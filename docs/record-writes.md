@@ -860,17 +860,22 @@ record's place in what the rules read:
   in a script append the record to the window's unsorted found set, and
   its number is the found set's count before it plus one, wherever the
   current record was (FileMaker Server's engine, auto-entry.md;
-  [#298](https://github.com/OpenMaker-Dev/openmaker/issues/298)). The
-  desktop window gives that number to its New Record and Duplicate Record,
-  from a script or its own command (the command's is inferred), and
-  OpenMaker Server's scripts give it to theirs. A sorted found set's new
-  record is not answered.
+  [#298](https://github.com/OpenMaker-Dev/openmaker/issues/298)).
+  OpenMaker Server's scripts give that number to their New Record and
+  Duplicate Record, keep it through the record's Set Field steps, and
+  check at the commit that the record is still at that place in an
+  unsorted found set; a duplicate's replacing auto-entered calculations
+  are entered again, not copied. A sorted found set's new record, one no
+  longer at its place, and the desktop's New Record and Duplicate Record
+  are not answered: the desktop's Duplicate Record copies auto-entered
+  values, and its window keeps a found count and sort state that can be
+  stale.
 - **Hosted files** take the same answer, an inference (parity-unverified).
 - **Routed writes:** a portal row of another file's table carries the
   calling window's number to that file.
 - **Everything else is unanswered:** a portal with rows, sorted or
-  filtered, a new record in a sorted found set, and edits of stored
-  records. A formula that is evaluated without the number refuses its
+  filtered, a new record in a sorted found set, the desktop's new records,
+  and edits of stored records. A formula that is evaluated without the number refuses its
   write with 3.
 - **Edits that evaluate no such formula are written.** An auto-entered
   calculation with no field inputs is evaluated only at creation.

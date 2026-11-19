@@ -1313,6 +1313,20 @@ impl ServerHost {
     /// none changed): an imported row keeps what the import's own options
     /// gave it. Returns the cells the rules wrote.
     fn apply_rules(&mut self, record: &mut OpenRecord, entry: Entry) -> HostResult<BTreeSet<u64>> {
+        // The place New Record gave a new record is its number only while
+        // it is still there, in the window's unsorted found set: its
+        // creation and its commit then read the same place. Otherwise
+        // (records before it omitted, the found set sorted or found again,
+        // another table's) what FileMaker stores is unmeasured (#298).
+        if let Some(number) = record.context.record_number {
+            let at = usize::try_from(number).ok().and_then(|n| n.checked_sub(1));
+            let there = self.window().is_ok_and(|w| {
+                w.sort.is_none() && at.and_then(|at| w.found.get(at)) == Some(&record.id)
+            });
+            if !there {
+                record.context.record_number = None;
+            }
+        }
         let plan = self.plan(record.table)?;
         let (mode, existing, cells) = match &record.ruled {
             Some(ruled) if ruled.since.is_empty() => return Ok(BTreeSet::new()),
@@ -3286,13 +3300,20 @@ impl Records for ServerHost {
         let entered = normal(&|f: &Field| f.data_type != DataType::Container);
         let serials =
             normal(&|f: &Field| f.decoded_options().is_some_and(|o| o.auto_entry_serial()));
+        // An auto-entered calculation that replaces an existing value is
+        // entered again, as FileMaker Server's engine entered the copy's
+        // own Get ( RecordNumber ) into it (s44): not copied.
+        let replacing = normal(&|f: &Field| {
+            f.decoded_options()
+                .is_some_and(|o| o.calculation_replaces_existing())
+        });
         let record = self.record.as_mut().expect("the new record");
         for cell in source.children {
             if cell.segment == [modcount::MOD_COUNT] {
                 continue;
             }
             if let Some(field) = om_hbam::slot::be_uint(&cell.segment) {
-                if serials.contains(&field) {
+                if serials.contains(&field) || replacing.contains(&field) {
                     continue;
                 }
                 if entered.contains(&field) {

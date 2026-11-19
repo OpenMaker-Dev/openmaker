@@ -130,9 +130,6 @@ pub(crate) struct Uncommitted {
     /// changed it since, so Revert drops only the window's changes and
     /// keeps it.
     pub saved: bool,
-    /// The place New Record gave the record in an unsorted found set, its
-    /// `Get ( RecordNumber )` for the rules until it is committed (#298).
-    pub record_number: Option<u64>,
 }
 
 impl Uncommitted {
@@ -171,8 +168,6 @@ pub(crate) struct NewRecord {
     session: bool,
     /// Made at once on the host.
     saved: bool,
-    /// Its place in the found set ([`Uncommitted::record_number`]).
-    record_number: Option<u64>,
 }
 
 /// What [`Window::commit`] writes with, as its caller gave it.
@@ -837,7 +832,7 @@ impl Window {
                 typed,
                 skip_validation,
                 privilege_set: privilege_set.clone(),
-                record_number: open.record_number,
+                record_number: None,
                 prepared: None,
             });
             if let Some((table, _)) = pinned {
@@ -1257,15 +1252,6 @@ impl Window {
             revert(provider, session);
             return Err(DataError::with_code(101, "There is no layout."));
         };
-        // The record joins the end of an unsorted found set: its auto-entry
-        // reads that position as Get ( RecordNumber ), n + 1 (s44,
-        // FileMaker Server's engine running a script's New Record and
-        // Duplicate Record; the window's own command is inferred to be the
-        // same). A sorted found set's is unmeasured and unanswered (#298).
-        let record_number = match self.sorted {
-            false => self.found_count(provider).ok().map(|found| found + 1),
-            true => None,
-        };
         let write = ScriptWrite {
             layout,
             table: None,
@@ -1275,7 +1261,7 @@ impl Window {
             typed: BTreeSet::new(),
             skip_validation: false,
             privilege_set,
-            record_number,
+            record_number: None,
             prepared: None,
         };
         let (record, saved) = match provider.write_record(&write) {
@@ -1289,7 +1275,6 @@ impl Window {
             record,
             session,
             saved,
-            record_number,
         })
     }
 
@@ -1304,7 +1289,6 @@ impl Window {
         if self.state.uncommitted.new {
             self.state.uncommitted.session = made.session;
             self.state.uncommitted.saved = made.saved;
-            self.state.uncommitted.record_number = made.record_number;
         } else if made.session {
             let _ = provider.revert_transaction();
         }

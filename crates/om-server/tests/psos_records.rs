@@ -617,8 +617,11 @@ fn server_scripts_auto_enter_over_a_global_reads_the_sessions_value() {
 /// A record a server script makes auto-enters Get ( RecordNumber ) as the
 /// position it takes at the end of the found set, n + 1, wherever the
 /// current record was: in every record, after records were omitted, and
-/// for a duplicate (s44, FileMaker Server's engine; #298). A field set
-/// before the commit keeps it, as in the oracle's probes.
+/// for a duplicate, whose copied number the calculation replaces (s44,
+/// FileMaker Server's engine, whose fields replaced; #298). A field set
+/// before the commit keeps it, as in the oracle's probes. A record no
+/// longer at that place when its rules run (an earlier record omitted in
+/// a transaction) is not answered: its write is refused.
 #[test]
 fn server_scripts_new_records_auto_enter_their_found_set_position() {
     let made = |before: Vec<ScriptStep>| {
@@ -632,7 +635,7 @@ fn server_scripts_new_records_auto_enter_their_found_set_position() {
         steps
     };
     let mut root = tree();
-    fixture::add_field(&mut root, TABLE, NUMBER, "Number", 1, 1, 0, 0x8, 0);
+    fixture::add_field(&mut root, TABLE, NUMBER, "Number", 1, 1, 0, 0x88, 0);
     fixture::add_formula(
         &mut root,
         &names(),
@@ -659,7 +662,26 @@ fn server_scripts_new_records_auto_enter_their_found_set_position() {
         (
             10,
             "Duplicate",
-            made(vec![fixture::go_to_record(1), ScriptStep::new(8)]),
+            made(vec![
+                fixture::go_to_record(1),
+                set_field(NUMBER, 1, "\"1\""),
+                ScriptStep::new(75),
+                ScriptStep::new(8),
+            ]),
+        ),
+        (
+            11,
+            "Moved",
+            vec![
+                fixture::on(86, true),
+                ScriptStep::new(23),
+                ScriptStep::new(205),
+                ScriptStep::new(7),
+                fixture::go_to_record(1),
+                ScriptStep::new(25),
+                ScriptStep::new(206),
+                exit_with("Get ( LastError )"),
+            ],
         ),
     ] {
         root.put(
@@ -680,6 +702,7 @@ fn server_scripts_new_records_auto_enter_their_found_set_position() {
         run(&mut client, 10).1,
         format!("{}|{}|0", found + 2, found + 2)
     );
+    assert_eq!(run(&mut client, 11).1, "3");
 }
 
 #[test]
