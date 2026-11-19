@@ -13,8 +13,12 @@ the field's message, and uniqueness of text fields. Contacts' actual stored
 Initial formula is decoded from its compiled stream without field-name
 special cases. Lookups are performed only in the exact-match form below
 (Lookups); serial numbers as below (Serial numbers), reserved on the host.
-Other lookups, entry from the last visited record, related, global,
-container, summary and unstored-calculation dependencies, plug-in
+A container field a formula reads is read as its data, through the
+write's container reader. Other lookups, entry from the last visited
+record, related fields beyond the formulas docs/record-writes.md
+supports, globals other than one repetition of a non-container global of
+the record's own table read by an auto-entered or validation
+calculation, summary and unstored-calculation dependencies, plug-in
 functions, custom functions that read fields and dependency cycles fail
 preflight (docs/record-writes.md, Limits).
 

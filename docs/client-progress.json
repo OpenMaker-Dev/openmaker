@@ -391,7 +391,7 @@
       "previous_status": "Partial",
       "status": "Partial",
       "scope": "Layouts of another file's tables support Browse, edits, new, duplicate and delete records, finds and sorts, Go to Related Record into the other file, and script transactions that prepare every file before any data goes ([limits](record-writes.md#limits)).",
-      "remaining": "Imports, globals, containers and repetitions are refused on these layouts [#43](https://github.com/OpenMaker-Dev/openmaker/issues/43), and so is Delete Record inside a transaction [#312](https://github.com/OpenMaker-Dev/openmaker/issues/312). Each file commits on its own, so a commit is not all or none once the first has gone.",
+      "remaining": "Imports, global and repeating fields, the layout's related records and duplicating a record that holds a container are refused on these layouts [#43](https://github.com/OpenMaker-Dev/openmaker/issues/43), and so is Delete Record inside a transaction [#312](https://github.com/OpenMaker-Dev/openmaker/issues/312). Each file commits on its own, so a connection lost, or a host refusing a later file, after an earlier file's commit leaves that file committed.",
       "issues": [
         43,
         312
