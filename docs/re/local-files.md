@@ -407,6 +407,28 @@ gets `SetPassword`'s checks (206, 208, 209); more than 100 characters is
 FileMaker Pro's own accounts are. It does not create the empty `5d`
 subtree.
 
+OpenMaker Server's scripts run Change Password through the same
+operation, and Reset Account Password and Enable Account through
+`Hosted::reset_account_password` and `Hosted::enable_account`, writing
+the members the table above lists. A session without full access gets 9.
+Reset Account Password takes only a FileMaker-file account (206) and a
+password of at most 100 characters (11). Its status is stamped like
+Change Password's, with bit 18 set as the step's option says. Enable
+Account changes only bit 19 and leaves an account already in that state
+unwritten. While each step writes, the script's session holds a write lock
+on `[23, 1]`, as Manage Security does. Another user's lock there gives
+310, which is Reset Account Password's observed code and is inferred for
+the other steps.
+
+Before any of these rewrites an account, it recomputes the stored `04`
+from the account's current members. When the two differ, nothing is
+written and the step gives 3 (OpenMaker's choice): FileMaker Pro would
+refuse a file whose checksum OpenMaker got wrong (808), so an account it
+does not read as FileMaker does is left alone. An account with no `04` is
+given one. An account name no account has gives 213 [I: FileMaker's code
+for a name it does not find is not observed]. [Guest], whose name is not
+text, is never found.
+
 When a local file's Login is refused with 211, the desktop asks for a new
 password in a Change Password dialog (New Password, Confirm New Password)
 in the sign-in dialog's place [I: OpenMaker's wording; FileMaker Pro's
@@ -428,7 +450,9 @@ with its reason. The new password is then the session's, for the files its
 scripts open later [I]. A file on a host does not offer it yet ([#248](https://github.com/OpenMaker-Dev/openmaker/issues/248)).
 
 Unknowns: the account script steps above and hosted password change at
-sign-in were not run live; login type 2 was not captured; whether the
+sign-in were not run live, so their errors for a missing account, for an
+account catalog another user has locked (other than Reset Account
+Password's 310) and for [Guest] are not observed; login type 2 was not captured; whether the
 password stamp's time is local or UTC is not measured; the empty `5d`
 subtree noted above is not explained. The checksums for privilege sets,
 extended privileges and file access entries are specified separately in

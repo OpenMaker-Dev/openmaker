@@ -3820,6 +3820,58 @@ impl Network for ServerHost {
         self.fetch_url_step(request)
     }
 }
+/// FileMaker's error 310, "Cannot modify items because another user is
+/// modifying them": what Reset Account Password gives when the account
+/// catalog is locked (script-runtime.md 2.3, its 8003).
+const ACCOUNTS_IN_USE: i32 = 310;
+
+impl ServerHost {
+    /// Run `edit` while the session holds the write lock FileMaker Pro's
+    /// Manage Security takes on the account catalog `[23, 1]`
+    /// (local-files.md 2.4), so that a client saving accounts and a script
+    /// do not change them at once: 310 while another user holds it
+    /// (FileMaker's code for Reset Account Password; inferred for the other
+    /// account steps). A file that is read-only changes nothing: 3
+    /// (OpenMaker's choice).
+    fn edit_accounts(&self, edit: impl FnOnce() -> HostResult) -> HostResult {
+        if self.hosted.read_only {
+            return Err(ErrorCode::UNAVAILABLE.into());
+        }
+        let path = [vec![23], vec![1]];
+        self.hosted
+            .lock_table()
+            .lock(&path, self.user, LOCK_WRITE, &self.holder)
+            .map_err(|conflict| {
+                info!(
+                    "{:?}: script session refused the accounts: in use by {}",
+                    self.hosted.name, conflict.users
+                );
+                HostError::Error(ErrorCode(ACCOUNTS_IN_USE))
+            })?;
+        let result = edit();
+        self.hosted.lock_table().release_path(&path, self.user);
+        result
+    }
+
+    /// The step error for an account edit's `code` (`None`: the account or
+    /// file could not be written, logged with `reason`, 3).
+    fn account_error(&self, step: &str, code: Option<i32>, reason: &str) -> HostError {
+        if code.is_none() {
+            warn!("{:?}: {step} changed nothing: {reason}", self.hosted.name);
+        }
+        ErrorCode(code.unwrap_or(ErrorCode::UNAVAILABLE.0)).into()
+    }
+
+    /// [`Self::account_error`] for Reset Account Password and Enable Account.
+    fn account_edit_error(&self, step: &str, e: &crate::hosting::AccountEditError) -> HostError {
+        let reason = match e {
+            crate::hosting::AccountEditError::Unwritten(reason) => reason.as_str(),
+            _ => "",
+        };
+        self.account_error(step, e.code(), reason)
+    }
+}
+
 impl Accounts for ServerHost {
     /// Change Password (83): the session's account's own password in the
     /// hosted file, as FileMaker's `SetPassword` sets it
@@ -3828,26 +3880,46 @@ impl Accounts for ServerHost {
     /// old password, 206 a set that does not allow it, 208 shorter than
     /// the set's minimum, 209 the same password, 11 longer than 100
     /// characters, 210 an inactive account). A server script shows no
-    /// dialog, so the step runs as without one (inferred). A file that is
-    /// read-only, or could not be written, changes nothing: 3 (OpenMaker's
-    /// choice).
+    /// dialog, so the step runs as without one (inferred).
     fn change_password(&mut self, old: &str, new: &str, _with_dialog: bool) -> HostResult {
-        if self.hosted.read_only {
-            return Err(ErrorCode::UNAVAILABLE.into());
-        }
-        let now = jiff::Zoned::now().datetime();
-        match self.hosted.change_password(&self.account, old, new, now) {
-            Ok(()) => Ok(()),
-            Err(e) => {
-                if let crate::hosting::PasswordChangeError::Unwritten(reason) = &e {
-                    warn!(
-                        "{:?}: Change Password for {:?} changed nothing: {reason}",
-                        self.hosted.name, self.account
-                    );
-                }
-                Err(ErrorCode(e.code().unwrap_or(ErrorCode::UNAVAILABLE.0)).into())
-            }
-        }
+        self.edit_accounts(|| {
+            let now = jiff::Zoned::now().datetime();
+            self.hosted
+                .change_password(&self.account, old, new, now)
+                .map_err(|e| {
+                    let reason = match &e {
+                        crate::hosting::PasswordChangeError::Unwritten(reason) => reason.as_str(),
+                        _ => "",
+                    };
+                    self.account_error("Change Password", e.code(), reason)
+                })
+        })
+    }
+
+    /// Reset Account Password (136): only a session with full access
+    /// privileges (9), as FileMaker's `DoResetAccount`;
+    /// [`crate::hosting::Hosted::reset_account_password`] writes it.
+    fn reset_account_password(&mut self, name: &str, password: &str, expire: bool) -> HostResult {
+        self.require_full_access()?;
+        self.edit_accounts(|| {
+            let now = jiff::Zoned::now().datetime();
+            self.hosted
+                .reset_account_password(name, password, expire, now)
+                .map_err(|e| self.account_edit_error("Reset Account Password", &e))
+        })
+    }
+
+    /// Enable Account (137): only a session with full access privileges
+    /// (9), as FileMaker's `DoEnableAccount`;
+    /// [`crate::hosting::Hosted::enable_account`] writes it.
+    fn enable_account(&mut self, name: &str, active: bool) -> HostResult {
+        self.require_full_access()?;
+        self.edit_accounts(|| {
+            self.hosted
+                .enable_account(name, active)
+                .map_err(|e| self.account_edit_error("Enable Account", &e))
+        })
     }
 }
+
 impl Platform for ServerHost {}

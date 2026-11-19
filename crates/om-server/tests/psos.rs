@@ -1262,3 +1262,108 @@ fn change_password_sets_the_accounts_own_password() {
     assert!(login("fresh secret"));
     assert!(!login(CLERK_PASSWORD));
 }
+
+/// Reset Account Password (136) and Enable Account (137) in a server
+/// script, as FileMaker's `DoResetAccount` and `DoEnableAccount` write them
+/// (local-files.md 2.4): a full-access session resets Clerk's password,
+/// makes the account inactive and then active again, each saved with the
+/// checksum FileMaker Pro checks. A missing account is 213 (inferred), an
+/// account whose stored checksum is not the one its members give is not
+/// rewritten (3), and a session without full access gets 9 (#83).
+#[test]
+fn account_steps_reset_passwords_and_enable_accounts() {
+    use fixture::{calc, exit_with, on, script, set_variable};
+    let named = |id: u16, name: &str| {
+        let mut step = ScriptStep::new(id);
+        step.set_calculation(0, Some(&calc(name)));
+        step
+    };
+    let reset = |name: &str, password: &str| {
+        let mut step = named(136, name);
+        step.set_calculation(1, Some(&calc(password)));
+        step
+    };
+    // Deactivate is the step's flag 0x100.
+    let enable = |name: &str, active: bool| {
+        let mut step = named(137, name);
+        step.set_flag(0x100, !active);
+        step
+    };
+    let scripts = [
+        script(
+            6,
+            "Reset and disable",
+            vec![
+                on(86, true),
+                reset("\"clerk\"", "\"new secret\""),
+                set_variable("$reset", "Get ( LastError )"),
+                enable("\"Clerk\"", false),
+                set_variable("$off", "Get ( LastError )"),
+                reset("\"Nobody\"", "\"x\""),
+                set_variable("$missing", "Get ( LastError )"),
+                enable(&format!("{:?}", fixture::READER), false),
+                exit_with("$reset & \"|\" & $off & \"|\" & $missing & \"|\" & Get ( LastError )"),
+            ],
+        ),
+        script(
+            7,
+            "Enable",
+            vec![
+                on(86, true),
+                enable("\"Clerk\"", true),
+                exit_with("Get ( LastError )"),
+            ],
+        ),
+    ];
+    let mut root = fixture::tree(&scripts, true);
+    fixture::add_reader(&mut root);
+    root.put(
+        &[&[23], &[1], &[5], &[6], &[4]],
+        om_hbam::OwnedNode::leaf(Vec::new(), vec![0; 16]),
+    );
+    let file = TempFile::from_tree("account-steps", &root);
+    let port = start(&file, None);
+    // Clerk ([Data Entry Only]) may not manage accounts.
+    let mut clerk = logged_in_as(port, "clerk", CLERK);
+    assert_eq!(run(&mut clerk, 7).1, "9");
+    clerk.disconnect().unwrap();
+
+    let login = |account: &str, password: &str| {
+        let mut session = connect(port, "check");
+        session.open_file("127.0.0.1", FILE).unwrap();
+        session.fetch_internal_creation().unwrap();
+        let environment = LoginEnvironment::for_remote_file("127.0.0.1", FILE);
+        let reply = session
+            .login(account, password, INTERNAL_CREATION, &environment)
+            .unwrap();
+        let _ = session.disconnect();
+        reply.is_success()
+    };
+    let mut admin = logged_in(port, "admin");
+    assert_eq!(run(&mut admin, 6).1, "0|0|213|3");
+    assert!(!login(CLERK, "new secret"), "Clerk is inactive");
+    assert!(login(fixture::READER, fixture::READER_PASSWORD));
+    assert_eq!(run(&mut admin, 7).1, "0");
+    assert!(login(CLERK, "new secret"));
+    assert!(!login(CLERK, CLERK_PASSWORD));
+
+    // The saved account carries the checksum its members give.
+    let saved = om_hbam::HbamFile::open(&file.0).unwrap();
+    let at = |path: &[&[u8]]| saved.subtree(path).unwrap().and_then(|n| n.value);
+    let account = saved.subtree(&[&[23], &[1], &[5], &[3]]).unwrap().unwrap();
+    let member = |key: u8| account.child(&[key]).and_then(|n| n.value);
+    let name = account.child(&[16]).and_then(|n| n.text()?.ok()).unwrap();
+    let expected = om_server::accounts::checksum(&om_server::accounts::ChecksumInput {
+        version: at(&[&[2], &[5]]).map(|v| u16::from_be_bytes(v.try_into().unwrap())),
+        access_uuid: at(&[&[23], &[4], &[1], &[0x10]]),
+        creation: at(&[&[2], &[254]]),
+        key: &[3],
+        kind: member(2).and_then(|v| v.first().copied()),
+        name: &name,
+        password: member(6).unwrap(),
+        description: None,
+        status: member(0x0a),
+        set: member(0x0b),
+    });
+    assert_eq!(member(4), Some(&expected[..]));
+}

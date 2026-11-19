@@ -478,9 +478,12 @@ Open items:
   - Account steps: Change Password sets the session account's own
     password in the hosted file, as FileMaker's `SetPassword` does
     (re/local-files.md 2.4), with its errors, and runs as without a
-    dialog. Add Account, Delete Account, Reset Account Password, Enable
-    Account and Re-Login fail with error 3
-    ([#83](https://github.com/OpenMaker-Dev/openmaker/issues/83)).
+    dialog. Reset Account Password and Enable Account change an account
+    for a session with full access (else 9). None of them rewrites an
+    account whose stored checksum OpenMaker does not reproduce (3). A
+    missing account is 213 (inferred), and another user's lock on the
+    accounts is 310. Add Account, Delete Account and Re-Login fail with
+    error 3 ([#83](https://github.com/OpenMaker-Dev/openmaker/issues/83)).
   - The recompute after a schema change reads container inputs from the
     table's library. It still skips repeating calculations, container
     results, plug-in functions and `Get` selectors that need a window,

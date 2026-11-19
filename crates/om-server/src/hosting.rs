@@ -574,16 +574,7 @@ impl Hosted {
             return Err(PasswordChangeError::TooLong);
         }
         let mut store = self.write_store();
-        let wanted = name.to_lowercase();
-        let found = store.node(&ACCOUNTS_PATH).and_then(|accounts| {
-            accounts.children.iter().find(|account| {
-                crate::store::view(account)
-                    .child(ACCOUNT_NAME)
-                    .and_then(|n| n.text()?.ok())
-                    .is_some_and(|text| text.to_lowercase() == wanted)
-            })
-        });
-        let Some(record) = found.cloned() else {
+        let Some(record) = find_account(&store, name) else {
             return Err(PasswordChangeError::Refused);
         };
         let view = crate::store::view(&record);
@@ -649,54 +640,139 @@ impl Hosted {
                 return Err(PasswordChangeError::Unchanged);
             }
         }
+        let status = current.password_set(now.date(), seconds(now)).encode();
+        let password =
+            StoredPassword::encode(new, random_salt().map_err(PasswordChangeError::Unwritten)?);
+        self.rewrite_account(&mut store, &record, Some(password), status)
+            .map_err(PasswordChangeError::Unwritten)
+    }
+
+    /// Reset Account Password (136) for the account named `name`, as
+    /// FileMaker's `DoResetAccount` writes it (local-files.md 2.4): the
+    /// stored password `06` with a new random salt, the status `0a`
+    /// stamped `now` to the second with its other flags kept and a change
+    /// due at the next login when `expire`, and the checksum `04`. Only a
+    /// FileMaker-file account has a password to reset (206, as
+    /// `SetPassword` refuses another kind); more than 100 characters is
+    /// 11. The caller has checked that the session may manage accounts.
+    pub fn reset_account_password(
+        &self,
+        name: &str,
+        new: &str,
+        expire: bool,
+        now: jiff::civil::DateTime,
+    ) -> Result<(), AccountEditError> {
+        if new.chars().count() > 100 {
+            return Err(AccountEditError::TooLong);
+        }
+        let mut store = self.write_store();
+        let record = find_account(&store, name).ok_or(AccountEditError::Missing)?;
+        let view = crate::store::view(&record);
+        if AccountKind::decode(member(&view, ACCOUNT_KIND)) != Some(AccountKind::FileMakerFile) {
+            return Err(AccountEditError::NotFileAccount);
+        }
+        let current = AccountStatus::decode(member(&view, ACCOUNT_STATUS))
+            .ok_or_else(|| AccountEditError::Unwritten("its status does not decode".into()))?;
         let status = current
-            .password_set(
-                now.date(),
-                now.time().hour() as u32 * 3600
-                    + now.time().minute() as u32 * 60
-                    + now.time().second() as u32,
-            )
+            .password_reset(now.date(), seconds(now), expire)
             .encode();
-        let mut salt = [0u8; om_crypto::account::SALT_LEN];
-        ring::rand::SecureRandom::fill(&ring::rand::SystemRandom::new(), &mut salt)
-            .map_err(|_| PasswordChangeError::Unwritten("no random salt".into()))?;
-        let password = StoredPassword::encode(new, salt);
-        let description = view.child(ACCOUNT_DESCRIPTION).and_then(|n| n.text()?.ok());
-        let account_name = view
+        let password =
+            StoredPassword::encode(new, random_salt().map_err(AccountEditError::Unwritten)?);
+        self.rewrite_account(&mut store, &record, Some(password), status)
+            .map_err(AccountEditError::Unwritten)
+    }
+
+    /// Enable Account (137): the account named `name` made active or
+    /// inactive, as FileMaker's `SetEnabled` sets it (local-files.md 2.4):
+    /// only the status's inactive bit changes (an account without a status
+    /// gets 1/1/1024's), and the checksum `04` with it. An account already
+    /// in that state is left as it is. The caller has checked that the
+    /// session may manage accounts.
+    pub fn enable_account(&self, name: &str, active: bool) -> Result<(), AccountEditError> {
+        let mut store = self.write_store();
+        let record = find_account(&store, name).ok_or(AccountEditError::Missing)?;
+        let view = crate::store::view(&record);
+        let stored = member(&view, ACCOUNT_STATUS);
+        let current = AccountStatus::decode(stored)
+            .ok_or_else(|| AccountEditError::Unwritten("its status does not decode".into()))?;
+        let status = current.enabled(active).encode();
+        if stored == Some(&status[..]) {
+            return Ok(());
+        }
+        self.rewrite_account(&mut store, &record, None, status)
+            .map_err(AccountEditError::Unwritten)
+    }
+
+    /// Write account `record` again with `password` (its own when `None`)
+    /// and `status`, and the checksum `04` they give, in one commit saved
+    /// before this returns; its other members are kept. Refused, changing
+    /// nothing, when it stores a checksum other than the one its current
+    /// members give: FileMaker Pro refuses a file whose account checksum is
+    /// wrong (808), so an account this server does not read as FileMaker
+    /// does is not rewritten. One without a checksum, which FileMaker
+    /// always writes, gets one.
+    fn rewrite_account(
+        &self,
+        store: &mut Store,
+        record: &om_hbam::OwnedNode,
+        password: Option<Vec<u8>>,
+        status: Vec<u8>,
+    ) -> Result<(), String> {
+        let view = crate::store::view(record);
+        let current = view
+            .child(ACCOUNT_PASSWORD)
+            .and_then(|n| n.assembled())
+            .ok_or("it stores no password")?;
+        let name = view
             .child(ACCOUNT_NAME)
             .and_then(|n| n.text()?.ok())
-            .unwrap_or_default();
+            .ok_or("its name is not text")?;
+        let description = view.child(ACCOUNT_DESCRIPTION).and_then(|n| n.text()?.ok());
+        let kind = member(&view, ACCOUNT_KIND).and_then(|v| v.first().copied());
+        let set = member_owned(&view, ACCOUNT_PRIVILEGES);
         let version = store
             .node(&[&[2], &[5]])
             .and_then(|n| n.value.as_deref())
             .and_then(|v| <[u8; 2]>::try_from(v).ok())
             .map(u16::from_be_bytes);
-        let checksum = crate::accounts::checksum(&crate::accounts::ChecksumInput {
-            version,
-            access_uuid: store
-                .node(&[&[23], &[4], &[1], &[0x10]])
-                .and_then(|n| n.value.as_deref()),
-            creation: store.node(&[&[2], &[254]]).and_then(|n| n.value.as_deref()),
-            key: &record.segment,
-            kind: member(&view, ACCOUNT_KIND).and_then(|v| v.first().copied()),
-            name: &account_name,
-            password: &password,
-            description: description.as_deref(),
-            status: Some(&status),
-            set: set_ref.as_deref(),
-        });
+        let access_uuid = store
+            .node(&[&[23], &[4], &[1], &[0x10]])
+            .and_then(|n| n.value.as_deref());
+        let creation = store.node(&[&[2], &[254]]).and_then(|n| n.value.as_deref());
+        let checksum = |password: &[u8], status: Option<&[u8]>| {
+            crate::accounts::checksum(&crate::accounts::ChecksumInput {
+                version,
+                access_uuid,
+                creation,
+                key: &record.segment,
+                kind,
+                name: &name,
+                password,
+                description: description.as_deref(),
+                status,
+                set: set.as_deref(),
+            })
+        };
+        if let Some(stored) = member(&view, ACCOUNT_CHECKSUM) {
+            if stored != checksum(&current, member(&view, ACCOUNT_STATUS)) {
+                return Err("its checksum is not the one its members give".into());
+            }
+        }
+        let sum = checksum(password.as_deref().unwrap_or(&current), Some(&status));
         let mut changed = record.clone();
-        changed.put(
-            &[ACCOUNT_PASSWORD],
-            om_hbam::OwnedNode::leaf(Vec::new(), password),
-        );
+        if let Some(password) = password {
+            changed.put(
+                &[ACCOUNT_PASSWORD],
+                om_hbam::OwnedNode::leaf(Vec::new(), password),
+            );
+        }
         changed.put(
             &[ACCOUNT_STATUS],
             om_hbam::OwnedNode::leaf(Vec::new(), status),
         );
         changed.put(
             &[ACCOUNT_CHECKSUM],
-            om_hbam::OwnedNode::leaf(Vec::new(), checksum.to_vec()),
+            om_hbam::OwnedNode::leaf(Vec::new(), sum.to_vec()),
         );
         let path: Vec<Vec<u8>> = ACCOUNTS_PATH
             .iter()
@@ -705,8 +781,7 @@ impl Hosted {
             .collect();
         let mut journal = store.begin_commit();
         store.replace_members_in(&mut journal, vec![(path, changed)]);
-        self.save_commit(&mut store, journal)
-            .map_err(|e| PasswordChangeError::Unwritten(e.to_string()))
+        self.save_commit(store, journal).map_err(|e| e.to_string())
     }
 
     /// [`Store::save_commit`] for this file, logged.
@@ -841,6 +916,34 @@ pub enum PasswordChangeError {
     Unwritten(String),
 }
 
+/// Why Reset Account Password or Enable Account changed nothing.
+#[derive(Debug)]
+pub enum AccountEditError {
+    /// No account has that name (213, inferred: FileMaker's code for an
+    /// account it does not find there is not observed).
+    Missing,
+    /// Not a FileMaker-file account, which alone has a password here (206).
+    NotFileAccount,
+    /// More than 100 characters (11).
+    TooLong,
+    /// The account could not be rewritten, or the file could not be
+    /// written, and nothing changed.
+    Unwritten(String),
+}
+
+impl AccountEditError {
+    /// FileMaker's error code; `None` for an account or file that could not
+    /// be written.
+    pub fn code(&self) -> Option<i32> {
+        match self {
+            Self::Missing => Some(213),
+            Self::NotFileAccount => Some(206),
+            Self::TooLong => Some(11),
+            Self::Unwritten(_) => None,
+        }
+    }
+}
+
 impl PasswordChangeError {
     /// FileMaker's error code; `None` for a file that could not be written.
     pub fn code(&self) -> Option<i32> {
@@ -854,6 +957,39 @@ impl PasswordChangeError {
             Self::Unwritten(_) => None,
         }
     }
+}
+
+/// The record of the account named `name` (as FileMaker matches names,
+/// ignoring case) as `store` holds it. [Guest], whose name is not text, is
+/// never found.
+fn find_account(store: &Store, name: &str) -> Option<om_hbam::OwnedNode> {
+    let wanted = name.to_lowercase();
+    store.node(&ACCOUNTS_PATH).and_then(|accounts| {
+        accounts
+            .children
+            .iter()
+            .find(|account| {
+                crate::store::view(account)
+                    .child(ACCOUNT_NAME)
+                    .and_then(|n| n.text()?.ok())
+                    .is_some_and(|text| text.to_lowercase() == wanted)
+            })
+            .cloned()
+    })
+}
+
+/// The seconds since midnight of `now`, to the second.
+fn seconds(now: jiff::civil::DateTime) -> u32 {
+    let time = now.time();
+    time.hour() as u32 * 3600 + time.minute() as u32 * 60 + time.second() as u32
+}
+
+/// A new random salt for a stored password.
+fn random_salt() -> Result<[u8; om_crypto::account::SALT_LEN], String> {
+    let mut salt = [0u8; om_crypto::account::SALT_LEN];
+    ring::rand::SecureRandom::fill(&ring::rand::SystemRandom::new(), &mut salt)
+        .map_err(|_| "no random salt".to_string())?;
+    Ok(salt)
 }
 
 /// The value of `record`'s member `key`: `None` when it has none, and an
