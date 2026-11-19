@@ -594,6 +594,7 @@ mod tests {
             globals: None,
             context: Default::default(),
             held: None,
+            others_held: Default::default(),
             related_needs: None,
         }
     }

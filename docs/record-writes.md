@@ -1520,12 +1520,18 @@ application creation plan.
     reads the rows committed before it with its key through an unsorted
     equality join, never itself: aggregates and the first related record
     read them in creation order. FileMaker Pro's local witness read one
-    older row (computed key); FileMaker Server's engine read zero to three
-    older rows of records a script made (given keys; auto-entry.md, "A new
+    older row (computed key, an aggregate); FileMaker Server's engine read
+    zero to three older rows of records a script made (given keys, an
+    auto-entry that replaces an existing value; auto-entry.md, "A new
     record's own self-join"). Both sides' keys must be final and the
-    commit must hold no other row of the table. A join on several equal
-    predicates is read the same way, an inference. Reads by position
-    (`Last`, `GetNthRecord`) are not answered.
+    commit must hold no other row of the table: a desktop commit's held
+    records, or, on OpenMaker Server, the other records of a script's
+    transaction. More than one older row is answered only for an
+    auto-entry that replaces an existing value: one that keeps it was
+    entered when the record was made, before its keys, which OpenMaker
+    does not evaluate. A join on several equal predicates is read the same
+    way, an inference. Reads by position (`Last`, `GetNthRecord`) are not
+    answered.
   - **A match field on the record's side left empty** relates nothing, the
     record included, since an empty match value never matches
     (file-metadata.md 4.3). This holds also where the write computes that

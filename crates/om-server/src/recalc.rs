@@ -243,6 +243,7 @@ pub fn record_environment(account: &str, uuid: String) -> RecordEnvironment {
         // A server script's transaction holds its records in its own
         // session, which its source reads (`scripts::host`).
         held: None,
+        others_held: Default::default(),
         related_needs: None,
     }
 }

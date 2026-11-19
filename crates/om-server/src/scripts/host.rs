@@ -1383,6 +1383,16 @@ impl ServerHost {
         // What the write's lookups copy, read from the session's records as
         // the script's calculations read them.
         let mut environment = self.record_environment();
+        // The transaction's other records, which the session's reads see:
+        // a self-join's answer that depends on what is committed is
+        // refused (s47: FileMaker's second new record of one transaction
+        // did not read the first).
+        if let Some(transaction) = &self.transaction {
+            environment.others_held = (transaction.changes.keys())
+                .filter(|key| **key != (record.table, record.id))
+                .map(|(table, _)| *table)
+                .collect();
+        }
         // The step that last changed the record, not the one committing it.
         environment.context = rules::WriteContext {
             host_timestamp: environment.context.host_timestamp.take(),

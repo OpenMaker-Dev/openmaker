@@ -8364,15 +8364,22 @@ fn a_new_records_auto_entry_reads_an_unmatched_self_join_as_empty() {
     }
     let host = Host::new("self-join-unmatched", vec![(ROOT, root)]);
     let mut provider = host.open(ROOT);
+    fn create_counting(
+        provider: &mut impl DataProvider,
+        key: &str,
+        count: &str,
+    ) -> Result<om_data::Record, om_data::DataError> {
+        let values = [
+            ("Key".to_owned(), Some(key.to_owned())),
+            ("Count".to_owned(), Some(count.to_owned())),
+        ];
+        provider.create_record(fixture::LAYOUT as u32, values.into())
+    }
     fn create(
         provider: &mut impl DataProvider,
         key: &str,
     ) -> Result<om_data::Record, om_data::DataError> {
-        let values = [
-            ("Key".to_owned(), Some(key.to_owned())),
-            ("Count".to_owned(), Some("5".to_owned())),
-        ];
-        provider.create_record(fixture::LAYOUT as u32, values.into())
+        create_counting(provider, key, "5")
     }
     let made = create(&mut provider, "x2").unwrap();
     let page = provider.records(fixture::LAYOUT as u32, 0, 100).unwrap();
@@ -8386,6 +8393,16 @@ fn a_new_records_auto_entry_reads_an_unmatched_self_join_as_empty() {
     let record = page.records.iter().find(|r| r.id == second.id).unwrap();
     assert_eq!(record.values[at("Tally")].as_deref(), Some("5|1|5|10"));
     assert_eq!(record.values[at("First")].as_deref(), Some("s=|5"));
+    // Three older matches made in another order than their values': the
+    // fourth reads them in creation order.
+    for count in ["7", "3", "9"] {
+        create_counting(&mut provider, "w", count).unwrap();
+    }
+    let fourth = create_counting(&mut provider, "w", "1").unwrap();
+    let page = provider.records(fixture::LAYOUT as u32, 0, 100).unwrap();
+    let record = page.records.iter().find(|r| r.id == fourth.id).unwrap();
+    let tally = record.values[at("Tally")].as_deref().unwrap_or_default();
+    assert_eq!(tally.replace(['\r', '\n'], ","), "1|3|7,3,9|14,6,18");
     // Two new records in one commit: the other could match by then.
     provider.begin_transaction(Default::default()).unwrap();
     create(&mut provider, "y1").unwrap();
