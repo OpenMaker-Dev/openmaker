@@ -3679,7 +3679,9 @@ Globals (2026-10-29; Claris "Global fields")
   before the commit, as a first repetition's does (the window's
   uncommitted cells under the user's own typing there); one replacing the
   user's typing (an OnObjectSave setting the field again) shows the
-  script's value. Native Browse repetition and global entry parity remains
+  script's value. Entered again, the field object opens with the script's
+  value, and the user's edit replaces it, also one erased back to the
+  stored value. Native Browse repetition and global entry parity remains
   unmeasured.
 - Claris documents that a global's validation runs on field exit, rather
   than record commit
