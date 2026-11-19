@@ -521,24 +521,30 @@ impl OpenMakerApp {
         });
         let table = crate::calc::layout_occurrence(session)
             .zip(schema)
-            .and_then(|(occurrence, schema)| Some((schema, schema.table_of(occurrence)?.id)));
-        let (Some((schema, table)), Some(record), Mode::Browse) = (table, current, self.w.mode)
-        else {
+            .and_then(|(occurrence, schema)| schema.table_of(occurrence))
+            .map(|table| table.id);
+        let (Some(table), Some(record), Mode::Browse) = (table, current, self.w.mode) else {
             return;
         };
         // The user's typing counts once the field is left. A selected
         // container is not typed into.
-        let typing = document.active.as_deref().filter(|f| {
-            drafts.contains_key(*f)
+        let typing = document.active.clone().filter(|f| {
+            drafts.contains_key(f)
                 && document
                     .selected_container(session)
                     .is_none_or(|c| c.field != *f)
         });
         // The record's own later repetitions: a script's cells, and the
-        // user's typing into them but for the one being typed into.
+        // user's typing into them but for the one being typed into, a
+        // cell of this record (another related record's cell of the same
+        // id is not it).
         let parent = u64::try_from(record).ok();
         let focused = related
-            .filter(|f| f.portal.is_none())
+            .filter(|f| {
+                f.portal.is_none()
+                    && f.field.table == table
+                    && parent.is_some_and(|p| f.field.row == RelatedRow::Record(p))
+            })
             .map(|f| f.field.field);
         let scripted = uncommitted
             .into_iter()
@@ -560,17 +566,16 @@ impl OpenMakerApp {
             .chain(drafted)
             .filter(|cell| Some(*cell) != focused);
         let entered = match uncommitted {
-            Some(u) if u.new => u.entered.as_slice(),
-            _ => &[],
+            Some(u) if u.new => u.entered.clone(),
+            _ => Vec::new(),
         };
-        info.modified_fields = crate::calc::window_modified_fields(
-            schema,
+        info.modified_fields = self.w.calcs.modified_fields(crate::calc::ModifiedInputs {
             table,
-            drafts.keys().map(String::as_str),
+            drafts: drafts.into_keys().collect(),
             typing,
-            scripted.chain(typed),
+            cells: scripted.chain(typed).collect(),
             entered,
-        );
+        });
     }
 
     /// The portal row of the related field the user's focus is in, that

@@ -302,6 +302,9 @@ pub(crate) struct Calculations {
     /// value, kept apart from `values`, where the same object holds the
     /// found set's value.
     group_values: RefCell<HashMap<GroupKey, SessionResult<Value>>>,
+    /// The layout calculations' last `Get ( ModifiedFields )`, with the
+    /// schema and inputs it was computed from ([`Self::modified_fields`]).
+    modified: RefCell<Option<(Arc<CalcSchema>, ModifiedInputs, Vec<String>)>>,
     /// The value-list items of controls whose list depends on the record
     /// (its related values, or an unstored calculation's), by object,
     /// record and portal row, with whether they were computed by a
@@ -1134,6 +1137,44 @@ pub(crate) fn focus_names(field: &str, layout_table: &str) -> (String, String) {
     match field.split_once("::") {
         Some((occurrence, name)) => (name.to_owned(), occurrence.to_owned()),
         None => (field.to_owned(), layout_table.to_owned()),
+    }
+}
+
+/// What a window's `Get ( ModifiedFields )` is computed from
+/// ([`window_modified_fields`]).
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub(crate) struct ModifiedInputs {
+    pub table: u64,
+    pub drafts: Vec<String>,
+    pub typing: Option<String>,
+    pub cells: Vec<u64>,
+    pub entered: Vec<String>,
+}
+
+impl Calculations {
+    /// [`window_modified_fields`] for the layout's calculations, computed
+    /// again only when its inputs or the schema change: the walk through
+    /// the stored calculations that depend on the changed fields would
+    /// otherwise run on every frame the window draws.
+    pub fn modified_fields(&self, inputs: ModifiedInputs) -> Vec<String> {
+        let Some(schema) = self.schema() else {
+            return Vec::new();
+        };
+        if let Some((seen, given, answer)) = &*self.modified.borrow() {
+            if Arc::ptr_eq(seen, schema) && *given == inputs {
+                return answer.clone();
+            }
+        }
+        let answer = window_modified_fields(
+            schema,
+            inputs.table,
+            inputs.drafts.iter().map(String::as_str),
+            inputs.typing.as_deref(),
+            inputs.cells.iter().copied(),
+            &inputs.entered,
+        );
+        *self.modified.borrow_mut() = Some((Arc::clone(schema), inputs, answer.clone()));
+        answer
     }
 }
 
