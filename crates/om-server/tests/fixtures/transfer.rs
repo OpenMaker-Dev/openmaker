@@ -54,6 +54,7 @@ pub fn export(paths: &[&str], fields: &[u64], file_type: FileType) -> ScriptStep
         formatting: false,
         charset: ExportCharset::Utf8,
         use_name_alias: Some(1),
+        field_names: None,
     };
     export_with(paths, options, file_type)
 }

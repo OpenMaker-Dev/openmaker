@@ -98,18 +98,16 @@ index keys, and no others:
 | `20` | `04` | in every file; the layout index `[4, 1]` has the same, the value list index `[21, 1]` has `01`. Probably the Manage dialogs' last view order (`KLastViewOrdering`) [I] |
 | `d8`, `fc`, `fc01`-`fc03` | | the index's UUID and modification stamp (schema-path.md 8) |
 
-**Name keys depend on the file's language.** A name list key is the
-name's text key without its `01` (schema-path.md 5.6) in the collation of
-the file's language ([README.md](README.md) F57). The English, Dutch and
-Italian files list their ASCII names under DUCET 5.2.0's primary weights
-and `00 00 00`. A name with accents (in the French, German, Spanish,
-Portuguese and Swedish files) has a second level after its primary
-weights: `00 00`, `01`, one secondary weight per character, `00` ("Añadir
+**Name keys do not depend on the file's language.** A name list key is
+FileMaker's key of the name in the catalog language (schema-path.md 5.6),
+the same in every file: an ASCII name is DUCET 5.2.0's primary weights and
+`00 00 00` in all 66 starters; accents add a secondary level ("Añadir
 registro relacionado": 27 primary weights, then `00 00 01 01 2f 01 ...
-01 00`, `2f` for the tilde). The Japanese, Korean and Chinese files use
-weights of their own (`76ee 9332`, the code points, for `目録`). How the
-list holds two members of one name (two folders' `--` ends) is not
-established: no starter file has two.
+01 00`, `2f` for the tilde), kana a tertiary one, and ideographs and Hangul
+syllables key as FileMaker's own weights (`76ee 9332`, the code points, for
+`目録`). How the list holds two scripts of one name is not established: no
+starter file has two (layouts and fonts of one name are listed under the
+key and the member's key segment, schema-path.md 5.6).
 
 **A script member** `[17, 5, S]` in the starter files has `04` and `05`
 (scripts only), `10`, `13` = 0, `d8` and `d9` (version-4 UUIDs), `f0` and

@@ -20,7 +20,7 @@ fn pdf(path: &std::path::Path) -> ScriptStep {
         0x82,
         Some(om_data::text_node(
             &[0x82],
-            &format!("file:{}", path.display()),
+            &crate::scripting::files::file_line(path),
         )),
     );
     step

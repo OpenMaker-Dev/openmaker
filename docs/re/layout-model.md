@@ -1000,8 +1000,10 @@ Chooser and Add Assignee layouts, which are also the only two without
 
 `0x20000` (with placeholder text, above 5.5) and `0x80000` (on every
 value-list control and calendar of the templates) are in neither source
-[U]. OpenMaker reads `0x8000` (`FieldObject::quick_find`); the other bits
-of the table it reads only where this section's other paragraphs say.
+[U]. OpenMaker reads `0x8000` (`FieldObject::quick_find`) and `0x80`
+(`FieldObject::next_object_on_enter`, which the keypad's Enter follows in
+Browse); the other bits of the table it reads only where this section's
+other paragraphs say.
 
 [O, FileMaker Pro 26.1.1 x86_64] The Inspector writes the two 26.1.1 bits
 into this word: `PropFieldFormatter::ApplyFormatImpl` (0x101b35f90 and

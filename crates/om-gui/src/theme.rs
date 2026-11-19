@@ -113,9 +113,11 @@ pub(crate) fn body() -> FontId {
 
 /// Install the FileMaker look on `ctx`: the bundled UI font and the light
 /// chrome style. FileMaker's captured chrome is light, so OpenMaker pins the
-/// light theme.
+/// light theme. Library images decode with `egui_extras`' raster loaders
+/// and OpenMaker's own SVG loader (`svg_loader`).
 pub fn install(ctx: &egui::Context) {
     egui_extras::install_image_loaders(ctx);
+    crate::svg_loader::install(ctx);
     ctx.set_fonts(fonts());
     ctx.set_theme(Theme::Light);
     ctx.set_style_of(Theme::Light, style());
