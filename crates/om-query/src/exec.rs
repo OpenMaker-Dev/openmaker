@@ -610,10 +610,19 @@ impl Finder {
         table: &[u8],
         candidates: &RidList,
     ) -> Result<RidList, QueryError> {
-        let repetitions = indexes
+        let options = indexes
             .field(table, &self.field)?
-            .and_then(|f| f.decoded_options())
-            .map_or(1, |o| o.max_repetitions.max(1));
+            .and_then(|f| f.decoded_options());
+        let repetitions = options.as_ref().map_or(1, |o| o.max_repetitions.max(1));
+        // Text compares as the field's index language does: Unicode raw by
+        // the characters as written, English, System, Unicode standard and
+        // the file's own language by collation key; a tailored language
+        // OpenMaker does not key is refused rather than compared in English.
+        let raw = match options.as_ref().map_or(0, |o| o.index_language()) {
+            2 => true,
+            0 | 1 | 3 | 21 | 77 => false,
+            _ => return Err(QueryError::Unimplemented("match in this index language")),
+        };
         let cells: Vec<Vec<u8>> = std::iter::once(self.field.clone())
             .chain(be_uint(&self.field).into_iter().flat_map(|id| {
                 (2..=u64::from(repetitions))
@@ -645,9 +654,9 @@ impl Finder {
                 matched = if self.scope == WORD_SCOPE {
                     om_collate::words(&value)
                         .into_iter()
-                        .any(|word| pattern.matches(word))
+                        .any(|word| pattern.matches(word, raw))
                 } else {
-                    pattern.matches(&value)
+                    pattern.matches(&value, raw)
                 };
                 if matched {
                     break;

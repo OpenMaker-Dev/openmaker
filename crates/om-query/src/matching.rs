@@ -15,9 +15,10 @@ use crate::QueryError;
 /// One unit of a Match pattern.
 #[derive(Clone, Debug, PartialEq, Eq)]
 enum Unit {
-    /// A character of a text operand, by its collation key: case and
-    /// accents do not count (live1 matches `test` with `Test`).
-    Char(Vec<u8>),
+    /// A character of a text operand and its collation key: by the key
+    /// case and accents do not count (live1 matches `test` with `Test`); a
+    /// Unicode raw field compares the character itself.
+    Char(char, Vec<u8>),
     /// Type 1: any one character.
     One,
     /// Type 2: one digit.
@@ -79,10 +80,7 @@ impl Pattern {
                     if units.len() + text.chars().count() > MAX_UNITS {
                         return Err(QueryError::Limit("match pattern"));
                     }
-                    units.extend(text.chars().filter_map(|c| {
-                        let key = char_key(c);
-                        (!key.is_empty()).then_some(Unit::Char(key))
-                    }));
+                    units.extend(text.chars().map(|c| Unit::Char(c, char_key(c))));
                 }
                 1 => units.push(Unit::One),
                 2 => units.push(Unit::Digit),
@@ -100,13 +98,21 @@ impl Pattern {
     }
 
     /// Whether `text` matches the whole pattern (6.3: from its start, ending
-    /// where the pattern ends). Characters with no collation weight (accents
-    /// alone, controls) are passed over, as the index ignores them.
-    pub(crate) fn matches(&self, text: &str) -> bool {
-        let chars: Vec<(char, Vec<u8>)> = text
-            .chars()
-            .map(|c| (c, char_key(c)))
-            .filter(|(_, key)| !key.is_empty())
+    /// where the pattern ends). By collation key, characters with no weight
+    /// (accents alone, controls) are passed over in both, as the index
+    /// ignores them; `raw` (a Unicode raw field) compares every character
+    /// as written.
+    pub(crate) fn matches(&self, text: &str, raw: bool) -> bool {
+        let kept = |key: &[u8]| raw || !key.is_empty();
+        let chars: Vec<(usize, char, Vec<u8>)> = text
+            .char_indices()
+            .map(|(offset, c)| (offset, c, char_key(c)))
+            .filter(|(_, _, key)| kept(key))
+            .collect();
+        let units: Vec<&Unit> = self
+            .units
+            .iter()
+            .filter(|u| !matches!(u, Unit::Char(_, key) if !kept(key)))
             .collect();
         // Word edges only for a pattern that asks for them.
         let breaks = if self.units.contains(&Unit::Break) {
@@ -114,7 +120,7 @@ impl Pattern {
         } else {
             vec![false; chars.len() + 1]
         };
-        matches_at(&self.units, &chars, &breaks)
+        matches_at(&units, &chars, &breaks, raw)
     }
 }
 
@@ -126,35 +132,35 @@ fn char_key(c: char) -> Vec<u8> {
 }
 
 /// For each place between the kept characters (one more than there are),
-/// whether a word of the word index starts or ends there.
-fn word_breaks(text: &str, chars: &[(char, Vec<u8>)]) -> Vec<bool> {
-    let mut edges = std::collections::BTreeSet::new();
+/// whether a word of the word index starts or ends there. An edge between
+/// characters that were passed over (after `e` and U+0301) marks the place
+/// before the next kept one.
+fn word_breaks(text: &str, chars: &[(usize, char, Vec<u8>)]) -> Vec<bool> {
+    let mut breaks = vec![false; chars.len() + 1];
     for word in om_collate::words(text) {
         let start = word.as_ptr() as usize - text.as_ptr() as usize;
-        edges.insert(start);
-        edges.insert(start + word.len());
+        for edge in [start, start + word.len()] {
+            breaks[chars.partition_point(|(offset, _, _)| *offset < edge)] = true;
+        }
     }
-    // The byte offset of each kept character.
-    let offsets: Vec<usize> = text
-        .char_indices()
-        .filter(|(_, c)| !char_key(*c).is_empty())
-        .map(|(offset, _)| offset)
-        .collect();
-    debug_assert_eq!(offsets.len(), chars.len());
-    let mut breaks: Vec<bool> = offsets.iter().map(|o| edges.contains(o)).collect();
-    breaks.push(true);
+    breaks[chars.len()] = true;
     breaks
 }
 
 /// The usual iterative wildcard match, `Break` matching no character where
 /// a word starts or ends: at most the pattern's length times the text's
 /// steps, however many `Any` there are.
-fn matches_at(units: &[Unit], chars: &[(char, Vec<u8>)], breaks: &[bool]) -> bool {
+fn matches_at(
+    units: &[&Unit],
+    chars: &[(usize, char, Vec<u8>)],
+    breaks: &[bool],
+    raw: bool,
+) -> bool {
     let (mut p, mut c) = (0, 0);
     // The latest `Any` and the character its match ends at.
     let mut star: Option<(usize, usize)> = None;
     loop {
-        match units.get(p) {
+        match units.get(p).copied() {
             Some(Unit::Any) => {
                 star = Some((p, c));
                 p += 1;
@@ -164,7 +170,7 @@ fn matches_at(units: &[Unit], chars: &[(char, Vec<u8>)], breaks: &[bool]) -> boo
                 p += 1;
                 continue;
             }
-            Some(unit) if c < chars.len() && takes(unit, &chars[c]) => {
+            Some(unit) if c < chars.len() && takes(unit, &chars[c], raw) => {
                 p += 1;
                 c += 1;
                 continue;
@@ -183,9 +189,10 @@ fn matches_at(units: &[Unit], chars: &[(char, Vec<u8>)], breaks: &[bool]) -> boo
     }
 }
 
-fn takes(unit: &Unit, (c, key): &(char, Vec<u8>)) -> bool {
+fn takes(unit: &Unit, (_, c, key): &(usize, char, Vec<u8>), raw: bool) -> bool {
     match unit {
-        Unit::Char(expected) => key == expected,
+        Unit::Char(expected, _) if raw => c == expected,
+        Unit::Char(_, expected) => key == expected,
         Unit::One => true,
         Unit::Digit => c.is_ascii_digit(),
         Unit::Any | Unit::Break => false,
@@ -222,7 +229,7 @@ mod tests {
         let values = ["Test", "Hello", "Ima", "A long text, Test", "One Test here"];
         let found = |p: &Pattern| -> Vec<usize> {
             (0..values.len())
-                .filter(|&i| p.matches(values[i]))
+                .filter(|&i| p.matches(values[i], false))
                 .collect()
         };
         assert_eq!(found(&parse(&test)), [0]);
@@ -231,11 +238,16 @@ mod tests {
         assert_eq!(found(&parse(&pattern(&[Err(3), Ok("est")]))), [0, 3]);
         assert!(found(&parse(&pattern(&[Ok("Qqqq")]))).is_empty());
         // One character, a digit, and a word break.
-        assert!(parse(&pattern(&[Ok("T"), Err(1), Ok("st")])).matches("Test"));
-        assert!(parse(&pattern(&[Ok("A"), Err(2)])).matches("A7"));
-        assert!(!parse(&pattern(&[Ok("A"), Err(2)])).matches("Ab"));
+        assert!(parse(&pattern(&[Ok("T"), Err(1), Ok("st")])).matches("Test", false));
+        assert!(parse(&pattern(&[Ok("A"), Err(2)])).matches("A7", false));
+        assert!(!parse(&pattern(&[Ok("A"), Err(2)])).matches("Ab", false));
         let words = parse(&pattern(&[Err(3), Err(6), Ok("Test"), Err(6), Err(3)]));
-        assert!(words.matches("A long text, Test") && !words.matches("Tester"));
+        assert!(words.matches("A long text, Test", false) && !words.matches("Tester", false));
+        // A word break after a combining mark (`e` + U+0301 ends the word).
+        let cafe = parse(&pattern(&[Ok("Cafe"), Err(6), Err(3)]));
+        assert!(cafe.matches("Cafe\u{301} noir", false));
+        // Unicode raw compares characters as written.
+        assert!(parse(&test).matches("Test", true) && !parse(&test).matches("test", true));
         // Unobserved types, and truncated bytes, are refused.
         assert!(matches!(
             Pattern::parse(&[0, 1, 4]),
