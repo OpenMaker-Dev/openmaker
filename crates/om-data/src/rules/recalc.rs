@@ -37,9 +37,6 @@ pub struct Recalculation {
     plan: RecordPlan,
     targets: Vec<Target>,
     skipped: Vec<Skipped>,
-    /// Container fields whose stored cells name no member they counted
-    /// ([`Self::set_unowned_cells`]).
-    unowned: BTreeSet<u64>,
 }
 
 struct Target {
@@ -200,20 +197,21 @@ impl Recalculation {
         // calculation reading one recomputed in the same pass would read
         // its old value; so would one reading such a skipped calculation,
         // and so on.
-        let mut unready: BTreeSet<u64> = ready
+        // A container calculation reading another is a reader too.
+        let producers: BTreeSet<u64> = ready
             .iter()
             .filter(|(_, t)| t.container)
             .map(|(id, _)| *id)
             .collect();
+        let mut removed: BTreeSet<u64> = BTreeSet::new();
         loop {
             let readers: Vec<u64> = ready
                 .iter()
                 .filter(|(id, t)| {
-                    !unready.contains(id)
-                        && t.expression
-                            .dependencies
-                            .iter()
-                            .any(|d| unready.contains(d))
+                    t.expression
+                        .dependencies
+                        .iter()
+                        .any(|d| (producers.contains(d) && d != *id) || removed.contains(d))
                 })
                 .map(|(id, _)| *id)
                 .collect();
@@ -221,7 +219,7 @@ impl Recalculation {
                 break;
             }
             for id in readers {
-                unready.insert(id);
+                removed.insert(id);
                 ready.remove(&id);
                 skipped.push(Skipped {
                     field: id,
@@ -256,16 +254,7 @@ impl Recalculation {
             },
             targets,
             skipped,
-            unowned: BTreeSet::new(),
         }
-    }
-
-    /// Container fields whose stored cells name no member they counted (a
-    /// calculation whose result type changed to container keeps its old
-    /// text until recomputed): a result is never taken as already held
-    /// there, so its reference is counted when it is stored.
-    pub fn set_unowned_cells(&mut self, fields: BTreeSet<u64>) {
-        self.unowned = fields;
     }
 
     /// Whether no stored value needs recomputing.
@@ -344,10 +333,14 @@ impl Recalculation {
 
     /// The new values of one record, `row` being its stored cells as text
     /// (repetition cells under `F * 256 + n`).
+    /// `budget` is what may still be held of container results for the
+    /// host to store after the walk: a result past it fails on the record,
+    /// which keeps its value.
     pub fn recompute(
         &self,
         row: &BTreeMap<u64, String>,
         environment: &RecordEnvironment,
+        budget: &mut usize,
     ) -> Recomputed {
         // The file's own calculation with no session, as FileMaker Server
         // recomputes stored values (calc-functions.md 6.1, file context).
@@ -383,11 +376,26 @@ impl Recalculation {
                     };
                     match result {
                         Ok(result) => {
-                            let held = !self.unowned.contains(&target.id)
-                                && holds(row.get(&cell), &result, self.plan.table, environment);
-                            if !held {
-                                out.containers.insert(cell, result);
+                            if holds(row.get(&cell), &result, self.plan.table, environment) {
+                                continue;
                             }
+                            // What the host holds for the library until the
+                            // walk ends, charged as it is queued.
+                            let cost = held_cost(&result);
+                            if cost > *budget {
+                                out.failed.push((
+                                    target.id,
+                                    DataError::with_code(
+                                        super::error::UNAVAILABLE,
+                                        "the container data recomputed in one change passed its \
+                                         limit."
+                                            .to_string(),
+                                    ),
+                                ));
+                                continue;
+                            }
+                            *budget -= cost;
+                            out.containers.insert(cell, result);
                         }
                         Err(e) => out.failed.push((target.id, e)),
                     }
@@ -539,6 +547,20 @@ fn container_result(value: om_calc::Value, text: String) -> Result<ContainerResu
         ));
     }
     Ok(ContainerResult::Text(text))
+}
+
+/// What `result` holds in memory until the host stores it: its data, its
+/// text or file name, and a fixed share for the entry itself.
+fn held_cost(result: &ContainerResult) -> usize {
+    const ENTRY: usize = 64;
+    ENTRY
+        + match result {
+            ContainerResult::Empty => 0,
+            ContainerResult::Text(text) => text.len(),
+            ContainerResult::Data(c) => {
+                c.text.as_str().len() + c.streams.iter().map(|(_, b)| b.len()).sum::<usize>()
+            }
+        }
 }
 
 /// Whether the cell text `stored` of a record of `table` already holds
@@ -1010,7 +1032,7 @@ mod tests {
             (6, "old".to_string()),
             (7, "H".to_string()),
         ]);
-        let out = recalc.recompute(&row, &environment());
+        let out = recalc.recompute(&row, &environment(), &mut usize::MAX);
         assert!(out.failed.is_empty(), "{:?}", out.failed);
         assert_eq!(
             out.values,

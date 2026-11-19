@@ -2398,10 +2398,17 @@ data the calculation made, typed by its file name) is stored as a member
 or counts one more reference to a member with the same MD5, text is the
 cell's text, and a member a cell no longer names is released (deleted at
 0); a record whose library writes would be refused keeps its container
-values, logged. A calculation that reads a container result recomputed
-in the same change is skipped, since it would read the old value. How
-FileMaker Server stores a recomputed container result is unmeasured
-(inf). A calculation it cannot evaluate (a related, global, summary or
+values, logged. Text in the form of a library reference is refused as a
+container result (the record keeps its value), and a calculation whose
+result type changes to container has its old cells, derived values of
+the old type that name no member they counted, dropped with the change,
+so no cell counts a reference it did not take. The new container data
+held for the library during one walk is limited to 256 MiB, charged as
+each result is queued; past it a result fails on its record. A
+calculation that reads a container result recomputed in the same change
+is skipped, since it would read the old value, and so is one reading a
+calculation skipped so. How FileMaker Server stores a recomputed
+container result is unmeasured (inf). A calculation it cannot evaluate (a related, global, summary or
 unstored-calculation input, a plug-in or mobile function, a selector
 that needs a window, a formula that names a deleted field) is
 skipped: its values stay as they were and the server

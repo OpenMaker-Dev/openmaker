@@ -968,13 +968,21 @@ fn a_result_changed_to_container_releases_no_reference_its_text_did_not_own() {
         "reference-shaped text is refused"
     );
 
-    // Shaped becomes a container calculation answering nothing.
+    // Shaped becomes a container calculation, its formula kept: the
+    // shaped text it answers is refused, and its old text, a value of the
+    // old type, is dropped with the type change rather than kept uncounted.
     let path: [&[u8]; 3] = [&[5], &uint_segment(SHAPED), &[2]];
     let mut definition = catalog.at(&path).unwrap().value.clone().unwrap();
     definition[1] = 6;
     catalog.put(&path, OwnedNode::leaf(Vec::new(), definition));
+    defer(&mut catalog, SHAPED, 0x40);
+    save_field_catalog(&mut designer, id, &catalog);
+    let after = records_of(&mut designer, TABLE);
+    assert_eq!(cell(&after, 1, SHAPED), None);
+    // A later save empties it: nothing it never counted is released.
+    catalog.remove(&[&[1], &[0xfd]]);
     set_formula(&mut catalog, SHAPED, "\"\"");
-    defer(&mut catalog, SHAPED, 0x40 | FORMULA_CHANGED);
+    defer(&mut catalog, SHAPED, FORMULA_CHANGED);
     save_field_catalog(&mut designer, id, &catalog);
     let after = records_of(&mut designer, TABLE);
     assert_eq!(cell(&after, 1, SHAPED), None);
