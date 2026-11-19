@@ -992,6 +992,21 @@ ActiveSelectionSize )`, the Insert steps). Limits:
 - ⌘- inserts the date while a field is entered and zooms out otherwise;
   FileMaker Pro's own shortcut for Zoom Out is unmeasured.
 
+**The Edit menu.** In the field the user is typing in, Edit > Undo and
+Redo (labelled Can't Undo and Can't Redo when there is nothing to do), Cut,
+Copy, Paste, Paste Text Only, Clear and Select All do what the field
+editor's own keys do: Undo and Redo through its typing history, Cut, Copy
+and Paste through the platform's clipboard, Clear deleting the selection
+without the clipboard. Paste Text Only pastes as Paste does, since the
+editors paste text only. With no field entered, Copy copies the current
+record (the Copy Record/Request step, 101). In Layout mode, Clear deletes
+the selected object, as before. Limits:
+- Clear, Undo and Redo from the menu change the field's text without its
+  object triggers (OnObjectModify), which typing runs.
+- Find mode's criteria, Table view's cells and portal rows' fields take
+  none of them from the menu; their editors' keys still work.
+- Find/Replace and Spelling stay disabled.
+
 **Committing and reverting.** A record being edited shows no bar, as in
 FileMaker Pro 26.0.3 (#871, observed on the Tasks starter), so the layout
 keeps its place. Switching fields keeps the record's draft. A click on

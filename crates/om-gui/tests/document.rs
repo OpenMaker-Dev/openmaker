@@ -821,6 +821,35 @@ fn the_insert_menu_puts_its_text_at_the_insertion_point() {
     assert!(app.state().error().is_none(), "{:?}", app.state().error());
 }
 
+/// Edit > Select All, Clear and Undo act on the field being typed in,
+/// which a click on the menus leaves entered.
+#[test]
+fn the_edit_menu_selects_clears_and_undoes_in_the_field() {
+    let mut provider = DocumentProvider::new(false);
+    provider.writable = true;
+    let mut app = open_provider(provider);
+    let family = |app: &common::App| common::text_field(app, "Family").value();
+    let edit = |app: &mut common::App, command: &str| {
+        common::open_menu(app, "Edit");
+        common::click(app, command);
+        app.run_steps(2);
+        assert!(common::text_field(app, "Family").is_focused(), "{command}");
+    };
+    common::text_field(&app, "Family").focus();
+    app.run_steps(2);
+    app.key_press(egui::Key::End);
+    app.event(egui::Event::Text(" Jr".into()));
+    app.run_steps(2);
+    assert_eq!(family(&app).as_deref(), Some("Mason Jr"));
+    edit(&mut app, "Select All");
+    edit(&mut app, "Clear");
+    assert_eq!(family(&app).as_deref(), Some(""));
+    assert!(common::unsaved(&app));
+    edit(&mut app, "Undo");
+    assert_eq!(family(&app).as_deref(), Some("Mason Jr"));
+    assert!(app.state().error().is_none(), "{:?}", app.state().error());
+}
+
 #[test]
 fn clicking_an_existing_field_edits_text_with_create_and_delete_independent() {
     let mut provider = DocumentProvider::new(false);

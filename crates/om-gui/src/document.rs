@@ -50,6 +50,19 @@ struct HeldFocus {
     editor: Option<(u64, i64, u64)>,
 }
 
+/// An Edit menu command on the field the user is typing in
+/// (`DocumentState::edit_field`). Cut, Copy and Paste go to the field's
+/// editor through the platform's clipboard instead
+/// (`egui::ViewportCommand::RequestCopy`).
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) enum FieldEdit {
+    Undo,
+    Redo,
+    /// Delete the selection, as Delete does, without the clipboard.
+    Clear,
+    SelectAll,
+}
+
 /// A field editor's selection as last drawn (`DocumentState::selection`).
 struct EditorSelection {
     field: String,
@@ -1819,6 +1832,111 @@ impl DocumentState {
         }
         let (a, b) = selection.range;
         Some((a.min(b) as u64 + 1, a.abs_diff(b) as u64))
+    }
+
+    /// The editor and buffer of the field the user is typing in on record
+    /// `record` of layout `layout` (one of the record's own fields).
+    fn entered_buffer(&self, layout: u64, record: i64) -> Option<(egui::Id, &FieldBuffer)> {
+        let selection = self.editor_selection.as_ref()?;
+        if self.active.as_deref() != Some(selection.field.as_str()) || self.active_related.is_some()
+        {
+            return None;
+        }
+        let buffer = self
+            .buffers
+            .get(&(layout, record, selection.field.clone()))?;
+        Some((selection.editor, buffer))
+    }
+
+    /// Whether Edit > Undo and Redo have a step to take back or again in
+    /// the field the user is typing in (its editor's own history).
+    pub(crate) fn field_undo(&self, ctx: &egui::Context, layout: u64, record: i64) -> (bool, bool) {
+        let Some((editor, buffer)) = self.entered_buffer(layout, record) else {
+            return (false, false);
+        };
+        let Some(state) = egui::TextEdit::load_state(ctx, editor) else {
+            return (false, false);
+        };
+        let Some(range) = state.cursor.char_range() else {
+            return (false, false);
+        };
+        let current = (range, buffer.value.clone());
+        let undoer = state.undoer();
+        (undoer.has_undo(&current), undoer.has_redo(&current))
+    }
+
+    /// Edit > `edit` in the field the user is typing in, as its editor's
+    /// own keys do (Undo and Redo through its history). The record's draft
+    /// takes the change; the field stays entered.
+    pub(crate) fn edit_field(
+        &mut self,
+        ctx: &egui::Context,
+        layout: u64,
+        record: i64,
+        edit: FieldEdit,
+    ) {
+        let Some((editor, _)) = self.entered_buffer(layout, record) else {
+            return;
+        };
+        let Some(field) = self.active.clone() else {
+            return;
+        };
+        let Some(buffer) = self.buffers.get_mut(&(layout, record, field)) else {
+            return;
+        };
+        let mut state = egui::TextEdit::load_state(ctx, editor).unwrap_or_default();
+        let len = buffer.value.chars().count();
+        let range = state
+            .cursor
+            .char_range()
+            .unwrap_or_else(|| egui::text::CCursorRange::one(egui::text::CCursor::new(len)));
+        match edit {
+            FieldEdit::SelectAll => {
+                state
+                    .cursor
+                    .set_char_range(Some(egui::text::CCursorRange::two(
+                        egui::text::CCursor::new(0),
+                        egui::text::CCursor::new(len),
+                    )))
+            }
+            FieldEdit::Clear => {
+                let [start, end] = range.sorted_cursors();
+                let (start, end) = (start.index.0.min(len), end.index.0.min(len));
+                if start < end {
+                    let mut undoer = state.undoer();
+                    undoer.add_undo(&(range, buffer.value.clone()));
+                    state.set_undoer(undoer);
+                    buffer.value = buffer
+                        .value
+                        .chars()
+                        .take(start)
+                        .chain(buffer.value.chars().skip(end))
+                        .collect();
+                    buffer.ui_edited = true;
+                    state
+                        .cursor
+                        .set_char_range(Some(egui::text::CCursorRange::one(
+                            egui::text::CCursor::new(start),
+                        )));
+                }
+            }
+            FieldEdit::Undo | FieldEdit::Redo => {
+                let current = (range, buffer.value.clone());
+                let mut undoer = state.undoer();
+                let restored = if edit == FieldEdit::Undo {
+                    undoer.undo(&current).cloned()
+                } else {
+                    undoer.redo(&current).cloned()
+                };
+                if let Some((range, text)) = restored {
+                    buffer.value = text;
+                    buffer.ui_edited = true;
+                    state.cursor.set_char_range(Some(range));
+                }
+                state.set_undoer(undoer);
+            }
+        }
+        state.store(ctx, editor);
     }
 
     /// A step left `field`'s selection at `selection` (1-based start and

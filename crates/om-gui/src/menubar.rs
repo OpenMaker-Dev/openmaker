@@ -8,7 +8,7 @@
 use egui::{Key, KeyboardShortcut, Modifiers, Ui};
 use om_data::scripts::save_records::Format as SaveFormat;
 
-use crate::app::{shortcuts, steps, Action, FindState, Mode, ViewMode};
+use crate::app::{shortcuts, steps, Action, EditCommand, FindState, Mode, ViewMode};
 use crate::session::Session;
 use crate::theme;
 use crate::widgets::{menu_item, menu_separator, submenu};
@@ -63,6 +63,11 @@ pub(crate) struct MenuContext<'a> {
     /// mode, no script running): Insert's Current Date, Current Time,
     /// Current User Name, From Index and From Last Visited Record.
     pub text_field: bool,
+    /// Edit > Undo and Redo have something to do in that field.
+    pub field_undo: (bool, bool),
+    /// A record is shown in Browse with no field entered: Edit > Copy
+    /// copies the record (Copy Record/Request).
+    pub record_copy: bool,
     pub client_license: bool,
     /// Layout mode has a field placed with the Field tool and not yet
     /// saved (Save Layout, Revert Layout).
@@ -387,25 +392,67 @@ pub(crate) fn manage_items(ui: &mut Ui, design: bool, actions: &mut Vec<Action>)
 }
 
 fn edit_menu(ui: &mut Ui, context: &MenuContext<'_>, actions: &mut Vec<Action>) {
-    pending(ui, "Can't Undo", command(CMD, Key::Z));
-    pending(ui, "Can't Redo", command(SHIFT_CMD, Key::Z));
-    menu_separator(ui);
-    pending(ui, "Cut", command(CMD, Key::X));
-    pending(ui, "Copy", command(CMD, Key::C));
-    pending(ui, "Paste", command(CMD, Key::V));
-    pending(ui, "Paste Text Only", command(ALT_SHIFT_CMD, Key::V));
-    // Layout mode: delete the selected object, as Delete does.
+    // The field the user is typing in: its editor's own commands, which
+    // its keys also run (a click on the menus leaves it entered). That
+    // Editing only keeps them, as it keeps the editors' keys, is inferred.
+    let text = context.text_field && context.editing();
+    let (undo, redo) = context.field_undo;
+    let undo = text && undo;
+    let redo = text && redo;
     if item(
         ui,
-        "Clear",
-        None,
+        if undo { "Undo" } else { "Can't Undo" },
+        command(CMD, Key::Z),
         false,
-        context.layout_delete && context.full_menus(),
+        undo,
     ) {
-        actions.push(Action::DeleteLayoutObject);
+        actions.push(Action::EditField(EditCommand::Undo));
+    }
+    if item(
+        ui,
+        if redo { "Redo" } else { "Can't Redo" },
+        command(SHIFT_CMD, Key::Z),
+        false,
+        redo,
+    ) {
+        actions.push(Action::EditField(EditCommand::Redo));
     }
     menu_separator(ui);
-    pending(ui, "Select All", command(CMD, Key::A));
+    if item(ui, "Cut", command(CMD, Key::X), false, text) {
+        actions.push(Action::EditField(EditCommand::Cut));
+    }
+    // With no field entered, Copy copies the record (Copy Record/Request).
+    let record_copy = context.record_copy && context.editing();
+    if item(ui, "Copy", command(CMD, Key::C), false, text || record_copy) {
+        actions.push(if text {
+            Action::EditField(EditCommand::Copy)
+        } else {
+            Action::Step(steps::COPY_RECORD, 0)
+        });
+    }
+    // The editors paste text only: Paste Text Only pastes as Paste does.
+    for (label, shortcut) in [
+        ("Paste", command(CMD, Key::V)),
+        ("Paste Text Only", command(ALT_SHIFT_CMD, Key::V)),
+    ] {
+        if item(ui, label, shortcut, false, text) {
+            actions.push(Action::EditField(EditCommand::Paste));
+        }
+    }
+    // A field's selection, or in Layout mode the selected object, as
+    // Delete deletes them.
+    let layout_clear = context.layout_delete && context.full_menus();
+    if item(ui, "Clear", None, false, text || layout_clear) {
+        actions.push(if text {
+            Action::EditField(EditCommand::Clear)
+        } else {
+            Action::DeleteLayoutObject
+        });
+    }
+    menu_separator(ui);
+    if item(ui, "Select All", command(CMD, Key::A), false, text) {
+        actions.push(Action::EditField(EditCommand::SelectAll));
+    }
     menu_separator(ui);
     pending_submenu(ui, "Find/Replace");
     pending_submenu(ui, "Spelling");

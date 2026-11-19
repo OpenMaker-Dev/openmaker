@@ -137,6 +137,19 @@ impl ViewMode {
 }
 
 /// Step ids of the commands that run as a single step.
+/// An Edit menu command on the field the user is typing in
+/// (`OpenMakerApp::edit_field`).
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum EditCommand {
+    Undo,
+    Redo,
+    Cut,
+    Copy,
+    Paste,
+    Clear,
+    SelectAll,
+}
+
 pub(crate) mod steps {
     pub const UNSORT: u16 = 21;
     pub const SHOW_ALL: u16 = 23;
@@ -161,6 +174,7 @@ pub(crate) mod steps {
     pub const INSERT_CURRENT_DATE: u16 = 13;
     pub const INSERT_CURRENT_TIME: u16 = 14;
     pub const INSERT_CURRENT_USER_NAME: u16 = 60;
+    pub const COPY_RECORD: u16 = 101;
     pub const INSERT_FILE: u16 = 131;
     pub const EXPORT_FIELD_CONTENTS: u16 = 132;
     pub const PERFORM_QUICK_FIND: u16 = 150;
@@ -476,6 +490,9 @@ pub(crate) enum Action {
     /// A command that is one script step (found-set commands, Perform
     /// Find): the step id and its flags.
     Step(u16, u32),
+    /// Edit > Undo, Redo, Cut, Copy, Paste, Clear or Select All in the
+    /// field the user is typing in.
+    EditField(EditCommand),
     /// The toolbar's Quick Find: Perform Quick Find with the search box's
     /// text.
     QuickFind(String),
@@ -1198,6 +1215,32 @@ impl OpenMakerApp {
     /// The window's menu bar at the top of `ui`. The Window menu lists no
     /// cards (Claris: "FileMaker Pro does not include cards in the Window
     /// menu").
+    /// Edit > `command` in the field the user is typing in. Cut, Copy and
+    /// Paste go to its editor through the platform's clipboard, as its keys
+    /// do; the others change its text or selection here.
+    fn edit_field(&mut self, ctx: &egui::Context, command: EditCommand) {
+        use crate::document::FieldEdit;
+        let edit = match command {
+            EditCommand::Cut => return ctx.send_viewport_cmd(ViewportCommand::RequestCut),
+            EditCommand::Copy => return ctx.send_viewport_cmd(ViewportCommand::RequestCopy),
+            EditCommand::Paste => return ctx.send_viewport_cmd(ViewportCommand::RequestPaste),
+            EditCommand::Undo => FieldEdit::Undo,
+            EditCommand::Redo => FieldEdit::Redo,
+            EditCommand::Clear => FieldEdit::Clear,
+            EditCommand::SelectAll => FieldEdit::SelectAll,
+        };
+        let Some((layout, record)) = self.current_layout_record() else {
+            return;
+        };
+        self.w.document.edit_field(ctx, layout, record, edit);
+    }
+
+    /// The window's layout and current record.
+    fn current_layout_record(&self) -> Option<(u64, i64)> {
+        let session = self.w.session.as_ref()?;
+        Some((u64::from(session.layout?), session.current_record()?.1.id))
+    }
+
     /// A text field of the current record is entered for typing in Browse,
     /// where Insert's Current Date, Current Time, Current User Name, From
     /// Index and From Last Visited Record put their text.
@@ -1303,6 +1346,20 @@ impl OpenMakerApp {
                     && !self.script.busy()
                     && self.script.prompt.is_none()
                     && self.text_field_entered(),
+                field_undo: self
+                    .current_layout_record()
+                    .filter(|_| self.text_field_entered())
+                    .map_or((false, false), |(layout, record)| {
+                        self.w.document.field_undo(ui.ctx(), layout, record)
+                    }),
+                record_copy: input
+                    && !self.script.busy()
+                    && self.script.prompt.is_none()
+                    && self.w.mode == Mode::Browse
+                    && self.w.connection_lost.is_none()
+                    && self.w.document.active.is_none()
+                    && !container
+                    && self.current_layout_record().is_some(),
                 client_license: self.client_license,
                 layout_edit: self.w.mode == Mode::Layout
                     && self.w.layout_workspace.has_changes()
@@ -3373,6 +3430,7 @@ impl OpenMakerApp {
             }
             Action::ImportRecords => self.run_step(ctx, steps::IMPORT_RECORDS, 0),
             Action::Step(id, flags) => self.run_step(ctx, id, flags),
+            Action::EditField(command) => self.edit_field(ctx, command),
             Action::QuickFind(text) => self.quick_find(ctx, text),
             Action::ScriptWorkspace => {
                 let file = self.w.file_id;
