@@ -137,6 +137,17 @@ impl ViewMode {
 }
 
 /// Step ids of the commands that run as a single step.
+/// Where keys a keyboard commit held for the next frame were typed
+/// (`OpenMakerApp::shortcuts`): the window's file, mode, layout and record,
+/// and the active field.
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+struct HeldKeysOwner {
+    file: u64,
+    mode: Mode,
+    record: Option<(u32, i64)>,
+    field: Option<String>,
+}
+
 /// Whether a field editor applies `event` to its text or selection: typed
 /// text, a paste or cut, an input method's text, a key pressed.
 fn edits_text(event: &egui::Event) -> bool {
@@ -2593,16 +2604,30 @@ impl OpenMakerApp {
         let return_goes_next =
             enter_keys && field.is_some_and(om_layout::FieldObject::next_object_on_return);
         // A commit key that came after typing in the same frame waited for
-        // this one: the editor has applied the typing (below). Only the next
-        // frame takes it; a later one (a script ran, a dialog came up)
-        // drops it rather than commit what the window shows by then.
+        // this one: the editor has applied the typing (below). It goes back
+        // only in the next frame, and only to the file, mode, layout, record
+        // and field it was typed in. Otherwise (a script ran or moved, a
+        // dialog came up) it is dropped rather than commit what the window
+        // shows by then.
         let held_id = egui::Id::unique("held_commit_keys").with(ui.ctx().viewport_id());
         let frame = ui.ctx().cumulative_frame_nr();
-        let held: Option<(u64, Vec<egui::Event>)> =
+        let typed_in = HeldKeysOwner {
+            file: self.w.file_id,
+            mode: self.w.mode,
+            record: self
+                .w
+                .session
+                .as_ref()
+                .and_then(|session| Some((session.layout?, session.current_record()?.1.id))),
+            field: self.w.document.active.clone(),
+        };
+        let held: Option<(u64, HeldKeysOwner, Vec<egui::Event>)> =
             ui.ctx().data_mut(|data| data.remove_temp(held_id));
         let mut hold = None;
         ui.input_mut(|input| {
-            if let Some((_, held)) = held.filter(|(at, _)| at + 1 == frame) {
+            if let Some((_, _, held)) =
+                held.filter(|(at, owner, _)| at + 1 == frame && *owner == typed_in)
+            {
                 input.events.splice(0..0, held);
             }
             if input.consume_shortcut(&shortcuts::QUIT) {
@@ -2810,7 +2835,7 @@ impl OpenMakerApp {
         });
         if let Some(hold) = hold {
             ui.ctx()
-                .data_mut(|data| data.insert_temp(held_id, (frame, hold)));
+                .data_mut(|data| data.insert_temp(held_id, (frame, typed_in, hold)));
             ui.ctx().request_repaint();
         }
         // Keyboard Commit leaves the field (script-runtime.md 7.1):
