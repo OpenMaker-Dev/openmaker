@@ -19,7 +19,7 @@ use std::time::{Duration, Instant};
 use egui::load::{BytesPoll, ImageLoadResult, ImageLoader, ImagePoll, LoadError, SizeHint};
 use egui::{ColorImage, ViewportId};
 
-use crate::report::svg_worker::{self, Unsupported};
+use crate::report::svg_worker;
 
 /// How often a window with an SVG still being drawn repaints, so that the
 /// SVG is asked for again while it is on screen.
@@ -111,6 +111,16 @@ fn lock(state: &Mutex<State>) -> MutexGuard<'_, State> {
     state.lock().unwrap_or_else(|e| e.into_inner())
 }
 
+/// `bytes` drawn at `size` pixels: in the worker, or here in unit tests.
+fn draw(bytes: &[u8], size: [u32; 2]) -> Result<Arc<ColorImage>, String> {
+    let picture = crate::report::browse_svg(bytes, size)?;
+    let size = [picture.width, picture.height].map(|n| n as usize);
+    Ok(Arc::new(ColorImage::from_rgba_unmultiplied(
+        size,
+        &picture.rgba,
+    )))
+}
+
 /// Draw the jobs on `queue`, one at a time, while they are wanted.
 fn draw_queue(state: Weak<Mutex<State>>, queue: mpsc::Receiver<Job>) {
     for job in queue {
@@ -120,14 +130,7 @@ fn draw_queue(state: Weak<Mutex<State>>, queue: mpsc::Receiver<Job>) {
         if !lock(&state).wanted(&job.uri, job.hint) {
             continue;
         }
-        let result = svg_worker::draw(&job.bytes, Some(job.size), Unsupported::Skip).map(
-            |(width, height, rgba)| {
-                Arc::new(ColorImage::from_rgba_unmultiplied(
-                    [width as usize, height as usize],
-                    &rgba,
-                ))
-            },
-        );
+        let result = draw(&job.bytes, job.size);
         let stored = match lock(&state).entry(&job.uri, job.hint) {
             Some(entry) => {
                 entry.result = Some(result);
@@ -235,13 +238,34 @@ impl SvgLoader {
             BytesPoll::Pending { size } => return Ok(ImagePoll::Pending { size }),
         };
         let max_side = ctx.input(|input| input.max_texture_side);
+        let size = svg_worker::fit(size, u32::try_from(max_side).unwrap_or(u32::MAX));
+        if cfg!(test) {
+            // Unit tests draw in this process (`report::browse_svg`), at
+            // once, so that a frame paints what it shows.
+            let result = draw(&bytes, size);
+            self.state()
+                .cache
+                .entry(uri.to_owned())
+                .or_default()
+                .insert(
+                    hint,
+                    Entry {
+                        requested: Instant::now(),
+                        result: Some(result.clone()),
+                    },
+                );
+            return match result {
+                Ok(image) => Ok(ImagePoll::Ready { image }),
+                Err(error) => Err(LoadError::Loading(error)),
+            };
+        }
         let job = Job {
             ctx: ctx.clone(),
             viewport: ctx.viewport_id(),
             uri: uri.to_owned(),
             hint,
             bytes,
-            size: svg_worker::fit(size, u32::try_from(max_side).unwrap_or(u32::MAX)),
+            size,
         };
         let mut state = self.state();
         state.cache.entry(uri.to_owned()).or_default().insert(

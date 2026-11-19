@@ -952,6 +952,13 @@ impl std::fmt::Debug for Picture {
 mod static_picture;
 pub mod svg_worker;
 
+/// An SVG drawn at `size` pixels as Browse draws it (what the worker does
+/// not draw left out): in the SVG worker, or in this process in unit
+/// tests (`static_picture::svg`).
+pub(crate) fn browse_svg(data: &[u8], size: [u32; 2]) -> Result<Picture, String> {
+    static_picture::svg(data, Some(size), svg_worker::Unsupported::Skip)
+}
+
 /// Static layout pictures have their own bounded decoder; SVG pictures are
 /// never tinted or passed through the button-icon renderer.
 fn decode_picture(key: u64, image: &LibraryImage) -> Result<Picture, ReportError> {

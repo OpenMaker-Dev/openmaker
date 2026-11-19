@@ -78,7 +78,8 @@ pub fn set_default(path: PathBuf) {
 pub type Drawn = (u32, u32, Vec<u8>);
 
 /// Draw `data` with the app's worker; see [`draw_with`].
-pub(crate) fn draw(
+#[cfg_attr(test, allow(dead_code, reason = "unit tests draw in-process"))]
+pub(super) fn draw(
     data: &[u8],
     size: Option<[u32; 2]>,
     unsupported: Unsupported,
