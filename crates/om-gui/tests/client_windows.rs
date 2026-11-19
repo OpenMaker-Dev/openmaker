@@ -620,7 +620,10 @@ fn a_visible_peer_open_is_presented_even_when_the_script_returns_to_its_caller()
     let mut app = egui_kittest::Harness::builder()
         .with_size(egui::vec2(1060.0, 760.0))
         .renderer(common::renderer())
-        .build_eframe(move |_cc| om_gui::OpenMakerApp::new(provider).open_on_launch(connection));
+        .build_eframe(move |_cc| {
+            om_gui::OpenMakerApp::with_license_store(provider, Box::new(common::NoLicense))
+                .open_on_launch(connection)
+        });
     common::wait_until(&mut app, "root", |a| a.state().is_settled());
     let run = |app: &mut common::App, script: &str| {
         let peer = app.state().window_name().starts_with("Peer");
