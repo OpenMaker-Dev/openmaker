@@ -127,17 +127,35 @@ folder's root and in its subfolders, one level deep, as FileMaker Server
 opens its database folders' (Claris: "Database folders"). The default
 folder is `Databases` in the state folder
 (`~/.local/state/openmaker-server/Databases`, or
-`$STATE_DIRECTORY/Databases` under systemd), made for the server's user
-only; it is searched also when files are named on the command line.
-`--database-folder <dir>`, given once or more, replaces it. Only regular
-files are hosted and links are not followed, so a database elsewhere is
-hosted by naming its folder or the file itself. Files named on the
-command line come first. A found file with the name of one already hosted
-is left out and logged, and the default backup and log folders are not
-searched (a schedule's own backup target is not excluded). A file copied
-in after startup is not hosted until the server starts again. With no
-files at all the server still starts, with an empty file list; when files
-are found or named and none of them opens, it does not start.
+`$STATE_DIRECTORY/Databases` under systemd). The server makes it for its
+own user only, and does not use it when it is a link, belongs to another
+user, or others may write in it. It is searched also when files are named
+on the command line. `--database-folder <dir>`, given once or more,
+replaces it; a folder named this way is resolved once, links and all,
+since the administrator chose it. Inside a database folder only regular
+files and folders are used, never a link, so a database elsewhere is
+hosted by naming its folder or the file itself. A file named on the
+command line may be a link to a regular file; every hosted file must be a
+regular file, and one that is not (a FIFO, a device) is refused without
+being waited on.
+
+Files named on the command line come first. A found file with the name of
+one already hosted is left out and logged. The backup and log folders in
+use (`--backup-folder` and `--log-folder`, or their defaults) and
+everything inside them are not searched; a schedule's own backup target is
+not excluded. At most 200,000 entries are read across all the folders and
+10,000 files found. The entry limit applies as entries are read, before
+they are sorted, so past it which files are found depends on the order the
+system lists them. A file copied in after startup is not hosted until the
+server starts again. With no files at all the server still starts, with an
+empty file list; when files are found or named and none of them opens, it
+does not start.
+
+Discovery checks each entry when it reads the folder. The server opens and
+saves a hosted file by its path later on, so whoever may write in a
+database folder can still change what that path leads to after startup;
+keep database folders writable by the server's user only
+([#468](https://github.com/OpenMaker-Dev/openmaker/issues/468)).
 
 Failed logins are limited. After 5 failures an address (an IPv6 address by
 its /64) may try once a minute; after 30 failures of an account of a file

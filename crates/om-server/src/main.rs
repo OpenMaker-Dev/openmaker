@@ -141,16 +141,23 @@ const USAGE: &str = "usage: om-server [--bind <addr:port>] [--name <server name>
                     links to its copies. It holds whole databases: the
                     server makes it owner-only when it makes it
   --database-folder folder whose files the server hosts at startup: the
-                    regular .fmp12 files at its root and in its subfolders,
-                    one level deep, as FileMaker Server opens its database
-                    folders'; links are not followed (default Databases in
-                    the state folder, see --state-dir, made for the
-                    server's user only, searched also when files are named;
-                    give it again for more folders). Files named on the
+                    .fmp12 files at its root and in its subfolders, one
+                    level deep, as FileMaker Server opens its database
+                    folders'. The folder named is resolved, links and all;
+                    in it only regular files and folders are used, never a
+                    link. Default: Databases in the state folder (see
+                    --state-dir), made for the server's user only and not
+                    used when it is a link, another user's or writable by
+                    others; it is searched also when files are named. Give
+                    the flag again for more folders. Files named on the
                     command line are hosted first; a found file with the
                     name of one already hosted is left out, logged. The
-                    default backup and log folders are not searched. When
-                    no file opens, the server does not start
+                    backup and log folders in use (--backup-folder,
+                    --log-folder or their defaults) are not searched. At
+                    most 200000 entries are read and 10000 files found.
+                    Every hosted file must be a regular file. When there
+                    are files to host and none opens, the server does not
+                    start
   --list            name a hosted file (as clients open it, e.g. Tasks.fmp12)
                     in the file list OpenMaker clients' Hosts dialog shows.
                     Files are unlisted by default: a file's own \"Don't
@@ -815,7 +822,10 @@ fn hosted_paths(args: &Args) -> Vec<PathBuf> {
 }
 
 /// Make `folder` (with any missing parent) when it is missing, for the
-/// server's user only on Unix.
+/// server's user only on Unix. On Unix it is refused when it is a link,
+/// not the server's user's, or one others may write in: the server did
+/// not choose its files then, and another user could change which are
+/// hosted.
 fn make_private_folder(folder: &Path) -> std::io::Result<()> {
     let mut builder = std::fs::DirBuilder::new();
     builder.recursive(true);
@@ -824,7 +834,27 @@ fn make_private_folder(folder: &Path) -> std::io::Result<()> {
         use std::os::unix::fs::DirBuilderExt;
         builder.mode(0o700);
     }
-    builder.create(folder)
+    builder.create(folder)?;
+    #[cfg(unix)]
+    {
+        use rustix::fs::{Mode, OFlags};
+        let refused = |why: &str| std::io::Error::new(std::io::ErrorKind::PermissionDenied, why);
+        let flags = OFlags::RDONLY | OFlags::DIRECTORY | OFlags::NOFOLLOW | OFlags::CLOEXEC;
+        let dir = match rustix::fs::open(folder, flags, Mode::empty()) {
+            Err(rustix::io::Errno::LOOP | rustix::io::Errno::NOTDIR) => {
+                return Err(refused("not a folder (a link or a file)"))
+            }
+            result => result?,
+        };
+        let stat = rustix::fs::fstat(&dir)?;
+        if stat.st_uid != rustix::process::geteuid().as_raw() {
+            return Err(refused("not the server's user's folder"));
+        }
+        if Mode::from_raw_mode(stat.st_mode).intersects(Mode::WGRP | Mode::WOTH) {
+            return Err(refused("other users may write in it"));
+        }
+    }
+    Ok(())
 }
 
 /// The name a file is opened by: its file name, with `.fmp12` added if the

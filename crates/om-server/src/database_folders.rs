@@ -6,15 +6,15 @@
 //! followed, so a file or folder linked from elsewhere is never found:
 //! another location is chosen by naming it as a folder. Hidden entries
 //! (named with a leading `.`) and anything inside the folders named in
-//! `exclude` (the backup and log folders) are passed over. Each folder's
-//! entries are read up to [`MAX_ENTRIES`], and at most [`MAX_FILES`] files
-//! are found in all, so that a large tree cannot hold startup.
+//! `exclude` (the backup and log folders) are passed over. At most
+//! [`MAX_ENTRIES`] entries are read in all and [`MAX_FILES`] files found,
+//! so that a large tree cannot hold startup.
 
 use std::ffi::OsString;
 use std::path::{Path, PathBuf};
 
-/// Entries one folder is read for.
-pub const MAX_ENTRIES: usize = 100_000;
+/// Entries read in all, every folder's together.
+pub const MAX_ENTRIES: usize = 200_000;
 
 /// Files found in all.
 pub const MAX_FILES: usize = 10_000;
@@ -30,6 +30,7 @@ pub fn discover(folders: &[PathBuf], exclude: &[PathBuf]) -> Vec<PathBuf> {
         excluded.iter().any(|e| path.starts_with(e))
     };
     let mut found = Vec::new();
+    let mut budget = MAX_ENTRIES;
     let add = |files: Vec<PathBuf>, found: &mut Vec<PathBuf>| {
         for file in files {
             if found.len() == MAX_FILES {
@@ -43,10 +44,14 @@ pub fn discover(folders: &[PathBuf], exclude: &[PathBuf]) -> Vec<PathBuf> {
         true
     };
     for folder in folders {
+        // The folder as named resolves through links once, here; below it
+        // only what is not a link is used, so every path found is a
+        // resolved one.
+        let folder = &canonical(folder);
         if inside_excluded(folder) {
             continue;
         }
-        let (files, subfolders) = match entries(folder) {
+        let (files, subfolders) = match entries(folder, &mut budget) {
             Ok(entries) => entries,
             Err(e) => {
                 log::warn!("database folder {}: {e}", folder.display());
@@ -60,7 +65,7 @@ pub fn discover(folders: &[PathBuf], exclude: &[PathBuf]) -> Vec<PathBuf> {
             if inside_excluded(&subfolder) {
                 continue;
             }
-            match entries(&subfolder) {
+            match entries(&subfolder, &mut budget) {
                 // One level deep: the subfolder's own subfolders are not
                 // looked into.
                 Ok((files, _)) => {
@@ -76,18 +81,23 @@ pub fn discover(folders: &[PathBuf], exclude: &[PathBuf]) -> Vec<PathBuf> {
 }
 
 /// The regular `.fmp12` files and the subfolders of `folder` (neither a
-/// link), each in name order.
-fn entries(folder: &Path) -> std::io::Result<(Vec<PathBuf>, Vec<PathBuf>)> {
+/// link), each in name order, reading no more entries than `budget` has
+/// left and taking those read from it.
+fn entries(folder: &Path, budget: &mut usize) -> std::io::Result<(Vec<PathBuf>, Vec<PathBuf>)> {
     let mut files: Vec<(OsString, PathBuf)> = Vec::new();
     let mut subfolders: Vec<(OsString, PathBuf)> = Vec::new();
-    for (read, entry) in std::fs::read_dir(folder)?.enumerate() {
-        if read == MAX_ENTRIES {
+    if *budget == 0 {
+        return Ok((Vec::new(), Vec::new()));
+    }
+    for entry in std::fs::read_dir(folder)? {
+        if *budget == 0 {
             log::warn!(
-                "database folder {}: more than {MAX_ENTRIES} entries; the rest are not read",
+                "database folders: more than {MAX_ENTRIES} entries; {} and later folders are not read in full",
                 folder.display()
             );
             break;
         }
+        *budget -= 1;
         let entry = entry?;
         let name = entry.file_name();
         if name.to_string_lossy().starts_with('.') {
@@ -138,6 +148,9 @@ mod tests {
         for dir in ["Sales", "Sales/Archive", "Backups", "Empty"] {
             std::fs::create_dir_all(databases.join(dir)).unwrap();
         }
+        // Found paths are resolved ones (a temporary folder may be reached
+        // through a link, as on macOS).
+        let databases = databases.canonicalize().unwrap();
         for file in [
             "b.fmp12",
             "A.FMP12",
