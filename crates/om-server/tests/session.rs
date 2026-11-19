@@ -2243,7 +2243,9 @@ fn a_refused_file_on_a_shared_connection_fails_alone() {
 /// edits Tasks records but views Notes only. An upload to Tasks is stored;
 /// one to Notes, or to the file's own library (any table's records may
 /// hold it), is refused with 200, also when the data is already there,
-/// which would raise the member's count as op87 would not let it.
+/// which would raise the member's count as op87 would not let it. Mixed's
+/// set creates Tasks records and edits Notes records: each table allows
+/// one of the two, so the file's library takes its upload.
 #[test]
 fn container_uploads_need_the_tables_create_or_edit_privilege() {
     use om_hbam::slot::uint_segment;
@@ -2252,6 +2254,35 @@ fn container_uploads_need_the_tables_create_or_edit_privilege() {
 
     let mut root = fixture::tree(&[], true);
     fixture::add_custom_clerk(&mut root);
+    // Set 5 as `add_custom_clerk`'s set 4, but records viewed and created
+    // by default (`50 03`) and Notes' viewed and edited (`14 03`); account
+    // record 8.
+    let set: &[u8] = &[5];
+    for (path, value) in [
+        (vec![vec![2u8]], vec![0x50u8, 0x03]),
+        (vec![vec![0x0a]], vec![0x9f, 0xff]),
+        (vec![vec![0x0c]], vec![0, 0]),
+        (
+            vec![vec![5], uint_segment(fixture::NOTES), vec![2]],
+            vec![0x14, 0x03],
+        ),
+        (vec![vec![9], vec![0x04]], vec![0xdf]),
+        (vec![vec![9], vec![0x11]], vec![0xd7]),
+        (vec![vec![9], vec![0x21]], vec![0xd7]),
+    ] {
+        let mut full: Vec<&[u8]> = vec![&[23], &[2], &[5], set];
+        full.extend(path.iter().map(Vec::as_slice));
+        root.put(&full, om_hbam::OwnedNode::leaf(Vec::new(), value));
+    }
+    root.put(
+        &[&[23], &[2], &[5], set, &[16]],
+        om_scripts::text_node(&[], "Mixed"),
+    );
+    root.put(
+        &[&[23], &[1], &[5], &[8], &[16]],
+        om_scripts::text_node(&[], "Mixed"),
+    );
+    fixture::put_account(&mut root, 8, "mixed secret", None, 5);
     let file = fixture::TempFile::from_tree("upload-privileges", &root);
     let port = server::start_configured(&file, |server| server.admitting_custom_sets());
     let (mut admin, admin_file) = server::logged_in(port, "admin");
@@ -2309,5 +2340,10 @@ fn container_uploads_need_the_tables_create_or_edit_privilege() {
         1u32.to_be_bytes().to_vec()
     );
     temp.disconnect().unwrap();
+    let (mut mixed, mixed_file) =
+        server::logged_in_as(port, "mixed", fixture::FILE, "Mixed", "mixed secret");
+    let stored = upload(&mut mixed, mixed_file, Vec::new());
+    assert_eq!((stored.status, stored.member.len()), (0, 1), "{stored:?}");
+    mixed.disconnect().unwrap();
     admin.disconnect().unwrap();
 }

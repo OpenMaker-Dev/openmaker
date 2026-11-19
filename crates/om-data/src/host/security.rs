@@ -110,6 +110,18 @@ impl SetAccess {
         }
     }
 
+    /// Whether the account may do one of `actions` to the records of every
+    /// table, each table by its own rules: for a member of the file's own
+    /// container library, which any table's records may hold.
+    pub fn may_any_in_every_table(&self, actions: &[RecordAction]) -> bool {
+        match self {
+            Self::BuiltIn(set) => set.edits_records(),
+            Self::Custom(rules) => std::iter::once(&rules.default)
+                .chain(rules.tables.values())
+                .all(|table| actions.iter().any(|a| table.actions.of(*a).always())),
+        }
+    }
+
     /// Whether field `field` of base table `table` (their keys) may be
     /// changed: not when the account's custom set gives it view-only access.
     pub fn modifies(&self, table: &[u8], field: &[u8]) -> bool {

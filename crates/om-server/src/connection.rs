@@ -2765,7 +2765,7 @@ fn container_library_writable(file: &OpenFile, table: &[Vec<u8>]) -> bool {
     };
     let actions = [RecordAction::Create, RecordAction::Edit];
     match table {
-        [] => actions.iter().any(|a| access.may_in_every_table(*a)),
+        [] => access.may_any_in_every_table(&actions),
         [table] => actions.iter().any(|a| access.may(table, *a)),
         _ => true,
     }
