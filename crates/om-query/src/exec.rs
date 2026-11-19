@@ -806,8 +806,10 @@ fn projected_keys(
         .as_ref()
         .and_then(|o| TextKeys::of_language(o.index_language()))
         .filter(|form| *form != TextKeys::None);
-    let from_index =
-        indexes.is_indexed(work, table, field, VALUE_INDEX)? && (!text || index_form == Some(form));
+    // An index in another form is not even loaded: reading it all would
+    // cost what keying a few stored values does not.
+    let from_index = (!text || index_form == Some(form))
+        && indexes.is_indexed(work, table, field, VALUE_INDEX)?;
 
     if !from_index {
         // Every stored repetition's lines, each keyed once per record.
@@ -825,6 +827,8 @@ fn projected_keys(
         for id in records.iter() {
             let mut keys = BTreeSet::new();
             for cell in &cells {
+                // Each look counts, a repetition the record lacks included.
+                work.spend(Size { nodes: 1, bytes: 0 })?;
                 let value = indexes
                     .stored_text(work, table, cell, id)?
                     .unwrap_or_default();
