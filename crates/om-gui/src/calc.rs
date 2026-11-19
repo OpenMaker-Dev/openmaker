@@ -304,7 +304,7 @@ pub(crate) struct Calculations {
     group_values: RefCell<HashMap<GroupKey, SessionResult<Value>>>,
     /// The layout calculations' last `Get ( ModifiedFields )`, with the
     /// schema and inputs it was computed from ([`Self::modified_fields`]).
-    modified: RefCell<Option<(Arc<CalcSchema>, ModifiedInputs, Vec<String>)>>,
+    modified: RefCell<Option<ModifiedAnswer>>,
     /// The value-list items of controls whose list depends on the record
     /// (its related values, or an unstored calculation's), by object,
     /// record and portal row, with whether they were computed by a
@@ -1139,6 +1139,10 @@ pub(crate) fn focus_names(field: &str, layout_table: &str) -> (String, String) {
         None => (field.to_owned(), layout_table.to_owned()),
     }
 }
+
+/// A `Get ( ModifiedFields )` answer with the schema and inputs it was
+/// computed from.
+type ModifiedAnswer = (Arc<CalcSchema>, ModifiedInputs, Vec<String>);
 
 /// What a window's `Get ( ModifiedFields )` is computed from
 /// ([`window_modified_fields`]).
