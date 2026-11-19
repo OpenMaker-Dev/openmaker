@@ -4588,6 +4588,7 @@ dependencies = [
  "egui_kittest",
  "flate2",
  "gdkx11",
+ "getrandom 0.2.17",
  "gtk",
  "hayro",
  "image",

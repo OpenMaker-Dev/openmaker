@@ -19,14 +19,17 @@
 //! developer tools; they open no other windows, download nothing, and go
 //! only to http, https, data, blob, file and about URLs; an address that
 //! Foundation cannot read as a URL shows a blank page (wry would panic on
-//! it). The bridge ([`BRIDGE`]) reaches the app by asking a hidden frame to
-//! load an `openmaker-message:` URL, which the navigation handler takes and
-//! refuses: wry's message handler, like WebKitGTK's through wry, drops
-//! messages from pages whose URL has no host, such as `data:` URLs. That
-//! handler hears every frame, so the URL carries a token of the view's own
-//! that only the script injected into the page's main frame knows: another
-//! site's frame inside the page cannot post. Messages are bounded in size
-//! and in the bytes waiting for the app.
+//! it). The bridge ([`APPKIT_BRIDGE`]) reaches the app by asking a hidden
+//! frame to load an `openmaker-message:` URL, which the navigation handler
+//! takes and refuses: wry's message handler, like WebKitGTK's through wry,
+//! drops messages from pages whose URL has no host, such as `data:` URLs.
+//! That handler hears every frame, so the URL carries a token that only the
+//! bridge in the page's main frame knows. A new token goes to each document
+//! the main frame commits (from the OS's random source; without one the
+//! bridge stays off), and the last document's no longer works: another
+//! site's frame cannot post, nor can a page that learned an earlier
+//! document's token. Messages are bounded in size, in number and in the
+//! bytes waiting for the app, and only well-formed ones are kept.
 //!
 //! wry reports a load when it commits and when it finishes, not when it
 //! starts or fails. So each frame also looks at the page's `loading`
@@ -52,11 +55,65 @@ use wry::dpi::{LogicalPosition, LogicalSize};
 use wry::{PageLoadEvent, WebView, WebViewBuilder, WebViewExtMacOS};
 
 use super::{allowed, Backend, Event, Geometry, NativeParent, Navigation, Unavailable, ViewSpec};
-use super::{BRIDGE, MAX_MESSAGE, MESSAGE_URL};
+use super::{js_string, parse_message, MAX_MESSAGE, MESSAGE_URL};
 
-/// The most bridge message bytes that may wait for the app at once; more
-/// are dropped, as one longer than [`MAX_MESSAGE`] is.
+/// The `FileMaker` object of a page whose web viewer allows JavaScript to
+/// perform FileMaker scripts, as the WebKitGTK bridge's (`super::BRIDGE`),
+/// posting through a hidden frame's load of [`MESSAGE_URL`], the document's
+/// token and the message. Until the app gives the document its token
+/// (`__openmakerRoute`; a document restored from the back-forward cache gets
+/// a new one), up to 64 messages wait.
+const APPKIT_BRIDGE: &str = r#"(function () {
+  if (window.FileMaker) { return; }
+  var route = null, waiting = [];
+  function text(value, fallback) {
+    return value === undefined || value === null ? fallback : String(value);
+  }
+  function deliver(body) {
+    var frame = document.createElement("iframe");
+    frame.style.display = "none";
+    frame.src = route + body;
+    (document.body || document.documentElement).appendChild(frame);
+    setTimeout(function () { frame.remove(); }, 0);
+  }
+  function post(script, parameter, option) {
+    var body = "openmaker-perform-script&s=" + encodeURIComponent(text(script, "")) +
+      "&p=" + encodeURIComponent(text(parameter, "")) +
+      "&o=" + encodeURIComponent(text(option, "0"));
+    if (route === null) {
+      if (waiting.length < 64) { waiting.push(body); }
+      return;
+    }
+    deliver(body);
+  }
+  Object.defineProperty(window, "__openmakerRoute", {
+    value: function (next) {
+      if (typeof next !== "string") { return; }
+      route = next;
+      var queued = waiting;
+      waiting = [];
+      queued.forEach(deliver);
+    },
+    writable: false, configurable: false, enumerable: false
+  });
+  var fileMaker = Object.freeze({
+    PerformScript: function (script, parameter) { post(script, parameter, "0"); },
+    PerformScriptWithOption: function (script, parameter, option) {
+      post(script, parameter, option);
+    }
+  });
+  Object.defineProperty(window, "FileMaker", {
+    value: fileMaker, writable: false, configurable: false, enumerable: true
+  });
+})();"#;
+
+/// The most bridge message bytes that may wait for the app at once, each
+/// message counted as at least [`MESSAGE_COST`]; more are dropped, as one
+/// longer than [`MAX_MESSAGE`] is.
 const MESSAGE_BUDGET: usize = 2 * MAX_MESSAGE;
+const MESSAGE_COST: usize = 1024;
+/// The most bridge messages that may wait for the app at once.
+const MESSAGE_ENTRIES: usize = 256;
 
 /// How long after a navigation the page must have started loading: when it
 /// is not loading by then, the navigation has ended (it failed before
@@ -115,8 +172,10 @@ pub(crate) struct AppKitBackend {
     views: HashMap<u64, Hosted>,
     events: Events,
     received: Receiver<Event>,
-    /// Bridge message bytes sent and not yet polled.
+    /// Bridge message bytes (each at least [`MESSAGE_COST`]) and messages
+    /// sent and not yet polled.
     waiting: Arc<AtomicUsize>,
+    entries: Arc<AtomicUsize>,
 }
 
 /// Where events go: the app's channel, with a repaint so it reads them.
@@ -149,6 +208,11 @@ struct Hosted {
     /// A navigation (its generation) whose load has not been seen to start
     /// yet, and when it was asked for.
     issued: Option<(u64, Instant)>,
+    /// The bridge: the prefix of the current document's messages, how many
+    /// documents the main frame has committed, and how many had a token.
+    route: Option<Rc<std::cell::RefCell<Option<String>>>>,
+    commits: Rc<Cell<u64>>,
+    routed: u64,
 }
 
 impl AppKitBackend {
@@ -166,6 +230,7 @@ impl AppKitBackend {
             },
             received,
             waiting: Arc::default(),
+            entries: Arc::default(),
         })
     }
 
@@ -213,6 +278,15 @@ impl AppKitBackend {
                 let Some(hosted) = self.views.get(&view) else {
                     return;
                 };
+                // A page that started loading since the last frame: the call
+                // waits for no document (the registry fails it with 5).
+                if flag(&hosted.webview.webview(), "loading") {
+                    self.events.send(Event::LoadStarted {
+                        view,
+                        generation: hosted.active_generation.get(),
+                    });
+                    return;
+                }
                 let events = self.events.clone();
                 let result = hosted
                     .webview
@@ -293,11 +367,15 @@ impl AppKitBackend {
         let active = Rc::clone(&active_generation);
         let loads = self.events.clone();
         let messages = self.events.clone();
-        let waiting = Arc::clone(&self.waiting);
-        let scripts = spec.scripts;
-        // The prefix only this view's injected bridge knows.
-        let route = format!("{MESSAGE_URL}{}/", om_data::host::window::new_window_uuid());
-        let bridge = BRIDGE.replacen(&format!("\"{MESSAGE_URL}\""), &format!("\"{route}\""), 1);
+        let (waiting, entries) = (Arc::clone(&self.waiting), Arc::clone(&self.entries));
+        let commits = Rc::new(Cell::new(0));
+        let committed = Rc::clone(&commits);
+        // The current document's message prefix, which only its bridge
+        // knows (`watch_loads` gives one to each committed document).
+        let route = spec
+            .scripts
+            .then(|| Rc::new(std::cell::RefCell::new(None::<String>)));
+        let current = route.clone();
         let mut builder = WebViewBuilder::new()
             .with_url(readable(spec.url))
             .with_incognito(true)
@@ -310,19 +388,28 @@ impl AppKitBackend {
                 if !url.starts_with(MESSAGE_URL) {
                     return allowed(&url);
                 }
-                // Never a page of its own; a message only with the view's
-                // own prefix, within the bounds.
-                let body = url.strip_prefix(&route).filter(|_| scripts);
-                if let Some(body) = body.filter(|body| body.len() <= MAX_MESSAGE) {
-                    let queued = waiting.fetch_add(body.len(), Ordering::SeqCst);
-                    if queued + body.len() <= MESSAGE_BUDGET {
-                        messages.send(Event::Message {
-                            view,
-                            body: body.to_owned(),
-                        });
-                    } else {
-                        waiting.fetch_sub(body.len(), Ordering::SeqCst);
-                    }
+                // Never a page of its own; a message only with the current
+                // document's prefix, well formed and within the bounds.
+                let Some(prefix) = current.as_ref().and_then(|r| r.borrow().clone()) else {
+                    return false;
+                };
+                let Some(body) = url.strip_prefix(&prefix) else {
+                    return false;
+                };
+                if body.len() > MAX_MESSAGE || parse_message(body).is_none() {
+                    return false;
+                }
+                let cost = body.len().max(MESSAGE_COST);
+                let bytes = waiting.fetch_add(cost, Ordering::SeqCst) + cost;
+                let count = entries.fetch_add(1, Ordering::SeqCst) + 1;
+                if bytes <= MESSAGE_BUDGET && count <= MESSAGE_ENTRIES {
+                    messages.send(Event::Message {
+                        view,
+                        body: body.to_owned(),
+                    });
+                } else {
+                    waiting.fetch_sub(cost, Ordering::SeqCst);
+                    entries.fetch_sub(1, Ordering::SeqCst);
                 }
                 false
             })
@@ -330,6 +417,8 @@ impl AppKitBackend {
             .with_download_started_handler(|_, _| false)
             .with_on_page_load_handler(move |event, _| match event {
                 PageLoadEvent::Started => {
+                    // The main frame committed a document: it gets a token.
+                    committed.set(committed.get() + 1);
                     active.set(requested.get());
                     loads.send(Event::LoadStarted {
                         view,
@@ -342,7 +431,7 @@ impl AppKitBackend {
                 }),
             });
         if spec.scripts {
-            builder = builder.with_initialization_script(&bridge);
+            builder = builder.with_initialization_script(APPKIT_BRIDGE);
         }
         let webview = builder.build_as_child(&root).map_err(|e| e.to_string())?;
         let page = webview.webview();
@@ -371,6 +460,9 @@ impl AppKitBackend {
             zoom: 1.0,
             loading: false,
             issued: Some((0, Instant::now())),
+            route,
+            commits,
+            routed: 0,
         };
         place(self.mtm, &mut hosted, spec.geometry, spec.visible);
         self.views.insert(view, hosted);
@@ -441,7 +533,9 @@ impl Backend for AppKitBackend {
         let events: Vec<Event> = self.received.try_iter().collect();
         for event in &events {
             if let Event::Message { body, .. } = event {
-                self.waiting.fetch_sub(body.len(), Ordering::SeqCst);
+                self.waiting
+                    .fetch_sub(body.len().max(MESSAGE_COST), Ordering::SeqCst);
+                self.entries.fetch_sub(1, Ordering::SeqCst);
             }
         }
         events
@@ -487,7 +581,12 @@ impl AppKitBackend {
             }
             hosted.loading = loading;
             match hosted.issued {
-                Some(_) if loading => hosted.issued = None,
+                // Loading now (perhaps still the page it replaces): its end
+                // is this navigation's.
+                Some((generation, _)) if loading => {
+                    hosted.active_generation.set(generation);
+                    hosted.issued = None;
+                }
                 Some((generation, at)) if at.elapsed() >= SETTLE => {
                     hosted.issued = None;
                     hosted.active_generation.set(generation);
@@ -496,11 +595,36 @@ impl AppKitBackend {
                 _ => {}
             }
             busy |= loading || hosted.issued.is_some();
+            if let Some(route) = &hosted.route {
+                let commits = hosted.commits.get();
+                if commits != hosted.routed {
+                    hosted.routed = commits;
+                    give_token(&hosted.webview, route);
+                }
+            }
         }
         if busy {
             self.events.ctx.request_repaint_after(WATCH);
         }
     }
+}
+
+/// Give the main frame's new document a token of its own: the last one no
+/// longer posts. Without the OS's random source the bridge stays off.
+fn give_token(webview: &WebView, route: &std::cell::RefCell<Option<String>>) {
+    let mut bytes = [0u8; 16];
+    let token = getrandom::getrandom(&mut bytes)
+        .ok()
+        .map(|()| bytes.iter().map(|b| format!("{b:02x}")).collect::<String>());
+    let prefix = token.map(|token| format!("{MESSAGE_URL}{token}/"));
+    if let Some(prefix) = &prefix {
+        let script = format!(
+            "window.__openmakerRoute && window.__openmakerRoute({})",
+            js_string(prefix)
+        );
+        let _ = webview.evaluate_script(&script);
+    }
+    *route.borrow_mut() = prefix;
 }
 
 /// `url` when Foundation reads it as a URL, a blank page otherwise: wry
