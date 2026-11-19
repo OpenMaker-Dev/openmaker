@@ -1526,6 +1526,10 @@ struct Expression {
     /// its own (script oracle s44), but they are not among the fields its
     /// "Do not evaluate if all referenced fields are empty" looks at.
     through_unstored: BTreeSet<u64>,
+    /// The formulas of those unstored calculations: a `Random` draw, the
+    /// clock or a UUID in one makes this formula's value change when it is
+    /// evaluated again, as one of its own would.
+    through_formulas: Vec<Arc<Formula>>,
 }
 
 /// How a formula reads one related occurrence.
@@ -2037,7 +2041,7 @@ impl RecordPlan {
         // The inputs of the unstored calculations each auto-entered
         // (`true`) or validation (`false`) formula reads, by field, and
         // each calculation's own (`unstored_inputs`).
-        let mut through: BTreeMap<(u64, bool), BTreeSet<u64>> = BTreeMap::new();
+        let mut through: BTreeMap<(u64, bool), UnstoredReads> = BTreeMap::new();
         let mut known = BTreeMap::new();
         for (id, field) in &fields {
             // A stored calculation's formula, or an auto-entered or
@@ -2074,7 +2078,7 @@ impl RecordPlan {
                     // FileMaker evaluates it (script oracle s44); a stored
                     // calculation over one would be unstored itself.
                     if !calculation && !global && def.is_some_and(|d| d.is_unstored_calculation()) {
-                        let inputs = unstored_inputs(
+                        let reads = unstored_inputs(
                             *dependency,
                             &unstored_formulas,
                             &schema,
@@ -2089,7 +2093,9 @@ impl RecordPlan {
                                 field.name
                             ))
                         })?;
-                        through.entry((*id, own)).or_default().extend(inputs);
+                        let entry = through.entry((*id, own)).or_default();
+                        entry.inputs.extend(reads.inputs);
+                        entry.calculations.extend(reads.calculations);
                         continue;
                     }
                     let unsupported = (global
@@ -2112,7 +2118,7 @@ impl RecordPlan {
         // A change of an input of an unstored calculation a formula reads
         // evaluates an auto-entered one again (script oracle s44); the
         // inputs also order the formula after them.
-        for ((id, own), inputs) in through {
+        for ((id, own), reads) in through {
             let Some(field) = fields.get_mut(&id) else {
                 continue;
             };
@@ -2122,11 +2128,18 @@ impl RecordPlan {
                 field.validation.as_mut()
             };
             if let Some(expression) = expression {
-                for input in inputs {
+                for input in reads.inputs {
                     if expression.dependencies.insert(input) {
                         expression.through_unstored.insert(input);
                     }
                 }
+                expression.through_formulas.extend(
+                    reads
+                        .calculations
+                        .iter()
+                        .filter_map(|c| unstored_formulas.get(c)?.as_ref().ok())
+                        .map(|e| Arc::clone(&e.formula)),
+                );
             }
         }
         // A message calculation reading what its one-record evaluation
@@ -2874,6 +2887,7 @@ impl RecordPlan {
             whole: BTreeSet::new(),
             uses: BTreeMap::new(),
             through_unstored: BTreeSet::new(),
+            through_formulas: Vec::new(),
         };
         self.evaluate_field(id, &read, row, session)
     }
@@ -3221,7 +3235,10 @@ impl RecordPlan {
             !others && field.lookup.is_some()
                 || field.expression.as_ref().is_some_and(|e| {
                     !others && (!e.related.is_empty() || !e.whole.is_empty())
-                        || draws_random(&self.schema, &e.formula.polish)
+                        || e.reads_any(
+                            &self.schema,
+                            &|x| matches!(x, Expr::Call { op, .. } if op.0 == 0x31),
+                        )
                 })
         };
         let mut other: BTreeSet<u64> = self
@@ -3661,29 +3678,30 @@ impl RecordPlan {
             }
             _ => false,
         };
-        let volatile: BTreeSet<u64> =
-            self.fields
-                .iter()
-                .filter(|(_, field)| {
-                    let variable = field.options.auto_entry_variable().is_some_and(|v| {
-                        !stamp
-                            && matches!(
-                                v,
-                                EntryVariable::CreationDate
-                                    | EntryVariable::CreationTime
-                                    | EntryVariable::CreationTimestamp
-                                    | EntryVariable::ModificationDate
-                                    | EntryVariable::ModificationTime
-                                    | EntryVariable::ModificationTimestamp
-                            )
-                    });
-                    variable
-                        || field.expression.as_ref().is_some_and(|e| {
-                            reads_any(&self.schema, &e.formula.polish, &volatile_expr)
-                        })
-                })
-                .map(|(id, _)| *id)
-                .collect();
+        let volatile: BTreeSet<u64> = self
+            .fields
+            .iter()
+            .filter(|(_, field)| {
+                let variable = field.options.auto_entry_variable().is_some_and(|v| {
+                    !stamp
+                        && matches!(
+                            v,
+                            EntryVariable::CreationDate
+                                | EntryVariable::CreationTime
+                                | EntryVariable::CreationTimestamp
+                                | EntryVariable::ModificationDate
+                                | EntryVariable::ModificationTime
+                                | EntryVariable::ModificationTimestamp
+                        )
+                });
+                variable
+                    || field
+                        .expression
+                        .as_ref()
+                        .is_some_and(|e| e.reads_any(&self.schema, &volatile_expr))
+            })
+            .map(|(id, _)| *id)
+            .collect();
         volatile
     }
 
@@ -4878,6 +4896,17 @@ fn evaluation_order(fields: &BTreeMap<u64, PlannedField>) -> Result<Vec<u64>, Da
 }
 
 impl Expression {
+    /// Whether this formula, or an unstored calculation it reads
+    /// ([`Self::through_formulas`]), itself or through the custom functions
+    /// it calls, has a part `test` holds for.
+    fn reads_any(&self, schema: &CalcSchema, test: &dyn Fn(&Expr) -> bool) -> bool {
+        reads_any(schema, &self.formula.polish, test)
+            || self
+                .through_formulas
+                .iter()
+                .any(|formula| reads_any(schema, &formula.polish, test))
+    }
+
     /// Evaluate on a row of stored text whose fields are all text, as the
     /// field's calculation would on a record of a table of text fields.
     #[cfg(test)]
@@ -4927,8 +4956,8 @@ fn unstored_inputs(
     schema: &CalcSchema,
     table: u64,
     stack: &mut Vec<u64>,
-    known: &mut BTreeMap<u64, Result<BTreeSet<u64>, String>>,
-) -> Result<BTreeSet<u64>, String> {
+    known: &mut BTreeMap<u64, Result<UnstoredReads, String>>,
+) -> Result<UnstoredReads, String> {
     if let Some(answer) = known.get(&id) {
         return answer.clone();
     }
@@ -4944,8 +4973,8 @@ fn unstored_inputs_of(
     schema: &CalcSchema,
     table: u64,
     stack: &mut Vec<u64>,
-    known: &mut BTreeMap<u64, Result<BTreeSet<u64>, String>>,
-) -> Result<BTreeSet<u64>, String> {
+    known: &mut BTreeMap<u64, Result<UnstoredReads, String>>,
+) -> Result<UnstoredReads, String> {
     let fields = schema
         .table(table)
         .map(|t| &t.fields)
@@ -4971,7 +5000,10 @@ fn unstored_inputs_of(
     )
     .map_err(|reason| format!("Field {}: {reason}", def.name))?;
     stack.push(id);
-    let mut inputs = BTreeSet::new();
+    let mut reads = UnstoredReads {
+        inputs: BTreeSet::new(),
+        calculations: BTreeSet::from([id]),
+    };
     for dependency in &expression.dependencies {
         let input = fields
             .get(dependency)
@@ -4986,20 +5018,24 @@ fn unstored_inputs_of(
             ));
         }
         if input.is_unstored_calculation() {
-            inputs.extend(unstored_inputs(
-                *dependency,
-                formulas,
-                schema,
-                table,
-                stack,
-                known,
-            )?);
+            let read = unstored_inputs(*dependency, formulas, schema, table, stack, known)?;
+            reads.inputs.extend(read.inputs);
+            reads.calculations.extend(read.calculations);
         } else {
-            inputs.insert(*dependency);
+            reads.inputs.insert(*dependency);
         }
     }
     stack.pop();
-    Ok(inputs)
+    Ok(reads)
+}
+
+/// What [`unstored_inputs`] gives: the stored fields an unstored
+/// calculation reads, and the unstored calculations on the way, itself
+/// included.
+#[derive(Clone, Debug, Default)]
+struct UnstoredReads {
+    inputs: BTreeSet<u64>,
+    calculations: BTreeSet<u64>,
 }
 
 /// Custom functions must obey the same record-only limits as their callers.
@@ -5608,6 +5644,7 @@ fn parse_code_with(code: &[u8], context: &[u8], related_reads: bool) -> Result<E
         whole,
         uses,
         through_unstored: BTreeSet::new(),
+        through_formulas: Vec::new(),
     })
 }
 
@@ -6972,6 +7009,13 @@ mod tests {
         let other = update(&[(2, "z")]).unwrap();
         assert_eq!(decoded(&other, 15), None, "not an input");
         assert_eq!(update(&[(1, "x")]).err().unwrap().code, Some(507));
+        // A `Random` draw in the calculation makes the formula over it
+        // change when evaluated again: no preview shows its value.
+        let mut drawn = formulas.clone();
+        drawn[0] = (14, 5, "Field1 & Random");
+        let plan = plan_of(&table, &drawn, &[]).unwrap();
+        assert!(!plan.preview_fields(true).contains(&15));
+        assert!(plan.preview_fields(true).contains(&1));
         // Over another occurrence or a global field, the write could not
         // evaluate it.
         table
