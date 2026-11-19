@@ -602,7 +602,8 @@ are read, rows show without sub-summary parts. Table view shows no
 sub-summary rows, and Form view still draws sub-summary parts. Container
 fields optimized for images show a movie or a sound as a file (an
 interactive container plays it, above); a GIF shows its
-first frame; Table view and Preview draw no pictures (Preview: #264); a
+first frame; Table view draws no pictures (Preview and PDF print them:
+[portable-pdf.md](portable-pdf.md#container-fields)); a
 picture is drawn one pixel to a point whatever resolution (`DPI_`) it
 has; the file icon is OpenMaker's own, not the system's icon for the
 file's type; and only the starters' two graphic formats (5 and 7, centered)
@@ -790,9 +791,9 @@ replacement invalidates the identity. Text whose row and source mapping
 cannot be verified, justified text and elided text keep the ordinary
 renderer.
 
-Limits: List, Table, Preview, Layout mode, generic Form fallbacks and focused
-field editors are not zoomed, and Set Zoom Level's lock option is not
-enforced.
+Limits: List, Table, Layout mode, generic Form fallbacks and focused field
+editors are not zoomed (Preview scales its paper: [preview.md](preview.md)),
+and Set Zoom Level's lock option is not enforced.
 
 ### Layout menus
 
@@ -1935,7 +1936,9 @@ request. Bringing another file's window to the front, or closing the
 last window of its file, closes it; a reply for another file or for a
 dialog since closed is discarded before it is handled.
 
-Limits: value lists are read only. No writer for the definition
+Limits: this dialog changes no value list; a custom list's values change
+through a pop-up menu's Edit… ([Editing records](#editing-records)). No
+writer for the definition
 `DBValueList::Definition` is specified and the host drops uploads to the
 protected index `[21, 1]` that lack `KModCount` and `KSerNum`
 (schema-path.md 2), so New, Edit, Duplicate and Delete are disabled with
@@ -2348,6 +2351,10 @@ Limits:
 ### Not built
 
 The Themes, Custom Functions, External Data Sources and Data Viewer
-dialogs, and editing value lists. Of layouts, only a new Form layout and
-Layout mode's placed fields (with their labels), texts and buttons and its
-moved and deleted objects are saved; of scripts, only their steps.
+dialogs, and Manage Value Lists' New, Edit, Duplicate and Delete (a custom
+list's values are edited from a pop-up menu's Edit…, under
+[Editing records](#editing-records)). Of layouts, only what
+[Layout mode and Manage Layouts](#layout-mode-and-manage-layouts) lists is
+saved, and New Layout/Report makes only Form layouts; of scripts, Script Workspace saves
+steps and catalog changes but no folders or separators
+([Script Workspace](#script-workspace)).

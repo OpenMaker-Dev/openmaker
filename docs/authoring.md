@@ -11,12 +11,15 @@ and run a script on the host to see what an edit does. The same service
 (`om_author::Service`) answers a command-line tool and an MCP server; both
 print the same versioned JSON.
 
-This version edits **script steps**, adds **stored fields** (text,
-number, date, time or timestamp) to existing tables, adds **Form
-layouts** with an empty body, and **places a field**
-(an edit box, with an optional text label) on an existing layout, in files
-hosted by **OpenMaker Server**, and **runs scripts** on the host with
-Perform Script on Server. Everything else is read-only; see
+In files hosted by **OpenMaker Server**, this version edits **script
+steps**; adds **stored fields** (text, number, date, time or timestamp) to
+existing tables; adds, duplicates and deletes **Form layouts** and changes
+their Layout Setup, width and parts; **places fields** (an edit box, with
+an optional text label), texts and portals, moves, resizes and deletes
+objects, and changes a field's control and a text's words; changes a
+**custom value list's values**; and **runs scripts** on the host with
+Perform Script on Server. `create-file` makes a blank file on this
+computer without a connection. Everything else is read-only; see
 [Limits](#limits).
 
 ## Commands (`openmaker.authoring/v1`)
@@ -974,20 +977,17 @@ on a Form layout, and reads the layout back after the restart.
 
 ## MCP server
 
-`om-author mcp` serves the commands as MCP tools over stdio with the
-official Rust SDK (`rmcp` 3.9): `openmaker_capabilities`,
-`openmaker_inspect`, `openmaker_get_script`, `openmaker_validate_script`,
-`openmaker_plan_script_edit`, `openmaker_apply_script_edit`,
-`openmaker_plan_field`, `openmaker_create_field`, `openmaker_get_layout`,
-`openmaker_plan_field_placement`, `openmaker_place_field`,
-`openmaker_run_script`, `openmaker_commands`. A tool's
+`om-author mcp` serves every command of the catalog as an MCP tool over
+stdio with the official Rust SDK (`rmcp` 3.9), under the name `om-author
+commands` gives it as `mcp_tool` (`openmaker_capabilities`,
+`openmaker_place_field`, `openmaker_commands` and the others). A tool's
 arguments are the command's params; its result is the JSON response as
 structured content, marked as an error when `ok` is false. Protocol
 revisions: **2026-07-28** (stateless `server/discover`, per-request
 `_meta`) and **2025-11-25** (`initialize`); no others are offered. stdout
-carries protocol messages only. Each tool call but `openmaker_commands`
-opens the file over a new connection with the configured account, so the
-server holds no session state between calls.
+carries protocol messages only. Each tool call whose command needs the
+file (`needs` in `commands`) opens it over a new connection with the
+configured account, so the server holds no session state between calls.
 
 Starting MCP, listing its tools and calling `openmaker_commands` need no
 connection settings or credentials. They are loaded when the first tool
@@ -1174,11 +1174,11 @@ codec is `om_protocol::authoring`; the host side is `om-server`'s
 
 ## Limits
 
-- **Hosts.** Script edits, new fields, new layouts and placements
-  (fields and buttons) need OpenMaker Server. On a host that does not claim the extension, FileMaker Server
-  (Claris) included, every command but `apply`, `create_field`,
-  `place_field`, `set_object_frames` and `create_layout` works; those
-  report `unsupported` and nothing is sent.
+- **Hosts.** Every design change needs OpenMaker Server: the commands
+  `commands` lists with the effect `authors`, and the desktop's placements
+  through the same extension. On a host that does not claim the extension,
+  FileMaker Server (Claris) included, those commands report `unsupported`
+  and nothing is sent; the others work.
   `run_script` sends the request FileMaker Pro sends for Perform Script
   on Server, which FileMaker Server answers too, but it has been run
   against OpenMaker Server only (in process, on a synthetic file).
@@ -1199,23 +1199,26 @@ codec is `om_protocol::authoring`; the host side is `om-server`'s
   frame chosen, not of the placement. Other field types, labels, layouts
   and script edits have not been opened in FileMaker Pro.
 - **Records.** `list_choices` reads records, as above; no other command
-  does. `choose_value_list_item` is unavailable without a window.
+  does. `choose_value_list_item` and `enter_other_value` are unavailable
+  without a window.
 - **Operations.** Only replacing an existing script's steps and adding a
   stored text, number, date, time or timestamp field with the default
   options to an existing table. Creating, renaming, deleting, moving and
   duplicating scripts and folders, script options, tables, changing,
   renaming or deleting fields, calculation, summary, container and global
   fields, field options (auto-enter, validation, indexing, repetitions,
-  storage), occurrences, relationships, layouts, value lists, custom
+  storage), occurrences, relationships, value lists, custom
   functions and accounts are read-only here (`capabilities` lists them as
-  unavailable). On layouts, only the operations above: placing edit boxes
-  of the layout's table, texts, buttons and portals of related
-  occurrences with fields in their first row; moving, resizing and
-  deleting top-level objects; a field's control, a text's words, Layout
+  unavailable); of value lists, only a custom list's values change
+  ([Value lists](#value-lists)). On layouts, only the operations above:
+  new, duplicated and deleted Form layouts; placing edit boxes of the
+  layout's table, texts, and portals of related occurrences with fields
+  in their first row (buttons are placed by the desktop's Layout mode);
+  moving, resizing and deleting top-level objects; a field's control (the
+  styles in [Field controls](#field-controls)), a text's words, Layout
   Setup, the width, part options and adding, deleting and resizing
-  parts. No other object kinds or control
-  styles (drop-down lists, pop-up menus, checkbox and radio sets,
-  calendars, containers), no related fields outside a new portal,
+  parts. A field is placed as an edit box. No other object kinds, no
+  related fields outside a new portal,
   repetitions, styles, data formatting, tab order, triggers, conditional
   formatting or hide conditions; nothing placed in headers, footers,
   summaries, stored portals, tab or slide panels, popovers or groups;
