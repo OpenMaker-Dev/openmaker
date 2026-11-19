@@ -500,10 +500,13 @@ impl<'a> FileCalc<'a> {
                     None => {
                         // An occurrence of a related file not opened yet:
                         // the read waits for the file, as a field's does.
+                        // Its name matches in any case, as the file's
+                        // names do once it is open (`NameTable`).
+                        let folded = name.to_lowercase();
                         let pending = self
                             .schema
                             .external_occurrences()
-                            .find(|o| o.name.eq_ignore_ascii_case(&name))
+                            .find(|o| o.name.to_lowercase() == folded)
                             .is_some_and(|o| self.waits(o.id));
                         return Err(if pending {
                             CalcError::from_code(1224).expect("nonzero")

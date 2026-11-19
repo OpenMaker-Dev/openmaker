@@ -392,6 +392,9 @@ pub(crate) struct NativeSource<'a> {
     /// The tables whose data could not be read in this call, with the
     /// first failure of each.
     failed_tables: RefCell<BTreeMap<u64, DataError>>,
+    /// The tables whose window found set could not be read, with why
+    /// (`NativeProvider::read_calc_batch`): their found-set needs fail.
+    pub(crate) unseeded: RefCell<BTreeMap<u64, DataError>>,
     /// Relationship scans kept across calls, when given.
     scans: Option<&'a RefCell<KeptScans>>,
     /// The window's token for this read, when it may stop needing it
@@ -446,6 +449,7 @@ impl<'a> NativeSource<'a> {
             calculation_session: None,
             failure: RefCell::default(),
             failed_tables: RefCell::default(),
+            unseeded: RefCell::default(),
             scans: None,
             cancel: None,
             fonts: None,
@@ -809,6 +813,10 @@ impl CalcSource for NativeSource<'_> {
     fn found_set(&self, occurrence: u64, table: u64) -> Result<Arc<[u64]>, CalcError> {
         if let Some(found) = self.found.borrow().get(&occurrence) {
             return Ok(Arc::clone(found));
+        }
+        // The window's found set could not be read: never every record.
+        if let Some(error) = self.unseeded.borrow().get(&table).cloned() {
+            return Err(self.fail(error));
         }
         self.records(table)
     }
@@ -1582,12 +1590,22 @@ impl NativeProvider {
         let globals = self.desktop_globals(&schema);
         let mut page = std::mem::take(&mut self.calc.page);
         // A found set the kept page no longer holds (its budget dropped it)
-        // is the window's, never every record of its table.
+        // is the window's, never every record of its table: read once per
+        // table, for all its occurrences. One that cannot be read fails
+        // its needs, and the batch's other needs are still answered.
+        let mut seeded = BTreeSet::new();
+        let mut unseeded = BTreeMap::new();
         for need in needs {
             if let CalcNeed::FoundSet { occurrence, table } = need {
-                if !page.found.contains_key(occurrence) {
-                    // A table that cannot be read fails its need as before.
-                    let _ = self.seed_found_set(&schema, *table, &mut page);
+                if page.found.contains_key(occurrence) || !seeded.insert(*table) {
+                    continue;
+                }
+                // A read the window stopped answers no need (#987).
+                if cancel.is_some_and(CalcCancel::cancelled) {
+                    break;
+                }
+                if let Err(error) = self.seed_found_set(&schema, *table, &mut page) {
+                    unseeded.insert(*table, error);
                 }
             }
         }
@@ -1601,6 +1619,7 @@ impl NativeProvider {
             .with_scans(&self.calc.scans)
             .with_cancel(cancel);
         source.seed(&page);
+        source.unseeded.replace(unseeded);
         // Records in as few op92 requests as possible (a query's found set
         // arrives as one list of needs).
         let mut ahead: std::collections::BTreeMap<u64, Vec<u64>> = Default::default();

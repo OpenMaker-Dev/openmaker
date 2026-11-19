@@ -741,6 +741,11 @@ impl<'h> Solver<'h> {
         let (v, e) = self
             .host
             .call_reporting(HostFunction::Named(name), &values, &self.context);
+        // A host function that refused to build its text past the limit
+        // (error 7) ends the evaluation, as the evaluator's own do.
+        if e == Some(CalcError::OUT_OF_MEMORY) {
+            return self.built(Err(CalcError::OUT_OF_MEMORY));
+        }
         if let Some(e) = e {
             self.errors.record(e);
         }

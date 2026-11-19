@@ -40,17 +40,21 @@ pub fn kind(value: &Value, cx: &Ctx) -> Result<u8, CalcError> {
 /// JSON array of their texts; 2 a JSON array of numbers; 3 one per value,
 /// a run of ascending consecutive ids as `first-last`; 4 those as a JSON
 /// array of texts. No id is empty text for 0 and 3 and `[]` for the JSON
-/// types. Text longer than `limit` bytes fails with
-/// [`CalcError::OUT_OF_MEMORY`] before it is built further, as the
-/// evaluator fails text past its limit.
+/// types. Text longer than `limit` bytes, a JSON array's closing bracket
+/// counted from the start, fails with [`CalcError::OUT_OF_MEMORY`] before
+/// it is built further, as the evaluator fails text past its limit.
 pub fn write(ids: &[u64], kind: u8, limit: usize) -> Result<String, CalcError> {
     use std::fmt::Write as _;
     let json = matches!(kind, 1 | 2 | 4);
     let quoted = matches!(kind, 1 | 4);
     let ranged = matches!(kind, 3 | 4);
     let mut out = String::new();
+    let fits = |out: &String| out.len() + usize::from(json) <= limit;
     if json {
         out.push('[');
+    }
+    if !fits(&out) {
+        return Err(CalcError::OUT_OF_MEMORY);
     }
     let mut i = 0;
     while i < ids.len() {
@@ -71,7 +75,7 @@ pub fn write(ids: &[u64], kind: u8, limit: usize) -> Result<String, CalcError> {
         if quoted {
             out.push('"');
         }
-        if out.len() > limit {
+        if !fits(&out) {
             return Err(CalcError::OUT_OF_MEMORY);
         }
         i = j + 1;
@@ -102,5 +106,9 @@ mod tests {
         assert_eq!(at(&[], 0), "");
         assert_eq!(at(&[], 4), "[]");
         assert_eq!(write(&gaps, 0, 6), Err(CalcError::OUT_OF_MEMORY));
+        // A JSON array's brackets count.
+        assert_eq!(write(&[1], 2, 3).as_deref(), Ok("[1]"));
+        assert_eq!(write(&[1], 2, 2), Err(CalcError::OUT_OF_MEMORY));
+        assert_eq!(write(&[], 1, 1), Err(CalcError::OUT_OF_MEMORY));
     }
 }
