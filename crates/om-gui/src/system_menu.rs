@@ -90,6 +90,10 @@ fn shape(menus: &Menus) -> Vec<(String, Vec<Row>)> {
 pub(crate) struct Recorder<'a> {
     path: String,
     rows: Vec<Row>,
+    /// A dialog is over the window: no row runs.
+    blocked: bool,
+    /// What the window's menus have asked for since it came to the front.
+    asked: &'a mut std::collections::HashSet<String>,
     /// How many rows of each label this menu has had so far: ids stay
     /// distinct when two rows read alike (two scripts of one name).
     seen: HashMap<String, usize>,
@@ -97,10 +101,17 @@ pub(crate) struct Recorder<'a> {
 }
 
 impl<'a> Recorder<'a> {
-    fn new(path: String, chosen: &'a mut Option<String>) -> Self {
+    fn new(
+        path: String,
+        chosen: &'a mut Option<String>,
+        asked: &'a mut std::collections::HashSet<String>,
+        blocked: bool,
+    ) -> Self {
         Recorder {
             path,
             rows: Vec::new(),
+            blocked,
+            asked,
             seen: HashMap::new(),
             chosen,
         }
@@ -123,6 +134,7 @@ impl Recorder<'_> {
         checked: bool,
         enabled: bool,
     ) -> bool {
+        let enabled = enabled && !self.blocked;
         let chosen = enabled && self.chosen.as_deref() == Some(id.as_str());
         if chosen {
             *self.chosen = None;
@@ -170,7 +182,12 @@ impl MenuRows for Recorder<'_> {
 
     fn submenu(&mut self, label: &str, enabled: bool, rows: &mut dyn FnMut(&mut dyn MenuRows)) {
         let id = self.id(label);
-        let mut inner = Recorder::new(id.clone(), &mut *self.chosen);
+        let mut inner = Recorder::new(
+            id.clone(),
+            &mut *self.chosen,
+            &mut *self.asked,
+            self.blocked,
+        );
         rows(&mut inner);
         let rows = inner.rows;
         self.rows.push(Row::Submenu {
@@ -193,9 +210,14 @@ impl MenuRows for Recorder<'_> {
     }
 
     fn shown(&self) -> bool {
-        // The system menu says nothing before it opens: what a menu reads
-        // when shown is asked for at once.
+        // The system menu says nothing before it opens.
         true
+    }
+
+    fn ask(&mut self, what: &str) -> bool {
+        // Once while the window is in front: a read that failed is asked
+        // again when the window comes to the front again, not every frame.
+        self.asked.insert(what.to_owned())
     }
 }
 
@@ -210,10 +232,24 @@ pub(crate) struct SystemMenuBar {
     menu: Option<Menu>,
     shown: Menus,
     handles: HashMap<String, Handle>,
-    /// The row the user chose, until a recording answers it.
-    chosen: Option<String>,
+    /// The window (session epoch and window id) whose menus the bar shows.
+    owner: Option<Owner>,
+    /// The rows the user chose, in order, each with the window whose menus
+    /// showed it, until a recording answers or drops it.
+    chosen: std::collections::VecDeque<(Option<Owner>, String)>,
+    /// A choice came: the bar's check marks may differ from the rows (muda
+    /// flips a check item's mark itself when it is chosen).
+    reconcile: bool,
+    /// What the owner's menus asked for while it is in front.
+    asked: std::collections::HashSet<String>,
     events: std::sync::mpsc::Receiver<String>,
 }
+
+/// A window, as the system bar tells windows apart.
+pub(crate) type Owner = (u64, u32);
+
+/// The most choices that wait for the app at once.
+const CHOICES: usize = 16;
 
 impl SystemMenuBar {
     /// The system menu bar, when the app's root window is an AppKit window
@@ -238,7 +274,10 @@ impl SystemMenuBar {
             menu: None,
             shown: Vec::new(),
             handles: HashMap::new(),
-            chosen: None,
+            owner: None,
+            chosen: std::collections::VecDeque::new(),
+            reconcile: false,
+            asked: std::collections::HashSet::new(),
             events,
         })
     }
@@ -246,23 +285,45 @@ impl SystemMenuBar {
     /// The start of a frame: take the row the user chose.
     pub(crate) fn begin(&mut self) {
         while let Ok(id) = self.events.try_recv() {
-            self.chosen = Some(id);
+            self.reconcile = true;
+            if self.chosen.len() < CHOICES {
+                self.chosen.push_back((self.owner, id));
+            }
         }
     }
 
-    /// Build the front window's menus: `menus` adds each menu with its
-    /// title. A choice the rows did not answer (the front window changed,
-    /// or the row went) is dropped.
-    pub(crate) fn record(&mut self, menus: impl FnOnce(&mut crate::menubar::MenuSink<'_>)) {
+    /// Build the front window's menus (`owner`'s): `menus` adds each menu
+    /// with its title, `blocked` when a dialog is over the window. The
+    /// oldest choice made in this window's menus is answered; choices made
+    /// in another window's menus, or that no enabled row answers (the row
+    /// went), are dropped.
+    pub(crate) fn record(
+        &mut self,
+        owner: Owner,
+        blocked: bool,
+        menus: impl FnOnce(&mut crate::menubar::MenuSink<'_>),
+    ) {
+        if self.owner != Some(owner) {
+            self.owner = Some(owner);
+            self.asked.clear();
+        }
+        while self
+            .chosen
+            .front()
+            .is_some_and(|(made, _)| *made != Some(owner))
+        {
+            self.chosen.pop_front();
+        }
+        let mut chosen = self.chosen.pop_front().map(|(_, id)| id);
         let mut recorded: Menus = Vec::new();
-        let chosen = &mut self.chosen;
+        let asked = &mut self.asked;
         menus(&mut |title, rows| {
-            let mut recorder = Recorder::new(title.to_owned(), &mut *chosen);
+            let mut recorder = Recorder::new(title.to_owned(), &mut chosen, &mut *asked, blocked);
             rows(&mut recorder);
             recorded.push((title.to_owned(), recorder.rows));
         });
-        self.chosen = None;
-        if recorded == self.shown {
+        let reconcile = std::mem::take(&mut self.reconcile);
+        if recorded == self.shown && !reconcile {
             return;
         }
         if self.menu.is_some() && shape(&recorded) == shape(&self.shown) {
@@ -442,7 +503,8 @@ mod tests {
 
     fn record(chosen: Option<&str>, f: impl FnOnce(&mut dyn MenuRows) -> bool) -> (Vec<Row>, bool) {
         let mut chosen = chosen.map(str::to_owned);
-        let mut recorder = Recorder::new("File".into(), &mut chosen);
+        let mut asked = std::collections::HashSet::new();
+        let mut recorder = Recorder::new("File".into(), &mut chosen, &mut asked, false);
         let answered = f(&mut recorder);
         (recorder.rows, answered)
     }

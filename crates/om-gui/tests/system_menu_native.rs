@@ -6,7 +6,10 @@
 //!   as its key equivalent (Open... is ⌘O).
 //! - Choosing View > Find Mode there (the menu's own action, as a click in
 //!   it runs it) puts the window in Find mode: Records gives way to
-//!   Requests, and Find Mode is checked.
+//!   Requests, and Find Mode is checked. Choosing it again keeps its check.
+//! - Back in Browse mode, Records > Delete Record... asks to confirm, and
+//!   while it does the bar's rows are disabled, as the window's own bar is
+//!   under a dialog.
 //!
 //! `cargo test -p om-gui --test system_menu_native` opens a window on
 //! macOS; elsewhere it does nothing. With `OM_MENU_SHOTS` set to a
@@ -89,6 +92,31 @@ mod macos {
     enum Phase {
         Opening,
         Finding,
+        Rechosen(Instant),
+        Browsing,
+        Confirming,
+    }
+
+    /// Choose `title` in the menu `menu`, through the menu's own action.
+    fn choose(menu: &str, title: &str) {
+        let Some(found) = self::menu(menu) else {
+            fail(format!("no {menu} menu"));
+        };
+        let Some((index, row)) = item(&found, title) else {
+            fail(format!("no {menu} > {title}"));
+        };
+        if !row.isEnabled() {
+            fail(format!("{menu} > {title} is disabled"));
+        }
+        println!("choosing {menu} > {title}");
+        found.performActionForItemAtIndex(index);
+    }
+
+    /// The state of `menu` > `title`: enabled, checked.
+    fn row(menu: &str, title: &str) -> Option<(bool, bool)> {
+        let found = self::menu(menu)?;
+        let (_, row) = item(&found, title)?;
+        Some((row.isEnabled(), row.state() == 1))
     }
 
     struct Driver {
@@ -135,13 +163,7 @@ mod macos {
                             open.keyEquivalent().to_string()
                         ));
                     }
-                    let view = menu("View").expect("View");
-                    let (index, find) = item(&view, "Find Mode").expect("Find Mode");
-                    if !find.isEnabled() {
-                        fail("Find Mode is disabled".into());
-                    }
-                    println!("choosing View > Find Mode");
-                    view.performActionForItemAtIndex(index);
+                    choose("View", "Find Mode");
                     self.phase = Phase::Finding;
                 }
                 Phase::Finding => {
@@ -155,13 +177,51 @@ mod macos {
                     if titles.iter().any(|t| t == "Records") {
                         fail(format!("Records is still there: {titles:?}"));
                     }
-                    let view = menu("View").expect("View");
-                    let (_, find) = item(&view, "Find Mode").expect("Find Mode");
-                    if find.state() != 1 {
+                    if row("View", "Find Mode") != Some((true, true)) {
                         return;
                     }
                     println!("menus {titles:?}; Find Mode checked");
                     shot("find-mode");
+                    // The checked row chosen again: muda flips its mark
+                    // itself, the mode does not change, and the bar must
+                    // show the check again.
+                    choose("View", "Find Mode");
+                    self.phase = Phase::Rechosen(Instant::now() + Duration::from_millis(600));
+                }
+                Phase::Rechosen(until) => {
+                    if Instant::now() < until {
+                        return;
+                    }
+                    if row("View", "Find Mode") != Some((true, true)) {
+                        fail(format!(
+                            "Find Mode chosen again reads {:?}",
+                            row("View", "Find Mode")
+                        ));
+                    }
+                    println!("Find Mode chosen again stays checked");
+                    choose("View", "Browse Mode");
+                    self.phase = Phase::Browsing;
+                }
+                Phase::Browsing => {
+                    let browsing = self.app.mode() == Mode::Browse
+                        && bar().iter().any(|(t, _)| t == "Records")
+                        && row("Records", "Delete Record...").is_some_and(|(on, _)| on);
+                    if !browsing {
+                        return;
+                    }
+                    choose("Records", "Delete Record...");
+                    self.phase = Phase::Confirming;
+                }
+                Phase::Confirming => {
+                    // The confirmation is up: the rows wait for it.
+                    if row("View", "Find Mode") != Some((false, false)) {
+                        return;
+                    }
+                    if row("Records", "Delete Record...").is_some_and(|(on, _)| on) {
+                        fail("Delete Record... is enabled under its own confirmation".into());
+                    }
+                    println!("rows disabled while Delete Record asks to confirm");
+                    shot("confirming");
                     println!("PASS");
                     std::process::exit(0);
                 }

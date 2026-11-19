@@ -141,6 +141,15 @@ pub(crate) trait MenuRows {
     /// The user is looking at these rows now: a menu that reads its
     /// content when shown asks for it.
     fn shown(&self) -> bool;
+    /// Whether a menu that reads its content when shown (`what`, the
+    /// Scripts menu's catalog) should ask for it now: whenever the rows are
+    /// [`Self::shown`], unless the rows say otherwise (the system menu bar
+    /// asks once while its window is in front, as it cannot tell when the
+    /// menu opens).
+    fn ask(&mut self, what: &str) -> bool {
+        let _ = what;
+        self.shown()
+    }
 }
 
 /// Rows drawn in an egui menu.
@@ -857,7 +866,7 @@ fn scripts_menu(rows: &mut dyn MenuRows, context: &MenuContext<'_>, actions: &mu
         if context.open() {
             rows.separator();
             rows.item("Loading Scripts…", None, false, false);
-            if rows.shown() {
+            if rows.ask("scripts") {
                 actions.push(Action::ReadScripts);
             }
         }

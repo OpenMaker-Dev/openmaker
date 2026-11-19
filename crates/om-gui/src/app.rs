@@ -1227,9 +1227,18 @@ impl OpenMakerApp {
         // (`system_menu.rs`): the window draws none.
         #[cfg(target_os = "macos")]
         if let Some(mut bar) = self.system_menu.take() {
-            if input {
+            // Only the window AppKit has in front shows its menus there, and
+            // a choice made in them reaches only that window. A dialog over
+            // it (or over the document) leaves its rows disabled, as it does
+            // the window's own bar.
+            let key = ui.ctx().input(|i| i.viewport().focused == Some(true));
+            if input && key {
+                let owner = (self.epoch, self.w.id);
+                let blocked = !ui.is_enabled() || self.dialog_over_document();
                 self.with_menu_context(input, |context| {
-                    bar.record(|menu| menubar::menus(context, actions, menu));
+                    bar.record(owner, blocked, |menu| {
+                        menubar::menus(context, actions, menu);
+                    });
                 });
             }
             self.system_menu = Some(bar);
@@ -1506,9 +1515,11 @@ impl OpenMakerApp {
             self.shortcuts(ui, &mut actions);
         }
 
+        // With the system menu bar the window's menu bar is drawn there, and
+        // takes none of the window's height: known, and nothing.
         let system = self.system_menu_bar();
-        self.w.menu_drawn = menu && self.w.menubar && !system;
-        if self.w.menu_drawn {
+        self.w.menu_drawn = menu && self.w.menubar;
+        if self.w.menu_drawn && !system {
             let top = ui.available_rect_before_wrap().top();
             self.menu_bar(ui, input, &mut actions);
             self.w.menu_height = ui.available_rect_before_wrap().top() - top;
