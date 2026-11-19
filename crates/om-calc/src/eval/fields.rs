@@ -228,6 +228,7 @@ impl Solver<'_> {
         if self.depth >= MAX_CALCULATION_DEPTH {
             return Ok(Value::invalid());
         }
+        self.count_calculation()?;
         self.check_interrupt()?;
         let skip_empty = !self.host.evaluate_always(t.occurrence, t.field);
         let occurrence = formula.occurrence().unwrap_or(t.occurrence);

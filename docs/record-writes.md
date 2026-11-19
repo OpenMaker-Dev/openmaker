@@ -708,7 +708,10 @@ still does; so does a chain of unstored calculations more than 32 deep,
 past which the calculation host reads them as `?`, or one whose read
 would evaluate unstored calculations more than 65,536 times (the host
 evaluates one on every read, so a chain that reads each step twice
-doubles at each). A preview treats a
+doubles at each). A loop or an aggregate over repetitions reads one
+again, which planning does not count: the write's evaluation of the
+formula then stops past the same 65,536 evaluations, and the write is
+refused (error 7), where FileMaker would go on. A preview treats a
 formula over a calculation that draws `Random`, the clock or a UUID, and
 a skip that calculation's value decides, as not known until the commit.
 

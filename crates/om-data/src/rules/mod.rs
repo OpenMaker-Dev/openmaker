@@ -1499,6 +1499,11 @@ struct Computed {
     deferred: BTreeSet<u64>,
     /// The fields whose value an auto-entered variable or a formula gave.
     evaluated: BTreeSet<u64>,
+    /// The fields whose formula was not evaluated because the unstored
+    /// calculations it reads were empty: a volatile one may not be at the
+    /// commit ([`RecordPlan::pending_row`]). Its formula read nothing else,
+    /// so a commit's check of what it read passes it over.
+    probed: BTreeSet<u64>,
 }
 
 /// A stored formula and the fields of its context occurrence it reads.
@@ -2048,6 +2053,9 @@ impl RecordPlan {
                 .map(|e| (e, stored_calculation, true))
                 .chain(field.validation.iter().map(|e| (e, false, false)));
             for (expression, calculation, own) in formulas {
+                // How many times it reads each field, counted once a
+                // dependency is an unstored calculation.
+                let mut counts = None;
                 check_custom_functions(
                     &schema,
                     &expression.formula.polish,
@@ -2083,7 +2091,8 @@ impl RecordPlan {
                                 field.name
                             ))
                                 })?;
-                        let times = field_read_counts(&expression.formula.polish)
+                        let times = counts
+                            .get_or_insert_with(|| field_read_counts(&expression.formula.polish))
                             .get(dependency)
                             .copied()
                             .unwrap_or(1);
@@ -3503,6 +3512,7 @@ impl RecordPlan {
             .evaluated
             .iter()
             .filter(|id| sources.contains(id) || readers.contains(id))
+            .chain(computed.probed.iter().filter(|id| sources.contains(id)))
             .chain(&computed.deferred)
             .copied()
             .collect();
@@ -3725,6 +3735,7 @@ impl RecordPlan {
         let validate = preview.is_none();
         let mut deferred = BTreeSet::new();
         let mut evaluated = BTreeSet::new();
+        let mut probed = BTreeSet::new();
         let (mut row, mut dirty) = self.written(existing, changes, entry)?;
         // A write that changes nothing changes nothing, unless it sets a
         // lookup's match field: FileMaker performs the lookup then, also on
@@ -3741,6 +3752,7 @@ impl RecordPlan {
                 dirty,
                 deferred,
                 evaluated,
+                probed,
             });
         }
         for (id, field) in &self.fields {
@@ -3925,7 +3937,7 @@ impl RecordPlan {
             // value's: a volatile one (a `Random` draw) makes it change when
             // evaluated again, and a reader of an unknown value read it.
             if skip && !expression.through_formulas.is_empty() {
-                evaluated.insert(*id);
+                probed.insert(*id);
             }
             let value = match (skip, field.stored_calculation()) {
                 (true, true) => String::new(),
@@ -4043,6 +4055,7 @@ impl RecordPlan {
             dirty,
             deferred,
             evaluated,
+            probed,
         })
     }
 
@@ -4515,7 +4528,13 @@ impl RecordPlan {
             .interrupted
             .as_deref()
             .map(|f| f as &dyn Fn() -> bool);
-        host.limits = session.limits;
+        // An unstored calculation is evaluated on every read, so a loop
+        // that reads one again, which planning does not count, ends the
+        // evaluation past as many evaluations as planning allows.
+        host.limits = CalcLimits {
+            calculations: session.limits.calculations.min(MAX_UNSTORED_EVALUATIONS),
+            ..session.limits
+        };
         let context = Context {
             occurrence: expression.formula.occurrence(),
             record: Some(0),
@@ -4956,8 +4975,11 @@ impl Expression {
 const MAX_UNSTORED_READS: usize = 1 << 20;
 
 /// How many evaluations of unstored calculations one formula's read may
-/// take ([`UnstoredReads::cost`]): the calculation host evaluates one on
-/// every read, so a chain that reads each step twice doubles at each.
+/// take: the calculation host evaluates one on every read, so a chain that
+/// reads each step twice doubles at each. Planning refuses a formula whose
+/// reads take more ([`UnstoredReads::cost`]); a loop or the repetitions of
+/// an aggregate read again, which planning does not count, and the
+/// evaluation ends with error 7 past it (`CalcLimits::calculations`).
 const MAX_UNSTORED_EVALUATIONS: u64 = 1 << 16;
 
 /// How many times `polish` reads each field of its own occurrence.
@@ -7196,6 +7218,52 @@ mod tests {
         let refused = plan_of(&table, &formulas, &[]).err().unwrap();
         assert!(started.elapsed() < std::time::Duration::from_secs(10));
         assert!(refused.to_string().contains("too many times"), "{refused}");
+    }
+
+    /// A loop reads an unstored calculation on each turn, which planning
+    /// does not count: two loops of 1,000 turns over a chain plan as four
+    /// evaluations, and the write's evaluation ends with error 7 past the
+    /// same 65,536 evaluations instead of running a million; a loop of 10
+    /// turns over the inner one evaluates.
+    #[test]
+    fn a_loop_reading_unstored_calculations_again_stops_the_write() {
+        let mut table = table();
+        table.fields.retain(|f| f.id <= 2);
+        for id in [100, 101, 102] {
+            table.fields.push(field(
+                id,
+                FieldKind::Calculation,
+                DataType::Text,
+                0,
+                UNSTORED,
+                0,
+            ));
+        }
+        table
+            .fields
+            .push(field(300, FieldKind::Normal, DataType::Text, 0, 0x88, 0));
+        let looped = |turns: u32, read: u64| {
+            format!(
+                "While ( [ i = 0 ; r = \"\" ] ; i < {turns} ; [ i = i + 1 ; r = Field{read} ] ; r )"
+            )
+        };
+        let (inner, outer) = (looped(1000, 100), looped(1000, 101));
+        let mut formulas = vec![
+            (100, 5, "Field1 & \"!\""),
+            (101, 5, inner.as_str()),
+            (102, 5, outer.as_str()),
+            (300, 5, "Field102"),
+        ];
+        let plan = plan_of(&table, &formulas, &[]).unwrap();
+        let started = std::time::Instant::now();
+        let refused = create(&plan, &[(1, "a")]).err().unwrap();
+        assert!(started.elapsed() < std::time::Duration::from_secs(10));
+        assert!(refused.to_string().contains("error 7"), "{refused}");
+        let few = looped(10, 101);
+        formulas[2] = (102, 5, few.as_str());
+        let plan = plan_of(&table, &formulas, &[]).unwrap();
+        let made = create(&plan, &[(1, "a")]).unwrap();
+        assert_eq!(decoded(&made, 300).as_deref(), Some("a!"));
     }
 
     /// A chain of unstored calculations deeper than the calculation host

@@ -363,6 +363,7 @@ const LIMIT_BUDGET: std::time::Duration = std::time::Duration::from_millis(100);
 const LIMIT_CALC: om_calc::eval::CalcLimits = om_calc::eval::CalcLimits {
     text: 1 << 20,
     nesting: 1_000,
+    calculations: u64::MAX,
 };
 
 /// A custom privilege set's calculation limiting a record action
@@ -483,6 +484,7 @@ impl RecordLimit {
         environment.limits = om_calc::eval::CalcLimits {
             text: environment.limits.text.min(LIMIT_CALC.text),
             nesting: environment.limits.nesting.min(LIMIT_CALC.nesting),
+            calculations: environment.limits.calculations,
         };
         environment.interrupted = Some(Arc::new(move || {
             outer.as_ref().is_some_and(|stop| stop()) || std::time::Instant::now() >= deadline
