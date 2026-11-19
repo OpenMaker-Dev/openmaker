@@ -8334,9 +8334,10 @@ fn a_related_files_list_of_a_calculation_reads_the_opened_file() {
 /// A new record's auto-entry reading its own table through a self-join that
 /// no other record matches, by the key the record was given, reads the
 /// relationship as empty, as #1035's two native cases measured: Count 0,
-/// List empty, the first related record's fields empty. Where another record
-/// matches, or the commit holds another record of the table, the record's
-/// own membership is unmeasured: refused (3).
+/// List empty, the first related record's fields empty. Where another
+/// record matches, it reads that one, never itself (s45, FileMaker Server's
+/// engine). Where the commit holds another record of the table, refused (3):
+/// FileMaker's transaction did not read it, OpenMaker's held reads would.
 #[test]
 fn a_new_records_auto_entry_reads_an_unmatched_self_join_as_empty() {
     const KEY: u64 = 30;
@@ -8379,10 +8380,12 @@ fn a_new_records_auto_entry_reads_an_unmatched_self_join_as_empty() {
     let record = page.records.iter().find(|r| r.id == made.id).unwrap();
     assert_eq!(record.values[at("Tally")].as_deref(), Some("5|0||"));
     assert_eq!(record.values[at("First")].as_deref(), Some("s=|"));
-    // Another record matches now: whether the new one is among its own
-    // related records is unmeasured.
-    let refused = create(&mut provider, "x2").unwrap_err();
-    assert_eq!(refused.code, Some(3), "{refused:?}");
+    // Another record matches now: the new one reads it, not itself.
+    let second = create(&mut provider, "x2").unwrap();
+    let page = provider.records(fixture::LAYOUT as u32, 0, 100).unwrap();
+    let record = page.records.iter().find(|r| r.id == second.id).unwrap();
+    assert_eq!(record.values[at("Tally")].as_deref(), Some("5|1|5|10"));
+    assert_eq!(record.values[at("First")].as_deref(), Some("s=|5"));
     // Two new records in one commit: the other could match by then.
     provider.begin_transaction(Default::default()).unwrap();
     create(&mut provider, "y1").unwrap();
