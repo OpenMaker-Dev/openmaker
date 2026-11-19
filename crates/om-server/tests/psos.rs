@@ -1214,40 +1214,66 @@ fn administrators_abort_scripts_and_shut_down() {
     std::fs::remove_dir_all(&folder).unwrap();
 }
 
-/// Change Password (83) in a server script sets the session's account's
-/// own password in the hosted file, as FileMaker's `SetPassword` does
-/// (local-files.md 2.4): a wrong old password is 212 and changes nothing;
-/// the right one sets the new password, which the old one then no longer
-/// matches (#83).
+/// Change Password (83) in a server script sets the password of the
+/// account the session logged in with, as FileMaker's `DoChangePassword`
+/// and `SetPassword` do (local-files.md 2.4): with its dialog the step is
+/// refused (3); a wrong old password is 212 and changes nothing; the right
+/// one sets the new password, cut to 100 UTF-16 code units, which the old
+/// one then no longer matches. The saved account carries the checksum its
+/// members give, and the account catalog's index a raised modification
+/// count, so clients holding a copy see it is stale (#83).
 #[test]
 fn change_password_sets_the_accounts_own_password() {
     use fixture::{calc, exit_with, on, script, set_variable};
-    let change = |old: &str, new: &str| {
+    let change = |old: &str, new: &str, dialog: bool| {
         let mut step = ScriptStep::new(83);
         step.set_calculation(0, Some(&calc(old)));
         step.set_calculation(1, Some(&calc(new)));
+        // "With dialog" is on unless the step stores kNoInteract (0x80).
+        step.set_flag(0x80, !dialog);
         step
     };
     let old = format!("{CLERK_PASSWORD:?}");
+    let long = "x".repeat(101);
     let scripts = [script(
         6,
         "Change",
         vec![
             on(86, true),
-            change("\"wrong\"", "\"fresh secret\""),
+            change(&old, "\"fresh secret\"", true),
+            set_variable("$dialog", "Get ( LastError )"),
+            change("\"wrong\"", "\"fresh secret\"", false),
             set_variable("$wrong", "Get ( LastError )"),
-            change(&old, "\"fresh secret\""),
+            change(&old, &format!("{long:?}"), false),
             set_variable("$right", "Get ( LastError )"),
-            change(&old, "\"another\""),
-            exit_with("$wrong & \"|\" & $right & \"|\" & Get ( LastError )"),
+            change(&old, "\"another\"", false),
+            exit_with("$dialog & \"|\" & $wrong & \"|\" & $right & \"|\" & Get ( LastError )"),
         ],
     )];
-    let file = TempFile::new("change-password", &scripts, true);
+    // The account catalog's index, which every FileMaker file has
+    // (local-files.md 3); the server refuses to change accounts without it.
+    let mut root = fixture::tree(&scripts, true);
+    root.put(
+        &[&[23], &[1], &[1], &[4]],
+        om_hbam::OwnedNode::leaf(Vec::new(), vec![2]),
+    );
+    let file = TempFile::from_tree("change-password", &root);
+    let index_count = |file: &TempFile| {
+        let saved = om_hbam::HbamFile::open(&file.0).unwrap();
+        let count = saved
+            .subtree(&[&[23], &[1], &[1], &[0xfc]])
+            .unwrap()
+            .and_then(|n| n.value)
+            .map(<[u8]>::to_vec);
+        count
+    };
+    let before = index_count(&file);
     let port = start(&file, None);
     let mut clerk = logged_in_as(port, "clerk", CLERK);
-    assert_eq!(run(&mut clerk, 6).1, "212|0|212");
+    assert_eq!(run(&mut clerk, 6).1, "3|212|0|212");
     clerk.disconnect().unwrap();
-    // A new login takes the new password, not the old one.
+    // A new login takes the new password, its first 100 characters, and
+    // not the old one.
     let login = |password: &str| {
         let mut session = connect(port, "check");
         session.open_file("127.0.0.1", FILE).unwrap();
@@ -1259,6 +1285,28 @@ fn change_password_sets_the_accounts_own_password() {
         let _ = session.disconnect();
         reply.is_success()
     };
-    assert!(login("fresh secret"));
+    assert!(login(&long[..100]));
     assert!(!login(CLERK_PASSWORD));
+
+    // On disk: the checksum of the account as changed, and the catalog's
+    // count raised.
+    let saved = om_hbam::HbamFile::open(&file.0).unwrap();
+    let at = |path: &[&[u8]]| saved.subtree(path).unwrap().and_then(|n| n.value);
+    let account = saved.subtree(&[&[23], &[1], &[5], &[3]]).unwrap().unwrap();
+    let member = |key: u8| account.child(&[key]).and_then(|n| n.value);
+    let name = account.child(&[16]).and_then(|n| n.text()?.ok()).unwrap();
+    let expected = om_server::accounts::checksum(&om_server::accounts::ChecksumInput {
+        version: at(&[&[2], &[5]]).map(|v| u16::from_be_bytes(v.try_into().unwrap())),
+        access_uuid: at(&[&[23], &[4], &[1], &[0x10]]),
+        creation: at(&[&[2], &[254]]),
+        key: &[3],
+        kind: member(2).and_then(|v| v.first().copied()),
+        name: &name,
+        password: member(6).unwrap(),
+        description: None,
+        status: member(0x0a),
+        set: member(0x0b),
+    });
+    assert_eq!(member(4), Some(&expected[..]));
+    assert_ne!(index_count(&file), before);
 }

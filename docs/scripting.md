@@ -475,11 +475,17 @@ Open items:
   reads the catalog back (desktop-client.md, Script Workspace).
 - Server: auto-enter calculations are not recomputed after a schema
   change (by design, as FileMaker). Schedules run (#11).
-  - Account steps: Change Password sets the session account's own
-    password in the hosted file, as FileMaker's `SetPassword` does
-    (re/local-files.md 2.4), with its errors, and runs as without a
-    dialog. Add Account, Delete Account, Reset Account Password, Enable
-    Account and Re-Login fail with error 3
+  - Account steps: Change Password sets the password of the account the
+    session logged in with (found by its record key, so a rename does not
+    redirect it), as FileMaker's `DoChangePassword` and `SetPassword` do
+    (re/local-files.md 2.4), with their errors. A step with full access
+    skips the set's checks. With its dialog, for [Guest] or for an
+    account of another kind it fails with 3. It holds the account
+    catalog's lock while it writes (310 when another user holds it,
+    inferred), raises the catalog's modification count and tells the
+    other clients. It does not rewrite an account whose stored checksum
+    OpenMaker does not reproduce (3). Add Account, Delete Account, Reset
+    Account Password, Enable Account and Re-Login fail with error 3
     ([#83](https://github.com/OpenMaker-Dev/openmaker/issues/83)).
   - The recompute after a schema change reads container inputs from the
     table's library. It still skips repeating calculations, container

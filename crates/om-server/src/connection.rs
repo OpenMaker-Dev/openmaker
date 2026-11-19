@@ -3204,6 +3204,7 @@ fn perform_script(
             hosted,
             privileges: account.privileges(),
             account: account.name.clone(),
+            account_key: account.key.clone(),
             requester: session.connection_id,
             script: request,
         },
