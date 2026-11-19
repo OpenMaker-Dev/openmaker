@@ -76,6 +76,12 @@ mod event_loop {
     /// Run eframe's app on an event loop of OpenMaker's own, as
     /// `eframe::run_native` runs it (`run_app_on_demand`, the event loop
     /// built with `options`' hook), with keypad Enter marked ([`Keys`]).
+    ///
+    /// The error that ends that loop is read from eframe's log
+    /// ([`EframeErrors`]). In a process with a logger of its own (an
+    /// embedding program's), it could not be, so the app runs on
+    /// `eframe::run_native`, which returns its error; there the keypad's
+    /// Enter is not told apart from Return.
     pub(crate) fn run(
         app_name: &str,
         mut options: eframe::NativeOptions,
@@ -83,12 +89,17 @@ mod event_loop {
     ) -> eframe::Result {
         use winit::platform::run_on_demand::EventLoopExtRunOnDemand as _;
 
+        if !catch_eframe_errors() {
+            return eframe::run_native(app_name, options, app_creator);
+        }
+        if let Ok(mut error) = EXIT_ERROR.lock() {
+            *error = None;
+        }
         let mut builder = EventLoop::<UserEvent>::with_user_event();
         if let Some(hook) = options.event_loop_builder.take() {
             hook(&mut builder);
         }
         let mut event_loop = builder.build()?;
-        catch_eframe_errors();
         let app = eframe::create_native(app_name, options, app_creator, &event_loop);
         event_loop.run_app_on_demand(&mut Keys(app))?;
         match EXIT_ERROR.lock().ok().and_then(|mut error| error.take()) {
@@ -166,7 +177,7 @@ mod event_loop {
     const EXIT_PREFIX: &str = "Exiting because of error: ";
 
     /// Keeps the error eframe logs as it ends its event loop. Nothing else
-    /// is logged anywhere, as before (the app installs no other logger).
+    /// is logged anywhere, as before.
     struct EframeErrors;
 
     impl log::Log for EframeErrors {
@@ -189,12 +200,17 @@ mod event_loop {
         fn flush(&self) {}
     }
 
-    /// Install [`EframeErrors`] unless the process has a logger already
-    /// (an embedding program's), which then sees eframe's errors itself.
-    fn catch_eframe_errors() {
+    /// Whether [`EframeErrors`] is the process's logger: installed now,
+    /// or by an earlier `run`. A logger of the process's own keeps it out.
+    fn catch_eframe_errors() -> bool {
         static LOGGER: EframeErrors = EframeErrors;
-        if log::set_logger(&LOGGER).is_ok() {
-            log::set_max_level(log::LevelFilter::Error);
-        }
+        static INSTALLED: std::sync::OnceLock<bool> = std::sync::OnceLock::new();
+        *INSTALLED.get_or_init(|| {
+            let installed = log::set_logger(&LOGGER).is_ok();
+            if installed {
+                log::set_max_level(log::LevelFilter::Error);
+            }
+            installed
+        })
     }
 }
