@@ -1493,24 +1493,33 @@ fn field_texts(row: &om_hbam::record::Record, field: &om_hbam::Field) -> Vec<Str
         .collect()
 }
 
-/// The value-index keys of a stored value (one per line), as a join
-/// compares them; empty lines have none (an empty value never relates,
-/// file-metadata.md 4).
+/// The value-index keys of a stored value (one per line of text, a typed
+/// value whole), as a join compares them; empty lines have none (an empty
+/// value never relates, file-metadata.md 4).
 fn join_keys(data_type: om_hbam::DataType, value: &str, reading: Reading) -> Vec<Vec<u8>> {
     use om_hbam::DataType;
-    value
-        .split(['\r', '\n'])
-        .filter(|line| !line.trim().is_empty())
-        .filter_map(|line| match data_type {
-            // The reading treats spaces itself (`1e3 ` is 13 where the
-            // thousands separator is a space).
-            DataType::Number => om_collate::number_key_in(line, reading.numbers),
-            DataType::Date => om_collate::date_key(line.trim(), reading.order),
-            DataType::Time => om_collate::time_key(line.trim()),
-            DataType::Timestamp => om_collate::timestamp_key(line.trim(), reading.order),
-            _ => Some(om_collate::text_index_key(line.trim())),
-        })
-        .collect()
+    if value.trim().is_empty() {
+        return Vec::new();
+    }
+    // A number, date, time or timestamp is keyed whole, as its index keys
+    // it (`om_query::keys::typed_value_keys`: `$12` and `$34` on two lines
+    // is 1234); the reading of a number treats spaces itself.
+    let typed = match data_type {
+        DataType::Number => Some(om_collate::number_key_in(value, reading.numbers)),
+        DataType::Date => Some(om_collate::date_key(value.trim(), reading.order)),
+        DataType::Time => Some(om_collate::time_key(value.trim())),
+        DataType::Timestamp => Some(om_collate::timestamp_key(value.trim(), reading.order)),
+        _ => None,
+    };
+    match typed {
+        Some(key) => key.into_iter().collect(),
+        None => value
+            .split(['\r', '\n'])
+            .map(str::trim)
+            .filter(|line| !line.is_empty())
+            .map(om_collate::text_index_key)
+            .collect(),
+    }
 }
 
 /// [`Reading`] of a file's locale.
