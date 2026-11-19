@@ -405,7 +405,7 @@ impl OpenMakerApp {
             zoom: self.w.document.zoom.percent(),
             // The user's selection in the field being typed in.
             selection: (self.w.mode == Mode::Browse)
-                .then(|| self.w.document.active.as_deref())
+                .then_some(self.w.document.active.as_deref())
                 .flatten()
                 .filter(|_| self.w.document.active_related.is_none())
                 .and_then(|field| self.w.document.selection(field)),
