@@ -369,33 +369,147 @@ pub fn collation_elements(text: &str) -> Vec<Element> {
     out
 }
 
-/// Whether `c` is part of a word.
-fn is_word_char(c: char) -> bool {
-    c.is_alphanumeric()
+/// The script classes between which the word index breaks a run of letters
+/// (spec 7.1: `日本語のテキスト` gives `日本語`, `の`, `テキスト`).
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum Script {
+    Han,
+    Hiragana,
+    Katakana,
+    HangulSyllable,
+    HangulJamo,
+    HangulCompatibility,
+    /// Latin, digits and every other script.
+    Other,
+}
+
+/// The script class of a word character. The kana and Hangul ranges follow
+/// Unicode's blocks, with the kana sound marks U+309B and U+309C and the
+/// prolonged sound mark among the katakana, and the iteration marks `々`
+/// `〻` and `〆` among the ideographs, as the probe's keys show; `〇`, a
+/// number, is not.
+fn script(c: char) -> Script {
+    match u32::from(c) {
+        0x2E80..=0x2FDF
+        | 0x3005
+        | 0x3006
+        | 0x303B
+        | 0x3400..=0x4DBF
+        | 0x4E00..=0x9FFF
+        | 0xF900..=0xFAFF
+        | 0x20000..=0x3FFFF => Script::Han,
+        0x3041..=0x3096 | 0x309D..=0x309F => Script::Hiragana,
+        0x309B | 0x309C | 0x30A0..=0x30FA | 0x30FC..=0x30FF | 0x31F0..=0x31FF | 0xFF66..=0xFF9F => {
+            Script::Katakana
+        }
+        0xAC00..=0xD7A3 => Script::HangulSyllable,
+        0x1100..=0x11FF | 0xA960..=0xA97F | 0xD7B0..=0xD7FF => Script::HangulJamo,
+        0x3130..=0x318F | 0xFFA0..=0xFFDC => Script::HangulCompatibility,
+        _ => Script::Other,
+    }
+}
+
+/// How the word index reads a character (spec 7.1).
+enum WordChar {
+    /// A letter or digit of a script class. So is a code point the table
+    /// does not list (an emoji, U+0378: `a😀b` is one word), and so are
+    /// the kana sound marks.
+    Word(Script),
+    /// Continues a word, adding no break: an accent (a character whose
+    /// collation elements are accents alone, such as U+0301 or U+3099),
+    /// U+FFFE and U+FFFF.
+    Extend,
+    /// Ends a word, unless it joins the characters around it
+    /// ([`joins_word`]).
+    Break,
+}
+
+fn word_char(c: char) -> WordChar {
+    if matches!(c, '\u{FFFE}' | '\u{FFFF}') {
+        return WordChar::Extend;
+    }
+    if c.is_alphanumeric() || matches!(c, '\u{309B}' | '\u{309C}') {
+        return WordChar::Word(script(c));
+    }
+    match table().singles.get(&u32::from(c)) {
+        None => WordChar::Word(script(c)),
+        Some(elements)
+            if elements.iter().all(|e| e.primary == 0)
+                && elements.iter().any(|e| e.secondary != 0) =>
+        {
+            WordChar::Extend
+        }
+        Some(_) => WordChar::Break,
+    }
+}
+
+/// Whether `c`, between `before` and `after`, joins them into one word
+/// (spec 7.1): `-`, `.`, `,`, `:` and `/` between two digits (`3.14`,
+/// `12:30`, `E9D8-45A3`); `.` between two letters (`x.y`), and an
+/// apostrophe (`'` or U+2019) when `apostrophes` (`don't`; French
+/// separates `l'équipe`).
+fn joins_word(before: char, c: char, after: char, apostrophes: bool) -> bool {
+    match c {
+        '-' | ',' | ':' | '/' => before.is_numeric() && after.is_numeric(),
+        '.' => {
+            before.is_numeric() && after.is_numeric()
+                || before.is_alphabetic() && after.is_alphabetic()
+        }
+        '\'' | '\u{2019}' => apostrophes && before.is_alphabetic() && after.is_alphabetic(),
+        _ => false,
+    }
 }
 
 /// The words of `text` as the word index keys them (spec 7.1): runs of
-/// letters and digits. A hyphen between two digits joins them ("E9D8-45A3"
-/// splits, "45A3-83DD" does not); everything else, apostrophes included,
-/// separates words.
+/// letters and digits of one script class ([`Script`]), accents and U+FFFE
+/// within them, joined across the punctuation [`joins_word`] names. Every
+/// other character separates words: `e-mail` gives `e`, `mail`; `U.S.A.`
+/// gives `U.S.A`; `日本語abc123` gives `日本語`, `abc123`. The word breaks of
+/// other index languages and of Unicode raw are not built here, but for
+/// French's apostrophe ([`words_with`]).
 pub fn words(text: &str) -> Vec<&str> {
+    words_with(text, true)
+}
+
+/// [`words`], an apostrophe between letters joining them when `apostrophes`
+/// (English, Unicode standard) and separating them otherwise (French).
+pub fn words_with(text: &str, apostrophes: bool) -> Vec<&str> {
     let chars: Vec<(usize, char)> = text.char_indices().collect();
     let mut words = Vec::new();
-    let mut start: Option<usize> = None;
+    // The current word: where it starts, where its last character ends, and
+    // its script class.
+    let mut word: Option<(usize, usize, Script)> = None;
     for (i, &(offset, c)) in chars.iter().enumerate() {
-        let joins = c == '-'
-            && start.is_some()
-            && i > 0
-            && chars[i - 1].1.is_numeric()
-            && chars.get(i + 1).is_some_and(|&(_, next)| next.is_numeric());
-        if is_word_char(c) || joins {
-            start.get_or_insert(offset);
-        } else if let Some(begin) = start.take() {
-            words.push(&text[begin..offset]);
+        let end = offset + c.len_utf8();
+        match (word_char(c), &mut word) {
+            (WordChar::Word(script), Some((start, last, current))) => {
+                if *current != script {
+                    words.push(&text[*start..*last]);
+                    *start = offset;
+                    *current = script;
+                }
+                *last = end;
+            }
+            (WordChar::Word(script), None) => word = Some((offset, end, script)),
+            (WordChar::Extend, Some((_, last, _))) => *last = end,
+            (WordChar::Break, Some((_, last, _)))
+                if *last == offset
+                    && chars.get(i + 1).is_some_and(|&(_, after)| {
+                        let before = chars[i - 1].1;
+                        script(before) == script(after) && joins_word(before, c, after, apostrophes)
+                    }) =>
+            {
+                *last = end;
+            }
+            (_, current) => {
+                if let Some((start, last, _)) = current.take() {
+                    words.push(&text[start..last]);
+                }
+            }
         }
     }
-    if let Some(begin) = start {
-        words.push(&text[begin..]);
+    if let Some((start, last, _)) = word {
+        words.push(&text[start..last]);
     }
     words
 }
@@ -462,10 +576,12 @@ mod tests {
             words("240F5BD8-319A-49D0-8BA3-07C7E599E604"),
             ["240F5BD8-319A", "49D0-8BA3-07C7E599E604"]
         );
+        // The French FMS sample separates at an apostrophe; English joins.
         assert_eq!(
-            words("Revoir ce croquis avec l'équipe."),
+            words_with("Revoir ce croquis avec l'équipe.", false),
             ["Revoir", "ce", "croquis", "avec", "l", "équipe"]
         );
+        assert_eq!(words("avec l'équipe."), ["avec", "l'équipe"]);
         assert_eq!(words("  Ima  "), ["Ima"]);
         assert!(words("").is_empty());
         assert!(words("- ' .").is_empty());

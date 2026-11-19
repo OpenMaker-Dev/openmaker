@@ -115,8 +115,11 @@ fn value_index_keys_match() {
 #[ignore = "requires the git-ignored FileMaker Server samples and test project copy"]
 fn word_index_keys_match() {
     let (checked, mismatches) = compare(1, |data_type, value, english, _| {
+        // Apostrophes separate, as when this test last passed: the French
+        // sample separates there, while English joins (the probe,
+        // query-program.md 7.1), which these files' text did not need.
         (english && data_type == DataType::Text).then(|| {
-            om_collate::words(value)
+            om_collate::words_with(value, false)
                 .into_iter()
                 .map(om_collate::text_key)
                 .collect()
