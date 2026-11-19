@@ -162,6 +162,18 @@ pub fn name_key(name: &str) -> Vec<u8> {
     om_collate::text_key(name)[1..].to_vec()
 }
 
+/// Whether OpenMaker takes `a` and `b` for one name in a catalog: their
+/// primary weights are equal in [`name_key`]'s form or in FileMaker's
+/// catalog language, which equates more (it keys `ı` as `i`). Two names
+/// whose name list or by-type keys are equal are always one name.
+pub fn same_names(a: &str, b: &str) -> bool {
+    if name_key(a) == name_key(b) {
+        return true;
+    }
+    let primary = |name| om_collate::name_key(name, om_collate::Levels::One).ok();
+    primary(a).is_some_and(|key| Some(key) == primary(b))
+}
+
 /// The key FileMaker lists `name` under in a catalog's name list
 /// `[cat, 1, 01]` (schema-path.md 5.6): the primary, secondary and
 /// tertiary levels of FileMaker's key in the catalog language, whatever
@@ -292,11 +304,11 @@ pub fn members(catalog: &OwnedNode) -> &[OwnedNode] {
         .map_or(&[], |m| m.children.as_slice())
 }
 
-/// The member whose name has `name`'s name key, with its id.
+/// The member whose name OpenMaker takes for `name` ([`same_names`]),
+/// with its id.
 pub fn same_name<'a>(catalog: &'a OwnedNode, name: &str) -> Option<(u64, &'a OwnedNode)> {
-    let key = name_key(name);
     members(catalog).iter().find_map(|member| {
-        if name_key(&member_name(member)?) != key {
+        if !same_names(&member_name(member)?, name) {
             return None;
         }
         Some((be_uint(&member.segment)?, member))
@@ -383,17 +395,24 @@ pub fn plan(catalog: Option<&OwnedNode>, field: &NewField) -> Result<Planned, Re
             name: member_name(member).unwrap_or_default(),
         });
     }
-    if let Some(entry) = index.child(&[NAMES]).and_then(|n| n.child(&listed)) {
-        let id = entry
-            .value
-            .as_deref()
-            .and_then(|v| v.get(1..))
-            .and_then(be_uint)
-            .unwrap_or(0);
-        return Err(Refusal::Exists {
-            field: id,
-            name: field.name.clone(),
-        });
+    // An entry under either key belongs to another field: never written
+    // over, whatever name it has.
+    let typed = typed_key(NORMAL, field.data_type.code(), false, &field.name).ok_or_else(|| {
+        Refusal::Name(format!("“{}” has no key OpenMaker can build.", field.name))
+    })?;
+    for (list, key) in [(NAMES, &listed), (TYPED_NAMES, &typed)] {
+        if let Some(entry) = index.child(&[list]).and_then(|n| n.child(key)) {
+            let id = entry
+                .value
+                .as_deref()
+                .and_then(|v| v.get(1..))
+                .and_then(be_uint)
+                .unwrap_or(0);
+            return Err(Refusal::Exists {
+                field: id,
+                name: field.name.clone(),
+            });
+        }
     }
     let missing = |what: &str| {
         Refusal::Unsupported(format!(
@@ -476,9 +495,6 @@ pub fn plan(catalog: Option<&OwnedNode>, field: &NewField) -> Result<Planned, Re
     member.set_child(om_scripts::text_node(&[NAME], &field.name));
 
     let id_value = key_string(&field_key);
-    let typed = typed_key(NORMAL, field.data_type.code(), false, &field.name).ok_or_else(|| {
-        Refusal::Name(format!("“{}” has no key OpenMaker can build.", field.name))
-    })?;
     let mut next = catalog.clone();
     next.put(&[&[MEMBERS], &field_key], member);
     let mut changes = vec![(

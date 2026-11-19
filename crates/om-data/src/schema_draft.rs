@@ -443,14 +443,32 @@ fn member_name(member: &OwnedNode) -> Option<String> {
     member.child(&[NAME]).and_then(text_of)
 }
 
-/// The member of `catalog` whose name FileMaker takes for `name`'s (by name
-/// key, so case and accents do not tell them apart), other than `except`.
+/// The member of `catalog` whose name OpenMaker takes for `name`
+/// ([`field_catalog::same_names`]: neither case nor accents tell them
+/// apart), other than `except`.
 fn named<'a>(catalog: &'a OwnedNode, name: &str, except: Option<&[u8]>) -> Option<&'a OwnedNode> {
-    let key = field_catalog::name_key(name);
     members(catalog).iter().find(|member| {
         Some(member.segment.as_slice()) != except
-            && member_name(member).is_some_and(|n| field_catalog::name_key(&n) == key)
+            && member_name(member).is_some_and(|n| field_catalog::same_names(&n, name))
     })
+}
+
+/// Refuse writing `entry` into list `list` of `catalog`'s index for member
+/// `key` when the list holds it for another member: [`named`] keeps names
+/// that share a key out, and this keeps a name OpenMaker could not key, or
+/// a list another writer left, from losing its entry.
+fn check_free(catalog: &OwnedNode, list: u8, entry: &[u8], key: &[u8]) -> Result<(), DataError> {
+    match catalog
+        .at(&[&[INDEX], &[list], entry])
+        .and_then(|e| e.value.as_deref())
+    {
+        Some(held) if held != key_string(key) => Err(taken(
+            "Another member is listed under the key of this name; OpenMaker does not write \
+             over its entry."
+                .into(),
+        )),
+        _ => Ok(()),
+    }
 }
 
 /// What `copy`, a duplicate made through the Create and options paths,
@@ -709,6 +727,9 @@ impl Catalog<'_> {
             }
         }
         let entry = name.map(listed).transpose()?;
+        if let Some(entry) = &entry {
+            check_free(self.node, NAMES, entry, key)?;
+        }
         self.node.put(&[&[MEMBERS], key], member);
         let value = key_string(key);
         self.index()
@@ -767,6 +788,7 @@ impl Catalog<'_> {
             return Err(Self::missing("name list"));
         }
         let entry = listed(new)?;
+        check_free(self.node, NAMES, &entry, key)?;
         let names = self.index().ensure(&[&[NAMES]]);
         unlist_member(names, key);
         names.set_child(OwnedNode::leaf(entry, key_string(key)));
@@ -1648,6 +1670,7 @@ impl SchemaDraft {
             members(catalog).is_empty() || catalog.at(&[&[INDEX], &[TYPED_NAMES]]).is_some()
         };
         let typed_entry = typed(KIND_NORMAL, type_code(data_type), false, name)?;
+        check_free(self.catalog_mut(&which), TYPED_NAMES, &typed_entry, &key)?;
         let mut fields = self.catalog(which.clone());
         fields.add(&key, member, Some(name))?;
         if has_typed {
@@ -1791,7 +1814,9 @@ impl SchemaDraft {
             .at(&[&[INDEX], &[TYPED_NAMES]])
             .is_some();
         let typed_entry = if typed_list && (old != name || old_type != new_type) {
-            Some(typed(definition[0], new_type, options & GLOBAL != 0, name)?)
+            let entry = typed(definition[0], new_type, options & GLOBAL != 0, name)?;
+            check_free(self.fields(table)?, TYPED_NAMES, &entry, field)?;
+            Some(entry)
         } else {
             None
         };
@@ -2308,6 +2333,7 @@ impl SchemaDraft {
         if old.storage.global != new.storage.global && typed_list {
             let name = member_name(self.field_member(table, field)?).unwrap_or_default();
             let entry = typed(definition[0], definition[1], new.storage.global, &name)?;
+            check_free(self.fields(table)?, TYPED_NAMES, &entry, field)?;
             let mut fields = self.catalog(which.clone());
             let list = fields.index().ensure(&[&[TYPED_NAMES]]);
             unlist_member(list, field);
@@ -3012,6 +3038,7 @@ impl SchemaDraft {
                 calculation.storage.global,
                 name,
             )?;
+            check_free(self.catalog_mut(&which), TYPED_NAMES, &typed_entry, &key)?;
             let mut fields = self.catalog(which.clone());
             fields.add(&key, member, Some(name))?;
             if has_typed {
@@ -3129,12 +3156,14 @@ impl SchemaDraft {
                 && (old_definition[1] != definition[1]
                     || old.storage.global != calculation.storage.global)
             {
-                Some(typed(
+                let entry = typed(
                     definition[0],
                     definition[1],
                     calculation.storage.global,
                     &name,
-                )?)
+                )?;
+                check_free(self.fields(table)?, TYPED_NAMES, &entry, field)?;
+                Some(entry)
             } else {
                 None
             };
@@ -3558,6 +3587,7 @@ impl SchemaDraft {
         };
         {
             let typed_entry = typed(KIND_SUMMARY, definition[1], false, name)?;
+            check_free(self.catalog_mut(&which), TYPED_NAMES, &typed_entry, &key)?;
             let mut fields = self.catalog(which.clone());
             fields.add(&key, member, Some(name))?;
             if has_typed {
@@ -3611,7 +3641,9 @@ impl SchemaDraft {
                     .at(&[&[INDEX], &[TYPED_NAMES]])
                     .is_some()
             {
-                Some(typed(KIND_SUMMARY, definition[1], false, &name)?)
+                let entry = typed(KIND_SUMMARY, definition[1], false, &name)?;
+                check_free(self.fields(table)?, TYPED_NAMES, &entry, field)?;
+                Some(entry)
             } else {
                 None
             };
@@ -6681,6 +6713,11 @@ mod tests {
             let refused = draft.apply(&create(taken)).unwrap_err();
             assert_eq!(refused.code, Some(NAME_EXISTS), "{taken}");
         }
+        // The catalog language keys `ı` as `i`, so they are one name: the
+        // second would take the first's entries in both lists.
+        draft.apply(&create("i")).unwrap();
+        let refused = draft.apply(&create("ı")).unwrap_err();
+        assert_eq!(refused.code, Some(NAME_EXISTS));
         // Renamed, it leaves no entry under the old keys.
         draft
             .apply(&SchemaChange::ChangeField {

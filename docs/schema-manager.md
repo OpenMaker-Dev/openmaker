@@ -613,7 +613,9 @@ established:
 Names must be ones a calculation can use as they are, the rule `om-author`
 applies (`field_catalog::check_name`), and must differ from the other
 tables', fields' or occurrences' names by their primary weights, so neither
-case nor accents tell names apart. FileMaker Pro accepts some other names
+case nor accents tell names apart, nor what FileMaker's catalog language
+equates (`ı` and `i`); an entry another member has in a name list is never
+written over. FileMaker Pro accepts some other names
 after a warning, which OpenMaker does not. FileMaker's own keys tell
 accents apart; whether Pro takes `Grosse` beside `Größe` is not
 established, so OpenMaker refuses it. A name is listed in the name lists

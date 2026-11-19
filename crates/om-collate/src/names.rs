@@ -14,6 +14,10 @@ use crate::{table, Element};
 /// The levels a name key holds.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Levels {
+    /// The primary weights alone, which no list holds by itself: two names
+    /// with equal ones have the same key in the list by type when their
+    /// accents match, and in the name list when their kana marks match too.
+    One,
     /// Primary and secondary: a field catalog's list by type
     /// `[T, 3, 1, 06]`, which has no tertiary level and no `00` after the
     /// secondary one.
@@ -79,6 +83,9 @@ pub fn name_key(name: &str, levels: Levels) -> Result<Vec<u8>, Unkeyed> {
                 tertiary.push(byte);
             }
         }
+    }
+    if levels == Levels::One {
+        return Ok(primary);
     }
     let shown = |level: &[u8]| level.iter().any(|&b| b != 1);
     let secondary_shown = shown(&secondary);
@@ -223,5 +230,8 @@ mod tests {
             Err(Unkeyed::Character('\u{e002}'))
         );
         assert!(name_key("\u{e002}e", Levels::Three).is_ok());
+        // The catalog language keys `ı` as `i`, where DUCET's primary
+        // weights tell them apart.
+        assert_eq!(name_key("ı", Levels::One), name_key("I", Levels::One));
     }
 }

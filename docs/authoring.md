@@ -204,7 +204,8 @@ delimiters, no leading digit, period or `$`, no space at either end, no
 (`invalid_name`), and one whose name list key OpenMaker can build
 (re/schema-path.md 5.6; the names it cannot are in schema-manager.md,
 "What it refuses"). It must not have the primary weights of another of the
-table's fields, so neither case nor accents tell them apart
+table's fields, so neither case nor accents tell them apart, nor what
+FileMaker's catalog language equates (`ı` and `i`)
 (`duplicate_name`, naming the field that has it): FileMaker's keys tell
 accents apart, and whether FileMaker Pro takes `Grosse` beside `Größe` is
 not established.
