@@ -1370,6 +1370,7 @@ impl OpenMakerApp {
                     && !self.script.busy()
                     && self.script.prompt.is_none()
                     && self.text_field_entered(),
+                own_field: self.w.document.active_related.is_none(),
                 field_undo: self
                     .current_layout_record()
                     .filter(|_| self.text_field_entered())

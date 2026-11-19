@@ -420,4 +420,14 @@ fn layout_calculations_hide_format_and_label_objects() {
         ),
         "Hello Ada, record 3 <<Name>>"
     );
+    // A symbol held as its selector's number; another number, or one
+    // spelled otherwise, stays as typed.
+    assert_eq!(
+        merge_text(
+            &mut host,
+            "Record {{1020}}, {{9999}}, {{+1020}}, {{01020}}",
+            &on(3)
+        ),
+        "Record 3, {{9999}}, {{+1020}}, {{01020}}"
+    );
 }

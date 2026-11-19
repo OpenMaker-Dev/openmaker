@@ -16,8 +16,6 @@ mod relay;
 #[path = "fixtures/server.rs"]
 mod server;
 
-use std::io::Read;
-use std::net::TcpStream;
 use std::time::{Duration, Instant};
 
 use fixture::{TempFile, FILE};
@@ -422,6 +420,9 @@ fn connections_over_the_per_address_cap_are_closed_until_one_ends() {
 #[test]
 #[cfg(target_os = "linux")]
 fn a_connection_without_a_thread_is_closed_and_the_server_goes_on() {
+    use std::io::Read as _;
+    use std::net::TcpStream;
+
     let file = TempFile::new("keepalive-no-thread", &[], true);
     // No thread starts with a stack larger than the address space: every
     // connection's thread fails, as when the system has no threads left.
