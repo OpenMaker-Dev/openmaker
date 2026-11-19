@@ -346,12 +346,23 @@ fn scannable(field: &om_hbam::Field, options: &om_hbam::FieldOptions) -> Result<
 }
 
 /// One repetition's stored text of `field` in `row` (repetition 1 the
-/// field's own cell).
-fn repetition_text(row: &om_hbam::record::Record, field: u64, repetition: u16) -> String {
-    om_data::rules::cell_of(field, u32::from(repetition))
-        .and_then(|cell| row.text(cell))
-        .and_then(Result::ok)
-        .unwrap_or_default()
+/// field's own cell); empty when the record stores none, an error when the
+/// stored cell is not readable text.
+fn repetition_text(
+    row: &om_hbam::record::Record,
+    field: u64,
+    repetition: u16,
+) -> Result<String, DataError> {
+    let Some(cell) = om_data::rules::cell_of(field, u32::from(repetition)) else {
+        return Ok(String::new());
+    };
+    match row.cells.get(&cell) {
+        None => Ok(String::new()),
+        Some(value) => value
+            .text()
+            .ok_or_else(|| unsupported("a stored cell is not readable text."))?
+            .map_err(|e| failure("decode a value list's stored value", e)),
+    }
 }
 
 impl NativeProvider {
@@ -764,14 +775,16 @@ impl NativeProvider {
             let tree = download_tree(std::slice::from_ref(&data))?;
             // Records come in id order, the source order.
             for row in om_hbam::record::records(&tree, table) {
-                let second_value = repetition_text(&row, second.id, second_repetition);
+                // Keyed as stored: trimming would make values a raw index
+                // keeps apart (`A`, `A `) one.
+                let second_value = repetition_text(&row, second.id, second_repetition)?;
                 let second_key = second_keying
-                    .whole_key(second_value.trim())?
+                    .whole_key(&second_value)?
                     .unwrap_or_else(|| EMPTY_TEXT_KEY.to_vec());
                 if items.contains_key(&second_key) {
                     continue;
                 }
-                let first_value = repetition_text(&row, first.id, first_repetition);
+                let first_value = repetition_text(&row, first.id, first_repetition)?;
                 let Some(line) = first_value
                     .split(['\r', '\n'])
                     .find(|l| !l.trim().is_empty())
