@@ -570,6 +570,12 @@ fn pasted_text_stores_what_filemaker_shows() {
     let related = pasted(lines[10]);
     assert!(related.has_flag(flag::OPTION3) && related.calculation(8).is_some());
     assert!(related.data.as_ref().and_then(|d| d.slot(0)).is_none());
+    // No table at all is no calculation: refused, as before.
+    let empty = "Go to Related Record [ From table:  ; Using layout: <Current Layout> ]";
+    assert!(matches!(
+        &parse_steps(empty, &Contacts::new(), Origin::Unknown).unwrap()[..],
+        [Pasted::Failed { .. }]
+    ));
     // Insert Text's text is slot 0.
     let text = pasted(lines[0]);
     assert_eq!((text.text(0).as_deref(), text.text(1)), (Some("x"), None));

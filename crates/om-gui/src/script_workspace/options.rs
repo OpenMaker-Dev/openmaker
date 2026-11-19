@@ -2568,6 +2568,13 @@ fn rows(step: &ScriptStep, names: &Option<Arc<CalcSchema>>) -> Vec<Row> {
                             was: value,
                         },
                     ));
+                } else if id == 74 && step.has_flag(flag::OPTION3) {
+                    // Go to Related Record's Table by Calculation (26.1,
+                    // `0x400` with slot 8, script-steps.md 12.4): the
+                    // dialog cannot switch between the two forms yet, and
+                    // a picked occurrence would be stored beside the
+                    // calculation the runtime follows. Kept as stored.
+                    rows.push(row(label, Edit::Kept));
                 } else {
                     match slot_of(p, SlotKind::Aliases).map(|s| (s, aliases_occurrence(step, s))) {
                         Some((slot, Ok(value))) => rows.push(row(

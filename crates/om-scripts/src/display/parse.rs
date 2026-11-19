@@ -1391,31 +1391,28 @@ fn go_to_record(p: &mut Parser<'_>) {
 fn go_to_related_record(p: &mut Parser<'_>) {
     p.word("Show only related records", flag::RESTORE);
     p.word("Match found set", flag::OPTION2);
-    if let Some(mut text) = p.labeled_value("From table") {
-        if quoted_head(&text).is_none() && text != UNKNOWN {
+    if let Some(text) = p.labeled_value("From table") {
+        if quoted_head(&text).is_none() && text != UNKNOWN && !text.trim().is_empty() {
             // Table by Calculation: the name's calculation in slot 8 with
             // `0x400` (script-steps.md 12.4).
             p.calc_into(8, &text);
             p.step.flags |= flag::OPTION3;
-            text.clear();
-        }
-        let occurrence = match quoted_head(&text) {
-            _ if text.is_empty() => Ok(None),
-            Some(name) => p
-                .names
-                .find_occurrence(name)
-                .require(&format!("the table occurrence “{name}”"))
-                .map(Some),
-            None => Err(format!("{text} is not a table occurrence name")),
-        };
-        match occurrence {
-            Ok(Some(o)) => {
-                let key = om_formula::Key::from_id(o).0;
-                p.step
-                    .set_slot_child(0, 0x11, Some(om_hbam::OwnedNode::leaf([0x11], key)));
+        } else {
+            let occurrence = match quoted_head(&text) {
+                Some(name) => p
+                    .names
+                    .find_occurrence(name)
+                    .require(&format!("the table occurrence “{name}”")),
+                None => Err(format!("{text} is not a table occurrence name")),
+            };
+            match occurrence {
+                Ok(o) => {
+                    let key = om_formula::Key::from_id(o).0;
+                    p.step
+                        .set_slot_child(0, 0x11, Some(om_hbam::OwnedNode::leaf([0x11], key)));
+                }
+                Err(reason) => p.issue(reason, Some(Part::Slot(0))),
             }
-            Ok(None) => {}
-            Err(reason) => p.issue(reason, Some(Part::Slot(0))),
         }
     }
     if let Some(text) = p.labeled_value("Using layout") {
