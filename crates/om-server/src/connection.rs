@@ -59,7 +59,7 @@ use crate::recalc;
 use crate::record::{Recorder, Recordings};
 use crate::scripts::{self, ScriptEngine};
 use crate::transfer::{
-    page_limit, Owner, Refused, Transfers, Upload, MAX_PRE_LOGIN_UPLOAD, MAX_UPLOAD,
+    page_limit, DownloadMemory, Owner, Refused, Transfers, Upload, MAX_PRE_LOGIN_UPLOAD, MAX_UPLOAD,
 };
 use crate::uploads::{self, Charge, UploadMemory};
 use crate::writes::{self, Mailboxes};
@@ -210,6 +210,9 @@ pub(crate) struct Shared {
     /// The memory clients' uploads take as trees, on the whole server and
     /// for each client address ([`crate::uploads`]).
     pub upload_memory: Arc<UploadMemory>,
+    /// The memory the download streams connections keep paged take, on
+    /// the whole server ([`crate::transfer`]).
+    pub download_memory: Arc<DownloadMemory>,
     /// A request that panics ([`crate::Server::panicking_on`]).
     #[cfg(debug_assertions)]
     pub test_panic: std::sync::OnceLock<TestPanic>,
@@ -1207,7 +1210,11 @@ impl Connection {
             key,
             name: machine.machine_name.clone(),
             open: HashMap::new(),
-            transfers: Transfers::new(&self.shared.upload_memory, client),
+            transfers: Transfers::new(
+                &self.shared.upload_memory,
+                &self.shared.download_memory,
+                client,
+            ),
             temp: HashMap::new(),
             client,
             version: machine.version_string.clone(),

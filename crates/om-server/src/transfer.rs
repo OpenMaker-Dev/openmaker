@@ -32,7 +32,16 @@
 //!   still hold, the connection first evicts its own idle uploads, least
 //!   recently used first. An idle upload on another connection of the same
 //!   client address keeps counting until that connection starts another
-//!   transfer or its session ends. Downloads are not charged.
+//!   transfer or its session ends.
+//! - The download streams every connection keeps paged are charged to a
+//!   server-wide budget of their own ([`DownloadMemory`]). Past it, the
+//!   streams least recently paged, on any connection, are dropped, never
+//!   the one just started (#145). A client continues its download at once,
+//!   so the least recently paged streams are those clients abandoned. They
+//!   are dropped, not the new download refused, since a refused read shows
+//!   where a dropped abandoned one does not; a client address is not the
+//!   unit, since many connections behind one NAT address each page a
+//!   download in ordinary use.
 //!
 //! Continuing an evicted transfer, or one dropped with its file's session
 //! ([`Transfers::drop_file`]: the file was closed, logged out of, or logged
@@ -49,7 +58,8 @@
 
 use std::collections::{HashMap, VecDeque};
 use std::net::IpAddr;
-use std::sync::Arc;
+use std::sync::atomic::{AtomicU64, AtomicUsize, Ordering};
+use std::sync::{Arc, Mutex, MutexGuard, PoisonError, Weak};
 
 use log::{info, warn};
 use om_protocol::{page_cut, Resume, UploadScan, PAGE_LIMIT};
@@ -74,6 +84,132 @@ pub(crate) const MAX_PRE_LOGIN_UPLOAD: usize = 64 << 10;
 /// How many evicted cursors are remembered, so that continuing one is
 /// refused instead of answered as the end of its stream.
 const EVICTED_REMEMBERED: usize = 64;
+
+/// The server's budget for the download streams connections keep paged:
+/// the bytes not yet sent and those sent, of each stream larger than one
+/// page, from its first page until its last is sent or it is dropped.
+#[derive(Debug)]
+pub(crate) struct DownloadMemory {
+    /// The most the streams may hold together, in bytes.
+    limit: AtomicUsize,
+    /// What they hold now.
+    held: AtomicUsize,
+    /// Advances each time a stream is paged, on any connection.
+    clock: AtomicU64,
+    /// Every stream held, some perhaps already dropped.
+    streams: Mutex<Vec<Weak<Stream>>>,
+}
+
+impl DownloadMemory {
+    /// A budget of `limit` bytes.
+    pub fn new(limit: usize) -> Arc<Self> {
+        Arc::new(Self {
+            limit: AtomicUsize::new(limit),
+            held: AtomicUsize::new(0),
+            clock: AtomicU64::new(0),
+            streams: Mutex::default(),
+        })
+    }
+
+    /// Change the limit. What is held stays until a stream is next held.
+    pub fn set_limit(&self, limit: usize) {
+        self.limit.store(limit, Ordering::Relaxed);
+    }
+
+    /// What all streams hold now.
+    #[cfg(test)]
+    pub fn in_use(&self) -> usize {
+        self.held.load(Ordering::Relaxed)
+    }
+
+    fn tick(&self) -> u64 {
+        self.clock.fetch_add(1, Ordering::Relaxed) + 1
+    }
+
+    fn streams(&self) -> MutexGuard<'_, Vec<Weak<Stream>>> {
+        self.streams.lock().unwrap_or_else(PoisonError::into_inner)
+    }
+
+    /// Hold `data` as a stream being paged, first dropping the streams
+    /// least recently paged, on any connection, while all of them together
+    /// would pass the limit. The new stream is held however large it is.
+    fn hold(self: &Arc<Self>, data: Vec<u8>) -> Arc<Stream> {
+        let bytes = data.len();
+        let stream = Arc::new(Stream {
+            bytes,
+            used: AtomicU64::new(self.tick()),
+            data: Mutex::new(Some(data)),
+            memory: self.clone(),
+        });
+        let limit = self.limit.load(Ordering::Relaxed);
+        let held = self.held.fetch_add(bytes, Ordering::Relaxed) + bytes;
+        // Dropped after the list's lock is let go: the last reference to a
+        // stream may be one of these.
+        let mut dropped = Vec::new();
+        let mut streams = self.streams();
+        streams.retain(|stream| stream.strong_count() > 0);
+        if held > limit {
+            let mut others: Vec<Arc<Stream>> = streams.iter().filter_map(Weak::upgrade).collect();
+            others.sort_by_key(|other| other.used.load(Ordering::Relaxed));
+            for other in others {
+                if self.held.load(Ordering::Relaxed) <= limit {
+                    break;
+                }
+                if other.drop_data() {
+                    info!(
+                        "dropping an unfinished download of {} bytes to stay within the \
+                         server's download memory",
+                        other.bytes
+                    );
+                }
+                dropped.push(other);
+            }
+            streams.retain(|stream| stream.upgrade().is_some_and(|s| s.holds()));
+        }
+        streams.push(Arc::downgrade(&stream));
+        drop(streams);
+        drop(dropped);
+        stream
+    }
+}
+
+/// A download stream being paged. Its bytes are charged to the server's
+/// [`DownloadMemory`] while they are held: until its last page is sent,
+/// its transfer is evicted or its connection ends, or the budget drops it.
+#[derive(Debug)]
+struct Stream {
+    bytes: usize,
+    /// When it was last paged, by the budget's clock.
+    used: AtomicU64,
+    /// `None` once the budget dropped it.
+    data: Mutex<Option<Vec<u8>>>,
+    memory: Arc<DownloadMemory>,
+}
+
+impl Stream {
+    fn data(&self) -> MutexGuard<'_, Option<Vec<u8>>> {
+        self.data.lock().unwrap_or_else(PoisonError::into_inner)
+    }
+
+    fn holds(&self) -> bool {
+        self.data().is_some()
+    }
+
+    /// Give its bytes back to the budget, once: whether this did.
+    fn drop_data(&self) -> bool {
+        let held = self.data().take().is_some();
+        if held {
+            self.memory.held.fetch_sub(self.bytes, Ordering::Relaxed);
+        }
+        held
+    }
+}
+
+impl Drop for Stream {
+    fn drop(&mut self) {
+        self.drop_data();
+    }
+}
 
 /// Who may continue a transfer: the operation and file that started it.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -104,7 +240,7 @@ enum Transfer {
     /// A slot stream being paged out: the bytes not yet sent start at
     /// `offset`, where the open-list depth is `depth`.
     Download {
-        stream: Vec<u8>,
+        stream: Arc<Stream>,
         offset: usize,
         depth: i16,
     },
@@ -121,7 +257,7 @@ impl Transfer {
     /// The bytes it holds.
     fn bytes(&self) -> usize {
         match self {
-            Transfer::Download { stream, .. } => stream.len(),
+            Transfer::Download { stream, .. } => stream.bytes,
             Transfer::Upload { payload, .. } => payload.len(),
         }
     }
@@ -156,6 +292,8 @@ pub(crate) struct Transfers {
     /// address they are charged under.
     memory: Arc<UploadMemory>,
     client: IpAddr,
+    /// The server's budget its download streams are charged to.
+    downloads: Arc<DownloadMemory>,
     by_cursor: HashMap<u64, Held>,
     /// The bytes the transfers hold.
     bytes: usize,
@@ -171,11 +309,17 @@ pub(crate) fn page_limit(max_return: u32) -> usize {
 }
 
 impl Transfers {
-    /// No transfers, their uploads charged to `memory` under `client`.
-    pub fn new(memory: &Arc<UploadMemory>, client: IpAddr) -> Self {
+    /// No transfers, their uploads charged to `memory` under `client` and
+    /// their download streams to `downloads`.
+    pub fn new(
+        memory: &Arc<UploadMemory>,
+        downloads: &Arc<DownloadMemory>,
+        client: IpAddr,
+    ) -> Self {
         Self {
             memory: memory.clone(),
             client,
+            downloads: downloads.clone(),
             by_cursor: HashMap::new(),
             bytes: 0,
             clock: 0,
@@ -185,7 +329,7 @@ impl Transfers {
 
     /// Serve the first page of `stream` for `owner`. `new_handle` mints a
     /// nonzero handle; it is called only when the stream does not fit one
-    /// page.
+    /// page, which is then held on the server's download budget.
     pub fn start(
         &mut self,
         owner: Owner,
@@ -193,14 +337,22 @@ impl Transfers {
         limit: usize,
         mut new_handle: impl FnMut() -> u64,
     ) -> (Vec<u8>, Resume) {
-        self.page(owner, stream, (0, 0), limit, || {
-            (new_handle(), new_handle())
-        })
+        let (end, depth) = page_cut(&stream, 0, limit, 0);
+        if end == stream.len() {
+            return (stream, Resume::complete());
+        }
+        let page = stream[..end].to_vec();
+        let stream = self.downloads.hold(stream);
+        let (perform, cursor) = (new_handle(), new_handle());
+        (
+            page,
+            self.keep_download(owner, perform, cursor, stream, end, depth),
+        )
     }
 
     /// Serve the next page of the download `resume` names, or `None` if
     /// `owner` has no such download on this connection. Refused when it was
-    /// evicted.
+    /// evicted, or dropped for the server's download budget.
     pub fn next(
         &mut self,
         owner: Owner,
@@ -216,14 +368,26 @@ impl Transfers {
                 offset,
                 depth,
             } if held.owner == owner && held.perform == resume.perform => {
-                let handles = || (held.perform, resume.cursor);
-                Ok(Some(self.page(
-                    owner,
-                    stream,
-                    (offset, depth),
-                    limit,
-                    handles,
-                )))
+                let cut = stream.data().as_deref().map(|data| {
+                    let (end, depth) = page_cut(data, offset, limit, depth);
+                    (data[offset..end].to_vec(), end, depth, end == data.len())
+                });
+                let Some((page, end, depth, complete)) = cut else {
+                    warn!(
+                        "refusing to continue transfer {:#x}, dropped to stay within the \
+                         server's download memory",
+                        resume.cursor
+                    );
+                    self.remember(resume.cursor);
+                    return Err(Refused);
+                };
+                if complete {
+                    return Ok(Some((page, Resume::complete())));
+                }
+                stream.used.store(self.downloads.tick(), Ordering::Relaxed);
+                let resume =
+                    self.keep_download(owner, held.perform, resume.cursor, stream, end, depth);
+                Ok(Some((page, resume)))
             }
             transfer => {
                 self.insert(resume.cursor, Held { transfer, ..held });
@@ -232,36 +396,30 @@ impl Transfers {
         }
     }
 
-    /// Cut the page at `offset`, where the open-list depth is `depth`, and
-    /// keep the rest under `handles` (asked for only then) when it does not
-    /// complete the stream.
-    fn page(
+    /// Keep the rest of `stream`, from `offset`, where the open-list depth
+    /// is `depth`, under `perform` and `cursor`, and answer the block that
+    /// continues it.
+    fn keep_download(
         &mut self,
         owner: Owner,
-        stream: Vec<u8>,
-        (offset, depth): (usize, i16),
-        limit: usize,
-        handles: impl FnOnce() -> (u64, u64),
-    ) -> (Vec<u8>, Resume) {
-        let (end, depth) = page_cut(&stream, offset, limit, depth);
-        let page = stream[offset..end].to_vec();
-        if end == stream.len() {
-            return (page, Resume::complete());
-        }
-        let (perform, cursor) = handles();
+        perform: u64,
+        cursor: u64,
+        stream: Arc<Stream>,
+        offset: usize,
+        depth: i16,
+    ) -> Resume {
         let download = Transfer::Download {
             stream,
-            offset: end,
+            offset,
             depth,
         };
         self.hold(owner, perform, cursor, download);
-        let resume = Resume {
+        Resume {
             perform,
             cursor,
             depth,
             copy_key: Vec::new(),
-        };
-        (page, resume)
+        }
     }
 
     /// Receive one part of an uploaded payload for `owner`: the first part
@@ -499,9 +657,13 @@ mod tests {
         file_id: 1,
     };
 
-    /// No transfers, on a budget that refuses nothing.
+    /// No transfers, on budgets that refuse nothing.
     fn transfers() -> Transfers {
-        Transfers::new(&UploadMemory::new(usize::MAX), [192, 0, 2, 1].into())
+        Transfers::new(
+            &UploadMemory::new(usize::MAX),
+            &DownloadMemory::new(usize::MAX),
+            [192, 0, 2, 1].into(),
+        )
     }
 
     fn counter() -> impl FnMut() -> u64 {
@@ -682,5 +844,56 @@ mod tests {
                 .is_some());
         }
         assert!(transfers.bytes <= MAX_IDLE + stream.len());
+    }
+
+    /// The download streams of all connections share the server's budget
+    /// (#145): past it the stream least recently paged, on any connection,
+    /// is dropped, and continuing it is refused; the one just started is
+    /// held even alone past the budget; what is held goes back as streams
+    /// finish or their connections end.
+    #[test]
+    fn download_streams_share_the_servers_budget() {
+        // A node of 100 leaves of 4 bytes: 402 bytes, pages of 64.
+        let stream: Vec<u8> = [0x80]
+            .into_iter()
+            .chain((0..100u8).flat_map(|key| [0x02, key, 7, 7]))
+            .chain([0x40])
+            .collect();
+        let uploads = UploadMemory::new(usize::MAX);
+        let downloads = DownloadMemory::new(1000);
+        let connection = || Transfers::new(&uploads, &downloads, [192, 0, 2, 1].into());
+        let (mut a, mut b, mut c) = (connection(), connection(), connection());
+        let mut handles = counter();
+        let (_, resume_a) = a.start(OWNER, stream.clone(), 64, &mut handles);
+        let (_, resume_b) = b.start(OWNER, stream.clone(), 64, &mut handles);
+        assert_eq!(downloads.in_use(), 2 * stream.len());
+        // A pages on: B is now the least recently paged, and C's stream
+        // drops it, not A's.
+        let (_, resume_a) = a.next(OWNER, &resume_a, 64).unwrap().unwrap();
+        let (_, resume_c) = c.start(OWNER, stream.clone(), 64, &mut handles);
+        assert_eq!(downloads.in_use(), 2 * stream.len());
+        assert!(b.next(OWNER, &resume_b, 64).is_err());
+        assert!(b.next(OWNER, &resume_b, 64).is_err());
+        // A and C read to the end, as the stream was.
+        for (transfers, mut resume) in [(&mut a, resume_a), (&mut c, resume_c)] {
+            while resume.has_more() {
+                resume = transfers.next(OWNER, &resume, 64).unwrap().unwrap().1;
+            }
+        }
+        assert_eq!(downloads.in_use(), 0);
+        // A stream larger than the budget is still held, alone.
+        let large: Vec<u8> = [0x80]
+            .into_iter()
+            .chain((0..=255u8).flat_map(|key| [0x02, key, 7, 7]))
+            .chain([0x40])
+            .collect();
+        let (_, resume_a) = a.start(OWNER, stream.clone(), 64, &mut handles);
+        let (_, resume_b) = b.start(OWNER, large.clone(), 64, &mut handles);
+        assert_eq!(downloads.in_use(), large.len());
+        assert!(a.next(OWNER, &resume_a, 64).is_err());
+        assert!(b.next(OWNER, &resume_b, 64).unwrap().is_some());
+        // A connection's end gives its streams back.
+        drop(b);
+        assert_eq!(downloads.in_use(), 0);
     }
 }

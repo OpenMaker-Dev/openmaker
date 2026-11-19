@@ -34,7 +34,8 @@ const USAGE: &str = "usage: om-server [--bind <addr:port>] [--name <server name>
                  [--scripts <n>] [--script-steps <n>] [--script-seconds <n>]
                  [--calc-text-mib <n>]
                  [--connections <n>] [--connections-per-address <n>]
-                 [--upload-memory-mib <n>] [--idle-seconds <n>|off]
+                 [--upload-memory-mib <n>] [--download-memory-mib <n>]
+                 [--idle-seconds <n>|off]
                  [--schedules <file>] [--backup-folder <dir>]
                  [--list <file name>]... [--list-all]
                  <file.fmp12>...
@@ -117,6 +118,11 @@ const USAGE: &str = "usage: om-server [--bind <addr:port>] [--name <server name>
                     can upload a container of about 465 MiB: raise it for
                     larger ones. It is not safe on a machine with much less
                     than 8 GB of memory: set it lower there
+  --download-memory-mib
+                    memory held for downloads being paged to clients, on the
+                    whole server (default 2048). Past it the downloads left
+                    unfinished longest, on any connection, are dropped; a
+                    client that continues one gets an error
   --idle-seconds    close a connection with a session that sends nothing for
                     this long (default 3600; off: never). A client with a file
                     open sends a keepalive every 60 s. A connection without a
@@ -262,6 +268,10 @@ fn parse_args() -> Result<Args, String> {
             "--upload-memory-mib" => {
                 let mib: usize = positive(&arg, value()?)?;
                 args.connections.upload_memory = mib.saturating_mul(1 << 20)
+            }
+            "--download-memory-mib" => {
+                let mib: usize = positive(&arg, value()?)?;
+                args.connections.download_memory = mib.saturating_mul(1 << 20)
             }
             "--idle-seconds" => {
                 args.connections.idle = match value()?.as_str() {
