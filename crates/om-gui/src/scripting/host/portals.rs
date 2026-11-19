@@ -73,6 +73,9 @@ pub(super) struct Portal {
     /// record come first, as Browse draws them.
     pub new_row_top: bool,
     pub visible: u64,
+    /// The records before its initial row (portal option `5`), which
+    /// Browse does not draw; its drawn rows are numbered from there.
+    pub first: usize,
     /// The portal sorts or filters its own rows by a definition that does
     /// not read, so which record a row shows is not known here (see the
     /// module documentation).
@@ -142,6 +145,7 @@ fn portal(object: &om_layout::LayoutObject) -> Option<Portal> {
         scrolls: def.flags & PORTAL_SCROLLS != 0,
         new_row_top: def.flags & PORTAL_NEW_ROW_TOP != 0 && def.flags & PORTAL_SCROLLS == 0,
         visible: (def.num_rows.max(1.0) as u64).max(1),
+        first: usize::try_from(def.initial_row.saturating_sub(1)).unwrap_or(0),
         ordered: unread_sort || unread_filter,
         own_order: sorts || calcs.portal_filter.is_some(),
         filtered: calcs.portal_filter.is_some() || unread_filter,
@@ -256,7 +260,7 @@ impl WorkerHost<'_> {
             return Ok(Vec::new());
         };
         let related = self.order_rows(portal, related)?;
-        let records = related.into_iter().map(Row::Record);
+        let records: Vec<Row> = related.into_iter().map(Row::Record).collect();
         let begun: Vec<Row> = self
             .s
             .file
@@ -270,28 +274,34 @@ impl WorkerHost<'_> {
             .map(|(i, _)| Row::New(i))
             .collect();
         let visible = usize::try_from(portal.visible).unwrap_or(usize::MAX);
-        let rows = if portal.scrolls {
-            let mut rows: Vec<Row> = records.chain(begun).collect();
+        if portal.scrolls {
+            let mut rows = records;
+            rows.extend(begun);
             if self.creation_allowed(occurrence) {
                 rows.push(Row::Creation);
             }
-            rows
-        } else if portal.new_row_top {
+            return Ok(rows);
+        }
+        // The records before the initial row keep their numbers, which
+        // Browse's drawn rows are numbered after; the drawn rows follow
+        // (`document::portals::paint_rows`) [I: whether FileMaker lets a
+        // step reach a row before the initial row is unmeasured].
+        let first = portal.first.min(records.len());
+        let mut rows = records[..first].to_vec();
+        if portal.new_row_top {
             // The rows without a record first, the creation row among
             // them, where Browse draws and numbers them [I: FileMaker's
             // numbering of the top row is unmeasured].
-            let mut rows = begun;
+            rows.extend(begun);
             if self.creation_allowed(occurrence) {
                 rows.push(Row::Creation);
             }
-            rows.extend(records);
-            rows.truncate(visible);
-            rows
+            rows.extend_from_slice(&records[first..]);
         } else {
-            let mut rows: Vec<Row> = records.chain(begun).collect();
-            rows.truncate(visible);
-            rows
-        };
+            rows.extend_from_slice(&records[first..]);
+            rows.extend(begun);
+        }
+        rows.truncate(first.saturating_add(visible));
         Ok(rows)
     }
 
@@ -585,6 +595,16 @@ impl WorkerHost<'_> {
             .filter(|row| matches!(row, Row::New(_) | Row::Creation))
     }
 
+    /// The number (from 1) of the row of `portal` showing `identity`, if it
+    /// still shows it.
+    pub(super) fn number_of(&mut self, portal: &Portal, identity: Row) -> HostResult<Option<u64>> {
+        let rows = self.portal_rows(portal)?;
+        Ok(rows
+            .iter()
+            .position(|row| *row == identity)
+            .map(|i| i as u64 + 1))
+    }
+
     /// The row `row` (from 1) of `portal`.
     pub(super) fn row_of(&mut self, portal: &Portal, row: u64) -> Result<Option<Row>, HostError> {
         let rows = self.portal_rows(portal)?;
@@ -711,14 +731,20 @@ impl WorkerHost<'_> {
             }
         };
         // The field the focus is in is left first: its OnObjectExit may
-        // keep the focus there.
+        // keep the focus there, or begin a row that moves the destination,
+        // which the move then finds by what it shows.
+        let identity = if portal.ordered {
+            None
+        } else {
+            self.row_of(&portal, row)?
+        };
         self.run_act(
             Act::Portal {
                 row: Some(PortalRow {
                     object: portal.object,
                     occurrence: portal.occurrence,
                     row,
-                    identity: None,
+                    identity,
                     clicked: false,
                     field,
                     repetition,

@@ -1166,7 +1166,12 @@ Pro 26.1.1's `DataEntryModel::IsVisibleTopNewPortalRow` decides
 for scripts alike: the creation row is row 1, the records follow, and
 scripts reach the creation row there (Go to Portal Row, a button in the
 row) as Browse shows it [I: how FileMaker numbers a row drawn at the top,
-and whether a script reaches it, are unmeasured]. The option's storage is
+and whether a script reaches it, are unmeasured]. A portal whose initial
+row is past 1 numbers its drawn rows from that row, also for scripts, and
+the records before it keep their numbers; a script still reaches them [I:
+unmeasured], as before. A Go to Portal Row whose OnObjectExit begins a
+row moves to the row it chose, found again by what it shows, or fails
+with 101 when that row left the portal. The option's storage is
 read from FileMaker Pro 26.1.1's binaries, not from a file it saved, and
 Portal Setup does not offer it.
 
