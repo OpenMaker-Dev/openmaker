@@ -302,6 +302,71 @@ openssl req -x509 -newkey ec -pkeyopt ec_paramgen_curve:P-256 -nodes -days 30 \
   -addext basicConstraints=critical,CA:FALSE -keyout server.key -out server.pem
 ```
 
+### OpenMaker Server as a Linux service
+
+On Linux with systemd 247 or newer, run these scripts from a source checkout.
+They build the server and its PDF worker with Cargo, then use `sudo` for
+installation. Linux needs Bash, coreutils, util-linux, account management
+commands (`useradd`, `groupadd`), OpenSSL and `ss` from iproute2. The
+source build also needs stable Rust and a C linker.
+
+```sh
+tools/server/install.sh
+tools/server/update.sh      # after checking out the version to install
+tools/server/uninstall.sh
+```
+
+Install and update also accept a directory containing the matching Linux
+`om-server` and `om-server-pdf-worker` executables. For example,
+`tools/server/install.sh /path/to/openmaker/bin` skips the source build.
+The binaries need database folder discovery and the default Admin Console
+feature enabled.
+
+The installer starts and enables `openmaker-server.service` as the
+non-login user `omserver` and group `omadmin`. The service can start with
+an empty database directory.
+
+| Path | Contents |
+| --- | --- |
+| `/opt/OpenMaker/OpenMaker Server/bin/` | Link to the installed server and PDF worker |
+| `/opt/OpenMaker/OpenMaker Server/Data/Databases/` | Hosted databases |
+| `/opt/OpenMaker/OpenMaker Server/Data/Backups/` | Backups |
+| `/opt/OpenMaker/OpenMaker Server/Logs/` | FileMaker-format logs |
+| `/etc/openmaker/server.env` | Server name, database bind address, console bind address and console user |
+| `/etc/openmaker/admin-password` | Generated password for the Admin Console |
+| `/etc/openmaker/tls/` | TLS certificate and private key |
+| `/var/lib/openmaker-server/` | Server state directory managed by systemd |
+
+The default listeners are `127.0.0.1:5003` and `127.0.0.1:16000`. Sign in
+as `admin` at `https://localhost:16000/admin-console`. Read the password
+with `sudo cat /etc/openmaker/admin-password`. For remote access, edit the
+bind addresses in `server.env` and supply a certificate covering the
+address clients use. The generated certificate is self-signed and covers
+localhost. The service reads the private key and password through systemd
+credentials. Run `sudo systemctl restart openmaker-server.service` after
+changing the settings or replacing credentials.
+
+Stage working copies in the database folder. The server discovers eligible
+`.fmp12` files at startup, including one level of subdirectories.
+FileMaker Server's `Data/Secure/` and `Data/Scripts/` have no equivalent
+hosting or system-script features in this layout.
+
+```sh
+sudo install -o omserver -g omadmin -m 0660 Tasks.fmp12 \
+  '/opt/OpenMaker/OpenMaker Server/Data/Databases/Tasks.fmp12'
+sudo systemctl restart openmaker-server.service
+```
+
+Use `sudo systemctl edit openmaker-server.service` for unit overrides.
+When replacing a manual installation, stop its service first. The
+installer expects root-owned parent directories and manages only the
+unit and binaries it installs.
+Update keeps configuration and data, retains the service's active or
+stopped state, and restores the previous binaries and unit if the updated
+service fails to start. Uninstall stops and disables the service and
+removes its unit and binaries. It keeps databases, backups, logs, settings,
+credentials, and the service account for a later install.
+
 ### Packages for Ubuntu 24.04
 
 `tools/package-ubuntu.sh` builds release `om-gui` (with web viewers) and
