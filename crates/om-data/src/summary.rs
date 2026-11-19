@@ -45,7 +45,9 @@ fn unsummarizable(e: CalcError) -> bool {
 /// A group's summary over values its operation cannot summarize as `?`,
 /// the value `GetSummary` gives, so that one group's failure is that
 /// group's cell rather than the whole export's error (oracle x05: FileMaker
-/// Server exports such a group with error 0). Other errors stay errors.
+/// Server exports such a group with error 0). It applies to every kind of
+/// group value: a total or deviation, a running value and a fraction
+/// (the last two inferred from the first). Other errors stay errors.
 pub fn or_invalid(value: Result<Value, CalcError>) -> Result<Value, CalcError> {
     match value {
         Err(e) if unsummarizable(e) => Ok(Value::invalid()),
@@ -294,12 +296,14 @@ impl Summary {
                     Some(starts) => starts.get(end - 1).copied().unwrap_or(end - 1),
                     None => 0,
                 };
+                // A group whose running value cannot be given is `?`, and
+                // so is every later one that adds to it.
                 let value = match &running {
                     Some((s, e, so_far)) if *s == from && *e <= end => {
-                        let part = self.aggregate(found, *e..end, cx)?;
-                        accumulate(so_far, &part, cx)?
+                        let part = or_invalid(self.aggregate(found, *e..end, cx))?;
+                        or_invalid(accumulate(so_far, &part, cx))?
                     }
-                    _ => self.aggregate(found, from..end, cx)?,
+                    _ => or_invalid(self.aggregate(found, from..end, cx))?,
                 };
                 running = Some((from, end, value.clone()));
                 value
@@ -328,12 +332,12 @@ impl Summary {
                                     }
                                     _ => 0..all,
                                 };
-                                let total = aggregate("Sum", &found.values[range], cx)?;
+                                let total = or_invalid(aggregate("Sum", &found.values[range], cx))?;
                                 totals.insert(first, total.clone());
                                 total
                             }
                         };
-                        self.fraction_of(found, start..end, &total, cx)?
+                        or_invalid(self.fraction_of(found, start..end, &total, cx))?
                     }
                 }
             } else {

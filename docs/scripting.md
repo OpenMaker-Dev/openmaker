@@ -297,8 +297,10 @@ dBase.
   HTML and a text cell `?` in Excel (script-steps.md, Exports). Without
   groups the same summary is empty on every row, as FileMaker Pro 26.0.3
   wrote it in Excel. Unmeasured and OpenMaker's inference: merge files
-  (as comma), dBase (empty), the grand summary of a grouped export (`?`)
-  and a calculation field whose value is `?` (as a summary).
+  (as comma), dBase (empty), the grand summary of a grouped export (`?`),
+  a calculation field whose value is `?` (as a summary), and a `?` among a
+  field's repetitions or related values in FMPXMLRESULT (an empty `DATA`,
+  so the values after it keep their places).
 - Imports cover every action, mapping by position or name, field names
   rows, and auto-enter and validation through `om_data::rules`.
 - Stored specs decode and re-encode byte for byte.

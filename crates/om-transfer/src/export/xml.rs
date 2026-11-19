@@ -92,8 +92,17 @@ pub(crate) fn write(table: &Table) -> Vec<u8> {
                 Cell::Absent => {}
                 Cell::Values(values) if values.is_empty() => s.push_str("<DATA></DATA>"),
                 Cell::Values(values) => {
-                    // A `?` has no `DATA` (oracle x05).
-                    for v in values.iter().filter(|v| !v.is_invalid()) {
+                    for v in values {
+                        // A `?` alone has no `DATA` (oracle x05); among a
+                        // field's repetitions or related values it keeps its
+                        // place with an empty one, so the values after it
+                        // stay where they are (inferred, unmeasured).
+                        if v.is_invalid() {
+                            if values.len() > 1 {
+                                s.push_str("<DATA></DATA>");
+                            }
+                            continue;
+                        }
                         s.push_str("<DATA>");
                         escape(&v.text(), &mut s);
                         s.push_str("</DATA>");
