@@ -103,6 +103,7 @@ fn logged_in_as(port: u16, name: &str, account: &str) -> Session {
     let password = match account {
         CLERK => CLERK_PASSWORD,
         fixture::READER => fixture::READER_PASSWORD,
+        CUSTOM => CUSTOM_PASSWORD,
         _ => PASSWORD,
     };
     let login = session
@@ -669,6 +670,95 @@ fn scripts_run_with_the_requesting_accounts_privileges() {
     assert!(result.starts_with("3|3|From |Clerk|"), "{result}");
     assert_eq!(records(&mut clerk).len(), 3);
     clerk.disconnect().unwrap();
+}
+
+/// An account in a custom set, which [`add_custom_set`] adds.
+const CUSTOM: &str = "Temp";
+const CUSTOM_PASSWORD: &str = "temp's secret";
+
+/// Add [`CUSTOM`] (security catalog record 7) in set 4, a custom set
+/// OpenMaker enforces: records view only, every layout and value list,
+/// every script executable only but script 4, which it gives no access
+/// (session-identity.md 2.2: `09, 11 04` is script `04`'s entry, `d5` no
+/// access), every other privilege, no password lifetime.
+fn add_custom_set(root: &mut om_hbam::OwnedNode) {
+    use om_hbam::OwnedNode;
+    let set: &[u8] = &[4];
+    root.put(
+        &[&[23], &[2], &[5], set, &[16]],
+        om_scripts::text_node(&[], "Clerks"),
+    );
+    for (member, value) in [(2u8, [0x10u8, 0x03]), (0x0a, [0x9f, 0xff]), (0x0c, [0, 0])] {
+        root.put(
+            &[&[23], &[2], &[5], set, &[member]],
+            OwnedNode::leaf(Vec::new(), value.to_vec()),
+        );
+    }
+    for (entry, quad) in [
+        (&[0x04u8][..], 0xdfu8),
+        (&[0x11], 0xd6),
+        (&[0x11, 0x04], 0xd5),
+        (&[0x21], 0xd6),
+    ] {
+        root.put(
+            &[&[23], &[2], &[5], set, &[9], entry],
+            OwnedNode::leaf(Vec::new(), vec![quad]),
+        );
+    }
+    root.put(
+        &[&[23], &[1], &[5], &[7], &[16]],
+        om_scripts::text_node(&[], CUSTOM),
+    );
+    fixture::put_account(root, 7, CUSTOM_PASSWORD, None, 4);
+}
+
+/// A custom set decides which scripts its account may run
+/// (session-identity.md 2.2): script 4, set to run with full access
+/// privileges, has no access in Temp's set, so op30 answers 9 and nothing
+/// changes, as `CallScript` refuses a script the account has no access to
+/// (script-runtime.md 3.7, 9.1). Before, being set to run with full access
+/// let it run, and its steps wrote with full access (#227). Script 5 is
+/// executable: it runs, and its record steps fail closed (9), since a
+/// custom set's record limits are not applied to server scripts yet.
+#[test]
+fn a_custom_set_decides_which_scripts_its_account_may_run() {
+    use fixture::{exit_with, full_access, go_to_record, on, script, set_field};
+    let scripts = [
+        full_access(
+            4,
+            "Elevated",
+            vec![
+                on(86, true),
+                go_to_record(1),
+                set_field(NAME, "\"By temp\""),
+                ScriptStep::new(75),
+                exit_with("\"ran\""),
+            ],
+        ),
+        script(
+            5,
+            "Own",
+            vec![
+                on(86, true),
+                set_field(COUNT, "1000"),
+                exit_with("Get ( LastError ) & \"|\" & Get ( AccountName )"),
+            ],
+        ),
+    ];
+    let mut root = fixture::tree(&scripts, true);
+    add_custom_set(&mut root);
+    let file = TempFile::from_tree("custom-scripts", &root);
+    let (port, _handle) = start_configured(&file, ScriptLimits::DEFAULT, |server| {
+        server.admitting_custom_sets()
+    });
+    let mut temp = logged_in_as(port, "temp", CUSTOM);
+    assert_eq!(run(&mut temp, 4), (9, String::new()));
+    // The script's last error is Set Field's.
+    assert_eq!(run(&mut temp, 5), (9, "9|Temp".into()));
+    let after = records(&mut temp);
+    assert_eq!(cell(&after, 1, NAME), Some("Write tests"));
+    assert_eq!(cell(&after, 1, COUNT), Some("3"));
+    temp.disconnect().unwrap();
 }
 
 #[test]

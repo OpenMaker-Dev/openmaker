@@ -33,6 +33,7 @@ use std::time::{Duration, Instant};
 use log::{info, warn};
 use om_calc::eval::CalcHost;
 use om_calc::{Ctx, Value};
+use om_data::host::security::SetAccess;
 use om_protocol::script::{
     self, PerformScript, PerformScriptReply, PsosResult, RESULT_TOO_LONG, TEXT_LIMIT,
 };
@@ -413,6 +414,8 @@ pub(crate) struct Request {
     pub account: String,
     /// What the account may do.
     pub privileges: Privileges,
+    /// The account's privilege set as its login verified it.
+    pub access: Option<SetAccess>,
     /// The requesting connection, which gets the op105.
     pub requester: u32,
     pub script: PerformScript,
@@ -561,6 +564,7 @@ fn run_request(shared: &Arc<Shared>, request: &Request, slot: &Slot) -> Outcome 
         &request.hosted,
         &request.account,
         request.privileges,
+        request.access.clone(),
         ScriptRef::Key(&request.script.script),
         &request.script.parameter,
         slot,
@@ -578,12 +582,15 @@ fn run_request(shared: &Arc<Shared>, request: &Request, slot: &Slot) -> Outcome 
 }
 
 /// Run `script` of `hosted` with `parameter` in a session of its own, as
-/// `account` with `privileges`, under `slot`'s abort flag and limits.
+/// `account` with `privileges` and its set `access`, under `slot`'s abort
+/// flag and limits.
+#[allow(clippy::too_many_arguments)]
 pub(crate) fn run(
     shared: &Arc<Shared>,
     hosted: &Arc<Hosted>,
     account: &str,
     privileges: Privileges,
+    access: Option<SetAccess>,
     script: ScriptRef<'_>,
     parameter: &str,
     slot: &Slot,
@@ -598,6 +605,7 @@ pub(crate) fn run(
     );
     host.set_control(slot.control.clone());
     host.set_calc_limits(slot.calc_limits);
+    host.set_access(access);
     let outcome = execute(&mut host, script, parameter, slot);
     host.close();
     // (The session's locks go with it, before another can get its id.)
@@ -802,6 +810,7 @@ mod tests {
             hosted: hosted(shared),
             account: fixture::ACCOUNT.into(),
             privileges: Privileges::FullAccess,
+            access: None,
             requester: CLIENT,
             script: PerformScript {
                 flags,
