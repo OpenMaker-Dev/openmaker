@@ -66,6 +66,10 @@ use super::{js_string, parse_message, MAX_MESSAGE, MESSAGE_URL};
 const APPKIT_BRIDGE: &str = r#"(function () {
   if (window.FileMaker) { return; }
   var route = null, waiting = [];
+  // A document back from the back-forward cache waits for its new token.
+  window.addEventListener("pageshow", function (event) {
+    if (event.persisted) { route = null; }
+  });
   function text(value, fallback) {
     return value === undefined || value === null ? fallback : String(value);
   }
