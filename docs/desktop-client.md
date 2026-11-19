@@ -471,6 +471,20 @@ authoring part tabs or object kind captions.
   OpenMaker's choice: FileMaker Pro keeps cached records until a
   notification purges them (write-path.md 6.5), and its requests per page
   are unmeasured.
+- While a save or another change has the window's calculations read
+  their data again, each related field, merge field, summary, unstored
+  calculation, hide condition, conditional format, tooltip and label keeps
+  drawing the result it had before the change, until its fresh one can be
+  computed; a portal already kept its rows ([#324](https://github.com/OpenMaker-Dev/openmaker/issues/324)). Before, a save drew
+  them empty for the moment the data took to arrive, about 1 s on a hosted
+  multi-file solution. A portal row's or related field's value is drawn
+  read-only in that moment: its editor returns once its record is read
+  again. The kept results go once a frame draws the window with nothing
+  missing and nothing on its way. A read that fails draws its failure at
+  once, not the last value. Preview, PDF and printing never draw kept
+  results. OpenMaker's choice: whether FileMaker Pro draws anything in
+  place of these values while it refreshes them after a save is
+  unmeasured.
 - A window asks its provider for what its calculations lack once per
   frame, all of it in one request. The request carries the window's token
   for its current layout, page revision, view and found set.
