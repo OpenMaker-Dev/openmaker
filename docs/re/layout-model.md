@@ -2083,10 +2083,21 @@ OpenMaker's runtime (`om-gui` `web_viewer`, the `web-viewer` feature):
   load an `openmaker-message:` URL, which the view's navigation handler
   takes and refuses; wry's IPC would drop `data:` pages' messages, and a
   message handler of OpenMaker's own needs code objc2 marks unsafe, which
-  the workspace forbids. For the same reason the history and loading state
-  that Set Web Viewer's Back and Forward need are read through key-value
-  coding. Every window shows its own pages: another window's AppKit window
-  is found as `web_viewer/viewports.rs` says (below). `tests/web_viewer_native.rs`
+  the workspace forbids. The handler hears every frame's navigations, so
+  the URL carries a random token of the view's, known only to the bridge
+  script injected into the main frame: another site's frame in the page
+  cannot post. A message longer than 16 MiB, or one that would put more
+  than 32 MiB in wait for the app, is dropped. A page whose Content
+  Security Policy forbids frames (`frame-src 'none'`) cannot post at all.
+  For the same reason the history and loading state that Set Web Viewer's
+  Back and Forward need are read through key-value coding. wry reports a
+  load only when it commits and when it finishes, so each frame also looks
+  at the page's `loading`: a navigation is loading from when it starts,
+  and one that fails before committing ends a quarter of a second after it
+  stops loading. An address Foundation cannot read as a URL shows a blank
+  page [I, OpenMaker's choice; wry would panic on it]. Every window shows
+  its own pages: another window's AppKit window is found as
+  `web_viewer/viewports.rs` says (below). `tests/web_viewer_native.rs`
   runs on macOS too, with the window's mouse events given to the view under
   the page's button rather than real input (the test window is not made key,
   so as to leave the desktop alone), and `tests/web_viewer_windows_native.rs`

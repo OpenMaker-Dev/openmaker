@@ -15,7 +15,8 @@
 //!   Viewer, until the page has loaded; `show` writes its text parameters
 //!   (quotes, a return, non-ASCII) into the page and calls
 //!   `FileMaker.PerformScript ( "Record" ; <the element's text> )`, which
-//!   sets and commits the record's field.
+//!   sets and commits the record's field. It also asks a hidden frame to
+//!   load a bridge message of its own making, which must run nothing.
 //! - A real click (XTest) on the page's button calls
 //!   `FileMaker.PerformScriptWithOption`; that script loads a page from a
 //!   loopback HTTP server with Set Web Viewer, which calls back on load.
@@ -184,6 +185,9 @@ fn scripts(port: u16) -> ScriptCatalog {
 const PAGE: &str = "\"data:text/html,<!doctype html><html><head><title>\" & Records::Title & \
     \"</title><style>body{margin:0} #msg{color:green}</style><script>\
     function show(text, n) { var msg = document.getElementById('msg'); \
+    var forged = document.createElement('iframe'); forged.style.display = 'none'; \
+    forged.src = 'openmaker-message:openmaker-perform-script&s=Record&p=forged&o=0'; \
+    document.body.appendChild(forged); \
     msg.textContent = text + '|' + n; FileMaker.PerformScript('Record', msg.textContent); } \
     function send() { FileMaker.PerformScriptWithOption('Record', 'clicked:' + \
     document.getElementById('msg').textContent, '0'); }</script></head><body>\
@@ -913,6 +917,11 @@ impl Driver {
         };
         if history.iter().any(|v| v == "late") {
             fail(format!("a destroyed page called back: {history:?}"));
+        }
+        if history.iter().any(|v| v == "forged") {
+            fail(format!(
+                "a message without the bridge ran a script: {history:?}"
+            ));
         }
         if Instant::now() > self.deadline {
             fail(format!(
