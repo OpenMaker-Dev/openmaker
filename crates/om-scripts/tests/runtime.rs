@@ -1164,6 +1164,43 @@ fn a_step_budget_stops_endless_loops() {
     assert!(!rt.is_running());
 }
 
+#[test]
+fn go_to_list_of_records_reads_filemaker_slots() {
+    // #189: the ids are calculation slot 7, and `kTurnOn` asks for the new
+    // window named by slot 0, which Pro keeps when New Window is turned
+    // off (script-steps.md 12.2). `0x100`, read before, opens none.
+    let mut h = host();
+    let mut list = ScriptStep::new(228);
+    list.set_calculation(0, Some(&calc(&h, "\"Kept name\"")));
+    list.set_calculation(7, Some(&calc(&h, "\"2¶3\"")));
+    list.set_flag(flag::OPTION, true);
+    let mut windowed = list.clone();
+    windowed.set_flag(flag::TURN_ON, true);
+    windowed.set_calculation(1, Some(&calc(&h, "300")));
+    h.add_script(0, script(1, "Client", vec![list, windowed]));
+    let mut rt = Runtime::default();
+    run(&mut h, &mut rt, 1);
+    let lists: Vec<_> = h
+        .record_lists
+        .iter()
+        .map(|r| {
+            let window = r.new_window.as_ref();
+            (
+                r.ids.as_str(),
+                window.and_then(|w| w.name.as_deref()),
+                window.and_then(|w| w.bounds.height),
+            )
+        })
+        .collect();
+    assert_eq!(
+        lists,
+        [
+            ("2\r3", None, None),
+            ("2\r3", Some("Kept name"), Some(300.0))
+        ]
+    );
+}
+
 // ----- triggers ----------------------------------------------------------------------
 
 #[test]
@@ -1604,6 +1641,57 @@ fn perform_script_on_server_returns_result_and_error() {
     assert_eq!(age_is(&h, 1), "42");
 }
 
+#[test]
+fn perform_script_on_server_with_callback_reads_filemaker_slots() {
+    // #188: Pro stores the callback from the list as the hex literal of its
+    // key in slot 3 and keeps it when the choice changes to by name
+    // (`[00 6]` = 1, the name in slot 7); the parameter is slot 4.
+    let mut h = host();
+    h.add_script(0, script(2, "Server", vec![]));
+    h.add_script(0, script(3, "Callback", vec![]));
+    h.add_script(0, script(4, "Named", vec![]));
+    let mut psos = with_calc(&h, 210, "\"ServerMarker\"");
+    psos.set_script_key(StoredKey::from_serial_id(2));
+    psos.set_calculation(3, Some(&calc(&h, "\"03\"")));
+    psos.set_calculation(4, Some(&calc(&h, "\"CallbackMarker\"")));
+    psos.flags |= flag::OPTION | flag::OPTION2;
+    let mut named = psos.clone();
+    named.set_list_value(6, Some(1));
+    named.set_calculation(7, Some(&calc(&h, "\"named\"")));
+    let mut missing = psos.clone();
+    missing.set_calculation(3, Some(&calc(&h, "\"09\"")));
+    let steps = vec![
+        psos,
+        set_var(&h, "$$list", "Get ( LastError )"),
+        named,
+        set_var(&h, "$$named", "Get ( LastError )"),
+        missing,
+        set_var(&h, "$$missing", "Get ( LastError )"),
+    ];
+    h.add_script(0, script(1, "Client", steps));
+    let mut rt = Runtime::default();
+    run(&mut h, &mut rt, 1);
+    assert_eq!(
+        (g(&mut rt, "$$list"), g(&mut rt, "$$named")),
+        ("0".into(), "0".into())
+    );
+    // A callback the file does not have: the server is not called.
+    assert_eq!(g(&mut rt, "$$missing"), "104");
+    let parameter = calc(&h, "\"CallbackMarker\"");
+    let calls: Vec<_> = h
+        .server_callbacks
+        .iter()
+        .map(|c| (c.call.script, c.callback, c.callback_parameter.as_ref()))
+        .collect();
+    assert_eq!(
+        calls,
+        [
+            (2, Some((0, 3)), Some(&parameter)),
+            (2, Some((0, 4)), Some(&parameter))
+        ]
+    );
+}
+
 // ----- every step id ------------------------------------------------------------------
 
 #[test]
@@ -1647,10 +1735,24 @@ fn every_step_id_dispatches_on_every_client() {
                 assert_eq!(error.as_deref(), Some("0"), "step {id}");
             } else if client == Client::Server && id == 146 {
                 assert_eq!(error.as_deref(), Some("5"));
-            } else if id >= 248 || om_scripts::OBSOLETE_STEP_IDS.contains(&id) {
-                assert_eq!(error.as_deref(), Some("4"), "{client:?} step {id}");
-            } else if !om_scripts::is_supported(id, client) {
-                assert_eq!(error.as_deref(), Some("3"), "{client:?} step {id}");
+            } else {
+                let (known, supported) = if client == Client::Mac {
+                    (
+                        om_scripts::is_valid_step_id(id),
+                        om_scripts::is_supported(id, client),
+                    )
+                } else {
+                    // The server keeps FileMaker Server 26.0.3's table.
+                    (
+                        om_scripts::is_server_step_id(id),
+                        om_scripts::is_supported_on_server(id, client),
+                    )
+                };
+                if !known || om_scripts::OBSOLETE_STEP_IDS.contains(&id) {
+                    assert_eq!(error.as_deref(), Some("4"), "{client:?} step {id}");
+                } else if !supported {
+                    assert_eq!(error.as_deref(), Some("3"), "{client:?} step {id}");
+                }
             }
         }
     }

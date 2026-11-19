@@ -201,9 +201,14 @@ fields), and the optional comment. The name must be one a calculation can
 name without `${…}`: at most 100 characters, no operators or other
 delimiters, no leading digit, period or `$`, no space at either end, no
 `and`/`or`/`xor`/`not` word, not a function's name, no control characters
-(`invalid_name`). It must not be a name of the table's fields as FileMaker
-compares them, by their name keys, so case and accents do not tell them
-apart (`duplicate_name`, naming the field that has it).
+(`invalid_name`), and one whose name list key OpenMaker can build
+(re/schema-path.md 5.6; the names it cannot are in schema-manager.md,
+"What it refuses"). It must not have the primary weights of another of the
+table's fields, so neither case nor accents tell them apart, nor what
+FileMaker's catalog language equates (`ı` and `i`)
+(`duplicate_name`, naming the field that has it): FileMaker's keys tell
+accents apart, and whether FileMaker Pro takes `Grosse` beside `Größe` is
+not established.
 
 The host does what Manage Database's save of one new field stores
 (re/schema-path.md 2.3, 5.1, 5.5, 5.6, 8.1), in the table's field catalog
@@ -476,6 +481,9 @@ FileMaker Pro's New Layout/Report makes for a computer with Form chosen
 shows only in Form view (Claris, "New Layout/Report"). It takes the theme
 and width of the layout named, or of the first layout in the file's order
 that has a theme; its body is 600 points high. Layouts may share a name.
+The name is listed under the key FileMaker Pro lists it under
+(re/schema-path.md 5.6), and one whose key OpenMaker cannot build is
+refused as an unusable name.
 The part set, the body's height, the width and the theme are OpenMaker's
 choices: what FileMaker Pro writes for them is not measured
 (re/layout-model.md 10.6).

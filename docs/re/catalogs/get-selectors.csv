@@ -141,3 +141,4 @@ index,selector,signature,category_id,display_name,description
 139,AccountPasswordDaysRemaining,Get ( AccountPasswordDaysRemaining ),19,Account Password Days Remaining,Returns the number of days remaining before the current account's password must be changed.
 140,WindowUUID,Get ( WindowUUID ),19,Window UUID,Returns the Universally Unique Identifier (UUID) of the active window.
 141,GuidedAccessState,Get ( GuidedAccessState ),19,Guided Access State,"In FileMaker Go, returns 1 (true) if Guided Access is turned on; otherwise, returns 0 (false)."
+142,SortOrder,Get ( SortOrder ),19,Sort Order,Returns the sort order as a JSON object.

@@ -320,6 +320,20 @@ impl RelatedRecords<'_> {
     }
 }
 
+/// Go to List of Records (228, script-steps.md 12.2).
+#[derive(Clone, Debug, PartialEq)]
+pub struct RecordList {
+    /// The record ids as a return-separated list (calculation slot 7).
+    pub ids: String,
+    pub layout: Option<LayoutTarget>,
+    pub animation: Option<u32>,
+    /// "Show in new window" (`kTurnOn`): the window as Go to Related Record
+    /// stores it, its name in slot 0, its bounds in slots 1-4 and its style
+    /// word at `[00 0, 03]`. Its `layout` is `None` and `style` 0: the step
+    /// goes to its own layout.
+    pub new_window: Option<NewWindow>,
+}
+
 /// Commit Records/Requests and Open Transaction options.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 pub struct CommitOptions {
@@ -825,14 +839,8 @@ pub trait Navigation {
         Err(HostError::Unsupported)
     }
 
-    /// Go to List of Records (228): record ids as a return-separated list.
-    fn go_to_list_of_records(
-        &mut self,
-        _ids: &str,
-        _layout: Option<&LayoutTarget>,
-        _animation: Option<u32>,
-        _new_window: bool,
-    ) -> HostResult {
+    /// Go to List of Records (228).
+    fn go_to_list_of_records(&mut self, _request: &RecordList) -> HostResult {
         Err(HostError::Unsupported)
     }
 

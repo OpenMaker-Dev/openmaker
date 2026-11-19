@@ -49,8 +49,8 @@ pub use host::{
     DialogInput, DialogResponse, Dialogs, Encoding, ErrorAlert, ErrorLogEntry, FieldRef, Fields,
     FileId, FileSource, Files, FindKind, FoundSets, HostError, HostResult, InsertFile, InsertKind,
     InsertTarget, LayoutTarget, Mail, MailVia, Mode, Navigation, Network, NewWindow, OnTimer,
-    PauseEnd, Platform, RecordMove, Records, RelatedRecords, Replacement, ScriptAccess, ScriptHost,
-    ServerCallbackCall, ServerScriptCall, ServerScriptResult, StepArg, StepCall,
+    PauseEnd, Platform, RecordList, RecordMove, Records, RelatedRecords, Replacement, ScriptAccess,
+    ScriptHost, ServerCallbackCall, ServerScriptCall, ServerScriptResult, StepArg, StepCall,
     TransactionOptions, TransferCall, UrlRequest, UrlResponse, Visibility, WindowId, WindowOptions,
     WindowStyle, WindowTarget, Windows,
 };
@@ -1846,12 +1846,24 @@ impl Runtime {
     }
 }
 
-/// Whether a step id is one FileMaker 26 refuses with error 4.
-fn is_unknown_step(id: u16) -> bool {
-    !crate::is_valid_step_id(id) || OBSOLETE_STEP_IDS.contains(&id)
+/// Whether a step id is one FileMaker refuses with error 4. The server's
+/// runtimes refuse what FileMaker Server 26.0.3 does not know.
+fn is_unknown_step(options: &Options, id: u16) -> bool {
+    let known = if options.is_server() {
+        crate::is_server_step_id(id)
+    } else {
+        crate::is_valid_step_id(id)
+    };
+    !known || OBSOLETE_STEP_IDS.contains(&id)
 }
 
-/// Whether `client` has a handler for the step (script-runtime.md 10.2).
-fn client_supports(client: Client, id: u16) -> bool {
-    is_supported(id, client)
+/// Whether the runtime's client has a handler for the step
+/// (script-runtime.md 10.2), on the server by FileMaker Server 26.0.3's
+/// table.
+fn client_supports(options: &Options, id: u16) -> bool {
+    if options.is_server() {
+        crate::is_supported_on_server(id, options.client)
+    } else {
+        is_supported(id, options.client)
+    }
 }

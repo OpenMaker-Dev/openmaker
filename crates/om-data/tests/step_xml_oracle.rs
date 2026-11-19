@@ -866,10 +866,17 @@ fn targeted_probe_steps(names: &om_data::host::CalcSchema) -> Vec<ScriptStep> {
     callback.set_script_key(StoredKey::from_serial_id(
         names.find_script("Sort by Name").one().expect("script"),
     ));
-    callback.set_calculation(2, Some(&calc("\"Sort by Status\"")));
-    callback.set_calculation(3, Some(&calc("4")));
+    // The callback from the list as the hex literal of its key in slot 3,
+    // its parameter in slot 4 (script-steps.md 12.2).
+    let status = names.find_script("Sort by Status").one().expect("script");
+    let hex: String = om_hbam::serial::encode(status)
+        .iter()
+        .map(|b| format!("{b:02X}"))
+        .collect();
+    callback.set_calculation(3, Some(&calc(&format!("\"{hex}\""))));
+    callback.set_calculation(4, Some(&calc("4")));
     callback.value = 3;
-    callback.flags |= flag::MENU_SELECTION;
+    callback.flags |= flag::MENU_SELECTION | flag::OPTION | flag::OPTION2;
     out.push(callback);
     let mut external = ScriptStep::new(1);
     external.set_script_key(StoredKey::from_serial_id(3));

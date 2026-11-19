@@ -76,7 +76,8 @@ Complete, on every path:
   repetition 256);
 - the key forms of `re/query-program.md` 7.2-7.3: English and English
   international DUCET 5.2 primary weights, System and Unicode standard
-  (the same plus `00 00`), Unicode raw (UTF-16BE), and nonnegative integer,
+  (the same, `00 00` and the secondary weights), Unicode raw (UTF-16BE),
+  and nonnegative integer,
   date, whole-second time and timestamp keys. Language 0 has no keys and
   lists nothing.
 

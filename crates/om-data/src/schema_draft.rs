@@ -364,23 +364,34 @@ fn read_nested_key<'a>(input: &mut &'a [u8]) -> Option<&'a [u8]> {
     key_string_key(inner)
 }
 
-/// The name list key of `name` in `[cat, 1, 01]`: its name key and three
-/// zero bytes (schema-path.md 5.6).
-fn listed(name: &str) -> Vec<u8> {
-    let mut key = field_catalog::name_key(name);
-    key.extend([0, 0, 0]);
-    key
+/// The key `name` is listed under in `[cat, 1, 01]` (schema-path.md 5.6).
+/// A name [`check_name`] passed always has one; a name already in the file
+/// may not.
+fn listed(name: &str) -> Result<Vec<u8>, DataError> {
+    field_catalog::listed_key(name).ok_or_else(|| unkeyed(name))
 }
 
-/// The key in a field catalog's name list by type `[T, 3, 1, 06]`.
-/// A field's key in the name list by type, `[T, 3, 1, 06]`: its kind, its
-/// type shifted left by 2 with bit 0 for global storage (E38), and its name
-/// key.
-fn typed(kind: u8, data_type: u8, global: bool, name: &str) -> Vec<u8> {
-    let mut key = vec![kind, data_type << 2 | u8::from(global)];
-    key.extend(field_catalog::name_key(name));
-    key.extend([0, 0]);
-    key
+/// A field's key in the name list by type `[T, 3, 1, 06]`
+/// ([`field_catalog::typed_key`]).
+fn typed(kind: u8, data_type: u8, global: bool, name: &str) -> Result<Vec<u8>, DataError> {
+    field_catalog::typed_key(kind, data_type, global, name).ok_or_else(|| unkeyed(name))
+}
+
+/// The refusal for a name whose name list key OpenMaker cannot build.
+fn unkeyed(name: &str) -> DataError {
+    unsupported(format!(
+        "OpenMaker cannot yet build the key FileMaker lists “{name}” under: FileMaker's weights \
+         for one of its characters are not established."
+    ))
+}
+
+/// Remove the entries of name list `list` that name member `key`, under
+/// whatever key they are listed (one FileMaker or an earlier OpenMaker
+/// wrote, or one OpenMaker cannot build).
+fn unlist_member(list: &mut OwnedNode, key: &[u8]) {
+    let value = key_string(key);
+    list.children
+        .retain(|entry| entry.value.as_deref() != Some(value.as_slice()));
 }
 
 fn text_of(node: &OwnedNode) -> Option<String> {
@@ -432,14 +443,32 @@ fn member_name(member: &OwnedNode) -> Option<String> {
     member.child(&[NAME]).and_then(text_of)
 }
 
-/// The member of `catalog` whose name FileMaker takes for `name`'s (by name
-/// key, so case and accents do not tell them apart), other than `except`.
+/// The member of `catalog` whose name OpenMaker takes for `name`
+/// ([`field_catalog::same_names`]: neither case nor accents tell them
+/// apart), other than `except`.
 fn named<'a>(catalog: &'a OwnedNode, name: &str, except: Option<&[u8]>) -> Option<&'a OwnedNode> {
-    let key = field_catalog::name_key(name);
     members(catalog).iter().find(|member| {
         Some(member.segment.as_slice()) != except
-            && member_name(member).is_some_and(|n| field_catalog::name_key(&n) == key)
+            && member_name(member).is_some_and(|n| field_catalog::same_names(&n, name))
     })
+}
+
+/// Refuse writing `entry` into list `list` of `catalog`'s index for member
+/// `key` when the list holds it for another member: [`named`] keeps names
+/// that share a key out, and this keeps a name OpenMaker could not key, or
+/// a list another writer left, from losing its entry.
+fn check_free(catalog: &OwnedNode, list: u8, entry: &[u8], key: &[u8]) -> Result<(), DataError> {
+    match catalog
+        .at(&[&[INDEX], &[list], entry])
+        .and_then(|e| e.value.as_deref())
+    {
+        Some(held) if held != key_string(key) => Err(taken(
+            "Another member is listed under the key of this name; OpenMaker does not write \
+             over its entry."
+                .into(),
+        )),
+        _ => Ok(()),
+    }
 }
 
 /// What `copy`, a duplicate made through the Create and options paths,
@@ -697,14 +726,18 @@ impl Catalog<'_> {
                 }
             }
         }
+        let entry = name.map(listed).transpose()?;
+        if let Some(entry) = &entry {
+            check_free(self.node, NAMES, entry, key)?;
+        }
         self.node.put(&[&[MEMBERS], key], member);
         let value = key_string(key);
         self.index()
             .set_child(OwnedNode::leaf(vec![LAST_ID], value.clone()));
-        if let Some(name) = name {
+        if let Some(entry) = entry {
             self.index()
                 .ensure(&[&[NAMES]])
-                .set_child(OwnedNode::leaf(listed(name), value));
+                .set_child(OwnedNode::leaf(entry, value));
             // A new member goes after the last position, as FileMaker Pro
             // adds it, without renumbering the others.
             let next = match self
@@ -737,8 +770,8 @@ impl Catalog<'_> {
             .node
             .remove(&[&[MEMBERS], key])
             .ok_or_else(|| refuse("The definition no longer exists."))?;
-        if let Some(name) = member_name(&member) {
-            self.unlist(&name, key);
+        if let Some(names) = self.node.at_mut(&[&[INDEX], &[NAMES]]) {
+            unlist_member(names, key);
         }
         if self.node.at(&[&[INDEX], &[ORDER]]).is_some() {
             let kept: Vec<Vec<u8>> = order.into_iter().filter(|k| k != key).collect();
@@ -748,26 +781,17 @@ impl Catalog<'_> {
         Ok(member)
     }
 
-    /// Remove `name` from the name list if it names `key`.
-    fn unlist(&mut self, name: &str, key: &[u8]) {
-        let entry = listed(name);
-        let value = key_string(key);
-        let names = self.index().ensure(&[&[NAMES]]);
-        if names.child(&entry).and_then(|e| e.value.as_deref()) == Some(value.as_slice()) {
-            names.remove(&[&entry]);
-        }
-    }
-
-    /// Rename member `key` from `old` to `new` in the member and the name
-    /// list, which a catalog with members must have.
-    fn rename(&mut self, key: &[u8], old: &str, new: &str) -> Result<(), DataError> {
+    /// Rename member `key` to `new` in the member and the name list, which
+    /// a catalog with members must have.
+    fn rename(&mut self, key: &[u8], new: &str) -> Result<(), DataError> {
         if self.node.at(&[&[INDEX], &[NAMES]]).is_none() {
             return Err(Self::missing("name list"));
         }
-        self.unlist(old, key);
-        self.index()
-            .ensure(&[&[NAMES]])
-            .set_child(OwnedNode::leaf(listed(new), key_string(key)));
+        let entry = listed(new)?;
+        check_free(self.node, NAMES, &entry, key)?;
+        let names = self.index().ensure(&[&[NAMES]]);
+        unlist_member(names, key);
+        names.set_child(OwnedNode::leaf(entry, key_string(key)));
         if let Some(member) = self.node.at_mut(&[&[MEMBERS], key]) {
             member.set_child(om_scripts::text_node(&[NAME], new));
         }
@@ -1492,8 +1516,7 @@ impl SchemaDraft {
                     member_name(other).unwrap_or_default()
                 )));
             }
-            self.catalog(CatalogPath::Tables)
-                .rename(table, &old, name)?;
+            self.catalog(CatalogPath::Tables).rename(table, name)?;
             // FileMaker Pro renames the occurrences that had the table's
             // name, unless another occurrence has the new one.
             let occurrences = self
@@ -1514,7 +1537,7 @@ impl SchemaDraft {
                 .unwrap_or_default();
             for occurrence in occurrences {
                 self.catalog(CatalogPath::Occurrences)
-                    .rename(&occurrence, &old, name)?;
+                    .rename(&occurrence, name)?;
                 self.touch(CatalogPath::Occurrences, &occurrence);
             }
         }
@@ -1646,16 +1669,15 @@ impl SchemaDraft {
             let catalog = self.catalog_mut(&which);
             members(catalog).is_empty() || catalog.at(&[&[INDEX], &[TYPED_NAMES]]).is_some()
         };
+        let typed_entry = typed(KIND_NORMAL, type_code(data_type), false, name)?;
+        check_free(self.catalog_mut(&which), TYPED_NAMES, &typed_entry, &key)?;
         let mut fields = self.catalog(which.clone());
         fields.add(&key, member, Some(name))?;
         if has_typed {
             fields
                 .index()
                 .ensure(&[&[TYPED_NAMES]])
-                .set_child(OwnedNode::leaf(
-                    typed(KIND_NORMAL, type_code(data_type), false, name),
-                    key_string(&key),
-                ));
+                .set_child(OwnedNode::leaf(typed_entry, key_string(&key)));
         }
         self.created.insert(MemberRef {
             catalog: which,
@@ -1787,24 +1809,26 @@ impl SchemaDraft {
         if old != name || old_comment != comment {
             work |= WORK_MEMBER;
         }
+        let typed_list = self
+            .fields(table)?
+            .at(&[&[INDEX], &[TYPED_NAMES]])
+            .is_some();
+        let typed_entry = if typed_list && (old != name || old_type != new_type) {
+            let entry = typed(definition[0], new_type, options & GLOBAL != 0, name)?;
+            check_free(self.fields(table)?, TYPED_NAMES, &entry, field)?;
+            Some(entry)
+        } else {
+            None
+        };
         {
             let mut fields = self.catalog(which.clone());
             if old != name {
-                fields.rename(field, &old, name)?;
+                fields.rename(field, name)?;
             }
-            let typed_list = fields.node.at(&[&[INDEX], &[TYPED_NAMES]]).is_some();
-            if typed_list && (old != name || old_type != new_type) {
+            if let Some(entry) = typed_entry {
                 let list = fields.index().ensure(&[&[TYPED_NAMES]]);
-                let before = typed(definition[0], old_type, options & GLOBAL != 0, &old);
-                if list.child(&before).and_then(|e| e.value.as_deref())
-                    == Some(key_string(field).as_slice())
-                {
-                    list.remove(&[&before]);
-                }
-                list.set_child(OwnedNode::leaf(
-                    typed(definition[0], new_type, options & GLOBAL != 0, name),
-                    key_string(field),
-                ));
+                unlist_member(list, field);
+                list.set_child(OwnedNode::leaf(entry, key_string(field)));
             }
             if old_type != new_type {
                 definition[1] = new_type;
@@ -2308,18 +2332,12 @@ impl SchemaDraft {
         };
         if old.storage.global != new.storage.global && typed_list {
             let name = member_name(self.field_member(table, field)?).unwrap_or_default();
+            let entry = typed(definition[0], definition[1], new.storage.global, &name)?;
+            check_free(self.fields(table)?, TYPED_NAMES, &entry, field)?;
             let mut fields = self.catalog(which.clone());
             let list = fields.index().ensure(&[&[TYPED_NAMES]]);
-            let before = typed(definition[0], definition[1], old.storage.global, &name);
-            if list.child(&before).and_then(|e| e.value.as_deref())
-                == Some(key_string(field).as_slice())
-            {
-                list.remove(&[&before]);
-            }
-            list.set_child(OwnedNode::leaf(
-                typed(definition[0], definition[1], new.storage.global, &name),
-                key_string(field),
-            ));
+            unlist_member(list, field);
+            list.set_child(OwnedNode::leaf(entry, key_string(field)));
         }
         {
             let fields = self.catalog(which.clone());
@@ -3014,21 +3032,20 @@ impl SchemaDraft {
             members(catalog).is_empty() || catalog.at(&[&[INDEX], &[TYPED_NAMES]]).is_some()
         };
         {
+            let typed_entry = typed(
+                calc_field::KIND_CALCULATION,
+                definition[1],
+                calculation.storage.global,
+                name,
+            )?;
+            check_free(self.catalog_mut(&which), TYPED_NAMES, &typed_entry, &key)?;
             let mut fields = self.catalog(which.clone());
             fields.add(&key, member, Some(name))?;
             if has_typed {
                 fields
                     .index()
                     .ensure(&[&[TYPED_NAMES]])
-                    .set_child(OwnedNode::leaf(
-                        typed(
-                            calc_field::KIND_CALCULATION,
-                            definition[1],
-                            calculation.storage.global,
-                            name,
-                        ),
-                        key_string(&key),
-                    ));
+                    .set_child(OwnedNode::leaf(typed_entry, key_string(&key)));
             }
         }
         self.created.insert(MemberRef {
@@ -3131,33 +3148,30 @@ impl SchemaDraft {
             }
         }
         {
-            let mut fields = self.catalog(which.clone());
-            let typed_list = fields.node.at(&[&[INDEX], &[TYPED_NAMES]]).is_some();
-            if typed_list
+            let typed_list = self
+                .fields(table)?
+                .at(&[&[INDEX], &[TYPED_NAMES]])
+                .is_some();
+            let typed_entry = if typed_list
                 && (old_definition[1] != definition[1]
                     || old.storage.global != calculation.storage.global)
             {
-                let list = fields.index().ensure(&[&[TYPED_NAMES]]);
-                let before = typed(
-                    old_definition[0],
-                    old_definition[1],
-                    old.storage.global,
+                let entry = typed(
+                    definition[0],
+                    definition[1],
+                    calculation.storage.global,
                     &name,
-                );
-                if list.child(&before).and_then(|e| e.value.as_deref())
-                    == Some(key_string(field).as_slice())
-                {
-                    list.remove(&[&before]);
-                }
-                list.set_child(OwnedNode::leaf(
-                    typed(
-                        definition[0],
-                        definition[1],
-                        calculation.storage.global,
-                        &name,
-                    ),
-                    key_string(field),
-                ));
+                )?;
+                check_free(self.fields(table)?, TYPED_NAMES, &entry, field)?;
+                Some(entry)
+            } else {
+                None
+            };
+            let mut fields = self.catalog(which.clone());
+            if let Some(entry) = typed_entry {
+                let list = fields.index().ensure(&[&[TYPED_NAMES]]);
+                unlist_member(list, field);
+                list.set_child(OwnedNode::leaf(entry, key_string(field)));
             }
             let member = fields
                 .node
@@ -3572,16 +3586,15 @@ impl SchemaDraft {
             members(catalog).is_empty() || catalog.at(&[&[INDEX], &[TYPED_NAMES]]).is_some()
         };
         {
+            let typed_entry = typed(KIND_SUMMARY, definition[1], false, name)?;
+            check_free(self.catalog_mut(&which), TYPED_NAMES, &typed_entry, &key)?;
             let mut fields = self.catalog(which.clone());
             fields.add(&key, member, Some(name))?;
             if has_typed {
                 fields
                     .index()
                     .ensure(&[&[TYPED_NAMES]])
-                    .set_child(OwnedNode::leaf(
-                        typed(KIND_SUMMARY, definition[1], false, name),
-                        key_string(&key),
-                    ));
+                    .set_child(OwnedNode::leaf(typed_entry, key_string(&key)));
             }
         }
         self.created.insert(MemberRef {
@@ -3622,19 +3635,23 @@ impl SchemaDraft {
             key: field.to_vec(),
         });
         {
+            let typed_entry = if old_type != definition[1]
+                && self
+                    .fields(table)?
+                    .at(&[&[INDEX], &[TYPED_NAMES]])
+                    .is_some()
+            {
+                let entry = typed(KIND_SUMMARY, definition[1], false, &name)?;
+                check_free(self.fields(table)?, TYPED_NAMES, &entry, field)?;
+                Some(entry)
+            } else {
+                None
+            };
             let mut fields = self.catalog(which.clone());
-            if old_type != definition[1] && fields.node.at(&[&[INDEX], &[TYPED_NAMES]]).is_some() {
+            if let Some(entry) = typed_entry {
                 let list = fields.index().ensure(&[&[TYPED_NAMES]]);
-                let before = typed(KIND_SUMMARY, old_type, false, &name);
-                if list.child(&before).and_then(|e| e.value.as_deref())
-                    == Some(key_string(field).as_slice())
-                {
-                    list.remove(&[&before]);
-                }
-                list.set_child(OwnedNode::leaf(
-                    typed(KIND_SUMMARY, definition[1], false, &name),
-                    key_string(field),
-                ));
+                unlist_member(list, field);
+                list.set_child(OwnedNode::leaf(entry, key_string(field)));
             }
             let member = fields
                 .node
@@ -4553,17 +4570,11 @@ impl SchemaDraft {
             })?;
         }
         let which = CatalogPath::Fields(table.to_vec());
-        let global = u32::from_be_bytes(definition[OPTIONS].try_into().expect("4 bytes")) & GLOBAL;
-        let typed_key = typed(definition[0], definition[1], global != 0, &name);
         {
             let mut fields = self.catalog(which.clone());
             fields.remove(field)?;
             if let Some(list) = fields.node.at_mut(&[&[INDEX], &[TYPED_NAMES]]) {
-                if list.child(&typed_key).and_then(|e| e.value.as_deref())
-                    == Some(key_string(field).as_slice())
-                {
-                    list.remove(&[&typed_key]);
-                }
+                unlist_member(list, field);
             }
             // Its triggers, validation triggers and related reads; the
             // lists stay, also empty (runs e02, e04).
@@ -4822,7 +4833,7 @@ impl SchemaDraft {
             )));
         }
         self.catalog(CatalogPath::Occurrences)
-            .rename(occurrence, &old, name)?;
+            .rename(occurrence, name)?;
         self.touch(CatalogPath::Occurrences, occurrence);
         Ok(())
     }
@@ -6062,7 +6073,7 @@ mod tests {
             member.set_child(OwnedNode::leaf(vec![RELATED], vec![0, 0, 0, 1]));
             tables.put(&[&[MEMBERS], &key], member);
             tables.put(
-                &[&[INDEX], &[NAMES], &listed(name)],
+                &[&[INDEX], &[NAMES], &listed(name).unwrap()],
                 OwnedNode::leaf(vec![], key_string(&key)),
             );
             let to = key_of(id - 0x8002 + 0xd00002);
@@ -6071,7 +6082,7 @@ mod tests {
                 .unwrap()
                 .set_child(text(&[NAME], name));
             occurrences.put(
-                &[&[INDEX], &[NAMES], &listed(name)],
+                &[&[INDEX], &[NAMES], &listed(name).unwrap()],
                 OwnedNode::leaf(vec![], key_string(&to)),
             );
         }
@@ -6100,7 +6111,7 @@ mod tests {
                 .unwrap()
                 .set_child(text(&[NAME], name));
             contacts.put(
-                &[&[INDEX], &[NAMES], &listed(name)],
+                &[&[INDEX], &[NAMES], &listed(name).unwrap()],
                 OwnedNode::leaf(vec![], key_string(&[key])),
             );
         }
@@ -6126,7 +6137,7 @@ mod tests {
             member.set_child(text(&[NAME], "ForeignKey"));
             catalog.put(&[&[MEMBERS], &[id]], member);
             catalog.put(
-                &[&[INDEX], &[NAMES], &listed("ForeignKey")],
+                &[&[INDEX], &[NAMES], &listed("ForeignKey").unwrap()],
                 OwnedNode::leaf(vec![], key_string(&[id])),
             );
             catalog
@@ -6664,6 +6675,71 @@ mod tests {
         let error = set(&mut draft, 0x01, true).unwrap_err();
         assert_eq!(error.code, Some(UNSUPPORTED), "{}", error.message);
         assert!(!draft.is_changed());
+    }
+
+    #[test]
+    fn an_accented_field_is_listed_as_filemaker_pro_lists_it() {
+        // FileMaker Pro 26.0.3's keys for the Text field `Größe` it added as
+        // 0e to a German Contacts copy (schema-path.md 5.6).
+        let listed = "12b013da138e14101410126b000001010128013a0101000101010103031e01";
+        let typed = "010412b013da138e14101410126b000001010128013a0101";
+        let mut draft = SchemaDraft::new(contacts());
+        let create = |name: &str| SchemaChange::CreateField {
+            table_id: 0x8002,
+            name: name.into(),
+            data_type: FieldKind::Text,
+            comment: String::new(),
+        };
+        draft.apply(&create("Größe")).unwrap();
+        let fields = |draft: &SchemaDraft| {
+            let plan = draft.clone().finish(&stamp(), &mut uuids());
+            plan.catalogs
+                .into_iter()
+                .find(|(p, _)| *p == CatalogPath::Fields(hex("8002")))
+                .unwrap()
+                .1
+        };
+        let catalog = fields(&draft);
+        assert_eq!(
+            value(&catalog, &format!("01/01/{listed}")),
+            Some(&hex("010e")[..])
+        );
+        assert_eq!(
+            value(&catalog, &format!("01/06/{typed}")),
+            Some(&hex("010e")[..])
+        );
+        // Case does not tell names apart, nor, in OpenMaker, accents.
+        for taken in ["GRÖSSE", "Grosse"] {
+            let refused = draft.apply(&create(taken)).unwrap_err();
+            assert_eq!(refused.code, Some(NAME_EXISTS), "{taken}");
+        }
+        // The catalog language keys `ı` as `i`, so they are one name: the
+        // second would take the first's entries in both lists.
+        draft.apply(&create("i")).unwrap();
+        let refused = draft.apply(&create("ı")).unwrap_err();
+        assert_eq!(refused.code, Some(NAME_EXISTS));
+        // Renamed, it leaves no entry under the old keys.
+        draft
+            .apply(&SchemaChange::ChangeField {
+                table_id: 0x8002,
+                field_id: 0x0e,
+                name: "Maß".into(),
+                data_type: FieldKind::Text,
+                comment: String::new(),
+            })
+            .unwrap();
+        let catalog = fields(&draft);
+        for (list, old) in [(NAMES, listed), (TYPED_NAMES, typed)] {
+            let entries: Vec<&OwnedNode> = catalog
+                .at(&[&[INDEX], &[list]])
+                .unwrap()
+                .children
+                .iter()
+                .filter(|e| e.value.as_deref() == Some(&hex("010e")[..]))
+                .collect();
+            assert_eq!(entries.len(), 1, "list {list:02x}");
+            assert_ne!(entries[0].segment, hex(old), "list {list:02x}");
+        }
     }
 
     #[test]
