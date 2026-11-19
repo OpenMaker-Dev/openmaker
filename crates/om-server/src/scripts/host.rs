@@ -3665,9 +3665,11 @@ impl FoundSets for ServerHost {
     /// record is current otherwise, and the found set is unsorted. A text
     /// with no word is 400; no match is 401 and keeps the found set, its
     /// sort and the current record (6.6, reported). A layout with Quick
-    /// Find turned off searches no field (401). A Quick Find field of
-    /// another occurrence is a related criterion, which server finds do
-    /// not support (3, script-steps.md 11.2.5).
+    /// Find turned off searches no field (401). A word a field of another
+    /// occurrence would be searched for is a related criterion, which
+    /// server finds do not support (3, script-steps.md 11.2.5); a related
+    /// field whose type cannot read the word is not searched for it, as on
+    /// the desktop, and needs no join.
     fn perform_quick_find(&mut self, text: &str) -> HostResult {
         // A find reads field values.
         self.require_view()?;

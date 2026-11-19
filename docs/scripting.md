@@ -269,9 +269,9 @@ Server Find mode:
 - A find without criteria (400) returns to Browse.
 - Perform Quick Find (150) searches the window's layout by the
   desktop's rules ([Quick Find](desktop-client.md#quick-find)), among
-  all the table's records. A layout with a Quick Find field of another
-  occurrence fails with 3, as a related find criterion does on the
-  server; Find Matching Records is 3 too
+  all the table's records. A word that a Quick Find field of another
+  occurrence would be searched for fails with 3, as a related find
+  criterion does on the server; Find Matching Records is 3 too
   ([#101](https://github.com/OpenMaker-Dev/openmaker/issues/101)). What
   FileMaker Server does is not measured.
 - Globals read their value with no current record, and sessions start

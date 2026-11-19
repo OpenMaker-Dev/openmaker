@@ -45,10 +45,11 @@ struct Term {
     phrase: bool,
 }
 
-/// The fields Quick Find searches on `layout` (a layout as
-/// `DataProvider::render_layout` returns it, merge fields resolved to
-/// names), in the order the layout stores their objects; `None` when the
-/// layout has Quick Find turned off.
+/// The fields Quick Find searches on `layout`, in the order the layout
+/// stores their objects; `None` when the layout has Quick Find turned off.
+/// Merge fields count whether the layout names them (as
+/// `DataProvider::render_layout` resolves them) or holds only their
+/// catalog keys (a layout as stored, which the server reads).
 pub fn fields(layout: &om_layout::Layout, schema: &CalcSchema) -> Option<Vec<QuickFindField>> {
     if !layout
         .def
@@ -115,6 +116,14 @@ pub fn fields(layout: &om_layout::Layout, schema: &CalcSchema) -> Option<Vec<Qui
             };
             if let Some((occurrence, field)) = field {
                 add(occurrence, field);
+            }
+        }
+        for spec in object.merge_field_specs() {
+            let occurrence = schema.occurrence(spec.table_key);
+            if let (Some(occurrence), Some(field)) =
+                (occurrence, schema.field(spec.table_key, spec.field_key))
+            {
+                add(occurrence.id, field);
             }
         }
     }

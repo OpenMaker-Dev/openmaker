@@ -223,6 +223,11 @@ fn scripts() -> Vec<Script> {
             "Quick Find no match",
             quick_find_then_count("\"write qqq\""),
         ),
+        script(
+            43,
+            "Quick Find merge field",
+            quick_find_then_count("\"open\""),
+        ),
     ]
 }
 
@@ -254,7 +259,9 @@ fn tree() -> OwnedNode {
     let ids: RidList = (1..=5).collect();
     root.put(&[&tasks, &[0x0d]], ids.to_node(Vec::new()));
     root.put(&[&tasks, &[0]], OwnedNode::leaf(Vec::new(), vec![1, 5]));
-    // Layout Tasks shows Name in an edit box, which Quick Find searches.
+    // Layout Tasks shows Name in an edit box and Status as a merge field
+    // stored by its catalog keys (layout-model.md 4.1), both of which Quick
+    // Find searches.
     let key = |id: u64| serial::id_of_raw(id).unwrap();
     let bounds = Rect {
         top: 20.0,
@@ -265,14 +272,32 @@ fn tree() -> OwnedNode {
     };
     let mut store = Vec::new();
     encode::uint(1, 1, &mut store);
+    encode::uint(1, 2, &mut store);
     encode::bytes(
         2,
         &encode::field_object(1, &bounds, key(OCCURRENCE), key(NAME)),
         &mut store,
     );
+    encode::bytes(2, &encode::text_object(2, &bounds), &mut store);
+    let layout = uint_segment(fixture::LAYOUT);
     root.put(
-        &[&[4], &[5], &uint_segment(fixture::LAYOUT), &[7]],
+        &[&[4], &[5], &layout, &[7]],
         OwnedNode::leaf(Vec::new(), store),
+    );
+    // The merge token: kind 2, then the occurrence and field keys with
+    // their lengths, as hex (`om_layout`'s `merge_field_spec`).
+    let token = format!("0003{OCCURRENCE:06X}01{:02X}", fixture::STATUS);
+    let text = format!(
+        "Status: <<\u{1}\u{2}{}{token}>>",
+        char::from(token.len() as u8)
+    );
+    let scsu = om_scsu::encode_scsu(&text);
+    let mut literal = vec![0x13, scsu.len() as u8];
+    literal.extend(scsu);
+    literal.push(0);
+    root.put(
+        &[&[4], &[5], &layout, &[5], &serial::encode(2), &[2], &[6]],
+        OwnedNode::leaf(Vec::new(), literal),
     );
     root
 }
@@ -341,9 +366,9 @@ fn find_mode_reads_and_finds_without_criteria_are_filemakers() {
 }
 
 /// Perform Quick Find on the server (query-program.md 6.6) searches the
-/// layout's Name field object: a word finds the records holding it, the
-/// words narrow one another, and no match (401) or no word (400) keeps the
-/// found set. It ran into error 3 before.
+/// layout's Name field object and its Status merge field: a word finds the
+/// records holding it, the words narrow one another, and no match (401) or
+/// no word (400) keeps the found set. It ran into error 3 before.
 #[test]
 fn server_quick_find_searches_the_layouts_quick_find_fields() {
     let file = TempFile::from_tree("psos-quick-find", &tree());
@@ -352,4 +377,6 @@ fn server_quick_find_searches_the_layouts_quick_find_fields() {
     assert_eq!(run(&mut client, 40), (0, "0:1".into()));
     assert_eq!(run(&mut client, 41), (400, "400:5".into()));
     assert_eq!(run(&mut client, 42), (401, "401:5".into()));
+    // Record 5's Status "Open", through the merge field.
+    assert_eq!(run(&mut client, 43), (0, "0:1".into()));
 }
