@@ -703,8 +703,9 @@ const CUSTOM_PASSWORD: &str = "temp's secret";
 
 /// Add [`CUSTOM`] (security catalog record 7) in set 4, a custom set
 /// OpenMaker enforces: records view only, every layout and value list,
-/// every script executable only but script 4, which it gives no access
-/// (session-identity.md 2.2: `09, 11 04` is script `04`'s entry, `d5` no
+/// every script executable only but scripts 4 and 200, which it gives no
+/// access (session-identity.md 2.2: `09, 11 04` is script `04`'s entry,
+/// `09, 11 80 48` script 200's, its key the serial encoding; `d5` no
 /// access), every other privilege, no password lifetime.
 fn add_custom_set(root: &mut om_hbam::OwnedNode) {
     use om_hbam::OwnedNode;
@@ -723,6 +724,8 @@ fn add_custom_set(root: &mut om_hbam::OwnedNode) {
         (&[0x04u8][..], 0xdfu8),
         (&[0x11], 0xd6),
         (&[0x11, 0x04], 0xd5),
+        // Script 200, keyed `80 48` (two bytes, its serial encoding).
+        (&[0x11, 0x80, 0x48], 0xd5),
         (&[0x21], 0xd6),
     ] {
         root.put(
@@ -770,6 +773,8 @@ fn a_custom_set_decides_which_scripts_its_account_may_run() {
             ],
         ),
     ];
+    let mut scripts = scripts.to_vec();
+    scripts.push(full_access(200, "Elevated too", vec![exit_with("\"ran\"")]));
     let mut root = fixture::tree(&scripts, true);
     add_custom_set(&mut root);
     let file = TempFile::from_tree("custom-scripts", &root);
@@ -778,6 +783,8 @@ fn a_custom_set_decides_which_scripts_its_account_may_run() {
     });
     let mut temp = logged_in_as(port, "temp", CUSTOM);
     assert_eq!(run(&mut temp, 4), (9, String::new()));
+    // A two-byte key: its entry is found by the key, not the id's bytes.
+    assert_eq!(run(&mut temp, 200), (9, String::new()));
     // The script's last error is Set Field's.
     assert_eq!(run(&mut temp, 5), (9, "9|Temp".into()));
     let after = records(&mut temp);

@@ -2598,8 +2598,10 @@ Server engine (11.3, 11.5)
   is set to run with full access privileges: then each of its steps has
   full access (2.2, 9.1). A sub-script it calls may execute even without
   access (`mParentRunWithFullAccess`) but runs with the account's own
-  privileges, not elevated (OpenMaker gives the flag only to a script the
-  account may run; inf for one also set to run with full access): there,
+  privileges: OpenMaker gives the full-access flag only to a script the
+  account may run, so such a child is not elevated even when it is itself
+  set to run with full access, where FileMaker would elevate it (inf, 9.1)
+  ([#227](https://github.com/OpenMaker-Dev/openmaker/issues/227)): there,
   and wherever the account is not elevated, creating, changing, deleting,
   truncating, setting a global field or a next serial value and finding
   fail with 9, and reading a field is calculation error 9 (`?`, not

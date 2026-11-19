@@ -36,10 +36,12 @@ pub struct HostedFile {
 /// An account of a file in one of its verified built-in sets
 /// (`hosting::FileAccount::privileges`, session-identity.md 2.7) has that
 /// set's privileges. Every other account is [`Privileges::Unknown`] and
-/// fails closed in the server's own sessions: its scripts run only when
-/// they are set to run with full access privileges, and steps that create,
-/// change, delete, find or read records without that elevation fail with
-/// FileMaker's error 9 (insufficient privileges).
+/// fails closed in the server's own sessions: it runs the scripts its
+/// custom set makes executable (the session's set decides,
+/// `ServerHost::set_access`), and steps that create, change, delete, find
+/// or read records without the elevation of a script set to run with full
+/// access privileges fail with FileMaker's error 9 (insufficient
+/// privileges).
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 pub enum Privileges {
     /// The [Full Access] privilege set.

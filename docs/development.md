@@ -150,9 +150,10 @@ run any Perform Script on Server script and make `om-author` edits. One in
 reads every record, and under [Data Entry Only] creates, edits and deletes
 them, while [Read-Only Access]'s writes are refused with 200. An account in
 a custom set (admitted by a local file's private host) runs the scripts
-its set makes executable, never one it gives no access, and its steps
-read and write nothing unless the script is set to run with full access
-privileges. Only [Full Access] authors. The rules and their error codes are in
+its set makes executable. One its set gives no access runs only when a
+script running with full access performs it, and then with the account's
+own privileges. Its steps read and write no record or field unless the
+script is set to run with full access privileges. Only [Full Access] authors. The rules and their error codes are in
 [docs/re/local-files.md](re/local-files.md) 2. A desktop's private host
 for a local file applies the same ones, but admits the custom sets
 OpenMaker enforces, since its one client is the desktop itself. A password,

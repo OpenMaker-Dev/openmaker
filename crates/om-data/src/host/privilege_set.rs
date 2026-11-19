@@ -453,9 +453,12 @@ impl CustomRules {
     }
 
     /// Whether script `id` may be run: executable only or modifiable, not
-    /// no access (2.2).
+    /// no access (2.2). `id` is the script's serial id (`om_scripts`'
+    /// `Script::id`, the serial decode of its key `[17, 5, S]`); its entry
+    /// is under that key, as stored (`09, 11 80 59`).
     pub fn runs_script(&self, id: u64) -> bool {
-        self.scripts.of(&key_of(id)).first() != Some(AccessLevel::No)
+        let key = om_hbam::serial::encode(id);
+        self.scripts.of(&key).first() != Some(AccessLevel::No)
     }
 
     /// The access to records through layout `id`: the second field of its
@@ -723,8 +726,10 @@ mod tests {
         }
         // A script entry of its own (`09, 11 80 59`) without access.
         let mut rules = rules;
+        // Scripts are named by their serial id, the key's decode.
         rules.scripts.items.insert(vec![0x80, 0x59], Quad(0xd5));
-        assert!(!rules.runs_script(0x8059) && rules.runs_script(0x8058));
+        let id = om_hbam::serial::decode(&[0x80, 0x59]).unwrap();
+        assert!(!rules.runs_script(id) && rules.runs_script(id - 1));
         // A value list entry of its own (`09, 21 03`) without access.
         rules.value_lists.items.insert(vec![3], Quad(0xd5));
         assert!(!rules.shows_value_list(3) && rules.shows_value_list(4));
