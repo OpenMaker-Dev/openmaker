@@ -408,9 +408,7 @@ impl ExportSource for ServerExport<'_> {
             // desktop reads it: a running total's total, a fraction's 1.
             let summary = FieldId { occurrence, field };
             let context = om_calc::eval::Context::record(self.window.occurrence, first);
-            return self
-                .host
-                .get_summary(&context, summary, summary)
+            return om_data::summary::or_invalid(self.host.get_summary(&context, summary, summary))
                 .map(ExportValue::Computed)
                 .map_err(calc_error);
         };

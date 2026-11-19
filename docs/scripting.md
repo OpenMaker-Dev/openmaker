@@ -310,6 +310,17 @@ dBase.
   the desktop: a running total's found-set total and a fraction's 1, as
   FileMaker Pro 26.0.3 wrote them without restart or subtotal. Restart,
   subtotal and FileMaker Server's own values are unmeasured.
+- A group's summary its values cannot give (the sample standard
+  deviation of a group with one value) is `?` in that group only, written
+  as FileMaker Server writes it: nothing in tab, an unquoted empty field
+  in comma-separated text, a `COL` without `DATA` in FMPXMLRESULT, `?` in
+  HTML and a text cell `?` in Excel (script-steps.md, Exports). Without
+  groups the same summary is empty on every row, as FileMaker Pro 26.0.3
+  wrote it in Excel. Unmeasured and OpenMaker's inference: merge files
+  (as comma), dBase (empty), the grand summary of a grouped export (`?`),
+  a calculation field whose value is `?` (as a summary), and a `?` among a
+  field's repetitions or related values in FMPXMLRESULT (an empty `DATA`,
+  so the values after it keep their places).
 - Imports cover every action, mapping by position or name, field names
   rows, and auto-enter and validation through `om_data::rules`.
 - Stored specs decode and re-encode byte for byte.
