@@ -7,7 +7,9 @@ use std::io::{Cursor, Read};
 use std::sync::{Arc, OnceLock};
 
 pub(super) const MAX_BYTES: u64 = 256 << 20;
-const MAX_SVG_BYTES: u64 = 4 << 20;
+/// The largest report SVG picture ([`Unsupported::Refuse`]), compressed or
+/// not.
+pub(super) const MAX_SVG_BYTES: u64 = 4 << 20;
 const MAX_SVG_NODES: usize = 50_000;
 const MAX_DEPTH: usize = 64;
 pub(super) const MAX_SVG_PIXELS: f64 = 16_777_216.0;

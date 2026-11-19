@@ -77,6 +77,15 @@ pub fn set_default(path: PathBuf) {
 /// A drawn picture: its size in pixels and straight-alpha RGBA rows.
 pub type Drawn = (u32, u32, Vec<u8>);
 
+/// The most SVG data the worker reads for `unsupported`: a report picture's
+/// limit, or what a request may hold.
+fn input_limit(unsupported: Unsupported) -> u64 {
+    match unsupported {
+        Unsupported::Refuse => super::static_picture::MAX_SVG_BYTES,
+        Unsupported::Skip => super::static_picture::MAX_BYTES,
+    }
+}
+
 /// Draw `data` with the app's worker; see [`draw_with`].
 #[cfg_attr(test, allow(dead_code, reason = "unit tests draw in-process"))]
 pub(super) fn draw(
@@ -112,6 +121,10 @@ pub fn draw_with(
     size: Option<[u32; 2]>,
     unsupported: Unsupported,
 ) -> Result<Drawn, String> {
+    // Refused here rather than copied to a worker that would refuse it.
+    if data.len() as u64 > input_limit(unsupported) {
+        return Err("SVG input exceeds the picture limit".into());
+    }
     let [width, height] = size.unwrap_or([0, 0]);
     let limit = match size {
         Some([w, h]) => u64::from(w) * u64::from(h) * 4,
@@ -257,7 +270,7 @@ fn request(from: &mut impl Read) -> Option<Request> {
     let width = u32::from_be_bytes(head[7..11].try_into().ok()?);
     let height = u32::from_be_bytes(head[11..15].try_into().ok()?);
     let len = u64::from_be_bytes(head[15..23].try_into().ok()?);
-    if len > super::static_picture::MAX_BYTES {
+    if len > input_limit(unsupported) {
         return None;
     }
     let mut data = Vec::with_capacity(len as usize);

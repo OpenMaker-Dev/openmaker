@@ -40,6 +40,13 @@ fn the_worker_draws_ordinary_svg_and_contains_what_has_no_bound() {
     )
     .unwrap_err();
     assert!(error.contains("images"), "{error}");
+    // Past a report picture's 4 MiB it is refused before a worker starts.
+    let large = svg(&" ".repeat(5 << 20));
+    let started = Instant::now();
+    let error =
+        draw_with(Path::new("/nonexistent"), &large, None, Unsupported::Refuse).unwrap_err();
+    assert!(error.contains("exceeds"), "{error}");
+    assert!(started.elapsed() < Duration::from_secs(1));
 
     let clip_cycle = svg(
         r#"<clipPath id="a"><rect width="1" height="1" clip-path="url(#b)"/></clipPath>

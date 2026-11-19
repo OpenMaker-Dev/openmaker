@@ -176,9 +176,22 @@ fn draw(bytes: &[u8], size: [u32; 2]) -> Result<Arc<ColorImage>, String> {
     )))
 }
 
-/// Draw the jobs on `queue`, one at a time, while they are wanted.
-fn draw_queue(state: Weak<Mutex<State>>, queue: mpsc::Receiver<Job>) {
-    for job in queue {
+/// Draw the jobs on `queue`, one at a time, while they are wanted. When
+/// none comes for [`FRESH`], keep the rasters within `budget`: a window
+/// that stops painting stops the passes that trim them.
+fn draw_queue(state: Weak<Mutex<State>>, queue: mpsc::Receiver<Job>, budget: usize) {
+    loop {
+        let job = match queue.recv_timeout(FRESH) {
+            Ok(job) => job,
+            Err(mpsc::RecvTimeoutError::Timeout) => {
+                let Some(state) = state.upgrade() else {
+                    return;
+                };
+                lock(&state).trim(budget, Instant::now());
+                continue;
+            }
+            Err(mpsc::RecvTimeoutError::Disconnected) => return,
+        };
         let Some(state) = state.upgrade() else {
             return;
         };
@@ -332,13 +345,14 @@ impl SvgLoader {
                 result: None,
             },
         );
+        let budget = self.budget;
         let queue = state.queue.get_or_insert_with(|| {
             let (sender, receiver) = mpsc::channel();
             let weak = Arc::downgrade(&self.state);
             // A thread that does not start leaves its SVGs undrawn.
             let _ = std::thread::Builder::new()
                 .name("om-gui svg".into())
-                .spawn(move || draw_queue(weak, receiver));
+                .spawn(move || draw_queue(weak, receiver, budget));
             sender
         });
         if queue.send(job).is_err() {
