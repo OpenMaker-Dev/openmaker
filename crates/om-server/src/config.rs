@@ -33,21 +33,51 @@ pub struct HostedFile {
 /// privileges a Perform Script on Server session runs with
 /// (script-runtime.md 9, 11.3).
 ///
-/// An account of a file in its verified built-in [Full Access] set
-/// (`hosting::FileAccount::full_access`) has [`Privileges::FullAccess`].
-/// Every other account is [`Privileges::Unknown`] and fails closed in the
-/// server's own sessions: its scripts run only when they are set to run
-/// with full access privileges, and steps that create, change, delete,
-/// find or read records without that elevation fail with FileMaker's
-/// error 9 (insufficient privileges).
+/// An account of a file in one of its verified built-in sets
+/// (`hosting::FileAccount::privileges`, session-identity.md 2.7) has that
+/// set's privileges. Every other account is [`Privileges::Unknown`] and
+/// fails closed in the server's own sessions: performed at the top or by
+/// an unelevated script, it runs the scripts its custom set makes
+/// executable (the session's set decides, `ServerHost::set_access`; a
+/// script running with full access may perform one without access too),
+/// and steps that create, change, delete, find or read records without
+/// the elevation of a script set to run with full access privileges fail
+/// with FileMaker's error 9 (insufficient privileges).
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 pub enum Privileges {
     /// The [Full Access] privilege set.
     FullAccess,
-    /// Any other privilege set: its limits are not applied to scripts, so
-    /// nothing is assumed.
+    /// [Data Entry Only]: every record viewed, created, edited and
+    /// deleted, every script executable, no design.
+    DataEntry,
+    /// [Read-Only Access]: every record viewed only, every script
+    /// executable, no design.
+    ReadOnly,
+    /// Any other privilege set, a custom set's: its data limits (records,
+    /// fields, layouts) are not applied to server scripts, so a step reads
+    /// and writes nothing unless elevated; its script entries are, through
+    /// the session's set (`ServerHost::set_access`).
     #[default]
     Unknown,
+}
+
+impl Privileges {
+    /// Whether the account may run every script of the file: a verified
+    /// built-in set's account (scripts modifiable or executable only).
+    pub fn runs_scripts(self) -> bool {
+        self != Self::Unknown
+    }
+
+    /// Whether the account may read every record: a verified built-in
+    /// set's account.
+    pub fn views_records(self) -> bool {
+        self != Self::Unknown
+    }
+
+    /// Whether the account may create, edit and delete every record.
+    pub fn edits_records(self) -> bool {
+        matches!(self, Self::FullAccess | Self::DataEntry)
+    }
 }
 
 /// Limits on Perform Script on Server scripts. FileMaker has no step or time

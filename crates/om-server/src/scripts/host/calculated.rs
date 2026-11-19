@@ -93,7 +93,7 @@ impl ServerHost {
     /// field, whose value is then error 9 (fail closed).
     pub(super) fn field_info(&self, occurrence: u64, field: u64) -> Option<FieldInfo> {
         let (_, def) = self.schema.field(occurrence, field)?;
-        if self.privileged() {
+        if self.may_view() {
             let calc = self
                 .schema
                 .rules
