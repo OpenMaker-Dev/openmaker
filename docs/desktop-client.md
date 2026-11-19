@@ -2006,10 +2006,14 @@ step drafts, Run and Revert. Save stores the active script's steps:
   separators (and duplicated folders), a name another script or folder
   has, names with characters outside ASCII, and deleting or renaming one
   of two members of one name. Files whose own script names do not show
-  how FileMaker keys an ASCII name in their language refuse new and
-  renamed scripts (deletes, moves and options still save): the Japanese,
-  Korean and Chinese starter files, and the Swedish Assets and the French
-  and Swedish Meetings, whose script names all have accents ([#209](https://github.com/OpenMaker-Dev/openmaker/issues/209)). A
+  how FileMaker keys an ASCII name, in a language whose starter files do
+  not show it either, refuse new and renamed scripts (deletes, moves and
+  options still save): the Japanese, Korean and Chinese starter files
+  ([#209](https://github.com/OpenMaker-Dev/openmaker/issues/209)). A
+  Create New file and the starters whose script names all have accents
+  (the Swedish Assets, the French and Swedish Meetings) take new ASCII
+  names in their language's form
+  ([#274](https://github.com/OpenMaker-Dev/openmaker/issues/274)). A
   file whose script index lacks a part every file FileMaker made has is
   refused too, and so is one whose stored digest is not the one OpenMaker
   computes for its scripts.
