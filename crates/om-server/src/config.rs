@@ -149,6 +149,13 @@ pub struct ConnectionLimits {
     /// before anything is staged, stored or run, and an upload refused part
     /// way is dropped whole.
     pub upload_memory: usize,
+    /// Bytes of memory held for the download streams connections keep
+    /// paged (a reply larger than one page is kept until its last page is
+    /// sent), on the whole server. Past it the streams least recently
+    /// paged, on any connection, are dropped (never the one just started),
+    /// and a client that continues one is refused with the CORBA system
+    /// exception `IMP_LIMIT`.
+    pub download_memory: usize,
     /// How long a client disconnected with notice has, once its grace time
     /// ends, to log out and disconnect before the server ends its session
     /// (`ServerHandle::disconnect_client_with_notice`).
@@ -184,6 +191,10 @@ impl ConnectionLimits {
     /// not safe on a machine with much less than 8 GB of memory: set it
     /// lower there. Clients behind one NAT address share its quarter.
     ///
+    /// 2 GiB of paged downloads. A client pages each download to its end at
+    /// once, so what is held is the downloads in progress; the streams
+    /// dropped past it are those clients left unfinished longest.
+    ///
     /// 30 s to log out after a grace time: FileMaker Server called
     /// `Disconnect` on a client that had closed its files 90 s after a
     /// disconnect with a 60-second grace time (network-protocol.md 6.5;
@@ -196,6 +207,7 @@ impl ConnectionLimits {
         idle_without_session: Duration::from_secs(145),
         write_stall: Duration::from_secs(120),
         upload_memory: 4 << 30,
+        download_memory: 2 << 30,
         logout_wait: Duration::from_secs(30),
     };
 }

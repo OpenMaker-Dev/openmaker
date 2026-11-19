@@ -54,7 +54,10 @@
 //! data) and the records clients stage are charged to one budget for the
 //! whole server, 4 GiB by default (`ConnectionLimits::upload_memory`), of
 //! which one client address may hold a quarter; what a request, a staged
-//! area or a session held goes back however it ends. A request past a
+//! area or a session held goes back however it ends. The downloads
+//! connections keep paged share a budget of their own, 2 GiB by default
+//! (`ConnectionLimits::download_memory`): past it the least recently paged
+//! are dropped, on any connection. A request past a
 //! limit fails with a CORBA system exception. These limits are OpenMaker's
 //! choice, where a client that finishes each transfer and commits what it
 //! stages never reaches them; FileMaker Server's are unmeasured.

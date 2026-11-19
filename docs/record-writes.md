@@ -642,8 +642,22 @@ anyway is refused again.
   ends, so a client that left a large upload unfinished on one file has
   less room on its others until then. The per-connection rules stay as
   they were: one upload of at most 1 GiB, at most 8 transfers and 64 MiB in
-  those not in use. Paged downloads are kept per connection and are not in
-  the budget.
+  those not in use. Paged downloads are not in this budget but in one of
+  their own (below).
+- **Paged downloads.** A reply larger than one page (op90, op15, op92,
+  op86) is kept, whole, until its client has read its last page. These
+  streams are charged to a server-wide budget of their own,
+  `--download-memory-mib` (default 2048, `ConnectionLimits::download_memory`).
+  Past it, the streams least recently paged, on any connection, are
+  dropped, never the one just started, which is held even when it alone
+  passes the budget; a client that continues a dropped stream is refused
+  with `IMP_LIMIT`. A client reads each download to its end at once, so the
+  streams dropped are those clients left unfinished longest. It is not
+  split by client address, since many connections behind one NAT address
+  each page downloads in ordinary use, and a stream is dropped rather than
+  a new download refused, since a refused read shows where a dropped
+  abandoned one does not
+  ([#145](https://github.com/OpenMaker-Dev/openmaker/issues/145)).
 - **Records (op14), commit lists (op70) and subtrees written straight into
   the file (op13)** are read within the reservation. A connection whose
   address's staged records did fill its quarter could not commit them
