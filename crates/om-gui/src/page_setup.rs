@@ -18,6 +18,16 @@ impl Settings {
         }
     }
 
+    /// The paper a file's stored page setup gives (`[2, 87]`,
+    /// `CalcSchema::page_format`), when its common format reads: the file
+    /// session's paper until a Page Setup is accepted in it.
+    pub fn stored_paper(
+        schema: Option<&om_data::host::CalcSchema>,
+    ) -> Option<om_layout::paper::PaperSettings> {
+        let bytes = schema?.page_format.as_deref()?;
+        Self::restored(bytes).ok().map(|settings| settings.paper)
+    }
+
     pub fn restored(bytes: &[u8]) -> Result<Self, String> {
         if bytes.len() > 1024 * 1024 {
             return Err("Page format exceeds 1 MiB".into());

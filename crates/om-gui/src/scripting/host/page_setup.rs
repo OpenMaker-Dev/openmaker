@@ -98,8 +98,10 @@ impl WorkerHost<'_> {
             .paper
             .validate()
             .map_err(|e| self.page_setup_error(e))?;
-        let paper_changed = self
-            .page_setup()
+        // Against the setup accepted in this session only: the windows are
+        // told of the first one even when it matches the file's stored
+        // setup, so none is left on another paper.
+        let paper_changed = (self.s.file.page_setup.as_ref())
             .is_none_or(|current| current.paper != candidate.paper);
         let paper = candidate.paper.clone();
         self.s.file.page_setup = Some(candidate);

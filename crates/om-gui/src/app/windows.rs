@@ -841,6 +841,13 @@ impl OpenMakerApp {
             crate::session::DEFAULT_PAGE_SIZE,
         );
         session.set_layouts_for(opened.layouts, doc.calcs.schema().map(AsRef::as_ref));
+        // The page setup the file stores, as a file the user opens starts
+        // with it (`accept_calc_schema`).
+        if let Some(paper) =
+            crate::page_setup::Settings::stored_paper(doc.calcs.schema().map(AsRef::as_ref))
+        {
+            session.set_paper(paper);
+        }
         // The layout the file opened on, the blank page when the account
         // may not see it (#696).
         session.open_on(opened.window.layout);

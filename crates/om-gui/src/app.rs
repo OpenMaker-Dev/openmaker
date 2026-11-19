@@ -4082,9 +4082,7 @@ impl OpenMakerApp {
                 // The page setup the file stores (`[2, 87]`), when its
                 // common format reads: the file session's paper until one
                 // is accepted in it, as the script worker reads it too.
-                let stored = (schema.as_ref())
-                    .and_then(|s| s.page_format.as_deref())
-                    .and_then(|bytes| crate::page_setup::Settings::restored(bytes).ok());
+                let stored = crate::page_setup::Settings::stored_paper(schema.as_deref());
                 // No schema at all: this file's windows have no
                 // calculations, rather than waiting for them.
                 for doc in std::iter::once(&mut self.w)
@@ -4098,7 +4096,7 @@ impl OpenMakerApp {
                     }
                     if let (Some(stored), Some(session)) = (&stored, doc.session.as_mut()) {
                         if session.paper.is_none() {
-                            session.set_paper(stored.paper.clone());
+                            session.set_paper(stored.clone());
                         }
                     }
                 }

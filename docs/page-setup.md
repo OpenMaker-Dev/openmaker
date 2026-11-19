@@ -26,8 +26,11 @@ Browse selection and record drafts retain their existing lifecycle.
 A file that stores a page setup (`[2, 87]`, [file format](re/file-format.md)
 3.4: the same tagged chunks as Print Setup's page format) opens with it: when its
 `Comm` chunk reads (below), it is the file session's paper until one is accepted
-in the session, in every window, Preview, Print and Save Records as PDF, and it
-seeds the first dialog. A stored setup that does not read is ignored. Without one,
+in the session, in every window (also one a script opens the file in), Preview,
+Print and Save Records as PDF, and it seeds the first dialog. A stored setup
+larger than 1 MiB, by its declared or actual size, is ignored before it is
+reassembled (`om_data::meta::page_format`), and so is one that does not read.
+Without one,
 the Letter/layout-orientation defaults remain and the first dialog is seeded from
 the current layout. None of the starter solutions stores one.
 
@@ -51,8 +54,9 @@ FileMaker, which saves the choice in the file.
   open a hardware dialog or submit a job.
 
 The decoder accepts exactly one 29-byte `Comm` chunk: orientation 0/2, scale 1.0,
-finite paper rectangle and positive printable dimensions within the sheet. It
-bounds the value to 1 MiB before reassembly, validates every chunk boundary and
+finite paper rectangle and positive printable dimensions within the sheet. The
+step bounds the value to 1 MiB before reassembly, as opening a file bounds its
+stored setup, validates every chunk boundary and
 rejects missing/duplicate common chunks, invalid sizes/numbers, and scale other
 than 100%. Paper size is `(right-left, bottom-top)`; printable-origin offsets are
 validated but do not replace the printer's margins. The rectangle is interpreted
@@ -66,7 +70,8 @@ The tagged stream's big-endian u32 lengths follow the existing
 `om-scripts/examples/stored_specs.rs` decoder/re-encoder and
 `docs/re/script-steps.md` 11.0/11.6. Common f32 values use big-endian order, inferred
 from the Swap-stream convention and the existing BE paragraph-style f32 decoder
-in `om-layout/src/rich_text.rs`; no native orientation/float comparison was run.
+in `om-layout/src/rich_text.rs`. One native comparison confirms it: the US
+Letter portrait chunk above. No native landscape or other paper was compared.
 Original key `87` bytes, including opaque `M_PM`, `M_PD`, `MMod`, printer names and
 unknown chunks, remain intact in the script codec and session source record. UI
 edits change the portable paper preference, not those source bytes. Undecoded
@@ -80,8 +85,9 @@ script restore + external-file ownership + vector PDF output, cancellation and
 invalid-restore preservation of dirty records, and actual menu/toolbar dialog
 accept/reopen with Preview repagination. The existing Preview isolation test also
 checks cached-plan replacement, same-file/new-window inheritance and peer-file
-isolation while retaining its stale-range/reload-error checks. This uses only the
-existing synthetic report/provider and literal synthetic page-format bytes.
+isolation while retaining its stale-range/reload-error checks. These use the
+existing synthetic report/provider and literal synthetic page-format bytes, and
+the decoder check also reads the one native US Letter `Comm` chunk.
 
 A4 landscape produces five physical pages for the nine-record fixture; both
 Preview and PDF use that plan, including report page-number calculations. Existing
