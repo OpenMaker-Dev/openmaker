@@ -1041,13 +1041,12 @@
       "feature": "Native desktop menus / common commands",
       "previous_status": "Partial",
       "status": "Partial",
-      "scope": "The File, Records, Requests, Layouts, Window and Manage menus run their common commands through the app's actions, and menu levels gate items per privilege set ([chrome](desktop-client.md#chrome), [privilege sets](desktop-client.md#privilege-sets)). Menus are drawn inside each window, also on macOS.",
-      "remaining": "The Edit menu's data-entry commands [#52](https://github.com/OpenMaker-Dev/openmaker/issues/52), the Format menu [#53](https://github.com/OpenMaker-Dev/openmaker/issues/53), the Window menu's Tile and Cascade [#54](https://github.com/OpenMaker-Dev/openmaker/issues/54), recent files and favorites [#56](https://github.com/OpenMaker-Dev/openmaker/issues/56), custom menu sets [#57](https://github.com/OpenMaker-Dev/openmaker/issues/57) and Snapshot Link [#95](https://github.com/OpenMaker-Dev/openmaker/issues/95) are disabled; the macOS menu bar is drawn in the window [#55](https://github.com/OpenMaker-Dev/openmaker/issues/55).",
+      "scope": "The File, Records, Requests, Layouts, Window and Manage menus run their common commands through the app's actions, and menu levels gate items per privilege set ([chrome](desktop-client.md#chrome), [privilege sets](desktop-client.md#privilege-sets)). On macOS they are in the system menu bar; elsewhere they are drawn inside each window.",
+      "remaining": "The Edit menu's data-entry commands [#52](https://github.com/OpenMaker-Dev/openmaker/issues/52), the Format menu [#53](https://github.com/OpenMaker-Dev/openmaker/issues/53), the Window menu's Tile and Cascade [#54](https://github.com/OpenMaker-Dev/openmaker/issues/54), recent files and favorites [#56](https://github.com/OpenMaker-Dev/openmaker/issues/56), custom menu sets [#57](https://github.com/OpenMaker-Dev/openmaker/issues/57) and Snapshot Link [#95](https://github.com/OpenMaker-Dev/openmaker/issues/95) are disabled.",
       "issues": [
         52,
         53,
         54,
-        55,
         56,
         57,
         95

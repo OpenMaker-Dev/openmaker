@@ -783,6 +783,9 @@ pub struct OpenMakerApp {
     /// found for the other windows' viewports.
     web: crate::web_viewer::WebViewers,
     native_parent: Result<crate::web_viewer::NativeParent, crate::web_viewer::Unavailable>,
+    /// The macOS menu bar, while the app runs in a window of its own.
+    #[cfg(target_os = "macos")]
+    system_menu: Option<crate::system_menu::SystemMenuBar>,
     viewport_windows: crate::web_viewer::ViewportWindows,
     /// Open the form's file when the app first draws (`open_on_launch`).
     open_on_launch: bool,
@@ -884,6 +887,8 @@ impl OpenMakerApp {
             settings_path: crate::settings::default_path(),
             web: Default::default(),
             native_parent: Err(crate::web_viewer::Unavailable::Window),
+            #[cfg(target_os = "macos")]
+            system_menu: None,
             viewport_windows: Default::default(),
             open_on_launch: false,
             reconnect: None,
@@ -1217,7 +1222,37 @@ impl OpenMakerApp {
     /// The window's menu bar at the top of `ui`. The Window menu lists no
     /// cards (Claris: "FileMaker Pro does not include cards in the Window
     /// menu").
-    pub(super) fn menu_bar(&self, ui: &mut Ui, input: bool, actions: &mut Vec<Action>) {
+    pub(super) fn menu_bar(&mut self, ui: &mut Ui, input: bool, actions: &mut Vec<Action>) {
+        // On macOS the system menu bar shows the front window's menus
+        // (`system_menu.rs`): the window draws none.
+        #[cfg(target_os = "macos")]
+        if let Some(mut bar) = self.system_menu.take() {
+            if input {
+                self.with_menu_context(input, |context| {
+                    bar.record(|menu| menubar::menus(context, actions, menu));
+                });
+            }
+            self.system_menu = Some(bar);
+            return;
+        }
+        self.with_menu_context(input, |context| menubar::show(ui, context, actions));
+    }
+
+    /// Whether the system menu bar shows the menus (macOS), so the windows
+    /// draw no menu bar of their own.
+    pub(super) fn system_menu_bar(&self) -> bool {
+        #[cfg(target_os = "macos")]
+        {
+            self.system_menu.is_some()
+        }
+        #[cfg(not(target_os = "macos"))]
+        {
+            false
+        }
+    }
+
+    /// What the window's menus read, for `f`.
+    fn with_menu_context(&self, input: bool, f: impl FnOnce(&MenuContext<'_>)) {
         let window_title = self.window_title();
         let container = input
             && !self.script.busy()
@@ -1236,9 +1271,7 @@ impl OpenMakerApp {
             .filter(|(id, _, _)| !self.is_card(*id))
             .cloned()
             .collect();
-        menubar::show(
-            ui,
-            &MenuContext {
+        f(&MenuContext {
                 mode: self.w.mode,
                 view: self.w.view,
                 zoom: self.w.document.zoom.percent(),
@@ -1313,9 +1346,7 @@ impl OpenMakerApp {
                         !self.w.layout_workspace.saving
                             && self.w.layout_workspace.selection_count(session) > 0
                     }),
-            },
-            actions,
-        );
+            });
     }
 
     /// Draw the window the app works on in `ui`. `input`: the window takes
@@ -1475,11 +1506,15 @@ impl OpenMakerApp {
             self.shortcuts(ui, &mut actions);
         }
 
-        self.w.menu_drawn = menu && self.w.menubar;
+        let system = self.system_menu_bar();
+        self.w.menu_drawn = menu && self.w.menubar && !system;
         if self.w.menu_drawn {
             let top = ui.available_rect_before_wrap().top();
             self.menu_bar(ui, input, &mut actions);
             self.w.menu_height = ui.available_rect_before_wrap().top() - top;
+        } else if system && menu {
+            self.w.menu_height = 0.0;
+            self.menu_bar(ui, input, &mut actions);
         }
         if front {
             self.pause_bar(ui);
@@ -6026,6 +6061,15 @@ impl OpenMakerApp {
 impl eframe::App for OpenMakerApp {
     fn ui(&mut self, ui: &mut Ui, frame: &mut eframe::Frame) {
         self.native_parent = crate::web_viewer::NativeParent::of(frame);
+        #[cfg(target_os = "macos")]
+        {
+            if self.system_menu.is_none() {
+                self.system_menu = crate::system_menu::SystemMenuBar::start(ui.ctx(), frame);
+            }
+            if let Some(bar) = &mut self.system_menu {
+                bar.begin();
+            }
+        }
         self.show(ui);
     }
 }

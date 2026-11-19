@@ -66,6 +66,8 @@ mod test_renderer;
 mod theme;
 mod toolbar;
 mod value_lists;
+#[cfg(target_os = "macos")]
+mod system_menu;
 mod web_viewer;
 mod widgets;
 mod worker;
