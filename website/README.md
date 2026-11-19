@@ -73,14 +73,15 @@ themes.
 The page restates facts kept elsewhere; update them together:
 
 - **Status** section: each area's status and summary from
-  [ROADMAP.md](../ROADMAP.md), with its date (2026-11-11), and the alpha
-  gate's eight criteria.
-- **Engines** section: the script-step count (about 130 of 210) from
-  ROADMAP.md, and the calculation results from
-  [docs/re/calc-values.md](../docs/re/calc-values.md) 2.7.
-- **Clean room** counts: Markdown specifications in `docs/re/` other than
-  its README (27), data files in `docs/re/catalogs/` other than its README
-  (21) and crates in `crates/` (23).
+  [ROADMAP.md](../ROADMAP.md), with its date (2026-11-19), and the alpha
+  gate's eight criteria with their "Now" lines.
+- **Engines** section: the script-step count (146 of 210, the meter's
+  width in `.meter-bar i` included) from ROADMAP.md, and the calculation
+  results from [docs/re/calc-values.md](../docs/re/calc-values.md) 2.7.
+- **Clean room** counts: Markdown specifications of FileMaker in
+  `docs/re/` other than its README and `mbs-plugin.md`, which describes a
+  third-party plug-in (27), data files in `docs/re/catalogs/` other than
+  its README (20) and crates in `crates/` (23).
 
 ## Screenshots
 

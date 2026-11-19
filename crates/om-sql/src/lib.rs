@@ -50,7 +50,11 @@ pub fn query(
 ) -> Result<Vec<Vec<Val>>, SqlError> {
     // The statement and its plan are dropped inside the guard too.
     stack::guard(|| {
-        let statement = parse::parse(sql).map_err(|e| SqlError::syntax(e.pos))?;
+        let statement =
+            parse::parse_until(sql, &|| source.interrupted()).map_err(|stopped| match stopped {
+                parse::Stopped::Syntax(e) => SqlError::syntax(e.pos),
+                parse::Stopped::Interrupted => SqlError::Engine(exec::ABORTED),
+            })?;
         let plan = plan::Binder::new(source).statement(&statement)?;
         let plan::Plan::Query(q) = plan;
         exec::Exec::new(source, args).query(&q)

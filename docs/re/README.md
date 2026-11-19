@@ -22,12 +22,16 @@ git-ignored):
 | `fm-installers/fmp_26.0.3.307.dmg` | 26.0.3.307 | macOS universal (x86_64 + arm64) |
 | `fm-installers/fmp_26.0.3.307a_x64.exe` | 26.0.3.307a | Windows x64, RAR SFX around an MSI |
 | `fm-installers/fms_26.0.3.309_Ubuntu24_amd64.zip` | 26.0.3.309 | FileMaker Server for Ubuntu 24.04, `.deb` inside (sha256 `2e8383bd...`) |
+| `fm-installers/fmp_26.1.1.54.dmg` | 26.1.1.54 | macOS universal (x86_64 + arm64); the app's signature names Claris's Developer ID J6K4T76U7W (sha256 `8254f67b...`) |
+| `fm-installers/fmp_26.1.1.54_x64.exe` | 26.1.1.54 | Windows x64, RAR SFX around an MSI (sha256 `d0dc1114...`) |
 
 Extracted (untrusted data, git-ignored):
 
 - `re/extracted/mac/FileMaker Pro 26/FileMaker Pro.app`
 - `re/extracted/win/msi/PFiles64/FileMaker/FileMaker Pro`
 - `re/extracted/fms/deb/opt/FileMaker` - unpacked with `dpkg-deb -x` (no maintainer scripts run, nothing installed)
+- `re/extracted/mac/FileMaker Pro 26.1.1/FileMaker Pro.app` - copied out of the dmg's HFS+ volume with `7z`, read-only
+- `re/extracted/win/26.1.1/sfx` (the SFX's files) and `re/extracted/win/26.1.1/msi/PFiles64/FileMaker/FileMaker Pro` (`msiextract`, nothing installed)
 
 The Linux server libraries are now the primary engine reference: `lib/libDBEngine.so`
 (330 MB) is unstripped with 118,915 symbols and full DWARF (134 MB `.debug_info`,
@@ -41,10 +45,30 @@ Derived (git-ignored):
 - `re/work/thin/<name>` - x86_64 slices of the Mac binaries, `SHA256SUMS` alongside
 - `re/work/symbols/<name>.x86_64.txt` - demangled exported symbols (`llvm-nm | llvm-cxxfilt`)
 - `re/work/ghidra/<name>/<name>.gpr` - persistent pre-analyzed Ghidra projects
+- `re/work/thin-26.1.1/<name>` and `re/work/symbols-26.1.1/<name>.x86_64.txt` - the same for FileMaker Pro 26.1.1; `re/work/ghidra-26.1.1/noan/<name>` holds no-analysis imports for on-demand decompiling (`tools/ghidra/DecompileOnDemand.java`)
 
 For client-side code paths the macOS x86_64 slices are the primary
 reference: they export about 140k demangled C++ symbols and use POSIX code
 paths closest to Linux.
+
+### FileMaker Pro 26.1.1
+
+FileMaker Pro 26.1.1 (November 2026; Claris release notes, FileMaker Pro
+26.1.1) is the newest client. FileMaker Server 26.1.1 has been announced
+but not released, so the Linux engine reference stays at 26.0.3. The
+specs record what 26.1.1 changes where each fact belongs, marked
+"26.1.1"; F112-F114 below summarize them. Compared with 26.0.3 [O]:
+
+- Windows installs the same files. The Mac app adds nibs (Go to Line, an
+  agent-access prompt and manager, an Excel runtime options sheet) and
+  ships its ten localized `NewLogin.strings` as nibs. The bundled starter
+  solutions (`DynamicTemplates/*/*.fmp12`) and themes are
+  byte-identical on macOS and Windows.
+- All 11 embedded `.proto` schemas are byte-identical (protobuf-schemas.md).
+- The catalogs stay at 26.0.3; catalogs/README.md lists what 26.1.1 adds
+  ([#338](https://github.com/OpenMaker-Dev/openmaker/issues/338)).
+- The new behavior is in the Mac binaries' symbols and strings; the
+  method and the per-binary diffs are in `re/work/fm-26.1.1/`.
 
 ## Live observations
 
@@ -185,6 +209,10 @@ before a capture session (`defaults export com.filemaker.client.pro12
 | F109 | A synthetic auto-entered value outside its custom value list saves without a validation dialog under validation word `0x8180`; legacy `0x180` and related-values-list carry-over remain inference | observation (FileMaker Pro 26.0.3, one local synthetic C125 outcome B, closed raw differential) | [auto-entry.md](auto-entry.md), "Auto-entered value checked against a value list" |
 | F110 | A new portal row with a computed non-empty self-join key stores Count 0 and List empty with no other row. A follow-up with one older match stores Count 1 and List of the older value, before the new value is entered and at its last stored evaluation. Persistent exclusion and original-context behavior remain unmeasured | observation (FileMaker Pro 26.0.3, two local synthetic C126 cases, private checksum-verified relays) | [auto-entry.md](auto-entry.md), "A new record's own self-join" |
 | F111 | A container field object's "Optimize for: Interactive content" is bit `0x0100` of its graphic format (the `u16` at bytes 210-211 of its 213-byte `KFormat`), and "Start playback automatically" is `0x0200`; images leave both clear and the scaling bits stay | observation (FileMaker Pro 26.0.3, the English Content Management starter's File Container saved as images, interactive and interactive with autoplay, 2026-11-19, #200; only byte 210 changed between saves) | [containers.md](containers.md) 6.6 |
+| F112 | FileMaker Pro 26.1.1 against 26.0.3: two new script steps, 249 Replace Field Contents by Name and 250 Set Variable by Name (248 stays unnamed); one function, GetToolDefinitions (`f9 12`); one Get selector, SortOrder (`9b 8e`); one error, 120 "Custom menu is missing"; no new script triggers, layout object classes or enumerations. The `.fmp12` layout schemas (`FMLayoutPB`) and every other embedded `.proto` are byte-identical, the value-list definition stream is the same size, and the client's Connect still sends protocol version `0x20` with the version string `Pro 26.1.1`; no new host-operation classes. Three key constants are new: `KButtonIconSvgCalc` `91`, `KCatalogSpecificFlags` `f3`, `KDBData2` `0b` | observation (string resources 129-165 of both DBEngines, `tools/make_catalogs.py`; Mach-O symbol and string diffs; `__GLOBAL__sub_I_DBGlobals.cpp`; `PushMachineInfo`); starters and themes byte-identical | [catalogs/README.md](catalogs/README.md), [network-protocol.md](network-protocol.md) 5.2, [script-steps.md](script-steps.md) 12.4 |
+| F113 | 26.1.1's new layout options are bits and one key in places 26.0 already stores: field objects' flags `0x400000` ("Display single checkbox without value") and `0x800000` ("Show indicator for clipped contents"), `portalFlags` `0x400` ("Place row for new record at top"), `buttonObj.flags` `0x4` ("Calculated icon") with the SVG formula at `[4, 5, L, 5, O, 91]`. Calculated value lists were already in 26.0.3's format (definition type 3, formula at `[21, 5, V, 05]`) but enabled only behind a debugger bit; 26.1.1 drops the gate and reads JSON with `display` and one of `displaySecond`, `enterSecond`, `displayAndEnterSecond` | from bin (FileMaker Pro x86_64 `PropFieldFormatter::ApplyFormatImpl`, `CPortalSetupDlog::GetItems`, `PortalLayoutObjectView::HasNewRecordRowTop`; FMEngine `ButtonLayoutObject::GetButtonIconSvgCalc`, `ObjectTransferLayouts::XMLSerialize_Object_Button_INTERNAL`; DBEngine `DBValueList::IsCalculationBased`); no 26.1.1-made file yet | [layout-model.md](layout-model.md) 5.3.2, 5.3.4, 5.4.1, 5.5; [file-metadata.md](file-metadata.md) 6.2, 6.6 |
+| F114 | 26.1.1's new script and transfer options: Show Custom Dialog's "Close after" is numeric slot 6 (on) and calculation slot 13 (seconds); Go to Related Record's "Table by Calculation" is step flag `0x400` with the occurrence name in calculation slot 8; Import Records' "Preserve target field data if source field is empty" is `TImportFlags` `0x40`; Export Records' field-names row is a fourth byte after `ExpUseNameAlias` in `85`. Field display names gain `fm_import`, `fm_sql` and `fm_odata`. The file access catalog gains `KCatalogSpecificFlags` (`f3`, inferred by analogy to sit at `[23, 4, 1, f3]`), whose bit `0x1` records a file "marked by ADT", the unannounced agent interface; the catalog's checksum does not cover it. When FileMaker Pro sets the bit is unknown | from bin (FMEngine `V2_ScriptStepXML`, `V1_ScriptStepXML::SerializeGoToRelatedRecord`, `XMLScriptStep::GenerateStepImportExportOptions`, `FMExportOptions::TExportOptions::Write`; DBEngine `DBField::GetDisplayFieldNameOnly`, `DBAuthFileCatalog::SetMarkedByADT`, `GetCatalogCRC`) | [script-steps.md](script-steps.md) 11.3, 11.4, 12.4; [file-metadata.md](file-metadata.md) 1.2; [session-identity.md](session-identity.md) 4.5 |
+| F115 | A catalog's name list keys a name in the catalog language whatever the file's: its primary weights, `00 00`, a secondary byte per accent-bearing element (the weight minus 0x1F), `00`, a tertiary byte per element (its lowercase weight minus 1), each higher level left out when all its bytes are `01`; FileMaker's own weights add no higher levels. The list by type stops after the secondary level, and a shared name's later members add their key segment | observation (all 7,641 name list entries of the 66 starter files, 11 languages; FileMaker Pro 26.0.3 adding `Größe` and `テスト` to starter copies) | [schema-path.md](schema-path.md) 5.6 |
 
 ## Tooling notes
 

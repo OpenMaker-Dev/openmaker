@@ -603,9 +603,10 @@ named by its tag in `Base.lproj/IDD_PORTAL_SETUP.nib`:
 | `0x80` | `kFilterRows` | "Filter portal records" | `PortalLayoutObject::GetFilterCalc` (0x3a8658) answers only with it; all 9 corpus portals with the bit have a filter `25`, two more keep a filter without it |
 | `0x100` | `kInlineScroll` | "Show scroll bar": "When scrolling" (item 2 of the pop-up; "Always" clears it) | 68 corpus portals, every template portal |
 | `0x200` | `kMasterDetail` | none | [U]; not seen |
+| `0x400` | (26.1.1; no DWARF yet) | "Place row for new record at top" | FileMaker Pro 26.1.1 (x86_64): `CPortalSetupDlog::GetItems` (0x1005e10e4) sets it from the new checkbox, `PortalLayoutObjectView::HasNewRecordRowTop` (0x101d2f3b6) tests it; FMEngine `DataEntryModel::IsVisibleTopNewPortalRow` (0x5d2076) takes the top row only with `0x400` set and `0x1` clear. Claris: the option is offered when the relationship allows creating related records. Not seen in 26.0 files |
 
 Portal Setup's OK writes the whole word from its controls, so it clears
-`0x2`, `0x20`, `0x40` and `0x200` [from bin]. "Use alternate row state"
+`0x2`, `0x20`, `0x40` and `0x200` [from bin]; 26.1.1's also writes `0x400`. "Use alternate row state"
 and "Use active row state" are not flags: they set style properties 610
 (`-fm-portal-alt-background`, `FMStyle::kPortalAltBackground`) and 620
 (`-fm-use-portal-current-row-style`, `kUsePortalCurrentRowStyle`) in the
@@ -703,6 +704,31 @@ an empty `11` when it has none, as the 42 have. Steps whose options are
 kept in other places (step-level keys such as find requests or a sort
 order) go with their data unchanged. Whether FileMaker Pro opens and runs
 such a button has not been checked [U] (issue [#70](https://github.com/OpenMaker-Dev/openmaker/issues/70)).
+
+#### 5.3.4 `buttonObj.flags` and the calculated icon (26.1.1)
+
+[O, FileMaker Pro 26.1.1 FMEngine x86_64] `buttonObj.flags` is the
+button's `u32` at `ButtonLayoutObject` + 0x188 (`ScriptStepButtonLayoutObject::
+Serialize` 0x4790b0 writes it as field 1, `textFlags` at + 0x18c as field
+2). Save as XML (`ObjectTransferLayouts::XMLSerialize_Object_Button_INTERNAL`
+0xb246a) reads two of its bits:
+
+| Bit | Meaning |
+|---|---|
+| `0x2` | the label is a calculation (`KLabelCalc`, 5.5) rather than stored text |
+| `0x4` | "Calculated icon" (26.1.1): the icon is the SVG text a calculation returns, `KButtonIconSvgCalc` (`91`) in the object's attribute record `[4, 5, L, 5, O]`; without it the icon is the library image `libraryKey` |
+
+`SetButtonIconSvgCalcText` (0x45858c) stores the formula with
+`DBCalcFormula::Set` under the object key and `91`, with no context
+occurrence (`KUnknown`), as the other object calculations of 5.5. The
+functions are on `ButtonLayoutObject`, the class of buttons, button bar
+segments and popover buttons; Claris documents the option in Button Setup
+and Button Bar Setup. Layout mode shows a placeholder icon (FMEngine holds a
+blank 24 x 24 SVG); Browse, Find and Preview show the calculated SVG, and a
+warning icon when the text is not SVG FileMaker supports (Claris).
+FileMaker Pro caches the rendered images under keys made by
+`FMFileUser::GenerateRuntimeLibraryKey` (`runtime_calc_` names, FileMaker
+Pro strings); nothing shows that they are stored in the file [I].
 
 ### 5.4 Field control styles (`FieldLayoutObject.displayType`)
 
@@ -969,11 +995,31 @@ Chooser and Add Assignee layouts, which are also the only two without
 | `0x8000` | **not** included for Quick Find (the Inspector's "Include field for Quick Find" cleared; query-program.md 6.6) | DDR ("Disable for quick find"), 26.0.2 |
 | `0x10000` | placeholder text **not** shown in Find mode | 26.0.2 only |
 | `0x100000` | data formatting **not** overridden by the value list | 26.0.2 only |
+| `0x400000` | "Display single checkbox without value" (26.1.1): one checkbox without a label; checked stores the value list's first value, cleared its second, or clears the field when the list has one value (Claris) | 26.1.1 bin |
+| `0x800000` | "Show indicator for clipped contents" (26.1.1): three dots at the bottom of an edit box in Browse mode when its text does not fit (Claris) | 26.1.1 bin |
 
 `0x20000` (with placeholder text, above 5.5) and `0x80000` (on every
 value-list control and calendar of the templates) are in neither source
-[U]. OpenMaker reads `0x8000` (`FieldObject::quick_find`); the other bits
-of the table it reads only where this section's other paragraphs say.
+[U]. OpenMaker reads `0x8000` (`FieldObject::quick_find`) and `0x80`
+(`FieldObject::next_object_on_enter`, which the keypad's Enter follows in
+Browse); the other bits of the table it reads only where this section's
+other paragraphs say.
+
+[O, FileMaker Pro 26.1.1 x86_64] The Inspector writes the two 26.1.1 bits
+into this word: `PropFieldFormatter::ApplyFormatImpl` (0x101b35f90 and
+0x101b3630a) reads it with `FieldLayoutObject::GetFieldFlags`, sets or
+clears `0x800000` for the property `FieldClippedIndicator` and `0x400000`
+for `SingleUnlabeledCheckBox`, and writes it back with `SetFieldFlags`.
+Neither is set for a container field (data type 6, schema-path.md); it
+sets `0x800000` only on an edit box (display type 0), and `0x400000` only
+when two more tests of the object pass (unnamed virtual calls; Claris: the
+option needs a value list).
+`FieldLayoutObject::Serialize` (FMEngine 0x3eb416) stores the word as
+`fieldObj.flags`. Browse draws the dots with `FieldClippedIndicatorView`
+(`FieldTextView::ShouldShowClippedIndicator` 0x101d086da), in a color
+chosen for contrast with the field's background (`GetFieldClippedIndicatorColor`).
+FileMaker Go 26.1.1 shows the indicator too (Claris release notes,
+FileMaker Go 26.1.1).
 
 ### 5.5 Per-object data stored outside the protobuf
 
@@ -993,6 +1039,7 @@ through FMEngine's GOT bindings and Ghidra cross-references):
 | Field entry calc | `KFieldEntryCalc` | `FieldLayoutObject::GetFieldEntryCalc` |
 | Button label, popover title, tab panel label (calcs) | `KLabelCalc` | `ButtonLayoutObject::GetLabelCalc`, `PopoverLayoutObject::GetTitleCalc`, `TabLayoutObject::Panel::GetPanelCalc` |
 | Active button bar segment (calc) | `KActiveObjectCalc` | `SegmentedBarLayoutObject::GetActiveSegmentCalc` |
+| Calculated button icon (SVG calc, 26.1.1) | `KButtonIconSvgCalc` (`91`) | `ButtonLayoutObject::GetButtonIconSvgCalc` @0x458326, `SetButtonIconSvgCalcText` @0x45858c (26.1.1 FMEngine); applies with `buttonObj.flags` `0x4` (5.3.4) |
 | Text content, merge fields, layout calculations | `KLayoutCalcs`, `KTempTextLayoutCalc` | `LayoutObject::LayCalc_StoreTextAsDBCalc`, `GetLayoutCalculationResult` |
 | Web viewer and chart settings | `KExternalOptions` | `ExternalLayoutObject::GetExternalProperties` @0x3d961e |
 
@@ -3337,6 +3384,15 @@ name 26.0.3.307a.
     set behind `Get ( FoundCount ) > 1000`), and when it computes it after
     the condition stops holding (#1023). Unmeasured; a hidden object shows
     nothing either way.
+14. FileMaker Pro 26.1.1's Layout Setup option "Show alerts when field
+    isn't modifiable or no records are present" (on in new files, off in
+    existing ones; Claris): where it is stored. No new symbol names it; a
+    `LayoutDef` flag bit is the likely place [I]. Needs a layout saved by
+    26.1.1 with the option on and off.
+15. For the other 26.1.1 options (5.3.2, 5.3.4, 5.4.1): a layout saved by
+    FileMaker Pro 26.1.1, to confirm the bits as stored; whether popover
+    buttons offer the calculated icon; what FileMaker Pro 26.0 shows for
+    each (the bits and `91` have no reader there [I]).
 
 ## 13. Implications for OpenMaker
 

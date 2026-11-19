@@ -1,4 +1,4 @@
-# Interoperability catalogs (FileMaker Pro 26.0.3)
+# Interoperability catalogs (FileMaker Pro 26.1.1)
 
 Data tables extracted from the shipped binaries. Sources, record layouts,
 counts, and caveats (which indexes are believed to be internal ids) are in
@@ -27,15 +27,51 @@ counts, and caveats (which indexes are believed to be internal ids) are in
 | `password-hash-vectors.tsv` | 50 `ComputePasswordHash` vectors from the same library: text and its decomposition as UTF-16 code units (`-` empty), salt, iterations, selector, output length, hash. Inputs are synthetic and non-secret; every row uses the fixed 30-byte pepper of [network-protocol.md](../network-protocol.md) 4.3 |
 | `calc-value-vectors.tsv` | 2,196 value and operator vectors from FileMaker Server's engine ([calc-values.md](../calc-values.md) section 11; `tools/fms-calc-harness`); escapes `\r \n \t \\` in both expression and result. Evidence `file=` names the template's locale; rows with `context=`, `record=` or `rep=` ran in a table occurrence on a record (`schema:` rows describe the schema in words) and need an evaluator with fields |
 
-Regenerate (Mac x86_64 slice of DBEngine, SHA-256 `b8bf96a634ddb7833c8ac68f4cc7f3203bc41c43684f7feeebda4c4770958fb1`):
+Regenerate (FileMaker Pro 26.1.1's Mac x86_64 slice of DBEngine, SHA-256
+`096a19947982cdd5602264a5f23abee2e133e0f4b1af114e07d05d28dbdd9c55`, its
+string-resource directory at VA `0x2574bd0`):
 
 ```
-python3 -I tools/dbengine_strres.py re/work/thin/DBEngine 2556500 re/work/arch/dbengine-strres.tsv
-python3 -I tools/make_catalogs.py re/work/arch/dbengine-strres.tsv docs/re/catalogs
+python3 -I tools/dbengine_strres.py re/work/thin-26.1.1/DBEngine 2574bd0 re/work/arch/dbengine-strres-26.1.1.tsv
+python3 -I tools/make_catalogs.py re/work/arch/dbengine-strres-26.1.1.tsv docs/re/catalogs
 ```
+
+26.0.3's slice (SHA-256 `b8bf96a634ddb7833c8ac68f4cc7f3203bc41c43684f7feeebda4c4770958fb1`)
+has its directory at VA `0x2556500`. `enumerations.csv` comes out the same
+from both.
 
 The raw dump of all 37 string resources (`re/work/arch/dbengine-strres.tsv`)
 stays in the git-ignored `re/work/`: the catalogs above keep only what
 OpenMaker needs.
 
 `layout-object-types.csv` is assembled by hand from the evidence listed in it.
+
+## Added in 26.1.1
+
+The files above are FileMaker Pro 26.1.1's since
+[#338](https://github.com/OpenMaker-Dev/openmaker/issues/338); against
+26.0.3 they differ in the rows below. Source: the string-resource directory
+of 26.1.1's Mac x86_64 DBEngine, compared resource by resource with
+26.0.3's (2026-11-19). `make_catalogs.py` writes the first seven rows; the
+`script-step-compat.csv`, `calc-tokens.csv` and `hbkey-constants.csv` rows
+were added by hand from the evidence given.
+
+| File | Row | 26.1.1 |
+|---|---|---|
+| `script-steps.csv` | 248 | an empty entry (no step) |
+| `script-steps.csv` | 249 | Replace Field Contents by Name, Fields ([../script-steps.md](../script-steps.md) 12.4) |
+| `script-steps.csv` | 250 | Set Variable by Name, Control (12.4) |
+| `script-steps.csv` | 147 | renamed: "Set Field by Name" |
+| `calc-functions.csv` | 140/18 | GetToolDefinitions, Artificial Intelligence ([../calc-functions.md](../calc-functions.md) 6.0) |
+| `get-selectors.csv` | 142 | SortOrder |
+| `error-codes.csv` | 120 | "Custom menu is missing" |
+| `script-triggers.csv` | all | the same 29 triggers; resource 129 gained 79 strings, so their indices move from 1221-1276 to 1277-1332 |
+| `script-step-compat.csv` | 96, 248-250 | from 26.1.1's Mac `FMEngine` step table ([../script-runtime.md](../script-runtime.md) 10.1): 96 gains the Server bit, 248 has no client, 249 and 250 every client; their Claris and server-dispatch columns are unknown |
+| `enumerations.csv` | none | unchanged |
+| `calc-tokens.csv` | 1142, 1143 | `Get ( SortOrder )` is `9b 8e`, so `kEndGetFuncOp` presumably moves to 1143 [I: no 26.1.1 DWARF] |
+| `calc-tokens.csv` | 2318 | GetToolDefinitions, `f9 12`, VarArgs; two or more arguments by its signature [I] |
+| `hbkey-constants.csv` | 3 rows | `KButtonIconSvgCalc` `91`, `KCatalogSpecificFlags` `f3`, `KDBData2` `0b` (Mac DBEngine's `__GLOBAL__sub_I_DBGlobals.cpp`) |
+
+Not known yet: the new steps' parameters as `script-step-params.csv` rows
+(their storage is in script-steps.md 12.4), and the new function's and
+selector's entries in `calc-function-spec.json`.

@@ -15,7 +15,9 @@
 //!   `new_related_field`) are mirrored here, assuming a related record.
 //! - Scripts: each enabled step of the file's scripts and buttons, through
 //!   the script runtime against [`Probe`], a host with the capabilities the
-//!   desktop host leaves to the runtime's default (error 3).
+//!   desktop host leaves to the runtime's default (error 3), and those it
+//!   has for some steps only, which refuse the steps the desktop host
+//!   refuses by its own decision (`OPENED_MENU_ITEMS`, `bar_flag`).
 //! - Output: each layout through the report builder Preview and Save
 //!   Records as PDF share, for one record of empty values.
 //! - Browse: each layout's objects by kind, and those Browse does not draw
@@ -60,8 +62,8 @@ use om_data::calc::ValueType;
 use om_data::host::{CalcSchema, FieldClass};
 use om_data::rules::RecordPlan;
 use om_data::runtime::{
-    Accounts, Dialogs, FieldRef, Fields, Files, FoundSets, HostError, HostResult, Navigation,
-    Network, Platform, Records, ScriptHost, StepCall, Windows,
+    Accounts, Bar, Dialogs, FieldRef, Fields, Files, FoundSets, HostError, HostResult, Navigation,
+    Network, Platform, Records, ScriptHost, StepCall, Visibility, Windows,
 };
 use om_data::{DataProvider, LocalFile, LocalOpen, RecordCapabilities, RenderLayout, ScriptStep};
 use om_layout::{FieldEntry, Layout, LayoutObject, ObjectKind};
@@ -1362,6 +1364,12 @@ impl Desktop {
         {
             return ("unknown", Some("not a step FileMaker Pro 26 runs".into()));
         }
+        if om_data::scripts::PENDING_STEP_IDS.contains(&id) {
+            return (
+                "error3",
+                Some("a FileMaker Pro 26.1.1 step OpenMaker cannot run yet".into()),
+            );
+        }
         if !om_data::scripts::is_supported(id, self.client) {
             return (
                 "filemaker",
@@ -1397,11 +1405,8 @@ impl Desktop {
                     break;
                 }
             }
-            if let Some(method) = probe.reached.first() {
-                return (
-                    "error3",
-                    Some(format!("the desktop host has no `{method}` capability")),
-                );
+            if let Some(why) = probe.reached.first() {
+                return ("error3", Some(why.clone()));
             }
             if probe.other.contains(&id) && !self.other_steps.contains(&id) {
                 return (
@@ -1481,13 +1486,16 @@ fn methods(block: &str) -> Vec<(String, &str)> {
 }
 
 /// A script host with only the capabilities in [`PROBED`], each recording
-/// that a step reached it, and `other_step`; everything else is the
+/// that a step reached it; `other_step`; and `open_menu_item` and
+/// `show_hide`, which the desktop host has for some steps only: they refuse
+/// the steps it refuses, by its own decision. Everything else is the
 /// runtime's default.
 struct Probe {
     calc: om_data::calc::eval::NullHost,
     /// The script a script step is probed in.
     script: Option<Arc<om_data::Script>>,
-    reached: Vec<&'static str>,
+    /// Why a step reached a capability the desktop host lacks for it.
+    reached: Vec<String>,
     other: Vec<u16>,
 }
 
@@ -1507,7 +1515,15 @@ impl Default for Probe {
 
 impl Probe {
     fn reach(&mut self, method: &'static str) -> HostResult {
-        self.reached.push(method);
+        self.reached
+            .push(format!("the desktop host has no `{method}` capability"));
+        Err(HostError::Unsupported)
+    }
+
+    /// A capability the desktop host has for other steps than this one.
+    fn refuse(&mut self, method: &'static str) -> HostResult {
+        self.reached
+            .push(format!("the desktop host's `{method}` refuses this step"));
         Err(HostError::Unsupported)
     }
 }
@@ -1547,8 +1563,24 @@ impl Fields for Probe {
     }
 }
 impl FoundSets for Probe {}
-impl Windows for Probe {}
-impl Dialogs for Probe {}
+impl Windows for Probe {
+    fn show_hide(&mut self, bar: Bar, _visibility: Visibility, _lock: bool) -> HostResult {
+        let mut window = crate::scripting::WindowState::default();
+        match crate::scripting::host::bar_flag(&mut window, bar) {
+            Some(_) => Ok(()),
+            None => self.refuse("show_hide"),
+        }
+    }
+}
+impl Dialogs for Probe {
+    fn open_menu_item(&mut self, step: u16) -> HostResult {
+        if crate::scripting::host::OPENED_MENU_ITEMS.contains(&step) {
+            Ok(())
+        } else {
+            self.refuse("open_menu_item")
+        }
+    }
+}
 impl Files for Probe {
     fn save_a_copy_as(&mut self, _paths: &[String], _kind: u16, _create: bool) -> HostResult {
         self.reach("save_a_copy_as")

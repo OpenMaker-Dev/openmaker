@@ -263,6 +263,18 @@ fn a_source_that_asks_to_stop_ends_a_long_query() {
     assert_eq!(error, SqlError::Engine(1));
     assert_eq!(error.message(), " (1): Operation aborted");
     assert_eq!(error.calc_error().code(), 1);
+    // A long statement is asked about while it is parsed too, before it
+    // visits a row (#122): its time grows with its length.
+    let long = vec!["SELECT id FROM Teams WHERE id = 0"; 100].join(" UNION ALL ");
+    assert_eq!(
+        om_sql::execute(&mut source, &long, "", "", &[]),
+        Err(SqlError::Engine(1))
+    );
+    source.stop = false;
+    assert_eq!(
+        om_sql::execute(&mut source, &long, "", "", &[]),
+        Ok("".into())
+    );
 }
 
 #[test]
