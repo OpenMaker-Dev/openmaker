@@ -485,11 +485,11 @@
       "previous_status": "Partial",
       "status": "Partial",
       "scope": "Get functions answer the owning file's privileges, account facts and the desktop's User Name setting, which is modeled on FileMaker Pro 26's ([Settings](desktop-client.md#settings), [privilege sets](desktop-client.md#privilege-sets)).",
-      "remaining": "Hosted files answer AccountType and password days empty [#3](https://github.com/OpenMaker-Dev/openmaker/issues/3); LayoutAccess and RecordAccess ignore layout entries and per-table rules [#182](https://github.com/OpenMaker-Dev/openmaker/issues/182); ActiveFieldName, ModifiedFields and SortState answer as if nothing were active [#33](https://github.com/OpenMaker-Dev/openmaker/issues/33).",
+      "remaining": "Hosted files answer AccountType and password days empty [#364](https://github.com/OpenMaker-Dev/openmaker/issues/364); LayoutAccess and RecordAccess ignore layout entries and per-table rules [#182](https://github.com/OpenMaker-Dev/openmaker/issues/182); ActiveFieldName, ModifiedFields and SortState answer as if nothing were active [#33](https://github.com/OpenMaker-Dev/openmaker/issues/33).",
       "issues": [
-        3,
         33,
-        182
+        182,
+        364
       ],
       "docs": [
         "desktop-client.md#settings",
