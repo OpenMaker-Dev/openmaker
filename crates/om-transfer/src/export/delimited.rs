@@ -11,7 +11,10 @@
 //!   empty without quotes;
 //! - merge: comma-separated values with number fields as stored, after a
 //!   header row of the field names (no occurrence; `S by Company` for a
-//!   summary grouped by a break field), comma-separated and unquoted.
+//!   summary grouped by a break field), comma-separated and unquoted;
+//! - comma with a 26.1.1 order's "Use field names as column names in first
+//!   row": a first row of the same names, quoted as values are (inferred,
+//!   unmeasured on FileMaker).
 
 use super::{Cell, Table};
 use crate::text::ExportValue;
@@ -93,8 +96,19 @@ fn quoted_rows(table: &Table, numbers: bool, text: &mut String) {
     }
 }
 
-pub(crate) fn comma(table: &Table) -> Vec<u8> {
+pub(crate) fn comma(table: &Table, field_names: bool) -> Vec<u8> {
     let mut text = String::new();
+    if field_names {
+        for (i, column) in table.columns.iter().enumerate() {
+            if i > 0 {
+                text.push(',');
+            }
+            text.push('"');
+            quoted_text(&column.merge_name(), &mut text);
+            text.push('"');
+        }
+        text.push('\r');
+    }
     quoted_rows(table, true, &mut text);
     encode(table, &text)
 }

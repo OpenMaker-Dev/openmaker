@@ -2044,6 +2044,52 @@ fn the_users_portal_row_edit_is_committed_with_the_record() {
     assert_eq!(stored(&hosted, TABLE, &[(CODE, 1)])[0].1, ["c1"]);
 }
 
+/// A save keeps the record's portal rows on screen while their data is
+/// read again: no frame between the save and the fresh rows draws them
+/// empty. Each row shows its last value, the saved text among them,
+/// read-only while its record is read again, then in its editor.
+#[test]
+fn a_save_keeps_the_portal_rows_while_they_are_read_again() {
+    let hosted = host("save-keeps-rows");
+    let mut app = open(&hosted);
+    expect(&mut app, "Show portals", "on Portals");
+    let editors = |app: &common::App| -> Vec<String> {
+        app.query_all(
+            By::new()
+                .role(egui::accesskit::Role::TextInput)
+                .label("Notes::Body"),
+        )
+        .filter_map(|row| row.value())
+        .filter(|value| !value.is_empty())
+        .collect()
+    };
+    // In an editor or as text.
+    let shown = |app: &common::App, text: &str| {
+        app.query_all(By::new())
+            .any(|node| node.value().as_deref() == Some(text))
+    };
+    retype_first_row(&mut app, "edited");
+    common::wait_until(&mut app, "unsaved record changes", common::unsaved);
+    common::save_record(&mut app);
+    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(30);
+    loop {
+        app.step();
+        assert!(
+            shown(&app, "edited") && shown(&app, "second"),
+            "a frame after the save drew the rows empty"
+        );
+        if !common::unsaved(&app) && !common::saving(&app) && app.state().is_settled() {
+            break;
+        }
+        assert!(std::time::Instant::now() < deadline, "timed out saving");
+        std::thread::sleep(std::time::Duration::from_millis(5));
+    }
+    common::wait_until(&mut app, "the rows' editors", |app| {
+        editors(app) == ["edited", "second"]
+    });
+    assert!(app.state().error().is_none(), "{:?}", app.state().error());
+}
+
 /// The user's focus and typing in a portal row's field run the field
 /// object's triggers (#1005), with its row and field active: OnObjectEnter
 /// as the field is entered, OnObjectModify as it is typed into, and
