@@ -636,6 +636,26 @@ fn scripts_run_with_the_requesting_accounts_privileges() {
                 exit_with("$write & \"|\" & Get ( LastError ) & \"|\" & $read"),
             ],
         ),
+        // Truncate Table (182) needs [Full Access] whatever the account may
+        // delete (Claris's Truncate Table help); elevation counts.
+        script(
+            6,
+            "Truncate",
+            vec![
+                on(86, true),
+                ScriptStep::new(182),
+                exit_with("Get ( LastError ) & \"|\" & Get ( TotalRecordCount )"),
+            ],
+        ),
+        full_access(
+            7,
+            "Truncate elevated",
+            vec![
+                on(86, true),
+                ScriptStep::new(182),
+                exit_with("Get ( LastError ) & \"|\" & Get ( TotalRecordCount )"),
+            ],
+        ),
     ];
     let mut root = fixture::tree(&scripts, true);
     fixture::add_reader(&mut root);
@@ -668,6 +688,11 @@ fn scripts_run_with_the_requesting_accounts_privileges() {
     assert_eq!(error, 0);
     assert!(result.starts_with("3|3|From |Clerk|"), "{result}");
     assert_eq!(records(&mut clerk).len(), 3);
+    assert_eq!(run(&mut clerk, 6).1, "9|3");
+    let mut reader = logged_in_as(port, "reader", fixture::READER);
+    assert_eq!(run(&mut reader, 6).1, "9|3");
+    reader.disconnect().unwrap();
+    assert_eq!(run(&mut clerk, 7).1, "0|0");
     clerk.disconnect().unwrap();
 }
 

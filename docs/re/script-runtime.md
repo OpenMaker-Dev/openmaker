@@ -2578,13 +2578,14 @@ Server engine (11.3, 11.5)
   privileges: [Full Access] everything; [Data Entry Only] every script
   executable, every record read, created, edited and deleted;
   [Read-Only Access] every script executable and every record read, with
-  creating, changing, deleting, truncating, setting a global field and
-  importing refused with 200, the code a client's own write under the
-  set gets (inferred: FileMaker Server's codes for a server script under
-  these sets are unmeasured, with
-  [#7](https://github.com/OpenMaker-Dev/openmaker/issues/7)). Set Next Serial Value, which
-  changes a field's definition, needs [Full Access] (9 otherwise;
-  inferred). An account in a custom set fails closed
+  creating, changing, deleting, setting a global field and importing
+  refused with 200, the code a client's own write under the set gets
+  (inferred: FileMaker Server's codes for a server script under these
+  sets are unmeasured, with
+  [#7](https://github.com/OpenMaker-Dev/openmaker/issues/7)). Truncate
+  Table needs [Full Access] whatever the account may delete (Claris's
+  Truncate Table help), and Set Next Serial Value, which changes a
+  field's definition, does too (inferred); both are 9 otherwise. An account in a custom set fails closed
   (`Privileges::Unknown`): the set's script, layout and record limits are
   not applied to server scripts yet. Its scripts are not executable
   (op30 answers 9 and nothing runs) unless set to run with full access
