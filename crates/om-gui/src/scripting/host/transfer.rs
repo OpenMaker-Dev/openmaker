@@ -190,11 +190,12 @@ impl WorkerHost<'_> {
                 .file
                 .trim_end_matches(".fmp12")
                 .to_owned();
+            let shown = paths
+                .first()
+                .cloned()
+                .unwrap_or_else(|| format!("file:{stem}.{}", profile.file_type.extension()));
             let dialog = ExportDialog {
-                path: paths
-                    .first()
-                    .cloned()
-                    .unwrap_or_else(|| format!("file:{stem}.{}", profile.file_type.extension())),
+                path: shown.clone(),
                 file_type: profile.file_type,
                 types: if excel {
                     vec![FileType::ExcelExport]
@@ -210,7 +211,16 @@ impl WorkerHost<'_> {
             let Some(Answer::Export(Some(d))) = self.ask(Prompt::Export(dialog)) else {
                 return Err(ErrorCode::CANCELED.into());
             };
-            paths = vec![d.path.clone()];
+            // A native path the user typed, in FileMaker's form, as the
+            // PDF and import dialogs pass theirs: `/private/tmp/x.csv` as it
+            // is would name the volume `private` on macOS (error 826). The
+            // path list line shown, if left as it was, stays as it is: it
+            // may be a FileMaker path without a prefix.
+            paths = vec![if d.path == shown {
+                shown
+            } else {
+                files::chosen_path(&d.path)
+            }];
             current = d.current_record == Some(true);
             profile = Profile::new(d.file_type);
             options.charset = d.charset;

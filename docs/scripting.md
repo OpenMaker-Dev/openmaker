@@ -306,7 +306,10 @@ dBase.
   a session's data files close when its script ends or is aborted
   (script-steps.md, Paths on OpenMaker Server).
 - The desktop shows FileMaker's export, import mapping and summary
-  dialogs.
+  dialogs. The export dialog's Save as takes a native absolute path, which
+  it passes on in FileMaker's form (on macOS `/Macintosh HD/...`), a path
+  relative to Documents, or a path list line; the line it shows, left
+  unchanged, is passed on as it is.
 - In Browse mode, File > Import Records > File opens a source chooser
   before the shared import mapping dialog. Enter a native absolute path
   or a path relative to Documents, choose TSV, CSV or XLSX explicitly,
