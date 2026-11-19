@@ -2051,9 +2051,9 @@ mod tests {
             OwnedNode::leaf(Vec::new(), om_scsu::encode_scsu(value)),
         );
         let keys: Vec<Vec<u8>> = project(&source, 21);
-        assert_eq!(keys, [english.clone()]);
-        assert_eq!(project(&source, 3), [padded.clone()]);
-        assert_eq!(project(&source, 1), [padded.clone()]);
+        assert_eq!(keys, std::slice::from_ref(&english));
+        assert_eq!(project(&source, 3), std::slice::from_ref(&padded));
+        assert_eq!(project(&source, 1), std::slice::from_ref(&padded));
         // A Unicode standard index: an English request keys the value.
         let mut source = Indexed::new(1, vec![entry(&padded, &[1])]).defined(3, 1);
         source.root.put(
