@@ -1144,35 +1144,44 @@ fn lookup_value(
     let dest = instruction.required_spot(leaf::DEST)?;
     let preds = instruction.required_spot(leaf::DEL_LIST)?;
     let higher = instruction.leaf(leaf::LOOKUP_HIGHER) == Some(&[0x01, 0x01][..]);
-    program.set_spot(&dest, Vec::new())?;
-    if !indexes.table_exists(&table)? {
-        return Err(QueryError::Missing("table"));
-    }
-    let predicates: Vec<Predicate> = program
+    // The inputs are read before the destination is cleared: a program may
+    // name one spot for both.
+    let predicates: Vec<Vec<u8>> = program
         .spot(&preds)?
         .map(|spot| {
             spot.children
                 .iter()
-                .map(|p| Predicate::parse(p.value.as_deref().unwrap_or_default()))
-                .collect::<Result<_, _>>()
+                .map(|p| p.value.clone().unwrap_or_default())
+                .collect()
         })
-        .transpose()?
         .unwrap_or_default();
     // FileMaker Pro sends the current record's one row.
     let row = program
         .spot(&src)?
         .and_then(|spot| spot.children.first().cloned())
         .unwrap_or_default();
+    program.set_spot(&dest, Vec::new())?;
+    if !indexes.table_exists(&table)? {
+        return Err(QueryError::Missing("table"));
+    }
     let work = program.work();
     let mut so_far: Option<RidList> = None;
-    for predicate in &predicates {
+    // Each predicate is read when it is reached: once the walk begins the
+    // later ones are not consulted (8.6).
+    for bytes in &predicates {
+        let predicate = &Predicate::parse(bytes)?;
+        let keys = source_keys(&row, &predicate.b);
+        // The row's keys are read again for each predicate.
+        work.spend(Size {
+            nodes: keys.len(),
+            bytes: keys.iter().map(|k| k.len()).sum(),
+        })?;
         let matches = if predicate.kind == pred::CARTESIAN {
             let all = indexes.all_records(&table)?;
             read_list(work, all)?;
             all.clone()
         } else {
             let index = indexes.index(work, &table, &predicate.a, VALUE_INDEX)?;
-            let keys = source_keys(&row, &predicate.b);
             let ranges = predicate.related(index, &keys, work)?;
             records_at(index, ranges, work)?
         };
@@ -1184,7 +1193,6 @@ fn lookup_value(
             so_far = Some(both);
             continue;
         }
-        let keys = source_keys(&row, &predicate.b);
         let Some(&key) = keys.last() else {
             return Err(QueryError::NoRecords);
         };
@@ -2185,6 +2193,26 @@ mod tests {
             )
         };
         assert!(matches!(nokey, Err(QueryError::NoRecords)));
+        // The walk starts at the first predicate that leaves no record; a
+        // later one is not read, even malformed.
+        let later_malformed = {
+            let fields = vec![OwnedNode::list(vec![9], uploaded(&[&a]))];
+            let rows = vec![OwnedNode::list(serial::encode(1), fields)];
+            let leaves = vec![
+                OwnedNode::leaf(vec![leaf::SRC], vec![1, 2, 1, 1]),
+                OwnedNode::leaf(vec![leaf::DEL_LIST], vec![1, 2, 1, 2]),
+            ];
+            let predicates = numbered(vec![vec![pred::EQ, 2, 1, 1, 2, 1, 9], vec![pred::EQ, 9]]);
+            result(
+                &source,
+                &lookup(opcode::LOOKUP, leaves, [rows, predicates]),
+                Budget::DEFAULT,
+            )
+            .map(|dest| dest.child(&[0x00]).and_then(|l| l.value.clone()))
+            .ok()
+            .flatten()
+        };
+        assert_eq!(later_malformed, record(13));
         assert_eq!(QueryError::NoRecords.code(), 401);
     }
 
