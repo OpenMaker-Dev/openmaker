@@ -4269,6 +4269,9 @@ impl Navigation for WorkerHost<'_> {
         if let Some(window) = &request.new_window {
             let style = self.new_window_style(window.window_options(), window.bounds)?;
             self.open_window(window.name.clone(), style)?;
+            // Its size and place, as New Window and Go to Related Record
+            // give theirs.
+            self.move_resize_window(&WindowTarget::Current, window.bounds, false)?;
         }
         if let Some(layout) = &request.layout {
             self.go_to_layout(layout, request.animation)?;
