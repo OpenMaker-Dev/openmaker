@@ -967,7 +967,9 @@ impl ScriptSession {
             request => {
                 self.s.observe(&request);
                 let reply = worker::handle_in(io.provider.as_mut(), io.store, window, request);
-                match &reply {
+                // An open the worker wrapped with the schema it grew is
+                // still an open: its endpoint is kept for Reconnect.
+                match reply.answered() {
                     worker::Reply::Opened(Ok(_)) => self.s.file.endpoint = opening,
                     worker::Reply::OpenedLocal(Ok((om_data::LocalOpen::Opened { .. }, opened))) => {
                         self.s.file.endpoint = opening.map(|mut endpoint| {
@@ -1467,8 +1469,18 @@ impl ScriptSession {
                         self.s.observe(&request);
                         let reply =
                             worker::handle_in(io.provider.as_mut(), io.store, job.window, request);
-                        // The reply goes before the switch back, whose
-                        // panic ends the paused scripts (#313).
+                        // The switch back, whose panic ends the paused
+                        // scripts, comes before the reply, which says
+                        // whether a save outlives it (#313).
+                        let back = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+                            io.files.select(file, io.provider, &mut self.s);
+                            io.provider.use_window(self.s.file.window.id());
+                        }))
+                        .err();
+                        let reply = match back {
+                            Some(_) => worker::unkept_save(io.provider.as_mut(), reply),
+                            None => reply,
+                        };
                         let sent = io
                             .responses
                             .send(Response {
@@ -1477,8 +1489,9 @@ impl ScriptSession {
                                 reply,
                             })
                             .is_ok();
-                        io.files.select(file, io.provider, &mut self.s);
-                        io.provider.use_window(self.s.file.window.id());
+                        if let Some(payload) = back {
+                            std::panic::resume_unwind(payload);
+                        }
                         if sent {
                             job.ctx.request_repaint();
                         }

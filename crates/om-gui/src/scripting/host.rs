@@ -464,8 +464,18 @@ impl<'a> WorkerHost<'a> {
                     let current = self.s.file.window.id();
                     let provider = self.provider.get_mut().as_mut();
                     let reply = worker::handle_in(provider, self.store, job.window, request);
-                    // The reply goes before the switch back, whose panic
-                    // ends the running scripts (#313).
+                    // The switch back, whose panic ends the running
+                    // scripts, comes before the reply, which says whether
+                    // a save outlives it (#313).
+                    let back = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+                        self.provider.get_mut().use_window(current);
+                        self.files.select(file, self.provider.get_mut(), self.s);
+                    }))
+                    .err();
+                    let reply = match back {
+                        Some(_) => worker::unkept_save(self.provider.get_mut().as_mut(), reply),
+                        None => reply,
+                    };
                     let sent = self
                         .responses
                         .send(Response {
@@ -474,8 +484,9 @@ impl<'a> WorkerHost<'a> {
                             reply,
                         })
                         .is_ok();
-                    provider.use_window(current);
-                    self.files.select(file, self.provider.get_mut(), self.s);
+                    if let Some(payload) = back {
+                        std::panic::resume_unwind(payload);
+                    }
                     if !sent {
                         self.s.interrupted = true;
                         return None;

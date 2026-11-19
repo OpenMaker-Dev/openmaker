@@ -575,6 +575,15 @@ pub(crate) enum Reply {
 }
 
 impl Reply {
+    /// The reply to the request itself, inside any [`Reply::Grown`] the
+    /// worker wrapped it in.
+    pub(crate) fn answered(&self) -> &Reply {
+        match self {
+            Reply::Grown { then, .. } => then.answered(),
+            reply => reply,
+        }
+    }
+
     /// The provider's error in this reply, if it failed.
     pub(crate) fn error(&self) -> Option<&DataError> {
         match self {
@@ -1024,9 +1033,14 @@ pub(crate) fn handle_in(
     match panic::catch_unwind(AssertUnwindSafe(|| provider.use_window(window))) {
         Ok(()) => handle(provider, store, request),
         Err(payload) => {
+            // The loss probe is best effort: a second panic here must not
+            // lose the save's reply either.
+            let lost =
+                panic::catch_unwind(AssertUnwindSafe(|| provider.connection_lost().is_some()))
+                    .unwrap_or(false);
             let error = || {
                 let mut error = panicked(payload.as_ref());
-                error.lost |= provider.connection_lost().is_some();
+                error.lost |= lost;
                 error
             };
             match request {
@@ -1050,6 +1064,49 @@ pub(crate) fn handle_in(
                 _ => panic::resume_unwind(payload),
             }
         }
+    }
+}
+
+/// `reply`, once switching the provider back to the scripts' window after
+/// it panicked: the scripts stop, and their cleanup reverts a script
+/// transaction still open (`ScriptSession::revert_abandoned`). A save that
+/// transaction held (the provider has it open, not apart in a record
+/// session) is then answered as failed, so the window keeps its draft,
+/// rather than as kept (#313).
+pub(crate) fn unkept_save(provider: &mut dyn DataProvider, reply: Reply) -> Reply {
+    let held = panic::catch_unwind(AssertUnwindSafe(|| {
+        provider.transaction_open() && !provider.record_session_open()
+    }))
+    .unwrap_or(true);
+    if !held {
+        return reply;
+    }
+    let unkept = || {
+        DataError::new(
+            "The scripts stopped when the data provider failed unexpectedly, and the open \
+             transaction that held this change was reverted: it was not saved.",
+        )
+    };
+    match reply {
+        Reply::Updated {
+            layout_id,
+            record_id,
+            result: Ok(_),
+        } => Reply::Updated {
+            layout_id,
+            record_id,
+            result: Err(unkept()),
+        },
+        Reply::Deleted {
+            layout_id,
+            record_id,
+            result: Ok(()),
+        } => Reply::Deleted {
+            layout_id,
+            record_id,
+            result: Err(unkept()),
+        },
+        reply => reply,
     }
 }
 
@@ -1434,9 +1491,14 @@ mod tests {
 
     /// Panics listing files; once `grown` is set, on the next question
     /// whether the schema grew; switching windows while `windows` is.
+    #[derive(Default)]
     struct PanickingProvider {
         grown: Arc<AtomicBool>,
         windows: Arc<AtomicBool>,
+        /// The next loss probe panics.
+        lost: Arc<AtomicBool>,
+        /// A script's transaction is open.
+        held: Arc<AtomicBool>,
     }
 
     impl DataProvider for PanickingProvider {
@@ -1453,6 +1515,15 @@ mod tests {
                 panic!("take_grown_schema exploded")
             }
             false
+        }
+        fn connection_lost(&self) -> Option<DataError> {
+            if self.lost.swap(false, Ordering::SeqCst) {
+                panic!("connection_lost exploded")
+            }
+            None
+        }
+        fn transaction_open(&self) -> bool {
+            self.held.load(Ordering::SeqCst)
         }
         fn open(&mut self, _: &Connection) -> Result<(), DataError> {
             Ok(())
@@ -1702,13 +1773,16 @@ mod tests {
     #[test]
     fn a_panicking_provider_becomes_an_error_and_the_worker_survives() {
         let ctx = egui::Context::default();
-        let (grown, windows) = (
+        let (grown, windows, lost) = (
+            Arc::new(AtomicBool::new(false)),
             Arc::new(AtomicBool::new(false)),
             Arc::new(AtomicBool::new(false)),
         );
         let worker = Worker::spawn(Box::new(PanickingProvider {
             grown: Arc::clone(&grown),
             windows: Arc::clone(&windows),
+            lost: Arc::clone(&lost),
+            ..PanickingProvider::default()
         }));
         let request = Request::ListFiles {
             token: 7,
@@ -1733,7 +1807,11 @@ mod tests {
         // the schema read failed (#313).
         grown.store(true, Ordering::SeqCst);
         worker.send(&ctx, 1, 1, Request::Layouts).unwrap();
-        match wait(&worker).reply {
+        let reply = wait(&worker).reply;
+        // What the request itself was answered, for a session that keeps
+        // an open's endpoint.
+        assert!(matches!(reply.answered(), Reply::Layouts(Ok(_))));
+        match reply {
             Reply::Grown { grown, then } => {
                 let error = grown.result.unwrap_err();
                 assert!(
@@ -1745,8 +1823,10 @@ mod tests {
             other => panic!("unexpected reply {other:?}"),
         }
         // One switching to a save's window is the save's own failure, which
-        // ends the window's wait for it.
+        // ends the window's wait for it, also when the loss probe that
+        // follows panics too.
         windows.store(true, Ordering::SeqCst);
+        lost.store(true, Ordering::SeqCst);
         let update = Request::UpdateRecord {
             layout_id: 1,
             record_id: 2,
@@ -1761,5 +1841,35 @@ mod tests {
             } => assert!(err.message.contains("use_window exploded"), "{err:?}"),
             other => panic!("unexpected reply {other:?}"),
         }
+    }
+
+    /// A switch back that panics after a save stops the scripts, whose
+    /// cleanup reverts a script transaction still open: a save it held is
+    /// answered as not kept, one outside a transaction as kept (#313).
+    #[test]
+    fn a_save_a_reverted_transaction_held_is_not_answered_as_kept() {
+        let held = Arc::new(AtomicBool::new(true));
+        let mut provider = PanickingProvider {
+            held: Arc::clone(&held),
+            ..PanickingProvider::default()
+        };
+        let deleted = || Reply::Deleted {
+            layout_id: 1,
+            record_id: 2,
+            result: Ok(()),
+        };
+        match unkept_save(&mut provider, deleted()) {
+            Reply::Deleted {
+                result: Err(err), ..
+            } => {
+                assert!(err.message.contains("not saved"), "{err:?}")
+            }
+            other => panic!("unexpected reply {other:?}"),
+        }
+        held.store(false, Ordering::SeqCst);
+        assert!(matches!(
+            unkept_save(&mut provider, deleted()),
+            Reply::Deleted { result: Ok(()), .. }
+        ));
     }
 }
