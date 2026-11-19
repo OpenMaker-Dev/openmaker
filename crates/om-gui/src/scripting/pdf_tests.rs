@@ -2817,10 +2817,13 @@ fn field_borders_and_fill_print_unless_delineated_on_the_current_record_only() {
 /// Text whose font is Arial or Helvetica prints in the bundled Liberation
 /// Sans, which is metric-compatible with Arial, so it wraps where FileMaker
 /// Pro's does (#265); any other font, or none, stays on Inter. A face is
-/// embedded only when the document uses it.
+/// embedded only when the document uses it. Italic Arial or Helvetica, from
+/// the style's font-style or a character run's italic face, prints in
+/// Liberation Sans Italic or Bold Italic; italic in another family refuses
+/// with 3 (no italic Inter is bundled).
 #[test]
 fn arial_text_prints_in_liberation_sans_and_other_text_in_inter() {
-    let labelled_text = |family: Option<&str>, bold: bool, value: &str| {
+    let text = |family: Option<&str>, bold: bool, value: &str| {
         let mut text = label(1, value, rect(10.0, 10.0, 300.0, 40.0), 12.0, bold);
         if let Some(family) = family {
             text.style
@@ -2837,6 +2840,9 @@ fn arial_text_prints_in_liberation_sans_and_other_text_in_inter() {
                     ..Default::default()
                 });
         }
+        text
+    };
+    let render = |text: LayoutObject| {
         let layout = Layout {
             def: Some(LayoutDef {
                 base_width: 540.0,
@@ -2854,18 +2860,19 @@ fn arial_text_prints_in_liberation_sans_and_other_text_in_inter() {
             },
             ..Default::default()
         };
-        let report = crate::report::render_pdf(
+        crate::report::render_pdf(
             &layout,
             1,
             om_layout::pagination::PageSize::default(),
             &[],
             |o, _| Ok(o.text.clone().unwrap_or_default()),
         )
-        .unwrap();
-        String::from_utf8_lossy(&report.bytes).into_owned()
+        .map(|report| String::from_utf8_lossy(&report.bytes).into_owned())
     };
-    let labelled = |family: Option<&str>, bold: bool| labelled_text(family, bold, "Ada Lovelace");
-    let labelled_value = |family: Option<&str>, value: &str| labelled_text(family, false, value);
+    let labelled =
+        |family: Option<&str>, bold: bool| render(text(family, bold, "Ada Lovelace")).unwrap();
+    let labelled_value =
+        |family: Option<&str>, value: &str| render(text(family, false, value)).unwrap();
     for family in ["arial,sans-serif", "Arial", "Helvetica"] {
         let pdf = labelled(Some(family), false);
         assert!(pdf.contains("/BaseFont /LiberationSans"), "{family}");
@@ -2881,6 +2888,44 @@ fn arial_text_prints_in_liberation_sans_and_other_text_in_inter() {
         let pdf = labelled(family, false);
         assert!(!pdf.contains("LiberationSans"), "{family:?}");
         assert_eq!(text_origins(&pdf, 1, "Ada Lovelace").len(), 1, "{family:?}");
+    }
+    // Italic from the style (font-style 2, italic) and from a character
+    // run's italic face (512 under mask 512), which a run can also turn off.
+    let italic_style = |mut text: LayoutObject| {
+        let local = text.style.as_mut().unwrap().local_styles.as_mut().unwrap();
+        local.components[0].properties.push(Property {
+            id: 67,
+            int: Some(2),
+            ..Default::default()
+        });
+        text
+    };
+    let italic_run = |mut text: LayoutObject, italic: bool| {
+        let rich = text.rich_text.as_mut().unwrap();
+        let run = &mut rich.character_runs[0].style;
+        run.faces = Some(run.faces.unwrap_or(0) | if italic { 512 } else { 0 });
+        run.face_mask = Some(256 | 512);
+        text
+    };
+    let pdf = render(italic_style(text(Some("Arial"), false, "Ada Lovelace"))).unwrap();
+    assert!(pdf.contains("/BaseFont /LiberationSans-Italic"), "{pdf}");
+    assert!(pdf.contains("/F5 ") && !pdf.contains("/F3 "));
+    assert!(pdf.contains("/ItalicAngle -12"));
+    let pdf = render(italic_run(
+        text(Some("Helvetica"), true, "Ada Lovelace"),
+        true,
+    ))
+    .unwrap();
+    assert!(pdf.contains("/BaseFont /LiberationSans-BoldItalic"));
+    let upright = italic_run(italic_style(text(Some("Arial"), false, "Ada")), false);
+    let pdf = render(upright).unwrap();
+    assert!(pdf.contains("/F3 ") && !pdf.contains("LiberationSans-Italic"));
+    for italic in [
+        italic_style(text(Some("Verdana"), false, "Ada")),
+        italic_run(text(None, false, "Ada"), true),
+    ] {
+        let error = render(italic).unwrap_err();
+        assert_eq!(error.code, 3, "{}", error.message);
     }
 }
 
