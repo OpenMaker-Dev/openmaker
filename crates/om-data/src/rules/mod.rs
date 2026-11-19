@@ -1520,6 +1520,12 @@ struct Expression {
     /// How it reads each related occurrence ([`Uses`]): what decides
     /// whether a self-join's answer depends on the written record (#1035).
     uses: BTreeMap<u64, Uses>,
+    /// Fields among [`Self::dependencies`] it does not read itself: the
+    /// inputs of the unstored calculations it reads ([`unstored_inputs`]).
+    /// A change of one evaluates an auto-entered formula again, as one of
+    /// its own (script oracle s44), but they are not among the fields its
+    /// "Do not evaluate if all referenced fields are empty" looks at.
+    through_unstored: BTreeSet<u64>,
 }
 
 /// How a formula reads one related occurrence.
@@ -1599,6 +1605,9 @@ impl RecordPlan {
         let file_language = u32::from(schema.locale.language.id());
         let mut fields = BTreeMap::new();
         let mut contexts = BTreeSet::new();
+        // The table's unstored calculations a formula of the table may read
+        // (`unstored_inputs`), or why one cannot be evaluated for a write.
+        let mut unstored_formulas: BTreeMap<u64, Result<Expression, String>> = BTreeMap::new();
         for field in &table.fields {
             let error = |reason: &str| DataError::new(format!("Field {}: {reason}", field.name));
             let options = field
@@ -1764,6 +1773,25 @@ impl RecordPlan {
             } else {
                 None
             };
+            // Parsed as a stored calculation's formula: its own table's
+            // fields only, which a write's record holds.
+            if kind == FieldKind::Calculation && options.options & UNSTORED != 0 && !global {
+                let readable = if field.data_type == DataType::Container
+                    || matches!(field.data_type, DataType::Unknown(_))
+                {
+                    Err(format!("Field {} has a container result.", field.name))
+                } else if options.max_repetitions != 1 {
+                    Err(format!("Field {} repeats.", field.name))
+                } else {
+                    formula_at(FIELD_FORMULA, false).map_err(|e| e.to_string())
+                };
+                if let Ok(expression) = &readable {
+                    if let Some(id) = expression.formula.occurrence() {
+                        contexts.insert(id);
+                    }
+                }
+                unstored_formulas.insert(field.id, readable);
+            }
             for expr in expression.iter().chain(validation.iter()) {
                 if let Some(id) = expr.formula.occurrence() {
                     contexts.insert(id);
@@ -2006,6 +2034,9 @@ impl RecordPlan {
             .filter(|f| f.kind == FieldKind::Calculation)
             .map(|f| f.id)
             .collect();
+        // The inputs of the unstored calculations each auto-entered
+        // (`true`) or validation (`false`) formula reads, by field.
+        let mut through: BTreeMap<(u64, bool), BTreeSet<u64>> = BTreeMap::new();
         for (id, field) in &fields {
             // A stored calculation's formula, or an auto-entered or
             // validation formula, which may read a global field (5.17).
@@ -2013,9 +2044,9 @@ impl RecordPlan {
             let formulas = field
                 .expression
                 .iter()
-                .map(|e| (e, stored_calculation))
-                .chain(field.validation.iter().map(|e| (e, false)));
-            for (expression, calculation) in formulas {
+                .map(|e| (e, stored_calculation, true))
+                .chain(field.validation.iter().map(|e| (e, false, false)));
+            for (expression, calculation, own) in formulas {
                 check_custom_functions(
                     &schema,
                     &expression.formula.polish,
@@ -2036,6 +2067,28 @@ impl RecordPlan {
                     // A container is read through the write's
                     // [`ContainerReader`] (its data, not its cell's text).
                     let global = referenced.options.options & GLOBAL != 0;
+                    // An unstored calculation an auto-entered or validation
+                    // formula reads is evaluated on the write's record, as
+                    // FileMaker evaluates it (script oracle s44); a stored
+                    // calculation over one would be unstored itself.
+                    if !calculation && !global && def.is_some_and(|d| d.is_unstored_calculation()) {
+                        let inputs = unstored_inputs(
+                            *dependency,
+                            &unstored_formulas,
+                            &schema,
+                            table.id,
+                            &mut Vec::new(),
+                        )
+                        .map_err(|reason| {
+                            DataError::new(format!(
+                                "Field {}: it reads an unstored calculation a write cannot \
+                                 evaluate: {reason}",
+                                field.name
+                            ))
+                        })?;
+                        through.entry((*id, own)).or_default().extend(inputs);
+                        continue;
+                    }
                     let unsupported = (global
                         && (calculation
                             || referenced.data_type == DataType::Container
@@ -2049,6 +2102,26 @@ impl RecordPlan {
                             "Field {} depends on unsupported non-text storage.",
                             field.name
                         )));
+                    }
+                }
+            }
+        }
+        // A change of an input of an unstored calculation a formula reads
+        // evaluates an auto-entered one again (script oracle s44); the
+        // inputs also order the formula after them.
+        for ((id, own), inputs) in through {
+            let Some(field) = fields.get_mut(&id) else {
+                continue;
+            };
+            let expression = if own {
+                field.expression.as_mut()
+            } else {
+                field.validation.as_mut()
+            };
+            if let Some(expression) = expression {
+                for input in inputs {
+                    if expression.dependencies.insert(input) {
+                        expression.through_unstored.insert(input);
                     }
                 }
             }
@@ -2767,6 +2840,41 @@ impl RecordPlan {
     }
 
     /// Whether field `id` of the table has global storage.
+    /// Whether field `id` of the table is an unstored calculation.
+    fn is_unstored(&self, id: u64) -> bool {
+        self.schema
+            .table(self.table)
+            .and_then(|t| t.fields.get(&id))
+            .is_some_and(|f| f.is_unstored_calculation())
+    }
+
+    /// What unstored calculation `id` reads as on `row` for `reader`, a
+    /// formula of the table that reads it: evaluated in the reader's
+    /// context occurrence, with its own "Do not evaluate if all referenced
+    /// fields are empty" (`FileCalc::read_field`).
+    fn unstored_value(
+        &self,
+        id: u64,
+        reader: &Expression,
+        row: &BTreeMap<u64, String>,
+        session: &Evaluation,
+    ) -> Result<String, DataError> {
+        let occurrence = reader.formula.occurrence().unwrap_or_default();
+        let read = Expression {
+            formula: Arc::new(Formula {
+                context: reader.formula.context.clone(),
+                formatted: None,
+                polish: Expr::Field(om_formula::Field::new(occurrence, id, true)),
+            }),
+            dependencies: BTreeSet::from([id]),
+            related: BTreeSet::new(),
+            whole: BTreeSet::new(),
+            uses: BTreeMap::new(),
+            through_unstored: BTreeSet::new(),
+        };
+        self.evaluate_field(id, &read, row, session)
+    }
+
     fn is_global(&self, id: u64) -> bool {
         self.schema
             .table(self.table)
@@ -3767,14 +3875,26 @@ impl RecordPlan {
             // global field holds the session's value (5.17), which the
             // write must have to tell.
             let globals = self.session_globals(*id, expression, &session)?;
+            // The fields the formula reads itself, not the inputs of the
+            // unstored calculations among them: an unstored one reads as
+            // its own evaluation gives it (script oracle s44), one it
+            // cannot evaluate as not empty, and the formula's own
+            // evaluation then answers.
             let skip = field.options.options & ALWAYS_EVALUATE == 0
                 && !expression.dependencies.is_empty()
-                && expression.dependencies.iter().all(|d| match &globals {
-                    Some(globals) if self.is_global(*d) => {
-                        globals.get(*d, 1).is_none_or(Value::is_empty)
-                    }
-                    _ => row.get(d).map_or(true, String::is_empty),
-                });
+                && expression
+                    .dependencies
+                    .iter()
+                    .filter(|d| !expression.through_unstored.contains(d))
+                    .all(|d| match &globals {
+                        Some(globals) if self.is_global(*d) => {
+                            globals.get(*d, 1).is_none_or(Value::is_empty)
+                        }
+                        _ if self.is_unstored(*d) => self
+                            .unstored_value(*d, expression, &row, &session)
+                            .is_ok_and(|value| value.is_empty()),
+                        _ => row.get(d).map_or(true, String::is_empty),
+                    });
             let value = match (skip, field.stored_calculation()) {
                 (true, true) => String::new(),
                 // A calculation that replaces the value leaves it empty
@@ -4787,6 +4907,77 @@ impl Expression {
     }
 }
 
+/// The fields of `table` that its unstored calculation `id` reads, through
+/// the unstored calculations it reads in turn (`formulas`, parsed as stored
+/// formulas): an auto-entered formula reading `id` is evaluated again when
+/// one of them changes, as FileMaker Server's script engine evaluates it
+/// (auto-entry.md, "Formulas over an unstored calculation"). Refused, with
+/// the reason, when `id` cannot be evaluated on a write's record: it reads
+/// another occurrence, a global, summary or container field, a missing
+/// field, `Get` functions a write does not answer, a custom function that
+/// reads fields, or itself.
+fn unstored_inputs(
+    id: u64,
+    formulas: &BTreeMap<u64, Result<Expression, String>>,
+    schema: &CalcSchema,
+    table: u64,
+    stack: &mut Vec<u64>,
+) -> Result<BTreeSet<u64>, String> {
+    let fields = schema
+        .table(table)
+        .map(|t| &t.fields)
+        .ok_or("its table is missing.")?;
+    let def = fields.get(&id).ok_or("a field it reads is missing.")?;
+    if stack.contains(&id) {
+        return Err(format!("Field {} reads itself.", def.name));
+    }
+    // Bounded like a formula's own nesting.
+    if stack.len() >= MAX_DEPTH {
+        return Err("unstored calculations read each other too deeply.".into());
+    }
+    let expression = match formulas.get(&id) {
+        Some(Ok(expression)) => expression,
+        Some(Err(reason)) => return Err(reason.clone()),
+        None => return Err(format!("Field {} cannot be evaluated.", def.name)),
+    };
+    check_custom_functions(
+        schema,
+        &expression.formula.polish,
+        false,
+        &mut BTreeSet::new(),
+    )
+    .map_err(|reason| format!("Field {}: {reason}", def.name))?;
+    stack.push(id);
+    let mut inputs = BTreeSet::new();
+    for dependency in &expression.dependencies {
+        let input = fields
+            .get(dependency)
+            .ok_or_else(|| format!("Field {} references an unavailable field.", def.name))?;
+        if input.global
+            || input.class == crate::host::FieldClass::Summary
+            || input.value_type == ValueType::Container
+        {
+            return Err(format!(
+                "Field {} reads a global, summary or container field.",
+                def.name
+            ));
+        }
+        if input.is_unstored_calculation() {
+            inputs.extend(unstored_inputs(
+                *dependency,
+                formulas,
+                schema,
+                table,
+                stack,
+            )?);
+        } else {
+            inputs.insert(*dependency);
+        }
+    }
+    stack.pop();
+    Ok(inputs)
+}
+
 /// Custom functions must obey the same record-only limits as their callers.
 /// Field reads are also refused because their dependencies are not the
 /// formula's own (custom function bodies have no context).
@@ -5392,6 +5583,7 @@ fn parse_code_with(code: &[u8], context: &[u8], related_reads: bool) -> Result<E
         related,
         whole,
         uses,
+        through_unstored: BTreeSet::new(),
     })
 }
 
@@ -6709,6 +6901,66 @@ mod tests {
             .unwrap()
             .to_string()
             .contains("Cyclic"));
+    }
+
+    /// Auto-entered and validation formulas over an unstored calculation
+    /// of the table, as FileMaker Server's script engine evaluates them
+    /// (script oracle s44): the calculation is evaluated on the record
+    /// with its own "Do not evaluate if all referenced fields are empty", a
+    /// change of its input evaluates a replacing formula again, and the
+    /// validation reads it as the record holds it. One the write cannot
+    /// evaluate still refuses the table.
+    #[test]
+    fn formulas_over_an_unstored_calculation_follow_its_inputs() {
+        let mut table = table();
+        table.fields.retain(|f| f.id <= 2);
+        let always = VALIDATE_BY_CALCULATION | VALIDATE_CALCULATION_ALWAYS | VALIDATE_ALWAYS;
+        table.fields.extend([
+            field(14, FieldKind::Calculation, DataType::Text, 0, UNSTORED, 0),
+            field(15, FieldKind::Normal, DataType::Text, 0, 0x88, 0),
+            field(16, FieldKind::Normal, DataType::Text, 0, 0x8, 0),
+            field(17, FieldKind::Normal, DataType::Text, 0, 0, always),
+        ]);
+        let mut formulas = vec![
+            (14, 5, "Field1 & \"!\""),
+            (15, 5, "Field14 & \"?\""),
+            (16, 5, "Field14 & \"?\""),
+            (17, 0x19, "Field14 <> \"x!\""),
+        ];
+        let plan = plan_of(&table, &formulas, &[]).unwrap();
+        let blank = create(&plan, &[]).unwrap();
+        assert_eq!(decoded(&blank, 15), None, "the calculation reads empty");
+        assert_eq!(decoded(&blank, 16), None);
+        let made = create(&plan, &[(1, "a")]).unwrap();
+        assert_eq!(decoded(&made, 15).as_deref(), Some("a!?"));
+        assert_eq!(decoded(&made, 16).as_deref(), Some("a!?"));
+        let row = BTreeMap::from([(1, "a".into()), (15, "a!?".into()), (16, "a!?".into())]);
+        let update = |changes: &[(u64, &str)]| {
+            let changes = changes
+                .iter()
+                .map(|(id, v)| (*id, Some(v.to_string())))
+                .collect();
+            plan.prepare(WriteMode::Update, &row, &changes, &environment())
+        };
+        let changed = update(&[(1, "b")]).unwrap();
+        assert_eq!(decoded(&changed, 15).as_deref(), Some("b!?"));
+        assert_eq!(decoded(&changed, 16), None, "do not replace");
+        let other = update(&[(2, "z")]).unwrap();
+        assert_eq!(decoded(&other, 15), None, "not an input");
+        assert_eq!(update(&[(1, "x")]).err().unwrap().code, Some(507));
+        // Over another occurrence or a global field, the write could not
+        // evaluate it.
+        table
+            .fields
+            .push(field(18, FieldKind::Normal, DataType::Text, 0, GLOBAL, 0));
+        formulas[0] = (14, 5, "Field1 & Field18");
+        let refused = plan_of(&table, &formulas, &[]).err().unwrap();
+        assert!(
+            refused
+                .to_string()
+                .contains("reads an unstored calculation a write cannot evaluate"),
+            "{refused}"
+        );
     }
 
     #[test]
