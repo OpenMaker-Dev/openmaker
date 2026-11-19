@@ -1623,18 +1623,19 @@ impl OpenMakerApp {
                 // The window's name, and the file's windows front first
                 // (`WindowNames`).
                 info.window_name = self.window_name_for_get();
-                // The window's view and the current record's draft, as a
-                // script in this window reads them.
+                // The window's view, as a script in this window reads it.
                 info.layout_view_state = Some(match self.w.view {
                     ViewMode::Form => 0,
                     ViewMode::List => 1,
                     ViewMode::Table => 2,
                 });
-                if !self.w.document.changes(session).is_empty()
-                    || self.w.document.related_edited(session)
-                {
-                    info.record_open_state = Some(2);
-                }
+                // The focus, the record's open state and changed fields, the
+                // find requests and the sort.
+                self.window_get_state(
+                    session,
+                    self.w.calcs.schema().map(|s| s.as_ref()),
+                    &mut info,
+                );
                 if self.window_list.len() > 1 {
                     info.windows = self
                         .window_list
@@ -1933,6 +1934,10 @@ impl OpenMakerApp {
                 );
             }
         }
+        // A frame that sent nothing and waits for nothing drew only fresh
+        // results: needs that failed or wait for an unreachable host are
+        // not sent, and keep no result from before the last change.
+        self.w.calcs.settle_last_results();
         // What waits for a related file's unreachable host is asked again
         // then (#740): draw again at that time.
         if let Some(at) = self.w.calcs.retry_at() {

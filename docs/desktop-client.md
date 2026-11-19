@@ -430,7 +430,9 @@ authoring part tabs or object kind captions.
   record is in it, or when a sort field may read other records. A hop
   whose source match values are all empty relates nothing and reads no
   record. A new record the transaction holds ([#261](https://github.com/OpenMaker-Dev/openmaker/issues/261)) has no related set
-  on the host yet, so its sets are scanned. Results are kept from frame
+  on the host yet, so its sets are scanned from its held values, also
+  before anything is typed into it: right after New Record its
+  auto-entered keys relate records ([#327](https://github.com/OpenMaker-Dev/openmaker/issues/327)). Results are kept from frame
   to frame while the changes stay the same, and are all evaluated again
   when they change; those that read the window's context (`Get`
   functions) are also evaluated again when that changes (#1308). Limits: a
@@ -469,6 +471,20 @@ authoring part tabs or object kind captions.
   OpenMaker's choice: FileMaker Pro keeps cached records until a
   notification purges them (write-path.md 6.5), and its requests per page
   are unmeasured.
+- While a save or another change has the window's calculations read
+  their data again, each related field, merge field, summary, unstored
+  calculation, hide condition, conditional format, tooltip and label keeps
+  drawing the result it had before the change, until its fresh one can be
+  computed; a portal already kept its rows ([#324](https://github.com/OpenMaker-Dev/openmaker/issues/324)). Before, a save drew
+  them empty for the moment the data took to arrive, about 1 s on a hosted
+  multi-file solution. A portal row's or related field's value is drawn
+  read-only in that moment: its editor returns once its record is read
+  again. The kept results go once a frame draws the window with nothing
+  missing and nothing on its way. A read that fails draws its failure at
+  once, not the last value. Preview, PDF and printing never draw kept
+  results. OpenMaker's choice: whether FileMaker Pro draws anything in
+  place of these values while it refreshes them after a save is
+  unmeasured.
 - A window asks its provider for what its calculations lack once per
   frame, all of it in one request. The request carries the window's token
   for its current layout, page revision, view and found set.
@@ -528,7 +544,24 @@ authoring part tabs or object kind captions.
   system's media view, unmeasured].
 - Button icons come from the file's library root `31` as the original SVG,
   colored through the icon component's style; no application icon is
-  substituted for a file's library image. Binary merge references resolve
+  substituted for a file's library image.
+- SVG pictures and icons are drawn outside om-gui's process, by the SVG
+  worker (`om-gui-pdf-worker --svg`, the one reports use: its allocator
+  capped 512 MiB past its input, killed after 30 seconds, one SVG at a
+  time), on a background thread, at the pixel size they show at (at most
+  8,192 pixels a side and 16 megapixels, or the GPU's largest texture,
+  then stretched over the frame). A library SVG is hostile input that can
+  ask usvg and resvg for unbounded memory or stack, which would abort
+  om-gui ([#303](https://github.com/OpenMaker-Dev/openmaker/issues/303)).
+  Nothing shows until the worker answers (a few milliseconds an icon).
+  Drawn rasters are kept within 128 MiB beside those on screen, the sizes
+  an SVG no longer shows at (a window being resized) dropped first. Text
+  is drawn in the bundled fonts (Inter, else Liberation Sans); the images
+  an SVG names are left out and never read from disk; an SVG that fails in
+  the worker, or every SVG when no worker is installed beside om-gui,
+  shows egui's error mark, as a picture that does not decode does
+  [I, OpenMaker; FileMaker draws SVG with the platform's renderer, and
+  what it shows for one it cannot draw is unmeasured]. Binary merge references resolve
   through the occurrence and field keys, to `Field` in the layout's
   occurrence and to `Occurrence::Field` in related ones (layout-model.md
   4.1).

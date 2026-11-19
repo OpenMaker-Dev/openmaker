@@ -1155,8 +1155,11 @@ once, within what the client's address may still hold of the server's
 memory for clients' uploads (`--upload-memory-mib`, record-writes.md): up
 to 256 times the request's size plus 64 KiB while it reads. The tree stays
 charged while the request is served, and what decoding it as a script takes
-is charged before it is decoded: about twice the tree, and a step's data
-twice again for every step that names it. Past either the request is
+is charged before it is decoded: about twice the tree, a step for each
+descriptor, and the step data the steps name twice again, once however
+many steps name it, since decoding shares it between them
+([#149](https://github.com/OpenMaker-Dev/openmaker/issues/149)). Past
+either the request is
 refused with the CORBA system exception `IMP_LIMIT` before anything is
 applied. The order and the limit are OpenMaker's choice. A client sends an
 operation only when Describe lists its bit, so a host that predates field
@@ -1276,8 +1279,9 @@ codec is `om_protocol::authoring`; the host side is `om-server`'s
   save; a save that takes longer than the client's 30-second read timeout
   is reported as `outcome_unknown`.
 - **Not audited.** A dedicated security review of the extension and of
-  OpenMaker Server's existing op13 handling (which accepts uploads from any
-  logged-in account) is still to be done.
+  OpenMaker Server's existing op13 handling (direct catalog uploads need
+  the file's [Full Access] set; staged record uploads need only a session
+  that may write the file, as below) is still to be done.
 
 Structured authoring authenticates without requiring Browse layouts or tables.
 Accepted source is aligned after parser normalization, so retrying the same

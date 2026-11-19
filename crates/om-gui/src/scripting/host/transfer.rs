@@ -27,6 +27,7 @@
 //! at the end).
 
 use std::collections::{BTreeMap, HashMap};
+use std::io::Read;
 use std::path::PathBuf;
 
 use om_data::calc::eval::{CalcHost, Context, FieldId};
@@ -161,6 +162,7 @@ impl WorkerHost<'_> {
                 formatting: false,
                 charset: ExportCharset::Utf8,
                 use_name_alias: Some(1),
+                field_names: None,
             },
         };
         let mut profile = match call.profile.as_deref() {
@@ -242,7 +244,7 @@ impl WorkerHost<'_> {
         }
         let path = self.export_path(&paths, call.create_folders)?;
         let mut request = ExportRequest::new(options, profile);
-        request.field_names_row = excel;
+        request.field_names_row |= excel;
         let sort = self.sorted_fields(&schema, occurrence);
         let mut source = GuiExport {
             host: self,
@@ -368,6 +370,8 @@ impl WorkerHost<'_> {
             .field_flags
             .as_deref()
             .and_then(|b| FieldFlags::decode(b).ok());
+        import::refuse_unsupported(&options, field_flags.as_ref())
+            .map_err(|_| HostError::Unsupported)?;
         let mut paths = call.paths.clone();
         let target = options.table.id().unwrap_or(window);
         let target_name = format!(
@@ -423,7 +427,15 @@ impl WorkerHost<'_> {
         }
         let documents = self.s.file.data_files.folders.documents.clone();
         let path = files::existing(&paths, &documents, false)?;
-        let bytes = std::fs::read(&path).map_err(|_| ErrorCode::FILE_MISSING)?;
+        // One byte past the limit, so that the import refuses a larger
+        // file without it being read whole.
+        let mut bytes = Vec::new();
+        std::fs::File::open(&path)
+            .and_then(|f| {
+                f.take(import::limit::SOURCE_BYTES as u64 + 1)
+                    .read_to_end(&mut bytes)
+            })
+            .map_err(|_| ErrorCode::FILE_MISSING)?;
         if call.with_dialog || choose_source || options.map.is_empty() {
             let probe = ImportRequest {
                 options: options.clone(),
