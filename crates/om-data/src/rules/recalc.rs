@@ -25,6 +25,7 @@ use super::{
     parse_recomputed, schema, walk, Expression, InRepetition, RecordEnvironment, RecordPlan,
     ALWAYS_EVALUATE, FIELD_FORMULA, GLOBAL, MAX_CODE, MAX_DEPTH, MAX_NODES, UNSTORED,
 };
+use crate::containers;
 use crate::host::{CalcSchema, FieldClass};
 use crate::DataError;
 
@@ -48,17 +49,16 @@ struct Target {
     readings: BTreeMap<u64, Readings>,
 }
 
-/// How a formula reads a field of its own context ([`readings`]).
+/// How a formula reads a field of its own context, by every operation
+/// that reads it ([`readings`]).
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 struct Readings {
-    /// Plainly: in repetition n, repetition n of a repeating field, and a
-    /// field that does not repeat in repetition 1 only (calc-values.md
-    /// 8.6).
+    /// [`Reading::Current`]: in repetition n, repetition n of a repeating
+    /// field, and a field that does not repeat in repetition 1 only.
     current: bool,
-    /// Through `Extend`: its first repetition in every repetition.
+    /// [`Reading::First`]: its first repetition in every repetition.
     first: bool,
-    /// Through `GetRepetition`, `f[n]`, an aggregate of the field alone
-    /// or as a field reference: any of its repetitions.
+    /// [`Reading::Any`]: any of its repetitions.
     any: bool,
 }
 
@@ -226,6 +226,53 @@ impl Recalculation {
         })
     }
 
+    /// Why `target` cannot be computed on `row`: a container field it
+    /// reads has a cell naming a library member that `environment`'s
+    /// reader cannot find (no library, or a member the library lost), in
+    /// any repetition. The formula would read the reference's own text,
+    /// not the data, so the calculation fails on the record and its value
+    /// stays as it was (OpenMaker's choice: what FileMaker Server stores
+    /// then is unmeasured).
+    fn missing_container_data(
+        &self,
+        target: &Target,
+        row: &BTreeMap<u64, String>,
+        environment: &RecordEnvironment,
+    ) -> Option<DataError> {
+        let table = self.plan.schema.table(self.plan.table)?;
+        for field in &target.expression.dependencies {
+            let Some(def) = table
+                .fields
+                .get(field)
+                .filter(|d| d.value_type == ValueType::Container)
+            else {
+                continue;
+            };
+            for n in 1..=def.repetitions.clamp(1, 255) {
+                let Some(member) = cell_of(*field, n)
+                    .and_then(|cell| row.get(&cell))
+                    .and_then(|text| containers::reference(text))
+                else {
+                    continue;
+                };
+                let found = environment
+                    .containers
+                    .as_ref()
+                    .map(|reader| reader.member(self.plan.table, &member));
+                if !matches!(found, Some(Ok(Some(_)))) {
+                    return Some(DataError::with_code(
+                        super::error::UNAVAILABLE,
+                        format!(
+                            "the data of container field {} is missing from the library.",
+                            def.name
+                        ),
+                    ));
+                }
+            }
+        }
+        None
+    }
+
     /// The new values of one record, `row` being its stored cells as text
     /// (repetition cells under `F * 256 + n`).
     pub fn recompute(
@@ -240,6 +287,10 @@ impl Recalculation {
         let mut row = row.clone();
         let mut out = Recomputed::default();
         for target in &self.targets {
+            if let Some(error) = self.missing_container_data(target, &row, environment) {
+                out.failed.push((target.id, error));
+                continue;
+            }
             for repetition in 1..=target.repetitions {
                 let Some(cell) = cell_of(target.id, repetition) else {
                     continue;
@@ -352,7 +403,12 @@ fn evaluable(
         }
     }
     let mut found = BTreeMap::new();
-    readings(&expression.formula.polish, context, &mut found);
+    readings(
+        &expression.formula.polish,
+        context,
+        Reading::Current,
+        &mut found,
+    );
     Ok(Target {
         id: field,
         expression,
@@ -378,52 +434,80 @@ const AGGREGATES: [&str; 11] = [
     "last",
 ];
 
+/// How a field reference reads its field, by the operation that consumes
+/// it (calc-values.md 8.6).
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum Reading {
+    /// Repetition n in repetition n: read plainly, or as one of several
+    /// arguments of an aggregate.
+    Current,
+    /// Through `Extend`: its first repetition.
+    First,
+    /// As `GetRepetition`'s or `f[n]`'s field, or as an aggregate's only
+    /// argument: any of its repetitions.
+    Any,
+}
+
 /// How `expr` reads each field of the context `context` (its key as the
-/// formula holds it): plainly, through `Extend`, or in any repetition.
-fn readings(expr: &Expr, context: &[u8], out: &mut BTreeMap<u64, Readings>) {
-    let own = |e: &Expr| match e {
-        Expr::Field(f) | Expr::FieldRef(f) if f.occurrence.0 == context => f.field.id(),
-        _ => None,
-    };
+/// formula holds it), `reading` being how its consumer reads a field it
+/// passes on (`Current` at the top).
+fn readings(expr: &Expr, context: &[u8], reading: Reading, out: &mut BTreeMap<u64, Readings>) {
     match expr {
-        Expr::Field(_) | Expr::FieldRef(_) => {
-            if let Some(id) = own(expr) {
+        Expr::Field(f) | Expr::FieldRef(f) => {
+            if let Some(id) = f.field.id().filter(|_| f.occurrence.0 == context) {
                 let entry = out.entry(id).or_default();
-                match expr {
-                    Expr::Field(_) => entry.current = true,
-                    _ => entry.any = true,
+                match reading {
+                    Reading::Current => entry.current = true,
+                    Reading::First => entry.first = true,
+                    Reading::Any => entry.any = true,
                 }
             }
         }
         Expr::Call { op, args } => {
             let name = op.name().map(str::to_ascii_lowercase);
-            let lone = match args.as_slice() {
-                [only] => own(only),
-                _ => None,
-            };
-            match (name.as_deref(), lone) {
-                (Some("extend"), Some(id)) => out.entry(id).or_default().first = true,
-                (Some(name), Some(id)) if AGGREGATES.contains(&name) => {
-                    out.entry(id).or_default().any = true;
-                }
-                (Some("getrepetition"), _) => {
-                    if let Some(id) = args.first().and_then(own) {
-                        out.entry(id).or_default().any = true;
+            match name.as_deref() {
+                // Extend of an aggregate's only argument expands it.
+                Some("extend") => {
+                    let inner = match reading {
+                        Reading::Any => Reading::Any,
+                        _ => Reading::First,
+                    };
+                    for arg in args {
+                        readings(arg, context, inner, out);
                     }
-                    for arg in args.iter().skip(1) {
-                        readings(arg, context, out);
+                }
+                Some(name) if AGGREGATES.contains(&name) => {
+                    let each = if args.len() == 1 {
+                        Reading::Any
+                    } else {
+                        Reading::Current
+                    };
+                    for arg in args {
+                        readings(arg, context, each, out);
+                    }
+                }
+                // The field, direct or computed, in any repetition; the
+                // repetition number plainly.
+                Some("getrepetition") => {
+                    for (i, arg) in args.iter().enumerate() {
+                        let each = if i == 0 {
+                            Reading::Any
+                        } else {
+                            Reading::Current
+                        };
+                        readings(arg, context, each, out);
                     }
                 }
                 _ => {
                     for arg in args {
-                        readings(arg, context, out);
+                        readings(arg, context, reading, out);
                     }
                 }
             }
         }
         _ => {
             for part in children(expr) {
-                readings(part, context, out);
+                readings(part, context, reading, out);
             }
         }
     }
@@ -766,6 +850,54 @@ mod tests {
         // A deleted or retyped input makes its readers stale too.
         let recalc = Recalculation::plan(&table, &tree, &file, &BTreeSet::from([1]));
         assert_eq!(recalc.fields(), [5, 7, 6]);
+    }
+
+    /// Each field reference reads as the operation consuming it reads
+    /// fields (calc-values.md 8.6), for "do not evaluate if all referenced
+    /// fields are empty": the review of #380's cases among them.
+    #[test]
+    fn readings_follow_the_operation_that_reads_each_field() {
+        let mut names = crate::formula::NameTable::default();
+        names.add_occurrence(0xd0_0002, "Example", 0x8002);
+        names.add_field(0x8002, 1, "r");
+        names.add_field(0x8002, 2, "e");
+        let read = |source: &str| {
+            let mut ctx = crate::formula::Context::new(&names);
+            ctx.occurrence = Some(0xd0_0002);
+            let compiled = crate::formula::compile(source, &ctx).unwrap();
+            let mut out = BTreeMap::new();
+            readings(&compiled.expr, CONTEXT, Reading::Current, &mut out);
+            out
+        };
+        let how = |current, first, any| Readings {
+            current,
+            first,
+            any,
+        };
+        let (current, first, any) = (
+            how(true, false, false),
+            how(false, true, false),
+            how(false, false, true),
+        );
+        for (source, field, want) in [
+            ("r", 1, current),
+            ("Upper ( r )", 1, current),
+            ("Sum ( r ; 1 )", 1, current),
+            ("List ( r ; e )", 2, current),
+            ("Sum ( r )", 1, any),
+            ("Last ( r )", 1, any),
+            ("Extend ( r )", 1, first),
+            ("Sum ( Extend ( r ) )", 1, any),
+            ("r[2]", 1, any),
+            ("GetRepetition ( If ( 1 ; r ; r ) ; 1 ) & e", 1, any),
+            ("GetRepetition ( If ( 1 ; r ; r ) ; 1 ) & e", 2, current),
+        ] {
+            assert_eq!(
+                read(source).get(&field),
+                Some(&want),
+                "{source}: field {field}"
+            );
+        }
     }
 
     #[test]
