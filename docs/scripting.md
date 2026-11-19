@@ -456,6 +456,17 @@ Open items:
     the header's 16-bit lengths would wrap. `.xlsx` exports past column
     `XFD` write invalid references. FileMaker's behavior past either
     limit is unknown.
+- Steps: the step catalog is FileMaker Pro 26.1.1's (valid ids below 251).
+  Its new steps 249 Replace Field Contents by Name and 250 Set Variable by
+  Name have no parameter rows yet, are not offered in the Script Workspace
+  or as a button's single step, are refused when pasted or authored as
+  text or XML, and fail with error 3 when a desktop script holds one
+  ([#349](https://github.com/OpenMaker-Dev/openmaker/issues/349)); the
+  unnamed id 248 fails with error 3 too, as a valid id without a handler
+  [I]. OpenMaker Server's scripts keep FileMaker Server 26.0.3's table
+  until FileMaker Server 26.1.1 ships: ids from 248 fail with error 4, and
+  Save a Copy as Add-on Package (96) with error 3 without evaluating its
+  options.
 - Scripts: desktop steps still missing include the account steps
   ([#83](https://github.com/OpenMaker-Dev/openmaker/issues/83)) and the PDF
   steps other than Save Records as PDF
