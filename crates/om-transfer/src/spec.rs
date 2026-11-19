@@ -314,6 +314,12 @@ pub mod import_flag {
     pub const ADD_REMAINING: u8 = 0x08;
     pub const CONTAINERS_AS_IS: u8 = 0x10;
     pub const KEEP_ORIGINAL: u8 = 0x20;
+    /// "Preserve target field data if source field is empty" (FileMaker
+    /// 26.1.1, the update actions; the clipboard's `SkipEmptySourceData`).
+    pub const PRESERVE_TARGET: u8 = 0x40;
+    /// Every flag OpenMaker knows. An import with another is refused,
+    /// rather than run without an option it may need.
+    pub const KNOWN: u8 = 0x7f;
 }
 
 /// What a source column does (`FMImportFieldMapEntry::MappingOption`).

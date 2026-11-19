@@ -405,6 +405,13 @@ Open items:
   - Shift-JIS, Big-5 and EUC-KR differ for some letters, and `.xlsx`
     times match to about 15 digits.
   - "Split repetitions into separate records" is not reproduced.
+  - FileMaker 26.1's "Preserve target field data if source field is
+    empty" (import flag `0x40`) keeps a field an update's source leaves
+    empty. Unmeasured on FileMaker and OpenMaker's inference: a value
+    counts as empty repetition by repetition, a missing column counts as
+    empty, and a record the import adds is written in full. Neither import
+    dialog offers the option (FileMaker Pro 26.1's), but both keep it. An
+    import with a flag past `0x40` fails with error 3 and imports nothing.
   - A stored XML import did not run on FileMaker Server (717), so XML
     imports are checked by round trip only.
   - Not probed: the layout data-formatting option, non-English files and
