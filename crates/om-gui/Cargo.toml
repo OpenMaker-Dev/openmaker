@@ -112,7 +112,7 @@ serde_json = "1"
 # The menu bar test's reading of the system menu bar (the versions muda
 # uses; MIT).
 objc2 = "0.6"
-objc2-app-kit = { version = "0.3", default-features = false, features = ["std", "NSApplication", "NSMenu", "NSMenuItem", "NSResponder"] }
+objc2-app-kit = { version = "0.3", default-features = false, features = ["std", "NSApplication", "NSMenu", "NSMenuItem", "NSResponder", "NSWindow"] }
 
 [target.'cfg(target_os = "linux")'.dev-dependencies]
 # Real pointer input for the web viewer test (XTest).

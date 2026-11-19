@@ -243,12 +243,15 @@ pub(crate) fn show(ui: &mut Ui, context: &MenuContext<'_>, actions: &mut Vec<Act
 /// Editing only or Minimum menus (session-identity.md 2.3) each menu gates
 /// its own items, so that a row's look and its click agree: a whole menu
 /// disabled at its start drew some rows as enabled.
-pub(crate) fn menus(
-    context: &MenuContext<'_>,
-    actions: &mut Vec<Action>,
-    menu: &mut dyn FnMut(&str, &mut dyn FnMut(&mut dyn MenuRows)),
-) {
-    menu(crate::APP_TITLE, &mut |rows| app_menu(rows, context, actions));
+/// What adds a menu's rows.
+pub(crate) type MenuContents<'a> = dyn FnMut(&mut dyn MenuRows) + 'a;
+/// What takes each menu: its title and what adds its rows.
+pub(crate) type MenuSink<'a> = dyn FnMut(&str, &mut MenuContents<'_>) + 'a;
+
+pub(crate) fn menus(context: &MenuContext<'_>, actions: &mut Vec<Action>, menu: &mut MenuSink<'_>) {
+    menu(crate::APP_TITLE, &mut |rows| {
+        app_menu(rows, context, actions)
+    });
     menu("File", &mut |rows| file_menu(rows, context, actions));
     menu("Edit", &mut |rows| edit_menu(rows, context, actions));
     menu("View", &mut |rows| view_menu(rows, context, actions));
@@ -258,7 +261,9 @@ pub(crate) fn menus(
         Mode::Browse | Mode::Preview => {
             menu("Records", &mut |rows| records_menu(rows, context, actions));
         }
-        Mode::Find => menu("Requests", &mut |rows| requests_menu(rows, context, actions)),
+        Mode::Find => menu("Requests", &mut |rows| {
+            requests_menu(rows, context, actions)
+        }),
         Mode::Layout => {
             menu("Layouts", &mut |rows| layouts_menu(rows, context, actions));
             menu("Arrange", &mut |rows| arrange_menu(rows));

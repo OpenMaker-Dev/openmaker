@@ -22,7 +22,7 @@ use std::collections::HashMap;
 
 use egui::{Key, KeyboardShortcut};
 use muda::accelerator::{Key as MudaKey, KeyAccelerator, Modifiers as MudaModifiers, NamedKey};
-use muda::{CheckMenuItem, IsMenuItem, Menu, MenuEvent, PredefinedMenuItem, Submenu};
+use muda::{CheckMenuItem, Menu, MenuEvent, PredefinedMenuItem, Submenu};
 
 use crate::menubar::MenuRows;
 
@@ -63,7 +63,9 @@ impl Row {
                 enabled: false,
             },
             Row::Separator => Row::Separator,
-            Row::Submenu { id, label, rows, .. } => Row::Submenu {
+            Row::Submenu {
+                id, label, rows, ..
+            } => Row::Submenu {
                 id: id.clone(),
                 label: label.clone(),
                 enabled: false,
@@ -251,10 +253,7 @@ impl SystemMenuBar {
     /// Build the front window's menus: `menus` adds each menu with its
     /// title. A choice the rows did not answer (the front window changed,
     /// or the row went) is dropped.
-    pub(crate) fn record(
-        &mut self,
-        menus: impl FnOnce(&mut dyn FnMut(&str, &mut dyn FnMut(&mut dyn MenuRows))),
-    ) {
+    pub(crate) fn record(&mut self, menus: impl FnOnce(&mut crate::menubar::MenuSink<'_>)) {
         let mut recorded: Menus = Vec::new();
         let chosen = &mut self.chosen;
         menus(&mut |title, rows| {
@@ -394,7 +393,7 @@ fn accelerator(shortcut: KeyboardShortcut) -> Option<KeyAccelerator> {
     let mut mods = MudaModifiers::empty();
     let m = shortcut.modifiers;
     if m.command || m.mac_cmd {
-        mods |= MudaModifiers::SUPER;
+        mods |= MudaModifiers::META;
     }
     if m.ctrl && !m.command {
         mods |= MudaModifiers::CONTROL;
@@ -492,11 +491,17 @@ mod tests {
         let cmd = egui::Modifiers::COMMAND;
         assert_eq!(
             accelerator(shortcut(cmd, Key::N)),
-            Some(KeyAccelerator::new(MudaModifiers::SUPER, MudaKey::Character("n".into())))
+            Some(KeyAccelerator::new(
+                MudaModifiers::META,
+                MudaKey::Character("n".into())
+            ))
         );
         assert_eq!(
             accelerator(shortcut(cmd, Key::Plus)),
-            Some(KeyAccelerator::new(MudaModifiers::SUPER, MudaKey::Character("+".into())))
+            Some(KeyAccelerator::new(
+                MudaModifiers::META,
+                MudaKey::Character("+".into())
+            ))
         );
         assert_eq!(
             accelerator(shortcut(egui::Modifiers::CTRL, Key::ArrowUp)),

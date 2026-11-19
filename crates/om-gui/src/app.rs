@@ -1272,81 +1272,81 @@ impl OpenMakerApp {
             .cloned()
             .collect();
         f(&MenuContext {
-                mode: self.w.mode,
-                view: self.w.view,
-                zoom: self.w.document.zoom.percent(),
-                session: self.w.session.as_ref(),
-                find: &self.w.find,
-                toolbar: self.w.show_toolbar,
-                formatting: self.w.show_formatting,
-                inspector: self.w.inspector,
-                objects: self.w.objects,
-                window_title: &window_title,
-                windows: &windows,
-                window: self.w.id,
-                scripts: &self.w.scripts,
-                scripts_read: self.w.scripts_read == windows::ScriptsRead::Read,
-                set_access: self
-                    .w
-                    .calcs
-                    .schema()
-                    .and_then(|schema| schema.authenticated_account.set_access.as_ref()),
-                record_create: self.w.record_capabilities.create && !self.w.document.pending,
-                record_delete: self.delete_enabled(),
-                // Held edits wait for Keep or Discard My Changes, which
-                // refuses every other command until then.
-                revert_record: input
-                    && !self.script.busy()
-                    && self.script.prompt.is_none()
-                    && !self.recovery_holds()
-                    && om_data::scripts::revert_record::available(
-                        self.w.mode.runtime(),
-                        if self.w.mode == Mode::Find {
-                            self.w
-                                .find
-                                .current()
-                                .criteria
-                                .iter()
-                                .any(|(_, text)| !text.is_empty())
-                        } else {
-                            self.record_modified()
-                        },
-                        self.w.document.pending,
-                    ),
-                design: self.design_allowed(),
-                export_records: input
-                    && !self.script.busy()
-                    && self.script.prompt.is_none()
-                    && self.can_export_records()
-                    && self.exports(),
-                print: self.prints(),
-                menus: self.menu_commands(),
-                save_records: &self.save_records_enabled(input),
-                import_records: input
-                    && !self.script.busy()
-                    && self.script.prompt.is_none()
-                    && self.can_import_records(),
-                container,
-                // A related container's row was checked as it was selected.
-                container_insert: container
-                    && (self.w.record_capabilities.update
-                        || self.w.session.as_ref().is_some_and(|session| {
-                            self.w
-                                .document
-                                .selected_container(session)
-                                .is_some_and(|selection| selection.row.is_some())
-                        })),
-                client_license: self.client_license,
-                layout_edit: self.w.mode == Mode::Layout
-                    && self.w.layout_workspace.has_changes()
-                    && !self.w.layout_workspace.saving,
-                layout_delete: self.w.mode == Mode::Layout
-                    && self.design_allowed()
-                    && self.w.session.as_ref().is_some_and(|session| {
-                        !self.w.layout_workspace.saving
-                            && self.w.layout_workspace.selection_count(session) > 0
-                    }),
-            });
+            mode: self.w.mode,
+            view: self.w.view,
+            zoom: self.w.document.zoom.percent(),
+            session: self.w.session.as_ref(),
+            find: &self.w.find,
+            toolbar: self.w.show_toolbar,
+            formatting: self.w.show_formatting,
+            inspector: self.w.inspector,
+            objects: self.w.objects,
+            window_title: &window_title,
+            windows: &windows,
+            window: self.w.id,
+            scripts: &self.w.scripts,
+            scripts_read: self.w.scripts_read == windows::ScriptsRead::Read,
+            set_access: self
+                .w
+                .calcs
+                .schema()
+                .and_then(|schema| schema.authenticated_account.set_access.as_ref()),
+            record_create: self.w.record_capabilities.create && !self.w.document.pending,
+            record_delete: self.delete_enabled(),
+            // Held edits wait for Keep or Discard My Changes, which
+            // refuses every other command until then.
+            revert_record: input
+                && !self.script.busy()
+                && self.script.prompt.is_none()
+                && !self.recovery_holds()
+                && om_data::scripts::revert_record::available(
+                    self.w.mode.runtime(),
+                    if self.w.mode == Mode::Find {
+                        self.w
+                            .find
+                            .current()
+                            .criteria
+                            .iter()
+                            .any(|(_, text)| !text.is_empty())
+                    } else {
+                        self.record_modified()
+                    },
+                    self.w.document.pending,
+                ),
+            design: self.design_allowed(),
+            export_records: input
+                && !self.script.busy()
+                && self.script.prompt.is_none()
+                && self.can_export_records()
+                && self.exports(),
+            print: self.prints(),
+            menus: self.menu_commands(),
+            save_records: &self.save_records_enabled(input),
+            import_records: input
+                && !self.script.busy()
+                && self.script.prompt.is_none()
+                && self.can_import_records(),
+            container,
+            // A related container's row was checked as it was selected.
+            container_insert: container
+                && (self.w.record_capabilities.update
+                    || self.w.session.as_ref().is_some_and(|session| {
+                        self.w
+                            .document
+                            .selected_container(session)
+                            .is_some_and(|selection| selection.row.is_some())
+                    })),
+            client_license: self.client_license,
+            layout_edit: self.w.mode == Mode::Layout
+                && self.w.layout_workspace.has_changes()
+                && !self.w.layout_workspace.saving,
+            layout_delete: self.w.mode == Mode::Layout
+                && self.design_allowed()
+                && self.w.session.as_ref().is_some_and(|session| {
+                    !self.w.layout_workspace.saving
+                        && self.w.layout_workspace.selection_count(session) > 0
+                }),
+        });
     }
 
     /// Draw the window the app works on in `ui`. `input`: the window takes
