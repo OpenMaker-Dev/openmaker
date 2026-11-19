@@ -366,7 +366,8 @@ impl Number {
                     }
                 }
                 '.' if !in_fraction => in_fraction = true,
-                '-' if !digits => negative = true,
+                // A minus sign, ASCII or U+2212, as a stored number reads it.
+                '-' | '\u{2212}' if !digits => negative = true,
                 // An exponent ends the digits FileMaker reads.
                 'e' | 'E' if digits => break,
                 _ => {}
