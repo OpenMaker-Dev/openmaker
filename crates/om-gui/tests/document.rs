@@ -869,6 +869,23 @@ fn return_types_a_line_break_and_the_keypad_enter_commits_or_both_go_on() {
     assert!(!common::text_field(&app, "Family").is_focused());
     assert_eq!(family(&app).as_deref(), Some("Keypad\rTwo\rQ Z"));
     assert!(app.state().error().is_none(), "{:?}", app.state().error());
+
+    // Return, then Tab and typing, in one frame: Return goes on from Given
+    // to Family, the Tab from Family on to Given, which takes the typing.
+    common::text_field(&app, "Given").focus();
+    app.step();
+    app.input_mut().events.extend([
+        key(egui::Key::Enter),
+        key(egui::Key::Tab),
+        egui::Event::Text("X".into()),
+    ]);
+    app.run_steps(4);
+    assert!(common::text_field(&app, "Given").is_focused());
+    assert_eq!(
+        common::text_field(&app, "Given").value().as_deref(),
+        Some("EnterX")
+    );
+    assert_eq!(family(&app).as_deref(), Some("Keypad\rTwo\rQ Z"));
 }
 
 /// Undo and Redo put the text back with its line breaks as the field

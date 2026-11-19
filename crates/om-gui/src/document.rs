@@ -6743,19 +6743,23 @@ fn return_goes_on(
         return;
     };
     rest.remove(0);
-    // A Tab after it this frame took the keys that follow it.
+    // A Tab after it this frame took the keys that follow it. That Tab is
+    // still among the keys after the Return when `resolve_tab` held them;
+    // a portal row's field a Tab reached took it out (`reach_tab_goal`).
     if let Some((backward, _, after)) = tab_held.take() {
-        rest.push(egui::Event::Key {
-            key: egui::Key::Tab,
-            physical_key: None,
-            pressed: true,
-            repeat: false,
-            modifiers: if backward {
-                egui::Modifiers::SHIFT
-            } else {
-                egui::Modifiers::NONE
-            },
-        });
+        if !rest.iter().any(|event| tab_key(event).is_some()) {
+            rest.push(egui::Event::Key {
+                key: egui::Key::Tab,
+                physical_key: None,
+                pressed: true,
+                repeat: false,
+                modifiers: if backward {
+                    egui::Modifiers::SHIFT
+                } else {
+                    egui::Modifiers::NONE
+                },
+            });
+        }
         rest.extend(after);
     }
     *tab_held = Some((false, Some(id), rest));
