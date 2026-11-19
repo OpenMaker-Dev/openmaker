@@ -657,3 +657,84 @@ fn a_type_change_to_date_rewrites_values_and_one_from_container_deletes_them() {
     assert_ne!(count(&after, 1), count(&before, 1));
     assert_eq!(count(&after, 2), count(&before, 2));
 }
+
+/// New stored calculations over the container Photo are computed from the
+/// data its library member holds, as FileMaker Server's engine computes
+/// them (script oracle s34-containers-calc): record 1's photo gives its
+/// file name and byte length, and record 2, with no photo, stays empty
+/// ("do not evaluate if all referenced fields are empty"). Reading the
+/// data leaves the library as it was. Before, the recompute skipped any
+/// calculation reading a container and left its values empty (#82). A
+/// photo naming a member the library lost is no data to compute from: the
+/// calculation fails on that record, which keeps its value, rather than
+/// reading the reference's own text.
+#[test]
+fn stored_calculations_over_a_container_read_its_data() {
+    let mut root = fixture::tree(&[], true);
+    fixture::add_photo(&mut root);
+    let t = uint_segment(TABLE);
+    let lost = om_data::containers::reference_text(&om_hbam::serial::encode(99));
+    let record = |id: u64| om_hbam::serial::encode(id);
+    root.put(
+        &[&t, &[5], &record(3), &uint_segment(fixture::PHOTO)],
+        om_scripts::text_node(&[], &lost),
+    );
+    root.put(
+        &[&t, &[5], &record(3), &uint_segment(22)],
+        om_scripts::text_node(&[], "75"),
+    );
+    let file = TempFile::from_tree("recalc-container-input", &root);
+    let port = server::start(&file);
+    let (mut designer, id) = server::logged_in(port, "designer");
+    let member_count = |session: &mut Session| {
+        let m = om_hbam::serial::encode(fixture::PHOTO_MEMBER);
+        let path: [&[u8]; 5] = [&t, &[0x1f], &[5], &m, &[0x12]];
+        session.download(&path).unwrap().value
+    };
+    let count_before = member_count(&mut designer);
+
+    // PhotoName and PhotoLength of the oracle's fields, added as Manage
+    // Database adds new fields: no deferred work, the server sees they are
+    // new.
+    let mut with_calculations = root.clone();
+    let names = fixture::photo_names();
+    for (field, name, kind, data_type, options, text) in fixture::PHOTO_CALCULATIONS {
+        if kind == 2 && field != 23 {
+            fixture::add_field(
+                &mut with_calculations,
+                TABLE,
+                field,
+                name,
+                kind,
+                data_type,
+                0,
+                options,
+                0,
+            );
+            fixture::add_formula(
+                &mut with_calculations,
+                &names,
+                (TABLE, OCCURRENCE),
+                field,
+                5,
+                text,
+            );
+        }
+    }
+    save_field_catalog(&mut designer, id, &field_catalog(&with_calculations));
+
+    let after = records_of(&mut designer, TABLE);
+    assert_eq!(cell(&after, 1, 21), Some("photo2.png"));
+    let length = fixture::png().len().to_string();
+    assert_eq!(cell(&after, 1, 22), Some(length.as_str()));
+    assert_eq!(cell(&after, 2, 21), None);
+    assert_eq!(cell(&after, 2, 22), None);
+    assert_eq!(cell(&after, 3, 21), None);
+    assert_eq!(
+        cell(&after, 3, 22),
+        Some("75"),
+        "kept, not the reference's length"
+    );
+    assert_eq!(member_count(&mut designer), count_before);
+    assert!(cell(&after, 1, fixture::PHOTO).is_some(), "Photo is kept");
+}

@@ -437,7 +437,7 @@
       "previous_status": "Partial",
       "status": "Partial",
       "scope": "Layout, object and record triggers run in the owning context and can veto. Browse keystroke triggers see control keys and modifiers and keep the queued input order; related edit boxes run their object triggers; Tab follows the stored tab order ([editing records](desktop-client.md#editing-records)).",
-      "remaining": "Find and Preview mode keys, input-method commits and keypad Enter are not implemented or measured ([desktop notes](re/script-runtime.md#implementation-notes-desktop-client)); keypad Enter does not commit [#260](https://github.com/OpenMaker-Dev/openmaker/issues/260). Related fields get no keystroke trigger.",
+      "remaining": "Find and Preview mode keys and input-method commits are not implemented or measured ([desktop notes](re/script-runtime.md#implementation-notes-desktop-client)); Return ends a field's editing [#376](https://github.com/OpenMaker-Dev/openmaker/issues/376). Related fields get no keystroke trigger.",
       "issues": [
         260
       ],
@@ -517,10 +517,10 @@
       "previous_status": "Implemented",
       "status": "Partial",
       "scope": "Perform Script on Server sends the script to the host and returns its result and error to the desktop; OpenMaker Server runs it with bounds on the scripts a client may run and on runaway scripts ([status](scripting.md#status-2026-10-29)).",
-      "remaining": "Perform Script on Server with Callback reads its callback script and parameter from other slots than FileMaker stores them in, so a step FileMaker Pro wrote does not call back correctly [#188](https://github.com/OpenMaker-Dev/openmaker/issues/188). Callback timing, refusal and close or loss cases are not compared with FileMaker Server; a server script cannot perform another [#103](https://github.com/OpenMaker-Dev/openmaker/issues/103).",
+      "remaining": "A callback script in another file is refused with error 3 [#372](https://github.com/OpenMaker-Dev/openmaker/issues/372). Callback timing, refusal and close or loss cases are not compared with FileMaker Server; a server script cannot perform another [#103](https://github.com/OpenMaker-Dev/openmaker/issues/103).",
       "issues": [
         103,
-        188
+        372
       ],
       "docs": [
         "scripting.md#status-2026-10-29"
@@ -551,7 +551,7 @@
       "previous_status": "Partial",
       "status": "Partial",
       "scope": "Themes, styles, borders, merge text, data formats and pictures render, with per-field text insets; one text placement is recorded as matching FileMaker Pro ([Browse mode](desktop-client.md#browse-mode)).",
-      "remaining": "Fields in portal rows, related fields, containers and Find requests are not drawn in their In Focus state [#231](https://github.com/OpenMaker-Dev/openmaker/issues/231); stored numeric symbols such as {{1002}} draw literally [#295](https://github.com/OpenMaker-Dev/openmaker/issues/295). Precise font metrics, borders and placement need measured comparisons at several zoom levels.",
+      "remaining": "Fields in portal rows, related fields, containers and Find requests are not drawn in their In Focus state [#231](https://github.com/OpenMaker-Dev/openmaker/issues/231). Precise font metrics, borders and placement need measured comparisons at several zoom levels.",
       "issues": [
         231,
         295
