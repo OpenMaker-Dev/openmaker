@@ -96,10 +96,7 @@ impl ViewportWindows {
                 _ => None,
             };
         }
-        #[cfg(not(any(
-            target_os = "linux",
-            all(feature = "web-viewer", target_os = "macos")
-        )))]
+        #[cfg(not(any(target_os = "linux", all(feature = "web-viewer", target_os = "macos"))))]
         let _ = (root, hosts_pages);
     }
 
@@ -195,10 +192,7 @@ impl ViewportWindows {
             self.numbers.insert(id, window);
             Ok(NativeParent::AppKit(window))
         }
-        #[cfg(not(any(
-            target_os = "linux",
-            all(feature = "web-viewer", target_os = "macos")
-        )))]
+        #[cfg(not(any(target_os = "linux", all(feature = "web-viewer", target_os = "macos"))))]
         {
             let _ = (id, title);
             Err(Unavailable::Window)
