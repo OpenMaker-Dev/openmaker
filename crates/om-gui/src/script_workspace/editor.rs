@@ -247,10 +247,14 @@ pub(super) fn has_options(step: &ScriptStep) -> bool {
 }
 
 /// The step ids the steps pane and the new-step list offer: named, not
-/// obsolete.
+/// obsolete, and not among the 26.1.1 steps OpenMaker cannot edit or run
+/// yet.
 pub(super) fn offered_steps() -> impl Iterator<Item = u16> {
-    scripts::step_ids()
-        .filter(|id| scripts::step_name(*id).is_some() && !scripts::OBSOLETE_STEP_IDS.contains(id))
+    scripts::step_ids().filter(|id| {
+        scripts::step_name(*id).is_some()
+            && !scripts::OBSOLETE_STEP_IDS.contains(id)
+            && !scripts::PENDING_STEP_IDS.contains(id)
+    })
 }
 
 /// Step ids whose names match `text`: names that start with it first,

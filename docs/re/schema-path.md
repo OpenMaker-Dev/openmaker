@@ -993,14 +993,86 @@ Examples (test project, templates):
 | unstored calculation, number | `02 02 00 00 00000000 000a0020 ...` |
 | summary, number | `03 02 00 00 00000015 00000000 ...`, `09` = summary definition |
 
-### 5.6 Name keys (High: compared with every stored name in test project)
+### 5.6 Name keys (High: every name list of the 66 starter files; FileMaker Pro 26.0.3 checks)
 
-A name list key is the name's text index key without its `01` prefix
-(om-collate `text_key(name)[1..]`, DUCET 5.2.0 primary weights, two bytes
-per character, space `02 0a`) followed by `00 00 00` in `[cat, 1, 01]` and by
-`00 00` after the two type bytes in `[T, 3, 1, 06]`. "Contacts" =
-`123d 138e 136d 1433 120f 123d 1433 1410 000000`. Case does not change the
-key, so the name list also enforces case-insensitive uniqueness.
+A catalog's name list `[cat, 1, 01]` lists each member under FileMaker's
+key of its name, which `M_DBNameList::Update` builds in one fixed language
+(5.7: locale type 4, the catalog language) whatever the file's own
+language. The key has three levels [O]:
+
+1. **Primary:** each non-zero primary weight as a big-endian u16, from
+   FileMaker's table (DUCET 5.2.0 one code point at a time, with its own
+   weights for code points DUCET does not list: a CJK unified ideograph is
+   its code point, a Hangul syllable its code point + 0x19AD, U+E002
+   `ffe0 e002`; query-program.md 7.2). The catalog language tailors one
+   character: `ı` keys as `i` (query-program.md 7.2). Space is `020a`.
+2. **`00 00`, then the secondary level:** for each element with a non-zero
+   secondary weight, one byte, the weight minus 0x1F (`01` for an
+   unaccented letter, `28` for U+0308, `2f` for U+0303; its low byte for a
+   larger weight: `ß`'s middle element, 0x159, gives `3a`). The level is
+   left out when every byte would be `01`.
+3. **`00`, then the tertiary level:** for each element with a non-zero
+   tertiary weight, one byte, the weight of its lowercase form minus 1
+   (`01` for `G` as for `g`, `03 03 1e` for `ß`, `10` for a katakana,
+   `0d` for a hiragana). The level is left out when every byte would be
+   `01`.
+
+FileMaker's own weights add nothing to the higher levels: in the Japanese
+starters' names that mix kanji and kana, only the kana have secondary and
+tertiary bytes. The curly marks `‘`, `’` and `“` key as the straight ones
+with secondary weight 0x21 (query-program.md 7.2; `”` is inferred to), and
+`„` also with tertiary weight 0x04 (a German starter's script
+`„Bearbeiter hinzufügen“ abbrechen`). No starter keys any
+name in its language's tailoring: German `ö` is `o` with an accent, not
+`o e`; Japanese kana have DUCET's weights, not the Japanese ones.
+
+| name | where | key |
+|---|---|---|
+| `Contacts` | every starter | `123d 138e 136d 1433 120f 123d 1433 1410` `00 00 00` |
+| `Größe` | Pro 26.0.3, field `0e` of a German Contacts copy | `12b0 13da 138e 1410 1410 126b` `00 00` `01 01 01 28 01 3a 01 01` `00` `01 01 01 01 03 03 1e 01` |
+| `テスト` | Pro 26.0.3, table and occurrence of a Japanese Contacts copy | `2b27 2b21 2b28` `00 00` `00` `10 10 10` |
+| `主キー` | a Japanese starter's field | `4e3b 2b1b 11dd` `00 00` `00` `10 01` |
+| `[`U+E002`]` | [Guest], every starter | `0301 ffe0 e002 0302` `00 00 00` |
+
+A field catalog's **list by type** `[T, 3, 1, 06]` keys a field by its
+kind, its type byte (E38), then the first two levels only, with no `00`
+after the secondary level: `Größe` as a Text field is `01 04`, its primary
+weights, `00 00`, `01 01 01 28 01 3a 01 01`.
+
+A **name several members hold** (layout separators `-`, folder ends `--`,
+a font the font catalog `[25]` lists more than once) is listed once under
+its key and, for each other member, under its key followed by that
+member's key segment (layout-model.md 10.6): a second layout separator
+`07` is `0223 000000 07`, and of the fonts `0001` to `0004` named
+"Helvetica Neue" in a Japanese starter, `0001` has the plain key and the
+others the key followed by `0002`, `0003` and `0004`.
+
+Case does not change the key, so the name list enforces case-insensitive
+uniqueness; accents do change it. FileMaker Pro refuses a second field
+`Größe` ("The name ‘Größe’ is already in use. Please provide a unique
+name."); a file whose name list holds `Größe` under the primary weights
+alone (an earlier OpenMaker's) lets Pro add a second one, and Check
+Consistency does not flag that list. Whether Pro takes `Grosse` beside
+`Größe`, whose keys differ in the secondary level, is not established.
+
+Evidence: every entry of every name list in the 66 starter files (7,641
+entries: tables, occurrences, both field lists, layouts, scripts, themes
+`[6]`, the security catalogs `[23, 1]` to `[23, 3]`, fonts `[25]`, value
+lists `[33]` and `[65]`), which om-collate's `name_key` reproduces
+(`cargo test -p om-collate --test names -- --ignored`); FileMaker Pro
+26.0.3 adding `Größe` and `テスト` to disposable starter copies, and
+refusing the second `Größe`
+([#210](https://github.com/OpenMaker-Dev/openmaker/issues/210)).
+
+Not established, and refused by OpenMaker [I]: the higher levels of
+FileMaker's own weights other than a CJK unified ideograph's in a name
+that also has accents or kana (taken as none, as an ideograph's); the low
+and reversed marks `‚`, `‛` and `‟`; a secondary or tertiary byte that
+would be `00`; what FileMaker does with a key longer than the 210-byte
+capacity (5.7); a CJK compatibility ideograph (keyed as its canonical
+ideograph, 7.2). Taking case off the wide, compatibility, font and circled
+capitals' tertiary weights (DUCET's 0x09 to 0x0C as 0x03 to 0x06) is
+inferred.
 
 ### 5.7 Static corroboration in the arm64 client engine (Med: bin, static only)
 
@@ -2374,11 +2446,19 @@ change never makes another table's stored values stale.
 **How.** `Recalculation` plans per field with the record rules' evaluator
 (auto-entry.md, docs/record-writes.md): the formula's own table, stored data and
 stored calculation inputs, the `Get` selectors record rules allow, custom
-functions that read no fields. A calculation it cannot evaluate (a
-related, global, summary, unstored-calculation or container input, a
-plug-in, a selector that needs a window, repetitions, a container result,
-a formula that names a deleted field) is skipped: its values stay as they
-were and the server logs the field and why. A calculation that fails on a
+functions that read no fields. A container input is read from the
+table's library: the field's data, as FileMaker Server's engine reads it
+when a commit computes such a calculation (script oracle
+s34-containers-calc: file name, length, Base64 of the data; inf for
+op73's walk, which was not measured). A container cell naming a member
+the library lacks is no data to read: the calculation fails on that
+record, which keeps its value, rather than reading the reference's own
+text (OpenMaker's choice; FileMaker Server's answer is unmeasured). A
+calculation it cannot evaluate (a related, global, summary or
+unstored-calculation input, a plug-in, a selector that needs a window,
+repetitions, a container result, a formula that names a deleted field) is
+skipped: its values stay as they were and the server logs the field and
+why. A calculation that fails on a
 record keeps that record's value; failures are counted and logged once per
 field. With "do not evaluate if all referenced fields are empty" the value
 is empty when they all are. Auto-enter calculations are not recomputed
@@ -2436,4 +2516,5 @@ indexes are never cached: unique checks, finds and joins read the store.
 Test: `crates/om-server/tests/recalc.rs` (FileMaker Pro's save sequence of
 2.3a with a formula change, a new dependent calculation, a calculation the
 server cannot evaluate, a rename, a deleted input, and a file left with
-deferred work; a script paused across a formula change).
+deferred work; a script paused across a formula change; new calculations
+over a container).

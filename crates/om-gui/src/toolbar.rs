@@ -638,7 +638,7 @@ fn layout(ui: &mut Ui, bar: Rect, context: &ToolbarContext<'_>, actions: &mut Ve
         .style(theme::menu_popup_style)
         // Only Layout mode shows it, and only a design-allowed account
         // enters Layout mode.
-        .show(|ui| crate::menubar::manage_items(ui, true, actions));
+        .show(|ui| crate::menubar::manage_items(&mut crate::menubar::Drawn(ui), true, actions));
     let inspector = Rect::from_center_size(
         pos2(bar.right() - 35.0, bar.center().y),
         vec2(60.0, bar.height()),

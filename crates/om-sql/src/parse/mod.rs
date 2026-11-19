@@ -25,7 +25,7 @@ use std::cell::RefCell;
 use std::sync::OnceLock;
 
 pub use lex::{Pos, Token, TokenType};
-pub use tree::SyntaxError;
+pub use tree::{Stopped, SyntaxError};
 
 use atn::Atn;
 use predict::Predictor;
@@ -55,6 +55,14 @@ fn atn() -> &'static Atn {
     ATN.get_or_init(Atn::build)
 }
 
+/// What one thread's prediction cache may hold before a parse starts it
+/// afresh ([`Predictor::cached`]: DFA states and their configurations,
+/// some hundreds of bytes each). The cache only grows: random statements
+/// grew it past 1.5 GB in 40,000 parses, on each thread that parses
+/// (#122). Ordinary use stays far below: the cache is only a saving, and
+/// starting it afresh costs the next parses a few milliseconds.
+const CACHE_LIMIT: usize = 100_000;
+
 thread_local! {
     /// The SLL prediction cache (ANTLR keeps one per recognizer class too).
     static PREDICTOR: RefCell<Predictor<'static>> = RefCell::new(Predictor::new(atn()));
@@ -65,17 +73,36 @@ pub fn rule_name(rule: usize) -> &'static str {
     atn().rule_names[rule]
 }
 
-/// Lexes and parses `sql` into a parse tree.
-pub(crate) fn parse_tree(sql: &str) -> Result<(lex::Lexed, tree::Node), SyntaxError> {
+/// Lexes and parses `sql` into a parse tree, asking `interrupted` every so
+/// often whether to stop.
+pub(crate) fn parse_tree(
+    sql: &str,
+    interrupted: &dyn Fn() -> bool,
+) -> Result<(lex::Lexed, tree::Node), Stopped> {
     let lexed = lex::lex(sql);
-    let node = PREDICTOR.with(|p| tree::parse(atn(), &mut p.borrow_mut(), &lexed))?;
+    let node = PREDICTOR.with(|p| {
+        let mut predictor = p.borrow_mut();
+        if predictor.cached() > CACHE_LIMIT {
+            *predictor = Predictor::new(atn());
+        }
+        tree::parse(atn(), &mut predictor, &lexed, interrupted)
+    })?;
     Ok((lexed, node))
 }
 
 /// Parses a statement. A syntax error is FQL0001 at its position.
 pub fn parse(sql: &str) -> Result<ast::Statement, SyntaxError> {
+    parse_until(sql, &|| false).map_err(|stopped| match stopped {
+        Stopped::Syntax(error) => error,
+        Stopped::Interrupted => unreachable!("never asked to stop"),
+    })
+}
+
+/// [`parse`], stopping when `interrupted` says so (a script's abort or
+/// time limit).
+pub fn parse_until(sql: &str, interrupted: &dyn Fn() -> bool) -> Result<ast::Statement, Stopped> {
     crate::stack::guard(|| {
-        let (lexed, node) = parse_tree(sql)?;
+        let (lexed, node) = parse_tree(sql, interrupted)?;
         Ok(build::statement(&lexed.tokens, &node))
     })
 }

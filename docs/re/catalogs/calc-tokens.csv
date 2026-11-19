@@ -400,7 +400,8 @@ opcode,stored,constant,english_name,source_name,kind,nargs,arity,min_args,max_ar
 1139,9b 8b,kDBAccountPasswordDaysRemainingOp,AccountPasswordDaysRemaining,,get-selector,,,,,,,,0,0
 1140,9b 8c,kDBWindowUUIDOp,WindowUUID,,get-selector,,,,,,,,0,0
 1141,9b 8d,,GuidedAccessState,,get-selector,,,,,,,,0,0
-1142,9b 8e,kEndGetFuncOp,,,get-selector,,,,,,,,0,0
+1142,9b 8e,,SortOrder,,get-selector,,,,,,,,0,0
+1143,9b 8f,kEndGetFuncOp,,,get-selector,,,,,,,,0,0
 2000,f8 00,kDBLoopOp,While,While,function,Special,0,4,4,"u16 a, a bindings, condition, u16 b, b bindings, result",139/0,While ( [ initialVariable ] ; condition ; [ logic ] ; result ),0,7
 2300,f9 00,,,,unused,VarArgs,0,,,,140/0,,0,0
 2301,f9 01,,GetLayoutObjectAttribute,GetLayoutObjectAttribute,function,VarArgs,0,2,4,"u16 n, n exprs reversed",140/1,GetLayoutObjectAttribute ( objectName ; attributeName {; repetitionNumber ; portalRowNumber} ),0,12
@@ -420,6 +421,7 @@ opcode,stored,constant,english_name,source_name,kind,nargs,arity,min_args,max_ar
 2315,f9 0f,kDBNormalizeVectorOp,NormalizeEmbedding,NormalizeEmbedding,function,VarArgs,0,1,2,"u16 n, n exprs reversed",140/15,NormalizeEmbedding ( data { ; dimension } ),0,0
 2316,f9 10,kDBGetRecordIDsFromFoundSetVarOp,GetRecordIDsFromFoundSet,GetRecordIDsFromFoundSet,function,VarArgs,0,1,2,"u16 n, n exprs reversed",140/16,GetRecordIDsFromFoundSet ( type { ; tableOccurrenceOrPortal } ),0,0
 2317,f9 11,kDBGetRagSpaceInfoOp,GetRagSpaceInfo,GetRAGSpaceInfo,function,VarArgs,0,1,2,"u16 n, n exprs reversed",140/17,GetRAGSpaceInfo ( ragAccountName {; spaceID } ),0,0
+2318,f9 12,,GetToolDefinitions,GetToolDefinitions,function,VarArgs,0,2,0,"u16 n, n exprs reversed",140/18,GetToolDefinitions ( provider ; functionName {; functionName } ),0,0
 2900,fa 00,kDBSelfOp,Self,Self,function,NoArgs,0,0,0,0 exprs,141/0,Self,44,342
 2901,fa 01,kDBJsonStringOp,JSONString,JSONString,constant,NoArgs,0,0,0,0 exprs,141/1,,0,352
 2902,fa 02,kDBJsonNumberOp,JSONNumber,JSONNumber,constant,NoArgs,0,0,0,0 exprs,141/2,,0,136
