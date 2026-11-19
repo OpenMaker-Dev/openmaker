@@ -12,6 +12,10 @@ use super::layout_cache::LayoutCache;
 use crate::calc::{Evaluator, PortalRow};
 
 const SCROLLS: i32 = 0x1;
+/// "Place row for new record at top" (FileMaker Pro 26.1, layout-model.md
+/// 5.3.2): the row for a new related record comes first, in a portal that
+/// does not scroll.
+const NEW_ROW_TOP: i32 = 0x400;
 
 #[derive(Clone, Copy, Debug)]
 pub(super) struct PortalGeometry {
@@ -19,6 +23,9 @@ pub(super) struct PortalGeometry {
     pub row_height: f32,
     pub first_record: usize,
     pub scrolls: bool,
+    /// The rows without a record come before the records
+    /// ([`NEW_ROW_TOP`]).
+    pub new_row_top: bool,
 }
 
 impl PortalGeometry {
@@ -54,6 +61,9 @@ impl PortalGeometry {
             row_height: (inner_height / count as f32).max(1.0),
             first_record: portal.initial_row.saturating_sub(1).max(0) as usize,
             scrolls: portal.flags & SCROLLS != 0,
+            // FileMaker Pro 26.1.1 takes the top row only while the portal
+            // does not scroll (`DataEntryModel::IsVisibleTopNewPortalRow`).
+            new_row_top: portal.flags & NEW_ROW_TOP != 0 && portal.flags & SCROLLS == 0,
         })
     }
 
@@ -272,12 +282,22 @@ fn paint_rows(
     let mut borders = Vec::new();
     let mut clicked = None;
     let mut paint_row = |ui: &mut Ui, index: usize, row_rect: Rect| {
-        let record_index = geometry.first_record + index;
+        // The row's place among the records and the rows without one,
+        // which come after them, or first with `new_row_top`. Its number,
+        // id and clicks follow that place, wherever it is drawn [I: how
+        // FileMaker numbers a row drawn at the top is unmeasured].
+        let top = geometry.new_row_top && unsaved > 0;
+        let place = match top {
+            true if index < unsaved => records.len() + index,
+            true => index - unsaved,
+            false => index,
+        };
+        let record_index = geometry.first_record + place;
         let mut style = styles.normal.clone();
-        if styles.use_alternate && record_index % 2 == 1 {
+        if styles.use_alternate && (geometry.first_record + index) % 2 == 1 {
             style.overlay(&styles.alternate);
         }
-        let record = records.get(index).copied();
+        let record = records.get(place).copied();
         if styles.use_active && record.is_some() && record == selected {
             style.overlay(&styles.active);
         }
@@ -286,9 +306,15 @@ fn paint_rows(
         super::paint_box(ui, row_rect, &fill, om_layout::ObjectKind::Rectangle);
         style.background = None;
         borders.push((row_rect, style));
-        let new = index
-            .checked_sub(records.len())
-            .filter(|new| *new < unsaved);
+        // At the top only the first rows are without a record: the slots
+        // past the records stay empty.
+        let new = if top {
+            (index < unsaved).then_some(index)
+        } else {
+            place
+                .checked_sub(records.len())
+                .filter(|new| *new < unsaved)
+        };
         if record.is_none() && new.is_none() {
             return;
         }
@@ -547,6 +573,59 @@ mod tests {
                     "a template must not invent a record ID"
                 );
             }
+        }
+    }
+
+    /// "Place row for new record at top" (`0x400`) draws the creation row
+    /// first in a portal that does not scroll, keeping each row's number;
+    /// a scrolling portal keeps it last, as FileMaker Pro 26.1.1 does.
+    #[test]
+    fn the_new_record_row_comes_first_when_the_portal_asks_and_does_not_scroll() {
+        let context = egui::Context::default();
+        let layout = Layout::default();
+        let rect = Rect::from_min_size(pos2(30.0, 50.0), vec2(202.0, 102.0));
+        for (flags, top) in [
+            (NEW_ROW_TOP, true),
+            (NEW_ROW_TOP | SCROLLS, false),
+            (0, false),
+        ] {
+            let object = portal(5.0, 1, flags);
+            let geometry = PortalGeometry::new(&object, rect, &ResolvedStyle::default()).unwrap();
+            assert_eq!(geometry.new_row_top, top, "{flags:#x}");
+            let mut painted = Vec::new();
+            context
+                .run_ui(egui::RawInput::default(), |context| {
+                    egui::CentralPanel::default().show(context, |ui| {
+                        paint_rows(
+                            ui,
+                            &object,
+                            rect,
+                            7,
+                            PortalRecords {
+                                layout_id: 0,
+                                styles: styles(&LayoutCache::default(), &layout, &object),
+                                geometry,
+                                occurrence: 2,
+                                records: &[10, 20],
+                                new_rows: 0,
+                                creation_row: true,
+                                selected: None,
+                                stale: false,
+                            },
+                            |_, row| {
+                                painted.push((row.context.map(|c| c.record), row.new, row.number))
+                            },
+                        );
+                    });
+                })
+                .drop_without_applying_deltas();
+            let creation = (None, Some(0), 3);
+            let expected = if top {
+                vec![creation, (Some(10), None, 1), (Some(20), None, 2)]
+            } else {
+                vec![(Some(10), None, 1), (Some(20), None, 2), creation]
+            };
+            assert_eq!(painted, expected, "{flags:#x}");
         }
     }
 

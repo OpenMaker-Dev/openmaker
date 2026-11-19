@@ -1157,6 +1157,18 @@ the worker finds by its number (`enter_clicked_row` without a record
 identity): Set Field into the creation row creates a related record, and
 Delete Portal Row there deletes nothing (script-runtime.md 13.24).
 
+A portal saved with FileMaker Pro 26.1's "Place row for new record at top"
+(portal option `0x400`, layout-model.md 5.3.2) draws the creation row,
+and the rows begun in it, above its records, when it does not scroll
+(option `0x1` clear); a portal that scrolls keeps them last, as FileMaker
+Pro 26.1.1's `DataEntryModel::IsVisibleTopNewPortalRow` decides
+([#343](https://github.com/OpenMaker-Dev/openmaker/issues/343)). Every row keeps the number it has without the option, so a
+script's portal row numbers, Go to Portal Row and `Get (
+ActivePortalRowNumber )` are unchanged [I: how FileMaker numbers a row
+drawn at the top is unmeasured]. The option's storage is read from
+FileMaker Pro 26.1.1's binaries, not from a file it saved, and Portal
+Setup does not offer it.
+
 A step that puts the focus in a field of a portal row (Go to Field, Go to
 Object, Go to Portal Row with a field active), as the starter solutions'
 add buttons do with Go to Portal Row [Last] and Go to Field, gives that
