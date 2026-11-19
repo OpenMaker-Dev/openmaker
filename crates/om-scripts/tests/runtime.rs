@@ -1659,12 +1659,24 @@ fn every_step_id_dispatches_on_every_client() {
                 assert_eq!(error.as_deref(), Some("0"), "step {id}");
             } else if client == Client::Server && id == 146 {
                 assert_eq!(error.as_deref(), Some("5"));
-            } else if !om_scripts::is_valid_step_id(id)
-                || om_scripts::OBSOLETE_STEP_IDS.contains(&id)
-            {
-                assert_eq!(error.as_deref(), Some("4"), "{client:?} step {id}");
-            } else if !om_scripts::is_supported(id, client) {
-                assert_eq!(error.as_deref(), Some("3"), "{client:?} step {id}");
+            } else {
+                let (known, supported) = if client == Client::Mac {
+                    (
+                        om_scripts::is_valid_step_id(id),
+                        om_scripts::is_supported(id, client),
+                    )
+                } else {
+                    // The server keeps FileMaker Server 26.0.3's table.
+                    (
+                        om_scripts::is_server_step_id(id),
+                        om_scripts::is_supported_on_server(id, client),
+                    )
+                };
+                if !known || om_scripts::OBSOLETE_STEP_IDS.contains(&id) {
+                    assert_eq!(error.as_deref(), Some("4"), "{client:?} step {id}");
+                } else if !supported {
+                    assert_eq!(error.as_deref(), Some("3"), "{client:?} step {id}");
+                }
             }
         }
     }

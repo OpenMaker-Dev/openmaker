@@ -1872,7 +1872,17 @@ mod tests {
         let text = "GetToolDefinitions ( \"openai\" ; \"f\" ; \"g\" )";
         let compiled = compile(text, &ctx).unwrap();
         let polish = polish::encode(&compiled.expr);
-        assert_eq!(polish[..4], [0xf9, 0x12, 0x00, 0x03]);
+        // Prefix order (calc-encoding.md 1): the opcode and argument count,
+        // then each argument in turn.
+        let arg = |text: &str| polish::encode(&compile(text, &ctx).unwrap().expr);
+        let want = [
+            vec![0xf9, 0x12, 0x00, 0x03],
+            arg("\"openai\""),
+            arg("\"f\""),
+            arg("\"g\""),
+        ]
+        .concat();
+        assert_eq!(polish, want);
         assert_eq!(polish::encode(&polish::decode(&polish).unwrap()), polish);
         let formatted = formatted::encode(&compiled.tokens);
         assert_eq!(

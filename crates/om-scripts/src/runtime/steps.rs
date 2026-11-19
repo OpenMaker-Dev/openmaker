@@ -39,7 +39,7 @@ impl Runtime {
         if id == 0 {
             return Exec::error(ErrorCode::UNKNOWN);
         }
-        if is_unknown_step(id) {
+        if is_unknown_step(&self.options, id) {
             return Exec::error(ErrorCode::UNKNOWN_COMMAND);
         }
         if let Some(t) = &self.transaction {
@@ -66,7 +66,7 @@ impl Runtime {
                 _ => {}
             }
         }
-        if !client_supports(self.options.client, id) {
+        if !client_supports(&self.options, id) {
             return Exec::error(ErrorCode::UNAVAILABLE);
         }
         match id {

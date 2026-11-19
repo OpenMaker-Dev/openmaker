@@ -50,6 +50,11 @@ const COMPILED_ENTRIES: usize = 1024;
 /// `Get ( CalculationRepetitionNumber )`, answered from the context.
 const CALCULATION_REPETITION_NUMBER: u8 = 68;
 
+/// `Get ( SortOrder )`, FileMaker Pro 26.1.1's, which no host answers yet
+/// ([#350](https://github.com/OpenMaker-Dev/openmaker/issues/350)): it
+/// fails rather than answer empty, as unanswered selectors do.
+const SORT_ORDER: u8 = 142;
+
 pub(super) mod opc {
     use om_formula::Opcode;
 
@@ -862,7 +867,11 @@ impl<'h> Solver<'h> {
         if selector == CALCULATION_REPETITION_NUMBER {
             return Value::number(i64::from(self.context.repetition));
         }
-        let r = self.host.get(selector, &self.context);
+        let r = if selector == SORT_ORDER {
+            Err(CalcError::NOT_SUPPORTED)
+        } else {
+            self.host.get(selector, &self.context)
+        };
         self.check(r)
     }
 
