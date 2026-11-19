@@ -5151,7 +5151,14 @@ impl FoundSets for WorkerHost<'_> {
             Some(node) => {
                 let spec = om_data::specs::SortSpec::from_node(node)
                     .ok_or(HostError::Error(ErrorCode::INVALID))?;
-                (self.sort_fields(spec.clone())?, Some(spec))
+                // With the dialog, the order the user chooses is checked,
+                // so a stored key this host cannot sort by can be replaced.
+                let sort = if with_dialog {
+                    Vec::new()
+                } else {
+                    self.sort_fields(spec.clone())?
+                };
+                (sort, Some(spec))
             }
             None => {
                 // Another table's stored order is not this table's.
@@ -5161,7 +5168,26 @@ impl FoundSets for WorkerHost<'_> {
                     .clone()
                     .filter(|(table, _)| *table == window.table)
                     .map(|(_, spec)| spec);
-                (window.last_sort.clone(), spec)
+                let sort = window.last_sort.clone();
+                // The order was accepted on a layout of this table, so a key
+                // of another occurrence of it named that layout's own field:
+                // it is this layout's own field now.
+                let own = self.occurrence();
+                let spec = match (spec, own, self.schema()) {
+                    (Some(mut spec), Some(own), Some(schema)) => {
+                        let table_of = |o: u64| schema.table_of(o).map(|t| t.id);
+                        for entry in &mut spec.fields {
+                            if entry.field.occurrence.is_some_and(|o| {
+                                o != own && table_of(o).is_some() && table_of(o) == table_of(own)
+                            }) {
+                                entry.field.occurrence = Some(own);
+                            }
+                        }
+                        Some(spec)
+                    }
+                    (spec, _, _) => spec,
+                };
+                (sort, spec)
             }
         };
         if with_dialog {
