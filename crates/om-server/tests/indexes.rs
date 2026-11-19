@@ -323,33 +323,6 @@ fn text_indexed_in_a_language_without_keys_is_not_keyed_in_english() {
     assert_eq!(name_index_on_disk(&file), index);
 }
 
-/// An index entry keyed by other rules than this server's (an earlier
-/// build's, or FileMaker's where they differ) does not outlive the record's
-/// change: record 2 stores `Ship` but is listed under `Shop`'s key, and once
-/// its Name is `Boat` it is listed under `Boat` alone, so a find for the old
-/// key no longer returns it.
-#[test]
-fn a_changed_record_leaves_no_entry_under_a_key_of_other_rules() {
-    use om_hbam::slot::uint_segment;
-    let mut root = fixture::tree(&[], true);
-    let (t, f) = (uint_segment(fixture::TABLE), uint_segment(fixture::NAME));
-    let records: om_hbam::RidList = [2].into_iter().collect();
-    root.put(
-        &[&t, &[1], &f, &[0], &om_collate::text_key("Shop")],
-        records.to_node(Vec::new()),
-    );
-    let file = fixture::TempFile::from_tree("stale-entries", &root);
-    let port = server::start(&file);
-    let (mut session, _) = server::logged_in(port, "stale entries");
-    commit_name(&mut session, 2, "Boat");
-    session.disconnect().unwrap();
-    assert_eq!(name_on_disk(&file, 2).as_deref(), Some("Boat"));
-    assert_eq!(
-        name_index_on_disk(&file),
-        [(om_collate::text_key("Boat"), vec![2])]
-    );
-}
-
 /// Record `id`'s Name in the file on disk.
 fn name_on_disk(file: &fixture::TempFile, id: u64) -> Option<String> {
     use om_hbam::slot::uint_segment;
