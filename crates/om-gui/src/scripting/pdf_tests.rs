@@ -3921,7 +3921,9 @@ fn container_fields_print_pictures_by_graphic_format_and_files_by_name() {
 /// `{{PageNumber}}` prints each page's number, in a static label and in a
 /// merge text's literal (any case), as FileMaker Pro 26.0.3's Save Records
 /// as PDF wrote it on page *n* (calc-functions.md, O4), without touching
-/// the merged field's value. Other layout symbols still refuse.
+/// the merged field's value. An unclosed `{{` prints as it is, and a
+/// symbol is read within one literal run, never across a merged field.
+/// Other layout symbols still refuse.
 #[test]
 fn page_number_symbols_print_each_pages_number() {
     use om_layout::TextRun::{Literal, MergeField};
@@ -3929,6 +3931,18 @@ fn page_number_symbols_print_each_pages_number() {
     merged.text_runs = vec![
         Literal("No. {{pagenumber}} ".into()),
         MergeField("Name".into()),
+    ];
+    let mut noted = label(
+        5,
+        "Note {{ <<Name>> / Page {{PageNumber}}",
+        rect(12.0, 60.0, 400.0, 20.0),
+        12.0,
+        false,
+    );
+    noted.text_runs = vec![
+        Literal("Note {{ ".into()),
+        MergeField("Name".into()),
+        Literal(" / Page {{PageNumber}}".into()),
     ];
     let layout = Layout {
         def: Some(LayoutDef {
@@ -3949,7 +3963,7 @@ fn page_number_symbols_print_each_pages_number() {
             },
         ],
         objects: ObjectStore {
-            root: vec![1, 2, 3],
+            root: vec![1, 2, 3, 4, 5],
             objects: vec![
                 label(1, "Body", rect(12.0, 10.0, 200.0, 20.0), 12.0, false),
                 label(
@@ -3960,6 +3974,8 @@ fn page_number_symbols_print_each_pages_number() {
                     false,
                 ),
                 merged,
+                label(4, "Draft {{", rect(12.0, 35.0, 200.0, 20.0), 12.0, false),
+                noted,
             ],
             ..Default::default()
         },
@@ -3995,7 +4011,16 @@ fn page_number_symbols_print_each_pages_number() {
             [page],
             "{merge}"
         );
+        let note = format!("Note {{{{ {{{{PageNumber}}}} / Page {number}");
+        let notes = text_origins(&pdf, 2, &note);
+        assert_eq!(
+            notes.iter().map(|o| o.0).collect::<Vec<_>>(),
+            [page],
+            "{note}"
+        );
     }
+    let drafts = text_origins(&pdf, 2, "Draft {{");
+    assert_eq!(drafts.iter().map(|o| o.0).collect::<Vec<_>>(), [0, 1]);
     let mut dated = layout.clone();
     dated.objects.objects[1].text = Some("{{CurrentDate}}".into());
     assert_eq!(

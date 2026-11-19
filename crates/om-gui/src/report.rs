@@ -2083,14 +2083,7 @@ fn report_object<'a>(
         )));
     }
     if matches!(object.kind(), ObjectKind::Text | ObjectKind::Button)
-        && object
-            .text
-            .iter()
-            .chain(object.text_runs.iter().filter_map(|run| match run {
-                om_layout::TextRun::Literal(literal) => Some(literal),
-                _ => None,
-            }))
-            .any(|text| numbered(text, 0).is_none())
+        && symbol_texts(object).any(|text| numbered(text, 0).is_none())
     {
         return Err(ReportError::unsupported(
             "Layout merge symbols other than {{PageNumber}} are unsupported",
@@ -2561,7 +2554,8 @@ fn part_objects<'s, 'a>(
 /// symbols, `om_data::host::layout::merge_text`) replaced by page `page`'s
 /// number (from 0): what FileMaker Pro 26.0.3 wrote on page *n* of Save
 /// Records as PDF (calc-functions.md, O4). `None` when the text holds
-/// another symbol, which reports refuse; an unclosed `{{` is text.
+/// another symbol, which reports refuse; an unclosed `{{` is text, as
+/// Browse keeps it.
 fn numbered(text: &str, page: usize) -> Option<String> {
     let mut out = String::with_capacity(text.len());
     let mut rest = text;
@@ -2569,7 +2563,8 @@ fn numbered(text: &str, page: usize) -> Option<String> {
         out.push_str(&rest[..start]);
         let tail = &rest[start..];
         let Some(end) = tail[2..].find("}}").map(|i| i + 2) else {
-            break;
+            out.push_str(tail);
+            return Some(out);
         };
         if !tail[2..end].eq_ignore_ascii_case("PageNumber") {
             return None;
@@ -2581,19 +2576,29 @@ fn numbered(text: &str, page: usize) -> Option<String> {
     Some(out)
 }
 
+/// The texts a text object's or button's layout symbols are read from, as
+/// Browse and the report's content read them: a merge text's literal runs,
+/// each on its own (a symbol never spans a merged field), or else its label.
+fn symbol_texts(object: &LayoutObject) -> Box<dyn Iterator<Item = &String> + '_> {
+    use om_layout::TextRun;
+    if object.text_runs.is_empty() {
+        Box::new(object.text.iter())
+    } else {
+        Box::new(object.text_runs.iter().filter_map(|run| match run {
+            TextRun::Literal(literal) => Some(literal),
+            _ => None,
+        }))
+    }
+}
+
 /// `object` as page `page` (from 0) prints it: a text object's or a
-/// button's `{{PageNumber}}` numbered in its label and literal runs
-/// ([`numbered`]), so every source reads it as plain text and no field's
-/// value is touched; borrowed when it has none.
+/// button's `{{PageNumber}}` numbered where its symbols are read
+/// ([`symbol_texts`], [`numbered`]), so every source reads it as plain text
+/// and no field's value is touched; borrowed when it has none.
 fn on_page(object: &LayoutObject, page: usize) -> std::borrow::Cow<'_, LayoutObject> {
     use om_layout::TextRun;
-    let paged = |text: &String| text.contains("{{");
     if !matches!(object.kind(), ObjectKind::Text | ObjectKind::Button)
-        || !(object.text.iter().any(paged)
-            || object
-                .text_runs
-                .iter()
-                .any(|run| matches!(run, TextRun::Literal(l) if paged(l))))
+        || !symbol_texts(object).any(|text| text.contains("{{"))
     {
         return std::borrow::Cow::Borrowed(object);
     }
@@ -2603,8 +2608,10 @@ fn on_page(object: &LayoutObject, page: usize) -> std::borrow::Cow<'_, LayoutObj
             *text = n;
         }
     };
-    if let Some(text) = object.text.as_mut() {
-        number(text);
+    if object.text_runs.is_empty() {
+        if let Some(text) = object.text.as_mut() {
+            number(text);
+        }
     }
     for run in &mut object.text_runs {
         if let TextRun::Literal(literal) = run {
