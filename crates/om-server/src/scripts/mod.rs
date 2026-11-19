@@ -1346,6 +1346,12 @@ mod tests {
         );
         let read = CalcHost::field_value(&host, fixture::OCCURRENCE, 1, fixture::NAME, 1);
         assert_eq!(read.unwrap_err().code(), 9);
+        let query = om_calc::eval::evaluate_text(
+            "ExecuteSQL ( \"SELECT Name FROM Tasks\" ; \"\" ; \"\" )",
+            &mut host,
+            &om_calc::eval::Context::new(),
+        );
+        assert_eq!(query.code(), 9, "{:?}", query.value);
         host.enter_mode(Mode::Find, false, None).unwrap();
         host.set_field(field(fixture::NAME), Value::text("Ship"))
             .unwrap();

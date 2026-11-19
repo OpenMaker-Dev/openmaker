@@ -205,6 +205,13 @@ impl FieldObject {
         self.flags & 0x800 != 0
     }
 
+    /// The Inspector's "Go to next object using" Enter key: flag `0x80`
+    /// (layout-model.md 5.4.1; its Tab and Return keys are `0x20` and
+    /// `0x40`).
+    pub fn next_object_on_enter(&self) -> bool {
+        self.flags & 0x80 != 0
+    }
+
     /// Whether Tab into the field in Browse selects its whole content, so
     /// typing replaces it, rather than putting the insertion point after
     /// it. FileMaker Pro 26.0.3 selects a drop-down calendar's date (#964,

@@ -160,6 +160,7 @@ fn a_grouped_export_of_4000_records() {
         formatting: false,
         charset: ExportCharset::Utf8,
         use_name_alias: Some(1),
+        field_names: None,
     };
     let scripts = vec![script(
         1,

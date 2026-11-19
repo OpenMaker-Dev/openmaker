@@ -85,7 +85,10 @@ const POINTS: u64 = 6;
 const LINES: u64 = 9;
 
 /// The theme catalog `[6]` holding the one theme, key `01`.
-pub(super) fn catalog(stamp: &Stamp, uuid: &mut dyn FnMut() -> [u8; 16]) -> OwnedNode {
+pub(super) fn catalog(
+    stamp: &Stamp,
+    uuid: &mut dyn FnMut() -> [u8; 16],
+) -> Result<OwnedNode, super::Refusal> {
     let id = uuid();
     let mut member = OwnedNode::list([1], Vec::new());
     member.set_child(om_scripts::text_node(&[DISPLAY_NAME], NAME_SHOWN));
@@ -98,20 +101,15 @@ pub(super) fn catalog(stamp: &Stamp, uuid: &mut dyn FnMut() -> [u8; 16]) -> Owne
     member.set_child(OwnedNode::leaf([METADATA], metadata()));
     member.set_child(OwnedNode::leaf([UNIQUE_ID], uuid().to_vec()));
     let member = stamped(member, stamp);
-    OwnedNode::list(
+    // `18` = the theme `01 01` and `20` = `01`, as Pro's blank files' theme
+    // index has them.
+    let mut index = index(&[(vec![1], &theme_id(&id))], false, stamp, uuid)?;
+    index.set_child(OwnedNode::leaf([0x18], [0x01, 0x01]));
+    index.set_child(OwnedNode::leaf([0x20], [0x01]));
+    Ok(OwnedNode::list(
         [super::THEMES],
-        vec![
-            {
-                // `18` = the theme `01 01` and `20` = `01`, as Pro's blank
-                // files' theme index has them.
-                let mut index = index(&[(vec![1], &theme_id(&id))], false, stamp, uuid);
-                index.set_child(OwnedNode::leaf([0x18], [0x01, 0x01]));
-                index.set_child(OwnedNode::leaf([0x20], [0x01]));
-                index
-            },
-            OwnedNode::list([MEMBERS], vec![member]),
-        ],
-    )
+        vec![index, OwnedNode::list([MEMBERS], vec![member])],
+    ))
 }
 
 /// `com.filemaker.theme.custom.` and the UUID in capitals with `_`, as
