@@ -13,18 +13,37 @@ use std::process::{Child, ChildStdin, ChildStdout, Command, Stdio};
 use common::*;
 use serde_json::{json, Value};
 
-/// Files the binary reads its CA and password from, removed when dropped.
+/// Scratch directory, removed when dropped.
 struct Secrets {
     dir: PathBuf,
 }
 
 impl Secrets {
     fn new(tag: &str, host: &Host) -> Self {
+        let secrets = Self::scratch(tag);
+        std::fs::write(secrets.dir.join("ca.pem"), &host.ca_pem).unwrap();
+        std::fs::write(secrets.dir.join("password"), format!("{PASSWORD}\n")).unwrap();
+        secrets
+    }
+
+    fn scratch(tag: &str) -> Self {
         let dir = std::env::temp_dir().join(format!("om-author-{tag}-{}", std::process::id()));
         std::fs::create_dir_all(&dir).unwrap();
-        std::fs::write(dir.join("ca.pem"), &host.ca_pem).unwrap();
-        std::fs::write(dir.join("password"), format!("{PASSWORD}\n")).unwrap();
         Secrets { dir }
+    }
+
+    fn command(&self) -> Command {
+        let mut command = Command::new(env!("CARGO_BIN_EXE_om-author"));
+        for (variable, _) in
+            std::env::vars_os().filter(|(v, _)| v.to_string_lossy().starts_with("OPENMAKER_"))
+        {
+            command.env_remove(variable);
+        }
+        command
+            .env("HOME", &self.dir)
+            .env("XDG_CONFIG_HOME", &self.dir)
+            .env("APPDATA", &self.dir);
+        command
     }
 }
 
@@ -35,14 +54,7 @@ impl Drop for Secrets {
 }
 
 fn om_author(host: &Host, secrets: &Secrets) -> Command {
-    let mut command = Command::new(env!("CARGO_BIN_EXE_om-author"));
-    for variable in [
-        "OPENMAKER_PASSWORD",
-        "OPENMAKER_CLIENT_CERT",
-        "OPENMAKER_CLIENT_KEY",
-    ] {
-        command.env_remove(variable);
-    }
+    let mut command = secrets.command();
     command
         .env("OPENMAKER_HOST", "127.0.0.1")
         .env("OPENMAKER_PORT", host.port.to_string())
@@ -51,6 +63,123 @@ fn om_author(host: &Host, secrets: &Secrets) -> Command {
         .env("OPENMAKER_PASSWORD_FILE", secrets.dir.join("password"))
         .env("OPENMAKER_CA_CERT", secrets.dir.join("ca.pem"));
     command
+}
+
+#[test]
+fn cli_and_mcp_resolve_user_config_and_send_the_selected_license() {
+    let file = TempFile::from_tree("author-config", &form_tree());
+    let scratch = Secrets::scratch("user-config");
+    let records = scratch.dir.join("recordings");
+    let host = host_recording(&file, &records);
+    let config = scratch.command().arg("config-path").output().unwrap();
+    assert!(config.status.success());
+    let config = PathBuf::from(std::str::from_utf8(&config.stdout).unwrap().trim_end());
+    assert!(config.starts_with(&scratch.dir));
+    assert_eq!(config.file_name().unwrap(), "author.json");
+    let directory = config.parent().unwrap();
+    std::fs::create_dir_all(directory).unwrap();
+    std::fs::write(directory.join("ca.pem"), &host.ca_pem).unwrap();
+    std::fs::write(directory.join("password"), format!("{PASSWORD}\n")).unwrap();
+    std::fs::write(
+        directory.join("license"),
+        " synthetic-license-from-file \r\n",
+    )
+    .unwrap();
+    std::fs::write(
+        &config,
+        json!({
+            "host": "127.0.0.1", "port": host.port, "file": FILE, "account": ACCOUNT,
+            "password_file": "password", "ca_cert": "ca.pem", "license_file": "license",
+        })
+        .to_string(),
+    )
+    .unwrap();
+
+    let output = scratch
+        .command()
+        .args(["inspect", "--include", "tables"])
+        .output()
+        .unwrap();
+    assert!(output.status.success(), "{output:?}");
+    ok(serde_json::from_slice(&output.stdout).unwrap());
+    for stream in [&output.stdout, &output.stderr] {
+        assert!(!String::from_utf8_lossy(stream).contains("synthetic-license"));
+    }
+
+    let env_override = scratch
+        .command()
+        .env("OPENMAKER_LICENSE_KEY", "synthetic-license-from-env")
+        .arg("capabilities")
+        .output()
+        .unwrap();
+    assert!(env_override.status.success(), "{env_override:?}");
+
+    let mut command = scratch.command();
+    command
+        .arg("--config")
+        .arg(&config)
+        .env("OPENMAKER_AUTHOR_CONFIG", scratch.dir.join("missing.json"))
+        .env("OPENMAKER_FILE", "Wrong.fmp12")
+        .env("OPENMAKER_PORT", "1")
+        .env("OPENMAKER_PASSWORD", "synthetic-password-for-another-file")
+        .env("OPENMAKER_CA_CERT", scratch.dir.join("missing.pem"))
+        .env(
+            "OPENMAKER_LICENSE_KEY",
+            "synthetic-license-for-another-file",
+        );
+    let mut mcp = Mcp::from_command(command);
+    let call = mcp.request(
+        1,
+        "tools/call",
+        modern(json!({
+            "name": "openmaker_inspect", "arguments": { "include": ["tables"] },
+        })),
+    );
+    ok(tool_result(&call));
+    drop(mcp);
+
+    let override_host = scratch
+        .command()
+        .args(["--port", "1", "inspect"])
+        .output()
+        .unwrap();
+    assert_eq!(override_host.status.code(), Some(2));
+    assert!(String::from_utf8_lossy(&override_host.stderr)
+        .contains("belongs to a different connection"));
+    let too_long = "q".repeat(256);
+    let refused = scratch
+        .command()
+        .env("OPENMAKER_LICENSE_KEY", &too_long)
+        .arg("inspect")
+        .output()
+        .unwrap();
+    assert_eq!(refused.status.code(), Some(2));
+    let error = String::from_utf8_lossy(&refused.stderr);
+    assert!(error.contains("255 encoded bytes"));
+    assert!(!error.contains(&too_long));
+
+    host.stop();
+    for (index, expected) in [
+        "synthetic-license-from-file",
+        "synthetic-license-from-env",
+        "synthetic-license-from-file",
+    ]
+    .into_iter()
+    .enumerate()
+    {
+        let mut stream =
+            std::fs::File::open(records.join(format!("conn-{index:03}/c2s.bin"))).unwrap();
+        let mut reader = om_giop::MessageReader::new(64 * 1024);
+        reader.read_logical(&mut stream).unwrap(); // _is_a
+        let connect = reader.read_logical(&mut stream).unwrap();
+        assert_eq!(
+            om_protocol::parse_connect_request(&connect)
+                .unwrap()
+                .machine
+                .install_code,
+            expected
+        );
+    }
 }
 
 #[test]
@@ -272,10 +401,8 @@ fn tool_result(response: &Value) -> Value {
 
 #[test]
 fn mcp_discovers_commands_before_connection_settings_are_available() {
-    let mut command = Command::new(env!("CARGO_BIN_EXE_om-author"));
-    for (variable, _) in std::env::vars().filter(|(v, _)| v.starts_with("OPENMAKER_")) {
-        command.env_remove(variable);
-    }
+    let scratch = Secrets::scratch("mcp-without-config");
+    let command = scratch.command();
     let mut mcp = Mcp::from_command(command);
     let discovered = mcp.request(1, "server/discover", modern(json!({})));
     assert!(discovered["result"]["capabilities"]["tools"].is_object());

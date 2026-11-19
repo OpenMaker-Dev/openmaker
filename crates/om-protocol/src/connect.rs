@@ -78,20 +78,20 @@ impl Default for MachineInfo {
 
 impl MachineInfo {
     /// Marshal the machine-info OctetSeq (2 bytes, 4 strings, 2 bytes, 3 strings).
-    pub fn to_octets(&self) -> Vec<u8> {
+    pub fn to_octets(&self) -> Result<Vec<u8>, ConnectError> {
         let mut out = Vec::new();
         out.push(self.exe_type);
         out.push(self.app_type);
-        push_string(&mut out, &self.machine_name);
-        push_string(&mut out, &self.install_code);
-        push_string(&mut out, &self.version_string);
-        push_string(&mut out, &self.mac_addresses);
+        push_string(&mut out, &self.machine_name)?;
+        out.extend(encode_client_license(&self.install_code)?);
+        push_string(&mut out, &self.version_string)?;
+        push_string(&mut out, &self.mac_addresses)?;
         out.push(self.system_language);
         out.push(self.protocol_version);
-        push_string(&mut out, &self.persistent_id);
-        push_string(&mut out, &self.web_service_settings);
-        push_string(&mut out, &self.standby_address);
-        out
+        push_string(&mut out, &self.persistent_id)?;
+        push_string(&mut out, &self.web_service_settings)?;
+        push_string(&mut out, &self.standby_address)?;
+        Ok(out)
     }
 
     /// Parse a machine-info OctetSeq (the inverse of [`MachineInfo::to_octets`]).
@@ -113,10 +113,22 @@ impl MachineInfo {
     }
 }
 
-fn push_string(out: &mut Vec<u8>, s: &str) {
-    // LeadingU8 cannot represent >255 SCSU bytes; Connect fields are short.
-    let field = encode_field(s, Framing::LeadingU8).expect("connect string fits in u8 length");
-    out.extend_from_slice(&field);
+fn push_string(out: &mut Vec<u8>, s: &str) -> Result<(), ConnectError> {
+    out.extend(encode_field(s, Framing::LeadingU8).map_err(|_| ConnectError::StringTooLong)?);
+    Ok(())
+}
+
+fn encode_client_license(key: &str) -> Result<Vec<u8>, ConnectError> {
+    // A scalar uses at most four UTF-8 bytes and at least one SCSU byte.
+    if key.len() > 4 * usize::from(u8::MAX) {
+        return Err(ConnectError::LicenseTooLong);
+    }
+    encode_field(key, Framing::LeadingU8).map_err(|_| ConnectError::LicenseTooLong)
+}
+
+/// Verify that a client license fits in the Connect request's install-code field.
+pub fn validate_client_license(key: &str) -> Result<(), ConnectError> {
+    encode_client_license(key).map(|_| ())
 }
 
 /// The server identity carried by a `Connect` reply.
@@ -150,17 +162,20 @@ impl ConnectReply {
     /// If a string encodes to more than 255 SCSU bytes.
     pub fn to_octets(&self) -> Vec<u8> {
         let mut out = self.connection_key.to_vec();
+        let push = |out: &mut Vec<u8>, value| {
+            push_string(out, value).expect("server Connect string fits in u8 length")
+        };
         out.push(self.exe_type);
         out.push(self.app_type);
-        push_string(&mut out, &self.remote_name);
-        push_string(&mut out, "");
-        push_string(&mut out, &self.version_string);
-        push_string(&mut out, "");
+        push(&mut out, &self.remote_name);
+        push(&mut out, "");
+        push(&mut out, &self.version_string);
+        push(&mut out, "");
         out.push(self.system_language);
         out.push(self.protocol_version);
-        push_string(&mut out, &self.install_code);
-        push_string(&mut out, &self.web_service_settings);
-        push_string(&mut out, &self.standby_address);
+        push(&mut out, &self.install_code);
+        push(&mut out, &self.web_service_settings);
+        push(&mut out, &self.standby_address);
         out
     }
 }
@@ -174,13 +189,15 @@ pub struct ConnectRequest {
     pub machine: MachineInfo,
 }
 
-/// Error parsing a `Connect` message.
+/// Error building or parsing a `Connect` message.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum ConnectError {
     Giop(String),
     Status(String),
     Truncated,
     BadString,
+    StringTooLong,
+    LicenseTooLong,
 }
 
 impl core::fmt::Display for ConnectError {
@@ -190,6 +207,10 @@ impl core::fmt::Display for ConnectError {
             ConnectError::Status(s) => write!(f, "connect reply status {s}"),
             ConnectError::Truncated => f.write_str("connect message truncated"),
             ConnectError::BadString => f.write_str("connect message has a malformed string field"),
+            ConnectError::StringTooLong => f.write_str("a Connect field exceeds 255 encoded bytes"),
+            ConnectError::LicenseTooLong => {
+                f.write_str("the FileMaker client license exceeds 255 encoded bytes")
+            }
         }
     }
 }
@@ -207,20 +228,20 @@ pub fn build_connect(
     callback_host: &str,
     callback_port: u16,
     info: &MachineInfo,
-) -> Vec<u8> {
+) -> Result<Vec<u8>, ConnectError> {
     let mut body = CdrWriter::with_origin(0);
     write_callback_ior(&mut body, callback_host, callback_port);
     body.string(b""); // unused1
     body.string(b""); // unused2
-    body.octet_sequence(&info.to_octets());
-    build_request(
+    body.octet_sequence(&info.to_octets()?);
+    Ok(build_request(
         request_id,
         true,
         OBJECT_KEY,
         op::CONNECT,
         &[],
         &body.into_bytes(),
-    )
+    ))
 }
 
 /// Write the client callback object reference: type id plus one IIOP 1.2 profile.
@@ -362,12 +383,20 @@ mod tests {
     #[test]
     fn connect_request_structure_round_trips() {
         let info = MachineInfo::default();
-        let msg = build_connect(4, "10.0.0.5", 0x138b, &info);
+        let msg = build_connect(4, "10.0.0.5", 0x138b, &info).unwrap();
         let req = Request::parse(&msg).unwrap();
         assert_eq!(req.operation, op::CONNECT);
         assert_eq!(req.object_key, OBJECT_KEY);
         // Body starts with the callback IOR type id.
         assert!(req.body.windows(REPO_ID.len()).any(|w| w == REPO_ID));
+        let oversized = MachineInfo {
+            install_code: "k".repeat(256),
+            ..info
+        };
+        assert_eq!(
+            build_connect(4, "10.0.0.5", 0x138b, &oversized),
+            Err(ConnectError::LicenseTooLong)
+        );
     }
 
     #[test]
@@ -376,7 +405,7 @@ mod tests {
             install_code: String::new(),
             ..MachineInfo::default()
         };
-        let octets = info.to_octets();
+        let octets = info.to_octets().unwrap();
         // Re-read with the reply-shaped parser's string walker to confirm framing:
         // skip the 2 leading bytes, read machineName.
         let (name, _) = decode_field(&octets[2..], Framing::LeadingU8).unwrap();
@@ -390,7 +419,7 @@ mod tests {
             version_string: "Pro 26.0.3".into(),
             ..MachineInfo::default()
         };
-        let msg = build_connect(4, "10.0.0.5", 0x138b, &info);
+        let msg = build_connect(4, "10.0.0.5", 0x138b, &info).unwrap();
         let req = parse_connect_request(&msg).unwrap();
         assert_eq!(req.callback_type_id, "IDL:RCFMP12:1.0");
         assert_eq!(req.machine.machine_name, "workstation");

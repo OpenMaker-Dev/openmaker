@@ -19,6 +19,7 @@
 
 pub mod api;
 pub mod catalog;
+pub mod config;
 pub mod mcp;
 pub mod refs;
 pub mod service;

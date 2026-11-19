@@ -726,10 +726,15 @@ impl Service {
         let opened = provider.open_metadata(&connection);
         forget_password(&mut connection);
         opened.map_err(|e| {
+            let hint = if e.code == Some(om_provider::CLIENT_LICENSE_REFUSED) {
+                ". Check OPENMAKER_LICENSE_KEY or license_file in the author config."
+            } else {
+                ""
+            };
             AuthorError::new(
                 ErrorKind::Connection,
                 format!(
-                    "Could not open {} on {}:{} as {}: {e}",
+                    "Could not open {} on {}:{} as {}: {e}{hint}",
                     self.target.file, self.target.host, self.target.port, self.target.account
                 ),
             )

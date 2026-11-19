@@ -4467,6 +4467,7 @@ dependencies = [
  "om-crypto",
  "om-data",
  "om-formula",
+ "om-giop",
  "om-hbam",
  "om-layout",
  "om-protocol",

@@ -22,6 +22,97 @@ Perform Script on Server. `create-file` makes a blank file on this
 computer without a connection. Everything else is read-only; see
 [Limits](#limits).
 
+## Quickstart
+
+1. [Host a copy of your `.fmp12` file on OpenMaker Server](development.md#hosting-a-file-and-opening-it).
+   For design edits, use a password-protected account in the hosted file's
+   built-in Full Access privilege set. OpenMaker Server requires no FileMaker
+   client license.
+2. From the OpenMaker checkout on Linux or macOS, run the setup script with
+   Rust and Python 3.8 or newer on `PATH`.
+
+   ```sh
+   ./tools/setup-om-author.sh
+   ```
+
+   It installs `om-author` in Cargo's `bin` directory, normally `~/.cargo/bin`,
+   and prompts for the hosted file and account. For a self-signed OpenMaker
+   Server, give the PEM certificate path printed when the server starts.
+   The script creates the user config and stores prompted secrets in separate
+   owner-only files. Run it in an interactive terminal for first-time setup.
+   Running it again reuses an existing config.
+3. Run the printed `capabilities` command to verify the hosted file opens and
+   see what your account can do. Then run the printed Codex or Claude Code
+   command to register the MCP server. With the default Cargo install path
+   and user config, the commands are:
+
+   ```sh
+   "$HOME/.cargo/bin/om-author" capabilities
+   AUTHOR_CONFIG=$("$HOME/.cargo/bin/om-author" config-path)
+   codex mcp add openmaker -- "$HOME/.cargo/bin/om-author" --config "$AUTHOR_CONFIG" mcp
+   claude mcp add --scope user openmaker -- "$HOME/.cargo/bin/om-author" --config "$AUTHOR_CONFIG" mcp
+   ```
+
+   In another MCP client, use the absolute path to `om-author` as the command,
+   `--config`, the absolute config path and `mcp` as arguments, and stdio as
+   the transport. Start or reload the agent
+   and ask it to inspect the hosted file's tables using `openmaker_inspect`.
+   `openmaker_commands` lists the available commands without connecting.
+
+### Manual configuration
+
+Build `om-author` with `cargo build --locked -p om-author` and use the binary
+from `target/debug/` (with `.exe` on Windows). Run `om-author config-path` to
+find the config path. It defaults to `$XDG_CONFIG_HOME/openmaker/author.json`
+or `~/.config/openmaker/author.json` on Linux, to
+`~/Library/Application Support/OpenMaker/author.json` on macOS, and to
+`%APPDATA%\OpenMaker\author.json` on Windows. Use `--config PATH` or
+`OPENMAKER_AUTHOR_CONFIG` to select a different file. For another hosted file,
+pass the corresponding config path when registering the MCP server, for
+example `om-author --config /path/to/another.json mcp`.
+
+An example `author.json` for a local server on port 5003:
+
+```json
+{
+  "host": "localhost",
+  "file": "Tasks.fmp12",
+  "account": "Admin",
+  "password_file": "password",
+  "ca_cert": "server-ca.pem"
+}
+```
+
+Paths in JSON are relative to the config file unless absolute. Use the full
+home directory path if needed, since JSON paths do not expand `~`. The password
+file's first line is the file account password and may be empty. `ca_cert` is
+optional when the server's certificate is already trusted. An optional
+`license_file` points to a file with the FileMaker client license on its first
+line. Keep the password and license files private to your OS account. To
+rotate a password or license, edit the referenced file in place and restart
+the MCP server. If you remove a config created by setup, remove the password
+and license files it references as well.
+
+CLI flags take precedence. With the default config, environment variables
+override its settings. The password lookup order is `--password-file`,
+`OPENMAKER_PASSWORD_FILE`, `OPENMAKER_PASSWORD`, then `password_file`.
+With `--config` or `OPENMAKER_AUTHOR_CONFIG`, the selected file supplies the
+host, port, file and account. Its credential and CA paths take precedence
+over inherited environment variables. Environment credentials and CA paths
+can fill gaps as long as the environment's target settings match the
+connection. A different host or port skips the config's credential and CA
+paths. A different file or account also skips the config's password file.
+
+For a FileMaker Server that requires a client license, set
+`OPENMAKER_LICENSE_KEY` in the environment that launches `om-author`, or set
+`license_file` in its config. For MCP, prefer `license_file` with an explicit
+config path so the client can start the server without shell exports. With
+the default config, an empty `OPENMAKER_LICENSE_KEY` disables the saved key
+and an empty `OPENMAKER_CA_CERT` uses the public roots alone. The server checks
+the key when opening the hosted file, where a missing or invalid key can
+return `0x507c`. Design edits
+still require OpenMaker Server.
+
 ## Commands (`openmaker.authoring/v1`)
 
 A request is JSON:
@@ -969,10 +1060,10 @@ om-author complete-calculation --text 'Left ( Tasks::Ti' # names completing the 
 om-author commands                          # every command and its parameters; no connection
 ```
 
-`--host`, `--port` (default 5003), `--file`, `--account` and
-`--password-file` override the environment; `commands` needs none of
-them. Passwords are never taken as arguments, which other users of the
-machine can list, and are never printed. The exit status is 0 for a
+`--host`, `--port`, `--file`, `--account` and `--password-file` override
+the corresponding environment variables and config settings. See
+[Manual configuration](#manual-configuration) for precedence. `commands`
+needs no connection settings. The exit status is 0 for a
 successful response (a valid `validate`, a `run_script` whose last error
 is 0), 1 for an error response or another `run_script` last error, and
 2 for a usage error.
@@ -1002,11 +1093,11 @@ configured account, so the server holds no session state between calls.
 Starting MCP, listing its tools and calling `openmaker_commands` need no
 connection settings or credentials. They are loaded when the first tool
 needs the file. Missing configuration is that tool's structured error;
-the MCP session stays open so discovery still works.
+the MCP session stays open so discovery still works. Restart the MCP server
+after editing a configuration it has already loaded.
 
-Registering the server with an agent is the user's choice; for example a
-client configuration entry running `om-author mcp` with the `OPENMAKER_*`
-environment above. Nothing registers it automatically.
+See the [Quickstart](#quickstart) for MCP registration commands and the first
+tool call. The MCP server uses the same config file and environment as the CLI.
 
 ## How writes reach the file
 
