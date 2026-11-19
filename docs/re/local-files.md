@@ -770,18 +770,20 @@ its own requirements.
 ## 6. Refused or not supported yet
 
 - Accounts, local and hosted by OpenMaker Server: inactive accounts,
-  passwords due a change (OpenMaker cannot change a password yet: 211),
-  [Guest], external (Claris ID, OAuth, external server) accounts, account
+  a password due a change in a hosted file (a local file's is changed in
+  the desktop's Change Password dialog, 2.4;
+  [#8](https://github.com/OpenMaker-Dev/openmaker/issues/8)), [Guest],
+  external (Claris ID, OAuth, external server) accounts, account
   settings in forms it cannot read (2.2) and every privilege set but the
   three verified built-in ones and, for a local file, the custom sets it
   enforces (2.3).
-- File Options' "Log in using" (3.1): OpenMaker always asks, also for a
-  file that stores an account to log in with.
+- File Options' "Log in using" with the Guest account (3.1): OpenMaker
+  asks, since it does not log in as [Guest]
+  ([#19](https://github.com/OpenMaker-Dev/openmaker/issues/19)).
 - Related and other files from a local file (4): only plain names in the
   same folder are followed. Folder-relative, absolute (`filemac:`,
   `filewin:`, `filelinux:`), `fmnet` and other alternatives are skipped
-  (their occurrences stay unresolved, with a warning); asking for another
-  account when the first file's is refused; two files of the same name at
+  (their occurrences stay unresolved, with a warning); two files of the same name at
   once; a file another OpenMaker window or process has open (300). How
   FileMaker Pro orders and caches alternatives, and what it does on a
   name collision, is not compared.

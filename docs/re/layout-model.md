@@ -2056,8 +2056,9 @@ OpenMaker's runtime (`om-gui` `web_viewer`, the `web-viewer` feature):
   and with a note. When eframe recreates a viewport's window (some builder
   changes), or a window moves to the root viewport, its views are made
   again in the new native window. A test checks this in eframe's real event
-  loop under Xvfb; a page in another window has not yet been rendered on a
-  WebKitGTK build.
+  loop under Xvfb, and another, on a WebKitGTK build, renders a page in a
+  second window's List rows, each row its own record's
+  (`tests/web_viewer_windows_native.rs`).
 - [Documented] [Claris, Working with web viewers on layouts](https://help.claris.com/en/pro-help/content/web-viewers.html)
   describes pages in Form and List; in Table view only in the header,
   footer and top or bottom navigation parts. On portals: "You can't place a

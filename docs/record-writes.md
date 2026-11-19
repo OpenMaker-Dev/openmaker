@@ -63,8 +63,10 @@ FileMaker Pro's order:
   related records, or a script's Open Transaction. Both commit alike for
   now. Another file's provider may join a transaction under its id only on
   the same connection, as a handle of it; a second connection, to the
-  same host or not, is refused with 3. No commit joins one yet (one file
-  per commit, below).
+  same host or not, is refused with 3. A commit across files gives each
+  file its own part, every part prepared before any record data goes
+  (below: a script's transaction across files, and the window's commit of
+  a record across files).
 
 ### A window's record session
 
@@ -898,8 +900,9 @@ entries, not measured (schema-path.md 5.17 [I]). A stored calculation
 over a global is not one FileMaker stores (5.16) and keeps the table
 read-only.
 
-Browse edits stored, non-global, single-repetition text, number, date,
-time and timestamp fields of the layout's own table, and of related
+Browse edits stored text, number, date, time and timestamp fields, globals
+and later repetitions included (below, under Limits), of the layout's own
+table, and of related
 records one relationship away (a portal row's, a related field's first
 record, or one the user begins in a portal's creation row), by the related
 table's own rules; a table of another file is written by that file
