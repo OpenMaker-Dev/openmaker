@@ -829,6 +829,50 @@ fn insert_steps_write_variables_and_fields() {
 }
 
 #[test]
+fn send_mail_reads_the_message_and_its_options_from_filemakers_slots() {
+    // script-steps.md 12.3: To, CC, BCC, Subject and Message are
+    // calculations 0-4; Collect `[00 0..2, 03]`, SMTP `[00 4, 03]`.
+    let mut h = host();
+    let mut mail = ScriptStep::new(63);
+    for (slot, text) in [
+        (0, "\"pat@example.com\""),
+        (3, "\"Report \" & 1"),
+        (4, "\"Hi\""),
+    ] {
+        mail.set_calculation(slot, Some(&calc(&h, text)));
+    }
+    mail.set_number_bool(0, Some(true));
+    let mut smtp = mail.clone();
+    smtp.set_number_bool(4, Some(true));
+    smtp.set_flag(flag::NO_INTERACT, true);
+    h.add_script(0, script(1, "Mail", vec![mail, smtp]));
+    let mut rt = Runtime::default();
+    run(&mut h, &mut rt, 1);
+    assert_eq!(
+        h.mails,
+        [
+            Mail {
+                via: MailVia::Client,
+                to: "pat@example.com".into(),
+                cc: String::new(),
+                bcc: String::new(),
+                subject: "Report 1".into(),
+                message: "Hi".into(),
+                collect: [true, false, false],
+                one_per_record: false,
+                attachments: String::new(),
+                with_dialog: true,
+            },
+            Mail {
+                via: MailVia::Smtp,
+                with_dialog: false,
+                ..h.mails[0].clone()
+            },
+        ]
+    );
+}
+
+#[test]
 fn custom_dialogs_store_inputs_and_the_choice() {
     let mut h = host();
     let mut dialog = with_calc(&h, 87, "\"Title\"");

@@ -123,6 +123,17 @@ Done, verified against FileMaker:
   finds for indexed `field = constant`); all 1,244 runnable sample-file
   vectors match on the hosted path.
 
+Send Mail (63) through the email client, with dialog, opens a new message
+in the system's mail client on the desktop: a `mailto:` URL (RFC 6068,
+`om_url::mailto`) with the To, CC, BCC, subject and message the step's
+calculations give in the current record, for the user to look over and
+send. FileMaker Pro hands the message to the email client too; a URL is
+OpenMaker's means, which cannot carry the rest, so these fail with 3: SMTP
+and OAuth, no dialog (sending unseen), attachments, one email per record,
+and addresses collected across a found set of more than one record
+([#89](https://github.com/OpenMaker-Dev/openmaker/issues/89)). On OpenMaker
+Server the step is 3.
+
 The desktop host answers the Get selectors, layout-object attributes
 and Design functions for other files as FileMaker Pro 26.0.3 does
 (calc-functions.md 6.3, measured on local files in the isolated capture

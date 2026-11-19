@@ -5647,6 +5647,32 @@ impl Network for WorkerHost<'_> {
         Ok(())
     }
 
+    /// Send Mail through the email client, with dialog: a new message in
+    /// the system's mail client, opened as a `mailto:` URL (#89), for the
+    /// user to look over and send. What a `mailto:` URL cannot carry is 3,
+    /// as FileMaker fails a step it cannot run: SMTP and OAuth, no dialog
+    /// (sending unseen), attachments, one email per record, and addresses
+    /// collected across a found set of more than one record.
+    fn send_mail(&mut self, mail: &om_data::runtime::Mail) -> HostResult {
+        let client = mail.via == om_data::runtime::MailVia::Client;
+        if !client
+            || !mail.with_dialog
+            || mail.one_per_record
+            || !mail.attachments.trim().is_empty()
+        {
+            return Err(HostError::Unsupported);
+        }
+        if mail.collect.iter().any(|&c| c) {
+            let (window, provider) = self.wp();
+            if window.found_count(provider).map_err(data_error)? > 1 {
+                return Err(HostError::Unsupported);
+            }
+        }
+        let url = om_url::mailto(&mail.to, &mail.cc, &mail.bcc, &mail.subject, &mail.message);
+        self.send(ScriptEvent::OpenUrl(url));
+        Ok(())
+    }
+
     /// Insert from URL (`om_url`): into a container field as container
     /// data, another field as text; a `file:` URL reads a local file.
     fn fetch_url(&mut self, request: &UrlRequest) -> HostResult<UrlResponse> {

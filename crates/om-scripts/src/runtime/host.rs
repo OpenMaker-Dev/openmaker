@@ -468,6 +468,39 @@ pub struct ServerCallbackCall {
     pub state: u16,
 }
 
+/// Send Mail (63, script-steps.md 12.3): one message, its calculations
+/// evaluated in the current record, and how it is to go.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct Mail {
+    pub via: MailVia,
+    pub to: String,
+    pub cc: String,
+    pub bcc: String,
+    pub subject: String,
+    pub message: String,
+    /// "Collect addresses across found set" for To, CC and BCC
+    /// (`[00 0..2, 03]`): each address calculation over every record of the
+    /// found set, not the current record's alone.
+    pub collect: [bool; 3],
+    /// "Multiple emails (one for each record in found set)" (`[00 3, 03]`).
+    pub one_per_record: bool,
+    /// The attachments' paths, one per line (`[00 0, 82]`).
+    pub attachments: String,
+    /// "With dialog": the message is shown before it goes.
+    pub with_dialog: bool,
+}
+
+/// How Send Mail sends.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum MailVia {
+    /// The user's email client.
+    Client,
+    /// SMTP (`[00 4, 03]`), with the step's server and account.
+    Smtp,
+    /// OAuth (`[00 7, 03]`), Google or Microsoft.
+    OAuth,
+}
+
 /// Insert from URL.
 #[derive(Clone, Debug)]
 pub struct UrlRequest {
@@ -1363,6 +1396,10 @@ pub trait Network {
     /// Insert from URL (160): the response, which the runtime stores in the
     /// step's target, and the variables the options write.
     fn fetch_url(&mut self, _request: &UrlRequest) -> HostResult<UrlResponse> {
+        Err(HostError::Unsupported)
+    }
+    /// Send Mail (63).
+    fn send_mail(&mut self, _mail: &Mail) -> HostResult {
         Err(HostError::Unsupported)
     }
     /// Execute FileMaker Data API (203): the JSON response.

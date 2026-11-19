@@ -711,6 +711,42 @@ fn percent(text: &str) -> String {
     out
 }
 
+/// A `mailto:` URL (RFC 6068) for a new message to the addresses of `to`,
+/// with `cc`, `bcc`, `subject` and `body`. An address list is split at
+/// returns, semicolons and commas; every character but the unreserved ones
+/// (and an address's `@`) is percent-encoded, and the body's line breaks
+/// are written as CRLF (`%0D%0A`), as RFC 6068 asks.
+pub fn mailto(to: &str, cc: &str, bcc: &str, subject: &str, body: &str) -> String {
+    let addresses = |list: &str| {
+        list.split(['\r', '\n', ';', ','])
+            .map(str::trim)
+            .filter(|a| !a.is_empty())
+            .map(|a| a.split('@').map(percent).collect::<Vec<_>>().join("@"))
+            .collect::<Vec<_>>()
+            .join(",")
+    };
+    let body = body
+        .replace("\r\n", "\n")
+        .replace('\r', "\n")
+        .replace('\n', "\r\n");
+    let fields: Vec<String> = [
+        ("cc", addresses(cc)),
+        ("bcc", addresses(bcc)),
+        ("subject", percent(subject)),
+        ("body", percent(&body)),
+    ]
+    .into_iter()
+    .filter(|(_, value)| !value.is_empty())
+    .map(|(name, value)| format!("{name}={value}"))
+    .collect();
+    let mut url = format!("mailto:{}", addresses(to));
+    if !fields.is_empty() {
+        url.push('?');
+        url.push_str(&fields.join("&"));
+    }
+    url
+}
+
 /// FileMaker's automatic URL encoding: characters a URL cannot hold
 /// (spaces, quotes, non-ASCII) are percent-encoded; reserved characters and
 /// existing escapes stay. Insert from URL and web viewers use it.
@@ -752,6 +788,22 @@ fn base64(bytes: &[u8]) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn mailto_urls_encode_each_part_as_rfc_6068_asks() {
+        assert_eq!(
+            mailto(
+                "pat@example.com; lee@example.com\r",
+                "",
+                "boss@example.com",
+                "Weekly report: 5 & 6",
+                "See attached.\rThanks",
+            ),
+            "mailto:pat@example.com,lee@example.com?bcc=boss@example.com\
+             &subject=Weekly%20report%3A%205%20%26%206&body=See%20attached.%0D%0AThanks"
+        );
+        assert_eq!(mailto("", "", "", "", ""), "mailto:");
+    }
 
     #[test]
     fn helpers_reserve_the_last_slot_before_they_can_be_abandoned() {

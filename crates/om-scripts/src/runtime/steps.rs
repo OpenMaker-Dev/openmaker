@@ -1546,6 +1546,34 @@ impl Runtime {
                 let value = host.execute_data_api(&request);
                 return self.result_to_target(host, step, value, select_all);
             }
+            63 => {
+                // Slots of script-steps.md 12.3: To, CC, BCC, Subject and
+                // Message calculations 0-4, Collect `[00 0..2, 03]`, one
+                // per record `[00 3, 03]`, SMTP `[00 4, 03]`, OAuth
+                // `[00 7, 03]`, attachments `[00 0, 82]`.
+                let on = |slot| step.number(slot).is_some_and(|n| n != 0);
+                let via = if on(7) {
+                    MailVia::OAuth
+                } else if on(4) {
+                    MailVia::Smtp
+                } else {
+                    MailVia::Client
+                };
+                let mut text = |slot| self.slot_text(host, step, slot).unwrap_or_default();
+                let (to, cc, bcc, subject, message) = (text(0), text(1), text(2), text(3), text(4));
+                host.send_mail(&Mail {
+                    via,
+                    to,
+                    cc,
+                    bcc,
+                    subject,
+                    message,
+                    collect: [on(0), on(1), on(2)],
+                    one_per_record: on(3),
+                    attachments: path_list(step).unwrap_or_default(),
+                    with_dialog: dialog,
+                })
+            }
             // Accounts
             134 | 135 | 136 | 137 | 83 | 138 => {
                 let first = self.slot_text(host, step, 0).unwrap_or_default();

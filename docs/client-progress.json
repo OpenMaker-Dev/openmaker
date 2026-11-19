@@ -955,14 +955,16 @@
       "domain": "Integrations",
       "feature": "Send Mail and platform automation",
       "previous_status": "Unavailable",
-      "status": "Unavailable",
-      "scope": "Send Mail's options can be edited in Script Workspace, but the step does not run; no AppleScript, Send Event or Speak host exists.",
-      "remaining": "Send Mail [#89](https://github.com/OpenMaker-Dev/openmaker/issues/89); macOS and Windows integration steps [#92](https://github.com/OpenMaker-Dev/openmaker/issues/92).",
+      "status": "Partial",
+      "scope": "Send Mail through the email client with dialog opens a new message in the system's mail client on the desktop (a `mailto:` URL), for the user to send ([scripting](scripting.md)); no AppleScript, Send Event or Speak host exists.",
+      "remaining": "Send Mail by SMTP or OAuth, without a dialog, with attachments, one email per record, or with addresses collected across several records, and on the server [#89](https://github.com/OpenMaker-Dev/openmaker/issues/89); macOS and Windows integration steps [#92](https://github.com/OpenMaker-Dev/openmaker/issues/92).",
       "issues": [
         89,
         92
       ],
-      "docs": []
+      "docs": [
+        "scripting.md"
+      ]
     },
     {
       "id": "C58",
