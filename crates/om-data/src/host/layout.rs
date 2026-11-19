@@ -25,6 +25,9 @@ pub struct ObjectState {
     pub placeholder: Option<String>,
     /// A calculated label (buttons, popover buttons, panels).
     pub label: Option<String>,
+    /// A button's calculated icon, the SVG text its "Calculated icon"
+    /// formula gives (`ButtonObject::calculated_icon`).
+    pub icon_svg: Option<String>,
 }
 
 /// Evaluate a layout formula in `context`. A formula whose stored context
@@ -84,6 +87,14 @@ pub fn display_state(
     state.tooltip = calcs.tooltip.as_ref().map(|f| text(host, f, context));
     state.placeholder = calcs.placeholder.as_ref().map(|f| text(host, f, context));
     state.label = calcs.label.as_ref().map(|f| text(host, f, context));
+    let calculated_icon = object.button.as_ref().is_some_and(|b| b.calculated_icon())
+        || object
+            .popover_button
+            .as_ref()
+            .is_some_and(|b| b.calculated_icon());
+    if calculated_icon {
+        state.icon_svg = calcs.button_icon.as_ref().map(|f| text(host, f, context));
+    }
     state
 }
 

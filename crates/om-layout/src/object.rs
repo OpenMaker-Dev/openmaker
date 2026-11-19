@@ -291,6 +291,16 @@ pub struct ButtonObject {
     pub other: Vec<RawField>,
 }
 
+impl ButtonObject {
+    /// "Calculated icon" (FileMaker Pro 26.1): the icon is the SVG text of
+    /// the object's `KButtonIconSvgCalc` calculation
+    /// ([`crate::calcs::ObjectCalcs::button_icon`]), not the library image:
+    /// flag `0x4` (layout-model.md 5.3.4, read from 26.1.1's binaries).
+    pub fn calculated_icon(&self) -> bool {
+        self.flags & 0x4 != 0
+    }
+}
+
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
 pub struct PopoverButtonObject {
     pub flags: u32,
@@ -300,6 +310,15 @@ pub struct PopoverButtonObject {
     pub icon_size: i32,
     pub display_type: i32,
     pub other: Vec<RawField>,
+}
+
+impl PopoverButtonObject {
+    /// [`ButtonObject::calculated_icon`]: the functions are on the class of
+    /// buttons, button bar segments and popover buttons alike (whether
+    /// FileMaker Pro offers the option on popover buttons is unmeasured).
+    pub fn calculated_icon(&self) -> bool {
+        self.flags & 0x4 != 0
+    }
 }
 
 /// `FMLayoutPB.ExternalLayoutObject` (`LayoutObject.externalObj`): a web

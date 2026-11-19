@@ -412,6 +412,25 @@ fn layout_calculations_hide_format_and_label_objects() {
     assert_eq!(state.tooltip.as_deref(), Some("Total: 12"));
     assert_eq!(state.placeholder.as_deref(), Some("Type a name"));
     assert!(object_state(&mut host, &object, &on(2), Value::number(20)).hidden);
+    // A 26.1 calculated button icon: its SVG text, only with the button's
+    // flag `0x4`.
+    let mut button = LayoutObject {
+        button: Some(om_layout::ButtonObject {
+            flags: 0x4,
+            ..Default::default()
+        }),
+        calcs: ObjectCalcs {
+            button_icon: field("\"<svg>\" & $$who"),
+            ..ObjectCalcs::default()
+        },
+        ..LayoutObject::default()
+    };
+    let icon = |host: &mut FileHost<'_>, button: &LayoutObject| {
+        object_state(host, button, &on(1), Value::number(0)).icon_svg
+    };
+    assert_eq!(icon(&mut host, &button).as_deref(), Some("<svg>Ada"));
+    button.button.as_mut().unwrap().flags = 0;
+    assert_eq!(icon(&mut host, &button), None);
     assert_eq!(
         merge_text(
             &mut host,

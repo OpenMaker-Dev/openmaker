@@ -545,6 +545,19 @@ authoring part tabs or object kind captions.
 - Button icons come from the file's library root `31` as the original SVG,
   colored through the icon component's style; no application icon is
   substituted for a file's library image.
+- A button with FileMaker Pro 26.1's "Calculated icon" (`buttonObj.flags`
+  `0x4`, layout-model.md 5.3.4) shows the SVG text its `KButtonIconSvgCalc`
+  formula (`91`) gives on the record, in the library icon's place and
+  colored the same way, drawn by the same SVG worker, in Browse and Find
+  mode. Text that is not an SVG document shows a warning sign, as FileMaker
+  Pro shows a warning icon for SVG it does not support (Claris). Popover
+  buttons take the option too. Inferred, not measured: the sign's look,
+  which SVG FileMaker Pro refuses beyond text that is not SVG, and whether
+  popover buttons offer the option. The bit and the key were read from
+  FileMaker Pro 26.1.1's binaries; no file made by 26.1.1 has been read.
+  Preview, printing and PDF, which FileMaker Pro draws the calculated icon
+  in too, and Layout mode, where it shows a placeholder, still draw the
+  library icon ([#466](https://github.com/OpenMaker-Dev/openmaker/issues/466)).
 - SVG pictures and icons are drawn outside om-gui's process, by the SVG
   worker (`om-gui-pdf-worker --svg`, the one reports use: its allocator
   capped 512 MiB past its input, killed after 30 seconds, one SVG at a

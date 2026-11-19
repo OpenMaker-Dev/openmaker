@@ -4818,7 +4818,18 @@ fn paint_object_repetition(
                 (None, Some(button)) => Some((button.library_key, button.icon_size)),
                 (None, None) => None,
             };
-            if let Some((library_key, icon_size)) = icon.filter(|(key, _)| *key != 0) {
+            // A calculated icon (FileMaker Pro 26.1) is the SVG its formula
+            // gives on the record, in the library icon's place.
+            let calculated = object.button.as_ref().is_some_and(|b| b.calculated_icon())
+                || object
+                    .popover_button
+                    .as_ref()
+                    .is_some_and(|b| b.calculated_icon());
+            let svg = calculated.then(|| calc_state.icon_svg.clone().unwrap_or_default());
+            // A library icon shows only with its key; a calculated one
+            // always, its size the button's icon size.
+            let shown = icon.filter(|(key, _)| svg.is_some() || *key != 0);
+            if let Some((library_key, icon_size)) = shown {
                 let size = (icon_size.max(1) as f32)
                     .min(rect.width())
                     .min(rect.height());
@@ -4835,14 +4846,13 @@ fn paint_object_repetition(
                     .or(icon.color)
                     .or(style.border_color[0])
                     .map(color);
-                paint_library_image(
-                    ui,
-                    &state.layout_cache,
-                    layout,
-                    library_key,
-                    Rect::from_center_size(center, vec2(size, size)),
-                    tint,
-                );
+                let at = Rect::from_center_size(center, vec2(size, size));
+                match &svg {
+                    Some(svg) => paint_calculated_icon(ui, svg, at, tint),
+                    None => {
+                        paint_library_image(ui, &state.layout_cache, layout, library_key, at, tint)
+                    }
+                }
                 if !text.is_empty() {
                     text_rect.min.x += size + 10.0;
                 }
@@ -7285,6 +7295,45 @@ fn paint_library_image(
             .show_loading_spinner(false)
             .paint_at(ui, rect);
     }
+}
+
+/// A button's calculated icon `svg` (FileMaker Pro 26.1) over `rect`, an
+/// icon's SVG tinted as a library icon's is. Text that is not an SVG
+/// document shows a warning sign, as FileMaker Pro shows a warning icon for
+/// SVG it does not support (Claris); the sign's look, and which SVG
+/// FileMaker Pro refuses, are unmeasured. An SVG the loader cannot read
+/// draws nothing.
+fn paint_calculated_icon(ui: &Ui, svg: &str, rect: Rect, tint: Option<Color32>) {
+    use std::hash::{Hash, Hasher};
+    let text = svg.trim_start_matches('\u{feff}').trim_start();
+    let is_svg = (text.starts_with("<svg") || text.starts_with("<?xml")) && text.contains("<svg");
+    if !is_svg {
+        ui.painter().text(
+            rect.center(),
+            egui::Align2::CENTER_CENTER,
+            "\u{26a0}",
+            FontId::proportional(rect.height().max(1.0)),
+            tint.unwrap_or(theme::TEXT),
+        );
+        return;
+    }
+    let image = om_layout::LibraryImage {
+        format: om_layout::LibraryImageFormat::Svg,
+        data: svg.as_bytes().to_vec(),
+    };
+    let data = tinted_image(&image, tint);
+    let mut hash = std::collections::hash_map::DefaultHasher::new();
+    data.hash(&mut hash);
+    let uri = format!(
+        "bytes://openmaker/calculated-icon-{:016x}.svg",
+        hash.finish()
+    );
+    egui::Image::new(egui::ImageSource::Bytes {
+        uri: uri.into(),
+        bytes: data.into(),
+    })
+    .show_loading_spinner(false)
+    .paint_at(ui, rect);
 }
 
 /// A library image's encoded bytes, an SVG's tinted, under a URI naming

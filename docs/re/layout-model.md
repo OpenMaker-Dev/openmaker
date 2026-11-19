@@ -729,6 +729,9 @@ warning icon when the text is not SVG FileMaker supports (Claris).
 FileMaker Pro caches the rendered images under keys made by
 `FMFileUser::GenerateRuntimeLibraryKey` (`runtime_calc_` names, FileMaker
 Pro strings); nothing shows that they are stored in the file [I].
+OpenMaker reads the bit (`ButtonObject::calculated_icon`, also on popover
+buttons) and the formula (`ObjectCalcs::button_icon`), keeping every other
+byte of the object and its record as it is.
 
 ### 5.4 Field control styles (`FieldLayoutObject.displayType`)
 
