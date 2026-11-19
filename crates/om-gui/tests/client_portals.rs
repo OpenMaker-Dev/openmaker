@@ -4350,31 +4350,29 @@ fn saving_only_a_typed_global_runs_no_window_transaction() {
             }
         }
     }
-    // Do not offer the new Number case when it needs a global's own
-    // field-exit validation or prohibits user modification.
-    for (tag, options, validation) in [("validated", 0x1_0000, 0x1000), ("prohibited", 0x1_0100, 0)]
-    {
-        let hosted = host_with(tag, |root| {
-            fixture::add_field(
-                root, TABLE, SETTING, "Setting", 1, 2, 0, options, validation,
-            );
-        });
-        let mut app = open(&hosted);
-        expect(&mut app, "Show portals", "on Portals");
-        assert!(common::find_text_field(&app, "Setting").is_none());
-    }
-    for (tag, options, validation) in [
-        ("date-validated", 0x1_0000, 0x2000),
-        ("date-prohibited", 0x1_0100, 0),
+    // A number or date global validated by its entry rules is offered, its
+    // typing checked as it is applied; one validated by calculation, or
+    // prohibiting user modification, is not.
+    for (tag, data_type, options, validation, offered) in [
+        ("validated", 2, 0x1_0000, 0x1000, true),
+        ("calculated", 2, 0x1_0000, 0x1, false),
+        ("prohibited", 2, 0x1_0100, 0, false),
+        ("date-validated", 3, 0x1_0000, 0x2000, true),
+        ("date-calculated", 3, 0x1_0000, 0x1, false),
+        ("date-prohibited", 3, 0x1_0100, 0, false),
     ] {
         let hosted = host_with(tag, |root| {
             fixture::add_field(
-                root, TABLE, SETTING, "Setting", 1, 3, 0, options, validation,
+                root, TABLE, SETTING, "Setting", 1, data_type, 0, options, validation,
             );
         });
         let mut app = open(&hosted);
         expect(&mut app, "Show portals", "on Portals");
-        assert!(common::find_text_field(&app, "Setting").is_none());
+        assert_eq!(
+            common::find_text_field(&app, "Setting").is_some(),
+            offered,
+            "{tag}"
+        );
     }
 }
 

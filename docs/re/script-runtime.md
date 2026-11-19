@@ -3657,8 +3657,11 @@ Globals (2026-10-29; Claris "Global fields")
 - Claris documents that a global's validation runs on field exit, rather
   than record commit
   ([field validation](https://help.claris.com/en/pro-help/content/field-validation.html)).
-  Non-text globals requiring those checks stay display-only. Intrinsic
-  temporal parsing here runs on save; global field-exit timing is unmeasured.
+  OpenMaker checks a typed global's entry rules and Not empty as the
+  typing is applied, at the commit; a global validated by calculation,
+  unique or existing value stays display-only (record-writes.md, Limits;
+  [#424](https://github.com/OpenMaker-Dev/openmaker/issues/424)). Global
+  field-exit timing is unmeasured.
 - Tests: `om-gui/tests/client_globals.rs` (a script's globals through the
   window against an in-process server: the stored value first, Set Field
   in Browse and Find mode, the value across scripts, another client and
