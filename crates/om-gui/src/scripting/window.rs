@@ -130,6 +130,9 @@ pub(crate) struct Uncommitted {
     /// changed it since, so Revert drops only the window's changes and
     /// keeps it.
     pub saved: bool,
+    /// The place New Record gave the record in an unsorted found set, its
+    /// `Get ( RecordNumber )` for the rules until it is committed (#298).
+    pub record_number: Option<u64>,
 }
 
 impl Uncommitted {
@@ -168,6 +171,8 @@ pub(crate) struct NewRecord {
     session: bool,
     /// Made at once on the host.
     saved: bool,
+    /// Its place in the found set ([`Uncommitted::record_number`]).
+    record_number: Option<u64>,
 }
 
 /// What [`Window::commit`] writes with, as its caller gave it.
@@ -832,7 +837,7 @@ impl Window {
                 typed,
                 skip_validation,
                 privilege_set: privilege_set.clone(),
-                record_number: None,
+                record_number: open.record_number,
                 prepared: None,
             });
             if let Some((table, _)) = pinned {
@@ -1284,6 +1289,7 @@ impl Window {
             record,
             session,
             saved,
+            record_number,
         })
     }
 
@@ -1298,6 +1304,7 @@ impl Window {
         if self.state.uncommitted.new {
             self.state.uncommitted.session = made.session;
             self.state.uncommitted.saved = made.saved;
+            self.state.uncommitted.record_number = made.record_number;
         } else if made.session {
             let _ = provider.revert_transaction();
         }

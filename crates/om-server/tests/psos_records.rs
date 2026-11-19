@@ -617,13 +617,15 @@ fn server_scripts_auto_enter_over_a_global_reads_the_sessions_value() {
 /// A record a server script makes auto-enters Get ( RecordNumber ) as the
 /// position it takes at the end of the found set, n + 1, wherever the
 /// current record was: in every record, after records were omitted, and
-/// for a duplicate (s44, FileMaker Server's engine; #298).
+/// for a duplicate (s44, FileMaker Server's engine; #298). A field set
+/// before the commit keeps it, as in the oracle's probes.
 #[test]
 fn server_scripts_new_records_auto_enter_their_found_set_position() {
     let made = |before: Vec<ScriptStep>| {
         let mut steps = vec![ScriptStep::new(23)];
         steps.extend(before);
         steps.extend([
+            set_field(NOTE, 1, "\"made\""),
             ScriptStep::new(75),
             exit_with("Tasks::Number & \"|\" & Get ( FoundCount ) & \"|\" & Get ( LastError )"),
         ]);

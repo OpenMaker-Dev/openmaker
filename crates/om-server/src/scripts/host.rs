@@ -1872,7 +1872,11 @@ impl ServerHost {
         let key = uint_segment(cell);
         let before = record.node.child(&key).cloned();
         record.before_change();
-        *record.context = context;
+        // The place New Record gave the record stays its own.
+        *record.context = rules::WriteContext {
+            record_number: record.context.record_number,
+            ..context
+        };
         match stored {
             Some(text) => record.node.set_child(values::cell(&key, &text)),
             None => {
