@@ -1026,6 +1026,34 @@ impl Window {
         self.touch();
     }
 
+    /// Revert Transaction removed the record New Record made in it, which
+    /// the window still shows (#307): the window lets go of it, without a
+    /// call to delete it, and shows the record that takes its place, as
+    /// Revert Record of a new record does. A record the provider still
+    /// holds in a record session, or one already on the host, is left as
+    /// it is.
+    pub fn forget_reverted_new_record(
+        &mut self,
+        provider: &mut dyn DataProvider,
+    ) -> Result<(), DataError> {
+        let uncommitted = &self.state.uncommitted;
+        let held = uncommitted.session
+            && (provider.record_session_open() || provider.record_session_held());
+        if !uncommitted.new || uncommitted.saved || held || self.state.record.is_none() {
+            return Ok(());
+        }
+        self.discard_previews(provider);
+        self.state.uncommitted = Uncommitted::default();
+        self.state.drafts.clear();
+        self.state.portal = None;
+        self.state.record = None;
+        self.changed_data();
+        self.found = None;
+        let found = self.found_count(provider)?;
+        self.state.index = self.state.index.min(found.saturating_sub(1));
+        Ok(())
+    }
+
     /// Revert Record: drop the drafts, the related records' too; a new
     /// record is deleted.
     pub fn revert(&mut self, provider: &mut dyn DataProvider) -> Result<(), DataError> {

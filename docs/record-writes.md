@@ -67,6 +67,12 @@ FileMaker Pro's order:
   file its own part, every part prepared before any record data goes
   (below: a script's transaction across files, and the window's commit of
   a record across files).
+- **The window after Revert Transaction.** A record New Record made in
+  the transaction, which the window still shows, goes with it: the window
+  shows the record at its place (the found set's last when the new record
+  was at its end), and `Get ( RecordID )` answers that record's id
+  ([#307](https://github.com/OpenMaker-Dev/openmaker/issues/307)). Which
+  record FileMaker shows then is unmeasured [I].
 
 ### A window's record session
 

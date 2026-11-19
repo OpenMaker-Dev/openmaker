@@ -4657,17 +4657,25 @@ impl Records for WorkerHost<'_> {
         // The active record is exited without OnRecordRevert (8.3), unless
         // the window holds it apart from the transaction: its typing stays
         // (#1103).
-        if !self.record_apart() {
+        let apart = self.record_apart();
+        if !apart {
             self.s.file.window.state.drafts.clear();
             self.s.file.window.state.focus = None;
             self.s.file.window.state.object = None;
             self.s.file.window.state.portal = None;
         }
         let held = self.s.file.transaction.take().unwrap_or_default();
-        let result = self.p().revert_transaction().map_err(|e| self.failed(e));
+        let mut result = self.p().revert_transaction().map_err(|e| self.failed(e));
         if result.is_ok() {
-            // The records the transaction created are gone.
+            // The records the transaction created are gone, the window's
+            // own new record too unless it is held apart.
             self.release_records(&held, transaction::Operation::New);
+            if !apart {
+                let (window, provider) = self.wp();
+                result = window
+                    .forget_reverted_new_record(provider)
+                    .map_err(data_error);
+            }
         }
         // The held writes went with the connection, not by this revert.
         self.s.file.lost_transaction |= self.p().connection_lost().is_some();

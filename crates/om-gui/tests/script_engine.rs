@@ -710,6 +710,22 @@ fn more_scripts() -> Vec<Script> {
             ],
         ),
         script(
+            902,
+            "Revert new record",
+            vec![
+                capture_errors(),
+                transaction_step(205, 4),
+                step(7),
+                step(207),
+                transaction_step(206, 4),
+                set_field(
+                    "Note",
+                    "Get ( RecordNumber ) & \"|\" & Get ( RecordID ) & \"|\" & Get ( FoundCount )",
+                ),
+                step(75),
+            ],
+        ),
+        script(
             24,
             "Data files",
             vec![
@@ -1617,6 +1633,16 @@ fn reverted_and_failed_transactions_leave_the_records() {
     assert_eq!(row.values[0].as_deref(), Some("Ada"), "nothing was written");
     assert_eq!(row.values[2].as_deref(), Some("507"));
     assert!(state.lock().unwrap().events.contains(&"refused".to_owned()));
+
+    // A New Record the transaction held goes with it: the window shows the
+    // record at its place, the last one, whose id `Get ( RecordID )`
+    // answers (#307; FileMaker unmeasured).
+    run(&mut app, "Revert new record");
+    wait_idle(&mut app);
+    assert!(app.state().error().is_none(), "{:?}", app.state().error());
+    let rows = state.lock().unwrap().rows.clone();
+    assert_eq!(rows.len(), 5, "the new record was not kept");
+    assert_eq!(rows[4].values[2].as_deref(), Some("5|5|5"));
 }
 
 #[test]
