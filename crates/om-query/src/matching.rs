@@ -34,10 +34,11 @@ pub(crate) struct Pattern {
     units: Vec<Unit>,
 }
 
-/// The most regex types a pattern may hold: FileMaker Pro writes one per
-/// operator and operand of a criterion, and a criterion holds at most
-/// [`crate::criteria::MAX_CRITERION_CHARS`] characters.
-const MAX_TYPES: usize = crate::criteria::MAX_CRITERION_CHARS;
+/// The most units a pattern may hold, its operands' characters included:
+/// FileMaker Pro writes one per operator and character of a criterion, and a
+/// criterion holds at most [`crate::criteria::MAX_CRITERION_CHARS`]
+/// characters.
+const MAX_UNITS: usize = crate::criteria::MAX_CRITERION_CHARS;
 
 impl Pattern {
     /// Parse the bytes after a Match finder's repetition (6.2): `u16 n`,
@@ -50,7 +51,7 @@ impl Pattern {
             return Err(truncated());
         };
         let count = usize::from(u16::from_be_bytes([*high, *low]));
-        if count > MAX_TYPES {
+        if count > MAX_UNITS {
             return Err(QueryError::Limit("match pattern"));
         }
         let types = rest.get(..count).ok_or_else(truncated)?;
@@ -75,6 +76,9 @@ impl Pattern {
                     // Quoted and unquoted text compare alike: live1 found the
                     // same records for both, and how `IsMatchFoldingAll`
                     // differs is not measured.
+                    if units.len() + text.chars().count() > MAX_UNITS {
+                        return Err(QueryError::Limit("match pattern"));
+                    }
                     units.extend(text.chars().filter_map(|c| {
                         let key = char_key(c);
                         (!key.is_empty()).then_some(Unit::Char(key))
@@ -104,7 +108,12 @@ impl Pattern {
             .map(|c| (c, char_key(c)))
             .filter(|(_, key)| !key.is_empty())
             .collect();
-        let breaks = word_breaks(text, &chars);
+        // Word edges only for a pattern that asks for them.
+        let breaks = if self.units.contains(&Unit::Break) {
+            word_breaks(text, &chars)
+        } else {
+            vec![false; chars.len() + 1]
+        };
         matches_at(&self.units, &chars, &breaks)
     }
 }

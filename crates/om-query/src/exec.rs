@@ -463,7 +463,6 @@ mod kind {
     pub const ROW_ID_MATCH: u8 = 4;
     pub const NOT_ROW_ID_MATCH: u8 = 5;
     pub const ROW_ID_RANGE: u8 = 6;
-    pub const INDEX_SCAN: u8 = 3;
     pub const FIND_DUPLICATES: u8 = 7;
     pub const MATCH: u8 = 8;
 }
@@ -805,11 +804,20 @@ fn simple_find(
     // Every finder runs, even once nothing is left: a finder may have its
     // index built on demand for later programs (spec 7.1), or be one this
     // engine refuses.
+    // A Match finder's pattern, held while the request runs, counts.
+    for pattern in finders.iter().filter_map(|f| f.pattern.as_ref()) {
+        work.spend(Size {
+            nodes: pattern.len(),
+            bytes: 0,
+        })?;
+    }
+    // FileMaker Pro marks a Match finder's pre-filters IsOptional (6.4): an
+    // IndexRange or IndexScan on the literal. They are left out, so the
+    // exact Match finder tests every record the other finders leave, also
+    // where the pre-filter's index is missing or IndexScan is not built.
+    let has_match = finders.iter().any(|f| f.pattern.is_some());
     for finder in &finders {
-        // IndexScan (3) is not built; FileMaker Pro sends it only as an
-        // optional pre-filter of a Match finder (6.4: `*x*`), which then
-        // tests every record the other finders leave.
-        if finder.kind == kind::INDEX_SCAN && finder.options & IS_OPTIONAL != 0 {
+        if has_match && finder.options & IS_OPTIONAL != 0 {
             continue;
         }
         found = match &finder.pattern {
@@ -2341,7 +2349,7 @@ mod tests {
         );
         assert_eq!(find(&[rows, matcher(0)]), [4, 5]);
         // An optional IndexScan before a Match finder is left out (`*x*`,
-        // 6.4); a required one is still refused.
+        // 6.4); one without a Match finder, or a required one, is refused.
         let scan = |options: u8| {
             let mut bytes = vec![3, 0, options, 3, 2, 0x80, 0x01, 2, 1, 1, 0, 1];
             bytes.extend([5, 4, 0x14, 0x33, 0x12, 0x6b, 2, 1, 0xff]);
@@ -2349,6 +2357,18 @@ mod tests {
         };
         assert_eq!(find(&[scan(0x88), matcher(0)]), [1, 4, 5]);
         assert!(result(&source, &find_program(&[scan(0x08)]), Budget::DEFAULT).is_err());
+        assert!(result(&source, &find_program(&[scan(0x88)]), Budget::DEFAULT).is_err());
+        // An optional IndexRange whose index holds nothing (field 1's word
+        // index here) does not empty the Match finder's candidates.
+        let mut range = finder(
+            2,
+            0x83,
+            1,
+            &[0x01, 0x14, 0x33],
+            &[0x01, 0x14, 0x33, 0xff, 0xfe],
+        );
+        range[1] = 0;
+        assert_eq!(find(&[range, matcher(1)]), [1]);
         // DateTimeMatch (9) is not built: refused, as before.
         let mut date_time = matcher(1);
         date_time[0] = 9;
