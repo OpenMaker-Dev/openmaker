@@ -419,7 +419,6 @@ Open items:
     the header's 16-bit lengths would wrap. `.xlsx` exports past column
     `XFD` write invalid references. FileMaker's behavior past either
     limit is unknown.
-  - The desktop reads a whole import file before the size check.
 - Scripts: desktop steps still missing include the account steps
   ([#83](https://github.com/OpenMaker-Dev/openmaker/issues/83)) and the PDF
   steps other than Save Records as PDF
