@@ -7,6 +7,7 @@ use std::ops::{Bound, Range, RangeBounds};
 use om_hbam::{serial, DataType, OwnedNode, RidList};
 
 use crate::index::{Index, Indexes, VALUE_INDEX, WORD_INDEX};
+use crate::keys::TextKeys;
 use crate::program::{
     decode_path, leaf, opcode, take_key_string, Budget, Instruction, Program, Size, Work,
 };
@@ -747,7 +748,7 @@ fn data_type_code(data_type: DataType) -> Option<u8> {
 mod language {
     /// No key at all.
     pub const NONE: u8 = 0;
-    /// The English form plus `00 00`: System, Unicode standard.
+    /// The padded form: System, Unicode standard.
     pub const SYSTEM: u8 = 1;
     pub const UNICODE: u8 = 3;
     /// The English form: English, English international.
@@ -757,11 +758,12 @@ mod language {
 
 /// The keys `field` gives each record of `records`, as Projection requests
 /// them (`[u8 data type][u8 index language]`, spec 9.1). An indexed field is
-/// answered from its value index; an unindexed text field from its stored
-/// values, each line keyed as the value index would key it. Conversion to
-/// another type, a language whose form the index does not hold, and
-/// unindexed fields of other types are not supported yet. Empty values give
-/// no key.
+/// answered from its value index; an unindexed text field, and text in the
+/// padded form (System, Unicode standard), whose secondary weights an
+/// English index does not hold, from its stored values, each line keyed as
+/// the value index would key it. Conversion to another type, a language
+/// whose form the index does not hold, and unindexed fields of other types
+/// are not supported yet. Empty values give no key.
 fn projected_keys(
     indexes: &mut Indexes<'_>,
     work: &Work,
@@ -782,10 +784,10 @@ fn projected_keys(
     if *requested_type == 0 || text && *requested_language == language::NONE {
         return Ok(Vec::new());
     }
-    let suffix: &[u8] = match *requested_language {
-        _ if !text => &[],
-        language::ENGLISH | language::ENGLISH_INTERNATIONAL => &[],
-        language::SYSTEM | language::UNICODE => &[0x00, 0x00],
+    let form = match *requested_language {
+        _ if !text => TextKeys::Collated,
+        language::ENGLISH | language::ENGLISH_INTERNATIONAL => TextKeys::Collated,
+        language::SYSTEM | language::UNICODE => TextKeys::CollatedPadded,
         _ => {
             return Err(QueryError::Unimplemented(
                 "projection in this index language",
@@ -794,7 +796,9 @@ fn projected_keys(
     };
     let same_type = data_type_code(definition.data_type) == Some(*requested_type);
 
-    if !indexes.is_indexed(work, table, field, VALUE_INDEX)? {
+    if text && form == TextKeys::CollatedPadded
+        || !indexes.is_indexed(work, table, field, VALUE_INDEX)?
+    {
         let mut out = Vec::new();
         for id in records.iter() {
             let value = indexes
@@ -820,7 +824,7 @@ fn projected_keys(
             out.extend(
                 lines
                     .into_iter()
-                    .map(|line| (id, projected_key(&om_collate::text_key(line), suffix))),
+                    .filter_map(|line| Some((id, form.key(line)?))),
             );
         }
         return Ok(out);
@@ -850,20 +854,11 @@ fn projected_keys(
     }
     let mut out = Vec::new();
     for at in keys {
-        let key = projected_key(index.key(at), suffix);
+        let key = index.key(at).to_vec();
         let holders = index.records(at, work)?;
         out.extend(holders.and(records).iter().map(|id| (id, key.clone())));
     }
     Ok(out)
-}
-
-/// A projected key: an English-form key with the requested language's
-/// suffix, cut as an index cuts keys (query-program.md 7.1), so that it
-/// meets the keys of the index a join reads.
-fn projected_key(key: &[u8], suffix: &[u8]) -> Vec<u8> {
-    let mut key = [key, suffix].concat();
-    om_collate::cut_index_key(&mut key);
-    key
 }
 
 /// Projection (op 11, spec 9.1): each record of the `KSrc` RID list keyed by
@@ -1986,6 +1981,45 @@ mod tests {
 
     /// #306: instructions find keys in an index by binary search; each
     /// answers at the edges of the index as the scans it replaced did.
+    /// Projection in the padded form (System, Unicode standard) keys the
+    /// stored value with its secondary weights, which the English index
+    /// does not hold (spec 9.1, 7.2: `équipe`'s keys in
+    /// catalogs/index-key-vectors.tsv).
+    #[test]
+    fn a_padded_projection_keys_the_stored_value() {
+        let english = om_collate::text_key("\u{e9}quipe");
+        let mut source = Indexed::new(1, vec![entry(&english, &[1])]);
+        source.root.put(
+            &[&[0x80, 0x01], &[5], &serial::encode(1), &[1]],
+            OwnedNode::leaf(Vec::new(), om_scsu::encode_scsu("\u{e9}quipe")),
+        );
+        let project = |language: u8| {
+            let leaves = vec![
+                OwnedNode::leaf(vec![leaf::SRC], vec![1, 2, 1, 1]),
+                OwnedNode::leaf(vec![leaf::PROJ_LIST], vec![1, 2, 1, 2]),
+            ];
+            let records = [1u64].into_iter().collect::<RidList>().entries();
+            let fields = vec![OwnedNode::leaf(vec![1], vec![1, language])];
+            let program = lookup(opcode::PROJECTION, leaves, [records, fields]);
+            let dest = result(&source, &program, Budget::DEFAULT).unwrap();
+            let keys = dest.at(&[&serial::encode(1), &[1]]).unwrap();
+            keys.children
+                .iter()
+                .map(|k| k.segment.clone())
+                .collect::<Vec<_>>()
+        };
+        assert_eq!(project(21), [english]);
+        let padded: Vec<u8> = [
+            &[
+                0x01, 0x12, 0x6b, 0x13, 0xc8, 0x14, 0x53, 0x12, 0xec, 0x13, 0xb3, 0x12, 0x6b,
+            ][..],
+            &[0x00, 0x00, 0x01, 0x13, 0x01, 0x01, 0x01, 0x01, 0x01],
+        ]
+        .concat();
+        assert_eq!(project(3), std::slice::from_ref(&padded));
+        assert_eq!(project(1), [padded]);
+    }
+
     #[test]
     fn index_lookups_answer_at_the_edges() {
         check_lookups(&Indexed::new(6, lookup_index()));

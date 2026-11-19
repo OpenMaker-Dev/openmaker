@@ -3,12 +3,19 @@
 //!
 //! A text value's index key in the English form (index languages English and
 //! English international) is `01` followed by the primary weight of each of
-//! its collation elements in the Unicode Collation Algorithm's default table
-//! (DUCET) of UCA 5.2.0, each a big-endian u16. Variable elements (spaces,
-//! punctuation) keep their weights; elements with a zero primary (combining
-//! marks, controls) add nothing, which makes keys ignore case and accents.
-//! The table ships as `data/allkeys-5.2.0.txt` from unicode.org, under
-//! `data/LICENSE-UNICODE`.
+//! its collation elements, each a big-endian u16 ([`text_key`]). FileMaker
+//! takes the elements from the Unicode Collation Algorithm's default table
+//! (DUCET) of UCA 5.2.0 one code point at a time, without contractions, and
+//! gives code points the table does not list weights of its own
+//! ([`index_elements`]). Variable elements (spaces, punctuation) keep their
+//! weights; elements with a zero primary (combining marks, controls) add
+//! nothing, which makes keys ignore case and accents. The padded form (System
+//! and Unicode standard) adds the elements' secondary weights
+//! ([`padded_text_key`]). The table ships as `data/allkeys-5.2.0.txt` from
+//! unicode.org, under `data/LICENSE-UNICODE`.
+//!
+//! [`collation_elements`] is the table as UCA reads it (contractions and
+//! UCA's implicit weights), for the calculation engine's text sorting.
 //!
 //! The word index keys each word of a value the same way; [`words`] splits a
 //! value as FileMaker does. Numbers, dates, times and timestamps have keys of
@@ -129,16 +136,41 @@ fn implicit_weights(c: u32) -> [u16; 2] {
     [(base + (c >> 15)) as u16, ((c & 0x7FFF) | 0x8000) as u16]
 }
 
-/// The index key of `text` in the English form (spec 7.2). The empty string
-/// gives `01`. Curly quotation marks key as the straight ones
-/// ([`index_char`]).
+/// The index key of `text` in the English form (spec 7.2): `01`, then the
+/// primary weight of each of its [`index_elements`] that has one. The empty
+/// string gives `01`.
 pub fn text_key(text: &str) -> Vec<u8> {
-    let folded: String = text.chars().map(index_char).collect();
-    let weights = primary_weights(&folded);
-    let mut key = Vec::with_capacity(1 + 2 * weights.len());
+    primary_key(&index_elements(text))
+}
+
+/// The index key of `text` in the padded form of index languages System (1)
+/// and Unicode standard (3) (spec 7.2): [`text_key`], `00 00`, then one byte
+/// for each element with a secondary weight, the weight minus 0x1F, its low
+/// byte (DUCET's 0x159 gives `3a`). The bytes are left out when every one is
+/// `01`, as for text without accents: `Test` = `01 1433 126b 1410 1433 00
+/// 00`, `équipe` = the English key, `00 00`, `01 13 01 01 01 01 01`.
+pub fn padded_text_key(text: &str) -> Vec<u8> {
+    let elements = index_elements(text);
+    let mut key = primary_key(&elements);
+    key.extend([0, 0]);
+    let secondary: Vec<u8> = elements
+        .iter()
+        .filter(|e| e.secondary != 0)
+        // The low byte: FileMaker's 0x159 gives 3a (`ß`, `æ`, `œ`).
+        .map(|e| e.secondary.wrapping_sub(0x1F).to_be_bytes()[1])
+        .collect();
+    if secondary.iter().any(|&b| b != 0x01) {
+        key.extend(secondary);
+    }
+    key
+}
+
+/// `01` and the non-zero primary weights of `elements`.
+fn primary_key(elements: &[Element]) -> Vec<u8> {
+    let mut key = Vec::with_capacity(1 + 2 * elements.len());
     key.push(TEXT_KEY_PREFIX);
-    for weight in weights {
-        key.extend(weight.to_be_bytes());
+    for element in elements.iter().filter(|e| e.primary != 0) {
+        key.extend(element.primary.to_be_bytes());
     }
     key
 }
@@ -173,24 +205,124 @@ pub fn index_char(c: char) -> char {
     }
 }
 
-/// The DUCET 5.2.0 primary weights of `text`'s collation elements in order:
-/// contractions first, implicit weights for unlisted code points, elements
-/// with a zero primary left out. [`text_key`] is these weights after `01`.
-pub fn primary_weights(text: &str) -> Vec<u16> {
-    collation_elements(text)
-        .into_iter()
-        .map(|element| element.primary)
-        .filter(|&primary| primary != 0)
-        .collect()
+/// The collation elements FileMaker's index keys read for `text` (spec 7.2,
+/// `Draco::KeyBuilder`), ignorable ones included. Each code point is looked
+/// up on its own, so DUCET's contractions do not apply (Thai `เก` keys in the
+/// order written). Unlike UCA ([`collation_elements`]):
+///
+/// - the curly quotation marks U+2018..U+201B key as `'` and U+201C..U+201F
+///   as `"`, with secondary weight 0x21 instead of 0x20;
+/// - U+FFFE and U+FFFF add nothing;
+/// - a code point the table does not list gets FileMaker's own weights
+///   (spec 7.2's table), not UCA's implicit ones;
+/// - a table entry that holds UCA's implicit weights for an ideograph (a CJK
+///   compatibility ideograph's canonical ideograph, a Kangxi radical's)
+///   holds FileMaker's weights for that ideograph instead: `豈` U+F900 keys
+///   as U+8C48 (`8c48`).
+///
+/// FileMaker's weights for unlisted code points have no secondary weight on
+/// record: here the first element of each has 0x20 and a second one none,
+/// as UCA's implicit elements (inferred; only text whose other secondary
+/// bytes are all `01` was observed, spec 7.2).
+pub fn index_elements(text: &str) -> Vec<Element> {
+    let table = table();
+    let mut out = Vec::with_capacity(text.len());
+    for c in text.chars() {
+        let (code_point, quote) = match u32::from(c) {
+            0x2018..=0x201B => (0x27, true),
+            0x201C..=0x201F => (0x22, true),
+            0xFFFE | 0xFFFF => continue,
+            other => (other, false),
+        };
+        let Some(elements) = table.singles.get(&code_point) else {
+            push_filemaker_weights(code_point, 0x20, &mut out);
+            continue;
+        };
+        let mut i = 0;
+        while i < elements.len() {
+            let element = elements[i];
+            if let Some(ideograph) = implicit_code_point(element, elements.get(i + 1)) {
+                push_filemaker_weights(ideograph, element.secondary, &mut out);
+                i += 2;
+                continue;
+            }
+            out.push(if quote {
+                Element {
+                    secondary: 0x21,
+                    ..element
+                }
+            } else {
+                element
+            });
+            i += 1;
+        }
+    }
+    out
 }
 
-/// The DUCET 5.2.0 collation elements of `text` in order, ignorable ones
-/// included: contractions first (the longest that matches), and for a code
-/// point the table does not list its two implicit elements
-/// (`[.AAAA.0020.0002][.BBBB.0000.0000]`, UTS #10 7.1.3). As in
-/// FileMaker, the noncharacters U+FFFE and U+FFFF are completely ignorable
-/// and the curly quotation marks sort as one single and one double mark
-/// (U+2018..U+201B as U+2018, U+201C..U+201F as U+201C).
+/// The code point whose UCA implicit weights `first` and `second` are
+/// (UTS #10 7.1.3: `[.AAAA.0020.xxxx][.BBBB.0000.0000]`, AAAA = FB40, FB80
+/// or FBC0 + (code point >> 15), BBBB = (code point & 7FFF) | 8000).
+/// No element of DUCET 5.2.0 that is not implicit has a primary weight
+/// from FB40.
+fn implicit_code_point(first: Element, second: Option<&Element>) -> Option<u32> {
+    let second = second.filter(|e| e.secondary == 0 && e.primary & 0x8000 != 0)?;
+    let base = match first.primary {
+        0xFB40..=0xFB7F => 0xFB40,
+        0xFB80..=0xFBBF => 0xFB80,
+        0xFBC0..=0xFBFF => 0xFBC0,
+        _ => return None,
+    };
+    Some(u32::from(first.primary - base) << 15 | u32::from(second.primary & 0x7FFF))
+}
+
+/// FileMaker's primary weights for a code point its table does not list
+/// (spec 7.2, `KeyBuilder::MakeKey`, each range observed): one or two.
+fn filemaker_weights(code_point: u32) -> ([u16; 2], usize) {
+    // Every arm fits 16 bits: the ranges bound the sums, a code point
+    // (at most 10FFFF) shifted right by 16 is at most 0x10.
+    let low = (code_point & 0xFFFF) as u16;
+    match code_point {
+        // CJK unified ideographs: the code point.
+        0x4E00..=0x9FCB => ([low, 0], 1),
+        // CJK extension A.
+        0x3400..=0x4DB5 => ([low + 0x6FCB, 0], 1),
+        // Hangul syllables.
+        0xAC00..=0xD7A3 => ([low + 0x19AD, 0], 1),
+        // CJK extensions B to D: the high surrogate - 0x16C0, then the low
+        // surrogate.
+        0x20000..=0x2B7FF => {
+            let offset = code_point - 0x10000;
+            let high = 0xD800 + (offset >> 10) as u16;
+            let low = 0xDC00 + (offset & 0x3FF) as u16;
+            ([high - 0x16C0, low], 2)
+        }
+        // Any other code point: FFE0 + its plane, then its low 16 bits.
+        _ => ([0xFFE0 + (code_point >> 16) as u16, low], 2),
+    }
+}
+
+/// Append FileMaker's elements for an unlisted code point, the first with
+/// secondary weight `secondary`.
+fn push_filemaker_weights(code_point: u32, secondary: u16, out: &mut Vec<Element>) {
+    let (weights, count) = filemaker_weights(code_point);
+    for (i, &primary) in weights[..count].iter().enumerate() {
+        out.push(Element {
+            primary,
+            secondary: if i == 0 { secondary } else { 0 },
+            tertiary: if i == 0 { 0x02 } else { 0 },
+        });
+    }
+}
+
+/// The DUCET 5.2.0 collation elements of `text` in order, as UCA reads the
+/// table, ignorable ones included: contractions first (the longest that
+/// matches), and for a code point the table does not list its two implicit
+/// elements (`[.AAAA.0020.0002][.BBBB.0000.0000]`, UTS #10 7.1.3). As in
+/// FileMaker's sorting, the noncharacters U+FFFE and U+FFFF are completely
+/// ignorable and the curly quotation marks sort as one single and one
+/// double mark (U+2018..U+201B as U+2018, U+201C..U+201F as U+201C). Index
+/// keys read the table differently ([`index_elements`]).
 pub fn collation_elements(text: &str) -> Vec<Element> {
     let table = table();
     let code_points: Vec<u32> = text
@@ -313,13 +445,10 @@ mod tests {
         assert_eq!(cut(&"x".repeat(110)), (219, true));
         assert_eq!(cut(&"x".repeat(300)), (219, true));
         assert_eq!(text_index_key(&"x".repeat(300)), text_key(&"x".repeat(109)));
-        // Two weights per ideograph: the cut keeps the first weight of the
-        // 55th (the byte rule applied; no cut CJK key was observed).
-        assert_eq!(cut(&"\u{4e00}".repeat(55)), (219, true));
-        assert_eq!(
-            hex(&text_index_key(&"\u{4e00}".repeat(55))[215..]),
-            "ce00fb40"
-        );
+        // One weight per unified ideograph, so 109 fit (spec 7.1, `中`×109
+        // against `中`×110).
+        assert_eq!(cut(&"\u{4e2d}".repeat(109)), (219, false));
+        assert_eq!(cut(&"\u{4e2d}".repeat(110)), (219, true));
         assert_eq!(text_index_key("Test"), text_key("Test"));
     }
 
@@ -377,9 +506,19 @@ mod tests {
     }
 
     #[test]
-    fn unlisted_code_points_get_implicit_weights() {
-        // U+4E00 (a CJK ideograph) and an unassigned code point.
-        assert_eq!(hex(&text_key("\u{4e00}")), "01fb40ce00");
-        assert_eq!(hex(&text_key("\u{e0000}")), "01fbdc8000");
+    fn index_keys_and_sorting_read_the_table_differently() {
+        // Index keys: one code point at a time (Thai `เก` as written),
+        // FileMaker's own weights where the table lists nothing, a
+        // compatibility ideograph as its canonical one. Every row of
+        // catalogs/index-key-vectors.tsv is checked in om-query.
+        assert_eq!(hex(&text_key("\u{e40}\u{e01}")), "011faa1f70");
+        assert_eq!(hex(&text_key("\u{4e2d}\u{f900}")), "014e2d8c48");
+        // UCA's reading, for sorting, keeps contractions and implicit
+        // weights.
+        assert_eq!(
+            collation_elements("\u{e40}\u{e01}")[0],
+            collation_elements("\u{e01}")[0]
+        );
+        assert_eq!(collation_elements("\u{4e00}")[0].primary, 0xfb40);
     }
 }

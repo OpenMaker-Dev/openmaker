@@ -1259,8 +1259,16 @@ Not covered:
 - The languages FileMaker does not tailor, such as French and Dutch, are
   refused too, though their keys look like the English ones ([#300](https://github.com/OpenMaker-Dev/openmaker/issues/300)).
 - The tailored languages wait for their keys ([#299](https://github.com/OpenMaker-Dev/openmaker/issues/299)).
-- Within the forms OpenMaker builds, some scripts and the padded form's
-  accents still differ from FileMaker's keys ([#175](https://github.com/OpenMaker-Dev/openmaker/issues/175)).
+- Within the forms OpenMaker builds, the keys equal FileMaker's for every
+  English, Unicode standard and Unicode raw value of the probe
+  (`catalogs/index-key-vectors.tsv`). Two choices are OpenMaker's, since
+  FileMaker's are unmeasured (query-program.md 13, item 1). In the padded
+  form, the first weight of an unlisted code point carries secondary
+  weight 0x20 and a second weight carries none, as in UCA. A character that
+  DUCET lists with UCA's implicit weights for an ideograph keys as that
+  ideograph does in FileMaker: `⼀` U+2F00 as `一` (`4e00`), U+FA0E as
+  `ffe0 fa0e`. Whether a record is also listed under `ff 80` follows
+  FileMaker only in part ([#177](https://github.com/OpenMaker-Dev/openmaker/issues/177)).
 
 **Furigana.** A normal field with "Use Furigana Field" (option `0x40`)
 leaves its table writable. OpenMaker's record rules refuse a write that
@@ -1276,9 +1284,9 @@ change by a script, an import or auto-entry is unmeasured.
 A number field with unique or existing-value validation keeps its table
 read-only, as before. Unique and existing values are checked in the field's
 value index, so such a field must be defined for a value index in English (21,
-77) or Unicode raw (2) (auto-entry.md, Index bits), the forms whose keys
-OpenMaker builds exactly; a field in another language keeps its table
-read-only ([#299](https://github.com/OpenMaker-Dev/openmaker/issues/299), [#175](https://github.com/OpenMaker-Dev/openmaker/issues/175)). The client and the host build the key in the field's
+77), System (1), Unicode standard (3) or Unicode raw (2) (auto-entry.md,
+Index bits), the forms whose keys OpenMaker builds; a field in another
+language keeps its table read-only ([#299](https://github.com/OpenMaker-Dev/openmaker/issues/299)). The client and the host build the key in the field's
 form (`om_data::rules::checked_text_keys`, query-program.md 7.2), cut to 219
 bytes as the index holds it (7.1), so a long value is checked against the
 values that share its first 109 weights, or code units in Unicode raw ([#177](https://github.com/OpenMaker-Dev/openmaker/issues/177)).

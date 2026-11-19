@@ -1669,8 +1669,9 @@ values, not the value index: live:proj_ts keys ModificationTimestamp, which
 has no index. When the requested type is the field's own type and the
 language gives the index's form, the output equals the value index inverted
 (record -> keys) without its empty-value key `01`; om-query answers that case
-from the index and reports the others (conversions, unindexed fields, other
-languages) as unsupported until it can key stored values.
+from the index, keys text in System and Unicode standard and unindexed text
+fields from the stored values, and reports the others (conversions, other
+unindexed fields, other languages) as unsupported.
 
 ### 9.2 JoinProjection, op 12: full semantics (High)
 
@@ -1961,7 +1962,14 @@ the value indexes of First Name, Company and PK (`dl_*`).
    Thai and Greek-mixed tailorings, the Chinese, Chinese-stroke and Korean
    tables and the Japanese weights of kanji outside JIS X 0208 level 1;
    whether System (1) follows the machine's language; language 77, which
-   FMUpgradeTool would not create. The full word-break rules (7.1). The
+   FMUpgradeTool would not create. In the padded form, the secondary
+   weights of the weights FileMaker gives unlisted code points: no probe
+   value mixed them with accents, so whether each weight adds a secondary
+   byte is not known. The keys of the characters DUCET lists with UCA's
+   implicit weights, other than the compatibility ideographs that have a
+   canonical decomposition: Kangxi and CJK radicals, circled and
+   parenthesized ideographs, and the twelve unified ideographs in
+   U+FA0E..U+FA29, which have no decomposition. The full word-break rules (7.1). The
    cut of long keys in every form (7.1) and `IncludeTooLong` (6.3) are
    solved; three FileMaker Pro long-criterion wire requests are captured
    (6.4), but its finders were not replayed against FileMaker Server with
