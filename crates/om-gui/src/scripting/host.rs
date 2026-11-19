@@ -25,7 +25,6 @@ use om_data::calc::eval::{
 use om_data::calc::{CalcError, Ctx, Date, Locale, Value, ValueType};
 use om_data::formula::Names;
 use om_data::found::{code, FindRequest, FoundSetChange, SortField, SortOrder};
-use om_data::host::session::{auto_enters, modified_fields};
 use om_data::host::{
     stored_value, CachedSource, CalcData, CalcNeed, CalcSchema, FieldClass, FileCalc, SessionInfo,
     Vars, WindowMode, NO_RECORD,
@@ -64,9 +63,23 @@ const CACHE_FILE_PATH: u8 = 131;
 /// "Field cannot be modified".
 const FIELD_LOCKED: i32 = 201;
 
-/// Script Workspace and Manage Database, the menu steps the app has.
+/// The "Open Menu Item" steps the desktop opens: Manage Database and the
+/// Script Workspace. The others answer error 3; the alpha scorecard counts
+/// them from this list.
+pub(crate) const OPENED_MENU_ITEMS: [u16; 2] = [OPEN_MANAGE_DATABASE, OPEN_SCRIPT_WORKSPACE];
 const OPEN_MANAGE_DATABASE: u16 = 38;
 const OPEN_SCRIPT_WORKSPACE: u16 = 88;
+
+/// The window's flag a Show/Hide step changes for `bar`. The desktop has
+/// no text ruler and no touch keyboard: `None`, error 3; the alpha
+/// scorecard counts those steps from here.
+pub(crate) fn bar_flag(state: &mut super::WindowState, bar: Bar) -> Option<&mut bool> {
+    match bar {
+        Bar::Toolbars { .. } => Some(&mut state.toolbar),
+        Bar::Menubar => Some(&mut state.menubar),
+        Bar::TextRuler | Bar::TouchKeyboard => None,
+    }
+}
 
 /// Trigger action tokens the UI hands out carry this bit; the worker's own
 /// tokens do not.
@@ -2604,7 +2617,7 @@ impl<'a> WorkerHost<'a> {
         let (active_field_name, active_field_table_name) = match portal_field {
             Some(named) => named,
             None if state.focus.is_some() => {
-                (state.focus.clone().unwrap_or_default(), table_name.clone())
+                crate::calc::focus_names(state.focus.as_deref().unwrap_or_default(), &table_name)
             }
             None => own_repetition
                 .and_then(|field| {
@@ -2755,64 +2768,34 @@ impl<'a> WorkerHost<'a> {
         let Some(table) = schema.table_of(occurrence) else {
             return Vec::new();
         };
-        let state = &self.s.file.window.state;
-        if state.mode != Mode::Browse {
+        let table = table.id;
+        if self.s.file.window.state.mode != Mode::Browse {
             return Vec::new();
         }
-        let id = |name: &str| table.fields.values().find(|f| f.name == name).map(|f| f.id);
-        let mut changed: Vec<u64> = state
-            .drafts
-            .keys()
-            .filter(|f| state.typing.as_ref() != Some(*f))
-            .filter_map(|f| id(f))
-            .collect();
         // A script's later repetitions (cell `F * 256 + n`) change field F,
         // and so does the user's typing into them (the record's own related
         // draft, #185), but for the one being typed into.
-        let record = state.record.and_then(|id| u64::try_from(id).ok());
-        let typed: Vec<u64> = state
-            .uncommitted
-            .related
-            .iter()
-            .filter(|d| d.table == table.id && d.record == record && !d.deleted)
-            .flat_map(|d| d.cells.keys().copied())
-            .collect();
         let focused = self
             .own_repetition_focus()
             .and_then(|f| om_data::rules::cell_of(f.field, f.repetition));
-        let state = &self.s.file.window.state;
-        for cell in self
-            .s
-            .file
-            .window
-            .cells()
-            .keys()
-            .chain(typed.iter().filter(|cell| Some(**cell) != focused))
-        {
-            let field = if table.fields.contains_key(cell) {
-                *cell
-            } else {
-                cell >> 8
-            };
-            let typing = table
-                .fields
-                .get(&field)
-                .is_some_and(|f| state.typing.as_deref() == Some(f.name.as_str()));
-            if table.fields.contains_key(&field) && !typing && !changed.contains(&field) {
-                changed.push(field);
-            }
-        }
-        let entered: Vec<u64> = self
-            .s
-            .file
-            .window
-            .auto_entered()
+        let window = &self.s.file.window;
+        let state = &window.state;
+        let record = state.record.and_then(|id| u64::try_from(id).ok());
+        let typed = state
+            .uncommitted
+            .related
             .iter()
-            .filter_map(|f| table.fields.values().find(|d| d.name == *f))
-            .filter(|d| auto_enters(d))
-            .map(|d| d.id)
-            .collect();
-        modified_fields(&schema, table.id, &changed, &entered)
+            .filter(|d| d.table == table && d.record == record && !d.deleted)
+            .flat_map(|d| d.cells.keys().copied())
+            .filter(|cell| Some(*cell) != focused);
+        crate::calc::window_modified_fields(
+            &schema,
+            table,
+            state.drafts.keys().map(String::as_str),
+            state.typing.as_deref(),
+            window.cells().keys().copied().chain(typed),
+            window.auto_entered(),
+        )
     }
 
     /// The host's IPv4 address, resolved once.
@@ -5457,12 +5440,7 @@ impl Windows for WorkerHost<'_> {
     }
 
     fn show_hide(&mut self, bar: Bar, visibility: Visibility, _lock: bool) -> HostResult {
-        let state = &mut self.s.file.window.state;
-        let flag = match bar {
-            Bar::Toolbars { .. } => &mut state.toolbar,
-            Bar::Menubar => &mut state.menubar,
-            Bar::TextRuler | Bar::TouchKeyboard => return Err(HostError::Unsupported),
-        };
+        let flag = bar_flag(&mut self.s.file.window.state, bar).ok_or(HostError::Unsupported)?;
         *flag = match visibility {
             Visibility::Show => true,
             Visibility::Hide => false,
@@ -5511,13 +5489,11 @@ impl Dialogs for WorkerHost<'_> {
     }
 
     fn open_menu_item(&mut self, step: u16) -> HostResult {
-        match step {
-            OPEN_SCRIPT_WORKSPACE | OPEN_MANAGE_DATABASE => {
-                self.send(ScriptEvent::OpenMenu(step));
-                Ok(())
-            }
-            _ => Err(HostError::Unsupported),
+        if !OPENED_MENU_ITEMS.contains(&step) {
+            return Err(HostError::Unsupported);
         }
+        self.send(ScriptEvent::OpenMenu(step));
+        Ok(())
     }
 }
 
