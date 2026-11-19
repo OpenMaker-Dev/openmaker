@@ -532,7 +532,10 @@ Open items:
 - Server: auto-enter calculations are not recomputed after a schema
   change (by design, as FileMaker). Schedules run (#11).
   - The recompute after a schema change reads container inputs from the
-    table's library. It still skips repeating calculations, container
+    table's library and computes repeating calculations in each
+    repetition; with "do not evaluate if all referenced fields are empty"
+    which inputs count in a repetition above 1 is OpenMaker's reading. It
+    still skips calculations of more than 255 repetitions, container
     results, plug-in functions and `Get` selectors that need a window,
     leaving their values as they were and logging the field
     ([#82](https://github.com/OpenMaker-Dev/openmaker/issues/82)).
