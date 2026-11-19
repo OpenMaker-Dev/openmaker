@@ -3317,9 +3317,9 @@ fn a_script_its_set_gives_no_access_is_refused_however_it_runs() {
     };
     let mut perform = ScriptStep::new(1);
     perform.set_script_key(StoredKey::from_id(2));
+    // The fixture's scripts capture errors.
     let mut c = Client::new(
         vec![
-            ScriptStep::new(86),
             perform,
             exit("Get ( LastError ) & \"|\" & Get ( ScriptResult )"),
         ],
