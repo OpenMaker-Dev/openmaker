@@ -911,3 +911,61 @@ fn lookup_tree() -> OwnedNode {
     );
     root
 }
+
+/// A new record's auto-entry through a self-join reads the group's records
+/// committed before it, never itself (s47, FileMaker Server's engine;
+/// #297): 0, then 1. Two new records of the group in one transaction are
+/// refused (3): FileMaker's second did not read the first, and the
+/// session's reads would.
+#[test]
+fn server_scripts_self_join_auto_entry_reads_committed_matches_only() {
+    const KEY: u64 = 42;
+    const SEEN: u64 = 43;
+    const GROUP: u64 = 0xd0_0019;
+    let mut root = tree();
+    let mut names = names();
+    names.add_occurrence(GROUP, "G", TABLE);
+    names.add_field(TABLE, KEY, "Key");
+    names.add_field(TABLE, SEEN, "Seen");
+    fixture::add_field(&mut root, TABLE, KEY, "Key", 1, 1, 0, 0, 0);
+    fixture::add_occurrence(&mut root, GROUP, "G", TABLE);
+    fixture::add_relationship(&mut root, 20, (OCCURRENCE, KEY), 0, (GROUP, KEY));
+    // Replacing an existing value, as the oracle's witness did.
+    fixture::add_field(&mut root, TABLE, SEEN, "Seen", 1, 1, 0, 0x88, 0);
+    fixture::add_formula(
+        &mut root,
+        &names,
+        (TABLE, OCCURRENCE),
+        SEEN,
+        5,
+        "Count ( G::Key )",
+    );
+    let make = vec![
+        ScriptStep::new(7),
+        fixture::set_field(KEY, "\"k\""),
+        ScriptStep::new(75),
+        exit_with("Get ( LastError ) & \"|\" & Tasks::Seen"),
+    ];
+    let two = vec![
+        fixture::on(86, true),
+        ScriptStep::new(205),
+        ScriptStep::new(7),
+        fixture::set_field(KEY, "\"t\""),
+        ScriptStep::new(7),
+        fixture::set_field(KEY, "\"t\""),
+        ScriptStep::new(206),
+        exit_with("Get ( LastError )"),
+    ];
+    for (id, name, steps) in [(10, "Make", make), (11, "Two", two)] {
+        root.put(
+            &[&[17], &[5], &uint_segment(id)],
+            script(id, name, steps).encode(),
+        );
+    }
+    let file = TempFile::from_tree("psos-self-join", &root);
+    let port = server::start(&file);
+    let (mut client, _) = server::logged_in(port, "client");
+    assert_eq!(run(&mut client, 10).1, "0|0");
+    assert_eq!(run(&mut client, 10).1, "0|1");
+    assert_eq!(run(&mut client, 11).1, "3");
+}
