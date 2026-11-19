@@ -70,7 +70,7 @@ wry = { version = "0.57", default-features = false, features = ["os-webview"], o
 objc2 = { version = "0.6", optional = true }
 objc2-app-kit = { version = "0.3", default-features = false, features = ["std", "objc2-core-foundation", "NSApplication", "NSResponder", "NSView", "NSWindow"], optional = true }
 objc2-core-foundation = { version = "0.3", default-features = false, features = ["std", "CFCGTypes"], optional = true }
-objc2-foundation = { version = "0.3", default-features = false, features = ["std", "NSKeyValueCoding", "NSObject", "NSString", "NSValue"], optional = true }
+objc2-foundation = { version = "0.3", default-features = false, features = ["std", "NSKeyValueCoding", "NSObject", "NSString", "NSURL", "NSValue"], optional = true }
 
 [target.'cfg(target_os = "windows")'.dependencies]
 keyring = { version = "3.6.3", features = ["windows-native"] }

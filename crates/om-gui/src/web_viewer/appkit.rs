@@ -17,28 +17,55 @@
 //!
 //! Views are incognito (no cookies or storage written to disk) and have no
 //! developer tools; they open no other windows, download nothing, and go
-//! only to http, https, data, blob, file and about URLs. The bridge
-//! ([`BRIDGE`]) reaches the app by asking a hidden frame to load an
-//! `openmaker-message:` URL, which the navigation handler takes and
+//! only to http, https, data, blob, file and about URLs; an address that
+//! Foundation cannot read as a URL shows a blank page (wry would panic on
+//! it). The bridge ([`BRIDGE`]) reaches the app by asking a hidden frame to
+//! load an `openmaker-message:` URL, which the navigation handler takes and
 //! refuses: wry's message handler, like WebKitGTK's through wry, drops
-//! messages from pages whose URL has no host, such as `data:` URLs.
+//! messages from pages whose URL has no host, such as `data:` URLs. That
+//! handler hears every frame, so the URL carries a token of the view's own
+//! that only the script injected into the page's main frame knows: another
+//! site's frame inside the page cannot post. Messages are bounded in size
+//! and in the bytes waiting for the app.
+//!
+//! wry reports a load when it commits and when it finishes, not when it
+//! starts or fails. So each frame also looks at the page's `loading`
+//! property: a page that started loading is reported as loading, one that
+//! stopped as loaded, and a navigation that no load followed (or one that
+//! failed before committing) is reported as loaded after [`SETTLE`].
 
 use std::cell::Cell;
 use std::collections::HashMap;
 use std::rc::Rc;
+use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::mpsc::{channel, Receiver, Sender};
+use std::sync::Arc;
+use std::time::{Duration, Instant};
 
 use objc2::rc::Retained;
 use objc2::MainThreadMarker;
 use objc2_app_kit::{NSApplication, NSView, NSWindow};
 use objc2_core_foundation::{CGPoint, CGRect, CGSize};
-use objc2_foundation::{NSNumber, NSObject, NSObjectNSKeyValueCoding as _, NSString};
+use objc2_foundation::{NSNumber, NSObject, NSObjectNSKeyValueCoding as _, NSString, NSURL};
 use raw_window_handle::HasWindowHandle;
 use wry::dpi::{LogicalPosition, LogicalSize};
 use wry::{PageLoadEvent, WebView, WebViewBuilder, WebViewExtMacOS};
 
 use super::{allowed, Backend, Event, Geometry, NativeParent, Navigation, Unavailable, ViewSpec};
-use super::{BRIDGE, MESSAGE_URL};
+use super::{BRIDGE, MAX_MESSAGE, MESSAGE_URL};
+
+/// The most bridge message bytes that may wait for the app at once; more
+/// are dropped, as one longer than [`MAX_MESSAGE`] is.
+const MESSAGE_BUDGET: usize = 2 * MAX_MESSAGE;
+
+/// How long after a navigation the page must have started loading: when it
+/// is not loading by then, the navigation has ended (it failed before
+/// committing, or loaded between two frames).
+const SETTLE: Duration = Duration::from_millis(250);
+
+/// How often a page that is loading is looked at while nothing else
+/// repaints the app.
+const WATCH: Duration = Duration::from_millis(100);
 
 enum Command {
     Create {
@@ -69,12 +96,27 @@ enum Command {
     },
 }
 
+impl Command {
+    fn view(&self) -> Option<u64> {
+        match self {
+            Command::Create { view, .. }
+            | Command::Place { view, .. }
+            | Command::Navigate { view, .. }
+            | Command::Evaluate { view, .. }
+            | Command::Destroy { view } => Some(*view),
+            Command::ReleaseFocus { .. } => None,
+        }
+    }
+}
+
 pub(crate) struct AppKitBackend {
     mtm: MainThreadMarker,
     queued: Vec<Command>,
     views: HashMap<u64, Hosted>,
     events: Events,
     received: Receiver<Event>,
+    /// Bridge message bytes sent and not yet polled.
+    waiting: Arc<AtomicUsize>,
 }
 
 /// Where events go: the app's channel, with a repaint so it reads them.
@@ -102,6 +144,11 @@ struct Hosted {
     active_generation: Rc<Cell<u64>>,
     shown: bool,
     zoom: f64,
+    /// The page's `loading` as last seen.
+    loading: bool,
+    /// A navigation (its generation) whose load has not been seen to start
+    /// yet, and when it was asked for.
+    issued: Option<(u64, Instant)>,
 }
 
 impl AppKitBackend {
@@ -118,11 +165,20 @@ impl AppKitBackend {
                 ctx: ctx.clone(),
             },
             received,
+            waiting: Arc::default(),
         })
     }
 
-    /// Apply `command` now, or after the views still to be made.
+    /// Apply `command` now, or after the views still to be made. Destroying
+    /// a view that is still to be made drops it and what waits for it.
     fn command(&mut self, command: Command) {
+        if let Command::Destroy { view } = command {
+            let pending = |c: &Command| matches!(c, Command::Create { view: v, .. } if *v == view);
+            if self.queued.iter().any(pending) {
+                self.queued.retain(|c| c.view() != Some(view));
+                return;
+            }
+        }
         if self.queued.is_empty() {
             self.apply(command);
         } else {
@@ -181,7 +237,7 @@ impl AppKitBackend {
     }
 
     fn go(&mut self, view: u64, generation: u64, navigation: Navigation) {
-        let Some(hosted) = self.views.get(&view) else {
+        let Some(hosted) = self.views.get_mut(&view) else {
             return;
         };
         hosted.generation.set(generation);
@@ -201,11 +257,12 @@ impl AppKitBackend {
             return;
         }
         let result = match navigation {
-            Navigation::Load(url) => webview.load_url(&url),
+            Navigation::Load(url) => webview.load_url(&readable(url)),
             Navigation::Reload => webview.reload(),
             Navigation::Back => webview.go_back(),
             Navigation::Forward => webview.go_forward(),
         };
+        hosted.issued = Some((generation, Instant::now()));
         if let Err(error) = result {
             self.events.send(Event::Failed {
                 view,
@@ -236,26 +293,38 @@ impl AppKitBackend {
         let active = Rc::clone(&active_generation);
         let loads = self.events.clone();
         let messages = self.events.clone();
+        let waiting = Arc::clone(&self.waiting);
         let scripts = spec.scripts;
+        // The prefix only this view's injected bridge knows.
+        let route = format!("{MESSAGE_URL}{}/", om_data::host::window::new_window_uuid());
+        let bridge = BRIDGE.replacen(&format!("\"{MESSAGE_URL}\""), &format!("\"{route}\""), 1);
         let mut builder = WebViewBuilder::new()
-            .with_url(spec.url)
+            .with_url(readable(spec.url))
             .with_incognito(true)
             .with_devtools(false)
             .with_bounds(wry::Rect {
                 position: LogicalPosition::new(0, 0).into(),
                 size: LogicalSize::new(1, 1).into(),
             })
-            .with_navigation_handler(move |url| match url.strip_prefix(MESSAGE_URL) {
-                Some(body) => {
-                    if scripts {
+            .with_navigation_handler(move |url| {
+                if !url.starts_with(MESSAGE_URL) {
+                    return allowed(&url);
+                }
+                // Never a page of its own; a message only with the view's
+                // own prefix, within the bounds.
+                let body = url.strip_prefix(&route).filter(|_| scripts);
+                if let Some(body) = body.filter(|body| body.len() <= MAX_MESSAGE) {
+                    let queued = waiting.fetch_add(body.len(), Ordering::SeqCst);
+                    if queued + body.len() <= MESSAGE_BUDGET {
                         messages.send(Event::Message {
                             view,
                             body: body.to_owned(),
                         });
+                    } else {
+                        waiting.fetch_sub(body.len(), Ordering::SeqCst);
                     }
-                    false
                 }
-                None => allowed(&url),
+                false
             })
             .with_new_window_req_handler(|_, _| wry::NewWindowResponse::Deny)
             .with_download_started_handler(|_, _| false)
@@ -273,7 +342,7 @@ impl AppKitBackend {
                 }),
             });
         if spec.scripts {
-            builder = builder.with_initialization_script(BRIDGE);
+            builder = builder.with_initialization_script(&bridge);
         }
         let webview = builder.build_as_child(&root).map_err(|e| e.to_string())?;
         let page = webview.webview();
@@ -300,6 +369,8 @@ impl AppKitBackend {
             active_generation,
             shown: false,
             zoom: 1.0,
+            loading: false,
+            issued: Some((0, Instant::now())),
         };
         place(self.mtm, &mut hosted, spec.geometry, spec.visible);
         self.views.insert(view, hosted);
@@ -367,7 +438,13 @@ impl Backend for AppKitBackend {
     }
 
     fn poll(&mut self) -> Vec<Event> {
-        self.received.try_iter().collect()
+        let events: Vec<Event> = self.received.try_iter().collect();
+        for event in &events {
+            if let Event::Message { body, .. } = event {
+                self.waiting.fetch_sub(body.len(), Ordering::SeqCst);
+            }
+        }
+        events
     }
 
     fn flush(&mut self, root: &dyn HasWindowHandle) {
@@ -385,6 +462,54 @@ impl Backend for AppKitBackend {
                 command => self.apply(command),
             }
         }
+        self.watch_loads();
+    }
+}
+
+impl AppKitBackend {
+    /// Report what wry does not: a load starting before it commits, and a
+    /// navigation that ended without finishing.
+    fn watch_loads(&mut self) {
+        let mut busy = false;
+        for (&view, hosted) in &mut self.views {
+            let loading = flag(&hosted.webview.webview(), "loading");
+            if loading && !hosted.loading {
+                hosted.active_generation.set(hosted.generation.get());
+                self.events.send(Event::LoadStarted {
+                    view,
+                    generation: hosted.active_generation.get(),
+                });
+            } else if !loading && hosted.loading {
+                self.events.send(Event::Loaded {
+                    view,
+                    generation: hosted.active_generation.get(),
+                });
+            }
+            hosted.loading = loading;
+            match hosted.issued {
+                Some(_) if loading => hosted.issued = None,
+                Some((generation, at)) if at.elapsed() >= SETTLE => {
+                    hosted.issued = None;
+                    hosted.active_generation.set(generation);
+                    self.events.send(Event::Loaded { view, generation });
+                }
+                _ => {}
+            }
+            busy |= loading || hosted.issued.is_some();
+        }
+        if busy {
+            self.events.ctx.request_repaint_after(WATCH);
+        }
+    }
+}
+
+/// `url` when Foundation reads it as a URL, a blank page otherwise: wry
+/// unwraps Foundation's reading, and would panic.
+fn readable(url: String) -> String {
+    if NSURL::URLWithString(&NSString::from_str(&url)).is_some() {
+        url
+    } else {
+        "about:blank".into()
     }
 }
 
@@ -459,5 +584,15 @@ fn place(mtm: MainThreadMarker, hosted: &mut Hosted, geometry: Geometry, visible
     if shown != hosted.shown {
         hosted.container.setHidden(!shown);
         hosted.shown = shown;
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    #[test]
+    fn an_address_foundation_cannot_read_shows_a_blank_page() {
+        assert_eq!(super::readable("http://[".into()), "about:blank");
+        let page = "data:text/html,%3Cp%3Ehi%3C/p%3E";
+        assert_eq!(super::readable(page.into()), page);
     }
 }
