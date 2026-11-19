@@ -31,6 +31,12 @@ const FRESH: Duration = Duration::from_secs(1);
 /// Times, not egui's pass numbers: each window is a viewport with passes
 /// of its own.
 const UNUSED: Duration = Duration::from_secs(10);
+/// The most the drawn rasters may hold. Past it, rasters are dropped, the
+/// sizes an SVG no longer shows at first ([`State::trim`]): a window
+/// dragged over a stretched picture asks for a new size every frame.
+const BUDGET: usize = 128 << 20;
+/// A raster asked for this recently is on screen, and is not dropped.
+const SHOWN: Duration = Duration::from_millis(100);
 
 /// One raster of one SVG: drawn, refused, or still being drawn (`None`).
 struct Entry {
@@ -48,6 +54,45 @@ struct State {
 impl State {
     fn entry(&mut self, uri: &str, hint: SizeHint) -> Option<&mut Entry> {
         self.cache.get_mut(uri)?.get_mut(&hint)
+    }
+
+    /// Drop drawn rasters, as of `now`, until they hold at most `budget`
+    /// bytes: first those of sizes an SVG was asked for at before its
+    /// latest, then any not asked for within [`FRESH`], each oldest first.
+    /// A raster asked for within [`SHOWN`] stays, so what is on screen,
+    /// in any window, is not drawn again.
+    fn trim(&mut self, budget: usize, now: Instant) {
+        let size = |entry: &Entry| match &entry.result {
+            Some(Ok(image)) => image.pixels.len() * size_of::<egui::Color32>(),
+            _ => 0,
+        };
+        let mut held: usize = self.cache.values().flat_map(|b| b.values()).map(size).sum();
+        if held <= budget {
+            return;
+        }
+        let mut droppable = Vec::new();
+        for (uri, bucket) in &self.cache {
+            let latest = bucket.values().map(|entry| entry.requested).max();
+            for (hint, entry) in bucket {
+                let age = now.saturating_duration_since(entry.requested);
+                let superseded = Some(entry.requested) != latest;
+                if size(entry) > 0 && age > SHOWN && (superseded || age > FRESH) {
+                    droppable.push((!superseded, entry.requested, uri.clone(), *hint));
+                }
+            }
+        }
+        droppable.sort_by_key(|(current, requested, ..)| (*current, *requested));
+        for (_, _, uri, hint) in droppable {
+            if held <= budget {
+                break;
+            }
+            if let Some(bucket) = self.cache.get_mut(&uri) {
+                held -= bucket.remove(&hint).as_ref().map_or(0, size);
+                if bucket.is_empty() {
+                    self.cache.remove(&uri);
+                }
+            }
+        }
     }
 
     /// Whether raster `hint` of `uri` is still to be drawn: not drawn or
@@ -86,10 +131,20 @@ struct Job {
 /// SVG worker. Only exact sizes are drawn (`SizeHint::Size` without
 /// keeping the aspect ratio), which is what `egui::Image::paint_at` asks
 /// for; the raster is at most the worker's largest, stretched over the
-/// rectangle.
-#[derive(Default)]
+/// rectangle. The rasters it keeps hold at most [`BUDGET`] bytes beside
+/// those on screen.
 pub struct SvgLoader {
     state: Arc<Mutex<State>>,
+    budget: usize,
+}
+
+impl Default for SvgLoader {
+    fn default() -> Self {
+        Self {
+            state: Arc::default(),
+            budget: BUDGET,
+        }
+    }
 }
 
 impl SvgLoader {
@@ -206,12 +261,14 @@ impl ImageLoader for SvgLoader {
     }
 
     fn end_pass(&self, _pass_index: u64) {
-        self.state().cache.retain(|_, bucket| {
+        let mut state = self.state();
+        state.cache.retain(|_, bucket| {
             if bucket.len() >= 2 {
                 bucket.retain(|_, entry| entry.requested.elapsed() <= UNUSED);
             }
             !bucket.is_empty()
         });
+        state.trim(self.budget, Instant::now());
     }
 
     fn has_pending(&self) -> bool {
@@ -292,5 +349,67 @@ impl SvgLoader {
             return Err(LoadError::Loading(error));
         }
         Ok(ImagePoll::Pending { size: None })
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// A window dragged over a stretched SVG asks for a new size each
+    /// frame: past the budget, the sizes it no longer shows go first,
+    /// oldest first, and the latest stays (#303 review).
+    #[test]
+    fn superseded_sizes_are_dropped_past_the_budget() {
+        let ctx = egui::Context::default();
+        let loader = Arc::new(SvgLoader {
+            budget: 1 << 20,
+            ..SvgLoader::default()
+        });
+        ctx.add_image_loader(loader.clone());
+        let uri = "bytes://test/stretched.svg";
+        ctx.include_bytes(
+            uri,
+            br#"<svg xmlns="http://www.w3.org/2000/svg" width="8" height="8"><rect width="8" height="8" fill="red"/></svg>"#
+                .to_vec(),
+        );
+        let hint = |width| SizeHint::Size {
+            width,
+            height: 256,
+            maintain_aspect_ratio: false,
+        };
+        // 16 sizes of 256 KiB, drawn at once in unit tests.
+        for width in 256..272 {
+            assert!(matches!(
+                ctx.try_load_image(uri, hint(width)),
+                Ok(ImagePoll::Ready { .. })
+            ));
+        }
+        assert!(loader.byte_size() > 4 << 20);
+        // Asked for a millisecond apart, in order of width.
+        let start = Instant::now();
+        for (hint, entry) in loader.state().cache.get_mut(uri).unwrap() {
+            let SizeHint::Size { width, .. } = hint else {
+                unreachable!()
+            };
+            entry.requested = start + Duration::from_millis(u64::from(width - 256));
+        }
+        // Just after: everything was asked for within `SHOWN`, so stays.
+        let now = start + Duration::from_millis(15);
+        loader.state().trim(1 << 20, now);
+        assert!(loader.byte_size() > 4 << 20);
+        // Later, the superseded sizes go, oldest first, the latest stays.
+        loader.state().trim(1 << 20, now + 2 * SHOWN);
+        assert!(loader.byte_size() <= 1 << 20, "{}", loader.byte_size());
+        let state = loader.state();
+        let kept: Vec<u32> = state.cache[uri]
+            .keys()
+            .map(|hint| match hint {
+                SizeHint::Size { width, .. } => *width,
+                _ => 0,
+            })
+            .collect();
+        assert!(kept.contains(&271), "{kept:?}");
+        assert!(kept.iter().all(|width| *width >= 268), "{kept:?}");
     }
 }

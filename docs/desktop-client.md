@@ -537,7 +537,9 @@ authoring part tabs or object kind captions.
   then stretched over the frame). A library SVG is hostile input that can
   ask usvg and resvg for unbounded memory or stack, which would abort
   om-gui ([#303](https://github.com/OpenMaker-Dev/openmaker/issues/303)).
-  Nothing shows until the worker answers (a few milliseconds an icon). Text
+  Nothing shows until the worker answers (a few milliseconds an icon).
+  Drawn rasters are kept within 128 MiB beside those on screen, the sizes
+  an SVG no longer shows at (a window being resized) dropped first. Text
   is drawn in the bundled fonts (Inter, else Liberation Sans); the images
   an SVG names are left out and never read from disk; an SVG that fails in
   the worker, or every SVG when no worker is installed beside om-gui,
