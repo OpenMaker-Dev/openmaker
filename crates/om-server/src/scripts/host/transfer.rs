@@ -142,6 +142,8 @@ impl ServerHost {
             .field_flags
             .as_deref()
             .and_then(|b| FieldFlags::decode(b).ok());
+        import::refuse_unsupported(&options, field_flags.as_ref())
+            .map_err(|_| HostError::Unsupported)?;
         let mut paths = call.paths.clone();
         if paths.is_empty() {
             if let ProfileBody::XmlImport {

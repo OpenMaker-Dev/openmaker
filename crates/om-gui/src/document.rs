@@ -4252,6 +4252,10 @@ fn paint_object(
         .filter(|_| state.find.is_none())
         .map_or(1, |field| field.num_of_reps.unsigned_abs().clamp(1, 255));
     for index in 0..repetitions {
+        // An object whose hide condition is kept from before the last
+        // change paints its children stale too (`paint_object_repetition`),
+        // and only those.
+        let stale = state.painting_stale;
         paint_object_repetition(
             ui,
             session,
@@ -4268,6 +4272,7 @@ fn paint_object(
             index,
             repetitions,
         );
+        state.painting_stale = stale;
     }
 }
 
@@ -4404,6 +4409,13 @@ fn paint_object_repetition(
         }),
         None => None,
     };
+    // A hide condition kept from before the last change while its data is
+    // read again: the object shows as it did, but takes no click, focus or
+    // typing until the condition is decided afresh.
+    if has_hide && calculated.as_ref().is_some_and(|c| c.kept) {
+        state.painting_stale = true;
+        state.visibility_undecided();
+    }
     let segment_name = calculated
         .as_ref()
         .and_then(|calculated| calculated.active_segment.clone());
@@ -4769,6 +4781,7 @@ fn paint_object_repetition(
                     }
                     kept
                 });
+                let outer_stale = state.painting_stale;
                 let shown = portals::show(
                     ui,
                     layout,
@@ -4780,7 +4793,7 @@ fn paint_object_repetition(
                     calc,
                     (records, pending),
                     |ui, row| {
-                        state.painting_stale = row.stale;
+                        state.painting_stale = outer_stale || row.stale;
                         let mut row_visited = BTreeSet::new();
                         for &child in &object.children {
                             match (row.context, row.new.zip(creating)) {
@@ -4827,7 +4840,7 @@ fn paint_object_repetition(
                         }
                     },
                 );
-                state.painting_stale = false;
+                state.painting_stale = outer_stale;
                 if shown.pending {
                     state.visibility_undecided();
                 }

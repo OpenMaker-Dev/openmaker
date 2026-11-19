@@ -1706,7 +1706,11 @@ impl NativeProvider {
     /// host has none of yet: read as held (`held_new_cells`), as record
     /// pages show them, so that a script's field after New Record and the
     /// match field of a row begun in the record's portal read its values.
-    /// Only the answer has them, not the working set of the host's records.
+    /// So is the record a related set of `needs` is read from: the window
+    /// scans a held record's sets from its held values
+    /// (`CachedSource::related_over_overlays`), and a layout that shows
+    /// only its portal asks for nothing else of it. Only the answer has
+    /// them, not the working set of the host's records.
     fn overlay_held_new(
         &self,
         schema: &CalcSchema,
@@ -1715,8 +1719,14 @@ impl NativeProvider {
         today: Date,
     ) {
         for need in needs {
-            let CalcNeed::Record { table, record } = need else {
-                continue;
+            let (table, record) = match need {
+                CalcNeed::Record { table, record } => (table, record),
+                CalcNeed::Related { from, record, .. }
+                | CalcNeed::RelatedIds { from, record, .. } => match schema.table_of(*from) {
+                    Some(table) => (&table.id, record),
+                    None => continue,
+                },
+                _ => continue,
             };
             let Some(cells) = self
                 .held_new_cells(*table, *record)

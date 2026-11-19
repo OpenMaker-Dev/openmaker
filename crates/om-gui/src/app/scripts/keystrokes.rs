@@ -59,8 +59,8 @@ impl Keystroke {
 /// The characters of a navigational key: the Code function's table in the
 /// Claris reference. Backspace 8, Tab and Shift-Tab 9, Return 13, Escape
 /// 27, left arrow 28, up arrow 29, right arrow 30, down arrow 31, forward
-/// delete 127. egui has one Enter key, Return's 13; the numeric keypad's
-/// Enter (10) is not told apart.
+/// delete 127; the numeric keypad's Enter 10, which egui reports as Enter
+/// too ([`crate::keypad`]), so [`keystroke`] tells it apart.
 fn navigation(key: Key) -> Option<char> {
     Some(match key {
         Key::Backspace => '\u{8}',
@@ -112,6 +112,7 @@ pub(in crate::app) fn keystroke(
                 return None;
             }
             match navigation(*key) {
+                Some(_) if crate::keypad::is_enter(event) => (Some("\n".into()), *modifiers),
                 Some(c) => (Some(c.to_string()), *modifiers),
                 None if all && untriggered(*key) => (None, *modifiers),
                 None => return None,
@@ -670,6 +671,11 @@ mod tests {
             );
             assert_eq!(modifiers, 0);
         }
+        // The keypad's Enter is 10, as OpenMaker's event loop delivers it.
+        assert_eq!(
+            seen(crate::keypad::enter_event(true, Modifiers::NONE), false),
+            Some((Some("\n".into()), 0))
+        );
         // Shift-Tab is Tab; the Shift key is in the modifiers.
         assert_eq!(
             seen(key(Key::Tab, Modifiers::SHIFT), false),

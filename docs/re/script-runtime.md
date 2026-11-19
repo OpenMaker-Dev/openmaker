@@ -3306,9 +3306,10 @@ Triggers (7)
   keys typed before such a change. Queued keys retain their original field
   object and editor before any trigger dispatch. An approved Tab, Return or
   Escape can transfer its own pending typeahead after navigation settles; an
-  intervening pointer focus change cancels that transfer. Limits: Find and Preview mode keys (the
-  triggers' other modes), IME commits, the keypad Enter (10; egui reports
-  Return), Home/End/Page keys (no documented code; they reach the editor
+  intervening pointer focus change cancels that transfer. The keypad's
+  Enter is 10 and Return 13: egui reports both as Enter, and the app's
+  event loop marks the keypad's (`om_gui::keypad`). Limits: Find and Preview mode keys (the
+  triggers' other modes), IME commits, Home/End/Page keys (no documented code; they reach the editor
   without a trigger), the no-active-object alert for typed characters, and
   native key timing and type-ahead ordering are not implemented or
   measured.

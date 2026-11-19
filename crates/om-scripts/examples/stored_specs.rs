@@ -566,7 +566,7 @@ impl ExportOptions {
             group_by.push((FieldSpec::read(&mut r)?, r.u8()?));
         }
         let tail = r.rest().to_vec();
-        (tail.len() <= 3).then_some(Self {
+        (tail.len() <= 4).then_some(Self {
             fields,
             group_by,
             tail,
