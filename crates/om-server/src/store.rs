@@ -2746,16 +2746,48 @@ impl Store {
         }
         let path: [&[u8]; 4] = [table, &[keys::INDEXES], field, &[index]];
         let node = self.root.ensure(&path);
+        let this: RidList = [id].into_iter().collect();
+        // The record's old keys did not hold it: the index was keyed by
+        // other rules (an earlier build's, or FileMaker's where OpenMaker's
+        // differ), and the entries that do hold it are found by reading them.
+        let mut stale = false;
         for key in before.difference(after) {
             let Some(entry) = node.child_mut(key) else {
+                stale = true;
                 continue;
             };
             let mut records = RidList::from_owned(entry).unwrap_or_default();
-            records = records.and_not(&[id].into_iter().collect());
+            stale |= !records.contains(id);
+            records = records.and_not(&this);
             if records.is_empty() {
                 node.remove(&[key]);
             } else {
                 entry.children = records.entries();
+            }
+        }
+        if stale {
+            // Only entries that read as RID lists holding the record change;
+            // an entry this server cannot read stays as it is.
+            let mut emptied = Vec::new();
+            for entry in &mut node.children {
+                if after.contains(&entry.segment) {
+                    continue;
+                }
+                let Ok(records) = RidList::from_owned(entry) else {
+                    continue;
+                };
+                if !records.contains(id) {
+                    continue;
+                }
+                let records = records.and_not(&this);
+                if records.is_empty() {
+                    emptied.push(entry.segment.clone());
+                } else {
+                    entry.children = records.entries();
+                }
+            }
+            for key in emptied {
+                node.remove(&[&key]);
             }
         }
         for key in after.difference(before) {

@@ -1500,14 +1500,15 @@ fn join_keys(data_type: om_hbam::DataType, value: &str, reading: Reading) -> Vec
     use om_hbam::DataType;
     value
         .split(['\r', '\n'])
-        .map(str::trim)
-        .filter(|line| !line.is_empty())
+        .filter(|line| !line.trim().is_empty())
         .filter_map(|line| match data_type {
+            // The reading treats spaces itself (`1e3 ` is 13 where the
+            // thousands separator is a space).
             DataType::Number => om_collate::number_key_in(line, reading.numbers),
-            DataType::Date => om_collate::date_key(line, reading.order),
-            DataType::Time => om_collate::time_key(line),
-            DataType::Timestamp => om_collate::timestamp_key(line, reading.order),
-            _ => Some(om_collate::text_index_key(line)),
+            DataType::Date => om_collate::date_key(line.trim(), reading.order),
+            DataType::Time => om_collate::time_key(line.trim()),
+            DataType::Timestamp => om_collate::timestamp_key(line.trim(), reading.order),
+            _ => Some(om_collate::text_index_key(line.trim())),
         })
         .collect()
 }

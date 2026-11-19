@@ -199,9 +199,11 @@ pub fn typed_value_keys(
         return vec![EMPTY_TEXT_KEY.to_vec()];
     }
     let key = match data_type {
+        // The text as stored: the reading treats spaces itself (`1e3 ` is
+        // 13 where the thousands separator is a space, calc-values.md 13).
         DataType::Number => {
             return vec![
-                om_collate::number_key_in(trimmed, numbers).unwrap_or_else(|| INVALID_KEY.to_vec())
+                om_collate::number_key_in(value, numbers).unwrap_or_else(|| INVALID_KEY.to_vec())
             ]
         }
         DataType::Date => om_collate::date_key(trimmed, order),

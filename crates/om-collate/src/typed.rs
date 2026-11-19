@@ -285,6 +285,14 @@ mod tests {
         };
         assert_eq!(hex(&number_key_in("379,5", german).unwrap()), "800348a6");
         assert_eq!(number_key_in("1.234,5", german), number_key("1,234.5"));
+        // A trailing space where the thousands separator is a space makes
+        // the text impure: `1e3 ` is 13 (calc-values.md 13).
+        let french = NumberFormat {
+            decimal: ',',
+            thousands: ' ',
+        };
+        assert_eq!(number_key_in("1e3 ", french), number_key("13"));
+        assert_eq!(number_key_in("1e3", french), number_key("1000"));
     }
 
     #[test]
