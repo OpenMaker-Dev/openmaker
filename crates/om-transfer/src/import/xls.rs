@@ -16,7 +16,10 @@
 //! Refused with error 730, as an unreadable `.xlsx`: a file that is not a
 //! compound file, a stream or sector chain out of bounds or looping, a
 //! workbook that is not BIFF8 (Excel 5.0/95's `Book` stream), an encrypted
-//! one (`FILEPASS`), and a sheet that is not a worksheet. Input is hostile:
+//! one (`FILEPASS`), and a sheet that is not a worksheet (a chart, macro or
+//! dialog sheet). The `Workbook` stream is the root storage's own, never an
+//! embedded object's, and a worksheet's embedded substreams (a chart's
+//! cached data) are not its cells. Input is hostile:
 //! every length is checked against the file, chains are bounded by the
 //! number of sectors, and what the rows take is charged to the import's
 //! budget ([`super::limit`]).
@@ -77,9 +80,17 @@ struct Compound<'a> {
 struct Entry {
     name: String,
     kind: u8,
+    /// The entry's siblings and first child in the directory's trees
+    /// ([MS-CFB] 2.6.1), [`NO_ENTRY`] for none.
+    left: u32,
+    right: u32,
+    child: u32,
     start: u32,
     size: u64,
 }
+
+/// No directory entry (`NOSTREAM`).
+const NO_ENTRY: u32 = 0xffff_ffff;
 
 impl<'a> Compound<'a> {
     fn open(bytes: &'a [u8]) -> Result<Compound<'a>> {
@@ -160,6 +171,9 @@ impl<'a> Compound<'a> {
             file.entries.push(Entry {
                 name: String::from_utf16_lossy(&units),
                 kind: raw[66],
+                left: u32_at(raw, 68).ok_or_else(bad)?,
+                right: u32_at(raw, 72).ok_or_else(bad)?,
+                child: u32_at(raw, 76).ok_or_else(bad)?,
                 start: u32_at(raw, 116).ok_or_else(bad)?,
                 // Version 3 files may leave the high half undefined.
                 size: if major == 3 { size & 0xffff_ffff } else { size },
@@ -194,20 +208,22 @@ impl<'a> Compound<'a> {
     }
 
     /// A regular chain's bytes from sector `start`, up to `size` when
-    /// given (sectors past it are not read). A chain longer than the file
-    /// has sectors loops, and is refused.
+    /// given (sectors past it are not read). A chain that comes back to a
+    /// sector it holds, its link past `size` too, loops and is refused, so
+    /// a chain is never longer than the file.
     fn chain_bytes(&self, start: u32, size: Option<u64>) -> Result<Vec<u8>> {
         let mut out = Vec::new();
+        let mut seen = vec![false; self.sectors];
         let mut next = start;
-        let mut steps = 0;
         while next != END_OF_CHAIN {
+            let visited = seen.get_mut(next as usize).ok_or_else(bad)?;
+            if *visited {
+                return Err(bad());
+            }
             if size.is_some_and(|s| out.len() as u64 >= s) {
                 break;
             }
-            if steps >= self.sectors {
-                return Err(bad());
-            }
-            steps += 1;
+            *visited = true;
             out.extend_from_slice(self.sector_data(next)?);
             next = *self.fat.get(next as usize).ok_or_else(bad)?;
             if next == FREE {
@@ -223,32 +239,55 @@ impl<'a> Compound<'a> {
         Ok(out)
     }
 
-    /// A chain of 64-byte mini sectors in the mini stream, as long as the
-    /// mini stream at most.
+    /// A chain of 64-byte mini sectors in the mini stream; one that comes
+    /// back to a mini sector it holds loops and is refused.
     fn mini_chain_bytes(&self, start: u32, size: u64) -> Result<Vec<u8>> {
         let mut out = Vec::new();
+        let mut seen = vec![false; self.mini_stream.len() / 64];
         let mut next = start;
-        let mut steps = 0;
         while (out.len() as u64) < size {
-            if next > MAX_SECTOR || steps >= self.mini_stream.len() / 64 {
+            // In range before any offset is computed from it.
+            let visited = seen.get_mut(next as usize).ok_or_else(bad)?;
+            if *visited {
                 return Err(bad());
             }
-            steps += 1;
+            *visited = true;
             let at = next as usize * 64;
             out.extend_from_slice(self.mini_stream.get(at..at + 64).ok_or_else(bad)?);
             next = *self.mini_fat.get(next as usize).ok_or_else(bad)?;
+        }
+        if next != END_OF_CHAIN && seen.get(next as usize) == Some(&true) {
+            return Err(bad());
         }
         out.truncate(size as usize);
         Ok(out)
     }
 
-    /// The stream entry named `name` (any case).
+    /// The stream named `name` (any case) among the root storage's own
+    /// entries: its child's tree of siblings ([MS-CFB] 2.6.4), each entry
+    /// visited once, so a stream of an embedded storage (another workbook's)
+    /// is never taken for it.
     fn stream(&self, name: &str) -> Result<Option<Vec<u8>>> {
-        let Some(entry) = self
-            .entries
-            .iter()
-            .find(|e| e.kind == 2 && e.name.eq_ignore_ascii_case(name))
-        else {
+        let mut seen = vec![false; self.entries.len()];
+        let mut stack = vec![self.entries[0].child];
+        let mut found = None;
+        while let Some(id) = stack.pop() {
+            if id == NO_ENTRY {
+                continue;
+            }
+            let visited = seen.get_mut(id as usize).ok_or_else(bad)?;
+            if *visited {
+                return Err(bad());
+            }
+            *visited = true;
+            let entry = &self.entries[id as usize];
+            if entry.kind == 2 && entry.name.eq_ignore_ascii_case(name) {
+                found = Some(entry);
+                break;
+            }
+            stack.extend([entry.left, entry.right]);
+        }
+        let Some(entry) = found else {
             return Ok(None);
         };
         // No stream is larger than the file that holds it.
@@ -280,6 +319,9 @@ const BOOLERR: u16 = 0x0205;
 const FORMULA: u16 = 0x0006;
 const STRING: u16 = 0x0207;
 const ROW: u16 = 0x0208;
+const WSBOOL: u16 = 0x0081;
+/// `WsBool`'s `fDialog`: a dialog sheet, stored as a worksheet.
+const DIALOG: u16 = 0x0010;
 
 /// The records of a stream from `at`: (type, data, offset of the next).
 fn record(stream: &[u8], at: usize) -> Option<(u16, &[u8], usize)> {
@@ -291,24 +333,54 @@ fn record(stream: &[u8], at: usize) -> Option<(u16, &[u8], usize)> {
 
 /// A record's data with the `CONTINUE` records after it, read across their
 /// boundaries; in a string's characters each continuation starts with the
-/// flags byte of the characters after it ([MS-XLS] 2.5.293).
+/// flags byte of the characters after it ([MS-XLS] 2.5.293). The records
+/// are read as they are reached, so a long run of them costs no memory.
 struct Pieces<'s> {
-    parts: Vec<&'s [u8]>,
-    part: usize,
+    stream: &'s [u8],
+    /// The data of the record being read, and where in it.
+    data: &'s [u8],
     at: usize,
+    /// The offset of the record after it.
+    next: usize,
 }
 
 impl<'s> Pieces<'s> {
-    fn byte(&mut self) -> Result<u8> {
-        loop {
-            let part = self.parts.get(self.part).ok_or_else(bad)?;
-            if let Some(&b) = part.get(self.at) {
-                self.at += 1;
-                return Ok(b);
+    /// The record at `at` ([`record`]).
+    fn new(stream: &'s [u8], at: usize) -> Option<Pieces<'s>> {
+        let (_, data, next) = record(stream, at)?;
+        Some(Pieces {
+            stream,
+            data,
+            at: 0,
+            next,
+        })
+    }
+
+    /// On to the next `CONTINUE` record; the data ends without one.
+    fn advance(&mut self) -> Result<()> {
+        match record(self.stream, self.next) {
+            Some((CONTINUE, data, next)) => {
+                (self.data, self.at, self.next) = (data, 0, next);
+                Ok(())
             }
-            self.part += 1;
-            self.at = 0;
+            _ => Err(bad()),
         }
+    }
+
+    /// The offset of the first record after this one's `CONTINUE`s.
+    fn end(mut self) -> usize {
+        while let Some((CONTINUE, _, next)) = record(self.stream, self.next) {
+            self.next = next;
+        }
+        self.next
+    }
+
+    fn byte(&mut self) -> Result<u8> {
+        while self.at >= self.data.len() {
+            self.advance()?;
+        }
+        self.at += 1;
+        Ok(self.data[self.at - 1])
     }
 
     fn u16(&mut self) -> Result<u16> {
@@ -326,14 +398,11 @@ impl<'s> Pieces<'s> {
 
     fn skip(&mut self, mut n: usize) -> Result<()> {
         while n > 0 {
-            let part = self.parts.get(self.part).ok_or_else(bad)?;
-            let left = part.len() - self.at.min(part.len());
-            if left == 0 {
-                self.part += 1;
-                self.at = 0;
+            if self.at >= self.data.len() {
+                self.advance()?;
                 continue;
             }
-            let take = left.min(n);
+            let take = (self.data.len() - self.at).min(n);
             self.at += take;
             n -= take;
         }
@@ -347,10 +416,8 @@ impl<'s> Pieces<'s> {
         let mut units: Vec<u16> = Vec::with_capacity(count);
         let mut left = count;
         while left > 0 {
-            let part = self.parts.get(self.part).ok_or_else(bad)?;
-            if self.at >= part.len() {
-                self.part += 1;
-                self.at = 0;
+            if self.at >= self.data.len() {
+                self.advance()?;
                 high = self.byte()? & 1 != 0;
                 continue;
             }
@@ -381,24 +448,6 @@ impl<'s> Pieces<'s> {
         self.skip(ext as usize)?;
         Ok(text)
     }
-}
-
-/// The record at `at` with the `CONTINUE` records after it.
-fn pieces(stream: &[u8], at: usize) -> Option<(Pieces<'_>, usize)> {
-    let (_, data, mut next) = record(stream, at)?;
-    let mut parts = vec![data];
-    while let Some((CONTINUE, more, after)) = record(stream, next) {
-        parts.push(more);
-        next = after;
-    }
-    Some((
-        Pieces {
-            parts,
-            part: 0,
-            at: 0,
-        },
-        next,
-    ))
 }
 
 /// Excel's spelling of an error value ([MS-XLS] 2.5.13 `BErr`).
@@ -495,7 +544,7 @@ pub(crate) fn workbook(
                 at = next;
             }
             SST => {
-                let (mut sst, after) = pieces(&stream, at).ok_or_else(bad)?;
+                let mut sst = Pieces::new(&stream, at).ok_or_else(bad)?;
                 sst.u32()?;
                 let unique = sst.u32()? as usize;
                 for _ in 0..unique {
@@ -503,7 +552,7 @@ pub(crate) fn workbook(
                     budget.charge(std::mem::size_of::<String>() + text.len())?;
                     strings.push(text);
                 }
-                at = after;
+                at = sst.end();
             }
             _ => at = next,
         }
@@ -535,8 +584,32 @@ fn sheet_rows(
     let mut rows: Vec<SourceRow> = Vec::new();
     // A formula whose cached result is a string: its STRING record follows.
     let mut pending: Option<(usize, usize)> = None;
+    // The substreams a worksheet holds (an embedded chart's, with its own
+    // BOF and EOF and cell-like records of its cached data) are skipped
+    // whole: they are not the sheet's cells.
+    let mut nested = 0usize;
     loop {
         let (kind, data, next) = record(stream, at).ok_or_else(bad)?;
+        match kind {
+            BOF => {
+                nested += 1;
+                at = next;
+                continue;
+            }
+            EOF if nested > 0 => {
+                nested -= 1;
+                at = next;
+                continue;
+            }
+            _ if nested > 0 => {
+                at = next;
+                continue;
+            }
+            WSBOOL if u16_at(data, 0).is_some_and(|flags| flags & DIALOG != 0) => {
+                return Err(bad());
+            }
+            _ => {}
+        }
         let cell = |data: &[u8]| -> Result<(usize, usize)> {
             Ok((
                 usize::from(u16_at(data, 0).ok_or_else(bad)?),
@@ -557,10 +630,10 @@ fn sheet_rows(
                 put.push((cell(data)?, text.clone()));
             }
             LABEL => {
-                let (mut text, end) = pieces(stream, at).ok_or_else(bad)?;
+                let mut text = Pieces::new(stream, at).ok_or_else(bad)?;
                 text.skip(6)?;
                 put.push((cell(data)?, text.string()?));
-                after = end;
+                after = text.end();
             }
             NUMBER => {
                 let value = f64::from_bits(u64_at(data, 6).ok_or_else(bad)?);
@@ -603,12 +676,12 @@ fn sheet_rows(
                 }
             }
             STRING => {
-                let (mut text, end) = pieces(stream, at).ok_or_else(bad)?;
+                let mut text = Pieces::new(stream, at).ok_or_else(bad)?;
                 let value = text.string()?;
                 if let Some(position) = pending.take() {
                     put.push((position, value));
                 }
-                after = end;
+                after = text.end();
             }
             _ => {}
         }
