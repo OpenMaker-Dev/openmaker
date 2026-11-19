@@ -356,6 +356,30 @@ fn portal_store_with(flags: u64, body_display: u64, extra: Vec<u8>, setting: Vec
     store
 }
 
+/// The Portals layout's objects with the portal alone: none of the
+/// layout's own fields.
+fn portal_only_store() -> Vec<u8> {
+    let mut store = Vec::new();
+    uint(1, PORTAL, &mut store);
+    bytes(
+        2,
+        &portal_object(PORTAL_FLAGS, rect(60.0, 10.0, 130.0, 410.0)),
+        &mut store,
+    );
+    bytes(
+        2,
+        &shown_field_object(
+            PORTAL_BODY,
+            NOTES_OCCURRENCE,
+            BODY,
+            rect(0.0, 0.0, 20.0, 300.0),
+            0,
+        ),
+        &mut store,
+    );
+    store
+}
+
 /// Notes 2 "first" and 3 "second" of "Write tests".
 fn add_notes(root: &mut OwnedNode) {
     let table = uint_segment(NOTES);
@@ -2018,6 +2042,52 @@ fn the_users_portal_row_edit_is_committed_with_the_record() {
     wait_saved(&mut app);
     assert_eq!(note(&hosted).as_deref(), Some("edited"));
     assert_eq!(stored(&hosted, TABLE, &[(CODE, 1)])[0].1, ["c1"]);
+}
+
+/// A save keeps the record's portal rows on screen while their data is
+/// read again: no frame between the save and the fresh rows draws them
+/// empty. Each row shows its last value, the saved text among them,
+/// read-only while its record is read again, then in its editor.
+#[test]
+fn a_save_keeps_the_portal_rows_while_they_are_read_again() {
+    let hosted = host("save-keeps-rows");
+    let mut app = open(&hosted);
+    expect(&mut app, "Show portals", "on Portals");
+    let editors = |app: &common::App| -> Vec<String> {
+        app.query_all(
+            By::new()
+                .role(egui::accesskit::Role::TextInput)
+                .label("Notes::Body"),
+        )
+        .filter_map(|row| row.value())
+        .filter(|value| !value.is_empty())
+        .collect()
+    };
+    // In an editor or as text.
+    let shown = |app: &common::App, text: &str| {
+        app.query_all(By::new())
+            .any(|node| node.value().as_deref() == Some(text))
+    };
+    retype_first_row(&mut app, "edited");
+    common::wait_until(&mut app, "unsaved record changes", common::unsaved);
+    common::save_record(&mut app);
+    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(30);
+    loop {
+        app.step();
+        assert!(
+            shown(&app, "edited") && shown(&app, "second"),
+            "a frame after the save drew the rows empty"
+        );
+        if !common::unsaved(&app) && !common::saving(&app) && app.state().is_settled() {
+            break;
+        }
+        assert!(std::time::Instant::now() < deadline, "timed out saving");
+        std::thread::sleep(std::time::Duration::from_millis(5));
+    }
+    common::wait_until(&mut app, "the rows' editors", |app| {
+        editors(app) == ["edited", "second"]
+    });
+    assert!(app.state().error().is_none(), "{:?}", app.state().error());
 }
 
 /// The user's focus and typing in a portal row's field run the field
@@ -5531,6 +5601,57 @@ fn a_held_new_records_refused_save_writes_its_portal_row_once_when_retried() {
         notes.last().map(|(_, values)| values.clone()),
         Some(vec!["kept".to_owned(), "New task".to_owned()])
     );
+}
+
+/// A new record the window holds relates records by the key it was
+/// auto-entered with before anything is typed into it, as FileMaker's new
+/// record does (Claris, "Creating related records"): with relationship 1
+/// joining `Tasks::Creator = Notes::Task`, Creator auto-entered with the
+/// account's name and both notes the account's, New Record's portal shows
+/// them at once. The stored tasks have no creator and relate none. The
+/// layout shows the portal alone, so nothing else reads the new record.
+#[test]
+fn a_held_new_records_portal_follows_its_auto_entered_key_before_typing() {
+    let hosted = host_with("held-new-auto-key", |root| {
+        root.put(
+            &[&[4], &[5], &uint_segment(PORTALS), &[7]],
+            OwnedNode::leaf(Vec::new(), portal_only_store()),
+        );
+        fixture::add_relationship(root, 1, (OCCURRENCE, CREATOR), 0, (NOTES_OCCURRENCE, TASK));
+        for note in [2u64, 3] {
+            root.put(
+                &[
+                    &uint_segment(NOTES),
+                    &[5],
+                    &serial::encode(note),
+                    &uint_segment(TASK),
+                ],
+                text_node(&[], fixture::ACCOUNT),
+            );
+        }
+    });
+    let mut app = open(&hosted);
+    common::select_layout(&mut app, "Portals");
+    let rows = |app: &common::App| -> Vec<String> {
+        app.query_all(
+            By::new()
+                .role(egui::accesskit::Role::TextInput)
+                .label("Notes::Body"),
+        )
+        .filter_map(|row| row.value())
+        .filter(|value| !value.is_empty())
+        .collect()
+    };
+    common::wait_until(&mut app, "the Portals layout", |app| {
+        app.state().is_settled()
+    });
+    assert!(common::find_text_field(&app, "Name").is_none());
+    assert!(rows(&app).is_empty(), "{:?}", rows(&app));
+    common::click(&mut app, "New Record");
+    common::wait_until(&mut app, "the new record's related notes", |app| {
+        app.state().is_settled() && rows(app) == ["first", "second"]
+    });
+    assert!(app.state().error().is_none(), "{:?}", app.state().error());
 }
 
 /// Find mode draws the layout itself: its fields, the portal's first row

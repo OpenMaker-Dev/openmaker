@@ -1973,7 +1973,8 @@ impl ButtonAction {
 pub const MAX_BUTTON_STEP_DATA: usize = 64 * 1024;
 
 /// Whether `step` can be a button's Single Step here: a step the Script
-/// Workspace offers (not an obsolete id), one FileMaker Pro allows on a
+/// Workspace offers (not an obsolete id, nor a 26.1.1 step OpenMaker
+/// cannot edit or run yet), one FileMaker Pro allows on a
 /// button (15 are not: the control blocks, comments, error capture, user
 /// abort, transactions and Set Layout Object Animation; the step catalog's
 /// `not_button_compatible`), not Perform Script (the Perform Script
@@ -1985,6 +1986,11 @@ pub fn check_button_step(step: &om_scripts::ScriptStep) -> Result<(), Refusal> {
     let name = om_scripts::step_name(id)
         .filter(|_| !om_scripts::OBSOLETE_STEP_IDS.contains(&id))
         .ok_or_else(|| Refusal::Invalid(format!("Step {id} is not a script step.")))?;
+    if om_scripts::PENDING_STEP_IDS.contains(&id) {
+        return Err(Refusal::Invalid(format!(
+            "OpenMaker cannot edit or run \u{201c}{name}\u{201d} yet."
+        )));
+    }
     if id == 1 {
         return Err(Refusal::Invalid(
             "Perform Script is the button's Perform Script action, not a single step.".into(),

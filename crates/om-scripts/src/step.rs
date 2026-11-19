@@ -6,6 +6,7 @@ use crate::schema::{Location, SlotKind};
 use crate::value::{bytes_node, node_bytes, node_text, renamed, text_node};
 use om_hbam::OwnedNode;
 use std::collections::BTreeMap;
+use std::sync::Arc;
 
 /// `ScriptStep::StepFlags` bits (script-steps.md 2.2).
 pub mod flag {
@@ -193,8 +194,15 @@ impl Slot {
 /// (`06` find requests, `0a` sort order, `20` file references, `82` paths,
 /// `83` blob, `84`-`88` import, export and print specs, `d8`/`d9` UUIDs, ...)
 /// and anything else, all kept as stored so the subtree re-encodes exactly.
+///
+/// The decoded subtree is shared, and copied only when one step edits it:
+/// steps naming one data key share its decode (a definition can name one
+/// large data node from thousands of steps, #149).
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
-pub struct StepData {
+pub struct StepData(Arc<DataNodes>);
+
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+struct DataNodes {
     slots: BTreeMap<u16, Slot>,
     keys: BTreeMap<u8, OwnedNode>,
     other: Vec<OwnedNode>,
@@ -228,10 +236,10 @@ impl StepData {
     ];
 
     pub fn decode(node: &OwnedNode) -> Self {
-        let mut data = StepData {
+        let mut data = DataNodes {
             value: node.value.clone(),
             push: node.push,
-            ..StepData::default()
+            ..DataNodes::default()
         };
         for child in &node.children {
             match child.segment.as_slice() {
@@ -245,61 +253,78 @@ impl StepData {
                 _ => data.other.push(child.clone()),
             }
         }
-        data
+        StepData(Arc::new(data))
+    }
+
+    /// A new, empty subtree, pushed as FileMaker writes one.
+    fn pushed() -> Self {
+        StepData(Arc::new(DataNodes {
+            push: true,
+            ..DataNodes::default()
+        }))
+    }
+
+    /// The subtree to edit: this step's own copy once it is shared.
+    fn nodes_mut(&mut self) -> &mut DataNodes {
+        Arc::make_mut(&mut self.0)
+    }
+
+    /// Whether `other` is this very decode, not a copy.
+    #[cfg(test)]
+    pub(crate) fn shares(&self, other: &StepData) -> bool {
+        Arc::ptr_eq(&self.0, &other.0)
     }
 
     /// The subtree under the step's data key segment.
     pub fn encode(&self, segment: &[u8]) -> OwnedNode {
-        let mut children: Vec<OwnedNode> = self
-            .slots
-            .iter()
+        let mut children: Vec<OwnedNode> = (self.0.slots.iter())
             .map(|(n, slot)| slot.encode(*n))
-            .chain(self.keys.values().cloned())
-            .chain(self.other.iter().cloned())
+            .chain(self.0.keys.values().cloned())
+            .chain(self.0.other.iter().cloned())
             .collect();
         children.sort_by(|a, b| a.segment.cmp(&b.segment));
         OwnedNode {
             segment: segment.to_vec(),
-            value: self.value.clone(),
-            push: self.push || !children.is_empty(),
+            value: self.0.value.clone(),
+            push: self.0.push || !children.is_empty(),
             children,
         }
     }
 
     pub fn is_empty(&self) -> bool {
-        self.slots.is_empty()
-            && self.keys.is_empty()
-            && self.other.is_empty()
-            && self.value.is_none()
+        self.0.slots.is_empty()
+            && self.0.keys.is_empty()
+            && self.0.other.is_empty()
+            && self.0.value.is_none()
     }
 
     pub fn slot(&self, n: u16) -> Option<&Slot> {
-        self.slots.get(&n)
+        self.0.slots.get(&n)
     }
 
     /// Slot numbers and slots, in key order.
     pub fn slots(&self) -> impl Iterator<Item = (u16, &Slot)> {
-        self.slots.iter().map(|(n, s)| (*n, s))
+        self.0.slots.iter().map(|(n, s)| (*n, s))
     }
 
     /// A step-level key's node.
     pub fn key(&self, key: u8) -> Option<&OwnedNode> {
-        self.keys.get(&key)
+        self.0.keys.get(&key)
     }
 
     /// The step-level keys present, in key order.
     pub fn keys(&self) -> impl Iterator<Item = u8> + '_ {
-        self.keys.keys().copied()
+        self.0.keys.keys().copied()
     }
 
     /// Children that are neither slots nor one-byte keys.
     pub fn other(&self) -> &[OwnedNode] {
-        &self.other
+        &self.0.other
     }
 
     /// A value on the step node itself (never seen; kept).
     pub fn node_value(&self) -> Option<&[u8]> {
-        self.value.as_deref()
+        self.0.value.as_deref()
     }
 
     /// Replace or remove slot `n` with a stored slot node (the step text's
@@ -307,10 +332,10 @@ impl StepData {
     pub(crate) fn set_slot_node(&mut self, n: u16, node: Option<&OwnedNode>) {
         match node {
             Some(node) => {
-                self.slots.insert(n, Slot::decode(node));
+                self.nodes_mut().slots.insert(n, Slot::decode(node));
             }
             None => {
-                self.slots.remove(&n);
+                self.nodes_mut().slots.remove(&n);
             }
         }
     }
@@ -319,24 +344,22 @@ impl StepData {
     pub(crate) fn set_key_node(&mut self, key: u8, node: Option<OwnedNode>) {
         match node {
             Some(node) => {
-                self.keys.insert(key, node);
+                self.nodes_mut().keys.insert(key, node);
             }
             None => {
-                self.keys.remove(&key);
+                self.nodes_mut().keys.remove(&key);
             }
         }
     }
 
     /// The flags the present data implies (script-steps.md 6).
     fn implied_flags(&self) -> u32 {
-        let slots = self.slots.iter().flat_map(|(n, slot)| {
+        let slots = self.0.slots.iter().flat_map(|(n, slot)| {
             slot.children.keys().filter_map(move |key| {
                 SlotKind::from_child(*key).map(|kind| Location::Slot { slot: *n, kind })
             })
         });
-        let keys = self
-            .keys
-            .keys()
+        let keys = (self.0.keys.keys())
             .filter(|k| !Self::ITEM_KEYS.contains(k))
             .map(|k| Location::Key(*k));
         slots.chain(keys).fold(0, |acc, l| acc | l.flags())
@@ -555,6 +578,33 @@ impl ScriptStep {
             .ok()
     }
 
+    /// The id a calculation stores as a key "with its position"
+    /// (`SetScriptKeyWithStorePosition`, script-steps.md 12.2): the
+    /// formula is a quoted text literal of the key segment in hex, `"08"`
+    /// for script 8, `"01"` for data source 1. Either case of the digits
+    /// a-f is read. `None` when the slot holds no such literal.
+    pub fn positioned_id(&self, slot: u16) -> Option<u64> {
+        let polish = self.calculation(slot)?.polish?;
+        let om_formula::Expr::Text(text) = om_formula::polish::decode(&polish).ok()? else {
+            return None;
+        };
+        let hex = text.value.as_bytes();
+        // A key segment is at most 5 bytes (`HBKey<5>`).
+        if hex.is_empty()
+            || hex.len() % 2 != 0
+            || hex.len() > 10
+            || !hex.iter().all(u8::is_ascii_hexdigit)
+        {
+            return None;
+        }
+        let digit = |d: u8| (d as char).to_digit(16).expect("checked") as u8;
+        let segment: Vec<u8> = hex
+            .chunks(2)
+            .map(|pair| digit(pair[0]) << 4 | digit(pair[1]))
+            .collect();
+        om_hbam::serial::decode(&segment)
+    }
+
     /// A calculation parameter as the editor shows it when it is a text
     /// literal or `Get ( ScriptParameter )`; `None` for other formulas.
     pub fn argument_text(&self, slot: u16) -> Option<String> {
@@ -568,25 +618,26 @@ impl ScriptStep {
     }
 
     pub(crate) fn data_mut(&mut self) -> &mut StepData {
-        self.data.get_or_insert_with(|| StepData {
-            push: true,
-            ..StepData::default()
-        })
+        self.data.get_or_insert_with(StepData::pushed)
     }
 
     fn slot_mut(&mut self, slot: u16) -> &mut Slot {
-        self.data_mut().slots.entry(slot).or_insert_with(|| Slot {
-            push: true,
-            ..Slot::default()
-        })
+        self.data_mut()
+            .nodes_mut()
+            .slots
+            .entry(slot)
+            .or_insert_with(|| Slot {
+                push: true,
+                ..Slot::default()
+            })
     }
 
     /// Drop empty slots and an empty subtree after a removal.
     fn prune(&mut self, slot: Option<u16>) {
         if let Some(data) = &mut self.data {
             if let Some(n) = slot {
-                if data.slots.get(&n).is_some_and(Slot::is_empty) {
-                    data.slots.remove(&n);
+                if data.0.slots.get(&n).is_some_and(Slot::is_empty) {
+                    data.nodes_mut().slots.remove(&n);
                 }
             }
             if data.is_empty() {
@@ -612,7 +663,7 @@ impl ScriptStep {
             }
             None => {
                 if let Some(data) = &mut self.data {
-                    if let Some(s) = data.slots.get_mut(&slot) {
+                    if let Some(s) = data.nodes_mut().slots.get_mut(&slot) {
                         s.children.remove(&key);
                     }
                 }
@@ -717,7 +768,9 @@ impl ScriptStep {
                 s.push = !s.children.is_empty();
             }
             None => {
-                if let Some(s) = self.data.as_mut().and_then(|d| d.slots.get_mut(&slot)) {
+                if let Some(s) =
+                    (self.data.as_mut()).and_then(|d| d.nodes_mut().slots.get_mut(&slot))
+                {
                     s.value = None;
                 }
                 self.prune(Some(slot));
@@ -731,14 +784,17 @@ impl ScriptStep {
         let bits = Location::Key(key).flags();
         match node {
             Some(node) => {
-                self.data_mut().keys.insert(key, renamed(&node, &[key]));
+                self.data_mut()
+                    .nodes_mut()
+                    .keys
+                    .insert(key, renamed(&node, &[key]));
                 if !StepData::ITEM_KEYS.contains(&key) {
                     self.flags |= bits;
                 }
             }
             None => {
                 if let Some(data) = &mut self.data {
-                    data.keys.remove(&key);
+                    data.nodes_mut().keys.remove(&key);
                 }
                 self.prune(None);
                 if !StepData::ITEM_KEYS.contains(&key) {

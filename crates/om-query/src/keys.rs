@@ -59,10 +59,11 @@ pub enum TextKeys {
     /// Language 0: no key at all.
     None,
     /// English (21) and English international (77): `01`, then the
-    /// DUCET 5.2.0 primary weight of each collation element.
+    /// DUCET 5.2.0 primary weight of each collation element
+    /// ([`om_collate::text_key`]).
     Collated,
-    /// System (1) and Unicode standard (3): the collated form plus
-    /// `00 00`.
+    /// System (1) and Unicode standard (3): the collated form, `00 00` and
+    /// the secondary weights ([`om_collate::padded_text_key`]).
     CollatedPadded,
     /// Unicode raw (2): `01`, then the UTF-16BE code units.
     Raw,
@@ -94,7 +95,7 @@ impl TextKeys {
         match self {
             TextKeys::None => None,
             TextKeys::Collated => Some(om_collate::text_key(text)),
-            TextKeys::CollatedPadded => Some([om_collate::text_key(text), vec![0, 0]].concat()),
+            TextKeys::CollatedPadded => Some(om_collate::padded_text_key(text)),
             TextKeys::Raw => Some(
                 std::iter::once(0x01)
                     .chain(text.encode_utf16().flat_map(u16::to_be_bytes))
