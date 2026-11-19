@@ -116,8 +116,10 @@ pub(crate) fn cell_text(cell: &Cell) -> Option<String> {
                 .find(|(path, _)| path.len() == 1 && path[0] == [0])?
                 .1
                 .as_ref()?;
-            let total = u32::from_be_bytes(header.get(..4)?.try_into().ok()?) as usize;
-            let mut out = Vec::with_capacity(total);
+            let total = u32::from_be_bytes(*header.first_chunk()?) as usize;
+            // The total is the host's to claim: nothing is reserved until
+            // the pieces present add up to it (#216).
+            let mut pieces = Vec::new();
             for n in 1u64.. {
                 let key = om_hbam::serial::encode(n);
                 let Some((_, Some(piece))) = entries
@@ -126,12 +128,12 @@ pub(crate) fn cell_text(cell: &Cell) -> Option<String> {
                 else {
                     break;
                 };
-                out.extend_from_slice(piece);
+                pieces.push(piece.as_slice());
             }
-            if out.len() != total {
+            if pieces.iter().map(|piece| piece.len()).sum::<usize>() != total {
                 return None;
             }
-            std::borrow::Cow::Owned(out)
+            std::borrow::Cow::Owned(pieces.concat())
         }
     };
     om_scsu::decode_scsu(&bytes).ok()
@@ -1878,5 +1880,9 @@ mod tests {
             cell_text(&Cell::Value(om_scsu::encode_scsu("plain"))).as_deref(),
             Some("plain")
         );
+        // A header claiming 4 GiB with no pieces behind it reserves nothing
+        // (#216; aborts under `ulimit -v` if it does).
+        let claim = Cell::Nested(vec![(vec![vec![0]], Some(vec![0xff; 4]))]);
+        assert_eq!(cell_text(&claim), None);
     }
 }
