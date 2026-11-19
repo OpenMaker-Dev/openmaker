@@ -1032,7 +1032,8 @@ mod tests {
             (6, "old".to_string()),
             (7, "H".to_string()),
         ]);
-        let out = recalc.recompute(&row, &environment(), &mut usize::MAX);
+        let mut budget = usize::MAX;
+        let out = recalc.recompute(&row, &environment(), &mut budget);
         assert!(out.failed.is_empty(), "{:?}", out.failed);
         assert_eq!(
             out.values,
