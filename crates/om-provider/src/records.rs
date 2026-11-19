@@ -1647,6 +1647,17 @@ impl NativeProvider {
         Ok(stored)
     }
 
+    /// The error `field` of `table` refuses an entry with: `code`, with the
+    /// field's validation message when it has one.
+    pub(super) fn entry_refusal(
+        &mut self,
+        table: u64,
+        field: u64,
+        code: i32,
+    ) -> Result<DataError, DataError> {
+        Ok(self.entry_plan(table)?.refusal(field, code))
+    }
+
     /// The rules of `table`, from the schema read at open (with the opened
     /// file's tables, as `plan_schema` gives it, for an owner's write).
     fn entry_plan(&mut self, table: u64) -> Result<RecordPlan, DataError> {

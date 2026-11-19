@@ -891,10 +891,15 @@ pub trait DataProvider: Send {
     }
 
     /// Enter a user's `text` into a global field, applying the supported
-    /// type's entry parsing before changing this session's value. Unlike
-    /// [`Self::set_global`], this is not a script's permissive assignment.
-    /// The native provider supports the defined repetitions of plain Date,
-    /// Time and Timestamp data globals; unsupported targets/providers refuse with error 3.
+    /// type's entry parsing and the field's entry validation (maximum
+    /// characters, strict data type, range, value list, not empty) before
+    /// changing this session's value. Unlike [`Self::set_global`], this is
+    /// not a script's permissive assignment. The native provider supports
+    /// the defined repetitions of Text, Number, Date, Time and Timestamp
+    /// data globals; a field whose rules it cannot check (validation by
+    /// calculation, unique, existing value) or that prohibits modification
+    /// is 201, other targets and providers without typed entry refuse with
+    /// error 3.
     fn set_typed_global(
         &mut self,
         _table: u64,

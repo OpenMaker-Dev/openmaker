@@ -2917,6 +2917,7 @@ impl RecordPlan {
             error::NOT_UNIQUE => "a unique value",
             error::NOT_EXISTING => "an existing value",
             error::NOT_IN_LIST => "a value of its value list",
+            error::REQUIRED => "a value",
             _ => "a valid value",
         };
         match self.fields.get(&field) {

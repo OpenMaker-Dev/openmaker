@@ -3605,6 +3605,65 @@ fn typing_into_a_global_field_sets_the_sessions_value() {
     }
 }
 
+/// A number global validated "Not empty" and "Strict data type: Numeric
+/// only" takes typing, checked by those rules as it is applied: what they
+/// refuse keeps the session's value. One validated by calculation is not
+/// offered (its check is not implemented for globals).
+#[test]
+fn typing_into_a_validated_global_checks_its_entry_rules() {
+    use fixture::SETTING;
+    use om_data::host::CalcNeed;
+    for (validation, offered) in [(0x8 | 0x1000, true), (0x1, false)] {
+        let file = file_with(
+            &format!("provider-validated-global-{validation}"),
+            &[],
+            |root| {
+                fixture::add_field(
+                    root, TABLE, SETTING, "Setting", 1, 2, 0, 0x1_0000, validation,
+                );
+            },
+        );
+        let (port, ca) = host(&file.0);
+        let mut provider = open(port, &ca);
+        let tasks = layout(&mut provider, "Tasks");
+        let capabilities = provider.record_capabilities(tasks).unwrap();
+        assert_eq!(
+            capabilities.editable_fields.unwrap().contains("Setting"),
+            offered
+        );
+        let global = |provider: &mut NativeProvider| {
+            let data = provider
+                .calc_data(&[CalcNeed::Globals { table: TABLE }])
+                .unwrap();
+            let locale = om_data::calc::Locale::en_us();
+            let cx = om_data::calc::Ctx::new(
+                &locale,
+                om_data::calc::Date::from_ymd(2026, 10, 29).unwrap(),
+            );
+            data.globals[&TABLE]
+                .get(SETTING, 1)
+                .map(|v| v.to_text(&cx).into_string())
+                .unwrap_or_default()
+        };
+        let typed = |provider: &mut NativeProvider, text: &str| {
+            provider
+                .set_typed_global(TABLE, SETTING, 1, text)
+                .map_err(|error| error.code)
+        };
+        if offered {
+            assert_eq!(typed(&mut provider, "12"), Ok(()));
+            assert_eq!(global(&mut provider), "12");
+            assert_eq!(typed(&mut provider, "12abc"), Err(Some(502)));
+            assert_eq!(typed(&mut provider, ""), Err(Some(509)));
+            assert_eq!(global(&mut provider), "12");
+        } else {
+            assert_eq!(typed(&mut provider, "12"), Err(Some(201)));
+            assert_eq!(global(&mut provider), "");
+        }
+        provider.close();
+    }
+}
+
 #[test]
 fn repetition_256_matches_literal_native_index() {
     let mut answers = Vec::new();

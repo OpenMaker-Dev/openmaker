@@ -452,6 +452,15 @@ struct PeerAuth {
 
 pub(crate) use om_data::{FIELD_NOT_MODIFIABLE, PRIVILEGE_DENIED};
 
+/// Whether Browse's typing into a global with `options` can be checked as
+/// FileMaker checks it (`NativeProvider::set_typed_global`): no "Prohibit
+/// modification", and no validation by calculation (`0x1`), unique (`0x10`)
+/// or existing value (`0x20`), whose checks are not implemented for
+/// globals. Entry rules and Not empty are checked.
+fn typed_global_options(options: &om_hbam::FieldOptions) -> bool {
+    !options.auto_entry_editing_prohibited() && options.validation_options & 0x31 == 0
+}
+
 impl NativeProvider {
     pub fn new(config: NativeConfig) -> Self {
         Self {
@@ -2972,17 +2981,21 @@ impl DataProvider for NativeProvider {
             ),
             Err(_) => None,
         };
-        // Text globals and plain number/date/time/timestamp globals take the session's
-        // value (`take_globals`). Non-text globals with validation
-        // stay display-only: their field-exit checks are not implemented.
+        // Text, number, date, time and timestamp data globals take the
+        // session's value (`take_globals`), their typing checked as it is
+        // applied (`set_typed_global`). One validated by calculation stays
+        // display-only: that check is not implemented for globals.
         let globals = file.table(table.id).into_iter().flat_map(|t| {
             t.fields
                 .values()
                 .filter(|f| {
-                    let plain = f.class == om_data::host::FieldClass::Data
+                    f.global
+                        && f.repetitions <= 255
+                        && f.class == om_data::host::FieldClass::Data
                         && matches!(
                             f.value_type,
-                            om_data::calc::ValueType::Number
+                            om_data::calc::ValueType::Text
+                                | om_data::calc::ValueType::Number
                                 | om_data::calc::ValueType::Date
                                 | om_data::calc::ValueType::Time
                                 | om_data::calc::ValueType::Timestamp
@@ -2990,13 +3003,7 @@ impl DataProvider for NativeProvider {
                         && table
                             .field(f.id)
                             .and_then(|field| field.decoded_options())
-                            .is_some_and(|options| {
-                                options.validation_options == 0
-                                    && !options.auto_entry_editing_prohibited()
-                            });
-                    f.global
-                        && f.repetitions <= 255
-                        && (f.value_type == om_data::calc::ValueType::Text || plain)
+                            .is_some_and(|options| typed_global_options(&options))
                 })
                 .map(|f| f.name.clone())
         });
@@ -3638,29 +3645,54 @@ impl DataProvider for NativeProvider {
             .table(table)
             .and_then(|t| t.field(field))
             .ok_or_else(|| DataError::with_code(102, "The field is missing."))?;
+        let options = def.decoded_options();
         let supported = def.kind == om_hbam::FieldKind::Normal
             && matches!(
                 def.data_type,
-                om_hbam::DataType::Date | om_hbam::DataType::Time | om_hbam::DataType::Timestamp
+                om_hbam::DataType::Text
+                    | om_hbam::DataType::Number
+                    | om_hbam::DataType::Date
+                    | om_hbam::DataType::Time
+                    | om_hbam::DataType::Timestamp
             )
             && repetition >= 1
-            && def.decoded_options().is_some_and(|options| {
+            && options.as_ref().is_some_and(|options| {
                 options.options & 0x1_0000 != 0
                     && repetition <= u32::from(options.max_repetitions.max(1))
-                    && options.validation_options == 0
-                    && !options.auto_entry_editing_prohibited()
             });
         if !supported {
             return Err(DataError::with_code(
                 3,
-                "Typed entry requires a supported repetition of a plain temporal global.",
+                "Typed entry requires a supported repetition of a text, number, date, \
+                 time or timestamp global.",
             ));
         }
-        // Reuse ordinary entry's locale-aware parsing, without changing a
-        // script's permissive global assignment. Refusal changes no value.
+        if !options.as_ref().is_some_and(typed_global_options) {
+            return Err(DataError::with_code(201, FIELD_NOT_MODIFIABLE));
+        }
+        // A text or number global without validation takes the text as
+        // typed, as before; only dates and times are parsed.
+        let temporal = matches!(
+            def.data_type,
+            om_hbam::DataType::Date | om_hbam::DataType::Time | om_hbam::DataType::Timestamp
+        );
+        if !temporal
+            && options
+                .as_ref()
+                .is_some_and(|options| options.validation_options == 0)
+        {
+            return self.set_global(table, field, repetition, text);
+        }
+        // Reuse ordinary entry's locale-aware parsing and rules (maximum
+        // characters, strict data type, range, value list), without
+        // changing a script's permissive global assignment. Refusal changes
+        // no value.
         let cell = om_data::rules::cell_of(field, repetition)
             .ok_or_else(|| DataError::with_code(201, "The repetition is out of range."))?;
         let text = self.check_typed_entry(table, cell, text)?;
+        if text.is_empty() && options.is_some_and(|options| options.validation_not_empty()) {
+            return Err(self.entry_refusal(table, field, om_data::rules::error::REQUIRED)?);
+        }
         self.set_global(table, field, repetition, &text)
     }
 

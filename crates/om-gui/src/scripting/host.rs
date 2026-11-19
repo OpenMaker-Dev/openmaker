@@ -1597,6 +1597,26 @@ impl<'a> WorkerHost<'a> {
     /// The user's typing into a global field of the layout's table sets
     /// the session's value, as `DataProvider::update_record` does: it is
     /// no change of the record.
+    /// The user's typing into a global, checked by the field's entry rules
+    /// (`DataProvider::set_typed_global`). A provider without typed entry
+    /// takes a text or number global's text as it is, as before; a date,
+    /// time or timestamp global's typing it cannot parse is refused.
+    fn enter_global(
+        &mut self,
+        table: u64,
+        field: u64,
+        repetition: u32,
+        temporal: bool,
+        text: &str,
+    ) -> Result<(), om_data::DataError> {
+        match self.p().set_typed_global(table, field, repetition, text) {
+            Err(error) if !temporal && error.code == Some(om_data::found::code::UNSUPPORTED) => {
+                self.p().set_global(table, field, repetition, text)
+            }
+            result => result,
+        }
+    }
+
     fn take_typed_globals(&mut self) -> HostResult {
         let Some(schema) = self.schema().cloned() else {
             return Ok(());
@@ -1638,12 +1658,8 @@ impl<'a> WorkerHost<'a> {
                 .cloned()
                 .flatten()
                 .unwrap_or_default();
-            let result = if temporal {
-                self.p().set_typed_global(table.id, field, 1, &text)
-            } else {
-                self.p().set_global(table.id, field, 1, &text)
-            };
-            result.map_err(|e| self.failed(e))?;
+            self.enter_global(table.id, field, 1, temporal, &text)
+                .map_err(|e| self.failed(e))?;
             self.s.file.window.state.drafts.remove(&name);
             *self.s.file.cache.borrow_mut() = CalcData::default();
             self.s.file.window.changed_data();
@@ -1692,13 +1708,8 @@ impl<'a> WorkerHost<'a> {
             }
         }
         for (index, cell, field, repetition, temporal, text) in globals {
-            let result = if temporal {
-                self.p()
-                    .set_typed_global(table.id, field, repetition, &text)
-            } else {
-                self.p().set_global(table.id, field, repetition, &text)
-            };
-            result.map_err(|error| self.failed(error))?;
+            self.enter_global(table.id, field, repetition, temporal, &text)
+                .map_err(|error| self.failed(error))?;
             let draft = &mut self.s.file.window.state.uncommitted.related[index];
             draft.cells.remove(&cell);
             draft.typed.remove(&cell);
