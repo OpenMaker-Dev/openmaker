@@ -3055,16 +3055,14 @@ impl ScriptHost for ServerHost {
         self.refresh_schema();
     }
 
-    /// An account with [Full Access] may run every script; any other may
-    /// run only scripts set to run with full access privileges, whose
-    /// steps then have full access (script-runtime.md 2.2, 9.1). The
-    /// script privileges of other privilege sets are not decoded.
-    /// A script the account's set gives no access is not executable, and
-    /// being set to run with full access privileges does not make it so:
-    /// only a caller running with full access lets it run, and then with
-    /// the account's own privileges (script-runtime.md 3.7, 9.1; a custom
-    /// set's "no access", 2.2). The runtime admits a script with either
-    /// flag, so the flag is given only for a script the account may run.
+    /// The scripts the account's set lets it run (session-identity.md
+    /// 2.2): every script under a verified built-in set, and under a custom
+    /// set those it makes executable. A script the set gives no access is
+    /// not executable, and being set to run with full access privileges
+    /// does not make it so: only a caller running with full access lets it
+    /// run, and then with the account's own privileges (script-runtime.md
+    /// 3.7, 9.1). The runtime admits a script with either flag, so the flag
+    /// is given only for a script the account may run.
     fn script_access(&mut self, file: FileId, script: u64) -> ScriptAccess {
         let executable = match &self.access {
             Some(access) => access.runs_script(script),
