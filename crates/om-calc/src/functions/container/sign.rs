@@ -23,9 +23,12 @@ use cbc::cipher::block_padding::Pkcs7;
 use cbc::cipher::{BlockDecryptMut, KeyIvInit};
 use hmac::{Hmac, Mac};
 use md5::Md5;
-use rsa::pkcs1::{DecodeRsaPrivateKey, DecodeRsaPublicKey};
-use rsa::pkcs8::{DecodePrivateKey, DecodePublicKey};
-use rsa::{Pkcs1v15Sign, PrivateKey, PublicKey};
+use rsa::pkcs1::{RsaPrivateKeyRef, RsaPublicKeyRef, Version};
+use rsa::pkcs8::der::asn1::{AsUintRef, Null};
+use rsa::pkcs8::der::Decode;
+use rsa::pkcs8::spki::AlgorithmIdentifierRef;
+use rsa::pkcs8::{EncryptedPrivateKeyInfoRef, PrivateKeyInfoRef, SubjectPublicKeyInfoRef};
+use rsa::{BoxedUint, Pkcs1v15Sign, PrivateKey, PublicKey};
 use sha1::Sha1;
 use sha2::{Digest, Sha224, Sha256, Sha384, Sha512};
 
@@ -190,10 +193,16 @@ fn private_key_from_pem(text: &str, password: &[u8]) -> Option<PrivateKey> {
             } else {
                 pem.der
             };
-            PrivateKey::from_pkcs1_der(&der).ok()
+            private_key_from_pkcs1(&der)
         }
-        "PRIVATE KEY" => PrivateKey::from_pkcs8_der(&pem.der).ok(),
-        "ENCRYPTED PRIVATE KEY" => PrivateKey::from_pkcs8_encrypted_der(&pem.der, password).ok(),
+        "PRIVATE KEY" => private_key_from_pkcs8(&pem.der),
+        "ENCRYPTED PRIVATE KEY" => {
+            let document = EncryptedPrivateKeyInfoRef::from_der(&pem.der)
+                .ok()?
+                .decrypt(password)
+                .ok()?;
+            private_key_from_pkcs8(document.as_bytes())
+        }
         _ => None,
     }
 }
@@ -201,10 +210,76 @@ fn private_key_from_pem(text: &str, password: &[u8]) -> Option<PrivateKey> {
 fn public_key_from_pem(text: &str) -> Option<PublicKey> {
     let pem = pem(text)?;
     match pem.label.as_str() {
-        "PUBLIC KEY" => PublicKey::from_public_key_der(&pem.der).ok(),
-        "RSA PUBLIC KEY" => PublicKey::from_pkcs1_der(&pem.der).ok(),
+        "PUBLIC KEY" => {
+            let info = SubjectPublicKeyInfoRef::from_der(&pem.der).ok()?;
+            rsa_algorithm(&info.algorithm)?;
+            public_key_from_pkcs1(info.subject_public_key.as_bytes()?)
+        }
+        "RSA PUBLIC KEY" => public_key_from_pkcs1(&pem.der),
         _ => None,
     }
+}
+
+// The keys are read from their components here rather than by `rsa`'s
+// decoders, whose policies refuse keys `rsa` 0.9 read and OpenSSL signs
+// and verifies with: public keys below 1,024 bits, and private keys whose
+// primes are not each about half the modulus. These policies are fixed,
+// not chosen per key, so that reading a key does not depend on the sizes
+// of its secret primes (#29).
+
+/// Public moduli read: any size up to `rsa`'s largest, 8,192 bits (`rsa`
+/// 0.9 had no smallest and stopped at 4,096).
+const PUBLIC_KEY_BITS: std::ops::RangeInclusive<usize> = 1..=PublicKey::MAX_SIZE;
+
+/// `rsaEncryption` with NULL parameters, as `rsa` 0.9 required.
+fn rsa_algorithm(algorithm: &AlgorithmIdentifierRef<'_>) -> Option<()> {
+    let null = algorithm.parameters_any().ok()? == Null.into();
+    (algorithm.oid == rsa::pkcs1::ALGORITHM_OID && null).then_some(())
+}
+
+/// An unsigned big-endian integer `bits` wide.
+fn uint(bytes: &[u8], bits: u32) -> Option<BoxedUint> {
+    BoxedUint::from_be_slice(bytes, bits).ok()
+}
+
+/// The bits of `bytes`, whole bytes.
+fn bits(bytes: &[u8]) -> Option<u32> {
+    u32::try_from(bytes.len()).ok()?.checked_mul(8)
+}
+
+/// A two-prime PKCS#1 `RSAPrivateKey`, its primes stored at the modulus's
+/// width whatever their sizes.
+fn private_key_from_pkcs1(der: &[u8]) -> Option<PrivateKey> {
+    let key = RsaPrivateKeyRef::from_der(der).ok()?;
+    if key.version() != Version::TwoPrime {
+        return None;
+    }
+    let modulus = key.modulus.as_uint_ref().as_bytes();
+    let width = bits(modulus)?;
+    let exponent = key.public_exponent.as_uint_ref().as_bytes();
+    let n = uint(modulus, width)?;
+    let e = uint(exponent, bits(exponent)?)?;
+    let d = uint(key.private_exponent.as_uint_ref().as_bytes(), width)?;
+    let p = uint(key.prime1.as_uint_ref().as_bytes(), width)?;
+    let q = uint(key.prime2.as_uint_ref().as_bytes(), width)?;
+    PrivateKey::from_components_with_wide_primes(n, e, d, vec![p, q]).ok()
+}
+
+/// A PKCS#8 `PrivateKeyInfo` holding an RSA key.
+fn private_key_from_pkcs8(der: &[u8]) -> Option<PrivateKey> {
+    let info = PrivateKeyInfoRef::from_der(der).ok()?;
+    rsa_algorithm(&info.algorithm)?;
+    private_key_from_pkcs1(info.private_key.as_bytes())
+}
+
+/// A PKCS#1 `RSAPublicKey`.
+fn public_key_from_pkcs1(der: &[u8]) -> Option<PublicKey> {
+    let key = RsaPublicKeyRef::from_der(der).ok()?;
+    let modulus = key.modulus.as_uint_ref().as_bytes();
+    let exponent = key.public_exponent.as_uint_ref().as_bytes();
+    let n = uint(modulus, bits(modulus)?)?;
+    let e = uint(exponent, bits(exponent)?)?;
+    PublicKey::new_with_size_limits(n, e, PUBLIC_KEY_BITS).ok()
 }
 
 /// OpenSSL's traditional PEM encryption (`DEK-Info: <cipher>,<hex IV>`):
@@ -377,6 +452,63 @@ MIGJAoGBAKtbxa7Z6WjjnsX43+EQw0bKU90rn5cqCWMP2uyv8evKsSUUA2Q0pk5s\n\
             Err(UNKNOWN_NAME)
         );
         assert_eq!(generate_signature(b"abc", "SHA256", "", ""), Ok(None));
+    }
+
+    /// Keys `rsa` 0.9 read and OpenSSL signs and verifies with, which
+    /// `rsa` 0.10's own decoders refuse (#29 review): a 512-bit key, and a
+    /// 1,040-bit key of a 640-bit and a 400-bit prime (`openssl rsa -check`
+    /// passes). The signatures are OpenSSL's, of `abc` with SHA256.
+    const SMALL_PRIVATE: &str = "\
+-----BEGIN RSA PRIVATE KEY-----\n\
+MIIBOwIBAAJBAK14aLCy7h5oIIn+XbqeVxVxVjQPNmAZedTzNld53FEKJi2G10zh\n\
+L/SVMEY3v0988+imtzhjmUR02HzFie8fCLkCAwEAAQJAPu11HNRr6P/g/e4WVkJm\n\
+WNL6cHwsP4Q+W++2gNkmAQdSkeOnhL1x0n1O6yY64q+dIGLLr+RsFxwyqP6WWHA7\n\
+AQIhANcBw0oWvFoMO3+Lp6eZQSN1W/aOrE4AHWtZ+tIJzcERAiEAzotLtZvpzIpE\n\
+svEqhyFDShCdQbi5uk/yRgj05KiJTSkCIGN5VFIF3NTIjgp/oWygMgvms0qKTdu0\n\
+n+fX9HySvpgRAiEAorv1pt11VIcMocCKNXXrwotcm8+j5jvfM3cTHKX9qCECIQCh\n\
++9XZ2qqtmtluvfPySX3DewepMnVEwSp5eduDW/kIMQ==\n\
+-----END RSA PRIVATE KEY-----\n";
+    const SMALL_PUBLIC: &str = "\
+-----BEGIN PUBLIC KEY-----\n\
+MFwwDQYJKoZIhvcNAQEBBQADSwAwSAJBAK14aLCy7h5oIIn+XbqeVxVxVjQPNmAZ\n\
+edTzNld53FEKJi2G10zhL/SVMEY3v0988+imtzhjmUR02HzFie8fCLkCAwEAAQ==\n\
+-----END PUBLIC KEY-----\n";
+    const SMALL_ABC_SHA256: &str =
+        "OAPfoaaDLKg2C7EnVCRUSzy+jxfyElxWzhNc6PDhh16t2HRraHvH4s8YI+60n0gWinsBj5hx+VRHAbCLAndMPg==";
+    const UNBALANCED_PRIVATE: &str = "\
+-----BEGIN RSA PRIVATE KEY-----\n\
+MIICdgIBAAKBgwCgOfdbvFH8/50wQ3mJ7z1XD8hVtSl9bnRD7BUT7piCO4ya/mQa\n\
+pm6Vgx7PK1iz5RH85d3DKiz7nWHeTKQ1YdQlw4XHdFSsEnCs7rTTH+OIhoSBd1zT\n\
+pl1RdPBwV5eoaDoM+ppe54kak5PyP7+OLsreR6yXBiCi44KZOJwJRSyg9njRAgMB\n\
+AAECgYJWg9Yvn3j5zh/XHqfytc5+QxReSwrTIp/+yOv8rjmFIJhkXHY6+aD+dCVf\n\
+ob0srcTPs/aI/qKU5uwlp8T91XIB28fy6ZGXXAIx5IDn/4yLks0UTdrLgP0/fD4l\n\
+u8FX+sbqbwymRlNuvw+kFF6nJtjhbVD8TlwS6jA4UyfiQ7zKaIoBAlEAyImI/c+2\n\
+owm2hm9efNPO1qG+2tUqbNAojaArjcUT/310KordR14Z+Nnmbg6n1ll2uq7FnKfh\n\
+2Z++sdOwZIQ5rt9dsKZJUoUfwZuHmddAUDECMwDMilbf8r4Kb/ocHSF/dYkoB/9a\n\
++Pey/El24D0EWzbnLZk2TLBtuGylnhw5EI7tHxwqoQJRAJVKNm7ldIzZjUV1oX0C\n\
+XchRL3lQGj5ZlOciZ2oqXmHkblfBe0xHFMS6yx4B0Rb1ETuXIswl+y/9CYTvGDEs\n\
+cpjp9qCsmodRTbvfYkq4AUvxAjMAu2mSWlZf3M5nO/VRKSl3x880IZX31+8kHSEv\n\
+p1swfjggp0kzawVNv56Uu5C5dPlJZKECUQCZtxTB2GGi0YmYEuGiPxnyGPruwG0f\n\
+5JIetjztLYwEQhEBek7+f+PiOGsDPhUFIy9DKSNkxvL7p3rW2N9Q/L23RKERLgfP\n\
+JL/muXQG1uYEwQ==\n\
+-----END RSA PRIVATE KEY-----\n";
+    const UNBALANCED_ABC_SHA256: &str = "QimFMCd/6k84Vze3emSoZyWgKBYGHl1ncVid4+gB/jZwTdXs5OVIkE8QRHn9N3bMVADs4o7lSZ10ryAKV+d5EEZdoVC4L5wmD4L2dA785/HWu9VSJNAq1cXf3Gok6QxYPwl2UDFIexbqcOi0aqZnZzSLnVLmw4kYcJsI+NZWsWtNqA==";
+
+    #[test]
+    fn small_and_unbalanced_keys() {
+        let cr = |s: &str| s.replace('\n', "\r");
+        for (private, expected) in [
+            (SMALL_PRIVATE, SMALL_ABC_SHA256),
+            (UNBALANCED_PRIVATE, UNBALANCED_ABC_SHA256),
+        ] {
+            let sig = generate_signature(b"abc", "SHA256", &cr(private), "");
+            assert_eq!(sig, Ok(encodings::base64_decode(expected)));
+        }
+        let sig = encodings::base64_decode(SMALL_ABC_SHA256).unwrap();
+        assert_eq!(
+            verify_signature(b"abc", "SHA256", &cr(SMALL_PUBLIC), &sig),
+            Ok(Some(true))
+        );
     }
 
     #[test]
