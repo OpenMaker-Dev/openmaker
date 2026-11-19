@@ -16,10 +16,12 @@
 //! identity: a page of a closed window or an earlier session never reaches
 //! a new one, and a callback runs a script of the view's own file only.
 //!
-//! Native views come from a [`Backend`]: WebKitGTK on Linux/X11 with the
-//! `web-viewer` feature. Without one, web viewers show a note and the script
-//! steps fail instead of reporting success.
+//! Native views come from a [`Backend`]: with the `web-viewer` feature,
+//! WebKitGTK on Linux/X11 and WKWebView on macOS. Without one, web viewers
+//! show a note and the script steps fail instead of reporting success.
 
+#[cfg(all(feature = "web-viewer", target_os = "macos"))]
+mod appkit;
 #[cfg(all(feature = "web-viewer", target_os = "linux"))]
 mod gtk;
 mod viewports;
@@ -64,16 +66,25 @@ pub(crate) struct Placement {
     pub zoom: f32,
 }
 
+/// Whether this build has a native backend for its platform.
+const NATIVE: bool = cfg!(all(
+    feature = "web-viewer",
+    any(target_os = "linux", target_os = "macos")
+));
+
 /// The native window a view is a child of.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub(crate) enum NativeParent {
     /// An X11 window id.
     X11(u64),
+    /// An AppKit window's number (`NSWindow.windowNumber`).
+    #[cfg(all(feature = "web-viewer", target_os = "macos"))]
+    AppKit(isize),
 }
 
 impl NativeParent {
-    /// The native window eframe created for the root viewport: an X11
-    /// window, or why there is none to host views in.
+    /// The native window eframe created for the root viewport: an X11 or
+    /// AppKit window, or why there is none to host views in.
     #[allow(
         clippy::useless_conversion,
         reason = "an Xlib window id is a C unsigned long: 32 bits on some targets"
@@ -83,6 +94,10 @@ impl NativeParent {
         match handle.window_handle().map(|h| h.as_raw()) {
             Ok(RawWindowHandle::Xlib(h)) => Ok(Self::X11(u64::from(h.window))),
             Ok(RawWindowHandle::Xcb(h)) => Ok(Self::X11(u64::from(h.window.get()))),
+            #[cfg(all(feature = "web-viewer", target_os = "macos"))]
+            Ok(RawWindowHandle::AppKit(h)) => appkit::window_of_view(h.ns_view.as_ptr() as usize)
+                .map(Self::AppKit)
+                .ok_or(Unavailable::Window),
             Ok(_) => Err(Unavailable::Platform),
             Err(_) => Err(Unavailable::Window),
         }
@@ -150,7 +165,7 @@ pub(crate) enum Navigation {
 /// What a backend reports about its views, in the order it happened.
 #[derive(Clone, Debug, PartialEq)]
 #[cfg_attr(
-    not(all(feature = "web-viewer", target_os = "linux")),
+    not(all(feature = "web-viewer", any(target_os = "linux", target_os = "macos"))),
     allow(dead_code, reason = "only a native backend reports events")
 )]
 pub(crate) enum Event {
@@ -194,6 +209,10 @@ pub(crate) trait Backend {
     /// to `parent`.
     fn release_focus(&mut self, parent: NativeParent);
     fn poll(&mut self) -> Vec<Event>;
+    /// The end of the app's frame, with the root viewport's window: a
+    /// backend whose views must be made on the main thread, with a window
+    /// to make them in, applies its commands now.
+    fn flush(&mut self, _root: &dyn raw_window_handle::HasWindowHandle) {}
 }
 
 /// Why web viewers show no page in a window.
@@ -395,7 +414,11 @@ fn native_backend(ctx: &egui::Context) -> Result<Box<dyn Backend>, Unavailable> 
     {
         gtk::GtkBackend::start(ctx).map(|b| Box::new(b) as Box<dyn Backend>)
     }
-    #[cfg(not(all(feature = "web-viewer", target_os = "linux")))]
+    #[cfg(all(feature = "web-viewer", target_os = "macos"))]
+    {
+        appkit::AppKitBackend::start(ctx).map(|b| Box::new(b) as Box<dyn Backend>)
+    }
+    #[cfg(not(all(feature = "web-viewer", any(target_os = "linux", target_os = "macos"))))]
     {
         Err(Unavailable::Build)
     }
@@ -405,7 +428,7 @@ impl WebViewers {
     /// Web viewers with the platform's backend, when the build has one.
     fn native() -> Self {
         let mut viewers = Self::with_factory(Box::new(native_backend));
-        viewers.supported = cfg!(all(feature = "web-viewer", target_os = "linux"));
+        viewers.supported = NATIVE;
         viewers
     }
 
@@ -446,6 +469,14 @@ impl WebViewers {
             self.backend = Some(factory(ctx));
         }
         self.backend.as_mut()?.as_mut().ok()
+    }
+
+    /// The end of the app's frame (`Backend::flush`), with the root
+    /// viewport's window.
+    pub fn flush(&mut self, root: &dyn raw_window_handle::HasWindowHandle) {
+        if let Some(Ok(backend)) = self.backend.as_mut() {
+            backend.flush(root);
+        }
     }
 
     /// Whether a script waits for a view (the app polls for timeouts).
@@ -888,13 +919,36 @@ pub(crate) fn url_for(address: &str, options: WebViewerOptions) -> String {
     }
 }
 
+/// The URLs a page may go to.
+#[cfg_attr(
+    not(all(feature = "web-viewer", any(target_os = "linux", target_os = "macos"))),
+    allow(dead_code, reason = "only a native backend asks")
+)]
+pub(crate) fn allowed(url: &str) -> bool {
+    let scheme = url.split(':').next().unwrap_or("").to_ascii_lowercase();
+    matches!(
+        scheme.as_str(),
+        "http" | "https" | "data" | "blob" | "file" | "about"
+    )
+}
+
+/// The URL a hidden frame of the page asks for to post a bridge message
+/// where the view has no `openmaker` message handler (macOS, `appkit.rs`):
+/// this, then the message. The view refuses the load.
+#[cfg_attr(
+    not(all(feature = "web-viewer", target_os = "macos")),
+    allow(dead_code, reason = "only the AppKit backend reads it")
+)]
+pub(crate) const MESSAGE_URL: &str = "openmaker-message:";
+
 /// The `FileMaker` object a page gets when its web viewer allows
 /// JavaScript to perform FileMaker scripts. Its functions post the script
 /// name, parameter and option (each `encodeURIComponent`d, `&`-separated)
-/// to the view's `openmaker` message handler; nothing comes back to the
+/// to the view's `openmaker` message handler, or where the view has none,
+/// as a hidden frame's load of [`MESSAGE_URL`]; nothing comes back to the
 /// page.
 #[cfg_attr(
-    not(all(feature = "web-viewer", target_os = "linux")),
+    not(all(feature = "web-viewer", any(target_os = "linux", target_os = "macos"))),
     allow(dead_code, reason = "only a native backend injects it")
 )]
 pub(crate) const BRIDGE: &str = r#"(function () {
@@ -906,7 +960,16 @@ pub(crate) const BRIDGE: &str = r#"(function () {
     var body = "openmaker-perform-script&s=" + encodeURIComponent(text(script, "")) +
       "&p=" + encodeURIComponent(text(parameter, "")) +
       "&o=" + encodeURIComponent(text(option, "0"));
-    window.webkit.messageHandlers.openmaker.postMessage(body);
+    var handlers = window.webkit && window.webkit.messageHandlers;
+    if (handlers && handlers.openmaker) {
+      handlers.openmaker.postMessage(body);
+      return;
+    }
+    var frame = document.createElement("iframe");
+    frame.style.display = "none";
+    frame.src = "openmaker-message:" + body;
+    (document.body || document.documentElement).appendChild(frame);
+    setTimeout(function () { frame.remove(); }, 0);
   }
   var fileMaker = Object.freeze({
     PerformScript: function (script, parameter) { post(script, parameter, "0"); },

@@ -1,6 +1,9 @@
-//! Web viewers in the real app under an X server, with WebKitGTK (the
-//! `web-viewer` feature): eframe's own event loop and root window, the
-//! browser's own process and GTK thread, real X11 input.
+//! Web viewers in the real app (the `web-viewer` feature): eframe's own
+//! event loop and root window, the browser's own process, and input the
+//! window system delivers: WebKitGTK under an X server, with its GTK thread
+//! and real X11 input (XTest), or WKWebView on macOS, with mouse events
+//! posted to the window (they reach the page as a click does, without
+//! moving the pointer).
 //!
 //! - The layout's web viewer is decoded from native wire bytes (an external
 //!   object of type `WEBV` with "Allow interaction" and "Allow JavaScript to
@@ -16,14 +19,18 @@
 //! - A real click (XTest) on the page's button calls
 //!   `FileMaker.PerformScriptWithOption`; that script loads a page from a
 //!   loopback HTTP server with Set Web Viewer, which calls back on load.
-//! - Going to another layout destroys the view: no child window is left
-//!   under the app's window, the WebKit web process exits, the old page's
-//!   timer never calls back, and Perform JavaScript on it fails with 116.
-//! - It all runs with `WAYLAND_DISPLAY` set, as in a Wayland session, so
-//!   `om_gui::native_options` must choose winit's X11 backend.
+//! - Going to another layout destroys the view: no child window (X11) or
+//!   page view (AppKit) is left in the app's window, the old page's timer
+//!   never calls back, and Perform JavaScript on it fails with 116. On
+//!   Linux the WebKit web process exits too; macOS runs its web processes
+//!   as system services, not as the app's children, so it is not checked.
+//! - On Linux it all runs with `WAYLAND_DISPLAY` set, as in a Wayland
+//!   session, so `om_gui::native_options` must choose winit's X11 backend.
 //!
 //! `xvfb-run -a cargo test -p om-gui --features web-viewer --test
-//! web_viewer_native`; skipped without a display.
+//! web_viewer_native` on Linux, skipped without a display;
+//! `cargo test -p om-gui --features web-viewer --test web_viewer_native` on
+//! macOS, which opens a window.
 
 use std::collections::BTreeMap;
 use std::io::{Read, Write};
@@ -38,10 +45,6 @@ use om_data::{
 use om_gui::OpenMakerApp;
 use om_hbam::{KeySegment, KeyTree, Node};
 use om_layout::{Layout, LayoutDef, LayoutObject, ObjectStore, Part, Rect};
-use x11rb::connection::Connection as _;
-use x11rb::protocol::xproto::{self, ConnectionExt as _};
-use x11rb::protocol::xtest::ConnectionExt as _;
-use x11rb::rust_connection::RustConnection;
 
 const OCCURRENCE: u64 = 0xd0_0002;
 const TABLE: u64 = 0x8002;
@@ -531,8 +534,7 @@ struct Driver {
     state: Arc<Mutex<State>>,
     requests: Arc<Mutex<Vec<String>>>,
     port: u16,
-    x11: RustConnection,
-    root: u32,
+    native: native::Native,
     phase: Phase,
     deadline: Instant,
 }
@@ -544,126 +546,367 @@ fn fail(message: String) -> ! {
     std::process::exit(1);
 }
 
-impl Driver {
-    /// The child windows of `parent`: id, position, size, mapped.
-    fn children(&self, parent: u32) -> Vec<(u32, i16, i16, u16, u16, bool)> {
-        let Ok(reply) = self.x11.query_tree(parent).map(|c| c.reply()) else {
-            return vec![];
-        };
-        let Ok(tree) = reply else {
-            return vec![];
-        };
-        tree.children
-            .into_iter()
-            .filter_map(|child| {
-                let geometry = self.x11.get_geometry(child).ok()?.reply().ok()?;
-                let mapped = self
-                    .x11
-                    .get_window_attributes(child)
-                    .ok()?
-                    .reply()
-                    .ok()?
-                    .map_state
-                    == xproto::MapState::VIEWABLE;
-                Some((
-                    child,
-                    geometry.x,
-                    geometry.y,
-                    geometry.width,
-                    geometry.height,
-                    mapped,
-                ))
-            })
-            .collect()
+/// A view's native window (X11) or container view (AppKit) in the app's
+/// window: its id, position, size and whether it shows.
+type Child = (u64, i32, i32, u32, u32, bool);
+
+/// What the test asks of the window system.
+#[cfg(target_os = "linux")]
+mod native {
+    use std::time::Duration;
+
+    use x11rb::connection::Connection as _;
+    use x11rb::protocol::xproto::{self, ConnectionExt as _};
+    use x11rb::protocol::xtest::ConnectionExt as _;
+    use x11rb::rust_connection::RustConnection;
+
+    use super::{fail, Child};
+
+    /// The app's X11 window.
+    pub type Parent = u32;
+
+    pub struct Native {
+        x11: RustConnection,
+        root: u32,
     }
 
-    /// Save the app's window, the page's child window included, as PNG in
-    /// `OM_WEB_VIEWER_SHOTS` when it is set (evidence).
-    fn shot(&self, parent: u32, name: &str) {
-        let Some(dir) = std::env::var_os("OM_WEB_VIEWER_SHOTS") else {
-            return;
-        };
-        let Ok(Ok(geometry)) = self.x11.get_geometry(parent).map(|c| c.reply()) else {
-            return;
-        };
-        let (width, height) = (geometry.width, geometry.height);
-        let Ok(Ok(image)) = self
-            .x11
-            .get_image(
-                xproto::ImageFormat::Z_PIXMAP,
-                parent,
-                0,
-                0,
-                width,
-                height,
-                !0,
-            )
-            .map(|c| c.reply())
-        else {
-            return;
-        };
-        // 32 bits per pixel, blue green red unused.
-        let mut rgb = image::RgbImage::new(u32::from(width), u32::from(height));
-        for (pixel, [blue, green, red, _]) in rgb.pixels_mut().zip(image.data.as_chunks::<4>().0) {
-            *pixel = image::Rgb([*red, *green, *blue]);
+    impl Native {
+        /// Connect to the X server; `None` without a display.
+        pub fn start() -> Option<Self> {
+            if std::env::var_os("DISPLAY").is_none() {
+                println!("skipped: no X display (run under xvfb-run)");
+                return None;
+            }
+            // A Wayland session's environment, with a socket that does
+            // not exist: left to itself winit would choose Wayland and
+            // fail, so the app's own options must put its windows on X11
+            // (XWayland in a real session).
+            std::env::set_var("WAYLAND_DISPLAY", "openmaker-test-no-such-wayland");
+            let (x11, screen) = x11rb::connect(None).expect("X display");
+            let root = x11.setup().roots[screen].root;
+            Some(Native { x11, root })
         }
-        let path = std::path::Path::new(&dir).join(format!("{name}.png"));
-        match rgb.save(&path) {
-            Ok(()) => println!("screenshot {}", path.display()),
-            Err(error) => println!("screenshot {name} failed: {error}"),
-        }
-    }
 
-    fn click(&self, window: u32, x: i16, y: i16) {
-        let at = self
-            .x11
-            .translate_coordinates(window, self.root, x, y)
-            .unwrap()
-            .reply()
-            .unwrap();
-        for (kind, detail) in [
-            (xproto::MOTION_NOTIFY_EVENT, 0),
-            (xproto::BUTTON_PRESS_EVENT, 1),
-            (xproto::BUTTON_RELEASE_EVENT, 1),
-        ] {
-            self.x11
-                .xtest_fake_input(
-                    kind,
-                    detail,
-                    x11rb::CURRENT_TIME,
-                    self.root,
-                    at.dst_x,
-                    at.dst_y,
+        pub fn parent(frame: &eframe::Frame) -> Parent {
+            use raw_window_handle::{HasWindowHandle, RawWindowHandle};
+            match frame.window_handle().map(|h| h.as_raw()) {
+                Ok(RawWindowHandle::Xlib(h)) => h.window as u32,
+                Ok(RawWindowHandle::Xcb(h)) => h.window.get(),
+                other => fail(format!("not an X11 window: {other:?}")),
+            }
+        }
+
+        /// The child windows of `parent`.
+        pub fn children(&self, parent: Parent) -> Vec<Child> {
+            let Ok(reply) = self.x11.query_tree(parent).map(|c| c.reply()) else {
+                return vec![];
+            };
+            let Ok(tree) = reply else {
+                return vec![];
+            };
+            tree.children
+                .into_iter()
+                .filter_map(|child| {
+                    let geometry = self.x11.get_geometry(child).ok()?.reply().ok()?;
+                    let mapped = self
+                        .x11
+                        .get_window_attributes(child)
+                        .ok()?
+                        .reply()
+                        .ok()?
+                        .map_state
+                        == xproto::MapState::VIEWABLE;
+                    Some((
+                        u64::from(child),
+                        i32::from(geometry.x),
+                        i32::from(geometry.y),
+                        u32::from(geometry.width),
+                        u32::from(geometry.height),
+                        mapped,
+                    ))
+                })
+                .collect()
+        }
+
+        /// Save the app's window, the page's child window included, as PNG
+        /// in `OM_WEB_VIEWER_SHOTS` when it is set (evidence).
+        pub fn shot(&self, parent: Parent, name: &str) {
+            let Some(dir) = std::env::var_os("OM_WEB_VIEWER_SHOTS") else {
+                return;
+            };
+            let Ok(Ok(geometry)) = self.x11.get_geometry(parent).map(|c| c.reply()) else {
+                return;
+            };
+            let (width, height) = (geometry.width, geometry.height);
+            let Ok(Ok(image)) = self
+                .x11
+                .get_image(
+                    xproto::ImageFormat::Z_PIXMAP,
+                    parent,
                     0,
+                    0,
+                    width,
+                    height,
+                    !0,
                 )
-                .unwrap();
-            self.x11.flush().unwrap();
-            std::thread::sleep(Duration::from_millis(60));
+                .map(|c| c.reply())
+            else {
+                return;
+            };
+            // 32 bits per pixel, blue green red unused.
+            let mut rgb = image::RgbImage::new(u32::from(width), u32::from(height));
+            for (pixel, [blue, green, red, _]) in
+                rgb.pixels_mut().zip(image.data.as_chunks::<4>().0)
+            {
+                *pixel = image::Rgb([*red, *green, *blue]);
+            }
+            let path = std::path::Path::new(&dir).join(format!("{name}.png"));
+            match rgb.save(&path) {
+                Ok(()) => println!("screenshot {}", path.display()),
+                Err(error) => println!("screenshot {name} failed: {error}"),
+            }
         }
-        println!("clicked page button at root ({}, {})", at.dst_x, at.dst_y);
+
+        /// A real click (XTest) at `x`, `y` in the child window `child`.
+        pub fn click(&self, _parent: Parent, child: u64, x: i16, y: i16) {
+            let at = self
+                .x11
+                .translate_coordinates(child as u32, self.root, x, y)
+                .unwrap()
+                .reply()
+                .unwrap();
+            for (kind, detail) in [
+                (xproto::MOTION_NOTIFY_EVENT, 0),
+                (xproto::BUTTON_PRESS_EVENT, 1),
+                (xproto::BUTTON_RELEASE_EVENT, 1),
+            ] {
+                self.x11
+                    .xtest_fake_input(
+                        kind,
+                        detail,
+                        x11rb::CURRENT_TIME,
+                        self.root,
+                        at.dst_x,
+                        at.dst_y,
+                        0,
+                    )
+                    .unwrap();
+                self.x11.flush().unwrap();
+                std::thread::sleep(Duration::from_millis(60));
+            }
+            println!("clicked page button at root ({}, {})", at.dst_x, at.dst_y);
+        }
+
+        /// The WebKit web processes this process started.
+        pub fn web_processes() -> Option<usize> {
+            let me = std::process::id().to_string();
+            let count = std::fs::read_dir("/proc")
+                .into_iter()
+                .flatten()
+                .flatten()
+                .filter(|entry| {
+                    let path = entry.path();
+                    let comm = std::fs::read_to_string(path.join("comm")).unwrap_or_default();
+                    let stat = std::fs::read_to_string(path.join("stat")).unwrap_or_default();
+                    // pid (comm) state ppid ...
+                    let ppid = stat
+                        .rsplit(')')
+                        .next()
+                        .and_then(|rest| rest.split_whitespace().nth(1));
+                    comm.starts_with("WebKitWebProces") && ppid == Some(me.as_str())
+                })
+                .count();
+            Some(count)
+        }
+    }
+}
+
+/// What the test asks of the window system.
+#[cfg(target_os = "macos")]
+mod native {
+    use objc2::rc::Retained;
+    use objc2::MainThreadMarker;
+    use objc2_app_kit::{NSApplication, NSEvent, NSEventModifierFlags, NSEventType, NSWindow};
+    use objc2_core_foundation::CGPoint;
+
+    use super::{fail, Child};
+
+    /// The app's window's number.
+    pub type Parent = isize;
+
+    pub struct Native;
+
+    fn window(number: Parent) -> Option<Retained<NSWindow>> {
+        let mtm = MainThreadMarker::new()?;
+        NSApplication::sharedApplication(mtm)
+            .windows()
+            .iter()
+            .find(|w| w.windowNumber() == number)
     }
 
-    fn web_processes() -> usize {
-        let me = std::process::id().to_string();
-        std::fs::read_dir("/proc")
-            .into_iter()
-            .flatten()
-            .flatten()
-            .filter(|entry| {
-                let path = entry.path();
-                let comm = std::fs::read_to_string(path.join("comm")).unwrap_or_default();
-                let stat = std::fs::read_to_string(path.join("stat")).unwrap_or_default();
-                // pid (comm) state ppid ...
-                let ppid = stat
-                    .rsplit(')')
-                    .next()
-                    .and_then(|rest| rest.split_whitespace().nth(1));
-                comm.starts_with("WebKitWebProces") && ppid == Some(me.as_str())
-            })
-            .count()
-    }
+    impl Native {
+        pub fn start() -> Option<Self> {
+            Some(Native)
+        }
 
-    fn step(&mut self, parent: u32) {
+        pub fn parent(frame: &eframe::Frame) -> Parent {
+            use raw_window_handle::{HasWindowHandle, RawWindowHandle};
+            let Ok(RawWindowHandle::AppKit(handle)) = frame.window_handle().map(|h| h.as_raw())
+            else {
+                fail("not an AppKit window".into());
+            };
+            let view = handle.ns_view.as_ptr() as usize;
+            let mtm = MainThreadMarker::new().expect("the main thread");
+            NSApplication::sharedApplication(mtm)
+                .windows()
+                .iter()
+                .find(|w| {
+                    w.contentView()
+                        .is_some_and(|c| Retained::as_ptr(&c) as usize == view)
+                })
+                .map_or_else(
+                    || fail("the app's window is not found".into()),
+                    |w| w.windowNumber(),
+                )
+        }
+
+        /// The views in `parent`'s content view (the pages' containers),
+        /// in points from its top left.
+        pub fn children(&self, parent: Parent) -> Vec<Child> {
+            let Some(content) = window(parent).and_then(|w| w.contentView()) else {
+                return vec![];
+            };
+            let height = content.frame().size.height;
+            content
+                .subviews()
+                .iter()
+                .map(|view| {
+                    let frame = view.frame();
+                    let top = if content.isFlipped() {
+                        frame.origin.y
+                    } else {
+                        height - frame.origin.y - frame.size.height
+                    };
+                    (
+                        Retained::as_ptr(&view) as u64,
+                        frame.origin.x.round() as i32,
+                        top.round() as i32,
+                        frame.size.width.round() as u32,
+                        frame.size.height.round() as u32,
+                        !view.isHidden(),
+                    )
+                })
+                .collect()
+        }
+
+        /// Save the app's window as PNG in `OM_WEB_VIEWER_SHOTS` when it is
+        /// set (evidence), with the system's `screencapture`.
+        pub fn shot(&self, parent: Parent, name: &str) {
+            let Some(dir) = std::env::var_os("OM_WEB_VIEWER_SHOTS") else {
+                return;
+            };
+            let path = std::path::Path::new(&dir).join(format!("{name}.png"));
+            let saved = std::process::Command::new("screencapture")
+                .args(["-x", "-o", &format!("-l{parent}")])
+                .arg(&path)
+                .status()
+                .is_ok_and(|s| s.success());
+            if saved {
+                println!("screenshot {}", path.display());
+            } else {
+                println!("screenshot {name} failed");
+            }
+        }
+
+        /// A click at `x`, `y` points from the top left of the container
+        /// `child`: a mouse down and up posted to the window, which sends
+        /// them to the view under them.
+        pub fn click(&self, parent: Parent, child: u64, x: i16, y: i16) {
+            let Some(window) = window(parent) else {
+                fail("the app's window is gone".into());
+            };
+            let Some(content) = window.contentView() else {
+                fail("the app's window has no content view".into());
+            };
+            let Some(container) = content
+                .subviews()
+                .iter()
+                .find(|view| Retained::as_ptr(view) as u64 == child)
+            else {
+                fail("the page's view is gone".into());
+            };
+            let height = container.frame().size.height;
+            let point = CGPoint::new(f64::from(x), height - f64::from(y));
+            let at = container.convertPoint_toView(point, None);
+            // The view under the point takes the events itself: the window
+            // would first make itself key, which a test must not ask of
+            // the desktop it runs on.
+            let Some(target) = content.hitTest(at) else {
+                fail("nothing under the page's button".into());
+            };
+            for (number, kind) in [NSEventType::LeftMouseDown, NSEventType::LeftMouseUp]
+                .into_iter()
+                .enumerate()
+            {
+                let event = NSEvent::mouseEventWithType_location_modifierFlags_timestamp_windowNumber_context_eventNumber_clickCount_pressure(
+                    kind,
+                    at,
+                    NSEventModifierFlags::empty(),
+                    0.0,
+                    parent,
+                    None,
+                    number as isize,
+                    1,
+                    1.0,
+                )
+                .expect("a mouse event");
+                if kind == NSEventType::LeftMouseDown {
+                    target.mouseDown(&event);
+                } else {
+                    target.mouseUp(&event);
+                }
+            }
+            println!("clicked page button at window ({}, {})", at.x, at.y);
+        }
+
+        /// macOS runs WebKit's web processes as system services, not as
+        /// children of the app: not counted.
+        pub fn web_processes() -> Option<usize> {
+            None
+        }
+    }
+}
+
+/// Elsewhere there is no native backend to test.
+#[cfg(not(any(target_os = "linux", target_os = "macos")))]
+mod native {
+    use super::Child;
+
+    pub type Parent = u64;
+
+    pub struct Native;
+
+    impl Native {
+        pub fn start() -> Option<Self> {
+            println!("skipped: no web viewer backend on this platform");
+            None
+        }
+        pub fn parent(_: &eframe::Frame) -> Parent {
+            0
+        }
+        pub fn children(&self, _: Parent) -> Vec<Child> {
+            Vec::new()
+        }
+        pub fn shot(&self, _: Parent, _: &str) {}
+        pub fn click(&self, _: Parent, _: u64, _: i16, _: i16) {}
+        pub fn web_processes() -> Option<usize> {
+            None
+        }
+    }
+}
+
+impl Driver {
+    fn step(&mut self, parent: native::Parent) {
         let (given, history) = {
             let state = self.state.lock().unwrap();
             (state.given.clone(), state.history.clone())
@@ -676,32 +919,33 @@ impl Driver {
                 "timed out in {:?}; history {history:?}; error {:?}; children {:?}",
                 self.phase,
                 self.app.error(),
-                self.children(parent)
+                self.native.children(parent)
             ));
         }
         match self.phase {
             Phase::Loading if given == SHOWN => {
-                let children = self.children(parent);
-                let [(window, x, y, width, height, true)] = children[..] else {
-                    fail(format!("expected one mapped child window: {children:?}"));
+                let children = self.native.children(parent);
+                let [(child, x, y, width, height, true)] = children[..] else {
+                    fail(format!("expected one shown child: {children:?}"));
                 };
-                // The object's 500 x 300 points (the window's scale is 1).
-                println!(
-                    "page window {window:#x} at ({x}, {y}) size {width}x{height} in parent {parent:#x}"
-                );
+                // The object's 500 x 300 points (on X11 the window's scale
+                // is 1; AppKit counts in points).
+                println!("page at ({x}, {y}) size {width}x{height} in parent {parent:#x}");
                 if (width, height) != (500, 300) {
-                    fail(format!("page window size {width}x{height}"));
+                    fail(format!("page size {width}x{height}"));
                 }
                 println!("callback set Given to {given:?} after Perform JavaScript");
-                println!("web processes: {}", Self::web_processes());
-                self.shot(parent, "1-page-after-perform-javascript");
-                self.click(window, 150, 175);
+                if let Some(count) = native::Native::web_processes() {
+                    println!("web processes: {count}");
+                }
+                self.native.shot(parent, "1-page-after-perform-javascript");
+                self.native.click(parent, child, 150, 175);
                 self.phase = Phase::Clicking;
             }
             Phase::Clicking if given.starts_with("clicked:") => {
                 assert_eq!(given, format!("clicked:{SHOWN}"));
                 println!("click callback set Given to {given:?}");
-                self.shot(parent, "2-after-click");
+                self.native.shot(parent, "2-after-click");
                 self.phase = Phase::Navigating;
             }
             Phase::Navigating | Phase::Clicking if given.starts_with("after:") => {
@@ -719,28 +963,33 @@ impl Driver {
                 self.phase = Phase::Late(Instant::now() + Duration::from_secs(3));
             }
             Phase::Late(until) if Instant::now() >= until => {
-                let children = self.children(parent);
+                let children = self.native.children(parent);
                 if !children.is_empty() {
                     fail(format!(
-                        "{} child windows left after the layout changed",
+                        "{} children left after the layout changed",
                         children.len()
                     ));
                 }
-                println!("no child windows under the app window after the layout changed");
-                self.shot(parent, "3-other-layout");
+                println!("nothing left in the app window after the layout changed");
+                self.native.shot(parent, "3-other-layout");
                 self.phase = Phase::Released(Instant::now() + Duration::from_secs(15));
             }
-            Phase::Released(until) => {
-                let left = Self::web_processes();
-                if left == 0 {
+            Phase::Released(until) => match native::Native::web_processes() {
+                None => {
+                    println!("history {history:?}");
+                    println!("PASS");
+                    std::process::exit(0);
+                }
+                Some(0) => {
                     println!("web process exited; history {history:?}");
                     println!("PASS");
                     std::process::exit(0);
                 }
-                if Instant::now() >= until {
+                Some(left) if Instant::now() >= until => {
                     fail(format!("{left} WebKit web processes still running"));
                 }
-            }
+                Some(_) => {}
+            },
             _ => {}
         }
     }
@@ -749,26 +998,15 @@ impl Driver {
 impl eframe::App for Driver {
     fn ui(&mut self, ui: &mut egui::Ui, frame: &mut eframe::Frame) {
         eframe::App::ui(&mut self.app, ui, frame);
-        use raw_window_handle::{HasWindowHandle, RawWindowHandle};
-        let parent = match frame.window_handle().map(|h| h.as_raw()) {
-            Ok(RawWindowHandle::Xlib(h)) => h.window as u32,
-            Ok(RawWindowHandle::Xcb(h)) => h.window.get(),
-            other => fail(format!("not an X11 window: {other:?}")),
-        };
-        self.step(parent);
+        self.step(native::Native::parent(frame));
         ui.ctx().request_repaint_after(Duration::from_millis(30));
     }
 }
 
 fn main() {
-    if std::env::var_os("DISPLAY").is_none() {
-        println!("skipped: no X display (run under xvfb-run)");
+    let Some(native) = native::Native::start() else {
         return;
-    }
-    // A Wayland session's environment, with a socket that does not exist:
-    // left to itself winit would choose Wayland and fail, so the app's own
-    // options must put its windows on X11 (XWayland in a real session).
-    std::env::set_var("WAYLAND_DISPLAY", "openmaker-test-no-such-wayland");
+    };
     // As `om_gui::run` does, before any other thread starts.
     om_gui::prepare_web_viewers();
     std::thread::spawn(|| {
@@ -781,8 +1019,6 @@ fn main() {
         scripts: scripts(port),
         ..Default::default()
     }));
-    let (x11, screen) = x11rb::connect(None).expect("X display");
-    let root = x11.setup().roots[screen].root;
     let provider = Provider(Arc::clone(&state));
     let options = eframe::NativeOptions {
         viewport: egui::ViewportBuilder::default()
@@ -808,8 +1044,7 @@ fn main() {
                 state,
                 requests,
                 port,
-                x11,
-                root,
+                native,
                 phase: Phase::Loading,
                 deadline: Instant::now() + Duration::from_secs(180),
             }))

@@ -31,7 +31,9 @@ use x11rb::protocol::xproto::{
 use x11rb::rust_connection::RustConnection;
 use x11rb::wrapper::ConnectionExt as _;
 
-use super::{Backend, Event, Geometry, NativeParent, Navigation, Unavailable, ViewSpec, BRIDGE};
+use super::{
+    allowed, Backend, Event, Geometry, NativeParent, Navigation, Unavailable, ViewSpec, BRIDGE,
+};
 
 enum Command {
     Create {
@@ -323,15 +325,6 @@ fn retire() {
             glib::timeout_add_local_once(RETIRE_INTERVAL, retire);
         }
     });
-}
-
-/// The URLs a page may go to.
-fn allowed(url: &str) -> bool {
-    let scheme = url.split(':').next().unwrap_or("").to_ascii_lowercase();
-    matches!(
-        scheme.as_str(),
-        "http" | "https" | "data" | "blob" | "file" | "about"
-    )
 }
 
 impl State {
