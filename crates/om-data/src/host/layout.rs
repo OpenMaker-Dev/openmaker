@@ -125,16 +125,70 @@ const SYMBOLS: [(&str, u16, &str); 5] = [
     ("RecordNumber", 1020, "Get ( RecordNumber )"),
 ];
 
-/// The `Get` selector of symbol `{{inner}}`: named in any case, or by its
-/// selector's number. Another number is no symbol.
+/// Whether `inner` names symbol `name` whose selector's number is `op`:
+/// the name in any case, or the number as FileMaker writes it (decimal
+/// digits, no sign, no leading zero).
+fn names_symbol(inner: &str, name: &str, op: u16) -> bool {
+    name.eq_ignore_ascii_case(inner) || inner == op.to_string()
+}
+
+/// The `Get` selector of symbol `{{inner}}`. Another name or number is no
+/// symbol.
 fn symbol_selector(inner: &str) -> Option<&'static str> {
-    let number = Some(inner)
-        .filter(|inner| !inner.is_empty() && inner.bytes().all(|b| b.is_ascii_digit()))
-        .and_then(|inner| inner.parse::<u16>().ok());
     SYMBOLS
         .iter()
-        .find(|(name, op, _)| name.eq_ignore_ascii_case(inner) || number == Some(*op))
+        .find(|(name, op, _)| names_symbol(inner, name, *op))
         .map(|(_, _, get)| *get)
+}
+
+/// A piece of layout text as [`merge_text`] reads it: text, or a merge
+/// variable's or a symbol's inside (`raw`, the piece with its brackets).
+enum Piece<'t> {
+    Text(&'t str),
+    Merge { inner: &'t str, raw: &'t str },
+    Symbol { inner: &'t str, raw: &'t str },
+}
+
+/// `text` in [`Piece`]s: each `<<$` or `{{`, whichever comes first, up to
+/// its closing `>>` or `}}`; an unclosed one is text.
+fn pieces(text: &str) -> Vec<Piece<'_>> {
+    let mut pieces = Vec::new();
+    let mut rest = text;
+    loop {
+        let merge = rest.find("<<$");
+        let symbol = rest.find("{{");
+        let Some(start) = [merge, symbol].into_iter().flatten().min() else {
+            pieces.push(Piece::Text(rest));
+            return pieces;
+        };
+        pieces.push(Piece::Text(&rest[..start]));
+        let tail = &rest[start..];
+        let is_merge = tail.starts_with("<<");
+        let close = if is_merge { ">>" } else { "}}" };
+        let Some(end) = tail[2..].find(close).map(|i| i + 2) else {
+            pieces.push(Piece::Text(tail));
+            return pieces;
+        };
+        let (inner, raw) = (&tail[2..end], &tail[..end + 2]);
+        pieces.push(if is_merge {
+            Piece::Merge { inner, raw }
+        } else {
+            Piece::Symbol { inner, raw }
+        });
+        rest = &tail[end + 2..];
+    }
+}
+
+/// Whether layout text holds `{{PageNumber}}` or `{{PageCount}}`, by name
+/// or by its selector's number (`{{1015}}`, `{{1125}}`; calc-values.md
+/// "Layout calculations"), read as [`merge_text`] reads its symbols.
+pub(super) fn has_page_symbol(text: &str) -> bool {
+    pieces(text).iter().any(|piece| match piece {
+        Piece::Symbol { inner, .. } => {
+            names_symbol(inner, "PageNumber", 1015) || names_symbol(inner, "PageCount", 1125)
+        }
+        _ => false,
+    })
 }
 
 /// Layout text with its merge variables (`<<$$name>>`, `<<$name>>`, with
@@ -142,40 +196,26 @@ fn symbol_selector(inner: &str) -> Option<&'static str> {
 /// in `context`. Other text, including unresolved `<<...>>`, is kept.
 pub fn merge_text(host: &mut dyn CalcHost, text: &str, context: &Context) -> String {
     let mut out = String::with_capacity(text.len());
-    let mut rest = text;
-    loop {
-        let merge = rest.find("<<$");
-        let symbol = rest.find("{{");
-        let Some(start) = [merge, symbol].into_iter().flatten().min() else {
-            out.push_str(rest);
-            return out;
-        };
-        out.push_str(&rest[..start]);
-        let tail = &rest[start..];
-        let (open, close) = if tail.starts_with("<<") {
-            ("<<", ">>")
-        } else {
-            ("{{", "}}")
-        };
-        let Some(end) = tail[2..].find(close).map(|i| i + 2) else {
-            out.push_str(tail);
-            return out;
-        };
-        let inner = &tail[2..end];
-        let formula = if open == "<<" {
-            is_variable_reference(inner).then(|| inner.to_owned())
-        } else {
-            symbol_selector(inner).map(str::to_owned)
+    for piece in pieces(text) {
+        let (formula, raw) = match piece {
+            Piece::Text(text) => {
+                out.push_str(text);
+                continue;
+            }
+            Piece::Merge { inner, raw } => {
+                (is_variable_reference(inner).then(|| inner.to_owned()), raw)
+            }
+            Piece::Symbol { inner, raw } => (symbol_selector(inner).map(str::to_owned), raw),
         };
         match formula {
             Some(formula) => {
                 let value = evaluate_text(&formula, host, context).value;
                 out.push_str(&display(&value, host));
             }
-            None => out.push_str(&tail[..end + 2]),
+            None => out.push_str(raw),
         }
-        rest = &tail[end + 2..];
     }
+    out
 }
 
 /// `$name`, `$$name` or either with `[n]`: what a merge variable may hold.
@@ -203,6 +243,23 @@ fn is_variable_reference(text: &str) -> bool {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn page_symbols_are_read_as_merge_text_reads_symbols() {
+        for page in [
+            "Page {{1015}}",
+            "{{pagecount}} pages",
+            "{{PageNumber}}",
+            "{{1125}}",
+        ] {
+            assert!(has_page_symbol(page), "{page}");
+        }
+        // A number spelled otherwise, and a symbol inside an unclosed one,
+        // are text, as merge_text keeps them.
+        for text in ["{{01015}}", "{{x{{1015}}", "{{1015", "Page 1015"] {
+            assert!(!has_page_symbol(text), "{text}");
+        }
+    }
 
     #[test]
     fn variable_references_are_dollar_names_with_an_optional_repetition() {
