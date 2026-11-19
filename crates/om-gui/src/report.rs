@@ -952,6 +952,13 @@ impl std::fmt::Debug for Picture {
 mod static_picture;
 pub mod svg_worker;
 
+/// An SVG drawn at `size` pixels as Browse draws it (what the worker does
+/// not draw left out): in the SVG worker, or in this process in unit
+/// tests (`static_picture::svg`).
+pub(crate) fn browse_svg(data: &[u8], size: [u32; 2]) -> Result<Picture, String> {
+    static_picture::svg(data, Some(size), svg_worker::Unsupported::Skip)
+}
+
 /// Static layout pictures have their own bounded decoder; SVG pictures are
 /// never tinted or passed through the button-icon renderer.
 fn decode_picture(key: u64, image: &LibraryImage) -> Result<Picture, ReportError> {
@@ -1102,8 +1109,9 @@ impl std::fmt::Debug for Pictures {
 const ICON_SCALE: f64 = 4.0;
 
 /// An SVG icon tinted as Browse tints it (`document::tinted_image`) and
-/// rasterized by the renderer Browse uses (`egui_extras`, resvg) into
-/// `side` x `side` pixels, stretched as Browse stretches it into its square.
+/// drawn as Browse draws it (in the SVG worker, what it does not draw left
+/// out) into `side` x `side` pixels, stretched as Browse stretches it into
+/// its square.
 fn rasterize_icon(
     key: u64,
     image: &LibraryImage,
@@ -1111,36 +1119,10 @@ fn rasterize_icon(
     side: u32,
 ) -> Result<Picture, ReportError> {
     let data = crate::document::tinted_image(image, tint);
-    let raster = egui_extras::image::load_svg_bytes_with_size(
-        &data,
-        egui::SizeHint::Size {
-            width: side,
-            height: side,
-            maintain_aspect_ratio: false,
-        },
-        &resvg::usvg::Options::default(),
-    )
-    .map_err(|error| {
+    static_picture::svg(&data, Some([side, side]), svg_worker::Unsupported::Skip).map_err(|error| {
         ReportError::unsupported(format!(
             "Library image {key} could not be drawn for the report: {error}"
         ))
-    })?;
-    let [width, height] = raster.size.map(|n| n as u32);
-    if width == 0 || height == 0 {
-        return Err(ReportError::unsupported(format!(
-            "Library image {key} has no pixels"
-        )));
-    }
-    // egui keeps premultiplied alpha; pictures carry straight alpha.
-    let rgba: Vec<u8> = (raster.pixels.iter())
-        .flat_map(|pixel| pixel.to_srgba_unmultiplied())
-        .collect();
-    Ok(Picture {
-        width,
-        height,
-        opaque: rgba.as_chunks::<4>().0.iter().all(|p| p[3] == u8::MAX),
-        rgba,
-        texture: OnceLock::new(),
     })
 }
 
@@ -4372,7 +4354,7 @@ pub(crate) mod tests {
 
         // What reports do not draw refuses before the tree is built: images,
         // references outside the picture and entities. What only exhausts
-        // memory or time is the worker's to contain (tests/report_svg_worker.rs).
+        // memory or time is the worker's to contain (tests/svg_worker.rs).
         for (body, reason) in [
             (
                 r#"<image href="/not-a-report-resource.png" width="10" height="10"/>"#,

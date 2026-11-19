@@ -353,8 +353,7 @@ static picture.
   Text uses the bundled fonts only: Inter where the SVG names no family, and
   Liberation Sans for any family that is not bundled (usvg falls back to a
   generic family, which would otherwise draw nothing). Browse draws the same
-  SVG through `egui_extras` with no fonts, so its text shows in reports but
-  not in Browse [I, OpenMaker; FileMaker unmeasured].
+  SVG text in the same fonts [I, OpenMaker; FileMaker unmeasured].
 - SVG is drawn in a worker process, never in om-gui's: usvg and resvg
   allocate and recurse in ways no check before them bounds (reference
   cycles through clip paths, masks, filters and patterns; pattern content
@@ -370,9 +369,10 @@ static picture.
   drawn once the picture is (and kept with Preview's other pictures). Save
   Records as PDF and Print, which run in the script worker, draw in line. Before building the tree the worker refuses input
   past 4 MiB (expanded for SVGZ) or 50,000 XML nodes, XML entity
-  declarations, `<image>` (resvg is built without raster decoding, which
-  Browse's SVG loader shares) and `use`/`feImage` references outside the
-  picture. No network or filesystem resolver runs.
+  declarations, `<image>` (resvg is built without raster decoding) and
+  `use`/`feImage` references outside the picture; for Browse and button
+  icons it refuses none of those and leaves images out, within its memory
+  and time limits. No network or filesystem resolver runs.
 - Geometry: like Browse (egui 0.37 `Image::paint_at`), the picture stretches
   over the object's whole frame, without keeping its aspect ratio, cropping or
   centering. Root stacking, part clipping, part placement and page repetition are
@@ -451,8 +451,8 @@ have 1, Button Setup's "Image only", and Add Assignee's labelled button has 4,
   frame's left edge, and the label is laid out from the icon size plus 10
   points.
 - An SVG is tinted as Browse tints it (the icon component's color, else
-  the frame's top border color, fills its `fm_fill` shapes) and drawn by
-  the renderer Browse uses (resvg, through `egui_extras`), stretched into
+  the frame's top border color, fills its `fm_fill` shapes) and drawn as
+  Browse draws it (in the SVG worker, images left out), stretched into
   the square. It is embedded as a picture at 4 pixels a point, not as
   vectors. A PNG, JPEG, GIF, BMP, TIFF or WebP icon is decoded as a static
   picture, untinted.
@@ -668,10 +668,14 @@ pages. Damaged and missing pictures leave the saved PDF unchanged and spool
 nothing; tinted and nested pictures refuse, as do SVGs with images, outside
 references or entities, while SVG text in a family that is not bundled still
 draws (unit tests draw SVG in-process). `cargo test -p om-gui --test
-report_svg_worker` drives the worker executable: an SVG comes back drawn at
-the size asked for and at its own, and a clip-path cycle, nested pattern
-clones, a huge arc and a huge filter region each fail in the worker while
-the test process carries on. Decoding is compared with
+svg_worker` drives the worker executable: an SVG comes back drawn at the
+size asked for and at its own, and a clip-path cycle, nested pattern
+clones and a huge filter region each fail in the worker while the test
+process carries on; through Browse's loader, an SVG declaring
+entities draws without the image it names on the local disk, a raster
+past the limits is drawn smaller, and the four SVGs of
+[#303](https://github.com/OpenMaker-Dev/openmaker/issues/303) fail in the
+worker. Decoding is compared with
 Browse's loader, including an EXIF-rotated JPEG, and reused library keys with
 other bytes are decoded again.
 
