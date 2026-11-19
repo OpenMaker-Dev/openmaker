@@ -5251,20 +5251,44 @@ impl Windows for WorkerHost<'_> {
     }
 
     fn select_window(&mut self, target: &WindowTarget, current_file_only: bool) -> HostResult {
-        self.check_dialog_selection(target)?;
-        if let Err(error) = self.select(target) {
-            // Another file's window, which must be shown already: one
-            // opened hidden is not found from here (script-runtime.md 9.2).
-            if !current_file_only {
-                if let WindowTarget::Named(name) = target {
-                    if let Some(window) = self.named_database_window(name) {
-                        self.select_database_window(window)?;
-                        self.send(ScriptEvent::Viewport(egui::ViewportCommand::Focus));
-                        return Ok(());
+        if let WindowTarget::Named(name) = target {
+            // Every open file's windows by name, then by UUID
+            // (script-runtime.md 9.2). Another file's window must be shown
+            // already: one opened hidden is not found from here.
+            enum Found {
+                /// This file's: `None` the current window.
+                Here(Option<usize>),
+                Elsewhere(WindowId),
+            }
+            let found = windows::WindowKey::ORDER.into_iter().find_map(|key| {
+                if let Some(index) = self.window_by(key, name) {
+                    return Some(Found::Here(index));
+                }
+                let other = (!current_file_only)
+                    .then(|| self.named_database_window(key, name))
+                    .flatten();
+                other.map(Found::Elsewhere)
+            });
+            // Over a dialog, only the dialog itself: the window this search
+            // found, never one another file's name pass found first.
+            self.check_dialog_selection(matches!(found, Some(Found::Here(None))))?;
+            match found {
+                None => return Err(ErrorCode::WINDOW_MISSING.into()),
+                Some(Found::Elsewhere(window)) => {
+                    self.select_database_window(window)?;
+                    self.send(ScriptEvent::Viewport(egui::ViewportCommand::Focus));
+                    return Ok(());
+                }
+                Some(Found::Here(index)) => {
+                    if let Some(index) = index {
+                        self.make_current(index);
                     }
+                    self.send(ScriptEvent::Viewport(egui::ViewportCommand::Focus));
                 }
             }
-            return Err(error);
+        } else {
+            self.check_dialog_selection(true)?;
+            self.select(target)?;
         }
         // A window of the script's own file is shown, hidden or not: a file
         // a script in it was opened for, hidden, shows here (#1313). Not
