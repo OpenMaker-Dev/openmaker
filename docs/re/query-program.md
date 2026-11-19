@@ -1264,8 +1264,8 @@ writes `0x800000` for year 0, then the number key of
 
 A find for `12:30 PM` on a time field reads the range [`80 00 00 80 05 56
 11 10`, `80 00 00 80 05 56 16 aa aa aa a0`], the whole minute up to
-45,059.9999999 s (the finder FileMaker Server's engine built for that
-find, traced in the probe).
+45,059.999999 s, its last microsecond (the finder FileMaker Server's engine
+built for that find, traced in the probe).
 
 **Timestamp (High).** The 3-byte date part, then the number key of the
 seconds since midnight: 2026-10-27 21:26:57 = `9f aa 9b | 80 05 88 32 80`
@@ -1723,6 +1723,10 @@ Multi-key and multi-row cases: jp_two_keys (two keys under B, one matching)
 {1}; jp_two_rows (one matching row, one not) {1}; jp_two_preds_hit
 (PK = K and Company = empty) {1}; jp_two_preds_miss (Company = "A") {};
 jp_company_emptykey (Company = `01`) {1,2,3}; jp_pk_miss, jp_empty_src {}.
+Whether `≠` and the inequalities list the records under the empty value's
+key `01` is not measured on the host; a relationship never relates an empty
+value (file-metadata.md 4, observed), and om-query leaves `01` out of
+those ranges while `=` matches it.
 
 Not observed: `25` KFilter and `0a` KOperand1, which `JoinProjection` reads
 when present (bin @0xfc90c0; by name, a relationship filter and its operand;
