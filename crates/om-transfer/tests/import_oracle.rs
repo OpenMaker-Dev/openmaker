@@ -654,4 +654,27 @@ fn an_update_preserving_target_data_keeps_fields_its_source_leaves_empty() {
     assert_eq!(e.code, 3);
     assert_eq!(mem.record(id).cells[&f::K], ["old"]);
     assert_eq!(mem.record(id).mod_count, 0);
+
+    // With "perform auto-enter options" too: fields without auto-entry
+    // import as above, and one with auto-entry mapped (AE) refuses the
+    // import, as its unwritten cell would no longer be kept from it.
+    let with_auto_enter = spec.replace(
+        "Preserve target: On",
+        "Preserve target: On ; Auto-enter: On",
+    );
+    let mut mem = Mem::new();
+    let id = original(&mut mem);
+    let mut request = crate::request(&mem, &with_auto_enter);
+    let summary = import(&mut mem, &request, source.as_bytes(), &en).unwrap();
+    assert_eq!((summary.updated, summary.error_code()), (1, 0));
+    assert_eq!(mem.record(id).cells[&f::FIRST], ["kept"]);
+    request.options.map.push(MapEntry {
+        field: Key::from_id(f::AE),
+        mapping: Mapping::Import,
+    });
+    let mut mem = Mem::new();
+    let id = original(&mut mem);
+    let e = import(&mut mem, &request, b"new\t\ta\t\r", &en).unwrap_err();
+    assert_eq!(e.code, 3);
+    assert_eq!(mem.record(id).mod_count, 0);
 }

@@ -914,6 +914,7 @@ impl ImportTarget for GuiImport<'_, '_> {
                 ty: field_type(f),
                 kind: field_kind(f),
                 repetitions: f.repetitions.max(1),
+                auto_enters: om_data::host::session::auto_enters(f),
             })
             .collect())
     }
