@@ -20,10 +20,11 @@ use om_hbam::catalog::{DataType, FieldKind};
 use om_hbam::{KeyTree, Table};
 
 use super::{
-    check_custom_functions, first_field_occurrence, parse_code, schema, walk, Expression,
+    cell_of, check_custom_functions, first_field_occurrence, parse_code, schema, walk, Expression,
     RecordEnvironment, RecordPlan, ALWAYS_EVALUATE, FIELD_FORMULA, GLOBAL, MAX_CODE, MAX_DEPTH,
     MAX_NODES, UNSTORED,
 };
+use crate::containers;
 use crate::host::{CalcSchema, FieldClass};
 use crate::DataError;
 
@@ -207,6 +208,53 @@ impl Recalculation {
         })
     }
 
+    /// Why `target` cannot be computed on `row`: a container field it
+    /// reads has a cell naming a library member that `environment`'s
+    /// reader cannot find (no library, or a member the library lost), in
+    /// any repetition. The formula would read the reference's own text,
+    /// not the data, so the calculation fails on the record and its value
+    /// stays as it was (OpenMaker's choice: what FileMaker Server stores
+    /// then is unmeasured).
+    fn missing_container_data(
+        &self,
+        target: &Target,
+        row: &BTreeMap<u64, String>,
+        environment: &RecordEnvironment,
+    ) -> Option<DataError> {
+        let table = self.plan.schema.table(self.plan.table)?;
+        for field in &target.expression.dependencies {
+            let Some(def) = table
+                .fields
+                .get(field)
+                .filter(|d| d.value_type == ValueType::Container)
+            else {
+                continue;
+            };
+            for n in 1..=def.repetitions.clamp(1, 255) {
+                let Some(member) = cell_of(*field, n)
+                    .and_then(|cell| row.get(&cell))
+                    .and_then(|text| containers::reference(text))
+                else {
+                    continue;
+                };
+                let found = environment
+                    .containers
+                    .as_ref()
+                    .map(|reader| reader.member(self.plan.table, &member));
+                if !matches!(found, Some(Ok(Some(_)))) {
+                    return Some(DataError::with_code(
+                        super::error::UNAVAILABLE,
+                        format!(
+                            "the data of container field {} is missing from the library.",
+                            def.name
+                        ),
+                    ));
+                }
+            }
+        }
+        None
+    }
+
     /// The new values of one record, `row` being its stored cells as text
     /// (repetition cells under `F * 256 + n`).
     pub fn recompute(
@@ -218,6 +266,10 @@ impl Recalculation {
         let mut row = row.clone();
         let mut out = Recomputed::default();
         for target in &self.targets {
+            if let Some(error) = self.missing_container_data(target, &row, environment) {
+                out.failed.push((target.id, error));
+                continue;
+            }
             let deps = &target.expression.dependencies;
             let skip = !target.always
                 && !deps.is_empty()

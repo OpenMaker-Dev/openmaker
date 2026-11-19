@@ -2375,7 +2375,11 @@ functions that read no fields. A container input is read from the
 table's library: the field's data, as FileMaker Server's engine reads it
 when a commit computes such a calculation (script oracle
 s34-containers-calc: file name, length, Base64 of the data; inf for
-op73's walk, which was not measured). A calculation it cannot evaluate (a related, global, summary or
+op73's walk, which was not measured). A container cell naming a member
+the library lacks is no data to read: the calculation fails on that
+record, which keeps its value, rather than reading the reference's own
+text (OpenMaker's choice; FileMaker Server's answer is unmeasured). A
+calculation it cannot evaluate (a related, global, summary or
 unstored-calculation input, a plug-in, a selector that needs a window,
 repetitions, a container result, a formula that names a deleted field) is
 skipped: its values stay as they were and the server logs the field and
