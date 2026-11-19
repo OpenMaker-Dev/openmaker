@@ -1155,8 +1155,11 @@ once, within what the client's address may still hold of the server's
 memory for clients' uploads (`--upload-memory-mib`, record-writes.md): up
 to 256 times the request's size plus 64 KiB while it reads. The tree stays
 charged while the request is served, and what decoding it as a script takes
-is charged before it is decoded: about twice the tree, and a step's data
-twice again for every step that names it. Past either the request is
+is charged before it is decoded: about twice the tree, a step for each
+descriptor, and the step data the steps name twice again, once however
+many steps name it, since decoding shares it between them
+([#149](https://github.com/OpenMaker-Dev/openmaker/issues/149)). Past
+either the request is
 refused with the CORBA system exception `IMP_LIMIT` before anything is
 applied. The order and the limit are OpenMaker's choice. A client sends an
 operation only when Describe lists its bit, so a host that predates field
