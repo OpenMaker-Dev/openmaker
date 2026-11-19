@@ -615,6 +615,8 @@ impl Finder {
         for id in candidates.iter() {
             let mut matched = false;
             for cell in &cells {
+                // Each look counts, a repetition the record lacks included.
+                work.spend(Size { nodes: 1, bytes: 0 })?;
                 let Some(value) = indexes.stored_text(work, table, cell, id)? else {
                     continue;
                 };
