@@ -405,29 +405,41 @@ its old password is tested, as FileMaker's check gives it; an account that may n
 gets `SetPassword`'s checks (206, 208, 209); more than 100 characters is
 11. A new password outside ASCII is hashed after `HashDecompose` (2.1), as
 FileMaker Pro's own accounts are. It does not create the empty `5d`
-subtree.
+subtree. Before it rewrites an account, it recomputes the stored `04`
+from the account's current members; when the two differ nothing is
+written (3 for a script step; OpenMaker's choice): FileMaker Pro would
+refuse a file whose checksum OpenMaker got wrong (808), so an account it
+does not read as FileMaker does is left alone. An account with no `04`
+is given one.
 
 OpenMaker Server's scripts run Change Password through the same
-operation, and Reset Account Password and Enable Account through
-`Hosted::reset_account_password` and `Hosted::enable_account`, writing
-the members the table above lists. A session without full access gets 9.
-Reset Account Password takes only a FileMaker-file account (206) and a
-password of at most 100 characters (11). Its status is stamped like
-Change Password's, with bit 18 set as the step's option says. Enable
-Account changes only bit 19 and leaves an account already in that state
-unwritten. While each step writes, the script's session holds a write lock
-on `[23, 1]`, as Manage Security does. Another user's lock there gives
-310, which is Reset Account Password's observed code and is inferred for
-the other steps.
+operation, as `DoChangePassword` does. The target is the account the
+session logged in with, found by its record key so that a rename since
+cannot redirect it. Both passwords are cut to 100 UTF-16 code units, and
+[Guest] or an account of another kind gives 3. A step running with full
+access counts as a caller that may manage the account, so it skips
+`SetPassword`'s set checks [I: Claris documents that a script granted
+full access may change a password the set does not let the account
+change]. The step's dialog is not shown on a server, so with it the step
+gives 3 [I: FileMaker Server's handling is not measured]. While it
+writes, the script's session holds a write lock on `[23, 1]`, as Manage
+Security does, and another user's lock gives 310 [I: Reset Account
+Password's observed code]. The commit stamps the account and the
+catalog's index `[23, 1, 1]` (schema-path.md 8.1), so a client's cached
+copy of the catalog shows as stale, and other clients are told the
+catalog changed.
 
-Before any of these rewrites an account, it recomputes the stored `04`
-from the account's current members. When the two differ, nothing is
-written and the step gives 3 (OpenMaker's choice): FileMaker Pro would
-refuse a file whose checksum OpenMaker got wrong (808), so an account it
-does not read as FileMaker does is left alone. An account with no `04` is
-given one. An account name no account has gives 213 [I: FileMaker's code
-for a name it does not find is not observed]. [Guest], whose name is not
-text, is never found.
+Reset Account Password and Enable Account run through
+`Hosted::reset_account_password` and `Hosted::enable_account`, under the
+same lock, stamps, notification and checksum check, writing the members
+the table above lists. A session without full access gets 9. Reset
+Account Password takes only a FileMaker-file account (206) and a password
+of at most 100 characters (11); its status is stamped as Change
+Password's is, with bit 18 set as the step's option says. Enable Account
+changes only bit 19 and leaves an account already in that state
+unwritten. Both find the account by name, ignoring case; a name no
+account has gives 213 [I: FileMaker's code for a name it does not find
+is not observed], and [Guest], whose name is not text, is never found.
 
 When a local file's Login is refused with 211, the desktop asks for a new
 password in a Change Password dialog (New Password, Confirm New Password)

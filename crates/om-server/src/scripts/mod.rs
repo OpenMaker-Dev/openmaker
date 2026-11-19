@@ -411,6 +411,9 @@ pub(crate) struct Request {
     pub hosted: Arc<Hosted>,
     /// The account the client logged in with; the script session uses it.
     pub account: String,
+    /// That account's record key under `[23, 1, 5]`, which identifies it
+    /// however it is renamed later.
+    pub account_key: Vec<u8>,
     /// What the account may do.
     pub privileges: Privileges,
     /// The requesting connection, which gets the op105.
@@ -560,6 +563,7 @@ fn run_request(shared: &Arc<Shared>, request: &Request, slot: &Slot) -> Outcome 
         shared,
         &request.hosted,
         &request.account,
+        &request.account_key,
         request.privileges,
         ScriptRef::Key(&request.script.script),
         &request.script.parameter,
@@ -578,11 +582,14 @@ fn run_request(shared: &Arc<Shared>, request: &Request, slot: &Slot) -> Outcome 
 }
 
 /// Run `script` of `hosted` with `parameter` in a session of its own, as
-/// `account` with `privileges`, under `slot`'s abort flag and limits.
+/// `account` (record key `account_key`) with `privileges`, under `slot`'s
+/// abort flag and limits.
+#[allow(clippy::too_many_arguments)]
 pub(crate) fn run(
     shared: &Arc<Shared>,
     hosted: &Arc<Hosted>,
     account: &str,
+    account_key: &[u8],
     privileges: Privileges,
     script: ScriptRef<'_>,
     parameter: &str,
@@ -598,6 +605,7 @@ pub(crate) fn run(
     );
     host.set_control(slot.control.clone());
     host.set_calc_limits(slot.calc_limits);
+    host.set_account_key(account_key);
     let outcome = execute(&mut host, script, parameter, slot);
     host.close();
     // (The session's locks go with it, before another can get its id.)
@@ -801,6 +809,7 @@ mod tests {
         Request {
             hosted: hosted(shared),
             account: fixture::ACCOUNT.into(),
+            account_key: vec![2],
             privileges: Privileges::FullAccess,
             requester: CLIENT,
             script: PerformScript {

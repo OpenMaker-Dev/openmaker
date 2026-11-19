@@ -957,6 +957,7 @@ fn run(shared: &Arc<Shared>, name: &str, schedule: &ScriptTask, slot: Slot) -> E
         &hosted,
         // `Get ( AccountName )` is the name as the schedule has it.
         &schedule.account,
+        &account.key,
         account.privileges(),
         ScriptRef::Name(&schedule.script),
         &schedule.parameter,

@@ -560,13 +560,19 @@ impl Hosted {
     /// nor a set managing accounts outside [Full Access]) is checked as
     /// `SetPassword` checks it: its set must let it change its own
     /// password, and the new one must have at least the set's minimum
-    /// length (`0d`) and differ from the old one. One commit, saved before this returns; a failed save takes it
-    /// back.
+    /// length (`0d`) and differ from the old one. A `manager` caller (a
+    /// script running with full access) skips those checks as one that
+    /// may manage the account does. One commit, saved before this returns;
+    /// a failed save takes it back. With `stamp` the account and the
+    /// catalog's index get FileMaker's modification stamps
+    /// ([`Self::rewrite_account`]).
     pub fn change_password(
         &self,
-        name: &str,
+        account: AccountRef<'_>,
         old: &str,
         new: &str,
+        manager: bool,
+        stamp: Option<&ModStamp<'_>>,
         now: jiff::civil::DateTime,
     ) -> Result<(), PasswordChangeError> {
         use om_data::host::privilege_set::Options;
@@ -574,7 +580,7 @@ impl Hosted {
             return Err(PasswordChangeError::TooLong);
         }
         let mut store = self.write_store();
-        let Some(record) = find_account(&store, name) else {
+        let Some(record) = find_account(&store, account) else {
             return Err(PasswordChangeError::Refused);
         };
         let view = crate::store::view(&record);
@@ -617,7 +623,7 @@ impl Hosted {
         };
         // An account that may manage itself (full access, or a set that
         // manages accounts outside [Full Access]) skips the checks.
-        let full = set.segment.0 == FULL_ACCESS_SET;
+        let full = manager || set.segment.0 == FULL_ACCESS_SET;
         let decoded = om_data::host::privilege_set::decode(&set);
         let manages = full
             || decoded
@@ -641,9 +647,9 @@ impl Hosted {
             }
         }
         let status = current.password_set(now.date(), seconds(now)).encode();
-        let password =
-            StoredPassword::encode(new, random_salt().map_err(PasswordChangeError::Unwritten)?);
-        self.rewrite_account(&mut store, &record, Some(password), status)
+        let salt = random_salt().map_err(PasswordChangeError::Unwritten)?;
+        let password = StoredPassword::encode(new, salt);
+        self.rewrite_account(&mut store, &record, Some(password), status, stamp)
             .map_err(PasswordChangeError::Unwritten)
     }
 
@@ -651,22 +657,25 @@ impl Hosted {
     /// FileMaker's `DoResetAccount` writes it (local-files.md 2.4): the
     /// stored password `06` with a new random salt, the status `0a`
     /// stamped `now` to the second with its other flags kept and a change
-    /// due at the next login when `expire`, and the checksum `04`. Only a
-    /// FileMaker-file account has a password to reset (206, as
-    /// `SetPassword` refuses another kind); more than 100 characters is
-    /// 11. The caller has checked that the session may manage accounts.
+    /// due at the next login when `expire`, and the checksum `04`
+    /// ([`Self::rewrite_account`], with `stamp`). Only a FileMaker-file
+    /// account has a password to reset (206, as `SetPassword` refuses
+    /// another kind); more than 100 characters is 11. The caller has
+    /// checked that the session may manage accounts.
     pub fn reset_account_password(
         &self,
         name: &str,
         new: &str,
         expire: bool,
+        stamp: Option<&ModStamp<'_>>,
         now: jiff::civil::DateTime,
     ) -> Result<(), AccountEditError> {
         if new.chars().count() > 100 {
             return Err(AccountEditError::TooLong);
         }
         let mut store = self.write_store();
-        let record = find_account(&store, name).ok_or(AccountEditError::Missing)?;
+        let record =
+            find_account(&store, AccountRef::Name(name)).ok_or(AccountEditError::Missing)?;
         let view = crate::store::view(&record);
         if AccountKind::decode(member(&view, ACCOUNT_KIND)) != Some(AccountKind::FileMakerFile) {
             return Err(AccountEditError::NotFileAccount);
@@ -676,21 +685,28 @@ impl Hosted {
         let status = current
             .password_reset(now.date(), seconds(now), expire)
             .encode();
-        let password =
-            StoredPassword::encode(new, random_salt().map_err(AccountEditError::Unwritten)?);
-        self.rewrite_account(&mut store, &record, Some(password), status)
+        let salt = random_salt().map_err(AccountEditError::Unwritten)?;
+        let password = StoredPassword::encode(new, salt);
+        self.rewrite_account(&mut store, &record, Some(password), status, stamp)
             .map_err(AccountEditError::Unwritten)
     }
 
     /// Enable Account (137): the account named `name` made active or
     /// inactive, as FileMaker's `SetEnabled` sets it (local-files.md 2.4):
     /// only the status's inactive bit changes (an account without a status
-    /// gets 1/1/1024's), and the checksum `04` with it. An account already
-    /// in that state is left as it is. The caller has checked that the
+    /// gets 1/1/1024's), and the checksum `04` with it
+    /// ([`Self::rewrite_account`], with `stamp`). An account already in
+    /// that state is left as it is. The caller has checked that the
     /// session may manage accounts.
-    pub fn enable_account(&self, name: &str, active: bool) -> Result<(), AccountEditError> {
+    pub fn enable_account(
+        &self,
+        name: &str,
+        active: bool,
+        stamp: Option<&ModStamp<'_>>,
+    ) -> Result<(), AccountEditError> {
         let mut store = self.write_store();
-        let record = find_account(&store, name).ok_or(AccountEditError::Missing)?;
+        let record =
+            find_account(&store, AccountRef::Name(name)).ok_or(AccountEditError::Missing)?;
         let view = crate::store::view(&record);
         let stored = member(&view, ACCOUNT_STATUS);
         let current = AccountStatus::decode(stored)
@@ -699,24 +715,30 @@ impl Hosted {
         if stored == Some(&status[..]) {
             return Ok(());
         }
-        self.rewrite_account(&mut store, &record, None, status)
+        self.rewrite_account(&mut store, &record, None, status, stamp)
             .map_err(AccountEditError::Unwritten)
     }
 
     /// Write account `record` again with `password` (its own when `None`)
     /// and `status`, and the checksum `04` they give, in one commit saved
-    /// before this returns; its other members are kept. Refused, changing
-    /// nothing, when it stores a checksum other than the one its current
-    /// members give: FileMaker Pro refuses a file whose account checksum is
-    /// wrong (808), so an account this server does not read as FileMaker
-    /// does is not rewritten. One without a checksum, which FileMaker
-    /// always writes, gets one.
+    /// before this returns; its other members are kept. With `stamp`, the
+    /// account and the account catalog's index `[23, 1, 1]` get the
+    /// modification stamps FileMaker writes on every catalog commit
+    /// (`IncrementModCount`, schema-path.md 8.1), so a client holding a
+    /// copy of the catalog sees that it is stale.
+    ///
+    /// Refused, changing nothing, when the account stores a checksum other
+    /// than the one its current members give: FileMaker Pro refuses a file
+    /// whose account checksum is wrong (808), so an account this server
+    /// does not read as FileMaker does is not rewritten. One without a
+    /// checksum, which FileMaker always writes, gets one.
     fn rewrite_account(
         &self,
         store: &mut Store,
         record: &om_hbam::OwnedNode,
         password: Option<Vec<u8>>,
         status: Vec<u8>,
+        stamp: Option<&ModStamp<'_>>,
     ) -> Result<(), String> {
         let view = crate::store::view(record);
         let current = view
@@ -779,8 +801,21 @@ impl Hosted {
             .map(|s| s.to_vec())
             .chain([record.segment.clone()])
             .collect();
+        let mut members = Vec::new();
+        if let Some(stamp) = stamp {
+            let index = store
+                .node(&ACCOUNT_INDEX_PATH)
+                .cloned()
+                .ok_or("the account catalog has no index")?;
+            changed = crate::authoring::stamped(changed, stamp.user, stamp.account, stamp.time);
+            members.push((
+                ACCOUNT_INDEX_PATH.iter().map(|s| s.to_vec()).collect(),
+                crate::authoring::stamped(index, stamp.user, stamp.account, stamp.time),
+            ));
+        }
+        members.insert(0, (path, changed));
         let mut journal = store.begin_commit();
-        store.replace_members_in(&mut journal, vec![(path, changed)]);
+        store.replace_members_in(&mut journal, members);
         self.save_commit(store, journal).map_err(|e| e.to_string())
     }
 
@@ -858,6 +893,9 @@ pub fn save_error(error: &std::io::Error) -> u16 {
 
 /// Key of the account records in the security catalog: `[23, 1, 5]`.
 const ACCOUNTS_PATH: [&[u8]; 3] = [&[23], &[1], &[5]];
+
+/// Key of the account catalog's index (local-files.md 3).
+const ACCOUNT_INDEX_PATH: [&[u8]; 3] = [&[23], &[1], &[1]];
 
 /// Key of an account record's name.
 const ACCOUNT_NAME: &[u8] = &[16];
@@ -959,23 +997,41 @@ impl PasswordChangeError {
     }
 }
 
-/// The record of the account named `name` (as FileMaker matches names,
-/// ignoring case) as `store` holds it. [Guest], whose name is not text, is
-/// never found.
-fn find_account(store: &Store, name: &str) -> Option<om_hbam::OwnedNode> {
-    let wanted = name.to_lowercase();
-    store.node(&ACCOUNTS_PATH).and_then(|accounts| {
-        accounts
-            .children
-            .iter()
-            .find(|account| {
-                crate::store::view(account)
+/// An account named by its record key under `[23, 1, 5]`, which a rename
+/// does not change, or by its name.
+#[derive(Clone, Copy, Debug)]
+pub enum AccountRef<'a> {
+    Key(&'a [u8]),
+    Name(&'a str),
+}
+
+/// Who changed a catalog, and when: the modification stamp FileMaker
+/// writes (schema-path.md 8.1), `time` being the host time key of 3.1.
+#[derive(Clone, Copy, Debug)]
+pub struct ModStamp<'a> {
+    pub user: &'a str,
+    pub account: &'a str,
+    pub time: &'a [u8],
+}
+
+/// The record of `account` as `store` holds it: by key, or by name as
+/// FileMaker matches names, ignoring case. [Guest], whose name is not
+/// text, is found only by its key.
+fn find_account(store: &Store, account: AccountRef<'_>) -> Option<om_hbam::OwnedNode> {
+    let accounts = store.node(&ACCOUNTS_PATH)?;
+    match account {
+        AccountRef::Key(key) => accounts.children.iter().find(|a| a.segment == key),
+        AccountRef::Name(name) => {
+            let wanted = name.to_lowercase();
+            accounts.children.iter().find(|a| {
+                crate::store::view(a)
                     .child(ACCOUNT_NAME)
                     .and_then(|n| n.text()?.ok())
                     .is_some_and(|text| text.to_lowercase() == wanted)
             })
-            .cloned()
-    })
+        }
+    }
+    .cloned()
 }
 
 /// The seconds since midnight of `now`, to the second.
