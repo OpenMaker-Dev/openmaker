@@ -1342,9 +1342,14 @@ impl Window {
     /// Delete Record: the record goes; the next one takes its place.
     pub fn delete(&mut self, provider: &mut dyn DataProvider) -> Result<(), DataError> {
         // A new record the window's session holds is not on the host:
-        // deleting it is releasing it.
+        // deleting it is releasing it. An existing record's session holds
+        // the lock its editing took: its edits go with it, then the record
+        // is deleted.
         if self.state.uncommitted.session && self.state.record.is_some() {
-            return self.revert(provider);
+            if self.state.uncommitted.new {
+                return self.revert(provider);
+            }
+            self.revert(provider)?;
         }
         let (Some(layout), Some(id)) = (self.state.layout, self.record_id(provider)?) else {
             return Err(DataError::with_code(101, "There is no current record."));

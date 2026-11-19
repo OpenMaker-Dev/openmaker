@@ -4813,6 +4813,7 @@ impl DataProvider for NativeProvider {
             self.unprepared_root_edits
                 .remove(&(self.window, table.id, record_id));
             self.pinned.remove(&(self.window, table.id, id));
+            self.release_untouched_edit(table.id, id);
         }
     }
 

@@ -837,6 +837,19 @@ impl OpenMakerApp {
                 }
             }
         }
+        // The lock an existing record's editing took went with the lost
+        // connection, and a reconnect carries no such session (only new
+        // records'): its edits are saved by the ordinary path, which locks
+        // the record again and checks the version they began from.
+        if let Some((_, _, open)) = &mut self.w.uncommitted {
+            if open.session
+                && !open.new
+                && open.attachment_field.is_none()
+                && open.related_attachments.is_empty()
+            {
+                open.session = false;
+            }
+        }
         // The window's new record, held again under a new id or gone (#152).
         let recreated = probe.new_record.and_then(|(layout, old)| {
             let (_, _, _, new) = reconnected

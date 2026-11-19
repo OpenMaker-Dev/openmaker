@@ -881,6 +881,27 @@ impl NativeProvider {
     }
 
     /// The open transaction's kind.
+    /// The window's record session holds only record `record` of `table`,
+    /// locked as its editing began (`prepare_root_record_edit`) and not
+    /// changed since, and the window keeps no edit of it any more: the
+    /// session goes, which lets the lock go.
+    pub(crate) fn release_untouched_edit(&mut self, table: u64, record: u64) {
+        let untouched = self.transaction.as_ref().is_some_and(|t| {
+            t.kind == TransactionKind::Record
+                && t.mark.is_none()
+                && t.containers.is_empty()
+                && t.root_acquisitions.is_empty()
+                && t.parked.is_empty()
+                && t.held.len() == 1
+                && t.held.get(&(table, record)).is_some_and(
+                    |held| matches!(&held.change, Change::Edit { values, .. } if values.is_empty()),
+                )
+        });
+        if untouched {
+            let _ = om_data::DataProvider::revert_record_session(self);
+        }
+    }
+
     pub(crate) fn transaction_kind(&self) -> Option<TransactionKind> {
         self.transaction.as_ref().map(|t| t.kind)
     }
@@ -2952,31 +2973,34 @@ impl NativeProvider {
             let mark = self
                 .single_root_baseline()
                 .ok_or_else(|| unavailable("No before-work record baseline."))?;
-            let Some(identity) = self.external.root_identity().cloned() else {
-                return Ok(Unavailable);
+            // What a reconnect can recover of the edit, where it can be
+            // proved (the account's set, the file's identity); the record
+            // is locked either way, as FileMaker Pro locks it.
+            let mut start = match self.external.root_identity().cloned() {
+                Some(identity) => self.existing_edit_start_at(
+                    &table,
+                    scalar_recovery::ExistingAttachment {
+                        record,
+                        version,
+                        field: None,
+                    },
+                    Some(baseline.layout),
+                    mark,
+                    identity,
+                    false,
+                )?,
+                None => None,
             };
-            let Some(mut start) = self.existing_edit_start_at(
-                &table,
-                scalar_recovery::ExistingAttachment {
-                    record,
-                    version,
-                    field: None,
-                },
-                Some(baseline.layout),
-                mark,
-                identity,
-                false,
-            )?
-            else {
-                return Ok(Unavailable);
-            };
-            if !start.extend_record_edit(self, table.id, fields, baseline.layout) {
-                return Ok(Unavailable);
+            if let Some(proved) = &mut start {
+                if proved.extend_record_edit(self, table.id, fields, baseline.layout) {
+                    proved.row = proved
+                        .existing
+                        .clone()
+                        .map(scalar_recovery::mixed::RowReceipt::Existing);
+                } else {
+                    start = None;
+                }
             }
-            start.row = start
-                .existing
-                .clone()
-                .map(scalar_recovery::mixed::RowReceipt::Existing);
             if self.lock_record(table.id, record, self.transaction_id()?)? != Some(version) {
                 return Err(DataError::with_code(
                     306,
@@ -3004,7 +3028,7 @@ impl NativeProvider {
                 .ok_or_else(|| unavailable("The accepted record is not held."))?
                 .input_layouts
                 .insert(baseline.layout);
-            t.single_root_start = Some(start);
+            t.single_root_start = start;
             Ok(Prepared)
         })();
         if opened && !matches!(prepared, Ok(Prepared)) {

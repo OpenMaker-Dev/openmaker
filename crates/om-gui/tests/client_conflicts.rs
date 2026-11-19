@@ -209,6 +209,28 @@ fn a_record_changed_before_editing_refuses_the_entry() {
     other.close();
 }
 
+/// Delete Record on a record whose editing took its lock deletes the
+/// record: the edit and the lock go first, then the record, and no other
+/// record takes its edit.
+#[test]
+fn deleting_a_record_being_edited_deletes_it() {
+    let hosted = host("delete-edited");
+    let mut app = open(&hosted);
+    type_name(&mut app, "Mine");
+    common::wait_until(&mut app, "the edit taken", common::unsaved);
+    common::click(&mut app, "Delete Record");
+    common::wait_for_label(&mut app, DELETE_CONFIRMATION);
+    common::click(&mut app, "Delete");
+    common::wait_until(&mut app, "the record deleted", |app| {
+        app.state().is_settled() && !app.state().script_running() && !common::editing(app)
+    });
+    assert!(app.state().error().is_none(), "{:?}", app.state().error());
+    assert_eq!(stored_names(&hosted), [Some("Ship".to_owned())]);
+}
+
+/// Delete Record's confirmation (client-ui.md, "Delete confirmations").
+const DELETE_CONFIRMATION: &str = "Permanently delete this ENTIRE record?";
+
 /// The Names of the tasks the host has, read by a client of its own.
 fn stored_names(hosted: &hosted::Hosted) -> Vec<Option<String>> {
     let mut reader = hosted.opened();

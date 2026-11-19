@@ -3266,7 +3266,9 @@ impl OpenMakerApp {
                 };
                 let (layout_id, record_id) = (session.layout.unwrap_or_default(), record.id);
                 // A new record the window's record session holds is not on
-                // the host: the window's own Delete Record releases it (#892).
+                // the host: the window's own Delete Record releases it
+                // (#892). An existing record whose editing took its lock is
+                // deleted by the same step, which lets the lock go first.
                 if self.uncommitted().is_some_and(|open| open.session) {
                     self.run_step(
                         ctx,
@@ -5134,6 +5136,26 @@ impl OpenMakerApp {
                     Ok(om_data::EditPreparation::Prepared) => {
                         let layout = request.baseline.layout;
                         let record = request.baseline.record;
+                        // A reply for a record the window left, or whose
+                        // input went back to its stored value, is not this
+                        // window's edit: its lock goes when the window
+                        // releases the record (`release_record`).
+                        let current = self
+                            .w
+                            .session
+                            .as_ref()
+                            .and_then(|s| Some((s.layout?, s.current_record()?.1.id)))
+                            == Some((layout, record));
+                        if !current
+                            || !self
+                                .w
+                                .document
+                                .drafted_records()
+                                .contains(&(layout, record))
+                        {
+                            ctx.request_repaint();
+                            return;
+                        }
                         if !self
                             .w
                             .uncommitted
