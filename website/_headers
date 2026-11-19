@@ -1,0 +1,9 @@
+# Response headers for every path. Wrangler reads this file and does not
+# serve it. The policy follows what index.html uses: one inline <script>, an
+# inline <style> and style attributes, and images from this site. Nothing
+# loads from another origin, and the page cannot be framed, change its base
+# URL or submit a form.
+/*
+  Content-Security-Policy: default-src 'none'; script-src 'self' 'unsafe-inline'; style-src 'self' 'unsafe-inline'; img-src 'self'; base-uri 'none'; form-action 'none'; frame-ancestors 'none'
+  X-Content-Type-Options: nosniff
+  Referrer-Policy: strict-origin-when-cross-origin

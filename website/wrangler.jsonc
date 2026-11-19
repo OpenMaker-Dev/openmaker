@@ -1,0 +1,21 @@
+// Cloudflare Workers Builds deploys this folder to https://openmaker.dev as
+// static assets, with no Worker script. See README.md, "Deployment".
+{
+  // Must match the Worker's name in the Cloudflare dashboard, or the build
+  // fails.
+  "name": "openmaker-site",
+  "compatibility_date": "2026-11-19",
+  "assets": {
+    "directory": "."
+  },
+  // Off, so that the site has no *.workers.dev address and no Preview URLs:
+  // those hostnames carry the account's subdomain.
+  "workers_dev": false,
+  "preview_urls": false,
+  // Every deploy sets the Worker's Custom Domains to exactly this list. A
+  // Custom Domain added in the dashboard and not listed here can be removed
+  // by the next deploy, so add hostnames here.
+  "routes": [
+    { "pattern": "openmaker.dev", "custom_domain": true }
+  ]
+}
