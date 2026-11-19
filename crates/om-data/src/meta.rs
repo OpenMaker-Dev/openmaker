@@ -7,6 +7,7 @@
 //! |---|---|---|
 //! | file locale | `[2, 0d]` | [`locale`] ([`Locale::from_record`]) |
 //! | file options, default layout, file triggers | `[2, 18]` | [`FileOptions`] |
+//! | page setup | `[2, 87]` | [`page_format`], as stored |
 //! | relationships | `[3, fb, 5, R]` | [`Relationship`] |
 //! | summary definitions | `[T, 3, 5, F, 09]` | [`SummaryDef`] |
 //! | value lists | `[21, 5, V]` | [`ValueList`] |
@@ -30,6 +31,10 @@ pub use om_layout::triggers::{ScriptTrigger, StoredFormula};
 pub const LOCALE: [u64; 2] = [2, 0x0d];
 /// The document preferences `[2, 18]` (file-metadata.md 3).
 pub const DOCUMENT_PREFERENCES: [u64; 2] = [2, 0x18];
+/// The page setup `[2, 87]` (file-format.md 3.4): the same tagged chunks as
+/// Print Setup's stored page format (script-steps.md 11.6), a `Comm` chunk
+/// and the platform's records.
+pub const PAGE_SETUP: [u64; 2] = [2, 0x87];
 /// Relationships `[3, fb, 5]`.
 pub const RELATIONSHIPS: [u64; 3] = [3, 0xfb, 5];
 /// Value lists `[21, 5]` (`KValueLists`).
@@ -42,6 +47,15 @@ pub const LAYOUTS: u64 = 4;
 /// The file's locale, when `tree` holds a record that decodes.
 pub fn locale(tree: &KeyTree<'_>) -> Option<Locale> {
     Locale::from_record(&tree.at(&LOCALE)?.assembled()?)
+}
+
+/// The file's stored page setup ([`PAGE_SETUP`]), reassembled but not
+/// decoded: a host reads what it supports of it. `None` for a file that
+/// stores none (no starter solution does).
+pub fn page_format(tree: &KeyTree<'_>) -> Option<Vec<u8>> {
+    tree.at(&PAGE_SETUP)?
+        .assembled()
+        .map(|bytes| bytes.into_owned())
 }
 
 /// A big-endian reader over a stored stream (file-metadata.md 0).

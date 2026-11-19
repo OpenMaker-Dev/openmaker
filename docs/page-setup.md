@@ -23,11 +23,19 @@ only the physical report plan, resets Preview to page one and changes its scroll
 identity. Accepted record pages, fetch keys, pending ranges, errors, found sets,
 Browse selection and record drafts retain their existing lifecycle.
 
-There is **no local disk persistence** and no write to the hosted file. Closing
-and reopening the file loses this preference. Before a file has explicit settings,
-existing Letter/layout-orientation defaults remain; its first dialog is seeded
-from the current layout. Once accepted, the preference overrides layout orientation
-for every layout. This differs from native FileMaker's saved per-file options.
+A file that stores a page setup (`[2, 87]`, [file format](re/file-format.md)
+3.4: the same tagged chunks as Print Setup's page format) opens with it: when its
+`Comm` chunk reads (below), it is the file session's paper until one is accepted
+in the session, in every window, Preview, Print and Save Records as PDF, and it
+seeds the first dialog. A stored setup that does not read is ignored. Without one,
+the Letter/layout-orientation defaults remain and the first dialog is seeded from
+the current layout. None of the starter solutions stores one.
+
+Nothing is written back: there is **no local disk persistence** and no write to
+the hosted file, so a Page Setup accepted in OpenMaker is lost when the file
+closes, and the file keeps the setup it had. Once accepted, the preference
+overrides layout orientation for every layout. This differs from native
+FileMaker, which saves the choice in the file.
 
 ## Script step 42
 
@@ -48,8 +56,11 @@ bounds the value to 1 MiB before reassembly, validates every chunk boundary and
 rejects missing/duplicate common chunks, invalid sizes/numbers, and scale other
 than 100%. Paper size is `(right-left, bottom-top)`; printable-origin offsets are
 validated but do not replace the printer's margins. The rectangle is interpreted
-as the unrotated sheet and orientation is applied once. This interpretation and
-common-float byte order have synthetic acceptance, not native desktop acceptance.
+as the unrotated sheet and orientation is applied once. The common chunk a
+FileMaker Pro 26 for macOS file stored at `[2, 87]` reads this way as US Letter
+portrait (the sheet -18, -18 to 594, 774 around a 576 x 734 printable area), so
+the big-endian float order holds for native bytes; landscape and other papers
+are still synthetic.
 
 The tagged stream's big-endian u32 lengths follow the existing
 `om-scripts/examples/stored_specs.rs` decoder/re-encoder and

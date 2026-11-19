@@ -12,10 +12,20 @@ use om_layout::{pagination::PageSize, paper::PaperSettings, Layout};
 
 impl WorkerHost<'_> {
     pub(super) fn report_paper(&self, layout: &Layout) -> Result<PageSize, String> {
-        self.s.file.page_setup.as_ref().map_or_else(
+        self.page_setup().as_ref().map_or_else(
             || PageSize::for_layout(layout),
             |settings| settings.paper.for_layout(layout),
         )
+    }
+
+    /// The file session's page setup: the one accepted in it, else the one
+    /// the file stores (`[2, 87]`) when its common format reads; `None`
+    /// before either, for the layout's own defaults.
+    fn page_setup(&self) -> Option<Settings> {
+        self.s.file.page_setup.clone().or_else(|| {
+            let bytes = self.schema()?.page_format.as_deref()?;
+            Settings::restored(bytes).ok()
+        })
     }
 
     fn page_setup_error(&mut self, message: String) -> HostError {
@@ -60,7 +70,7 @@ impl WorkerHost<'_> {
         if restored.is_none() && call.step.has_flag(flag::NO_INTERACT) {
             return Ok(());
         }
-        let mut candidate = match restored.or_else(|| self.s.file.page_setup.clone()) {
+        let mut candidate = match restored.or_else(|| self.page_setup()) {
             Some(settings) => settings,
             None => {
                 let id = self
@@ -89,10 +99,7 @@ impl WorkerHost<'_> {
             .validate()
             .map_err(|e| self.page_setup_error(e))?;
         let paper_changed = self
-            .s
-            .file
-            .page_setup
-            .as_ref()
+            .page_setup()
             .is_none_or(|current| current.paper != candidate.paper);
         let paper = candidate.paper.clone();
         self.s.file.page_setup = Some(candidate);

@@ -4079,6 +4079,12 @@ impl OpenMakerApp {
                     .filter(|s| !self.related_asked.contains(&(file, s.file.clone())))
                     .collect();
                 self.related_sign_ins.insert(file, pending);
+                // The page setup the file stores (`[2, 87]`), when its
+                // common format reads: the file session's paper until one
+                // is accepted in it, as the script worker reads it too.
+                let stored = (schema.as_ref())
+                    .and_then(|s| s.page_format.as_deref())
+                    .and_then(|bytes| crate::page_setup::Settings::restored(bytes).ok());
                 // No schema at all: this file's windows have no
                 // calculations, rather than waiting for them.
                 for doc in std::iter::once(&mut self.w)
@@ -4089,6 +4095,11 @@ impl OpenMakerApp {
                         Some(_) if grown => doc.calcs.grow_schema(schema.clone()),
                         Some(_) => doc.calcs.set_schema(schema.clone()),
                         None => doc.calcs.schema_unavailable(),
+                    }
+                    if let (Some(stored), Some(session)) = (&stored, doc.session.as_mut()) {
+                        if session.paper.is_none() {
+                            session.set_paper(stored.paper.clone());
+                        }
                     }
                 }
                 if let Some(report) = self.w.calcs.report_related_files(warnings) {
