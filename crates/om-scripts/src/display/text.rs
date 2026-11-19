@@ -814,7 +814,9 @@ pub fn parse_record(
     let mut step = match read.extras.step {
         Some(step) => step,
         None => {
-            refuse_pending(read.step.id())?;
+            if read.extras.is_empty() {
+                refuse_pending(read.step.id())?;
+            }
             // From elsewhere, a reference the text names but this file
             // does not have is not made up for by stored bytes.
             let covered = |part: Part| {
@@ -848,8 +850,9 @@ pub fn parse_record(
 }
 
 /// Refuse to make a step OpenMaker cannot yet edit or run
-/// ([`crate::PENDING_STEP_IDS`]) from its text or XML, which would leave it
-/// without its options. A step whose stored bytes come with it is kept.
+/// ([`crate::PENDING_STEP_IDS`]) from its text or XML alone, which would
+/// leave it without its options. A step whose text carries its stored
+/// bytes (`Stored …` options, as OpenMaker writes it) is kept.
 pub(super) fn refuse_pending(id: u16) -> Result<(), String> {
     if !crate::PENDING_STEP_IDS.contains(&id) {
         return Ok(());

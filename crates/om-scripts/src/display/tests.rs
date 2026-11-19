@@ -655,6 +655,17 @@ fn lines_that_do_not_read_are_kept_as_disabled_comments() {
             "{pasted:?}"
         );
     }
+    // Its text as OpenMaker writes it, stored bytes included, reads back.
+    let mut stored = ScriptStep::new(250);
+    stored.set_calculation(3, Some(&calc(&names, "\"$x\"")));
+    let text = step_text(&stored, &names);
+    for origin in [Origin::ThisFile, Origin::Unknown] {
+        let pasted = parse_steps(&text, &names, origin).unwrap();
+        assert!(
+            matches!(&pasted[..], [Pasted::Step(step)] if step.id() == 250),
+            "{text}: {pasted:?}"
+        );
+    }
     let comment = failed_comment("Not a step");
     assert!(!comment.is_enabled());
     assert_eq!(comment.text(0).as_deref(), Some("Not a step"));
