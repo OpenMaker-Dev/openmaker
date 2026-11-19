@@ -799,26 +799,30 @@ fn blank_canvas_commits_but_changing_fields_keeps_the_record_draft() {
     }
 }
 
-/// Return ends a field's editing and keeps the record's draft; the keypad's
-/// Enter commits it. From a field whose "Go to next object using" includes
-/// them, both go to the next field, as Tab does.
+/// Return types a line break into an edit box, stored as FileMaker stores
+/// it, a carriage return; the keypad's Enter commits the record. From a
+/// field whose "Go to next object using" includes them, both go to the next
+/// field, as Tab does.
 #[test]
-fn the_keypad_enter_commits_or_goes_on_where_return_keeps_the_draft() {
+fn return_types_a_line_break_and_the_keypad_enter_commits_or_both_go_on() {
     let keypad_enter = |app: &mut common::App| {
         for pressed in [true, false] {
             app.event(om_gui::keypad::enter_event(pressed, egui::Modifiers::NONE));
         }
         app.run_steps(3);
     };
+    let family = |app: &common::App| common::text_field(app, "Family").value();
     let mut provider = DocumentProvider::new(false);
     provider.writable = true;
     provider.given_next_keys = true;
     let mut app = open_provider(provider);
     replace(&mut app, "Family", "Keypad");
     app.key_press(egui::Key::Enter);
+    app.event(egui::Event::Text("Two".into()));
     app.run_steps(3);
-    assert!(common::unsaved(&app), "Return keeps the draft");
-    assert!(!common::text_field(&app, "Family").is_focused());
+    assert!(common::text_field(&app, "Family").is_focused());
+    assert_eq!(family(&app).as_deref(), Some("Keypad\rTwo"));
+    assert!(common::unsaved(&app), "a line break keeps the draft");
 
     replace(&mut app, "Given", "Return");
     app.key_press(egui::Key::Enter);
@@ -832,9 +836,9 @@ fn the_keypad_enter_commits_or_goes_on_where_return_keeps_the_draft() {
     assert!(common::unsaved(&app), "going on keeps the draft");
 
     keypad_enter(&mut app);
-    common::wait_for_label(&mut app, "Contact: Enter Keypad");
     common::wait_until(&mut app, "the commit", |app| !common::editing(app));
     assert!(!common::text_field(&app, "Family").is_focused());
+    assert_eq!(family(&app).as_deref(), Some("Keypad\rTwo"));
     assert!(app.state().error().is_none(), "{:?}", app.state().error());
 }
 

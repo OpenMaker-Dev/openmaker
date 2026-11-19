@@ -2719,6 +2719,7 @@ fn find_field(
         placeholder,
         drop_down::browse_keys(open),
         enterable,
+        false,
     );
     if response.changed() && completes {
         if let Some(list) = &list {
@@ -5439,6 +5440,7 @@ fn paint_object_repetition(
                                 placeholder_text.as_deref(),
                                 drop_down::browse_keys(list_open),
                                 interactive,
+                                types_line_breaks(object),
                             )
                         });
                     response.widget_info(|| {
@@ -6169,6 +6171,7 @@ fn related_field(
         placeholder,
         related_keys(current, open),
         !state.pending,
+        types_line_breaks(object),
     );
     if keep {
         response.request_focus();
@@ -6317,10 +6320,75 @@ fn related_field(
     None
 }
 
+/// Whether Return types a line break in the field object's Browse editor:
+/// an edit box's (display type 0). Drop-down lists, pop-up menus and
+/// calendars keep one line, Find mode's criteria too (Return performs the
+/// find), and a field whose "Go to next object using" includes Return
+/// never sees it (`OpenMakerApp::shortcuts` makes it a Tab).
+fn types_line_breaks(object: &LayoutObject) -> bool {
+    object
+        .field_obj
+        .as_ref()
+        .is_some_and(|field| field.display_type == 0)
+}
+
+/// A field's text as its editor changes it. FileMaker stores a line break
+/// as a carriage return, so the `\n` that Return and a paste insert is
+/// stored as `\r` (and a pasted `\r\n` as one `\r`). Text already stored,
+/// an `\n` too, is left as it is: the editor lays both out as line breaks
+/// (`field_galley`), one character each, so cursor positions stay the
+/// buffer's.
+struct FieldText<'a>(&'a mut String);
+
+/// [`FieldText`]'s `TextBuffer::type_id`, which needs a `'static` type.
+struct FieldTextBuffer;
+
+impl egui::TextBuffer for FieldText<'_> {
+    fn is_mutable(&self) -> bool {
+        true
+    }
+
+    fn as_str(&self) -> &str {
+        self.0
+    }
+
+    fn insert_text(&mut self, text: &str, char_index: egui::text::CharIndex) -> usize {
+        let text = text.replace("\r\n", "\r").replace('\n', "\r");
+        self.0.insert_text(&text, char_index)
+    }
+
+    fn delete_char_range(&mut self, char_range: std::ops::Range<egui::text::CharIndex>) {
+        self.0.delete_char_range(char_range);
+    }
+
+    fn type_id(&self) -> std::any::TypeId {
+        std::any::TypeId::of::<FieldTextBuffer>()
+    }
+}
+
+/// The galley of a field's text in its editor: as `paint_rich_text` lays
+/// the field out at rest (its font, color, alignment, line spacing and
+/// wrapping, a carriage return breaking the line), without an uppercase
+/// transform, which could change the number of characters.
+fn field_galley(
+    ui: &Ui,
+    text: &str,
+    style: &ResolvedStyle,
+    wrap_width: f32,
+) -> std::sync::Arc<egui::Galley> {
+    let mut style = style.clone();
+    style.text_transform = None;
+    ui.fonts_mut(|fonts| {
+        let job = rich_text::layout_job(fonts, text, &style, None, wrap_width);
+        rich_text::layout_galley(fonts, job)
+    })
+}
+
 /// A field object's editor in Browse over `rect`: the field's font,
 /// color and insets, and its placeholder as the read-only field shows it,
 /// beside the drop-down arrow the field has. Conditional formatting is
-/// ignored while a field is in focus.
+/// ignored while a field is in focus. With `lines`, Return types a line
+/// break, the text wraps as at rest and scrolls in the field.
 #[allow(clippy::too_many_arguments)]
 fn field_editor(
     ui: &mut Ui,
@@ -6331,6 +6399,7 @@ fn field_editor(
     placeholder_text: Option<&str>,
     keys: egui::EventFilter,
     interactive: bool,
+    lines: bool,
 ) -> egui::Response {
     let style = field_text_box(object, layout, cache.text_style(layout, object, &[], 1));
     let size = style.font_size.unwrap_or(14.0) as f32;
@@ -6338,18 +6407,28 @@ fn field_editor(
     // the content box, and the line sits at its top, middle or bottom.
     let inset = |side: usize| style.padding[side].unwrap_or(0.0).clamp(0.0, 127.0) as f32;
     let (top_inset, right, bottom, left) = (inset(0), inset(1), inset(2), inset(3));
-    let free = (rect.height() - top_inset - bottom - size - 4.0).max(0.0);
+    let mut inner = rect;
+    if has_drop_down_arrow(object) {
+        inner.max.x -= 20.0;
+        paint_field_icon(ui, object, rect, style.color.map(color));
+    }
+    // Several lines sit as a block, as `paint_rich_text` places them.
+    let text_height = if lines {
+        let wrap = (inner.width() - left - right).max(0.0);
+        field_galley(ui, buffer, &style, wrap)
+            .size()
+            .y
+            .max(size + 4.0)
+    } else {
+        size + 4.0
+    };
+    let free = (rect.height() - top_inset - bottom - text_height).max(0.0);
     let top = top_inset
         + match style.vertical_align {
             Some(1) => free / 2.0,
             Some(2) => free,
             _ => 0.0,
         };
-    let mut inner = rect;
-    if has_drop_down_arrow(object) {
-        inner.max.x -= 20.0;
-        paint_field_icon(ui, object, rect, style.color.map(color));
-    }
     // The placeholder looks as it does in a read-only field: the field's
     // font in its placeholder style (state 18).
     let placeholder = cache.text_style(layout, object, &[], 18);
@@ -6367,19 +6446,32 @@ fn field_editor(
         .color(placeholder.color.map(color).unwrap_or(theme::CAPTION));
     let mut child = ui.new_child(UiBuilder::new().max_rect(inner));
     child.set_clip_rect(ui.clip_rect().intersect(rect));
+    // A custom frame replaces the editor's own margin, so the text's
+    // insets are the frame's.
+    let frame = egui::Frame::new().inner_margin(egui::Margin {
+        left: left.round() as i8,
+        right: right.round() as i8,
+        top: top.min(127.0).round() as i8,
+        bottom: bottom.round() as i8,
+    });
+    if lines {
+        return lines_editor(
+            &mut child,
+            (object, inner),
+            id,
+            buffer,
+            &style,
+            (keys, interactive),
+            frame,
+            hint,
+        );
+    }
     child.add_sized(
         inner.size(),
         egui::TextEdit::singleline(buffer)
             .id(id)
             .event_filter(keys)
-            // A custom frame replaces the editor's own margin, so the text's
-            // insets are the frame's.
-            .frame(egui::Frame::new().inner_margin(egui::Margin {
-                left: left.round() as i8,
-                right: right.round() as i8,
-                top: top.min(127.0).round() as i8,
-                bottom: bottom.round() as i8,
-            }))
+            .frame(frame)
             .interactive(interactive)
             .font(FontId::new(
                 size,
@@ -6394,6 +6486,75 @@ fn field_editor(
             .text_color(style.color.map(color).unwrap_or(theme::TEXT))
             .hint_text(hint),
     )
+}
+
+/// [`field_editor`] with `lines`: a multi-line editor of [`FieldText`],
+/// laid out as the field at rest ([`field_galley`]), scrolled in the field
+/// to keep the insertion point in view, with a scroll bar only where the
+/// field object has one (flag `0x100`, layout-model.md 5.4.1). Up and Down
+/// move between lines. Tab stays the document's: the editor inserts no tab
+/// character, and egui moves no focus on it (`DocumentState::resolve_tab`).
+#[allow(clippy::too_many_arguments)]
+fn lines_editor(
+    ui: &mut Ui,
+    (object, inner): (&LayoutObject, Rect),
+    id: egui::Id,
+    buffer: &mut String,
+    style: &ResolvedStyle,
+    (keys, interactive): (egui::EventFilter, bool),
+    frame: egui::Frame,
+    hint: RichText,
+) -> egui::Response {
+    let editor_keys = egui::EventFilter {
+        tab: false,
+        vertical_arrows: true,
+        ..keys
+    };
+    let bar = object
+        .field_obj
+        .as_ref()
+        .is_some_and(|field| field.flags & 0x100 != 0);
+    let mut layouter = |ui: &Ui, text: &dyn egui::TextBuffer, wrap_width: f32| {
+        field_galley(ui, text.as_str(), style, wrap_width)
+    };
+    let response = egui::ScrollArea::vertical()
+        .id_salt(id.with("lines"))
+        .max_height(inner.height())
+        .auto_shrink([false, true])
+        .scroll_bar_visibility(if bar {
+            egui::scroll_area::ScrollBarVisibility::VisibleWhenNeeded
+        } else {
+            egui::scroll_area::ScrollBarVisibility::AlwaysHidden
+        })
+        .show(ui, |ui| {
+            ui.add(
+                egui::TextEdit::multiline(&mut FieldText(buffer))
+                    .id(id)
+                    .event_filter(editor_keys)
+                    .frame(frame)
+                    .interactive(interactive)
+                    .desired_rows(1)
+                    .desired_width(inner.width())
+                    .min_size(inner.size())
+                    .layouter(&mut layouter)
+                    .hint_text(hint),
+            )
+        })
+        .inner;
+    // The editor locks its own keys while it has the focus; the document's
+    // Tab stays locked from egui's traversal as on one line.
+    if response.has_focus() {
+        ui.memory_mut(|memory| {
+            memory.set_focus_lock_filter(
+                id,
+                egui::EventFilter {
+                    vertical_arrows: true,
+                    ..keys
+                },
+            );
+        });
+    }
+    response
 }
 
 /// How many frames the keys typed after a Tab wait for the portal row's

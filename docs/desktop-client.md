@@ -986,8 +986,8 @@ editor and keeps the record uncommitted. A successful commit leaves no
 field editor focused. Save/Exit/Commit and focus departure were observed
 for one ordinary local Text field in FileMaker Pro 26.0.3 with macOS keypad
 Enter (re/script-runtime.md 7.1). Hosted/portal behavior and the shortcut
-mapping were not compared by that case. Return in a field ends its editing
-and keeps the draft.
+mapping were not compared by that case. Return in an edit box types a line
+break (below, Keypad Enter and Return).
 
 Records > Revert Record... and, in Find mode, Requests > Revert
 Request... are the `om_scripts::revert_record` command: each runs Revert
@@ -1023,9 +1023,15 @@ Record menu item, and OpenMaker adds none.
     committing or typing a line break, is inferred from the option, not
     measured. With Shift or Option either key still goes forward; what Pro
     does then is unmeasured.
-  - From any other field, Return ends the field's editing and keeps the
-    draft, where FileMaker Pro types a line break
-    ([#376](https://github.com/OpenMaker-Dev/openmaker/issues/376)).
+  - From any other edit box, Return types a line break, stored as
+    FileMaker stores one, a carriage return; a pasted line break is stored
+    so too, and text already stored is left as it is. While it is edited,
+    the field's text wraps and is spaced as at rest, and it scrolls to keep
+    the insertion point in view, with a scroll bar only where the field
+    has one. Up and Down move between lines. Drop-down lists, pop-up
+    menus, calendars and Table view's cells keep one line, and Return ends
+    their editing: what FileMaker Pro's Return does in them is unmeasured.
+    In Find mode, Return still performs the find.
 - **A new record and reconnecting.** Records > New Record and Duplicate
   Record run the New Record/Request and Duplicate Record/Request steps:
   the record is held in the window's record session until it is
