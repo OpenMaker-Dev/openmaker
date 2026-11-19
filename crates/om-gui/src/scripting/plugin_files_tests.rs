@@ -61,10 +61,7 @@ fn a_data_file_another_database_holds_is_not_deleted() {
         let mut s = ScriptStep::new(id);
         s.flags |= flag::FILE_PATH;
         // The steps take a FileMaker path; Files.Delete a native one.
-        let path = format!(
-            "file:{}",
-            crate::scripting::files::filemaker_path(&held, false)
-        );
+        let path = crate::scripting::files::file_line(&held);
         s.set_data_leaf(0x82, Some(om_data::text_node(&[0x82], &path)));
         s
     };

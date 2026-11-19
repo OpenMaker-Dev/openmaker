@@ -149,13 +149,21 @@ pub(crate) fn filemaker_path(path: &Path, folder: bool) -> String {
     text
 }
 
+/// A native absolute file path as a `file:` path list line. A native path
+/// is not one as it is: on macOS FileMaker's absolute paths start with the
+/// volume's name (`/tmp/a` is volume `tmp`, error 826), on Windows with the
+/// drive.
+pub(crate) fn file_line(path: &Path) -> String {
+    format!("file:{}", filemaker_path(path, false))
+}
+
 /// What the user typed into an in-app file dialog, as a path list line: a
 /// native absolute path in FileMaker's form, anything else as typed (a
 /// path relative to the Documents folder, or a FileMaker path).
 pub(crate) fn chosen_path(text: &str) -> String {
     let path = text.trim();
     if Path::new(path).is_absolute() {
-        format!("file:{}", filemaker_path(Path::new(path), false))
+        file_line(Path::new(path))
     } else {
         path.to_owned()
     }

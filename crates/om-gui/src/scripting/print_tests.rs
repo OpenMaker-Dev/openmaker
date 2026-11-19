@@ -75,7 +75,7 @@ fn desktop_print_shares_vector_pdf_and_owned_file_window_paper() {
         0x82,
         Some(om_data::text_node(
             &[0x82],
-            &format!("file:{}", path.display()),
+            &crate::scripting::files::file_line(&path),
         )),
     );
     let mut peer_print = print(true, true, false);
@@ -481,7 +481,7 @@ fn an_elevated_steps_own_error_keeps_its_alert() {
         0x82,
         Some(om_data::text_node(
             &[0x82],
-            &format!("file:{}", temp.path().join("out.pdf").display()),
+            &crate::scripting::files::file_line(&temp.path().join("out.pdf")),
         )),
     );
     let mut c = Client::new(vec![ScriptStep::new(86), append], vec![]);
