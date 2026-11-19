@@ -127,10 +127,10 @@ neutral numeric defaults. The other restored options:
 
 Restore Off ignores stale option slots, as native storage does. [Desktop Print](printing.md) reuses
 this complete builder. New PDF building steps and a complete native printing UI
-remain outside this feature. Print-specific
-account privilege metadata is not exposed by the desktop provider contract;
-this slice uses the existing field/record access behavior, not a new native
-Allow printing privilege gate.
+remain outside this feature. A privilege set that denies printing
+disables Print, Page Setup and Save as PDF, and a script's Print and Save
+Records as PDF then fail with 3, as in FileMaker Pro 26.0.3
+([privilege sets](desktop-client.md#privilege-sets)).
 
 This is synthetic acceptance, not a measurement of native FileMaker desktop
 printing parity. FileMaker Pro 26's Preview and PDF of the starters' Task List
@@ -463,8 +463,9 @@ Still refused (error 3, before any output file or print job):
   decode, a button that contains objects, and a button or group with fields
   this version does not decode;
 - popover buttons, button bars and every other container: an object inside
-  anything but a group refuses the report, as does an object no container
-  walk reaches (a containment cycle);
+  anything but a group, a portal or a tab control's front panel refuses
+  the report ([Portals](#portals), [Tab controls](#tab-controls)), as does
+  an object no container walk reaches (a containment cycle);
 - a group, or a group's member, set to slide up, and a member whose top is
   in another part than its group's: how FileMaker slides grouped objects is
   unmeasured;

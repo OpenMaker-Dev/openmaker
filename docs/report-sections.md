@@ -54,7 +54,9 @@ Break keys decode strictly (layout-model.md 4.3). Planning refuses, before any
 PDF is staged or spooled and with an explicit Preview message: malformed or
 other-file break keys, break fields that are not fields of the layout's table,
 summary or container break fields, duplicate parts for one break field and side,
-part flags, page breaks and unknown part options, a sort whose break order
+part flags other than body bit `0x400` (which prints;
+[portable PDF](portable-pdf.md#supported-layout-and-output-contract)), page
+breaks and unknown part options, a sort whose break order
 disagrees with the layout's part order (leading parts top-down from the outermost
 break, trailing parts bottom-up), a group break after a sort key of another table
 (see below), and summary fields of another occurrence (a related set) or a later
@@ -85,8 +87,8 @@ that, as do reports whose parts resize by sliding.
 
 One body is required. Bodyless (summary-only) reports, sliding left, splitting,
 explicit page breaks/restarts ("page break before/after each occurrence"),
-nonzero part flags, unknown part options, columns and responsive forms remain
-refused. Existing unsupported objects, typography, page ranges and opaque output
+nonzero part flags other than body bit `0x400`, unknown part options, columns
+and responsive forms remain refused. Existing unsupported objects, typography, page ranges and opaque output
 options remain bounded by [portable PDF](portable-pdf.md) and [Print](printing.md).
 
 Parts remain whole: when the next part will not fit, it moves to a fresh page.

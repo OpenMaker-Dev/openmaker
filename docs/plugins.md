@@ -117,8 +117,8 @@ are answered by OpenMaker's own engine (`om_scripts::runtime::dynapdf`):
     and embedded, as reports set them. CodePage 1252 or Unicode.
   - `DynaPDF.SetFillColor ; PDF ; R ; G ; B`, components from 0 to 1, sets
     the text's color; `DynaPDF.RGB ; R ; G ; B` packs one, `Blue * 65536 +
-    Green * 256 + Red`. `DynaPDF.SetLineWidth` keeps the line width for
-    what strokes (nothing drawn here does yet).
+    Green * 256 + Red`. `DynaPDF.SetLineWidth` sets the width of the
+    borders of the form fields and web links made after it (1 at first).
   - `DynaPDF.SetTextRect ; PDF ; X ; Y ; Width ; Height` sets the rectangle
     `DynaPDF.WriteFText ; PDF ; Align ; Text` writes into;
     `DynaPDF.WriteFTextEx ; PDF ; X ; Y ; Width ; Height ; Align ; Text`
@@ -390,9 +390,10 @@ steps, through the same operations as any script.
   Save draws).
 - **DynaPDF saves only to the file `DynaPDF.OpenOutputFile` named.**
   `DynaPDF.Save` without one, which the plug-in answers with container
-  data, returns an error. The document has no outlines (bookmarks),
-  structure tree or interactive form: a copied page keeps its annotations,
-  form field widgets among them, but they are no form's fields. Nor does it
+  data, returns an error. The document has no outlines (bookmarks) or
+  structure tree, and its interactive form holds only the fields DynaPDF
+  commands made: a copied page keeps its annotations, form field widgets
+  among them, but they are no form's fields. Nor does it
   keep a PDF's optional content (layer) configuration, without which
   content the configuration hides would show, so a PDF that has layers is
   refused when opened.

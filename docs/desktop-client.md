@@ -1016,9 +1016,10 @@ Record menu item, and OpenMaker adds none.
   Record run the New Record/Request and Duplicate Record/Request steps:
   the record is held in the window's record session until it is
   committed, and Revert removes it, as Pro 26.0.3 does ([#261](https://github.com/OpenMaker-Dev/openmaker/issues/261);
-  record-writes.md, "A window's record session"). A held record still
-  blocks reconnecting: recovering it, its typing included, is still to be
-  done ([#16](https://github.com/OpenMaker-Dev/openmaker/issues/16), #1006). Whether Pro holds a duplicate uncommitted is
+  record-writes.md, "A window's record session"). A held record that sent
+  nothing to the host is carried to the new connection on Reconnect, its
+  typing included (recovery.md, "A new record not saved yet";
+  [#16](https://github.com/OpenMaker-Dev/openmaker/issues/16)). Whether Pro holds a duplicate uncommitted is
   unmeasured; OpenMaker holds it as a new record.
 - **Revert Request** clears the request's criteria. For a request that
   held criteria before it was entered (Modify Last Find), Pro may bring
@@ -1228,8 +1229,10 @@ drop-down lists (layout-model.md 5.4) read their items through
     tables and the session, which a shared list's rebuilds do not
     follow. It is built again when the window's context changes (its
     size, for example), as results that read the session are.
-  - Validation against a related-values list of such a field is still
-    refused with 3 (`om-provider`'s `related_lists.rs`).
+  - Validation against a related-values list of such a field computes it
+    on each related record, and refuses with 3 only a record whose value
+    cannot be computed (`om-provider`'s `related_lists.rs`;
+    record-writes.md, "A list of an unstored calculation").
 - **When the items are read.** A checkbox or radio button set reads its
   items to draw them. A drop-down list or pop-up menu reads them only once
   it is entered, opened or clicked, or the pointer rests on its arrow; a
@@ -1611,7 +1614,7 @@ dashed box on the canvas, which takes the keyboard when drawn; the
 Inspector shows its frame. Save Layout places it, after any moves and
 deletions, as it places a field, and an empty text is not sent. Revert
 Layout drops it. One new object (field, button or text) waits at a time.
-Editing a stored text's words is not offered yet.
+A stored text's words are retyped as the next paragraph describes.
 
 **Retyping a text.** In Layout mode the canvas shows a text object's
 words, a field's label's included. A double click on one whose words are
@@ -1789,7 +1792,7 @@ look is OpenMaker's.
 Limits: a stored object cannot be moved between parts or restyled;
 groups, portals, tab and slide controls, popovers and button bars and the
 objects inside them do not move and cannot be deleted, nor can objects
-showing a library image, a field's label or a popover button; Delete works on one selected object at a time; a stored text's words cannot be edited; and the Text tool places one line of plain text in the theme's text style, with no character styles. The other tool buttons only select a tool. The provider exposes no
+showing a library image, a field's label or a popover button; only a stored text of one line of plain text can be retyped; and the Text tool places one line of plain text in the theme's text style, with no character styles. The Field, Text, Button and Portal tools place objects; the other tool buttons only select a tool. The provider exposes no
 object styles, autosizing, names or tooltips, so the Inspector does not
 show them, and the other property and arrangement controls stay disabled. Layouts without geometry keep the generic field
 view, which is not inspectable as document objects; they cannot be edited.
@@ -2050,20 +2053,21 @@ matched by overlaying the render on capture 42. Without the field options
 the bottom bar is 60 pt. Field type icons are OpenMaker's own drawings in
 42's style.
 
-**Steps and field calculations.** For a script step (the only caller today)
-the bottom bar holds Cancel and OK only: the result type, repetitions, "Do
+**Steps and field calculations.** For a script step, and a button's
+script parameter in Button Setup, the bottom bar holds Cancel and OK only: the result type, repetitions, "Do
 not evaluate if all referenced fields are empty" and Storage Options apply
 to calculation fields. The stored context stays occurrence 0
 (`Calculation::NO_CONTEXT`). The context popup lists every occurrence and
 chooses the occurrence unqualified names compile against; it opens on the
 occurrence of the formula's unqualified fields, else the file's first
 occurrence. Fields inserted from the list are qualified (`Contacts::First
-Name`); `Self` is error 1225. The field mode (`for_field`, for Manage
-Database's calculation fields) is not wired to Manage Database yet: it shows
-42's options, lists only the occurrences of the field's table, stores the
-chosen occurrence as the context (child 4), inserts fields of the current
-table unqualified and allows `Self`. Its Storage Options button is disabled
-until Manage Database has a field options dialog.
+Name`); `Self` is error 1225. The field mode (`for_field`) is what Manage
+Database opens for a calculation field and for a field's auto-enter,
+validation and message formulas (schema-manager.md): it shows 42's options,
+lists only the occurrences of the field's table, stores the chosen
+occurrence as the context (child 4), inserts fields of the current table
+unqualified and allows `Self`. Its Storage Options button opens the
+calculation's storage options.
 
 **Fields pane.** The table popup lists the current table (the context
 occurrence), then Related Tables and Unrelated Tables (whether the
@@ -2345,8 +2349,10 @@ Limits:
 - **Not compared with FileMaker Pro.** What FileMaker Pro disables under
   these sets, its alerts, and its codes (OpenMaker answers 200 for a
   refused record action) were not measured.
-- **Hosted files.** The desktop applies these limits only when its host
-  tells it the verified set, which only OpenMaker's own local host does.
+- **Hosted files.** A local file's host tells the desktop the verified
+  set; a hosted file applies the record and field rights decoded from its
+  own account's privilege-set reply (above), and where that reply is
+  unavailable the host's own refusals stand.
 
 ### Not built
 

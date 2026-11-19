@@ -1640,9 +1640,10 @@ plans the record the same way; its occurrences of other files stay unresolved, a
 reading them keeps the table read-only. Its formulas read the opened
 file's tables through the opened file's own session and account, so that
 account's record access applies; whether FileMaker reads them through the
-related file's own connection to the opened file is not measured. A
-record the opened file holds in a transaction is not reached from the
-related file before a commit may span files (#1006).
+related file's own connection to the opened file is not measured. In a
+save across files the related file reads a record the opened file holds
+as the opened file's commit will write it (above: in a save across both
+files).
 
 Serial numbers, generated on creation or on commit, are taken from the
 host for each new record (auto-entry.md, Serial numbers): op72 advances
