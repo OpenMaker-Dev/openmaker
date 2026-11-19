@@ -128,12 +128,16 @@ opens its database folders' (Claris: "Database folders"). The default
 folder is `Databases` in the state folder
 (`~/.local/state/openmaker-server/Databases`, or
 `$STATE_DIRECTORY/Databases` under systemd), made for the server's user
-only. `--database-folder <dir>`, given once or more, replaces it. Files
-named on the command line come first. A found file with the name of one
-already hosted is left out and logged, and the backup and log folders are
-not searched. A file copied in after startup is not hosted until the
-server starts again. With no files at all the server still starts, with
-an empty file list.
+only; it is searched also when files are named on the command line.
+`--database-folder <dir>`, given once or more, replaces it. Only regular
+files are hosted and links are not followed, so a database elsewhere is
+hosted by naming its folder or the file itself. Files named on the
+command line come first. A found file with the name of one already hosted
+is left out and logged, and the default backup and log folders are not
+searched (a schedule's own backup target is not excluded). A file copied
+in after startup is not hosted until the server starts again. With no
+files at all the server still starts, with an empty file list; when files
+are found or named and none of them opens, it does not start.
 
 Failed logins are limited. After 5 failures an address (an IPv6 address by
 its /64) may try once a minute; after 30 failures of an account of a file

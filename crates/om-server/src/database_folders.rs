@@ -2,21 +2,48 @@
 //! FileMaker Server opens the databases of its default and additional
 //! database folders (Claris: "Database folders", "Additional database
 //! folders"): files at a folder's root and one subfolder deep, never
-//! deeper. Only `.fmp12` files (any case) are hosted; hidden entries
-//! (named with a leading `.`) and the folders named in `exclude` (the
-//! backup and log folders, should they lie inside one) are passed over.
+//! deeper. Only regular `.fmp12` files (any case) are hosted. Links are not
+//! followed, so a file or folder linked from elsewhere is never found:
+//! another location is chosen by naming it as a folder. Hidden entries
+//! (named with a leading `.`) and anything inside the folders named in
+//! `exclude` (the backup and log folders) are passed over. Each folder's
+//! entries are read up to [`MAX_ENTRIES`], and at most [`MAX_FILES`] files
+//! are found in all, so that a large tree cannot hold startup.
 
+use std::ffi::OsString;
 use std::path::{Path, PathBuf};
+
+/// Entries one folder is read for.
+pub const MAX_ENTRIES: usize = 100_000;
+
+/// Files found in all.
+pub const MAX_FILES: usize = 10_000;
 
 /// The `.fmp12` files under `folders`, each folder's in name order: its
 /// own files first, then those of its subfolders, each subfolder in name
-/// order. A folder that cannot be read is skipped, logged; one in
-/// `exclude` is not looked into.
+/// order. A folder that cannot be read is skipped, logged; one inside a
+/// folder of `exclude` is not looked into.
 pub fn discover(folders: &[PathBuf], exclude: &[PathBuf]) -> Vec<PathBuf> {
     let excluded: Vec<PathBuf> = exclude.iter().map(|p| canonical(p)).collect();
+    let inside_excluded = |path: &Path| {
+        let path = canonical(path);
+        excluded.iter().any(|e| path.starts_with(e))
+    };
     let mut found = Vec::new();
+    let add = |files: Vec<PathBuf>, found: &mut Vec<PathBuf>| {
+        for file in files {
+            if found.len() == MAX_FILES {
+                log::warn!(
+                    "database folders: more than {MAX_FILES} files; the rest are not hosted"
+                );
+                return false;
+            }
+            found.push(file);
+        }
+        true
+    };
     for folder in folders {
-        if excluded.contains(&canonical(folder)) {
+        if inside_excluded(folder) {
             continue;
         }
         let (files, subfolders) = match entries(folder) {
@@ -26,15 +53,21 @@ pub fn discover(folders: &[PathBuf], exclude: &[PathBuf]) -> Vec<PathBuf> {
                 continue;
             }
         };
-        found.extend(files);
+        if !add(files, &mut found) {
+            break;
+        }
         for subfolder in subfolders {
-            if excluded.contains(&canonical(&subfolder)) {
+            if inside_excluded(&subfolder) {
                 continue;
             }
             match entries(&subfolder) {
                 // One level deep: the subfolder's own subfolders are not
                 // looked into.
-                Ok((files, _)) => found.extend(files),
+                Ok((files, _)) => {
+                    if !add(files, &mut found) {
+                        return found;
+                    }
+                }
                 Err(e) => log::warn!("database folder {}: {e}", subfolder.display()),
             }
         }
@@ -42,37 +75,47 @@ pub fn discover(folders: &[PathBuf], exclude: &[PathBuf]) -> Vec<PathBuf> {
     found
 }
 
-/// The `.fmp12` files and the subfolders of `folder`, each in name order.
+/// The regular `.fmp12` files and the subfolders of `folder` (neither a
+/// link), each in name order.
 fn entries(folder: &Path) -> std::io::Result<(Vec<PathBuf>, Vec<PathBuf>)> {
-    let mut items: Vec<(String, PathBuf, bool)> = Vec::new();
-    for entry in std::fs::read_dir(folder)? {
+    let mut files: Vec<(OsString, PathBuf)> = Vec::new();
+    let mut subfolders: Vec<(OsString, PathBuf)> = Vec::new();
+    for (read, entry) in std::fs::read_dir(folder)?.enumerate() {
+        if read == MAX_ENTRIES {
+            log::warn!(
+                "database folder {}: more than {MAX_ENTRIES} entries; the rest are not read",
+                folder.display()
+            );
+            break;
+        }
         let entry = entry?;
-        let name = entry.file_name().to_string_lossy().into_owned();
-        if name.starts_with('.') {
+        let name = entry.file_name();
+        if name.to_string_lossy().starts_with('.') {
             continue;
         }
-        let path = entry.path();
-        // Symbolic links are followed, as an administrator's link to a
-        // file or folder elsewhere is meant to be hosted.
-        let Ok(metadata) = std::fs::metadata(&path) else {
+        // The entry itself, not what a link names.
+        let Ok(kind) = entry.file_type() else {
             continue;
         };
-        items.push((name, path, metadata.is_dir()));
-    }
-    items.sort_by(|a, b| a.0.cmp(&b.0));
-    let mut files = Vec::new();
-    let mut subfolders = Vec::new();
-    for (_, path, is_dir) in items {
-        if is_dir {
-            subfolders.push(path);
-        } else if path
-            .extension()
-            .is_some_and(|e| e.eq_ignore_ascii_case("fmp12"))
+        let path = entry.path();
+        if kind.is_dir() {
+            subfolders.push((name, path));
+        } else if kind.is_file()
+            && path
+                .extension()
+                .is_some_and(|e| e.eq_ignore_ascii_case("fmp12"))
         {
-            files.push(path);
+            files.push((name, path));
+        } else if kind.is_symlink() {
+            log::info!("{}: a link, not hosted", path.display());
         }
     }
-    Ok((files, subfolders))
+    files.sort();
+    subfolders.sort();
+    Ok((
+        files.into_iter().map(|(_, p)| p).collect(),
+        subfolders.into_iter().map(|(_, p)| p).collect(),
+    ))
 }
 
 /// `path` resolved when it exists, else as given.
@@ -105,6 +148,23 @@ mod tests {
             "Backups/Copy.fmp12",
         ] {
             std::fs::write(databases.join(file), b"").unwrap();
+        }
+        // A link to a file and to a folder elsewhere, and a FIFO named as
+        // a database, are not hosted.
+        #[cfg(unix)]
+        {
+            let elsewhere = root.join("Elsewhere");
+            std::fs::create_dir_all(&elsewhere).unwrap();
+            std::fs::write(elsewhere.join("Outside.fmp12"), b"").unwrap();
+            std::os::unix::fs::symlink(
+                elsewhere.join("Outside.fmp12"),
+                databases.join("Link.fmp12"),
+            )
+            .unwrap();
+            std::os::unix::fs::symlink(&elsewhere, databases.join("Linked")).unwrap();
+            let fifo = databases.join("Pipe.fmp12");
+            let status = std::process::Command::new("mkfifo").arg(&fifo).status();
+            assert!(status.is_ok_and(|s| s.success()), "mkfifo");
         }
         let found = discover(
             &[databases.clone(), root.join("Missing")],

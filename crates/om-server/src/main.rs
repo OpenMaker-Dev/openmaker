@@ -141,14 +141,16 @@ const USAGE: &str = "usage: om-server [--bind <addr:port>] [--name <server name>
                     links to its copies. It holds whole databases: the
                     server makes it owner-only when it makes it
   --database-folder folder whose files the server hosts at startup: the
-                    .fmp12 files at its root and in its subfolders, one
-                    level deep, as FileMaker Server opens its database
-                    folders' (default Databases in the state folder, see
-                    --state-dir, made for the server's user only; give it
-                    again for more folders). Files named on the command
-                    line are hosted first; a found file with the name of
-                    one already hosted is left out, logged. The backup and
-                    log folders are not searched
+                    regular .fmp12 files at its root and in its subfolders,
+                    one level deep, as FileMaker Server opens its database
+                    folders'; links are not followed (default Databases in
+                    the state folder, see --state-dir, made for the
+                    server's user only, searched also when files are named;
+                    give it again for more folders). Files named on the
+                    command line are hosted first; a found file with the
+                    name of one already hosted is left out, logged. The
+                    default backup and log folders are not searched. When
+                    no file opens, the server does not start
   --list            name a hosted file (as clients open it, e.g. Tasks.fmp12)
                     in the file list OpenMaker clients' Hosts dialog shows.
                     Files are unlisted by default: a file's own \"Don't
@@ -783,20 +785,24 @@ fn hosted_paths(args: &Args) -> Vec<PathBuf> {
     .flatten()
     .collect();
     let canonical = |path: &Path| std::fs::canonicalize(path).unwrap_or_else(|_| path.to_owned());
-    let named: Vec<PathBuf> = args.files.iter().map(|p| canonical(p)).collect();
+    // Names as hosting keys them (`Hosting::load`: lower case, Unicode).
+    let mut identities: std::collections::HashSet<PathBuf> =
+        args.files.iter().map(|p| canonical(p)).collect();
+    let mut names: std::collections::HashSet<String> = args
+        .files
+        .iter()
+        .map(|p| file_name(p).to_lowercase())
+        .collect();
     let mut paths = args.files.clone();
     for folder in &folders {
         log::info!("database folder {}", folder.display());
     }
     for found in om_server::database_folders::discover(&folders, &exclude) {
-        if named.contains(&canonical(&found)) {
+        if !identities.insert(canonical(&found)) {
             continue;
         }
         let name = file_name(&found);
-        if paths
-            .iter()
-            .any(|p| file_name(p).eq_ignore_ascii_case(&name))
-        {
+        if !names.insert(name.to_lowercase()) {
             log::warn!(
                 "{}: not hosted: a file named {name:?} is already hosted",
                 found.display()
