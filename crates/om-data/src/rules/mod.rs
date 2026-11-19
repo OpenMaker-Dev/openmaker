@@ -4083,12 +4083,21 @@ impl RecordPlan {
         // was made, before its keys), and records the commit holds besides
         // this one (s47's second new record of one transaction did not read
         // the first; OpenMaker's related reads find held records).
-        if let (Some(replaces), Written::New(own)) = (auto_entry, session.written) {
+        // A new record while the commit holds other records of its table:
+        // FileMaker's second new record of one transaction did not read the
+        // first (s47), and every path below reads `found`, which held
+        // records can be among. Refused.
+        if let Written::New(own) = session.written {
             let others = session.others_held.contains(&self.table)
                 || session
                     .held
                     .as_ref()
                     .is_some_and(|held| held.holds_other(self.table, own));
+            if others {
+                return Ok(false);
+            }
+        }
+        if let (Some(replaces), Written::New(own)) = (auto_entry, session.written) {
             let hop = self
                 .schema
                 .path(context, occurrence)
@@ -4117,7 +4126,7 @@ impl RecordPlan {
                     })
                 });
             let older_matches = replaces && older && !uses.placed && unsorted_equal;
-            if !others && final_keys && (found.is_empty() || one_older_match || older_matches) {
+            if final_keys && (found.is_empty() || one_older_match || older_matches) {
                 return Ok(true);
             }
         }
