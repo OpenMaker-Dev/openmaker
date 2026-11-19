@@ -926,3 +926,64 @@ fn stored_container_calculations_store_their_data() {
     );
     assert_eq!(references(&mut designer, &decoded), 2);
 }
+
+/// A calculation whose result type changes from text to container keeps
+/// its old text until it is recomputed; text shaped like a library
+/// reference there owns no reference. Emptying it must not release the
+/// member Photo names (#427's review: Photo's member was deleted while
+/// Photo still named it). A container result whose text has that shape is
+/// refused: the record keeps its value.
+#[test]
+fn a_result_changed_to_container_releases_no_reference_its_text_did_not_own() {
+    const SHAPED: u64 = 46;
+    const FAKE: u64 = 47;
+    let mut root = fixture::tree(&[], true);
+    fixture::add_photo(&mut root);
+    let file = TempFile::from_tree("recalc-result-type", &root);
+    let port = server::start(&file);
+    let (mut designer, id) = server::logged_in(port, "designer");
+    let t = uint_segment(TABLE);
+    let photo_member = |session: &mut Session| {
+        let m = om_hbam::serial::encode(fixture::PHOTO_MEMBER);
+        let path: [&[u8]; 5] = [&t, &[0x1f], &[5], &m, &[0x12]];
+        session.download(&path).unwrap()
+    };
+    // Photo's member is `01`; its reference text is "01" then U+E000.
+    let reference = om_data::containers::reference_text(&om_hbam::serial::encode(1));
+    let shaped = "\"01\" & Char ( 57344 )";
+    let names = fixture::photo_names();
+    let mut designed = root.clone();
+    // Shaped: a stored text calculation (1); Fake: a container one (6).
+    for (field, name, data_type) in [(SHAPED, "Shaped", 1u8), (FAKE, "Fake", 6)] {
+        fixture::add_field(&mut designed, TABLE, field, name, 2, data_type, 0, 0x20, 0);
+        fixture::add_formula(&mut designed, &names, (TABLE, OCCURRENCE), field, 5, shaped);
+    }
+    let mut catalog = field_catalog(&designed);
+    save_field_catalog(&mut designer, id, &catalog);
+    let after = records_of(&mut designer, TABLE);
+    assert_eq!(cell(&after, 1, SHAPED), Some(reference.as_str()));
+    assert_eq!(
+        cell(&after, 1, FAKE),
+        None,
+        "reference-shaped text is refused"
+    );
+
+    // Shaped becomes a container calculation answering nothing.
+    let path: [&[u8]; 3] = [&[5], &uint_segment(SHAPED), &[2]];
+    let mut definition = catalog.at(&path).unwrap().value.clone().unwrap();
+    definition[1] = 6;
+    catalog.put(&path, OwnedNode::leaf(Vec::new(), definition));
+    set_formula(&mut catalog, SHAPED, "\"\"");
+    defer(&mut catalog, SHAPED, 0x40 | FORMULA_CHANGED);
+    save_field_catalog(&mut designer, id, &catalog);
+    let after = records_of(&mut designer, TABLE);
+    assert_eq!(cell(&after, 1, SHAPED), None);
+    let member = photo_member(&mut designer);
+    assert_eq!(
+        member.node_state,
+        om_protocol::NodeState::Terminal,
+        "Photo's data is kept"
+    );
+    assert_eq!(member.value, 1u32.to_be_bytes().to_vec());
+    assert_eq!(cell(&after, 1, fixture::PHOTO), Some(reference.as_str()));
+}

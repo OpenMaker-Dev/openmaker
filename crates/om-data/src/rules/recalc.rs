@@ -37,6 +37,9 @@ pub struct Recalculation {
     plan: RecordPlan,
     targets: Vec<Target>,
     skipped: Vec<Skipped>,
+    /// Container fields whose stored cells name no member they counted
+    /// ([`Self::set_unowned_cells`]).
+    unowned: BTreeSet<u64>,
 }
 
 struct Target {
@@ -195,29 +198,38 @@ impl Recalculation {
         }
         // A container result is stored by the host after the walk, so a
         // calculation reading one recomputed in the same pass would read
-        // its old value.
-        let containers: BTreeSet<u64> = ready
+        // its old value; so would one reading such a skipped calculation,
+        // and so on.
+        let mut unready: BTreeSet<u64> = ready
             .iter()
             .filter(|(_, t)| t.container)
             .map(|(id, _)| *id)
             .collect();
-        let readers: Vec<u64> = ready
-            .iter()
-            .filter(|(_, t)| {
-                t.expression
-                    .dependencies
-                    .iter()
-                    .any(|d| containers.contains(d))
-            })
-            .map(|(id, _)| *id)
-            .collect();
-        for id in readers {
-            ready.remove(&id);
-            skipped.push(Skipped {
-                field: id,
-                name: table.field(id).map_or_else(String::new, |f| f.name.clone()),
-                reason: "it reads a container calculation recomputed in the same change.".into(),
-            });
+        loop {
+            let readers: Vec<u64> = ready
+                .iter()
+                .filter(|(id, t)| {
+                    !unready.contains(id)
+                        && t.expression
+                            .dependencies
+                            .iter()
+                            .any(|d| unready.contains(d))
+                })
+                .map(|(id, _)| *id)
+                .collect();
+            if readers.is_empty() {
+                break;
+            }
+            for id in readers {
+                unready.insert(id);
+                ready.remove(&id);
+                skipped.push(Skipped {
+                    field: id,
+                    name: table.field(id).map_or_else(String::new, |f| f.name.clone()),
+                    reason: "it reads a container calculation recomputed in the same change."
+                        .into(),
+                });
+            }
         }
         // Formulas read the table through their context occurrence.
         for target in ready.values() {
@@ -244,7 +256,16 @@ impl Recalculation {
             },
             targets,
             skipped,
+            unowned: BTreeSet::new(),
         }
+    }
+
+    /// Container fields whose stored cells name no member they counted (a
+    /// calculation whose result type changed to container keeps its old
+    /// text until recomputed): a result is never taken as already held
+    /// there, so its reference is counted when it is stored.
+    pub fn set_unowned_cells(&mut self, fields: BTreeSet<u64>) {
+        self.unowned = fields;
     }
 
     /// Whether no stored value needs recomputing.
@@ -358,11 +379,13 @@ impl Recalculation {
                                 &row,
                                 &session,
                             )
-                            .map(|(value, text)| container_result(value, text))
+                            .and_then(|(value, text)| container_result(value, text))
                     };
                     match result {
                         Ok(result) => {
-                            if !holds(row.get(&cell), &result, self.plan.table, environment) {
+                            let held = !self.unowned.contains(&target.id)
+                                && holds(row.get(&cell), &result, self.plan.table, environment);
+                            if !held {
                                 out.containers.insert(cell, result);
                             }
                         }
@@ -492,23 +515,30 @@ fn evaluable(
 }
 
 /// What a container calculation's value `value` (shown as `text`)
-/// stores: nothing, its text, or container data.
-fn container_result(value: om_calc::Value, text: String) -> ContainerResult {
-    match value {
-        om_calc::Value::Container(c) if c.is_empty() => ContainerResult::Empty,
+/// stores: nothing, its text, or container data. Text in the form a cell
+/// names a library member by (containers.md 1.4) cannot be stored as text:
+/// the cell would name that member without counting it, so the
+/// calculation fails on the record, which keeps its value.
+fn container_result(value: om_calc::Value, text: String) -> Result<ContainerResult, DataError> {
+    let text = match value {
+        om_calc::Value::Container(c) if c.is_empty() => return Ok(ContainerResult::Empty),
         // A reference text without data stays text.
         om_calc::Value::Container(c) if c.library.is_none() && c.streams.is_empty() => {
-            let text = c.text.as_str().to_owned();
-            if text.is_empty() {
-                ContainerResult::Empty
-            } else {
-                ContainerResult::Text(text)
-            }
+            c.text.as_str().to_owned()
         }
-        om_calc::Value::Container(c) => ContainerResult::Data(c),
-        _ if text.is_empty() => ContainerResult::Empty,
-        _ => ContainerResult::Text(text),
+        om_calc::Value::Container(c) => return Ok(ContainerResult::Data(c)),
+        _ => text,
+    };
+    if text.is_empty() {
+        return Ok(ContainerResult::Empty);
     }
+    if containers::reference(&text).is_some() {
+        return Err(DataError::with_code(
+            super::error::UNAVAILABLE,
+            "its text result has the form of a container's library reference.".to_string(),
+        ));
+    }
+    Ok(ContainerResult::Text(text))
 }
 
 /// Whether the cell text `stored` of a record of `table` already holds

@@ -1813,11 +1813,12 @@ impl Store {
         }
         let basis = recalc::table_basis(&self.root, &definition);
         let stale = recalc::changed_fields(self.basis.get(table), &basis, &work);
+        let unowned = recalc::unowned_cells(self.basis.get(table), &basis);
         self.basis.insert(table.to_vec(), basis);
         let recomputed = if stale.is_empty() {
             Vec::new()
         } else {
-            self.recalculate(table, &definition, &stale, environment)
+            self.recalculate(table, &definition, &stale, &unowned, environment)
         };
         changed |= !recomputed.is_empty();
         let mut rebuild: BTreeSet<Vec<u8>> = work
@@ -1944,9 +1945,10 @@ impl Store {
         table: &[u8],
         definition: &om_hbam::Table,
         stale: &BTreeSet<u64>,
+        unowned: &BTreeSet<u64>,
         environment: &mut dyn FnMut() -> RecordEnvironment,
     ) -> Vec<u64> {
-        let Some(plan) = self.with_calc_inputs(table, |tree, calc| {
+        let Some(mut plan) = self.with_calc_inputs(table, |tree, calc| {
             Recalculation::plan(definition, tree, calc, stale)
         }) else {
             warn!(
@@ -1966,6 +1968,7 @@ impl Store {
         if plan.is_empty() {
             return Vec::new();
         }
+        plan.set_unowned_cells(unowned.clone());
         let fields = plan.fields();
         // Calculations read container data from the table's library, set
         // aside (not copied) while the records are rewritten, and put back
@@ -2001,7 +2004,17 @@ impl Store {
         let outcome = outcome.unwrap_or_else(|panic| std::panic::resume_unwind(panic));
         // The library is back: container results go into it.
         for (record, cells) in &outcome.containers {
-            self.store_recomputed_containers(table, record, cells, &definition.name);
+            self.store_recomputed_containers(table, record, cells, unowned, &definition.name);
+        }
+        if outcome.over_budget > 0 {
+            warn!(
+                "{}: table {:?}: {} record(s) keep their container calculation values: the \
+                 container data recomputed in one change is limited to {} MiB",
+                self.name,
+                definition.name,
+                outcome.over_budget,
+                recalc::CONTAINER_BUDGET >> 20
+            );
         }
         for (field, (records, first)) in &outcome.failed {
             let name = definition.field(*field).map_or("", |f| f.name.as_str());
@@ -2045,6 +2058,7 @@ impl Store {
         table: &[u8],
         record: &[u8],
         cells: &BTreeMap<u64, ContainerResult>,
+        unowned: &BTreeSet<u64>,
         name: &str,
     ) {
         let path: [&[u8]; 3] = [table, &[keys::RECORDS], record];
@@ -2052,6 +2066,14 @@ impl Store {
             return;
         };
         let mut new = old.clone();
+        // The record as it counted its references: the cells of a field
+        // that was not a container counted none (`recalc::unowned_cells`).
+        let mut counted_old = old.clone();
+        counted_old.children.retain(|cell| {
+            be_uint(&cell.segment).is_none_or(|id| {
+                !unowned.contains(&id) && !(id > 0xff && unowned.contains(&(id >> 8)))
+            })
+        });
         let mut journal = self.begin_commit();
         // The members `store_container_in` counted a reference to.
         let mut counted = Vec::new();
@@ -2082,7 +2104,13 @@ impl Store {
             }
         }
         if journal.refused.is_none() {
-            self.count_containers_in(&mut journal, table, Some(&old), Some(&new), &counted);
+            self.count_containers_in(
+                &mut journal,
+                table,
+                Some(&counted_old),
+                Some(&new),
+                &counted,
+            );
         }
         if let Some(reason) = journal.refused.take() {
             warn!(

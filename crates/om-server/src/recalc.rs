@@ -116,6 +116,26 @@ pub fn changed_fields(
     changed
 }
 
+/// The container fields of `new` whose stored cells name no member they
+/// counted: fields that were not containers in `old` (a calculation whose
+/// result type changed to container keeps its old text until it is
+/// recomputed, and reference-shaped text there owns no reference), or
+/// every container field without an `old` basis, whose old types are not
+/// known. Their old cells are never counted as references, so that
+/// clearing one cannot release another field's member; at worst a count
+/// stays one too high, which deletes nothing (#427's review).
+pub fn unowned_cells(old: Option<&TableBasis>, new: &TableBasis) -> BTreeSet<u64> {
+    const CONTAINER: u8 = 6;
+    new.iter()
+        .filter(|(_, basis)| basis.data_type == CONTAINER)
+        .filter(|(id, _)| {
+            old.and_then(|old| old.get(*id))
+                .is_none_or(|was| was.data_type != CONTAINER)
+        })
+        .map(|(id, _)| *id)
+        .collect()
+}
+
 /// What a recomputation did.
 #[derive(Debug, Default)]
 pub struct Outcome {
@@ -133,7 +153,16 @@ pub struct Outcome {
     /// which reads the library while it runs ([`crate::store::Store`]'s
     /// `recalculate`).
     pub containers: Vec<(Vec<u8>, BTreeMap<u64, ContainerResult>)>,
+    /// Records whose container results were left as they were because
+    /// the data already held reached [`CONTAINER_BUDGET`].
+    pub over_budget: usize,
 }
+
+/// How much new container data one recompute holds for the library
+/// before it is stored: past it, a record's container results are left as
+/// they were (logged), so that a formula making large data on every row
+/// cannot hold rows times its size in memory (#427's review).
+pub const CONTAINER_BUDGET: usize = 256 << 20;
 
 /// Recompute `recalc`'s calculations on every record under `records`
 /// (`[T, 05]`), in place, one record at a time: a record whose values
@@ -152,6 +181,7 @@ pub fn recompute_records(
     let per_record = recalc.uses_uuid();
     let mut shared = environment();
     let mut outcome = Outcome::default();
+    let mut held = 0usize;
     for record in &mut records.children {
         if om_hbam::writer::holds_value(record) {
             continue;
@@ -160,7 +190,22 @@ pub fn recompute_records(
         if per_record {
             shared = environment();
         }
-        let result = recalc.recompute(&texts(record), &shared);
+        let mut result = recalc.recompute(&texts(record), &shared);
+        let size: usize = result
+            .containers
+            .values()
+            .map(|r| match r {
+                ContainerResult::Data(c) => c.streams.iter().map(|(_, b)| b.len()).sum(),
+                ContainerResult::Text(t) => t.len(),
+                ContainerResult::Empty => 0,
+            })
+            .sum();
+        if size > 0 && held.saturating_add(size) > CONTAINER_BUDGET {
+            result.containers.clear();
+            outcome.over_budget += 1;
+        } else {
+            held += size;
+        }
         // A calculation failing in several repetitions of the record is
         // one record it failed on.
         let mut seen = BTreeSet::new();
