@@ -1162,12 +1162,13 @@ A portal saved with FileMaker Pro 26.1's "Place row for new record at top"
 and the rows begun in it, above its records, when it does not scroll
 (option `0x1` clear); a portal that scrolls keeps them last, as FileMaker
 Pro 26.1.1's `DataEntryModel::IsVisibleTopNewPortalRow` decides
-([#343](https://github.com/OpenMaker-Dev/openmaker/issues/343)). Every row keeps the number it has without the option, so a
-script's portal row numbers, Go to Portal Row and `Get (
-ActivePortalRowNumber )` are unchanged [I: how FileMaker numbers a row
-drawn at the top is unmeasured]. The option's storage is read from
-FileMaker Pro 26.1.1's binaries, not from a file it saved, and Portal
-Setup does not offer it.
+([#343](https://github.com/OpenMaker-Dev/openmaker/issues/343)). Rows are numbered where they are drawn, in Browse, for Tab and
+for scripts alike: the creation row is row 1, the records follow, and
+scripts reach the creation row there (Go to Portal Row, a button in the
+row) as Browse shows it [I: how FileMaker numbers a row drawn at the top,
+and whether a script reaches it, are unmeasured]. The option's storage is
+read from FileMaker Pro 26.1.1's binaries, not from a file it saved, and
+Portal Setup does not offer it.
 
 A step that puts the focus in a field of a portal row (Go to Field, Go to
 Object, Go to Portal Row with a field active), as the starter solutions'

@@ -224,9 +224,9 @@ pub(super) fn show(
         paint,
     );
     shown.clicked = clicked.is_some();
-    // The clicked row's index counts from the portal's first related
-    // record, before its initial row.
-    shown.selected = clicked.and_then(|index| Some((*records.get(index)?, index + 1)));
+    // The clicked row's index counts from the portal's first row, before
+    // its initial row.
+    shown.selected = clicked.and_then(|(index, record)| Some((record?, index + 1)));
     shown
 }
 
@@ -250,7 +250,7 @@ fn paint_rows(
     parent: u64,
     rows: PortalRecords<'_>,
     mut paint: impl FnMut(&mut Ui, PortalPaintRow),
-) -> Option<usize> {
+) -> Option<(usize, Option<u64>)> {
     let PortalRecords {
         layout_id,
         styles,
@@ -283,18 +283,19 @@ fn paint_rows(
     let mut clicked = None;
     let mut paint_row = |ui: &mut Ui, index: usize, row_rect: Rect| {
         // The row's place among the records and the rows without one,
-        // which come after them, or first with `new_row_top`. Its number,
-        // id and clicks follow that place, wherever it is drawn [I: how
-        // FileMaker numbers a row drawn at the top is unmeasured].
+        // which come after them, or first with `new_row_top`. It is
+        // numbered where it is drawn, as scripts number it
+        // (`WorkerHost::portal_rows`) [I: how FileMaker numbers a row drawn
+        // at the top is unmeasured].
         let top = geometry.new_row_top && unsaved > 0;
         let place = match top {
             true if index < unsaved => records.len() + index,
             true => index - unsaved,
             false => index,
         };
-        let record_index = geometry.first_record + place;
+        let record_index = geometry.first_record + index;
         let mut style = styles.normal.clone();
-        if styles.use_alternate && (geometry.first_record + index) % 2 == 1 {
+        if styles.use_alternate && record_index % 2 == 1 {
             style.overlay(&styles.alternate);
         }
         let record = records.get(place).copied();
@@ -331,7 +332,7 @@ fn paint_rows(
             )
         });
         if response.clicked() && !stale {
-            clicked = Some(record_index);
+            clicked = Some((record_index, record));
         }
         let mut row_ui = ui.new_child(
             UiBuilder::new()
@@ -577,8 +578,8 @@ mod tests {
     }
 
     /// "Place row for new record at top" (`0x400`) draws the creation row
-    /// first in a portal that does not scroll, keeping each row's number;
-    /// a scrolling portal keeps it last, as FileMaker Pro 26.1.1 does.
+    /// first, numbered 1, in a portal that does not scroll; a scrolling
+    /// portal keeps it last, as FileMaker Pro 26.1.1 does.
     #[test]
     fn the_new_record_row_comes_first_when_the_portal_asks_and_does_not_scroll() {
         let context = egui::Context::default();
@@ -619,11 +620,10 @@ mod tests {
                     });
                 })
                 .drop_without_applying_deltas();
-            let creation = (None, Some(0), 3);
             let expected = if top {
-                vec![creation, (Some(10), None, 1), (Some(20), None, 2)]
+                vec![(None, Some(0), 1), (Some(10), None, 2), (Some(20), None, 3)]
             } else {
-                vec![(Some(10), None, 1), (Some(20), None, 2), creation]
+                vec![(Some(10), None, 1), (Some(20), None, 2), (None, Some(0), 3)]
             };
             assert_eq!(painted, expected, "{flags:#x}");
         }

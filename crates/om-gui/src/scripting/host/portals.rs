@@ -68,6 +68,10 @@ pub(super) struct Portal {
     /// "Allow vertical scrolling" (portal option `0x1`); without it only
     /// the visible rows are reached.
     pub scrolls: bool,
+    /// "Place row for new record at top" in a portal that does not scroll
+    /// (portal option `0x400`, layout-model.md 5.3.2): the rows without a
+    /// record come first, as Browse draws them.
+    pub new_row_top: bool,
     pub visible: u64,
     /// The portal sorts or filters its own rows by a definition that does
     /// not read, so which record a row shows is not known here (see the
@@ -99,6 +103,8 @@ const RELATIONSHIP_MISSING: ErrorCode = ErrorCode(103);
 const OBJECT_MISSING: ErrorCode = ErrorCode(116);
 /// The portal scrolls (`PortalLayoutObject.flags`, s35 `-word0`/`-word1`).
 const PORTAL_SCROLLS: i32 = 0x1;
+/// "Place row for new record at top" (FileMaker Pro 26.1).
+const PORTAL_NEW_ROW_TOP: i32 = 0x400;
 /// The portal sorts its rows by its stored sort order (`portalFlags`
 /// `0x8`): a stored order alone does not sort them, as in Browse.
 const PORTAL_SORTS: i32 = 0x8;
@@ -134,6 +140,7 @@ fn portal(object: &om_layout::LayoutObject) -> Option<Portal> {
         object: object.id,
         occurrence: om_layout::occurrence_id(def.table_alias_key)?,
         scrolls: def.flags & PORTAL_SCROLLS != 0,
+        new_row_top: def.flags & PORTAL_NEW_ROW_TOP != 0 && def.flags & PORTAL_SCROLLS == 0,
         visible: (def.num_rows.max(1.0) as u64).max(1),
         ordered: unread_sort || unread_filter,
         own_order: sorts || calcs.portal_filter.is_some(),
@@ -230,8 +237,9 @@ impl WorkerHost<'_> {
     /// the relationship's order (without those a script deleted), the
     /// records a script is creating through it, and the creation row when
     /// the relationship allows creating records and the portal scrolls; a
-    /// portal that does not scroll has its visible rows at most. A portal
-    /// of the layout's own occurrence shows the found set.
+    /// portal that does not scroll has its visible rows at most, those
+    /// without a record first when it places the new record's row at the
+    /// top. A portal of the layout's own occurrence shows the found set.
     pub(super) fn portal_rows(&mut self, portal: &Portal) -> Result<Vec<Row>, HostError> {
         let occurrence = portal.occurrence;
         let current = self.s.file.occurrence;
@@ -248,26 +256,42 @@ impl WorkerHost<'_> {
             return Ok(Vec::new());
         };
         let related = self.order_rows(portal, related)?;
-        let mut rows: Vec<Row> = related.into_iter().map(Row::Record).collect();
-        rows.extend(
-            self.s
-                .file
-                .window
-                .state
-                .uncommitted
-                .related
-                .iter()
-                .enumerate()
-                .filter(|(_, d)| d.occurrence == occurrence && d.record.is_none())
-                .map(|(i, _)| Row::New(i)),
-        );
-        if portal.scrolls {
+        let records = related.into_iter().map(Row::Record);
+        let begun: Vec<Row> = self
+            .s
+            .file
+            .window
+            .state
+            .uncommitted
+            .related
+            .iter()
+            .enumerate()
+            .filter(|(_, d)| d.occurrence == occurrence && d.record.is_none())
+            .map(|(i, _)| Row::New(i))
+            .collect();
+        let visible = usize::try_from(portal.visible).unwrap_or(usize::MAX);
+        let rows = if portal.scrolls {
+            let mut rows: Vec<Row> = records.chain(begun).collect();
             if self.creation_allowed(occurrence) {
                 rows.push(Row::Creation);
             }
+            rows
+        } else if portal.new_row_top {
+            // The rows without a record first, the creation row among
+            // them, where Browse draws and numbers them [I: FileMaker's
+            // numbering of the top row is unmeasured].
+            let mut rows = begun;
+            if self.creation_allowed(occurrence) {
+                rows.push(Row::Creation);
+            }
+            rows.extend(records);
+            rows.truncate(visible);
+            rows
         } else {
-            rows.truncate(usize::try_from(portal.visible).unwrap_or(usize::MAX));
-        }
+            let mut rows: Vec<Row> = records.chain(begun).collect();
+            rows.truncate(visible);
+            rows
+        };
         Ok(rows)
     }
 
