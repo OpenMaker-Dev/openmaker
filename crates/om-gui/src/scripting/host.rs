@@ -704,10 +704,12 @@ impl<'a> WorkerHost<'a> {
             let def = schema
                 .field(field.occurrence, field.field)
                 .ok_or(HostError::Error(ErrorCode::FIELD_MISSING))?;
-            if occurrence != Some(field.occurrence) {
-                // A related record's field: another occurrence is reached
-                // through a relationship, a self-join's too, never the
-                // current record.
+            let same_table = occurrence
+                .and_then(|o| schema.table_of(o))
+                .zip(schema.table_of(field.occurrence))
+                .is_some_and(|(a, b)| a.id == b.id);
+            if !same_table {
+                // A related record's field.
                 return Err(HostError::Unsupported);
             }
             if field.repetition > 1 {
@@ -4917,6 +4919,12 @@ impl Fields for WorkerHost<'_> {
         with: &mut Replacement<'_>,
         with_dialog: bool,
     ) -> HostResult {
+        // A field reached through a relationship, a self-join's too, is
+        // the related records' (as Set Field writes it): not replaced in
+        // the found set's own records.
+        if field.is_some_and(|f| self.is_related(f.occurrence)) {
+            return Err(HostError::Unsupported);
+        }
         let name = self.target_name(field)?;
         // Every target would need an owned typed value and its own +1.
         // Refuse before committing or changing any record in the set.

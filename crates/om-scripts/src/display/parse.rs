@@ -119,6 +119,11 @@ fn label_value<'o>(option: &'o str, label: &str) -> Option<&'o str> {
     }
     let rest = &option[label.len()..];
     let rest = rest.trim_start_matches(' ').strip_prefix(':')?;
+    // `Repetition::Names` is a field of the occurrence Repetition, not the
+    // label Repetition.
+    if rest.starts_with(':') {
+        return None;
+    }
     // One space follows the colon; a calculation keeps the rest as is.
     let rest = rest.strip_prefix(' ').unwrap_or(rest);
     Some(if rest.trim().is_empty() { "" } else { rest })
@@ -1725,4 +1730,16 @@ pub(super) fn split_top(text: &str, sep: char) -> Vec<String> {
         out.push(current.trim().to_owned());
     }
     out
+}
+
+#[cfg(test)]
+mod tests {
+    use super::label_value;
+
+    #[test]
+    fn a_label_is_not_an_occurrence_of_its_name() {
+        assert_eq!(label_value("Repetition: 2", "Repetition"), Some("2"));
+        assert_eq!(label_value("Repetition::Names[2]", "Repetition"), None);
+        assert_eq!(label_value("Value::x", "Value"), None);
+    }
 }

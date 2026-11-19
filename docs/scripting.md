@@ -487,13 +487,15 @@ Open items:
   not read there. Other serial numbers count up the initial value's last
   run of digits, keeping its width, on every host; one past an `i128`
   fails with error 3.
-- On the desktop a step's field reached through another occurrence than
-  the layout's, of the same table too (a self-join), is a related record's
-  field and is refused with error 3, as other tables' related fields are;
-  Set Field, Set Field By Name and Replace Field Contents wrote the
-  current record's field instead. Names given to Set Field By Name and
-  Replace Field Contents by Name match without regard to case, as on the
-  server.
+- On the desktop Replace Field Contents and Replace Field Contents by Name
+  refuse with error 3 a field reached through a relationship from the
+  layout's occurrence, a self-join's too, whose related records Set Field
+  would write; they replaced the found set's own field instead. Inside a
+  transaction this refusal and Use Entry Options' are the transaction's
+  error, as other writes OpenMaker cannot make are (script-runtime.md
+  8.4), where FileMaker would have written. Names given to Set Field By
+  Name and Replace Field Contents by Name match without regard to case,
+  as on the server.
 - Scripts: desktop steps still missing include the account steps
   ([#83](https://github.com/OpenMaker-Dev/openmaker/issues/83)) and the PDF
   steps other than Save Records as PDF
