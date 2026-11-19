@@ -810,3 +810,31 @@ fn repeating_stored_calculations_are_computed_in_each_repetition() {
     assert_eq!(cell(&after, 1, repetition(SHOUT, 3)), None);
     assert_eq!(cell(&after, 2, repetition(SHOUT, 2)), None);
 }
+
+/// The recompute evaluates a stored calculation as the file's own, with no
+/// session: Design functions answer empty but `DatabaseNames`, as
+/// FileMaker Server's engine answers them there (calc-functions.md,
+/// "Design functions on FileMaker Server", battery `fn-design`). Before,
+/// they answered from the file's schema (#82).
+#[test]
+fn design_functions_answer_as_the_file_context_does() {
+    const TABLES: u64 = 42;
+    const FILES: u64 = 43;
+    let root = fixture::tree(&[], true);
+    let file = TempFile::from_tree("recalc-design", &root);
+    let port = server::start(&file);
+    let (mut designer, id) = server::logged_in(port, "designer");
+    let names = fixture::names();
+    let mut designed = root.clone();
+    for (field, name, text) in [
+        (TABLES, "Tables", "TableNames ( \"\" ) & \"|\""),
+        (FILES, "Files", "DatabaseNames"),
+    ] {
+        fixture::add_field(&mut designed, TABLE, field, name, 2, 1, 0, 0, 0);
+        fixture::add_formula(&mut designed, &names, (TABLE, OCCURRENCE), field, 5, text);
+    }
+    save_field_catalog(&mut designer, id, &field_catalog(&designed));
+    let after = records_of(&mut designer, TABLE);
+    assert_eq!(cell(&after, 1, TABLES), Some("|"));
+    assert_eq!(cell(&after, 1, FILES), Some("Tasks"));
+}

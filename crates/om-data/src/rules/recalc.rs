@@ -21,9 +21,9 @@ use om_hbam::catalog::{DataType, FieldKind};
 use om_hbam::{KeyTree, Table};
 
 use super::{
-    cell_of, check_custom_functions, children, first_field_occurrence, parse_code, schema, walk,
-    Expression, InRepetition, RecordEnvironment, RecordPlan, ALWAYS_EVALUATE, FIELD_FORMULA,
-    GLOBAL, MAX_CODE, MAX_DEPTH, MAX_NODES, UNSTORED,
+    cell_of, check_custom_functions, children, first_field_occurrence, parse_code,
+    parse_recomputed, schema, walk, Expression, InRepetition, RecordEnvironment, RecordPlan,
+    ALWAYS_EVALUATE, FIELD_FORMULA, GLOBAL, MAX_CODE, MAX_DEPTH, MAX_NODES, UNSTORED,
 };
 use crate::host::{CalcSchema, FieldClass};
 use crate::DataError;
@@ -233,7 +233,10 @@ impl Recalculation {
         row: &BTreeMap<u64, String>,
         environment: &RecordEnvironment,
     ) -> Recomputed {
-        let session = environment.session();
+        // The file's own calculation with no session, as FileMaker Server
+        // recomputes stored values (calc-functions.md 6.1, file context).
+        let mut session = environment.session();
+        session.file_context = true;
         let mut row = row.clone();
         let mut out = Recomputed::default();
         for target in &self.targets {
@@ -316,7 +319,7 @@ fn evaluable(
     if !(1..=255).contains(&options.max_repetitions) {
         return Err("calculations of more than 255 repetitions are not recomputed.".into());
     }
-    let expression = parse_code(code, context)?;
+    let expression = parse_recomputed(code, context)?;
     if let Some(occurrence) = expression.formula.occurrence() {
         if calc
             .occurrence(occurrence)
@@ -329,6 +332,7 @@ fn evaluable(
         calc,
         &expression.formula.polish,
         false,
+        true,
         &mut BTreeSet::new(),
     )?;
     // A container input is read through the environment's container
@@ -560,6 +564,7 @@ impl RecordLimit {
         check_custom_functions(
             &calc,
             &expression.formula.polish,
+            false,
             false,
             &mut BTreeSet::new(),
         )?;

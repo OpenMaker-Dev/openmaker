@@ -620,6 +620,9 @@ pub(crate) struct Evaluation {
     settled: BTreeSet<u64>,
     /// The [`CONTEXT_SELECTORS`] the operation could not answer.
     unanswered: BTreeSet<u8>,
+    /// A host's recomputation of stored values with no session
+    /// ([`super::host::FileHost::file_context`]), not a write.
+    file_context: bool,
 }
 
 impl RecordEnvironment {
@@ -671,6 +674,7 @@ impl RecordEnvironment {
             held: self.held.clone(),
             settled: BTreeSet::new(),
             unanswered,
+            file_context: false,
         }
     }
 }
@@ -1878,6 +1882,7 @@ impl RecordPlan {
                             &schema,
                             &e.formula.polish,
                             true,
+                            false,
                             &mut BTreeSet::new(),
                         )
                         .is_ok()
@@ -2034,6 +2039,7 @@ impl RecordPlan {
                     &schema,
                     &expression.formula.polish,
                     !calculation,
+                    false,
                     &mut BTreeSet::new(),
                 )
                 .map_err(|reason| DataError::new(format!("Field {}: {reason}", field.name)))?;
@@ -4378,6 +4384,7 @@ impl RecordPlan {
             .as_deref()
             .map(|f| f as &dyn Fn() -> bool);
         host.limits = session.limits;
+        host.file_context = session.file_context;
         let (repetition, extend_fields) = match repetition {
             InRepetition::Validation(n) => (n, n > 1),
             InRepetition::Calculation(n) => (n, false),
@@ -4832,6 +4839,7 @@ fn check_custom_functions(
     schema: &CalcSchema,
     expr: &Expr,
     option: bool,
+    design: bool,
     seen: &mut BTreeSet<u64>,
 ) -> Result<(), String> {
     let mut result = Ok(());
@@ -4860,7 +4868,7 @@ fn check_custom_functions(
                     || resolves_names_at_run_time(inner)
                 {
                     problem = Some("calls a custom function that reads fields.".to_owned());
-                } else if let Some(reason) = unsupported_rule_operation(inner, option) {
+                } else if let Some(reason) = unsupported_rule_operation(inner, option, design) {
                     problem = Some(format!("calls a custom function: {reason}"));
                 }
             });
@@ -4868,7 +4876,7 @@ fn check_custom_functions(
                 result = Err(problem);
                 return;
             }
-            if let Err(e) = check_custom_functions(schema, &body.body, option, seen) {
+            if let Err(e) = check_custom_functions(schema, &body.body, option, design, seen) {
                 result = Err(e);
             }
         }
@@ -5156,9 +5164,12 @@ const DYNAMIC_REFERENCES: &str =
 /// Expression operations the record-only host cannot evaluate faithfully.
 /// Apply this to both the formula and every reachable custom-function body.
 /// `option`: an auto-entered or validation formula, which may also read the
-/// [`CONTEXT_SELECTORS`].
-fn unsupported_rule_operation(expr: &Expr, option: bool) -> Option<&'static str> {
+/// [`CONTEXT_SELECTORS`]. `design`: a host's recomputation of stored values,
+/// which answers the Design functions as the file's own calculation does
+/// ([`crate::host::FileHost::file_context`]).
+fn unsupported_rule_operation(expr: &Expr, option: bool, design: bool) -> Option<&'static str> {
     match expr {
+        Expr::PluginCall { function, .. } if design && is_design_function(*function) => None,
         Expr::PluginCall { .. } => Some("plug-in functions are unsupported in record rules."),
         expr if resolves_names_at_run_time(expr) => Some(DYNAMIC_REFERENCES),
         Expr::Get(selector)
@@ -5169,6 +5180,13 @@ fn unsupported_rule_operation(expr: &Expr, option: bool) -> Option<&'static str>
         }
         _ => None,
     }
+}
+
+/// Whether `function` is one of FileMaker's Design functions, which the
+/// Polish stream stores as calls of the built-in plug-in `FMDR`
+/// (calc-encoding.md 7).
+fn is_design_function(function: om_formula::PluginFunctionId) -> bool {
+    function.plugin == *b"FMDR" && om_formula::catalog::builtin(function).is_some()
 }
 
 /// Forms whose field reads are only known when they run (`Evaluate`,
@@ -5313,6 +5331,22 @@ fn parse_code(code: &[u8], context: &[u8]) -> Result<Expression, String> {
 /// than refused (aggregates of them are), and the [`CONTEXT_SELECTORS`] are
 /// read.
 fn parse_code_with(code: &[u8], context: &[u8], related_reads: bool) -> Result<Expression, String> {
+    parse_formula(code, context, related_reads, false)
+}
+
+/// [`parse_code`] for a host's recomputation of a stored calculation, which
+/// also answers the Design functions ([`unsupported_rule_operation`]).
+fn parse_recomputed(code: &[u8], context: &[u8]) -> Result<Expression, String> {
+    parse_formula(code, context, false, true)
+}
+
+/// [`parse_code_with`], with the Design functions allowed when `design`.
+fn parse_formula(
+    code: &[u8],
+    context: &[u8],
+    related_reads: bool,
+    design: bool,
+) -> Result<Expression, String> {
     if code.len() > MAX_CODE {
         return Err("calculation is too large.".into());
     }
@@ -5405,7 +5439,7 @@ fn parse_code_with(code: &[u8], context: &[u8], related_reads: bool) -> Result<E
                 problem = Some("LookupNext over related fields is unsupported.".into());
             }
             _ => {
-                if let Some(reason) = unsupported_rule_operation(e, related_reads) {
+                if let Some(reason) = unsupported_rule_operation(e, related_reads, design) {
                     problem = Some(reason.into());
                 }
             }

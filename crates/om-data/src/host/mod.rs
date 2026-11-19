@@ -609,6 +609,11 @@ pub struct FileHost<'a> {
     pub interrupted: Option<&'a dyn Fn() -> bool>,
     /// What evaluations on this host may build ([`CalcHost::limits`]).
     pub limits: CalcLimits,
+    /// A calculation of the file itself with no session, as FileMaker
+    /// Server recomputes stored values after a schema change: every
+    /// Design function but `DatabaseNames` answers empty (calc-functions.md,
+    /// "Design functions on FileMaker Server").
+    pub file_context: bool,
     nested_reads: Cell<HostReads>,
 }
 
@@ -654,6 +659,7 @@ impl<'a> FileHost<'a> {
             self_reads: HostReads::default(),
             interrupted: None,
             limits: CalcLimits::DEFAULT,
+            file_context: false,
             nested_reads: Cell::default(),
         }
     }
@@ -889,6 +895,9 @@ impl CalcHost for FileHost<'_> {
         match function {
             HostFunction::Builtin(builtin) => {
                 if let Some(result) = self.file.design(builtin.name, args, context) {
+                    if self.file_context && !builtin.name.eq_ignore_ascii_case("DatabaseNames") {
+                        return Ok(Value::empty_text());
+                    }
                     return result;
                 }
             }

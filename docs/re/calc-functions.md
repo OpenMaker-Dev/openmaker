@@ -3011,8 +3011,9 @@ Known deviations (OpenMaker):
   `SystemStorageAvailable`: see "Oracle answers (desktop Get selectors
   and s33)".
 - File context: FileMaker Server answers every Design function empty but
-  `DatabaseNames` there; OpenMaker's stored-calculation recompute after a
-  schema change (op73) answers them from the file's schema instead.
+  `DatabaseNames` there. OpenMaker's stored-calculation recompute after a
+  schema change (op73) answers them the same way (`FileHost::file_context`;
+  that op73's walk is this context is inferred).
 - `FieldAnnotation` and `FieldDisplayNames` answer empty, which is
   FileMaker's answer only for fields without an annotation or display
   names: OpenMaker does not read `[T, 3, 5, F, 29]`, `30` and `31`

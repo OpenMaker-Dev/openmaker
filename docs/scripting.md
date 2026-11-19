@@ -395,8 +395,6 @@ Open items:
     entries and per-table rules (re/session-identity.md 2) are not applied
     to LayoutAccess and RecordAccess, and FileMaker Server's answers under
     them are unmeasured.
-  - The recompute after a schema change answers Design functions from the
-    schema, where FileMaker gives empty.
   - Not implemented: `FieldAnnotation` and `FieldDisplayNames` (their
     storage is unknown).
   - Also open: AI (`GetEmbedding`, `GetTokenCount`) and mobile functions
@@ -462,13 +460,17 @@ Open items:
 - Server: auto-enter calculations are not recomputed after a schema
   change (by design, as FileMaker). Schedules run (#11).
   - The recompute after a schema change reads container inputs from the
-    table's library and computes repeating calculations in each
-    repetition; with "do not evaluate if all referenced fields are empty"
-    which inputs count in a repetition above 1 is OpenMaker's reading. It
-    still skips calculations of more than 255 repetitions, container
-    results, plug-in functions and `Get` selectors that need a window,
-    leaving their values as they were and logging the field
-    ([#82](https://github.com/OpenMaker-Dev/openmaker/issues/82)).
+    table's library, computes repeating calculations in each repetition,
+    and answers Design functions as FileMaker Server's file context does
+    (empty, but `DatabaseNames`). With "do not evaluate if all referenced
+    fields are empty", which inputs count in a repetition above 1 is
+    OpenMaker's reading. It still skips these, leaving their values as
+    they were and logging the field: calculations of more than 255
+    repetitions; container results
+    ([#384](https://github.com/OpenMaker-Dev/openmaker/issues/384));
+    plug-in functions and `Get` selectors that need a window, whose
+    FileMaker Server answers there are unmeasured
+    ([#385](https://github.com/OpenMaker-Dev/openmaker/issues/385)).
   - FileMaker Pro clients: op77 GetFileList (the Hosts dialog's file list)
     and op89 CompareModCounts (reopening a cached file) are unsupported;
     an op13 with node state `00` (FileMaker Pro deleting a script) leaves

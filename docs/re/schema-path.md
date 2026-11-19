@@ -2371,7 +2371,12 @@ change never makes another table's stored values stale.
 **How.** `Recalculation` plans per field with the record rules' evaluator
 (auto-entry.md, docs/record-writes.md): the formula's own table, stored data and
 stored calculation inputs, the `Get` selectors record rules allow, custom
-functions that read no fields. A container input is read from the
+functions that read no fields, and the Design functions, which answer as
+FileMaker Server's engine answers them in file context: empty, but
+`DatabaseNames` the file's name (calc-functions.md, "Design functions on
+FileMaker Server"; inf that op73's walk is that context). Before, a
+calculation calling one was skipped with the plug-in functions, which the
+Polish stream stores them as (`FMDR`, calc-encoding.md 7). A container input is read from the
 table's library: the field's data, as FileMaker Server's engine reads it
 when a commit computes such a calculation (script oracle
 s34-containers-calc: file name, length, Base64 of the data; inf for
@@ -2381,8 +2386,8 @@ repetition, as calc-values.md 8.6 measured it: repetition n of a
 repeating input, a plain input that does not repeat read empty above
 repetition 1, `Extend` and `GetRepetition` as written,
 `Get ( CalculationRepetitionNumber )` n. A calculation it cannot evaluate
-(a related, global, summary or unstored-calculation input, a plug-in, a
-selector that needs a window, a container result, a formula that names a
+(a related, global, summary or unstored-calculation input, a plug-in or
+mobile function, a selector that needs a window, a container result, a formula that names a
 deleted field) is skipped: its values stay as they were and the server
 logs the field and why. A calculation that fails on a record keeps that
 record's value; failures are counted and logged once per field. With "do
