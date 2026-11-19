@@ -83,7 +83,7 @@ starter solution):
     - Only the languages whose index keys OpenMaker builds as FileMaker
       does can be chosen (`om_data::rules::written_text_keys`): Unicode,
       English and English (international). The others are listed
-      unavailable (#1279, #1280).
+      unavailable ([#299](https://github.com/OpenMaker-Dev/openmaker/issues/299), [#300](https://github.com/OpenMaker-Dev/openmaker/issues/300)).
     - A field that has a language the list does not show (none, System,
       Unicode standard, catalog) shows it by its catalog name.
     - Whether FileMaker Pro's own list also has a "Default" entry, and
@@ -95,13 +95,13 @@ starter solution):
     - the translation. Only Full-Width Katakana and Half-Width Roman, the
       two FileMaker Pro 26.0.3 was seen to write, can be chosen. The others
       are listed unavailable, and a field's own is kept
-      ([#1334](https://github.com/OpenMaker-Dev/openmaker/issues/326)).
+      ([#326](https://github.com/OpenMaker-Dev/openmaker/issues/326)).
 
     They are written as Pro writes them: bit `0x40`, and member `07`'s
     second part, its other bytes kept. Turned off, the bit alone goes. A
     value list set on the field keeps the furigana part, and the furigana
     keeps the value list. OpenMaker's record rules refuse changing such a
-    field's value, as OpenMaker does not write the reading (#1302, #1327).
+    field's value, as OpenMaker does not write the reading (#1302, [#322](https://github.com/OpenMaker-Dev/openmaker/issues/322)).
   - What the field has but OpenMaker does not change yet is shown
     unavailable: a lookup whose definition does not read.
 - **Relationships:** the graph and its tools. Add a table occurrence opens
@@ -211,10 +211,10 @@ FileMaker Pro does (schema-path.md 2):
       whose host is OpenMaker's own and converts them. In a hosted file it
       is made only on a field that holds no value: the editor cannot make
       sure the host converts
-      ([#1267](https://github.com/OpenMaker-Dev/openmaker/issues/292)).
+      ([#292](https://github.com/OpenMaker-Dev/openmaker/issues/292)).
     - **To a container:** the text stays, and what it reads as there is not
       established
-      ([#1268](https://github.com/OpenMaker-Dev/openmaker/issues/293)).
+      ([#293](https://github.com/OpenMaker-Dev/openmaker/issues/293)).
       Made only on a field that holds no value.
 
     A field whose type changes more than once in one edit must be allowed
@@ -227,7 +227,7 @@ FileMaker Pro does (schema-path.md 2):
     from every record, or from the global value of a global field
     (schema-path.md 7.2). In a hosted file it is made only on a field that
     holds no value, as the editor cannot make sure the host deletes them
-    (#1267). A field that holds no value is:
+    ([#292](https://github.com/OpenMaker-Dev/openmaker/issues/292)). A field that holds no value is:
     - one made in the same edit;
     - in a file on this computer, a field that is not global (in the file
       or in the edit) of a table that had no record when Manage Database
@@ -480,9 +480,9 @@ established:
   for the definitions it leaves reading a missing field is not
   established;
 - changing the type of a field that may hold values (see Changed field)
-  to a container, whose stored text's reading is not established (#1268),
+  to a container, whose stored text's reading is not established ([#293](https://github.com/OpenMaker-Dev/openmaker/issues/293)),
   or, in a hosted file, to one its values would be converted to: the
-  editor cannot make sure the host converts them (#1267);
+  editor cannot make sure the host converts them ([#292](https://github.com/OpenMaker-Dev/openmaker/issues/292));
 - deleting a field or an occurrence while the file has a relationship
   OpenMaker cannot read (a definition, a predicate list, or a predicate
   with an operator above 6 that does not decode), which might use it;
@@ -569,21 +569,21 @@ established:
     calculation, a container or a repeating global, or a `Get` answer only
     the write gives (`Get ( RecordNumber )`, the layout number, the
     privilege set name, the host's clock);
-  - a furigana translation FileMaker Pro was not seen to write (#1334), a
+  - a furigana translation FileMaker Pro was not seen to write ([#326](https://github.com/OpenMaker-Dev/openmaker/issues/326)), a
     furigana field that is not a stored text field of the table, and
     furigana on a field that is not text;
   - an index language whose keys OpenMaker does not build (any but
     Unicode raw, English, English international, System and Unicode
-    standard; #1279, #1280). In a hosted file, any change of the index
+    standard; [#299](https://github.com/OpenMaker-Dev/openmaker/issues/299), [#300](https://github.com/OpenMaker-Dev/openmaker/issues/300)). In a hosted file, any change of the index
     language of a field that may hold values: the editor cannot make sure
     the host rebuilds the index in the new language, as an OpenMaker
-    Server older than 2026-11-14 keyed every index in English (#1267). In
+    Server older than 2026-11-14 keyed every index in English ([#292](https://github.com/OpenMaker-Dev/openmaker/issues/292)). In
     a file on this computer the change asks the host to rebuild the index
     (`0x10`, schema-path.md 7.2), and OpenMaker's host keys it in the new
     language;
   - changing the repetitions of a field that may hold values in a hosted
     file (see Changed field), as the editor cannot make sure the host
-    deletes those above a smaller number (#1267);
+    deletes those above a smaller number ([#292](https://github.com/OpenMaker-Dev/openmaker/issues/292));
   - changing the global storage of a field a calculation, summary,
     relationship or option uses (FileMaker Pro makes the stored
     calculations that read a field made global unstored, 5.9, E38, which
@@ -680,8 +680,8 @@ after a warning, which OpenMaker does not.
   - calculated values and validation calculations over related fields
     beyond what the record rules evaluate (above);
   - lookups beyond what the record rules perform (above);
-  - index languages without keys (#1279, #1280), and furigana translations
-    FileMaker Pro was not seen to write (#1334);
+  - index languages without keys ([#299](https://github.com/OpenMaker-Dev/openmaker/issues/299), [#300](https://github.com/OpenMaker-Dev/openmaker/issues/300)), and furigana translations
+    FileMaker Pro was not seen to write ([#326](https://github.com/OpenMaker-Dev/openmaker/issues/326));
   - repetitions of fields that may hold values, and global storage of
     fields that other definitions use (above). A field with more than one
     stored auto-enter source also refuses any Options edit, since decoding
@@ -716,7 +716,7 @@ after a warning, which OpenMaker does not.
   FileMaker Pro (schema-path.md 5.14), not a capture of its Duplicate.
 - **Missing list features.** Custom order, Copy, Paste, Import and Print
   are not built, and the record counts of "Details" are not read
-  ([#433](https://github.com/OpenMaker-Dev/openmaker/issues/152)).
+  ([#152](https://github.com/OpenMaker-Dev/openmaker/issues/152)).
 - **The Fields tab's third column.** Advanced shows nothing: OpenMaker
   does not read a field's advanced members (`29`-`31`). The options text
   says "Use Furigana" without the furigana field, and a summary's break or

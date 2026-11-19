@@ -117,7 +117,7 @@ needs no open file.
   setup keys of `[2]` are left for FileMaker to write.
 - **The theme** is plain and covers six object types; tabs, portals,
   popovers, button bars and the rest look as FileMaker's defaults make them
-  (#719).
+  ([#222](https://github.com/OpenMaker-Dev/openmaker/issues/222)).
 - **Field heights**: FileMaker Pro sizes a field it places (a field added
   in Manage Database) from the border widths, the edit box's text margins
   and one line. It draws the text inside the text's insets too, without
@@ -137,7 +137,7 @@ needs no open file.
     migrate them, and Pro still cuts their text.
 - **Hosting**: FileMaker Server refuses to host a file whose full access
   account has no password. A new file's Admin has none, and OpenMaker cannot
-  set a password yet (#148, #157), so the file must get one in FileMaker Pro
+  set a password yet ([#12](https://github.com/OpenMaker-Dev/openmaker/issues/12), #157), so the file must get one in FileMaker Pro
   before FileMaker Server hosts it.
 - `mInternalCreation` is the seconds since 1904; Pro's count from an epoch
   about 36.5 days earlier, which is not known.

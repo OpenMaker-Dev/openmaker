@@ -138,7 +138,7 @@ Access] set (docs/re/local-files.md 2.3), may read it. Any other account is
 `permission_denied` (status 9), and a session without the file open is
 status 100. Another host, FileMaker Server included, is sent nothing:
 `unsupported`. Accounts and privilege sets cannot be created, changed or
-deleted. How FileMaker writes an account is not specified (#148), nor is a
+deleted. How FileMaker writes an account is not specified ([#12](https://github.com/OpenMaker-Dev/openmaker/issues/12)), nor is a
 set's checksum (#474). The rest of a set's members are specified
 (docs/re/session-identity.md 2) but Describe Security does not read them
 yet: set descriptions, per-table record and field access, layout, script
@@ -572,7 +572,7 @@ it, as FileMaker Pro's deletion keeps them. A folder or separator, the
 file's last layout, a layout whose styles show a library image and one
 whose stored table view `0d` shows a library item are refused (status 3).
 No client holds the layout's lock while it edits the layout: a Layout mode
-draft in another client is not protected from the deletion (#680). The request's identity is the layout: ids are not
+draft in another client is not protected from the deletion ([#217](https://github.com/OpenMaker-Dev/openmaker/issues/217)). The request's identity is the layout: ids are not
 issued again, so a repeat that names it by its reference after a lost
 answer finds it gone at another revision and reports `already_applied`;
 another layout's deletion at an old revision is a `conflict`.
@@ -621,7 +621,7 @@ an old revision is a `conflict`.
 Where the file differs from Pro's for the same change: OpenMaker keeps the
 objects in their stored order, where Pro writes them in an order of its
 own, and does not count the change in the layout index's modification
-count (#788).
+count ([#241](https://github.com/OpenMaker-Dev/openmaker/issues/241)).
 
 ### Parts
 
@@ -663,7 +663,7 @@ part's `PartDef` `[4, 5, L, 03, P, 02]`, every other byte as stored:
 For the one change Pro made of each, the `PartDef` is Pro's byte for byte.
 Pro also writes the file's history, the layout index's count, the object
 store and some library items' counts again on saving; OpenMaker keeps them
-as stored (#788 for the index count).
+as stored ([#241](https://github.com/OpenMaker-Dev/openmaker/issues/241) for the index count).
 
 Refused, as Part Definition offers it (re/layout-model.md 10.15): an
 option the part's type does not offer, a trailing sub-summary's or a
@@ -897,7 +897,7 @@ Lists' own changes (new lists, sources, options) are not in this version:
 
 `complete_calculation` answers the query Specify Calculation's
 completion list shows while typing (`om_data::formula_editor::completion`,
-issue #225; docs/desktop-client.md), for agents writing formulas:
+issue [#69](https://github.com/OpenMaker-Dev/openmaker/issues/69); docs/desktop-client.md), for agents writing formulas:
 
 - The **prefix** is the name the formula scanner reads ending at `cursor`
   (a name runs over the spaces between its words, so `First Na` is tried

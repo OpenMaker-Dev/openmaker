@@ -117,7 +117,7 @@ container recovery as described below. Another file of the lost connection
 whose windows hold such changes is not reopened with this one (#1011) and
 stays lost. A user's own changes to related records, typed in a portal or a
 related field, and rows begun through the record, were never sent: they stay, and are checked
-(below, #152).
+(below, [#16](https://github.com/OpenMaker-Dev/openmaker/issues/16)).
 
 **Opening again.** The worker reconnects the file that owns the asking
 window, on the host, port and account it was opened with (a file a script
@@ -148,7 +148,7 @@ holds what a reconnect cannot recover (above), and one refused at its Login
 stay lost, with their banner, for their own Reconnect: none is tried again
 with anything else [I: OpenMaker's choice; whether FileMaker Pro reconnects
 a host's files together is unmeasured]. What a script, a lock or a timer
-held in the lost session is gone for every file (#152).
+held in the lost session is gone for every file ([#16](https://github.com/OpenMaker-Dev/openmaker/issues/16)).
 
 A local file reconnects through its existing private engine, preserving its
 exclusive file lock and endpoint across both a refused and successful login.
@@ -244,7 +244,7 @@ A record write the loss left unanswered is never sent again. A save is
 reconciled as above; a delete is reported as done or not by reading the
 record back; a save of changes scripts made is reported as unknown.
 
-**A new record not saved yet** (#152). New Record holds the record in the
+**A new record not saved yet** ([#16](https://github.com/OpenMaker-Dev/openmaker/issues/16)). New Record holds the record in the
 window's record session: op71 reserves its id on the host and op72 its
 serial numbers, neither of which changes a record, and its values go to
 the host only with the window's save. A reconnect carries such a session
@@ -290,7 +290,7 @@ found in a **Reconnected to the host.** bar until the user dismisses it,
 saves, or resolves the held edits. A connection lost again later starts
 over: the next reconnect checks every edit again.
 
-**An unsaved record with an uploaded attachment** (#152). A single ordinary
+**An unsaved record with an uploaded attachment** ([#16](https://github.com/OpenMaker-Dev/openmaker/issues/16)). A single ordinary
 new or prepared existing record in the opened file can carry positively
 acknowledged table-library uploads before its first Save. Its no-record-submission
 baseline is captured
@@ -341,7 +341,7 @@ These operations are PM-chosen synthetic acceptance cases for ordinary new and
 existing record attachment entry. They are not evidence that a real
 hosted solution uses either sequence, nor a comparison with native FileMaker Pro or FileMaker Server.
 
-**Existing attachments across files before Save** (#152). Insert into one
+**Existing attachments across files before Save** ([#16](https://github.com/OpenMaker-Dev/openmaker/issues/16)). Insert into one
 existing opened-file record and one existing row in each of several external
 files can form an ordinary never-submitted group without first attempting a
 Save. Root may be inserted before, between or after the related attachments.
@@ -430,7 +430,7 @@ copying from materialized or cross-library sources, new/multiple rows and file
 libraries remain outside this case. The synthetic lifecycle and lost-ACK relay
 are OpenMaker verification, not native FileMaker/FMS recovery parity or real hosted-solution use.
 
-**Mixed rows with attachments before Save** (#152). A new or accepted existing
+**Mixed rows with attachments before Save** ([#16](https://github.com/OpenMaker-Dev/openmaker/issues/16)). A new or accepted existing
 opened-file record with an ACKed table-library upload can admit several accepted existing
 related rows and several new log rows, including different native tables in
 one physical owning file. Each logical row has its own before-work intent;
@@ -522,7 +522,7 @@ libraries, stored-source copying and related container repetitions beyond the
 first remain outside this extension. Unknown creation/upload outcomes are retained, never
 replayed.
 
-**A refused ordinary save across files** (#152). An ordinary save refused
+**A refused ordinary save across files** ([#16](https://github.com/OpenMaker-Dev/openmaker/issues/16)). An ordinary save refused
 before any participant submitted record data keeps a receipt for the window,
 the existing records' checked modification counts, and every owner's parked
 new records with their issued serials, creation clock and UUID. This includes

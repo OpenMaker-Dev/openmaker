@@ -1114,7 +1114,7 @@ from FileMaker Server: no bound or combining was found in its traced
 enqueue and delivery paths, and failed-`Notify` behavior remains
 unresolved. Its back channel is outside `maxreturn`; FileMaker Pro
 ignores `0x101` for `[T, 05]` and empties every found set of the table for
-`0x401` (6.5, #468).
+`0x401` (6.5, [#171](https://github.com/OpenMaker-Dev/openmaker/issues/171)).
 
 ### 6.5 What the receiving client does (High: bin; not captured)
 
@@ -1320,7 +1320,7 @@ subtree with the next `table-states` file.
    (skipping counts), commit, download it and lock it again; then the same
    with `fc = 02 01` (a length byte that does not match its key).
 
-10. A two-client capture of change notifications (6.4-6.5, #354): what
+10. A two-client capture of change notifications (6.4-6.5, [#137](https://github.com/OpenMaker-Dev/openmaker/issues/137)): what
     FileMaker Pro downloads after each code, whether its found sets change as
     6.5 reads from the code, how often FileMaker Server's push pass runs,
     and what FileMaker Server does with a client whose `Notify` calls fail.

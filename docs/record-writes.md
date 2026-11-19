@@ -70,7 +70,7 @@ FileMaker Pro's order:
 
 New Record and Duplicate Record, a script's and the menus', are held,
 not saved, until the record is committed, as FileMaker Pro holds a new
-record (#892). FileMaker Pro sends op71 at New Record,
+record ([#261](https://github.com/OpenMaker-Dev/openmaker/issues/261)). FileMaker Pro sends op71 at New Record,
 under a transaction id of its own for that record (write-path.md 1.1,
 1.2), and op14 and op70 only when the record is committed. A record left
 uncommitted is abandoned with op65, its id used up (5.1).
@@ -171,7 +171,7 @@ comes only at the commit, it presumably sees nothing until then
 ### A new record's preview
 
 `DataProvider::preview_new_record` computes a new record's rules before
-the record is written (`om-provider/src/preview.rs`, #1047): what a window
+the record is written (`om-provider/src/preview.rs`, [#277](https://github.com/OpenMaker-Dev/openmaker/issues/277)): what a window
 would show of a portal row the user began, and what its triggers read,
 before the record commit writes it.
 - **What it computes.** Auto-entered values, serial numbers generated on
@@ -193,7 +193,7 @@ before the record commit writes it.
     record and leaves these values out, rather than read the host's stored
     record in their place and show a value the commit computes
     differently.
-  - **With them** (`preview_new_record_over`, #1063), the window names
+  - **With them** (`preview_new_record_over`, [#278](https://github.com/OpenMaker-Dev/openmaker/issues/278)), the window names
     every one but the written row, and the preview reads related records
     and lookups through them as Commit Transaction reads the records it
     holds (`HeldRecords`), each computed by its own rules first, as its
@@ -201,7 +201,7 @@ before the record commit writes it.
     calculation or auto-entered value of a parent reads as the commit
     stores it, not as stored now:
     - a record the open transaction holds new (a window's record session,
-      #892) from its held cells, the serial numbers it took and the clock
+      [#261](https://github.com/OpenMaker-Dev/openmaker/issues/261)) from its held cells, the serial numbers it took and the clock
       and UUID drawn when it was held, with the window's cells over them;
     - an existing record from its stored record, or what the transaction
       holds of it, with the window's cells;
@@ -266,7 +266,7 @@ before the record commit writes it.
     that comes after it.
   - **The commit** computes these values over the records it holds, or
     refuses them: a commit holding records of both files is #1006, a
-    related record's unresolved calculation dependencies #1022, a
+    related record's unresolved calculation dependencies [#276](https://github.com/OpenMaker-Dev/openmaker/issues/276), a
     self-join's own membership #1035.
 - **What else it leaves out.** A `Random` draw, which the commit would
   draw again, with what is computed from it. A formula it cannot evaluate
@@ -307,7 +307,7 @@ before the record commit writes it.
 - **Lifecycle.** A preview ends with `DataProvider::discard_prepared`, or
   when the file closes. A reconnect keeps the file's own previews, with
   the serial numbers, clock and UUID they drew, for their records' saves
-  (#152); a routed one (a row of another file's table) ends with its
+  ([#16](https://github.com/OpenMaker-Dev/openmaker/issues/16)); a routed one (a row of another file's table) ends with its
   owner's session, and a window's new record with such a row begun is not
   carried across the reconnect (recovery.md). A refused scalar save whose
   new related rows are already reserved can instead carry those owners'
@@ -359,7 +359,7 @@ before the record commit writes it.
 - **Related files.** A portal row of another file's table is previewed by
   that file's provider through the table's route, as its write goes
   (related_owner.rs); the opened file maps its preview id to the owner's.
-  A layout of another file's table (#193) has no preview.
+  A layout of another file's table ([#43](https://github.com/OpenMaker-Dev/openmaker/issues/43)) has no preview.
 - **The desktop window's use.** OnObjectSave when leaving a changed field
   by clicking the layout's background or using keyboard Commit
   (an ordinary commit, #1070), previews the window's begun rows before its
@@ -390,7 +390,7 @@ before the record commit writes it.
   still reads the row's auto-entered fields empty.
 - **Unmeasured.** When FileMaker computes a begun portal row's auto-entered
   values and match fields relative to OnObjectSave in an ordinary commit is
-  measured only for `Get ( RecordNumber )` (#1047's native cases); that a
+  measured only for `Get ( RecordNumber )` ([#277](https://github.com/OpenMaker-Dev/openmaker/issues/277)'s native cases); that a
   UUID or a timestamp is drawn once, before the triggers, and kept by the
   commit is OpenMaker's choice. When FileMaker takes a serial number for a
   begun portal row, and whether an abandoned row leaves a gap, is not
@@ -558,7 +558,7 @@ its next Perform reply (write-path.md 6.4; OpenMaker Server makes no
   again on any notification. FileMaker Pro does not (write-path.md 6.5,
   from its code): for `[T, 05]` it drops every cached record on `0x201`,
   ignores `0x101`, so added records do not join its found sets, and on
-  `0x401` empties every found set of the table (#468). FileMaker Server
+  `0x401` empties every found set of the table ([#171](https://github.com/OpenMaker-Dev/openmaker/issues/171)). FileMaker Server
   has no bound or combining in the traced queue paths; failed-`Notify`
   behavior is unresolved (write-path.md 6.4). A bulk change by a server
   script (Delete All Records, an import)
@@ -729,7 +729,7 @@ checked by the desktop at the commit (`om-provider` `related_lists.rs`).
   written record's over its unsaved values, with the session's account
   and other `Get` answers. A record whose value can't be computed refuses
   the write with 3, rather than leave its values out.
-- **The transaction's other records** (#1063). At Commit Transaction the
+- **The transaction's other records** ([#278](https://github.com/OpenMaker-Dev/openmaker/issues/278)). At Commit Transaction the
   list reads the records the commit has computed before this one as it
   writes them: their auto-entered and calculated values, not their stored
   rows. A record it computes only after this one is not known yet. The
@@ -762,7 +762,7 @@ checked by the desktop at the commit (`om-provider` `related_lists.rs`).
   with 3. Unknown values are by record, so a related row of another job
   still reads its own parent. A record the opened file deletes in the same
   save is no record there. What the window hasn't saved, outside the
-  transaction, isn't read (#1063). The opened file's commit, which comes
+  transaction, isn't read ([#278](https://github.com/OpenMaker-Dev/openmaker/issues/278)). The opened file's commit, which comes
   last, reads the related files' records the same way, as their prepared
   commits write them (#1167, below).
 - **Which writes check it:** a user's (`update_record`), a field validated
@@ -823,7 +823,7 @@ window's, or the server script's), which the write carries
 given is refused, never computed over an empty global. An auto-entered
 or validation calculation (not a stored one) may also read
 `Get ( LayoutNumber )`, `Get ( CurrentPrivilegeSetName )` and
-`Get ( CurrentHostTimestamp )` (#187): the operation making the write
+`Get ( CurrentHostTimestamp )` ([#39](https://github.com/OpenMaker-Dev/openmaker/issues/39)): the operation making the write
 supplies them (`RecordEnvironment::context`, `WriteContext`), and a
 formula reading one it left out refuses the write that evaluates it,
 never reads it as empty:
@@ -880,7 +880,7 @@ record's place in what the rules read:
   one. Any other creation that evaluates the selector is refused.
 - **Before the save:** an ordinary commit (a click on the layout's
   background) previews a begun row before its field's OnObjectSave script
-  runs (a new record's preview, above; #1047), with the number the window
+  runs (a new record's preview, above; [#277](https://github.com/OpenMaker-Dev/openmaker/issues/277)), with the number the window
   gives, so the script reads the number, as FileMaker Pro 26.0.3's did,
   and the commit stores it.
 
@@ -1032,7 +1032,7 @@ is written by that file (`related_owner.rs`, #1000):
       deletion snapshot, with no outgoing calculation dependencies.
       Cyclic or unresolved dependencies refuse with 3. Within a file,
       calculation dependencies also determine record preparation order
-      (#1022); import-time and related-values-list limits remain below.
+      ([#276](https://github.com/OpenMaker-Dev/openmaker/issues/276)); import-time and related-values-list limits remain below.
     - What FileMaker Pro reads here is unmeasured (parity-unverified).
   - **Refused before any record data,** in any file (a rule, a
     validation): the window's record session stays as it was (#1095).
@@ -1253,10 +1253,10 @@ field's text as it is goes through.
 
 Not covered:
 - The languages FileMaker does not tailor, such as French and Dutch, are
-  refused too, though their keys look like the English ones (#1280).
-- The tailored languages wait for their keys (#1279).
+  refused too, though their keys look like the English ones ([#300](https://github.com/OpenMaker-Dev/openmaker/issues/300)).
+- The tailored languages wait for their keys ([#299](https://github.com/OpenMaker-Dev/openmaker/issues/299)).
 - Within the forms OpenMaker builds, some scripts and the padded form's
-  accents still differ from FileMaker's keys (#485).
+  accents still differ from FileMaker's keys ([#175](https://github.com/OpenMaker-Dev/openmaker/issues/175)).
 
 **Furigana.** A normal field with "Use Furigana Field" (option `0x40`)
 leaves its table writable. OpenMaker's record rules refuse a write that
@@ -1274,10 +1274,10 @@ read-only, as before. Unique and existing values are checked in the field's
 value index, so such a field must be defined for a value index in English (21,
 77) or Unicode raw (2) (auto-entry.md, Index bits), the forms whose keys
 OpenMaker builds exactly; a field in another language keeps its table
-read-only (#1279, #485). The client and the host build the key in the field's
+read-only ([#299](https://github.com/OpenMaker-Dev/openmaker/issues/299), [#175](https://github.com/OpenMaker-Dev/openmaker/issues/175)). The client and the host build the key in the field's
 form (`om_data::rules::checked_text_keys`, query-program.md 7.2), cut to 219
 bytes as the index holds it (7.1), so a long value is checked against the
-values that share its first 109 weights, or code units in Unicode raw (#487).
+values that share its first 109 weights, or code units in Unicode raw ([#177](https://github.com/OpenMaker-Dev/openmaker/issues/177)).
 Raw keys keep case, so `A` and `a` are two values there; FileMaker documents
 its Unicode index as case-sensitive, which was not measured.
 A definition marked indexed does not prove that the host has built the
@@ -1348,8 +1348,8 @@ the starting occurrence, must be as FileMaker Pro writes them. It holds:
   (`01:02:03.500` reads as `1:02:03.5`), and a date field holding other
   text reads as text in calculations where FileMaker reads an invalid
   date (`+ 1` gives 1/1/0001), so lookups of times and timestamps and of
-  text or numbers into a date field keep the table read-only (#764,
-  #765);
+  text or numbers into a date field keep the table read-only ([#235](https://github.com/OpenMaker-Dev/openmaker/issues/235),
+  [#236](https://github.com/OpenMaker-Dev/openmaker/issues/236));
 - a field of another table of the same file, through one relationship
   whose predicates are all `=` on stored text match fields, unsorted or
   sorted only by the related table's own data fields and stored
@@ -1420,7 +1420,7 @@ Auto-entered and validation calculations may read related fields
 (auto-entry.md, "Calculations over related fields"), in the form lookups
 are performed in: another table's stored value of one repetition, through
 one relationship of `=` predicates, each of two fields of one type, text
-or number (#187): a stored field of the record's table, not global,
+or number ([#39](https://github.com/OpenMaker-Dev/openmaker/issues/39)): a stored field of the record's table, not global,
 including a supported stored calculation (#1204), and a stored field of
 the other, auto-entered or not (a serial key is matched by its stored
 value). Unsorted or sorted as a lookup's may be. Local match fields join
@@ -1460,7 +1460,7 @@ application creation plan.
     same way, its own write opening the file and planning first.
   - A file that does not open leaves the rule refused as reading a missing
     occurrence, as before.
-  - A related file's own write planned for the opened file (#187) reads
+  - A related file's own write planned for the opened file ([#39](https://github.com/OpenMaker-Dev/openmaker/issues/39)) reads
     the opened file's tables, and also its own other related files that
     the opened file has open (#1160).
     - The owner's plan imports them as it imports the opened file, and its
@@ -1628,9 +1628,9 @@ lookups above), and match fields of other types (dates, times,
 timestamps), of two types, or global on the record's side.
 
 A record the opened file writes into a related file's table (a portal
-row or related field, #1000, or a layout of that table, #193) is planned
+row or related field, #1000, or a layout of that table, [#43](https://github.com/OpenMaker-Dev/openmaker/issues/43)) is planned
 by that file's rules over its own schema with the opened file's tables
-imported (#187). Its occurrences whose data source found the opened file,
+imported ([#39](https://github.com/OpenMaker-Dev/openmaker/issues/39)). Its occurrences whose data source found the opened file,
 by its only path or one of a list, are bound to them, matched by host,
 port and name or by path, never by name alone. A Set Field's entry check
 plans the record the same way; its occurrences of other files stay unresolved, and a formula

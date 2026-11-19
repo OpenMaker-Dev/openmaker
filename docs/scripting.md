@@ -148,7 +148,7 @@ and OnWindowTransaction, as FileMaker Server's engine answered them
   as Pro does (#903); a panel inside another one fronts both (not
   compared). Slide panels and Go to Field into a field on a back panel are
   left as they are (unmeasured in Pro). Go to Object on a portal leaves no
-  visible focus, where Pro focuses the portal as a whole (#888).
+  visible focus, where Pro focuses the portal as a whole ([#259](https://github.com/OpenMaker-Dev/openmaker/issues/259)).
 - Set Field fails on the rules checked at entry, only for fields validated
   Always; typing into a global and Set Field By Name into one work.
 - New Window opens an OS window with its own layout, found set, mode and
@@ -657,7 +657,7 @@ user leaves by clicking the layout's background, the commit FileMaker Pro
 26.0.3 was measured in, reads the row with what its own rules enter: its
 match fields, and its auto-entered values and stored calculations as its
 file's provider previews them (record-writes.md, "A new record's preview";
-#1047). Browse shows them under what was typed from then on, and the commit
+[#277](https://github.com/OpenMaker-Dev/openmaker/issues/277)). Browse shows them under what was typed from then on, and the commit
 stores what the script read. A Tab or a click into another field previews
 nothing [I: when FileMaker enters them then is unmeasured]. Its unstored
 calculations evaluate over those values. Its own relationships find no

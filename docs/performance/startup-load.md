@@ -130,7 +130,7 @@ first needs it; these are not paired timings.
 
 With 20 of the 60 files on a second host, those 20 are not opened at
 all: no account is sent to another host until the user signs in to it
-(#976), which this run does not do. That case opens 40, and its alert at
+([#272](https://github.com/OpenMaker-Dev/openmaker/issues/272)), which this run does not do. That case opens 40, and its alert at
 open lists the 20 files to sign in to (#981 keeps its OK on screen).
 
 ## A root with a large script catalog
@@ -192,7 +192,7 @@ the related values it shows are still being read (#1138).
 Since #1146 the window's record capabilities open nothing: a plan they
 cannot make while a write rule's file waits is offered from the fields'
 definitions, and the write opens the file. The rule files now relate by
-Name, as a write's rules need (#187); nothing reads them before a write
+Name, as a write's rules need ([#39](https://github.com/OpenMaker-Dev/openmaker/issues/39)); nothing reads them before a write
 either way. In a debug build of #1146, one run each, counts only, both
 cases open 8 related files with 159 requests before the first paint. The
 4 rule-only files open with the first write that plans them. Those

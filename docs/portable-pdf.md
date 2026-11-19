@@ -172,7 +172,7 @@ The field's text, a container's picture, and its content box (inset by the
 borders) stay. A conditional format's fill or border is left out too. That
 FileMaker leaves those out is inferred.
 
-Measured in FileMaker Pro 26.0.3's PDFs (#263, #536), on starter layouts, all of
+Measured in FileMaker Pro 26.0.3's PDFs (#263, [#201](https://github.com/OpenMaker-Dev/openmaker/issues/201)), on starter layouts, all of
 which set the option:
 - the starter lists' field underlines do not print;
 - Task Details' Priority, Status and Category pop-ups print no fill or border
@@ -194,7 +194,7 @@ report.
 
 The starter lists' row fields set 0.875 em above, 0.625 em below and 0.25 em at
 the sides: at 16 points, 14 / 10 / 4 points. FileMaker Pro prints that row text
-lower than OpenMaker did before the margins applied (the walkthrough, #536);
+lower than OpenMaker did before the margins applied (the walkthrough, [#201](https://github.com/OpenMaker-Dev/openmaker/issues/201));
 that these margins are the whole difference is inferred.
 
 Text too tall for a field that does not slide prints cut at its text box,
@@ -216,7 +216,7 @@ Claris documents that only the data that fits within a field's boundaries
 prints, and that sliding only shrinks a field
 ([Printing records](https://help.claris.com/en/pro-help/content/printing-records.html)).
 
-Measured in FileMaker Pro 26.0.3 (#536, 2026-11-13):
+Measured in FileMaker Pro 26.0.3 ([#201](https://github.com/OpenMaker-Dev/openmaker/issues/201), 2026-11-13):
 - **Task List.** With the task "Prepare the quarterly budget review for the
   marketing team", Pro prints "…review for" on the first line and shows
   nothing of the second. Its PDF text still contains "the marketing team".
@@ -293,7 +293,7 @@ file in the PDF:
 - Text whose style's first font family is Arial or Helvetica prints in
   **Liberation Sans 2.1.5**, Regular or Bold. It is designed to be
   metric-compatible with Arial. The 39 character widths in Pro's embedded ArialMT
-  (Task Details, #536) match Liberation Sans to within 1/1000 em. One wrap point
+  (Task Details, [#201](https://github.com/OpenMaker-Dev/openmaker/issues/201)) match Liberation Sans to within 1/1000 em. One wrap point
   was compared: Task List's long task name breaks after "…review for" in both.
   That other lines wrap and cut where Pro's do is inferred from those
   measurements. The starters' text is "arial,sans-serif" or "Arial" (405
@@ -442,7 +442,7 @@ have 1, Button Setup's "Image only", and Add Assignee's labelled button has 4,
 - A square of the icon size, at most the frame's smaller side.
 - **Type 1:** the square sits alone in the middle of the frame, and a label the
   object stores does not print. FileMaker Pro 26 prints Task Details' "Add
-  Assignee" button this way: the "+" alone (#536).
+  Assignee" button this way: the "+" alone ([#201](https://github.com/OpenMaker-Dev/openmaker/issues/201)).
 - **Type 4:** the square is centered 6 points plus half its side from the
   frame's left edge, and the label is laid out from the icon size plus 10
   points.

@@ -140,7 +140,7 @@ key, not its big-endian reading (docs/scripting.md open item).
   `("fmnet", "\u{E000}host:5003\u{E000}", "File")` [O: FileMaker Pro 26.0.3
   saved each as the one path of a local file's data source,
   `fmnet:/example.invalid/Related-214.fmp12` in 48 bytes and the `:5003`
-  form in 53, [#759](https://github.com/OpenMaker-Dev/openmaker/issues/232)]. The
+  form in 53, [#232](https://github.com/OpenMaker-Dev/openmaker/issues/232)]. The
   two U+E000 characters are stored, each written through a dynamic SCSU
   window at U+E000, and the dialog shows them as the path's `/`. Not
   measured: a host with a folder after it, IPv6 addresses, several
@@ -155,7 +155,7 @@ key, not its big-endian reading (docs/scripting.md open item).
   the opened file's host it opens it on that file's connection with the
   same account. A file on another host or port is sent no account of the
   opened file's: the window asks for one, and only then is that host
-  contacted (#976). Hosts are compared by their text in any case, never
+  contacted ([#272](https://github.com/OpenMaker-Dev/openmaker/issues/272)). Hosts are compared by their text in any case, never
   looked up. A folder on a host is not followed. FileMaker Pro following
   an `fmnet` path from a hosted file, to its own host or another, is
   unmeasured.
@@ -844,7 +844,7 @@ same 12-byte form is common in record data) [O].
 
 In FileMaker Pro 26.0.3, a field-backed drop-down list did not include a
 new value still in the current record's draft [O: local Contacts copy,
-#412]. Two objects of the same field displayed the typed text, but the
+[#148](https://github.com/OpenMaker-Dev/openmaker/issues/148)]. Two objects of the same field displayed the typed text, but the
 second object's list held only the three committed values. "Revert Record"
 was still available and closing asked whether to save the record. After
 saving and reopening, the list included the new value [O]. That the list
@@ -852,10 +852,10 @@ reads the committed field index, rather than the draft, is consistent with
 this result but was not checked by reading the index [I]. Pop-up menu,
 checkbox set and radio button set controls also omitted distinct values
 typed into a new, unsaved record while showing the committed choices [O:
-three disposable copies of the same local Contacts file, #412].
+three disposable copies of the same local Contacts file, [#148](https://github.com/OpenMaker-Dev/openmaker/issues/148)].
 
 A related list behaved differently in a local Tasks copy [O: FileMaker Pro
-26.0.3, #412]. Its pop-up drew from a self-related occurrence, with "include
+26.0.3, [#148](https://github.com/OpenMaker-Dev/openmaker/issues/148)]. Its pop-up drew from a self-related occurrence, with "include
 only related values starting from Tasks" enabled and automatic record
 saving off. With three saved records, the current record's saved numeric
 relationship key 2 offered `Completed, Pending`; changing that key to 3
@@ -1083,7 +1083,7 @@ script-engine runs of 4.3, 5.3 and 6.4).
   whose "Switch to layout" (3.2) is off (the starters all have it on).
 - U11. Four data sources used by occurrences of a hosted multi-file
   solution have neither a readable name `10` nor path list `82` in
-  OpenMaker (#761). The current host's complete `[32]` replies lack the
+  OpenMaker ([#233](https://github.com/OpenMaker-Dev/openmaker/issues/233)). The current host's complete `[32]` replies lack the
   four source members themselves, and the occurrence source keys decode
   cleanly (1.1). Three further occurrences reference raw base-table key
   `80 01` (serial id 129) absent from the respective related files'
@@ -1097,7 +1097,7 @@ script-engine runs of 4.3, 5.3 and 6.4).
   these causes. OpenMaker's alert describes the absent members and
   tables as seen in its downloaded catalogs.
 
-  Local synthetic checks [O, FileMaker Pro 26.0.3, #761]: in separate
+  Local synthetic checks [O, FileMaker Pro 26.0.3, [#233](https://github.com/OpenMaker-Dev/openmaker/issues/233)]: in separate
   copies of a two-file pair, deleting only a source's `10` name leaf,
   only its `82` path-list leaf, or both changed no other decoded key-tree
   leaf. Each file opened on a layout that did not use the related file
@@ -1123,7 +1123,7 @@ occurrence's key (`[TO]`, the occurrence id's segment, e.g. `d0 00 02`),
 the found set its window had there, and opens the file on it again: Task
 Details reopens at found 2 of 3 on the record that was current, and a
 second table's layout, when the window first goes there, at its own found
-set, sort and record [O: walkthrough on #536, FileMaker Pro 26.0.3].
+set, sort and record [O: walkthrough on [#201](https://github.com/OpenMaker-Dev/openmaker/issues/201), FileMaker Pro 26.0.3].
 
 `[TO, 07, 01]`:
 
@@ -1148,12 +1148,12 @@ request `01` included `Task = Alpha*`, and request `02` omitted
 Request `01` had `06, 01, fc` = `01 01`; request `02` had an empty
 `06, 02, 00` leaf and no `fc`. After close and reopen, Pro restored the
 one-of-three found set, and Modify Last Find showed both criteria and
-their Include/Omit settings [O, #829].
+their Include/Omit settings [O, [#247](https://github.com/OpenMaker-Dev/openmaker/issues/247)].
 
 In a second save, changing only request `02` from Omit to Include left
 its criterion leaf unchanged, removed its empty `00` child, and wrote
 `06, 02, fc` = `01 01`. This identifies the empty `00` child as Omit
-and `fc` = `01 01` as Include in these Pro-authored requests [O, #829].
+and `fc` = `01 01` as Include in these Pro-authored requests [O, [#247](https://github.com/OpenMaker-Dev/openmaker/issues/247)].
 The second save also committed a disposable record to ensure the file
 wrote its window state after the value index was already present; this
 does not establish that a find alone causes a save.

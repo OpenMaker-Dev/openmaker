@@ -85,7 +85,7 @@ Shortcuts (macOS): Browse ⌘B, Find ⌘F, Layout ⌘L, Preview ⌘U.
 
 What the window shows in Find mode, with its evidence:
 
-- The current layout itself, its fields empty for criteria [O, #536:
+- The current layout itself, its fields empty for criteria [O, [#201](https://github.com/OpenMaker-Dev/openmaker/issues/201):
   FileMaker Pro 26.0.3 kept the designed layout in Find mode on the
   starter solutions it was compared on]. A related field in a portal takes
   criteria, and finds "all the records that have a related record matching
@@ -565,7 +565,7 @@ SHA-256 of the archives: `FieldInspector.nib`
 `FieldOptionsCalendarView.nib`
 `57a55590711b0c190bfca9f5f93e9eb27652dc476347b5f032e301e331065515`.
 
-[O, 2026-11-14, FileMaker Pro 26.0.3, the walkthrough on #227] The Data
+[O, 2026-11-14, FileMaker Pro 26.0.3, the walkthrough on [#71](https://github.com/OpenMaker-Dev/openmaker/issues/71)] The Data
 tab read back a file's five changed controls as Control style and Values
 from (Title's "Include arrow to show and hide list" checked); for an edit
 box it shows no value list. Geometry and the pop-ups' widths are not

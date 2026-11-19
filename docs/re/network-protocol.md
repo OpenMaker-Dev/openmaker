@@ -1146,7 +1146,7 @@ and Login, and each later closed with an op62 Unlock of its root
 (write-path.md 4.3) (High). In all 19, the op63's client file id is
 `-(its transidlo + 2)` and the Open and Login headers carry session id 1
 with each file's own `fileid`; the op90 downloads' `transidlo` rises
-across files (High, #740). How FileMaker Pro tickles such a session (6.1)
+across files (High, [#229](https://github.com/OpenMaker-Dev/openmaker/issues/229)). How FileMaker Pro tickles such a session (6.1)
 is not recorded.
 
 When FileMaker Pro opens a related file: the solution of s03 names 63
@@ -1215,7 +1215,7 @@ and calculations first read them (desktop-client.md, "Opening files",
 #983) [implementation]; other callers of its provider open them all when
 the calculation schema is first built. Either way they open as FileMaker
 Pro opens them, on the connection of the file the user opened
-[implementation, #740]: each
+[implementation, [#229](https://github.com/OpenMaker-Dev/openmaker/issues/229)]: each
 has a handle of its own on it (`om_session::Session::share`), with its own
 `Open` naming that host, op63 (client file id `-(transidlo + 2)`) and
 `Login` (5.4) with the same account, and no host lookup, TLS handshake or
@@ -1252,7 +1252,7 @@ op80 Logins of a two-host capture, classified outside this repository;
 for, are not recorded here.
 
 OpenMaker sends such a file, on a verified connection to its host and
-port (#976): an account that host admitted in this session (typed for one
+port ([#272](https://github.com/OpenMaker-Dev/openmaker/issues/272)): an account that host admitted in this session (typed for one
 of its files, or the opened file's), else the opened file's account once
 for that host. After any of that host's files refused it, none is sent
 it again, and the search ends there until the user signs in to that file
@@ -1268,7 +1268,7 @@ it stands for is known]. Otherwise:
   included), is the data source's file.
 - A host that could not be reached (no connection: host lookup, connect
   or TLS, before any Open or Login) ends the search for now, not for the
-  session (#740): the data source waits, its warning given, and its paths
+  session ([#229](https://github.com/OpenMaker-Dev/openmaker/issues/229)): the data source waits, its warning given, and its paths
   are tried again once 30 seconds have passed, when a read next wants one
   of its occurrences (on demand) or the schema is built again. No Login
   went there, so an account offered there once (#1010) may be offered when
@@ -1301,7 +1301,7 @@ refused, the window asks for another account for it, as FileMaker Pro does
 for a local file (local-files.md 4, *Accounts*): each answer is one Login,
 and a new pair is remembered as the first was. At most 128 Opens are made
 (failed ones and each path tried included): one at a time on the opened
-file's connection, which carries one request at a time (#772), and 4 at a
+file's connection, which carries one request at a time ([#237](https://github.com/OpenMaker-Dev/openmaker/issues/237)), and 4 at a
 time on connections of their own. A data source naming a file already open needs no Open and counts
 toward no limit; discovery queues at most 4096 data sources. The alert
 retains at most 20 lines, including a count of omitted problems.
@@ -1329,7 +1329,7 @@ is OpenMaker's choice: what FileMaker Pro shows for them is unmeasured
 - A data source is named with its file and by its name, never by its id.
   One without a name that reads as one is named by up to three of the
   occurrences that use it, which FileMaker Pro's relationships graph
-  shows (#761). A name past 100 characters is cut.
+  shows ([#233](https://github.com/OpenMaker-Dev/openmaker/issues/233)). A name past 100 characters is cut.
 - The host's Open answers and Login errors are in words, with the status
   or FileMaker error number only as detail.
 - An occurrence whose table its related file does not have is named by
@@ -1343,7 +1343,7 @@ occurrences use but the file's data sources `[32, 5]` do not hold, as the
 host sent them, is said to be missing from them. One they hold with
 neither a name nor a path list is said to have neither. A name that is
 empty or does not decode is said to be so. Why any of these happens is not
-known (#761, file-metadata.md U11). The same line reached twice (one file
+known ([#233](https://github.com/OpenMaker-Dev/openmaker/issues/233), file-metadata.md U11). The same line reached twice (one file
 named by two data sources) is listed once.
 
 ### 5.6 Perform reply layout
@@ -2284,7 +2284,7 @@ fc000000 03000000 0000 0000         request id 252, response expected, KeyAddr
   exactly one record, always session 1 and trailing 0). With two files
   opened independently and signed in on one connection, FileMaker Pro sent
   one record, not one per file: `(1, 112, 0)` and `(1, 173, 0)` in two
-  Tickles 60.8 s apart (#740, private capture
+  Tickles 60.8 s apart ([#229](https://github.com/OpenMaker-Dev/openmaker/issues/229), private capture
   `s137-hosted-privileges-20261114/conn-000`). Not measured: files opened
   through a relationship and sessions with different ids.
 - The idle seconds are the same counter as the RCTransaction header's
@@ -2411,7 +2411,7 @@ up the client's allowance. The limits are OpenMaker's choice
   that holds a session with no file open, which may not tickle (FileMaker
   Pro's behavior there is Unknown; OpenMaker's client does not). FileMaker
   Server ends a silent session after 125 s (above), so a vanished client
-  holds its files and locks far longer on OpenMaker Server (#476).
+  holds its files and locks far longer on OpenMaker Server ([#173](https://github.com/OpenMaker-Dev/openmaker/issues/173)).
 
 `om-server --idle-seconds` sets the limit for sessions or turns it off (a
 connection without a session is then still closed after 145 s, or after the
@@ -2518,7 +2518,7 @@ lost and keeps unsaved edits on screen. Reconnecting means opening the file
 again (Connect, Open, Login): the desktop client's **Reconnect…** does so
 when the user asks, with the account the file was opened with and a
 password typed again ([recovery.md](../recovery.md), "Reconnecting"); it
-does not reconnect by itself as FileMaker Pro does (#152).
+does not reconnect by itself as FileMaker Pro does ([#16](https://github.com/OpenMaker-Dev/openmaker/issues/16)).
 
 ### 6.4 Disconnect
 

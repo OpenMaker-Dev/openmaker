@@ -66,7 +66,7 @@ The starter solutions' currency fields set an unlisted `0x0200`, most with
 `0x4000`: in Inventory's Product Details, three fields have `0x4a0c`
 (symbol `$`, two decimals) and one `0x0a0c`. FileMaker Pro 26 on an en-US
 system shows Unit Cost's `12.5` as `$12.50` [O: the alpha walkthrough,
-#536]. Which separators, and which symbol, `0x4000` takes in another
+[#201](https://github.com/OpenMaker-Dev/openmaker/issues/201)]. Which separators, and which symbol, `0x4000` takes in another
 locale is [U]; what `0x0200` does is [U].
 
 Boolean and general dispatch precede decimal zero suppression. Percent
@@ -263,7 +263,7 @@ the same `KFormat` as a field object, and FileMaker shows the merged value
 through it [O: the Assets starter's Asset Details header, object 35, a
 button labelled `<<Price>>`, stores a `0d` byte for byte equal to the Price
 field object's (object 16); FileMaker Pro 26.0.3 shows `$12.50` in both
-(walkthrough #536)]. Every number, date, time and timestamp merge field in
+(walkthrough [#201](https://github.com/OpenMaker-Dev/openmaker/issues/201))]. Every number, date, time and timestamp merge field in
 the object is formatted by that one format [I for objects holding several].
 
 ## Browse display in OpenMaker
