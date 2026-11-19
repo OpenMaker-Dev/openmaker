@@ -17,7 +17,7 @@
 
 use std::collections::{BTreeMap, BTreeSet};
 
-use om_data::rules::recalc::Recalculation;
+use om_data::rules::recalc::{ContainerResult, Recalculation};
 use om_data::rules::{self, RecordEnvironment};
 use om_hbam::slot::{be_uint, uint_segment};
 use om_hbam::{Cell, OwnedNode, Table};
@@ -128,6 +128,11 @@ pub struct Outcome {
     /// Records with a value that changed, left as they were because their
     /// modification count is the largest a serial key holds.
     pub exhausted: usize,
+    /// Per record (its key under `[T, 05]`), the container results that
+    /// changed, by cell: stored in the table's library after the walk,
+    /// which reads the library while it runs ([`crate::store::Store`]'s
+    /// `recalculate`).
+    pub containers: Vec<(Vec<u8>, BTreeMap<u64, ContainerResult>)>,
 }
 
 /// Recompute `recalc`'s calculations on every record under `records`
@@ -163,7 +168,7 @@ pub fn recompute_records(
                 .or_insert_with(|| (0, error.to_string()));
             entry.0 += 1;
         }
-        if result.values.is_empty() {
+        if result.values.is_empty() && result.containers.is_empty() {
             continue;
         }
         // Changed without a new count, a client's copy would not show as
@@ -171,6 +176,11 @@ pub fn recompute_records(
         if modcount::bump(record, 1).is_none() {
             outcome.exhausted += 1;
             continue;
+        }
+        if !result.containers.is_empty() {
+            outcome
+                .containers
+                .push((record.segment.clone(), result.containers));
         }
         for (field, text) in &result.values {
             let key = uint_segment(*field);

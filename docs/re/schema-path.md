@@ -2389,10 +2389,22 @@ repeating calculation (up to
 repetition, as calc-values.md 8.6 measured it: repetition n of a
 repeating input, a plain input that does not repeat read empty above
 repetition 1, `Extend` and `GetRepetition` as written,
-`Get ( CalculationRepetitionNumber )` n. A calculation it cannot evaluate
-(a related, global, summary or unstored-calculation input, a plug-in or
-mobile function, a selector that needs a window, a container result, a formula that names a
-deleted field) is skipped: its values stay as they were and the server
+`Get ( CalculationRepetitionNumber )` n. A container result is stored
+after the walk, which reads the library while it runs, as a server
+script's commit stores container data (containers.md, "Implementation
+notes (OpenMaker Server scripts)"): a member of the table's library the
+value names takes one more reference, data (another table's member's, or
+data the calculation made, typed by its file name) is stored as a member
+or counts one more reference to a member with the same MD5, text is the
+cell's text, and a member a cell no longer names is released (deleted at
+0); a record whose library writes would be refused keeps its container
+values, logged. A calculation that reads a container result recomputed
+in the same change is skipped, since it would read the old value. How
+FileMaker Server stores a recomputed container result is unmeasured
+(inf). A calculation it cannot evaluate (a related, global, summary or
+unstored-calculation input, a plug-in or mobile function, a selector
+that needs a window, a formula that names a deleted field) is
+skipped: its values stay as they were and the server
 logs the field and why. A calculation that fails on a record keeps that
 record's value; failures are counted and logged once per field. With "do
 not evaluate if all referenced fields are empty" the value is empty when

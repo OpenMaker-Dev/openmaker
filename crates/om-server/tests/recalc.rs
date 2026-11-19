@@ -857,3 +857,72 @@ fn design_functions_answer_as_the_file_context_does() {
     assert_eq!(cell(&after, 1, TABLES), Some("|"));
     assert_eq!(cell(&after, 1, FILES), Some("Tasks"));
 }
+
+/// Stored calculations with a container result are recomputed and stored
+/// as a server script's commit stores container data (containers.md,
+/// "Implementation notes (OpenMaker Server scripts)"; #384). PhotoCopy
+/// (`Photo`) names Photo's own member, one more reference to it; record 2,
+/// with no photo, stays empty. Decoded (`Base64Decode`, the same data on
+/// both records) is stored once as a new member with two references. When
+/// PhotoCopy's formula then answers nothing, its reference is released.
+/// Before, the recompute skipped container results and left them as they
+/// were.
+#[test]
+fn stored_container_calculations_store_their_data() {
+    const COPY: u64 = 44;
+    const DECODED: u64 = 45;
+    let mut root = fixture::tree(&[], true);
+    fixture::add_photo(&mut root);
+    let file = TempFile::from_tree("recalc-container-results", &root);
+    let port = server::start(&file);
+    let (mut designer, id) = server::logged_in(port, "designer");
+    let t = uint_segment(TABLE);
+    let references = |session: &mut Session, text: &str| {
+        let member = om_data::containers::reference(text).unwrap();
+        let path: [&[u8]; 5] = [&t, &[0x1f], &[5], &member, &[0x12]];
+        let value = session.download(&path).unwrap().value;
+        u32::from_be_bytes(value.try_into().unwrap())
+    };
+
+    let mut names = fixture::photo_names();
+    names.add_field(TABLE, COPY, "PhotoCopy");
+    names.add_field(TABLE, DECODED, "Decoded");
+    let mut designed = root.clone();
+    for (field, name, text) in [
+        (COPY, "PhotoCopy", "Photo"),
+        (
+            DECODED,
+            "Decoded",
+            "Base64Decode ( \"aGVsbG8=\" ; \"a.txt\" )",
+        ),
+    ] {
+        // A stored calculation (2) with a container result (6).
+        fixture::add_field(&mut designed, TABLE, field, name, 2, 6, 0, 0, 0);
+        fixture::add_formula(&mut designed, &names, (TABLE, OCCURRENCE), field, 5, text);
+    }
+    let mut catalog = field_catalog(&designed);
+    save_field_catalog(&mut designer, id, &catalog);
+
+    let after = records_of(&mut designer, TABLE);
+    let photo = cell(&after, 1, fixture::PHOTO).unwrap().to_owned();
+    assert_eq!(cell(&after, 1, COPY), Some(photo.as_str()));
+    assert_eq!(cell(&after, 2, COPY), None);
+    assert_eq!(references(&mut designer, &photo), 2);
+    let decoded = cell(&after, 1, DECODED).unwrap().to_owned();
+    assert_ne!(decoded, photo);
+    assert_eq!(cell(&after, 2, DECODED), Some(decoded.as_str()));
+    assert_eq!(references(&mut designer, &decoded), 2);
+
+    set_formula(&mut catalog, COPY, "\"\"");
+    defer(&mut catalog, COPY, FORMULA_CHANGED);
+    save_field_catalog(&mut designer, id, &catalog);
+    let after = records_of(&mut designer, TABLE);
+    assert_eq!(cell(&after, 1, COPY), None);
+    assert_eq!(references(&mut designer, &photo), 1);
+    assert_eq!(
+        cell(&after, 1, DECODED),
+        Some(decoded.as_str()),
+        "not stale"
+    );
+    assert_eq!(references(&mut designer, &decoded), 2);
+}

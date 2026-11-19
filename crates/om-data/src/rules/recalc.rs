@@ -5,10 +5,11 @@
 //! calc-values.md 8.8).
 //!
 //! The plan is per field, unlike [`RecordPlan`]: a calculation this
-//! evaluator cannot run (a related field, a plug-in, a container result)
-//! is listed in [`Recalculation::skipped`] and its stored values stay as
-//! they were, while the table's other calculations are recomputed. A
-//! repeating calculation is computed in each of its repetitions.
+//! evaluator cannot run (a related field, a plug-in) is listed in
+//! [`Recalculation::skipped`] and its stored values stay as they were,
+//! while the table's other calculations are recomputed. A repeating
+//! calculation is computed in each of its repetitions; a container result
+//! is handed to the host to store ([`Recomputed::containers`]).
 //! Auto-enter calculations are not recomputed (they apply when data is
 //! entered) and nothing is validated.
 
@@ -47,6 +48,9 @@ struct Target {
     repetitions: u32,
     /// How the formula reads each field it reads, for the check above.
     readings: BTreeMap<u64, Readings>,
+    /// Its result is a container, which the host stores
+    /// ([`Recomputed::containers`]).
+    container: bool,
 }
 
 /// How a formula reads a field of its own context, by every operation
@@ -79,9 +83,27 @@ pub struct Skipped {
 pub struct Recomputed {
     /// The cells whose text changed (`None`: now empty).
     pub values: BTreeMap<u64, Option<String>>,
+    /// The cells of container results that changed: what the host stores
+    /// in the table's library and the cell then names.
+    pub containers: BTreeMap<u64, ContainerResult>,
     /// Calculations that failed on this record; their cells keep their
     /// stored text.
     pub failed: Vec<(u64, DataError)>,
+}
+
+/// A recomputed container result as the host stores it.
+#[derive(Clone, Debug, PartialEq)]
+pub enum ContainerResult {
+    /// No value: the cell goes, releasing a member it named.
+    Empty,
+    /// Text, stored as the cell's text (as text a script sets into a
+    /// container field is, containers.md "Implementation notes (OpenMaker
+    /// Server scripts)").
+    Text(String),
+    /// Container data: a member of a library the value names, or data to
+    /// store as a new member (or one more reference to a member holding
+    /// the same data).
+    Data(om_calc::Container),
 }
 
 impl Recalculation {
@@ -170,6 +192,32 @@ impl Recalculation {
                     reason,
                 }),
             }
+        }
+        // A container result is stored by the host after the walk, so a
+        // calculation reading one recomputed in the same pass would read
+        // its old value.
+        let containers: BTreeSet<u64> = ready
+            .iter()
+            .filter(|(_, t)| t.container)
+            .map(|(id, _)| *id)
+            .collect();
+        let readers: Vec<u64> = ready
+            .iter()
+            .filter(|(_, t)| {
+                t.expression
+                    .dependencies
+                    .iter()
+                    .any(|d| containers.contains(d))
+            })
+            .map(|(id, _)| *id)
+            .collect();
+        for id in readers {
+            ready.remove(&id);
+            skipped.push(Skipped {
+                field: id,
+                name: table.field(id).map_or_else(String::new, |f| f.name.clone()),
+                reason: "it reads a container calculation recomputed in the same change.".into(),
+            });
         }
         // Formulas read the table through their context occurrence.
         for target in ready.values() {
@@ -298,6 +346,30 @@ impl Recalculation {
                 let skip = !target.always
                     && !target.readings.is_empty()
                     && !self.reads_a_value(target, repetition, &row);
+                if target.container {
+                    let result = if skip {
+                        Ok(ContainerResult::Empty)
+                    } else {
+                        self.plan
+                            .evaluate_repetition_value(
+                                target.id,
+                                repetition,
+                                &target.expression,
+                                &row,
+                                &session,
+                            )
+                            .map(|(value, text)| container_result(value, text))
+                    };
+                    match result {
+                        Ok(result) => {
+                            if !holds(row.get(&cell), &result, self.plan.table, environment) {
+                                out.containers.insert(cell, result);
+                            }
+                        }
+                        Err(e) => out.failed.push((target.id, e)),
+                    }
+                    continue;
+                }
                 let text = if skip {
                     String::new()
                 } else {
@@ -362,8 +434,8 @@ fn evaluable(
     code: &[u8],
     context: &[u8],
 ) -> Result<Target, String> {
-    if matches!(data_type, DataType::Container | DataType::Unknown(_)) {
-        return Err("only text, number, date and time results are recomputed.".into());
+    if matches!(data_type, DataType::Unknown(_)) {
+        return Err("its result type is unknown.".into());
     }
     // Repetition n of field F is the cell `F * 256 + n` (calc-values.md,
     // "Repetitions in records"), so only 255 have cells.
@@ -415,7 +487,67 @@ fn evaluable(
         always: options.options & ALWAYS_EVALUATE != 0,
         repetitions: u32::from(options.max_repetitions),
         readings: found,
+        container: data_type == DataType::Container,
     })
+}
+
+/// What a container calculation's value `value` (shown as `text`)
+/// stores: nothing, its text, or container data.
+fn container_result(value: om_calc::Value, text: String) -> ContainerResult {
+    match value {
+        om_calc::Value::Container(c) if c.is_empty() => ContainerResult::Empty,
+        // A reference text without data stays text.
+        om_calc::Value::Container(c) if c.library.is_none() && c.streams.is_empty() => {
+            let text = c.text.as_str().to_owned();
+            if text.is_empty() {
+                ContainerResult::Empty
+            } else {
+                ContainerResult::Text(text)
+            }
+        }
+        om_calc::Value::Container(c) => ContainerResult::Data(c),
+        _ if text.is_empty() => ContainerResult::Empty,
+        _ => ContainerResult::Text(text),
+    }
+}
+
+/// Whether the cell text `stored` of a record of `table` already holds
+/// `result`: no value, the same text, or a member of the table's library
+/// with the same data (its own member, or one whose MD5 is the data's,
+/// containers.md 2.2) as `environment`'s reader reads it.
+fn holds(
+    stored: Option<&String>,
+    result: &ContainerResult,
+    table: u64,
+    environment: &RecordEnvironment,
+) -> bool {
+    let stored = stored.map_or("", String::as_str);
+    match result {
+        ContainerResult::Empty => stored.is_empty(),
+        ContainerResult::Text(text) => {
+            containers::reference(stored).is_none() && stored == text.as_str()
+        }
+        ContainerResult::Data(c) => {
+            let Some(member) = containers::reference(stored) else {
+                return false;
+            };
+            if let Some(library) = &c.library {
+                if library.table == table {
+                    return library.member == member;
+                }
+            }
+            let md5 = match (&c.library, containers::tree(c)) {
+                (_, Some((_, md5))) => md5,
+                (Some(library), None) => library.md5,
+                (None, None) => return false,
+            };
+            environment
+                .containers
+                .as_ref()
+                .and_then(|reader| reader.member(table, &member).ok().flatten())
+                .is_some_and(|info| info.md5 == md5)
+        }
+    }
 }
 
 /// Aggregates that walk every repetition of a lone field argument

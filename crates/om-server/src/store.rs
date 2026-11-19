@@ -29,7 +29,7 @@ use std::sync::{Mutex, MutexGuard, PoisonError};
 use log::{error, info, warn};
 use om_calc::Locale;
 use om_collate::DateOrder;
-use om_data::rules::recalc::Recalculation;
+use om_data::rules::recalc::{ContainerResult, Recalculation};
 use om_data::rules::RecordEnvironment;
 use om_hbam::catalog::keys as catalog_keys;
 use om_hbam::slot::{be_uint, uint_segment};
@@ -1999,6 +1999,10 @@ impl Store {
             self.root.put(&[table, &[LIBRARY]], node);
         }
         let outcome = outcome.unwrap_or_else(|panic| std::panic::resume_unwind(panic));
+        // The library is back: container results go into it.
+        for (record, cells) in &outcome.containers {
+            self.store_recomputed_containers(table, record, cells, &definition.name);
+        }
         for (field, (records, first)) in &outcome.failed {
             let name = definition.field(*field).map_or("", |f| f.name.as_str());
             warn!(
@@ -2024,6 +2028,113 @@ impl Store {
         );
         self.dirty |= outcome.changed > 0;
         fields
+    }
+
+    /// Store the container results `cells` the recompute computed for
+    /// record `record` of `table` (its key under `[T, 05]`), as a server
+    /// script's commit stores container data (containers.md,
+    /// "Implementation notes (OpenMaker Server scripts)"): a member of the
+    /// table's library the value names takes one more reference, data
+    /// (another table's member's, or data a calculation made) is stored as
+    /// a member, or counts one more reference to a member with the same
+    /// data, and text is the cell's text; a member a cell no longer names
+    /// is released (deleted at 0). When the library would refuse a write,
+    /// the record keeps its container values, logged.
+    fn store_recomputed_containers(
+        &mut self,
+        table: &[u8],
+        record: &[u8],
+        cells: &BTreeMap<u64, ContainerResult>,
+        name: &str,
+    ) {
+        let path: [&[u8]; 3] = [table, &[keys::RECORDS], record];
+        let Some(old) = self.node(&path).cloned() else {
+            return;
+        };
+        let mut new = old.clone();
+        let mut journal = self.begin_commit();
+        // The members `store_container_in` counted a reference to.
+        let mut counted = Vec::new();
+        for (cell, result) in cells {
+            let key = uint_segment(*cell);
+            let text = match result {
+                ContainerResult::Empty => None,
+                ContainerResult::Text(text) => Some(text.clone()),
+                ContainerResult::Data(value) => {
+                    let Some((member, stored)) = self.recomputed_member(&mut journal, table, value)
+                    else {
+                        journal.refused.get_or_insert_with(|| {
+                            "the container value has no data to store".to_string()
+                        });
+                        break;
+                    };
+                    if stored {
+                        counted.push(member.clone());
+                    }
+                    Some(containers::reference_text(&member))
+                }
+            };
+            match text {
+                Some(text) => new.set_child(om_scripts::text_node(&key, &text)),
+                None => {
+                    new.remove(&[&key]);
+                }
+            }
+        }
+        if journal.refused.is_none() {
+            self.count_containers_in(&mut journal, table, Some(&old), Some(&new), &counted);
+        }
+        if let Some(reason) = journal.refused.take() {
+            warn!(
+                "{}: table {name:?}: record {record:02x?} keeps its container calculation                  values: {reason}",
+                self.name
+            );
+            self.roll_back(journal);
+            return;
+        }
+        if let Some(node) = self.root.at_mut(&path) {
+            *node = new;
+            self.dirty = true;
+        }
+    }
+
+    /// The member of `table`'s library a recomputed container value names
+    /// when it is one of that library's, with `false`; else the member
+    /// [`Self::store_container_in`] stores its data in, counted, with
+    /// `true`: another table's member's tree as stored there, or the tree
+    /// the field stores for data a calculation made
+    /// (`om_data::containers::tree`). `None` without data to store, or
+    /// when the library refused it (in `journal`).
+    fn recomputed_member(
+        &mut self,
+        journal: &mut Journal,
+        table: &[u8],
+        value: &om_calc::Container,
+    ) -> Option<(Vec<u8>, bool)> {
+        let mut data = None;
+        if let Some(r) = &value.library {
+            let library = [uint_segment(r.table), vec![LIBRARY]];
+            let segments: Vec<&[u8]> = library.iter().map(Vec::as_slice).collect();
+            let member = self
+                .library_member(&segments, &r.member)
+                .filter(|m| MemberInfo::read(m).is_some_and(|i| i.md5 == r.md5));
+            if let Some(member) = member {
+                if library[0] == table {
+                    return Some((r.member.clone(), false));
+                }
+                data = library::member_tree(member);
+            }
+        }
+        let data = match data {
+            Some(data) => data,
+            None if value.streams.is_empty() => return None,
+            None => {
+                let (keys, md5) = containers::tree(value)?;
+                BinaryData::from_tree(keys, md5)
+            }
+        };
+        let member = self.store_container_in(journal, table, data);
+        (!member.is_empty()).then_some((member, true))
     }
 
     /// The cells holding repetitions 2 to 255 of `field`, in a record of
