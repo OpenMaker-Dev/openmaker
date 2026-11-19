@@ -483,8 +483,6 @@ Open items:
   ORDER BY with FETCH or OFFSET is inferred (execute-sql.md implementation
   notes). The memory budget makes a huge unfiltered product fail with
   error 2 where FileMaker would finish it.
-- Dependencies: `rsa` carries RUSTSEC-2023-0071 (timing side channel in
-  private-key operations, used by `CryptGenerateSignature`).
 
 ## Calculation limits
 

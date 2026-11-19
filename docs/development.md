@@ -372,10 +372,8 @@ of each dependency, unless there is a concrete reason not to.
   release; after an update, read the lockfile diff and name every crate
   that moved. When a change touches `Cargo.lock`, check it against the
   RustSec advisory database with `cargo audit` (install it once with
-  `cargo install cargo-audit --locked`). RUSTSEC-2023-0071 (`rsa`, no
-  fixed 0.9 release) is expected until
-  [#29](https://github.com/OpenMaker-Dev/openmaker/issues/29) is
-  resolved; any other vulnerability it lists needs an update or an issue.
+  `cargo install cargo-audit --locked`). Any vulnerability it lists needs
+  an update or an issue.
 
 ## Kinds of tests
 

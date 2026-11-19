@@ -11,6 +11,11 @@
 //! key as SubjectPublicKeyInfo (`PUBLIC KEY`) or PKCS#1 (`RSA PUBLIC KEY`).
 //! FileMaker text ends lines with CR; any line break is accepted. A key
 //! that does not read, or a wrong password, is error 5.
+//!
+//! The private-key operation is `rsa` 0.10's: constant-time arithmetic,
+//! blinded with the operating system's random numbers. 0.9's leaked the
+//! key through its timing (RUSTSEC-2023-0071), which a client can measure
+//! when OpenMaker Server signs in a script (#29).
 
 use super::{encodings, UNKNOWN_NAME};
 use crate::error::CalcError;
@@ -19,8 +24,8 @@ use cbc::cipher::{BlockDecryptMut, KeyIvInit};
 use hmac::{Hmac, Mac};
 use md5::Md5;
 use rsa::pkcs1::{DecodeRsaPrivateKey, DecodeRsaPublicKey};
-use rsa::pkcs8::{DecodePrivateKey, DecodePublicKey, EncryptedPrivateKeyInfo};
-use rsa::{Pkcs1v15Sign, RsaPrivateKey, RsaPublicKey};
+use rsa::pkcs8::{DecodePrivateKey, DecodePublicKey};
+use rsa::{Pkcs1v15Sign, PrivateKey, PublicKey};
 use sha1::Sha1;
 use sha2::{Digest, Sha224, Sha256, Sha384, Sha512};
 
@@ -171,7 +176,7 @@ fn pem(text: &str) -> Option<Pem> {
     None
 }
 
-fn private_key_from_pem(text: &str, password: &[u8]) -> Option<RsaPrivateKey> {
+fn private_key_from_pem(text: &str, password: &[u8]) -> Option<PrivateKey> {
     let pem = pem(text)?;
     match pem.label.as_str() {
         "RSA PRIVATE KEY" => {
@@ -185,23 +190,19 @@ fn private_key_from_pem(text: &str, password: &[u8]) -> Option<RsaPrivateKey> {
             } else {
                 pem.der
             };
-            RsaPrivateKey::from_pkcs1_der(&der).ok()
+            PrivateKey::from_pkcs1_der(&der).ok()
         }
-        "PRIVATE KEY" => RsaPrivateKey::from_pkcs8_der(&pem.der).ok(),
-        "ENCRYPTED PRIVATE KEY" => {
-            let info = EncryptedPrivateKeyInfo::try_from(pem.der.as_slice()).ok()?;
-            let document = info.decrypt(password).ok()?;
-            RsaPrivateKey::from_pkcs8_der(document.as_bytes()).ok()
-        }
+        "PRIVATE KEY" => PrivateKey::from_pkcs8_der(&pem.der).ok(),
+        "ENCRYPTED PRIVATE KEY" => PrivateKey::from_pkcs8_encrypted_der(&pem.der, password).ok(),
         _ => None,
     }
 }
 
-fn public_key_from_pem(text: &str) -> Option<RsaPublicKey> {
+fn public_key_from_pem(text: &str) -> Option<PublicKey> {
     let pem = pem(text)?;
     match pem.label.as_str() {
-        "PUBLIC KEY" => RsaPublicKey::from_public_key_der(&pem.der).ok(),
-        "RSA PUBLIC KEY" => RsaPublicKey::from_pkcs1_der(&pem.der).ok(),
+        "PUBLIC KEY" => PublicKey::from_public_key_der(&pem.der).ok(),
+        "RSA PUBLIC KEY" => PublicKey::from_pkcs1_der(&pem.der).ok(),
         _ => None,
     }
 }
@@ -281,26 +282,71 @@ mod tests {
         assert!(hmac("SHA-1", b"", b"abc").is_err());
     }
 
-    /// The unencrypted key formats sign alike and verify (the engine's
-    /// signatures for an OpenSSL key are in the fixture, checked against
-    /// its public keys; encrypted keys were checked against OpenSSL output
-    /// when this was written, their scrypt is too slow for a debug test).
+    /// A 1024-bit key made with OpenSSL for these tests (the engine's
+    /// signatures for another OpenSSL key are in the fixture, checked
+    /// against its public key), in each format the functions read.
+    const PKCS1_PRIVATE: &str = "\
+-----BEGIN RSA PRIVATE KEY-----\n\
+MIICXQIBAAKBgQCrW8Wu2elo457F+N/hEMNGylPdK5+XKgljD9rsr/HryrElFANk\n\
+NKZObPQPn9+kZcamIC791Vyf6vexyn71kTwcYX0BRk0xDO24UIyJGgZZ6zLqH6wC\n\
+Xb0Ij9vFA9zKWwziXTUDtJfx3g+ONmUjuzY7MReAy5fomhWyTbz1HbMLjQIDAQAB\n\
+AoGAa+/NsFrAxHoEK82dL8aASpntg3YT+4LWENkO3GHjb9PoC2P00uy7CNFmVmUs\n\
+2P/mxgOltevsgSrfRNU5bXNDOdCVQznJQrt04Pj2FxCmIx7E/TccN2Y9cQ00Y1/l\n\
+/1tDsBR3YGc0rrnLeLE1W2P6dNZB9I1/JgGq4SLOkpzWr10CQQDi7g0ouiG1FwNv\n\
+XQP+hK6Xpnt/PYkTcnbTisUJzqUKedr8nFo5tWkgI/lwONpNgsWkfJbtUbbCpmO/\n\
+CWtws/ivAkEAwU9PTos8m+BtfXd7GAONhE2knyUp8+57ng6aqBIITyXR7S95hV71\n\
+n4N4Ed+I2rdkWsJy2rj/gxpH2wxuqPBWgwJASR7FVLMs+0nQDIkfKVqdWzYEowoz\n\
+6fU+/oi/VpqkKUz8V9sVY3Tly7prvFJFXSZfAtI2W3+x8ORmTX7+hJEo9wJBAK3v\n\
+BpTNg4NdtCaoUwGQcM0Sb4Uik1UAyAm3akC/uOo+RVz80oLGposYZ/jtAN6LFKj1\n\
+PRLAUmdMRks6LHeliLECQQDNO4Vt2EsnEYJ/61rh3dDbLbg8I+UolkbLw3soXjlV\n\
+E8udXarD25UZ6HW9jymYLdO5gv5CgMkjlnFcvwALSdyW\n\
+-----END RSA PRIVATE KEY-----\n";
+    const PKCS8_PRIVATE: &str = "\
+-----BEGIN PRIVATE KEY-----\n\
+MIICdwIBADANBgkqhkiG9w0BAQEFAASCAmEwggJdAgEAAoGBAKtbxa7Z6WjjnsX4\n\
+3+EQw0bKU90rn5cqCWMP2uyv8evKsSUUA2Q0pk5s9A+f36RlxqYgLv3VXJ/q97HK\n\
+fvWRPBxhfQFGTTEM7bhQjIkaBlnrMuofrAJdvQiP28UD3MpbDOJdNQO0l/HeD442\n\
+ZSO7NjsxF4DLl+iaFbJNvPUdswuNAgMBAAECgYBr782wWsDEegQrzZ0vxoBKme2D\n\
+dhP7gtYQ2Q7cYeNv0+gLY/TS7LsI0WZWZSzY/+bGA6W16+yBKt9E1Tltc0M50JVD\n\
+OclCu3Tg+PYXEKYjHsT9Nxw3Zj1xDTRjX+X/W0OwFHdgZzSuuct4sTVbY/p01kH0\n\
+jX8mAarhIs6SnNavXQJBAOLuDSi6IbUXA29dA/6Erpeme389iRNydtOKxQnOpQp5\n\
+2vycWjm1aSAj+XA42k2CxaR8lu1RtsKmY78Ja3Cz+K8CQQDBT09Oizyb4G19d3sY\n\
+A42ETaSfJSnz7nueDpqoEghPJdHtL3mFXvWfg3gR34jat2RawnLauP+DGkfbDG6o\n\
+8FaDAkBJHsVUsyz7SdAMiR8pWp1bNgSjCjPp9T7+iL9WmqQpTPxX2xVjdOXLumu8\n\
+UkVdJl8C0jZbf7Hw5GZNfv6EkSj3AkEAre8GlM2Dg120JqhTAZBwzRJvhSKTVQDI\n\
+CbdqQL+46j5FXPzSgsamixhn+O0A3osUqPU9EsBSZ0xGSzosd6WIsQJBAM07hW3Y\n\
+SycRgn/rWuHd0NstuDwj5SiWRsvDeyheOVUTy51dqsPblRnodb2PKZgt07mC/kKA\n\
+ySOWcVy/AAtJ3JY=\n\
+-----END PRIVATE KEY-----\n";
+    const SPKI_PUBLIC: &str = "\
+-----BEGIN PUBLIC KEY-----\n\
+MIGfMA0GCSqGSIb3DQEBAQUAA4GNADCBiQKBgQCrW8Wu2elo457F+N/hEMNGylPd\n\
+K5+XKgljD9rsr/HryrElFANkNKZObPQPn9+kZcamIC791Vyf6vexyn71kTwcYX0B\n\
+Rk0xDO24UIyJGgZZ6zLqH6wCXb0Ij9vFA9zKWwziXTUDtJfx3g+ONmUjuzY7MReA\n\
+y5fomhWyTbz1HbMLjQIDAQAB\n\
+-----END PUBLIC KEY-----\n";
+    const PKCS1_PUBLIC: &str = "\
+-----BEGIN RSA PUBLIC KEY-----\n\
+MIGJAoGBAKtbxa7Z6WjjnsX43+EQw0bKU90rn5cqCWMP2uyv8evKsSUUA2Q0pk5s\n\
+9A+f36RlxqYgLv3VXJ/q97HKfvWRPBxhfQFGTTEM7bhQjIkaBlnrMuofrAJdvQiP\n\
+28UD3MpbDOJdNQO0l/HeD442ZSO7NjsxF4DLl+iaFbJNvPUdswuNAgMBAAE=\n\
+-----END RSA PUBLIC KEY-----\n";
+    /// `openssl dgst -sha256 -sign` of `abc` with that key, base64.
+    const ABC_SHA256: &str = "ISQf5prtj9BSWeqg5Rfgbfg1mt3BWIdp3aWyNfkEyqDwblip5Rkvp2Mx8wqzuUrhRZPDJuFZq21lBO3B2LGfg+n/SYzVb4LqABs1G/SafC5WLXXN12oTN44OhuCAg1i9hhm5A71x6CkGl6zEhi9t3GsD4Tan6D89QSXPatIa+LQ=";
+
+    /// The unencrypted key formats sign as OpenSSL does and verify
+    /// (encrypted keys were checked against OpenSSL output when this was
+    /// written; their scrypt is too slow for a debug test).
     #[test]
     fn key_formats() {
-        use rsa::pkcs1::{EncodeRsaPrivateKey, EncodeRsaPublicKey, LineEnding};
-        use rsa::pkcs8::{EncodePrivateKey, EncodePublicKey};
-        let mut rng = rsa::rand_core::OsRng;
-        let key = RsaPrivateKey::new(&mut rng, 1024).unwrap();
         // FileMaker text ends lines with CR.
         let cr = |s: &str| s.replace('\n', "\r");
-        let pkcs1 = cr(&key.to_pkcs1_pem(LineEnding::LF).unwrap());
-        let pkcs8 = cr(&key.to_pkcs8_pem(LineEnding::LF).unwrap());
-        let public = key.to_public_key();
-        let spki = cr(&public.to_public_key_pem(LineEnding::LF).unwrap());
-        let rsa_public = cr(&public.to_pkcs1_pem(LineEnding::LF).unwrap());
+        let (pkcs1, pkcs8) = (cr(PKCS1_PRIVATE), cr(PKCS8_PRIVATE));
+        let (spki, rsa_public) = (cr(SPKI_PUBLIC), cr(PKCS1_PUBLIC));
         let sig = generate_signature(b"abc", "SHA256", &pkcs1, "")
             .unwrap()
             .unwrap();
+        assert_eq!(Some(sig.clone()), encodings::base64_decode(ABC_SHA256));
         assert_eq!(
             generate_signature(b"abc", "sha256", &pkcs8, "x")
                 .unwrap()
