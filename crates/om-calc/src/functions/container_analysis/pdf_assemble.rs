@@ -70,9 +70,10 @@ pub struct PageGeometry {
 }
 
 /// A PDF's page count, whether [`assemble`] keeps how its pages look
-/// ([`optional_content_kept`]), and the geometry of its first
-/// [`INFO_PAGES`] pages; `None` for data that does not read.
-pub(super) fn info(data: Vec<u8>) -> Option<(u32, bool, Vec<PageGeometry>)> {
+/// ([`optional_content_kept`]) and everything else it holds
+/// ([`document_kept`]), and the geometry of its first [`INFO_PAGES`]
+/// pages; `None` for data that does not read.
+pub(super) fn info(data: Vec<u8>) -> Option<(u32, bool, bool, Vec<PageGeometry>)> {
     let pdf = Pdf::new(data).ok()?;
     let pages = pdf.pages();
     let count = u32::try_from(pages.len()).ok()?;
@@ -95,7 +96,12 @@ pub(super) fn info(data: Vec<u8>) -> Option<(u32, bool, Vec<PageGeometry>)> {
             }
         })
         .collect();
-    Some((count, optional_content_kept(&pdf), geometry))
+    Some((
+        count,
+        optional_content_kept(&pdf),
+        document_kept(&pdf),
+        geometry,
+    ))
 }
 
 /// Check only the selected source pages. The index prefix is bounded
@@ -263,6 +269,30 @@ pub(super) fn optional_content_kept(pdf: &Pdf) -> bool {
     pdf.xref()
         .get::<Dict<'_>>(pdf.xref().root_id())
         .is_none_or(|catalog| !catalog.contains_key(b"OCProperties"))
+}
+
+/// Whether a new document of all of a document's pages ([`assemble`]) keeps
+/// all that it holds: its catalog names nothing past its type and page tree
+/// (no outlines, interactive form, structure tree, names, page labels,
+/// metadata stream, open action, page mode or viewer preferences, which the
+/// page copy leaves behind), it has no document information (title,
+/// author, dates, producer...) and it is not encrypted (the copy is not).
+/// A document OpenMaker's reports or this assembler wrote, without a form,
+/// keeps all; appending to a PDF refuses one that does not rather than drop
+/// what it holds.
+pub(super) fn document_kept(pdf: &Pdf) -> bool {
+    let Some(catalog) = pdf.xref().get::<Dict<'_>>(pdf.xref().root_id()) else {
+        return false;
+    };
+    catalog
+        .keys()
+        .all(|key| matches!(key.as_ref(), b"Type" | b"Pages"))
+        && *pdf.metadata() == hayro::hayro_interpret::hayro_syntax::metadata::Metadata::default()
+        && !pdf
+            .data()
+            .as_ref()
+            .windows(b"/Encrypt".len())
+            .any(|w| w == b"/Encrypt")
 }
 
 /// A page box a page may set.

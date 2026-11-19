@@ -437,6 +437,11 @@ pub struct Info {
     /// no optional content configuration: it has none (`pdf_assemble`).
     /// [`assemble`] refuses pages of a PDF that has one.
     pub optional_content_kept: bool,
+    /// Whether a new document of all its pages keeps everything else it
+    /// holds too: no document-level parts, document information or
+    /// encryption that the page copy would leave behind
+    /// (`pdf_assemble::document_kept`).
+    pub document_kept: bool,
     /// The geometry of its first `INFO_PAGES` pages.
     geometry: Vec<PageGeometry>,
 }
@@ -465,9 +470,10 @@ pub fn info(data: &[u8]) -> Result<Option<Info>, Unavailable> {
         let pages = u32::from_be_bytes(pages.try_into().ok()?);
         let described = (pages as usize).min(pdf_assemble::INFO_PAGES);
         let geometry = pdf_assemble::decode_geometry(geometry, described)?;
-        (*kept <= 1).then_some(Info {
+        (*kept <= 3).then_some(Info {
             pages,
-            optional_content_kept: *kept == 1,
+            optional_content_kept: *kept & 1 != 0,
+            document_kept: *kept & 2 != 0,
             geometry,
         })
     }))
@@ -581,9 +587,9 @@ pub fn serve(limit: impl FnOnce(usize) -> bool) -> ExitCode {
             bytes
         }),
         Op::Text => pdf::text(&data).map(String::into_bytes),
-        Op::Info => pdf_assemble::info(data).map(|(pages, kept, geometry)| {
+        Op::Info => pdf_assemble::info(data).map(|(pages, kept, whole, geometry)| {
             let mut bytes = pages.to_be_bytes().to_vec();
-            bytes.push(u8::from(kept));
+            bytes.push(u8::from(kept) | u8::from(whole) << 1);
             pdf_assemble::encode_geometry(&geometry, &mut bytes);
             bytes
         }),

@@ -105,11 +105,27 @@ between the corners its start bits name, as Browse draws it (layout-model.md
 printing are decoded but refused ([report sliding](report-sliding.md)). The supported slice does not silently clip oversized
 objects or drop records returned incompletely by the provider.
 
-Append, target/container/variable/currently-open-PDF destinations, blank records,
+Target/container/variable/currently-open-PDF destinations, blank records,
 email attachment creation, encryption/restricted permissions, metadata,
 page ranges and page layouts and magnifications other than Default are
 explicitly refused. With Restore On, slots 0-7 accept only their decoded
-neutral numeric defaults. The other restored options:
+neutral numeric defaults. The other options:
+- **Append to existing PDF** (`kOption`) writes one new document of the
+  existing file's pages followed by the report's, which the PDF worker
+  assembles as it does DynaPDF's documents, each page copied with all it
+  refers to ([plugins](plugins.md)). With no file at the path it writes the
+  report alone [I: FileMaker's answer there is unmeasured]. It refuses with
+  3, and leaves the file as it was, rather than drop part of it: a file the
+  worker does not read as a PDF; one whose catalog holds more than its page
+  tree (bookmarks, an interactive form, a structure tree, names, page labels,
+  an XMP metadata stream, an open action, a page mode, viewer preferences);
+  one with document information (title, author, producer, dates); one that
+  is encrypted or has optional content; and an initial view other than Page
+  Only, since the new document sets none. OpenMaker's own reports have none
+  of these, so saving and then appending in a script builds one document,
+  but a PDF from FileMaker or another producer is usually refused. Without
+  the PDF worker it refuses too. The existing file is read up to 512 MiB.
+  FileMaker's own append was not compared.
 - **Initial view (slot 8)** is honored in the PDF's catalog (script-steps.md
   11.7, 12.5):
   - 0 Page Only writes no `/PageMode`, the PDF default;
@@ -645,8 +661,9 @@ is inferred from Browse; its printed output has not been compared.
 
 `cargo test -p om-gui --lib pdf_` exercises the real desktop runtime/host, generates
 found-set (three pages) and current-record (one page) output from synthetic data,
-keeps the selected record/index, and verifies cancellation plus unsupported
-append/security preserve existing output. The found set is deliberately shuffled;
+keeps the selected record/index, and verifies cancellation, an append
+without the PDF worker and unsupported security options preserve existing
+output (`tests/script_engine.rs` appends with the worker). The found set is deliberately shuffled;
 fields include a calculation using `Get ( RecordNumber )` and a formatted currency
 value. A second check refuses text overflow and a summary part. A small pagination
 unit check verifies repeated parts, whole-record transitions and oversize refusal.

@@ -132,7 +132,10 @@ fn selected_and_whole_imports_keep_pages_resources_and_streams() {
     assert_eq!(pdf_worker::find(&a, 0, ""), Ok(None));
     let b = source_b();
     let info = pdf_worker::info(&a).unwrap().unwrap();
-    assert_eq!((info.pages, info.optional_content_kept), (3, true));
+    assert_eq!(
+        (info.pages, info.optional_content_kept, info.document_kept),
+        (3, true, true)
+    );
     // Page 3 and page 1 of A, then all of B.
     let out = pdf_worker::assemble(&[&a, &b], &[(0, 2), (0, 0), (1, 0)])
         .unwrap()
@@ -141,6 +144,9 @@ fn selected_and_whole_imports_keep_pages_resources_and_streams() {
         pdf_worker::text(&out).unwrap().as_deref(),
         Some("A3\rA1\rB1")
     );
+    // What the assembler writes keeps all it holds when copied again
+    // (Save Records as PDF appends to it).
+    assert!(pdf_worker::info(&out).unwrap().unwrap().document_kept);
     let parsed = Parsed::new(out.clone()).unwrap();
     let pages = parsed.pages();
     assert_eq!(pages.len(), 3);
@@ -271,8 +277,8 @@ fn what_does_not_read_or_names_a_missing_page_makes_nothing() {
         let layered = layered(off);
         let info = pdf_worker::info(&layered).unwrap().unwrap();
         assert_eq!(
-            (info.pages, info.optional_content_kept),
-            (1, false),
+            (info.pages, info.optional_content_kept, info.document_kept),
+            (1, false, false),
             "{off}"
         );
         assert_eq!(
