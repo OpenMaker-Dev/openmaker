@@ -1018,12 +1018,13 @@ Record menu item, and OpenMaker adds none.
     Find, the record number), it acts as Return.
   - From a field whose "Go to next object using" includes the Enter key
     (field flag `0x80`, layout-model.md 5.4.1), it goes to the next object
-    as Tab does. That FileMaker Pro goes on there rather than commits is
-    inferred from the option, not measured. With Shift or Option it still
-    goes forward; what Pro does then is unmeasured.
-  - Return ends the field's editing and keeps the draft. FileMaker Pro
-    types a line break there, or goes to the next object when the option
-    includes the Return key (`0x40`)
+    as Tab does, and so does Return from one whose option includes the
+    Return key (`0x40`). That FileMaker Pro goes on there, rather than
+    committing or typing a line break, is inferred from the option, not
+    measured. With Shift or Option either key still goes forward; what Pro
+    does then is unmeasured.
+  - From any other field, Return ends the field's editing and keeps the
+    draft, where FileMaker Pro types a line break
     ([#376](https://github.com/OpenMaker-Dev/openmaker/issues/376)).
 - **A new record and reconnecting.** Records > New Record and Duplicate
   Record run the New Record/Request and Duplicate Record/Request steps:

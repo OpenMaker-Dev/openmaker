@@ -2521,28 +2521,28 @@ impl OpenMakerApp {
             || self.value_list_edit.is_some()
     }
 
-    /// Whether the keypad's Enter goes to the next object rather than
-    /// committing the record: the active field object's "Go to next object
-    /// using" includes the Enter key (`FieldObject::next_object_on_enter`).
-    /// That FileMaker Pro then goes on rather than commits is inferred from
-    /// the option (layout-model.md 5.4.1), not measured.
-    fn enter_goes_to_next_object(&self) -> bool {
+    /// The field object of the active field, whose "Go to next object
+    /// using" says where Return and the keypad's Enter go
+    /// (`FieldObject::next_object_on_return`, `next_object_on_enter`;
+    /// layout-model.md 5.4.1). That FileMaker Pro then goes on, rather than
+    /// typing a line break or committing, is inferred from the option, not
+    /// measured.
+    fn active_field_object(&self) -> Option<&om_layout::FieldObject> {
         let (Some(_), Some(object), Some(session)) = (
             &self.w.document.active,
             self.w.document.active_object,
             &self.w.session,
         ) else {
-            return false;
+            return None;
         };
         let crate::session::RenderState::Loaded(layout) = &session.render else {
-            return false;
+            return None;
         };
         layout
             .layout
             .objects
             .get(object)
             .and_then(|object| object.field_obj.as_ref())
-            .is_some_and(om_layout::FieldObject::next_object_on_enter)
     }
 
     fn shortcuts(&self, ui: &Ui, actions: &mut Vec<Action>) {
@@ -2566,11 +2566,19 @@ impl OpenMakerApp {
         // The keypad's Enter, unlike Return, commits the record or goes to
         // the next object (`keypad`) from a field of the record or with no
         // editor focused. In an open menu or list, or in a box of the
-        // toolbar (Quick Find, the record number), it acts as Return.
-        let keypad_enter = browse
+        // toolbar (Quick Find, the record number), it acts as Return, and
+        // Return keeps its own use there too.
+        let enter_keys = browse
             && !egui::Popup::is_any_open(ui.ctx())
             && (self.w.document.active.is_some() || !typing);
-        let enter_goes_next = keypad_enter && self.enter_goes_to_next_object();
+        let field = self.active_field_object();
+        let enter_goes_next =
+            enter_keys && field.is_some_and(om_layout::FieldObject::next_object_on_enter);
+        // Return goes to the next object as Tab does from a field whose
+        // option includes it. Otherwise it still ends the field's editing,
+        // where FileMaker Pro types a line break.
+        let return_goes_next =
+            enter_keys && field.is_some_and(om_layout::FieldObject::next_object_on_return);
         ui.input_mut(|input| {
             if input.consume_shortcut(&shortcuts::QUIT) {
                 actions.push(Action::Quit);
@@ -2653,17 +2661,23 @@ impl OpenMakerApp {
                     actions.push(Action::CommitRecord);
                     commit = true;
                 }
+                // As a Tab: the document moves the focus.
+                let tab = egui::Event::Key {
+                    key: Key::Tab,
+                    physical_key: None,
+                    pressed: true,
+                    repeat: false,
+                    modifiers: Modifiers::NONE,
+                };
+                if return_goes_next {
+                    if let Some(at) = input.events.iter().position(crate::keypad::is_return_press) {
+                        input.events[at] = tab.clone();
+                    }
+                }
                 let at = input.events.iter().position(crate::keypad::is_enter_press);
-                if let Some(at) = at.filter(|_| keypad_enter) {
+                if let Some(at) = at.filter(|_| enter_keys) {
                     if enter_goes_next {
-                        // As a Tab: the document moves the focus.
-                        input.events[at] = egui::Event::Key {
-                            key: Key::Tab,
-                            physical_key: None,
-                            pressed: true,
-                            repeat: false,
-                            modifiers: Modifiers::NONE,
-                        };
+                        input.events[at] = tab;
                     } else {
                         input
                             .events

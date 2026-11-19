@@ -50,15 +50,31 @@ pub(crate) fn is_enter(event: &Event) -> bool {
 /// Whether `event` presses the keypad's Enter without Command (Ctrl on
 /// Linux and Windows), which is Commit's own shortcut with either Enter.
 pub(crate) fn is_enter_press(event: &Event) -> bool {
-    is_enter(event)
-        && matches!(
-            event,
-            Event::Key {
-                pressed: true,
-                modifiers,
-                ..
-            } if !modifiers.command && !modifiers.mac_cmd
-        )
+    is_enter(event) && pressed_without_command(event)
+}
+
+/// Whether `event` presses Return (egui's Enter that is not the keypad's)
+/// without Command.
+pub(crate) fn is_return_press(event: &Event) -> bool {
+    matches!(
+        event,
+        Event::Key {
+            key: Key::Enter,
+            ..
+        }
+    ) && !is_enter(event)
+        && pressed_without_command(event)
+}
+
+fn pressed_without_command(event: &Event) -> bool {
+    matches!(
+        event,
+        Event::Key {
+            pressed: true,
+            modifiers,
+            ..
+        } if !modifiers.command && !modifiers.mac_cmd
+    )
 }
 
 pub(crate) use event_loop::run;

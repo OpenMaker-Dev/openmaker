@@ -30,8 +30,9 @@ struct DocumentProvider {
     styled: bool,
     conditional_color: bool,
     duplicate_field: bool,
-    /// Given's "Go to next object using" includes the Enter key.
-    given_next_on_enter: bool,
+    /// Given's "Go to next object using" includes Return and the Enter
+    /// key, as 123 of the starter solutions' 179 field objects do.
+    given_next_keys: bool,
     replacement: Option<Arc<AtomicBool>>,
     list: bool,
     /// The card is [`web_viewer_card`].
@@ -55,7 +56,7 @@ impl DocumentProvider {
             styled: false,
             conditional_color: false,
             duplicate_field: false,
-            given_next_on_enter: false,
+            given_next_keys: false,
             replacement: None,
             list: false,
             web_viewer: false,
@@ -248,14 +249,14 @@ impl DataProvider for DocumentProvider {
             return Ok(None);
         }
         let mut document = document();
-        if self.given_next_on_enter {
+        if self.given_next_keys {
             let given = document
                 .layout
                 .objects
                 .objects
                 .iter_mut()
                 .find(|o| o.id == 3);
-            given.unwrap().field_obj.as_mut().unwrap().flags |= 0x80;
+            given.unwrap().field_obj.as_mut().unwrap().flags |= 0xc0;
         }
         if self.styled {
             document.layout.def.as_mut().unwrap().table_alias_key = 0x104082;
@@ -799,8 +800,8 @@ fn blank_canvas_commits_but_changing_fields_keeps_the_record_draft() {
 }
 
 /// Return ends a field's editing and keeps the record's draft; the keypad's
-/// Enter commits it, or from a field whose "Go to next object using"
-/// includes the Enter key goes to the next field, as Tab does.
+/// Enter commits it. From a field whose "Go to next object using" includes
+/// them, both go to the next field, as Tab does.
 #[test]
 fn the_keypad_enter_commits_or_goes_on_where_return_keeps_the_draft() {
     let keypad_enter = |app: &mut common::App| {
@@ -811,13 +812,19 @@ fn the_keypad_enter_commits_or_goes_on_where_return_keeps_the_draft() {
     };
     let mut provider = DocumentProvider::new(false);
     provider.writable = true;
-    provider.given_next_on_enter = true;
+    provider.given_next_keys = true;
     let mut app = open_provider(provider);
     replace(&mut app, "Family", "Keypad");
     app.key_press(egui::Key::Enter);
     app.run_steps(3);
     assert!(common::unsaved(&app), "Return keeps the draft");
     assert!(!common::text_field(&app, "Family").is_focused());
+
+    replace(&mut app, "Given", "Return");
+    app.key_press(egui::Key::Enter);
+    app.run_steps(3);
+    assert!(common::text_field(&app, "Family").is_focused());
+    assert!(common::unsaved(&app), "going on keeps the draft");
 
     replace(&mut app, "Given", "Enter");
     keypad_enter(&mut app);
