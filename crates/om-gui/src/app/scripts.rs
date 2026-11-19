@@ -415,6 +415,164 @@ impl OpenMakerApp {
         }
     }
 
+    /// What `Get` reads of the window's focus, edits, find requests and
+    /// sort in the layout's calculations: the answers a script
+    /// started now reads (`WindowHost::session_info` over
+    /// [`Self::window_state`]), without its reads from the provider. The
+    /// active field's text is what its editor holds, else the record's
+    /// stored text; a related field's editor not drawn yet holds nothing.
+    pub(super) fn window_get_state(
+        &self,
+        session: &crate::session::Session,
+        schema: Option<&om_data::host::CalcSchema>,
+        info: &mut om_data::host::SessionInfo,
+    ) {
+        let find = self.w.mode == Mode::Find;
+        let document = &self.w.document;
+        let current = session.current_record().map(|(_, record)| record.id);
+        info.sorted = self.w.found_set.is_some_and(|f| f.sorted);
+        info.request_count = if find {
+            self.w.find.len() as u64
+        } else {
+            self.w.requests
+        };
+        info.request_omit = find && self.w.find.current().omit;
+        let objects = match &session.render {
+            RenderState::Loaded(loaded) => Some(&loaded.layout.objects),
+            _ => None,
+        };
+        let object_name = |id: u64| {
+            objects
+                .and_then(|o| o.get(id))
+                .map(|o| o.name.clone().unwrap_or_default())
+        };
+        // Find mode has no portal rows. Otherwise the row of the related
+        // field the user is in, else the row last clicked on this record.
+        let related = document.active_related.filter(|_| !find);
+        let portal = match related {
+            _ if find => None,
+            Some(focus) if focus.portal.is_some() => focus.row.map(|row| (focus.object, row)),
+            _ => self
+                .w
+                .portal
+                .filter(|(l, r, _)| Some(*l) == session.layout && Some(*r) == current)
+                .map(|(_, _, row)| (row.field.unwrap_or(row.object), row.row)),
+        };
+        info.active_portal_row_number = Some(portal.map_or(0, |(_, row)| row));
+        if find {
+            if let Some(field) = &self.w.find.focused_field {
+                (info.active_field_name, info.active_field_table_name) =
+                    crate::calc::focus_names(field, &info.layout_table_name);
+                info.active_field_contents = self
+                    .w
+                    .find
+                    .current()
+                    .get(field)
+                    .unwrap_or_default()
+                    .to_owned();
+            }
+        } else if let Some(focus) = related {
+            // A portal row's field, a related field outside portals, or a
+            // later repetition of the record's own field.
+            let names = objects
+                .and_then(|o| o.get(focus.object)?.field_spec())
+                .zip(schema)
+                .and_then(|(spec, schema)| {
+                    let occurrence = om_layout::occurrence_id(spec.table_key)?;
+                    Some((
+                        schema.field(occurrence, spec.field_id()?)?.name.clone(),
+                        schema.occurrence(occurrence)?.name.clone(),
+                    ))
+                });
+            if let Some((name, table)) = names {
+                info.active_field_name = name;
+                info.active_field_table_name = table;
+            }
+            info.active_repetition_number = Some(u64::from(focus.repetition.max(1)));
+            info.active_field_contents = document
+                .related_text(&focus.field)
+                .unwrap_or_default()
+                .to_owned();
+            if focus.portal.is_some() {
+                info.active_layout_object = object_name(focus.object);
+            }
+        } else if let Some(name) = &document.active {
+            info.active_field_name = name.clone();
+            info.active_field_table_name = info.layout_table_name.clone();
+            info.active_field_contents = document.value(session, name).unwrap_or_default();
+        } else if let Some((object, _)) = portal {
+            info.active_layout_object = object_name(object);
+        }
+        // The record's open state and changed fields.
+        let uncommitted = self.uncommitted();
+        let drafts = document.changes(session);
+        let new = uncommitted.is_some_and(|u| u.new);
+        info.record_open_state = Some(if find {
+            0
+        } else if new {
+            1
+        } else if !drafts.is_empty()
+            || document.related_edited(session)
+            || uncommitted.is_some_and(|u| !u.cells.is_empty())
+        {
+            2
+        } else {
+            0
+        });
+        let table = crate::calc::layout_occurrence(session)
+            .zip(schema)
+            .and_then(|(occurrence, schema)| Some((schema, schema.table_of(occurrence)?.id)));
+        let (Some((schema, table)), Some(record), Mode::Browse) = (table, current, self.w.mode)
+        else {
+            return;
+        };
+        // The user's typing counts once the field is left. A selected
+        // container is not typed into.
+        let typing = document.active.as_deref().filter(|f| {
+            drafts.contains_key(*f)
+                && document
+                    .selected_container(session)
+                    .is_none_or(|c| c.field != *f)
+        });
+        // The record's own later repetitions: a script's cells, and the
+        // user's typing into them but for the one being typed into.
+        let parent = u64::try_from(record).ok();
+        let focused = related
+            .filter(|f| f.portal.is_none())
+            .map(|f| f.field.field);
+        let scripted = uncommitted
+            .into_iter()
+            .flat_map(|u| u.cells.keys().copied());
+        let drafted = uncommitted.into_iter().flat_map(|u| {
+            u.related
+                .iter()
+                .filter(|d| d.table == table && d.record == parent && !d.deleted)
+                .flat_map(|d| d.cells.keys().copied())
+        });
+        let typed = document
+            .related_edits(session.layout.unwrap_or_default(), record)
+            .into_iter()
+            .filter(|edit| {
+                edit.field.table == table
+                    && parent.is_some_and(|p| edit.field.row == RelatedRow::Record(p))
+            })
+            .map(|edit| edit.field.field)
+            .chain(drafted)
+            .filter(|cell| Some(*cell) != focused);
+        let entered = match uncommitted {
+            Some(u) if u.new => u.entered.as_slice(),
+            _ => &[],
+        };
+        info.modified_fields = crate::calc::window_modified_fields(
+            schema,
+            table,
+            drafts.keys().map(String::as_str),
+            typing,
+            scripted.chain(typed),
+            entered,
+        );
+    }
+
     /// The portal row of the related field the user's focus is in, that
     /// field active in it (#1005).
     fn focused_portal_row(&self) -> Option<crate::scripting::PortalRow> {

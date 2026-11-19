@@ -1127,6 +1127,63 @@ pub(crate) fn session_info(
     }
 }
 
+/// `Get ( ActiveFieldName )` and `Get ( ActiveFieldTableName )` of the
+/// field the window names `field`: a related one as Find mode names it
+/// (`Occurrence::Field`), else one of the layout's table `layout_table`.
+pub(crate) fn focus_names(field: &str, layout_table: &str) -> (String, String) {
+    match field.split_once("::") {
+        Some((occurrence, name)) => (name.to_owned(), occurrence.to_owned()),
+        None => (field.to_owned(), layout_table.to_owned()),
+    }
+}
+
+/// `Get ( ModifiedFields )` of a window's current record of `table` in
+/// Browse mode (calc-functions.md 6.3 O3), as scripts and the layout's
+/// calculations read it: the fields with a draft (`drafts`, by name) and
+/// those whose cells a script set or the user typed into (`cells`; cell
+/// `F * 256 + n` is field F's repetition n), but not the field still being
+/// typed into (`typing`), which is listed once it is left; the stored
+/// calculations on them; and a new record's auto-entered fields
+/// (`entered`, the fields that held a value when it was made).
+pub(crate) fn window_modified_fields<'a>(
+    schema: &CalcSchema,
+    table: u64,
+    drafts: impl IntoIterator<Item = &'a str>,
+    typing: Option<&str>,
+    cells: impl IntoIterator<Item = u64>,
+    entered: &[String],
+) -> Vec<String> {
+    let Some(def) = schema.table(table) else {
+        return Vec::new();
+    };
+    let named = |name: &str| def.fields.values().find(|f| f.name == name);
+    let mut changed: Vec<u64> = drafts
+        .into_iter()
+        .filter(|name| typing != Some(*name))
+        .filter_map(|name| named(name).map(|f| f.id))
+        .collect();
+    for cell in cells {
+        let field = if def.fields.contains_key(&cell) {
+            cell
+        } else {
+            cell >> 8
+        };
+        let Some(def) = def.fields.get(&field) else {
+            continue;
+        };
+        if typing != Some(def.name.as_str()) && !changed.contains(&field) {
+            changed.push(field);
+        }
+    }
+    let entered: Vec<u64> = entered
+        .iter()
+        .filter_map(|name| named(name))
+        .filter(|f| om_data::host::session::auto_enters(f))
+        .map(|f| f.id)
+        .collect();
+    om_data::host::session::modified_fields(schema, table, &changed, &entered)
+}
+
 /// The layout's table occurrence.
 pub(crate) fn layout_occurrence(session: &Session) -> Option<u64> {
     match &session.render {
