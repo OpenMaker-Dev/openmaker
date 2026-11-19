@@ -1242,8 +1242,11 @@ key text in the form of the field's index language (query-program.md 7.2,
 Number, date, time and timestamp fields are keyed in the forms of 7.3: an
 empty value under `01`, a value with no digit (`N/A`, a date stored as `?`)
 under `fe ff`, and a timestamp stored as a date alone under its date and
-`fe ff`. A number with other characters among its digits (`1,234`, `abc12`)
-gets no key yet ([#246](https://github.com/OpenMaker-Dev/openmaker/issues/246)).
+`fe ff`. A number's text is read as FileMaker reads it, with the file's
+decimal and thousands separators (`om_collate::number_text`, the reading
+the calculation engine uses too, calc-values.md 2.8): `1,234` is 1234 in
+an en-US file, `abc12` is 12, `(5)` is -5. A date or time with digits that
+OpenMaker does not read gets no key.
 A typed index that an earlier OpenMaker build wrote lists no empty value
 under `01`, so a find for `=` on it misses those records.
 

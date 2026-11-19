@@ -2001,7 +2001,10 @@ holding `10`, `2`, `-3`, `4.5` and `N/A` changed to Number, and back.
 - **The value index:** it is rebuilt, the five text keys replaced by five numeric keys with its counts unchanged; back as text the original keys return byte for byte.
 - **Sorting:** ascending, it orders `-3`, `2`, `4.5`, `10`, `N/A` as a number and `-3`, `10`, `2`, `4.5`, `N/A` as text.
 
-What key `N/A` gets in the number index is not recorded ([#246](https://github.com/OpenMaker-Dev/openmaker/issues/246)).
+`N/A` is listed under `fe ff`, the key of a value with no number in it
+(query-program.md 7.3): in the closed fixture, its record is the child
+`[80 02, 01, 05, 00, fe ff, 05]` of the rebuilt number index (observed,
+[#246](https://github.com/OpenMaker-Dev/openmaker/issues/246)).
 
 **The rewrite (`0x400`, `0x800`).** For every record and every stored
 repetition of the field (the iterator visits existing repetitions only),

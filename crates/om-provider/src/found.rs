@@ -29,7 +29,7 @@ use om_hbam::{RidList, Table};
 use om_query::find::{
     self as finders, ClientFind, ClientFindError, Criterion, FieldIndex, FindContext, IndexKind,
 };
-use om_query::keys::{record_value_keys, word_keys, TextKeys};
+use om_query::keys::{record_value_keys, word_keys, Reading, TextKeys};
 
 use crate::calc::NativeSource;
 use crate::{download_records, download_tree, failure, record_ids, NativeProvider};
@@ -724,6 +724,14 @@ impl NativeProvider {
         Ok(found)
     }
 
+    /// How the file's stored numbers and dates read for their index keys
+    /// (query-program.md 7.3): its locale's date order and decimal and
+    /// thousands separators.
+    fn reading(&mut self) -> Result<Reading, DataError> {
+        let schema = self.calc_schema_cached()?;
+        Ok(reading_of(&schema.locale))
+    }
+
     /// The file's own language (`Locale::Type`), which an index in
     /// language 0 keys text in (query-program.md 7.2).
     fn file_language(&mut self) -> Result<u32, DataError> {
@@ -864,7 +872,7 @@ impl NativeProvider {
             .collect();
         let failed = |e: ClientFindError| client_find_error(table, e);
         let mut client = ClientFind::new(&finders, CLIENT_FIND_BUDGET).map_err(failed)?;
-        let order = self.calc_schema_cached()?.locale.date_order;
+        let reading = self.reading()?;
         let file_language = self.file_language()?;
         let reads: Vec<(om_hbam::Field, IndexKind, TextKeys)> = client
             .reads()
@@ -889,7 +897,7 @@ impl NativeProvider {
                         let texts = field_texts(&row, field);
                         match index {
                             IndexKind::Value => {
-                                record_value_keys(field.data_type, &texts, order, *text)
+                                record_value_keys(field.data_type, &texts, reading, *text)
                             }
                             IndexKind::Word => word_keys(&texts, *text),
                         }
@@ -1057,7 +1065,7 @@ impl NativeProvider {
     fn join_back(&mut self, path: &[Hop], records: RidList) -> Result<RidList, DataError> {
         let schema = self.calc_schema_cached()?;
         // Stored dates and timestamps read in the file's order.
-        let order = schema.locale.date_order;
+        let reading = reading_of(&schema.locale);
         let mut current = records;
         for hop in path.iter().rev() {
             let (Some(near), Some(far)) = (schema.table_of(hop.from), schema.table_of(hop.to))
@@ -1080,7 +1088,7 @@ impl NativeProvider {
             let rows = self.join_rows(&far_table, &ids, &fields, |field, row| {
                 row.cells
                     .get(&field.id)
-                    .map(|cell| join_keys(field.data_type, &cell.display(), order))
+                    .map(|cell| join_keys(field.data_type, &cell.display(), reading))
                     .unwrap_or_default()
             })?;
             if rows.is_empty() {
@@ -1139,7 +1147,7 @@ impl NativeProvider {
                             .iter()
                             .find(|(id, _)| *id == field.id)
                             .map_or(TextKeys::Collated, |(_, form)| *form);
-                        record_value_keys(field.data_type, &texts, order, form)
+                        record_value_keys(field.data_type, &texts, reading, form)
                             .into_iter()
                             .collect()
                     })?;
@@ -1488,20 +1496,31 @@ fn field_texts(row: &om_hbam::record::Record, field: &om_hbam::Field) -> Vec<Str
 /// The value-index keys of a stored value (one per line), as a join
 /// compares them; empty lines have none (an empty value never relates,
 /// file-metadata.md 4).
-fn join_keys(data_type: om_hbam::DataType, value: &str, order: DateOrder) -> Vec<Vec<u8>> {
+fn join_keys(data_type: om_hbam::DataType, value: &str, reading: Reading) -> Vec<Vec<u8>> {
     use om_hbam::DataType;
     value
         .split(['\r', '\n'])
         .map(str::trim)
         .filter(|line| !line.is_empty())
         .filter_map(|line| match data_type {
-            DataType::Number => om_collate::number_key(line),
-            DataType::Date => om_collate::date_key(line, order),
+            DataType::Number => om_collate::number_key_in(line, reading.numbers),
+            DataType::Date => om_collate::date_key(line, reading.order),
             DataType::Time => om_collate::time_key(line),
-            DataType::Timestamp => om_collate::timestamp_key(line, order),
+            DataType::Timestamp => om_collate::timestamp_key(line, reading.order),
             _ => Some(om_collate::text_index_key(line)),
         })
         .collect()
+}
+
+/// [`Reading`] of a file's locale.
+fn reading_of(locale: &om_data::calc::Locale) -> Reading {
+    Reading {
+        order: locale.date_order,
+        numbers: om_collate::NumberFormat {
+            decimal: locale.decimal_separator,
+            thousands: locale.thousands_separator,
+        },
+    }
 }
 
 /// The error slot of a failed op86 reply, `[00] = 02 <u16>` (query-program.md

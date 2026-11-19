@@ -2,11 +2,13 @@
 //! `docs/re/query-program.md` 7.3), from the text FileMaker stores for them.
 //!
 //! Each form makes byte order equal value order. The forms are FileMaker's:
-//! decimal numbers of either sign, dates with a four-digit year in the order
-//! the caller names, times of either sign with fractions of a second, and
+//! numbers of either sign, read from their text as FileMaker reads it
+//! ([`crate::number_text`]), dates with a four-digit year in the order the
+//! caller names, times of either sign with fractions of a second, and
 //! timestamps. Text these functions do not read returns `None`; which of it
-//! FileMaker reads as a value (digits among other text, spec 7.3) and which
-//! it lists as invalid is the caller's to decide.
+//! FileMaker lists as invalid is the caller's to decide.
+
+use crate::number_text::{read_number, ReadNumber};
 
 /// Bit 23 of a date key's three bytes.
 const DATE: u32 = 0x80_0000;
@@ -14,10 +16,38 @@ const DATE: u32 = 0x80_0000;
 /// The most digits a number key holds (spec 7.3, from bin).
 const MAX_DIGITS: usize = 200;
 
-/// The key of a decimal number stored as an optional `-` (or U+2212), digits
-/// and at most one `.` (spec 7.3): a big-endian u16 head, then one nibble
-/// per digit, integer digits first, without leading integer zeros or
-/// trailing fraction zeros, at most 200 of them.
+/// How a file writes numbers: its decimal and thousands separators (its
+/// locale's `Num.Decimal` and `Num.1000s`), which reading a stored number
+/// depends on (`1,5` is 1.5 in de-DE, 15 in en-US).
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct NumberFormat {
+    pub decimal: char,
+    pub thousands: char,
+}
+
+impl Default for NumberFormat {
+    /// en-US: `.` and `,`.
+    fn default() -> Self {
+        NumberFormat {
+            decimal: '.',
+            thousands: ',',
+        }
+    }
+}
+
+/// [`number_key_in`] with en-US separators.
+pub fn number_key(text: &str) -> Option<Vec<u8>> {
+    number_key_in(text, NumberFormat::default())
+}
+
+/// The key of a number stored as `text` in a file writing numbers in
+/// `format` (spec 7.3), the text read as FileMaker reads it
+/// ([`crate::number_text::read_number`]: `12abc34` is 1234, `$5` 5, `(5)`
+/// -5, `1e3` 1000): a big-endian u16 head, then one nibble per digit,
+/// integer digits first, without leading integer zeros or trailing
+/// fraction zeros, at most 200 of them. `None` when the text holds no
+/// number (no digit, `?`, an exponent out of range), which a number index
+/// lists as invalid.
 ///
 /// - Zero (`0`, `-0`, `0.0`) is `80 00`.
 /// - A positive number's head is 0x8000 + the count of integer digits kept;
@@ -27,24 +57,34 @@ const MAX_DIGITS: usize = 200;
 ///   `14 - digit`, then an `f` nibble, the last byte padded with `f`
 ///   (`-1` = `7f fe df`, `-12` = `7f fd dc ff`), so a longer magnitude
 ///   sorts first.
-pub fn number_key(text: &str) -> Option<Vec<u8>> {
-    let text = text.trim();
-    let (negative, magnitude) = match text
-        .strip_prefix('-')
-        .or_else(|| text.strip_prefix('\u{2212}'))
-    {
-        Some(rest) => (true, rest),
-        None => (false, text),
-    };
-    let (integer, fraction) = magnitude.split_once('.').unwrap_or((magnitude, ""));
-    if integer.is_empty() && fraction.is_empty()
-        || !integer
-            .bytes()
-            .chain(fraction.bytes())
-            .all(|b| b.is_ascii_digit())
-    {
+pub fn number_key_in(text: &str, format: NumberFormat) -> Option<Vec<u8>> {
+    let ReadNumber::Value {
+        negative,
+        digits,
+        frac,
+        exponent,
+    } = read_number(text, format.decimal, format.thousands)
+    else {
         return None;
-    }
+    };
+    // The point's place among the digits: `frac` from the end, moved by the
+    // exponent (less than 800 either way, so the zeros added stay few).
+    let point = digits.len() as i64 - frac as i64 + exponent;
+    let ascii = |d: &[u8]| d.iter().map(|d| char::from(b'0' + d)).collect::<String>();
+    let (integer, fraction) = if point <= 0 {
+        (
+            String::new(),
+            "0".repeat(point.unsigned_abs() as usize) + &ascii(&digits),
+        )
+    } else if point as usize >= digits.len() {
+        (
+            ascii(&digits) + &"0".repeat(point as usize - digits.len()),
+            String::new(),
+        )
+    } else {
+        let (int, frac) = digits.split_at(point as usize);
+        (ascii(int), ascii(frac))
+    };
     Some(decimal_key(
         negative,
         integer.trim_start_matches('0'),
@@ -234,10 +274,17 @@ mod tests {
             assert_eq!(hex(&number_key(value).unwrap()), key, "{value}");
         }
         // The probe's other numbers are in catalogs/index-key-vectors.tsv,
-        // checked in om-query; text these functions do not read:
-        for value in ["", "-", ".", "abc", "1.2.3", "1e3", "+5"] {
+        // checked in om-query; text that holds no number:
+        for value in ["", "-", ".", "abc", "?", "1e800"] {
             assert_eq!(number_key(value), None, "{value}");
         }
+        // The file's separators decide (calc-values.md 2.8).
+        let german = NumberFormat {
+            decimal: ',',
+            thousands: '.',
+        };
+        assert_eq!(hex(&number_key_in("379,5", german).unwrap()), "800348a6");
+        assert_eq!(number_key_in("1.234,5", german), number_key("1,234.5"));
     }
 
     #[test]
