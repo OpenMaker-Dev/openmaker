@@ -1082,7 +1082,9 @@ pub fn checked_join_program(
 /// host's index: a target matches a row when every predicate `(type, a,
 /// b)` relates some key of its `a` to some key of the row's `b`, keys
 /// compared as bytes, `×` relating every record. No rows or no predicates
-/// relate nothing.
+/// relate nothing. As the host leaves an empty value's key `01` out of
+/// `≠` and the inequalities ([`crate::exec`], file-metadata.md 4), a
+/// target's `01` relates only through `=`, `≥` and `×`.
 pub fn join_on_keys(
     targets: &[JoinRow],
     rows: &[JoinRow],
@@ -1096,6 +1098,7 @@ pub fn join_on_keys(
     }
     let relates = |kind: u8, a: &[u8], b: &[u8]| match kind {
         0 => a == b,
+        1..=3 if a == EMPTY_TEXT_KEY => false,
         1 => a != b,
         2 => a < b,
         3 => a <= b,

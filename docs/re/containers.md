@@ -254,6 +254,12 @@ Data types (embedded / remote):
 | media | `MOV `/`mov `, `WMV `/`wmv `, `MPEG`/`mpeg`, `MPG4`/`mpg4`, `AVI `/`avi `, `M4V `/`m4v `, `MP3 `/`mp3 `, `WAV `/`wav `, `AU  `/`au  `, `AIFF`/`aiff`, `M4A `/`m4a `, `WMA `/`wma `, `FLAC`/`flac`, `MPG3`, `MooV`/`moov`, `snd ` |
 | any file | `FILE`/`file` (stored as is), `ZLIB`/`zlib` (stored zlib-compressed), `FLDR`/`fldr`, `FORK` (Mac resource fork) |
 
+FileMaker Pro and Go 26.1.1 insert AVIF images (`.avif`) into container
+fields (Claris release notes, FileMaker Pro 26.1.1; libavif 1.4.2). The
+Mac binaries add the `.avif` extension, `image/avif` and an "AV1 Image File
+Format" file type [O: strings]; which stream type such an image is stored
+under (an `AVIF` 4cc, or `FILE`) is [U] until a 26.1.1 insertion is read.
+
 Supporting (metadata) types, `QuadChar::IsSupportingType`: `SIZE`, `DPI_`,
 `ROT8`, `FRM#`, `FORK`, `FNAM`, `SIGN`, `REMO`, `ENCR`, `GLPH`. Others seen:
 `MAIN`/`main` (names the main stream), `BAR#`/`BART` (barcode text and type),

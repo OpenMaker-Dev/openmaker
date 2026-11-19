@@ -272,7 +272,7 @@ impl ServerHost {
         create_folders: bool,
     ) -> om_scripts::runtime::HostResult {
         use om_scripts::runtime::{ErrorCode, HostError};
-        self.require_privileges()?;
+        self.require_view()?;
         // A server session has no active field.
         let field = field.ok_or(HostError::Unsupported)?;
         let value = self.value_of(field)?;
