@@ -1012,7 +1012,9 @@ Record menu item, and OpenMaker adds none.
 **Limits of committing and reverting:**
 - **Keypad Enter and Return.** egui reports both keys as Enter, so the
   app's event loop marks keypad Enter's events before egui reads them
-  (`om_gui::keypad`).
+  (`om_gui::keypad`). A program that runs `om_gui::run` with a logger of its
+  own gets eframe's own loop instead, which keeps eframe's errors its
+  return value, and there keypad Enter acts as Return.
   - Keypad Enter commits from a field of the record, or with no field
     active. In an open menu or list, and in the toolbar's boxes (Quick
     Find, the record number), it acts as Return.
