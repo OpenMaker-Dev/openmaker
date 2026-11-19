@@ -302,6 +302,9 @@ pub(crate) struct Calculations {
     /// value, kept apart from `values`, where the same object holds the
     /// found set's value.
     group_values: RefCell<HashMap<GroupKey, SessionResult<Value>>>,
+    /// The layout calculations' last `Get ( ModifiedFields )`, with the
+    /// schema and inputs it was computed from ([`Self::modified_fields`]).
+    modified: RefCell<Option<ModifiedAnswer>>,
     /// The value-list items of controls whose list depends on the record
     /// (its related values, or an unstored calculation's), by object,
     /// record and portal row, with whether they were computed by a
@@ -1125,6 +1128,105 @@ pub(crate) fn session_info(
         utc_offset: om_provider::local_utc_offset(),
         ..SessionInfo::for_this_machine()
     }
+}
+
+/// `Get ( ActiveFieldName )` and `Get ( ActiveFieldTableName )` of the
+/// field the window names `field`: a related one as Find mode names it
+/// (`Occurrence::Field`), else one of the layout's table `layout_table`.
+pub(crate) fn focus_names(field: &str, layout_table: &str) -> (String, String) {
+    match field.split_once("::") {
+        Some((occurrence, name)) => (name.to_owned(), occurrence.to_owned()),
+        None => (field.to_owned(), layout_table.to_owned()),
+    }
+}
+
+/// A `Get ( ModifiedFields )` answer with the schema and inputs it was
+/// computed from.
+type ModifiedAnswer = (Arc<CalcSchema>, ModifiedInputs, Vec<String>);
+
+/// What a window's `Get ( ModifiedFields )` is computed from
+/// ([`window_modified_fields`]).
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub(crate) struct ModifiedInputs {
+    pub table: u64,
+    pub drafts: Vec<String>,
+    pub typing: Option<String>,
+    pub cells: Vec<u64>,
+    pub entered: Vec<String>,
+}
+
+impl Calculations {
+    /// [`window_modified_fields`] for the layout's calculations, computed
+    /// again only when its inputs or the schema change: the walk through
+    /// the stored calculations that depend on the changed fields would
+    /// otherwise run on every frame the window draws.
+    pub fn modified_fields(&self, inputs: ModifiedInputs) -> Vec<String> {
+        let Some(schema) = self.schema() else {
+            return Vec::new();
+        };
+        if let Some((seen, given, answer)) = &*self.modified.borrow() {
+            if Arc::ptr_eq(seen, schema) && *given == inputs {
+                return answer.clone();
+            }
+        }
+        let answer = window_modified_fields(
+            schema,
+            inputs.table,
+            inputs.drafts.iter().map(String::as_str),
+            inputs.typing.as_deref(),
+            inputs.cells.iter().copied(),
+            &inputs.entered,
+        );
+        *self.modified.borrow_mut() = Some((Arc::clone(schema), inputs, answer.clone()));
+        answer
+    }
+}
+
+/// `Get ( ModifiedFields )` of a window's current record of `table` in
+/// Browse mode (calc-functions.md 6.3 O3), as scripts and the layout's
+/// calculations read it: the fields with a draft (`drafts`, by name) and
+/// those whose cells a script set or the user typed into (`cells`; cell
+/// `F * 256 + n` is field F's repetition n), but not the field still being
+/// typed into (`typing`), which is listed once it is left; the stored
+/// calculations on them; and a new record's auto-entered fields
+/// (`entered`, the fields that held a value when it was made).
+pub(crate) fn window_modified_fields<'a>(
+    schema: &CalcSchema,
+    table: u64,
+    drafts: impl IntoIterator<Item = &'a str>,
+    typing: Option<&str>,
+    cells: impl IntoIterator<Item = u64>,
+    entered: &[String],
+) -> Vec<String> {
+    let Some(def) = schema.table(table) else {
+        return Vec::new();
+    };
+    let named = |name: &str| def.fields.values().find(|f| f.name == name);
+    let mut changed: Vec<u64> = drafts
+        .into_iter()
+        .filter(|name| typing != Some(*name))
+        .filter_map(|name| named(name).map(|f| f.id))
+        .collect();
+    for cell in cells {
+        let field = if def.fields.contains_key(&cell) {
+            cell
+        } else {
+            cell >> 8
+        };
+        let Some(def) = def.fields.get(&field) else {
+            continue;
+        };
+        if typing != Some(def.name.as_str()) && !changed.contains(&field) {
+            changed.push(field);
+        }
+    }
+    let entered: Vec<u64> = entered
+        .iter()
+        .filter_map(|name| named(name))
+        .filter(|f| om_data::host::session::auto_enters(f))
+        .map(|f| f.id)
+        .collect();
+    om_data::host::session::modified_fields(schema, table, &changed, &entered)
 }
 
 /// The layout's table occurrence.

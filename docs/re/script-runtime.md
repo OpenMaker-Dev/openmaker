@@ -319,7 +319,9 @@ comments do not either, because they never execute (2.2).
 ### 2.5 Valid, obsolete and gated step ids
 
 - Valid ids are 0..247 (`ScriptStep::IsStepIDValid` 0xe7ef80: absolute value
-  below 248) (obs).
+  below 248) (obs). FileMaker Pro 26.1.1 accepts 0..250 (Mac `FMEngine`
+  0x523c34: below 251), for its steps 249 and 250 (script-steps.md 12.4)
+  (obs); its obsolete and gated ids are those below.
 - Obsolete ids (`IsStepIDObsolete` 0xe7f1a0): 15, 52, 54, 58, 59, 78, 100,
   153, 176, 198, 204 (obs). They fail with error 4.
 - Feature-gated ids: 224 (Execute URL) and 239 (Validate Scripts) count as

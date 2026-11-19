@@ -1284,8 +1284,9 @@ codec is `om_protocol::authoring`; the host side is `om-server`'s
   save; a save that takes longer than the client's 30-second read timeout
   is reported as `outcome_unknown`.
 - **Not audited.** A dedicated security review of the extension and of
-  OpenMaker Server's existing op13 handling (which accepts uploads from any
-  logged-in account) is still to be done.
+  OpenMaker Server's existing op13 handling (direct catalog uploads need
+  the file's [Full Access] set; staged record uploads need only a session
+  that may write the file, as below) is still to be done.
 
 Structured authoring authenticates without requiring Browse layouts or tables.
 Accepted source is aligned after parser normalization, so retrying the same

@@ -331,6 +331,18 @@ A scheduled run logs these lines in this order, all at level Information
   folder is separate goes.
 - Whether a changed file's copy starts from the previous backup's copy.
 - The progressive backup folder's layout, with and without container data.
+- FileMaker Server 26.1.1 (announced in Claris's 26.1 launch webinar, not
+  released on 2026-11-19): automatic switchover to a standby server, behind a virtual IP
+  address, with progressive backups sent to the standby over SSH. FileMaker
+  Pro 26.1.1's shared engine already carries pieces of it [O: strings and
+  symbols]: Windows Failover Clustering messages (cluster access point
+  address, virtual IP address, file share witness, a "FileMaker Server
+  failover role", the Windows account for cluster setup), a standby
+  keystore (`KeyStorageRequestor::RekeyKeyStore`,
+  `ApplyRekeyedKeyStore`, the HTTP headers `X-FMS-Standby-Keystore` and
+  `X-FMS-Upload-Request-Id`), a license key field `Automatic_Failover`, and
+  libssh2 behind libcurl. How the standby is set up and fed on Linux, and
+  what changes in the backup folders, is unknown until it ships.
 - What `maxBackups` 0 means.
 - Whether preserved backups count toward the keep count, and what
   `IsPreserved=true` looks like.

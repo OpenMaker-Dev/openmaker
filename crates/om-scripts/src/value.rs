@@ -14,24 +14,35 @@ const PIECE: usize = 1000;
 
 /// The bytes of a value node, reassembling a chunked value. `None` for a
 /// node that is neither a plain value nor a well-formed chunked one.
+///
+/// The header's length comes from a file or a host, so nothing is reserved
+/// until the pieces present add up to it: a header claiming 4 GiB with no
+/// pieces must not reserve 4 GiB (#216).
 pub fn node_bytes(node: &OwnedNode) -> Option<Cow<'_, [u8]>> {
     if let Some(value) = &node.value {
         return node.children.is_empty().then_some(Cow::Borrowed(value));
     }
     let (header, pieces) = node.children.split_first()?;
     let header_value = header.value.as_deref()?;
-    if header.segment != [0] || !header.children.is_empty() || header_value.len() < 4 {
+    if header.segment != [0] || !header.children.is_empty() {
         return None;
     }
-    let total = u32::from_be_bytes(header_value[..4].try_into().ok()?) as usize;
-    let mut out = Vec::with_capacity(total);
+    let total = u32::from_be_bytes(*header_value.first_chunk()?);
+    let mut len = 0usize;
     for (n, piece) in pieces.iter().enumerate() {
         if serial::decode(&piece.segment) != Some(n as u64 + 1) || !piece.children.is_empty() {
             return None;
         }
-        out.extend_from_slice(piece.value.as_deref()?);
+        len = len.checked_add(piece.value.as_deref()?.len())?;
     }
-    (out.len() == total).then_some(Cow::Owned(out))
+    if len != total as usize {
+        return None;
+    }
+    let mut out = Vec::with_capacity(len);
+    for piece in pieces {
+        out.extend_from_slice(piece.value.as_deref().unwrap_or_default());
+    }
+    Some(Cow::Owned(out))
 }
 
 /// The text of a value node (XOR 0x5A masked SCSU).
@@ -143,5 +154,9 @@ mod tests {
             ],
         );
         assert_eq!(node_text(&node).unwrap(), "hi");
+        // A header claiming 4 GiB with no pieces behind it reserves nothing
+        // (#216; aborts under `ulimit -v` if it does).
+        let claim = OwnedNode::list([1], vec![OwnedNode::leaf([0], [0xff; 4])]);
+        assert_eq!(node_bytes(&claim), None);
     }
 }

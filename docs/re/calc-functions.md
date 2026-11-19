@@ -783,6 +783,35 @@ kPro 1, kRuntime 2, kServer 3, kCWP 4, kMobile 5, kXDBC 6, kSASE 7, kIWP 8,
 kWebIntgrPlat 9, kAdminServer 10, kOData 11, kFCC 12, kTool 99) is the
 natural key for those answers (inference).
 
+### 6.0 FileMaker 26.1.1 additions
+
+[O: FileMaker Pro 26.1.1's string resources, catalogs/README.md "Added in
+26.1.1" (the catalogs stay at 26.0.3, #338); behavior from the Claris
+release notes, FileMaker Pro 26.1.1; nothing executed yet]
+
+- **`Get ( SortOrder )`** (selector 142, stored `9b 8e`): the current sort
+  order as a JSON object. The new DBEngine strings `sortOrder`,
+  `tableName` and `summary` are candidates for its keys [I]; the shape is
+  [U] until run.
+- **`GetToolDefinitions ( provider ; functionName {; functionName } )`**
+  (resource 140, index 18, stored `f9 12`, variable arguments): the named
+  custom functions as tool definitions in JSON for the provider (OpenAI,
+  Anthropic, Cohere or Google), for Generate Response from Model's Tool
+  Definitions. Built by `DBDataArg::CreateToolDefinitions` (DBEngine
+  0x18d3642). The definitions carry the function's and its parameters'
+  descriptions (below).
+- **Custom function descriptions:** Edit Custom Function takes a
+  description of the function and of each parameter (Claris). They are kept
+  in the custom function's existing description member `16/5/<id>/3`
+  (`KDescription`): `DBFunction::GetComment` (0x1a911fc) returns its text
+  up to the first `;`, with `<{?:!}>` standing for an escaped `;`
+  (`UnEscapeSemiColon`), and `GetParamCommentList` (0x1a90f02) the rest
+  [O code; I: that the parameters follow in order]. Save as XML writes them
+  as `ParameterDescription` and `parametersComment` (FMEngine strings).
+- **`Get ( InstalledFMPluginsAsJSON )`** adds `environment.pluginpath`, the
+  plug-in folder as a FileMaker path (Claris; DBEngine string
+  `pluginpath`).
+
 ### 6.1 Host matrix [O: server and file context, 2026-10-29]
 
 What each OpenMaker host answers for each selector, and where the answer

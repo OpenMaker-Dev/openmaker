@@ -163,8 +163,9 @@ and OnWindowTransaction, as FileMaker Server's engine answered them
   FileMaker's JSON.
 
 Root-file layouts backed by a readable related hosted table can edit existing
-records. Browse exposes the same ordinary text fields as the native local
-write engine; Set Field also supports ordinary stored scalar fields. The
+records. Browse and Set Field write their ordinary stored text, number, date,
+time, timestamp and container fields, a container's data going to the owning
+file's library (record-writes.md, Limits). The
 owning provider supplies field rules, auto-entry, custom functions, stored
 calculations, version checks, locks, commit and verified readback. The root
 layout and script remain the caller's context, and returned calculations and
@@ -176,12 +177,15 @@ same owning engine: the owner issues the record id, enters its auto-entry
 values and stores the ordinary scalar values; the new record joins the
 caller window's found set and becomes current, as a local creation does.
 Duplicate Record of a record holding a container reference is refused before
-any effect. A script's transaction includes these layouts: Commit
-Transaction prepares every file before any record data goes (record-writes.md,
-"A script's transaction across files"), and Delete Record inside one is
-refused ([#312](https://github.com/OpenMaker-Dev/openmaker/issues/312)).
-Import, writes to other imported tables, globals, containers and repetitions
-remain refused on these layouts
+any effect. A script's transaction includes these layouts and commits all or
+none: Commit Transaction prepares every file before any record data goes, and
+a refusal in any file reverts every file's part; only a connection lost, or a
+host refusing a later file, after an earlier file's commit leaves that earlier
+file committed (record-writes.md, "A script's transaction across files").
+Delete Record inside one is refused
+([#312](https://github.com/OpenMaker-Dev/openmaker/issues/312)).
+Import, writes to the layout's related records in other tables, globals and
+repetitions remain refused on these layouts
 ([#43](https://github.com/OpenMaker-Dev/openmaker/issues/43)). The owning file
 is reached through its data source's paths, on its own host
 (desktop-files.md); native FileMaker acceptance is unmeasured.
@@ -397,8 +401,9 @@ Open items:
     them are unmeasured.
   - The recompute after a schema change answers Design functions from the
     schema, where FileMaker gives empty.
-  - Not implemented: `FieldAnnotation` and `FieldDisplayNames` (their
-    storage is unknown).
+  - `FieldAnnotation` and `FieldDisplayNames` answer empty text, as for a
+    field without them: no file read so far stores either, so their
+    storage is unknown.
   - Also open: AI (`GetEmbedding`, `GetTokenCount`) and mobile functions
     through each host, and the TextEncode transliteration table.
 - Import and export:
@@ -434,10 +439,6 @@ Open items:
   are inferred, not measured on FileMaker Pro. On the desktop:
   - Set Field does not create records through more than one relationship
     ([#41](https://github.com/OpenMaker-Dev/openmaker/issues/41)).
-    Delete Portal Row deletes whatever the portal's "Allow deletion of
-    portal records" option (layout-model.md 5.3.2) says, as FileMaker
-    Server's script engine does.
-  - Reads in Find mode or with an empty found set give 1224.
   - A running summary or
   fraction on a record outside the found set reads empty (unconfirmed);
   related-field criteria in server scripts; sorts by
@@ -449,9 +450,7 @@ Open items:
   or header with CR or LF, framing headers that disagree with the body),
   which cURL would send, and a cancelled transfer keeps its connection
   until the server answers or the transfer's time limit passes (the step
-  itself ends at once);
-  `om_scripts::Script::id` is the raw big-endian key; FileMaker's ids are
-  its serial-key decode (file-metadata.md 1: key `80 0d` is script 141).
+  itself ends at once).
 - Script Workspace does not save to FileMaker Server. It saves step edits
   through OpenMaker's authoring extension on OpenMaker Server or a file
   opened from this computer. On those hosts, it saves script catalog
@@ -465,9 +464,7 @@ Open items:
     and op89 CompareModCounts (reopening a cached file) are unsupported;
     an op13 with node state `00` (FileMaker Pro deleting a script) leaves
     an empty node (scripts.md, "Saving scripts to a host").
-  - Set Field into a container is still error 3.
-  - op86 DeleteTable does not release library members, and external
-    container storage is not read.
+  - External container storage is not read (containers.md 8).
   - Unique and existing-value rules need a text field with a value index
     in English or Unicode raw, value-list rules one in English. Lists from another file, a calculation, related values or
     a second field still make the table read-only.
