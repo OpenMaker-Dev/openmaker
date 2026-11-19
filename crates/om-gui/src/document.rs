@@ -6413,15 +6413,13 @@ fn field_editor(
         paint_field_icon(ui, object, rect, style.color.map(color));
     }
     // Several lines sit as a block, as `paint_rich_text` places them.
-    let text_height = if lines {
+    let galley = lines.then(|| {
         let wrap = (inner.width() - left - right).max(0.0);
         field_galley(ui, buffer, &style, wrap)
-            .size()
-            .y
-            .max(size + 4.0)
-    } else {
-        size + 4.0
-    };
+    });
+    let text_height = galley
+        .as_ref()
+        .map_or(size + 4.0, |galley| galley.size().y.max(size + 4.0));
     let free = (rect.height() - top_inset - bottom - text_height).max(0.0);
     let top = top_inset
         + match style.vertical_align {
@@ -6455,9 +6453,15 @@ fn field_editor(
         bottom: bottom.round() as i8,
     });
     if lines {
+        // Text taller than the field scrolls in it; text that fits keeps
+        // the field's own place (a scroll area aligns its content to whole
+        // points).
+        let fits = galley.as_ref().is_none_or(|galley| {
+            galley.rows.len() <= 1 || galley.size().y <= rect.height() - top_inset - bottom
+        });
         return lines_editor(
             &mut child,
-            (object, inner),
+            (object, inner, fits),
             id,
             buffer,
             &style,
@@ -6489,15 +6493,16 @@ fn field_editor(
 }
 
 /// [`field_editor`] with `lines`: a multi-line editor of [`FieldText`],
-/// laid out as the field at rest ([`field_galley`]), scrolled in the field
-/// to keep the insertion point in view, with a scroll bar only where the
-/// field object has one (flag `0x100`, layout-model.md 5.4.1). Up and Down
-/// move between lines. Tab stays the document's: the editor inserts no tab
-/// character, and egui moves no focus on it (`DocumentState::resolve_tab`).
+/// laid out as the field at rest ([`field_galley`]). Text taller than the
+/// field (`fits` false) scrolls in it to keep the insertion point in view,
+/// with a scroll bar only where the field object has one (flag `0x100`,
+/// layout-model.md 5.4.1). Up and Down move between lines. Tab stays the
+/// document's: the editor inserts no tab character, and egui moves no
+/// focus on it (`DocumentState::resolve_tab`).
 #[allow(clippy::too_many_arguments)]
 fn lines_editor(
     ui: &mut Ui,
-    (object, inner): (&LayoutObject, Rect),
+    (object, inner, fits): (&LayoutObject, Rect, bool),
     id: egui::Id,
     buffer: &mut String,
     style: &ResolvedStyle,
@@ -6517,30 +6522,32 @@ fn lines_editor(
     let mut layouter = |ui: &Ui, text: &dyn egui::TextBuffer, wrap_width: f32| {
         field_galley(ui, text.as_str(), style, wrap_width)
     };
-    let response = egui::ScrollArea::vertical()
-        .id_salt(id.with("lines"))
-        .max_height(inner.height())
-        .auto_shrink([false, true])
-        .scroll_bar_visibility(if bar {
-            egui::scroll_area::ScrollBarVisibility::VisibleWhenNeeded
-        } else {
-            egui::scroll_area::ScrollBarVisibility::AlwaysHidden
-        })
-        .show(ui, |ui| {
-            ui.add(
-                egui::TextEdit::multiline(&mut FieldText(buffer))
-                    .id(id)
-                    .event_filter(editor_keys)
-                    .frame(frame)
-                    .interactive(interactive)
-                    .desired_rows(1)
-                    .desired_width(inner.width())
-                    .min_size(inner.size())
-                    .layouter(&mut layouter)
-                    .hint_text(hint),
-            )
-        })
-        .inner;
+    let mut text = FieldText(buffer);
+    let edit = egui::TextEdit::multiline(&mut text)
+        .id(id)
+        .event_filter(editor_keys)
+        .frame(frame)
+        .interactive(interactive)
+        .desired_rows(1)
+        .desired_width(inner.width())
+        .layouter(&mut layouter)
+        .hint_text(hint);
+    let response = if fits {
+        // As the one-line editor sits: the field's own rect.
+        ui.add_sized(inner.size(), edit)
+    } else {
+        egui::ScrollArea::vertical()
+            .id_salt(id.with("lines"))
+            .max_height(inner.height())
+            .auto_shrink([false, true])
+            .scroll_bar_visibility(if bar {
+                egui::scroll_area::ScrollBarVisibility::VisibleWhenNeeded
+            } else {
+                egui::scroll_area::ScrollBarVisibility::AlwaysHidden
+            })
+            .show(ui, |ui| ui.add(edit.min_size(inner.size())))
+            .inner
+    };
     // The editor locks its own keys while it has the focus; the document's
     // Tab stays locked from egui's traversal as on one line.
     if response.has_focus() {
