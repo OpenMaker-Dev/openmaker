@@ -151,6 +151,15 @@ impl<'a> Compound<'a> {
             }
             next = u32_at(data, 4 * per_difat).ok_or_else(bad)?;
         }
+        // A FAT sector listed twice is no FAT a writer makes.
+        let mut listed = vec![false; sectors];
+        for &s in &fat_list {
+            let seen = listed.get_mut(s as usize).ok_or_else(bad)?;
+            if *seen {
+                return Err(bad());
+            }
+            *seen = true;
+        }
         let mut fat = Vec::with_capacity(fat_sectors * (sector / 4));
         for &s in &fat_list {
             let data = file.sector_data(s)?;
