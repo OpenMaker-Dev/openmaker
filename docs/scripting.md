@@ -295,7 +295,7 @@ hostile text cannot overflow a script thread's stack (execute-sql.md,
 Import Records, Export Records and Save Records as Excel (`om-transfer`)
 run in server scripts and the desktop client. Formats: tab- and
 comma-separated, merge, HTML table, FMPXMLRESULT, Excel `.xlsx` and
-dBase.
+dBase, and for imports Excel 97-2004 `.xls` too.
 - Exports cover related fields, repetitions, group-by summaries, every
   export character set and FileMaker's line endings and quoting.
 - Without group-by fields each row holds its record's summaries, read in
@@ -468,6 +468,14 @@ Open items:
     no 26.1.1 order has been read or run in FileMaker. Neither export
     dialog shows the option, and the orders OpenMaker makes are 26.0's.
   - The desktop writes a modification count of 0 in XML.
+  - `.xls` imports (`om_transfer::import`, the `xls` reader) read BIFF8
+    workbooks only, as an `.xlsx` sheet is read: numbers as the shortest
+    decimal of their value, formulas as their cached results, dates as
+    their serial numbers. How FileMaker spells an `.xls` number, and
+    whether FileMaker Server imports `.xls` at all, are unmeasured.
+    Excel 5.0/95 and encrypted workbooks fail with 730. File > Import
+    Records does not offer `.xls` (its type menu is FileMaker Pro's);
+    stored steps do.
   - An import reads its whole source and stages every row in one
     transaction; only the import limits bound its memory.
   - No `Import.log` (FileMaker Server writes none; FileMaker Pro's format

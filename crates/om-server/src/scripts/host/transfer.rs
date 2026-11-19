@@ -131,7 +131,7 @@ impl ServerHost {
         };
         if matches!(
             profile.file_type,
-            FileType::FileMaker | FileType::Folder | FileType::Odbc | FileType::Excel2003
+            FileType::FileMaker | FileType::Folder | FileType::Odbc
         ) {
             return Err(HostError::Unsupported);
         }
