@@ -461,6 +461,31 @@ fn typed_global_options(options: &om_hbam::FieldOptions) -> bool {
     !options.auto_entry_editing_prohibited() && options.validation_options & 0x31 == 0
 }
 
+/// Whether Browse's typing into repetition `repetition` of global `field`
+/// can be checked as it is entered (`NativeProvider::set_typed_global`):
+/// its options allow it (`typed_global_options`), it is one of the first
+/// 255 repetitions, and a value list it is validated by is a custom list
+/// or a field of this file (`RecordPlan::checks_global_entry`; another
+/// file's field is refused as `refuse_related_lists` refuses it). A global
+/// that fails this stays display-only.
+fn checks_typed_global(
+    file: &om_data::host::CalcSchema,
+    plan: &om_data::rules::RecordPlan,
+    options: &om_hbam::FieldOptions,
+    field: u64,
+    repetition: u32,
+) -> bool {
+    let Some(cell) = om_data::rules::cell_of(field, repetition).filter(|_| repetition <= 255)
+    else {
+        return false;
+    };
+    typed_global_options(options)
+        && plan.checks_global_entry(field, cell)
+        && plan
+            .value_list_field(cell, om_data::rules::Entry::default())
+            .is_none_or(|(occurrence, _)| !shows_related_file(file, occurrence))
+}
+
 impl NativeProvider {
     pub fn new(config: NativeConfig) -> Self {
         Self {
@@ -1775,6 +1800,84 @@ impl NativeProvider {
         self.pinned.remove(&own);
     }
 
+    /// The text a user's typing `text` into repetition `repetition` of
+    /// global `field` of `table` stores, checked as FileMaker checks it
+    /// (`DataProvider::set_typed_global`), or its refusal. Nothing is set.
+    fn typed_global(
+        &mut self,
+        table: u64,
+        field: u64,
+        repetition: u32,
+        text: &str,
+    ) -> Result<String, DataError> {
+        self.refuse_while_unsettled()?;
+        self.require_open()?;
+        self.refuse_imported_table(table)?;
+        self.calc_schema_cached()?;
+        let def = self
+            .catalog
+            .table(table)
+            .and_then(|t| t.field(field))
+            .ok_or_else(|| DataError::with_code(102, "The field is missing."))?;
+        let options = def.decoded_options();
+        let supported = def.kind == om_hbam::FieldKind::Normal
+            && matches!(
+                def.data_type,
+                om_hbam::DataType::Text
+                    | om_hbam::DataType::Number
+                    | om_hbam::DataType::Date
+                    | om_hbam::DataType::Time
+                    | om_hbam::DataType::Timestamp
+            )
+            && (1..=255).contains(&repetition)
+            && options.as_ref().is_some_and(|options| {
+                options.options & 0x1_0000 != 0
+                    && repetition <= u32::from(options.max_repetitions.max(1))
+            });
+        if !supported {
+            return Err(DataError::with_code(
+                3,
+                "Typed entry requires a supported repetition of a text, number, date, \
+                 time or timestamp global.",
+            ));
+        }
+        if !options.as_ref().is_some_and(typed_global_options) {
+            return Err(DataError::with_code(201, FIELD_NOT_MODIFIABLE));
+        }
+        // A text or number global without validation takes the text as
+        // typed, as before, with no plan; only dates and times are parsed.
+        let temporal = matches!(
+            def.data_type,
+            om_hbam::DataType::Date | om_hbam::DataType::Time | om_hbam::DataType::Timestamp
+        );
+        if !temporal
+            && options
+                .as_ref()
+                .is_some_and(|options| options.validation_options == 0)
+        {
+            return Ok(text.to_owned());
+        }
+        let plan = self.entry_plan(table)?;
+        let file = self.calc_schema_cached()?;
+        if !options
+            .as_ref()
+            .is_some_and(|options| checks_typed_global(&file, &plan, options, field, repetition))
+        {
+            return Err(DataError::with_code(201, FIELD_NOT_MODIFIABLE));
+        }
+        // Reuse ordinary entry's locale-aware parsing and rules (maximum
+        // characters, strict data type, range, value list), without
+        // changing a script's permissive global assignment. Refusal changes
+        // no value.
+        let cell = om_data::rules::cell_of(field, repetition)
+            .ok_or_else(|| DataError::with_code(201, "The repetition is out of range."))?;
+        let text = self.check_typed_entry(table, cell, text)?;
+        if text.is_empty() && options.is_some_and(|options| options.validation_not_empty()) {
+            return Err(self.entry_refusal(table, field, om_data::rules::error::REQUIRED)?);
+        }
+        Ok(text)
+    }
+
     /// Move the values of global fields out of a user's edit of the
     /// layout's record into this session's globals (`set_global`): typing
     /// into a global field on a layout sets the session's value, as Set
@@ -1796,31 +1899,23 @@ impl NativeProvider {
         let Some(def) = schema.table(table) else {
             return Ok(false);
         };
-        let globals: Vec<(String, u64, bool)> = values
+        let globals: Vec<(String, u64)> = values
             .keys()
             .filter_map(|name| {
                 let field = def.fields.values().find(|f| f.name == *name)?;
-                field.global.then(|| {
-                    (
-                        name.clone(),
-                        field.id,
-                        matches!(
-                            field.value_type,
-                            om_data::calc::ValueType::Date
-                                | om_data::calc::ValueType::Time
-                                | om_data::calc::ValueType::Timestamp
-                        ),
-                    )
-                })
+                field.global.then(|| (name.clone(), field.id))
             })
             .collect();
-        for (name, field, temporal) in &globals {
+        // The user's typing, checked by each field's rules as it is entered
+        // (`typed_global`): all of them first, so a refusal changes no
+        // global and saves nothing.
+        let mut checked = Vec::with_capacity(globals.len());
+        for (name, field) in &globals {
             let text = values.get(name).cloned().flatten().unwrap_or_default();
-            if *temporal {
-                self.set_typed_global(table, *field, 1, &text)?;
-            } else {
-                self.set_global(table, *field, 1, &text)?;
-            }
+            checked.push((name, *field, self.typed_global(table, *field, 1, &text)?));
+        }
+        for (name, field, text) in checked {
+            self.set_global(table, field, 1, &text)?;
             values.remove(name);
         }
         Ok(!globals.is_empty())
@@ -2983,8 +3078,8 @@ impl DataProvider for NativeProvider {
         };
         // Text, number, date, time and timestamp data globals take the
         // session's value (`take_globals`), their typing checked as it is
-        // applied (`set_typed_global`). One validated by calculation stays
-        // display-only: that check is not implemented for globals.
+        // applied (`set_typed_global`). One with a rule that cannot be
+        // checked so stays display-only (`checks_typed_global`).
         let globals = file.table(table.id).into_iter().flat_map(|t| {
             t.fields
                 .values()
@@ -3003,7 +3098,10 @@ impl DataProvider for NativeProvider {
                         && table
                             .field(f.id)
                             .and_then(|field| field.decoded_options())
-                            .is_some_and(|options| typed_global_options(&options))
+                            .zip(planned.as_ref().ok())
+                            .is_some_and(|(options, plan)| {
+                                checks_typed_global(&file, plan, &options, f.id, 1)
+                            })
                 })
                 .map(|f| f.name.clone())
         });
@@ -3636,64 +3734,12 @@ impl DataProvider for NativeProvider {
         repetition: u32,
         text: &str,
     ) -> Result<(), DataError> {
-        self.refuse_while_unsettled()?;
-        self.require_open()?;
-        self.refuse_imported_table(table)?;
-        self.calc_schema_cached()?;
-        let def = self
-            .catalog
-            .table(table)
-            .and_then(|t| t.field(field))
-            .ok_or_else(|| DataError::with_code(102, "The field is missing."))?;
-        let options = def.decoded_options();
-        let supported = def.kind == om_hbam::FieldKind::Normal
-            && matches!(
-                def.data_type,
-                om_hbam::DataType::Text
-                    | om_hbam::DataType::Number
-                    | om_hbam::DataType::Date
-                    | om_hbam::DataType::Time
-                    | om_hbam::DataType::Timestamp
-            )
-            && repetition >= 1
-            && options.as_ref().is_some_and(|options| {
-                options.options & 0x1_0000 != 0
-                    && repetition <= u32::from(options.max_repetitions.max(1))
-            });
-        if !supported {
-            return Err(DataError::with_code(
-                3,
-                "Typed entry requires a supported repetition of a text, number, date, \
-                 time or timestamp global.",
-            ));
-        }
-        if !options.as_ref().is_some_and(typed_global_options) {
-            return Err(DataError::with_code(201, FIELD_NOT_MODIFIABLE));
-        }
-        // A text or number global without validation takes the text as
-        // typed, as before; only dates and times are parsed.
-        let temporal = matches!(
-            def.data_type,
-            om_hbam::DataType::Date | om_hbam::DataType::Time | om_hbam::DataType::Timestamp
-        );
-        if !temporal
-            && options
-                .as_ref()
-                .is_some_and(|options| options.validation_options == 0)
-        {
-            return self.set_global(table, field, repetition, text);
-        }
-        // Reuse ordinary entry's locale-aware parsing and rules (maximum
-        // characters, strict data type, range, value list), without
-        // changing a script's permissive global assignment. Refusal changes
-        // no value.
-        let cell = om_data::rules::cell_of(field, repetition)
-            .ok_or_else(|| DataError::with_code(201, "The repetition is out of range."))?;
-        let text = self.check_typed_entry(table, cell, text)?;
-        if text.is_empty() && options.is_some_and(|options| options.validation_not_empty()) {
-            return Err(self.entry_refusal(table, field, om_data::rules::error::REQUIRED)?);
-        }
+        let text = self.typed_global(table, field, repetition, text)?;
         self.set_global(table, field, repetition, &text)
+    }
+
+    fn enters_typed_globals(&self) -> bool {
+        true
     }
 
     /// The session's own value, never uploaded: calculations read it over

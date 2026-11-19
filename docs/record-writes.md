@@ -1205,11 +1205,16 @@ the file's own locale (file-metadata.md 2.2).
 Browse edits Text, Number, Date, Time and Timestamp data globals through
 session-value operations. A global edit changes no stored record and reaches
 no other client. A global's validation is checked as the typing is
-applied (`DataProvider::set_typed_global`): its entry rules (maximum
-characters 511, strict data type 500-502, range 503, a custom value list
-506) and Not empty (509), with the field's message. What they refuse keeps
-the draft and the session's value, as an invalid date does. A global
-validated by calculation, unique or existing value, whose checks are not
+applied (`DataProvider::set_typed_global`), in the record's ordinary save
+as in a commit after scripts: its entry rules (maximum characters 511,
+strict data type 500-502, range 503, a custom value list or a field of
+this file 506) and Not empty (509). The refusal carries the field's
+custom message when it is text, or a calculated one that is text alone;
+otherwise, and for a date or time it cannot read, OpenMaker's own
+wording. What they refuse keeps the draft and the session's value, as an
+invalid date does, and a save with several globals sets none of them. A
+global validated by calculation, unique or existing value, a
+related-values list or another file's field, whose checks are not
 implemented for globals, stays display-only. Temporal entry uses the shared typed-global operation and
 the file's entry parser: invalid Date/Timestamp (500) or Time (501) text
 keeps its draft and leaves the session value unchanged. Complete accepted
@@ -1229,8 +1234,9 @@ once together; related-record cells use their existing versioned write.
 Global repetitions remain session values and run no record transaction.
 Account rights, validation and prohibited modification still apply.
 
-Limits: globals validated by calculation, unique or existing value, and
-container globals, are not typing targets; calculation fields are not, as
+Limits: globals validated by calculation, unique or existing value, a
+related-values list or another file's field, and container globals, are
+not typing targets; calculation fields are not, as
 in FileMaker. Typed globals are applied, and so checked, when the record
 is committed; FileMaker validates a global as its field is left (Claris
 "Field validation"), and its alert there is unmeasured

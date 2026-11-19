@@ -226,7 +226,7 @@
       "previous_status": "Implemented",
       "status": "Implemented",
       "scope": "Session globals and repetitions take part in calculations and edits; Browse types into text, number, date, time and timestamp globals and into repetitions 2 to 255 ([limits](record-writes.md#limits)).",
-      "remaining": "Globals validated by calculation, unique or existing value [#424](https://github.com/OpenMaker-Dev/openmaker/issues/424) and container globals [#302](https://github.com/OpenMaker-Dev/openmaker/issues/302) take no typing, and a global's validation runs at the commit, not as its field is left [#424](https://github.com/OpenMaker-Dev/openmaker/issues/424); repetitions above 255 are not written; another file's related globals and repetitions are refused [#43](https://github.com/OpenMaker-Dev/openmaker/issues/43). Native readback is unmeasured.",
+      "remaining": "Globals validated by calculation, unique or existing value, a related-values list or another file's field [#424](https://github.com/OpenMaker-Dev/openmaker/issues/424) and container globals [#302](https://github.com/OpenMaker-Dev/openmaker/issues/302) take no typing, and a global's validation runs at the commit, not as its field is left [#424](https://github.com/OpenMaker-Dev/openmaker/issues/424); repetitions above 255 are not written; another file's related globals and repetitions are refused [#43](https://github.com/OpenMaker-Dev/openmaker/issues/43). Native readback is unmeasured.",
       "issues": [
         43,
         424,

@@ -2895,6 +2895,23 @@ impl RecordPlan {
             .any(|field| matches!(field.list, Some(ListRule::Related(_))))
     }
 
+    /// Whether a user's typing into `cell`, a repetition of global field
+    /// `field`, can be checked as it is entered, with no record's commit
+    /// after it: the cell is a repetition the field defines, and a value
+    /// list the field is validated by is a custom list or a field's values,
+    /// not a related-values list ([`ListRule::Related`], checked at a
+    /// record's commit) or one the rules cannot check
+    /// ([`ListRule::Unchecked`]).
+    pub fn checks_global_entry(&self, field: u64, cell: u64) -> bool {
+        self.cell_field(cell).is_some_and(|(at, _)| at == field)
+            && self.fields.get(&field).is_some_and(|planned| {
+                !matches!(
+                    planned.list,
+                    Some(ListRule::Related(_) | ListRule::Unchecked(_))
+                )
+            })
+    }
+
     /// The related-values list a write by `entry` checks a changed value of
     /// `cell` against ([`ListRule::Related`]): the host computes it for the
     /// record as the write leaves it and checks the value at the commit
@@ -7110,6 +7127,17 @@ mod tests {
         assert!(plan.related_value_list(47, Entry::default()).is_some());
         assert!(plan.related_value_list(47, script).is_none());
         assert_eq!(plan.value_list_field(47, Entry::default()), None);
+        // Typing into a global is checked as it is entered, with no commit
+        // after it: against a custom list or a field's values, in a
+        // repetition the field has, not against a related-values list or
+        // one the rules cannot check.
+        assert!(plan.checks_global_entry(36, 36));
+        assert!(plan.checks_global_entry(36, rep(36, 3)));
+        assert!(!plan.checks_global_entry(36, rep(36, 4)));
+        assert!(plan.checks_global_entry(38, 38));
+        assert!(!plan.checks_global_entry(38, 36));
+        assert!(!plan.checks_global_entry(46, 46));
+        assert!(!plan.checks_global_entry(47, 47));
         assert_eq!(plan.existing_fields_for(script), vec![40, 41]);
         assert_eq!(
             plan.existing_fields_for(Entry::script(true, false)),

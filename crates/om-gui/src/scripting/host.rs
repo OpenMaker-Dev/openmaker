@@ -1594,13 +1594,11 @@ impl<'a> WorkerHost<'a> {
         provider.record_session_held() && !provider.record_session_open()
     }
 
-    /// The user's typing into a global field of the layout's table sets
-    /// the session's value, as `DataProvider::update_record` does: it is
-    /// no change of the record.
     /// The user's typing into a global, checked by the field's entry rules
-    /// (`DataProvider::set_typed_global`). A provider without typed entry
-    /// takes a text or number global's text as it is, as before; a date,
-    /// time or timestamp global's typing it cannot parse is refused.
+    /// (`DataProvider::set_typed_global`), whose refusal stands. A provider
+    /// without typed entry (`enters_typed_globals`) takes a text or number
+    /// global's text as it is, as before, and refuses a date, time or
+    /// timestamp global's (3).
     fn enter_global(
         &mut self,
         table: u64,
@@ -1609,14 +1607,16 @@ impl<'a> WorkerHost<'a> {
         temporal: bool,
         text: &str,
     ) -> Result<(), om_data::DataError> {
-        match self.p().set_typed_global(table, field, repetition, text) {
-            Err(error) if !temporal && error.code == Some(om_data::found::code::UNSUPPORTED) => {
-                self.p().set_global(table, field, repetition, text)
-            }
-            result => result,
+        if temporal || self.p().enters_typed_globals() {
+            self.p().set_typed_global(table, field, repetition, text)
+        } else {
+            self.p().set_global(table, field, repetition, text)
         }
     }
 
+    /// The user's typing into a global field of the layout's table sets
+    /// the session's value, as `DataProvider::update_record` does: it is
+    /// no change of the record.
     fn take_typed_globals(&mut self) -> HostResult {
         let Some(schema) = self.schema().cloned() else {
             return Ok(());

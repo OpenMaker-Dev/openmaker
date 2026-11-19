@@ -1660,7 +1660,7 @@ impl NativeProvider {
 
     /// The rules of `table`, from the schema read at open (with the opened
     /// file's tables, as `plan_schema` gives it, for an owner's write).
-    fn entry_plan(&mut self, table: u64) -> Result<RecordPlan, DataError> {
+    pub(super) fn entry_plan(&mut self, table: u64) -> Result<RecordPlan, DataError> {
         self.refuse_imported_table(table)?;
         let table = self
             .catalog

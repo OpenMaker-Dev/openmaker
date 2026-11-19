@@ -896,10 +896,11 @@ pub trait DataProvider: Send {
     /// changing this session's value. Unlike [`Self::set_global`], this is
     /// not a script's permissive assignment. The native provider supports
     /// the defined repetitions of Text, Number, Date, Time and Timestamp
-    /// data globals; a field whose rules it cannot check (validation by
-    /// calculation, unique, existing value) or that prohibits modification
-    /// is 201, other targets and providers without typed entry refuse with
-    /// error 3.
+    /// data globals, their first 255 repetitions; a field whose rules it
+    /// cannot check (validation by calculation, unique, existing value, a
+    /// related-values list or another file's field's values) or that
+    /// prohibits modification is 201, other targets and providers without
+    /// typed entry refuse with error 3 ([`Self::enters_typed_globals`]).
     fn set_typed_global(
         &mut self,
         _table: u64,
@@ -911,6 +912,15 @@ pub trait DataProvider: Send {
             found::code::UNSUPPORTED,
             "This connection cannot enter typed global values.",
         ))
+    }
+
+    /// Whether [`Self::set_typed_global`] checks a user's typing (the
+    /// native provider's does): Browse then enters every global it offers
+    /// through it, and its refusals stand. Without it, Browse sets a text
+    /// or number global's text as typed ([`Self::set_global`]), and a date,
+    /// time or timestamp global's is error 3.
+    fn enters_typed_globals(&self) -> bool {
+        false
     }
 
     fn value_list(&mut self, _id: u64) -> Result<Vec<String>, DataError> {

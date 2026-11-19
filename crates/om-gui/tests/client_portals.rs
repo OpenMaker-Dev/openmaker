@@ -4411,6 +4411,14 @@ fn saving_only_a_typed_global_runs_no_window_transaction() {
             fixture::add_field(
                 root, TABLE, SETTING, "Setting", 1, data_type, 0, options, validation,
             );
+            // Its formula, so the table's other fields are planned and only
+            // the global is left out.
+            if validation & 0x1 != 0 {
+                let mut names = fixture::names();
+                names.add_field(TABLE, SETTING, "Setting");
+                let formula = "not IsEmpty ( Setting )";
+                fixture::add_formula(root, &names, (TABLE, OCCURRENCE), SETTING, 0x19, formula);
+            }
         });
         let mut app = open(&hosted);
         expect(&mut app, "Show portals", "on Portals");
@@ -4419,6 +4427,28 @@ fn saving_only_a_typed_global_runs_no_window_transaction() {
             offered,
             "{tag}"
         );
+        assert!(common::find_text_field(&app, "Name").is_some(), "{tag}");
+        // Numeric only: the ordinary save refuses other typing, and the
+        // field keeps it.
+        if tag == "validated" {
+            common::text_field(&app, "Setting").focus();
+            app.step();
+            common::text_field(&app, "Setting").type_text("12abc");
+            app.run_steps(2);
+            common::save_record(&mut app);
+            common::wait_until(&mut app, "non-numeric global refused", |app| {
+                app.state().error().is_some() && !app.state().script_running()
+            });
+            assert!(
+                app.state().error().is_some_and(|e| e.contains("Setting")),
+                "{:?}",
+                app.state().error()
+            );
+            assert_eq!(
+                common::text_field(&app, "Setting").accesskit_node().value(),
+                Some("12abc".into())
+            );
+        }
     }
 }
 

@@ -3664,6 +3664,16 @@ fn typing_into_a_validated_global_checks_its_entry_rules() {
             assert_eq!(typed(&mut provider, "12abc"), Err(Some(502)));
             assert_eq!(typed(&mut provider, ""), Err(Some(509)));
             assert_eq!(global(&mut provider), "12");
+            // Browse's ordinary save of the record checks it too.
+            for (text, code) in [("12abc", 502), ("", 509)] {
+                let saved = provider.update_record(tasks, 1, values(&[("Setting", text)]));
+                assert_eq!(saved.map(|_| ()).map_err(|e| e.code), Err(Some(code)));
+            }
+            assert_eq!(global(&mut provider), "12");
+            assert!(provider
+                .update_record(tasks, 1, values(&[("Setting", "7")]))
+                .is_ok());
+            assert_eq!(global(&mut provider), "7");
         } else {
             assert_eq!(typed(&mut provider, "12"), Err(Some(201)));
             assert_eq!(global(&mut provider), "");
