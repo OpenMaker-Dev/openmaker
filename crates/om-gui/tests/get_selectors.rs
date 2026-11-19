@@ -1224,9 +1224,16 @@ fn sorting_preview_printing_and_layout_object_functions() {
                 "Get ( PageCount )",
                 "Get ( PrinterName )",
                 "Get ( QuickFindText )",
+                "GetRecordIDsFromFoundSet ( JSONStringRanges )",
+                "GetRecordIDsFromFoundSet ( 2 )",
             ]),
             sort_by_name(),
-            probe(&["Get ( SortState )"]),
+            probe(&[
+                "Get ( SortState )",
+                "GetRecordIDsFromFoundSet ( JSONStringRanges )",
+                "GetRecordIDsFromFoundSet ( 2 )",
+                "EvaluationError ( GetRecordIDsFromFoundSet ( 5 ) )",
+            ]),
             // Still sorted with a new record open (O3).
             step(7),
             probe(&["Get ( SortState )", "Get ( RecordOpenState )"]),
@@ -1249,8 +1256,11 @@ fn sorting_preview_printing_and_layout_object_functions() {
     )];
     let (mut app, state) = open(scripts);
     let all = answers(&mut app, &state, "Sort and preview");
-    assert_eq!(all[0], ["0", "0", "", " ", ""]);
-    assert_eq!(all[1], ["1"]);
+    // The found set's ids in its order, each run of ascending ids a range
+    // (calc-functions.md, "GetRecordIDsFromFoundSet on FileMaker
+    // Server"): Ada 1, Grace 2, Alan 3, then by name.
+    assert_eq!(all[0], ["0", "0", "", " ", "", r#"["1-3"]"#, "[1,2,3]"]);
+    assert_eq!(all[1], ["1", r#"["1","3","2"]"#, "[1,3,2]", "1708"]);
     assert_eq!(all[2], ["1", "1"]);
     // Preview has pages but no page count, and no object bounds.
     assert_eq!(all[3], ["2", "1", "", ""]);

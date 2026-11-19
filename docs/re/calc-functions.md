@@ -717,6 +717,47 @@ Design function answers empty but `DatabaseNames`.
   follows the last bracket (FMS sample, Task Details), `<¶>` otherwise. A
   named container gives its name, then `<`: `Assignee Portal¶<¶>`.
 
+#### GetRecordIDsFromFoundSet on FileMaker Server [O: script engine, 2026-11-19]
+
+FileMaker Server 26.0.3's script engine (`tools/fms-script-harness`,
+battery `s45-record-ids` on the Contacts template, records 1 to 8 made in
+the run) answers `GetRecordIDsFromFoundSet ( type {; tableOccurrenceOrPortal} )`
+from the window's found set, in its order:
+
+| type | records 1 to 8 | 1, 3, 4, 6, 7, 8 | 7, 6, 4, 3, 1 (sorted descending) | no record |
+|---|---|---|---|---|
+| 0 (`ValueNumber`) | `1¶2¶...¶8` | `1¶3¶4¶6¶7¶8` | `7¶6¶4¶3¶1` | empty |
+| 1 | not run | `["1","3","4","6","7","8"]` | `["7","6","4","3","1"]` | not run |
+| 2 | not run | `[1,3,4,6,7,8]` | `[7,6,4,3,1]` | not run |
+| 3 (`ValueNumberRanges`) | `1-8` | `1¶3-4¶6-8` | `7¶6¶4¶3¶1` | empty |
+| 4 (`JSONStringRanges`) | `["1-8"]` | `["1","3-4","6-8"]` | `["7","6","4","3","1"]` | `[]` |
+
+- The keywords are numbers: `GetAsNumber ( ValueNumber )` is 0,
+  `ValueNumberRanges` 3, `JSONStringRanges` 4. Types 1 (JSON strings) and 2
+  (JSON numbers) have no keyword. The type is truncated (1.5 is 1). Text
+  that is no number is 0 (`"x"` lists the ids); `"3"` is 3. Empty text,
+  -1, 5 to 7 and 2912 are `?` with error 1708.
+- A range is a run of ids each one more than the one before, in the found
+  set's order: a set sorted descending has no ranges. The JSON arrays have
+  no spaces.
+- With no record, types 0 and 3 are empty and type 4 is `[]`; types 1 and
+  2 were not run over an empty set [I: `[]`].
+- The second parameter names a table occurrence. The layout's own
+  (`"Contacts"`) gives its found set; a related one (`"Phone Numbers"`)
+  gives the current record's related records (one in the run). An unknown
+  name (`"Nothing"`) or empty text is `?` with error 10. A portal object's
+  name was not run.
+
+In the same battery: `GetAddonInfo ( "x" )` answers `{` CR TAB
+`"APIVers" : 2` CR `}` with error 0, and `GetAddonInfo ( "" )` is `?` with
+error 3. `Furigana ( "abc" )` answers `abc`: the engine calls an external
+`kakasi` program, missing in the harness, so this is no answer for a
+system with one. `GetSensor ( "battery" )` is `?` with error 1208, and
+`GetAVPlayerAttribute ( "playbackState" )` is empty with error 0.
+`Location`, `LocationValues` and `RangeBeacons` were not evaluated:
+FMUpgradeTool dropped the steps naming them. These are FileMaker Server's
+answers, not FileMaker Pro's.
+
 #### Layout objects (`GetLayoutObjectAttribute`) [O: script engine]
 
 Battery `s32-layout-objects-*` (Contacts' Contact Details, Tasks' Task
