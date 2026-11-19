@@ -2083,10 +2083,17 @@ fn report_object<'a>(
         )));
     }
     if matches!(object.kind(), ObjectKind::Text | ObjectKind::Button)
-        && object.text.as_deref().is_some_and(|s| s.contains("{{"))
+        && object
+            .text
+            .iter()
+            .chain(object.text_runs.iter().filter_map(|run| match run {
+                om_layout::TextRun::Literal(literal) => Some(literal),
+                _ => None,
+            }))
+            .any(|text| numbered(text, 0).is_none())
     {
         return Err(ReportError::unsupported(
-            "Layout merge symbols (including page numbers) are unsupported",
+            "Layout merge symbols other than {{PageNumber}} are unsupported",
         ));
     }
     if [rect.top, rect.left, rect.bottom, rect.right]
@@ -2550,6 +2557,63 @@ fn part_objects<'s, 'a>(
     }
 }
 
+/// `text` with each `{{PageNumber}}` (in any case, as Browse reads layout
+/// symbols, `om_data::host::layout::merge_text`) replaced by page `page`'s
+/// number (from 0): what FileMaker Pro 26.0.3 wrote on page *n* of Save
+/// Records as PDF (calc-functions.md, O4). `None` when the text holds
+/// another symbol, which reports refuse; an unclosed `{{` is text.
+fn numbered(text: &str, page: usize) -> Option<String> {
+    let mut out = String::with_capacity(text.len());
+    let mut rest = text;
+    while let Some(start) = rest.find("{{") {
+        out.push_str(&rest[..start]);
+        let tail = &rest[start..];
+        let Some(end) = tail[2..].find("}}").map(|i| i + 2) else {
+            break;
+        };
+        if !tail[2..end].eq_ignore_ascii_case("PageNumber") {
+            return None;
+        }
+        out.push_str(&(page + 1).to_string());
+        rest = &tail[end + 2..];
+    }
+    out.push_str(rest);
+    Some(out)
+}
+
+/// `object` as page `page` (from 0) prints it: a text object's or a
+/// button's `{{PageNumber}}` numbered in its label and literal runs
+/// ([`numbered`]), so every source reads it as plain text and no field's
+/// value is touched; borrowed when it has none.
+fn on_page(object: &LayoutObject, page: usize) -> std::borrow::Cow<'_, LayoutObject> {
+    use om_layout::TextRun;
+    let paged = |text: &String| text.contains("{{");
+    if !matches!(object.kind(), ObjectKind::Text | ObjectKind::Button)
+        || !(object.text.iter().any(paged)
+            || object
+                .text_runs
+                .iter()
+                .any(|run| matches!(run, TextRun::Literal(l) if paged(l))))
+    {
+        return std::borrow::Cow::Borrowed(object);
+    }
+    let mut object = object.clone();
+    let number = |text: &mut String| {
+        if let Some(n) = numbered(text, page) {
+            *text = n;
+        }
+    };
+    if let Some(text) = object.text.as_mut() {
+        number(text);
+    }
+    for run in &mut object.text_runs {
+        if let TextRun::Literal(literal) = run {
+            number(literal);
+        }
+    }
+    std::borrow::Cow::Owned(object)
+}
+
 /// Lay out one part for one record and page, sliding objects up as
 /// FileMaker describes (Claris, "Removing blank spaces in printouts"):
 ///
@@ -2579,6 +2643,8 @@ fn layout_part(
     let mut data = Vec::with_capacity(count);
     let mut shrink = vec![0.0; count];
     for (i, (object, _, _)) in part.objects.iter().enumerate() {
+        let paged = on_page(object, context.page);
+        let object = paged.as_ref();
         let shrinks = object.slide_up().is_some() && object.kind() == ObjectKind::Field;
         let value = if matches!(
             object.kind(),
@@ -2840,7 +2906,8 @@ fn portal_rows(
             rect.top - part.rects[index].top + geometry.offset.1 + row as f64 * geometry.row_height,
         );
         for &j in &members {
-            let object = part.objects[j].0;
+            let paged = on_page(part.objects[j].0, context.page);
+            let object = paged.as_ref();
             let r = &part.rects[j];
             let bounds = Rect {
                 left: r.left + dx,

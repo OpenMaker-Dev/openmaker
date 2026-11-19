@@ -3917,3 +3917,89 @@ fn container_fields_print_pictures_by_graphic_format_and_files_by_name() {
     // The rest of the frame stays the field's own.
     assert_eq!(at(image.left + 5.0, clip.top + 2.0), [255, 255, 255, 255]);
 }
+
+/// `{{PageNumber}}` prints each page's number, in a static label and in a
+/// merge text's literal (any case), as FileMaker Pro 26.0.3's Save Records
+/// as PDF wrote it on page *n* (calc-functions.md, O4), without touching
+/// the merged field's value. Other layout symbols still refuse.
+#[test]
+fn page_number_symbols_print_each_pages_number() {
+    use om_layout::TextRun::{Literal, MergeField};
+    let mut merged = label(3, "No.", rect(320.0, 610.0, 200.0, 24.0), 11.0, false);
+    merged.text_runs = vec![
+        Literal("No. {{pagenumber}} ".into()),
+        MergeField("Name".into()),
+    ];
+    let layout = Layout {
+        def: Some(LayoutDef {
+            base_width: 540.0,
+            ..Default::default()
+        }),
+        parts: vec![
+            Part {
+                part_type: 4,
+                height: 600.0,
+                ..Default::default()
+            },
+            Part {
+                part_type: 7,
+                top: 600.0,
+                height: 40.0,
+                ..Default::default()
+            },
+        ],
+        objects: ObjectStore {
+            root: vec![1, 2, 3],
+            objects: vec![
+                label(1, "Body", rect(12.0, 10.0, 200.0, 20.0), 12.0, false),
+                label(
+                    2,
+                    "Page {{PageNumber}}",
+                    rect(12.0, 610.0, 200.0, 24.0),
+                    11.0,
+                    false,
+                ),
+                merged,
+            ],
+            ..Default::default()
+        },
+        ..Default::default()
+    };
+    let render = |layout: &Layout| {
+        let paper = om_layout::pagination::PageSize::for_layout(layout).unwrap();
+        crate::report::render_pdf(layout, 2, paper, &[], |o, _| {
+            Ok(match o.text_runs.as_slice() {
+                [] => o.text.clone().unwrap_or_default(),
+                runs => runs
+                    .iter()
+                    .map(|run| match run {
+                        Literal(text) => text.clone(),
+                        // A value that holds the symbol stays as it is.
+                        _ => "{{PageNumber}}".to_owned(),
+                    })
+                    .collect(),
+            })
+        })
+        .map_err(|e| e.message)
+    };
+    let report = render(&layout).unwrap();
+    assert_eq!(report.plan.pages.len(), 2);
+    let pdf = String::from_utf8_lossy(&report.bytes).into_owned();
+    for (page, number) in [(0, "1"), (1, "2")] {
+        let labels = text_origins(&pdf, 2, &format!("Page {number}"));
+        assert_eq!(labels.iter().map(|o| o.0).collect::<Vec<_>>(), [page]);
+        let merge = format!("No. {number} {{{{PageNumber}}}}");
+        let merged = text_origins(&pdf, 2, &merge);
+        assert_eq!(
+            merged.iter().map(|o| o.0).collect::<Vec<_>>(),
+            [page],
+            "{merge}"
+        );
+    }
+    let mut dated = layout.clone();
+    dated.objects.objects[1].text = Some("{{CurrentDate}}".into());
+    assert_eq!(
+        render(&dated).unwrap_err(),
+        "Layout merge symbols other than {{PageNumber}} are unsupported"
+    );
+}
