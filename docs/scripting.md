@@ -133,6 +133,17 @@ screen points at every zoom and toolbar state. Battery `s33` settled the
 server's focus, `ModifiedFields`, `RequestCount` and extended privilege
 answers.
 
+Go to Related Record's "Table by Calculation" (FileMaker Pro 26.1: step
+flag `0x400` with the occurrence's name in calculation slot 8,
+script-steps.md 12.4) goes to the occurrence that name gives, found as
+calculations find one, then as the step does with a stored occurrence; a
+name no occurrence of the file has is 106. The step text shows the
+calculation in place of a quoted occurrence name. The 106, the text and the
+layout choices kept as they are stored for other steps are OpenMaker's,
+since no step FileMaker Pro 26.1.1 wrote has been read
+([#352](https://github.com/OpenMaker-Dev/openmaker/issues/352)); the Script
+Workspace's options do not offer the choice yet.
+
 Desktop scripts have portal rows, a script's own write rules, real windows
 and OnWindowTransaction, as FileMaker Server's engine answered them
 (script-runtime.md 13.24-13.27, batteries `s35-*`):

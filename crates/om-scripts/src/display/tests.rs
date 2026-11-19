@@ -560,10 +560,16 @@ fn pasted_text_stores_what_filemaker_shows() {
         "Truncate Table [ With dialog: On ; Table: “Contacts” ]",
         "Import Records [ With dialog: On ; Source: “file:a.csv” ]",
         "New Window [ Style: Card ; Name: \"c\" ]",
+        "Go to Related Record [ From table: \"Con\" & \"tacts\" ; Using layout: <Current Layout> ]",
     ];
     for line in lines {
         assert_eq!(shown(&pasted(line)), line);
     }
+    // Table by Calculation: the name's calculation in slot 8, `0x400`
+    // (script-steps.md 12.4), and no stored occurrence.
+    let related = pasted(lines[10]);
+    assert!(related.has_flag(flag::OPTION3) && related.calculation(8).is_some());
+    assert!(related.data.as_ref().and_then(|d| d.slot(0)).is_none());
     // Insert Text's text is slot 0.
     let text = pasted(lines[0]);
     assert_eq!((text.text(0).as_deref(), text.text(1)), (Some("x"), None));

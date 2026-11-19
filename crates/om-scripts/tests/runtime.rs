@@ -1120,6 +1120,35 @@ fn a_step_budget_stops_endless_loops() {
     assert!(!rt.is_running());
 }
 
+#[test]
+fn go_to_related_record_takes_its_table_by_calculation() {
+    // FileMaker Pro 26.1's "Table by Calculation": `0x400` and the
+    // occurrence's name in calculation slot 8 (script-steps.md 12.4).
+    let mut h = host();
+    let mut by_name = ScriptStep::new(74);
+    by_name.set_flag(flag::OPTION3, true);
+    by_name.set_calculation(8, Some(&calc(&h, "\"Peo\" & \"ple\"")));
+    let mut missing = by_name.clone();
+    missing.set_calculation(8, Some(&calc(&h, "\"Nowhere\"")));
+    let steps = vec![
+        on(86, true),
+        by_name,
+        missing,
+        set_var(&h, "$$e", "Get ( LastError )"),
+    ];
+    h.add_script(0, script(1, "Related", steps));
+    let mut rt = Runtime::default();
+    run(&mut h, &mut rt, 1);
+    let calls: Vec<_> = h
+        .calls
+        .iter()
+        .filter(|c| c.starts_with("go_to_related_record"))
+        .collect();
+    assert_eq!(calls, [&format!("go_to_related_record Some({PEOPLE})")]);
+    // A name no occurrence has: 106, the host not asked.
+    assert_eq!(g(&mut rt, "$$e"), "106");
+}
+
 // ----- triggers ----------------------------------------------------------------------
 
 #[test]

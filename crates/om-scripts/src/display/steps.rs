@@ -1177,10 +1177,18 @@ fn go_to_related_record(l: &mut Line<'_>) {
             let (&len, segment) = bytes.split_first()?;
             om_hbam::slot::be_uint(segment.get(..usize::from(len))?)
         });
-    let table = occurrence
-        .and_then(|o| l.names.calc_names().occurrence_name(o))
-        .map_or_else(|| UNKNOWN.into(), quoted);
-    l.push("Related table", format!("From table: {table}"));
+    if l.has(flag::OPTION3) {
+        // Table by Calculation (26.1, script-steps.md 12.4): the name's
+        // calculation, slot 8, where a quoted occurrence name goes
+        // otherwise. OpenMaker's text: FileMaker 26.1.1's is not observed.
+        let name = l.calc(8).unwrap_or_default();
+        l.push_calculation("Related table", 8, format!("From table: {name}"));
+    } else {
+        let table = occurrence
+            .and_then(|o| l.names.calc_names().occurrence_name(o))
+            .map_or_else(|| UNKNOWN.into(), quoted);
+        l.push("Related table", format!("From table: {table}"));
+    }
     let layout = match step.value {
         1 => "<Current Layout>".into(),
         _ => l.member_layout(),

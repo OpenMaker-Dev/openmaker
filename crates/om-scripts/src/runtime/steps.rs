@@ -1066,13 +1066,25 @@ impl Runtime {
                         .and_then(|k| k.id())
                         .map(LayoutTarget::Key),
                 };
-                let occurrence = step
-                    .data
-                    .as_ref()
-                    .and_then(|d| d.slot(0))
-                    .and_then(|s| s.child(0x11))
-                    .and_then(crate::node_bytes)
-                    .and_then(|b| key_id(&b));
+                let occurrence = if step.has_flag(flag::OPTION3) {
+                    // "Table by Calculation" (FileMaker Pro 26.1): `0x400`
+                    // with the occurrence's name in calculation slot 8 in
+                    // place of `[00 0, 11]` (script-steps.md 12.4, from the
+                    // binaries). A name no occurrence of the file has is
+                    // 106, OpenMaker's choice: FileMaker's is unmeasured.
+                    let name = self.slot_text(host, step, 8).unwrap_or_default();
+                    match host.names().find_occurrence(&name) {
+                        Some(occurrence) => Some(occurrence),
+                        None => return Exec::error(ErrorCode::TABLE_MISSING),
+                    }
+                } else {
+                    step.data
+                        .as_ref()
+                        .and_then(|d| d.slot(0))
+                        .and_then(|s| s.child(0x11))
+                        .and_then(crate::node_bytes)
+                        .and_then(|b| key_id(&b))
+                };
                 host.go_to_related_record(&RelatedRecords {
                     occurrence,
                     layout,
