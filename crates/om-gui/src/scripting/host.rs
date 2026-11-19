@@ -4947,13 +4947,23 @@ impl Fields for WorkerHost<'_> {
                 .map_err(data_error)?
                 .unwrap_or_default()
         };
+        // Serial numbers that cannot all be counted write none of them.
+        if let Replacement::Serial {
+            initial, increment, ..
+        } = with
+        {
+            if serial_text(initial, *increment, found.saturating_sub(1)).is_none() {
+                return Err(HostError::Error(ErrorCode::UNAVAILABLE));
+            }
+        }
         for index in 0..found {
             self.s.file.window.go_to(index);
             let text = match with {
                 Replacement::CurrentContents => current_value.clone(),
                 Replacement::Serial {
                     initial, increment, ..
-                } => serial_text(initial, *increment, index),
+                } => serial_text(initial, *increment, index)
+                    .ok_or(HostError::Error(ErrorCode::UNAVAILABLE))?,
                 Replacement::Calculation(evaluate) => {
                     let value = evaluate(self);
                     self.text(&value)
@@ -5008,34 +5018,6 @@ impl WorkerHost<'_> {
         };
         self.write_named(&name, text)
     }
-}
-
-/// The `index`th serial number from `initial`: its last run of digits
-/// counts up, the rest stays ("INV0009" + 1 = "INV0010").
-fn serial_text(initial: &str, increment: i64, index: u64) -> String {
-    let end = initial
-        .char_indices()
-        .rev()
-        .find(|(_, c)| c.is_ascii_digit())
-        .map(|(i, c)| i + c.len_utf8());
-    let Some(end) = end else {
-        return initial.to_owned();
-    };
-    let start = initial[..end]
-        .char_indices()
-        .rev()
-        .take_while(|(_, c)| c.is_ascii_digit())
-        .last()
-        .map_or(end, |(i, _)| i);
-    let digits = &initial[start..end];
-    let number: i128 = digits.parse().unwrap_or(0) + i128::from(increment) * index as i128;
-    format!(
-        "{}{:0width$}{}",
-        &initial[..start],
-        number,
-        &initial[end..],
-        width = digits.len()
-    )
 }
 
 impl FoundSets for WorkerHost<'_> {
@@ -5774,19 +5756,5 @@ pub(crate) fn parameter(stored: &om_layout::triggers::StoredFormula) -> Calculat
         context: stored.context.clone(),
         formatted: None,
         polish: Some(stored.polish.clone()),
-    }
-}
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    #[test]
-    fn serial_numbers_count_up_the_last_digits() {
-        assert_eq!(serial_text("1", 1, 0), "1");
-        assert_eq!(serial_text("1", 1, 4), "5");
-        assert_eq!(serial_text("INV0009", 1, 1), "INV0010");
-        assert_eq!(serial_text("A-10-x", 5, 2), "A-20-x");
-        assert_eq!(serial_text("none", 1, 3), "none");
     }
 }

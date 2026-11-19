@@ -45,14 +45,14 @@ pub use crate::catalog::Client;
 pub use calc::selector;
 pub use error::{confirm_alert, map_error, never_suppressed, ErrorCode};
 pub use host::{
-    Accounts, AlertChoice, Arg, Bar, Bounds, Clipboard, CommitOptions, CustomDialog, DialogButton,
-    DialogInput, DialogResponse, Dialogs, Encoding, ErrorAlert, ErrorLogEntry, FieldRef, Fields,
-    FileId, FileSource, Files, FindKind, FoundSets, HostError, HostResult, InsertFile, InsertKind,
-    InsertTarget, LayoutTarget, Mode, Navigation, Network, NewWindow, OnTimer, PauseEnd, Platform,
-    RecordList, RecordMove, Records, RelatedRecords, Replacement, ScriptAccess, ScriptHost,
-    ServerCallbackCall, ServerScriptCall, ServerScriptResult, StepArg, StepCall,
-    TransactionOptions, TransferCall, UrlRequest, UrlResponse, Visibility, WindowId, WindowOptions,
-    WindowStyle, WindowTarget, Windows,
+    serial_text, Accounts, AlertChoice, Arg, Bar, Bounds, Clipboard, CommitOptions, CustomDialog,
+    DialogButton, DialogInput, DialogResponse, Dialogs, Encoding, ErrorAlert, ErrorLogEntry,
+    FieldRef, Fields, FileId, FileSource, Files, FindKind, FoundSets, HostError, HostResult,
+    InsertFile, InsertKind, InsertTarget, LayoutTarget, Mode, Navigation, Network, NewWindow,
+    OnTimer, PauseEnd, Platform, RecordList, RecordMove, Records, RelatedRecords, Replacement,
+    ScriptAccess, ScriptHost, ServerCallbackCall, ServerScriptCall, ServerScriptResult, StepArg,
+    StepCall, TransactionOptions, TransferCall, UrlRequest, UrlResponse, Visibility, WindowId,
+    WindowOptions, WindowStyle, WindowTarget, Windows,
 };
 pub use memory::{MemoryLayout, MemoryScriptHost, MemoryWindow, SessionFunction};
 pub use om_hbam::OwnedNode;

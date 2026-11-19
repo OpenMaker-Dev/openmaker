@@ -915,6 +915,16 @@ impl Fields for MemoryScriptHost {
             .map(|w| (w.found.len(), w.current))
             .ok_or(HostError::Error(ErrorCode::RECORD_MISSING))?;
         let contents = self.field_value_of(field)?;
+        // Serial numbers that cannot all be counted write none of them.
+        if let Replacement::Serial {
+            initial, increment, ..
+        } = with
+        {
+            let last = u64::try_from(count.saturating_sub(1)).unwrap_or(u64::MAX);
+            if serial_text(initial, *increment, last).is_none() {
+                return Err(HostError::Error(ErrorCode::UNAVAILABLE));
+            }
+        }
         let mut result = Ok(());
         for i in 0..count {
             if let Some(window) = self.window_mut() {
@@ -925,10 +935,10 @@ impl Fields for MemoryScriptHost {
                 Replacement::Calculation(evaluate) => evaluate(self),
                 Replacement::Serial {
                     initial, increment, ..
-                } => {
-                    let start: i64 = initial.trim().parse().unwrap_or(1);
-                    Value::text((start + *increment * i as i64).to_string())
-                }
+                } => match serial_text(initial, *increment, i as u64) {
+                    Some(text) => Value::text(text),
+                    None => return Err(HostError::Error(ErrorCode::UNAVAILABLE)),
+                },
             };
             result = self.set_value(field, value);
             if result.is_err() {
