@@ -1999,8 +1999,17 @@ impl ServerHost {
                 .schema
                 .field(occurrence, *field)
                 .ok_or(FindError::Unsupported)?;
-            let criterion = find::Criterion::parse(text, def.data_type, &context)
-                .map_err(|_| FindError::Unsupported)?;
+            // Text keyed as the field's index keys it (query-program.md 7.2).
+            let form = match def.decoded_options() {
+                Some(options) if def.data_type == DataType::Text => rules::read_text_keys(
+                    options.index_language(),
+                    u32::from(self.locale.language.id()),
+                ),
+                _ => TextKeys::Collated,
+            };
+            let criterion =
+                find::Criterion::parse(text, def.data_type, &context.with_text_keys(form))
+                    .map_err(|_| FindError::Unsupported)?;
             let Some(criterion) = criterion else {
                 continue;
             };

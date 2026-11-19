@@ -882,7 +882,18 @@ Browse's does. Their items are read with no record, so a list of
 related values offers none. A set's items are read to draw it; a pop-up
 menu's or drop-down list's when it opens, and shown from the next frame.
 
+A text criterion is keyed in the form of its field's index language
+(query-program.md 7.2, `FindContext::with_text_keys`): English and English
+international by primary weights, System and Unicode standard padded,
+Unicode raw by its code units with case kept, and language 0 in the file's
+own language. A field in another language is keyed in English, which keys
+most text as those languages do.
+
 **Limits.** List view shows only the current request, as one body row.
+In the padded form a word's start is matched by its primary weights alone
+(`equ` finds `équipe`), and a Unicode raw find keeps case: FileMaker's keys
+for those criteria are unmeasured. The mock provider's in-memory finds key
+text in English.
 The badge's place, the portal's single row, empty merge fields, Return
 performing the find and how the value-list controls build criteria are
 OpenMaker's reading, not compared with FileMaker Pro (client-ui.md, "Find

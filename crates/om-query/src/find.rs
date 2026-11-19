@@ -24,7 +24,9 @@ use om_collate::DateOrder;
 use om_hbam::slot::uint_segment;
 use om_hbam::{DataType, KeyTree, OwnedNode, RidList, SlotReader};
 
-use crate::criteria::{Bound, DatePattern, Kind, Moment, Part, Term, TimePattern, Unit, Whole};
+use crate::criteria::{
+    self, Bound, DatePattern, Kind, Moment, Part, Term, TimePattern, Unit, Whole,
+};
 pub use crate::criteria::{Criterion, FindContext, Unreadable, Ymd};
 
 /// Finder kinds (`DBFinder::FindKind`, 6.2).
@@ -355,16 +357,17 @@ fn keyed_plan(
                         let words = om_collate::words(&phrase);
                         let last = words.len().saturating_sub(1);
                         for (i, word) in words.iter().enumerate() {
-                            let key = om_collate::text_key(word);
                             if i == 0 && *anywhere {
                                 continue;
                             }
                             // Whole words inside the phrase; its first word
                             // starts a word, its last may end inside one.
                             let whole = i < last || !open_end;
+                            let form = criterion.text;
                             finders.push(if i == 0 || (i == last && !whole) {
-                                prefix_range(WORD_SCOPE, &key)
+                                prefix_range(WORD_SCOPE, &criteria::prefix_key(form, word))
                             } else {
+                                let key = criteria::whole_key(form, word);
                                 keep(make(kind::INDEX_MATCH, WORD_SCOPE, 0, &key, &[]))
                             });
                         }
