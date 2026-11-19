@@ -1586,7 +1586,8 @@ impl NativeProvider {
         for need in needs {
             if let CalcNeed::FoundSet { occurrence, table } = need {
                 if !page.found.contains_key(occurrence) {
-                    self.seed_found_set(&schema, *table, &mut page)?;
+                    // A table that cannot be read fails its need as before.
+                    let _ = self.seed_found_set(&schema, *table, &mut page);
                 }
             }
         }
