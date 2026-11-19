@@ -528,7 +528,22 @@ authoring part tabs or object kind captions.
   system's media view, unmeasured].
 - Button icons come from the file's library root `31` as the original SVG,
   colored through the icon component's style; no application icon is
-  substituted for a file's library image. Binary merge references resolve
+  substituted for a file's library image.
+- SVG pictures and icons are drawn outside om-gui's process, by the SVG
+  worker (`om-gui-pdf-worker --svg`, the one reports use: its allocator
+  capped 512 MiB past its input, killed after 30 seconds, one SVG at a
+  time), on a background thread, at the pixel size they show at (at most
+  8,192 pixels a side and 16 megapixels, or the GPU's largest texture,
+  then stretched over the frame). A library SVG is hostile input that can
+  ask usvg and resvg for unbounded memory or stack, which would abort
+  om-gui ([#303](https://github.com/OpenMaker-Dev/openmaker/issues/303)).
+  Nothing shows until the worker answers (a few milliseconds an icon). Text
+  is drawn in the bundled fonts (Inter, else Liberation Sans); the images
+  an SVG names are left out and never read from disk; an SVG that fails in
+  the worker, or every SVG when no worker is installed beside om-gui,
+  shows egui's error mark, as a picture that does not decode does
+  [I, OpenMaker; FileMaker draws SVG with the platform's renderer, and
+  what it shows for one it cannot draw is unmeasured]. Binary merge references resolve
   through the occurrence and field keys, to `Field` in the layout's
   occurrence and to `Occurrence::Field` in related ones (layout-model.md
   4.1).

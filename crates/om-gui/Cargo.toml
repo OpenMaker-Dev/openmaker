@@ -19,7 +19,9 @@ om-transfer = { path = "../om-transfer" }
 eframe = "0.37"
 # Bundled emoji/icon fonts, so toolbar glyphs render the same on every platform.
 egui = { version = "0.37", features = ["monochrome_emoji_fonts"] }
-egui_extras = { version = "0.37", features = ["svg", "image"] }
+# Raster library images and tables. Not its `svg` feature: Browse draws SVG
+# in the SVG worker (`svg_loader`), never in this process.
+egui_extras = { version = "0.37", features = ["image"] }
 # Read unrounded font metrics for native paragraph leading (also used by epaint).
 skrifa = { version = "0.44", default-features = false, features = ["std"] }
 zeroize = "1"
@@ -34,10 +36,9 @@ serde_json = "1"
 # and zlib streams for their PDF image XObjects. Both MIT OR Apache-2.0.
 image = { version = "0.25", default-features = false, features = ["png", "jpeg", "gif", "bmp", "tiff", "webp"] }
 flate2 = "1.1"
-# Static report SVG pictures (their text, in the bundled fonts) and report
-# button icons (resvg: MIT OR Apache-2.0). Without `raster-images`: the
-# feature would also reach Browse's SVG loader (egui_extras), which would
-# then draw the local files an SVG's images name.
+# SVG pictures and button icons, in Browse and reports, drawn in the SVG
+# worker (their text in the bundled fonts; resvg: MIT OR Apache-2.0).
+# Without `raster-images`: no raster image an SVG embeds is decoded.
 resvg = { version = "0.45.1", default-features = false, features = ["text"] }
 # The root viewport's native window, which web viewers are children of
 # (the version eframe uses; MIT OR Apache-2.0 OR Zlib).

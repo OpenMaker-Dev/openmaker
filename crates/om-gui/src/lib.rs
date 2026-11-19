@@ -59,6 +59,7 @@ mod scripting;
 mod security;
 mod session;
 pub mod settings;
+pub mod svg_loader;
 #[cfg(test)]
 mod test_renderer;
 mod theme;

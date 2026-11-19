@@ -1,4 +1,5 @@
 //! Static report pictures, separate from button icon tinting/rasterization.
+use super::svg_worker::Unsupported;
 use super::{LibraryImage, LibraryImageFormat, Picture, ReportError, MAX_PICTURE_SIDE};
 use image::{DynamicImage, ImageDecoder, ImageFormat, ImageReader};
 use resvg::{tiny_skia, usvg};
@@ -37,7 +38,7 @@ pub(super) fn decode(
             return Err("encoded picture exceeds 256 MiB".into());
         }
         if source.format == LibraryImageFormat::Svg {
-            svg(&source.data, size)
+            svg(&source.data, size, Unsupported::Refuse)
         } else {
             raster(&source.data, format(source.format))
         }
@@ -101,23 +102,31 @@ fn picture(width: u32, height: u32, rgba: Vec<u8>) -> Picture {
 
 /// An SVG picture, drawn in the worker process (`svg_worker`). Unit tests
 /// draw it here, with the same code the worker runs; the worker itself is
-/// tested from `tests/report_svg_worker.rs`.
-fn svg(data: &[u8], size: Option<[u32; 2]>) -> Result<Picture, String> {
+/// tested from `tests/svg_worker.rs`.
+pub(super) fn svg(
+    data: &[u8],
+    size: Option<[u32; 2]>,
+    unsupported: Unsupported,
+) -> Result<Picture, String> {
     #[cfg(test)]
     {
-        svg_here(data, size)
+        svg_here(data, size, unsupported)
     }
     #[cfg(not(test))]
     {
-        let (width, height, rgba) = super::svg_worker::draw(data, size)?;
+        let (width, height, rgba) = super::svg_worker::draw(data, size, unsupported)?;
         Ok(picture(width, height, rgba))
     }
 }
 
 /// Draw an SVG picture in this process: only the worker (and unit tests)
 /// do, since nothing here bounds what usvg and resvg allocate.
-pub(super) fn svg_here(data: &[u8], size: Option<[u32; 2]>) -> Result<Picture, String> {
-    let tree = svg_tree(data)?;
+pub(super) fn svg_here(
+    data: &[u8],
+    size: Option<[u32; 2]>,
+    unsupported: Unsupported,
+) -> Result<Picture, String> {
+    let tree = svg_tree(data, unsupported)?;
     let size = match size {
         Some(size) => size,
         None => raster_size(
@@ -153,22 +162,28 @@ pub(super) fn svg_here(data: &[u8], size: Option<[u32; 2]>) -> Result<Picture, S
     Ok(picture(size[0], size[1], rgba))
 }
 
-/// The SVG's tree. Nothing outside the picture's own bytes is read: images
-/// are refused (resvg is built without raster decoding, which Browse's SVG
-/// loader shares), and the only fonts are the bundled ones.
-fn svg_tree(data: &[u8]) -> Result<usvg::Tree, String> {
-    if data.len() as u64 > MAX_SVG_BYTES {
-        return Err("SVG input exceeds the report limit".into());
+/// The SVG's tree. Nothing outside the picture's own bytes is read: an
+/// image's reference is never resolved (and resvg is built without raster
+/// decoding), and the only fonts are the bundled ones. With
+/// [`Unsupported::Refuse`], what reports do not draw refuses the picture.
+/// With [`Unsupported::Skip`] (Browse) the rest is drawn, entity
+/// declarations included (Illustrator writes them), and only the
+/// worker's memory and time limits bound it.
+fn svg_tree(data: &[u8], unsupported: Unsupported) -> Result<usvg::Tree, String> {
+    let refuse = unsupported == Unsupported::Refuse;
+    let limit = if refuse { MAX_SVG_BYTES } else { MAX_BYTES };
+    if data.len() as u64 > limit {
+        return Err("SVG input exceeds the picture limit".into());
     }
     let expanded;
     let data = if data.starts_with(&[0x1f, 0x8b]) {
         let mut bytes = Vec::new();
         flate2::read::GzDecoder::new(data)
-            .take(MAX_SVG_BYTES + 1)
+            .take(limit + 1)
             .read_to_end(&mut bytes)
             .map_err(|e| e.to_string())?;
-        if bytes.len() as u64 > MAX_SVG_BYTES {
-            return Err("SVG input exceeds the report limit".into());
+        if bytes.len() as u64 > limit {
+            return Err("SVG input exceeds the picture limit".into());
         }
         expanded = bytes;
         expanded.as_slice()
@@ -178,18 +193,24 @@ fn svg_tree(data: &[u8]) -> Result<usvg::Tree, String> {
     let text = std::str::from_utf8(data).map_err(|e| e.to_string())?;
     // An entity can expand to far more text than the input holds; a DOCTYPE
     // without one (as editors write) is fine.
-    if text.contains("<!ENTITY") {
+    if refuse && text.contains("<!ENTITY") {
         return Err("SVG entity declarations are not supported in reports".into());
     }
     let doc = usvg::roxmltree::Document::parse_with_options(
         text,
         usvg::roxmltree::ParsingOptions {
             allow_dtd: true,
-            nodes_limit: MAX_SVG_NODES as u32,
+            nodes_limit: if refuse {
+                MAX_SVG_NODES as u32
+            } else {
+                u32::MAX
+            },
         },
     )
     .map_err(|e| e.to_string())?;
-    check_xml(doc.root_element(), 0)?;
+    if refuse {
+        check_xml(doc.root_element(), 0)?;
+    }
     let options = usvg::Options {
         fontdb: svg_fonts(),
         font_family: "Inter".into(),
