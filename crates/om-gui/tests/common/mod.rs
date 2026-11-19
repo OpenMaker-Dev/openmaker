@@ -86,6 +86,30 @@ pub fn text_field<'a>(app: &'a App, label: &'a str) -> egui_kittest::Node<'a> {
         .unwrap_or_else(|| app.get_by_role_and_label(Role::PasswordInput, label))
 }
 
+/// A native absolute file path as a `file:` path list line of this
+/// platform, for typing where FileMaker takes a path list (script-runtime.md,
+/// "Data files and paths"). A macOS path starts with the volume's name: the
+/// startup disk's is the one under `/Volumes` that links to `/`.
+pub fn file_line(path: &std::path::Path) -> String {
+    let text = path.to_str().expect("a UTF-8 path");
+    if cfg!(target_os = "macos") {
+        let volume = std::fs::read_dir("/Volumes")
+            .into_iter()
+            .flatten()
+            .flatten()
+            .find(|e| std::fs::read_link(e.path()).is_ok_and(|t| t == std::path::Path::new("/")))
+            .map_or_else(
+                || "Macintosh HD".to_owned(),
+                |e| e.file_name().to_string_lossy().into_owned(),
+            );
+        format!("file:/{volume}{text}")
+    } else if cfg!(windows) {
+        format!("file:/{}", text.replace('\\', "/"))
+    } else {
+        format!("file:{text}")
+    }
+}
+
 /// Type into the text field labelled `label`.
 pub fn fill(app: &mut App, label: &str, text: &str) {
     text_field(app, label).focus();
