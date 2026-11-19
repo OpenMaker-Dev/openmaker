@@ -374,7 +374,7 @@
       "previous_status": "Partial",
       "status": "Partial",
       "scope": "Related files open on demand, also on other hosts with their own account, and calculations, layouts and record operations reach the file that owns each occurrence; a missing related file gives a warning and is tried again ([opening files](desktop-client.md#opening-files)).",
-      "remaining": "A value reached only through text built at run time reads as missing until the window asks for that file. Each related hosted file has a connection of its own [#229](https://github.com/OpenMaker-Dev/openmaker/issues/229), and some data sources of a hosted solution cannot be read [#233](https://github.com/OpenMaker-Dev/openmaker/issues/233).",
+      "remaining": "A value reached only through text built at run time reads as missing until the window asks for that file. Related files that share the opened file's connection are checked against OpenMaker Server only, not FileMaker Server [#229](https://github.com/OpenMaker-Dev/openmaker/issues/229), and some data sources of a hosted solution cannot be read [#233](https://github.com/OpenMaker-Dev/openmaker/issues/233).",
       "issues": [
         229,
         233
@@ -550,7 +550,7 @@
       "previous_status": "Partial",
       "status": "Partial",
       "scope": "Themes, styles, borders, merge text, data formats and pictures render, with per-field text insets; one text placement is recorded as matching FileMaker Pro ([Browse mode](desktop-client.md#browse-mode)).",
-      "remaining": "A focused field is not drawn in its In Focus state [#231](https://github.com/OpenMaker-Dev/openmaker/issues/231); stored numeric symbols such as {{1002}} draw literally [#295](https://github.com/OpenMaker-Dev/openmaker/issues/295). Precise font metrics, borders and placement need measured comparisons at several zoom levels.",
+      "remaining": "Fields in portal rows, related fields, containers and Find requests are not drawn in their In Focus state [#231](https://github.com/OpenMaker-Dev/openmaker/issues/231); stored numeric symbols such as {{1002}} draw literally [#295](https://github.com/OpenMaker-Dev/openmaker/issues/295). Precise font metrics, borders and placement need measured comparisons at several zoom levels.",
       "issues": [
         231,
         295
@@ -796,8 +796,9 @@
       "previous_status": "Partial",
       "status": "Partial",
       "scope": "Script Workspace edits steps and their options and the script catalog, and saves them to OpenMaker Server and local files with FileMaker Pro's lock and upload sequence; unsaved changes ask before closing ([Script Workspace](desktop-client.md#script-workspace)).",
-      "remaining": "No new folders or separators; names outside ASCII are refused [#209](https://github.com/OpenMaker-Dev/openmaker/issues/209); compound options (Send Mail, PDF and Excel options, data sources, print settings) are kept as stored. FileMaker Server is C48's. FileMaker Pro has not opened files with OpenMaker-made scripts since the catalog digest was fixed.",
+      "remaining": "No new folders or separators [#66](https://github.com/OpenMaker-Dev/openmaker/issues/66); names outside ASCII are refused [#209](https://github.com/OpenMaker-Dev/openmaker/issues/209); compound options (Send Mail, PDF and Excel options, data sources, print settings) are kept as stored. FileMaker Server is C48's. FileMaker Pro has not opened files with OpenMaker-made scripts since the catalog digest was fixed.",
       "issues": [
+        66,
         209
       ],
       "docs": [
