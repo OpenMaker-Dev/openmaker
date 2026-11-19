@@ -7,7 +7,8 @@ body:
     attributes:
       value: |
         One problem per issue; search existing issues first. Add an `area: ...` label
-        after filing. Never paste credentials, license keys or capture contents.
+        after filing, or name the area if you cannot set labels. Never paste
+        credentials, license keys or capture contents.
 
   - type: textarea
     id: what-happened

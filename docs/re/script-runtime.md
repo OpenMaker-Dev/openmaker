@@ -3155,7 +3155,7 @@ The desktop client's script host (2026-10-29): `om-gui` `scripting`
 (the window side), with found sets in `om-data` (`found`), `om-provider`
 (`found.rs`) and the finder builder shared with OpenMaker Server
 (`om_query::find`). Stored sort orders and find requests follow
-script-steps.md section 11 (coordinator commit 08a0b61), decoded by
+script-steps.md section 11 (commit 08a0b61 of the earlier, private history), decoded by
 `om_scripts::specs`. Points marked (unconfirmed) need a FileMaker Pro run.
 
 Execution (2.1, 6)

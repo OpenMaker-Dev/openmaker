@@ -1,6 +1,7 @@
 # Record-batch download benchmark
 
-Baseline: `aebaa2a80dee9fa1715d30e2c7ea49623fe06617` (`main`).
+Baseline: `aebaa2a80dee9fa1715d30e2c7ea49623fe06617`, `main` in the project's earlier, private history (not
+in this repository).
 
 Op92 previously cloned every child below the requested parent, then filtered
 with a linear search of requested keys. The change selects matching children

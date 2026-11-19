@@ -1,17 +1,21 @@
 # OpenMaker reverse engineering notes
 
 Goal: document the FileMaker Pro 26 client's behavior, wire protocol, file
-formats, and layout/rendering model well enough to build OpenMaker, a
-compatible Rust client. First target: Ubuntu Desktop.
+formats, and layout/rendering model, and FileMaker Server's hosting, well
+enough to build OpenMaker, a compatible Rust client and server. First
+target: Ubuntu Desktop.
 
 ## Clean-room rule
 
 These notes describe behavior, formats, and interfaces. The OpenMaker
 implementation is written from these notes, never by copying or translating
 decompiled code. Evidence in these notes cites symbol names, addresses, string
-offsets, and REA Evidence IDs; it does not paste large decompiled bodies.
+offsets, and REA Evidence IDs; it does not paste or paraphrase decompiled code.
 
 ## Reference artifacts
+
+Claris's installers are not in the repository (`fm-installers/` is
+git-ignored):
 
 | Artifact | Version | Notes |
 |---|---|---|
@@ -38,8 +42,9 @@ Derived (git-ignored):
 - `re/work/symbols/<name>.x86_64.txt` - demangled exported symbols (`llvm-nm | llvm-cxxfilt`)
 - `re/work/ghidra/<name>/<name>.gpr` - persistent pre-analyzed Ghidra projects
 
-The macOS x86_64 slices are the primary reference: they export about 140k
-demangled C++ symbols and use POSIX code paths closest to Linux.
+For client-side code paths the macOS x86_64 slices are the primary
+reference: they export about 140k demangled C++ symbols and use POSIX code
+paths closest to Linux.
 
 ## Live observations
 
@@ -171,15 +176,14 @@ before a capture session (`defaults export com.filemaker.client.pro12
 | F100 | Under a custom set with printing or exporting off, FileMaker Pro 26.0.3's Print, Save Records as PDF, Export Records and Save Records as Excel steps return 3 before any dialog and show no alert with errors not captured; Print Setup still opens Page Setup; Export Field Contents and Save Records as Snapshot Link save, and Import Records from a CSV file imports (0); Copy All Records/Requests shows the privilege alert, leaves the clipboard and returns 200; Save a Copy as opens its chooser and fails with 800; importing from a FileMaker file open under an export-denied account shows the privilege alert and returns 714. Local closed-source import with matching credentials raised no prompt: an Admin target imported from an export-off source, while a restricted target was refused by that source and imported from an export-on source. With different credentials, Pro asked for the source account before import mapping; Cancel left the target unchanged | observation (FileMaker Pro 26.0.3, local disposable Contacts copies, script steps with `Get ( LastError )` and menu commands, [#214](https://github.com/OpenMaker-Dev/openmaker/issues/214)); error capture off inferred from the control runs' canceled-step prompt; hosted behavior unmeasured | [session-identity.md](session-identity.md) 2.3 |
 | F101 | Layout Setup's "Print in 2 columns" is bit `0x400` of a layout's effective flags (`0xf1` at the layout record and its catalog entry): checking it changed `0x10f30a4b` to `0x10f30e4b` on Task List. FileMaker Pro keeps `printColumnCount` 2 and a `printColumnWidth` (270 pt) with the box unchecked after a Layout Setup save and prints one column, so those values do not tell whether columns print | observation (FileMaker Pro 26.0.3, local disposable Tasks copies, #925) | [layout-model.md](layout-model.md) 4.1, 4.2 |
 | F102 | Layout Setup's "Use fixed page margins" is bit `0x40` of a layout's effective flags (`0xf1` at the layout record and its catalog entry): checking it changed `0x10f30a0b` to `0x10f30a4b` on Task List, and `customMargins` is stored with the box off too. FileMaker Pro prints within the stored margins only with the bit set: with fixed 36 pt margins its PDF moved Task List's text 18 pt right and down from the printer's 18 pt | observation (FileMaker Pro 26.0.3, local disposable Tasks copies and their PDFs, #609) | [layout-model.md](layout-model.md) 4.1, 4.2 |
-| F103 | In local FileMaker Pro 26.0.3, a text object with hide condition `1/0` hides, and a `Get ( FoundCount ) = 1` condition updates after Find and Show All. A script setting a global used by a hide condition did not immediately refresh the object; switching layouts or modes did, while clicks on the title or empty header and changes to another tab panel did not. The internal cache rule and the action during a later Data Viewer visit that refreshed it remain unknown | observation (disposable local Contacts copies, [#38](https://github.com/OpenMaker-Dev/openmaker/issues/38)); immediate global-script refresh differs in OpenMaker at `ea6ca95d` | [layout-model.md](layout-model.md) 5.5.2 |
+| F103 | In local FileMaker Pro 26.0.3, a text object with hide condition `1/0` hides, and a `Get ( FoundCount ) = 1` condition updates after Find and Show All. A script setting a global used by a hide condition did not immediately refresh the object; switching layouts or modes did, while clicks on the title or empty header and changes to another tab panel did not. The internal cache rule and the action during a later Data Viewer visit that refreshed it remain unknown | observation (disposable local Contacts copies, [#38](https://github.com/OpenMaker-Dev/openmaker/issues/38)); immediate global-script refresh differs in OpenMaker at `ea6ca95d` (a commit of the earlier, private history) | [layout-model.md](layout-model.md) 5.5.2 |
 | F104 | In a native hosted multi-file capture, an occurrence's definition names source key `09` (id 9) and raw base-table key `80 01` (serial id 129), while that source exists and the related file's complete base-table catalog contains only raw key `80 02` (serial id 130). The target key is dangling as served in that capture; FileMaker Pro's display and the later copy of the solution are unmeasured | observation (s03 conn-000, op90 requests 786, 788 and 386; the related file's `[3]` reply reassembled from two GIOP messages) | [file-metadata.md](file-metadata.md) 1.1, U11 |
 | F105 | FileMaker Pro stores a data source's `fmnet:/host/File` path as the three strings `("fmnet", "\u{E000}host\u{E000}", "File")`, and `fmnet:/host:5003/File` as `("fmnet", "\u{E000}host:5003\u{E000}", "File")`: the two U+E000 characters are stored (each through a dynamic SCSU window), and the dialog shows them as `/` | observation (FileMaker Pro 26.0.3, two local disposable files whose one data-source path was set to each form, `[32, 5, 1, 0x82]` read from the closed files, [#232](https://github.com/OpenMaker-Dev/openmaker/issues/232)); following such a path from a hosted file unmeasured | [file-metadata.md](file-metadata.md) 1.1 |
-| F107 | FileMaker Pro opening a hosted solution's first layout opened the related files of every object's data (fields, merge fields, portals, value lists' fields) but not one read only by the conditional formats of objects right of its window's view: it opened that file only later, after user actions. A formula that only changes how an object looks is evaluated, and opens its file, when the object is drawn (inferred) | inference from observation (s03 conn-000: 16 Opens within about 11 s of the root's open, 3 later after user actions, coarse event-log times; offline rule comparison over the recorded layout and schema; window size not recorded, zoom probably 150%; #1120) | [network-protocol.md](network-protocol.md) 5.5 |
 | F106 | In a later read-only hosted catalog probe, four occurrence source keys were absent as whole members from their owners' complete `[32]` replies; their occurrence references decoded cleanly. Three other occurrences had present sources but named raw target key `80 01` (serial id 129), while each related file's complete base-table catalog had only `80 02` (serial id 130). This establishes the mismatch for the authenticated account's host replies, not on-disk deletion or current FileMaker Pro UI behavior | observation (2026-11-16 private nine-file op90 `[3]`/`[32]` slot packet, hashes and per-key paths in `current-mapping.md`; [#233](https://github.com/OpenMaker-Dev/openmaker/issues/233)) | [file-metadata.md](file-metadata.md) 1.1, U11 |
+| F107 | FileMaker Pro opening a hosted solution's first layout opened the related files of every object's data (fields, merge fields, portals, value lists' fields) but not one read only by the conditional formats of objects right of its window's view: it opened that file only later, after user actions. A formula that only changes how an object looks is evaluated, and opens its file, when the object is drawn (inferred) | inference from observation (s03 conn-000: 16 Opens within about 11 s of the root's open, 3 later after user actions, coarse event-log times; offline rule comparison over the recorded layout and schema; window size not recorded, zoom probably 150%; #1120) | [network-protocol.md](network-protocol.md) 5.5 |
 | F108 | One macOS keypad Enter after changing an ordinary local Text field runs OnObjectSave, OnObjectExit, OnRecordCommit (`|S|E|C`) and leaves focus on Browse content before any later interaction. Normal close adds no marker; schema/layout/script/trigger bytes remain unchanged | observation (FileMaker Pro 26.0.3, one disposable local instrumented fixture, 2026-11-17, #1070/#1181; marker scripts write a global and return True; other field types, portals, hosted files and Windows unmeasured) | [script-runtime.md](script-runtime.md) 7.1 |
-
-| F110 | A new portal row with a computed non-empty self-join key stores Count 0 and List empty with no other row. A follow-up with one older match stores Count 1 and List of the older value, before the new value is entered and at its last stored evaluation. Persistent exclusion and original-context behavior remain unmeasured | observation (FileMaker Pro 26.0.3, two local synthetic C126 cases, private checksum-verified relays) | [auto-entry.md](auto-entry.md), "A new record's own self-join" |
 | F109 | A synthetic auto-entered value outside its custom value list saves without a validation dialog under validation word `0x8180`; legacy `0x180` and related-values-list carry-over remain inference | observation (FileMaker Pro 26.0.3, one local synthetic C125 outcome B, closed raw differential) | [auto-entry.md](auto-entry.md), "Auto-entered value checked against a value list" |
+| F110 | A new portal row with a computed non-empty self-join key stores Count 0 and List empty with no other row. A follow-up with one older match stores Count 1 and List of the older value, before the new value is entered and at its last stored evaluation. Persistent exclusion and original-context behavior remain unmeasured | observation (FileMaker Pro 26.0.3, two local synthetic C126 cases, private checksum-verified relays) | [auto-entry.md](auto-entry.md), "A new record's own self-join" |
 | F111 | A container field object's "Optimize for: Interactive content" is bit `0x0100` of its graphic format (the `u16` at bytes 210-211 of its 213-byte `KFormat`), and "Start playback automatically" is `0x0200`; images leave both clear and the scaling bits stay | observation (FileMaker Pro 26.0.3, the English Content Management starter's File Container saved as images, interactive and interactive with autoplay, 2026-11-19, #200; only byte 210 changed between saves) | [containers.md](containers.md) 6.6 |
 
 ## Tooling notes
@@ -237,6 +241,7 @@ in [catalogs/](catalogs/README.md); recovered `.proto` files are in
 - [calc-functions.md](calc-functions.md) - every calculation function and Get selector: behavior, edge cases, compatibility, oracle answers, implementation tiers
 - [execute-sql.md](execute-sql.md) - ExecuteSQL: the FQL grammar (recovered from the engine), semantics, output formats, errors and execution
 - [auto-entry.md](auto-entry.md) - field auto-entry and validation metadata: the field definition, index bits, client and server roles
+- [mbs-plugin.md](mbs-plugin.md) - the MBS FileMaker Plugin's idle script, alert, folder and PDF document commands, from its public documentation
 
 ### Scripts
 

@@ -382,10 +382,11 @@ of each dependency, unless there is a concrete reason not to.
 - **Default tests** run anywhere: unit tests, checked-in vectors
   (`crates/*/tests/data/`, `docs/re/catalogs/`) and end-to-end tests that
   host a synthetic file on an in-process `om-server`.
-- **Ignored tests** (`#[ignore]`, about 100) need inputs that are not in
+- **Ignored tests** (`#[ignore]`, about 170) need inputs that are not in
   git: recorded captures and working files under `re/`, files from the
-  FileMaker installers, the oracle harness container, or a live server.
-  The test's `#[ignore = "requires ..."]` reason names its inputs.
+  FileMaker installers, the oracle harness container, or a live server. A
+  few are measurements run on demand, such as release-build timings. The
+  test's `#[ignore = "requires ..."]` reason names its inputs.
   Run one with `cargo test -p <crate> --test <file> -- --ignored`. A fresh
   clone or worktree has no `re/` directory; link the one from a checkout
   that has it.
@@ -506,7 +507,7 @@ Each of these cost a debugging round:
 
   ```sh
   OM_SCORECARD_FILES="a.fmp12:b.fmp12" OM_SCORECARD_OUT=/tmp/scorecard \
-    OM_SCORECARD_TRUST=~/om-fixtures/trust/<sha> \
+    OM_SCORECARD_TRUST=/tmp/scorecard-trust \
     cargo test -p om-gui --lib scorecard::alpha_scorecard -- --ignored --exact --nocapture
   ```
 
@@ -594,7 +595,7 @@ Each of these cost a debugging round:
   README saying where each change is:
 
   ```sh
-  OM_BUILD_STEP_SOURCE=Tasks.fmp12 OM_BUILD_STEP_FILES=~/om-fixtures/build-steps/<sha> \
+  OM_BUILD_STEP_SOURCE=Tasks.fmp12 OM_BUILD_STEP_FILES=/tmp/build-steps \
     cargo test -p om-gui --lib build_step_files -- --ignored
   ```
 
@@ -621,7 +622,7 @@ Each of these cost a debugging round:
   ```sh
   OM_SCORECARD_FILES="a.fmp12:b.fmp12" OM_SCORECARD_OUT=/tmp/scorecard \
     cargo test -p om-gui --lib scorecard::md_steps::md_steps_scorecard -- --ignored --exact
-  OM_MD_STEP_FILES=~/om-fixtures/trust/<sha>/md-steps \
+  OM_MD_STEP_FILES=/tmp/md-steps \
     cargo test -p om-gui --lib scorecard::md_steps::md_step_files -- --ignored --exact
   ```
 

@@ -20,7 +20,8 @@ On Linux, prefix both invocations with `taskset -c 3` to use the same CPU.
 
 ## Measurement on 2026-10-29
 
-Baseline: `aebaa2a80dee9fa1715d30e2c7ea49623fe06617`.
+Baseline: `aebaa2a80dee9fa1715d30e2c7ea49623fe06617`, a commit of the project's earlier, private history
+(not in this repository).
 Candidate changes only the index-page prefix search, from successively
 serializing every candidate prefix to exponential bracketing and bisection.
 It still selects the largest fitting prefix and uses the original serializer.

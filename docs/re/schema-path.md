@@ -80,7 +80,7 @@ OpenMaker Server), **op82** (3.1), **op15** (3.2), **op61** (4.2), **op86
 UploadMultiple** (3.4), **op13** direct upload (3.3), **op73** answered with
 an empty reply (3.6; deferred work is only needed once tables hold records),
 and the op86 GetKey/NodeExists checks without access keys (3.5; already in
-OpenMaker Server since commit 9bf56ee). Deleting a table adds op86
+OpenMaker Server since commit 9bf56ee of the earlier, private history). Deleting a table adds op86
 DeleteTable (3.4). Other connected clients learn of the change from the
 attention-2 unlock (section 9).
 

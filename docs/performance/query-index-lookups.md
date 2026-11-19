@@ -1,7 +1,8 @@
 # Query program index lookups
 
 Measured on 2026-11-10 for #306, against baseline
-`d57188d` (`main` with the program limits of #334).
+`d57188d` (`main` with the program limits of #334), a commit of the project's earlier, private history
+(not in this repository).
 
 A query program (op86) runs while the hosted file's store is held for
 reading, so writers of the file wait for it, and any signed-in account may

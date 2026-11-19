@@ -93,7 +93,7 @@ needs no open file.
   values from the host's own rules and joins PrimaryKey's index. Opening
   it needs #723 (a file without an image library), as Pro's own blank
   file does.
-- FileMaker 26.0.3 (#593, files made at `74e1c34`): a blank file, one
+- FileMaker 26.0.3 (#593, files made at commit `74e1c34` of the earlier, private history): a blank file, one
   named with a space, and one OpenMaker edited (a field placed with its
   label, a text object, a second record). `FMDeveloperTool
   --checkConsistency` finds no bad block in any, and `--saveAsXML` writes

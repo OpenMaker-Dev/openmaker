@@ -1,7 +1,8 @@
 # Indexed SQL candidate intersection
 
 Measured on 2026-10-29 while reviewing PR #2, against baseline
-`d013c9e16fbfc10ac9095c89fae21494172815b7`.
+`d013c9e16fbfc10ac9095c89fae21494172815b7`, a commit of the project's earlier, private history (not in
+this repository).
 
 `Exec::found_sets` used `Vec::contains` to intersect each table record with
 the ids returned by `SqlSource::lookup`. With N table records and M index
