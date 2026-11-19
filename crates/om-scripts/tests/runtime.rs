@@ -858,6 +858,44 @@ fn steps_by_name_find_their_variable_and_field() {
     );
     assert_eq!(g(&mut rt, "$$missing"), "102");
     assert_eq!(g(&mut rt, "$$bad"), "5");
+
+    // "Use Entry Options" takes the field's own serial settings, which are
+    // not read: refused with 3 before any record is written.
+    let mut entry = replace(&h, "\"People::Age\"", "1");
+    entry.set_number(1, Some(2));
+    entry.set_number(5, Some(1));
+    let steps = vec![
+        go_to_layout(2),
+        entry,
+        set_var(&h, "$$entry", "Get ( LastError )"),
+    ];
+    h.add_script(0, script(2, "Entry options", steps));
+    let mut rt = Runtime::default();
+    run(&mut h, &mut rt, 2);
+    assert_eq!(g(&mut rt, "$$entry"), "3");
+    assert_eq!(
+        [age_is(&h, 1), age_is(&h, 2), age_is(&h, 3)],
+        ["30", "30", "20"]
+    );
+
+    // On the server 249 is unknown (FileMaker Server 26.0.3's table): its
+    // error 4 does not fail an open transaction, whose write commits.
+    let mut h = host();
+    let steps = vec![
+        on(86, true),
+        ScriptStep::new(205),
+        set_age(&h, "30", 1),
+        replace(&h, "\"People::Age\"", "1"),
+        set_var(&h, "$$unknown", "Get ( LastError )"),
+        ScriptStep::new(206),
+        set_var(&h, "$$e", "Get ( LastError )"),
+    ];
+    h.add_script(0, script(1, "Server", steps));
+    let mut rt = Runtime::new(Options::new(Client::Server));
+    run(&mut h, &mut rt, 1);
+    assert_eq!(g(&mut rt, "$$unknown"), "4");
+    assert_eq!(g(&mut rt, "$$e"), "0");
+    assert_eq!(age_is(&h, 1), "30");
 }
 
 #[test]

@@ -704,12 +704,10 @@ impl<'a> WorkerHost<'a> {
             let def = schema
                 .field(field.occurrence, field.field)
                 .ok_or(HostError::Error(ErrorCode::FIELD_MISSING))?;
-            let same_table = occurrence
-                .and_then(|o| schema.table_of(o))
-                .zip(schema.table_of(field.occurrence))
-                .is_some_and(|(a, b)| a.id == b.id);
-            if !same_table {
-                // A related record's field.
+            if occurrence != Some(field.occurrence) {
+                // A related record's field: another occurrence is reached
+                // through a relationship, a self-join's too, never the
+                // current record.
                 return Err(HostError::Unsupported);
             }
             if field.repetition > 1 {
@@ -4706,14 +4704,14 @@ impl Fields for WorkerHost<'_> {
             Some((occurrence, field)) => (
                 schema
                     .occurrences()
-                    .find(|o| o.name == occurrence)
+                    .find(|o| same_name(&o.name, occurrence))
                     .map(|o| o.id)
                     // One of a related file not open yet, opened below
                     // (#1149).
                     .or_else(|| {
                         schema
                             .external_occurrences()
-                            .find(|o| o.name == occurrence)
+                            .find(|o| same_name(&o.name, occurrence))
                             .map(|o| o.id)
                     })
                     .ok_or(HostError::Error(ErrorCode::FIELD_MISSING))?,
@@ -4730,7 +4728,7 @@ impl Fields for WorkerHost<'_> {
         let schema = self.open_pending(&schema, occurrence)?;
         let id = schema
             .table_of(occurrence)
-            .and_then(|t| t.fields.values().find(|f| f.name == field))
+            .and_then(|t| t.fields.values().find(|f| same_name(&f.name, field)))
             .map(|f| f.id)
             .ok_or(HostError::Error(ErrorCode::FIELD_MISSING))?;
         Ok(FieldRef {
@@ -5018,6 +5016,12 @@ impl WorkerHost<'_> {
         };
         self.write_named(&name, text)
     }
+}
+
+/// Whether two names are the same name: without regard to case, as
+/// calculations' names match (`om_formula::NameTable`).
+fn same_name(a: &str, b: &str) -> bool {
+    a.to_lowercase() == b.to_lowercase()
 }
 
 impl FoundSets for WorkerHost<'_> {

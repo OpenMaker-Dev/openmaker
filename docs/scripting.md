@@ -481,6 +481,19 @@ Open items:
   Server 26.0.3's table until FileMaker Server 26.1.1 ships: ids from 248,
   these two steps among them, fail with error 4, and Save a Copy as Add-on
   Package (96) with error 3 without evaluating its options.
+- Replace Field Contents and Replace Field Contents by Name: serial numbers
+  with "Use Entry Options" (`[00 5, 03]`, the field's own serial settings)
+  fail with error 3 before any record is written; the field's settings are
+  not read there. Other serial numbers count up the initial value's last
+  run of digits, keeping its width, on every host; one past an `i128`
+  fails with error 3.
+- On the desktop a step's field reached through another occurrence than
+  the layout's, of the same table too (a self-join), is a related record's
+  field and is refused with error 3, as other tables' related fields are;
+  Set Field, Set Field By Name and Replace Field Contents wrote the
+  current record's field instead. Names given to Set Field By Name and
+  Replace Field Contents by Name match without regard to case, as on the
+  server.
 - Scripts: desktop steps still missing include the account steps
   ([#83](https://github.com/OpenMaker-Dev/openmaker/issues/83)) and the PDF
   steps other than Save Records as PDF

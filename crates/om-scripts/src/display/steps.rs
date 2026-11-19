@@ -1151,14 +1151,13 @@ fn set_variable(l: &mut Line<'_>) {
 /// calculation, its repetition in brackets unless 1, then the value [I:
 /// FileMaker Pro 26.1.1's text not seen].
 fn set_variable_by_name(l: &mut Line<'_>) {
-    if let Some(mut name) = l.calc(3) {
-        if let Some(rep) = l
-            .calc(2)
-            .filter(|r| r.trim() != "1" && !r.trim().is_empty())
-        {
-            name.push_str(&format!("[{rep}]"));
-        }
+    if let Some(name) = l.calc(3) {
         l.push_calculation("Name", 3, name);
+    }
+    if l.calc(2)
+        .is_some_and(|r| r.trim() != "1" && !r.trim().is_empty())
+    {
+        l.labeled("Repetition", "Repetition", 2);
     }
     l.labeled_always("Value", "Value", 1);
 }

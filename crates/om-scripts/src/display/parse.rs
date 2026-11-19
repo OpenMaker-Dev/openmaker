@@ -241,6 +241,14 @@ impl<'a> Parser<'a> {
         }
     }
 
+    /// `kFieldSpecByCalc` with a target field named by slot 1's calculation
+    /// (Set Field By Name, Replace Field Contents by Name), as FileMaker
+    /// stores it (script-steps.md 4).
+    fn field_by_calculation(&mut self) {
+        let named = self.step.calculation(1).is_some();
+        self.step.set_flag(flag::FIELD_SPEC_BY_CALC, named);
+    }
+
     /// A calculation alone, unless the next option is one of `stop`.
     fn bare(&mut self, slot: u16, stop: &[&str]) {
         if self.peek().is_some() && !self.stops(stop) {
@@ -790,6 +798,7 @@ fn rule(p: &mut Parser<'_>) {
             // 249 names its field with a calculation (script-steps.md 12.4).
             if p.step.id() == 249 {
                 p.bare(1, &["Current contents", "Serial numbers"]);
+                p.field_by_calculation();
             } else {
                 p.field(&["Current contents", "Serial numbers"]);
             }
@@ -805,6 +814,7 @@ fn rule(p: &mut Parser<'_>) {
         }
         147 => {
             p.bare(1, &[]);
+            p.field_by_calculation();
             p.bare(0, &[]);
         }
         131 => {
@@ -1401,14 +1411,20 @@ fn set_variable(p: &mut Parser<'_>) {
 }
 
 /// Set Variable by Name's text as OpenMaker shows it: the name's
-/// calculation, its repetition in brackets, then `Value:` [I].
+/// calculation whole, then `Repetition:` when it is not 1, then `Value:`
+/// [I]. The repetition has its own label: a name calculation can end in a
+/// repetition of its own (`Table::Names[2]`).
 fn set_variable_by_name(p: &mut Parser<'_>) {
-    if p.peek().is_some_and(|o| label_value(o, "Value").is_none()) {
+    if p.peek().is_some_and(|o| {
+        label_value(o, "Value").is_none() && label_value(o, "Repetition").is_none()
+    }) {
         let text = p.take().expect("peeked");
-        let (name, repetition) = split_repetition(&text);
-        p.calc_into(3, name);
+        p.calc_into(3, &text);
+    }
+    match p.labeled_value("Repetition") {
+        Some(text) => p.calc_into(2, &text),
         // As Set Variable stores repetition 1 when none is given.
-        p.calc_into(2, repetition.unwrap_or("1"));
+        None => p.calc_into(2, "1"),
     }
     p.labeled("Value", 1);
 }

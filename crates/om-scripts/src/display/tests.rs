@@ -609,11 +609,20 @@ fn pasted_text_stores_what_filemaker_shows() {
         "Go to List of Records [ List of record IDs: \"1¶2\" ; Using layout: “Contact Details” (Contacts) ; New window ]",
         // FileMaker Pro 26.1.1's steps by name, as OpenMaker shows them [I].
         "Set Variable by Name [ \"$x\" ; Value: 1 ]",
-        "Set Variable by Name [ \"$\" & \"x\"[2] ; Value: 1 ]",
+        "Set Variable by Name [ \"$\" & \"x\" ; Repetition: 2 ; Value: 1 ]",
+        "Set Variable by Name [ Contacts::First Name[2] ; Value: 1 ]",
         "Replace Field Contents by Name [ With dialog: Off ; \"Contacts::First Name\" ; Contacts::Last Name ]",
     ];
     for line in lines {
         assert_eq!(shown(&pasted(line)), line);
+    }
+    // A target named by a calculation sets kFieldSpecByCalc, as FileMaker
+    // stores it (script-steps.md 4).
+    for line in [
+        lines[lines.len() - 1],
+        "Set Field By Name [ \"Contacts::First Name\" ; 1 ]",
+    ] {
+        assert!(pasted(line).has_flag(flag::FIELD_SPEC_BY_CALC), "{line}");
     }
     // Go to List of Records: the ids in slot 7, a new window under
     // `kTurnOn` (script-steps.md 12.2).

@@ -922,7 +922,11 @@ impl Runtime {
         if error == ErrorCode::RETRY || error == ErrorCode::MULTI_STAGE || self.is_paused() {
             return;
         }
-        if error != ErrorCode::CANCELED && !writes_records(step.id()) {
+        // A step the runtime does not know (on the server, 249 among them)
+        // never reaches the data layer.
+        if error != ErrorCode::CANCELED
+            && (!writes_records(step.id()) || is_unknown_step(&self.options, step.id()))
+        {
             return;
         }
         let location = self.location(step);
@@ -1610,6 +1614,12 @@ impl Runtime {
                         };
                         evaluate = move |h: &mut dyn ScriptHost| self.eval(h, &calc).value;
                         Replacement::Calculation(&mut evaluate)
+                    }
+                    // "Use Entry Options" (`[00 5, 03]`) takes the field's
+                    // own serial settings, which are not read here: refused
+                    // before any record is written (script-steps.md 11.8).
+                    Some(2) if step.number(5).is_some_and(|n| n != 0) => {
+                        return Exec::error(ErrorCode::UNAVAILABLE);
                     }
                     Some(2) => Replacement::Serial {
                         initial: step.text(3).unwrap_or_else(|| "1".into()),
