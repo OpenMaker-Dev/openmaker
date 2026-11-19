@@ -467,6 +467,7 @@ fn round_trips_through_every_text_format() {
             formatting: false,
             charset: om_transfer::ExportCharset::Utf8,
             use_name_alias: Some(1),
+            field_names: None,
         };
         let profile = Profile {
             file_type: out_type,
