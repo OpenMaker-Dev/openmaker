@@ -1858,6 +1858,40 @@ mod tests {
         assert_eq!(polish::encode(&compiled.expr), [0x9b, 0x65]);
     }
 
+    /// FileMaker Pro 26.1.1's tokens (calc-tokens.csv rows 1142 and 2318,
+    /// #338): Get ( SortOrder ) is `9b 8e`, GetToolDefinitions `f9 12`
+    /// with its arguments last first; both decode, re-encode byte for byte
+    /// and print back as written.
+    #[test]
+    fn filemaker_26_1_1_tokens() {
+        let ctx = Context::new(&NoNames);
+        let compiled = compile("Get ( SortOrder )", &ctx).unwrap();
+        assert_eq!(polish::encode(&compiled.expr), [0x9b, 0x8e]);
+        assert_eq!(polish::decode(&[0x9b, 0x8e]).unwrap(), compiled.expr);
+        assert_eq!(crate::print(&compiled.tokens, &ctx), "Get ( SortOrder )");
+        let text = "GetToolDefinitions ( \"openai\" ; \"f\" ; \"g\" )";
+        let compiled = compile(text, &ctx).unwrap();
+        let polish = polish::encode(&compiled.expr);
+        // An `f9` function: its opcode and argument count, then the
+        // arguments last first (calc-encoding.md 5.1).
+        let arg = |text: &str| polish::encode(&compile(text, &ctx).unwrap().expr);
+        let want = [
+            vec![0xf9, 0x12, 0x00, 0x03],
+            arg("\"g\""),
+            arg("\"f\""),
+            arg("\"openai\""),
+        ]
+        .concat();
+        assert_eq!(polish, want);
+        assert_eq!(polish::encode(&polish::decode(&polish).unwrap()), polish);
+        let formatted = formatted::encode(&compiled.tokens);
+        assert_eq!(
+            formatted::encode(&formatted::decode(&formatted).unwrap()),
+            formatted
+        );
+        assert_eq!(crate::print(&compiled.tokens, &ctx), text);
+    }
+
     #[test]
     fn let_slots_follow_the_binding_positions() {
         // calc-encoding.md 5.5, CURLExecute ( URL ; Post Text ; HTTP Headers ).
