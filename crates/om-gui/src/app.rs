@@ -3776,6 +3776,11 @@ impl OpenMakerApp {
                 self.w.document.discard_failed_edits();
                 self.error = None;
                 self.w.document.release_focus();
+                // Entry is refused for a record another client changed since
+                // the window read it (306) or holds (301): the page is read
+                // again, so that a new entry starts from the host's copy.
+                let key = self.w.session.as_mut().and_then(Session::refresh);
+                self.request_page(ctx, key);
             }
             Action::DismissAlert => {
                 self.error = None;

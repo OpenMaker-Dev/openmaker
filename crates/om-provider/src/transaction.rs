@@ -2862,11 +2862,9 @@ impl NativeProvider {
         let Ok((table, _)) = self.record_plan(baseline.layout) else {
             return Ok(Unavailable);
         };
-        if self.external.route(table.id).is_some()
-            || !table.fields.iter().any(|f| {
-                f.kind == om_hbam::FieldKind::Normal && f.data_type == om_hbam::DataType::Container
-            })
-        {
+        // Another file's table is written through its owner, which locks
+        // the record only to commit it.
+        if self.external.route(table.id).is_some() {
             return Ok(Unavailable);
         }
         if self
