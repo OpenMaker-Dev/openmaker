@@ -476,39 +476,40 @@ pub fn words(text: &str) -> Vec<&str> {
 pub fn words_with(text: &str, apostrophes: bool) -> Vec<&str> {
     let chars: Vec<(usize, char)> = text.char_indices().collect();
     let mut words = Vec::new();
-    // The current word: where it starts, where its last character ends, and
-    // its script class.
-    let mut word: Option<(usize, usize, Script)> = None;
+    // The current word: where it starts, where its last character ends, its
+    // script class, and its last letter or digit, which a joiner reads
+    // through the accents after it (`e` + U+0301 + `'` + `t`).
+    let mut word: Option<(usize, usize, Script, char)> = None;
     for (i, &(offset, c)) in chars.iter().enumerate() {
         let end = offset + c.len_utf8();
         match (word_char(c), &mut word) {
-            (WordChar::Word(script), Some((start, last, current))) => {
+            (WordChar::Word(script), Some((start, last, current, base))) => {
                 if *current != script {
                     words.push(&text[*start..*last]);
                     *start = offset;
                     *current = script;
                 }
                 *last = end;
+                *base = c;
             }
-            (WordChar::Word(script), None) => word = Some((offset, end, script)),
-            (WordChar::Extend, Some((_, last, _))) => *last = end,
-            (WordChar::Break, Some((_, last, _)))
+            (WordChar::Word(script), None) => word = Some((offset, end, script, c)),
+            (WordChar::Extend, Some((_, last, _, _))) => *last = end,
+            (WordChar::Break, Some((_, last, _, base)))
                 if *last == offset
                     && chars.get(i + 1).is_some_and(|&(_, after)| {
-                        let before = chars[i - 1].1;
-                        script(before) == script(after) && joins_word(before, c, after, apostrophes)
+                        script(*base) == script(after) && joins_word(*base, c, after, apostrophes)
                     }) =>
             {
                 *last = end;
             }
             (_, current) => {
-                if let Some((start, last, _)) = current.take() {
+                if let Some((start, last, _, _)) = current.take() {
                     words.push(&text[start..last]);
                 }
             }
         }
     }
-    if let Some((start, last, _)) = word {
+    if let Some((start, last, _, _)) = word {
         words.push(&text[start..last]);
     }
     words
@@ -582,6 +583,8 @@ mod tests {
             ["Revoir", "ce", "croquis", "avec", "l", "équipe"]
         );
         assert_eq!(words("avec l'équipe."), ["avec", "l'équipe"]);
+        // A joiner after an accent joins as after its letter.
+        assert_eq!(words("e\u{301}'t\u{e9}"), ["e\u{301}'t\u{e9}"]);
         assert_eq!(words("  Ima  "), ["Ima"]);
         assert!(words("").is_empty());
         assert!(words("- ' .").is_empty());

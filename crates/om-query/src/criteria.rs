@@ -947,22 +947,56 @@ fn is_word_char(c: char) -> bool {
     c.is_alphanumeric()
 }
 
-/// Whether the phrase `text` is in `value` (its characters in lower case).
-fn phrase_matches(text: &[char], anywhere: bool, open_end: bool, value: &[char]) -> bool {
-    if text.is_empty() || text.len() > value.len() {
+/// A value as phrases read it: its characters as [`phrase_chars`] gives
+/// them, and for each place between them (one more than the characters)
+/// whether it lies inside a word of the word index ([`words`]), so that a
+/// phrase starts and ends where the index's words do (`t` is inside
+/// `don't`, `テ` starts a word of `日本語のテキスト`).
+struct PhraseView {
+    chars: Vec<char>,
+    inside: Vec<bool>,
+}
+
+fn phrase_view(form: TextKeys, value: &str) -> PhraseView {
+    // Each word's byte span in `value`.
+    let spans: Vec<(usize, usize)> = words(value)
+        .iter()
+        .map(|w| {
+            let start = w.as_ptr() as usize - value.as_ptr() as usize;
+            (start, start + w.len())
+        })
+        .collect();
+    let mut chars = Vec::new();
+    let mut inside = Vec::new();
+    for (offset, c) in value.char_indices() {
+        let first = chars.len();
+        chars.extend(phrase_chars(form, std::iter::once(c)));
+        let in_word = spans.iter().any(|&(s, e)| s < offset && offset < e);
+        // Between the characters one character lowers to, inside it.
+        inside.extend((first..chars.len()).map(|i| in_word || i > first));
+    }
+    inside.push(false);
+    PhraseView { chars, inside }
+}
+
+/// Whether the phrase `text` is in `value`, starting a word unless
+/// `anywhere`, and ending one when `anywhere` and not `open_end`.
+fn phrase_matches(text: &[char], anywhere: bool, open_end: bool, value: &PhraseView) -> bool {
+    let chars = &value.chars;
+    if text.is_empty() || text.len() > chars.len() {
         return text.is_empty();
     }
     let starts_word = is_word_char(text[0]);
     let ends_word = is_word_char(text[text.len() - 1]);
-    (0..=value.len() - text.len()).any(|start| {
-        if value[start..start + text.len()] != *text {
+    (0..=chars.len() - text.len()).any(|start| {
+        if chars[start..start + text.len()] != *text {
             return false;
         }
-        if !anywhere && starts_word && start > 0 && is_word_char(value[start - 1]) {
+        if !anywhere && starts_word && value.inside[start] {
             return false;
         }
         let end = start + text.len();
-        if anywhere && !open_end && ends_word && end < value.len() && is_word_char(value[end]) {
+        if anywhere && !open_end && ends_word && value.inside[end] {
             return false;
         }
         true
@@ -1120,8 +1154,8 @@ struct ValueWords<'a> {
     words: Vec<&'a str>,
     keys: Vec<Option<Vec<u8>>>,
     units: Vec<Option<KeyedChars>>,
-    /// The value's characters as phrases compare them ([`phrase_chars`]).
-    lowered: Option<Vec<char>>,
+    /// The value as phrases compare it ([`phrase_view`]).
+    lowered: Option<PhraseView>,
 }
 
 impl<'a> ValueWords<'a> {
@@ -1163,9 +1197,7 @@ impl<'a> ValueWords<'a> {
                 open_end,
             } => {
                 let (form, value) = (self.form, self.value);
-                let lowered = self
-                    .lowered
-                    .get_or_insert_with(|| phrase_chars(form, value.chars()));
+                let lowered = self.lowered.get_or_insert_with(|| phrase_view(form, value));
                 phrase_matches(text, *anywhere, *open_end, lowered)
             }
         }
@@ -1653,6 +1685,12 @@ mod tests {
         assert!(text("*\"son & Phillips\"", "Johnson & Phillips"));
         assert!(!text("*\"son & Phillips\"", "Paulson & Philson"));
         assert!(!text("*\"Phil\"", "Phillips") && text("*\"Phil\"*", "Phillips"));
+        // Phrases start and end where the word index's words do (7.1).
+        assert!(!text("\"t\"", "don't") && text("\"don't\"", "don't"));
+        assert!(text(
+            "\"\u{30c6}\u{30ad}\u{30b9}\u{30c8}\"",
+            "\u{65e5}\u{672c}\u{8a9e}\u{306e}\u{30c6}\u{30ad}\u{30b9}\u{30c8}"
+        ));
         // == the whole field, = whole words.
         assert!(text("==John", "John") && !text("==John", "John Smith"));
         assert!(text("==John Smith", "John Smith"));
