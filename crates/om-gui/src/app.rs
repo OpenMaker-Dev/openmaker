@@ -1892,8 +1892,6 @@ impl OpenMakerApp {
             let build = Box::new(build);
             self.request(&ctx, Request::BuildValueList { build, cancel });
         }
-        // A frame that found nothing missing drew only fresh results.
-        self.w.calcs.settle_last_results();
         let needs = self.w.calcs.take_wanted();
         if !needs.is_empty() {
             if self.w.connection_lost.is_some() {
@@ -1911,6 +1909,10 @@ impl OpenMakerApp {
                 );
             }
         }
+        // A frame that sent nothing and waits for nothing drew only fresh
+        // results: needs that failed or wait for an unreachable host are
+        // not sent, and keep no result from before the last change.
+        self.w.calcs.settle_last_results();
         // What waits for a related file's unreachable host is asked again
         // then (#740): draw again at that time.
         if let Some(at) = self.w.calcs.retry_at() {

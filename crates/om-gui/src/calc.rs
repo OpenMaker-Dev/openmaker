@@ -197,6 +197,10 @@ pub(crate) struct ObjectCalcState {
     /// A shown button bar's active segment calculation (layout-model.md
     /// 5.5); `None` without one.
     pub active_segment: Option<SegmentName>,
+    /// Drawn before the last change and kept while its data is read again
+    /// ([`Evaluator::object_state_in_portal`]): what decides the object's
+    /// clicks and focus is not known yet.
+    pub kept: bool,
 }
 
 /// What a button bar's active segment calculation gave: the object name of
@@ -235,6 +239,20 @@ struct LastResults {
     merge_values: HashMap<MergeKey, SessionResult<Value>>,
     group_values: HashMap<GroupKey, SessionResult<Value>>,
 }
+
+impl LastResults {
+    fn len(&self) -> usize {
+        self.states.len()
+            + self.values.len()
+            + self.named_values.len()
+            + self.merge_values.len()
+            + self.group_values.len()
+    }
+}
+
+/// How many results [`LastResults`] holds at most before a change: a few
+/// pages of a large layout's objects.
+const MAX_KEPT_RESULTS: usize = 65_536;
 
 /// A portal's displayed related records, keyed by (layout, portal object,
 /// parent record), with whether they read the session (its filter's or
@@ -524,6 +542,11 @@ impl Calculations {
     /// its data), variables and the mode.
     fn keep_last_results(&self) {
         let mut last = self.last.borrow_mut();
+        // Bounded however long a read stays outstanding: past the bound
+        // only the results drawn since the previous change are kept.
+        if last.len() > MAX_KEPT_RESULTS {
+            *last = LastResults::default();
+        }
         last.states.extend(self.states.borrow_mut().drain());
         last.values.extend(self.values.borrow_mut().drain());
         last.named_values
@@ -534,9 +557,10 @@ impl Calculations {
             .extend(self.group_values.borrow_mut().drain());
     }
 
-    /// A frame was drawn and its needs are about to be asked for: when it
-    /// found nothing missing and nothing is on its way, every result it
-    /// drew is fresh, and those kept from before the last change go.
+    /// A frame was drawn and its needs were asked for
+    /// ([`Self::take_wanted`]): when none was and nothing is on its way,
+    /// every result it drew is fresh, and those kept from before the last
+    /// change go.
     pub fn settle_last_results(&mut self) {
         if !self.awaiting_data() {
             *self.last.get_mut() = LastResults::default();
@@ -2589,7 +2613,10 @@ impl<'a> Evaluator<'a> {
                 // Read again: the state drawn last.
                 let key = (self.layout, object.id, record, portal);
                 let last = self.calcs.last.borrow();
-                last.states.get(&key).map(|cached| cached.calc.clone())
+                last.states.get(&key).map(|cached| ObjectCalcState {
+                    kept: true,
+                    ..cached.calc.clone()
+                })
             })
     }
 
@@ -2725,6 +2752,7 @@ impl<'a> Evaluator<'a> {
             visibility,
             state,
             active_segment,
+            kept: false,
         };
         self.calcs.states.borrow_mut().insert(
             key,
