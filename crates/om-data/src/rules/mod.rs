@@ -1521,7 +1521,7 @@ struct Expression {
     /// whether a self-join's answer depends on the written record (#1035).
     uses: BTreeMap<u64, Uses>,
     /// Fields among [`Self::dependencies`] it does not read itself: the
-    /// inputs of the unstored calculations it reads ([`unstored_inputs`]).
+    /// inputs of the unstored calculations it reads ([`UnstoredGraph::reads`]).
     /// A change of one evaluates an auto-entered formula again, as one of
     /// its own (script oracle s44), but they are not among the fields its
     /// "Do not evaluate if all referenced fields are empty" looks at.
@@ -1610,7 +1610,7 @@ impl RecordPlan {
         let mut fields = BTreeMap::new();
         let mut contexts = BTreeSet::new();
         // The table's unstored calculations a formula of the table may read
-        // (`unstored_inputs`), or why one cannot be evaluated for a write.
+        // (`UnstoredGraph`), or why one cannot be evaluated for a write.
         let mut unstored_formulas: BTreeMap<u64, Result<Expression, String>> = BTreeMap::new();
         for field in &table.fields {
             let error = |reason: &str| DataError::new(format!("Field {}: {reason}", field.name));
@@ -2035,9 +2035,9 @@ impl RecordPlan {
             .collect();
         // The inputs of the unstored calculations each auto-entered
         // (`true`) or validation (`false`) formula reads, by field, and
-        // each calculation's own (`unstored_inputs`).
+        // each calculation's own (`UnstoredGraph`).
         let mut through: BTreeMap<(u64, bool), UnstoredReads> = BTreeMap::new();
-        let mut known = BTreeMap::new();
+        let mut unstored = UnstoredGraph::new(&unstored_formulas, &schema, table.id);
         for (id, field) in &fields {
             // A stored calculation's formula, or an auto-entered or
             // validation formula, which may read a global field (5.17).
@@ -2073,21 +2073,16 @@ impl RecordPlan {
                     // FileMaker evaluates it (script oracle s44); a stored
                     // calculation over one would be unstored itself.
                     if !calculation && !global && def.is_some_and(|d| d.is_unstored_calculation()) {
-                        let reads = unstored_inputs(
-                            *dependency,
-                            &unstored_formulas,
-                            &schema,
-                            table.id,
-                            &mut Vec::new(),
-                            &mut known,
-                        )
-                        .map_err(|reason| {
-                            DataError::new(format!(
+                        let reads =
+                            unstored
+                                .reads(*dependency, &mut Vec::new())
+                                .map_err(|reason| {
+                                    DataError::new(format!(
                                 "Field {}: it reads an unstored calculation a write cannot \
                                  evaluate: {reason}",
                                 field.name
                             ))
-                        })?;
+                                })?;
                         let entry = through.entry((*id, own)).or_default();
                         entry.inputs.extend(reads.inputs);
                         entry.calculations.extend(reads.calculations);
@@ -4944,120 +4939,166 @@ impl Expression {
     }
 }
 
-/// The fields of `table` that its unstored calculation `id` reads, through
-/// the unstored calculations it reads in turn (`formulas`, parsed as stored
-/// formulas): an auto-entered formula reading `id` is evaluated again when
-/// one of them changes, as FileMaker Server's script engine evaluates it
-/// (auto-entry.md, "Formulas over an unstored calculation"). Refused, with
-/// the reason, when `id` cannot be evaluated on a write's record: it reads
-/// another occurrence, a global, summary or container field, a missing
-/// field, `Get` functions a write does not answer, a custom function that
-/// reads fields, or itself. Each calculation's answer is kept in `known`,
-/// so that one many calculations read is followed once: a shared graph of
-/// them is planned in time linear in its edges, not in its paths.
-fn unstored_inputs(
-    id: u64,
-    formulas: &BTreeMap<u64, Result<Expression, String>>,
-    schema: &CalcSchema,
+/// How many fields and calculations the unstored readings of one plan
+/// may hold together ([`UnstoredGraph`]): a hostile file's graph of
+/// unstored calculations is refused rather than planned without bound.
+const MAX_UNSTORED_READS: usize = 1 << 20;
+
+/// The table's unstored calculations a write's formulas may read, as they
+/// read each other ([`Self::reads`]).
+struct UnstoredGraph<'a> {
+    /// Each one's formula parsed as a stored formula, or why it cannot be.
+    formulas: &'a BTreeMap<u64, Result<Expression, String>>,
+    schema: &'a CalcSchema,
     table: u64,
-    stack: &mut Vec<u64>,
-    known: &mut BTreeMap<u64, Result<UnstoredReads, String>>,
-) -> Result<UnstoredReads, String> {
-    if let Some(answer) = known.get(&id) {
-        return answer.clone();
-    }
-    let answer = unstored_inputs_of(id, formulas, schema, table, stack, known);
-    known.insert(id, answer.clone());
-    answer
+    /// Each calculation's answer, so that one many calculations read is
+    /// followed once.
+    known: BTreeMap<u64, Result<UnstoredReads, String>>,
+    /// What [`MAX_UNSTORED_READS`] leaves to hand out.
+    budget: usize,
 }
 
-/// [`unstored_inputs`] of a calculation not followed yet.
-fn unstored_inputs_of(
-    id: u64,
-    formulas: &BTreeMap<u64, Result<Expression, String>>,
-    schema: &CalcSchema,
-    table: u64,
-    stack: &mut Vec<u64>,
-    known: &mut BTreeMap<u64, Result<UnstoredReads, String>>,
-) -> Result<UnstoredReads, String> {
-    let fields = schema
-        .table(table)
-        .map(|t| &t.fields)
-        .ok_or("its table is missing.")?;
-    let def = fields.get(&id).ok_or("a field it reads is missing.")?;
-    if stack.contains(&id) {
-        return Err(format!("Field {} reads itself.", def.name));
-    }
-    // Bounded like a formula's own nesting.
-    if stack.len() >= MAX_DEPTH {
-        return Err("unstored calculations read each other too deeply.".into());
-    }
-    let expression = match formulas.get(&id) {
-        Some(Ok(expression)) => expression,
-        Some(Err(reason)) => return Err(reason.clone()),
-        None => return Err(format!("Field {} cannot be evaluated.", def.name)),
-    };
-    // Evaluated from an occurrence of its own table, as the formulas that
-    // read it; one the schema lacks is added once a reader is planned.
-    let context = expression.formula.occurrence();
-    if let Some(occurrence) = context.and_then(|o| schema.occurrence(o)) {
-        if occurrence.table != table {
-            return Err(format!(
-                "Field {} is evaluated from another table's occurrence.",
-                def.name
-            ));
+impl<'a> UnstoredGraph<'a> {
+    fn new(
+        formulas: &'a BTreeMap<u64, Result<Expression, String>>,
+        schema: &'a CalcSchema,
+        table: u64,
+    ) -> Self {
+        Self {
+            formulas,
+            schema,
+            table,
+            known: BTreeMap::new(),
+            budget: MAX_UNSTORED_READS,
         }
     }
-    check_custom_functions(
-        schema,
-        &expression.formula.polish,
-        false,
-        &mut BTreeSet::new(),
-    )
-    .map_err(|reason| format!("Field {}: {reason}", def.name))?;
-    stack.push(id);
-    let mut reads = UnstoredReads {
-        inputs: BTreeSet::new(),
-        calculations: BTreeSet::from([id]),
-        contexts: context
-            .filter(|o| schema.occurrence(*o).is_none())
-            .into_iter()
-            .collect(),
-    };
-    for dependency in &expression.dependencies {
-        let input = fields
-            .get(dependency)
-            .ok_or_else(|| format!("Field {} references an unavailable field.", def.name))?;
-        if input.global
-            || input.class == crate::host::FieldClass::Summary
-            || input.value_type == ValueType::Container
-        {
-            return Err(format!(
-                "Field {} reads a global, summary or container field.",
-                def.name
-            ));
+
+    /// The fields of the table that its unstored calculation `id` reads,
+    /// through the unstored calculations it reads in turn, below the
+    /// calculations of `stack`: an auto-entered formula reading `id` is
+    /// evaluated again when one of them changes, as FileMaker Server's
+    /// script engine evaluates it (auto-entry.md, "Formulas over an
+    /// unstored calculation or a summary field"). Refused, with the reason,
+    /// when `id` cannot be evaluated on a write's record: it reads another
+    /// occurrence, a global, summary or container field, a missing field,
+    /// `Get` functions a write does not answer, a custom function that
+    /// reads fields, or itself; when the chain of calculations is deeper
+    /// than the calculation host evaluates them (`MAX_READ_DEPTH`, where
+    /// they would read `?`); or past [`MAX_UNSTORED_READS`].
+    fn reads(&mut self, id: u64, stack: &mut Vec<u64>) -> Result<UnstoredReads, String> {
+        let answer = match self.known.get(&id) {
+            Some(answer) => answer.clone(),
+            None => {
+                let answer = self.reads_of(id, stack);
+                self.known.insert(id, answer.clone());
+                answer
+            }
+        }?;
+        // A kept answer is checked against this reader's own chain too.
+        if stack.len() + answer.depth > crate::host::MAX_READ_DEPTH as usize {
+            return Err(
+                "unstored calculations read each other more deeply than a write \
+                        evaluates them."
+                    .into(),
+            );
         }
-        if input.is_unstored_calculation() {
-            let read = unstored_inputs(*dependency, formulas, schema, table, stack, known)?;
-            reads.inputs.extend(read.inputs);
-            reads.calculations.extend(read.calculations);
-            reads.contexts.extend(read.contexts);
-        } else {
-            reads.inputs.insert(*dependency);
-        }
+        let size = answer.inputs.len() + answer.calculations.len() + answer.contexts.len();
+        self.budget = self.budget.checked_sub(size).ok_or_else(|| {
+            "the table's unstored calculations read each other too widely to plan.".to_owned()
+        })?;
+        Ok(answer)
     }
-    stack.pop();
-    Ok(reads)
+
+    /// [`Self::reads`] of a calculation not followed yet.
+    fn reads_of(&mut self, id: u64, stack: &mut Vec<u64>) -> Result<UnstoredReads, String> {
+        let schema = self.schema;
+        let fields = schema
+            .table(self.table)
+            .map(|t| &t.fields)
+            .ok_or("its table is missing.")?;
+        let def = fields.get(&id).ok_or("a field it reads is missing.")?;
+        if stack.contains(&id) {
+            return Err(format!("Field {} reads itself.", def.name));
+        }
+        if stack.len() >= crate::host::MAX_READ_DEPTH as usize {
+            return Err(
+                "unstored calculations read each other more deeply than a write \
+                        evaluates them."
+                    .into(),
+            );
+        }
+        let expression = match self.formulas.get(&id) {
+            Some(Ok(expression)) => expression,
+            Some(Err(reason)) => return Err(reason.clone()),
+            None => return Err(format!("Field {} cannot be evaluated.", def.name)),
+        };
+        // Evaluated from an occurrence of its own table, as the formulas
+        // that read it; one the schema lacks is added once a reader is
+        // planned.
+        let context = expression.formula.occurrence();
+        if let Some(occurrence) = context.and_then(|o| schema.occurrence(o)) {
+            if occurrence.table != self.table {
+                return Err(format!(
+                    "Field {} is evaluated from another table's occurrence.",
+                    def.name
+                ));
+            }
+        }
+        check_custom_functions(
+            schema,
+            &expression.formula.polish,
+            false,
+            &mut BTreeSet::new(),
+        )
+        .map_err(|reason| format!("Field {}: {reason}", def.name))?;
+        stack.push(id);
+        let mut reads = UnstoredReads {
+            inputs: BTreeSet::new(),
+            calculations: BTreeSet::from([id]),
+            contexts: context
+                .filter(|o| schema.occurrence(*o).is_none())
+                .into_iter()
+                .collect(),
+            depth: 1,
+        };
+        for dependency in &expression.dependencies {
+            let input = fields
+                .get(dependency)
+                .ok_or_else(|| format!("Field {} references an unavailable field.", def.name))?;
+            if input.global
+                || input.class == crate::host::FieldClass::Summary
+                || input.value_type == ValueType::Container
+            {
+                return Err(format!(
+                    "Field {} reads a global, summary or container field.",
+                    def.name
+                ));
+            }
+            if input.is_unstored_calculation() {
+                let read = self.reads(*dependency, stack)?;
+                reads.inputs.extend(read.inputs);
+                reads.calculations.extend(read.calculations);
+                reads.contexts.extend(read.contexts);
+                reads.depth = reads.depth.max(read.depth + 1);
+            } else {
+                reads.inputs.insert(*dependency);
+            }
+        }
+        stack.pop();
+        Ok(reads)
+    }
 }
 
-/// What [`unstored_inputs`] gives: the stored fields an unstored
+/// What [`UnstoredGraph::reads`] gives: the stored fields an unstored
 /// calculation reads, the unstored calculations on the way, itself
-/// included, and their context occurrences the schema lacks.
+/// included, their context occurrences the schema lacks, and how many
+/// calculations deep its longest chain is.
 #[derive(Clone, Debug, Default)]
 struct UnstoredReads {
     inputs: BTreeSet<u64>,
     calculations: BTreeSet<u64>,
     contexts: BTreeSet<u64>,
+    depth: usize,
 }
 
 /// Custom functions must obey the same record-only limits as their callers.
@@ -7070,13 +7111,13 @@ mod tests {
     }
 
     /// A ladder of unstored calculations that each read both of the level
-    /// below has 2^40 paths over 80 fields: planning a formula over its top
+    /// below has 2^30 paths over 60 fields: planning a formula over its top
     /// follows each calculation once (a hostile file must not hang it).
     #[test]
     fn a_shared_graph_of_unstored_calculations_is_followed_once() {
         let mut table = table();
         table.fields.retain(|f| f.id <= 2);
-        let levels = 40u64;
+        let levels = 30u64;
         let mut formulas = Vec::new();
         let sources: Vec<String> = (0..levels)
             .flat_map(|level| {
@@ -7107,10 +7148,48 @@ mod tests {
             .push(field(300, FieldKind::Normal, DataType::Text, 0, 0x88, 0));
         let top = format!("Field{}", 100 + 2 * (levels - 1));
         formulas.push((300, 5, top.as_str()));
-        // Planning only: the top's value would double its text 40 times.
+        // Planning only: the top's value would double its text 30 times.
         let started = std::time::Instant::now();
         assert!(plan_of(&table, &formulas, &[]).is_ok());
         assert!(started.elapsed() < std::time::Duration::from_secs(10));
+    }
+
+    /// A chain of unstored calculations deeper than the calculation host
+    /// evaluates them is refused, also where a formula read part of it
+    /// first: 20 calculations, read by one formula, then 15 more over them
+    /// read by another (35 deep).
+    #[test]
+    fn a_chain_of_unstored_calculations_deeper_than_evaluated_is_refused() {
+        let mut table = table();
+        table.fields.retain(|f| f.id <= 2);
+        let mut sources = Vec::new();
+        for i in 0..35u64 {
+            let id = 100 + i;
+            table.fields.push(field(
+                id,
+                FieldKind::Calculation,
+                DataType::Text,
+                0,
+                UNSTORED,
+                0,
+            ));
+            let below = if i == 0 { 1 } else { id - 1 };
+            sources.push((id, format!("Field{below} & \"!\"")));
+        }
+        table
+            .fields
+            .push(field(50, FieldKind::Normal, DataType::Text, 0, 0x88, 0));
+        let mut formulas: Vec<(u64, u64, &str)> =
+            sources.iter().map(|(id, s)| (*id, 5, s.as_str())).collect();
+        formulas.push((50, 5, "Field119"));
+        let shallow = plan_of(&table, &formulas, &[]);
+        assert!(shallow.is_ok(), "{:?}", shallow.err());
+        table
+            .fields
+            .push(field(300, FieldKind::Normal, DataType::Text, 0, 0x88, 0));
+        formulas.push((300, 5, "Field134"));
+        let refused = plan_of(&table, &formulas, &[]).err().unwrap();
+        assert!(refused.to_string().contains("more deeply"), "{refused}");
     }
 
     #[test]

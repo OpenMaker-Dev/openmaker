@@ -704,7 +704,10 @@ read: one that reads another occurrence, a global, summary or container
 field, a `Get` function only the write's operation answers, a custom
 function that reads fields, or another unstored calculation that does,
 keeps the table read-only, as a summary field read by such a formula
-still does.
+still does; so does a chain of unstored calculations more than 32 deep,
+past which the calculation host reads them as `?`. A preview treats a
+formula over a calculation that draws `Random`, the clock or a UUID, and
+a skip that calculation's value decides, as not known until the commit.
 
 **A custom message** is shown for any rule of its field that a write
 breaks, not empty included. One stored as a calculation (`0x8000` with
