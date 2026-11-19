@@ -136,7 +136,6 @@ impl ViewMode {
     }
 }
 
-/// Step ids of the commands that run as a single step.
 /// Where keys a keyboard commit held for the next frame were typed
 /// (`OpenMakerApp::shortcuts`): the window's file, mode, layout and record,
 /// and the active field.
@@ -161,6 +160,7 @@ fn edits_text(event: &egui::Event) -> bool {
     )
 }
 
+/// Step ids of the commands that run as a single step.
 pub(crate) mod steps {
     pub const UNSORT: u16 = 21;
     pub const SHOW_ALL: u16 = 23;
