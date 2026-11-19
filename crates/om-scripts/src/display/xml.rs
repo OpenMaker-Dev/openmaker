@@ -101,6 +101,7 @@ fn read_step(element: &Element, names: &dyn StepNames) -> Read<ScriptStep> {
         // Its data source and query are not in FileMaker's XML.
         return Err("Execute SQL's query is not in FileMaker's XML".into());
     }
+    super::text::refuse_pending(id)?;
     let mut reader = StepReader {
         names,
         step: ScriptStep::new(id),

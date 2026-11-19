@@ -1444,9 +1444,9 @@ record ids are the calculation in slot 7; `LayoutReferenceContainer` is
 window as Go to Related Record's (11.8): name slot 0, height, width, top,
 left slots 1-4, style word `[00 0, 03]`. Turning New Window off in a local
 Pro 26.0.3 file cleared `0x20000` but left the old slot-0 name calculation
-in place; slot 7 still held the record ids [O: [#189](https://github.com/OpenMaker-Dev/openmaker/issues/189)]. OpenMaker reads the
-ids from slot 0 and the new window from `0x100`, which is wrong ([#189](https://github.com/OpenMaker-Dev/openmaker/issues/189)); its
-layout and animation slots are right.
+in place; slot 7 still held the record ids [O: [#189](https://github.com/OpenMaker-Dev/openmaker/issues/189)]. So the flag, not
+slot 0, asks for the new window [I]. What the step does at run time (the
+window it opens, ids that are not records) is unmeasured.
 
 **Configure Persistent Data (238)** [O; V1 `SetPersistentData`
 0x4f4c0a/0x4f4a1c]: `PersistentStore` with `Name value` = the key as text
@@ -1611,10 +1611,13 @@ ProcessGoogleImageEmbedding` and the task-type strings).
 above with error 4 (script-runtime.md 2.5); it has no reader for the new
 slots, flags and bytes [I: none of its serializers names them].
 
+**Clients.** 26.1.1's step compatibility table gives 249 and 250 every
+client (0x7e) and 248 none (script-runtime.md 10.1) (obs).
+
 Unknowns: a step of each kind written by FileMaker Pro 26.1.1, read back;
 whether 26.0.3 keeps the new slots and bytes when it rewrites such a step;
-Go to Related Record's layout storage with `0x400`; the runtime of 249 and
-250 on FileMaker Server and in WebDirect (no compatibility row yet).
+Go to Related Record's layout storage with `0x400`; how 249 and 250 run on
+FileMaker Server and in WebDirect (the table allows them; not run).
 
 ## Implementation notes (import/export)
 
@@ -2958,8 +2961,8 @@ does not map, a calculation that does not compile, or when `Options` says
 the step holds data the XML did not give: a calculation, field, layout or
 table, script, text, paths, file reference, stored spec, or a list choice
 with no choice element. FileMaker's writer leaves out what a step's
-choices do not use, and always leaves out Go to List of Records' record
-ids and Execute SQL's query. Not read (they fail): plug-in steps (186),
+choices do not use, and always leaves out Execute SQL's query. Not read
+(they fail): plug-in steps (186),
 Send Event, Send Mail, Speak, Perform AppleScript, Perform Find/Replace,
 Insert File's options, Import and Export orders, Save Records as Excel and
 PDF options, Print PDF, Insert from Device, the AVPlayer play and option

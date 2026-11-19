@@ -106,6 +106,17 @@ pub fn logged_in(port: u16, name: &str) -> (Session, u32) {
 
 /// [`logged_in`] to the hosted file `file`.
 pub fn logged_in_to(port: u16, name: &str, file: &str) -> (Session, u32) {
+    logged_in_as(port, name, file, ACCOUNT, PASSWORD)
+}
+
+/// [`logged_in_to`] as `account` with `password`.
+pub fn logged_in_as(
+    port: u16,
+    name: &str,
+    file: &str,
+    account: &str,
+    password: &str,
+) -> (Session, u32) {
     let client = rcgen::generate_simple_self_signed(vec!["client".to_string()]).unwrap();
     let mut session = Session::connect(
         "127.0.0.1",
@@ -126,7 +137,7 @@ pub fn logged_in_to(port: u16, name: &str, file: &str) -> (Session, u32) {
     );
     let environment = LoginEnvironment::for_remote_file("127.0.0.1", file);
     let login = session
-        .login(ACCOUNT, PASSWORD, INTERNAL_CREATION, &environment)
+        .login(account, password, INTERNAL_CREATION, &environment)
         .unwrap();
     assert!(login.is_success(), "{login:?}");
     let register = om_protocol::build_request_notification(

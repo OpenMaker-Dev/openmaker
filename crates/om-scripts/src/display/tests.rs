@@ -606,10 +606,16 @@ fn pasted_text_stores_what_filemaker_shows() {
         "Truncate Table [ With dialog: On ; Table: “Contacts” ]",
         "Import Records [ With dialog: On ; Source: “file:a.csv” ]",
         "New Window [ Style: Card ; Name: \"c\" ]",
+        "Go to List of Records [ List of record IDs: \"1¶2\" ; Using layout: “Contact Details” (Contacts) ; New window ]",
     ];
     for line in lines {
         assert_eq!(shown(&pasted(line)), line);
     }
+    // Go to List of Records: the ids in slot 7, a new window under
+    // `kTurnOn` (script-steps.md 12.2).
+    let list = pasted(lines[10]);
+    assert!(list.calculation(7).is_some() && list.calculation(0).is_none());
+    assert!(list.has_flag(flag::TURN_ON) && !list.has_flag(flag::OPTION));
     // Insert Text's text is slot 0.
     let text = pasted(lines[0]);
     assert_eq!((text.text(0).as_deref(), text.text(1)), (Some("x"), None));
@@ -689,6 +695,29 @@ fn lines_that_do_not_read_are_kept_as_disabled_comments() {
         panic!("{:?}", pasted[2]);
     };
     assert_eq!(layout.member_key().and_then(|k| k.id()), Some(3));
+    // A step OpenMaker cannot yet edit or run is not made from text or
+    // XML (#338).
+    for text in [
+        "Set Variable by Name",
+        r#"<fmxmlsnippet type="FMObjectList"><Step id="249" name="Replace Field Contents by Name"/></fmxmlsnippet>"#,
+    ] {
+        let pasted = parse_steps(text, &names, Origin::Unknown).unwrap();
+        assert!(
+            matches!(&pasted[..], [Pasted::Failed { reason, .. }] if reason.contains("cannot make")),
+            "{pasted:?}"
+        );
+    }
+    // Its text as OpenMaker writes it, stored bytes included, reads back.
+    let mut stored = ScriptStep::new(250);
+    stored.set_calculation(3, Some(&calc(&names, "\"$x\"")));
+    let text = step_text(&stored, &names);
+    for origin in [Origin::ThisFile, Origin::Unknown] {
+        let pasted = parse_steps(&text, &names, origin).unwrap();
+        assert!(
+            matches!(&pasted[..], [Pasted::Step(step)] if step.id() == 250),
+            "{text}: {pasted:?}"
+        );
+    }
     let comment = failed_comment("Not a step");
     assert!(!comment.is_enabled());
     assert_eq!(comment.text(0).as_deref(), Some("Not a step"));

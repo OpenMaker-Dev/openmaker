@@ -1096,6 +1096,14 @@ Animation, Open/Commit/Revert Transaction, Set Revert Transaction on Error).
 (no caller in the server build; inf: the Script Workspace uses it to grey
 out steps).
 
+FileMaker Pro's Mac `FMEngine` holds the same table: 26.0.3's x86_64 slice
+at file offset `0x8a7dd0`, with the 248 values of libFMEngine's, and
+26.1.1's (SHA-256 `e306cd52...`) at `0x8d7d80` with 251 (obs, 2026-11-19:
+found by those values). In 26.1.1, 248 is 0 (no client), 249 Replace Field
+Contents by Name and 250 Set Variable by Name are 0x7e (every client), and
+96 Save a Copy as Add-on Package gains the Server bit (0x0e; Claris: it
+runs on FileMaker Server in 26.1.1); the other 247 are unchanged.
+
 The `IsServerCompatible`, `IsWebDirectCompatible`, `IsCustomWebCompatible`
 and `IsWebCompatible` functions (0xe86920 etc.) do not test a step: they
 test the global `ScriptStep::m_Compatibility` (0x12d9634), the platform the
@@ -3738,7 +3746,13 @@ Steps
   given or after the current window plus " - 2" (" - 3" when taken;
   OpenMaker's choice beyond the engine's one answer), with a layout going
   there with OnLayoutEnter; Select Window makes a named window current
-  (names matched front to back, duplicates allowed); Close Window commits
+  (names matched front to back, as given and then without case,
+  duplicates allowed, then `Get ( WindowUUID )`s, each in every open file
+  before the next, as 9.2 documents; over a dialog only the dialog itself
+  may be the window found; Close Window, Set Window Title and Move/Resize Window match
+  this file's windows the same way, which Claris does not state for them
+  ([#320](https://github.com/OpenMaker-Dev/openmaker/issues/320)), and
+  letters beyond ASCII fold as Unicode lowercase [I]); Close Window commits
   the window's record, closes it and makes the window current before it
   current again (closing another window keeps the current one); 112 for a
   name no window has. Closing the file's last window closes the file

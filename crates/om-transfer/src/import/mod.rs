@@ -21,6 +21,21 @@
 //! others. Afterwards the found set holds the records added and updated
 //! (all of the found set for an update of the found set).
 //!
+//! "Preserve target field data if source field is empty" (FileMaker
+//! 26.1.1, flag `0x40`): an update leaves a field whose source value is
+//! empty as it is and still writes the row's other values (Claris). Which
+//! values count is inferred, unmeasured on FileMaker: an empty text or a
+//! missing column, repetition by repetition; a record the import adds is
+//! written in full, as without the option. With "perform auto-enter
+//! options" too, an update fails with error 3 before any row: an imported
+//! field's write is what keeps auto-entry from replacing it, so a field
+//! left unwritten could have a calculation or lookup overwrite the very
+//! value the option keeps (how FileMaker orders the two is unmeasured).
+//! The refusal reads only the step's own options, so no schema change
+//! during the import and no column the source lacks can get past it. An
+//! import with a flag OpenMaker does not know fails with error 3 before
+//! any row.
+//!
 //! Entry options. With "perform auto-enter options" fields that are not
 //! imported get their auto-entered values; an imported field keeps the
 //! imported value (empty too). Validation set to "always" is checked and a
@@ -173,8 +188,10 @@ impl ImportSummary {
 /// FileMaker would: "Split repeating values into separate records"
 /// (FileMaker Server's split of a text source kept only each field's first
 /// repetition and left others empty, oracle x02 `i_split`; not reproduced)
-/// and an import into a new table (`FieldFlags::new_table`; OpenMaker
-/// creates no table).
+/// an import into a new table (`FieldFlags::new_table`; OpenMaker
+/// creates no table), "Preserve target field data" in an update that
+/// performs auto-enter options (module docs), and option flags OpenMaker
+/// does not know.
 pub fn refuse_unsupported(options: &ImportOptions, field_flags: Option<&FieldFlags>) -> Result<()> {
     if options.has(import_flag::SPLIT_REPETITIONS) {
         return Err(TransferError::new(
@@ -186,6 +203,26 @@ pub fn refuse_unsupported(options: &ImportOptions, field_flags: Option<&FieldFla
         return Err(TransferError::new(
             code::UNAVAILABLE,
             "Importing into a new table is not supported.",
+        ));
+    }
+    // "Preserve target field data" with auto-entry in an update (module
+    // docs), and options OpenMaker does not know.
+    if options.has(import_flag::PRESERVE_TARGET)
+        && options.has(import_flag::AUTO_ENTER)
+        && options.action != ImportAction::Add
+    {
+        return Err(TransferError::new(
+            code::UNAVAILABLE,
+            "Preserving target data while performing auto-enter options is not supported.",
+        ));
+    }
+    if options.flags & !import_flag::KNOWN != 0 {
+        return Err(TransferError::new(
+            code::UNAVAILABLE,
+            format!(
+                "Import option flags {:#04x} are not supported.",
+                options.flags & !import_flag::KNOWN
+            ),
         ));
     }
     Ok(())
@@ -316,6 +353,7 @@ pub fn import_rows(
     let columns = map_columns(options, &source, &fields);
     let auto_enter = options.has(import_flag::AUTO_ENTER);
     let add_remaining = options.has(import_flag::ADD_REMAINING);
+    let preserve = options.has(import_flag::PRESERVE_TARGET);
     let mut summary = ImportSummary {
         total: source.rows.len(),
         ..ImportSummary::default()
@@ -327,7 +365,9 @@ pub fn import_rows(
         .enumerate()
         .filter_map(|(i, c)| Some((i, c.as_ref()?)))
         .collect();
-    let writes_of = |row: &SourceRow, with_match: bool| -> Vec<FieldWrite> {
+    // `existing`: the writes update a record (module docs, "Preserve
+    // target field data").
+    let writes_of = |row: &SourceRow, with_match: bool, existing: bool| -> Vec<FieldWrite> {
         let mut out = Vec::new();
         for &(i, t) in &mapped {
             if t.matching && !with_match {
@@ -339,6 +379,9 @@ pub fn import_rows(
                 let text = values.get(r).cloned().unwrap_or_default();
                 if reps == 1 && r > 0 {
                     break;
+                }
+                if preserve && existing && text.is_empty() {
+                    continue;
                 }
                 out.push(FieldWrite {
                     field: t.field.id,
@@ -373,7 +416,7 @@ pub fn import_rows(
                 if target.interrupted() {
                     return Err(crate::interrupted());
                 }
-                let writes = writes_of(row, true);
+                let writes = writes_of(row, true, false);
                 add(target, &mut summary, &mut found, i, &writes);
             }
         }
@@ -383,17 +426,22 @@ pub fn import_rows(
                 if target.interrupted() {
                     return Err(crate::interrupted());
                 }
-                let writes = writes_of(row, true);
                 match records.get(i) {
-                    Some(&record) => match target.update(occurrence, record, &writes, auto_enter) {
-                        Ok(()) => summary.updated += 1,
-                        Err(e) => summary.errors.push(RowError {
-                            row: first_row + i,
-                            code: e.code,
-                            message: e.message,
-                        }),
-                    },
-                    None if add_remaining => add(target, &mut summary, &mut found, i, &writes),
+                    Some(&record) => {
+                        let writes = writes_of(row, true, true);
+                        match target.update(occurrence, record, &writes, auto_enter) {
+                            Ok(()) => summary.updated += 1,
+                            Err(e) => summary.errors.push(RowError {
+                                row: first_row + i,
+                                code: e.code,
+                                message: e.message,
+                            }),
+                        }
+                    }
+                    None if add_remaining => {
+                        let writes = writes_of(row, true, false);
+                        add(target, &mut summary, &mut found, i, &writes);
+                    }
                     None => break,
                 }
             }
@@ -447,14 +495,14 @@ pub fn import_rows(
                 let matches = by_key.get(&row_key).map_or(&[][..], Vec::as_slice);
                 if matches.is_empty() {
                     if add_remaining {
-                        let writes = writes_of(row, true);
+                        let writes = writes_of(row, true, false);
                         add(target, &mut summary, &mut found, i, &writes);
                     }
                     continue;
                 }
                 // With "add remaining" a matched record takes the row's
                 // match values too (`alpha` over `Alpha`, oracle x04).
-                let writes = writes_of(row, add_remaining);
+                let writes = writes_of(row, add_remaining, true);
                 for &record in matches {
                     match target.update(occurrence, record, &writes, auto_enter) {
                         Ok(()) => {
