@@ -99,6 +99,8 @@ section{border-top:1px solid var(--border);padding:88px 0;position:relative}
 .section-head h2,.open-head h2{font-size:clamp(32px,4vw,48px);letter-spacing:-.03em;font-weight:600;line-height:1.05;margin-bottom:18px;text-wrap:balance}
 .section-head p{color:var(--fg-muted);font-size:18px;letter-spacing:-.005em;max-width:640px}
 .section-head p code,.muted code{font-size:.88em;color:var(--fg);background:var(--tint-2);border:1px solid var(--border);border-radius:5px;padding:1px 5px}
+.section-head p+p{margin-top:14px;font-size:15px;color:var(--fg-dim)}
+.section-head p a{color:var(--fg);text-decoration:underline;text-decoration-color:var(--border-strong);text-underline-offset:3px}
 .checklist{display:flex;flex-wrap:wrap;gap:12px 28px;list-style:none}
 .checklist li{display:flex;align-items:center;gap:9px;color:var(--fg-muted);font-size:14px}
 .checklist svg{color:var(--ok);flex:none}
@@ -200,7 +202,7 @@ section{border-top:1px solid var(--border);padding:88px 0;position:relative}
 .calc-note{margin-top:16px;font-size:13px;color:var(--fg-dim)}
 .meter{margin-top:18px}
 .meter-bar{height:8px;border-radius:999px;background:var(--meter-track);overflow:hidden}
-.meter-bar i{display:block;height:100%;width:70%;border-radius:inherit;background:linear-gradient(90deg,#b84a0b,#f0782f)}
+.meter-bar i{display:block;height:100%;width:61%;border-radius:inherit;background:linear-gradient(90deg,#b84a0b,#f0782f)}
 .meter-label{display:flex;justify-content:space-between;margin-top:8px;font-family:var(--font-mono);font-size:11px;color:var(--fg-dim)}
 .meter-label b{color:var(--fg);font-weight:600}
 .snippet{margin-top:16px;padding:12px 14px;border-radius:8px;background:var(--bg-elev);border:1px solid var(--border);font-family:var(--font-mono);font-size:12px;line-height:1.6;color:var(--fg-muted)}
@@ -561,7 +563,7 @@ section{border-top:1px solid var(--border);padding:88px 0;position:relative}
         <span class="eyebrow">om-scripts</span>
         <h3>Scripts and triggers</h3>
         <p>Control flow, errors, variables, transactions and triggers. A step OpenMaker can't run yet fails with error&nbsp;3, as FileMaker's unsupported steps do.</p>
-        <div class="meter"><div class="meter-bar"><i></i></div><div class="meter-label"><span><b>146</b> of 210 desktop steps</span><span>70%</span></div></div>
+        <div class="meter"><div class="meter-bar"><i></i></div><div class="meter-label"><span><b>129</b> of 210 desktop steps</span><span>61%</span></div></div>
       </div>
       <div class="tile b-find">
         <span class="eyebrow">om-query</span>
@@ -639,6 +641,7 @@ section{border-top:1px solid var(--border);padding:88px 0;position:relative}
       <span class="eyebrow">Status</span>
       <h2>Pre-alpha, and honest about it.</h2>
       <p>The goal is 1:1 compatibility with FileMaker. Much of it is still partial or missing; this is where each area stands. Try OpenMaker on a copy of your files.</p>
+      <p>OpenMaker is measured against FileMaker&nbsp;Pro and Server 26.0.3. FileMaker&nbsp;Pro 26.1's changes are recorded but not matched yet, and an Update or Replace import does not yet keep target data the way 26.1's new option does (<a href="https://github.com/OpenMaker-Dev/openmaker/blob/main/ROADMAP.md#filemaker-261">FileMaker 26.1 in the roadmap</a>).</p>
     </div>
     <div class="status-summary">
       <div class="legend"><span><i class="s-working"></i>Working: 2</span><span><i class="s-partial"></i>Partial: 15</span><span><i class="s-early"></i>Early: 2</span></div>
@@ -654,7 +657,7 @@ section{border-top:1px solid var(--border);padding:88px 0;position:relative}
       <div class="area"><div class="area-top"><span class="area-name">Find, sort, found sets</span><span class="badge partial">Partial</span></div><p>Finds, sorts and joins through query programs; Quick Find. <span class="gap">No sorting by a related field; non-English index keys.</span></p></div>
       <div class="area"><div class="area-top"><span class="area-name">Relationships and portals</span><span class="badge partial">Partial</span></div><p>Related fields and portals in sort and filter order; related records edited and created in portal rows. <span class="gap">Some portal row buttons take no clicks.</span></p></div>
       <div class="area"><div class="area-top"><span class="area-name">Containers</span><span class="badge partial">Partial</span></div><p>Storage, upload, server thumbnails, Insert Picture/File; Browse draws pictures and PDFs. <span class="gap">No Insert PDF or Audio/Video, and no file references.</span></p></div>
-      <div class="area"><div class="area-top"><span class="area-name">Scripts and triggers</span><span class="badge partial">Partial</span></div><p>146 of 210 desktop steps, including every step the starter solutions use. <span class="gap">No Send Mail, plug-ins, accounts or AI steps.</span></p></div>
+      <div class="area"><div class="area-top"><span class="area-name">Scripts and triggers</span><span class="badge partial">Partial</span></div><p>129 of 210 desktop steps, including every step the starter solutions use. <span class="gap">No Send Mail, plug-ins, accounts or AI steps.</span></p></div>
       <div class="area"><div class="area-top"><span class="area-name">Import and export</span><span class="badge partial">Partial</span></div><p>CSV and Excel, Save Records as Excel, Insert from URL. <span class="gap">No ODBC, XSLT, or import from FileMaker files.</span></p></div>
       <div class="area"><div class="area-top"><span class="area-name">Preview, print, PDF</span><span class="badge partial">Partial</span></div><p>One-column reports with summaries and sliding. <span class="gap">Multi-column reports; Windows printing.</span></p></div>
       <div class="area"><div class="area-top"><span class="area-name">Web viewers</span><span class="badge partial">Partial</span></div><p>WebKitGTK with the JavaScript script bridge, in Form and List view. <span class="gap">Linux only; macOS and Windows show a note.</span></p></div>
