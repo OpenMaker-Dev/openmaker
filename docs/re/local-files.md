@@ -451,6 +451,23 @@ text, is never found. A new status that would not read back as written
 (flags added to a fraction of a second already held, past the six digits
 the value keeps) is not written (3).
 
+Delete Account runs through `Hosted::delete_account`, under the same
+lock and notification, for a session with full access (else 9). It
+removes the account's member and, from the catalog's index (3), its name
+list entry, its place in the display order (the order numbered again
+from 1) and its `07` entry, and takes one from the count; `00` keeps the
+last key issued, and the index is stamped. A name no account has gives
+213 (inferred). It does not delete a [Full Access] account (3, OpenMaker's
+choice: FileMaker's rule for the step is not observed, and a file must
+keep an account that can manage it). An index that does not hold the
+account as 3 describes (one name list entry and one place naming it, a
+four-byte count equal to the number of accounts) is not rewritten (3).
+The header's account name `10` is left as it is.
+
+Add Account is not run: the step's privilege set is an inline key in
+`mReserved` whose layout is only inferred (script-steps.md 4.1), and
+reading it wrongly would put the new account in another set.
+
 When a local file's Login is refused with 211, the desktop asks for a new
 password in a Change Password dialog (New Password, Confirm New Password)
 in the sign-in dialog's place [I: OpenMaker's wording; FileMaker Pro's
@@ -487,6 +504,31 @@ It is the member data of the account catalog itself
 (`DBUserAccountCatalog`, the file user's `mUserAccountCatalog`). In every
 starter solution [O]: `00` = `01 02` (account 2's key), `04` = 2, `06`
 empty, `16` = "Admin", `24` = "0" (text), `252` = `01 02`.
+
+It is the catalog's index `[cat, 1]` (schema-path.md 1), laid out as the
+other catalogs' indexes are [O: the English Contacts and Tasks and the
+German Inventory starter solutions of FileMaker Pro 26, read with
+`om-hbam`'s `dump_keys` example; all three alike]:
+
+| Key | Content | Starter value |
+|---|---|---|
+| `00` | the last account key issued, as a key string | `01 02` |
+| `01, <name key>` | the name list: one leaf per account, keyed by its name's key (schema-path.md 5.6), holding the account's key as a key string | `0301ffe0e0020302000000` → `01 01` ([Guest]); `120f1250135f12ec136d000000` → `01 02` ("Admin") |
+| `03, <position>` | the display order: big-endian u32 positions from 1, each holding an account's key as a key string | `00000001` → `01 01`, `00000002` → `01 02` |
+| `04` | the number of accounts, big-endian u32 | `00000002` |
+| `06` | empty | |
+| `07, <key>` | one empty leaf per account | `07/01`, `07/02` |
+| `10` | "Admin": the header's account name above | |
+| `18` | "0" | |
+| `d8`, `fc`, `fc01`-`fc03` | the index's UUID and modification stamps (schema-path.md 8.1) | |
+
+So a new account takes the key after `00`, a name list entry, the next
+display position, one more in `04` and a `07` entry, as a new script does
+in the script catalog's index (scripts.md); a deleted one gives up its
+name list entry, display position and `07` entry and one of `04`, while
+`00` keeps the last key issued [I: from the other catalogs' indexes; an
+account added or deleted by FileMaker Pro was observed to change its index
+entries (2.4), but those entries were not compared one by one].
 
 ### 3.1 File Options > Open: "Log in using" and sign-in options
 

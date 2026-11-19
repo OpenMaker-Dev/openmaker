@@ -3995,6 +3995,19 @@ impl Accounts for ServerHost {
         })
     }
 
+    /// Delete Account (135): only a session with full access privileges
+    /// (9), as FileMaker's `DoDeleteAccount`;
+    /// [`crate::hosting::Hosted::delete_account`] removes it.
+    fn delete_account(&mut self, name: &str) -> HostResult {
+        self.require_full_access()?;
+        self.edit_accounts("Delete Account", |stamp| {
+            self.hosted
+                .delete_account(name, Some(stamp))
+                .map(|()| true)
+                .map_err(|e| self.account_edit_error("Delete Account", &e))
+        })
+    }
+
     /// Enable Account (137): only a session with full access privileges
     /// (9), as FileMaker's `DoEnableAccount`;
     /// [`crate::hosting::Hosted::enable_account`] writes it.

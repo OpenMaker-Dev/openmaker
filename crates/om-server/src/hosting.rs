@@ -716,11 +716,7 @@ impl Hosted {
             Some(AccountKind::FileMakerFile | AccountKind::External(1)) => {}
             _ => return Err(AccountEditError::Unsupported),
         }
-        let set = member(&view, ACCOUNT_PRIVILEGES)
-            .and_then(|r| r.split_first())
-            .filter(|(length, key)| usize::from(**length) == key.len())
-            .map(|(_, key)| key);
-        if !active && set == Some(FULL_ACCESS_SET) {
+        if !active && account_set(&view) == Some(FULL_ACCESS_SET) {
             return Err(AccountEditError::FullAccess);
         }
         let current = AccountStatus::decode(member(&view, ACCOUNT_STATUS))
@@ -733,6 +729,53 @@ impl Hosted {
         self.rewrite_account(&mut store, &record, None, status, stamp)
             .map(|()| true)
             .map_err(AccountEditError::Unwritten)
+    }
+
+    /// Delete Account (135): the account named `name` removed, as
+    /// FileMaker's `DoDeleteAccount` removes it (local-files.md 2.4 and 3):
+    /// its member, and from the catalog's index its name list entry, its
+    /// place in the display order (written again from 1) and its `07`
+    /// entry, and one from the count; the last key issued stays. One
+    /// commit, saved before this returns, with the index stamped when
+    /// `stamp` is given. A [Full Access] account is not deleted (3,
+    /// OpenMaker's choice, so that no file loses its last one). An index
+    /// that does not hold the account as described is not rewritten. The
+    /// caller has checked that the session may manage accounts.
+    pub fn delete_account(
+        &self,
+        name: &str,
+        stamp: Option<&ModStamp<'_>>,
+    ) -> Result<(), AccountEditError> {
+        let mut store = self.write_store();
+        let record =
+            find_account(&store, AccountRef::Name(name)).ok_or(AccountEditError::Missing)?;
+        if account_set(&crate::store::view(&record)) == Some(FULL_ACCESS_SET) {
+            return Err(AccountEditError::FullAccess);
+        }
+        let mut accounts = store
+            .node(&ACCOUNTS_PATH)
+            .cloned()
+            .ok_or_else(|| AccountEditError::Unwritten("no account catalog".into()))?;
+        let index = store.node(&ACCOUNT_INDEX_PATH).cloned().ok_or_else(|| {
+            AccountEditError::Unwritten("the account catalog has no index".into())
+        })?;
+        let mut index = index_without(index, &record.segment, accounts.children.len())
+            .map_err(AccountEditError::Unwritten)?;
+        if let Some(stamp) = stamp {
+            index = crate::authoring::stamped(index, stamp.user, stamp.account, stamp.time);
+        }
+        accounts.children.retain(|a| a.segment != record.segment);
+        let path = |segments: &[&[u8]]| segments.iter().map(|s| s.to_vec()).collect();
+        let mut journal = store.begin_commit();
+        store.replace_members_in(
+            &mut journal,
+            vec![
+                (path(&ACCOUNTS_PATH), accounts),
+                (path(&ACCOUNT_INDEX_PATH), index),
+            ],
+        );
+        self.save_commit(&mut store, journal)
+            .map_err(|e| AccountEditError::Unwritten(e.to_string()))
     }
 
     /// Write account `record` again with `password` (its own when `None`)
@@ -984,7 +1027,8 @@ pub enum AccountEditError {
     /// provider or Claris ID signs in (3, inferred).
     Unsupported,
     /// Making a [Full Access] account inactive (3, inferred: Claris
-    /// documents that the step does not; its code is not observed).
+    /// documents that Enable Account does not; its code is not observed),
+    /// or deleting one (3, OpenMaker's choice).
     FullAccess,
     /// The account could not be rewritten, or the file could not be
     /// written, and nothing changed.
@@ -1055,6 +1099,70 @@ fn find_account(store: &Store, account: AccountRef<'_>) -> Option<om_hbam::Owned
         }
     }
     .cloned()
+}
+
+/// The key of the privilege set account `view` is in (`0b`, a key string).
+fn account_set<'a>(view: &om_hbam::Node<'a>) -> Option<&'a [u8]> {
+    member(view, ACCOUNT_PRIVILEGES)
+        .and_then(|r| r.split_first())
+        .filter(|(length, key)| usize::from(**length) == key.len())
+        .map(|(_, key)| key)
+}
+
+/// The account catalog's index `index` without account `key`
+/// (local-files.md 3): its name list entry and its place in the display
+/// order removed, the order numbered again from 1, its `07` entry removed
+/// and the count, which must be `accounts` (the members before the
+/// deletion), one less. Why not, when the index does not hold the account
+/// that way: one name list entry and one place naming it, positions and
+/// a count of four bytes.
+fn index_without(
+    mut index: om_hbam::OwnedNode,
+    key: &[u8],
+    accounts: usize,
+) -> Result<om_hbam::OwnedNode, String> {
+    let mut named = vec![key.len() as u8];
+    named.extend_from_slice(key);
+    let names = |n: &om_hbam::OwnedNode| n.value.as_deref() == Some(&named[..]);
+    let list = index.child_mut(&[1]).ok_or("the index has no name list")?;
+    if list.children.iter().filter(|n| names(n)).count() != 1 {
+        return Err("its name list does not name the account once".into());
+    }
+    list.children.retain(|n| !names(n));
+    let order = index
+        .child_mut(&[3])
+        .ok_or("the index has no display order")?;
+    if order.children.iter().any(|n| n.segment.len() != 4)
+        || order.children.iter().filter(|n| names(n)).count() != 1
+    {
+        return Err("its display order does not hold the account once".into());
+    }
+    // In position order: the children are kept sorted by segment, and a
+    // big-endian u32 sorts as its number.
+    order.children.retain(|n| !names(n));
+    for (position, place) in order.children.iter_mut().enumerate() {
+        place.segment = u32::try_from(position + 1)
+            .map_err(|_| "too many places")?
+            .to_be_bytes()
+            .to_vec();
+    }
+    if let Some(cache) = index.child_mut(&[7]) {
+        cache.children.retain(|n| n.segment != key);
+    }
+    let count = index
+        .child(&[4])
+        .and_then(|n| n.value.as_deref())
+        .and_then(|v| <[u8; 4]>::try_from(v).ok())
+        .map(u32::from_be_bytes)
+        .ok_or("the index has no count")?;
+    if usize::try_from(count).ok() != Some(accounts) || count == 0 {
+        return Err("its count is not the number of accounts".into());
+    }
+    index.set_child(om_hbam::OwnedNode::leaf(
+        vec![4],
+        (count - 1).to_be_bytes().to_vec(),
+    ));
+    Ok(index)
 }
 
 /// `status` as FileMaker stores it, refused when the value would not read
