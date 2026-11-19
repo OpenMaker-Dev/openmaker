@@ -4667,13 +4667,23 @@ impl Records for WorkerHost<'_> {
         let held = self.s.file.transaction.take().unwrap_or_default();
         let mut result = self.p().revert_transaction().map_err(|e| self.failed(e));
         if result.is_ok() {
-            // The records the transaction created are gone, the window's
-            // own new record too unless it is held apart.
+            // The records the transaction created are gone, with what any
+            // window of the file still has pending on them, and the new
+            // records windows made in it but had not committed; one held
+            // apart in its window's record session stays.
             self.release_records(&held, transaction::Operation::New);
+            let created: Vec<(u64, i64)> = held
+                .iter()
+                .filter(|e| e.operation == transaction::Operation::New)
+                .map(|e| (e.table, e.record))
+                .collect();
+            for other in &mut self.s.file.others {
+                other.forget_reverted_record_waiting(&created);
+            }
             if !apart {
                 let (window, provider) = self.wp();
                 result = window
-                    .forget_reverted_new_record(provider)
+                    .forget_reverted_record(provider, &created)
                     .map_err(data_error);
             }
         }

@@ -710,6 +710,56 @@ fn more_scripts() -> Vec<Script> {
             ],
         ),
         script(
+            903,
+            "Revert committed new record",
+            vec![
+                capture_errors(),
+                transaction_step(205, 6),
+                step(7),
+                step(75),
+                set_field("Note", "\"pending\""),
+                step(207),
+                transaction_step(206, 6),
+                set_field(
+                    "Note",
+                    "\"c:\" & Get ( RecordNumber ) & \"|\" & Get ( RecordID ) & \"|\" & Get ( FoundCount )",
+                ),
+                step(75),
+            ],
+        ),
+        script(
+            904,
+            "Revert new record in another window",
+            vec![
+                capture_errors(),
+                transaction_step(205, 6),
+                {
+                    let mut new = step(122);
+                    new.set_calculation(0, Some(&calc("\"B\"")));
+                    new
+                },
+                step(7),
+                {
+                    let mut back = with_value(step(123), 1);
+                    back.set_calculation(0, Some(&calc("\"Contacts\"")));
+                    back
+                },
+                step(207),
+                transaction_step(206, 6),
+                {
+                    let mut b = with_value(step(123), 1);
+                    b.set_calculation(0, Some(&calc("\"B\"")));
+                    b
+                },
+                set_field(
+                    "Note",
+                    "\"w:\" & Get ( RecordNumber ) & \"|\" & Get ( RecordID ) & \"|\" & Get ( FoundCount )",
+                ),
+                step(75),
+                step(121),
+            ],
+        ),
+        script(
             902,
             "Revert new record",
             vec![
@@ -1643,6 +1693,24 @@ fn reverted_and_failed_transactions_leave_the_records() {
     let rows = state.lock().unwrap().rows.clone();
     assert_eq!(rows.len(), 5, "the new record was not kept");
     assert_eq!(rows[4].values[2].as_deref(), Some("5|5|5"));
+
+    // One committed into the transaction and edited after, and one a
+    // second window made: both go, with what was pending on them.
+    for (script, note) in [
+        ("Revert committed new record", "c:5|5|5"),
+        ("Revert new record in another window", "w:5|5|5"),
+    ] {
+        run(&mut app, script);
+        wait_idle(&mut app);
+        assert!(
+            app.state().error().is_none(),
+            "{script}: {:?}",
+            app.state().error()
+        );
+        let rows = state.lock().unwrap().rows.clone();
+        assert_eq!(rows.len(), 5, "{script}: the new record was not kept");
+        assert_eq!(rows[4].values[2].as_deref(), Some(note), "{script}");
+    }
 }
 
 #[test]
