@@ -368,6 +368,8 @@ impl WorkerHost<'_> {
             .field_flags
             .as_deref()
             .and_then(|b| FieldFlags::decode(b).ok());
+        import::refuse_unsupported(&options, field_flags.as_ref())
+            .map_err(|_| HostError::Unsupported)?;
         let mut paths = call.paths.clone();
         let target = options.table.id().unwrap_or(window);
         let target_name = format!(

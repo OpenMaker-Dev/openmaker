@@ -404,7 +404,11 @@ Open items:
 - Import and export:
   - Shift-JIS, Big-5 and EUC-KR differ for some letters, and `.xlsx`
     times match to about 15 digits.
-  - "Split repetitions into separate records" is not reproduced.
+  - Import Records with "Split repeating values into separate records"
+    or into a new table fails with error 3 and imports nothing: the split
+    is not reproduced (script-steps.md, Implementation notes
+    (import/export)), and OpenMaker creates no table. How FileMaker stores
+    a new-table import's target table is not observed.
   - A stored XML import did not run on FileMaker Server (717), so XML
     imports are checked by round trip only.
   - Not probed: the layout data-formatting option, non-English files and
