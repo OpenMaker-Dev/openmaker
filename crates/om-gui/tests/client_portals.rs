@@ -4556,6 +4556,18 @@ fn browse_repetitions_keep_their_cell_and_share_one_record_commit() {
     app.step();
     app.query_all(later()).next().unwrap().type_text("ab");
     app.run_steps(2);
+    // Leaving the box runs its OnObjectSave: the script's value shows at
+    // once, before the record is committed.
+    app.key_press(egui::Key::Tab);
+    let shown = |app: &common::App| {
+        app.query_all(later())
+            .next()
+            .and_then(|n| n.accesskit_node().value())
+    };
+    common::wait_until(&mut app, "the script's value", |app| {
+        app.state().is_settled() && shown(app).as_deref() == Some("AB")
+    });
+    assert_eq!(stored(&hosted, TABLE, &[(STATUS, 2)])[0].1, [""]);
     common::save_record(&mut app);
     wait_saved(&mut app);
     assert_eq!(
