@@ -1625,16 +1625,25 @@ fn walk_report_objects<'a>(
         })
         .filter_map(part_of)
         .collect();
-    if let Some(object) =
-        layout.objects.objects.iter().find(|o| {
-            o.slide_up().is_some() && part_of(o).is_some_and(|part| beyond.contains(&part))
-        })
-    {
-        refuse(ReportError::unsupported(format!(
-            "Report object {} slides up in a part with objects beyond the printable width; \
-             how those slide is unmeasured",
-            object.id
-        )))?;
+    // Likewise whether an object hidden when printing still holds back
+    // what slides up below it.
+    let hidden: BTreeSet<usize> = (layout.objects.objects.iter())
+        .filter(|o| o.flags & sliding::NON_PRINTING != 0)
+        .filter_map(part_of)
+        .collect();
+    for (parts, what) in [
+        (&beyond, "objects beyond the printable width"),
+        (&hidden, "objects hidden when printing"),
+    ] {
+        if let Some(object) = layout.objects.objects.iter().find(|o| {
+            o.slide_up().is_some() && part_of(o).is_some_and(|part| parts.contains(&part))
+        }) {
+            refuse(ReportError::unsupported(format!(
+                "Report object {} slides up in a part with {what}; how those slide is \
+                 unmeasured",
+                object.id
+            )))?;
+        }
     }
     // Whether a sliding object overlapping another would move over, under or
     // out of it natively is unmeasured; such layouts are refused.
@@ -1858,15 +1867,15 @@ fn report_object<'a>(
     if beyond_page(object, &rect, paper) {
         return Ok(None);
     }
+    // Hide when printing leaves the object, and what it holds, out of
+    // every printed page (Claris, "Removing blank spaces in printouts";
+    // layout-model.md 5.8), whatever else it is set to do.
+    if object.flags & sliding::NON_PRINTING != 0 {
+        return Ok(None);
+    }
     if object.flags & sliding::LEFT != 0 {
         return Err(ReportError::unsupported(format!(
             "Report object {} slides left; sliding left is unsupported",
-            object.id
-        )));
-    }
-    if object.flags & sliding::NON_PRINTING != 0 {
-        return Err(ReportError::unsupported(format!(
-            "Report object {} is hidden when printing; non-printing objects are unsupported",
             object.id
         )));
     }

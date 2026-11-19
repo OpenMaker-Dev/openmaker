@@ -27,6 +27,10 @@ the physical page context; advanced layout merge symbols remain refused.
   Bodies and summary parts remain whole and move to the next page when needed.
   Objects that slide up and parts they resize print at their measured heights
   ([report sliding](report-sliding.md)).
+- Objects set to Hide when printing (bit `0x200` of their flags,
+  [report sliding](report-sliding.md)) do not print, nor does anything they
+  hold; like an object beyond the printable width they are not read or
+  checked. A sliding object in the same part refuses the report.
 - Navigation parts do not print. A layout with Layout Setup's "Use fixed page
   margins" checked (bit `0x40` of its flags, [layout model](re/layout-model.md#42-views-form-list-table))
   prints within its stored margins (`customMargins`); fixed margins that
