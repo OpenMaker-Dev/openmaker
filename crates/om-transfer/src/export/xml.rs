@@ -92,7 +92,8 @@ pub(crate) fn write(table: &Table) -> Vec<u8> {
                 Cell::Absent => {}
                 Cell::Values(values) if values.is_empty() => s.push_str("<DATA></DATA>"),
                 Cell::Values(values) => {
-                    for v in values {
+                    // A `?` has no `DATA` (oracle x05).
+                    for v in values.iter().filter(|v| !v.is_invalid()) {
                         s.push_str("<DATA>");
                         escape(&v.text(), &mut s);
                         s.push_str("</DATA>");
