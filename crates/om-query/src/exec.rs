@@ -4,7 +4,7 @@
 use std::collections::{BTreeMap, BTreeSet};
 use std::ops::{Bound, Range, RangeBounds};
 
-use om_hbam::{serial, DataType, OwnedNode, RidList};
+use om_hbam::{serial, slot::be_uint, DataType, OwnedNode, RidList};
 
 use crate::index::{Index, Indexes, VALUE_INDEX, WORD_INDEX};
 use crate::program::{
@@ -463,8 +463,17 @@ mod kind {
     pub const ROW_ID_MATCH: u8 = 4;
     pub const NOT_ROW_ID_MATCH: u8 = 5;
     pub const ROW_ID_RANGE: u8 = 6;
+    pub const INDEX_SCAN: u8 = 3;
     pub const FIND_DUPLICATES: u8 = 7;
+    pub const MATCH: u8 = 8;
 }
+
+/// Finder option bit 7, IsOptional (spec 6.2): the finder only narrows the
+/// records an exact finder after it tests, so a host may leave it out.
+const IS_OPTIONAL: u8 = 1 << 7;
+
+/// Finder scopes (spec 6.2): words, the whole value, each repetition.
+const WORD_SCOPE: u8 = 0;
 
 /// Finder option bits (spec 6.2).
 const INCLUDE_BEGIN: u8 = 1 << 0;
@@ -482,6 +491,8 @@ pub(crate) struct Finder {
     field: Vec<u8>,
     begin: Vec<u8>,
     end: Vec<u8>,
+    /// A Match finder's pattern (kind 8).
+    pattern: Option<crate::matching::Pattern>,
 }
 
 impl Finder {
@@ -494,6 +505,18 @@ impl Finder {
         let (field, rest) = take_key_string(rest)?;
         let field = single_segment(field)?;
         let rest = rest.get(2..).ok_or(truncated)?; // u16 repetition
+        if *kind == kind::MATCH {
+            let (pattern, _) = crate::matching::Pattern::parse(rest)?;
+            return Ok(Self {
+                kind: *kind,
+                scope: *scope,
+                options: *options,
+                field,
+                begin: Vec::new(),
+                end: Vec::new(),
+                pattern: Some(pattern),
+            });
+        }
         if !matches!(kind, 0..=7 | 10..=12) {
             return Err(QueryError::Unsupported("finder kind", *kind));
         }
@@ -506,6 +529,7 @@ impl Finder {
             field,
             begin: begin.concat(),
             end: end.concat(),
+            pattern: None,
         })
     }
 
@@ -562,6 +586,60 @@ impl Finder {
             }
             other => return Err(QueryError::Unsupported("finder kind", other)),
         })
+    }
+
+    /// The records of `candidates` whose text in the field matches a Match
+    /// finder's pattern (spec 6.3): each repetition's whole value (value and
+    /// repetition scope) or each of its words (word scope), read from the
+    /// stored record whether the field is indexed or not.
+    fn matching(
+        &self,
+        pattern: &crate::matching::Pattern,
+        indexes: &mut Indexes<'_>,
+        work: &Work,
+        table: &[u8],
+        candidates: &RidList,
+    ) -> Result<RidList, QueryError> {
+        let repetitions = indexes
+            .field(table, &self.field)?
+            .and_then(|f| f.decoded_options())
+            .map_or(1, |o| o.max_repetitions.clamp(1, 255));
+        let cells: Vec<Vec<u8>> = std::iter::once(self.field.clone())
+            .chain(be_uint(&self.field).into_iter().flat_map(|id| {
+                (2..=u64::from(repetitions))
+                    .filter_map(move |n| id.checked_mul(256)?.checked_add(n))
+                    .map(om_hbam::slot::uint_segment)
+            }))
+            .collect();
+        let mut found = RidList::new();
+        for id in candidates.iter() {
+            let mut matched = false;
+            for cell in &cells {
+                let Some(value) = indexes.stored_text(work, table, cell, id)? else {
+                    continue;
+                };
+                // Matching costs up to the pattern's length per character.
+                let steps = value.len().saturating_mul(pattern.len().max(1));
+                work.spend(Size {
+                    nodes: 0,
+                    bytes: steps,
+                })?;
+                matched = if self.scope == WORD_SCOPE {
+                    om_collate::words(&value)
+                        .into_iter()
+                        .any(|word| pattern.matches(word))
+                } else {
+                    pattern.matches(&value)
+                };
+                if matched {
+                    break;
+                }
+            }
+            if matched {
+                found.insert(id);
+            }
+        }
+        Ok(found)
     }
 
     /// The records of `table` this finder selects. An index finder finds
@@ -726,7 +804,17 @@ fn simple_find(
     // index built on demand for later programs (spec 7.1), or be one this
     // engine refuses.
     for finder in &finders {
-        found = found.and(&finder.evaluate(indexes, work, &table)?);
+        // IndexScan (3) is not built; FileMaker Pro sends it only as an
+        // optional pre-filter of a Match finder (6.4: `*x*`), which then
+        // tests every record the other finders leave.
+        if finder.kind == kind::INDEX_SCAN && finder.options & IS_OPTIONAL != 0 {
+            continue;
+        }
+        found = match &finder.pattern {
+            // A Match finder tests the records the others leave.
+            Some(pattern) => finder.matching(pattern, indexes, work, &table, &found)?,
+            None => found.and(&finder.evaluate(indexes, work, &table)?),
+        };
     }
     program.set_spot(&dest, found.entries())
 }
@@ -2186,6 +2274,55 @@ mod tests {
         };
         assert!(matches!(nokey, Err(QueryError::NoRecords)));
         assert_eq!(QueryError::NoRecords.code(), 401);
+    }
+
+    /// SimpleFind with Match finders (spec 6.3): each record's stored text
+    /// against the pattern, the whole value or each word (live1's
+    /// m_text_test, m_text_test_w), after the other finders' records.
+    #[test]
+    fn match_finders_test_stored_values() {
+        let values = ["Test", "Hello", "Ima", "A long text, Test", "One Test here"];
+        let mut source = Indexed::new(5, Vec::new());
+        for (i, value) in values.iter().enumerate() {
+            source.root.put(
+                &[&[0x80, 0x01], &[5], &serial::encode(i as u64 + 1), &[1]],
+                OwnedNode::leaf(Vec::new(), om_scsu::encode_scsu(value)),
+            );
+        }
+        let test_operand = [0x00, 0x04, 0x0e, 0x3f, 0x29, 0x2e, 0x00];
+        let matcher = |scope: u8| {
+            let mut bytes = vec![8, scope, 0, 3, 2, 0x80, 0x01, 2, 1, 1, 0, 1];
+            bytes.extend([0, 1, 0]);
+            bytes.extend(test_operand);
+            bytes
+        };
+        let find = |finders: &[Vec<u8>]| {
+            ids(&result(&source, &find_program(finders), Budget::DEFAULT).unwrap())
+        };
+        assert_eq!(find(&[matcher(1)]), [1]);
+        assert_eq!(find(&[matcher(0)]), [1, 4, 5]);
+        // After a row-id range of records 2 to 5, only 4 and 5 are tested.
+        let rows = finder(
+            6,
+            INCLUDE_BEGIN | INCLUDE_END,
+            1,
+            &serial::encode(2),
+            &serial::encode(5),
+        );
+        assert_eq!(find(&[rows, matcher(0)]), [4, 5]);
+        // An optional IndexScan before a Match finder is left out (`*x*`,
+        // 6.4); a required one is still refused.
+        let scan = |options: u8| {
+            let mut bytes = vec![3, 0, options, 3, 2, 0x80, 0x01, 2, 1, 1, 0, 1];
+            bytes.extend([5, 4, 0x14, 0x33, 0x12, 0x6b, 2, 1, 0xff]);
+            bytes
+        };
+        assert_eq!(find(&[scan(0x88), matcher(0)]), [1, 4, 5]);
+        assert!(result(&source, &find_program(&[scan(0x08)]), Budget::DEFAULT).is_err());
+        // DateTimeMatch (9) is not built: refused, as before.
+        let mut date_time = matcher(1);
+        date_time[0] = 9;
+        assert!(result(&source, &find_program(&[date_time]), Budget::DEFAULT).is_err());
     }
 
     #[test]
