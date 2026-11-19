@@ -82,8 +82,11 @@ pub(crate) const MAX_UPLOAD: usize = 1 << 30;
 pub(crate) const MAX_PRE_LOGIN_UPLOAD: usize = 64 << 10;
 
 /// How many evicted cursors are remembered, so that continuing one is
-/// refused instead of answered as the end of its stream.
-const EVICTED_REMEMBERED: usize = 64;
+/// refused instead of answered as the end of its stream (32 KiB a
+/// connection). Downloads are dropped for the server's budget by other
+/// connections' downloads too, so this is far more than one connection's
+/// own transfers would evict.
+const EVICTED_REMEMBERED: usize = 4096;
 
 /// The server's budget for the download streams connections keep paged:
 /// the bytes not yet sent and those sent, of each stream larger than one
@@ -133,8 +136,13 @@ impl DownloadMemory {
     /// Hold `data` as a stream being paged, first dropping the streams
     /// least recently paged, on any connection, while all of them together
     /// would pass the limit. The new stream is held however large it is.
-    fn hold(self: &Arc<Self>, data: Vec<u8>) -> Arc<Stream> {
-        let bytes = data.len();
+    /// Charging, dropping and listing happen under the list's lock, so two
+    /// streams held at once cannot both miss what the other added.
+    fn hold(self: &Arc<Self>, mut data: Vec<u8>) -> Arc<Stream> {
+        // What is kept is what is charged: the stream was grown as it was
+        // written, and could hold up to twice its length.
+        data.shrink_to_fit();
+        let bytes = data.capacity();
         let stream = Arc::new(Stream {
             bytes,
             used: AtomicU64::new(self.tick()),
@@ -142,11 +150,11 @@ impl DownloadMemory {
             memory: self.clone(),
         });
         let limit = self.limit.load(Ordering::Relaxed);
-        let held = self.held.fetch_add(bytes, Ordering::Relaxed) + bytes;
         // Dropped after the list's lock is let go: the last reference to a
         // stream may be one of these.
         let mut dropped = Vec::new();
         let mut streams = self.streams();
+        let held = self.held.fetch_add(bytes, Ordering::Relaxed) + bytes;
         streams.retain(|stream| stream.strong_count() > 0);
         if held > limit {
             let mut others: Vec<Arc<Stream>> = streams.iter().filter_map(Weak::upgrade).collect();
@@ -550,8 +558,20 @@ impl Transfers {
     }
 
     /// Keep `transfer` under `cursor` as the one in use, then evict the
-    /// least recently used others until the limits hold.
+    /// least recently used others until the limits hold. Downloads the
+    /// server's budget dropped are evicted first: they hold nothing, and
+    /// counting them would evict transfers that do.
     fn hold(&mut self, owner: Owner, perform: u64, cursor: u64, transfer: Transfer) {
+        let dropped: Vec<u64> = (self.by_cursor.iter())
+            .filter(|(_, held)| match &held.transfer {
+                Transfer::Download { stream, .. } => !stream.holds(),
+                Transfer::Upload { .. } => false,
+            })
+            .map(|(cursor, _)| *cursor)
+            .collect();
+        for cursor in dropped {
+            self.evict(cursor);
+        }
         self.clock += 1;
         self.insert(
             cursor,
@@ -895,5 +915,24 @@ mod tests {
         // A connection's end gives its streams back.
         drop(b);
         assert_eq!(downloads.in_use(), 0);
+        // A dropped download no longer counts against its connection's own
+        // limits once it holds another transfer, and continuing it is still
+        // refused.
+        let (_, dropped) = a.start(OWNER, stream.clone(), 64, &mut handles);
+        let _ = c.start(OWNER, large.clone(), 64, &mut handles);
+        assert_eq!(a.bytes, stream.len());
+        let part = vec![0x80, 0x20, 0x01];
+        assert!(matches!(
+            a.upload(
+                OWNER,
+                &Resume::start(),
+                part.clone(),
+                MAX_UPLOAD,
+                &mut handles
+            ),
+            Ok(Upload::Partial(_))
+        ));
+        assert_eq!(a.bytes, part.len());
+        assert!(a.next(OWNER, &dropped, 64).is_err());
     }
 }
