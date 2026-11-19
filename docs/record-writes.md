@@ -705,7 +705,10 @@ field, a `Get` function only the write's operation answers, a custom
 function that reads fields, or another unstored calculation that does,
 keeps the table read-only, as a summary field read by such a formula
 still does; so does a chain of unstored calculations more than 32 deep,
-past which the calculation host reads them as `?`. A preview treats a
+past which the calculation host reads them as `?`, or one whose read
+would evaluate unstored calculations more than 65,536 times (the host
+evaluates one on every read, so a chain that reads each step twice
+doubles at each). A preview treats a
 formula over a calculation that draws `Random`, the clock or a UUID, and
 a skip that calculation's value decides, as not known until the commit.
 

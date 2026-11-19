@@ -2083,10 +2083,21 @@ impl RecordPlan {
                                 field.name
                             ))
                                 })?;
+                        let times = field_read_counts(&expression.formula.polish)
+                            .get(dependency)
+                            .copied()
+                            .unwrap_or(1);
                         let entry = through.entry((*id, own)).or_default();
                         entry.inputs.extend(reads.inputs);
                         entry.calculations.extend(reads.calculations);
                         entry.contexts.extend(reads.contexts);
+                        entry.cost = entry.cost.saturating_add(times.saturating_mul(reads.cost));
+                        if entry.cost > MAX_UNSTORED_EVALUATIONS {
+                            return Err(DataError::new(format!(
+                                "Field {}: it evaluates unstored calculations too many times.",
+                                field.name
+                            )));
+                        }
                         continue;
                     }
                     let unsupported = (global
@@ -4944,6 +4955,24 @@ impl Expression {
 /// unstored calculations is refused rather than planned without bound.
 const MAX_UNSTORED_READS: usize = 1 << 20;
 
+/// How many evaluations of unstored calculations one formula's read may
+/// take ([`UnstoredReads::cost`]): the calculation host evaluates one on
+/// every read, so a chain that reads each step twice doubles at each.
+const MAX_UNSTORED_EVALUATIONS: u64 = 1 << 16;
+
+/// How many times `polish` reads each field of its own occurrence.
+fn field_read_counts(polish: &Expr) -> BTreeMap<u64, u64> {
+    let mut reads = BTreeMap::new();
+    walk(polish, &mut |e| {
+        if let Expr::Field(field) | Expr::FieldRef(field) = e {
+            if let Some(id) = field.field.id() {
+                *reads.entry(id).or_insert(0u64) += 1;
+            }
+        }
+    });
+    reads
+}
+
 /// The table's unstored calculations a write's formulas may read, as they
 /// read each other ([`Self::reads`]).
 struct UnstoredGraph<'a> {
@@ -5060,7 +5089,9 @@ impl<'a> UnstoredGraph<'a> {
                 .into_iter()
                 .collect(),
             depth: 1,
+            cost: 1,
         };
+        let counts = field_read_counts(&expression.formula.polish);
         for dependency in &expression.dependencies {
             let input = fields
                 .get(dependency)
@@ -5080,6 +5111,14 @@ impl<'a> UnstoredGraph<'a> {
                 reads.calculations.extend(read.calculations);
                 reads.contexts.extend(read.contexts);
                 reads.depth = reads.depth.max(read.depth + 1);
+                let times = counts.get(dependency).copied().unwrap_or(1);
+                reads.cost = reads.cost.saturating_add(times.saturating_mul(read.cost));
+                if reads.cost > MAX_UNSTORED_EVALUATIONS {
+                    return Err(format!(
+                        "Field {} evaluates unstored calculations too many times.",
+                        def.name
+                    ));
+                }
             } else {
                 reads.inputs.insert(*dependency);
             }
@@ -5091,14 +5130,18 @@ impl<'a> UnstoredGraph<'a> {
 
 /// What [`UnstoredGraph::reads`] gives: the stored fields an unstored
 /// calculation reads, the unstored calculations on the way, itself
-/// included, their context occurrences the schema lacks, and how many
-/// calculations deep its longest chain is.
+/// included, their context occurrences the schema lacks, how many
+/// calculations deep its longest chain is, and how many evaluations a
+/// read of it takes.
 #[derive(Clone, Debug, Default)]
 struct UnstoredReads {
     inputs: BTreeSet<u64>,
     calculations: BTreeSet<u64>,
     contexts: BTreeSet<u64>,
     depth: usize,
+    /// How many unstored calculations one read of it evaluates, itself
+    /// and each read of another counted.
+    cost: u64,
 }
 
 /// Custom functions must obey the same record-only limits as their callers.
@@ -7112,7 +7155,8 @@ mod tests {
 
     /// A ladder of unstored calculations that each read both of the level
     /// below has 2^30 paths over 60 fields: planning a formula over its top
-    /// follows each calculation once (a hostile file must not hang it).
+    /// follows each calculation once (a hostile file must not hang it), and
+    /// refuses the table, as its evaluation would take 2^30 reads.
     #[test]
     fn a_shared_graph_of_unstored_calculations_is_followed_once() {
         let mut table = table();
@@ -7148,10 +7192,10 @@ mod tests {
             .push(field(300, FieldKind::Normal, DataType::Text, 0, 0x88, 0));
         let top = format!("Field{}", 100 + 2 * (levels - 1));
         formulas.push((300, 5, top.as_str()));
-        // Planning only: the top's value would double its text 30 times.
         let started = std::time::Instant::now();
-        assert!(plan_of(&table, &formulas, &[]).is_ok());
+        let refused = plan_of(&table, &formulas, &[]).err().unwrap();
         assert!(started.elapsed() < std::time::Duration::from_secs(10));
+        assert!(refused.to_string().contains("too many times"), "{refused}");
     }
 
     /// A chain of unstored calculations deeper than the calculation host
