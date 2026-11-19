@@ -124,7 +124,7 @@ The earlier title/grand checks (shuffled nine records, four pages, overall total
 5625, page summaries on a grand-only page) still apply. Artifact environment
 variables are documented in [Preview](preview.md) and [portable PDF](portable-pdf.md).
 
-This extends partial C41. Objects that slide up and resize sub-summary and
+This extends partial C41 ([client-progress.md](client-progress.md)). Objects that slide up and resize sub-summary and
 grand parts are in [report sliding](report-sliding.md). Sliding left, bodyless
 summary reports, part page breaks,
 related-key grouping, native FileMaker geometry, printer hardware and native

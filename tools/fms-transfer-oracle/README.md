@@ -36,7 +36,8 @@ the probe syntax is 1-based).
 Results of x01-x04 are in `crates/om-transfer/tests/data/x0N/`; the tests
 there replay every probe. x05's are in `results/x05/`.
 
-The x05 results were collected with the schema generator at `12e41ac4`.
+The x05 results were collected with the schema generator at commit `12e41ac4` of the
+earlier, private history.
 It wrote noncanonical defaults for some omitted summary options, relying
 on importer fallbacks. The corrected generator emits explicit defaults
 and has been checked locally as XML; it has not been rerun in the engine.

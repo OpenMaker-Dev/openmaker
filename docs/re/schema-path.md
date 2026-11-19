@@ -80,7 +80,7 @@ OpenMaker Server), **op82** (3.1), **op15** (3.2), **op61** (4.2), **op86
 UploadMultiple** (3.4), **op13** direct upload (3.3), **op73** answered with
 an empty reply (3.6; deferred work is only needed once tables hold records),
 and the op86 GetKey/NodeExists checks without access keys (3.5; already in
-OpenMaker Server since commit 9bf56ee). Deleting a table adds op86
+OpenMaker Server since commit 9bf56ee of the earlier, private history). Deleting a table adds op86
 DeleteTable (3.4). Other connected clients learn of the change from the
 attention-2 unlock (section 9).
 
@@ -2190,9 +2190,9 @@ when it is idle, write-path.md 6.4):
 
 | release | code | path in the message | example (back channel of the other connection) |
 |---------|------|---------------------|-----------------------------------------------|
-| catalog after commit | `0x2` `kDBAttnCatalog` | the catalog, `[3, 16]` | `ff00 | 00000002 001d | 00000001 00000000 00000002 0002 001b fffffffc 0004 04 01 03 01 10 0005` (live:s2a/a16_bflush) |
+| catalog after commit | `0x2` `kDBAttnCatalog` | the catalog, `[3, 16]` | `ff00 \| 00000002 001d \| 00000001 00000000 00000002 0002 001b fffffffc 0004 04 01 03 01 10 0005` (live:s2a/a16_bflush) |
 | field catalog | `0x2` | `[80 07, 3]` | `... 00000002 001e ... 05 02 80 07 01 03 0006` (live:s2b/bF_bflush) |
-| table lock after the save | `0x201` modify + record scope | `[80 07, 5]` | `ff00 | 00000201 001e | ... 05 02 80 07 01 05 0006` (live:s2b/b_flush_end) |
+| table lock after the save | `0x201` modify + record scope | `[80 07, 5]` | `ff00 \| 00000201 001e \| ... 05 02 80 07 01 05 0006` (live:s2b/b_flush_end) |
 
 The message is the marshalled `DBMesg` of write-path.md 6.3 (send-to
 address, reply-to 0, attention, two items: the client file id from op63 and

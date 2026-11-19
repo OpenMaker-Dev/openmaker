@@ -1,6 +1,7 @@
 # Opening a hosted multi-file solution
 
-Baseline: main `f00d3552`.
+Baseline: main `f00d3552`. The commit ids in this note are from the project's earlier, private history;
+they are not in this repository.
 
 How long the desktop client takes to open a hosted file that names many
 related files, and what it asks the host for on the way: the time to the

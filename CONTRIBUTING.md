@@ -40,9 +40,10 @@ keys and tokens in anything you paste. `re/captures/`, `re/extracted/`,
 
 Search first, then open one issue per problem with the matching template.
 Say what OpenMaker does, what FileMaker does and how you know, and how to
-reproduce it. Labels and wording are in [AGENTS.md](AGENTS.md), section 6.
-Report security problems privately, as [SECURITY.md](SECURITY.md) says, not
-in an issue.
+reproduce it. Labels and wording are in [AGENTS.md](AGENTS.md), section 6;
+if GitHub does not let you set labels, name the area in the issue and a
+maintainer labels it. Report security problems privately, as
+[SECURITY.md](SECURITY.md) says, not in an issue.
 
 In the docs, an issue number written as a link
 (`[#186](https://github.com/OpenMaker-Dev/openmaker/issues/186)`) is an
