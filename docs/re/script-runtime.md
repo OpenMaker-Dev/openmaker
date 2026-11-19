@@ -3730,8 +3730,10 @@ Steps
   table is 3).
 - Replace Field Contents: every found record in order, the calculation
   evaluated on each record made current, serial numbers counting up the
-  last run of digits of the initial value; each record is committed; no
-  triggers fire.
+  last run of digits of the initial value
+  (`om_scripts::runtime::Replacement::serial_text`); each record is
+  committed; no triggers fire. OpenMaker Server runs it the same way and
+  also updates the field's next serial value when the step asks to.
 - Windows (2026-10-29, run 13.25; `app/windows.rs`,
   `scripting/host/windows.rs`): real windows. Each window keeps its own
   layout, found set, mode, view, current record and unsaved values, Find

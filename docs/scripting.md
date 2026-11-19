@@ -269,6 +269,15 @@ codes and timing (script-runtime.md 13.21, 291 engine runs):
   500, time 501, range 503, value list 506.
 - Existing value is Commit's 505.
 
+Replace Field Contents (91) runs in server scripts as on the desktop
+(script-runtime.md, "Steps"): each found record in order is made current,
+takes the value through Set Field's checks, and is committed; the first
+failure stops the step, the records before it kept, and the record current
+before is current again. On the server "Update serial number in Entry
+Options" moves the field's next serial value one increment past the last,
+as Set Next Serial Value does. A container field, a related field and Find
+mode are refused (3); FileMaker's answers there are not measured.
+
 Server Find mode:
 - An unstored calculation with all-empty references reads empty, on the
   desktop too.

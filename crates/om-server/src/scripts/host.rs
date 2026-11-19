@@ -66,8 +66,8 @@ use om_scripts::runtime::Fields as FieldSteps;
 use om_scripts::runtime::{
     Accounts, CommitOptions, Dialogs, ErrorCode, ErrorLogEntry, FieldRef, FileId, Files, FindKind,
     FoundSets, HostError, HostResult, InsertTarget, LayoutTarget, Mode, Navigation, Network,
-    PauseEnd, Platform, RecordList, RecordMove, Records, RelatedRecords, ScriptAccess, ScriptHost,
-    TransactionOptions, WindowId, Windows,
+    PauseEnd, Platform, RecordList, RecordMove, Records, RelatedRecords, Replacement, ScriptAccess,
+    ScriptHost, TransactionOptions, WindowId, Windows,
 };
 use om_scripts::specs::SortSpec;
 use om_scripts::{Script, ScriptCatalog, ScriptKind};
@@ -3571,6 +3571,78 @@ impl FieldSteps for ServerHost {
         self.hosted
             .save_commit(&mut store, journal)
             .map_err(|e| HostError::Error(ErrorCode(i32::from(crate::hosting::save_error(&e)))))
+    }
+
+    /// Replace Field Contents (91), as the desktop runs it
+    /// (script-runtime.md, "Steps"): each record of the found set in order
+    /// is made current, takes the current record's value, a serial number
+    /// or the calculation evaluated on it through Set Field's checks, and
+    /// is committed; the first that fails stops the step, the records
+    /// before it kept. The record current before is current again. With
+    /// "Update serial number in Entry Options" the field's next serial
+    /// value is one increment past the last (Set Next Serial Value's rules).
+    /// The target is the step's field or the field with the focus (102
+    /// without either). A container field is refused (3), as on the
+    /// desktop, and so are Find mode and a related field (3; FileMaker's
+    /// answers there are not measured). The dialog option is not shown on
+    /// the server.
+    fn replace_field_contents(
+        &mut self,
+        field: Option<FieldRef>,
+        with: &mut Replacement<'_>,
+        _with_dialog: bool,
+    ) -> HostResult {
+        let focused = self.focus.as_ref().map(|f| FieldRef {
+            occurrence: f.occurrence,
+            field: f.field,
+            repetition: 1,
+        });
+        let field = field.or(focused).ok_or(ErrorCode::FIELD_MISSING)?;
+        let (_, def) = self.target(field)?;
+        let window = self.window()?;
+        if def.data_type == DataType::Container
+            || window.mode == Mode::Find
+            || window.occurrence != field.occurrence
+        {
+            return Err(HostError::Unsupported);
+        }
+        self.require_edit()?;
+        self.leave()?;
+        let current = match with {
+            Replacement::CurrentContents => Some(self.value_of(field)?),
+            _ => None,
+        };
+        let window = self.window()?;
+        let (original, count) = (window.current, window.found.len());
+        let mut result = Ok(());
+        for index in 0..count {
+            self.window_mut()?.current = index;
+            let value = match with {
+                Replacement::CurrentContents => current.clone().unwrap_or_else(Value::empty_text),
+                Replacement::Serial {
+                    initial, increment, ..
+                } => Value::text(Replacement::serial_text(initial, *increment, index as u64)),
+                Replacement::Calculation(evaluate) => evaluate(self),
+            };
+            result = self.store_value(field, value).and_then(|()| self.leave());
+            if result.is_err() {
+                break;
+            }
+        }
+        if let Some(window) = self.window.as_mut() {
+            window.current = original.min(window.found.len().saturating_sub(1));
+        }
+        result?;
+        if let Replacement::Serial {
+            initial,
+            increment,
+            update_serial: true,
+        } = with
+        {
+            let next = Replacement::serial_text(initial, *increment, count as u64);
+            self.set_next_serial_value(field, Value::text(next))?;
+        }
+        Ok(())
     }
 }
 

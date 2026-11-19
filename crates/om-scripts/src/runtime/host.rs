@@ -526,6 +526,38 @@ pub enum Replacement<'a> {
     Calculation(&'a mut dyn FnMut(&mut dyn ScriptHost) -> Value),
 }
 
+impl Replacement<'_> {
+    /// The serial number of the `index`th record (0 the first) from
+    /// `initial` by `increment`: the last run of digits counts, keeping its
+    /// width, and the text around it stays (`INV0009` then `INV0010`); an
+    /// initial value without digits stays as it is.
+    pub fn serial_text(initial: &str, increment: i64, index: u64) -> String {
+        let end = initial
+            .char_indices()
+            .rev()
+            .find(|(_, c)| c.is_ascii_digit())
+            .map(|(i, c)| i + c.len_utf8());
+        let Some(end) = end else {
+            return initial.to_owned();
+        };
+        let start = initial[..end]
+            .char_indices()
+            .rev()
+            .take_while(|(_, c)| c.is_ascii_digit())
+            .last()
+            .map_or(end, |(i, _)| i);
+        let digits = &initial[start..end];
+        let number: i128 = digits.parse().unwrap_or(0) + i128::from(increment) * index as i128;
+        format!(
+            "{}{:0width$}{}",
+            &initial[..start],
+            number,
+            &initial[end..],
+            width = digits.len()
+        )
+    }
+}
+
 /// Data file encodings (Write to / Read from Data File).
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Encoding {
@@ -1478,6 +1510,16 @@ pub(crate) fn encoding(v: u16) -> Encoding {
 #[cfg(test)]
 mod window_style_tests {
     use super::{WindowOptions, WindowStyle};
+
+    #[test]
+    fn serial_numbers_count_up_the_last_digits() {
+        let serial = super::Replacement::serial_text;
+        assert_eq!(serial("1", 1, 0), "1");
+        assert_eq!(serial("1", 1, 4), "5");
+        assert_eq!(serial("INV0009", 1, 1), "INV0010");
+        assert_eq!(serial("A-10-x", 5, 2), "A-20-x");
+        assert_eq!(serial("none", 1, 3), "none");
+    }
 
     #[test]
     fn style_words_name_their_style_and_options() {

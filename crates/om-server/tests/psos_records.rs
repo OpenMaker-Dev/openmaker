@@ -327,6 +327,52 @@ fn scripts() -> Vec<Script> {
                 exit_with("Get ( LastError )"),
             ],
         ),
+        script(
+            10,
+            "Replace by calculation",
+            replaced(1, COUNT, 3, "Count * 10"),
+        ),
+        script(11, "Replace by serials", replaced(2, NAME, 2, "T-08")),
+        script(12, "Replace by contents", replaced(2, COUNT, 1, "")),
+    ]
+}
+
+/// Go to Record [`go`: 1 first, 2 last], Replace Field Contents
+/// [Tasks::`field`] with `choice` 1 the current contents, 2 serial numbers
+/// from `text` by 2 or 3 the calculation `text`, then exit with the error,
+/// the current record's number and the field's values in record order.
+fn replaced(go: u16, field: u64, choice: i32, text: &str) -> Vec<ScriptStep> {
+    let mut step = ScriptStep::new(91);
+    step.set_field_spec(
+        0,
+        Some(FieldSpec::new(
+            StoredKey::from_id(OCCURRENCE).unwrap(),
+            StoredKey::from_id(field).unwrap(),
+            1,
+        )),
+    );
+    step.set_number(1, Some(choice));
+    match choice {
+        2 => {
+            step.set_number(2, Some(2));
+            step.set_text(3, Some(text));
+        }
+        3 => step.set_calculation(0, Some(&calc(text))),
+        _ => {}
+    }
+    // Count is an SQL function's name: quoted.
+    let column = if field == NAME {
+        "Name"
+    } else {
+        "\\\"Count\\\""
+    };
+    vec![
+        fixture::go_to_record(go),
+        step,
+        exit_with(&format!(
+            "Get ( LastError ) & \"/\" & Get ( RecordNumber ) & \"/\" & \
+             ExecuteSQL ( \"SELECT {column} FROM Tasks\" ; \"\" ; \",\" )"
+        )),
     ]
 }
 
@@ -910,4 +956,21 @@ fn lookup_tree() -> OwnedNode {
         OwnedNode::leaf(Vec::new(), unsorted),
     );
     root
+}
+
+/// Replace Field Contents on the server (script-runtime.md, "Steps"): every
+/// record of the found set takes the calculation evaluated on it, a serial
+/// number counting up the initial value's last digits, or the current
+/// record's value; each is committed, and the record current before stays
+/// current. It ran into error 3 before.
+#[test]
+fn server_replace_field_contents_writes_every_found_record() {
+    let file = TempFile::from_tree("psos-replace", &tree());
+    let port = server::start(&file);
+    let (mut client, _) = server::logged_in(port, "client");
+    // From the first record, which is current again afterwards.
+    assert_eq!(run(&mut client, 10), (0, "0/1/30,50,70,10".into()));
+    assert_eq!(run(&mut client, 11), (0, "0/4/T-08,T-10,T-12,T-14".into()));
+    // The last record's Count, 10, into every record.
+    assert_eq!(run(&mut client, 12), (0, "0/4/10,10,10,10".into()));
 }
