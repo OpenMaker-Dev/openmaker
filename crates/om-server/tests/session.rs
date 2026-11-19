@@ -2237,3 +2237,77 @@ fn a_refused_file_on_a_shared_connection_fails_alone() {
         .download(&[&om_hbam::slot::uint_segment(fixture::TABLE), &[5]])
         .is_err());
 }
+
+/// op88 stores container data only where the account's set lets it write
+/// the records that would hold it (#227): Temp's custom set creates and
+/// edits Tasks records but views Notes only. An upload to Tasks is stored;
+/// one to Notes, or to the file's own library (any table's records may
+/// hold it), is refused with 200, also when the data is already there,
+/// which would raise the member's count as op87 would not let it.
+#[test]
+fn container_uploads_need_the_tables_create_or_edit_privilege() {
+    use om_hbam::slot::uint_segment;
+    use om_protocol::container::{self, UploadBinary};
+    use om_protocol::Resume;
+
+    let mut root = fixture::tree(&[], true);
+    fixture::add_custom_clerk(&mut root);
+    let file = fixture::TempFile::from_tree("upload-privileges", &root);
+    let port = server::start_configured(&file, |server| server.admitting_custom_sets());
+    let (mut admin, admin_file) = server::logged_in(port, "admin");
+    let (mut temp, temp_file) = server::logged_in_as(
+        port,
+        "temp",
+        fixture::FILE,
+        fixture::TEMP,
+        fixture::TEMP_PASSWORD,
+    );
+    // Streams in key order.
+    let payload = binary_data(&[
+        (b"FILE", b"hello"),
+        (b"FNAM", &om_data::containers::fnam("file", "a.txt")),
+    ]);
+    let upload = |session: &mut Session, file: u32, table: Vec<Vec<u8>>| {
+        let request = UploadBinary {
+            payload: payload.clone(),
+            resume: Resume::start(),
+            table,
+            field: vec![vec![1]],
+            solved_path: String::new(),
+            reserved: [0; 16],
+        };
+        let reply = session
+            .perform(&container::build_upload_binary(9, file, &request))
+            .unwrap();
+        container::parse_upload_binary_reply(&reply).unwrap()
+    };
+    let tasks = vec![uint_segment(fixture::TABLE)];
+    let notes = vec![uint_segment(fixture::NOTES)];
+
+    let stored = upload(&mut temp, temp_file, tasks);
+    assert_eq!((stored.status, stored.member.len()), (0, 1), "{stored:?}");
+    for table in [notes.clone(), Vec::new()] {
+        let refused = upload(&mut temp, temp_file, table.clone());
+        assert_eq!(refused.status, 200, "{table:02x?}");
+        assert!(refused.member.is_empty());
+    }
+    // Admin stores the data in Notes; Temp's copy of it is refused and the
+    // member keeps the one reference Admin's upload counted.
+    let first = upload(&mut admin, admin_file, notes.clone());
+    assert_eq!(first.status, 0, "{first:?}");
+    let again = upload(&mut temp, temp_file, notes.clone());
+    assert_eq!(again.status, 200);
+    let count = [
+        notes[0].as_slice(),
+        &[0x1f],
+        &[5],
+        &first.member[0],
+        &[0x12],
+    ];
+    assert_eq!(
+        admin.download(&count).unwrap().value,
+        1u32.to_be_bytes().to_vec()
+    );
+    temp.disconnect().unwrap();
+    admin.disconnect().unwrap();
+}
