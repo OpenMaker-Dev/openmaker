@@ -51,7 +51,7 @@ use om_hbam::slot::be_uint;
 use om_hbam::{serial, OwnedNode};
 use om_scripts::StepData;
 
-use crate::field_catalog::{listed_key_or_why, name_key, MAX_NAME_CHARS, MAX_NAME_KEY};
+use crate::field_catalog::{listed_key, listed_key_or_why, name_key, MAX_NAME_CHARS, MAX_NAME_KEY};
 use crate::schema_draft::Stamp;
 use crate::{DataError, Script, ScriptCatalog, ScriptKind};
 
@@ -357,6 +357,18 @@ pub fn plan(
         return Err(missing("index"));
     };
     let mut index = index.clone();
+    // With no member decoded, the index is a new one only when it lists no
+    // member either: a name, order or cache entry without its member is
+    // not written over as if the catalog were empty.
+    let lists_members = [NAMES, ORDER, CACHE]
+        .iter()
+        .any(|key| index.child(&[*key]).is_some_and(|n| !n.children.is_empty()));
+    if before.is_empty() && lists_members {
+        return Err(unsupported(
+            "The script catalog's index lists members the file does not define, so OpenMaker \
+             does not save a change to it; nothing was saved.",
+        ));
+    }
     let last = match index.child(&[LAST_ID]) {
         Some(node) => node
             .value
@@ -429,12 +441,36 @@ pub fn plan(
             )));
         }
     }
+    // A going member's name list entries go with it, so each must be a
+    // plain leaf: one with children of its own holds bytes OpenMaker cannot
+    // read, which removing it would lose.
+    let entries: &[OwnedNode] = index
+        .child(&[NAMES])
+        .map(|n| n.children.as_slice())
+        .unwrap_or_default();
+    for &id in &going {
+        let value = key_string(&serial::encode(id));
+        if entries
+            .iter()
+            .any(|e| e.value.as_deref() == Some(value.as_slice()) && !e.children.is_empty())
+        {
+            let name = stored
+                .scripts
+                .iter()
+                .find(|s| s.id == id)
+                .map_or("", |s| &s.name);
+            return Err(unsupported(format!(
+                "The script catalog's name list entry for “{name}” holds data OpenMaker cannot \
+                 read, so OpenMaker does not rename or delete it; nothing was saved."
+            )));
+        }
+    }
     let unlist = |index: &mut OwnedNode, segment: &[u8]| {
         let value = key_string(segment);
         index
             .ensure(&[&[NAMES]])
             .children
-            .retain(|e| e.value.as_deref() != Some(value.as_slice()));
+            .retain(|e| !e.children.is_empty() || e.value.as_deref() != Some(value.as_slice()));
     };
 
     // The names every member keeps, by name key, to refuse a second one:
@@ -491,6 +527,61 @@ pub fn plan(
     }
     for script in &new {
         keys.insert(script.id, take(&script.name, assigned[&script.id])?);
+    }
+    // A new member's id must be free in the index: an entry already under
+    // it (left by a member the file no longer defines) is not replaced.
+    for &id in assigned.values() {
+        let segment = serial::encode(id);
+        let value = key_string(&segment);
+        let named = |key: u8| {
+            index.child(&[key]).is_some_and(|n| {
+                n.children
+                    .iter()
+                    .any(|e| e.value.as_deref() == Some(&value[..]))
+            })
+        };
+        if index.at(&[&[CACHE], &segment]).is_some() || named(NAMES) || named(ORDER) {
+            return Err(unsupported(format!(
+                "The script catalog's index already has an entry for id {id}, which no script \
+                 holds, so OpenMaker does not give a new script that id; nothing was saved."
+            )));
+        }
+    }
+    // The members that stay must be listed under the keys OpenMaker
+    // computes for them: one FileMaker listed under another key means the
+    // two disagree, and a new key could then land where FileMaker would
+    // list another name (scripts.md, "The catalog index").
+    if !keys.is_empty() {
+        let mut listed: BTreeMap<&[u8], Vec<&[u8]>> = BTreeMap::new();
+        for entry in index
+            .child(&[NAMES])
+            .map(|n| n.children.as_slice())
+            .unwrap_or_default()
+        {
+            if let Some(value) = entry.value.as_deref() {
+                listed.entry(value).or_default().push(&entry.segment);
+            }
+        }
+        for script in stored
+            .scripts
+            .iter()
+            .filter(|s| after.contains(&s.id) && !going.contains(&s.id))
+        {
+            let value = key_string(&serial::encode(script.id));
+            let (Some(segments), Some(expected)) =
+                (listed.get(value.as_slice()), listed_key(&script.name))
+            else {
+                continue;
+            };
+            if !segments.contains(&expected.as_slice()) {
+                return Err(unsupported(format!(
+                    "The script catalog lists “{}” under a name key OpenMaker does not compute \
+                     for it, so OpenMaker does not save a new or renamed script beside it; \
+                     nothing was saved.",
+                    script.name
+                )));
+            }
+        }
     }
 
     for script in &deleted {
@@ -1210,5 +1301,87 @@ mod tests {
         )
         .unwrap()
         .is_none());
+    }
+
+    /// What the index holds that OpenMaker cannot read, or that disagrees
+    /// with the keys it computes, is never written over: the save is
+    /// refused and nothing changes.
+    #[test]
+    fn index_entries_openmaker_cannot_account_for_are_refused() {
+        let (index, definitions, stored) = starter();
+        let with_new = |stored: &ScriptCatalog| {
+            let mut requested = stored.clone();
+            requested.scripts.push(Script {
+                id: 9,
+                name: "Fresh".into(),
+                kind: ScriptKind::Script,
+                ..Script::default()
+            });
+            requested
+        };
+        let refused = |index: &OwnedNode,
+                       stored: &ScriptCatalog,
+                       definitions: &BTreeMap<u64, OwnedNode>,
+                       requested: &ScriptCatalog| {
+            plan(
+                Some(index),
+                stored,
+                definitions,
+                requested,
+                &by(),
+                &mut || [0; 16],
+            )
+            .unwrap_err()
+            .message
+        };
+        // A renamed or deleted member's name list entry with children of
+        // its own: removing the entry would lose them.
+        let mut opaque = index.clone();
+        let key = listed_key("Go to Entry Field").unwrap();
+        opaque
+            .ensure(&[&[NAMES], &key])
+            .children
+            .push(OwnedNode::leaf([9], [1]));
+        let mut renamed = stored.clone();
+        renamed.scripts[1].name = "Other".into();
+        let mut deleted = stored.clone();
+        deleted.scripts.remove(1);
+        for requested in [&renamed, &deleted] {
+            let error = refused(&opaque, &stored, &definitions, requested);
+            assert!(error.contains("cannot read"), "{error}");
+        }
+        // A member listed under another key than the one OpenMaker
+        // computes for its name: the two disagree, so no new key is added.
+        let mut moved = index.clone();
+        let tasks = listed_key("Tasks").unwrap();
+        moved
+            .ensure(&[&[NAMES]])
+            .children
+            .retain(|e| e.segment != tasks);
+        moved.ensure(&[&[NAMES]]).set_child(OwnedNode::leaf(
+            listed_key("Taskz").unwrap(),
+            key_string(&[1]),
+        ));
+        let error = refused(&moved, &stored, &definitions, &with_new(&stored));
+        assert!(error.contains("does not compute"), "{error}");
+        // No member decoded, no last issued id, and a cache entry left for
+        // id 1: not an empty catalog, so the first script does not take 1.
+        let orphan = OwnedNode::list(
+            vec![1],
+            vec![OwnedNode::list(
+                vec![CACHE],
+                vec![OwnedNode::list(
+                    vec![1],
+                    vec![
+                        om_scripts::text_node(&[NAME], "Gone"),
+                        OwnedNode::leaf([MEMBER_FLAGS], [0, 0, 0, 0, 0, 0, 0, 8]),
+                        OwnedNode::leaf([0x55], [1, 2, 3]),
+                    ],
+                )],
+            )],
+        );
+        let empty = ScriptCatalog::default();
+        let error = refused(&orphan, &empty, &BTreeMap::new(), &with_new(&empty));
+        assert!(error.contains("does not define"), "{error}");
     }
 }
