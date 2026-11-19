@@ -727,12 +727,13 @@ impl OpenMakerApp {
                 self.with_window(window, |app| app.on_script_event(ctx, event));
             }
             Reply::Script(event @ ScriptEvent::Prompt { .. }) => {
-                // A modal belongs to its requesting window. A prior visible
-                // Open File must not leave the blocked caller behind its peer.
+                // A modal belongs to its requesting window, which comes to
+                // the front so it can be answered: in front of the Script
+                // Workspace a Run started from, of a peer a visible
+                // Open File presented, and of a window the user brought
+                // forward while the script ran.
                 self.with_window(window, |app| app.on_script_event(ctx, event));
-                if matches!(self.presentation, Some(Presentation::Window { .. })) {
-                    self.present_owner(window);
-                }
+                self.present_owner(window);
             }
             Reply::Script(event @ ScriptEvent::Paused { .. }) => {
                 // The pause bar is the front window's, and Continue goes on
