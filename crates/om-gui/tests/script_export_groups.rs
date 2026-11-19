@@ -212,10 +212,12 @@ fn save_records_as_excel_after_a_sort_keeps_the_sorts_groups() {
     };
     let mut excel = ScriptStep::new(143);
     excel.set_data_leaf(0x85, Some(OwnedNode::leaf([0x85], options.encode())));
-    excel.set_number(0, Some(0));
+    // Slot 0 one byte and slot 1 two, the output path in slot 0's path
+    // list, as FileMaker Pro stores them (script-steps.md 11.7).
+    excel.set_number_bool(0, Some(false));
     excel.set_number_u16(1, Some(1));
-    excel.flags |= flag::NO_INTERACT | flag::RESTORE | flag::FILE_PATH;
-    excel.set_data_leaf(0x82, Some(om_scripts::text_node(&[0x82], "$p")));
+    excel.flags |= flag::NO_INTERACT | flag::RESTORE;
+    excel.set_path_list("file:$q").unwrap();
     let scripts = vec![
         fixture::script(
             1,
@@ -227,7 +229,7 @@ fn save_records_as_excel_after_a_sort_keeps_the_sorts_groups() {
             "Save rows",
             vec![
                 fixture::on(86, true),
-                export_to(&name),
+                set_variable("$q", &format!("Get ( TemporaryPath ) & \"{name}\"")),
                 excel,
                 show("\"exported \" & Get ( LastError )"),
             ],
