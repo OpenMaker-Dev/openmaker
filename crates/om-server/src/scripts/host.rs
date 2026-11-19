@@ -3820,5 +3820,34 @@ impl Network for ServerHost {
         self.fetch_url_step(request)
     }
 }
-impl Accounts for ServerHost {}
+impl Accounts for ServerHost {
+    /// Change Password (83): the session's account's own password in the
+    /// hosted file, as FileMaker's `SetPassword` sets it
+    /// (local-files.md 2.4, [`crate::hosting::Hosted::change_password`]):
+    /// saved before the step ends, with FileMaker's errors (212 a wrong
+    /// old password, 206 a set that does not allow it, 208 shorter than
+    /// the set's minimum, 209 the same password, 11 longer than 100
+    /// characters, 210 an inactive account). A server script shows no
+    /// dialog, so the step runs as without one (inferred). A file that is
+    /// read-only, or could not be written, changes nothing: 3 (OpenMaker's
+    /// choice).
+    fn change_password(&mut self, old: &str, new: &str, _with_dialog: bool) -> HostResult {
+        if self.hosted.read_only {
+            return Err(ErrorCode::UNAVAILABLE.into());
+        }
+        let now = jiff::Zoned::now().datetime();
+        match self.hosted.change_password(&self.account, old, new, now) {
+            Ok(()) => Ok(()),
+            Err(e) => {
+                if let crate::hosting::PasswordChangeError::Unwritten(reason) = &e {
+                    warn!(
+                        "{:?}: Change Password for {:?} changed nothing: {reason}",
+                        self.hosted.name, self.account
+                    );
+                }
+                Err(ErrorCode(e.code().unwrap_or(ErrorCode::UNAVAILABLE.0)).into())
+            }
+        }
+    }
+}
 impl Platform for ServerHost {}

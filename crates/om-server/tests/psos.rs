@@ -1213,3 +1213,52 @@ fn administrators_abort_scripts_and_shut_down() {
     assert_eq!(aborts(), expected);
     std::fs::remove_dir_all(&folder).unwrap();
 }
+
+/// Change Password (83) in a server script sets the session's account's
+/// own password in the hosted file, as FileMaker's `SetPassword` does
+/// (local-files.md 2.4): a wrong old password is 212 and changes nothing;
+/// the right one sets the new password, which the old one then no longer
+/// matches (#83).
+#[test]
+fn change_password_sets_the_accounts_own_password() {
+    use fixture::{calc, exit_with, on, script, set_variable};
+    let change = |old: &str, new: &str| {
+        let mut step = ScriptStep::new(83);
+        step.set_calculation(0, Some(&calc(old)));
+        step.set_calculation(1, Some(&calc(new)));
+        step
+    };
+    let old = format!("{CLERK_PASSWORD:?}");
+    let scripts = [script(
+        6,
+        "Change",
+        vec![
+            on(86, true),
+            change("\"wrong\"", "\"fresh secret\""),
+            set_variable("$wrong", "Get ( LastError )"),
+            change(&old, "\"fresh secret\""),
+            set_variable("$right", "Get ( LastError )"),
+            change(&old, "\"another\""),
+            exit_with("$wrong & \"|\" & $right & \"|\" & Get ( LastError )"),
+        ],
+    )];
+    let file = TempFile::new("change-password", &scripts, true);
+    let port = start(&file, None);
+    let mut clerk = logged_in_as(port, "clerk", CLERK);
+    assert_eq!(run(&mut clerk, 6).1, "212|0|212");
+    clerk.disconnect().unwrap();
+    // A new login takes the new password, not the old one.
+    let login = |password: &str| {
+        let mut session = connect(port, "check");
+        session.open_file("127.0.0.1", FILE).unwrap();
+        session.fetch_internal_creation().unwrap();
+        let environment = LoginEnvironment::for_remote_file("127.0.0.1", FILE);
+        let reply = session
+            .login(CLERK, password, INTERNAL_CREATION, &environment)
+            .unwrap();
+        let _ = session.disconnect();
+        reply.is_success()
+    };
+    assert!(login("fresh secret"));
+    assert!(!login(CLERK_PASSWORD));
+}
