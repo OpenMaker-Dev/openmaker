@@ -523,7 +523,8 @@ Open items:
     an empty node (scripts.md, "Saving scripts to a host").
   - External container storage is not read (containers.md 8).
   - Unique and existing-value rules need a text field with a value index
-    in English or Unicode raw, value-list rules one in English. Lists from another file, a calculation, related values or
+    in English, System, Unicode standard or Unicode raw, value-list rules
+    one in English. Lists from another file, a calculation, related values or
     a second field still make the table read-only.
   - OpenMaker's own choices, not settled by the oracle: numeric forms
     beyond those tested, value-list dividers, ranges on text and date
