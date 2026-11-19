@@ -157,13 +157,18 @@ impl DownloadMemory {
         let held = self.held.fetch_add(bytes, Ordering::Relaxed) + bytes;
         streams.retain(|stream| stream.strong_count() > 0);
         if held > limit {
-            let mut others: Vec<Arc<Stream>> = streams.iter().filter_map(Weak::upgrade).collect();
-            others.sort_by_key(|other| other.used.load(Ordering::Relaxed));
-            for other in others {
+            let mut others: Vec<(u64, Arc<Stream>)> = (streams.iter())
+                .filter_map(Weak::upgrade)
+                .map(|other| (other.used.load(Ordering::Relaxed), other))
+                .collect();
+            others.sort_by_key(|(used, _)| *used);
+            for (used, other) in others {
                 if self.held.load(Ordering::Relaxed) <= limit {
                     break;
                 }
-                if other.drop_data() {
+                // One paged since the order was taken is not the least
+                // recently paged any more.
+                if other.drop_unless_paged_since(used) {
                     info!(
                         "dropping an unfinished download of {} bytes to stay within the \
                          server's download memory",
@@ -205,9 +210,22 @@ impl Stream {
 
     /// Give its bytes back to the budget, once: whether this did.
     fn drop_data(&self) -> bool {
-        let held = self.data().take().is_some();
+        Self::give_back(&self.memory, self.bytes, &mut self.data())
+    }
+
+    /// [`Self::drop_data`], unless it was paged after `used`: its owner
+    /// marks it paged with its data locked, so it is never dropped between
+    /// a page cut from it and the mark.
+    fn drop_unless_paged_since(&self, used: u64) -> bool {
+        let mut data = self.data();
+        self.used.load(Ordering::Relaxed) == used
+            && Self::give_back(&self.memory, self.bytes, &mut data)
+    }
+
+    fn give_back(memory: &DownloadMemory, bytes: usize, data: &mut Option<Vec<u8>>) -> bool {
+        let held = data.take().is_some();
         if held {
-            self.memory.held.fetch_sub(self.bytes, Ordering::Relaxed);
+            memory.held.fetch_sub(bytes, Ordering::Relaxed);
         }
         held
     }
@@ -377,6 +395,7 @@ impl Transfers {
                 depth,
             } if held.owner == owner && held.perform == resume.perform => {
                 let cut = stream.data().as_deref().map(|data| {
+                    stream.used.store(self.downloads.tick(), Ordering::Relaxed);
                     let (end, depth) = page_cut(data, offset, limit, depth);
                     (data[offset..end].to_vec(), end, depth, end == data.len())
                 });
@@ -392,7 +411,6 @@ impl Transfers {
                 if complete {
                     return Ok(Some((page, Resume::complete())));
                 }
-                stream.used.store(self.downloads.tick(), Ordering::Relaxed);
                 let resume =
                     self.keep_download(owner, held.perform, resume.cursor, stream, end, depth);
                 Ok(Some((page, resume)))
