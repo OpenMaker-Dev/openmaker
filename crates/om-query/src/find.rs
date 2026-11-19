@@ -217,6 +217,33 @@ fn stamp_key((year, month, day): Ymd, seconds: u32) -> Option<Vec<u8>> {
     )
 }
 
+/// The key of the last microsecond of second `seconds` (`h:mm:ss.999999`):
+/// a time period ends there, so a value with a fraction of that second is
+/// inside it. FileMaker's own finder for `12:30 PM` reads up to
+/// 45,059.999999 s (spec 7.3).
+fn time_end_key(seconds: u32) -> Option<Vec<u8>> {
+    om_collate::time_key(&format!("{}.999999", clock(seconds)))
+}
+
+/// [`time_end_key`] of a timestamp (the same fraction, inferred).
+fn stamp_end_key((year, month, day): Ymd, seconds: u32) -> Option<Vec<u8>> {
+    om_collate::timestamp_key(
+        &format!("{month}/{day}/{year} {}.999999", clock(seconds)),
+        DateOrder::MonthDayYear,
+    )
+}
+
+/// The key of a bound that stands for the last second of what it names
+/// (the end of an inclusive range, the start of `>x`): through that
+/// second's last microsecond for times and timestamps ([`time_end_key`]).
+fn bound_end_key(bound: &Bound) -> Option<Vec<u8>> {
+    match bound {
+        Bound::Time(seconds) => time_end_key(*seconds),
+        Bound::Stamp(date, seconds) => stamp_end_key(*date, *seconds),
+        other => bound_key(other),
+    }
+}
+
 /// A bound's index key; `None` when its form is not established.
 fn bound_key(bound: &Bound) -> Option<Vec<u8>> {
     match bound {
@@ -414,15 +441,18 @@ fn keyed_plan(
                     typed.to_vec()
                 }
             };
-            let key = |b: &Option<(Bound, bool)>, open: Vec<u8>| -> Option<(Vec<u8>, bool)> {
-                match b {
-                    None => Some((open, false)),
-                    Some((bound, inclusive)) => Some((bound_key(bound)?, *inclusive)),
+            // `<=x`, `a...b` and `>x` take x's last second (criteria.rs),
+            // which ends at its last microsecond.
+            let key = |b: &Option<(Bound, bool)>, open: Vec<u8>, high: bool| match b {
+                None => Some((open, false)),
+                Some((bound, inclusive)) if *inclusive == high => {
+                    Some((bound_end_key(bound)?, *inclusive))
                 }
+                Some((bound, inclusive)) => Some((bound_key(bound)?, *inclusive)),
             };
             match (
-                key(low, open(EMPTY_TEXT_KEY)),
-                key(high, open(crate::keys::INVALID_KEY)),
+                key(low, open(EMPTY_TEXT_KEY), false),
+                key(high, open(crate::keys::INVALID_KEY), true),
             ) {
                 (Some((begin, low_in)), Some((end, high_in))) => {
                     let options = if low_in { INCLUDE_BEGIN } else { 0 }
@@ -452,9 +482,11 @@ fn keyed_plan(
                     Some((first, last)) => period(date_key(first), date_key(last), d.is_period()),
                     None => Plan::candidates(Vec::new()),
                 },
-                Moment::Time(t) => {
-                    period(time_key(t.earliest()), time_key(t.latest()), t.is_period())
-                }
+                Moment::Time(t) => period(
+                    time_key(t.earliest()),
+                    time_end_key(t.latest()),
+                    t.is_period(),
+                ),
                 Moment::Stamp(d, t) => match days(d) {
                     Some((first, last)) => {
                         let whole_days = *t == any_time();
@@ -462,13 +494,13 @@ fn keyed_plan(
                         if one_day {
                             period(
                                 stamp_key(first, t.earliest()),
-                                stamp_key(last, t.latest()),
+                                stamp_end_key(last, t.latest()),
                                 true,
                             )
                         } else {
                             period(
                                 stamp_key(first, 0),
-                                stamp_key(last, 86_399),
+                                stamp_end_key(last, 86_399),
                                 whole_days && d.is_period(),
                             )
                         }
@@ -1354,6 +1386,18 @@ mod tests {
             .ends_with(&[key_operand(&[0x01]), key_operand(&seven)].concat()));
         let between = number("1...7");
         assert_eq!(between[0].bytes[2], INCLUDE_BEGIN | INCLUDE_END);
+        // The finder FileMaker Server's engine built for `12:30 PM` on a
+        // time field (7.3): the whole minute, to 45,059.999999 s.
+        let minute = finders(TABLE, 3, DataType::Time, "12:30 PM", order).unwrap();
+        assert_eq!(
+            &minute[0].bytes[..3],
+            [kind::INDEX_RANGE, VALUE_SCOPE, INCLUDE_BEGIN | INCLUDE_END]
+        );
+        let begin = [0x80, 0, 0, 0x80, 0x05, 0x56, 0x11, 0x10];
+        let end = [0x80, 0, 0, 0x80, 0x05, 0x56, 0x16, 0xaa, 0xaa, 0xaa, 0xa0];
+        assert!(minute[0]
+            .bytes
+            .ends_with(&[key_operand(&begin), key_operand(&end)].concat()));
         // Empty: the empty value's key `01`, for every type (7.3).
         let empty = finders(TABLE, 1, DataType::Text, "=", order).unwrap();
         assert!(empty[0].bytes.ends_with(&[2, 1, 1, 0]));
