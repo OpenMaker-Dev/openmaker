@@ -66,6 +66,7 @@ fn export_grouped() -> ScriptStep {
         formatting: false,
         charset: ExportCharset::Utf8,
         use_name_alias: Some(1),
+        field_names: None,
     };
     let mut step = ScriptStep::new(36);
     step.set_data_leaf(0x85, Some(OwnedNode::leaf([0x85], options.encode())));

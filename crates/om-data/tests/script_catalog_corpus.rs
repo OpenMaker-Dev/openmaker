@@ -14,7 +14,7 @@ use std::path::{Path, PathBuf};
 
 use om_data::field_catalog::name_key;
 use om_data::schema_draft::Stamp;
-use om_data::script_catalog::{catalog_digest, lists_ascii_names_plainly, plan};
+use om_data::script_catalog::{catalog_digest, plan};
 use om_data::{Script, ScriptCatalog, ScriptKind};
 use om_hbam::{serial, HbamFile, KeyTree, OwnedNode, SlotReader};
 
@@ -113,34 +113,17 @@ fn check(path: &Path) -> (usize, usize) {
     let stored = ScriptCatalog::decode(&tree).unwrap_or_else(|e| panic!("{at}: {e:?}"));
 
     // The index as FileMaker left it. ASCII names are listed under their
-    // DUCET key in every file of a language `lists_ascii_names_plainly`
-    // names (#274); names with accents add levels, and the Japanese,
-    // Korean and Chinese files, which name no script in ASCII, use other
-    // weights.
-    let language = tree
-        .at(&[2, 0x0d])
-        .and_then(|n| n.to_owned_node().value)
-        .and_then(|v| om_calc::Locale::from_record(&v))
-        .unwrap_or_else(|| panic!("{at}: no locale"))
-        .language;
-    let plainly = lists_ascii_names_plainly(language);
+    // DUCET key in the English, Dutch and Italian files; the others show
+    // other forms (accents add levels; Japanese, Korean and Chinese use
+    // other weights).
     let mut ascii_keyed = 0;
     for script in &stored.scripts {
         let segment = serial::encode(script.id);
         let entry = key_string(&segment);
-        let lettered = script.name.bytes().any(|b| b.is_ascii_alphabetic());
-        let keyed =
-            value(&index, &[&[1], &listed(&script.name)]).as_deref() == Some(entry.as_slice());
-        if keyed && lettered {
+        if value(&index, &[&[1], &listed(&script.name)]).as_deref() == Some(entry.as_slice())
+            && script.name.bytes().any(|b| b.is_ascii_alphabetic())
+        {
             ascii_keyed += 1;
-        }
-        if lettered && script.name.is_ascii() && script.kind != ScriptKind::FolderEnd {
-            assert!(
-                keyed && plainly,
-                "{at}: “{}” in a file of language {}",
-                script.name,
-                language.id()
-            );
         }
         let cached = value(&index, &[&[7], &segment, &[0x10]])
             .unwrap_or_else(|| panic!("{at}: no cached name for {}", script.id));
@@ -205,7 +188,6 @@ fn check(path: &Path) -> (usize, usize) {
         &stored,
         &definitions,
         &requested,
-        Some(language),
         &Stamp {
             user: "Tester".into(),
             account: "Admin".into(),
@@ -272,7 +254,6 @@ fn check(path: &Path) -> (usize, usize) {
         &stored,
         &definitions,
         &requested,
-        Some(language),
         &by,
         &mut || [7; 16],
     );
@@ -284,17 +265,13 @@ fn check(path: &Path) -> (usize, usize) {
     let save = match planned {
         Ok(Some(save)) => save,
         Ok(None) => panic!("{at}: nothing planned"),
-        Err(e) => {
-            // Refused only where no member shows the ASCII key form and
-            // the file's language does not say it.
-            assert!(
-                ascii_keyed == 0 && !plainly && e.message.contains("do not show the key"),
-                "{at}: {} ({ascii_keyed} ASCII-keyed, ASCII-named scripts: {ascii_named})",
-                e.message
-            );
-            println!("refused: {at}");
-            return (0, 1);
-        }
+        // Name list keys are the same in every file (#274): a new ASCII
+        // name is listed in every starter, the Japanese, Korean and
+        // Chinese ones, which hold no ASCII script name, included.
+        Err(e) => panic!(
+            "{at}: {} ({ascii_keyed} ASCII-keyed, ASCII-named scripts: {ascii_named})",
+            e.message
+        ),
     };
     let mut members = definitions.clone();
     for member in &save.members {

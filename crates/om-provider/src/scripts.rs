@@ -360,10 +360,6 @@ impl NativeProvider {
                  Workspace again.",
             ));
         };
-        // The file's language says how its name list keys a new name that
-        // no stored name shows (#274), read before any lock is taken. Not
-        // known when the schema cannot be read: the stored names decide.
-        let language = self.calc_schema_cached().ok().map(|s| s.locale.language);
         let index = index_path();
         let index_txn = self.new_transaction();
         self.lock_script_path(&index, index_txn)
@@ -372,7 +368,7 @@ impl NativeProvider {
                 ..e
             })?;
         let mut member_locks = Vec::new();
-        let outcome = self.send_catalog(&requested, base, language, index_txn, &mut member_locks);
+        let outcome = self.send_catalog(&requested, base, index_txn, &mut member_locks);
         let session = self.session.as_mut().expect("open session");
         // Whatever the upload released already, nothing stays locked.
         for (path, txn) in member_locks.iter().chain([(index, index_txn)].iter()) {
@@ -452,7 +448,6 @@ impl NativeProvider {
         &mut self,
         requested: &ScriptCatalog,
         base: Revision,
-        language: Option<om_data::calc::Language>,
         index_txn: u32,
         member_locks: &mut Vec<(Vec<Vec<u8>>, u32)>,
     ) -> Result<Option<CatalogSave>, Failure> {
@@ -504,7 +499,6 @@ impl NativeProvider {
             &stored.catalog,
             &stored.definitions,
             requested,
-            language,
             &stamp,
             &mut uuid,
         );

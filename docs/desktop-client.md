@@ -430,7 +430,9 @@ authoring part tabs or object kind captions.
   record is in it, or when a sort field may read other records. A hop
   whose source match values are all empty relates nothing and reads no
   record. A new record the transaction holds ([#261](https://github.com/OpenMaker-Dev/openmaker/issues/261)) has no related set
-  on the host yet, so its sets are scanned. Results are kept from frame
+  on the host yet, so its sets are scanned from its held values, also
+  before anything is typed into it: right after New Record its
+  auto-entered keys relate records ([#327](https://github.com/OpenMaker-Dev/openmaker/issues/327)). Results are kept from frame
   to frame while the changes stay the same, and are all evaluated again
   when they change; those that read the window's context (`Get`
   functions) are also evaluated again when that changes (#1308). Limits: a
@@ -469,6 +471,20 @@ authoring part tabs or object kind captions.
   OpenMaker's choice: FileMaker Pro keeps cached records until a
   notification purges them (write-path.md 6.5), and its requests per page
   are unmeasured.
+- While a save or another change has the window's calculations read
+  their data again, each related field, merge field, summary, unstored
+  calculation, hide condition, conditional format, tooltip and label keeps
+  drawing the result it had before the change, until its fresh one can be
+  computed; a portal already kept its rows ([#324](https://github.com/OpenMaker-Dev/openmaker/issues/324)). Before, a save drew
+  them empty for the moment the data took to arrive, about 1 s on a hosted
+  multi-file solution. A portal row's or related field's value is drawn
+  read-only in that moment: its editor returns once its record is read
+  again. The kept results go once a frame draws the window with nothing
+  missing and nothing on its way. A read that fails draws its failure at
+  once, not the last value. Preview, PDF and printing never draw kept
+  results. OpenMaker's choice: whether FileMaker Pro draws anything in
+  place of these values while it refreshes them after a save is
+  unmeasured.
 - A window asks its provider for what its calculations lack once per
   frame, all of it in one request. The request carries the window's token
   for its current layout, page revision, view and found set.
@@ -528,7 +544,24 @@ authoring part tabs or object kind captions.
   system's media view, unmeasured].
 - Button icons come from the file's library root `31` as the original SVG,
   colored through the icon component's style; no application icon is
-  substituted for a file's library image. Binary merge references resolve
+  substituted for a file's library image.
+- SVG pictures and icons are drawn outside om-gui's process, by the SVG
+  worker (`om-gui-pdf-worker --svg`, the one reports use: its allocator
+  capped 512 MiB past its input, killed after 30 seconds, one SVG at a
+  time), on a background thread, at the pixel size they show at (at most
+  8,192 pixels a side and 16 megapixels, or the GPU's largest texture,
+  then stretched over the frame). A library SVG is hostile input that can
+  ask usvg and resvg for unbounded memory or stack, which would abort
+  om-gui ([#303](https://github.com/OpenMaker-Dev/openmaker/issues/303)).
+  Nothing shows until the worker answers (a few milliseconds an icon).
+  Drawn rasters are kept within 128 MiB beside those on screen, the sizes
+  an SVG no longer shows at (a window being resized) dropped first. Text
+  is drawn in the bundled fonts (Inter, else Liberation Sans); the images
+  an SVG names are left out and never read from disk; an SVG that fails in
+  the worker, or every SVG when no worker is installed beside om-gui,
+  shows egui's error mark, as a picture that does not decode does
+  [I, OpenMaker; FileMaker draws SVG with the platform's renderer, and
+  what it shows for one it cannot draw is unmeasured]. Binary merge references resolve
   through the occurrence and field keys, to `Field` in the layout's
   occurrence and to `Occurrence::Field` in related ones (layout-model.md
   4.1).
@@ -976,8 +1009,8 @@ Inferred, unmeasured in Pro:
 **Committing and reverting.** A record being edited shows no bar, as in
 FileMaker Pro 26.0.3 (#871, observed on the Tasks starter), so the layout
 keeps its place. Switching fields keeps the record's draft. A click on
-blank layout canvas, Command-Enter (Ctrl+Enter on Linux and Windows),
-going to another record, changing mode or layout, Refresh Window, closing
+blank layout canvas, the numeric keypad's Enter, Command-Enter (Ctrl+Enter
+on Linux and Windows) with either Enter key, going to another record, changing mode or layout, Refresh Window, closing
 the window or file, quitting, and a script's Commit Records/Requests
 commit it. Keyboard Commit leaves the field through the existing
 OnObjectValidate, OnObjectSave (when changed) and OnObjectExit stages,
@@ -1010,8 +1043,23 @@ starter), except the re-read, which is OpenMaker's. Pro has no Save
 Record menu item, and OpenMaker adds none.
 
 **Limits of committing and reverting:**
-- **Keypad Enter** commits in Pro. egui reports it as Return, so in
-  OpenMaker it keeps the draft ([#260](https://github.com/OpenMaker-Dev/openmaker/issues/260)).
+- **Keypad Enter and Return.** egui reports both keys as Enter, so the
+  app's event loop marks keypad Enter's events before egui reads them
+  (`om_gui::keypad`). A program that runs `om_gui::run` with a logger of its
+  own gets eframe's own loop instead, which keeps eframe's errors its
+  return value, and there keypad Enter acts as Return.
+  - Keypad Enter commits from a field of the record, or with no field
+    active. In an open menu or list, and in the toolbar's boxes (Quick
+    Find, the record number), it acts as Return.
+  - From a field whose "Go to next object using" includes the Enter key
+    (field flag `0x80`, layout-model.md 5.4.1), it goes to the next object
+    as Tab does. That FileMaker Pro goes on there rather than commits is
+    inferred from the option, not measured. With Shift or Option it still
+    goes forward; what Pro does then is unmeasured.
+  - Return ends the field's editing and keeps the draft. FileMaker Pro
+    types a line break there, or goes to the next object when the option
+    includes the Return key (`0x40`)
+    ([#376](https://github.com/OpenMaker-Dev/openmaker/issues/376)).
 - **A new record and reconnecting.** Records > New Record and Duplicate
   Record run the New Record/Request and Duplicate Record/Request steps:
   the record is held in the window's record session until it is
@@ -2004,15 +2052,11 @@ step drafts, Run and Revert. Save stores the active script's steps:
     id, which no script takes again.
 - **Refused with an alert (error 3), nothing saved:** new folders and
   separators (and duplicated folders), a name another script or folder
-  has, names with characters outside ASCII, and deleting or renaming one
-  of two members of one name. Files whose own script names do not show
-  how FileMaker keys an ASCII name, in a language whose starter files do
-  not show it either, refuse new and renamed scripts (deletes, moves and
-  options still save): the Japanese, Korean and Chinese starter files
-  ([#209](https://github.com/OpenMaker-Dev/openmaker/issues/209)). A
-  Create New file and the starters whose script names all have accents
-  (the Swedish Assets, the French and Swedish Meetings) take new ASCII
-  names in their language's form
+  has, names with characters outside ASCII
+  ([#209](https://github.com/OpenMaker-Dev/openmaker/issues/209)), and
+  deleting or renaming one of two members of one name. New and renamed scripts are listed under
+  FileMaker's name list key, which is the same in every file, so a Create
+  New file and the Japanese, Korean and Chinese starters take them too
   ([#274](https://github.com/OpenMaker-Dev/openmaker/issues/274)). A
   file whose script index lacks a part every file FileMaker made has is
   refused too, and so is one whose stored digest is not the one OpenMaker

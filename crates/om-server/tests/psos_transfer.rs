@@ -778,6 +778,7 @@ fn grouped_exports_summarize_each_group() {
         formatting: false,
         charset: om_transfer::ExportCharset::Utf8,
         use_name_alias: Some(1),
+        field_names: None,
     };
     let scripts = vec![script(
         1,
@@ -832,6 +833,7 @@ fn grouped_exports_summarize_each_group() {
         formatting: false,
         charset: om_transfer::ExportCharset::Utf8,
         use_name_alias: Some(1),
+        field_names: None,
     };
     let scripts = vec![script(
         1,

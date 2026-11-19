@@ -47,12 +47,11 @@
 
 use std::collections::{BTreeMap, BTreeSet};
 
-use om_calc::Language;
 use om_hbam::slot::be_uint;
 use om_hbam::{serial, OwnedNode};
 use om_scripts::StepData;
 
-use crate::field_catalog::{name_key, MAX_NAME_CHARS, MAX_NAME_KEY};
+use crate::field_catalog::{listed_key_or_why, name_key, MAX_NAME_CHARS, MAX_NAME_KEY};
 use crate::schema_draft::Stamp;
 use crate::{DataError, Script, ScriptCatalog, ScriptKind};
 
@@ -135,79 +134,23 @@ fn key_string_id(value: &[u8]) -> Option<u64> {
         .flatten()
 }
 
-/// The name list key of `name` in `[17, 1, 01]`: its name key and three
-/// zero bytes (schema-path.md 5.6).
+/// The name list key of an ASCII name in `[17, 1, 01]`: its name key and
+/// three zero bytes (schema-path.md 5.6), as [`listed_key`] builds it.
+#[cfg(test)]
 fn listed(key: &[u8]) -> Vec<u8> {
     let mut listed = key.to_vec();
     listed.extend([0, 0, 0]);
     listed
 }
 
-/// What the file's own name list shows of the key form [`name_key`]
-/// computes for names of ASCII characters: the members named with an
-/// ASCII letter, each named once, listed under it, or one listed
-/// otherwise. The key depends on the file's language (scripts.md, "The
-/// catalog index"). Folder ends (`--`), separators (`-`) and members
-/// sharing a name cannot each have the one entry of their key, so they
-/// say nothing.
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-enum AsciiKeys {
-    Shown,
-    Contradicted,
-    /// No member shows it either way: a new file's empty catalog, or one
-    /// whose names all have other characters.
-    Unseen,
-}
-
-fn ascii_keys(stored: &ScriptCatalog, index: &OwnedNode) -> AsciiKeys {
-    let names = index.child(&[NAMES]);
-    let mut seen = BTreeMap::new();
-    for script in &stored.scripts {
-        *seen.entry(name_key(&script.name)).or_insert(0) += 1;
-    }
-    let mut shown = false;
-    for script in stored.scripts.iter().filter(|s| {
-        s.name.is_ascii()
-            && matches!(s.kind, ScriptKind::Script | ScriptKind::Folder)
-            && seen[&name_key(&s.name)] == 1
-    }) {
-        let listed = names
-            .and_then(|n| n.child(&listed(&name_key(&script.name))))
-            .and_then(|e| e.value.as_deref())
-            .and_then(key_string_id);
-        if listed != Some(script.id) {
-            return AsciiKeys::Contradicted;
-        }
-        shown |= script.name.bytes().any(|b| b.is_ascii_alphabetic());
-    }
-    if shown {
-        AsciiKeys::Shown
-    } else {
-        AsciiKeys::Unseen
-    }
-}
-
-/// Whether files of `language` list names of ASCII characters under
-/// [`name_key`]: in the 66 starter files every script named in ASCII is,
-/// in each of these eight languages, 5 or 6 files each [O: the corpus test
-/// `script_catalog_corpus`]. The Japanese, Korean and Chinese starters
-/// name no script in ASCII, so their form for one is not known.
-pub fn lists_ascii_names_plainly(language: Language) -> bool {
-    use Language::*;
-    match language {
-        English | French | German | Swedish | Spanish => true,
-        // Dutch, Italian, Portuguese.
-        Other(id) => matches!(id, 20 | 30 | 34),
-        Japanese | Chinese | Korean => false,
-    }
-}
-
-/// Check a script or folder name and return its name key. FileMaker's
+/// Check a script or folder name and return its name key and the key the
+/// name list holds it under ([`listed_key`]: FileMaker's, the same in every
+/// file whatever its language, scripts.md "The catalog index"). FileMaker's
 /// rules for script names are not established; these are OpenMaker's: a
 /// name, at most 100 characters (FileMaker's limit for field names), no
-/// control character or line break, and a name key the name list can hold.
-/// Only ASCII names are written, whose key [`ascii_keys`] checks.
-fn check_name(name: &str) -> Result<Vec<u8>, DataError> {
+/// control character or line break, and a name list key it can hold. Only
+/// ASCII names are written for now.
+fn check_name(name: &str) -> Result<(Vec<u8>, Vec<u8>), DataError> {
     let refuse = |why: &str| unsupported(format!("“{name}” cannot be a script name: {why}."));
     if name.is_empty() {
         return Err(unsupported("A script needs a name."));
@@ -222,19 +165,18 @@ fn check_name(name: &str) -> Result<Vec<u8>, DataError> {
     }
     if !name.is_ascii() {
         return Err(refuse(
-            "OpenMaker saves script names of ASCII characters only for now, since the key \
-             FileMaker lists a name under for other characters depends on the file's language \
-             and is not established",
+            "OpenMaker saves script names of ASCII characters only for now",
         ));
     }
     let key = name_key(name);
     if key.is_empty() {
         return Err(refuse("it has no character FileMaker tells names apart by"));
     }
-    if key.len() + 3 > MAX_NAME_KEY {
+    let entry = listed_key_or_why(name).map_err(|why| refuse(&why))?;
+    if entry.len() > MAX_NAME_KEY {
         return Err(refuse("its name key is longer than FileMaker stores"));
     }
-    Ok(key)
+    Ok((key, entry))
 }
 
 /// Set a member's or the index's modification stamp (schema-path.md 8.1):
@@ -331,15 +273,14 @@ fn same_rest(a: &Script, b: &Script) -> bool {
 
 /// Plan saving `requested` over the host's catalog: `stored` (decoded, in
 /// display order), its members' definitions `[17, 5, S]` by id and its
-/// index `[17, 1]`, all as read now, in a file of `language` (its locale's,
-/// when known). `None` when nothing changes. Refused whole (error 3) for a
-/// change OpenMaker does not save; nothing is planned then.
+/// index `[17, 1]`, all as read now. `None` when nothing changes. Refused
+/// whole (error 3) for a change OpenMaker does not save; nothing is planned
+/// then.
 pub fn plan(
     index: Option<&OwnedNode>,
     stored: &ScriptCatalog,
     definitions: &BTreeMap<u64, OwnedNode>,
     requested: &ScriptCatalog,
-    language: Option<Language>,
     by: &Stamp,
     uuid: &mut dyn FnMut() -> [u8; 16],
 ) -> Result<Option<CatalogSave>, DataError> {
@@ -463,20 +404,6 @@ pub fn plan(
         .copied()
         .filter(|(s, old)| s.name != old.name)
         .collect();
-    // The file's own names show the key form, or its language does when
-    // none shows it (a new file's empty catalog, #274).
-    let keyed = match ascii_keys(stored, &index) {
-        AsciiKeys::Shown => true,
-        AsciiKeys::Contradicted => false,
-        AsciiKeys::Unseen => language.is_some_and(lists_ascii_names_plainly),
-    };
-    if !(new.is_empty() && renamed.is_empty()) && !keyed {
-        return Err(unsupported(
-            "This file's script names do not show the key FileMaker lists a name under in \
-             its language, so OpenMaker does not save new or renamed scripts in it yet; \
-             nothing was saved.",
-        ));
-    }
 
     // A member's name list entry is found by the id it holds, so a deleted
     // or renamed member's entry goes whatever its language's key. One that
@@ -527,14 +454,14 @@ pub fn plan(
         .filter(|(_, id)| !going.contains(id))
         .collect();
     let mut take = |name: &str, id: u64| -> Result<Vec<u8>, DataError> {
-        let key = check_name(name)?;
-        if names.insert(key.clone(), id).is_some() || listed_names.contains_key(&listed(&key)) {
+        let (key, entry) = check_name(name)?;
+        if names.insert(key, id).is_some() || listed_names.contains_key(&entry) {
             return Err(unsupported(format!(
                 "Another script or folder is named “{name}”, and OpenMaker does not save two \
                  of one name yet; nothing was saved."
             )));
         }
-        Ok(key)
+        Ok(entry)
     };
 
     let mut members = Vec::new();
@@ -569,7 +496,7 @@ pub fn plan(
             let member = new_member(script, id, by, uuid);
             let flags = flags(&script.metadata, MEMBER_FLAGS);
             index.ensure(&[&[NAMES]]).set_child(OwnedNode::leaf(
-                listed(&keys[&script.id]),
+                keys[&script.id].clone(),
                 key_string(&segment),
             ));
             let mut cached = vec![
@@ -603,7 +530,7 @@ pub fn plan(
                 cached.set_child(om_scripts::text_node(&[NAME], &script.name));
                 unlist(&mut index, &segment);
                 index.ensure(&[&[NAMES]]).set_child(OwnedNode::leaf(
-                    listed(&keys[&script.id]),
+                    keys[&script.id].clone(),
                     key_string(&segment),
                 ));
             }
@@ -898,7 +825,6 @@ mod tests {
             &stored,
             &definitions,
             &requested,
-            None,
             &by(),
             &mut || [5; 16],
         )
@@ -975,7 +901,6 @@ mod tests {
             &stored,
             &definitions,
             &requested,
-            None,
             &by(),
             &mut || unreachable!("a rename makes no UUID"),
         )
@@ -1023,7 +948,6 @@ mod tests {
             &stored_accented,
             &definitions,
             &requested,
-            None,
             &by(),
             &mut || unreachable!(),
         )
@@ -1055,7 +979,6 @@ mod tests {
             &stored,
             &definitions,
             &stale,
-            None,
             &by(),
             &mut || unreachable!(),
         )
@@ -1075,7 +998,6 @@ mod tests {
             stored,
             &definitions,
             requested,
-            None,
             &by(),
             &mut || {
                 n += 1;
@@ -1208,7 +1130,6 @@ mod tests {
                 &stored,
                 &definitions,
                 requested,
-                None,
                 &by(),
                 &mut || [0; 16],
             )
@@ -1230,15 +1151,9 @@ mod tests {
         assert!(refused(&accented).message.contains("ASCII"));
         let mut renamed = stored.clone();
         renamed.scripts[1].name = "Other".into();
-        let error = plan(
-            None,
-            &stored,
-            &definitions,
-            &renamed,
-            None,
-            &by(),
-            &mut || [0; 16],
-        )
+        let error = plan(None, &stored, &definitions, &renamed, &by(), &mut || {
+            [0; 16]
+        })
         .unwrap_err();
         assert_eq!(error.code, Some(3));
         // A digest that is not the cache's: FileMaker refuses the file, and
@@ -1250,7 +1165,6 @@ mod tests {
             &stored,
             &definitions,
             &renamed,
-            None,
             &by(),
             &mut || [0; 16],
         )
@@ -1261,7 +1175,6 @@ mod tests {
             &stored,
             &definitions,
             &stored,
-            None,
             &by(),
             &mut || [0; 16]
         )
