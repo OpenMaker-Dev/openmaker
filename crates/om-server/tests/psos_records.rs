@@ -628,7 +628,7 @@ fn server_scripts_new_records_auto_enter_their_found_set_position() {
         let mut steps = vec![ScriptStep::new(23)];
         steps.extend(before);
         steps.extend([
-            set_field(NOTE, 1, "\"made\""),
+            set_field(fixture::NAME, 1, "\"made\""),
             ScriptStep::new(75),
             exit_with("Tasks::Number & \"|\" & Get ( FoundCount ) & \"|\" & Get ( LastError )"),
         ]);
