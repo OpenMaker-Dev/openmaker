@@ -1,946 +1,1139 @@
 {
-  "schema": "openmaker.client-progress/v1",
-  "source_main": "44aa30e28ea780084bb8f5e86ce1403648a78671",
-  "baseline_date": "2026-11-01",
-  "baseline_revision": "5ba9db602184143e944e0f0acb8350e861cc9e05",
-  "baseline_counts": {
-    "Implemented": 21,
-    "Partial": 24,
-    "Unavailable": 19,
-    "Unverified": 4
+  "schema": "openmaker.client-progress/v2",
+  "checked_at": {
+    "commit": "dadb9f0781400850cc9bc5f52e223ac7b8ca24d2",
+    "date": "2026-11-19"
   },
-  "current_counts": {
-    "Implemented": 21,
-    "Partial": 31,
-    "Unverified": 4,
-    "Unavailable": 12
+  "classes": {
+    "Implemented": "A working path covered by tests. It does not mean that every FileMaker behavior in the group works.",
+    "Partial": "A supported slice works and has tests, within the limits the row lists.",
+    "Unavailable": "No supported path: OpenMaker refuses the capability or leaves it disabled.",
+    "Unverified": "The evidence neither establishes the capability nor rules it out."
   },
-  "method": "Conservative implementation coverage for 68 unequal capability groups, retaining baseline classifications except evidenced promotions. Not a new native parity assessment or an overall parity percentage. Implemented means a working covered path, not every FileMaker behavior. Native paired acceptance remains incomplete.",
-  "rechecked": [
-    {
-      "date": "2026-11-10",
-      "main": "c0677a6c22dddadf92a4aaacaa69cdc02d3b093c",
-      "features": [
-        "C01",
-        "C16",
-        "C27",
-        "C52"
-      ],
-      "note": "Only the rows and the agent authoring summary that merges after source_main changed were checked again; no other group was audited again and no classification changed."
-    },
-    {
-      "date": "2026-11-10",
-      "main": "c6718ae392f0502c8bca881105fad31a33b61af7",
-      "features": [
-        "C42",
-        "C45",
-        "C63"
-      ],
-      "note": "After #341 only these rows' sources were checked again; no other group was audited again, no native acceptance was run and no classification changed."
-    },
-    {
-      "date": "2026-11-10",
-      "main": "9f625b8f9ab126e200565425269a1572323766a9",
-      "features": [
-        "C52",
-        "C65"
-      ],
-      "note": "After #342 and #355 only these rows and the agent authoring summary were checked again; the native check covers one field and edit box; no other group was audited again and no classification changed."
-    },
-    {
-      "date": "2026-11-10",
-      "main": "2093ef027e238b329e1f14e982a864829a4c6794",
-      "features": [
-        "C45"
-      ],
-      "note": "After #365 only this row was checked again; no other group was audited again and no classification changed."
-    },
-    {
-      "date": "2026-11-10",
-      "main": "8c8226d9968016b2872fdb9dcf93b1e33b437d51",
-      "features": [
-        "C45"
-      ],
-      "note": "After #371 only this row was checked again; no other group was audited again and no classification changed."
-    },
-    {
-      "date": "2026-11-10",
-      "main": "f46a195cb2a1c8cee0c4685e6701f2bb35cdd941",
-      "features": [
-        "C18"
-      ],
-      "note": "After #374 only this row was checked again; the roadmap has no row about value lists, so it is unchanged; no other group was audited again and no classification changed."
-    },
-    {
-      "date": "2026-11-10",
-      "main": "8ab436cc87b30931803c40b1283ef893b92243a6",
-      "features": [
-        "C45"
-      ],
-      "note": "After #377 only this row was checked again; no other group was audited again and no classification changed."
-    },
-    {
-      "date": "2026-11-10",
-      "main": "82a510651322e6bc501e8e9a17e3db139259095d",
-      "features": [
-        "C41",
-        "C42"
-      ],
-      "note": "After #381 only these rows were checked again; the roadmap's Preview, print, PDF row was assessed and is unchanged (no status change, its gaps still accurate); no other group was audited again and no classification changed."
-    },
-    {
-      "date": "2026-11-10",
-      "main": "ded9ac173853fba48ec60c7a33dda4afb93585b9",
-      "features": [
-        "C18",
-        "C35"
-      ],
-      "note": "After #390 only these rows, the agent authoring summary and the roadmap's agent authoring row were checked again; the roadmap's records row was assessed and is unchanged; no other group was audited again and no classification changed."
-    },
-    {
-      "date": "2026-11-10",
-      "main": "9b408010376ad7f725fe00bec207c16ce6af0b95",
-      "features": [
-        "C10",
-        "C41",
-        "C42"
-      ],
-      "note": "After #384 and #393 only these rows and the roadmap's records row were checked again; #382, #395 and #399 were assessed and left no row stale; no other group was audited again and no classification changed."
-    },
-    {
-      "date": "2026-11-11",
-      "main": "bc3d802a39a1c9de3062b928177c5fdfe0a7d89e",
-      "features": [
-        "C18",
-        "C35"
-      ],
-      "note": "After #403, #407 and #408 only these rows and the roadmap's records row were checked again; #407 and the earlier #382, #384 and #395 left no row stale; no other group was audited again and no classification changed."
+  "method": "Each group was checked against the code, its tests and the feature docs' limits at this commit. The 68 groups are unequal in size, so the counts are not a parity percentage. Native FileMaker behavior was compared only where a row or its linked doc says so.",
+  "counts": {
+    "Implemented": 20,
+    "Partial": 35,
+    "Unavailable": 10,
+    "Unverified": 3
+  },
+  "previous": {
+    "description": "Each group's class in the map before this check; previous_status gives it per group.",
+    "counts": {
+      "Implemented": 21,
+      "Partial": 31,
+      "Unavailable": 12,
+      "Unverified": 4
     }
-  ],
+  },
   "features": [
     {
       "id": "C01",
       "domain": "Access and lifecycle",
       "feature": "Hosted account sign-in",
-      "baseline_status": "Implemented",
+      "previous_status": "Implemented",
       "status": "Implemented",
-      "scope": "Open a named hosted file with account credentials; basic native connection path exists. A host's refusal after too many failed logins (error 214) is reported as such.",
-      "remaining": "Broaden native host/version/account matrix and startup error cases.",
-      "pull_requests": [
-        324
+      "scope": "Signs in to a hosted file with an account name and password over verified TLS, on FileMaker Server and OpenMaker Server, which checks each file's own accounts ([accounts](development.md#accounts-and-insecure-files)). A related file or a file on another host that refuses the account asks for its own. A refusal after too many failed logins (error 214) is reported as such.",
+      "remaining": "No [Guest], Claris ID, OAuth or external-server accounts [#19](https://github.com/OpenMaker-Dev/openmaker/issues/19). An account that must change its password cannot sign in to a hosted file [#248](https://github.com/OpenMaker-Dev/openmaker/issues/248), and refusals of inactive or expiring accounts show only an error code [#225](https://github.com/OpenMaker-Dev/openmaker/issues/225). Which hosts and versions are supported is C07's question.",
+      "issues": [
+        19,
+        225,
+        248
+      ],
+      "docs": [
+        "development.md#accounts-and-insecure-files"
       ]
     },
     {
       "id": "C02",
       "domain": "Access and lifecycle",
       "feature": "Hosted-file discovery UI",
-      "baseline_status": "Partial",
+      "previous_status": "Partial",
       "status": "Partial",
-      "scope": "OpenMaker Server file listing, filtering and selection; manual filenames on Claris hosts.",
-      "remaining": "Claris enumeration, LAN discovery and per-account lists remain unavailable.",
-      "pull_requests": [
-        107
+      "scope": "The Hosts dialog lists a host's files with FileMaker's file-list request (op77) or OpenMaker Server's own listing, searches them, and tells empty, unsupported and unreachable hosts apart; a file name can also be typed ([Hosts dialog file list](desktop-client.md#hosts-dialog-file-list), [hosted file list](hosted-file-list.md#hosted-file-list)).",
+      "remaining": "The dialog has not been checked against FileMaker Server since the op77 reader was written [#14](https://github.com/OpenMaker-Dev/openmaker/issues/14), a host that lists files only after a sign-in is not asked, and how FileMaker Server pages a long list is unmeasured [#4](https://github.com/OpenMaker-Dev/openmaker/issues/4). OpenMaker Server shows every client the same names [#15](https://github.com/OpenMaker-Dev/openmaker/issues/15). No LAN discovery; Favorites and Recent are disabled [#56](https://github.com/OpenMaker-Dev/openmaker/issues/56).",
+      "issues": [
+        4,
+        14,
+        15,
+        56
+      ],
+      "docs": [
+        "desktop-client.md#hosts-dialog-file-list",
+        "hosted-file-list.md#hosted-file-list"
       ]
     },
     {
       "id": "C03",
       "domain": "Access and lifecycle",
       "feature": "Standalone local .fmp12 client opening",
-      "baseline_status": "Unavailable",
+      "previous_status": "Partial",
       "status": "Partial",
-      "scope": "Local file opening, authenticated edits and atomic persistence through a private loopback engine; related local files use individual authenticated sessions.",
-      "remaining": "Only verified built-in Full Access file accounts; no encryption, Guest/external accounts, sharing, or writable files without supported locks.",
-      "pull_requests": [
-        105,
-        111,
-        114
+      "scope": "A local file opens through a private embedded host with the file's own accounts: the three built-in privilege sets, and custom sets whose every member OpenMaker enforces. Edits are saved atomically; File Options sign-in and password changes work; related and script-opened local files share the engine ([local files](re/local-files.md#4-implementation-notes-openmaker), [privilege sets](desktop-client.md#privilege-sets)).",
+      "remaining": "Refused: [Guest] and external accounts, custom sets limited by a calculation [#220](https://github.com/OpenMaker-Dev/openmaker/issues/220), encrypted files [#58](https://github.com/OpenMaker-Dev/openmaker/issues/58), sharing [#61](https://github.com/OpenMaker-Dev/openmaker/issues/61), Save a Copy [#63](https://github.com/OpenMaker-Dev/openmaker/issues/63), Recover [#64](https://github.com/OpenMaker-Dev/openmaker/issues/64) and conversion [#65](https://github.com/OpenMaker-Dev/openmaker/issues/65) ([what is refused](re/local-files.md#6-refused-or-not-supported-yet)). Files open read-only on Windows [#30](https://github.com/OpenMaker-Dev/openmaker/issues/30). Related files are found only by plain name in the same folder [#59](https://github.com/OpenMaker-Dev/openmaker/issues/59), and one that refuses the first file's account is not asked for another [#60](https://github.com/OpenMaker-Dev/openmaker/issues/60).",
+      "issues": [
+        30,
+        58,
+        59,
+        60,
+        61,
+        63,
+        64,
+        65,
+        220
+      ],
+      "docs": [
+        "re/local-files.md#4-implementation-notes-openmaker",
+        "desktop-client.md#privilege-sets",
+        "re/local-files.md#6-refused-or-not-supported-yet"
       ]
     },
     {
       "id": "C04",
       "domain": "Access and lifecycle",
       "feature": "Open File / Close File sessions",
-      "baseline_status": "Partial",
+      "previous_status": "Partial",
       "status": "Partial",
-      "scope": "Same-host and local plain-name file sessions, ordered alternatives, owning-file identity, leases and caller continuation.",
-      "remaining": "Local folder/volume/network paths and alternative-account prompting remain unsupported.",
-      "pull_requests": [
-        80,
-        114
+      "scope": "Open File, Close File and external scripts open files on the same host or, through fmnet paths, on other hosts (asking for an account there), trying a data source's paths in order. Files on one host share one session, and each file keeps its own identity and lease ([sources](desktop-files.md#supported-sources), [ownership](desktop-files.md#ownership-and-execution)).",
+      "remaining": "Host folders, absolute and local paths, other path schemes and ODBC are refused, and so is Open File without a source ([limits](desktop-files.md#explicit-limits-and-acceptance)). A local file follows only plain names in its folder [#59](https://github.com/OpenMaker-Dev/openmaker/issues/59). Window steps match names case-sensitively and never by UUID [#320](https://github.com/OpenMaker-Dev/openmaker/issues/320).",
+      "issues": [
+        59,
+        320
+      ],
+      "docs": [
+        "desktop-files.md#supported-sources",
+        "desktop-files.md#ownership-and-execution",
+        "desktop-files.md#explicit-limits-and-acceptance"
       ]
     },
     {
       "id": "C05",
       "domain": "Access and lifecycle",
       "feature": "Connection loss and pending edits",
-      "baseline_status": "Partial",
+      "previous_status": "Partial",
       "status": "Partial",
-      "scope": "User-invoked reconnect retains edits, reconciles interrupted saves and offers explicit recovery choices.",
-      "remaining": "No automatic/crash recovery, script resumption or recovery of lost transactions.",
-      "pull_requests": [
-        106
+      "scope": "After a lost connection the user reconnects. Typed edits, new records not yet sent, and related and attachment drafts are kept; a save the connection was lost in is checked before anything is sent again; the files that shared the connection reopen together ([reconnecting](recovery.md#reconnecting)).",
+      "remaining": "Nothing reconnects by itself, and the session's locks, timers and script state are lost [#16](https://github.com/OpenMaker-Dev/openmaker/issues/16); interrupted scripts do not resume, and script transactions and deletions that may have reached the host are refused. FileMaker Pro's reconnect is unmeasured [#5](https://github.com/OpenMaker-Dev/openmaker/issues/5).",
+      "issues": [
+        5,
+        16
+      ],
+      "docs": [
+        "recovery.md#reconnecting"
       ]
     },
     {
       "id": "C06",
       "domain": "Access and lifecycle",
       "feature": "Client license integration",
-      "baseline_status": "Implemented",
+      "previous_status": "Implemented",
       "status": "Implemented",
-      "scope": "Native provider supports client license selection; GUI has separate credential-store integration.",
-      "remaining": "Test native first-run and restart with disposable test credentials/license.",
-      "pull_requests": []
+      "scope": "A FileMaker client license is kept in the desktop's credential store and sent where FileMaker Server needs one; OpenMaker Server and local files need none ([client license](desktop-client.md#client-license)). Saving, removal and a store that cannot be reached are tested with a test store.",
+      "remaining": "No first-run or restart run against FileMaker Server with a test license is recorded. Opening a host can wait on Keychain access on macOS [#151](https://github.com/OpenMaker-Dev/openmaker/issues/151).",
+      "issues": [
+        151
+      ],
+      "docs": [
+        "desktop-client.md#client-license"
+      ]
     },
     {
       "id": "C07",
       "domain": "Access and lifecycle",
       "feature": "Host/OS/version acceptance matrix",
-      "baseline_status": "Unverified",
+      "previous_status": "Unverified",
       "status": "Unverified",
-      "scope": "Linux headless fixtures dominate recent gates; no complete macOS/Windows native-client matrix has been demonstrated.",
-      "remaining": "Record supported host versions, OS builds and repeatable smoke results.",
-      "pull_requests": []
+      "scope": "OpenMaker targets FileMaker Pro and FileMaker Server 26.0.3. Its tests run mostly on Linux under Xvfb, and an Ubuntu 24.04 package can be built ([packages](development.md#packages-for-ubuntu-2404)). No host, OS and version matrix has been recorded.",
+      "remaining": "Record supported host versions and OS builds with repeatable smoke runs. Local files are read-only on Windows [#30](https://github.com/OpenMaker-Dev/openmaker/issues/30), and there are no published packages [#31](https://github.com/OpenMaker-Dev/openmaker/issues/31).",
+      "issues": [
+        30,
+        31
+      ],
+      "docs": [
+        "development.md#packages-for-ubuntu-2404"
+      ]
     },
     {
       "id": "C08",
       "domain": "Hosted data",
       "feature": "Stored records and typed fields",
-      "baseline_status": "Implemented",
+      "previous_status": "Implemented",
       "status": "Implemented",
-      "scope": "Native pages and record IDs feed Form/List/Table; text, numeric and date/time paths are present.",
-      "remaining": "Native typed-value round trips, locale and null/empty cases.",
-      "pull_requests": []
+      "scope": "Record pages with their record ids feed Form, List and Table views, with unstored calculations, summaries and globals. Browse edits text, numbers, dates, times and timestamps as data entry reads them ([editing records](desktop-client.md#editing-records)).",
+      "remaining": "Two entry differences from FileMaker Pro are measured, and other inputs and locales are not ([limits](record-writes.md#limits)). Summaries cannot be edited. A date field holding other text reads as text [#235](https://github.com/OpenMaker-Dev/openmaker/issues/235), and times are read without their stored text [#236](https://github.com/OpenMaker-Dev/openmaker/issues/236).",
+      "issues": [
+        235,
+        236
+      ],
+      "docs": [
+        "desktop-client.md#editing-records",
+        "record-writes.md#limits"
+      ]
     },
     {
       "id": "C09",
       "domain": "Hosted data",
       "feature": "Create / edit / duplicate / delete",
-      "baseline_status": "Implemented",
+      "previous_status": "Implemented",
       "status": "Implemented",
-      "scope": "Provider and desktop script host expose record writes, commit/revert and deletion with fixture coverage.",
-      "remaining": "Disposable multi-user conflict, refused-save and cancellation acceptance.",
-      "pull_requests": []
+      "scope": "New, duplicate, edit, revert and delete from the menus, scripts and portal rows. A new record is held in its window's record session until committed, and a save can span files ([a window's record session](record-writes.md#a-windows-record-session)).",
+      "remaining": "Tables whose rules OpenMaker does not support open read-only [#39](https://github.com/OpenMaker-Dev/openmaker/issues/39) ([limits](record-writes.md#limits)). Multi-user conflict and cancellation cases are not compared with FileMaker Pro.",
+      "issues": [
+        39
+      ],
+      "docs": [
+        "record-writes.md#a-windows-record-session",
+        "record-writes.md#limits"
+      ]
     },
     {
       "id": "C10",
       "domain": "Hosted data",
       "feature": "Entry rules and auto-entry",
-      "baseline_status": "Implemented",
+      "previous_status": "Implemented",
       "status": "Implemented",
-      "scope": "Validation, generated values and held-import preflight were corrected in #67/#73; supported paths have regression controls. The supported exact-match text lookup form copies a stored text field from the first related record through one unsorted relationship of `=` predicates on stored text fields when a write changes the match field; the looked-up value appears when the record is written, not when Tab leaves the match field.",
-      "remaining": "Compare native fill-only, lookup, unique/list validation and refusal behavior. Other lookup forms (next lower or higher value, constants, several or sorted relationships, other field types), serial numbers and entry from the last visited record still make a table read-only; native selection among several matches, lookups fired by scripts and imports, and FileMaker Server's runtime are unmeasured (issue 186).",
-      "pull_requests": [
-        384
+      "scope": "Auto-enter, validation with calculated custom messages, and serial numbers reserved on the host (op72). Exact-match lookups copy text, numbers and dates through one relationship, also one sorted by the related table's own fields and one with calculated match keys ([limits](record-writes.md#limits), [lookups](re/auto-entry.md#lookups)).",
+      "remaining": "Other lookup forms (next lower or higher value, constants, several relationships, other sorts, times and timestamps) and entry from the last visited record make a table read-only [#39](https://github.com/OpenMaker-Dev/openmaker/issues/39); Relookup Field Contents fails [#87](https://github.com/OpenMaker-Dev/openmaker/issues/87). A looked-up value appears when the record is written, not on Tab, and lookups fired by scripts and imports are unmeasured.",
+      "issues": [
+        39,
+        87
+      ],
+      "docs": [
+        "record-writes.md#limits",
+        "re/auto-entry.md#lookups"
       ]
     },
     {
       "id": "C11",
       "domain": "Hosted data",
       "feature": "Explicit transactions and held changes",
-      "baseline_status": "Implemented",
+      "previous_status": "Implemented",
       "status": "Implemented",
-      "scope": "Begin/commit/revert and held change semantics are wired through the native provider.",
-      "remaining": "Compare native mixed create/edit/delete rollback and partial refusal cases.",
-      "pull_requests": []
+      "scope": "Open, Commit and Revert Transaction hold changes and commit them together; a script's transaction across files is prepared in every file before any data goes ([transactions](record-writes.md#transactions)). The runtime's transaction traces are compared with FileMaker Server's script engine.",
+      "remaining": "Once one file's commit has gone, a later loss leaves that file committed. Delete Record on another file's layout is refused inside a transaction [#312](https://github.com/OpenMaker-Dev/openmaker/issues/312), and a transaction refuses a record whose calculation reads a related record changed after it [#276](https://github.com/OpenMaker-Dev/openmaker/issues/276).",
+      "issues": [
+        276,
+        312
+      ],
+      "docs": [
+        "record-writes.md#transactions"
+      ]
     },
     {
       "id": "C12",
       "domain": "Hosted data",
       "feature": "Globals and repeating fields",
-      "baseline_status": "Implemented",
+      "previous_status": "Implemented",
       "status": "Implemented",
-      "scope": "Window/session globals and repetitions participate in calculations and edits; high repetitions received regression coverage.",
-      "remaining": "Native cross-window global visibility and high repetition round trips.",
-      "pull_requests": []
+      "scope": "Session globals and repetitions take part in calculations and edits; Browse types into text, number, date, time and timestamp globals and into repetitions 2 to 255 ([limits](record-writes.md#limits)).",
+      "remaining": "Number, date and time globals with validation [#301](https://github.com/OpenMaker-Dev/openmaker/issues/301) and container globals [#302](https://github.com/OpenMaker-Dev/openmaker/issues/302) take no typing; repetitions above 255 are not written; another file's related globals and repetitions are refused [#43](https://github.com/OpenMaker-Dev/openmaker/issues/43). Native readback is unmeasured.",
+      "issues": [
+        43,
+        301,
+        302
+      ],
+      "docs": [
+        "record-writes.md#limits"
+      ]
     },
     {
       "id": "C13",
       "domain": "Hosted data",
       "feature": "Stored container read / write / export",
-      "baseline_status": "Partial",
+      "previous_status": "Partial",
       "status": "Partial",
-      "scope": "Stored containers support owning-file reads/replacement, selected-container menu insertion and exact-byte export, including no-path script dialogs.",
-      "remaining": "Portal/related interactive targets, reference-only/external forms and interactive media remain limited.",
-      "pull_requests": [
-        12,
-        120
+      "scope": "Stored containers are read, replaced from the Insert menu and scripts, also in portal rows, and exported byte for byte. Browse draws pictures and a PDF's first page, an interactive container shows every page of a PDF, and Preview and PDF print pictures ([Browse mode](desktop-client.md#browse-mode), [container fields in reports](portable-pdf.md#container-fields)).",
+      "remaining": "Insert > PDF and Audio/Video and \"Store only a reference\" are not available [#50](https://github.com/OpenMaker-Dev/openmaker/issues/50); externally stored data is not read [#9](https://github.com/OpenMaker-Dev/openmaker/issues/9); Table view draws no pictures; audio and video play only in a `web-viewer` build.",
+      "issues": [
+        9,
+        50
+      ],
+      "docs": [
+        "desktop-client.md#browse-mode",
+        "portable-pdf.md#container-fields"
       ]
     },
     {
       "id": "C14",
       "domain": "Hosted data",
       "feature": "Record locks and concurrent clients",
-      "baseline_status": "Partial",
+      "previous_status": "Partial",
       "status": "Partial",
-      "scope": "Window-owned accepted-row versions preserve ordinary drafts through stale-record and lock refusals, including mixed script/UI drafts and retrying a failed new-record discard.",
-      "remaining": "No lock at first keystroke, automatic field merging or broad native multi-client acceptance.",
-      "pull_requests": [
-        106,
-        118
+      "scope": "Each window's accepted record version answers its own save: a stale-record or lock refusal keeps the user's and scripts' drafts and offers a choice, and commands act on records by id after another client deletes one ([saving over another client's change](recovery.md#saving-over-another-clients-change)).",
+      "remaining": "Records are locked when saved, not when editing begins [#40](https://github.com/OpenMaker-Dev/openmaker/issues/40), and changes to different fields are not merged. Idle clients of OpenMaker Server see other users' changes only with their next request [#17](https://github.com/OpenMaker-Dev/openmaker/issues/17). No broad multi-client run against FileMaker.",
+      "issues": [
+        17,
+        40
+      ],
+      "docs": [
+        "recovery.md#saving-over-another-clients-change"
       ]
     },
     {
       "id": "C15",
       "domain": "Hosted data",
       "feature": "Cross-window save and record freshness",
-      "baseline_status": "Implemented",
+      "previous_status": "Implemented",
       "status": "Implemented",
-      "scope": "Merged #71/#72/#81 cover same-page reload, background commits and held-click identity/mode checks.",
-      "remaining": "Repeat native background Save/Next/root-close plus trigger veto/reorder cases.",
-      "pull_requests": []
+      "scope": "One record session per window: a commit refreshes the other windows, a background click commits only after the field's exit triggers, and a held click checks the record the trigger left current ([a window's record session](record-writes.md#a-windows-record-session)).",
+      "remaining": "What FileMaker does to a window's held record when another window's transaction commits or reverts, and the trigger order against related commits, are unmeasured. A window's change can join another window's open script transaction [#282](https://github.com/OpenMaker-Dev/openmaker/issues/282).",
+      "issues": [
+        282
+      ],
+      "docs": [
+        "record-writes.md#a-windows-record-session"
+      ]
     },
     {
       "id": "C16",
       "domain": "Find and relationships",
       "feature": "Find requests / omit / constrain / extend",
-      "baseline_status": "Implemented",
+      "previous_status": "Implemented",
       "status": "Implemented",
-      "scope": "Client and provider implement multi-request found-set operations and field matching.",
-      "remaining": "Differential native result IDs for mixed requests and operators. A criterion over 10,000 characters is unreadable (error 3 in a script), OpenMaker's limit; FileMaker's is unmeasured.",
-      "pull_requests": [
-        322
+      "scope": "Find mode on the designed layout with several requests, omit, constrain and extend, and value-list criteria; Quick Find, Omit Multiple, Modify Last Find and the dialog for a find that matches nothing ([Find mode](desktop-client.md#find-mode), [Quick Find](desktop-client.md#quick-find)).",
+      "remaining": "Finds key text criteria in English [#239](https://github.com/OpenMaker-Dev/openmaker/issues/239), and other index languages need the host's index [#46](https://github.com/OpenMaker-Dev/openmaker/issues/46). A find with more than 255 index finders fails [#124](https://github.com/OpenMaker-Dev/openmaker/issues/124); a criterion over 10,000 characters is refused (OpenMaker's limit). Result ids of mixed requests and Quick Find's word rules are not compared with FileMaker.",
+      "issues": [
+        46,
+        124,
+        239
+      ],
+      "docs": [
+        "desktop-client.md#find-mode",
+        "desktop-client.md#quick-find"
       ]
     },
     {
       "id": "C17",
       "domain": "Find and relationships",
       "feature": "Sorting and found-set preservation",
-      "baseline_status": "Implemented",
+      "previous_status": "Implemented",
       "status": "Implemented",
-      "scope": "Script sorts, unsort and window found-set isolation are wired and tested.",
-      "remaining": "Native collation, mixed types, summary sorting and tie order.",
-      "pull_requests": []
+      "scope": "The Sort Records dialog and script sorts, unsort, sorts by value list, a found set per window, the last sort kept per table, and a local file reopening on its found set ([Sort Records dialog](desktop-client.md#sort-records-dialog), [reopening a local file](desktop-client.md#reopening-a-local-file)).",
+      "remaining": "Sorting by a related field fails [#47](https://github.com/OpenMaker-Dev/openmaker/issues/47). Text order differs from FileMaker for kana, the Catalog language and Vietnamese tone marks [#49](https://github.com/OpenMaker-Dev/openmaker/issues/49). A sorted local file reopens unsorted after editing [#286](https://github.com/OpenMaker-Dev/openmaker/issues/286).",
+      "issues": [
+        47,
+        49,
+        286
+      ],
+      "docs": [
+        "desktop-client.md#sort-records-dialog",
+        "desktop-client.md#reopening-a-local-file"
+      ]
     },
     {
       "id": "C18",
       "domain": "Find and relationships",
       "feature": "Missing-index finds / exists / value lists",
-      "baseline_status": "Partial",
+      "previous_status": "Partial",
       "status": "Partial",
-      "scope": "Merged #65/#73/#74 add bounded fallbacks and response-completion checks. Supported forms/languages and resource limits are narrower than general native indexing. The provider's field-value retrieval for value-list sorting and Insert from Index returns the whole list or error 3, within its 100,000-value and 64 MiB bounds, using the host's list, its index or a scan (docs/value-lists-missing-index.md).",
-      "remaining": "Cover unsupported collations/types separately; retain literal warm-index differential fixtures. Values that must be keyed in a tailored index language, or as negative, fractional or localized numbers, are refused (issues 195, 196); static analysis shows FileMaker Server sends entries past 1,000 bytes in pieces, which the desktop rejects (issue 464); a captured large FileMaker Server reply and native whole-list acceptance remain unverified (issue 366). HostFile::value_list_entries, which checkbox and radio sets, pop-up menus and drop-down lists use (C35), is a separate path from this one. Drop-down calendars do not open in Browse yet (issue 178).",
-      "pull_requests": [
-        374
+      "scope": "Finds, existence and unique checks, value-list sorting and Insert from Index work on fields whose index the host has not built, using the host's list, its index or a bounded scan (100,000 values, 64 MiB). FileMaker Server's replies for long lists, which come in pieces, are joined ([what is complete and what is refused](value-lists-missing-index.md#what-is-complete-and-what-is-refused)).",
+      "remaining": "Values keyed in a tailored index language, and negative, fractional or localized numbers, are refused [#45](https://github.com/OpenMaker-Dev/openmaker/issues/45) [#46](https://github.com/OpenMaker-Dev/openmaker/issues/46). Other collations and types need their own cases.",
+      "issues": [
+        45,
+        46
+      ],
+      "docs": [
+        "value-lists-missing-index.md#what-is-complete-and-what-is-refused"
       ]
     },
     {
       "id": "C19",
       "domain": "Find and relationships",
       "feature": "Same-file related reads and portal edits",
-      "baseline_status": "Implemented",
+      "previous_status": "Implemented",
       "status": "Implemented",
-      "scope": "Relationships, related rows and supported related writes are connected to the desktop; portal-row buttons can run scripts on the clicked related record.",
-      "remaining": "Direct text editing in portal rows and the full native filtered/related-create matrix remain incomplete.",
-      "pull_requests": [
-        110
+      "scope": "Related fields and portals show rows in each row's context, in the portal's sort and filter order. Typing into portal rows and related fields, the creation row and Delete Record on a selected row edit the related records, committed with the record; row buttons run scripts on their row ([editing records](desktop-client.md#editing-records), [buttons in portal rows](scripting.md#desktop-buttons-in-portal-rows)).",
+      "remaining": "Set Field creates related records only one relationship away [#41](https://github.com/OpenMaker-Dev/openmaker/issues/41); some portal row buttons take no clicks [#42](https://github.com/OpenMaker-Dev/openmaker/issues/42); Browse filters a portal's rows after its filter was turned off [#174](https://github.com/OpenMaker-Dev/openmaker/issues/174). Related fields get no keystroke trigger, and the related record is locked at the save.",
+      "issues": [
+        41,
+        42,
+        174
+      ],
+      "docs": [
+        "desktop-client.md#editing-records",
+        "scripting.md#desktop-buttons-in-portal-rows"
       ]
     },
     {
       "id": "C20",
       "domain": "Find and relationships",
       "feature": "Lazy portals and coherent reuse",
-      "baseline_status": "Implemented",
+      "previous_status": "Implemented",
       "status": "Implemented",
-      "scope": "Merged #77 discovers IDs separately, loads visible bodies and guards volatile related ordering. Synthetic request counts confirm reduced body fetches.",
-      "remaining": "Native latency/large-set profiling and invalidation under second-client writes.",
-      "pull_requests": []
+      "scope": "Portals read related record ids first and only the visible rows' bodies, reuse rows across pages and drop kept results when another client changes the table ([Browse mode](desktop-client.md#browse-mode)). Request counts are measured on synthetic files ([startup and load](performance/startup-load.md#measurements)).",
+      "remaining": "The first scan still downloads whole records, and what is kept is bounded (2,097,152 rows, 256 MiB). FileMaker Pro's requests per page are unmeasured.",
+      "issues": [],
+      "docs": [
+        "desktop-client.md#browse-mode",
+        "performance/startup-load.md#measurements"
+      ]
     },
     {
       "id": "C21",
       "domain": "Find and relationships",
       "feature": "Related hosted files in calculations",
-      "baseline_status": "Partial",
+      "previous_status": "Partial",
       "status": "Partial",
-      "scope": "Same-host related catalogs and supported calculation, layout and record operations route to the owning file.",
-      "remaining": "Compound relationships, missing-file behavior and unsupported field/source forms need broader native acceptance.",
-      "pull_requests": [
-        67,
-        96,
-        97,
-        98,
-        99,
-        100
+      "scope": "Related files open on demand, also on other hosts with their own account, and calculations, layouts and record operations reach the file that owns each occurrence; a missing related file gives a warning and is tried again ([opening files](desktop-client.md#opening-files)).",
+      "remaining": "A value reached only through text built at run time reads as missing until the window asks for that file. Each related hosted file has a connection of its own [#229](https://github.com/OpenMaker-Dev/openmaker/issues/229), and some data sources of a hosted solution cannot be read [#233](https://github.com/OpenMaker-Dev/openmaker/issues/233).",
+      "issues": [
+        229,
+        233
+      ],
+      "docs": [
+        "desktop-client.md#opening-files"
       ]
     },
     {
       "id": "C22",
       "domain": "Find and relationships",
       "feature": "Imported-table layouts and cross-file GTRR",
-      "baseline_status": "Unavailable",
+      "previous_status": "Partial",
       "status": "Partial",
-      "scope": "Imported-table layouts support Browse, edits, create/duplicate/delete, Find/Sort and cross-file Go to Related Record.",
-      "remaining": "Related criteria, some field types and cross-file transactions remain limited.",
-      "pull_requests": [
-        84,
-        85,
-        96,
-        97,
-        98,
-        99,
-        100
+      "scope": "Layouts of another file's tables support Browse, edits, new, duplicate and delete records, finds and sorts, Go to Related Record into the other file, and script transactions that prepare every file before any data goes ([limits](record-writes.md#limits)).",
+      "remaining": "Imports, globals, containers and repetitions are refused on these layouts [#43](https://github.com/OpenMaker-Dev/openmaker/issues/43), and so is Delete Record inside a transaction [#312](https://github.com/OpenMaker-Dev/openmaker/issues/312). Each file commits on its own, so a commit is not all or none once the first has gone.",
+      "issues": [
+        43,
+        312
+      ],
+      "docs": [
+        "record-writes.md#limits"
       ]
     },
     {
       "id": "C23",
       "domain": "Scripts and calculations",
       "feature": "Script flow / variables / calls",
-      "baseline_status": "Implemented",
+      "previous_status": "Implemented",
       "status": "Implemented",
-      "scope": "Desktop runtime supports conditionals, loops, parameters/results, nested calls and host actions in covered slices.",
-      "remaining": "Native branch, abort, pause and error-path traces, including event ordering.",
-      "pull_requests": []
+      "scope": "The runtime runs control flow, variables, parameters and results, nested and queued calls, error capture and host actions; it replays 256 of 258 probe runs of FileMaker Server's script engine ([status](scripting.md#status-2026-10-29)). About 130 of FileMaker Pro's 210 desktop steps have an implementation (static count).",
+      "remaining": "A step without an implementation stops the script with error 3 ([scripts](desktop-client.md#scripts)). Native traces of pause, abort and event order are not compared. Several desktop behaviors are inferred [#105](https://github.com/OpenMaker-Dev/openmaker/issues/105).",
+      "issues": [
+        105
+      ],
+      "docs": [
+        "scripting.md#status-2026-10-29",
+        "desktop-client.md#scripts"
+      ]
     },
     {
       "id": "C24",
       "domain": "Scripts and calculations",
       "feature": "Cross-file Perform Script and continuation",
-      "baseline_status": "Partial",
+      "previous_status": "Partial",
       "status": "Partial",
-      "scope": "Cross-file calls preserve the caller and file-local IDs; local peers open beside their owning file.",
-      "remaining": "No local cross-host/folder-path support or prompt for another account.",
-      "pull_requests": [
-        80,
-        114
+      "scope": "Perform Script in another file keeps the caller and the file-local ids; it reaches files on the same host and, asking for an account, on other hosts; local peers open beside their owning file ([ownership](desktop-files.md#ownership-and-execution)).",
+      "remaining": "Host folders, absolute and local paths are refused ([sources](desktop-files.md#supported-sources)), and Open File without a source is unsupported. Native event order is unmeasured.",
+      "issues": [],
+      "docs": [
+        "desktop-files.md#ownership-and-execution",
+        "desktop-files.md#supported-sources"
       ]
     },
     {
       "id": "C25",
       "domain": "Scripts and calculations",
       "feature": "Local layout / object / record triggers",
-      "baseline_status": "Partial",
+      "previous_status": "Partial",
       "status": "Partial",
-      "scope": "Layout/object/record events and vetoes use the owning context. Browse text/control-key triggers preserve the original editor, modifier values and queued input order.",
-      "remaining": "Find/Preview keys, IME, keypad-Enter distinction and native event/focus timing remain incomplete.",
-      "pull_requests": [
-        81,
-        110,
-        119
+      "scope": "Layout, object and record triggers run in the owning context and can veto. Browse keystroke triggers see control keys and modifiers and keep the queued input order; related edit boxes run their object triggers; Tab follows the stored tab order ([editing records](desktop-client.md#editing-records)).",
+      "remaining": "Find and Preview mode keys, input-method commits and keypad Enter are not implemented or measured ([desktop notes](re/script-runtime.md#implementation-notes-desktop-client)); keypad Enter does not commit [#260](https://github.com/OpenMaker-Dev/openmaker/issues/260). Related fields get no keystroke trigger.",
+      "issues": [
+        260
+      ],
+      "docs": [
+        "desktop-client.md#editing-records",
+        "re/script-runtime.md#implementation-notes-desktop-client"
       ]
     },
     {
       "id": "C26",
       "domain": "Scripts and calculations",
       "feature": "External trigger routing",
-      "baseline_status": "Unavailable",
+      "previous_status": "Partial",
       "status": "Partial",
-      "scope": "External layout/object triggers dispatch into the owning file session, including queued starts.",
-      "remaining": "Stored supported source forms only; native event/focus ordering needs comparison.",
-      "pull_requests": [
-        83
+      "scope": "Layout and object triggers stored as external scripts run in the owning file's session, including queued starts, commit vetoes and resumed writes in the original window.",
+      "remaining": "Only stored, supported source forms; native focus and event order is unmeasured ([desktop notes](re/script-runtime.md#implementation-notes-desktop-client)).",
+      "issues": [],
+      "docs": [
+        "re/script-runtime.md#implementation-notes-desktop-client"
       ]
     },
     {
       "id": "C27",
       "domain": "Scripts and calculations",
       "feature": "Arithmetic / text / date / JSON / lazy forms",
-      "baseline_status": "Implemented",
+      "previous_status": "Implemented",
       "status": "Implemented",
-      "scope": "Substantial calculation library plus Let/While/If/Case and repetition/related evaluation is present; no product-wide function parity count is claimed.",
-      "remaining": "Broaden independent native vectors, error coercion and locale cases. JSONSetElement refuses a result nested deeper than 1,000 levels or more than 1,000,000 new array elements in one call, OpenMaker's limits; FileMaker's are unmeasured.",
-      "pull_requests": [
-        319
+      "scope": "FileMaker's decimal arithmetic and the function library, Let, While, If and Case, and repetition and related evaluation, checked against FileMaker Server's engine on recorded vectors ([status](scripting.md#status-2026-10-29)). Evaluations stop at stated memory and depth limits ([calculation limits](scripting.md#calculation-limits)).",
+      "remaining": "17 catalog functions have no implementation [#77](https://github.com/OpenMaker-Dev/openmaker/issues/77) [#78](https://github.com/OpenMaker-Dev/openmaker/issues/78) [#79](https://github.com/OpenMaker-Dev/openmaker/issues/79), and a few results differ from FileMaker's engine [#80](https://github.com/OpenMaker-Dev/openmaker/issues/80). JSONSetElement refuses results deeper than 1,000 levels or over 1,000,000 new array elements in one call (OpenMaker's limits; FileMaker's are unmeasured).",
+      "issues": [
+        77,
+        78,
+        79,
+        80
+      ],
+      "docs": [
+        "scripting.md#status-2026-10-29",
+        "scripting.md#calculation-limits"
       ]
     },
     {
       "id": "C28",
       "domain": "Scripts and calculations",
       "feature": "Get / design / login metadata",
-      "baseline_status": "Partial",
+      "previous_status": "Partial",
       "status": "Partial",
-      "scope": "Owning-file privileges and desktop user name are available. Local account-type/password-expiry facts retain their owning-file context and refresh across date rollover.",
-      "remaining": "Hosted account facts may be unavailable; some selectors and native UserName preference policy remain deferred. Password-day parity is unmeasured.",
-      "pull_requests": [
-        70,
-        76,
-        78,
-        121
+      "scope": "Get functions answer the owning file's privileges, account facts and the desktop's User Name setting, which is modeled on FileMaker Pro 26's ([Settings](desktop-client.md#settings), [privilege sets](desktop-client.md#privilege-sets)).",
+      "remaining": "Hosted files answer AccountType and password days empty [#3](https://github.com/OpenMaker-Dev/openmaker/issues/3); LayoutAccess and RecordAccess ignore layout entries and per-table rules [#182](https://github.com/OpenMaker-Dev/openmaker/issues/182); ActiveFieldName, ModifiedFields and SortState answer as if nothing were active [#33](https://github.com/OpenMaker-Dev/openmaker/issues/33).",
+      "issues": [
+        3,
+        33,
+        182
+      ],
+      "docs": [
+        "desktop-client.md#settings",
+        "desktop-client.md#privilege-sets"
       ]
     },
     {
       "id": "C29",
       "domain": "Scripts and calculations",
       "feature": "Pending container / nested evaluation",
-      "baseline_status": "Implemented",
+      "previous_status": "Implemented",
       "status": "Implemented",
-      "scope": "Merged #12 propagates pending inputs and variable provenance across nested hosts, SQL, selectors and batching in retained regression probes.",
-      "remaining": "Native asynchronous complex-calculation comparisons and request-count invariants.",
-      "pull_requests": []
+      "scope": "Container data still loading is tracked through nested evaluations, ExecuteSQL, Get selectors and batched reads: only evaluations that read it wait, and branches resume when it arrives ([a new record's preview](record-writes.md#a-new-records-preview)).",
+      "remaining": "ExecuteSQL inside a hide condition does not report its own unknown answers to the outer evaluation ([limits](conditional-visibility.md#limits)). No native asynchronous comparison.",
+      "issues": [],
+      "docs": [
+        "record-writes.md#a-new-records-preview",
+        "conditional-visibility.md#limits"
+      ]
     },
     {
       "id": "C30",
       "domain": "Scripts and calculations",
       "feature": "Server scripts and callbacks",
-      "baseline_status": "Implemented",
-      "status": "Implemented",
-      "scope": "Provider forwards Perform Script on Server and callback replies; desktop host schedules callback context.",
-      "remaining": "Native callback timing, server refusal, file ownership and close/loss cases.",
-      "pull_requests": []
+      "previous_status": "Implemented",
+      "status": "Partial",
+      "scope": "Perform Script on Server sends the script to the host and returns its result and error to the desktop; OpenMaker Server runs it with bounds on the scripts a client may run and on runaway scripts ([status](scripting.md#status-2026-10-29)).",
+      "remaining": "Perform Script on Server with Callback reads its callback script and parameter from other slots than FileMaker stores them in, so a step FileMaker Pro wrote does not call back correctly [#188](https://github.com/OpenMaker-Dev/openmaker/issues/188). Callback timing, refusal and close or loss cases are not compared with FileMaker Server; a server script cannot perform another [#103](https://github.com/OpenMaker-Dev/openmaker/issues/103).",
+      "issues": [
+        103,
+        188
+      ],
+      "docs": [
+        "scripting.md#status-2026-10-29"
+      ]
     },
     {
       "id": "C31",
       "domain": "Layout and interaction",
       "feature": "Form / List / Table browsing",
-      "baseline_status": "Implemented",
+      "previous_status": "Implemented",
       "status": "Implemented",
-      "scope": "Native records and layout geometry feed the main browse views with virtualized rows.",
-      "remaining": "Match native record, view, zoom and geometry before visual comparison.",
-      "pull_requests": []
+      "scope": "Form, List and Table views of native records and layout geometry, with virtualized rows, List sub-summary groups, sideways scrolling in Table view, the view kept per layout, and container pictures in Browse ([Browse mode](desktop-client.md#browse-mode)).",
+      "remaining": "Table view shows no sub-summary rows [#147](https://github.com/OpenMaker-Dev/openmaker/issues/147), every field instead of the layout's table columns [#270](https://github.com/OpenMaker-Dev/openmaker/issues/270), and no header or footer [#306](https://github.com/OpenMaker-Dev/openmaker/issues/306); zoom works only in Form view [#36](https://github.com/OpenMaker-Dev/openmaker/issues/36).",
+      "issues": [
+        36,
+        147,
+        270,
+        306
+      ],
+      "docs": [
+        "desktop-client.md#browse-mode"
+      ]
     },
     {
       "id": "C32",
       "domain": "Layout and interaction",
       "feature": "Styled text / borders / placement",
-      "baseline_status": "Partial",
+      "previous_status": "Partial",
       "status": "Partial",
-      "scope": "Styles, images, bounds, merge text and data formats render; precise native font metrics, borders and text placement still need the S13 oracle.",
-      "remaining": "Golden disposable layouts at multiple DPI/zoom levels with measured geometry.",
-      "pull_requests": []
+      "scope": "Themes, styles, borders, merge text, data formats and pictures render, with per-field text insets; one text placement is recorded as matching FileMaker Pro ([Browse mode](desktop-client.md#browse-mode)).",
+      "remaining": "A focused field is not drawn in its In Focus state [#231](https://github.com/OpenMaker-Dev/openmaker/issues/231); stored numeric symbols such as {{1002}} draw literally [#295](https://github.com/OpenMaker-Dev/openmaker/issues/295). Precise font metrics, borders and placement need measured comparisons at several zoom levels.",
+      "issues": [
+        231,
+        295
+      ],
+      "docs": [
+        "desktop-client.md#browse-mode"
+      ]
     },
     {
       "id": "C33",
       "domain": "Layout and interaction",
       "feature": "Conditional visibility / styles / tooltips",
-      "baseline_status": "Partial",
+      "previous_status": "Partial",
       "status": "Partial",
-      "scope": "Visibility distinguishes real show/hide results, unavailable-input placeholders and pending calculations; Get context changes invalidate cached results.",
-      "remaining": "Find-mode hide options, complete formatting provenance and native missing-button acceptance remain incomplete.",
-      "pull_requests": [
-        102
+      "scope": "Hide conditions tell FileMaker's results apart from what the window lacks, follow the window's context, and leave undetermined buttons unclickable; recorded FileMaker Pro comparisons cover the cases in [context](conditional-visibility.md#context).",
+      "remaining": "Find mode never applies hide conditions [#35](https://github.com/OpenMaker-Dev/openmaker/issues/35); conditional formatting, tooltips and labels show guessed results for unreadable inputs [#34](https://github.com/OpenMaker-Dev/openmaker/issues/34); a global variable change refreshes too soon [#38](https://github.com/OpenMaker-Dev/openmaker/issues/38) ([limits](conditional-visibility.md#limits)).",
+      "issues": [
+        34,
+        35,
+        38
+      ],
+      "docs": [
+        "conditional-visibility.md#context",
+        "conditional-visibility.md#limits"
       ]
     },
     {
       "id": "C34",
       "domain": "Layout and interaction",
       "feature": "Popovers / tabs / buttons",
-      "baseline_status": "Implemented",
+      "previous_status": "Implemented",
       "status": "Implemented",
-      "scope": "Popover/tab interaction and button/portal-row actions use owning-window context and trigger vetoes; button bars evaluate active segments.",
-      "remaining": "Native focus/event ordering and some portal/button-bar forms remain limited.",
-      "pull_requests": [
-        79,
-        110,
-        115
+      "scope": "Popovers, tab and slide panels, buttons and button bars run in the owning window's context with trigger vetoes; button bars show their active segment; buttons in portal rows and creation rows run on their row ([button bars](scripting.md#desktop-button-bars), [portal rows](scripting.md#desktop-buttons-in-portal-rows)).",
+      "remaining": "Some portal row buttons take no clicks [#42](https://github.com/OpenMaker-Dev/openmaker/issues/42); the active segment is not shown in Find mode or calculated in portal rows [#37](https://github.com/OpenMaker-Dev/openmaker/issues/37); Tab passes over buttons and tab panels [#253](https://github.com/OpenMaker-Dev/openmaker/issues/253).",
+      "issues": [
+        37,
+        42,
+        253
+      ],
+      "docs": [
+        "scripting.md#desktop-button-bars",
+        "scripting.md#desktop-buttons-in-portal-rows"
       ]
     },
     {
       "id": "C35",
       "domain": "Layout and interaction",
       "feature": "Option controls and value selection",
-      "baseline_status": "Partial",
+      "previous_status": "Partial",
       "status": "Partial",
-      "scope": "Own-table single-repetition checkbox/radio sets support mouse/keyboard edits, primary-value storage behind secondary labels, per-object triggers and save/readback. Own-table pop-up menus showing one repetition, with Edit field entry, open in Browse on a custom list or a list of a field's values in this file: the closed control shows the stored value's label, and a chosen item goes through the shared choice operation into the record's draft, then the typed-edit path (OnObjectModify, validation, lock, commit). A drop-down list showing its arrow stays the field's edit box and opens the same items from the arrow; a chosen item takes the same path, and Escape closes the list and keeps the draft.",
-      "remaining": "Portal/related/repeated sets, menus and lists, Other/Edit items, drop-down calendars, drop-down lists without their arrow, auto-complete, the keyboard in a menu or list beyond Escape, also-display labels and calculated entry remain limited; text fields do not yet honor the option-set entry guard. Another file's or a calculated list, and more than 100,000 items, are refused. The menu's and list's position, width and timing, how a second-field list labels its items, and the order of triggers on a choice are not compared with FileMaker Pro (issue 178).",
-      "pull_requests": [
-        122,
-        390,
-        408
+      "scope": "Checkbox and radio sets, pop-up menus, drop-down lists and drop-down calendars edit own-table and related fields, in portal rows too, through one choice operation and the typed-edit path. Pop-up menus offer Other and Edit; drop-down lists complete typing; value-list controls give Find mode criteria ([editing records](desktop-client.md#editing-records), [Find mode](desktop-client.md#find-mode)).",
+      "remaining": "Controls showing several repetitions, Other and Edit in sets, the keyboard in a menu, list or calendar beyond Escape, and object triggers of related controls are not available. Another file's and calculated value lists, and more than 100,000 items, are refused [#44](https://github.com/OpenMaker-Dev/openmaker/issues/44). Placement and trigger order are not compared with FileMaker Pro.",
+      "issues": [
+        44
+      ],
+      "docs": [
+        "desktop-client.md#editing-records",
+        "desktop-client.md#find-mode"
       ]
     },
     {
       "id": "C36",
       "domain": "Layout and interaction",
       "feature": "Window styles / cards / modality / arrange",
-      "baseline_status": "Partial",
+      "previous_status": "Partial",
       "status": "Partial",
-      "scope": "Document, embedded Card and modal Dialog windows support parent ownership, focus restoration and close refusal.",
-      "remaining": "Floating documents, Arrange Window and several window option bits remain unsupported or unmeasured.",
-      "pull_requests": [
-        113
+      "scope": "Document, Card and Dialog windows with parent ownership, focus restoration and close refusal; a card is drawn over its dimmed parent; Resize to Fit and Move/Resize Window work.",
+      "remaining": "Floating Document windows, Show/Hide Window, Tile and Cascade are not available [#54](https://github.com/OpenMaker-Dev/openmaker/issues/54); Arrange All Windows does nothing; option bits beyond Dim parent window and the close box are not applied ([desktop notes](re/script-runtime.md#implementation-notes-desktop-client)).",
+      "issues": [
+        54
+      ],
+      "docs": [
+        "re/script-runtime.md#implementation-notes-desktop-client"
       ]
     },
     {
       "id": "C37",
       "domain": "Layout and interaction",
       "feature": "Zoom / wheel / Freeze / Scroll Window",
-      "baseline_status": "Partial",
+      "previous_status": "Partial",
       "status": "Partial",
-      "scope": "Zoom/wheel, Freeze and scripted Home/End/Page/Selection scrolling use queued focus and fresh geometry.",
-      "remaining": "Native multi-layout, input-method and separate-window behavior needs comparison.",
-      "pull_requests": [
-        66,
-        82
+      "scope": "Zoom and the wheel, Freeze Window and scripted Scroll Window use queued focus and fresh geometry; Table view scrolls sideways ([Zoom](desktop-client.md#zoom)).",
+      "remaining": "List, Table, Layout mode and focused editors are not zoomed, and Set Zoom Level's lock is ignored [#36](https://github.com/OpenMaker-Dev/openmaker/issues/36). Native multi-window and input-method behavior is not compared.",
+      "issues": [
+        36
+      ],
+      "docs": [
+        "desktop-client.md#zoom"
       ]
     },
     {
       "id": "C38",
       "domain": "Layout and interaction",
       "feature": "Targeted Refresh Object / Portal / Window flags",
-      "baseline_status": "Partial",
+      "previous_status": "Partial",
       "status": "Partial",
-      "scope": "Named object/portal refresh, window cache flags and join/external invalidation preserve supported Browse drafts.",
-      "remaining": "Targeted display is bounded to supported object forms in Browse Form/List.",
-      "pull_requests": [
-        87,
-        88
+      "scope": "Refresh Window, and Refresh Object and Refresh Portal by name, rebuild what they target while keeping Browse drafts, focus and mode ([targeted refresh](scripting.md#desktop-targeted-refresh-c38), [Refresh Window](scripting.md#desktop-refresh-window)).",
+      "remaining": "They fail in Table view, outside Browse mode and on multi-repetition fields [#98](https://github.com/OpenMaker-Dev/openmaker/issues/98); ODBC refresh is unsupported [#90](https://github.com/OpenMaker-Dev/openmaker/issues/90). Native acceptance is unmeasured.",
+      "issues": [
+        90,
+        98
+      ],
+      "docs": [
+        "scripting.md#desktop-targeted-refresh-c38",
+        "scripting.md#desktop-refresh-window"
       ]
     },
     {
       "id": "C39",
       "domain": "Layout and interaction",
       "feature": "Native charts and interactive media",
-      "baseline_status": "Unverified",
-      "status": "Unverified",
-      "scope": "No end-to-end native chart/interactive audio-video acceptance was found in the inspected client evidence; generic object presence is insufficient.",
-      "remaining": "Inventory object render paths, then generated chart/PDF/audio/video fixtures.",
-      "pull_requests": []
+      "previous_status": "Unverified",
+      "status": "Partial",
+      "scope": "A container set to interactive content shows a PDF with every page, scrolled and paged, with GUI tests; audio and video play in the WebKitGTK engine in a `web-viewer` build ([Browse mode](desktop-client.md#browse-mode)).",
+      "remaining": "Charts and plug-in objects are not drawn, in Browse or in reports ([web viewers in reports](portable-pdf.md#web-viewers)). Media playback has no end-to-end test, and FileMaker Pro's interactive container is unmeasured.",
+      "issues": [],
+      "docs": [
+        "desktop-client.md#browse-mode",
+        "portable-pdf.md#web-viewers"
+      ]
     },
     {
       "id": "C40",
       "domain": "Output and transfer",
       "feature": "Page Setup / printer dispatch",
-      "baseline_status": "Unavailable",
+      "previous_status": "Partial",
       "status": "Partial",
-      "scope": "Shared paper/orientation settings, printer dispatch, copies and physical page ranges.",
-      "remaining": "Windows printing, advanced driver options, settings persistence and native printer acceptance remain.",
-      "pull_requests": [
-        90,
-        92,
-        95
+      "scope": "Page Setup's paper and orientation, Print to CUPS with copies, physical page ranges and the records being browsed or the current record; print and export privilege gates ([printing](printing.md#scripts-and-ownership), [page selection](printing.md#physical-page-selection)).",
+      "remaining": "Settings are lost when the file closes, and scale and margins cannot be changed [#112](https://github.com/OpenMaker-Dev/openmaker/issues/112); FileMaker's print options are missing [#110](https://github.com/OpenMaker-Dev/openmaker/issues/110); Print returns error 3 on Windows [#111](https://github.com/OpenMaker-Dev/openmaker/issues/111) ([Page Setup](page-setup.md#acceptance-and-limits)).",
+      "issues": [
+        110,
+        111,
+        112
+      ],
+      "docs": [
+        "printing.md#scripts-and-ownership",
+        "printing.md#physical-page-selection",
+        "page-setup.md#acceptance-and-limits"
       ]
     },
     {
       "id": "C41",
       "domain": "Output and transfer",
       "feature": "Paginated Preview / subsummary reports",
-      "baseline_status": "Partial",
+      "previous_status": "Partial",
       "status": "Partial",
-      "scope": "Shared physical pages include title/grand parts, sorted nested subsummary groups and supported slide-up/part shrinking. Ordinary buttons without an icon and plain groups, nested groups included, print in Preview, PDF and Print from the one report scene; their scripts are not run (docs/portable-pdf.md, Buttons and groups). Frames whose four corners share an absolute radius print rounded, with a border that is the same on every side (docs/portable-pdf.md, Rounded frames).",
-      "remaining": "No slide-left, hide-when-printing, bodyless reports, related break fields or part page breaks; native output equivalence unmeasured. Button icons, rounded frames with differing corners, a relative or automatic radius, a border that differs by side or is as wide as the frame, rounded pictures and parts, rotation, hide and conditional calculations, popover buttons, button bars, portals, tab and slide panels and other containers still refuse the report with error 3; FileMaker's printing of buttons, groups and rounded frames is inferred, not compared (issue 263).",
-      "pull_requests": [
-        89,
-        94,
-        101,
-        103,
-        117,
-        381,
-        393
+      "scope": "Preview pages share one report scene with Print and PDF: title and grand parts, sorted nested sub-summaries and supported sliding, with buttons (some icon types), groups, rounded frames, unsorted and unfiltered portals, the front tab panel, conditional formatting, container fields and web-viewer frames printed. Two starter list pages were compared with FileMaker Pro 26 ([compared pages](preview.md#starter-list-pages-compared-with-filemaker), [layout contract](portable-pdf.md#supported-layout-and-output-contract)).",
+      "remaining": "Multi-column, summary-only, page-break and several sub-summary layouts are refused [#107](https://github.com/OpenMaker-Dev/openmaker/issues/107); sliding left, Hide when printing and overlapping sliders are refused [#108](https://github.com/OpenMaker-Dev/openmaker/issues/108); fonts and mixed styles are limited [#106](https://github.com/OpenMaker-Dev/openmaker/issues/106) ([bounds](report-sections.md#bounds-and-acceptance)). Other output is not compared with FileMaker Pro [#113](https://github.com/OpenMaker-Dev/openmaker/issues/113).",
+      "issues": [
+        106,
+        107,
+        108,
+        113
+      ],
+      "docs": [
+        "preview.md#starter-list-pages-compared-with-filemaker",
+        "portable-pdf.md#supported-layout-and-output-contract",
+        "report-sections.md#bounds-and-acceptance"
       ]
     },
     {
       "id": "C42",
       "domain": "Output and transfer",
       "feature": "Save Records as PDF / PDF script workflows",
-      "baseline_status": "Unavailable",
+      "previous_status": "Partial",
       "status": "Partial",
-      "scope": "Searchable vector PDF shares report geometry with Preview/Print, including static PNG/JPEG, grouped summaries and supported sliding. Scripts, File > Save/Send Records As > PDF and the Share menu's and Preview toolbar's Save as PDF run the same step, with its dialog for the records being browsed or the current record. Ordinary buttons without an icon, plain groups and rounded frames print as in Preview (C41).",
-      "remaining": "Advanced PDF options, Save Records as PDF in server scripts (issue 261) and native FileMaker acceptance remain limited. Layouts with the objects C41 lists as refused (other containers, button icons, the rounded frames it names) refuse the PDF too (issue 263).",
-      "pull_requests": [
-        86,
-        94,
-        101,
-        103,
-        117,
-        341,
-        381,
-        393
+      "scope": "Save Records as PDF writes searchable vector PDF from the report scene (C41), from scripts, File > Save/Send Records As, the Share menu and the Preview toolbar, for the records being browsed or the current record, with the step's dialog and its initial view ([layout contract](portable-pdf.md#supported-layout-and-output-contract)).",
+      "remaining": "Append, other destinations, security, metadata and page ranges are refused [#109](https://github.com/OpenMaker-Dev/openmaker/issues/109); server scripts cannot run it [#104](https://github.com/OpenMaker-Dev/openmaker/issues/104); the PDF script steps fail [#96](https://github.com/OpenMaker-Dev/openmaker/issues/96); layouts C41 refuses refuse the PDF too.",
+      "issues": [
+        96,
+        104,
+        109
+      ],
+      "docs": [
+        "portable-pdf.md#supported-layout-and-output-contract"
       ]
     },
     {
       "id": "C43",
       "domain": "Output and transfer",
       "feature": "Text / spreadsheet import by script",
-      "baseline_status": "Partial",
+      "previous_status": "Partial",
       "status": "Partial",
-      "scope": "File-menu and script CSV/TSV/XLSX imports support field mapping and match keys.",
-      "remaining": "Other source types, new-table import and the native picker remain unavailable.",
-      "pull_requests": [
-        93
-      ]
+      "scope": "Import Records reads tab, CSV, merge, XML, xlsx and dBase files from scripts, and tab, CSV and xlsx from the File menu, with field mapping and match keys, also inside transactions.",
+      "remaining": "\"Split repetitions\" is ignored and no new table is created [#115](https://github.com/OpenMaker-Dev/openmaker/issues/115); the whole source is read before the size check [#116](https://github.com/OpenMaker-Dev/openmaker/issues/116); the File menu lacks FileMaker's dialogs and options [#118](https://github.com/OpenMaker-Dev/openmaker/issues/118).",
+      "issues": [
+        115,
+        116,
+        118
+      ],
+      "docs": []
     },
     {
       "id": "C44",
       "domain": "Output and transfer",
       "feature": "FileMaker / folder / ODBC / legacy import",
-      "baseline_status": "Unavailable",
+      "previous_status": "Unavailable",
       "status": "Unavailable",
-      "scope": "Import source_kind 2 and FileMaker/Folder/ODBC/Excel2003 profiles return Unsupported.",
-      "remaining": "Implement one source class per feature PR with mapping and failure tests.",
-      "pull_requests": []
+      "scope": "FileMaker files, folders, ODBC and Excel 2003 sources are refused with error 3 on the desktop and the server; the menu's Folder and ODBC items are disabled.",
+      "remaining": "FileMaker files, folders and .xls workbooks [#114](https://github.com/OpenMaker-Dev/openmaker/issues/114); ODBC [#90](https://github.com/OpenMaker-Dev/openmaker/issues/90).",
+      "issues": [
+        90,
+        114
+      ],
+      "docs": []
     },
     {
       "id": "C45",
       "domain": "Output and transfer",
       "feature": "Export Records: script vs menu",
-      "baseline_status": "Partial",
+      "previous_status": "Partial",
       "status": "Partial",
-      "scope": "File-menu export exposes supported formats and the owning found set, using the existing script export engine. File > Save/Send Records As > Excel and the toolbars' Save as Excel run Save Records as Excel through the shared command, for the records being browsed or the current record. A script step stored with Current record and Restore writes only the current record, as FileMaker Pro 26 does with the dialog off. Without groups, Export Records and Save Records as Excel write each record's own running total and fraction of total, matching FileMaker Pro 26's tab-separated and whole-found-set Excel output for a running total without restart and a fraction without subtotal. In a grouped export, the desktop and OpenMaker Server both write the found set's grand summary on the first row, as FileMaker Pro 26 does locally for a running total and a fraction of total.",
-      "remaining": "Grouping editor, saved settings and further format/layout options remain. Restarting, subtotaled and other summary options, break-field rows of grouped exports, grouped Excel and other formats, the current-record Excel row and FileMaker Server's values are unmeasured (issue 372). Save Records as Excel with its dialog on is not compared with FileMaker Pro.",
-      "pull_requests": [
-        91,
-        341,
-        365,
-        371,
-        377
+      "scope": "Export Records and Save Records as Excel from scripts, the File menu and the toolbars, for the found set or the current record, in the supported formats with grouped summaries; local FileMaker Pro 26.0.3 comparisons cover several summary options ([exports](desktop-client.md#export-records-and-savesend-records-as)).",
+      "remaining": "No grouping editor, saved settings or XSLT [#118](https://github.com/OpenMaker-Dev/openmaker/issues/118); restarting running totals and subtotaled fractions at breaks are still wrong in Excel exports [#264](https://github.com/OpenMaker-Dev/openmaker/issues/264) [#265](https://github.com/OpenMaker-Dev/openmaker/issues/265); other summary options are not compared [#139](https://github.com/OpenMaker-Dev/openmaker/issues/139); some formats write invalid files past their limits [#117](https://github.com/OpenMaker-Dev/openmaker/issues/117).",
+      "issues": [
+        117,
+        118,
+        139,
+        264,
+        265
+      ],
+      "docs": [
+        "desktop-client.md#export-records-and-savesend-records-as"
       ]
     },
     {
       "id": "C46",
       "domain": "Output and transfer",
       "feature": "Data-file I/O and container/text export",
-      "baseline_status": "Implemented",
+      "previous_status": "Implemented",
       "status": "Implemented",
-      "scope": "Desktop host wires data-file operations and container export; narrow native binary/text-export samples passed.",
-      "remaining": "Expand paths, encoding, existing-file refusal and cancellation comparisons.",
-      "pull_requests": []
+      "scope": "Data file steps create, write, read, seek, rename and delete files on the desktop and in server scripts, and Export Field Contents writes container data ([desktop notes](re/script-runtime.md#implementation-notes-desktop-client)).",
+      "remaining": "At most 25 open data files and 64 MB per read or write (OpenMaker's limits). Paths, encodings, existing-file refusal and cancellation are not all compared with FileMaker.",
+      "issues": [],
+      "docs": [
+        "re/script-runtime.md#implementation-notes-desktop-client"
+      ]
     },
     {
       "id": "C47",
       "domain": "Authoring and diagnostics",
       "feature": "Script Workspace view / local drafts",
-      "baseline_status": "Partial",
+      "previous_status": "Partial",
       "status": "Partial",
-      "scope": "Workspace edits steps and catalog via a provider interface; native catalog is read-only. UI capability is not native persistence.",
-      "remaining": "Keep drafts recoverable; compare option editing and all step parameter forms.",
-      "pull_requests": []
+      "scope": "Script Workspace edits steps and their options and the script catalog, and saves them to OpenMaker Server and local files with FileMaker Pro's lock and upload sequence; unsaved changes ask before closing ([Script Workspace](desktop-client.md#script-workspace)).",
+      "remaining": "No new folders or separators; names outside ASCII are refused [#209](https://github.com/OpenMaker-Dev/openmaker/issues/209); compound options (Send Mail, PDF and Excel options, data sources, print settings) are kept as stored. FileMaker Server is C48's. FileMaker Pro has not opened files with OpenMaker-made scripts since the catalog digest was fixed.",
+      "issues": [
+        209
+      ],
+      "docs": [
+        "desktop-client.md#script-workspace"
+      ]
     },
     {
       "id": "C48",
       "domain": "Authoring and diagnostics",
       "feature": "Save scripts / script catalog to native host",
-      "baseline_status": "Unavailable",
+      "previous_status": "Unavailable",
       "status": "Unavailable",
-      "scope": "Desktop Script Workspace drafts locally against native hosts. OpenMaker-hosted script-step replacement is separately available through om-author.",
-      "remaining": "Claris FileMaker Server script/catalog persistence is unavailable.",
-      "pull_requests": [
-        108
-      ]
+      "scope": "Saving scripts to Claris FileMaker Server is refused: hosts without OpenMaker's authoring extension get a read-only catalog with a reason. Saves to OpenMaker Server and local files are C47's.",
+      "remaining": "Script and catalog saves on FileMaker Server [#66](https://github.com/OpenMaker-Dev/openmaker/issues/66) [#23](https://github.com/OpenMaker-Dev/openmaker/issues/23).",
+      "issues": [
+        23,
+        66
+      ],
+      "docs": []
     },
     {
       "id": "C49",
       "domain": "Authoring and diagnostics",
       "feature": "Manage Database / schema inspection",
-      "baseline_status": "Partial",
+      "previous_status": "Partial",
       "status": "Partial",
-      "scope": "Native tables/fields and decoded relationships are readable; supported edits to tables, normal fields, their auto-enter, validation and storage options, occurrences and relationships are saved with FileMaker Pro's schema transaction on OpenMaker Server and local files.",
-      "remaining": "Other relationship tools; calculated and looked-up values, value lists, ranges, validation calculations and custom messages; calculation and summary fields; FileMaker Server saves (#430-#433).",
-      "pull_requests": []
+      "scope": "Manage Database reads tables, fields and relationships and saves supported edits to tables, normal, calculation and summary fields, their options (auto-enter, lookups, validation with messages, storage) and occurrences and relationships, with FileMaker Pro's schema transaction on OpenMaker Server and local files; the graph links fields by dragging, duplicates and arranges ([editing and saving](schema-manager.md#editing-and-saving), [the graph](schema-manager.md#the-relationships-graph)).",
+      "remaining": "Read only on FileMaker Server (C50). Refused edits are listed in [what it refuses](schema-manager.md#what-it-refuses-error-3-nothing-staged), and missing tools in [limits](schema-manager.md#limits) [#152](https://github.com/OpenMaker-Dev/openmaker/issues/152) [#310](https://github.com/OpenMaker-Dev/openmaker/issues/310) [#311](https://github.com/OpenMaker-Dev/openmaker/issues/311). Files changed this way passed FileMaker's consistency check but have not been opened in FileMaker Pro.",
+      "issues": [
+        152,
+        310,
+        311
+      ],
+      "docs": [
+        "schema-manager.md#editing-and-saving",
+        "schema-manager.md#the-relationships-graph",
+        "schema-manager.md#what-it-refuses-error-3-nothing-staged",
+        "schema-manager.md#limits"
+      ]
     },
     {
       "id": "C50",
       "domain": "Authoring and diagnostics",
       "feature": "Save schema definitions to native host",
-      "baseline_status": "Unavailable",
+      "previous_status": "Unavailable",
       "status": "Unavailable",
-      "scope": "Schema inspection is available; om-author can create supported scalar fields on OpenMaker Server.",
-      "remaining": "Claris FileMaker Server schema mutation and general schema editing remain unavailable.",
-      "pull_requests": [
-        112
-      ]
+      "scope": "Schema changes are not saved to Claris FileMaker Server: the dialog is read only there. Saves to OpenMaker Server and local files are C49's.",
+      "remaining": "Schema saves on FileMaker Server [#23](https://github.com/OpenMaker-Dev/openmaker/issues/23); a research probe replayed the schema transaction there, but no product path exists.",
+      "issues": [
+        23
+      ],
+      "docs": []
     },
     {
       "id": "C51",
       "domain": "Authoring and diagnostics",
       "feature": "Layout inspection / Objects / canvas",
-      "baseline_status": "Partial",
+      "previous_status": "Partial",
       "status": "Partial",
-      "scope": "Geometry selection and inspection exist; canvas selection does not change the document.",
-      "remaining": "Native object/part metadata comparison and selection navigation.",
-      "pull_requests": []
+      "scope": "Layout mode shows the canvas, the Objects pane and the Inspector with real geometry; the canvas selects, moves, resizes and deletes objects, with Shift-click selection ([Layout mode](desktop-client.md#layout-mode-and-manage-layouts)).",
+      "remaining": "No object styles, names or tooltips, box selection, Select All or multi-object Inspector edits; field objects are labeled \"Field\" [#256](https://github.com/OpenMaker-Dev/openmaker/issues/256); a portal's caption is drawn over its first field [#257](https://github.com/OpenMaker-Dev/openmaker/issues/257). Native metadata is not compared [#76](https://github.com/OpenMaker-Dev/openmaker/issues/76).",
+      "issues": [
+        76,
+        256,
+        257
+      ],
+      "docs": [
+        "desktop-client.md#layout-mode-and-manage-layouts"
+      ]
     },
     {
       "id": "C52",
       "domain": "Authoring and diagnostics",
       "feature": "Create / modify / persist layouts",
-      "baseline_status": "Unavailable",
+      "previous_status": "Partial",
       "status": "Partial",
-      "scope": "om-author can durably append an own-table edit box with an optional label to an existing Form layout on OpenMaker Server.",
-      "remaining": "No general layout editor persistence, tab-order insertion or Claris-hosted layout saves. FileMaker Pro 26 accepted one case, an edit box without a label for a stored Text field: consistency check, Browse entry on first open, binding and its own later saves passed; other object kinds, labels and layouts are unchecked (issue 166).",
-      "pull_requests": [
-        116,
-        342
+      "scope": "Layout mode saves fields, texts, buttons and portals placed with its tools, moves, resizes and deletes, field controls, Layout Setup, Part Setup and width, and New (Form), Duplicate and Delete Layout, on OpenMaker Server and local files; `om-author` makes the same kinds of change ([Layout mode](desktop-client.md#layout-mode-and-manage-layouts), [authoring limits](authoring.md#limits)).",
+      "remaining": "No List, Table or Report layouts, restyling, groups, objects in portals or panels, or tab order [#316](https://github.com/OpenMaker-Dev/openmaker/issues/316); FileMaker Server is read only [#23](https://github.com/OpenMaker-Dev/openmaker/issues/23). FileMaker Pro has opened only a placed edit box and a widened layout; new layouts passed only the consistency check.",
+      "issues": [
+        23,
+        316
+      ],
+      "docs": [
+        "desktop-client.md#layout-mode-and-manage-layouts",
+        "authoring.md#limits"
       ]
     },
     {
       "id": "C53",
       "domain": "Authoring and diagnostics",
       "feature": "Script Debugger / Data Viewer",
-      "baseline_status": "Unavailable",
+      "previous_status": "Unavailable",
       "status": "Unavailable",
-      "scope": "Tools commands are disabled; workspace explicitly reports debugger unavailable.",
-      "remaining": "Breakpoints, step/call stack and watch-expression evaluation in correct context.",
-      "pull_requests": []
+      "scope": "Tools > Script Debugger, Debugging Controls and Data Viewer are disabled, and Script Workspace says the debugger is not available.",
+      "remaining": "Breakpoints, stepping, the call stack and watch expressions evaluated in context [#74](https://github.com/OpenMaker-Dev/openmaker/issues/74).",
+      "issues": [
+        74
+      ],
+      "docs": []
     },
     {
       "id": "C54",
       "domain": "Authoring and diagnostics",
       "feature": "Manage value lists / menus / custom functions / DDR",
-      "baseline_status": "Unavailable",
-      "status": "Unavailable",
-      "scope": "Several management dialogs and design-report/XML tools are disabled; runtime use of stored definitions is separate.",
-      "remaining": "Prioritize editable definitions and metadata export needed for compatibility work.",
-      "pull_requests": []
+      "previous_status": "Unavailable",
+      "status": "Partial",
+      "scope": "Manage Value Lists shows the catalog read only; a pop-up menu's Edit opens Edit Value List and saves a custom list's values as FileMaker Pro 26.0.3 writes them, on OpenMaker Server and local files ([Manage Value Lists](desktop-client.md#manage-value-lists), [value lists](authoring.md#value-lists)). Manage Security shows security read only.",
+      "remaining": "New, edit, duplicate and delete of value lists, and lists of field values, are not available; custom menus [#57](https://github.com/OpenMaker-Dev/openmaker/issues/57), custom functions and the other dialogs [#73](https://github.com/OpenMaker-Dev/openmaker/issues/73), Manage Security editing [#72](https://github.com/OpenMaker-Dev/openmaker/issues/72), and Save a Copy as XML and the Database Design Report [#75](https://github.com/OpenMaker-Dev/openmaker/issues/75) are not built.",
+      "issues": [
+        57,
+        72,
+        73,
+        75
+      ],
+      "docs": [
+        "desktop-client.md#manage-value-lists",
+        "authoring.md#value-lists"
+      ]
     },
     {
       "id": "C55",
       "domain": "Integrations",
       "feature": "Open URL / Insert from URL",
-      "baseline_status": "Implemented",
+      "previous_status": "Implemented",
       "status": "Implemented",
-      "scope": "Desktop host dispatches URLs and fetches responses through om-url, including file URLs and cooperative transfer cancellation.",
-      "remaining": "Native response/encoding/target and supported option differential tests.",
-      "pull_requests": []
+      "scope": "Open URL hands URLs to the desktop, and Insert from URL fetches through `om-url`, including file URLs, with cancellation, on the desktop and the server ([status](scripting.md#status-2026-10-29)).",
+      "remaining": "Certificates are verified even when a script turns verification off, and cURL options that could split the request are refused. No desktop GUI test of Insert from URL; responses, encodings and options are not compared with FileMaker.",
+      "issues": [],
+      "docs": [
+        "scripting.md#status-2026-10-29"
+      ]
     },
     {
       "id": "C56",
       "domain": "Integrations",
       "feature": "Web viewer and JavaScript bridge",
-      "baseline_status": "Unavailable",
+      "previous_status": "Partial",
       "status": "Partial",
-      "scope": "Opt-in embedded WebKitGTK with JavaScript calls and script callbacks on Linux/X11, Browse Form, first file window.",
-      "remaining": "No macOS, Windows, native Wayland, List/portal rows or Find content; native parity unmeasured.",
-      "pull_requests": [
-        109
+      "scope": "With the `web-viewer` build on Linux, WebKitGTK views show in Form and List view in every window (one per List row in sight, one over a portal), run the JavaScript bridge both ways, and print as a frame and caption; on a Wayland session the app runs through XWayland ([web viewers](re/layout-model.md#96-web-viewer)).",
+      "remaining": "Not on macOS [#304](https://github.com/OpenMaker-Dev/openmaker/issues/304) or Windows [#305](https://github.com/OpenMaker-Dev/openmaker/issues/305), nor in native Wayland windows [#323](https://github.com/OpenMaker-Dev/openmaker/issues/323) or embedded viewports [#319](https://github.com/OpenMaker-Dev/openmaker/issues/319); not in Find mode or Table parts; objects stacked above a viewer are covered by it.",
+      "issues": [
+        304,
+        305,
+        319,
+        323
+      ],
+      "docs": [
+        "re/layout-model.md#96-web-viewer"
       ]
     },
     {
       "id": "C57",
       "domain": "Integrations",
       "feature": "Send Mail and platform automation",
-      "baseline_status": "Unavailable",
+      "previous_status": "Unavailable",
       "status": "Unavailable",
-      "scope": "Mail and platform automation steps fall through unsupported desktop host paths.",
-      "remaining": "Separate generic mail transport, macOS automation and Windows dispatch features.",
-      "pull_requests": []
+      "scope": "Send Mail's options can be edited in Script Workspace, but the step does not run; no AppleScript, Send Event or Speak host exists.",
+      "remaining": "Send Mail [#89](https://github.com/OpenMaker-Dev/openmaker/issues/89); macOS and Windows integration steps [#92](https://github.com/OpenMaker-Dev/openmaker/issues/92).",
+      "issues": [
+        89,
+        92
+      ],
+      "docs": []
     },
     {
       "id": "C58",
       "domain": "Integrations",
       "feature": "ExecuteSQL calculation host",
-      "baseline_status": "Implemented",
+      "previous_status": "Implemented",
       "status": "Implemented",
-      "scope": "SQL calculation integration and cursor/container forwarding exist; pending selectors received targeted corrections.",
-      "remaining": "Native query grammar, typing, joins and error behavior differential suite.",
-      "pull_requests": []
+      "scope": "ExecuteSQL runs through `om-sql` on desktop and server sources, with container and cursor forwarding, a nesting limit and a memory budget for cross products, checked against recorded engine vectors ([status](scripting.md#status-2026-10-29)).",
+      "remaining": "Summary columns ignore DISTINCT and subqueries, and two letters sort differently [#81](https://github.com/OpenMaker-Dev/openmaker/issues/81).",
+      "issues": [
+        81
+      ],
+      "docs": [
+        "scripting.md#status-2026-10-29"
+      ]
     },
     {
       "id": "C59",
       "domain": "Integrations",
       "feature": "ESS / ODBC / external SQL tables",
-      "baseline_status": "Unavailable",
+      "previous_status": "Unavailable",
       "status": "Unavailable",
-      "scope": "No complete desktop external SQL provider path was found; ODBC import is explicitly refused. Client ExecuteSQL calculations do not imply ESS support.",
-      "remaining": "Independent SQL data-source discovery, table binding and write semantics.",
-      "pull_requests": []
+      "scope": "No external SQL data source: Import from ODBC and Manage External Data Sources are disabled, ODBC refresh is unsupported, and data source paths to ODBC are refused. Client ExecuteSQL (C58) does not imply ESS.",
+      "remaining": "ODBC and ESS [#90](https://github.com/OpenMaker-Dev/openmaker/issues/90).",
+      "issues": [
+        90
+      ],
+      "docs": []
     },
     {
       "id": "C60",
       "domain": "Integrations",
       "feature": "Execute FileMaker Data API script step",
-      "baseline_status": "Unavailable",
+      "previous_status": "Unavailable",
       "status": "Unavailable",
-      "scope": "Desktop Network implementation does not override execute_data_api; default is Unsupported.",
-      "remaining": "Implement the client script-step contract and response/error mapping.",
-      "pull_requests": []
+      "scope": "Execute FileMaker Data API returns unsupported on the desktop and the server.",
+      "remaining": "The client step's contract and its response and error mapping [#94](https://github.com/OpenMaker-Dev/openmaker/issues/94).",
+      "issues": [
+        94
+      ],
+      "docs": []
     },
     {
       "id": "C61",
       "domain": "Integrations",
       "feature": "Third-party FileMaker plug-ins",
-      "baseline_status": "Unavailable",
+      "previous_status": "Unavailable",
       "status": "Unavailable",
-      "scope": "Machine metadata reports no installed plug-ins; no compatible plugin execution host is demonstrated.",
-      "remaining": "Assess ABI/platform strategy before committing to plugin compatibility.",
-      "pull_requests": []
+      "scope": "No FileMaker plug-in loads: there is no plug-in API or installer, and Get ( InstalledFMPlugins ) is empty. A clean-room subset of 49 MBS commands runs natively, without the plug-in ([what runs](plugins.md#what-runs)).",
+      "remaining": "Plug-in compatibility [#91](https://github.com/OpenMaker-Dev/openmaker/issues/91); the full MBS feature set [#287](https://github.com/OpenMaker-Dev/openmaker/issues/287) ([limits](plugins.md#limits)).",
+      "issues": [
+        91,
+        287
+      ],
+      "docs": [
+        "plugins.md#what-runs",
+        "plugins.md#limits"
+      ]
     },
     {
       "id": "C62",
       "domain": "Integrations",
       "feature": "2025/2026 AI and model workflows",
-      "baseline_status": "Unavailable",
+      "previous_status": "Unavailable",
       "status": "Unavailable",
-      "scope": "Pure embedding calculations exist, but inspected desktop host lacks general AI model/RAG script workflows. Function/step catalogs alone are not implementation.",
-      "remaining": "Add only after core workflow priorities, using generic model fixtures.",
-      "pull_requests": []
+      "scope": "Only pure embedding calculations exist (CosineSimilarity and the embedding conversions); AI script steps and model calls fail.",
+      "remaining": "AI script steps and AI functions [#77](https://github.com/OpenMaker-Dev/openmaker/issues/77).",
+      "issues": [
+        77
+      ],
+      "docs": []
     },
     {
       "id": "C63",
       "domain": "Platform and quality",
       "feature": "Native desktop menus / common commands",
-      "baseline_status": "Partial",
+      "previous_status": "Partial",
       "status": "Partial",
-      "scope": "Menus draw inside each window on macOS. File > Save/Send Records As > Excel and PDF, the Share menu and the Preview toolbar's Save as buttons run Save Records as Excel and as PDF through one shared command and the steps' dialogs; many other items are disabled even when related script paths exist.",
-      "remaining": "Audit every enabled command and keyboard route; native menu integration. Save as Snapshot Link stays disabled (issue 251). FileMaker Pro's item text, dialogs and OnRecordCommit timing for these menu commands are unmeasured.",
-      "pull_requests": [
-        341
+      "scope": "The File, Records, Requests, Layouts, Window and Manage menus run their common commands through the app's actions, and menu levels gate items per privilege set ([chrome](desktop-client.md#chrome), [privilege sets](desktop-client.md#privilege-sets)). Menus are drawn inside each window, also on macOS.",
+      "remaining": "The Edit menu's data-entry commands [#52](https://github.com/OpenMaker-Dev/openmaker/issues/52), the Format menu [#53](https://github.com/OpenMaker-Dev/openmaker/issues/53), the Window menu's Tile and Cascade [#54](https://github.com/OpenMaker-Dev/openmaker/issues/54), recent files and favorites [#56](https://github.com/OpenMaker-Dev/openmaker/issues/56), custom menu sets [#57](https://github.com/OpenMaker-Dev/openmaker/issues/57) and Snapshot Link [#95](https://github.com/OpenMaker-Dev/openmaker/issues/95) are disabled; the macOS menu bar is drawn in the window [#55](https://github.com/OpenMaker-Dev/openmaker/issues/55).",
+      "issues": [
+        52,
+        53,
+        54,
+        55,
+        56,
+        57,
+        95
+      ],
+      "docs": [
+        "desktop-client.md#chrome",
+        "desktop-client.md#privilege-sets"
       ]
     },
     {
       "id": "C64",
       "domain": "Platform and quality",
       "feature": "Keyboard / clipboard / IME / accessibility",
-      "baseline_status": "Unverified",
+      "previous_status": "Unverified",
       "status": "Unverified",
-      "scope": "Individual control behavior has tests, but a complete native keyboard, IME, clipboard and assistive-technology audit is not established. Disabled Edit menu entries alone do not prove widget shortcuts fail.",
-      "remaining": "Manual OS-level input matrix with Unicode, selection, paste and accessibility navigation.",
-      "pull_requests": []
+      "scope": "Tab follows the stored tab order in Form, List, Table, Find mode and portal rows; keyboard commit and keyboard choices in drop-down lists have tests. No OS-level keyboard, input-method, clipboard or assistive-technology audit has been made.",
+      "remaining": "An OS input matrix with Unicode, selection, paste and accessibility navigation. Keypad Enter does not commit [#260](https://github.com/OpenMaker-Dev/openmaker/issues/260); Tab passes over buttons and panels [#253](https://github.com/OpenMaker-Dev/openmaker/issues/253).",
+      "issues": [
+        253,
+        260
+      ],
+      "docs": []
     },
     {
       "id": "C65",
       "domain": "Platform and quality",
       "feature": "Performance / memory / render caches",
-      "baseline_status": "Partial",
+      "previous_status": "Partial",
       "status": "Partial",
-      "scope": "Merged #68/#77 and bounded scans improve supported paths; synthetic request counts and frame tests are not a native workload latency claim. Query programs find index keys by binary search, measured on synthetic programs against earlier OpenMaker only (docs/performance/query-index-lookups.md).",
-      "remaining": "Compare cold/warm latency, memory and request counts on generated small/large solutions.",
-      "pull_requests": [
-        355
+      "scope": "Demand loading of related files, layouts, themes, fonts, fields and script bodies; batched related catalogs; value lists built in linear time off the UI thread; index keys found by binary search. Measured on synthetic files against earlier OpenMaker only ([startup and load](performance/startup-load.md#measurements), [index lookups](performance/query-index-lookups.md)).",
+      "remaining": "FileMaker Pro and FileMaker Server are not measured, and rendering is not timed ([limits](performance/startup-load.md#limits)).",
+      "issues": [],
+      "docs": [
+        "performance/startup-load.md#measurements",
+        "performance/query-index-lookups.md",
+        "performance/startup-load.md#limits"
       ]
     },
     {
       "id": "C66",
       "domain": "Platform and quality",
       "feature": "File recovery / copy / conversion tools",
-      "baseline_status": "Unavailable",
-      "status": "Unavailable",
-      "scope": "Create New, Save a Copy As and Recover are disabled; read-only file-format tooling is separate.",
-      "remaining": "Scope local persistence first, then copy/recovery with disposable corruption fixtures.",
-      "pull_requests": []
+      "previous_status": "Unavailable",
+      "status": "Partial",
+      "scope": "File > Create New makes a blank file, as `om-author create-file` does; FileMaker Pro 26.0.3 opened such files with no alert and its consistency check found no bad block ([checks](new-files.md#checks)).",
+      "remaining": "Save a Copy As [#63](https://github.com/OpenMaker-Dev/openmaker/issues/63), Recover [#64](https://github.com/OpenMaker-Dev/openmaker/issues/64) and conversion of older files [#65](https://github.com/OpenMaker-Dev/openmaker/issues/65) are not available; a new file has one plain theme [#222](https://github.com/OpenMaker-Dev/openmaker/issues/222) and refuses new scripts [#274](https://github.com/OpenMaker-Dev/openmaker/issues/274) ([limits](new-files.md#limits)).",
+      "issues": [
+        63,
+        64,
+        65,
+        222,
+        274
+      ],
+      "docs": [
+        "new-files.md#checks",
+        "new-files.md#limits"
+      ]
     },
     {
       "id": "C67",
       "domain": "Platform and quality",
       "feature": "Peer-to-peer file hosting from the client",
-      "baseline_status": "Unavailable",
+      "previous_status": "Unavailable",
       "status": "Unavailable",
-      "scope": "NativeProvider consumes hosted sessions; no interactive client-hosted sharing workflow was identified. Standalone om-server is a separate component.",
-      "remaining": "Define supported client-hosting contract separately from Server replacement.",
-      "pull_requests": []
+      "scope": "A local file is served only to the client that opened it, on a loopback port; File > Sharing is not available. The standalone OpenMaker Server is a separate component.",
+      "remaining": "Sharing a local file with other clients [#61](https://github.com/OpenMaker-Dev/openmaker/issues/61).",
+      "issues": [
+        61
+      ],
+      "docs": []
     },
     {
       "id": "C68",
       "domain": "Platform and quality",
       "feature": "Broad native workflow / every-button parity",
-      "baseline_status": "Unverified",
+      "previous_status": "Unverified",
       "status": "Unverified",
-      "scope": "Reviewed automated slices and synthetic end-to-end tests cover a growing subset of client workflows.",
-      "remaining": "No complete every-button or broad native workflow equivalence claim.",
-      "pull_requests": []
+      "scope": "Automated slices, synthetic end-to-end tests and measurement runs over the starter solutions cover a growing subset of client workflows; none compares the results with FileMaker.",
+      "remaining": "No every-button or broad native workflow equivalence is claimed.",
+      "issues": [],
+      "docs": []
     }
   ],
-  "agent_authoring": {
-    "transport": "Versioned JSON CLI and MCP stdio",
-    "host": "Design changes use OpenMaker Server extensions; script execution uses the host account's ordinary script permissions (native FileMaker Server acceptance unmeasured)",
-    "available": [
-      "List every command and its parameters from one shared catalog, without a connection",
-      "Replace an existing script step list with revision protection and fresh-connection verification",
-      "Create stored text, number, date, time or timestamp fields",
-      "Place an own-table edit box and optional plain label in an existing Form body",
-      "Run a script with Perform Script on Server and read its last error and result (run against OpenMaker Server only)",
-      "List the items a field control's value list offers on a record (list_choices), complete or as an error (run against OpenMaker Server only)"
-    ],
-    "remaining": [
-      "General script/catalog operations",
-      "General schema/layout editing",
-      "Value-list/menu/custom-function authoring",
-      "FileMaker Pro 26 accepted one stored Text field and its edit box without a label (consistency, Browse entry, binding, its own later saves; issue 166); other outputs have not been opened in FileMaker Pro",
-      "Choosing a value-list item needs a desktop window: choose_value_list_item answers error 3 (no_window) and changes nothing"
-    ]
-  },
-  "deferred": [
-    "Precise font, border and text-placement oracle",
-    "Broad native OS/host/version and every-button acceptance",
-    "Native UserName preference policy",
-    "Fine-grained server privilege enforcement and security hardening",
-    "Further feature work requires a new development plan"
+  "agent_authoring": "`om-author`'s JSON CLI and MCP server read one catalog of commands, which `om-author commands` lists with their parameters without a connection ([commands](authoring.md#commands-openmakerauthoringv1)). On OpenMaker Server an agent can inspect a solution and its security, replace a script's steps, add stored fields, add, duplicate and delete Form layouts, place fields, texts and portals, move, resize and delete objects, change field controls, parts, Layout Setup and width, change a custom value list's values, and run a script with Perform Script on Server. `create-file` makes a blank local file without a connection. `list_choices` lists the items a field control's value list offers; `choose_value_list_item` and `enter_other_value` need a desktop window, so they answer error 3 (`no_window`) and change nothing. Design changes need Full Access, revision checks, locks and verification by reading back.\n\nNone of this saves to Claris FileMaker Server [#23](https://github.com/OpenMaker-Dev/openmaker/issues/23), and `run_script` has run against OpenMaker Server only ([limits](authoring.md#limits)). FileMaker Pro 26 opened a file with one added Text field and its edit box, and blank files from `create-file` ([checks](new-files.md#checks)); other outputs have not been opened in FileMaker Pro.",
+  "open_areas": [
+    "Precise font, border and text-placement comparisons with FileMaker Pro",
+    "Broad native OS, host, version and every-button acceptance",
+    "Fine-grained server privilege enforcement and security hardening"
   ]
 }
