@@ -1438,7 +1438,8 @@ impl OpenMakerApp {
         // What scripts left in the current record's later repetitions shows
         // in their boxes before the commit, as the user's own typing there
         // does: the window's uncommitted cells, under that typing.
-        if let Some((table, record, cells)) = self.scripted_repetitions(&open) {
+        let scripted = self.scripted_repetitions(&open);
+        if let Some((table, record, cells)) = scripted.clone() {
             match related_drafts
                 .iter_mut()
                 .find(|(t, r, _)| *t == table && *r == record)
@@ -1452,6 +1453,7 @@ impl OpenMakerApp {
             }
         }
         self.w.document.related_drafts = related_drafts;
+        self.w.document.scripted = scripted;
         let mut begun: std::collections::BTreeMap<u64, Vec<_>> = Default::default();
         // A begun row shows what was typed over what its rules entered,
         // once an ordinary commit's OnObjectSave previewed them (#1047).

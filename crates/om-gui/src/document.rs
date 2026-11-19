@@ -199,6 +199,10 @@ pub(crate) struct DocumentState {
     /// occurrence, `(id, table, cells)`. Calculations see them, and begun
     /// records show as rows.
     pub related_drafts: RelatedDrafts,
+    /// The current record's later repetitions a script set and no commit
+    /// has kept: its base table, id and those cells (`related_drafts` shows
+    /// them too, under the user's typing). Their editors open with them.
+    pub scripted: Option<(u64, u64, crate::scripting::Cells)>,
     pub begun_rows: BegunRows,
     /// The field of the current record that has the focus, as of the last
     /// frame, and what this frame saw (object triggers).
@@ -571,14 +575,47 @@ struct RelatedBuffer {
     occurrence: u64,
     version: Option<u64>,
     buffer: FieldBuffer,
+    /// What a script left in the cell, uncommitted, as the edit began or
+    /// last took it (`DocumentState::scripted_value`). The editor opens
+    /// with it, and the user's edit is a change against it, not against
+    /// the stored value: clearing the box back to the stored value
+    /// replaces the script's too.
+    scripted: Option<String>,
 }
 
 impl RelatedBuffer {
-    /// The record was read again: an unchanged edit takes its value and
-    /// version; a changed one keeps the version it began from.
-    fn refresh(&mut self, target: &crate::calc::RelatedRecord) {
-        self.buffer.refresh(&target.stored);
-        if self.buffer.value == self.buffer.original {
+    fn new(occurrence: u64, version: Option<u64>, stored: &str, scripted: Option<String>) -> Self {
+        let mut buffer = FieldBuffer::new(stored);
+        if let Some(value) = &scripted {
+            buffer.value.clone_from(value);
+        }
+        Self {
+            occurrence,
+            version,
+            buffer,
+            scripted,
+        }
+    }
+
+    /// Whether the user changed a stored record's value: from the script's,
+    /// if one is left, else from the stored one.
+    fn changed(&self) -> bool {
+        self.buffer.value != *self.scripted.as_ref().unwrap_or(&self.buffer.original)
+    }
+
+    /// The record was read again: an unchanged edit takes its value (the
+    /// script's, if one is left) and version; a changed one keeps the
+    /// version it began from.
+    fn refresh(&mut self, target: &crate::calc::RelatedRecord, scripted: Option<String>) {
+        if self.changed() {
+            self.buffer.refresh(&target.stored);
+        } else {
+            self.buffer.value.clone_from(&self.buffer.original);
+            self.buffer.refresh(&target.stored);
+            if let Some(value) = &scripted {
+                self.buffer.value.clone_from(value);
+            }
+            self.scripted = scripted;
             self.version = target.version;
         }
     }
@@ -1727,6 +1764,18 @@ impl DocumentState {
         }
     }
 
+    /// What a script left uncommitted in `field`, a later repetition of
+    /// the current record (`scripted`): "" for one it cleared.
+    fn scripted_value(&self, field: &RelatedField) -> Option<String> {
+        let (table, record, cells) = self.scripted.as_ref()?;
+        if field.table != *table || field.row != RelatedRow::Record(*record) {
+            return None;
+        }
+        cells
+            .get(&field.field)
+            .map(|value| value.clone().unwrap_or_default())
+    }
+
     /// Whether `field` of any record has an unsaved draft.
     pub fn edited(&self, field: &str) -> bool {
         self.buffers
@@ -1747,7 +1796,7 @@ impl DocumentState {
         self.related
             .get(&focus.field)
             .is_some_and(|edit| match focus.field.row {
-                RelatedRow::Record(_) => edit.buffer.value != edit.buffer.original,
+                RelatedRow::Record(_) => edit.changed(),
                 RelatedRow::New { .. } => edit.buffer.ui_edited,
             })
     }
@@ -2037,7 +2086,7 @@ impl DocumentState {
                 key.layout == layout
                     && key.parent == parent
                     && match key.row {
-                        RelatedRow::Record(_) => edit.buffer.value != edit.buffer.original,
+                        RelatedRow::Record(_) => edit.changed(),
                         RelatedRow::New { .. } => edit.buffer.ui_edited,
                     }
             })
@@ -2056,10 +2105,7 @@ impl DocumentState {
     pub fn all_related_edits(&self) -> Vec<RelatedEdit> {
         self.related
             .iter()
-            .filter(|(key, edit)| {
-                matches!(key.row, RelatedRow::Record(_))
-                    && edit.buffer.value != edit.buffer.original
-            })
+            .filter(|(key, edit)| matches!(key.row, RelatedRow::Record(_)) && edit.changed())
             .map(|(key, edit)| RelatedEdit {
                 field: *key,
                 occurrence: edit.occurrence,
@@ -2081,11 +2127,10 @@ impl DocumentState {
         original: &str,
         value: &str,
     ) {
-        let edit = self.related.entry(field).or_insert_with(|| RelatedBuffer {
-            occurrence,
-            version,
-            buffer: FieldBuffer::new(original),
-        });
+        let edit = self
+            .related
+            .entry(field)
+            .or_insert_with(|| RelatedBuffer::new(occurrence, version, original, None));
         edit.buffer.value = value.into();
         edit.buffer.ui_edited = true;
     }
@@ -2097,7 +2142,7 @@ impl DocumentState {
         self.related.iter().any(|(key, edit)| {
             key.layout == layout
                 && match key.row {
-                    RelatedRow::Record(_) => edit.buffer.value != edit.buffer.original,
+                    RelatedRow::Record(_) => edit.changed(),
                     RelatedRow::New { .. } => edit.buffer.ui_edited,
                 }
         })
@@ -5844,8 +5889,9 @@ fn paint_related_option_set(
     let read = !pop_up || set.labels || egui::Popup::is_id_open(ui.ctx(), popup::menu_id(id));
     let refusal = related_refusal(state, &set, target, read);
     let editable = refusal.is_none();
+    let scripted = state.scripted_value(&field);
     if let (Some(edit), RelatedRow::Record(_)) = (state.related.get_mut(&field), field.row) {
-        edit.refresh(target);
+        edit.refresh(target, scripted);
     }
     let value = state
         .related
@@ -5988,10 +6034,9 @@ fn paint_related_option_set(
         }
     };
     if let Some(chosen) = chosen {
-        let edit = state.related.entry(field).or_insert_with(|| RelatedBuffer {
-            occurrence: target.occurrence,
-            version: target.version,
-            buffer: FieldBuffer::new(&target.stored),
+        let scripted = state.scripted_value(&field);
+        let edit = state.related.entry(field).or_insert_with(|| {
+            RelatedBuffer::new(target.occurrence, target.version, &target.stored, scripted)
         });
         edit.buffer.value = chosen;
         edit.buffer.ui_edited = true;
@@ -6059,8 +6104,9 @@ fn related_field(
         state.related_click = None;
     }
     // A record begun in a creation row has no stored values to refresh from.
+    let scripted = state.scripted_value(&field);
     if let (Some(edit), RelatedRow::Record(_)) = (state.related.get_mut(&field), field.row) {
-        edit.refresh(target);
+        edit.refresh(target, scripted);
     }
     // A field of the current record is a Tab stop (#859); one a Tab goes
     // to takes the focus now, its insertion point after its text.
@@ -6175,10 +6221,10 @@ fn related_field(
     let open = list.is_some() && drop_down::is_open(ui, id);
     // Entered: the list's items are read now.
     let refusal = list.and_then(|list| related_refusal(state, list.set, target, true));
-    let edit = state.related.entry(field).or_insert_with(|| RelatedBuffer {
-        occurrence: target.occurrence,
-        version: target.version,
-        buffer: FieldBuffer::new(&target.stored),
+    // A later repetition a script set opens with the script's value.
+    let scripted = state.scripted_value(&field);
+    let edit = state.related.entry(field).or_insert_with(|| {
+        RelatedBuffer::new(target.occurrence, target.version, &target.stored, scripted)
     });
     let response = field_editor(
         ui,
@@ -6779,11 +6825,11 @@ fn show_other_dialog(ui: &Ui, session: &Session, state: &mut DocumentState) {
                 record: u64::try_from(field.parent).unwrap_or(u64::MAX),
             };
             if let Ok(edit) = choice::other_value(&dialog.object, at, at, &text) {
-                let related = state.related.entry(field).or_insert_with(|| RelatedBuffer {
-                    occurrence,
-                    version,
-                    buffer: FieldBuffer::new(&stored),
-                });
+                let scripted = state.scripted_value(&field);
+                let related = state
+                    .related
+                    .entry(field)
+                    .or_insert_with(|| RelatedBuffer::new(occurrence, version, &stored, scripted));
                 related.buffer.value = edit.value;
                 related.buffer.ui_edited = true;
             }
