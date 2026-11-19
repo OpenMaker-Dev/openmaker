@@ -903,7 +903,7 @@ fn an_imported_layout_edits_commits_corrects_and_reverts_on_the_peer() {
 
 #[test]
 fn imported_layout_delete_menu_and_scripts_preserve_caller_and_omitted_peers() {
-    use egui_kittest::kittest::{By, Queryable};
+    use egui_kittest::kittest::{By, NodeT, Queryable};
     use om_data::DataProvider;
     use om_scripts::{flag, ScriptStep};
     const REMOTE: u64 = 0xd0_0040;
@@ -920,10 +920,33 @@ fn imported_layout_delete_menu_and_scripts_preserve_caller_and_omitted_peers() {
         delete.set_flag(flag::NO_INTERACT, true);
         fixture::script(id, name, vec![delete, report()])
     };
+    // Delete Record inside a script's transaction, then Revert or Commit
+    // Transaction: the deletion is held in the related file's part (#312).
+    let delete_in_transaction = |id, name, end: u16| {
+        let mut delete = ScriptStep::new(9);
+        delete.set_flag(flag::NO_INTERACT, true);
+        let mut show = ScriptStep::new(87);
+        show.set_text(0, Some("OK"));
+        show.set_calculation(1, Some(&fixture::calc(
+            "$e & \"|\" & Get ( LastError ) & \"|\" & Get ( FileName ) & \"|\" & Get ( LayoutName ) & \"|in transaction\"",
+        )));
+        let mut steps = vec![
+            fixture::on(86, true),
+            fixture::on(223, false),
+            ScriptStep::new(205),
+            delete,
+            fixture::set_variable("$e", "Get ( LastError )"),
+        ];
+        steps.extend((end == 207).then(|| ScriptStep::new(207)));
+        steps.extend([ScriptStep::new(206), show]);
+        fixture::script(id, name, steps)
+    };
     let mut root = fixture::tree(
         &[
             delete_script(1, "Delete peer", 9),
             delete_script(2, "Delete found peers", 10),
+            delete_in_transaction(3, "Delete peer then revert", 207),
+            delete_in_transaction(4, "Delete peer then commit", 206),
         ],
         true,
     );
@@ -1071,6 +1094,54 @@ fn imported_layout_delete_menu_and_scripts_preserve_caller_and_omitted_peers() {
         .with_opcode(om_protocol::Opcode::HostCommit)
         .iter()
         .all(|(file, _)| file == "Related.fmp12"));
+
+    // The last peer, deleted inside a transaction: kept when it is
+    // reverted, gone once it commits, with no error either way (#312).
+    let stored = |host: &related::Host| -> Vec<i64> {
+        host.open("Related.fmp12")
+            .records(1, 0, 10)
+            .unwrap()
+            .records
+            .into_iter()
+            .map(|r| r.id)
+            .collect()
+    };
+    common::select_layout(&mut app, "Notes");
+    for (script, kept) in [
+        ("Delete peer then revert", vec![4]),
+        ("Delete peer then commit", vec![]),
+    ] {
+        // Which records the window shows after a reverted deletion is
+        // unmeasured in FileMaker; all of them are shown again first.
+        common::click(&mut app, "Show All");
+        common::wait_until(&mut app, "the last peer", |a| {
+            a.state().is_settled() && cell(a).as_deref() == Some("Task 4")
+        });
+        common::open_menu(&mut app, "Scripts");
+        common::click(&mut app, script);
+        let by = By::new().label_contains("|in transaction");
+        common::wait_until(&mut app, script, |a| {
+            a.query_all(by.clone()).next().is_some()
+        });
+        let shown = app
+            .query_all(by)
+            .next()
+            .unwrap()
+            .accesskit_node()
+            .value()
+            .unwrap_or_default();
+        assert!(shown.starts_with("0|0|Root|Notes|"), "{script}: {shown}");
+        common::click(&mut app, "OK");
+        common::wait_until(&mut app, "script ended", |a| {
+            !a.state().script_running() && a.state().is_settled()
+        });
+        assert!(
+            app.state().error().is_none(),
+            "{script}: {:?}",
+            app.state().error()
+        );
+        assert_eq!(stored(&host), kept, "{script}");
+    }
 }
 
 #[test]

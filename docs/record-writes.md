@@ -998,9 +998,16 @@ is written by that file (`related_owner.rs`, #1000):
     window keeps what was typed. What FileMaker does in that case is
     unmeasured.
   - **Revert Transaction** reverts every file's part.
-  - **Still refused (3)** inside the transaction, on a layout of another
-    file's table: Delete Record, and edits the user makes there while the
-    script is paused (the provider's create, update and delete calls).
+  - **Delete Record** on a layout of another file's table, from a script
+    or the menu while the script is paused, is held in that file's part,
+    as a deleted portal row is: the record goes when the transaction
+    commits and stays when it is reverted
+    ([#312](https://github.com/OpenMaker-Dev/openmaker/issues/312)). Which
+    records the window shows after such a revert is unmeasured.
+  - **Still refused (3)** inside the transaction, on such a layout: the
+    edits and new records the user makes there while the script is paused
+    (the provider's create and update calls,
+    [#411](https://github.com/OpenMaker-Dev/openmaker/issues/411)).
 - **The window's commit of a record across files** (#1006; it begins with
   `DataProvider::begin_record_commit`, a script's Open Transaction with
   `begin_transaction`). It is saved file by file, related files first and
