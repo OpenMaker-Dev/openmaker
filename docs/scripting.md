@@ -306,7 +306,12 @@ dBase.
   a session's data files close when its script ends or is aborted
   (script-steps.md, Paths on OpenMaker Server).
 - The desktop shows FileMaker's export, import mapping and summary
-  dialogs.
+  dialogs. The export dialog's Save as shows the step's first stored path
+  this machine reads (another platform's line is skipped), or the file's
+  name with the type's extension. It takes a native absolute path, which it
+  passes on in FileMaker's form (on macOS `/Macintosh HD/...`), a path
+  relative to Documents, or a path list line; the line it showed, left as
+  it was or with only its type changed, is passed on as it is.
 - In Browse mode, File > Import Records > File opens a source chooser
   before the shared import mapping dialog. Enter a native absolute path
   or a path relative to Documents, choose TSV, CSV or XLSX explicitly,
@@ -409,11 +414,22 @@ Open items:
 - Import and export:
   - Shift-JIS, Big-5 and EUC-KR differ for some letters, and `.xlsx`
     times match to about 15 digits.
-  - "Split repetitions into separate records" is not reproduced.
+  - Import Records with "Split repeating values into separate records"
+    or into a new table fails with error 3 and imports nothing: the split
+    is not reproduced (script-steps.md, Implementation notes
+    (import/export)), and OpenMaker creates no table. How FileMaker stores
+    a new-table import's target table is not observed.
   - A stored XML import did not run on FileMaker Server (717), so XML
     imports are checked by round trip only.
   - Not probed: the layout data-formatting option, non-English files and
     Save Records as Excel's stored options.
+  - An export order saved by FileMaker Pro 26.1.1 (one more byte, "Use
+    field names as column names in first row", script-steps.md 12.4) is
+    read and kept. With it on, comma-separated and Excel output start with
+    a row of the field names, as merge files name them (quoted in CSV);
+    other formats ignore it. Both are inferred from Claris's description;
+    no 26.1.1 order has been read or run in FileMaker. Neither export
+    dialog shows the option, and the orders OpenMaker makes are 26.0's.
   - The desktop writes a modification count of 0 in XML.
   - An import reads its whole source and stages every row in one
     transaction; only the import limits bound its memory.
@@ -424,7 +440,6 @@ Open items:
     the header's 16-bit lengths would wrap. `.xlsx` exports past column
     `XFD` write invalid references. FileMaker's behavior past either
     limit is unknown.
-  - The desktop reads a whole import file before the size check.
 - Scripts: desktop steps still missing include the account steps
   ([#83](https://github.com/OpenMaker-Dev/openmaker/issues/83)) and the PDF
   steps other than Save Records as PDF
@@ -460,6 +475,11 @@ Open items:
   reads the catalog back (desktop-client.md, Script Workspace).
 - Server: auto-enter calculations are not recomputed after a schema
   change (by design, as FileMaker). Schedules run (#11).
+  - The recompute after a schema change reads container inputs from the
+    table's library. It still skips repeating calculations, container
+    results, plug-in functions and `Get` selectors that need a window,
+    leaving their values as they were and logging the field
+    ([#82](https://github.com/OpenMaker-Dev/openmaker/issues/82)).
   - FileMaker Pro clients: op77 GetFileList (the Hosts dialog's file list)
     and op89 CompareModCounts (reopening a cached file) are unsupported;
     an op13 with node state `00` (FileMaker Pro deleting a script) leaves
@@ -483,8 +503,6 @@ Open items:
   ORDER BY with FETCH or OFFSET is inferred (execute-sql.md implementation
   notes). The memory budget makes a huge unfiltered product fail with
   error 2 where FileMaker would finish it.
-- Dependencies: `rsa` carries RUSTSEC-2023-0071 (timing side channel in
-  private-key operations, used by `CryptGenerateSignature`).
 
 ## Calculation limits
 

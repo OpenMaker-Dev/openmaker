@@ -25,7 +25,7 @@ const INTERRUPT_CHECK: u32 = 256;
 
 /// FQL's engine error 1, `Operation aborted`: a query its source
 /// interrupted.
-const ABORTED: i32 = 1;
+pub(crate) const ABORTED: i32 = 1;
 /// FQL's engine error 2, `Memory allocation failure`: an intermediate
 /// result larger than the source's [`SqlSource::memory_budget`].
 const MEMORY: i32 = 2;
