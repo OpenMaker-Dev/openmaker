@@ -28,6 +28,7 @@ use crate::criteria::{
     self, Bound, DatePattern, Kind, Moment, Part, Term, TimePattern, Unit, Whole,
 };
 pub use crate::criteria::{Criterion, FindContext, Unreadable, Ymd};
+use crate::keys::TextKeys;
 
 /// Finder kinds (`DBFinder::FindKind`, 6.2).
 mod kind {
@@ -479,7 +480,14 @@ fn keyed_plan(
         // The index keys text by primary weights, which already ignore
         // kana form, voicing and size (7.2): the relaxed criterion's
         // finders select a superset.
-        Kind::Relaxed(inner) => Plan::candidates(keyed_plan(table, field, inner, held).finders),
+        // `~` reads kana forms, voicing and size as one: the English keys
+        // ignore them, so its finders narrow to a superset; Unicode raw and
+        // the padded form's secondary weights tell them apart, so every
+        // record is a candidate there.
+        Kind::Relaxed(inner) if inner.text == TextKeys::Collated => {
+            Plan::candidates(keyed_plan(table, field, inner, held).finders)
+        }
+        Kind::Relaxed(_) => Plan::candidates(Vec::new()),
     }
 }
 
@@ -1418,6 +1426,15 @@ mod tests {
             assert!(!plan.exact, "{text}");
             assert_eq!(plan.finders.len(), finders, "{text}");
         }
+        // `~` on Unicode raw: no index narrows it, every record is
+        // evaluated, and `ガッコウ` matches `~かつこう`.
+        let raw = context.with_text_keys(TextKeys::Raw);
+        let relaxed = Criterion::parse("~かつこう", DataType::Text, &raw)
+            .unwrap()
+            .unwrap();
+        let plan = plan(TABLE, 1, &relaxed);
+        assert!(!plan.exact && plan.finders.is_empty());
+        assert!(relaxed.matches("ガッコウ", DateOrder::MonthDayYear, &|_| false));
         // A literal prefix narrows a pattern to the words that start with it.
         let pattern = plan_of(DataType::Text, "Jo*n");
         let jo = om_collate::text_key("jo");
