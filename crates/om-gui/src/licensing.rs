@@ -117,19 +117,31 @@ enum Operation {
 /// asks whether OpenMaker may use the item (always, for a build whose code
 /// signature the item does not trust yet), and an unlocked-store prompt does
 /// the same elsewhere. OpenMaker Server needs no license, so its connections
-/// must not wait on that (#151).
+/// must not wait on that ([#151](https://github.com/OpenMaker-Dev/openmaker/issues/151)).
 ///
 /// A read that did not answer in time is not asked again: the next load
 /// waits for the same one, and takes its answer once the user gave it.
-/// Saving and removing wait for the store without a limit, as the user asked
-/// for them in the License dialog and a write that is abandoned would still
-/// happen later; they also drop any read still running, whose answer is then
-/// out of date.
+/// Saving and removing are refused while such a read is still waiting: they
+/// would queue behind it and hold the worker until the user answers. Once
+/// they run they wait for the store without a limit, as the user asked for
+/// them in the License dialog and a write that is abandoned would still
+/// happen later; they also drop the answer of any earlier read, which is
+/// then out of date.
 pub(crate) struct ThreadedStore {
+    /// The store until its thread has started.
     inner: Option<Box<dyn LicenseStore>>,
     thread: Option<std::sync::mpsc::Sender<Operation>>,
     reading: Option<std::sync::mpsc::Receiver<Result<Option<LicenseKey>, DataError>>>,
     wait: std::time::Duration,
+}
+
+/// The store thread is gone (its store panicked): nothing reaches the store
+/// again until OpenMaker starts again.
+fn stopped() -> DataError {
+    DataError::new(
+        "The system credential store stopped answering OpenMaker. Quit and open OpenMaker \
+         again to use the saved license.",
+    )
 }
 
 impl ThreadedStore {
@@ -142,13 +154,19 @@ impl ThreadedStore {
         }
     }
 
-    /// Send `operation` to the store thread, started on first use.
+    /// Send `operation` to the store thread, started on first use. The store
+    /// moves to the thread once it runs: a thread that cannot start leaves
+    /// it here for the next try.
     fn send(&mut self, operation: Operation) -> Result<(), DataError> {
-        if let Some(mut inner) = self.inner.take() {
+        if self.thread.is_none() {
             let (tx, rx) = std::sync::mpsc::channel::<Operation>();
+            let (hand, take) = std::sync::mpsc::channel::<Box<dyn LicenseStore>>();
             std::thread::Builder::new()
                 .name("om-license-store".into())
                 .spawn(move || {
+                    let Ok(mut inner) = take.recv() else {
+                        return;
+                    };
                     // Ends when the worker drops its store. A closed answer
                     // channel means nobody waits any more.
                     for operation in rx {
@@ -166,23 +184,35 @@ impl ThreadedStore {
                     }
                 })
                 .map_err(|_| store_error())?;
+            let inner = self.inner.take().ok_or_else(stopped)?;
+            hand.send(inner).map_err(|_| stopped())?;
             self.thread = Some(tx);
         }
         self.thread
             .as_ref()
             .and_then(|thread| thread.send(operation).ok())
-            .ok_or_else(store_error)
+            .ok_or_else(stopped)
     }
 
-    /// Send a write and wait for its answer.
+    /// Send a write and wait for its answer, unless a read is still waiting
+    /// for the store.
     fn write(
         &mut self,
         operation: impl FnOnce(std::sync::mpsc::Sender<Result<(), DataError>>) -> Operation,
     ) -> Result<(), DataError> {
-        self.reading = None;
+        if let Some(reading) = &self.reading {
+            if let Err(std::sync::mpsc::TryRecvError::Empty) = reading.try_recv() {
+                return Err(DataError::new(
+                    "The system credential store has not answered an earlier request yet. If \
+                     it is asking whether OpenMaker may use the saved license, answer it and \
+                     try again.",
+                ));
+            }
+            self.reading = None;
+        }
         let (tx, rx) = std::sync::mpsc::channel();
         self.send(operation(tx))?;
-        rx.recv().map_err(|_| store_error())?
+        rx.recv().map_err(|_| stopped())?
     }
 }
 
@@ -205,7 +235,7 @@ impl LicenseStore for ThreadedStore {
             )),
             Err(std::sync::mpsc::RecvTimeoutError::Disconnected) => {
                 self.reading = None;
-                Err(store_error())
+                Err(stopped())
             }
         }
     }
@@ -223,6 +253,8 @@ impl LicenseStore for ThreadedStore {
 pub(crate) enum LicenseAction {
     Save,
     Remove,
+    /// Read the store again after it could not say whether a key is saved.
+    Check,
     Close,
 }
 
@@ -292,6 +324,11 @@ impl LicenseDialog {
                     if ui.add_enabled(self.stored == Some(true), egui::Button::new("Remove License")).clicked() {
                         action = Some(LicenseAction::Remove);
                     }
+                    // The store could not say whether a key is saved: it may
+                    // have answered since (#151's prompt).
+                    if self.stored.is_none() && ui.button("Check Again").clicked() {
+                        action = Some(LicenseAction::Check);
+                    }
                     if ui.button("Done").clicked() {
                         action = Some(LicenseAction::Close);
                     }
@@ -317,6 +354,7 @@ mod tests {
     struct Held {
         gate: std::sync::mpsc::Receiver<()>,
         reads: std::sync::Arc<std::sync::atomic::AtomicUsize>,
+        saves: std::sync::Arc<std::sync::atomic::AtomicUsize>,
     }
 
     impl LicenseStore for Held {
@@ -326,6 +364,7 @@ mod tests {
             Ok(Some(LicenseKey::new(format!("synthetic-license-{read}"))))
         }
         fn save(&mut self, _: &LicenseKey) -> Result<(), DataError> {
+            self.saves.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
             Ok(())
         }
         fn remove(&mut self) -> Result<(), DataError> {
@@ -337,10 +376,12 @@ mod tests {
     fn a_read_the_store_holds_gives_up_in_time_and_answers_a_later_load() {
         let (release, gate) = std::sync::mpsc::channel();
         let reads = std::sync::Arc::default();
+        let saves = std::sync::Arc::default();
         let mut store = ThreadedStore::new(
             Box::new(Held {
                 gate,
                 reads: std::sync::Arc::clone(&reads),
+                saves: std::sync::Arc::clone(&saves),
             }),
             std::time::Duration::from_millis(20),
         );
@@ -349,22 +390,28 @@ mod tests {
         assert!(store.load().is_err());
         assert!(store.load().is_err());
         release.send(()).unwrap();
-        let answered = |store: &mut ThreadedStore| {
-            let deadline = std::time::Instant::now() + std::time::Duration::from_secs(10);
-            loop {
-                match store.load() {
-                    Ok(key) => break key.unwrap().expose().to_owned(),
-                    Err(_) => assert!(std::time::Instant::now() < deadline),
-                }
+        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(10);
+        let answered = |store: &mut ThreadedStore| loop {
+            match store.load() {
+                Ok(key) => break key.unwrap().expose().to_owned(),
+                Err(_) => assert!(std::time::Instant::now() < deadline),
             }
         };
         assert_eq!(answered(&mut store), "synthetic-license-1");
         assert_eq!(reads.load(std::sync::atomic::Ordering::SeqCst), 1);
-        // A read still running when the key is saved is out of date: the
-        // next load reads again.
+        // A save while a read still waits is refused rather than queued
+        // behind it, where it would hold the worker.
         assert!(store.load().is_err());
+        let key = LicenseKey::new("synthetic".into());
+        assert!(store.save(&key).is_err());
+        assert_eq!(saves.load(std::sync::atomic::Ordering::SeqCst), 0);
         release.send(()).unwrap();
-        store.save(&LicenseKey::new("synthetic".into())).unwrap();
+        while store.save(&key).is_err() {
+            assert!(std::time::Instant::now() < deadline);
+        }
+        assert_eq!(saves.load(std::sync::atomic::Ordering::SeqCst), 1);
+        // The earlier read's answer is out of date after the save: the next
+        // load reads again.
         release.send(()).unwrap();
         assert_eq!(answered(&mut store), "synthetic-license-3");
     }

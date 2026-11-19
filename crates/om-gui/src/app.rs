@@ -2173,6 +2173,10 @@ impl OpenMakerApp {
                         dialog.pending = true;
                         Some(Request::RemoveLicense)
                     }
+                    LicenseAction::Check => {
+                        dialog.pending = true;
+                        Some(Request::LicenseStatus)
+                    }
                     LicenseAction::Close => {
                         self.license_dialog = None;
                         None

@@ -300,8 +300,11 @@ store fails or does not answer in time, the connection goes ahead without
 a key, which OpenMaker Server does not need; if the host refuses it, the
 error says the saved license was not sent and why. The next attempt takes
 the answer of a read that was still waiting rather than asking again ([#151](https://github.com/OpenMaker-Dev/openmaker/issues/151)).
-Save and Remove wait for the store without a limit. Turning off **Use
-saved license** bypasses the store. The desktop client does not
+While such a read waits, Save and Remove say so and change nothing;
+otherwise they wait for the store without a limit. When the dialog cannot
+tell whether a key is saved, **Check Again** reads the store again. If the
+store's thread stops (its store failed), OpenMaker must be started again to
+reach it. Turning off **Use saved license** bypasses the store. The desktop client does not
 import license keys from `.env` or environment variables. License values and
 machine-info license fields are redacted in diagnostics.
 
