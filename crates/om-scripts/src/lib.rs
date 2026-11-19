@@ -27,9 +27,9 @@ mod step;
 mod value;
 
 pub use catalog::{
-    is_supported, is_valid_step_id, step_compat, step_ids, step_info, step_name, supported_clients,
-    ClarisSupport, Client, StepCompat, StepInfo, Support, NOT_BUTTON_COMPATIBLE, OBSOLETE_STEP_IDS,
-    PENDING_STEP_IDS,
+    is_server_step_id, is_supported, is_supported_on_server, is_valid_step_id, step_compat,
+    step_ids, step_info, step_name, supported_clients, ClarisSupport, Client, StepCompat, StepInfo,
+    Support, NOT_BUTTON_COMPATIBLE, OBSOLETE_STEP_IDS, PENDING_STEP_IDS,
 };
 pub use flow::{analyze as analyze_blocks, caches_index, Cached};
 pub use key::{FieldSpec, StoredKey};

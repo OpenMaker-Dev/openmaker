@@ -643,6 +643,18 @@ fn lines_that_do_not_read_are_kept_as_disabled_comments() {
         panic!("{:?}", pasted[2]);
     };
     assert_eq!(layout.member_key().and_then(|k| k.id()), Some(3));
+    // A step OpenMaker cannot yet edit or run is not made from text or
+    // XML (#338).
+    for text in [
+        "Set Variable by Name",
+        r#"<fmxmlsnippet type="FMObjectList"><Step id="249" name="Replace Field Contents by Name"/></fmxmlsnippet>"#,
+    ] {
+        let pasted = parse_steps(text, &names, Origin::Unknown).unwrap();
+        assert!(
+            matches!(&pasted[..], [Pasted::Failed { reason, .. }] if reason.contains("cannot make")),
+            "{pasted:?}"
+        );
+    }
     let comment = failed_comment("Not a step");
     assert!(!comment.is_enabled());
     assert_eq!(comment.text(0).as_deref(), Some("Not a step"));

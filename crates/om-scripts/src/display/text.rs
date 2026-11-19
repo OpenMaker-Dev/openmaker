@@ -814,6 +814,7 @@ pub fn parse_record(
     let mut step = match read.extras.step {
         Some(step) => step,
         None => {
+            refuse_pending(read.step.id())?;
             // From elsewhere, a reference the text names but this file
             // does not have is not made up for by stored bytes.
             let covered = |part: Part| {
@@ -844,6 +845,19 @@ pub fn parse_record(
         }
     }
     Ok(step)
+}
+
+/// Refuse to make a step OpenMaker cannot yet edit or run
+/// ([`crate::PENDING_STEP_IDS`]) from its text or XML, which would leave it
+/// without its options. A step whose stored bytes come with it is kept.
+pub(super) fn refuse_pending(id: u16) -> Result<(), String> {
+    if !crate::PENDING_STEP_IDS.contains(&id) {
+        return Ok(());
+    }
+    Err(format!(
+        "OpenMaker cannot make {} steps yet",
+        crate::step_name(id).unwrap_or_default()
+    ))
 }
 
 /// Take a step read from text of unknown origin only where its `Stored …`

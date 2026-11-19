@@ -99,6 +99,14 @@ pub fn is_valid_step_id(id: u16) -> bool {
     id < 251
 }
 
+/// Whether FileMaker Server 26.0.3 accepts the step id: below 248
+/// (script-runtime.md 2.5). OpenMaker Server's script runtimes keep its
+/// bound until FileMaker Server 26.1.1 ships, so a step only FileMaker Pro
+/// 26.1.1 knows fails there with error 4, as on 26.0.3.
+pub fn is_server_step_id(id: u16) -> bool {
+    id < 248
+}
+
 /// Steps FileMaker Pro 26.1.1 added that OpenMaker cannot yet edit or run
 /// (Replace Field Contents by Name and Set Variable by Name,
 /// script-steps.md 12.4, #349): not offered in the Script Workspace, and
@@ -263,6 +271,14 @@ pub fn is_supported(id: u16, client: Client) -> bool {
     step_compat(id).is_some_and(|c| c.supports(client))
 }
 
+/// [`is_supported`] by FileMaker Server 26.0.3's table, which OpenMaker
+/// Server's script runtimes keep until FileMaker Server 26.1.1 ships: its
+/// steps only, and without the Server bit 26.1.1 gives Save a Copy as
+/// Add-on Package (96) (script-runtime.md 10.1).
+pub fn is_supported_on_server(id: u16, client: Client) -> bool {
+    is_server_step_id(id) && is_supported(id, client) && !(client == Client::Server && id == 96)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -299,6 +315,10 @@ mod tests {
         assert_eq!(unsupported, 83);
         assert_eq!(supported_clients(250), Client::ALL);
         assert!(supported_clients(248).is_empty());
+        // OpenMaker Server keeps FileMaker Server 26.0.3's table.
+        assert!(!is_supported_on_server(96, Client::Server));
+        assert!(!is_supported_on_server(250, Client::Server));
+        assert!(is_supported_on_server(3, Client::Server));
         let comment = step_compat(89).unwrap();
         assert!(!comment.button_compatible());
         assert!(step_compat(1).unwrap().button_compatible());
