@@ -2585,12 +2585,16 @@ impl OpenMakerApp {
             && (self.w.document.active.is_some() || !typing);
         let enter_goes_next = keypad_enter && self.enter_goes_to_next_object();
         // A commit key that came after typing in the same frame waited for
-        // this one: the editor has applied the typing (below).
+        // this one: the editor has applied the typing (below). Only the next
+        // frame takes it; a later one (a script ran, a dialog came up)
+        // drops it rather than commit what the window shows by then.
         let held_id = egui::Id::unique("held_commit_keys").with(ui.ctx().viewport_id());
-        let held: Option<Vec<egui::Event>> = ui.ctx().data_mut(|data| data.remove_temp(held_id));
+        let frame = ui.ctx().cumulative_frame_nr();
+        let held: Option<(u64, Vec<egui::Event>)> =
+            ui.ctx().data_mut(|data| data.remove_temp(held_id));
         let mut hold = None;
         ui.input_mut(|input| {
-            if let Some(held) = held {
+            if let Some((_, held)) = held.filter(|(at, _)| at + 1 == frame) {
                 input.events.splice(0..0, held);
             }
             if input.consume_shortcut(&shortcuts::QUIT) {
@@ -2791,7 +2795,8 @@ impl OpenMakerApp {
             }
         });
         if let Some(hold) = hold {
-            ui.ctx().data_mut(|data| data.insert_temp(held_id, hold));
+            ui.ctx()
+                .data_mut(|data| data.insert_temp(held_id, (frame, hold)));
             ui.ctx().request_repaint();
         }
         // Keyboard Commit leaves the field (script-runtime.md 7.1):
