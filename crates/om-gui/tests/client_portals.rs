@@ -5384,6 +5384,37 @@ fn reverting_mixed_edits_drops_pending_worker_repetitions() {
     );
 }
 
+/// A script's pending repetition alone holds the record on the host, as
+/// the user's typing does: another client's change of that repetition is
+/// refused (301), and the window's save stores the script's value.
+#[test]
+fn a_scripts_repetition_alone_holds_the_record_against_a_peer() {
+    let hosted = host("repetition-held");
+    let mut app = open(&hosted);
+    expect(&mut app, "Repetition only", "reps 2:1:Status:ab");
+    common::wait_until(&mut app, "the accepted record", |app| {
+        app.state().is_settled() && common::text_field(app, "Code").value().is_some()
+    });
+    let mut other = hosted.opened();
+    other.records(PORTALS as u32, 0, 10).unwrap();
+    let refused = other
+        .write_record(&om_data::ScriptWrite {
+            layout: PORTALS as u32,
+            record: Some(1),
+            cells: [(STATUS * 256 + 2, Some("xy".into()))].into(),
+            ..Default::default()
+        })
+        .unwrap_err();
+    assert_eq!(refused.code, Some(301), "{refused:?}");
+    other.close();
+    common::save_record(&mut app);
+    wait_saved(&mut app);
+    assert_eq!(
+        stored(&hosted, TABLE, &[(CODE, 1), (STATUS, 2)])[0].1,
+        ["", "ab"]
+    );
+}
+
 /// A record a script's New Record left uncommitted is held in the window's
 /// record session, not on the host (#892): another client can neither see
 /// nor change it, and Revert writes nothing, so it can never delete another
