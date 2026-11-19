@@ -6594,9 +6594,10 @@ fn lines_editor(
             })
             .show(ui, |ui| {
                 let output = edit.min_size(inner.size()).show(ui);
-                if let Some(range) = output.cursor_range.filter(|_| {
-                    !continued && output.response.has_focus()
-                }) {
+                if let Some(range) = output
+                    .cursor_range
+                    .filter(|_| !continued && output.response.has_focus())
+                {
                     let caret = output.galley.pos_from_cursor(range.primary).translate(
                         output.galley_pos.to_vec2() - egui::vec2(output.galley.rect.left(), 0.0),
                     );
@@ -6729,10 +6730,7 @@ fn return_goes_on(
         .field_obj
         .as_ref()
         .is_some_and(om_layout::FieldObject::next_object_on_return);
-    if !goes_on
-        || !ui.memory(|memory| memory.has_focus(id))
-        || egui::Popup::is_any_open(ui.ctx())
-    {
+    if !goes_on || !ui.memory(|memory| memory.has_focus(id)) || egui::Popup::is_any_open(ui.ctx()) {
         return;
     }
     let Some(mut rest) = ui.ctx().input_mut(|input| {

@@ -891,7 +891,10 @@ fn undo_and_redo_keep_the_line_breaks_the_field_stored() {
     app.key_press_modifiers(egui::Modifiers::COMMAND, egui::Key::Z);
     app.run_steps(2);
     assert_eq!(family(&app).as_deref(), Some(stored));
-    app.key_press_modifiers(egui::Modifiers::COMMAND.plus(egui::Modifiers::SHIFT), egui::Key::Z);
+    app.key_press_modifiers(
+        egui::Modifiers::COMMAND.plus(egui::Modifiers::SHIFT),
+        egui::Key::Z,
+    );
     app.run_steps(2);
     assert_eq!(family(&app), Some(typed.clone()));
     for pressed in [true, false] {
