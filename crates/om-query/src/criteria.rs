@@ -394,10 +394,15 @@ impl Number {
     /// The number's value-index key (query-program.md 7.3).
     pub(crate) fn index_key(&self) -> Option<Vec<u8>> {
         let digits = |d: &[u8]| d.iter().map(|d| char::from(b'0' + d)).collect::<String>();
+        // At least one integer digit: `0` has none of its own.
+        let integer = if self.integer.is_empty() {
+            "0".to_string()
+        } else {
+            digits(&self.integer)
+        };
         om_collate::number_key(&format!(
-            "{}{}.{}",
+            "{}{integer}.{}",
             if self.negative { "-" } else { "" },
-            digits(&self.integer),
             digits(&self.fraction)
         ))
     }

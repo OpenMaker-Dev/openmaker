@@ -1389,6 +1389,8 @@ mod tests {
             // FileMaker's own finders (6.4): IndexMatch `7f ff 9f`, IndexRange.
             (DataType::Number, "-0.5"),
             (DataType::Number, "-1...1"),
+            (DataType::Number, "0"),
+            (DataType::Number, "0...5"),
             (DataType::Date, "//"),
             (DataType::Date, "6/2019"),
             (DataType::Date, "2019"),
