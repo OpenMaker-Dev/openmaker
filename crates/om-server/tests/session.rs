@@ -2244,8 +2244,9 @@ fn a_refused_file_on_a_shared_connection_fails_alone() {
 /// one to Notes, or to the file's own library (any table's records may
 /// hold it), is refused with 200, also when the data is already there,
 /// which would raise the member's count as op87 would not let it. Mixed's
-/// set creates Tasks records and edits Notes records: each table allows
-/// one of the two, so the file's library takes its upload.
+/// set creates Tasks records and edits Notes records, each by the table's
+/// own entry, while its default views only: each table allows one of the
+/// two, so the file's library takes its upload.
 #[test]
 fn container_uploads_need_the_tables_create_or_edit_privilege() {
     use om_hbam::slot::uint_segment;
@@ -2254,12 +2255,16 @@ fn container_uploads_need_the_tables_create_or_edit_privilege() {
 
     let mut root = fixture::tree(&[], true);
     fixture::add_custom_clerk(&mut root);
-    // Set 5 as `add_custom_clerk`'s set 4, but records viewed and created
-    // by default (`50 03`) and Notes' viewed and edited (`14 03`); account
-    // record 8.
+    // Set 5 as `add_custom_clerk`'s set 4, but records viewed only by
+    // default (`10 03`), Tasks' viewed and created (`50 03`), Notes' viewed
+    // and edited (`14 03`); account record 8.
     let set: &[u8] = &[5];
     for (path, value) in [
-        (vec![vec![2u8]], vec![0x50u8, 0x03]),
+        (vec![vec![2u8]], vec![0x10u8, 0x03]),
+        (
+            vec![vec![5], uint_segment(fixture::TABLE), vec![2]],
+            vec![0x50, 0x03],
+        ),
         (vec![vec![0x0a]], vec![0x9f, 0xff]),
         (vec![vec![0x0c]], vec![0, 0]),
         (
