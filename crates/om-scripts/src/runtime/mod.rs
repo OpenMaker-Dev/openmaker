@@ -49,10 +49,10 @@ pub use host::{
     DialogInput, DialogResponse, Dialogs, Encoding, ErrorAlert, ErrorLogEntry, FieldRef, Fields,
     FileId, FileSource, Files, FindKind, FoundSets, HostError, HostResult, InsertFile, InsertKind,
     InsertTarget, LayoutTarget, Mode, Navigation, Network, NewWindow, OnTimer, PauseEnd, Platform,
-    RecordMove, Records, RelatedRecords, Replacement, ScriptAccess, ScriptHost, ServerCallbackCall,
-    ServerScriptCall, ServerScriptResult, StepArg, StepCall, TransactionOptions, TransferCall,
-    UrlRequest, UrlResponse, Visibility, WindowId, WindowOptions, WindowStyle, WindowTarget,
-    Windows,
+    RecordList, RecordMove, Records, RelatedRecords, Replacement, ScriptAccess, ScriptHost,
+    ServerCallbackCall, ServerScriptCall, ServerScriptResult, StepArg, StepCall,
+    TransactionOptions, TransferCall, UrlRequest, UrlResponse, Visibility, WindowId, WindowOptions,
+    WindowStyle, WindowTarget, Windows,
 };
 pub use memory::{MemoryLayout, MemoryScriptHost, MemoryWindow, SessionFunction};
 pub use om_hbam::OwnedNode;

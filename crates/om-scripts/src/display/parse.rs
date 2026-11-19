@@ -725,13 +725,13 @@ fn rule(p: &mut Parser<'_>) {
             p.labeled("Repetition", 1);
         }
         228 => {
-            p.labeled("List of record IDs", 0);
+            p.labeled("List of record IDs", 7);
             if let Some(text) = p.labeled_value("Using layout") {
                 if text != "<Current Layout>" {
                     p.layout(&text);
                 }
             }
-            p.word("New window", flag::OPTION);
+            p.word("New window", flag::TURN_ON);
             p.animation();
         }
         11 | 12 | 18 | 46 | 47 | 49 => {

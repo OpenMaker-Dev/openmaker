@@ -439,14 +439,17 @@ fn options(l: &mut Line<'_>) -> bool {
             l.labeled("Repetition", "Repetition", 1);
         }
         228 => {
-            l.labeled_always("List of record IDs", "List of record IDs", 0);
+            // Slot 7, and the new window under `kTurnOn` with its name in
+            // slot 0, which Pro keeps when it is turned off (script-steps.md
+            // 12.2).
+            l.labeled_always("List of record IDs", "List of record IDs", 7);
             let layout = if s.member_key().is_some() {
                 l.member_layout()
             } else {
                 "<Current Layout>".into()
             };
             l.push("Layout", format!("Using layout: {layout}"));
-            let new_window = l.has(flag::OPTION);
+            let new_window = l.has(flag::TURN_ON);
             l.word("New window", "New window", new_window);
             l.animation();
         }
