@@ -190,8 +190,11 @@ impl WorkerHost<'_> {
                 .file
                 .trim_end_matches(".fmp12")
                 .to_owned();
+            // The first stored path this machine reads, as the resolver
+            // would take it: another platform's line first is skipped.
             let shown = paths
-                .first()
+                .iter()
+                .find(|line| files::of_this_platform(line))
                 .cloned()
                 .unwrap_or_else(|| format!("file:{stem}.{}", profile.file_type.extension()));
             let dialog = ExportDialog {
@@ -212,12 +215,17 @@ impl WorkerHost<'_> {
                 return Err(ErrorCode::CANCELED.into());
             };
             // A native path the user typed, in FileMaker's form, as the
-            // PDF and import dialogs pass theirs: `/private/tmp/x.csv` as it
-            // is would name the volume `private` on macOS (error 826). The
-            // path list line shown, if left as it was, stays as it is: it
-            // may be a FileMaker path without a prefix.
-            paths = vec![if d.path == shown {
-                shown
+            // import dialog passes its own: `/private/tmp/x.csv` as it is
+            // would name the volume `private` on macOS (error 826). The
+            // path list line shown stays as it is when the user left it, or
+            // only changed the file type, which gives it that type's
+            // extension (`app::scripts::transfer`): it may be a FileMaker
+            // path without a prefix.
+            let retyped = shown
+                .rsplit_once('.')
+                .map(|(stem, _)| format!("{stem}.{}", d.file_type.extension()));
+            paths = vec![if d.path == shown || Some(&d.path) == retyped.as_ref() {
+                d.path.clone()
             } else {
                 files::chosen_path(&d.path)
             }];

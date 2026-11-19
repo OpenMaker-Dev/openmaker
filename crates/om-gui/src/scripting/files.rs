@@ -279,6 +279,20 @@ fn split_prefix(line: &str) -> (Option<String>, &str) {
     }
 }
 
+/// Whether a path list line is one this machine reads: a `file` path (or
+/// one without a prefix), or one of this platform's (`filemac`, `filewin`,
+/// `filelinux`), not another platform's or another kind's.
+pub(crate) fn of_this_platform(line: &str) -> bool {
+    let prefix = split_prefix(line.trim()).0;
+    match prefix.as_deref().unwrap_or("file") {
+        "file" => true,
+        "filemac" => THIS == Platform::Mac,
+        "filewin" => THIS == Platform::Windows,
+        "filelinux" => THIS == Platform::Linux,
+        _ => false,
+    }
+}
+
 /// One path of a path list on this machine. `Ok(None)`: a path of another
 /// platform or kind, skipped; `Err(826)`: not a valid path.
 fn resolve(line: &str, documents: &Path) -> Result<Option<PathBuf>, ErrorCode> {
