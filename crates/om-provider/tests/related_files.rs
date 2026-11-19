@@ -1231,13 +1231,15 @@ fn related_file_layouts_browse_and_expose_only_supported_edit_capabilities() {
         provider.update_record(layout, 1, values).unwrap_err().code,
         Some(3)
     );
-    assert_eq!(provider.delete_record(layout, 1).unwrap_err().code, Some(3));
+    // A deletion is held in the related file's part of the transaction
+    // (#312): it locks the record and commits nothing before Commit
+    // Transaction.
+    provider.delete_record(layout, 1).unwrap();
     provider.revert_transaction().unwrap();
     refused(provider.set_next_serial_value(REMOTE, NAME, "10"));
     for op in [
         om_protocol::Opcode::HostCreateRecord,
         om_protocol::Opcode::HostCommit,
-        om_protocol::Opcode::Lock,
         om_protocol::Opcode::HostGetSerial,
     ] {
         assert!(host.captures.with_opcode(op).is_empty(), "{op:?} was sent");
@@ -1558,15 +1560,14 @@ fn imported_layout_delete_uses_owner_verification_without_field_entry_rules() {
     provider.use_window(1);
     assert_eq!(ids(&mut provider, 2), [2, 1]);
 
+    // Held in the related file's part of the transaction (#312): nothing
+    // is committed, and the revert keeps the record.
     provider.begin_transaction(Default::default()).unwrap();
-    let before = host.captures.transactions().len();
-    assert_eq!(provider.delete_record(2, 1).unwrap_err().code, Some(3));
-    assert_eq!(
-        host.captures.transactions().len(),
-        before,
-        "pre-effect refusal"
-    );
+    let commits = host.captures.with_opcode(Opcode::HostCommit).len();
+    provider.delete_record(2, 1).unwrap();
     provider.revert_transaction().unwrap();
+    assert_eq!(host.captures.with_opcode(Opcode::HostCommit).len(), commits);
+    assert_eq!(ids(&mut provider, 2), [2, 1], "the reverted deletion");
     let generation = provider.calc_data(&[]).unwrap().generation;
     let barrier = host.block_saves(1);
     let error = provider.delete_record(2, 1).unwrap_err();
