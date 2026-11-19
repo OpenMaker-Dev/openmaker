@@ -831,6 +831,76 @@ fn focus_selection_and_the_records_open_state() {
     assert_eq!(all[5], ["0", "", "4", "2", "1300048", ""]);
 }
 
+/// The layout's calculations read the window's focus, the text typed so
+/// far, the record's changed fields and the sort as a script in the window
+/// does: hide conditions on them follow the user's focus and typing, the
+/// field being left and Sort Records.
+#[test]
+fn layout_calculations_read_the_focus_changes_and_sort() {
+    use egui_kittest::kittest::Queryable;
+    let mut layout = render();
+    for (id, text, hide) in [
+        (
+            30,
+            "OUT OF NAME",
+            "Get ( ActiveFieldName ) = \"Name\" and Get ( ActiveFieldTableName ) = \"Contacts\"",
+        ),
+        (
+            31,
+            "NOTHING TYPED",
+            "PatternCount ( Get ( ActiveFieldContents ) ; \"x\" ) > 0",
+        ),
+        (
+            32,
+            "NAME UNCHANGED",
+            "PatternCount ( Get ( ModifiedFields ) ; \"Name\" ) > 0",
+        ),
+        (33, "UNSORTED", "Get ( SortState ) = 1"),
+    ] {
+        let top = 230.0 + 15.0 * (id - 30) as f64;
+        let mut marker = LayoutObject {
+            id,
+            object_type: 2,
+            text: Some(text.into()),
+            bounds: Some(Rect {
+                top,
+                left: 320.0,
+                bottom: top + 14.0,
+                right: 620.0,
+                ..Default::default()
+            }),
+            ..Default::default()
+        };
+        marker.calcs.hide = Some(formula(hide));
+        layout.layout.objects.root.push(id);
+        layout.layout.objects.objects.push(marker);
+    }
+    let markers = ["OUT OF NAME", "NOTHING TYPED", "NAME UNCHANGED", "UNSORTED"];
+    let shown = |app: &common::App| markers.map(|label| app.query_by_label(label).is_some());
+    let (mut app, _state) = open_with(
+        vec![script(208, "Sort by name", vec![sort_by_name()])],
+        Default::default(),
+        Some(layout),
+    );
+    common::wait_until(&mut app, "every marker", |app| shown(app) == [true; 4]);
+    // Typing into Name: Name is active with what was typed, and listed as
+    // modified only once it is left.
+    common::fill(&mut app, "Name", "x");
+    common::wait_until(&mut app, "the focus and typing", |app| {
+        shown(app) == [false, false, true, true]
+    });
+    app.key_press(egui::Key::Tab);
+    common::wait_until(&mut app, "Name left", |app| {
+        shown(app) == [true, true, false, true]
+    });
+    common::open_menu(&mut app, "Scripts");
+    common::click(&mut app, "Sort by name");
+    common::wait_until(&mut app, "the sort", |app| {
+        !app.state().script_running() && !shown(app)[3]
+    });
+    assert!(app.state().error().is_none(), "{:?}", app.state().error());
+}
+
 /// The text field that has the focus: its label and its top.
 fn focused(app: &common::App) -> Option<(String, f32)> {
     use egui_kittest::kittest::{NodeT as _, Queryable as _};

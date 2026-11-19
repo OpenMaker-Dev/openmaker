@@ -192,7 +192,7 @@ Neither item has a shortcut (`AXMenuItemCmdChar` absent).
 - an untouched new record: it is removed (3 of 3 became 2 of 2), and the former last record is current;
 - a find request: the typed criterion is cleared.
 
-**Not measured:** the alert of the Revert Record/Request script step with its dialog; keypad Enter as a commit (Claris Help, as #871 cites it).
+**Not measured:** the alert of the Revert Record/Request script step with its dialog; keypad Enter as a commit beyond the one ordinary Text field of script-runtime.md 7.1 (Claris Help, as #871 cites it).
 
 ## Menus
 
