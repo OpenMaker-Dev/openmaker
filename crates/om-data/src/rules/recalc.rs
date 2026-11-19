@@ -644,13 +644,13 @@ fn readings(expr: &Expr, context: &[u8], reading: Reading, out: &mut BTreeMap<u6
                     } else {
                         1
                     };
+                    // Their other arguments are values of the current
+                    // repetition (`GetRepetition`'s index, NPV's rate).
                     for (i, arg) in args.iter().enumerate() {
                         let each = if i < expanded {
                             Reading::Any
-                        } else if aggregate {
-                            Reading::Current
                         } else {
-                            reading
+                            Reading::Current
                         };
                         readings(arg, context, each, out);
                     }
@@ -1057,6 +1057,8 @@ mod tests {
             ("Last ( r )", 1, any),
             ("NPV ( r ; e )", 1, any),
             ("NPV ( r ; e )", 2, current),
+            ("Sum ( GetRepetition ( r ; e ) )", 1, any),
+            ("Sum ( GetRepetition ( r ; e ) )", 2, current),
             ("Extend ( r )", 1, first),
             ("Sum ( Extend ( r ) )", 1, any),
             ("r[2]", 1, any),
