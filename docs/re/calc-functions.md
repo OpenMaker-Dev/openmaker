@@ -724,24 +724,28 @@ battery `s45-record-ids` on the Contacts template, records 1 to 8 made in
 the run) answers `GetRecordIDsFromFoundSet ( type {; tableOccurrenceOrPortal} )`
 from the window's found set, in its order:
 
-| type | records 1 to 8 | 1, 3, 4, 6, 7, 8 | 7, 6, 4, 3, 1 (sorted descending) | no record |
+| type | records 1 to 8 | 1, 3, 4, 6, 7, 8 | 7, 6, 4, 3, 1 (sorted descending) | empty found set |
 |---|---|---|---|---|
 | 0 (`ValueNumber`) | `1¶2¶...¶8` | `1¶3¶4¶6¶7¶8` | `7¶6¶4¶3¶1` | empty |
-| 1 | not run | `["1","3","4","6","7","8"]` | `["7","6","4","3","1"]` | not run |
-| 2 | not run | `[1,3,4,6,7,8]` | `[7,6,4,3,1]` | not run |
+| 1 (`JSONString`) | not run | `["1","3","4","6","7","8"]` | `["7","6","4","3","1"]` | not run |
+| 2 (`JSONNumber`) | not run | `[1,3,4,6,7,8]` | `[7,6,4,3,1]` | not run |
 | 3 (`ValueNumberRanges`) | `1-8` | `1¶3-4¶6-8` | `7¶6¶4¶3¶1` | empty |
 | 4 (`JSONStringRanges`) | `["1-8"]` | `["1","3-4","6-8"]` | `["7","6","4","3","1"]` | `[]` |
 
 - The keywords are numbers: `GetAsNumber ( ValueNumber )` is 0,
-  `ValueNumberRanges` 3, `JSONStringRanges` 4. Types 1 (JSON strings) and 2
-  (JSON numbers) have no keyword. The type is truncated (1.5 is 1). Text
+  `ValueNumberRanges` 3, `JSONStringRanges` 4. Types 1 and 2 are the JSON
+  functions' `JSONString` and `JSONNumber`, which Claris documents as this
+  function's types too. The type is truncated (1.5 is 1). Text
   that is no number is 0 (`"x"` lists the ids); `"3"` is 3. Empty text,
   -1, 5 to 7 and 2912 are `?` with error 1708.
 - A range is a run of ids each one more than the one before, in the found
   set's order: a set sorted descending has no ranges. The JSON arrays have
   no spaces.
-- With no record, types 0 and 3 are empty and type 4 is `[]`; types 1 and
-  2 were not run over an empty set [I: `[]`].
+- Over an empty found set (after Delete All Records), types 0 and 3 are
+  empty and type 4 is `[]`. Types 1 and 2 were not run there; Claris
+  documents `[]` for an empty JSON result
+  ([function reference](https://help.claris.com/en/pro-help/content/getrecordidsfromfoundset.html)).
+  Find mode was not run.
 - The second parameter names a table occurrence. The layout's own
   (`"Contacts"`) gives its found set; a related one (`"Phone Numbers"`)
   gives the current record's related records (one in the run). An unknown

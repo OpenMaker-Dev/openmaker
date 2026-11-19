@@ -2419,7 +2419,8 @@ impl ServerHost {
             return Err(CalcError::from_code(3).expect("nonzero"));
         };
         let source = SessionSource::new(self, &schema);
-        FileCalc::new(&schema, &source, self.today).record_ids_from_found_set(args, context)
+        let limit = om_calc::eval::CalcHost::limits(self).text;
+        FileCalc::new(&schema, &source, self.today).record_ids_from_found_set(args, context, limit)
     }
 }
 

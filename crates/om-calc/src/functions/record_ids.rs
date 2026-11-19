@@ -8,7 +8,8 @@ use super::Keyword;
 use crate::error::CalcError;
 use crate::value::{Ctx, Value};
 
-/// The named types; 1 (JSON strings) and 2 (JSON numbers) have no name.
+/// The types' own names; 1 and 2 are `JSONString` and `JSONNumber`, the
+/// JSON functions' keywords of those values.
 pub(super) const KEYWORDS: &[Keyword] = &[
     ("ValueNumber", 0),
     ("ValueNumberRanges", 3),
@@ -39,45 +40,46 @@ pub fn kind(value: &Value, cx: &Ctx) -> Result<u8, CalcError> {
 /// JSON array of their texts; 2 a JSON array of numbers; 3 one per value,
 /// a run of ascending consecutive ids as `first-last`; 4 those as a JSON
 /// array of texts. No id is empty text for 0 and 3 and `[]` for the JSON
-/// types.
-pub fn write(ids: &[u64], kind: u8) -> String {
-    let json = |items: Vec<String>| format!("[{}]", items.join(","));
-    match kind {
-        0 => join(ids.iter().map(u64::to_string)),
-        1 => json(ids.iter().map(|id| format!("\"{id}\"")).collect()),
-        2 => json(ids.iter().map(u64::to_string).collect()),
-        3 => join(ranges(ids).into_iter()),
-        _ => json(
-            ranges(ids)
-                .into_iter()
-                .map(|r| format!("\"{r}\""))
-                .collect(),
-        ),
+/// types. Text longer than `limit` bytes fails with
+/// [`CalcError::OUT_OF_MEMORY`] before it is built further, as the
+/// evaluator fails text past its limit.
+pub fn write(ids: &[u64], kind: u8, limit: usize) -> Result<String, CalcError> {
+    use std::fmt::Write as _;
+    let json = matches!(kind, 1 | 2 | 4);
+    let quoted = matches!(kind, 1 | 4);
+    let ranged = matches!(kind, 3 | 4);
+    let mut out = String::new();
+    if json {
+        out.push('[');
     }
-}
-
-fn join(items: impl Iterator<Item = String>) -> String {
-    items.collect::<Vec<_>>().join("\r")
-}
-
-/// Runs of ids each one more than the one before, as `first-last`; any
-/// other id on its own.
-fn ranges(ids: &[u64]) -> Vec<String> {
-    let mut out = Vec::new();
     let mut i = 0;
     while i < ids.len() {
         let mut j = i;
-        while j + 1 < ids.len() && ids[j].checked_add(1) == Some(ids[j + 1]) {
+        while ranged && j + 1 < ids.len() && ids[j].checked_add(1) == Some(ids[j + 1]) {
             j += 1;
         }
-        out.push(if j > i {
-            format!("{}-{}", ids[i], ids[j])
-        } else {
-            ids[i].to_string()
-        });
+        if i > 0 {
+            out.push(if json { ',' } else { '\r' });
+        }
+        if quoted {
+            out.push('"');
+        }
+        let _ = write!(out, "{}", ids[i]);
+        if j > i {
+            let _ = write!(out, "-{}", ids[j]);
+        }
+        if quoted {
+            out.push('"');
+        }
+        if out.len() > limit {
+            return Err(CalcError::OUT_OF_MEMORY);
+        }
         i = j + 1;
     }
-    out
+    if json {
+        out.push(']');
+    }
+    Ok(out)
 }
 
 #[cfg(test)]
@@ -88,15 +90,17 @@ mod tests {
     /// "GetRecordIDsFromFoundSet on FileMaker Server").
     #[test]
     fn writes_each_type_as_the_server_engine_does() {
+        let at = |ids: &[u64], kind| write(ids, kind, usize::MAX).unwrap();
         let gaps = [1, 3, 4, 6, 7, 8];
-        assert_eq!(write(&gaps, 0), "1\r3\r4\r6\r7\r8");
-        assert_eq!(write(&gaps, 1), r#"["1","3","4","6","7","8"]"#);
-        assert_eq!(write(&gaps, 2), "[1,3,4,6,7,8]");
-        assert_eq!(write(&gaps, 3), "1\r3-4\r6-8");
-        assert_eq!(write(&gaps, 4), r#"["1","3-4","6-8"]"#);
+        assert_eq!(at(&gaps, 0), "1\r3\r4\r6\r7\r8");
+        assert_eq!(at(&gaps, 1), r#"["1","3","4","6","7","8"]"#);
+        assert_eq!(at(&gaps, 2), "[1,3,4,6,7,8]");
+        assert_eq!(at(&gaps, 3), "1\r3-4\r6-8");
+        assert_eq!(at(&gaps, 4), r#"["1","3-4","6-8"]"#);
         let sorted = [7, 6, 4, 3, 1];
-        assert_eq!(write(&sorted, 3), "7\r6\r4\r3\r1");
-        assert_eq!(write(&[], 0), "");
-        assert_eq!(write(&[], 4), "[]");
+        assert_eq!(at(&sorted, 3), "7\r6\r4\r3\r1");
+        assert_eq!(at(&[], 0), "");
+        assert_eq!(at(&[], 4), "[]");
+        assert_eq!(write(&gaps, 0, 6), Err(CalcError::OUT_OF_MEMORY));
     }
 }

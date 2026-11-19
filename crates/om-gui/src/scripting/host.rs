@@ -3712,8 +3712,9 @@ impl CalcHost for WorkerHost<'_> {
             // The window's found set, in its order (calc-functions.md
             // 5.8.1).
             if name.eq_ignore_ascii_case("GetRecordIDsFromFoundSet") {
+                let limit = self.limits().text;
                 return self
-                    .file(|f| f.record_ids_from_found_set(args, context))
+                    .file(|f| f.record_ids_from_found_set(args, context, limit))
                     .unwrap_or(Err(CalcError::TABLE_MISSING));
             }
         }

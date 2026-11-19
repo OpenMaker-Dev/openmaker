@@ -1581,6 +1581,15 @@ impl NativeProvider {
         self.calc.library.get_mut().refresh();
         let globals = self.desktop_globals(&schema);
         let mut page = std::mem::take(&mut self.calc.page);
+        // A found set the kept page no longer holds (its budget dropped it)
+        // is the window's, never every record of its table.
+        for need in needs {
+            if let CalcNeed::FoundSet { occurrence, table } = need {
+                if !page.found.contains_key(occurrence) {
+                    self.seed_found_set(&schema, *table, &mut page)?;
+                }
+            }
+        }
         let session = self.session.as_mut().expect("open session");
         let source = NativeSource::new(session, &schema, today)
             .with_calculation_session(session_info)
@@ -1667,6 +1676,29 @@ impl NativeProvider {
                 Ok((data, pending))
             }
         }
+    }
+
+    /// Put the window's found set of `table`, in its order, and its sort
+    /// under every occurrence of the table into `page`, as a record page
+    /// read puts them ([`Self::calculate_page_once`]).
+    fn seed_found_set(
+        &mut self,
+        schema: &CalcSchema,
+        table: u64,
+        page: &mut CalcData,
+    ) -> Result<(), DataError> {
+        let (found, _) = self.found_ids(table)?;
+        let sort: Arc<[u64]> = self
+            .found_sort(table)
+            .iter()
+            .map(|key| schema.sort_key_field(table, key))
+            .collect();
+        let found: Arc<[u64]> = found.into();
+        for alias in schema.occurrences().filter(|o| o.table == table) {
+            page.found.insert(alias.id, Arc::clone(&found));
+            page.sorts.insert(alias.id, Arc::clone(&sort));
+        }
+        Ok(())
     }
 
     /// Only the answer to this window's display read receives its retained
