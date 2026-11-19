@@ -179,6 +179,8 @@ fn unavailable_storage_never_blocks_a_connection_and_clears_any_previous_key() {
     common::open_menu(&mut app, "OpenMaker");
     common::click(&mut app, "FileMaker License...");
     common::wait_for_label(&mut app, "Test credential store is locked.");
+    // A key typed meanwhile is not saved, and stays for Save.
+    common::fill(&mut app, "License key", "typed-not-saved");
     storage.lock().unwrap().fail = false;
     common::click(&mut app, "Check Again");
     common::wait_for_label(
@@ -186,6 +188,11 @@ fn unavailable_storage_never_blocks_a_connection_and_clears_any_previous_key() {
         "A license is saved in your system credential store.",
     );
     assert!(app.query_by_label("Check Again").is_none());
+    assert_ne!(
+        common::text_field(&app, "License key").value().as_deref(),
+        Some("")
+    );
+    assert_eq!(storage.lock().unwrap().key.as_deref(), Some("unused-key"));
 }
 
 #[test]

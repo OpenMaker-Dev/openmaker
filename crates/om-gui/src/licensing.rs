@@ -104,9 +104,17 @@ impl LicenseStore for OsLicenseStore {
 /// the user anything answers in well under a second.
 pub(crate) const LOAD_WAIT: std::time::Duration = std::time::Duration::from_secs(3);
 
+/// How long the answer of a read that came after its load gave up is used
+/// by a later load: long enough to retry after answering the system's
+/// prompt; older answers may be out of date, and the store is read again.
+const LATE_ANSWER: std::time::Duration = std::time::Duration::from_secs(60);
+
+/// A read's answer and when it came.
+type Read = (std::time::Instant, Result<Option<LicenseKey>, DataError>);
+
 /// What the store thread is asked, with where its answer goes.
 enum Operation {
-    Load(std::sync::mpsc::Sender<Result<Option<LicenseKey>, DataError>>),
+    Load(std::sync::mpsc::Sender<Read>),
     Save(LicenseKey, std::sync::mpsc::Sender<Result<(), DataError>>),
     Remove(std::sync::mpsc::Sender<Result<(), DataError>>),
 }
@@ -120,8 +128,8 @@ enum Operation {
 /// must not wait on that ([#151](https://github.com/OpenMaker-Dev/openmaker/issues/151)).
 ///
 /// A read that did not answer in time is not asked again: the next load
-/// waits for the same one, and takes its answer once the user gave it.
-/// Saving and removing are refused while such a read is still waiting: they
+/// waits for the same one, and takes its answer once the user gave it, for
+/// [`LATE_ANSWER`] after it came. Saving and removing are refused while such a read is still waiting: they
 /// would queue behind it and hold the worker until the user answers. Once
 /// they run they wait for the store without a limit, as the user asked for
 /// them in the License dialog and a write that is abandoned would still
@@ -131,7 +139,7 @@ pub(crate) struct ThreadedStore {
     /// The store until its thread has started.
     inner: Option<Box<dyn LicenseStore>>,
     thread: Option<std::sync::mpsc::Sender<Operation>>,
-    reading: Option<std::sync::mpsc::Receiver<Result<Option<LicenseKey>, DataError>>>,
+    reading: Option<std::sync::mpsc::Receiver<Read>>,
     wait: std::time::Duration,
 }
 
@@ -172,7 +180,8 @@ impl ThreadedStore {
                     for operation in rx {
                         match operation {
                             Operation::Load(answer) => {
-                                let _ = answer.send(inner.load());
+                                let read = inner.load();
+                                let _ = answer.send((std::time::Instant::now(), read));
                             }
                             Operation::Save(key, answer) => {
                                 let _ = answer.send(inner.save(&key));
@@ -218,6 +227,18 @@ impl ThreadedStore {
 
 impl LicenseStore for ThreadedStore {
     fn load(&mut self) -> Result<Option<LicenseKey>, DataError> {
+        // An answer that came long after its load gave up may be out of
+        // date (another OpenMaker may have changed the key): read again.
+        if let Some(reading) = &self.reading {
+            match reading.try_recv() {
+                Ok((at, result)) if at.elapsed() <= LATE_ANSWER => {
+                    self.reading = None;
+                    return result;
+                }
+                Ok(_) | Err(std::sync::mpsc::TryRecvError::Disconnected) => self.reading = None,
+                Err(std::sync::mpsc::TryRecvError::Empty) => {}
+            }
+        }
         if self.reading.is_none() {
             let (tx, rx) = std::sync::mpsc::channel();
             self.send(Operation::Load(tx))?;
@@ -225,7 +246,7 @@ impl LicenseStore for ThreadedStore {
         }
         let reading = self.reading.as_ref().expect("a read was just sent");
         match reading.recv_timeout(self.wait) {
-            Ok(result) => {
+            Ok((_, result)) => {
                 self.reading = None;
                 result
             }
@@ -261,6 +282,9 @@ pub(crate) enum LicenseAction {
 pub(crate) struct LicenseDialog {
     pub input: Zeroizing<String>,
     pub pending: bool,
+    /// The request waited for saves or removes the key: the draft goes
+    /// when it succeeds. A status read keeps it.
+    pub writing: bool,
     pub stored: Option<bool>,
     pub error: Option<String>,
 }
@@ -270,6 +294,7 @@ impl Default for LicenseDialog {
         Self {
             input: Zeroizing::new(String::new()),
             pending: true,
+            writing: false,
             stored: None,
             error: None,
         }
@@ -279,10 +304,13 @@ impl Default for LicenseDialog {
 impl LicenseDialog {
     pub fn accept(&mut self, result: Result<bool, DataError>) {
         self.pending = false;
+        let writing = std::mem::take(&mut self.writing);
         match result {
             Ok(stored) => {
                 self.stored = Some(stored);
-                self.input.zeroize();
+                if writing {
+                    self.input.zeroize();
+                }
                 self.error = None;
             }
             Err(error) => self.error = Some(error.to_string()),
@@ -375,6 +403,16 @@ mod tests {
     #[test]
     fn a_read_the_store_holds_gives_up_in_time_and_answers_a_later_load() {
         let (release, gate) = std::sync::mpsc::channel();
+        // Should a save queue behind the held read again, it would wait for
+        // a release the test never gets to: this one comes late instead, so
+        // the test fails rather than hangs.
+        let watchdog = release.clone();
+        std::thread::spawn(move || {
+            std::thread::sleep(std::time::Duration::from_secs(20));
+            for _ in 0..4 {
+                let _ = watchdog.send(());
+            }
+        });
         let reads = std::sync::Arc::default();
         let saves = std::sync::Arc::default();
         let mut store = ThreadedStore::new(

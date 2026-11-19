@@ -2163,27 +2163,19 @@ impl OpenMakerApp {
             use crate::licensing::{LicenseAction, LicenseKey};
             if let Some(action) = dialog.show(&ctx) {
                 let request = match action {
-                    LicenseAction::Save => {
-                        dialog.pending = true;
-                        Some(Request::SaveLicense(LicenseKey::new(
-                            dialog.input.trim().to_owned(),
-                        )))
-                    }
-                    LicenseAction::Remove => {
-                        dialog.pending = true;
-                        Some(Request::RemoveLicense)
-                    }
-                    LicenseAction::Check => {
-                        dialog.pending = true;
-                        Some(Request::LicenseStatus)
-                    }
+                    LicenseAction::Save => Some(Request::SaveLicense(LicenseKey::new(
+                        dialog.input.trim().to_owned(),
+                    ))),
+                    LicenseAction::Remove => Some(Request::RemoveLicense),
+                    LicenseAction::Check => Some(Request::LicenseStatus),
                     LicenseAction::Close => {
                         self.license_dialog = None;
                         None
                     }
                 };
                 if let Some(request) = request {
-                    self.request(&ctx, request);
+                    let writes = !matches!(request, Request::LicenseStatus);
+                    self.license_request(&ctx, request, writes);
                 }
             }
         }
@@ -3155,7 +3147,7 @@ impl OpenMakerApp {
             Action::ManageLicense => {
                 if self.client_license && self.status == ConnectStatus::Idle {
                     self.license_dialog = Some(crate::licensing::LicenseDialog::default());
-                    self.request(ctx, Request::LicenseStatus);
+                    self.license_request(ctx, Request::LicenseStatus, false);
                 }
             }
             Action::NewRecord | Action::DuplicateRecord => {
@@ -3946,6 +3938,21 @@ impl OpenMakerApp {
         let file = self.w.file_id;
         let workspace = self.workspace.as_mut()?;
         workspace.takes(file, token).then_some(workspace)
+    }
+
+    /// Send a License dialog's request. The credential store is the
+    /// worker's, not the host's, so it goes also when the window's host is
+    /// gone; the dialog waits only for a request that went. `writes`: it
+    /// saves or removes, so the masked draft goes once it succeeds.
+    fn license_request(&mut self, ctx: &egui::Context, request: Request, writes: bool) {
+        let sent = self.worker.send(ctx, self.epoch, self.w.id, request);
+        if let Some(dialog) = &mut self.license_dialog {
+            dialog.pending = sent.is_ok();
+            dialog.writing = writes && sent.is_ok();
+            if let Err(err) = &sent {
+                dialog.error = Some(err.to_string());
+            }
+        }
     }
 
     fn request(&mut self, ctx: &egui::Context, request: Request) {
