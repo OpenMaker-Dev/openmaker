@@ -1053,16 +1053,60 @@ pub(crate) struct Pictures(
     RefCell<BTreeMap<PictureKey, DecodedPicture>>,
     RefCell<BTreeMap<ContainerKey, ContainerPicture>>,
     RefCell<BTreeMap<IconKey, DecodedPicture>>,
-    /// Where SVG pictures are drawn apart ([`Pictures::drawn_apart`]).
-    Option<Arc<Drawing>>,
+    /// Where SVG pictures and icons are drawn apart
+    /// ([`Pictures::drawn_apart`]).
+    Option<Drawing>,
 );
 
-/// SVG pictures drawn on threads of their own, by key: those drawn and not
-/// taken yet, and those being drawn.
+/// The SVG pictures and icons being drawn apart.
 #[derive(Default)]
 pub(crate) struct Drawing {
-    drawn: Mutex<BTreeMap<PictureKey, DecodedPicture>>,
-    busy: Mutex<BTreeSet<PictureKey>>,
+    pictures: Arc<Apart<PictureKey>>,
+    icons: Arc<Apart<IconKey>>,
+}
+
+/// Pictures drawn on threads of their own, by key: those drawn and not
+/// taken yet, and those being drawn.
+pub(crate) struct Apart<K> {
+    drawn: Mutex<BTreeMap<K, DecodedPicture>>,
+    busy: Mutex<BTreeSet<K>>,
+}
+
+impl<K> Default for Apart<K> {
+    fn default() -> Self {
+        Apart {
+            drawn: Mutex::default(),
+            busy: Mutex::default(),
+        }
+    }
+}
+
+impl<K: Ord + Copy + Send + 'static> Apart<K> {
+    /// The picture `draw` made of `image` for `key`, once drawn (taken out
+    /// of here for the caller's cache); pending until then, the drawing
+    /// started once. A drawing of bytes the layout no longer has is drawn
+    /// again.
+    fn take_or_start(
+        apart: &Arc<Apart<K>>,
+        key: K,
+        image: &LibraryImage,
+        draw: impl FnOnce(&LibraryImage) -> Result<Arc<Picture>, ReportError> + Send + 'static,
+    ) -> Result<Arc<Picture>, ReportError> {
+        if let Some((source, picture)) = lock(&apart.drawn).remove(&key) {
+            if source == *image {
+                return picture;
+            }
+        }
+        if lock(&apart.busy).insert(key) {
+            let (apart, image) = (Arc::clone(apart), image.clone());
+            std::thread::spawn(move || {
+                let picture = draw(&image);
+                lock(&apart.drawn).insert(key, (image, picture));
+                lock(&apart.busy).remove(&key);
+            });
+        }
+        Err(drawing_pictures())
+    }
 }
 
 /// `mutex`'s value, also after a thread panicked holding it: the maps it
@@ -1161,7 +1205,7 @@ impl Pictures {
             Default::default(),
             Default::default(),
             Default::default(),
-            Some(Arc::default()),
+            Some(Drawing::default()),
         )
     }
 
@@ -1170,7 +1214,8 @@ impl Pictures {
         self.1.get_mut().clear();
         self.2.get_mut().clear();
         if let Some(drawing) = &self.3 {
-            lock(&drawing.drawn).clear();
+            lock(&drawing.pictures.drawn).clear();
+            lock(&drawing.icons.drawn).clear();
         }
     }
 
@@ -1199,11 +1244,18 @@ impl Pictures {
                 return picture.clone();
             }
         }
-        let picture = match image.format {
-            LibraryImageFormat::Svg => rasterize_icon(key, image, tint, side),
-            _ => decode_picture(key, image),
-        }
-        .map(Arc::new);
+        let picture = match (image.format, &self.3) {
+            (LibraryImageFormat::Svg, Some(drawing)) => {
+                match Apart::take_or_start(&drawing.icons, cache_key, image, move |image| {
+                    rasterize_icon(key, image, tint, side).map(Arc::new)
+                }) {
+                    Err(error) if error.code == -1 => return Err(error),
+                    drawn => drawn,
+                }
+            }
+            (LibraryImageFormat::Svg, None) => rasterize_icon(key, image, tint, side).map(Arc::new),
+            _ => decode_picture(key, image).map(Arc::new),
+        };
         decoded.insert(cache_key, (image.clone(), picture.clone()));
         picture
     }
@@ -1262,23 +1314,11 @@ impl Pictures {
         }
         let picture = match (&self.3, size) {
             (Some(drawing), Some(_)) => {
-                let drawn = lock(&drawing.drawn).remove(&cache_key);
-                match drawn {
-                    Some((source, picture)) if source == *image => picture,
-                    // Not drawn yet, or drawn from bytes the layout no longer
-                    // has: drawn (again) apart.
-                    _ => {
-                        if lock(&drawing.busy).insert(cache_key) {
-                            let (drawing, image) = (Arc::clone(drawing), image.clone());
-                            std::thread::spawn(move || {
-                                let picture =
-                                    static_picture::decode(key, &image, size).map(Arc::new);
-                                lock(&drawing.drawn).insert(cache_key, (image, picture));
-                                lock(&drawing.busy).remove(&cache_key);
-                            });
-                        }
-                        return Err(drawing_pictures());
-                    }
+                match Apart::take_or_start(&drawing.pictures, cache_key, image, move |image| {
+                    static_picture::decode(key, image, size).map(Arc::new)
+                }) {
+                    Err(error) if error.code == -1 => return Err(error),
+                    drawn => drawn,
                 }
             }
             _ => static_picture::decode(key, image, size).map(Arc::new),
