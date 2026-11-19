@@ -1247,6 +1247,19 @@ are inferred; the private owner comparison shows a mismatch, and this
 bounded correction has only a neutral Linux fixture comparison, without a
 new macOS/FileMaker measurement.
 
+**A single checkbox without value.** A checkbox set with FileMaker Pro
+26.1's "Display single checkbox without value" (field flag `0x400000`,
+layout-model.md 5.4.1) draws one box without a label, checked when the
+field holds the list's first value. A click or Space checks it, storing
+that value, or clears it, storing the list's second value, or emptying
+the field when the list has one value (`om_data::choice::single_checkbox`,
+from Claris's release notes). In Find mode it gives the first value as the
+criterion, or none [I]. Inferred, not measured: the box's place in the
+field (where the set's first item would be), its look, and that a value
+holding the first value among other lines checks it. The flag's storage
+was read from FileMaker Pro 26.1.1's binaries; no file made by 26.1.1 has
+been read.
+
 Checkbox and radio button sets, pop-up menus and
 drop-down lists (layout-model.md 5.4) read their items through
 `om_data::choice`, the operation `om-author`'s `list_choices` also runs.

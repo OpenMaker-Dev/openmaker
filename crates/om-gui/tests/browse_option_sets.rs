@@ -89,6 +89,9 @@ struct State {
     shade_without_arrow: bool,
     /// Shade's drop-down list has "Auto-complete using value list".
     shade_completes: bool,
+    /// Colors is a "Display single checkbox without value" set (field
+    /// flag `0x400000`).
+    single: bool,
     updates: Vec<String>,
     update_gate: Option<Arc<UpdateGate>>,
     /// The window's found set (Find mode's test).
@@ -274,6 +277,7 @@ impl DataProvider for Provider {
             state.keys,
             state.shade_without_arrow,
             state.shade_completes,
+            state.single,
         )))
     }
     fn calc_schema(&mut self) -> Result<Option<Arc<CalcSchema>>, DataError> {
@@ -456,12 +460,18 @@ fn field(
     }
 }
 
-fn document(exit: Exit, keys: bool, shade_without_arrow: bool, completes: bool) -> RenderLayout {
+fn document(
+    exit: Exit,
+    keys: bool,
+    shade_without_arrow: bool,
+    completes: bool,
+    single: bool,
+) -> RenderLayout {
     let title = LayoutObject {
         text: Some("OPTION SETS".into()),
         ..object(1, 2, 20.0, 5.0, 24.0)
     };
-    let mut colors = field(2, 1, 3, 1, 0, (20.0, 40.0));
+    let mut colors = field(2, 1, 3, 1, if single { 0x40_0000 } else { 0 }, (20.0, 40.0));
     // A saved leading larger than the marker's font size: the options
     // must use the same line boxes their labels were shaped into.
     colors.style = Some(om_layout::ObjectStyle {
@@ -626,6 +636,7 @@ fn state(exit: Exit) -> Arc<Mutex<State>> {
         keys: false,
         shade_without_arrow: false,
         shade_completes: false,
+        single: false,
         updates: Vec::new(),
         update_gate: None,
         found: Default::default(),
@@ -812,6 +823,38 @@ fn other_enters_a_value_and_edit_saves_the_list_values() {
     let updates = &state.lock().unwrap().updates;
     assert_eq!(updates.len(), 1);
     assert!(updates[0].contains("Code=Dr "), "{updates:?}");
+}
+
+/// A checkbox set shown as one checkbox without value (FileMaker Pro 26.1's
+/// "Display single checkbox without value", field flag `0x400000`): one
+/// box and no labels, checked by the list's first value. Clearing it
+/// stores the list's second value, checking it the first.
+#[test]
+fn a_single_checkbox_toggles_between_the_lists_first_and_second_values() {
+    let state = state(Exit::None);
+    state.lock().unwrap().single = true;
+    let mut app = open(&state);
+    // Colors holds Red, the first of Red, Green and Blue.
+    assert!(checked(&app, Role::CheckBox, "Colors"));
+    for item in ["Red", "Green", "Blue"] {
+        assert!(app.query_by_label(item).is_none(), "{item}");
+    }
+    pick(&mut app, Role::CheckBox, "Colors");
+    common::wait_until(&mut app, "the box cleared", |app| {
+        !checked(app, Role::CheckBox, "Colors")
+    });
+    idle(&mut app);
+    save(&mut app, &state);
+    let updates = state.lock().unwrap().updates.clone();
+    assert!(
+        updates.last().is_some_and(|u| u.contains("Colors=Green")),
+        "{updates:?}"
+    );
+    pick(&mut app, Role::CheckBox, "Colors");
+    common::wait_until(&mut app, "the box checked", |app| {
+        checked(app, Role::CheckBox, "Colors")
+    });
+    assert!(app.state().error().is_none(), "{:?}", app.state().error());
 }
 
 #[test]

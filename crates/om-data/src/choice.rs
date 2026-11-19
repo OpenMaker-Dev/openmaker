@@ -432,6 +432,43 @@ pub fn choose(
     })
 }
 
+/// The value a click gives a checkbox set shown as one checkbox without a
+/// label ("Display single checkbox without value", FileMaker Pro 26.1;
+/// layout-model.md 5.4.1), holding `value`. The box is checked when the
+/// value holds the list's first value. Checking it stores that value;
+/// clearing it stores the second, or empties the field when the list has
+/// one value (Claris, FileMaker Pro 26.1.1 release notes). `None`: the list
+/// has no item, or the value stays as it is. That the box is checked by
+/// the first value among the value's lines, as a set's item is, is
+/// inferred.
+pub fn single_checkbox(choices: &Choices, value: &str) -> Option<String> {
+    let mut items = choices
+        .items
+        .iter()
+        .filter(|item| !choices.is_divider(item) && !item.value.is_empty());
+    let first = &items.next()?.value;
+    let checked = value.split(['\r', '\n']).any(|line| line == first);
+    let changed = if checked {
+        items
+            .next()
+            .map(|item| item.value.clone())
+            .unwrap_or_default()
+    } else {
+        first.clone()
+    };
+    (changed != value).then_some(changed)
+}
+
+/// Whether `value` checks the single checkbox of `choices`
+/// ([`single_checkbox`]).
+pub fn single_checked(choices: &Choices, value: &str) -> bool {
+    choices
+        .items
+        .iter()
+        .find(|item| !choices.is_divider(item) && !item.value.is_empty())
+        .is_some_and(|first| value.split(['\r', '\n']).any(|line| line == first.value))
+}
+
 /// An item a menu offers after its value list's items: a command, never a
 /// value. It is not one of [`choices`]' items, so [`choose`], a value
 /// list's completion and a find criterion never meet it.
@@ -552,6 +589,36 @@ mod tests {
             value: value.into(),
             label: value.into(),
         }
+    }
+
+    #[test]
+    fn a_single_checkbox_stores_the_first_value_and_clears_to_the_second() {
+        let two = Choices {
+            items: ["Yes", "No"].map(item).to_vec(),
+            custom: true,
+        };
+        assert_eq!(single_checkbox(&two, ""), Some("Yes".into()));
+        assert_eq!(single_checkbox(&two, "No"), Some("Yes".into()));
+        assert_eq!(single_checkbox(&two, "Yes"), Some("No".into()));
+        assert!(single_checked(&two, "Yes") && !single_checked(&two, "No"));
+        // One value: clearing empties the field.
+        let one = Choices {
+            items: vec![item("Done")],
+            custom: true,
+        };
+        assert_eq!(single_checkbox(&one, "Done"), Some(String::new()));
+        assert_eq!(single_checkbox(&one, ""), Some("Done".into()));
+        // A divider is no value; no item, no change.
+        let divided = Choices {
+            items: ["-", "On", "-", "Off"].map(item).to_vec(),
+            custom: true,
+        };
+        assert_eq!(single_checkbox(&divided, "On"), Some("Off".into()));
+        let none = Choices {
+            items: Vec::new(),
+            custom: true,
+        };
+        assert_eq!(single_checkbox(&none, "x"), None);
     }
 
     #[test]

@@ -272,6 +272,26 @@ pub(super) fn picked(value: &str, item: &str, radio: bool, shift: bool) -> Optio
     (changed != value).then_some(changed)
 }
 
+/// The one item a checkbox set shown as a single checkbox without value
+/// draws (`FieldObject::single_unlabeled_checkbox`): the list's first value,
+/// with no label, at the place the set's first item takes [I: the box's
+/// place in the field is unmeasured]. A click on it toggles the field
+/// between the list's first and second values (`choice::single_checkbox`).
+pub(super) fn single_item(choices: &om_data::choice::Choices) -> Vec<ValueListEntry> {
+    choices
+        .items
+        .iter()
+        .find(|item| !choices.is_divider(item) && !item.value.is_empty())
+        // A space keeps a label's line height, so the box sits in the row
+        // the first item's would.
+        .map(|item| ValueListEntry {
+            value: item.value.clone(),
+            label: " ".into(),
+        })
+        .into_iter()
+        .collect()
+}
+
 /// What the user did to an editable set this frame.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub(super) enum Input {
@@ -515,7 +535,13 @@ pub(super) fn show(
             } else {
                 egui::Role::CheckBox
             };
-            egui::WidgetInfo::selected(role, editable && enabled, selected, &item.label)
+            // A single checkbox's item has no label: it is the set's.
+            let name = if item.label.trim().is_empty() {
+                label
+            } else {
+                &item.label
+            };
+            egui::WidgetInfo::selected(role, editable && enabled, selected, name)
         });
         if editable && enabled && response.clicked() {
             let shift = child.input(|input| input.modifiers.shift);
