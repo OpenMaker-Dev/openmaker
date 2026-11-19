@@ -150,13 +150,14 @@ const CONTEXT_SELECTORS: [u8; 4] = [
 
 /// How a value index in `language` keys text when a unique or existing
 /// value is checked in it (query-program.md 7.2): English and English
-/// international as primary weights, Unicode raw as its UTF-16 code units.
-/// `None` for the other languages, whose keys OpenMaker does not build
-/// exactly yet (the padded form's accents, the tailorings: #159, #485), so
-/// a field validated in them keeps its table read-only.
+/// international as primary weights, System and Unicode standard padded,
+/// Unicode raw as its UTF-16 code units. `None` for the other languages,
+/// whose keys OpenMaker does not build (the tailorings, #159), so a field
+/// validated in them keeps its table read-only.
 pub fn checked_text_keys(language: u32) -> Option<om_query::keys::TextKeys> {
     match language {
         21 | 77 => Some(om_query::keys::TextKeys::Collated),
+        1 | 3 => Some(om_query::keys::TextKeys::CollatedPadded),
         2 => Some(om_query::keys::TextKeys::Raw),
         _ => None,
     }
@@ -169,8 +170,7 @@ pub fn checked_text_keys(language: u32) -> Option<om_query::keys::TextKeys> {
 /// code units. `None` for the other languages, whose forms OpenMaker does
 /// not build (the tailorings, #1279; those FileMaker leaves untailored,
 /// #1280): a write that would change such an index is refused rather than
-/// keyed in English (#159). Within these forms, some scripts and the padded
-/// form's accents still differ from FileMaker's keys (#485).
+/// keyed in English (#159).
 pub fn written_text_keys(language: u32, file_language: u32) -> Option<om_query::keys::TextKeys> {
     let language = if language == 0 {
         file_language
@@ -1802,7 +1802,7 @@ impl RecordPlan {
                 if !options.value_indexed() || checked_text_keys(options.index_language()).is_none()
                 {
                     return Err(error(
-                        "unique and existing values require a value index in English or Unicode raw.",
+                        "unique and existing values require a value index in English, System, Unicode standard or Unicode raw.",
                     ));
                 }
             }
@@ -6139,7 +6139,7 @@ mod tests {
     }
 
     #[test]
-    fn unique_fields_need_a_value_index_keyed_in_english_or_unicode_raw() {
+    fn unique_fields_need_a_value_index_keyed_in_a_form_openmaker_builds() {
         let mut table = table();
         let primary_key = 4;
         assert_eq!(table.fields[primary_key].id, 9);
@@ -6148,12 +6148,15 @@ mod tests {
             .err()
             .unwrap()
             .to_string()
-            .contains("value index in English or Unicode raw"));
+            .contains("require a value index"));
         table.fields[primary_key].options[8..12].copy_from_slice(&0x8000_0188u32.to_be_bytes());
-        table.fields[primary_key].options[4..8].copy_from_slice(&3u32.to_be_bytes());
+        // German (25) is a tailoring OpenMaker does not key.
+        table.fields[primary_key].options[4..8].copy_from_slice(&25u32.to_be_bytes());
         assert!(plan(&table, &initials(1, 2)).is_err());
-        table.fields[primary_key].options[4..8].copy_from_slice(&77u32.to_be_bytes());
-        assert!(plan(&table, &initials(1, 2)).is_ok());
+        for language in [77u32, 1, 3] {
+            table.fields[primary_key].options[4..8].copy_from_slice(&language.to_be_bytes());
+            assert!(plan(&table, &initials(1, 2)).is_ok(), "{language}");
+        }
         // FileMaker Pro 26's own blank file indexes PrimaryKey so (#725).
         table.fields[primary_key].options[4..8].copy_from_slice(&2u32.to_be_bytes());
         assert!(plan(&table, &initials(1, 2)).is_ok());

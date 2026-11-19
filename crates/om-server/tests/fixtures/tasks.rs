@@ -66,6 +66,10 @@ pub const NEWCOMER_PASSWORD: &str = "temporary";
 /// (security catalog record 6), and its password.
 pub const READER: &str = "Reader";
 pub const READER_PASSWORD: &str = "reader's secret";
+/// An account in a custom set in a file with [`add_custom_clerk`]
+/// (security catalog record 7), and its password.
+pub const TEMP: &str = "Temp";
+pub const TEMP_PASSWORD: &str = "temp's secret";
 pub const INTERNAL_CREATION: u32 = 0x0102_0304;
 
 /// Fields [`add_calculated`] adds to Tasks: Status (text); Label, an
@@ -1200,6 +1204,36 @@ pub fn add_reader(root: &mut OwnedNode) {
     }
     root.put(&[&[23], &[1], &[5], &[6], &[16]], text_node(&[], READER));
     put_account(root, 6, READER_PASSWORD, None, 3);
+}
+
+/// Add [`TEMP`], in set 4 "Clerks", a custom set OpenMaker enforces
+/// (session-identity.md 2.1-2.3, the members `om_data`'s
+/// `custom_sets_are_enforced_only_with_plain_record_and_field_limits`
+/// decodes): records of Tasks viewed, created and edited but not deleted
+/// (`54 03`), every other table's view only (`10 03`); every layout,
+/// script and value list modifiable; every other privilege; no password
+/// lifetime. A server admits it only with `Server::admitting_custom_sets`.
+pub fn add_custom_clerk(root: &mut OwnedNode) {
+    let set: &[u8] = &[4];
+    root.put(&[&[23], &[2], &[5], set, &[16]], text_node(&[], "Clerks"));
+    for (member, value) in [(2u8, [0x10u8, 0x03]), (0x0a, [0x9f, 0xff]), (0x0c, [0, 0])] {
+        root.put(
+            &[&[23], &[2], &[5], set, &[member]],
+            OwnedNode::leaf(Vec::new(), value.to_vec()),
+        );
+    }
+    root.put(
+        &[&[23], &[2], &[5], set, &[5], &uint_segment(TABLE), &[2]],
+        OwnedNode::leaf(Vec::new(), vec![0x54, 0x03]),
+    );
+    for catalog in [0x04u8, 0x11, 0x21] {
+        root.put(
+            &[&[23], &[2], &[5], set, &[9], &[catalog]],
+            OwnedNode::leaf(Vec::new(), vec![if catalog == 4 { 0xdf } else { 0xd7 }]),
+        );
+    }
+    root.put(&[&[23], &[1], &[5], &[7], &[16]], text_node(&[], TEMP));
+    put_account(root, 7, TEMP_PASSWORD, None, 4);
 }
 
 /// Store account `record`'s password as FileMaker does (`[23, 1, 5, A,

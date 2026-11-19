@@ -123,6 +123,16 @@ Done, verified against FileMaker:
   finds for indexed `field = constant`); all 1,244 runnable sample-file
   vectors match on the hosted path.
 
+Perform Script on Server with Callback reads the slots FileMaker Pro
+writes (script-steps.md 12.2): the callback by name (`[00 6]` = 1, slot 7)
+or from the list (the key literal in slot 3), and its parameter in slot 4;
+the step text shows and writes the same. These are OpenMaker's choices,
+not compared with FileMaker: a callback script the file does not have is
+error 104 and the server is not called, and a callback in another file is
+error 3 ([#372](https://github.com/OpenMaker-Dev/openmaker/issues/372)). The step text writes the list key's hex digits
+a-f in upper case ([#371](https://github.com/OpenMaker-Dev/openmaker/issues/371)), and pasting the step as FileMaker XML
+refuses its callback ([#370](https://github.com/OpenMaker-Dev/openmaker/issues/370)).
+
 The desktop host answers the Get selectors, layout-object attributes
 and Design functions for other files as FileMaker Pro 26.0.3 does
 (calc-functions.md 6.3, measured on local files in the isolated capture
@@ -189,6 +199,12 @@ repetitions remain refused on these layouts
 ([#43](https://github.com/OpenMaker-Dev/openmaker/issues/43)). The owning file
 is reached through its data source's paths, on its own host
 (desktop-files.md); native FileMaker acceptance is unmeasured.
+
+Go to List of Records finds its record ids in calculation slot 7, and
+Show in new window (`0x20000`) opens a window with the step's name, bounds
+and style first, as Go to Related Record's does (script-steps.md 12.2).
+OpenMaker Server refuses the new window with error 3. Neither is compared
+with FileMaker, which has not been measured running the step.
 
 Fixes from a review of import data safety:
 - Each imported row is checked once with the import's own auto-enter and
@@ -419,6 +435,16 @@ Open items:
     is not reproduced (script-steps.md, Implementation notes
     (import/export)), and OpenMaker creates no table. How FileMaker stores
     a new-table import's target table is not observed.
+  - FileMaker 26.1's "Preserve target field data if source field is
+    empty" (import flag `0x40`) keeps a field an update's source leaves
+    empty. Unmeasured on FileMaker and OpenMaker's inference: a value
+    counts as empty repetition by repetition, a missing column counts as
+    empty, and a record the import adds is written in full. Neither import
+    dialog offers the option (FileMaker Pro 26.1's), but both keep it.
+    With "Perform auto-enter options" on too, an update fails with error 3
+    and imports nothing: a field left unwritten would no longer be kept
+    from auto-entry, and which FileMaker applies first is unmeasured. An
+    import with a flag past `0x40` fails with error 3 and imports nothing.
   - A stored XML import did not run on FileMaker Server (717), so XML
     imports are checked by round trip only.
   - Not probed: the layout data-formatting option, non-English files and
@@ -440,6 +466,17 @@ Open items:
     the header's 16-bit lengths would wrap. `.xlsx` exports past column
     `XFD` write invalid references. FileMaker's behavior past either
     limit is unknown.
+- Steps: the step catalog is FileMaker Pro 26.1.1's (valid ids below 251).
+  Its new steps 249 Replace Field Contents by Name and 250 Set Variable by
+  Name have no parameter rows yet, are not offered in the Script Workspace
+  or as a button's single step, are refused when pasted or authored as
+  text or XML, and fail with error 3 when a desktop script holds one
+  ([#349](https://github.com/OpenMaker-Dev/openmaker/issues/349)); the
+  unnamed id 248 fails with error 3 too, as a valid id without a handler
+  [I]. OpenMaker Server's scripts keep FileMaker Server 26.0.3's table
+  until FileMaker Server 26.1.1 ships: ids from 248 fail with error 4, and
+  Save a Copy as Add-on Package (96) with error 3 without evaluating its
+  options.
 - Scripts: desktop steps still missing include the account steps
   ([#83](https://github.com/OpenMaker-Dev/openmaker/issues/83)) and the PDF
   steps other than Save Records as PDF
@@ -486,7 +523,8 @@ Open items:
     an empty node (scripts.md, "Saving scripts to a host").
   - External container storage is not read (containers.md 8).
   - Unique and existing-value rules need a text field with a value index
-    in English or Unicode raw, value-list rules one in English. Lists from another file, a calculation, related values or
+    in English, System, Unicode standard or Unicode raw, value-list rules
+    one in English. Lists from another file, a calculation, related values or
     a second field still make the table read-only.
   - OpenMaker's own choices, not settled by the oracle: numeric forms
     beyond those tested, value-list dividers, ranges on text and date
