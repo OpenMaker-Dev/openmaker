@@ -414,6 +414,13 @@ Open items:
     imports are checked by round trip only.
   - Not probed: the layout data-formatting option, non-English files and
     Save Records as Excel's stored options.
+  - An export order saved by FileMaker Pro 26.1.1 (one more byte, "Use
+    field names as column names in first row", script-steps.md 12.4) is
+    read and kept. With it on, comma-separated and Excel output start with
+    a row of the field names, as merge files name them (quoted in CSV);
+    other formats ignore it. Both are inferred from Claris's description;
+    no 26.1.1 order has been read or run in FileMaker. Neither export
+    dialog shows the option, and the orders OpenMaker makes are 26.0's.
   - The desktop writes a modification count of 0 in XML.
   - An import reads its whole source and stages every row in one
     transaction; only the import limits bound its memory.

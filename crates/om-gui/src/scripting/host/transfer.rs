@@ -162,6 +162,7 @@ impl WorkerHost<'_> {
                 formatting: false,
                 charset: ExportCharset::Utf8,
                 use_name_alias: Some(1),
+                field_names: None,
             },
         };
         let mut profile = match call.profile.as_deref() {
@@ -243,7 +244,7 @@ impl WorkerHost<'_> {
         }
         let path = self.export_path(&paths, call.create_folders)?;
         let mut request = ExportRequest::new(options, profile);
-        request.field_names_row = excel;
+        request.field_names_row |= excel;
         let sort = self.sorted_fields(&schema, occurrence);
         let mut source = GuiExport {
             host: self,
