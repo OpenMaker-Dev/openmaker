@@ -1789,11 +1789,6 @@ impl RecordPlan {
                 } else {
                     formula_at(FIELD_FORMULA, false).map_err(|e| e.to_string())
                 };
-                if let Ok(expression) = &readable {
-                    if let Some(id) = expression.formula.occurrence() {
-                        contexts.insert(id);
-                    }
-                }
                 unstored_formulas.insert(field.id, readable);
             }
             for expr in expression.iter().chain(validation.iter()) {
@@ -2096,6 +2091,7 @@ impl RecordPlan {
                         let entry = through.entry((*id, own)).or_default();
                         entry.inputs.extend(reads.inputs);
                         entry.calculations.extend(reads.calculations);
+                        entry.contexts.extend(reads.contexts);
                         continue;
                     }
                     let unsupported = (global
@@ -2119,6 +2115,9 @@ impl RecordPlan {
         // evaluates an auto-entered one again (script oracle s44); the
         // inputs also order the formula after them.
         for ((id, own), reads) in through {
+            for occurrence in &reads.contexts {
+                schema.add_occurrence(*occurrence, table.name.clone(), table.id);
+            }
             let Some(field) = fields.get_mut(&id) else {
                 continue;
             };
@@ -3916,6 +3915,12 @@ impl RecordPlan {
                             .is_ok_and(|value| value.is_empty()),
                         _ => row.get(d).map_or(true, String::is_empty),
                     });
+            // A skip decided by an unstored calculation's value is that
+            // value's: a volatile one (a `Random` draw) makes it change when
+            // evaluated again, and a reader of an unknown value read it.
+            if skip && !expression.through_formulas.is_empty() {
+                evaluated.insert(*id);
+            }
             let value = match (skip, field.stored_calculation()) {
                 (true, true) => String::new(),
                 // A calculation that replaces the value leaves it empty
@@ -4992,6 +4997,17 @@ fn unstored_inputs_of(
         Some(Err(reason)) => return Err(reason.clone()),
         None => return Err(format!("Field {} cannot be evaluated.", def.name)),
     };
+    // Evaluated from an occurrence of its own table, as the formulas that
+    // read it; one the schema lacks is added once a reader is planned.
+    let context = expression.formula.occurrence();
+    if let Some(occurrence) = context.and_then(|o| schema.occurrence(o)) {
+        if occurrence.table != table {
+            return Err(format!(
+                "Field {} is evaluated from another table's occurrence.",
+                def.name
+            ));
+        }
+    }
     check_custom_functions(
         schema,
         &expression.formula.polish,
@@ -5003,6 +5019,10 @@ fn unstored_inputs_of(
     let mut reads = UnstoredReads {
         inputs: BTreeSet::new(),
         calculations: BTreeSet::from([id]),
+        contexts: context
+            .filter(|o| schema.occurrence(*o).is_none())
+            .into_iter()
+            .collect(),
     };
     for dependency in &expression.dependencies {
         let input = fields
@@ -5021,6 +5041,7 @@ fn unstored_inputs_of(
             let read = unstored_inputs(*dependency, formulas, schema, table, stack, known)?;
             reads.inputs.extend(read.inputs);
             reads.calculations.extend(read.calculations);
+            reads.contexts.extend(read.contexts);
         } else {
             reads.inputs.insert(*dependency);
         }
@@ -5030,12 +5051,13 @@ fn unstored_inputs_of(
 }
 
 /// What [`unstored_inputs`] gives: the stored fields an unstored
-/// calculation reads, and the unstored calculations on the way, itself
-/// included.
+/// calculation reads, the unstored calculations on the way, itself
+/// included, and their context occurrences the schema lacks.
 #[derive(Clone, Debug, Default)]
 struct UnstoredReads {
     inputs: BTreeSet<u64>,
     calculations: BTreeSet<u64>,
+    contexts: BTreeSet<u64>,
 }
 
 /// Custom functions must obey the same record-only limits as their callers.
@@ -7016,6 +7038,22 @@ mod tests {
         let plan = plan_of(&table, &drawn, &[]).unwrap();
         assert!(!plan.preview_fields(true).contains(&15));
         assert!(plan.preview_fields(true).contains(&1));
+        // So is a skip it decides: whether the calculation reads empty is
+        // drawn again at the commit.
+        drawn[0] = (14, 5, "If ( Random < 2 ; \"\" ; \"x\" )");
+        let plan = plan_of(&table, &drawn, &[]).unwrap();
+        let known = |_: u64, _: Option<u64>, _: u64| false;
+        let entry = (Entry::default(), (true, true), &known as UnknownValue<'_>);
+        let (_, unknown) = plan
+            .pending_row(
+                WriteMode::Create,
+                &BTreeMap::new(),
+                &BTreeMap::new(),
+                &environment(),
+                entry,
+            )
+            .unwrap();
+        assert!(unknown.contains(&15), "{unknown:?}");
         // Over another occurrence or a global field, the write could not
         // evaluate it.
         table
