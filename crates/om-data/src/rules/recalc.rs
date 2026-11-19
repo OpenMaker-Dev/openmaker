@@ -21,9 +21,9 @@ use om_hbam::catalog::{DataType, FieldKind};
 use om_hbam::{KeyTree, Table};
 
 use super::{
-    cell_of, check_custom_functions, children, first_field_occurrence, parse_code, schema, walk,
-    Expression, InRepetition, RecordEnvironment, RecordPlan, ALWAYS_EVALUATE, FIELD_FORMULA,
-    GLOBAL, MAX_CODE, MAX_DEPTH, MAX_NODES, UNSTORED,
+    cell_of, check_custom_functions, children, first_field_occurrence, is_aggregate, parse_code,
+    schema, walk, Expression, InRepetition, RecordEnvironment, RecordPlan, ALWAYS_EVALUATE,
+    FIELD_FORMULA, GLOBAL, MAX_CODE, MAX_DEPTH, MAX_NODES, UNSTORED,
 };
 use crate::containers;
 use crate::host::{CalcSchema, FieldClass};
@@ -414,21 +414,15 @@ fn evaluable(
     })
 }
 
-/// Aggregates that walk every repetition of a lone field argument
-/// (calc-values.md 8.6).
-const AGGREGATES: [&str; 11] = [
-    "list",
-    "count",
-    "sum",
-    "average",
-    "max",
-    "min",
-    "stdev",
-    "stdevp",
-    "variance",
-    "variancep",
-    "last",
-];
+/// Whether `op` takes a field parameter it expands to every repetition
+/// (`NPV`, `Last`; its first argument), as the evaluator reads it.
+fn expands_field(op: om_formula::Opcode) -> bool {
+    use om_formula::catalog::NArgs;
+    matches!(
+        op.info().map(|i| i.nargs),
+        Some(NArgs::UnaryField | NArgs::BinaryField)
+    )
+}
 
 /// How a field reference reads its field, by the operation that consumes
 /// it (calc-values.md 8.6).
@@ -472,13 +466,26 @@ fn readings(expr: &Expr, context: &[u8], reading: Reading, out: &mut BTreeMap<u6
                         readings(arg, context, inner, out);
                     }
                 }
-                Some(name) if AGGREGATES.contains(&name) => {
-                    let each = if args.len() == 1 {
-                        Reading::Any
+                // As the evaluator expands them (om-calc's
+                // `aggregate_arguments`): an aggregate's only argument, and
+                // the field parameter of a function that takes one (`NPV`,
+                // `Last`), read every repetition; each of several aggregate
+                // arguments its current one.
+                _ if is_aggregate(*op) || expands_field(*op) => {
+                    let aggregate = is_aggregate(*op);
+                    let expanded = if aggregate {
+                        usize::from(args.len() == 1)
                     } else {
-                        Reading::Current
+                        1
                     };
-                    for arg in args {
+                    for (i, arg) in args.iter().enumerate() {
+                        let each = if i < expanded {
+                            Reading::Any
+                        } else if aggregate {
+                            Reading::Current
+                        } else {
+                            reading
+                        };
                         readings(arg, context, each, out);
                     }
                 }
@@ -881,6 +888,8 @@ mod tests {
             ("List ( r ; e )", 2, current),
             ("Sum ( r )", 1, any),
             ("Last ( r )", 1, any),
+            ("NPV ( r ; e )", 1, any),
+            ("NPV ( r ; e )", 2, current),
             ("Extend ( r )", 1, first),
             ("Sum ( Extend ( r ) )", 1, any),
             ("r[2]", 1, any),
