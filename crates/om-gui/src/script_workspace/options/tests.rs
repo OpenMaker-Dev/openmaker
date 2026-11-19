@@ -642,6 +642,10 @@ fn rows_follow_the_schema_and_keep_what_they_do_not_edit() {
             ("Input 3", false),
             ("Input 3 label", false),
             ("Input 3 uses password character", false),
+            // FileMaker Pro 26.1's "Close after (seconds)" (script-steps.md
+            // 12.4).
+            ("Close after", false),
+            ("Close After Seconds", false),
             ("Button Label Calculations", true)
         ]
     );
