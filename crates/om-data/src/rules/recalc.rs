@@ -20,10 +20,11 @@ use om_hbam::catalog::{DataType, FieldKind};
 use om_hbam::{KeyTree, Table};
 
 use super::{
-    check_custom_functions, first_field_occurrence, parse_code, schema, walk, Expression,
+    cell_of, check_custom_functions, first_field_occurrence, parse_code, schema, walk, Expression,
     RecordEnvironment, RecordPlan, ALWAYS_EVALUATE, FIELD_FORMULA, GLOBAL, MAX_CODE, MAX_DEPTH,
     MAX_NODES, UNSTORED,
 };
+use crate::containers;
 use crate::host::{CalcSchema, FieldClass};
 use crate::DataError;
 
@@ -207,6 +208,53 @@ impl Recalculation {
         })
     }
 
+    /// Why `target` cannot be computed on `row`: a container field it
+    /// reads has a cell naming a library member that `environment`'s
+    /// reader cannot find (no library, or a member the library lost), in
+    /// any repetition. The formula would read the reference's own text,
+    /// not the data, so the calculation fails on the record and its value
+    /// stays as it was (OpenMaker's choice: what FileMaker Server stores
+    /// then is unmeasured).
+    fn missing_container_data(
+        &self,
+        target: &Target,
+        row: &BTreeMap<u64, String>,
+        environment: &RecordEnvironment,
+    ) -> Option<DataError> {
+        let table = self.plan.schema.table(self.plan.table)?;
+        for field in &target.expression.dependencies {
+            let Some(def) = table
+                .fields
+                .get(field)
+                .filter(|d| d.value_type == ValueType::Container)
+            else {
+                continue;
+            };
+            for n in 1..=def.repetitions.clamp(1, 255) {
+                let Some(member) = cell_of(*field, n)
+                    .and_then(|cell| row.get(&cell))
+                    .and_then(|text| containers::reference(text))
+                else {
+                    continue;
+                };
+                let found = environment
+                    .containers
+                    .as_ref()
+                    .map(|reader| reader.member(self.plan.table, &member));
+                if !matches!(found, Some(Ok(Some(_)))) {
+                    return Some(DataError::with_code(
+                        super::error::UNAVAILABLE,
+                        format!(
+                            "the data of container field {} is missing from the library.",
+                            def.name
+                        ),
+                    ));
+                }
+            }
+        }
+        None
+    }
+
     /// The new values of one record, `row` being its stored cells as text
     /// (repetition cells under `F * 256 + n`).
     pub fn recompute(
@@ -218,6 +266,10 @@ impl Recalculation {
         let mut row = row.clone();
         let mut out = Recomputed::default();
         for target in &self.targets {
+            if let Some(error) = self.missing_container_data(target, &row, environment) {
+                out.failed.push((target.id, error));
+                continue;
+            }
             let deps = &target.expression.dependencies;
             let skip = !target.always
                 && !deps.is_empty()
@@ -282,19 +334,20 @@ fn evaluable(
         false,
         &mut BTreeSet::new(),
     )?;
+    // A container input is read through the environment's container
+    // reader (the table's library on the server): the field's data, as
+    // FileMaker Server's engine reads it when a commit computes such a
+    // calculation (script oracle s34-containers-calc).
+    // Global, summary and unstored inputs make FileMaker store the
+    // calculation unstored (calc-values.md 8.8), so they come only from a
+    // file it did not write.
     let fields = calc.table(table.id).map(|t| &t.fields);
     for dependency in &expression.dependencies {
         let Some(def) = fields.and_then(|f| f.get(dependency)) else {
             return Err("it references a field that does not exist.".into());
         };
-        if def.value_type == ValueType::Container
-            || def.global
-            || def.class == FieldClass::Summary
-            || def.is_unstored_calculation()
-        {
-            return Err(
-                "it reads a container, global, summary or unstored calculation field.".into(),
-            );
+        if def.global || def.class == FieldClass::Summary || def.is_unstored_calculation() {
+            return Err("it reads a global, summary or unstored calculation field.".into());
         }
     }
     Ok(Target {
@@ -648,11 +701,12 @@ mod tests {
             name: "Example".into(),
             fields: vec![
                 field(1, FieldKind::Normal, DataType::Text, 0, 0, 0),
-                field(2, FieldKind::Normal, DataType::Container, 0, 0, 0),
+                field(2, FieldKind::Normal, DataType::Text, 0, GLOBAL, 0),
                 field(5, FieldKind::Calculation, DataType::Text, 0, 0, 0),
                 field(6, FieldKind::Calculation, DataType::Text, 0, 0, 0),
             ],
         };
+        // 5 reads the global 2, which only the session knows.
         let tree = tree(&[(5, initials(1, 2)), (6, initials(1, 1))]);
         let file = CalcSchema::new("test", Locale::en_us());
         let recalc = Recalculation::plan(&table, &tree, &file, &BTreeSet::from([5, 6]));
@@ -662,6 +716,6 @@ mod tests {
         // Unchanged calculations are left alone.
         let recalc = Recalculation::plan(&table, &tree, &file, &BTreeSet::from([2]));
         assert!(recalc.fields().is_empty());
-        assert_eq!(recalc.skipped().len(), 1, "5 reads the container");
+        assert_eq!(recalc.skipped().len(), 1, "5 reads the global");
     }
 }

@@ -533,6 +533,7 @@ fn export_ages(summaries: &[&str]) -> ScriptStep {
         formatting: false,
         charset: om_transfer::ExportCharset::Utf8,
         use_name_alias: Some(1),
+        field_names: None,
     };
     let profile = om_transfer::Profile::new(om_transfer::FileType::TabSeparated);
     let mut s = step(36);

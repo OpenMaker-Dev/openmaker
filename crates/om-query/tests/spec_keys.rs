@@ -257,3 +257,117 @@ fn client_finds_agree_with_finds_on_the_specs_keys() {
         "German ! is unsupported on the client"
     );
 }
+
+/// A row of `docs/re/catalogs/index-key-vectors.tsv`: the keys FileMaker
+/// Server's engine wrote for one value (query-program.md 7.1-7.3).
+struct Vector {
+    kind: &'static str,
+    language: &'static str,
+    value: String,
+    value_entries: BTreeSet<Vec<u8>>,
+}
+
+fn vectors() -> Vec<Vector> {
+    include_str!("../../../docs/re/catalogs/index-key-vectors.tsv")
+        .lines()
+        .filter(|line| !line.starts_with('#'))
+        .map(|line| {
+            let columns: Vec<&str> = line.split('\t').collect();
+            Vector {
+                kind: columns[0],
+                language: columns[1],
+                value: vector_value(columns[2]),
+                value_entries: columns[3].split_whitespace().map(vector_key).collect(),
+            }
+        })
+        .collect()
+}
+
+/// A value as the table writes it: `\r \n \t \\`, `\u{hex}`, and `c{n}`
+/// for `n` copies of `c`.
+fn vector_value(text: &str) -> String {
+    let mut out = String::new();
+    let mut chars = text.chars();
+    let until_brace = |chars: &mut std::str::Chars| -> String {
+        chars.by_ref().take_while(|&c| c != '}').collect()
+    };
+    while let Some(c) = chars.next() {
+        match c {
+            '\\' => match chars.next() {
+                Some('r') => out.push('\r'),
+                Some('n') => out.push('\n'),
+                Some('t') => out.push('\t'),
+                Some('u') => {
+                    chars.next();
+                    let hex = until_brace(&mut chars);
+                    out.push(char::from_u32(u32::from_str_radix(&hex, 16).unwrap()).unwrap());
+                }
+                other => out.extend(other),
+            },
+            '{' => {
+                let count: usize = until_brace(&mut chars).parse().unwrap();
+                let last = out.chars().last().unwrap();
+                out.extend(std::iter::repeat_n(last, count - 1));
+            }
+            other => out.push(other),
+        }
+    }
+    out
+}
+
+/// A key as the table writes it: hex, `hhhh{n}` for `n` copies of a
+/// 2-byte weight.
+fn vector_key(text: &str) -> Vec<u8> {
+    let mut digits = String::new();
+    let mut parts = text.split('{');
+    digits.push_str(parts.next().unwrap());
+    for part in parts {
+        let (count, rest) = part.split_once('}').unwrap();
+        let weight = digits[digits.len() - 4..].to_string();
+        for _ in 1..count.parse::<usize>().unwrap() {
+            digits.push_str(&weight);
+        }
+        digits.push_str(rest);
+    }
+    hex(&digits)
+}
+
+/// Every English, Unicode standard and Unicode raw text row of the vector
+/// table: the value-index keys OpenMaker builds are FileMaker's. System (1)
+/// and English international (77) key as Unicode standard and English and
+/// have no rows of their own. Whether a record is also listed under
+/// `ff 80` (a long key, 7.1) follows rules OpenMaker does not model yet
+/// ([#177](https://github.com/OpenMaker-Dev/openmaker/issues/177)), so that
+/// entry is left out here.
+#[test]
+fn text_keys_are_filemakers_vectors() {
+    let too_long = om_collate::TOO_LONG_KEY.to_vec();
+    let mut checked = 0;
+    let mut mismatches = Vec::new();
+    for vector in vectors().iter().filter(|v| v.kind == "text") {
+        let language: u32 = vector.language.parse().unwrap();
+        let Some(form @ (TextKeys::Collated | TextKeys::CollatedPadded | TextKeys::Raw)) =
+            TextKeys::of_language(language)
+        else {
+            continue;
+        };
+        let ours = om_query::keys::record_value_entries(
+            DataType::Text,
+            std::slice::from_ref(&vector.value),
+            DateOrder::MonthDayYear,
+            form,
+        );
+        let without_flag = |keys: &BTreeSet<Vec<u8>>| {
+            keys.iter()
+                .filter(|key| **key != too_long)
+                .cloned()
+                .collect::<BTreeSet<_>>()
+        };
+        checked += 1;
+        if without_flag(&ours) != without_flag(&vector.value_entries) {
+            mismatches.push(format!("{language} {:?}", vector.value));
+        }
+    }
+    assert!(mismatches.is_empty(), "{mismatches:#?}");
+    assert_eq!(checked, 364);
+}

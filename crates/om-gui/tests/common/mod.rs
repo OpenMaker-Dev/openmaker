@@ -31,10 +31,18 @@ pub fn harness(provider: Box<dyn DataProvider>) -> App {
 /// A harness of `size`: a taller one shows a long Scripts menu whole (the
 /// menu's items past the screen's bottom are not drawn, nor reachable).
 pub fn harness_sized(provider: Box<dyn DataProvider>, size: egui::Vec2) -> App {
+    use_svg_worker();
     Harness::builder()
         .with_size(size)
         .renderer(renderer())
         .build_eframe(move |_cc| OpenMakerApp::new(provider))
+}
+
+/// Draw SVG pictures and icons with this package's worker, as the app
+/// draws them beside its executable (`om_gui::svg_loader`); without it
+/// they show egui's error mark.
+pub fn use_svg_worker() {
+    om_gui::report::svg_worker::set_default(env!("CARGO_BIN_EXE_om-gui-pdf-worker").into());
 }
 
 pub fn mock() -> App {
@@ -84,6 +92,39 @@ pub fn find_text_field<'a>(app: &'a App, label: &'a str) -> Option<egui_kittest:
 pub fn text_field<'a>(app: &'a App, label: &'a str) -> egui_kittest::Node<'a> {
     app.query_by_role_and_label(Role::TextInput, label)
         .unwrap_or_else(|| app.get_by_role_and_label(Role::PasswordInput, label))
+}
+
+/// A native absolute file path as a `file:` path list line of this
+/// platform, for typing where FileMaker takes a path list (script-runtime.md,
+/// "Data files and paths"), as `scripting::files::filemaker_path` writes it:
+/// a macOS path starts with its volume's name (a mounted volume's, or the
+/// startup disk's, the one under `/Volumes` that links to `/`), a Windows
+/// one with its drive or, for a UNC path, `//computer/share`.
+pub fn file_line(path: &std::path::Path) -> String {
+    let text = path.to_str().expect("a UTF-8 path");
+    if cfg!(target_os = "macos") {
+        if let Some(mounted) = text.strip_prefix("/Volumes/") {
+            return format!("file:/{mounted}");
+        }
+        let volume = std::fs::read_dir("/Volumes")
+            .into_iter()
+            .flatten()
+            .flatten()
+            .find(|e| std::fs::read_link(e.path()).is_ok_and(|t| t == std::path::Path::new("/")))
+            .map_or_else(
+                || "Macintosh HD".to_owned(),
+                |e| e.file_name().to_string_lossy().into_owned(),
+            );
+        format!("file:/{volume}{text}")
+    } else if cfg!(windows) {
+        let text = text.replace('\\', "/");
+        match text.strip_prefix("//") {
+            Some(unc) => format!("file://{unc}"),
+            None => format!("file:/{text}"),
+        }
+    } else {
+        format!("file:{text}")
+    }
 }
 
 /// Type into the text field labelled `label`.

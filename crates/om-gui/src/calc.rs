@@ -197,6 +197,10 @@ pub(crate) struct ObjectCalcState {
     /// A shown button bar's active segment calculation (layout-model.md
     /// 5.5); `None` without one.
     pub active_segment: Option<SegmentName>,
+    /// Drawn before the last change and kept while its data is read again
+    /// ([`Evaluator::object_state_in_portal`]): what decides the object's
+    /// clicks and focus is not known yet.
+    pub kept: bool,
 }
 
 /// What a button bar's active segment calculation gave: the object name of
@@ -220,6 +224,35 @@ struct CachedObjectState {
 /// A cached result, with whether it read the session
 /// ([`Calculations::observe_context`]).
 type SessionResult<T> = (T, bool);
+
+/// A merge field's value, by (layout, record, portal row, the field as
+/// the text names it).
+type MergeKey = (u64, u64, Option<PortalRow>, String);
+
+/// The results a change dropped ([`Calculations::keep_last_results`]),
+/// by the keys of the caches they came from.
+#[derive(Default)]
+struct LastResults {
+    states: HashMap<ObjectKey, CachedObjectState>,
+    values: HashMap<(ObjectKey, i32), SessionResult<Value>>,
+    named_values: HashMap<(u64, u64, u64), SessionResult<Value>>,
+    merge_values: HashMap<MergeKey, SessionResult<Value>>,
+    group_values: HashMap<GroupKey, SessionResult<Value>>,
+}
+
+impl LastResults {
+    fn len(&self) -> usize {
+        self.states.len()
+            + self.values.len()
+            + self.named_values.len()
+            + self.merge_values.len()
+            + self.group_values.len()
+    }
+}
+
+/// How many results [`LastResults`] holds at most before a change: a few
+/// pages of a large layout's objects.
+const MAX_KEPT_RESULTS: usize = 65_536;
 
 /// A portal's displayed related records, keyed by (layout, portal object,
 /// parent record), with whether they read the session (its filter's or
@@ -295,6 +328,8 @@ pub(crate) struct Calculations {
     /// Table and fallback views have field columns rather than object ids.
     /// Keep their (layout, field, record) keys separate from object values.
     named_values: RefCell<HashMap<(u64, u64, u64), SessionResult<Value>>>,
+    /// Merge fields' values in layout text.
+    merge_values: RefCell<HashMap<MergeKey, SessionResult<Value>>>,
     /// Complete displayed sets, by layout, portal object and parent record.
     portal_sets: RefCell<PortalSets>,
     /// Summary values of List view's sub-summary bands, by (layout,
@@ -302,6 +337,18 @@ pub(crate) struct Calculations {
     /// value, kept apart from `values`, where the same object holds the
     /// found set's value.
     group_values: RefCell<HashMap<GroupKey, SessionResult<Value>>>,
+    /// The results the last changes dropped, drawn in Browse in
+    /// place of one whose data is being read again: a related field, a
+    /// merge field, a summary, a calculation or an object's hide condition
+    /// and formats keeps its last value after a save rather than drawing
+    /// empty until its data arrives (a portal keeps its rows in the
+    /// document). They go once a frame drew the window with nothing
+    /// outstanding ([`Self::settle_last_results`]). Reports never read
+    /// them.
+    last: RefCell<LastResults>,
+    /// The layout calculations' last `Get ( ModifiedFields )`, with the
+    /// schema and inputs it was computed from ([`Self::modified_fields`]).
+    modified: RefCell<Option<ModifiedAnswer>>,
     /// The value-list items of controls whose list depends on the record
     /// (its related values, or an unstored calculation's), by object,
     /// record and portal row, with whether they were computed by a
@@ -491,6 +538,38 @@ impl Calculations {
         self.forget_results();
     }
 
+    /// The results evaluated so far become the ones drawn while their
+    /// data is read again ([`Self::last`]), over those kept before. Every
+    /// change that has them evaluated again keeps them: a data change, a
+    /// data reply, a draft (a save first drops the record's draft, then
+    /// its data), variables and the mode.
+    fn keep_last_results(&self) {
+        let mut last = self.last.borrow_mut();
+        // Bounded however long a read stays outstanding: past the bound
+        // only the results drawn since the previous change are kept.
+        if last.len() > MAX_KEPT_RESULTS {
+            *last = LastResults::default();
+        }
+        last.states.extend(self.states.borrow_mut().drain());
+        last.values.extend(self.values.borrow_mut().drain());
+        last.named_values
+            .extend(self.named_values.borrow_mut().drain());
+        last.merge_values
+            .extend(self.merge_values.borrow_mut().drain());
+        last.group_values
+            .extend(self.group_values.borrow_mut().drain());
+    }
+
+    /// A frame was drawn and its needs were asked for
+    /// ([`Self::take_wanted`]): when none was and nothing is on its way,
+    /// every result it drew is fresh, and those kept from before the last
+    /// change go.
+    pub fn settle_last_results(&mut self) {
+        if !self.awaiting_data() {
+            *self.last.get_mut() = LastResults::default();
+        }
+    }
+
     /// Variables, the mode or a draft changed: evaluate again.
     pub fn forget_results(&self) {
         self.targeted.set(false);
@@ -554,6 +633,9 @@ impl Calculations {
         self.values
             .get_mut()
             .retain(|((l, o, _, _), _), _| !values.contains(&(*l, *o)));
+        // Merge fields are kept by name, not by object: all are read again,
+        // as they were before they were kept at all.
+        self.merge_values.get_mut().clear();
         // A refreshed object in a sub-summary band reads its summaries'
         // groups again, from the fresh data.
         if let (Some(schema), Some(origin)) = (self.schema.as_deref(), layout_occurrence(session)) {
@@ -609,6 +691,10 @@ impl Calculations {
             let before = named.len();
             named.retain(|_, (_, session)| !*session);
             dropped |= named.len() != before;
+            let mut merged = self.merge_values.borrow_mut();
+            let before = merged.len();
+            merged.retain(|_, (_, session)| !*session);
+            dropped |= merged.len() != before;
             let mut sets = self.portal_sets.borrow_mut();
             let before = sets.len();
             sets.retain(|_, (_, session)| !*session);
@@ -643,9 +729,11 @@ impl Calculations {
     }
 
     fn clear_results(&self) {
+        self.keep_last_results();
         self.states.borrow_mut().clear();
         self.values.borrow_mut().clear();
         self.named_values.borrow_mut().clear();
+        self.merge_values.borrow_mut().clear();
         self.portal_sets.borrow_mut().clear();
         self.options.borrow_mut().clear();
         self.group_values.borrow_mut().clear();
@@ -1127,6 +1215,105 @@ pub(crate) fn session_info(
     }
 }
 
+/// `Get ( ActiveFieldName )` and `Get ( ActiveFieldTableName )` of the
+/// field the window names `field`: a related one as Find mode names it
+/// (`Occurrence::Field`), else one of the layout's table `layout_table`.
+pub(crate) fn focus_names(field: &str, layout_table: &str) -> (String, String) {
+    match field.split_once("::") {
+        Some((occurrence, name)) => (name.to_owned(), occurrence.to_owned()),
+        None => (field.to_owned(), layout_table.to_owned()),
+    }
+}
+
+/// A `Get ( ModifiedFields )` answer with the schema and inputs it was
+/// computed from.
+type ModifiedAnswer = (Arc<CalcSchema>, ModifiedInputs, Vec<String>);
+
+/// What a window's `Get ( ModifiedFields )` is computed from
+/// ([`window_modified_fields`]).
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub(crate) struct ModifiedInputs {
+    pub table: u64,
+    pub drafts: Vec<String>,
+    pub typing: Option<String>,
+    pub cells: Vec<u64>,
+    pub entered: Vec<String>,
+}
+
+impl Calculations {
+    /// [`window_modified_fields`] for the layout's calculations, computed
+    /// again only when its inputs or the schema change: the walk through
+    /// the stored calculations that depend on the changed fields would
+    /// otherwise run on every frame the window draws.
+    pub fn modified_fields(&self, inputs: ModifiedInputs) -> Vec<String> {
+        let Some(schema) = self.schema() else {
+            return Vec::new();
+        };
+        if let Some((seen, given, answer)) = &*self.modified.borrow() {
+            if Arc::ptr_eq(seen, schema) && *given == inputs {
+                return answer.clone();
+            }
+        }
+        let answer = window_modified_fields(
+            schema,
+            inputs.table,
+            inputs.drafts.iter().map(String::as_str),
+            inputs.typing.as_deref(),
+            inputs.cells.iter().copied(),
+            &inputs.entered,
+        );
+        *self.modified.borrow_mut() = Some((Arc::clone(schema), inputs, answer.clone()));
+        answer
+    }
+}
+
+/// `Get ( ModifiedFields )` of a window's current record of `table` in
+/// Browse mode (calc-functions.md 6.3 O3), as scripts and the layout's
+/// calculations read it: the fields with a draft (`drafts`, by name) and
+/// those whose cells a script set or the user typed into (`cells`; cell
+/// `F * 256 + n` is field F's repetition n), but not the field still being
+/// typed into (`typing`), which is listed once it is left; the stored
+/// calculations on them; and a new record's auto-entered fields
+/// (`entered`, the fields that held a value when it was made).
+pub(crate) fn window_modified_fields<'a>(
+    schema: &CalcSchema,
+    table: u64,
+    drafts: impl IntoIterator<Item = &'a str>,
+    typing: Option<&str>,
+    cells: impl IntoIterator<Item = u64>,
+    entered: &[String],
+) -> Vec<String> {
+    let Some(def) = schema.table(table) else {
+        return Vec::new();
+    };
+    let named = |name: &str| def.fields.values().find(|f| f.name == name);
+    let mut changed: Vec<u64> = drafts
+        .into_iter()
+        .filter(|name| typing != Some(*name))
+        .filter_map(|name| named(name).map(|f| f.id))
+        .collect();
+    for cell in cells {
+        let field = if def.fields.contains_key(&cell) {
+            cell
+        } else {
+            cell >> 8
+        };
+        let Some(def) = def.fields.get(&field) else {
+            continue;
+        };
+        if typing != Some(def.name.as_str()) && !changed.contains(&field) {
+            changed.push(field);
+        }
+    }
+    let entered: Vec<u64> = entered
+        .iter()
+        .filter_map(|name| named(name))
+        .filter(|f| om_data::host::session::auto_enters(f))
+        .map(|f| f.id)
+        .collect();
+    om_data::host::session::modified_fields(schema, table, &changed, &entered)
+}
+
 /// The layout's table occurrence.
 pub(crate) fn layout_occurrence(session: &Session) -> Option<u64> {
     match &session.render {
@@ -1450,7 +1637,8 @@ impl<'a> Evaluator<'a> {
             source = source.with_overlay(*table, *record, Arc::clone(values));
         }
         // Only `self.overlays` are scanned over: no other overlays come.
-        if !overlays.is_empty() {
+        // Without any, the frame scans only a held new record's sets.
+        if !overlays.is_empty() || self.overlays.is_empty() {
             source = source.keeping_scans(&self.scans);
         }
         let (mut locals, mut globals) = (self.locals.borrow_mut(), self.globals.borrow_mut());
@@ -1938,7 +2126,12 @@ impl<'a> Evaluator<'a> {
         let Some((value, reads)) =
             self.with_host_reads(|host| host.file.summary(&context, summary, by))
         else {
-            return Some(Value::empty(def.value_type));
+            let last = self.calcs.last.borrow();
+            return Some(
+                last.group_values
+                    .get(&key)
+                    .map_or_else(|| Value::empty(def.value_type), |(value, _)| value.clone()),
+            );
         };
         let value = value.unwrap_or_else(|_| Value::invalid());
         self.calcs
@@ -2508,9 +2701,31 @@ impl<'a> Evaluator<'a> {
     }
 
     /// The calculations of `object` on `record` (`NO_RECORD` without one);
-    /// `None` while their data is being fetched. `self_value` is the
-    /// object's content.
+    /// while their data is being read again, the state drawn before the
+    /// last change, else `None`. `self_value` is the object's
+    /// content.
     pub fn object_state_in_portal(
+        &self,
+        object: &LayoutObject,
+        record: u64,
+        portal: Option<PortalRow>,
+        self_value: impl FnOnce() -> Value,
+    ) -> Option<ObjectCalcState> {
+        self.fresh_object_state(object, record, portal, self_value)
+            .or_else(|| {
+                // Read again: the state drawn last.
+                let key = (self.layout, object.id, record, portal);
+                let last = self.calcs.last.borrow();
+                last.states.get(&key).map(|cached| ObjectCalcState {
+                    kept: true,
+                    ..cached.calc.clone()
+                })
+            })
+    }
+
+    /// [`Self::object_state_in_portal`] from the data read since the last
+    /// change, `None` while it is being read.
+    fn fresh_object_state(
         &self,
         object: &LayoutObject,
         record: u64,
@@ -2640,6 +2855,7 @@ impl<'a> Evaluator<'a> {
             visibility,
             state,
             active_segment,
+            kept: false,
         };
         self.calcs.states.borrow_mut().insert(
             key,
@@ -2716,7 +2932,10 @@ impl<'a> Evaluator<'a> {
         if let Some((value, _)) = self.calcs.values.borrow().get(&key) {
             return Some(value.clone());
         }
-        let (value, reads) = self.read_field_value_with_reads(spec, record, portal)?;
+        let Some((value, reads)) = self.read_field_value_with_reads(spec, record, portal) else {
+            let last = self.calcs.last.borrow();
+            return last.values.get(&key).map(|(value, _)| value.clone());
+        };
         self.calcs
             .values
             .borrow_mut()
@@ -2772,9 +2991,12 @@ impl<'a> Evaluator<'a> {
         if let Some((value, _)) = self.calcs.named_values.borrow().get(&key) {
             return Some(value.clone());
         }
-        let (value, reads) = self.with_host_reads(|host| {
+        let Some((value, reads)) = self.with_host_reads(|host| {
             om_data::host::read_field(host, self.occurrence, record, field.id, 1)
-        })?;
+        }) else {
+            let last = self.calcs.last.borrow();
+            return last.named_values.get(&key).map(|(value, _)| value.clone());
+        };
         self.calcs
             .named_values
             .borrow_mut()
@@ -2790,6 +3012,7 @@ impl<'a> Evaluator<'a> {
     ) -> Option<Value> {
         use om_data::formula::Names;
 
+        let name_in_text = name;
         let (occurrence, name) = match name.split_once("::") {
             Some((occurrence, field)) => (self.schema.names().find_occurrence(occurrence)?, field),
             None => (self.occurrence, name),
@@ -2806,13 +3029,25 @@ impl<'a> Evaluator<'a> {
         if let Some(value) = self.band_summary(occurrence, field, repetition, parent, portal) {
             return Some(value);
         }
+        let key = (self.layout, parent, portal, name_in_text.to_owned());
+        if let Some((value, _)) = self.calcs.merge_values.borrow().get(&key) {
+            return Some(value.clone());
+        }
         let expression =
             om_data::formula::Expr::Field(om_data::formula::Field::new(occurrence, field, true));
         let context = self
             .portal_context(parent, portal)
             .with_repetition(repetition);
-        let value = self
-            .with_host(|host| om_data::calc::eval::evaluate(&expression, host, &context).value)?;
+        let Some((value, reads)) = self.with_host_reads(|host| {
+            om_data::calc::eval::evaluate(&expression, host, &context).value
+        }) else {
+            let last = self.calcs.last.borrow();
+            return last.merge_values.get(&key).map(|(value, _)| value.clone());
+        };
+        self.calcs
+            .merge_values
+            .borrow_mut()
+            .insert(key, (value.clone(), reads.session));
         Some(value)
     }
 
@@ -3117,11 +3352,16 @@ mod tests {
                 "completed frames must not refetch evicted bodies"
             );
         }
-        // A record/data change still invalidates the completed result.
+        // A record/data change still invalidates the completed result: it
+        // is read again, its last value drawn meanwhile.
         calcs.data_changed();
-        assert!(evaluator(&calcs, &schema)
-            .named_field_value("Bytes", 1)
-            .is_none());
+        {
+            let evaluation = evaluator(&calcs, &schema);
+            assert_eq!(
+                evaluation.display(&evaluation.named_field_value("Bytes", 1).unwrap()),
+                bytes.to_string()
+            );
+        }
         assert_eq!(
             calcs.take_wanted(),
             [CalcNeed::Record {
