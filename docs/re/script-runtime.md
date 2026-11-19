@@ -319,7 +319,9 @@ comments do not either, because they never execute (2.2).
 ### 2.5 Valid, obsolete and gated step ids
 
 - Valid ids are 0..247 (`ScriptStep::IsStepIDValid` 0xe7ef80: absolute value
-  below 248) (obs).
+  below 248) (obs). FileMaker Pro 26.1.1 accepts 0..250 (Mac `FMEngine`
+  0x523c34: below 251), for its steps 249 and 250 (script-steps.md 12.4)
+  (obs); its obsolete and gated ids are those below.
 - Obsolete ids (`IsStepIDObsolete` 0xe7f1a0): 15, 52, 54, 58, 59, 78, 100,
   153, 176, 198, 204 (obs). They fail with error 4.
 - Feature-gated ids: 224 (Execute URL) and 239 (Validate Scripts) count as
@@ -3155,7 +3157,7 @@ The desktop client's script host (2026-10-29): `om-gui` `scripting`
 (the window side), with found sets in `om-data` (`found`), `om-provider`
 (`found.rs`) and the finder builder shared with OpenMaker Server
 (`om_query::find`). Stored sort orders and find requests follow
-script-steps.md section 11 (coordinator commit 08a0b61), decoded by
+script-steps.md section 11 (commit 08a0b61 of the earlier, private history), decoded by
 `om_scripts::specs`. Points marked (unconfirmed) need a FileMaker Pro run.
 
 Execution (2.1, 6)
@@ -3277,12 +3279,12 @@ Triggers (7)
   Record, New/Duplicate/Delete Record, Commit/Revert, mode steps, Perform
   Find, Sort, View As, Go to Field/Next Field/Object, Go to Related Record).
   OnTimer comes from Install OnTimer Script (the window keeps the clock),
-  OnPSOSCallback from polling the host for callback results. Window and
-  file triggers (OnFirstWindowOpen, OnLastWindowClose, OnWindowOpen,
-  OnWindowClose) are not fired: where the file options store them is not
-  specified (now specified: the document preferences `[2, 18]`,
-  file-metadata.md section 3, with OnFileAVPlayerChange and
-  OnWindowTransaction).
+  OnPSOSCallback from polling the host for callback results. The file's
+  window and file triggers come from its document preferences `[2, 18]`
+  (file-metadata.md section 3; `app/scripts.rs`): OnFirstWindowOpen and
+  OnWindowOpen when the file's window has opened, before its first
+  layout's OnLayoutEnter, and OnWindowClose then OnLastWindowClose before
+  the user closes the file. OnFileAVPlayerChange is not fired.
 - Keystroke triggers (2026-11-02, `app/scripts/keystrokes.rs`; (doc)
   `onobjectkeystroke.html`, `onlayoutkeystroke.html`, `code.html`,
   `get-triggermodifierkeys.html`, `get-activemodifierkeys.html`): in
@@ -3316,8 +3318,9 @@ Triggers (7)
   evaluated in the originating window and file's global namespace before
   opening the script's file. The script then uses that file's catalog and
   window; its result allows or vetoes the originating held action. Recursion
-  suppression is scoped to the event's window. This uses the same same-host
-  hosted-file support and limits as external Perform Script. Synthetic
+  suppression is scoped to the event's window. This uses the same
+  data-source support and limits as external Perform Script
+  (desktop-files.md, Supported sources). Synthetic
   native-provider/GUI checks cover dispatch and caller continuation; native
   FileMaker focus and event ordering acceptance remains unmeasured.
 - OnWindowTransaction (2026-10-29, run 13.26; `scripting/host/transaction.rs`)
@@ -3805,7 +3808,8 @@ Steps
   of the related table stays (13.24; before, every record was shown), and
   when it lacks the record every record is shown (OpenMaker's choice).
   With external layouts (`kOption`), the GUI opens/reuses an owned peer
-  session through the declared data source's ordered same-host paths and
+  session through the declared data source's ordered paths (desktop-files.md,
+  Supported sources) and
   resolves the layout only in that session. The hydrated table maps back
   to its native table id; record ids are already file-local. A missing
   peer layout is 105 even when Root has the same layout id; another

@@ -15,7 +15,8 @@ still normalizes accumulated text on each append. That separate cost remains.
 
 ## Measurement
 
-Baseline: `d013c9e`. Measured 2026-10-29 with Rust 1.99.1,
+Baseline: `d013c9e`, a commit of the project's earlier, private history (not in this
+repository). Measured 2026-10-29 with Rust 1.99.1,
 `rustc -C opt-level=3`, x86_64 QEMU VM, eight virtual CPUs. The complete
 baseline om-calc source was rebuilt in a scratch directory with both its
 original text-function module and the changed module. Both implementations

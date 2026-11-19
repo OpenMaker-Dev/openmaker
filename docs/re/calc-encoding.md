@@ -682,7 +682,9 @@ the source, end exclusive (`DBScanError::mBeginPos`/`mEndPos`, read with
   4100+ four arguments [O, `GetNumberOfArgs` `0xe3aae0`].
 - **While** (resource 139) is `f8 00` (2000).
 - **Get** selectors: resource 131 index = stored byte; `kEndGetFuncOp` = 1142,
-  so selectors run to 141 [O].
+  so selectors run to 141 [O]. FileMaker 26.1.1 adds selector 142,
+  `SortOrder` (`9b 8e`), so its `kEndGetFuncOp` is presumably 1143 [I: no
+  26.1.1 DWARF].
 - **Plug-in functions** (third party): `1d`, count, `15` id, arguments. The
   display name comes from the installed plug-in (`DBCalcScan::
   GetExternalFunctionName`); without it FileMaker cannot name the function
@@ -712,10 +714,11 @@ All locations share this codec. Owner keys are `Draco::K*` constants
 | conditional formatting condition n | `4/5/<L>/5/<O>/138/<n>/5` (sibling `13` = `CFCondition` protobuf, `1` = predefined kind) | `KCFConditions` 0x8a | 1,104 |
 | hide object when | `4/5/<L>/5/<O>/141` | `KHideCondition` 0x8d | 275 |
 | active button bar segment | `4/5/<L>/5/<O>/142` | `KActiveObjectCalc` 0x8e | 1 |
+| calculated button icon (26.1.1, SVG text) | `4/5/<L>/5/<O>/145` | `KButtonIconSvgCalc` 0x91 | 0 (layout-model.md 5.3.4) |
 | button action parameter | `4/5/<L>/5/<O>/0/<n>/5` | | 82 |
 | object script trigger parameter | `4/5/<L>/5/<O>/48/...` | `KScriptTriggers` 0x30, `KParameter` 0x31 | 3 |
 | layout script trigger parameter | `4/5/<L>/48/5/<trigger>/49` | same | 7 |
-| custom function | `16/5/<id>/35`, no context; `16` name, `32` = `02` + u16 BE parameter count (checked on 218 functions with 0-21 parameters), `33` parameter names joined by `;`, `36` = `01` | `KGlobalFunctions` 0x10, `KFunction` 0x23, `KArity` 0x20, `KParamList` 0x21 | 224 |
+| custom function | `16/5/<id>/35`, no context; `16` name, `32` = `02` + u16 BE parameter count (checked on 218 functions with 0-21 parameters), `33` parameter names joined by `;`, `36` = `01`; 26.1.1's descriptions in `3` (calc-functions.md 6.0) | `KGlobalFunctions` 0x10, `KFunction` 0x23, `KArity` 0x20, `KParamList` 0x21 | 224 |
 | custom menu install-when; menu items | `65/5/<M>/37`; `65/5/<M>/<n>/<item>/<k>` | `KCustomMenus` 0x41, `KFilter` 0x25 | 4,970 |
 | privilege set record access calculation, per table; only k = 9 seen, with formulas guarding deletion ("need to be able to delete own record") [I: 9 = delete] | `23/2/5/<P>/5/<T>/<k>` | | 3 |
 | other `K*Calc` constants (not seen in the corpus) | `KTempTextLayoutCalc` 0x8f, `KLayoutCalcs` 0x90, `KImportODBCAuthCalc` 0x91, `KFieldEntryCalc` 0x92, `KUserNameCalc` 0x73, `KPasswordCalc` 0x74, `KItemsCalc` 5 (value lists) | | 0 |

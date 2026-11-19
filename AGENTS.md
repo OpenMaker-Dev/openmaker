@@ -29,9 +29,11 @@ crates/       the Rust workspace (23 crates; map in docs/architecture.md)
   om-gui        desktop client          om-server   OpenMaker Server
                                         om-admin    its Admin Console
   om-provider   client data access      om-data     the GUI's data contract
-  om-calc, om-formula, om-scripts, om-sql, om-query, om-transfer, om-url   engines
+  om-calc, om-formula, om-scripts, om-sql, om-query, om-transfer, om-url,
+  om-collate    engines
   om-hbam, om-layout                      .fmp12 files and layouts
   om-protocol, om-session, om-giop, om-scsu, om-crypto, om-rctransaction   the wire
+  om-client     command-line protocol probe
   om-author     agent authoring (CLI + MCP)
 docs/re/      FileMaker facts: specs, catalogs (docs/re/catalogs), recovered .proto files
 docs/*.md     OpenMaker behavior per feature, with its limits; architecture; development
@@ -136,16 +138,19 @@ Work is tracked in [GitHub issues](https://github.com/OpenMaker-Dev/openmaker/is
 not in the repository: no task lists, backlogs or plans in docs or code.
 
 - Search first (`gh issue list --search "..."`). One problem per issue.
-- Code and docs written before the repository moved to its public home cite
-  issue and pull request numbers from the earlier, private tracker; they do
-  not refer to the public repository's issues.
+- In the docs, an issue number written as a link is an issue of this
+  tracker. A bare number (`#1006`) is an issue or pull request number from
+  the project's earlier, private tracker, kept as provenance; it does not
+  refer to this repository's issues. Code comments written before the move
+  cite the earlier tracker's numbers, bare. Link new references to this
+  tracker's issues.
 - **Title:** the problem in plain words: "Portal rows ignore the portal's
   filter on the desktop".
 - **Labels:** exactly one type (`bug`, `parity-gap`, `needs-re`,
   `documentation`, `enhancement`, `performance`, `security`, `flaky-test`,
   `tech-debt`), at least one `area: ...`, and where they apply a
   `platform: ...`, status (`needs-maintainer`, `needs-live-test`,
-  `parity-unverified`, `blocked`, `pre-publication`, `alpha`) and
+  `parity-unverified`, `blocked`, `alpha`) and
   `priority: ...`. `gh label list` shows each label's meaning.
 - **Body:** what OpenMaker does; what FileMaker does, with its evidence
   (spec section, capture, oracle vector, or "unmeasured"); where (crate,

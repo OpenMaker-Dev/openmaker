@@ -39,3 +39,33 @@ stays in the git-ignored `re/work/`: the catalogs above keep only what
 OpenMaker needs.
 
 `layout-object-types.csv` is assembled by hand from the evidence listed in it.
+
+## Added in 26.1.1
+
+The files above are FileMaker Pro 26.0.3's. FileMaker Pro 26.1.1 adds the
+rows below; adopting them, together with the code that reads these files,
+is [#338](https://github.com/OpenMaker-Dev/openmaker/issues/338).
+Source: the string-resource directory of 26.1.1's Mac x86_64 DBEngine
+(SHA-256 `096a19947982cdd5602264a5f23abee2e133e0f4b1af114e07d05d28dbdd9c55`,
+directory at VA `0x2574bd0`), compared resource by resource with 26.0.3's
+(2026-11-19); the commands above work on it with that path and address.
+
+| File | Row | 26.1.1 |
+|---|---|---|
+| `script-steps.csv` | 248 | an empty entry (no step) |
+| `script-steps.csv` | 249 | Replace Field Contents by Name, Fields ([../script-steps.md](../script-steps.md) 12.4) |
+| `script-steps.csv` | 250 | Set Variable by Name, Control (12.4) |
+| `script-steps.csv` | 147 | renamed: "Set Field by Name" |
+| `calc-functions.csv` | 140/18 | GetToolDefinitions, Artificial Intelligence ([../calc-functions.md](../calc-functions.md) 6.0) |
+| `get-selectors.csv` | 142 | SortOrder |
+| `error-codes.csv` | 120 | "Custom menu is missing" |
+| `script-triggers.csv` | all | the same 29 triggers; resource 129 gained 79 strings, so their indices move from 1221-1276 to 1277-1332 |
+| `enumerations.csv` | none | unchanged |
+| `calc-tokens.csv` | 1142, 1143 | `Get ( SortOrder )` is `9b 8e`, so `kEndGetFuncOp` presumably moves to 1143 [I: no 26.1.1 DWARF] |
+| `calc-tokens.csv` | 2318 | GetToolDefinitions, `f9 12`, VarArgs; two or more arguments by its signature [I] |
+| `hbkey-constants.csv` | 3 rows | `KButtonIconSvgCalc` `91`, `KCatalogSpecificFlags` `f3`, `KDBData2` `0b` (Mac DBEngine's `__GLOBAL__sub_I_DBGlobals.cpp`) |
+
+Not known yet: the new steps' parameters as `script-step-params.csv` rows
+(their storage is in script-steps.md 12.4) and the clients that run them
+(`script-step-compat.csv`); the new function's and selector's entries in
+`calc-function-spec.json`.

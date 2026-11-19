@@ -7,7 +7,8 @@ body:
     attributes:
       value: |
         This is the clean-room boundary: the answer goes into the spec in docs/re, and
-        implementation reads the spec. Add an `area: ...` label after filing.
+        implementation reads the spec. Add an `area: ...` label after filing, or name
+        the area if you cannot set labels.
 
   - type: textarea
     id: question

@@ -408,6 +408,12 @@ directory (obs, Mac x86_64 slice, SHA-256 `b8bf96a6...958fb1`):
 | 160 | `0x25538c0` | 248 | empty parallel table to script steps (unk purpose) |
 | 161-165 | | | certificate status messages, `GetSensor` names (162), starter-solution names, patch tool log text |
 
+FileMaker Pro 26.1.1's slice (SHA-256 `096a1994...`) has the directory at
+VA `0x2574bd0` with the same 37 resources; the counts that changed are 129
+(2,124), 131 (143), 132 (251), 140 (19), 159 (284), 160 (251) and 165 (29)
+[O]. The catalogs stay at 26.0.3; what 26.1.1 adds is in
+catalogs/README.md, "Added in 26.1.1".
+
 ### 5.2 Files
 
 | File | Rows | Source |
@@ -427,7 +433,8 @@ Number 18, JSON 15, Artificial Intelligence 14, Japanese 12, Miscellaneous
 Time 4, Financial 4, Repeating 3, Timestamp 1, Get 1. Script steps by
 category: Miscellaneous 30, Control 28, Files 22, Fields 21, Artificial
 Intelligence 17, Records 16, Windows 16, Open Menu Item 16, Navigation 13,
-Found Sets 13, Spelling 8, Editing 8, PDF Files 7, Accounts 6.
+Found Sets 13, Spelling 8, Editing 8, PDF Files 7, Accounts 6. FileMaker
+Pro 26.1.1 adds one AI function, one Control and one Fields step.
 
 ### 5.3 Catalog caveats
 

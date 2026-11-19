@@ -95,7 +95,7 @@ and the object was hidden after that later visit. In fresh local copies,
 layout and mode changes hid the object, while clicks on the title or
 empty layout header and changes to another tab panel left it visible
 [observed, [#38](https://github.com/OpenMaker-Dev/openmaker/issues/38)]. The exact internal cache rule remains unmeasured. At
-product code `ea6ca95d`, OpenMaker hid the object immediately after the
+product code `ea6ca95d` (a commit of the project's earlier, private history), OpenMaker hid the object immediately after the
 same script ran from its Scripts menu
 on a byte-identical local copy. This observed case is a parity gap.
 
@@ -105,7 +105,8 @@ on a byte-identical local copy. This observed case is a parity gap.
   local copies for one constant hide condition in Browse and Find ([#35](https://github.com/OpenMaker-Dev/openmaker/issues/35)),
   and for the expression and refresh cases above ([#38](https://github.com/OpenMaker-Dev/openmaker/issues/38)). Other
   expressions, object kinds and context changes remain unmeasured. The
-  global-script case was compared against OpenMaker at `ea6ca95d`;
+  global-script case was compared against OpenMaker at `ea6ca95d` (of the
+  earlier, private history);
   the other cases used an earlier debug binary of unknown revision.
 - `Get ( UserName )` is Settings' User Name
   ([desktop-client.md](desktop-client.md#settings)): a condition on it

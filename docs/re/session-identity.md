@@ -862,3 +862,25 @@ another file changes it; an extended privilege's does not [C].
 Unknowns: what the sharing state `02` of an extended privilege means;
 when exactly the open runs these checks (FileMaker Pro was not run with a
 damaged file); and who maintains the set checksum index `[23, 2, 1, 08]`.
+
+### 4.5 FileMaker 26.1.1: the file access catalog's `f3`
+
+[O code, FileMaker Pro 26.1.1 DBEngine x86_64] A new key constant,
+`KCatalogSpecificFlags` = `f3`, is a `u64` that `DBAuthFileCatalog` reads
+and writes with `GetMemberData`, the accessor that reads its checksum
+`[23, 4, 1, 09]`, so it is `[23, 4, 1, f3]` [I: path by analogy].
+`DBAuthFileCatalog::GetMarkedByADT` (0x1ccf144) answers bit `0x1` (an
+8-byte value only); `SetMarkedByADT` (0x1ccf230) sets it when it is not set.
+`DBFileUser::Get/SetMarkedByADT` (0x1a3b1f6, 0x1a3b258) wrap them and
+first test a debugger bit (`0xa5`), as `RCNetworkStack::IsADTAllowed` does
+(network-protocol.md 5.2). "ADT" is the unannounced agent interface of
+client-ui.md (FileMaker Pro 26.1.1); nothing in the release notes
+describes it [I].
+
+The checksum is not affected: `DBAuthFileCatalog::ComputeCRC` and
+`GetCatalogCRC` (0x1cceb80, 0x1cced50) call what 26.0.3's do (`KFlags`,
+`KName`, `KSummary`), so a marked file still passes 26.0's tamper check
+(4.4) [O code, I: runtime].
+
+Unknowns: when FileMaker Pro marks a file (the callers are virtual);
+whether a marked file behaves differently; what the other bits mean.

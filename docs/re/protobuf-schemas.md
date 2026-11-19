@@ -447,6 +447,11 @@ protobuf bytes.
   arm64 and Windows x64 (one sha256 per file, see table above). The Mac
   `fmxdbc_listener` copies are identical too.
 - All third-party descriptors present on both platforms are byte-identical.
+- FileMaker Pro 26.1.1 (Mac x86_64 `FMEngine` and `DBEngine`) embeds the
+  same 11 FileMaker descriptors, byte for byte (same sha256s; rerun of
+  `tools/protobuf_extract.py`, 2026-11-19): 26.1.1 changed no `FMLayoutPB`
+  message, and its new layout options are bits of existing fields
+  (layout-model.md 5.3.2, 5.3.4, 5.4.1).
 - Mac `DBEngine` carries 28 more third-party files than Windows
   `DBEngine.dll`: `envoy/admin/v3/config_dump`, `envoy/annotations/resource`,
   `envoy/config/bootstrap/v3/bootstrap`, `envoy/config/metrics/v3/stats`,

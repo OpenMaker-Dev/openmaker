@@ -73,7 +73,9 @@ flattened over an assumed backdrop
 ([translucent colors](portable-pdf.md#translucent-colors)).
 There is no exact-print field-list fallback. [Page Setup](page-setup.md) now supplies
 shared file-session paper/orientation for Preview and PDF; scale stays at 100%.
-Printer dispatch and native account/printer settings remain outside this slice. Data exports
+Preview's Print button runs desktop [Print](printing.md), which a privilege set that denies
+printing disables ([privilege sets](desktop-client.md#privilege-sets)); native printer settings
+remain outside this slice. Data exports
 retain their existing behavior. This is synthetic functional acceptance. Apart
 from the two starter list pages [below](#starter-list-pages-compared-with-filemaker),
 native FileMaker desktop acceptance and advanced event parity remain unmeasured.

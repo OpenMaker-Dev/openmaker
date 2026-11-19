@@ -7,8 +7,8 @@ body:
     attributes:
       value: |
         One gap per issue; search existing issues first. Add an `area: ...` label after
-        filing. If the FileMaker behavior itself is not known yet, file a "Spec needed"
-        issue instead.
+        filing, or name the area if you cannot set labels. If the FileMaker behavior
+        itself is not known yet, file a "Spec needed" issue instead.
 
   - type: textarea
     id: filemaker

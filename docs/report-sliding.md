@@ -82,10 +82,12 @@ file is staged or job spooled. Preview shows the reason instead of a page.
 - An object that would be cut off by its resized part. For example, a fixed
   object near the bottom of a part whose higher objects resize it. Set it to
   slide up and resize the part too.
-- Everything the ordinary report contract already refuses
-  ([portable PDF](portable-pdf.md)): nested and grouped objects, portals,
-  rotation, hide/conditional/label calculations, repeating fields, text
-  overflow, and so on. Sliding never relaxes these.
+- Everything the ordinary report contract still refuses
+  ([portable PDF](portable-pdf.md)): rotation, hide and label
+  calculations, repeating fields, text overflow other than a field's text
+  that does not slide (it prints cut), and so on; and groups, portals and
+  conditionally formatted objects that are set to slide up, which print
+  only when they do not slide. Sliding never relaxes these.
 
 ## Costs and limits
 

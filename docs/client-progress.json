@@ -70,7 +70,7 @@
       "previous_status": "Partial",
       "status": "Partial",
       "scope": "A local file opens through a private embedded host with the file's own accounts: the three built-in privilege sets, and custom sets whose every member OpenMaker enforces. Edits are saved atomically; File Options sign-in and password changes work; related and script-opened local files share the engine ([local files](re/local-files.md#4-implementation-notes-openmaker), [privilege sets](desktop-client.md#privilege-sets)).",
-      "remaining": "Refused: [Guest] and external accounts, custom sets limited by a calculation [#220](https://github.com/OpenMaker-Dev/openmaker/issues/220), encrypted files [#58](https://github.com/OpenMaker-Dev/openmaker/issues/58), sharing [#61](https://github.com/OpenMaker-Dev/openmaker/issues/61), Save a Copy [#63](https://github.com/OpenMaker-Dev/openmaker/issues/63), Recover [#64](https://github.com/OpenMaker-Dev/openmaker/issues/64) and conversion [#65](https://github.com/OpenMaker-Dev/openmaker/issues/65) ([what is refused](re/local-files.md#6-refused-or-not-supported-yet)). Files open read-only on Windows [#30](https://github.com/OpenMaker-Dev/openmaker/issues/30). Related files are found only by plain name in the same folder [#59](https://github.com/OpenMaker-Dev/openmaker/issues/59), and one that refuses the first file's account is not asked for another [#60](https://github.com/OpenMaker-Dev/openmaker/issues/60).",
+      "remaining": "Refused: [Guest] and external accounts, custom sets limited by a calculation [#220](https://github.com/OpenMaker-Dev/openmaker/issues/220), encrypted files [#58](https://github.com/OpenMaker-Dev/openmaker/issues/58), sharing [#61](https://github.com/OpenMaker-Dev/openmaker/issues/61), Save a Copy [#63](https://github.com/OpenMaker-Dev/openmaker/issues/63), Recover [#64](https://github.com/OpenMaker-Dev/openmaker/issues/64) and conversion [#65](https://github.com/OpenMaker-Dev/openmaker/issues/65) ([what is refused](re/local-files.md#6-refused-or-not-supported-yet)). Files open read-only on Windows [#30](https://github.com/OpenMaker-Dev/openmaker/issues/30). Related files are found only by plain name in the same folder [#59](https://github.com/OpenMaker-Dev/openmaker/issues/59), and one that refuses the first file's account is asked for another only from a layout, Open File or Go to Related Record; Perform Script and external triggers still fail with error 212 [#60](https://github.com/OpenMaker-Dev/openmaker/issues/60).",
       "issues": [
         30,
         58,
@@ -144,7 +144,7 @@
       "previous_status": "Unverified",
       "status": "Unverified",
       "scope": "OpenMaker targets FileMaker Pro and FileMaker Server 26.0.3. Its tests run mostly on Linux under Xvfb, and an Ubuntu 24.04 package can be built ([packages](development.md#packages-for-ubuntu-2404)). No host, OS and version matrix has been recorded.",
-      "remaining": "Record supported host versions and OS builds with repeatable smoke runs. Local files are read-only on Windows [#30](https://github.com/OpenMaker-Dev/openmaker/issues/30), and there are no published packages [#31](https://github.com/OpenMaker-Dev/openmaker/issues/31).",
+      "remaining": "Record supported host versions and OS builds with repeatable smoke runs. Local files are read-only on Windows [#30](https://github.com/OpenMaker-Dev/openmaker/issues/30). Packages exist only for Ubuntu 24.04 on amd64, and none installs OpenMaker Server as a service [#31](https://github.com/OpenMaker-Dev/openmaker/issues/31).",
       "issues": [
         30,
         31
@@ -375,7 +375,7 @@
       "previous_status": "Partial",
       "status": "Partial",
       "scope": "Related files open on demand, also on other hosts with their own account, and calculations, layouts and record operations reach the file that owns each occurrence; a missing related file gives a warning and is tried again ([opening files](desktop-client.md#opening-files)).",
-      "remaining": "A value reached only through text built at run time reads as missing until the window asks for that file. Each related hosted file has a connection of its own [#229](https://github.com/OpenMaker-Dev/openmaker/issues/229), and some data sources of a hosted solution cannot be read [#233](https://github.com/OpenMaker-Dev/openmaker/issues/233).",
+      "remaining": "A value reached only through text built at run time reads as missing until the window asks for that file. Related files that share the opened file's connection are checked against OpenMaker Server only, not FileMaker Server [#229](https://github.com/OpenMaker-Dev/openmaker/issues/229), and some data sources of a hosted solution cannot be read [#233](https://github.com/OpenMaker-Dev/openmaker/issues/233).",
       "issues": [
         229,
         233
@@ -406,7 +406,7 @@
       "feature": "Script flow / variables / calls",
       "previous_status": "Implemented",
       "status": "Implemented",
-      "scope": "The runtime runs control flow, variables, parameters and results, nested and queued calls, error capture and host actions; it replays 256 of 258 probe runs of FileMaker Server's script engine ([status](scripting.md#status-2026-10-29)). About 130 of FileMaker Pro's 210 desktop steps have an implementation (static count).",
+      "scope": "The runtime runs control flow, variables, parameters and results, nested and queued calls, error capture and host actions; it replays 256 of 258 probe runs of FileMaker Server's script engine ([status](scripting.md#status-2026-10-29)). 129 of the 210 steps FileMaker Pro runs on macOS or Windows have an implementation on the desktop (a static count: each step run alone through the desktop's script runtime, against what the desktop host answers; an option a step does not handle still answers error 3).",
       "remaining": "A step without an implementation stops the script with error 3 ([scripts](desktop-client.md#scripts)). Native traces of pause, abort and event order are not compared. Several desktop behaviors are inferred [#105](https://github.com/OpenMaker-Dev/openmaker/issues/105).",
       "issues": [
         105
@@ -551,7 +551,7 @@
       "previous_status": "Partial",
       "status": "Partial",
       "scope": "Themes, styles, borders, merge text, data formats and pictures render, with per-field text insets; one text placement is recorded as matching FileMaker Pro ([Browse mode](desktop-client.md#browse-mode)).",
-      "remaining": "A focused field is not drawn in its In Focus state [#231](https://github.com/OpenMaker-Dev/openmaker/issues/231); stored numeric symbols such as {{1002}} draw literally [#295](https://github.com/OpenMaker-Dev/openmaker/issues/295). Precise font metrics, borders and placement need measured comparisons at several zoom levels.",
+      "remaining": "Fields in portal rows, related fields, containers and Find requests are not drawn in their In Focus state [#231](https://github.com/OpenMaker-Dev/openmaker/issues/231); stored numeric symbols such as {{1002}} draw literally [#295](https://github.com/OpenMaker-Dev/openmaker/issues/295). Precise font metrics, borders and placement need measured comparisons at several zoom levels.",
       "issues": [
         231,
         295
@@ -797,8 +797,9 @@
       "previous_status": "Partial",
       "status": "Partial",
       "scope": "Script Workspace edits steps and their options and the script catalog, and saves them to OpenMaker Server and local files with FileMaker Pro's lock and upload sequence; unsaved changes ask before closing ([Script Workspace](desktop-client.md#script-workspace)).",
-      "remaining": "No new folders or separators; names outside ASCII are refused [#209](https://github.com/OpenMaker-Dev/openmaker/issues/209); compound options (Send Mail, PDF and Excel options, data sources, print settings) are kept as stored. FileMaker Server is C48's. FileMaker Pro has not opened files with OpenMaker-made scripts since the catalog digest was fixed.",
+      "remaining": "No new folders or separators [#66](https://github.com/OpenMaker-Dev/openmaker/issues/66); names outside ASCII are refused [#209](https://github.com/OpenMaker-Dev/openmaker/issues/209); compound options (Send Mail, PDF and Excel options, data sources, print settings) are kept as stored. FileMaker Server is C48's. FileMaker Pro has not opened files with OpenMaker-made scripts since the catalog digest was fixed.",
       "issues": [
+        66,
         209
       ],
       "docs": [

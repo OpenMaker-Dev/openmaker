@@ -220,9 +220,11 @@ filename alone is not a data-source declaration. Script ids and source aliases t
 selection of another file's window. Catalog lookup and `window_for_file`
 use the registry; `use_window` restores a complete owning context.
 
-This feature does not lift the existing imported-table-layout error 3, or
-route external layout and object trigger records; those paths keep their
-explicit refusals/suppression. Go to Related Record into another file's
+Layouts of another file's tables are written by that file
+(record-writes.md, "Related records of another file"; scripting.md), and
+external layout and object triggers run in the owning file's session
+(script-runtime.md, desktop notes); what those paths still refuse is listed
+there. Go to Related Record into another file's
 layout ("Use external table's layouts") opens or reuses that file through
 this registry and the data source's paths (script-runtime.md, Go to Related
 Record). The file it reaches must be the one the related records came from,

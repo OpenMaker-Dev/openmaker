@@ -499,6 +499,15 @@ system table "FileMaker_Tables"." (q12).
 - `SELECT *` lists every field of every `FROM` table in `FROM` order,
   fields in FieldId (creation) order, globals, calculations and summaries
   included; `t.*` the fields of one table.
+- FileMaker 26.1.1 adds the field display-name key `fm_sql`
+  (file-metadata.md 1.2): it names the field's column in results and can
+  be used in a query in place of the field name (Claris release notes,
+  FileMaker Pro 26.1.1). DBEngine 26.1.1 resolves such names in
+  `FQL::TableInfo::GetFieldKeyByAliasName` after
+  `PrepopulateFieldAliasNameMap` [O: symbols]. Not run: how a display
+  name that collides with another field's name, or a missing or non-JSON
+  display-names result, resolves; whether ExecuteSQLe's column headings
+  (`fieldSeparator` output has none) are affected [U].
 
 ### 4.4 ROWID and ROWMODID [O-run]
 

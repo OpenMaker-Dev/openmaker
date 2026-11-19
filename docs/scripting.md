@@ -176,10 +176,15 @@ same owning engine: the owner issues the record id, enters its auto-entry
 values and stores the ordinary scalar values; the new record joins the
 caller window's found set and becomes current, as a local creation does.
 Duplicate Record of a record holding a container reference is refused before
-any effect. Import, explicit transactions, writes to other imported tables,
-globals, containers and repetitions remain refused on these layouts. This uses
-the existing same-host hosted-file routes; native FileMaker acceptance is
-unmeasured.
+any effect. A script's transaction includes these layouts: Commit
+Transaction prepares every file before any record data goes (record-writes.md,
+"A script's transaction across files"), and Delete Record inside one is
+refused ([#312](https://github.com/OpenMaker-Dev/openmaker/issues/312)).
+Import, writes to other imported tables, globals, containers and repetitions
+remain refused on these layouts
+([#43](https://github.com/OpenMaker-Dev/openmaker/issues/43)). The owning file
+is reached through its data source's paths, on its own host
+(desktop-files.md); native FileMaker acceptance is unmeasured.
 
 Fixes from a review of import data safety:
 - Each imported row is checked once with the import's own auto-enter and
@@ -376,12 +381,14 @@ Open items:
   reused: LGPL); Japanese kana sort order details, Catalog and Vietnamese
   residuals, Persian index keys; FileMaker's per-session font-name
   spelling; Live Text (Apple Vision) and HEIC in container analysis.
-- Functions: the desktop reads containers as their reference text, so
-  container functions are wrong there.
-  - Desktop Get: the provider does not pass the privilege set, so the
-    privilege selectors answer empty; Preview pages, printing and web
-    viewers answer as FileMaker Pro does without them; the desktop area
-    is read on X11 only. Still unmeasured: the hosted-only selectors,
+- Functions:
+  - Desktop Get: the privilege selectors answer the file's privilege set,
+    but LayoutAccess and RecordAccess ignore its layout entries and
+    per-table rules ([#182](https://github.com/OpenMaker-Dev/openmaker/issues/182));
+    while a report page is drawn, PageNumber, RecordNumber and RecordID
+    answer that page and its record; GetLayoutObjectAttribute gives no
+    live page's `source` or `content` (layout-model.md 9.6); the desktop
+    area is read on X11 only. Still unmeasured: the hosted-only selectors,
     Shift for `ActiveModifierKeys`, and `isActive` with the window in
     front.
   - Server: per-account privilege metadata is decoded; a set's layout
@@ -413,16 +420,20 @@ Open items:
     `XFD` write invalid references. FileMaker's behavior past either
     limit is unknown.
   - The desktop reads a whole import file before the size check.
-- Scripts: desktop steps still missing (accounts, printing and PDF). Set
+- Scripts: desktop steps still missing include the account steps
+  ([#83](https://github.com/OpenMaker-Dev/openmaker/issues/83)) and the PDF
+  steps other than Save Records as PDF
+  ([#96](https://github.com/OpenMaker-Dev/openmaker/issues/96)). Set
   Web Viewer and Perform JavaScript in Web Viewer need a native web viewer
-  (the `web-viewer` feature, Linux/X11, Browse in Form or List view;
+  (the `web-viewer` feature on Linux, under X11 or, on a Wayland session,
+  XWayland; Browse in Form or List view;
   layout-model.md 9.6); elsewhere
   they fail with 116 (no live web
   viewer) rather than succeed. The error codes for a page still loading (5),
   a missing or throwing function (5) and a viewer that is not shown (116)
   are inferred, not measured on FileMaker Pro. On the desktop:
-  - Portal rows are not drawn, portal filters and sorts are ignored, and
-    Set Field does not create records through more than one relationship.
+  - Set Field does not create records through more than one relationship
+    ([#41](https://github.com/OpenMaker-Dev/openmaker/issues/41)).
     Delete Portal Row deletes whatever the portal's "Allow deletion of
     portal records" option (layout-model.md 5.3.2) says, as FileMaker
     Server's script engine does.
