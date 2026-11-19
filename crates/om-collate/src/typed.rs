@@ -61,7 +61,9 @@ fn decimal_key(negative: bool, integer: &str, fraction: &str) -> Vec<u8> {
         .take(MAX_DIGITS)
         .map(|b| b - b'0')
         .collect();
-    if digits.iter().all(|&d| d == 0) {
+    // Zero by the whole number, not by the digits kept: `0.` and 200 zeros
+    // then `1` keys its 200 zero digits.
+    if integer.bytes().chain(fraction.bytes()).all(|b| b == b'0') {
         return vec![0x80, 0x00];
     }
     // At most 200, so both heads fit.
@@ -233,6 +235,12 @@ mod tests {
         ] {
             assert_eq!(hex(&number_key(value).unwrap()), key, "{value}");
         }
+        // The 200-digit cut keeps a small fraction's leading zeros.
+        let tiny = format!("0.{}1", "0".repeat(200));
+        assert_eq!(
+            number_key(&tiny).unwrap(),
+            [&[0x80, 0][..], &[0x11; 100]].concat()
+        );
         // The probe's other numbers are in catalogs/index-key-vectors.tsv,
         // checked in om-query; text these functions do not read:
         for value in ["", "-", ".", "abc", "1.2.3", "1e3", "+5"] {

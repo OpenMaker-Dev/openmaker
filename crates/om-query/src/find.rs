@@ -1373,6 +1373,11 @@ mod tests {
         assert!(below[0]
             .bytes
             .ends_with(&[key_operand(&[0x01]), key_operand(&seven)].concat()));
+        // U+2212 is a minus sign, as in a stored number (7.3).
+        let minus_two = om_collate::number_key("-2").unwrap();
+        assert!(number("\u{2212}2")[0]
+            .bytes
+            .ends_with(&[key_operand(&minus_two), vec![0]].concat()));
         let between = number("1...7");
         assert_eq!(between[0].bytes[2], INCLUDE_BEGIN | INCLUDE_END);
         // The finder FileMaker Server's engine built for `12:30 PM` on a
