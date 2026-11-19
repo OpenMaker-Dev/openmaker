@@ -1552,7 +1552,8 @@ impl<'a> Evaluator<'a> {
             source = source.with_overlay(*table, *record, Arc::clone(values));
         }
         // Only `self.overlays` are scanned over: no other overlays come.
-        if !overlays.is_empty() {
+        // Without any, the frame scans only a held new record's sets.
+        if !overlays.is_empty() || self.overlays.is_empty() {
             source = source.keeping_scans(&self.scans);
         }
         let (mut locals, mut globals) = (self.locals.borrow_mut(), self.globals.borrow_mut());
