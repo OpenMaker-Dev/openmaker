@@ -26,7 +26,7 @@ impl Contacts {
         Self {
             names,
             layouts: HashMap::from([(3, ("Contact Details", "Contacts"))]),
-            scripts: HashMap::from([(2, "Go to Entry Field")]),
+            scripts: HashMap::from([(2, "Go to Entry Field"), (3, "Import from file: CSV")]),
         }
     }
 }
@@ -454,13 +454,59 @@ fn psos_canonical_names_have_a_real_calculation_span() {
         schema.params[name.parameter.unwrap()].name,
         "Specify by name"
     );
-    // Callback steps retain their existing name in slot 1 and callback
-    // in slot 2; these are not PSOS's canonical by-name layout.
-    step.opcode = 210;
-    step.set_calculation(1, Some(&calc(&names, "\"Server\"")));
-    assert!(step_line(&step, &names)
-        .text
-        .contains("Specified: By name ; \"Server\""));
+}
+
+#[test]
+fn psos_callback_reads_and_writes_the_slots_filemaker_stores() {
+    // The slots of #188's two FileMaker Pro 26.0.3 variants: the callback
+    // from the list (script 2 as the literal "02" in slot 3, `kOption`)
+    // and by name (`[00 6]` = 1, slot 7), which keeps that slot 3.
+    let names = Contacts::new();
+    let mut step = ScriptStep::new(210);
+    step.set_list_value(1, Some(1));
+    step.flags |= flag::STORE_REFERENCE | flag::RESTORE;
+    step.set_calculation(2, Some(&calc(&names, "\"Server\"")));
+    step.set_calculation(0, Some(&calc(&names, "\"ServerMarker\"")));
+    step.set_calculation(3, Some(&calc(&names, "\"02\"")));
+    step.set_calculation(4, Some(&calc(&names, "\"CallbackMarker\"")));
+    step.flags |= flag::OPTION | flag::OPTION2 | flag::MENU_SELECTION;
+    step.value = 3;
+    let text = step_text(&step, &names);
+    assert_eq!(
+        text,
+        "Perform Script on Server with Callback [ Specified: By name ; \"Server\" ; \
+         Parameter: \"ServerMarker\" ; Callback script specified: From list ; \
+         “Go to Entry Field” ; Callback script parameter: \"CallbackMarker\" ; \
+         State: Resume ]"
+    );
+    assert_eq!(canonical(&pasted(&text)), canonical(&step), "{text}");
+
+    step.set_list_value(6, Some(1));
+    step.set_calculation(7, Some(&calc(&names, "\"Other\"")));
+    step.flags |= flag::SELECT_ALL | flag::EXIT;
+    let text = step_text(&step, &names);
+    assert!(
+        text.contains(
+            "Callback script specified: By name ; \"Other\" ; \
+             Callback script parameter: \"CallbackMarker\" ;"
+        ),
+        "{text}"
+    );
+    // The stale slot 3 is not shown; the text keeps it as stored.
+    assert_eq!(canonical(&pasted(&text)), canonical(&step), "{text}");
+
+    // A script of this file whose name holds " from file: " is not
+    // another file's.
+    let mut local = ScriptStep::new(210);
+    local.set_script_key(StoredKey::from_serial_id(2));
+    local.set_calculation(3, Some(&calc(&names, "\"03\"")));
+    local.flags |= flag::OPTION;
+    let text = step_text(&local, &names);
+    assert!(
+        text.contains("From list ; “Import from file: CSV”"),
+        "{text}"
+    );
+    assert_eq!(canonical(&pasted(&text)), canonical(&local), "{text}");
 }
 
 #[test]

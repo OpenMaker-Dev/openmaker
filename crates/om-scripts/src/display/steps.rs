@@ -1012,18 +1012,24 @@ fn perform_script(l: &mut Line<'_>) {
 /// Perform Script on Server (with Callback): as Perform Script, then
 /// `Wait for completion: On|Off`, or the callback script and its state.
 fn server_script(l: &mut Line<'_>) {
-    // PSOS uses Perform Script's canonical slot-2 name form. Keep
-    // reading the old slot-1 form; callback steps use that slot too.
-    let canonical = l.step.id() == 164 && l.step.list_value(1) == Some(1);
+    // Both steps name the script to run in Perform Script's canonical
+    // slot-2 form (script-steps.md 12.2). Keep reading the old slot-1 form.
+    let canonical = l.step.list_value(1) == Some(1);
     let by_name = if canonical {
         Some(l.calc(2).unwrap_or_default())
     } else {
         l.calc(1)
     };
+    // Step 210's schema keeps the by-name form in its Script parameter.
+    let by_name_param = if l.step.id() == 164 {
+        "Specify by name"
+    } else {
+        "Script"
+    };
     match by_name {
         Some(name) if canonical => {
-            l.push("Specify by name", "Specified: By name");
-            l.push_calculation("Specify by name", 2, name);
+            l.push(by_name_param, "Specified: By name");
+            l.push_calculation(by_name_param, 2, name);
         }
         Some(name) => {
             l.push("Script", "Specified: By name");
@@ -1040,14 +1046,37 @@ fn server_script(l: &mut Line<'_>) {
         let wait = !l.has(flag::OPTION);
         l.on_off("Wait for completion", "Wait for completion", wait);
     } else {
-        match l.calc(2) {
-            Some(name) => {
-                l.push("Callback script", "Callback script specified: By name");
+        // The choice decides: Pro keeps the list's key in slot 3 when the
+        // callback changes to by name (script-steps.md 12.2).
+        if l.step.list_value(6) == Some(1) {
+            l.push("Callback script", "Callback script specified: By name");
+            let name = l.calc(7).unwrap_or_default();
+            l.push_calculation("Callback script", 7, name);
+        } else {
+            l.push("Callback script", "Callback script specified: From list");
+            // Nothing more when no callback is chosen; `<unknown>` for one
+            // the file does not have.
+            let id = l.step.positioned_id(3).filter(|_| l.has(flag::OPTION));
+            if let Some(id) = id {
+                let name = l
+                    .names
+                    .script_name(id)
+                    .map_or_else(|| UNKNOWN.into(), quoted);
+                let name = if l.has(flag::OPTION3) {
+                    // Its data source is in slot 5 (`"01"`), not under `20`.
+                    let file = l
+                        .step
+                        .positioned_id(5)
+                        .and_then(|id| l.names.data_source_name(id))
+                        .map_or_else(|| UNKNOWN.into(), quoted);
+                    format!("{name} from file: {file}")
+                } else {
+                    name
+                };
                 l.push("Callback script", name);
             }
-            None => l.push("Callback script", "Callback script specified: From list"),
         }
-        l.labeled("Callback script", "Callback script parameter", 3);
+        l.labeled("Callback script parameter", "Callback script parameter", 4);
         l.choice(
             "State",
             &[

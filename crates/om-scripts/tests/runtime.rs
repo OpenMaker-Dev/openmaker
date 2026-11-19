@@ -1560,6 +1560,57 @@ fn perform_script_on_server_returns_result_and_error() {
     assert_eq!(age_is(&h, 1), "42");
 }
 
+#[test]
+fn perform_script_on_server_with_callback_reads_filemaker_slots() {
+    // #188: Pro stores the callback from the list as the hex literal of its
+    // key in slot 3 and keeps it when the choice changes to by name
+    // (`[00 6]` = 1, the name in slot 7); the parameter is slot 4.
+    let mut h = host();
+    h.add_script(0, script(2, "Server", vec![]));
+    h.add_script(0, script(3, "Callback", vec![]));
+    h.add_script(0, script(4, "Named", vec![]));
+    let mut psos = with_calc(&h, 210, "\"ServerMarker\"");
+    psos.set_script_key(StoredKey::from_serial_id(2));
+    psos.set_calculation(3, Some(&calc(&h, "\"03\"")));
+    psos.set_calculation(4, Some(&calc(&h, "\"CallbackMarker\"")));
+    psos.flags |= flag::OPTION | flag::OPTION2;
+    let mut named = psos.clone();
+    named.set_list_value(6, Some(1));
+    named.set_calculation(7, Some(&calc(&h, "\"named\"")));
+    let mut missing = psos.clone();
+    missing.set_calculation(3, Some(&calc(&h, "\"09\"")));
+    let steps = vec![
+        psos,
+        set_var(&h, "$$list", "Get ( LastError )"),
+        named,
+        set_var(&h, "$$named", "Get ( LastError )"),
+        missing,
+        set_var(&h, "$$missing", "Get ( LastError )"),
+    ];
+    h.add_script(0, script(1, "Client", steps));
+    let mut rt = Runtime::default();
+    run(&mut h, &mut rt, 1);
+    assert_eq!(
+        (g(&mut rt, "$$list"), g(&mut rt, "$$named")),
+        ("0".into(), "0".into())
+    );
+    // A callback the file does not have: the server is not called.
+    assert_eq!(g(&mut rt, "$$missing"), "104");
+    let parameter = calc(&h, "\"CallbackMarker\"");
+    let calls: Vec<_> = h
+        .server_callbacks
+        .iter()
+        .map(|c| (c.call.script, c.callback, c.callback_parameter.as_ref()))
+        .collect();
+    assert_eq!(
+        calls,
+        [
+            (2, Some((0, 3)), Some(&parameter)),
+            (2, Some((0, 4)), Some(&parameter))
+        ]
+    );
+}
+
 // ----- every step id ------------------------------------------------------------------
 
 #[test]
