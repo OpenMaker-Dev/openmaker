@@ -47,9 +47,9 @@ in an issue.
 In the docs, an issue number written as a link
 (`[#186](https://github.com/OpenMaker-Dev/openmaker/issues/186)`) is an
 issue of this tracker. A bare number (`#1006`) is an issue or pull request
-of the project's earlier, private tracker that was not carried over here,
-kept as provenance; it does not refer to this repository's issues. Code
-comments written before the move cite the earlier tracker's numbers, bare.
+number from the project's earlier, private tracker, kept as provenance; it
+does not refer to this repository's issues. Code comments written before
+the move cite the earlier tracker's numbers, bare.
 
 ## Pull requests
 
