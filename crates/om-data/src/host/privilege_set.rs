@@ -477,8 +477,10 @@ impl CustomRules {
     }
 }
 
-/// An item's key under `09`: its catalog id as the shortest big-endian
-/// bytes, as references give it (`80 59` for script 0x8059).
+/// A layout's or value list's key under `09`: its catalog id as the
+/// shortest big-endian bytes, as references give it (`04 13` for layout
+/// 0x13). Scripts are named by their serial id instead
+/// ([`CustomRules::runs_script`]).
 fn key_of(id: u64) -> Vec<u8> {
     let bytes = id.to_be_bytes();
     let skip = bytes.iter().take_while(|b| **b == 0).count().min(7);
@@ -647,7 +649,8 @@ mod tests {
         // tables: view only.
         let clerks = office(&name, &[0x10, 0x03], &[0x54, 0x03], &[2], &[0xdf], all);
         let rules = enforced(&clerks).unwrap();
-        assert!(rules.shows_layout(0x13) && rules.runs_script(0x8059));
+        let script = om_hbam::serial::decode(&[0x80, 0x59]).unwrap();
+        assert!(rules.shows_layout(0x13) && rules.runs_script(script));
         assert_eq!(rules.layout_records(0x13), AccessLevel::Modifiable);
         // Records through a layout view only (`db`) are enforced, by
         // layout, and `Get ( LayoutAccess )` answers 1 there (2.4). Without
