@@ -5251,7 +5251,6 @@ impl Windows for WorkerHost<'_> {
     }
 
     fn select_window(&mut self, target: &WindowTarget, current_file_only: bool) -> HostResult {
-        self.check_dialog_selection(target)?;
         if let WindowTarget::Named(name) = target {
             // Every open file's windows by name, then by UUID
             // (script-runtime.md 9.2). Another file's window must be shown
@@ -5261,17 +5260,18 @@ impl Windows for WorkerHost<'_> {
                 Here(Option<usize>),
                 Elsewhere(WindowId),
             }
-            let found = [windows::WindowKey::Name, windows::WindowKey::Uuid]
-                .into_iter()
-                .find_map(|key| {
-                    if let Some(index) = self.window_by(key, name) {
-                        return Some(Found::Here(index));
-                    }
-                    let other = (!current_file_only)
-                        .then(|| self.named_database_window(key, name))
-                        .flatten();
-                    other.map(Found::Elsewhere)
-                });
+            let found = windows::WindowKey::ORDER.into_iter().find_map(|key| {
+                if let Some(index) = self.window_by(key, name) {
+                    return Some(Found::Here(index));
+                }
+                let other = (!current_file_only)
+                    .then(|| self.named_database_window(key, name))
+                    .flatten();
+                other.map(Found::Elsewhere)
+            });
+            // Over a dialog, only the dialog itself: the window this search
+            // found, never one another file's name pass found first.
+            self.check_dialog_selection(matches!(found, Some(Found::Here(None))))?;
             match found {
                 None => return Err(ErrorCode::WINDOW_MISSING.into()),
                 Some(Found::Elsewhere(window)) => {
@@ -5287,6 +5287,7 @@ impl Windows for WorkerHost<'_> {
                 }
             }
         } else {
+            self.check_dialog_selection(true)?;
             self.select(target)?;
         }
         // A window of the script's own file is shown, hidden or not: a file

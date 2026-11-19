@@ -3724,9 +3724,10 @@ Steps
   given or after the current window plus " - 2" (" - 3" when taken;
   OpenMaker's choice beyond the engine's one answer), with a layout going
   there with OnLayoutEnter; Select Window makes a named window current
-  (names matched front to back without case, duplicates allowed, then
-  `Get ( WindowUUID )`s, each in every open file before the next, as 9.2
-  documents; Close Window, Set Window Title and Move/Resize Window match
+  (names matched front to back, as given and then without case,
+  duplicates allowed, then `Get ( WindowUUID )`s, each in every open file
+  before the next, as 9.2 documents; over a dialog only the dialog itself
+  may be the window found; Close Window, Set Window Title and Move/Resize Window match
   this file's windows the same way, which Claris does not state for them
   ([#320](https://github.com/OpenMaker-Dev/openmaker/issues/320)), and
   letters beyond ASCII fold as Unicode lowercase [I]); Close Window commits

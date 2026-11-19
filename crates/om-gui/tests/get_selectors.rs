@@ -1397,6 +1397,16 @@ fn window_names_and_uuids_follow_new_window() {
             probe(&["Get ( LastError )", "Get ( WindowName )"]),
             select("\"sECOND\""),
             probe(&["Get ( LastError )", "Get ( WindowName )"]),
+            // A name as given wins over one that differs only in case.
+            {
+                let mut upper = step(122);
+                upper.set_calculation(0, Some(&calc("\"SECOND\"")));
+                upper
+            },
+            select("\"Second\""),
+            probe(&["Get ( LastError )", "Get ( WindowName )"]),
+            // Close Second, then SECOND, the window current before it.
+            step(121),
             step(121),
             probe(&["WindowNames", "Get ( WindowUUID ) = $$u"]),
         ]),
@@ -1407,5 +1417,6 @@ fn window_names_and_uuids_follow_new_window() {
     assert_eq!(all[1], ["Second\rContacts", "Second", "1", "32"]);
     assert_eq!(all[2], ["0", "Contacts"]);
     assert_eq!(all[3], ["0", "Second"]);
-    assert_eq!(all[4], ["Contacts", "1"]);
+    assert_eq!(all[4], ["0", "Second"]);
+    assert_eq!(all[5], ["Contacts", "1"]);
 }

@@ -794,6 +794,10 @@ impl WorkerHost<'_> {
                 .find(|w| {
                     !w.state.hidden
                         && match key {
+                            WindowKey::ExactName => w.state.title.as_deref().map_or_else(
+                                || hosted_key(&f.state.context.file) == hosted_key(name),
+                                |title| title == name,
+                            ),
                             WindowKey::Name => w.state.title.as_deref().map_or_else(
                                 || hosted_key(&f.state.context.file) == hosted_key(name),
                                 |title| same_window_key(title, name),
