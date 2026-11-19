@@ -1892,6 +1892,8 @@ impl OpenMakerApp {
             let build = Box::new(build);
             self.request(&ctx, Request::BuildValueList { build, cancel });
         }
+        // A frame that found nothing missing drew only fresh results.
+        self.w.calcs.settle_last_results();
         let needs = self.w.calcs.take_wanted();
         if !needs.is_empty() {
             if self.w.connection_lost.is_some() {
