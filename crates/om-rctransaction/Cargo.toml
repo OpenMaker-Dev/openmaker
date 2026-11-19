@@ -1,0 +1,12 @@
+[package]
+name = "om-rctransaction"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+rust-version.workspace = true
+
+[dependencies]
+om-scsu = { path = "../om-scsu" }
+
+[lints]
+workspace = true

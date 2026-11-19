@@ -1,0 +1,2 @@
+# Design functions: what the file holds (names for the battery)
+no such script		DatabaseNames	TableNames ( "" )	TableIDs ( "" )	BaseTableNames ( "" )	BaseTableIDs ( "" )	LayoutNames ( "" )	LayoutIDs ( "" )	ScriptNames ( "" )	ScriptIDs ( "" )	ValueListNames ( "" )	ValueListIDs ( "" )	WindowNames	Get ( LayoutName )	Get ( LayoutTableName )	Get ( FileName )

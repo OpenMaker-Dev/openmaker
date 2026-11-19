@@ -1,0 +1,92 @@
+# What a schedule's run looks like to its script (script-runtime.md
+# "Implementation notes (schedules)"): every run line is a fresh session
+# started as fmsased starts a FileMaker script schedule
+# (SMSession::RunScriptAndClose with the schedule's file, account, script
+# name and parameter). Script names in other cases or with spaces, a missing
+# or empty name, parameters (empty, a calculation's text, returns, non-ASCII),
+# the Get answers of the session, results and errors, `$$` variables across
+# runs, real accounts (a wrong password, an unknown account, the name in
+# another case, the template's disabled [Guest]) and a file that cannot be
+# opened (`@path`). Base file: contacts-en.
+== sched context
+Exit Script [ Get ( ScriptName ) & "|" & Get ( ScriptParameter ) & "|" & Length ( Get ( ScriptParameter ) ) & "|" & Get ( AccountName ) & "|" & Get ( UserName ) & "|" & Get ( WindowName ) & "|" & Get ( ApplicationVersion ) & "|" & Get ( ScriptResult ) & "|" & Get ( LastError ) & "|" & Get ( LayoutName ) & "|" & Get ( FoundCount ) & "|" & Get ( ErrorCaptureState ) & "|" & Get ( AllowAbortState ) & "|" & Get ( CurrentPrivilegeSetName ) & "|" & Get ( WindowMode ) ]
+== sched param
+Exit Script [ GetAsNumber ( Get ( ScriptParameter ) ) & "|" & IsEmpty ( Get ( ScriptParameter ) ) & "|" & Evaluate ( Get ( ScriptParameter ) ) & "|" & Code ( Get ( ScriptParameter ) ) ]
+== sched set global
+Set Variable [ $$g ; Get ( ScriptParameter ) ]
+Exit Script [ "set " & $$g ]
+== sched read global
+Exit Script [ "g=" & $$g ]
+== sched error
+Go to Record/Request/Page [ Next ]
+Set Variable [ $e ; Get ( LastError ) ]
+Exit Script [ "after " & $e ]
+== sched error last
+Exit Script [ "before" ]
+== sched error then ok
+Go to Record/Request/Page [ Next ]
+Set Variable [ $e ; Get ( LastError ) ]
+== sched halt
+Set Variable [ $a ; 1 ]
+Halt Script
+== sched no exit
+Set Variable [ $a ; 1 ]
+== sched exit empty
+Exit Script [ "" ]
+== sched exit date
+Exit Script [ Date ( 1 ; 2 ; 2020 ) ]
+== sched unknown step
+Step 15
+Exit Script [ "after unknown" ]
+== sched sub
+Perform Script [ "sched context" ; Parameter: "sub" ]
+Exit Script [ "sub: " & Get ( ScriptResult ) ]
+== sched dup
+Exit Script [ "first" ]
+== Sched Dup
+Exit Script [ "second" ]
+--- run
+sched context		Get ( LastError )
+sched context	5 + 5
+sched context	two\rlines é ✓
+sched context	  padded
+SCHED CONTEXT	upper
+Sched Context	title
+sched context 	trailing space
+ sched context	leading space
+no such script	x	Get ( LastError )	Get ( LastErrorLocation )
+	empty name	Get ( LastError )
+sched param	5 + 5
+sched param
+sched param	0012
+sched set global	v
+sched read global
+sched error		Get ( LastError )	Get ( LastErrorLocation )
+sched error then ok		Get ( LastError )
+sched halt		Get ( LastError )
+sched no exit		Get ( LastError )
+sched exit empty		Get ( LastError )
+sched exit date
+sched unknown step		Get ( LastError )
+sched sub	p
+sched dup
+Sched Dup
+@account Admin
+sched context	real account
+@account admin
+sched context	lower-case account
+@account Admin	wrong
+sched context	wrong password	Get ( LastError )
+@account Nobody
+sched context	unknown account	Get ( LastError )
+@account Nobody	pw
+sched context	unknown account with password
+@account [Guest]
+sched context	disabled account	Get ( LastError )
+@account Admin
+@path /tmp/no-such-file.fmp12
+sched context	missing file	Get ( LastError )
+@path /tmp
+sched context	a folder
+@path
+sched context	back

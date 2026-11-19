@@ -1,0 +1,1 @@
+no such script		Get ( LayoutCount )	Get ( LayoutNumber )	Get ( LayoutName )	Get ( TriggerCurrentPanel )	Length ( Get ( TriggerCurrentPanel ) )	Code ( Get ( TriggerCurrentPanel ) )	Get ( WindowName )

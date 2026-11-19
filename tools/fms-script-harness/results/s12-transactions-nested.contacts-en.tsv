@@ -1,0 +1,134 @@
+# scan txn sub custom: open 0 load 0 scan 0 commit 0; index:id=value (0-based): 0:141=0 1:205=6 2:7=0 3:76=0 4:1=0 5:141=0 6:206=6 7:103=0
+# scan txn sub reverts 5002: open 0 load 0 scan 0 commit 0; index:id=value (0-based): 0:207=0 1:141=0 2:103=0
+# scan txn deep custom: open 0 load 0 scan 0 commit 0; index:id=value (0-based): 0:205=3 1:7=0 2:1=0 3:206=3 4:103=0
+# scan txn mid: open 0 load 0 scan 0 commit 0; index:id=value (0-based): 0:1=0 1:141=0
+# scan txn custom no message: open 0 load 0 scan 0 commit 0; index:id=value (0-based): 0:205=2 1:207=0 2:206=2 3:103=0
+# scan txn two reverts: open 0 load 0 scan 0 commit 0; index:id=value (0-based): 0:205=3 1:207=0 2:207=0 3:206=3 4:103=0
+# scan txn data error then revert: open 0 load 0 scan 0 commit 0; index:id=value (0-based): 0:205=4 1:7=0 2:76=0 3:207=0 4:206=4 5:103=0
+# scan txn data error then revert off: open 0 load 0 scan 0 commit 0; index:id=value (0-based): 0:223=0 1:141=0 2:205=6 3:7=0 4:76=0 5:207=0 6:206=6 7:103=0
+# scan txn revert out of range: open 0 load 0 scan 0 commit 0; index:id=value (0-based): 0:141=0 1:205=5 2:7=0 3:207=0 4:141=0 5:206=5 6:103=0
+# scan txn halt after error: open 0 load 0 scan 0 commit 0; index:id=value (0-based): 0:205=5 1:7=0 2:76=0 3:90=0 4:141=0 5:206=5 6:141=0
+# scan txn exit after error: open 0 load 0 scan 0 commit 0; index:id=value (0-based): 0:205=5 1:7=0 2:76=0 3:103=0 4:141=0 5:206=5 6:103=0
+# scan txn sub revert setting: open 0 load 0 scan 0 commit 0; index:id=value (0-based): 0:205=5 1:7=0 2:1=0 3:76=0 4:141=0 5:206=5 6:103=0
+# scan txn sub sets off: open 0 load 0 scan 0 commit 0; index:id=value (0-based): 0:223=0
+# scan txn sub error then custom: open 0 load 0 scan 0 commit 0; index:id=value (0-based): 0:205=3 1:7=0 2:1=0 3:206=3 4:103=0
+# scan txn sub data error then revert: open 0 load 0 scan 0 commit 0; index:id=value (0-based): 0:76=0 1:207=0 2:141=0
+# scan txn count: open 0 load 0 scan 0 commit 0; index:id=value (0-based): 0:103=0
+# scan: close 13
+txn count		0	0 	0
+>	1	txn count	1	103	0	0	1	0
+txn sub custom		5002	5002\rtxn sub reverts 5002\rRevert Transaction\r1\rsub message\rtxn sub custom/Commit Transaction/7\r[]\r[]\r[]\r0\r0	5002	5002	txn sub custom\rCommit Transaction\r7	txn sub reverts 5002\rRevert Transaction\r1\rsub message
+>	1	txn sub custom	1	141	0	0	0	0
+>	1	txn sub custom	2	205	0	0	0	0
+>	1	txn sub custom	3	7	0	0	0	0
+>	1	txn sub custom	4	76	0	0	0	0
+>	1	txn sub custom	5	1	0	0	0	0
+>	2	txn sub reverts 5002	1	207	0	0	0	0
+>	2	txn sub reverts 5002	2	141	0	0	1	0
+>	2	txn sub reverts 5002	3	103	0	0	1	0
+>	1	txn sub custom	6	141	0	0	1	0
+!	5002	work : txn sub custom : 7 : Commit Transaction
+>	1	txn sub custom	7	206	5002	0	0	5002
+>	1	txn sub custom	8	103	0	0	1	5002
+txn deep custom		5002	5002\rtxn sub reverts 5002\rRevert Transaction\r1\rsub message\rtxn deep custom/Commit Transaction/4\r[]	5002	5002	
+>	1	txn deep custom	1	205	0	0	0	0
+>	1	txn deep custom	2	7	0	0	0	0
+>	1	txn deep custom	3	1	0	0	0	0
+>	2	txn mid	1	1	0	0	0	0
+>	3	txn sub reverts 5002	1	207	0	0	0	0
+>	3	txn sub reverts 5002	2	141	0	0	1	0
+>	3	txn sub reverts 5002	3	103	0	0	1	0
+>	2	txn mid	2	141	0	0	1	0
+!	5002	work : txn deep custom : 4 : Commit Transaction
+>	1	txn deep custom	4	206	5002	0	0	5002
+>	1	txn deep custom	5	103	0	0	1	5002
+txn custom no message		5003	5003\r[txn custom no message/Revert Transaction/2]	5003	5003
+>	1	txn custom no message	1	205	0	0	0	0
+>	1	txn custom no message	2	207	0	0	0	0
+!	5003	work : txn custom no message : 3 : Commit Transaction
+>	1	txn custom no message	3	206	5003	0	0	5003
+>	1	txn custom no message	4	103	0	0	1	5003
+txn two reverts		5004	5004\rtxn two reverts\rRevert Transaction\r2\rfirst	5004	5004
+>	1	txn two reverts	1	205	0	0	0	0
+>	1	txn two reverts	2	207	0	0	0	0
+>	1	txn two reverts	3	207	0	0	1	0
+!	5004	work : txn two reverts : 4 : Commit Transaction
+>	1	txn two reverts	4	206	5004	0	0	5004
+>	1	txn two reverts	5	103	0	0	1	5004
+txn data error then revert		201	201\rtxn data error then revert\rSet Field\r3	201	201
+>	1	txn data error then revert	1	205	0	0	0	0
+>	1	txn data error then revert	2	7	0	0	0	0
+!	201	work : txn data error then revert : 3 : Set Field
+>	1	txn data error then revert	3	76	201	0	0	201
+>	1	txn data error then revert	4	207	0	0	1	201
+>	1	txn data error then revert	5	206	201	0	1	201
+>	1	txn data error then revert	6	103	0	0	1	201
+txn data error then revert off		5006	5006\rtxn data error then revert off\rRevert Transaction\r6\rafter data error\r0\r0	5006	5006
+>	1	txn data error then revert off	1	223	0	0	0	0
+>	1	txn data error then revert off	2	141	0	0	0	0
+>	1	txn data error then revert off	3	205	0	0	0	0
+>	1	txn data error then revert off	4	7	0	0	0	0
+!	201	work : txn data error then revert off : 5 : Set Field
+>	1	txn data error then revert off	5	76	201	0	0	201
+>	1	txn data error then revert off	6	207	0	0	0	0
+!	5006	work : txn data error then revert off : 7 : Commit Transaction
+>	1	txn data error then revert off	7	206	5006	0	0	5006
+>	1	txn data error then revert off	8	103	0	0	1	5006
+txn count		0	0 	0
+>	1	txn count	1	103	0	0	1	0
+txn revert out of range		0	0\r[]\r0\r0	0	0
+>	1	txn revert out of range	1	141	0	0	0	0
+>	1	txn revert out of range	2	205	0	0	0	0
+>	1	txn revert out of range	3	7	0	0	0	0
+>	1	txn revert out of range	4	207	0	0	0	0
+>	1	txn revert out of range	5	141	0	0	1	0
+>	1	txn revert out of range	6	206	0	0	0	0
+>	1	txn revert out of range	7	103	0	0	1	0
+txn count		0	0 	0
+>	1	txn count	1	103	0	0	1	0
+txn halt after error		0		0	0		201	0
+>	1	txn halt after error	1	205	0	0	0	0
+>	1	txn halt after error	2	7	0	0	0	0
+!	201	work : txn halt after error : 3 : Set Field
+>	1	txn halt after error	3	76	201	0	0	201
+>	1	txn halt after error	4	90	0	0	1	201
+>	1	txn halt after error	5	141	0	0	1	201
+>	1	txn halt after error	6	206	201	0	1	201
+>	1	txn halt after error	7	141	0	0	0	0
+txn count		0	0 	0
+>	1	txn count	1	103	0	0	1	0
+txn exit after error		201	end 201	201	201		0
+>	1	txn exit after error	1	205	0	0	0	0
+>	1	txn exit after error	2	7	0	0	0	0
+!	201	work : txn exit after error : 3 : Set Field
+>	1	txn exit after error	3	76	201	0	0	201
+>	1	txn exit after error	4	103	0	0	1	201
+>	1	txn exit after error	5	141	0	0	1	201
+>	1	txn exit after error	6	206	201	0	1	201
+>	1	txn exit after error	7	103	0	0	1	201
+txn count		0	0 	0
+>	1	txn count	1	103	0	0	1	0
+txn sub revert setting		0	0\r[not skipped]\r0	0	0	1
+>	1	txn sub revert setting	1	205	0	0	0	0
+>	1	txn sub revert setting	2	7	0	0	0	0
+>	1	txn sub revert setting	3	1	0	0	0	0
+>	2	txn sub sets off	1	223	0	0	0	0
+!	201	work : txn sub revert setting : 4 : Set Field
+>	1	txn sub revert setting	4	76	201	0	0	201
+>	1	txn sub revert setting	5	141	0	0	0	0
+>	1	txn sub revert setting	6	206	0	0	0	0
+>	1	txn sub revert setting	7	103	0	0	1	0
+txn count		0	1 	0
+>	1	txn count	1	103	0	0	1	0
+txn sub error then custom		201	201\rtxn sub data error then revert\rSet Field\r1\r[]	201	201
+>	1	txn sub error then custom	1	205	0	0	0	0
+>	1	txn sub error then custom	2	7	0	0	0	0
+>	1	txn sub error then custom	3	1	0	0	0	0
+!	201	work : txn sub data error then revert : 1 : Set Field
+>	2	txn sub data error then revert	1	76	201	0	0	201
+>	2	txn sub data error then revert	2	207	0	0	1	201
+>	2	txn sub data error then revert	3	141	0	0	1	201
+>	1	txn sub error then custom	4	206	201	0	1	201
+>	1	txn sub error then custom	5	103	0	0	1	201
+txn count		0	1 	0
+>	1	txn count	1	103	0	0	1	0

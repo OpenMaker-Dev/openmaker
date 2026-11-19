@@ -1,0 +1,1042 @@
+# FileMaker Server 26.0.3 script engine (tools/fms-script-harness, s30-design),
+# expressions evaluated after a session opened designprobe.fmp12 as "work" on its
+# default layout, with no table occurrence (no script ran).
+# file	designprobe.fmp12
+# layout	Task Details
+DatabaseNames	work
+TableNames ( "" )	_under\r10 ten\r9 nine\ra lower\rAssignees\rAssignments\rAttachments\rÉclair\reclair two\rP_A\rP_B\rP_C\rP_D\rP_E\rP_F\rP_G\rTasks\rTasks2\rZeta\r日本
+TableIDs ( "" )	1065202\r1065203\r1065204\r1065200\r1065092\r1065093\r1065091\r1065205\r1065206\r1065100\r1065101\r1065102\r1065103\r1065104\r1065105\r1065106\r1065090\r1065208\r1065201\r1065207
+BaseTableNames ( "" )	Assignees\rAssignments\rAttachments\rTasks
+BaseTableIDs ( "" )	132\r133\r131\r130
+LayoutNames ( "" )	Task List\rTask Details\rAssignee List\rAssignee Details\r-\rAssignee Chooser\rAdd Assignee\rAssignments
+LayoutIDs ( "" )	2\r3\r6\r7\r8\r9\r10\r11
+ScriptNames ( "" )	Go to Entry Field\rAdd Related Record\rChoose Assignee\rCreate Assignee Entry\rCancel Add Assignee\rSort by Name\rSort by Status\rprobe
+ScriptIDs ( "" )	2\r3\r4\r5\r6\r7\r8\r1000
+ValueListNames ( "" )	Priority\rStatus\rCategory\rTitle\rCompany\rP_TaskStatus\rP_NumbersGerman\rP_TaskAndStatus\rP_Custom
+ValueListIDs ( "" )	1\r2\r3\r4\r5\r100\r101\r103\r102
+WindowNames	work
+TableNames ( "work" )	_under\r10 ten\r9 nine\ra lower\rAssignees\rAssignments\rAttachments\rÉclair\reclair two\rP_A\rP_B\rP_C\rP_D\rP_E\rP_F\rP_G\rTasks\rTasks2\rZeta\r日本
+TableNames ( "WORK" )	_under\r10 ten\r9 nine\ra lower\rAssignees\rAssignments\rAttachments\rÉclair\reclair two\rP_A\rP_B\rP_C\rP_D\rP_E\rP_F\rP_G\rTasks\rTasks2\rZeta\r日本
+TableNames ( "work.fmp12" )	_under\r10 ten\r9 nine\ra lower\rAssignees\rAssignments\rAttachments\rÉclair\reclair two\rP_A\rP_B\rP_C\rP_D\rP_E\rP_F\rP_G\rTasks\rTasks2\rZeta\r日本
+TableNames ( "work.FMP12" )	_under\r10 ten\r9 nine\ra lower\rAssignees\rAssignments\rAttachments\rÉclair\reclair two\rP_A\rP_B\rP_C\rP_D\rP_E\rP_F\rP_G\rTasks\rTasks2\rZeta\r日本
+TableNames ( " work" )	
+TableNames ( "no such file" )	
+TableNames ( "?" )	
+LayoutNames ( "work" )	Task List\rTask Details\rAssignee List\rAssignee Details\r-\rAssignee Chooser\rAdd Assignee\rAssignments
+ScriptNames ( "work" )	Go to Entry Field\rAdd Related Record\rChoose Assignee\rCreate Assignee Entry\rCancel Add Assignee\rSort by Name\rSort by Status\rprobe
+ValueListNames ( "work" )	Priority\rStatus\rCategory\rTitle\rCompany\rP_TaskStatus\rP_NumbersGerman\rP_TaskAndStatus\rP_Custom
+BaseTableNames ( "work" )	Assignees\rAssignments\rAttachments\rTasks
+WindowNames ( "work" )	work
+LayoutNames ( "no such file" )	
+ScriptNames ( "no such file" )	
+ValueListNames ( "no such file" )	
+BaseTableNames ( "no such file" )	
+WindowNames ( "no such file" )	
+WindowNames ( "" )	work
+EvaluationError ( TableNames ( 1 / 0 ) )	15
+FieldNames ( "" ; "_under" )	Task\rDue Date\rDescription\rStatus\rCategory\rCompletion Date\rPriority\rPrimaryKey\rCreatedBy\rModifiedBy\rCreationTimestamp\rModificationTimestamp\rN\rW\rNR\rU\rUT\rG\rS_Total\rS_RunTotal\rS_Avg\rS_WAvg\rS_Count\rS_RunCount\rS_Min\rS_Max\rS_SD\rS_SDP\rS_Frac\rS_FracSub\rS_List\rS_TotalReps\rSER\rSC\rGR\rC\rTS\rTM\rGC\rRC\rSER2
+FieldIDs ( "" ; "_under" )	1\r2\r3\r4\r5\r6\r7\r8\r9\r10\r11\r12\r100\r101\r102\r103\r104\r105\r110\r111\r112\r113\r114\r115\r116\r117\r118\r119\r120\r121\r122\r123\r130\r131\r132\r133\r134\r135\r136\r137\r138
+RelationInfo ( "" ; "_under" )	
+FieldNames ( "" ; "10 ten" )	Task\rDue Date\rDescription\rStatus\rCategory\rCompletion Date\rPriority\rPrimaryKey\rCreatedBy\rModifiedBy\rCreationTimestamp\rModificationTimestamp\rN\rW\rNR\rU\rUT\rG\rS_Total\rS_RunTotal\rS_Avg\rS_WAvg\rS_Count\rS_RunCount\rS_Min\rS_Max\rS_SD\rS_SDP\rS_Frac\rS_FracSub\rS_List\rS_TotalReps\rSER\rSC\rGR\rC\rTS\rTM\rGC\rRC\rSER2
+FieldIDs ( "" ; "10 ten" )	1\r2\r3\r4\r5\r6\r7\r8\r9\r10\r11\r12\r100\r101\r102\r103\r104\r105\r110\r111\r112\r113\r114\r115\r116\r117\r118\r119\r120\r121\r122\r123\r130\r131\r132\r133\r134\r135\r136\r137\r138
+RelationInfo ( "" ; "10 ten" )	
+FieldNames ( "" ; "9 nine" )	Task\rDue Date\rDescription\rStatus\rCategory\rCompletion Date\rPriority\rPrimaryKey\rCreatedBy\rModifiedBy\rCreationTimestamp\rModificationTimestamp\rN\rW\rNR\rU\rUT\rG\rS_Total\rS_RunTotal\rS_Avg\rS_WAvg\rS_Count\rS_RunCount\rS_Min\rS_Max\rS_SD\rS_SDP\rS_Frac\rS_FracSub\rS_List\rS_TotalReps\rSER\rSC\rGR\rC\rTS\rTM\rGC\rRC\rSER2
+FieldIDs ( "" ; "9 nine" )	1\r2\r3\r4\r5\r6\r7\r8\r9\r10\r11\r12\r100\r101\r102\r103\r104\r105\r110\r111\r112\r113\r114\r115\r116\r117\r118\r119\r120\r121\r122\r123\r130\r131\r132\r133\r134\r135\r136\r137\r138
+RelationInfo ( "" ; "9 nine" )	
+FieldNames ( "" ; "a lower" )	Task\rDue Date\rDescription\rStatus\rCategory\rCompletion Date\rPriority\rPrimaryKey\rCreatedBy\rModifiedBy\rCreationTimestamp\rModificationTimestamp\rN\rW\rNR\rU\rUT\rG\rS_Total\rS_RunTotal\rS_Avg\rS_WAvg\rS_Count\rS_RunCount\rS_Min\rS_Max\rS_SD\rS_SDP\rS_Frac\rS_FracSub\rS_List\rS_TotalReps\rSER\rSC\rGR\rC\rTS\rTM\rGC\rRC\rSER2
+FieldIDs ( "" ; "a lower" )	1\r2\r3\r4\r5\r6\r7\r8\r9\r10\r11\r12\r100\r101\r102\r103\r104\r105\r110\r111\r112\r113\r114\r115\r116\r117\r118\r119\r120\r121\r122\r123\r130\r131\r132\r133\r134\r135\r136\r137\r138
+RelationInfo ( "" ; "a lower" )	
+FieldNames ( "" ; "Assignees" )	First Name\rLast Name\rPhoto\rTitle\rCompany\rGroup\rPhone\rEmail\rName\rInitial\rPrimaryKey\rCreatedBy\rModifiedBy\rCreationTimestamp\rModificationTimestamp
+FieldIDs ( "" ; "Assignees" )	1\r2\r3\r4\r5\r6\r7\r8\r9\r10\r11\r12\r13\r14\r15
+RelationInfo ( "" ; "Assignees" )	Source:work\rTable:Assignments\rOptions:\rAssignments::AssigneeForeignKey = Assignees::PrimaryKey
+FieldNames ( "" ; "Assignments" )	AssigneeForeignKey\rPrimaryKey\rCreatedBy\rModifiedBy\rTaskForeignKey\rModificationTimestamp\rCreationTimestamp
+FieldIDs ( "" ; "Assignments" )	1\r2\r3\r4\r5\r7\r6
+RelationInfo ( "" ; "Assignments" )	Source:work\rTable:Tasks\rOptions:\rTasks::PrimaryKey = Assignments::TaskForeignKey\r\rSource:work\rTable:Assignees\rOptions:\rAssignees::PrimaryKey = Assignments::AssigneeForeignKey
+FieldNames ( "" ; "Attachments" )	Attachment\rDescription\rForeignKey\rPrimaryKey\rCreatedBy\rModifiedBy\rCreationTimestamp\rModificationTimestamp
+FieldIDs ( "" ; "Attachments" )	1\r2\r3\r4\r5\r6\r7\r8
+RelationInfo ( "" ; "Attachments" )	Source:work\rTable:Tasks\rOptions:\rTasks::PrimaryKey = Attachments::ForeignKey
+FieldNames ( "" ; "Éclair" )	Task\rDue Date\rDescription\rStatus\rCategory\rCompletion Date\rPriority\rPrimaryKey\rCreatedBy\rModifiedBy\rCreationTimestamp\rModificationTimestamp\rN\rW\rNR\rU\rUT\rG\rS_Total\rS_RunTotal\rS_Avg\rS_WAvg\rS_Count\rS_RunCount\rS_Min\rS_Max\rS_SD\rS_SDP\rS_Frac\rS_FracSub\rS_List\rS_TotalReps\rSER\rSC\rGR\rC\rTS\rTM\rGC\rRC\rSER2
+FieldIDs ( "" ; "Éclair" )	1\r2\r3\r4\r5\r6\r7\r8\r9\r10\r11\r12\r100\r101\r102\r103\r104\r105\r110\r111\r112\r113\r114\r115\r116\r117\r118\r119\r120\r121\r122\r123\r130\r131\r132\r133\r134\r135\r136\r137\r138
+RelationInfo ( "" ; "Éclair" )	
+FieldNames ( "" ; "eclair two" )	Task\rDue Date\rDescription\rStatus\rCategory\rCompletion Date\rPriority\rPrimaryKey\rCreatedBy\rModifiedBy\rCreationTimestamp\rModificationTimestamp\rN\rW\rNR\rU\rUT\rG\rS_Total\rS_RunTotal\rS_Avg\rS_WAvg\rS_Count\rS_RunCount\rS_Min\rS_Max\rS_SD\rS_SDP\rS_Frac\rS_FracSub\rS_List\rS_TotalReps\rSER\rSC\rGR\rC\rTS\rTM\rGC\rRC\rSER2
+FieldIDs ( "" ; "eclair two" )	1\r2\r3\r4\r5\r6\r7\r8\r9\r10\r11\r12\r100\r101\r102\r103\r104\r105\r110\r111\r112\r113\r114\r115\r116\r117\r118\r119\r120\r121\r122\r123\r130\r131\r132\r133\r134\r135\r136\r137\r138
+RelationInfo ( "" ; "eclair two" )	
+FieldNames ( "" ; "P_A" )	Task\rDue Date\rDescription\rStatus\rCategory\rCompletion Date\rPriority\rPrimaryKey\rCreatedBy\rModifiedBy\rCreationTimestamp\rModificationTimestamp\rN\rW\rNR\rU\rUT\rG\rS_Total\rS_RunTotal\rS_Avg\rS_WAvg\rS_Count\rS_RunCount\rS_Min\rS_Max\rS_SD\rS_SDP\rS_Frac\rS_FracSub\rS_List\rS_TotalReps\rSER\rSC\rGR\rC\rTS\rTM\rGC\rRC\rSER2
+FieldIDs ( "" ; "P_A" )	1\r2\r3\r4\r5\r6\r7\r8\r9\r10\r11\r12\r100\r101\r102\r103\r104\r105\r110\r111\r112\r113\r114\r115\r116\r117\r118\r119\r120\r121\r122\r123\r130\r131\r132\r133\r134\r135\r136\r137\r138
+RelationInfo ( "" ; "P_A" )	
+FieldNames ( "" ; "P_B" )	Task\rDue Date\rDescription\rStatus\rCategory\rCompletion Date\rPriority\rPrimaryKey\rCreatedBy\rModifiedBy\rCreationTimestamp\rModificationTimestamp\rN\rW\rNR\rU\rUT\rG\rS_Total\rS_RunTotal\rS_Avg\rS_WAvg\rS_Count\rS_RunCount\rS_Min\rS_Max\rS_SD\rS_SDP\rS_Frac\rS_FracSub\rS_List\rS_TotalReps\rSER\rSC\rGR\rC\rTS\rTM\rGC\rRC\rSER2
+FieldIDs ( "" ; "P_B" )	1\r2\r3\r4\r5\r6\r7\r8\r9\r10\r11\r12\r100\r101\r102\r103\r104\r105\r110\r111\r112\r113\r114\r115\r116\r117\r118\r119\r120\r121\r122\r123\r130\r131\r132\r133\r134\r135\r136\r137\r138
+RelationInfo ( "" ; "P_B" )	Source:work\rTable:Tasks\rOptions:Delete Sorted\rTasks::N >= P_B::N
+FieldNames ( "" ; "P_C" )	Task\rDue Date\rDescription\rStatus\rCategory\rCompletion Date\rPriority\rPrimaryKey\rCreatedBy\rModifiedBy\rCreationTimestamp\rModificationTimestamp\rN\rW\rNR\rU\rUT\rG\rS_Total\rS_RunTotal\rS_Avg\rS_WAvg\rS_Count\rS_RunCount\rS_Min\rS_Max\rS_SD\rS_SDP\rS_Frac\rS_FracSub\rS_List\rS_TotalReps\rSER\rSC\rGR\rC\rTS\rTM\rGC\rRC\rSER2
+FieldIDs ( "" ; "P_C" )	1\r2\r3\r4\r5\r6\r7\r8\r9\r10\r11\r12\r100\r101\r102\r103\r104\r105\r110\r111\r112\r113\r114\r115\r116\r117\r118\r119\r120\r121\r122\r123\r130\r131\r132\r133\r134\r135\r136\r137\r138
+RelationInfo ( "" ; "P_C" )	Source:work\rTable:Tasks\rOptions:\rTasks::N < P_C::N
+FieldNames ( "" ; "P_D" )	Task\rDue Date\rDescription\rStatus\rCategory\rCompletion Date\rPriority\rPrimaryKey\rCreatedBy\rModifiedBy\rCreationTimestamp\rModificationTimestamp\rN\rW\rNR\rU\rUT\rG\rS_Total\rS_RunTotal\rS_Avg\rS_WAvg\rS_Count\rS_RunCount\rS_Min\rS_Max\rS_SD\rS_SDP\rS_Frac\rS_FracSub\rS_List\rS_TotalReps\rSER\rSC\rGR\rC\rTS\rTM\rGC\rRC\rSER2
+FieldIDs ( "" ; "P_D" )	1\r2\r3\r4\r5\r6\r7\r8\r9\r10\r11\r12\r100\r101\r102\r103\r104\r105\r110\r111\r112\r113\r114\r115\r116\r117\r118\r119\r120\r121\r122\r123\r130\r131\r132\r133\r134\r135\r136\r137\r138
+RelationInfo ( "" ; "P_D" )	Source:work\rTable:Tasks\rOptions:\rTasks::N <> P_D::N\rTasks::Status = P_D::Status\rTasks::Due Date > P_D::Due Date
+FieldNames ( "" ; "P_E" )	Task\rDue Date\rDescription\rStatus\rCategory\rCompletion Date\rPriority\rPrimaryKey\rCreatedBy\rModifiedBy\rCreationTimestamp\rModificationTimestamp\rN\rW\rNR\rU\rUT\rG\rS_Total\rS_RunTotal\rS_Avg\rS_WAvg\rS_Count\rS_RunCount\rS_Min\rS_Max\rS_SD\rS_SDP\rS_Frac\rS_FracSub\rS_List\rS_TotalReps\rSER\rSC\rGR\rC\rTS\rTM\rGC\rRC\rSER2
+FieldIDs ( "" ; "P_E" )	1\r2\r3\r4\r5\r6\r7\r8\r9\r10\r11\r12\r100\r101\r102\r103\r104\r105\r110\r111\r112\r113\r114\r115\r116\r117\r118\r119\r120\r121\r122\r123\r130\r131\r132\r133\r134\r135\r136\r137\r138
+RelationInfo ( "" ; "P_E" )	Source:work\rTable:Tasks\rOptions:Create\rTasks::Task x P_E::Task
+FieldNames ( "" ; "P_F" )	Task\rDue Date\rDescription\rStatus\rCategory\rCompletion Date\rPriority\rPrimaryKey\rCreatedBy\rModifiedBy\rCreationTimestamp\rModificationTimestamp\rN\rW\rNR\rU\rUT\rG\rS_Total\rS_RunTotal\rS_Avg\rS_WAvg\rS_Count\rS_RunCount\rS_Min\rS_Max\rS_SD\rS_SDP\rS_Frac\rS_FracSub\rS_List\rS_TotalReps\rSER\rSC\rGR\rC\rTS\rTM\rGC\rRC\rSER2
+FieldIDs ( "" ; "P_F" )	1\r2\r3\r4\r5\r6\r7\r8\r9\r10\r11\r12\r100\r101\r102\r103\r104\r105\r110\r111\r112\r113\r114\r115\r116\r117\r118\r119\r120\r121\r122\r123\r130\r131\r132\r133\r134\r135\r136\r137\r138
+RelationInfo ( "" ; "P_F" )	Source:work\rTable:Tasks\rOptions:\rTasks::N <= P_F::N
+FieldNames ( "" ; "P_G" )	Task\rDue Date\rDescription\rStatus\rCategory\rCompletion Date\rPriority\rPrimaryKey\rCreatedBy\rModifiedBy\rCreationTimestamp\rModificationTimestamp\rN\rW\rNR\rU\rUT\rG\rS_Total\rS_RunTotal\rS_Avg\rS_WAvg\rS_Count\rS_RunCount\rS_Min\rS_Max\rS_SD\rS_SDP\rS_Frac\rS_FracSub\rS_List\rS_TotalReps\rSER\rSC\rGR\rC\rTS\rTM\rGC\rRC\rSER2
+FieldIDs ( "" ; "P_G" )	1\r2\r3\r4\r5\r6\r7\r8\r9\r10\r11\r12\r100\r101\r102\r103\r104\r105\r110\r111\r112\r113\r114\r115\r116\r117\r118\r119\r120\r121\r122\r123\r130\r131\r132\r133\r134\r135\r136\r137\r138
+RelationInfo ( "" ; "P_G" )	Source:work\rTable:Tasks\rOptions:Delete\rTasks::N > P_G::N\rTasks::W >= P_G::W
+FieldNames ( "" ; "Tasks" )	Task\rDue Date\rDescription\rStatus\rCategory\rCompletion Date\rPriority\rPrimaryKey\rCreatedBy\rModifiedBy\rCreationTimestamp\rModificationTimestamp\rN\rW\rNR\rU\rUT\rG\rS_Total\rS_RunTotal\rS_Avg\rS_WAvg\rS_Count\rS_RunCount\rS_Min\rS_Max\rS_SD\rS_SDP\rS_Frac\rS_FracSub\rS_List\rS_TotalReps\rSER\rSC\rGR\rC\rTS\rTM\rGC\rRC\rSER2
+FieldIDs ( "" ; "Tasks" )	1\r2\r3\r4\r5\r6\r7\r8\r9\r10\r11\r12\r100\r101\r102\r103\r104\r105\r110\r111\r112\r113\r114\r115\r116\r117\r118\r119\r120\r121\r122\r123\r130\r131\r132\r133\r134\r135\r136\r137\r138
+RelationInfo ( "" ; "Tasks" )	Source:work\rTable:Attachments\rOptions:Create\rAttachments::ForeignKey = Tasks::PrimaryKey\r\rSource:work\rTable:Assignments\rOptions:\rAssignments::TaskForeignKey = Tasks::PrimaryKey\r\rSource:work\rTable:P_B\rOptions:Delete Create Sorted\rP_B::N <= Tasks::N\r\rSource:work\rTable:P_C\rOptions:\rP_C::N > Tasks::N\r\rSource:work\rTable:P_D\rOptions:Create\rP_D::N <> Tasks::N\rP_D::Status = Tasks::Status\rP_D::Due Date < Tasks::Due Date\r\rSource:work\rTable:P_E\rOptions:\rP_E::Task x Tasks::Task\r\rSource:work\rTable:P_F\rOptions:Sorted\rP_F::N >= Tasks::N\r\rSource:work\rTable:P_G\rOptions:\rP_G::N < Tasks::N\rP_G::W <= Tasks::W
+FieldNames ( "" ; "Tasks2" )	Task\rDue Date\rDescription\rStatus\rCategory\rCompletion Date\rPriority\rPrimaryKey\rCreatedBy\rModifiedBy\rCreationTimestamp\rModificationTimestamp\rN\rW\rNR\rU\rUT\rG\rS_Total\rS_RunTotal\rS_Avg\rS_WAvg\rS_Count\rS_RunCount\rS_Min\rS_Max\rS_SD\rS_SDP\rS_Frac\rS_FracSub\rS_List\rS_TotalReps\rSER\rSC\rGR\rC\rTS\rTM\rGC\rRC\rSER2
+FieldIDs ( "" ; "Tasks2" )	1\r2\r3\r4\r5\r6\r7\r8\r9\r10\r11\r12\r100\r101\r102\r103\r104\r105\r110\r111\r112\r113\r114\r115\r116\r117\r118\r119\r120\r121\r122\r123\r130\r131\r132\r133\r134\r135\r136\r137\r138
+RelationInfo ( "" ; "Tasks2" )	
+FieldNames ( "" ; "Zeta" )	Task\rDue Date\rDescription\rStatus\rCategory\rCompletion Date\rPriority\rPrimaryKey\rCreatedBy\rModifiedBy\rCreationTimestamp\rModificationTimestamp\rN\rW\rNR\rU\rUT\rG\rS_Total\rS_RunTotal\rS_Avg\rS_WAvg\rS_Count\rS_RunCount\rS_Min\rS_Max\rS_SD\rS_SDP\rS_Frac\rS_FracSub\rS_List\rS_TotalReps\rSER\rSC\rGR\rC\rTS\rTM\rGC\rRC\rSER2
+FieldIDs ( "" ; "Zeta" )	1\r2\r3\r4\r5\r6\r7\r8\r9\r10\r11\r12\r100\r101\r102\r103\r104\r105\r110\r111\r112\r113\r114\r115\r116\r117\r118\r119\r120\r121\r122\r123\r130\r131\r132\r133\r134\r135\r136\r137\r138
+RelationInfo ( "" ; "Zeta" )	
+FieldNames ( "" ; "日本" )	Task\rDue Date\rDescription\rStatus\rCategory\rCompletion Date\rPriority\rPrimaryKey\rCreatedBy\rModifiedBy\rCreationTimestamp\rModificationTimestamp\rN\rW\rNR\rU\rUT\rG\rS_Total\rS_RunTotal\rS_Avg\rS_WAvg\rS_Count\rS_RunCount\rS_Min\rS_Max\rS_SD\rS_SDP\rS_Frac\rS_FracSub\rS_List\rS_TotalReps\rSER\rSC\rGR\rC\rTS\rTM\rGC\rRC\rSER2
+FieldIDs ( "" ; "日本" )	1\r2\r3\r4\r5\r6\r7\r8\r9\r10\r11\r12\r100\r101\r102\r103\r104\r105\r110\r111\r112\r113\r114\r115\r116\r117\r118\r119\r120\r121\r122\r123\r130\r131\r132\r133\r134\r135\r136\r137\r138
+RelationInfo ( "" ; "日本" )	
+BaseTableComment ( "" ; "Assignees" )	
+BaseTableComment ( "" ; "Assignments" )	
+BaseTableComment ( "" ; "Attachments" )	
+BaseTableComment ( "" ; "Tasks" )	Things to do
+FieldNames ( "" ; "" )	Task\rDue Date\rDescription\rStatus\rCategory\rCompletion Date\rPriority\rPrimaryKey\rCreatedBy\rModifiedBy\rCreationTimestamp\rModificationTimestamp\rN\rW\rNR\rU\rUT\rG\rS_Total\rS_RunTotal\rS_Avg\rS_WAvg\rS_Count\rS_RunCount\rS_Min\rS_Max\rS_SD\rS_SDP\rS_Frac\rS_FracSub\rS_List\rS_TotalReps\rSER\rSC\rGR\rC\rTS\rTM\rGC\rRC\rSER2
+FieldIDs ( "" ; "" )	1\r2\r3\r4\r5\r6\r7\r8\r9\r10\r11\r12\r100\r101\r102\r103\r104\r105\r110\r111\r112\r113\r114\r115\r116\r117\r118\r119\r120\r121\r122\r123\r130\r131\r132\r133\r134\r135\r136\r137\r138
+FieldNames ( "" ; "no such" )	
+RelationInfo ( "" ; "no such" )	
+BaseTableComment ( "" ; "no such" )	
+FieldNames ( "no such file" ; "" )	
+FieldNames ( "" ; "_UNDER" )	Task\rDue Date\rDescription\rStatus\rCategory\rCompletion Date\rPriority\rPrimaryKey\rCreatedBy\rModifiedBy\rCreationTimestamp\rModificationTimestamp\rN\rW\rNR\rU\rUT\rG\rS_Total\rS_RunTotal\rS_Avg\rS_WAvg\rS_Count\rS_RunCount\rS_Min\rS_Max\rS_SD\rS_SDP\rS_Frac\rS_FracSub\rS_List\rS_TotalReps\rSER\rSC\rGR\rC\rTS\rTM\rGC\rRC\rSER2
+FieldNames ( "" ; "Task List" )	Due Date\rCategory\rStatus\rTask
+FieldIDs ( "" ; "Task List" )	2\r5\r4\r1
+LayoutObjectNames ( "" ; "Task List" )	<\rTasks\rAssignees\r>\rGo to details.
+FieldNames ( "" ; "Task Details" )	Description\rAttachments::Description\rAttachments::Attachment\rAssignees::Email\rAssignees::Name\rCompletion Date\rStatus\rPriority\rCategory\rDue Date\rTask
+FieldIDs ( "" ; "Task Details" )	3\r1065091::2\r1065091::1\r1065092::8\r1065092::9\r6\r4\r7\r5\r2\r1
+LayoutObjectNames ( "" ; "Task Details" )	<\r>\rGo to Tasks.\r<\r>\rAssignee Portal\r<\r>\rStatus\rCategory\rDue Date\rTask
+FieldNames ( "" ; "Assignee List" )	Email\rPhone\rLast Name\rFirst Name\rPhoto
+FieldIDs ( "" ; "Assignee List" )	8\r7\r2\r1\r3
+LayoutObjectNames ( "" ; "Assignee List" )	<\rTasks\rAssignees\r>\rGo to details.
+FieldNames ( "" ; "Assignee Details" )	Email\rPhone\rGroup\rCompany\rLast Name\rFirst Name\rTitle\rPhoto\rPhoto
+FieldIDs ( "" ; "Assignee Details" )	8\r7\r6\r5\r2\r1\r4\r3\r3
+LayoutObjectNames ( "" ; "Assignee Details" )	<\r>\rGo to Assignees.\rEmail\rPhone\rLast Name\rFirst Name\rItem
+FieldNames ( "" ; "Assignee Chooser" )	Photo
+FieldIDs ( "" ; "Assignee Chooser" )	3
+LayoutObjectNames ( "" ; "Assignee Chooser" )	<\r>\rSelect Assignee button
+FieldNames ( "" ; "Add Assignee" )	Email\rLast Name\rFirst Name\rPhoto
+FieldIDs ( "" ; "Add Assignee" )	8\r2\r1\r3
+LayoutObjectNames ( "" ; "Add Assignee" )	<\r>\rEmail\rLast Name\rFirst Name
+LayoutObjectNames ( "" ; "Assignments" )	
+LayoutObjectNames ( "" ; "no such" )	
+LayoutObjectNames ( "" ; "" )	
+LayoutObjectNames ( "" ; "TASK LIST" )	<\rTasks\rAssignees\r>\rGo to details.
+FieldType ( "" ; "Assignees::First Name" )	Standard Text Unindexed 1
+FieldComment ( "" ; "Assignees::First Name" )	
+FieldAnnotation ( "" ; "Assignees::First Name" )	
+FieldDisplayNames ( "" ; "Assignees::First Name" )	
+GetNextSerialValue ( "" ; "Assignees::First Name" )	
+FieldType ( "" ; "Assignees::Last Name" )	Standard Text Unindexed 1
+FieldComment ( "" ; "Assignees::Last Name" )	
+FieldAnnotation ( "" ; "Assignees::Last Name" )	
+FieldDisplayNames ( "" ; "Assignees::Last Name" )	
+GetNextSerialValue ( "" ; "Assignees::Last Name" )	
+FieldType ( "" ; "Assignees::Photo" )	Standard Container Unindexed 1
+FieldComment ( "" ; "Assignees::Photo" )	
+FieldAnnotation ( "" ; "Assignees::Photo" )	
+FieldDisplayNames ( "" ; "Assignees::Photo" )	
+GetNextSerialValue ( "" ; "Assignees::Photo" )	
+FieldType ( "" ; "Assignees::Title" )	Standard Text Unindexed 1
+FieldComment ( "" ; "Assignees::Title" )	
+FieldAnnotation ( "" ; "Assignees::Title" )	
+FieldDisplayNames ( "" ; "Assignees::Title" )	
+GetNextSerialValue ( "" ; "Assignees::Title" )	
+FieldType ( "" ; "Assignees::Company" )	Standard Text Indexed 1
+FieldComment ( "" ; "Assignees::Company" )	
+FieldAnnotation ( "" ; "Assignees::Company" )	
+FieldDisplayNames ( "" ; "Assignees::Company" )	
+GetNextSerialValue ( "" ; "Assignees::Company" )	
+FieldType ( "" ; "Assignees::Group" )	Standard Text Unindexed 1
+FieldComment ( "" ; "Assignees::Group" )	
+FieldAnnotation ( "" ; "Assignees::Group" )	
+FieldDisplayNames ( "" ; "Assignees::Group" )	
+GetNextSerialValue ( "" ; "Assignees::Group" )	
+FieldType ( "" ; "Assignees::Phone" )	Standard Text Unindexed 1
+FieldComment ( "" ; "Assignees::Phone" )	
+FieldAnnotation ( "" ; "Assignees::Phone" )	
+FieldDisplayNames ( "" ; "Assignees::Phone" )	
+GetNextSerialValue ( "" ; "Assignees::Phone" )	
+FieldType ( "" ; "Assignees::Email" )	Standard Text Indexed 1
+FieldComment ( "" ; "Assignees::Email" )	
+FieldAnnotation ( "" ; "Assignees::Email" )	
+FieldDisplayNames ( "" ; "Assignees::Email" )	
+GetNextSerialValue ( "" ; "Assignees::Email" )	
+FieldType ( "" ; "Assignees::Name" )	StoredCalc Text Indexed 1
+FieldComment ( "" ; "Assignees::Name" )	
+FieldAnnotation ( "" ; "Assignees::Name" )	
+FieldDisplayNames ( "" ; "Assignees::Name" )	
+GetNextSerialValue ( "" ; "Assignees::Name" )	
+FieldType ( "" ; "Assignees::Initial" )	StoredCalc Text Unindexed 1
+FieldComment ( "" ; "Assignees::Initial" )	
+FieldAnnotation ( "" ; "Assignees::Initial" )	
+FieldDisplayNames ( "" ; "Assignees::Initial" )	
+GetNextSerialValue ( "" ; "Assignees::Initial" )	
+FieldType ( "" ; "Assignees::PrimaryKey" )	Standard Text Indexed 1
+FieldComment ( "" ; "Assignees::PrimaryKey" )	Unique identifier of each record in this table
+FieldAnnotation ( "" ; "Assignees::PrimaryKey" )	
+FieldDisplayNames ( "" ; "Assignees::PrimaryKey" )	
+GetNextSerialValue ( "" ; "Assignees::PrimaryKey" )	
+FieldType ( "" ; "Assignees::CreatedBy" )	Standard Text Unindexed 1
+FieldComment ( "" ; "Assignees::CreatedBy" )	Account name of the user who created each record
+FieldAnnotation ( "" ; "Assignees::CreatedBy" )	
+FieldDisplayNames ( "" ; "Assignees::CreatedBy" )	
+GetNextSerialValue ( "" ; "Assignees::CreatedBy" )	
+FieldType ( "" ; "Assignees::ModifiedBy" )	Standard Text Unindexed 1
+FieldComment ( "" ; "Assignees::ModifiedBy" )	Account name of the user who last modified each record
+FieldAnnotation ( "" ; "Assignees::ModifiedBy" )	
+FieldDisplayNames ( "" ; "Assignees::ModifiedBy" )	
+GetNextSerialValue ( "" ; "Assignees::ModifiedBy" )	
+FieldType ( "" ; "Assignees::CreationTimestamp" )	Standard Timestamp Unindexed 1
+FieldComment ( "" ; "Assignees::CreationTimestamp" )	Date and time each record was created
+FieldAnnotation ( "" ; "Assignees::CreationTimestamp" )	
+FieldDisplayNames ( "" ; "Assignees::CreationTimestamp" )	
+GetNextSerialValue ( "" ; "Assignees::CreationTimestamp" )	
+FieldType ( "" ; "Assignees::ModificationTimestamp" )	Standard Timestamp Unindexed 1
+FieldComment ( "" ; "Assignees::ModificationTimestamp" )	Date and time each record was last modified
+FieldAnnotation ( "" ; "Assignees::ModificationTimestamp" )	
+FieldDisplayNames ( "" ; "Assignees::ModificationTimestamp" )	
+GetNextSerialValue ( "" ; "Assignees::ModificationTimestamp" )	
+FieldType ( "" ; "Assignments::AssigneeForeignKey" )	Standard Text Indexed 1
+FieldComment ( "" ; "Assignments::AssigneeForeignKey" )	Unique identifier of each record in the related table
+FieldAnnotation ( "" ; "Assignments::AssigneeForeignKey" )	
+FieldDisplayNames ( "" ; "Assignments::AssigneeForeignKey" )	
+GetNextSerialValue ( "" ; "Assignments::AssigneeForeignKey" )	
+FieldType ( "" ; "Assignments::PrimaryKey" )	Standard Text Indexed 1
+FieldComment ( "" ; "Assignments::PrimaryKey" )	Unique identifier of each record in this table
+FieldAnnotation ( "" ; "Assignments::PrimaryKey" )	
+FieldDisplayNames ( "" ; "Assignments::PrimaryKey" )	
+GetNextSerialValue ( "" ; "Assignments::PrimaryKey" )	
+FieldType ( "" ; "Assignments::CreatedBy" )	Standard Text Unindexed 1
+FieldComment ( "" ; "Assignments::CreatedBy" )	Account name of the user who created each record
+FieldAnnotation ( "" ; "Assignments::CreatedBy" )	
+FieldDisplayNames ( "" ; "Assignments::CreatedBy" )	
+GetNextSerialValue ( "" ; "Assignments::CreatedBy" )	
+FieldType ( "" ; "Assignments::ModifiedBy" )	Standard Text Unindexed 1
+FieldComment ( "" ; "Assignments::ModifiedBy" )	Account name of the user who last modified each record
+FieldAnnotation ( "" ; "Assignments::ModifiedBy" )	
+FieldDisplayNames ( "" ; "Assignments::ModifiedBy" )	
+GetNextSerialValue ( "" ; "Assignments::ModifiedBy" )	
+FieldType ( "" ; "Assignments::TaskForeignKey" )	Standard Text Indexed 1
+FieldComment ( "" ; "Assignments::TaskForeignKey" )	Unique identifier of each record in the related table
+FieldAnnotation ( "" ; "Assignments::TaskForeignKey" )	
+FieldDisplayNames ( "" ; "Assignments::TaskForeignKey" )	
+GetNextSerialValue ( "" ; "Assignments::TaskForeignKey" )	
+FieldType ( "" ; "Assignments::ModificationTimestamp" )	Standard Timestamp Unindexed 1
+FieldComment ( "" ; "Assignments::ModificationTimestamp" )	Date and time each record was last modified
+FieldAnnotation ( "" ; "Assignments::ModificationTimestamp" )	
+FieldDisplayNames ( "" ; "Assignments::ModificationTimestamp" )	
+GetNextSerialValue ( "" ; "Assignments::ModificationTimestamp" )	
+FieldType ( "" ; "Assignments::CreationTimestamp" )	Standard Timestamp Unindexed 1
+FieldComment ( "" ; "Assignments::CreationTimestamp" )	Date and time each record was created
+FieldAnnotation ( "" ; "Assignments::CreationTimestamp" )	
+FieldDisplayNames ( "" ; "Assignments::CreationTimestamp" )	
+GetNextSerialValue ( "" ; "Assignments::CreationTimestamp" )	
+FieldType ( "" ; "Attachments::Attachment" )	Standard Container Unindexed 1
+FieldComment ( "" ; "Attachments::Attachment" )	
+FieldAnnotation ( "" ; "Attachments::Attachment" )	
+FieldDisplayNames ( "" ; "Attachments::Attachment" )	
+GetNextSerialValue ( "" ; "Attachments::Attachment" )	
+FieldType ( "" ; "Attachments::Description" )	Standard Text Unindexed 1
+FieldComment ( "" ; "Attachments::Description" )	
+FieldAnnotation ( "" ; "Attachments::Description" )	
+FieldDisplayNames ( "" ; "Attachments::Description" )	
+GetNextSerialValue ( "" ; "Attachments::Description" )	
+FieldType ( "" ; "Attachments::ForeignKey" )	Standard Text Indexed 1
+FieldComment ( "" ; "Attachments::ForeignKey" )	Unique identifier of each record in the related table
+FieldAnnotation ( "" ; "Attachments::ForeignKey" )	
+FieldDisplayNames ( "" ; "Attachments::ForeignKey" )	
+GetNextSerialValue ( "" ; "Attachments::ForeignKey" )	
+FieldType ( "" ; "Attachments::PrimaryKey" )	Standard Text Indexed 1
+FieldComment ( "" ; "Attachments::PrimaryKey" )	Unique identifier of each record in this table
+FieldAnnotation ( "" ; "Attachments::PrimaryKey" )	
+FieldDisplayNames ( "" ; "Attachments::PrimaryKey" )	
+GetNextSerialValue ( "" ; "Attachments::PrimaryKey" )	
+FieldType ( "" ; "Attachments::CreatedBy" )	Standard Text Unindexed 1
+FieldComment ( "" ; "Attachments::CreatedBy" )	Account name of the user who created each record
+FieldAnnotation ( "" ; "Attachments::CreatedBy" )	
+FieldDisplayNames ( "" ; "Attachments::CreatedBy" )	
+GetNextSerialValue ( "" ; "Attachments::CreatedBy" )	
+FieldType ( "" ; "Attachments::ModifiedBy" )	Standard Text Unindexed 1
+FieldComment ( "" ; "Attachments::ModifiedBy" )	Account name of the user who last modified each record
+FieldAnnotation ( "" ; "Attachments::ModifiedBy" )	
+FieldDisplayNames ( "" ; "Attachments::ModifiedBy" )	
+GetNextSerialValue ( "" ; "Attachments::ModifiedBy" )	
+FieldType ( "" ; "Attachments::CreationTimestamp" )	Standard Timestamp Unindexed 1
+FieldComment ( "" ; "Attachments::CreationTimestamp" )	Date and time each record was created
+FieldAnnotation ( "" ; "Attachments::CreationTimestamp" )	
+FieldDisplayNames ( "" ; "Attachments::CreationTimestamp" )	
+GetNextSerialValue ( "" ; "Attachments::CreationTimestamp" )	
+FieldType ( "" ; "Attachments::ModificationTimestamp" )	Standard Timestamp Unindexed 1
+FieldComment ( "" ; "Attachments::ModificationTimestamp" )	Date and time each record was last modified
+FieldAnnotation ( "" ; "Attachments::ModificationTimestamp" )	
+FieldDisplayNames ( "" ; "Attachments::ModificationTimestamp" )	
+GetNextSerialValue ( "" ; "Attachments::ModificationTimestamp" )	
+FieldType ( "" ; "P_B::Task" )	Standard Text Unindexed 1
+FieldComment ( "" ; "P_B::Task" )	
+FieldAnnotation ( "" ; "P_B::Task" )	
+FieldDisplayNames ( "" ; "P_B::Task" )	
+GetNextSerialValue ( "" ; "P_B::Task" )	
+FieldType ( "" ; "P_B::Due Date" )	Standard Date Unindexed 1
+FieldComment ( "" ; "P_B::Due Date" )	
+FieldAnnotation ( "" ; "P_B::Due Date" )	
+FieldDisplayNames ( "" ; "P_B::Due Date" )	
+GetNextSerialValue ( "" ; "P_B::Due Date" )	
+FieldType ( "" ; "P_B::Description" )	Standard Text Unindexed 1
+FieldComment ( "" ; "P_B::Description" )	
+FieldAnnotation ( "" ; "P_B::Description" )	
+FieldDisplayNames ( "" ; "P_B::Description" )	
+GetNextSerialValue ( "" ; "P_B::Description" )	
+FieldType ( "" ; "P_B::Status" )	Standard Text Unindexed 1
+FieldComment ( "" ; "P_B::Status" )	
+FieldAnnotation ( "" ; "P_B::Status" )	
+FieldDisplayNames ( "" ; "P_B::Status" )	
+GetNextSerialValue ( "" ; "P_B::Status" )	
+FieldType ( "" ; "P_B::Category" )	Standard Text Unindexed 1
+FieldComment ( "" ; "P_B::Category" )	
+FieldAnnotation ( "" ; "P_B::Category" )	
+FieldDisplayNames ( "" ; "P_B::Category" )	
+GetNextSerialValue ( "" ; "P_B::Category" )	
+FieldType ( "" ; "P_B::Completion Date" )	Standard Date Unindexed 1
+FieldComment ( "" ; "P_B::Completion Date" )	
+FieldAnnotation ( "" ; "P_B::Completion Date" )	
+FieldDisplayNames ( "" ; "P_B::Completion Date" )	
+GetNextSerialValue ( "" ; "P_B::Completion Date" )	
+FieldType ( "" ; "P_B::Priority" )	Standard Text Unindexed 1
+FieldComment ( "" ; "P_B::Priority" )	
+FieldAnnotation ( "" ; "P_B::Priority" )	
+FieldDisplayNames ( "" ; "P_B::Priority" )	
+GetNextSerialValue ( "" ; "P_B::Priority" )	
+FieldType ( "" ; "P_B::PrimaryKey" )	Standard Text Indexed 1
+FieldComment ( "" ; "P_B::PrimaryKey" )	Unique identifier of each record in this table
+FieldAnnotation ( "" ; "P_B::PrimaryKey" )	
+FieldDisplayNames ( "" ; "P_B::PrimaryKey" )	
+GetNextSerialValue ( "" ; "P_B::PrimaryKey" )	
+FieldType ( "" ; "P_B::CreatedBy" )	Standard Text Unindexed 1
+FieldComment ( "" ; "P_B::CreatedBy" )	Account name of the user who created each record
+FieldAnnotation ( "" ; "P_B::CreatedBy" )	
+FieldDisplayNames ( "" ; "P_B::CreatedBy" )	
+GetNextSerialValue ( "" ; "P_B::CreatedBy" )	
+FieldType ( "" ; "P_B::ModifiedBy" )	Standard Text Unindexed 1
+FieldComment ( "" ; "P_B::ModifiedBy" )	Account name of the user who last modified each record
+FieldAnnotation ( "" ; "P_B::ModifiedBy" )	
+FieldDisplayNames ( "" ; "P_B::ModifiedBy" )	
+GetNextSerialValue ( "" ; "P_B::ModifiedBy" )	
+FieldType ( "" ; "P_B::CreationTimestamp" )	Standard Timestamp Unindexed 1
+FieldComment ( "" ; "P_B::CreationTimestamp" )	Date and time each record was created
+FieldAnnotation ( "" ; "P_B::CreationTimestamp" )	
+FieldDisplayNames ( "" ; "P_B::CreationTimestamp" )	
+GetNextSerialValue ( "" ; "P_B::CreationTimestamp" )	
+FieldType ( "" ; "P_B::ModificationTimestamp" )	Standard Timestamp Unindexed 1
+FieldComment ( "" ; "P_B::ModificationTimestamp" )	Date and time each record was last modified
+FieldAnnotation ( "" ; "P_B::ModificationTimestamp" )	
+FieldDisplayNames ( "" ; "P_B::ModificationTimestamp" )	
+GetNextSerialValue ( "" ; "P_B::ModificationTimestamp" )	
+FieldType ( "" ; "P_B::N" )	Standard Number Unindexed 1
+FieldComment ( "" ; "P_B::N" )	a number
+FieldAnnotation ( "" ; "P_B::N" )	
+FieldDisplayNames ( "" ; "P_B::N" )	
+GetNextSerialValue ( "" ; "P_B::N" )	
+FieldType ( "" ; "P_B::W" )	Standard Number Unindexed 1
+FieldComment ( "" ; "P_B::W" )	
+FieldAnnotation ( "" ; "P_B::W" )	
+FieldDisplayNames ( "" ; "P_B::W" )	
+GetNextSerialValue ( "" ; "P_B::W" )	
+FieldType ( "" ; "P_B::NR" )	Standard Number Unindexed 3
+FieldComment ( "" ; "P_B::NR" )	
+FieldAnnotation ( "" ; "P_B::NR" )	
+FieldDisplayNames ( "" ; "P_B::NR" )	
+GetNextSerialValue ( "" ; "P_B::NR" )	
+FieldType ( "" ; "P_B::U" )	UnstoredCalc Number Unindexed 1
+FieldComment ( "" ; "P_B::U" )	
+FieldAnnotation ( "" ; "P_B::U" )	
+FieldDisplayNames ( "" ; "P_B::U" )	
+GetNextSerialValue ( "" ; "P_B::U" )	
+FieldType ( "" ; "P_B::UT" )	UnstoredCalc Text Unindexed 1
+FieldComment ( "" ; "P_B::UT" )	
+FieldAnnotation ( "" ; "P_B::UT" )	
+FieldDisplayNames ( "" ; "P_B::UT" )	
+GetNextSerialValue ( "" ; "P_B::UT" )	
+FieldType ( "" ; "P_B::G" )	Global Text Unindexed 1
+FieldComment ( "" ; "P_B::G" )	
+FieldAnnotation ( "" ; "P_B::G" )	
+FieldDisplayNames ( "" ; "P_B::G" )	
+GetNextSerialValue ( "" ; "P_B::G" )	
+FieldType ( "" ; "P_B::S_Total" )	Summary Number Unindexed 1
+FieldComment ( "" ; "P_B::S_Total" )	
+FieldAnnotation ( "" ; "P_B::S_Total" )	
+FieldDisplayNames ( "" ; "P_B::S_Total" )	
+GetNextSerialValue ( "" ; "P_B::S_Total" )	
+FieldType ( "" ; "P_B::S_RunTotal" )	Summary Number Unindexed 1
+FieldComment ( "" ; "P_B::S_RunTotal" )	
+FieldAnnotation ( "" ; "P_B::S_RunTotal" )	
+FieldDisplayNames ( "" ; "P_B::S_RunTotal" )	
+GetNextSerialValue ( "" ; "P_B::S_RunTotal" )	
+FieldType ( "" ; "P_B::S_Avg" )	Summary Number Unindexed 1
+FieldComment ( "" ; "P_B::S_Avg" )	
+FieldAnnotation ( "" ; "P_B::S_Avg" )	
+FieldDisplayNames ( "" ; "P_B::S_Avg" )	
+GetNextSerialValue ( "" ; "P_B::S_Avg" )	
+FieldType ( "" ; "P_B::S_WAvg" )	Summary Number Unindexed 1
+FieldComment ( "" ; "P_B::S_WAvg" )	
+FieldAnnotation ( "" ; "P_B::S_WAvg" )	
+FieldDisplayNames ( "" ; "P_B::S_WAvg" )	
+GetNextSerialValue ( "" ; "P_B::S_WAvg" )	
+FieldType ( "" ; "P_B::S_Count" )	Summary Number Unindexed 1
+FieldComment ( "" ; "P_B::S_Count" )	
+FieldAnnotation ( "" ; "P_B::S_Count" )	
+FieldDisplayNames ( "" ; "P_B::S_Count" )	
+GetNextSerialValue ( "" ; "P_B::S_Count" )	
+FieldType ( "" ; "P_B::S_RunCount" )	Summary Number Unindexed 1
+FieldComment ( "" ; "P_B::S_RunCount" )	
+FieldAnnotation ( "" ; "P_B::S_RunCount" )	
+FieldDisplayNames ( "" ; "P_B::S_RunCount" )	
+GetNextSerialValue ( "" ; "P_B::S_RunCount" )	
+FieldType ( "" ; "P_B::S_Min" )	Summary Number Unindexed 1
+FieldComment ( "" ; "P_B::S_Min" )	
+FieldAnnotation ( "" ; "P_B::S_Min" )	
+FieldDisplayNames ( "" ; "P_B::S_Min" )	
+GetNextSerialValue ( "" ; "P_B::S_Min" )	
+FieldType ( "" ; "P_B::S_Max" )	Summary Number Unindexed 1
+FieldComment ( "" ; "P_B::S_Max" )	
+FieldAnnotation ( "" ; "P_B::S_Max" )	
+FieldDisplayNames ( "" ; "P_B::S_Max" )	
+GetNextSerialValue ( "" ; "P_B::S_Max" )	
+FieldType ( "" ; "P_B::S_SD" )	Summary Number Unindexed 1
+FieldComment ( "" ; "P_B::S_SD" )	
+FieldAnnotation ( "" ; "P_B::S_SD" )	
+FieldDisplayNames ( "" ; "P_B::S_SD" )	
+GetNextSerialValue ( "" ; "P_B::S_SD" )	
+FieldType ( "" ; "P_B::S_SDP" )	Summary Number Unindexed 1
+FieldComment ( "" ; "P_B::S_SDP" )	
+FieldAnnotation ( "" ; "P_B::S_SDP" )	
+FieldDisplayNames ( "" ; "P_B::S_SDP" )	
+GetNextSerialValue ( "" ; "P_B::S_SDP" )	
+FieldType ( "" ; "P_B::S_Frac" )	Summary Number Unindexed 1
+FieldComment ( "" ; "P_B::S_Frac" )	
+FieldAnnotation ( "" ; "P_B::S_Frac" )	
+FieldDisplayNames ( "" ; "P_B::S_Frac" )	
+GetNextSerialValue ( "" ; "P_B::S_Frac" )	
+FieldType ( "" ; "P_B::S_FracSub" )	Summary Number Unindexed 1
+FieldComment ( "" ; "P_B::S_FracSub" )	
+FieldAnnotation ( "" ; "P_B::S_FracSub" )	
+FieldDisplayNames ( "" ; "P_B::S_FracSub" )	
+GetNextSerialValue ( "" ; "P_B::S_FracSub" )	
+FieldType ( "" ; "P_B::S_List" )	Summary Text Unindexed 1
+FieldComment ( "" ; "P_B::S_List" )	
+FieldAnnotation ( "" ; "P_B::S_List" )	
+FieldDisplayNames ( "" ; "P_B::S_List" )	
+GetNextSerialValue ( "" ; "P_B::S_List" )	
+FieldType ( "" ; "P_B::S_TotalReps" )	Summary Number Unindexed 3
+FieldComment ( "" ; "P_B::S_TotalReps" )	
+FieldAnnotation ( "" ; "P_B::S_TotalReps" )	
+FieldDisplayNames ( "" ; "P_B::S_TotalReps" )	
+GetNextSerialValue ( "" ; "P_B::S_TotalReps" )	
+FieldType ( "" ; "P_B::SER" )	Standard Text Indexed 1
+FieldComment ( "" ; "P_B::SER" )	
+FieldAnnotation ( "" ; "P_B::SER" )	
+FieldDisplayNames ( "" ; "P_B::SER" )	
+GetNextSerialValue ( "" ; "P_B::SER" )	A0007
+FieldType ( "" ; "P_B::SC" )	StoredCalc Number Indexed 1
+FieldComment ( "" ; "P_B::SC" )	comment of SC
+FieldAnnotation ( "" ; "P_B::SC" )	
+FieldDisplayNames ( "" ; "P_B::SC" )	
+GetNextSerialValue ( "" ; "P_B::SC" )	
+FieldType ( "" ; "P_B::GR" )	Global Number Unindexed 2
+FieldComment ( "" ; "P_B::GR" )	
+FieldAnnotation ( "" ; "P_B::GR" )	
+FieldDisplayNames ( "" ; "P_B::GR" )	
+GetNextSerialValue ( "" ; "P_B::GR" )	
+FieldType ( "" ; "P_B::C" )	Standard Container Unindexed 1
+FieldComment ( "" ; "P_B::C" )	
+FieldAnnotation ( "" ; "P_B::C" )	
+FieldDisplayNames ( "" ; "P_B::C" )	
+GetNextSerialValue ( "" ; "P_B::C" )	
+FieldType ( "" ; "P_B::TS" )	Standard Timestamp Indexed 1
+FieldComment ( "" ; "P_B::TS" )	
+FieldAnnotation ( "" ; "P_B::TS" )	
+FieldDisplayNames ( "" ; "P_B::TS" )	
+GetNextSerialValue ( "" ; "P_B::TS" )	
+FieldType ( "" ; "P_B::TM" )	Standard Time Unindexed 1
+FieldComment ( "" ; "P_B::TM" )	
+FieldAnnotation ( "" ; "P_B::TM" )	
+FieldDisplayNames ( "" ; "P_B::TM" )	
+GetNextSerialValue ( "" ; "P_B::TM" )	
+FieldType ( "" ; "P_B::GC" )	StoredCalc Text Unindexed 1
+FieldComment ( "" ; "P_B::GC" )	
+FieldAnnotation ( "" ; "P_B::GC" )	
+FieldDisplayNames ( "" ; "P_B::GC" )	
+GetNextSerialValue ( "" ; "P_B::GC" )	
+FieldType ( "" ; "P_B::RC" )	StoredCalc Number Unindexed 4
+FieldComment ( "" ; "P_B::RC" )	
+FieldAnnotation ( "" ; "P_B::RC" )	
+FieldDisplayNames ( "" ; "P_B::RC" )	
+GetNextSerialValue ( "" ; "P_B::RC" )	
+FieldType ( "" ; "P_B::SER2" )	Standard Number Unindexed 1
+FieldComment ( "" ; "P_B::SER2" )	
+FieldAnnotation ( "" ; "P_B::SER2" )	
+FieldDisplayNames ( "" ; "P_B::SER2" )	
+GetNextSerialValue ( "" ; "P_B::SER2" )	41
+FieldType ( "" ; "Tasks::Task" )	Standard Text Unindexed 1
+FieldComment ( "" ; "Tasks::Task" )	
+FieldAnnotation ( "" ; "Tasks::Task" )	
+FieldDisplayNames ( "" ; "Tasks::Task" )	
+GetNextSerialValue ( "" ; "Tasks::Task" )	
+FieldType ( "" ; "Tasks::Due Date" )	Standard Date Unindexed 1
+FieldComment ( "" ; "Tasks::Due Date" )	
+FieldAnnotation ( "" ; "Tasks::Due Date" )	
+FieldDisplayNames ( "" ; "Tasks::Due Date" )	
+GetNextSerialValue ( "" ; "Tasks::Due Date" )	
+FieldType ( "" ; "Tasks::Description" )	Standard Text Unindexed 1
+FieldComment ( "" ; "Tasks::Description" )	
+FieldAnnotation ( "" ; "Tasks::Description" )	
+FieldDisplayNames ( "" ; "Tasks::Description" )	
+GetNextSerialValue ( "" ; "Tasks::Description" )	
+FieldType ( "" ; "Tasks::Status" )	Standard Text Unindexed 1
+FieldComment ( "" ; "Tasks::Status" )	
+FieldAnnotation ( "" ; "Tasks::Status" )	
+FieldDisplayNames ( "" ; "Tasks::Status" )	
+GetNextSerialValue ( "" ; "Tasks::Status" )	
+FieldType ( "" ; "Tasks::Category" )	Standard Text Unindexed 1
+FieldComment ( "" ; "Tasks::Category" )	
+FieldAnnotation ( "" ; "Tasks::Category" )	
+FieldDisplayNames ( "" ; "Tasks::Category" )	
+GetNextSerialValue ( "" ; "Tasks::Category" )	
+FieldType ( "" ; "Tasks::Completion Date" )	Standard Date Unindexed 1
+FieldComment ( "" ; "Tasks::Completion Date" )	
+FieldAnnotation ( "" ; "Tasks::Completion Date" )	
+FieldDisplayNames ( "" ; "Tasks::Completion Date" )	
+GetNextSerialValue ( "" ; "Tasks::Completion Date" )	
+FieldType ( "" ; "Tasks::Priority" )	Standard Text Unindexed 1
+FieldComment ( "" ; "Tasks::Priority" )	
+FieldAnnotation ( "" ; "Tasks::Priority" )	
+FieldDisplayNames ( "" ; "Tasks::Priority" )	
+GetNextSerialValue ( "" ; "Tasks::Priority" )	
+FieldType ( "" ; "Tasks::PrimaryKey" )	Standard Text Indexed 1
+FieldComment ( "" ; "Tasks::PrimaryKey" )	Unique identifier of each record in this table
+FieldAnnotation ( "" ; "Tasks::PrimaryKey" )	
+FieldDisplayNames ( "" ; "Tasks::PrimaryKey" )	
+GetNextSerialValue ( "" ; "Tasks::PrimaryKey" )	
+FieldType ( "" ; "Tasks::CreatedBy" )	Standard Text Unindexed 1
+FieldComment ( "" ; "Tasks::CreatedBy" )	Account name of the user who created each record
+FieldAnnotation ( "" ; "Tasks::CreatedBy" )	
+FieldDisplayNames ( "" ; "Tasks::CreatedBy" )	
+GetNextSerialValue ( "" ; "Tasks::CreatedBy" )	
+FieldType ( "" ; "Tasks::ModifiedBy" )	Standard Text Unindexed 1
+FieldComment ( "" ; "Tasks::ModifiedBy" )	Account name of the user who last modified each record
+FieldAnnotation ( "" ; "Tasks::ModifiedBy" )	
+FieldDisplayNames ( "" ; "Tasks::ModifiedBy" )	
+GetNextSerialValue ( "" ; "Tasks::ModifiedBy" )	
+FieldType ( "" ; "Tasks::CreationTimestamp" )	Standard Timestamp Unindexed 1
+FieldComment ( "" ; "Tasks::CreationTimestamp" )	Date and time each record was created
+FieldAnnotation ( "" ; "Tasks::CreationTimestamp" )	
+FieldDisplayNames ( "" ; "Tasks::CreationTimestamp" )	
+GetNextSerialValue ( "" ; "Tasks::CreationTimestamp" )	
+FieldType ( "" ; "Tasks::ModificationTimestamp" )	Standard Timestamp Unindexed 1
+FieldComment ( "" ; "Tasks::ModificationTimestamp" )	Date and time each record was last modified
+FieldAnnotation ( "" ; "Tasks::ModificationTimestamp" )	
+FieldDisplayNames ( "" ; "Tasks::ModificationTimestamp" )	
+GetNextSerialValue ( "" ; "Tasks::ModificationTimestamp" )	
+FieldType ( "" ; "Tasks::N" )	Standard Number Unindexed 1
+FieldComment ( "" ; "Tasks::N" )	a number
+FieldAnnotation ( "" ; "Tasks::N" )	
+FieldDisplayNames ( "" ; "Tasks::N" )	
+GetNextSerialValue ( "" ; "Tasks::N" )	
+FieldType ( "" ; "Tasks::W" )	Standard Number Unindexed 1
+FieldComment ( "" ; "Tasks::W" )	
+FieldAnnotation ( "" ; "Tasks::W" )	
+FieldDisplayNames ( "" ; "Tasks::W" )	
+GetNextSerialValue ( "" ; "Tasks::W" )	
+FieldType ( "" ; "Tasks::NR" )	Standard Number Unindexed 3
+FieldComment ( "" ; "Tasks::NR" )	
+FieldAnnotation ( "" ; "Tasks::NR" )	
+FieldDisplayNames ( "" ; "Tasks::NR" )	
+GetNextSerialValue ( "" ; "Tasks::NR" )	
+FieldType ( "" ; "Tasks::U" )	UnstoredCalc Number Unindexed 1
+FieldComment ( "" ; "Tasks::U" )	
+FieldAnnotation ( "" ; "Tasks::U" )	
+FieldDisplayNames ( "" ; "Tasks::U" )	
+GetNextSerialValue ( "" ; "Tasks::U" )	
+FieldType ( "" ; "Tasks::UT" )	UnstoredCalc Text Unindexed 1
+FieldComment ( "" ; "Tasks::UT" )	
+FieldAnnotation ( "" ; "Tasks::UT" )	
+FieldDisplayNames ( "" ; "Tasks::UT" )	
+GetNextSerialValue ( "" ; "Tasks::UT" )	
+FieldType ( "" ; "Tasks::G" )	Global Text Unindexed 1
+FieldComment ( "" ; "Tasks::G" )	
+FieldAnnotation ( "" ; "Tasks::G" )	
+FieldDisplayNames ( "" ; "Tasks::G" )	
+GetNextSerialValue ( "" ; "Tasks::G" )	
+FieldType ( "" ; "Tasks::S_Total" )	Summary Number Unindexed 1
+FieldComment ( "" ; "Tasks::S_Total" )	
+FieldAnnotation ( "" ; "Tasks::S_Total" )	
+FieldDisplayNames ( "" ; "Tasks::S_Total" )	
+GetNextSerialValue ( "" ; "Tasks::S_Total" )	
+FieldType ( "" ; "Tasks::S_RunTotal" )	Summary Number Unindexed 1
+FieldComment ( "" ; "Tasks::S_RunTotal" )	
+FieldAnnotation ( "" ; "Tasks::S_RunTotal" )	
+FieldDisplayNames ( "" ; "Tasks::S_RunTotal" )	
+GetNextSerialValue ( "" ; "Tasks::S_RunTotal" )	
+FieldType ( "" ; "Tasks::S_Avg" )	Summary Number Unindexed 1
+FieldComment ( "" ; "Tasks::S_Avg" )	
+FieldAnnotation ( "" ; "Tasks::S_Avg" )	
+FieldDisplayNames ( "" ; "Tasks::S_Avg" )	
+GetNextSerialValue ( "" ; "Tasks::S_Avg" )	
+FieldType ( "" ; "Tasks::S_WAvg" )	Summary Number Unindexed 1
+FieldComment ( "" ; "Tasks::S_WAvg" )	
+FieldAnnotation ( "" ; "Tasks::S_WAvg" )	
+FieldDisplayNames ( "" ; "Tasks::S_WAvg" )	
+GetNextSerialValue ( "" ; "Tasks::S_WAvg" )	
+FieldType ( "" ; "Tasks::S_Count" )	Summary Number Unindexed 1
+FieldComment ( "" ; "Tasks::S_Count" )	
+FieldAnnotation ( "" ; "Tasks::S_Count" )	
+FieldDisplayNames ( "" ; "Tasks::S_Count" )	
+GetNextSerialValue ( "" ; "Tasks::S_Count" )	
+FieldType ( "" ; "Tasks::S_RunCount" )	Summary Number Unindexed 1
+FieldComment ( "" ; "Tasks::S_RunCount" )	
+FieldAnnotation ( "" ; "Tasks::S_RunCount" )	
+FieldDisplayNames ( "" ; "Tasks::S_RunCount" )	
+GetNextSerialValue ( "" ; "Tasks::S_RunCount" )	
+FieldType ( "" ; "Tasks::S_Min" )	Summary Number Unindexed 1
+FieldComment ( "" ; "Tasks::S_Min" )	
+FieldAnnotation ( "" ; "Tasks::S_Min" )	
+FieldDisplayNames ( "" ; "Tasks::S_Min" )	
+GetNextSerialValue ( "" ; "Tasks::S_Min" )	
+FieldType ( "" ; "Tasks::S_Max" )	Summary Number Unindexed 1
+FieldComment ( "" ; "Tasks::S_Max" )	
+FieldAnnotation ( "" ; "Tasks::S_Max" )	
+FieldDisplayNames ( "" ; "Tasks::S_Max" )	
+GetNextSerialValue ( "" ; "Tasks::S_Max" )	
+FieldType ( "" ; "Tasks::S_SD" )	Summary Number Unindexed 1
+FieldComment ( "" ; "Tasks::S_SD" )	
+FieldAnnotation ( "" ; "Tasks::S_SD" )	
+FieldDisplayNames ( "" ; "Tasks::S_SD" )	
+GetNextSerialValue ( "" ; "Tasks::S_SD" )	
+FieldType ( "" ; "Tasks::S_SDP" )	Summary Number Unindexed 1
+FieldComment ( "" ; "Tasks::S_SDP" )	
+FieldAnnotation ( "" ; "Tasks::S_SDP" )	
+FieldDisplayNames ( "" ; "Tasks::S_SDP" )	
+GetNextSerialValue ( "" ; "Tasks::S_SDP" )	
+FieldType ( "" ; "Tasks::S_Frac" )	Summary Number Unindexed 1
+FieldComment ( "" ; "Tasks::S_Frac" )	
+FieldAnnotation ( "" ; "Tasks::S_Frac" )	
+FieldDisplayNames ( "" ; "Tasks::S_Frac" )	
+GetNextSerialValue ( "" ; "Tasks::S_Frac" )	
+FieldType ( "" ; "Tasks::S_FracSub" )	Summary Number Unindexed 1
+FieldComment ( "" ; "Tasks::S_FracSub" )	
+FieldAnnotation ( "" ; "Tasks::S_FracSub" )	
+FieldDisplayNames ( "" ; "Tasks::S_FracSub" )	
+GetNextSerialValue ( "" ; "Tasks::S_FracSub" )	
+FieldType ( "" ; "Tasks::S_List" )	Summary Text Unindexed 1
+FieldComment ( "" ; "Tasks::S_List" )	
+FieldAnnotation ( "" ; "Tasks::S_List" )	
+FieldDisplayNames ( "" ; "Tasks::S_List" )	
+GetNextSerialValue ( "" ; "Tasks::S_List" )	
+FieldType ( "" ; "Tasks::S_TotalReps" )	Summary Number Unindexed 3
+FieldComment ( "" ; "Tasks::S_TotalReps" )	
+FieldAnnotation ( "" ; "Tasks::S_TotalReps" )	
+FieldDisplayNames ( "" ; "Tasks::S_TotalReps" )	
+GetNextSerialValue ( "" ; "Tasks::S_TotalReps" )	
+FieldType ( "" ; "Tasks::SER" )	Standard Text Indexed 1
+FieldComment ( "" ; "Tasks::SER" )	
+FieldAnnotation ( "" ; "Tasks::SER" )	
+FieldDisplayNames ( "" ; "Tasks::SER" )	
+GetNextSerialValue ( "" ; "Tasks::SER" )	A0007
+FieldType ( "" ; "Tasks::SC" )	StoredCalc Number Indexed 1
+FieldComment ( "" ; "Tasks::SC" )	comment of SC
+FieldAnnotation ( "" ; "Tasks::SC" )	
+FieldDisplayNames ( "" ; "Tasks::SC" )	
+GetNextSerialValue ( "" ; "Tasks::SC" )	
+FieldType ( "" ; "Tasks::GR" )	Global Number Unindexed 2
+FieldComment ( "" ; "Tasks::GR" )	
+FieldAnnotation ( "" ; "Tasks::GR" )	
+FieldDisplayNames ( "" ; "Tasks::GR" )	
+GetNextSerialValue ( "" ; "Tasks::GR" )	
+FieldType ( "" ; "Tasks::C" )	Standard Container Unindexed 1
+FieldComment ( "" ; "Tasks::C" )	
+FieldAnnotation ( "" ; "Tasks::C" )	
+FieldDisplayNames ( "" ; "Tasks::C" )	
+GetNextSerialValue ( "" ; "Tasks::C" )	
+FieldType ( "" ; "Tasks::TS" )	Standard Timestamp Indexed 1
+FieldComment ( "" ; "Tasks::TS" )	
+FieldAnnotation ( "" ; "Tasks::TS" )	
+FieldDisplayNames ( "" ; "Tasks::TS" )	
+GetNextSerialValue ( "" ; "Tasks::TS" )	
+FieldType ( "" ; "Tasks::TM" )	Standard Time Unindexed 1
+FieldComment ( "" ; "Tasks::TM" )	
+FieldAnnotation ( "" ; "Tasks::TM" )	
+FieldDisplayNames ( "" ; "Tasks::TM" )	
+GetNextSerialValue ( "" ; "Tasks::TM" )	
+FieldType ( "" ; "Tasks::GC" )	StoredCalc Text Unindexed 1
+FieldComment ( "" ; "Tasks::GC" )	
+FieldAnnotation ( "" ; "Tasks::GC" )	
+FieldDisplayNames ( "" ; "Tasks::GC" )	
+GetNextSerialValue ( "" ; "Tasks::GC" )	
+FieldType ( "" ; "Tasks::RC" )	StoredCalc Number Unindexed 4
+FieldComment ( "" ; "Tasks::RC" )	
+FieldAnnotation ( "" ; "Tasks::RC" )	
+FieldDisplayNames ( "" ; "Tasks::RC" )	
+GetNextSerialValue ( "" ; "Tasks::RC" )	
+FieldType ( "" ; "Tasks::SER2" )	Standard Number Unindexed 1
+FieldComment ( "" ; "Tasks::SER2" )	
+FieldAnnotation ( "" ; "Tasks::SER2" )	
+FieldDisplayNames ( "" ; "Tasks::SER2" )	
+GetNextSerialValue ( "" ; "Tasks::SER2" )	41
+FieldType ( "" ; "日本::Task" )	Standard Text Unindexed 1
+FieldComment ( "" ; "日本::Task" )	
+FieldAnnotation ( "" ; "日本::Task" )	
+FieldDisplayNames ( "" ; "日本::Task" )	
+GetNextSerialValue ( "" ; "日本::Task" )	
+FieldType ( "" ; "日本::Due Date" )	Standard Date Unindexed 1
+FieldComment ( "" ; "日本::Due Date" )	
+FieldAnnotation ( "" ; "日本::Due Date" )	
+FieldDisplayNames ( "" ; "日本::Due Date" )	
+GetNextSerialValue ( "" ; "日本::Due Date" )	
+FieldType ( "" ; "日本::Description" )	Standard Text Unindexed 1
+FieldComment ( "" ; "日本::Description" )	
+FieldAnnotation ( "" ; "日本::Description" )	
+FieldDisplayNames ( "" ; "日本::Description" )	
+GetNextSerialValue ( "" ; "日本::Description" )	
+FieldType ( "" ; "日本::Status" )	Standard Text Unindexed 1
+FieldComment ( "" ; "日本::Status" )	
+FieldAnnotation ( "" ; "日本::Status" )	
+FieldDisplayNames ( "" ; "日本::Status" )	
+GetNextSerialValue ( "" ; "日本::Status" )	
+FieldType ( "" ; "日本::Category" )	Standard Text Unindexed 1
+FieldComment ( "" ; "日本::Category" )	
+FieldAnnotation ( "" ; "日本::Category" )	
+FieldDisplayNames ( "" ; "日本::Category" )	
+GetNextSerialValue ( "" ; "日本::Category" )	
+FieldType ( "" ; "日本::Completion Date" )	Standard Date Unindexed 1
+FieldComment ( "" ; "日本::Completion Date" )	
+FieldAnnotation ( "" ; "日本::Completion Date" )	
+FieldDisplayNames ( "" ; "日本::Completion Date" )	
+GetNextSerialValue ( "" ; "日本::Completion Date" )	
+FieldType ( "" ; "日本::Priority" )	Standard Text Unindexed 1
+FieldComment ( "" ; "日本::Priority" )	
+FieldAnnotation ( "" ; "日本::Priority" )	
+FieldDisplayNames ( "" ; "日本::Priority" )	
+GetNextSerialValue ( "" ; "日本::Priority" )	
+FieldType ( "" ; "日本::PrimaryKey" )	Standard Text Indexed 1
+FieldComment ( "" ; "日本::PrimaryKey" )	Unique identifier of each record in this table
+FieldAnnotation ( "" ; "日本::PrimaryKey" )	
+FieldDisplayNames ( "" ; "日本::PrimaryKey" )	
+GetNextSerialValue ( "" ; "日本::PrimaryKey" )	
+FieldType ( "" ; "日本::CreatedBy" )	Standard Text Unindexed 1
+FieldComment ( "" ; "日本::CreatedBy" )	Account name of the user who created each record
+FieldAnnotation ( "" ; "日本::CreatedBy" )	
+FieldDisplayNames ( "" ; "日本::CreatedBy" )	
+GetNextSerialValue ( "" ; "日本::CreatedBy" )	
+FieldType ( "" ; "日本::ModifiedBy" )	Standard Text Unindexed 1
+FieldComment ( "" ; "日本::ModifiedBy" )	Account name of the user who last modified each record
+FieldAnnotation ( "" ; "日本::ModifiedBy" )	
+FieldDisplayNames ( "" ; "日本::ModifiedBy" )	
+GetNextSerialValue ( "" ; "日本::ModifiedBy" )	
+FieldType ( "" ; "日本::CreationTimestamp" )	Standard Timestamp Unindexed 1
+FieldComment ( "" ; "日本::CreationTimestamp" )	Date and time each record was created
+FieldAnnotation ( "" ; "日本::CreationTimestamp" )	
+FieldDisplayNames ( "" ; "日本::CreationTimestamp" )	
+GetNextSerialValue ( "" ; "日本::CreationTimestamp" )	
+FieldType ( "" ; "日本::ModificationTimestamp" )	Standard Timestamp Unindexed 1
+FieldComment ( "" ; "日本::ModificationTimestamp" )	Date and time each record was last modified
+FieldAnnotation ( "" ; "日本::ModificationTimestamp" )	
+FieldDisplayNames ( "" ; "日本::ModificationTimestamp" )	
+GetNextSerialValue ( "" ; "日本::ModificationTimestamp" )	
+FieldType ( "" ; "日本::N" )	Standard Number Unindexed 1
+FieldComment ( "" ; "日本::N" )	a number
+FieldAnnotation ( "" ; "日本::N" )	
+FieldDisplayNames ( "" ; "日本::N" )	
+GetNextSerialValue ( "" ; "日本::N" )	
+FieldType ( "" ; "日本::W" )	Standard Number Unindexed 1
+FieldComment ( "" ; "日本::W" )	
+FieldAnnotation ( "" ; "日本::W" )	
+FieldDisplayNames ( "" ; "日本::W" )	
+GetNextSerialValue ( "" ; "日本::W" )	
+FieldType ( "" ; "日本::NR" )	Standard Number Unindexed 3
+FieldComment ( "" ; "日本::NR" )	
+FieldAnnotation ( "" ; "日本::NR" )	
+FieldDisplayNames ( "" ; "日本::NR" )	
+GetNextSerialValue ( "" ; "日本::NR" )	
+FieldType ( "" ; "日本::U" )	UnstoredCalc Number Unindexed 1
+FieldComment ( "" ; "日本::U" )	
+FieldAnnotation ( "" ; "日本::U" )	
+FieldDisplayNames ( "" ; "日本::U" )	
+GetNextSerialValue ( "" ; "日本::U" )	
+FieldType ( "" ; "日本::UT" )	UnstoredCalc Text Unindexed 1
+FieldComment ( "" ; "日本::UT" )	
+FieldAnnotation ( "" ; "日本::UT" )	
+FieldDisplayNames ( "" ; "日本::UT" )	
+GetNextSerialValue ( "" ; "日本::UT" )	
+FieldType ( "" ; "日本::G" )	Global Text Unindexed 1
+FieldComment ( "" ; "日本::G" )	
+FieldAnnotation ( "" ; "日本::G" )	
+FieldDisplayNames ( "" ; "日本::G" )	
+GetNextSerialValue ( "" ; "日本::G" )	
+FieldType ( "" ; "日本::S_Total" )	Summary Number Unindexed 1
+FieldComment ( "" ; "日本::S_Total" )	
+FieldAnnotation ( "" ; "日本::S_Total" )	
+FieldDisplayNames ( "" ; "日本::S_Total" )	
+GetNextSerialValue ( "" ; "日本::S_Total" )	
+FieldType ( "" ; "日本::S_RunTotal" )	Summary Number Unindexed 1
+FieldComment ( "" ; "日本::S_RunTotal" )	
+FieldAnnotation ( "" ; "日本::S_RunTotal" )	
+FieldDisplayNames ( "" ; "日本::S_RunTotal" )	
+GetNextSerialValue ( "" ; "日本::S_RunTotal" )	
+FieldType ( "" ; "日本::S_Avg" )	Summary Number Unindexed 1
+FieldComment ( "" ; "日本::S_Avg" )	
+FieldAnnotation ( "" ; "日本::S_Avg" )	
+FieldDisplayNames ( "" ; "日本::S_Avg" )	
+GetNextSerialValue ( "" ; "日本::S_Avg" )	
+FieldType ( "" ; "日本::S_WAvg" )	Summary Number Unindexed 1
+FieldComment ( "" ; "日本::S_WAvg" )	
+FieldAnnotation ( "" ; "日本::S_WAvg" )	
+FieldDisplayNames ( "" ; "日本::S_WAvg" )	
+GetNextSerialValue ( "" ; "日本::S_WAvg" )	
+FieldType ( "" ; "日本::S_Count" )	Summary Number Unindexed 1
+FieldComment ( "" ; "日本::S_Count" )	
+FieldAnnotation ( "" ; "日本::S_Count" )	
+FieldDisplayNames ( "" ; "日本::S_Count" )	
+GetNextSerialValue ( "" ; "日本::S_Count" )	
+FieldType ( "" ; "日本::S_RunCount" )	Summary Number Unindexed 1
+FieldComment ( "" ; "日本::S_RunCount" )	
+FieldAnnotation ( "" ; "日本::S_RunCount" )	
+FieldDisplayNames ( "" ; "日本::S_RunCount" )	
+GetNextSerialValue ( "" ; "日本::S_RunCount" )	
+FieldType ( "" ; "日本::S_Min" )	Summary Number Unindexed 1
+FieldComment ( "" ; "日本::S_Min" )	
+FieldAnnotation ( "" ; "日本::S_Min" )	
+FieldDisplayNames ( "" ; "日本::S_Min" )	
+GetNextSerialValue ( "" ; "日本::S_Min" )	
+FieldType ( "" ; "日本::S_Max" )	Summary Number Unindexed 1
+FieldComment ( "" ; "日本::S_Max" )	
+FieldAnnotation ( "" ; "日本::S_Max" )	
+FieldDisplayNames ( "" ; "日本::S_Max" )	
+GetNextSerialValue ( "" ; "日本::S_Max" )	
+FieldType ( "" ; "日本::S_SD" )	Summary Number Unindexed 1
+FieldComment ( "" ; "日本::S_SD" )	
+FieldAnnotation ( "" ; "日本::S_SD" )	
+FieldDisplayNames ( "" ; "日本::S_SD" )	
+GetNextSerialValue ( "" ; "日本::S_SD" )	
+FieldType ( "" ; "日本::S_SDP" )	Summary Number Unindexed 1
+FieldComment ( "" ; "日本::S_SDP" )	
+FieldAnnotation ( "" ; "日本::S_SDP" )	
+FieldDisplayNames ( "" ; "日本::S_SDP" )	
+GetNextSerialValue ( "" ; "日本::S_SDP" )	
+FieldType ( "" ; "日本::S_Frac" )	Summary Number Unindexed 1
+FieldComment ( "" ; "日本::S_Frac" )	
+FieldAnnotation ( "" ; "日本::S_Frac" )	
+FieldDisplayNames ( "" ; "日本::S_Frac" )	
+GetNextSerialValue ( "" ; "日本::S_Frac" )	
+FieldType ( "" ; "日本::S_FracSub" )	Summary Number Unindexed 1
+FieldComment ( "" ; "日本::S_FracSub" )	
+FieldAnnotation ( "" ; "日本::S_FracSub" )	
+FieldDisplayNames ( "" ; "日本::S_FracSub" )	
+GetNextSerialValue ( "" ; "日本::S_FracSub" )	
+FieldType ( "" ; "日本::S_List" )	Summary Text Unindexed 1
+FieldComment ( "" ; "日本::S_List" )	
+FieldAnnotation ( "" ; "日本::S_List" )	
+FieldDisplayNames ( "" ; "日本::S_List" )	
+GetNextSerialValue ( "" ; "日本::S_List" )	
+FieldType ( "" ; "日本::S_TotalReps" )	Summary Number Unindexed 3
+FieldComment ( "" ; "日本::S_TotalReps" )	
+FieldAnnotation ( "" ; "日本::S_TotalReps" )	
+FieldDisplayNames ( "" ; "日本::S_TotalReps" )	
+GetNextSerialValue ( "" ; "日本::S_TotalReps" )	
+FieldType ( "" ; "日本::SER" )	Standard Text Indexed 1
+FieldComment ( "" ; "日本::SER" )	
+FieldAnnotation ( "" ; "日本::SER" )	
+FieldDisplayNames ( "" ; "日本::SER" )	
+GetNextSerialValue ( "" ; "日本::SER" )	A0007
+FieldType ( "" ; "日本::SC" )	StoredCalc Number Indexed 1
+FieldComment ( "" ; "日本::SC" )	comment of SC
+FieldAnnotation ( "" ; "日本::SC" )	
+FieldDisplayNames ( "" ; "日本::SC" )	
+GetNextSerialValue ( "" ; "日本::SC" )	
+FieldType ( "" ; "日本::GR" )	Global Number Unindexed 2
+FieldComment ( "" ; "日本::GR" )	
+FieldAnnotation ( "" ; "日本::GR" )	
+FieldDisplayNames ( "" ; "日本::GR" )	
+GetNextSerialValue ( "" ; "日本::GR" )	
+FieldType ( "" ; "日本::C" )	Standard Container Unindexed 1
+FieldComment ( "" ; "日本::C" )	
+FieldAnnotation ( "" ; "日本::C" )	
+FieldDisplayNames ( "" ; "日本::C" )	
+GetNextSerialValue ( "" ; "日本::C" )	
+FieldType ( "" ; "日本::TS" )	Standard Timestamp Indexed 1
+FieldComment ( "" ; "日本::TS" )	
+FieldAnnotation ( "" ; "日本::TS" )	
+FieldDisplayNames ( "" ; "日本::TS" )	
+GetNextSerialValue ( "" ; "日本::TS" )	
+FieldType ( "" ; "日本::TM" )	Standard Time Unindexed 1
+FieldComment ( "" ; "日本::TM" )	
+FieldAnnotation ( "" ; "日本::TM" )	
+FieldDisplayNames ( "" ; "日本::TM" )	
+GetNextSerialValue ( "" ; "日本::TM" )	
+FieldType ( "" ; "日本::GC" )	StoredCalc Text Unindexed 1
+FieldComment ( "" ; "日本::GC" )	
+FieldAnnotation ( "" ; "日本::GC" )	
+FieldDisplayNames ( "" ; "日本::GC" )	
+GetNextSerialValue ( "" ; "日本::GC" )	
+FieldType ( "" ; "日本::RC" )	StoredCalc Number Unindexed 4
+FieldComment ( "" ; "日本::RC" )	
+FieldAnnotation ( "" ; "日本::RC" )	
+FieldDisplayNames ( "" ; "日本::RC" )	
+GetNextSerialValue ( "" ; "日本::RC" )	
+FieldType ( "" ; "日本::SER2" )	Standard Number Unindexed 1
+FieldComment ( "" ; "日本::SER2" )	
+FieldAnnotation ( "" ; "日本::SER2" )	
+FieldDisplayNames ( "" ; "日本::SER2" )	
+GetNextSerialValue ( "" ; "日本::SER2" )	41
+FieldType ( "" ; "Task" )	
+FieldComment ( "" ; "Task" )	
+GetNextSerialValue ( "" ; "Task" )	
+FieldType ( "" ; "Due Date" )	
+FieldComment ( "" ; "Due Date" )	
+GetNextSerialValue ( "" ; "Due Date" )	
+FieldType ( "" ; "Description" )	
+FieldComment ( "" ; "Description" )	
+GetNextSerialValue ( "" ; "Description" )	
+FieldType ( "" ; "Status" )	
+FieldComment ( "" ; "Status" )	
+GetNextSerialValue ( "" ; "Status" )	
+FieldType ( "" ; "no such" )	
+FieldComment ( "" ; "" )	
+FieldStyle ( "" ; "Task List" ; "Due Date" )	Calendar 
+FieldRepetitions ( "" ; "Task List" ; "Due Date" )	1 vertical
+FieldBounds ( "" ; "Task List" ; "Due Date" )	776 112 976 156 0
+FieldStyle ( "" ; "Task List" ; "Category" )	Popupmenu Category
+FieldRepetitions ( "" ; "Task List" ; "Category" )	1 vertical
+FieldBounds ( "" ; "Task List" ; "Category" )	542 112 772 156 0
+FieldStyle ( "" ; "Task List" ; "Status" )	Popupmenu Status
+FieldRepetitions ( "" ; "Task List" ; "Status" )	1 vertical
+FieldBounds ( "" ; "Task List" ; "Status" )	308 112 538 156 0
+FieldStyle ( "" ; "Task List" ; "Task" )	Standard
+FieldRepetitions ( "" ; "Task List" ; "Task" )	1 vertical
+FieldBounds ( "" ; "Task List" ; "Task" )	9 112 304 156 0
+FieldStyle ( "" ; "Task List" ; "no such" )	
+FieldBounds ( "" ; "Task List" ; "no such" )	
+FieldStyle ( "" ; "Task Details" ; "Description" )	Standard
+FieldRepetitions ( "" ; "Task Details" ; "Description" )	1 vertical
+FieldBounds ( "" ; "Task Details" ; "Description" )	700 492 991 536 0
+FieldStyle ( "" ; "Task Details" ; "Attachments::Description" )	Standard
+FieldRepetitions ( "" ; "Task Details" ; "Attachments::Description" )	1 vertical
+FieldBounds ( "" ; "Task Details" ; "Attachments::Description" )	795 172 981 236 0
+FieldStyle ( "" ; "Task Details" ; "Attachments::Attachment" )	Standard
+FieldRepetitions ( "" ; "Task Details" ; "Attachments::Attachment" )	1 vertical
+FieldBounds ( "" ; "Task Details" ; "Attachments::Attachment" )	727 172 791 236 0
+FieldStyle ( "" ; "Task Details" ; "Assignees::Email" )	Standard
+FieldRepetitions ( "" ; "Task Details" ; "Assignees::Email" )	1 vertical
+FieldBounds ( "" ; "Task Details" ; "Assignees::Email" )	394 220 647 264 0
+FieldStyle ( "" ; "Task Details" ; "Assignees::Name" )	Standard
+FieldRepetitions ( "" ; "Task Details" ; "Assignees::Name" )	1 vertical
+FieldBounds ( "" ; "Task Details" ; "Assignees::Name" )	394 172 647 216 0
+FieldStyle ( "" ; "Task Details" ; "Completion Date" )	Calendar 
+FieldRepetitions ( "" ; "Task Details" ; "Completion Date" )	1 vertical
+FieldBounds ( "" ; "Task Details" ; "Completion Date" )	32 483 323 527 0
+FieldStyle ( "" ; "Task Details" ; "Status" )	Popupmenu Status
+FieldRepetitions ( "" ; "Task Details" ; "Status" )	1 vertical
+FieldBounds ( "" ; "Task Details" ; "Status" )	32 398 323 442 0
+FieldStyle ( "" ; "Task Details" ; "Priority" )	Popupmenu Priority
+FieldRepetitions ( "" ; "Task Details" ; "Priority" )	1 vertical
+FieldBounds ( "" ; "Task Details" ; "Priority" )	32 350 323 394 0
+FieldStyle ( "" ; "Task Details" ; "Category" )	Popupmenu Category
+FieldRepetitions ( "" ; "Task Details" ; "Category" )	1 vertical
+FieldBounds ( "" ; "Task Details" ; "Category" )	32 302 323 346 0
+FieldStyle ( "" ; "Task Details" ; "Due Date" )	Calendar 
+FieldRepetitions ( "" ; "Task Details" ; "Due Date" )	1 vertical
+FieldBounds ( "" ; "Task Details" ; "Due Date" )	32 243 323 287 0
+FieldStyle ( "" ; "Task Details" ; "Task" )	Standard
+FieldRepetitions ( "" ; "Task Details" ; "Task" )	1 vertical
+FieldBounds ( "" ; "Task Details" ; "Task" )	32 163 323 207 0
+FieldStyle ( "" ; "Task Details" ; "no such" )	
+FieldBounds ( "" ; "Task Details" ; "no such" )	
+FieldStyle ( "" ; "Assignee List" ; "Email" )	Standard
+FieldRepetitions ( "" ; "Assignee List" ; "Email" )	1 vertical
+FieldBounds ( "" ; "Assignee List" ; "Email" )	746 112 976 156 0
+FieldStyle ( "" ; "Assignee List" ; "Phone" )	Standard
+FieldRepetitions ( "" ; "Assignee List" ; "Phone" )	1 vertical
+FieldBounds ( "" ; "Assignee List" ; "Phone" )	564 112 742 156 0
+FieldStyle ( "" ; "Assignee List" ; "Last Name" )	Standard
+FieldRepetitions ( "" ; "Assignee List" ; "Last Name" )	1 vertical
+FieldBounds ( "" ; "Assignee List" ; "Last Name" )	330 112 560 156 0
+FieldStyle ( "" ; "Assignee List" ; "First Name" )	Standard
+FieldRepetitions ( "" ; "Assignee List" ; "First Name" )	1 vertical
+FieldBounds ( "" ; "Assignee List" ; "First Name" )	96 112 326 156 0
+FieldStyle ( "" ; "Assignee List" ; "Photo" )	Standard
+FieldRepetitions ( "" ; "Assignee List" ; "Photo" )	1 vertical
+FieldBounds ( "" ; "Assignee List" ; "Photo" )	9 112 89 156 0
+FieldStyle ( "" ; "Assignee List" ; "no such" )	
+FieldBounds ( "" ; "Assignee List" ; "no such" )	
+FieldStyle ( "" ; "Assignee Details" ; "Email" )	Standard
+FieldRepetitions ( "" ; "Assignee Details" ; "Email" )	1 vertical
+FieldBounds ( "" ; "Assignee Details" ; "Email" )	366 403 657 447 0
+FieldStyle ( "" ; "Assignee Details" ; "Phone" )	Standard
+FieldRepetitions ( "" ; "Assignee Details" ; "Phone" )	1 vertical
+FieldBounds ( "" ; "Assignee Details" ; "Phone" )	366 323 657 367 0
+FieldStyle ( "" ; "Assignee Details" ; "Group" )	Standard
+FieldRepetitions ( "" ; "Assignee Details" ; "Group" )	1 vertical
+FieldBounds ( "" ; "Assignee Details" ; "Group" )	366 243 657 287 0
+FieldStyle ( "" ; "Assignee Details" ; "Company" )	Popuplist Company
+FieldRepetitions ( "" ; "Assignee Details" ; "Company" )	1 vertical
+FieldBounds ( "" ; "Assignee Details" ; "Company" )	366 163 657 207 0
+FieldStyle ( "" ; "Assignee Details" ; "Last Name" )	Standard
+FieldRepetitions ( "" ; "Assignee Details" ; "Last Name" )	1 vertical
+FieldBounds ( "" ; "Assignee Details" ; "Last Name" )	32 441 323 485 0
+FieldStyle ( "" ; "Assignee Details" ; "First Name" )	Standard
+FieldRepetitions ( "" ; "Assignee Details" ; "First Name" )	1 vertical
+FieldBounds ( "" ; "Assignee Details" ; "First Name" )	32 393 323 437 0
+FieldStyle ( "" ; "Assignee Details" ; "Title" )	Popupmenu Title
+FieldRepetitions ( "" ; "Assignee Details" ; "Title" )	1 vertical
+FieldBounds ( "" ; "Assignee Details" ; "Title" )	32 345 323 389 0
+FieldStyle ( "" ; "Assignee Details" ; "Photo" )	Standard
+FieldRepetitions ( "" ; "Assignee Details" ; "Photo" )	1 vertical
+FieldBounds ( "" ; "Assignee Details" ; "Photo" )	15 116 340 331 0
+FieldStyle ( "" ; "Assignee Details" ; "no such" )	
+FieldBounds ( "" ; "Assignee Details" ; "no such" )	
+FieldStyle ( "" ; "Assignee Chooser" ; "Photo" )	Standard
+FieldRepetitions ( "" ; "Assignee Chooser" ; "Photo" )	1 vertical
+FieldBounds ( "" ; "Assignee Chooser" ; "Photo" )	9 112 89 156 0
+FieldStyle ( "" ; "Assignee Chooser" ; "no such" )	
+FieldBounds ( "" ; "Assignee Chooser" ; "no such" )	
+FieldStyle ( "" ; "Add Assignee" ; "Email" )	Standard
+FieldRepetitions ( "" ; "Add Assignee" ; "Email" )	1 vertical
+FieldBounds ( "" ; "Add Assignee" ; "Email" )	93 101 657 145 0
+FieldStyle ( "" ; "Add Assignee" ; "Last Name" )	Standard
+FieldRepetitions ( "" ; "Add Assignee" ; "Last Name" )	1 vertical
+FieldBounds ( "" ; "Add Assignee" ; "Last Name" )	377 53 657 97 0
+FieldStyle ( "" ; "Add Assignee" ; "First Name" )	Standard
+FieldRepetitions ( "" ; "Add Assignee" ; "First Name" )	1 vertical
+FieldBounds ( "" ; "Add Assignee" ; "First Name" )	93 53 373 97 0
+FieldStyle ( "" ; "Add Assignee" ; "Photo" )	Standard
+FieldRepetitions ( "" ; "Add Assignee" ; "Photo" )	1 vertical
+FieldBounds ( "" ; "Add Assignee" ; "Photo" )	9 53 89 97 0
+FieldStyle ( "" ; "Add Assignee" ; "no such" )	
+FieldBounds ( "" ; "Add Assignee" ; "no such" )	
+FieldStyle ( "" ; "Assignments" ; "AssigneeForeignKey" )	Standard
+FieldRepetitions ( "" ; "Assignments" ; "AssigneeForeignKey" )	1 vertical
+FieldBounds ( "" ; "Assignments" ; "AssigneeForeignKey" )	41 126 294 170 0
+FieldStyle ( "" ; "Assignments" ; "PrimaryKey" )	Standard
+FieldRepetitions ( "" ; "Assignments" ; "PrimaryKey" )	1 vertical
+FieldBounds ( "" ; "Assignments" ; "PrimaryKey" )	41 174 294 218 0
+FieldStyle ( "" ; "Assignments" ; "CreatedBy" )	Standard
+FieldRepetitions ( "" ; "Assignments" ; "CreatedBy" )	1 vertical
+FieldBounds ( "" ; "Assignments" ; "CreatedBy" )	41 270 294 314 0
+FieldStyle ( "" ; "Assignments" ; "ModifiedBy" )	Standard
+FieldRepetitions ( "" ; "Assignments" ; "ModifiedBy" )	1 vertical
+FieldBounds ( "" ; "Assignments" ; "ModifiedBy" )	41 366 294 410 0
+FieldStyle ( "" ; "Assignments" ; "TaskForeignKey" )	Standard
+FieldRepetitions ( "" ; "Assignments" ; "TaskForeignKey" )	1 vertical
+FieldBounds ( "" ; "Assignments" ; "TaskForeignKey" )	41 414 294 458 0
+FieldStyle ( "" ; "Assignments" ; "ModificationTimestamp" )	Standard
+FieldRepetitions ( "" ; "Assignments" ; "ModificationTimestamp" )	1 vertical
+FieldBounds ( "" ; "Assignments" ; "ModificationTimestamp" )	41 318 294 362 0
+FieldStyle ( "" ; "Assignments" ; "CreationTimestamp" )	Standard
+FieldRepetitions ( "" ; "Assignments" ; "CreationTimestamp" )	1 vertical
+FieldBounds ( "" ; "Assignments" ; "CreationTimestamp" )	41 222 294 266 0
+FieldStyle ( "" ; "Assignments" ; "no such" )	
+FieldBounds ( "" ; "Assignments" ; "no such" )	

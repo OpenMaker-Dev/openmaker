@@ -1,0 +1,46 @@
+[workspace]
+resolver = "2"
+members = [
+    "crates/om-giop",
+    "crates/om-scsu",
+    "crates/om-crypto",
+    "crates/om-rctransaction",
+    "crates/om-protocol",
+    "crates/om-session",
+    "crates/om-provider",
+    "crates/om-client",
+    "crates/om-data",
+    "crates/om-gui",
+    "crates/om-hbam",
+    "crates/om-layout",
+    "crates/om-formula",
+    "crates/om-scripts",
+    "crates/om-query",
+    "crates/om-collate",
+    "crates/om-calc",
+    "crates/om-sql",
+    "crates/om-server",
+    "crates/om-admin",
+    "crates/om-transfer",
+    "crates/om-url",
+    "crates/om-author",
+]
+
+[workspace.package]
+version = "0.0.0"
+edition = "2021"
+license = "MIT"
+# Keep the required compiler aligned with the stable toolchain used for checks.
+rust-version = "1.99"
+
+[workspace.lints.rust]
+unsafe_code = "forbid"
+
+[workspace.lints.clippy]
+all = { level = "warn", priority = -1 }
+# Temporary while #368 coordinates the newer-std-API migration across
+# active feature branches. Remove these style-lint allows with that work.
+unnecessary_map_or = "allow"
+chunks_exact_to_as_chunks = "allow"
+manual_is_multiple_of = "allow"
+manual_repeat_n = "allow"

@@ -1,0 +1,32 @@
+# q19: summary fields over data (execute-sql.md 12, S3). File: sumprobe, the
+# file-metadata.md probe (tools/file_metadata_probe.py --no-triggers
+# --find-fields on the Tasks template) after the setup script of
+# tools/fms-script-harness s16-client-finds ran: Tasks has six records in
+# creation order (Task, N, W, Status, Category): e 5 1 Pending Work,
+# a 1 2 Pending Home, d 4 3 Done Work, b 2 1 Done Home, (empty) - 1 Pending
+# Home, c 3 2 Pending Work. Summaries of file-metadata.md 5.2 (S_Total ...
+# S_TotalReps), unstored U = N * 2 and UT = Task & " " & Status. No record
+# context.
+ExecuteSQLe ( "SELECT Task, N, S_Total FROM Tasks" ; "|" ; "¶" )	0	1/1/0	e|5|15\ra|1|15\rd|4|15\rb|2|15\r||15\rc|3|15
+ExecuteSQLe ( "SELECT Task, S_Total FROM Tasks WHERE Status = 'Done'" ; "|" ; "¶" )	0	1/1/0	d|6\rb|6
+ExecuteSQLe ( "SELECT Task, S_Total FROM Tasks WHERE N > 2" ; "|" ; "¶" )	0	1/1/0	e|12\rd|12\rc|12
+ExecuteSQLe ( "SELECT Task, S_RunTotal, S_RunCount FROM Tasks" ; "|" ; "¶" )	0	1/1/0	e|5|1\ra|6|2\rd|10|3\rb|12|4\r|12|4\rc|15|5
+ExecuteSQLe ( "SELECT Task, S_RunTotal, S_RunCount FROM Tasks ORDER BY N DESC" ; "|" ; "¶" )	0	1/1/0	e|5|1\rd|10|3\rc|15|5\rb|12|4\ra|6|2\r|12|4
+ExecuteSQLe ( "SELECT Task, S_RunTotal, S_RunCount FROM Tasks WHERE Category = 'Work'" ; "|" ; "¶" )	0	1/1/0	e|5|1\rd|9|2\rc|12|3
+ExecuteSQLe ( "SELECT Task, S_Frac, S_FracSub FROM Tasks" ; "|" ; "¶" )	0	1/1/0	e|.3333333333333333|\ra|.0666666666666667|\rd|.2666666666666667|\rb|.1333333333333333|\r||\rc|.2|
+ExecuteSQLe ( "SELECT Task, S_Frac FROM Tasks WHERE Status = 'Done'" ; "|" ; "¶" )	0	1/1/0	d|.6666666666666667\rb|.3333333333333333
+ExecuteSQLe ( "SELECT S_Avg, S_WAvg, S_Count, S_Min, S_Max, S_SD, S_SDP FROM Tasks FETCH FIRST 1 ROWS ONLY" ; "|" ; "¶" )	0	1/1/0	5|5|1|5|5||0
+ExecuteSQLe ( "SELECT S_Avg, S_WAvg, S_Count, S_Min, S_Max FROM Tasks WHERE Status = 'Pending' FETCH FIRST 1 ROWS ONLY" ; "|" ; "¶" )	0	1/1/0	5|5|1|5|5
+ExecuteSQLe ( "SELECT S_List FROM Tasks FETCH FIRST 1 ROWS ONLY" ; "|" ; "¶" )	0	1/1/0	e
+ExecuteSQLe ( "SELECT S_List FROM Tasks WHERE Category = 'Home' FETCH FIRST 1 ROWS ONLY" ; "|" ; "¶" )	0	1/1/0	a
+ExecuteSQLe ( "SELECT Task, S_TotalReps FROM Tasks" ; "|" ; "¶" )	0	1/1/0	e|\ra|\rd|\rb|\r|\rc|
+ExecuteSQLe ( "SELECT COUNT(S_Total), MAX(S_Total), SUM(S_Total) FROM Tasks" ; "|" ; "¶" )	0	1/1/0	6|15|90
+ExecuteSQLe ( "SELECT Task FROM Tasks WHERE S_Total = 15" ; "|" ; "¶" )	0	1/1/0	e\ra\rd\rb\r\rc
+ExecuteSQLe ( "SELECT Task FROM Tasks WHERE S_Total IS NULL" ; "|" ; "¶" )	0	0/1/0	
+ExecuteSQLe ( "SELECT Task, S_Total FROM Tasks WHERE S_Total = 6" ; "|" ; "¶" )	0	0/1/0	
+ExecuteSQLe ( "SELECT a.Task, b.S_Total FROM Tasks a JOIN P_A b ON a.N = b.N" ; "|" ; "¶" )	0	1/1/0	e|15\ra|15\rd|15\rb|15\rc|15
+ExecuteSQLe ( "SELECT a.Task, b.S_Total FROM Tasks a JOIN P_A b ON a.N = b.N WHERE b.Status = 'Done'" ; "|" ; "¶" )	0	1/1/0	d|15\rb|15
+ExecuteSQLe ( "SELECT Status, MAX(S_Total) FROM Tasks GROUP BY Status" ; "|" ; "¶" )	0	1/1/0	Done|15\rPending|15
+ExecuteSQLe ( "SELECT Task, S_Total FROM Tasks WHERE Task IN ('a', 'b') OR N = 5" ; "|" ; "¶" )	0	1/1/0	e|8\ra|8\rb|8
+ExecuteSQLe ( "SELECT Task, U, UT FROM Tasks" ; "|" ; "¶" )	0	1/1/0	e|10|e Pending\ra|2|a Pending\rd|8|d Done\rb|4|b Done\r|| Pending\rc|6|c Pending
+ExecuteSQLe ( "SELECT Task FROM Tasks WHERE U > 5" ; "|" ; "¶" )	0	1/1/0	e\rd\rc

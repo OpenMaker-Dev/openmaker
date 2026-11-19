@@ -1,0 +1,567 @@
+# scan t exit: open 0 load 0 scan 0 commit 0; index:id=value (0-based): 0:141=0 1:141=0 2:68=4 3:103=0 4:125=6 5:103=0 6:125=8 7:103=0 8:125=10 9:103=0 10:125=12 11:90=0 12:125=14 13:1=0 14:70=0
+# scan t enter: open 0 load 0 scan 0 commit 0; index:id=value (0-based): 0:141=0 1:141=0 2:68=4 3:103=0 4:125=6 5:103=0 6:125=8 7:103=0 8:125=10 9:90=0 10:125=12 11:1=0 12:70=0
+# scan t commit: open 0 load 0 scan 0 commit 0; index:id=value (0-based): 0:141=0 1:141=0 2:68=4 3:103=0 4:125=6 5:103=0 6:125=8 7:90=0 8:125=10 9:1=0 10:70=0
+# scan t load: open 0 load 0 scan 0 commit 0; index:id=value (0-based): 0:141=0 1:141=0 2:68=4 3:103=0 4:125=6 5:103=0 6:125=8 7:90=0 8:70=0
+# scan t goto: open 0 load 0 scan 0 commit 0; index:id=value (0-based): 0:141=0 1:141=0 2:6=5 3:141=0 4:103=0
+# scan t goto after error: open 0 load 0 scan 0 commit 0; index:id=value (0-based): 0:141=0 1:141=0 2:1=0 3:6=5 4:141=0 5:103=0
+# scan t goto sub: open 0 load 0 scan 0 commit 0; index:id=value (0-based): 0:141=0 1:141=0 2:1=0 3:141=0 4:103=0
+# scan t goto inner: open 0 load 0 scan 0 commit 0; index:id=value (0-based): 0:6=5
+# scan t goto back: open 0 load 0 scan 0 commit 0; index:id=value (0-based): 0:141=0 1:141=0 2:6=5 3:6=5 4:141=0 5:103=0
+# scan t commit records: open 0 load 0 scan 0 commit 0; index:id=value (0-based): 0:141=0 1:141=0 2:7=0 3:76=0 4:75=0 5:141=0 6:103=0
+# scan t next: open 0 load 0 scan 0 commit 0; index:id=value (0-based): 0:141=0 1:141=0 2:6=5 3:141=0 4:16=4 5:141=0 6:103=0
+# scan t first: open 0 load 0 scan 0 commit 0; index:id=value (0-based): 0:141=0 1:141=0 2:6=5 3:141=0 4:16=1 5:141=0 6:103=0
+# scan t count: open 0 load 0 scan 0 commit 0; index:id=value (0-based): 0:103=0
+# scan: close 13
+t goto	true true	0	A Xtrue(Contact Details/0) Etrue(Contact List/0) L(0/0) B(Contact List/0/)	0	Contact List	0
+>	1	t goto	1	141	0	0	0	0
+>	1	t goto	2	141	0	0	0	0
+>	1	t goto	3	6	3000	0	0	0
+>	2	t exit	1	141	0	0	0	0
+>	2	t exit	2	141	0	0	0	0
+>	2	t exit	3	68	0	0	1	0
+>	2	t exit	4	103	0	0	1	0
+>	1	t goto	3	6	0	0	0	0
+>	3	t enter	1	141	0	0	0	0
+>	3	t enter	2	141	0	0	0	0
+>	3	t enter	3	68	0	0	1	0
+>	3	t enter	4	103	0	0	1	0
+>	2	t load	1	141	0	0	0	0
+>	2	t load	2	141	0	0	0	0
+>	2	t load	3	68	0	0	1	0
+>	2	t load	5	125	0	0	1	0
+>	2	t load	7	125	0	0	1	0
+>	2	t load	9	70	0	0	1	0
+>	1	t goto	4	141	0	0	0	0
+>	1	t goto	5	103	0	0	1	0
+t goto	false true	0	A Xfalse(Contact Details/0) B(Contact Details/20/)	0	Contact Details	0
+>	1	t goto	1	141	0	0	0	0
+>	1	t goto	2	141	0	0	0	0
+>	1	t goto	3	6	3000	0	0	0
+>	2	t exit	1	141	0	0	0	0
+>	2	t exit	2	141	0	0	0	0
+>	2	t exit	3	68	0	0	1	0
+>	2	t exit	5	125	0	0	1	0
+>	2	t exit	6	103	0	0	1	20
+>	1	t goto	4	141	0	0	0	0
+>	1	t goto	5	103	0	0	1	0
+t goto	text true	0	A Xtext(Contact Details/0) B(Contact Details/20/)	0	Contact Details	0
+>	1	t goto	1	141	0	0	0	0
+>	1	t goto	2	141	0	0	0	0
+>	1	t goto	3	6	3000	0	0	0
+>	2	t exit	1	141	0	0	0	0
+>	2	t exit	2	141	0	0	0	0
+>	2	t exit	3	68	0	0	1	0
+>	2	t exit	5	125	0	0	1	0
+>	2	t exit	7	125	0	0	1	0
+>	2	t exit	8	103	0	0	1	20
+>	1	t goto	4	141	0	0	0	0
+>	1	t goto	5	103	0	0	1	0
+t goto	empty true	0	A Xempty(Contact Details/0) B(Contact Details/20/)	0	Contact Details	0
+>	1	t goto	1	141	0	0	0	0
+>	1	t goto	2	141	0	0	0	0
+>	1	t goto	3	6	3000	0	0	0
+>	2	t exit	1	141	0	0	0	0
+>	2	t exit	2	141	0	0	0	0
+>	2	t exit	3	68	0	0	1	0
+>	2	t exit	5	125	0	0	1	0
+>	2	t exit	7	125	0	0	1	0
+>	2	t exit	9	125	0	0	1	0
+>	2	t exit	10	103	0	0	1	20
+>	1	t goto	4	141	0	0	0	0
+>	1	t goto	5	103	0	0	1	0
+t goto	none true	0	A Xnone(Contact Details/0) Etrue(Contact List/0) L(0/0) B(Contact List/0/)	0	Contact List	0
+>	1	t goto	1	141	0	0	0	0
+>	1	t goto	2	141	0	0	0	0
+>	1	t goto	3	6	3000	0	0	0
+>	2	t exit	1	141	0	0	0	0
+>	2	t exit	2	141	0	0	0	0
+>	2	t exit	3	68	0	0	1	0
+>	2	t exit	5	125	0	0	1	0
+>	2	t exit	7	125	0	0	1	0
+>	2	t exit	9	125	0	0	1	0
+>	2	t exit	11	125	0	0	1	0
+>	2	t exit	13	125	0	0	1	0
+>	2	t exit	15	70	0	0	1	0
+>	1	t goto	3	6	0	0	0	0
+>	3	t enter	1	141	0	0	0	0
+>	3	t enter	2	141	0	0	0	0
+>	3	t enter	3	68	0	0	1	0
+>	3	t enter	4	103	0	0	1	0
+>	2	t load	1	141	0	0	0	0
+>	2	t load	2	141	0	0	0	0
+>	2	t load	3	68	0	0	1	0
+>	2	t load	5	125	0	0	1	0
+>	2	t load	7	125	0	0	1	0
+>	2	t load	9	70	0	0	1	0
+>	1	t goto	4	141	0	0	0	0
+>	1	t goto	5	103	0	0	1	0
+t goto	halt true	0		0	Contact Details	0	A Xhalt(Contact Details/0)
+>	1	t goto	1	141	0	0	0	0
+>	1	t goto	2	141	0	0	0	0
+>	1	t goto	3	6	3000	0	0	0
+>	2	t exit	1	141	0	0	0	0
+>	2	t exit	2	141	0	0	0	0
+>	2	t exit	3	68	0	0	1	0
+>	2	t exit	5	125	0	0	1	0
+>	2	t exit	7	125	0	0	1	0
+>	2	t exit	9	125	0	0	1	0
+>	2	t exit	11	125	0	0	1	0
+>	2	t exit	12	90	0	0	1	0
+t goto	error true	0	A Xerror(Contact Details/0) Etrue(Contact List/0) L(0/0) B(Contact List/0/)	0	Contact List	0
+>	1	t goto	1	141	0	0	0	0
+>	1	t goto	2	141	0	0	0	0
+>	1	t goto	3	6	3000	0	0	0
+>	2	t exit	1	141	0	0	0	0
+>	2	t exit	2	141	0	0	0	0
+>	2	t exit	3	68	0	0	1	0
+>	2	t exit	5	125	0	0	1	0
+>	2	t exit	7	125	0	0	1	0
+>	2	t exit	9	125	0	0	1	0
+>	2	t exit	11	125	0	0	1	0
+>	2	t exit	13	125	0	0	1	0
+!	104	work : t exit : 14 : Perform Script
+>	2	t exit	14	1	104	0	0	104
+>	2	t exit	15	70	0	0	1	104
+>	1	t goto	3	6	0	0	0	0
+>	3	t enter	1	141	0	0	0	0
+>	3	t enter	2	141	0	0	0	0
+>	3	t enter	3	68	0	0	1	0
+>	3	t enter	4	103	0	0	1	0
+>	2	t load	1	141	0	0	0	0
+>	2	t load	2	141	0	0	0	0
+>	2	t load	3	68	0	0	1	0
+>	2	t load	5	125	0	0	1	0
+>	2	t load	7	125	0	0	1	0
+>	2	t load	9	70	0	0	1	0
+>	1	t goto	4	141	0	0	0	0
+>	1	t goto	5	103	0	0	1	0
+t goto	true false	0	A Xtrue(Contact Details/0) Efalse(Contact List/0) L(0/0) B(Contact List/0/)	0	Contact List	0
+>	1	t goto	1	141	0	0	0	0
+>	1	t goto	2	141	0	0	0	0
+>	1	t goto	3	6	3000	0	0	0
+>	2	t exit	1	141	0	0	0	0
+>	2	t exit	2	141	0	0	0	0
+>	2	t exit	3	68	0	0	1	0
+>	2	t exit	4	103	0	0	1	0
+>	1	t goto	3	6	0	0	0	0
+>	3	t enter	1	141	0	0	0	0
+>	3	t enter	2	141	0	0	0	0
+>	3	t enter	3	68	0	0	1	0
+>	3	t enter	5	125	0	0	1	0
+>	3	t enter	6	103	0	0	1	0
+>	2	t load	1	141	0	0	0	0
+>	2	t load	2	141	0	0	0	0
+>	2	t load	3	68	0	0	1	0
+>	2	t load	5	125	0	0	1	0
+>	2	t load	7	125	0	0	1	0
+>	2	t load	9	70	0	0	1	0
+>	1	t goto	4	141	0	0	0	0
+>	1	t goto	5	103	0	0	1	0
+t goto	true text	0	A Xtrue(Contact Details/0) Etext(Contact List/0) L(0/0) B(Contact List/0/)	0	Contact List	0
+>	1	t goto	1	141	0	0	0	0
+>	1	t goto	2	141	0	0	0	0
+>	1	t goto	3	6	3000	0	0	0
+>	2	t exit	1	141	0	0	0	0
+>	2	t exit	2	141	0	0	0	0
+>	2	t exit	3	68	0	0	1	0
+>	2	t exit	4	103	0	0	1	0
+>	1	t goto	3	6	0	0	0	0
+>	3	t enter	1	141	0	0	0	0
+>	3	t enter	2	141	0	0	0	0
+>	3	t enter	3	68	0	0	1	0
+>	3	t enter	5	125	0	0	1	0
+>	3	t enter	7	125	0	0	1	0
+>	3	t enter	8	103	0	0	1	0
+>	2	t load	1	141	0	0	0	0
+>	2	t load	2	141	0	0	0	0
+>	2	t load	3	68	0	0	1	0
+>	2	t load	5	125	0	0	1	0
+>	2	t load	7	125	0	0	1	0
+>	2	t load	9	70	0	0	1	0
+>	1	t goto	4	141	0	0	0	0
+>	1	t goto	5	103	0	0	1	0
+t goto	true halt	0		0	Contact List	0	A Xtrue(Contact Details/0) Ehalt(Contact List/0)
+>	1	t goto	1	141	0	0	0	0
+>	1	t goto	2	141	0	0	0	0
+>	1	t goto	3	6	3000	0	0	0
+>	2	t exit	1	141	0	0	0	0
+>	2	t exit	2	141	0	0	0	0
+>	2	t exit	3	68	0	0	1	0
+>	2	t exit	4	103	0	0	1	0
+>	1	t goto	3	6	0	0	0	0
+>	3	t enter	1	141	0	0	0	0
+>	3	t enter	2	141	0	0	0	0
+>	3	t enter	3	68	0	0	1	0
+>	3	t enter	5	125	0	0	1	0
+>	3	t enter	7	125	0	0	1	0
+>	3	t enter	9	125	0	0	1	0
+>	3	t enter	10	90	0	0	1	0
+t goto	true error	0	A Xtrue(Contact Details/0) Eerror(Contact List/0) L(0/104) B(Contact List/0/)	0	Contact List	0
+>	1	t goto	1	141	0	0	0	0
+>	1	t goto	2	141	0	0	0	0
+>	1	t goto	3	6	3000	0	0	0
+>	2	t exit	1	141	0	0	0	0
+>	2	t exit	2	141	0	0	0	0
+>	2	t exit	3	68	0	0	1	0
+>	2	t exit	4	103	0	0	1	0
+>	1	t goto	3	6	0	0	0	0
+>	3	t enter	1	141	0	0	0	0
+>	3	t enter	2	141	0	0	0	0
+>	3	t enter	3	68	0	0	1	0
+>	3	t enter	5	125	0	0	1	0
+>	3	t enter	7	125	0	0	1	0
+>	3	t enter	9	125	0	0	1	0
+>	3	t enter	11	125	0	0	1	0
+!	104	work : t enter : 12 : Perform Script
+>	3	t enter	12	1	104	0	0	104
+>	3	t enter	13	70	0	0	1	104
+>	2	t load	1	141	0	0	0	0
+>	2	t load	2	141	0	0	0	0
+>	2	t load	3	68	0	0	1	0
+>	2	t load	5	125	0	0	1	0
+>	2	t load	7	125	0	0	1	0
+>	2	t load	9	70	0	0	1	0
+>	1	t goto	4	141	0	0	0	0
+>	1	t goto	5	103	0	0	1	0
+t goto after error	none true	0	A Xnone(Contact Details/0) Etrue(Contact List/0) L(0/0) B(Contact List/0)	0	Contact List	0
+>	1	t goto after error	1	141	0	0	0	0
+>	1	t goto after error	2	141	0	0	0	0
+!	104	work : t goto after error : 3 : Perform Script
+>	1	t goto after error	3	1	104	0	0	104
+>	1	t goto after error	4	6	3000	0	0	0
+>	2	t exit	1	141	0	0	0	0
+>	2	t exit	2	141	0	0	0	0
+>	2	t exit	3	68	0	0	1	0
+>	2	t exit	5	125	0	0	1	0
+>	2	t exit	7	125	0	0	1	0
+>	2	t exit	9	125	0	0	1	0
+>	2	t exit	11	125	0	0	1	0
+>	2	t exit	13	125	0	0	1	0
+>	2	t exit	15	70	0	0	1	0
+>	1	t goto after error	4	6	0	0	0	0
+>	3	t enter	1	141	0	0	0	0
+>	3	t enter	2	141	0	0	0	0
+>	3	t enter	3	68	0	0	1	0
+>	3	t enter	4	103	0	0	1	0
+>	2	t load	1	141	0	0	0	0
+>	2	t load	2	141	0	0	0	0
+>	2	t load	3	68	0	0	1	0
+>	2	t load	5	125	0	0	1	0
+>	2	t load	7	125	0	0	1	0
+>	2	t load	9	70	0	0	1	0
+>	1	t goto after error	5	141	0	0	0	0
+>	1	t goto after error	6	103	0	0	1	0
+t goto after error	false true	0	A Xfalse(Contact Details/0) B(Contact Details/20)	0	Contact Details	0
+>	1	t goto after error	1	141	0	0	0	0
+>	1	t goto after error	2	141	0	0	0	0
+!	104	work : t goto after error : 3 : Perform Script
+>	1	t goto after error	3	1	104	0	0	104
+>	1	t goto after error	4	6	3000	0	0	0
+>	2	t exit	1	141	0	0	0	0
+>	2	t exit	2	141	0	0	0	0
+>	2	t exit	3	68	0	0	1	0
+>	2	t exit	5	125	0	0	1	0
+>	2	t exit	6	103	0	0	1	20
+>	1	t goto after error	5	141	0	0	0	0
+>	1	t goto after error	6	103	0	0	1	0
+t goto sub	false true	0	A Xfalse(Contact Details/0) D(Contact Details/20/)	0	Contact Details	0
+>	1	t goto sub	1	141	0	0	0	0
+>	1	t goto sub	2	141	0	0	0	0
+>	1	t goto sub	3	1	0	0	0	0
+>	2	t goto inner	1	6	3000	0	0	0
+>	3	t exit	1	141	0	0	0	0
+>	3	t exit	2	141	0	0	0	0
+>	3	t exit	3	68	0	0	1	0
+>	3	t exit	5	125	0	0	1	0
+>	3	t exit	6	103	0	0	1	20
+>	1	t goto sub	4	141	0	0	0	0
+>	1	t goto sub	5	103	0	0	1	0
+t goto sub	true true	0	A Xtrue(Contact Details/0) Etrue(Contact List/0) L(0/0) D(Contact List/0/)	0	Contact List	0
+>	1	t goto sub	1	141	0	0	0	0
+>	1	t goto sub	2	141	0	0	0	0
+>	1	t goto sub	3	1	0	0	0	0
+>	2	t goto inner	1	6	3000	0	0	0
+>	3	t exit	1	141	0	0	0	0
+>	3	t exit	2	141	0	0	0	0
+>	3	t exit	3	68	0	0	1	0
+>	3	t exit	4	103	0	0	1	0
+>	2	t goto inner	1	6	0	0	0	0
+>	4	t enter	1	141	0	0	0	0
+>	4	t enter	2	141	0	0	0	0
+>	4	t enter	3	68	0	0	1	0
+>	4	t enter	4	103	0	0	1	0
+>	3	t load	1	141	0	0	0	0
+>	3	t load	2	141	0	0	0	0
+>	3	t load	3	68	0	0	1	0
+>	3	t load	5	125	0	0	1	0
+>	3	t load	7	125	0	0	1	0
+>	3	t load	9	70	0	0	1	0
+>	1	t goto sub	4	141	0	0	0	0
+>	1	t goto sub	5	103	0	0	1	0
+t goto back	true true	0	A Xtrue(Contact Details/0) Etrue(Contact List/0) L(0/0) B(Contact Details/0)	0	Contact Details	0
+>	1	t goto back	1	141	0	0	0	0
+>	1	t goto back	2	141	0	0	0	0
+>	1	t goto back	3	6	3000	0	0	0
+>	2	t exit	1	141	0	0	0	0
+>	2	t exit	2	141	0	0	0	0
+>	2	t exit	3	68	0	0	1	0
+>	2	t exit	4	103	0	0	1	0
+>	1	t goto back	3	6	0	0	0	0
+>	3	t enter	1	141	0	0	0	0
+>	3	t enter	2	141	0	0	0	0
+>	3	t enter	3	68	0	0	1	0
+>	3	t enter	4	103	0	0	1	0
+>	2	t load	1	141	0	0	0	0
+>	2	t load	2	141	0	0	0	0
+>	2	t load	3	68	0	0	1	0
+>	2	t load	5	125	0	0	1	0
+>	2	t load	7	125	0	0	1	0
+>	2	t load	9	70	0	0	1	0
+>	1	t goto back	4	6	0	0	0	0
+>	1	t goto back	5	141	0	0	0	0
+>	1	t goto back	6	103	0	0	1	0
+t goto back	true false	0	A Xtrue(Contact Details/0) Efalse(Contact List/0) L(0/0) B(Contact Details/0)	0	Contact Details	0
+>	1	t goto back	1	141	0	0	0	0
+>	1	t goto back	2	141	0	0	0	0
+>	1	t goto back	3	6	3000	0	0	0
+>	2	t exit	1	141	0	0	0	0
+>	2	t exit	2	141	0	0	0	0
+>	2	t exit	3	68	0	0	1	0
+>	2	t exit	4	103	0	0	1	0
+>	1	t goto back	3	6	0	0	0	0
+>	3	t enter	1	141	0	0	0	0
+>	3	t enter	2	141	0	0	0	0
+>	3	t enter	3	68	0	0	1	0
+>	3	t enter	5	125	0	0	1	0
+>	3	t enter	6	103	0	0	1	0
+>	2	t load	1	141	0	0	0	0
+>	2	t load	2	141	0	0	0	0
+>	2	t load	3	68	0	0	1	0
+>	2	t load	5	125	0	0	1	0
+>	2	t load	7	125	0	0	1	0
+>	2	t load	9	70	0	0	1	0
+>	1	t goto back	4	6	0	0	0	0
+>	1	t goto back	5	141	0	0	0	0
+>	1	t goto back	6	103	0	0	1	0
+t commit records	x x true	0	A Ctrue(0) B(0/1)	0	0
+>	1	t commit records	1	141	0	0	0	0
+>	1	t commit records	2	141	0	0	0	0
+>	1	t commit records	3	7	0	0	0	0
+>	1	t commit records	4	76	0	0	0	0
+>	1	t commit records	5	75	3000	0	0	0
+>	2	t commit	1	141	0	0	0	0
+>	2	t commit	2	141	0	0	0	0
+>	2	t commit	3	68	0	0	1	0
+>	2	t commit	4	103	0	0	1	0
+>	1	t commit records	5	75	0	0	0	0
+>	1	t commit records	6	141	0	0	0	0
+>	1	t commit records	7	103	0	0	1	0
+t count		0	1 c true	0
+>	1	t count	1	103	0	0	1	0
+t commit records	x x false	0	A Cfalse(0) B(20/2)	0	0
+>	1	t commit records	1	141	0	0	0	0
+>	1	t commit records	2	141	0	0	0	0
+>	1	t commit records	3	7	0	0	0	0
+>	1	t commit records	4	76	0	0	0	0
+>	1	t commit records	5	75	3000	0	0	0
+>	2	t commit	1	141	0	0	0	0
+>	2	t commit	2	141	0	0	0	0
+>	2	t commit	3	68	0	0	1	0
+>	2	t commit	5	125	0	0	1	0
+>	2	t commit	6	103	0	0	1	20
+>	1	t commit records	6	141	0	0	0	0
+>	1	t commit records	7	103	0	0	1	0
+t count		0	2 c true,c false	0
+>	1	t count	1	103	0	0	1	0
+t commit records	x x none	0	A Cnone(0) B(0/3)	0	0
+>	1	t commit records	1	141	0	0	0	0
+>	1	t commit records	2	141	0	0	0	0
+>	1	t commit records	3	7	0	0	0	0
+>	1	t commit records	4	76	0	0	0	0
+>	1	t commit records	5	75	3000	0	0	0
+>	2	t commit	1	141	0	0	0	0
+>	2	t commit	2	141	0	0	0	0
+>	2	t commit	3	68	0	0	1	0
+>	2	t commit	5	125	0	0	1	0
+>	2	t commit	7	125	0	0	1	0
+>	2	t commit	9	125	0	0	1	0
+>	2	t commit	11	70	0	0	1	0
+>	1	t commit records	5	75	0	0	0	0
+>	1	t commit records	6	141	0	0	0	0
+>	1	t commit records	7	103	0	0	1	0
+t count		0	3 c true,c false,c none	0
+>	1	t count	1	103	0	0	1	0
+t commit records	x x error	0	A Cerror(0) B(0/4)	0	0
+>	1	t commit records	1	141	0	0	0	0
+>	1	t commit records	2	141	0	0	0	0
+>	1	t commit records	3	7	0	0	0	0
+>	1	t commit records	4	76	0	0	0	0
+>	1	t commit records	5	75	3000	0	0	0
+>	2	t commit	1	141	0	0	0	0
+>	2	t commit	2	141	0	0	0	0
+>	2	t commit	3	68	0	0	1	0
+>	2	t commit	5	125	0	0	1	0
+>	2	t commit	7	125	0	0	1	0
+>	2	t commit	9	125	0	0	1	0
+!	104	work : t commit : 10 : Perform Script
+>	2	t commit	10	1	104	0	0	104
+>	2	t commit	11	70	0	0	1	104
+>	1	t commit records	5	75	0	0	0	0
+>	1	t commit records	6	141	0	0	0	0
+>	1	t commit records	7	103	0	0	1	0
+t count		0	4 c true,c false,c none,c error	0
+>	1	t count	1	103	0	0	1	0
+t commit records	x x halt	0		0	0	A Chalt(0)
+>	1	t commit records	1	141	0	0	0	0
+>	1	t commit records	2	141	0	0	0	0
+>	1	t commit records	3	7	0	0	0	0
+>	1	t commit records	4	76	0	0	0	0
+>	1	t commit records	5	75	3000	0	0	0
+>	2	t commit	1	141	0	0	0	0
+>	2	t commit	2	141	0	0	0	0
+>	2	t commit	3	68	0	0	1	0
+>	2	t commit	5	125	0	0	1	0
+>	2	t commit	7	125	0	0	1	0
+>	2	t commit	8	90	0	0	1	0
+t count		0	5 c true,c false,c none,c error,c halt	0
+>	1	t count	1	103	0	0	1	0
+t next	true true x true	0	A Xtrue(Contact Details/0) Etrue(Contact List/0) Ltrue(5/0) B(5/0) N(5/101)	0	5	0
+>	1	t next	1	141	0	0	0	0
+>	1	t next	2	141	0	0	0	0
+>	1	t next	3	6	3000	0	0	0
+>	2	t exit	1	141	0	0	0	0
+>	2	t exit	2	141	0	0	0	0
+>	2	t exit	3	68	0	0	1	0
+>	2	t exit	4	103	0	0	1	0
+>	1	t next	3	6	0	0	0	0
+>	3	t enter	1	141	0	0	0	0
+>	3	t enter	2	141	0	0	0	0
+>	3	t enter	3	68	0	0	1	0
+>	3	t enter	4	103	0	0	1	0
+>	2	t load	1	141	0	0	0	0
+>	2	t load	2	141	0	0	0	0
+>	2	t load	3	68	0	0	1	0
+>	2	t load	4	103	0	0	1	0
+>	1	t next	4	141	0	0	0	0
+!	101	work : t next : 5 : Go to Record/Request/Page
+>	1	t next	5	16	101	0	0	101
+>	1	t next	6	141	0	0	0	0
+>	1	t next	7	103	0	0	1	0
+t next	true true x false	0	A Xtrue(Contact Details/0) Etrue(Contact List/0) Lfalse(5/0) B(5/0) N(5/101)	0	5	0
+>	1	t next	1	141	0	0	0	0
+>	1	t next	2	141	0	0	0	0
+>	1	t next	3	6	3000	0	0	0
+>	2	t exit	1	141	0	0	0	0
+>	2	t exit	2	141	0	0	0	0
+>	2	t exit	3	68	0	0	1	0
+>	2	t exit	4	103	0	0	1	0
+>	1	t next	3	6	0	0	0	0
+>	3	t enter	1	141	0	0	0	0
+>	3	t enter	2	141	0	0	0	0
+>	3	t enter	3	68	0	0	1	0
+>	3	t enter	4	103	0	0	1	0
+>	2	t load	1	141	0	0	0	0
+>	2	t load	2	141	0	0	0	0
+>	2	t load	3	68	0	0	1	0
+>	2	t load	5	125	0	0	1	0
+>	2	t load	6	103	0	0	1	0
+>	1	t next	4	141	0	0	0	0
+!	101	work : t next : 5 : Go to Record/Request/Page
+>	1	t next	5	16	101	0	0	101
+>	1	t next	6	141	0	0	0	0
+>	1	t next	7	103	0	0	1	0
+t next	true true x halt	0		0	5	0	A Xtrue(Contact Details/0) Etrue(Contact List/0) Lhalt(5/0)
+>	1	t next	1	141	0	0	0	0
+>	1	t next	2	141	0	0	0	0
+>	1	t next	3	6	3000	0	0	0
+>	2	t exit	1	141	0	0	0	0
+>	2	t exit	2	141	0	0	0	0
+>	2	t exit	3	68	0	0	1	0
+>	2	t exit	4	103	0	0	1	0
+>	1	t next	3	6	0	0	0	0
+>	3	t enter	1	141	0	0	0	0
+>	3	t enter	2	141	0	0	0	0
+>	3	t enter	3	68	0	0	1	0
+>	3	t enter	4	103	0	0	1	0
+>	2	t load	1	141	0	0	0	0
+>	2	t load	2	141	0	0	0	0
+>	2	t load	3	68	0	0	1	0
+>	2	t load	5	125	0	0	1	0
+>	2	t load	7	125	0	0	1	0
+>	2	t load	8	90	0	0	1	0
+t first	true true x true true	0	A Xtrue(Contact Details/0) Etrue(Contact List/0) Ltrue(5/0) Ltrue(1/0) F(1/0)	0	1	0
+>	1	t first	1	141	0	0	0	0
+>	1	t first	2	141	0	0	0	0
+>	1	t first	3	6	3000	0	0	0
+>	2	t exit	1	141	0	0	0	0
+>	2	t exit	2	141	0	0	0	0
+>	2	t exit	3	68	0	0	1	0
+>	2	t exit	4	103	0	0	1	0
+>	1	t first	3	6	0	0	0	0
+>	3	t enter	1	141	0	0	0	0
+>	3	t enter	2	141	0	0	0	0
+>	3	t enter	3	68	0	0	1	0
+>	3	t enter	4	103	0	0	1	0
+>	2	t load	1	141	0	0	0	0
+>	2	t load	2	141	0	0	0	0
+>	2	t load	3	68	0	0	1	0
+>	2	t load	4	103	0	0	1	0
+>	1	t first	4	141	0	0	0	0
+>	1	t first	5	16	0	0	0	0
+>	2	t load	1	141	0	0	0	0
+>	2	t load	2	141	0	0	0	0
+>	2	t load	3	68	0	0	1	0
+>	2	t load	4	103	0	0	1	0
+>	1	t first	6	141	0	0	0	0
+>	1	t first	7	103	0	0	1	0
+t first	true true x true false	0	A Xtrue(Contact Details/0) Etrue(Contact List/0) Ltrue(5/0) Lfalse(1/0) F(1/0)	0	1	0
+>	1	t first	1	141	0	0	0	0
+>	1	t first	2	141	0	0	0	0
+>	1	t first	3	6	3000	0	0	0
+>	2	t exit	1	141	0	0	0	0
+>	2	t exit	2	141	0	0	0	0
+>	2	t exit	3	68	0	0	1	0
+>	2	t exit	4	103	0	0	1	0
+>	1	t first	3	6	0	0	0	0
+>	3	t enter	1	141	0	0	0	0
+>	3	t enter	2	141	0	0	0	0
+>	3	t enter	3	68	0	0	1	0
+>	3	t enter	4	103	0	0	1	0
+>	2	t load	1	141	0	0	0	0
+>	2	t load	2	141	0	0	0	0
+>	2	t load	3	68	0	0	1	0
+>	2	t load	4	103	0	0	1	0
+>	1	t first	4	141	0	0	0	0
+>	1	t first	5	16	0	0	0	0
+>	2	t load	1	141	0	0	0	0
+>	2	t load	2	141	0	0	0	0
+>	2	t load	3	68	0	0	1	0
+>	2	t load	5	125	0	0	1	0
+>	2	t load	6	103	0	0	1	0
+>	1	t first	6	141	0	0	0	0
+>	1	t first	7	103	0	0	1	0
+t first	true true x true halt	0		0	1	0	A Xtrue(Contact Details/0) Etrue(Contact List/0) Ltrue(5/0) Lhalt(1/0)
+>	1	t first	1	141	0	0	0	0
+>	1	t first	2	141	0	0	0	0
+>	1	t first	3	6	3000	0	0	0
+>	2	t exit	1	141	0	0	0	0
+>	2	t exit	2	141	0	0	0	0
+>	2	t exit	3	68	0	0	1	0
+>	2	t exit	4	103	0	0	1	0
+>	1	t first	3	6	0	0	0	0
+>	3	t enter	1	141	0	0	0	0
+>	3	t enter	2	141	0	0	0	0
+>	3	t enter	3	68	0	0	1	0
+>	3	t enter	4	103	0	0	1	0
+>	2	t load	1	141	0	0	0	0
+>	2	t load	2	141	0	0	0	0
+>	2	t load	3	68	0	0	1	0
+>	2	t load	4	103	0	0	1	0
+>	1	t first	4	141	0	0	0	0
+>	1	t first	5	16	0	0	0	0
+>	2	t load	1	141	0	0	0	0
+>	2	t load	2	141	0	0	0	0
+>	2	t load	3	68	0	0	1	0
+>	2	t load	5	125	0	0	1	0
+>	2	t load	7	125	0	0	1	0
+>	2	t load	8	90	0	0	1	0

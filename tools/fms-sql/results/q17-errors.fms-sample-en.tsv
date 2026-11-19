@@ -1,0 +1,11 @@
+# q17: what the calculation sees of an ExecuteSQL / ExecuteSQLe error. File: FileMaker Server sample (en).
+EvaluationError ( ExecuteSQLe ( "SELECT x FROM Tasks" ; "" ; "" ) )	0	2/2/0	8309
+EvaluationError ( ExecuteSQLe ( "SELEC" ; "" ; "" ) )	0	2/2/0	8310
+EvaluationError ( ExecuteSQLe ( "SELECT 1/0 FROM Tasks" ; "" ; "" ) )	0	2/2/0	15
+EvaluationError ( ExecuteSQLe ( "SELECT Task FROM Tasks" ; "" ; "" ) )	0	2/2/0	0
+GetAsNumber ( ExecuteSQL ( "SELECT x FROM Tasks" ; "" ; "" ) )	8309	2/2/0	?
+IsEmpty ( ExecuteSQL ( "SELECT x FROM Tasks" ; "" ; "" ) )	8309	2/2/0	0
+ExecuteSQL ( "SELECT x FROM Tasks" ; "" ; "" ) & "|"	8309	1/1/0	?|
+Length ( ExecuteSQLe ( "SELECT x FROM Tasks" ; "" ; "" ) )	8309	2/2/0	105
+IsValid ( ExecuteSQL ( "SELECT x FROM Tasks" ; "" ; "" ) )	0	2/2/0	0
+Let ( r = ExecuteSQL ( "SELECT x FROM Tasks" ; "" ; "" ) ; r = "?" )	8309	2/2/0	1

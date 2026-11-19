@@ -1,0 +1,195 @@
+# scan wst: open 0 load 0 scan 0 commit 0; index:id=value (0-based): 0:141=0
+# scan wsel: open 0 load 0 scan 0 commit 0; index:id=value (0-based): 0:89=0 1:141=0 2:141=0
+# scan setup: open 0 load 0 scan 0 commit 0; index:id=value (0-based): 0:6=5 1:7=0 2:76=0 3:7=0 4:76=0 5:7=0 6:76=0 7:7=0 8:76=0 9:7=0 10:76=0 11:75=0 12:103=0
+# scan reset: open 0 load 0 scan 0 commit 0; index:id=value (0-based): 0:89=0 1:141=0 2:6=5 3:23=0 4:16=1
+# scan new: open 0 load 0 scan 0 commit 0; index:id=value (0-based): 0:89=0 1:89=0 2:86=0 3:1=0 4:16=4 5:1=0 6:122=1 7:1=0 8:122=1 9:1=0 10:122=1 11:1=0 12:122=5 13:1=0 14:122=5 15:1=0 16:103=0
+# scan perwin: open 0 load 0 scan 0 commit 0; index:id=value (0-based): 0:89=0 1:89=0 2:86=0 3:1=0 4:141=0 5:16=4 6:1=0 7:122=1 8:1=0 9:25=0 10:1=0 11:16=4 12:1=0 13:123=1 14:1=0 15:123=1 16:1=0 17:22=0 18:1=0 19:123=1 20:1=0 21:123=1 22:1=0 23:103=0
+# scan perwin find: open 0 load 0 scan 0 commit 0; index:id=value (0-based): 0:89=0 1:86=0 2:1=0 3:141=0 4:16=2 5:122=1 6:22=0 7:76=0 8:28=0 9:1=0 10:123=1 11:1=0 12:103=0
+# scan close: open 0 load 0 scan 0 commit 0; index:id=value (0-based): 0:89=0 1:89=0 2:86=0 3:1=0 4:141=0 5:122=1 6:16=2 7:122=1 8:16=3 9:123=1 10:123=1 11:1=0 12:121=0 13:1=0 14:121=1 15:1=0 16:121=1 17:1=0 18:123=1 19:1=0 20:123=1 21:1=0 22:123=1 23:1=0 24:103=0
+# scan close last: open 0 load 0 scan 0 commit 0; index:id=value (0-based): 0:89=0 1:86=0 2:1=0 3:1=0 4:121=0 5:141=0 6:1=0 7:103=0
+# scan close by name: open 0 load 0 scan 0 commit 0; index:id=value (0-based): 0:89=0 1:86=0 2:1=0 3:141=0 4:122=1 5:121=1 6:1=0 7:123=1 8:1=0 9:103=0
+# scan selectors: open 0 load 0 scan 0 commit 0; index:id=value (0-based): 0:89=0 1:86=0 2:1=0 3:141=0 4:1=0 5:122=1 6:141=0 7:1=0 8:123=1 9:1=0 10:103=0
+# scan: close 13
+setup		0	5	0
+>	1	setup	1	6	0	0	0	0
+>	1	setup	2	7	0	0	0	0
+>	1	setup	3	76	0	0	0	0
+>	1	setup	4	7	0	0	0	0
+>	1	setup	5	76	0	0	0	0
+>	1	setup	6	7	0	0	0	0
+>	1	setup	7	76	0	0	0	0
+>	1	setup	8	7	0	0	0	0
+>	1	setup	9	76	0	0	0	0
+>	1	setup	10	7	0	0	0	0
+>	1	setup	11	76	0	0	0	0
+>	1	setup	12	75	0	0	0	0
+>	1	setup	13	103	0	0	1	0
+new		0	[0:work:work:Task Details:5:2:0:b][0:W2:W2,work:Task Details:5:2:0:b][0:W2 - 2:W2 - 2,W2,work:Task Details:5:2:0:b][0:W2:W2,W2 - 2,W2,work:Task Details:5:2:0:b][0:W5:W5,W2,W2 - 2,W2,work:Assignments:0:0:0:][0:W6:W6,W5,W2,W2 - 2,W2,work:Task List:5:1:0:a]	0
+>	1	new	3	86	0	0	0	0
+>	1	new	4	1	0	0	0	0
+>	2	reset	2	141	0	0	0	0
+>	2	reset	3	6	0	0	0	0
+>	2	reset	4	23	0	0	0	0
+>	2	reset	5	16	0	0	0	0
+>	1	new	5	16	0	0	0	0
+>	1	new	6	1	0	0	0	0
+>	2	wst	1	141	0	0	0	0
+>	1	new	7	122	0	0	0	0
+>	1	new	8	1	0	0	0	0
+>	2	wst	1	141	0	0	0	0
+>	1	new	9	122	0	0	0	0
+>	1	new	10	1	0	0	0	0
+>	2	wst	1	141	0	0	0	0
+>	1	new	11	122	0	0	0	0
+>	1	new	12	1	0	0	0	0
+>	2	wst	1	141	0	0	0	0
+>	1	new	13	122	0	0	0	0
+>	1	new	14	1	0	0	0	0
+>	2	wst	1	141	0	0	0	0
+>	1	new	15	122	0	0	0	0
+>	2	Sort by Status	1	39	0	0	0	0
+>	1	new	16	1	0	0	0	0
+>	2	wst	1	141	0	0	0	0
+>	1	new	17	103	0	0	1	0
+perwin		0	[0:work:work:Task Details:5:2:0:b][0:W2:W2,work:Task Details:5:2:0:b][0:W2:W2,work:Task Details:4:2:0:c][0:W2:W2,work:Task Details:4:3:0:d][0:work:work,W2:Task Details:5:2:0:b][0:W2:W2,work:Task Details:4:3:0:d][0:W2:W2,work:Task Details:1:1:1:][0:work:work,W2:Task Details:5:2:0:b][0:W2:W2,work:Task Details:1:1:1:]	0
+>	1	perwin	3	86	0	0	0	0
+>	1	perwin	4	1	0	0	0	0
+>	2	reset	2	141	0	0	0	0
+>	2	reset	3	6	0	0	0	0
+>	2	reset	4	23	0	0	0	0
+>	2	reset	5	16	0	0	0	0
+>	1	perwin	5	141	0	0	0	0
+>	1	perwin	6	16	0	0	0	0
+>	1	perwin	7	1	0	0	0	0
+>	2	wst	1	141	0	0	0	0
+>	1	perwin	8	122	0	0	0	0
+>	1	perwin	9	1	0	0	0	0
+>	2	wst	1	141	0	0	0	0
+>	1	perwin	10	25	0	0	0	0
+>	1	perwin	11	1	0	0	0	0
+>	2	wst	1	141	0	0	0	0
+>	1	perwin	12	16	0	0	0	0
+>	1	perwin	13	1	0	0	0	0
+>	2	wst	1	141	0	0	0	0
+>	1	perwin	14	123	0	0	0	0
+>	1	perwin	15	1	0	0	0	0
+>	2	wst	1	141	0	0	0	0
+>	1	perwin	16	123	0	0	0	0
+>	1	perwin	17	1	0	0	0	0
+>	2	wst	1	141	0	0	0	0
+>	1	perwin	18	22	0	0	0	0
+>	1	perwin	19	1	0	0	0	0
+>	2	wst	1	141	0	0	0	0
+>	1	perwin	20	123	0	0	0	0
+>	1	perwin	21	1	0	0	0	0
+>	2	wst	1	141	0	0	0	0
+>	1	perwin	22	123	0	0	0	0
+>	1	perwin	23	1	0	0	0	0
+>	2	wst	1	141	0	0	0	0
+>	1	perwin	24	103	0	0	1	0
+perwin find		0	[0:W2:W2,work:Task Details:1:1:0:d][0:work:work,W2:Task Details:5:5:0:e]	0
+>	1	perwin find	2	86	0	0	0	0
+>	1	perwin find	3	1	0	0	0	0
+>	2	reset	2	141	0	0	0	0
+>	2	reset	3	6	0	0	0	0
+>	2	reset	4	23	0	0	0	0
+>	2	reset	5	16	0	0	0	0
+>	1	perwin find	4	141	0	0	0	0
+>	1	perwin find	5	16	0	0	0	0
+>	1	perwin find	6	122	0	0	0	0
+>	1	perwin find	7	22	0	0	0	0
+>	1	perwin find	8	76	0	0	0	0
+>	1	perwin find	9	28	0	0	0	0
+>	1	perwin find	10	1	0	0	0	0
+>	2	wst	1	141	0	0	0	0
+>	1	perwin find	11	123	0	0	0	0
+>	1	perwin find	12	1	0	0	0	0
+>	2	wst	1	141	0	0	0	0
+>	1	perwin find	13	103	0	0	1	0
+close		0	[0:W2:W2,work,W3:Task Details:5:5:0:e][0:work:work,W3:Task Details:5:1:0:a][0:work:work:Task Details:5:1:0:a][112:work:work:Task Details:5:1:0:a][112:work:work:Task Details:5:1:0:a][112:work:work:Task Details:5:1:0:a][112:work:work:Task Details:5:1:0:a]	0
+>	1	close	3	86	0	0	0	0
+>	1	close	4	1	0	0	0	0
+>	2	reset	2	141	0	0	0	0
+>	2	reset	3	6	0	0	0	0
+>	2	reset	4	23	0	0	0	0
+>	2	reset	5	16	0	0	0	0
+>	1	close	5	141	0	0	0	0
+>	1	close	6	122	0	0	0	0
+>	1	close	7	16	0	0	0	0
+>	1	close	8	122	0	0	0	0
+>	1	close	9	16	0	0	0	0
+>	1	close	10	123	0	0	0	0
+>	1	close	11	123	0	0	0	0
+>	1	close	12	1	0	0	0	0
+>	2	wst	1	141	0	0	0	0
+>	1	close	13	121	0	0	0	0
+>	1	close	14	1	0	0	0	0
+>	2	wst	1	141	0	0	0	0
+>	1	close	15	121	0	0	0	0
+>	1	close	16	1	0	0	0	0
+>	2	wst	1	141	0	0	0	0
+!	112	work : close : 17 : Close Window
+>	1	close	17	121	112	0	0	112
+>	1	close	18	1	0	0	0	0
+>	2	wst	1	141	0	0	0	0
+!	112	work : close : 19 : Select Window
+>	1	close	19	123	112	0	0	112
+>	1	close	20	1	0	0	0	0
+>	2	wst	1	141	0	0	0	0
+!	112	work : close : 21 : Select Window
+>	1	close	21	123	112	0	0	112
+>	1	close	22	1	0	0	0	0
+>	2	wst	1	141	0	0	0	0
+!	112	work : close : 23 : Select Window
+>	1	close	23	123	112	0	0	112
+>	1	close	24	1	0	0	0	0
+>	2	wst	1	141	0	0	0	0
+>	1	close	25	103	0	0	1	0
+close last		0		0		[0:work:work:Task Details:5:1:0:a]	
+>	1	close last	2	86	0	0	0	0
+>	1	close last	3	1	0	0	0	0
+>	2	reset	2	141	0	0	0	0
+>	2	reset	3	6	0	0	0	0
+>	2	reset	4	23	0	0	0	0
+>	2	reset	5	16	0	0	0	0
+>	1	close last	4	1	0	0	0	0
+>	2	wst	1	141	0	0	0	0
+>	1	close last	5	121	13	0	0	0
+close by name		0	[0:W2:W2:Task Details:5:1:0:a][112:W2:W2:Task Details:5:1:0:a]	0
+>	1	close by name	2	86	0	0	0	0
+>	1	close by name	3	1	0	0	0	0
+>	2	reset	2	141	0	0	0	0
+>	2	reset	3	6	0	0	0	0
+>	2	reset	4	23	0	0	0	0
+>	2	reset	5	16	0	0	0	0
+>	1	close by name	4	141	0	0	0	0
+>	1	close by name	5	122	0	0	0	0
+>	1	close by name	6	121	0	0	0	0
+>	1	close by name	7	1	0	0	0	0
+>	2	wst	1	141	0	0	0	0
+!	112	work : close by name : 8 : Select Window
+>	1	close by name	8	123	112	0	0	112
+>	1	close by name	9	1	0	0	0	0
+>	2	wst	1	141	0	0	0	0
+>	1	close by name	10	103	0	0	1	0
+selectors		0	0 {work,1,0,0,0,480,640,100,480,640,480,640,-1,480,640,32}{W3,1,0,10,20,400,600,100,400,600,480,640,-1,480,640,32}{work,1,0,0,0,480,640,100,480,640,480,640,-1,480,640,32} work=6507A62443944D62B886C83A1733B60B W3=7663B5E31D97470EADB348B214BEDB82 work=6507A62443944D62B886C83A1733B60B 	0	work	work\rW3	work\rW3
+>	1	selectors	2	86	0	0	0	0
+>	1	selectors	3	1	0	0	0	0
+>	2	reset	2	141	0	0	0	0
+>	2	reset	3	6	0	0	0	0
+>	2	reset	4	23	0	0	0	0
+>	2	reset	5	16	0	0	0	0
+>	1	selectors	4	141	0	0	0	0
+>	1	selectors	5	1	0	0	0	0
+>	2	wsel	2	141	0	0	0	0
+>	2	wsel	3	141	0	0	0	0
+>	1	selectors	6	122	0	0	0	0
+>	1	selectors	7	141	0	0	0	0
+>	1	selectors	8	1	0	0	0	0
+>	2	wsel	2	141	0	0	0	0
+>	2	wsel	3	141	0	0	0	0
+>	1	selectors	9	123	0	0	0	0
+>	1	selectors	10	1	0	0	0	0
+>	2	wsel	2	141	0	0	0	0
+>	2	wsel	3	141	0	0	0	0
+>	1	selectors	11	103	0	0	1	0

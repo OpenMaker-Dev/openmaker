@@ -1,0 +1,669 @@
+# scan otx: open 0 load 0 scan 0 commit 0; index:id=value (0-based): 0:141=0 1:141=0
+# scan mk: open 0 load 0 scan 0 commit 0; index:id=value (0-based): 0:89=0 1:89=0 2:141=0 3:141=0 4:6=5 5:7=0 6:76=0 7:75=0 8:141=0 9:6=5 10:141=0 11:71=18 12:72=18 13:141=0 14:7=0 15:76=0 16:76=0 17:75=0 18:73=11 19:6=5 20:23=0 21:16=1 22:71=25 23:72=25 24:16=4 25:73=22 26:141=0 27:141=0
+# scan new: open 0 load 0 scan 0 commit 0; index:id=value (0-based): 0:89=0 1:86=0 2:6=5 3:141=0 4:7=0 5:76=0 6:141=0 7:75=0 8:141=0 9:141=0 10:103=0
+# scan edit: open 0 load 0 scan 0 commit 0; index:id=value (0-based): 0:89=0 1:86=0 2:1=0 3:76=0 4:75=0 5:141=0 6:141=0 7:103=0
+# scan nochange: open 0 load 0 scan 0 commit 0; index:id=value (0-based): 0:89=0 1:86=0 2:1=0 3:75=0 4:141=0 5:141=0 6:76=0 7:75=0 8:103=0
+# scan delete: open 0 load 0 scan 0 commit 0; index:id=value (0-based): 0:89=0 1:86=0 2:1=0 3:141=0 4:9=0 5:141=0 6:141=0 7:103=0
+# scan delete all: open 0 load 0 scan 0 commit 0; index:id=value (0-based): 0:89=0 1:89=0 2:86=0 3:1=0 4:6=5 5:22=0 6:76=0 7:28=0 8:141=0 9:141=0 10:10=0 11:141=0 12:141=0 13:103=0
+# scan tx two: open 0 load 0 scan 0 commit 0; index:id=value (0-based): 0:89=0 1:89=0 2:86=0 3:1=0 4:141=0 5:205=14 6:76=0 7:7=0 8:76=0 9:6=5 10:7=0 11:76=0 12:76=0 13:141=0 14:206=14 15:141=0 16:141=0 17:103=0
+# scan tx delete: open 0 load 0 scan 0 commit 0; index:id=value (0-based): 0:89=0 1:86=0 2:1=0 3:205=6 4:9=0 5:141=0 6:206=6 7:141=0 8:103=0
+# scan portal delete: open 0 load 0 scan 0 commit 0; index:id=value (0-based): 0:89=0 1:86=0 2:1=0 3:99=1 4:104=0 5:141=0 6:75=0 7:141=0 8:103=0
+# scan portal create: open 0 load 0 scan 0 commit 0; index:id=value (0-based): 0:89=0 1:89=0 2:86=0 3:1=0 4:76=0 5:76=0 6:75=0 7:141=0 8:103=0
+# scan revert record: open 0 load 0 scan 0 commit 0; index:id=value (0-based): 0:89=0 1:86=0 2:1=0 3:76=0 4:51=0 5:7=0 6:76=0 7:51=0 8:103=0
+# scan revert tx: open 0 load 0 scan 0 commit 0; index:id=value (0-based): 0:89=0 1:86=0 2:1=0 3:205=7 4:7=0 5:76=0 6:207=0 7:206=7 8:141=0 9:103=0
+# scan failed tx: open 0 load 0 scan 0 commit 0; index:id=value (0-based): 0:89=0 1:86=0 2:1=0 3:205=8 4:7=0 5:76=0 6:76=0 7:141=0 8:206=8 9:141=0 10:103=0
+# scan failed commit: open 0 load 0 scan 0 commit 0; index:id=value (0-based): 0:89=0 1:86=0 2:1=0 3:76=0 4:75=0 5:141=0 6:51=0 7:103=0
+# scan two commits: open 0 load 0 scan 0 commit 0; index:id=value (0-based): 0:89=0 1:86=0 2:6=5 3:141=0 4:7=0 5:76=0 6:75=0 7:141=0 8:7=0 9:76=0 10:75=0 11:141=0 12:103=0
+# scan: close 13
+new	n1	0	before  commit 0 seen  id 1	0	{{\r\t"work" : \r\t{\r\t\t"Tasks" : \r\t\t[\r\t\t\t[\r\t\t\t\t"New",\r\t\t\t\t1,\r\t\t\t\t""\r\t\t\t]\r\t\t]\r\t}\r}}	1	0
+>	1	new	2	86	0	0	0	0
+>	1	new	3	6	0	0	0	0
+>	1	new	4	141	0	0	0	0
+>	1	new	5	7	0	0	0	0
+>	1	new	6	76	0	0	0	0
+>	1	new	7	141	0	0	0	0
+>	1	new	8	75	0	0	0	0
+>	2	new	9	141	0	0	0	0
+>	2	new	10	141	0	0	0	0
+>	2	new	11	103	0	0	1	0
+>	1	otx	1	141	0	0	0	0
+>	1	otx	2	141	0	0	0	0
+edit	ed	0	commit 0 seen  id 2	0	{{\r\t"work" : \r\t{\r\t\t"Tasks" : \r\t\t[\r\t\t\t[\r\t\t\t\t"New",\r\t\t\t\t2,\r\t\t\t\t""\r\t\t\t]\r\t\t]\r\t}\r}}{{\r\t"work" : \r\t{\r\t\t"Tasks" : \r\t\t[\r\t\t\t[\r\t\t\t\t"Modified",\r\t\t\t\t2,\r\t\t\t\t""\r\t\t\t]\r\t\t]\r\t}\r}}	2
+>	1	edit	2	86	0	0	0	0
+>	1	edit	3	1	0	0	0	0
+>	2	mk	3	141	0	0	0	0
+>	2	mk	4	141	0	0	0	0
+>	2	mk	5	6	0	0	0	0
+>	2	mk	6	7	0	0	0	0
+>	2	mk	7	76	0	0	0	0
+>	2	mk	8	75	0	0	0	0
+>	3	mk	9	141	0	0	0	0
+>	3	mk	10	6	0	0	0	0
+>	3	mk	11	141	0	0	0	0
+>	3	mk	12	71	0	0	1	0
+>	3	mk	13	72	0	0	1	0
+>	3	mk	20	6	0	0	0	0
+>	3	mk	21	23	0	0	0	0
+>	3	mk	22	16	0	0	0	0
+>	3	mk	23	71	0	0	1	0
+>	3	mk	24	72	0	0	1	0
+>	3	mk	25	16	0	0	0	0
+>	3	mk	26	73	0	0	1	0
+>	3	mk	24	72	0	0	1	0
+>	3	mk	27	141	0	0	0	0
+>	3	mk	28	141	0	0	0	0
+>	2	edit	4	76	0	0	0	0
+>	2	edit	5	75	0	0	0	0
+>	3	edit	6	141	0	0	0	0
+>	3	edit	7	141	0	0	0	0
+>	3	edit	8	103	0	0	1	0
+>	2	otx	1	141	0	0	0	0
+>	2	otx	2	141	0	0	0	0
+>	1	otx	1	141	0	0	0	0
+>	1	otx	2	141	0	0	0	0
+nochange	nc	0	commit 0 seen  same value 0 seen 	0	{{\r\t"work" : \r\t{\r\t\t"Tasks" : \r\t\t[\r\t\t\t[\r\t\t\t\t"New",\r\t\t\t\t3,\r\t\t\t\t""\r\t\t\t]\r\t\t]\r\t}\r}}{{\r\t"work" : \r\t{\r\t\t"Tasks" : \r\t\t[\r\t\t\t[\r\t\t\t\t"Modified",\r\t\t\t\t3,\r\t\t\t\t""\r\t\t\t]\r\t\t]\r\t}\r}}	2
+>	1	nochange	2	86	0	0	0	0
+>	1	nochange	3	1	0	0	0	0
+>	2	mk	3	141	0	0	0	0
+>	2	mk	4	141	0	0	0	0
+>	2	mk	5	6	0	0	0	0
+>	2	mk	6	7	0	0	0	0
+>	2	mk	7	76	0	0	0	0
+>	2	mk	8	75	0	0	0	0
+>	3	mk	9	141	0	0	0	0
+>	3	mk	10	6	0	0	0	0
+>	3	mk	11	141	0	0	0	0
+>	3	mk	12	71	0	0	1	0
+>	3	mk	13	72	0	0	1	0
+>	3	mk	20	6	0	0	0	0
+>	3	mk	21	23	0	0	0	0
+>	3	mk	22	16	0	0	0	0
+>	3	mk	23	71	0	0	1	0
+>	3	mk	24	72	0	0	1	0
+>	3	mk	25	16	0	0	0	0
+>	3	mk	26	73	0	0	1	0
+>	3	mk	24	72	0	0	1	0
+>	3	mk	25	16	0	0	0	0
+>	3	mk	26	73	0	0	1	0
+>	3	mk	24	72	0	0	1	0
+>	3	mk	27	141	0	0	0	0
+>	3	mk	28	141	0	0	0	0
+>	2	nochange	4	75	0	0	0	0
+>	2	nochange	5	141	0	0	0	0
+>	2	nochange	6	141	0	0	0	0
+>	2	nochange	7	76	0	0	0	0
+>	2	nochange	8	75	0	0	0	0
+>	3	nochange	9	103	0	0	1	0
+>	2	otx	1	141	0	0	0	0
+>	2	otx	2	141	0	0	0	0
+>	1	otx	1	141	0	0	0	0
+>	1	otx	2	141	0	0	0	0
+delete	dl	0	delete 0 seen  id 4	0	{{\r\t"work" : \r\t{\r\t\t"Tasks" : \r\t\t[\r\t\t\t[\r\t\t\t\t"New",\r\t\t\t\t4,\r\t\t\t\t""\r\t\t\t]\r\t\t]\r\t}\r}}{{\r\t"work" : \r\t{\r\t\t"Tasks" : \r\t\t[\r\t\t\t[\r\t\t\t\t"Deleted",\r\t\t\t\t4,\r\t\t\t\t""\r\t\t\t]\r\t\t]\r\t}\r}}	2
+>	1	delete	2	86	0	0	0	0
+>	1	delete	3	1	0	0	0	0
+>	2	mk	3	141	0	0	0	0
+>	2	mk	4	141	0	0	0	0
+>	2	mk	5	6	0	0	0	0
+>	2	mk	6	7	0	0	0	0
+>	2	mk	7	76	0	0	0	0
+>	2	mk	8	75	0	0	0	0
+>	3	mk	9	141	0	0	0	0
+>	3	mk	10	6	0	0	0	0
+>	3	mk	11	141	0	0	0	0
+>	3	mk	12	71	0	0	1	0
+>	3	mk	13	72	0	0	1	0
+>	3	mk	20	6	0	0	0	0
+>	3	mk	21	23	0	0	0	0
+>	3	mk	22	16	0	0	0	0
+>	3	mk	23	71	0	0	1	0
+>	3	mk	24	72	0	0	1	0
+>	3	mk	25	16	0	0	0	0
+>	3	mk	26	73	0	0	1	0
+>	3	mk	24	72	0	0	1	0
+>	3	mk	25	16	0	0	0	0
+>	3	mk	26	73	0	0	1	0
+>	3	mk	24	72	0	0	1	0
+>	3	mk	25	16	0	0	0	0
+>	3	mk	26	73	0	0	1	0
+>	3	mk	24	72	0	0	1	0
+>	3	mk	27	141	0	0	0	0
+>	3	mk	28	141	0	0	0	0
+>	2	delete	4	141	0	0	0	0
+>	2	delete	5	9	0	0	0	0
+>	3	delete	6	141	0	0	0	0
+>	3	delete	7	141	0	0	0	0
+>	3	delete	8	103	0	0	1	0
+>	2	otx	1	141	0	0	0	0
+>	2	otx	2	141	0	0	0	0
+>	1	otx	1	141	0	0	0	0
+>	1	otx	2	141	0	0	0	0
+delete all	da	0	find 0/2 delete all 0 seen 	0	{{\r\t"work" : \r\t{\r\t\t"Tasks" : \r\t\t[\r\t\t\t[\r\t\t\t\t"New",\r\t\t\t\t5,\r\t\t\t\t""\r\t\t\t]\r\t\t]\r\t}\r}}{{\r\t"work" : \r\t{\r\t\t"Attachments" : \r\t\t[\r\t\t\t[\r\t\t\t\t"New",\r\t\t\t\t1,\r\t\t\t\t""\r\t\t\t]\r\t\t]\r\t}\r}}{{\r\t"work" : \r\t{\r\t\t"Attachments" : \r\t\t[\r\t\t\t[\r\t\t\t\t"New",\r\t\t\t\t2,\r\t\t\t\t""\r\t\t\t]\r\t\t]\r\t}\r}}{{\r\t"work" : \r\t{\r\t\t"Attachments" : \r\t\t[\r\t\t\t[\r\t\t\t\t"Deleted",\r\t\t\t\t1,\r\t\t\t\t""\r\t\t\t],\r\t\t\t[\r\t\t\t\t"Deleted",\r\t\t\t\t2,\r\t\t\t\t""\r\t\t\t]\r\t\t]\r\t}\r}}	4
+>	1	delete all	3	86	0	0	0	0
+>	1	delete all	4	1	0	0	0	0
+>	2	mk	3	141	0	0	0	0
+>	2	mk	4	141	0	0	0	0
+>	2	mk	5	6	0	0	0	0
+>	2	mk	6	7	0	0	0	0
+>	2	mk	7	76	0	0	0	0
+>	2	mk	8	75	0	0	0	0
+>	3	mk	9	141	0	0	0	0
+>	3	mk	10	6	0	0	0	0
+>	3	mk	11	141	0	0	0	0
+>	3	mk	12	71	0	0	1	0
+>	3	mk	13	72	0	0	1	0
+>	3	mk	14	141	0	0	0	0
+>	3	mk	15	7	0	0	0	0
+>	3	mk	16	76	0	0	0	0
+>	3	mk	17	76	0	0	0	0
+>	3	mk	18	75	0	0	0	0
+>	4	mk	19	73	0	0	1	0
+>	4	mk	13	72	0	0	1	0
+>	4	mk	14	141	0	0	0	0
+>	4	mk	15	7	0	0	0	0
+>	4	mk	16	76	0	0	0	0
+>	4	mk	17	76	0	0	0	0
+>	4	mk	18	75	0	0	0	0
+>	5	mk	19	73	0	0	1	0
+>	5	mk	13	72	0	0	1	0
+>	5	mk	20	6	0	0	0	0
+>	5	mk	21	23	0	0	0	0
+>	5	mk	22	16	0	0	0	0
+>	5	mk	23	71	0	0	1	0
+>	5	mk	24	72	0	0	1	0
+>	5	mk	25	16	0	0	0	0
+>	5	mk	26	73	0	0	1	0
+>	5	mk	24	72	0	0	1	0
+>	5	mk	25	16	0	0	0	0
+>	5	mk	26	73	0	0	1	0
+>	5	mk	24	72	0	0	1	0
+>	5	mk	25	16	0	0	0	0
+>	5	mk	26	73	0	0	1	0
+>	5	mk	24	72	0	0	1	0
+>	5	mk	27	141	0	0	0	0
+>	5	mk	28	141	0	0	0	0
+>	4	delete all	5	6	0	0	0	0
+>	4	delete all	6	22	0	0	0	0
+>	4	delete all	7	76	0	0	0	0
+>	4	delete all	8	28	0	0	0	0
+>	4	delete all	9	141	0	0	0	0
+>	4	delete all	10	141	0	0	0	0
+>	4	delete all	11	10	0	0	0	0
+>	5	delete all	12	141	0	0	0	0
+>	5	delete all	13	141	0	0	0	0
+>	5	delete all	14	103	0	0	1	0
+>	4	otx	1	141	0	0	0	0
+>	4	otx	2	141	0	0	0	0
+>	3	otx	1	141	0	0	0	0
+>	3	otx	2	141	0	0	0	0
+>	2	otx	1	141	0	0	0	0
+>	2	otx	2	141	0	0	0	0
+>	1	otx	1	141	0	0	0	0
+>	1	otx	2	141	0	0	0	0
+tx two	tt	0	before  commit tx 0 seen 	0	{{\r\t"work" : \r\t{\r\t\t"Tasks" : \r\t\t[\r\t\t\t[\r\t\t\t\t"New",\r\t\t\t\t6,\r\t\t\t\t""\r\t\t\t]\r\t\t]\r\t}\r}}{{\r\t"work" : \r\t{\r\t\t"Attachments" : \r\t\t[\r\t\t\t[\r\t\t\t\t"New",\r\t\t\t\t3,\r\t\t\t\t""\r\t\t\t]\r\t\t],\r\t\t"Tasks" : \r\t\t[\r\t\t\t[\r\t\t\t\t"Modified",\r\t\t\t\t6,\r\t\t\t\t""\r\t\t\t],\r\t\t\t[\r\t\t\t\t"New",\r\t\t\t\t7,\r\t\t\t\t""\r\t\t\t]\r\t\t]\r\t}\r}}	2
+>	1	tx two	3	86	0	0	0	0
+>	1	tx two	4	1	0	0	0	0
+>	2	mk	3	141	0	0	0	0
+>	2	mk	4	141	0	0	0	0
+>	2	mk	5	6	0	0	0	0
+>	2	mk	6	7	0	0	0	0
+>	2	mk	7	76	0	0	0	0
+>	2	mk	8	75	0	0	0	0
+>	3	mk	9	141	0	0	0	0
+>	3	mk	10	6	0	0	0	0
+>	3	mk	11	141	0	0	0	0
+>	3	mk	12	71	0	0	1	0
+>	3	mk	13	72	0	0	1	0
+>	3	mk	20	6	0	0	0	0
+>	3	mk	21	23	0	0	0	0
+>	3	mk	22	16	0	0	0	0
+>	3	mk	23	71	0	0	1	0
+>	3	mk	24	72	0	0	1	0
+>	3	mk	25	16	0	0	0	0
+>	3	mk	26	73	0	0	1	0
+>	3	mk	24	72	0	0	1	0
+>	3	mk	25	16	0	0	0	0
+>	3	mk	26	73	0	0	1	0
+>	3	mk	24	72	0	0	1	0
+>	3	mk	25	16	0	0	0	0
+>	3	mk	26	73	0	0	1	0
+>	3	mk	24	72	0	0	1	0
+>	3	mk	25	16	0	0	0	0
+>	3	mk	26	73	0	0	1	0
+>	3	mk	24	72	0	0	1	0
+>	3	mk	27	141	0	0	0	0
+>	3	mk	28	141	0	0	0	0
+>	2	tx two	5	141	0	0	0	0
+>	2	tx two	6	205	0	0	0	0
+>	2	tx two	7	76	0	0	0	0
+>	2	tx two	8	7	0	0	0	0
+>	2	tx two	9	76	0	0	0	0
+>	2	tx two	10	6	0	0	0	0
+>	2	tx two	11	7	0	0	0	0
+>	2	tx two	12	76	0	0	0	0
+>	2	tx two	13	76	0	0	0	0
+>	2	tx two	14	141	0	0	0	0
+>	2	tx two	15	206	0	0	0	0
+>	3	tx two	16	141	0	0	0	0
+>	3	tx two	17	141	0	0	0	0
+>	3	tx two	18	103	0	0	1	0
+>	2	otx	1	141	0	0	0	0
+>	2	otx	2	141	0	0	0	0
+>	1	otx	1	141	0	0	0	0
+>	1	otx	2	141	0	0	0	0
+tx delete	td	0	before  commit tx 0 seen 	0	{{\r\t"work" : \r\t{\r\t\t"Tasks" : \r\t\t[\r\t\t\t[\r\t\t\t\t"New",\r\t\t\t\t8,\r\t\t\t\t""\r\t\t\t]\r\t\t]\r\t}\r}}{{\r\t"work" : \r\t{\r\t\t"Tasks" : \r\t\t[\r\t\t\t[\r\t\t\t\t"Deleted",\r\t\t\t\t8,\r\t\t\t\t""\r\t\t\t]\r\t\t]\r\t}\r}}	2
+>	1	tx delete	2	86	0	0	0	0
+>	1	tx delete	3	1	0	0	0	0
+>	2	mk	3	141	0	0	0	0
+>	2	mk	4	141	0	0	0	0
+>	2	mk	5	6	0	0	0	0
+>	2	mk	6	7	0	0	0	0
+>	2	mk	7	76	0	0	0	0
+>	2	mk	8	75	0	0	0	0
+>	3	mk	9	141	0	0	0	0
+>	3	mk	10	6	0	0	0	0
+>	3	mk	11	141	0	0	0	0
+>	3	mk	12	71	0	0	1	0
+>	3	mk	13	72	0	0	1	0
+>	3	mk	20	6	0	0	0	0
+>	3	mk	21	23	0	0	0	0
+>	3	mk	22	16	0	0	0	0
+>	3	mk	23	71	0	0	1	0
+>	3	mk	24	72	0	0	1	0
+>	3	mk	25	16	0	0	0	0
+>	3	mk	26	73	0	0	1	0
+>	3	mk	24	72	0	0	1	0
+>	3	mk	25	16	0	0	0	0
+>	3	mk	26	73	0	0	1	0
+>	3	mk	24	72	0	0	1	0
+>	3	mk	25	16	0	0	0	0
+>	3	mk	26	73	0	0	1	0
+>	3	mk	24	72	0	0	1	0
+>	3	mk	25	16	0	0	0	0
+>	3	mk	26	73	0	0	1	0
+>	3	mk	24	72	0	0	1	0
+>	3	mk	25	16	0	0	0	0
+>	3	mk	26	73	0	0	1	0
+>	3	mk	24	72	0	0	1	0
+>	3	mk	25	16	0	0	0	0
+>	3	mk	26	73	0	0	1	0
+>	3	mk	24	72	0	0	1	0
+>	3	mk	27	141	0	0	0	0
+>	3	mk	28	141	0	0	0	0
+>	2	tx delete	4	205	0	0	0	0
+>	2	tx delete	5	9	0	0	0	0
+>	2	tx delete	6	141	0	0	0	0
+>	2	tx delete	7	206	0	0	0	0
+>	3	tx delete	8	141	0	0	0	0
+>	3	tx delete	9	103	0	0	1	0
+>	2	otx	1	141	0	0	0	0
+>	2	otx	2	141	0	0	0	0
+>	1	otx	1	141	0	0	0	0
+>	1	otx	2	141	0	0	0	0
+portal delete	pd	0	delete row 0 seen  commit 0 seen 	0	{{\r\t"work" : \r\t{\r\t\t"Tasks" : \r\t\t[\r\t\t\t[\r\t\t\t\t"New",\r\t\t\t\t9,\r\t\t\t\t""\r\t\t\t]\r\t\t]\r\t}\r}}{{\r\t"work" : \r\t{\r\t\t"Attachments" : \r\t\t[\r\t\t\t[\r\t\t\t\t"New",\r\t\t\t\t4,\r\t\t\t\t""\r\t\t\t]\r\t\t]\r\t}\r}}{{\r\t"work" : \r\t{\r\t\t"Attachments" : \r\t\t[\r\t\t\t[\r\t\t\t\t"New",\r\t\t\t\t5,\r\t\t\t\t""\r\t\t\t]\r\t\t]\r\t}\r}}{{\r\t"work" : \r\t{\r\t\t"Attachments" : \r\t\t[\r\t\t\t[\r\t\t\t\t"Deleted",\r\t\t\t\t4,\r\t\t\t\t""\r\t\t\t]\r\t\t]\r\t}\r}}	4
+>	1	portal delete	2	86	0	0	0	0
+>	1	portal delete	3	1	0	0	0	0
+>	2	mk	3	141	0	0	0	0
+>	2	mk	4	141	0	0	0	0
+>	2	mk	5	6	0	0	0	0
+>	2	mk	6	7	0	0	0	0
+>	2	mk	7	76	0	0	0	0
+>	2	mk	8	75	0	0	0	0
+>	3	mk	9	141	0	0	0	0
+>	3	mk	10	6	0	0	0	0
+>	3	mk	11	141	0	0	0	0
+>	3	mk	12	71	0	0	1	0
+>	3	mk	13	72	0	0	1	0
+>	3	mk	14	141	0	0	0	0
+>	3	mk	15	7	0	0	0	0
+>	3	mk	16	76	0	0	0	0
+>	3	mk	17	76	0	0	0	0
+>	3	mk	18	75	0	0	0	0
+>	4	mk	19	73	0	0	1	0
+>	4	mk	13	72	0	0	1	0
+>	4	mk	14	141	0	0	0	0
+>	4	mk	15	7	0	0	0	0
+>	4	mk	16	76	0	0	0	0
+>	4	mk	17	76	0	0	0	0
+>	4	mk	18	75	0	0	0	0
+>	5	mk	19	73	0	0	1	0
+>	5	mk	13	72	0	0	1	0
+>	5	mk	20	6	0	0	0	0
+>	5	mk	21	23	0	0	0	0
+>	5	mk	22	16	0	0	0	0
+>	5	mk	23	71	0	0	1	0
+>	5	mk	24	72	0	0	1	0
+>	5	mk	25	16	0	0	0	0
+>	5	mk	26	73	0	0	1	0
+>	5	mk	24	72	0	0	1	0
+>	5	mk	25	16	0	0	0	0
+>	5	mk	26	73	0	0	1	0
+>	5	mk	24	72	0	0	1	0
+>	5	mk	25	16	0	0	0	0
+>	5	mk	26	73	0	0	1	0
+>	5	mk	24	72	0	0	1	0
+>	5	mk	25	16	0	0	0	0
+>	5	mk	26	73	0	0	1	0
+>	5	mk	24	72	0	0	1	0
+>	5	mk	25	16	0	0	0	0
+>	5	mk	26	73	0	0	1	0
+>	5	mk	24	72	0	0	1	0
+>	5	mk	25	16	0	0	0	0
+>	5	mk	26	73	0	0	1	0
+>	5	mk	24	72	0	0	1	0
+>	5	mk	27	141	0	0	0	0
+>	5	mk	28	141	0	0	0	0
+>	4	portal delete	4	99	0	0	0	0
+>	4	portal delete	5	104	0	0	0	0
+>	4	portal delete	6	141	0	0	0	0
+>	4	portal delete	7	75	0	0	0	0
+>	5	portal delete	8	141	0	0	0	0
+>	5	portal delete	9	103	0	0	1	0
+>	4	otx	1	141	0	0	0	0
+>	4	otx	2	141	0	0	0	0
+>	3	otx	1	141	0	0	0	0
+>	3	otx	2	141	0	0	0	0
+>	2	otx	1	141	0	0	0	0
+>	2	otx	2	141	0	0	0	0
+>	1	otx	1	141	0	0	0	0
+>	1	otx	2	141	0	0	0	0
+portal create	pc	0	commit 0 seen 	0	{{\r\t"work" : \r\t{\r\t\t"Tasks" : \r\t\t[\r\t\t\t[\r\t\t\t\t"New",\r\t\t\t\t10,\r\t\t\t\t""\r\t\t\t]\r\t\t]\r\t}\r}}{{\r\t"work" : \r\t{\r\t\t"Attachments" : \r\t\t[\r\t\t\t[\r\t\t\t\t"New",\r\t\t\t\t6,\r\t\t\t\t""\r\t\t\t]\r\t\t],\r\t\t"Tasks" : \r\t\t[\r\t\t\t[\r\t\t\t\t"Modified",\r\t\t\t\t10,\r\t\t\t\t""\r\t\t\t]\r\t\t]\r\t}\r}}	2
+>	1	portal create	3	86	0	0	0	0
+>	1	portal create	4	1	0	0	0	0
+>	2	mk	3	141	0	0	0	0
+>	2	mk	4	141	0	0	0	0
+>	2	mk	5	6	0	0	0	0
+>	2	mk	6	7	0	0	0	0
+>	2	mk	7	76	0	0	0	0
+>	2	mk	8	75	0	0	0	0
+>	3	mk	9	141	0	0	0	0
+>	3	mk	10	6	0	0	0	0
+>	3	mk	11	141	0	0	0	0
+>	3	mk	12	71	0	0	1	0
+>	3	mk	13	72	0	0	1	0
+>	3	mk	20	6	0	0	0	0
+>	3	mk	21	23	0	0	0	0
+>	3	mk	22	16	0	0	0	0
+>	3	mk	23	71	0	0	1	0
+>	3	mk	24	72	0	0	1	0
+>	3	mk	25	16	0	0	0	0
+>	3	mk	26	73	0	0	1	0
+>	3	mk	24	72	0	0	1	0
+>	3	mk	25	16	0	0	0	0
+>	3	mk	26	73	0	0	1	0
+>	3	mk	24	72	0	0	1	0
+>	3	mk	25	16	0	0	0	0
+>	3	mk	26	73	0	0	1	0
+>	3	mk	24	72	0	0	1	0
+>	3	mk	25	16	0	0	0	0
+>	3	mk	26	73	0	0	1	0
+>	3	mk	24	72	0	0	1	0
+>	3	mk	25	16	0	0	0	0
+>	3	mk	26	73	0	0	1	0
+>	3	mk	24	72	0	0	1	0
+>	3	mk	25	16	0	0	0	0
+>	3	mk	26	73	0	0	1	0
+>	3	mk	24	72	0	0	1	0
+>	3	mk	25	16	0	0	0	0
+>	3	mk	26	73	0	0	1	0
+>	3	mk	24	72	0	0	1	0
+>	3	mk	27	141	0	0	0	0
+>	3	mk	28	141	0	0	0	0
+>	2	portal create	5	76	0	0	0	0
+>	2	portal create	6	76	0	0	0	0
+>	2	portal create	7	75	0	0	0	0
+>	3	portal create	8	141	0	0	0	0
+>	3	portal create	9	103	0	0	1	0
+>	2	otx	1	141	0	0	0	0
+>	2	otx	2	141	0	0	0	0
+>	1	otx	1	141	0	0	0	0
+>	1	otx	2	141	0	0	0	0
+revert record	rr	0	revert 0 seen 	0	{{\r\t"work" : \r\t{\r\t\t"Tasks" : \r\t\t[\r\t\t\t[\r\t\t\t\t"New",\r\t\t\t\t11,\r\t\t\t\t""\r\t\t\t]\r\t\t]\r\t}\r}}	1
+>	1	revert record	2	86	0	0	0	0
+>	1	revert record	3	1	0	0	0	0
+>	2	mk	3	141	0	0	0	0
+>	2	mk	4	141	0	0	0	0
+>	2	mk	5	6	0	0	0	0
+>	2	mk	6	7	0	0	0	0
+>	2	mk	7	76	0	0	0	0
+>	2	mk	8	75	0	0	0	0
+>	3	mk	9	141	0	0	0	0
+>	3	mk	10	6	0	0	0	0
+>	3	mk	11	141	0	0	0	0
+>	3	mk	12	71	0	0	1	0
+>	3	mk	13	72	0	0	1	0
+>	3	mk	20	6	0	0	0	0
+>	3	mk	21	23	0	0	0	0
+>	3	mk	22	16	0	0	0	0
+>	3	mk	23	71	0	0	1	0
+>	3	mk	24	72	0	0	1	0
+>	3	mk	25	16	0	0	0	0
+>	3	mk	26	73	0	0	1	0
+>	3	mk	24	72	0	0	1	0
+>	3	mk	25	16	0	0	0	0
+>	3	mk	26	73	0	0	1	0
+>	3	mk	24	72	0	0	1	0
+>	3	mk	25	16	0	0	0	0
+>	3	mk	26	73	0	0	1	0
+>	3	mk	24	72	0	0	1	0
+>	3	mk	25	16	0	0	0	0
+>	3	mk	26	73	0	0	1	0
+>	3	mk	24	72	0	0	1	0
+>	3	mk	25	16	0	0	0	0
+>	3	mk	26	73	0	0	1	0
+>	3	mk	24	72	0	0	1	0
+>	3	mk	25	16	0	0	0	0
+>	3	mk	26	73	0	0	1	0
+>	3	mk	24	72	0	0	1	0
+>	3	mk	25	16	0	0	0	0
+>	3	mk	26	73	0	0	1	0
+>	3	mk	24	72	0	0	1	0
+>	3	mk	25	16	0	0	0	0
+>	3	mk	26	73	0	0	1	0
+>	3	mk	24	72	0	0	1	0
+>	3	mk	27	141	0	0	0	0
+>	3	mk	28	141	0	0	0	0
+>	2	revert record	4	76	0	0	0	0
+>	2	revert record	5	51	0	0	0	0
+>	2	revert record	6	7	0	0	0	0
+>	2	revert record	7	76	0	0	0	0
+>	2	revert record	8	51	0	0	0	0
+>	2	revert record	9	103	0	0	1	0
+>	1	otx	1	141	0	0	0	0
+>	1	otx	2	141	0	0	0	0
+revert tx	rt	0	commit tx 0 seen 	0	{{\r\t"work" : \r\t{\r\t\t"Tasks" : \r\t\t[\r\t\t\t[\r\t\t\t\t"New",\r\t\t\t\t13,\r\t\t\t\t""\r\t\t\t]\r\t\t]\r\t}\r}}	1
+>	1	revert tx	2	86	0	0	0	0
+>	1	revert tx	3	1	0	0	0	0
+>	2	mk	3	141	0	0	0	0
+>	2	mk	4	141	0	0	0	0
+>	2	mk	5	6	0	0	0	0
+>	2	mk	6	7	0	0	0	0
+>	2	mk	7	76	0	0	0	0
+>	2	mk	8	75	0	0	0	0
+>	3	mk	9	141	0	0	0	0
+>	3	mk	10	6	0	0	0	0
+>	3	mk	11	141	0	0	0	0
+>	3	mk	12	71	0	0	1	0
+>	3	mk	13	72	0	0	1	0
+>	3	mk	20	6	0	0	0	0
+>	3	mk	21	23	0	0	0	0
+>	3	mk	22	16	0	0	0	0
+>	3	mk	23	71	0	0	1	0
+>	3	mk	24	72	0	0	1	0
+>	3	mk	25	16	0	0	0	0
+>	3	mk	26	73	0	0	1	0
+>	3	mk	24	72	0	0	1	0
+>	3	mk	25	16	0	0	0	0
+>	3	mk	26	73	0	0	1	0
+>	3	mk	24	72	0	0	1	0
+>	3	mk	25	16	0	0	0	0
+>	3	mk	26	73	0	0	1	0
+>	3	mk	24	72	0	0	1	0
+>	3	mk	25	16	0	0	0	0
+>	3	mk	26	73	0	0	1	0
+>	3	mk	24	72	0	0	1	0
+>	3	mk	25	16	0	0	0	0
+>	3	mk	26	73	0	0	1	0
+>	3	mk	24	72	0	0	1	0
+>	3	mk	25	16	0	0	0	0
+>	3	mk	26	73	0	0	1	0
+>	3	mk	24	72	0	0	1	0
+>	3	mk	25	16	0	0	0	0
+>	3	mk	26	73	0	0	1	0
+>	3	mk	24	72	0	0	1	0
+>	3	mk	25	16	0	0	0	0
+>	3	mk	26	73	0	0	1	0
+>	3	mk	24	72	0	0	1	0
+>	3	mk	25	16	0	0	0	0
+>	3	mk	26	73	0	0	1	0
+>	3	mk	24	72	0	0	1	0
+>	3	mk	27	141	0	0	0	0
+>	3	mk	28	141	0	0	0	0
+>	2	revert tx	4	205	0	0	0	0
+>	2	revert tx	5	7	0	0	0	0
+>	2	revert tx	6	76	0	0	0	0
+>	2	revert tx	7	207	0	0	0	0
+>	2	revert tx	8	206	0	0	0	0
+>	2	revert tx	9	141	0	0	0	0
+>	2	revert tx	10	103	0	0	1	0
+>	1	otx	1	141	0	0	0	0
+>	1	otx	2	141	0	0	0	0
+failed tx	ft	0	set 0 commit tx 507 seen 	0	{{\r\t"work" : \r\t{\r\t\t"Tasks" : \r\t\t[\r\t\t\t[\r\t\t\t\t"New",\r\t\t\t\t15,\r\t\t\t\t""\r\t\t\t]\r\t\t]\r\t}\r}}	1
+>	1	failed tx	2	86	0	0	0	0
+>	1	failed tx	3	1	0	0	0	0
+>	2	mk	3	141	0	0	0	0
+>	2	mk	4	141	0	0	0	0
+>	2	mk	5	6	0	0	0	0
+>	2	mk	6	7	0	0	0	0
+>	2	mk	7	76	0	0	0	0
+>	2	mk	8	75	0	0	0	0
+>	3	mk	9	141	0	0	0	0
+>	3	mk	10	6	0	0	0	0
+>	3	mk	11	141	0	0	0	0
+>	3	mk	12	71	0	0	1	0
+>	3	mk	13	72	0	0	1	0
+>	3	mk	20	6	0	0	0	0
+>	3	mk	21	23	0	0	0	0
+>	3	mk	22	16	0	0	0	0
+>	3	mk	23	71	0	0	1	0
+>	3	mk	24	72	0	0	1	0
+>	3	mk	25	16	0	0	0	0
+>	3	mk	26	73	0	0	1	0
+>	3	mk	24	72	0	0	1	0
+>	3	mk	25	16	0	0	0	0
+>	3	mk	26	73	0	0	1	0
+>	3	mk	24	72	0	0	1	0
+>	3	mk	25	16	0	0	0	0
+>	3	mk	26	73	0	0	1	0
+>	3	mk	24	72	0	0	1	0
+>	3	mk	25	16	0	0	0	0
+>	3	mk	26	73	0	0	1	0
+>	3	mk	24	72	0	0	1	0
+>	3	mk	25	16	0	0	0	0
+>	3	mk	26	73	0	0	1	0
+>	3	mk	24	72	0	0	1	0
+>	3	mk	25	16	0	0	0	0
+>	3	mk	26	73	0	0	1	0
+>	3	mk	24	72	0	0	1	0
+>	3	mk	25	16	0	0	0	0
+>	3	mk	26	73	0	0	1	0
+>	3	mk	24	72	0	0	1	0
+>	3	mk	25	16	0	0	0	0
+>	3	mk	26	73	0	0	1	0
+>	3	mk	24	72	0	0	1	0
+>	3	mk	25	16	0	0	0	0
+>	3	mk	26	73	0	0	1	0
+>	3	mk	24	72	0	0	1	0
+>	3	mk	25	16	0	0	0	0
+>	3	mk	26	73	0	0	1	0
+>	3	mk	24	72	0	0	1	0
+>	3	mk	27	141	0	0	0	0
+>	3	mk	28	141	0	0	0	0
+>	2	failed tx	4	205	0	0	0	0
+>	2	failed tx	5	7	0	0	0	0
+>	2	failed tx	6	76	0	0	0	0
+>	2	failed tx	7	76	0	0	0	0
+>	2	failed tx	8	141	0	0	0	0
+>	2	failed tx	9	206	507	0	1	507
+>	2	failed tx	10	141	0	0	0	0
+>	2	failed tx	11	103	0	0	1	0
+>	1	otx	1	141	0	0	0	0
+>	1	otx	2	141	0	0	0	0
+failed commit	fc	0	commit 507 seen 	0	{{\r\t"work" : \r\t{\r\t\t"Tasks" : \r\t\t[\r\t\t\t[\r\t\t\t\t"New",\r\t\t\t\t17,\r\t\t\t\t""\r\t\t\t]\r\t\t]\r\t}\r}}	1
+>	1	failed commit	2	86	0	0	0	0
+>	1	failed commit	3	1	0	0	0	0
+>	2	mk	3	141	0	0	0	0
+>	2	mk	4	141	0	0	0	0
+>	2	mk	5	6	0	0	0	0
+>	2	mk	6	7	0	0	0	0
+>	2	mk	7	76	0	0	0	0
+>	2	mk	8	75	0	0	0	0
+>	3	mk	9	141	0	0	0	0
+>	3	mk	10	6	0	0	0	0
+>	3	mk	11	141	0	0	0	0
+>	3	mk	12	71	0	0	1	0
+>	3	mk	13	72	0	0	1	0
+>	3	mk	20	6	0	0	0	0
+>	3	mk	21	23	0	0	0	0
+>	3	mk	22	16	0	0	0	0
+>	3	mk	23	71	0	0	1	0
+>	3	mk	24	72	0	0	1	0
+>	3	mk	25	16	0	0	0	0
+>	3	mk	26	73	0	0	1	0
+>	3	mk	24	72	0	0	1	0
+>	3	mk	25	16	0	0	0	0
+>	3	mk	26	73	0	0	1	0
+>	3	mk	24	72	0	0	1	0
+>	3	mk	25	16	0	0	0	0
+>	3	mk	26	73	0	0	1	0
+>	3	mk	24	72	0	0	1	0
+>	3	mk	25	16	0	0	0	0
+>	3	mk	26	73	0	0	1	0
+>	3	mk	24	72	0	0	1	0
+>	3	mk	25	16	0	0	0	0
+>	3	mk	26	73	0	0	1	0
+>	3	mk	24	72	0	0	1	0
+>	3	mk	25	16	0	0	0	0
+>	3	mk	26	73	0	0	1	0
+>	3	mk	24	72	0	0	1	0
+>	3	mk	25	16	0	0	0	0
+>	3	mk	26	73	0	0	1	0
+>	3	mk	24	72	0	0	1	0
+>	3	mk	25	16	0	0	0	0
+>	3	mk	26	73	0	0	1	0
+>	3	mk	24	72	0	0	1	0
+>	3	mk	25	16	0	0	0	0
+>	3	mk	26	73	0	0	1	0
+>	3	mk	24	72	0	0	1	0
+>	3	mk	25	16	0	0	0	0
+>	3	mk	26	73	0	0	1	0
+>	3	mk	24	72	0	0	1	0
+>	3	mk	25	16	0	0	0	0
+>	3	mk	26	73	0	0	1	0
+>	3	mk	24	72	0	0	1	0
+>	3	mk	27	141	0	0	0	0
+>	3	mk	28	141	0	0	0	0
+>	2	failed commit	4	76	0	0	0	0
+!	507	work : failed commit : 5 : Commit Records/Requests
+>	2	failed commit	5	75	1	0	0	507
+>	2	failed commit	6	141	0	0	0	0
+>	2	failed commit	7	51	0	0	0	0
+>	2	failed commit	8	103	0	0	1	0
+>	1	otx	1	141	0	0	0	0
+>	1	otx	2	141	0	0	0	0
+two commits	tc	0	after first  after second  seen 	0	{{\r\t"work" : \r\t{\r\t\t"Tasks" : \r\t\t[\r\t\t\t[\r\t\t\t\t"New",\r\t\t\t\t18,\r\t\t\t\t""\r\t\t\t]\r\t\t]\r\t}\r}}{{\r\t"work" : \r\t{\r\t\t"Tasks" : \r\t\t[\r\t\t\t[\r\t\t\t\t"New",\r\t\t\t\t19,\r\t\t\t\t""\r\t\t\t]\r\t\t]\r\t}\r}}	2
+>	1	two commits	2	86	0	0	0	0
+>	1	two commits	3	6	0	0	0	0
+>	1	two commits	4	141	0	0	0	0
+>	1	two commits	5	7	0	0	0	0
+>	1	two commits	6	76	0	0	0	0
+>	1	two commits	7	75	0	0	0	0
+>	2	two commits	8	141	0	0	0	0
+>	2	two commits	9	7	0	0	0	0
+>	2	two commits	10	76	0	0	0	0
+>	2	two commits	11	75	0	0	0	0
+>	3	two commits	12	141	0	0	0	0
+>	3	two commits	13	103	0	0	1	0
+>	2	otx	1	141	0	0	0	0
+>	2	otx	2	141	0	0	0	0
+>	1	otx	1	141	0	0	0	0
+>	1	otx	2	141	0	0	0	0

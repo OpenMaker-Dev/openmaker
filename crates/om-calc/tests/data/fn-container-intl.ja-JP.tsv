@@ -1,0 +1,17 @@
+# container encodings by locale
+Base64Encode ( 1/3 )	0	1/1/0	LjMzMzMzMzMzMzMzMzMzMzM=\r\n
+Base64Encode ( Date ( 1 ; 2 ; 2003 ) )	0	1/1/0	MjAwMy8wMS8wMg==\r\n
+Base64Encode ( 1234.5 )	0	1/1/0	MTIzNC41\r\n
+HexEncode ( 1/3 )	0	1/1/0	2E33333333333333333333333333333333
+HexEncode ( Time ( 1 ; 2 ; 3 ) )	0	1/1/0	313A30323A3033
+HexEncode ( CryptDigest ( 1/3 ; "MD5" ) )	0	1/1/0	BD58C0DAACF0A7AFD381ECEE26F99007
+Base64EncodeRFC ( "1421,0" ; "Black" )	0	1/1/0	QmxhY2s=
+Base64EncodeRFC ( "1.421" ; "Black" )	0	1/1/0	QmxhY2s=
+Base64EncodeRFC ( 2045,5 ; "Black" )	1202	2/2/0	?
+CryptDecrypt ( CryptEncrypt ( 1/3 ; "key" ) ; "key" )	0	1/6/0	.3333333333333333
+CryptDecrypt ( CryptEncrypt ( "x" ; 1/3 ) ; ".3333333333333333" )	0	1/6/0	x
+HexEncode ( TextEncode ( "a¶b" ; "utf-8" ; "3,7" ) )	0	1/1/0	610D62
+HexEncode ( TextEncode ( 1/4 ; "utf-8" ; 1 ) )	0	1/1/0	2E3235
+Base64Decode ( "QmxhY2s=" ; 1,5 )	1202	2/2/0	?
+HexDecode ( "4142" ; 1/4 )	0	6/6/0	.25
+TextDecode ( HexDecode ( "c3a9" ; "a" ) ; "utf-8" )	0	1/6/0	é

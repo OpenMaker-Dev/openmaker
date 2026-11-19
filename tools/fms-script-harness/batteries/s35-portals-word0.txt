@@ -1,0 +1,130 @@
+# s35-portals with the Attachments portal's options word 0 (the template's
+# is 257; Contacts' portals have 273): which bit lets Delete Portal Row
+# delete, and Go to Portal Row past the 3 visible rows. Scripts and output
+# as s35-portals.
+@layout	Attachment List	Attachments	Assignments
+@name	Task Details	portal:Attachments	Attachments Portal
+@name	Task Details	Attachments::Description	att desc
+@name	Task Details	Assignees::Name	assignee name
+@portal	Task Details	Attachments	0
+
+== st
+Set Variable [ $$s ; $$s & "[" & Get ( ScriptParameter ) & ":" & Get ( ActivePortalRowNumber ) & ":" & Get ( ActiveFieldName ) & ":" & Get ( ActiveFieldTableName ) & ":" & Get ( ActiveLayoutObjectName ) & ":" & Get ( ActiveRepetitionNumber ) & ":" & Get ( RecordNumber ) & ":" & Tasks::Task & ":" & Attachments::Description & ":" & Get ( LayoutName ) & ":" & Get ( FoundCount ) & "]" ]
+
+== at
+# Parameter: a task name. Task Details, all records, on that task.
+Set Variable [ $$s ; "" ]
+Go to Layout [ "Task Details" ]
+Show All Records
+Go to Record/Request/Page [ First ]
+Loop
+Exit Loop If [ Tasks::Task = Get ( ScriptParameter ) ]
+Go to Record/Request/Page [ Next ; Exit after last: On ]
+End Loop
+
+== mk
+# Parameter: name ¶ n. A new task with n attachments "name-1" ... (made
+# on Attachment List), then "at" it.
+Set Variable [ $name ; GetValue ( Get ( ScriptParameter ) ; 1 ) ]
+Set Variable [ $n ; GetAsNumber ( GetValue ( Get ( ScriptParameter ) ; 2 ) ) ]
+Go to Layout [ "Task Details" ]
+New Record/Request
+Set Field [ Tasks::Task ; $name ]
+Commit Records/Requests [ With dialog: Off ]
+Set Variable [ $k ; Tasks::PrimaryKey ]
+Go to Layout [ "Attachment List" ]
+Set Variable [ $i ; 0 ]
+Loop
+Exit Loop If [ $i >= $n ]
+Set Variable [ $i ; $i + 1 ]
+New Record/Request
+Set Field [ Attachments::ForeignKey ; $k ]
+Set Field [ Attachments::Description ; $name & "-" & $i ]
+Commit Records/Requests [ With dialog: Off ]
+End Loop
+Perform Script [ "at" ; Parameter: $name ]
+
+== rel
+# The task's related attachments now: descriptions # count.
+Exit Script [ Substitute ( List ( Attachments::Description ) ; ¶ ; "," ) & "#" & Count ( Attachments::PrimaryKey ) ]
+
+== all
+# Every attachment: description/its task's name, and the counts.
+Go to Layout [ "Attachment List" ]
+Show All Records
+Set Variable [ $a ; "" ]
+Go to Record/Request/Page [ First ]
+Loop
+Exit Loop If [ Get ( FoundCount ) = 0 ]
+Set Variable [ $a ; $a & Attachments::Description & "/" & Tasks::Task & " " ]
+Go to Record/Request/Page [ Next ; Exit after last: On ]
+End Loop
+Set Variable [ $n ; Get ( TotalRecordCount ) ]
+Go to Layout [ "Task Details" ]
+Exit Script [ $n & " attachments, " & Get ( TotalRecordCount ) & " tasks: " & $a ]
+
+== setup
+Perform Script [ "mk" ; Parameter: "t0¶0" ]
+Perform Script [ "mk" ; Parameter: "t1¶1" ]
+Perform Script [ "mk" ; Parameter: "t2¶2" ]
+Perform Script [ "mk" ; Parameter: "t3¶3" ]
+Perform Script [ "all" ]
+
+== seq
+# A2: First, Next x3, Previous x3, Last, Next.
+Perform Script [ "at" ; Parameter: Get ( ScriptParameter ) ]
+Set Error Capture [ On ]
+Go to Portal Row [ First ]
+Perform Script [ "st" ; Parameter: Get ( LastError ) ]
+Go to Portal Row [ Next ]
+Perform Script [ "st" ; Parameter: Get ( LastError ) ]
+Go to Portal Row [ Next ]
+Perform Script [ "st" ; Parameter: Get ( LastError ) ]
+Go to Portal Row [ Next ]
+Perform Script [ "st" ; Parameter: Get ( LastError ) ]
+Go to Portal Row [ Previous ]
+Perform Script [ "st" ; Parameter: Get ( LastError ) ]
+Go to Portal Row [ Previous ]
+Perform Script [ "st" ; Parameter: Get ( LastError ) ]
+Go to Portal Row [ Previous ]
+Perform Script [ "st" ; Parameter: Get ( LastError ) ]
+Go to Portal Row [ Last ]
+Perform Script [ "st" ; Parameter: Get ( LastError ) ]
+Go to Portal Row [ Next ]
+Perform Script [ "st" ; Parameter: Get ( LastError ) ]
+Exit Script [ $$s ]
+
+== del
+# A5. Parameter: mode ¶ task name ¶ attachments. mk, then none (no active
+# row), row2, row2 dialog (With dialog: On), last; Delete Portal Row; read;
+# Commit Records; read.
+Set Error Capture [ On ]
+Perform Script [ "mk" ; Parameter: GetValue ( Get ( ScriptParameter ) ; 2 ) & ¶ & GetValue ( Get ( ScriptParameter ) ; 3 ) ]
+Set Variable [ $m ; GetValue ( Get ( ScriptParameter ) ; 1 ) ]
+If [ Left ( $m ; 4 ) = "row2" ]
+Go to Portal Row [ By calculation: 2 ; With dialog: Off ]
+Else If [ $m = "last" ]
+Go to Portal Row [ Last ]
+End If
+Perform Script [ "st" ; Parameter: Get ( LastError ) ]
+If [ $m = "row2 dialog" ]
+Delete Portal Row [ With dialog: On ]
+Else
+Delete Portal Row [ With dialog: Off ]
+End If
+Set Variable [ $d ; Get ( LastError ) ]
+Perform Script [ "st" ; Parameter: $d ]
+Perform Script [ "rel" ]
+Set Variable [ $l1 ; Get ( ScriptResult ) ]
+Commit Records/Requests [ With dialog: Off ]
+Set Variable [ $c ; Get ( LastError ) ]
+Perform Script [ "st" ; Parameter: $c ]
+Perform Script [ "rel" ]
+Exit Script [ $$s & " del:" & $l1 & " commit:" & $c & " after:" & Get ( ScriptResult ) ]
+
+--- run
+setup
+seq	t3
+del	row2\rw-row2\r3
+del	last\rw-last\r3
+all

@@ -1,0 +1,120 @@
+# s35-portals with a strict validation rule by calculation on the related
+# field, validated Always: Attachments::Description
+# Length ( Self ) <= 5. Set Field [ Attachments::Description ] of an
+# invalid ("toolong") and a valid value through the portal: the error at
+# Set Field, at Commit Records, and what is stored. Scripts and output as
+# s35-portals.
+@layout	Attachment List	Attachments	Assignments
+@name	Task Details	portal:Attachments	Attachments Portal
+@name	Task Details	Attachments::Description	att desc
+@name	Task Details	Assignees::Name	assignee name
+@validate	Attachments::Description	Always	Length ( Self ) <= 5
+
+== st
+Set Variable [ $$s ; $$s & "[" & Get ( ScriptParameter ) & ":" & Get ( ActivePortalRowNumber ) & ":" & Get ( ActiveFieldName ) & ":" & Get ( ActiveFieldTableName ) & ":" & Get ( ActiveLayoutObjectName ) & ":" & Get ( ActiveRepetitionNumber ) & ":" & Get ( RecordNumber ) & ":" & Tasks::Task & ":" & Attachments::Description & ":" & Get ( LayoutName ) & ":" & Get ( FoundCount ) & "]" ]
+
+== at
+# Parameter: a task name. Task Details, all records, on that task.
+Set Variable [ $$s ; "" ]
+Go to Layout [ "Task Details" ]
+Show All Records
+Go to Record/Request/Page [ First ]
+Loop
+Exit Loop If [ Tasks::Task = Get ( ScriptParameter ) ]
+Go to Record/Request/Page [ Next ; Exit after last: On ]
+End Loop
+
+== mk
+# Parameter: name ¶ n. A new task with n attachments "name-1" ... (made
+# on Attachment List), then "at" it.
+Set Variable [ $name ; GetValue ( Get ( ScriptParameter ) ; 1 ) ]
+Set Variable [ $n ; GetAsNumber ( GetValue ( Get ( ScriptParameter ) ; 2 ) ) ]
+Go to Layout [ "Task Details" ]
+New Record/Request
+Set Field [ Tasks::Task ; $name ]
+Commit Records/Requests [ With dialog: Off ]
+Set Variable [ $k ; Tasks::PrimaryKey ]
+Go to Layout [ "Attachment List" ]
+Set Variable [ $i ; 0 ]
+Loop
+Exit Loop If [ $i >= $n ]
+Set Variable [ $i ; $i + 1 ]
+New Record/Request
+Set Field [ Attachments::ForeignKey ; $k ]
+Set Field [ Attachments::Description ; $name & "-" & $i ]
+Commit Records/Requests [ With dialog: Off ]
+End Loop
+Perform Script [ "at" ; Parameter: $name ]
+
+== rel
+# The task's related attachments now: descriptions # count.
+Exit Script [ Substitute ( List ( Attachments::Description ) ; ¶ ; "," ) & "#" & Count ( Attachments::PrimaryKey ) ]
+
+== all
+# Every attachment: description/its task's name, and the counts.
+Go to Layout [ "Attachment List" ]
+Show All Records
+Set Variable [ $a ; "" ]
+Go to Record/Request/Page [ First ]
+Loop
+Exit Loop If [ Get ( FoundCount ) = 0 ]
+Set Variable [ $a ; $a & Attachments::Description & "/" & Tasks::Task & " " ]
+Go to Record/Request/Page [ Next ; Exit after last: On ]
+End Loop
+Set Variable [ $n ; Get ( TotalRecordCount ) ]
+Go to Layout [ "Task Details" ]
+Exit Script [ $n & " attachments, " & Get ( TotalRecordCount ) & " tasks: " & $a ]
+
+== setup
+Perform Script [ "mk" ; Parameter: "t0¶0" ]
+Perform Script [ "mk" ; Parameter: "t1¶1" ]
+Perform Script [ "mk" ; Parameter: "t2¶2" ]
+Perform Script [ "mk" ; Parameter: "t3¶3" ]
+Perform Script [ "all" ]
+
+== sf
+# A4. Parameter: mode ¶ task name ¶ attachments ¶ end (commit | revert)
+# [ ¶ value, default "<name>+" ].
+# mk the task, then by mode: none (no active row), first, row2 (By
+# calculation 2), last, count+1 (By calculation count + 1); Set Field
+# Attachments::Description to "<name>+"; read the related records; Commit
+# Records (or not); Revert Record; read them again. SQL counts the
+# committed attachments of the task with the new value.
+Set Error Capture [ On ]
+Perform Script [ "mk" ; Parameter: GetValue ( Get ( ScriptParameter ) ; 2 ) & ¶ & GetValue ( Get ( ScriptParameter ) ; 3 ) ]
+Set Variable [ $m ; GetValue ( Get ( ScriptParameter ) ; 1 ) ]
+Set Variable [ $v ; If ( IsEmpty ( GetValue ( Get ( ScriptParameter ) ; 5 ) ) ; GetValue ( Get ( ScriptParameter ) ; 2 ) & "+" ; GetValue ( Get ( ScriptParameter ) ; 5 ) ) ]
+If [ $m = "first" ]
+Go to Portal Row [ First ]
+Else If [ $m = "row2" ]
+Go to Portal Row [ By calculation: 2 ; With dialog: Off ]
+Else If [ $m = "last" ]
+Go to Portal Row [ Last ]
+Else If [ $m = "count+1" ]
+Go to Portal Row [ By calculation: Count ( Attachments::PrimaryKey ) + 1 ; With dialog: Off ]
+End If
+Perform Script [ "st" ; Parameter: Get ( LastError ) ]
+Set Field [ Attachments::Description ; $v ]
+Perform Script [ "st" ; Parameter: Get ( LastError ) ]
+Set Variable [ $cnt ; Count ( Attachments::PrimaryKey ) & "/" & Count ( Attachments::Description ) & "/" & ValueCount ( List ( Attachments::PrimaryKey ) ) ]
+Perform Script [ "rel" ]
+Set Variable [ $l1 ; Get ( ScriptResult ) & "#sql " & ExecuteSQL ( "SELECT COUNT(*) FROM Attachments WHERE Description = ?" ; "" ; "" ; $v ) ]
+If [ GetValue ( Get ( ScriptParameter ) ; 4 ) = "commit" ]
+Commit Records/Requests [ With dialog: Off ]
+End If
+Set Variable [ $c ; Get ( LastError ) ]
+Perform Script [ "st" ; Parameter: $c ]
+Revert Record/Request [ With dialog: Off ]
+Set Variable [ $r ; Get ( LastError ) ]
+Perform Script [ "rel" ]
+Set Variable [ $l2 ; Get ( ScriptResult ) & "#sql " & ExecuteSQL ( "SELECT COUNT(*) FROM Attachments WHERE Description = ? AND ForeignKey = ?" ; "" ; "" ; $v ; Tasks::PrimaryKey ) ]
+Exit Script [ $$s & " set:" & $l1 & " counts:" & $cnt & " commit:" & $c & " revert:" & $r & " after:" & $l2 ]
+
+--- run
+sf	none\rva\r2\rcommit\rtoolong
+sf	none\rvb\r2\rcommit\rok
+sf	row2\rvc\r3\rcommit\rtoolong
+sf	last\rvd\r2\rcommit\rtoolong
+sf	none\rve\r0\rcommit\rtoolong
+sf	none\rvf\r2\rrevert\rtoolong
+all

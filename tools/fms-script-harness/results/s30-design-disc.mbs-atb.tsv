@@ -1,0 +1,11 @@
+# Design functions: what the file holds (names for the battery)
+no such script		104		0	work	ATB\rATB_Icons\rATB_NSImageTemplates	1065089\r1065091\r1065092	ATB\rATB_Icons\rATB_NSImageTemplates	129\r131\r132	ATB\rATB_Icons\rObject_Trigger\rATB_NSImageTemplates\rObject_Trigger_Flex	1\r3\r4\r5\r6	Start\rObject_Trigger\rObject_Trigger_Flex\rΩNS_templates\rshowMenu_OR_FullAccess\rZoom_In_Out\rclose_PC\rATB_customFunction\rATB_Flex\rATB_MBS\ralpha\rbeta\rdelta\repsilon\rgamma\riota\rlambda\romega\rsigma\rzeta\rATB_hardCoded\rBuildAppTouchBar_test\rRefresh\rBuildWindowTouchBar	5\r30\r41\r31\r2\r3\r4\r20\r40\r19\r42\r43\r45\r46\r44\r48\r49\r51\r50\r47\r29\r21\r34\r22	Functions\rDefault	1\r2	work	ATB	ATB	work
+>	1	Start	11	166	0	0	0	0
+>	1	Start	12	92	0	0	0	0
+>	1	Start	13	29	0	0	0	0
+>	1	Start	14	141	0	0	0	0
+>	1	Start	16	6	0	0	0	0
+!	3	work : Start : 17 : Adjust Window
+>	1	Start	17	31	3	0	0	3
+>	1	Start	18	1	0	0	0	0
+>	2	ATB_customFunction	13	141	0	0	0	0

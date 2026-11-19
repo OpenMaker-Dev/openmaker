@@ -1,0 +1,406 @@
+# Export Records probes (battery x05, issue #372), written by gen_x05.py: summary
+# fields of every operation and option over six records (K B N W NR):
+# 1 b 5 1 1|2|3, 2 a 1 2 4||6, 3 b 4 3 |5|, 4 a 2 1 7|8|9, 5 c - 1 ||, 6 c 3 2 10||.
+# Paths: Get ( DocumentsPath ), or /root/Documents/ in the script harness, where
+# it is empty (fms-script-harness README, DOCUMENTS).
+
+== Setup
+Set Error Capture [ On ]
+Go to Layout [ "Contact List" ]
+Show All Records
+Loop
+Exit Loop If [ Get ( FoundCount ) = 0 ]
+Delete Record/Request [ With dialog: Off ]
+End Loop
+New Record/Request
+Set Field [ Contacts::K ; "1" ]
+Set Field [ Contacts::VNE ; "v1" ]
+Set Field [ Contacts::VNO ; "o1" ]
+Set Field [ Contacts::VU ; "u1" ]
+Set Field [ Contacts::B ; "b" ]
+Set Field [ Contacts::N ; 5 ]
+Set Field [ Contacts::W ; 1 ]
+Set Field [ Contacts::NR[1] ; 1 ]
+Set Field [ Contacts::NR[2] ; 2 ]
+Set Field [ Contacts::NR[3] ; 3 ]
+New Record/Request
+Set Field [ Contacts::K ; "2" ]
+Set Field [ Contacts::VNE ; "v2" ]
+Set Field [ Contacts::VNO ; "o2" ]
+Set Field [ Contacts::VU ; "u2" ]
+Set Field [ Contacts::B ; "a" ]
+Set Field [ Contacts::N ; 1 ]
+Set Field [ Contacts::W ; 2 ]
+Set Field [ Contacts::NR[1] ; 4 ]
+Set Field [ Contacts::NR[3] ; 6 ]
+New Record/Request
+Set Field [ Contacts::K ; "3" ]
+Set Field [ Contacts::VNE ; "v3" ]
+Set Field [ Contacts::VNO ; "o3" ]
+Set Field [ Contacts::VU ; "u3" ]
+Set Field [ Contacts::B ; "b" ]
+Set Field [ Contacts::N ; 4 ]
+Set Field [ Contacts::W ; 3 ]
+Set Field [ Contacts::NR[2] ; 5 ]
+New Record/Request
+Set Field [ Contacts::K ; "4" ]
+Set Field [ Contacts::VNE ; "v4" ]
+Set Field [ Contacts::VNO ; "o4" ]
+Set Field [ Contacts::VU ; "u4" ]
+Set Field [ Contacts::B ; "a" ]
+Set Field [ Contacts::N ; 2 ]
+Set Field [ Contacts::W ; 1 ]
+Set Field [ Contacts::NR[1] ; 7 ]
+Set Field [ Contacts::NR[2] ; 8 ]
+Set Field [ Contacts::NR[3] ; 9 ]
+New Record/Request
+Set Field [ Contacts::K ; "5" ]
+Set Field [ Contacts::VNE ; "v5" ]
+Set Field [ Contacts::VNO ; "o5" ]
+Set Field [ Contacts::VU ; "u5" ]
+Set Field [ Contacts::B ; "c" ]
+Set Field [ Contacts::W ; 1 ]
+New Record/Request
+Set Field [ Contacts::K ; "6" ]
+Set Field [ Contacts::VNE ; "v6" ]
+Set Field [ Contacts::VNO ; "o6" ]
+Set Field [ Contacts::VU ; "u6" ]
+Set Field [ Contacts::B ; "c" ]
+Set Field [ Contacts::N ; 3 ]
+Set Field [ Contacts::W ; 2 ]
+Set Field [ Contacts::NR[1] ; 10 ]
+Commit Records/Requests [ With dialog: Off ]
+Show All Records
+Set Variable [ $$dir ; If ( IsEmpty ( Get ( DocumentsPath ) ) ; "/root/Documents/" ; Get ( DocumentsPath ) ) ]
+Set Variable [ $$log ; "setup" & Char ( 9 ) & Get ( LastError ) & Char ( 9 ) & Get ( FoundCount ) & ¶ ]
+
+== x5_u_tab
+Set Error Capture [ On ]
+Go to Layout [ "Contact List" ]
+Show All Records
+Unsort Records
+Set Variable [ $p0 ; $$dir & "omprobe_x5_u_tab.tab" ]
+Export Records [ "file:$p0" ; Type: TABS ; Charset: 4 ; Fields: Contacts::K | Contacts::B | Contacts::N | Contacts::S | Contacts::SRT | Contacts::SRT0 | Contacts::SRC | Contacts::SRCR | Contacts::SF | Contacts::SFS | Contacts::SA | Contacts::SWA | Contacts::SMIN | Contacts::SMAX | Contacts::SSD | Contacts::SSDP | Contacts::SL | Contacts::SNR | Contacts::SNRI | Contacts::SNRRI ; With dialog: Off ]
+Set Variable [ $$log ; $$log & "x5_u_tab" & Char ( 9 ) & Get ( LastError ) & Char ( 9 ) & Get ( FoundCount ) & ¶ ]
+
+== x5_s_tab
+Set Error Capture [ On ]
+Go to Layout [ "Contact List" ]
+Show All Records
+Sort Records [ Contacts::B ; Contacts::K ]
+Set Variable [ $p0 ; $$dir & "omprobe_x5_s_tab.tab" ]
+Export Records [ "file:$p0" ; Type: TABS ; Charset: 4 ; Fields: Contacts::K | Contacts::B | Contacts::N | Contacts::S | Contacts::SRT | Contacts::SRT0 | Contacts::SRC | Contacts::SRCR | Contacts::SF | Contacts::SFS | Contacts::SA | Contacts::SWA | Contacts::SMIN | Contacts::SMAX | Contacts::SSD | Contacts::SSDP | Contacts::SL | Contacts::SNR | Contacts::SNRI | Contacts::SNRRI ; With dialog: Off ]
+Set Variable [ $$log ; $$log & "x5_s_tab" & Char ( 9 ) & Get ( LastError ) & Char ( 9 ) & Get ( FoundCount ) & ¶ ]
+
+== x5_k_tab
+Set Error Capture [ On ]
+Go to Layout [ "Contact List" ]
+Show All Records
+Sort Records [ Contacts::K ]
+Set Variable [ $p0 ; $$dir & "omprobe_x5_k_tab.tab" ]
+Export Records [ "file:$p0" ; Type: TABS ; Charset: 4 ; Fields: Contacts::K | Contacts::B | Contacts::N | Contacts::S | Contacts::SRT | Contacts::SRT0 | Contacts::SRC | Contacts::SRCR | Contacts::SF | Contacts::SFS | Contacts::SA | Contacts::SWA | Contacts::SMIN | Contacts::SMAX | Contacts::SSD | Contacts::SSDP | Contacts::SL | Contacts::SNR | Contacts::SNRI | Contacts::SNRRI ; With dialog: Off ]
+Set Variable [ $$log ; $$log & "x5_k_tab" & Char ( 9 ) & Get ( LastError ) & Char ( 9 ) & Get ( FoundCount ) & ¶ ]
+
+== x5_d_tab
+Set Error Capture [ On ]
+Go to Layout [ "Contact List" ]
+Show All Records
+Sort Records [ Contacts::B desc ; Contacts::K ]
+Set Variable [ $p0 ; $$dir & "omprobe_x5_d_tab.tab" ]
+Export Records [ "file:$p0" ; Type: TABS ; Charset: 4 ; Fields: Contacts::K | Contacts::B | Contacts::N | Contacts::S | Contacts::SRT | Contacts::SRT0 | Contacts::SRC | Contacts::SRCR | Contacts::SF | Contacts::SFS | Contacts::SA | Contacts::SWA | Contacts::SMIN | Contacts::SMAX | Contacts::SSD | Contacts::SSDP | Contacts::SL | Contacts::SNR | Contacts::SNRI | Contacts::SNRRI ; With dialog: Off ]
+Set Variable [ $$log ; $$log & "x5_d_tab" & Char ( 9 ) & Get ( LastError ) & Char ( 9 ) & Get ( FoundCount ) & ¶ ]
+
+== x5_ub_tab
+Set Error Capture [ On ]
+Go to Layout [ "Contact List" ]
+Show All Records
+Unsort Records
+Set Variable [ $p0 ; $$dir & "omprobe_x5_ub_tab.tab" ]
+Export Records [ "file:$p0" ; Type: TABS ; Charset: 4 ; Fields: Contacts::K | Contacts::B | Contacts::N | Contacts::S | Contacts::SRT | Contacts::SRT0 | Contacts::SRC | Contacts::SRCR | Contacts::SF | Contacts::SFS | Contacts::SA | Contacts::SWA | Contacts::SMIN | Contacts::SMAX | Contacts::SSD | Contacts::SSDP | Contacts::SL | Contacts::SNR | Contacts::SNRI | Contacts::SNRRI | Contacts::S > Contacts::B | Contacts::SRT > Contacts::B | Contacts::SRT0 > Contacts::B | Contacts::SRC > Contacts::B | Contacts::SRCR > Contacts::B | Contacts::SF > Contacts::B | Contacts::SFS > Contacts::B | Contacts::SA > Contacts::B | Contacts::SWA > Contacts::B | Contacts::SMIN > Contacts::B | Contacts::SMAX > Contacts::B | Contacts::SSD > Contacts::B | Contacts::SSDP > Contacts::B | Contacts::SL > Contacts::B | Contacts::SNR > Contacts::B | Contacts::SNRI > Contacts::B | Contacts::SNRRI > Contacts::B ; With dialog: Off ]
+Set Variable [ $$log ; $$log & "x5_ub_tab" & Char ( 9 ) & Get ( LastError ) & Char ( 9 ) & Get ( FoundCount ) & ¶ ]
+
+== x5_sb_tab
+Set Error Capture [ On ]
+Go to Layout [ "Contact List" ]
+Show All Records
+Sort Records [ Contacts::B ; Contacts::K ]
+Set Variable [ $p0 ; $$dir & "omprobe_x5_sb_tab.tab" ]
+Export Records [ "file:$p0" ; Type: TABS ; Charset: 4 ; Fields: Contacts::K | Contacts::B | Contacts::N | Contacts::S | Contacts::SRT | Contacts::SRT0 | Contacts::SRC | Contacts::SRCR | Contacts::SF | Contacts::SFS | Contacts::SA | Contacts::SWA | Contacts::SMIN | Contacts::SMAX | Contacts::SSD | Contacts::SSDP | Contacts::SL | Contacts::SNR | Contacts::SNRI | Contacts::SNRRI | Contacts::S > Contacts::B | Contacts::SRT > Contacts::B | Contacts::SRT0 > Contacts::B | Contacts::SRC > Contacts::B | Contacts::SRCR > Contacts::B | Contacts::SF > Contacts::B | Contacts::SFS > Contacts::B | Contacts::SA > Contacts::B | Contacts::SWA > Contacts::B | Contacts::SMIN > Contacts::B | Contacts::SMAX > Contacts::B | Contacts::SSD > Contacts::B | Contacts::SSDP > Contacts::B | Contacts::SL > Contacts::B | Contacts::SNR > Contacts::B | Contacts::SNRI > Contacts::B | Contacts::SNRRI > Contacts::B ; With dialog: Off ]
+Set Variable [ $$log ; $$log & "x5_sb_tab" & Char ( 9 ) & Get ( LastError ) & Char ( 9 ) & Get ( FoundCount ) & ¶ ]
+
+== x5_kb_tab
+Set Error Capture [ On ]
+Go to Layout [ "Contact List" ]
+Show All Records
+Sort Records [ Contacts::K ]
+Set Variable [ $p0 ; $$dir & "omprobe_x5_kb_tab.tab" ]
+Export Records [ "file:$p0" ; Type: TABS ; Charset: 4 ; Fields: Contacts::K | Contacts::B | Contacts::N | Contacts::S | Contacts::SRT | Contacts::SRT0 | Contacts::SRC | Contacts::SRCR | Contacts::SF | Contacts::SFS | Contacts::SA | Contacts::SWA | Contacts::SMIN | Contacts::SMAX | Contacts::SSD | Contacts::SSDP | Contacts::SL | Contacts::SNR | Contacts::SNRI | Contacts::SNRRI | Contacts::S > Contacts::B | Contacts::SRT > Contacts::B | Contacts::SRT0 > Contacts::B | Contacts::SRC > Contacts::B | Contacts::SRCR > Contacts::B | Contacts::SF > Contacts::B | Contacts::SFS > Contacts::B | Contacts::SA > Contacts::B | Contacts::SWA > Contacts::B | Contacts::SMIN > Contacts::B | Contacts::SMAX > Contacts::B | Contacts::SSD > Contacts::B | Contacts::SSDP > Contacts::B | Contacts::SL > Contacts::B | Contacts::SNR > Contacts::B | Contacts::SNRI > Contacts::B | Contacts::SNRRI > Contacts::B ; With dialog: Off ]
+Set Variable [ $$log ; $$log & "x5_kb_tab" & Char ( 9 ) & Get ( LastError ) & Char ( 9 ) & Get ( FoundCount ) & ¶ ]
+
+== x5_g_tab
+Set Error Capture [ On ]
+Go to Layout [ "Contact List" ]
+Show All Records
+Sort Records [ Contacts::B ; Contacts::K ]
+Set Variable [ $p0 ; $$dir & "omprobe_x5_g_tab.tab" ]
+Export Records [ "file:$p0" ; Type: TABS ; Charset: 4 ; Fields: Contacts::K | Contacts::B | Contacts::N | Contacts::S | Contacts::SRT | Contacts::SRT0 | Contacts::SRC | Contacts::SRCR | Contacts::SF | Contacts::SFS | Contacts::SA | Contacts::SWA | Contacts::SMIN | Contacts::SMAX | Contacts::SSD | Contacts::SSDP | Contacts::SL | Contacts::SNR | Contacts::SNRI | Contacts::SNRRI | Contacts::S > Contacts::B | Contacts::SRT > Contacts::B | Contacts::SRT0 > Contacts::B | Contacts::SRC > Contacts::B | Contacts::SRCR > Contacts::B | Contacts::SF > Contacts::B | Contacts::SFS > Contacts::B | Contacts::SA > Contacts::B | Contacts::SWA > Contacts::B | Contacts::SMIN > Contacts::B | Contacts::SMAX > Contacts::B | Contacts::SSD > Contacts::B | Contacts::SSDP > Contacts::B | Contacts::SL > Contacts::B | Contacts::SNR > Contacts::B | Contacts::SNRI > Contacts::B | Contacts::SNRRI > Contacts::B ; With dialog: Off ; Group: Contacts::B ]
+Set Variable [ $$log ; $$log & "x5_g_tab" & Char ( 9 ) & Get ( LastError ) & Char ( 9 ) & Get ( FoundCount ) & ¶ ]
+
+== x5_gd_tab
+Set Error Capture [ On ]
+Go to Layout [ "Contact List" ]
+Show All Records
+Sort Records [ Contacts::B desc ; Contacts::K ]
+Set Variable [ $p0 ; $$dir & "omprobe_x5_gd_tab.tab" ]
+Export Records [ "file:$p0" ; Type: TABS ; Charset: 4 ; Fields: Contacts::K | Contacts::B | Contacts::N | Contacts::S | Contacts::SRT | Contacts::SRT0 | Contacts::SRC | Contacts::SRCR | Contacts::SF | Contacts::SFS | Contacts::SA | Contacts::SWA | Contacts::SMIN | Contacts::SMAX | Contacts::SSD | Contacts::SSDP | Contacts::SL | Contacts::SNR | Contacts::SNRI | Contacts::SNRRI | Contacts::S > Contacts::B | Contacts::SRT > Contacts::B | Contacts::SRT0 > Contacts::B | Contacts::SRC > Contacts::B | Contacts::SRCR > Contacts::B | Contacts::SF > Contacts::B | Contacts::SFS > Contacts::B | Contacts::SA > Contacts::B | Contacts::SWA > Contacts::B | Contacts::SMIN > Contacts::B | Contacts::SMAX > Contacts::B | Contacts::SSD > Contacts::B | Contacts::SSDP > Contacts::B | Contacts::SL > Contacts::B | Contacts::SNR > Contacts::B | Contacts::SNRI > Contacts::B | Contacts::SNRRI > Contacts::B ; With dialog: Off ; Group: Contacts::B ]
+Set Variable [ $$log ; $$log & "x5_gd_tab" & Char ( 9 ) & Get ( LastError ) & Char ( 9 ) & Get ( FoundCount ) & ¶ ]
+
+== x5_gu_tab
+Set Error Capture [ On ]
+Go to Layout [ "Contact List" ]
+Show All Records
+Unsort Records
+Set Variable [ $p0 ; $$dir & "omprobe_x5_gu_tab.tab" ]
+Export Records [ "file:$p0" ; Type: TABS ; Charset: 4 ; Fields: Contacts::K | Contacts::B | Contacts::N | Contacts::S | Contacts::SRT | Contacts::SRT0 | Contacts::SRC | Contacts::SRCR | Contacts::SF | Contacts::SFS | Contacts::SA | Contacts::SWA | Contacts::SMIN | Contacts::SMAX | Contacts::SSD | Contacts::SSDP | Contacts::SL | Contacts::SNR | Contacts::SNRI | Contacts::SNRRI | Contacts::S > Contacts::B | Contacts::SRT > Contacts::B | Contacts::SRT0 > Contacts::B | Contacts::SRC > Contacts::B | Contacts::SRCR > Contacts::B | Contacts::SF > Contacts::B | Contacts::SFS > Contacts::B | Contacts::SA > Contacts::B | Contacts::SWA > Contacts::B | Contacts::SMIN > Contacts::B | Contacts::SMAX > Contacts::B | Contacts::SSD > Contacts::B | Contacts::SSDP > Contacts::B | Contacts::SL > Contacts::B | Contacts::SNR > Contacts::B | Contacts::SNRI > Contacts::B | Contacts::SNRRI > Contacts::B ; With dialog: Off ; Group: Contacts::B ]
+Set Variable [ $$log ; $$log & "x5_gu_tab" & Char ( 9 ) & Get ( LastError ) & Char ( 9 ) & Get ( FoundCount ) & ¶ ]
+
+== x5_gk_tab
+Set Error Capture [ On ]
+Go to Layout [ "Contact List" ]
+Show All Records
+Sort Records [ Contacts::K ]
+Set Variable [ $p0 ; $$dir & "omprobe_x5_gk_tab.tab" ]
+Export Records [ "file:$p0" ; Type: TABS ; Charset: 4 ; Fields: Contacts::K | Contacts::B | Contacts::N | Contacts::S | Contacts::SRT | Contacts::SRT0 | Contacts::SRC | Contacts::SRCR | Contacts::SF | Contacts::SFS | Contacts::SA | Contacts::SWA | Contacts::SMIN | Contacts::SMAX | Contacts::SSD | Contacts::SSDP | Contacts::SL | Contacts::SNR | Contacts::SNRI | Contacts::SNRRI | Contacts::S > Contacts::B | Contacts::SRT > Contacts::B | Contacts::SRT0 > Contacts::B | Contacts::SRC > Contacts::B | Contacts::SRCR > Contacts::B | Contacts::SF > Contacts::B | Contacts::SFS > Contacts::B | Contacts::SA > Contacts::B | Contacts::SWA > Contacts::B | Contacts::SMIN > Contacts::B | Contacts::SMAX > Contacts::B | Contacts::SSD > Contacts::B | Contacts::SSDP > Contacts::B | Contacts::SL > Contacts::B | Contacts::SNR > Contacts::B | Contacts::SNRI > Contacts::B | Contacts::SNRRI > Contacts::B ; With dialog: Off ; Group: Contacts::B ]
+Set Variable [ $$log ; $$log & "x5_gk_tab" & Char ( 9 ) & Get ( LastError ) & Char ( 9 ) & Get ( FoundCount ) & ¶ ]
+
+== x5_g2_tab
+Set Error Capture [ On ]
+Go to Layout [ "Contact List" ]
+Show All Records
+Sort Records [ Contacts::B ; Contacts::K ]
+Set Variable [ $p0 ; $$dir & "omprobe_x5_g2_tab.tab" ]
+Export Records [ "file:$p0" ; Type: TABS ; Charset: 4 ; Fields: Contacts::K | Contacts::B | Contacts::N | Contacts::S | Contacts::SRT | Contacts::SRT0 | Contacts::SRC | Contacts::SRCR | Contacts::SF | Contacts::SFS | Contacts::SA | Contacts::SWA | Contacts::SMIN | Contacts::SMAX | Contacts::SSD | Contacts::SSDP | Contacts::SL | Contacts::SNR | Contacts::SNRI | Contacts::SNRRI | Contacts::S > Contacts::B | Contacts::SRT > Contacts::B | Contacts::SRT0 > Contacts::B | Contacts::SRC > Contacts::B | Contacts::SRCR > Contacts::B | Contacts::SF > Contacts::B | Contacts::SFS > Contacts::B | Contacts::SA > Contacts::B | Contacts::SWA > Contacts::B | Contacts::SMIN > Contacts::B | Contacts::SMAX > Contacts::B | Contacts::SSD > Contacts::B | Contacts::SSDP > Contacts::B | Contacts::SL > Contacts::B | Contacts::SNR > Contacts::B | Contacts::SNRI > Contacts::B | Contacts::SNRRI > Contacts::B | Contacts::S > Contacts::K | Contacts::SRT > Contacts::K | Contacts::SRT0 > Contacts::K | Contacts::SRC > Contacts::K | Contacts::SRCR > Contacts::K | Contacts::SF > Contacts::K | Contacts::SFS > Contacts::K | Contacts::SA > Contacts::K | Contacts::SWA > Contacts::K | Contacts::SMIN > Contacts::K | Contacts::SMAX > Contacts::K | Contacts::SSD > Contacts::K | Contacts::SSDP > Contacts::K | Contacts::SL > Contacts::K | Contacts::SNR > Contacts::K | Contacts::SNRI > Contacts::K | Contacts::SNRRI > Contacts::K ; With dialog: Off ; Group: Contacts::B | Contacts::K ]
+Set Variable [ $$log ; $$log & "x5_g2_tab" & Char ( 9 ) & Get ( LastError ) & Char ( 9 ) & Get ( FoundCount ) & ¶ ]
+
+== x5_u_xml
+Set Error Capture [ On ]
+Go to Layout [ "Contact List" ]
+Show All Records
+Unsort Records
+Set Variable [ $p0 ; $$dir & "omprobe_x5_u_xml.xml" ]
+Export Records [ "file:$p0" ; Type: XMLE ; Charset: 4 ; Fields: Contacts::K | Contacts::B | Contacts::N | Contacts::S | Contacts::SRT | Contacts::SRT0 | Contacts::SRC | Contacts::SRCR | Contacts::SF | Contacts::SFS | Contacts::SA | Contacts::SWA | Contacts::SMIN | Contacts::SMAX | Contacts::SSD | Contacts::SSDP | Contacts::SL | Contacts::SNR | Contacts::SNRI | Contacts::SNRRI ; With dialog: Off ]
+Set Variable [ $$log ; $$log & "x5_u_xml" & Char ( 9 ) & Get ( LastError ) & Char ( 9 ) & Get ( FoundCount ) & ¶ ]
+
+== x5_s_xml
+Set Error Capture [ On ]
+Go to Layout [ "Contact List" ]
+Show All Records
+Sort Records [ Contacts::B ; Contacts::K ]
+Set Variable [ $p0 ; $$dir & "omprobe_x5_s_xml.xml" ]
+Export Records [ "file:$p0" ; Type: XMLE ; Charset: 4 ; Fields: Contacts::K | Contacts::B | Contacts::N | Contacts::S | Contacts::SRT | Contacts::SRT0 | Contacts::SRC | Contacts::SRCR | Contacts::SF | Contacts::SFS | Contacts::SA | Contacts::SWA | Contacts::SMIN | Contacts::SMAX | Contacts::SSD | Contacts::SSDP | Contacts::SL | Contacts::SNR | Contacts::SNRI | Contacts::SNRRI ; With dialog: Off ]
+Set Variable [ $$log ; $$log & "x5_s_xml" & Char ( 9 ) & Get ( LastError ) & Char ( 9 ) & Get ( FoundCount ) & ¶ ]
+
+== x5_g_xml
+Set Error Capture [ On ]
+Go to Layout [ "Contact List" ]
+Show All Records
+Sort Records [ Contacts::B ; Contacts::K ]
+Set Variable [ $p0 ; $$dir & "omprobe_x5_g_xml.xml" ]
+Export Records [ "file:$p0" ; Type: XMLE ; Charset: 4 ; Fields: Contacts::K | Contacts::B | Contacts::N | Contacts::S | Contacts::SRT | Contacts::SRT0 | Contacts::SRC | Contacts::SRCR | Contacts::SF | Contacts::SFS | Contacts::SA | Contacts::SWA | Contacts::SMIN | Contacts::SMAX | Contacts::SSD | Contacts::SSDP | Contacts::SL | Contacts::SNR | Contacts::SNRI | Contacts::SNRRI | Contacts::S > Contacts::B | Contacts::SRT > Contacts::B | Contacts::SRT0 > Contacts::B | Contacts::SRC > Contacts::B | Contacts::SRCR > Contacts::B | Contacts::SF > Contacts::B | Contacts::SFS > Contacts::B | Contacts::SA > Contacts::B | Contacts::SWA > Contacts::B | Contacts::SMIN > Contacts::B | Contacts::SMAX > Contacts::B | Contacts::SSD > Contacts::B | Contacts::SSDP > Contacts::B | Contacts::SL > Contacts::B | Contacts::SNR > Contacts::B | Contacts::SNRI > Contacts::B | Contacts::SNRRI > Contacts::B ; With dialog: Off ; Group: Contacts::B ]
+Set Variable [ $$log ; $$log & "x5_g_xml" & Char ( 9 ) & Get ( LastError ) & Char ( 9 ) & Get ( FoundCount ) & ¶ ]
+
+== x5_u_xlsx
+Set Error Capture [ On ]
+Go to Layout [ "Contact List" ]
+Show All Records
+Unsort Records
+Set Variable [ $p0 ; $$dir & "omprobe_x5_u_xlsx.xlsx" ]
+Export Records [ "file:$p0" ; Type: XLXE ; Charset: 4 ; Fields: Contacts::K | Contacts::B | Contacts::N | Contacts::S | Contacts::SRT | Contacts::SRT0 | Contacts::SRC | Contacts::SRCR | Contacts::SF | Contacts::SFS | Contacts::SA | Contacts::SWA | Contacts::SMIN | Contacts::SMAX | Contacts::SSD | Contacts::SSDP | Contacts::SL | Contacts::SNR ; With dialog: Off ]
+Set Variable [ $$log ; $$log & "x5_u_xlsx" & Char ( 9 ) & Get ( LastError ) & Char ( 9 ) & Get ( FoundCount ) & ¶ ]
+
+== x5_s_xlsx
+Set Error Capture [ On ]
+Go to Layout [ "Contact List" ]
+Show All Records
+Sort Records [ Contacts::B ; Contacts::K ]
+Set Variable [ $p0 ; $$dir & "omprobe_x5_s_xlsx.xlsx" ]
+Export Records [ "file:$p0" ; Type: XLXE ; Charset: 4 ; Fields: Contacts::K | Contacts::B | Contacts::N | Contacts::S | Contacts::SRT | Contacts::SRT0 | Contacts::SRC | Contacts::SRCR | Contacts::SF | Contacts::SFS | Contacts::SA | Contacts::SWA | Contacts::SMIN | Contacts::SMAX | Contacts::SSD | Contacts::SSDP | Contacts::SL | Contacts::SNR ; With dialog: Off ]
+Set Variable [ $$log ; $$log & "x5_s_xlsx" & Char ( 9 ) & Get ( LastError ) & Char ( 9 ) & Get ( FoundCount ) & ¶ ]
+
+== x5_g_xlsx
+Set Error Capture [ On ]
+Go to Layout [ "Contact List" ]
+Show All Records
+Sort Records [ Contacts::B ; Contacts::K ]
+Set Variable [ $p0 ; $$dir & "omprobe_x5_g_xlsx.xlsx" ]
+Export Records [ "file:$p0" ; Type: XLXE ; Charset: 4 ; Fields: Contacts::K | Contacts::B | Contacts::N | Contacts::S | Contacts::SRT | Contacts::SRT0 | Contacts::SRC | Contacts::SRCR | Contacts::SF | Contacts::SFS | Contacts::SA | Contacts::SWA | Contacts::SMIN | Contacts::SMAX | Contacts::SSD | Contacts::SSDP | Contacts::SL | Contacts::SNR | Contacts::S > Contacts::B | Contacts::SRT > Contacts::B | Contacts::SRT0 > Contacts::B | Contacts::SRC > Contacts::B | Contacts::SRCR > Contacts::B | Contacts::SF > Contacts::B | Contacts::SFS > Contacts::B | Contacts::SA > Contacts::B | Contacts::SWA > Contacts::B | Contacts::SMIN > Contacts::B | Contacts::SMAX > Contacts::B | Contacts::SSD > Contacts::B | Contacts::SSDP > Contacts::B | Contacts::SL > Contacts::B | Contacts::SNR > Contacts::B ; With dialog: Off ; Group: Contacts::B ]
+Set Variable [ $$log ; $$log & "x5_g_xlsx" & Char ( 9 ) & Get ( LastError ) & Char ( 9 ) & Get ( FoundCount ) & ¶ ]
+
+== x5_rep_xlsx
+Set Error Capture [ On ]
+Go to Layout [ "Contact List" ]
+Show All Records
+Unsort Records
+Set Variable [ $p0 ; $$dir & "omprobe_x5_rep_xlsx.xlsx" ]
+Export Records [ "file:$p0" ; Type: XLXE ; Charset: 4 ; Fields: Contacts::K | Contacts::SNRI | Contacts::SNRRI ; With dialog: Off ]
+Set Variable [ $$log ; $$log & "x5_rep_xlsx" & Char ( 9 ) & Get ( LastError ) & Char ( 9 ) & Get ( FoundCount ) & ¶ ]
+
+== x5_g_coms
+Set Error Capture [ On ]
+Go to Layout [ "Contact List" ]
+Show All Records
+Sort Records [ Contacts::B ; Contacts::K ]
+Set Variable [ $p0 ; $$dir & "omprobe_x5_g_coms.csv" ]
+Export Records [ "file:$p0" ; Type: COMS ; Charset: 4 ; Fields: Contacts::K | Contacts::B | Contacts::N | Contacts::S | Contacts::SRT | Contacts::SRT0 | Contacts::SRC | Contacts::SRCR | Contacts::SF | Contacts::SFS | Contacts::SA | Contacts::SWA | Contacts::SMIN | Contacts::SMAX | Contacts::SSD | Contacts::SSDP | Contacts::SL | Contacts::SNR | Contacts::SNRI | Contacts::SNRRI | Contacts::S > Contacts::B | Contacts::SRT > Contacts::B | Contacts::SRT0 > Contacts::B | Contacts::SRC > Contacts::B | Contacts::SRCR > Contacts::B | Contacts::SF > Contacts::B | Contacts::SFS > Contacts::B | Contacts::SA > Contacts::B | Contacts::SWA > Contacts::B | Contacts::SMIN > Contacts::B | Contacts::SMAX > Contacts::B | Contacts::SSD > Contacts::B | Contacts::SSDP > Contacts::B | Contacts::SL > Contacts::B | Contacts::SNR > Contacts::B | Contacts::SNRI > Contacts::B | Contacts::SNRRI > Contacts::B ; With dialog: Off ; Group: Contacts::B ]
+Set Variable [ $$log ; $$log & "x5_g_coms" & Char ( 9 ) & Get ( LastError ) & Char ( 9 ) & Get ( FoundCount ) & ¶ ]
+
+== x5_g_htm
+Set Error Capture [ On ]
+Go to Layout [ "Contact List" ]
+Show All Records
+Sort Records [ Contacts::B ; Contacts::K ]
+Set Variable [ $p0 ; $$dir & "omprobe_x5_g_htm.htm" ]
+Export Records [ "file:$p0" ; Type: HTML ; Charset: 4 ; Fields: Contacts::K | Contacts::B | Contacts::N | Contacts::S | Contacts::SRT | Contacts::SRT0 | Contacts::SRC | Contacts::SRCR | Contacts::SF | Contacts::SFS | Contacts::SA | Contacts::SWA | Contacts::SMIN | Contacts::SMAX | Contacts::SSD | Contacts::SSDP | Contacts::SL | Contacts::SNR | Contacts::SNRI | Contacts::SNRRI | Contacts::S > Contacts::B | Contacts::SRT > Contacts::B | Contacts::SRT0 > Contacts::B | Contacts::SRC > Contacts::B | Contacts::SRCR > Contacts::B | Contacts::SF > Contacts::B | Contacts::SFS > Contacts::B | Contacts::SA > Contacts::B | Contacts::SWA > Contacts::B | Contacts::SMIN > Contacts::B | Contacts::SMAX > Contacts::B | Contacts::SSD > Contacts::B | Contacts::SSDP > Contacts::B | Contacts::SL > Contacts::B | Contacts::SNR > Contacts::B | Contacts::SNRI > Contacts::B | Contacts::SNRRI > Contacts::B ; With dialog: Off ; Group: Contacts::B ]
+Set Variable [ $$log ; $$log & "x5_g_htm" & Char ( 9 ) & Get ( LastError ) & Char ( 9 ) & Get ( FoundCount ) & ¶ ]
+
+== x5_vals_u
+Set Error Capture [ On ]
+Go to Layout [ "Contact List" ]
+Show All Records
+Unsort Records
+Set Variable [ $$vals ; $$vals & "vals u" & ¶ ]
+Go to Record/Request/Page [ First ]
+Loop
+Set Variable [ $$vals ; $$vals & Contacts::K & Char ( 9 ) & Contacts::S & Char ( 9 ) & Contacts::SRT & Char ( 9 ) & Contacts::SRT0 & Char ( 9 ) & Contacts::SRC & Char ( 9 ) & Contacts::SRCR & Char ( 9 ) & Contacts::SF & Char ( 9 ) & Contacts::SFS & Char ( 9 ) & Contacts::SA & Char ( 9 ) & Contacts::SWA & Char ( 9 ) & Contacts::SMIN & Char ( 9 ) & Contacts::SMAX & Char ( 9 ) & Contacts::SSD & Char ( 9 ) & Contacts::SSDP & Char ( 9 ) & Contacts::SL & Char ( 9 ) & Contacts::SNR & Char ( 9 ) & GetRepetition ( Contacts::SNRI ; 1 ) & Char ( 9 ) & GetRepetition ( Contacts::SNRI ; 2 ) & Char ( 9 ) & GetRepetition ( Contacts::SNRI ; 3 ) & Char ( 9 ) & GetRepetition ( Contacts::SNRRI ; 1 ) & Char ( 9 ) & GetRepetition ( Contacts::SNRRI ; 2 ) & Char ( 9 ) & GetRepetition ( Contacts::SNRRI ; 3 ) & ¶ ]
+Go to Record/Request/Page [ Next ; Exit after last: On ]
+End Loop
+
+== x5_vals_s
+Set Error Capture [ On ]
+Go to Layout [ "Contact List" ]
+Show All Records
+Sort Records [ Contacts::B ; Contacts::K ]
+Set Variable [ $$vals ; $$vals & "vals s" & ¶ ]
+Go to Record/Request/Page [ First ]
+Loop
+Set Variable [ $$vals ; $$vals & Contacts::K & Char ( 9 ) & Contacts::S & Char ( 9 ) & Contacts::SRT & Char ( 9 ) & Contacts::SRT0 & Char ( 9 ) & Contacts::SRC & Char ( 9 ) & Contacts::SRCR & Char ( 9 ) & Contacts::SF & Char ( 9 ) & Contacts::SFS & Char ( 9 ) & Contacts::SA & Char ( 9 ) & Contacts::SWA & Char ( 9 ) & Contacts::SMIN & Char ( 9 ) & Contacts::SMAX & Char ( 9 ) & Contacts::SSD & Char ( 9 ) & Contacts::SSDP & Char ( 9 ) & Contacts::SL & Char ( 9 ) & Contacts::SNR & Char ( 9 ) & GetRepetition ( Contacts::SNRI ; 1 ) & Char ( 9 ) & GetRepetition ( Contacts::SNRI ; 2 ) & Char ( 9 ) & GetRepetition ( Contacts::SNRI ; 3 ) & Char ( 9 ) & GetRepetition ( Contacts::SNRRI ; 1 ) & Char ( 9 ) & GetRepetition ( Contacts::SNRRI ; 2 ) & Char ( 9 ) & GetRepetition ( Contacts::SNRRI ; 3 ) & ¶ ]
+Go to Record/Request/Page [ Next ; Exit after last: On ]
+End Loop
+
+== x5_vals_k
+Set Error Capture [ On ]
+Go to Layout [ "Contact List" ]
+Show All Records
+Sort Records [ Contacts::K ]
+Set Variable [ $$vals ; $$vals & "vals k" & ¶ ]
+Go to Record/Request/Page [ First ]
+Loop
+Set Variable [ $$vals ; $$vals & Contacts::K & Char ( 9 ) & Contacts::S & Char ( 9 ) & Contacts::SRT & Char ( 9 ) & Contacts::SRT0 & Char ( 9 ) & Contacts::SRC & Char ( 9 ) & Contacts::SRCR & Char ( 9 ) & Contacts::SF & Char ( 9 ) & Contacts::SFS & Char ( 9 ) & Contacts::SA & Char ( 9 ) & Contacts::SWA & Char ( 9 ) & Contacts::SMIN & Char ( 9 ) & Contacts::SMAX & Char ( 9 ) & Contacts::SSD & Char ( 9 ) & Contacts::SSDP & Char ( 9 ) & Contacts::SL & Char ( 9 ) & Contacts::SNR & Char ( 9 ) & GetRepetition ( Contacts::SNRI ; 1 ) & Char ( 9 ) & GetRepetition ( Contacts::SNRI ; 2 ) & Char ( 9 ) & GetRepetition ( Contacts::SNRI ; 3 ) & Char ( 9 ) & GetRepetition ( Contacts::SNRRI ; 1 ) & Char ( 9 ) & GetRepetition ( Contacts::SNRRI ; 2 ) & Char ( 9 ) & GetRepetition ( Contacts::SNRRI ; 3 ) & ¶ ]
+Go to Record/Request/Page [ Next ; Exit after last: On ]
+End Loop
+
+== x5_vals_d
+Set Error Capture [ On ]
+Go to Layout [ "Contact List" ]
+Show All Records
+Sort Records [ Contacts::B desc ; Contacts::K ]
+Set Variable [ $$vals ; $$vals & "vals d" & ¶ ]
+Go to Record/Request/Page [ First ]
+Loop
+Set Variable [ $$vals ; $$vals & Contacts::K & Char ( 9 ) & Contacts::S & Char ( 9 ) & Contacts::SRT & Char ( 9 ) & Contacts::SRT0 & Char ( 9 ) & Contacts::SRC & Char ( 9 ) & Contacts::SRCR & Char ( 9 ) & Contacts::SF & Char ( 9 ) & Contacts::SFS & Char ( 9 ) & Contacts::SA & Char ( 9 ) & Contacts::SWA & Char ( 9 ) & Contacts::SMIN & Char ( 9 ) & Contacts::SMAX & Char ( 9 ) & Contacts::SSD & Char ( 9 ) & Contacts::SSDP & Char ( 9 ) & Contacts::SL & Char ( 9 ) & Contacts::SNR & Char ( 9 ) & GetRepetition ( Contacts::SNRI ; 1 ) & Char ( 9 ) & GetRepetition ( Contacts::SNRI ; 2 ) & Char ( 9 ) & GetRepetition ( Contacts::SNRI ; 3 ) & Char ( 9 ) & GetRepetition ( Contacts::SNRRI ; 1 ) & Char ( 9 ) & GetRepetition ( Contacts::SNRRI ; 2 ) & Char ( 9 ) & GetRepetition ( Contacts::SNRRI ; 3 ) & ¶ ]
+Go to Record/Request/Page [ Next ; Exit after last: On ]
+End Loop
+
+== x5_gets_u
+Set Error Capture [ On ]
+Go to Layout [ "Contact List" ]
+Show All Records
+Unsort Records
+Set Variable [ $$vals ; $$vals & "gets u" & ¶ ]
+Go to Record/Request/Page [ First ]
+Loop
+Set Variable [ $$vals ; $$vals & Contacts::K & Char ( 9 ) & GetSummary ( Contacts::S ; Contacts::S ) & Char ( 9 ) & GetSummary ( Contacts::SRT ; Contacts::SRT ) & Char ( 9 ) & GetSummary ( Contacts::SRT0 ; Contacts::SRT0 ) & Char ( 9 ) & GetSummary ( Contacts::SRC ; Contacts::SRC ) & Char ( 9 ) & GetSummary ( Contacts::SRCR ; Contacts::SRCR ) & Char ( 9 ) & GetSummary ( Contacts::SF ; Contacts::SF ) & Char ( 9 ) & GetSummary ( Contacts::SFS ; Contacts::SFS ) & Char ( 9 ) & GetSummary ( Contacts::SA ; Contacts::SA ) & Char ( 9 ) & GetSummary ( Contacts::SWA ; Contacts::SWA ) & Char ( 9 ) & GetSummary ( Contacts::SMIN ; Contacts::SMIN ) & Char ( 9 ) & GetSummary ( Contacts::SMAX ; Contacts::SMAX ) & Char ( 9 ) & GetSummary ( Contacts::SSD ; Contacts::SSD ) & Char ( 9 ) & GetSummary ( Contacts::SSDP ; Contacts::SSDP ) & Char ( 9 ) & GetSummary ( Contacts::SL ; Contacts::SL ) & Char ( 9 ) & GetSummary ( Contacts::SNR ; Contacts::SNR ) & Char ( 9 ) & GetSummary ( Contacts::SNRI ; Contacts::SNRI ) & Char ( 9 ) & GetSummary ( Contacts::SNRRI ; Contacts::SNRRI ) & Char ( 9 ) & GetSummary ( Contacts::S ; Contacts::B ) & Char ( 9 ) & GetSummary ( Contacts::SRT ; Contacts::B ) & Char ( 9 ) & GetSummary ( Contacts::SRT0 ; Contacts::B ) & Char ( 9 ) & GetSummary ( Contacts::SRC ; Contacts::B ) & Char ( 9 ) & GetSummary ( Contacts::SRCR ; Contacts::B ) & Char ( 9 ) & GetSummary ( Contacts::SF ; Contacts::B ) & Char ( 9 ) & GetSummary ( Contacts::SFS ; Contacts::B ) & Char ( 9 ) & GetSummary ( Contacts::SA ; Contacts::B ) & Char ( 9 ) & GetSummary ( Contacts::SWA ; Contacts::B ) & Char ( 9 ) & GetSummary ( Contacts::SMIN ; Contacts::B ) & Char ( 9 ) & GetSummary ( Contacts::SMAX ; Contacts::B ) & Char ( 9 ) & GetSummary ( Contacts::SSD ; Contacts::B ) & Char ( 9 ) & GetSummary ( Contacts::SSDP ; Contacts::B ) & Char ( 9 ) & GetSummary ( Contacts::SL ; Contacts::B ) & Char ( 9 ) & GetSummary ( Contacts::SNR ; Contacts::B ) & Char ( 9 ) & GetSummary ( Contacts::SNRI ; Contacts::B ) & Char ( 9 ) & GetSummary ( Contacts::SNRRI ; Contacts::B ) & ¶ ]
+Go to Record/Request/Page [ Next ; Exit after last: On ]
+End Loop
+
+== x5_gets_s
+Set Error Capture [ On ]
+Go to Layout [ "Contact List" ]
+Show All Records
+Sort Records [ Contacts::B ; Contacts::K ]
+Set Variable [ $$vals ; $$vals & "gets s" & ¶ ]
+Go to Record/Request/Page [ First ]
+Loop
+Set Variable [ $$vals ; $$vals & Contacts::K & Char ( 9 ) & GetSummary ( Contacts::S ; Contacts::S ) & Char ( 9 ) & GetSummary ( Contacts::SRT ; Contacts::SRT ) & Char ( 9 ) & GetSummary ( Contacts::SRT0 ; Contacts::SRT0 ) & Char ( 9 ) & GetSummary ( Contacts::SRC ; Contacts::SRC ) & Char ( 9 ) & GetSummary ( Contacts::SRCR ; Contacts::SRCR ) & Char ( 9 ) & GetSummary ( Contacts::SF ; Contacts::SF ) & Char ( 9 ) & GetSummary ( Contacts::SFS ; Contacts::SFS ) & Char ( 9 ) & GetSummary ( Contacts::SA ; Contacts::SA ) & Char ( 9 ) & GetSummary ( Contacts::SWA ; Contacts::SWA ) & Char ( 9 ) & GetSummary ( Contacts::SMIN ; Contacts::SMIN ) & Char ( 9 ) & GetSummary ( Contacts::SMAX ; Contacts::SMAX ) & Char ( 9 ) & GetSummary ( Contacts::SSD ; Contacts::SSD ) & Char ( 9 ) & GetSummary ( Contacts::SSDP ; Contacts::SSDP ) & Char ( 9 ) & GetSummary ( Contacts::SL ; Contacts::SL ) & Char ( 9 ) & GetSummary ( Contacts::SNR ; Contacts::SNR ) & Char ( 9 ) & GetSummary ( Contacts::SNRI ; Contacts::SNRI ) & Char ( 9 ) & GetSummary ( Contacts::SNRRI ; Contacts::SNRRI ) & Char ( 9 ) & GetSummary ( Contacts::S ; Contacts::B ) & Char ( 9 ) & GetSummary ( Contacts::SRT ; Contacts::B ) & Char ( 9 ) & GetSummary ( Contacts::SRT0 ; Contacts::B ) & Char ( 9 ) & GetSummary ( Contacts::SRC ; Contacts::B ) & Char ( 9 ) & GetSummary ( Contacts::SRCR ; Contacts::B ) & Char ( 9 ) & GetSummary ( Contacts::SF ; Contacts::B ) & Char ( 9 ) & GetSummary ( Contacts::SFS ; Contacts::B ) & Char ( 9 ) & GetSummary ( Contacts::SA ; Contacts::B ) & Char ( 9 ) & GetSummary ( Contacts::SWA ; Contacts::B ) & Char ( 9 ) & GetSummary ( Contacts::SMIN ; Contacts::B ) & Char ( 9 ) & GetSummary ( Contacts::SMAX ; Contacts::B ) & Char ( 9 ) & GetSummary ( Contacts::SSD ; Contacts::B ) & Char ( 9 ) & GetSummary ( Contacts::SSDP ; Contacts::B ) & Char ( 9 ) & GetSummary ( Contacts::SL ; Contacts::B ) & Char ( 9 ) & GetSummary ( Contacts::SNR ; Contacts::B ) & Char ( 9 ) & GetSummary ( Contacts::SNRI ; Contacts::B ) & Char ( 9 ) & GetSummary ( Contacts::SNRRI ; Contacts::B ) & ¶ ]
+Go to Record/Request/Page [ Next ; Exit after last: On ]
+End Loop
+
+== x5_gets_k
+Set Error Capture [ On ]
+Go to Layout [ "Contact List" ]
+Show All Records
+Sort Records [ Contacts::K ]
+Set Variable [ $$vals ; $$vals & "gets k" & ¶ ]
+Go to Record/Request/Page [ First ]
+Loop
+Set Variable [ $$vals ; $$vals & Contacts::K & Char ( 9 ) & GetSummary ( Contacts::S ; Contacts::S ) & Char ( 9 ) & GetSummary ( Contacts::SRT ; Contacts::SRT ) & Char ( 9 ) & GetSummary ( Contacts::SRT0 ; Contacts::SRT0 ) & Char ( 9 ) & GetSummary ( Contacts::SRC ; Contacts::SRC ) & Char ( 9 ) & GetSummary ( Contacts::SRCR ; Contacts::SRCR ) & Char ( 9 ) & GetSummary ( Contacts::SF ; Contacts::SF ) & Char ( 9 ) & GetSummary ( Contacts::SFS ; Contacts::SFS ) & Char ( 9 ) & GetSummary ( Contacts::SA ; Contacts::SA ) & Char ( 9 ) & GetSummary ( Contacts::SWA ; Contacts::SWA ) & Char ( 9 ) & GetSummary ( Contacts::SMIN ; Contacts::SMIN ) & Char ( 9 ) & GetSummary ( Contacts::SMAX ; Contacts::SMAX ) & Char ( 9 ) & GetSummary ( Contacts::SSD ; Contacts::SSD ) & Char ( 9 ) & GetSummary ( Contacts::SSDP ; Contacts::SSDP ) & Char ( 9 ) & GetSummary ( Contacts::SL ; Contacts::SL ) & Char ( 9 ) & GetSummary ( Contacts::SNR ; Contacts::SNR ) & Char ( 9 ) & GetSummary ( Contacts::SNRI ; Contacts::SNRI ) & Char ( 9 ) & GetSummary ( Contacts::SNRRI ; Contacts::SNRRI ) & Char ( 9 ) & GetSummary ( Contacts::S ; Contacts::B ) & Char ( 9 ) & GetSummary ( Contacts::SRT ; Contacts::B ) & Char ( 9 ) & GetSummary ( Contacts::SRT0 ; Contacts::B ) & Char ( 9 ) & GetSummary ( Contacts::SRC ; Contacts::B ) & Char ( 9 ) & GetSummary ( Contacts::SRCR ; Contacts::B ) & Char ( 9 ) & GetSummary ( Contacts::SF ; Contacts::B ) & Char ( 9 ) & GetSummary ( Contacts::SFS ; Contacts::B ) & Char ( 9 ) & GetSummary ( Contacts::SA ; Contacts::B ) & Char ( 9 ) & GetSummary ( Contacts::SWA ; Contacts::B ) & Char ( 9 ) & GetSummary ( Contacts::SMIN ; Contacts::B ) & Char ( 9 ) & GetSummary ( Contacts::SMAX ; Contacts::B ) & Char ( 9 ) & GetSummary ( Contacts::SSD ; Contacts::B ) & Char ( 9 ) & GetSummary ( Contacts::SSDP ; Contacts::B ) & Char ( 9 ) & GetSummary ( Contacts::SL ; Contacts::B ) & Char ( 9 ) & GetSummary ( Contacts::SNR ; Contacts::B ) & Char ( 9 ) & GetSummary ( Contacts::SNRI ; Contacts::B ) & Char ( 9 ) & GetSummary ( Contacts::SNRRI ; Contacts::B ) & ¶ ]
+Go to Record/Request/Page [ Next ; Exit after last: On ]
+End Loop
+
+== x5_gets_d
+Set Error Capture [ On ]
+Go to Layout [ "Contact List" ]
+Show All Records
+Sort Records [ Contacts::B desc ; Contacts::K ]
+Set Variable [ $$vals ; $$vals & "gets d" & ¶ ]
+Go to Record/Request/Page [ First ]
+Loop
+Set Variable [ $$vals ; $$vals & Contacts::K & Char ( 9 ) & GetSummary ( Contacts::S ; Contacts::S ) & Char ( 9 ) & GetSummary ( Contacts::SRT ; Contacts::SRT ) & Char ( 9 ) & GetSummary ( Contacts::SRT0 ; Contacts::SRT0 ) & Char ( 9 ) & GetSummary ( Contacts::SRC ; Contacts::SRC ) & Char ( 9 ) & GetSummary ( Contacts::SRCR ; Contacts::SRCR ) & Char ( 9 ) & GetSummary ( Contacts::SF ; Contacts::SF ) & Char ( 9 ) & GetSummary ( Contacts::SFS ; Contacts::SFS ) & Char ( 9 ) & GetSummary ( Contacts::SA ; Contacts::SA ) & Char ( 9 ) & GetSummary ( Contacts::SWA ; Contacts::SWA ) & Char ( 9 ) & GetSummary ( Contacts::SMIN ; Contacts::SMIN ) & Char ( 9 ) & GetSummary ( Contacts::SMAX ; Contacts::SMAX ) & Char ( 9 ) & GetSummary ( Contacts::SSD ; Contacts::SSD ) & Char ( 9 ) & GetSummary ( Contacts::SSDP ; Contacts::SSDP ) & Char ( 9 ) & GetSummary ( Contacts::SL ; Contacts::SL ) & Char ( 9 ) & GetSummary ( Contacts::SNR ; Contacts::SNR ) & Char ( 9 ) & GetSummary ( Contacts::SNRI ; Contacts::SNRI ) & Char ( 9 ) & GetSummary ( Contacts::SNRRI ; Contacts::SNRRI ) & Char ( 9 ) & GetSummary ( Contacts::S ; Contacts::B ) & Char ( 9 ) & GetSummary ( Contacts::SRT ; Contacts::B ) & Char ( 9 ) & GetSummary ( Contacts::SRT0 ; Contacts::B ) & Char ( 9 ) & GetSummary ( Contacts::SRC ; Contacts::B ) & Char ( 9 ) & GetSummary ( Contacts::SRCR ; Contacts::B ) & Char ( 9 ) & GetSummary ( Contacts::SF ; Contacts::B ) & Char ( 9 ) & GetSummary ( Contacts::SFS ; Contacts::B ) & Char ( 9 ) & GetSummary ( Contacts::SA ; Contacts::B ) & Char ( 9 ) & GetSummary ( Contacts::SWA ; Contacts::B ) & Char ( 9 ) & GetSummary ( Contacts::SMIN ; Contacts::B ) & Char ( 9 ) & GetSummary ( Contacts::SMAX ; Contacts::B ) & Char ( 9 ) & GetSummary ( Contacts::SSD ; Contacts::B ) & Char ( 9 ) & GetSummary ( Contacts::SSDP ; Contacts::B ) & Char ( 9 ) & GetSummary ( Contacts::SL ; Contacts::B ) & Char ( 9 ) & GetSummary ( Contacts::SNR ; Contacts::B ) & Char ( 9 ) & GetSummary ( Contacts::SNRI ; Contacts::B ) & Char ( 9 ) & GetSummary ( Contacts::SNRRI ; Contacts::B ) & ¶ ]
+Go to Record/Request/Page [ Next ; Exit after last: On ]
+End Loop
+
+== Run
+Perform Script [ "Setup" ]
+Perform Script [ "x5_u_tab" ]
+Perform Script [ "x5_s_tab" ]
+Perform Script [ "x5_k_tab" ]
+Perform Script [ "x5_d_tab" ]
+Perform Script [ "x5_ub_tab" ]
+Perform Script [ "x5_sb_tab" ]
+Perform Script [ "x5_kb_tab" ]
+Perform Script [ "x5_g_tab" ]
+Perform Script [ "x5_gd_tab" ]
+Perform Script [ "x5_gu_tab" ]
+Perform Script [ "x5_gk_tab" ]
+Perform Script [ "x5_g2_tab" ]
+Perform Script [ "x5_u_xml" ]
+Perform Script [ "x5_s_xml" ]
+Perform Script [ "x5_g_xml" ]
+Perform Script [ "x5_u_xlsx" ]
+Perform Script [ "x5_s_xlsx" ]
+Perform Script [ "x5_g_xlsx" ]
+Perform Script [ "x5_rep_xlsx" ]
+Perform Script [ "x5_g_coms" ]
+Perform Script [ "x5_g_htm" ]
+Perform Script [ "x5_vals_u" ]
+Perform Script [ "x5_vals_s" ]
+Perform Script [ "x5_vals_k" ]
+Perform Script [ "x5_vals_d" ]
+Perform Script [ "x5_gets_u" ]
+Perform Script [ "x5_gets_s" ]
+Perform Script [ "x5_gets_k" ]
+Perform Script [ "x5_gets_d" ]
+Go to Layout [ "Contact List" ]
+Show All Records
+Show Omitted Only
+New Record/Request
+Set Field [ Contacts::VNE ; "log" ]
+Set Field [ Contacts::VNO ; "log" ]
+Set Field [ Contacts::VU ; "log" ]
+Set Field [ Contacts::LOG ; $$log & "vals" & ¶ & $$vals ]
+Commit Records/Requests [ With dialog: Off ]
+Set Variable [ $p0 ; $$dir & "omprobe_log.tab" ]
+Export Records [ "file:$p0" ; Type: TABS ; Charset: 4 ; Fields: Contacts::LOG ; With dialog: Off ]
+
+--- run
+Run		$$log	$$vals

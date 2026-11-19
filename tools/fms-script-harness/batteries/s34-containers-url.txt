@@ -1,0 +1,50 @@
+# Insert from URL into a container field: the file name the response gets
+# and how its data is typed, with file:// URLs to files in the harness's
+# work folder (s34url, made by hand: a 3 x 2 PNG as red.png, red.txt,
+# "a b.png" and RED.JPG; "hello" as hello.png, noext and x.mp3; UTF-8 text
+# as hello.txt; HTML as page.html), into a text field too, and a path
+# outside the Documents and temporary folders. The run copy's library is
+# read afterwards. Base file: contacts-en.
+== url
+Set Error Capture [ On ]
+New Record/Request
+Insert from URL [ Select: On ; Contacts::Photo ; Get ( ScriptParameter ) ]
+Set Variable [ $$r ; Get ( LastError ) & "|" & GetAsText ( Contacts::Photo ) & "|" & Length ( Contacts::Photo ) & "|" & GetWidth ( Contacts::Photo ) & "x" & GetHeight ( Contacts::Photo ) & "|" & GetContainerAttribute ( Contacts::Photo ; "internalSize" ) & "|" & IsEmpty ( Contacts::Photo ) ]
+Commit Records/Requests [ With dialog: Off ]
+Exit Script [ $$r & "|" & Get ( RecordID ) ]
+== text
+Set Error Capture [ On ]
+New Record/Request
+Insert from URL [ Select: On ; Contacts::First Name ; Get ( ScriptParameter ) ]
+Set Variable [ $$r ; Get ( LastError ) & "|" & Contacts::First Name & "|" & Length ( Contacts::First Name ) ]
+Commit Records/Requests [ With dialog: Off ]
+Exit Script [ $$r & "|" & Get ( RecordID ) ]
+== append
+Set Error Capture [ On ]
+New Record/Request
+Insert from URL [ Select: On ; Contacts::Photo ; "file:///work/s34url/red.png" ]
+Insert from URL [ Select: Off ; Contacts::Photo ; "file:///work/s34url/hello.txt" ]
+Set Variable [ $$r ; Get ( LastError ) & "|" & GetAsText ( Contacts::Photo ) & "|" & Length ( Contacts::Photo ) ]
+Commit Records/Requests [ With dialog: Off ]
+Exit Script [ $$r & "|" & Get ( RecordID ) ]
+== paths
+Exit Script [ Get ( DocumentsPath ) & "|" & Get ( TemporaryPath ) ]
+--- run
+paths
+url	file:///work/s34url/red.png
+url	file:///work/s34url/red.txt
+url	file:///work/s34url/hello.png
+url	file:///work/s34url/noext
+url	file:///work/s34url/a%20b.png
+url	file:///work/s34url/a b.png
+url	file:///work/s34url/hello.txt
+url	file:///work/s34url/RED.JPG
+url	file:///work/s34url/x.mp3
+url	file:///work/s34url/page.html
+url	file:///work/s34url/red.png?size=2
+url	file:///work/s34url/
+url	file:///work/s34url/missing.png
+url	file:///etc/hostname
+text	file:///work/s34url/hello.txt
+text	file:///work/s34url/red.png
+append

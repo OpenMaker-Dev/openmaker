@@ -1,0 +1,35 @@
+# scan acct probe: open 0 load 0 scan 0 commit 0; index:id=value (0-based): 0:103=0
+# scan: close 13
+# @account Admin
+acct probe	Get ( AccountName )	0	Admin	0
+>	1	acct probe	1	103	0	0	1	0
+acct probe	Get ( AccountType )	0	FileMaker File	0
+>	1	acct probe	1	103	0	0	1	0
+acct probe	Get ( AccountPrivilegeSetName )	0	[Full Access]	0
+>	1	acct probe	1	103	0	0	1	0
+acct probe	Get ( CurrentPrivilegeSetName )	0	[Full Access]	0
+>	1	acct probe	1	103	0	0	1	0
+acct probe	Get ( AccountExtendedPrivileges )	0	fmreauthenticate10	0
+>	1	acct probe	1	103	0	0	1	0
+acct probe	Get ( CurrentExtendedPrivileges )	0	fmreauthenticate10	0
+>	1	acct probe	1	103	0	0	1	0
+acct probe	Get ( AccountGroupName )	0		0
+>	1	acct probe	1	103	0	0	1	0
+acct probe	Get ( AccountPasswordDaysRemaining )	0	-1	0
+>	1	acct probe	1	103	0	0	1	0
+acct probe	Get ( UserName )	0	Admin	0
+>	1	acct probe	1	103	0	0	1	0
+acct probe	Get ( LayoutAccess )	0	2	0
+>	1	acct probe	1	103	0	0	1	0
+acct probe	Get ( RecordAccess )	0	2	0
+>	1	acct probe	1	103	0	0	1	0
+acct probe	Get ( UserCount )	0	1	0
+>	1	acct probe	1	103	0	0	1	0
+acct probe	Get ( MultiUserState )	0	0	0
+>	1	acct probe	1	103	0	0	1	0
+acct probe	Get ( PersistentID )	0	D41D8CD98F00B204E9800998ECF8427E	0
+>	1	acct probe	1	103	0	0	1	0
+acct probe	Get ( ConnectionState )	0	0	0
+>	1	acct probe	1	103	0	0	1	0
+acct probe	Get ( EncryptionState )	0	0	0
+>	1	acct probe	1	103	0	0	1	0

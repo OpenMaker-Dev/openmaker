@@ -1,0 +1,94 @@
+# scan sched context: open 0 load 0 scan 0 commit 0; index:id=value (0-based): 0:103=0
+# scan sched param: open 0 load 0 scan 0 commit 0; index:id=value (0-based): 0:103=0
+# scan sched set global: open 0 load 0 scan 0 commit 0; index:id=value (0-based): 0:141=0 1:103=0
+# scan sched read global: open 0 load 0 scan 0 commit 0; index:id=value (0-based): 0:103=0
+# scan sched error: open 0 load 0 scan 0 commit 0; index:id=value (0-based): 0:16=4 1:141=0 2:103=0
+# scan sched error last: open 0 load 0 scan 0 commit 0; index:id=value (0-based): 0:103=0
+# scan sched error then ok: open 0 load 0 scan 0 commit 0; index:id=value (0-based): 0:16=4 1:141=0
+# scan sched halt: open 0 load 0 scan 0 commit 0; index:id=value (0-based): 0:141=0 1:90=0
+# scan sched no exit: open 0 load 0 scan 0 commit 0; index:id=value (0-based): 0:141=0
+# scan sched exit empty: open 0 load 0 scan 0 commit 0; index:id=value (0-based): 0:103=0
+# scan sched exit date: open 0 load 0 scan 0 commit 0; index:id=value (0-based): 0:103=0
+# scan sched unknown step: open 0 load 0 scan 0 commit 0; index:id=value (0-based): 0:15=0 1:103=0
+# scan sched sub: open 0 load 0 scan 0 commit 0; index:id=value (0-based): 0:1=0 1:103=0
+# scan sched dup: open 0 load 0 scan 0 commit 0; index:id=value (0-based): 0:103=0
+# scan Sched Dup: open 0 load 0 scan 0 commit 0; index:id=value (0-based): 0:103=0
+# scan: close 13
+sched context		0	sched context||0|Admin|Admin|work|Server 26.0.3||0|Contact Details|0|0|1|[Full Access]|0	0	0
+>	1	sched context	1	103	0	0	1	0
+sched context	5 + 5	0	sched context|5 + 5|5|Admin|Admin|work|Server 26.0.3||0|Contact Details|0|0|1|[Full Access]|0	0
+>	1	sched context	1	103	0	0	1	0
+sched context	two\rlines é ✓	0	sched context|two\rlines é ✓|13|Admin|Admin|work|Server 26.0.3||0|Contact Details|0|0|1|[Full Access]|0	0
+>	1	sched context	1	103	0	0	1	0
+sched context	  padded	0	sched context|  padded|8|Admin|Admin|work|Server 26.0.3||0|Contact Details|0|0|1|[Full Access]|0	0
+>	1	sched context	1	103	0	0	1	0
+SCHED CONTEXT	upper	0	sched context|upper|5|Admin|Admin|work|Server 26.0.3||0|Contact Details|0|0|1|[Full Access]|0	0
+>	1	sched context	1	103	0	0	1	0
+Sched Context	title	0	sched context|title|5|Admin|Admin|work|Server 26.0.3||0|Contact Details|0|0|1|[Full Access]|0	0
+>	1	sched context	1	103	0	0	1	0
+sched context 	trailing space	104		0
+ sched context	leading space	104		0
+no such script	x	104		0	0	
+	empty name	104		0	0
+sched param	5 + 5	0	55|0|10|5300032000430003200053	0
+>	1	sched param	1	103	0	0	1	0
+sched param		0	|1||	0
+>	1	sched param	1	103	0	0	1	0
+sched param	0012	0	12|0|12|50000490004800048	0
+>	1	sched param	1	103	0	0	1	0
+sched set global	v	0	set v	0
+>	1	sched set global	1	141	0	0	0	0
+>	1	sched set global	2	103	0	0	1	0
+sched read global		0	g=	0
+>	1	sched read global	1	103	0	0	1	0
+sched error		0	after 101	0	0	
+!	101	work : sched error : 1 : Go to Record/Request/Page
+>	1	sched error	1	16	101	0	0	101
+>	1	sched error	2	141	0	0	0	0
+>	1	sched error	3	103	0	0	1	0
+sched error then ok		0		0	0
+!	101	work : sched error then ok : 1 : Go to Record/Request/Page
+>	1	sched error then ok	1	16	101	0	0	101
+>	1	sched error then ok	2	141	0	0	0	0
+sched halt		0		0	0
+>	1	sched halt	1	141	0	0	0	0
+>	1	sched halt	2	90	0	0	1	0
+sched no exit		0		0	0
+>	1	sched no exit	1	141	0	0	0	0
+sched exit empty		0		0	0
+>	1	sched exit empty	1	103	0	0	1	0
+sched exit date		0	1/2/2020	0
+>	1	sched exit date	1	103	0	0	1	0
+sched unknown step		4		1	1
+!	4	work : sched unknown step : 1 : <unknown> [15]
+>	1	sched unknown step	1	15	4	0	0	1
+sched sub	p	0	sub: sched context|sub|3|Admin|Admin|work|Server 26.0.3||0|Contact Details|0|0|1|[Full Access]|0	0
+>	1	sched sub	1	1	0	0	0	0
+>	2	sched context	1	103	0	0	1	0
+>	1	sched sub	2	103	0	0	1	0
+sched dup		0	first	0
+>	1	sched dup	1	103	0	0	1	0
+Sched Dup		0	first	0
+>	1	sched dup	1	103	0	0	1	0
+# @account Admin
+sched context	real account	0	sched context|real account|12|Admin|Admin|work|Server 26.0.3||0|Contact Details|0|0|1|[Full Access]|0	0
+>	1	sched context	1	103	0	0	1	0
+# @account admin
+sched context	lower-case account	0	sched context|lower-case account|18|admin|admin|work|Server 26.0.3||0|Contact Details|0|0|1|[Full Access]|0	0
+>	1	sched context	1	103	0	0	1	0
+# @account Admin
+sched context	wrong password	212	
+# @account Nobody
+sched context	unknown account	212	
+# @account Nobody
+sched context	unknown account with password	212	
+# @account [Guest]
+sched context	disabled account	212	
+# @account Admin
+# @path /tmp/no-such-file.fmp12
+sched context	missing file	802	
+# @path /tmp
+sched context	a folder	802	
+# @path
+sched context	back	0	sched context|back|4|Admin|Admin|work|Server 26.0.3||0|Contact Details|0|0|1|[Full Access]|0	0
+>	1	sched context	1	103	0	0	1	0

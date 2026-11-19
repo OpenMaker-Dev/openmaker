@@ -1,0 +1,156 @@
+# short circuit
+0 and (1/0)
+1 or (1/0)
+0 and Let($a=1;1)
+Let($a="";0) & (0 and Let($a=1;1)) & $a
+Let($a="";0) & (1 and Let($a=1;1)) & $a
+Let($a="";0) & (1 or Let($a=1;1)) & $a
+Let($a="";0) & (0 or Let($a=1;1)) & $a
+Let($a="";0) & (1 xor Let($a=1;1)) & $a
+Let($a="";0) & If(1;"t";Let($a=1;"f")) & $a
+Let($a="";0) & If(0;Let($a=1;"t");"f") & $a
+Let($a="";0) & Case(1;"a";Let($a=1;1);"b") & $a
+Let($a="";0) & Case(0;"a";1;"b";Let($a=1;1);"c") & $a
+Let($a="";0) & Choose(1;Let($a=1;"z");"o";Let($a=2;"t")) & $a
+Let($a="";0) & Let([x=Let($a=1;1)];"u") & $a
+Let($a="";0) & Let([x=Let($a=1;1)];x) & $a
+Let($a="";0) & Let([y=0;x=Let($a=y+1;1)];y) & $a
+Let($a="";0) & (Let($a=$a&"L";1) + Let($a=$a&"R";1)) & $a
+Let($a="";0) & (Let($a=$a&"L";"x") & Let($a=$a&"R";"y")) & $a
+Let($a="";0) & Max(Let($a=$a&"1";1);Let($a=$a&"2";2)) & $a
+Let($a="";0) & Abs(Let($a=$a&"1";1)) & IsEmpty(Let($a=$a&"2";2)) & $a
+Let($a="";0) & IsEmpty(1/0) & $a
+Let($a="";0) & If(Let($a=$a&"c";1);Let($a=$a&"t";"T");Let($a=$a&"f";"F")) & $a
+Let($a="";0) & Case(Let($a=$a&"1";0);"a";Let($a=$a&"2";1);"b";Let($a=$a&"3";1);"c";"d") & $a
+Let($a="";0) & Case(0;"a";0;"b";Let($a=$a&"D";"default")) & $a
+Case(0;"a")
+Case(0;"a";"b")
+Case(1;"a";"b";"c")
+Case("";"a";"x";"b")
+Choose(1.9;"a";"b";"c")
+Choose(-1;"a";"b")
+Choose(3;"a";"b")
+Choose("";"a";"b")
+Choose("1";"a";"b")
+If("";"t")
+If(0;"t")
+If(1;"t")
+# Let scoping
+Let(x=1;x)
+Let([x=1;y=x+1];y)
+Let([x=1;x=2];x)
+Let(x=1;Let(x=2;x) + x)
+Let(x=1;Let(y=x+1;y) + x)
+Let([x=2;y=Let(x=3;x)];x & y)
+Let(x=1;Evaluate("x"))
+Let($x=5;Evaluate("$x"))
+Let($$g=7;Evaluate("$$g"))
+Let(x=5;x+$x)
+Let([$x=1;x=$x+1];x & $x)
+Let([$x[2]=5];$x[2])
+Let([$x[2]=5];$x)
+Let([$x[2]=5];$x[1])
+Let([$x[2]=5;$x=1];$x & "," & $x[2])
+Let([$x[0]=5];$x)
+Let([$x[-1]=5];$x[-1])
+Let([$x[1.5]=5];$x[1])
+Let([$x["2"]=5];$x[2])
+Let([$x[2+1]=5];$x[3])
+Let([i=2;$x[i]=5];$x[2])
+Let([$x[100000]=1];$x[100000])
+Let([$x[1000000000]=1];$x[1000000000])
+Let([$a=1];"") & $a
+$a
+$$nothing
+$$nothing & "x"
+IsEmpty($$nothing)
+Let([$$g=1];"") & $$g
+Let([$$g=""];"") & $$g
+Let([$x=TextStyleAdd("a";Bold)];GetAsCSS($x))
+Let([$x=Date(1;1;2001)];$x+1)
+Let([$x=1/3];$x*3)
+Let([$x=SetPrecision(1/3;30)];$x)
+Let(x=SetPrecision(1/3;30);x+0)
+Let([a=1;b=2;a=3];a)
+Let([a=1;b=2];Let([a=a+b;b=a*b];a & "," & b))
+Let( x = 1 ; x )
+Let(_x=1;_x)
+Let(x1=1;x1)
+Let(1x=1;1x)
+Let(Abs=1;Abs)
+Let(Pi=1;Pi)
+Let(and=1;and)
+Let(x.y=1;x.y)
+Let(é=1;é)
+Let(${x y}=1;${x y})
+Let($=1;$)
+Let(["x"=1];1)
+# While
+While([i=0;r=""];i<3;[i=i+1;r=r&i];r)
+While([i=0];i<0;[i=i+1];i)
+While([i=0];i<50000;[i=i+1];i)
+While([i=0];i<50001;[i=i+1];i)
+While([i=0];i<49999;[i=i+1];i)
+While([i=0];i<50000;[i=i+1];i) & "x"
+SetRecursion(While([i=0];i<100000;[i=i+1];i);200000)
+SetRecursion(While([i=0];i<100000;[i=i+1];i);100000)
+SetRecursion(While([i=0];i<100000;[i=i+1];i);100001)
+SetRecursion(While([i=0];i<10;[i=i+1];i);5)
+SetRecursion(While([i=0];i<10;[i=i+1];i);0)
+SetRecursion(While([i=0];i<10;[i=i+1];i);-1)
+SetRecursion(While([i=0];i<10;[i=i+1];i);"")
+SetRecursion(1+1;5)
+While([i=0];i<3;[i=i+1;$w=$w&i];i) & $w
+While([i=0;j=0];i<3;[i=i+1;j=While([k=0];k<i;[k=k+1];k)];j)
+While([i=0];i<3;[i=i+1;i=i+1];i)
+While([i=0];i;[i=i+1];i)
+While([i=0];"";[i=i+1];i)
+While([i=0];1/0;[i=i+1];i)
+While([i=0];i<3;[i=i+1];Let(i=9;i))
+While([i=0];i<3;[x=i;i=i+1];x)
+While([i=0];i<3;[i=i+1];j)
+While(0;0;0;5)
+# Evaluate
+Evaluate("1+1")
+Evaluate(1+1)
+Evaluate("\"a\"&1")
+Evaluate("Let(x=1;x)")
+Evaluate("")
+Evaluate(" ")
+Evaluate("Evaluate(\"2*3\")")
+Evaluate("1+1";[1])
+Evaluate("Get(CalculationRepetitionNumber)")
+Evaluate("Date(1;1;2001)") + 1
+Evaluate("1/3")*3
+Evaluate("SetPrecision(1/3;20)")
+Evaluate(SetPrecision(1/3;20))
+Evaluate("¶")
+Evaluate("\"a¶b\"")
+Evaluate("1;2")
+Evaluate("1 2")
+Evaluate("// comment" & ¶ & "5")
+Evaluate("5 // comment")
+Evaluate("/* c */ 6")
+GetAsText(Evaluate("Date(1;1;2001)"))
+# misc
+Get(CalculationRepetitionNumber)
+Self
+GetRepetition(5;1)
+GetRepetition(5;2)
+Extend(5)
+Last(5)
+GetNthRecord(5;1)
+GetNthRecord(5;2)
+Get(LastError)
+Get(LastErrorDetail)
+Get(FileName)
+Get(SystemLanguage)
+Get(SystemNumericSeparator)
+Get(SystemDateFormat)
+Get(FileLocale)
+Get(ApplicationVersion)
+Get(LayoutTableName)
+Get(RecordNumber)
+Get(TemporaryPath)
+Get(UserName)
+Get(AccountName)

@@ -1,0 +1,24 @@
+# Whether a server script's Truncate Table and Delete All Records release
+# the container data of the records they delete (containers.md 12.6). Two
+# records share member 1 (the same data), a third holds member 2; the run
+# copy's library is read afterwards. Base file: contacts-en. This battery
+# runs Delete All Records; Truncate Table's step loses its table in the
+# patch, so it runs from s34-containers-release-truncate (its header).
+== fill
+New Record/Request
+Set Field [ Contacts::Photo ; Base64Decode ( "c2hhcmVk" ; "shared.txt" ) ]
+New Record/Request
+Set Field [ Contacts::Photo ; Base64Decode ( "c2hhcmVk" ; "shared.txt" ) ]
+New Record/Request
+Set Field [ Contacts::Photo ; Base64Decode ( "b3du" ; "own.txt" ) ]
+Commit Records/Requests [ With dialog: Off ]
+Exit Script [ Get ( TotalRecordCount ) ]
+== truncate
+Truncate Table [ With dialog: Off ; Table: Contacts ]
+Exit Script [ Get ( LastError ) & "|" & Get ( TotalRecordCount ) ]
+== deleteall
+Delete All Records [ With dialog: Off ]
+Exit Script [ Get ( LastError ) & "|" & Get ( TotalRecordCount ) ]
+--- run
+fill
+deleteall

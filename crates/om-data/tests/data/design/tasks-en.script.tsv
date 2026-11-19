@@ -1,0 +1,26 @@
+# FileMaker Server 26.0.3 script engine (tools/fms-script-harness, s30-design),
+# expressions evaluated by a script in design-tasks-en.fmp12 (the file with the probe
+# script "design" added) in its window, on the default layout's occurrence.
+# file	design-tasks-en.fmp12
+# layout	Task Details
+ValueListItems ( "" ; "Priority" )	High\rMedium\rLow
+ValueListItems ( "" ; "Status" )	In Progress\rPending\rPostponed\rCanceled\r-\rCompleted\r-
+ValueListItems ( "" ; "Category" )	Business\rHome\rOther\r-
+ValueListItems ( "" ; "Title" )	Mr.\rMrs.\rMs.\r-\rProf.\r-
+ValueListItems ( "" ; "Company" )	
+ValueListItems ( "" ; "no such" )	
+ValueListItems ( "" ; "" )	
+FieldType ( "" ; "Task" )	Standard Text Unindexed 1
+FieldComment ( "" ; "Task" )	
+GetNextSerialValue ( "" ; "Task" )	
+FieldType ( "" ; "Due Date" )	Standard Date Unindexed 1
+FieldComment ( "" ; "Due Date" )	
+GetNextSerialValue ( "" ; "Due Date" )	
+FieldType ( "" ; "Description" )	Standard Text Unindexed 1
+FieldComment ( "" ; "Description" )	
+GetNextSerialValue ( "" ; "Description" )	
+FieldType ( "" ; "Status" )	Standard Text Unindexed 1
+FieldComment ( "" ; "Status" )	
+GetNextSerialValue ( "" ; "Status" )	
+FieldType ( "" ; "no such" )	
+FieldComment ( "" ; "" )	

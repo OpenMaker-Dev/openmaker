@@ -1,0 +1,20 @@
+== acct probe
+Exit Script [ Evaluate ( Get ( ScriptParameter ) ) ]
+--- run
+@account Admin	
+acct probe	Get ( AccountName )
+acct probe	Get ( AccountType )
+acct probe	Get ( AccountPrivilegeSetName )
+acct probe	Get ( CurrentPrivilegeSetName )
+acct probe	Get ( AccountExtendedPrivileges )
+acct probe	Get ( CurrentExtendedPrivileges )
+acct probe	Get ( AccountGroupName )
+acct probe	Get ( AccountPasswordDaysRemaining )
+acct probe	Get ( UserName )
+acct probe	Get ( LayoutAccess )
+acct probe	Get ( RecordAccess )
+acct probe	Get ( UserCount )
+acct probe	Get ( MultiUserState )
+acct probe	Get ( PersistentID )
+acct probe	Get ( ConnectionState )
+acct probe	Get ( EncryptionState )

@@ -1,0 +1,24 @@
+# Smoke test: branching through imported If/Else If/Else, a loop, a
+# sub-script with a result. Base file: contacts-en.
+== smoke branch
+Set Variable [ $p ; Get ( ScriptParameter ) ]
+If [ $p = 1 ]
+Set Variable [ $r ; "one" ]
+Else If [ $p = 2 ]
+Set Variable [ $r ; "two" ]
+Else
+Set Variable [ $r ; "other" ]
+End If
+Set Variable [ $i ; 0 ]
+Loop
+Set Variable [ $i ; $i + 1 ]
+Exit Loop If [ $i ≥ 3 ]
+End Loop
+Perform Script [ "smoke sub" ; Parameter: $r ]
+Exit Script [ $r & "|" & $i & "|" & Get ( ScriptResult ) ]
+== smoke sub
+Exit Script [ "sub(" & Get ( ScriptParameter ) & ")" ]
+--- run
+smoke branch	1
+smoke branch	2
+smoke branch	3

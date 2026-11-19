@@ -1,0 +1,963 @@
+# FileMaker Server 26.0.3 script engine (tools/fms-script-harness, s30-design),
+# expressions evaluated after a session opened mbs-events.fmp12 as "work" on its
+# default layout, with no table occurrence (no script ran).
+# file	mbs-events.fmp12
+# layout	Events
+DatabaseNames	work
+TableNames ( "" )	Agenda\rAssignees | Contributors\rAuditLog\rContacts\rContributors\rEvents\rGuests\rGuests | Contacts\rTasks\rVenue Looked Up
+TableIDs ( "" )	1065093\r1065094\r1065116\r1065098\r1065097\r1065089\r1065092\r1065095\r1065091\r1065107
+BaseTableNames ( "" )	Agenda\rContacts\rContributors\rEvents\rGuests\rTasks
+BaseTableIDs ( "" )	133\r130\r135\r129\r132\r131
+LayoutNames ( "" )	Events\rEvent Details\rContacts\rContact Details
+LayoutIDs ( "" )	54\r1\r55\r2
+ScriptNames ( "" )	Add Contributor [+]\rAdd Task [+]\rAdd Guest [+]\rAdd Agenda Item [+]\rRemove Event Item [Get Script Parameter]\rTrigger | On First Window Open\rTrigger | On Window Close\r-\rTrigger | Layout Selection\rTrigger | Sort Event List\rTrigger | Create Event in List\r-\rTrigger | Sort Contact List\rTrigger | Create Contact in List
+ScriptIDs ( "" )	6\r7\r8\r9\r79\r12\r85\r68\r71\r49\r44\r70\r62\r69
+ValueListNames ( "" )	Type\rVenue\rBoolean\rStatus | Tasks\rStatus | Guest\rTime [Meridiem]\rTime [24 Hours]\rContacts\rAssignees\rRole\rPreferences\rAssignment\rTitle\rJob Title\rCompany\rLayout Selector\rEvent List | Sort Selection\rContact List | Sort Selection
+ValueListIDs ( "" )	6\r13\r2\r24\r3\r4\r5\r12\r18\r19\r21\r20\r22\r23\r11\r16\r15\r17
+WindowNames	work
+TableNames ( "work" )	Agenda\rAssignees | Contributors\rAuditLog\rContacts\rContributors\rEvents\rGuests\rGuests | Contacts\rTasks\rVenue Looked Up
+TableNames ( "WORK" )	Agenda\rAssignees | Contributors\rAuditLog\rContacts\rContributors\rEvents\rGuests\rGuests | Contacts\rTasks\rVenue Looked Up
+TableNames ( "work.fmp12" )	Agenda\rAssignees | Contributors\rAuditLog\rContacts\rContributors\rEvents\rGuests\rGuests | Contacts\rTasks\rVenue Looked Up
+TableNames ( "work.FMP12" )	Agenda\rAssignees | Contributors\rAuditLog\rContacts\rContributors\rEvents\rGuests\rGuests | Contacts\rTasks\rVenue Looked Up
+TableNames ( " work" )	
+TableNames ( "no such file" )	
+TableNames ( "?" )	
+LayoutNames ( "work" )	Events\rEvent Details\rContacts\rContact Details
+ScriptNames ( "work" )	Add Contributor [+]\rAdd Task [+]\rAdd Guest [+]\rAdd Agenda Item [+]\rRemove Event Item [Get Script Parameter]\rTrigger | On First Window Open\rTrigger | On Window Close\r-\rTrigger | Layout Selection\rTrigger | Sort Event List\rTrigger | Create Event in List\r-\rTrigger | Sort Contact List\rTrigger | Create Contact in List
+ValueListNames ( "work" )	Type\rVenue\rBoolean\rStatus | Tasks\rStatus | Guest\rTime [Meridiem]\rTime [24 Hours]\rContacts\rAssignees\rRole\rPreferences\rAssignment\rTitle\rJob Title\rCompany\rLayout Selector\rEvent List | Sort Selection\rContact List | Sort Selection
+BaseTableNames ( "work" )	Agenda\rContacts\rContributors\rEvents\rGuests\rTasks
+WindowNames ( "work" )	work
+LayoutNames ( "no such file" )	
+ScriptNames ( "no such file" )	
+ValueListNames ( "no such file" )	
+BaseTableNames ( "no such file" )	
+WindowNames ( "no such file" )	
+WindowNames ( "" )	work
+EvaluationError ( TableNames ( 1 / 0 ) )	15
+FieldNames ( "" ; "Agenda" )	EVENT ID MATCH FIELD\rAgenda Item\rDate\rExplanation\rTime\rTime Frame Order\rTime Frame\rAuditTimeStamp\rAuditState
+FieldIDs ( "" ; "Agenda" )	2\r3\r4\r5\r6\r8\r9\r10\r11
+RelationInfo ( "" ; "Agenda" )	Source:work\rTable:Events\rOptions:\rEvents::EVENT ID MATCH FIELD = Agenda::EVENT ID MATCH FIELD
+FieldNames ( "" ; "Assignees | Contributors" )	EVENT ID MATCH FIELD\rEmail\rPhone\rContributor | MATCH FIELD\rRole\rAssignment\rPhoto | Container\rAssignment Status\rPhoto Placeholder\rAuditTimeStamp\rAuditState
+FieldIDs ( "" ; "Assignees | Contributors" )	1\r2\r3\r4\r5\r13\r14\r16\r18\r19\r20
+RelationInfo ( "" ; "Assignees | Contributors" )	Source:work\rTable:Tasks\rOptions:\rTasks::Assignee | MATCH FIELD = Assignees | Contributors::Contributor | MATCH FIELD\rTasks::EVENT ID MATCH FIELD = Assignees | Contributors::EVENT ID MATCH FIELD
+FieldNames ( "" ; "AuditLog" )	
+FieldIDs ( "" ; "AuditLog" )	
+RelationInfo ( "" ; "AuditLog" )	Source:work\rTable:Events\rOptions:\rEvents::EVENT ID MATCH FIELD = AuditLog::<File Missing>
+FieldNames ( "" ; "Contacts" )	Sort Selection\rCompany\rAddress Short\rWork Phone\rContacts | MATCH FIELD\rEvents::Layout Selector
+FieldIDs ( "" ; "Contacts" )	39\r6\r48\r8\r4\r1065089::26
+RelationInfo ( "" ; "Contacts" )	Source:work\rTable:Contributors\rOptions:\rContributors::Contributor | MATCH FIELD = Contacts::Contacts | MATCH FIELD
+FieldNames ( "" ; "Contributors" )	EVENT ID MATCH FIELD\rEmail\rPhone\rContributor | MATCH FIELD\rRole\rAssignment\rPhoto | Container\rAssignment Status\rPhoto Placeholder\rAuditTimeStamp\rAuditState
+FieldIDs ( "" ; "Contributors" )	1\r2\r3\r4\r5\r13\r14\r16\r18\r19\r20
+RelationInfo ( "" ; "Contributors" )	Source:work\rTable:Events\rOptions:\rEvents::EVENT ID MATCH FIELD = Contributors::EVENT ID MATCH FIELD\r\rSource:work\rTable:Contacts\rOptions:\rContacts::Contacts | MATCH FIELD = Contributors::Contributor | MATCH FIELD
+FieldNames ( "" ; "Events" )	Sort Selection\rEvent\rType\rVenue\rDate\rLayout Selector
+FieldIDs ( "" ; "Events" )	27\r2\r21\r4\r3\r26
+RelationInfo ( "" ; "Events" )	Source:work\rTable:Tasks\rOptions:Delete Create\rTasks::EVENT ID MATCH FIELD = Events::EVENT ID MATCH FIELD\r\rSource:work\rTable:Guests\rOptions:Delete Create\rGuests::EVENT ID MATCH FIELD = Events::EVENT ID MATCH FIELD\r\rSource:work\rTable:Agenda\rOptions:Delete Create\rAgenda::EVENT ID MATCH FIELD = Events::EVENT ID MATCH FIELD\r\rSource:work\rTable:Contributors\rOptions:Delete Create\rContributors::EVENT ID MATCH FIELD = Events::EVENT ID MATCH FIELD\r\rSource:work\rTable:Venue Looked Up\rOptions:\rVenue Looked Up::Venue = Events::Venue\r\rSource:Event Management AuditLog\rTable:AuditLog\rOptions:\rAuditLog:: = Events::EVENT ID MATCH FIELD
+FieldNames ( "" ; "Guests" )	EVENT ID MATCH FIELD\rPreferences\rStatus\rGuest | MATCH FIELD\rEmail\rAttending\rPhoto | Container\rPhoto Placeholder\rAuditTimeStamp\rAuditState
+FieldIDs ( "" ; "Guests" )	2\r3\r4\r5\r9\r10\r13\r14\r15\r16
+RelationInfo ( "" ; "Guests" )	Source:work\rTable:Events\rOptions:\rEvents::EVENT ID MATCH FIELD = Guests::EVENT ID MATCH FIELD\r\rSource:work\rTable:Guests | Contacts\rOptions:\rGuests | Contacts::Contacts | MATCH FIELD = Guests::Guest | MATCH FIELD
+FieldNames ( "" ; "Guests | Contacts" )	First\rLast\rContacts | MATCH FIELD\rJob Title\rCompany\rWork Email\rWork Phone\rMobile Phone\rFax\rWebsite\rAddress 1\rCity\rState\rPostal Code\rCountry\rAddress 2\rCONTACT ID MATCH FIELD\rInitial\rSort Selection\rSort List Key\rPhoto | Container\rTitle\rHome Phone\rHome Email\rNotes\rAddress Short\rFile Name Placeholder\rResult Label Plural\rAuditTimeStamp\rAuditState
+FieldIDs ( "" ; "Guests | Contacts" )	2\r3\r4\r5\r6\r7\r8\r9\r10\r11\r12\r13\r14\r15\r16\r17\r33\r34\r39\r40\r41\r42\r43\r44\r46\r48\r49\r50\r51\r52
+RelationInfo ( "" ; "Guests | Contacts" )	Source:work\rTable:Guests\rOptions:\rGuests::Guest | MATCH FIELD = Guests | Contacts::Contacts | MATCH FIELD
+FieldNames ( "" ; "Tasks" )	EVENT ID MATCH FIELD\rDue Date\rTask\rStatus\rAssignee | MATCH FIELD\rStatus Sort Order\rCompleted\rTo Do\rOverdue\rEvent\rAuditTimeStamp\rAuditState
+FieldIDs ( "" ; "Tasks" )	2\r5\r6\r7\r11\r12\r14\r17\r18\r20\r21\r22
+RelationInfo ( "" ; "Tasks" )	Source:work\rTable:Events\rOptions:\rEvents::EVENT ID MATCH FIELD = Tasks::EVENT ID MATCH FIELD\r\rSource:work\rTable:Assignees | Contributors\rOptions:\rAssignees | Contributors::Contributor | MATCH FIELD = Tasks::Assignee | MATCH FIELD\rAssignees | Contributors::EVENT ID MATCH FIELD = Tasks::EVENT ID MATCH FIELD
+FieldNames ( "" ; "Venue Looked Up" )	EVENT ID MATCH FIELD\rEvent\rDate\rVenue\rDescription\rAddress\rCity\rState\rPostal Code\rNotes\rTask Number | All\rGuest Number | All\rType\rContributor Number | All\rCountry\rQuickFind | iOS\rLayout Selector\rSort Selection\rSort List Key\rTime Frame | Sort Order\rTime Frame\rTask Label Plural\rGuest Label Plural\rGuest Number | Attending\rContributor Number | Assigned\rAgenda Item Number | All\rAgenda Item Number | Current\rAgenda Item Label Plural\rPhone\rEmail\rTask Number | To Do\rResult Label Plural\rAuditTimeStamp\rAuditState
+FieldIDs ( "" ; "Venue Looked Up" )	1\r2\r3\r4\r5\r6\r7\r8\r9\r11\r13\r19\r21\r22\r24\r25\r26\r27\r28\r29\r30\r31\r32\r34\r36\r37\r38\r40\r41\r42\r45\r48\r51\r53
+RelationInfo ( "" ; "Venue Looked Up" )	Source:work\rTable:Events\rOptions:\rEvents::Venue = Venue Looked Up::Venue
+BaseTableComment ( "" ; "Agenda" )	
+BaseTableComment ( "" ; "Contacts" )	
+BaseTableComment ( "" ; "Contributors" )	
+BaseTableComment ( "" ; "Events" )	
+BaseTableComment ( "" ; "Guests" )	
+BaseTableComment ( "" ; "Tasks" )	
+FieldNames ( "" ; "" )	EVENT ID MATCH FIELD\rEvent\rDate\rVenue\rDescription\rAddress\rCity\rState\rPostal Code\rNotes\rTask Number | All\rGuest Number | All\rType\rContributor Number | All\rCountry\rQuickFind | iOS\rLayout Selector\rSort Selection\rSort List Key\rTime Frame | Sort Order\rTime Frame\rTask Label Plural\rGuest Label Plural\rGuest Number | Attending\rContributor Number | Assigned\rAgenda Item Number | All\rAgenda Item Number | Current\rAgenda Item Label Plural\rPhone\rEmail\rTask Number | To Do\rResult Label Plural\rAuditTimeStamp\rAuditState
+FieldIDs ( "" ; "" )	1\r2\r3\r4\r5\r6\r7\r8\r9\r11\r13\r19\r21\r22\r24\r25\r26\r27\r28\r29\r30\r31\r32\r34\r36\r37\r38\r40\r41\r42\r45\r48\r51\r53
+FieldNames ( "" ; "no such" )	
+RelationInfo ( "" ; "no such" )	
+BaseTableComment ( "" ; "no such" )	
+FieldNames ( "no such file" ; "" )	
+FieldNames ( "" ; "AGENDA" )	EVENT ID MATCH FIELD\rAgenda Item\rDate\rExplanation\rTime\rTime Frame Order\rTime Frame\rAuditTimeStamp\rAuditState
+RelationInfo ( "" ; "agenda" )	Source:work\rTable:Events\rOptions:\rEvents::EVENT ID MATCH FIELD = Agenda::EVENT ID MATCH FIELD
+LayoutObjectNames ( "" ; "Events" )	
+FieldNames ( "" ; "Event Details" )	Tasks::Task\rTasks::Due Date\rTasks::Assignee | MATCH FIELD\rTasks::Completed\rTasks::Status\rGuests::Preferences\rGuests::Guest | MATCH FIELD\rGuests::Email\rGuests::Status\rAgenda::Agenda Item\rAgenda::Date\rAgenda::Time\rAgenda::Explanation\rNotes\rType\rContributors::Email\rContributors::Contributor | MATCH FIELD\rContributors::Phone\rContributors::Role\rVenue\rDescription\rAddress\rCity\rState\rPostal Code\rCountry\rEvent\rDate\rPhone\rEmail\r\r\r\r\r\r
+FieldIDs ( "" ; "Event Details" )	1065091::6\r1065091::5\r1065091::11\r1065091::14\r1065091::7\r1065092::3\r1065092::5\r1065092::9\r1065092::4\r1065093::3\r1065093::4\r1065093::6\r1065093::5\r11\r21\r1065097::2\r1065097::4\r1065097::3\r1065097::5\r4\r5\r6\r7\r8\r9\r24\r2\r3\r41\r42\r1065116::2\r1065116::3\r1065116::6\r1065116::8\r1065116::13\r1065116::16
+LayoutObjectNames ( "" ; "Event Details" )	<\r<\r>\r>\r<\r<\r>\r>\r<\r<\r>\r>\r<\r>\r<\r>\r<\r>
+LayoutObjectNames ( "" ; "Contacts" )	
+FieldNames ( "" ; "Contact Details" )	Events::Event\rEvents::Date\rEvents::Venue\rEvents::City\rEvents::Description\rAddress 1\rAddress 2\rCity\rState\rPostal Code\rCountry\rWork Email\rHome Email\rPhoto | Container\rTitle\rFirst\rLast\rWork Phone\rMobile Phone\rHome Phone\rFax\rCompany\rJob Title\rWebsite\rNotes
+FieldIDs ( "" ; "Contact Details" )	1065089::2\r1065089::3\r1065089::4\r1065089::7\r1065089::5\r12\r17\r13\r14\r15\r16\r7\r44\r41\r42\r2\r3\r8\r9\r43\r10\r6\r5\r11\r46
+LayoutObjectNames ( "" ; "Contact Details" )	<\r>
+LayoutObjectNames ( "" ; "no such" )	
+LayoutObjectNames ( "" ; "" )	
+LayoutObjectNames ( "" ; "EVENTS" )	
+FieldType ( "" ; "Agenda::EVENT ID MATCH FIELD" )	Standard Number Indexed 1
+FieldComment ( "" ; "Agenda::EVENT ID MATCH FIELD" )	
+FieldAnnotation ( "" ; "Agenda::EVENT ID MATCH FIELD" )	
+FieldDisplayNames ( "" ; "Agenda::EVENT ID MATCH FIELD" )	
+GetNextSerialValue ( "" ; "Agenda::EVENT ID MATCH FIELD" )	
+FieldType ( "" ; "Agenda::Agenda Item" )	Standard Text Indexed 1
+FieldComment ( "" ; "Agenda::Agenda Item" )	
+FieldAnnotation ( "" ; "Agenda::Agenda Item" )	
+FieldDisplayNames ( "" ; "Agenda::Agenda Item" )	
+GetNextSerialValue ( "" ; "Agenda::Agenda Item" )	
+FieldType ( "" ; "Agenda::Date" )	Standard Date Unindexed 1
+FieldComment ( "" ; "Agenda::Date" )	
+FieldAnnotation ( "" ; "Agenda::Date" )	
+FieldDisplayNames ( "" ; "Agenda::Date" )	
+GetNextSerialValue ( "" ; "Agenda::Date" )	
+FieldType ( "" ; "Agenda::Explanation" )	Standard Text Indexed 1
+FieldComment ( "" ; "Agenda::Explanation" )	
+FieldAnnotation ( "" ; "Agenda::Explanation" )	
+FieldDisplayNames ( "" ; "Agenda::Explanation" )	
+GetNextSerialValue ( "" ; "Agenda::Explanation" )	
+FieldType ( "" ; "Agenda::Time" )	Standard Time Unindexed 1
+FieldComment ( "" ; "Agenda::Time" )	
+FieldAnnotation ( "" ; "Agenda::Time" )	
+FieldDisplayNames ( "" ; "Agenda::Time" )	
+GetNextSerialValue ( "" ; "Agenda::Time" )	
+FieldType ( "" ; "Agenda::Time Frame Order" )	UnstoredCalc Number Unindexed 1
+FieldComment ( "" ; "Agenda::Time Frame Order" )	
+FieldAnnotation ( "" ; "Agenda::Time Frame Order" )	
+FieldDisplayNames ( "" ; "Agenda::Time Frame Order" )	
+GetNextSerialValue ( "" ; "Agenda::Time Frame Order" )	
+FieldType ( "" ; "Agenda::Time Frame" )	UnstoredCalc Text Unindexed 1
+FieldComment ( "" ; "Agenda::Time Frame" )	
+FieldAnnotation ( "" ; "Agenda::Time Frame" )	
+FieldDisplayNames ( "" ; "Agenda::Time Frame" )	
+GetNextSerialValue ( "" ; "Agenda::Time Frame" )	
+FieldType ( "" ; "Agenda::AuditTimeStamp" )	Standard Timestamp Unindexed 1
+FieldComment ( "" ; "Agenda::AuditTimeStamp" )	
+FieldAnnotation ( "" ; "Agenda::AuditTimeStamp" )	
+FieldDisplayNames ( "" ; "Agenda::AuditTimeStamp" )	
+GetNextSerialValue ( "" ; "Agenda::AuditTimeStamp" )	
+FieldType ( "" ; "Agenda::AuditState" )	Standard Text Unindexed 1
+FieldComment ( "" ; "Agenda::AuditState" )	
+FieldAnnotation ( "" ; "Agenda::AuditState" )	
+FieldDisplayNames ( "" ; "Agenda::AuditState" )	
+GetNextSerialValue ( "" ; "Agenda::AuditState" )	
+FieldType ( "" ; "Assignees | Contributors::EVENT ID MATCH FIELD" )	Standard Number Indexed 1
+FieldComment ( "" ; "Assignees | Contributors::EVENT ID MATCH FIELD" )	
+FieldAnnotation ( "" ; "Assignees | Contributors::EVENT ID MATCH FIELD" )	
+FieldDisplayNames ( "" ; "Assignees | Contributors::EVENT ID MATCH FIELD" )	
+GetNextSerialValue ( "" ; "Assignees | Contributors::EVENT ID MATCH FIELD" )	
+FieldType ( "" ; "Assignees | Contributors::Email" )	Standard Text Indexed 1
+FieldComment ( "" ; "Assignees | Contributors::Email" )	
+FieldAnnotation ( "" ; "Assignees | Contributors::Email" )	
+FieldDisplayNames ( "" ; "Assignees | Contributors::Email" )	
+GetNextSerialValue ( "" ; "Assignees | Contributors::Email" )	
+FieldType ( "" ; "Assignees | Contributors::Phone" )	Standard Text Indexed 1
+FieldComment ( "" ; "Assignees | Contributors::Phone" )	
+FieldAnnotation ( "" ; "Assignees | Contributors::Phone" )	
+FieldDisplayNames ( "" ; "Assignees | Contributors::Phone" )	
+GetNextSerialValue ( "" ; "Assignees | Contributors::Phone" )	
+FieldType ( "" ; "Assignees | Contributors::Contributor | MATCH FIELD" )	Standard Text Indexed 1
+FieldComment ( "" ; "Assignees | Contributors::Contributor | MATCH FIELD" )	
+FieldAnnotation ( "" ; "Assignees | Contributors::Contributor | MATCH FIELD" )	
+FieldDisplayNames ( "" ; "Assignees | Contributors::Contributor | MATCH FIELD" )	
+GetNextSerialValue ( "" ; "Assignees | Contributors::Contributor | MATCH FIELD" )	
+FieldType ( "" ; "Assignees | Contributors::Role" )	Standard Text Indexed 1
+FieldComment ( "" ; "Assignees | Contributors::Role" )	
+FieldAnnotation ( "" ; "Assignees | Contributors::Role" )	
+FieldDisplayNames ( "" ; "Assignees | Contributors::Role" )	
+GetNextSerialValue ( "" ; "Assignees | Contributors::Role" )	
+FieldType ( "" ; "Assignees | Contributors::Assignment" )	UnstoredCalc Text Unindexed 1
+FieldComment ( "" ; "Assignees | Contributors::Assignment" )	
+FieldAnnotation ( "" ; "Assignees | Contributors::Assignment" )	
+FieldDisplayNames ( "" ; "Assignees | Contributors::Assignment" )	
+GetNextSerialValue ( "" ; "Assignees | Contributors::Assignment" )	
+FieldType ( "" ; "Assignees | Contributors::Photo | Container" )	Standard Container Unindexed 1
+FieldComment ( "" ; "Assignees | Contributors::Photo | Container" )	
+FieldAnnotation ( "" ; "Assignees | Contributors::Photo | Container" )	
+FieldDisplayNames ( "" ; "Assignees | Contributors::Photo | Container" )	
+GetNextSerialValue ( "" ; "Assignees | Contributors::Photo | Container" )	
+FieldType ( "" ; "Assignees | Contributors::Assignment Status" )	UnstoredCalc Number Unindexed 1
+FieldComment ( "" ; "Assignees | Contributors::Assignment Status" )	
+FieldAnnotation ( "" ; "Assignees | Contributors::Assignment Status" )	
+FieldDisplayNames ( "" ; "Assignees | Contributors::Assignment Status" )	
+GetNextSerialValue ( "" ; "Assignees | Contributors::Assignment Status" )	
+FieldType ( "" ; "Assignees | Contributors::Photo Placeholder" )	UnstoredCalc Text Unindexed 1
+FieldComment ( "" ; "Assignees | Contributors::Photo Placeholder" )	
+FieldAnnotation ( "" ; "Assignees | Contributors::Photo Placeholder" )	
+FieldDisplayNames ( "" ; "Assignees | Contributors::Photo Placeholder" )	
+GetNextSerialValue ( "" ; "Assignees | Contributors::Photo Placeholder" )	
+FieldType ( "" ; "Assignees | Contributors::AuditTimeStamp" )	Standard Timestamp Unindexed 1
+FieldComment ( "" ; "Assignees | Contributors::AuditTimeStamp" )	
+FieldAnnotation ( "" ; "Assignees | Contributors::AuditTimeStamp" )	
+FieldDisplayNames ( "" ; "Assignees | Contributors::AuditTimeStamp" )	
+GetNextSerialValue ( "" ; "Assignees | Contributors::AuditTimeStamp" )	
+FieldType ( "" ; "Assignees | Contributors::AuditState" )	Standard Text Unindexed 1
+FieldComment ( "" ; "Assignees | Contributors::AuditState" )	
+FieldAnnotation ( "" ; "Assignees | Contributors::AuditState" )	
+FieldDisplayNames ( "" ; "Assignees | Contributors::AuditState" )	
+GetNextSerialValue ( "" ; "Assignees | Contributors::AuditState" )	
+FieldType ( "" ; "Contacts::Sort Selection" )	Global Text Unindexed 1
+FieldComment ( "" ; "Contacts::Sort Selection" )	
+FieldAnnotation ( "" ; "Contacts::Sort Selection" )	
+FieldDisplayNames ( "" ; "Contacts::Sort Selection" )	
+GetNextSerialValue ( "" ; "Contacts::Sort Selection" )	
+FieldType ( "" ; "Contacts::Company" )	Standard Text Indexed 1
+FieldComment ( "" ; "Contacts::Company" )	
+FieldAnnotation ( "" ; "Contacts::Company" )	
+FieldDisplayNames ( "" ; "Contacts::Company" )	
+GetNextSerialValue ( "" ; "Contacts::Company" )	
+FieldType ( "" ; "Contacts::Address Short" )	UnstoredCalc Text Unindexed 1
+FieldComment ( "" ; "Contacts::Address Short" )	
+FieldAnnotation ( "" ; "Contacts::Address Short" )	
+FieldDisplayNames ( "" ; "Contacts::Address Short" )	
+GetNextSerialValue ( "" ; "Contacts::Address Short" )	
+FieldType ( "" ; "Contacts::Work Phone" )	Standard Text Indexed 1
+FieldComment ( "" ; "Contacts::Work Phone" )	
+FieldAnnotation ( "" ; "Contacts::Work Phone" )	
+FieldDisplayNames ( "" ; "Contacts::Work Phone" )	
+GetNextSerialValue ( "" ; "Contacts::Work Phone" )	
+FieldType ( "" ; "Contacts::Contacts | MATCH FIELD" )	StoredCalc Text Indexed 1
+FieldComment ( "" ; "Contacts::Contacts | MATCH FIELD" )	
+FieldAnnotation ( "" ; "Contacts::Contacts | MATCH FIELD" )	
+FieldDisplayNames ( "" ; "Contacts::Contacts | MATCH FIELD" )	
+GetNextSerialValue ( "" ; "Contacts::Contacts | MATCH FIELD" )	
+FieldType ( "" ; "Contacts::Events::Layout Selector" )	
+FieldComment ( "" ; "Contacts::Events::Layout Selector" )	
+FieldAnnotation ( "" ; "Contacts::Events::Layout Selector" )	
+FieldDisplayNames ( "" ; "Contacts::Events::Layout Selector" )	
+GetNextSerialValue ( "" ; "Contacts::Events::Layout Selector" )	
+FieldType ( "" ; "Contributors::EVENT ID MATCH FIELD" )	Standard Number Indexed 1
+FieldComment ( "" ; "Contributors::EVENT ID MATCH FIELD" )	
+FieldAnnotation ( "" ; "Contributors::EVENT ID MATCH FIELD" )	
+FieldDisplayNames ( "" ; "Contributors::EVENT ID MATCH FIELD" )	
+GetNextSerialValue ( "" ; "Contributors::EVENT ID MATCH FIELD" )	
+FieldType ( "" ; "Contributors::Email" )	Standard Text Indexed 1
+FieldComment ( "" ; "Contributors::Email" )	
+FieldAnnotation ( "" ; "Contributors::Email" )	
+FieldDisplayNames ( "" ; "Contributors::Email" )	
+GetNextSerialValue ( "" ; "Contributors::Email" )	
+FieldType ( "" ; "Contributors::Phone" )	Standard Text Indexed 1
+FieldComment ( "" ; "Contributors::Phone" )	
+FieldAnnotation ( "" ; "Contributors::Phone" )	
+FieldDisplayNames ( "" ; "Contributors::Phone" )	
+GetNextSerialValue ( "" ; "Contributors::Phone" )	
+FieldType ( "" ; "Contributors::Contributor | MATCH FIELD" )	Standard Text Indexed 1
+FieldComment ( "" ; "Contributors::Contributor | MATCH FIELD" )	
+FieldAnnotation ( "" ; "Contributors::Contributor | MATCH FIELD" )	
+FieldDisplayNames ( "" ; "Contributors::Contributor | MATCH FIELD" )	
+GetNextSerialValue ( "" ; "Contributors::Contributor | MATCH FIELD" )	
+FieldType ( "" ; "Contributors::Role" )	Standard Text Indexed 1
+FieldComment ( "" ; "Contributors::Role" )	
+FieldAnnotation ( "" ; "Contributors::Role" )	
+FieldDisplayNames ( "" ; "Contributors::Role" )	
+GetNextSerialValue ( "" ; "Contributors::Role" )	
+FieldType ( "" ; "Contributors::Assignment" )	UnstoredCalc Text Unindexed 1
+FieldComment ( "" ; "Contributors::Assignment" )	
+FieldAnnotation ( "" ; "Contributors::Assignment" )	
+FieldDisplayNames ( "" ; "Contributors::Assignment" )	
+GetNextSerialValue ( "" ; "Contributors::Assignment" )	
+FieldType ( "" ; "Contributors::Photo | Container" )	Standard Container Unindexed 1
+FieldComment ( "" ; "Contributors::Photo | Container" )	
+FieldAnnotation ( "" ; "Contributors::Photo | Container" )	
+FieldDisplayNames ( "" ; "Contributors::Photo | Container" )	
+GetNextSerialValue ( "" ; "Contributors::Photo | Container" )	
+FieldType ( "" ; "Contributors::Assignment Status" )	UnstoredCalc Number Unindexed 1
+FieldComment ( "" ; "Contributors::Assignment Status" )	
+FieldAnnotation ( "" ; "Contributors::Assignment Status" )	
+FieldDisplayNames ( "" ; "Contributors::Assignment Status" )	
+GetNextSerialValue ( "" ; "Contributors::Assignment Status" )	
+FieldType ( "" ; "Contributors::Photo Placeholder" )	UnstoredCalc Text Unindexed 1
+FieldComment ( "" ; "Contributors::Photo Placeholder" )	
+FieldAnnotation ( "" ; "Contributors::Photo Placeholder" )	
+FieldDisplayNames ( "" ; "Contributors::Photo Placeholder" )	
+GetNextSerialValue ( "" ; "Contributors::Photo Placeholder" )	
+FieldType ( "" ; "Contributors::AuditTimeStamp" )	Standard Timestamp Unindexed 1
+FieldComment ( "" ; "Contributors::AuditTimeStamp" )	
+FieldAnnotation ( "" ; "Contributors::AuditTimeStamp" )	
+FieldDisplayNames ( "" ; "Contributors::AuditTimeStamp" )	
+GetNextSerialValue ( "" ; "Contributors::AuditTimeStamp" )	
+FieldType ( "" ; "Contributors::AuditState" )	Standard Text Unindexed 1
+FieldComment ( "" ; "Contributors::AuditState" )	
+FieldAnnotation ( "" ; "Contributors::AuditState" )	
+FieldDisplayNames ( "" ; "Contributors::AuditState" )	
+GetNextSerialValue ( "" ; "Contributors::AuditState" )	
+FieldType ( "" ; "Events::Sort Selection" )	Global Text Unindexed 1
+FieldComment ( "" ; "Events::Sort Selection" )	
+FieldAnnotation ( "" ; "Events::Sort Selection" )	
+FieldDisplayNames ( "" ; "Events::Sort Selection" )	
+GetNextSerialValue ( "" ; "Events::Sort Selection" )	
+FieldType ( "" ; "Events::Event" )	Standard Text Indexed 1
+FieldComment ( "" ; "Events::Event" )	
+FieldAnnotation ( "" ; "Events::Event" )	
+FieldDisplayNames ( "" ; "Events::Event" )	
+GetNextSerialValue ( "" ; "Events::Event" )	
+FieldType ( "" ; "Events::Type" )	Standard Text Indexed 1
+FieldComment ( "" ; "Events::Type" )	
+FieldAnnotation ( "" ; "Events::Type" )	
+FieldDisplayNames ( "" ; "Events::Type" )	
+GetNextSerialValue ( "" ; "Events::Type" )	
+FieldType ( "" ; "Events::Venue" )	Standard Text Indexed 1
+FieldComment ( "" ; "Events::Venue" )	
+FieldAnnotation ( "" ; "Events::Venue" )	
+FieldDisplayNames ( "" ; "Events::Venue" )	
+GetNextSerialValue ( "" ; "Events::Venue" )	
+FieldType ( "" ; "Events::Date" )	Standard Date Indexed 1
+FieldComment ( "" ; "Events::Date" )	
+FieldAnnotation ( "" ; "Events::Date" )	
+FieldDisplayNames ( "" ; "Events::Date" )	
+GetNextSerialValue ( "" ; "Events::Date" )	
+FieldType ( "" ; "Events::Layout Selector" )	Global Text Unindexed 1
+FieldComment ( "" ; "Events::Layout Selector" )	
+FieldAnnotation ( "" ; "Events::Layout Selector" )	
+FieldDisplayNames ( "" ; "Events::Layout Selector" )	
+GetNextSerialValue ( "" ; "Events::Layout Selector" )	
+FieldType ( "" ; "Guests::EVENT ID MATCH FIELD" )	Standard Number Indexed 1
+FieldComment ( "" ; "Guests::EVENT ID MATCH FIELD" )	
+FieldAnnotation ( "" ; "Guests::EVENT ID MATCH FIELD" )	
+FieldDisplayNames ( "" ; "Guests::EVENT ID MATCH FIELD" )	
+GetNextSerialValue ( "" ; "Guests::EVENT ID MATCH FIELD" )	
+FieldType ( "" ; "Guests::Preferences" )	Standard Text Indexed 1
+FieldComment ( "" ; "Guests::Preferences" )	
+FieldAnnotation ( "" ; "Guests::Preferences" )	
+FieldDisplayNames ( "" ; "Guests::Preferences" )	
+GetNextSerialValue ( "" ; "Guests::Preferences" )	
+FieldType ( "" ; "Guests::Status" )	Standard Text Indexed 1
+FieldComment ( "" ; "Guests::Status" )	
+FieldAnnotation ( "" ; "Guests::Status" )	
+FieldDisplayNames ( "" ; "Guests::Status" )	
+GetNextSerialValue ( "" ; "Guests::Status" )	
+FieldType ( "" ; "Guests::Guest | MATCH FIELD" )	Standard Text Indexed 1
+FieldComment ( "" ; "Guests::Guest | MATCH FIELD" )	
+FieldAnnotation ( "" ; "Guests::Guest | MATCH FIELD" )	
+FieldDisplayNames ( "" ; "Guests::Guest | MATCH FIELD" )	
+GetNextSerialValue ( "" ; "Guests::Guest | MATCH FIELD" )	
+FieldType ( "" ; "Guests::Email" )	Standard Text Indexed 1
+FieldComment ( "" ; "Guests::Email" )	
+FieldAnnotation ( "" ; "Guests::Email" )	
+FieldDisplayNames ( "" ; "Guests::Email" )	
+GetNextSerialValue ( "" ; "Guests::Email" )	
+FieldType ( "" ; "Guests::Attending" )	UnstoredCalc Number Unindexed 1
+FieldComment ( "" ; "Guests::Attending" )	
+FieldAnnotation ( "" ; "Guests::Attending" )	
+FieldDisplayNames ( "" ; "Guests::Attending" )	
+GetNextSerialValue ( "" ; "Guests::Attending" )	
+FieldType ( "" ; "Guests::Photo | Container" )	Standard Container Unindexed 1
+FieldComment ( "" ; "Guests::Photo | Container" )	
+FieldAnnotation ( "" ; "Guests::Photo | Container" )	
+FieldDisplayNames ( "" ; "Guests::Photo | Container" )	
+GetNextSerialValue ( "" ; "Guests::Photo | Container" )	
+FieldType ( "" ; "Guests::Photo Placeholder" )	UnstoredCalc Text Unindexed 1
+FieldComment ( "" ; "Guests::Photo Placeholder" )	
+FieldAnnotation ( "" ; "Guests::Photo Placeholder" )	
+FieldDisplayNames ( "" ; "Guests::Photo Placeholder" )	
+GetNextSerialValue ( "" ; "Guests::Photo Placeholder" )	
+FieldType ( "" ; "Guests::AuditTimeStamp" )	Standard Timestamp Unindexed 1
+FieldComment ( "" ; "Guests::AuditTimeStamp" )	
+FieldAnnotation ( "" ; "Guests::AuditTimeStamp" )	
+FieldDisplayNames ( "" ; "Guests::AuditTimeStamp" )	
+GetNextSerialValue ( "" ; "Guests::AuditTimeStamp" )	
+FieldType ( "" ; "Guests::AuditState" )	Standard Text Unindexed 1
+FieldComment ( "" ; "Guests::AuditState" )	
+FieldAnnotation ( "" ; "Guests::AuditState" )	
+FieldDisplayNames ( "" ; "Guests::AuditState" )	
+GetNextSerialValue ( "" ; "Guests::AuditState" )	
+FieldType ( "" ; "Guests | Contacts::First" )	Standard Text Indexed 1
+FieldComment ( "" ; "Guests | Contacts::First" )	
+FieldAnnotation ( "" ; "Guests | Contacts::First" )	
+FieldDisplayNames ( "" ; "Guests | Contacts::First" )	
+GetNextSerialValue ( "" ; "Guests | Contacts::First" )	
+FieldType ( "" ; "Guests | Contacts::Last" )	Standard Text Indexed 1
+FieldComment ( "" ; "Guests | Contacts::Last" )	
+FieldAnnotation ( "" ; "Guests | Contacts::Last" )	
+FieldDisplayNames ( "" ; "Guests | Contacts::Last" )	
+GetNextSerialValue ( "" ; "Guests | Contacts::Last" )	
+FieldType ( "" ; "Guests | Contacts::Contacts | MATCH FIELD" )	StoredCalc Text Indexed 1
+FieldComment ( "" ; "Guests | Contacts::Contacts | MATCH FIELD" )	
+FieldAnnotation ( "" ; "Guests | Contacts::Contacts | MATCH FIELD" )	
+FieldDisplayNames ( "" ; "Guests | Contacts::Contacts | MATCH FIELD" )	
+GetNextSerialValue ( "" ; "Guests | Contacts::Contacts | MATCH FIELD" )	
+FieldType ( "" ; "Guests | Contacts::Job Title" )	Standard Text Indexed 1
+FieldComment ( "" ; "Guests | Contacts::Job Title" )	
+FieldAnnotation ( "" ; "Guests | Contacts::Job Title" )	
+FieldDisplayNames ( "" ; "Guests | Contacts::Job Title" )	
+GetNextSerialValue ( "" ; "Guests | Contacts::Job Title" )	
+FieldType ( "" ; "Guests | Contacts::Company" )	Standard Text Indexed 1
+FieldComment ( "" ; "Guests | Contacts::Company" )	
+FieldAnnotation ( "" ; "Guests | Contacts::Company" )	
+FieldDisplayNames ( "" ; "Guests | Contacts::Company" )	
+GetNextSerialValue ( "" ; "Guests | Contacts::Company" )	
+FieldType ( "" ; "Guests | Contacts::Work Email" )	Standard Text Indexed 1
+FieldComment ( "" ; "Guests | Contacts::Work Email" )	
+FieldAnnotation ( "" ; "Guests | Contacts::Work Email" )	
+FieldDisplayNames ( "" ; "Guests | Contacts::Work Email" )	
+GetNextSerialValue ( "" ; "Guests | Contacts::Work Email" )	
+FieldType ( "" ; "Guests | Contacts::Work Phone" )	Standard Text Indexed 1
+FieldComment ( "" ; "Guests | Contacts::Work Phone" )	
+FieldAnnotation ( "" ; "Guests | Contacts::Work Phone" )	
+FieldDisplayNames ( "" ; "Guests | Contacts::Work Phone" )	
+GetNextSerialValue ( "" ; "Guests | Contacts::Work Phone" )	
+FieldType ( "" ; "Guests | Contacts::Mobile Phone" )	Standard Text Indexed 1
+FieldComment ( "" ; "Guests | Contacts::Mobile Phone" )	
+FieldAnnotation ( "" ; "Guests | Contacts::Mobile Phone" )	
+FieldDisplayNames ( "" ; "Guests | Contacts::Mobile Phone" )	
+GetNextSerialValue ( "" ; "Guests | Contacts::Mobile Phone" )	
+FieldType ( "" ; "Guests | Contacts::Fax" )	Standard Text Indexed 1
+FieldComment ( "" ; "Guests | Contacts::Fax" )	
+FieldAnnotation ( "" ; "Guests | Contacts::Fax" )	
+FieldDisplayNames ( "" ; "Guests | Contacts::Fax" )	
+GetNextSerialValue ( "" ; "Guests | Contacts::Fax" )	
+FieldType ( "" ; "Guests | Contacts::Website" )	Standard Text Indexed 1
+FieldComment ( "" ; "Guests | Contacts::Website" )	
+FieldAnnotation ( "" ; "Guests | Contacts::Website" )	
+FieldDisplayNames ( "" ; "Guests | Contacts::Website" )	
+GetNextSerialValue ( "" ; "Guests | Contacts::Website" )	
+FieldType ( "" ; "Guests | Contacts::Address 1" )	Standard Text Indexed 1
+FieldComment ( "" ; "Guests | Contacts::Address 1" )	
+FieldAnnotation ( "" ; "Guests | Contacts::Address 1" )	
+FieldDisplayNames ( "" ; "Guests | Contacts::Address 1" )	
+GetNextSerialValue ( "" ; "Guests | Contacts::Address 1" )	
+FieldType ( "" ; "Guests | Contacts::City" )	Standard Text Indexed 1
+FieldComment ( "" ; "Guests | Contacts::City" )	
+FieldAnnotation ( "" ; "Guests | Contacts::City" )	
+FieldDisplayNames ( "" ; "Guests | Contacts::City" )	
+GetNextSerialValue ( "" ; "Guests | Contacts::City" )	
+FieldType ( "" ; "Guests | Contacts::State" )	Standard Text Indexed 1
+FieldComment ( "" ; "Guests | Contacts::State" )	
+FieldAnnotation ( "" ; "Guests | Contacts::State" )	
+FieldDisplayNames ( "" ; "Guests | Contacts::State" )	
+GetNextSerialValue ( "" ; "Guests | Contacts::State" )	
+FieldType ( "" ; "Guests | Contacts::Postal Code" )	Standard Text Indexed 1
+FieldComment ( "" ; "Guests | Contacts::Postal Code" )	
+FieldAnnotation ( "" ; "Guests | Contacts::Postal Code" )	
+FieldDisplayNames ( "" ; "Guests | Contacts::Postal Code" )	
+GetNextSerialValue ( "" ; "Guests | Contacts::Postal Code" )	
+FieldType ( "" ; "Guests | Contacts::Country" )	Standard Text Indexed 1
+FieldComment ( "" ; "Guests | Contacts::Country" )	
+FieldAnnotation ( "" ; "Guests | Contacts::Country" )	
+FieldDisplayNames ( "" ; "Guests | Contacts::Country" )	
+GetNextSerialValue ( "" ; "Guests | Contacts::Country" )	
+FieldType ( "" ; "Guests | Contacts::Address 2" )	Standard Text Indexed 1
+FieldComment ( "" ; "Guests | Contacts::Address 2" )	
+FieldAnnotation ( "" ; "Guests | Contacts::Address 2" )	
+FieldDisplayNames ( "" ; "Guests | Contacts::Address 2" )	
+GetNextSerialValue ( "" ; "Guests | Contacts::Address 2" )	
+FieldType ( "" ; "Guests | Contacts::CONTACT ID MATCH FIELD" )	Standard Number Indexed 1
+FieldComment ( "" ; "Guests | Contacts::CONTACT ID MATCH FIELD" )	
+FieldAnnotation ( "" ; "Guests | Contacts::CONTACT ID MATCH FIELD" )	
+FieldDisplayNames ( "" ; "Guests | Contacts::CONTACT ID MATCH FIELD" )	
+GetNextSerialValue ( "" ; "Guests | Contacts::CONTACT ID MATCH FIELD" )	2
+FieldType ( "" ; "Guests | Contacts::Initial" )	UnstoredCalc Text Unindexed 1
+FieldComment ( "" ; "Guests | Contacts::Initial" )	
+FieldAnnotation ( "" ; "Guests | Contacts::Initial" )	
+FieldDisplayNames ( "" ; "Guests | Contacts::Initial" )	
+GetNextSerialValue ( "" ; "Guests | Contacts::Initial" )	
+FieldType ( "" ; "Guests | Contacts::Sort Selection" )	Global Text Unindexed 1
+FieldComment ( "" ; "Guests | Contacts::Sort Selection" )	
+FieldAnnotation ( "" ; "Guests | Contacts::Sort Selection" )	
+FieldDisplayNames ( "" ; "Guests | Contacts::Sort Selection" )	
+GetNextSerialValue ( "" ; "Guests | Contacts::Sort Selection" )	
+FieldType ( "" ; "Guests | Contacts::Sort List Key" )	UnstoredCalc Text Unindexed 1
+FieldComment ( "" ; "Guests | Contacts::Sort List Key" )	
+FieldAnnotation ( "" ; "Guests | Contacts::Sort List Key" )	
+FieldDisplayNames ( "" ; "Guests | Contacts::Sort List Key" )	
+GetNextSerialValue ( "" ; "Guests | Contacts::Sort List Key" )	
+FieldType ( "" ; "Guests | Contacts::Photo | Container" )	Standard Container Unindexed 1
+FieldComment ( "" ; "Guests | Contacts::Photo | Container" )	
+FieldAnnotation ( "" ; "Guests | Contacts::Photo | Container" )	
+FieldDisplayNames ( "" ; "Guests | Contacts::Photo | Container" )	
+GetNextSerialValue ( "" ; "Guests | Contacts::Photo | Container" )	
+FieldType ( "" ; "Guests | Contacts::Title" )	Standard Text Indexed 1
+FieldComment ( "" ; "Guests | Contacts::Title" )	
+FieldAnnotation ( "" ; "Guests | Contacts::Title" )	
+FieldDisplayNames ( "" ; "Guests | Contacts::Title" )	
+GetNextSerialValue ( "" ; "Guests | Contacts::Title" )	
+FieldType ( "" ; "Guests | Contacts::Home Phone" )	Standard Text Indexed 1
+FieldComment ( "" ; "Guests | Contacts::Home Phone" )	
+FieldAnnotation ( "" ; "Guests | Contacts::Home Phone" )	
+FieldDisplayNames ( "" ; "Guests | Contacts::Home Phone" )	
+GetNextSerialValue ( "" ; "Guests | Contacts::Home Phone" )	
+FieldType ( "" ; "Guests | Contacts::Home Email" )	Standard Text Indexed 1
+FieldComment ( "" ; "Guests | Contacts::Home Email" )	
+FieldAnnotation ( "" ; "Guests | Contacts::Home Email" )	
+FieldDisplayNames ( "" ; "Guests | Contacts::Home Email" )	
+GetNextSerialValue ( "" ; "Guests | Contacts::Home Email" )	
+FieldType ( "" ; "Guests | Contacts::Notes" )	Standard Text Indexed 1
+FieldComment ( "" ; "Guests | Contacts::Notes" )	
+FieldAnnotation ( "" ; "Guests | Contacts::Notes" )	
+FieldDisplayNames ( "" ; "Guests | Contacts::Notes" )	
+GetNextSerialValue ( "" ; "Guests | Contacts::Notes" )	
+FieldType ( "" ; "Guests | Contacts::Address Short" )	UnstoredCalc Text Unindexed 1
+FieldComment ( "" ; "Guests | Contacts::Address Short" )	
+FieldAnnotation ( "" ; "Guests | Contacts::Address Short" )	
+FieldDisplayNames ( "" ; "Guests | Contacts::Address Short" )	
+GetNextSerialValue ( "" ; "Guests | Contacts::Address Short" )	
+FieldType ( "" ; "Guests | Contacts::File Name Placeholder" )	UnstoredCalc Text Unindexed 1
+FieldComment ( "" ; "Guests | Contacts::File Name Placeholder" )	
+FieldAnnotation ( "" ; "Guests | Contacts::File Name Placeholder" )	
+FieldDisplayNames ( "" ; "Guests | Contacts::File Name Placeholder" )	
+GetNextSerialValue ( "" ; "Guests | Contacts::File Name Placeholder" )	
+FieldType ( "" ; "Guests | Contacts::Result Label Plural" )	UnstoredCalc Text Unindexed 1
+FieldComment ( "" ; "Guests | Contacts::Result Label Plural" )	
+FieldAnnotation ( "" ; "Guests | Contacts::Result Label Plural" )	
+FieldDisplayNames ( "" ; "Guests | Contacts::Result Label Plural" )	
+GetNextSerialValue ( "" ; "Guests | Contacts::Result Label Plural" )	
+FieldType ( "" ; "Guests | Contacts::AuditTimeStamp" )	Standard Timestamp Unindexed 1
+FieldComment ( "" ; "Guests | Contacts::AuditTimeStamp" )	
+FieldAnnotation ( "" ; "Guests | Contacts::AuditTimeStamp" )	
+FieldDisplayNames ( "" ; "Guests | Contacts::AuditTimeStamp" )	
+GetNextSerialValue ( "" ; "Guests | Contacts::AuditTimeStamp" )	
+FieldType ( "" ; "Guests | Contacts::AuditState" )	Standard Text Unindexed 1
+FieldComment ( "" ; "Guests | Contacts::AuditState" )	
+FieldAnnotation ( "" ; "Guests | Contacts::AuditState" )	
+FieldDisplayNames ( "" ; "Guests | Contacts::AuditState" )	
+GetNextSerialValue ( "" ; "Guests | Contacts::AuditState" )	
+FieldType ( "" ; "Tasks::EVENT ID MATCH FIELD" )	Standard Number Indexed 1
+FieldComment ( "" ; "Tasks::EVENT ID MATCH FIELD" )	
+FieldAnnotation ( "" ; "Tasks::EVENT ID MATCH FIELD" )	
+FieldDisplayNames ( "" ; "Tasks::EVENT ID MATCH FIELD" )	
+GetNextSerialValue ( "" ; "Tasks::EVENT ID MATCH FIELD" )	
+FieldType ( "" ; "Tasks::Due Date" )	Standard Date Unindexed 1
+FieldComment ( "" ; "Tasks::Due Date" )	
+FieldAnnotation ( "" ; "Tasks::Due Date" )	
+FieldDisplayNames ( "" ; "Tasks::Due Date" )	
+GetNextSerialValue ( "" ; "Tasks::Due Date" )	
+FieldType ( "" ; "Tasks::Task" )	Standard Text Indexed 1
+FieldComment ( "" ; "Tasks::Task" )	
+FieldAnnotation ( "" ; "Tasks::Task" )	
+FieldDisplayNames ( "" ; "Tasks::Task" )	
+GetNextSerialValue ( "" ; "Tasks::Task" )	
+FieldType ( "" ; "Tasks::Status" )	UnstoredCalc Number Unindexed 1
+FieldComment ( "" ; "Tasks::Status" )	
+FieldAnnotation ( "" ; "Tasks::Status" )	
+FieldDisplayNames ( "" ; "Tasks::Status" )	
+GetNextSerialValue ( "" ; "Tasks::Status" )	
+FieldType ( "" ; "Tasks::Assignee | MATCH FIELD" )	Standard Text Indexed 1
+FieldComment ( "" ; "Tasks::Assignee | MATCH FIELD" )	
+FieldAnnotation ( "" ; "Tasks::Assignee | MATCH FIELD" )	
+FieldDisplayNames ( "" ; "Tasks::Assignee | MATCH FIELD" )	
+GetNextSerialValue ( "" ; "Tasks::Assignee | MATCH FIELD" )	
+FieldType ( "" ; "Tasks::Status Sort Order" )	UnstoredCalc Number Unindexed 1
+FieldComment ( "" ; "Tasks::Status Sort Order" )	
+FieldAnnotation ( "" ; "Tasks::Status Sort Order" )	
+FieldDisplayNames ( "" ; "Tasks::Status Sort Order" )	
+GetNextSerialValue ( "" ; "Tasks::Status Sort Order" )	
+FieldType ( "" ; "Tasks::Completed" )	Standard Text Unindexed 1
+FieldComment ( "" ; "Tasks::Completed" )	
+FieldAnnotation ( "" ; "Tasks::Completed" )	
+FieldDisplayNames ( "" ; "Tasks::Completed" )	
+GetNextSerialValue ( "" ; "Tasks::Completed" )	
+FieldType ( "" ; "Tasks::To Do" )	UnstoredCalc Number Unindexed 1
+FieldComment ( "" ; "Tasks::To Do" )	
+FieldAnnotation ( "" ; "Tasks::To Do" )	
+FieldDisplayNames ( "" ; "Tasks::To Do" )	
+GetNextSerialValue ( "" ; "Tasks::To Do" )	
+FieldType ( "" ; "Tasks::Overdue" )	UnstoredCalc Number Unindexed 1
+FieldComment ( "" ; "Tasks::Overdue" )	
+FieldAnnotation ( "" ; "Tasks::Overdue" )	
+FieldDisplayNames ( "" ; "Tasks::Overdue" )	
+GetNextSerialValue ( "" ; "Tasks::Overdue" )	
+FieldType ( "" ; "Tasks::Event" )	UnstoredCalc Text Unindexed 1
+FieldComment ( "" ; "Tasks::Event" )	
+FieldAnnotation ( "" ; "Tasks::Event" )	
+FieldDisplayNames ( "" ; "Tasks::Event" )	
+GetNextSerialValue ( "" ; "Tasks::Event" )	
+FieldType ( "" ; "Tasks::AuditTimeStamp" )	Standard Timestamp Unindexed 1
+FieldComment ( "" ; "Tasks::AuditTimeStamp" )	
+FieldAnnotation ( "" ; "Tasks::AuditTimeStamp" )	
+FieldDisplayNames ( "" ; "Tasks::AuditTimeStamp" )	
+GetNextSerialValue ( "" ; "Tasks::AuditTimeStamp" )	
+FieldType ( "" ; "Tasks::AuditState" )	Standard Text Unindexed 1
+FieldComment ( "" ; "Tasks::AuditState" )	
+FieldAnnotation ( "" ; "Tasks::AuditState" )	
+FieldDisplayNames ( "" ; "Tasks::AuditState" )	
+GetNextSerialValue ( "" ; "Tasks::AuditState" )	
+FieldType ( "" ; "Venue Looked Up::EVENT ID MATCH FIELD" )	Standard Number Indexed 1
+FieldComment ( "" ; "Venue Looked Up::EVENT ID MATCH FIELD" )	
+FieldAnnotation ( "" ; "Venue Looked Up::EVENT ID MATCH FIELD" )	
+FieldDisplayNames ( "" ; "Venue Looked Up::EVENT ID MATCH FIELD" )	
+GetNextSerialValue ( "" ; "Venue Looked Up::EVENT ID MATCH FIELD" )	2
+FieldType ( "" ; "Venue Looked Up::Event" )	Standard Text Indexed 1
+FieldComment ( "" ; "Venue Looked Up::Event" )	
+FieldAnnotation ( "" ; "Venue Looked Up::Event" )	
+FieldDisplayNames ( "" ; "Venue Looked Up::Event" )	
+GetNextSerialValue ( "" ; "Venue Looked Up::Event" )	
+FieldType ( "" ; "Venue Looked Up::Date" )	Standard Date Indexed 1
+FieldComment ( "" ; "Venue Looked Up::Date" )	
+FieldAnnotation ( "" ; "Venue Looked Up::Date" )	
+FieldDisplayNames ( "" ; "Venue Looked Up::Date" )	
+GetNextSerialValue ( "" ; "Venue Looked Up::Date" )	
+FieldType ( "" ; "Venue Looked Up::Venue" )	Standard Text Indexed 1
+FieldComment ( "" ; "Venue Looked Up::Venue" )	
+FieldAnnotation ( "" ; "Venue Looked Up::Venue" )	
+FieldDisplayNames ( "" ; "Venue Looked Up::Venue" )	
+GetNextSerialValue ( "" ; "Venue Looked Up::Venue" )	
+FieldType ( "" ; "Venue Looked Up::Description" )	Standard Text Unindexed 1
+FieldComment ( "" ; "Venue Looked Up::Description" )	
+FieldAnnotation ( "" ; "Venue Looked Up::Description" )	
+FieldDisplayNames ( "" ; "Venue Looked Up::Description" )	
+GetNextSerialValue ( "" ; "Venue Looked Up::Description" )	
+FieldType ( "" ; "Venue Looked Up::Address" )	Standard Text Indexed 1
+FieldComment ( "" ; "Venue Looked Up::Address" )	
+FieldAnnotation ( "" ; "Venue Looked Up::Address" )	
+FieldDisplayNames ( "" ; "Venue Looked Up::Address" )	
+GetNextSerialValue ( "" ; "Venue Looked Up::Address" )	
+FieldType ( "" ; "Venue Looked Up::City" )	Standard Text Indexed 1
+FieldComment ( "" ; "Venue Looked Up::City" )	
+FieldAnnotation ( "" ; "Venue Looked Up::City" )	
+FieldDisplayNames ( "" ; "Venue Looked Up::City" )	
+GetNextSerialValue ( "" ; "Venue Looked Up::City" )	
+FieldType ( "" ; "Venue Looked Up::State" )	Standard Text Indexed 1
+FieldComment ( "" ; "Venue Looked Up::State" )	
+FieldAnnotation ( "" ; "Venue Looked Up::State" )	
+FieldDisplayNames ( "" ; "Venue Looked Up::State" )	
+GetNextSerialValue ( "" ; "Venue Looked Up::State" )	
+FieldType ( "" ; "Venue Looked Up::Postal Code" )	Standard Text Indexed 1
+FieldComment ( "" ; "Venue Looked Up::Postal Code" )	
+FieldAnnotation ( "" ; "Venue Looked Up::Postal Code" )	
+FieldDisplayNames ( "" ; "Venue Looked Up::Postal Code" )	
+GetNextSerialValue ( "" ; "Venue Looked Up::Postal Code" )	
+FieldType ( "" ; "Venue Looked Up::Notes" )	Standard Text Unindexed 1
+FieldComment ( "" ; "Venue Looked Up::Notes" )	
+FieldAnnotation ( "" ; "Venue Looked Up::Notes" )	
+FieldDisplayNames ( "" ; "Venue Looked Up::Notes" )	
+GetNextSerialValue ( "" ; "Venue Looked Up::Notes" )	
+FieldType ( "" ; "Venue Looked Up::Task Number | All" )	UnstoredCalc Number Unindexed 1
+FieldComment ( "" ; "Venue Looked Up::Task Number | All" )	
+FieldAnnotation ( "" ; "Venue Looked Up::Task Number | All" )	
+FieldDisplayNames ( "" ; "Venue Looked Up::Task Number | All" )	
+GetNextSerialValue ( "" ; "Venue Looked Up::Task Number | All" )	
+FieldType ( "" ; "Venue Looked Up::Guest Number | All" )	UnstoredCalc Number Unindexed 1
+FieldComment ( "" ; "Venue Looked Up::Guest Number | All" )	
+FieldAnnotation ( "" ; "Venue Looked Up::Guest Number | All" )	
+FieldDisplayNames ( "" ; "Venue Looked Up::Guest Number | All" )	
+GetNextSerialValue ( "" ; "Venue Looked Up::Guest Number | All" )	
+FieldType ( "" ; "Venue Looked Up::Type" )	Standard Text Indexed 1
+FieldComment ( "" ; "Venue Looked Up::Type" )	
+FieldAnnotation ( "" ; "Venue Looked Up::Type" )	
+FieldDisplayNames ( "" ; "Venue Looked Up::Type" )	
+GetNextSerialValue ( "" ; "Venue Looked Up::Type" )	
+FieldType ( "" ; "Venue Looked Up::Contributor Number | All" )	UnstoredCalc Number Unindexed 1
+FieldComment ( "" ; "Venue Looked Up::Contributor Number | All" )	
+FieldAnnotation ( "" ; "Venue Looked Up::Contributor Number | All" )	
+FieldDisplayNames ( "" ; "Venue Looked Up::Contributor Number | All" )	
+GetNextSerialValue ( "" ; "Venue Looked Up::Contributor Number | All" )	
+FieldType ( "" ; "Venue Looked Up::Country" )	Standard Text Indexed 1
+FieldComment ( "" ; "Venue Looked Up::Country" )	
+FieldAnnotation ( "" ; "Venue Looked Up::Country" )	
+FieldDisplayNames ( "" ; "Venue Looked Up::Country" )	
+GetNextSerialValue ( "" ; "Venue Looked Up::Country" )	
+FieldType ( "" ; "Venue Looked Up::QuickFind | iOS" )	Global Text Unindexed 1
+FieldComment ( "" ; "Venue Looked Up::QuickFind | iOS" )	
+FieldAnnotation ( "" ; "Venue Looked Up::QuickFind | iOS" )	
+FieldDisplayNames ( "" ; "Venue Looked Up::QuickFind | iOS" )	
+GetNextSerialValue ( "" ; "Venue Looked Up::QuickFind | iOS" )	
+FieldType ( "" ; "Venue Looked Up::Layout Selector" )	Global Text Unindexed 1
+FieldComment ( "" ; "Venue Looked Up::Layout Selector" )	
+FieldAnnotation ( "" ; "Venue Looked Up::Layout Selector" )	
+FieldDisplayNames ( "" ; "Venue Looked Up::Layout Selector" )	
+GetNextSerialValue ( "" ; "Venue Looked Up::Layout Selector" )	
+FieldType ( "" ; "Venue Looked Up::Sort Selection" )	Global Text Unindexed 1
+FieldComment ( "" ; "Venue Looked Up::Sort Selection" )	
+FieldAnnotation ( "" ; "Venue Looked Up::Sort Selection" )	
+FieldDisplayNames ( "" ; "Venue Looked Up::Sort Selection" )	
+GetNextSerialValue ( "" ; "Venue Looked Up::Sort Selection" )	
+FieldType ( "" ; "Venue Looked Up::Sort List Key" )	UnstoredCalc Text Unindexed 1
+FieldComment ( "" ; "Venue Looked Up::Sort List Key" )	
+FieldAnnotation ( "" ; "Venue Looked Up::Sort List Key" )	
+FieldDisplayNames ( "" ; "Venue Looked Up::Sort List Key" )	
+GetNextSerialValue ( "" ; "Venue Looked Up::Sort List Key" )	
+FieldType ( "" ; "Venue Looked Up::Time Frame | Sort Order" )	UnstoredCalc Number Unindexed 1
+FieldComment ( "" ; "Venue Looked Up::Time Frame | Sort Order" )	
+FieldAnnotation ( "" ; "Venue Looked Up::Time Frame | Sort Order" )	
+FieldDisplayNames ( "" ; "Venue Looked Up::Time Frame | Sort Order" )	
+GetNextSerialValue ( "" ; "Venue Looked Up::Time Frame | Sort Order" )	
+FieldType ( "" ; "Venue Looked Up::Time Frame" )	UnstoredCalc Text Unindexed 1
+FieldComment ( "" ; "Venue Looked Up::Time Frame" )	
+FieldAnnotation ( "" ; "Venue Looked Up::Time Frame" )	
+FieldDisplayNames ( "" ; "Venue Looked Up::Time Frame" )	
+GetNextSerialValue ( "" ; "Venue Looked Up::Time Frame" )	
+FieldType ( "" ; "Venue Looked Up::Task Label Plural" )	UnstoredCalc Text Unindexed 1
+FieldComment ( "" ; "Venue Looked Up::Task Label Plural" )	
+FieldAnnotation ( "" ; "Venue Looked Up::Task Label Plural" )	
+FieldDisplayNames ( "" ; "Venue Looked Up::Task Label Plural" )	
+GetNextSerialValue ( "" ; "Venue Looked Up::Task Label Plural" )	
+FieldType ( "" ; "Venue Looked Up::Guest Label Plural" )	UnstoredCalc Text Unindexed 1
+FieldComment ( "" ; "Venue Looked Up::Guest Label Plural" )	
+FieldAnnotation ( "" ; "Venue Looked Up::Guest Label Plural" )	
+FieldDisplayNames ( "" ; "Venue Looked Up::Guest Label Plural" )	
+GetNextSerialValue ( "" ; "Venue Looked Up::Guest Label Plural" )	
+FieldType ( "" ; "Venue Looked Up::Guest Number | Attending" )	UnstoredCalc Number Unindexed 1
+FieldComment ( "" ; "Venue Looked Up::Guest Number | Attending" )	
+FieldAnnotation ( "" ; "Venue Looked Up::Guest Number | Attending" )	
+FieldDisplayNames ( "" ; "Venue Looked Up::Guest Number | Attending" )	
+GetNextSerialValue ( "" ; "Venue Looked Up::Guest Number | Attending" )	
+FieldType ( "" ; "Venue Looked Up::Contributor Number | Assigned" )	UnstoredCalc Number Unindexed 1
+FieldComment ( "" ; "Venue Looked Up::Contributor Number | Assigned" )	
+FieldAnnotation ( "" ; "Venue Looked Up::Contributor Number | Assigned" )	
+FieldDisplayNames ( "" ; "Venue Looked Up::Contributor Number | Assigned" )	
+GetNextSerialValue ( "" ; "Venue Looked Up::Contributor Number | Assigned" )	
+FieldType ( "" ; "Venue Looked Up::Agenda Item Number | All" )	UnstoredCalc Number Unindexed 1
+FieldComment ( "" ; "Venue Looked Up::Agenda Item Number | All" )	
+FieldAnnotation ( "" ; "Venue Looked Up::Agenda Item Number | All" )	
+FieldDisplayNames ( "" ; "Venue Looked Up::Agenda Item Number | All" )	
+GetNextSerialValue ( "" ; "Venue Looked Up::Agenda Item Number | All" )	
+FieldType ( "" ; "Venue Looked Up::Agenda Item Number | Current" )	UnstoredCalc Number Unindexed 1
+FieldComment ( "" ; "Venue Looked Up::Agenda Item Number | Current" )	
+FieldAnnotation ( "" ; "Venue Looked Up::Agenda Item Number | Current" )	
+FieldDisplayNames ( "" ; "Venue Looked Up::Agenda Item Number | Current" )	
+GetNextSerialValue ( "" ; "Venue Looked Up::Agenda Item Number | Current" )	
+FieldType ( "" ; "Venue Looked Up::Agenda Item Label Plural" )	UnstoredCalc Text Unindexed 1
+FieldComment ( "" ; "Venue Looked Up::Agenda Item Label Plural" )	
+FieldAnnotation ( "" ; "Venue Looked Up::Agenda Item Label Plural" )	
+FieldDisplayNames ( "" ; "Venue Looked Up::Agenda Item Label Plural" )	
+GetNextSerialValue ( "" ; "Venue Looked Up::Agenda Item Label Plural" )	
+FieldType ( "" ; "Venue Looked Up::Phone" )	Standard Text Indexed 1
+FieldComment ( "" ; "Venue Looked Up::Phone" )	
+FieldAnnotation ( "" ; "Venue Looked Up::Phone" )	
+FieldDisplayNames ( "" ; "Venue Looked Up::Phone" )	
+GetNextSerialValue ( "" ; "Venue Looked Up::Phone" )	
+FieldType ( "" ; "Venue Looked Up::Email" )	Standard Text Indexed 1
+FieldComment ( "" ; "Venue Looked Up::Email" )	
+FieldAnnotation ( "" ; "Venue Looked Up::Email" )	
+FieldDisplayNames ( "" ; "Venue Looked Up::Email" )	
+GetNextSerialValue ( "" ; "Venue Looked Up::Email" )	
+FieldType ( "" ; "Venue Looked Up::Task Number | To Do" )	UnstoredCalc Number Unindexed 1
+FieldComment ( "" ; "Venue Looked Up::Task Number | To Do" )	
+FieldAnnotation ( "" ; "Venue Looked Up::Task Number | To Do" )	
+FieldDisplayNames ( "" ; "Venue Looked Up::Task Number | To Do" )	
+GetNextSerialValue ( "" ; "Venue Looked Up::Task Number | To Do" )	
+FieldType ( "" ; "Venue Looked Up::Result Label Plural" )	UnstoredCalc Text Unindexed 1
+FieldComment ( "" ; "Venue Looked Up::Result Label Plural" )	
+FieldAnnotation ( "" ; "Venue Looked Up::Result Label Plural" )	
+FieldDisplayNames ( "" ; "Venue Looked Up::Result Label Plural" )	
+GetNextSerialValue ( "" ; "Venue Looked Up::Result Label Plural" )	
+FieldType ( "" ; "Venue Looked Up::AuditTimeStamp" )	Standard Timestamp Unindexed 1
+FieldComment ( "" ; "Venue Looked Up::AuditTimeStamp" )	
+FieldAnnotation ( "" ; "Venue Looked Up::AuditTimeStamp" )	
+FieldDisplayNames ( "" ; "Venue Looked Up::AuditTimeStamp" )	
+GetNextSerialValue ( "" ; "Venue Looked Up::AuditTimeStamp" )	
+FieldType ( "" ; "Venue Looked Up::AuditState" )	Standard Text Unindexed 1
+FieldComment ( "" ; "Venue Looked Up::AuditState" )	
+FieldAnnotation ( "" ; "Venue Looked Up::AuditState" )	
+FieldDisplayNames ( "" ; "Venue Looked Up::AuditState" )	
+GetNextSerialValue ( "" ; "Venue Looked Up::AuditState" )	
+FieldType ( "" ; "Sort Selection" )	
+FieldComment ( "" ; "Sort Selection" )	
+GetNextSerialValue ( "" ; "Sort Selection" )	
+FieldType ( "" ; "Event" )	
+FieldComment ( "" ; "Event" )	
+GetNextSerialValue ( "" ; "Event" )	
+FieldType ( "" ; "Type" )	
+FieldComment ( "" ; "Type" )	
+GetNextSerialValue ( "" ; "Type" )	
+FieldType ( "" ; "Venue" )	
+FieldComment ( "" ; "Venue" )	
+GetNextSerialValue ( "" ; "Venue" )	
+FieldType ( "" ; "no such" )	
+FieldType ( "" ; "no such::x" )	
+FieldComment ( "" ; "" )	
+FieldStyle ( "" ; "Events" ; "Sort Selection" )	Popupmenu Event List | Sort Selection
+FieldRepetitions ( "" ; "Events" ; "Sort Selection" )	1 vertical
+FieldBounds ( "" ; "Events" ; "Sort Selection" )	185 29 343 53 0
+FieldStyle ( "" ; "Events" ; "Event" )	Standard
+FieldRepetitions ( "" ; "Events" ; "Event" )	1 vertical
+FieldBounds ( "" ; "Events" ; "Event" )	185 104 513 126 0
+FieldStyle ( "" ; "Events" ; "Type" )	Standard
+FieldRepetitions ( "" ; "Events" ; "Type" )	1 vertical
+FieldBounds ( "" ; "Events" ; "Type" )	516 104 660 126 0
+FieldStyle ( "" ; "Events" ; "Venue" )	Standard
+FieldRepetitions ( "" ; "Events" ; "Venue" )	1 vertical
+FieldBounds ( "" ; "Events" ; "Venue" )	663 104 861 126 0
+FieldStyle ( "" ; "Events" ; "Date" )	Standard
+FieldRepetitions ( "" ; "Events" ; "Date" )	1 vertical
+FieldBounds ( "" ; "Events" ; "Date" )	61 104 182 126 0
+FieldStyle ( "" ; "Events" ; "Layout Selector" )	Popupmenu Layout Selector
+FieldRepetitions ( "" ; "Events" ; "Layout Selector" )	1 vertical
+FieldBounds ( "" ; "Events" ; "Layout Selector" )	19 22 170 60 0
+FieldStyle ( "" ; "Events" ; "no such" )	
+FieldBounds ( "" ; "Events" ; "no such" )	
+FieldStyle ( "" ; "Event Details" ; "Tasks::Task" )	Standard
+FieldRepetitions ( "" ; "Event Details" ; "Tasks::Task" )	1 vertical
+FieldBounds ( "" ; "Event Details" ; "Tasks::Task" )	353 164 478 186 0
+FieldStyle ( "" ; "Event Details" ; "Tasks::Due Date" )	Calendar 
+FieldRepetitions ( "" ; "Event Details" ; "Tasks::Due Date" )	1 vertical
+FieldBounds ( "" ; "Event Details" ; "Tasks::Due Date" )	613 164 715 186 0
+FieldStyle ( "" ; "Event Details" ; "Tasks::Assignee | MATCH FIELD" )	Popuplist Assignees
+FieldRepetitions ( "" ; "Event Details" ; "Tasks::Assignee | MATCH FIELD" )	1 vertical
+FieldBounds ( "" ; "Event Details" ; "Tasks::Assignee | MATCH FIELD" )	478 164 613 186 0
+FieldStyle ( "" ; "Event Details" ; "Tasks::Completed" )	Checkbox Boolean
+FieldRepetitions ( "" ; "Event Details" ; "Tasks::Completed" )	1 vertical
+FieldBounds ( "" ; "Event Details" ; "Tasks::Completed" )	328 166 345 184 0
+FieldStyle ( "" ; "Event Details" ; "Tasks::Status" )	Popuplist Status | Tasks
+FieldRepetitions ( "" ; "Event Details" ; "Tasks::Status" )	1 vertical
+FieldBounds ( "" ; "Event Details" ; "Tasks::Status" )	715 164 812 186 0
+FieldStyle ( "" ; "Event Details" ; "Guests::Preferences" )	Popuplist Preferences
+FieldRepetitions ( "" ; "Event Details" ; "Guests::Preferences" )	1 vertical
+FieldBounds ( "" ; "Event Details" ; "Guests::Preferences" )	602 164 676 186 0
+FieldStyle ( "" ; "Event Details" ; "Guests::Guest | MATCH FIELD" )	Popuplist Contacts
+FieldRepetitions ( "" ; "Event Details" ; "Guests::Guest | MATCH FIELD" )	1 vertical
+FieldBounds ( "" ; "Event Details" ; "Guests::Guest | MATCH FIELD" )	319 164 455 186 0
+FieldStyle ( "" ; "Event Details" ; "Guests::Email" )	Standard
+FieldRepetitions ( "" ; "Event Details" ; "Guests::Email" )	1 vertical
+FieldBounds ( "" ; "Event Details" ; "Guests::Email" )	455 164 602 186 0
+FieldStyle ( "" ; "Event Details" ; "Guests::Status" )	Popupmenu Status | Guest
+FieldRepetitions ( "" ; "Event Details" ; "Guests::Status" )	1 vertical
+FieldBounds ( "" ; "Event Details" ; "Guests::Status" )	676 164 811 186 0
+FieldStyle ( "" ; "Event Details" ; "Agenda::Agenda Item" )	Standard
+FieldRepetitions ( "" ; "Event Details" ; "Agenda::Agenda Item" )	1 vertical
+FieldBounds ( "" ; "Event Details" ; "Agenda::Agenda Item" )	319 164 493 186 0
+FieldStyle ( "" ; "Event Details" ; "Agenda::Date" )	Calendar 
+FieldRepetitions ( "" ; "Event Details" ; "Agenda::Date" )	1 vertical
+FieldBounds ( "" ; "Event Details" ; "Agenda::Date" )	492 164 598 186 0
+FieldStyle ( "" ; "Event Details" ; "Agenda::Time" )	Popuplist Time [Meridiem]
+FieldRepetitions ( "" ; "Event Details" ; "Agenda::Time" )	1 vertical
+FieldBounds ( "" ; "Event Details" ; "Agenda::Time" )	598 164 686 186 0
+FieldStyle ( "" ; "Event Details" ; "Agenda::Explanation" )	Standard
+FieldRepetitions ( "" ; "Event Details" ; "Agenda::Explanation" )	1 vertical
+FieldBounds ( "" ; "Event Details" ; "Agenda::Explanation" )	686 164 812 186 0
+FieldStyle ( "" ; "Event Details" ; "Notes" )	Scrolling
+FieldRepetitions ( "" ; "Event Details" ; "Notes" )	1 vertical
+FieldBounds ( "" ; "Event Details" ; "Notes" )	318 160 863 274 0
+FieldStyle ( "" ; "Event Details" ; "Type" )	Popupmenu Type
+FieldRepetitions ( "" ; "Event Details" ; "Type" )	1 vertical
+FieldBounds ( "" ; "Event Details" ; "Type" )	667 71 864 92 0
+FieldStyle ( "" ; "Event Details" ; "Contributors::Email" )	Standard
+FieldRepetitions ( "" ; "Event Details" ; "Contributors::Email" )	1 vertical
+FieldBounds ( "" ; "Event Details" ; "Contributors::Email" )	536 364 683 386 0
+FieldStyle ( "" ; "Event Details" ; "Contributors::Contributor | MATCH FIELD" )	Popuplist Contacts
+FieldRepetitions ( "" ; "Event Details" ; "Contributors::Contributor | MATCH FIELD" )	1 vertical
+FieldBounds ( "" ; "Event Details" ; "Contributors::Contributor | MATCH FIELD" )	353 364 536 386 0
+FieldStyle ( "" ; "Event Details" ; "Contributors::Phone" )	Standard
+FieldRepetitions ( "" ; "Event Details" ; "Contributors::Phone" )	1 vertical
+FieldBounds ( "" ; "Event Details" ; "Contributors::Phone" )	683 364 812 386 0
+FieldStyle ( "" ; "Event Details" ; "Contributors::Role" )	Popuplist Role
+FieldRepetitions ( "" ; "Event Details" ; "Contributors::Role" )	1 vertical
+FieldBounds ( "" ; "Event Details" ; "Contributors::Role" )	353 388 812 410 0
+FieldStyle ( "" ; "Event Details" ; "Venue" )	Popuplist Venue
+FieldRepetitions ( "" ; "Event Details" ; "Venue" )	1 vertical
+FieldBounds ( "" ; "Event Details" ; "Venue" )	36 172 300 194 0
+FieldStyle ( "" ; "Event Details" ; "Description" )	Standard
+FieldRepetitions ( "" ; "Event Details" ; "Description" )	1 vertical
+FieldBounds ( "" ; "Event Details" ; "Description" )	36 258 300 280 0
+FieldStyle ( "" ; "Event Details" ; "Address" )	Standard
+FieldRepetitions ( "" ; "Event Details" ; "Address" )	1 vertical
+FieldBounds ( "" ; "Event Details" ; "Address" )	36 302 300 324 0
+FieldStyle ( "" ; "Event Details" ; "City" )	Standard
+FieldRepetitions ( "" ; "Event Details" ; "City" )	1 vertical
+FieldBounds ( "" ; "Event Details" ; "City" )	36 346 171 368 0
+FieldStyle ( "" ; "Event Details" ; "State" )	Standard
+FieldRepetitions ( "" ; "Event Details" ; "State" )	1 vertical
+FieldBounds ( "" ; "Event Details" ; "State" )	171 346 300 368 0
+FieldStyle ( "" ; "Event Details" ; "Postal Code" )	Standard
+FieldRepetitions ( "" ; "Event Details" ; "Postal Code" )	1 vertical
+FieldBounds ( "" ; "Event Details" ; "Postal Code" )	36 390 171 412 0
+FieldStyle ( "" ; "Event Details" ; "Country" )	Standard
+FieldRepetitions ( "" ; "Event Details" ; "Country" )	1 vertical
+FieldBounds ( "" ; "Event Details" ; "Country" )	171 390 300 412 0
+FieldStyle ( "" ; "Event Details" ; "Event" )	Standard
+FieldRepetitions ( "" ; "Event Details" ; "Event" )	1 vertical
+FieldBounds ( "" ; "Event Details" ; "Event" )	36 128 300 150 0
+FieldStyle ( "" ; "Event Details" ; "Date" )	Calendar 
+FieldRepetitions ( "" ; "Event Details" ; "Date" )	1 vertical
+FieldBounds ( "" ; "Event Details" ; "Date" )	36 214 300 236 0
+FieldStyle ( "" ; "Event Details" ; "Phone" )	Standard
+FieldRepetitions ( "" ; "Event Details" ; "Phone" )	1 vertical
+FieldBounds ( "" ; "Event Details" ; "Phone" )	36 434 171 456 0
+FieldStyle ( "" ; "Event Details" ; "Email" )	Standard
+FieldRepetitions ( "" ; "Event Details" ; "Email" )	1 vertical
+FieldBounds ( "" ; "Event Details" ; "Email" )	171 434 300 456 0
+FieldStyle ( "" ; "Event Details" ; "" )	
+FieldRepetitions ( "" ; "Event Details" ; "" )	
+FieldBounds ( "" ; "Event Details" ; "" )	
+FieldStyle ( "" ; "Event Details" ; "no such" )	
+FieldBounds ( "" ; "Event Details" ; "no such" )	
+FieldStyle ( "" ; "Contacts" ; "Sort Selection" )	Popupmenu Contact List | Sort Selection
+FieldRepetitions ( "" ; "Contacts" ; "Sort Selection" )	1 vertical
+FieldBounds ( "" ; "Contacts" ; "Sort Selection" )	185 29 343 53 0
+FieldStyle ( "" ; "Contacts" ; "Company" )	Standard
+FieldRepetitions ( "" ; "Contacts" ; "Company" )	1 vertical
+FieldBounds ( "" ; "Contacts" ; "Company" )	212 137 413 159 0
+FieldStyle ( "" ; "Contacts" ; "Address Short" )	Standard
+FieldRepetitions ( "" ; "Contacts" ; "Address Short" )	1 vertical
+FieldBounds ( "" ; "Contacts" ; "Address Short" )	415 137 704 159 0
+FieldStyle ( "" ; "Contacts" ; "Work Phone" )	Standard
+FieldRepetitions ( "" ; "Contacts" ; "Work Phone" )	1 vertical
+FieldBounds ( "" ; "Contacts" ; "Work Phone" )	706 137 861 159 0
+FieldStyle ( "" ; "Contacts" ; "Contacts | MATCH FIELD" )	Standard
+FieldRepetitions ( "" ; "Contacts" ; "Contacts | MATCH FIELD" )	1 vertical
+FieldBounds ( "" ; "Contacts" ; "Contacts | MATCH FIELD" )	61 137 210 159 0
+FieldStyle ( "" ; "Contacts" ; "Events::Layout Selector" )	Popupmenu Layout Selector
+FieldRepetitions ( "" ; "Contacts" ; "Events::Layout Selector" )	1 vertical
+FieldBounds ( "" ; "Contacts" ; "Events::Layout Selector" )	19 22 170 60 0
+FieldStyle ( "" ; "Contacts" ; "no such" )	
+FieldBounds ( "" ; "Contacts" ; "no such" )	
+FieldStyle ( "" ; "Contact Details" ; "Events::Event" )	Standard
+FieldRepetitions ( "" ; "Contact Details" ; "Events::Event" )	1 vertical
+FieldBounds ( "" ; "Contact Details" ; "Events::Event" )	80 464 301 486 0
+FieldStyle ( "" ; "Contact Details" ; "Events::Date" )	Calendar 
+FieldRepetitions ( "" ; "Contact Details" ; "Events::Date" )	1 vertical
+FieldBounds ( "" ; "Contact Details" ; "Events::Date" )	301 464 413 486 0
+FieldStyle ( "" ; "Contact Details" ; "Events::Venue" )	Standard
+FieldRepetitions ( "" ; "Contact Details" ; "Events::Venue" )	1 vertical
+FieldBounds ( "" ; "Contact Details" ; "Events::Venue" )	413 464 561 486 0
+FieldStyle ( "" ; "Contact Details" ; "Events::City" )	Standard
+FieldRepetitions ( "" ; "Contact Details" ; "Events::City" )	1 vertical
+FieldBounds ( "" ; "Contact Details" ; "Events::City" )	561 464 709 486 0
+FieldStyle ( "" ; "Contact Details" ; "Events::Description" )	Standard
+FieldRepetitions ( "" ; "Contact Details" ; "Events::Description" )	1 vertical
+FieldBounds ( "" ; "Contact Details" ; "Events::Description" )	709 464 846 486 0
+FieldStyle ( "" ; "Contact Details" ; "Address 1" )	Standard
+FieldRepetitions ( "" ; "Contact Details" ; "Address 1" )	1 vertical
+FieldBounds ( "" ; "Contact Details" ; "Address 1" )	583 110 840 132 0
+FieldStyle ( "" ; "Contact Details" ; "Address 2" )	Standard
+FieldRepetitions ( "" ; "Contact Details" ; "Address 2" )	1 vertical
+FieldBounds ( "" ; "Contact Details" ; "Address 2" )	583 132 865 154 0
+FieldStyle ( "" ; "Contact Details" ; "City" )	Standard
+FieldRepetitions ( "" ; "Contact Details" ; "City" )	1 vertical
+FieldBounds ( "" ; "Contact Details" ; "City" )	583 154 865 176 0
+FieldStyle ( "" ; "Contact Details" ; "State" )	Standard
+FieldRepetitions ( "" ; "Contact Details" ; "State" )	1 vertical
+FieldBounds ( "" ; "Contact Details" ; "State" )	583 176 865 198 0
+FieldStyle ( "" ; "Contact Details" ; "Postal Code" )	Standard
+FieldRepetitions ( "" ; "Contact Details" ; "Postal Code" )	1 vertical
+FieldBounds ( "" ; "Contact Details" ; "Postal Code" )	583 198 865 220 0
+FieldStyle ( "" ; "Contact Details" ; "Country" )	Standard
+FieldRepetitions ( "" ; "Contact Details" ; "Country" )	1 vertical
+FieldBounds ( "" ; "Contact Details" ; "Country" )	583 220 865 242 0
+FieldStyle ( "" ; "Contact Details" ; "Work Email" )	Standard
+FieldRepetitions ( "" ; "Contact Details" ; "Work Email" )	1 vertical
+FieldBounds ( "" ; "Contact Details" ; "Work Email" )	157 362 412 384 0
+FieldStyle ( "" ; "Contact Details" ; "Home Email" )	Standard
+FieldRepetitions ( "" ; "Contact Details" ; "Home Email" )	1 vertical
+FieldBounds ( "" ; "Contact Details" ; "Home Email" )	157 384 412 406 0
+FieldStyle ( "" ; "Contact Details" ; "Photo | Container" )	Standard
+FieldRepetitions ( "" ; "Contact Details" ; "Photo | Container" )	1 vertical
+FieldBounds ( "" ; "Contact Details" ; "Photo | Container" )	300 111 437 273 0
+FieldStyle ( "" ; "Contact Details" ; "Title" )	Popuplist Title
+FieldRepetitions ( "" ; "Contact Details" ; "Title" )	1 vertical
+FieldBounds ( "" ; "Contact Details" ; "Title" )	157 111 289 133 0
+FieldStyle ( "" ; "Contact Details" ; "First" )	Standard
+FieldRepetitions ( "" ; "Contact Details" ; "First" )	1 vertical
+FieldBounds ( "" ; "Contact Details" ; "First" )	157 133 289 155 0
+FieldStyle ( "" ; "Contact Details" ; "Last" )	Standard
+FieldRepetitions ( "" ; "Contact Details" ; "Last" )	1 vertical
+FieldBounds ( "" ; "Contact Details" ; "Last" )	157 155 289 177 0
+FieldStyle ( "" ; "Contact Details" ; "Work Phone" )	Standard
+FieldRepetitions ( "" ; "Contact Details" ; "Work Phone" )	1 vertical
+FieldBounds ( "" ; "Contact Details" ; "Work Phone" )	157 185 289 207 0
+FieldStyle ( "" ; "Contact Details" ; "Mobile Phone" )	Standard
+FieldRepetitions ( "" ; "Contact Details" ; "Mobile Phone" )	1 vertical
+FieldBounds ( "" ; "Contact Details" ; "Mobile Phone" )	157 207 289 229 0
+FieldStyle ( "" ; "Contact Details" ; "Home Phone" )	Standard
+FieldRepetitions ( "" ; "Contact Details" ; "Home Phone" )	1 vertical
+FieldBounds ( "" ; "Contact Details" ; "Home Phone" )	157 229 289 251 0
+FieldStyle ( "" ; "Contact Details" ; "Fax" )	Standard
+FieldRepetitions ( "" ; "Contact Details" ; "Fax" )	1 vertical
+FieldBounds ( "" ; "Contact Details" ; "Fax" )	157 251 289 273 0
+FieldStyle ( "" ; "Contact Details" ; "Company" )	Popuplist Company
+FieldRepetitions ( "" ; "Contact Details" ; "Company" )	1 vertical
+FieldBounds ( "" ; "Contact Details" ; "Company" )	157 287 437 309 0
+FieldStyle ( "" ; "Contact Details" ; "Job Title" )	Popuplist Job Title
+FieldRepetitions ( "" ; "Contact Details" ; "Job Title" )	1 vertical
+FieldBounds ( "" ; "Contact Details" ; "Job Title" )	157 309 437 331 0
+FieldStyle ( "" ; "Contact Details" ; "Website" )	Standard
+FieldRepetitions ( "" ; "Contact Details" ; "Website" )	1 vertical
+FieldBounds ( "" ; "Contact Details" ; "Website" )	157 331 413 353 0
+FieldStyle ( "" ; "Contact Details" ; "Notes" )	Standard
+FieldRepetitions ( "" ; "Contact Details" ; "Notes" )	1 vertical
+FieldBounds ( "" ; "Contact Details" ; "Notes" )	583 273 865 406 0
+FieldStyle ( "" ; "Contact Details" ; "no such" )	
+FieldBounds ( "" ; "Contact Details" ; "no such" )	

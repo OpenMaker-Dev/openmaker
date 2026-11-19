@@ -1,0 +1,60 @@
+# A lookup through a sorted relationship on FileMaker Server's script
+# engine (#657). Base file: assets-en with Assets::LA added by FMUpgradeTool:
+# looked up from Assignments::Note starting from Assets ("Do not copy"),
+# through the starter's relationship Assets::PrimaryKey =
+# Assignments::AssetForeignKey, sorted by Assignments::Sort By descending
+# (If ( IsEmpty ( Date Returned ) ; 1/1/2099 ; Date Returned )), creation
+# allowed on the Assignments side. In "probe", assignment "first"
+# (returned 1/1/2020) is made before "second" (not returned): "second" is
+# first in the sort, "first" in creation order. In "reversed", "early"
+# (not returned) is made before "late" (returned 1/1/2020): "early" is
+# first both in the sort and in creation order, so the two runs tell the
+# sort from either end of the creation order.
+
+== probe
+Go to Layout [ "Asset Details" ]
+New Record/Request
+Set Field [ Assets::Name ; "A1" ]
+Commit Records/Requests [ With dialog: Off ]
+Set Variable [ $k ; Assets::PrimaryKey ]
+Set Field [ Assignments::Note ; "first" ]
+Set Field [ Assignments::Date Returned ; Date ( 1 ; 1 ; 2020 ) ]
+Commit Records/Requests [ With dialog: Off ]
+Set Variable [ $log ; "1 first made [" & Assets::LA & "]" ]
+Set Field [ Assets::PrimaryKey ; "TMP" ]
+Commit Records/Requests [ With dialog: Off ]
+Set Field [ Assignments::Note ; "second" ]
+Commit Records/Requests [ With dialog: Off ]
+Set Field [ Assignments::AssetForeignKey ; $k ]
+Commit Records/Requests [ With dialog: Off ]
+Set Variable [ $log ; $log & ¶ & "2 second made [" & Assets::LA & "]" ]
+Set Field [ Assets::PrimaryKey ; $k ]
+Commit Records/Requests [ With dialog: Off ]
+Set Variable [ $log ; $log & ¶ & "3 key back, related " & Count ( Assignments::Note ) & ", first in sort " & Assignments::Note & " [" & Assets::LA & "]" ]
+Exit Script [ $log ]
+
+== reversed
+Go to Layout [ "Asset Details" ]
+New Record/Request
+Set Field [ Assets::Name ; "A2" ]
+Commit Records/Requests [ With dialog: Off ]
+Set Variable [ $k ; Assets::PrimaryKey ]
+Set Field [ Assignments::Note ; "early" ]
+Commit Records/Requests [ With dialog: Off ]
+Set Variable [ $log ; "1 early made [" & Assets::LA & "]" ]
+Set Field [ Assets::PrimaryKey ; "TMP2" ]
+Commit Records/Requests [ With dialog: Off ]
+Set Field [ Assignments::Note ; "late" ]
+Set Field [ Assignments::Date Returned ; Date ( 1 ; 1 ; 2020 ) ]
+Commit Records/Requests [ With dialog: Off ]
+Set Field [ Assignments::AssetForeignKey ; $k ]
+Commit Records/Requests [ With dialog: Off ]
+Set Variable [ $log ; $log & ¶ & "2 late made [" & Assets::LA & "]" ]
+Set Field [ Assets::PrimaryKey ; $k ]
+Commit Records/Requests [ With dialog: Off ]
+Set Variable [ $log ; $log & ¶ & "3 key back, related " & Count ( Assignments::Note ) & ", first in sort " & Assignments::Note & " [" & Assets::LA & "]" ]
+Exit Script [ $log ]
+
+--- run
+probe
+reversed

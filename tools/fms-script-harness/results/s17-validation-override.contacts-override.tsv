@@ -1,0 +1,28 @@
+# scan ov rep2 only: open 0 load 0 scan 0 commit 0; index:id=value (0-based): 0:86=0 1:7=0 2:76=0 3:141=0 4:75=0 5:141=0 6:68=8 7:9=0 8:70=0 9:103=0
+# scan ov none: open 0 load 0 scan 0 commit 0; index:id=value (0-based): 0:86=0 1:7=0 2:76=0 3:141=0 4:75=0 5:141=0 6:68=8 7:9=0 8:70=0 9:103=0
+# scan count: open 0 load 0 scan 0 commit 0; index:id=value (0-based): 0:103=0
+# scan: close 13
+ov rep2 only		0	0/0	0
+>	1	ov rep2 only	1	86	0	0	0	0
+>	1	ov rep2 only	2	7	0	0	0	0
+>	1	ov rep2 only	3	76	0	0	0	0
+>	1	ov rep2 only	4	141	0	0	0	0
+>	1	ov rep2 only	5	75	0	0	0	0
+>	1	ov rep2 only	6	141	0	0	0	0
+>	1	ov rep2 only	7	68	0	0	1	0
+>	1	ov rep2 only	9	70	0	0	1	0
+>	1	ov rep2 only	10	103	0	0	1	0
+ov none		0	0/509	0
+>	1	ov none	1	86	0	0	0	0
+>	1	ov none	2	7	0	0	0	0
+>	1	ov none	3	76	0	0	0	0
+>	1	ov none	4	141	0	0	0	0
+!	509	work : ov none : 5 : Commit Records/Requests
+>	1	ov none	5	75	1	0	0	509
+>	1	ov none	6	141	0	0	0	0
+>	1	ov none	7	68	0	0	1	0
+>	1	ov none	8	9	0	0	0	0
+>	1	ov none	9	70	0	0	1	0
+>	1	ov none	10	103	0	0	1	0
+count		0	1	0
+>	1	count	1	103	0	0	1	0

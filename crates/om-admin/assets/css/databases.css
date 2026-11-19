@@ -1,0 +1,530 @@
+/* Databases (src/views/databases.rs), laid out as FileMaker Server's at
+   1440 px (docs/re/admin-console.md 4.2): the files in a 350 px column on
+   the left, the clients on the right. */
+
+.activities {
+  display: grid;
+  grid-template-columns: 350px minmax(0, 1fr);
+  margin: 0 -9.75px;
+}
+
+.activities-databases {
+  box-sizing: border-box;
+  padding: 0 0 50px 9.75px;
+  border-right: 1px solid var(--border);
+}
+
+.activities-clients {
+  min-width: 0;
+  padding: 0 9.75px 0 25px;
+}
+
+/* Search and "Sort by". */
+
+.list-tools {
+  display: flex;
+  align-items: center;
+  gap: 13px;
+  margin-bottom: 24px;
+}
+
+.search-form {
+  margin: 0;
+}
+
+.search-input {
+  width: 140px;
+}
+
+.activities-clients .search-input {
+  width: 158px;
+}
+
+.sort {
+  display: flex;
+  align-items: center;
+}
+
+.sort-label {
+  color: var(--label);
+  font-weight: 400;
+  white-space: nowrap;
+}
+
+.dropdown {
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+  padding-right: 6px;
+  padding-left: 6px;
+}
+
+.search-note {
+  margin: -12px 0 12px;
+  color: var(--label);
+  font-weight: 400;
+}
+
+.search-note a {
+  margin-left: 8px;
+}
+
+/* Menus: <details> with a panel under their summary. */
+
+.activities .menu {
+  position: relative;
+}
+
+.activities .menu > summary {
+  list-style: none;
+  cursor: pointer;
+}
+
+.activities .menu > summary::-webkit-details-marker {
+  display: none;
+}
+
+.menu-panel {
+  position: absolute;
+  top: calc(100% + 10px);
+  left: 0;
+  z-index: 30;
+  box-sizing: border-box;
+  min-width: 250px;
+  padding: 6px 0;
+  border: 1px solid #cccccc;
+  border-radius: 3px;
+  background: #ffffff;
+  box-shadow: 0 3px 10px rgba(0, 0, 0, 0.08);
+}
+
+.menu-panel::before {
+  position: absolute;
+  top: -6px;
+  left: 18px;
+  width: 10px;
+  height: 10px;
+  border-top: 1px solid #cccccc;
+  border-left: 1px solid #cccccc;
+  background: #ffffff;
+  content: "";
+  transform: rotate(45deg);
+}
+
+.menu-item {
+  display: block;
+  box-sizing: border-box;
+  width: 100%;
+  min-height: 32px;
+  padding: 5.2px 19.5px;
+  border: 0;
+  background: none;
+  color: var(--accent);
+  font: 400 13px/21.6px var(--font);
+  letter-spacing: normal;
+  text-align: left;
+  text-decoration: none;
+  white-space: nowrap;
+  cursor: pointer;
+}
+
+.menu-item:hover:not(:disabled),
+.menu-item:focus-visible {
+  background: #f4f6fd;
+}
+
+.menu-item:disabled {
+  color: #b4b4b4;
+  cursor: default;
+}
+
+.sort-panel {
+  min-width: 190px;
+}
+
+.sort-panel .menu-item.current {
+  color: var(--text);
+}
+
+.toolbar-end .menu-panel {
+  right: 0;
+  left: auto;
+}
+
+.toolbar-end .menu-panel::before {
+  right: 18px;
+  left: auto;
+}
+
+/* The list of files: a folder row, then a row per file. */
+
+.db-list {
+  margin: 0;
+  padding: 0;
+  border-top: 1px solid var(--border);
+  list-style: none;
+}
+
+.db-row {
+  position: relative;
+  display: flex;
+  align-items: center;
+  box-sizing: border-box;
+  height: 60px;
+  padding-right: 23px;
+  border-bottom: 1px solid var(--border);
+}
+
+.db-row.selected {
+  background: var(--selected);
+}
+
+.db-select {
+  display: flex;
+  flex: 1 1 auto;
+  align-items: center;
+  gap: 8px;
+  min-width: 0;
+  height: 100%;
+  padding-left: 14px;
+  color: var(--text);
+  text-decoration: none;
+}
+
+/* The whole row selects the file; its menus sit above the link. */
+.db-select::after {
+  position: absolute;
+  inset: 0;
+  content: "";
+}
+
+.db-row .menu {
+  z-index: 1;
+}
+
+.db-row .menu[open] {
+  z-index: 5;
+}
+
+.db-all .db-select {
+  flex: none;
+  padding-left: 10px;
+  color: var(--accent);
+}
+
+.db-name {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.db-clients {
+  flex: none;
+  margin: 0 7px 0 8px;
+  color: var(--label);
+  font-weight: 400;
+}
+
+.db-count {
+  flex: 1 1 auto;
+  margin-left: 4px;
+  color: var(--text);
+  font-weight: 400;
+}
+
+.db-empty {
+  padding: 18px 10px;
+  border-bottom: 1px solid var(--border);
+  color: var(--label);
+  text-align: center;
+}
+
+/* Status icons and the encryption lock. */
+
+.db-status,
+.db-lock {
+  display: inline-flex;
+  flex: none;
+}
+
+.db-status.open,
+.db-status.changing {
+  color: var(--accent);
+}
+
+.db-status.paused {
+  color: var(--warning);
+}
+
+.db-status.closed {
+  color: var(--label);
+}
+
+.db-lock-shackle {
+  stroke: #9a9a9a;
+  stroke-width: 1.3;
+}
+
+.db-lock-body {
+  fill: #9a9a9a;
+}
+
+.db-lock-badge {
+  fill: #f5a623;
+  stroke: #ffffff;
+  stroke-width: 0.8;
+}
+
+.db-lock-bar {
+  stroke: #ffffff;
+  stroke-width: 1.3;
+}
+
+/* The folder filter: a select-like summary and a list of folders. */
+
+.folder-menu {
+  margin-left: 10px;
+}
+
+.folder-summary {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  box-sizing: border-box;
+  width: 175px;
+  color: var(--text);
+  font-weight: 400;
+}
+
+.folder-label {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.select-arrow {
+  flex: none;
+  color: #555555;
+}
+
+.folder-panel {
+  top: calc(100% + 6px);
+  left: -18px;
+  min-width: 186px;
+  max-width: 300px;
+  max-height: 60vh;
+  padding: 0;
+  overflow-y: auto;
+  box-shadow: 0 4px 14px rgba(0, 0, 0, 0.16);
+  border: 0;
+}
+
+.folder-panel::before {
+  display: none;
+}
+
+.folder-panel .menu-item {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  min-height: 48px;
+  padding: 0 16px;
+  color: var(--text);
+}
+
+.folder-panel .menu-item.current {
+  background: #f3f3f3;
+  color: var(--accent);
+}
+
+.menu-note {
+  margin: 0;
+  padding: 10px 16px;
+  font-weight: 400;
+  white-space: normal;
+}
+
+.folder-item span {
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.folder-item .icon {
+  flex: none;
+  color: var(--accent);
+}
+
+.folder-item.depth-1 {
+  padding-left: 34px;
+}
+
+.folder-item.depth-2 {
+  padding-left: 52px;
+}
+
+.folder-item.depth-3 {
+  padding-left: 70px;
+}
+
+/* A row's menu: a circled chevron, its panel centered under it. */
+
+.row-menu-toggle {
+  display: flex;
+  border-radius: 50%;
+}
+
+.row-menu-icon circle {
+  stroke: #b5b5b5;
+}
+
+.row-menu-icon path {
+  stroke: #888888;
+  stroke-width: 1.2;
+  stroke-linecap: round;
+  stroke-linejoin: round;
+}
+
+.row-menu .menu-panel {
+  top: calc(100% + 11px);
+  left: 50%;
+  transform: translateX(-50%);
+}
+
+.row-menu .menu-panel::before {
+  left: calc(50% - 6px);
+}
+
+/* The clients. */
+
+.activities-clients .toolbar {
+  margin-bottom: 24px;
+}
+
+.activities-clients .toolbar-end {
+  gap: 14px;
+}
+
+.clients-table {
+  table-layout: fixed;
+}
+
+.clients-table .check-cell {
+  width: 16px;
+  padding: 0 6.5px 0 13px;
+}
+
+.clients-table input[type="checkbox"] {
+  display: block;
+  width: 16px;
+  height: 16px;
+  margin: 0;
+  accent-color: var(--accent);
+}
+
+.clients-table td {
+  height: 60px;
+}
+
+.clients-table .col-session {
+  width: 22%;
+}
+
+.clients-table .col-databases {
+  width: 14.6%;
+}
+
+.clients-table .col-host {
+  width: 29.5%;
+}
+
+.clients-table .col-signin {
+  width: 20.6%;
+}
+
+.clients-table .col-client {
+  width: 94px;
+}
+
+.cell-text {
+  display: block;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.muted,
+.disconnecting td {
+  color: var(--label);
+}
+
+.client-state {
+  display: block;
+  color: var(--label);
+  font-size: 12px;
+  line-height: 16px;
+}
+
+.client-tag {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  box-sizing: border-box;
+  width: 75px;
+  height: 24px;
+  border: 1px solid var(--border);
+  background: #ffffff;
+  color: var(--label);
+  font-size: 11.05px;
+  font-weight: 400;
+  letter-spacing: normal;
+}
+
+/* The dialogs. */
+
+.modal-intro {
+  margin: 0 0 18px;
+  font-weight: 400;
+}
+
+.modal-field .delay-input {
+  width: 120px;
+}
+
+.close-form {
+  margin: 0;
+}
+
+@media (max-width: 760px) {
+  .activities {
+    display: block;
+  }
+
+  .activities-databases {
+    padding: 0 9.75px 20px;
+    border-right: 0;
+    border-bottom: 1px solid var(--border);
+  }
+
+  .activities-clients {
+    padding: 20px 9.75px 0;
+  }
+
+  .activities-clients .live-region {
+    overflow-x: auto;
+  }
+
+  .clients-table {
+    min-width: 640px;
+  }
+
+  .row-menu .menu-panel {
+    right: -12px;
+    left: auto;
+    transform: none;
+  }
+
+  .row-menu .menu-panel::before {
+    right: 15px;
+    left: auto;
+  }
+}

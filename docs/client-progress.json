@@ -1,0 +1,946 @@
+{
+  "schema": "openmaker.client-progress/v1",
+  "source_main": "44aa30e28ea780084bb8f5e86ce1403648a78671",
+  "baseline_date": "2026-11-01",
+  "baseline_revision": "5ba9db602184143e944e0f0acb8350e861cc9e05",
+  "baseline_counts": {
+    "Implemented": 21,
+    "Partial": 24,
+    "Unavailable": 19,
+    "Unverified": 4
+  },
+  "current_counts": {
+    "Implemented": 21,
+    "Partial": 31,
+    "Unverified": 4,
+    "Unavailable": 12
+  },
+  "method": "Conservative implementation coverage for 68 unequal capability groups, retaining baseline classifications except evidenced promotions. Not a new native parity assessment or an overall parity percentage. Implemented means a working covered path, not every FileMaker behavior. Native paired acceptance remains incomplete.",
+  "rechecked": [
+    {
+      "date": "2026-11-10",
+      "main": "c0677a6c22dddadf92a4aaacaa69cdc02d3b093c",
+      "features": [
+        "C01",
+        "C16",
+        "C27",
+        "C52"
+      ],
+      "note": "Only the rows and the agent authoring summary that merges after source_main changed were checked again; no other group was audited again and no classification changed."
+    },
+    {
+      "date": "2026-11-10",
+      "main": "c6718ae392f0502c8bca881105fad31a33b61af7",
+      "features": [
+        "C42",
+        "C45",
+        "C63"
+      ],
+      "note": "After #341 only these rows' sources were checked again; no other group was audited again, no native acceptance was run and no classification changed."
+    },
+    {
+      "date": "2026-11-10",
+      "main": "9f625b8f9ab126e200565425269a1572323766a9",
+      "features": [
+        "C52",
+        "C65"
+      ],
+      "note": "After #342 and #355 only these rows and the agent authoring summary were checked again; the native check covers one field and edit box; no other group was audited again and no classification changed."
+    },
+    {
+      "date": "2026-11-10",
+      "main": "2093ef027e238b329e1f14e982a864829a4c6794",
+      "features": [
+        "C45"
+      ],
+      "note": "After #365 only this row was checked again; no other group was audited again and no classification changed."
+    },
+    {
+      "date": "2026-11-10",
+      "main": "8c8226d9968016b2872fdb9dcf93b1e33b437d51",
+      "features": [
+        "C45"
+      ],
+      "note": "After #371 only this row was checked again; no other group was audited again and no classification changed."
+    },
+    {
+      "date": "2026-11-10",
+      "main": "f46a195cb2a1c8cee0c4685e6701f2bb35cdd941",
+      "features": [
+        "C18"
+      ],
+      "note": "After #374 only this row was checked again; the roadmap has no row about value lists, so it is unchanged; no other group was audited again and no classification changed."
+    },
+    {
+      "date": "2026-11-10",
+      "main": "8ab436cc87b30931803c40b1283ef893b92243a6",
+      "features": [
+        "C45"
+      ],
+      "note": "After #377 only this row was checked again; no other group was audited again and no classification changed."
+    },
+    {
+      "date": "2026-11-10",
+      "main": "82a510651322e6bc501e8e9a17e3db139259095d",
+      "features": [
+        "C41",
+        "C42"
+      ],
+      "note": "After #381 only these rows were checked again; the roadmap's Preview, print, PDF row was assessed and is unchanged (no status change, its gaps still accurate); no other group was audited again and no classification changed."
+    },
+    {
+      "date": "2026-11-10",
+      "main": "ded9ac173853fba48ec60c7a33dda4afb93585b9",
+      "features": [
+        "C18",
+        "C35"
+      ],
+      "note": "After #390 only these rows, the agent authoring summary and the roadmap's agent authoring row were checked again; the roadmap's records row was assessed and is unchanged; no other group was audited again and no classification changed."
+    },
+    {
+      "date": "2026-11-10",
+      "main": "9b408010376ad7f725fe00bec207c16ce6af0b95",
+      "features": [
+        "C10",
+        "C41",
+        "C42"
+      ],
+      "note": "After #384 and #393 only these rows and the roadmap's records row were checked again; #382, #395 and #399 were assessed and left no row stale; no other group was audited again and no classification changed."
+    },
+    {
+      "date": "2026-11-11",
+      "main": "bc3d802a39a1c9de3062b928177c5fdfe0a7d89e",
+      "features": [
+        "C18",
+        "C35"
+      ],
+      "note": "After #403, #407 and #408 only these rows and the roadmap's records row were checked again; #407 and the earlier #382, #384 and #395 left no row stale; no other group was audited again and no classification changed."
+    }
+  ],
+  "features": [
+    {
+      "id": "C01",
+      "domain": "Access and lifecycle",
+      "feature": "Hosted account sign-in",
+      "baseline_status": "Implemented",
+      "status": "Implemented",
+      "scope": "Open a named hosted file with account credentials; basic native connection path exists. A host's refusal after too many failed logins (error 214) is reported as such.",
+      "remaining": "Broaden native host/version/account matrix and startup error cases.",
+      "pull_requests": [
+        324
+      ]
+    },
+    {
+      "id": "C02",
+      "domain": "Access and lifecycle",
+      "feature": "Hosted-file discovery UI",
+      "baseline_status": "Partial",
+      "status": "Partial",
+      "scope": "OpenMaker Server file listing, filtering and selection; manual filenames on Claris hosts.",
+      "remaining": "Claris enumeration, LAN discovery and per-account lists remain unavailable.",
+      "pull_requests": [
+        107
+      ]
+    },
+    {
+      "id": "C03",
+      "domain": "Access and lifecycle",
+      "feature": "Standalone local .fmp12 client opening",
+      "baseline_status": "Unavailable",
+      "status": "Partial",
+      "scope": "Local file opening, authenticated edits and atomic persistence through a private loopback engine; related local files use individual authenticated sessions.",
+      "remaining": "Only verified built-in Full Access file accounts; no encryption, Guest/external accounts, sharing, or writable files without supported locks.",
+      "pull_requests": [
+        105,
+        111,
+        114
+      ]
+    },
+    {
+      "id": "C04",
+      "domain": "Access and lifecycle",
+      "feature": "Open File / Close File sessions",
+      "baseline_status": "Partial",
+      "status": "Partial",
+      "scope": "Same-host and local plain-name file sessions, ordered alternatives, owning-file identity, leases and caller continuation.",
+      "remaining": "Local folder/volume/network paths and alternative-account prompting remain unsupported.",
+      "pull_requests": [
+        80,
+        114
+      ]
+    },
+    {
+      "id": "C05",
+      "domain": "Access and lifecycle",
+      "feature": "Connection loss and pending edits",
+      "baseline_status": "Partial",
+      "status": "Partial",
+      "scope": "User-invoked reconnect retains edits, reconciles interrupted saves and offers explicit recovery choices.",
+      "remaining": "No automatic/crash recovery, script resumption or recovery of lost transactions.",
+      "pull_requests": [
+        106
+      ]
+    },
+    {
+      "id": "C06",
+      "domain": "Access and lifecycle",
+      "feature": "Client license integration",
+      "baseline_status": "Implemented",
+      "status": "Implemented",
+      "scope": "Native provider supports client license selection; GUI has separate credential-store integration.",
+      "remaining": "Test native first-run and restart with disposable test credentials/license.",
+      "pull_requests": []
+    },
+    {
+      "id": "C07",
+      "domain": "Access and lifecycle",
+      "feature": "Host/OS/version acceptance matrix",
+      "baseline_status": "Unverified",
+      "status": "Unverified",
+      "scope": "Linux headless fixtures dominate recent gates; no complete macOS/Windows native-client matrix has been demonstrated.",
+      "remaining": "Record supported host versions, OS builds and repeatable smoke results.",
+      "pull_requests": []
+    },
+    {
+      "id": "C08",
+      "domain": "Hosted data",
+      "feature": "Stored records and typed fields",
+      "baseline_status": "Implemented",
+      "status": "Implemented",
+      "scope": "Native pages and record IDs feed Form/List/Table; text, numeric and date/time paths are present.",
+      "remaining": "Native typed-value round trips, locale and null/empty cases.",
+      "pull_requests": []
+    },
+    {
+      "id": "C09",
+      "domain": "Hosted data",
+      "feature": "Create / edit / duplicate / delete",
+      "baseline_status": "Implemented",
+      "status": "Implemented",
+      "scope": "Provider and desktop script host expose record writes, commit/revert and deletion with fixture coverage.",
+      "remaining": "Disposable multi-user conflict, refused-save and cancellation acceptance.",
+      "pull_requests": []
+    },
+    {
+      "id": "C10",
+      "domain": "Hosted data",
+      "feature": "Entry rules and auto-entry",
+      "baseline_status": "Implemented",
+      "status": "Implemented",
+      "scope": "Validation, generated values and held-import preflight were corrected in #67/#73; supported paths have regression controls. The supported exact-match text lookup form copies a stored text field from the first related record through one unsorted relationship of `=` predicates on stored text fields when a write changes the match field; the looked-up value appears when the record is written, not when Tab leaves the match field.",
+      "remaining": "Compare native fill-only, lookup, unique/list validation and refusal behavior. Other lookup forms (next lower or higher value, constants, several or sorted relationships, other field types), serial numbers and entry from the last visited record still make a table read-only; native selection among several matches, lookups fired by scripts and imports, and FileMaker Server's runtime are unmeasured (issue 186).",
+      "pull_requests": [
+        384
+      ]
+    },
+    {
+      "id": "C11",
+      "domain": "Hosted data",
+      "feature": "Explicit transactions and held changes",
+      "baseline_status": "Implemented",
+      "status": "Implemented",
+      "scope": "Begin/commit/revert and held change semantics are wired through the native provider.",
+      "remaining": "Compare native mixed create/edit/delete rollback and partial refusal cases.",
+      "pull_requests": []
+    },
+    {
+      "id": "C12",
+      "domain": "Hosted data",
+      "feature": "Globals and repeating fields",
+      "baseline_status": "Implemented",
+      "status": "Implemented",
+      "scope": "Window/session globals and repetitions participate in calculations and edits; high repetitions received regression coverage.",
+      "remaining": "Native cross-window global visibility and high repetition round trips.",
+      "pull_requests": []
+    },
+    {
+      "id": "C13",
+      "domain": "Hosted data",
+      "feature": "Stored container read / write / export",
+      "baseline_status": "Partial",
+      "status": "Partial",
+      "scope": "Stored containers support owning-file reads/replacement, selected-container menu insertion and exact-byte export, including no-path script dialogs.",
+      "remaining": "Portal/related interactive targets, reference-only/external forms and interactive media remain limited.",
+      "pull_requests": [
+        12,
+        120
+      ]
+    },
+    {
+      "id": "C14",
+      "domain": "Hosted data",
+      "feature": "Record locks and concurrent clients",
+      "baseline_status": "Partial",
+      "status": "Partial",
+      "scope": "Window-owned accepted-row versions preserve ordinary drafts through stale-record and lock refusals, including mixed script/UI drafts and retrying a failed new-record discard.",
+      "remaining": "No lock at first keystroke, automatic field merging or broad native multi-client acceptance.",
+      "pull_requests": [
+        106,
+        118
+      ]
+    },
+    {
+      "id": "C15",
+      "domain": "Hosted data",
+      "feature": "Cross-window save and record freshness",
+      "baseline_status": "Implemented",
+      "status": "Implemented",
+      "scope": "Merged #71/#72/#81 cover same-page reload, background commits and held-click identity/mode checks.",
+      "remaining": "Repeat native background Save/Next/root-close plus trigger veto/reorder cases.",
+      "pull_requests": []
+    },
+    {
+      "id": "C16",
+      "domain": "Find and relationships",
+      "feature": "Find requests / omit / constrain / extend",
+      "baseline_status": "Implemented",
+      "status": "Implemented",
+      "scope": "Client and provider implement multi-request found-set operations and field matching.",
+      "remaining": "Differential native result IDs for mixed requests and operators. A criterion over 10,000 characters is unreadable (error 3 in a script), OpenMaker's limit; FileMaker's is unmeasured.",
+      "pull_requests": [
+        322
+      ]
+    },
+    {
+      "id": "C17",
+      "domain": "Find and relationships",
+      "feature": "Sorting and found-set preservation",
+      "baseline_status": "Implemented",
+      "status": "Implemented",
+      "scope": "Script sorts, unsort and window found-set isolation are wired and tested.",
+      "remaining": "Native collation, mixed types, summary sorting and tie order.",
+      "pull_requests": []
+    },
+    {
+      "id": "C18",
+      "domain": "Find and relationships",
+      "feature": "Missing-index finds / exists / value lists",
+      "baseline_status": "Partial",
+      "status": "Partial",
+      "scope": "Merged #65/#73/#74 add bounded fallbacks and response-completion checks. Supported forms/languages and resource limits are narrower than general native indexing. The provider's field-value retrieval for value-list sorting and Insert from Index returns the whole list or error 3, within its 100,000-value and 64 MiB bounds, using the host's list, its index or a scan (docs/value-lists-missing-index.md).",
+      "remaining": "Cover unsupported collations/types separately; retain literal warm-index differential fixtures. Values that must be keyed in a tailored index language, or as negative, fractional or localized numbers, are refused (issues 195, 196); static analysis shows FileMaker Server sends entries past 1,000 bytes in pieces, which the desktop rejects (issue 464); a captured large FileMaker Server reply and native whole-list acceptance remain unverified (issue 366). HostFile::value_list_entries, which checkbox and radio sets, pop-up menus and drop-down lists use (C35), is a separate path from this one. Drop-down calendars do not open in Browse yet (issue 178).",
+      "pull_requests": [
+        374
+      ]
+    },
+    {
+      "id": "C19",
+      "domain": "Find and relationships",
+      "feature": "Same-file related reads and portal edits",
+      "baseline_status": "Implemented",
+      "status": "Implemented",
+      "scope": "Relationships, related rows and supported related writes are connected to the desktop; portal-row buttons can run scripts on the clicked related record.",
+      "remaining": "Direct text editing in portal rows and the full native filtered/related-create matrix remain incomplete.",
+      "pull_requests": [
+        110
+      ]
+    },
+    {
+      "id": "C20",
+      "domain": "Find and relationships",
+      "feature": "Lazy portals and coherent reuse",
+      "baseline_status": "Implemented",
+      "status": "Implemented",
+      "scope": "Merged #77 discovers IDs separately, loads visible bodies and guards volatile related ordering. Synthetic request counts confirm reduced body fetches.",
+      "remaining": "Native latency/large-set profiling and invalidation under second-client writes.",
+      "pull_requests": []
+    },
+    {
+      "id": "C21",
+      "domain": "Find and relationships",
+      "feature": "Related hosted files in calculations",
+      "baseline_status": "Partial",
+      "status": "Partial",
+      "scope": "Same-host related catalogs and supported calculation, layout and record operations route to the owning file.",
+      "remaining": "Compound relationships, missing-file behavior and unsupported field/source forms need broader native acceptance.",
+      "pull_requests": [
+        67,
+        96,
+        97,
+        98,
+        99,
+        100
+      ]
+    },
+    {
+      "id": "C22",
+      "domain": "Find and relationships",
+      "feature": "Imported-table layouts and cross-file GTRR",
+      "baseline_status": "Unavailable",
+      "status": "Partial",
+      "scope": "Imported-table layouts support Browse, edits, create/duplicate/delete, Find/Sort and cross-file Go to Related Record.",
+      "remaining": "Related criteria, some field types and cross-file transactions remain limited.",
+      "pull_requests": [
+        84,
+        85,
+        96,
+        97,
+        98,
+        99,
+        100
+      ]
+    },
+    {
+      "id": "C23",
+      "domain": "Scripts and calculations",
+      "feature": "Script flow / variables / calls",
+      "baseline_status": "Implemented",
+      "status": "Implemented",
+      "scope": "Desktop runtime supports conditionals, loops, parameters/results, nested calls and host actions in covered slices.",
+      "remaining": "Native branch, abort, pause and error-path traces, including event ordering.",
+      "pull_requests": []
+    },
+    {
+      "id": "C24",
+      "domain": "Scripts and calculations",
+      "feature": "Cross-file Perform Script and continuation",
+      "baseline_status": "Partial",
+      "status": "Partial",
+      "scope": "Cross-file calls preserve the caller and file-local IDs; local peers open beside their owning file.",
+      "remaining": "No local cross-host/folder-path support or prompt for another account.",
+      "pull_requests": [
+        80,
+        114
+      ]
+    },
+    {
+      "id": "C25",
+      "domain": "Scripts and calculations",
+      "feature": "Local layout / object / record triggers",
+      "baseline_status": "Partial",
+      "status": "Partial",
+      "scope": "Layout/object/record events and vetoes use the owning context. Browse text/control-key triggers preserve the original editor, modifier values and queued input order.",
+      "remaining": "Find/Preview keys, IME, keypad-Enter distinction and native event/focus timing remain incomplete.",
+      "pull_requests": [
+        81,
+        110,
+        119
+      ]
+    },
+    {
+      "id": "C26",
+      "domain": "Scripts and calculations",
+      "feature": "External trigger routing",
+      "baseline_status": "Unavailable",
+      "status": "Partial",
+      "scope": "External layout/object triggers dispatch into the owning file session, including queued starts.",
+      "remaining": "Stored supported source forms only; native event/focus ordering needs comparison.",
+      "pull_requests": [
+        83
+      ]
+    },
+    {
+      "id": "C27",
+      "domain": "Scripts and calculations",
+      "feature": "Arithmetic / text / date / JSON / lazy forms",
+      "baseline_status": "Implemented",
+      "status": "Implemented",
+      "scope": "Substantial calculation library plus Let/While/If/Case and repetition/related evaluation is present; no product-wide function parity count is claimed.",
+      "remaining": "Broaden independent native vectors, error coercion and locale cases. JSONSetElement refuses a result nested deeper than 1,000 levels or more than 1,000,000 new array elements in one call, OpenMaker's limits; FileMaker's are unmeasured.",
+      "pull_requests": [
+        319
+      ]
+    },
+    {
+      "id": "C28",
+      "domain": "Scripts and calculations",
+      "feature": "Get / design / login metadata",
+      "baseline_status": "Partial",
+      "status": "Partial",
+      "scope": "Owning-file privileges and desktop user name are available. Local account-type/password-expiry facts retain their owning-file context and refresh across date rollover.",
+      "remaining": "Hosted account facts may be unavailable; some selectors and native UserName preference policy remain deferred. Password-day parity is unmeasured.",
+      "pull_requests": [
+        70,
+        76,
+        78,
+        121
+      ]
+    },
+    {
+      "id": "C29",
+      "domain": "Scripts and calculations",
+      "feature": "Pending container / nested evaluation",
+      "baseline_status": "Implemented",
+      "status": "Implemented",
+      "scope": "Merged #12 propagates pending inputs and variable provenance across nested hosts, SQL, selectors and batching in retained regression probes.",
+      "remaining": "Native asynchronous complex-calculation comparisons and request-count invariants.",
+      "pull_requests": []
+    },
+    {
+      "id": "C30",
+      "domain": "Scripts and calculations",
+      "feature": "Server scripts and callbacks",
+      "baseline_status": "Implemented",
+      "status": "Implemented",
+      "scope": "Provider forwards Perform Script on Server and callback replies; desktop host schedules callback context.",
+      "remaining": "Native callback timing, server refusal, file ownership and close/loss cases.",
+      "pull_requests": []
+    },
+    {
+      "id": "C31",
+      "domain": "Layout and interaction",
+      "feature": "Form / List / Table browsing",
+      "baseline_status": "Implemented",
+      "status": "Implemented",
+      "scope": "Native records and layout geometry feed the main browse views with virtualized rows.",
+      "remaining": "Match native record, view, zoom and geometry before visual comparison.",
+      "pull_requests": []
+    },
+    {
+      "id": "C32",
+      "domain": "Layout and interaction",
+      "feature": "Styled text / borders / placement",
+      "baseline_status": "Partial",
+      "status": "Partial",
+      "scope": "Styles, images, bounds, merge text and data formats render; precise native font metrics, borders and text placement still need the S13 oracle.",
+      "remaining": "Golden disposable layouts at multiple DPI/zoom levels with measured geometry.",
+      "pull_requests": []
+    },
+    {
+      "id": "C33",
+      "domain": "Layout and interaction",
+      "feature": "Conditional visibility / styles / tooltips",
+      "baseline_status": "Partial",
+      "status": "Partial",
+      "scope": "Visibility distinguishes real show/hide results, unavailable-input placeholders and pending calculations; Get context changes invalidate cached results.",
+      "remaining": "Find-mode hide options, complete formatting provenance and native missing-button acceptance remain incomplete.",
+      "pull_requests": [
+        102
+      ]
+    },
+    {
+      "id": "C34",
+      "domain": "Layout and interaction",
+      "feature": "Popovers / tabs / buttons",
+      "baseline_status": "Implemented",
+      "status": "Implemented",
+      "scope": "Popover/tab interaction and button/portal-row actions use owning-window context and trigger vetoes; button bars evaluate active segments.",
+      "remaining": "Native focus/event ordering and some portal/button-bar forms remain limited.",
+      "pull_requests": [
+        79,
+        110,
+        115
+      ]
+    },
+    {
+      "id": "C35",
+      "domain": "Layout and interaction",
+      "feature": "Option controls and value selection",
+      "baseline_status": "Partial",
+      "status": "Partial",
+      "scope": "Own-table single-repetition checkbox/radio sets support mouse/keyboard edits, primary-value storage behind secondary labels, per-object triggers and save/readback. Own-table pop-up menus showing one repetition, with Edit field entry, open in Browse on a custom list or a list of a field's values in this file: the closed control shows the stored value's label, and a chosen item goes through the shared choice operation into the record's draft, then the typed-edit path (OnObjectModify, validation, lock, commit). A drop-down list showing its arrow stays the field's edit box and opens the same items from the arrow; a chosen item takes the same path, and Escape closes the list and keeps the draft.",
+      "remaining": "Portal/related/repeated sets, menus and lists, Other/Edit items, drop-down calendars, drop-down lists without their arrow, auto-complete, the keyboard in a menu or list beyond Escape, also-display labels and calculated entry remain limited; text fields do not yet honor the option-set entry guard. Another file's or a calculated list, and more than 100,000 items, are refused. The menu's and list's position, width and timing, how a second-field list labels its items, and the order of triggers on a choice are not compared with FileMaker Pro (issue 178).",
+      "pull_requests": [
+        122,
+        390,
+        408
+      ]
+    },
+    {
+      "id": "C36",
+      "domain": "Layout and interaction",
+      "feature": "Window styles / cards / modality / arrange",
+      "baseline_status": "Partial",
+      "status": "Partial",
+      "scope": "Document, embedded Card and modal Dialog windows support parent ownership, focus restoration and close refusal.",
+      "remaining": "Floating documents, Arrange Window and several window option bits remain unsupported or unmeasured.",
+      "pull_requests": [
+        113
+      ]
+    },
+    {
+      "id": "C37",
+      "domain": "Layout and interaction",
+      "feature": "Zoom / wheel / Freeze / Scroll Window",
+      "baseline_status": "Partial",
+      "status": "Partial",
+      "scope": "Zoom/wheel, Freeze and scripted Home/End/Page/Selection scrolling use queued focus and fresh geometry.",
+      "remaining": "Native multi-layout, input-method and separate-window behavior needs comparison.",
+      "pull_requests": [
+        66,
+        82
+      ]
+    },
+    {
+      "id": "C38",
+      "domain": "Layout and interaction",
+      "feature": "Targeted Refresh Object / Portal / Window flags",
+      "baseline_status": "Partial",
+      "status": "Partial",
+      "scope": "Named object/portal refresh, window cache flags and join/external invalidation preserve supported Browse drafts.",
+      "remaining": "Targeted display is bounded to supported object forms in Browse Form/List.",
+      "pull_requests": [
+        87,
+        88
+      ]
+    },
+    {
+      "id": "C39",
+      "domain": "Layout and interaction",
+      "feature": "Native charts and interactive media",
+      "baseline_status": "Unverified",
+      "status": "Unverified",
+      "scope": "No end-to-end native chart/interactive audio-video acceptance was found in the inspected client evidence; generic object presence is insufficient.",
+      "remaining": "Inventory object render paths, then generated chart/PDF/audio/video fixtures.",
+      "pull_requests": []
+    },
+    {
+      "id": "C40",
+      "domain": "Output and transfer",
+      "feature": "Page Setup / printer dispatch",
+      "baseline_status": "Unavailable",
+      "status": "Partial",
+      "scope": "Shared paper/orientation settings, printer dispatch, copies and physical page ranges.",
+      "remaining": "Windows printing, advanced driver options, settings persistence and native printer acceptance remain.",
+      "pull_requests": [
+        90,
+        92,
+        95
+      ]
+    },
+    {
+      "id": "C41",
+      "domain": "Output and transfer",
+      "feature": "Paginated Preview / subsummary reports",
+      "baseline_status": "Partial",
+      "status": "Partial",
+      "scope": "Shared physical pages include title/grand parts, sorted nested subsummary groups and supported slide-up/part shrinking. Ordinary buttons without an icon and plain groups, nested groups included, print in Preview, PDF and Print from the one report scene; their scripts are not run (docs/portable-pdf.md, Buttons and groups). Frames whose four corners share an absolute radius print rounded, with a border that is the same on every side (docs/portable-pdf.md, Rounded frames).",
+      "remaining": "No slide-left, hide-when-printing, bodyless reports, related break fields or part page breaks; native output equivalence unmeasured. Button icons, rounded frames with differing corners, a relative or automatic radius, a border that differs by side or is as wide as the frame, rounded pictures and parts, rotation, hide and conditional calculations, popover buttons, button bars, portals, tab and slide panels and other containers still refuse the report with error 3; FileMaker's printing of buttons, groups and rounded frames is inferred, not compared (issue 263).",
+      "pull_requests": [
+        89,
+        94,
+        101,
+        103,
+        117,
+        381,
+        393
+      ]
+    },
+    {
+      "id": "C42",
+      "domain": "Output and transfer",
+      "feature": "Save Records as PDF / PDF script workflows",
+      "baseline_status": "Unavailable",
+      "status": "Partial",
+      "scope": "Searchable vector PDF shares report geometry with Preview/Print, including static PNG/JPEG, grouped summaries and supported sliding. Scripts, File > Save/Send Records As > PDF and the Share menu's and Preview toolbar's Save as PDF run the same step, with its dialog for the records being browsed or the current record. Ordinary buttons without an icon, plain groups and rounded frames print as in Preview (C41).",
+      "remaining": "Advanced PDF options, Save Records as PDF in server scripts (issue 261) and native FileMaker acceptance remain limited. Layouts with the objects C41 lists as refused (other containers, button icons, the rounded frames it names) refuse the PDF too (issue 263).",
+      "pull_requests": [
+        86,
+        94,
+        101,
+        103,
+        117,
+        341,
+        381,
+        393
+      ]
+    },
+    {
+      "id": "C43",
+      "domain": "Output and transfer",
+      "feature": "Text / spreadsheet import by script",
+      "baseline_status": "Partial",
+      "status": "Partial",
+      "scope": "File-menu and script CSV/TSV/XLSX imports support field mapping and match keys.",
+      "remaining": "Other source types, new-table import and the native picker remain unavailable.",
+      "pull_requests": [
+        93
+      ]
+    },
+    {
+      "id": "C44",
+      "domain": "Output and transfer",
+      "feature": "FileMaker / folder / ODBC / legacy import",
+      "baseline_status": "Unavailable",
+      "status": "Unavailable",
+      "scope": "Import source_kind 2 and FileMaker/Folder/ODBC/Excel2003 profiles return Unsupported.",
+      "remaining": "Implement one source class per feature PR with mapping and failure tests.",
+      "pull_requests": []
+    },
+    {
+      "id": "C45",
+      "domain": "Output and transfer",
+      "feature": "Export Records: script vs menu",
+      "baseline_status": "Partial",
+      "status": "Partial",
+      "scope": "File-menu export exposes supported formats and the owning found set, using the existing script export engine. File > Save/Send Records As > Excel and the toolbars' Save as Excel run Save Records as Excel through the shared command, for the records being browsed or the current record. A script step stored with Current record and Restore writes only the current record, as FileMaker Pro 26 does with the dialog off. Without groups, Export Records and Save Records as Excel write each record's own running total and fraction of total, matching FileMaker Pro 26's tab-separated and whole-found-set Excel output for a running total without restart and a fraction without subtotal. In a grouped export, the desktop and OpenMaker Server both write the found set's grand summary on the first row, as FileMaker Pro 26 does locally for a running total and a fraction of total.",
+      "remaining": "Grouping editor, saved settings and further format/layout options remain. Restarting, subtotaled and other summary options, break-field rows of grouped exports, grouped Excel and other formats, the current-record Excel row and FileMaker Server's values are unmeasured (issue 372). Save Records as Excel with its dialog on is not compared with FileMaker Pro.",
+      "pull_requests": [
+        91,
+        341,
+        365,
+        371,
+        377
+      ]
+    },
+    {
+      "id": "C46",
+      "domain": "Output and transfer",
+      "feature": "Data-file I/O and container/text export",
+      "baseline_status": "Implemented",
+      "status": "Implemented",
+      "scope": "Desktop host wires data-file operations and container export; narrow native binary/text-export samples passed.",
+      "remaining": "Expand paths, encoding, existing-file refusal and cancellation comparisons.",
+      "pull_requests": []
+    },
+    {
+      "id": "C47",
+      "domain": "Authoring and diagnostics",
+      "feature": "Script Workspace view / local drafts",
+      "baseline_status": "Partial",
+      "status": "Partial",
+      "scope": "Workspace edits steps and catalog via a provider interface; native catalog is read-only. UI capability is not native persistence.",
+      "remaining": "Keep drafts recoverable; compare option editing and all step parameter forms.",
+      "pull_requests": []
+    },
+    {
+      "id": "C48",
+      "domain": "Authoring and diagnostics",
+      "feature": "Save scripts / script catalog to native host",
+      "baseline_status": "Unavailable",
+      "status": "Unavailable",
+      "scope": "Desktop Script Workspace drafts locally against native hosts. OpenMaker-hosted script-step replacement is separately available through om-author.",
+      "remaining": "Claris FileMaker Server script/catalog persistence is unavailable.",
+      "pull_requests": [
+        108
+      ]
+    },
+    {
+      "id": "C49",
+      "domain": "Authoring and diagnostics",
+      "feature": "Manage Database / schema inspection",
+      "baseline_status": "Partial",
+      "status": "Partial",
+      "scope": "Native tables/fields and decoded relationships are readable; supported edits to tables, normal fields, their auto-enter, validation and storage options, occurrences and relationships are saved with FileMaker Pro's schema transaction on OpenMaker Server and local files.",
+      "remaining": "Other relationship tools; calculated and looked-up values, value lists, ranges, validation calculations and custom messages; calculation and summary fields; FileMaker Server saves (#430-#433).",
+      "pull_requests": []
+    },
+    {
+      "id": "C50",
+      "domain": "Authoring and diagnostics",
+      "feature": "Save schema definitions to native host",
+      "baseline_status": "Unavailable",
+      "status": "Unavailable",
+      "scope": "Schema inspection is available; om-author can create supported scalar fields on OpenMaker Server.",
+      "remaining": "Claris FileMaker Server schema mutation and general schema editing remain unavailable.",
+      "pull_requests": [
+        112
+      ]
+    },
+    {
+      "id": "C51",
+      "domain": "Authoring and diagnostics",
+      "feature": "Layout inspection / Objects / canvas",
+      "baseline_status": "Partial",
+      "status": "Partial",
+      "scope": "Geometry selection and inspection exist; canvas selection does not change the document.",
+      "remaining": "Native object/part metadata comparison and selection navigation.",
+      "pull_requests": []
+    },
+    {
+      "id": "C52",
+      "domain": "Authoring and diagnostics",
+      "feature": "Create / modify / persist layouts",
+      "baseline_status": "Unavailable",
+      "status": "Partial",
+      "scope": "om-author can durably append an own-table edit box with an optional label to an existing Form layout on OpenMaker Server.",
+      "remaining": "No general layout editor persistence, tab-order insertion or Claris-hosted layout saves. FileMaker Pro 26 accepted one case, an edit box without a label for a stored Text field: consistency check, Browse entry on first open, binding and its own later saves passed; other object kinds, labels and layouts are unchecked (issue 166).",
+      "pull_requests": [
+        116,
+        342
+      ]
+    },
+    {
+      "id": "C53",
+      "domain": "Authoring and diagnostics",
+      "feature": "Script Debugger / Data Viewer",
+      "baseline_status": "Unavailable",
+      "status": "Unavailable",
+      "scope": "Tools commands are disabled; workspace explicitly reports debugger unavailable.",
+      "remaining": "Breakpoints, step/call stack and watch-expression evaluation in correct context.",
+      "pull_requests": []
+    },
+    {
+      "id": "C54",
+      "domain": "Authoring and diagnostics",
+      "feature": "Manage value lists / menus / custom functions / DDR",
+      "baseline_status": "Unavailable",
+      "status": "Unavailable",
+      "scope": "Several management dialogs and design-report/XML tools are disabled; runtime use of stored definitions is separate.",
+      "remaining": "Prioritize editable definitions and metadata export needed for compatibility work.",
+      "pull_requests": []
+    },
+    {
+      "id": "C55",
+      "domain": "Integrations",
+      "feature": "Open URL / Insert from URL",
+      "baseline_status": "Implemented",
+      "status": "Implemented",
+      "scope": "Desktop host dispatches URLs and fetches responses through om-url, including file URLs and cooperative transfer cancellation.",
+      "remaining": "Native response/encoding/target and supported option differential tests.",
+      "pull_requests": []
+    },
+    {
+      "id": "C56",
+      "domain": "Integrations",
+      "feature": "Web viewer and JavaScript bridge",
+      "baseline_status": "Unavailable",
+      "status": "Partial",
+      "scope": "Opt-in embedded WebKitGTK with JavaScript calls and script callbacks on Linux/X11, Browse Form, first file window.",
+      "remaining": "No macOS, Windows, native Wayland, List/portal rows or Find content; native parity unmeasured.",
+      "pull_requests": [
+        109
+      ]
+    },
+    {
+      "id": "C57",
+      "domain": "Integrations",
+      "feature": "Send Mail and platform automation",
+      "baseline_status": "Unavailable",
+      "status": "Unavailable",
+      "scope": "Mail and platform automation steps fall through unsupported desktop host paths.",
+      "remaining": "Separate generic mail transport, macOS automation and Windows dispatch features.",
+      "pull_requests": []
+    },
+    {
+      "id": "C58",
+      "domain": "Integrations",
+      "feature": "ExecuteSQL calculation host",
+      "baseline_status": "Implemented",
+      "status": "Implemented",
+      "scope": "SQL calculation integration and cursor/container forwarding exist; pending selectors received targeted corrections.",
+      "remaining": "Native query grammar, typing, joins and error behavior differential suite.",
+      "pull_requests": []
+    },
+    {
+      "id": "C59",
+      "domain": "Integrations",
+      "feature": "ESS / ODBC / external SQL tables",
+      "baseline_status": "Unavailable",
+      "status": "Unavailable",
+      "scope": "No complete desktop external SQL provider path was found; ODBC import is explicitly refused. Client ExecuteSQL calculations do not imply ESS support.",
+      "remaining": "Independent SQL data-source discovery, table binding and write semantics.",
+      "pull_requests": []
+    },
+    {
+      "id": "C60",
+      "domain": "Integrations",
+      "feature": "Execute FileMaker Data API script step",
+      "baseline_status": "Unavailable",
+      "status": "Unavailable",
+      "scope": "Desktop Network implementation does not override execute_data_api; default is Unsupported.",
+      "remaining": "Implement the client script-step contract and response/error mapping.",
+      "pull_requests": []
+    },
+    {
+      "id": "C61",
+      "domain": "Integrations",
+      "feature": "Third-party FileMaker plug-ins",
+      "baseline_status": "Unavailable",
+      "status": "Unavailable",
+      "scope": "Machine metadata reports no installed plug-ins; no compatible plugin execution host is demonstrated.",
+      "remaining": "Assess ABI/platform strategy before committing to plugin compatibility.",
+      "pull_requests": []
+    },
+    {
+      "id": "C62",
+      "domain": "Integrations",
+      "feature": "2025/2026 AI and model workflows",
+      "baseline_status": "Unavailable",
+      "status": "Unavailable",
+      "scope": "Pure embedding calculations exist, but inspected desktop host lacks general AI model/RAG script workflows. Function/step catalogs alone are not implementation.",
+      "remaining": "Add only after core workflow priorities, using generic model fixtures.",
+      "pull_requests": []
+    },
+    {
+      "id": "C63",
+      "domain": "Platform and quality",
+      "feature": "Native desktop menus / common commands",
+      "baseline_status": "Partial",
+      "status": "Partial",
+      "scope": "Menus draw inside each window on macOS. File > Save/Send Records As > Excel and PDF, the Share menu and the Preview toolbar's Save as buttons run Save Records as Excel and as PDF through one shared command and the steps' dialogs; many other items are disabled even when related script paths exist.",
+      "remaining": "Audit every enabled command and keyboard route; native menu integration. Save as Snapshot Link stays disabled (issue 251). FileMaker Pro's item text, dialogs and OnRecordCommit timing for these menu commands are unmeasured.",
+      "pull_requests": [
+        341
+      ]
+    },
+    {
+      "id": "C64",
+      "domain": "Platform and quality",
+      "feature": "Keyboard / clipboard / IME / accessibility",
+      "baseline_status": "Unverified",
+      "status": "Unverified",
+      "scope": "Individual control behavior has tests, but a complete native keyboard, IME, clipboard and assistive-technology audit is not established. Disabled Edit menu entries alone do not prove widget shortcuts fail.",
+      "remaining": "Manual OS-level input matrix with Unicode, selection, paste and accessibility navigation.",
+      "pull_requests": []
+    },
+    {
+      "id": "C65",
+      "domain": "Platform and quality",
+      "feature": "Performance / memory / render caches",
+      "baseline_status": "Partial",
+      "status": "Partial",
+      "scope": "Merged #68/#77 and bounded scans improve supported paths; synthetic request counts and frame tests are not a native workload latency claim. Query programs find index keys by binary search, measured on synthetic programs against earlier OpenMaker only (docs/performance/query-index-lookups.md).",
+      "remaining": "Compare cold/warm latency, memory and request counts on generated small/large solutions.",
+      "pull_requests": [
+        355
+      ]
+    },
+    {
+      "id": "C66",
+      "domain": "Platform and quality",
+      "feature": "File recovery / copy / conversion tools",
+      "baseline_status": "Unavailable",
+      "status": "Unavailable",
+      "scope": "Create New, Save a Copy As and Recover are disabled; read-only file-format tooling is separate.",
+      "remaining": "Scope local persistence first, then copy/recovery with disposable corruption fixtures.",
+      "pull_requests": []
+    },
+    {
+      "id": "C67",
+      "domain": "Platform and quality",
+      "feature": "Peer-to-peer file hosting from the client",
+      "baseline_status": "Unavailable",
+      "status": "Unavailable",
+      "scope": "NativeProvider consumes hosted sessions; no interactive client-hosted sharing workflow was identified. Standalone om-server is a separate component.",
+      "remaining": "Define supported client-hosting contract separately from Server replacement.",
+      "pull_requests": []
+    },
+    {
+      "id": "C68",
+      "domain": "Platform and quality",
+      "feature": "Broad native workflow / every-button parity",
+      "baseline_status": "Unverified",
+      "status": "Unverified",
+      "scope": "Reviewed automated slices and synthetic end-to-end tests cover a growing subset of client workflows.",
+      "remaining": "No complete every-button or broad native workflow equivalence claim.",
+      "pull_requests": []
+    }
+  ],
+  "agent_authoring": {
+    "transport": "Versioned JSON CLI and MCP stdio",
+    "host": "Design changes use OpenMaker Server extensions; script execution uses the host account's ordinary script permissions (native FileMaker Server acceptance unmeasured)",
+    "available": [
+      "List every command and its parameters from one shared catalog, without a connection",
+      "Replace an existing script step list with revision protection and fresh-connection verification",
+      "Create stored text, number, date, time or timestamp fields",
+      "Place an own-table edit box and optional plain label in an existing Form body",
+      "Run a script with Perform Script on Server and read its last error and result (run against OpenMaker Server only)",
+      "List the items a field control's value list offers on a record (list_choices), complete or as an error (run against OpenMaker Server only)"
+    ],
+    "remaining": [
+      "General script/catalog operations",
+      "General schema/layout editing",
+      "Value-list/menu/custom-function authoring",
+      "FileMaker Pro 26 accepted one stored Text field and its edit box without a label (consistency, Browse entry, binding, its own later saves; issue 166); other outputs have not been opened in FileMaker Pro",
+      "Choosing a value-list item needs a desktop window: choose_value_list_item answers error 3 (no_window) and changes nothing"
+    ]
+  },
+  "deferred": [
+    "Precise font, border and text-placement oracle",
+    "Broad native OS/host/version and every-button acceptance",
+    "Native UserName preference policy",
+    "Fine-grained server privilege enforcement and security hardening",
+    "Further feature work requires a new development plan"
+  ]
+}

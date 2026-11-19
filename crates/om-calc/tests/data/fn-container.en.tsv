@@ -1,0 +1,600 @@
+# Base64Encode
+Base64Encode ( "" )	0	1/1/0	
+Base64Encode ( "a" )	0	1/1/0	YQ==\r\n
+Base64Encode ( "ab" )	0	1/1/0	YWI=\r\n
+Base64Encode ( "abc" )	0	1/1/0	YWJj\r\n
+Base64Encode ( "Black" )	0	1/1/0	QmxhY2s=\r\n
+Base64Encode ( "é" )	0	1/1/0	w6k=\r\n
+Base64Encode ( "😀" )	0	1/1/0	8J+YgA==\r\n
+Base64Encode ( "a¶b" )	0	1/1/0	YQ0KYg==\r\n
+Base64Encode ( "日本語" )	0	1/1/0	5pel5pys6Kqe\r\n
+Base64Encode ( "01234567890123456789012345678901234567890123456789012345" )	0	1/1/0	MDEyMzQ1Njc4OTAxMjM0NTY3ODkwMTIzNDU2Nzg5MDEyMzQ1Njc4OTAxMjM0NTY3ODkwMTIzNDU=\r\n
+Base64Encode ( "012345678901234567890123456789012345678901234567890123456" )	0	1/1/0	MDEyMzQ1Njc4OTAxMjM0NTY3ODkwMTIzNDU2Nzg5MDEyMzQ1Njc4OTAxMjM0NTY3ODkwMTIzNDU2\r\n
+Base64Encode ( "0123456789012345678901234567890123456789012345678901234567890123456789012345678901234567890123456789" )	0	1/1/0	MDEyMzQ1Njc4OTAxMjM0NTY3ODkwMTIzNDU2Nzg5MDEyMzQ1Njc4OTAxMjM0NTY3ODkwMTIzNDU2\r\nNzg5MDEyMzQ1Njc4OTAxMjM0NTY3ODkwMTIzNDU2Nzg5MDEyMzQ1Njc4OQ==\r\n
+Base64Encode ( 12 )	0	1/1/0	MTI=\r\n
+Base64Encode ( 1/3 )	0	1/1/0	LjMzMzMzMzMzMzMzMzMzMzM=\r\n
+Base64Encode ( Date ( 1 ; 2 ; 2003 ) )	0	1/1/0	MS8yLzIwMDM=\r\n
+Base64Encode ( 1 = 1 )	0	1/1/0	MQ==\r\n
+Base64Encode ( Char ( 10 ) )	0	1/1/0	DQo=\r\n
+Base64Encode ( HexDecode ( "00ff" ; "a.bin" ) )	0	1/1/0	AP8=\r\n
+Base64Encode ( HexDecode ( "" ; "a.bin" ) )	0	1/1/0	\r\n
+Base64Encode ( HexDecode ( "00ff" ) )	0	1/1/0	AO+/vQ==\r\n
+Base64Encode ( Upper ( "abc" ) )	0	1/1/0	QUJD\r\n
+# Base64EncodeRFC
+Base64EncodeRFC ( 1421 ; "" )	0	1/2/0	
+Base64EncodeRFC ( 1421 ; "a" )	0	1/1/0	YQ==\r\n
+Base64EncodeRFC ( 1421 ; "Black" )	0	1/1/0	QmxhY2s=\r\n
+Base64EncodeRFC ( 1421 ; "012345678901234567890123456789012345678901234567" )	0	1/1/0	MDEyMzQ1Njc4OTAxMjM0NTY3ODkwMTIzNDU2Nzg5MDEyMzQ1Njc4OTAxMjM0NTY3\r\n
+Base64EncodeRFC ( 1421 ; "012345678901234567890123456789012345678901234567890123456" )	0	1/1/0	MDEyMzQ1Njc4OTAxMjM0NTY3ODkwMTIzNDU2Nzg5MDEyMzQ1Njc4OTAxMjM0NTY3\r\nODkwMTIzNDU2\r\n
+Base64EncodeRFC ( 1421 ; "0123456789012345678901234567890123456789012345678901234567890123456789012345678901234567890123456789" )	0	1/1/0	MDEyMzQ1Njc4OTAxMjM0NTY3ODkwMTIzNDU2Nzg5MDEyMzQ1Njc4OTAxMjM0NTY3\r\nODkwMTIzNDU2Nzg5MDEyMzQ1Njc4OTAxMjM0NTY3ODkwMTIzNDU2Nzg5MDEyMzQ1\r\nNjc4OQ==\r\n
+Base64EncodeRFC ( 1421 ; HexDecode ( "" ; "a" ) )	0	1/1/0	\r\n
+Base64EncodeRFC ( 1421 ; HexDecode ( "00ffff" ; "a" ) )	0	1/1/0	AP//\r\n
+Base64EncodeRFC ( 2045 ; "" )	0	1/2/0	
+Base64EncodeRFC ( 2045 ; "a" )	0	1/1/0	YQ==\r\n
+Base64EncodeRFC ( 2045 ; "Black" )	0	1/1/0	QmxhY2s=\r\n
+Base64EncodeRFC ( 2045 ; "012345678901234567890123456789012345678901234567" )	0	1/1/0	MDEyMzQ1Njc4OTAxMjM0NTY3ODkwMTIzNDU2Nzg5MDEyMzQ1Njc4OTAxMjM0NTY3\r\n
+Base64EncodeRFC ( 2045 ; "012345678901234567890123456789012345678901234567890123456" )	0	1/1/0	MDEyMzQ1Njc4OTAxMjM0NTY3ODkwMTIzNDU2Nzg5MDEyMzQ1Njc4OTAxMjM0NTY3ODkwMTIzNDU2\r\n
+Base64EncodeRFC ( 2045 ; "0123456789012345678901234567890123456789012345678901234567890123456789012345678901234567890123456789" )	0	1/1/0	MDEyMzQ1Njc4OTAxMjM0NTY3ODkwMTIzNDU2Nzg5MDEyMzQ1Njc4OTAxMjM0NTY3ODkwMTIzNDU2\r\nNzg5MDEyMzQ1Njc4OTAxMjM0NTY3ODkwMTIzNDU2Nzg5MDEyMzQ1Njc4OQ==\r\n
+Base64EncodeRFC ( 2045 ; HexDecode ( "" ; "a" ) )	0	1/1/0	\r\n
+Base64EncodeRFC ( 2045 ; HexDecode ( "00ffff" ; "a" ) )	0	1/1/0	AP//\r\n
+Base64EncodeRFC ( 3548 ; "" )	0	1/2/0	
+Base64EncodeRFC ( 3548 ; "a" )	0	1/1/0	YQ==
+Base64EncodeRFC ( 3548 ; "Black" )	0	1/1/0	QmxhY2s=
+Base64EncodeRFC ( 3548 ; "012345678901234567890123456789012345678901234567" )	0	1/1/0	MDEyMzQ1Njc4OTAxMjM0NTY3ODkwMTIzNDU2Nzg5MDEyMzQ1Njc4OTAxMjM0NTY3
+Base64EncodeRFC ( 3548 ; "012345678901234567890123456789012345678901234567890123456" )	0	1/1/0	MDEyMzQ1Njc4OTAxMjM0NTY3ODkwMTIzNDU2Nzg5MDEyMzQ1Njc4OTAxMjM0NTY3ODkwMTIzNDU2
+Base64EncodeRFC ( 3548 ; "0123456789012345678901234567890123456789012345678901234567890123456789012345678901234567890123456789" )	0	1/1/0	MDEyMzQ1Njc4OTAxMjM0NTY3ODkwMTIzNDU2Nzg5MDEyMzQ1Njc4OTAxMjM0NTY3ODkwMTIzNDU2Nzg5MDEyMzQ1Njc4OTAxMjM0NTY3ODkwMTIzNDU2Nzg5MDEyMzQ1Njc4OQ==
+Base64EncodeRFC ( 3548 ; HexDecode ( "" ; "a" ) )	0	1/1/0	
+Base64EncodeRFC ( 3548 ; HexDecode ( "00ffff" ; "a" ) )	0	1/1/0	AP//
+Base64EncodeRFC ( 4648 ; "" )	0	1/2/0	
+Base64EncodeRFC ( 4648 ; "a" )	0	1/1/0	YQ==
+Base64EncodeRFC ( 4648 ; "Black" )	0	1/1/0	QmxhY2s=
+Base64EncodeRFC ( 4648 ; "012345678901234567890123456789012345678901234567" )	0	1/1/0	MDEyMzQ1Njc4OTAxMjM0NTY3ODkwMTIzNDU2Nzg5MDEyMzQ1Njc4OTAxMjM0NTY3
+Base64EncodeRFC ( 4648 ; "012345678901234567890123456789012345678901234567890123456" )	0	1/1/0	MDEyMzQ1Njc4OTAxMjM0NTY3ODkwMTIzNDU2Nzg5MDEyMzQ1Njc4OTAxMjM0NTY3ODkwMTIzNDU2
+Base64EncodeRFC ( 4648 ; "0123456789012345678901234567890123456789012345678901234567890123456789012345678901234567890123456789" )	0	1/1/0	MDEyMzQ1Njc4OTAxMjM0NTY3ODkwMTIzNDU2Nzg5MDEyMzQ1Njc4OTAxMjM0NTY3ODkwMTIzNDU2Nzg5MDEyMzQ1Njc4OTAxMjM0NTY3ODkwMTIzNDU2Nzg5MDEyMzQ1Njc4OQ==
+Base64EncodeRFC ( 4648 ; HexDecode ( "" ; "a" ) )	0	1/1/0	
+Base64EncodeRFC ( 4648 ; HexDecode ( "00ffff" ; "a" ) )	0	1/1/0	AP//
+Base64EncodeRFC ( 4880 ; "" )	0	1/2/0	
+Base64EncodeRFC ( 4880 ; "a" )	0	1/1/0	YQ==\r\n=8lcT\r\n
+Base64EncodeRFC ( 4880 ; "Black" )	0	1/1/0	QmxhY2s=\r\n=Yb2R\r\n
+Base64EncodeRFC ( 4880 ; "012345678901234567890123456789012345678901234567" )	0	1/1/0	MDEyMzQ1Njc4OTAxMjM0NTY3ODkwMTIzNDU2Nzg5MDEyMzQ1Njc4OTAxMjM0NTY3\r\n=7KNz\r\n
+Base64EncodeRFC ( 4880 ; "012345678901234567890123456789012345678901234567890123456" )	0	1/1/0	MDEyMzQ1Njc4OTAxMjM0NTY3ODkwMTIzNDU2Nzg5MDEyMzQ1Njc4OTAxMjM0NTY3ODkwMTIzNDU2\r\n=iBuV\r\n
+Base64EncodeRFC ( 4880 ; "0123456789012345678901234567890123456789012345678901234567890123456789012345678901234567890123456789" )	0	1/1/0	MDEyMzQ1Njc4OTAxMjM0NTY3ODkwMTIzNDU2Nzg5MDEyMzQ1Njc4OTAxMjM0NTY3ODkwMTIzNDU2\r\nNzg5MDEyMzQ1Njc4OTAxMjM0NTY3ODkwMTIzNDU2Nzg5MDEyMzQ1Njc4OQ==\r\n=HDvi\r\n
+Base64EncodeRFC ( 4880 ; HexDecode ( "" ; "a" ) )	0	1/1/0	\r\n=twTO\r\n
+Base64EncodeRFC ( 4880 ; HexDecode ( "00ffff" ; "a" ) )	0	1/1/0	AP//\r\n=JtPG\r\n
+Base64EncodeRFC ( 0 ; "0123456789012345678901234567890123456789012345678901234567890123456789012345678901234567890123456789" )	0	1/1/0	MDEyMzQ1Njc4OTAxMjM0NTY3ODkwMTIzNDU2Nzg5MDEyMzQ1Njc4OTAxMjM0NTY3ODkwMTIzNDU2Nzg5MDEyMzQ1Njc4OTAxMjM0NTY3ODkwMTIzNDU2Nzg5MDEyMzQ1Njc4OQ==
+Base64EncodeRFC ( -1421 ; "0123456789012345678901234567890123456789012345678901234567890123456789012345678901234567890123456789" )	0	1/1/0	MDEyMzQ1Njc4OTAxMjM0NTY3ODkwMTIzNDU2Nzg5MDEyMzQ1Njc4OTAxMjM0NTY3\r\nODkwMTIzNDU2Nzg5MDEyMzQ1Njc4OTAxMjM0NTY3ODkwMTIzNDU2Nzg5MDEyMzQ1\r\nNjc4OQ==\r\n
+Base64EncodeRFC ( 1421.9 ; "0123456789012345678901234567890123456789012345678901234567890123456789012345678901234567890123456789" )	0	1/1/0	MDEyMzQ1Njc4OTAxMjM0NTY3ODkwMTIzNDU2Nzg5MDEyMzQ1Njc4OTAxMjM0NTY3\r\nODkwMTIzNDU2Nzg5MDEyMzQ1Njc4OTAxMjM0NTY3ODkwMTIzNDU2Nzg5MDEyMzQ1\r\nNjc4OQ==\r\n
+Base64EncodeRFC ( "" ; "0123456789012345678901234567890123456789012345678901234567890123456789012345678901234567890123456789" )	0	1/1/0	MDEyMzQ1Njc4OTAxMjM0NTY3ODkwMTIzNDU2Nzg5MDEyMzQ1Njc4OTAxMjM0NTY3ODkwMTIzNDU2Nzg5MDEyMzQ1Njc4OTAxMjM0NTY3ODkwMTIzNDU2Nzg5MDEyMzQ1Njc4OQ==
+Base64EncodeRFC ( "abc" ; "0123456789012345678901234567890123456789012345678901234567890123456789012345678901234567890123456789" )	0	1/1/0	MDEyMzQ1Njc4OTAxMjM0NTY3ODkwMTIzNDU2Nzg5MDEyMzQ1Njc4OTAxMjM0NTY3ODkwMTIzNDU2Nzg5MDEyMzQ1Njc4OTAxMjM0NTY3ODkwMTIzNDU2Nzg5MDEyMzQ1Njc4OQ==
+Base64EncodeRFC ( "1421" ; "0123456789012345678901234567890123456789012345678901234567890123456789012345678901234567890123456789" )	0	1/1/0	MDEyMzQ1Njc4OTAxMjM0NTY3ODkwMTIzNDU2Nzg5MDEyMzQ1Njc4OTAxMjM0NTY3\r\nODkwMTIzNDU2Nzg5MDEyMzQ1Njc4OTAxMjM0NTY3ODkwMTIzNDU2Nzg5MDEyMzQ1\r\nNjc4OQ==\r\n
+Base64EncodeRFC ( 1421 + 4294967296 ; "0123456789012345678901234567890123456789012345678901234567890123456789012345678901234567890123456789" )	0	1/1/0	MDEyMzQ1Njc4OTAxMjM0NTY3ODkwMTIzNDU2Nzg5MDEyMzQ1Njc4OTAxMjM0NTY3\r\nODkwMTIzNDU2Nzg5MDEyMzQ1Njc4OTAxMjM0NTY3ODkwMTIzNDU2Nzg5MDEyMzQ1\r\nNjc4OQ==\r\n
+Base64EncodeRFC ( 99999 ; "0123456789012345678901234567890123456789012345678901234567890123456789012345678901234567890123456789" )	0	1/1/0	MDEyMzQ1Njc4OTAxMjM0NTY3ODkwMTIzNDU2Nzg5MDEyMzQ1Njc4OTAxMjM0NTY3ODkwMTIzNDU2Nzg5MDEyMzQ1Njc4OTAxMjM0NTY3ODkwMTIzNDU2Nzg5MDEyMzQ1Njc4OQ==
+Base64EncodeRFC ( -2045 ; "0123456789012345678901234567890123456789012345678901234567890123456789012345678901234567890123456789" )	0	1/1/0	MDEyMzQ1Njc4OTAxMjM0NTY3ODkwMTIzNDU2Nzg5MDEyMzQ1Njc4OTAxMjM0NTY3ODkwMTIzNDU2\r\nNzg5MDEyMzQ1Njc4OTAxMjM0NTY3ODkwMTIzNDU2Nzg5MDEyMzQ1Njc4OQ==\r\n
+Base64EncodeRFC ( 4880.5 ; "0123456789012345678901234567890123456789012345678901234567890123456789012345678901234567890123456789" )	0	1/1/0	MDEyMzQ1Njc4OTAxMjM0NTY3ODkwMTIzNDU2Nzg5MDEyMzQ1Njc4OTAxMjM0NTY3ODkwMTIzNDU2\r\nNzg5MDEyMzQ1Njc4OTAxMjM0NTY3ODkwMTIzNDU2Nzg5MDEyMzQ1Njc4OQ==\r\n=HDvi\r\n
+Base64EncodeRFC ( 4880 ; "ab" )	0	1/1/0	YWI=\r\n=oRot\r\n
+Base64EncodeRFC ( 4880 ; "abc" )	0	1/1/0	YWJj\r\n=uhx7\r\n
+Base64EncodeRFC ( 4648 ; 12 )	0	1/1/0	MTI=
+Base64EncodeRFC ( 4648 ; "é" )	0	1/1/0	w6k=
+# Base64Decode
+Base64Decode ( "QmxhY2s=" )	0	1/1/0	Black
+Base64Decode ( "QmxhY2s" )	17	2/2/0	?
+Base64Decode ( "Qmxh Y2s=" )	0	1/1/0	Black
+Base64Decode ( "QmxhY2s=¶" )	0	1/1/0	Black
+Base64Decode ( "Qmxh¶Y2s=" )	0	1/1/0	Black
+Base64Decode ( "!!!!" )	0	1/1/0	
+Base64Decode ( "" )	0	1/1/0	
+Base64Decode ( "QQ" )	17	2/2/0	?
+Base64Decode ( "QQ=" )	0	1/1/0	A
+Base64Decode ( "QQ==" )	0	1/1/0	A
+Base64Decode ( "QQ==QQ==" )	0	1/1/0	A
+Base64Decode ( "QUJD" )	0	1/1/0	ABC
+Base64Decode ( "QUJ" )	17	2/2/0	?
+Base64Decode ( "QU" )	17	2/2/0	?
+Base64Decode ( "Q" )	17	2/2/0	?
+Base64Decode ( "=" )	0	1/1/0	
+Base64Decode ( "====" )	0	1/1/0	
+Base64Decode ( "QUJD=" )	0	1/1/0	ABC
+Base64Decode ( "QU!JD" )	0	1/1/0	ABC
+Base64Decode ( "QU!J" )	17	2/2/0	?
+Base64Decode ( "-_8=" )	17	2/2/0	?
+Base64Decode ( "QUJDQQ" )	17	2/2/0	?
+Base64Decode ( "QUJDQQ=" )	0	1/1/0	ABCA
+Base64Decode ( "Q=" )	17	2/2/0	?
+Base64Decode ( "QQ=QQ" )	0	1/1/0	A
+Base64Decode ( "QUéJD" )	0	1/1/0	ABC
+Base64Decode ( " QUJD" )	0	1/1/0	ABC
+Base64Decode ( "QUJD " )	0	1/1/0	ABC
+Base64Decode ( "YQ0KYg==" )	0	1/1/0	a\rb
+Base64Decode ( "w6k=" )	0	1/1/0	é
+Base64Decode ( "/w==" )	0	1/1/0	�
+Base64Decode ( "Q===" )	17	2/2/0	?
+Base64Decode ( "QU=J" )	0	1/1/0	A
+Base64Decode ( "QUJD" & Char ( 9 ) & "REVG" )	0	1/1/0	ABCDEF
+Base64Decode ( "QUJ" & Char ( 10 ) & "D" )	0	1/1/0	ABC
+Base64Decode ( 12 )	17	2/2/0	?
+HexEncode ( Base64Decode ( "-_8=" ; "a" ) )	17	1/1/0	3F
+HexEncode ( Base64Decode ( "+/8=" ; "a" ) )	0	1/1/0	FBFF
+HexEncode ( Base64Decode ( "+/8" ; "a" ) )	17	1/1/0	3F
+HexEncode ( Base64Decode ( "+/9" ; "a" ) )	17	1/1/0	3F
+HexEncode ( Base64Decode ( "QR==" ; "a" ) )	0	1/1/0	41
+HexEncode ( Base64Decode ( "QUI=" ; "a" ) )	0	1/1/0	4142
+HexEncode ( Base64Decode ( "QUJ=" ; "a" ) )	0	1/1/0	4142
+HexEncode ( Base64Decode ( "QUJDREVG" ; "a" ) )	0	1/1/0	414243444546
+HexEncode ( Base64Decode ( "QUJD REVG" ; "a" ) )	0	1/1/0	414243444546
+HexEncode ( Base64Decode ( "QUJD.REVG" ; "a" ) )	0	1/1/0	414243444546
+HexEncode ( Base64Decode ( "QUJD.REV" ; "a" ) )	17	1/1/0	3F
+HexEncode ( Base64Decode ( "QUJDRE" ; "a" ) )	17	1/1/0	3F
+HexEncode ( Base64Decode ( "QUJDREV" ; "a" ) )	17	1/1/0	3F
+HexEncode ( Base64Decode ( "QUJDREVGR" ; "a" ) )	17	1/1/0	3F
+HexEncode ( Base64Decode ( "YQ0KYg==" ; "a" ) )	0	1/1/0	610D0A62
+HexEncode ( Base64Decode ( "" ; "a" ) )	0	1/1/0	
+HexEncode ( Base64Decode ( "YQ0KYg==" ) )	0	1/1/0	610D62
+Base64Decode ( "QmxhY2s=" ; "" )	0	1/1/0	Black
+Base64Decode ( "QmxhY2s=" ; "a.txt" )	0	6/6/0	a.txt
+Base64Decode ( "QmxhY2s=" ; "a" )	0	6/6/0	a
+Base64Decode ( "QmxhY2s=" ; 12 )	0	6/6/0	12
+Base64Decode ( "QmxhY2s=" ; "dir/a.txt" )	0	6/6/0	a.txt
+Base64Decode ( "QmxhY2s=" ; " a.txt " )	0	6/6/0	 a.txt 
+Base64Decode ( "QmxhY2s=" ; "a¶b.txt" )	0	6/6/0	a
+Base64Decode ( "QmxhY2s=" ; "¶a" )	0	6/6/0	a
+Base64Decode ( "QmxhY2s=" ; "é.txt" )	0	6/6/0	é.txt
+Base64Decode ( "QmxhY2s=" ; "a\\b.txt" )	0	6/6/0	a_b.txt
+Base64Decode ( "QmxhY2s=" ; "a:b.txt" )	0	6/6/0	b.txt
+Base64Decode ( "QmxhY2s=" ; "dir/" )	0	6/6/0	Untitled.dat
+Base64Decode ( "QmxhY2s=" ; "/a" )	0	6/6/0	a
+Base64Decode ( "QmxhY2s=" ; "file:a.txt" )	0	6/6/0	a.txt
+Base64Decode ( "QmxhY2s=" ; "image:a.png" )	0	6/6/0	a.png
+Base64Decode ( "QmxhY2s=" ; " " )	0	6/6/0	 
+Base64Decode ( "QmxhY2s=" ; "a:b:c.txt" )	0	6/6/0	b.c.txt
+Base64Decode ( "QmxhY2s=" ; "a/b:c.txt" )	0	6/6/0	b.c.txt
+Base64Decode ( "QmxhY2s=" ; "a:b/c.txt" )	0	6/6/0	c.txt
+Base64Decode ( "QmxhY2s=" ; "x.txt¶y.txt" )	0	6/6/0	x.txt
+Base64Decode ( "QmxhY2s=" ; "imagemac:/Mac/a.png" )	0	6/6/0	a.png
+Base64Decode ( "QmxhY2s=" ; "filewin:/C:/a.txt" )	0	6/6/0	a.txt
+Base64Decode ( "QmxhY2s=" ; ":a" )	0	6/6/0	a
+Base64Decode ( "QmxhY2s=" ; "a:" )	0	6/6/0	Untitled.dat
+Base64Decode ( "QmxhY2s=" ; "a/" )	0	6/6/0	Untitled.dat
+Base64Decode ( "QmxhY2s=" ; ".." )	0	6/6/0	..
+Base64Decode ( "QmxhY2s=" ; "." )	0	6/6/0	.
+Base64Decode ( "QmxhY2s=" ; "a.b.c" )	0	6/6/0	a.b.c
+Base64Decode ( "QmxhY2s=" ; "a*b?.txt" )	0	6/6/0	a_b_.txt
+Base64Decode ( "QmxhY2s=" ; "¶" )	0	6/6/0	Untitled.dat
+Base64Decode ( "QmxhY2s=" ; "¶¶b" )	0	6/6/0	b
+Base64Decode ( "QmxhY2s=" ; "a" & Char ( 10 ) & "b" )	0	6/6/0	a\nb
+Base64Decode ( "QmxhY2s=" ; "a" & Char ( 9 ) & "b" )	0	6/6/0	a\tb
+GetAsText ( Base64Decode ( "QmxhY2s=" ; "a.txt" ) )	0	1/1/0	a.txt
+IsEmpty ( Base64Decode ( "QmxhY2s=" ; "a.txt" ) )	0	2/2/0	0
+IsEmpty ( Base64Decode ( "" ; "a.txt" ) )	0	2/2/0	0
+Base64Decode ( "" ; "a.txt" )	0	6/6/0	a.txt
+HexEncode ( Base64Decode ( "" ; "a.txt" ) )	0	1/1/0	
+Base64Decode ( "!!" ; "a.txt" )	0	6/6/0	a.txt
+# HexEncode and HexDecode
+HexEncode ( "" )	0	1/1/0	
+HexEncode ( "FileMaker" )	0	1/1/0	46696C654D616B6572
+HexEncode ( "é😀" )	0	1/1/0	C3A9F09F9880
+HexEncode ( "a¶b" )	0	1/1/0	610D62
+HexEncode ( "abc" )	0	1/1/0	616263
+HexEncode ( Char ( 13 ) )	0	1/1/0	0D
+HexEncode ( Char ( 10 ) )	0	1/1/0	0A
+HexEncode ( 1/3 )	0	1/1/0	2E33333333333333333333333333333333
+HexEncode ( Date ( 1 ; 2 ; 2003 ) )	0	1/1/0	312F322F32303033
+HexEncode ( 1 = 1 )	0	1/1/0	31
+HexEncode ( HexDecode ( "00ff10" ; "key.data" ) )	0	1/1/0	00FF10
+HexEncode ( HexDecode ( "" ; "a" ) )	0	1/1/0	
+HexDecode ( "46696C654D616B6572" )	0	1/1/0	FileMaker
+HexDecode ( "46696c654d616b6572" )	0	1/1/0	FileMaker
+HexDecode ( "466" )	17	2/2/0	?
+HexDecode ( "46 69" )	0	1/1/0	Fi
+HexDecode ( "4G" )	17	2/2/0	?
+HexDecode ( "" )	0	1/1/0	
+HexDecode ( "c3a9" )	0	1/1/0	é
+HexDecode ( "ff" )	0	1/1/0	�
+HexDecode ( "0x46" )	17	2/2/0	?
+HexDecode ( " 4 6 " )	17	2/2/0	?
+HexDecode ( "4 6" )	0	1/1/0	F
+HexDecode ( "46:69" )	17	2/2/0	?
+HexDecode ( "46-69" )	17	2/2/0	?
+HexDecode ( "-" )	17	2/2/0	?
+HexDecode ( "00" )	0	1/1/0	\u0000
+HexDecode ( " 46" )	0	1/1/0	F
+HexDecode ( "46 " )	17	2/2/0	?
+HexDecode ( "4 6 " )	17	2/2/0	?
+HexDecode ( "4669 " )	0	1/1/0	Fi
+HexDecode ( " 4669" )	0	1/1/0	Fi
+HexDecode ( "46  69" )	0	1/1/0	Fi
+HexDecode ( "46 6" )	17	2/2/0	?
+HexDecode ( "466 9" )	0	1/1/0	Fi
+HexDecode ( "4 669" )	0	1/1/0	Fi
+HexDecode ( "4669  " )	0	1/1/0	Fi
+HexDecode ( "466971 " )	17	2/2/0	?
+HexDecode ( "46  " )	17	2/2/0	?
+HexDecode ( "c3a9 " )	0	1/1/0	é
+HexDecode ( "41 " )	17	2/2/0	?
+HexDecode ( "¶46" )	0	1/1/0	F
+HexDecode ( "46¶" )	17	2/2/0	?
+HexDecode ( 46 )	0	1/1/0	F
+HexDecode ( "46" & Char ( 9 ) & "69" )	0	1/1/0	Fi
+HexDecode ( "46" & Char ( 10 ) & "69" )	0	1/1/0	Fi
+HexDecode ( "46" & Char ( 160 ) & "69" )	17	2/2/0	?
+HexDecode ( "46" & Char ( 9 ) )	17	2/2/0	?
+HexDecode ( "4" & Char ( 9 ) & "6" )	0	1/1/0	F
+Length ( HexDecode ( "00" ) )	0	2/2/0	1
+Length ( HexDecode ( "410042" ) )	0	2/2/0	3
+HexEncode ( HexDecode ( "00" ) )	0	1/1/0	00
+HexEncode ( HexDecode ( "4100" ) )	0	1/1/0	4100
+HexEncode ( HexDecode ( "c3" ) )	0	1/1/0	EFBFBD
+HexEncode ( HexDecode ( "c341" ) )	0	1/1/0	EFBFBD41
+HexEncode ( HexDecode ( "c328" ) )	0	1/1/0	EFBFBD28
+HexEncode ( HexDecode ( "e282" ) )	0	1/1/0	EFBFBD
+HexEncode ( HexDecode ( "e28241" ) )	0	1/1/0	EFBFBD41
+HexEncode ( HexDecode ( "f0908080" ) )	0	1/1/0	F0908080
+HexEncode ( HexDecode ( "f09080" ) )	0	1/1/0	EFBFBD
+HexEncode ( HexDecode ( "eda080" ) )	0	1/1/0	EFBFBDEFBFBDEFBFBD
+HexEncode ( HexDecode ( "c0af" ) )	0	1/1/0	EFBFBDEFBFBD
+HexEncode ( HexDecode ( "e080af" ) )	0	1/1/0	EFBFBDEFBFBDEFBFBD
+HexEncode ( HexDecode ( "f4908080" ) )	0	1/1/0	EFBFBDEFBFBDEFBFBDEFBFBD
+HexEncode ( HexDecode ( "f8888080" ) )	0	1/1/0	EFBFBDEFBFBDEFBFBDEFBFBD
+HexEncode ( HexDecode ( "80" ) )	0	1/1/0	EFBFBD
+HexEncode ( HexDecode ( "8080" ) )	0	1/1/0	EFBFBDEFBFBD
+HexEncode ( HexDecode ( "fe" ) )	0	1/1/0	EFBFBD
+HexEncode ( HexDecode ( "efbbbf41" ) )	0	1/1/0	EFBBBF41
+HexEncode ( HexDecode ( "0d0a" ) )	0	1/1/0	0D
+HexEncode ( HexDecode ( "0a" ) )	0	1/1/0	0D
+HexEncode ( HexDecode ( "0d0d0a0a" ) )	0	1/1/0	0D0D0D
+HexEncode ( HexDecode ( "0a0d" ) )	0	1/1/0	0D0D
+HexEncode ( HexDecode ( "e280a8" ) )	0	1/1/0	E280A8
+HexEncode ( HexDecode ( "c285" ) )	0	1/1/0	C285
+HexEncode ( HexDecode ( "09" ) )	0	1/1/0	09
+HexEncode ( HexDecode ( "7f" ) )	0	1/1/0	7F
+HexEncode ( HexDecode ( "efbfbe" ) )	0	1/1/0	EFBFBE
+HexEncode ( HexDecode ( "f09f9880" ) )	0	1/1/0	F09F9880
+HexEncode ( HexDecode ( "46 " ; "a" ) )	17	1/1/0	3F
+HexEncode ( HexDecode ( "4 6 " ; "a" ) )	17	1/1/0	3F
+HexEncode ( HexDecode ( "4669 " ; "a" ) )	0	1/1/0	4669
+HexEncode ( HexDecode ( "46 6" ; "a" ) )	17	1/1/0	3F
+HexEncode ( HexDecode ( "466" ; "a" ) )	17	1/1/0	3F
+HexEncode ( HexDecode ( "4G" ; "a" ) )	17	1/1/0	3F
+HexEncode ( HexDecode ( "466971 " ; "a" ) )	17	1/1/0	3F
+HexEncode ( HexDecode ( "00ff10" ; "a" ) )	0	1/1/0	00FF10
+HexDecode ( "46696C654D616B6572" ; "key.data" )	0	6/6/0	key.data
+GetAsText ( HexDecode ( "00ff10" ; "key.data" ) )	0	1/1/0	key.data
+HexDecode ( "61" ; "a/b/c.txt" )	0	6/6/0	c.txt
+# container values
+HexDecode ( "00" ; "a" ) = HexDecode ( "01" ; "a" )	0	2/2/0	0
+HexDecode ( "00" ; "a" ) = HexDecode ( "00" ; "b" )	0	2/2/0	0
+HexDecode ( "00" ; "a" ) = HexDecode ( "00" ; "a" )	0	2/2/0	1
+HexDecode ( "00" ; "a" ) < HexDecode ( "01" ; "a" )	0	2/2/0	0
+HexDecode ( "01" ; "a" ) > HexDecode ( "00" ; "a" )	0	2/2/0	0
+HexDecode ( "01" ; "a" ) ≥ HexDecode ( "00" ; "a" )	0	2/2/0	1
+HexDecode ( "01" ; "a" ) ≤ HexDecode ( "00" ; "a" )	0	2/2/0	1
+HexDecode ( "01" ; "a" ) ≠ HexDecode ( "00" ; "a" )	0	2/2/0	1
+HexDecode ( "01" ; "a" ) ≠ HexDecode ( "01" ; "a" )	0	2/2/0	0
+HexDecode ( "01" ; "a" ) < HexDecode ( "01" ; "a" )	0	2/2/0	0
+HexDecode ( "61" ; "a" ) = Base64Decode ( "YQ==" ; "a" )	0	2/2/0	1
+HexDecode ( "61" ; "a.png" ) = HexDecode ( "61" ; "a.txt" )	0	2/2/0	0
+HexDecode ( "61" ; "a" ) = "a"	0	2/2/0	1
+HexDecode ( "3132" ; "x" ) = "12"	0	2/2/0	0
+HexDecode ( "3132" ; "x" ) = 12	0	2/2/0	0
+HexDecode ( "61" ; "5" ) = 0	0	2/2/0	1
+HexDecode ( "61" ; "5" ) = 5	0	2/2/0	0
+HexDecode ( "61" ; "a" ) & "x"	0	1/1/0	ax
+HexDecode ( "61" ; "5" ) + 1	0	2/2/0	1
+HexDecode ( "61" ; "5" ) * 2	0	2/2/0	0
+GetAsNumber ( HexDecode ( "3132" ; "99" ) )	0	2/2/0	0
+GetAsText ( HexDecode ( "3132" ; "99" ) )	0	1/1/0	99
+Upper ( HexDecode ( "616263" ; "x" ) )	0	1/1/0	X
+HexDecode ( "" ; "a" ) = HexDecode ( "" ; "a" )	0	2/2/0	1
+# CryptDigest
+HexEncode ( CryptDigest ( "abc" ; "" ) )	0	1/1/0	DDAF35A193617ABACC417349AE20413112E6FA4E89A97EA20A9EEEE64B55D39A2192992A274FC1A836BA3C23A3FEEBBD454D4423643CE80E2A9AC94FA54CA49F
+HexEncode ( CryptDigest ( "abc" ; "MD5" ) )	0	1/1/0	900150983CD24FB0D6963F7D28E17F72
+HexEncode ( CryptDigest ( "abc" ; "md5" ) )	0	1/1/0	900150983CD24FB0D6963F7D28E17F72
+HexEncode ( CryptDigest ( "abc" ; "SHA1" ) )	0	1/1/0	A9993E364706816ABA3E25717850C26C9CD0D89D
+HexEncode ( CryptDigest ( "abc" ; "SHA224" ) )	0	1/1/0	23097D223405D8228642A477BDA255B32AADBCE4BDA0B3F7E36C9DA7
+HexEncode ( CryptDigest ( "abc" ; "SHA256" ) )	0	1/1/0	BA7816BF8F01CFEA414140DE5DAE2223B00361A396177A9CB410FF61F20015AD
+HexEncode ( CryptDigest ( "abc" ; "SHA384" ) )	0	1/1/0	CB00753F45A35E8BB5A03D699AC65007272C32AB0EDED1631A8B605A43FF5BED8086072BA1E7CC2358BAECA134C825A7
+HexEncode ( CryptDigest ( "abc" ; "SHA512" ) )	0	1/1/0	DDAF35A193617ABACC417349AE20413112E6FA4E89A97EA20A9EEEE64B55D39A2192992A274FC1A836BA3C23A3FEEBBD454D4423643CE80E2A9AC94FA54CA49F
+HexEncode ( CryptDigest ( "abc" ; "sha512" ) )	0	1/1/0	DDAF35A193617ABACC417349AE20413112E6FA4E89A97EA20A9EEEE64B55D39A2192992A274FC1A836BA3C23A3FEEBBD454D4423643CE80E2A9AC94FA54CA49F
+HexEncode ( CryptDigest ( "abc" ; "Sha256" ) )	0	1/1/0	BA7816BF8F01CFEA414140DE5DAE2223B00361A396177A9CB410FF61F20015AD
+HexEncode ( CryptDigest ( "abc" ; "SHA-256" ) )	4	1/1/0	3F
+HexEncode ( CryptDigest ( "abc" ; "SHA3-256" ) )	4	1/1/0	3F
+HexEncode ( CryptDigest ( "abc" ; "MD4" ) )	4	1/1/0	3F
+HexEncode ( CryptDigest ( "abc" ; "RIPEMD160" ) )	4	1/1/0	3F
+HexEncode ( CryptDigest ( "abc" ; "SHA" ) )	4	1/1/0	3F
+HexEncode ( CryptDigest ( "abc" ; " SHA256" ) )	4	1/1/0	3F
+HexEncode ( CryptDigest ( "abc" ; "SHA256 " ) )	4	1/1/0	3F
+HexEncode ( CryptDigest ( "abc" ; "xyz" ) )	4	1/1/0	3F
+CryptDigest ( "abc" ; "xyz" )	4	2/2/0	?
+CryptDigest ( "abc" ; "SHA256" )	0	6/6/0	digest.data
+CryptDigest ( "" ; "SHA256" )	0	6/6/0	digest.data
+HexEncode ( CryptDigest ( "" ; "SHA256" ) )	0	1/1/0	E3B0C44298FC1C149AFBF4C8996FB92427AE41E4649B934CA495991B7852B855
+HexEncode ( CryptDigest ( "é" ; "MD5" ) )	0	1/1/0	66DDCD97CFDEABB2F6FB8A999B4BC76F
+HexEncode ( CryptDigest ( "a¶b" ; "MD5" ) )	0	1/1/0	2132B3BDA00D60E52785208164BFF1C8
+HexEncode ( CryptDigest ( 12 ; "MD5" ) )	0	1/1/0	C20AD4D76FE97759AA27A0C99BFF6710
+HexEncode ( CryptDigest ( HexDecode ( "00ff" ; "a" ) ; "MD5" ) )	0	1/1/0	D07D34EFAC6328007AD67C7E0A985E00
+HexEncode ( CryptDigest ( HexDecode ( "" ; "a" ) ; "MD5" ) )	0	1/1/0	D41D8CD98F00B204E9800998ECF8427E
+Base64EncodeRFC ( 4648 ; CryptDigest ( "abc" ; "SHA512" ) )	0	1/1/0	3a81oZNherrMQXNJriBBMRLm+k6JqX6iCp7u5ktV05ohkpkqJ0/BqDa6PCOj/uu9RU1EI2Q86A4qmslPpUyknw==
+GetAsText ( CryptDigest ( "abc" ; "SHA256" ) )	0	1/1/0	digest.data
+HexEncode ( CryptDigest ( "abc" ; 5 ) )	4	1/1/0	3F
+# CryptAuthCode
+HexEncode ( CryptAuthCode ( "abc" ; "" ; "key" ) )	0	1/1/0	3926A207C8C42B0C41792CBD3E1A1AAAF5F7A25704F62DFC939C4987DD7CE060009C5BB1C2447355B3216F10B537E9AFA7B64A4E5391B0D631172D07939E087A
+HexEncode ( CryptAuthCode ( "abc" ; "MD5" ; "key" ) )	0	1/1/0	D2FE98063F876B03193AFB49B4979591
+HexEncode ( CryptAuthCode ( "abc" ; "SHA1" ; "key" ) )	0	1/1/0	4FD0B215276EF12F2B3E4C8ECAC2811498B656FC
+HexEncode ( CryptAuthCode ( "abc" ; "SHA224" ; "key" ) )	0	1/1/0	F524670B7E34F31467DE0AA96593861CF65117D414FB2D86158D760E
+HexEncode ( CryptAuthCode ( "abc" ; "SHA256" ; "key" ) )	0	1/1/0	9C196E32DC0175F86F4B1CB89289D6619DE6BEE699E4C378E68309ED97A1A6AB
+HexEncode ( CryptAuthCode ( "abc" ; "SHA384" ; "key" ) )	0	1/1/0	30DDB9C8F347CFFBFB44E519D814F074CF4047A55D6F563324F1C6A33920E5EDFB2A34BAC60BDC96CD33A95623D7D638
+HexEncode ( CryptAuthCode ( "abc" ; "SHA512" ; "key" ) )	0	1/1/0	3926A207C8C42B0C41792CBD3E1A1AAAF5F7A25704F62DFC939C4987DD7CE060009C5BB1C2447355B3216F10B537E9AFA7B64A4E5391B0D631172D07939E087A
+HexEncode ( CryptAuthCode ( "abc" ; "sha1" ; "key" ) )	0	1/1/0	4FD0B215276EF12F2B3E4C8ECAC2811498B656FC
+HexEncode ( CryptAuthCode ( "abc" ; "zz" ; "key" ) )	4	1/1/0	3F
+CryptAuthCode ( "abc" ; "SHA256" ; "key" )	0	6/6/0	hmac.data
+HexEncode ( CryptAuthCode ( "abc" ; "MD5" ; "" ) )	0	1/1/0	616263
+HexEncode ( CryptAuthCode ( "" ; "SHA256" ; "" ) )	0	1/1/0	
+HexEncode ( CryptAuthCode ( "abc" ; "SHA256" ; HexDecode ( "6b6579" ; "key.data" ) ) )	0	1/1/0	9C196E32DC0175F86F4B1CB89289D6619DE6BEE699E4C378E68309ED97A1A6AB
+HexEncode ( CryptAuthCode ( "abc" ; "SHA256" ; HexDecode ( "6b6579" ) ) )	0	1/1/0	9C196E32DC0175F86F4B1CB89289D6619DE6BEE699E4C378E68309ED97A1A6AB
+HexEncode ( CryptAuthCode ( "abc" ; "SHA256" ; 12 ) )	0	1/1/0	24E32A7B4EDEB01F63A46991B135F2A93A4318317EA1654FD6C6618DA5BC461C
+HexEncode ( CryptAuthCode ( "abc" ; "SHA256" ; "01234567890123456789012345678901234567890123456789012345678901234567890123456789012345678901234567890123456789012345678901234567890123456789012345678901234567890123456789012345678901234567890123456789" ) )	0	1/1/0	627384F52861D0A2BD05C8FF862ABA17B75D7DFCF83C0316952623A60720DFF4
+HexEncode ( CryptAuthCode ( HexDecode ( "00ff" ; "a" ) ; "SHA1" ; "k" ) )	0	1/1/0	75CFCD102A35A6BEC1A31D91B6618C929CD359B1
+HexEncode ( CryptAuthCode ( "é" ; "SHA1" ; "é" ) )	0	1/1/0	5F8B86502CA047BFECFACC2C486070320EE62471
+CryptAuthCode ( "abc" ; "zz" ; "key" )	4	2/2/0	?
+# CryptEncrypt and CryptDecrypt
+CryptDecrypt ( CryptEncrypt ( "abc" ; "key" ) ; "key" )	0	1/6/0	abc
+CryptDecryptBase64 ( CryptEncryptBase64 ( "abc" ; "key" ) ; "key" )	0	1/6/0	abc
+CryptDecrypt ( CryptEncrypt ( "" ; "key" ) ; "key" )	0	1/1/0	
+CryptDecryptBase64 ( CryptEncryptBase64 ( "" ; "key" ) ; "key" )	0	1/1/0	
+CryptDecrypt ( CryptEncrypt ( "é😀" ; "key" ) ; "key" )	0	1/6/0	é😀
+CryptDecryptBase64 ( CryptEncryptBase64 ( "é😀" ; "key" ) ; "key" )	0	1/6/0	é😀
+CryptDecrypt ( CryptEncrypt ( "a¶b" ; "key" ) ; "key" )	0	1/6/0	a\rb
+CryptDecryptBase64 ( CryptEncryptBase64 ( "a¶b" ; "key" ) ; "key" )	0	1/6/0	a\rb
+CryptDecrypt ( CryptEncrypt ( "0123456789012345678901234567890123456789012345678901234567890123456789012345678901234567890123456789" ; "key" ) ; "key" )	0	1/6/0	0123456789012345678901234567890123456789012345678901234567890123456789012345678901234567890123456789
+CryptDecryptBase64 ( CryptEncryptBase64 ( "0123456789012345678901234567890123456789012345678901234567890123456789012345678901234567890123456789" ; "key" ) ; "key" )	0	1/6/0	0123456789012345678901234567890123456789012345678901234567890123456789012345678901234567890123456789
+CryptDecrypt ( CryptEncrypt ( "This needs protection" ; "key" ) ; "key" )	0	1/6/0	This needs protection
+CryptDecryptBase64 ( CryptEncryptBase64 ( "This needs protection" ; "key" ) ; "key" )	0	1/6/0	This needs protection
+CryptDecrypt ( CryptEncrypt ( "This needs protection" ; "My secret password" ) ; "My secret password" )	0	1/6/0	This needs protection
+CryptDecryptBase64 ( CryptEncryptBase64 ( "This needs protection" ; "My secret password" ) ; "My secret password" )	0	1/6/0	This needs protection
+CryptDecrypt ( CryptEncrypt ( 12 ; "key" ) ; "key" )	0	1/6/0	12
+CryptDecrypt ( CryptEncrypt ( 1/3 ; "key" ) ; "key" )	0	1/6/0	.3333333333333333
+CryptDecrypt ( CryptEncrypt ( Date ( 1 ; 2 ; 2003 ) ; "key" ) ; "key" )	0	1/6/0	1/2/2003
+CryptDecrypt ( CryptEncrypt ( "abc" ; "é" ) ; "é" )	0	1/6/0	abc
+CryptDecrypt ( CryptEncrypt ( "abc" ; 12 ) ; "12" )	0	1/6/0	abc
+CryptDecrypt ( CryptEncrypt ( "abc" ; HexDecode ( "6b6579" ; "k" ) ) ; "key" )	0	1/6/0	abc
+CryptDecrypt ( CryptEncrypt ( HexDecode ( "00ff10" ; "x.bin" ) ; "key" ) ; "key" )	0	6/6/0	x.bin
+HexEncode ( CryptDecrypt ( CryptEncrypt ( HexDecode ( "00ff10" ; "x.bin" ) ; "key" ) ; "key" ) )	0	1/1/0	00FF10
+CryptDecrypt ( CryptEncrypt ( HexDecode ( "" ; "e.bin" ) ; "key" ) ; "key" )	0	6/6/0	e.bin
+CryptDecrypt ( CryptEncrypt ( HexDecode ( "61" ; "é.bin" ) ; "key" ) ; "key" )	0	6/6/0	é.bin
+CryptDecrypt ( CryptEncrypt ( "abc" ; "key" ) ; "wrong" )	0	2/2/0	?
+CryptDecrypt ( CryptEncrypt ( "abc" ; "key" ) ; "" )	0	2/2/0	?
+CryptEncrypt ( "abc" ; "" )	0	2/2/0	?
+CryptDecrypt ( "abc" ; "key" )	0	2/2/0	?
+CryptDecrypt ( "" ; "key" )	0	1/1/0	
+CryptDecrypt ( HexDecode ( "00" ; "a" ) ; "key" )	0	2/2/0	?
+CryptEncrypt ( "" ; "key" )	0	1/1/0	
+CryptEncryptBase64 ( "" ; "key" )	0	1/1/0	
+CryptDecryptBase64 ( "" ; "key" )	0	1/1/0	
+CryptDecryptBase64 ( "abc" ; "key" )	17	2/2/0	?
+CryptDecryptBase64 ( "QUJD" ; "key" )	0	2/2/0	?
+CryptEncrypt ( "abc" ; "key" )	0	6/6/0	encrypted.data
+GetAsText ( CryptEncrypt ( "abc" ; "key" ) )	0	1/1/0	encrypted.data
+CryptDecryptBase64 ( Base64EncodeRFC ( 2045 ; CryptEncrypt ( "abc" ; "key" ) ) ; "key" )	0	1/6/0	abc
+CryptDecrypt ( Base64Decode ( CryptEncryptBase64 ( "abc" ; "key" ) ; "e" ) ; "key" )	0	1/6/0	abc
+Length ( HexEncode ( CryptEncrypt ( "abc" ; "key" ) ) ) ≥ 144 and Length ( HexEncode ( CryptEncrypt ( "abc" ; "key" ) ) ) ≤ 174	0	2/2/0	1
+Length ( CryptEncryptBase64 ( "abc" ; "key" ) ) ≥ 96	0	2/2/0	1
+CryptDecryptBase64 ( "hMfHJpgzDC2D/d1ns6JqQV/SSBqRCTeSH2XwDI5zxK0kL+zNBN0fvozsTK3eLc5KEmp5a78Lk6wqk0ukpF2L72II+kABy3Em2k0Sy0oaw6Le0DJ7wQ==" ; "key" )	0	1/6/0	abc
+CryptDecryptBase64 ( "cQ5yTC4pzXBPMIsRdr5WkX5Ox2tNWNiLLcUZJsa0eOoqjWS7QBQ4bh+riJFNVwaHGFSIUiZUjwNxy0tBKptuh6YVuzGLCgBLdUtRehMfzsrZNSQDJUMYfNLiDrS6Ng==" ; "My secret password" )	0	1/6/0	This needs protection
+HexEncode ( CryptDecrypt ( HexDecode ( "20C4F0F53EF8D471D3661F1945F5ADE53F4BF221634B5C14A03111066564899D1E67071C299A5137324FA5B0AFD5AD634AD73E5D24459D147EA752AFEC3F5B9F2C3B8AC5A7C6DE116A171BD1F6A3DB41376EF3CBD108746190A9" ; "e.data" ) ; "key" ) )	0	1/1/0	00FF10
+CryptDecrypt ( HexDecode ( "20C4F0F53EF8D471D3661F1945F5ADE53F4BF221634B5C14A03111066564899D1E67071C299A5137324FA5B0AFD5AD634AD73E5D24459D147EA752AFEC3F5B9F2C3B8AC5A7C6DE116A171BD1F6A3DB41376EF3CBD108746190A9" ; "e.data" ) ; "key" )	0	6/6/0	x.bin
+HexEncode ( CryptDecrypt ( HexDecode ( "B2432E0AF145F37B32F08B42ED06AE8E44401C05B44EE931121C77FD84B38F0EE07F71A4588879AF0CFD1EB55CFA9D9D9EC47DCF484872ED4C467C4391CFC54FFD8C0F9C3193412E82B05D1E51D64FB6E59F97D869EF8F115827E9201CCBCD6A9A9B" ; "e.data" ) ; "key" ) )	0	1/1/0	00FF10
+CryptDecrypt ( HexDecode ( "B2432E0AF145F37B32F08B42ED06AE8E44401C05B44EE931121C77FD84B38F0EE07F71A4588879AF0CFD1EB55CFA9D9D9EC47DCF484872ED4C467C4391CFC54FFD8C0F9C3193412E82B05D1E51D64FB6E59F97D869EF8F115827E9201CCBCD6A9A9B" ; "e.data" ) ; "key" )	0	6/6/0	longfilename.bin
+HexEncode ( CryptDecrypt ( HexDecode ( "4FD3F736773DDFCD8B0A47EB8BDEA6F125ACA997F4A25B72B31B17594BC364DA2444132C2BF63D689674CF24A663E7BE6A605B75EE4CAE676A370AF9ECA1D13796BF6D767812424F83503C5F4316369622" ; "e.data" ) ; "key" ) )	0	1/1/0	00EFBFBD10
+CryptDecrypt ( HexDecode ( "4FD3F736773DDFCD8B0A47EB8BDEA6F125ACA997F4A25B72B31B17594BC364DA2444132C2BF63D689674CF24A663E7BE6A605B75EE4CAE676A370AF9ECA1D13796BF6D767812424F83503C5F4316369622" ; "e.data" ) ; "key" )	0	1/6/0	\u0000�\u0010
+HexEncode ( CryptDecrypt ( HexDecode ( "9868F37AF46BBB38364B411D35851C5D771D03882B703DE50EFB79112659619E1CF26FC76C963EE5720468B6ADDDD41A4C5B088DB5FF2B9931652D30C40B0EF9DA2E56049D0DD995" ; "e.data" ) ; "key" ) )	0	1/1/0	616263
+CryptDecrypt ( HexDecode ( "9868F37AF46BBB38364B411D35851C5D771D03882B703DE50EFB79112659619E1CF26FC76C963EE5720468B6ADDDD41A4C5B088DB5FF2B9931652D30C40B0EF9DA2E56049D0DD995" ; "e.data" ) ; "key" )	0	1/6/0	abc
+# TextEncode and TextDecode
+HexEncode ( TextEncode ( "aé" ; "utf-8" ; 1 ) )	0	1/1/0	61C3A9
+HexEncode ( TextEncode ( "aé" ; "UTF-8" ; 1 ) )	0	1/1/0	61C3A9
+HexEncode ( TextEncode ( "aé" ; "iso-8859-1" ; 1 ) )	0	1/1/0	61E9
+HexEncode ( TextEncode ( "aé" ; "windows-1252" ; 1 ) )	0	1/1/0	61E9
+HexEncode ( TextEncode ( "aé" ; "windows-1251" ; 1 ) )	0	1/1/0	612765
+HexEncode ( TextEncode ( "aé" ; "macintosh" ; 1 ) )	0	1/1/0	618E
+HexEncode ( TextEncode ( "aé" ; "shift_jis" ; 1 ) )	0	1/1/0	61814C65
+HexEncode ( TextEncode ( "aé" ; "gb18030" ; 1 ) )	0	1/1/0	61A8A6
+HexEncode ( TextEncode ( "aé" ; "euc-kr" ; 1 ) )	0	1/1/0	61A2A565
+HexEncode ( TextEncode ( "aé" ; "big5" ; 1 ) )	0	1/1/0	612765
+HexEncode ( TextEncode ( "aé" ; "utf8" ; 1 ) )	4	1/1/0	3F
+HexEncode ( TextEncode ( "aé" ; "latin1" ; 1 ) )	4	1/1/0	3F
+HexEncode ( TextEncode ( "aé" ; "utf-16" ; 1 ) )	4	1/1/0	3F
+HexEncode ( TextEncode ( "aé" ; "" ; 1 ) )	4	1/1/0	3F
+TextEncode ( "abc" ; "utf-8" ; 1 )	0	6/6/0	utf-8.txt
+TextEncode ( "abc" ; "UTF-8" ; 1 )	0	6/6/0	utf-8.txt
+TextEncode ( "abc" ; "Shift_JIS" ; 1 )	0	6/6/0	shift_jis.txt
+TextEncode ( "abc" ; "xyz" ; 1 )	4	2/2/0	?
+TextEncode ( "" ; "utf-8" ; 1 )	0	6/6/0	utf-8.txt
+HexEncode ( TextEncode ( "" ; "utf-8" ; 1 ) )	0	1/1/0	
+HexEncode ( TextEncode ( "a" & Char ( 10 ) & "b" & Char ( 13 ) & Char ( 10 ) & "c" & Char ( 13 ) & "d" ; "utf-8" ; 1 ) )	0	1/1/0	610A620D0A630D64
+HexEncode ( TextEncode ( "a" & Char ( 10 ) & "b" & Char ( 13 ) & Char ( 10 ) & "c" & Char ( 13 ) & "d" ; "utf-8" ; 2 ) )	0	1/1/0	610D620D630D64
+HexEncode ( TextEncode ( "a" & Char ( 10 ) & "b" & Char ( 13 ) & Char ( 10 ) & "c" & Char ( 13 ) & "d" ; "utf-8" ; 3 ) )	0	1/1/0	610A620A630A64
+HexEncode ( TextEncode ( "a" & Char ( 10 ) & "b" & Char ( 13 ) & Char ( 10 ) & "c" & Char ( 13 ) & "d" ; "utf-8" ; 4 ) )	0	1/1/0	610D0A620D0A630D0A64
+HexEncode ( TextEncode ( "a" & Char ( 10 ) & "b" & Char ( 13 ) & Char ( 10 ) & "c" & Char ( 13 ) & "d" ; "utf-8" ; 5 ) )	0	1/1/0	610A620D0A630D64
+HexEncode ( TextEncode ( "a" & Char ( 10 ) & "b" & Char ( 13 ) & Char ( 10 ) & "c" & Char ( 13 ) & "d" ; "utf-8" ; 0 ) )	0	1/1/0	610A620D0A630D64
+HexEncode ( TextEncode ( "a" & Char ( 10 ) & "b" & Char ( 13 ) & Char ( 10 ) & "c" & Char ( 13 ) & "d" ; "utf-8" ; "" ) )	0	1/1/0	610A620D0A630D64
+HexEncode ( TextEncode ( "a" & Char ( 10 ) & "b" & Char ( 13 ) & Char ( 10 ) & "c" & Char ( 13 ) & "d" ; "utf-8" ; 3.7 ) )	0	1/1/0	610A620A630A64
+HexEncode ( TextEncode ( "a" & Char ( 10 ) & "b" & Char ( 13 ) & Char ( 10 ) & "c" & Char ( 13 ) & "d" ; "utf-8" ; -3 ) )	0	1/1/0	610A620D0A630D64
+HexEncode ( TextEncode ( "a" & Char ( 8232 ) & "b" & Char ( 8233 ) & "c" ; "utf-8" ; 3 ) )	0	1/1/0	610A620A63
+HexEncode ( TextEncode ( "a" & Char ( 11 ) & "b" ; "utf-8" ; 3 ) )	0	1/1/0	610B62
+HexEncode ( TextEncode ( "日本語ｱ" ; "shift_jis" ; 1 ) )	0	1/1/0	93FA967B8CEAB1
+HexEncode ( TextEncode ( "한국어" ; "euc-kr" ; 1 ) )	0	1/1/0	C7D1B1B9BEEE
+HexEncode ( TextEncode ( "中文" ; "gb18030" ; 1 ) )	0	1/1/0	D6D0CEC4
+HexEncode ( TextEncode ( "😀" ; "gb18030" ; 1 ) )	0	1/1/0	9439FC36
+HexEncode ( TextEncode ( "中文" ; "big5" ; 1 ) )	0	1/1/0	A4A4A4E5
+HexEncode ( TextEncode ( "aжb" ; "windows-1251" ; 1 ) )	0	1/1/0	61E662
+HexEncode ( TextEncode ( "ž" ; "windows-1252" ; 1 ) )	0	1/1/0	9E
+HexEncode ( TextEncode ( "ä" ; "macintosh" ; 1 ) )	0	1/1/0	8A
+HexEncode ( TextEncode ( "〜−¥" ; "shift_jis" ; 1 ) )	0	1/1/0	8160817C5C
+HexEncode ( TextEncode ( "€" ; "iso-8859-1" ; 1 ) )	0	1/1/0	455552
+HexEncode ( TextEncode ( "Ω日" ; "iso-8859-1" ; 1 ) )	0	1/1/0	
+HexEncode ( TextEncode ( "e" & Char ( 769 ) ; "iso-8859-1" ; 1 ) )	0	1/1/0	65
+HexEncode ( TextEncode ( HexDecode ( "c3a9" ; "a" ) ; "utf-8" ; 1 ) )	0	1/1/0	61
+HexEncode ( TextEncode ( 1/4 ; "utf-8" ; 1 ) )	0	1/1/0	2E3235
+HexEncode ( TextDecode ( HexDecode ( "e9" ; "a" ) ; "iso-8859-1" ) )	0	1/1/0	C3A9
+HexEncode ( TextDecode ( HexDecode ( "e9" ; "a" ) ; "utf-8" ) )	17	1/1/0	3F
+HexEncode ( TextDecode ( HexDecode ( "c3a9" ; "a" ) ; "utf-8" ) )	0	1/1/0	C3A9
+HexEncode ( TextDecode ( HexDecode ( "c3a9" ; "a" ) ; "" ) )	4	1/1/0	3F
+HexEncode ( TextDecode ( HexDecode ( "c3a9" ; "a" ) ; "xyz" ) )	4	1/1/0	3F
+HexEncode ( TextDecode ( HexDecode ( "610d0a62" ; "a" ) ; "utf-8" ) )	0	1/1/0	610D62
+HexEncode ( TextDecode ( HexDecode ( "610a62" ; "a" ) ; "utf-8" ) )	0	1/1/0	610D62
+HexEncode ( TextDecode ( HexDecode ( "0d0d0a0a" ; "a" ) ; "utf-8" ) )	0	1/1/0	0D0D0D
+HexEncode ( TextDecode ( HexDecode ( "efbbbf61" ; "a" ) ; "utf-8" ) )	0	1/1/0	EFBBBF61
+HexEncode ( TextDecode ( HexDecode ( "80818d8f909d9f" ; "a" ) ; "windows-1252" ) )	0	1/1/0	E282ACC5B8
+HexEncode ( TextDecode ( HexDecode ( "80818d8f909d9f" ; "a" ) ; "iso-8859-1" ) )	0	1/1/0	C280C281C28DC28FC290C29DC29F
+HexEncode ( TextDecode ( HexDecode ( "8e80db" ; "a" ) ; "macintosh" ) )	0	1/1/0	C3A9C384C2A4
+HexEncode ( TextDecode ( HexDecode ( "93fa967b8cea815f8160817c" ; "a" ) ; "shift_jis" ) )	0	1/1/0	E697A5E69CACE8AA9EEFBCBCE3809CE28892
+HexEncode ( TextDecode ( HexDecode ( "5c7e" ; "a" ) ; "shift_jis" ) )	0	1/1/0	C2A5E280BE
+HexEncode ( TextDecode ( HexDecode ( "ff" ; "a" ) ; "shift_jis" ) )	0	1/6/0	
+HexEncode ( TextDecode ( HexDecode ( "81" ; "a" ) ; "shift_jis" ) )	17	1/1/0	3F
+HexEncode ( TextDecode ( HexDecode ( "c7d1b1b9beee" ; "a" ) ; "euc-kr" ) )	0	1/1/0	ED959CEAB5ADEC96B4
+HexEncode ( TextDecode ( HexDecode ( "c7d1b1b9be" ; "a" ) ; "euc-kr" ) )	17	1/1/0	3F
+HexEncode ( TextDecode ( HexDecode ( "d6d0cec4a2e3" ; "a" ) ; "gb18030" ) )	0	1/1/0	E4B8ADE69687E282AC
+HexEncode ( TextDecode ( HexDecode ( "a4a4a4e5" ; "a" ) ; "big5" ) )	0	1/1/0	E4B8ADE69687
+HexEncode ( TextDecode ( HexDecode ( "c0e188" ; "a" ) ; "windows-1251" ) )	0	1/1/0	D090D0B1E282AC
+HexEncode ( TextDecode ( HexDecode ( "00" ; "a" ) ; "utf-8" ) )	0	1/1/0	00
+HexEncode ( TextDecode ( HexDecode ( "" ; "a" ) ; "utf-8" ) )	2	2/2/0	?
+HexEncode ( TextDecode ( HexDecode ( "c3" ; "a" ) ; "utf-8" ) )	17	1/1/0	3F
+HexEncode ( TextDecode ( HexDecode ( "c341" ; "a" ) ; "utf-8" ) )	0	1/1/0	41
+TextDecode ( "abc" ; "utf-8" )	0	1/1/0	abc
+TextDecode ( "" ; "utf-8" )	0	1/1/0	
+TextDecode ( 12 ; "utf-8" )	0	1/2/0	12
+TextDecode ( "é" ; "iso-8859-1" )	0	1/1/0	Ã©
+TextDecode ( TextEncode ( "é" ; "iso-8859-1" ; 1 ) ; "iso-8859-1" )	0	1/6/0	é
+TextDecode ( TextEncode ( "日本語" ; "shift_jis" ; 1 ) ; "shift_jis" )	0	1/6/0	日本語
+TextDecode ( HexDecode ( "41" ; "a" ) ; "" )	4	2/2/0	?
+# line breaks by function
+Base64EncodeRFC ( 4648 ; "a¶b" )	0	1/1/0	YQ1i
+Base64EncodeRFC ( 4648 ; Char ( 10 ) )	0	1/1/0	Cg==
+Base64EncodeRFC ( 4648 ; "a" & Char ( 13 ) & Char ( 10 ) & "b" )	0	1/1/0	YQ0KYg==
+Base64Encode ( "a" & Char ( 13 ) & Char ( 10 ) & "b" )	0	1/1/0	YQ0KYg==\r\n
+Base64Encode ( "a" & Char ( 10 ) & Char ( 13 ) & "b" )	0	1/1/0	YQ0KDQpi\r\n
+Base64Encode ( "a" & Char ( 8232 ) & "b" )	0	1/1/0	YQ0KYg==\r\n
+Base64Encode ( "a" & Char ( 8233 ) & "b" )	0	1/1/0	YQ0KYg==\r\n
+Base64Encode ( "a" & Char ( 133 ) & "b" )	0	1/1/0	YcKFYg==\r\n
+Base64EncodeRFC ( 1421 ; "a¶b" )	0	1/1/0	YQ1i\r\n
+HexEncode ( "a" & Char ( 13 ) & Char ( 10 ) & "b" )	0	1/1/0	610D0A62
+HexEncode ( CryptAuthCode ( "a¶b" ; "MD5" ; "k" ) )	0	1/1/0	D5C0F533FBE78449BCEEDFC91EDF5B0E
+HexEncode ( CryptAuthCode ( "a" ; "MD5" ; "k¶" ) )	0	1/1/0	C431C3D72628395F40C202D0740D3742
+HexEncode ( CryptDigest ( "a" & Char ( 10 ) & "b" ; "MD5" ) )	0	1/1/0	8CDEB44417F3C26826595D5820CF5700
+Code ( Middle ( CryptDecrypt ( CryptEncrypt ( "a" & Char ( 10 ) & "b" ; "key" ) ; "key" ) ; 2 ; 1 ) )	0	2/2/0	10
+Code ( Middle ( Base64Decode ( Base64Encode ( "a¶b" ) ) ; 2 ; 1 ) )	0	2/2/0	13
+Code ( Middle ( Base64Decode ( "YQpi" ) ; 2 ; 1 ) )	0	2/2/0	13
+Code ( Middle ( HexDecode ( "610d0a62" ) ; 2 ; 1 ) )	0	2/2/0	13
+Length ( HexDecode ( "610d0a62" ) )	0	2/2/0	3
+# shift_jis JIS and Microsoft variants
+HexEncode ( TextDecode ( HexDecode ( "8160" ; "a" ) ; "shift_jis" ) )	0	1/1/0	E3809C
+HexEncode ( TextDecode ( HexDecode ( "8161" ; "a" ) ; "shift_jis" ) )	0	1/1/0	E28096
+HexEncode ( TextDecode ( HexDecode ( "817c" ; "a" ) ; "shift_jis" ) )	0	1/1/0	E28892
+HexEncode ( TextDecode ( HexDecode ( "8191" ; "a" ) ; "shift_jis" ) )	0	1/1/0	C2A2
+HexEncode ( TextDecode ( HexDecode ( "8192" ; "a" ) ; "shift_jis" ) )	0	1/1/0	C2A3
+HexEncode ( TextDecode ( HexDecode ( "81ca" ; "a" ) ; "shift_jis" ) )	0	1/1/0	C2AC
+HexEncode ( TextDecode ( HexDecode ( "815c" ; "a" ) ; "shift_jis" ) )	0	1/1/0	E28095
+HexEncode ( TextDecode ( HexDecode ( "815f" ; "a" ) ; "shift_jis" ) )	0	1/1/0	EFBCBC
+HexEncode ( TextDecode ( HexDecode ( "ed40" ; "a" ) ; "shift_jis" ) )	0	1/1/0	40
+HexEncode ( TextDecode ( HexDecode ( "fa40" ; "a" ) ; "shift_jis" ) )	0	1/1/0	40
+HexEncode ( TextDecode ( HexDecode ( "f040" ; "a" ) ; "shift_jis" ) )	0	1/1/0	EE8080
+HexEncode ( TextDecode ( HexDecode ( "8740" ; "a" ) ; "shift_jis" ) )	0	1/1/0	40
+HexEncode ( TextDecode ( HexDecode ( "81" ; "a" ) ; "shift_jis" ) )	17	1/1/0	3F
+HexEncode ( TextDecode ( HexDecode ( "a0" ; "a" ) ; "shift_jis" ) )	0	1/6/0	
+HexEncode ( TextDecode ( HexDecode ( "fd" ; "a" ) ; "shift_jis" ) )	0	1/6/0	
+HexEncode ( TextDecode ( HexDecode ( "b1" ; "a" ) ; "shift_jis" ) )	0	1/1/0	EFBDB1
+HexEncode ( TextDecode ( HexDecode ( "5c" ; "a" ) ; "shift_jis" ) )	0	1/1/0	C2A5
+HexEncode ( TextDecode ( HexDecode ( "7e" ; "a" ) ; "shift_jis" ) )	0	1/1/0	E280BE
+HexEncode ( TextEncode ( Char ( 12316 ) ; "shift_jis" ; 1 ) )	0	1/1/0	8160
+HexEncode ( TextEncode ( Char ( 65374 ) ; "shift_jis" ; 1 ) )	0	1/1/0	
+HexEncode ( TextEncode ( Char ( 8214 ) ; "shift_jis" ; 1 ) )	0	1/1/0	8161
+HexEncode ( TextEncode ( Char ( 8741 ) ; "shift_jis" ; 1 ) )	0	1/1/0	
+HexEncode ( TextEncode ( Char ( 8722 ) ; "shift_jis" ; 1 ) )	0	1/1/0	817C
+HexEncode ( TextEncode ( Char ( 65293 ) ; "shift_jis" ; 1 ) )	0	1/1/0	2D
+HexEncode ( TextEncode ( Char ( 162 ) ; "shift_jis" ; 1 ) )	0	1/1/0	8191
+HexEncode ( TextEncode ( Char ( 65504 ) ; "shift_jis" ; 1 ) )	0	1/1/0	8191
+HexEncode ( TextEncode ( Char ( 163 ) ; "shift_jis" ; 1 ) )	0	1/1/0	8192
+HexEncode ( TextEncode ( Char ( 65505 ) ; "shift_jis" ; 1 ) )	0	1/1/0	8192
+HexEncode ( TextEncode ( Char ( 172 ) ; "shift_jis" ; 1 ) )	0	1/1/0	81CA
+HexEncode ( TextEncode ( Char ( 65506 ) ; "shift_jis" ; 1 ) )	0	1/1/0	81CA
+HexEncode ( TextEncode ( Char ( 8212 ) ; "shift_jis" ; 1 ) )	0	1/1/0	2D
+HexEncode ( TextEncode ( Char ( 8213 ) ; "shift_jis" ; 1 ) )	0	1/1/0	815C
+HexEncode ( TextEncode ( Char ( 165 ) ; "shift_jis" ; 1 ) )	0	1/1/0	5C
+HexEncode ( TextEncode ( Char ( 8254 ) ; "shift_jis" ; 1 ) )	0	1/1/0	7E
+HexEncode ( TextEncode ( Char ( 92 ) ; "shift_jis" ; 1 ) )	0	1/1/0	
+HexEncode ( TextEncode ( Char ( 126 ) ; "shift_jis" ; 1 ) )	0	1/1/0	
+HexEncode ( TextEncode ( Char ( 9312 ) ; "shift_jis" ; 1 ) )	0	1/1/0	283129
+HexEncode ( TextEncode ( Char ( 39641 ) ; "shift_jis" ; 1 ) )	0	1/1/0	
+HexEncode ( TextEncode ( Char ( 65393 ) ; "shift_jis" ; 1 ) )	0	1/1/0	B1
+HexEncode ( TextEncode ( Char ( 12354 ) ; "shift_jis" ; 1 ) )	0	1/1/0	82A0
+# more decoders
+HexEncode ( TextDecode ( HexDecode ( "e28241" ; "a" ) ; "utf-8" ) )	0	1/1/0	41
+HexEncode ( TextDecode ( HexDecode ( "41c3" ; "a" ) ; "utf-8" ) )	17	1/1/0	3F
+HexEncode ( TextDecode ( HexDecode ( "f09f98" ; "a" ) ; "utf-8" ) )	17	1/1/0	3F
+HexEncode ( TextDecode ( HexDecode ( "f09f9880" ; "a" ) ; "utf-8" ) )	0	1/1/0	F09F9880
+HexEncode ( TextDecode ( HexDecode ( "c0af41" ; "a" ) ; "utf-8" ) )	0	1/1/0	41
+HexEncode ( TextDecode ( HexDecode ( "81308130" ; "a" ) ; "gb18030" ) )	0	1/1/0	C280
+HexEncode ( TextDecode ( HexDecode ( "8130" ; "a" ) ; "gb18030" ) )	17	1/1/0	3F
+HexEncode ( TextDecode ( HexDecode ( "a1a1" ; "a" ) ; "euc-kr" ) )	0	1/1/0	E38080
+HexEncode ( TextDecode ( HexDecode ( "c8fe" ; "a" ) ; "euc-kr" ) )	0	1/1/0	ED9E9D
+HexEncode ( TextDecode ( HexDecode ( "a140" ; "a" ) ; "big5" ) )	0	1/1/0	E38080
+HexEncode ( TextDecode ( HexDecode ( "a1" ; "a" ) ; "big5" ) )	17	1/1/0	3F
+HexEncode ( TextDecode ( HexDecode ( "ff41" ; "a" ) ; "gb18030" ) )	0	1/1/0	41
+HexEncode ( TextDecode ( HexDecode ( "8e" ; "a" ) ; "shift_jis" ) )	17	1/1/0	3F
+HexEncode ( TextDecode ( HexDecode ( "41ff42" ; "a" ) ; "windows-1251" ) )	0	1/1/0	41D18F42
+HexEncode ( TextDecode ( HexDecode ( "41f042" ; "a" ) ; "macintosh" ) )	0	1/1/0	4142
+HexEncode ( TextDecode ( HexDecode ( "bd" ; "a" ) ; "macintosh" ) )	0	1/1/0	E284A6
+HexEncode ( TextDecode ( HexDecode ( "41818d42" ; "a" ) ; "windows-1252" ) )	0	1/1/0	4142
+TextDecode ( HexDecode ( "" ; "a" ) ; "xyz" )	2	2/2/0	?
+TextDecode ( "" ; "xyz" )	0	1/1/0	
+TextDecode ( "abc" ; "xyz" )	4	2/2/0	?
+HexEncode ( TextEncode ( Char ( 128 ) & Char ( 159 ) & Char ( 164 ) & Char ( 8364 ) & Char ( 1046 ) & Char ( 8486 ) ; "iso-8859-1" ; 1 ) )	0	1/1/0	809FA44555524F686D
+HexEncode ( TextEncode ( Char ( 128 ) & Char ( 159 ) & Char ( 164 ) & Char ( 8364 ) & Char ( 1046 ) & Char ( 8486 ) ; "windows-1252" ; 1 ) )	0	1/1/0	A4804F686D
+HexEncode ( TextEncode ( Char ( 128 ) & Char ( 159 ) & Char ( 164 ) & Char ( 8364 ) & Char ( 1046 ) & Char ( 8486 ) ; "windows-1251" ; 1 ) )	0	1/1/0	A488C64F686D
+HexEncode ( TextEncode ( Char ( 128 ) & Char ( 159 ) & Char ( 164 ) & Char ( 8364 ) & Char ( 1046 ) & Char ( 8486 ) ; "macintosh" ; 1 ) )	0	1/1/0	DB455552BD
+# CryptVerifySignature with engine-made signatures (public keys only)
+CryptVerifySignature ( "abc" ; "" ; "-----BEGIN PUBLIC KEY-----¶MIGfMA0GCSqGSIb3DQEBAQUAA4GNADCBiQKBgQCkD6wNJPscsG7CyKDQMAsGTKlp¶t8AocSZaUUJKdWBCzSrKShzSViqfRSchnjBbSKGno2sS8COqbWXHw3r47lVdMj0x¶lL+yohTm8rFcRkM4ugy2BGn213jzSPUfmxHzyrtsixD4GnvLGH3ztCNMPb2qwEZe¶H9Wwen5EXcbOC0AClQIDAQAB¶-----END PUBLIC KEY-----" ; HexDecode ( "61FE72C63145A07D5F3C28046452C14FB086B9E2B01BF5D07DDBEDAF858B855A3FA5B3E7C9A0ADD66715C97A9C5D1BAE85E736DFD593DF446E840E47F60574B4DE048AEF367A61F909B52EDFA8B36CB94F4EE81E611CDBF4628E41554D7D2C5A8017C62E6723D883831526DFADC6D6DB6C832AC9CA49F85A67F69A8DBBDA43FE" ; "sig.data" ) )	0	2/2/0	1
+CryptVerifySignature ( "" ; "" ; "-----BEGIN PUBLIC KEY-----¶MIGfMA0GCSqGSIb3DQEBAQUAA4GNADCBiQKBgQCkD6wNJPscsG7CyKDQMAsGTKlp¶t8AocSZaUUJKdWBCzSrKShzSViqfRSchnjBbSKGno2sS8COqbWXHw3r47lVdMj0x¶lL+yohTm8rFcRkM4ugy2BGn213jzSPUfmxHzyrtsixD4GnvLGH3ztCNMPb2qwEZe¶H9Wwen5EXcbOC0AClQIDAQAB¶-----END PUBLIC KEY-----" ; HexDecode ( "9933B9291C38C41F4A9558515EEE1734FAF8CB491521E54DE7BE693B9E462337235165500E21F4837D4F1D682AE34B849414DC849E69E7561EA2E2324928062357348942BD5C6693DDC7D310C5EC1D287876C6EDD4A7656675DCB726F48EB27877BD105CF468D52CC7470E3A01F7C1FFD2B537689EEBF09D8E129A9052B1965A" ; "sig.data" ) )	0	2/2/0	1
+CryptVerifySignature ( "é😀¶x" ; "" ; "-----BEGIN PUBLIC KEY-----¶MIGfMA0GCSqGSIb3DQEBAQUAA4GNADCBiQKBgQCkD6wNJPscsG7CyKDQMAsGTKlp¶t8AocSZaUUJKdWBCzSrKShzSViqfRSchnjBbSKGno2sS8COqbWXHw3r47lVdMj0x¶lL+yohTm8rFcRkM4ugy2BGn213jzSPUfmxHzyrtsixD4GnvLGH3ztCNMPb2qwEZe¶H9Wwen5EXcbOC0AClQIDAQAB¶-----END PUBLIC KEY-----" ; HexDecode ( "892A730AD0E47023AEF349520C0B35237559DC7735EC9F9D6C2616846C7C9D520733201EF05DFAED6F121286885393523A9FA7638A9CD8600133A9EF328159CDCE2AA53B6BF83C597C0969A11809F6AC3C4D5E95507CD2C1A32560E47A38FFA3E0572585CD572DFAD454D4006967461A1A35BDA05FC0B9E3CA126F214092CE09" ; "sig.data" ) )	0	2/2/0	1
+CryptVerifySignature ( "abc" ; "MD5" ; "-----BEGIN PUBLIC KEY-----¶MIGfMA0GCSqGSIb3DQEBAQUAA4GNADCBiQKBgQCkD6wNJPscsG7CyKDQMAsGTKlp¶t8AocSZaUUJKdWBCzSrKShzSViqfRSchnjBbSKGno2sS8COqbWXHw3r47lVdMj0x¶lL+yohTm8rFcRkM4ugy2BGn213jzSPUfmxHzyrtsixD4GnvLGH3ztCNMPb2qwEZe¶H9Wwen5EXcbOC0AClQIDAQAB¶-----END PUBLIC KEY-----" ; HexDecode ( "0D8D28CED8B912F208DA8325E4E5121FA67C9C130836C861174ED6D17AA3ADC7EA7ABB6E89A53F9DF730A9FFBEA7463909EA742FBD04AD0B3B3D8F57B3FF5EF137F77FCDE7B399F918DFEC6DBCCAD8408F57D5B0C63D323415537FB0A50DE0A969EF8880CE026462A6FC251D7C885AC94FDF7C131D045CDFC5672C996B1E770F" ; "sig.data" ) )	0	2/2/0	1
+CryptVerifySignature ( "" ; "MD5" ; "-----BEGIN PUBLIC KEY-----¶MIGfMA0GCSqGSIb3DQEBAQUAA4GNADCBiQKBgQCkD6wNJPscsG7CyKDQMAsGTKlp¶t8AocSZaUUJKdWBCzSrKShzSViqfRSchnjBbSKGno2sS8COqbWXHw3r47lVdMj0x¶lL+yohTm8rFcRkM4ugy2BGn213jzSPUfmxHzyrtsixD4GnvLGH3ztCNMPb2qwEZe¶H9Wwen5EXcbOC0AClQIDAQAB¶-----END PUBLIC KEY-----" ; HexDecode ( "9B791A704AEF28C5F3408CFBEB0A58E6F5021117D8E770EBDD275E02C32C935E91B9F6807396F033E45DEDFD0BEA0CB35AC41280DAE05D9C07B9924B8E11B00E4184628EF3F1BC8A5D68532E20514441979358DD2F807415176063B833F1A49D4998A6E90AC985E6D0E87D99AAA527EF4A2830B7C312178D2C9C192B63299379" ; "sig.data" ) )	0	2/2/0	1
+CryptVerifySignature ( "é😀¶x" ; "MD5" ; "-----BEGIN PUBLIC KEY-----¶MIGfMA0GCSqGSIb3DQEBAQUAA4GNADCBiQKBgQCkD6wNJPscsG7CyKDQMAsGTKlp¶t8AocSZaUUJKdWBCzSrKShzSViqfRSchnjBbSKGno2sS8COqbWXHw3r47lVdMj0x¶lL+yohTm8rFcRkM4ugy2BGn213jzSPUfmxHzyrtsixD4GnvLGH3ztCNMPb2qwEZe¶H9Wwen5EXcbOC0AClQIDAQAB¶-----END PUBLIC KEY-----" ; HexDecode ( "1E6C3A0E1EF3DD1B62969B7E609A5C176341427614CCF86E0BB64E6E3C765B5C37793DCA87623277B2326A2680C55CAA4E28DD6249EBB23B32F8E31901325EA0AF65F337F8EF7825C2D1E3C19F50067B1105DACFE797B0477AB5E0A86407D2B55407949CC699F95DA40BE6F3E824B650099A6DAD6D1526994636A45F82D3AC4A" ; "sig.data" ) )	0	2/2/0	1
+CryptVerifySignature ( "abc" ; "SHA1" ; "-----BEGIN PUBLIC KEY-----¶MIGfMA0GCSqGSIb3DQEBAQUAA4GNADCBiQKBgQCkD6wNJPscsG7CyKDQMAsGTKlp¶t8AocSZaUUJKdWBCzSrKShzSViqfRSchnjBbSKGno2sS8COqbWXHw3r47lVdMj0x¶lL+yohTm8rFcRkM4ugy2BGn213jzSPUfmxHzyrtsixD4GnvLGH3ztCNMPb2qwEZe¶H9Wwen5EXcbOC0AClQIDAQAB¶-----END PUBLIC KEY-----" ; HexDecode ( "1E78FBB7B02F4C8B09BB5D41D7E9FDD869EB420C2A984DA5E162B9802014204E3A0C6E241165E3E9119733D71180398D70EB5720316461879A1194670CB16F02777E658F4A0A31F4CDBB462DAFC7A0823B25769CF6367345A956BDEC0C451720C90ADBC9050BC2C02A026FEA227E4FC79DA45F10F1ADF93ED378917901492357" ; "sig.data" ) )	0	2/2/0	1
+CryptVerifySignature ( "" ; "SHA1" ; "-----BEGIN PUBLIC KEY-----¶MIGfMA0GCSqGSIb3DQEBAQUAA4GNADCBiQKBgQCkD6wNJPscsG7CyKDQMAsGTKlp¶t8AocSZaUUJKdWBCzSrKShzSViqfRSchnjBbSKGno2sS8COqbWXHw3r47lVdMj0x¶lL+yohTm8rFcRkM4ugy2BGn213jzSPUfmxHzyrtsixD4GnvLGH3ztCNMPb2qwEZe¶H9Wwen5EXcbOC0AClQIDAQAB¶-----END PUBLIC KEY-----" ; HexDecode ( "0F95635F145DA35D5FF0CD2475F4E6BEC122F7116ADAF5C34DF2FD7B9A4B983EB13A53CF259618E5172318760A9124A4C07A06FD33B3F43423279AEF30B605372E0EC722899D696A6108BD5AAD065B50C3282F8443624C1E09B859936B37E3AEC20CDC8388E23B646C4D3E56FEAB3044CA95F53D86D4AE913FD740D1F5C486A0" ; "sig.data" ) )	0	2/2/0	1
+CryptVerifySignature ( "é😀¶x" ; "SHA1" ; "-----BEGIN PUBLIC KEY-----¶MIGfMA0GCSqGSIb3DQEBAQUAA4GNADCBiQKBgQCkD6wNJPscsG7CyKDQMAsGTKlp¶t8AocSZaUUJKdWBCzSrKShzSViqfRSchnjBbSKGno2sS8COqbWXHw3r47lVdMj0x¶lL+yohTm8rFcRkM4ugy2BGn213jzSPUfmxHzyrtsixD4GnvLGH3ztCNMPb2qwEZe¶H9Wwen5EXcbOC0AClQIDAQAB¶-----END PUBLIC KEY-----" ; HexDecode ( "196557CF2A53982A0E530E977959A46BBC996225BAB2BAD79FED2EE67CE24F9CC0ADC65B667F913350471B8803FAAEABD21530056C774154DF9590DC8CD2D7EBDE151F63EAC86753E7434E4A6E9AD92D02912E906E8813AC223CD8B9196E15917C95B48D1FF3F09912A7424909DB0A6E135F8D97A2263388E94F05E295B4B5B7" ; "sig.data" ) )	0	2/2/0	1
+CryptVerifySignature ( "abc" ; "SHA224" ; "-----BEGIN PUBLIC KEY-----¶MIGfMA0GCSqGSIb3DQEBAQUAA4GNADCBiQKBgQCkD6wNJPscsG7CyKDQMAsGTKlp¶t8AocSZaUUJKdWBCzSrKShzSViqfRSchnjBbSKGno2sS8COqbWXHw3r47lVdMj0x¶lL+yohTm8rFcRkM4ugy2BGn213jzSPUfmxHzyrtsixD4GnvLGH3ztCNMPb2qwEZe¶H9Wwen5EXcbOC0AClQIDAQAB¶-----END PUBLIC KEY-----" ; HexDecode ( "35790704628F6171B510B39CBB96580FF40B8D3610D46AB96C66D33BE99BFC4486CB1CE5C7BD6EC4D808C1972E00F08955B403355685A7DCE6C4B361137CF0333AA13C87DEABC0171B79907C111976532F50972AAE20309C1DF038A5F895A8D6E787048B1BED666CF31C72910B3288B81F29FB9487F6531B9F3219D4B05C0D2D" ; "sig.data" ) )	0	2/2/0	1
+CryptVerifySignature ( "" ; "SHA224" ; "-----BEGIN PUBLIC KEY-----¶MIGfMA0GCSqGSIb3DQEBAQUAA4GNADCBiQKBgQCkD6wNJPscsG7CyKDQMAsGTKlp¶t8AocSZaUUJKdWBCzSrKShzSViqfRSchnjBbSKGno2sS8COqbWXHw3r47lVdMj0x¶lL+yohTm8rFcRkM4ugy2BGn213jzSPUfmxHzyrtsixD4GnvLGH3ztCNMPb2qwEZe¶H9Wwen5EXcbOC0AClQIDAQAB¶-----END PUBLIC KEY-----" ; HexDecode ( "98D76BEC1FC2421553E250370B46DFAB5A2534D5C069FECC75959AC486CA5E1506F27E332DDB187DD0420E002B5FA131ECF930DBEF3BDD8ED8B6FA63C87CA31D958397352E2EF7D23F14B65CB35AB48EB01CFA0AE99F3B94B56EC4846F65436DA6CDC52141B1E9EE5353FC352D3318E4437898FC58DB0E057EA90516603CD9C5" ; "sig.data" ) )	0	2/2/0	1
+CryptVerifySignature ( "é😀¶x" ; "SHA224" ; "-----BEGIN PUBLIC KEY-----¶MIGfMA0GCSqGSIb3DQEBAQUAA4GNADCBiQKBgQCkD6wNJPscsG7CyKDQMAsGTKlp¶t8AocSZaUUJKdWBCzSrKShzSViqfRSchnjBbSKGno2sS8COqbWXHw3r47lVdMj0x¶lL+yohTm8rFcRkM4ugy2BGn213jzSPUfmxHzyrtsixD4GnvLGH3ztCNMPb2qwEZe¶H9Wwen5EXcbOC0AClQIDAQAB¶-----END PUBLIC KEY-----" ; HexDecode ( "3A9A456D43DD7D15BDC9FB7513A2DB86AA5EA68FD2C83D528D554C9B56DD67F9860A2B502F99F5F80B8A84980DDE1A79383D26567C9F2969C4ED876EA080EA30C3E206FBA5CDB7570E7A5B7E7BDC5CA13DFCCA3EFEAAC0C7C5761E1403482CEFDEEE9F57322CF6314367DC79010BC44BF4A4A6159AFA0546CCCDC93DF746A08C" ; "sig.data" ) )	0	2/2/0	1
+CryptVerifySignature ( "abc" ; "SHA256" ; "-----BEGIN PUBLIC KEY-----¶MIGfMA0GCSqGSIb3DQEBAQUAA4GNADCBiQKBgQCkD6wNJPscsG7CyKDQMAsGTKlp¶t8AocSZaUUJKdWBCzSrKShzSViqfRSchnjBbSKGno2sS8COqbWXHw3r47lVdMj0x¶lL+yohTm8rFcRkM4ugy2BGn213jzSPUfmxHzyrtsixD4GnvLGH3ztCNMPb2qwEZe¶H9Wwen5EXcbOC0AClQIDAQAB¶-----END PUBLIC KEY-----" ; HexDecode ( "882C98FDC380913763EB3E424292B8715C008049BA33D44C11A004D8B6C5757D806833939CE7A435A46AC61F1116661C3E209244FDDEA2B5E4C6051F55DB1D62FA2EB2B61665311F83768F8445E156E6C4FA10F9C316A17BE903D4ED05E732917001066FECF011AEC0248F3DF04C1005200CC3EA136A8C1252F0D8276E87B34D" ; "sig.data" ) )	0	2/2/0	1
+CryptVerifySignature ( "" ; "SHA256" ; "-----BEGIN PUBLIC KEY-----¶MIGfMA0GCSqGSIb3DQEBAQUAA4GNADCBiQKBgQCkD6wNJPscsG7CyKDQMAsGTKlp¶t8AocSZaUUJKdWBCzSrKShzSViqfRSchnjBbSKGno2sS8COqbWXHw3r47lVdMj0x¶lL+yohTm8rFcRkM4ugy2BGn213jzSPUfmxHzyrtsixD4GnvLGH3ztCNMPb2qwEZe¶H9Wwen5EXcbOC0AClQIDAQAB¶-----END PUBLIC KEY-----" ; HexDecode ( "7F64AF649D01935BC342FAE80B0E51F3DA9ABFDDB41C3E548EEA7F48D1A603347BCA8362040E2CA61B7D1B48BF5F0013F682570786DEDDFF151C73EE3159C6334CBD23FCE9BC4186A3CFE069543D1316D1FFE6704EB175B9129B7446A86AA910692D2E7B7C31C895FD93889C35BE239E8D7BFEE385A093E7750BE55EF515F858" ; "sig.data" ) )	0	2/2/0	1
+CryptVerifySignature ( "é😀¶x" ; "SHA256" ; "-----BEGIN PUBLIC KEY-----¶MIGfMA0GCSqGSIb3DQEBAQUAA4GNADCBiQKBgQCkD6wNJPscsG7CyKDQMAsGTKlp¶t8AocSZaUUJKdWBCzSrKShzSViqfRSchnjBbSKGno2sS8COqbWXHw3r47lVdMj0x¶lL+yohTm8rFcRkM4ugy2BGn213jzSPUfmxHzyrtsixD4GnvLGH3ztCNMPb2qwEZe¶H9Wwen5EXcbOC0AClQIDAQAB¶-----END PUBLIC KEY-----" ; HexDecode ( "65D8F129E595D688E0CA479C8540A2130295101693224242C8FF2062AD61CFD36F9C963A86161D4DE39C71A8BA7033F1D192A5CA6BD0ABD44FB3DDAA6E83C90CFBD9027C20B394066591394A752F5CF4F1033E13CDAB3812F83162430EC9979AADF14A8CC2E05F599D86CB26255E529C2AFCDB43C72B8517593AD380A71C4647" ; "sig.data" ) )	0	2/2/0	1
+CryptVerifySignature ( "abc" ; "SHA384" ; "-----BEGIN PUBLIC KEY-----¶MIGfMA0GCSqGSIb3DQEBAQUAA4GNADCBiQKBgQCkD6wNJPscsG7CyKDQMAsGTKlp¶t8AocSZaUUJKdWBCzSrKShzSViqfRSchnjBbSKGno2sS8COqbWXHw3r47lVdMj0x¶lL+yohTm8rFcRkM4ugy2BGn213jzSPUfmxHzyrtsixD4GnvLGH3ztCNMPb2qwEZe¶H9Wwen5EXcbOC0AClQIDAQAB¶-----END PUBLIC KEY-----" ; HexDecode ( "1BADA1E921A8E0ED2C3E892499A120917EAA348ADC2764518D79DA69C6C50313497CEAD14B89746BB32739819DE3FE7016F7B5A75AD5E9D3EECC0C1811B1D3CEE0B55DE4E820E139BACEDF1A2CBCA0974430414F6351D39A24A377FC4ABE34D93C5A03626689B6DFEA8F2CFE3CA75E0EAB14CBD58C75748044297BBCCB518FE9" ; "sig.data" ) )	0	2/2/0	1
+CryptVerifySignature ( "" ; "SHA384" ; "-----BEGIN PUBLIC KEY-----¶MIGfMA0GCSqGSIb3DQEBAQUAA4GNADCBiQKBgQCkD6wNJPscsG7CyKDQMAsGTKlp¶t8AocSZaUUJKdWBCzSrKShzSViqfRSchnjBbSKGno2sS8COqbWXHw3r47lVdMj0x¶lL+yohTm8rFcRkM4ugy2BGn213jzSPUfmxHzyrtsixD4GnvLGH3ztCNMPb2qwEZe¶H9Wwen5EXcbOC0AClQIDAQAB¶-----END PUBLIC KEY-----" ; HexDecode ( "553F791EB98FDF00CF22F87169BAFB702D06FAD5BCC17EFF65A26BED16D92DD99A7B8A2B3AC8D02EADE9706CAE4BCE4B6CD8816B3696D7D4A831C19A9D6D66368D74242C0B0A1108651B29340218BC92C6483F936B707896CEBBC71770D2F34E97E7545FAF8D6E86928E01FCB6BB9C5C87F94FEC6BED9DF003BAB7D4B5ECBCE1" ; "sig.data" ) )	0	2/2/0	1
+CryptVerifySignature ( "é😀¶x" ; "SHA384" ; "-----BEGIN PUBLIC KEY-----¶MIGfMA0GCSqGSIb3DQEBAQUAA4GNADCBiQKBgQCkD6wNJPscsG7CyKDQMAsGTKlp¶t8AocSZaUUJKdWBCzSrKShzSViqfRSchnjBbSKGno2sS8COqbWXHw3r47lVdMj0x¶lL+yohTm8rFcRkM4ugy2BGn213jzSPUfmxHzyrtsixD4GnvLGH3ztCNMPb2qwEZe¶H9Wwen5EXcbOC0AClQIDAQAB¶-----END PUBLIC KEY-----" ; HexDecode ( "8F0C2CBD22D7703C959F57D40A1786B8FA1F490EC8E031C88A0DEE5999AFB85983CB07911BEFEB64FB4CCF0FF6A3155F14CBFC4D55EF29CD583B5CAAE92A6C8C45C9AEBB82251F4724483A4DFBFC5829A8D4F0FEEC86114F29DE90C65A35916E6CB8E3E25A0551C3D2F9EA105F8DFD4E56AAC30F154BAA7D5DDCF2829624B409" ; "sig.data" ) )	0	2/2/0	1
+CryptVerifySignature ( "abc" ; "SHA512" ; "-----BEGIN PUBLIC KEY-----¶MIGfMA0GCSqGSIb3DQEBAQUAA4GNADCBiQKBgQCkD6wNJPscsG7CyKDQMAsGTKlp¶t8AocSZaUUJKdWBCzSrKShzSViqfRSchnjBbSKGno2sS8COqbWXHw3r47lVdMj0x¶lL+yohTm8rFcRkM4ugy2BGn213jzSPUfmxHzyrtsixD4GnvLGH3ztCNMPb2qwEZe¶H9Wwen5EXcbOC0AClQIDAQAB¶-----END PUBLIC KEY-----" ; HexDecode ( "61FE72C63145A07D5F3C28046452C14FB086B9E2B01BF5D07DDBEDAF858B855A3FA5B3E7C9A0ADD66715C97A9C5D1BAE85E736DFD593DF446E840E47F60574B4DE048AEF367A61F909B52EDFA8B36CB94F4EE81E611CDBF4628E41554D7D2C5A8017C62E6723D883831526DFADC6D6DB6C832AC9CA49F85A67F69A8DBBDA43FE" ; "sig.data" ) )	0	2/2/0	1
+CryptVerifySignature ( "" ; "SHA512" ; "-----BEGIN PUBLIC KEY-----¶MIGfMA0GCSqGSIb3DQEBAQUAA4GNADCBiQKBgQCkD6wNJPscsG7CyKDQMAsGTKlp¶t8AocSZaUUJKdWBCzSrKShzSViqfRSchnjBbSKGno2sS8COqbWXHw3r47lVdMj0x¶lL+yohTm8rFcRkM4ugy2BGn213jzSPUfmxHzyrtsixD4GnvLGH3ztCNMPb2qwEZe¶H9Wwen5EXcbOC0AClQIDAQAB¶-----END PUBLIC KEY-----" ; HexDecode ( "9933B9291C38C41F4A9558515EEE1734FAF8CB491521E54DE7BE693B9E462337235165500E21F4837D4F1D682AE34B849414DC849E69E7561EA2E2324928062357348942BD5C6693DDC7D310C5EC1D287876C6EDD4A7656675DCB726F48EB27877BD105CF468D52CC7470E3A01F7C1FFD2B537689EEBF09D8E129A9052B1965A" ; "sig.data" ) )	0	2/2/0	1
+CryptVerifySignature ( "é😀¶x" ; "SHA512" ; "-----BEGIN PUBLIC KEY-----¶MIGfMA0GCSqGSIb3DQEBAQUAA4GNADCBiQKBgQCkD6wNJPscsG7CyKDQMAsGTKlp¶t8AocSZaUUJKdWBCzSrKShzSViqfRSchnjBbSKGno2sS8COqbWXHw3r47lVdMj0x¶lL+yohTm8rFcRkM4ugy2BGn213jzSPUfmxHzyrtsixD4GnvLGH3ztCNMPb2qwEZe¶H9Wwen5EXcbOC0AClQIDAQAB¶-----END PUBLIC KEY-----" ; HexDecode ( "892A730AD0E47023AEF349520C0B35237559DC7735EC9F9D6C2616846C7C9D520733201EF05DFAED6F121286885393523A9FA7638A9CD8600133A9EF328159CDCE2AA53B6BF83C597C0969A11809F6AC3C4D5E95507CD2C1A32560E47A38FFA3E0572585CD572DFAD454D4006967461A1A35BDA05FC0B9E3CA126F214092CE09" ; "sig.data" ) )	0	2/2/0	1
+CryptVerifySignature ( "abc" ; "SHA256" ; "-----BEGIN RSA PUBLIC KEY-----¶MIGJAoGBAKQPrA0k+xywbsLIoNAwCwZMqWm3wChxJlpRQkp1YELNKspKHNJWKp9F¶JyGeMFtIoaejaxLwI6ptZcfDevjuVV0yPTGUv7KiFObysVxGQzi6DLYEafbXePNI¶9R+bEfPKu2yLEPgae8sYffO0I0w9varARl4f1bB6fkRdxs4LQAKVAgMBAAE=¶-----END RSA PUBLIC KEY-----" ; HexDecode ( "882C98FDC380913763EB3E424292B8715C008049BA33D44C11A004D8B6C5757D806833939CE7A435A46AC61F1116661C3E209244FDDEA2B5E4C6051F55DB1D62FA2EB2B61665311F83768F8445E156E6C4FA10F9C316A17BE903D4ED05E732917001066FECF011AEC0248F3DF04C1005200CC3EA136A8C1252F0D8276E87B34D" ; "sig.data" ) )	0	2/2/0	1
+CryptVerifySignature ( "abc" ; "SHA256" ; "-----BEGIN PUBLIC KEY-----" & Char ( 10 ) & "MIGfMA0GCSqGSIb3DQEBAQUAA4GNADCBiQKBgQCkD6wNJPscsG7CyKDQMAsGTKlp" & Char ( 10 ) & "t8AocSZaUUJKdWBCzSrKShzSViqfRSchnjBbSKGno2sS8COqbWXHw3r47lVdMj0x" & Char ( 10 ) & "lL+yohTm8rFcRkM4ugy2BGn213jzSPUfmxHzyrtsixD4GnvLGH3ztCNMPb2qwEZe" & Char ( 10 ) & "H9Wwen5EXcbOC0AClQIDAQAB" & Char ( 10 ) & "-----END PUBLIC KEY-----" ; HexDecode ( "882C98FDC380913763EB3E424292B8715C008049BA33D44C11A004D8B6C5757D806833939CE7A435A46AC61F1116661C3E209244FDDEA2B5E4C6051F55DB1D62FA2EB2B61665311F83768F8445E156E6C4FA10F9C316A17BE903D4ED05E732917001066FECF011AEC0248F3DF04C1005200CC3EA136A8C1252F0D8276E87B34D" ; "sig.data" ) )	0	2/2/0	1
+CryptVerifySignature ( "abc" ; "sha256" ; "-----BEGIN PUBLIC KEY-----¶MIGfMA0GCSqGSIb3DQEBAQUAA4GNADCBiQKBgQCkD6wNJPscsG7CyKDQMAsGTKlp¶t8AocSZaUUJKdWBCzSrKShzSViqfRSchnjBbSKGno2sS8COqbWXHw3r47lVdMj0x¶lL+yohTm8rFcRkM4ugy2BGn213jzSPUfmxHzyrtsixD4GnvLGH3ztCNMPb2qwEZe¶H9Wwen5EXcbOC0AClQIDAQAB¶-----END PUBLIC KEY-----" ; HexDecode ( "882C98FDC380913763EB3E424292B8715C008049BA33D44C11A004D8B6C5757D806833939CE7A435A46AC61F1116661C3E209244FDDEA2B5E4C6051F55DB1D62FA2EB2B61665311F83768F8445E156E6C4FA10F9C316A17BE903D4ED05E732917001066FECF011AEC0248F3DF04C1005200CC3EA136A8C1252F0D8276E87B34D" ; "sig.data" ) )	0	2/2/0	1
+CryptVerifySignature ( "abd" ; "SHA256" ; "-----BEGIN PUBLIC KEY-----¶MIGfMA0GCSqGSIb3DQEBAQUAA4GNADCBiQKBgQCkD6wNJPscsG7CyKDQMAsGTKlp¶t8AocSZaUUJKdWBCzSrKShzSViqfRSchnjBbSKGno2sS8COqbWXHw3r47lVdMj0x¶lL+yohTm8rFcRkM4ugy2BGn213jzSPUfmxHzyrtsixD4GnvLGH3ztCNMPb2qwEZe¶H9Wwen5EXcbOC0AClQIDAQAB¶-----END PUBLIC KEY-----" ; HexDecode ( "882C98FDC380913763EB3E424292B8715C008049BA33D44C11A004D8B6C5757D806833939CE7A435A46AC61F1116661C3E209244FDDEA2B5E4C6051F55DB1D62FA2EB2B61665311F83768F8445E156E6C4FA10F9C316A17BE903D4ED05E732917001066FECF011AEC0248F3DF04C1005200CC3EA136A8C1252F0D8276E87B34D" ; "sig.data" ) )	0	2/2/0	0
+CryptVerifySignature ( "abc" ; "SHA512" ; "-----BEGIN PUBLIC KEY-----¶MIGfMA0GCSqGSIb3DQEBAQUAA4GNADCBiQKBgQCkD6wNJPscsG7CyKDQMAsGTKlp¶t8AocSZaUUJKdWBCzSrKShzSViqfRSchnjBbSKGno2sS8COqbWXHw3r47lVdMj0x¶lL+yohTm8rFcRkM4ugy2BGn213jzSPUfmxHzyrtsixD4GnvLGH3ztCNMPb2qwEZe¶H9Wwen5EXcbOC0AClQIDAQAB¶-----END PUBLIC KEY-----" ; HexDecode ( "882C98FDC380913763EB3E424292B8715C008049BA33D44C11A004D8B6C5757D806833939CE7A435A46AC61F1116661C3E209244FDDEA2B5E4C6051F55DB1D62FA2EB2B61665311F83768F8445E156E6C4FA10F9C316A17BE903D4ED05E732917001066FECF011AEC0248F3DF04C1005200CC3EA136A8C1252F0D8276E87B34D" ; "sig.data" ) )	0	2/2/0	0
+CryptVerifySignature ( "abc" ; "SHA256" ; "-----BEGIN PUBLIC KEY-----¶MIGfMA0GCSqGSIb3DQEBAQUAA4GNADCBiQKBgQCkD6wNJPscsG7CyKDQMAsGTKlp¶t8AocSZaUUJKdWBCzSrKShzSViqfRSchnjBbSKGno2sS8COqbWXHw3r47lVdMj0x¶lL+yohTm8rFcRkM4ugy2BGn213jzSPUfmxHzyrtsixD4GnvLGH3ztCNMPb2qwEZe¶H9Wwen5EXcbOC0AClQIDAQAB¶-----END PUBLIC KEY-----" ; Base64Decode ( Base64EncodeRFC ( 4648 ; HexDecode ( "882C98FDC380913763EB3E424292B8715C008049BA33D44C11A004D8B6C5757D806833939CE7A435A46AC61F1116661C3E209244FDDEA2B5E4C6051F55DB1D62FA2EB2B61665311F83768F8445E156E6C4FA10F9C316A17BE903D4ED05E732917001066FECF011AEC0248F3DF04C1005200CC3EA136A8C1252F0D8276E87B34D" ; "x" ) ) ; "sig.data" ) )	0	2/2/0	1
+CryptVerifySignature ( "abc" ; "SHA256" ; "-----BEGIN PUBLIC KEY-----¶MIGfMA0GCSqGSIb3DQEBAQUAA4GNADCBiQKBgQCkD6wNJPscsG7CyKDQMAsGTKlp¶t8AocSZaUUJKdWBCzSrKShzSViqfRSchnjBbSKGno2sS8COqbWXHw3r47lVdMj0x¶lL+yohTm8rFcRkM4ugy2BGn213jzSPUfmxHzyrtsixD4GnvLGH3ztCNMPb2qwEZe¶H9Wwen5EXcbOC0AClQIDAQAB¶-----END PUBLIC KEY-----" ; HexDecode ( "882C98FDC380913763EB3E424292B8715C008049BA33D44C11A004D8B6C5757D806833939CE7A435A46AC61F1116661C3E209244FDDEA2B5E4C6051F55DB1D62FA2EB2B61665311F83768F8445E156E6C4FA10F9C316A17BE903D4ED05E732917001066FECF011AEC0248F3DF04C1005200CC3EA136A8C1252F0D8276E87B3" ; "sig.data" ) )	0	2/2/0	0
+CryptVerifySignature ( "abc" ; "SHA256" ; "-----BEGIN PUBLIC KEY-----¶MIGfMA0GCSqGSIb3DQEBAQUAA4GNADCBiQKBgQCkD6wNJPscsG7CyKDQMAsGTKlp¶t8AocSZaUUJKdWBCzSrKShzSViqfRSchnjBbSKGno2sS8COqbWXHw3r47lVdMj0x¶lL+yohTm8rFcRkM4ugy2BGn213jzSPUfmxHzyrtsixD4GnvLGH3ztCNMPb2qwEZe¶H9Wwen5EXcbOC0AClQIDAQAB¶-----END PUBLIC KEY-----" ; HexDecode ( "882C98FDC380913763EB3E424292B8715C008049BA33D44C11A004D8B6C5757D806833939CE7A435A46AC61F1116661C3E209244FDDEA2B5E4C6051F55DB1D62FA2EB2B61665311F83768F8445E156E6C4FA10F9C316A17BE903D4ED05E732917001066FECF011AEC0248F3DF04C1005200CC3EA136A8C1252F0D8276E87B34D00" ; "sig.data" ) )	0	2/2/0	0
+CryptVerifySignature ( "abc" ; "SHA256" ; "-----BEGIN PUBLIC KEY-----¶MIGfMA0GCSqGSIb3DQEBAQUAA4GNADCBiQKBgQCkD6wNJPscsG7CyKDQMAsGTKlp¶t8AocSZaUUJKdWBCzSrKShzSViqfRSchnjBbSKGno2sS8COqbWXHw3r47lVdMj0x¶lL+yohTm8rFcRkM4ugy2BGn213jzSPUfmxHzyrtsixD4GnvLGH3ztCNMPb2qwEZe¶H9Wwen5EXcbOC0AClQIDAQAB¶-----END PUBLIC KEY-----" ; "junk" )	0	2/2/0	0
+CryptVerifySignature ( "abc" ; "SHA256" ; "-----BEGIN PUBLIC KEY-----¶MIGfMA0GCSqGSIb3DQEBAQUAA4GNADCBiQKBgQCkD6wNJPscsG7CyKDQMAsGTKlp¶t8AocSZaUUJKdWBCzSrKShzSViqfRSchnjBbSKGno2sS8COqbWXHw3r47lVdMj0x¶lL+yohTm8rFcRkM4ugy2BGn213jzSPUfmxHzyrtsixD4GnvLGH3ztCNMPb2qwEZe¶H9Wwen5EXcbOC0AClQIDAQAB¶-----END PUBLIC KEY-----" ; "" )	0	2/2/0	?
+CryptVerifySignature ( "abc" ; "SHA256" ; "-----BEGIN PUBLIC KEY-----¶MIGfMA0GCSqGSIb3DQEBAQUAA4GNADCBiQKBgQCkD6wNJPscsG7CyKDQMAsGTKlp¶t8AocSZaUUJKdWBCzSrKShzSViqfRSchnjBbSKGno2sS8COqbWXHw3r47lVdMj0x¶lL+yohTm8rFcRkM4ugy2BGn213jzSPUfmxHzyrtsixD4GnvLGH3ztCNMPb2qwEZe¶H9Wwen5EXcbOC0AClQIDAQAB¶-----END PUBLIC KEY-----" ; HexDecode ( "00" ; "s" ) )	0	2/2/0	0
+CryptVerifySignature ( "abc" ; "xyz" ; "-----BEGIN PUBLIC KEY-----¶MIGfMA0GCSqGSIb3DQEBAQUAA4GNADCBiQKBgQCkD6wNJPscsG7CyKDQMAsGTKlp¶t8AocSZaUUJKdWBCzSrKShzSViqfRSchnjBbSKGno2sS8COqbWXHw3r47lVdMj0x¶lL+yohTm8rFcRkM4ugy2BGn213jzSPUfmxHzyrtsixD4GnvLGH3ztCNMPb2qwEZe¶H9Wwen5EXcbOC0AClQIDAQAB¶-----END PUBLIC KEY-----" ; HexDecode ( "882C98FDC380913763EB3E424292B8715C008049BA33D44C11A004D8B6C5757D806833939CE7A435A46AC61F1116661C3E209244FDDEA2B5E4C6051F55DB1D62FA2EB2B61665311F83768F8445E156E6C4FA10F9C316A17BE903D4ED05E732917001066FECF011AEC0248F3DF04C1005200CC3EA136A8C1252F0D8276E87B34D" ; "sig.data" ) )	4	2/2/0	?
+CryptVerifySignature ( "abc" ; "SHA-256" ; "-----BEGIN PUBLIC KEY-----¶MIGfMA0GCSqGSIb3DQEBAQUAA4GNADCBiQKBgQCkD6wNJPscsG7CyKDQMAsGTKlp¶t8AocSZaUUJKdWBCzSrKShzSViqfRSchnjBbSKGno2sS8COqbWXHw3r47lVdMj0x¶lL+yohTm8rFcRkM4ugy2BGn213jzSPUfmxHzyrtsixD4GnvLGH3ztCNMPb2qwEZe¶H9Wwen5EXcbOC0AClQIDAQAB¶-----END PUBLIC KEY-----" ; HexDecode ( "882C98FDC380913763EB3E424292B8715C008049BA33D44C11A004D8B6C5757D806833939CE7A435A46AC61F1116661C3E209244FDDEA2B5E4C6051F55DB1D62FA2EB2B61665311F83768F8445E156E6C4FA10F9C316A17BE903D4ED05E732917001066FECF011AEC0248F3DF04C1005200CC3EA136A8C1252F0D8276E87B34D" ; "sig.data" ) )	4	2/2/0	?
+CryptVerifySignature ( "abc" ; "SHA256" ; "junk" ; "x" )	5	2/2/0	?
+CryptVerifySignature ( "abc" ; "SHA256" ; "" ; "x" )	0	2/2/0	?
+CryptVerifySignature ( "abc" ; "xyz" ; "junk" ; "x" )	4	2/2/0	?
+CryptVerifySignature ( "abc" ; "SHA256" ; "-----BEGIN PUBLIC KEY-----¶QUJD¶-----END PUBLIC KEY-----" ; "x" )	5	2/2/0	?
+CryptGenerateSignature ( "abc" ; "SHA256" ; "junk" ; "" )	5	2/2/0	?
+CryptGenerateSignature ( "abc" ; "SHA256" ; "" ; "" )	0	2/2/0	?
+CryptGenerateSignature ( "abc" ; "xyz" ; "junk" ; "" )	4	2/2/0	?
+CryptGenerateSignature ( "abc" ; "SHA256" ; "-----BEGIN RSA PRIVATE KEY-----¶QUJD¶-----END RSA PRIVATE KEY-----" ; "" )	5	2/2/0	?
+CryptGenerateSignature ( "abc" ; "SHA256" ; "-----BEGIN PUBLIC KEY-----¶MIGfMA0GCSqGSIb3DQEBAQUAA4GNADCBiQKBgQCkD6wNJPscsG7CyKDQMAsGTKlp¶t8AocSZaUUJKdWBCzSrKShzSViqfRSchnjBbSKGno2sS8COqbWXHw3r47lVdMj0x¶lL+yohTm8rFcRkM4ugy2BGn213jzSPUfmxHzyrtsixD4GnvLGH3ztCNMPb2qwEZe¶H9Wwen5EXcbOC0AClQIDAQAB¶-----END PUBLIC KEY-----" ; "" )	5	2/2/0	?
+# Length of container data
+Length ( CryptDigest ( "abc" ; "SHA256" ) )	0	2/2/0	32
+Length ( TextEncode ( "abcd" ; "utf-8" ; 1 ) )	0	2/2/0	4
+Length ( HexDecode ( "00ff10" ; "x.bin" ) )	0	2/2/0	3

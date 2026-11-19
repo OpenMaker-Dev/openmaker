@@ -1,0 +1,39 @@
+# FileMaker Server 26.0.3 script engine (tools/fms-script-harness, s30-design),
+# expressions evaluated by a script in design-mbs-events.fmp12 (the file with the probe
+# script "design" added) in its window, on the default layout's occurrence.
+# file	design-mbs-events.fmp12
+# layout	Events
+ValueListItems ( "" ; "Type" )	Event\rMeeting\rCongress\rParty\r-\rWedding\rAnniversary\r-
+ValueListItems ( "" ; "Venue" )	At home
+ValueListItems ( "" ; "Boolean" )	1
+ValueListItems ( "" ; "Status | Tasks" )	Overdue\rDue\rTo Do\rUnassigned\rCompleted
+ValueListItems ( "" ; "Status | Guest" )	Attending\rMaybe Attending\rInvited\rNo Response\rNot Attending
+ValueListItems ( "" ; "Time [Meridiem]" )	8:00 AM\r9:00 AM\r10:00 AM\r11:00 AM\r-\r12:00 PM\r1:00 PM\r2:00 PM\r3:00 PM\r4:00 PM\r5:00 PM\r6:00 PM\r7:00 PM\r8:00 PM\r-
+ValueListItems ( "" ; "Time [24 Hours]" )	8:00\r9:00\r10:00\r11:00\r12:00\r-\r13:00\r14:00\r15:00\r16:00\r17:00\r18:00\r-\r19:00\r20:00\r-
+ValueListItems ( "" ; "Contacts" )	John Miller
+ValueListItems ( "" ; "Assignees" )	Chief
+ValueListItems ( "" ; "Role" )	just a test
+ValueListItems ( "" ; "Preferences" )	
+ValueListItems ( "" ; "Assignment" )	Assigned\rNot Assigned
+ValueListItems ( "" ; "Title" )	
+ValueListItems ( "" ; "Job Title" )	
+ValueListItems ( "" ; "Company" )	Test Inc.
+ValueListItems ( "" ; "Layout Selector" )	Events\rContacts
+ValueListItems ( "" ; "Event List | Sort Selection" )	Time Frame\rEvent\rType\rVenue\rCity\rState
+ValueListItems ( "" ; "Contact List | Sort Selection" )	Company\rContact Name\rCity\rState
+ValueListItems ( "" ; "no such" )	
+ValueListItems ( "" ; "" )	
+FieldType ( "" ; "Sort Selection" )	Global Text Unindexed 1
+FieldComment ( "" ; "Sort Selection" )	
+GetNextSerialValue ( "" ; "Sort Selection" )	
+FieldType ( "" ; "Event" )	Standard Text Indexed 1
+FieldComment ( "" ; "Event" )	
+GetNextSerialValue ( "" ; "Event" )	
+FieldType ( "" ; "Type" )	Standard Text Indexed 1
+FieldComment ( "" ; "Type" )	
+GetNextSerialValue ( "" ; "Type" )	
+FieldType ( "" ; "Venue" )	Standard Text Indexed 1
+FieldComment ( "" ; "Venue" )	
+GetNextSerialValue ( "" ; "Venue" )	
+FieldType ( "" ; "no such" )	
+FieldComment ( "" ; "" )	

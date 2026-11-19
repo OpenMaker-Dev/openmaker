@@ -1,0 +1,19 @@
+# Compile mode (calceval -c), MBS example Examples/Third Party/FileMaker_Snippet_Storage.fmp12,
+# context SnippetStorageDB (03d00001). Custom functions: __GEN_Rabatt ( pBetrag ; pRabatt ) id 64,
+# __GUID (no parameters) id 20, __GEN_Range_ID ( pBeginn ; pEnde ; pAbstand ) id 17 (recursive).
+# Stand-ins for needed-expressions section 15 (f, g, r).
+__GEN_Rabatt ( 1 ; 2 )
+1 + __GEN_Rabatt ( 1 ; 2 )
+If ( 1 ; __GEN_Rabatt ( 1 ; 2 ) ; 0 )
+Let ( x = __GEN_Rabatt ( 1 ; 2 ) ; x )
+__GUID
+__GUID ( )
+__GEN_Range_ID ( 3 ; 1 ; 1 )
+Case ( 0 ; __GUID ; __GEN_Rabatt ( 1 ; 2 ) )
+Choose ( 1 ; __GUID ; __GEN_Rabatt ( 1 ; 2 ) )
+List ( __GEN_Rabatt ( 1 ; 2 ) )
+Let ( x = 1 ; If ( x ; __GUID ) )
+__GEN_Rabatt ( 1 )
+__GEN_Rabatt ( 1 ; 2 ; 3 )
+__gen_rabatt ( 1 ; 2 )
+__GEN_Rabatt ( 1 ; 2 ; )

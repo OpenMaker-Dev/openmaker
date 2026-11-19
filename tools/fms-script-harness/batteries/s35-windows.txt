@@ -1,0 +1,172 @@
+# Windows on FileMaker Server's script engine: New Window, Select Window,
+# Close Window, per-window found sets, records and modes, the window Get
+# selectors (findings: results/s35-findings.md, part B).
+# Base file: tasks-en, generated (no records); "setup" adds tasks a-e.
+# Each probe returns $$w, one bracket per state: [error of the step before
+# : Get(WindowName) : WindowNames ( Get ( FileName ) ) (comma-separated) :
+# Get(LayoutName) : Get(FoundCount) : Get(RecordNumber) : Get(WindowMode) :
+# Tasks::Task]. W1 is the session's own window, named as the session
+# names it ($w1).
+@generate
+
+== wst
+Set Variable [ $$w ; $$w & "[" & Get ( ScriptParameter ) & ":" & Get ( WindowName ) & ":" & Substitute ( WindowNames ( Get ( FileName ) ) ; ¶ ; "," ) & ":" & Get ( LayoutName ) & ":" & Get ( FoundCount ) & ":" & Get ( RecordNumber ) & ":" & Get ( WindowMode ) & ":" & Tasks::Task & "]" ]
+
+== wsel
+# The window selectors of the current window, comma-separated.
+Set Variable [ $$w ; $$w & "{" & Get ( WindowName ) & "," & Get ( WindowVisible ) & "," & Get ( WindowStyle ) & "," & Get ( WindowTop ) & "," & Get ( WindowLeft ) & "," & Get ( WindowHeight ) & "," & Get ( WindowWidth ) & "," & Get ( WindowZoomLevel ) & "," & Get ( WindowContentHeight ) & "," & Get ( WindowContentWidth ) & "," & Get ( WindowDesktopHeight ) & "," & Get ( WindowDesktopWidth ) & "," & Get ( WindowOrientation ) & "," & Get ( ScreenHeight ) & "," & Get ( ScreenWidth ) & "," & Length ( Get ( WindowUUID ) ) & "}" ]
+Set Variable [ $$uuids ; $$uuids & Get ( WindowName ) & "=" & Get ( WindowUUID ) & " " ]
+
+== setup
+Go to Layout [ "Task Details" ]
+New Record/Request
+Set Field [ Tasks::Task ; "a" ]
+New Record/Request
+Set Field [ Tasks::Task ; "b" ]
+New Record/Request
+Set Field [ Tasks::Task ; "c" ]
+New Record/Request
+Set Field [ Tasks::Task ; "d" ]
+New Record/Request
+Set Field [ Tasks::Task ; "e" ]
+Commit Records/Requests [ With dialog: Off ]
+Exit Script [ Get ( TotalRecordCount ) ]
+
+== reset
+# Task Details, all records, record 1.
+Set Variable [ $$w ; "" ]
+Go to Layout [ "Task Details" ]
+Show All Records
+Go to Record/Request/Page [ First ]
+
+== new
+# B1: New Window with a name, without one, the same name again, with a
+# layout; the state in each.
+Set Error Capture [ On ]
+Perform Script [ "reset" ]
+Go to Record/Request/Page [ Next ]
+Perform Script [ "wst" ; Parameter: Get ( LastError ) ]
+New Window [ Name: "W2" ]
+Perform Script [ "wst" ; Parameter: Get ( LastError ) ]
+New Window [ ]
+Perform Script [ "wst" ; Parameter: Get ( LastError ) ]
+New Window [ Name: "W2" ]
+Perform Script [ "wst" ; Parameter: Get ( LastError ) ]
+New Window [ Name: "W5" ; Layout: "Assignments" ]
+Perform Script [ "wst" ; Parameter: Get ( LastError ) ]
+New Window [ Name: "W6" ; Layout: "Task List" ]
+Perform Script [ "wst" ; Parameter: Get ( LastError ) ]
+Exit Script [ $$w ]
+
+== perwin
+# B2: W1 on record 2; W2 omits a record and goes to the next one; back in
+# W1; W2 enters Find mode; W1's mode; W2's mode.
+Set Error Capture [ On ]
+Perform Script [ "reset" ]
+Set Variable [ $w1 ; Get ( WindowName ) ]
+Go to Record/Request/Page [ Next ]
+Perform Script [ "wst" ; Parameter: Get ( LastError ) ]
+New Window [ Name: "W2" ]
+Perform Script [ "wst" ; Parameter: Get ( LastError ) ]
+Omit Record
+Perform Script [ "wst" ; Parameter: Get ( LastError ) ]
+Go to Record/Request/Page [ Next ]
+Perform Script [ "wst" ; Parameter: Get ( LastError ) ]
+Select Window [ Name: $w1 ; Current file ]
+Perform Script [ "wst" ; Parameter: Get ( LastError ) ]
+Select Window [ Name: "W2" ; Current file ]
+Perform Script [ "wst" ; Parameter: Get ( LastError ) ]
+Enter Find Mode [ Pause: Off ]
+Perform Script [ "wst" ; Parameter: Get ( LastError ) ]
+Select Window [ Name: $w1 ; Current file ]
+Perform Script [ "wst" ; Parameter: Get ( LastError ) ]
+Select Window [ Name: "W2" ; Current file ]
+Perform Script [ "wst" ; Parameter: Get ( LastError ) ]
+Exit Script [ $$w ]
+
+== perwin find
+# B2: a find in W2 (Task = d), then W1.
+Set Error Capture [ On ]
+Perform Script [ "reset" ]
+Set Variable [ $w1 ; Get ( WindowName ) ]
+Go to Record/Request/Page [ Last ]
+New Window [ Name: "W2" ]
+Enter Find Mode [ Pause: Off ]
+Set Field [ Tasks::Task ; "d" ]
+Perform Find
+Perform Script [ "wst" ; Parameter: Get ( LastError ) ]
+Select Window [ Name: $w1 ]
+Perform Script [ "wst" ; Parameter: Get ( LastError ) ]
+Exit Script [ $$w ]
+
+== close
+# B3: W1, W2, W3; select W1, then W2; close the current window (W2); close
+# W3 by name; names that do not exist.
+Set Error Capture [ On ]
+Perform Script [ "reset" ]
+Set Variable [ $w1 ; Get ( WindowName ) ]
+New Window [ Name: "W2" ]
+Go to Record/Request/Page [ Last ]
+New Window [ Name: "W3" ]
+Go to Record/Request/Page [ Previous ]
+Select Window [ Name: $w1 ; Current file ]
+Select Window [ Name: "W2" ; Current file ]
+Perform Script [ "wst" ; Parameter: Get ( LastError ) ]
+Close Window [ Current Window ]
+Perform Script [ "wst" ; Parameter: Get ( LastError ) ]
+Close Window [ Name: "W3" ; Current file ]
+Perform Script [ "wst" ; Parameter: Get ( LastError ) ]
+Close Window [ Name: "nosuch" ; Current file ]
+Perform Script [ "wst" ; Parameter: Get ( LastError ) ]
+Select Window [ Name: "nosuch" ; Current file ]
+Perform Script [ "wst" ; Parameter: Get ( LastError ) ]
+Select Window [ Name: "nosuch" ]
+Perform Script [ "wst" ; Parameter: Get ( LastError ) ]
+Select Window [ Name: "" ]
+Perform Script [ "wst" ; Parameter: Get ( LastError ) ]
+Exit Script [ $$w ]
+
+== close last
+# B3: closing the only window: the steps after it.
+Set Error Capture [ On ]
+Perform Script [ "reset" ]
+Perform Script [ "wst" ; Parameter: Get ( LastError ) ]
+Close Window [ Current Window ]
+Set Variable [ $$after ; "ran:" & Get ( LastError ) ]
+Perform Script [ "wst" ; Parameter: Get ( LastError ) ]
+Exit Script [ $$w ]
+
+== close by name
+# Close Window by W1's own name while W2 is current.
+Set Error Capture [ On ]
+Perform Script [ "reset" ]
+Set Variable [ $w1 ; Get ( WindowName ) ]
+New Window [ Name: "W2" ]
+Close Window [ Name: $w1 ; Current file ]
+Perform Script [ "wst" ; Parameter: Get ( LastError ) ]
+Select Window [ Name: $w1 ]
+Perform Script [ "wst" ; Parameter: Get ( LastError ) ]
+Exit Script [ $$w ]
+
+== selectors
+# B4: the window selectors in W1, in W3 made with bounds, back in W1.
+Set Error Capture [ On ]
+Perform Script [ "reset" ]
+Set Variable [ $w1 ; Get ( WindowName ) ]
+Perform Script [ "wsel" ]
+New Window [ Name: "W3" ; Height: 400 ; Width: 600 ; Top: 10 ; Left: 20 ]
+Set Variable [ $e ; Get ( LastError ) ]
+Perform Script [ "wsel" ]
+Select Window [ Name: $w1 ]
+Perform Script [ "wsel" ]
+Exit Script [ $e & " " & $$w & " " & $$uuids ]
+
+--- run
+setup
+new
+perwin
+perwin find
+close
+close last		$$after	$$w	Get ( WindowName )
+close by name
+selectors		Get ( WindowName )	WindowNames ( "" )	WindowNames ( "work" )

@@ -1,0 +1,153 @@
+//! OpenMaker's desktop GUI: connect to a FileMaker Server and open a hosted
+//! file, or open a file on this computer (File > Open), and browse its
+//! layouts and records in a window whose application chrome
+//! follows FileMaker Pro's (menu bar, status toolbar, layout bar, modes). See
+//! `docs/re/client-ui.md` for FileMaker Pro's chrome and
+//! `docs/desktop-client.md` for what this crate builds of it.
+//!
+//! The GUI talks to data only through [`om_data::DataProvider`], which it runs
+//! on a background thread. [`OpenMakerApp::new`] takes any provider.
+//!
+//! # Choosing the provider
+//!
+//! The `om-gui` binary picks its provider with [`provider_from_env`], driven
+//! by the `OPENMAKER_PROVIDER` environment variable (default `native`).
+//! Sample data requires an explicit `mock` selection and is labeled in the
+//! window. Providers can also be supplied directly to [`run`]:
+//!
+//! ```no_run
+//! # use om_data::mock::MockProvider;
+//! om_gui::run(Box::new(MockProvider::new())).expect("OpenMaker failed");
+//! ```
+
+mod app;
+mod calc;
+mod connect;
+mod content;
+mod create_new;
+mod database;
+mod database_graph;
+mod database_lookup;
+mod database_options;
+mod database_relationship;
+mod database_summary;
+mod desktop;
+mod document;
+mod icons;
+mod inspector;
+mod layout_bar;
+mod layout_canvas;
+mod layout_objects;
+mod layout_setup;
+pub mod licensing;
+mod list_build;
+mod manage_layouts;
+mod menubar;
+mod new_layout;
+mod open_file;
+mod page_setup;
+mod part_setup;
+mod plugin_ui;
+mod portal_setup;
+mod preview;
+mod printing;
+pub mod report;
+#[cfg(test)]
+mod scorecard;
+mod script_workspace;
+mod scripting;
+mod security;
+mod session;
+pub mod settings;
+#[cfg(test)]
+mod test_renderer;
+mod theme;
+mod toolbar;
+mod value_lists;
+mod web_viewer;
+mod widgets;
+mod worker;
+
+pub use app::{CardFrame, Mode, OpenMakerApp, ViewMode, APP_TITLE};
+pub use document::PdfViewer;
+pub use theme::install as install_theme;
+
+use om_data::{mock::MockProvider, DataProvider};
+
+/// The environment variable that selects the data provider.
+pub const PROVIDER_ENV: &str = "OPENMAKER_PROVIDER";
+
+/// Build the data provider named by [`PROVIDER_ENV`].
+///
+/// Recognised values: `native` (default) and `mock` (explicit sample data).
+pub fn provider_from_env() -> Result<Box<dyn DataProvider>, String> {
+    let name = match std::env::var(PROVIDER_ENV) {
+        Ok(name) => name,
+        Err(std::env::VarError::NotPresent) => String::new(),
+        Err(std::env::VarError::NotUnicode(_)) => {
+            return Err(format!("{PROVIDER_ENV} is not valid UTF-8"));
+        }
+    };
+    match name.trim() {
+        // A hosted file's related files open when its layouts and
+        // calculations first read them (#983).
+        "" | "native" => om_provider::NativeProvider::from_env()
+            .map(|provider| {
+                Box::new(provider.with_related_on_demand(true)) as Box<dyn DataProvider>
+            })
+            .map_err(|err| err.to_string()),
+        "mock" => Ok(Box::new(MockProvider::new())),
+        other => Err(format!(
+            "unknown {PROVIDER_ENV} value {other:?} (supported: native, mock)"
+        )),
+    }
+}
+
+/// Native window options for the OpenMaker window. With the `web-viewer`
+/// feature on Linux they choose winit's X11 backend whenever an X server
+/// answers, also on a Wayland session (through XWayland), since the web
+/// viewers are X11 child windows.
+pub fn native_options() -> eframe::NativeOptions {
+    eframe::NativeOptions {
+        viewport: egui::ViewportBuilder::default()
+            .with_title(APP_TITLE)
+            .with_app_id("openmaker")
+            // FileMaker's document window in the captures is 1060 pt wide.
+            .with_inner_size([1060.0, 760.0])
+            .with_min_inner_size([720.0, 480.0]),
+        event_loop_builder: web_viewer::event_loop_hook(),
+        ..Default::default()
+    }
+}
+
+/// Settle what web viewers need from the process environment: call it
+/// before any thread starts (`run` does). With the `web-viewer` feature on
+/// an X server without DRI3, WebKitGTK's DMA-BUF renderer is turned off,
+/// unless `WEBKIT_DISABLE_DMABUF_RENDERER` is already set; otherwise it does
+/// nothing.
+pub fn prepare_web_viewers() {
+    web_viewer::prepare_environment();
+}
+
+/// Open the OpenMaker window with `provider` and run until it is closed.
+pub fn run(provider: Box<dyn DataProvider>) -> eframe::Result {
+    prepare_web_viewers();
+    // The User Name the account chose last time (Settings).
+    if let Some(path) = settings::default_path() {
+        if let Err(err) = settings::apply_saved(&path) {
+            eprintln!("openmaker: {err}");
+        }
+    }
+    eframe::run_native(
+        APP_TITLE,
+        native_options(),
+        Box::new(|cc| {
+            install_theme(&cc.egui_ctx);
+            Ok(Box::new(
+                OpenMakerApp::new(provider).with_connection_defaults(),
+            ))
+        }),
+    )
+}
+
+mod layout_menu;

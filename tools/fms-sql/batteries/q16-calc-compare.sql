@@ -1,0 +1,19 @@
+# q16: SQL functions beside the calculation functions of the same name, same
+# arguments. File: FileMaker Server sample (en), no record context. Each pair:
+# the calculation, then the SQL.
+=Cos ( 1 ) & "|" & Sin ( 1 ) & "|" & Tan ( 1 ) & "|" & Atan ( 1 ) & "|" & Degrees ( 1 ) & "|" & Radians ( 180 ) & "|" & Pi
+SELECT COS(1), SIN(1), TAN(1), ATAN(1), DEGREES(1), RADIANS(180), PI() FROM Tasks WHERE "TASK ID MATCH FIELD" = 3
+=Exp ( 1 ) & "|" & Ln ( 10 ) & "|" & Log ( 2 ) & "|" & Lg ( 100 ) & "|" & Sqrt ( 2 ) & "|" & 2 ^ 0.5 & "|" & Exp ( 2.5 )
+SELECT EXP(1), LN(10), LOG(2), LG(100), SQRT(2), 2^0.5, EXP(2.5) FROM Tasks WHERE "TASK ID MATCH FIELD" = 3
+=Round ( 2.5 ; 0 ) & "|" & Round ( -2.5 ; 0 ) & "|" & Round ( 0.125 ; 2 ) & "|" & Int ( -2.7 ) & "|" & Ceiling ( -1.2 ) & "|" & Floor ( -1.2 ) & "|" & Mod ( -7 ; 3 ) & "|" & Mod ( 7 ; -3 ) & "|" & Mod ( 7 ; 0 ) & "|" & Sign ( -3 )
+SELECT ROUND(2.5, 0), ROUND(-2.5, 0), ROUND(0.125, 2), INT(-2.7), CEILING(-1.2), FLOOR(-1.2), MOD(-7, 3), MOD(7, -3), MOD(7, 0), SIGN(-3) FROM Tasks WHERE "TASK ID MATCH FIELD" = 3
+=1/3 & "|" & 10/3 & "|" & 1/7 & "|" & 2/3 & "|" & 1/3000000 & "|" & 123456789.123456789 * 1000
+SELECT 1/3, 10/3, 1/7, 2/3, 1/3000000, 123456789.123456789 * 1000 FROM Tasks WHERE "TASK ID MATCH FIELD" = 3
+=Length ( "👍🏽" ) & "|" & Length ( "🇩🇪" ) & "|" & Length ( "e" & Char ( 769 ) ) & "|" & Length ( "😀" ) & "|" & Upper ( "straße" ) & "|" & Lower ( "ΣΑΣ" ) & "|" & Upper ( "ǆ" ) & "|" & Lower ( "İ" )
+SELECT LENGTH('👍🏽'), LENGTH('🇩🇪'), LENGTH('é'), LENGTH('😀'), UPPER('straße'), LOWER('ΣΑΣ'), UPPER('ǆ'), LOWER('İ') FROM Tasks WHERE "TASK ID MATCH FIELD" = 3
+=Left ( "😀ab" ; 1 ) & "|" & Middle ( "😀abc" ; 2 ; 2 ) & "|" & Right ( "ab😀" ; 1 ) & "|" & Middle ( "Hire New" ; 0 ; 3 )
+SELECT LEFT('😀ab', 1), SUBSTR('😀abc', 2, 2), RIGHT('ab😀', 1), SUBSTR('Hire New', 0, 3) FROM Tasks WHERE "TASK ID MATCH FIELD" = 3
+=DayName ( Date ( 11 ; 24 ; 2014 ) ) & "|" & MonthName ( Date ( 11 ; 24 ; 2014 ) ) & "|" & DayOfWeek ( Date ( 11 ; 24 ; 2014 ) )
+SELECT DAYNAME(DATE '2014-11-24'), MONTHNAME(DATE '2014-11-24'), DAYOFWEEK(DATE '2014-11-24') FROM Tasks WHERE "TASK ID MATCH FIELD" = 3
+=1e20 & "|" & 10^9 & "|" & 1000000000.5 & "|" & 0.0000000001 & "|" & .5 & "|" & 1.50
+SELECT 1e20, 10^9, 1000000000.5, 0.0000000001, .5, 1.50 FROM Tasks WHERE "TASK ID MATCH FIELD" = 3

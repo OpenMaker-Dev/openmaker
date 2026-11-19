@@ -1,0 +1,95 @@
+# Lone surrogates (calc-values.md 13, collation gaps): FileMaker's UTF-16 text holds
+# them as code units. GetAsURLEncoded ( Char ( 55357 ) ) crashes the engine and is left out.
+Char ( 55357 )	0	1/1/0	\uD83D
+Char ( 56832 )	0	1/1/0	\uDE00
+Code ( Char ( 55357 ) )	0	2/2/0	55357
+Length ( Char ( 55357 ) )	0	2/2/0	1
+Length ( "a" & Char ( 55357 ) & "b" )	0	2/2/0	3
+Code ( "a" & Char ( 55357 ) & "b" )	0	2/2/0	985535700097
+Char ( 55357 ) & Char ( 56832 )	0	1/1/0	😀
+Length ( Char ( 55357 ) & Char ( 56832 ) )	0	2/2/0	1
+Code ( Char ( 55357 ) & Char ( 56832 ) )	0	2/2/0	5683255357
+Char ( 56832 ) & Char ( 55357 )	0	1/1/0	\uDE00\uD83D
+Length ( Char ( 56832 ) & Char ( 55357 ) )	0	2/2/0	2
+Left ( "😀" ; 1 )	0	1/1/0	😀
+Middle ( "a😀b" ; 2 ; 1 )	0	1/1/0	😀
+Length ( "😀" )	0	2/2/0	1
+Left ( Char ( 55357 ) & "x" ; 1 )	0	1/1/0	\uD83D
+Right ( "x" & Char ( 56832 ) ; 1 )	0	1/1/0	\uDE00
+Middle ( "a" & Char ( 55357 ) & "b" ; 2 ; 1 )	0	1/1/0	\uD83D
+Code ( Middle ( "a" & Char ( 55357 ) & "b" ; 2 ; 1 ) )	0	2/2/0	55357
+Exact ( Char ( 55357 ) ; Char ( 65533 ) )	0	2/2/0	0
+Exact ( Char ( 55357 ) ; Char ( 55357 ) )	0	2/2/0	1
+Exact ( Char ( 55357 ) ; Char ( 55358 ) )	0	2/2/0	0
+Char ( 55357 ) = Char ( 55358 )	0	2/2/0	1
+Char ( 55357 ) = Char ( 65533 )	0	2/2/0	0
+Char ( 55357 ) = ""	0	2/2/0	0
+Char ( 55357 ) = "a"	0	2/2/0	0
+Char ( 55357 ) < "a"	0	2/2/0	1
+"a" < Char ( 55357 )	0	2/2/0	0
+Char ( 55357 ) < Char ( 56832 )	0	2/2/0	0
+Char ( 56832 ) < Char ( 55357 )	0	2/2/0	0
+Char ( 55357 ) < "一"	0	2/2/0	1
+Char ( 55357 ) < "가"	0	2/2/0	1
+Char ( 55357 ) < Char ( 64976 )	0	2/2/0	1
+"a" & Char ( 55357 ) = "a"	0	2/2/0	0
+"a" & Char ( 55357 ) < "a"	0	2/2/0	0
+"a" < "a" & Char ( 55357 )	0	2/2/0	1
+Base64Encode ( Char ( 55357 ) )	17	2/2/0	?
+Base64Encode ( "a" & Char ( 55357 ) & "b" )	0	1/1/0	YWI=\r\n
+Base64Encode ( Char ( 56832 ) )	0	1/1/0	\r\n
+HexEncode ( Char ( 55357 ) )	17	2/2/0	?
+TextEncode ( Char ( 55357 ) ; "utf-16" ; 1 )	4	2/2/0	?
+Base64Encode ( TextEncode ( "a" & Char ( 55357 ) ; "utf-16" ; 1 ) )	4	1/1/0	Pw==\r\n
+Base64Encode ( TextEncode ( "a" & Char ( 55357 ) ; "utf-8" ; 1 ) )	0	1/1/0	\r\n
+Upper ( Char ( 55357 ) )	0	1/1/0	\uD83D
+Length ( Upper ( "a" & Char ( 55357 ) ) )	0	2/2/0	2
+Code ( Upper ( "a" & Char ( 55357 ) ) )	0	2/2/0	5535700065
+Position ( "a" & Char ( 55357 ) & "b" ; Char ( 55357 ) ; 1 ; 1 )	0	2/2/0	2
+Position ( "a😀b" ; Char ( 56832 ) ; 1 ; 1 )	0	2/2/0	3
+Position ( "a😀b" ; Char ( 55357 ) ; 1 ; 1 )	0	2/2/0	2
+PatternCount ( "a😀b" ; Char ( 55357 ) )	0	2/2/0	1
+PatternCount ( "a😀b" ; Char ( 56832 ) )	0	2/2/0	1
+Substitute ( "a😀b" ; Char ( 56832 ) ; "x" )	0	1/1/0	a\uD83Dxb
+Length ( Substitute ( "a😀b" ; Char ( 56832 ) ; "x" ) )	0	2/2/0	4
+Code ( Substitute ( "a😀b" ; Char ( 56832 ) ; "x" ) )	0	2/2/0	98001205535700097
+Substitute ( "a" & Char ( 55357 ) & "b" ; Char ( 55357 ) ; "" )	0	1/1/0	ab
+Filter ( "a" & Char ( 55357 ) & "b" ; "ab" )	0	1/1/0	ab
+Filter ( "a" & Char ( 55357 ) & "b" ; Char ( 55357 ) )	0	1/1/0	\uD83D
+Length ( Filter ( "a😀b" ; Char ( 55357 ) ) )	0	2/2/0	0
+Code ( Filter ( "a😀b" ; Char ( 55357 ) ) )	0	0/1/0	
+Replace ( "a😀b" ; 2 ; 0 ; "x" )	0	1/1/0	ax😀b
+Code ( Replace ( "x" & Char ( 55357 ) ; 2 ; 0 ; Char ( 56832 ) ) )	0	2/2/0	553575683200120
+Quote ( Char ( 55357 ) )	0	1/1/0	"\uD83D"
+JSONSetElement ( "{}" ; "k" ; Char ( 55357 ) ; JSONString )	0	8/1/0	{"k":""}
+JSONGetElement ( JSONSetElement ( "{}" ; "k" ; Char ( 55357 ) ; JSONString ) ; "k" )	0	1/1/0	
+Code ( JSONGetElement ( "{\"k\":\"\\ud83d\"}" ; "k" ) )	503	2/2/0	?
+Code ( JSONGetElement ( "{\"k\":\"\\ud83d\\ude00\"}" ; "k" ) )	0	2/2/0	5683255357
+GetAsCSS ( Char ( 55357 ) )	0	1/1/0	<span style="" >&#55357;</span>
+GetAsSVG ( Char ( 55357 ) )	0	1/1/0	<stylelist>\r<style#0>"", begin: 1, end: 1</style> \r</stylelist>\r<data>\r<span style="0">&#55357;</span>\r</data>
+SortValues ( Char ( 55357 ) & ¶ & "a" & ¶ & Char ( 56832 ) & ¶ & "" & ¶ & "一" & ¶ & "가" )	0	1/1/0	\r\uDE00\r\uD83D\ra\r一\r가\r
+UniqueValues ( Char ( 55357 ) & ¶ & Char ( 55358 ) & ¶ & Char ( 56832 ) & ¶ & "a" )	0	1/1/0	\uD83D\r\uD83E\r\uDE00\ra\r
+SortValues ( Char ( 55357 ) & ¶ & Char ( 56832 ) & ¶ & "a" ; 1 ; "Unicode_Raw" )	0	1/1/0	a\r\uD83D\r\uDE00\r
+Char ( 55357 ) & "😀"	0	1/1/0	\uD83D😀
+Length ( Char ( 55357 ) & "😀" )	0	2/2/0	2
+Code ( Char ( 55357 ) & "😀" )	0	2/2/0	568325535755357
+WordCount ( "a" & Char ( 55357 ) & "b" )	0	2/2/0	2
+LeftWords ( "ab" & Char ( 55357 ) & "c d" ; 1 )	0	1/1/0	ab
+Lower ( Char ( 56832 ) )	0	1/1/0	\uDE00
+GetAsNumber ( Char ( 55357 ) & "5" )	0	2/2/0	5
+TextColor ( Char ( 55357 ) ; 255 )	0	1/1/0	\uD83D
+Char ( 55357 ) & TextColor ( Char ( 56832 ) ; 255 )	0	1/1/0	😀
+Length ( Char ( 55357 ) & TextColor ( Char ( 56832 ) ; 255 ) )	0	2/2/0	1
+Char ( 55357 ) = Char ( 56832 )	0	2/2/0	1
+Char ( 56832 ) = Char ( 56833 )	0	2/2/0	1
+Exact ( Char ( 55357 ) & Char ( 56832 ) ; "😀" )	0	2/2/0	1
+SortValues ( Char ( 55296 ) & ¶ & Char ( 56320 ) & ¶ & Char ( 56321 ) & ¶ & Char ( 57343 ) & ¶ & Char ( 56319 ) & ¶ & Char ( 3784 ) & ¶ & Char ( 133 ) & ¶ & Char ( 127 ) & ¶ & "a" )	0	1/1/0	\uDC01\r\uDFFF\r\r\uD800\r\uDC00\r\uDBFF\r່\r\ra\r
+UniqueValues ( Char ( 55296 ) & ¶ & Char ( 56320 ) & ¶ & Char ( 56321 ) & ¶ & "a" & Char ( 56321 ) & ¶ & "a" )	0	1/1/0	\uD800\r\uDC00\r\uDC01\ra\uDC01\r
+Max ( Char ( 55357 ) ; "a" )	0	1/1/0	a
+Min ( Char ( 55357 ) ; "a" )	0	1/1/0	\uD83D
+Max ( Char ( 55357 ) ; Char ( 56832 ) )	0	1/1/0	\uD83D
+Middle ( Char ( 55357 ) & Char ( 56832 ) & "x" ; 1 ; 1 )	0	1/1/0	😀
+Length ( Left ( "a" & Char ( 55357 ) ; 1 ) & Char ( 56832 ) )	0	2/2/0	2
+Substitute ( "a" & Char ( 55357 ) & "b" ; "a" ; Char ( 56832 ) )	0	1/1/0	\uDE00\uD83Db
+Code ( Substitute ( "x" & Char ( 55357 ) & "b" ; "b" ; Char ( 56832 ) ) )	0	2/2/0	568325535700120
+Code ( Replace ( "x" & Char ( 55357 ) ; 3 ; 0 ; Char ( 56832 ) ) )	0	2/2/0	568325535700120

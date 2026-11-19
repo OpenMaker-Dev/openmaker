@@ -1,0 +1,6 @@
+# Custom function argument order (MBS FileMaker_Snippet_Storage, as x04):
+# arguments are stored last first.
+@ 03d00001
+Let ( $a = "" ; 0 ) & __GEN_Rabatt ( Let ( $a = $a & "1" ; 100 ) ; Let ( $a = $a & "2" ; 10 ) ) & "|" & $a
+EvaluationError ( __GEN_Rabatt ( 1/0 ; Sqrt ( -1 ) ) )
+Let ( $a = "" ; 0 ) & __GEN_Range_ID ( Let ( $a = $a & "1" ; 1 ) ; Let ( $a = $a & "2" ; 2 ) ; Let ( $a = $a & "3" ; 1 ) ) & "|" & $a

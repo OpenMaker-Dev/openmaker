@@ -1,0 +1,19 @@
+[package]
+name = "om-query"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+rust-version.workspace = true
+description = "FileMaker query programs (finds, joins, found sets) over HBAM files"
+
+[dependencies]
+om-collate = { path = "../om-collate" }
+om-crypto = { path = "../om-crypto" }
+om-hbam = { path = "../om-hbam" }
+om-scsu = { path = "../om-scsu" }
+
+[dev-dependencies]
+stats_alloc = "0.1"
+
+[lints]
+workspace = true

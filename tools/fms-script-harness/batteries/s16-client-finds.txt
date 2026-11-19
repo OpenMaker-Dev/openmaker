@@ -1,0 +1,155 @@
+# Finds the host cannot answer from an index (script-runtime.md 13.19):
+# criteria on unstored calculations, summary fields and a global field.
+# Base file: findprobe, generated from tasks-en with
+# `tools/file_metadata_probe.py --no-triggers --find-fields` (Tasks gains N,
+# W, the summaries of file-metadata.md 5, unstored U = N * 2 and UT = Task &
+# " " & Status, and a global G). "setup" adds the records of
+# file-metadata.md 4.3 (Task, N, W, Status, Category): e 5 1 Pending Work,
+# a 1 2 Pending Home, d 4 3 Done Work, b 2 1 Done Home, (empty) - 1 Pending
+# Home, c 3 2 Pending Work. Each probe returns
+# "error:found count:tasks of the found set" (an empty Task is shown as
+# "-"); the global probes add G's value after the find.
+
+== setup
+Go to Layout [ "Task List" ]
+New Record/Request
+Set Field [ Tasks::Task ; "e" ]
+Set Field [ Tasks::N ; 5 ]
+Set Field [ Tasks::W ; 1 ]
+Set Field [ Tasks::Status ; "Pending" ]
+Set Field [ Tasks::Category ; "Work" ]
+New Record/Request
+Set Field [ Tasks::Task ; "a" ]
+Set Field [ Tasks::N ; 1 ]
+Set Field [ Tasks::W ; 2 ]
+Set Field [ Tasks::Status ; "Pending" ]
+Set Field [ Tasks::Category ; "Home" ]
+New Record/Request
+Set Field [ Tasks::Task ; "d" ]
+Set Field [ Tasks::N ; 4 ]
+Set Field [ Tasks::W ; 3 ]
+Set Field [ Tasks::Status ; "Done" ]
+Set Field [ Tasks::Category ; "Work" ]
+New Record/Request
+Set Field [ Tasks::Task ; "b" ]
+Set Field [ Tasks::N ; 2 ]
+Set Field [ Tasks::W ; 1 ]
+Set Field [ Tasks::Status ; "Done" ]
+Set Field [ Tasks::Category ; "Home" ]
+New Record/Request
+Set Field [ Tasks::W ; 1 ]
+Set Field [ Tasks::Status ; "Pending" ]
+Set Field [ Tasks::Category ; "Home" ]
+New Record/Request
+Set Field [ Tasks::Task ; "c" ]
+Set Field [ Tasks::N ; 3 ]
+Set Field [ Tasks::W ; 2 ]
+Set Field [ Tasks::Status ; "Pending" ]
+Set Field [ Tasks::Category ; "Work" ]
+Commit Records/Requests [ With dialog: Off ]
+Exit Script [ Get ( TotalRecordCount ) & ":" & List ( Tasks::U ) ]
+
+== list
+Set Variable [ $$list ; "" ]
+If [ Get ( FoundCount ) > 0 ]
+Go to Record/Request/Page [ First ]
+Loop
+Set Variable [ $$list ; $$list & If ( IsEmpty ( Tasks::Task ) ; "-" ; Tasks::Task ) & " " ]
+Go to Record/Request/Page [ Next ; Exit after last: On ]
+End Loop
+End If
+
+== find
+# Parameter: field ¶ criterion, then optionally field ¶ criterion again.
+Set Error Capture [ On ]
+Go to Layout [ "Task List" ]
+Step 22
+If [ GetValue ( Get ( ScriptParameter ) ; 1 ) = "U" ]
+Set Field [ Tasks::U ; GetValue ( Get ( ScriptParameter ) ; 2 ) ]
+Else If [ GetValue ( Get ( ScriptParameter ) ; 1 ) = "UT" ]
+Set Field [ Tasks::UT ; GetValue ( Get ( ScriptParameter ) ; 2 ) ]
+Else If [ GetValue ( Get ( ScriptParameter ) ; 1 ) = "S_Total" ]
+Set Field [ Tasks::S_Total ; GetValue ( Get ( ScriptParameter ) ; 2 ) ]
+Else If [ GetValue ( Get ( ScriptParameter ) ; 1 ) = "S_RunTotal" ]
+Set Field [ Tasks::S_RunTotal ; GetValue ( Get ( ScriptParameter ) ; 2 ) ]
+Else If [ GetValue ( Get ( ScriptParameter ) ; 1 ) = "S_Count" ]
+Set Field [ Tasks::S_Count ; GetValue ( Get ( ScriptParameter ) ; 2 ) ]
+Else If [ GetValue ( Get ( ScriptParameter ) ; 1 ) = "S_List" ]
+Set Field [ Tasks::S_List ; GetValue ( Get ( ScriptParameter ) ; 2 ) ]
+Else If [ GetValue ( Get ( ScriptParameter ) ; 1 ) = "S_Frac" ]
+Set Field [ Tasks::S_Frac ; GetValue ( Get ( ScriptParameter ) ; 2 ) ]
+End If
+Set Variable [ $set ; Get ( LastError ) ]
+If [ GetValue ( Get ( ScriptParameter ) ; 3 ) = "Task" ]
+Set Field [ Tasks::Task ; GetValue ( Get ( ScriptParameter ) ; 4 ) ]
+End If
+Step 28
+Set Variable [ $err ; Get ( LastError ) ]
+Set Variable [ $mode ; Get ( WindowMode ) ]
+Perform Script [ "list" ]
+Exit Script [ $set & "/" & $err & ":" & Get ( FoundCount ) & ":" & $$list & "m" & $mode ]
+
+== find after e
+# The found set is "e" alone when the summary criterion is read.
+Set Error Capture [ On ]
+Go to Layout [ "Task List" ]
+Step 22
+Set Field [ Tasks::Task ; "e" ]
+Step 28
+Step 22
+Set Field [ Tasks::S_Total ; Get ( ScriptParameter ) ]
+Step 28
+Set Variable [ $err ; Get ( LastError ) ]
+Perform Script [ "list" ]
+Exit Script [ $err & ":" & Get ( FoundCount ) & ":" & $$list ]
+
+== global
+# Parameter: G's value before, G's criterion, Task's criterion.
+Set Error Capture [ On ]
+Go to Layout [ "Task List" ]
+Set Field [ Tasks::G ; GetValue ( Get ( ScriptParameter ) ; 1 ) ]
+Set Variable [ $before ; Get ( LastError ) ]
+Step 22
+Set Field [ Tasks::G ; GetValue ( Get ( ScriptParameter ) ; 2 ) ]
+Set Variable [ $set ; Get ( LastError ) ]
+Set Variable [ $infind ; Tasks::G ]
+Set Field [ Tasks::Task ; GetValue ( Get ( ScriptParameter ) ; 3 ) ]
+Step 28
+Set Variable [ $err ; Get ( LastError ) ]
+Perform Script [ "list" ]
+Exit Script [ $before & "/" & $set & "/" & $err & ":" & Get ( FoundCount ) & ":" & $$list & "G=" & Tasks::G & " in find=" & $infind ]
+
+--- run
+setup
+find	U\r8
+find	U\r>5
+find	U\r#
+find	U\r=
+find	U\r*
+find	U\r==8
+find	U\r4...8
+find	U\r!
+find	UT\rpend
+find	UT\r==a Pending
+find	UT\rd*
+find	UT\r"b Done"
+find	U\r>3\rTask\rb
+find	U\r>3\rTask\re
+find	S_Total\r15
+find	S_Total\r14
+find	S_Total\r*
+find	S_Total\r=
+find	S_RunTotal\r12
+find	S_RunTotal\r>10
+find	S_Count\r5
+find	S_List\ra
+find	S_Frac\r>.2
+find	S_Total\r15\rTask\ra
+find after e	5
+find after e	15
+global	x\rx\r
+global	x\ry\r
+global	x\rx\ra
+global	x\ry\ra
+global	x\r*\r
+global	\r=\r

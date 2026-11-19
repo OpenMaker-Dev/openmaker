@@ -1,0 +1,193 @@
+# q01: keywords, identifiers, quoting, comments, whitespace, literals, error
+# positions. File: FileMaker Server sample (en), no record context. Tasks has
+# 12 records; "TASK ID MATCH FIELD" = 3 is "Hire New Sales Person".
+# --- keywords and table names
+ExecuteSQLe ( "SELECT COUNT(*) FROM Tasks" ; "|" ; "¶" )	0	1/1/0	12
+ExecuteSQLe ( "select count(*) from tasks" ; "|" ; "¶" )	0	1/1/0	12
+ExecuteSQLe ( "SeLeCt CoUnT ( * ) FrOm TASKS" ; "|" ; "¶" )	0	1/1/0	12
+ExecuteSQLe ( "SELECT COUNT(*) FROM \"Tasks\"" ; "|" ; "¶" )	0	1/1/0	12
+ExecuteSQLe ( "SELECT COUNT(*) FROM \"tasks\"" ; "|" ; "¶" )	0	1/1/0	12
+ExecuteSQLe ( "SELECT COUNT(*) FROM \"TASKS\"" ; "|" ; "¶" )	0	1/1/0	12
+ExecuteSQLe ( "SELECT COUNT(*) FROM \"Related Tasks\"" ; "|" ; "¶" )	0	1/1/0	12
+ExecuteSQLe ( "SELECT COUNT(*) FROM \"related tasks\"" ; "|" ; "¶" )	0	1/1/0	12
+ExecuteSQLe ( "SELECT COUNT(*) FROM Related Tasks" ; "|" ; "¶" )	8309	1/1/0	? ERROR: FQL0002/(1:21): The table named "Related" does not exist.
+ExecuteSQLe ( "SELECT COUNT(*) FROM \"Assignees Looked Up Value\"" ; "|" ; "¶" )	0	1/1/0	0
+ExecuteSQLe ( "SELECT COUNT(*) FROM \" Tasks\"" ; "|" ; "¶" )	8309	1/1/0	? ERROR: FQL0002/(1:21): The table named " Tasks" does not exist.
+ExecuteSQLe ( "SELECT COUNT(*) FROM \"Tasks \"" ; "|" ; "¶" )	8309	1/1/0	? ERROR: FQL0002/(1:21): The table named "Tasks " does not exist.
+ExecuteSQLe ( "SELECT COUNT(*) FROM \"\"" ; "|" ; "¶" )	8309	1/1/0	? ERROR: FQL0002/(1:21): The table named "" does not exist.
+# --- column names
+ExecuteSQLe ( "SELECT Task FROM Tasks WHERE \"TASK ID MATCH FIELD\" = 3" ; "|" ; "¶" )	0	1/1/0	Hire New Sales Person
+ExecuteSQLe ( "SELECT task FROM tasks WHERE \"task id match field\" = 3" ; "|" ; "¶" )	0	1/1/0	Hire New Sales Person
+ExecuteSQLe ( "SELECT TASK FROM Tasks WHERE \"Task Id Match Field\" = 3" ; "|" ; "¶" )	0	1/1/0	Hire New Sales Person
+ExecuteSQLe ( "SELECT \"Task\" FROM Tasks WHERE \"TASK ID MATCH FIELD\" = 3" ; "|" ; "¶" )	0	1/1/0	Hire New Sales Person
+ExecuteSQLe ( "SELECT \"task\" FROM Tasks WHERE \"TASK ID MATCH FIELD\" = 3" ; "|" ; "¶" )	0	1/1/0	Hire New Sales Person
+ExecuteSQLe ( "SELECT Tasks.Task FROM Tasks WHERE \"TASK ID MATCH FIELD\" = 3" ; "|" ; "¶" )	0	1/1/0	Hire New Sales Person
+ExecuteSQLe ( "SELECT tasks.task FROM Tasks WHERE \"TASK ID MATCH FIELD\" = 3" ; "|" ; "¶" )	0	1/1/0	Hire New Sales Person
+ExecuteSQLe ( "SELECT \"Tasks\".\"Task\" FROM Tasks WHERE \"TASK ID MATCH FIELD\" = 3" ; "|" ; "¶" )	0	1/1/0	Hire New Sales Person
+ExecuteSQLe ( "SELECT \"Tasks\".Task FROM Tasks WHERE Tasks.\"TASK ID MATCH FIELD\" = 3" ; "|" ; "¶" )	0	1/1/0	Hire New Sales Person
+ExecuteSQLe ( "SELECT t.Task FROM Tasks t WHERE t.\"TASK ID MATCH FIELD\" = 3" ; "|" ; "¶" )	0	1/1/0	Hire New Sales Person
+ExecuteSQLe ( "SELECT t.Task FROM Tasks AS t WHERE t.\"TASK ID MATCH FIELD\" = 3" ; "|" ; "¶" )	0	1/1/0	Hire New Sales Person
+ExecuteSQLe ( "SELECT T.Task FROM Tasks t WHERE t.\"TASK ID MATCH FIELD\" = 3" ; "|" ; "¶" )	0	1/1/0	Hire New Sales Person
+ExecuteSQLe ( "SELECT \"t\".Task FROM Tasks t WHERE t.\"TASK ID MATCH FIELD\" = 3" ; "|" ; "¶" )	0	1/1/0	Hire New Sales Person
+ExecuteSQLe ( "SELECT \"T\".Task FROM Tasks t WHERE t.\"TASK ID MATCH FIELD\" = 3" ; "|" ; "¶" )	0	1/1/0	Hire New Sales Person
+ExecuteSQLe ( "SELECT Tasks.Task FROM Tasks t WHERE t.\"TASK ID MATCH FIELD\" = 3" ; "|" ; "¶" )	8309	1/1/0	? ERROR: FQL0008/(1:7): The table named "Tasks" does not exist in the column reference's scope.
+ExecuteSQLe ( "SELECT t.Task FROM Tasks \"t\" WHERE t.\"TASK ID MATCH FIELD\" = 3" ; "|" ; "¶" )	0	1/1/0	Hire New Sales Person
+ExecuteSQLe ( "SELECT x.Task FROM Tasks AS \"x y\" WHERE \"TASK ID MATCH FIELD\" = 3" ; "|" ; "¶" )	8309	1/1/0	? ERROR: FQL0008/(1:7): The table named "x" does not exist in the column reference's scope.
+ExecuteSQLe ( "SELECT \"x y\".Task FROM Tasks AS \"x y\" WHERE \"TASK ID MATCH FIELD\" = 3" ; "|" ; "¶" )	0	1/1/0	Hire New Sales Person
+ExecuteSQLe ( "SELECT \"Related Tasks\".Task FROM \"Related Tasks\" WHERE \"TASK ID MATCH FIELD\" = 3" ; "|" ; "¶" )	0	1/1/0	Hire New Sales Person
+ExecuteSQLe ( "SELECT Task AS \"My Task\" FROM Tasks WHERE \"TASK ID MATCH FIELD\" = 3" ; "|" ; "¶" )	0	1/1/0	Hire New Sales Person
+ExecuteSQLe ( "SELECT Task My FROM Tasks WHERE \"TASK ID MATCH FIELD\" = 3" ; "|" ; "¶" )	0	1/1/0	Hire New Sales Person
+ExecuteSQLe ( "SELECT Task AS Status FROM Tasks WHERE \"TASK ID MATCH FIELD\" = 3" ; "|" ; "¶" )	0	1/1/0	Hire New Sales Person
+ExecuteSQLe ( "SELECT \"Sort List Key | MATCH FIELD\" FROM Tasks WHERE \"TASK ID MATCH FIELD\" = 3" ; "|" ; "¶" )	0	1/1/0	2014
+ExecuteSQLe ( "SELECT \"Due Date\" FROM Tasks WHERE \"TASK ID MATCH FIELD\" = 3" ; "|" ; "¶" )	0	1/1/0	2014-11-24
+ExecuteSQLe ( "SELECT Due Date FROM Tasks WHERE \"TASK ID MATCH FIELD\" = 3" ; "|" ; "¶" )	8310	1/1/0	? ERROR: FQL0001/(1:12): There is an error in the syntax of the query.
+ExecuteSQLe ( "SELECT \"Task\"\"\" FROM Tasks WHERE \"TASK ID MATCH FIELD\" = 3" ; "|" ; "¶" )	8309	1/1/0	? ERROR: FQL0007/(1:7): The column named "Task"" does not exist in any table in the column reference's scope.
+ExecuteSQLe ( "SELECT _Task FROM Tasks WHERE \"TASK ID MATCH FIELD\" = 3" ; "|" ; "¶" )	8310	1/1/0	? ERROR: FQL0001/(1:8): There is an error in the syntax of the query.
+ExecuteSQLe ( "SELECT Task1 FROM Tasks WHERE \"TASK ID MATCH FIELD\" = 3" ; "|" ; "¶" )	8309	1/1/0	? ERROR: FQL0007/(1:7): The column named "Task1" does not exist in any table in the column reference's scope.
+ExecuteSQLe ( "SELECT Ta_sk FROM Tasks WHERE \"TASK ID MATCH FIELD\" = 3" ; "|" ; "¶" )	8309	1/1/0	? ERROR: FQL0007/(1:7): The column named "Ta_sk" does not exist in any table in the column reference's scope.
+ExecuteSQLe ( "SELECT Täsk FROM Tasks WHERE \"TASK ID MATCH FIELD\" = 3" ; "|" ; "¶" )	8310	1/1/0	? ERROR: FQL0001/(1:9): There is an error in the syntax of the query.
+ExecuteSQLe ( "SELECT \"Täsk\" FROM Tasks WHERE \"TASK ID MATCH FIELD\" = 3" ; "|" ; "¶" )	8309	1/1/0	? ERROR: FQL0007/(1:7): The column named "Täsk" does not exist in any table in the column reference's scope.
+ExecuteSQLe ( "SELECT \"\" FROM Tasks WHERE \"TASK ID MATCH FIELD\" = 3" ; "|" ; "¶" )	8309	1/1/0	? ERROR: FQL0007/(1:7): The column named "" does not exist in any table in the column reference's scope.
+ExecuteSQLe ( "SELECT Taskz FROM Tasks WHERE \"TASK ID MATCH FIELD\" = 3" ; "|" ; "¶" )	8309	1/1/0	? ERROR: FQL0007/(1:7): The column named "Taskz" does not exist in any table in the column reference's scope.
+ExecuteSQLe ( "SELECT x.Task FROM Tasks WHERE \"TASK ID MATCH FIELD\" = 3" ; "|" ; "¶" )	8309	1/1/0	? ERROR: FQL0008/(1:7): The table named "x" does not exist in the column reference's scope.
+ExecuteSQLe ( "SELECT Tasks.Taskz FROM Tasks WHERE \"TASK ID MATCH FIELD\" = 3" ; "|" ; "¶" )	8309	1/1/0	? ERROR: FQL0009/(1:7): The column named "Taskz" does not exist in table "Tasks".
+ExecuteSQLe ( "SELECT Task FROM Tasks WHERE Taskz = 3" ; "|" ; "¶" )	8309	1/1/0	? ERROR: FQL0007/(1:29): The column named "Taskz" does not exist in any table in the column reference's scope.
+# --- keywords as names
+ExecuteSQLe ( "SELECT Status FROM Tasks WHERE \"TASK ID MATCH FIELD\" = 3" ; "|" ; "¶" )	0	1/1/0	In Progress
+ExecuteSQLe ( "SELECT Category, Description FROM Tasks WHERE \"TASK ID MATCH FIELD\" = 3" ; "|" ; "¶" )	0	1/1/0	Business|Schedule interview with the top ten candidates.
+ExecuteSQLe ( "SELECT \"Date\" FROM Tasks WHERE \"TASK ID MATCH FIELD\" = 3" ; "|" ; "¶" )	8309	1/1/0	? ERROR: FQL0007/(1:7): The column named "Date" does not exist in any table in the column reference's scope.
+ExecuteSQLe ( "SELECT Task FROM Tasks AS Date WHERE \"TASK ID MATCH FIELD\" = 3" ; "|" ; "¶" )	8310	1/1/0	? ERROR: FQL0001/(1:24): There is an error in the syntax of the query.
+ExecuteSQLe ( "SELECT Task FROM Tasks AS Value WHERE \"TASK ID MATCH FIELD\" = 3" ; "|" ; "¶" )	8310	1/1/0	? ERROR: FQL0001/(1:24): There is an error in the syntax of the query.
+ExecuteSQLe ( "SELECT Task FROM Tasks AS Size WHERE \"TASK ID MATCH FIELD\" = 3" ; "|" ; "¶" )	8310	1/1/0	? ERROR: FQL0001/(1:24): There is an error in the syntax of the query.
+# --- comments and whitespace
+ExecuteSQLe ( "SELECT Task FROM Tasks /* c */ WHERE \"TASK ID MATCH FIELD\" = 3" ; "|" ; "¶" )	0	1/1/0	Hire New Sales Person
+ExecuteSQLe ( "SELECT Task FROM Tasks /* c WHERE \"TASK ID MATCH FIELD\" = 3" ; "|" ; "¶" )	8310	1/1/0	? ERROR: FQL0001/(1:24): There is an error in the syntax of the query.
+ExecuteSQLe ( "SELECT Task FROM Tasks WHERE \"TASK ID MATCH FIELD\" = 3 // c" ; "|" ; "¶" )	8310	1/1/0	? ERROR: FQL0001/(1:57): There is an error in the syntax of the query.
+ExecuteSQLe ( "SELECT Task FROM Tasks WHERE \"TASK ID MATCH FIELD\" = 3 // c\n" ; "|" ; "¶" )	0	1/1/0	Hire New Sales Person
+ExecuteSQLe ( "SELECT Task FROM Tasks WHERE \"TASK ID MATCH FIELD\" = 3 // c\r" ; "|" ; "¶" )	8310	1/1/0	? ERROR: FQL0001/(1:57): There is an error in the syntax of the query.
+ExecuteSQLe ( "SELECT Task FROM Tasks WHERE \"TASK ID MATCH FIELD\" = 3 // c\r\n" ; "|" ; "¶" )	0	1/1/0	Hire New Sales Person
+ExecuteSQLe ( "SELECT Task FROM Tasks // c\nWHERE \"TASK ID MATCH FIELD\" = 3" ; "|" ; "¶" )	0	1/1/0	Hire New Sales Person
+ExecuteSQLe ( "SELECT Task FROM Tasks WHERE \"TASK ID MATCH FIELD\" = 3 -- c" ; "|" ; "¶" )	8309	1/1/0	? ERROR: FQL0007/(1:58): The column named "c" does not exist in any table in the column reference's scope.
+ExecuteSQLe ( "SELECT Task FROM Tasks WHERE \"TASK ID MATCH FIELD\" = 3 --1" ; "|" ; "¶" )	0	1/1/0	Repair Water Damage in Kitchen
+ExecuteSQLe ( "SELECT Task\rFROM Tasks\rWHERE \"TASK ID MATCH FIELD\" = 3" ; "|" ; "¶" )	0	1/1/0	Hire New Sales Person
+ExecuteSQLe ( "SELECT Task\nFROM Tasks\nWHERE \"TASK ID MATCH FIELD\" = 3" ; "|" ; "¶" )	0	1/1/0	Hire New Sales Person
+ExecuteSQLe ( "SELECT\tTask\tFROM Tasks WHERE \"TASK ID MATCH FIELD\" = 3" ; "|" ; "¶" )	0	1/1/0	Hire New Sales Person
+ExecuteSQLe ( "SELECT Task FROM Tasks WHERE \"TASK ID MATCH FIELD\" = 3" ; "|" ; "¶" )	8310	1/1/0	? ERROR: FQL0001/(1:12): There is an error in the syntax of the query.
+ExecuteSQLe ( "SELECT Task\u000BFROM Tasks WHERE \"TASK ID MATCH FIELD\" = 3" ; "|" ; "¶" )	8310	1/1/0	? ERROR: FQL0001/(1:12): There is an error in the syntax of the query.
+ExecuteSQLe ( "SELECT Task\u000CFROM Tasks WHERE \"TASK ID MATCH FIELD\" = 3" ; "|" ; "¶" )	8310	1/1/0	? ERROR: FQL0001/(1:12): There is an error in the syntax of the query.
+ExecuteSQLe ( "SELECT Task FROM Tasks WHERE \"TASK ID MATCH FIELD\" = 3" ; "|" ; "¶" )	8310	1/1/0	? ERROR: FQL0001/(1:12): There is an error in the syntax of the query.
+ExecuteSQLe ( "   SELECT Task FROM Tasks WHERE \"TASK ID MATCH FIELD\" = 3" ; "|" ; "¶" )	0	1/1/0	Hire New Sales Person
+ExecuteSQLe ( "SELECT Task FROM Tasks WHERE \"TASK ID MATCH FIELD\" = 3;" ; "|" ; "¶" )	8310	1/1/0	? ERROR: FQL0001/(1:55): There is an error in the syntax of the query.
+ExecuteSQLe ( "SELECT Task FROM Tasks WHERE \"TASK ID MATCH FIELD\" = 3; SELECT 1 FROM Tasks" ; "|" ; "¶" )	8310	1/1/0	? ERROR: FQL0001/(1:55): There is an error in the syntax of the query.
+ExecuteSQLe ( "SELECT Task FROM Tasks WHERE \"TASK ID MATCH FIELD\"=3" ; "|" ; "¶" )	0	1/1/0	Hire New Sales Person
+ExecuteSQLe ( "SELECT Task FROM Tasks WHERE\"TASK ID MATCH FIELD\"=3" ; "|" ; "¶" )	0	1/1/0	Hire New Sales Person
+ExecuteSQLe ( "SELECT Task FROM\"Tasks\"WHERE\"TASK ID MATCH FIELD\"=3" ; "|" ; "¶" )	0	1/1/0	Hire New Sales Person
+# --- string literals
+ExecuteSQLe ( "SELECT 'abc' FROM Tasks WHERE \"TASK ID MATCH FIELD\" = 3" ; "|" ; "¶" )	0	1/1/0	abc
+ExecuteSQLe ( "SELECT 'it''s' FROM Tasks WHERE \"TASK ID MATCH FIELD\" = 3" ; "|" ; "¶" )	0	1/1/0	it's
+ExecuteSQLe ( "SELECT '' FROM Tasks WHERE \"TASK ID MATCH FIELD\" = 3" ; "|" ; "¶" )	0	0/1/0	
+ExecuteSQLe ( "SELECT '''' FROM Tasks WHERE \"TASK ID MATCH FIELD\" = 3" ; "|" ; "¶" )	0	1/1/0	'
+ExecuteSQLe ( "SELECT 'a\rb' FROM Tasks WHERE \"TASK ID MATCH FIELD\" = 3" ; "|" ; "¶" )	0	1/1/0	a b
+ExecuteSQLe ( "SELECT 'a\nb' FROM Tasks WHERE \"TASK ID MATCH FIELD\" = 3" ; "|" ; "¶" )	0	1/1/0	a\nb
+ExecuteSQLe ( "SELECT 'a|b' FROM Tasks WHERE \"TASK ID MATCH FIELD\" = 3" ; "|" ; "¶" )	0	1/1/0	a|b
+ExecuteSQLe ( "SELECT 'a\\\\b' FROM Tasks WHERE \"TASK ID MATCH FIELD\" = 3" ; "|" ; "¶" )	0	1/1/0	a\\b
+ExecuteSQLe ( "SELECT 'äé€😀' FROM Tasks WHERE \"TASK ID MATCH FIELD\" = 3" ; "|" ; "¶" )	0	1/1/0	äé€😀
+ExecuteSQLe ( "SELECT LENGTH('äé€😀') FROM Tasks WHERE \"TASK ID MATCH FIELD\" = 3" ; "|" ; "¶" )	0	1/1/0	4
+ExecuteSQLe ( "SELECT 'abc FROM Tasks WHERE \"TASK ID MATCH FIELD\" = 3" ; "|" ; "¶" )	8310	1/1/0	? ERROR: FQL0001/(1:8): There is an error in the syntax of the query.
+ExecuteSQLe ( "SELECT \"abc\" FROM Tasks WHERE \"TASK ID MATCH FIELD\" = 3" ; "|" ; "¶" )	8309	1/1/0	? ERROR: FQL0007/(1:7): The column named "abc" does not exist in any table in the column reference's scope.
+ExecuteSQLe ( "SELECT N'abc' FROM Tasks WHERE \"TASK ID MATCH FIELD\" = 3" ; "|" ; "¶" )	8310	1/1/0	? ERROR: FQL0001/(1:9): There is an error in the syntax of the query.
+ExecuteSQLe ( "SELECT 'a' 'b' FROM Tasks WHERE \"TASK ID MATCH FIELD\" = 3" ; "|" ; "¶" )	8310	1/1/0	? ERROR: FQL0001/(1:12): There is an error in the syntax of the query.
+# --- numeric literals
+ExecuteSQLe ( "SELECT 1 FROM Tasks WHERE \"TASK ID MATCH FIELD\" = 3" ; "|" ; "¶" )	0	1/1/0	1
+ExecuteSQLe ( "SELECT 1.5, .5, 1e3, 1.5E-3, 1E+2, 2.50 FROM Tasks WHERE \"TASK ID MATCH FIELD\" = 3" ; "|" ; "¶" )	0	1/1/0	1.5|.5|1000|.0015|100|2.5
+ExecuteSQLe ( "SELECT 5. FROM Tasks WHERE \"TASK ID MATCH FIELD\" = 3" ; "|" ; "¶" )	8310	1/1/0	? ERROR: FQL0001/(1:9): There is an error in the syntax of the query.
+ExecuteSQLe ( "SELECT 007, 0.0, 00.10 FROM Tasks WHERE \"TASK ID MATCH FIELD\" = 3" ; "|" ; "¶" )	0	1/1/0	7|0|.1
+ExecuteSQLe ( "SELECT 12345678901234567890123 FROM Tasks WHERE \"TASK ID MATCH FIELD\" = 3" ; "|" ; "¶" )	0	1/1/0	12345678901234567890123
+ExecuteSQLe ( "SELECT 4294967295, 4294967296, 9223372036854775808 FROM Tasks WHERE \"TASK ID MATCH FIELD\" = 3" ; "|" ; "¶" )	0	1/1/0	4294967295|4294967296|9223372036854775808
+ExecuteSQLe ( "SELECT 1e400, 1e-400 FROM Tasks WHERE \"TASK ID MATCH FIELD\" = 3" ; "|" ; "¶" )	0	1/1/0	1.0E+400|1.0E-400
+ExecuteSQLe ( "SELECT 0.1234567890123456789012345 FROM Tasks WHERE \"TASK ID MATCH FIELD\" = 3" ; "|" ; "¶" )	0	1/1/0	.1234567890123456789012345
+ExecuteSQLe ( "SELECT -1, +1, - 1, --1, -(-1) FROM Tasks WHERE \"TASK ID MATCH FIELD\" = 3" ; "|" ; "¶" )	8310	1/1/0	? ERROR: FQL0001/(1:22): There is an error in the syntax of the query.
+ExecuteSQLe ( "SELECT 1,5 FROM Tasks WHERE \"TASK ID MATCH FIELD\" = 3" ; "|" ; "¶" )	0	1/1/0	1|5
+ExecuteSQLe ( "SELECT X'4142', B'0101' FROM Tasks WHERE \"TASK ID MATCH FIELD\" = 3" ; "|" ; "¶" )	8309	1/1/0	? ERROR: FQL0045/(1:16): The value B'0101' is not a valid binary string.
+ExecuteSQLe ( "SELECT x'41', b'1' FROM Tasks WHERE \"TASK ID MATCH FIELD\" = 3" ; "|" ; "¶" )	8309	1/1/0	? ERROR: FQL0045/(1:14): The value b'1' is not a valid binary string.
+ExecuteSQLe ( "SELECT X'414' FROM Tasks WHERE \"TASK ID MATCH FIELD\" = 3" ; "|" ; "¶" )	8309	1/1/0	? ERROR: FQL0045/(1:7): The value X'414' is not a valid binary string.
+ExecuteSQLe ( "SELECT TRUE, FALSE FROM Tasks WHERE \"TASK ID MATCH FIELD\" = 3" ; "|" ; "¶" )	0	1/1/0	1|0
+ExecuteSQLe ( "SELECT NULL FROM Tasks WHERE \"TASK ID MATCH FIELD\" = 3" ; "|" ; "¶" )	0	0/1/0	
+ExecuteSQLe ( "SELECT NULL, 1 FROM Tasks WHERE \"TASK ID MATCH FIELD\" = 3" ; "|" ; "¶" )	0	1/1/0	|1
+# --- date, time, timestamp literals
+ExecuteSQLe ( "SELECT DATE '2014-02-17' FROM Tasks WHERE \"TASK ID MATCH FIELD\" = 3" ; "|" ; "¶" )	0	1/1/0	2014-02-17
+ExecuteSQLe ( "SELECT TIME '13:45:10' FROM Tasks WHERE \"TASK ID MATCH FIELD\" = 3" ; "|" ; "¶" )	0	1/1/0	13:45:10
+ExecuteSQLe ( "SELECT TIMESTAMP '2014-02-17 13:45:10' FROM Tasks WHERE \"TASK ID MATCH FIELD\" = 3" ; "|" ; "¶" )	0	1/1/0	2014-02-17 13:45:10
+ExecuteSQLe ( "SELECT date '2014-02-17' FROM Tasks WHERE \"TASK ID MATCH FIELD\" = 3" ; "|" ; "¶" )	0	1/1/0	2014-02-17
+ExecuteSQLe ( "SELECT DATE '2014-2-7' FROM Tasks WHERE \"TASK ID MATCH FIELD\" = 3" ; "|" ; "¶" )	0	1/1/0	2014-02-07
+ExecuteSQLe ( "SELECT DATE '02/17/2014' FROM Tasks WHERE \"TASK ID MATCH FIELD\" = 3" ; "|" ; "¶" )	8310	1/1/0	? ERROR: FQL0010/(1:12): The literal value "02/17/2014" is not a valid DATE, TIME or TIMESTAMP.
+ExecuteSQLe ( "SELECT DATE '17.02.2014' FROM Tasks WHERE \"TASK ID MATCH FIELD\" = 3" ; "|" ; "¶" )	8310	1/1/0	? ERROR: FQL0010/(1:12): The literal value "17.02.2014" is not a valid DATE, TIME or TIMESTAMP.
+ExecuteSQLe ( "SELECT DATE '2014/02/17' FROM Tasks WHERE \"TASK ID MATCH FIELD\" = 3" ; "|" ; "¶" )	0	1/1/0	2014-02-17
+ExecuteSQLe ( "SELECT DATE '20140217' FROM Tasks WHERE \"TASK ID MATCH FIELD\" = 3" ; "|" ; "¶" )	8310	1/1/0	? ERROR: FQL0010/(1:12): The literal value "20140217" is not a valid DATE, TIME or TIMESTAMP.
+ExecuteSQLe ( "SELECT DATE ' 2014-02-17 ' FROM Tasks WHERE \"TASK ID MATCH FIELD\" = 3" ; "|" ; "¶" )	0	1/1/0	2014-02-17
+ExecuteSQLe ( "SELECT DATE '2014-02-30' FROM Tasks WHERE \"TASK ID MATCH FIELD\" = 3" ; "|" ; "¶" )	8310	1/1/0	? ERROR: FQL0010/(1:12): The literal value "2014-02-30" is not a valid DATE, TIME or TIMESTAMP.
+ExecuteSQLe ( "SELECT DATE '0001-01-01', DATE '4000-12-31', DATE '4001-01-01' FROM Tasks WHERE \"TASK ID MATCH FIELD\" = 3" ; "|" ; "¶" )	8310	1/1/0	? ERROR: FQL0010/(1:50): The literal value "4001-01-01" is not a valid DATE, TIME or TIMESTAMP.
+ExecuteSQLe ( "SELECT DATE '14-02-17' FROM Tasks WHERE \"TASK ID MATCH FIELD\" = 3" ; "|" ; "¶" )	8310	1/1/0	? ERROR: FQL0010/(1:12): The literal value "14-02-17" is not a valid DATE, TIME or TIMESTAMP.
+ExecuteSQLe ( "SELECT DATE 'x' FROM Tasks WHERE \"TASK ID MATCH FIELD\" = 3" ; "|" ; "¶" )	8310	1/1/0	? ERROR: FQL0010/(1:12): The literal value "x" is not a valid DATE, TIME or TIMESTAMP.
+ExecuteSQLe ( "SELECT DATE '' FROM Tasks WHERE \"TASK ID MATCH FIELD\" = 3" ; "|" ; "¶" )	8310	1/1/0	? ERROR: FQL0010/(1:12): The literal value "" is not a valid DATE, TIME or TIMESTAMP.
+ExecuteSQLe ( "SELECT TIME '1:2:3' FROM Tasks WHERE \"TASK ID MATCH FIELD\" = 3" ; "|" ; "¶" )	0	1/1/0	01:02:03
+ExecuteSQLe ( "SELECT TIME '13:45' FROM Tasks WHERE \"TASK ID MATCH FIELD\" = 3" ; "|" ; "¶" )	0	1/1/0	13:45:00
+ExecuteSQLe ( "SELECT TIME '13:45:10.25' FROM Tasks WHERE \"TASK ID MATCH FIELD\" = 3" ; "|" ; "¶" )	0	1/1/0	13:45:10.25
+ExecuteSQLe ( "SELECT TIME '25:00:00' FROM Tasks WHERE \"TASK ID MATCH FIELD\" = 3" ; "|" ; "¶" )	0	1/1/0	25:00:00
+ExecuteSQLe ( "SELECT TIME '1:45 PM' FROM Tasks WHERE \"TASK ID MATCH FIELD\" = 3" ; "|" ; "¶" )	0	1/1/0	13:45:00
+ExecuteSQLe ( "SELECT TIME '13:61:00' FROM Tasks WHERE \"TASK ID MATCH FIELD\" = 3" ; "|" ; "¶" )	0	1/1/0	14:01:00
+ExecuteSQLe ( "SELECT TIMESTAMP '2014-02-17 13:45:10.123456' FROM Tasks WHERE \"TASK ID MATCH FIELD\" = 3" ; "|" ; "¶" )	0	1/1/0	2014-02-17 13:45:10.123456
+ExecuteSQLe ( "SELECT TIMESTAMP '2014-02-17 13:45' FROM Tasks WHERE \"TASK ID MATCH FIELD\" = 3" ; "|" ; "¶" )	0	1/1/0	2014-02-17 13:45:00
+ExecuteSQLe ( "SELECT TIMESTAMP '2014-02-17' FROM Tasks WHERE \"TASK ID MATCH FIELD\" = 3" ; "|" ; "¶" )	8310	1/1/0	? ERROR: FQL0010/(1:17): The literal value "2014-02-17" is not a valid DATE, TIME or TIMESTAMP.
+ExecuteSQLe ( "SELECT TIMESTAMP '2014-02-17T13:45:10' FROM Tasks WHERE \"TASK ID MATCH FIELD\" = 3" ; "|" ; "¶" )	8310	1/1/0	? ERROR: FQL0010/(1:17): The literal value "2014-02-17T13:45:10" is not a valid DATE, TIME or TIMESTAMP.
+ExecuteSQLe ( "SELECT TIMESTAMP '02/17/2014 1:45:10 PM' FROM Tasks WHERE \"TASK ID MATCH FIELD\" = 3" ; "|" ; "¶" )	8310	1/1/0	? ERROR: FQL0010/(1:17): The literal value "02/17/2014 1:45:10 PM" is not a valid DATE, TIME or TIMESTAMP.
+ExecuteSQLe ( "SELECT {d '2014-02-17'} FROM Tasks WHERE \"TASK ID MATCH FIELD\" = 3" ; "|" ; "¶" )	8310	1/1/0	? ERROR: FQL0001/(1:8): There is an error in the syntax of the query.
+ExecuteSQLe ( "SELECT {ts '2014-02-17 13:45:10'} FROM Tasks WHERE \"TASK ID MATCH FIELD\" = 3" ; "|" ; "¶" )	8310	1/1/0	? ERROR: FQL0001/(1:8): There is an error in the syntax of the query.
+ExecuteSQLe ( "SELECT Task FROM Tasks WHERE \"Due Date\" = {d '2014-11-24'}" ; "|" ; "¶" )	8310	1/1/0	? ERROR: FQL0001/(1:24): There is an error in the syntax of the query.
+ExecuteSQLe ( "SELECT Task FROM Tasks WHERE \"Due Date\" = DATE '2014-11-24'" ; "|" ; "¶" )	0	1/1/0	Hire New Sales Person
+ExecuteSQLe ( "SELECT Task FROM Tasks WHERE \"Due Date\" = '2014-11-24'" ; "|" ; "¶" )	0	0/1/0	
+ExecuteSQLe ( "SELECT Task FROM Tasks WHERE \"Due Date\" = '11/24/2014'" ; "|" ; "¶" )	0	1/1/0	Hire New Sales Person
+ExecuteSQLe ( "SELECT Task FROM Tasks WHERE \"Due Date\" = '2014-11-24 00:00:00'" ; "|" ; "¶" )	0	0/1/0	
+ExecuteSQLe ( "SELECT Task FROM Tasks WHERE \"Due Date\" = 'x'" ; "|" ; "¶" )	0	0/1/0	
+# --- statement shape and syntax errors
+ExecuteSQLe ( "SELEC Task FROM Tasks" ; "|" ; "¶" )	8310	1/1/0	? ERROR: FQL0001/(1:1): There is an error in the syntax of the query.
+ExecuteSQLe ( "SELECT Task FROM Taskz" ; "|" ; "¶" )	8309	1/1/0	? ERROR: FQL0002/(1:17): The table named "Taskz" does not exist.
+ExecuteSQLe ( "SELECT Task FROM Tasks WHERE" ; "|" ; "¶" )	8310	1/1/0	? ERROR: FQL0001/(1:24): There is an error in the syntax of the query.
+ExecuteSQLe ( "SELECT Task, FROM Tasks" ; "|" ; "¶" )	8310	1/1/0	? ERROR: FQL0001/(1:14): There is an error in the syntax of the query.
+ExecuteSQLe ( "SELECT FROM Tasks" ; "|" ; "¶" )	8310	1/1/0	? ERROR: FQL0001/(1:8): There is an error in the syntax of the query.
+ExecuteSQLe ( "SELECT 1" ; "|" ; "¶" )	8310	1/1/0	? ERROR: FQL0001/(1:9): There is an error in the syntax of the query.
+ExecuteSQLe ( "SELECT" ; "|" ; "¶" )	8310	1/1/0	? ERROR: FQL0001/(1:7): There is an error in the syntax of the query.
+ExecuteSQLe ( "SELECT Task FROM Tasks WHERE \"TASK ID MATCH FIELD\" = 3 )" ; "|" ; "¶" )	8310	1/1/0	? ERROR: FQL0001/(1:56): There is an error in the syntax of the query.
+ExecuteSQLe ( "SELECT Task FROM Tasks WHERE ( \"TASK ID MATCH FIELD\" = 3" ; "|" ; "¶" )	8310	1/1/0	? ERROR: FQL0001/(1:24): There is an error in the syntax of the query.
+ExecuteSQLe ( "\n\nSELECT Taskz FROM Tasks" ; "|" ; "¶" )	8309	1/1/0	? ERROR: FQL0007/(3:7): The column named "Taskz" does not exist in any table in the column reference's scope.
+ExecuteSQLe ( "SELECT Task\nFROM Taskz" ; "|" ; "¶" )	8309	1/1/0	? ERROR: FQL0002/(2:5): The table named "Taskz" does not exist.
+ExecuteSQLe ( "SELECT Task FROM Tasks\n  WHERE x = 1" ; "|" ; "¶" )	8309	1/1/0	? ERROR: FQL0007/(2:8): The column named "x" does not exist in any table in the column reference's scope.
+ExecuteSQLe ( "SELECT Task FROM Tasks WHERE x = 1" ; "|" ; "¶" )	8309	1/1/0	? ERROR: FQL0007/(1:29): The column named "x" does not exist in any table in the column reference's scope.
+ExecuteSQLe ( "SELECT Task FROM Tasks WHERE Task = 3 AND x = 1" ; "|" ; "¶" )	8309	1/1/0	? ERROR: FQL0018/(1:34): An expression contains incompatible data types.
+ExecuteSQLe ( "SELECT 'äé€' , Taskz FROM Tasks" ; "|" ; "¶" )	8309	1/1/0	? ERROR: FQL0007/(1:15): The column named "Taskz" does not exist in any table in the column reference's scope.
+ExecuteSQLe ( "SELECT '😀😀' , Taskz FROM Tasks" ; "|" ; "¶" )	8309	1/1/0	? ERROR: FQL0007/(1:14): The column named "Taskz" does not exist in any table in the column reference's scope.
+ExecuteSQLe ( "SELECT Task FROM Tasks t, Tasks t" ; "|" ; "¶" )	8309	1/1/0	? ERROR: FQL0003/(1:32): The table named "t" already exists in this query.
+ExecuteSQLe ( "SELECT * FROM Tasks, Tasks" ; "|" ; "¶" )	8309	1/1/0	? ERROR: FQL0003/(1:21): The table named "Tasks" already exists in this query.
+ExecuteSQLe ( "SELECT Task FROM Tasks t1, Tasks t2" ; "|" ; "¶" )	8309	1/1/0	? ERROR: FQL0006/(1:7): The column named "Task" appears in more than one table in the column reference's scope.
+ExecuteSQLe ( "SELECT ROWID FROM Tasks t1, Tasks t2 WHERE t1.ROWID = t2.ROWID" ; "|" ; "¶" )	8309	1/1/0	? ERROR: FQL0024/(1:7): A reference to ROWID must be qualified if more than one table is present in the query.
+ExecuteSQLe ( "SELECT COUNT(*) FROM Tasks t1, Tasks t2 WHERE t1.ROWID = t2.ROWID" ; "|" ; "¶" )	0	1/1/0	12
+ExecuteSQLe ( "SELECT Task FROM Tasks ORDER BY 5" ; "|" ; "¶" )	8309	1/1/0	? ERROR: FQL0012/(1:32): The ordinal reference "5" in the ORDER BY clause is not valid.
+ExecuteSQLe ( "SELECT Task FROM Tasks ORDER BY 0" ; "|" ; "¶" )	8309	1/1/0	? ERROR: FQL0012/(1:32): The ordinal reference "0" in the ORDER BY clause is not valid.
+ExecuteSQLe ( "SELECT Task FROM Tasks WHERE Task" ; "|" ; "¶" )	8310	1/1/0	? ERROR: FQL0001/(1:24): There is an error in the syntax of the query.
+ExecuteSQLe ( "SELECT Task FROM Tasks WHERE 1" ; "|" ; "¶" )	8310	1/1/0	? ERROR: FQL0001/(1:24): There is an error in the syntax of the query.
+ExecuteSQLe ( "SELECT Task FROM Tasks WHERE \"TASK ID MATCH FIELD\" = 'a'" ; "|" ; "¶" )	8309	1/1/0	? ERROR: FQL0018/(1:51): An expression contains incompatible data types.
+ExecuteSQLe ( "SELECT Task FROM Tasks WHERE Task = 3" ; "|" ; "¶" )	8309	1/1/0	? ERROR: FQL0018/(1:34): An expression contains incompatible data types.
+ExecuteSQLe ( "SELECT foo(1) FROM Tasks" ; "|" ; "¶" )	8309	1/1/0	? ERROR: FQL0030/(1:7): "foo" is an invalid function.
+ExecuteSQLe ( "SELECT FOO(1) FROM Tasks" ; "|" ; "¶" )	8309	1/1/0	? ERROR: FQL0030/(1:7): "FOO" is an invalid function.
+ExecuteSQLe ( "SELECT ABS() FROM Tasks" ; "|" ; "¶" )	8309	1/1/0	? ERROR: FQL0020/(1:7): An invalid number of parameters was supplied to the function "ABS"
+ExecuteSQLe ( "SELECT ABS(1, 2) FROM Tasks" ; "|" ; "¶" )	8309	1/1/0	? ERROR: FQL0020/(1:7): An invalid number of parameters was supplied to the function "ABS"
+ExecuteSQLe ( "SELECT ABS('a') FROM Tasks WHERE \"TASK ID MATCH FIELD\" = 3" ; "|" ; "¶" )	8309	1/1/0	? ERROR: FQL0021/(1:7): Parameter number 1 to the function "ABS" is not of the correct type.
+ExecuteSQLe ( "SELECT UPPER(1) FROM Tasks WHERE \"TASK ID MATCH FIELD\" = 3" ; "|" ; "¶" )	8309	1/1/0	? ERROR: FQL0021/(1:7): Parameter number 1 to the function "UPPER" is not of the correct type.
+ExecuteSQLe ( "" ; "|" ; "¶" )	8310	1/1/0	? ERROR: FQL0001/(1:1): There is an error in the syntax of the query.
+ExecuteSQLe ( " " ; "|" ; "¶" )	8310	1/1/0	? ERROR: FQL0001/(1:2): There is an error in the syntax of the query.
+ExecuteSQL ( "" ; "|" ; "¶" )	8310	2/2/0	?
+EvaluationError ( ExecuteSQL ( "" ; "|" ; "¶" ) )	0	2/2/0	8310
+EvaluationError ( ExecuteSQL ( "SELECT Task FROM Tasks WHERE x = 1" ; "|" ; "¶" ) )	0	2/2/0	8309
+EvaluationError ( ExecuteSQL ( "SELEC" ; "|" ; "¶" ) )	0	2/2/0	8310
+EvaluationError ( ExecuteSQL ( "SELECT 'x FROM Tasks" ; "|" ; "¶" ) )	0	2/2/0	8310
+Get ( LastError )	0	1/1/0	

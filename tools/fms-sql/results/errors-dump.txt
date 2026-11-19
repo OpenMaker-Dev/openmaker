@@ -1,0 +1,233 @@
+fql	0	(^0:^1)
+fql	1	There is an error in the syntax of the query.
+fql	2	The table named "^0" does not exist.
+fql	3	The table named "^0" already exists in this query.
+fql	4	The query is too complex. The maximum number of tables has been exceeded.
+fql	5	Expressions involving aggregations are not supported.
+fql	6	The column named "^0" appears in more than one table in the column reference's scope.
+fql	7	The column named "^0" does not exist in any table in the column reference's scope.
+fql	8	The table named "^0" does not exist in the column reference's scope.
+fql	9	The column named "^1" does not exist in table "^0".
+fql	10	The literal value "^0" is not a valid DATE, TIME or TIMESTAMP.
+fql	11	Predicate must contain a logical operation (=, <, OR, AND, IS NULL, ...).
+fql	12	The ordinal reference "^0" in the ORDER BY clause is not valid.
+fql	13	Incompatible types in assignment.
+fql	14	The number of values in a VALUES row value constructor does not match the number of values in the target.
+fql	15	The number of values in an INSERT...SELECT statement does not match the number of values in the target.
+fql	16	A subquery contains an illegal outer reference to a column in the INSERT's target table.
+fql	17	An expression contains data types that cannot be compared.
+fql	18	An expression contains incompatible data types.
+fql	19	The result data type of a CASE expression cannot be inferred; they are all NULL.
+fql	20	An invalid number of parameters was supplied to the function "^0"
+fql	21	Parameter number ^0 to the function "^1" is not of the correct type.
+fql	22	A subquery expression must have exactly one value in the SELECT list.
+fql	23	A CAST expression requested an invalid data type conversion.
+fql	24	A reference to ROWID must be qualified if more than one table is present in the query.
+fql	25	All non-aggregated column references in the SELECT list and HAVING clause must be in the GROUP BY clause.
+fql	26	The number of columns in both inputs to a UNION operation must be the same.
+fql	27	The data types of corresponding columns in the inputs to a UNION operation must be the same.
+fql	28	Field repetitions must be numeric and between 1 and ^0.
+fql	29	A field repetition in the SET clause of an UPDATE statement must be a constant.
+fql	30	"^0" is an invalid function.
+fql	31	The the parameter's type cannot be inferred in this context. At least one query parameter must be an expression, a column or a constant.
+fql	32	A query may contain either named parameters or dynamic parameters, but not both.
+fql	33	Column names in FROM clause subqueries must be unique.
+fql	34	The number of output columns in a FROM clause subquery must match the number of columns in the table's name list.
+fql	35	Cursor support is not enabled for this query.
+fql	36	A cursor with the name "^0" already exists.
+fql	37	There is no cursor with the name "^0".
+fql	38	The cursor "^0" is already open.
+fql	39	The cursor "^0" is not open.
+fql	40	The target cursor "^0" does not reference a query that is valid for WHERE CURRENT OF <cursor>.
+fql	41	The target cursor "^0" does not reference the same table as the current statement.
+fql	42	The default value for column "^0" does not match the column's data type.
+fql	43	The string "^0" is not a valid stream name.
+fql	44	The column "^0" is not valid in this context. The targets of GETAS and PUTAS must be Container fields.
+fql	45	The value ^0 is not a valid binary string.
+fql	46	Container fields are not allowed in UNION DISTINCT queries.
+fql	47	The database schema has changed. This prepared query is no longer valid.
+fql	48	This statement contains an invalid operation on FileMaker system table "^0".
+fql	49	Aggregation expressions are not allowed in the WHERE clause.
+fql	50	The offset count in OFFSET clause is not valid. 
+fql	51	The FETCH ... WITH TIES clause is not allowed without a corresponding ORDER BY clause.
+fql	52	The fetch count in FETCH clause is not valid. 
+fql	53	The cursor is already open.
+fql	54	The cursor is not open.
+fql	55	The cursor has already been declared.
+fql	56	The cursor is missing.
+error	-1	 (-1): <internal error>
+error	0	 (0): 
+error	1	 (1): Operation aborted
+error	2	 (2): Memory allocation failure
+error	3	 (3): Unavailable command
+error	4	 (4): Unknown command
+error	5	 (5): Invalid command
+error	6	 (6): Read-only file
+error	7	 (7): Out of stack space
+error	8	 (8): Empty result
+error	9	 (9): Access denied
+error	10	 (10): Data missing
+error	11	 (11): Invalid name
+error	12	 (12): Duplicate name
+error	13	 (13): Outstanding references
+error	14	 (14): Number out of range
+error	15	 (15): Divide by zero
+error	16	 (16): Operation failed, request retry
+error	17	 (17): Character set conversion failure
+error	18	 (18): Login required
+error	19	 (19): Non-alphanumeric ASCII characters
+error	100	 (100): File missing
+error	101	 (101): Record missing
+error	102	 (102): Field missing
+error	103	 (103): Relationship missing
+error	104	 (104): Script missing
+error	105	 (105): Layout missing
+error	106	 (106): Table missing
+error	107	 (107): Index missing
+error	108	 (108): Value list missing
+error	109	 (109): Privileges missing
+error	110	 (110): Related tables missing
+error	111	 (111): Invalid field repetition
+error	112	 (112): Window missing
+error	113	 (113): Function missing
+error	114	 (114): File reference missing
+error	118	 (118): Theme missing
+error	119	 (119): No supported email client found
+error	130	 (130): Core component missing
+error	131	 (131): Language missing
+error	200	 (200): No record access
+error	201	 (201): Cannot modify field
+error	202	 (202): Cannot read field
+error	203	 (203): Cannot print
+error	204	 (204): Cannot read all sort fields
+error	205	 (205): Cannot import over all records
+error	206	 (206): Cannot change password
+error	207	 (207): Cannot modify schema
+error	208	 (208): Password too short
+error	209	 (209): Password not different
+error	210	 (210): Invalid account/password
+error	211	 (211): Password expired
+error	212	 (212): Invalid account/password
+error	213	 (213): Invalid account/password
+error	214	 (214): Account temporarily locked
+error	216	 (216): Cannot duplicate guest account
+error	217	 (217): Cannot modify administrator account
+error	300	 (300): File locked or in use
+error	301	 (301): Record is locked by another user
+error	302	 (302): Data table is locked by another user
+error	303	 (303): Database schema is locked by another user
+error	304	 (304): Layout is locked by another user
+error	306	 (306): Record modification ID does not match
+error	308	 (308): Theme is locked by another user
+error	400	 (400): Empty query specified
+error	401	 (401): No records satisfy this request
+error	402	 (402): No field looks up values based on the indicated field
+error	404	 (404): Defined sort order is invalid
+error	406	 (406): Invalid replace/reserialize criteria
+error	407	 (407): One or both join fields are missing
+error	408	 (408): Specified field has inappropriate data type
+error	412	 (412): Tried to recover file with wrong version of FileMaker
+error	413	 (413): Specified field has inappropriate field type
+error	414	 (414): Layout cannot display the result
+error	500	 (500): Field failed date value validation test
+error	501	 (501): Field failed time value validation test
+error	502	 (502): Field failed numeric value validation test
+error	503	 (503): Field failed range validation test
+error	504	 (504): Field failed unique value validation test
+error	505	 (505): Field failed existing value validation test
+error	506	 (506): Field failed member value validation test
+error	507	 (507): Field failed calculation result test
+error	508	 (508): Field failed query value validation test
+error	509	 (509): Field failed required value validation test
+error	510	 (510): Join value is empty or unavailable
+error	511	 (511): Field failed maximum character count validation test
+error	513	 (513): Field failed maximum character count validation test
+error	800	 (800): Unable to create file
+error	801	 (801): Unable to create temp file
+error	802	 (802): Unable to open file
+error	803	 (803): File already open but single user
+error	804	 (804): File cannot be opened as read only in its current state
+error	805	 (805): File is damaged, use recover
+error	806	 (806): File cannot be opened with this version of FileMaker
+error	807	 (807): Unrecognized file
+error	808	 (808): Cannot open file because of damaged access privileges
+error	809	 (809): Disk full
+error	810	 (810): Disk/volume is locked
+error	811	 (811): Attempting to open a temp file as a normal FileMaker file
+error	812	 (812): Reached current host user limit
+error	813	 (813): Synchronization error
+error	814	 (814): Too many files open, name each file that cannot be opened
+error	815	 (815): Couldn't open the lookup file
+error	816	 (816): Unable to convert file
+error	817	 (817): File's binding key does not match this runtime application
+error	819	 (819): Cannot use block copy on a remote file
+error	820	 (820): File is in the process of being closed
+error	821	 (821): Force disconnected from the host
+error	822	 (822): FMI files are not found
+error	823	 (823): Cannot set exclusive because guests are connected
+error	824	 (824): File is damaged or not a FileMaker file
+error	825	 (825): File is not authorized to access protected file
+error	1200	 (1200): Parse error
+error	1201	 (1201): Too few arguments
+error	1202	 (1202): Too many arguments
+error	1203	 (1203): Unexpected end
+error	1204	 (1204): Number, text constant, field name or ( expected
+error	1205	 (1205): Comment is not terminated with '*/'
+error	1206	 (1206): Text constant missing trailing quotation mark
+error	1207	 (1207): Unbalanced parenthesis
+error	1208	 (1208): Operator missing, function not found, or ( not expected
+error	1209	 (1209): Field, layout, etc. name
+error	1210	 (1210): Plugin function was already registered
+error	1211	 (1211): List usage is not allowed in this function
+error	1212	 (1212): Operator (e.g. +, -, *, ...) is expected here
+error	1213	 (1213): Variable has already been defined in the Let function
+error	1214	 (1214): A function parameter contains an expression where a field is required
+error	1215	 (1215): Parameter is an invalid Get function parameter
+error	1216	 (1216): Only summary fields allowed as first argument in GetSummary
+error	1217	 (1217): Break field is invalid
+error	1218	 (1218): Bad format for the data type
+error	1219	 (1219): Field cannot be used in its own formula
+error	1220	 (1220): Field type must be normal or calculated
+error	1221	 (1221): Data type must be number, date, time, timestamp
+error	1222	 (1222): The calculation cannot be stored
+error	1223	 (1223): Expression is not implemented
+error	1224	 (1224): Expression is not defined
+error	1225	 (1225): Calc fFunction is not supported
+error	1638	 (1638): The host is not allowing new connections. Try again later.
+error	2055	 (2055): Field is not indexable
+error	3312	 (3312): Operation cannot be performed because some objects locked
+error	4100	 (4100):  button requires a field to be active
+error	8000	 (8000): Cannot unlock if not present
+error	8001	 (8001): Lock isn't granted, but hasn't timed out yet
+error	8002	 (8002): Lock cancelled
+error	8003	 (8003): Timeout/rejection due to lock conflict
+error	8005	 (8005): You need to update your schema
+error	8006	 (8006): We need to be picky about what type you can upgrade to
+error	8200	 (8200): Warning: name cannot be used in calculation expressions
+error	8201	 (8201): Cycle in the join graph
+error	8202	 (8202): Cannot join an alias to itself
+error	8203	 (8203): Cannot join on these fields
+error	8204	 (8204): Exceeding number of tables allowed
+error	8205	 (8205): External value list definition points back to itself in loop
+error	8207	 (8207): Field option requires index
+error	8208	 (8208): Field type or data type cannot be changed due to dependency
+error	8209	 (8209): Select a field from each list before clicking the add button
+error	8210	 (8210): Cannot delete a field, used in a privilege
+error	8300	 (8300): Unsupported temp-table operation
+error	8301	 (8301): Column type mismatch in UNION.
+error	8302	 (8302): Union - source and destination must differ
+error	8303	 (8303): A scalar subquery returned multiple rows.
+error	8304	 (8304): Schema changes (DDL) are not allowed until transaction is committed or rolled back
+error	8305	 (8305): Cannot create index - this column already has an index
+error	8306	 (8306): Cannot perform a schema change on an external table
+error	8307	 (8307): Cannot lock this select for update because the query contains computed columns.
+error	8308	 (8308): Default value in CREATE or ALTER TABLE does not match column type.
+error	8315	 (8315): Invalid container base directory specified
+error	8400	 (8400): Some external authentications schemes require multiple authentication calls
+error	8401	 (8401): Privilege set still has user accounts referencing it
+error	8402	 (8402): Cannot duplicate the administrator privileges
+error	8403	 (8403): Cannot allow the creation of and disallow the modification of new objects
+error	20600	 (20600): Can't initialize networking stack
+error	20601	 (20601): Can initialize for outbound only
+error	20602	 (20602): Can't create a connection
+error	20603	 (20603): Lost communications with host/guest

@@ -1,0 +1,112 @@
+# Get(LastError) after each kind of step, error capture, errors crossing
+# Perform Script, error location and detail. Base file: contacts-en (one
+# table Contacts, no records). The trace's LastError column is the value
+# after each step.
+== le control steps keep it
+Perform Script [ By name: "no such script" ]
+If [ 1 ]
+Else If [ 1 ]
+Else
+End If
+Loop
+Exit Loop If [ 1 ]
+End Loop
+# a comment
+// Set Variable [ $disabled ; 1 ]
+Set Variable [ $a ; Get ( LastError ) ]
+Set Variable [ $b ; Get ( LastError ) ]
+Exit Script [ $a & "," & $b ]
+== le step kinds
+Set Error Capture [ On ]
+Set Variable [ $v ; 1 ]
+Allow User Abort [ Off ]
+Allow User Abort [ On ]
+Set Error Capture [ Off ]
+Go to Layout [ "Contact List" ]
+Go to Record/Request/Page [ Next ]
+Set Field [ Contacts::First Name ; "x" ]
+Delete Record/Request [ With dialog: Off ]
+Commit Records/Requests [ With dialog: Off ]
+New Record/Request
+Set Field [ Contacts::First Name ; "Ann" ]
+Commit Records/Requests [ With dialog: Off ]
+Go to Record/Request/Page [ Next ]
+Go to Record/Request/Page [ First ]
+Pause/Resume Script [ Duration: .1 ]
+Perform Script [ "le sub ok" ]
+Perform Script [ By name: "no such script" ]
+Set Variable [ $v ; 2 ]
+Set Error Capture [ On ]
+Exit Script [ Get ( LastError ) ]
+== le sub ok
+Set Variable [ $s ; 1 ]
+== le calc errors
+Set Variable [ $x ; GetField ( "x" ) ]
+Set Variable [ $e1 ; Get ( LastError ) ]
+Perform Script [ By name: "no such script" ]
+Set Variable [ $y ; Evaluate ( "1+" ) ]
+Set Variable [ $e2 ; Get ( LastError ) ]
+Perform Script [ "le sub ok" ; Parameter: GetField ( "x" ) ]
+Set Variable [ $e3 ; Get ( LastError ) ]
+Set Field [ Contacts::First Name ; GetField ( "x" ) ]
+Set Variable [ $e4 ; Get ( LastError ) ]
+Exit Script [ List ( $e1 ; $e2 ; $e3 ; $e4 ; "[" & $x & "]" ) ]
+== le if error capture off
+Set Variable [ $z ; 1 ]
+If [ GetField ( "x" ) ]
+Set Variable [ $branch ; "then" ]
+Else
+Set Variable [ $branch ; "else" ]
+End If
+Exit Script [ $branch ]
+== le if error capture on
+Set Error Capture [ On ]
+If [ GetField ( "x" ) ]
+Set Variable [ $branch ; "then" ]
+Else If [ Evaluate ( "1+" ) ]
+Set Variable [ $branch ; "elseif" ]
+Else
+Set Variable [ $branch ; "else" ]
+End If
+Set Variable [ $i ; 0 ]
+Loop
+Set Variable [ $i ; $i + 1 ]
+Exit Loop If [ GetField ( "x" ) ]
+Exit Loop If [ $i ≥ 2 ]
+End Loop
+Exit Script [ $branch & "," & $i ]
+== le exit script error
+Set Variable [ $z ; 1 ]
+Exit Script [ GetField ( "x" ) ]
+== le sub error then end
+Perform Script [ "le sub fails" ]
+Set Variable [ $after ; Get ( LastError ) ]
+Perform Script [ "le sub fails then exits" ]
+Set Variable [ $after2 ; Get ( LastError ) ]
+Perform Script [ "le sub ok" ]
+Set Variable [ $after3 ; Get ( LastError ) ]
+Exit Script [ List ( $after ; $after2 ; $after3 ) ]
+== le sub fails
+Set Variable [ $s ; 1 ]
+Perform Script [ By name: "no such script" ]
+== le sub fails then exits
+Perform Script [ By name: "no such script" ]
+Exit Script [ "x" ]
+== le location
+Set Variable [ $z ; 1 ]
+Perform Script [ By name: "no such script" ]
+Exit Script [ Get ( LastErrorLocation ) & "|" & Get ( LastErrorDetail ) ]
+== le ends with error
+Set Variable [ $z ; 1 ]
+Perform Script [ By name: "no such script" ]
+--- run
+le control steps keep it		Get ( LastError )
+le step kinds		Get ( LastError )	Get ( ErrorCaptureState )	Get ( AllowAbortState )
+le calc errors		Get ( LastError )
+le if error capture off		Get ( LastError )
+le if error capture on		Get ( LastError )
+le exit script error		Get ( LastError )	Get ( ScriptResult )
+le sub error then end		Get ( LastError )
+le location		Get ( LastError )	Get ( LastErrorLocation )
+le ends with error		Get ( LastError )	Get ( LastErrorLocation )	Get ( LastErrorDetail )
+le sub ok		Get ( LastError )

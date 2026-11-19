@@ -1,0 +1,33 @@
+[package]
+name = "om-data"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+rust-version.workspace = true
+
+[dependencies]
+# Erasing a local file's password (LocalFile).
+zeroize = "1"
+om-calc = { path = "../om-calc" }
+om-collate = { path = "../om-collate" }
+om-crypto = { path = "../om-crypto" }
+jiff = "0.2"
+om-formula = { path = "../om-formula" }
+om-hbam = { path = "../om-hbam" }
+om-scsu = { path = "../om-scsu" }
+om-scripts = { path = "../om-scripts" }
+om-layout = { path = "../om-layout" }
+om-sql = { path = "../om-sql" }
+om-query = { path = "../om-query" }
+getrandom = "0.2.17"
+md-5 = "0.10"
+flate2 = "1.1"
+
+[target.'cfg(unix)'.dependencies]
+rustix = { version = "1.1", features = ["fs", "process", "system"] }
+# The account's full name (getpwuid_r), which macOS keeps out of /etc/passwd.
+nix = { version = "0.31", default-features = false, features = ["user"] }
+
+[lints]
+workspace = true
+

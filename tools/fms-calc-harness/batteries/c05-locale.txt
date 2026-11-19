@@ -1,0 +1,9 @@
+# Compile mode (calceval -c), Contacts template de-DE (contacts-de.fmp12), no context:
+# number literals with the file locale's decimal comma
+1,5
+1.5
+1,5E2
+List ( 1,5 ; 2 )
+List ( 1 , 5 ; 2 )
+1,5 + 1
+Abs ( -1,5 )

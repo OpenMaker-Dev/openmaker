@@ -1,0 +1,23 @@
+[package]
+name = "om-transfer"
+description = "FileMaker's Import Records, Export Records and Save Records as Excel: stored specs, file formats, character sets, the import and export engines"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+rust-version.workspace = true
+
+[dependencies]
+om-calc = { path = "../om-calc" }
+# Match values compared as FileMaker's English text index keys them.
+om-collate = { path = "../om-collate" }
+om-scsu = { path = "../om-scsu" }
+# Character sets FileMaker imports and exports (Windows, Mac Roman, Shift-JIS,
+# GB, Big-5, EUC-KR, UTF-16).
+encoding_rs = "0.8"
+# Letters with diacritics a character set lacks (mark, then base letter).
+icu_normalizer = { version = "2.4", default-features = false, features = ["compiled_data"] }
+# Excel workbooks (.xlsx): the zip package.
+zip = { version = "9", default-features = false, features = ["deflate"] }
+
+[lints]
+workspace = true

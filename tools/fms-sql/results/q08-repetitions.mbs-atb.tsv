@@ -1,0 +1,35 @@
+# q08: repeating fields. File: MBS example AppleTouchBar (ATB: 4 records;
+# flex_Function, flex_Script, flex_Icon, flex_Label varchar[9];
+# _default varchar[12]; _flex_Add calculated varchar[9]; TouchBar calculated
+# binary[12]). No record context.
+ExecuteSQL ( "SELECT TableName, FieldName, FieldType, FieldClass, FieldReps FROM FileMaker_Fields WHERE TableName = 'ATB'" ; "|" ; "¶" )	0	1/1/0	ATB|zzz|varchar|Normal|1\rATB|Zoom|decimal|Normal|1\rATB|Dev_Notes|global varchar|Normal|1\rATB|_empty|varchar|Normal|1\rATB|rel1|decimal|Calculated|1\rATB|_Set|varchar|Normal|1\rATB|_Table|varchar|Normal|1\rATB|_Functions|varchar|Normal|1\rATB|cf_Formula|varchar|Calculated|1\rATB|Icons|varchar|Calculated|1\rATB|Scripts|varchar|Calculated|1\rATB|TouchBar|binary[12]|Calculated|12\rATB|test_TB_Icon|binary|Calculated|1\rATB|flex_Formula|varchar|Calculated|1\rATB|flex_Function|varchar[9]|Normal|9\rATB|flex_Script|varchar[9]|Normal|9\rATB|_flex_Add|varchar[9]|Calculated|9\rATB|flex_Icon|varchar[9]|Normal|9\rATB|flex_Label|varchar[9]|Normal|9\rATB|f_Add|varchar|Calculated|1\rATB|VL_Functions|varchar|Calculated|1\rATB|_default|varchar[12]|Normal|12\rATB|VL_Default|varchar|Calculated|1\rATB|_primary|varchar|Normal|1\rATB|_config|varchar|Normal|1
+ExecuteSQLe ( "SELECT ROWID, flex_Label FROM ATB" ; "|" ; "¶" )	0	1/1/0	2|"+add"\r8|\r11|\r15|"delete"
+ExecuteSQLe ( "SELECT ROWID, flex_Label[1], flex_Label[2], flex_Label[3], flex_Label[9] FROM ATB" ; "|" ; "¶" )	0	1/1/0	2|"+add"|"Text"||\r8||||\r11||||\r15|"delete"|||
+ExecuteSQLe ( "SELECT ROWID, _default[1], _default[2], _default[3], _default[12] FROM ATB" ; "|" ; "¶" )	8310	1/1/0	? ERROR: FQL0001/(1:15): There is an error in the syntax of the query.
+ExecuteSQLe ( "SELECT flex_Label[0] FROM ATB" ; "|" ; "¶" )	8309	1/1/0	? ERROR: FQL0028/(1:18): Field repetitions must be numeric and between 1 and 32000.
+ExecuteSQLe ( "SELECT flex_Label[10] FROM ATB" ; "|" ; "¶" )	0	1/1/0	\r\r\r
+ExecuteSQLe ( "SELECT flex_Label[-1] FROM ATB" ; "|" ; "¶" )	8309	1/1/0	? ERROR: FQL0028/(1:18): Field repetitions must be numeric and between 1 and 32000.
+ExecuteSQLe ( "SELECT flex_Label[1.5] FROM ATB" ; "|" ; "¶" )	0	1/1/0	"+add"\r\r\r"delete"
+ExecuteSQLe ( "SELECT flex_Label[1+1] FROM ATB" ; "|" ; "¶" )	0	1/1/0	"Text"\r\r\r
+ExecuteSQLe ( "SELECT flex_Label['2'] FROM ATB" ; "|" ; "¶" )	8309	1/1/0	? ERROR: FQL0028/(1:18): Field repetitions must be numeric and between 1 and 0.
+ExecuteSQLe ( "SELECT flex_Label[?] FROM ATB" ; "|" ; "¶" ; 2 )	8309	1/1/0	? ERROR: FQL0028/(1:18): Field repetitions must be numeric and between 1 and 0.
+ExecuteSQLe ( "SELECT flex_Label[ROWID] FROM ATB" ; "|" ; "¶" )	0	1/1/0	"Text"\r\r\r
+ExecuteSQLe ( "SELECT ATB.flex_Label[2] FROM ATB" ; "|" ; "¶" )	0	1/1/0	"Text"\r\r\r
+ExecuteSQLe ( "SELECT a.flex_Label[2] FROM ATB a" ; "|" ; "¶" )	0	1/1/0	"Text"\r\r\r
+ExecuteSQLe ( "SELECT \"flex_Label\"[2] FROM ATB" ; "|" ; "¶" )	0	1/1/0	"Text"\r\r\r
+ExecuteSQLe ( "SELECT flex_Label [2] FROM ATB" ; "|" ; "¶" )	0	1/1/0	"Text"\r\r\r
+ExecuteSQLe ( "SELECT ROWID FROM ATB WHERE flex_Label[2] IS NOT NULL" ; "|" ; "¶" )	0	1/1/0	2
+ExecuteSQLe ( "SELECT ROWID FROM ATB WHERE flex_Label = 'x' OR flex_Label[2] LIKE '%'" ; "|" ; "¶" )	0	1/1/0	2
+ExecuteSQLe ( "SELECT COUNT(flex_Label), COUNT(flex_Label[2]), MAX(flex_Label[2]) FROM ATB" ; "|" ; "¶" )	0	1/1/0	2|1|"Text"
+ExecuteSQLe ( "SELECT DISTINCT flex_Label[2] FROM ATB" ; "|" ; "¶" )	0	1/1/0	\r"Text"
+ExecuteSQLe ( "SELECT flex_Label[2], COUNT(*) FROM ATB GROUP BY flex_Label[2]" ; "|" ; "¶" )	0	1/1/0	|3\r"Text"|1
+ExecuteSQLe ( "SELECT ROWID FROM ATB ORDER BY flex_Label[2], ROWID" ; "|" ; "¶" )	0	1/1/0	8\r11\r15\r2
+ExecuteSQLe ( "SELECT * FROM ATB" ; "|" ; "¶" )	0	1/1/0	[elided: 23410 bytes, sha256 39443ba562b64cde71551177d0abc267a4353c14a7b13a2dd307311e9f015835, starts "|150|"]
+ExecuteSQLe ( "SELECT _flex_Add, _flex_Add[2], _flex_Add[9] FROM ATB" ; "|" ; "¶" )	8310	1/1/0	? ERROR: FQL0001/(1:8): There is an error in the syntax of the query.
+ExecuteSQLe ( "SELECT TouchBar, TouchBar[2] FROM ATB" ; "|" ; "¶" )	0	1/1/0	 MBzz Kopie 2 copy.png|TB_add.png\r MBzz Kopie 2 copy.png|TB_add.png\rreturn.png|TB_add.png\r MBzz Kopie 2 copy.png|telsearch4.png
+ExecuteSQLe ( "SELECT ROWID, LENGTH(_default[1]) FROM ATB" ; "|" ; "¶" )	8310	1/1/0	? ERROR: FQL0001/(1:22): There is an error in the syntax of the query.
+ExecuteSQLe ( "SELECT COUNT(*) FROM ATB_Icons" ; "|" ; "¶" )	0	1/1/0	1
+ExecuteSQLe ( "SELECT * FROM ATB_Icons" ; "|" ; "¶" )	0	1/1/0	1|TB_add.png| TB_goforward.png|TB_goforward.png|Trash Kopie.png| MBzz Kopie 2 copy.png|mbs.png|ADRESSEN.png|AGENDA.png|RECHNUNGEN.png|SETUP.png|search.png|architetto_simbol_medicina_preview Kopie.png|textlist copy Kopie.png|close copy.png|Form copy.png|print copy.png|Preview.png|check copy.png|email_@.png|Info_Simple.svg copy.png|pdf copy.png|read Kopie.png|Xcel copy.png|return.png|
+ExecuteSQLe ( "SELECT COUNT(*) FROM ATB_NSImageTemplates" ; "|" ; "¶" )	0	1/1/0	74
+ExecuteSQLe ( "SELECT * FROM ATB_NSImageTemplates FETCH FIRST 5 ROWS ONLY" ; "|" ; "¶" )	0	1/1/0	3||https://developer.apple.com/reference/appkit/|NSImageNameTouchBarAddDetailTemplate|https://developer.apple.com/reference/appkit/NSImageNameTouchBarAddDetailTemplate|TB_adddetail_2x.png\r4||https://developer.apple.com/reference/appkit/|NSImageNameTouchBarAddTemplate|https://developer.apple.com/reference/appkit/NSImageNameTouchBarAddTemplate|TB_add_2x-2.png\r5||https://developer.apple.com/reference/appkit/|NSImageNameTouchBarAlarmTemplate|https://developer.apple.com/reference/appkit/NSImageNameTouchBarAlarmTemplate|TB_alarm_2x.png\r6||https://developer.apple.com/reference/appkit/|NSImageNameTouchBarAudioInputMuteTemplate|https://developer.apple.com/reference/appkit/NSImageNameTouchBarAudioInputMuteTemplate|TB_audioinputmute_2x.png\r7||https://developer.apple.com/reference/appkit/|NSImageNameTouchBarAudioInputTemplate|https://developer.apple.com/reference/appkit/NSImageNameTouchBarAudioInputTemplate|TB_audioinput_2x.png
+ExecuteSQLe ( "SELECT ROWID, ROWMODID FROM ATB" ; "|" ; "¶" )	0	1/1/0	2|238\r8|212\r11|198\r15|124

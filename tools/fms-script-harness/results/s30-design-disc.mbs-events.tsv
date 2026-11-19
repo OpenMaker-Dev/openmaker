@@ -1,0 +1,11 @@
+# Design functions: what the file holds (names for the battery)
+no such script		104		0	work	Agenda\rAssignees | Contributors\rAuditLog\rContacts\rContributors\rEvents\rGuests\rGuests | Contacts\rTasks\rVenue Looked Up	1065093\r1065094\r1065116\r1065098\r1065097\r1065089\r1065092\r1065095\r1065091\r1065107	Agenda\rContacts\rContributors\rEvents\rGuests\rTasks	133\r130\r135\r129\r132\r131	Events\rEvent Details\rContacts\rContact Details	54\r1\r55\r2	Add Contributor [+]\rAdd Task [+]\rAdd Guest [+]\rAdd Agenda Item [+]\rRemove Event Item [Get Script Parameter]\rTrigger | On First Window Open\rTrigger | On Window Close\r-\rTrigger | Layout Selection\rTrigger | Sort Event List\rTrigger | Create Event in List\r-\rTrigger | Sort Contact List\rTrigger | Create Contact in List	6\r7\r8\r9\r79\r12\r85\r68\r71\r49\r44\r70\r62\r69	Type\rVenue\rBoolean\rStatus | Tasks\rStatus | Guest\rTime [Meridiem]\rTime [24 Hours]\rContacts\rAssignees\rRole\rPreferences\rAssignment\rTitle\rJob Title\rCompany\rLayout Selector\rEvent List | Sort Selection\rContact List | Sort Selection	6\r13\r2\r24\r3\r4\r5\r12\r18\r19\r21\r20\r22\r23\r11\r16\r15\r17	work	Events	Events	work
+>	1	Trigger | On First Window Open	1	6	0	0	0	0
+>	1	Trigger | On First Window Open	2	29	0	0	0	0
+>	1	Trigger | On First Window Open	3	97	0	0	0	0
+>	1	Trigger | On First Window Open	4	68	0	0	1	0
+>	1	Trigger | On First Window Open	6	70	0	0	1	0
+>	1	Trigger | On Window Close	1	68	0	0	1	0
+>	1	Trigger | On Window Close	2	123	0	0	0	0
+>	1	Trigger | On Window Close	3	29	0	0	0	0
+>	1	Trigger | On Window Close	4	70	0	0	1	0

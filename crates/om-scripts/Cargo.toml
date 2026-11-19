@@ -1,0 +1,19 @@
+[package]
+name = "om-scripts"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+rust-version.workspace = true
+
+[dependencies]
+om-calc = { path = "../om-calc" }
+om-formula = { path = "../om-formula" }
+om-hbam = { path = "../om-hbam" }
+om-scsu = { path = "../om-scsu" }
+om-layout = { path = "../om-layout" }
+
+[dev-dependencies]
+om-sql = { path = "../om-sql" }
+
+[lints]
+workspace = true

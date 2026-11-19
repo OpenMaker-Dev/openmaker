@@ -1,0 +1,45 @@
+# Lookups of other types than text, on FileMaker Server's script engine
+# (#657's follow-up). Base file: assets-en with, added by FMUpgradeTool,
+# Assets::AT (Time) and eight Assignments lookups from Assets through the
+# starter's relationship Assets::PrimaryKey = Assignments::AssetForeignKey,
+# "Do not copy", "Don't copy contents if empty" off: LN (Number from Price),
+# LD (Date from Purchase Date), LT (Time from AT), LTS (Timestamp from
+# CreationTimestamp), LXN (Text from Price), LXD (Text from Purchase Date),
+# LNT (Number from Name), LDT (Date from Name). Each asset gets one
+# assignment made through the relationship (its foreign key set on
+# creation), then the values are read through it.
+
+== probe
+Go to Layout [ "Asset Details" ]
+New Record/Request
+Set Field [ Assets::Name ; "Widget 42" ]
+Set Field [ Assets::Price ; "12.50" ]
+Set Field [ Assets::Purchase Date ; Date ( 1 ; 2 ; 2020 ) ]
+Set Field [ Assets::AT ; Time ( 13 ; 45 ; 30 ) ]
+Commit Records/Requests [ With dialog: Off ]
+Set Field [ Assignments::Note ; "first" ]
+Commit Records/Requests [ With dialog: Off ]
+Set Variable [ $log ; "A1 price [" & Assets::Price & "] " & ( Assets::Price + 0 ) ]
+Set Variable [ $log ; $log & ¶ & "LN [" & Assignments::LN & "] +1 " & ( Assignments::LN + 1 ) ]
+Set Variable [ $log ; $log & ¶ & "LD [" & Assignments::LD & "] +1 " & GetAsText ( Assignments::LD + 1 ) ]
+Set Variable [ $log ; $log & ¶ & "LT [" & Assignments::LT & "] +60 " & GetAsText ( Assignments::LT + 60 ) ]
+Set Variable [ $log ; $log & ¶ & "LTS [" & Assignments::LTS & "] same " & ( Assignments::LTS = Assets::CreationTimestamp ) ]
+Set Variable [ $log ; $log & ¶ & "LXN [" & Assignments::LXN & "] len " & Length ( Assignments::LXN ) ]
+Set Variable [ $log ; $log & ¶ & "LXD [" & Assignments::LXD & "]" ]
+Set Variable [ $log ; $log & ¶ & "LNT [" & Assignments::LNT & "] +1 " & ( Assignments::LNT + 1 ) ]
+Set Variable [ $log ; $log & ¶ & "LDT [" & Assignments::LDT & "] +1 " & GetAsText ( Assignments::LDT + 1 ) ]
+New Record/Request
+Set Field [ Assets::Name ; "1/2/2020" ]
+Set Field [ Assets::Price ; "7 units" ]
+Commit Records/Requests [ With dialog: Off ]
+Set Field [ Assignments::Note ; "second" ]
+Commit Records/Requests [ With dialog: Off ]
+Set Variable [ $log ; $log & ¶ & "A2 LN [" & Assignments::LN & "] +1 " & ( Assignments::LN + 1 ) ]
+Set Variable [ $log ; $log & ¶ & "A2 LXN [" & Assignments::LXN & "]" ]
+Set Variable [ $log ; $log & ¶ & "A2 LNT [" & Assignments::LNT & "] +1 " & ( Assignments::LNT + 1 ) ]
+Set Variable [ $log ; $log & ¶ & "A2 LDT [" & Assignments::LDT & "] +1 " & GetAsText ( Assignments::LDT + 1 ) ]
+Set Variable [ $log ; $log & ¶ & "A2 LD [" & Assignments::LD & "] LT [" & Assignments::LT & "]" ]
+Exit Script [ $log ]
+
+--- run
+probe

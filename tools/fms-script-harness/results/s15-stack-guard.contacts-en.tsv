@@ -1,0 +1,38 @@
+# scan sg param: open 0 load 0 scan 0 commit 0; index:id=value (0-based): 0:141=0 1:68=8 2:1=0 3:141=0 4:68=7 5:141=0 6:141=0 7:70=0 8:70=0
+# scan sg big: open 0 load 0 scan 0 commit 0; index:id=value (0-based): 0:103=0
+# scan sg nop: open 0 load 0 scan 0 commit 0; index:id=value (0-based): 0:103=0
+# scan sg result: open 0 load 0 scan 0 commit 0; index:id=value (0-based): 0:141=0 1:68=9 2:1=0 3:1=0 4:141=0 5:68=8 6:141=0 7:141=0 8:70=0 9:70=0
+# scan sg local: open 0 load 0 scan 0 commit 0; index:id=value (0-based): 0:141=0 1:141=0 2:68=9 3:1=0 4:141=0 5:68=8 6:141=0 7:141=0 8:70=0 9:70=0
+# scan sg local param: open 0 load 0 scan 0 commit 0; index:id=value (0-based): 0:141=0 1:141=0 2:68=9 3:1=0 4:141=0 5:68=8 6:141=0 7:141=0 8:70=0 9:70=0
+# scan sg local2: open 0 load 0 scan 0 commit 0; index:id=value (0-based): 0:141=0 1:141=0 2:141=0 3:68=10 4:1=0 5:141=0 6:68=9 7:141=0 8:141=0 9:70=0 10:70=0
+# scan sg mixed: open 0 load 0 scan 0 commit 0; index:id=value (0-based): 0:141=0 1:68=13 2:1=0 3:141=0 4:68=6 5:141=0 6:70=0 7:1=0 8:141=0 9:68=12 10:141=0 11:141=0 12:70=0 13:70=0
+# scan sg build: open 0 load 0 scan 0 commit 0; index:id=value (0-based): 0:141=0 1:141=0
+# scan sg start param: open 0 load 0 scan 0 commit 0; index:id=value (0-based): 0:1=0 1:1=0 2:103=0
+# scan sg start result: open 0 load 0 scan 0 commit 0; index:id=value (0-based): 0:1=0 1:1=0 2:103=0
+# scan sg start local: open 0 load 0 scan 0 commit 0; index:id=value (0-based): 0:1=0 1:1=0 2:103=0
+# scan sg start local param: open 0 load 0 scan 0 commit 0; index:id=value (0-based): 0:1=0 1:1=0 2:103=0
+# scan sg start local2: open 0 load 0 scan 0 commit 0; index:id=value (0-based): 0:1=0 1:1=0 2:103=0
+# scan sg start mixed: open 0 load 0 scan 0 commit 0; index:id=value (0-based): 0:1=0 1:1=0 2:103=0
+# scan: close 13
+# @trace off
+sg start param	1000000\r3000	0	599 599 2 1000000	0
+sg start param	500000\r3000	0	1099 1099 2 500000	0
+sg start param	250000\r6000	0	2199 2199 2 250000	0
+sg start result	500000\r3000	0	3000   500000	0
+sg start local	500000\r3000	0	1099 1099 2 500000	0
+sg start mixed	1000000\r3000	0	3000   1000000 549:2	0
+sg start param	487099\r1300	0	1199 1199 2 487099	0
+sg start param	487100\r1300	0	1099 1099 2 487100	0
+sg start param	894866\r700	0	699 699 2 894866	0
+sg start param	894868\r700	0	599 599 2 894868	0
+sg start param	2696420\r250	0	250   2696420	0
+sg start param	2696428\r250	0	199 199 2 2696428	0
+sg start param	500000\r3000\ré	0	1099 1099 2 500000	0
+sg start param	250000\r3000\remoji	0	2199 2199 2 250000	0
+sg start param	250000\r3000\rcombining	0	1099 1099 2 250000	0
+sg start local	487075\r1300	0	1199 1199 2 487075	0
+sg start local	487085\r1300	0	1099 1099 2 487085	0
+sg start local param	486450\r1300	0	1199 1199 2 486450	0
+sg start local param	486460\r1300	0	1099 1099 2 486460	0
+sg start local2	486400\r1300	0	1199 1199 2 486400	0
+sg start local2	486450\r1300	0	1099 1099 2 486450	0

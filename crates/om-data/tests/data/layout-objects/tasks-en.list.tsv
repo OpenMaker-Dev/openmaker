@@ -1,0 +1,52 @@
+# FileMaker Server 26.0.3 script engine (tools/fms-script-harness, s32-layout-objects),
+# evaluated by a script in tasks-en.fmp12 on layout Task List (no records).
+# file	tasks-en.fmp12
+# layout	Task List
+GetLayoutObjectAttribute ( "Tasks" ; "objectType" )	button
+GetLayoutObjectAttribute ( "Tasks" ; "hasFocus" )	0
+GetLayoutObjectAttribute ( "Tasks" ; "containsFocus" )	0
+GetLayoutObjectAttribute ( "Tasks" ; "bounds" )	330 13 530 34 0
+GetLayoutObjectAttribute ( "Tasks" ; "rotation" )	0
+GetLayoutObjectAttribute ( "Tasks" ; "startPoint" )	330 13
+GetLayoutObjectAttribute ( "Tasks" ; "endPoint" )	530 34
+GetLayoutObjectAttribute ( "Tasks" ; "source" )	
+GetLayoutObjectAttribute ( "Tasks" ; "content" )	Tasks
+GetLayoutObjectAttribute ( "Tasks" ; "enclosingObject" )	
+GetLayoutObjectAttribute ( "Tasks" ; "containedObjects" )	
+GetLayoutObjectAttribute ( "Tasks" ; "isFrontTabPanel" )	0
+GetLayoutObjectAttribute ( "Tasks" ; "isFrontPanel" )	0
+GetLayoutObjectAttribute ( "Tasks" ; "isObjectHidden" )	0
+GetLayoutObjectAttribute ( "Tasks" ; "isActive" )	
+GetLayoutObjectAttribute ( "Tasks" ; "UUID" )	A4814361-FE9C-4647-A549-0AF06178B19B
+GetLayoutObjectAttribute ( "Assignees" ; "objectType" )	button
+GetLayoutObjectAttribute ( "Assignees" ; "hasFocus" )	0
+GetLayoutObjectAttribute ( "Assignees" ; "containsFocus" )	0
+GetLayoutObjectAttribute ( "Assignees" ; "bounds" )	530 13 730 34 0
+GetLayoutObjectAttribute ( "Assignees" ; "rotation" )	0
+GetLayoutObjectAttribute ( "Assignees" ; "startPoint" )	530 13
+GetLayoutObjectAttribute ( "Assignees" ; "endPoint" )	730 34
+GetLayoutObjectAttribute ( "Assignees" ; "source" )	
+GetLayoutObjectAttribute ( "Assignees" ; "content" )	Assignees
+GetLayoutObjectAttribute ( "Assignees" ; "enclosingObject" )	
+GetLayoutObjectAttribute ( "Assignees" ; "containedObjects" )	
+GetLayoutObjectAttribute ( "Assignees" ; "isFrontTabPanel" )	0
+GetLayoutObjectAttribute ( "Assignees" ; "isFrontPanel" )	0
+GetLayoutObjectAttribute ( "Assignees" ; "isObjectHidden" )	0
+GetLayoutObjectAttribute ( "Assignees" ; "isActive" )	
+GetLayoutObjectAttribute ( "Assignees" ; "UUID" )	0801E447-81F0-4B20-A037-6D1439FA15E6
+GetLayoutObjectAttribute ( "Go to details." ; "objectType" )	button
+GetLayoutObjectAttribute ( "Go to details." ; "hasFocus" )	0
+GetLayoutObjectAttribute ( "Go to details." ; "containsFocus" )	0
+GetLayoutObjectAttribute ( "Go to details." ; "bounds" )	
+GetLayoutObjectAttribute ( "Go to details." ; "rotation" )	0
+GetLayoutObjectAttribute ( "Go to details." ; "startPoint" )	
+GetLayoutObjectAttribute ( "Go to details." ; "endPoint" )	
+GetLayoutObjectAttribute ( "Go to details." ; "source" )	
+GetLayoutObjectAttribute ( "Go to details." ; "content" )	
+GetLayoutObjectAttribute ( "Go to details." ; "enclosingObject" )	
+GetLayoutObjectAttribute ( "Go to details." ; "containedObjects" )	
+GetLayoutObjectAttribute ( "Go to details." ; "isFrontTabPanel" )	0
+GetLayoutObjectAttribute ( "Go to details." ; "isFrontPanel" )	0
+GetLayoutObjectAttribute ( "Go to details." ; "isObjectHidden" )	0
+GetLayoutObjectAttribute ( "Go to details." ; "isActive" )	
+GetLayoutObjectAttribute ( "Go to details." ; "UUID" )	0FF77796-1085-47F5-871A-02C659A3FDAC

@@ -1,0 +1,42 @@
+# Record context: MBS example Examples/Phidgets/Phidget Digital Outputs.fmp12,
+# table occurrence Phidget Outputs (03d00001), record ID 1. Connected: number,
+# 8 repetitions; DeviceSerialNumber, DeviceID, ChannelClass: number fields.
+@ 03d00001 1
+Get ( RecordID )
+While ( [ i = 1 ; r = "" ] ; i <= 9 ; [ r = r & i & "=" & GetRepetition ( Connected ; i ) & ";" ; i = i + 1 ] ; r )
+DeviceSerialNumber & "|" & DeviceID & "|" & ChannelClass & "|" & DeviceName & "|" & DeviceLabel
+IsEmpty ( DeviceSerialNumber ) & IsEmpty ( DeviceID ) & IsEmpty ( ChannelClass )
+Connected + 1
+Connected[2] * 10
+Connected + Connected[3]
+Sum ( Connected )
+Count ( Connected )
+Average ( Connected )
+Sum ( Connected ; 5 )
+Sum ( Connected[2] )
+Sum ( Extend ( Connected ) )
+Connected = 1
+Connected & ""
+Last ( Connected )
+DeviceSerialNumber = 0
+DeviceSerialNumber + 1
+DeviceSerialNumber - 1
+DeviceSerialNumber * 2
+DeviceSerialNumber + DeviceID
+DeviceSerialNumber & "x"
+DeviceSerialNumber < 1
+DeviceSerialNumber = ""
+GetAsNumber ( DeviceSerialNumber ) = 0
+Sum ( DeviceSerialNumber ; 2 )
+Count ( DeviceSerialNumber )
+Count ( DeviceSerialNumber ; Connected )
+Average ( DeviceSerialNumber ; 2 )
+-DeviceSerialNumber
+Abs ( DeviceSerialNumber )
+If ( DeviceSerialNumber ; "true" ; "false" )
+not DeviceSerialNumber
+@rep 2
+Get ( CalculationRepetitionNumber )
+Connected + 1
+Sum ( Connected )
+DeviceSerialNumber + 1

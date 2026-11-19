@@ -1,0 +1,102 @@
+# FileMaker Server 26.0.3 script engine (tools/fms-script-harness, s32-layout-objects),
+# evaluated by a script in tasks-en.fmp12 on layout Task Details (no records).
+# file	tasks-en.fmp12
+# layout	Task Details
+GetLayoutObjectAttribute ( "Go to Tasks." ; "objectType" )	button
+GetLayoutObjectAttribute ( "Go to Tasks." ; "hasFocus" )	0
+GetLayoutObjectAttribute ( "Go to Tasks." ; "containsFocus" )	0
+GetLayoutObjectAttribute ( "Go to Tasks." ; "bounds" )	0 0 200 44 0
+GetLayoutObjectAttribute ( "Go to Tasks." ; "rotation" )	0
+GetLayoutObjectAttribute ( "Go to Tasks." ; "startPoint" )	0 0
+GetLayoutObjectAttribute ( "Go to Tasks." ; "endPoint" )	200 44
+GetLayoutObjectAttribute ( "Go to Tasks." ; "source" )	
+GetLayoutObjectAttribute ( "Go to Tasks." ; "content" )	Tasks
+GetLayoutObjectAttribute ( "Go to Tasks." ; "enclosingObject" )	
+GetLayoutObjectAttribute ( "Go to Tasks." ; "containedObjects" )	
+GetLayoutObjectAttribute ( "Go to Tasks." ; "isFrontTabPanel" )	0
+GetLayoutObjectAttribute ( "Go to Tasks." ; "isFrontPanel" )	0
+GetLayoutObjectAttribute ( "Go to Tasks." ; "isObjectHidden" )	0
+GetLayoutObjectAttribute ( "Go to Tasks." ; "isActive" )	
+GetLayoutObjectAttribute ( "Go to Tasks." ; "UUID" )	A568DA85-0E4E-42FA-B795-5D6D708DD575
+GetLayoutObjectAttribute ( "Assignee Portal" ; "objectType" )	portal
+GetLayoutObjectAttribute ( "Assignee Portal" ; "hasFocus" )	0
+GetLayoutObjectAttribute ( "Assignee Portal" ; "containsFocus" )	0
+GetLayoutObjectAttribute ( "Assignee Portal" ; "bounds" )	366 163 657 498 0
+GetLayoutObjectAttribute ( "Assignee Portal" ; "rotation" )	0
+GetLayoutObjectAttribute ( "Assignee Portal" ; "startPoint" )	366 163
+GetLayoutObjectAttribute ( "Assignee Portal" ; "endPoint" )	657 498
+GetLayoutObjectAttribute ( "Assignee Portal" ; "source" )	Assignments
+GetLayoutObjectAttribute ( "Assignee Portal" ; "content" )	
+GetLayoutObjectAttribute ( "Assignee Portal" ; "enclosingObject" )	
+GetLayoutObjectAttribute ( "Assignee Portal" ; "containedObjects" )	
+GetLayoutObjectAttribute ( "Assignee Portal" ; "isFrontTabPanel" )	0
+GetLayoutObjectAttribute ( "Assignee Portal" ; "isFrontPanel" )	0
+GetLayoutObjectAttribute ( "Assignee Portal" ; "isObjectHidden" )	0
+GetLayoutObjectAttribute ( "Assignee Portal" ; "isActive" )	
+GetLayoutObjectAttribute ( "Assignee Portal" ; "UUID" )	53BBBBA0-F2E2-4E7A-BB97-922945FBDF57
+GetLayoutObjectAttribute ( "Status" ; "objectType" )	field
+GetLayoutObjectAttribute ( "Status" ; "hasFocus" )	0
+GetLayoutObjectAttribute ( "Status" ; "containsFocus" )	0
+GetLayoutObjectAttribute ( "Status" ; "bounds" )	32 398 323 442 0
+GetLayoutObjectAttribute ( "Status" ; "rotation" )	0
+GetLayoutObjectAttribute ( "Status" ; "startPoint" )	32 398
+GetLayoutObjectAttribute ( "Status" ; "endPoint" )	323 442
+GetLayoutObjectAttribute ( "Status" ; "source" )	Tasks::Status
+GetLayoutObjectAttribute ( "Status" ; "content" )	
+GetLayoutObjectAttribute ( "Status" ; "enclosingObject" )	
+GetLayoutObjectAttribute ( "Status" ; "containedObjects" )	
+GetLayoutObjectAttribute ( "Status" ; "isFrontTabPanel" )	0
+GetLayoutObjectAttribute ( "Status" ; "isFrontPanel" )	0
+GetLayoutObjectAttribute ( "Status" ; "isObjectHidden" )	0
+GetLayoutObjectAttribute ( "Status" ; "isActive" )	
+GetLayoutObjectAttribute ( "Status" ; "UUID" )	229B4B4D-43A9-4A74-A053-66E9EEE47EBD
+GetLayoutObjectAttribute ( "Category" ; "objectType" )	field
+GetLayoutObjectAttribute ( "Category" ; "hasFocus" )	0
+GetLayoutObjectAttribute ( "Category" ; "containsFocus" )	0
+GetLayoutObjectAttribute ( "Category" ; "bounds" )	32 302 323 346 0
+GetLayoutObjectAttribute ( "Category" ; "rotation" )	0
+GetLayoutObjectAttribute ( "Category" ; "startPoint" )	32 302
+GetLayoutObjectAttribute ( "Category" ; "endPoint" )	323 346
+GetLayoutObjectAttribute ( "Category" ; "source" )	Tasks::Category
+GetLayoutObjectAttribute ( "Category" ; "content" )	
+GetLayoutObjectAttribute ( "Category" ; "enclosingObject" )	
+GetLayoutObjectAttribute ( "Category" ; "containedObjects" )	
+GetLayoutObjectAttribute ( "Category" ; "isFrontTabPanel" )	0
+GetLayoutObjectAttribute ( "Category" ; "isFrontPanel" )	0
+GetLayoutObjectAttribute ( "Category" ; "isObjectHidden" )	0
+GetLayoutObjectAttribute ( "Category" ; "isActive" )	
+GetLayoutObjectAttribute ( "Category" ; "UUID" )	AD2A6986-9E45-415E-B9EE-46E6CAE3F2A6
+GetLayoutObjectAttribute ( "Due Date" ; "objectType" )	field
+GetLayoutObjectAttribute ( "Due Date" ; "hasFocus" )	0
+GetLayoutObjectAttribute ( "Due Date" ; "containsFocus" )	0
+GetLayoutObjectAttribute ( "Due Date" ; "bounds" )	32 243 323 287 0
+GetLayoutObjectAttribute ( "Due Date" ; "rotation" )	0
+GetLayoutObjectAttribute ( "Due Date" ; "startPoint" )	32 243
+GetLayoutObjectAttribute ( "Due Date" ; "endPoint" )	323 287
+GetLayoutObjectAttribute ( "Due Date" ; "source" )	Tasks::Due Date
+GetLayoutObjectAttribute ( "Due Date" ; "content" )	
+GetLayoutObjectAttribute ( "Due Date" ; "enclosingObject" )	
+GetLayoutObjectAttribute ( "Due Date" ; "containedObjects" )	
+GetLayoutObjectAttribute ( "Due Date" ; "isFrontTabPanel" )	0
+GetLayoutObjectAttribute ( "Due Date" ; "isFrontPanel" )	0
+GetLayoutObjectAttribute ( "Due Date" ; "isObjectHidden" )	0
+GetLayoutObjectAttribute ( "Due Date" ; "isActive" )	
+GetLayoutObjectAttribute ( "Due Date" ; "UUID" )	F92786D9-C28B-4495-BC69-983A0FCAB20A
+GetLayoutObjectAttribute ( "Task" ; "objectType" )	field
+GetLayoutObjectAttribute ( "Task" ; "hasFocus" )	0
+GetLayoutObjectAttribute ( "Task" ; "containsFocus" )	0
+GetLayoutObjectAttribute ( "Task" ; "bounds" )	32 163 323 207 0
+GetLayoutObjectAttribute ( "Task" ; "rotation" )	0
+GetLayoutObjectAttribute ( "Task" ; "startPoint" )	32 163
+GetLayoutObjectAttribute ( "Task" ; "endPoint" )	323 207
+GetLayoutObjectAttribute ( "Task" ; "source" )	Tasks::Task
+GetLayoutObjectAttribute ( "Task" ; "content" )	
+GetLayoutObjectAttribute ( "Task" ; "enclosingObject" )	
+GetLayoutObjectAttribute ( "Task" ; "containedObjects" )	
+GetLayoutObjectAttribute ( "Task" ; "isFrontTabPanel" )	0
+GetLayoutObjectAttribute ( "Task" ; "isFrontPanel" )	0
+GetLayoutObjectAttribute ( "Task" ; "isObjectHidden" )	0
+GetLayoutObjectAttribute ( "Task" ; "isActive" )	
+GetLayoutObjectAttribute ( "Task" ; "UUID" )	55307BCC-567D-4FDD-B320-B7F3AFDEB2E0
+GetLayoutObjectAttribute ( "Assignee Portal" ; "bounds" ; 0 ; 2 )	366 163 657 498 0
+GetLayoutObjectAttribute ( "Status" ; "content" ; 1 )	

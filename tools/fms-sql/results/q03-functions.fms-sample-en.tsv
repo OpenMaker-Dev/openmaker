@@ -1,0 +1,141 @@
+# q03: scalar functions, CAST, CASE, COALESCE, NULLIF, number formatting.
+# File: FileMaker Server sample (en), no record context. Every probe reads
+# the one record "TASK ID MATCH FIELD" = 3 (Task "Hire New Sales Person",
+# Due Date 2014-11-24, Status "In Progress").
+# --- number text form
+ExecuteSQLe ( "SELECT 1e15, 1e16, 1e17, 1e18, 1e19, 1e20, 1e21 FROM Tasks WHERE \"TASK ID MATCH FIELD\" = 3" ; "|" ; "¶" )	0	1/1/0	1.0E+15|1.0E+16|1.0E+17|1.0E+18|1.0E+19|1.0E+20|1.0E+21
+ExecuteSQLe ( "SELECT 100000000000000000000, 1000000000000000000000, 123e18, 1.5e20, 12.5e19 FROM Tasks WHERE \"TASK ID MATCH FIELD\" = 3" ; "|" ; "¶" )	0	1/1/0	1.0E+20|1.0E+21|1.23E+20|1.5E+20|1.25E+20
+ExecuteSQLe ( "SELECT 10^15, 10^19, 10^20, 2^64, 2^70, 3^40 FROM Tasks WHERE \"TASK ID MATCH FIELD\" = 3" ; "|" ; "¶" )	0	1/1/0	1.0E+15|1.0E+19|1.0E+20|18446744073709551616|1180591620717411303424|12157665459056928801
+ExecuteSQLe ( "SELECT 1e-15, 1e-16, 1e-17, 1e-19, 1e-20, 1.5e-20, 1e-21 FROM Tasks WHERE \"TASK ID MATCH FIELD\" = 3" ; "|" ; "¶" )	0	1/1/0	1.0E-15|1.0E-16|1.0E-17|1.0E-19|1.0E-20|1.5E-20|1.0E-21
+ExecuteSQLe ( "SELECT 0.0000000000000001, 0.00000000000000001, 0.000000000000000000001 FROM Tasks WHERE \"TASK ID MATCH FIELD\" = 3" ; "|" ; "¶" )	0	1/1/0	1.0E-16|1.0E-17|1.0E-21
+ExecuteSQLe ( "SELECT 1e20 + 1, 1e20 - 1e20, 1e20 / 1e20, 1e20 * 0 FROM Tasks WHERE \"TASK ID MATCH FIELD\" = 3" ; "|" ; "¶" )	0	1/1/0	100000000000000000001|0|1|0
+ExecuteSQLe ( "SELECT -1e20, -1e-20, -1.5e25 FROM Tasks WHERE \"TASK ID MATCH FIELD\" = 3" ; "|" ; "¶" )	0	1/1/0	-1.0E+20|-1.0E-20|-1.5E+25
+ExecuteSQLe ( "SELECT 2^0.5, 2^-1, 0^0, 4^0.5, (-8)^2, (-8)^3 FROM Tasks WHERE \"TASK ID MATCH FIELD\" = 3" ; "|" ; "¶" )	0	1/1/0	1.414213562373095|.5|1|2|64|-512
+ExecuteSQLe ( "SELECT (-8)^(1/3) FROM Tasks WHERE \"TASK ID MATCH FIELD\" = 3" ; "|" ; "¶" )	14	1/1/0	? ERROR:  (14): Number out of range
+ExecuteSQLe ( "SELECT 0^-1 FROM Tasks WHERE \"TASK ID MATCH FIELD\" = 3" ; "|" ; "¶" )	15	1/1/0	? ERROR:  (15): Divide by zero
+ExecuteSQLe ( "SELECT 1/3*3, 2/3 + 1/3, 1 - 1/3 FROM Tasks WHERE \"TASK ID MATCH FIELD\" = 3" ; "|" ; "¶" )	0	1/1/0	1|1|.6666666666666667
+ExecuteSQLe ( "SELECT 123456789.123456789 * 1000, 1.1 * 1.1, 99999999999999999999 + 1 FROM Tasks WHERE \"TASK ID MATCH FIELD\" = 3" ; "|" ; "¶" )	0	1/1/0	123456789123.456789|1.21|1.0E+20
+ExecuteSQLe ( "SELECT 1/3 + 0, 1/3 * 1, ROUND(1/3, 20) FROM Tasks WHERE \"TASK ID MATCH FIELD\" = 3" ; "|" ; "¶" )	0	1/1/0	.3333333333333333|.3333333333333333|.3333333333333333
+# --- numeric functions (FunctionTable)
+ExecuteSQLe ( "SELECT ABS(-2.5), ABS(3), ABS(-0) FROM Tasks WHERE \"TASK ID MATCH FIELD\" = 3" ; "|" ; "¶" )	0	1/1/0	2.5|3|0
+ExecuteSQLe ( "SELECT ATAN(1), ATAN2(1, 1), ATAN2(1, 0) FROM Tasks WHERE \"TASK ID MATCH FIELD\" = 3" ; "|" ; "¶" )	0	1/1/0	.7853981633974483|.7853981633974483|1.5707963267948966
+ExecuteSQLe ( "SELECT CEIL(1.2), CEILING(-1.2), FLOOR(1.8), FLOOR(-1.2) FROM Tasks WHERE \"TASK ID MATCH FIELD\" = 3" ; "|" ; "¶" )	0	1/1/0	2|-1|1|-2
+ExecuteSQLe ( "SELECT COS(0), SIN(0), TAN(0), COS(1), SIN(1), TAN(1) FROM Tasks WHERE \"TASK ID MATCH FIELD\" = 3" ; "|" ; "¶" )	0	1/1/0	1|0|0|.5403023058681398|.8414709848078965|1.5574077246549023
+ExecuteSQLe ( "SELECT DEGREES(PI()), DEG(1), RADIANS(180), PI() FROM Tasks WHERE \"TASK ID MATCH FIELD\" = 3" ; "|" ; "¶" )	0	1/1/0	180|57.2957795130823209|3.1415926535897932|3.1415926535897932
+ExecuteSQLe ( "SELECT PI FROM Tasks WHERE \"TASK ID MATCH FIELD\" = 3" ; "|" ; "¶" )	8309	1/1/0	? ERROR: FQL0007/(1:7): The column named "PI" does not exist in any table in the column reference's scope.
+ExecuteSQLe ( "SELECT EXP(1), EXP(0), LN(10), LOG(100), LG(100), LOG(2) FROM Tasks WHERE \"TASK ID MATCH FIELD\" = 3" ; "|" ; "¶" )	0	1/1/0	2.7182818284590452|1|2.3025850929940457|2|6.6438561897747247|.3010299956639812
+ExecuteSQLe ( "SELECT LN(0) FROM Tasks WHERE \"TASK ID MATCH FIELD\" = 3" ; "|" ; "¶" )	14	1/1/0	? ERROR:  (14): Number out of range
+ExecuteSQLe ( "SELECT LN(-1) FROM Tasks WHERE \"TASK ID MATCH FIELD\" = 3" ; "|" ; "¶" )	14	1/1/0	? ERROR:  (14): Number out of range
+ExecuteSQLe ( "SELECT MOD(7, 3), MOD(-7, 3), MOD(7, -3), MOD(7.5, 2) FROM Tasks WHERE \"TASK ID MATCH FIELD\" = 3" ; "|" ; "¶" )	0	1/1/0	1|2|-2|1.5
+ExecuteSQLe ( "SELECT MOD(7, 0) FROM Tasks WHERE \"TASK ID MATCH FIELD\" = 3" ; "|" ; "¶" )	0	1/1/0	7
+ExecuteSQLe ( "SELECT SIGN(-3), SIGN(0), SIGN(2.5) FROM Tasks WHERE \"TASK ID MATCH FIELD\" = 3" ; "|" ; "¶" )	0	1/1/0	-1|0|1
+ExecuteSQLe ( "SELECT SQRT(2), SQRT(16), SQRT(0) FROM Tasks WHERE \"TASK ID MATCH FIELD\" = 3" ; "|" ; "¶" )	0	1/1/0	1.414213562373095|4|0
+ExecuteSQLe ( "SELECT SQRT(-1) FROM Tasks WHERE \"TASK ID MATCH FIELD\" = 3" ; "|" ; "¶" )	14	1/1/0	? ERROR:  (14): Number out of range
+ExecuteSQLe ( "SELECT abs(-1), Abs(-1), \"ABS\"(-1) FROM Tasks WHERE \"TASK ID MATCH FIELD\" = 3" ; "|" ; "¶" )	0	1/1/0	1|1|1
+ExecuteSQLe ( "SELECT ROUND(2.567, 2), ROUND(2.5, 0), ROUND(-2.5, 0), ROUND(1234.5, -2), ROUND(2.567) FROM Tasks WHERE \"TASK ID MATCH FIELD\" = 3" ; "|" ; "¶" )	8309	1/1/0	? ERROR: FQL0020/(1:74): An invalid number of parameters was supplied to the function "ROUND"
+ExecuteSQLe ( "SELECT ROUND(0.125, 2), ROUND(0.135, 2), ROUND(-0.125, 2) FROM Tasks WHERE \"TASK ID MATCH FIELD\" = 3" ; "|" ; "¶" )	0	1/1/0	.13|.14|-.13
+ExecuteSQLe ( "SELECT INT(2.7), INT(-2.7), INT(3) FROM Tasks WHERE \"TASK ID MATCH FIELD\" = 3" ; "|" ; "¶" )	0	1/1/0	2|-2|3
+ExecuteSQLe ( "SELECT MAX(1, 5), MIN(1, 5) FROM Tasks WHERE \"TASK ID MATCH FIELD\" = 3" ; "|" ; "¶" )	0	1/1/0	5|1
+ExecuteSQLe ( "SELECT MAX(1, 5, 3) FROM Tasks WHERE \"TASK ID MATCH FIELD\" = 3" ; "|" ; "¶" )	8309	1/1/0	? ERROR: FQL0020/(1:7): An invalid number of parameters was supplied to the function "MAX"
+ExecuteSQLe ( "SELECT MAX('a', 'b'), MIN(DATE '2014-01-01', DATE '2013-01-01') FROM Tasks WHERE \"TASK ID MATCH FIELD\" = 3" ; "|" ; "¶" )	8309	1/1/0	? ERROR: FQL0021/(1:7): Parameter number 1 to the function "MAX" is not of the correct type.
+ExecuteSQLe ( "SELECT ABS(NULL), SQRT(NULL), ROUND(NULL, 1) FROM Tasks WHERE \"TASK ID MATCH FIELD\" = 3" ; "|" ; "¶" )	8309	1/1/0	? ERROR: FQL0021/(1:7): Parameter number 1 to the function "ABS" is not of the correct type.
+ExecuteSQLe ( "SELECT ABS(\"Due Date\") FROM Tasks WHERE \"TASK ID MATCH FIELD\" = 3" ; "|" ; "¶" )	8309	1/1/0	? ERROR: FQL0021/(1:7): Parameter number 1 to the function "ABS" is not of the correct type.
+ExecuteSQLe ( "SELECT ABS('3') FROM Tasks WHERE \"TASK ID MATCH FIELD\" = 3" ; "|" ; "¶" )	8309	1/1/0	? ERROR: FQL0021/(1:7): Parameter number 1 to the function "ABS" is not of the correct type.
+# --- text functions
+ExecuteSQLe ( "SELECT CHR(65), CHR(97), CHR(8364), CHR(128512), CHR(13) FROM Tasks WHERE \"TASK ID MATCH FIELD\" = 3" ; "|" ; "¶" )	0	1/1/0	A|a|¬|\u0000|\r
+ExecuteSQLe ( "SELECT CHR(0) FROM Tasks WHERE \"TASK ID MATCH FIELD\" = 3" ; "|" ; "¶" )	0	1/1/0	\u0000
+ExecuteSQLe ( "SELECT LEFT(Task, 4), RIGHT(Task, 6), LEFT(Task, 0), LEFT(Task, 100), RIGHT(Task, -1) FROM Tasks WHERE \"TASK ID MATCH FIELD\" = 3" ; "|" ; "¶" )	14	1/1/0	? ERROR:  (14): Number out of range
+ExecuteSQLe ( "SELECT LENGTH(Task), LENGTH(''), LENGTH(NULL), LENGTH(' a ') FROM Tasks WHERE \"TASK ID MATCH FIELD\" = 3" ; "|" ; "¶" )	0	1/1/0	21|||3
+ExecuteSQLe ( "SELECT LENGTH(123), LENGTH(\"Due Date\") FROM Tasks WHERE \"TASK ID MATCH FIELD\" = 3" ; "|" ; "¶" )	8309	1/1/0	? ERROR: FQL0021/(1:7): Parameter number 1 to the function "LENGTH" is not of the correct type.
+ExecuteSQLe ( "SELECT LOWER(Task), UPPER(Task), UPPER('straße'), LOWER('ÀÉÎ'), UPPER('ǆ') FROM Tasks WHERE \"TASK ID MATCH FIELD\" = 3" ; "|" ; "¶" )	0	1/1/0	hire new sales person|HIRE NEW SALES PERSON|STRAßE|àéî|Ǆ
+ExecuteSQLe ( "SELECT '[' || LTRIM('  a  ') || ']', '[' || RTRIM('  a  ') || ']', '[' || TRIM('  a  ') || ']' FROM Tasks WHERE \"TASK ID MATCH FIELD\" = 3" ; "|" ; "¶" )	0	1/1/0	[a  ]|[  a]|[a]
+ExecuteSQLe ( "SELECT '[' || TRIM(BOTH 'x' FROM 'xxaxx') || ']', '[' || TRIM(LEADING 'x' FROM 'xxaxx') || ']', '[' || TRIM(TRAILING 'x' FROM 'xxaxx') || ']' FROM Tasks WHERE \"TASK ID MATCH FIELD\" = 3" ; "|" ; "¶" )	0	1/1/0	[a]|[axx]|[xxa]
+ExecuteSQLe ( "SELECT '[' || TRIM(BOTH FROM '  a  ') || ']', '[' || TRIM('x' FROM 'xxaxx') || ']', '[' || TRIM(BOTH 'xy' FROM 'xyaxy') || ']' FROM Tasks WHERE \"TASK ID MATCH FIELD\" = 3" ; "|" ; "¶" )	0	1/1/0	[a]|[a]|[yaxy]
+ExecuteSQLe ( "SELECT '[' || TRIM('\t a \t') || ']', '[' || TRIM('¶a¶') || ']', '[' || LTRIM('  a') || ']' FROM Tasks WHERE \"TASK ID MATCH FIELD\" = 3" ; "|" ; "¶" )	0	1/1/0	[\t a \t]|[\ra\r]|[ a]
+ExecuteSQLe ( "SELECT '[' || SPACE(3) || ']', '[' || SPACE(0) || ']' FROM Tasks WHERE \"TASK ID MATCH FIELD\" = 3" ; "|" ; "¶" )	0	1/1/0	[   ]|[]
+ExecuteSQLe ( "SELECT SUBSTR(Task, 6), SUBSTR(Task, 6, 3), SUBSTRING(Task, 1, 4), SUBSTR(Task, 0, 3), SUBSTR(Task, 100) FROM Tasks WHERE \"TASK ID MATCH FIELD\" = 3" ; "|" ; "¶" )	0	1/1/0	New Sales Person|New|Hire|Hir|
+ExecuteSQLe ( "SELECT SUBSTR(Task, -2, 4), SUBSTR(Task, 2, -1), SUBSTR(Task, 2.7, 2.2) FROM Tasks WHERE \"TASK ID MATCH FIELD\" = 3" ; "|" ; "¶" )	14	1/1/0	? ERROR:  (14): Number out of range
+ExecuteSQLe ( "SELECT SUBSTRING(Task FROM 2 FOR 3) FROM Tasks WHERE \"TASK ID MATCH FIELD\" = 3" ; "|" ; "¶" )	8310	1/1/0	? ERROR: FQL0001/(1:23): There is an error in the syntax of the query.
+ExecuteSQLe ( "SELECT POSITION('New' IN Task) FROM Tasks WHERE \"TASK ID MATCH FIELD\" = 3" ; "|" ; "¶" )	8310	1/1/0	? ERROR: FQL0001/(1:8): There is an error in the syntax of the query.
+ExecuteSQLe ( "SELECT STRVAL(12.50), STRVAL(DATE '2014-02-17'), STRVAL(TIME '13:45:10'), STRVAL(TIMESTAMP '2014-02-17 13:45:10'), STRVAL('a') FROM Tasks WHERE \"TASK ID MATCH FIELD\" = 3" ; "|" ; "¶" )	0	1/1/0	12.5|2014-02-17|13:45:10|2014-02-17 13:45:10|a
+ExecuteSQLe ( "SELECT STRVAL(\"Due Date\"), STRVAL(\"TASK ID MATCH FIELD\"), STRVAL(1/3), STRVAL(1e20), STRVAL(TRUE) FROM Tasks WHERE \"TASK ID MATCH FIELD\" = 3" ; "|" ; "¶" )	0	1/1/0	2014-11-24|3|.3333333333333333|1.0E+20|True
+ExecuteSQLe ( "SELECT STRVAL(NULL) FROM Tasks WHERE \"TASK ID MATCH FIELD\" = 3" ; "|" ; "¶" )	0	0/1/0	
+ExecuteSQLe ( "SELECT NUMVAL('12.5'), NUMVAL('abc12'), NUMVAL('1,234.5'), NUMVAL(' 7 '), NUMVAL('1e3'), NUMVAL('') FROM Tasks WHERE \"TASK ID MATCH FIELD\" = 3" ; "|" ; "¶" )	502	1/1/0	? ERROR:  (502): Field failed numeric value validation test
+ExecuteSQLe ( "SELECT NUMVAL('x') FROM Tasks WHERE \"TASK ID MATCH FIELD\" = 3" ; "|" ; "¶" )	502	1/1/0	? ERROR:  (502): Field failed numeric value validation test
+ExecuteSQLe ( "SELECT NUMVAL(12) FROM Tasks WHERE \"TASK ID MATCH FIELD\" = 3" ; "|" ; "¶" )	0	1/1/0	12
+ExecuteSQLe ( "SELECT DATEVAL('2014-02-17'), DATEVAL('02/17/2014'), DATEVAL('2/17/14'), DATEVAL(735281) FROM Tasks WHERE \"TASK ID MATCH FIELD\" = 3" ; "|" ; "¶" )	500	1/1/0	? ERROR:  (500): Field failed date value validation test
+ExecuteSQLe ( "SELECT DATEVAL('x') FROM Tasks WHERE \"TASK ID MATCH FIELD\" = 3" ; "|" ; "¶" )	500	1/1/0	? ERROR:  (500): Field failed date value validation test
+ExecuteSQLe ( "SELECT TIMEVAL('13:45:10'), TIMEVAL('1:45 PM'), TIMEVAL(3600), TIMEVAL('13:45') FROM Tasks WHERE \"TASK ID MATCH FIELD\" = 3" ; "|" ; "¶" )	0	1/1/0	13:45:10|13:45:00|01:00:00|13:45:00
+ExecuteSQLe ( "SELECT TIMESTAMPVAL('2014-02-17 13:45:10'), TIMESTAMPVAL('2/17/2014 1:45:10 PM'), TIMESTAMPVAL(63530221510) FROM Tasks WHERE \"TASK ID MATCH FIELD\" = 3" ; "|" ; "¶" )	501	1/1/0	? ERROR:  (501): Field failed time value validation test
+ExecuteSQLe ( "SELECT TIMESTAMPVAL('2014-02-17') FROM Tasks WHERE \"TASK ID MATCH FIELD\" = 3" ; "|" ; "¶" )	0	1/1/0	2014-02-17 00:00:00
+# --- date and time functions
+ExecuteSQLe ( "SELECT DAY(\"Due Date\"), MONTH(\"Due Date\"), YEAR(\"Due Date\"), DAYOFWEEK(\"Due Date\"), DAYNAME(\"Due Date\"), MONTHNAME(\"Due Date\") FROM Tasks WHERE \"TASK ID MATCH FIELD\" = 3" ; "|" ; "¶" )	0	1/1/0	24|11|2014|2|Monday|November
+ExecuteSQLe ( "SELECT HOUR(TIME '13:45:10'), MINUTE(TIME '13:45:10'), SECOND(TIME '13:45:10.5') FROM Tasks WHERE \"TASK ID MATCH FIELD\" = 3" ; "|" ; "¶" )	0	1/1/0	13|45|10.5
+ExecuteSQLe ( "SELECT HOUR(TIMESTAMP '2014-02-17 13:45:10'), DAY(TIMESTAMP '2014-02-17 13:45:10'), YEAR(TIMESTAMP '2014-02-17 13:45:10') FROM Tasks WHERE \"TASK ID MATCH FIELD\" = 3" ; "|" ; "¶" )	0	1/1/0	13|17|2014
+ExecuteSQLe ( "SELECT HOUR(\"Due Date\") FROM Tasks WHERE \"TASK ID MATCH FIELD\" = 3" ; "|" ; "¶" )	8309	1/1/0	? ERROR: FQL0021/(1:7): Parameter number 1 to the function "HOUR" is not of the correct type.
+ExecuteSQLe ( "SELECT DAY(TIME '13:45:10') FROM Tasks WHERE \"TASK ID MATCH FIELD\" = 3" ; "|" ; "¶" )	8309	1/1/0	? ERROR: FQL0021/(1:7): Parameter number 1 to the function "DAY" is not of the correct type.
+ExecuteSQLe ( "SELECT DAY('2014-02-17') FROM Tasks WHERE \"TASK ID MATCH FIELD\" = 3" ; "|" ; "¶" )	8309	1/1/0	? ERROR: FQL0021/(1:7): Parameter number 1 to the function "DAY" is not of the correct type.
+ExecuteSQLe ( "SELECT DAY(735281) FROM Tasks WHERE \"TASK ID MATCH FIELD\" = 3" ; "|" ; "¶" )	8309	1/1/0	? ERROR: FQL0021/(1:7): Parameter number 1 to the function "DAY" is not of the correct type.
+ExecuteSQLe ( "SELECT EXTRACT(YEAR FROM \"Due Date\"), EXTRACT(MONTH FROM \"Due Date\"), EXTRACT(DAY FROM \"Due Date\") FROM Tasks WHERE \"TASK ID MATCH FIELD\" = 3" ; "|" ; "¶" )	0	1/1/0	2014|11|24
+ExecuteSQLe ( "SELECT EXTRACT(HOUR FROM TIMESTAMP '2014-02-17 13:45:10'), EXTRACT(MINUTE FROM TIME '13:45:10'), EXTRACT(SECOND FROM TIME '13:45:10.25') FROM Tasks WHERE \"TASK ID MATCH FIELD\" = 3" ; "|" ; "¶" )	0	1/1/0	13|45|10.25
+ExecuteSQLe ( "SELECT EXTRACT(HOUR FROM \"Due Date\") FROM Tasks WHERE \"TASK ID MATCH FIELD\" = 3" ; "|" ; "¶" )	8309	1/1/0	? ERROR: FQL0018/(1:7): An expression contains incompatible data types.
+ExecuteSQLe ( "SELECT DAYOFWEEK(DATE '2014-02-16'), DAYOFWEEK(DATE '2014-02-22'), DAYNAME(DATE '2014-02-16'), MONTHNAME(DATE '2014-01-01') FROM Tasks WHERE \"TASK ID MATCH FIELD\" = 3" ; "|" ; "¶" )	0	1/1/0	1|7|Sunday|January
+ExecuteSQLe ( "SELECT DATE(), TIME(), TIMESTAMP() FROM Tasks WHERE \"TASK ID MATCH FIELD\" = 3" ; "|" ; "¶" )	0	1/1/0	2026-10-29|03:12:04|2026-10-29 03:12:04
+ExecuteSQLe ( "SELECT DATE() - CURRENT_DATE, TODAY - CURRENT_DATE, CURDATE() - CURDATE FROM Tasks WHERE \"TASK ID MATCH FIELD\" = 3" ; "|" ; "¶" )	8310	1/1/0	? ERROR: FQL0001/(1:61): There is an error in the syntax of the query.
+ExecuteSQLe ( "SELECT CURRENT_TIME() FROM Tasks WHERE \"TASK ID MATCH FIELD\" = 3" ; "|" ; "¶" )	8310	1/1/0	? ERROR: FQL0001/(1:21): There is an error in the syntax of the query.
+ExecuteSQLe ( "SELECT YEAR(CURRENT_DATE) > 2000, CURTIMESTAMP FROM Tasks WHERE \"TASK ID MATCH FIELD\" = 3" ; "|" ; "¶" )	8310	1/1/0	? ERROR: FQL0001/(1:27): There is an error in the syntax of the query.
+ExecuteSQLe ( "SELECT YEAR(CURRENT_DATE) FROM Tasks WHERE \"TASK ID MATCH FIELD\" = 3" ; "|" ; "¶" )	0	1/1/0	2026
+ExecuteSQLe ( "SELECT USER, USERNAME, CURRENT_USER FROM Tasks WHERE \"TASK ID MATCH FIELD\" = 3" ; "|" ; "¶" )	0	1/1/0	Admin|Admin|Admin
+ExecuteSQLe ( "SELECT USER() FROM Tasks WHERE \"TASK ID MATCH FIELD\" = 3" ; "|" ; "¶" )	8310	1/1/0	? ERROR: FQL0001/(1:13): There is an error in the syntax of the query.
+ExecuteSQLe ( "SELECT CURRENT_DATE(1) FROM Tasks WHERE \"TASK ID MATCH FIELD\" = 3" ; "|" ; "¶" )	8309	1/1/0	? ERROR: FQL0020/(1:7): An invalid number of parameters was supplied to the function "CURRENT_DATE"
+# --- CAST
+ExecuteSQLe ( "SELECT CAST(12.5 AS VARCHAR), CAST(12.5 AS INT), CAST(12.5 AS DECIMAL), CAST(12.5 AS NUMERIC) FROM Tasks WHERE \"TASK ID MATCH FIELD\" = 3" ; "|" ; "¶" )	0	1/1/0	12.5|12.5|12.5|12.5
+ExecuteSQLe ( "SELECT CAST(-12.5 AS INT), CAST(12.9 AS INT), CAST('12.9' AS INT), CAST('12abc' AS INT) FROM Tasks WHERE \"TASK ID MATCH FIELD\" = 3" ; "|" ; "¶" )	502	1/1/0	? ERROR:  (502): Field failed numeric value validation test
+ExecuteSQLe ( "SELECT CAST('abc' AS INT) FROM Tasks WHERE \"TASK ID MATCH FIELD\" = 3" ; "|" ; "¶" )	502	1/1/0	? ERROR:  (502): Field failed numeric value validation test
+ExecuteSQLe ( "SELECT CAST('abc' AS DECIMAL) FROM Tasks WHERE \"TASK ID MATCH FIELD\" = 3" ; "|" ; "¶" )	502	1/1/0	? ERROR:  (502): Field failed numeric value validation test
+ExecuteSQLe ( "SELECT CAST(\"Due Date\" AS VARCHAR), CAST(\"Due Date\" AS TIMESTAMP), CAST(\"Due Date\" AS INT) FROM Tasks WHERE \"TASK ID MATCH FIELD\" = 3" ; "|" ; "¶" )	0	1/1/0	2014-11-24|2014-11-24 00:00:00|735561
+ExecuteSQLe ( "SELECT CAST(\"Due Date\" AS DECIMAL) FROM Tasks WHERE \"TASK ID MATCH FIELD\" = 3" ; "|" ; "¶" )	0	1/1/0	735561
+ExecuteSQLe ( "SELECT CAST(\"Due Date\" AS TIME) FROM Tasks WHERE \"TASK ID MATCH FIELD\" = 3" ; "|" ; "¶" )	0	1/1/0	17653440:00:00
+ExecuteSQLe ( "SELECT CAST('2014-02-17' AS DATE), CAST('02/17/2014' AS DATE), CAST('13:45:10' AS TIME), CAST('2014-02-17 13:45:10' AS TIMESTAMP) FROM Tasks WHERE \"TASK ID MATCH FIELD\" = 3" ; "|" ; "¶" )	500	1/1/0	? ERROR:  (500): Field failed date value validation test
+ExecuteSQLe ( "SELECT CAST('x' AS DATE) FROM Tasks WHERE \"TASK ID MATCH FIELD\" = 3" ; "|" ; "¶" )	500	1/1/0	? ERROR:  (500): Field failed date value validation test
+ExecuteSQLe ( "SELECT CAST(TIMESTAMP '2014-02-17 13:45:10' AS DATE), CAST(TIMESTAMP '2014-02-17 13:45:10' AS TIME), CAST(TIMESTAMP '2014-02-17 13:45:10' AS VARCHAR) FROM Tasks WHERE \"TASK ID MATCH FIELD\" = 3" ; "|" ; "¶" )	0	1/1/0	2014-02-17|13:45:10|2014-02-17 13:45:10
+ExecuteSQLe ( "SELECT CAST(TIME '13:45:10' AS VARCHAR), CAST(TIME '13:45:10' AS DECIMAL) FROM Tasks WHERE \"TASK ID MATCH FIELD\" = 3" ; "|" ; "¶" )	0	1/1/0	13:45:10|49510
+ExecuteSQLe ( "SELECT CAST(735281 AS DATE), CAST(3600 AS TIME), CAST(63530221510 AS TIMESTAMP) FROM Tasks WHERE \"TASK ID MATCH FIELD\" = 3" ; "|" ; "¶" )	0	1/1/0	2014-02-17|01:00:00|2014-03-12 11:45:10
+ExecuteSQLe ( "SELECT CAST(Task AS VARCHAR(4)), CAST(12.345 AS DECIMAL(5,1)), CAST(12.345 AS NUMERIC(10, 2)) FROM Tasks WHERE \"TASK ID MATCH FIELD\" = 3" ; "|" ; "¶" )	0	1/1/0	Hire New Sales Person|12.345|12.345
+ExecuteSQLe ( "SELECT CAST(TRUE AS VARCHAR), CAST(1 AS BOOLEAN), CAST('true' AS BOOLEAN) FROM Tasks WHERE \"TASK ID MATCH FIELD\" = 3" ; "|" ; "¶" )	8309	1/1/0	? ERROR: FQL0023/(1:35): A CAST expression requested an invalid data type conversion.
+ExecuteSQLe ( "SELECT CAST(NULL AS INT), CAST(NULL AS VARCHAR) FROM Tasks WHERE \"TASK ID MATCH FIELD\" = 3" ; "|" ; "¶" )	0	1/1/0	|
+ExecuteSQLe ( "SELECT CAST(Task AS BLOB) FROM Tasks WHERE \"TASK ID MATCH FIELD\" = 3" ; "|" ; "¶" )	8309	1/1/0	? ERROR: FQL0023/(1:12): A CAST expression requested an invalid data type conversion.
+ExecuteSQLe ( "SELECT CAST(Task AS CHARACTER VARYING), CAST(1 AS FLOAT) FROM Tasks WHERE \"TASK ID MATCH FIELD\" = 3" ; "|" ; "¶" )	8310	1/1/0	? ERROR: FQL0001/(1:51): There is an error in the syntax of the query.
+ExecuteSQLe ( "SELECT CAST(1 AS DOUBLE) FROM Tasks WHERE \"TASK ID MATCH FIELD\" = 3" ; "|" ; "¶" )	8310	1/1/0	? ERROR: FQL0001/(1:18): There is an error in the syntax of the query.
+ExecuteSQLe ( "SELECT CAST(1 AS CHAR) FROM Tasks WHERE \"TASK ID MATCH FIELD\" = 3" ; "|" ; "¶" )	8310	1/1/0	? ERROR: FQL0001/(1:18): There is an error in the syntax of the query.
+ExecuteSQLe ( "SELECT CAST(1e20 AS VARCHAR), CAST(1/3 AS VARCHAR), CAST(1e20 AS INT) FROM Tasks WHERE \"TASK ID MATCH FIELD\" = 3" ; "|" ; "¶" )	0	1/1/0	1.0E+20|.3333333333333333|1.0E+20
+# --- CASE, COALESCE, NULLIF
+ExecuteSQLe ( "SELECT CASE WHEN \"TASK ID MATCH FIELD\" = 3 THEN 'three' ELSE 'other' END FROM Tasks WHERE \"TASK ID MATCH FIELD\" = 3" ; "|" ; "¶" )	0	1/1/0	three
+ExecuteSQLe ( "SELECT CASE \"TASK ID MATCH FIELD\" WHEN 3 THEN 'three' WHEN 4 THEN 'four' END FROM Tasks WHERE \"TASK ID MATCH FIELD\" = 3" ; "|" ; "¶" )	0	1/1/0	three
+ExecuteSQLe ( "SELECT CASE \"TASK ID MATCH FIELD\" WHEN 5 THEN 'five' END FROM Tasks WHERE \"TASK ID MATCH FIELD\" = 3" ; "|" ; "¶" )	0	0/1/0	
+ExecuteSQLe ( "SELECT CASE WHEN 1 = 2 THEN 'a' END, 'x' FROM Tasks WHERE \"TASK ID MATCH FIELD\" = 3" ; "|" ; "¶" )	0	1/1/0	|x
+ExecuteSQLe ( "SELECT CASE WHEN 1 = 1 THEN 1 ELSE 'a' END FROM Tasks WHERE \"TASK ID MATCH FIELD\" = 3" ; "|" ; "¶" )	8309	1/1/0	? ERROR: FQL0018/(1:30): An expression contains incompatible data types.
+ExecuteSQLe ( "SELECT CASE WHEN 1 = 1 THEN NULL ELSE NULL END FROM Tasks WHERE \"TASK ID MATCH FIELD\" = 3" ; "|" ; "¶" )	8309	1/1/0	? ERROR: FQL0019/(1:33): The result data type of a CASE expression cannot be inferred; they are all NULL.
+ExecuteSQLe ( "SELECT CASE WHEN 1 = 1 THEN NULL ELSE 2 END FROM Tasks WHERE \"TASK ID MATCH FIELD\" = 3" ; "|" ; "¶" )	0	0/1/0	
+ExecuteSQLe ( "SELECT CASE WHEN Task LIKE 'Hire%' AND Status = 'In Progress' THEN 1 ELSE 0 END FROM Tasks WHERE \"TASK ID MATCH FIELD\" = 3" ; "|" ; "¶" )	0	1/1/0	1
+ExecuteSQLe ( "SELECT CASE Task WHEN 'hire new sales person' THEN 'ci' ELSE 'cs' END FROM Tasks WHERE \"TASK ID MATCH FIELD\" = 3" ; "|" ; "¶" )	0	1/1/0	cs
+ExecuteSQLe ( "SELECT CASE WHEN NULL IS NULL THEN 'n' END FROM Tasks WHERE \"TASK ID MATCH FIELD\" = 3" ; "|" ; "¶" )	0	1/1/0	n
+ExecuteSQLe ( "SELECT CASE 1 WHEN 1 = 1 THEN 'a' ELSE 'b' END FROM Tasks WHERE \"TASK ID MATCH FIELD\" = 3" ; "|" ; "¶" )	0	1/1/0	a
+ExecuteSQLe ( "SELECT CASE WHEN 1 = 1 THEN DATE '2014-01-01' ELSE \"Due Date\" END FROM Tasks WHERE \"TASK ID MATCH FIELD\" = 3" ; "|" ; "¶" )	0	1/1/0	2014-01-01
+ExecuteSQLe ( "SELECT COALESCE(NULL, 'b'), COALESCE(Task, 'b'), COALESCE(NULL, NULL, 3), COALESCE(QuickFind, 'empty') FROM Tasks WHERE \"TASK ID MATCH FIELD\" = 3" ; "|" ; "¶" )	0	1/1/0	b|Hire New Sales Person|3|empty
+ExecuteSQLe ( "SELECT COALESCE('', 'b') FROM Tasks WHERE \"TASK ID MATCH FIELD\" = 3" ; "|" ; "¶" )	0	1/1/0	b
+ExecuteSQLe ( "SELECT COALESCE(1, 'a') FROM Tasks WHERE \"TASK ID MATCH FIELD\" = 3" ; "|" ; "¶" )	8309	1/1/0	? ERROR: FQL0018/(1:7): An expression contains incompatible data types.
+ExecuteSQLe ( "SELECT COALESCE(NULL) FROM Tasks WHERE \"TASK ID MATCH FIELD\" = 3" ; "|" ; "¶" )	8309	1/1/0	? ERROR: FQL0020/(1:7): An invalid number of parameters was supplied to the function "COALESCE"
+ExecuteSQLe ( "SELECT NULLIF(1, 1), NULLIF(1, 2), NULLIF(Task, 'x'), NULLIF('a', 'A') FROM Tasks WHERE \"TASK ID MATCH FIELD\" = 3" ; "|" ; "¶" )	0	1/1/0	|1|Hire New Sales Person|a
+ExecuteSQLe ( "SELECT NULLIF(1, 'a') FROM Tasks WHERE \"TASK ID MATCH FIELD\" = 3" ; "|" ; "¶" )	8309	1/1/0	? ERROR: FQL0018/(1:17): An expression contains incompatible data types.
+ExecuteSQLe ( "SELECT COALESCE(NULLIF(Status, 'In Progress'), 'was in progress') FROM Tasks WHERE \"TASK ID MATCH FIELD\" = 3" ; "|" ; "¶" )	0	1/1/0	was in progress
+ExecuteSQLe ( "SELECT VALUE(NULL, 1) FROM Tasks WHERE \"TASK ID MATCH FIELD\" = 3" ; "|" ; "¶" )	8310	1/1/0	? ERROR: FQL0001/(1:8): There is an error in the syntax of the query.
+ExecuteSQLe ( "SELECT IFNULL(NULL, 1) FROM Tasks WHERE \"TASK ID MATCH FIELD\" = 3" ; "|" ; "¶" )	8309	1/1/0	? ERROR: FQL0030/(1:7): "IFNULL" is an invalid function.
+ExecuteSQLe ( "SELECT CONCAT('a', 'b') FROM Tasks WHERE \"TASK ID MATCH FIELD\" = 3" ; "|" ; "¶" )	8309	1/1/0	? ERROR: FQL0030/(1:7): "CONCAT" is an invalid function.
+ExecuteSQLe ( "SELECT REPLACE(Task, 'a', 'b') FROM Tasks WHERE \"TASK ID MATCH FIELD\" = 3" ; "|" ; "¶" )	8309	1/1/0	? ERROR: FQL0030/(1:7): "REPLACE" is an invalid function.
+ExecuteSQLe ( "SELECT CHAR_LENGTH(Task) FROM Tasks WHERE \"TASK ID MATCH FIELD\" = 3" ; "|" ; "¶" )	8310	1/1/0	? ERROR: FQL0001/(1:8): There is an error in the syntax of the query.
+ExecuteSQLe ( "SELECT OCTET_LENGTH(Task) FROM Tasks WHERE \"TASK ID MATCH FIELD\" = 3" ; "|" ; "¶" )	8310	1/1/0	? ERROR: FQL0001/(1:8): There is an error in the syntax of the query.
+ExecuteSQLe ( "SELECT RANDOM FROM Tasks WHERE \"TASK ID MATCH FIELD\" = 3" ; "|" ; "¶" )	8310	1/1/0	? ERROR: FQL0001/(1:8): There is an error in the syntax of the query.
+ExecuteSQLe ( "SELECT PART(Task, 1) FROM Tasks WHERE \"TASK ID MATCH FIELD\" = 3" ; "|" ; "¶" )	8309	1/1/0	? ERROR: FQL0021/(1:7): Parameter number 2 to the function "PART" is not of the correct type.
+ExecuteSQLe ( "SELECT Task FROM Tasks WHERE 'New' PART OF Task" ; "|" ; "¶" )	0	1/1/0	Hire New Sales Person\rNew Logo Art
+ExecuteSQLe ( "SELECT Task FROM Tasks WHERE Task PART OF 'New'" ; "|" ; "¶" )	0	0/1/0	

@@ -1,0 +1,17 @@
+[package]
+name = "om-client"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+rust-version.workspace = true
+
+[dependencies]
+om-session = { path = "../om-session" }
+om-hbam = { path = "../om-hbam" }
+om-giop = { path = "../om-giop" }
+om-protocol = { path = "../om-protocol" }
+om-rctransaction = { path = "../om-rctransaction" }
+om-scsu = { path = "../om-scsu" }
+
+[lints]
+workspace = true

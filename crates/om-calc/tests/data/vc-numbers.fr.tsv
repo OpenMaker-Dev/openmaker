@@ -1,0 +1,212 @@
+# Text to number: signs and parentheses around the decimal separator, pure
+# numbers in parentheses, fullwidth forms (calc-values.md 13, value-core answers).
+GetAsNumber ( ".(22)" )	0	2/2/0	-22
+GetAsNumber ( "(.22)" )	0	2/2/0	-22
+GetAsNumber ( "(.22" )	0	2/2/0	22
+GetAsNumber ( ".22)" )	0	2/2/0	22
+GetAsNumber ( "(22)" )	0	2/2/0	-22
+GetAsNumber ( "a.(22)" )	0	2/2/0	-22
+GetAsNumber ( ".a(22)" )	0	2/2/0	-22
+GetAsNumber ( "1.(2)" )	0	2/2/0	12
+GetAsNumber ( "(1).(2)" )	0	2/2/0	-12
+GetAsNumber ( "(1.2)" )	0	2/2/0	-12
+GetAsNumber ( "(1).2" )	0	2/2/0	-12
+GetAsNumber ( "1(.2)" )	0	2/2/0	12
+GetAsNumber ( "(1)(2)" )	0	2/2/0	-12
+GetAsNumber ( "(1)2(3)" )	0	2/2/0	-123
+GetAsNumber ( "1(2)3" )	0	2/2/0	123
+GetAsNumber ( "((1)" )	0	2/2/0	-1
+GetAsNumber ( "(1))" )	0	2/2/0	-1
+GetAsNumber ( "(1" )	0	2/2/0	1
+GetAsNumber ( "1)" )	0	2/2/0	1
+GetAsNumber ( ")1(" )	0	2/2/0	1
+GetAsNumber ( ")(1)" )	0	2/2/0	-1
+GetAsNumber ( "a(1)" )	0	2/2/0	-1
+GetAsNumber ( "$(1,234.56)" )	0	2/2/0	-1,23456
+GetAsNumber ( "( 1 )" )	0	2/2/0	-1
+GetAsNumber ( "-(1)" )	0	2/2/0	-1
+GetAsNumber ( "(-1)" )	0	2/2/0	-1
+GetAsNumber ( "(+1)" )	0	2/2/0	-1
+GetAsNumber ( "+(1)" )	0	2/2/0	-1
+GetAsNumber ( ".-22" )	0	2/2/0	-22
+GetAsNumber ( "-.22" )	0	2/2/0	-22
+GetAsNumber ( ".-(22)" )	0	2/2/0	-22
+GetAsNumber ( "(.)22" )	0	2/2/0	22
+GetAsNumber ( "(.)" )	0	2/2/0	
+GetAsNumber ( "(a)" )	0	2/2/0	
+GetAsNumber ( "(.5)" )	0	2/2/0	-5
+GetAsNumber ( ". (22)" )	0	2/2/0	-22
+GetAsNumber ( "x.(22)" )	0	2/2/0	-22
+GetAsNumber ( "..(22)" )	0	2/2/0	-22
+GetAsNumber ( ".(2)2" )	0	2/2/0	-22
+GetAsNumber ( ".(2)." )	0	2/2/0	-2
+GetAsNumber ( "(1)." )	0	2/2/0	-1
+GetAsNumber ( "(1.)" )	0	2/2/0	-1
+GetAsNumber ( "1.2.(3)" )	0	2/2/0	123
+GetAsNumber ( ",(22)" )	0	2/2/0	,22
+GetAsNumber ( "(,22)" )	0	2/2/0	-,22
+GetAsNumber ( "e(1)" )	0	2/2/0	-1
+GetAsNumber ( "(1)e2" )	0	2/2/0	-12
+GetAsNumber ( "(1e2)" )	0	2/2/0	-100
+GetAsNumber ( "-.(22)" )	0	2/2/0	-22
+GetAsNumber ( "(-.22)" )	0	2/2/0	-22
+GetAsNumber ( "(.-22)" )	0	2/2/0	-22
+GetAsNumber ( ")(22)" )	0	2/2/0	-22
+GetAsNumber ( "((22))" )	0	2/2/0	-22
+GetAsNumber ( "(.(22))" )	0	2/2/0	-22
+GetAsNumber ( "( 12 )" )	0	2/2/0	-12
+GetAsNumber ( "[12]" )	0	2/2/0	12
+GetAsNumber ( "（12）" )	0	2/2/0	-12
+GetAsNumber ( ".5(1)" )	0	2/2/0	51
+GetAsNumber ( "(1)(2)(3)" )	0	2/2/0	-123
+GetAsNumber ( "(1)a(2)" )	0	2/2/0	-12
+GetAsNumber ( "((1)2)" )	0	2/2/0	-12
+GetAsNumber ( "(1(2))" )	0	2/2/0	12
+GetAsNumber ( "(1)-2" )	0	2/2/0	-12
+GetAsNumber ( "-(1)(2)" )	0	2/2/0	-12
+GetAsNumber ( "(1)x" )	0	2/2/0	-1
+GetAsNumber ( "(x1)" )	0	2/2/0	-1
+GetAsNumber ( "(1x)" )	0	2/2/0	-1
+GetAsNumber ( "( .22)" )	0	2/2/0	-22
+GetAsNumber ( " .(22)" )	0	2/2/0	-22
+GetAsNumber ( "0.(22)" )	0	2/2/0	22
+GetAsNumber ( "(0).22" )	0	2/2/0	-22
+GetAsNumber ( ".(.22)" )	0	2/2/0	-22
+GetAsNumber ( "(.2(2))" )	0	2/2/0	22
+GetAsNumber ( "(2.)" )	0	2/2/0	-2
+GetAsNumber ( "(.2)" )	0	2/2/0	-2
+GetAsNumber ( ").22(" )	0	2/2/0	22
+GetAsNumber ( "(.22)x" )	0	2/2/0	-22
+GetAsNumber ( "x(.22)" )	0	2/2/0	-22
+".(22)" + 0	0	2/2/0	-22
+"(.22)" + 0	0	2/2/0	-22
+-GetAsNumber ( ".(22)" )	0	2/2/0	22
+GetAsNumber ( ",(22)" ) + 0	0	2/2/0	,22
+GetAsNumber ( "1,(2)" )	0	2/2/0	1,2
+GetAsNumber ( "(1),2" )	0	2/2/0	-1,2
+GetAsNumber ( ",-22" )	0	2/2/0	,22
+GetAsNumber ( "(1e3)" )	0	2/2/0	-1000
+GetAsNumber ( "( 1e3 )" )	0	2/2/0	-13
+GetAsNumber ( "(-1e3)" )	0	2/2/0	-13
+GetAsNumber ( "-(1e3)" )	0	2/2/0	-1000
+GetAsNumber ( "(1,234.5)" )	0	2/2/0	-1,2345
+GetAsNumber ( "(1e800)" )	0	2/2/0	?
+GetAsNumber ( "(1e2" )	0	2/2/0	100
+GetAsNumber ( "1e2)" )	0	2/2/0	100
+GetAsNumber ( "(1e2)x" )	0	2/2/0	-12
+GetAsNumber ( "((1e2))" )	0	2/2/0	-100
+GetAsNumber ( "(+1e2)" )	0	2/2/0	-12
+GetAsNumber ( "(1 e2)" )	0	2/2/0	-100
+GetAsNumber ( "(1e-2)" )	0	2/2/0	-,01
+GetAsNumber ( "(.5e1)" )	0	2/2/0	-51
+GetAsNumber ( "(1.5e1)" )	0	2/2/0	-151
+GetAsNumber ( " (1e2) " )	0	2/2/0	-12
+GetAsNumber ( "(1e2) " )	0	2/2/0	-12
+GetAsNumber ( "( 1e2)" )	0	2/2/0	-12
+GetAsNumber ( "(1e2 )" )	0	2/2/0	-12
+GetAsNumber ( "(１e2)" )	0	2/2/0	-100
+GetAsNumber ( "（1e2）" )	0	2/2/0	-100
+GetAsNumber ( "－12" )	0	2/2/0	-12
+GetAsNumber ( "－(12)" )	0	2/2/0	-12
+GetAsNumber ( "1．5" )	0	2/2/0	15
+GetAsNumber ( "．(22)" )	0	2/2/0	-22
+GetAsNumber ( "(1e2)(3)" )	0	2/2/0	-123
+GetAsNumber ( "a(1e2)" )	0	2/2/0	-12
+GetAsNumber ( "(a1e2)" )	0	2/2/0	-12
+GetAsNumber ( "(1e2a)" )	0	2/2/0	-12
+GetAsNumber ( "-1e2" )	0	2/2/0	-100
+GetAsNumber ( "--1e2" )	0	2/2/0	-12
+GetAsNumber ( "(--1e2)" )	0	2/2/0	-12
+GetAsNumber ( "(-(1e2))" )	0	2/2/0	-12
+GetAsNumber ( "1e2" )	0	2/2/0	100
+GetAsNumber ( "+1e2" )	0	2/2/0	100
+GetAsNumber ( "(1.2.3)" )	0	2/2/0	-123
+GetAsNumber ( "(.)1" )	0	2/2/0	1
+GetAsNumber ( "(a)(.)1" )	0	2/2/0	1
+GetAsNumber ( "(.a)1" )	0	2/2/0	1
+GetAsNumber ( "(a.)1)" )	0	2/2/0	1
+GetAsNumber ( "(.1)2)" )	0	2/2/0	-12
+GetAsNumber ( "(a)1)" )	0	2/2/0	1
+GetAsNumber ( "((a)1)" )	0	2/2/0	1
+GetAsNumber ( "(.(1)" )	0	2/2/0	-1
+GetAsNumber ( "( . 1 )" )	0	2/2/0	-1
+GetAsNumber ( "( -. 1 )" )	0	2/2/0	-1
+GetAsNumber ( "a.-1" )	0	2/2/0	-1
+GetAsNumber ( ".+-1" )	0	2/2/0	1
+GetAsNumber ( "-.-1" )	0	2/2/0	-1
+GetAsNumber ( "+.-1" )	0	2/2/0	1
+GetAsNumber ( "+(.-1)" )	0	2/2/0	-1
+GetAsNumber ( "1-(2)" )	0	2/2/0	12
+GetAsNumber ( "(1)(" )	0	2/2/0	-1
+GetAsNumber ( "(1)()" )	0	2/2/0	-1
+GetAsNumber ( "(1()" )	0	2/2/0	1
+GetAsNumber ( "(1)) (" )	0	2/2/0	-1
+GetAsNumber ( "−(1)" )	0	2/2/0	-1
+GetAsNumber ( "(1.5)e" )	0	2/2/0	-15
+GetAsNumber ( "(0)" )	0	2/2/0	0
+GetAsNumber ( "(0.0)" )	0	2/2/0	0
+GetAsNumber ( "(00)" )	0	2/2/0	0
+GetAsNumber ( "(1,5)" )	0	2/2/0	-1,5
+GetAsNumber ( "(1.5,5)" )	0	2/2/0	-15,5
+GetAsNumber ( "1,234" )	0	2/2/0	1,234
+GetAsNumber ( "(1,234)" )	0	2/2/0	-1,234
+GetAsNumber ( "(1 234)" )	0	2/2/0	-1234
+GetAsNumber ( "(1.234,5)" )	0	2/2/0	-1234,5
+GetAsNumber ( "(,5)" )	0	2/2/0	-,5
+GetAsNumber ( ",(5)" )	0	2/2/0	,5
+GetAsNumber ( ".(5)" )	0	2/2/0	-5
+GetAsNumber ( "( 1,5 )" )	0	2/2/0	-1,5
+GetAsNumber ( "1ｅ2" )	0	2/2/0	100
+GetAsNumber ( "１，５" )	0	2/2/0	1,5
+GetAsNumber ( "1，5" )	0	2/2/0	1,5
+GetAsNumber ( "＋1" )	0	2/2/0	1
+GetAsNumber ( "＋－1" )	0	2/2/0	1
+GetAsNumber ( "１．５ｅ１" )	0	2/2/0	151
+GetAsNumber ( "（．５）" )	0	2/2/0	-5
+GetAsNumber ( "．－5" )	0	2/2/0	-5
+GetAsNumber ( "1．2．3" )	0	2/2/0	123
+GetAsNumber ( "＄1" )	0	2/2/0	1
+GetAsNumber ( "1Ｅ2" )	0	2/2/0	100
+GetAsNumber ( "１ｅ８００" )	0	2/2/0	?
+GetAsNumber ( "‐1" )	0	2/2/0	-1
+GetAsNumber ( "﹣1" )	0	2/2/0	-1
+GetAsNumber ( "﹙1﹚" )	0	2/2/0	-1
+GetAsNumber ( "⁽1⁾" )	0	2/2/0	1
+GetAsNumber ( "(1)" )	0	2/2/0	-1
+GetAsNumber ( "٫5" )	0	2/2/0	5
+GetAsNumber ( " ( 1e2 ) " )	0	2/2/0	-12
+GetAsNumber ( "+(1e2)" )	0	2/2/0	-100
+GetAsNumber ( "-((1e2))" )	0	2/2/0	-100
+GetAsNumber ( "(1e2))" )	0	2/2/0	-100
+GetAsNumber ( "((1e2)" )	0	2/2/0	-100
+GetAsNumber ( "( (1e2) )" )	0	2/2/0	-12
+GetAsNumber ( "(1,234)" )	0	2/2/0	-1,234
+GetAsNumber ( "(1,23)" )	0	2/2/0	-1,23
+GetAsNumber ( "(1e2" ) + 0	0	2/2/0	100
+GetAsNumber ( "( 1e2" )	0	2/2/0	12
+GetAsNumber ( "(\t1e2)" )	0	2/2/0	-12
+GetAsNumber ( "\t(1e2)" )	0	2/2/0	-100
+GetAsNumber ( "1 e2" )	0	2/2/0	100
+GetAsNumber ( "1,e2" )	0	2/2/0	100
+GetAsNumber ( "1.e2" )	0	2/2/0	12
+GetAsNumber ( "1 000e2" )	0	2/2/0	100000
+GetAsNumber ( "1 e" )	0	2/2/0	1
+GetAsNumber ( "1 x" )	0	2/2/0	1
+GetAsNumber ( "12 e3" )	0	2/2/0	12000
+GetAsNumber ( "1  e2" )	0	2/2/0	100
+GetAsNumber ( "1 E2" )	0	2/2/0	100
+GetAsNumber ( "1 e-2" )	0	2/2/0	,01
+GetAsNumber ( "(1 e2" )	0	2/2/0	100
+GetAsNumber ( "1 2" )	0	2/2/0	12
+GetAsNumber ( "1 23" )	0	2/2/0	123
+GetAsNumber ( "1 e2 " )	0	2/2/0	12
+GetAsNumber ( "-1 e2" )	0	2/2/0	-100
+GetAsNumber ( "1,5 e2" )	0	2/2/0	1,52
+GetAsNumber ( "1 ,5" )	0	2/2/0	1,5
+GetAsNumber ( "1" & Char ( 160 ) & "e2" )	0	2/2/0	100
+GetAsNumber ( "1" & Char ( 8239 ) & "e2" )	0	2/2/0	12
+GetAsNumber ( "1" & Char ( 9 ) & "e2" )	0	2/2/0	12
+GetAsNumber ( "1 000 000" )	0	2/2/0	1000000
+GetAsNumber ( "1 0" )	0	2/2/0	10
+GetAsNumber ( " 1 e2" )	0	2/2/0	100
+GetAsNumber ( "1e 2" )	0	2/2/0	12

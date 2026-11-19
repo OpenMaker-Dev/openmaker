@@ -1,0 +1,572 @@
+step_id,step_name,order,parameter,xml_type,storage,values,default,evidence,notes
+1,Perform Script,1,Script,ScriptReference,reserved:script,,,xml+params,kScriptKey 0x40; 6-byte key of the script in mReserved (local file); external file via file reference
+1,Perform Script,2,Parameter,Calculation,slot:0:calc,,,xml+params,Get(ScriptParameter) of the called script
+1,Perform Script,3,Specify by name,Calculation,slot:1:calc,,,xml+params,"script name calculated (kCalculation) instead of a stored key; slot from SpecifyScript_withStorePosition, Low"
+3,Save a Copy as XML,1,Window name,Calculation,slot:0:calc,,,xml+params,XML tag Calculation
+3,Save a Copy as XML,2,File paths,List,key:20|key:82|flag:0x20,,,xml+params,"kFilePath 0x20; path list text in 82 (KPathString), file references in 20 (KFileReferences)"
+3,Save a Copy as XML,3,Include details for analysis tools,Boolean,flag:0x100,,Off,xml+params,
+3,Save a Copy as XML,4,Save each layout object's binary data under its node,Boolean,flag:0x200,,Off,xml+params,
+3,Save a Copy as XML,5,Specify options as JSON,Boolean,flag:0x8000|slot:1:calc,,Off,xml+params,kExtendedData enables options calculation in slot 1 (prefilled SaXMLJSONOptionsPrefilledFormula)
+4,Go to Next Field,0,,,,,,xml+params,no parameters: absent from both XML dispatchers and from GenerateParameters
+5,Go to Previous Field,0,,,,,,xml+params,no parameters: absent from both XML dispatchers and from GenerateParameters
+6,Go to Layout,1,Layout,List,value,original layout; <current>; named layout (stored key); by name calc; by number calc,,xml+params,mStepValue selects the source; observed 5 = stored layout key; mStepValue with kMenuSelection 0x2
+6,Go to Layout,2,Layout,LayoutReference,reserved:layout|slot:0:calc,,,xml+params,kMemberKey 0x8 + layout key in mReserved; name/number calculation in slot 0 (Low)
+6,Go to Layout,3,Animation,List,slot:6:list,0 None; others enumerated by AppendLayoutTransitionAnimationList,,xml+params,list value stored directly at slot 6
+7,New Record/Request,0,,,,,,xml+params,no parameters: absent from both XML dispatchers and from GenerateParameters
+8,Duplicate Record/Request,0,,,,,,xml+params,no parameters: absent from both XML dispatchers and from GenerateParameters
+9,Delete Record/Request,1,With dialog,Boolean,flag:!0x80,,On,xml+params,On/Off; On = flag clear (kNoInteract is the stored bit)
+10,Delete All Records,1,With dialog,Boolean,flag:!0x80,,On,xml+params,On/Off; On = flag clear (kNoInteract is the stored bit)
+11,Insert from Index,1,Select entire contents,Boolean,flag:0x1000,,Off,xml+params,
+11,Insert from Index,2,Field,FieldReference,reserved:field,,,xml+params,kFieldSpec 0x1 + 14-byte DBFieldSpec in mReserved
+12,Insert from Last Visited,1,Select entire contents,Boolean,flag:0x1000,,Off,xml+params,
+12,Insert from Last Visited,2,Field,FieldReference,reserved:field,,,xml+params,kFieldSpec 0x1 + 14-byte DBFieldSpec in mReserved
+13,Insert Current Date,1,Select entire contents,Boolean,flag:0x1000,,Off,xml+params,
+13,Insert Current Date,2,Target,Target,reserved:field|slot:0:text,,,xml+params,"field (kFieldSpec + mReserved) or variable (name text in slot 0, kTextData); see script-steps.md 4.4"
+14,Insert Current Time,1,Select entire contents,Boolean,flag:0x1000,,Off,xml+params,
+14,Insert Current Time,2,Target,Target,reserved:field|slot:0:text,,,xml+params,"field (kFieldSpec + mReserved) or variable (name text in slot 0, kTextData); see script-steps.md 4.4"
+16,Go to Record/Request/Page,1,With dialog,Boolean,flag:!0x80,,On,xml+params,On/Off; On = flag clear (kNoInteract is the stored bit)
+16,Go to Record/Request/Page,2,Record/Request/Page,List,value,1 First; 2 Last; 3 Previous; 4 Next; 5 By calculation; 6 By number (stored),,xml+params,ScriptRuntimeBase::GetGotoValue; mStepValue with kMenuSelection 0x2
+16,Go to Record/Request/Page,3,Number,Calculation,slot:0:calc,,,xml+params,record number when mStepValue = 5
+16,Go to Record/Request/Page,4,Exit after last,Boolean,flag:0x2000,,Off,xml+params,kExit (Previous/Next only)
+16,Go to Record/Request/Page,5,Exit-after-last target,List,slot:0:num,,,xml+params,"numeric data [00 0]/03: index of the enclosing End Loop, or -1 (ffffffff, exit the script); cached like 3.1"
+17,Go to Field,1,Select/perform,Boolean,flag:0x1000,,Off,xml+params,label 306
+17,Go to Field,2,Field,FieldReference,reserved:field,,,xml+params,kFieldSpec 0x1 + 14-byte DBFieldSpec in mReserved
+18,Check Selection,1,Select entire contents,Boolean,flag:0x1000,,Off,xml+params,
+18,Check Selection,2,Field,FieldReference,reserved:field,,,xml+params,kFieldSpec 0x1 + 14-byte DBFieldSpec in mReserved
+19,Check Record,0,,,,,,xml+params,no parameters: absent from both XML dispatchers and from GenerateParameters
+20,Check Found Set,0,,,,,,xml+params,no parameters: absent from both XML dispatchers and from GenerateParameters
+21,Unsort Records,0,,,,,,xml+params,no parameters: absent from both XML dispatchers and from GenerateParameters
+22,Enter Find Mode,1,Pause,Boolean,flag:0x1000000,,Off,xml+params,kPauseScript
+22,Enter Find Mode,2,Restore,Boolean,flag:0x2000000,,Off,xml+params,kRestore: the stored spec is used without asking
+22,Enter Find Mode,3,Find requests,FindRequests,key:06|flag:0x8000,,,xml+params,"DBRequestSet subtree under 06 (KRequests), kExtendedData: rows, packed criterion keys, variables and evaluation in script-steps.md 11.2"
+23,Show All Records,0,,,,,,xml+params,no parameters: absent from both XML dispatchers and from GenerateParameters
+24,Modify Last Find,0,,,,,,xml+params,no parameters: absent from both XML dispatchers and from GenerateParameters
+25,Omit Record,0,,,,,,xml+params,no parameters: absent from both XML dispatchers and from GenerateParameters
+26,Omit Multiple Records,1,With dialog,Boolean,flag:!0x80,,On,xml+params,On/Off; On = flag clear (kNoInteract is the stored bit)
+26,Omit Multiple Records,2,Number of records,Calculation,slot:0:calc,,,xml+params,kCalculation
+27,Show Omitted Only,0,,,,,,xml+params,no parameters: absent from both XML dispatchers and from GenerateParameters
+28,Perform Find,1,Restore,Boolean,flag:0x2000000,,Off,xml+params,kRestore: the stored spec is used without asking
+28,Perform Find,2,Find requests,FindRequests,key:06|flag:0x8000,,,xml+params,"DBRequestSet subtree under 06 (KRequests), kExtendedData: rows, packed criterion keys, variables and evaluation in script-steps.md 11.2"
+29,Show/Hide Toolbars,1,Lock,Boolean,flag:0x80000,,Off,xml+params,kLock
+29,Show/Hide Toolbars,2,Include Edit Record Toolbar,Boolean,flag:0x100,,Off,xml+params,
+29,Show/Hide Toolbars,3,Show/Hide,List,value,1 Show; 2 Hide; 3 Toggle,,xml+params,mStepValue with kMenuSelection 0x2
+30,View As,1,View As,List,value,1 Form; 2 List; 3 Table; 4 Cycle,,xml+params,mStepValue with kMenuSelection 0x2
+31,Adjust Window,1,Adjust Window,List,value,1 Resize to Fit; 2 Maximize; 3 Minimize; 4 Restore; 5 Hide,,xml+params,mStepValue with kMenuSelection 0x2
+32,Open Help,0,,,,,,xml+params,no parameters: absent from both XML dispatchers and from GenerateParameters
+33,Open File,1,Open hidden,Boolean,flag:0x100,,Off,xml+params,
+33,Open File,2,Data source,DataSourceReference,reserved:key|slot:0:calc,,,xml+params,file reference (Manage Data Sources) key; Low
+34,Close File,1,Data source,DataSourceReference,reserved:key|slot:0:calc,,,xml+params,Low
+35,Import Records,1,Verify SSL Certificates,Boolean,flag:0x10000000,,Off,xml+params,
+35,Import Records,2,With dialog,Boolean,flag:!0x80,,On,xml+params,On/Off; On = flag clear (kNoInteract is the stored bit)
+35,Import Records,3,Data source,DataSource,key:20|key:82|flag:0x20|flag:0x10,,,xml+params,"mStepValue = data source kind (XML DataSourceReference value: 1 file, 2 folder, 4 XML source); paths in [00 0]/82, data source in 20; script-steps.md 11.3"
+35,Import Records,4,Import order,ImportOrder,key:84|key:86|flag:0x8000|flag:0x2000000,,,xml+params,"FMImportOptions under 84, per-field flags under f0 (KFlags), profile 86 and profile extension 87 (KImportProfileEx); Restore; script-steps.md 11.3 and 11.5"
+36,Export Records,1,With dialog,Boolean,flag:!0x80,,On,xml+params,On/Off; On = flag clear (kNoInteract is the stored bit)
+36,Export Records,2,Create folders,Boolean,flag:0x200,,Off,xml+params,kOption2
+36,Export Records,3,File paths,List,key:20|key:82|flag:0x20,,,xml+params,"kFilePath 0x20; path list text in 82 (KPathString), file references in 20 (KFileReferences)"
+36,Export Records,4,Output format,DataSource,key:86|flag:0x8000,,,xml+params,"FMTranslationProfile file type and options under 86, script-steps.md 11.5"
+36,Export Records,5,Export order,ExportOrder,key:85|flag:0x2000000,,,xml+params,FMExportOptions under 85 (KExportOrder); Restore; script-steps.md 11.4
+37,Save a Copy as,1,File paths,List,key:20|key:82|flag:0x20,,,xml+params,"kFilePath 0x20; path list text in 82 (KPathString), file references in 20 (KFileReferences)"
+37,Save a Copy as,2,Save a copy as,List,value,1 copy of current file; 2 compacted copy; 3 clone (no records); 4 self-contained copy,,xml+params,mStepValue with kMenuSelection 0x2
+37,Save a Copy as,3,Create folders,Boolean,flag:0x200,,Off,xml+params,kOption2
+38,Open Manage Database,0,,,,,,xml+params,no parameters: absent from both XML dispatchers and from GenerateParameters
+39,Sort Records,1,With dialog,Boolean,flag:!0x80,,On,xml+params,On/Off; On = flag clear (kNoInteract is the stored bit)
+39,Sort Records,2,Restore,Boolean,flag:0x2000000,,Off,xml+params,kRestore: the stored spec is used without asking
+39,Sort Records,3,Sort order,SortSpecification,key:0a|flag:0x8000,,,xml+params,"DBSortSpec stream in 0a (KSortOrder): layout, XML mapping and semantics in script-steps.md 11.1"
+40,Relookup Field Contents,1,With dialog,Boolean,flag:!0x80,,On,xml+params,On/Off; On = flag clear (kNoInteract is the stored bit)
+40,Relookup Field Contents,2,Field,FieldReference,reserved:field,,,xml+params,kFieldSpec 0x1 + 14-byte DBFieldSpec in mReserved
+41,Enter Preview Mode,1,Pause,Boolean,flag:0x1000000,,Off,xml+params,kPauseScript
+42,Print Setup,1,Restore,Boolean,flag:0x2000000,,Off,xml+params,kRestore: the stored spec is used without asking
+42,Print Setup,2,With dialog,Boolean,flag:!0x80,,On,xml+params,On/Off; On = flag clear (kNoInteract is the stored bit)
+42,Print Setup,3,Page setup,PageSetup,key:87|flag:0x8000,,,xml+params,"page format record in 87 (KPageFormat): tagged chunks, Comm = orientation, scale, paper rect; script-steps.md 11.6"
+43,Print,1,With dialog,Boolean,flag:!0x80,,On,xml+params,On/Off; On = flag clear (kNoInteract is the stored bit)
+43,Print,2,Restore,Boolean,flag:0x2000000,,Off,xml+params,kRestore: the stored spec is used without asking
+43,Print,3,Print settings,Print,key:88|key:87|flag:0x8000,,,xml+params,"print settings record in 88 (KPrintSettings), one chunked value of tagged chunks (its 00 child is the chunk header, not a kind); page format in 87; script-steps.md 11.6"
+43,Print,4,Print,List,value,records being browsed / current record / blank layout ...,,xml+params,"mStepValue = XML Print type: 1 records being browsed, 2 current record, 3-6 blank record (formatted, boxes, underlines, placeholder text); script-steps.md 11.6"
+44,Exit Application,0,,,,,,xml+params,no parameters: absent from both XML dispatchers and from GenerateParameters
+45,Undo/Redo,1,Collapsed,Boolean,flag:0x2000000,,Off,xml+params,Script Workspace fold state of a block step (label 303)
+45,Undo/Redo,2,Undo/Redo,List,value,1 Undo; 2 Redo; 3 Toggle,,xml+params,mStepValue with kMenuSelection 0x2
+46,Cut,1,Select entire contents,Boolean,flag:0x1000,,Off,xml+params,
+46,Cut,2,Field,FieldReference,reserved:field,,,xml+params,kFieldSpec 0x1 + 14-byte DBFieldSpec in mReserved
+47,Copy,1,Select entire contents,Boolean,flag:0x1000,,Off,xml+params,
+47,Copy,2,Field,FieldReference,reserved:field,,,xml+params,kFieldSpec 0x1 + 14-byte DBFieldSpec in mReserved
+48,Paste,1,Select entire contents,Boolean,flag:0x1000,,Off,xml+params,
+48,Paste,2,No style,Boolean,flag:0x200,,Off,xml+params,Paste without style
+48,Paste,3,Field,FieldReference,reserved:field,,,xml+params,kFieldSpec 0x1 + 14-byte DBFieldSpec in mReserved
+49,Clear,1,Select entire contents,Boolean,flag:0x1000,,Off,xml+params,
+49,Clear,2,Field,FieldReference,reserved:field,,,xml+params,kFieldSpec 0x1 + 14-byte DBFieldSpec in mReserved
+50,Select All,0,,,,,,xml+params,no parameters: absent from both XML dispatchers and from GenerateParameters
+51,Revert Record/Request,1,With dialog,Boolean,flag:!0x80,,On,xml+params,On/Off; On = flag clear (kNoInteract is the stored bit)
+55,Enter Browse Mode,1,Pause,Boolean,flag:0x1000000,,Off,xml+params,kPauseScript
+56,Insert Picture,1,Store only a reference,Boolean,flag:0x800,,Off,xml+params,kStoreReference
+56,Insert Picture,2,File paths,List,key:20|key:82|flag:0x20,,,xml+params,"kFilePath 0x20; path list text in 82 (KPathString), file references in 20 (KFileReferences)"
+57,Send Event,1,Send Event,SendEvent,slot:0:text|slot:0:num|slot:1:num|slot:6:num|flag:0x4,,,xml+params+oracle,"XML Target value = application name text [00 0]/01, Target id = its signature [00 6]/03 (the writer also shows it as type); Send class = [00 0]/03 (aevt), Send id = [00 1]/03 (odoc, pdoc, ...), four-character codes as u32; script-steps.md 12.3"
+57,Send Event,2,Source,List,slot:3:num|slot:0:path|slot:0:calc|slot:7:text|flag:0x20,0 Document; 1 Calculation; 2 Text,,xml+params+oracle,"XML Source type = [00 3]/03 u16: Document > UniversalPathList at [00 0]/82 (kFilePath), Calculation > Calculation: calculation slot 0, Text: character data as text [00 7]/01"
+57,Send Event,3,Options,Boolean,slot:2:num|slot:4:num|slot:5:num,,,xml+params+oracle,"XML Options Wait = [00 2]/03, Copy = [00 4]/03, Foreground = [00 5]/03 (u8)"
+59,Insert QuickTime,0,,,,,,xml+params,no parameters: absent from both XML dispatchers and from GenerateParameters
+60,Insert Current User Name,1,Select entire contents,Boolean,flag:0x1000,,Off,xml+params,
+60,Insert Current User Name,2,Target,Target,reserved:field|slot:0:text,,,xml+params,"field (kFieldSpec + mReserved) or variable (name text in slot 0, kTextData); see script-steps.md 4.4"
+61,Insert Text,1,Select entire contents,Boolean,flag:0x1000,,Off,xml+params,
+61,Insert Text,2,Target,Target,reserved:field|slot:0:text,,,xml+params,"field (kFieldSpec + mReserved) or variable (name text in slot 0, kTextData); see script-steps.md 4.4"
+61,Insert Text,3,Text,Text,slot:0:text|slot:1:text,,,xml+params,literal text; see script-steps.md
+62,Pause/Resume Script,1,Pause,List,value,indefinitely / for duration,,xml+params,PauseResumeOptions; mStepValue with kMenuSelection 0x2
+62,Pause/Resume Script,2,Duration (seconds),Calculation,slot:0:calc,,,xml+params,
+63,Send Mail,1,With dialog,Boolean,flag:!0x80,,On,xml+params+oracle,"On/Off; On = flag clear (kNoInteract is the stored bit); written only for client mail; with SMTP or OAuth the writer shows Boolean No dialog True, which stores nothing"
+63,Send Mail,2,Send Mail,SendMail,slot:0:calc|slot:1:calc|slot:2:calc|slot:3:calc|slot:4:calc|slot:0:num|slot:1:num|slot:2:num|slot:3:num|slot:4:num|slot:7:num|key:82|flag:0x20,,,xml+params+oracle,"XML Send: To, CC, BCC calculations slots 0-2 with CollectAddresses [00 0..2]/03 (only without Multiple), Subject slot 3, Message slot 4, Multiple (one email per record) [00 3]/03, SMTP attribute [00 4]/03, OAuthAuthentication attribute [00 7]/03; attachments UniversalPathList at [00 0]/82; script-steps.md 12.3"
+63,Send Mail,3,SMTP options,SMTP,slot:5:calc|slot:6:calc|slot:7:calc|slot:8:calc|slot:9:calc|slot:10:calc|slot:11:calc|slot:5:num|slot:6:num,,,xml+params+oracle,"XML SMTP beside Send: Name 5, Email 6, ReplyTo 7, Server 8, Port 9, UserName 10, Password 11 (calculations); Encryption [00 5]/03 u8 0 None 1 SSL 2 TLS; Authentication [00 6]/03 u16 1 None 2 Plain Password 3 Cram-MD5 (UserName and Password only when not 1)"
+63,Send Mail,4,OAuth options,OAuthAuthentication,slot:8:num|slot:12:calc|slot:13:calc|slot:14:calc|slot:15:calc|slot:16:calc|slot:17:calc|slot:18:calc|slot:19:calc|slot:20:calc|slot:21:calc,1 Google; 2 Microsoft,,xml+params+oracle,"XML OAuthAuthentication beside Send: OAuthProvider [00 8]/03 u16; Name 12, ReplyTo 14; Google: Email 13, UserID 15, ServiceAccount 16, PrivateKey 17; Microsoft: PrincipalName 18, TenantID 19, ClientID 20, ClientSecret 21 (calculations)"
+64,Send DDE Execute,1,Service,Calculation,slot:0:calc,,,xml+params,
+64,Send DDE Execute,2,Topic,Calculation,slot:1:calc,,,xml+params,DDEExecuteTopic
+64,Send DDE Execute,3,Command,Calculation,slot:2:calc,,,xml+params,
+65,Dial Phone,1,With dialog,Boolean,flag:!0x80,,On,xml+params,On/Off; On = flag clear (kNoInteract is the stored bit)
+65,Dial Phone,2,Phone number,Calculation,slot:0:calc,,,xml+params,
+66,Speak,1,Text,Calculation,slot:0:calc,,,xml+params+oracle,
+66,Speak,2,Speak options,SpeakOptions,slot:0:num|slot:1:num|slot:2:num,,,xml+params+oracle,"XML Voice value = [00 1]/03 and Voice id = [00 2]/03 (u32), Wait Boolean = [00 0]/03 (u8)"
+67,Perform AppleScript,1,AppleScript,SendAppleScriptOptions,slot:0:calc|slot:0:text|flag:0x4000|flag:0x4,,,xml+params,calculated or native text; Low
+68,If,1,Collapsed,Boolean,flag:0x2000000,,Off,xml+params,Script Workspace fold state of a block step (label 303)
+68,If,2,Condition,Calculation,slot:0:calc,,,xml+params,DBDataType 7 (boolean)
+69,Else,1,Collapsed,Boolean,flag:0x2000000,,Off,xml+params,Script Workspace fold state of a block step (label 303)
+69,Else,2,(unused),Calculation,slot:0:calc,,,xml+params,the XML writer emits an empty calculation
+70,End If,0,,,,,,xml+params,no parameters: absent from both XML dispatchers and from GenerateParameters
+71,Loop,1,Collapsed,Boolean,flag:0x2000000,,Off,xml+params,Script Workspace fold state of a block step (label 303)
+71,Loop,2,Flush,List,flag:0x100|slot:1:list,1 Always; 2 Minimum; 3 Defer,,xml+params,"26.x Loop option: list value at slot 1, read only when kOption 0x100 is set (script-runtime.md 3.3)"
+72,Exit Loop If,1,Condition,Calculation,slot:0:calc,,,xml+params,DBDataType 7
+73,End Loop,0,,,,,,xml+params,no parameters: absent from both XML dispatchers and from GenerateParameters
+74,Go to Related Record,1,Related table,TableOccurrence,slot:0:aliases,,,xml+params,table occurrence key in [00 0]/11 (KAliases); script-steps.md 11.8
+74,Go to Related Record,2,Layout,LayoutReference,reserved:layout|slot:0:calc|slot:1:calc|slot:2:calc|slot:3:calc|slot:4:calc|slot:5:calc,,,xml+params,"mStepValue 1 original layout, 5 layout key in mReserved (kMemberKey); new window (kTurnOn): name calc slot 0, height/width/top/left slots 1-4; animation list value slot 6; script-steps.md 11.8"
+74,Go to Related Record,3,Options,List,value|slot:0:num|flag:0x200|flag:0x100|flag:0x2000000|flag:0x20000,,,xml+params,"kRestore show only related records, kOption2 match all records in the found set, kTurnOn new window, [00 0]/03 window style word (XML WindowReference Style value, as New Window); script-steps.md 11.8"
+75,Commit Records/Requests,1,Skip data entry validation,Boolean,flag:0x100,,Off,xml+params,
+75,Commit Records/Requests,2,With dialog,Boolean,flag:!0x80,,On,xml+params,On/Off; On = flag clear (kNoInteract is the stored bit)
+75,Commit Records/Requests,3,Override ESS locking conflicts,Boolean,flag:0x200,,Off,xml+params,Force Commit
+76,Set Field,1,Field,FieldReference,reserved:field,,,xml+params,kFieldSpec 0x1 + 14-byte DBFieldSpec in mReserved
+76,Set Field,2,Value,Calculation,slot:0:calc,,,xml+params,
+76,Set Field,3,Repetition,Calculation,slot:1:calc,,,xml+params,target repetition calculation (kStandardRepetitionCalculationPos = 1)
+77,Insert Calculated Result,1,Select entire contents,Boolean,flag:0x1000,,Off,xml+params,
+77,Insert Calculated Result,2,Target,Target,reserved:field|slot:0:text,,,xml+params,"field (kFieldSpec + mReserved) or variable (name text in slot 0, kTextData); see script-steps.md 4.4"
+77,Insert Calculated Result,3,Value,Calculation,slot:0:calc,,,xml+params,
+78,Insert Object,0,,,,,,xml+params,no parameters: absent from both XML dispatchers and from GenerateParameters
+79,Freeze Window,0,,,,,,xml+params,no parameters: absent from both XML dispatchers and from GenerateParameters
+80,Refresh Window,1,Flush cached join results,Boolean,flag:0x100,,Off,xml+params,
+80,Refresh Window,2,Flush cached external data,Boolean,flag:0x200,,Off,xml+params,
+81,Scroll Window,1,Scroll,List,value,1 Home; 2 End; 3 Page Up; 4 Page Down; 5 To Selection,,xml+params,mStepValue with kMenuSelection 0x2
+82,New File,0,,,,,,xml+params,no parameters: absent from both XML dispatchers and from GenerateParameters
+83,Change Password,1,Old password,Calculation,slot:0:calc,,,xml+params,
+83,Change Password,2,New password,Calculation,slot:1:calc,,,xml+params,
+83,Change Password,3,With dialog,Boolean,flag:!0x80,,On,xml+params,On/Off; On = flag clear (kNoInteract is the stored bit)
+84,Set Multi-User,1,Network access,List,value,1 On; 2 On (Hidden); 3 Off,,xml+params,mStepValue with kMenuSelection 0x2
+85,Allow User Abort,1,State,Boolean,flag:0x20000|flag:0x10000,,Off,xml+params,On = kTurnOn 0x20000; kSetOnOff 0x10000 is read too and observed alongside On (0x30000) in FMServer_Sample
+86,Set Error Capture,1,State,Boolean,flag:0x20000|flag:0x10000,,Off,xml+params,On = kTurnOn 0x20000; kSetOnOff 0x10000 is read too and observed alongside On (0x30000) in FMServer_Sample
+87,Show Custom Dialog,1,Title,Calculation,slot:0:calc,,,xml+params,
+87,Show Custom Dialog,2,Message,Calculation,slot:1:calc,,,xml+params,
+87,Show Custom Dialog,3,Button labels,Text,slot:0:text|slot:1:text|slot:2:text,,OK; Cancel,xml+params,"Default Button, Button 2, Button 3 (text)"
+87,Show Custom Dialog,4,Button commit,Boolean,slot:3:num|slot:4:num|slot:5:num,,,xml+params,"corpus and XML: commit flags are [00 3..5]/03 (slot 3 = default button); slots 0-2 hold the input password flags (script-steps.md 10, 11.8)"
+87,Show Custom Dialog,5,Input fields,FieldReference,reserved:field|slot:1:field|slot:2:field,,,xml+params,"Input #1 in mReserved (kFieldSpec), #2/#3 at [00 1]/10, [00 2]/10; a variable target is the variable spec with its name text and repetition calc in slot 0x20 + n - 1 (script-steps.md 11.8)"
+87,Show Custom Dialog,6,Input labels,Calculation,slot:2:calc|slot:3:calc|slot:4:calc,,,xml+params,"XML positions and corpus: label calculations are slots 2, 3, 4 for inputs 1-3 (script-steps.md 11.8)"
+87,Show Custom Dialog,7,Password,Boolean,slot:0:num|slot:1:num|slot:2:num,,,xml+params,"XML and corpus: ""use password character"" is [00 n-1]/03 = 1 for input n (slots 0-2) (script-steps.md 11.8)"
+87,Show Custom Dialog,8,Window,Calculation,slot:8:calc|slot:9:calc|slot:11:calc|slot:12:calc,,,xml+params,"Height 8, Width 9, Top 11, Left 12"
+88,Open Script Workspace,0,,,,,,xml+params,no parameters: absent from both XML dispatchers and from GenerateParameters
+89,# (comment),1,Comment,Text,slot:0:text,,,xml+params,kTextData
+89,# (comment),2,Disabled/collapsed,Boolean,flag:0x800000,,,xml+params,kDisableStepCollapsed
+90,Halt Script,0,,,,,,xml+params,no parameters: absent from both XML dispatchers and from GenerateParameters
+91,Replace Field Contents,1,With dialog,Boolean,flag:!0x80,,On,xml+params+oracle,On/Off; On = flag clear (kNoInteract is the stored bit)
+91,Replace Field Contents,2,Field,FieldReference,reserved:field,,,xml+params+oracle,kFieldSpec 0x1 + 14-byte DBFieldSpec in mReserved
+91,Replace Field Contents,3,Replace with,ReplaceFieldContents,slot:1:num|slot:0:calc|slot:2:num|slot:3:text|slot:4:num|slot:5:num|slot:6:num|flag:0x2000000,1 current contents; 2 serial numbers; 3 calculated result,,xml+params+oracle,"XML replace List value = [00 1]/03; calculation slot 0; serial: Update Entry Options [00 4]/03, Entry option values [00 5]/03, Initial value text [00 3]/01, increment [00 2]/03; Skip auto-enter options: the reader sets kRestore and [00 6]/03 = 0 for True, 1 for False; script-steps.md 11.8"
+92,Show/Hide Text Ruler,1,Text ruler,List,value,1 Show; 2 Hide; 3 Toggle,,xml+params,mStepValue with kMenuSelection 0x2
+93,Beep,0,,,,,,xml+params,no parameters: absent from both XML dispatchers and from GenerateParameters
+94,Set Use System Formats,1,State,Boolean,flag:0x20000|flag:0x10000,,Off,xml+params,On = kTurnOn 0x20000; kSetOnOff 0x10000 is read too and observed alongside On (0x30000) in FMServer_Sample
+95,Recover File,1,With dialog,Boolean,flag:!0x80,,On,xml+params,On/Off; On = flag clear (kNoInteract is the stored bit)
+95,Recover File,2,File paths,List,key:20|key:82|flag:0x20,,,xml+params,"kFilePath 0x20; path list text in 82 (KPathString), file references in 20 (KFileReferences)"
+96,Save a Copy as Add-on Package,1,Package name,Calculation,slot:0:calc,,,xml+params,
+96,Save a Copy as Add-on Package,2,Replace UUIDs,Boolean,flag:0x40000,,Off,xml+params,kLinkAvail
+97,Set Zoom Level,1,Lock,Boolean,flag:0x80000,,Off,xml+params,
+97,Set Zoom Level,2,Zoom,List,value,1 25%; 2 50%; 3 75%; 4 100%; 5 150%; 6 200%; 7 300%; 8 400%; 9 Zoom In; 10 Zoom Out,,xml+params,mStepValue with kMenuSelection 0x2
+98,Copy All Records/Requests,0,,,,,,xml+params,no parameters: absent from both XML dispatchers and from GenerateParameters
+99,Go to Portal Row,1,Select entire contents,Boolean,flag:0x1000,,Off,xml+params,
+99,Go to Portal Row,2,With dialog,Boolean,flag:!0x80,,On,xml+params,On/Off; On = flag clear (kNoInteract is the stored bit)
+99,Go to Portal Row,3,Row,List,value,1 First; 2 Last; 3 Previous; 4 Next; 5 By calculation,,xml+params,as Go to Record; mStepValue with kMenuSelection 0x2
+99,Go to Portal Row,4,Row number,Calculation,slot:0:calc,,,xml+params,
+99,Go to Portal Row,5,Exit after last,Boolean,flag:0x2000,,Off,xml+params,
+99,Go to Portal Row,6,Exit-after-last target,List,slot:0:num,,,xml+params,as Go to Record: enclosing End Loop index or -1
+101,Copy Record/Request,0,,,,,,xml+params,no parameters: absent from both XML dispatchers and from GenerateParameters
+102,Flush Cache to Disk,0,,,,,,xml+params,no parameters: absent from both XML dispatchers and from GenerateParameters
+103,Exit Script,1,Text result,Calculation,slot:0:calc,,,xml+params,Get(ScriptResult) of the caller
+104,Delete Portal Row,1,With dialog,Boolean,flag:!0x80,,On,xml+params,On/Off; On = flag clear (kNoInteract is the stored bit)
+105,Open Settings,0,,,,,,xml+params,no parameters: absent from both XML dispatchers and from GenerateParameters
+106,Correct Word,0,,,,,,xml+params,no parameters: absent from both XML dispatchers and from GenerateParameters
+107,Spelling Options,0,,,,,,xml+params,no parameters: absent from both XML dispatchers and from GenerateParameters
+108,Select Dictionaries,0,,,,,,xml+params,no parameters: absent from both XML dispatchers and from GenerateParameters
+109,Edit User Dictionary,0,,,,,,xml+params,no parameters: absent from both XML dispatchers and from GenerateParameters
+111,Open URL,1,With dialog,Boolean,flag:!0x80,,On,xml+params,On/Off; On = flag clear (kNoInteract is the stored bit)
+111,Open URL,2,In external browser,Boolean,flag:0x100,,Off,xml+params,
+111,Open URL,3,URL,Calculation,slot:0:calc,,,xml+params,
+112,Open Manage Value Lists,0,,,,,,xml+params,no parameters: absent from both XML dispatchers and from GenerateParameters
+113,Open Sharing,0,,,,,,xml+params,no parameters: absent from both XML dispatchers and from GenerateParameters
+114,Open File Options,0,,,,,,xml+params,no parameters: absent from both XML dispatchers and from GenerateParameters
+115,Allow Formatting Bar,1,State,Boolean,flag:0x20000|flag:0x10000,,Off,xml+params,On = kTurnOn 0x20000; kSetOnOff 0x10000 is read too and observed alongside On (0x30000) in FMServer_Sample
+116,Set Next Serial Value,1,Field,FieldReference,reserved:field,,,xml+params,kFieldSpec 0x1 + 14-byte DBFieldSpec in mReserved
+116,Set Next Serial Value,2,Value,Calculation,slot:0:calc,,,xml+params,
+117,Execute SQL,1,With dialog,Boolean,flag:!0x80,,On,xml+params,On/Off; On = flag clear (kNoInteract is the stored bit)
+117,Execute SQL,2,Native/ODBC,Boolean,flag:0x200,,Off,xml+params,XML writer label 160; Low
+117,Execute SQL,3,SQL query,SQLQuery,slot:0:calc|slot:0:text|key:20|key:82|flag:0x4000|flag:0x4,,,xml+params,ODBC data source and calculated or native SQL text; Low
+118,Open Hosts,0,,,,,,xml+params,no parameters: absent from both XML dispatchers and from GenerateParameters
+119,Move/Resize Window,1,Window,WindowReference,value|slot:0:calc,,,xml+params,current / by name calc
+119,Move/Resize Window,2,Bounds,Calculation,slot:1:calc|slot:2:calc|slot:3:calc|slot:4:calc,,,xml+params,"height, width, top, left; Low"
+119,Move/Resize Window,3,Current file only,Boolean,flag:0x80000000,,,xml+params,kLimitToCurrentFile
+120,Arrange All Windows,1,Arrange,List,value,1 Tile Horizontally; 2 Tile Vertically; 3 Cascade; 4 Bring All To Front,,xml+params,mStepValue with kMenuSelection 0x2
+121,Close Window,1,Window,WindowReference,value|slot:0:calc,,,xml+params,0 current; 1 by name calc
+121,Close Window,2,Current file only,Boolean,flag:0x80000000,,,xml+params,kLimitToCurrentFile
+122,New Window,1,Window name,Calculation,slot:0:calc,,,xml+params,Low
+122,New Window,2,Bounds,Calculation,slot:1:calc|slot:2:calc|slot:3:calc|slot:4:calc,,,xml+params,"height 1, width 2, top 3, left 4 (observed slots 1-2 hold numbers); Low"
+122,New Window,3,Layout,LayoutReference,reserved:layout,,,xml+params,kMemberKey
+122,New Window,4,Window style and options,List,value|slot:0:num,,,xml+params,style in mStepValue (observed 5); option bits in [00 0]/03 (observed c0100010); Low
+123,Select Window,1,Window,WindowReference,value|slot:0:calc,,,xml+params,1 = by name (calc slot 0)
+123,Select Window,2,Current file only,Boolean,flag:0x80000000,,,xml+params,kLimitToCurrentFile
+124,Set Window Title,1,Window,WindowReference,value|slot:0:calc,,,xml+params,
+124,Set Window Title,2,New title,Calculation,slot:1:calc,,,xml+params,
+124,Set Window Title,3,Current file only,Boolean,flag:0x80000000,,,xml+params,
+125,Else If,1,Condition,Calculation,slot:0:calc,,,xml+params,DBDataType 7
+125,Else If,2,Collapsed,Boolean,flag:0x2000000,,Off,xml+params,Script Workspace fold state of a block step (label 303)
+125,Else If,3,End If index,List,slot:0:num,,,xml+params,index of the matching End If (observed)
+126,Constrain Found Set,1,Restore,Boolean,flag:0x2000000,,Off,xml+params,kRestore: the stored spec is used without asking
+126,Constrain Found Set,2,Find requests,FindRequests,key:06|flag:0x8000,,,xml+params,"DBRequestSet subtree under 06 (KRequests), kExtendedData: rows, packed criterion keys, variables and evaluation in script-steps.md 11.2"
+126,Constrain Found Set,3,Find without indexes,Boolean,flag:0x100,,Off,xml+params,"kOption; XML Boolean ""Find without indexes"" (script-steps.md 11.2)"
+127,Extend Found Set,1,Restore,Boolean,flag:0x2000000,,Off,xml+params,kRestore: the stored spec is used without asking
+127,Extend Found Set,2,Find requests,FindRequests,key:06|flag:0x8000,,,xml+params,"DBRequestSet subtree under 06 (KRequests), kExtendedData: rows, packed criterion keys, variables and evaluation in script-steps.md 11.2"
+128,Perform Find/Replace,1,With dialog,Boolean,flag:!0x80,,On,xml+params+oracle,On/Off; On = flag clear (kNoInteract is the stored bit)
+128,Perform Find/Replace,2,Find/Replace,PerformFindReplace,slot:0:calc|slot:1:calc|slot:0:num|slot:1:num|slot:2:num|slot:3:num|slot:4:num|slot:5:num|flag:0x100|flag:0x200|flag:0x1000,,,xml+params+oracle,"XML perform [00 0]/03 (1 Replace & Find, 2 Replace, 3 Replace All, other Find Next), find calculation slot 0, replace slot 1, direction [00 1]/03 (0 Forward, 1 Backward, 2 All), across [00 2]/03 (0 All records/requests, else current), within [00 3]/03 (0 All fields, else current), Match case [00 4]/03, Match whole words only [00 5]/03; the XML reader and writer use no flag bit (0x100, 0x200, 0x1000 are from the Script Workspace model)"
+129,Open Find/Replace,0,,,,,,xml+params,no parameters: absent from both XML dispatchers and from GenerateParameters
+130,Set Selection,1,Field,FieldReference,reserved:field,,,xml+params,kFieldSpec 0x1 + 14-byte DBFieldSpec in mReserved
+130,Set Selection,2,Start position,Calculation,slot:0:calc,,,xml+params,
+130,Set Selection,3,End position,Calculation,slot:1:calc,,,xml+params,
+131,Insert File,1,Insert File options,InsertFileOptions,slot:0:num|slot:1:num|slot:2:num|slot:3:calc|slot:4:calc,,,xml+params,"storage (insert/reference), display, compress; dialog title/filters calcs; Low"
+131,Insert File,2,Target,Target,reserved:field|slot:0:text,,,xml+params,"field (kFieldSpec + mReserved) or variable (name text in slot 0, kTextData); see script-steps.md 4.4"
+131,Insert File,3,File paths,List,key:20|key:82|flag:0x20,,,xml+params,"kFilePath 0x20; path list text in 82 (KPathString), file references in 20 (KFileReferences)"
+131,Insert File,4,Dialog options,Boolean,flag:0x200,,,xml+params,set on all 6 corpus instances; meaning not recovered
+132,Export Field Contents,1,Create folders,Boolean,flag:0x200,,Off,xml+params,kOption2
+132,Export Field Contents,2,Field,FieldReference,reserved:field,,,xml+params,kFieldSpec 0x1 + 14-byte DBFieldSpec in mReserved
+132,Export Field Contents,3,File paths,List,key:20|key:82|flag:0x20,,,xml+params,"kFilePath 0x20; path list text in 82 (KPathString), file references in 20 (KFileReferences)"
+132,Export Field Contents,4,Automatically open,Boolean,flag:0x20000000,,Off,xml+params,kOpenAutomatically
+132,Export Field Contents,5,Create email,Boolean,flag:0x40000000,,Off,xml+params,kCreateEmail
+133,Open Record/Request,0,,,,,,xml+params,no parameters: absent from both XML dispatchers and from GenerateParameters
+134,Add Account,1,Account name,Calculation,slot:0:calc,,,xml+params,
+134,Add Account,2,Password,Calculation,slot:1:calc,,,xml+params,
+134,Add Account,3,Privilege set,PrivilegeSet,reserved:key,,,xml+params,privilege set key (HBSerialKey<7>)
+134,Add Account,4,Expire password,Boolean,flag:0x100,,Off,xml+params,user must change password on next login; Low
+135,Delete Account,1,Account name,Calculation,slot:0:calc,,,xml+params,
+136,Reset Account Password,1,Account name,Calculation,slot:0:calc,,,xml+params,
+136,Reset Account Password,2,New password,Calculation,slot:1:calc,,,xml+params,
+136,Reset Account Password,3,Expire password,Boolean,flag:0x100,,Off,xml+params,Low
+137,Enable Account,1,Account name,Calculation,slot:0:calc,,,xml+params,
+137,Enable Account,2,Activate/Deactivate,List,flag:0x100,Activate / Deactivate,,xml+params,EnableAccountBoolean; Low
+138,Re-Login,1,With dialog,Boolean,flag:!0x80,,On,xml+params,On/Off; On = flag clear (kNoInteract is the stored bit)
+138,Re-Login,2,Account name,Calculation,slot:0:calc,,,xml+params,
+138,Re-Login,3,Password,Calculation,slot:1:calc,,,xml+params,
+138,Re-Login,4,Data source,DataSourceReference,reserved:key,,,xml+params,Low
+139,Convert File,1,Verify SSL Certificates,Boolean,flag:0x10000000,,Off,xml+params,
+139,Convert File,2,Open file after conversion,Boolean,flag:0x100,,Off,xml+params,
+139,Convert File,3,Skip index creation,Boolean,flag:0x200,,Off,xml+params,
+139,Convert File,4,With dialog,Boolean,flag:!0x80,,On,xml+params,On/Off; On = flag clear (kNoInteract is the stored bit)
+139,Convert File,5,Data source,DataSource,key:20|key:82|flag:0x20|flag:0x10,,,xml+params,
+139,Convert File,6,Import order,ImportOrder,key:84|key:86|flag:0x8000,,,xml+params,
+140,Open Manage Data Sources,0,,,,,,xml+params,no parameters: absent from both XML dispatchers and from GenerateParameters
+141,Set Variable,1,Name,Text,slot:0:text,,,xml+params,"variable name ($local or $$global), kTextData"
+141,Set Variable,2,Value,Calculation,slot:1:calc,,,xml+params,
+141,Set Variable,3,Repetition,Calculation,slot:2:calc,,,xml+params,absent = 1
+142,Install Menu Set,1,Menu set,MenuSet,reserved:layout,,,xml+params,kMemberKey + menu set key; Standard menus = KStandardMenuSet
+142,Install Menu Set,2,Use as file default,Boolean,flag:0x200,,Off,xml+params,
+143,Save Records as Excel,1,Restore,Boolean,flag:0x2000000,,Off,xml+params,kRestore: the stored spec is used without asking
+143,Save Records as Excel,2,With dialog,Boolean,flag:!0x80,,On,xml+params,On/Off; On = flag clear (kNoInteract is the stored bit)
+143,Save Records as Excel,3,File paths,List,key:20|key:82|flag:0x20,,,xml+params,"kFilePath 0x20; path list text in 82 (KPathString), file references in 20 (KFileReferences)"
+143,Save Records as Excel,4,Excel options,SaveRecordsAsExcelOptions,value|slot:0:calc|slot:1:calc|slot:2:calc|slot:3:calc|slot:4:calc|slot:5:calc|key:85|flag:0x8000,,,xml+params,"options in slots: slot 0 u8 (not mapped), slot 1 u16 the records choice (1 records being browsed, 2 current record; O, FileMaker's XML writer); export order 85 as Export Records; profile XLXE in 86; script-steps.md 11.4, 11.7"
+143,Save Records as Excel,5,Create folders,Boolean,flag:0x200,,Off,xml+params,kOption2
+143,Save Records as Excel,6,Automatically open,Boolean,flag:0x20000000,,Off,xml+params,
+143,Save Records as Excel,7,Create email,Boolean,flag:0x40000000,,Off,xml+params,
+144,Save Records as PDF,1,Restore,Boolean,flag:0x2000000,,Off,xml+params,kRestore: the stored spec is used without asking
+144,Save Records as PDF,2,Source,List,slot:11:list,,,xml+params,file/target choice
+144,Save Records as PDF,3,Target,Target,reserved:field|slot:0:text,,,xml+params,"field (kFieldSpec + mReserved) or variable (name text in slot 0, kTextData); see script-steps.md 4.4"
+144,Save Records as PDF,4,Append to existing PDF,Boolean,flag:0x100,,Off,xml+params,
+144,Save Records as PDF,5,File paths,List,key:20|key:82|flag:0x20,,,xml+params,"kFilePath 0x20; path list text in 82 (KPathString), file references in 20 (KFileReferences)"
+144,Save Records as PDF,6,Create folders,Boolean,flag:0x200,,Off,xml+params,kOption2
+144,Save Records as PDF,7,With dialog,Boolean,flag:!0x80,,On,xml+params,On/Off; On = flag clear (kNoInteract is the stored bit)
+144,Save Records as PDF,8,PDF options,SaveRecordsAsPDF,key:83|flag:0x20000,,,xml+params,"options are slots 0-10 (numeric data 1 or 2 bytes) and calculations at the XML positions, not a blob: no 83 in 23 corpus steps; slot map in script-steps.md 11.7 (Med)"
+145,Go to Object,1,Object name,Calculation,slot:0:calc,,,xml+params,
+145,Go to Object,2,Repetition,Calculation,slot:1:calc,,,xml+params,
+146,Set Web Viewer,1,Object name,Calculation,slot:0:calc,,,xml+params,
+146,Set Web Viewer,2,Action,WebViewerAction,value|slot:1:calc,,,xml+params,reset/reload/back/forward/go to URL; Low
+147,Set Field By Name,1,Value,Calculation,slot:0:calc,,,xml+params,
+147,Set Field By Name,2,Target field by name,Calculation,slot:1:calc|flag:0x8000000,,,xml+params,kFieldSpecByCalc enables the field-name calculation in slot 1
+148,Install OnTimer Script,1,Script,ScriptReference,reserved:script|slot:0:calc,,,xml+params,Low
+148,Install OnTimer Script,2,Parameter,Calculation,slot:0:calc,,,xml+params,
+148,Install OnTimer Script,3,Interval (seconds),Calculation,slot:1:calc,,,xml+params,
+149,Open Edit Saved Finds,0,,,,,,xml+params,no parameters: absent from both XML dispatchers and from GenerateParameters
+150,Perform Quick Find,1,Find text,Calculation,slot:0:calc,,,xml+params,
+151,Open Manage Layouts,0,,,,,,xml+params,no parameters: absent from both XML dispatchers and from GenerateParameters
+152,Save Records as Snapshot Link,1,File paths,List,key:20|key:82|flag:0x20,,,xml+params,"kFilePath 0x20; path list text in 82 (KPathString), file references in 20 (KFileReferences)"
+152,Save Records as Snapshot Link,2,Records,List,value,1 records being browsed; 2 current record,,xml+params,mStepValue with kMenuSelection 0x2
+152,Save Records as Snapshot Link,3,Create folders,Boolean,flag:0x200,,Off,xml+params,kOption2
+154,Sort Records by Field,1,Sort direction,List,value,1 ascending; 2 descending; 3 value list order,,xml+params,mStepValue with kMenuSelection 0x2
+154,Sort Records by Field,2,Field,FieldReference,reserved:field,,,xml+params,kFieldSpec 0x1 + 14-byte DBFieldSpec in mReserved
+155,Find Matching Records,1,Find,List,value,1 Replace found set; 2 Constrain; 3 Extend,,xml+params,mStepValue with kMenuSelection 0x2
+155,Find Matching Records,2,Field,FieldReference,reserved:field,,,xml+params,kFieldSpec 0x1 + 14-byte DBFieldSpec in mReserved
+156,Open Manage Containers,0,,,,,,xml+params,no parameters: absent from both XML dispatchers and from GenerateParameters
+157,Install Plug-In File,1,Field,FieldReference,reserved:field,,,xml+params,kFieldSpec 0x1 + 14-byte DBFieldSpec in mReserved
+158,Insert PDF,1,Store only a reference,Boolean,flag:0x800,,Off,xml+params,kStoreReference
+158,Insert PDF,2,File paths,List,key:20|key:82|flag:0x20,,,xml+params,"kFilePath 0x20; path list text in 82 (KPathString), file references in 20 (KFileReferences)"
+159,Insert Audio/Video,1,Store only a reference,Boolean,flag:0x800,,Off,xml+params,kStoreReference
+159,Insert Audio/Video,2,File paths,List,key:20|key:82|flag:0x20,,,xml+params,"kFilePath 0x20; path list text in 82 (KPathString), file references in 20 (KFileReferences)"
+160,Insert from URL,1,Verify SSL Certificates,Boolean,flag:0x10000000,,Off,xml+params,
+160,Insert from URL,2,Select entire contents,Boolean,flag:0x1000,,Off,xml+params,
+160,Insert from URL,3,With dialog,Boolean,flag:!0x80,,On,xml+params,On/Off; On = flag clear (kNoInteract is the stored bit)
+160,Insert from URL,4,Target,Target,reserved:field|slot:0:text,,,xml+params,"field (kFieldSpec + mReserved) or variable (name text in slot 0, kTextData); see script-steps.md 4.4"
+160,Insert from URL,5,URL,Calculation,slot:0:calc,,,xml+params,
+160,Insert from URL,6,cURL options,Calculation,slot:1:calc,,,xml+params,
+160,Insert from URL,7,Do not automatically encode URL,Boolean,flag:0x100,,Off,xml+params,"kOption = XML autoEncode inverted, 38/38 steps compared (script-steps.md 11.8)"
+161,Insert from Device,1,Field,FieldReference,reserved:field,,,xml+params,kFieldSpec 0x1 + 14-byte DBFieldSpec in mReserved
+161,Insert from Device,2,Insert from device options,InsertFromDeviceOptions,value|slot:0:calc|slot:1:calc|slot:2:calc|slot:3:calc,,,xml+params,camera/video/microphone/music/photo/signature/barcode options; Low
+164,Perform Script on Server,1,Script,ScriptReference,reserved:script|slot:1:calc,,,xml+params,as Perform Script
+164,Perform Script on Server,2,Parameter,Calculation,slot:0:calc,,,xml+params,
+164,Perform Script on Server,3,Wait for completion,Boolean,flag:!0x100,,On,xml+params,kOption set = asynchronous (do not wait); the editor shows it inverted (script-runtime.md 11)
+165,Open Manage Themes,0,,,,,,xml+params,no parameters: absent from both XML dispatchers and from GenerateParameters
+166,Show/Hide Menubar,1,Menubar,List,value,1 Show; 2 Hide; 3 Toggle,,xml+params,mStepValue with kMenuSelection 0x2
+166,Show/Hide Menubar,2,Lock,Boolean,flag:0x80000,,Off,xml+params,
+167,Refresh Object,1,Object name,Calculation,slot:0:calc,,,xml+params,
+167,Refresh Object,2,Repetition,Calculation,slot:1:calc,,,xml+params,
+168,Set Layout Object Animation,1,State,Boolean,flag:0x20000|flag:0x10000,,Off,xml+params,On = kTurnOn 0x20000; kSetOnOff 0x10000 is read too and observed alongside On (0x30000) in FMServer_Sample
+169,Close Popover,0,,,,,,xml+params,no parameters: absent from both XML dispatchers and from GenerateParameters
+172,Open Upload to Host,0,,,,,,xml+params,no parameters: absent from both XML dispatchers and from GenerateParameters
+174,Enable Touch Keyboard,1,Keyboard,List,value,1 On; 2 Off; 3 Toggle,,xml+params,mStepValue with kMenuSelection 0x2
+175,Perform JavaScript in Web Viewer,1,Object name,Calculation,slot:0:calc,,,xml+params,
+175,Perform JavaScript in Web Viewer,2,Function name,Calculation,slot:1:calc,,,xml+params,
+175,Perform JavaScript in Web Viewer,3,Parameters,Calculation,slot:10:calc|slot:11:calc|slot:12:calc|slot:13:calc,,,xml+params,parameter n in slot 10+n (GetCalcString(10+i))
+176,Set Allowed Orientations,1,Orientations,Boolean,value,,,xml+params,"mStepValue bits: 1 Portrait, 2 Portrait Upside Down, 4 Landscape Left, 8 Landscape Right"
+177,AVPlayer Play,1,AVPlayer Play,AVPlayerPlay,value|slot:0:calc|slot:1:calc|slot:2:calc|slot:3:calc|slot:4:calc|slot:5:calc,,,xml+params,"source, presentation, start/end offsets, repetition, hide controls; Low"
+178,AVPlayer Set Playback State,1,Playback state,List,value,0 Stopped; 1 Paused; 2 Playing,,xml+params,mStepValue with kMenuSelection 0x2
+179,AVPlayer Set Options,1,AVPlayer options,AVPlayerSetOptions,slot:0:calc|slot:1:calc|slot:2:calc|slot:3:calc|slot:4:calc|slot:5:calc,,,xml+params,Low
+180,Refresh Portal,1,Object name,Calculation,slot:0:calc,,,xml+params,
+180,Refresh Portal,2,Repetition,Calculation,slot:1:calc,,,xml+params,
+181,Get Folder Path,1,Allow Folder Creation,Boolean,flag:0x100,,Off,xml+params,
+181,Get Folder Path,2,Target variable,Text,slot:0:text,,,xml+params,
+181,Get Folder Path,3,Dialog title,Calculation,slot:3:calc,,,xml+params,
+181,Get Folder Path,4,Default location,Calculation,slot:4:calc,,,xml+params,
+182,Truncate Table,1,With dialog,Boolean,flag:!0x80,,On,xml+params,On/Off; On = flag clear (kNoInteract is the stored bit)
+182,Truncate Table,2,Table,BaseTableReference,value|slot:0:aliases,,,xml+params,current table or specified base table; Low
+183,Open Favorites,0,,,,,,xml+params,no parameters: absent from both XML dispatchers and from GenerateParameters
+185,Configure Region Monitor Script,1,Region monitor,ConfigureRegionMonitorScript,reserved:script|slot:0:calc|slot:1:calc|slot:2:calc|slot:3:calc|slot:4:calc|slot:5:calc,,,xml+params,iOS only; Low
+187,Configure Local Notification,1,Local notification,ConfigureLocalNotification,reserved:script|value|slot:0:calc|slot:1:calc|slot:2:calc|slot:3:calc|slot:4:calc|slot:5:calc,,,xml+params,iOS only; Low
+188,Get File Exists,1,File paths,List,key:20|key:82|flag:0x20,,,xml+params,"kFilePath 0x20; path list text in 82 (KPathString), file references in 20 (KFileReferences)"
+188,Get File Exists,2,Target,Target,reserved:field|slot:0:text,,,xml+params,"field (kFieldSpec + mReserved) or variable (name text in slot 0, kTextData); see script-steps.md 4.4"
+189,Get File Size,1,File paths,List,key:20|key:82|flag:0x20,,,xml+params,"kFilePath 0x20; path list text in 82 (KPathString), file references in 20 (KFileReferences)"
+189,Get File Size,2,Target,Target,reserved:field|slot:0:text,,,xml+params,"field (kFieldSpec + mReserved) or variable (name text in slot 0, kTextData); see script-steps.md 4.4"
+190,Create Data File,1,File paths,List,key:20|key:82|flag:0x20,,,xml+params,"kFilePath 0x20; path list text in 82 (KPathString), file references in 20 (KFileReferences)"
+190,Create Data File,2,Create folders,Boolean,flag:0x200,,Off,xml+params,kOption2
+191,Open Data File,1,File paths,List,key:20|key:82|flag:0x20,,,xml+params,"kFilePath 0x20; path list text in 82 (KPathString), file references in 20 (KFileReferences)"
+191,Open Data File,2,Target,Target,reserved:field|slot:0:text,,,xml+params,"field (kFieldSpec + mReserved) or variable (name text in slot 0, kTextData); see script-steps.md 4.4"
+192,Write to Data File,1,File ID,Calculation,slot:0:calc,,,xml+params,
+192,Write to Data File,2,Target,Target,reserved:field|slot:0:text,,,xml+params,"field (kFieldSpec + mReserved) or variable (name text in slot 0, kTextData); see script-steps.md 4.4"
+192,Write to Data File,3,Write as,List,value,1 UTF-16; 2 UTF-8,,xml+params,UserFileEncoding; mStepValue with kMenuSelection 0x2
+192,Write to Data File,4,Append line feed,Boolean,flag:0x200,,Off,xml+params,
+193,Read from Data File,1,File ID,Calculation,slot:0:calc,,,xml+params,
+193,Read from Data File,2,Amount,Calculation,slot:1:calc,,,xml+params,
+193,Read from Data File,3,Target,Target,reserved:field|slot:0:text,,,xml+params,"field (kFieldSpec + mReserved) or variable (name text in slot 0, kTextData); see script-steps.md 4.4"
+193,Read from Data File,4,Read as,List,value,1 UTF-16; 2 UTF-8; 3 Bytes,,xml+params,UserFileEncoding; mStepValue with kMenuSelection 0x2
+194,Get Data File Position,1,File ID,Calculation,slot:0:calc,,,xml+params,
+194,Get Data File Position,2,Target,Target,reserved:field|slot:0:text,,,xml+params,"field (kFieldSpec + mReserved) or variable (name text in slot 0, kTextData); see script-steps.md 4.4"
+195,Set Data File Position,1,File ID,Calculation,slot:0:calc,,,xml+params,
+195,Set Data File Position,2,New position,Calculation,slot:1:calc,,,xml+params,
+196,Close Data File,1,File ID,Calculation,slot:0:calc,,,xml+params,
+197,Delete File,1,File paths,List,key:20|key:82|flag:0x20,,,xml+params,"kFilePath 0x20; path list text in 82 (KPathString), file references in 20 (KFileReferences)"
+199,Rename File,1,File paths,List,key:20|key:82|flag:0x20,,,xml+params,"kFilePath 0x20; path list text in 82 (KPathString), file references in 20 (KFileReferences)"
+199,Rename File,2,New name,Calculation,slot:0:calc,,,xml+params,
+200,Set Error Logging,1,Enabled,Boolean,flag:0x100,,Off,xml+params,
+200,Set Error Logging,2,Custom debug info,Calculation,slot:0:calc,,,xml+params,
+201,Configure NFC Reading,1,NFC options,NFCTagReader,reserved:script|value|slot:0:calc|slot:1:calc|slot:2:calc,,,xml+params,iOS only; Low
+202,Configure Machine Learning Model,1,Core ML model,ConfigureCoreML,value|slot:0:calc|slot:1:calc|key:20|key:82,,,xml+params,macOS/iOS only; Low
+203,Execute FileMaker Data API,1,Select entire contents,Boolean,flag:0x1000,,Off,xml+params,
+203,Execute FileMaker Data API,2,Target,Target,reserved:field|slot:0:text,,,xml+params,"field (kFieldSpec + mReserved) or variable (name text in slot 0, kTextData); see script-steps.md 4.4"
+203,Execute FileMaker Data API,3,Request,Calculation,slot:0:calc,,,xml+params,
+205,Open Transaction,1,Commit index,Index,value,,,xml+params,mStepValue: index of the matching Commit Transaction (script-runtime.md 8.2)
+205,Open Transaction,2,Collapsed,Boolean,flag:0x2000000,,Off,xml+params,Script Workspace fold state of a block step (label 303)
+205,Open Transaction,3,Skip auto-enter options,Boolean,flag:0x1000,,Off,xml+params,
+205,Open Transaction,4,Skip data entry validation,Boolean,flag:0x100,,Off,xml+params,
+205,Open Transaction,5,Override ESS locking conflicts,Boolean,flag:0x200,,Off,xml+params,
+206,Commit Transaction,0,,,,,,xml+params,no parameters: absent from both XML dispatchers and from GenerateParameters
+207,Revert Transaction,1,Condition,Boolean,flag:0x100,,Off,xml+params,enables slot 0
+207,Revert Transaction,2,Condition,Calculation,slot:0:calc,,,xml+params,DBDataType 7
+207,Revert Transaction,3,Error code,Boolean,flag:0x200,,Off,xml+params,enables slots 1-2
+207,Revert Transaction,4,Error code,Calculation,slot:1:calc,,,xml+params,DBDataType 2
+207,Revert Transaction,5,Error message,Calculation,slot:2:calc,,,xml+params,
+208,Set Session Identifier,1,Session identifier,Calculation,slot:0:calc,,,xml+params,
+209,Set Dictionary,1,Main dictionary,List,value,1..n languages (AppendMainDictList),,xml+params,mStepValue with kMenuSelection 0x2
+209,Set Dictionary,2,File paths,List,key:20|key:82|flag:0x20,,,xml+params,"kFilePath 0x20; path list text in 82 (KPathString), file references in 20 (KFileReferences)"
+210,Perform Script on Server with Callback,1,Script,ScriptReference,reserved:script|slot:1:list|slot:2:calc|flag:0x800|flag:0x2000000,,,xml+params+oracle,"as Perform Script on Server (164): from list = script key in mReserved (kScriptKey 0x40); by name = [00 1] 1, name calculation slot 2, 0x800 and 0x2000000"
+210,Perform Script on Server with Callback,2,Parameter,Calculation,slot:0:calc,,,xml+params+oracle,
+210,Perform Script on Server with Callback,3,Callback script,CallbackScriptReference,slot:6:list|slot:3:calc|flag:0x100|slot:7:calc|flag:0x1000|flag:0x2000|slot:5:calc|flag:0x400,0 From list; 1 By name,,xml+params+oracle,"[00 6] 0 from list: the script key as a calculation in slot 3 whose formula is the quoted hex of the key segment (""08""), with 0x100 (SetScriptKeyWithStorePosition); 1 by name: name calculation slot 7 with 0x1000 and 0x2000; a script in another file: file reference calculation slot 5 with 0x400 (from bin); script-steps.md 12.1"
+210,Perform Script on Server with Callback,4,Callback script parameter,Calculation,slot:4:calc|flag:0x200,,,xml+params+oracle,"XML CallbackScriptParameter, or a repetition inside CallbackScriptReference"
+210,Perform Script on Server with Callback,5,State,List,value,1 Halt; 2 Exit; 3 Resume; 4 Pause,,xml+params+oracle,current script state on callback (XML CallbackScriptState); mStepValue with kMenuSelection 0x2
+211,Trigger Claris Connect Flow,1,Verify SSL Certificates,Boolean,flag:0x10000000,,Off,xml+params,
+211,Trigger Claris Connect Flow,2,Select entire contents,Boolean,flag:0x1000,,Off,xml+params,
+211,Trigger Claris Connect Flow,3,With dialog,Boolean,flag:!0x80,,On,xml+params,On/Off; On = flag clear (kNoInteract is the stored bit)
+211,Trigger Claris Connect Flow,4,Target,Target,reserved:field|slot:0:text,,,xml+params,"field (kFieldSpec + mReserved) or variable (name text in slot 0, kTextData); see script-steps.md 4.4"
+211,Trigger Claris Connect Flow,5,Flow,Calculation,slot:0:calc|slot:1:calc|slot:2:calc|slot:3:calc,,,xml+params,"URL 0, cURL/JSON data 1, JSON output 2, authentication 3"
+211,Trigger Claris Connect Flow,6,Text,Text,slot:0:text,,,xml+params,
+212,Configure AI Account,1,Verify SSL Certificates,Boolean,flag:0x10000000,,Off,xml+params+oracle,
+212,Configure AI Account,2,Model provider,List,value,0 OpenAI; 1 Anthropic; 2 Cohere; 3 AFM; 4 Google; 5 Open Source; 20 Custom,,xml+params+oracle,mStepValue with kMenuSelection 0x2 (XML List)
+212,Configure AI Account,3,Account name,Calculation,slot:1:calc,,,xml+params+oracle,XML LLMAccountName
+212,Configure AI Account,4,Endpoint,Calculation,slot:2:calc,,,xml+params+oracle,"XML LLMEndpoint; the writer shows it only for provider 20, the reader stores it for any"
+212,Configure AI Account,5,API key,Calculation,slot:3:calc,,,xml+params+oracle,XML LLMAPIKey
+213,Fine-Tune Model,1,Account name,Calculation,slot:1:calc,,,xml+params+oracle,XML FineTuneAccountName
+213,Fine-Tune Model,2,Base model,Calculation,slot:2:calc,,,xml+params+oracle,XML FineTuneBaseModel
+213,Fine-Tune Model,3,Training data (table/file),FineTuneDataSource,slot:6:list|flag:0x800,1 Table; 2 File,,xml+params+oracle,XML FineTuneDataSource; 2 sets 0x800
+213,Fine-Tune Model,4,Training table,FineTuneTable,slot:0:aliases|flag:0x100,,,xml+params+oracle,XML FineTuneTable (with Table)
+213,Fine-Tune Model,5,Completion field,FineTuneDataCompleteField,slot:3:field|flag:0x200,,,xml+params+oracle,XML FineTuneDataCompleteField (with Table)
+213,Fine-Tune Model,6,Training file,List,key:82|flag:0x20,,,xml+params+oracle,XML UniversalPathList at [00 0]/82 (with File)
+213,Fine-Tune Model,7,Response target,Target,reserved:field|slot:32:text|slot:10:calc,,,xml+params+oracle,"response target: field in mReserved (kFieldSpec) or variable (variable spec, name text in slot 0x20, kTextData); the importer stores the repetition calculation in slot 10"
+213,Fine-Tune Model,8,Parameters,Calculation,slot:4:calc|flag:0x400,,,xml+params+oracle,XML FineTuneParameters
+214,Perform SQL Query by Natural Language,1,Stream,Boolean,flag:0x1000,,,xml+params+oracle,
+214,Perform SQL Query by Natural Language,2,Account name,Calculation,slot:1:calc,,,xml+params+oracle,XML LLMAccountName
+214,Perform SQL Query by Natural Language,3,Model,Calculation,slot:2:calc,,,xml+params+oracle,XML LLMModel
+214,Perform SQL Query by Natural Language,4,Prompt,Calculation,slot:4:calc,,,xml+params+oracle,XML LLMMessage
+214,Perform SQL Query by Natural Language,5,Prompt template,Calculation,slot:18:calc|flag:0x2000,,,xml+params+oracle,XML LLMPromptTemplateName
+214,Perform SQL Query by Natural Language,6,Parameters,Calculation,slot:3:calc|flag:0x100,,,xml+params+oracle,XML LLMParameters
+214,Perform SQL Query by Natural Language,7,Response target,Target,reserved:field|slot:32:text|slot:10:calc,,,xml+params+oracle,"response target: field in mReserved (kFieldSpec) or variable (variable spec, name text in slot 0x20, kTextData); the importer stores the repetition calculation in slot 10"
+214,Perform SQL Query by Natural Language,8,Options,LLMOptionsSelection,slot:15:list|flag:0x800|slot:16:calc,0 From list; 1 By JSON data,,xml+params+oracle,XML LLMOptionsSelection; 1 sets 0x800 and takes the LLMOptionsName calculation in slot 16; the writer shows Action and Tables only for 0
+214,Perform SQL Query by Natural Language,9,Action,List,slot:6:list,1 Query; 2 Query for Data Only; 3 Email; 4 Get SQL; 5 Get First SQL Only; 6 Get DDL,,xml+params+oracle,XML LLMAction; the writer omits Tables for 30
+214,Perform SQL Query by Natural Language,10,Tables,LLMTablesSelection,slot:8:list|slot:9:aliases|flag:0x200|slot:11:calc|slot:13:calc,0 From list; 1 By name; 2 By DDL,,xml+params+oracle,"XML LLMTablesSelection; 0: TableOccurrences > TableOccurrence occurrence keys at [00 9]/11 with count [00 9]/04, 0x200; 1: LLMTablesName calculation slot 11; 2: LLMByDDL calculation slot 13"
+214,Perform SQL Query by Natural Language,11,Web script,LLMWebScript,slot:20:calc|slot:21:calc|slot:19:num|flag:0x2000000,,,xml+params+oracle,"XML LLMWebScript (kRestore 0x2000000): Name calculation slot 20, FunctionRef slot 21; [00 19]/03 = 0 in the probe, the web script parameters' slots are not measured"
+215,Insert Embedding,1,Account name,Calculation,slot:1:calc,,,xml+params+oracle,XML LLMEmbeddingAccountName
+215,Insert Embedding,2,Embedding model,Calculation,slot:2:calc,,,xml+params+oracle,XML LLMEmbeddingModel
+215,Insert Embedding,3,Input,Calculation,slot:3:calc,,,xml+params+oracle,XML LLMEmbeddingInputText
+215,Insert Embedding,4,Parameters,Calculation,slot:5:calc|flag:0x100,,,xml+params+oracle,XML LLMParameters
+215,Insert Embedding,5,Target,Target,reserved:field|slot:32:text|slot:10:calc,,,xml+params+oracle,"response target: field in mReserved (kFieldSpec) or variable (variable spec, name text in slot 0x20, kTextData); the importer stores the repetition calculation in slot 10"
+216,Insert Embedding in Found Set,1,Account name,Calculation,slot:1:calc,,,xml+params+oracle,XML LLMEmbeddingAccountName
+216,Insert Embedding in Found Set,2,Embedding model,Calculation,slot:2:calc,,,xml+params+oracle,XML LLMEmbeddingModel
+216,Insert Embedding in Found Set,3,Source field,LLMBulkEmbeddingField,slot:3:field|flag:0x200,,,xml+params+oracle,XML LLMBulkEmbeddingField
+216,Insert Embedding in Found Set,4,Target field,Target,reserved:field,,,xml+params+oracle,kFieldSpec + DBFieldSpec in mReserved (XML Target)
+216,Insert Embedding in Found Set,5,Replace target contents,Boolean,flag:0x400,,,xml+params+oracle,
+216,Insert Embedding in Found Set,6,Continue on error,Boolean,flag:0x1000,,,xml+params+oracle,
+216,Insert Embedding in Found Set,7,Show summary,Boolean,flag:0x2000,,,xml+params+oracle,
+216,Insert Embedding in Found Set,8,Parameters,Calculation,slot:4:calc|flag:0x800,,,xml+params+oracle,XML LLMParameters
+217,Set AI Call Logging,1,Enabled,Boolean,flag:0x20000,,,xml+params+oracle,XML Boolean enabled
+217,Set AI Call Logging,2,Filename,Calculation,slot:1:calc|flag:0x100,,,xml+params+oracle,XML LLMFileName; the writer shows it only with 0x100
+217,Set AI Call Logging,3,Verbose,Boolean,flag:0x200,,,xml+params+oracle,
+217,Set AI Call Logging,4,Truncate messages,Boolean,flag:0x400,,,xml+params+oracle,
+218,Perform Semantic Find,1,Account name,Calculation,slot:1:calc,,,xml+params+oracle,XML AccountName (Text and Image queries)
+218,Perform Semantic Find,2,Embedding model,Calculation,slot:4:calc,,,xml+params+oracle,XML LLMEmbeddingModel (Text and Image queries)
+218,Perform Semantic Find,3,Text/Image/Vector,Query,slot:8:list|flag:0x10|slot:2:calc|slot:9:calc|slot:11:calc,1 Text; 2 Vector data; 3 Image,,xml+params+oracle,XML Query; 1: Text calculation slot 2; 2: File calculation slot 9 (container result); 3: Image calculation slot 11 (container result); the list sets 0x10
+218,Perform Semantic Find,4,Return count,Calculation,slot:3:calc|flag:0x100,,,xml+params+oracle,XML Boolean Return count (0x100) and Count calculation slot 3 (number)
+218,Perform Semantic Find,5,Cosine similarity,Condition,slot:6:list|flag:0x400|slot:5:calc,1 greater than; 2 less than; 3 equal to; 4 greater than or equal to; 5 less than or equal to,,xml+params+oracle,XML Condition (sets 0x400) and Threshold calculation slot 5 (number)
+218,Perform Semantic Find,6,Parameters,Calculation,slot:12:calc|flag:0x800,,,xml+params+oracle,XML LLMParameters
+218,Perform Semantic Find,7,Save result,SaveResult,slot:10:field|slot:10:text|flag:0x200,,,xml+params+oracle,"XML SaveResult > Target: field spec [00 10]/10, variable name [00 10]/01"
+218,Perform Semantic Find,8,Records,List,slot:7:list|flag:0x8,1 All records; 2 Current found set,,xml+params+oracle,XML Records (sets 0x8)
+218,Perform Semantic Find,9,Embedding field,FieldReference,reserved:field|slot:10:calc,,,xml+params+oracle,XML FieldReference: kFieldSpec + DBFieldSpec in mReserved
+219,Perform RAG Action,1,RAG account name,Calculation,slot:1:calc,,,xml+params+oracle,XML RAGAccountName
+219,Perform RAG Action,2,Space ID,Calculation,slot:2:calc,,,xml+params+oracle,XML RAGSpaceID
+219,Perform RAG Action,3,Action (prompt/add/remove),List,slot:5:list,1 Add Data; 2 Remove Data; 3 Send Prompt,,xml+params+oracle,XML RAGAction
+219,Perform RAG Action,4,Prompt,Calculation,slot:6:calc,,,xml+params+oracle,XML LLMMessage (Send Prompt); RAGAIAccountName slot 9 and RAGModel slot 8 beside it
+219,Perform RAG Action,5,Stream,Boolean,flag:0x1000,,,xml+params+oracle,Send Prompt
+219,Perform RAG Action,6,Prompt template,Calculation,slot:11:calc|flag:0x2000,,,xml+params+oracle,XML TemplateName (Send Prompt)
+219,Perform RAG Action,7,Detect vertical text,Boolean,flag:0x8000,,,xml+params+oracle,Add Data from a file or container
+219,Perform RAG Action,8,Tokens per text chunk,Calculation,slot:14:calc|flag:0x40000,,,xml+params+oracle,XML RAGTokensPerTextChunk (number)
+219,Perform RAG Action,9,Parameters,Calculation,slot:7:calc|flag:0x400,,,xml+params+oracle,XML RAGPromptParameters (Send Prompt and Remove Data)
+219,Perform RAG Action,10,Response target,Target,reserved:field|slot:32:text|slot:10:calc,,,xml+params+oracle,"response target: field in mReserved (kFieldSpec) or variable (variable spec, name text in slot 0x20, kTextData); the importer stores the repetition calculation in slot 10; Send Prompt"
+219,Perform RAG Action,11,AI account and model,Calculation,slot:9:calc|slot:8:calc,,,xml+params+oracle,"XML RAGAIAccountName slot 9, RAGModel slot 8 (Send Prompt)"
+219,Perform RAG Action,12,Data source,List,slot:3:list|slot:4:calc|key:82|flag:0x20|reserved:field|slot:10:calc,1 From Text; 2 From File; 3 From File (Async); 4 From Container; 5 From Container (Async),,xml+params+oracle,"XML RAGDataSource (Add Data); 1: RAGInputText calculation slot 4; 2, 3: UniversalPathList at [00 0]/82; 4, 5: FieldReference in mReserved"
+219,Perform RAG Action,13,Add data response,RAGAddDataResponse,slot:12:field|slot:13:text|flag:0x200,,,xml+params+oracle,"XML RAGAddDataResponse > Target (From Text): field spec [00 12]/10, variable name [00 13]/01"
+220,Generate Response from Model,1,Account name,Calculation,slot:1:calc,,,xml+params+oracle,XML LLMAccountName
+220,Generate Response from Model,2,Model,Calculation,slot:2:calc,,,xml+params+oracle,XML LLMModel
+220,Generate Response from Model,3,User prompt,Calculation,slot:3:calc,,,xml+params+oracle,XML LLMUserPrompt
+220,Generate Response from Model,4,Agentic mode,Boolean,flag:0x20000,,,xml+params+oracle,
+220,Generate Response from Model,5,Instructions,Calculation,slot:5:calc|flag:0x200,,,xml+params+oracle,XML LLMInstruction
+220,Generate Response from Model,6,Messages,LLMMessages,slot:6:field|slot:7:text|flag:0x400,,,xml+params+oracle,"XML LLMMessages > Target: field spec [00 6]/10, variable name [00 7]/01"
+220,Generate Response from Model,7,Tool calls from model,LLMToolCallsFromModel,slot:14:field|slot:15:text|flag:0x2000,,,xml+params+oracle,"XML LLMToolCallsFromModel > Target: field spec [00 14]/10, variable name [00 15]/01"
+220,Generate Response from Model,8,Save message history,LLMSlidingWindow,slot:8:text|slot:22:num|slot:9:calc|slot:11:calc|flag:0x40000,,,xml+params+oracle,"XML LLMSlidingWindow: LLMSlidingWindowVariable value = variable name [00 8]/01 and its IncludeToolCalls = [00 22]/03, LLMSlidingWindowCount calculation slot 9, LLMSlidingWindowVariableRepetition slot 11"
+220,Generate Response from Model,9,Temperature,Calculation,slot:12:calc|flag:0x800,,,xml+params+oracle,XML LLMTemperature (number)
+220,Generate Response from Model,10,Tool definitions,Calculation,slot:13:calc|flag:0x1000,,,xml+params+oracle,XML LLMToolDefinitions
+220,Generate Response from Model,11,Stream,Boolean,flag:0x8000,,,xml+params+oracle,
+220,Generate Response from Model,12,Parameters,Calculation,slot:16:calc|flag:0x100,,,xml+params+oracle,XML LLMParameters
+220,Generate Response from Model,13,Response target,Target,reserved:field|slot:32:text|slot:10:calc,,,xml+params+oracle,"response target: field in mReserved (kFieldSpec) or variable (variable spec, name text in slot 0x20, kTextData); the importer stores the repetition calculation in slot 10"
+220,Generate Response from Model,14,Action,List,slot:18:list,1 Tool Call; 2 Dump Tools,,xml+params+oracle,XML LLMAction
+220,Generate Response from Model,15,Web script,LLMWebScript,slot:20:calc|slot:21:calc|slot:19:num|flag:0x2000000,,,xml+params+oracle,"XML LLMWebScript (kRestore 0x2000000): Name calculation slot 20, FunctionRef slot 21; [00 19]/03 = 0 in the probe, the web script parameters' slots are not measured"
+221,Perform Find by Natural Language,1,Account name,Calculation,slot:1:calc,,,xml+params+oracle,XML LLMAccountName
+221,Perform Find by Natural Language,2,Model,Calculation,slot:2:calc,,,xml+params+oracle,XML LLMModel
+221,Perform Find by Natural Language,3,Prompt,Calculation,slot:3:calc,,,xml+params+oracle,XML LLMMessage
+221,Perform Find by Natural Language,4,Parameters,Calculation,slot:5:calc|flag:0x100,,,xml+params+oracle,XML LLMParameters
+221,Perform Find by Natural Language,5,Prompt template,Calculation,slot:7:calc|flag:0x200,,,xml+params+oracle,XML TemplateName
+221,Perform Find by Natural Language,6,Response target,Target,reserved:field|slot:32:text|slot:10:calc,,,xml+params+oracle,"response target: field in mReserved (kFieldSpec) or variable (variable spec, name text in slot 0x20, kTextData); the importer stores the repetition calculation in slot 10"
+221,Perform Find by Natural Language,7,Result,List,slot:4:list,1 Found Set; 2 Found Set as JSON; 30 Find Request as JSON,,xml+params+oracle,XML LLMAction
+221,Perform Find by Natural Language,8,Target,Calculation,slot:6:calc,,,xml+params+oracle,XML calculation the writer tags Target; meaning not mapped
+222,Configure Regression Model,1,Action (train/save/load/unload),List,slot:7:list,0 Train Model; 1 Save Model; 2 Load Model; 3 Unload Model,,xml+params+oracle,XML LLMTrainActions
+222,Configure Regression Model,2,Model name,Calculation,slot:3:calc,,,xml+params+oracle,XML LLMTrainModelName
+222,Configure Regression Model,3,Training table/fields,FieldReference,slot:2:field|flag:0x100|slot:8:field|flag:0x400,,,xml+params+oracle,"XML LLMTrainVectorsField [00 2]/10 (0x100), LLMTrainLabelsField [00 8]/10 (0x400); the writer shows them and Parameters only while mStepValue is 0"
+222,Configure Regression Model,4,Skip empty or invalid records,Boolean,flag:0x1000,,,xml+params+oracle,
+222,Configure Regression Model,5,Parameters,Calculation,slot:4:calc|flag:0x800,,,xml+params+oracle,XML LLMTrainModelParameters
+222,Configure Regression Model,6,Save model to / load from,,,,,xml+params,no element in the XML reader or writer; storage not found
+222,Configure Regression Model,7,Algorithm,List,slot:9:list,0 Random Forest,,xml+params+oracle,XML LLMTrainAlgorithm; 0 is not stored
+222,Configure Regression Model,8,Response target,Target,reserved:field|slot:32:text|slot:10:calc,,,xml+params+oracle,"response target: field in mReserved (kFieldSpec) or variable (variable spec, name text in slot 0x20, kTextData); the importer stores the repetition calculation in slot 10"
+223,Set Revert Transaction on Error,1,State,Boolean,flag:0x20000|flag:0x10000,,Off,xml+params,On = kTurnOn 0x20000; kSetOnOff 0x10000 is read too and observed alongside On (0x30000) in FMServer_Sample
+224,Execute URL,1,URL,URL,slot:0:calc,,,xml+params+oracle,XML URL > Calculation (as Insert from URL)
+224,Execute URL,2,Callback script,ScriptReference,reserved:script|slot:2:calc,,,xml+params+oracle,"XML ScriptReference: script key in mReserved (kScriptKey 0x40), its repetition = parameter calculation slot 2; GetScriptKeyWithStorePosition special-cases step 224 (from bin)"
+224,Execute URL,3,Verify SSL Certificates,Boolean,flag:0x10000000,,Off,xml+params+oracle,
+224,Execute URL,4,cURL options,Calculation,slot:1:calc,,,xml+params+oracle,
+224,Execute URL,5,Do not automatically encode URL,Boolean,flag:0x100,,Off,xml+params+oracle,XML URL autoEncode inverted
+225,Save Records as JSONL,1,File paths,List,key:20|key:82|flag:0x20,,,xml+params+oracle,kFilePath 0x20; path list at [00 0]/82
+225,Save Records as JSONL,2,Format for fine-tuning,Boolean,flag:0x1000,,Off,xml+params+oracle,
+225,Save Records as JSONL,3,Create folders,Boolean,flag:0x200,,Off,xml+params+oracle,kOption2
+225,Save Records as JSONL,4,JSONL options,SaveAsJSONL,slot:0:aliases|flag:0x100|slot:2:calc|slot:3:calc|slot:4:calc|reserved:field,,,xml+params+oracle,"XML SaveAsJSONLTable occurrence key [00 0]/11 (0x100); fine-tuning: SaveAsJSONLSystemPromptField 2, UserPromptField 3, AssistantPromptField 4 (calculations); otherwise SaveAsJSONLDataCompleteField = field in mReserved (kFieldSpec)"
+226,Configure Prompt Template,1,Template name,Calculation,slot:1:calc,,,xml+params+oracle,XML TemplateName
+226,Configure Prompt Template,2,Model provider,List,slot:2:list,0 OpenAI; 1 Anthropic; 2 Cohere; 4 Google; 20 Custom,,xml+params+oracle,XML ModelProvider; all five menu values observed in FileMaker Pro 26.0.3 local SQL Query files (#149)
+226,Configure Prompt Template,3,SQL prompt,Calculation,slot:3:calc|flag:0x200,,,xml+params+oracle,XML SQLPrompt (SQL Query)
+226,Configure Prompt Template,4,Natural language prompt,Calculation,slot:4:calc|flag:0x100,,,xml+params+oracle,XML NaturalLanguagePrompt (SQL Query)
+226,Configure Prompt Template,5,Find request prompt,Calculation,slot:6:calc|flag:0x400,,,xml+params+oracle,XML FindRequestPrompt (Find Request)
+226,Configure Prompt Template,6,RAG prompt,Calculation,slot:7:calc|flag:0x800,,,xml+params+oracle,XML RAGPrompt (RAG Prompt)
+226,Configure Prompt Template,7,Template type,List,slot:5:list,1 SQL Query; 2 Find Request; 3 RAG Prompt,,xml+params+oracle,XML TemplateType; all three observed in FileMaker Pro 26.0.3 local files (#149)
+226,Configure Prompt Template,8,Step value,List,value,,,xml+params+oracle,XML List written from mStepValue without a name; Pro left it 0 for three template types and all five SQL Query provider choices (#149); nonzero meaning not mapped
+227,Configure RAG Account ,1,RAG account name,Calculation,slot:1:calc,,,xml+params+oracle,XML RAGAccountName
+227,Configure RAG Account ,2,Endpoint,Calculation,slot:2:calc,,,xml+params+oracle,XML RAGEndpoint
+227,Configure RAG Account ,3,API key,Calculation,slot:3:calc,,,xml+params+oracle,XML RAGAPIKey
+227,Configure RAG Account ,4,Verify SSL Certificates,Boolean,flag:0x10000000,,,xml+params+oracle,
+228,Go to List of Records,1,List of record IDs,Calculation,slot:7:calc,,,xml+params+oracle,XML Calculation position 7 (not slot 0)
+228,Go to List of Records,2,Layout,LayoutReference,reserved:layout|value,,,xml+params+oracle,XML LayoutReferenceContainer: step value 5 + layout key in mReserved (kMemberKey)
+228,Go to List of Records,3,Animation,List,slot:6:list,,,xml+params+oracle,
+228,Go to List of Records,4,New window,Boolean,flag:0x20000|slot:0:calc|slot:1:calc|slot:2:calc|slot:3:calc|slot:4:calc|slot:0:num,,Off,xml+params+oracle,"kTurnOn 0x20000 (not 0x100) with the new window as Go to Related Record: name calculation slot 0, height/width/top/left slots 1-4, style word [00 0]/03"
+237,Flush Web Viewer Cookies,0,,,,,,xml+params,no parameters: absent from both XML dispatchers and from GenerateParameters
+238,Configure Persistent Data,1,Persistent data,SetPersistentData,slot:0:text|slot:1:calc|slot:2:calc|flag:0x100|flag:0x4,,,xml+params+oracle,"XML PersistentStore: Name value = key text [00 0]/01 (kTextData), value > calculation slot 1, instanceID > calculation slot 2, Delete element = 0x100 (no value)"
+239,Validate Scripts,1,Account name,Calculation,slot:1:calc,,,xml+params+oracle,XML LLMAccountName
+239,Validate Scripts,2,Model,Calculation,slot:2:calc,,,xml+params+oracle,XML LLMModel
+239,Validate Scripts,3,Instructions,Calculation,slot:4:calc,,,xml+params+oracle,XML LLMInstruction
+239,Validate Scripts,4,Scripts,ScriptReference,slot:3:aliases|flag:0x100,,,xml+params+oracle,XML Scripts > Script > ScriptReference: script keys at [00 3]/11 (6 bytes each) with count [00 3]/04
+239,Validate Scripts,5,Response target,Target,reserved:field|slot:32:text|slot:10:calc,,,xml+params+oracle,"response target: field in mReserved (kFieldSpec) or variable (variable spec, name text in slot 0x20, kTextData); the importer stores the repetition calculation in slot 10"
+240,Insert Image Captions in Found Set,1,Account name,Calculation,slot:1:calc,,,xml+params+oracle,XML LLMEmbeddingAccountName
+240,Insert Image Captions in Found Set,2,Model,Calculation,slot:2:calc,,,xml+params+oracle,XML LLMEmbeddingModel
+240,Insert Image Captions in Found Set,3,Source field,LLMBulkEmbeddingField,slot:3:field|flag:0x200,,,xml+params+oracle,XML LLMBulkEmbeddingField
+240,Insert Image Captions in Found Set,4,Target field,Target,reserved:field,,,xml+params+oracle,kFieldSpec + DBFieldSpec in mReserved (XML Target)
+240,Insert Image Captions in Found Set,5,Replace target contents,Boolean,flag:0x400,,,xml+params+oracle,
+240,Insert Image Captions in Found Set,6,Continue on error,Boolean,flag:0x1000,,,xml+params+oracle,
+240,Insert Image Captions in Found Set,7,Parameters,Calculation,slot:4:calc|flag:0x800,,,xml+params+oracle,XML LLMParameters
+241,Insert Image Caption,1,Account name,Calculation,slot:1:calc,,,xml+params+oracle,XML LLMEmbeddingAccountName
+241,Insert Image Caption,2,Model,Calculation,slot:2:calc,,,xml+params+oracle,XML LLMEmbeddingModel
+241,Insert Image Caption,3,Input,Calculation,slot:3:calc,,,xml+params+oracle,XML LLMEmbeddingInputText
+241,Insert Image Caption,4,Target,Target,reserved:field|slot:32:text|slot:10:calc,,,xml+params+oracle,"response target: field in mReserved (kFieldSpec) or variable (variable spec, name text in slot 0x20, kTextData); the importer stores the repetition calculation in slot 10"
+241,Insert Image Caption,5,Parameters,Calculation,slot:5:calc|flag:0x100,,,xml+params+oracle,XML LLMParameters
+242,Print PDF,1,PDF to print,List,flag:0x20,,,xml+params,"1 = file (kFilePath set), 2 = container or variable"
+242,Print PDF,2,File paths,List,key:20|key:82|flag:0x20,,,xml+params,"kFilePath 0x20; path list text in 82 (KPathString), file references in 20 (KFileReferences)"
+242,Print PDF,3,Source,Target,reserved:field,,,xml+params,
+242,Print PDF,4,Restore,Boolean,flag:0x2000000,,Off,xml+params,kRestore: the stored spec is used without asking
+242,Print PDF,5,Password,Boolean,flag:0x100,,Off,xml+params,
+242,Print PDF,6,Password,Calculation,slot:1:calc,,,xml+params,
+242,Print PDF,7,Save print options to,Boolean,flag:0x400|slot:3:field,,Off,xml+params,target at slot 3
+242,Print PDF,8,Use print options from,Boolean,flag:0x200|slot:2:field,,Off,xml+params,target at slot 2
+242,Print PDF,9,With dialog,Boolean,flag:!0x80,,On,xml+params,On/Off; On = flag clear (kNoInteract is the stored bit)
+243,Create PDF,1,Restore,Boolean,flag:0x2000000,,,xml+params+oracle,
+243,Create PDF,2,PDF options,CreatePDFFileOptions,slot:0:calc|slot:1:calc|slot:2:calc|slot:3:calc|slot:7:calc|slot:8:calc|slot:2:num|slot:3:num|slot:4:num|slot:5:num|slot:6:num|slot:7:num|slot:8:num|slot:9:num|slot:10:num,,,xml+params+oracle,"XML Options: Document Title, Subject, Author, Keywords calculations 0-3; Security Open [00 2]/03 + Password calculation 7, Control [00 3]/03 + Password 8, Print [00 4]/03 u16, Edit [00 5]/03 u16, EnableCopying [00 6]/03, AllowScreenReader [00 7]/03; View show [00 8]/03, Layout [00 9]/03, Magnification [00 10]/03 (u16); script-steps.md 12.2"
+244,Append PDF,1,Source (file/target),List,slot:11:list,0 File; 1 Target,,xml+params+oracle,XML From
+244,Append PDF,2,Password,Calculation,slot:7:calc|flag:0x100,,,xml+params+oracle,XML PDFPassword
+244,Append PDF,3,Source file,List,key:82|flag:0x20|reserved:field|slot:32:text|slot:10:calc|flag:0x200,,,xml+params+oracle,"File: UniversalPathList at [00 0]/82 and Boolean Create folders (written from 0x200 as id 512, read as id 256 into 0x100); Target: field or variable as a response target"
+245,Close PDF,1,Destination (file/target),List,slot:11:list,0 File; 1 Target,,xml+params+oracle,XML SaveTo
+245,Close PDF,2,Create folders,Boolean,flag:0x200,,,xml+params+oracle,"written from 0x200 as id 512, read as id 256 into 0x100 (FileMaker's own XML loses it)"
+245,Close PDF,3,Target,Target,reserved:field|slot:32:text|slot:10:calc,,,xml+params+oracle,Target destination: field or variable
+245,Close PDF,4,Filename,Calculation,slot:12:calc,,,xml+params+oracle,XML PDFName (Target destination)
+245,Close PDF,5,File paths,List,key:82|flag:0x20,,,xml+params+oracle,File destination: UniversalPathList at [00 0]/82
+246,Open PDF,1,Source (file/target),List,slot:11:list,0 File; 1 Target,,xml+params+oracle,XML From
+246,Open PDF,2,Password,Calculation,slot:7:calc|flag:0x100,,,xml+params+oracle,XML PDFPassword
+246,Open PDF,3,Source file,List,key:82|flag:0x20|reserved:field|slot:32:text|slot:10:calc|flag:0x200,,,xml+params+oracle,"File: UniversalPathList at [00 0]/82 and Boolean Create folders (written from 0x200 as id 512, read as id 256 into 0x100); Target: field or variable as a response target"
+247,Cancel PDF,0,,,,,,xml+params,no parameters: absent from both XML dispatchers and from GenerateParameters

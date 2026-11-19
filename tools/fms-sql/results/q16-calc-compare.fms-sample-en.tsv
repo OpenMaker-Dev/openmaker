@@ -1,0 +1,19 @@
+# q16: SQL functions beside the calculation functions of the same name, same
+# arguments. File: FileMaker Server sample (en), no record context. Each pair:
+# the calculation, then the SQL.
+Cos ( 1 ) & "|" & Sin ( 1 ) & "|" & Tan ( 1 ) & "|" & Atan ( 1 ) & "|" & Degrees ( 1 ) & "|" & Radians ( 180 ) & "|" & Pi	0	1/1/0	.5403023058681398|.8414709848078965|1.5574077246549023|.7853981633974483|57.2957795130823209|3.1415926535897932|3.1415926535897932
+ExecuteSQLe ( "SELECT COS(1), SIN(1), TAN(1), ATAN(1), DEGREES(1), RADIANS(180), PI() FROM Tasks WHERE \"TASK ID MATCH FIELD\" = 3" ; "|" ; "¶" )	0	1/1/0	.5403023058681398|.8414709848078965|1.5574077246549023|.7853981633974483|57.2957795130823209|3.1415926535897932|3.1415926535897932
+Exp ( 1 ) & "|" & Ln ( 10 ) & "|" & Log ( 2 ) & "|" & Lg ( 100 ) & "|" & Sqrt ( 2 ) & "|" & 2 ^ 0.5 & "|" & Exp ( 2.5 )	0	1/1/0	2.7182818284590452|2.3025850929940457|.3010299956639812|6.6438561897747247|1.414213562373095|1.414213562373095|12.1824939607034734
+ExecuteSQLe ( "SELECT EXP(1), LN(10), LOG(2), LG(100), SQRT(2), 2^0.5, EXP(2.5) FROM Tasks WHERE \"TASK ID MATCH FIELD\" = 3" ; "|" ; "¶" )	0	1/1/0	2.7182818284590452|2.3025850929940457|.3010299956639812|6.6438561897747247|1.414213562373095|1.414213562373095|12.1824939607034734
+Round ( 2.5 ; 0 ) & "|" & Round ( -2.5 ; 0 ) & "|" & Round ( 0.125 ; 2 ) & "|" & Int ( -2.7 ) & "|" & Ceiling ( -1.2 ) & "|" & Floor ( -1.2 ) & "|" & Mod ( -7 ; 3 ) & "|" & Mod ( 7 ; -3 ) & "|" & Mod ( 7 ; 0 ) & "|" & Sign ( -3 )	0	1/1/0	3|-3|.13|-2|-1|-2|2|-2|7|-1
+ExecuteSQLe ( "SELECT ROUND(2.5, 0), ROUND(-2.5, 0), ROUND(0.125, 2), INT(-2.7), CEILING(-1.2), FLOOR(-1.2), MOD(-7, 3), MOD(7, -3), MOD(7, 0), SIGN(-3) FROM Tasks WHERE \"TASK ID MATCH FIELD\" = 3" ; "|" ; "¶" )	0	1/1/0	3|-3|.13|-2|-1|-2|2|-2|7|-1
+1/3 & "|" & 10/3 & "|" & 1/7 & "|" & 2/3 & "|" & 1/3000000 & "|" & 123456789.123456789 * 1000	0	1/1/0	.3333333333333333|3.3333333333333333|.1428571428571429|.6666666666666667|.0000003333333333|123456789123.456789
+ExecuteSQLe ( "SELECT 1/3, 10/3, 1/7, 2/3, 1/3000000, 123456789.123456789 * 1000 FROM Tasks WHERE \"TASK ID MATCH FIELD\" = 3" ; "|" ; "¶" )	0	1/1/0	.3333333333333333|3.3333333333333333|.1428571428571429|.6666666666666667|.0000003333333333|123456789123.456789
+Length ( "👍🏽" ) & "|" & Length ( "🇩🇪" ) & "|" & Length ( "e" & Char ( 769 ) ) & "|" & Length ( "😀" ) & "|" & Upper ( "straße" ) & "|" & Lower ( "ΣΑΣ" ) & "|" & Upper ( "ǆ" ) & "|" & Lower ( "İ" )	0	1/1/0	2|2|1|1|STRAßE|σας|Ǆ|i
+ExecuteSQLe ( "SELECT LENGTH('👍🏽'), LENGTH('🇩🇪'), LENGTH('é'), LENGTH('😀'), UPPER('straße'), LOWER('ΣΑΣ'), UPPER('ǆ'), LOWER('İ') FROM Tasks WHERE \"TASK ID MATCH FIELD\" = 3" ; "|" ; "¶" )	0	1/1/0	2|2|1|1|STRAßE|σας|Ǆ|i
+Left ( "😀ab" ; 1 ) & "|" & Middle ( "😀abc" ; 2 ; 2 ) & "|" & Right ( "ab😀" ; 1 ) & "|" & Middle ( "Hire New" ; 0 ; 3 )	0	1/1/0	😀|ab|😀|Hir
+ExecuteSQLe ( "SELECT LEFT('😀ab', 1), SUBSTR('😀abc', 2, 2), RIGHT('ab😀', 1), SUBSTR('Hire New', 0, 3) FROM Tasks WHERE \"TASK ID MATCH FIELD\" = 3" ; "|" ; "¶" )	0	1/1/0	😀|ab|😀|Hir
+DayName ( Date ( 11 ; 24 ; 2014 ) ) & "|" & MonthName ( Date ( 11 ; 24 ; 2014 ) ) & "|" & DayOfWeek ( Date ( 11 ; 24 ; 2014 ) )	0	1/1/0	Monday|November|2
+ExecuteSQLe ( "SELECT DAYNAME(DATE '2014-11-24'), MONTHNAME(DATE '2014-11-24'), DAYOFWEEK(DATE '2014-11-24') FROM Tasks WHERE \"TASK ID MATCH FIELD\" = 3" ; "|" ; "¶" )	0	1/1/0	Monday|November|2
+1e20 & "|" & 10^9 & "|" & 1000000000.5 & "|" & 0.0000000001 & "|" & .5 & "|" & 1.50	0	1/1/0	1.0E+20|1.0E+9|1.0000000005E+9|1.0E-10|.5|1.5
+ExecuteSQLe ( "SELECT 1e20, 10^9, 1000000000.5, 0.0000000001, .5, 1.50 FROM Tasks WHERE \"TASK ID MATCH FIELD\" = 3" ; "|" ; "¶" )	0	1/1/0	1.0E+20|1.0E+9|1.0000000005E+9|1.0E-10|.5|1.5

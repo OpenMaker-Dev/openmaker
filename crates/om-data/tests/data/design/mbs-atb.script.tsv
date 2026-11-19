@@ -1,0 +1,23 @@
+# FileMaker Server 26.0.3 script engine (tools/fms-script-harness, s30-design),
+# expressions evaluated by a script in design-mbs-atb.fmp12 (the file with the probe
+# script "design" added) in its window, on the default layout's occurrence.
+# file	design-mbs-atb.fmp12
+# layout	ATB
+ValueListItems ( "" ; "Functions" )	AddRec\rCalendar\rDelete\remail\rExcel\rhome\rInfo\rInvoice\rList\rPDF\rPrint\rread\rreturn\rSearch\rsetup\rtrash
+ValueListItems ( "" ; "Default" )	AddRec\rCalendar\rDelete\remail\rExcel\rhome\rInfo\rInvoice\rList\rPDF\rPrint\rread\rreturn\rSearch\rsetup\rSTouchBarItemIdentifierFixedSpaceLarge\rSTouchBarItemIdentifierFixedSpaceSmall\rSTouchBarItemIdentifierFlexibleSpace\rtrash
+ValueListItems ( "" ; "no such" )	
+ValueListItems ( "" ; "" )	
+FieldType ( "" ; "flex_Function" )	Standard Text Unindexed 9
+FieldComment ( "" ; "flex_Function" )	
+GetNextSerialValue ( "" ; "flex_Function" )	
+FieldType ( "" ; "flex_Icon" )	Standard Text Unindexed 9
+FieldComment ( "" ; "flex_Icon" )	
+GetNextSerialValue ( "" ; "flex_Icon" )	
+FieldType ( "" ; "flex_Script" )	Standard Text Unindexed 9
+FieldComment ( "" ; "flex_Script" )	
+GetNextSerialValue ( "" ; "flex_Script" )	
+FieldType ( "" ; "flex_Label" )	Standard Text Unindexed 9
+FieldComment ( "" ; "flex_Label" )	
+GetNextSerialValue ( "" ; "flex_Label" )	
+FieldType ( "" ; "no such" )	
+FieldComment ( "" ; "" )	

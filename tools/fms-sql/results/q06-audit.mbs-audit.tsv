@@ -1,0 +1,55 @@
+# q06: field types in the MBS example "Audit" (Audit: SomeText, SomeNumber,
+# SomeDate, SomeTime, SomeTimeStamp, SomeContainer (binary), AuditTimeStamp,
+# AuditState; 3 records. AuditLog: 18 text fields; 26 records). No record context.
+ExecuteSQLe ( "SELECT * FROM Audit" ; "|" ; "¶" )	0	1/1/0	Hello World|14|||||2024-03-05 18:26:59|1\rSecond record|||||||1\rjust a test|123|||2013-10-09 17:33:49||2020-08-18 09:26:26|1
+ExecuteSQLe ( "SELECT ROWID, SomeText, SomeNumber, SomeDate, SomeTime, SomeTimeStamp FROM Audit" ; "|" ; "¶" )	0	1/1/0	1|Hello World|14|||\r9|Second record||||\r10|just a test|123|||2013-10-09 17:33:49
+ExecuteSQLe ( "SELECT SomeContainer FROM Audit" ; "|" ; "¶" )	0	1/1/0	\r\r
+ExecuteSQLe ( "SELECT LENGTH(SomeContainer) FROM Audit" ; "|" ; "¶" )	8309	1/1/0	? ERROR: FQL0021/(1:7): Parameter number 1 to the function "LENGTH" is not of the correct type.
+ExecuteSQLe ( "SELECT SomeContainer IS NULL FROM Audit" ; "|" ; "¶" )	8310	1/1/0	? ERROR: FQL0001/(1:22): There is an error in the syntax of the query.
+ExecuteSQLe ( "SELECT ROWID FROM Audit WHERE SomeContainer IS NULL" ; "|" ; "¶" )	0	1/1/0	1\r9\r10
+ExecuteSQLe ( "SELECT ROWID FROM Audit WHERE SomeContainer IS NOT NULL" ; "|" ; "¶" )	0	0/1/0	
+ExecuteSQLe ( "SELECT CAST(SomeContainer AS VARCHAR) FROM Audit" ; "|" ; "¶" )	0	1/1/0	\r\r
+ExecuteSQLe ( "SELECT STRVAL(SomeContainer) FROM Audit" ; "|" ; "¶" )	0	1/1/0	\r\r
+ExecuteSQLe ( "SELECT GETAS(SomeContainer, 'FILE') FROM Audit" ; "|" ; "¶" )	0	1/1/0	\r\r
+ExecuteSQLe ( "SELECT GETAS(SomeContainer, 'JPEG') FROM Audit" ; "|" ; "¶" )	0	1/1/0	\r\r
+ExecuteSQLe ( "SELECT GETAS(SomeContainer, 'PNGf') FROM Audit" ; "|" ; "¶" )	0	1/1/0	\r\r
+ExecuteSQLe ( "SELECT GETAS(SomeContainer, 'SND ') FROM Audit" ; "|" ; "¶" )	0	1/1/0	\r\r
+ExecuteSQLe ( "SELECT GETAS(SomeContainer, DEFAULT) FROM Audit" ; "|" ; "¶" )	0	1/1/0	\r\r
+ExecuteSQLe ( "SELECT GETAS(SomeText, 'FILE') FROM Audit" ; "|" ; "¶" )	8309	1/1/0	? ERROR: FQL0021/(1:13): Parameter number 1 to the function "GETAS" is not of the correct type.
+ExecuteSQLe ( "SELECT GETAS(SomeContainer, 'XX') FROM Audit" ; "|" ; "¶" )	8309	1/1/0	? ERROR: FQL0043/(1:13): The string "XX" is not a valid stream name.
+ExecuteSQLe ( "SELECT COUNT(SomeContainer) FROM Audit" ; "|" ; "¶" )	0	1/1/0	0
+ExecuteSQLe ( "SELECT MAX(SomeContainer) FROM Audit" ; "|" ; "¶" )	0	0/1/0	
+ExecuteSQLe ( "SELECT DISTINCT SomeContainer FROM Audit" ; "|" ; "¶" )	0	0/1/0	
+ExecuteSQLe ( "SELECT SomeContainer FROM Audit UNION SELECT SomeContainer FROM Audit" ; "|" ; "¶" )	8309	1/1/0	? ERROR: FQL0046/(1:38): Container fields are not allowed in UNION DISTINCT queries.
+ExecuteSQLe ( "SELECT SomeContainer FROM Audit UNION ALL SELECT SomeContainer FROM Audit" ; "|" ; "¶" )	0	1/1/0	\r\r\r\r\r
+ExecuteSQLe ( "SELECT ROWID FROM Audit ORDER BY SomeContainer" ; "|" ; "¶" )	0	1/1/0	1\r9\r10
+ExecuteSQLe ( "SELECT ROWID FROM Audit WHERE SomeContainer = 'x'" ; "|" ; "¶" )	8309	1/1/0	? ERROR: FQL0018/(1:44): An expression contains incompatible data types.
+ExecuteSQLe ( "SELECT ROWID FROM Audit WHERE SomeContainer LIKE '%'" ; "|" ; "¶" )	8309	1/1/0	? ERROR: FQL0018/(1:44): An expression contains incompatible data types.
+ExecuteSQLe ( "SELECT SomeTime, SomeTime + 1, HOUR(SomeTime), CAST(SomeTime AS VARCHAR), SomeTime - TIME '00:00:00' FROM Audit" ; "|" ; "¶" )	0	1/1/0	||||\r||||\r||||
+ExecuteSQLe ( "SELECT SomeTimeStamp, SomeTimeStamp + 1, CAST(SomeTimeStamp AS DATE), CAST(SomeTimeStamp AS TIME), YEAR(SomeTimeStamp) FROM Audit" ; "|" ; "¶" )	0	1/1/0	||||\r||||\r2013-10-09 17:33:49|2013-10-09 17:33:50|2013-10-09|17:33:49|2013
+ExecuteSQLe ( "SELECT SomeNumber, SomeNumber * 2, SomeNumber / 3, -SomeNumber, ROUND(SomeNumber, 0) FROM Audit" ; "|" ; "¶" )	0	1/1/0	14|28|4.6666666666666667|-14|14\r||||\r123|246|41|-123|123
+ExecuteSQLe ( "SELECT SomeDate, SomeDate + 1, MONTHNAME(SomeDate), DAYNAME(SomeDate) FROM Audit" ; "|" ; "¶" )	0	1/1/0	|||\r|||\r|||
+ExecuteSQLe ( "SELECT AuditTimeStamp, AuditState FROM Audit" ; "|" ; "¶" )	0	1/1/0	2024-03-05 18:26:59|1\r|1\r2020-08-18 09:26:26|1
+ExecuteSQLe ( "SELECT ROWID FROM Audit WHERE SomeTime > TIME '12:00:00'" ; "|" ; "¶" )	0	0/1/0	
+ExecuteSQLe ( "SELECT ROWID FROM Audit WHERE SomeTime = '1:00:00 PM'" ; "|" ; "¶" )	0	0/1/0	
+ExecuteSQLe ( "SELECT ROWID FROM Audit WHERE SomeTimeStamp > TIMESTAMP '2000-01-01 00:00:00'" ; "|" ; "¶" )	0	1/1/0	10
+ExecuteSQLe ( "SELECT ROWID FROM Audit WHERE SomeTimeStamp > '1/1/2000 12:00:00 AM'" ; "|" ; "¶" )	0	0/1/0	
+ExecuteSQLe ( "SELECT ROWID FROM Audit WHERE SomeTimeStamp > DATE '2000-01-01'" ; "|" ; "¶" )	0	1/1/0	10
+ExecuteSQLe ( "SELECT MIN(SomeTime), MAX(SomeTimeStamp), SUM(SomeNumber), AVG(SomeNumber), COUNT(SomeTimeStamp) FROM Audit" ; "|" ; "¶" )	0	1/1/0	|2013-10-09 17:33:49|137|68.5|1
+ExecuteSQLe ( "SELECT SUM(SomeTime) FROM Audit" ; "|" ; "¶" )	8309	1/1/0	? ERROR: FQL0021/(1:7): Parameter number 1 to the function "SUM" is not of the correct type.
+ExecuteSQLe ( "SELECT ROWID, SomeText FROM Audit ORDER BY SomeText" ; "|" ; "¶" )	0	1/1/0	1|Hello World\r9|Second record\r10|just a test
+ExecuteSQLe ( "SELECT ROWID FROM Audit ORDER BY SomeTime DESC" ; "|" ; "¶" )	0	1/1/0	1\r9\r10
+ExecuteSQLe ( "SELECT ROWID FROM Audit ORDER BY SomeTimeStamp" ; "|" ; "¶" )	0	1/1/0	1\r9\r10
+ExecuteSQLe ( "SELECT ROWID FROM Audit ORDER BY SomeNumber" ; "|" ; "¶" )	0	1/1/0	9\r1\r10
+ExecuteSQLe ( "SELECT * FROM AuditLog FETCH FIRST 3 ROWS ONLY" ; "|" ; "¶" )	0	1/1/0	D41D8CD98F00B204E9800998ECF8427E|SomeContainer||data|Audit|Admin|192.168.2.109, 192.168.2.102, 172.16.72.1, 192.168.24.1|09.10.2013 17:27:23|Create|1|09.10.2013 17:27:23||Admin|1|Audit|||\rD41D8CD98F00B204E9800998ECF8427E|SomeDate||date|Audit|Admin|192.168.2.109, 192.168.2.102, 172.16.72.1, 192.168.24.1|09.10.2013 17:27:23|Create|1|09.10.2013 17:27:23||Admin|1|Audit|||\rC4CA4238A0B923820DCC509A6F75849B|SomeNumber|1|number|Audit|Admin|192.168.2.109, 192.168.2.102, 172.16.72.1, 192.168.24.1|09.10.2013 17:27:23|Create|1|09.10.2013 17:27:23||Admin|1|Audit|||
+ExecuteSQLe ( "SELECT FieldName, COUNT(*) FROM AuditLog GROUP BY FieldName" ; "|" ; "¶" )	0	1/1/0	SomeContainer|1\rSomeDate|2\rSomeNumber|12\rSomeText|5\rSomeTime|2\rSomeTimeStamp|4
+ExecuteSQLe ( "SELECT Action, COUNT(*) FROM AuditLog GROUP BY Action" ; "|" ; "¶" )	8310	1/1/0	? ERROR: FQL0001/(1:8): There is an error in the syntax of the query.
+ExecuteSQLe ( "SELECT DISTINCT FieldType FROM AuditLog" ; "|" ; "¶" )	0	1/1/0	Number\rdata\rdate\rnumber\rtext\rtime\rtimestamp
+ExecuteSQLe ( "SELECT FieldValue FROM AuditLog WHERE FieldType = 'Number'" ; "|" ; "¶" )	0	1/1/0	14
+ExecuteSQLe ( "SELECT FieldValue FROM AuditLog ORDER BY FieldValue" ; "|" ; "¶" )	0	1/1/0	\r\r\r\r\r\r\r\r\r09.10.2013\r09.10.2013 17:33:07\r09.10.2013 17:33:49\r1\r12\r123\r13\r14\r14\r15\r3\r4\r5\r9\rHello World\rjust a test\rjusta  test
+ExecuteSQLe ( "SELECT TimeStamp FROM AuditLog ORDER BY TimeStamp DESC FETCH FIRST 5 ROWS ONLY" ; "|" ; "¶" )	8310	1/1/0	? ERROR: FQL0001/(1:18): There is an error in the syntax of the query.
+ExecuteSQLe ( "SELECT a.SomeText, COUNT(l.ROWID) FROM Audit a LEFT JOIN AuditLog l ON l.RecordID = STRVAL(a.ROWID) GROUP BY a.SomeText" ; "|" ; "¶" )	0	1/1/0	Hello World|13\rSecond record|1\rjust a test|13
+ExecuteSQLe ( "SELECT a.ROWID, l.Action FROM Audit a JOIN AuditLog l ON l.RecordID = CAST(a.ROWID AS VARCHAR) ORDER BY 1, 2" ; "|" ; "¶" )	8310	1/1/0	? ERROR: FQL0001/(1:19): There is an error in the syntax of the query.
+ExecuteSQL ( "SELECT SomeContainer FROM Audit" ; "|" ; "¶" )	0	1/1/0	\r\r
+GetAsText ( ExecuteSQL ( "SELECT SomeContainer FROM Audit" ; "|" ; "¶" ) )	0	1/1/0	\r\r
+ExecuteSQL ( "SELECT ROWID, SomeTime, SomeNumber FROM Audit WHERE SomeTime = ?" ; "|" ; "¶" ; Time ( 13 ; 0 ; 0 ) )	0	0/1/0	

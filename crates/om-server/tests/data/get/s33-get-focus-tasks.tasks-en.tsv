@@ -1,0 +1,7 @@
+# FileMaker Server 26.0.3 script engine (tools/fms-script-harness, s33-get-focus-tasks): the run lines' answers,
+# each value the probe expression after a step (see the battery).
+s33 details new		0		0	Task|Tasks|1|0|1|Task|PrimaryKey,CreatedBy,ModifiedBy,CreationTimestamp,ModificationTimestamp|1|0|0	Task|Tasks|1|0|1|Task|Description,PrimaryKey,CreatedBy,ModifiedBy,CreationTimestamp,ModificationTimestamp|1|0|0	||||0|||0|0|0	||||0||Status|2|0|0	||||0||Task,Status|2|0|0	||||0|||0|0|0	1
+s33 list new		0		0	Task|Tasks|1|0|1||PrimaryKey,CreatedBy,ModifiedBy,CreationTimestamp,ModificationTimestamp|1|0|0	||||0|||0|0|0	1
+s33 details find		0		0	Task|Tasks|1|0|1|Task||0|1|1	Task|Tasks|1|0|1|Task||1|2|1	||||0|||0|2|0	Task|Tasks|1|0|1|Task||0|1|1	||||0|||0|1|0	1
+s33 list find		0		0	Task|Tasks|1|0|1|||0|1|1	||||0|||0|1|0
+s33 go to field		0		0	Task|Tasks|4|0|1|Task||0|0|0	Task|Tasks|6|0|1|Task||2|0|0	||||0|||0|0|0	||||0|||0|0|0	#1224 ?

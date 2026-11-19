@@ -1,0 +1,484 @@
+# Compile mode (calceval -c -d), calc-oracle.fmp12, context table occurrence "Table" (03d00001).
+# One minimal call per calc-tokens.csv row with corpus_all = 0 and per built-in plug-in
+# function; a second line calls it with every optional argument.
+# 33 21 operator
+1 xor 0
+# 46 2e Exp nargs=Unary min=1 max=1
+Exp ( 1 )
+# 51 33 Sign nargs=Unary min=1 max=1
+Sign ( 1 )
+# 52 34 Sqrt nargs=Unary min=1 max=1
+Sqrt ( 1 )
+# 56 38 Lg nargs=Unary min=1 max=1
+Lg ( 1 )
+# 57 39 Ln nargs=Unary min=1 max=1
+Ln ( 1 )
+# 58 3a Log nargs=Unary min=1 max=1
+Log ( 1 )
+# 59 3b Factorial nargs=VarArgs min=1 max=2
+Factorial ( 1 )
+Factorial ( 1 ; 1 )
+# 60 3c Combination nargs=Binary min=2 max=2
+Combination ( 1 ; 1 )
+# 64 40 SetRecursion nargs=Special min=2 max=2
+SetRecursion ( "a" ; "a" )
+# 83 53 WordCount nargs=Unary min=1 max=1
+WordCount ( "a" )
+# 108 6c GetAsSVG nargs=Unary min=1 max=1
+GetAsSVG ( "a" )
+# 114 72 DayName nargs=Unary min=1 max=1
+DayName ( Date ( 1 ; 2 ; 2024 ) )
+# 116 74 DayOfYear nargs=Unary min=1 max=1
+DayOfYear ( Date ( 1 ; 2 ; 2024 ) )
+# 118 76 MonthName nargs=Unary min=1 max=1
+MonthName ( Date ( 1 ; 2 ; 2024 ) )
+# 120 78 WeekOfYearFiscal nargs=Binary min=2 max=2
+WeekOfYearFiscal ( Date ( 1 ; 2 ; 2024 ) ; 1 )
+# 127 7f Average nargs=VarArgs min=1 max=0
+Average ( Table::Input )
+Average ( 1 ; 2 ; 3 )
+# 131 83 StDev nargs=VarArgs min=1 max=0
+StDev ( Table::Input )
+# 132 84 StDevP nargs=VarArgs min=1 max=0
+StDevP ( Table::Input )
+# 134 86 GetSummary nargs=BinaryField min=2 max=2
+GetSummary ( Table::Input ; Table::Input )
+# 138 8a Last nargs=UnaryField min=1 max=1
+Last ( Table::Input )
+# 140 8c FV nargs=Trinary min=3 max=3
+FV ( 1 ; 1 ; 1 )
+# 141 8d NPV nargs=BinaryField min=2 max=2
+NPV ( Table::Input ; 1 )
+# 142 8e PMT nargs=Trinary min=3 max=3
+PMT ( 1 ; 1 ; 1 )
+# 143 8f PV nargs=Trinary min=3 max=3
+PV ( 1 ; 1 ; 1 )
+# 148 94 Atan nargs=Unary min=1 max=1
+Atan ( 1 )
+# 149 95 Cos nargs=Unary min=1 max=1
+Cos ( 1 )
+# 150 96 Degrees nargs=Unary min=1 max=1
+Degrees ( 1 )
+# 151 97 Pi nargs=NoArgs min=0 max=0
+Pi
+# 152 98 Radians nargs=Unary min=1 max=1
+Radians ( 1 )
+# 153 99 Sin nargs=Unary min=1 max=1
+Sin ( 1 )
+# 154 9a Tan nargs=Unary min=1 max=1
+Tan ( 1 )
+# 157 9d Acos nargs=Unary min=1 max=1
+Acos ( 1 )
+# 158 9e Asin nargs=Unary min=1 max=1
+Asin ( 1 )
+# 160 a0 Variance nargs=VarArgs min=1 max=0
+Variance ( Table::Input )
+# 161 a1 VarianceP nargs=VarArgs min=1 max=0
+VarianceP ( Table::Input )
+# 166 a6 TextStyleRemove nargs=Binary min=2 max=2
+TextStyleRemove ( "a" ; "a" )
+# 168 a8 TextColorRemove nargs=VarArgs min=1 max=2
+TextColorRemove ( "a" )
+TextColorRemove ( "a" ; RGB ( 1 ; 2 ; 3 ) )
+# 170 aa constant
+Plain
+# 173 ad constant
+Underline
+# 175 af constant
+Extend
+# 176 b0 constant
+Strikethrough
+# 177 b1 constant
+SmallCaps
+# 178 b2 constant
+Superscript
+# 179 b3 constant
+Subscript
+# 180 b4 constant
+Uppercase
+# 181 b5 constant
+Lowercase
+# 182 b6 constant
+Titlecase
+# 183 b7 constant
+WordUnderline
+# 184 b8 constant
+DoubleUnderline
+# 185 b9 constant
+AllStyles
+# 186 ba TextSizeRemove nargs=VarArgs min=1 max=2
+TextSizeRemove ( "a" )
+TextSizeRemove ( "a" ; 1 )
+# 188 bc constant
+Lower
+# 189 bd constant
+Higher
+# 190 be constant
+Roman
+# 191 bf constant
+Greek
+# 192 c0 constant
+Cyrillic
+# 193 c1 constant
+CentralEurope
+# 194 c2 constant
+ShiftJIS
+# 195 c3 constant
+TraditionalChinese
+# 196 c4 constant
+SimplifiedChinese
+# 197 c5 constant
+OEM
+# 198 c6 constant
+Symbol
+# 199 c7 constant
+Other
+# 222 de IsValidExpression nargs=Special min=1 max=1
+IsValidExpression ( "a" )
+# 224 e0 Lookup nargs=VarArgs min=1 max=2
+Lookup ( Table::Input )
+Lookup ( Table::Input ; "a" )
+# 225 e1 LookupNext nargs=VarArgs min=2 max=2
+LookupNext ( Table::Input ; 1 )
+# 230 e6 DayNameJ nargs=Unary min=1 max=1
+DayNameJ ( Date ( 1 ; 2 ; 2024 ) )
+# 231 e7 MonthNameJ nargs=Unary min=1 max=1
+MonthNameJ ( Date ( 1 ; 2 ; 2024 ) )
+# 232 e8 YearName nargs=Binary min=2 max=2
+YearName ( Date ( 1 ; 2 ; 2024 ) ; "a" )
+# 233 e9 LunarDate nargs=Unary min=1 max=1
+LunarDate ( 1 )
+# 234 ea SolarDate nargs=Binary min=2 max=2
+SolarDate ( 1 ; 1 )
+# 235 eb KanjiNumeral nargs=Unary min=1 max=1
+KanjiNumeral ( "a" )
+# 236 ec NumToJText nargs=Trinary min=3 max=3
+NumToJText ( 1 ; 1 ; 1 )
+# 237 ed Katakana nargs=Unary min=1 max=1
+Katakana ( "a" )
+# 238 ee Hiragana nargs=Unary min=1 max=1
+Hiragana ( "a" )
+# 239 ef KanaHankaku nargs=Unary min=1 max=1
+KanaHankaku ( "a" )
+# 240 f0 KanaZenkaku nargs=Unary min=1 max=1
+KanaZenkaku ( "a" )
+# 241 f1 RomanHankaku nargs=Unary min=1 max=1
+RomanHankaku ( "a" )
+# 242 f2 RomanZenkaku nargs=Unary min=1 max=1
+RomanZenkaku ( "a" )
+# 243 f3 TrimAll nargs=Trinary min=3 max=3
+TrimAll ( "a" ; 1 ; 1 )
+# 1000 9b 00
+# 1006 9b 06
+Get ( FileSize )
+# 1008 9b 08
+Get ( HostName )
+# 1009 9b 09
+Get ( LayoutCount )
+# 1012 9b 0c
+Get ( SystemLanguage )
+# 1014 9b 0e
+Get ( MultiUserState )
+# 1018 9b 12
+Get ( PrinterName )
+# 1021 9b 15
+Get ( ActiveRepetitionNumber )
+# 1023 9b 17
+Get ( ScreenDepth )
+# 1028 9b 1c
+Get ( SystemVersion )
+# 1030 9b 1e
+Get ( UserCount )
+# 1034 9b 22
+Get ( CurrentPrivilegeSetName )
+# 1036 9b 24
+Get ( NetworkProtocol )
+# 1042 9b 2a
+Get ( LayoutAccess )
+# 1043 9b 2b
+Get ( RecordAccess )
+# 1044 9b 2c
+Get ( HighContrastState )
+# 1056 9b 38
+Get ( ActiveFieldTableName )
+# 1069 9b 45
+Get ( CurrentExtendedPrivileges )
+# 1070 9b 46
+Get ( AllowAbortState )
+# 1071 9b 47
+Get ( ErrorCaptureState )
+# 1074 9b 4a
+Get ( FileMakerPath )
+# 1075 9b 4b
+Get ( HostIPAddress )
+# 1076 9b 4c
+Get ( RequestOmitState )
+# 1078 9b 4e
+Get ( RecordOpenCount )
+# 1082 9b 52
+Get ( TextRulerVisible )
+# 1083 9b 53
+Get ( AllowFormattingBarState )
+# 1084 9b 54
+Get ( UseSystemFormatsState )
+# 1086 9b 56
+Get ( CustomMenuSetName )
+# 1087 9b 57
+Get ( DBEngineVersion )
+# 1088 9b 58
+Get ( ActiveLayoutObjectName )
+# 1091 9b 5b
+Get ( TriggerModifierKeys )
+# 1093 9b 5d
+Get ( DocumentsPathListing )
+# 1096 9b 60
+Get ( QuickFindText )
+# 1097 9b 61
+Get ( TriggerCurrentPanel )
+# 1102 9b 66
+Get ( PersistentID )
+# 1103 9b 67
+Get ( ConnectionState )
+# 1106 9b 6a
+Get ( WindowOrientation )
+# 1107 9b 6b
+Get ( TriggerGestureInfo )
+# 1108 9b 6c
+Get ( EncryptionState )
+# 1109 9b 6d
+Get ( ScriptAnimationState )
+# 1110 9b 6e
+Get ( ModifiedFields )
+# 1111 9b 6f
+Get ( NetworkType )
+# 1112 9b 70
+Get ( ConnectionAttributes )
+# 1113 9b 71
+Get ( ScreenScaleFactor )
+# 1114 9b 72
+# 1116 9b 74
+Get ( TriggerExternalEvent )
+# 1117 9b 75
+Get ( TouchKeyboardState )
+# 1118 9b 76
+Get ( MenubarState )
+# 1119 9b 77
+Get ( RegionMonitorEvents )
+# 1120 9b 78
+Get ( AccountGroupName )
+# 1123 9b 7b
+Get ( OpenDataFileInfo )
+# 1124 9b 7c
+Get ( AccountType )
+# 1125 9b 7d
+Get ( PageCount )
+# 1128 9b 80
+Get ( InstalledFMPluginsAsJSON )
+# 1129 9b 81
+Get ( SessionIdentifier )
+# 1130 9b 82
+Get ( CacheFileName )
+# 1131 9b 83
+Get ( CacheFilePath )
+# 1132 9b 84
+Get ( TransactionOpenState )
+# 1133 9b 85
+Get ( CurrentTimeUTCMicroseconds )
+# 1134 9b 86
+Get ( LastErrorLocation )
+# 1135 9b 87
+Get ( LastStepTokensUsed )
+# 1136 9b 88
+Get ( RevertTransactionOnErrorState )
+# 1137 9b 89
+Get ( SystemStorageAvailable )
+# 1138 9b 8a
+Get ( StudioDatasource )
+# 1139 9b 8b
+Get ( AccountPasswordDaysRemaining )
+# 1140 9b 8c
+Get ( WindowUUID )
+# 1141 9b 8d
+Get ( GuidedAccessState )
+# 1142 9b 8e
+# 2304 f9 04 Furigana nargs=VarArgs min=1 max=2
+Furigana ( "a" )
+Furigana ( "a" ; 1 )
+# 2309 f9 09 GetSensor nargs=VarArgs min=1 max=3
+GetSensor ( "a" )
+GetSensor ( "a" ; 1 ; 1 )
+# 2311 f9 0b GetEmbeddingAsFile nargs=VarArgs min=1 max=2
+GetEmbeddingAsFile ( "a" )
+GetEmbeddingAsFile ( "a" ; "a" )
+# 2312 f9 0c ExecuteSQLe nargs=VarArgs min=3 max=1000
+ExecuteSQLe ( "a" ; "b" ; "c" )
+ExecuteSQLe ( "a" ; "b" ; "c" ; 1 ; 2 )
+# 2313 f9 0d JSONUniqueValues nargs=VarArgs min=2 max=4
+JSONUniqueValues ( "a" ; "a" )
+# 2314 f9 0e JSONRemoveValues nargs=VarArgs min=3 max=5
+JSONRemoveValues ( "a" ; "a" ; "a" )
+# 2315 f9 0f NormalizeEmbedding nargs=VarArgs min=1 max=2
+NormalizeEmbedding ( "a" )
+NormalizeEmbedding ( "a" ; 1 )
+# 2316 f9 10 GetRecordIDsFromFoundSet nargs=VarArgs min=1 max=2
+GetRecordIDsFromFoundSet ( "a" )
+GetRecordIDsFromFoundSet ( "a" ; "a" )
+# 2317 f9 11 GetRAGSpaceInfo nargs=VarArgs min=1 max=2
+GetRAGSpaceInfo ( 1 )
+GetRAGSpaceInfo ( 1 ; "a" )
+# 2911 fa 0b LayoutObjectUUID nargs=NoArgs min=0 max=0
+LayoutObjectUUID
+# 2912 fa 0c constant
+ValueNumber
+# 2913 fa 0d constant
+ValueNumberRanges
+# 2914 fa 0e constant
+JSONStringRanges
+# 2915 fa 0f constant
+ROWID
+# 2916 fa 10 constant
+ROWMODID
+# 3204 fb 04 GetWidth nargs=Unary min=1 max=1
+GetWidth ( Table::Input )
+# 3205 fb 05 GetHeight nargs=Unary min=1 max=1
+GetHeight ( Table::Input )
+# 3206 fb 06 VerifyContainer nargs=Unary min=1 max=1
+VerifyContainer ( Table::Input )
+# 3208 fb 08 GetAVPlayerAttribute nargs=Unary min=1 max=1
+GetAVPlayerAttribute ( "a" )
+# 3211 fb 0b GetModelAttributes nargs=Unary min=1 max=1
+GetModelAttributes ( "a" )
+# 3212 fb 0c GetLayoutObjectOwnerInfo nargs=Unary min=1 max=1
+GetLayoutObjectOwnerInfo ( "a" )
+# 3213 fb 0d GetAddonInfo nargs=Unary min=1 max=1
+GetAddonInfo ( "a" )
+# 3215 fb 0f ReadQRCode nargs=Unary min=1 max=1
+ReadQRCode ( "a" )
+# 3216 fb 10 GetBaseTableName nargs=Unary min=1 max=1
+GetBaseTableName ( Table::Input )
+# 3217 fb 11 GetEmbeddingAsText nargs=Unary min=1 max=1
+GetEmbeddingAsText ( "a" )
+# 3218 fb 12 GetTokenCount nargs=Unary min=1 max=1
+GetTokenCount ( "a" )
+# 3219 fb 13 GetFieldsOnLayout nargs=Unary min=1 max=1
+GetFieldsOnLayout ( "a" )
+# 3220 fb 14 GetTextFromPDF nargs=Unary min=1 max=1
+GetTextFromPDF ( "a" )
+# 3221 fb 15 JSONParse nargs=Unary min=1 max=1
+JSONParse ( "a" )
+# 3222 fb 16 JSONParsedState nargs=Unary min=1 max=1
+JSONParsedState ( "a" )
+# 3223 fb 17 ListPersistentDataIDs nargs=Unary min=1 max=1
+ListPersistentDataIDs ( "a" )
+# 3505 fc 05 CryptDigest nargs=Binary min=2 max=2
+CryptDigest ( "a" ; "a" )
+# 3506 fc 06 Base64EncodeRFC nargs=Binary min=2 max=2
+Base64EncodeRFC ( 1 ; "a" )
+# 3507 fc 07 TextDecode nargs=Binary min=2 max=2
+TextDecode ( "a" ; "a" )
+# 3508 fc 08 CryptEncrypt nargs=Binary min=2 max=2
+CryptEncrypt ( "a" ; "a" )
+# 3509 fc 09 CryptDecrypt nargs=Binary min=2 max=2
+CryptDecrypt ( "a" ; "a" )
+# 3510 fc 0a CryptEncryptBase64 nargs=Binary min=2 max=2
+CryptEncryptBase64 ( "a" ; "a" )
+# 3511 fc 0b CryptDecryptBase64 nargs=Binary min=2 max=2
+CryptDecryptBase64 ( "a" ; "a" )
+# 3514 fc 0e JSONGetElementType nargs=Binary min=2 max=2
+JSONGetElementType ( "a" ; "a" )
+# 3515 fc 0f GetLiveText nargs=Binary min=2 max=2
+GetLiveText ( "a" ; "a" )
+# 3516 fc 10 CosineSimilarity nargs=Binary min=2 max=2
+CosineSimilarity ( "a" ; "a" )
+# 3517 fc 11 GetLiveTextAsJSON nargs=Binary min=2 max=2
+GetLiveTextAsJSON ( "a" ; "a" )
+# 3518 fc 12 GetTableDDL nargs=Binary min=2 max=2
+GetTableDDL ( "a" ; 1 )
+# 3519 fc 13 PredictFromModel nargs=Binary min=2 max=2
+PredictFromModel ( "a" ; "a" )
+# 3520 fc 14 AddEmbeddings nargs=Binary min=2 max=2
+AddEmbeddings ( "a" ; "a" )
+# 3521 fc 15 SubtractEmbeddings nargs=Binary min=2 max=2
+SubtractEmbeddings ( "a" ; "a" )
+# 3522 fc 16 GetPersistentData nargs=Binary min=2 max=2
+GetPersistentData ( "a" ; "a" )
+# 3801 fd 01 CryptAuthCode nargs=Trinary min=3 max=3
+CryptAuthCode ( "a" ; "a" ; "a" )
+# 3802 fd 02 TextEncode nargs=Trinary min=3 max=3
+TextEncode ( "a" ; "a" ; 1 )
+# 3803 fd 03 JSONMakeArray nargs=Trinary min=3 max=3
+JSONMakeArray ( "a" ; 1 ; "a" )
+# 3804 fd 04 GetEmbedding nargs=Trinary min=3 max=3
+GetEmbedding ( 1 ; "a" ; "a" )
+# 3805 fd 05 JSONValueExists nargs=Trinary min=3 max=3
+JSONValueExists ( "a" ; "a" ; "a" )
+# 3806 fd 06 JSONValueCount nargs=Trinary min=3 max=3
+JSONValueCount ( "a" ; "a" ; "a" )
+# 3807 fd 07 JSONAnyValuesExist nargs=Trinary min=3 max=3
+JSONAnyValuesExist ( "a" ; "a" ; "a" )
+# 4100 fe 00 CryptGenerateSignature nargs=Quad min=4 max=4
+CryptGenerateSignature ( "a" ; "a" ; "a" ; "a" )
+# 4101 fe 01 CryptVerifySignature nargs=Quad min=4 max=4
+CryptVerifySignature ( "a" ; "a" ; "a" ; "a" )
+#  1d nnnn 15 464d4452 0001 DatabaseNames nargs= min= max=
+DatabaseNames
+#  1d nnnn 15 464d4452 0002 FieldBounds nargs= min= max=
+FieldBounds ( "a" ; "a" ; "a" )
+#  1d nnnn 15 464d4452 0003 FieldIDs nargs= min= max=
+FieldIDs ( "a" ; "a" )
+#  1d nnnn 15 464d4452 0004 FieldNames nargs= min= max=
+FieldNames ( "a" ; "a" )
+#  1d nnnn 15 464d4452 0005 FieldRepetitions nargs= min= max=
+FieldRepetitions ( "a" ; "a" ; "a" )
+#  1d nnnn 15 464d4452 0006 FieldStyle nargs= min= max=
+FieldStyle ( "a" ; "a" ; "a" )
+#  1d nnnn 15 464d4452 0007 FieldType nargs= min= max=
+FieldType ( "a" ; "a" )
+#  1d nnnn 15 464d4452 0008 GetNextSerialValue nargs= min= max=
+GetNextSerialValue ( "a" ; "a" )
+#  1d nnnn 15 464d4452 0009 LayoutIDs nargs= min= max=
+LayoutIDs ( "a" )
+#  1d nnnn 15 464d4452 000a LayoutNames nargs= min= max=
+LayoutNames ( "a" )
+#  1d nnnn 15 464d4452 000b TableIDs nargs= min= max=
+TableIDs ( "a" )
+#  1d nnnn 15 464d4452 000c TableNames nargs= min= max=
+TableNames ( "a" )
+#  1d nnnn 15 464d4452 000d RelationInfo nargs= min= max=
+RelationInfo ( "a" ; "a" )
+#  1d nnnn 15 464d4452 000e ScriptIDs nargs= min= max=
+ScriptIDs ( "a" )
+#  1d nnnn 15 464d4452 000f ScriptNames nargs= min= max=
+ScriptNames ( "a" )
+#  1d nnnn 15 464d4452 0010 ValueListIDs nargs= min= max=
+ValueListIDs ( "a" )
+#  1d nnnn 15 464d4452 0011 ValueListNames nargs= min= max=
+ValueListNames ( "a" )
+#  1d nnnn 15 464d4452 0012 ValueListItems nargs= min= max=
+ValueListItems ( "a" ; "a" )
+#  1d nnnn 15 464d4452 0013 WindowNames nargs= min= max=
+WindowNames
+WindowNames ( "a" )
+#  1d nnnn 15 464d4452 0014 FieldComment nargs= min= max=
+FieldComment ( "a" ; "a" )
+#  1d nnnn 15 464d4452 0015 LayoutObjectNames nargs= min= max=
+LayoutObjectNames ( "a" ; "a" )
+#  1d nnnn 15 464d4452 0016 BaseTableIDs nargs= min= max=
+BaseTableIDs ( "a" )
+#  1d nnnn 15 464d4452 0017 BaseTableNames nargs= min= max=
+BaseTableNames ( "a" )
+#  1d nnnn 15 464d4452 0018 BaseTableComment nargs= min= max=
+BaseTableComment ( "a" ; "a" )
+#  1d nnnn 15 464d4452 0019 FieldAnnotation nargs= min= max=
+FieldAnnotation ( "a" ; "a" )
+#  1d nnnn 15 464d4452 001a FieldDisplayNames nargs= min= max=
+FieldDisplayNames ( "a" ; "a" )
+#  1d nnnn 15 464d4d42 0001 Location nargs= min= max=
+Location ( 1 )
+Location ( 1 ; 1 )
+#  1d nnnn 15 464d4d42 0002 LocationValues nargs= min= max=
+LocationValues ( 1 )
+LocationValues ( 1 ; 1 )
+#  1d nnnn 15 464d4d42 0003 RangeBeacons nargs= min= max=
+RangeBeacons ( "a" )
+RangeBeacons ( "a" ; 1 ; 1 ; 1 )

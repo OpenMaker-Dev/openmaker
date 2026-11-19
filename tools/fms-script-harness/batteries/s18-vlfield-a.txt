@@ -1,0 +1,82 @@
+# Validation rule vlfield, variant a (script-runtime.md 13.21): built by
+# tools/fms-script-harness/s18_validation.sh, fields 1=1,504,1 2=1,504,3 4=1,100,1 6=1,100,3
+# (field=type,validation word,repetitions). See the probe's comment.
+@trigger	Contact List	OnGestureTap	count
+== probe
+# Parameter: N (a new record) or L (the last record), then for each change
+# three lines: field letter (A First Name, B Last Name, C Title, D Job
+# Title, E Website, F Company), repetition, value. Exits with Set Field's
+# error and the field's value after it per change, then Commit Records'
+# error ("set,value;set,value/commit"); a refused record is deleted (new)
+# or reverted (Step 51), as a failed commit otherwise leaves the file
+# unable to close.
+Set Error Capture [ On ]
+Go to Layout [ "Contact Details" ]
+If [ GetValue ( Get ( ScriptParameter ) ; 1 ) = "L" ]
+Go to Record/Request/Page [ Last ]
+Else
+New Record/Request
+End If
+Set Variable [ $i ; 2 ]
+Loop
+Exit Loop If [ $i > ValueCount ( Get ( ScriptParameter ) ) ]
+Set Variable [ $f ; GetValue ( Get ( ScriptParameter ) ; $i ) ]
+Set Variable [ $r ; GetValue ( Get ( ScriptParameter ) ; $i + 1 ) ]
+Set Variable [ $v ; GetValue ( Get ( ScriptParameter ) ; $i + 2 ) ]
+If [ $f = "A" ]
+Set Field [ Contacts::First Name[$r] ; $v ]
+Set Variable [ $set ; $set & Get ( LastError ) & "," & GetRepetition ( Contacts::First Name ; $r ) & ";" ]
+Else If [ $f = "B" ]
+Set Field [ Contacts::Last Name[$r] ; $v ]
+Set Variable [ $set ; $set & Get ( LastError ) & "," & GetRepetition ( Contacts::Last Name ; $r ) & ";" ]
+Else If [ $f = "C" ]
+Set Field [ Contacts::Title[$r] ; $v ]
+Set Variable [ $set ; $set & Get ( LastError ) & "," & GetRepetition ( Contacts::Title ; $r ) & ";" ]
+Else If [ $f = "D" ]
+Set Field [ Contacts::Job Title[$r] ; $v ]
+Set Variable [ $set ; $set & Get ( LastError ) & "," & GetRepetition ( Contacts::Job Title ; $r ) & ";" ]
+Else If [ $f = "E" ]
+Set Field [ Contacts::Website[$r] ; $v ]
+Set Variable [ $set ; $set & Get ( LastError ) & "," & GetRepetition ( Contacts::Website ; $r ) & ";" ]
+Else If [ $f = "F" ]
+Set Field [ Contacts::Company[$r] ; $v ]
+Set Variable [ $set ; $set & Get ( LastError ) & "," & GetRepetition ( Contacts::Company ; $r ) & ";" ]
+End If
+Set Variable [ $i ; $i + 3 ]
+End Loop
+Commit Records/Requests [ With dialog: Off ]
+Set Variable [ $e ; Get ( LastError ) ]
+If [ $e ≠ 0 and GetValue ( Get ( ScriptParameter ) ; 1 ) = "L" ]
+Step 51
+Else If [ $e ≠ 0 ]
+Delete Record/Request [ With dialog: Off ]
+End If
+Exit Script [ $set & "/" & $e ]
+== seed
+# The probe in Open Transaction [ Skip data entry validation ]: exits with
+# the probe's result and Commit Transaction's error.
+Set Error Capture [ On ]
+Open Transaction [ skip validation ]
+Perform Script [ "probe" ; Parameter: Get ( ScriptParameter ) ]
+Set Variable [ $r ; Get ( ScriptResult ) ]
+Commit Transaction
+Exit Script [ $r & "/" & Get ( LastError ) ]
+== count
+Exit Script [ ExecuteSQL ( "SELECT COUNT(*) FROM Contacts" ; "" ; "" ) ]
+--- run
+probe	N\rF\r1\rAcme
+probe	N\rA\r1\rAcme
+probe	N\rA\r1\rZed
+probe	N\rA\r1\racme
+probe	N\rA\r1\r
+probe	N\rB\r1\rZed
+probe	N\rB\r2\rZed
+probe	N\rB\r1\rAcme\rB\r2\rAcme
+probe	N\rB\r1\rAcme\rB\r2\rZed
+probe	N\rC\r1\rAcme
+probe	N\rC\r1\rZed
+probe	N\rC\r1\racme
+probe	N\rD\r2\rZed
+probe	N\rD\r1\rAcme\rD\r2\rZed
+probe	L\rE\r1\rchanged
+count

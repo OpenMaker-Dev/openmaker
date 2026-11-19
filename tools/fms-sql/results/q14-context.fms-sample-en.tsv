@@ -1,0 +1,47 @@
+# q14: context independence, ExecuteSQL against ExecuteSQLe, system tables.
+# File: FileMaker Server sample (en). First without context, then in table
+# occurrence Tasks (03d00001) on record 30 ("Update Web Page", ID 12), then in
+# Assignees (03d00004) with no record.
+ExecuteSQL ( "SELECT Task FROM Tasks WHERE \"TASK ID MATCH FIELD\" < 3" ; "|" ; "¶" )	0	1/1/0	Checklist\rDetermine Budget for Marketing Campaign
+ExecuteSQLe ( "SELECT Task FROM Tasks WHERE \"TASK ID MATCH FIELD\" < 3" ; "|" ; "¶" )	0	1/1/0	Checklist\rDetermine Budget for Marketing Campaign
+ExecuteSQL ( "SELECT \"Days Till Due\", \"Time Frame\", \"Sort List Key | MATCH FIELD\", \"Assignee Number\" FROM Tasks WHERE \"TASK ID MATCH FIELD\" = 12" ; "|" ; "¶" )	0	1/1/0	0|2015|2015|0
+ExecuteSQL ( "SELECT COUNT(*) FROM Tasks" ; "|" ; "¶" )	0	1/1/0	12
+ExecuteSQL ( "SELECT Taskz FROM Tasks" ; "|" ; "¶" )	8309	2/2/0	?
+ExecuteSQLe ( "SELECT Taskz FROM Tasks" ; "|" ; "¶" )	8309	1/1/0	? ERROR: FQL0007/(1:7): The column named "Taskz" does not exist in any table in the column reference's scope.
+ExecuteSQL ( "SELECT Task FROM Tasks WHERE 1 = 0" ; "|" ; "¶" )	0	0/1/0	
+ExecuteSQLe ( "SELECT Task FROM Tasks WHERE 1 = 0" ; "|" ; "¶" )	0	0/1/0	
+ExecuteSQL ( "SELECT ? FROM Tasks WHERE \"TASK ID MATCH FIELD\" = 12" ; "|" ; "¶" ; Get ( RecordID ) )	0	0/1/0	
+ExecuteSQL ( "SELECT Task FROM Tasks WHERE ROWID = ?" ; "|" ; "¶" ; Get ( RecordID ) )	0	0/1/0	
+ExecuteSQL ( "SELECT BaseTableName, BaseTableId, Source, ModCount FROM FileMaker_BaseTables" ; "|" ; "¶" )	0	1/1/0	Assignees|132|<Internal>|22\rAttachments|133|<Internal>|53\rTasks|129|<Internal>|297
+ExecuteSQLe ( "SELECT TableName, BaseTableId FROM FileMaker_Tables" ; "|" ; "¶" )	8309	1/1/0	? ERROR: FQL0007/(1:18): The column named "BaseTableId" does not exist in any table in the column reference's scope.
+ExecuteSQLe ( "SELECT ValueListName, ValueListId, Source, ModCount FROM FileMaker_ValueLists" ; "|" ; "¶" )	0	1/1/0	Category|1|Custom|24\rPast and Upcoming | Filter|13|Custom|9\rPeople Name|8|Field|7\rPeople related Info|9|Related|1\rStatus|3|Custom|15\rTask List | Portal Filter|14|Custom|4\rTask List | Sort Selection|12|Custom|3
+ExecuteSQLe ( "SELECT FirstValues, SecondValues FROM \"FileMaker_ValueList_People Name\"" ; "|" ; "¶" )	8309	1/1/0	? ERROR: FQL0007/(1:20): The column named "SecondValues" does not exist in any table in the column reference's scope.
+ExecuteSQLe ( "SELECT * FROM \"FileMaker_ValueList_People related Info\"" ; "|" ; "¶" )	0	1/1/0	<Valuelist Unsupported>
+ExecuteSQLe ( "SELECT * FROM \"FileMaker_ValueList_Task List | Sort Selection\"" ; "|" ; "¶" )	0	1/1/0	Time Frame\rStatus\rCategory\rTask\rDue Date
+ExecuteSQLe ( "SELECT * FROM \"FileMaker_ValueList_status\"" ; "|" ; "¶" )	0	1/1/0	In Progress\rPending\rPostponed\rCancelled\r-\rCompleted\r-
+ExecuteSQLe ( "SELECT * FROM \"FileMaker_ValueList_Nope\"" ; "|" ; "¶" )	0	1/1/0	<Value List Missing>
+ExecuteSQLe ( "SELECT * FROM filemaker_tables" ; "|" ; "¶" )	0	1/1/0	Assignees|1065092|Assignees|work|22\rAssignees Looked Up Value|1065095|Assignees|work|22\rAttachments|1065093|Attachments|work|53\rRelated Tasks|1065091|Tasks|work|297\rTasks|1065089|Tasks|work|297
+ExecuteSQLe ( "SELECT t.TableName, COUNT(f.FieldName) FROM FileMaker_Tables t JOIN FileMaker_Fields f ON f.TableName = t.TableName GROUP BY t.TableName" ; "|" ; "¶" )	0	1/1/0	Assignees|4\rAssignees Looked Up Value|4\rAttachments|4\rRelated Tasks|17\rTasks|17
+ExecuteSQLe ( "SELECT FieldName FROM FileMaker_Fields WHERE TableName = 'Tasks' AND FieldClass = 'Calculated' ORDER BY FieldId DESC" ; "|" ; "¶" )	0	1/1/0	Result Label Plural\rDay Label Plural\rDays Till Due\rAttachment Number\rAssignee Number\rTime Frame\rTime Frame Order\rSort List Key | MATCH FIELD
+ExecuteSQLe ( "SELECT ROWID, * FROM FileMaker_Tables" ; "|" ; "¶" )	8310	1/1/0	? ERROR: FQL0001/(1:15): There is an error in the syntax of the query.
+ExecuteSQLe ( "SELECT ROWID FROM FileMaker_Tables" ; "|" ; "¶" )	0	1/1/0	1\r2\r3\r4\r5
+ExecuteSQLe ( "SELECT TableName FROM FileMaker_Tables ORDER BY TableId DESC" ; "|" ; "¶" )	0	1/1/0	Assignees Looked Up Value\rAttachments\rAssignees\rRelated Tasks\rTasks
+ExecuteSQLe ( "SELECT DISTINCT FieldType FROM FileMaker_Fields" ; "|" ; "¶" )	0	1/1/0	binary\rdate\rdecimal\rglobal varchar\rvarchar
+ExecuteSQLe ( "SELECT FieldName, FieldType FROM FileMaker_Fields WHERE TableName = 'Attachments'" ; "|" ; "¶" )	0	1/1/0	TASK ID MATCH FIELD|decimal\rComments|varchar\rAttachment | Container|binary\rFile Name Placeholder|varchar
+# @ 03d00001 30 records=12
+Get ( RecordID ) & " " & Task	0	1/1/0	30 Update Web Page
+ExecuteSQL ( "SELECT Task FROM Tasks WHERE \"TASK ID MATCH FIELD\" < 3" ; "|" ; "¶" )	0	1/1/0	Checklist\rDetermine Budget for Marketing Campaign
+ExecuteSQL ( "SELECT \"Days Till Due\", \"Time Frame\", \"Sort List Key | MATCH FIELD\", \"Assignee Number\" FROM Tasks WHERE \"TASK ID MATCH FIELD\" = 12" ; "|" ; "¶" )	0	1/1/0	0|2015|2015|0
+ExecuteSQL ( "SELECT COUNT(*) FROM Tasks" ; "|" ; "¶" )	0	1/1/0	12
+ExecuteSQL ( "SELECT ? FROM Tasks WHERE \"TASK ID MATCH FIELD\" = 12" ; "|" ; "¶" ; Get ( RecordID ) )	0	1/1/0	30
+ExecuteSQL ( "SELECT Task FROM Tasks WHERE ROWID = ?" ; "|" ; "¶" ; Get ( RecordID ) )	0	1/1/0	Update Web Page
+ExecuteSQL ( "SELECT Task FROM Tasks WHERE \"TASK ID MATCH FIELD\" = ?" ; "|" ; "¶" ; Tasks::TASK ID MATCH FIELD )	0	1/1/0	Update Web Page
+ExecuteSQL ( "SELECT Task FROM Tasks WHERE Task = ?" ; "|" ; "¶" ; ${Related Tasks}::Task )	0	1/1/0	Site Map Sketch
+ExecuteSQLe ( "SELECT Task FROM Tasks WHERE \"TASK ID MATCH FIELD\" = Tasks.\"TASK ID MATCH FIELD\"" ; "|" ; "¶" )	0	1/1/0	Site Map Sketch\rChecklist\rHire New Sales Person\rUpdate Web Page\rPay Internet Service Bill\rPlan Holiday\rReview mock ups\rWrite Page Text\rNew Logo Art\rDetermine Budget for Marketing Campaign\rSend Art to Vendor\rRepair Water Damage in Kitchen
+ExecuteSQLe ( "SELECT Task FROM \"Related Tasks\" WHERE \"TASK ID MATCH FIELD\" = 12" ; "|" ; "¶" )	0	1/1/0	Update Web Page
+ExecuteSQL ( "SELECT Task FROM Tasks WHERE Task = ?" ; "|" ; "¶" ; Task )	0	1/1/0	Update Web Page
+ExecuteSQL ( "SELECT ? FROM Tasks WHERE \"TASK ID MATCH FIELD\" = 12" ; "|" ; "¶" ; "Due Date: " & Due Date )	0	1/1/0	Due Date: 8/2/2015
+ExecuteSQL ( "SELECT ? FROM Tasks WHERE \"TASK ID MATCH FIELD\" = 12" ; "|" ; "¶" ; Due Date )	0	1/1/0	8/2/2015
+# @ 03d00004 records=0
+ExecuteSQL ( "SELECT Task FROM Tasks WHERE \"TASK ID MATCH FIELD\" < 3" ; "|" ; "¶" )	0	1/1/0	Checklist\rDetermine Budget for Marketing Campaign
+ExecuteSQL ( "SELECT COUNT(*) FROM Assignees" ; "|" ; "¶" )	0	1/1/0	0

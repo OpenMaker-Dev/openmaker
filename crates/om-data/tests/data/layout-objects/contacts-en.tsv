@@ -1,0 +1,182 @@
+# FileMaker Server 26.0.3 script engine (tools/fms-script-harness, s32-layout-objects),
+# evaluated by a script in contacts-en.fmp12 on layout Contact Details (no records).
+# file	contacts-en.fmp12
+# layout	Contact Details
+GetLayoutObjectAttribute ( "Back to Contacts" ; "objectType" )	button
+GetLayoutObjectAttribute ( "Back to Contacts" ; "hasFocus" )	0
+GetLayoutObjectAttribute ( "Back to Contacts" ; "containsFocus" )	0
+GetLayoutObjectAttribute ( "Back to Contacts" ; "bounds" )	0 0 200 44 0
+GetLayoutObjectAttribute ( "Back to Contacts" ; "left" )	0
+GetLayoutObjectAttribute ( "Back to Contacts" ; "right" )	200
+GetLayoutObjectAttribute ( "Back to Contacts" ; "top" )	0
+GetLayoutObjectAttribute ( "Back to Contacts" ; "bottom" )	44
+GetLayoutObjectAttribute ( "Back to Contacts" ; "width" )	200
+GetLayoutObjectAttribute ( "Back to Contacts" ; "height" )	44
+GetLayoutObjectAttribute ( "Back to Contacts" ; "rotation" )	0
+GetLayoutObjectAttribute ( "Back to Contacts" ; "startPoint" )	0 0
+GetLayoutObjectAttribute ( "Back to Contacts" ; "endPoint" )	200 44
+GetLayoutObjectAttribute ( "Back to Contacts" ; "source" )	
+GetLayoutObjectAttribute ( "Back to Contacts" ; "content" )	Contacts
+GetLayoutObjectAttribute ( "Back to Contacts" ; "enclosingObject" )	
+GetLayoutObjectAttribute ( "Back to Contacts" ; "containedObjects" )	
+GetLayoutObjectAttribute ( "Back to Contacts" ; "isFrontTabPanel" )	0
+GetLayoutObjectAttribute ( "Back to Contacts" ; "isFrontPanel" )	0
+GetLayoutObjectAttribute ( "Back to Contacts" ; "isObjectHidden" )	0
+GetLayoutObjectAttribute ( "Back to Contacts" ; "isActive" )	
+GetLayoutObjectAttribute ( "Back to Contacts" ; "UUID" )	B0A97EC3-E710-45FD-B0A3-0EF1D7257532
+GetLayoutObjectAttribute ( "Back to Contacts" ; "BOUNDS" )	0 0 200 44 0
+GetLayoutObjectAttribute ( "Back to Contacts" ; "nosuch" )	
+GetLayoutObjectAttribute ( "Back to Contacts" ; "" )	
+GetLayoutObjectAttribute ( "website" ; "objectType" )	web viewer
+GetLayoutObjectAttribute ( "website" ; "hasFocus" )	0
+GetLayoutObjectAttribute ( "website" ; "containsFocus" )	0
+GetLayoutObjectAttribute ( "website" ; "bounds" )	366 261 991 541 0
+GetLayoutObjectAttribute ( "website" ; "left" )	366
+GetLayoutObjectAttribute ( "website" ; "right" )	991
+GetLayoutObjectAttribute ( "website" ; "top" )	261
+GetLayoutObjectAttribute ( "website" ; "bottom" )	541
+GetLayoutObjectAttribute ( "website" ; "width" )	625
+GetLayoutObjectAttribute ( "website" ; "height" )	280
+GetLayoutObjectAttribute ( "website" ; "rotation" )	0
+GetLayoutObjectAttribute ( "website" ; "startPoint" )	366 261
+GetLayoutObjectAttribute ( "website" ; "endPoint" )	991 541
+GetLayoutObjectAttribute ( "website" ; "source" )	
+GetLayoutObjectAttribute ( "website" ; "content" )	
+GetLayoutObjectAttribute ( "website" ; "enclosingObject" )	
+GetLayoutObjectAttribute ( "website" ; "containedObjects" )	
+GetLayoutObjectAttribute ( "website" ; "isFrontTabPanel" )	0
+GetLayoutObjectAttribute ( "website" ; "isFrontPanel" )	0
+GetLayoutObjectAttribute ( "website" ; "isObjectHidden" )	0
+GetLayoutObjectAttribute ( "website" ; "isActive" )	
+GetLayoutObjectAttribute ( "website" ; "UUID" )	91655D35-46BD-4564-9C68-9A06C08F17C9
+GetLayoutObjectAttribute ( "website" ; "BOUNDS" )	366 261 991 541 0
+GetLayoutObjectAttribute ( "website" ; "nosuch" )	
+GetLayoutObjectAttribute ( "website" ; "" )	
+GetLayoutObjectAttribute ( "Company" ; "objectType" )	field
+GetLayoutObjectAttribute ( "Company" ; "hasFocus" )	0
+GetLayoutObjectAttribute ( "Company" ; "containsFocus" )	0
+GetLayoutObjectAttribute ( "Company" ; "bounds" )	366 206 666 250 0
+GetLayoutObjectAttribute ( "Company" ; "left" )	366
+GetLayoutObjectAttribute ( "Company" ; "right" )	666
+GetLayoutObjectAttribute ( "Company" ; "top" )	206
+GetLayoutObjectAttribute ( "Company" ; "bottom" )	250
+GetLayoutObjectAttribute ( "Company" ; "width" )	300
+GetLayoutObjectAttribute ( "Company" ; "height" )	44
+GetLayoutObjectAttribute ( "Company" ; "rotation" )	0
+GetLayoutObjectAttribute ( "Company" ; "startPoint" )	366 206
+GetLayoutObjectAttribute ( "Company" ; "endPoint" )	666 250
+GetLayoutObjectAttribute ( "Company" ; "source" )	Contacts::Company
+GetLayoutObjectAttribute ( "Company" ; "content" )	
+GetLayoutObjectAttribute ( "Company" ; "enclosingObject" )	
+GetLayoutObjectAttribute ( "Company" ; "containedObjects" )	
+GetLayoutObjectAttribute ( "Company" ; "isFrontTabPanel" )	0
+GetLayoutObjectAttribute ( "Company" ; "isFrontPanel" )	0
+GetLayoutObjectAttribute ( "Company" ; "isObjectHidden" )	0
+GetLayoutObjectAttribute ( "Company" ; "isActive" )	
+GetLayoutObjectAttribute ( "Company" ; "UUID" )	96DDBDE1-1032-4CAB-B86A-B03BCD3D07FB
+GetLayoutObjectAttribute ( "Company" ; "BOUNDS" )	366 206 666 250 0
+GetLayoutObjectAttribute ( "Company" ; "nosuch" )	
+GetLayoutObjectAttribute ( "Company" ; "" )	
+GetLayoutObjectAttribute ( "First Name" ; "objectType" )	field
+GetLayoutObjectAttribute ( "First Name" ; "hasFocus" )	0
+GetLayoutObjectAttribute ( "First Name" ; "containsFocus" )	0
+GetLayoutObjectAttribute ( "First Name" ; "bounds" )	32 393 323 437 0
+GetLayoutObjectAttribute ( "First Name" ; "left" )	32
+GetLayoutObjectAttribute ( "First Name" ; "right" )	323
+GetLayoutObjectAttribute ( "First Name" ; "top" )	393
+GetLayoutObjectAttribute ( "First Name" ; "bottom" )	437
+GetLayoutObjectAttribute ( "First Name" ; "width" )	291
+GetLayoutObjectAttribute ( "First Name" ; "height" )	44
+GetLayoutObjectAttribute ( "First Name" ; "rotation" )	0
+GetLayoutObjectAttribute ( "First Name" ; "startPoint" )	32 393
+GetLayoutObjectAttribute ( "First Name" ; "endPoint" )	323 437
+GetLayoutObjectAttribute ( "First Name" ; "source" )	Contacts::First Name
+GetLayoutObjectAttribute ( "First Name" ; "content" )	
+GetLayoutObjectAttribute ( "First Name" ; "enclosingObject" )	
+GetLayoutObjectAttribute ( "First Name" ; "containedObjects" )	
+GetLayoutObjectAttribute ( "First Name" ; "isFrontTabPanel" )	0
+GetLayoutObjectAttribute ( "First Name" ; "isFrontPanel" )	0
+GetLayoutObjectAttribute ( "First Name" ; "isObjectHidden" )	0
+GetLayoutObjectAttribute ( "First Name" ; "isActive" )	
+GetLayoutObjectAttribute ( "First Name" ; "UUID" )	BD9EB7E8-1237-464D-B0A2-42E058E00EC9
+GetLayoutObjectAttribute ( "First Name" ; "BOUNDS" )	32 393 323 437 0
+GetLayoutObjectAttribute ( "First Name" ; "nosuch" )	
+GetLayoutObjectAttribute ( "First Name" ; "" )	
+GetLayoutObjectAttribute ( "Last Name" ; "objectType" )	field
+GetLayoutObjectAttribute ( "Last Name" ; "hasFocus" )	0
+GetLayoutObjectAttribute ( "Last Name" ; "containsFocus" )	0
+GetLayoutObjectAttribute ( "Last Name" ; "bounds" )	32 441 323 485 0
+GetLayoutObjectAttribute ( "Last Name" ; "left" )	32
+GetLayoutObjectAttribute ( "Last Name" ; "right" )	323
+GetLayoutObjectAttribute ( "Last Name" ; "top" )	441
+GetLayoutObjectAttribute ( "Last Name" ; "bottom" )	485
+GetLayoutObjectAttribute ( "Last Name" ; "width" )	291
+GetLayoutObjectAttribute ( "Last Name" ; "height" )	44
+GetLayoutObjectAttribute ( "Last Name" ; "rotation" )	0
+GetLayoutObjectAttribute ( "Last Name" ; "startPoint" )	32 441
+GetLayoutObjectAttribute ( "Last Name" ; "endPoint" )	323 485
+GetLayoutObjectAttribute ( "Last Name" ; "source" )	Contacts::Last Name
+GetLayoutObjectAttribute ( "Last Name" ; "content" )	
+GetLayoutObjectAttribute ( "Last Name" ; "enclosingObject" )	
+GetLayoutObjectAttribute ( "Last Name" ; "containedObjects" )	
+GetLayoutObjectAttribute ( "Last Name" ; "isFrontTabPanel" )	0
+GetLayoutObjectAttribute ( "Last Name" ; "isFrontPanel" )	0
+GetLayoutObjectAttribute ( "Last Name" ; "isObjectHidden" )	0
+GetLayoutObjectAttribute ( "Last Name" ; "isActive" )	
+GetLayoutObjectAttribute ( "Last Name" ; "UUID" )	24A7FB6B-AC0D-4FA7-BA2E-0676EAF4C63C
+GetLayoutObjectAttribute ( "Last Name" ; "BOUNDS" )	32 441 323 485 0
+GetLayoutObjectAttribute ( "Last Name" ; "nosuch" )	
+GetLayoutObjectAttribute ( "Last Name" ; "" )	
+GetLayoutObjectAttribute ( "no such" ; "objectType" )	
+GetLayoutObjectAttribute ( "no such" ; "hasFocus" )	
+GetLayoutObjectAttribute ( "no such" ; "containsFocus" )	
+GetLayoutObjectAttribute ( "no such" ; "bounds" )	
+GetLayoutObjectAttribute ( "no such" ; "left" )	
+GetLayoutObjectAttribute ( "no such" ; "right" )	
+GetLayoutObjectAttribute ( "no such" ; "top" )	
+GetLayoutObjectAttribute ( "no such" ; "bottom" )	
+GetLayoutObjectAttribute ( "no such" ; "width" )	
+GetLayoutObjectAttribute ( "no such" ; "height" )	
+GetLayoutObjectAttribute ( "no such" ; "rotation" )	
+GetLayoutObjectAttribute ( "no such" ; "startPoint" )	
+GetLayoutObjectAttribute ( "no such" ; "endPoint" )	
+GetLayoutObjectAttribute ( "no such" ; "source" )	
+GetLayoutObjectAttribute ( "no such" ; "content" )	
+GetLayoutObjectAttribute ( "no such" ; "enclosingObject" )	
+GetLayoutObjectAttribute ( "no such" ; "containedObjects" )	
+GetLayoutObjectAttribute ( "no such" ; "isFrontTabPanel" )	
+GetLayoutObjectAttribute ( "no such" ; "isFrontPanel" )	
+GetLayoutObjectAttribute ( "no such" ; "isObjectHidden" )	
+GetLayoutObjectAttribute ( "no such" ; "isActive" )	
+GetLayoutObjectAttribute ( "no such" ; "UUID" )	
+GetLayoutObjectAttribute ( "no such" ; "BOUNDS" )	
+GetLayoutObjectAttribute ( "no such" ; "nosuch" )	
+GetLayoutObjectAttribute ( "no such" ; "" )	
+GetLayoutObjectAttribute ( "FIRST NAME" ; "objectType" )	field
+GetLayoutObjectAttribute ( "FIRST NAME" ; "hasFocus" )	0
+GetLayoutObjectAttribute ( "FIRST NAME" ; "containsFocus" )	0
+GetLayoutObjectAttribute ( "FIRST NAME" ; "bounds" )	32 393 323 437 0
+GetLayoutObjectAttribute ( "FIRST NAME" ; "left" )	32
+GetLayoutObjectAttribute ( "FIRST NAME" ; "right" )	323
+GetLayoutObjectAttribute ( "FIRST NAME" ; "top" )	393
+GetLayoutObjectAttribute ( "FIRST NAME" ; "bottom" )	437
+GetLayoutObjectAttribute ( "FIRST NAME" ; "width" )	291
+GetLayoutObjectAttribute ( "FIRST NAME" ; "height" )	44
+GetLayoutObjectAttribute ( "FIRST NAME" ; "rotation" )	0
+GetLayoutObjectAttribute ( "FIRST NAME" ; "startPoint" )	32 393
+GetLayoutObjectAttribute ( "FIRST NAME" ; "endPoint" )	323 437
+GetLayoutObjectAttribute ( "FIRST NAME" ; "source" )	Contacts::First Name
+GetLayoutObjectAttribute ( "FIRST NAME" ; "content" )	
+GetLayoutObjectAttribute ( "FIRST NAME" ; "enclosingObject" )	
+GetLayoutObjectAttribute ( "FIRST NAME" ; "containedObjects" )	
+GetLayoutObjectAttribute ( "FIRST NAME" ; "isFrontTabPanel" )	0
+GetLayoutObjectAttribute ( "FIRST NAME" ; "isFrontPanel" )	0
+GetLayoutObjectAttribute ( "FIRST NAME" ; "isObjectHidden" )	0
+GetLayoutObjectAttribute ( "FIRST NAME" ; "isActive" )	
+GetLayoutObjectAttribute ( "FIRST NAME" ; "UUID" )	BD9EB7E8-1237-464D-B0A2-42E058E00EC9
+GetLayoutObjectAttribute ( "FIRST NAME" ; "BOUNDS" )	32 393 323 437 0
+GetLayoutObjectAttribute ( "FIRST NAME" ; "nosuch" )	
+GetLayoutObjectAttribute ( "FIRST NAME" ; "" )	
+GetLayoutObjectAttribute ( "First Name" ; "content" ; 1 ; 1 )	
+GetLayoutObjectAttribute ( "First Name" ; "bounds" ; 2 )	
+GetLayoutObjectAttribute ( "Company" ; "bounds" ; 0 ; 0 )	366 206 666 250 0

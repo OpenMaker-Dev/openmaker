@@ -1,0 +1,17 @@
+# scan fill: open 0 load 0 scan 0 commit 0; index:id=value (0-based): 0:7=0 1:76=0 2:7=0 3:76=0 4:7=0 5:76=0 6:75=0 7:103=0
+# scan partial: open 0 load 0 scan 0 commit 0; index:id=value (0-based): 0:16=1 1:25=0 2:10=0 3:103=0
+# scan: close 13
+fill		0	3	0
+>	1	fill	1	7	0	0	0	0
+>	1	fill	2	76	0	0	0	0
+>	1	fill	3	7	0	0	0	0
+>	1	fill	4	76	0	0	0	0
+>	1	fill	5	7	0	0	0	0
+>	1	fill	6	76	0	0	0	0
+>	1	fill	7	75	0	0	0	0
+>	1	fill	8	103	0	0	1	0
+partial		0	0|1	0
+>	1	partial	1	16	0	0	0	0
+>	1	partial	2	25	0	0	0	0
+>	1	partial	3	10	0	0	0	0
+>	1	partial	4	103	0	0	1	0

@@ -1,0 +1,364 @@
+# FileMaker Server 26.0.3 script engine (tools/fms-script-harness, s30-design),
+# expressions evaluated after a session opened contacts-en.fmp12 as "work" on its
+# default layout, with no table occurrence (no script ran).
+# file	contacts-en.fmp12
+# layout	Contact Details
+DatabaseNames	work
+TableNames ( "" )	Addresses\rContacts\rEmail Addresses\rPhone Numbers
+TableIDs ( "" )	1065091\r1065090\r1065093\r1065092
+BaseTableNames ( "" )	Addresses\rContacts\rEmail Addresses\rPhone Numbers
+BaseTableIDs ( "" )	131\r130\r133\r132
+LayoutNames ( "" )	Contact List\rContact Details
+LayoutIDs ( "" )	2\r3
+ScriptNames ( "" )	Go to Entry Field\rSort by Name
+ScriptIDs ( "" )	2\r3
+ValueListNames ( "" )	Phone Type\rEmail Type\rTitle\rAddress Type\rCompany\rJob Title
+ValueListIDs ( "" )	1\r2\r3\r4\r5\r6
+WindowNames	work
+TableNames ( "work" )	Addresses\rContacts\rEmail Addresses\rPhone Numbers
+TableNames ( "WORK" )	Addresses\rContacts\rEmail Addresses\rPhone Numbers
+TableNames ( "work.fmp12" )	Addresses\rContacts\rEmail Addresses\rPhone Numbers
+TableNames ( "work.FMP12" )	Addresses\rContacts\rEmail Addresses\rPhone Numbers
+TableNames ( " work" )	
+TableNames ( "no such file" )	
+TableNames ( "?" )	
+LayoutNames ( "work" )	Contact List\rContact Details
+ScriptNames ( "work" )	Go to Entry Field\rSort by Name
+ValueListNames ( "work" )	Phone Type\rEmail Type\rTitle\rAddress Type\rCompany\rJob Title
+BaseTableNames ( "work" )	Addresses\rContacts\rEmail Addresses\rPhone Numbers
+WindowNames ( "work" )	work
+LayoutNames ( "no such file" )	
+ScriptNames ( "no such file" )	
+ValueListNames ( "no such file" )	
+BaseTableNames ( "no such file" )	
+WindowNames ( "no such file" )	
+WindowNames ( "" )	work
+EvaluationError ( TableNames ( 1 / 0 ) )	15
+FieldNames ( "" ; "Addresses" )	Address Line 2\rAddress Line 1\rCity\rState\rPostal Code\rCountry\rType\rCreatedBy\rModifiedBy\rForeignKey\rPrimaryKey\rCreationTimestamp\rModificationTimestamp
+FieldIDs ( "" ; "Addresses" )	1\r2\r3\r4\r5\r6\r7\r8\r9\r10\r11\r12\r13
+RelationInfo ( "" ; "Addresses" )	Source:work\rTable:Contacts\rOptions:\rContacts::PrimaryKey = Addresses::ForeignKey
+FieldNames ( "" ; "Contacts" )	First Name\rLast Name\rPhoto\rTitle\rCompany\rJob Title\rWebsite\rInitial\rPrimaryKey\rCreatedBy\rModifiedBy\rCreationTimestamp\rModificationTimestamp
+FieldIDs ( "" ; "Contacts" )	1\r2\r3\r4\r5\r6\r7\r8\r9\r10\r11\r12\r13
+RelationInfo ( "" ; "Contacts" )	Source:work\rTable:Addresses\rOptions:Create\rAddresses::ForeignKey = Contacts::PrimaryKey\r\rSource:work\rTable:Phone Numbers\rOptions:Create\rPhone Numbers::ForeignKey = Contacts::PrimaryKey\r\rSource:work\rTable:Email Addresses\rOptions:Create\rEmail Addresses::ForeignKey = Contacts::PrimaryKey
+FieldNames ( "" ; "Email Addresses" )	Address\rType\rCreatedBy\rModifiedBy\rForeignKey\rPrimaryKey\rCreationTimestamp\rModificationTimestamp
+FieldIDs ( "" ; "Email Addresses" )	1\r2\r3\r4\r5\r6\r7\r8
+RelationInfo ( "" ; "Email Addresses" )	Source:work\rTable:Contacts\rOptions:\rContacts::PrimaryKey = Email Addresses::ForeignKey
+FieldNames ( "" ; "Phone Numbers" )	Type\rNumber\rCreatedBy\rModifiedBy\rForeignKey\rPrimaryKey\rCreationTimestamp\rModificationTimestamp
+FieldIDs ( "" ; "Phone Numbers" )	1\r2\r3\r4\r5\r6\r7\r8
+RelationInfo ( "" ; "Phone Numbers" )	Source:work\rTable:Contacts\rOptions:\rContacts::PrimaryKey = Phone Numbers::ForeignKey
+BaseTableComment ( "" ; "Addresses" )	
+BaseTableComment ( "" ; "Contacts" )	
+BaseTableComment ( "" ; "Email Addresses" )	
+BaseTableComment ( "" ; "Phone Numbers" )	
+FieldNames ( "" ; "" )	First Name\rLast Name\rPhoto\rTitle\rCompany\rJob Title\rWebsite\rInitial\rPrimaryKey\rCreatedBy\rModifiedBy\rCreationTimestamp\rModificationTimestamp
+FieldIDs ( "" ; "" )	1\r2\r3\r4\r5\r6\r7\r8\r9\r10\r11\r12\r13
+FieldNames ( "" ; "no such" )	
+RelationInfo ( "" ; "no such" )	
+BaseTableComment ( "" ; "no such" )	
+FieldNames ( "no such file" ; "" )	
+FieldNames ( "" ; "ADDRESSES" )	Address Line 2\rAddress Line 1\rCity\rState\rPostal Code\rCountry\rType\rCreatedBy\rModifiedBy\rForeignKey\rPrimaryKey\rCreationTimestamp\rModificationTimestamp
+RelationInfo ( "" ; "addresses" )	Source:work\rTable:Contacts\rOptions:\rContacts::PrimaryKey = Addresses::ForeignKey
+FieldNames ( "" ; "Contact List" )	Company\rLast Name\rFirst Name\rPhoto
+FieldIDs ( "" ; "Contact List" )	5\r2\r1\r3
+LayoutObjectNames ( "" ; "Contact List" )	<\r>\rDetails
+FieldNames ( "" ; "Contact Details" )	Website\rCompany\rPhone Numbers::Number\rPhone Numbers::Type\rEmail Addresses::Address\rEmail Addresses::Type\rAddresses::Country\rAddresses::Postal Code\rAddresses::State\rAddresses::City\rAddresses::Address Line 2\rAddresses::Address Line 1\rAddresses::Type\rJob Title\rLast Name\rFirst Name\rTitle\rPhoto\rPhoto
+FieldIDs ( "" ; "Contact Details" )	7\r5\r1065092::2\r1065092::1\r1065093::1\r1065093::2\r1065091::6\r1065091::5\r1065091::4\r1065091::3\r1065091::1\r1065091::2\r1065091::7\r6\r2\r1\r4\r3\r3
+LayoutObjectNames ( "" ; "Contact Details" )	<\r>\rBack to Contacts\r<\rwebsite\rCompany\r>\r<\r<\r>\r>\r<\r<\r>\r>\r<\r<\r>\r>\rLast Name\rFirst Name
+LayoutObjectNames ( "" ; "no such" )	
+LayoutObjectNames ( "" ; "" )	
+LayoutObjectNames ( "" ; "CONTACT LIST" )	<\r>\rDetails
+FieldType ( "" ; "Addresses::Address Line 2" )	Standard Text Unindexed 1
+FieldComment ( "" ; "Addresses::Address Line 2" )	
+FieldAnnotation ( "" ; "Addresses::Address Line 2" )	
+FieldDisplayNames ( "" ; "Addresses::Address Line 2" )	
+GetNextSerialValue ( "" ; "Addresses::Address Line 2" )	
+FieldType ( "" ; "Addresses::Address Line 1" )	Standard Text Unindexed 1
+FieldComment ( "" ; "Addresses::Address Line 1" )	
+FieldAnnotation ( "" ; "Addresses::Address Line 1" )	
+FieldDisplayNames ( "" ; "Addresses::Address Line 1" )	
+GetNextSerialValue ( "" ; "Addresses::Address Line 1" )	
+FieldType ( "" ; "Addresses::City" )	Standard Text Unindexed 1
+FieldComment ( "" ; "Addresses::City" )	
+FieldAnnotation ( "" ; "Addresses::City" )	
+FieldDisplayNames ( "" ; "Addresses::City" )	
+GetNextSerialValue ( "" ; "Addresses::City" )	
+FieldType ( "" ; "Addresses::State" )	Standard Text Unindexed 1
+FieldComment ( "" ; "Addresses::State" )	
+FieldAnnotation ( "" ; "Addresses::State" )	
+FieldDisplayNames ( "" ; "Addresses::State" )	
+GetNextSerialValue ( "" ; "Addresses::State" )	
+FieldType ( "" ; "Addresses::Postal Code" )	Standard Number Unindexed 1
+FieldComment ( "" ; "Addresses::Postal Code" )	
+FieldAnnotation ( "" ; "Addresses::Postal Code" )	
+FieldDisplayNames ( "" ; "Addresses::Postal Code" )	
+GetNextSerialValue ( "" ; "Addresses::Postal Code" )	
+FieldType ( "" ; "Addresses::Country" )	Standard Text Unindexed 1
+FieldComment ( "" ; "Addresses::Country" )	
+FieldAnnotation ( "" ; "Addresses::Country" )	
+FieldDisplayNames ( "" ; "Addresses::Country" )	
+GetNextSerialValue ( "" ; "Addresses::Country" )	
+FieldType ( "" ; "Addresses::Type" )	Standard Text Unindexed 1
+FieldComment ( "" ; "Addresses::Type" )	
+FieldAnnotation ( "" ; "Addresses::Type" )	
+FieldDisplayNames ( "" ; "Addresses::Type" )	
+GetNextSerialValue ( "" ; "Addresses::Type" )	
+FieldType ( "" ; "Addresses::CreatedBy" )	Standard Text Unindexed 1
+FieldComment ( "" ; "Addresses::CreatedBy" )	Account name of the user who created each record
+FieldAnnotation ( "" ; "Addresses::CreatedBy" )	
+FieldDisplayNames ( "" ; "Addresses::CreatedBy" )	
+GetNextSerialValue ( "" ; "Addresses::CreatedBy" )	
+FieldType ( "" ; "Addresses::ModifiedBy" )	Standard Text Unindexed 1
+FieldComment ( "" ; "Addresses::ModifiedBy" )	Account name of the user who last modified each record
+FieldAnnotation ( "" ; "Addresses::ModifiedBy" )	
+FieldDisplayNames ( "" ; "Addresses::ModifiedBy" )	
+GetNextSerialValue ( "" ; "Addresses::ModifiedBy" )	
+FieldType ( "" ; "Addresses::ForeignKey" )	Standard Text Indexed 1
+FieldComment ( "" ; "Addresses::ForeignKey" )	Unique identifier of each record in the related table
+FieldAnnotation ( "" ; "Addresses::ForeignKey" )	
+FieldDisplayNames ( "" ; "Addresses::ForeignKey" )	
+GetNextSerialValue ( "" ; "Addresses::ForeignKey" )	
+FieldType ( "" ; "Addresses::PrimaryKey" )	Standard Text Indexed 1
+FieldComment ( "" ; "Addresses::PrimaryKey" )	Unique identifier of each record in this table
+FieldAnnotation ( "" ; "Addresses::PrimaryKey" )	
+FieldDisplayNames ( "" ; "Addresses::PrimaryKey" )	
+GetNextSerialValue ( "" ; "Addresses::PrimaryKey" )	
+FieldType ( "" ; "Addresses::CreationTimestamp" )	Standard Timestamp Unindexed 1
+FieldComment ( "" ; "Addresses::CreationTimestamp" )	Date and time each record was created
+FieldAnnotation ( "" ; "Addresses::CreationTimestamp" )	
+FieldDisplayNames ( "" ; "Addresses::CreationTimestamp" )	
+GetNextSerialValue ( "" ; "Addresses::CreationTimestamp" )	
+FieldType ( "" ; "Addresses::ModificationTimestamp" )	Standard Timestamp Unindexed 1
+FieldComment ( "" ; "Addresses::ModificationTimestamp" )	Date and time each record was last modified
+FieldAnnotation ( "" ; "Addresses::ModificationTimestamp" )	
+FieldDisplayNames ( "" ; "Addresses::ModificationTimestamp" )	
+GetNextSerialValue ( "" ; "Addresses::ModificationTimestamp" )	
+FieldType ( "" ; "Contacts::First Name" )	Standard Text Unindexed 1
+FieldComment ( "" ; "Contacts::First Name" )	
+FieldAnnotation ( "" ; "Contacts::First Name" )	
+FieldDisplayNames ( "" ; "Contacts::First Name" )	
+GetNextSerialValue ( "" ; "Contacts::First Name" )	
+FieldType ( "" ; "Contacts::Last Name" )	Standard Text Unindexed 1
+FieldComment ( "" ; "Contacts::Last Name" )	
+FieldAnnotation ( "" ; "Contacts::Last Name" )	
+FieldDisplayNames ( "" ; "Contacts::Last Name" )	
+GetNextSerialValue ( "" ; "Contacts::Last Name" )	
+FieldType ( "" ; "Contacts::Photo" )	Standard Container Unindexed 1
+FieldComment ( "" ; "Contacts::Photo" )	
+FieldAnnotation ( "" ; "Contacts::Photo" )	
+FieldDisplayNames ( "" ; "Contacts::Photo" )	
+GetNextSerialValue ( "" ; "Contacts::Photo" )	
+FieldType ( "" ; "Contacts::Title" )	Standard Text Unindexed 1
+FieldComment ( "" ; "Contacts::Title" )	
+FieldAnnotation ( "" ; "Contacts::Title" )	
+FieldDisplayNames ( "" ; "Contacts::Title" )	
+GetNextSerialValue ( "" ; "Contacts::Title" )	
+FieldType ( "" ; "Contacts::Company" )	Standard Text Indexed 1
+FieldComment ( "" ; "Contacts::Company" )	
+FieldAnnotation ( "" ; "Contacts::Company" )	
+FieldDisplayNames ( "" ; "Contacts::Company" )	
+GetNextSerialValue ( "" ; "Contacts::Company" )	
+FieldType ( "" ; "Contacts::Job Title" )	Standard Text Indexed 1
+FieldComment ( "" ; "Contacts::Job Title" )	
+FieldAnnotation ( "" ; "Contacts::Job Title" )	
+FieldDisplayNames ( "" ; "Contacts::Job Title" )	
+GetNextSerialValue ( "" ; "Contacts::Job Title" )	
+FieldType ( "" ; "Contacts::Website" )	Standard Text Unindexed 1
+FieldComment ( "" ; "Contacts::Website" )	
+FieldAnnotation ( "" ; "Contacts::Website" )	
+FieldDisplayNames ( "" ; "Contacts::Website" )	
+GetNextSerialValue ( "" ; "Contacts::Website" )	
+FieldType ( "" ; "Contacts::Initial" )	StoredCalc Text Unindexed 1
+FieldComment ( "" ; "Contacts::Initial" )	
+FieldAnnotation ( "" ; "Contacts::Initial" )	
+FieldDisplayNames ( "" ; "Contacts::Initial" )	
+GetNextSerialValue ( "" ; "Contacts::Initial" )	
+FieldType ( "" ; "Contacts::PrimaryKey" )	Standard Text Indexed 1
+FieldComment ( "" ; "Contacts::PrimaryKey" )	Unique identifier of each record in this table
+FieldAnnotation ( "" ; "Contacts::PrimaryKey" )	
+FieldDisplayNames ( "" ; "Contacts::PrimaryKey" )	
+GetNextSerialValue ( "" ; "Contacts::PrimaryKey" )	
+FieldType ( "" ; "Contacts::CreatedBy" )	Standard Text Unindexed 1
+FieldComment ( "" ; "Contacts::CreatedBy" )	Account name of the user who created each record
+FieldAnnotation ( "" ; "Contacts::CreatedBy" )	
+FieldDisplayNames ( "" ; "Contacts::CreatedBy" )	
+GetNextSerialValue ( "" ; "Contacts::CreatedBy" )	
+FieldType ( "" ; "Contacts::ModifiedBy" )	Standard Text Unindexed 1
+FieldComment ( "" ; "Contacts::ModifiedBy" )	Account name of the user who last modified each record
+FieldAnnotation ( "" ; "Contacts::ModifiedBy" )	
+FieldDisplayNames ( "" ; "Contacts::ModifiedBy" )	
+GetNextSerialValue ( "" ; "Contacts::ModifiedBy" )	
+FieldType ( "" ; "Contacts::CreationTimestamp" )	Standard Timestamp Unindexed 1
+FieldComment ( "" ; "Contacts::CreationTimestamp" )	Date and time each record was created
+FieldAnnotation ( "" ; "Contacts::CreationTimestamp" )	
+FieldDisplayNames ( "" ; "Contacts::CreationTimestamp" )	
+GetNextSerialValue ( "" ; "Contacts::CreationTimestamp" )	
+FieldType ( "" ; "Contacts::ModificationTimestamp" )	Standard Timestamp Unindexed 1
+FieldComment ( "" ; "Contacts::ModificationTimestamp" )	Date and time each record was last modified
+FieldAnnotation ( "" ; "Contacts::ModificationTimestamp" )	
+FieldDisplayNames ( "" ; "Contacts::ModificationTimestamp" )	
+GetNextSerialValue ( "" ; "Contacts::ModificationTimestamp" )	
+FieldType ( "" ; "Email Addresses::Address" )	Standard Text Unindexed 1
+FieldComment ( "" ; "Email Addresses::Address" )	
+FieldAnnotation ( "" ; "Email Addresses::Address" )	
+FieldDisplayNames ( "" ; "Email Addresses::Address" )	
+GetNextSerialValue ( "" ; "Email Addresses::Address" )	
+FieldType ( "" ; "Email Addresses::Type" )	Standard Text Unindexed 1
+FieldComment ( "" ; "Email Addresses::Type" )	
+FieldAnnotation ( "" ; "Email Addresses::Type" )	
+FieldDisplayNames ( "" ; "Email Addresses::Type" )	
+GetNextSerialValue ( "" ; "Email Addresses::Type" )	
+FieldType ( "" ; "Email Addresses::CreatedBy" )	Standard Text Unindexed 1
+FieldComment ( "" ; "Email Addresses::CreatedBy" )	Account name of the user who created each record
+FieldAnnotation ( "" ; "Email Addresses::CreatedBy" )	
+FieldDisplayNames ( "" ; "Email Addresses::CreatedBy" )	
+GetNextSerialValue ( "" ; "Email Addresses::CreatedBy" )	
+FieldType ( "" ; "Email Addresses::ModifiedBy" )	Standard Text Unindexed 1
+FieldComment ( "" ; "Email Addresses::ModifiedBy" )	Account name of the user who last modified each record
+FieldAnnotation ( "" ; "Email Addresses::ModifiedBy" )	
+FieldDisplayNames ( "" ; "Email Addresses::ModifiedBy" )	
+GetNextSerialValue ( "" ; "Email Addresses::ModifiedBy" )	
+FieldType ( "" ; "Email Addresses::ForeignKey" )	Standard Text Indexed 1
+FieldComment ( "" ; "Email Addresses::ForeignKey" )	Unique identifier of each record in the related table
+FieldAnnotation ( "" ; "Email Addresses::ForeignKey" )	
+FieldDisplayNames ( "" ; "Email Addresses::ForeignKey" )	
+GetNextSerialValue ( "" ; "Email Addresses::ForeignKey" )	
+FieldType ( "" ; "Email Addresses::PrimaryKey" )	Standard Text Indexed 1
+FieldComment ( "" ; "Email Addresses::PrimaryKey" )	Unique identifier of each record in this table
+FieldAnnotation ( "" ; "Email Addresses::PrimaryKey" )	
+FieldDisplayNames ( "" ; "Email Addresses::PrimaryKey" )	
+GetNextSerialValue ( "" ; "Email Addresses::PrimaryKey" )	
+FieldType ( "" ; "Email Addresses::CreationTimestamp" )	Standard Timestamp Unindexed 1
+FieldComment ( "" ; "Email Addresses::CreationTimestamp" )	Date and time each record was created
+FieldAnnotation ( "" ; "Email Addresses::CreationTimestamp" )	
+FieldDisplayNames ( "" ; "Email Addresses::CreationTimestamp" )	
+GetNextSerialValue ( "" ; "Email Addresses::CreationTimestamp" )	
+FieldType ( "" ; "Email Addresses::ModificationTimestamp" )	Standard Timestamp Unindexed 1
+FieldComment ( "" ; "Email Addresses::ModificationTimestamp" )	Date and time each record was last modified
+FieldAnnotation ( "" ; "Email Addresses::ModificationTimestamp" )	
+FieldDisplayNames ( "" ; "Email Addresses::ModificationTimestamp" )	
+GetNextSerialValue ( "" ; "Email Addresses::ModificationTimestamp" )	
+FieldType ( "" ; "Phone Numbers::Type" )	Standard Text Unindexed 1
+FieldComment ( "" ; "Phone Numbers::Type" )	
+FieldAnnotation ( "" ; "Phone Numbers::Type" )	
+FieldDisplayNames ( "" ; "Phone Numbers::Type" )	
+GetNextSerialValue ( "" ; "Phone Numbers::Type" )	
+FieldType ( "" ; "Phone Numbers::Number" )	Standard Text Unindexed 1
+FieldComment ( "" ; "Phone Numbers::Number" )	
+FieldAnnotation ( "" ; "Phone Numbers::Number" )	
+FieldDisplayNames ( "" ; "Phone Numbers::Number" )	
+GetNextSerialValue ( "" ; "Phone Numbers::Number" )	
+FieldType ( "" ; "Phone Numbers::CreatedBy" )	Standard Text Unindexed 1
+FieldComment ( "" ; "Phone Numbers::CreatedBy" )	Account name of the user who created each record
+FieldAnnotation ( "" ; "Phone Numbers::CreatedBy" )	
+FieldDisplayNames ( "" ; "Phone Numbers::CreatedBy" )	
+GetNextSerialValue ( "" ; "Phone Numbers::CreatedBy" )	
+FieldType ( "" ; "Phone Numbers::ModifiedBy" )	Standard Text Unindexed 1
+FieldComment ( "" ; "Phone Numbers::ModifiedBy" )	Account name of the user who last modified each record
+FieldAnnotation ( "" ; "Phone Numbers::ModifiedBy" )	
+FieldDisplayNames ( "" ; "Phone Numbers::ModifiedBy" )	
+GetNextSerialValue ( "" ; "Phone Numbers::ModifiedBy" )	
+FieldType ( "" ; "Phone Numbers::ForeignKey" )	Standard Text Indexed 1
+FieldComment ( "" ; "Phone Numbers::ForeignKey" )	Unique identifier of each record in the related table
+FieldAnnotation ( "" ; "Phone Numbers::ForeignKey" )	
+FieldDisplayNames ( "" ; "Phone Numbers::ForeignKey" )	
+GetNextSerialValue ( "" ; "Phone Numbers::ForeignKey" )	
+FieldType ( "" ; "Phone Numbers::PrimaryKey" )	Standard Text Indexed 1
+FieldComment ( "" ; "Phone Numbers::PrimaryKey" )	Unique identifier of each record in this table
+FieldAnnotation ( "" ; "Phone Numbers::PrimaryKey" )	
+FieldDisplayNames ( "" ; "Phone Numbers::PrimaryKey" )	
+GetNextSerialValue ( "" ; "Phone Numbers::PrimaryKey" )	
+FieldType ( "" ; "Phone Numbers::CreationTimestamp" )	Standard Timestamp Unindexed 1
+FieldComment ( "" ; "Phone Numbers::CreationTimestamp" )	Date and time each record was created
+FieldAnnotation ( "" ; "Phone Numbers::CreationTimestamp" )	
+FieldDisplayNames ( "" ; "Phone Numbers::CreationTimestamp" )	
+GetNextSerialValue ( "" ; "Phone Numbers::CreationTimestamp" )	
+FieldType ( "" ; "Phone Numbers::ModificationTimestamp" )	Standard Timestamp Unindexed 1
+FieldComment ( "" ; "Phone Numbers::ModificationTimestamp" )	Date and time each record was last modified
+FieldAnnotation ( "" ; "Phone Numbers::ModificationTimestamp" )	
+FieldDisplayNames ( "" ; "Phone Numbers::ModificationTimestamp" )	
+GetNextSerialValue ( "" ; "Phone Numbers::ModificationTimestamp" )	
+FieldType ( "" ; "First Name" )	
+FieldComment ( "" ; "First Name" )	
+GetNextSerialValue ( "" ; "First Name" )	
+FieldType ( "" ; "Last Name" )	
+FieldComment ( "" ; "Last Name" )	
+GetNextSerialValue ( "" ; "Last Name" )	
+FieldType ( "" ; "Photo" )	
+FieldComment ( "" ; "Photo" )	
+GetNextSerialValue ( "" ; "Photo" )	
+FieldType ( "" ; "Title" )	
+FieldComment ( "" ; "Title" )	
+GetNextSerialValue ( "" ; "Title" )	
+FieldType ( "" ; "no such" )	
+FieldType ( "" ; "no such::x" )	
+FieldComment ( "" ; "" )	
+FieldStyle ( "" ; "Contact List" ; "Company" )	Popuplist Company
+FieldRepetitions ( "" ; "Contact List" ; "Company" )	1 vertical
+FieldBounds ( "" ; "Contact List" ; "Company" )	636 112 976 156 0
+FieldStyle ( "" ; "Contact List" ; "Last Name" )	Standard
+FieldRepetitions ( "" ; "Contact List" ; "Last Name" )	1 vertical
+FieldBounds ( "" ; "Contact List" ; "Last Name" )	366 112 632 156 0
+FieldStyle ( "" ; "Contact List" ; "First Name" )	Standard
+FieldRepetitions ( "" ; "Contact List" ; "First Name" )	1 vertical
+FieldBounds ( "" ; "Contact List" ; "First Name" )	96 112 362 156 0
+FieldStyle ( "" ; "Contact List" ; "Photo" )	Standard
+FieldRepetitions ( "" ; "Contact List" ; "Photo" )	1 vertical
+FieldBounds ( "" ; "Contact List" ; "Photo" )	9 112 89 156 0
+FieldStyle ( "" ; "Contact List" ; "no such" )	
+FieldBounds ( "" ; "Contact List" ; "no such" )	
+FieldStyle ( "" ; "Contact Details" ; "Website" )	Standard
+FieldRepetitions ( "" ; "Contact Details" ; "Website" )	1 vertical
+FieldBounds ( "" ; "Contact Details" ; "Website" )	691 206 991 250 0
+FieldStyle ( "" ; "Contact Details" ; "Company" )	Popuplist Company
+FieldRepetitions ( "" ; "Contact Details" ; "Company" )	1 vertical
+FieldBounds ( "" ; "Contact Details" ; "Company" )	366 206 666 250 0
+FieldStyle ( "" ; "Contact Details" ; "Phone Numbers::Number" )	Standard
+FieldRepetitions ( "" ; "Contact Details" ; "Phone Numbers::Number" )	1 vertical
+FieldBounds ( "" ; "Contact Details" ; "Phone Numbers::Number" )	571 215 988 259 0
+FieldStyle ( "" ; "Contact Details" ; "Phone Numbers::Type" )	Popupmenu Phone Type
+FieldRepetitions ( "" ; "Contact Details" ; "Phone Numbers::Type" )	1 vertical
+FieldBounds ( "" ; "Contact Details" ; "Phone Numbers::Type" )	387 215 567 259 0
+FieldStyle ( "" ; "Contact Details" ; "Email Addresses::Address" )	Standard
+FieldRepetitions ( "" ; "Contact Details" ; "Email Addresses::Address" )	1 vertical
+FieldBounds ( "" ; "Contact Details" ; "Email Addresses::Address" )	571 215 988 259 0
+FieldStyle ( "" ; "Contact Details" ; "Email Addresses::Type" )	Popupmenu Email Type
+FieldRepetitions ( "" ; "Contact Details" ; "Email Addresses::Type" )	1 vertical
+FieldBounds ( "" ; "Contact Details" ; "Email Addresses::Type" )	387 215 567 259 0
+FieldStyle ( "" ; "Contact Details" ; "Addresses::Country" )	Standard
+FieldRepetitions ( "" ; "Contact Details" ; "Addresses::Country" )	1 vertical
+FieldBounds ( "" ; "Contact Details" ; "Addresses::Country" )	809 311 988 355 0
+FieldStyle ( "" ; "Contact Details" ; "Addresses::Postal Code" )	Standard
+FieldRepetitions ( "" ; "Contact Details" ; "Addresses::Postal Code" )	1 vertical
+FieldBounds ( "" ; "Contact Details" ; "Addresses::Postal Code" )	680 311 805 355 0
+FieldStyle ( "" ; "Contact Details" ; "Addresses::State" )	Standard
+FieldRepetitions ( "" ; "Contact Details" ; "Addresses::State" )	1 vertical
+FieldBounds ( "" ; "Contact Details" ; "Addresses::State" )	557 311 676 355 0
+FieldStyle ( "" ; "Contact Details" ; "Addresses::City" )	Standard
+FieldRepetitions ( "" ; "Contact Details" ; "Addresses::City" )	1 vertical
+FieldBounds ( "" ; "Contact Details" ; "Addresses::City" )	387 311 553 355 0
+FieldStyle ( "" ; "Contact Details" ; "Addresses::Address Line 2" )	Standard
+FieldRepetitions ( "" ; "Contact Details" ; "Addresses::Address Line 2" )	1 vertical
+FieldBounds ( "" ; "Contact Details" ; "Addresses::Address Line 2" )	809 263 988 307 0
+FieldStyle ( "" ; "Contact Details" ; "Addresses::Address Line 1" )	Standard
+FieldRepetitions ( "" ; "Contact Details" ; "Addresses::Address Line 1" )	1 vertical
+FieldBounds ( "" ; "Contact Details" ; "Addresses::Address Line 1" )	387 263 805 307 0
+FieldStyle ( "" ; "Contact Details" ; "Addresses::Type" )	Popupmenu Address Type
+FieldRepetitions ( "" ; "Contact Details" ; "Addresses::Type" )	1 vertical
+FieldBounds ( "" ; "Contact Details" ; "Addresses::Type" )	387 215 988 259 0
+FieldStyle ( "" ; "Contact Details" ; "Job Title" )	Popuplist Job Title
+FieldRepetitions ( "" ; "Contact Details" ; "Job Title" )	1 vertical
+FieldBounds ( "" ; "Contact Details" ; "Job Title" )	32 497 323 541 0
+FieldStyle ( "" ; "Contact Details" ; "Last Name" )	Standard
+FieldRepetitions ( "" ; "Contact Details" ; "Last Name" )	1 vertical
+FieldBounds ( "" ; "Contact Details" ; "Last Name" )	32 441 323 485 0
+FieldStyle ( "" ; "Contact Details" ; "First Name" )	Standard
+FieldRepetitions ( "" ; "Contact Details" ; "First Name" )	1 vertical
+FieldBounds ( "" ; "Contact Details" ; "First Name" )	32 393 323 437 0
+FieldStyle ( "" ; "Contact Details" ; "Title" )	Popupmenu Title
+FieldRepetitions ( "" ; "Contact Details" ; "Title" )	1 vertical
+FieldBounds ( "" ; "Contact Details" ; "Title" )	32 345 323 389 0
+FieldStyle ( "" ; "Contact Details" ; "Photo" )	Standard
+FieldRepetitions ( "" ; "Contact Details" ; "Photo" )	1 vertical
+FieldBounds ( "" ; "Contact Details" ; "Photo" )	15 116 340 331 0
+FieldStyle ( "" ; "Contact Details" ; "no such" )	
+FieldBounds ( "" ; "Contact Details" ; "no such" )	

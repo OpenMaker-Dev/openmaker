@@ -1,0 +1,119 @@
+# The "current script" options when another script is started while one is
+# paused or running (script-runtime.md 3.7, U5, U6): "@call" makes the
+# harness call ScriptRuntimeBase::CallScript(window, B, no parameter,
+# newState, queueAtBottom) right after step 2 of A, the way a button,
+# trigger or PSOS callback starts a script. newState 0 continue, 1 halt,
+# 2 exit, 3 resume, 4 pause, 5 suspend and resume. Base file: contacts-en.
+== q paused
+Set Variable [ $$log ; "A1" ]
+Pause/Resume Script
+Set Variable [ $$log ; $$log & " A3" ]
+Exit Script [ $$log & " result(" & Get ( ScriptResult ) & ")" ]
+== q running
+Set Variable [ $$log ; "A1" ]
+Set Variable [ $$log ; $$log & " A2" ]
+Set Variable [ $$log ; $$log & " A3" ]
+Exit Script [ $$log & " result(" & Get ( ScriptResult ) & ")" ]
+== q nested
+Set Variable [ $$log ; "A1" ]
+Perform Script [ "q nested sub" ]
+Set Variable [ $$log ; $$log & " A3" ]
+Exit Script [ $$log & " result(" & Get ( ScriptResult ) & ")" ]
+== q nested sub
+Set Variable [ $$log ; $$log & " S1" ]
+Set Variable [ $$log ; $$log & " S2" ]
+Set Variable [ $$log ; $$log & " S3" ]
+== q other
+Set Variable [ $$log ; $$log & " B(" & Get ( ScriptParameter ) & ")" ]
+Exit Script [ "b" ]
+--- run
+@call	q paused	2	q other	0	0
+q paused		$$log	Get ( LastError )
+@call
+@call	q paused	2	q other	0	1
+q paused		$$log	Get ( LastError )
+@call
+@call	q paused	2	q other	1	0
+q paused		$$log	Get ( LastError )
+@call
+@call	q paused	2	q other	1	1
+q paused		$$log	Get ( LastError )
+@call
+@call	q paused	2	q other	2	0
+q paused		$$log	Get ( LastError )
+@call
+@call	q paused	2	q other	2	1
+q paused		$$log	Get ( LastError )
+@call
+@call	q paused	2	q other	3	0
+q paused		$$log	Get ( LastError )
+@call
+@call	q paused	2	q other	3	1
+q paused		$$log	Get ( LastError )
+@call
+@call	q paused	2	q other	4	0
+q paused		$$log	Get ( LastError )
+@call
+@call	q paused	2	q other	4	1
+q paused		$$log	Get ( LastError )
+@call
+@call	q paused	2	q other	5	0
+q paused		$$log	Get ( LastError )
+@call
+@call	q paused	2	q other	5	1
+q paused		$$log	Get ( LastError )
+@call
+@call	q running	2	q other	0	0
+q running		$$log	Get ( LastError )
+@call
+@call	q running	2	q other	0	1
+q running		$$log	Get ( LastError )
+@call
+@call	q running	2	q other	1	0
+q running		$$log	Get ( LastError )
+@call
+@call	q running	2	q other	1	1
+q running		$$log	Get ( LastError )
+@call
+@call	q running	2	q other	2	0
+q running		$$log	Get ( LastError )
+@call
+@call	q running	2	q other	2	1
+q running		$$log	Get ( LastError )
+@call
+@call	q running	2	q other	3	0
+q running		$$log	Get ( LastError )
+@call
+@call	q running	2	q other	3	1
+q running		$$log	Get ( LastError )
+@call
+@call	q running	2	q other	4	0
+q running		$$log	Get ( LastError )
+@call
+@call	q running	2	q other	4	1
+q running		$$log	Get ( LastError )
+@call
+@call	q running	2	q other	5	0
+q running		$$log	Get ( LastError )
+@call
+@call	q running	2	q other	5	1
+q running		$$log	Get ( LastError )
+@call
+@call	q nested sub	2	q other	0	0
+q nested		$$log
+@call
+@call	q nested sub	2	q other	1	0
+q nested		$$log
+@call
+@call	q nested sub	2	q other	2	0
+q nested		$$log
+@call
+@call	q nested sub	2	q other	3	0
+q nested		$$log
+@call
+@call	q nested sub	2	q other	4	0
+q nested		$$log
+@call
+@call	q nested sub	2	q other	5	0
+q nested		$$log
+@call

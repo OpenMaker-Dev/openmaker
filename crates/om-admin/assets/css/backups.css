@@ -1,0 +1,218 @@
+/* Backups (src/views/backups.rs), at the measurements of FileMaker Server's
+   console (docs/re/admin-console.md 4.3, screenshots 13-15 at 1440x1000):
+   the sidebar's backup schedule and status, and the backup lists. */
+
+/* The sidebar's block: its select starts 13 px under the introduction, its
+   right-hand items end 11 px from the sidebar's border, and the sub-views
+   start 39 px under it. */
+
+.backup-plan {
+  margin: -7px 0 39px;
+  padding-right: 11px;
+}
+
+.plan-label {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  color: var(--label);
+}
+
+.plan-schedule {
+  display: flex;
+  align-items: center;
+  gap: 11px;
+  min-height: 34px;
+  margin: 0 0 20px;
+}
+
+.plan-schedule .select-wrap {
+  width: 163px;
+}
+
+.plan-schedule .btn {
+  margin: 0;
+}
+
+.plan-pair {
+  display: flex;
+  justify-content: space-between;
+  margin-bottom: 22px;
+}
+
+.plan-end {
+  text-align: right;
+}
+
+.plan-item {
+  margin-bottom: 10px;
+}
+
+.plan-line {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  min-height: 29.5px;
+}
+
+/* A select drawn with OpenMaker's chevron. */
+
+.select-wrap {
+  position: relative;
+  display: inline-flex;
+}
+
+.select-wrap .select {
+  width: 100%;
+  height: 33px;
+  padding-right: 30px;
+  appearance: none;
+  -webkit-appearance: none;
+  cursor: pointer;
+}
+
+.select-wrap .icon {
+  position: absolute;
+  top: 50%;
+  right: 10px;
+  color: #666666;
+  pointer-events: none;
+  transform: translateY(-50%);
+}
+
+/* The lists: buttons on the left, "Showing" and the label filter on the
+   right, the table 38 px under them. */
+
+.backups-toolbar {
+  align-items: flex-start;
+  margin-bottom: 38px;
+}
+
+.backups-toolbar .toolbar-end {
+  gap: 11px;
+}
+
+.toolbar-label {
+  margin-right: 1px;
+  color: var(--label);
+  font-weight: 400;
+}
+
+.backups-toolbar .select-wrap {
+  width: 290px;
+}
+
+.label-filter {
+  width: 166px;
+}
+
+.backups-table {
+  table-layout: fixed;
+}
+
+.backups-table th,
+.backups-table td {
+  box-sizing: border-box;
+}
+
+.backups-table td {
+  height: 60px;
+}
+
+.backups-table .check-cell {
+  width: 36px;
+  padding: 0 0 0 13px;
+}
+
+.backups-table .check-cell input {
+  display: block;
+  width: 16px;
+  height: 16px;
+  margin: 0;
+}
+
+.backups-table th:nth-child(2) {
+  width: 239.5px;
+}
+
+.backups-table th:nth-child(3) {
+  width: 221px;
+}
+
+.backups-table th:nth-child(4):not(:last-child) {
+  width: 220px;
+}
+
+.backup-name,
+.backup-label {
+  overflow-wrap: anywhere;
+}
+
+.th-help {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+}
+
+.data-table th .help-popover {
+  color: var(--text);
+  font-size: 13px;
+  font-weight: 400;
+  text-align: left;
+  white-space: normal;
+}
+
+.preserved-mark {
+  display: flex;
+  color: var(--accent);
+}
+
+.backups-showing {
+  margin: 0;
+  padding: 16.5px 0;
+  border-bottom: 1px solid var(--border);
+}
+
+.modal-text {
+  margin: 0 0 14px;
+}
+
+.modal-field[hidden] {
+  display: none;
+}
+
+.modal-field .modal-label {
+  padding-top: 5px;
+  color: var(--label);
+}
+
+.modal-field .current-label {
+  padding-top: 5px;
+  overflow-wrap: anywhere;
+}
+
+@media (max-width: 760px) {
+  .backup-plan {
+    margin-top: 0;
+  }
+
+  .backups-toolbar .toolbar-end {
+    flex-wrap: wrap;
+    width: 100%;
+  }
+
+  .backups-toolbar .select-wrap,
+  .label-filter {
+    flex: 1 1 140px;
+    width: auto;
+    min-width: 0;
+  }
+
+  .table-scroll {
+    overflow-x: auto;
+  }
+
+  .backups-table {
+    min-width: 640px;
+  }
+}

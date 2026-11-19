@@ -1,0 +1,48 @@
+[package]
+name = "om-calc"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+rust-version.workspace = true
+description = "FileMaker calculations: values (decimal numbers, dates and times, styled text, locales, operators), the function library and the evaluator"
+# data/zh-han.bin, data/zh-stroke.bin and data/ko-hangul.bin are FileMaker's
+# observed Chinese and Korean orders (data/README.md).
+
+[dependencies]
+om-collate = { path = "../om-collate" }
+om-formula = { path = "../om-formula" }
+# FileMaker's SCSU compressor: the stored length of a container's file name.
+om-scsu = { path = "../om-scsu" }
+icu_normalizer = { version = "2.4", default-features = false, features = ["compiled_data"] }
+# Deep custom-function recursion (50,000 nested calls) grows the stack on the
+# heap instead of overflowing the thread.
+stacker = "0.1"
+# Container encoding functions: digests, HMAC, CryptEncrypt's PBKDF2 +
+# AES-128-CTR, RSA signatures and their key formats, text encodings.
+aes = "0.8"
+cbc = "0.1"
+ctr = "0.9"
+des = "0.8"
+encoding_rs = "0.8"
+getrandom = "0.2"
+hmac = "0.12"
+md-5 = { version = "0.10", features = ["oid"] }
+pbkdf2 = { version = "0.12", default-features = false, features = ["hmac"] }
+pkcs8 = { version = "0.10", features = ["encryption", "pem", "3des"] }
+rsa = "0.9"
+sha1 = { version = "0.10", features = ["oid"] }
+sha2 = { version = "0.10", features = ["oid"] }
+# Container analysis functions: image decoding and scaling (GetThumbnail,
+# ReadQRCode), QR codes, PDF pages (size, text, thumbnails).
+hayro = "0.8"
+# The PDF worker executable's limiting allocator (pdf_worker; MIT OR Apache-2.0).
+cap = "0.1"
+image = { version = "0.25", default-features = false, features = ["bmp", "gif", "jpeg", "png", "tiff", "webp"] }
+rqrr = { version = "0.11", default-features = false }
+
+[dev-dependencies]
+# Builds the PDFs the assembly tests copy pages of (MIT OR Apache-2.0).
+pdf-writer = "0.15"
+
+[lints]
+workspace = true

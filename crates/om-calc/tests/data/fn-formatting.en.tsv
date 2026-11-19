@@ -1,0 +1,470 @@
+# Keyword values
+Plain	0	2/2/0	0
+Bold	0	2/2/0	256
+Italic	0	2/2/0	512
+Underline	0	2/2/0	1024
+Condense	0	2/2/0	8192
+Extend	0	2/2/0	16384
+Strikethrough	0	2/2/0	1
+SmallCaps	0	2/2/0	2
+Superscript	0	2/2/0	4
+Subscript	0	2/2/0	8
+Uppercase	0	2/2/0	16
+Lowercase	0	2/2/0	32
+Titlecase	0	2/2/0	48
+WordUnderline	0	2/2/0	64
+DoubleUnderline	0	2/2/0	128
+AllStyles	0	2/2/0	32767
+HighlightYellow	0	2/2/0	4096
+Roman	0	2/2/0	0
+Greek	0	2/2/0	1
+Cyrillic	0	2/2/0	2
+CentralEurope	0	2/2/0	3
+ShiftJIS	0	2/2/0	4
+TraditionalChinese	0	2/2/0	5
+SimplifiedChinese	0	2/2/0	6
+OEM	0	2/2/0	7
+Symbol	0	2/2/0	8
+Other	0	2/2/0	10
+GetAsNumber ( Bold )	0	2/2/0	256
+Bold + Italic	0	2/2/0	768
+Uppercase + Lowercase	0	2/2/0	48
+AllStyles - HighlightYellow	0	2/2/0	28671
+Bold & ""	0	1/1/0	256
+bold	0	2/2/0	256
+ALLSTYLES	0	2/2/0	32767
+# Claris examples (results as text, then styles through GetAsSVG)
+TextColor ( "Plaid" ; RGB ( 255 ; 0 ; 0 ) )	0	1/1/0	Plaid
+TextColor ( "Plaid" ; RGB ( 0 ; 255 ; 0 ) )	0	1/1/0	Plaid
+TextColor ( "Plaid" ; RGB ( 0 ; 0 ; 255 ) )	0	1/1/0	Plaid
+TextColor ( "Plaid" ; RGB ( 0 ; 0 ; 0 ) )	0	1/1/0	Plaid
+TextSize ( TextFont ( TextColor ( "My text" ; RGB ( 0 ; 125 ; 125 ) ) ; "Courier" ) ; 12 )	0	1/1/0	My text
+TextColorRemove ( TextColor ( "Red Text" ; RGB ( 255 ; 0 ; 0 ) ) & " and " & TextColor ( "Green Text" ; RGB ( 0 ; 255 ; 0 ) ) )	0	1/1/0	Red Text and Green Text
+TextColorRemove ( TextColor ( "Red Text" ; RGB ( 255 ; 0 ; 0 ) ) & " and " & TextColor ( "Green Text" ; RGB ( 0 ; 255 ; 0 ) ) ; RGB ( 255 ; 0 ; 0 ) )	0	1/1/0	Red Text and Green Text
+TextColorRemove ( "Red Text and Green Text" )	0	1/1/0	Red Text and Green Text
+TextColorRemove ( "Red Text and Green Text" ; RGB ( 255 ; 0 ; 0 ) )	0	1/1/0	Red Text and Green Text
+TextFont ( "Plaid" ; "Courier" )	0	1/1/0	Plaid
+TextFont ( "Plaid" ; "Arial" )	0	1/1/0	Plaid
+TextFontRemove ( TextFont ( "Arial Text" ; "Arial" ) & " and " & TextFont ( "Courier Text" ; "Courier" ) )	0	1/1/0	Arial Text and Courier Text
+TextFontRemove ( TextFont ( "Arial Text" ; "Arial" ) & " and " & TextFont ( "Courier Text" ; "Courier" ) ; "Arial" )	0	1/1/0	Arial Text and Courier Text
+TextFontRemove ( "Arial Text and Courier Text" )	0	1/1/0	Arial Text and Courier Text
+TextFontRemove ( "Arial Text and Courier Text" ; "Arial" )	0	1/1/0	Arial Text and Courier Text
+TextFormatRemove ( "Plaid" )	0	1/1/0	Plaid
+TextSize ( "Plaid" ; 18 )	0	1/1/0	Plaid
+TextSize ( "Plaid" ; 24 )	0	1/1/0	Plaid
+TextSizeRemove ( TextSize ( "10 Point Text" ; 10 ) & " and " & TextSize ( "18 Point Text" ; 18 ) )	0	1/1/0	10 Point Text and 18 Point Text
+TextSizeRemove ( TextSize ( "10 Point Text" ; 10 ) & " and " & TextSize ( "18 Point Text" ; 18 ) ; 18 )	0	1/1/0	10 Point Text and 18 Point Text
+TextSizeRemove ( "10 Point Text and 18 Point Text" )	0	1/1/0	10 Point Text and 18 Point Text
+TextSizeRemove ( "10 Point Text and 18 Point Text" ; 18 )	0	1/1/0	10 Point Text and 18 Point Text
+TextStyleAdd ( "Plaid" ; Italic )	0	1/1/0	Plaid
+TextStyleAdd ( "Sophie" ; Bold + Underline )	0	1/1/0	Sophie
+TextStyleAdd ( TextStyleAdd ( "Sophie" ; Plain ) ; Italic )	0	1/1/0	Sophie
+TextStyleAdd ( "Plaid" ; Smallcaps + Titlecase ) & TextStyleAdd ( " stripes" ; Bold + Italic )	0	1/1/0	Plaid stripes
+TextStyleRemove ( "Plaid" ; Italic )	0	1/1/0	Plaid
+TextStyleRemove ( TextStyleAdd ( "Sophie" ; Bold + Underline + Italic ) ; Bold + Underline )	0	1/1/0	Sophie
+TextStyleRemove ( TextStyleAdd ( "Sophie" ; AllStyles ) ; AllStyles )	0	1/1/0	Sophie
+TextStyleRemove ( TextStyleAdd ( "My text" ; HighlightYellow + Bold ) ; HighlightYellow )	0	1/1/0	My text
+TextColor ( "Sophie" ; RGB ( 255 ; 165 ; 0 ) ) & " " & TextColor ( "Smith" ; RGB ( 160 ; 32 ; 240 ) )	0	1/1/0	Sophie Smith
+GetAsSVG ( TextColor ( "Plaid" ; RGB ( 255 ; 0 ; 0 ) ) )	0	1/1/0	<stylelist>\r<style#0>"color: #FF0000;", begin: 1, end: 5</style> \r</stylelist>\r<data>\r<span style="0">Plaid</span>\r</data>
+GetAsSVG ( TextColor ( "Plaid" ; RGB ( 0 ; 255 ; 0 ) ) )	0	1/1/0	<stylelist>\r<style#0>"color: #00FF00;", begin: 1, end: 5</style> \r</stylelist>\r<data>\r<span style="0">Plaid</span>\r</data>
+GetAsSVG ( TextColor ( "Plaid" ; RGB ( 0 ; 0 ; 255 ) ) )	0	1/1/0	<stylelist>\r<style#0>"color: #0000FF;", begin: 1, end: 5</style> \r</stylelist>\r<data>\r<span style="0">Plaid</span>\r</data>
+GetAsSVG ( TextColor ( "Plaid" ; RGB ( 0 ; 0 ; 0 ) ) )	0	1/1/0	<stylelist>\r<style#0>"color: #000000;", begin: 1, end: 5</style> \r</stylelist>\r<data>\r<span style="0">Plaid</span>\r</data>
+GetAsSVG ( TextSize ( TextFont ( TextColor ( "My text" ; RGB ( 0 ; 125 ; 125 ) ) ; "Courier" ) ; 12 ) )	0	1/1/0	<stylelist>\r<style#0>"font-family: 'Courier';font-size: 12px;color: #007D7D;", begin: 1, end: 7</style> \r</stylelist>\r<data>\r<span style="0">My text</span>\r</data>
+GetAsSVG ( TextColorRemove ( TextColor ( "Red Text" ; RGB ( 255 ; 0 ; 0 ) ) & " and " & TextColor ( "Green Text" ; RGB ( 0 ; 255 ; 0 ) ) ) )	0	1/1/0	<stylelist>\r<style#0>"", begin: 1, end: 23</style> \r</stylelist>\r<data>\r<span style="0">Red Text and Green Text</span>\r</data>
+GetAsSVG ( TextColorRemove ( TextColor ( "Red Text" ; RGB ( 255 ; 0 ; 0 ) ) & " and " & TextColor ( "Green Text" ; RGB ( 0 ; 255 ; 0 ) ) ; RGB ( 255 ; 0 ; 0 ) ) )	0	1/1/0	<stylelist>\r<style#0>"", begin: 1, end: 8</style> \r<style#1>"", begin: 9, end: 13</style> \r<style#2>"color: #00FF00;", begin: 14, end: 23</style> \r</stylelist>\r<data>\r<span style="0">Red Text</span>\r<span style="1"> and </span>\r<span style="2">Green Text</span>\r</data>
+GetAsSVG ( TextColorRemove ( "Red Text and Green Text" ) )	0	1/1/0	<stylelist>\r<style#0>"", begin: 1, end: 23</style> \r</stylelist>\r<data>\r<span style="0">Red Text and Green Text</span>\r</data>
+GetAsSVG ( TextColorRemove ( "Red Text and Green Text" ; RGB ( 255 ; 0 ; 0 ) ) )	0	1/1/0	<stylelist>\r<style#0>"", begin: 1, end: 23</style> \r</stylelist>\r<data>\r<span style="0">Red Text and Green Text</span>\r</data>
+GetAsSVG ( TextFont ( "Plaid" ; "Courier" ) )	0	1/1/0	<stylelist>\r<style#0>"font-family: 'Courier';", begin: 1, end: 5</style> \r</stylelist>\r<data>\r<span style="0">Plaid</span>\r</data>
+GetAsSVG ( TextFont ( "Plaid" ; "Arial" ) )	0	1/1/0	<stylelist>\r<style#0>"font-family: 'Arial';", begin: 1, end: 5</style> \r</stylelist>\r<data>\r<span style="0">Plaid</span>\r</data>
+GetAsSVG ( TextFontRemove ( TextFont ( "Arial Text" ; "Arial" ) & " and " & TextFont ( "Courier Text" ; "Courier" ) ) )	0	1/1/0	<stylelist>\r<style#0>"", begin: 1, end: 27</style> \r</stylelist>\r<data>\r<span style="0">Arial Text and Courier Text</span>\r</data>
+GetAsSVG ( TextFontRemove ( TextFont ( "Arial Text" ; "Arial" ) & " and " & TextFont ( "Courier Text" ; "Courier" ) ; "Arial" ) )	0	1/1/0	<stylelist>\r<style#0>"", begin: 1, end: 10</style> \r<style#1>"", begin: 11, end: 15</style> \r<style#2>"font-family: 'Courier';", begin: 16, end: 27</style> \r</stylelist>\r<data>\r<span style="0">Arial Text</span>\r<span style="1"> and </span>\r<span style="2">Courier Text</span>\r</data>
+GetAsSVG ( TextFontRemove ( "Arial Text and Courier Text" ) )	0	1/1/0	<stylelist>\r<style#0>"", begin: 1, end: 27</style> \r</stylelist>\r<data>\r<span style="0">Arial Text and Courier Text</span>\r</data>
+GetAsSVG ( TextFontRemove ( "Arial Text and Courier Text" ; "Arial" ) )	0	1/1/0	<stylelist>\r<style#0>"", begin: 1, end: 27</style> \r</stylelist>\r<data>\r<span style="0">Arial Text and Courier Text</span>\r</data>
+GetAsSVG ( TextFormatRemove ( "Plaid" ) )	0	1/1/0	<stylelist>\r<style#0>"", begin: 1, end: 5</style> \r</stylelist>\r<data>\r<span style="0">Plaid</span>\r</data>
+GetAsSVG ( TextSize ( "Plaid" ; 18 ) )	0	1/1/0	<stylelist>\r<style#0>"font-size: 18px;", begin: 1, end: 5</style> \r</stylelist>\r<data>\r<span style="0">Plaid</span>\r</data>
+GetAsSVG ( TextSize ( "Plaid" ; 24 ) )	0	1/1/0	<stylelist>\r<style#0>"font-size: 24px;", begin: 1, end: 5</style> \r</stylelist>\r<data>\r<span style="0">Plaid</span>\r</data>
+GetAsSVG ( TextSizeRemove ( TextSize ( "10 Point Text" ; 10 ) & " and " & TextSize ( "18 Point Text" ; 18 ) ) )	0	1/1/0	<stylelist>\r<style#0>"", begin: 1, end: 31</style> \r</stylelist>\r<data>\r<span style="0">10 Point Text and 18 Point Text</span>\r</data>
+GetAsSVG ( TextSizeRemove ( TextSize ( "10 Point Text" ; 10 ) & " and " & TextSize ( "18 Point Text" ; 18 ) ; 18 ) )	0	1/1/0	<stylelist>\r<style#0>"font-size: 10px;", begin: 1, end: 13</style> \r<style#1>"", begin: 14, end: 18</style> \r<style#2>"", begin: 19, end: 31</style> \r</stylelist>\r<data>\r<span style="0">10 Point Text</span>\r<span style="1"> and </span>\r<span style="2">18 Point Text</span>\r</data>
+GetAsSVG ( TextSizeRemove ( "10 Point Text and 18 Point Text" ) )	0	1/1/0	<stylelist>\r<style#0>"", begin: 1, end: 31</style> \r</stylelist>\r<data>\r<span style="0">10 Point Text and 18 Point Text</span>\r</data>
+GetAsSVG ( TextSizeRemove ( "10 Point Text and 18 Point Text" ; 18 ) )	0	1/1/0	<stylelist>\r<style#0>"", begin: 1, end: 31</style> \r</stylelist>\r<data>\r<span style="0">10 Point Text and 18 Point Text</span>\r</data>
+GetAsSVG ( TextStyleAdd ( "Plaid" ; Italic ) )	0	1/1/0	<stylelist>\r<style#0>"font-style:italic;", begin: 1, end: 5</style> \r</stylelist>\r<data>\r<span style="0">Plaid</span>\r</data>
+GetAsSVG ( TextStyleAdd ( "Sophie" ; Bold + Underline ) )	0	1/1/0	<stylelist>\r<style#0>"font-weight: bold;text-decoration:underline ;", begin: 1, end: 6</style> \r</stylelist>\r<data>\r<span style="0">Sophie</span>\r</data>
+GetAsSVG ( TextStyleAdd ( TextStyleAdd ( "Sophie" ; Plain ) ; Italic ) )	0	1/1/0	<stylelist>\r<style#0>"font-size: 12px;background-color: normal;font-weight: normal;font-style:italic;text-decoration:none;font-variant:normal;letter-spacing: normal;text-transform: none;", begin: 1, end: 6</style> \r</stylelist>\r<data>\r<span style="0">Sophie</span>\r</data>
+GetAsSVG ( TextStyleAdd ( "Plaid" ; Smallcaps + Titlecase ) & TextStyleAdd ( " stripes" ; Bold + Italic ) )	0	1/1/0	<stylelist>\r<style#0>"font-variant:small-caps;text-transform: capitalize;", begin: 1, end: 5</style> \r<style#1>"font-weight: bold;font-style:italic;", begin: 6, end: 13</style> \r</stylelist>\r<data>\r<span style="0">Plaid</span>\r<span style="1"> stripes</span>\r</data>
+GetAsSVG ( TextStyleRemove ( "Plaid" ; Italic ) )	0	1/1/0	<stylelist>\r<style#0>"", begin: 1, end: 5</style> \r</stylelist>\r<data>\r<span style="0">Plaid</span>\r</data>
+GetAsSVG ( TextStyleRemove ( TextStyleAdd ( "Sophie" ; Bold + Underline + Italic ) ; Bold + Underline ) )	0	1/1/0	<stylelist>\r<style#0>"font-style:italic;", begin: 1, end: 6</style> \r</stylelist>\r<data>\r<span style="0">Sophie</span>\r</data>
+GetAsSVG ( TextStyleRemove ( TextStyleAdd ( "Sophie" ; AllStyles ) ; AllStyles ) )	0	1/1/0	<stylelist>\r<style#0>"", begin: 1, end: 6</style> \r</stylelist>\r<data>\r<span style="0">Sophie</span>\r</data>
+GetAsSVG ( TextStyleRemove ( TextStyleAdd ( "My text" ; HighlightYellow + Bold ) ; HighlightYellow ) )	0	1/1/0	<stylelist>\r<style#0>"font-weight: bold;", begin: 1, end: 7</style> \r</stylelist>\r<data>\r<span style="0">My text</span>\r</data>
+GetAsSVG ( TextColor ( "Sophie" ; RGB ( 255 ; 165 ; 0 ) ) & " " & TextColor ( "Smith" ; RGB ( 160 ; 32 ; 240 ) ) )	0	1/1/0	<stylelist>\r<style#0>"color: #FFA500;", begin: 1, end: 6</style> \r<style#1>"", begin: 7, end: 7</style> \r<style#2>"color: #A020F0;", begin: 8, end: 12</style> \r</stylelist>\r<data>\r<span style="0">Sophie</span>\r<span style="1"> </span>\r<span style="2">Smith</span>\r</data>
+# RGB: no clamping, decimals, empty and text components
+RGB ( 255 ; 0 ; 0 )	0	2/2/0	16711680
+RGB ( 0 ; 255 ; 0 )	0	2/2/0	65280
+RGB ( 0 ; 0 ; 255 )	0	2/2/0	255
+RGB ( 0 ; 0 ; 0 )	0	2/2/0	0
+RGB ( 255 ; 255 ; 255 )	0	2/2/0	16777215
+RGB ( 256 ; 0 ; 0 )	0	2/2/0	16777216
+RGB ( -1 ; 0 ; 0 )	0	2/2/0	-65536
+RGB ( 1.5 ; 0 ; 0 )	0	2/2/0	98304
+RGB ( 0 ; 1.5 ; 0 )	0	2/2/0	384
+RGB ( 0 ; 0 ; 1.5 )	0	2/2/0	1.5
+RGB ( "" ; "" ; "" )	0	2/2/0	0
+RGB ( "abc" ; 1 ; 1 )	0	2/2/0	257
+RGB ( 0 ; 0 ; 256 )	0	2/2/0	256
+RGB ( 0 ; 0 ; -1 )	0	2/2/0	-1
+RGB ( 0 ; 300 ; 0 )	0	2/2/0	76800
+RGB ( 1000 ; 1000 ; 1000 )	0	2/2/0	65793000
+RGB ( 10^20 ; 0 ; 0 )	0	2/2/0	6.5536E+24
+RGB ( "" ; 1 ; "" )	0	2/2/0	256
+RGB ( -0.5 ; 0 ; 0 )	0	2/2/0	-32768
+RGB ( 1/3 ; 0 ; 0 )	0	2/2/0	21845.3333333333333115
+RGB ( 0 ; 0 ; 1/3 )	0	2/2/0	.3333333333333333
+RGB ( 1/0 ; 0 ; 0 )	15	2/2/0	?
+RGB ( "12abc" ; 0 ; 0 )	0	2/2/0	786432
+RGB ( Date ( 1 ; 1 ; 2001 ) ; 0 ; 0 )	0	2/2/0	47873130496
+RGB ( Time ( 0 ; 1 ; 0 ) ; 0 ; 0 )	0	2/2/0	3932160
+RGB ( 255 ; 165 ; 0 )	0	2/2/0	16753920
+RGB ( 160 ; 32 ; 240 )	0	2/2/0	10494192
+IsEmpty ( RGB ( "" ; "" ; "" ) )	0	2/2/0	0
+# Every style keyword, alone, twice, and in pairs of the same group
+GetAsSVG ( TextStyleAdd ( "ab" ; Plain ) )	0	1/1/0	<stylelist>\r<style#0>"font-size: 12px;background-color: normal;font-weight: normal;font-style:normal;text-decoration:none;font-variant:normal;letter-spacing: normal;text-transform: none;", begin: 1, end: 2</style> \r</stylelist>\r<data>\r<span style="0">ab</span>\r</data>
+GetAsSVG ( TextStyleAdd ( "ab" ; Bold ) )	0	1/1/0	<stylelist>\r<style#0>"font-weight: bold;", begin: 1, end: 2</style> \r</stylelist>\r<data>\r<span style="0">ab</span>\r</data>
+GetAsSVG ( TextStyleAdd ( "ab" ; Italic ) )	0	1/1/0	<stylelist>\r<style#0>"font-style:italic;", begin: 1, end: 2</style> \r</stylelist>\r<data>\r<span style="0">ab</span>\r</data>
+GetAsSVG ( TextStyleAdd ( "ab" ; Underline ) )	0	1/1/0	<stylelist>\r<style#0>"text-decoration:underline ;", begin: 1, end: 2</style> \r</stylelist>\r<data>\r<span style="0">ab</span>\r</data>
+GetAsSVG ( TextStyleAdd ( "ab" ; Condense ) )	0	1/1/0	<stylelist>\r<style#0>"letter-spacing: -2px;", begin: 1, end: 2</style> \r</stylelist>\r<data>\r<span style="0">ab</span>\r</data>
+GetAsSVG ( TextStyleAdd ( "ab" ; Extend ) )	0	1/1/0	<stylelist>\r<style#0>"letter-spacing: 2px;", begin: 1, end: 2</style> \r</stylelist>\r<data>\r<span style="0">ab</span>\r</data>
+GetAsSVG ( TextStyleAdd ( "ab" ; Strikethrough ) )	0	1/1/0	<stylelist>\r<style#0>"text-decoration:line-through ;", begin: 1, end: 2</style> \r</stylelist>\r<data>\r<span style="0">ab</span>\r</data>
+GetAsSVG ( TextStyleAdd ( "ab" ; SmallCaps ) )	0	1/1/0	<stylelist>\r<style#0>"font-variant:small-caps;", begin: 1, end: 2</style> \r</stylelist>\r<data>\r<span style="0">ab</span>\r</data>
+GetAsSVG ( TextStyleAdd ( "ab" ; Superscript ) )	0	1/1/0	<stylelist>\r<style#0>"font-size: 6px;vertical-align: text-top;", begin: 1, end: 2</style> \r</stylelist>\r<data>\r<span style="0">ab</span>\r</data>
+GetAsSVG ( TextStyleAdd ( "ab" ; Subscript ) )	0	1/1/0	<stylelist>\r<style#0>"font-size: 6px;vertical-align: text-bottom;", begin: 1, end: 2</style> \r</stylelist>\r<data>\r<span style="0">ab</span>\r</data>
+GetAsSVG ( TextStyleAdd ( "ab" ; Uppercase ) )	0	1/1/0	<stylelist>\r<style#0>"text-transform: uppercase;", begin: 1, end: 2</style> \r</stylelist>\r<data>\r<span style="0">ab</span>\r</data>
+GetAsSVG ( TextStyleAdd ( "ab" ; Lowercase ) )	0	1/1/0	<stylelist>\r<style#0>"text-transform: lowercase;", begin: 1, end: 2</style> \r</stylelist>\r<data>\r<span style="0">ab</span>\r</data>
+GetAsSVG ( TextStyleAdd ( "ab" ; Titlecase ) )	0	1/1/0	<stylelist>\r<style#0>"text-transform: capitalize;", begin: 1, end: 2</style> \r</stylelist>\r<data>\r<span style="0">ab</span>\r</data>
+GetAsSVG ( TextStyleAdd ( "ab" ; WordUnderline ) )	0	1/1/0	<stylelist>\r<style#0>"text-decoration:underline ;", begin: 1, end: 2</style> \r</stylelist>\r<data>\r<span style="0">ab</span>\r</data>
+GetAsSVG ( TextStyleAdd ( "ab" ; DoubleUnderline ) )	0	1/1/0	<stylelist>\r<style#0>"text-decoration:underline ;", begin: 1, end: 2</style> \r</stylelist>\r<data>\r<span style="0">ab</span>\r</data>
+GetAsSVG ( TextStyleAdd ( "ab" ; AllStyles ) )	0	1/1/0	<stylelist>\r<style#0>"font-size: 6px;background-color: #FFFF00;font-weight: bold;font-style:italic;text-decoration:underline line-through ;font-variant:small-caps;letter-spacing: -2px;text-transform: capitalize;vertical-align: text-top;", begin: 1, end: 2</style> \r</stylelist>\r<data>\r<span style="0">ab</span>\r</data>
+GetAsSVG ( TextStyleAdd ( "ab" ; HighlightYellow ) )	0	1/1/0	<stylelist>\r<style#0>"background-color: #FFFF00;", begin: 1, end: 2</style> \r</stylelist>\r<data>\r<span style="0">ab</span>\r</data>
+GetAsSVG ( TextStyleAdd ( TextStyleAdd ( "ab" ; Underline ) ; DoubleUnderline ) )	0	1/1/0	<stylelist>\r<style#0>"text-decoration:underline ;", begin: 1, end: 2</style> \r</stylelist>\r<data>\r<span style="0">ab</span>\r</data>
+GetAsSVG ( TextStyleAdd ( "ab" ; Underline + DoubleUnderline ) )	0	1/1/0	<stylelist>\r<style#0>"text-decoration:underline ;", begin: 1, end: 2</style> \r</stylelist>\r<data>\r<span style="0">ab</span>\r</data>
+GetAsSVG ( TextStyleAdd ( TextStyleAdd ( "ab" ; Underline ) ; WordUnderline ) )	0	1/1/0	<stylelist>\r<style#0>"text-decoration:underline ;", begin: 1, end: 2</style> \r</stylelist>\r<data>\r<span style="0">ab</span>\r</data>
+GetAsSVG ( TextStyleAdd ( "ab" ; Underline + WordUnderline ) )	0	1/1/0	<stylelist>\r<style#0>"text-decoration:underline ;", begin: 1, end: 2</style> \r</stylelist>\r<data>\r<span style="0">ab</span>\r</data>
+GetAsSVG ( TextStyleAdd ( TextStyleAdd ( "ab" ; WordUnderline ) ; DoubleUnderline ) )	0	1/1/0	<stylelist>\r<style#0>"text-decoration:underline ;", begin: 1, end: 2</style> \r</stylelist>\r<data>\r<span style="0">ab</span>\r</data>
+GetAsSVG ( TextStyleAdd ( "ab" ; WordUnderline + DoubleUnderline ) )	0	1/1/0	<stylelist>\r<style#0>"text-decoration:underline ;", begin: 1, end: 2</style> \r</stylelist>\r<data>\r<span style="0">ab</span>\r</data>
+GetAsSVG ( TextStyleAdd ( TextStyleAdd ( "ab" ; Superscript ) ; Subscript ) )	0	1/1/0	<stylelist>\r<style#0>"font-size: 6px;vertical-align: text-bottom;", begin: 1, end: 2</style> \r</stylelist>\r<data>\r<span style="0">ab</span>\r</data>
+GetAsSVG ( TextStyleAdd ( "ab" ; Superscript + Subscript ) )	0	1/1/0	<stylelist>\r<style#0>"font-size: 6px;vertical-align: text-top;", begin: 1, end: 2</style> \r</stylelist>\r<data>\r<span style="0">ab</span>\r</data>
+GetAsSVG ( TextStyleAdd ( TextStyleAdd ( "ab" ; Subscript ) ; Superscript ) )	0	1/1/0	<stylelist>\r<style#0>"font-size: 6px;vertical-align: text-top;", begin: 1, end: 2</style> \r</stylelist>\r<data>\r<span style="0">ab</span>\r</data>
+GetAsSVG ( TextStyleAdd ( "ab" ; Subscript + Superscript ) )	0	1/1/0	<stylelist>\r<style#0>"font-size: 6px;vertical-align: text-top;", begin: 1, end: 2</style> \r</stylelist>\r<data>\r<span style="0">ab</span>\r</data>
+GetAsSVG ( TextStyleAdd ( TextStyleAdd ( "ab" ; Uppercase ) ; Lowercase ) )	0	1/1/0	<stylelist>\r<style#0>"text-transform: lowercase;", begin: 1, end: 2</style> \r</stylelist>\r<data>\r<span style="0">ab</span>\r</data>
+GetAsSVG ( TextStyleAdd ( "ab" ; Uppercase + Lowercase ) )	0	1/1/0	<stylelist>\r<style#0>"text-transform: capitalize;", begin: 1, end: 2</style> \r</stylelist>\r<data>\r<span style="0">ab</span>\r</data>
+GetAsSVG ( TextStyleAdd ( TextStyleAdd ( "ab" ; Lowercase ) ; Uppercase ) )	0	1/1/0	<stylelist>\r<style#0>"text-transform: uppercase;", begin: 1, end: 2</style> \r</stylelist>\r<data>\r<span style="0">ab</span>\r</data>
+GetAsSVG ( TextStyleAdd ( "ab" ; Lowercase + Uppercase ) )	0	1/1/0	<stylelist>\r<style#0>"text-transform: capitalize;", begin: 1, end: 2</style> \r</stylelist>\r<data>\r<span style="0">ab</span>\r</data>
+GetAsSVG ( TextStyleAdd ( TextStyleAdd ( "ab" ; Uppercase ) ; Titlecase ) )	0	1/1/0	<stylelist>\r<style#0>"text-transform: capitalize;", begin: 1, end: 2</style> \r</stylelist>\r<data>\r<span style="0">ab</span>\r</data>
+GetAsSVG ( TextStyleAdd ( "ab" ; Uppercase + Titlecase ) )	0	1/1/0	<stylelist>\r<style#0>"text-decoration:underline ;", begin: 1, end: 2</style> \r</stylelist>\r<data>\r<span style="0">ab</span>\r</data>
+GetAsSVG ( TextStyleAdd ( TextStyleAdd ( "ab" ; Titlecase ) ; Uppercase ) )	0	1/1/0	<stylelist>\r<style#0>"text-transform: uppercase;", begin: 1, end: 2</style> \r</stylelist>\r<data>\r<span style="0">ab</span>\r</data>
+GetAsSVG ( TextStyleAdd ( "ab" ; Titlecase + Uppercase ) )	0	1/1/0	<stylelist>\r<style#0>"text-decoration:underline ;", begin: 1, end: 2</style> \r</stylelist>\r<data>\r<span style="0">ab</span>\r</data>
+GetAsSVG ( TextStyleAdd ( TextStyleAdd ( "ab" ; Condense ) ; Extend ) )	0	1/1/0	<stylelist>\r<style#0>"letter-spacing: 2px;", begin: 1, end: 2</style> \r</stylelist>\r<data>\r<span style="0">ab</span>\r</data>
+GetAsSVG ( TextStyleAdd ( "ab" ; Condense + Extend ) )	0	1/1/0	<stylelist>\r<style#0>"letter-spacing: -2px;", begin: 1, end: 2</style> \r</stylelist>\r<data>\r<span style="0">ab</span>\r</data>
+GetAsSVG ( TextStyleAdd ( TextStyleAdd ( "ab" ; Extend ) ; Condense ) )	0	1/1/0	<stylelist>\r<style#0>"letter-spacing: -2px;", begin: 1, end: 2</style> \r</stylelist>\r<data>\r<span style="0">ab</span>\r</data>
+GetAsSVG ( TextStyleAdd ( "ab" ; Extend + Condense ) )	0	1/1/0	<stylelist>\r<style#0>"letter-spacing: -2px;", begin: 1, end: 2</style> \r</stylelist>\r<data>\r<span style="0">ab</span>\r</data>
+GetAsSVG ( TextStyleAdd ( TextStyleAdd ( "ab" ; Bold ) ; Plain ) )	0	1/1/0	<stylelist>\r<style#0>"font-size: 12px;background-color: normal;font-weight: normal;font-style:normal;text-decoration:none;font-variant:normal;letter-spacing: normal;text-transform: none;", begin: 1, end: 2</style> \r</stylelist>\r<data>\r<span style="0">ab</span>\r</data>
+GetAsSVG ( TextStyleAdd ( "ab" ; Bold + Plain ) )	0	1/1/0	<stylelist>\r<style#0>"font-weight: bold;", begin: 1, end: 2</style> \r</stylelist>\r<data>\r<span style="0">ab</span>\r</data>
+GetAsSVG ( TextStyleAdd ( TextStyleAdd ( "ab" ; Strikethrough ) ; Underline ) )	0	1/1/0	<stylelist>\r<style#0>"text-decoration:underline line-through ;", begin: 1, end: 2</style> \r</stylelist>\r<data>\r<span style="0">ab</span>\r</data>
+GetAsSVG ( TextStyleAdd ( "ab" ; Strikethrough + Underline ) )	0	1/1/0	<stylelist>\r<style#0>"text-decoration:underline line-through ;", begin: 1, end: 2</style> \r</stylelist>\r<data>\r<span style="0">ab</span>\r</data>
+GetAsSVG ( TextStyleAdd ( TextStyleAdd ( "ab" ; Underline ) ; Strikethrough ) )	0	1/1/0	<stylelist>\r<style#0>"text-decoration:underline line-through ;", begin: 1, end: 2</style> \r</stylelist>\r<data>\r<span style="0">ab</span>\r</data>
+GetAsSVG ( TextStyleAdd ( "ab" ; Underline + Strikethrough ) )	0	1/1/0	<stylelist>\r<style#0>"text-decoration:underline line-through ;", begin: 1, end: 2</style> \r</stylelist>\r<data>\r<span style="0">ab</span>\r</data>
+GetAsSVG ( TextStyleAdd ( TextStyleAdd ( "ab" ; Uppercase ) ; SmallCaps ) )	0	1/1/0	<stylelist>\r<style#0>"font-variant:small-caps;text-transform: uppercase;", begin: 1, end: 2</style> \r</stylelist>\r<data>\r<span style="0">ab</span>\r</data>
+GetAsSVG ( TextStyleAdd ( "ab" ; Uppercase + SmallCaps ) )	0	1/1/0	<stylelist>\r<style#0>"font-variant:small-caps;text-transform: uppercase;", begin: 1, end: 2</style> \r</stylelist>\r<data>\r<span style="0">ab</span>\r</data>
+# Style values: wrapping, negatives, unknown bits, empty, text, ?
+GetAsSVG ( TextStyleAdd ( "ab" ; 3 ) )	0	1/1/0	<stylelist>\r<style#0>"text-decoration:line-through ;font-variant:small-caps;", begin: 1, end: 2</style> \r</stylelist>\r<data>\r<span style="0">ab</span>\r</data>
+GetAsSVG ( TextStyleAdd ( "ab" ; -1 ) )	0	1/1/0	<stylelist>\r<style#0>"font-size: 12px;background-color: normal;font-weight: normal;font-style:normal;text-decoration:none;font-variant:normal;letter-spacing: normal;text-transform: none;", begin: 1, end: 2</style> \r</stylelist>\r<data>\r<span style="0">ab</span>\r</data>
+GetAsSVG ( TextStyleAdd ( "ab" ; 32768 ) )	0	1/1/0	<stylelist>\r<style#0>"", begin: 1, end: 2</style> \r</stylelist>\r<data>\r<span style="0">ab</span>\r</data>
+GetAsSVG ( TextStyleAdd ( "ab" ; 65536 ) )	0	1/1/0	<stylelist>\r<style#0>"font-size: 12px;background-color: normal;font-weight: normal;font-style:normal;text-decoration:none;font-variant:normal;letter-spacing: normal;text-transform: none;", begin: 1, end: 2</style> \r</stylelist>\r<data>\r<span style="0">ab</span>\r</data>
+GetAsSVG ( TextStyleAdd ( "ab" ; 65535 ) )	0	1/1/0	<stylelist>\r<style#0>"font-size: 6px;background-color: #FFFF00;font-weight: bold;font-style:italic;text-decoration:underline line-through ;font-variant:small-caps;letter-spacing: -2px;text-transform: capitalize;vertical-align: text-top;", begin: 1, end: 2</style> \r</stylelist>\r<data>\r<span style="0">ab</span>\r</data>
+GetAsSVG ( TextStyleAdd ( "ab" ; 2048 ) )	0	1/1/0	<stylelist>\r<style#0>"", begin: 1, end: 2</style> \r</stylelist>\r<data>\r<span style="0">ab</span>\r</data>
+GetAsSVG ( TextStyleAdd ( "ab" ; 2048 + 256 ) )	0	1/1/0	<stylelist>\r<style#0>"font-weight: bold;", begin: 1, end: 2</style> \r</stylelist>\r<data>\r<span style="0">ab</span>\r</data>
+GetAsSVG ( TextStyleAdd ( "ab" ; 32768 + 256 ) )	0	1/1/0	<stylelist>\r<style#0>"font-weight: bold;", begin: 1, end: 2</style> \r</stylelist>\r<data>\r<span style="0">ab</span>\r</data>
+GetAsSVG ( TextStyleAdd ( "ab" ; 256.9 ) )	0	1/1/0	<stylelist>\r<style#0>"font-weight: bold;", begin: 1, end: 2</style> \r</stylelist>\r<data>\r<span style="0">ab</span>\r</data>
+GetAsSVG ( TextStyleAdd ( "ab" ; "" ) )	0	1/1/0	<stylelist>\r<style#0>"font-size: 12px;background-color: normal;font-weight: normal;font-style:normal;text-decoration:none;font-variant:normal;letter-spacing: normal;text-transform: none;", begin: 1, end: 2</style> \r</stylelist>\r<data>\r<span style="0">ab</span>\r</data>
+GetAsSVG ( TextStyleAdd ( "ab" ; "abc" ) )	0	1/1/0	<stylelist>\r<style#0>"font-size: 12px;background-color: normal;font-weight: normal;font-style:normal;text-decoration:none;font-variant:normal;letter-spacing: normal;text-transform: none;", begin: 1, end: 2</style> \r</stylelist>\r<data>\r<span style="0">ab</span>\r</data>
+GetAsSVG ( TextStyleAdd ( "ab" ; "Bold" ) )	0	1/1/0	<stylelist>\r<style#0>"font-size: 12px;background-color: normal;font-weight: normal;font-style:normal;text-decoration:none;font-variant:normal;letter-spacing: normal;text-transform: none;", begin: 1, end: 2</style> \r</stylelist>\r<data>\r<span style="0">ab</span>\r</data>
+GetAsSVG ( TextStyleAdd ( "ab" ; "256" ) )	0	1/1/0	<stylelist>\r<style#0>"font-weight: bold;", begin: 1, end: 2</style> \r</stylelist>\r<data>\r<span style="0">ab</span>\r</data>
+GetAsSVG ( TextStyleAdd ( "ab" ; 1/0 ) )	15	1/1/0	<stylelist>\r<style#0>"font-size: 12px;background-color: normal;font-weight: normal;font-style:normal;text-decoration:none;font-variant:normal;letter-spacing: normal;text-transform: none;", begin: 1, end: 2</style> \r</stylelist>\r<data>\r<span style="0">ab</span>\r</data>
+GetAsSVG ( TextStyleAdd ( "ab" ; -256 ) )	0	1/1/0	<stylelist>\r<style#0>"font-size: 12px;background-color: normal;font-weight: normal;font-style:normal;text-decoration:none;font-variant:normal;letter-spacing: normal;text-transform: none;", begin: 1, end: 2</style> \r</stylelist>\r<data>\r<span style="0">ab</span>\r</data>
+GetAsSVG ( TextStyleAdd ( "ab" ; 2^31 ) )	0	1/1/0	<stylelist>\r<style#0>"font-size: 12px;background-color: normal;font-weight: normal;font-style:normal;text-decoration:none;font-variant:normal;letter-spacing: normal;text-transform: none;", begin: 1, end: 2</style> \r</stylelist>\r<data>\r<span style="0">ab</span>\r</data>
+GetAsSVG ( TextStyleAdd ( "ab" ; 2^31 + 256 ) )	0	1/1/0	<stylelist>\r<style#0>"font-weight: bold;", begin: 1, end: 2</style> \r</stylelist>\r<data>\r<span style="0">ab</span>\r</data>
+GetAsSVG ( TextStyleAdd ( "ab" ; 2^32 + 256 ) )	0	1/1/0	<stylelist>\r<style#0>"font-weight: bold;", begin: 1, end: 2</style> \r</stylelist>\r<data>\r<span style="0">ab</span>\r</data>
+GetAsSVG ( TextStyleAdd ( "ab" ; 2^32 - 256 ) )	0	1/1/0	<stylelist>\r<style#0>"background-color: #FFFF00;font-weight: bold;font-style:italic;text-decoration:underline ;letter-spacing: -2px;", begin: 1, end: 2</style> \r</stylelist>\r<data>\r<span style="0">ab</span>\r</data>
+GetAsSVG ( TextStyleAdd ( "ab" ; 2^16 + 256 ) )	0	1/1/0	<stylelist>\r<style#0>"font-weight: bold;", begin: 1, end: 2</style> \r</stylelist>\r<data>\r<span style="0">ab</span>\r</data>
+GetAsSVG ( TextStyleAdd ( "ab" ; -65280 ) )	0	1/1/0	<stylelist>\r<style#0>"font-size: 12px;background-color: normal;font-weight: normal;font-style:normal;text-decoration:none;font-variant:normal;letter-spacing: normal;text-transform: none;", begin: 1, end: 2</style> \r</stylelist>\r<data>\r<span style="0">ab</span>\r</data>
+GetAsSVG ( TextStyleAdd ( "ab" ; 2^48 + 256 ) )	0	1/1/0	<stylelist>\r<style#0>"font-weight: bold;", begin: 1, end: 2</style> \r</stylelist>\r<data>\r<span style="0">ab</span>\r</data>
+GetAsSVG ( TextStyleAdd ( "ab" ; 10^20 ) )	0	1/1/0	<stylelist>\r<style#0>"font-size: 12px;background-color: normal;font-weight: normal;font-style:normal;text-decoration:none;font-variant:normal;letter-spacing: normal;text-transform: none;", begin: 1, end: 2</style> \r</stylelist>\r<data>\r<span style="0">ab</span>\r</data>
+GetAsSVG ( TextStyleAdd ( "ab" ; Date ( 1 ; 1 ; 1 ) ) )	0	1/1/0	<stylelist>\r<style#0>"text-decoration:line-through ;", begin: 1, end: 2</style> \r</stylelist>\r<data>\r<span style="0">ab</span>\r</data>
+GetAsSVG ( TextStyleRemove ( TextStyleAdd ( "ab" ; Bold ) ; -1 ) )	0	1/1/0	<stylelist>\r<style#0>"font-weight: bold;", begin: 1, end: 2</style> \r</stylelist>\r<data>\r<span style="0">ab</span>\r</data>
+GetAsSVG ( TextStyleRemove ( TextStyleAdd ( "ab" ; Bold ) ; "" ) )	0	1/1/0	<stylelist>\r<style#0>"font-weight: bold;", begin: 1, end: 2</style> \r</stylelist>\r<data>\r<span style="0">ab</span>\r</data>
+GetAsSVG ( TextStyleRemove ( TextStyleAdd ( "ab" ; Bold ) ; Plain ) )	0	1/1/0	<stylelist>\r<style#0>"font-weight: bold;", begin: 1, end: 2</style> \r</stylelist>\r<data>\r<span style="0">ab</span>\r</data>
+GetAsSVG ( TextStyleRemove ( TextStyleAdd ( "ab" ; Bold ) ; 2^32 + 256 ) )	0	1/1/0	<stylelist>\r<style#0>"", begin: 1, end: 2</style> \r</stylelist>\r<data>\r<span style="0">ab</span>\r</data>
+GetAsSVG ( TextStyleRemove ( TextStyleAdd ( "ab" ; Bold ) ; 2^16 + 256 ) )	0	1/1/0	<stylelist>\r<style#0>"", begin: 1, end: 2</style> \r</stylelist>\r<data>\r<span style="0">ab</span>\r</data>
+GetAsSVG ( TextStyleRemove ( TextStyleAdd ( "ab" ; Bold ) ; -65280 ) )	0	1/1/0	<stylelist>\r<style#0>"font-weight: bold;", begin: 1, end: 2</style> \r</stylelist>\r<data>\r<span style="0">ab</span>\r</data>
+GetAsSVG ( TextStyleRemove ( TextStyleAdd ( "ab" ; Bold ) ; 256.9 ) )	0	1/1/0	<stylelist>\r<style#0>"", begin: 1, end: 2</style> \r</stylelist>\r<data>\r<span style="0">ab</span>\r</data>
+GetAsSVG ( TextStyleRemove ( TextStyleAdd ( "ab" ; Bold ) ; 1/0 ) )	15	1/1/0	<stylelist>\r<style#0>"font-weight: bold;", begin: 1, end: 2</style> \r</stylelist>\r<data>\r<span style="0">ab</span>\r</data>
+GetAsSVG ( TextStyleRemove ( TextStyleAdd ( "ab" ; 2048 + 256 ) ; 256 ) )	0	1/1/0	<stylelist>\r<style#0>"", begin: 1, end: 2</style> \r</stylelist>\r<data>\r<span style="0">ab</span>\r</data>
+GetAsSVG ( TextStyleRemove ( TextStyleAdd ( "ab" ; 32768 + 256 ) ; 256 ) )	0	1/1/0	<stylelist>\r<style#0>"", begin: 1, end: 2</style> \r</stylelist>\r<data>\r<span style="0">ab</span>\r</data>
+GetAsSVG ( TextStyleAdd ( TextStyleAdd ( "ab" ; Bold ) ; 32768 ) )	0	1/1/0	<stylelist>\r<style#0>"font-weight: bold;", begin: 1, end: 2</style> \r</stylelist>\r<data>\r<span style="0">ab</span>\r</data>
+GetAsSVG ( TextStyleAdd ( TextStyleAdd ( "ab" ; Bold ) ; 65536 ) )	0	1/1/0	<stylelist>\r<style#0>"font-size: 12px;background-color: normal;font-weight: normal;font-style:normal;text-decoration:none;font-variant:normal;letter-spacing: normal;text-transform: none;", begin: 1, end: 2</style> \r</stylelist>\r<data>\r<span style="0">ab</span>\r</data>
+GetAsSVG ( TextStyleAdd ( TextStyleAdd ( "ab" ; Bold ) ; -1 ) )	0	1/1/0	<stylelist>\r<style#0>"font-size: 12px;background-color: normal;font-weight: normal;font-style:normal;text-decoration:none;font-variant:normal;letter-spacing: normal;text-transform: none;", begin: 1, end: 2</style> \r</stylelist>\r<data>\r<span style="0">ab</span>\r</data>
+# TextStyleRemove group rules
+GetAsSVG ( TextStyleRemove ( TextStyleAdd ( "ab" ; Underline + DoubleUnderline ) ; DoubleUnderline ) )	0	1/1/0	<stylelist>\r<style#0>"", begin: 1, end: 2</style> \r</stylelist>\r<data>\r<span style="0">ab</span>\r</data>
+GetAsSVG ( TextStyleRemove ( TextStyleAdd ( "ab" ; Underline + DoubleUnderline ) ; Underline ) )	0	1/1/0	<stylelist>\r<style#0>"", begin: 1, end: 2</style> \r</stylelist>\r<data>\r<span style="0">ab</span>\r</data>
+GetAsSVG ( TextStyleRemove ( TextStyleAdd ( "ab" ; Underline ) ; DoubleUnderline ) )	0	1/1/0	<stylelist>\r<style#0>"text-decoration:underline ;", begin: 1, end: 2</style> \r</stylelist>\r<data>\r<span style="0">ab</span>\r</data>
+GetAsSVG ( TextStyleRemove ( TextStyleAdd ( "ab" ; DoubleUnderline ) ; Underline ) )	0	1/1/0	<stylelist>\r<style#0>"text-decoration:underline ;", begin: 1, end: 2</style> \r</stylelist>\r<data>\r<span style="0">ab</span>\r</data>
+GetAsSVG ( TextStyleRemove ( TextStyleAdd ( "ab" ; WordUnderline ) ; Underline ) )	0	1/1/0	<stylelist>\r<style#0>"text-decoration:underline ;", begin: 1, end: 2</style> \r</stylelist>\r<data>\r<span style="0">ab</span>\r</data>
+GetAsSVG ( TextStyleRemove ( TextStyleAdd ( "ab" ; Superscript + Subscript ) ; Superscript ) )	0	1/1/0	<stylelist>\r<style#0>"", begin: 1, end: 2</style> \r</stylelist>\r<data>\r<span style="0">ab</span>\r</data>
+GetAsSVG ( TextStyleRemove ( TextStyleAdd ( "ab" ; Superscript + Subscript ) ; Subscript ) )	0	1/1/0	<stylelist>\r<style#0>"", begin: 1, end: 2</style> \r</stylelist>\r<data>\r<span style="0">ab</span>\r</data>
+GetAsSVG ( TextStyleRemove ( TextStyleAdd ( "ab" ; Superscript ) ; Subscript ) )	0	1/1/0	<stylelist>\r<style#0>"font-size: 6px;vertical-align: text-top;", begin: 1, end: 2</style> \r</stylelist>\r<data>\r<span style="0">ab</span>\r</data>
+GetAsSVG ( TextStyleRemove ( TextStyleAdd ( "ab" ; Superscript ) ; Superscript ) )	0	1/1/0	<stylelist>\r<style#0>"", begin: 1, end: 2</style> \r</stylelist>\r<data>\r<span style="0">ab</span>\r</data>
+GetAsSVG ( TextStyleRemove ( TextStyleAdd ( "ab" ; Condense + Extend ) ; Condense ) )	0	1/1/0	<stylelist>\r<style#0>"", begin: 1, end: 2</style> \r</stylelist>\r<data>\r<span style="0">ab</span>\r</data>
+GetAsSVG ( TextStyleRemove ( TextStyleAdd ( "ab" ; Condense + Extend ) ; Extend ) )	0	1/1/0	<stylelist>\r<style#0>"", begin: 1, end: 2</style> \r</stylelist>\r<data>\r<span style="0">ab</span>\r</data>
+GetAsSVG ( TextStyleRemove ( TextStyleAdd ( "ab" ; Condense ) ; Extend ) )	0	1/1/0	<stylelist>\r<style#0>"letter-spacing: -2px;", begin: 1, end: 2</style> \r</stylelist>\r<data>\r<span style="0">ab</span>\r</data>
+GetAsSVG ( TextStyleRemove ( TextStyleAdd ( "ab" ; Extend ) ; Condense ) )	0	1/1/0	<stylelist>\r<style#0>"letter-spacing: 2px;", begin: 1, end: 2</style> \r</stylelist>\r<data>\r<span style="0">ab</span>\r</data>
+GetAsSVG ( TextStyleRemove ( TextStyleAdd ( "ab" ; Lowercase ) ; Uppercase ) )	0	1/1/0	<stylelist>\r<style#0>"text-transform: lowercase;", begin: 1, end: 2</style> \r</stylelist>\r<data>\r<span style="0">ab</span>\r</data>
+GetAsSVG ( TextStyleRemove ( TextStyleAdd ( "ab" ; Lowercase ) ; Titlecase ) )	0	1/1/0	<stylelist>\r<style#0>"", begin: 1, end: 2</style> \r</stylelist>\r<data>\r<span style="0">ab</span>\r</data>
+GetAsSVG ( TextStyleRemove ( TextStyleAdd ( "ab" ; Titlecase ) ; Lowercase ) )	0	1/1/0	<stylelist>\r<style#0>"text-transform: capitalize;", begin: 1, end: 2</style> \r</stylelist>\r<data>\r<span style="0">ab</span>\r</data>
+GetAsSVG ( TextStyleRemove ( TextStyleAdd ( "ab" ; Titlecase ) ; Uppercase ) )	0	1/1/0	<stylelist>\r<style#0>"text-transform: capitalize;", begin: 1, end: 2</style> \r</stylelist>\r<data>\r<span style="0">ab</span>\r</data>
+GetAsSVG ( TextStyleRemove ( TextStyleAdd ( "ab" ; Titlecase ) ; Titlecase ) )	0	1/1/0	<stylelist>\r<style#0>"", begin: 1, end: 2</style> \r</stylelist>\r<data>\r<span style="0">ab</span>\r</data>
+GetAsSVG ( TextStyleRemove ( TextStyleAdd ( "ab" ; Uppercase ) ; Uppercase ) )	0	1/1/0	<stylelist>\r<style#0>"", begin: 1, end: 2</style> \r</stylelist>\r<data>\r<span style="0">ab</span>\r</data>
+GetAsSVG ( TextStyleRemove ( TextStyleAdd ( "ab" ; Uppercase ) ; Lowercase ) )	0	1/1/0	<stylelist>\r<style#0>"text-transform: uppercase;", begin: 1, end: 2</style> \r</stylelist>\r<data>\r<span style="0">ab</span>\r</data>
+GetAsSVG ( TextStyleRemove ( TextStyleAdd ( "ab" ; Uppercase ) ; Titlecase ) )	0	1/1/0	<stylelist>\r<style#0>"", begin: 1, end: 2</style> \r</stylelist>\r<data>\r<span style="0">ab</span>\r</data>
+GetAsSVG ( TextStyleRemove ( TextStyleAdd ( "ab" ; AllStyles ) ; Bold ) )	0	1/1/0	<stylelist>\r<style#0>"font-size: 6px;background-color: #FFFF00;font-style:italic;text-decoration:underline line-through ;font-variant:small-caps;letter-spacing: -2px;text-transform: capitalize;vertical-align: text-top;", begin: 1, end: 2</style> \r</stylelist>\r<data>\r<span style="0">ab</span>\r</data>
+GetAsSVG ( TextStyleRemove ( TextStyleAdd ( "ab" ; AllStyles ) ; AllStyles ) )	0	1/1/0	<stylelist>\r<style#0>"", begin: 1, end: 2</style> \r</stylelist>\r<data>\r<span style="0">ab</span>\r</data>
+GetAsSVG ( TextStyleRemove ( TextStyleAdd ( "ab" ; AllStyles ) ; Titlecase ) )	0	1/1/0	<stylelist>\r<style#0>"font-size: 6px;background-color: #FFFF00;font-weight: bold;font-style:italic;text-decoration:underline line-through ;font-variant:small-caps;letter-spacing: -2px;vertical-align: text-top;", begin: 1, end: 2</style> \r</stylelist>\r<data>\r<span style="0">ab</span>\r</data>
+GetAsSVG ( TextStyleRemove ( TextStyleAdd ( "ab" ; AllStyles ) ; Underline + Superscript ) )	0	1/1/0	<stylelist>\r<style#0>"background-color: #FFFF00;font-weight: bold;font-style:italic;text-decoration:line-through ;font-variant:small-caps;letter-spacing: -2px;text-transform: capitalize;", begin: 1, end: 2</style> \r</stylelist>\r<data>\r<span style="0">ab</span>\r</data>
+GetAsSVG ( TextStyleRemove ( TextStyleAdd ( "ab" ; Bold + Italic ) ; Plain ) )	0	1/1/0	<stylelist>\r<style#0>"font-weight: bold;font-style:italic;", begin: 1, end: 2</style> \r</stylelist>\r<data>\r<span style="0">ab</span>\r</data>
+GetAsSVG ( TextStyleRemove ( TextStyleAdd ( "ab" ; Bold ) ; Italic ) )	0	1/1/0	<stylelist>\r<style#0>"font-weight: bold;", begin: 1, end: 2</style> \r</stylelist>\r<data>\r<span style="0">ab</span>\r</data>
+GetAsSVG ( TextStyleRemove ( TextStyleAdd ( TextStyleAdd ( "ab" ; Underline ) ; DoubleUnderline ) ; Underline ) )	0	1/1/0	<stylelist>\r<style#0>"text-decoration:underline ;", begin: 1, end: 2</style> \r</stylelist>\r<data>\r<span style="0">ab</span>\r</data>
+GetAsSVG ( TextStyleRemove ( TextStyleAdd ( TextStyleAdd ( "ab" ; Underline ) ; DoubleUnderline ) ; DoubleUnderline ) )	0	1/1/0	<stylelist>\r<style#0>"", begin: 1, end: 2</style> \r</stylelist>\r<data>\r<span style="0">ab</span>\r</data>
+GetAsSVG ( TextStyleRemove ( TextStyleAdd ( TextStyleAdd ( "ab" ; Underline ) ; WordUnderline ) ; Underline ) )	0	1/1/0	<stylelist>\r<style#0>"text-decoration:underline ;", begin: 1, end: 2</style> \r</stylelist>\r<data>\r<span style="0">ab</span>\r</data>
+GetAsSVG ( TextStyleRemove ( TextStyleAdd ( TextStyleAdd ( "ab" ; Underline ) ; WordUnderline ) ; WordUnderline ) )	0	1/1/0	<stylelist>\r<style#0>"", begin: 1, end: 2</style> \r</stylelist>\r<data>\r<span style="0">ab</span>\r</data>
+GetAsSVG ( TextStyleRemove ( TextStyleAdd ( TextStyleAdd ( "ab" ; Superscript ) ; Subscript ) ; Superscript ) )	0	1/1/0	<stylelist>\r<style#0>"font-size: 6px;vertical-align: text-bottom;", begin: 1, end: 2</style> \r</stylelist>\r<data>\r<span style="0">ab</span>\r</data>
+GetAsSVG ( TextStyleRemove ( TextStyleAdd ( TextStyleAdd ( "ab" ; Superscript ) ; Subscript ) ; Subscript ) )	0	1/1/0	<stylelist>\r<style#0>"", begin: 1, end: 2</style> \r</stylelist>\r<data>\r<span style="0">ab</span>\r</data>
+GetAsSVG ( TextStyleRemove ( TextStyleAdd ( TextStyleAdd ( "ab" ; Condense ) ; Extend ) ; Condense ) )	0	1/1/0	<stylelist>\r<style#0>"letter-spacing: 2px;", begin: 1, end: 2</style> \r</stylelist>\r<data>\r<span style="0">ab</span>\r</data>
+GetAsSVG ( TextStyleRemove ( TextStyleAdd ( TextStyleAdd ( "ab" ; Condense ) ; Extend ) ; Extend ) )	0	1/1/0	<stylelist>\r<style#0>"", begin: 1, end: 2</style> \r</stylelist>\r<data>\r<span style="0">ab</span>\r</data>
+GetAsSVG ( TextStyleRemove ( TextStyleAdd ( TextStyleAdd ( "ab" ; Uppercase ) ; Lowercase ) ; Uppercase ) )	0	1/1/0	<stylelist>\r<style#0>"text-transform: lowercase;", begin: 1, end: 2</style> \r</stylelist>\r<data>\r<span style="0">ab</span>\r</data>
+GetAsSVG ( TextStyleRemove ( TextStyleAdd ( TextStyleAdd ( "ab" ; Uppercase ) ; Lowercase ) ; Lowercase ) )	0	1/1/0	<stylelist>\r<style#0>"", begin: 1, end: 2</style> \r</stylelist>\r<data>\r<span style="0">ab</span>\r</data>
+GetAsSVG ( TextStyleRemove ( "ab" ; Bold ) )	0	1/1/0	<stylelist>\r<style#0>"", begin: 1, end: 2</style> \r</stylelist>\r<data>\r<span style="0">ab</span>\r</data>
+GetAsSVG ( TextStyleRemove ( TextColor ( TextStyleAdd ( "ab" ; Bold ) ; 255 ) ; AllStyles ) )	0	1/1/0	<stylelist>\r<style#0>"color: #0000FF;", begin: 1, end: 2</style> \r</stylelist>\r<data>\r<span style="0">ab</span>\r</data>
+# Plain: every style explicitly normal, and what adding and removing do to it
+GetAsSVG ( TextStyleAdd ( "ab" ; Plain ) )	0	1/1/0	<stylelist>\r<style#0>"font-size: 12px;background-color: normal;font-weight: normal;font-style:normal;text-decoration:none;font-variant:normal;letter-spacing: normal;text-transform: none;", begin: 1, end: 2</style> \r</stylelist>\r<data>\r<span style="0">ab</span>\r</data>
+GetAsSVG ( TextFormatRemove ( TextStyleAdd ( "ab" ; Plain ) ) )	0	1/1/0	<stylelist>\r<style#0>"", begin: 1, end: 2</style> \r</stylelist>\r<data>\r<span style="0">ab</span>\r</data>
+GetAsSVG ( TextStyleAdd ( "ab" ; Plain ) & TextStyleAdd ( "cd" ; Plain ) )	0	1/1/0	<stylelist>\r<style#0>"font-size: 12px;background-color: normal;font-weight: normal;font-style:normal;text-decoration:none;font-variant:normal;letter-spacing: normal;text-transform: none;", begin: 1, end: 4</style> \r</stylelist>\r<data>\r<span style="0">abcd</span>\r</data>
+GetAsSVG ( TextStyleAdd ( "ab" ; Plain ) & "cd" )	0	1/1/0	<stylelist>\r<style#0>"font-size: 12px;background-color: normal;font-weight: normal;font-style:normal;text-decoration:none;font-variant:normal;letter-spacing: normal;text-transform: none;", begin: 1, end: 2</style> \r<style#1>"", begin: 3, end: 4</style> \r</stylelist>\r<data>\r<span style="0">ab</span>\r<span style="1">cd</span>\r</data>
+GetAsSVG ( TextStyleAdd ( "abc" ; 0 ) & TextStyleAdd ( "def" ; 256 - 256 ) )	0	1/1/0	<stylelist>\r<style#0>"font-size: 12px;background-color: normal;font-weight: normal;font-style:normal;text-decoration:none;font-variant:normal;letter-spacing: normal;text-transform: none;", begin: 1, end: 6</style> \r</stylelist>\r<data>\r<span style="0">abcdef</span>\r</data>
+GetAsSVG ( TextStyleRemove ( TextStyleAdd ( "ab" ; Plain ) ; Bold ) )	0	1/1/0	<stylelist>\r<style#0>"font-size: 12px;font-weight: normal;letter-spacing: normal;", begin: 1, end: 2</style> \r</stylelist>\r<data>\r<span style="0">ab</span>\r</data>
+GetAsSVG ( TextStyleAdd ( TextStyleAdd ( "ab" ; Plain ) ; Bold ) )	0	1/1/0	<stylelist>\r<style#0>"font-size: 12px;background-color: normal;font-weight: bold;font-style:normal;text-decoration:none;font-variant:normal;letter-spacing: normal;text-transform: none;", begin: 1, end: 2</style> \r</stylelist>\r<data>\r<span style="0">ab</span>\r</data>
+GetAsSVG ( TextStyleRemove ( TextStyleAdd ( "ab" ; Plain ) ; Italic ) )	0	1/1/0	<stylelist>\r<style#0>"font-size: 12px;font-style:normal;letter-spacing: normal;", begin: 1, end: 2</style> \r</stylelist>\r<data>\r<span style="0">ab</span>\r</data>
+GetAsSVG ( TextStyleAdd ( TextStyleAdd ( "ab" ; Plain ) ; Italic ) )	0	1/1/0	<stylelist>\r<style#0>"font-size: 12px;background-color: normal;font-weight: normal;font-style:italic;text-decoration:none;font-variant:normal;letter-spacing: normal;text-transform: none;", begin: 1, end: 2</style> \r</stylelist>\r<data>\r<span style="0">ab</span>\r</data>
+GetAsSVG ( TextStyleRemove ( TextStyleAdd ( "ab" ; Plain ) ; AllStyles ) )	0	1/1/0	<stylelist>\r<style#0>"font-size: 12px;background-color: normal;font-weight: normal;font-style:normal;text-decoration:none;font-variant:normal;letter-spacing: normal;", begin: 1, end: 2</style> \r</stylelist>\r<data>\r<span style="0">ab</span>\r</data>
+GetAsSVG ( TextStyleAdd ( TextStyleAdd ( "ab" ; Plain ) ; AllStyles ) )	0	1/1/0	<stylelist>\r<style#0>"font-size: 6px;background-color: #FFFF00;font-weight: bold;font-style:italic;text-decoration:underline line-through ;font-variant:small-caps;letter-spacing: -2px;text-transform: capitalize;vertical-align: text-top;", begin: 1, end: 2</style> \r</stylelist>\r<data>\r<span style="0">ab</span>\r</data>
+GetAsSVG ( TextStyleRemove ( TextStyleAdd ( "ab" ; Plain ) ; Superscript ) )	0	1/1/0	<stylelist>\r<style#0>"font-size: 12px;letter-spacing: normal;", begin: 1, end: 2</style> \r</stylelist>\r<data>\r<span style="0">ab</span>\r</data>
+GetAsSVG ( TextStyleAdd ( TextStyleAdd ( "ab" ; Plain ) ; Superscript ) )	0	1/1/0	<stylelist>\r<style#0>"font-size: 6px;background-color: normal;font-weight: normal;font-style:normal;text-decoration:none;font-variant:normal;letter-spacing: normal;text-transform: none;vertical-align: text-top;", begin: 1, end: 2</style> \r</stylelist>\r<data>\r<span style="0">ab</span>\r</data>
+GetAsSVG ( TextStyleRemove ( TextStyleAdd ( "ab" ; Plain ) ; Subscript ) )	0	1/1/0	<stylelist>\r<style#0>"font-size: 12px;letter-spacing: normal;", begin: 1, end: 2</style> \r</stylelist>\r<data>\r<span style="0">ab</span>\r</data>
+GetAsSVG ( TextStyleAdd ( TextStyleAdd ( "ab" ; Plain ) ; Subscript ) )	0	1/1/0	<stylelist>\r<style#0>"font-size: 6px;background-color: normal;font-weight: normal;font-style:normal;text-decoration:none;font-variant:normal;letter-spacing: normal;text-transform: none;vertical-align: text-bottom;", begin: 1, end: 2</style> \r</stylelist>\r<data>\r<span style="0">ab</span>\r</data>
+GetAsSVG ( TextStyleRemove ( TextStyleAdd ( "ab" ; Plain ) ; Underline ) )	0	1/1/0	<stylelist>\r<style#0>"font-size: 12px;text-decoration:none;letter-spacing: normal;", begin: 1, end: 2</style> \r</stylelist>\r<data>\r<span style="0">ab</span>\r</data>
+GetAsSVG ( TextStyleAdd ( TextStyleAdd ( "ab" ; Plain ) ; Underline ) )	0	1/1/0	<stylelist>\r<style#0>"font-size: 12px;background-color: normal;font-weight: normal;font-style:normal;text-decoration:underline ;font-variant:normal;letter-spacing: normal;text-transform: none;", begin: 1, end: 2</style> \r</stylelist>\r<data>\r<span style="0">ab</span>\r</data>
+GetAsSVG ( TextStyleRemove ( TextStyleAdd ( "ab" ; Plain ) ; WordUnderline ) )	0	1/1/0	<stylelist>\r<style#0>"font-size: 12px;text-decoration:none;letter-spacing: normal;", begin: 1, end: 2</style> \r</stylelist>\r<data>\r<span style="0">ab</span>\r</data>
+GetAsSVG ( TextStyleAdd ( TextStyleAdd ( "ab" ; Plain ) ; WordUnderline ) )	0	1/1/0	<stylelist>\r<style#0>"font-size: 12px;background-color: normal;font-weight: normal;font-style:normal;text-decoration:underline ;font-variant:normal;letter-spacing: normal;text-transform: none;", begin: 1, end: 2</style> \r</stylelist>\r<data>\r<span style="0">ab</span>\r</data>
+GetAsSVG ( TextStyleRemove ( TextStyleAdd ( "ab" ; Plain ) ; Strikethrough ) )	0	1/1/0	<stylelist>\r<style#0>"font-size: 12px;text-decoration:none;letter-spacing: normal;", begin: 1, end: 2</style> \r</stylelist>\r<data>\r<span style="0">ab</span>\r</data>
+GetAsSVG ( TextStyleAdd ( TextStyleAdd ( "ab" ; Plain ) ; Strikethrough ) )	0	1/1/0	<stylelist>\r<style#0>"font-size: 12px;background-color: normal;font-weight: normal;font-style:normal;text-decoration:line-through ;font-variant:normal;letter-spacing: normal;text-transform: none;", begin: 1, end: 2</style> \r</stylelist>\r<data>\r<span style="0">ab</span>\r</data>
+GetAsSVG ( TextStyleRemove ( TextStyleAdd ( "ab" ; Plain ) ; HighlightYellow ) )	0	1/1/0	<stylelist>\r<style#0>"font-size: 12px;background-color: normal;letter-spacing: normal;", begin: 1, end: 2</style> \r</stylelist>\r<data>\r<span style="0">ab</span>\r</data>
+GetAsSVG ( TextStyleAdd ( TextStyleAdd ( "ab" ; Plain ) ; HighlightYellow ) )	0	1/1/0	<stylelist>\r<style#0>"font-size: 12px;background-color: #FFFF00;font-weight: normal;font-style:normal;text-decoration:none;font-variant:normal;letter-spacing: normal;text-transform: none;", begin: 1, end: 2</style> \r</stylelist>\r<data>\r<span style="0">ab</span>\r</data>
+GetAsSVG ( TextStyleRemove ( TextStyleAdd ( "ab" ; Plain ) ; Uppercase ) )	0	1/1/0	<stylelist>\r<style#0>"font-size: 12px;letter-spacing: normal;text-transform: none;", begin: 1, end: 2</style> \r</stylelist>\r<data>\r<span style="0">ab</span>\r</data>
+GetAsSVG ( TextStyleAdd ( TextStyleAdd ( "ab" ; Plain ) ; Uppercase ) )	0	1/1/0	<stylelist>\r<style#0>"font-size: 12px;background-color: normal;font-weight: normal;font-style:normal;text-decoration:none;font-variant:normal;letter-spacing: normal;text-transform: uppercase;", begin: 1, end: 2</style> \r</stylelist>\r<data>\r<span style="0">ab</span>\r</data>
+GetAsSVG ( TextStyleRemove ( TextStyleAdd ( "ab" ; Plain ) ; Lowercase ) )	0	1/1/0	<stylelist>\r<style#0>"font-size: 12px;letter-spacing: normal;text-transform: none;", begin: 1, end: 2</style> \r</stylelist>\r<data>\r<span style="0">ab</span>\r</data>
+GetAsSVG ( TextStyleAdd ( TextStyleAdd ( "ab" ; Plain ) ; Lowercase ) )	0	1/1/0	<stylelist>\r<style#0>"font-size: 12px;background-color: normal;font-weight: normal;font-style:normal;text-decoration:none;font-variant:normal;letter-spacing: normal;text-transform: lowercase;", begin: 1, end: 2</style> \r</stylelist>\r<data>\r<span style="0">ab</span>\r</data>
+GetAsSVG ( TextStyleRemove ( TextStyleAdd ( "ab" ; Plain ) ; Titlecase ) )	0	1/1/0	<stylelist>\r<style#0>"font-size: 12px;letter-spacing: normal;", begin: 1, end: 2</style> \r</stylelist>\r<data>\r<span style="0">ab</span>\r</data>
+GetAsSVG ( TextStyleAdd ( TextStyleAdd ( "ab" ; Plain ) ; Titlecase ) )	0	1/1/0	<stylelist>\r<style#0>"font-size: 12px;background-color: normal;font-weight: normal;font-style:normal;text-decoration:none;font-variant:normal;letter-spacing: normal;text-transform: capitalize;", begin: 1, end: 2</style> \r</stylelist>\r<data>\r<span style="0">ab</span>\r</data>
+GetAsSVG ( TextStyleRemove ( TextStyleAdd ( "ab" ; Plain ) ; Condense ) )	0	1/1/0	<stylelist>\r<style#0>"font-size: 12px;letter-spacing: normal;", begin: 1, end: 2</style> \r</stylelist>\r<data>\r<span style="0">ab</span>\r</data>
+GetAsSVG ( TextStyleAdd ( TextStyleAdd ( "ab" ; Plain ) ; Condense ) )	0	1/1/0	<stylelist>\r<style#0>"font-size: 12px;background-color: normal;font-weight: normal;font-style:normal;text-decoration:none;font-variant:normal;letter-spacing: -2px;text-transform: none;", begin: 1, end: 2</style> \r</stylelist>\r<data>\r<span style="0">ab</span>\r</data>
+GetAsSVG ( TextStyleRemove ( TextStyleAdd ( "ab" ; Plain ) ; Extend ) )	0	1/1/0	<stylelist>\r<style#0>"font-size: 12px;letter-spacing: normal;", begin: 1, end: 2</style> \r</stylelist>\r<data>\r<span style="0">ab</span>\r</data>
+GetAsSVG ( TextStyleAdd ( TextStyleAdd ( "ab" ; Plain ) ; Extend ) )	0	1/1/0	<stylelist>\r<style#0>"font-size: 12px;background-color: normal;font-weight: normal;font-style:normal;text-decoration:none;font-variant:normal;letter-spacing: 2px;text-transform: none;", begin: 1, end: 2</style> \r</stylelist>\r<data>\r<span style="0">ab</span>\r</data>
+GetAsSVG ( TextStyleRemove ( TextStyleAdd ( "ab" ; Plain ) ; SmallCaps ) )	0	1/1/0	<stylelist>\r<style#0>"font-size: 12px;font-variant:normal;letter-spacing: normal;", begin: 1, end: 2</style> \r</stylelist>\r<data>\r<span style="0">ab</span>\r</data>
+GetAsSVG ( TextStyleAdd ( TextStyleAdd ( "ab" ; Plain ) ; SmallCaps ) )	0	1/1/0	<stylelist>\r<style#0>"font-size: 12px;background-color: normal;font-weight: normal;font-style:normal;text-decoration:none;font-variant:small-caps;letter-spacing: normal;text-transform: none;", begin: 1, end: 2</style> \r</stylelist>\r<data>\r<span style="0">ab</span>\r</data>
+GetAsSVG ( TextStyleRemove ( TextStyleAdd ( "ab" ; Plain ) ; 2048 ) )	0	1/1/0	<stylelist>\r<style#0>"font-size: 12px;letter-spacing: normal;", begin: 1, end: 2</style> \r</stylelist>\r<data>\r<span style="0">ab</span>\r</data>
+GetAsSVG ( TextStyleAdd ( TextStyleAdd ( "ab" ; Plain ) ; 2048 ) )	0	1/1/0	<stylelist>\r<style#0>"font-size: 12px;background-color: normal;font-weight: normal;font-style:normal;text-decoration:none;font-variant:normal;letter-spacing: normal;text-transform: none;", begin: 1, end: 2</style> \r</stylelist>\r<data>\r<span style="0">ab</span>\r</data>
+GetAsSVG ( TextStyleRemove ( TextStyleAdd ( "ab" ; Plain ) ; 32768 ) )	0	1/1/0	<stylelist>\r<style#0>"font-size: 12px;letter-spacing: normal;", begin: 1, end: 2</style> \r</stylelist>\r<data>\r<span style="0">ab</span>\r</data>
+GetAsSVG ( TextStyleAdd ( TextStyleAdd ( "ab" ; Plain ) ; 32768 ) )	0	1/1/0	<stylelist>\r<style#0>"font-size: 12px;background-color: normal;font-weight: normal;font-style:normal;text-decoration:none;font-variant:normal;letter-spacing: normal;text-transform: none;", begin: 1, end: 2</style> \r</stylelist>\r<data>\r<span style="0">ab</span>\r</data>
+GetAsSVG ( TextStyleRemove ( TextStyleAdd ( "ab" ; Plain ) ; Bold + Italic ) )	0	1/1/0	<stylelist>\r<style#0>"font-size: 12px;font-weight: normal;font-style:normal;letter-spacing: normal;", begin: 1, end: 2</style> \r</stylelist>\r<data>\r<span style="0">ab</span>\r</data>
+GetAsSVG ( TextStyleAdd ( TextStyleAdd ( "ab" ; Plain ) ; Bold + Italic ) )	0	1/1/0	<stylelist>\r<style#0>"font-size: 12px;background-color: normal;font-weight: bold;font-style:italic;text-decoration:none;font-variant:normal;letter-spacing: normal;text-transform: none;", begin: 1, end: 2</style> \r</stylelist>\r<data>\r<span style="0">ab</span>\r</data>
+GetAsSVG ( TextStyleRemove ( TextStyleAdd ( "ab" ; Plain ) ; Uppercase + Bold ) )	0	1/1/0	<stylelist>\r<style#0>"font-size: 12px;font-weight: normal;letter-spacing: normal;text-transform: none;", begin: 1, end: 2</style> \r</stylelist>\r<data>\r<span style="0">ab</span>\r</data>
+GetAsSVG ( TextStyleAdd ( TextStyleAdd ( "ab" ; Plain ) ; Uppercase + Bold ) )	0	1/1/0	<stylelist>\r<style#0>"font-size: 12px;background-color: normal;font-weight: bold;font-style:normal;text-decoration:none;font-variant:normal;letter-spacing: normal;text-transform: uppercase;", begin: 1, end: 2</style> \r</stylelist>\r<data>\r<span style="0">ab</span>\r</data>
+GetAsSVG ( TextStyleRemove ( TextStyleAdd ( "ab" ; Plain ) ; 1025 ) )	0	1/1/0	<stylelist>\r<style#0>"font-size: 12px;text-decoration:none;letter-spacing: normal;", begin: 1, end: 2</style> \r</stylelist>\r<data>\r<span style="0">ab</span>\r</data>
+GetAsSVG ( TextStyleAdd ( TextStyleAdd ( "ab" ; Plain ) ; 1025 ) )	0	1/1/0	<stylelist>\r<style#0>"font-size: 12px;background-color: normal;font-weight: normal;font-style:normal;text-decoration:underline line-through ;font-variant:normal;letter-spacing: normal;text-transform: none;", begin: 1, end: 2</style> \r</stylelist>\r<data>\r<span style="0">ab</span>\r</data>
+GetAsSVG ( TextStyleRemove ( TextStyleAdd ( "ab" ; Plain ) ; Lowercase + Uppercase ) )	0	1/1/0	<stylelist>\r<style#0>"font-size: 12px;letter-spacing: normal;", begin: 1, end: 2</style> \r</stylelist>\r<data>\r<span style="0">ab</span>\r</data>
+GetAsSVG ( TextStyleAdd ( TextStyleAdd ( "ab" ; Plain ) ; Lowercase + Uppercase ) )	0	1/1/0	<stylelist>\r<style#0>"font-size: 12px;background-color: normal;font-weight: normal;font-style:normal;text-decoration:none;font-variant:normal;letter-spacing: normal;text-transform: capitalize;", begin: 1, end: 2</style> \r</stylelist>\r<data>\r<span style="0">ab</span>\r</data>
+GetAsSVG ( TextStyleRemove ( TextStyleAdd ( TextStyleAdd ( "ab" ; Plain ) ; Bold ) ; Bold ) )	0	1/1/0	<stylelist>\r<style#0>"font-size: 12px;letter-spacing: normal;", begin: 1, end: 2</style> \r</stylelist>\r<data>\r<span style="0">ab</span>\r</data>
+GetAsSVG ( TextStyleRemove ( TextStyleAdd ( TextStyleAdd ( "ab" ; Plain ) ; Bold ) ; Italic ) )	0	1/1/0	<stylelist>\r<style#0>"font-size: 12px;font-weight: bold;font-style:normal;letter-spacing: normal;", begin: 1, end: 2</style> \r</stylelist>\r<data>\r<span style="0">ab</span>\r</data>
+GetAsSVG ( TextStyleAdd ( TextStyleRemove ( TextStyleAdd ( "ab" ; Plain ) ; Bold ) ; Italic ) )	0	1/1/0	<stylelist>\r<style#0>"font-size: 12px;font-weight: normal;font-style:italic;letter-spacing: normal;", begin: 1, end: 2</style> \r</stylelist>\r<data>\r<span style="0">ab</span>\r</data>
+GetAsSVG ( TextStyleRemove ( TextStyleRemove ( TextStyleAdd ( "ab" ; Plain ) ; Bold ) ; Italic ) )	0	1/1/0	<stylelist>\r<style#0>"font-size: 12px;letter-spacing: normal;", begin: 1, end: 2</style> \r</stylelist>\r<data>\r<span style="0">ab</span>\r</data>
+GetAsSVG ( TextStyleRemove ( TextStyleAdd ( TextStyleAdd ( "ab" ; Plain ) ; Superscript ) ; Superscript ) )	0	1/1/0	<stylelist>\r<style#0>"letter-spacing: normal;", begin: 1, end: 2</style> \r</stylelist>\r<data>\r<span style="0">ab</span>\r</data>
+GetAsSVG ( TextStyleRemove ( TextStyleAdd ( TextStyleAdd ( "ab" ; Plain ) ; Condense ) ; Condense ) )	0	1/1/0	<stylelist>\r<style#0>"font-size: 12px;", begin: 1, end: 2</style> \r</stylelist>\r<data>\r<span style="0">ab</span>\r</data>
+GetAsSVG ( TextStyleRemove ( TextStyleAdd ( TextStyleAdd ( "ab" ; Plain ) ; Uppercase ) ; Uppercase ) )	0	1/1/0	<stylelist>\r<style#0>"font-size: 12px;letter-spacing: normal;", begin: 1, end: 2</style> \r</stylelist>\r<data>\r<span style="0">ab</span>\r</data>
+GetAsSVG ( TextStyleRemove ( TextStyleAdd ( TextStyleAdd ( "ab" ; Plain ) ; Underline ) ; Underline ) )	0	1/1/0	<stylelist>\r<style#0>"font-size: 12px;letter-spacing: normal;", begin: 1, end: 2</style> \r</stylelist>\r<data>\r<span style="0">ab</span>\r</data>
+GetAsSVG ( TextStyleAdd ( TextStyleAdd ( TextStyleAdd ( "ab" ; Plain ) ; Uppercase ) ; Lowercase ) )	0	1/1/0	<stylelist>\r<style#0>"font-size: 12px;background-color: normal;font-weight: normal;font-style:normal;text-decoration:none;font-variant:normal;letter-spacing: normal;text-transform: lowercase;", begin: 1, end: 2</style> \r</stylelist>\r<data>\r<span style="0">ab</span>\r</data>
+GetAsSVG ( TextStyleRemove ( TextStyleRemove ( TextStyleAdd ( "ab" ; Plain ) ; Uppercase ) ; Uppercase ) )	0	1/1/0	<stylelist>\r<style#0>"font-size: 12px;letter-spacing: normal;text-transform: none;", begin: 1, end: 2</style> \r</stylelist>\r<data>\r<span style="0">ab</span>\r</data>
+GetAsSVG ( TextStyleRemove ( TextStyleRemove ( TextStyleAdd ( "ab" ; Plain ) ; Uppercase ) ; Lowercase ) )	0	1/1/0	<stylelist>\r<style#0>"font-size: 12px;letter-spacing: normal;text-transform: none;", begin: 1, end: 2</style> \r</stylelist>\r<data>\r<span style="0">ab</span>\r</data>
+GetAsSVG ( TextStyleRemove ( TextStyleRemove ( TextStyleAdd ( "ab" ; Plain ) ; Superscript ) ; Superscript ) )	0	1/1/0	<stylelist>\r<style#0>"font-size: 12px;letter-spacing: normal;", begin: 1, end: 2</style> \r</stylelist>\r<data>\r<span style="0">ab</span>\r</data>
+GetAsSVG ( TextStyleAdd ( TextStyleRemove ( TextStyleAdd ( "ab" ; Plain ) ; Bold ) ; Plain ) )	0	1/1/0	<stylelist>\r<style#0>"font-size: 12px;background-color: normal;font-weight: normal;font-style:normal;text-decoration:none;font-variant:normal;letter-spacing: normal;text-transform: none;", begin: 1, end: 2</style> \r</stylelist>\r<data>\r<span style="0">ab</span>\r</data>
+GetAsSVG ( TextStyleAdd ( TextStyleAdd ( TextStyleAdd ( "ab" ; Plain ) ; Bold ) ; Plain ) )	0	1/1/0	<stylelist>\r<style#0>"font-size: 12px;background-color: normal;font-weight: normal;font-style:normal;text-decoration:none;font-variant:normal;letter-spacing: normal;text-transform: none;", begin: 1, end: 2</style> \r</stylelist>\r<data>\r<span style="0">ab</span>\r</data>
+GetAsSVG ( TextColor ( TextStyleAdd ( "ab" ; Plain ) ; 255 ) )	0	1/1/0	<stylelist>\r<style#0>"font-size: 12px;color: #0000FF;background-color: normal;font-weight: normal;font-style:normal;text-decoration:none;font-variant:normal;letter-spacing: normal;text-transform: none;", begin: 1, end: 2</style> \r</stylelist>\r<data>\r<span style="0">ab</span>\r</data>
+GetAsSVG ( TextSize ( TextStyleAdd ( "ab" ; Plain ) ; 20 ) )	0	1/1/0	<stylelist>\r<style#0>"font-size: 20px;background-color: normal;font-weight: normal;font-style:normal;text-decoration:none;font-variant:normal;letter-spacing: normal;text-transform: none;", begin: 1, end: 2</style> \r</stylelist>\r<data>\r<span style="0">ab</span>\r</data>
+GetAsSVG ( TextFont ( TextStyleAdd ( "ab" ; Plain ) ; "Arial" ) )	0	1/1/0	<stylelist>\r<style#0>"font-family: 'Arial';font-size: 12px;background-color: normal;font-weight: normal;font-style:normal;text-decoration:none;font-variant:normal;letter-spacing: normal;text-transform: none;", begin: 1, end: 2</style> \r</stylelist>\r<data>\r<span style="0">ab</span>\r</data>
+GetAsSVG ( TextStyleAdd ( TextColor ( TextStyleAdd ( "ab" ; Italic ) ; 255 ) ; Plain ) )	0	1/1/0	<stylelist>\r<style#0>"font-size: 12px;color: #0000FF;background-color: normal;font-weight: normal;font-style:normal;text-decoration:none;font-variant:normal;letter-spacing: normal;text-transform: none;", begin: 1, end: 2</style> \r</stylelist>\r<data>\r<span style="0">ab</span>\r</data>
+GetAsSVG ( TextStyleAdd ( TextSize ( TextFont ( "ab" ; "Arial" ) ; 20 ) ; Plain ) )	0	1/1/0	<stylelist>\r<style#0>"font-family: 'Arial';font-size: 20px;background-color: normal;font-weight: normal;font-style:normal;text-decoration:none;font-variant:normal;letter-spacing: normal;text-transform: none;", begin: 1, end: 2</style> \r</stylelist>\r<data>\r<span style="0">ab</span>\r</data>
+GetAsSVG ( TextStyleAdd ( "ab" ; Plain ) & TextStyleRemove ( TextStyleAdd ( "cd" ; Bold ) ; Bold ) )	0	1/1/0	<stylelist>\r<style#0>"font-size: 12px;background-color: normal;font-weight: normal;font-style:normal;text-decoration:none;font-variant:normal;letter-spacing: normal;text-transform: none;", begin: 1, end: 2</style> \r<style#1>"", begin: 3, end: 4</style> \r</stylelist>\r<data>\r<span style="0">ab</span>\r<span style="1">cd</span>\r</data>
+# Mixed runs
+GetAsSVG ( "a" & TextStyleAdd ( "b" ; Bold ) & "c" )	0	1/1/0	<stylelist>\r<style#0>"", begin: 1, end: 1</style> \r<style#1>"font-weight: bold;", begin: 2, end: 2</style> \r<style#2>"", begin: 3, end: 3</style> \r</stylelist>\r<data>\r<span style="0">a</span>\r<span style="1">b</span>\r<span style="2">c</span>\r</data>
+GetAsSVG ( TextStyleAdd ( "a" & TextStyleAdd ( "b" ; Bold ) & "c" ; Italic ) )	0	1/1/0	<stylelist>\r<style#0>"font-style:italic;", begin: 1, end: 1</style> \r<style#1>"font-weight: bold;font-style:italic;", begin: 2, end: 2</style> \r<style#2>"font-style:italic;", begin: 3, end: 3</style> \r</stylelist>\r<data>\r<span style="0">a</span>\r<span style="1">b</span>\r<span style="2">c</span>\r</data>
+GetAsSVG ( TextStyleRemove ( TextStyleAdd ( "abc" ; Bold ) & TextStyleAdd ( "def" ; Bold + Italic ) ; Italic ) )	0	1/1/0	<stylelist>\r<style#0>"font-weight: bold;", begin: 1, end: 3</style> \r<style#1>"font-weight: bold;", begin: 4, end: 6</style> \r</stylelist>\r<data>\r<span style="0">abc</span>\r<span style="1">def</span>\r</data>
+GetAsSVG ( TextStyleAdd ( TextStyleAdd ( "ab" ; Bold ) & TextStyleAdd ( "cd" ; Italic ) ; Underline ) )	0	1/1/0	<stylelist>\r<style#0>"font-weight: bold;text-decoration:underline ;", begin: 1, end: 2</style> \r<style#1>"font-style:italic;text-decoration:underline ;", begin: 3, end: 4</style> \r</stylelist>\r<data>\r<span style="0">ab</span>\r<span style="1">cd</span>\r</data>
+GetAsSVG ( TextStyleAdd ( "ab" ; Bold ) & TextStyleRemove ( TextStyleAdd ( "cd" ; Bold + Italic ) ; Italic ) )	0	1/1/0	<stylelist>\r<style#0>"font-weight: bold;", begin: 1, end: 4</style> \r</stylelist>\r<data>\r<span style="0">abcd</span>\r</data>
+GetAsSVG ( TextStyleRemove ( TextStyleAdd ( "ab" ; Bold ) ; Bold ) & "cd" )	0	1/1/0	<stylelist>\r<style#0>"", begin: 1, end: 4</style> \r</stylelist>\r<data>\r<span style="0">abcd</span>\r</data>
+GetAsSVG ( TextStyleAdd ( TextColor ( "a" ; 255 ) & TextFont ( "b" ; "Arial" ) & TextSize ( "c" ; 9 ) ; Bold ) )	0	1/1/0	<stylelist>\r<style#0>"color: #0000FF;font-weight: bold;", begin: 1, end: 1</style> \r<style#1>"font-family: 'Arial';font-weight: bold;", begin: 2, end: 2</style> \r<style#2>"font-size: 9px;font-weight: bold;", begin: 3, end: 3</style> \r</stylelist>\r<data>\r<span style="0">a</span>\r<span style="1">b</span>\r<span style="2">c</span>\r</data>
+GetAsSVG ( TextColorRemove ( TextColor ( "a" ; 255 ) & "b" ; 255 ) )	0	1/1/0	<stylelist>\r<style#0>"", begin: 1, end: 1</style> \r<style#1>"", begin: 2, end: 2</style> \r</stylelist>\r<data>\r<span style="0">a</span>\r<span style="1">b</span>\r</data>
+GetAsSVG ( TextFormatRemove ( TextColor ( "a" ; 255 ) & TextStyleAdd ( "b" ; Bold ) ) )	0	1/1/0	<stylelist>\r<style#0>"", begin: 1, end: 2</style> \r</stylelist>\r<data>\r<span style="0">ab</span>\r</data>
+GetAsSVG ( TextFont ( TextColor ( "a" ; 255 ) & "b" ; "Arial" ) )	0	1/1/0	<stylelist>\r<style#0>"font-family: 'Arial';color: #0000FF;", begin: 1, end: 1</style> \r<style#1>"font-family: 'Arial';", begin: 2, end: 2</style> \r</stylelist>\r<data>\r<span style="0">a</span>\r<span style="1">b</span>\r</data>
+GetAsSVG ( TextColor ( "a" & TextColor ( "b" ; 255 ) ; 65280 ) )	0	1/1/0	<stylelist>\r<style#0>"color: #00FF00;", begin: 1, end: 2</style> \r</stylelist>\r<data>\r<span style="0">ab</span>\r</data>
+GetAsSVG ( TextStyleAdd ( "a" & Char ( 769 ) & "😀b" ; Bold ) & "x" )	0	1/1/0	<stylelist>\r<style#0>"font-weight: bold;", begin: 1, end: 5</style> \r<style#1>"", begin: 6, end: 6</style> \r</stylelist>\r<data>\r<span style="0">a&#769;😀b</span>\r<span style="1">x</span>\r</data>
+GetAsSVG ( Left ( TextStyleAdd ( "abc" ; Bold ) ; 2 ) & "d" )	0	1/1/0	<stylelist>\r<style#0>"font-weight: bold;", begin: 1, end: 2</style> \r<style#1>"", begin: 3, end: 3</style> \r</stylelist>\r<data>\r<span style="0">ab</span>\r<span style="1">d</span>\r</data>
+GetAsSVG ( TextStyleAdd ( "a¶b" ; Bold ) )	0	1/1/0	<stylelist>\r<style#0>"font-weight: bold;", begin: 1, end: 3</style> \r</stylelist>\r<data>\r<span style="0">a<br/>b</span>\r</data>
+GetAsSVG ( TextStyleAdd ( 1/3 ; Bold ) )	0	1/1/0	<stylelist>\r<style#0>"font-weight: bold;", begin: 1, end: 17</style> \r</stylelist>\r<data>\r<span style="0">.3333333333333333</span>\r</data>
+GetAsSVG ( TextStyleAdd ( "" ; Bold ) )	0	1/1/0	
+GetAsSVG ( TextStyleAdd ( Date ( 1 ; 2 ; 2003 ) ; Bold ) )	0	1/1/0	<stylelist>\r<style#0>"font-weight: bold;", begin: 1, end: 8</style> \r</stylelist>\r<data>\r<span style="0">1/2/2003</span>\r</data>
+GetAsSVG ( TextColor ( TextStyleAdd ( 12 ; Bold ) ; 255 ) )	0	1/1/0	<stylelist>\r<style#0>"color: #0000FF;font-weight: bold;", begin: 1, end: 2</style> \r</stylelist>\r<data>\r<span style="0">12</span>\r</data>
+GetAsSVG ( TextSize ( TextFont ( TextColor ( TextStyleAdd ( "ab" ; Bold + Italic + Underline + HighlightYellow ) ; RGB ( 0 ; 125 ; 125 ) ) ; "Courier" ) ; 12 ) )	0	1/1/0	<stylelist>\r<style#0>"font-family: 'Courier';font-size: 12px;color: #007D7D;background-color: #FFFF00;font-weight: bold;font-style:italic;text-decoration:underline ;", begin: 1, end: 2</style> \r</stylelist>\r<data>\r<span style="0">ab</span>\r</data>
+GetAsSVG ( TextColor ( TextStyleAdd ( "ab" ; HighlightYellow ) ; RGB ( 255 ; 255 ; 0 ) ) )	0	1/1/0	<stylelist>\r<style#0>"color: #FFFF00;background-color: #FFFF00;", begin: 1, end: 2</style> \r</stylelist>\r<data>\r<span style="0">ab</span>\r</data>
+GetAsSVG ( TextStyleAdd ( "ab" ; Superscript + Condense + Bold ) )	0	1/1/0	<stylelist>\r<style#0>"font-size: 6px;font-weight: bold;letter-spacing: -2px;vertical-align: text-top;", begin: 1, end: 2</style> \r</stylelist>\r<data>\r<span style="0">ab</span>\r</data>
+# TextColor and TextColorRemove values
+GetAsSVG ( TextColor ( "ab" ; 0 ) )	0	1/1/0	<stylelist>\r<style#0>"color: #000000;", begin: 1, end: 2</style> \r</stylelist>\r<data>\r<span style="0">ab</span>\r</data>
+GetAsSVG ( TextColor ( "ab" ; -1 ) )	0	1/1/0	<stylelist>\r<style#0>"color: #000000;", begin: 1, end: 2</style> \r</stylelist>\r<data>\r<span style="0">ab</span>\r</data>
+GetAsSVG ( TextColor ( "ab" ; 16777215 ) )	0	1/1/0	<stylelist>\r<style#0>"color: #FFFFFF;", begin: 1, end: 2</style> \r</stylelist>\r<data>\r<span style="0">ab</span>\r</data>
+GetAsSVG ( TextColor ( "ab" ; 16777216 ) )	0	1/1/0	<stylelist>\r<style#0>"color: #000000;", begin: 1, end: 2</style> \r</stylelist>\r<data>\r<span style="0">ab</span>\r</data>
+GetAsSVG ( TextColor ( "ab" ; 16777217 ) )	0	1/1/0	<stylelist>\r<style#0>"color: #000001;", begin: 1, end: 2</style> \r</stylelist>\r<data>\r<span style="0">ab</span>\r</data>
+GetAsSVG ( TextColor ( "ab" ; 2^32 + 255 ) )	0	1/1/0	<stylelist>\r<style#0>"color: #0000FF;", begin: 1, end: 2</style> \r</stylelist>\r<data>\r<span style="0">ab</span>\r</data>
+GetAsSVG ( TextColor ( "ab" ; 2^31 + 255 ) )	0	1/1/0	<stylelist>\r<style#0>"color: #0000FF;", begin: 1, end: 2</style> \r</stylelist>\r<data>\r<span style="0">ab</span>\r</data>
+GetAsSVG ( TextColor ( "ab" ; 2^32 - 1 ) )	0	1/1/0	<stylelist>\r<style#0>"color: #FFFFFF;", begin: 1, end: 2</style> \r</stylelist>\r<data>\r<span style="0">ab</span>\r</data>
+GetAsSVG ( TextColor ( "ab" ; 255.9 ) )	0	1/1/0	<stylelist>\r<style#0>"color: #0000FF;", begin: 1, end: 2</style> \r</stylelist>\r<data>\r<span style="0">ab</span>\r</data>
+GetAsSVG ( TextColor ( "ab" ; "" ) )	0	1/1/0	<stylelist>\r<style#0>"color: #000000;", begin: 1, end: 2</style> \r</stylelist>\r<data>\r<span style="0">ab</span>\r</data>
+GetAsSVG ( TextColor ( "ab" ; "abc" ) )	0	1/1/0	<stylelist>\r<style#0>"color: #000000;", begin: 1, end: 2</style> \r</stylelist>\r<data>\r<span style="0">ab</span>\r</data>
+GetAsSVG ( TextColor ( "ab" ; "12abc" ) )	0	1/1/0	<stylelist>\r<style#0>"color: #00000C;", begin: 1, end: 2</style> \r</stylelist>\r<data>\r<span style="0">ab</span>\r</data>
+GetAsSVG ( TextColor ( "ab" ; 1/0 ) )	15	1/1/0	<stylelist>\r<style#0>"color: #000000;", begin: 1, end: 2</style> \r</stylelist>\r<data>\r<span style="0">ab</span>\r</data>
+GetAsSVG ( TextColor ( "ab" ; -16777216 ) )	0	1/1/0	<stylelist>\r<style#0>"color: #000000;", begin: 1, end: 2</style> \r</stylelist>\r<data>\r<span style="0">ab</span>\r</data>
+GetAsSVG ( TextColor ( "ab" ; -16777215 ) )	0	1/1/0	<stylelist>\r<style#0>"color: #000000;", begin: 1, end: 2</style> \r</stylelist>\r<data>\r<span style="0">ab</span>\r</data>
+GetAsSVG ( TextColor ( "ab" ; 10^20 ) )	0	1/1/0	<stylelist>\r<style#0>"color: #100000;", begin: 1, end: 2</style> \r</stylelist>\r<data>\r<span style="0">ab</span>\r</data>
+GetAsSVG ( TextColor ( "ab" ; RGB ( 255 ; 255 ; 255 ) ) )	0	1/1/0	<stylelist>\r<style#0>"color: #FFFFFF;", begin: 1, end: 2</style> \r</stylelist>\r<data>\r<span style="0">ab</span>\r</data>
+GetAsSVG ( TextColor ( "ab" ; RGB ( 256 ; 0 ; 0 ) ) )	0	1/1/0	<stylelist>\r<style#0>"color: #000000;", begin: 1, end: 2</style> \r</stylelist>\r<data>\r<span style="0">ab</span>\r</data>
+GetAsSVG ( TextColor ( TextColor ( "ab" ; 255 ) ; 65280 ) )	0	1/1/0	<stylelist>\r<style#0>"color: #00FF00;", begin: 1, end: 2</style> \r</stylelist>\r<data>\r<span style="0">ab</span>\r</data>
+GetAsSVG ( TextColorRemove ( TextColor ( "ab" ; 255 ) ) )	0	1/1/0	<stylelist>\r<style#0>"", begin: 1, end: 2</style> \r</stylelist>\r<data>\r<span style="0">ab</span>\r</data>
+GetAsSVG ( TextColorRemove ( TextColor ( "ab" ; 255 ) ; 255 ) )	0	1/1/0	<stylelist>\r<style#0>"", begin: 1, end: 2</style> \r</stylelist>\r<data>\r<span style="0">ab</span>\r</data>
+GetAsSVG ( TextColorRemove ( TextColor ( "ab" ; 255 ) ; 254 ) )	0	1/1/0	<stylelist>\r<style#0>"color: #0000FF;", begin: 1, end: 2</style> \r</stylelist>\r<data>\r<span style="0">ab</span>\r</data>
+GetAsSVG ( TextColorRemove ( TextColor ( "a" ; 255 ) & TextColor ( "b" ; 65280 ) ; 255 ) )	0	1/1/0	<stylelist>\r<style#0>"", begin: 1, end: 1</style> \r<style#1>"color: #00FF00;", begin: 2, end: 2</style> \r</stylelist>\r<data>\r<span style="0">a</span>\r<span style="1">b</span>\r</data>
+GetAsSVG ( TextColorRemove ( TextColor ( "ab" ; 0 ) ; 0 ) )	0	1/1/0	<stylelist>\r<style#0>"", begin: 1, end: 2</style> \r</stylelist>\r<data>\r<span style="0">ab</span>\r</data>
+GetAsSVG ( TextColorRemove ( TextColor ( "ab" ; 0 ) ; "" ) )	0	1/1/0	<stylelist>\r<style#0>"", begin: 1, end: 2</style> \r</stylelist>\r<data>\r<span style="0">ab</span>\r</data>
+GetAsSVG ( TextColorRemove ( TextColor ( "ab" ; 255 ) ; "" ) )	0	1/1/0	<stylelist>\r<style#0>"color: #0000FF;", begin: 1, end: 2</style> \r</stylelist>\r<data>\r<span style="0">ab</span>\r</data>
+GetAsSVG ( TextColorRemove ( TextColor ( "ab" ; 255 ) ; 255 + 2^24 ) )	0	1/1/0	<stylelist>\r<style#0>"", begin: 1, end: 2</style> \r</stylelist>\r<data>\r<span style="0">ab</span>\r</data>
+GetAsSVG ( TextColorRemove ( TextColor ( "ab" ; 255 ) ; 255.5 ) )	0	1/1/0	<stylelist>\r<style#0>"", begin: 1, end: 2</style> \r</stylelist>\r<data>\r<span style="0">ab</span>\r</data>
+GetAsSVG ( TextColorRemove ( TextColor ( TextStyleAdd ( "ab" ; Bold ) ; 255 ) ) )	0	1/1/0	<stylelist>\r<style#0>"font-weight: bold;", begin: 1, end: 2</style> \r</stylelist>\r<data>\r<span style="0">ab</span>\r</data>
+GetAsSVG ( TextColorRemove ( "ab" ; 0 ) )	0	1/1/0	<stylelist>\r<style#0>"", begin: 1, end: 2</style> \r</stylelist>\r<data>\r<span style="0">ab</span>\r</data>
+GetAsSVG ( TextColorRemove ( TextColor ( "ab" ; 255 ) ; -1 ) )	0	1/1/0	<stylelist>\r<style#0>"color: #0000FF;", begin: 1, end: 2</style> \r</stylelist>\r<data>\r<span style="0">ab</span>\r</data>
+GetAsSVG ( TextColorRemove ( TextColor ( "ab" ; 0 ) ; -1 ) )	0	1/1/0	<stylelist>\r<style#0>"", begin: 1, end: 2</style> \r</stylelist>\r<data>\r<span style="0">ab</span>\r</data>
+GetAsSVG ( TextColorRemove ( "ab" ) )	0	1/1/0	<stylelist>\r<style#0>"", begin: 1, end: 2</style> \r</stylelist>\r<data>\r<span style="0">ab</span>\r</data>
+# TextFont and TextFontRemove: names, scripts, matching
+GetAsSVG ( TextFont ( "ab" ; "" ) )	0	1/1/0	<stylelist>\r<style#0>"font-family: '';", begin: 1, end: 2</style> \r</stylelist>\r<data>\r<span style="0">ab</span>\r</data>
+GetAsSVG ( TextFont ( "ab" ; 12 ) )	0	1/1/0	<stylelist>\r<style#0>"font-family: '12';", begin: 1, end: 2</style> \r</stylelist>\r<data>\r<span style="0">ab</span>\r</data>
+GetAsSVG ( TextFont ( "ab" ; "Times New Roman" ) )	0	1/1/0	<stylelist>\r<style#0>"font-family: 'Times New Roman';", begin: 1, end: 2</style> \r</stylelist>\r<data>\r<span style="0">ab</span>\r</data>
+GetAsSVG ( TextFont ( "ab" ; "a'b" ) )	0	1/1/0	<stylelist>\r<style#0>"font-family: 'a'b';", begin: 1, end: 2</style> \r</stylelist>\r<data>\r<span style="0">ab</span>\r</data>
+GetAsSVG ( TextFont ( "ab" ; " Arial " ) )	0	1/1/0	<stylelist>\r<style#0>"font-family: ' Arial ';", begin: 1, end: 2</style> \r</stylelist>\r<data>\r<span style="0">ab</span>\r</data>
+GetAsSVG ( TextFont ( "ab" ; "Arial" ; 99 ) )	0	1/1/0	<stylelist>\r<style#0>"font-family: 'Arial';", begin: 1, end: 2</style> \r</stylelist>\r<data>\r<span style="0">ab</span>\r</data>
+GetAsSVG ( TextFont ( "ab" ; "Arial" ; -1 ) )	0	1/1/0	<stylelist>\r<style#0>"font-family: 'Arial';", begin: 1, end: 2</style> \r</stylelist>\r<data>\r<span style="0">ab</span>\r</data>
+GetAsSVG ( TextFont ( "ab" ; "Arial" ; "" ) )	0	1/1/0	<stylelist>\r<style#0>"font-family: 'Arial';", begin: 1, end: 2</style> \r</stylelist>\r<data>\r<span style="0">ab</span>\r</data>
+GetAsSVG ( TextFont ( "ab" ; "Arial" ; Greek ) )	0	1/1/0	<stylelist>\r<style#0>"font-family: 'Arial';", begin: 1, end: 2</style> \r</stylelist>\r<data>\r<span style="0">ab</span>\r</data>
+GetAsSVG ( TextFont ( "ab" ; "Arial" ; Roman ) )	0	1/1/0	<stylelist>\r<style#0>"font-family: 'Arial';", begin: 1, end: 2</style> \r</stylelist>\r<data>\r<span style="0">ab</span>\r</data>
+GetAsSVG ( TextFont ( "ab" ; TextStyleAdd ( "Arial" ; Bold ) ) )	0	1/1/0	<stylelist>\r<style#0>"font-family: 'Arial';", begin: 1, end: 2</style> \r</stylelist>\r<data>\r<span style="0">ab</span>\r</data>
+GetAsSVG ( TextFont ( "ab" ; "Arial" & ¶ & "x" ) )	0	1/1/0	<stylelist>\r<style#0>"font-family: 'Arial\rx';", begin: 1, end: 2</style> \r</stylelist>\r<data>\r<span style="0">ab</span>\r</data>
+GetAsSVG ( TextFont ( "ab" ; "ＡＢＣ" ) )	0	1/1/0	<stylelist>\r<style#0>"font-family: 'ＡＢＣ';", begin: 1, end: 2</style> \r</stylelist>\r<data>\r<span style="0">ab</span>\r</data>
+GetAsSVG ( TextFont ( "ab" ; "ｱｲｳ" ) )	0	1/1/0	<stylelist>\r<style#0>"font-family: 'ｱｲｳ';", begin: 1, end: 2</style> \r</stylelist>\r<data>\r<span style="0">ab</span>\r</data>
+GetAsSVG ( TextFont ( "ab" ; "Ａｒｉａｌ　Ｂｌａｃｋ" ) )	0	1/1/0	<stylelist>\r<style#0>"font-family: 'Ａｒｉａｌ　Ｂｌａｃｋ';", begin: 1, end: 2</style> \r</stylelist>\r<data>\r<span style="0">ab</span>\r</data>
+GetAsSVG ( TextFont ( TextFont ( "ab" ; "Arial" ) ; "" ) )	0	1/1/0	<stylelist>\r<style#0>"font-family: '';", begin: 1, end: 2</style> \r</stylelist>\r<data>\r<span style="0">ab</span>\r</data>
+GetAsSVG ( TextFont ( TextFont ( "ab" ; "Arial" ) ; "Courier" ) )	0	1/1/0	<stylelist>\r<style#0>"font-family: 'Courier';", begin: 1, end: 2</style> \r</stylelist>\r<data>\r<span style="0">ab</span>\r</data>
+GetAsSVG ( TextFont ( "ab" ; "ARIAL" ) )	0	1/1/0	<stylelist>\r<style#0>"font-family: 'Arial';", begin: 1, end: 2</style> \r</stylelist>\r<data>\r<span style="0">ab</span>\r</data>
+GetAsSVG ( TextFontRemove ( TextFont ( "ab" ; "Arial" ) ) )	0	1/1/0	<stylelist>\r<style#0>"", begin: 1, end: 2</style> \r</stylelist>\r<data>\r<span style="0">ab</span>\r</data>
+GetAsSVG ( TextFontRemove ( TextFont ( "ab" ; "Arial" ) ; "Arial" ) )	0	1/1/0	<stylelist>\r<style#0>"", begin: 1, end: 2</style> \r</stylelist>\r<data>\r<span style="0">ab</span>\r</data>
+GetAsSVG ( TextFontRemove ( TextFont ( "ab" ; "Arial" ) ; "arial" ) )	0	1/1/0	<stylelist>\r<style#0>"", begin: 1, end: 2</style> \r</stylelist>\r<data>\r<span style="0">ab</span>\r</data>
+GetAsSVG ( TextFontRemove ( TextFont ( "ab" ; "Arial" ) ; "ARIAL" ) )	0	1/1/0	<stylelist>\r<style#0>"", begin: 1, end: 2</style> \r</stylelist>\r<data>\r<span style="0">ab</span>\r</data>
+GetAsSVG ( TextFontRemove ( TextFont ( "ab" ; "Arial" ) ; "Ａｒｉａｌ" ) )	0	1/1/0	<stylelist>\r<style#0>"", begin: 1, end: 2</style> \r</stylelist>\r<data>\r<span style="0">ab</span>\r</data>
+GetAsSVG ( TextFontRemove ( TextFont ( "ab" ; "Arial" ) ; "Courier" ) )	0	1/1/0	<stylelist>\r<style#0>"font-family: 'Arial';", begin: 1, end: 2</style> \r</stylelist>\r<data>\r<span style="0">ab</span>\r</data>
+GetAsSVG ( TextFontRemove ( TextFont ( "ab" ; "Arial" ) ; "" ) )	0	1/1/0	<stylelist>\r<style#0>"font-family: 'Arial';", begin: 1, end: 2</style> \r</stylelist>\r<data>\r<span style="0">ab</span>\r</data>
+GetAsSVG ( TextFontRemove ( TextFont ( "ab" ; "" ) ; "" ) )	0	1/1/0	<stylelist>\r<style#0>"", begin: 1, end: 2</style> \r</stylelist>\r<data>\r<span style="0">ab</span>\r</data>
+GetAsSVG ( TextFontRemove ( TextFont ( "ab" ; " Arial" ) ; "Arial" ) )	0	1/1/0	<stylelist>\r<style#0>"font-family: ' Arial';", begin: 1, end: 2</style> \r</stylelist>\r<data>\r<span style="0">ab</span>\r</data>
+GetAsSVG ( TextFontRemove ( TextFont ( "ab" ; "Ärial" ) ; "ärial" ) )	0	1/1/0	<stylelist>\r<style#0>"", begin: 1, end: 2</style> \r</stylelist>\r<data>\r<span style="0">ab</span>\r</data>
+GetAsSVG ( TextFontRemove ( TextFont ( "ab" ; "Arial" ; Greek ) ; "Arial" ; Roman ) )	0	1/1/0	<stylelist>\r<style#0>"", begin: 1, end: 2</style> \r</stylelist>\r<data>\r<span style="0">ab</span>\r</data>
+GetAsSVG ( TextFontRemove ( TextFont ( "ab" ; "Arial" ; Greek ) ; "Arial" ; Greek ) )	0	1/1/0	<stylelist>\r<style#0>"", begin: 1, end: 2</style> \r</stylelist>\r<data>\r<span style="0">ab</span>\r</data>
+GetAsSVG ( TextFontRemove ( TextFont ( "ab" ; "Arial" ) ; "Arial" ; Greek ) )	0	1/1/0	<stylelist>\r<style#0>"", begin: 1, end: 2</style> \r</stylelist>\r<data>\r<span style="0">ab</span>\r</data>
+GetAsSVG ( TextFontRemove ( TextFont ( "ab" ; "Arial" ; Greek ) ; "Arial" ) )	0	1/1/0	<stylelist>\r<style#0>"", begin: 1, end: 2</style> \r</stylelist>\r<data>\r<span style="0">ab</span>\r</data>
+GetAsSVG ( TextFontRemove ( TextFont ( "a" ; "Arial" ) & TextFont ( "b" ; "Courier" ) ; "Arial" ) )	0	1/1/0	<stylelist>\r<style#0>"", begin: 1, end: 1</style> \r<style#1>"font-family: 'Courier';", begin: 2, end: 2</style> \r</stylelist>\r<data>\r<span style="0">a</span>\r<span style="1">b</span>\r</data>
+# TextSize and TextSizeRemove values
+GetAsSVG ( TextSize ( "ab" ; 0 ) )	0	1/1/0	<stylelist>\r<style#0>"", begin: 1, end: 2</style> \r</stylelist>\r<data>\r<span style="0">ab</span>\r</data>
+GetAsSVG ( TextSize ( "ab" ; -1 ) )	0	1/1/0	<stylelist>\r<style#0>"", begin: 1, end: 2</style> \r</stylelist>\r<data>\r<span style="0">ab</span>\r</data>
+GetAsSVG ( TextSize ( "ab" ; 1 ) )	0	1/1/0	<stylelist>\r<style#0>"font-size: 1px;", begin: 1, end: 2</style> \r</stylelist>\r<data>\r<span style="0">ab</span>\r</data>
+GetAsSVG ( TextSize ( "ab" ; 12.9 ) )	0	1/1/0	<stylelist>\r<style#0>"font-size: 12px;", begin: 1, end: 2</style> \r</stylelist>\r<data>\r<span style="0">ab</span>\r</data>
+GetAsSVG ( TextSize ( "ab" ; 500 ) )	0	1/1/0	<stylelist>\r<style#0>"font-size: 500px;", begin: 1, end: 2</style> \r</stylelist>\r<data>\r<span style="0">ab</span>\r</data>
+GetAsSVG ( TextSize ( "ab" ; 1000 ) )	0	1/1/0	<stylelist>\r<style#0>"font-size: 1000px;", begin: 1, end: 2</style> \r</stylelist>\r<data>\r<span style="0">ab</span>\r</data>
+GetAsSVG ( TextSize ( "ab" ; 1001 ) )	0	1/1/0	<stylelist>\r<style#0>"font-size: 1001px;", begin: 1, end: 2</style> \r</stylelist>\r<data>\r<span style="0">ab</span>\r</data>
+GetAsSVG ( TextSize ( "ab" ; 32767 ) )	0	1/1/0	<stylelist>\r<style#0>"font-size: 32767px;", begin: 1, end: 2</style> \r</stylelist>\r<data>\r<span style="0">ab</span>\r</data>
+GetAsSVG ( TextSize ( "ab" ; 65535 ) )	0	1/1/0	<stylelist>\r<style#0>"font-size: 65535px;", begin: 1, end: 2</style> \r</stylelist>\r<data>\r<span style="0">ab</span>\r</data>
+GetAsSVG ( TextSize ( "ab" ; 65536 ) )	0	1/1/0	<stylelist>\r<style#0>"", begin: 1, end: 2</style> \r</stylelist>\r<data>\r<span style="0">ab</span>\r</data>
+GetAsSVG ( TextSize ( "ab" ; 65548 ) )	0	1/1/0	<stylelist>\r<style#0>"font-size: 12px;", begin: 1, end: 2</style> \r</stylelist>\r<data>\r<span style="0">ab</span>\r</data>
+GetAsSVG ( TextSize ( "ab" ; "" ) )	0	1/1/0	<stylelist>\r<style#0>"", begin: 1, end: 2</style> \r</stylelist>\r<data>\r<span style="0">ab</span>\r</data>
+GetAsSVG ( TextSize ( "ab" ; "abc" ) )	0	1/1/0	<stylelist>\r<style#0>"", begin: 1, end: 2</style> \r</stylelist>\r<data>\r<span style="0">ab</span>\r</data>
+GetAsSVG ( TextSize ( "ab" ; 1/0 ) )	15	1/1/0	<stylelist>\r<style#0>"", begin: 1, end: 2</style> \r</stylelist>\r<data>\r<span style="0">ab</span>\r</data>
+GetAsSVG ( TextSize ( "ab" ; -65524 ) )	0	1/1/0	<stylelist>\r<style#0>"", begin: 1, end: 2</style> \r</stylelist>\r<data>\r<span style="0">ab</span>\r</data>
+GetAsSVG ( TextSize ( "ab" ; 2^32 + 12 ) )	0	1/1/0	<stylelist>\r<style#0>"font-size: 12px;", begin: 1, end: 2</style> \r</stylelist>\r<data>\r<span style="0">ab</span>\r</data>
+GetAsSVG ( TextSize ( "ab" ; 2^31 + 12 ) )	0	1/1/0	<stylelist>\r<style#0>"font-size: 12px;", begin: 1, end: 2</style> \r</stylelist>\r<data>\r<span style="0">ab</span>\r</data>
+GetAsSVG ( TextSize ( TextSize ( "ab" ; 20 ) ; 0 ) )	0	1/1/0	<stylelist>\r<style#0>"font-size: 20px;", begin: 1, end: 2</style> \r</stylelist>\r<data>\r<span style="0">ab</span>\r</data>
+GetAsSVG ( TextSize ( TextStyleAdd ( "ab" ; Superscript ) ; 13 ) )	0	1/1/0	<stylelist>\r<style#0>"font-size: 7px;vertical-align: text-top;", begin: 1, end: 2</style> \r</stylelist>\r<data>\r<span style="0">ab</span>\r</data>
+GetAsSVG ( TextSize ( TextStyleAdd ( "ab" ; Superscript ) ; 1 ) )	0	1/1/0	<stylelist>\r<style#0>"font-size: 1px;vertical-align: text-top;", begin: 1, end: 2</style> \r</stylelist>\r<data>\r<span style="0">ab</span>\r</data>
+GetAsSVG ( TextSize ( TextStyleAdd ( "ab" ; Superscript ) ; 65535 ) )	0	1/1/0	<stylelist>\r<style#0>"font-size: 32768px;vertical-align: text-top;", begin: 1, end: 2</style> \r</stylelist>\r<data>\r<span style="0">ab</span>\r</data>
+GetAsSVG ( TextStyleAdd ( TextSize ( "ab" ; 20 ) ; Superscript ) )	0	1/1/0	<stylelist>\r<style#0>"font-size: 10px;vertical-align: text-top;", begin: 1, end: 2</style> \r</stylelist>\r<data>\r<span style="0">ab</span>\r</data>
+GetAsSVG ( TextSize ( TextStyleAdd ( "ab" ; Subscript ) ; 21 ) )	0	1/1/0	<stylelist>\r<style#0>"font-size: 11px;vertical-align: text-bottom;", begin: 1, end: 2</style> \r</stylelist>\r<data>\r<span style="0">ab</span>\r</data>
+GetAsSVG ( TextSizeRemove ( TextSize ( "ab" ; 18 ) ) )	0	1/1/0	<stylelist>\r<style#0>"", begin: 1, end: 2</style> \r</stylelist>\r<data>\r<span style="0">ab</span>\r</data>
+GetAsSVG ( TextSizeRemove ( TextSize ( "ab" ; 18 ) ; 18 ) )	0	1/1/0	<stylelist>\r<style#0>"", begin: 1, end: 2</style> \r</stylelist>\r<data>\r<span style="0">ab</span>\r</data>
+GetAsSVG ( TextSizeRemove ( TextSize ( "ab" ; 18 ) ; 12 ) )	0	1/1/0	<stylelist>\r<style#0>"font-size: 18px;", begin: 1, end: 2</style> \r</stylelist>\r<data>\r<span style="0">ab</span>\r</data>
+GetAsSVG ( TextSizeRemove ( TextSize ( "ab" ; 18 ) ; 18.5 ) )	0	1/1/0	<stylelist>\r<style#0>"", begin: 1, end: 2</style> \r</stylelist>\r<data>\r<span style="0">ab</span>\r</data>
+GetAsSVG ( TextSizeRemove ( TextSize ( "ab" ; 18 ) ; "" ) )	0	1/1/0	<stylelist>\r<style#0>"font-size: 18px;", begin: 1, end: 2</style> \r</stylelist>\r<data>\r<span style="0">ab</span>\r</data>
+GetAsSVG ( TextSizeRemove ( TextSize ( "a" ; 10 ) & TextSize ( "b" ; 18 ) ; 18 ) )	0	1/1/0	<stylelist>\r<style#0>"font-size: 10px;", begin: 1, end: 1</style> \r<style#1>"", begin: 2, end: 2</style> \r</stylelist>\r<data>\r<span style="0">a</span>\r<span style="1">b</span>\r</data>
+GetAsSVG ( TextSizeRemove ( TextSize ( "ab" ; 12 ) ; 65548 ) )	0	1/1/0	<stylelist>\r<style#0>"", begin: 1, end: 2</style> \r</stylelist>\r<data>\r<span style="0">ab</span>\r</data>
+GetAsSVG ( TextSizeRemove ( TextSize ( "ab" ; 12 ) ; -65524 ) )	0	1/1/0	<stylelist>\r<style#0>"font-size: 12px;", begin: 1, end: 2</style> \r</stylelist>\r<data>\r<span style="0">ab</span>\r</data>
+GetAsSVG ( TextSizeRemove ( TextSize ( "ab" ; 12 ) ; 0 ) )	0	1/1/0	<stylelist>\r<style#0>"font-size: 12px;", begin: 1, end: 2</style> \r</stylelist>\r<data>\r<span style="0">ab</span>\r</data>
+GetAsSVG ( TextSizeRemove ( "ab" ; 0 ) )	0	1/1/0	<stylelist>\r<style#0>"", begin: 1, end: 2</style> \r</stylelist>\r<data>\r<span style="0">ab</span>\r</data>
+GetAsSVG ( TextFormatRemove ( TextStyleAdd ( TextColor ( TextSize ( TextFont ( "ab" ; "Arial" ) ; 20 ) ; 255 ) ; AllStyles ) ) )	0	1/1/0	<stylelist>\r<style#0>"", begin: 1, end: 2</style> \r</stylelist>\r<data>\r<span style="0">ab</span>\r</data>
+GetAsSVG ( TextFormatRemove ( "ab" ) )	0	1/1/0	<stylelist>\r<style#0>"", begin: 1, end: 2</style> \r</stylelist>\r<data>\r<span style="0">ab</span>\r</data>
+GetAsSVG ( "ab" )	0	1/1/0	<stylelist>\r<style#0>"", begin: 1, end: 2</style> \r</stylelist>\r<data>\r<span style="0">ab</span>\r</data>
+# Results are text: values, types and arithmetic
+TextStyleAdd ( 1/3 ; Bold ) + 1	0	2/2/0	1.3333333333333333
+TextStyleAdd ( Date ( 1 ; 2 ; 2003 ) ; Bold ) + 1	0	2/2/0	122004
+TextColor ( 12 ; 255 ) + 1	0	2/2/0	13
+TextFormatRemove ( 12 ) + 1	0	2/2/0	13
+TextColor ( Time ( 1 ; 0 ; 0 ) ; 255 ) + 1	0	2/2/0	10001
+TextStyleAdd ( 12 ; Bold )	0	1/1/0	12
+TextFont ( 12 ; "Arial" )	0	1/1/0	12
+TextFormatRemove ( 12 )	0	1/1/0	12
+TextColor ( Date ( 1 ; 2 ; 2003 ) ; 255 )	0	1/1/0	1/2/2003
+TextSize ( "" ; 12 )	0	1/1/0	
+TextColorRemove ( "" )	0	1/1/0	
+TextFont ( 1/0 ; "x" )	15	1/1/0	?
+TextStyleAdd ( "" ; Bold )	0	1/1/0	
+IsEmpty ( TextStyleAdd ( "" ; Bold ) )	0	2/2/0	1
+TextStyleAdd ( "ab" ; Bold ) = "ab"	0	2/2/0	1
+Length ( TextStyleAdd ( "a¶b" ; Bold ) )	0	2/2/0	3
+TextStyleAdd ( "ab" ; 1/0 )	15	1/1/0	ab
+TextColor ( "ab" ; 1/0 )	15	1/1/0	ab
+TextSize ( "a" ; 12,9 )	1202	2/2/0	?
+Upper ( TextStyleAdd ( "ab" ; Bold ) )	0	1/1/0	AB
+LunarDate ( 1 )	1223	2/2/0	?

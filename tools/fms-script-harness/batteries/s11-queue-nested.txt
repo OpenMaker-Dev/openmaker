@@ -1,0 +1,101 @@
+# Nested queue modes (script-runtime.md 3.7, 13.11, U5): "@call" after a
+# step of a sub-script with queueAtBottom 1, while a sub-script is paused,
+# two calls after one step, a call from a called script, and what a script
+# queued below sees of the one that ran before it (Get ( ScriptResult ),
+# Get ( LastError )). Base file: contacts-en.
+== n top
+Set Variable [ $$log ; "A1" ]
+Perform Script [ "n sub" ]
+Set Variable [ $$log ; $$log & " A3(" & Get ( ScriptResult ) & ")" ]
+Exit Script [ "a" ]
+== n sub
+Set Variable [ $$log ; $$log & " S1" ]
+Set Variable [ $$log ; $$log & " S2" ]
+Set Variable [ $$log ; $$log & " S3" ]
+Exit Script [ "s" ]
+== n top paused
+Set Variable [ $$log ; "A1" ]
+Perform Script [ "n sub paused" ]
+Set Variable [ $$log ; $$log & " A3(" & Get ( ScriptResult ) & ")" ]
+Exit Script [ "a" ]
+== n sub paused
+Set Variable [ $$log ; $$log & " S1" ]
+Pause/Resume Script
+Set Variable [ $$log ; $$log & " S3" ]
+Exit Script [ "s" ]
+== n top error
+Set Variable [ $$log ; "A1" ]
+Perform Script [ By name: "no such script" ]
+== n other
+Set Variable [ $$log ; $$log & " B(" & Get ( ScriptResult ) & "/" & Get ( LastError ) & ")" ]
+Exit Script [ "b" ]
+== n second
+Set Variable [ $$log ; $$log & " C(" & Get ( ScriptResult ) & ")" ]
+Exit Script [ "c" ]
+== n chained
+Set Variable [ $$log ; $$log & " D1" ]
+Set Variable [ $$log ; $$log & " D2" ]
+Exit Script [ "d" ]
+--- run
+@call	n sub	2	n other	0	1
+n top		$$log	Get ( LastError )
+@call
+@call	n sub	2	n other	1	1
+n top		$$log	Get ( LastError )
+@call
+@call	n sub	2	n other	2	1
+n top		$$log	Get ( LastError )
+@call
+@call	n sub	2	n other	3	1
+n top		$$log	Get ( LastError )
+@call
+@call	n sub	2	n other	4	1
+n top		$$log	Get ( LastError )
+@call
+@call	n sub	2	n other	5	1
+n top		$$log	Get ( LastError )
+@call
+@call	n sub paused	2	n other	0	0
+n top paused		$$log
+@call
+@call	n sub paused	2	n other	1	0
+n top paused		$$log
+@call
+@call	n sub paused	2	n other	2	0
+n top paused		$$log
+@call
+@call	n sub paused	2	n other	3	0
+n top paused		$$log
+@call
+@call	n sub paused	2	n other	4	0
+n top paused		$$log
+@call
+@call	n sub paused	2	n other	2	1
+n top paused		$$log
+@call
+@call	n sub	2	n other	0	0
+@call	n sub	2	n second	0	0
+n top		$$log
+@call
+@call	n sub	2	n other	0	1
+@call	n sub	2	n second	0	1
+n top		$$log
+@call
+@call	n sub	2	n other	0	0
+@call	n sub	2	n second	0	1
+n top		$$log
+@call
+@call	n top error	2	n other	0	1
+n top error		$$log	Get ( LastError )
+@call
+@call	n sub	2	n chained	0	0
+@call	n chained	1	n second	0	0
+n top		$$log
+@call
+@call	n sub	2	n chained	0	1
+@call	n chained	1	n second	2	0
+n top		$$log
+@call
+@call	n top	1	n other	1	1
+n top		$$log	Get ( LastError )
+@call

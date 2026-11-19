@@ -1,0 +1,20 @@
+expression	expected_result	expected_error	evidence
+# Rules stated for an abstract schema; "schema:" names the fields an implementation must create.
+# Settled by record-context runs of FileMaker Server's engine on sample files (batteries x01-x04, calc-values.md 12.1).
+r + 1	2	0	established:run fms26.0.3.309 schema:r=number field 3 reps (1;2;3) in a non-repeating calc; outside a repetition an unindexed repeating field reads repetition 1 (x01 ATB::flex_Label, x02 Connected + 1)
+r + 1	2¶3¶4 (per repetition)	0	established:run fms26.0.3.309 schema:same field in a calc with 3 repetitions; in repetition n an unindexed repeating field reads repetition n (x01 rep=2 flex_Label, stored calc _flex_Add reads flex_Script repetition n)
+r[2] * 10	20	0	established:run fms26.0.3.309 schema:r as above; field[n] reads repetition n in any context (x01 ATB::flex_Label[2], x02 Connected[2] * 10)
+r[4]	?	14	established:run fms26.0.3.309 schema:r as above; an index above the field's repetitions, 0 or negative is error 14 (x01 ATB::flex_Label[10], [0], [-1])
+Get(CalculationRepetitionNumber)	1	0	established:run fms26.0.3.309 schema:non-repeating calc field; repetition i of a calculation field evaluates with i (x01 _flex_Add repetition 1 reads GetRepetition ( flex_Label ; Get ( CalculationRepetitionNumber ) ) = repetition 1); a bare Evaluate outside any field returns 0
+n = 0	1	0	established:run fms26.0.3.309 schema:n=empty number field (x02 DeviceSerialNumber = 0)
+n + 1	1	0	established:run fms26.0.3.309 schema:n=empty number field; one empty operand acts as 0 (x02 DeviceSerialNumber + 1)
+n + m		0	established:run fms26.0.3.309 schema:n,m=empty number fields; both operands empty gives empty of type number (x02 DeviceSerialNumber + DeviceID)
+Rel::x	(first related record's x)	0	established:run fms26.0.3.309 schema:relationship to Rel without a sort; the first related record in creation (record ID) order (x03 ${Related Tasks}::Task); sorted relationships not tested
+Sum(Rel::x)	(sum over all related records)	0	established:run fms26.0.3.309 schema:relationship to Rel; one argument walks every related record (x03 Sum = 78 over 12 records)
+Sum(Rel::x; 100)	(first related record's x) + 100	0	established:run fms26.0.3.309 schema:relationship to Rel; with two or more arguments each field contributes only the first related record (x03 Sum ( ${Related Tasks}::${TASK ID MATCH FIELD} ; 100 ) = 7 + 100)
+Sum(Empty::x)		0	established:run fms26.0.3.309 schema:relationship with no related records; aggregates other than Count give empty, Count gives 0 (x03 Assignees)
+f(10000)	0	0	established:run fms26.0.3.309 schema:custom function f(n)=If(n<=0;0;f(n-1)); 10,001 calls; the limit is 50,000 calls per evaluation, recursion depth itself is not limited (x04 __GEN_Range_ID depth 49,999)
+f(49998)	0	0	established:run fms26.0.3.309 schema:f as above; 49,999 calls, the most the default allows (x04 __GEN_RandomPW ( 49999 ) succeeds)
+f(49999)	?	7	established:run fms26.0.3.309 schema:f as above; the 50,000th call fails and aborts the whole calculation (x04 __GEN_RandomPW ( 50000 ), __GEN_Range_ID ( 1 ; 50000 ; 1 )) aborts-calculation
+SetRecursion(f(99); 100)	0	0	established:run fms26.0.3.309 schema:f as above; SetRecursion ( expr ; n ) allows n calls (x04)
+SetRecursion(f(100); 100)	?	7	established:run fms26.0.3.309 schema:f as above; 101 calls under a limit of 100 (x04) aborts-calculation

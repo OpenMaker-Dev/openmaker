@@ -1,0 +1,120 @@
+# Transactions across sub-scripts with custom revert codes, the order of
+# errors in a transaction, a revert setting changed by a sub-script, Halt
+# and Exit Script inside a failed transaction, and a revert with a code out
+# of range on a record (script-runtime.md 8, 13.10). Base file:
+# contacts-en; probes report the Contacts row count before and after
+# (ExecuteSQL); records persist across run lines.
+== txn sub custom
+Set Variable [ $n0 ; ExecuteSQL ( "SELECT COUNT(*) FROM Contacts" ; "" ; "" ) ]
+Open Transaction
+New Record/Request
+Set Field [ Contacts::First Name ; "txn sub custom" ]
+Perform Script [ "txn sub reverts 5002" ]
+Set Variable [ $inside ; "not skipped" ]
+Commit Transaction
+Exit Script [ List ( Get ( LastError ) ; Get ( LastErrorDetail ) ; Substitute ( Get ( LastErrorLocation ) ; ¶ ; "/" ) ; "[" & $inside & "]" ; "[" & $$subafter & "]" ; "[" & Get ( ScriptResult ) & "]" ; $n0 ; ExecuteSQL ( "SELECT COUNT(*) FROM Contacts" ; "" ; "" ) ) ]
+== txn sub reverts 5002
+Revert Transaction [ Error: 5002 ; Message: "sub message" ]
+Set Variable [ $$subafter ; "sub continued" ]
+Exit Script [ "sub result" ]
+== txn deep custom
+Open Transaction
+New Record/Request
+Perform Script [ "txn mid" ]
+Commit Transaction
+Exit Script [ List ( Get ( LastError ) ; Get ( LastErrorDetail ) ; Substitute ( Get ( LastErrorLocation ) ; ¶ ; "/" ) ; "[" & $$midafter & "]" ) ]
+== txn mid
+Perform Script [ "txn sub reverts 5002" ]
+Set Variable [ $$midafter ; 1 ]
+== txn custom no message
+Open Transaction
+Revert Transaction [ Error: 5003 ]
+Commit Transaction
+Exit Script [ List ( Get ( LastError ) ; "[" & Substitute ( Get ( LastErrorDetail ) ; ¶ ; "/" ) & "]" ) ]
+== txn two reverts
+Open Transaction
+Revert Transaction [ Error: 5004 ; Message: "first" ]
+Revert Transaction [ Error: 5005 ; Message: "second" ]
+Commit Transaction
+Exit Script [ List ( Get ( LastError ) ; Get ( LastErrorDetail ) ) ]
+== txn data error then revert
+Open Transaction
+New Record/Request
+Set Field [ Contacts::Initial ; "x" ]
+Revert Transaction [ Error: 5006 ; Message: "after data error" ]
+Commit Transaction
+Exit Script [ List ( Get ( LastError ) ; Get ( LastErrorDetail ) ) ]
+== txn data error then revert off
+Set Revert Transaction on Error [ Off ]
+Set Variable [ $n0 ; ExecuteSQL ( "SELECT COUNT(*) FROM Contacts" ; "" ; "" ) ]
+Open Transaction
+New Record/Request
+Set Field [ Contacts::Initial ; "x" ]
+Revert Transaction [ Error: 5006 ; Message: "after data error" ]
+Commit Transaction
+Exit Script [ List ( Get ( LastError ) ; Get ( LastErrorDetail ) ; $n0 ; ExecuteSQL ( "SELECT COUNT(*) FROM Contacts" ; "" ; "" ) ) ]
+== txn revert out of range
+Set Variable [ $n0 ; ExecuteSQL ( "SELECT COUNT(*) FROM Contacts" ; "" ; "" ) ]
+Open Transaction
+New Record/Request
+Revert Transaction [ Error: 4999 ; Message: "x" ]
+Set Variable [ $inside ; "not skipped" ]
+Commit Transaction
+Exit Script [ List ( Get ( LastError ) ; "[" & $inside & "]" ; $n0 ; ExecuteSQL ( "SELECT COUNT(*) FROM Contacts" ; "" ; "" ) ) ]
+== txn halt after error
+Open Transaction
+New Record/Request
+Set Field [ Contacts::Initial ; "x" ]
+Halt Script
+Set Variable [ $$afterhalt ; 1 ]
+Commit Transaction
+Set Variable [ $$aftercommit ; Get ( LastError ) ]
+== txn exit after error
+Open Transaction
+New Record/Request
+Set Field [ Contacts::Initial ; "x" ]
+Exit Script [ "exited" ]
+Set Variable [ $$afterexit ; 1 ]
+Commit Transaction
+Exit Script [ "end " & Get ( LastError ) ]
+== txn sub revert setting
+Open Transaction
+New Record/Request
+Perform Script [ "txn sub sets off" ]
+Set Field [ Contacts::Initial ; "x" ]
+Set Variable [ $inside ; "not skipped" ]
+Commit Transaction
+Exit Script [ List ( Get ( LastError ) ; "[" & $inside & "]" ; Get ( RevertTransactionOnErrorState ) ) ]
+== txn sub sets off
+Set Revert Transaction on Error [ Off ]
+== txn sub error then custom
+Open Transaction
+New Record/Request
+Perform Script [ "txn sub data error then revert" ]
+Commit Transaction
+Exit Script [ List ( Get ( LastError ) ; Get ( LastErrorDetail ) ; "[" & $$sub2 & "]" ) ]
+== txn sub data error then revert
+Set Field [ Contacts::Initial ; "x" ]
+Revert Transaction [ Error: 5007 ; Message: "m" ]
+Set Variable [ $$sub2 ; 1 ]
+== txn count
+Exit Script [ ExecuteSQL ( "SELECT COUNT(*) FROM Contacts" ; "" ; "" ) & " " & Substitute ( ExecuteSQL ( "SELECT \"First Name\" FROM Contacts" ; "" ; "," ) ; ¶ ; "," ) ]
+--- run
+txn count
+txn sub custom		Get ( LastError )	Get ( LastErrorLocation )	Get ( LastErrorDetail )
+txn deep custom		Get ( LastError )	$$midafter
+txn custom no message		Get ( LastError )
+txn two reverts		Get ( LastError )
+txn data error then revert		Get ( LastError )
+txn data error then revert off		Get ( LastError )
+txn count
+txn revert out of range		Get ( LastError )
+txn count
+txn halt after error		Get ( LastError )	$$afterhalt	$$aftercommit	Get ( TransactionOpenState )
+txn count
+txn exit after error		Get ( LastError )	$$afterexit	Get ( TransactionOpenState )
+txn count
+txn sub revert setting		Get ( LastError )	Get ( RevertTransactionOnErrorState )
+txn count
+txn sub error then custom		Get ( LastError )
+txn count

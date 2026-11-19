@@ -1,0 +1,164 @@
+/* Configuration > Folders, SSL Certificate and Schedules
+   (src/views/folders.rs, ssl_certificate.rs and schedules.rs), at the
+   measurements of FileMaker Server's console in docs/re/admin-console.md
+   section 4.5. */
+
+/* A view's introduction, and a gray note where FileMaker Server has
+   controls OpenMaker Server does not. */
+
+.page-intro {
+  margin: 0 0 12px;
+}
+
+.section-note {
+  margin: 0 0 20px;
+  color: var(--label);
+}
+
+/* Folders: a narrower label column and a wide one for the paths. */
+
+.settings-row.path-row {
+  grid-template-columns: 1fr 2fr 1fr;
+}
+
+.path-row .settings-value {
+  padding-right: 19.5px;
+}
+
+.copy-button[hidden] {
+  display: none;
+}
+
+.copy-button.copied {
+  color: var(--label);
+  text-decoration: none;
+  cursor: default;
+}
+
+.folder-inexact {
+  display: block;
+  color: var(--warning);
+}
+
+.folders-more {
+  margin: 0 0 10px;
+  color: var(--label);
+}
+
+/* SSL Certificate: how long the certificate has left. */
+
+.cert-note {
+  display: block;
+  color: var(--label);
+}
+
+.cert-warning {
+  color: var(--warning);
+}
+
+.cert-problem {
+  color: var(--critical);
+}
+
+/* Schedules: FileMaker Server's grid, a 26 px header and 48 px rows in
+   columns of equal width after the checkboxes, its cells cut short with an
+   ellipsis. It scrolls sideways on a narrow screen rather than the page. */
+
+.schedules-toolbar .btn {
+  min-width: 90px;
+}
+
+.table-scroll {
+  overflow-x: auto;
+}
+
+.schedules-table {
+  min-width: 960px;
+  table-layout: fixed;
+}
+
+.schedules-table th,
+.schedules-table td {
+  padding: 0 0 0 13px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.schedules-table th {
+  height: 26px;
+  border-top: 0;
+  border-bottom-color: #e2e2e2;
+}
+
+.schedules-table td {
+  height: 47px;
+  border-bottom-color: #e2e2e2;
+}
+
+.schedules-table .check-cell {
+  box-sizing: border-box;
+  width: 61px;
+  padding-left: 23px;
+}
+
+.schedules-table .empty-row td {
+  padding: 0;
+}
+
+/* Checkboxes: 18 px, light gray, blue with a white tick when checked. */
+
+.schedules-table input[type="checkbox"] {
+  position: relative;
+  box-sizing: border-box;
+  width: 18px;
+  height: 18px;
+  margin: 0;
+  border: 1px solid var(--border);
+  border-radius: 3px;
+  background: #ffffff;
+  vertical-align: middle;
+  cursor: pointer;
+  appearance: none;
+}
+
+.schedules-table input[type="checkbox"]:checked {
+  border-color: var(--accent);
+  background: var(--accent);
+}
+
+.schedules-table input[type="checkbox"]:checked::after {
+  position: absolute;
+  top: 2px;
+  left: 5px;
+  width: 4px;
+  height: 9px;
+  border: solid #ffffff;
+  border-width: 0 2px 2px 0;
+  content: "";
+  transform: rotate(45deg);
+}
+
+.schedule-detail {
+  display: block;
+  overflow: hidden;
+  color: var(--label);
+  font-size: 12px;
+  line-height: 16px;
+  text-overflow: ellipsis;
+}
+
+.schedules-note {
+  margin: 15px 0 0;
+  color: var(--label);
+}
+
+@media (max-width: 760px) {
+  .settings-row.path-row {
+    grid-template-columns: 1fr;
+  }
+
+  .path-row .settings-value {
+    padding-right: 0;
+  }
+}

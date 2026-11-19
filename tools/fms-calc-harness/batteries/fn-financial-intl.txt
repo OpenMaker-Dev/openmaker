@@ -1,0 +1,11 @@
+# fn-financial-intl: locale-dependent conversions of the financial functions. Run in contacts-de, -fr, -sv, -ja.
+FV("100";"0,1";"2")
+FV("100";"0.1";"2")
+PMT(1000;5/1200;12)
+PMT("1000";"0,05";"12")
+PV(500;5/100;5)
+PV("500";"0,05";"5")
+FV(50;11/1200;60)
+FV(-100;1/10;10)
+PMT(100;0;3)
+NPV(100;1/10)

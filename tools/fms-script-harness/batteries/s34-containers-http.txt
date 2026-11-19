@@ -1,0 +1,54 @@
+# Insert from URL into a container field over HTTP: the file name and type
+# the response gets from the URL's path, its Content-Type and its
+# Content-Disposition, and text into a text field. The container has no
+# network: BEFORE starts the loopback server tools/fms-script-harness
+# s34 uses (copied to the work folder as s34url/serve.pl), which answers
+# /<content type, + for />/<disposition>/<file of s34url> ("-": no header).
+# Run: BEFORE='perl /work/s34url/serve.pl' runbat.sh ... The run copy's
+# library is read afterwards. Base file: contacts-en.
+== url
+Set Error Capture [ On ]
+New Record/Request
+Insert from URL [ Select: On ; Contacts::Photo ; Get ( ScriptParameter ) ]
+Set Variable [ $$r ; Get ( LastError ) & "|" & GetAsText ( Contacts::Photo ) & "|" & Length ( Contacts::Photo ) & "|" & GetWidth ( Contacts::Photo ) & "x" & GetHeight ( Contacts::Photo ) & "|" & GetContainerAttribute ( Contacts::Photo ; "internalSize" ) & "|" & IsEmpty ( Contacts::Photo ) ]
+Commit Records/Requests [ With dialog: Off ]
+Exit Script [ $$r & "|" & Get ( RecordID ) ]
+== text
+Set Error Capture [ On ]
+New Record/Request
+Insert from URL [ Select: On ; Contacts::First Name ; Get ( ScriptParameter ) ]
+Set Variable [ $$r ; Get ( LastError ) & "|" & Contacts::First Name & "|" & Length ( Contacts::First Name ) ]
+Commit Records/Requests [ With dialog: Off ]
+Exit Script [ $$r & "|" & Get ( RecordID ) ]
+== append
+Set Error Capture [ On ]
+New Record/Request
+Insert from URL [ Select: On ; Contacts::Photo ; "http://127.0.0.1:8080/image+png/-/red.png" ]
+Insert from URL [ Select: Off ; Contacts::Photo ; "http://127.0.0.1:8080/text+plain/-/hello.txt" ]
+Set Variable [ $$r ; Get ( LastError ) & "|" & GetAsText ( Contacts::Photo ) & "|" & Length ( Contacts::Photo ) ]
+Commit Records/Requests [ With dialog: Off ]
+Exit Script [ $$r & "|" & Get ( RecordID ) ]
+--- run
+url	http://127.0.0.1:8080/image+png/-/red.png
+url	http://127.0.0.1:8080/-/-/red.png
+url	http://127.0.0.1:8080/application+octet-stream/-/red.png
+url	http://127.0.0.1:8080/text+plain/-/red.png
+url	http://127.0.0.1:8080/image+png/-/red.txt
+url	http://127.0.0.1:8080/image+png/-/hello.png
+url	http://127.0.0.1:8080/image+png/-/noext
+url	http://127.0.0.1:8080/-/-/noext
+url	http://127.0.0.1:8080/image+jpeg/-/RED.JPG
+url	http://127.0.0.1:8080/audio+mpeg/-/x.mp3
+url	http://127.0.0.1:8080/text+html/-/page.html
+url	http://127.0.0.1:8080/text+plain/-/hello.txt
+url	http://127.0.0.1:8080/image+png/-/a%20b.png
+url	http://127.0.0.1:8080/image+png/-/red.png?x=1&y=2
+url	http://127.0.0.1:8080/image+png/attachment;%20filename=%22other.png%22/red.png
+url	http://127.0.0.1:8080/image+png/inline;%20filename=other.gif/red.png
+url	http://127.0.0.1:8080/image+png/-/red.png#frag
+url	http://127.0.0.1:8080/image+png/-/
+url	http://127.0.0.1:8080/image+png/-
+text	http://127.0.0.1:8080/text+plain;%20charset=utf-8/-/hello.txt
+text	http://127.0.0.1:8080/text+plain/-/hello.txt
+text	http://127.0.0.1:8080/image+png/-/red.png
+append

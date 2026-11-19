@@ -1,0 +1,21 @@
+# Text literal values (escapes in calc-encoding.md 6.1; compile-mode bytes in c01-needed)
+# harness escapes: \r = CR, \n = LF, \\ = one backslash, \uXXXX
+# literal holding a typed Return (CR): formatted U+E004, Polish space
+"ab\rc"	0	1/1/0	ab c
+Length ( "ab\rc" )	0	2/2/0	4
+Code ( Middle ( "ab\rc" ; 3 ; 1 ) )	0	2/2/0	32
+Code ( Middle ( "ab\uE004c" ; 3 ; 1 ) )	0	2/2/0	32
+Code ( Middle ( "ab\nc" ; 3 ; 1 ) )	0	2/2/0	10
+"a¶b" = "a" & Char ( 13 ) & "b"	0	2/2/0	1
+"a\\¶b"	0	1/1/0	a¶b
+Length ( "a\\¶b" )	0	2/2/0	3
+"a\\\\b"	0	1/1/0	a\\b
+"a\\nb"	0	1/1/0	a\\nb
+"a\\x"	0	1/1/0	a\\x
+"a""b"	0	1/1/0	a"b
+""""	0	1/1/0	"
+Length ( """" )	0	2/2/0	1
+"a\\"b"	0	1/1/0	a"b
+# Evaluate of text holding a real CR inside quotes
+Code ( Middle ( Evaluate ( "\\"ab" & Char ( 13 ) & "c\\"" ) ; 3 ; 1 ) )	0	2/2/0	32
+Code ( Middle ( Evaluate ( "\\"ab" & Char ( 10 ) & "c\\"" ) ; 3 ; 1 ) )	0	2/2/0	10

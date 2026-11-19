@@ -1,0 +1,23 @@
+kind,getlayoutobjectattribute_index,getlayoutobjectattribute_objecttype,xml_object_type,xml_type_symbol_fmengine,fmengine_model_class,fmlayoutpb_message,notes
+field,1,field,Field,Draco::fieldType,FieldLayoutObject,FieldLayoutObject,
+text,2,text,Text,Draco::textType,TextLayoutObject,TextLayoutObject,
+graphic,3,graphic,Graphic,Draco::graphicType,GraphicLayoutObject,GraphicLayoutObject,
+line,4,line,Line,Draco::lineType,ShapeLayoutObject,ShapeLayoutObject,shape subtype (inferred)
+rectangle,5,rectangle,Rect,Draco::rectType,ShapeLayoutObject,ShapeLayoutObject,shape subtype (inferred)
+rounded rectangle,6,rounded rectangle,RRect,Draco::rrectType,ShapeLayoutObject,ShapeLayoutObject,shape subtype (inferred)
+oval,7,oval,Oval,Draco::ovalType,ShapeLayoutObject,ShapeLayoutObject,shape subtype (inferred)
+group,8,group,,,GroupLayoutObject,GroupLayoutObject,no <Object type> string; groups nest objects
+button group,9,button group,GroupButton,Draco::groupButtonType,GroupLayoutObject or ButtonLayoutObject,,grouped button (legacy); class mapping unverified
+portal,10,portal,Portal,Draco::portalType,PortalLayoutObject,PortalLayoutObject,
+tab panel,11,tab panel,TabControl / TabPanel,Draco::tabControlType / Draco::tabPanelType,TabLayoutObject (TabLayoutObject::Panel),TabLayoutObject / TabPanelLayoutObject,
+web viewer,12,web viewer,ExternalObject,Draco::externalType,ExternalLayoutObject,ExternalLayoutObject,"external object; <ExternalObj typeID=... typeIndex=...> selects web viewer vs chart (typeID values unresolved)"
+external,13,external,ExternalObject,Draco::externalType,ExternalLayoutObject,ExternalLayoutObject,plug-in or other external object
+chart,14,chart,ExternalObject,Draco::externalType,ExternalLayoutObject,ExternalLayoutObject,"chart is an external object (inferred, same typeID mechanism)"
+button,15,button,Button,Draco::buttonType,ButtonLayoutObject / ScriptStepButtonLayoutObject,ButtonLayoutObject,
+slide panel,16,slide panel,SlideControl / SlidePanel,Draco::slideControlType / Draco::slidePanelType,DotLayoutObject (DotLayoutObject::Panel),DotLayoutObject / DotPanelLayoutObject,"""Dot"" = slide control dots"
+popover button,17,popover button,PopoverButton,Draco::popoverButtonType,PopoverButtonLayoutObject,PopoverButtonLayoutObject,
+popover,18,popover,Popover,Draco::popoverType,PopoverLayoutObject,PopoverLayoutObject,
+button bar,19,button bar,ButtonBar,Draco::segmentedBarType,SegmentedBarLayoutObject,SegmentedBarLayoutObject,"internally a ""segmented bar"""
+unknown,0,unknown,,,UnknownLayoutObject,,
+container (panel host),,,,,PanelContainerLayoutObject (PanelContainerLayoutObject::Panel),,base for tab/slide containers (inferred)
+(abstract) child-holding object,,,,,ContainerLayoutObject,,"base class with Add/Insert/Remove/ReparentChildren; parent of groups, portals, panels (inferred from methods); not the container field type"

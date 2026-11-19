@@ -1,0 +1,625 @@
+# scan setup: open 0 load 0 scan 0 commit 0; index:id=value (0-based): 0:6=5 1:7=0 2:76=0 3:7=0 4:76=0 5:7=0 6:76=0 7:75=0 8:103=0
+# scan reset: open 0 load 0 scan 0 commit 0; index:id=value (0-based): 0:6=5 1:23=0 2:16=1 3:76=0 4:76=0 5:75=0
+# scan stored: open 0 load 0 scan 0 commit 0; index:id=value (0-based): 0:16=1 1:103=0
+# scan tx: open 0 load 0 scan 0 commit 0; index:id=value (0-based): 0:89=0 1:89=0 2:86=0 3:1=0 4:141=0 5:141=0 6:68=8 7:223=0 8:70=0 9:205=26 10:141=0 11:68=14 12:76=0 13:141=0 14:69=17 15:76=0 16:141=0 17:70=0 18:68=21 19:75=0 20:141=0 21:125=24 22:16=4 23:141=0 24:70=0 25:141=0 26:206=26 27:141=0 28:1=0 29:103=0
+# scan tx skip: open 0 load 0 scan 0 commit 0; index:id=value (0-based): 0:89=0 1:86=0 2:1=0 3:141=0 4:141=0 5:205=22 6:141=0 7:68=10 8:76=0 9:141=0 10:69=13 11:76=0 12:141=0 13:70=0 14:68=17 15:75=0 16:141=0 17:125=20 18:16=4 19:141=0 20:70=0 21:141=0 22:206=22 23:141=0 24:1=0 25:103=0
+# scan plain: open 0 load 0 scan 0 commit 0; index:id=value (0-based): 0:89=0 1:89=0 2:86=0 3:1=0 4:141=0 5:141=0 6:68=8 7:76=0 8:69=10 9:76=0 10:70=0 11:141=0 12:68=14 13:75=0 14:125=16 15:16=4 16:125=18 17:75=0 18:70=0 19:141=0 20:51=0 21:1=0 22:103=0
+# scan: close 13
+setup		0	3	0
+>	1	setup	1	6	0	0	0	0
+>	1	setup	2	7	0	0	0	0
+>	1	setup	3	76	0	0	0	0
+>	1	setup	4	7	0	0	0	0
+>	1	setup	5	76	0	0	0	0
+>	1	setup	6	7	0	0	0	0
+>	1	setup	7	76	0	0	0	0
+>	1	setup	8	75	0	0	0	0
+>	1	setup	9	103	0	0	1	0
+tx	D\rcommit	0	open 0 / set 0 / leave 0/1 / in tx 1 / commit tx 507 open 0 | a=ok/ok sql ok/ok records 3	0
+>	1	tx	3	86	0	0	0	0
+>	1	tx	4	1	0	0	0	0
+>	2	reset	1	6	0	0	0	0
+>	2	reset	2	23	0	0	0	0
+>	2	reset	3	16	0	0	0	0
+>	2	reset	4	76	0	0	0	0
+>	2	reset	5	76	0	0	0	0
+>	2	reset	6	75	0	0	0	0
+>	1	tx	5	141	0	0	0	0
+>	1	tx	6	141	0	0	0	0
+>	1	tx	7	68	0	0	1	0
+>	1	tx	9	70	0	0	1	0
+>	1	tx	10	205	0	0	0	0
+>	1	tx	11	141	0	0	0	0
+>	1	tx	12	68	0	0	1	0
+>	1	tx	13	76	0	0	0	0
+>	1	tx	14	141	0	0	0	0
+>	1	tx	15	69	0	0	1	0
+>	1	tx	18	70	0	0	1	0
+>	1	tx	19	68	0	0	1	0
+>	1	tx	20	75	0	0	0	0
+>	1	tx	21	141	0	0	0	0
+>	1	tx	22	125	0	0	1	0
+>	1	tx	25	70	0	0	1	0
+>	1	tx	26	141	0	0	0	0
+>	1	tx	27	206	507	0	1	507
+>	1	tx	28	141	0	0	0	0
+>	1	tx	29	1	0	0	0	0
+>	2	stored	1	16	0	0	0	0
+>	2	stored	2	103	0	0	1	0
+>	1	tx	30	103	0	0	1	0
+tx	D\rnext	0	open 0 / set 0 / leave 0/2 / in tx 1 / commit tx 507 open 0 | a=ok/ok sql ok/ok records 3	0
+>	1	tx	3	86	0	0	0	0
+>	1	tx	4	1	0	0	0	0
+>	2	reset	1	6	0	0	0	0
+>	2	reset	2	23	0	0	0	0
+>	2	reset	3	16	0	0	0	0
+>	2	reset	4	76	0	0	0	0
+>	2	reset	5	76	0	0	0	0
+>	2	reset	6	75	0	0	0	0
+>	1	tx	5	141	0	0	0	0
+>	1	tx	6	141	0	0	0	0
+>	1	tx	7	68	0	0	1	0
+>	1	tx	9	70	0	0	1	0
+>	1	tx	10	205	0	0	0	0
+>	1	tx	11	141	0	0	0	0
+>	1	tx	12	68	0	0	1	0
+>	1	tx	13	76	0	0	0	0
+>	1	tx	14	141	0	0	0	0
+>	1	tx	15	69	0	0	1	0
+>	1	tx	18	70	0	0	1	0
+>	1	tx	19	68	0	0	1	0
+>	1	tx	22	125	0	0	1	0
+>	1	tx	23	16	0	0	0	0
+>	1	tx	24	141	0	0	0	0
+>	1	tx	25	70	0	0	1	0
+>	1	tx	26	141	0	0	0	0
+>	1	tx	27	206	507	0	1	507
+>	1	tx	28	141	0	0	0	0
+>	1	tx	29	1	0	0	0	0
+>	2	stored	1	16	0	0	0	0
+>	2	stored	2	103	0	0	1	0
+>	1	tx	30	103	0	0	1	0
+tx	D\rnone	0	open 0 / set 0 / in tx 1 / commit tx 507 open 0 | a=ok/ok sql ok/ok records 3	0
+>	1	tx	3	86	0	0	0	0
+>	1	tx	4	1	0	0	0	0
+>	2	reset	1	6	0	0	0	0
+>	2	reset	2	23	0	0	0	0
+>	2	reset	3	16	0	0	0	0
+>	2	reset	4	76	0	0	0	0
+>	2	reset	5	76	0	0	0	0
+>	2	reset	6	75	0	0	0	0
+>	1	tx	5	141	0	0	0	0
+>	1	tx	6	141	0	0	0	0
+>	1	tx	7	68	0	0	1	0
+>	1	tx	9	70	0	0	1	0
+>	1	tx	10	205	0	0	0	0
+>	1	tx	11	141	0	0	0	0
+>	1	tx	12	68	0	0	1	0
+>	1	tx	13	76	0	0	0	0
+>	1	tx	14	141	0	0	0	0
+>	1	tx	15	69	0	0	1	0
+>	1	tx	18	70	0	0	1	0
+>	1	tx	19	68	0	0	1	0
+>	1	tx	22	125	0	0	1	0
+>	1	tx	25	70	0	0	1	0
+>	1	tx	26	141	0	0	0	0
+>	1	tx	27	206	507	0	1	507
+>	1	tx	28	141	0	0	0	0
+>	1	tx	29	1	0	0	0	0
+>	2	stored	1	16	0	0	0	0
+>	2	stored	2	103	0	0	1	0
+>	1	tx	30	103	0	0	1	0
+tx	C\rcommit	0	open 0 / set 0 / leave 0/1 / in tx 1 / commit tx 507 open 0 | a=ok/ok sql ok/ok records 3	0
+>	1	tx	3	86	0	0	0	0
+>	1	tx	4	1	0	0	0	0
+>	2	reset	1	6	0	0	0	0
+>	2	reset	2	23	0	0	0	0
+>	2	reset	3	16	0	0	0	0
+>	2	reset	4	76	0	0	0	0
+>	2	reset	5	76	0	0	0	0
+>	2	reset	6	75	0	0	0	0
+>	1	tx	5	141	0	0	0	0
+>	1	tx	6	141	0	0	0	0
+>	1	tx	7	68	0	0	1	0
+>	1	tx	9	70	0	0	1	0
+>	1	tx	10	205	0	0	0	0
+>	1	tx	11	141	0	0	0	0
+>	1	tx	12	68	0	0	1	0
+>	1	tx	15	69	0	0	1	0
+>	1	tx	16	76	0	0	0	0
+>	1	tx	17	141	0	0	0	0
+>	1	tx	18	70	0	0	1	0
+>	1	tx	19	68	0	0	1	0
+>	1	tx	20	75	0	0	0	0
+>	1	tx	21	141	0	0	0	0
+>	1	tx	22	125	0	0	1	0
+>	1	tx	25	70	0	0	1	0
+>	1	tx	26	141	0	0	0	0
+>	1	tx	27	206	507	0	1	507
+>	1	tx	28	141	0	0	0	0
+>	1	tx	29	1	0	0	0	0
+>	2	stored	1	16	0	0	0	0
+>	2	stored	2	103	0	0	1	0
+>	1	tx	30	103	0	0	1	0
+tx	C\rnext	0	open 0 / set 0 / leave 0/2 / in tx 1 / commit tx 507 open 0 | a=ok/ok sql ok/ok records 3	0
+>	1	tx	3	86	0	0	0	0
+>	1	tx	4	1	0	0	0	0
+>	2	reset	1	6	0	0	0	0
+>	2	reset	2	23	0	0	0	0
+>	2	reset	3	16	0	0	0	0
+>	2	reset	4	76	0	0	0	0
+>	2	reset	5	76	0	0	0	0
+>	2	reset	6	75	0	0	0	0
+>	1	tx	5	141	0	0	0	0
+>	1	tx	6	141	0	0	0	0
+>	1	tx	7	68	0	0	1	0
+>	1	tx	9	70	0	0	1	0
+>	1	tx	10	205	0	0	0	0
+>	1	tx	11	141	0	0	0	0
+>	1	tx	12	68	0	0	1	0
+>	1	tx	15	69	0	0	1	0
+>	1	tx	16	76	0	0	0	0
+>	1	tx	17	141	0	0	0	0
+>	1	tx	18	70	0	0	1	0
+>	1	tx	19	68	0	0	1	0
+>	1	tx	22	125	0	0	1	0
+>	1	tx	23	16	0	0	0	0
+>	1	tx	24	141	0	0	0	0
+>	1	tx	25	70	0	0	1	0
+>	1	tx	26	141	0	0	0	0
+>	1	tx	27	206	507	0	1	507
+>	1	tx	28	141	0	0	0	0
+>	1	tx	29	1	0	0	0	0
+>	2	stored	1	16	0	0	0	0
+>	2	stored	2	103	0	0	1	0
+>	1	tx	30	103	0	0	1	0
+tx	C\rnone	0	open 0 / set 0 / in tx 1 / commit tx 507 open 0 | a=ok/ok sql ok/ok records 3	0
+>	1	tx	3	86	0	0	0	0
+>	1	tx	4	1	0	0	0	0
+>	2	reset	1	6	0	0	0	0
+>	2	reset	2	23	0	0	0	0
+>	2	reset	3	16	0	0	0	0
+>	2	reset	4	76	0	0	0	0
+>	2	reset	5	76	0	0	0	0
+>	2	reset	6	75	0	0	0	0
+>	1	tx	5	141	0	0	0	0
+>	1	tx	6	141	0	0	0	0
+>	1	tx	7	68	0	0	1	0
+>	1	tx	9	70	0	0	1	0
+>	1	tx	10	205	0	0	0	0
+>	1	tx	11	141	0	0	0	0
+>	1	tx	12	68	0	0	1	0
+>	1	tx	15	69	0	0	1	0
+>	1	tx	16	76	0	0	0	0
+>	1	tx	17	141	0	0	0	0
+>	1	tx	18	70	0	0	1	0
+>	1	tx	19	68	0	0	1	0
+>	1	tx	22	125	0	0	1	0
+>	1	tx	25	70	0	0	1	0
+>	1	tx	26	141	0	0	0	0
+>	1	tx	27	206	507	0	1	507
+>	1	tx	28	141	0	0	0	0
+>	1	tx	29	1	0	0	0	0
+>	2	stored	1	16	0	0	0	0
+>	2	stored	2	103	0	0	1	0
+>	1	tx	30	103	0	0	1	0
+tx	D\rcommit\rkeep	0	open 0 / set 0 / leave 0/1 / in tx 1 / commit tx 507 open 0 | a=ok/ok sql ok/ok records 3	0
+>	1	tx	3	86	0	0	0	0
+>	1	tx	4	1	0	0	0	0
+>	2	reset	1	6	0	0	0	0
+>	2	reset	2	23	0	0	0	0
+>	2	reset	3	16	0	0	0	0
+>	2	reset	4	76	0	0	0	0
+>	2	reset	5	76	0	0	0	0
+>	2	reset	6	75	0	0	0	0
+>	1	tx	5	141	0	0	0	0
+>	1	tx	6	141	0	0	0	0
+>	1	tx	7	68	0	0	1	0
+>	1	tx	8	223	0	0	0	0
+>	1	tx	9	70	0	0	1	0
+>	1	tx	10	205	0	0	0	0
+>	1	tx	11	141	0	0	0	0
+>	1	tx	12	68	0	0	1	0
+>	1	tx	13	76	0	0	0	0
+>	1	tx	14	141	0	0	0	0
+>	1	tx	15	69	0	0	1	0
+>	1	tx	18	70	0	0	1	0
+>	1	tx	19	68	0	0	1	0
+>	1	tx	20	75	0	0	0	0
+>	1	tx	21	141	0	0	0	0
+>	1	tx	22	125	0	0	1	0
+>	1	tx	25	70	0	0	1	0
+>	1	tx	26	141	0	0	0	0
+>	1	tx	27	206	507	0	1	507
+>	1	tx	28	141	0	0	0	0
+>	1	tx	29	1	0	0	0	0
+>	2	stored	1	16	0	0	0	0
+>	2	stored	2	103	0	0	1	0
+>	1	tx	30	103	0	0	1	0
+tx	D\rnext\rkeep	0	open 0 / set 0 / leave 0/2 / in tx 1 / commit tx 507 open 0 | a=ok/ok sql ok/ok records 3	0
+>	1	tx	3	86	0	0	0	0
+>	1	tx	4	1	0	0	0	0
+>	2	reset	1	6	0	0	0	0
+>	2	reset	2	23	0	0	0	0
+>	2	reset	3	16	0	0	0	0
+>	2	reset	4	76	0	0	0	0
+>	2	reset	5	76	0	0	0	0
+>	2	reset	6	75	0	0	0	0
+>	1	tx	5	141	0	0	0	0
+>	1	tx	6	141	0	0	0	0
+>	1	tx	7	68	0	0	1	0
+>	1	tx	8	223	0	0	0	0
+>	1	tx	9	70	0	0	1	0
+>	1	tx	10	205	0	0	0	0
+>	1	tx	11	141	0	0	0	0
+>	1	tx	12	68	0	0	1	0
+>	1	tx	13	76	0	0	0	0
+>	1	tx	14	141	0	0	0	0
+>	1	tx	15	69	0	0	1	0
+>	1	tx	18	70	0	0	1	0
+>	1	tx	19	68	0	0	1	0
+>	1	tx	22	125	0	0	1	0
+>	1	tx	23	16	0	0	0	0
+>	1	tx	24	141	0	0	0	0
+>	1	tx	25	70	0	0	1	0
+>	1	tx	26	141	0	0	0	0
+>	1	tx	27	206	507	0	1	507
+>	1	tx	28	141	0	0	0	0
+>	1	tx	29	1	0	0	0	0
+>	2	stored	1	16	0	0	0	0
+>	2	stored	2	103	0	0	1	0
+>	1	tx	30	103	0	0	1	0
+tx	D\rnone\rkeep	0	open 0 / set 0 / in tx 1 / commit tx 507 open 0 | a=ok/ok sql ok/ok records 3	0
+>	1	tx	3	86	0	0	0	0
+>	1	tx	4	1	0	0	0	0
+>	2	reset	1	6	0	0	0	0
+>	2	reset	2	23	0	0	0	0
+>	2	reset	3	16	0	0	0	0
+>	2	reset	4	76	0	0	0	0
+>	2	reset	5	76	0	0	0	0
+>	2	reset	6	75	0	0	0	0
+>	1	tx	5	141	0	0	0	0
+>	1	tx	6	141	0	0	0	0
+>	1	tx	7	68	0	0	1	0
+>	1	tx	8	223	0	0	0	0
+>	1	tx	9	70	0	0	1	0
+>	1	tx	10	205	0	0	0	0
+>	1	tx	11	141	0	0	0	0
+>	1	tx	12	68	0	0	1	0
+>	1	tx	13	76	0	0	0	0
+>	1	tx	14	141	0	0	0	0
+>	1	tx	15	69	0	0	1	0
+>	1	tx	18	70	0	0	1	0
+>	1	tx	19	68	0	0	1	0
+>	1	tx	22	125	0	0	1	0
+>	1	tx	25	70	0	0	1	0
+>	1	tx	26	141	0	0	0	0
+>	1	tx	27	206	507	0	1	507
+>	1	tx	28	141	0	0	0	0
+>	1	tx	29	1	0	0	0	0
+>	2	stored	1	16	0	0	0	0
+>	2	stored	2	103	0	0	1	0
+>	1	tx	30	103	0	0	1	0
+tx	C\rcommit\rkeep	0	open 0 / set 0 / leave 0/1 / in tx 1 / commit tx 507 open 0 | a=ok/ok sql ok/ok records 3	0
+>	1	tx	3	86	0	0	0	0
+>	1	tx	4	1	0	0	0	0
+>	2	reset	1	6	0	0	0	0
+>	2	reset	2	23	0	0	0	0
+>	2	reset	3	16	0	0	0	0
+>	2	reset	4	76	0	0	0	0
+>	2	reset	5	76	0	0	0	0
+>	2	reset	6	75	0	0	0	0
+>	1	tx	5	141	0	0	0	0
+>	1	tx	6	141	0	0	0	0
+>	1	tx	7	68	0	0	1	0
+>	1	tx	8	223	0	0	0	0
+>	1	tx	9	70	0	0	1	0
+>	1	tx	10	205	0	0	0	0
+>	1	tx	11	141	0	0	0	0
+>	1	tx	12	68	0	0	1	0
+>	1	tx	15	69	0	0	1	0
+>	1	tx	16	76	0	0	0	0
+>	1	tx	17	141	0	0	0	0
+>	1	tx	18	70	0	0	1	0
+>	1	tx	19	68	0	0	1	0
+>	1	tx	20	75	0	0	0	0
+>	1	tx	21	141	0	0	0	0
+>	1	tx	22	125	0	0	1	0
+>	1	tx	25	70	0	0	1	0
+>	1	tx	26	141	0	0	0	0
+>	1	tx	27	206	507	0	1	507
+>	1	tx	28	141	0	0	0	0
+>	1	tx	29	1	0	0	0	0
+>	2	stored	1	16	0	0	0	0
+>	2	stored	2	103	0	0	1	0
+>	1	tx	30	103	0	0	1	0
+tx	C\rnone\rkeep	0	open 0 / set 0 / in tx 1 / commit tx 507 open 0 | a=ok/ok sql ok/ok records 3	0
+>	1	tx	3	86	0	0	0	0
+>	1	tx	4	1	0	0	0	0
+>	2	reset	1	6	0	0	0	0
+>	2	reset	2	23	0	0	0	0
+>	2	reset	3	16	0	0	0	0
+>	2	reset	4	76	0	0	0	0
+>	2	reset	5	76	0	0	0	0
+>	2	reset	6	75	0	0	0	0
+>	1	tx	5	141	0	0	0	0
+>	1	tx	6	141	0	0	0	0
+>	1	tx	7	68	0	0	1	0
+>	1	tx	8	223	0	0	0	0
+>	1	tx	9	70	0	0	1	0
+>	1	tx	10	205	0	0	0	0
+>	1	tx	11	141	0	0	0	0
+>	1	tx	12	68	0	0	1	0
+>	1	tx	15	69	0	0	1	0
+>	1	tx	16	76	0	0	0	0
+>	1	tx	17	141	0	0	0	0
+>	1	tx	18	70	0	0	1	0
+>	1	tx	19	68	0	0	1	0
+>	1	tx	22	125	0	0	1	0
+>	1	tx	25	70	0	0	1	0
+>	1	tx	26	141	0	0	0	0
+>	1	tx	27	206	507	0	1	507
+>	1	tx	28	141	0	0	0	0
+>	1	tx	29	1	0	0	0	0
+>	2	stored	1	16	0	0	0	0
+>	2	stored	2	103	0	0	1	0
+>	1	tx	30	103	0	0	1	0
+tx skip	D\rcommit	0	open 0 / set 0 / leave 0/1 / in tx 1 / commit tx 507 open 0 | a=ok/ok sql ok/ok records 3	0
+>	1	tx skip	2	86	0	0	0	0
+>	1	tx skip	3	1	0	0	0	0
+>	2	reset	1	6	0	0	0	0
+>	2	reset	2	23	0	0	0	0
+>	2	reset	3	16	0	0	0	0
+>	2	reset	4	76	0	0	0	0
+>	2	reset	5	76	0	0	0	0
+>	2	reset	6	75	0	0	0	0
+>	1	tx skip	4	141	0	0	0	0
+>	1	tx skip	5	141	0	0	0	0
+>	1	tx skip	6	205	0	0	0	0
+>	1	tx skip	7	141	0	0	0	0
+>	1	tx skip	8	68	0	0	1	0
+>	1	tx skip	9	76	0	0	0	0
+>	1	tx skip	10	141	0	0	0	0
+>	1	tx skip	11	69	0	0	1	0
+>	1	tx skip	14	70	0	0	1	0
+>	1	tx skip	15	68	0	0	1	0
+>	1	tx skip	16	75	0	0	0	0
+>	1	tx skip	17	141	0	0	0	0
+>	1	tx skip	18	125	0	0	1	0
+>	1	tx skip	21	70	0	0	1	0
+>	1	tx skip	22	141	0	0	0	0
+>	1	tx skip	23	206	507	0	1	507
+>	1	tx skip	24	141	0	0	0	0
+>	1	tx skip	25	1	0	0	0	0
+>	2	stored	1	16	0	0	0	0
+>	2	stored	2	103	0	0	1	0
+>	1	tx skip	26	103	0	0	1	0
+tx skip	D\rnext	0	open 0 / set 0 / leave 0/2 / in tx 1 / commit tx 507 open 0 | a=ok/ok sql ok/ok records 3	0
+>	1	tx skip	2	86	0	0	0	0
+>	1	tx skip	3	1	0	0	0	0
+>	2	reset	1	6	0	0	0	0
+>	2	reset	2	23	0	0	0	0
+>	2	reset	3	16	0	0	0	0
+>	2	reset	4	76	0	0	0	0
+>	2	reset	5	76	0	0	0	0
+>	2	reset	6	75	0	0	0	0
+>	1	tx skip	4	141	0	0	0	0
+>	1	tx skip	5	141	0	0	0	0
+>	1	tx skip	6	205	0	0	0	0
+>	1	tx skip	7	141	0	0	0	0
+>	1	tx skip	8	68	0	0	1	0
+>	1	tx skip	9	76	0	0	0	0
+>	1	tx skip	10	141	0	0	0	0
+>	1	tx skip	11	69	0	0	1	0
+>	1	tx skip	14	70	0	0	1	0
+>	1	tx skip	15	68	0	0	1	0
+>	1	tx skip	18	125	0	0	1	0
+>	1	tx skip	19	16	0	0	0	0
+>	1	tx skip	20	141	0	0	0	0
+>	1	tx skip	21	70	0	0	1	0
+>	1	tx skip	22	141	0	0	0	0
+>	1	tx skip	23	206	507	0	1	507
+>	1	tx skip	24	141	0	0	0	0
+>	1	tx skip	25	1	0	0	0	0
+>	2	stored	1	16	0	0	0	0
+>	2	stored	2	103	0	0	1	0
+>	1	tx skip	26	103	0	0	1	0
+tx skip	D\rnone	0	open 0 / set 0 / in tx 1 / commit tx 507 open 0 | a=ok/ok sql ok/ok records 3	0
+>	1	tx skip	2	86	0	0	0	0
+>	1	tx skip	3	1	0	0	0	0
+>	2	reset	1	6	0	0	0	0
+>	2	reset	2	23	0	0	0	0
+>	2	reset	3	16	0	0	0	0
+>	2	reset	4	76	0	0	0	0
+>	2	reset	5	76	0	0	0	0
+>	2	reset	6	75	0	0	0	0
+>	1	tx skip	4	141	0	0	0	0
+>	1	tx skip	5	141	0	0	0	0
+>	1	tx skip	6	205	0	0	0	0
+>	1	tx skip	7	141	0	0	0	0
+>	1	tx skip	8	68	0	0	1	0
+>	1	tx skip	9	76	0	0	0	0
+>	1	tx skip	10	141	0	0	0	0
+>	1	tx skip	11	69	0	0	1	0
+>	1	tx skip	14	70	0	0	1	0
+>	1	tx skip	15	68	0	0	1	0
+>	1	tx skip	18	125	0	0	1	0
+>	1	tx skip	21	70	0	0	1	0
+>	1	tx skip	22	141	0	0	0	0
+>	1	tx skip	23	206	507	0	1	507
+>	1	tx skip	24	141	0	0	0	0
+>	1	tx skip	25	1	0	0	0	0
+>	2	stored	1	16	0	0	0	0
+>	2	stored	2	103	0	0	1	0
+>	1	tx skip	26	103	0	0	1	0
+tx skip	C\rcommit	0	open 0 / set 0 / leave 0/1 / in tx 1 / commit tx 0 open 0 | a=ok/toolong sql ok/toolong records 3	0
+>	1	tx skip	2	86	0	0	0	0
+>	1	tx skip	3	1	0	0	0	0
+>	2	reset	1	6	0	0	0	0
+>	2	reset	2	23	0	0	0	0
+>	2	reset	3	16	0	0	0	0
+>	2	reset	4	76	0	0	0	0
+>	2	reset	5	76	0	0	0	0
+>	2	reset	6	75	0	0	0	0
+>	1	tx skip	4	141	0	0	0	0
+>	1	tx skip	5	141	0	0	0	0
+>	1	tx skip	6	205	0	0	0	0
+>	1	tx skip	7	141	0	0	0	0
+>	1	tx skip	8	68	0	0	1	0
+>	1	tx skip	11	69	0	0	1	0
+>	1	tx skip	12	76	0	0	0	0
+>	1	tx skip	13	141	0	0	0	0
+>	1	tx skip	14	70	0	0	1	0
+>	1	tx skip	15	68	0	0	1	0
+>	1	tx skip	16	75	0	0	0	0
+>	1	tx skip	17	141	0	0	0	0
+>	1	tx skip	18	125	0	0	1	0
+>	1	tx skip	21	70	0	0	1	0
+>	1	tx skip	22	141	0	0	0	0
+>	1	tx skip	23	206	0	0	0	0
+>	1	tx skip	24	141	0	0	0	0
+>	1	tx skip	25	1	0	0	0	0
+>	2	stored	1	16	0	0	0	0
+>	2	stored	2	103	0	0	1	0
+>	1	tx skip	26	103	0	0	1	0
+plain	D\rcommit	0	set 0 / leave 507/1 | a=ok/ok sql ok/ok records 3	0
+>	1	plain	3	86	0	0	0	0
+>	1	plain	4	1	0	0	0	0
+>	2	reset	1	6	0	0	0	0
+>	2	reset	2	23	0	0	0	0
+>	2	reset	3	16	0	0	0	0
+>	2	reset	4	76	0	0	0	0
+>	2	reset	5	76	0	0	0	0
+>	2	reset	6	75	0	0	0	0
+>	1	plain	5	141	0	0	0	0
+>	1	plain	6	141	0	0	0	0
+>	1	plain	7	68	0	0	1	0
+>	1	plain	8	76	0	0	0	0
+>	1	plain	9	69	0	0	1	0
+>	1	plain	11	70	0	0	1	0
+>	1	plain	12	141	0	0	0	0
+>	1	plain	13	68	0	0	1	0
+!	507	work : plain : 14 : Commit Records/Requests
+>	1	plain	14	75	1	0	0	507
+>	1	plain	15	125	0	0	1	507
+>	1	plain	19	70	0	0	1	507
+>	1	plain	20	141	0	0	0	0
+>	1	plain	21	51	0	0	0	0
+>	1	plain	22	1	0	0	0	0
+>	2	stored	1	16	0	0	0	0
+>	2	stored	2	103	0	0	1	0
+>	1	plain	23	103	0	0	1	0
+plain	D\rnext	0	set 0 / leave 507/1 | a=ok/ok sql ok/ok records 3	0
+>	1	plain	3	86	0	0	0	0
+>	1	plain	4	1	0	0	0	0
+>	2	reset	1	6	0	0	0	0
+>	2	reset	2	23	0	0	0	0
+>	2	reset	3	16	0	0	0	0
+>	2	reset	4	76	0	0	0	0
+>	2	reset	5	76	0	0	0	0
+>	2	reset	6	75	0	0	0	0
+>	1	plain	5	141	0	0	0	0
+>	1	plain	6	141	0	0	0	0
+>	1	plain	7	68	0	0	1	0
+>	1	plain	8	76	0	0	0	0
+>	1	plain	9	69	0	0	1	0
+>	1	plain	11	70	0	0	1	0
+>	1	plain	12	141	0	0	0	0
+>	1	plain	13	68	0	0	1	0
+>	1	plain	15	125	0	0	1	0
+!	507	work : plain : 16 : Go to Record/Request/Page
+>	1	plain	16	16	1	0	0	507
+>	1	plain	17	125	0	0	1	507
+>	1	plain	19	70	0	0	1	507
+>	1	plain	20	141	0	0	0	0
+>	1	plain	21	51	0	0	0	0
+>	1	plain	22	1	0	0	0	0
+>	2	stored	1	16	0	0	0	0
+>	2	stored	2	103	0	0	1	0
+>	1	plain	23	103	0	0	1	0
+plain	D\rskip	0	set 0 / leave 507/1 | a=ok/ok sql ok/ok records 3	0
+>	1	plain	3	86	0	0	0	0
+>	1	plain	4	1	0	0	0	0
+>	2	reset	1	6	0	0	0	0
+>	2	reset	2	23	0	0	0	0
+>	2	reset	3	16	0	0	0	0
+>	2	reset	4	76	0	0	0	0
+>	2	reset	5	76	0	0	0	0
+>	2	reset	6	75	0	0	0	0
+>	1	plain	5	141	0	0	0	0
+>	1	plain	6	141	0	0	0	0
+>	1	plain	7	68	0	0	1	0
+>	1	plain	8	76	0	0	0	0
+>	1	plain	9	69	0	0	1	0
+>	1	plain	11	70	0	0	1	0
+>	1	plain	12	141	0	0	0	0
+>	1	plain	13	68	0	0	1	0
+>	1	plain	15	125	0	0	1	0
+>	1	plain	17	125	0	0	1	0
+!	507	work : plain : 18 : Commit Records/Requests
+>	1	plain	18	75	1	0	0	507
+>	1	plain	19	70	0	0	1	507
+>	1	plain	20	141	0	0	0	0
+>	1	plain	21	51	0	0	0	0
+>	1	plain	22	1	0	0	0	0
+>	2	stored	1	16	0	0	0	0
+>	2	stored	2	103	0	0	1	0
+>	1	plain	23	103	0	0	1	0
+plain	C\rcommit	0	set 0 / leave 507/1 | a=ok/ok sql ok/ok records 3	0
+>	1	plain	3	86	0	0	0	0
+>	1	plain	4	1	0	0	0	0
+>	2	reset	1	6	0	0	0	0
+>	2	reset	2	23	0	0	0	0
+>	2	reset	3	16	0	0	0	0
+>	2	reset	4	76	0	0	0	0
+>	2	reset	5	76	0	0	0	0
+>	2	reset	6	75	0	0	0	0
+>	1	plain	5	141	0	0	0	0
+>	1	plain	6	141	0	0	0	0
+>	1	plain	7	68	0	0	1	0
+>	1	plain	9	69	0	0	1	0
+>	1	plain	10	76	0	0	0	0
+>	1	plain	11	70	0	0	1	0
+>	1	plain	12	141	0	0	0	0
+>	1	plain	13	68	0	0	1	0
+!	507	work : plain : 14 : Commit Records/Requests
+>	1	plain	14	75	1	0	0	507
+>	1	plain	15	125	0	0	1	507
+>	1	plain	19	70	0	0	1	507
+>	1	plain	20	141	0	0	0	0
+>	1	plain	21	51	0	0	0	0
+>	1	plain	22	1	0	0	0	0
+>	2	stored	1	16	0	0	0	0
+>	2	stored	2	103	0	0	1	0
+>	1	plain	23	103	0	0	1	0
+plain	C\rnext	0	set 0 / leave 507/1 | a=ok/ok sql ok/ok records 3	0
+>	1	plain	3	86	0	0	0	0
+>	1	plain	4	1	0	0	0	0
+>	2	reset	1	6	0	0	0	0
+>	2	reset	2	23	0	0	0	0
+>	2	reset	3	16	0	0	0	0
+>	2	reset	4	76	0	0	0	0
+>	2	reset	5	76	0	0	0	0
+>	2	reset	6	75	0	0	0	0
+>	1	plain	5	141	0	0	0	0
+>	1	plain	6	141	0	0	0	0
+>	1	plain	7	68	0	0	1	0
+>	1	plain	9	69	0	0	1	0
+>	1	plain	10	76	0	0	0	0
+>	1	plain	11	70	0	0	1	0
+>	1	plain	12	141	0	0	0	0
+>	1	plain	13	68	0	0	1	0
+>	1	plain	15	125	0	0	1	0
+!	507	work : plain : 16 : Go to Record/Request/Page
+>	1	plain	16	16	1	0	0	507
+>	1	plain	17	125	0	0	1	507
+>	1	plain	19	70	0	0	1	507
+>	1	plain	20	141	0	0	0	0
+>	1	plain	21	51	0	0	0	0
+>	1	plain	22	1	0	0	0	0
+>	2	stored	1	16	0	0	0	0
+>	2	stored	2	103	0	0	1	0
+>	1	plain	23	103	0	0	1	0
+stored		0	a=ok/ok sql ok/ok records 3	0
+>	1	stored	1	16	0	0	0	0
+>	1	stored	2	103	0	0	1	0

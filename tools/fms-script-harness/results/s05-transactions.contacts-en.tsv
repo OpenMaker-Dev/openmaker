@@ -1,0 +1,191 @@
+# scan tx basic: open 0 load 0 scan 0 commit 0; index:id=value (0-based): 0:141=0 1:141=0 2:205=6 3:141=0 4:7=0 5:76=0 6:206=6 7:141=0 8:103=0
+# scan tx commit without open: open 0 load 0 scan 3702 commit 0; index:id=value (0-based): 0:206=0 1:141=0 2:207=0 3:141=0 4:207=0 5:103=0
+# scan warning: ScanScript error 3702 for tx commit without open (unbalanced blocks)
+# scan tx open twice: open 0 load 0 scan 3702 commit 0; index:id=value (0-based): 0:205=0 1:205=0 2:141=0 3:206=0 4:103=0
+# scan warning: ScanScript error 3702 for tx open twice (unbalanced blocks)
+# scan tx open in sub: open 0 load 0 scan 0 commit 0; index:id=value (0-based): 0:205=4 1:1=0 2:141=0 3:141=0 4:206=4 5:103=0
+# scan tx sub open commit: open 0 load 0 scan 0 commit 0; index:id=value (0-based): 0:141=0 1:205=3 2:141=0 3:206=3 4:141=0 5:103=0
+# scan tx revert custom: open 0 load 0 scan 0 commit 0; index:id=value (0-based): 0:141=0 1:205=6 2:7=0 3:76=0 4:207=0 5:141=0 6:206=6 7:103=0
+# scan tx revert code out of range: open 0 load 0 scan 0 commit 0; index:id=value (0-based): 0:205=2 1:207=0 2:206=2 3:141=0 4:205=6 5:207=0 6:206=6 7:103=0
+# scan tx revert plain: open 0 load 0 scan 0 commit 0; index:id=value (0-based): 0:141=0 1:205=5 2:7=0 3:207=0 4:141=0 5:206=5 6:103=0
+# scan tx revert condition: open 0 load 0 scan 0 commit 0; index:id=value (0-based): 0:141=0 1:205=5 2:7=0 3:207=0 4:141=0 5:206=5 6:103=0
+# scan tx error revert on: open 0 load 0 scan 0 commit 0; index:id=value (0-based): 0:141=0 1:141=0 2:205=6 3:7=0 4:1=0 5:141=0 6:206=6 7:103=0
+# scan tx error revert off: open 0 load 0 scan 0 commit 0; index:id=value (0-based): 0:141=0 1:223=0 2:141=0 3:205=7 4:7=0 5:1=0 6:141=0 7:206=7 8:103=0
+# scan tx error in sub: open 0 load 0 scan 0 commit 0; index:id=value (0-based): 0:141=0 1:205=5 2:7=0 3:1=0 4:141=0 5:206=5 6:103=0
+# scan tx sub fails: open 0 load 0 scan 0 commit 0; index:id=value (0-based): 0:1=0 1:141=0 2:103=0
+# scan tx sub commits: open 0 load 0 scan 0 commit 0; index:id=value (0-based): 0:141=0 1:205=6 2:7=0 3:1=0 4:141=0 5:141=0 6:206=6 7:103=0
+# scan tx sub commit: open 0 load 0 scan 3702 commit 0; index:id=value (0-based): 0:206=0 1:103=0
+# scan warning: ScanScript error 3702 for tx sub commit (unbalanced blocks)
+# scan tx sub reverts: open 0 load 0 scan 0 commit 0; index:id=value (0-based): 0:141=0 1:205=5 2:7=0 3:1=0 4:141=0 5:206=5 6:103=0
+# scan tx sub revert: open 0 load 0 scan 0 commit 0; index:id=value (0-based): 0:207=0 1:141=0
+# scan tx halt inside: open 0 load 0 scan 3702 commit 0; index:id=value (0-based): 0:205=0 1:7=0 2:76=0 3:90=0
+# scan warning: ScanScript error 3702 for tx halt inside (unbalanced blocks)
+# scan tx exit inside: open 0 load 0 scan 3702 commit 0; index:id=value (0-based): 0:205=0 1:7=0 2:76=0 3:103=0
+# scan warning: ScanScript error 3702 for tx exit inside (unbalanced blocks)
+# scan tx end inside: open 0 load 0 scan 3702 commit 0; index:id=value (0-based): 0:205=0 1:7=0 2:76=0
+# scan warning: ScanScript error 3702 for tx end inside (unbalanced blocks)
+# scan tx exit loop past commit: open 0 load 0 scan 0 commit 0; index:id=value (0-based): 0:141=0 1:71=6 2:205=5 3:7=0 4:72=6 5:206=5 6:73=1 7:103=0
+# scan tx count: open 0 load 0 scan 0 commit 0; index:id=value (0-based): 0:103=0
+# scan: close 13
+tx count		0	0 	0
+>	1	tx count	1	103	0	0	1	0
+tx basic		0	0\r0\r1\r0\r1\r0	0	0
+>	1	tx basic	1	141	0	0	0	0
+>	1	tx basic	2	141	0	0	0	0
+>	1	tx basic	3	205	0	0	0	0
+>	1	tx basic	4	141	0	0	0	0
+>	1	tx basic	5	7	0	0	0	0
+>	1	tx basic	6	76	0	0	0	0
+>	1	tx basic	7	206	0	0	0	0
+>	1	tx basic	8	141	0	0	0	0
+>	1	tx basic	9	103	0	0	1	0
+tx commit without open		3	3,3,3	3	3
+>	1	tx commit without open	1	206	3	0	1	3
+>	1	tx commit without open	2	141	0	0	0	0
+!	3	work : tx commit without open : 3 : Revert Transaction
+>	1	tx commit without open	3	207	3	0	0	3
+>	1	tx commit without open	4	141	0	0	0	0
+!	3	work : tx commit without open : 5 : Revert Transaction
+>	1	tx commit without open	5	207	3	0	0	3
+>	1	tx commit without open	6	103	0	0	1	3
+tx open twice		0	3,0,0	0	0
+>	1	tx open twice	1	205	0	0	0	0
+!	3	work : tx open twice : 2 : Open Transaction
+>	1	tx open twice	2	205	3	0	0	3
+>	1	tx open twice	3	141	0	0	0	0
+>	1	tx open twice	4	206	0	0	0	0
+>	1	tx open twice	5	103	0	0	1	0
+tx open in sub		0	1,3,3 | 1,0	0	0
+>	1	tx open in sub	1	205	0	0	0	0
+>	1	tx open in sub	2	1	0	0	0	0
+>	2	tx sub open commit	1	141	0	0	0	0
+!	3	work : tx sub open commit : 2 : Open Transaction
+>	2	tx sub open commit	2	205	3	0	0	3
+>	2	tx sub open commit	3	141	0	0	0	0
+>	2	tx sub open commit	4	206	3	0	1	3
+>	2	tx sub open commit	5	141	0	0	0	0
+>	2	tx sub open commit	6	103	0	0	1	0
+>	1	tx open in sub	3	141	0	0	0	0
+>	1	tx open in sub	4	141	0	0	0	0
+>	1	tx open in sub	5	206	0	0	0	0
+>	1	tx open in sub	6	103	0	0	1	0
+tx revert custom		5001	5001\rtx revert custom\rRevert Transaction\r5\rcustom message\rtx revert custom/Commit Transaction/7\r[]\r1\r1	5001	5001	tx revert custom\rRevert Transaction\r5\rcustom message	tx revert custom\rCommit Transaction\r7
+>	1	tx revert custom	1	141	0	0	0	0
+>	1	tx revert custom	2	205	0	0	0	0
+>	1	tx revert custom	3	7	0	0	0	0
+>	1	tx revert custom	4	76	0	0	0	0
+>	1	tx revert custom	5	207	0	0	0	0
+>	1	tx revert custom	6	141	0	0	1	0
+!	5001	work : tx revert custom : 7 : Commit Transaction
+>	1	tx revert custom	7	206	5001	0	0	5001
+>	1	tx revert custom	8	103	0	0	1	5001
+tx revert code out of range		0	0,0	0	0
+>	1	tx revert code out of range	1	205	0	0	0	0
+>	1	tx revert code out of range	2	207	0	0	0	0
+>	1	tx revert code out of range	3	206	0	0	0	0
+>	1	tx revert code out of range	4	141	0	0	0	0
+>	1	tx revert code out of range	5	205	0	0	0	0
+>	1	tx revert code out of range	6	207	0	0	0	0
+>	1	tx revert code out of range	7	206	0	0	0	0
+>	1	tx revert code out of range	8	103	0	0	1	0
+tx revert plain		0	0\r[]\r1\r1	0	0
+>	1	tx revert plain	1	141	0	0	0	0
+>	1	tx revert plain	2	205	0	0	0	0
+>	1	tx revert plain	3	7	0	0	0	0
+>	1	tx revert plain	4	207	0	0	0	0
+>	1	tx revert plain	5	141	0	0	1	0
+>	1	tx revert plain	6	206	0	0	0	0
+>	1	tx revert plain	7	103	0	0	1	0
+tx revert condition		0	0\r0\r1\r2	0	0
+>	1	tx revert condition	1	141	0	0	0	0
+>	1	tx revert condition	2	205	0	0	0	0
+>	1	tx revert condition	3	7	0	0	0	0
+>	1	tx revert condition	4	207	0	0	0	0
+>	1	tx revert condition	5	141	0	0	0	0
+>	1	tx revert condition	6	206	0	0	0	0
+>	1	tx revert condition	7	103	0	0	1	0
+tx error revert on		0	1\r0\r[not skipped]\r2\r3	0	0	
+>	1	tx error revert on	1	141	0	0	0	0
+>	1	tx error revert on	2	141	0	0	0	0
+>	1	tx error revert on	3	205	0	0	0	0
+>	1	tx error revert on	4	7	0	0	0	0
+!	104	work : tx error revert on : 5 : Perform Script
+>	1	tx error revert on	5	1	104	0	0	104
+>	1	tx error revert on	6	141	0	0	0	0
+>	1	tx error revert on	7	206	0	0	0	0
+>	1	tx error revert on	8	103	0	0	1	0
+tx error revert off		0	0\r0\r[not skipped]\r3\r4	0	0	1
+>	1	tx error revert off	1	141	0	0	0	0
+>	1	tx error revert off	2	223	0	0	0	0
+>	1	tx error revert off	3	141	0	0	0	0
+>	1	tx error revert off	4	205	0	0	0	0
+>	1	tx error revert off	5	7	0	0	0	0
+!	104	work : tx error revert off : 6 : Perform Script
+>	1	tx error revert off	6	1	104	0	0	104
+>	1	tx error revert off	7	141	0	0	0	0
+>	1	tx error revert off	8	206	0	0	0	0
+>	1	tx error revert off	9	103	0	0	1	0
+tx error in sub		0	0\r[not skipped]\r[sub continued]\r4\r5	0	0
+>	1	tx error in sub	1	141	0	0	0	0
+>	1	tx error in sub	2	205	0	0	0	0
+>	1	tx error in sub	3	7	0	0	0	0
+>	1	tx error in sub	4	1	0	0	0	0
+!	104	work : tx sub fails : 1 : Perform Script
+>	2	tx sub fails	1	1	104	0	0	104
+>	2	tx sub fails	2	141	0	0	0	0
+>	2	tx sub fails	3	103	0	0	1	0
+>	1	tx error in sub	5	141	0	0	0	0
+>	1	tx error in sub	6	206	0	0	0	0
+>	1	tx error in sub	7	103	0	0	1	0
+tx sub commits		0	3\r1\r0\r5\r6	0	0
+>	1	tx sub commits	1	141	0	0	0	0
+>	1	tx sub commits	2	205	0	0	0	0
+>	1	tx sub commits	3	7	0	0	0	0
+>	1	tx sub commits	4	1	0	0	0	0
+>	2	tx sub commit	1	206	3	0	1	3
+>	2	tx sub commit	2	103	0	0	1	3
+>	1	tx sub commits	5	141	0	0	0	0
+>	1	tx sub commits	6	141	0	0	0	0
+>	1	tx sub commits	7	206	0	0	0	0
+>	1	tx sub commits	8	103	0	0	1	0
+tx sub reverts		0	0\r[]\r[]\r6\r6	0	0
+>	1	tx sub reverts	1	141	0	0	0	0
+>	1	tx sub reverts	2	205	0	0	0	0
+>	1	tx sub reverts	3	7	0	0	0	0
+>	1	tx sub reverts	4	1	0	0	0	0
+>	2	tx sub revert	1	207	0	0	0	0
+>	2	tx sub revert	2	141	0	0	1	0
+>	1	tx sub reverts	5	141	0	0	1	0
+>	1	tx sub reverts	6	206	0	0	0	0
+>	1	tx sub reverts	7	103	0	0	1	0
+tx count		0	6 tx basic,,,,,	0
+>	1	tx count	1	103	0	0	1	0
+tx halt inside		0		0	0	0
+>	1	tx halt inside	1	205	0	0	0	0
+>	1	tx halt inside	2	7	0	0	0	0
+>	1	tx halt inside	3	76	0	0	0	0
+>	1	tx halt inside	4	90	0	0	1	0
+tx count		0	6 tx basic,,,,,	0
+>	1	tx count	1	103	0	0	1	0
+tx exit inside		0	exited	0	0	0
+>	1	tx exit inside	1	205	0	0	0	0
+>	1	tx exit inside	2	7	0	0	0	0
+>	1	tx exit inside	3	76	0	0	0	0
+>	1	tx exit inside	4	103	0	0	1	0
+tx count		0	6 tx basic,,,,,	0
+>	1	tx count	1	103	0	0	1	0
+tx end inside		0		0	0	0
+>	1	tx end inside	1	205	0	0	0	0
+>	1	tx end inside	2	7	0	0	0	0
+>	1	tx end inside	3	76	0	0	0	0
+tx count		0	6 tx basic,,,,,	0
+>	1	tx count	1	103	0	0	1	0
+tx exit loop past commit		0	0\r0\r6\r6	0	0
+>	1	tx exit loop past commit	1	141	0	0	0	0
+>	1	tx exit loop past commit	2	71	0	0	1	0
+>	1	tx exit loop past commit	3	205	0	0	0	0
+>	1	tx exit loop past commit	4	7	0	0	0	0
+>	1	tx exit loop past commit	5	72	0	0	1	0
+>	1	tx exit loop past commit	8	103	0	0	1	0
+tx count		0	6 tx basic,,,,,	0
+>	1	tx count	1	103	0	0	1	0

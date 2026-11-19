@@ -1,0 +1,31 @@
+# A lookup from a parent table keyed on its auto-entered primary key, on
+# FileMaker Server's script engine (#657). Base file: contacts-en with
+# Contacts::L2 added by FMUpgradeTool: looked up from Phone Numbers::Number
+# starting from Contacts ("Do not copy" with no match, "Don't copy contents
+# if empty" off). Contacts::PrimaryKey (auto-entered Get ( UUID ), replacing)
+# = Phone Numbers::ForeignKey, creation allowed on the Phone Numbers side.
+
+== probe
+Go to Layout [ "Contact Details" ]
+New Record/Request
+Commit Records/Requests [ With dialog: Off ]
+Set Variable [ $log ; "1 new record, key auto-entered [" & Contacts::L2 & "]" ]
+Set Field [ Phone Numbers::Number ; "555" ]
+Commit Records/Requests [ With dialog: Off ]
+Set Variable [ $log ; $log & ¶ & "2 related 555 made [" & Contacts::L2 & "]" ]
+Set Field [ Contacts::First Name ; "x" ]
+Commit Records/Requests [ With dialog: Off ]
+Set Variable [ $log ; $log & ¶ & "3 other field [" & Contacts::L2 & "]" ]
+Set Field [ Contacts::PrimaryKey ; Contacts::PrimaryKey ]
+Commit Records/Requests [ With dialog: Off ]
+Set Variable [ $log ; $log & ¶ & "4 key set to itself [" & Contacts::L2 & "]" ]
+Set Field [ Contacts::L2 ; "typed" ]
+Commit Records/Requests [ With dialog: Off ]
+Set Variable [ $log ; $log & ¶ & "5 L2 typed [" & Contacts::L2 & "]" ]
+Set Field [ Contacts::PrimaryKey ; Contacts::PrimaryKey ]
+Commit Records/Requests [ With dialog: Off ]
+Set Variable [ $log ; $log & ¶ & "6 key set to itself [" & Contacts::L2 & "]" ]
+Exit Script [ $log ]
+
+--- run
+probe

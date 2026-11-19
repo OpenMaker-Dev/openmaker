@@ -1,0 +1,17 @@
+[package]
+name = "om-protocol"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+rust-version.workspace = true
+
+[dependencies]
+om-giop = { path = "../om-giop" }
+om-rctransaction = { path = "../om-rctransaction" }
+om-scsu = { path = "../om-scsu" }
+om-crypto = { path = "../om-crypto" }
+om-hbam = { path = "../om-hbam" }
+
+[lints]
+workspace = true
+

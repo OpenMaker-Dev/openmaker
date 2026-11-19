@@ -1,0 +1,65 @@
+# Record context: FileMaker Server sample en_FMServer_Sample.fmp12. Table
+# occurrences Tasks (03d00001), Related Tasks (03d00003, self-join of Tasks),
+# Assignees (03d00004, no records), Attachments (03d00005, no records). Tasks
+# has 12 records, IDs 27..38; TASK ID MATCH FIELD = 7 1 3 12 5 6 8 11 9 2 10 4.
+@ 03d00001 30
+Get ( RecordID ) & " " & Task & " " & ${TASK ID MATCH FIELD}
+Get ( RecordNumber )
+Get ( FoundCount )
+Get ( TotalRecordCount )
+${Related Tasks}::Task
+${Related Tasks}::${TASK ID MATCH FIELD}
+List ( ${Related Tasks}::Task )
+Count ( ${Related Tasks}::Task )
+Sum ( ${Related Tasks}::${TASK ID MATCH FIELD} )
+Average ( ${Related Tasks}::${TASK ID MATCH FIELD} )
+Min ( ${Related Tasks}::${TASK ID MATCH FIELD} )
+Max ( ${Related Tasks}::${TASK ID MATCH FIELD} )
+StDev ( ${Related Tasks}::${TASK ID MATCH FIELD} )
+Sum ( ${Related Tasks}::${TASK ID MATCH FIELD} ; 100 )
+Sum ( ${Related Tasks}::${TASK ID MATCH FIELD} ; ${TASK ID MATCH FIELD} )
+Last ( ${Related Tasks}::Task )
+GetNthRecord ( ${Related Tasks}::Task ; 1 )
+GetNthRecord ( ${Related Tasks}::Task ; 2 )
+GetNthRecord ( ${Related Tasks}::Task ; 12 )
+GetNthRecord ( ${Related Tasks}::Task ; 13 )
+GetNthRecord ( ${Related Tasks}::Task ; 0 )
+GetNthRecord ( ${Related Tasks}::Task ; -1 )
+GetNthRecord ( Task ; 1 )
+GetNthRecord ( Task ; 2 )
+GetNthRecord ( Task ; 4 )
+GetNthRecord ( Task ; 13 )
+${Related Tasks}::Task[1]
+${Related Tasks}::Task[2]
+GetRepetition ( ${Related Tasks}::Task ; 1 )
+IsEmpty ( Assignees::Name )
+Assignees::Name & "|"
+Assignees::${TASK ID MATCH FIELD} + 1
+Count ( Assignees::Name )
+Sum ( Assignees::${TASK ID MATCH FIELD} )
+Sum ( Assignees::${TASK ID MATCH FIELD} ) + 1
+Average ( Assignees::${TASK ID MATCH FIELD} )
+Max ( Assignees::${TASK ID MATCH FIELD} )
+List ( Assignees::Name )
+Last ( Assignees::Name )
+GetNthRecord ( Assignees::Name ; 1 )
+Count ( Assignees::Name ; Attachments::${File Name} )
+${Assignee Number}
+${Attachment Number}
+${Days Till Due}
+${Time Frame}
+${Time Frame Order}
+@ 03d00003 33
+Get ( RecordID ) & " " & Task
+${Related Tasks}::Task
+Tasks::Task
+List ( Tasks::Task )
+@ 03d00001 38
+Get ( RecordID ) & " " & Task
+${Related Tasks}::Task
+Count ( ${Related Tasks}::Task )
+@ 03d00001
+${Related Tasks}::Task
+Task
+Count ( ${Related Tasks}::Task )
+Get ( RecordNumber )

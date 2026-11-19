@@ -1,0 +1,11 @@
+== acct probe
+Exit Script [ Get ( ScriptName ) ]
+--- run
+@account Admin	
+acct probe		Get ( AccountName )	Get ( AccountPrivilegeSetName )	Get ( CurrentPrivilegeSetName )	Get ( AccountExtendedPrivileges )	Get ( CurrentExtendedPrivileges )	Get ( LayoutAccess )	Get ( RecordAccess )	Get ( AccountType )
+@account Entry	
+acct probe		Get ( AccountName )	Get ( AccountPrivilegeSetName )	Get ( CurrentPrivilegeSetName )	Get ( AccountExtendedPrivileges )	Get ( CurrentExtendedPrivileges )	Get ( LayoutAccess )	Get ( RecordAccess )	Get ( AccountType )
+@account Viewer	
+acct probe		Get ( AccountName )	Get ( AccountPrivilegeSetName )	Get ( CurrentPrivilegeSetName )	Get ( AccountExtendedPrivileges )	Get ( CurrentExtendedPrivileges )	Get ( LayoutAccess )	Get ( RecordAccess )	Get ( AccountType )
+@account Prober	
+acct probe		Get ( AccountName )	Get ( AccountPrivilegeSetName )	Get ( CurrentPrivilegeSetName )	Get ( AccountExtendedPrivileges )	Get ( CurrentExtendedPrivileges )	Get ( LayoutAccess )	Get ( RecordAccess )	Get ( AccountType )

@@ -1,0 +1,37 @@
+# Evaluator probes (Contacts en-US, no table context): Let slots shared by a
+# While condition and its logic, slots a loop never wrote, Lookup keywords,
+# unset variable repetitions, and commas between arguments.
+While ( [ i = 0 ] ; Let ( z = i * 100 ; z < 300 ) ; [ w = i ; i = i + 1 ] ; w )
+While ( [ i = 0 ] ; Let ( z = i * 100 ; z < 300 ) ; [ i = i + 1 ; w = i ] ; w )
+Let ( [ a = 1 ; b = 7 ] ; 0 ) & While ( [ i = 0 ] ; 0 ; [ x = 5 ] ; x )
+Let ( [ a = 1 ; b = 7 ] ; 0 ) & While ( [ i = 0 ] ; 0 ; [ x = 5 ] ; IsEmpty ( x ) )
+While ( [ i = 0 ] ; i < 2 ; [ i = i + 1 ; x = Let ( q = 50 ; q ) ] ; x )
+Let ( x = Let ( [ a = 1 ; b = 2 ; c = 3 ] ; c ) ; Let ( [ y = 5 ; z = 6 ] ; x & y & z ) )
+Lower & "|" & Higher
+True & "|" & False
+$nope[1]
+$nope[3]
+$nope
+$nope[1] & "x"
+IsEmpty ( $nope[2] )
+Let ( $set[2] = "two" ; $set[2] )
+# commas between arguments
+List ( 1,5 ; 2 )
+List ( 1,5,2 )
+Max ( 1 , 2 )
+Let ( [ a = 1 , b = 2 ] ; a + b )
+Let ( x = 1 , x + 1 )
+Case ( 0 , 1 , 2 )
+If ( 1 , "y" , "n" )
+Substitute ( "abc" ; [ "a" , "x" ] )
+Substitute ( "abc" , "a" , "x" )
+GetValue ( "a¶b" , 2 )
+Abs ( 1,5 )
+Abs ( 1 , 5 )
+( 1 , 2 )
+1 , 2
+Evaluate ( "Max ( 1 , 2 )" )
+Evaluate ( "1 , 2" )
+While ( [ i = 0 , j = 1 ] , i < 2 , [ i = i + 1 ] , i & j )
+Get ( CalculationRepetitionNumber , 1 )
+Let ( $c[1,2] = 1 ; 1 )

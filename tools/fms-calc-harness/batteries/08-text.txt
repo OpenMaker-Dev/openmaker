@@ -1,0 +1,100 @@
+# unicode and lengths
+Length("abc")
+Length("😀")
+Length("e" & Char(769))
+Length("é")
+Length("")
+Length(¶)
+Code("😀")
+Code("A")
+Code(¶)
+Code("")
+Char(65)
+Char(128512)
+Char(13) = ¶
+Char(10) = ¶
+Length(Char(0))
+Upper("straße")
+Lower("İ")
+Upper("ǆ")
+Proper("hello WORLD")
+Left("😀a";1)
+Middle("😀a";2;1)
+Right("a😀";1)
+Position("a😀b";"b";1;1)
+Substitute("aAa";"a";"x")
+PatternCount("aAa";"a")
+Position("aAa";"A";1;1)
+Position("aÄa";"ä";1;1)
+Filter("a1b2";"12")
+Trim("  a  b  ")
+Trim(Char(9) & "a" & Char(9))
+TrimAll("  a   b  ";0;0)
+# return/paragraph separators
+"a" & ¶ & "b"
+Code("a" & ¶ & "b")
+ValueCount("a¶b")
+ValueCount("a¶b¶")
+ValueCount("a¶b¶¶")
+ValueCount("a" & Char(10) & "b")
+ValueCount("a" & Char(13) & Char(10) & "b")
+ValueCount("")
+ValueCount("¶")
+GetValue("a" & Char(10) & "b";2)
+GetValue("a¶b";0)
+GetValue("a¶b";3)
+GetValue("a¶b";1.9)
+List(1;"";2;"";3)
+List("a¶";"b")
+List("")
+List()
+"a¶b" = "a" & Char(10) & "b"
+Code(GetValue("a" & Char(10) & "b";1))
+Code(List("a";"b"))
+Substitute("a" & Char(10) & "b"; Char(10); "|")
+Quote("a\"b")
+Quote("a¶b")
+# styles (shown via GetAsCSS)
+GetAsCSS(TextStyleAdd("ab";Bold))
+GetAsCSS(TextStyleAdd("ab";Bold) & "c")
+GetAsCSS("c" & TextStyleAdd("ab";Bold))
+GetAsCSS(Left(TextStyleAdd("ab";Bold) & "c";2))
+GetAsCSS(Upper(TextStyleAdd("ab";Bold)))
+GetAsCSS(Substitute(TextStyleAdd("ab";Bold);"a";"x"))
+GetAsCSS(GetAsText(TextStyleAdd("ab";Bold)))
+GetAsCSS(TextColor("ab";RGB(255;0;0)) & TextStyleAdd("c";Italic))
+GetAsCSS(TextStyleAdd(1/3;Bold))
+GetAsCSS(TextStyleAdd(1/3;Bold) + 1)
+GetAsCSS(List(TextStyleAdd("a";Bold);"b"))
+GetAsCSS(Let(x=TextStyleAdd("a";Bold);x & x))
+GetAsCSS(If(1;TextStyleAdd("a";Bold);""))
+GetAsCSS(TextFont("a";"Arial") & TextSize("b";20))
+GetAsCSS(TextFormatRemove(TextStyleAdd("ab";Bold)))
+GetAsCSS(Trim(TextStyleAdd(" ab ";Bold)))
+GetAsCSS(GetValue(TextStyleAdd("a";Bold) & ¶ & "b";1))
+GetAsCSS(Middle(TextStyleAdd("abc";Bold);2;1))
+GetAsCSS(Replace(TextStyleAdd("abc";Bold);2;1;"X"))
+GetAsCSS(TextStyleAdd("a";Bold) & TextStyleAdd("b";Bold))
+GetAsCSS(TextStyleAdd("ab";Bold+Italic))
+GetAsCSS(TextStyleRemove(TextStyleAdd("ab";Bold+Italic);Italic))
+TextStyleAdd("ab";Bold) = "ab"
+Length(TextStyleAdd("ab";Bold))
+GetAsSVG(TextStyleAdd("ab";Bold))
+# sort/collation-ish
+"a" < "b"
+"Apple" < "apple"
+"apple" < "Apple"
+"apple" = "Apple"
+"Zebra" < "apple"
+"10" < "2"
+"item10" < "item2"
+"résumé" = "resume"
+"Ö" = "O"
+"Ø" = "O"
+"ı" = "i"
+"ǅ" = "ǆ"
+"ﬀ" = "ff"
+"①" = "1"
+"Ａ" = "A"
+"ア" = "ｱ"
+"か" = "カ"

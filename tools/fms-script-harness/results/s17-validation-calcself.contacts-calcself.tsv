@@ -1,0 +1,34 @@
+# scan self rep2 long: open 0 load 0 scan 0 commit 0; index:id=value (0-based): 0:86=0 1:7=0 2:76=0 3:141=0 4:76=0 5:141=0 6:75=0 7:141=0 8:68=10 9:9=0 10:70=0 11:103=0
+# scan self rep1 long rep2 short: open 0 load 0 scan 0 commit 0; index:id=value (0-based): 0:86=0 1:7=0 2:76=0 3:141=0 4:76=0 5:141=0 6:75=0 7:141=0 8:68=10 9:9=0 10:70=0 11:103=0
+# scan count: open 0 load 0 scan 0 commit 0; index:id=value (0-based): 0:103=0
+# scan: close 13
+self rep2 long		0	00/507	0
+>	1	self rep2 long	1	86	0	0	0	0
+>	1	self rep2 long	2	7	0	0	0	0
+>	1	self rep2 long	3	76	0	0	0	0
+>	1	self rep2 long	4	141	0	0	0	0
+>	1	self rep2 long	5	76	0	0	0	0
+>	1	self rep2 long	6	141	0	0	0	0
+!	507	work : self rep2 long : 7 : Commit Records/Requests
+>	1	self rep2 long	7	75	1	0	0	507
+>	1	self rep2 long	8	141	0	0	0	0
+>	1	self rep2 long	9	68	0	0	1	0
+>	1	self rep2 long	10	9	0	0	0	0
+>	1	self rep2 long	11	70	0	0	1	0
+>	1	self rep2 long	12	103	0	0	1	0
+self rep1 long rep2 short		0	00/507	0
+>	1	self rep1 long rep2 short	1	86	0	0	0	0
+>	1	self rep1 long rep2 short	2	7	0	0	0	0
+>	1	self rep1 long rep2 short	3	76	0	0	0	0
+>	1	self rep1 long rep2 short	4	141	0	0	0	0
+>	1	self rep1 long rep2 short	5	76	0	0	0	0
+>	1	self rep1 long rep2 short	6	141	0	0	0	0
+!	507	work : self rep1 long rep2 short : 7 : Commit Records/Requests
+>	1	self rep1 long rep2 short	7	75	1	0	0	507
+>	1	self rep1 long rep2 short	8	141	0	0	0	0
+>	1	self rep1 long rep2 short	9	68	0	0	1	0
+>	1	self rep1 long rep2 short	10	9	0	0	0	0
+>	1	self rep1 long rep2 short	11	70	0	0	1	0
+>	1	self rep1 long rep2 short	12	103	0	0	1	0
+count		0	0	0
+>	1	count	1	103	0	0	1	0

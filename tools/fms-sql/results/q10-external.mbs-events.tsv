@@ -1,0 +1,18 @@
+# q10: occurrences of another file and calculated fields. File: MBS example
+# "Event Management with Audit": AuditLog is an occurrence of a table in the
+# file Event_Management_AuditLog, which is not open; the other occurrences
+# hold one record each. No record context.
+ExecuteSQL ( "SELECT TableName, BaseTableName, BaseFileName FROM FileMaker_Tables" ; "|" ; "¶" )	0	1/1/0	Agenda|Agenda|work\rAssignees | Contributors|Contributors|work\rAuditLog||\rContacts|Contacts|work\rContributors|Contributors|work\rEvents|Events|work\rGuests|Guests|work\rGuests | Contacts|Contacts|work\rTasks|Tasks|work\rVenue Looked Up|Events|work
+ExecuteSQL ( "SELECT FieldName, FieldType FROM FileMaker_Fields WHERE TableName = 'AuditLog'" ; "|" ; "¶" )	0	0/1/0	
+ExecuteSQLe ( "SELECT COUNT(*) FROM AuditLog" ; "|" ; "¶" )	0	1/1/0	0
+ExecuteSQLe ( "SELECT * FROM AuditLog" ; "|" ; "¶" )	100	1/1/0	? ERROR: <File Missing>
+ExecuteSQLe ( "SELECT Taskz FROM AuditLog" ; "|" ; "¶" )	8309	1/1/0	? ERROR: FQL0007/(1:7): The column named "Taskz" does not exist in any table in the column reference's scope.
+ExecuteSQLe ( "SELECT * FROM Events" ; "|" ; "¶" )	0	1/1/0	1|Test event|2015-09-11|At home|Just a test from me||||||1|1|Event|1|||Events|Time Frame|Past|2|Past|Task|Guest|0|1|0|0|Items|||0|Result|2015-09-11 15:48:00|1
+ExecuteSQLe ( "SELECT Event, \"Date\", \"Task Number | All\", \"Guest Number | All\", \"Time Frame\" FROM Events" ; "|" ; "¶" )	0	1/1/0	Test event|2015-09-11|1|1|Past
+ExecuteSQLe ( "SELECT * FROM Tasks" ; "|" ; "¶" )	0	1/1/0	1|2015-09-12|Welcome Party||Chief|4|1|0|0|Test event|2015-09-11 16:02:46|1
+ExecuteSQLe ( "SELECT * FROM \"Venue Looked Up\"" ; "|" ; "¶" )	0	1/1/0	1|Test event|2015-09-11|At home|Just a test from me||||||1|1|Event|1|||Events|Time Frame|Past|2|Past|Task|Guest|0|1|0|0|Items|||0|Result|2015-09-11 15:48:00|1
+ExecuteSQLe ( "SELECT COUNT(*) FROM \"Guests | Contacts\"" ; "|" ; "¶" )	0	1/1/0	1
+ExecuteSQLe ( "SELECT * FROM Contacts" ; "|" ; "¶" )	0	1/1/0	John|Miller|John Miller||Test Inc.||||||||||||1|M|Company|Test Inc.|||||||Drag your photo here|Result|2015-09-11 15:46:17|1
+ExecuteSQLe ( "SELECT \"Sort Selection\", \"Sort List Key\", \"Address Short\", Initial FROM Contacts" ; "|" ; "¶" )	0	1/1/0	Company|Test Inc.||M
+ExecuteSQLe ( "SELECT e.Event, t.Task FROM Events e JOIN Tasks t ON t.\"EVENT ID MATCH FIELD\" = e.\"EVENT ID MATCH FIELD\"" ; "|" ; "¶" )	0	1/1/0	Test event|Welcome Party
+ExecuteSQLe ( "SELECT COUNT(*) FROM Events e, Tasks t, Guests g, Contacts c, Contributors x" ; "|" ; "¶" )	0	1/1/0	1

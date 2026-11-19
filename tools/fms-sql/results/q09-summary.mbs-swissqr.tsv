@@ -1,0 +1,16 @@
+# q09: summary field and global containers. File: MBS example "Swiss
+# QR-Code for invoices ISO 20022" (base_test: ID, id_stat_max (summary, maximum
+# of an empty field per calc-values.md U14), Swiss_QR (binary), QR_code_js and
+# QR_code_index_html (global text), QR_code_filename (calculated); 1 record.
+# "Muster QR Zahlteil": 20 records). No record context.
+ExecuteSQLe ( "SELECT ID, id_stat_max FROM base_test" ; "|" ; "¶" )	0	1/1/0	|
+ExecuteSQLe ( "SELECT id_stat_max FROM base_test" ; "|" ; "¶" )	0	0/1/0	
+ExecuteSQLe ( "SELECT COUNT(id_stat_max), MAX(id_stat_max) FROM base_test" ; "|" ; "¶" )	0	1/1/0	0|
+ExecuteSQLe ( "SELECT ID FROM base_test WHERE id_stat_max IS NULL" ; "|" ; "¶" )	0	0/1/0	
+ExecuteSQLe ( "SELECT * FROM base_test" ; "|" ; "¶" )	0	1/1/0	[elided: 21329 bytes, sha256 ad8a5ff3a0d2d4712dba210c1516d72c478b2f6779e9f005fbcf15cfebe12088, starts "|||||||"]
+ExecuteSQLe ( "SELECT LENGTH(QR_code_js), LENGTH(QR_code_index_html) FROM base_test" ; "|" ; "¶" )	0	1/1/0	19928|1347
+ExecuteSQLe ( "SELECT QR_code_filename, QR_code_size, Swiss_QR_version FROM base_test" ; "|" ; "¶" )	0	1/1/0	|100|
+ExecuteSQLe ( "SELECT Swiss_QR, textfile_container, QR_code_container, Cross FROM base_test" ; "|" ; "¶" )	8310	1/1/0	? ERROR: FQL0001/(1:57): There is an error in the syntax of the query.
+ExecuteSQLe ( "SELECT COUNT(*) FROM \"Muster QR Zahlteil\"" ; "|" ; "¶" )	0	1/1/0	20
+ExecuteSQL ( "SELECT FieldName, FieldType FROM FileMaker_Fields WHERE TableName = 'Muster QR Zahlteil'" ; "|" ; "¶" )	0	1/1/0	__ID|decimal\rActualType|varchar\rContainer|binary\rEncoding|varchar\rExpectedType|varchar\rResult|varchar\rzzz_URL|varchar
+ExecuteSQLe ( "SELECT * FROM \"Muster QR Zahlteil\" FETCH FIRST 3 ROWS ONLY" ; "|" ; "¶" )	0	1/1/0	2||Nr. 1 deutsch.jpg|UTF8|QRCode||https://www.paymentstandards.ch/de/shared/communication-grid/script.html\r3||Nr. 2 deutsch.jpg|UTF8|QRCode||https://www.paymentstandards.ch/de/shared/communication-grid/script.html\r4||Nr. 5 deutsch.jpg|UTF8|QRCode||https://www.paymentstandards.ch/de/shared/communication-grid/script.html

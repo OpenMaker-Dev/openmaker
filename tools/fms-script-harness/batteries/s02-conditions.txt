@@ -1,0 +1,129 @@
+# Condition values of If / Else If / Exit Loop If, including calculations
+# that fail (script-runtime.md U3), nested blocks with the single clause
+# flag (3.2), Loop flush options (U4). Base file: contacts-en.
+# "cond if" runs If [ Evaluate ( $$c ) ] for the expression in the run
+# parameter; "cond direct" has the conditions written out.
+== cond if
+Set Variable [ $$c ; Get ( ScriptParameter ) ]
+If [ Evaluate ( $$c ) ]
+Exit Script [ "then" ]
+Else
+Exit Script [ "else" ]
+End If
+== cond direct
+Set Variable [ $r ; "" ]
+If [ GetField ( "x" ) ]
+Set Variable [ $r ; $r & "a1" ]
+Else
+Set Variable [ $r ; $r & "a0" ]
+End If
+If [ Evaluate ( "1+" ) ]
+Set Variable [ $r ; $r & " b1" ]
+Else
+Set Variable [ $r ; $r & " b0" ]
+End If
+If [ "?" ]
+Set Variable [ $r ; $r & " c1" ]
+Else
+Set Variable [ $r ; $r & " c0" ]
+End If
+If [ 1/0 ]
+Set Variable [ $r ; $r & " d1" ]
+Else
+Set Variable [ $r ; $r & " d0" ]
+End If
+If [ Contacts::NoSuchField ]
+Set Variable [ $r ; $r & " e1" ]
+Else
+Set Variable [ $r ; $r & " e0" ]
+End If
+If [ "" ]
+Set Variable [ $r ; $r & " f1" ]
+Else
+Set Variable [ $r ; $r & " f0" ]
+End If
+If [ 0 ]
+Else If [ GetField ( "x" ) ]
+Set Variable [ $r ; $r & " g1" ]
+Else
+Set Variable [ $r ; $r & " g0" ]
+End If
+Set Variable [ $i ; 0 ]
+Loop
+Set Variable [ $i ; $i + 1 ]
+Exit Loop If [ Evaluate ( "1+" ) ]
+Exit Loop If [ $i ≥ 3 ]
+End Loop
+Exit Script [ $r & " loop" & $i ]
+== cond nested
+Set Variable [ $r ; "" ]
+If [ 1 ]
+Set Variable [ $r ; $r & "A" ]
+If [ 0 ]
+Set Variable [ $r ; $r & "x" ]
+Else If [ 1 ]
+Set Variable [ $r ; $r & "B" ]
+Else
+Set Variable [ $r ; $r & "x" ]
+End If
+Else If [ 1 ]
+Set Variable [ $r ; $r & "x" ]
+Else
+Set Variable [ $r ; $r & "x" ]
+End If
+If [ 0 ]
+Set Variable [ $r ; $r & "x" ]
+Else If [ 0 ]
+Set Variable [ $r ; $r & "x" ]
+Else If [ 1 ]
+Set Variable [ $r ; $r & "C" ]
+If [ 1 ]
+Set Variable [ $r ; $r & "D" ]
+End If
+Else
+Set Variable [ $r ; $r & "x" ]
+End If
+Set Variable [ $i ; 0 ]
+Loop
+Set Variable [ $i ; $i + 1 ]
+Set Variable [ $j ; 0 ]
+Loop
+Set Variable [ $j ; $j + 1 ]
+Exit Loop If [ $j ≥ 2 ]
+End Loop
+Set Variable [ $r ; $r & $i & $j ]
+Exit Loop If [ $i ≥ 2 ]
+End Loop
+Exit Script [ $r ]
+== cond loop flush
+Set Variable [ $i ; 0 ]
+Loop [ Flush: Minimum ]
+Set Variable [ $i ; $i + 1 ]
+Exit Loop If [ $i ≥ 2 ]
+End Loop
+Loop [ Flush: Defer ]
+Set Variable [ $i ; $i + 1 ]
+Exit Loop If [ $i ≥ 4 ]
+End Loop
+Loop [ Flush: Always ]
+Set Variable [ $i ; $i + 1 ]
+Exit Loop If [ $i ≥ 6 ]
+End Loop
+Exit Script [ $i ]
+--- run
+cond direct		Get ( LastError )
+cond nested		Get ( LastError )
+cond loop flush		Get ( LastError )
+cond if	1
+cond if	0
+cond if	""
+cond if	"?"
+cond if	"abc"
+cond if	"a1"
+cond if	1/0
+cond if	GetField ( "x" )
+cond if	Evaluate ( "1+" )
+cond if	Contacts::NoSuchField
+cond if	Length ( GetField ( "x" ) )
+cond if	EvaluationError ( GetField ( "x" ) )
+cond if	1+

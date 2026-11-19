@@ -1,0 +1,112 @@
+# scan le control steps keep it: open 0 load 0 scan 0 commit 0; index:id=value (0-based): 0:1=0 1:68=2 2:125=3 3:69=4 4:70=0 5:71=7 6:72=7 7:73=5 8:89=0 9:-141=0 10:141=0 11:141=0 12:103=0
+# scan le step kinds: open 0 load 0 scan 0 commit 0; index:id=value (0-based): 0:86=0 1:141=0 2:85=0 3:85=0 4:86=0 5:6=5 6:16=4 7:76=0 8:9=0 9:75=0 10:7=0 11:76=0 12:75=0 13:16=4 14:16=1 15:62=1 16:1=0 17:1=0 18:141=0 19:86=0 20:103=0
+# scan le sub ok: open 0 load 0 scan 0 commit 0; index:id=value (0-based): 0:141=0
+# scan le calc errors: open 0 load 0 scan 0 commit 0; index:id=value (0-based): 0:141=0 1:141=0 2:1=0 3:141=0 4:141=0 5:1=0 6:141=0 7:76=0 8:141=0 9:103=0
+# scan le if error capture off: open 0 load 0 scan 0 commit 0; index:id=value (0-based): 0:141=0 1:68=3 2:141=0 3:69=5 4:141=0 5:70=0 6:103=0
+# scan le if error capture on: open 0 load 0 scan 0 commit 0; index:id=value (0-based): 0:86=0 1:68=3 2:141=0 3:125=5 4:141=0 5:69=7 6:141=0 7:70=0 8:141=0 9:71=13 10:141=0 11:72=13 12:72=13 13:73=9 14:103=0
+# scan le exit script error: open 0 load 0 scan 0 commit 0; index:id=value (0-based): 0:141=0 1:103=0
+# scan le sub error then end: open 0 load 0 scan 0 commit 0; index:id=value (0-based): 0:1=0 1:141=0 2:1=0 3:141=0 4:1=0 5:141=0 6:103=0
+# scan le sub fails: open 0 load 0 scan 0 commit 0; index:id=value (0-based): 0:141=0 1:1=0
+# scan le sub fails then exits: open 0 load 0 scan 0 commit 0; index:id=value (0-based): 0:1=0 1:103=0
+# scan le location: open 0 load 0 scan 0 commit 0; index:id=value (0-based): 0:141=0 1:1=0 2:103=0
+# scan le ends with error: open 0 load 0 scan 0 commit 0; index:id=value (0-based): 0:141=0 1:1=0
+# scan: close 13
+le control steps keep it		0	104,0	0	0
+!	104	work : le control steps keep it : 1 : Perform Script
+>	1	le control steps keep it	1	1	104	0	0	104
+>	1	le control steps keep it	2	68	0	0	1	104
+>	1	le control steps keep it	3	125	0	0	1	104
+>	1	le control steps keep it	5	70	0	0	1	104
+>	1	le control steps keep it	6	71	0	0	1	104
+>	1	le control steps keep it	7	72	0	0	1	104
+>	1	le control steps keep it	11	141	0	0	0	0
+>	1	le control steps keep it	12	141	0	0	0	0
+>	1	le control steps keep it	13	103	0	0	1	0
+le step kinds		0	0	0	0	0	1
+>	1	le step kinds	1	86	0	0	0	0
+>	1	le step kinds	2	141	0	0	0	0
+>	1	le step kinds	3	85	0	0	0	0
+>	1	le step kinds	4	85	0	0	0	0
+>	1	le step kinds	5	86	0	0	0	0
+>	1	le step kinds	6	6	0	0	0	0
+>	2	Sort by Name	1	39	0	0	0	0
+!	101	work : le step kinds : 7 : Go to Record/Request/Page
+>	1	le step kinds	7	16	101	0	0	101
+!	101	work : le step kinds : 8 : Set Field
+>	1	le step kinds	8	76	101	0	0	101
+>	1	le step kinds	9	9	0	0	0	0
+>	1	le step kinds	10	75	0	0	0	0
+>	1	le step kinds	11	7	0	0	0	0
+>	1	le step kinds	12	76	0	0	0	0
+>	1	le step kinds	13	75	0	0	0	0
+!	101	work : le step kinds : 14 : Go to Record/Request/Page
+>	1	le step kinds	14	16	101	0	0	101
+>	1	le step kinds	15	16	0	0	0	0
+>	1	le step kinds	16	62	0	0	0	0
+>	1	le step kinds	17	1	0	0	0	0
+>	2	le sub ok	1	141	0	0	0	0
+!	104	work : le step kinds : 18 : Perform Script
+>	1	le step kinds	18	1	104	0	0	104
+>	1	le step kinds	19	141	0	0	0	0
+>	1	le step kinds	20	86	0	0	0	0
+>	1	le step kinds	21	103	0	0	1	0
+le calc errors		0	0\r0\r0\r0\r[?]	0	0
+>	1	le calc errors	1	141	0	0	0	0
+>	1	le calc errors	2	141	0	0	0	0
+!	104	work : le calc errors : 3 : Perform Script
+>	1	le calc errors	3	1	104	0	0	104
+>	1	le calc errors	4	141	0	0	0	0
+>	1	le calc errors	5	141	0	0	0	0
+>	1	le calc errors	6	1	0	0	0	0
+>	2	le sub ok	1	141	0	0	0	0
+>	1	le calc errors	7	141	0	0	0	0
+>	1	le calc errors	8	76	0	0	0	0
+>	1	le calc errors	9	141	0	0	0	0
+>	1	le calc errors	10	103	0	0	1	0
+le if error capture off		0	then	0	0
+>	1	le if error capture off	1	141	0	0	0	0
+>	1	le if error capture off	2	68	0	0	1	0
+>	1	le if error capture off	3	141	0	0	0	0
+>	1	le if error capture off	4	69	0	0	1	0
+>	1	le if error capture off	6	70	0	0	1	0
+>	1	le if error capture off	7	103	0	0	1	0
+le if error capture on		0	then,1	0	0
+>	1	le if error capture on	1	86	0	0	0	0
+>	1	le if error capture on	2	68	0	0	1	0
+>	1	le if error capture on	3	141	0	0	0	0
+>	1	le if error capture on	4	125	0	0	1	0
+>	1	le if error capture on	8	70	0	0	1	0
+>	1	le if error capture on	9	141	0	0	0	0
+>	1	le if error capture on	10	71	0	0	1	0
+>	1	le if error capture on	11	141	0	0	0	0
+>	1	le if error capture on	12	72	0	0	1	0
+>	1	le if error capture on	15	103	0	0	1	0
+le exit script error		0	?	0	0	
+>	1	le exit script error	1	141	0	0	0	0
+>	1	le exit script error	2	103	0	0	1	0
+le sub error then end		0	104\r104\r0	0	0
+>	1	le sub error then end	1	1	0	0	0	0
+>	2	le sub fails	1	141	0	0	0	0
+!	104	work : le sub fails : 2 : Perform Script
+>	2	le sub fails	2	1	104	0	0	104
+>	1	le sub error then end	2	141	0	0	0	0
+>	1	le sub error then end	3	1	0	0	0	0
+!	104	work : le sub fails then exits : 1 : Perform Script
+>	2	le sub fails then exits	1	1	104	0	0	104
+>	2	le sub fails then exits	2	103	0	0	1	104
+>	1	le sub error then end	4	141	0	0	0	0
+>	1	le sub error then end	5	1	0	0	0	0
+>	2	le sub ok	1	141	0	0	0	0
+>	1	le sub error then end	6	141	0	0	0	0
+>	1	le sub error then end	7	103	0	0	1	0
+le location		104	le location\rPerform Script\r2|	104	104	le location\rPerform Script\r2
+>	1	le location	1	141	0	0	0	0
+!	104	work : le location : 2 : Perform Script
+>	1	le location	2	1	104	0	0	104
+>	1	le location	3	103	0	0	1	104
+le ends with error		104		104	104	le ends with error\rPerform Script\r2	
+>	1	le ends with error	1	141	0	0	0	0
+!	104	work : le ends with error : 2 : Perform Script
+>	1	le ends with error	2	1	104	0	0	104
+le sub ok		0		0	0
+>	1	le sub ok	1	141	0	0	0	0

@@ -1,0 +1,47 @@
+1/3
+-2/3
+1234567.5
+10^20
+1/10^15
+1.5*10^20
+GetAsNumber("1,5")
+GetAsNumber("1.5")
+GetAsNumber("1.234,56")
+GetAsNumber("1,234.56")
+GetAsNumber("1,2,3")
+GetAsNumber("1e3")
+GetAsNumber("1,5e3")
+"1,5" + 0
+"1.5" + 0
+1,5
+1.5
+Date(1;2;2003)
+Date(1;2;2003) & ""
+Time(13;5;7)
+Timestamp(Date(1;2;2003);Time(13;5;7))
+Timestamp(Date(1;2;2003);Time(13;5;7.5))
+GetAsDate("2.1.2003")
+GetAsDate("1/2/2003")
+GetAsDate("2.1.03")
+GetAsDate("2003-01-02")
+GetAsTime("13:05")
+GetAsTime("1:05 PM")
+GetAsTime("1,5")
+GetAsTimestamp("2.1.2003 13:05:07")
+GetAsTime(1.5)
+Time(1;2;3.5)
+"ä" < "b"
+"ä" = "a"
+"ä" = "ae"
+"ö" < "p"
+"z" < "ä"
+"ss" = "ß"
+"é" = "e"
+"a" = "A"
+Upper("ß")
+Get(SystemLanguage)
+DayName(Date(1;2;2003))
+MonthName(Date(1;2;2003))
+Evaluate("1,5")
+Evaluate("1.5")
+List(1,5;2)

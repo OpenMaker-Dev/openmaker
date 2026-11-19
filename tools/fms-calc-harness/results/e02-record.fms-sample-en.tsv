@@ -1,0 +1,90 @@
+# Evaluator probes in record context: FileMaker Server sample
+# en_FMServer_Sample.fmp12 (as x03-related): Tasks (03d00001) with an
+# unsorted self-join Related Tasks (03d00003) to all 12 records, Assignees
+# (03d00004) and Attachments (03d00005) without records. Schema and data
+# survey first.
+ExecuteSQL ( "SELECT TableName, BaseTableName FROM FileMaker_Tables" ; "|" ; "¶" )	0	1/1/0	Assignees|Assignees\rAssignees Looked Up Value|Assignees\rAttachments|Attachments\rRelated Tasks|Tasks\rTasks|Tasks
+ExecuteSQL ( "SELECT TableName, FieldName, FieldType, FieldClass, FieldReps FROM FileMaker_Fields WHERE TableName IN ('Tasks','Assignees','Attachments')" ; "|" ; "¶" )	0	1/1/0	Assignees|TASK ID MATCH FIELD|decimal|Normal|1\rAssignees|Name|varchar|Normal|1\rAssignees|Email|varchar|Normal|1\rAssignees|Phone|varchar|Normal|1\rAttachments|TASK ID MATCH FIELD|decimal|Normal|1\rAttachments|Comments|varchar|Normal|1\rAttachments|Attachment | Container|binary|Normal|1\rAttachments|File Name Placeholder|varchar|Calculated|1\rTasks|TASK ID MATCH FIELD|decimal|Normal|1\rTasks|Task|varchar|Normal|1\rTasks|Due Date|date|Normal|1\rTasks|Description|varchar|Normal|1\rTasks|Category|varchar|Normal|1\rTasks|Status|varchar|Normal|1\rTasks|Sort List Key | MATCH FIELD|varchar|Calculated|1\rTasks|Related | Sort Selection|global varchar|Normal|1\rTasks|Time Frame Order|decimal|Calculated|1\rTasks|Time Frame|varchar|Calculated|1\rTasks|QuickFind|global varchar|Normal|1\rTasks|Assignee Number|decimal|Calculated|1\rTasks|Attachment Number|decimal|Calculated|1\rTasks|Days Till Due|decimal|Calculated|1\rTasks|Past | Upcoming Filter|global varchar|Normal|1\rTasks|Day Label Plural|varchar|Calculated|1\rTasks|Result Label Plural|varchar|Calculated|1
+ExecuteSQL ( "SELECT ROWID, Task, \"TASK ID MATCH FIELD\" FROM Tasks" ; "|" ; "¶" )	0	1/1/0	27|Site Map Sketch|7\r28|Checklist|1\r29|Hire New Sales Person|3\r30|Update Web Page|12\r31|Pay Internet Service Bill|5\r32|Plan Holiday|6\r33|Review mock ups|8\r34|Write Page Text|11\r35|New Logo Art|9\r36|Determine Budget for Marketing Campaign|2\r37|Send Art to Vendor|10\r38|Repair Water Damage in Kitchen|4
+# @ 03d00001 30 records=12
+# field references in field-reference positions through Let, If, Evaluate, GetField
+Let ( f = ${Related Tasks}::Task ; Count ( f ) )	0	2/2/0	12
+Let ( f = ${Related Tasks}::Task ; List ( f ) )	0	1/1/0	Site Map Sketch\rChecklist\rHire New Sales Person\rUpdate Web Page\rPay Internet Service Bill\rPlan Holiday\rReview mock ups\rWrite Page Text\rNew Logo Art\rDetermine Budget for Marketing Campaign\rSend Art to Vendor\rRepair Water Damage in Kitchen
+Count ( If ( 1 ; ${Related Tasks}::Task ; Task ) )	0	2/2/0	12
+Count ( Case ( 0 ; Task ; ${Related Tasks}::Task ) )	0	2/2/0	12
+Count ( Choose ( 1 ; Task ; ${Related Tasks}::Task ) )	0	2/2/0	12
+Count ( Let ( x = 1 ; ${Related Tasks}::Task ) )	0	2/2/0	12
+Count ( Evaluate ( "${Related Tasks}::Task" ) )	0	2/2/0	12
+Sum ( Evaluate ( "${Related Tasks}::${TASK ID MATCH FIELD}" ) )	0	2/2/0	78
+List ( GetField ( "Related Tasks::Task" ) )	0	1/1/0	Site Map Sketch\rChecklist\rHire New Sales Person\rUpdate Web Page\rPay Internet Service Bill\rPlan Holiday\rReview mock ups\rWrite Page Text\rNew Logo Art\rDetermine Budget for Marketing Campaign\rSend Art to Vendor\rRepair Water Damage in Kitchen
+Count ( GetField ( "Related Tasks::Task" ) )	0	2/2/0	12
+Count ( Extend ( ${Related Tasks}::Task ) )	0	2/2/0	12
+Count ( ${Related Tasks}::Task[1] )	0	2/2/0	12
+Count ( ${Related Tasks}::Task ; Task )	0	2/2/0	2
+List ( Task ; ${Related Tasks}::Task )	0	1/1/0	Update Web Page\rSite Map Sketch
+Sum ( ${Related Tasks}::${TASK ID MATCH FIELD} ; Assignees::${TASK ID MATCH FIELD} )	0	2/2/0	7
+Max ( Assignees::Name ; 5 )	0	2/2/0	5
+Count ( Assignees::Name ; 5 )	0	2/2/0	1
+Count ( Task )	0	2/2/0	1
+List ( Task )	0	1/1/0	Update Web Page
+Sum ( ${TASK ID MATCH FIELD} )	0	2/2/0	12
+# GetField, GetFieldName, GetBaseTableName
+GetField ( "Task" )	0	1/1/0	Update Web Page
+GetField ( "Related Tasks::Task" )	0	1/1/0	Site Map Sketch
+GetField ( "Tasks::Task" )	0	1/1/0	Update Web Page
+GetField ( "NoSuch" )	102	2/2/0	?
+GetField ( "Nope::Task" )	102	2/2/0	?
+GetField ( "TASK ID MATCH FIELD" ) + 1	0	2/2/0	13
+GetField ( "task" )	0	1/1/0	Update Web Page
+GetField ( " Task" )	0	1/1/0	Update Web Page
+GetField ( "${Task}" )	0	1/1/0	Update Web Page
+GetField ( "Task[1]" )	0	1/1/0	Update Web Page
+GetFieldName ( ${Related Tasks}::Task )	0	1/1/0	Related Tasks::Task
+GetFieldName ( Task )	0	1/1/0	Tasks::Task
+GetFieldName ( ${TASK ID MATCH FIELD} )	0	1/1/0	Tasks::TASK ID MATCH FIELD
+GetFieldName ( GetField ( "Task" ) )	0	1/1/0	Tasks::Task
+GetFieldName ( GetField ( "related tasks::task" ) )	0	1/1/0	Related Tasks::Task
+GetFieldName ( Evaluate ( "Task" ) )	0	1/1/0	Tasks::Task
+GetFieldName ( "Task" )	102	2/2/0	?
+GetFieldName ( "Related Tasks::Task" )	102	2/2/0	?
+GetFieldName ( Let ( f = Task ; f ) )	0	1/1/0	Tasks::Task
+GetFieldName ( If ( 1 ; Task ; 0 ) )	0	1/1/0	Tasks::Task
+GetFieldName ( ${Related Tasks}::Task[2] )	14	2/2/0	?
+GetBaseTableName ( ${Related Tasks}::Task )	0	1/1/0	Tasks
+GetBaseTableName ( Task )	0	1/1/0	Tasks
+GetBaseTableName ( "Task" )	102	2/2/0	?
+# Lookup, LookupNext, Last, GetNthRecord
+Lookup ( ${Related Tasks}::Task )	0	1/1/0	
+Lookup ( ${Related Tasks}::Task ; "fail" )	0	1/1/0	
+Lookup ( Assignees::Name ; "none" )	0	1/1/0	none
+Lookup ( Assignees::Name )	401	2/2/0	?
+EvaluationError ( Lookup ( Assignees::Name ; 1/0 ) )	0	2/2/0	15
+Lookup ( Task )	103	2/2/0	?
+Lookup ( Task ; "x" )	0	1/1/0	x
+LookupNext ( ${Related Tasks}::Task ; Lower )	0	1/1/0	
+LookupNext ( Assignees::Name ; Higher )	401	2/2/0	?
+LookupNext ( Assignees::Name ; Lower )	401	2/2/0	?
+Last ( Task )	0	1/1/0	Update Web Page
+Last ( ${Related Tasks}::${TASK ID MATCH FIELD} )	0	1/2/0	4
+GetNthRecord ( Task ; 1.9 )	0	1/1/0	Site Map Sketch
+GetNthRecord ( ${Related Tasks}::Task ; "" )	14	2/2/0	?
+GetNthRecord ( ${Related Tasks}::Task ; "2abc" )	0	1/1/0	Checklist
+GetNthRecord ( ${Related Tasks}::Task ; 1/0 )	15	2/2/0	?
+GetNthRecord ( ${TASK ID MATCH FIELD} ; 12 ) + 0	0	2/2/0	4
+GetNthRecord ( Evaluate ( "Task" ) ; 2 )	0	1/1/0	Checklist
+GetNthRecord ( Let ( f = Task ; f ) ; 2 )	0	1/1/0	Checklist
+GetNthRecord ( GetField ( "Task" ) ; 2 )	0	1/1/0	Checklist
+GetNthRecord ( ${Related Tasks}::Task ; Get ( RecordNumber ) )	0	1/1/0	Update Web Page
+# IsValid and IsEmpty on fields
+IsValid ( Task )	0	2/2/0	1
+IsValid ( Assignees::Name )	0	2/2/0	0
+IsValid ( ${Related Tasks}::Task )	0	2/2/0	1
+IsEmpty ( Task )	0	2/2/0	0
+# Evaluate in record context
+Evaluate ( "Task" )	0	1/1/0	Update Web Page
+Evaluate ( "Task" ; [ Task ] )	0	1/1/0	Update Web Page
+Evaluate ( "Task" ; [ Task ; ${Related Tasks}::Task ] )	0	1/1/0	Update Web Page
+Evaluate ( "Get ( RecordNumber )" )	0	2/2/0	4
+Evaluate ( "NoSuch" )	102	2/2/0	?
+# stored and unstored calculation fields as seen on this record
+${Days Till Due} & "|" & ${Time Frame} & "|" & ${Time Frame Order} & "|" & ${Assignee Number}	0	1/1/0	0|2015|7|0

@@ -1,0 +1,5 @@
+== priv probe
+Exit Script [ Get ( ScriptName ) ]
+--- run
+@account Admin	
+priv probe		Get ( CurrentExtendedPrivileges )	Get ( AccountExtendedPrivileges )	Get ( CurrentPrivilegeSetName )	Get ( AccountPrivilegeSetName )	Get ( SystemStorageAvailable ) > 0

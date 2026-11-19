@@ -1,0 +1,234 @@
+kind	code	text	evaluation_error	evidence
+fql-position	-	(^0:^1)	-	FQL::NonLocalizedStrings(0): (line:column) after FQLnnnn/
+fql	FQL0001	There is an error in the syntax of the query.	8310	established:FQL::NonLocalizedStrings(1); observed in execute-sql-vectors.tsv
+fql	FQL0002	The table named "^0" does not exist.	8309	established:FQL::NonLocalizedStrings(2); observed in execute-sql-vectors.tsv
+fql	FQL0003	The table named "^0" already exists in this query.	8309	established:FQL::NonLocalizedStrings(3); observed in execute-sql-vectors.tsv
+fql	FQL0004	The query is too complex. The maximum number of tables has been exceeded.	-	established:FQL::NonLocalizedStrings(4)
+fql	FQL0005	Expressions involving aggregations are not supported.	8309	established:FQL::NonLocalizedStrings(5); observed in execute-sql-vectors.tsv
+fql	FQL0006	The column named "^0" appears in more than one table in the column reference's scope.	8309	established:FQL::NonLocalizedStrings(6); observed in execute-sql-vectors.tsv
+fql	FQL0007	The column named "^0" does not exist in any table in the column reference's scope.	8309	established:FQL::NonLocalizedStrings(7); observed in execute-sql-vectors.tsv
+fql	FQL0008	The table named "^0" does not exist in the column reference's scope.	8309	established:FQL::NonLocalizedStrings(8); observed in execute-sql-vectors.tsv
+fql	FQL0009	The column named "^1" does not exist in table "^0".	8309	established:FQL::NonLocalizedStrings(9); observed in execute-sql-vectors.tsv
+fql	FQL0010	The literal value "^0" is not a valid DATE, TIME or TIMESTAMP.	8310	established:FQL::NonLocalizedStrings(10); observed in execute-sql-vectors.tsv
+fql	FQL0011	Predicate must contain a logical operation (=, <, OR, AND, IS NULL, ...).	-	established:FQL::NonLocalizedStrings(11)
+fql	FQL0012	The ordinal reference "^0" in the ORDER BY clause is not valid.	8309	established:FQL::NonLocalizedStrings(12); observed in execute-sql-vectors.tsv
+fql	FQL0013	Incompatible types in assignment.	-	established:FQL::NonLocalizedStrings(13)
+fql	FQL0014	The number of values in a VALUES row value constructor does not match the number of values in the target.	8309	established:FQL::NonLocalizedStrings(14); observed in execute-sql-vectors.tsv
+fql	FQL0015	The number of values in an INSERT...SELECT statement does not match the number of values in the target.	-	established:FQL::NonLocalizedStrings(15)
+fql	FQL0016	A subquery contains an illegal outer reference to a column in the INSERT's target table.	-	established:FQL::NonLocalizedStrings(16)
+fql	FQL0017	An expression contains data types that cannot be compared.	8309	established:FQL::NonLocalizedStrings(17); observed in execute-sql-vectors.tsv
+fql	FQL0018	An expression contains incompatible data types.	8309	established:FQL::NonLocalizedStrings(18); observed in execute-sql-vectors.tsv
+fql	FQL0019	The result data type of a CASE expression cannot be inferred; they are all NULL.	8309	established:FQL::NonLocalizedStrings(19); observed in execute-sql-vectors.tsv
+fql	FQL0020	An invalid number of parameters was supplied to the function "^0"	8309	established:FQL::NonLocalizedStrings(20); observed in execute-sql-vectors.tsv
+fql	FQL0021	Parameter number ^0 to the function "^1" is not of the correct type.	8309	established:FQL::NonLocalizedStrings(21); observed in execute-sql-vectors.tsv
+fql	FQL0022	A subquery expression must have exactly one value in the SELECT list.	8309	established:FQL::NonLocalizedStrings(22); observed in execute-sql-vectors.tsv
+fql	FQL0023	A CAST expression requested an invalid data type conversion.	8309	established:FQL::NonLocalizedStrings(23); observed in execute-sql-vectors.tsv
+fql	FQL0024	A reference to ROWID must be qualified if more than one table is present in the query.	8309	established:FQL::NonLocalizedStrings(24); observed in execute-sql-vectors.tsv
+fql	FQL0025	All non-aggregated column references in the SELECT list and HAVING clause must be in the GROUP BY clause.	8309	established:FQL::NonLocalizedStrings(25); observed in execute-sql-vectors.tsv
+fql	FQL0026	The number of columns in both inputs to a UNION operation must be the same.	8309	established:FQL::NonLocalizedStrings(26); observed in execute-sql-vectors.tsv
+fql	FQL0027	The data types of corresponding columns in the inputs to a UNION operation must be the same.	8309	established:FQL::NonLocalizedStrings(27); observed in execute-sql-vectors.tsv
+fql	FQL0028	Field repetitions must be numeric and between 1 and ^0.	8309	established:FQL::NonLocalizedStrings(28); observed in execute-sql-vectors.tsv
+fql	FQL0029	A field repetition in the SET clause of an UPDATE statement must be a constant.	-	established:FQL::NonLocalizedStrings(29)
+fql	FQL0030	"^0" is an invalid function.	8309	established:FQL::NonLocalizedStrings(30); observed in execute-sql-vectors.tsv
+fql	FQL0031	The the parameter's type cannot be inferred in this context. At least one query parameter must be an expression, a column or a constant.	8309	established:FQL::NonLocalizedStrings(31); observed in execute-sql-vectors.tsv
+fql	FQL0032	A query may contain either named parameters or dynamic parameters, but not both.	8309	established:FQL::NonLocalizedStrings(32); observed in execute-sql-vectors.tsv
+fql	FQL0033	Column names in FROM clause subqueries must be unique.	-	established:FQL::NonLocalizedStrings(33)
+fql	FQL0034	The number of output columns in a FROM clause subquery must match the number of columns in the table's name list.	-	established:FQL::NonLocalizedStrings(34)
+fql	FQL0035	Cursor support is not enabled for this query.	-	established:FQL::NonLocalizedStrings(35)
+fql	FQL0036	A cursor with the name "^0" already exists.	-	established:FQL::NonLocalizedStrings(36)
+fql	FQL0037	There is no cursor with the name "^0".	8309	established:FQL::NonLocalizedStrings(37); observed in execute-sql-vectors.tsv
+fql	FQL0038	The cursor "^0" is already open.	-	established:FQL::NonLocalizedStrings(38)
+fql	FQL0039	The cursor "^0" is not open.	-	established:FQL::NonLocalizedStrings(39)
+fql	FQL0040	The target cursor "^0" does not reference a query that is valid for WHERE CURRENT OF <cursor>.	-	established:FQL::NonLocalizedStrings(40)
+fql	FQL0041	The target cursor "^0" does not reference the same table as the current statement.	-	established:FQL::NonLocalizedStrings(41)
+fql	FQL0042	The default value for column "^0" does not match the column's data type.	-	established:FQL::NonLocalizedStrings(42)
+fql	FQL0043	The string "^0" is not a valid stream name.	8309	established:FQL::NonLocalizedStrings(43); observed in execute-sql-vectors.tsv
+fql	FQL0044	The column "^0" is not valid in this context. The targets of GETAS and PUTAS must be Container fields.	-	established:FQL::NonLocalizedStrings(44)
+fql	FQL0045	The value ^0 is not a valid binary string.	8309	established:FQL::NonLocalizedStrings(45); observed in execute-sql-vectors.tsv
+fql	FQL0046	Container fields are not allowed in UNION DISTINCT queries.	8309	established:FQL::NonLocalizedStrings(46); observed in execute-sql-vectors.tsv
+fql	FQL0047	The database schema has changed. This prepared query is no longer valid.	-	established:FQL::NonLocalizedStrings(47)
+fql	FQL0048	This statement contains an invalid operation on FileMaker system table "^0".	8309	established:FQL::NonLocalizedStrings(48); observed in execute-sql-vectors.tsv
+fql	FQL0049	Aggregation expressions are not allowed in the WHERE clause.	8309	established:FQL::NonLocalizedStrings(49); observed in execute-sql-vectors.tsv
+fql	FQL0050	The offset count in OFFSET clause is not valid. 	8309	established:FQL::NonLocalizedStrings(50); observed in execute-sql-vectors.tsv
+fql	FQL0051	The FETCH ... WITH TIES clause is not allowed without a corresponding ORDER BY clause.	8310	established:FQL::NonLocalizedStrings(51); observed in execute-sql-vectors.tsv
+fql	FQL0052	The fetch count in FETCH clause is not valid. 	8309	established:FQL::NonLocalizedStrings(52); observed in execute-sql-vectors.tsv
+fql	FQL0053	The cursor is already open.	-	established:FQL::NonLocalizedStrings(53)
+fql	FQL0054	The cursor is not open.	-	established:FQL::NonLocalizedStrings(54)
+fql	FQL0055	The cursor has already been declared.	-	established:FQL::NonLocalizedStrings(55)
+fql	FQL0056	The cursor is missing.	-	established:FQL::NonLocalizedStrings(56)
+engine	-1	<internal error>	-1	established:FQL::ErrorToString(-1) gives " (-1): " + text
+engine	0		0	established:FQL::ErrorToString(0) gives " (0): " + text
+engine	1	Operation aborted	1	established:FQL::ErrorToString(1) gives " (1): " + text
+engine	2	Memory allocation failure	2	established:FQL::ErrorToString(2) gives " (2): " + text
+engine	3	Unavailable command	3	established:FQL::ErrorToString(3) gives " (3): " + text
+engine	4	Unknown command	4	established:FQL::ErrorToString(4) gives " (4): " + text
+engine	5	Invalid command	5	established:FQL::ErrorToString(5) gives " (5): " + text
+engine	6	Read-only file	6	established:FQL::ErrorToString(6) gives " (6): " + text
+engine	7	Out of stack space	7	established:FQL::ErrorToString(7) gives " (7): " + text
+engine	8	Empty result	8	established:FQL::ErrorToString(8) gives " (8): " + text
+engine	9	Access denied	9	established:FQL::ErrorToString(9) gives " (9): " + text
+engine	10	Data missing	10	established:FQL::ErrorToString(10) gives " (10): " + text
+engine	11	Invalid name	11	established:FQL::ErrorToString(11) gives " (11): " + text
+engine	12	Duplicate name	12	established:FQL::ErrorToString(12) gives " (12): " + text
+engine	13	Outstanding references	13	established:FQL::ErrorToString(13) gives " (13): " + text
+engine	14	Number out of range	14	established:FQL::ErrorToString(14) gives " (14): " + text
+engine	15	Divide by zero	15	established:FQL::ErrorToString(15) gives " (15): " + text
+engine	16	Operation failed, request retry	16	established:FQL::ErrorToString(16) gives " (16): " + text
+engine	17	Character set conversion failure	17	established:FQL::ErrorToString(17) gives " (17): " + text
+engine	18	Login required	18	established:FQL::ErrorToString(18) gives " (18): " + text
+engine	19	Non-alphanumeric ASCII characters	19	established:FQL::ErrorToString(19) gives " (19): " + text
+engine	100	File missing	100	established:FQL::ErrorToString(100) gives " (100): " + text
+engine	101	Record missing	101	established:FQL::ErrorToString(101) gives " (101): " + text
+engine	102	Field missing	102	established:FQL::ErrorToString(102) gives " (102): " + text
+engine	103	Relationship missing	103	established:FQL::ErrorToString(103) gives " (103): " + text
+engine	104	Script missing	104	established:FQL::ErrorToString(104) gives " (104): " + text
+engine	105	Layout missing	105	established:FQL::ErrorToString(105) gives " (105): " + text
+engine	106	Table missing	106	established:FQL::ErrorToString(106) gives " (106): " + text
+engine	107	Index missing	107	established:FQL::ErrorToString(107) gives " (107): " + text
+engine	108	Value list missing	108	established:FQL::ErrorToString(108) gives " (108): " + text
+engine	109	Privileges missing	109	established:FQL::ErrorToString(109) gives " (109): " + text
+engine	110	Related tables missing	110	established:FQL::ErrorToString(110) gives " (110): " + text
+engine	111	Invalid field repetition	111	established:FQL::ErrorToString(111) gives " (111): " + text
+engine	112	Window missing	112	established:FQL::ErrorToString(112) gives " (112): " + text
+engine	113	Function missing	113	established:FQL::ErrorToString(113) gives " (113): " + text
+engine	114	File reference missing	114	established:FQL::ErrorToString(114) gives " (114): " + text
+engine	118	Theme missing	118	established:FQL::ErrorToString(118) gives " (118): " + text
+engine	119	No supported email client found	119	established:FQL::ErrorToString(119) gives " (119): " + text
+engine	130	Core component missing	130	established:FQL::ErrorToString(130) gives " (130): " + text
+engine	131	Language missing	131	established:FQL::ErrorToString(131) gives " (131): " + text
+engine	200	No record access	200	established:FQL::ErrorToString(200) gives " (200): " + text
+engine	201	Cannot modify field	201	established:FQL::ErrorToString(201) gives " (201): " + text
+engine	202	Cannot read field	202	established:FQL::ErrorToString(202) gives " (202): " + text
+engine	203	Cannot print	203	established:FQL::ErrorToString(203) gives " (203): " + text
+engine	204	Cannot read all sort fields	204	established:FQL::ErrorToString(204) gives " (204): " + text
+engine	205	Cannot import over all records	205	established:FQL::ErrorToString(205) gives " (205): " + text
+engine	206	Cannot change password	206	established:FQL::ErrorToString(206) gives " (206): " + text
+engine	207	Cannot modify schema	207	established:FQL::ErrorToString(207) gives " (207): " + text
+engine	208	Password too short	208	established:FQL::ErrorToString(208) gives " (208): " + text
+engine	209	Password not different	209	established:FQL::ErrorToString(209) gives " (209): " + text
+engine	210	Invalid account/password	210	established:FQL::ErrorToString(210) gives " (210): " + text
+engine	211	Password expired	211	established:FQL::ErrorToString(211) gives " (211): " + text
+engine	212	Invalid account/password	212	established:FQL::ErrorToString(212) gives " (212): " + text
+engine	213	Invalid account/password	213	established:FQL::ErrorToString(213) gives " (213): " + text
+engine	214	Account temporarily locked	214	established:FQL::ErrorToString(214) gives " (214): " + text
+engine	216	Cannot duplicate guest account	216	established:FQL::ErrorToString(216) gives " (216): " + text
+engine	217	Cannot modify administrator account	217	established:FQL::ErrorToString(217) gives " (217): " + text
+engine	300	File locked or in use	300	established:FQL::ErrorToString(300) gives " (300): " + text
+engine	301	Record is locked by another user	301	established:FQL::ErrorToString(301) gives " (301): " + text
+engine	302	Data table is locked by another user	302	established:FQL::ErrorToString(302) gives " (302): " + text
+engine	303	Database schema is locked by another user	303	established:FQL::ErrorToString(303) gives " (303): " + text
+engine	304	Layout is locked by another user	304	established:FQL::ErrorToString(304) gives " (304): " + text
+engine	306	Record modification ID does not match	306	established:FQL::ErrorToString(306) gives " (306): " + text
+engine	308	Theme is locked by another user	308	established:FQL::ErrorToString(308) gives " (308): " + text
+engine	400	Empty query specified	400	established:FQL::ErrorToString(400) gives " (400): " + text
+engine	401	No records satisfy this request	401	established:FQL::ErrorToString(401) gives " (401): " + text
+engine	402	No field looks up values based on the indicated field	402	established:FQL::ErrorToString(402) gives " (402): " + text
+engine	404	Defined sort order is invalid	404	established:FQL::ErrorToString(404) gives " (404): " + text
+engine	406	Invalid replace/reserialize criteria	406	established:FQL::ErrorToString(406) gives " (406): " + text
+engine	407	One or both join fields are missing	407	established:FQL::ErrorToString(407) gives " (407): " + text
+engine	408	Specified field has inappropriate data type	408	established:FQL::ErrorToString(408) gives " (408): " + text
+engine	412	Tried to recover file with wrong version of FileMaker	412	established:FQL::ErrorToString(412) gives " (412): " + text
+engine	413	Specified field has inappropriate field type	413	established:FQL::ErrorToString(413) gives " (413): " + text
+engine	414	Layout cannot display the result	414	established:FQL::ErrorToString(414) gives " (414): " + text
+engine	500	Field failed date value validation test	500	established:FQL::ErrorToString(500) gives " (500): " + text
+engine	501	Field failed time value validation test	501	established:FQL::ErrorToString(501) gives " (501): " + text
+engine	502	Field failed numeric value validation test	502	established:FQL::ErrorToString(502) gives " (502): " + text
+engine	503	Field failed range validation test	503	established:FQL::ErrorToString(503) gives " (503): " + text
+engine	504	Field failed unique value validation test	504	established:FQL::ErrorToString(504) gives " (504): " + text
+engine	505	Field failed existing value validation test	505	established:FQL::ErrorToString(505) gives " (505): " + text
+engine	506	Field failed member value validation test	506	established:FQL::ErrorToString(506) gives " (506): " + text
+engine	507	Field failed calculation result test	507	established:FQL::ErrorToString(507) gives " (507): " + text
+engine	508	Field failed query value validation test	508	established:FQL::ErrorToString(508) gives " (508): " + text
+engine	509	Field failed required value validation test	509	established:FQL::ErrorToString(509) gives " (509): " + text
+engine	510	Join value is empty or unavailable	510	established:FQL::ErrorToString(510) gives " (510): " + text
+engine	511	Field failed maximum character count validation test	511	established:FQL::ErrorToString(511) gives " (511): " + text
+engine	513	Field failed maximum character count validation test	513	established:FQL::ErrorToString(513) gives " (513): " + text
+engine	800	Unable to create file	800	established:FQL::ErrorToString(800) gives " (800): " + text
+engine	801	Unable to create temp file	801	established:FQL::ErrorToString(801) gives " (801): " + text
+engine	802	Unable to open file	802	established:FQL::ErrorToString(802) gives " (802): " + text
+engine	803	File already open but single user	803	established:FQL::ErrorToString(803) gives " (803): " + text
+engine	804	File cannot be opened as read only in its current state	804	established:FQL::ErrorToString(804) gives " (804): " + text
+engine	805	File is damaged, use recover	805	established:FQL::ErrorToString(805) gives " (805): " + text
+engine	806	File cannot be opened with this version of FileMaker	806	established:FQL::ErrorToString(806) gives " (806): " + text
+engine	807	Unrecognized file	807	established:FQL::ErrorToString(807) gives " (807): " + text
+engine	808	Cannot open file because of damaged access privileges	808	established:FQL::ErrorToString(808) gives " (808): " + text
+engine	809	Disk full	809	established:FQL::ErrorToString(809) gives " (809): " + text
+engine	810	Disk/volume is locked	810	established:FQL::ErrorToString(810) gives " (810): " + text
+engine	811	Attempting to open a temp file as a normal FileMaker file	811	established:FQL::ErrorToString(811) gives " (811): " + text
+engine	812	Reached current host user limit	812	established:FQL::ErrorToString(812) gives " (812): " + text
+engine	813	Synchronization error	813	established:FQL::ErrorToString(813) gives " (813): " + text
+engine	814	Too many files open, name each file that cannot be opened	814	established:FQL::ErrorToString(814) gives " (814): " + text
+engine	815	Couldn't open the lookup file	815	established:FQL::ErrorToString(815) gives " (815): " + text
+engine	816	Unable to convert file	816	established:FQL::ErrorToString(816) gives " (816): " + text
+engine	817	File's binding key does not match this runtime application	817	established:FQL::ErrorToString(817) gives " (817): " + text
+engine	819	Cannot use block copy on a remote file	819	established:FQL::ErrorToString(819) gives " (819): " + text
+engine	820	File is in the process of being closed	820	established:FQL::ErrorToString(820) gives " (820): " + text
+engine	821	Force disconnected from the host	821	established:FQL::ErrorToString(821) gives " (821): " + text
+engine	822	FMI files are not found	822	established:FQL::ErrorToString(822) gives " (822): " + text
+engine	823	Cannot set exclusive because guests are connected	823	established:FQL::ErrorToString(823) gives " (823): " + text
+engine	824	File is damaged or not a FileMaker file	824	established:FQL::ErrorToString(824) gives " (824): " + text
+engine	825	File is not authorized to access protected file	825	established:FQL::ErrorToString(825) gives " (825): " + text
+engine	1200	Parse error	1200	established:FQL::ErrorToString(1200) gives " (1200): " + text
+engine	1201	Too few arguments	1201	established:FQL::ErrorToString(1201) gives " (1201): " + text
+engine	1202	Too many arguments	1202	established:FQL::ErrorToString(1202) gives " (1202): " + text
+engine	1203	Unexpected end	1203	established:FQL::ErrorToString(1203) gives " (1203): " + text
+engine	1204	Number, text constant, field name or ( expected	1204	established:FQL::ErrorToString(1204) gives " (1204): " + text
+engine	1205	Comment is not terminated with '*/'	1205	established:FQL::ErrorToString(1205) gives " (1205): " + text
+engine	1206	Text constant missing trailing quotation mark	1206	established:FQL::ErrorToString(1206) gives " (1206): " + text
+engine	1207	Unbalanced parenthesis	1207	established:FQL::ErrorToString(1207) gives " (1207): " + text
+engine	1208	Operator missing, function not found, or ( not expected	1208	established:FQL::ErrorToString(1208) gives " (1208): " + text
+engine	1209	Field, layout, etc. name	1209	established:FQL::ErrorToString(1209) gives " (1209): " + text
+engine	1210	Plugin function was already registered	1210	established:FQL::ErrorToString(1210) gives " (1210): " + text
+engine	1211	List usage is not allowed in this function	1211	established:FQL::ErrorToString(1211) gives " (1211): " + text
+engine	1212	Operator (e.g. +, -, *, ...) is expected here	1212	established:FQL::ErrorToString(1212) gives " (1212): " + text
+engine	1213	Variable has already been defined in the Let function	1213	established:FQL::ErrorToString(1213) gives " (1213): " + text
+engine	1214	A function parameter contains an expression where a field is required	1214	established:FQL::ErrorToString(1214) gives " (1214): " + text
+engine	1215	Parameter is an invalid Get function parameter	1215	established:FQL::ErrorToString(1215) gives " (1215): " + text
+engine	1216	Only summary fields allowed as first argument in GetSummary	1216	established:FQL::ErrorToString(1216) gives " (1216): " + text
+engine	1217	Break field is invalid	1217	established:FQL::ErrorToString(1217) gives " (1217): " + text
+engine	1218	Bad format for the data type	1218	established:FQL::ErrorToString(1218) gives " (1218): " + text
+engine	1219	Field cannot be used in its own formula	1219	established:FQL::ErrorToString(1219) gives " (1219): " + text
+engine	1220	Field type must be normal or calculated	1220	established:FQL::ErrorToString(1220) gives " (1220): " + text
+engine	1221	Data type must be number, date, time, timestamp	1221	established:FQL::ErrorToString(1221) gives " (1221): " + text
+engine	1222	The calculation cannot be stored	1222	established:FQL::ErrorToString(1222) gives " (1222): " + text
+engine	1223	Expression is not implemented	1223	established:FQL::ErrorToString(1223) gives " (1223): " + text
+engine	1224	Expression is not defined	1224	established:FQL::ErrorToString(1224) gives " (1224): " + text
+engine	1225	Calc fFunction is not supported	1225	established:FQL::ErrorToString(1225) gives " (1225): " + text
+engine	1638	The host is not allowing new connections. Try again later.	1638	established:FQL::ErrorToString(1638) gives " (1638): " + text
+engine	2055	Field is not indexable	2055	established:FQL::ErrorToString(2055) gives " (2055): " + text
+engine	3312	Operation cannot be performed because some objects locked	3312	established:FQL::ErrorToString(3312) gives " (3312): " + text
+engine	4100	 button requires a field to be active	4100	established:FQL::ErrorToString(4100) gives " (4100): " + text
+engine	8000	Cannot unlock if not present	8000	established:FQL::ErrorToString(8000) gives " (8000): " + text
+engine	8001	Lock isn't granted, but hasn't timed out yet	8001	established:FQL::ErrorToString(8001) gives " (8001): " + text
+engine	8002	Lock cancelled	8002	established:FQL::ErrorToString(8002) gives " (8002): " + text
+engine	8003	Timeout/rejection due to lock conflict	8003	established:FQL::ErrorToString(8003) gives " (8003): " + text
+engine	8005	You need to update your schema	8005	established:FQL::ErrorToString(8005) gives " (8005): " + text
+engine	8006	We need to be picky about what type you can upgrade to	8006	established:FQL::ErrorToString(8006) gives " (8006): " + text
+engine	8200	Warning: name cannot be used in calculation expressions	8200	established:FQL::ErrorToString(8200) gives " (8200): " + text
+engine	8201	Cycle in the join graph	8201	established:FQL::ErrorToString(8201) gives " (8201): " + text
+engine	8202	Cannot join an alias to itself	8202	established:FQL::ErrorToString(8202) gives " (8202): " + text
+engine	8203	Cannot join on these fields	8203	established:FQL::ErrorToString(8203) gives " (8203): " + text
+engine	8204	Exceeding number of tables allowed	8204	established:FQL::ErrorToString(8204) gives " (8204): " + text
+engine	8205	External value list definition points back to itself in loop	8205	established:FQL::ErrorToString(8205) gives " (8205): " + text
+engine	8207	Field option requires index	8207	established:FQL::ErrorToString(8207) gives " (8207): " + text
+engine	8208	Field type or data type cannot be changed due to dependency	8208	established:FQL::ErrorToString(8208) gives " (8208): " + text
+engine	8209	Select a field from each list before clicking the add button	8209	established:FQL::ErrorToString(8209) gives " (8209): " + text
+engine	8210	Cannot delete a field, used in a privilege	8210	established:FQL::ErrorToString(8210) gives " (8210): " + text
+engine	8300	Unsupported temp-table operation	8300	established:FQL::ErrorToString(8300) gives " (8300): " + text
+engine	8301	Column type mismatch in UNION.	8301	established:FQL::ErrorToString(8301) gives " (8301): " + text
+engine	8302	Union - source and destination must differ	8302	established:FQL::ErrorToString(8302) gives " (8302): " + text
+engine	8303	A scalar subquery returned multiple rows.	8303	established:FQL::ErrorToString(8303) gives " (8303): " + text
+engine	8304	Schema changes (DDL) are not allowed until transaction is committed or rolled back	8304	established:FQL::ErrorToString(8304) gives " (8304): " + text
+engine	8305	Cannot create index - this column already has an index	8305	established:FQL::ErrorToString(8305) gives " (8305): " + text
+engine	8306	Cannot perform a schema change on an external table	8306	established:FQL::ErrorToString(8306) gives " (8306): " + text
+engine	8307	Cannot lock this select for update because the query contains computed columns.	8307	established:FQL::ErrorToString(8307) gives " (8307): " + text
+engine	8308	Default value in CREATE or ALTER TABLE does not match column type.	8308	established:FQL::ErrorToString(8308) gives " (8308): " + text
+engine	8315	Invalid container base directory specified	8315	established:FQL::ErrorToString(8315) gives " (8315): " + text
+engine	8400	Some external authentications schemes require multiple authentication calls	8400	established:FQL::ErrorToString(8400) gives " (8400): " + text
+engine	8401	Privilege set still has user accounts referencing it	8401	established:FQL::ErrorToString(8401) gives " (8401): " + text
+engine	8402	Cannot duplicate the administrator privileges	8402	established:FQL::ErrorToString(8402) gives " (8402): " + text
+engine	8403	Cannot allow the creation of and disallow the modification of new objects	8403	established:FQL::ErrorToString(8403) gives " (8403): " + text
+engine	20600	Can't initialize networking stack	20600	established:FQL::ErrorToString(20600) gives " (20600): " + text
+engine	20601	Can initialize for outbound only	20601	established:FQL::ErrorToString(20601) gives " (20601): " + text
+engine	20602	Can't create a connection	20602	established:FQL::ErrorToString(20602) gives " (20602): " + text
+engine	20603	Lost communications with host/guest	20603	established:FQL::ErrorToString(20603) gives " (20603): " + text

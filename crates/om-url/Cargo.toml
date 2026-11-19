@@ -1,0 +1,16 @@
+[package]
+name = "om-url"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+rust-version.workspace = true
+description = "Insert from URL: FileMaker's HTTP requests with Claris's cURL options, and the values responses become"
+
+[dependencies]
+om-calc = { path = "../om-calc" }
+om-scripts = { path = "../om-scripts" }
+# HTTP and HTTPS, rustls with the webpki roots.
+ureq = { version = "2.12", default-features = false, features = ["tls", "gzip"] }
+
+[lints]
+workspace = true

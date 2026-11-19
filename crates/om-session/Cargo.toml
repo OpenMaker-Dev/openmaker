@@ -1,0 +1,19 @@
+[package]
+name = "om-session"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+rust-version.workspace = true
+
+[dependencies]
+om-giop = { path = "../om-giop" }
+om-hbam = { path = "../om-hbam" }
+om-protocol = { path = "../om-protocol" }
+om-rctransaction = { path = "../om-rctransaction" }
+om-scsu = { path = "../om-scsu" }
+rustls = { version = "0.23", default-features = false, features = ["std", "ring", "tls12"] }
+rustls-pemfile = "2"
+webpki-roots = "1"
+
+[lints]
+workspace = true

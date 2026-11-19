@@ -1,0 +1,1509 @@
+# Claris doc examples (calc-function-vectors.tsv; field examples rewritten with literals)
+Char ( 0 )	0	1/1/0	
+Char ( 97 )	0	1/1/0	a
+Char ( 98 )	0	1/1/0	b
+Char ( 9800097 )	0	1/1/0	ab
+Char ( 228 )	0	1/1/0	ä
+Char ( 77600097 )	0	1/1/0	ä
+Length ( Char ( 77600097 ) )	0	2/2/0	1
+Code ( "a" )	0	2/2/0	97
+Code ( "b" )	0	2/2/0	98
+Code ( "ab" )	0	2/2/0	9800097
+Code ( "ä" )	0	2/2/0	228
+Exact ( "McDonald" ; "McDonald" )	0	2/2/0	1
+Exact ( "McDonald" ; "MCDONALD" )	0	2/2/0	0
+Exact ( "John" ; "John " )	0	2/2/0	0
+Exact ( Upper ( "McDonald" ) ; Upper ( "MCDONALD" ) )	0	2/2/0	1
+Exact ( "Spain" ; "Spain" )	0	2/2/0	1
+Exact ( "JOHNSON" ; Upper ( "JOHNSON" ) )	0	2/2/0	1
+Filter ( "(408)555-1212" ; "0123456789" )	0	1/1/0	4085551212
+Filter ( "AaBb" ; "AB" )	0	1/1/0	AB
+FilterValues ( "Plaid¶Canvas¶Suitcase" ; "Plaid¶Canvas" )	0	1/1/0	Plaid\rCanvas\r
+FilterValues ( "Small¶Medium¶Large" ; "Medium¶Small" )	0	1/1/0	Small\rMedium\r
+GetAsDate ( "03/03/2019" )	0	3/3/0	03/03/2019
+GetAsDate ( 737342 )	0	3/3/0	10.10.2019
+GetAsDate ( "12/31/2019" ) - GetAsDate ( "10/2/2019" )	500	2/2/0	?
+GetAsNumber ( "FY20" )	0	2/2/0	20
+GetAsNumber ( "$1,254.50" )	0	2/2/0	1,2545
+GetAsNumber ( "2 - 2" )	0	2/2/0	22
+GetAsNumber ( "-22" )	0	2/2/0	-22
+GetAsNumber ( ".(22)" )	0	2/2/0	-22
+GetAsNumber ( "QTjPLeRMaCV" )	0	2/2/0	
+GetAsNumber ( "TKV35FRG6HH84" )	0	2/2/0	35684
+GetAsNumber ( Date ( 10 ; 10 ; 2019 ) )	0	2/2/0	737342
+GetAsText ( 45 )	0	1/1/0	45
+"You are " & GetAsText ( 3 ) & " days late."	0	1/1/0	You are 3 days late.
+"FY" & GetAsText ( 98 )	0	1/1/0	FY98
+GetAsTime ( "02:47:35" )	0	4/4/0	02:47:35
+Abs ( GetAsTime ( "12:15 pm" ) - GetAsTime ( "3:15 PM" ) )	501	2/2/0	?
+GetAsTimestamp ( "4/5/2019 4:05:06" )	0	5/5/0	04/05/2019 04:05:06
+GetAsTimestamp ( 50000 )	0	5/5/0	01.01.0001 13:53:20
+GetAsURLEncoded ( "Hello" )	0	1/1/0	Hello
+GetAsURLEncoded ( "San Francisco" )	0	1/1/0	San%20Francisco
+GetAsURLEncoded ( "français" )	0	1/1/0	fran%C3%A7ais
+GetValue ( "London¶Paris¶Hong Kong" ; 2 )	0	1/1/0	Paris
+Left ( "Manufacturing" ; 4 )	0	1/1/0	Manu
+Left ( "Sophie Tang" ; Position ( "Sophie Tang" ; " " ; 1 ; 1 ) - 1 )	0	1/1/0	Sophie
+Left ( "48187" ; 3 ) & Upper ( Left ( "Johnson" ; 4 ) )	0	1/1/0	481JOHN
+LeftValues ( "Plaid¶Canvas¶Suitcase" ; 2 )	0	1/1/0	Plaid\rCanvas\r
+LeftValues ( "Sophie¶Bill¶John" ; 1 )	0	1/1/0	Sophie\r
+LeftWords ( "Plaid Canvas Suitcase" ; 2 )	0	1/1/0	Plaid Canvas
+LeftWords ( "Sophie Tang" ; 1 )	0	1/1/0	Sophie
+Length ( "John" )	0	2/2/0	4
+Length ( "Modem for PC" )	0	2/2/0	12
+Length ( "M1" & Left ( "Canvas Backpack" ; 5 ) )	0	2/2/0	7
+Lower ( "ABCD" )	0	1/1/0	abcd
+Lower ( "History" )	0	1/1/0	history
+Lower ( "YOUR BILL IS OVERDUE" )	0	1/1/0	your bill is overdue
+Middle ( "(408)555-9054" ; 2 ; 3 )	0	1/1/0	408
+Middle ( "(408) 555-9054" ; 2 ; 3 )	0	1/1/0	408
+Middle ( "abcdefghij" ; 5 ; 2 )	0	1/1/0	ef
+Middle ( "John Smith" ; Position ( "John Smith" ; " " ; 1 ; 1 ) + 1 ; 3 )	0	1/1/0	Smi
+MiddleValues ( "Plaid¶Canvas¶Suitcase" ; 2 ; 1 )	0	1/1/0	Canvas\r
+MiddleValues ( "Sophie¶Bill¶John¶Ann" ; 2 ; 2 )	0	1/1/0	Bill\rJohn\r
+MiddleWords ( "Plaid, Canvas, Suitcase" ; 2 ; 2 )	0	1/1/0	Canvas, Suitcase
+MiddleWords ( "Brigitte Erika Durand" ; 1 ; 2 )	0	1/1/0	Brigitte Erika
+PatternCount ( "Mississippi" ; "is" )	0	2/2/0	2
+PatternCount ( "Mississippi" ; "issi" )	0	2/2/0	1
+PatternCount ( "Guest¶Speaker" ; "Guest" )	0	2/2/0	1
+PatternCount ( "Full Access" ; "Read-Only Access" )	0	2/2/0	0
+Position ( "Mississippi" ; "iss" ; 1 ; 1 )	0	2/2/0	2
+Position ( "Mississippi" ; "iss" ; 1 ; 2 )	0	2/2/0	5
+Position ( "Mississippi" ; "iss" ; 3 ; 1 )	0	2/2/0	5
+Left ( "William Smith" ; Position ( "William Smith" ; " " ; 1 ; 1 ) - 1 )	0	1/1/0	William
+Right ( "William Smith" ; Length ( "William Smith" ) - Position ( "William Smith" ; " " ; Length ( "William Smith" ) ; -1 ) )	0	1/1/0	Smith
+Proper ( "ABCD" )	0	1/1/0	Abcd
+Proper ( "YUMIKO KITAGAWA" )	0	1/1/0	Yumiko Kitagawa
+Quote ( "hello" )	0	1/1/0	"hello"
+Quote ( "abc\¶" )	0	1/1/0	"abc\\¶"
+Quote ( "say \"hello\" fred" )	0	1/1/0	"say \\"hello\\" fred"
+Replace ( "1234567" ; 5 ; 1 ; "X" )	0	1/1/0	1234X67
+Replace ( "1234567" ; 5 ; 1 ; "XX" )	0	1/1/0	1234XX67
+Replace ( "1234567" ; 5 ; 2 ; "X" )	0	1/1/0	1234X7
+Replace ( "1234567" ; 5 ; 0 ; "X" )	0	1/1/0	1234X567
+Replace ( "William" ; 3 ; 4 ; "NEW TEXT" )	0	1/1/0	WiNEW TEXTm
+Replace ( "408-555-9054" ; 1 ; 3 ; "415" )	0	1/1/0	415-555-9054
+Right ( "Manufacturing" ; 4 )	0	1/1/0	ring
+Right ( "Michelle Cannon" ; Length ( "Michelle Cannon" ) - Position ( "Michelle Cannon" ; " " ; 1 ; 1 ) )	0	1/1/0	Cannon
+Right ( "00-48-187" ; 3 ) & Upper ( Left ( "Ferrini" ; 4 ) )	0	1/1/0	187FERR
+RightValues ( "Plaid¶Canvas¶Suitcase" ; 2 )	0	1/1/0	Canvas\rSuitcase\r
+RightValues ( "Sophie¶Bill¶John" ; 1 )	0	1/1/0	John\r
+RightWords ( "Plaid Canvas Suitcase" ; 2 )	0	1/1/0	Canvas Suitcase
+RightWords ( "Matti Virtanen" ; 1 )	0	1/1/0	Virtanen
+SerialIncrement ( "abc12" ; 1 )	0	1/1/0	abc13
+SerialIncrement ( "abc12" ; 7 )	0	1/1/0	abc19
+SerialIncrement ( "abc12" ; -1 )	0	1/1/0	abc11
+SerialIncrement ( "abc12" ; 1.2 )	106	2/2/0	?
+SerialIncrement ( "abc1.2" ; 1.2 )	106	2/2/0	?
+SerialIncrement ( "abc123;999" ; 1 )	0	1/1/0	abc123;1000
+SortValues ( "34¶600¶18¶29" ; -2 )	0	1/1/0	600\r34\r29\r18\r
+SortValues ( "red¶green¶blue¶GREEN¶yellow¶" )	0	1/1/0	blue\rgreen\rGREEN\rred\ryellow\r
+Substitute ( "We want WYSIWYG." ; "WYSIWYG." ; "What you see is what you get." )	0	1/1/0	We want What you see is what you get.
+Substitute ( "abcabc" ; [ "a" ; "A" ] ; [ "b" ; "B" ] )	0	1/1/0	ABcABc
+Trim ( " Tom " )	0	1/1/0	Tom
+Trim ( Middle ( "00230013 William 1234" ; 9 ; 9 ) )	0	1/1/0	William
+TrimAll ( " Julian       Scott Dunn " ; 0 ; 0 )	0	1/1/0	Julian Scott Dunn
+UniqueValues ( "34¶600¶18¶600¶18.0" ; 2 )	0	1/1/0	34\r600\r18\r18.0\r
+UniqueValues ( "RED¶green¶red¶yellow¶" )	0	1/1/0	RED\rgreen\ryellow\r
+Upper ( "Ca" )	0	1/1/0	CA
+Upper ( "12n34p" )	0	1/1/0	12N34P
+ValueCount ( "Item 1¶Item 2¶Item 3¶" )	0	2/2/0	3
+ValueCount ( "Item 1¶Item 2¶Item 3¶¶" )	0	2/2/0	4
+WordCount ( "The sun is rising." )	0	2/2/0	4
+WordCount ( "x=y=1.5" )	0	2/2/0	3
+# engine and inferred rows (calc-function-vectors.tsv)
+PatternCount ( "aaaa" ; "aa" )	0	2/2/0	2
+PatternCount ( "Abc abc ABC" ; "abc" )	0	2/2/0	3
+PatternCount ( "abc" ; "" )	0	2/2/0	0
+Middle ( "abcdef" ; 0 ; 2 )	0	1/1/0	ab
+Middle ( "abcdef" ; -5 ; 2 )	0	1/1/0	ab
+Middle ( "abcdef" ; 3 ; -1 )	0	1/1/0	
+Middle ( "abcdef" ; 2.9 ; 2.9 )	106	2/2/0	?
+Left ( "abcdef" ; 2.9 )	106	2/2/0	?
+Left ( "abcdef" ; -1 )	0	1/1/0	
+Left ( "abc" ; 4294967296 )	0	1/1/0	
+Length ( "e" & Char ( 769 ) )	0	2/2/0	1
+Length ( Char ( 66560 ) )	0	2/2/0	1
+Length ( Char ( 5683255357 ) )	0	2/2/0	1
+Position ( "ABCabc" ; "c" ; 1 ; 1 )	0	2/2/0	3
+Substitute ( "aAa" ; "a" ; "x" )	0	1/1/0	xAx
+Exact ( "a" ; "A" )	0	2/2/0	0
+Filter ( "AbCabc" ; "abc" )	0	1/1/0	babc
+Code ( Trim ( Char ( 12288 ) & "x" & Char ( 12288 ) ) )	0	2/2/0	120
+Length ( Trim ( Char ( 160 ) & "x" ) )	0	2/2/0	1
+Length ( Trim ( Char ( 9 ) & "x" ) )	0	2/2/0	2
+ValueCount ( "a" & Char ( 10 ) & "b" )	0	2/2/0	2
+ValueCount ( "a" & Char ( 8232 ) & "b" & Char ( 8233 ) & "c" )	0	2/2/0	3
+ValueCount ( "a" & Char ( 133 ) & "b" )	0	2/2/0	1
+ValueCount ( "a" & Char ( 13 ) & Char ( 10 ) & "b" )	0	2/2/0	3
+# spec unknowns U-1 to U-10, U-20
+Right ( "abcdef" ; -1 )	0	1/1/0	
+LeftWords ( "a b c" ; -1 )	0	1/1/0	
+LeftValues ( "a¶b" ; -1 )	0	1/1/0	
+Left ( "abc" ; 4294967297 )	0	1/1/0	a
+Length ( "👨‍👩‍👧" )	0	2/2/0	5
+Length ( "🇯🇵" )	0	2/2/0	2
+Length ( Char ( 4352 ) & Char ( 4449 ) & Char ( 4520 ) )	0	2/2/0	1
+Position ( "café" ; "CAFE" ; 1 ; 1 )	0	2/2/0	0
+PatternCount ( "Straße" ; "SS" )	0	2/2/0	0
+Position ( "ｱ" ; "ア" ; 1 ; 1 )	0	2/2/0	0
+GetValue ( "a" & Char ( 13 ) & Char ( 10 ) & "b" ; 2 )	0	1/1/0	
+WordCount ( "don't stop-here x.y 3,5 a_b" )	0	2/2/0	7
+LeftWords ( "e-mail me@x.com" ; 2 )	0	1/1/0	e-mail
+Proper ( "o'neil mcdonald-smith 3rd" )	0	1/1/0	O'neil Mcdonald-Smith 3rd
+MiddleWords ( "one, two; three. four" ; 2 ; 2 )	0	1/1/0	two; three
+Position ( "abc" ; "b" ; 0 ; 1 )	0	2/2/0	2
+Position ( "abc" ; "b" ; 1 ; 0 )	0	2/2/0	0
+Position ( "abcb" ; "b" ; 10 ; -1 )	0	2/2/0	4
+GetValue ( "a¶b" ; 0 )	0	0/1/0	
+GetValue ( "a¶b" ; -1 )	0	0/1/0	
+TrimAll ( "a  b" ; 0 ; 0 )	0	1/1/0	a b
+TrimAll ( "a  b  アイ  c" ; 1 ; 1 )	0	1/1/0	a b アイ c
+TrimAll ( "a  b  アイ  c" ; 1 ; 2 )	0	1/1/0	a b アイ c
+TrimAll ( "a  b  アイ  c" ; 1 ; 3 )	0	1/1/0	abアイc
+Quote ( "a" & Char ( 9 ) & "b" )	0	1/1/0	"a\tb"
+Quote ( "¶" )	0	1/1/0	"¶"
+Quote ( Char ( 13 ) )	0	1/1/0	"¶"
+# huge counts
+Left ( "abcdef" ; 2^64 )	0	1/1/0	
+Left ( "abcdef" ; 2^64 + 1 )	0	1/1/0	a
+Left ( "abcdef" ; 2^63 )	0	1/1/0	
+Left ( "abcdef" ; 2^63 + 2 )	0	1/1/0	ab
+Left ( "abcdef" ; 2^63 - 1 )	0	1/1/0	abcdef
+Left ( "abcdef" ; 18446744073709551617 )	0	1/1/0	a
+Left ( "abcdef" ; 2^32 * 3 + 2 )	0	1/1/0	ab
+Left ( "abcdef" ; -2^32 + 2 )	0	1/1/0	ab
+Left ( "abcdef" ; -2^64 + 2 )	0	1/1/0	ab
+Left ( "abcdef" ; 10^30 + 2 )	0	1/1/0	ab
+Left ( "abcdef" ; 2^96 + 2 )	0	1/1/0	abcdef
+Left ( "abcdef" ; 2^70 + 2 )	0	1/1/0	ab
+Left ( "abcdef" ; 2^65 + 2 )	0	1/1/0	ab
+Middle ( "abcdef" ; 2147483648 + 3 ; 2 )	0	1/1/0	ab
+Middle ( "abcdef" ; 4294967296 ; 2 )	0	1/1/0	ab
+Middle ( "abcdef" ; -4294967294 ; 2 )	0	1/1/0	ab
+Middle ( "abcdef" ; 6442450947 ; 2 )	0	1/1/0	ab
+Middle ( "abcdef" ; 2^64 + 3 ; 2 )	0	1/1/0	cd
+Middle ( "abcdef" ; 2 ; 2^64 + 1 )	0	1/1/0	b
+Position ( "abcabc" ; "b" ; -4294967294 ; 1 )	0	2/2/0	2
+Position ( "abcabc" ; "b" ; 2147483648 + 3 ; 1 )	0	2/2/0	0
+Position ( "abcabc" ; "b" ; 4294967296 + 3 ; 1 )	0	2/2/0	5
+Position ( "abcabc" ; "b" ; 6 ; 2147483648 )	0	2/2/0	0
+Position ( "abcabc" ; "b" ; 6 ; 4294967295 )	0	2/2/0	5
+Replace ( "1234567" ; 3 ; 2147483648 ; "X" )	0	1/1/0	12X34567
+Replace ( "1234567" ; 2147483651 ; 1 ; "X" )	0	1/1/0	X234567
+Replace ( "1234567" ; 3 ; -4294967295 ; "X" )	0	1/1/0	12X34567
+# grapheme positions
+Position ( "e" & Char ( 769 ) & Char ( 769 ) ; Char ( 769 ) ; 1 ; 1 )	0	2/2/0	2
+Position ( "e" & Char ( 769 ) & Char ( 769 ) ; Char ( 769 ) ; 1 ; 2 )	0	2/2/0	2
+Position ( "e" & Char ( 769 ) & "x" & Char ( 769 ) ; Char ( 769 ) ; 1 ; 2 )	0	2/2/0	3
+Position ( "e" & Char ( 769 ) & "x" & Char ( 769 ) ; Char ( 769 ) ; 2 ; 1 )	0	2/2/0	3
+Position ( "e" & Char ( 769 ) & "x" & Char ( 769 ) ; Char ( 769 ) ; 3 ; -1 )	0	2/2/0	3
+Position ( "e" & Char ( 769 ) & "x" & Char ( 769 ) ; Char ( 769 ) ; 2 ; -1 )	0	2/2/0	2
+Position ( "e" & Char ( 769 ) & "x" & Char ( 769 ) ; Char ( 769 ) ; 1 ; -1 )	0	2/2/0	0
+Position ( "😀b😀b" ; "b" ; 2 ; -1 )	0	2/2/0	2
+Position ( "😀b😀b" ; "b" ; 3 ; -1 )	0	2/2/0	2
+Position ( "😀b😀b" ; "b" ; 3 ; 1 )	0	2/2/0	4
+Position ( "😀b😀b" ; "😀" ; 2 ; 1 )	0	2/2/0	3
+Position ( "😀b😀b" ; "😀" ; 3 ; -1 )	0	2/2/0	3
+Position ( "😀b😀b" ; "😀" ; 2 ; -1 )	0	2/2/0	1
+Position ( "a" & Char ( 13 ) & Char ( 10 ) & "b" & Char ( 10 ) ; Char ( 10 ) ; 1 ; 2 )	0	2/2/0	4
+Position ( "a" & Char ( 13 ) & Char ( 10 ) & "b" & Char ( 10 ) ; Char ( 10 ) ; 4 ; -1 )	0	2/2/0	4
+Position ( "a" & Char ( 13 ) & Char ( 10 ) & "b" & Char ( 10 ) ; Char ( 10 ) ; 3 ; -1 )	0	2/2/0	3
+Position ( "a" & Char ( 13 ) & Char ( 10 ) & "b" & Char ( 10 ) ; Char ( 10 ) ; 2 ; -1 )	0	2/2/0	0
+Position ( "a" & Char ( 13 ) & Char ( 10 ) & "b" ; Char ( 13 ) & Char ( 10 ) & "B" ; 1 ; 1 )	0	2/2/0	2
+Position ( "AB" ; "ab" ; 1 ; -1 )	0	2/2/0	1
+Position ( "ABAB" ; "ab" ; 4 ; -1 )	0	2/2/0	3
+Position ( "ABAB" ; "ab" ; 3 ; -1 )	0	2/2/0	3
+Position ( "ABAB" ; "ab" ; 2 ; -1 )	0	2/2/0	1
+# Char and Code
+Char ( 97.9 )	106	2/2/0	?
+Char ( -97 )	0	1/1/0	
+Char ( "" )	0	1/1/0	
+Char ( "abc" )	0	1/1/0	
+Char ( 1/0 )	15	2/2/0	?
+Char ( 9700000 )	0	1/1/0	a
+Char ( 97 & 0 & 98 )	0	1/1/0	筊
+Char ( 128512 )	0	1/1/0	潠\u0001
+Code ( Char ( 55357 ) )	0	2/2/0	55357
+Length ( Char ( 55357 ) )	0	2/2/0	1
+Char ( 5683255357 )	0	1/1/0	😀
+Char ( 65 + 66 * 10^5 + 67 * 10^10 )	0	1/1/0	ABC
+Char ( 10^25 + 65 )	0	1/1/0	A\u0001
+Char ( 65 * 10^400 )	0	1/1/0	A
+Length ( Char ( 13 ) )	0	2/2/0	1
+Code ( Char ( 13 ) )	0	2/2/0	13
+Char ( 10 ) = Char ( 13 )	0	2/2/0	0
+Code ( "" )	0	0/1/0	
+Code ( "😀" )	0	2/2/0	5683255357
+Code ( "e" & Char ( 769 ) )	0	2/2/0	76900101
+Code ( 12 )	0	2/2/0	5000049
+Code ( 1/0 )	15	2/2/0	63
+Code ( "12345678901234567890123456789012345678901234567890123456789012345678901234567890" )	0	2/2/0	4800057000560005500054000530005200051000500004900048000570005600055000540005300052000510005000049000480005700056000550005400053000520005100050000490004800057000560005500054000530005200051000500004900048000570005600055000540005300052000510005000049000480005700056000550005400053000520005100050000490004800057000560005500054000530005200051000500004900048000570005600055000540005300052000510005000049
+Code ( "123456789012345678901234567890123456789012345678901234567890123456789012345678901" )	503	2/2/0	?
+Code ( "1234567890123456789012345678901234567890123456789012345678901234567890123456789😀" )	503	2/2/0	?
+Code ( "1234567890123456789012345678901234567890123456789012345678901234567890123456789" & Char ( 13 ) & Char ( 10 ) )	503	2/2/0	?
+Code ( Char ( 0 ) )	0	0/1/0	
+Code ( "a" & Char ( 0 ) )	0	2/2/0	97
+Length ( "a" & Char ( 0 ) & "b" )	0	2/2/0	2
+Code ( "a" ) + 1	0	2/2/0	98
+GetAsText ( Code ( "ab" ) ) & "x"	0	1/1/0	9800097x
+# Exact
+Exact ( "é" ; "e" & Char ( 769 ) )	0	2/2/0	0
+Exact ( TextStyleAdd ( "ab" ; Bold ) ; "ab" )	0	2/2/0	1
+Exact ( 1 ; "1" )	0	2/2/0	1
+Exact ( 1 ; "1.0" )	0	2/2/0	0
+Exact ( 1 ; 1.0 )	106	2/2/0	?
+Exact ( 1/3 ; ".3333333333333333" )	0	2/2/0	0
+Exact ( Date ( 1 ; 2 ; 2003 ) ; "1/2/2003" )	0	2/2/0	0
+Exact ( Date ( 1 ; 2 ; 2003 ) ; 731217 )	0	2/2/0	0
+Exact ( Date ( 1 ; 2 ; 2003 ) ; Date ( 1 ; 2 ; 2003 ) )	0	2/2/0	1
+Exact ( "" ; "" )	0	2/2/0	1
+Exact ( "" ; 0 )	0	2/2/0	0
+Exact ( 1/0 ; "?" )	15	2/2/0	1
+Exact ( 1/0 ; 1/0 )	15	2/2/0	1
+Exact ( Time ( 1 ; 0 ; 0 ) ; 3600 )	0	2/2/0	0
+Exact ( Time ( 1 ; 0 ; 0 ) ; "1:00:00" )	0	2/2/0	0
+Exact ( 2 ; 2.0000 )	106	2/2/0	?
+Exact ( "a" ; "a" & Char ( 0 ) )	0	2/2/0	1
+Exact ( GetAsNumber ( "" ) ; "" )	0	2/2/0	1
+Exact ( 10 ; "1e1" )	0	2/2/0	0
+Exact ( GetAsNumber ( "12abc" ) ; 12 )	0	2/2/0	1
+# Filter
+Filter ( "abc" ; "" )	0	1/1/0	
+Filter ( "" ; "abc" )	0	1/1/0	
+Filter ( "e" & Char ( 769 ) & "e" ; "e" )	0	1/1/0	e
+Filter ( "e" & Char ( 769 ) & "e" ; "e" & Char ( 769 ) )	0	1/1/0	é
+Filter ( "é" & "e" & Char ( 769 ) ; "é" )	0	1/1/0	é
+Filter ( "😀a😀" ; "😀" )	0	1/1/0	😀😀
+Filter ( 12.50 ; "0123456789" )	106	2/2/0	?
+Filter ( "a" & Char ( 13 ) & Char ( 10 ) & "b" ; Char ( 13 ) )	0	1/1/0	
+Filter ( "a" & Char ( 13 ) & Char ( 10 ) & "b" ; Char ( 13 ) & Char ( 10 ) )	0	1/1/0	\r\n
+Filter ( "aaa" ; "aa" )	0	1/1/0	aaa
+Filter ( 1/0 ; "?" )	15	1/1/0	?
+# Left Right Middle
+Left ( "abcdef" ; 0 )	0	1/1/0	
+Left ( "abcdef" ; "" )	0	1/1/0	
+Left ( "abcdef" ; "x" )	0	1/1/0	
+Left ( "abcdef" ; -0.5 )	106	2/2/0	?
+Left ( "abcdef" ; 4294967296 )	0	1/1/0	
+Left ( "abcdef" ; 4294967297 )	0	1/1/0	a
+Left ( "abcdef" ; 4294967295 )	0	1/1/0	abcdef
+Left ( "abcdef" ; 2147483648 )	0	1/1/0	abcdef
+Left ( "abcdef" ; -4294967295 )	0	1/1/0	
+Left ( "abcdef" ; 10^20 )	0	1/1/0	abcdef
+Left ( "abcdef" ; 10^20 + 2 )	0	1/1/0	abcdef
+Left ( "abcdef" ; 1/0 )	15	1/1/0	
+Left ( 1/0 ; 2 )	15	1/1/0	?
+Left ( "" ; 2 )	0	1/1/0	
+Left ( 12345 ; 2 )	0	1/1/0	12
+Left ( 1/3 ; 3 )	0	1/1/0	,33
+Left ( Date ( 1 ; 2 ; 2003 ) ; 3 )	0	1/1/0	02.
+Left ( "😀a" ; 1 )	0	1/1/0	😀
+Left ( "e" & Char ( 769 ) & "x" ; 1 )	0	1/1/0	é
+Left ( "a" & Char ( 13 ) & Char ( 10 ) & "b" ; 2 )	0	1/1/0	a\r\n
+Left ( "abc" ; "2abc" )	0	1/1/0	ab
+Left ( "abcdef" ; 1e3 )	0	1/1/0	abcdef
+Right ( "abcdef" ; 0 )	0	1/1/0	
+Right ( "abcdef" ; 2.9 )	106	2/2/0	?
+Right ( "abcdef" ; 10 )	0	1/1/0	abcdef
+Right ( "abcdef" ; 4294967297 )	0	1/1/0	f
+Right ( "a😀" ; 1 )	0	1/1/0	😀
+Right ( "" ; 1 )	0	1/1/0	
+Middle ( "abcdef" ; "" ; 2 )	0	1/1/0	ab
+Middle ( "abcdef" ; 2 ; "" )	0	1/1/0	
+Middle ( "abcdef" ; 7 ; 2 )	0	1/1/0	
+Middle ( "abcdef" ; 6 ; 2 )	0	1/1/0	f
+Middle ( "abcdef" ; 4294967297 ; 2 )	0	1/1/0	ab
+Middle ( "abcdef" ; 4294967298 ; 2 )	0	1/1/0	bc
+Middle ( "abcdef" ; 2 ; 4294967297 )	0	1/1/0	b
+Middle ( "abcdef" ; -4294967295 ; 2 )	0	1/1/0	ab
+Middle ( "abcdef" ; 2147483649 ; 2 )	0	1/1/0	ab
+Middle ( "abcdef" ; 3 ; 0 )	0	1/1/0	
+Middle ( "abcdef" ; 3 ; 100 )	0	1/1/0	cdef
+# Replace
+Replace ( "1234567" ; 0 ; 1 ; "X" )	0	1/1/0	X234567
+Replace ( "1234567" ; -3 ; 1 ; "X" )	0	1/1/0	X234567
+Replace ( "1234567" ; 8 ; 1 ; "X" )	0	1/1/0	1234567X
+Replace ( "1234567" ; 20 ; 1 ; "X" )	0	1/1/0	1234567X
+Replace ( "1234567" ; 3 ; -1 ; "X" )	0	1/1/0	12X34567
+Replace ( "1234567" ; 3 ; 100 ; "X" )	0	1/1/0	12X
+Replace ( "1234567" ; "" ; "" ; "X" )	0	1/1/0	X1234567
+Replace ( "1234567" ; 2.7 ; 1.9 ; "X" )	106	2/2/0	?
+Replace ( "" ; 1 ; 1 ; "X" )	0	1/1/0	X
+Replace ( "1234567" ; 3 ; 4294967297 ; "X" )	0	1/1/0	12X4567
+Replace ( "1234567" ; 4294967299 ; 1 ; "X" )	0	1/1/0	12X4567
+Replace ( "abc" ; 2 ; 1 ; 12 )	0	1/1/0	a12c
+Replace ( "a😀b" ; 2 ; 1 ; "X" )	0	1/1/0	aXb
+# Position
+Position ( "abcb" ; "b" ; 4 ; -1 )	0	2/2/0	4
+Position ( "abcb" ; "b" ; 3 ; -1 )	0	2/2/0	2
+Position ( "abcb" ; "b" ; 2 ; -1 )	0	2/2/0	2
+Position ( "abcb" ; "b" ; 1 ; -1 )	0	2/2/0	0
+Position ( "abcb" ; "b" ; 0 ; -1 )	0	2/2/0	0
+Position ( "abcb" ; "b" ; -3 ; -1 )	0	2/2/0	0
+Position ( "abcb" ; "b" ; 10 ; 1 )	0	2/2/0	0
+Position ( "abcb" ; "b" ; 5 ; 1 )	0	2/2/0	0
+Position ( "abcb" ; "b" ; 4 ; 1 )	0	2/2/0	4
+Position ( "abcb" ; "b" ; 1 ; 2 )	0	2/2/0	4
+Position ( "abcb" ; "b" ; 1 ; 3 )	0	2/2/0	0
+Position ( "abcb" ; "b" ; 4 ; -2 )	0	2/2/0	2
+Position ( "abcb" ; "b" ; 4 ; -3 )	0	2/2/0	0
+Position ( "abcb" ; "" ; 1 ; 1 )	0	2/2/0	0
+Position ( "" ; "" ; 1 ; 1 )	0	2/2/0	0
+Position ( "" ; "a" ; 1 ; 1 )	0	2/2/0	0
+Position ( "aaaa" ; "aa" ; 1 ; 2 )	0	2/2/0	3
+Position ( "aaaa" ; "aa" ; 1 ; 3 )	0	2/2/0	0
+Position ( "aaaa" ; "aa" ; 4 ; -1 )	0	2/2/0	3
+Position ( "aaaa" ; "aa" ; 4 ; -2 )	0	2/2/0	1
+Position ( "aaaa" ; "aa" ; 3 ; -1 )	0	2/2/0	3
+Position ( "aaaa" ; "aa" ; 2 ; -1 )	0	2/2/0	2
+Position ( "abcabc" ; "bc" ; 3 ; -1 )	0	2/2/0	2
+Position ( "abcabc" ; "bc" ; 2 ; -1 )	0	2/2/0	2
+Position ( "abcabc" ; "bc" ; 5 ; -1 )	0	2/2/0	5
+Position ( "Mississippi" ; "iss" ; 1.9 ; 1.9 )	106	2/2/0	?
+Position ( "Mississippi" ; "ISS" ; 1 ; 1 )	0	2/2/0	2
+Position ( "café" ; "CAFÉ" ; 1 ; 1 )	0	2/2/0	1
+Position ( "か" ; "カ" ; 1 ; 1 )	0	2/2/0	0
+Position ( "e" & Char ( 769 ) & "x" ; "x" ; 1 ; 1 )	0	2/2/0	2
+Position ( "e" & Char ( 769 ) & "x" ; "e" ; 1 ; 1 )	0	2/2/0	1
+Position ( "é" ; "e" & Char ( 769 ) ; 1 ; 1 )	0	2/2/0	0
+Position ( "e" & Char ( 769 ) ; "é" ; 1 ; 1 )	0	2/2/0	0
+Position ( "😀a😀b" ; "b" ; 1 ; 1 )	0	2/2/0	4
+Position ( "STRASSE" ; "ß" ; 1 ; 1 )	0	2/2/0	0
+Position ( "ǅ" ; "ǆ" ; 1 ; 1 )	0	2/2/0	1
+Position ( "İ" ; "i" ; 1 ; 1 )	0	2/2/0	1
+Position ( "ı" ; "I" ; 1 ; 1 )	0	2/2/0	0
+Position ( "Σ" ; "ς" ; 1 ; 1 )	0	2/2/0	0
+Position ( "abc" ; "b" ; 4294967297 ; 1 )	0	2/2/0	2
+Position ( "abcb" ; "b" ; 1 ; 4294967297 )	0	2/2/0	2
+Position ( "abcb" ; "b" ; 1 ; -4294967295 )	0	2/2/0	2
+Position ( 12312 ; 2 ; 1 ; 2 )	0	2/2/0	5
+Position ( "a" & Char ( 13 ) & Char ( 10 ) & "b" ; "b" ; 1 ; 1 )	0	2/2/0	3
+Position ( "a" & Char ( 13 ) & Char ( 10 ) & "b" ; Char ( 10 ) ; 1 ; 1 )	0	2/2/0	3
+Position ( "ab" ; "a" ; 1/0 ; 1 )	15	2/2/0	1
+# PatternCount
+PatternCount ( "" ; "a" )	0	2/2/0	0
+PatternCount ( "café" ; "e" )	0	2/2/0	0
+PatternCount ( "e" & Char ( 769 ) ; "e" )	0	2/2/0	1
+PatternCount ( "😀😀" ; "😀" )	0	2/2/0	2
+PatternCount ( "ﬁfi" ; "fi" )	0	2/2/0	1
+PatternCount ( 1111 ; 1 )	0	2/2/0	4
+PatternCount ( "a" & Char ( 13 ) & Char ( 10 ) ; Char ( 13 ) )	0	2/2/0	1
+PatternCount ( "a" & Char ( 13 ) & Char ( 10 ) ; Char ( 10 ) )	0	2/2/0	1
+# Substitute
+Substitute ( "aaaa" ; "aa" ; "a" )	0	1/1/0	aa
+Substitute ( "abc" ; "" ; "x" )	0	1/1/0	abc
+Substitute ( "abc" ; "b" ; "" )	0	1/1/0	ac
+Substitute ( "" ; "b" ; "x" )	0	1/1/0	
+Substitute ( "abc" ; "abc" ; "abcabc" )	0	1/1/0	abcabc
+Substitute ( "e" & Char ( 769 ) ; "e" ; "x" )	0	1/1/0	x́
+Substitute ( "é" ; "e" ; "x" )	0	1/1/0	é
+Substitute ( "a" & Char ( 13 ) & Char ( 10 ) & "b" ; Char ( 13 ) ; "x" )	0	1/1/0	ax\nb
+Substitute ( "a" & Char ( 13 ) & Char ( 10 ) & "b" ; Char ( 10 ) ; "x" )	0	1/1/0	a\rxb
+Substitute ( 1/0 ; "?" ; "x" )	15	1/1/0	x
+Substitute ( 12.5 ; "." ; "," )	106	2/2/0	?
+Substitute ( "abc" ; ["a";"b"] ; ["b";"c"] )	0	1/1/0	ccc
+Substitute ( "abc" ; ["b";"a"] ; ["a";"b"] )	0	1/1/0	bbc
+Substitute ( "abcabc" ; ["a";"x"] ; ["b";"y"] ; ["c";"z"] )	0	1/1/0	xyzxyz
+Substitute ( "abcabc" ; [ "a" ; "x" ] ; [ "b" ; "y" ] )	0	1/1/0	xycxyc
+Substitute ( "abcabc" ; [ "a" ; "x" ] )	0	1/1/0	xbcxbc
+WordCount ( "1.2" )	0	2/2/0	1
+WordCount ( "1/2" )	0	2/2/0	2
+WordCount ( "1,2" )	0	2/2/0	1
+WordCount ( "1:2" )	0	2/2/0	1
+WordCount ( "1-2" )	0	2/2/0	1
+WordCount ( "1" & Char ( 12290 ) & "2" )	0	2/2/0	1
+WordCount ( "1" & Char ( 65294 ) & "2" )	0	2/2/0	1
+WordCount ( "a.b" )	0	2/2/0	1
+WordCount ( "1 2" )	0	2/2/0	2
+WordCount ( "1" & Char ( 160 ) & "2" )	0	2/2/0	1
+# count conversion
+Left ( "abcdef" ; 1000000000000000000000000000002 )	0	1/1/0	ab
+Left ( "abcdef" ; 79228162514264337593543950338 )	0	1/1/0	abcdef
+Left ( "abcdef" ; 10000000000000000002 )	0	1/1/0	abcdef
+Left ( "abcdef" ; 18446744069414584323 )	0	1/1/0	abc
+Left ( "abcdef" ; 1000000000000000000000000002 )	0	1/1/0	ab
+Left ( "abcdef" ; 2.99999999999999999999 )	106	2/2/0	?
+Left ( "abcdef" ; "3abc" )	0	1/1/0	abc
+Left ( "abcdef" ; -0 )	0	1/1/0	
+Position ( "abcabc" ; "b" ; -3 ; 1 )	0	2/2/0	2
+Position ( "abcabc" ; "b" ; 4294967298 ; 1 )	0	2/2/0	2
+Position ( "abcabc" ; "b" ; -4294967291 ; 1 )	0	2/2/0	2
+Position ( "abcabc" ; "b" ; 2^64 + 5 ; 1 )	0	2/2/0	5
+Position ( "abcabc" ; "b" ; 18446744069414584323 ; 1 )	0	2/2/0	5
+Position ( "abcabc" ; "b" ; 10000000000000000002 ; 1 )	0	2/2/0	0
+Position ( "abcabc" ; "b" ; 6 ; 10000000000000000002 )	0	2/2/0	0
+Position ( "abcabc" ; "b" ; 6 ; -1.9 )	106	2/2/0	?
+Position ( "abcabc" ; "b" ; 6 ; "" )	0	2/2/0	0
+Middle ( "abcdef" ; 18446744069414584323 ; 2 )	0	1/1/0	cd
+Middle ( "abcdef" ; 10000000000000000003 ; 2 )	0	1/1/0	ab
+Middle ( "abcdef" ; 2 ; 10000000000000000002 )	0	1/1/0	bcdef
+Middle ( "abcdef" ; 2 ; 18446744069414584323 )	0	1/1/0	bcd
+Replace ( "1234567" ; 3 ; 18446744069414584323 ; "X" )	0	1/1/0	12X67
+Replace ( "1234567" ; 18446744069414584323 ; 1 ; "X" )	0	1/1/0	12X4567
+Replace ( "1234567" ; 3 ; 10000000000000000002 ; "X" )	0	1/1/0	12X34567
+Right ( "abcdef" ; 10000000000000000002 )	0	1/1/0	abcdef
+Right ( "abcdef" ; 18446744069414584323 )	0	1/1/0	def
+Exact ( GetAsDate ( "1-2-2003" ) ; Date ( 1 ; 2 ; 2003 ) )	0	2/2/0	0
+Exact ( GetAsNumber ( "1e1" ) ; 10 )	0	2/2/0	1
+Exact ( Time ( 1 ; 0 ; 0 ) ; GetAsTime ( "1:00" ) )	0	2/2/0	1
+Exact ( 1/3 ; SetPrecision ( 1/3 ; 20 ) )	0	2/2/0	0
+Exact ( "abc" ; TextStyleAdd ( "abc" ; Italic ) )	0	2/2/0	1
+# case
+Upper ( "straße" )	0	1/1/0	STRAßE
+Upper ( "ﬁ" )	0	1/1/0	ﬁ
+Upper ( "ǆ" )	0	1/1/0	Ǆ
+Lower ( "ǅ" )	0	1/1/0	ǆ
+Upper ( "ı i" )	0	1/1/0	I I
+Lower ( "İ I" )	0	1/1/0	i i
+Lower ( "ΣΑΣ" )	0	1/1/0	σας
+Upper ( "ŉ" )	0	1/1/0	ŉ
+Upper ( "é" & "e" & Char ( 769 ) )	0	1/1/0	ÉÉ
+Upper ( "ａｂｃ" )	0	1/1/0	ＡＢＣ
+Upper ( "ⓐ" )	0	1/1/0	Ⓐ
+Lower ( "Ⅻ" )	0	1/1/0	ⅻ
+Upper ( "ꭰ" )	0	1/1/0	ꭰ
+Upper ( "𐐨" )	0	1/1/0	𐐨
+Upper ( 1/3 )	0	1/1/0	,3333333333333333
+Upper ( Date ( 1 ; 2 ; 2003 ) )	0	1/1/0	02.01.2003
+Lower ( "ÀÉÎÕÜ" )	0	1/1/0	àéîõü
+Upper ( "àéîõüÿ" )	0	1/1/0	ÀÉÎÕÜŸ
+Upper ( "ǰ" )	0	1/1/0	ǰ
+Lower ( "ẞ" )	0	1/1/0	ß
+Upper ( "ꞵ" )	0	1/1/0	ꞵ
+Upper ( "ɐ" )	0	1/1/0	Ɐ
+# Proper
+Proper ( "hello world" )	0	1/1/0	Hello World
+Proper ( "hello,world.foo;bar:baz!qux?quux" )	0	1/1/0	Hello,World.foo;Bar:Baz!Qux?Quux
+Proper ( "a1b c_d e.f g/h i\j k(l) m[n] o{p} q\"r\" s'tt'" )	0	1/1/0	A1b C_D E.f G/H I\\J K(L) M[N] O{P} Q"R" S'tt'
+Proper ( "ǆemal ǳ" )	0	1/1/0	Ǆemal Ǳ
+Proper ( "élan ÉLAN" )	0	1/1/0	Élan Élan
+Proper ( "straße STRASSE" )	0	1/1/0	Straße Strasse
+Proper ( "  leading" )	0	1/1/0	  Leading
+Proper ( "tab" & Char ( 9 ) & "tab¶ret" )	0	1/1/0	Tab\tTab\rRet
+Proper ( "x@y.com e-mail don't" )	0	1/1/0	X@Y.com E-Mail Don't
+Proper ( "1st 2nd 3rd 4th 21st" )	0	1/1/0	1st 2nd 3rd 4th 21st
+Proper ( "ﬁsh ﬂy" )	0	1/1/0	ﬁsh ﬂy
+Proper ( "αβγ δεζ" )	0	1/1/0	Αβγ Δεζ
+Proper ( "привет мир" )	0	1/1/0	Привет Мир
+Proper ( "ｈｅｌｌｏ　ｗｏｒｌｄ" )	0	1/1/0	Ｈｅｌｌｏ　Ｗｏｒｌｄ
+Proper ( "e" & Char ( 769 ) & "clair" )	0	1/1/0	Éclair
+Proper ( "über ÜBER" )	0	1/1/0	Über Über
+Proper ( "mary-jane o’hara" )	0	1/1/0	Mary-Jane O’hara
+Proper ( "a&b a+b a=b a*b a#b a%b a~b a`b a^b a|b" )	0	1/1/0	A&B A+B A=B A*B A#B A%B A~B A`B A^B A|B
+Proper ( "x·y x•y x–y x—y" )	0	1/1/0	X·Y X•Y X–Y X—Y
+Proper ( "ijssel" )	0	1/1/0	Ijssel
+Proper ( "123abc abc123def" )	0	1/1/0	123abc Abc123def
+Proper ( "a.b.c" )	0	1/1/0	A.b.c
+Proper ( "mac's" )	0	1/1/0	Mac's
+# Quote
+Quote ( "abc\\¶" )	0	1/1/0	"abc\\¶"
+Quote ( "\\¶" )	0	1/1/0	"\\¶"
+Quote ( Char ( 10 ) )	0	1/1/0	"\n"
+Quote ( Char ( 13 ) & Char ( 10 ) )	0	1/1/0	"¶\n"
+Quote ( "\\" )	1206	2/2/0	?
+Quote ( "" )	0	1/1/0	""
+Quote ( 12.5 )	106	2/2/0	?
+Quote ( 1/0 )	15	1/1/0	"?"
+Quote ( Char ( 8232 ) & Char ( 8233 ) )	0	1/1/0	"  "
+Quote ( Char ( 57348 ) )	0	1/1/0	"\r"
+Quote ( Char ( 0 ) )	0	1/1/0	""
+Length ( Quote ( "a" & Char ( 13 ) & "b" ) )	0	2/2/0	5
+Code ( Quote ( "a" & Char ( 13 ) ) )	0	2/2/0	34001820009700034
+Code ( Quote ( "a" & Char ( 10 ) ) )	0	2/2/0	34000100009700034
+Code ( Quote ( Char ( 57348 ) ) )	0	2/2/0	340001300034
+Code ( Quote ( "a" & Char ( 9 ) ) )	0	2/2/0	34000090009700034
+Code ( Quote ( "a" & Char ( 1 ) & Char ( 31 ) & Char ( 127 ) ) )	0	2/2/0	340012700031000010009700034
+# Trim
+Length ( Trim ( Char ( 12288 ) & "x" & Char ( 9 ) ) )	0	2/2/0	2
+Code ( Trim ( Char ( 8192 ) & Char ( 8202 ) & Char ( 8239 ) & Char ( 8287 ) & "x" & Char ( 5760 ) & Char ( 6158 ) & Char ( 8203 ) ) )	0	2/2/0	1200828708239
+Code ( Trim ( Char ( 133 ) & Char ( 11 ) & Char ( 12 ) & "x" & Char ( 13 ) & Char ( 10 ) & Char ( 28 ) ) )	0	2/2/0	28000100001300120000120001100133
+Code ( Trim ( Char ( 8232 ) & "x" & Char ( 8233 ) ) )	0	2/2/0	82330012008232
+Code ( Trim ( Char ( 65279 ) & "x" & Char ( 8288 ) ) )	0	2/2/0	82880012065279
+Trim ( "" )	0	1/1/0	
+Trim ( "   " )	0	1/1/0	
+Trim ( "  a  b  " )	0	1/1/0	a  b
+Trim ( 1/0 )	15	1/1/0	?
+Trim ( " " & 12 & " " )	0	1/1/0	12
+GetAsCSS ( Trim ( TextStyleAdd ( " ab " ; Bold ) & " " ) )	0	1/1/0	<span style="font-weight: bold;" >ab</span>
+Code ( Trim ( " " & Char ( 769 ) & "x" ) )	0	2/2/0	12000769
+WordCount ( "漢字" )	0	2/2/0	1
+WordCount ( "カタカナ" )	0	2/2/0	1
+WordCount ( "ひらがな" )	0	2/2/0	1
+WordCount ( "한국어" )	0	2/2/0	1
+WordCount ( "ｶﾀｶﾅ" )	0	2/2/0	1
+WordCount ( "カー" )	0	2/2/0	1
+WordCount ( "漢a" )	0	2/2/0	2
+WordCount ( "a漢" )	0	2/2/0	2
+WordCount ( "1漢" )	0	2/2/0	2
+WordCount ( "漢1" )	0	2/2/0	2
+WordCount ( "ア゛" )	0	2/2/0	1
+WordCount ( "゛ア" )	0	2/2/0	1
+WordCount ( "ア1" )	0	2/2/0	2
+WordCount ( "1ア" )	0	2/2/0	2
+WordCount ( "゛゛" )	0	2/2/0	1
+WordCount ( "1゛" )	0	2/2/0	2
+WordCount ( "゛1" )	0	2/2/0	1
+WordCount ( "a゛" )	0	2/2/0	2
+WordCount ( "゛a" )	0	2/2/0	2
+WordCount ( "漢" & Char ( 769 ) & "字" )	0	2/2/0	1
+WordCount ( "a'b'c" )	0	2/2/0	1
+WordCount ( "a''b" )	0	2/2/0	2
+WordCount ( "a'" )	0	2/2/0	1
+WordCount ( "'a" )	0	2/2/0	1
+WordCount ( "'" )	0	2/2/0	0
+WordCount ( "1,2,3" )	0	2/2/0	1
+WordCount ( "1,,2" )	0	2/2/0	2
+WordCount ( "1.2.3" )	0	2/2/0	1
+WordCount ( "a.1" )	0	2/2/0	2
+WordCount ( "1.a" )	0	2/2/0	2
+WordCount ( "a1.2" )	0	2/2/0	1
+WordCount ( "1a.b" )	0	2/2/0	1
+WordCount ( "a1'b" )	0	2/2/0	2
+WordCount ( "1a,2" )	0	2/2/0	2
+WordCount ( "a1,2" )	0	2/2/0	1
+WordCount ( "1a'b" )	0	2/2/0	1
+WordCount ( "a.b.c" )	0	2/2/0	1
+WordCount ( "a.-b" )	0	2/2/0	2
+WordCount ( "a-.b" )	0	2/2/0	2
+WordCount ( "1-.2" )	0	2/2/0	2
+WordCount ( "1.-2" )	0	2/2/0	2
+WordCount ( "a" & Char ( 769 ) & "'b" )	0	2/2/0	1
+WordCount ( "a'" & Char ( 769 ) & "b" )	0	2/2/0	2
+WordCount ( "1" & Char ( 769 ) & ",2" )	0	2/2/0	1
+WordCount ( "1," & Char ( 769 ) & "2" )	0	2/2/0	2
+WordCount ( Char ( 769 ) )	0	2/2/0	1
+WordCount ( " " & Char ( 769 ) & " " )	0	2/2/0	1
+WordCount ( "a" & Char ( 8205 ) & "'b" )	0	2/2/0	2
+WordCount ( "a'" & Char ( 8205 ) & "b" )	0	2/2/0	2
+WordCount ( "²,³" )	0	2/2/0	1
+WordCount ( "½,½" )	0	2/2/0	1
+WordCount ( "٠,٠" )	0	2/2/0	1
+WordCount ( "１,２" )	0	2/2/0	1
+WordCount ( "Ⅰ,Ⅱ" )	0	2/2/0	1
+WordCount ( "1'2" )	0	2/2/0	2
+WordCount ( "a,b" )	0	2/2/0	2
+WordCount ( "" )	0	2/2/0	0
+WordCount ( "   " )	0	2/2/0	0
+WordCount ( "a¶b" )	0	2/2/0	2
+WordCount ( 1/0 )	15	2/2/0	0
+WordCount ( 12.5 )	106	2/2/0	?
+WordCount ( -12.5 )	106	2/2/0	?
+WordCount ( Date ( 1 ; 2 ; 2003 ) )	0	2/2/0	1
+WordCount ( "$5.00 or 5% or #5 or @x" )	0	2/2/0	7
+WordCount ( "12:30:45" )	0	2/2/0	1
+WordCount ( "1/2/2003" )	0	2/2/0	3
+WordCount ( "e-mail" )	0	2/2/0	2
+WordCount ( "a" & Char ( 173 ) & "b" )	0	2/2/0	2
+WordCount ( "1" & Char ( 173 ) & "2" )	0	2/2/0	1
+WordCount ( "1'2'3" )	0	2/2/0	3
+WordCount ( "a.1.b" )	0	2/2/0	3
+WordCount ( "1.a.2" )	0	2/2/0	3
+WordCount ( "a,1,b" )	0	2/2/0	3
+WordCount ( "1:a:2" )	0	2/2/0	3
+WordCount ( "a:b" )	0	2/2/0	2
+WordCount ( "a'1" )	0	2/2/0	2
+WordCount ( "1'a" )	0	2/2/0	2
+WordCount ( "ab'12" )	0	2/2/0	2
+WordCount ( "12'ab" )	0	2/2/0	2
+WordCount ( "ab.12" )	0	2/2/0	2
+WordCount ( "12.ab" )	0	2/2/0	2
+Proper ( "x..y" )	0	1/1/0	X..Y
+Proper ( "'hello" )	0	1/1/0	'Hello
+Proper ( "a 'b" )	0	1/1/0	A 'B
+Proper ( ".net" )	0	1/1/0	.Net
+Proper ( "a .net" )	0	1/1/0	A .Net
+Proper ( "x''y" )	0	1/1/0	X''Y
+Proper ( "1.y" )	0	1/1/0	1.Y
+Proper ( "x-'y" )	0	1/1/0	X-'Y
+Proper ( "1'y" )	0	1/1/0	1'Y
+Proper ( "x.1y" )	0	1/1/0	X.1y
+Proper ( "ab.12cd" )	0	1/1/0	Ab.12cd
+Proper ( "12.ab" )	0	1/1/0	12.Ab
+Proper ( "x'1y" )	0	1/1/0	X'1y
+Proper ( "a1,2b" )	0	1/1/0	A1,2b
+Proper ( "ΟΔΟΣ ΟΔΟΣ." )	0	1/1/0	Οδοσ Οδοσ.
+Lower ( "ΑΣ" )	0	1/1/0	ας
+Lower ( "ΣΑ" )	0	1/1/0	σα
+Lower ( "Σ" )	0	1/1/0	σ
+Lower ( "ΑΣ Α" )	0	1/1/0	ας α
+Lower ( "ΑΣ." )	0	1/1/0	ασ.
+Lower ( "ΑΣΑ" )	0	1/1/0	ασα
+Lower ( "ΑΣ1" )	0	1/1/0	ασ1
+Lower ( "1Σ" )	0	1/1/0	1ς
+Lower ( "ΑΣ'" )	0	1/1/0	ασ'
+Lower ( "ΑΣ'Α" )	0	1/1/0	ασ'α
+Lower ( "Α'Σ" )	0	1/1/0	α'ς
+Lower ( "ΑΣ" & Char ( 769 ) )	0	1/1/0	ασ́
+Lower ( "Α" & Char ( 769 ) & "Σ" )	0	1/1/0	άς
+Lower ( "aΣ" )	0	1/1/0	aς
+Lower ( "ΑΣΣ" )	0	1/1/0	ασς
+Lower ( "ΑΣ-Α" )	0	1/1/0	ασ-α
+Lower ( "ΑΣ.Α" )	0	1/1/0	ασ.α
+Proper ( "ΑΣ" )	0	1/1/0	Ασ
+Proper ( "σ" )	0	1/1/0	Σ
+Proper ( "ΑΣ ΑΣ" )	0	1/1/0	Ασ Ασ
+Length ( Lower ( "İ" ) )	0	2/2/0	1
+Lower ( "A" & Char ( 931 ) & "b" )	0	1/1/0	aσb
+Lower ( "漢Σ" )	0	1/1/0	漢ς
+Lower ( "ΑΣ漢" )	0	1/1/0	ασ漢
+GetAsCSS ( "é" )	0	1/1/0	<span style="" >&eacute;</span>
+GetAsCSS ( "😀" )	0	1/1/0	<span style="" >😀</span>
+GetAsCSS ( "a" & Char ( 9 ) & "b" & Char ( 10 ) & "c" & Char ( 8232 ) & "d" & Char ( 8233 ) & "e" )	0	1/1/0	<span style="" >a&#9;b<br/>c&#8232;d&#8233;e</span>
+GetAsCSS ( Char ( 160 ) & Char ( 127 ) & Char ( 1 ) & "~" )	0	1/1/0	<span style="" >&nbsp;&#127;&#1;~</span>
+GetAsCSS ( "e" & Char ( 769 ) )	0	1/1/0	<span style="" >e&#769;</span>
+GetAsCSS ( "a  b   c" )	0	1/1/0	<span style="" >a  b   c</span>
+GetAsCSS ( " a" )	0	1/1/0	<span style="" > a</span>
+GetAsCSS ( "¶" )	0	1/1/0	<span style="" ><br/></span>
+GetAsCSS ( "a¶¶b" )	0	1/1/0	<span style="" >a<br/><br/>b</span>
+GetAsCSS ( "a" & Char ( 13 ) & Char ( 10 ) & "b" )	0	1/1/0	<span style="" >a<br/><br/>b</span>
+GetAsCSS ( 12.5 )	106	2/2/0	?
+GetAsCSS ( 1/0 )	15	1/1/0	<span style="" >?</span>
+GetAsCSS ( TextStyleAdd ( "a" ; Bold ) & "b" & TextStyleAdd ( "c" ; Bold ) )	0	1/1/0	<span style="font-weight: bold;" >a</span><span style="" >b</span><span style="font-weight: bold;" >c</span>
+GetAsCSS ( TextColor ( "a" ; RGB ( 0 ; 128 ; 255 ) ) )	0	1/1/0	<span style="color: #0080FF;" >a</span>
+GetAsCSS ( TextColor ( "a" ; 0 ) )	0	1/1/0	<span style="color: #000000;" >a</span>
+GetAsCSS ( TextSize ( "a" ; 9.5 ) )	106	2/2/0	?
+GetAsCSS ( TextSize ( "a" ; 500 ) )	0	1/1/0	<span style="font-size: 500px;" >a</span>
+GetAsCSS ( TextFont ( "a" ; "Times New Roman" ) )	0	1/1/0	<span style="font-family: 'Times New Roman';" >a</span>
+GetAsCSS ( TextFont ( "a" ; "O'Brien" ) )	0	1/1/0	<span style="font-family: 'O'Brien';" >a</span>
+GetAsCSS ( TextFont ( "a" ; "a\"b" ) )	0	1/1/0	<span style="font-family: 'a"b';" >a</span>
+GetAsCSS ( TextFont ( "a" ; "" ) )	0	1/1/0	<span style="font-family: '';" >a</span>
+GetAsCSS ( TextStyleAdd ( TextColor ( TextFont ( TextSize ( "a" ; 10 ) ; "Arial" ) ; RGB ( 1 ; 2 ; 3 ) ) ; Bold + Italic + Underline + Strikethrough ) )	0	1/1/0	<span style="font-family: 'Arial';font-size: 10px;color: #010203;font-weight: bold;font-style:italic;text-decoration:underline line-through ;" >a</span>
+GetAsCSS ( TextStyleAdd ( "a" ; Underline + Strikethrough ) )	0	1/1/0	<span style="text-decoration:underline line-through ;" >a</span>
+GetAsCSS ( TextStyleAdd ( "a" ; WordUnderline + Strikethrough ) )	0	1/1/0	<span style="text-decoration:underline line-through ;" >a</span>
+GetAsCSS ( TextStyleAdd ( "a" ; Superscript + Subscript ) )	0	1/1/0	<span style="font-size: 6px;vertical-align: text-top;" >a</span>
+GetAsCSS ( TextStyleAdd ( "a" ; Condense + Extend ) )	0	1/1/0	<span style="letter-spacing: -2px;" >a</span>
+GetAsCSS ( TextStyleAdd ( "a" ; Uppercase + Lowercase ) )	0	1/1/0	<span style="text-transform: capitalize;" >a</span>
+GetAsCSS ( TextStyleAdd ( "a" ; Superscript ) & TextSize ( "b" ; 20 ) )	0	1/1/0	<span style="font-size: 6px;vertical-align: text-top;" >a</span><span style="font-size: 20px;" >b</span>
+GetAsCSS ( TextSize ( TextStyleAdd ( "a" ; Superscript ) ; 20 ) )	0	1/1/0	<span style="font-size: 10px;vertical-align: text-top;" >a</span>
+GetAsCSS ( TextStyleAdd ( "a" ; 2048 ) )	0	1/1/0	<span style="" >a</span>
+GetAsCSS ( TextStyleAdd ( "a" ; HighlightYellow + Bold ) )	0	1/1/0	<span style="background-color: #FFFF00;font-weight: bold;" >a</span>
+GetAsCSS ( TextStyleAdd ( "é😀" ; Bold ) & "x" )	0	1/1/0	<span style="font-weight: bold;" >&eacute;😀</span><span style="" >x</span>
+GetAsSVG ( TextStyleAdd ( "ab" ; Bold ) & "cd" & TextStyleAdd ( "ef" ; Bold ) )	0	1/1/0	<stylelist>\r<style#0>"font-weight: bold;", begin: 1, end: 2</style> \r<style#1>"", begin: 3, end: 4</style> \r<style#2>"font-weight: bold;", begin: 5, end: 6</style> \r</stylelist>\r<data>\r<span style="0">ab</span>\r<span style="1">cd</span>\r<span style="2">ef</span>\r</data>
+GetAsSVG ( TextStyleAdd ( "ab" ; Bold ) & "cd" & TextStyleAdd ( "ef" ; Italic ) )	0	1/1/0	<stylelist>\r<style#0>"font-weight: bold;", begin: 1, end: 2</style> \r<style#1>"", begin: 3, end: 4</style> \r<style#2>"font-style:italic;", begin: 5, end: 6</style> \r</stylelist>\r<data>\r<span style="0">ab</span>\r<span style="1">cd</span>\r<span style="2">ef</span>\r</data>
+GetAsSVG ( "😀a" & TextStyleAdd ( "b" ; Bold ) )	0	1/1/0	<stylelist>\r<style#0>"", begin: 1, end: 3</style> \r<style#1>"font-weight: bold;", begin: 4, end: 4</style> \r</stylelist>\r<data>\r<span style="0">😀a</span>\r<span style="1">b</span>\r</data>
+GetAsSVG ( "e" & Char ( 769 ) & TextStyleAdd ( "b" ; Bold ) )	0	1/1/0	<stylelist>\r<style#0>"", begin: 1, end: 2</style> \r<style#1>"font-weight: bold;", begin: 3, end: 3</style> \r</stylelist>\r<data>\r<span style="0">e&#769;</span>\r<span style="1">b</span>\r</data>
+GetAsSVG ( "a¶" & TextStyleAdd ( "b" ; Bold ) )	0	1/1/0	<stylelist>\r<style#0>"", begin: 1, end: 2</style> \r<style#1>"font-weight: bold;", begin: 3, end: 3</style> \r</stylelist>\r<data>\r<span style="0">a<br/></span>\r<span style="1">b</span>\r</data>
+GetAsSVG ( "é" )	0	1/1/0	<stylelist>\r<style#0>"", begin: 1, end: 1</style> \r</stylelist>\r<data>\r<span style="0">&eacute;</span>\r</data>
+GetAsSVG ( 1/0 )	15	1/1/0	<stylelist>\r<style#0>"", begin: 1, end: 1</style> \r</stylelist>\r<data>\r<span style="0">?</span>\r</data>
+GetAsSVG ( "a" & Char ( 13 ) & Char ( 10 ) & "b" )	0	1/1/0	<stylelist>\r<style#0>"", begin: 1, end: 4</style> \r</stylelist>\r<data>\r<span style="0">a<br/><br/>b</span>\r</data>
+GetAsSVG ( TextStyleAdd ( "a" ; Bold ) & TextStyleAdd ( "b" ; Italic ) & TextStyleAdd ( "c" ; Bold ) )	0	1/1/0	<stylelist>\r<style#0>"font-weight: bold;", begin: 1, end: 1</style> \r<style#1>"font-style:italic;", begin: 2, end: 2</style> \r<style#2>"font-weight: bold;", begin: 3, end: 3</style> \r</stylelist>\r<data>\r<span style="0">a</span>\r<span style="1">b</span>\r<span style="2">c</span>\r</data>
+GetAsCSS ( TextStyleRemove ( TextStyleAdd ( "a" ; Bold ) ; Bold ) )	0	1/1/0	<span style="" >a</span>
+GetAsCSS ( TextFormatRemove ( TextStyleAdd ( "a" ; Bold ) ) )	0	1/1/0	<span style="" >a</span>
+Quote ( TextStyleAdd ( "a" ; Bold ) & "b" )	0	1/1/0	"ab"
+GetAsCSS ( Quote ( TextStyleAdd ( "a" ; Bold ) & "b" ) )	0	1/1/0	<span style="font-weight: bold;" >&quot;a</span><span style="" >b&quot;</span>
+GetAsCSS ( Quote ( "a" & TextStyleAdd ( "b" ; Bold ) ) )	0	1/1/0	<span style="" >&quot;a</span><span style="font-weight: bold;" >b&quot;</span>
+GetAsCSS ( Quote ( "a" & TextStyleAdd ( "\"" ; Bold ) & "b" ) )	0	1/1/0	<span style="" >&quot;a\\</span><span style="font-weight: bold;" >&quot;</span><span style="" >b&quot;</span>
+GetAsCSS ( Quote ( "" ) )	0	1/1/0	<span style="" >&quot;&quot;</span>
+GetAsCSS ( Trim ( "  " & TextStyleAdd ( "a" ; Bold ) & "  " ) )	0	1/1/0	<span style="font-weight: bold;" >a</span>
+GetAsCSS ( RightWords ( "ab " & TextStyleAdd ( "cd" ; Bold ) ; 1 ) )	0	1/1/0	<span style="font-weight: bold;" >cd</span>
+GetAsCSS ( RightValues ( "ab¶" & TextStyleAdd ( "cd" ; Bold ) ; 1 ) )	0	1/1/0	<span style="font-weight: bold;" >cd<br/></span>
+GetAsCSS ( MiddleValues ( TextStyleAdd ( "ab" ; Bold ) & "¶cd¶ef" ; 1 ; 2 ) )	0	1/1/0	<span style="font-weight: bold;" >ab</span><span style="" ><br/>cd<br/></span>
+GetAsCSS ( TrimAll ( TextStyleAdd ( "a" ; Bold ) & "ア" ; 1 ; 1 ) )	0	1/1/0	<span style="font-weight: bold;" >a </span><span style="" >&#12450;</span>
+GetAsCSS ( TrimAll ( TextStyleAdd ( "a " ; Bold ) & " b" ; 1 ; 1 ) )	0	1/1/0	<span style="font-weight: bold;" >a </span><span style="" >b</span>
+GetAsCSS ( TrimAll ( "a " & TextStyleAdd ( " b" ; Bold ) ; 1 ; 1 ) )	0	1/1/0	<span style="" >a </span><span style="font-weight: bold;" >b</span>
+GetAsCSS ( Replace ( TextStyleAdd ( "ab" ; Bold ) & "c" ; 2 ; 1 ; TextStyleAdd ( "X" ; Italic ) ) )	0	1/1/0	<span style="font-weight: bold;" >a</span><span style="font-weight: bold;font-style:italic;" >X</span><span style="" >c</span>
+GetAsCSS ( Substitute ( TextFont ( "abc" ; "Arial" ) ; "b" ; TextFont ( "X" ; "Courier" ) ) )	0	1/1/0	<span style="font-family: 'Arial';" >a</span><span style="font-family: 'Courier';" >X</span><span style="font-family: 'Arial';" >c</span>
+GetAsCSS ( Substitute ( "abc" ; [ "a" ; TextStyleAdd ( "X" ; Bold ) ] ; [ "X" ; "Y" ] ) )	0	1/1/0	<span style="font-weight: bold;" >Y</span><span style="" >bc</span>
+GetAsCSS ( Upper ( TextStyleAdd ( "ß" ; Bold ) ) )	0	1/1/0	<span style="font-weight: bold;" >&szlig;</span>
+GetAsCSS ( Proper ( "ab " & TextStyleAdd ( "cd" ; Bold ) ) )	0	1/1/0	<span style="" >Ab </span><span style="font-weight: bold;" >Cd</span>
+Lower ( " Σ" )	0	1/1/0	 σ
+Lower ( "-Σ" )	0	1/1/0	-ς
+Lower ( ".Σ" )	0	1/1/0	.ς
+Lower ( "¶Σ" )	0	1/1/0	\rσ
+Lower ( "ΑΣ," )	0	1/1/0	ασ,
+Lower ( "ΑΣ!" )	0	1/1/0	ασ!
+Lower ( "ΑΣ¶" )	0	1/1/0	ας\r
+Lower ( "ΑΣ" & Char ( 9 ) )	0	1/1/0	ας\t
+Lower ( "ΑΣ)" )	0	1/1/0	ασ)
+Lower ( "ΑΣ" & Char ( 160 ) )	0	1/1/0	ασ 
+Lower ( "ΑΣ" & Char ( 12288 ) )	0	1/1/0	ας　
+Lower ( "ΑΣ" & Char ( 8232 ) )	0	1/1/0	ας 
+Lower ( "ΑΣ" & Char ( 10 ) )	0	1/1/0	ας\n
+Lower ( "ΑΣ" & Char ( 8203 ) )	0	1/1/0	ας​
+Lower ( "ΑΣ" & Char ( 8205 ) )	0	1/1/0	ασ‍
+Lower ( "ΑΣ\"" )	0	1/1/0	ασ"
+Lower ( "(Σ)" )	0	1/1/0	(σ)
+Lower ( "Σ " )	0	1/1/0	σ 
+Lower ( "ΣΣ" )	0	1/1/0	σς
+Lower ( "ΑΣ ΣΑ" )	0	1/1/0	ας σα
+Lower ( "ΑσΣ" )	0	1/1/0	ασς
+Lower ( "ΑΣ" & Char ( 8233 ) )	0	1/1/0	ας 
+Lower ( "ΑΣ" & Char ( 133 ) )	0	1/1/0	ασ
+Lower ( "ΑΣ" & Char ( 11 ) )	0	1/1/0	ας\u000B
+Lower ( Char ( 769 ) & "Σ" )	0	1/1/0	́ς
+Lower ( "ΑΣ" & Char ( 8192 ) )	0	1/1/0	ας 
+Lower ( "ΑΣ" & Char ( 5760 ) )	0	1/1/0	ας 
+Lower ( "ΑΣ" & Char ( 1 ) )	0	1/1/0	ασ\u0001
+# words extraction
+LeftWords ( "e-mail me@x.com" ; 3 )	0	1/1/0	e-mail me
+LeftWords ( "e-mail me@x.com" ; 10 )	0	1/1/0	e-mail me@x.com
+LeftWords ( "  one, two; three. four  " ; 1 )	0	1/1/0	one
+LeftWords ( "  one, two; three. four  " ; 3 )	0	1/1/0	one, two; three
+LeftWords ( "  one, two; three. four  " ; 4 )	0	1/1/0	one, two; three. four
+LeftWords ( "  one, two; three. four  " ; 5 )	0	1/1/0	one, two; three. four
+LeftWords ( "a b c" ; 0 )	0	1/1/0	
+LeftWords ( "a b c" ; 1.9 )	106	2/2/0	?
+LeftWords ( "a b c" ; "" )	0	1/1/0	
+LeftWords ( "a b c" ; 4294967297 )	0	1/1/0	a
+LeftWords ( "a b c" ; 4294967295 )	0	1/1/0	a b c
+LeftWords ( "a b c" ; 2147483648 )	0	1/1/0	a b c
+LeftWords ( "a b c" ; 10000000000000000002 )	0	1/1/0	a b c
+LeftWords ( "" ; 1 )	0	1/1/0	
+LeftWords ( "'a' 'b'" ; 1 )	0	1/1/0	a
+LeftWords ( "a¶b¶c" ; 2 )	0	1/1/0	a\rb
+LeftWords ( 1/0 ; 1 )	15	1/1/0	
+LeftWords ( "a b" ; 1/0 )	15	1/1/0	
+LeftWords ( "漢字かな abc" ; 1 )	0	1/1/0	漢字
+LeftWords ( "x" & Char ( 769 ) & " y" ; 1 )	0	1/1/0	x́
+LeftWords ( Char ( 769 ) & "x y" ; 1 )	0	1/1/0	́x
+LeftWords ( "a.b. c" ; 1 )	0	1/1/0	a.b
+LeftWords ( "3.5, 4.5" ; 1 )	0	1/1/0	3.5
+LeftWords ( "1,234.5 x" ; 1 )	0	1/1/0	1,234.5
+RightWords ( "  one, two; three. four.  " ; 2 )	0	1/1/0	three. four
+RightWords ( "  one, two; three. four.  " ; 1 )	0	1/1/0	four
+RightWords ( "  one, two; three. four.  " ; 4 )	0	1/1/0	one, two; three. four
+RightWords ( "  one, two; three. four.  " ; 5 )	0	1/1/0	one, two; three. four
+RightWords ( "a b c" ; -1 )	0	1/1/0	
+RightWords ( "a b c" ; 0 )	0	1/1/0	
+RightWords ( "a b c" ; 4294967297 )	0	1/1/0	c
+RightWords ( "a b c" ; 4294967295 )	0	1/1/0	a b c
+RightWords ( "a b c" ; 2147483648 )	0	1/1/0	a b c
+RightWords ( "a b c" ; 10000000000000000002 )	0	1/1/0	a b c
+RightWords ( "a'" ; 1 )	0	1/1/0	a
+RightWords ( "don't" ; 1 )	0	1/1/0	don't
+MiddleWords ( "one, two; three. four" ; 0 ; 2 )	0	1/1/0	one, two
+MiddleWords ( "one, two; three. four" ; -1 ; 2 )	0	1/1/0	one, two
+MiddleWords ( "one, two; three. four" ; 4 ; 2 )	0	1/1/0	four
+MiddleWords ( "one, two; three. four" ; 5 ; 2 )	0	1/1/0	
+MiddleWords ( "one, two; three. four" ; 2 ; -1 )	0	1/1/0	
+MiddleWords ( "one, two; three. four" ; 2 ; 0 )	0	1/1/0	
+MiddleWords ( "one, two; three. four" ; 2 ; 100 )	0	1/1/0	two; three. four
+MiddleWords ( "one, two; three. four" ; 4294967298 ; 1 )	0	1/1/0	two
+MiddleWords ( "one, two; three. four" ; 2147483650 ; 1 )	0	1/1/0	one
+MiddleWords ( "one, two; three. four" ; 10000000000000000002 ; 1 )	0	1/1/0	one
+MiddleWords ( "one, two; three. four" ; 2 ; 4294967297 )	0	1/1/0	two
+MiddleWords ( "one, two; three. four" ; 2 ; 2147483648 )	0	1/1/0	
+MiddleWords ( "one, two; three. four" ; 2 ; 10000000000000000002 )	0	1/1/0	
+MiddleWords ( "one, two; three. four" ; 1.9 ; 1.9 )	106	2/2/0	?
+MiddleWords ( "one, two; three. four" ; "" ; 1 )	0	1/1/0	one
+MiddleWords ( "a b c" ; 3 ; 1 )	0	1/1/0	c
+MiddleWords ( "" ; 1 ; 1 )	0	1/1/0	
+GetAsCSS ( LeftWords ( TextStyleAdd ( "ab" ; Bold ) & " cd ef" ; 2 ) )	0	1/1/0	<span style="font-weight: bold;" >ab</span><span style="" > cd</span>
+GetAsCSS ( MiddleWords ( "ab " & TextStyleAdd ( "cd" ; Italic ) & " ef" ; 2 ; 1 ) )	0	1/1/0	<span style="font-style:italic;" >cd</span>
+# values
+ValueCount ( "" )	0	2/2/0	0
+ValueCount ( "¶" )	0	2/2/0	1
+ValueCount ( "¶¶" )	0	2/2/0	2
+ValueCount ( "¶a" )	0	2/2/0	2
+ValueCount ( "a" )	0	2/2/0	1
+ValueCount ( 1/0 )	15	2/2/0	1
+ValueCount ( 12 )	0	2/2/0	1
+ValueCount ( "a" & Char ( 13 ) & Char ( 10 ) )	0	2/2/0	2
+ValueCount ( " " )	0	2/2/0	1
+GetValue ( "a¶b" ; 3 )	0	1/1/0	
+GetValue ( "a¶b" ; 2.9 )	106	2/2/0	?
+GetValue ( "a¶b" ; "" )	0	0/1/0	
+GetValue ( "a¶b" ; 4294967297 )	0	1/1/0	a
+GetValue ( "a¶b" ; 4294967298 )	0	1/1/0	b
+GetValue ( "a¶b" ; 2147483649 )	0	0/1/0	
+GetValue ( "a¶b" ; 10000000000000000002 )	0	0/1/0	
+GetValue ( "a¶b" ; -4294967295 )	0	1/1/0	a
+GetValue ( "a¶¶b" ; 2 )	0	1/1/0	
+GetValue ( "a¶¶b" ; 3 )	0	1/1/0	b
+GetValue ( "¶a" ; 1 )	0	1/1/0	
+GetValue ( "a" & Char ( 13 ) & Char ( 10 ) & "b" ; 3 )	0	1/1/0	b
+GetValue ( "a" & Char ( 8232 ) & "b" ; 2 )	0	1/1/0	b
+GetValue ( "" ; 1 )	0	1/1/0	
+GetValue ( 1/0 ; 1 )	15	1/1/0	?
+GetValue ( "a¶b" ; 1/0 )	15	0/1/0	
+GetValue ( 12 ; 1 )	0	1/1/0	12
+GetValue ( 12.5 ; 1 )	106	2/2/0	?
+GetValue ( Date ( 1 ; 2 ; 2003 ) ; 1 )	0	1/1/0	02.01.2003
+GetAsCSS ( GetValue ( TextStyleAdd ( "ab" ; Bold ) & "¶cd" ; 1 ) )	0	1/1/0	<span style="font-weight: bold;" >ab</span>
+LeftValues ( "a¶b" ; 0 )	0	1/1/0	
+LeftValues ( "a¶b" ; 5 )	0	1/1/0	a\rb\r
+LeftValues ( "a¶b¶" ; 5 )	0	1/1/0	a\rb\r
+LeftValues ( "a¶b¶¶" ; 5 )	0	1/1/0	a\rb\r\r
+LeftValues ( "a¶¶b" ; 2 )	0	1/1/0	a\r\r
+LeftValues ( "a" & Char ( 10 ) & "b" ; 1 )	0	1/1/0	a\r
+LeftValues ( "a" & Char ( 10 ) & "b" ; 2 )	0	1/1/0	a\nb\r
+LeftValues ( "a" & Char ( 13 ) & Char ( 10 ) & "b" ; 1 )	0	1/1/0	a\r
+LeftValues ( "a" & Char ( 13 ) & Char ( 10 ) & "b" ; 2 )	0	1/1/0	a\r\r
+LeftValues ( "a" & Char ( 13 ) & Char ( 10 ) & "b" ; 3 )	0	1/1/0	a\r\nb\r
+LeftValues ( "a" & Char ( 8232 ) & "b" ; 1 )	0	1/1/0	a\r
+LeftValues ( "a" & Char ( 8233 ) & "b" ; 5 )	0	1/1/0	a b\r
+LeftValues ( "" ; 1 )	0	1/1/0	
+LeftValues ( "¶" ; 1 )	0	1/1/0	\r
+LeftValues ( "¶" ; 2 )	0	1/1/0	\r
+LeftValues ( "a¶b" ; 1.9 )	106	2/2/0	?
+LeftValues ( "a¶b" ; 4294967297 )	0	1/1/0	a\r
+LeftValues ( "a¶b" ; 4294967296 )	0	1/1/0	
+LeftValues ( "a¶b" ; 2147483648 )	0	1/1/0	a\rb\r
+LeftValues ( "a¶b" ; 10000000000000000002 )	0	1/1/0	a\rb\r
+LeftValues ( "a¶b" ; "" )	0	1/1/0	
+LeftValues ( 1/0 ; 1 )	15	1/1/0	?\r
+LeftValues ( 12 ; 1 )	0	1/1/0	12\r
+GetAsCSS ( LeftValues ( TextStyleAdd ( "ab" ; Bold ) & "¶cd" ; 1 ) )	0	1/1/0	<span style="font-weight: bold;" >ab<br/></span>
+GetAsCSS ( LeftValues ( TextStyleAdd ( "ab¶" ; Bold ) & "cd" ; 2 ) )	0	1/1/0	<span style="font-weight: bold;" >ab<br/></span><span style="" >cd<br/></span>
+GetAsCSS ( LeftValues ( "ab¶" & TextStyleAdd ( "cd" ; Bold ) ; 2 ) )	0	1/1/0	<span style="" >ab<br/></span><span style="font-weight: bold;" >cd<br/></span>
+RightValues ( "a¶b" ; -1 )	0	1/1/0	
+RightValues ( "a¶b" ; 0 )	0	1/1/0	
+RightValues ( "a¶b" ; 5 )	0	1/1/0	a\rb\r
+RightValues ( "a¶b¶" ; 1 )	0	1/1/0	b\r
+RightValues ( "a¶b¶¶" ; 1 )	0	1/1/0	\r
+RightValues ( "a¶b¶¶" ; 2 )	0	1/1/0	b\r\r
+RightValues ( "a¶¶b" ; 2 )	0	1/1/0	\rb\r
+RightValues ( "a" & Char ( 13 ) & Char ( 10 ) & "b" ; 2 )	0	1/1/0	\nb\r
+RightValues ( "a" & Char ( 10 ) & "b" ; 1 )	0	1/1/0	b\r
+RightValues ( "a¶b" ; 4294967297 )	0	1/1/0	b\r
+RightValues ( "a¶b" ; 2147483648 )	0	1/1/0	a\rb\r
+RightValues ( "a¶b" ; 10000000000000000002 )	0	1/1/0	a\rb\r
+RightValues ( "¶" ; 1 )	0	1/1/0	\r
+RightValues ( "" ; 1 )	0	1/1/0	
+MiddleValues ( "a¶b¶c" ; 0 ; 1 )	0	1/1/0	a\r
+MiddleValues ( "a¶b¶c" ; -1 ; 2 )	0	1/1/0	a\rb\r
+MiddleValues ( "a¶b¶c" ; 3 ; 5 )	0	1/1/0	c\r
+MiddleValues ( "a¶b¶c" ; 4 ; 1 )	0	1/1/0	
+MiddleValues ( "a¶b¶c" ; 2 ; -1 )	0	1/1/0	
+MiddleValues ( "a¶b¶c" ; 2 ; 0 )	0	1/1/0	
+MiddleValues ( "a¶b¶c" ; 2.9 ; 1.9 )	106	2/2/0	?
+MiddleValues ( "a¶b¶c" ; "" ; 1 )	0	1/1/0	a\r
+MiddleValues ( "a¶b¶c" ; 4294967298 ; 1 )	0	1/1/0	b\r
+MiddleValues ( "a¶b¶c" ; 2147483650 ; 1 )	0	1/1/0	
+MiddleValues ( "a¶b¶c" ; 10000000000000000002 ; 1 )	0	1/1/0	
+MiddleValues ( "a¶b¶c" ; 2 ; 4294967297 )	0	1/1/0	b\r
+MiddleValues ( "a¶b¶c" ; 2 ; 2147483648 )	0	1/1/0	b\rc\r
+MiddleValues ( "a¶b¶c" ; 2 ; 10000000000000000002 )	0	1/1/0	b\rc\r
+MiddleValues ( "a¶¶c¶" ; 2 ; 5 )	0	1/1/0	\rc\r
+MiddleValues ( "a" & Char ( 10 ) & "b" & Char ( 13 ) & "c" ; 2 ; 1 )	0	1/1/0	b\r
+SortValues ( "GREEN¶green¶Green" )	0	1/1/0	GREEN\rgreen\rGreen\r
+SortValues ( "b¶¶a" )	0	1/1/0	\ra\rb\r
+SortValues ( "¶" )	0	1/1/0	\r
+SortValues ( "" )	0	1/1/0	
+SortValues ( "a" )	0	1/1/0	a\r
+SortValues ( "b¶a¶" )	0	1/1/0	a\rb\r
+SortValues ( "b¶a¶¶" )	0	1/1/0	\ra\rb\r
+SortValues ( "b" & Char ( 10 ) & "a" )	0	1/1/0	a\rb\r
+SortValues ( "b" & Char ( 13 ) & Char ( 10 ) & "a" )	0	1/1/0	\ra\rb\r
+SortValues ( "b" & Char ( 8232 ) & "a" )	0	1/1/0	a\rb\r
+SortValues ( "b¶a" ; 1 )	0	1/1/0	a\rb\r
+SortValues ( "b¶a" ; -1 )	0	1/1/0	b\ra\r
+SortValues ( "b¶a¶B¶A" ; -1 )	0	1/1/0	b\rB\ra\rA\r
+SortValues ( "b¶a" ; 0 )	0	1/1/0	a\rb\r
+SortValues ( "b¶a" ; 6 )	0	1/1/0	a\rb\r
+SortValues ( "b¶a" ; -6 )	0	1/1/0	a\rb\r
+SortValues ( "b¶a" ; "" )	0	1/1/0	a\rb\r
+SortValues ( "b¶a" ; 1.5 )	106	2/2/0	?
+SortValues ( "b¶a" ; -1.5 )	106	2/2/0	?
+SortValues ( "b¶a" ; 2.9 )	106	2/2/0	?
+SortValues ( "b¶a" ; "abc" )	0	1/1/0	a\rb\r
+SortValues ( "b¶a" ; 1/0 )	15	1/1/0	a\rb\r
+SortValues ( "10¶9¶100" )	0	1/1/0	10\r100\r9\r
+SortValues ( "10¶9¶100" ; 2 )	0	1/1/0	9\r10\r100\r
+SortValues ( "10¶9¶abc¶¶-1¶1e2¶$5¶x3" ; 2 )	0	1/1/0	\r-1\rx3\r$5\r9\r10\r1e2\rabc\r
+SortValues ( "10¶9¶abc¶¶-1¶1e2¶$5¶x3" ; -2 )	0	1/1/0	abc\r1e2\r10\r9\r$5\rx3\r-1\r\r
+SortValues ( "18.0¶2¶18" ; 2 )	0	1/1/0	2\r18\r18.0\r
+SortValues ( "1,5¶1.5¶2" ; 2 )	0	1/1/0	1,5\r2\r1.5\r
+SortValues ( "1/2/2003¶12/31/2002¶abc¶¶1/1/2003" ; 3 )	0	1/1/0	\r1/1/2003\r1/2/2003\r12/31/2002\rabc\r
+SortValues ( "1/2/2003¶12/31/2002¶abc¶¶1/1/2003" ; -3 )	0	1/1/0	12/31/2002\rabc\r1/2/2003\r1/1/2003\r\r
+SortValues ( "1/2/2003¶2003-01-01¶730000" ; 3 )	0	1/1/0	1/2/2003\r2003-01-01\r730000\r
+SortValues ( "1:00¶0:30¶abc¶¶25:00¶-1:00" ; 4 )	0	1/1/0	\r-1:00\r0:30\r1:00\r25:00\rabc\r
+SortValues ( "1/2/2003 1:00¶1/1/2003 5:00¶abc¶1/2/2003" ; 5 )	0	1/1/0	1/1/2003 5:00\r1/2/2003\r1/2/2003 1:00\rabc\r
+SortValues ( "b¶a" ; 1 ; "English" )	0	1/1/0	a\rb\r
+SortValues ( "b¶a" ; 1 ; "english" )	0	1/1/0	a\rb\r
+SortValues ( "b¶a" ; 1 ; "Bogus" )	0	2/2/0	?
+SortValues ( "b¶a" ; 1 ; "" )	0	1/1/0	a\rb\r
+SortValues ( "b¶a" ; 1 ; " English" )	0	2/2/0	?
+SortValues ( "b¶a" ; 2 ; "Bogus" )	0	2/2/0	?
+SortValues ( "B¶a¶A¶b" ; 1 ; "Unicode_Raw" )	0	1/1/0	A\rB\ra\rb\r
+SortValues ( "B¶a¶A¶b¶é¶e" ; 1 ; "Unicode_Standard" )	0	1/1/0	a\rA\rB\rb\re\ré\r
+SortValues ( "z¶ä¶a¶å¶ö¶o" ; 1 ; "English" )	0	1/1/0	a\rå\rä\ro\rö\rz\r
+SortValues ( "z¶ä¶a¶å¶ö¶o" ; 1 ; "German" )	0	1/1/0	a\rå\rä\ro\rö\rz\r
+SortValues ( "z¶ä¶a¶å¶ö¶o" ; 1 ; "Swedish" )	0	1/1/0	a\ro\rz\rå\rä\rö\r
+SortValues ( "z¶ä¶a¶å¶ö¶o¶ae¶af" ; 1 ; "German" )	0	1/1/0	a\rå\rä\rae\raf\ro\rö\rz\r
+SortValues ( "z¶ä¶a¶å¶ö¶o¶ae¶af" ; 1 ; "German_Dictionary" )	0	1/1/0	a\rå\rä\rae\raf\ro\rö\rz\r
+SortValues ( "カ¶か¶あ¶ア¶漢¶a" ; 1 ; "Japanese" )	0	1/1/0	a\rあ\rア\rか\rカ\r漢\r
+SortValues ( "é¶e¶f¶E¶É" )	0	1/1/0	e\rE\ré\rÉ\rf\r
+SortValues ( "a b¶ab¶a-b¶a_b¶a" )	0	1/1/0	a\ra b\ra_b\ra-b\rab\r
+SortValues ( "10¶2¶1" )	0	1/1/0	1\r10\r2\r
+SortValues ( "ss¶ß¶st¶sr" )	0	1/1/0	sr\rss\rß\rst\r
+SortValues ( 1/0 )	15	1/1/0	?\r
+SortValues ( "b¶a" ; 1 ; 1/0 )	15	2/2/0	?
+GetAsCSS ( SortValues ( TextStyleAdd ( "b" ; Bold ) & "¶a" ) )	0	1/1/0	<span style="" >a<br/></span><span style="font-weight: bold;" >b<br/></span>
+GetAsCSS ( SortValues ( "b¶" & TextStyleAdd ( "a" ; Bold ) ) )	0	1/1/0	<span style="font-weight: bold;" >a<br/></span><span style="" >b<br/></span>
+SortValues ( "b¶a" ; 1 ; "Catalog" )	0	1/1/0	a\rb\r
+SortValues ( "b¶a" ; 1 ; "Unicode_Raw" )	0	1/1/0	a\rb\r
+SortValues ( "b¶a" ; 1 ; "Swedish_Custom" )	0	1/1/0	a\rb\r
+SortValues ( "b¶a" ; 1 ; "Finnish_Custom" )	0	1/1/0	a\rb\r
+SortValues ( "b¶a" ; 1 ; "Turkish" )	0	1/1/0	a\rb\r
+SortValues ( "ı¶i¶I¶İ¶h¶j" ; 1 ; "Turkish" )	0	1/1/0	h\rı\rI\ri\rİ\rj\r
+SortValues ( "ı¶i¶I¶İ¶h¶j" ; 1 ; "English" )	0	1/1/0	h\ri\rI\rİ\rı\rj\r
+UniqueValues ( "RED¶green¶red¶yellow¶" ; 1 ; "Unicode_Raw" )	0	1/1/0	RED\rgreen\rred\ryellow\r
+UniqueValues ( "a¶¶a¶¶" )	0	1/1/0	a\r\r
+UniqueValues ( "¶¶" )	0	1/1/0	\r
+UniqueValues ( "" )	0	1/1/0	
+UniqueValues ( "é¶e¶E" )	0	1/1/0	é\r
+UniqueValues ( "é¶e¶E" ; 1 ; "Unicode_Raw" )	0	1/1/0	é\re\rE\r
+UniqueValues ( "é¶e¶E" ; 1 ; "Unicode_Standard" )	0	1/1/0	é\re\r
+UniqueValues ( "ä¶ae¶a" ; 1 ; "German" )	0	1/1/0	ä\ra\r
+UniqueValues ( "ä¶ae¶a" ; 1 ; "English" )	0	1/1/0	ä\rae\r
+UniqueValues ( "ä¶ae¶a" ; 1 ; "Swedish" )	0	1/1/0	ä\rae\ra\r
+UniqueValues ( "ß¶ss¶SS" )	0	1/1/0	ß\r
+UniqueValues ( "カ¶か¶ｶ" )	0	1/1/0	カ\r
+UniqueValues ( "a¶a " )	0	1/1/0	a\ra \r
+UniqueValues ( "1¶01¶1.0¶abc¶¶x" ; 2 )	0	1/1/0	1\r1.0\rabc\r\r
+UniqueValues ( "1/2/2003¶01/02/2003¶1-2-2003¶abc¶xyz" ; 3 )	0	1/1/0	1/2/2003\rabc\r
+UniqueValues ( "1:00¶1:00:00¶60:00¶abc" ; 4 )	0	1/1/0	1:00\r60:00\rabc\r
+UniqueValues ( "b¶a¶b" ; -1 )	0	1/1/0	b\ra\r
+UniqueValues ( "b¶a¶b" ; 9 )	0	1/1/0	b\ra\r
+UniqueValues ( "b¶a¶b" ; 1 ; "Bogus" )	0	2/2/0	?
+UniqueValues ( "a" & Char ( 10 ) & "a" & Char ( 13 ) & "b" )	0	1/1/0	a\rb\r
+GetAsCSS ( UniqueValues ( TextStyleAdd ( "a" ; Bold ) & "¶a¶b" ) )	0	1/1/0	<span style="font-weight: bold;" >a<br/></span><span style="" >b<br/></span>
+UniqueValues ( "a" & Char ( 9 ) & "¶a" )	0	1/1/0	a\t\ra\r
+UniqueValues ( "abc¶ABC¶Abc" )	0	1/1/0	abc\r
+UniqueValues ( "ǅ¶ǆ¶Ǆ" )	0	1/1/0	ǅ\r
+FilterValues ( "a¶A¶b" ; "a" )	0	1/1/0	a\rA\r
+FilterValues ( "é¶e¶E¶É" ; "e" )	0	1/1/0	e\rE\r
+FilterValues ( "ß¶ss¶SS" ; "ss" )	0	1/1/0	ss\rSS\r
+FilterValues ( "ｱ¶ア¶あ" ; "ア" )	0	1/1/0	ア\r
+FilterValues ( "1¶01¶1.0¶abc" ; "1" )	0	1/1/0	1\r
+FilterValues ( "a¶a¶b" ; "a" )	0	1/1/0	a\ra\r
+FilterValues ( "a¶¶b" ; "¶" )	0	1/1/0	\r
+FilterValues ( "a¶¶b" ; "a¶¶" )	0	1/1/0	a\r\r
+FilterValues ( "a¶¶b¶" ; "" )	0	1/1/0	
+FilterValues ( "a¶b" ; "b¶a" )	0	1/1/0	a\rb\r
+FilterValues ( "a" & Char ( 10 ) & "b" ; "b" & Char ( 10 ) & "a" )	0	1/1/0	a\nb\r
+FilterValues ( "a" & Char ( 13 ) & Char ( 10 ) & "b" ; "b" )	0	1/1/0	b\r
+FilterValues ( "a" & Char ( 13 ) & Char ( 10 ) & "b" ; "a¶¶b" )	0	1/1/0	a\r\nb\r
+FilterValues ( "" ; "a" )	0	1/1/0	
+FilterValues ( "a" ; "" )	0	1/1/0	
+FilterValues ( "a " ; "a" )	0	1/1/0	
+FilterValues ( "a" ; "a " )	0	1/1/0	
+FilterValues ( 1/0 ; "?" )	15	1/1/0	?\r
+FilterValues ( "12¶12.0" ; 12 )	0	1/1/0	12\r
+FilterValues ( "1/2/2003¶01/02/2003" ; Date ( 1 ; 2 ; 2003 ) )	0	1/1/0	
+FilterValues ( "İ¶i¶I¶ı" ; "i" )	0	1/1/0	İ\ri\rI\r
+FilterValues ( "ǅ¶ǆ¶Ǆ" ; "ǆ" )	0	1/1/0	ǅ\rǆ\rǄ\r
+FilterValues ( "abc¶ABC" ; "aBc" )	0	1/1/0	abc\rABC\r
+FilterValues ( "ä¶a¶ae" ; "a" )	0	1/1/0	a\r
+GetAsCSS ( FilterValues ( TextStyleAdd ( "a" ; Bold ) & "¶b¶a" ; "a" ) )	0	1/1/0	<span style="font-weight: bold;" >a</span><span style="" ><br/>a<br/></span>
+FilterValues ( "e" & Char ( 769 ) & "¶é" ; "é" )	0	1/1/0	é\r
+FilterValues ( "Σ¶σ¶ς" ; "σ" )	0	1/1/0	Σ\rσ\r
+FilterValues ( "a" & Char ( 0 ) & "¶a" ; "a" )	0	1/1/0	a\ra\r
+SortValues ( "ae¶ä¶af" ; 1 ; "German" )	0	1/1/0	ä\rae\raf\r
+SortValues ( "ä¶ae¶af" ; 1 ; "German" )	0	1/1/0	ä\rae\raf\r
+SortValues ( "ae¶ä¶af¶æ" )	0	1/1/0	ä\rae\ræ\raf\r
+SortValues ( "éa¶eb¶ea" )	0	1/1/0	ea\réa\reb\r
+SortValues ( "eb¶éa¶ea" )	0	1/1/0	ea\réa\reb\r
+SortValues ( "Ea¶éa¶ea" )	0	1/1/0	Ea\rea\réa\r
+SortValues ( "cote¶côte¶coté¶côté" )	0	1/1/0	cote\rcoté\rcôte\rcôté\r
+SortValues ( "côté¶coté¶côte¶cote" )	0	1/1/0	cote\rcoté\rcôte\rcôté\r
+SortValues ( "côté¶coté¶côte¶cote" ; 1 ; "French" )	0	1/1/0	cote\rcôte\rcoté\rcôté\r
+SortValues ( "ガ¶が¶カ¶か¶ｶ¶ア¶あ¶ぁ¶ァ" )	0	1/1/0	ア\rあ\rぁ\rァ\rカ\rか\rｶ\rガ\rが\r
+SortValues ( "ガ¶が¶カ¶か¶ｶ¶ア¶あ¶ぁ¶ァ" ; 1 ; "Japanese" )	0	1/1/0	あ\rア\rぁ\rァ\rか\rｶ\rカ\rが\rガ\r
+SortValues ( "w¶v¶x¶W¶V" ; 1 ; "Swedish" )	0	1/1/0	v\rV\rw\rW\rx\r
+SortValues ( "ü¶y¶u¶z" ; 1 ; "Swedish" )	0	1/1/0	u\ry\rü\rz\r
+SortValues ( "aa¶å¶ab¶z" ; 1 ; "Swedish" )	0	1/1/0	aa\rab\rz\rå\r
+SortValues ( "ö¶ø¶ä¶æ¶å" ; 1 ; "Swedish" )	0	1/1/0	æ\rå\rä\rö\rø\r
+SortValues ( "ö¶ø¶ä¶æ¶å¶oe¶o" ; 1 ; "German" )	0	1/1/0	å\rä\ræ\ro\rø\rö\roe\r
+SortValues ( "B¶b¶A¶a" ; 1 ; "Unicode_Standard" )	0	1/1/0	A\ra\rB\rb\r
+SortValues ( "b¶B¶a¶A" ; 1 ; "Unicode_Standard" )	0	1/1/0	a\rA\rb\rB\r
+SortValues ( "b¶B¶a¶A" )	0	1/1/0	a\rA\rb\rB\r
+SortValues ( Char ( 65313 ) & "¶" & Char ( 55297 ) & Char ( 56320 ) & "¶z" ; 1 ; "Unicode_Raw" )	0	1/1/0	z\r𐐀\rＡ\r
+SortValues ( "é¶e" & Char ( 769 ) & "¶f¶e" ; 1 ; "Unicode_Raw" )	0	1/1/0	e\ré\rf\ré\r
+SortValues ( "é¶e" & Char ( 769 ) & "¶e" )	0	1/1/0	e\ré\ré\r
+SortValues ( "a¶ a¶-a¶_a¶.a¶1¶A" )	0	1/1/0	 a\r_a\r-a\r.a\r1\ra\rA\r
+SortValues ( "α¶a¶а¶あ¶漢¶1¶!" )	0	1/1/0	!\r1\ra\rα\rа\rあ\r漢\r
+SortValues ( "b¶a¶1" ; 2 )	0	1/1/0	1\rb\ra\r
+SortValues ( "b¶a¶1¶" ; 2 )	0	1/1/0	1\rb\ra\r
+SortValues ( "abc¶ ¶5" ; 2 )	0	1/1/0	 \r5\rabc\r
+SortValues ( "2¶ ¶1" ; 1 )	0	1/1/0	 \r1\r2\r
+SortValues ( "1¶2" ; 2 ; "Bogus" )	0	2/2/0	?
+SortValues ( "b" & Char ( 9 ) & "¶b" )	0	1/1/0	b\rb\t\r
+SortValues ( "a" & Char ( 0 ) & "b¶ab" )	0	1/1/0	ab\rab\r
+SortValues ( "1.5¶1,5¶2" ; 2 )	0	1/1/0	1,5\r2\r1.5\r
+UniqueValues ( "ae¶ä" ; 1 ; "German" )	0	1/1/0	ae\r
+UniqueValues ( "æ¶ä¶ae" ; 1 ; "German" )	0	1/1/0	æ\r
+UniqueValues ( "v¶w" ; 1 ; "Swedish" )	0	1/1/0	v\r
+UniqueValues ( "ü¶y" ; 1 ; "Swedish" )	0	1/1/0	ü\r
+UniqueValues ( "ø¶ö" ; 1 ; "Swedish" )	0	1/1/0	ø\r
+UniqueValues ( "か¶カ¶ｶ¶が" ; 1 ; "Japanese" )	0	1/1/0	か\rカ\rが\r
+UniqueValues ( "a¶a" & Char ( 9 ) & "¶a" & Char ( 769 ) )	0	1/1/0	a\ra\t\r
+UniqueValues ( "ﬁ¶fi" )	0	1/1/0	ﬁ\r
+UniqueValues ( "½¶1/2" )	0	1/1/0	½\r1/2\r
+UniqueValues ( "①¶1" )	0	1/1/0	①\r
+UniqueValues ( "Ａ¶A" )	0	1/1/0	Ａ\r
+UniqueValues ( "a" & Char ( 173 ) & "b¶ab" )	0	1/1/0	a­b\rab\r
+UniqueValues ( "ab¶a b" )	0	1/1/0	ab\ra b\r
+UniqueValues ( "1/2/2003 1:00¶1/2/2003 1:00:00¶abc" ; 5 )	0	1/1/0	1/2/2003 1:00\rabc\r
+UniqueValues ( "1.0¶1" ; 1 )	0	1/1/0	1.0\r1\r
+UniqueValues ( "b¶B" ; -2 )	0	1/1/0	b\r
+FilterValues ( "a" & Char ( 10 ) & "b" ; "a" )	0	1/1/0	a\n
+FilterValues ( "a¶" & TextStyleAdd ( "b" ; Bold ) ; "b" )	0	1/1/0	b\r
+GetAsCSS ( FilterValues ( "a¶" & TextStyleAdd ( "b" ; Bold ) ; "b" ) )	0	1/1/0	<span style="font-weight: bold;" >b<br/></span>
+Code ( FilterValues ( "e" & Char ( 769 ) & "¶é" ; "é" ) )	0	2/2/0	1300233
+Code ( FilterValues ( "e" & Char ( 769 ) & "¶é" ; "e" & Char ( 769 ) ) )	0	2/2/0	130076900101
+FilterValues ( "a" & Char ( 8232 ) & "b" & Char ( 8233 ) ; "a¶b" )	0	1/1/0	a b 
+FilterValues ( "b¶a¶b" ; "b" )	0	1/1/0	b\rb\r
+FilterValues ( "x¶a¶x" ; "a" )	0	1/1/0	a\r
+FilterValues ( "a¶b¶" ; "a" )	0	1/1/0	a\r
+FilterValues ( "a" & Char ( 13 ) & Char ( 10 ) & "b" ; "a" )	0	1/1/0	a\r
+FilterValues ( "a" & Char ( 13 ) & Char ( 10 ) & "b" ; "a¶b" )	0	1/1/0	a\rb\r
+SerialIncrement ( "abc" ; 1 )	0	1/1/0	abc1
+SerialIncrement ( "" ; 1 )	0	1/1/0	1
+SerialIncrement ( "abc09" ; 1 )	0	1/1/0	abc10
+SerialIncrement ( "abc99" ; 1 )	0	1/1/0	abc100
+SerialIncrement ( "abc009" ; 1 )	0	1/1/0	abc010
+SerialIncrement ( "abc000" ; -1 )	0	1/1/0	abc0-1
+SerialIncrement ( "abc001" ; -1 )	0	1/1/0	abc000
+SerialIncrement ( "abc001" ; -2 )	0	1/1/0	abc0-1
+SerialIncrement ( "abc005" ; -10 )	0	1/1/0	abc0-5
+SerialIncrement ( "abc10" ; -10 )	0	1/1/0	abc00
+SerialIncrement ( "abc10" ; -11 )	0	1/1/0	abc-1
+SerialIncrement ( "abc10" ; -20 )	0	1/1/0	abc-10
+SerialIncrement ( "12abc" ; 1 )	0	1/1/0	13abc
+SerialIncrement ( "1a2b" ; 1 )	0	1/1/0	1a3b
+SerialIncrement ( "a-5" ; 1 )	0	1/1/0	a-6
+SerialIncrement ( "a-5" ; -10 )	0	1/1/0	a--5
+SerialIncrement ( "-5" ; 1 )	0	1/1/0	-6
+SerialIncrement ( "5" ; -10 )	0	1/1/0	-5
+SerialIncrement ( 12 ; 1 )	0	1/1/0	13
+SerialIncrement ( 1.5 ; 1 )	106	2/2/0	?
+SerialIncrement ( "abc12" ; 0 )	0	1/1/0	abc12
+SerialIncrement ( "abc12" ; "" )	0	1/1/0	abc12
+SerialIncrement ( "abc12" ; "x" )	0	1/1/0	abc12
+SerialIncrement ( "abc12" ; 1/0 )	15	1/1/0	abc0?
+SerialIncrement ( 1/0 ; 1 )	15	1/1/0	?1
+SerialIncrement ( "abc12" ; 10^20 )	0	1/1/0	abc100000000000000000012
+SerialIncrement ( "abc99999999999999999999" ; 1 )	0	1/1/0	abc100000000000000000000
+SerialIncrement ( "abc12" ; -0.9 )	106	2/2/0	?
+SerialIncrement ( "abc12" ; 4294967297 )	0	1/1/0	abc4294967309
+SerialIncrement ( "x１２" ; 1 )	0	1/1/0	x１３
+SerialIncrement ( "x١٢" ; 1 )	0	1/1/0	x01
+SerialIncrement ( "x12y" ; 1 )	0	1/1/0	x13y
+SerialIncrement ( "x12 " ; 1 )	0	1/1/0	x13 
+SerialIncrement ( "INV-0099-A" ; 1 )	0	1/1/0	INV-0100-A
+SerialIncrement ( "x0" ; -1 )	0	1/1/0	x-1
+SerialIncrement ( "x00" ; -1 )	0	1/1/0	x-1
+SerialIncrement ( "x1" ; -5 )	0	1/1/0	x-4
+SerialIncrement ( "x99" ; 2 )	0	1/1/0	x101
+SerialIncrement ( "x" & Char ( 178 ) ; 1 )	0	1/1/0	x²1
+GetAsCSS ( SerialIncrement ( TextStyleAdd ( "ab9" ; Bold ) ; 1 ) )	0	1/1/0	<span style="" >ab10</span>
+GetAsCSS ( SerialIncrement ( "ab" & TextStyleAdd ( "9" ; Bold ) ; 1 ) )	0	1/1/0	<span style="" >ab10</span>
+SerialIncrement ( "abc12" ; 1e3 )	0	1/1/0	abc1012
+SerialIncrement ( "abc12" ; 2.9 )	106	2/2/0	?
+SerialIncrement ( "abc12" ; -2.9 )	106	2/2/0	?
+# TrimAll
+TrimAll ( "a  b  アイ  c" ; 1 ; 0 )	0	1/1/0	a bアイc
+TrimAll ( "a  b  アイ  c" ; 0 ; 0 )	0	1/1/0	a bアイc
+TrimAll ( "a  b  アイ  c" ; 0 ; 1 )	0	1/1/0	a b アイ c
+TrimAll ( "a  b  アイ  c" ; 0 ; 2 )	0	1/1/0	a b アイ c
+TrimAll ( "a  b  アイ  c" ; 0 ; 3 )	0	1/1/0	abアイc
+TrimAll ( "aアbイ" ; 1 ; 1 )	0	1/1/0	a ア b イ
+TrimAll ( "aアbイ" ; 1 ; 2 )	0	1/1/0	aアbイ
+TrimAll ( "aアbイ" ; 0 ; 1 )	0	1/1/0	a ア b イ
+TrimAll ( "ア イ" ; 1 ; 0 )	0	1/1/0	アイ
+TrimAll ( "ア イ" ; 0 ; 0 )	0	1/1/0	アイ
+TrimAll ( "ア　イ" ; 1 ; 0 )	0	1/1/0	アイ
+TrimAll ( "ア　イ" ; 0 ; 0 )	0	1/1/0	ア　イ
+TrimAll ( "a　b" ; 1 ; 0 )	0	1/1/0	a b
+TrimAll ( "a　b" ; 0 ; 0 )	0	1/1/0	a　b
+TrimAll ( "a　 b" ; 0 ; 0 )	0	1/1/0	a　b
+TrimAll ( "a 　b" ; 1 ; 0 )	0	1/1/0	a b
+TrimAll ( "　a　" ; 0 ; 0 )	0	1/1/0	　a　
+TrimAll ( "　a　" ; 1 ; 0 )	0	1/1/0	a
+TrimAll ( "a ア" ; 1 ; 1 )	0	1/1/0	a ア
+TrimAll ( "a　ア" ; 1 ; 1 )	0	1/1/0	a ア
+TrimAll ( "a　ア" ; 0 ; 1 )	0	1/1/0	a　ア
+TrimAll ( "a　ア" ; 0 ; 2 )	0	1/1/0	a　ア
+TrimAll ( "a b" ; 1 ; 3 )	0	1/1/0	ab
+TrimAll ( "a b" ; 0 ; 3 )	0	1/1/0	ab
+TrimAll ( "a b" ; 0 ; 4 )	0	1/1/0	a b
+TrimAll ( "a b" ; 0 ; -1 )	0	1/1/0	a b
+TrimAll ( "a  b" ; 0 ; 4 )	0	1/1/0	a b
+TrimAll ( "a  b" ; 0 ; -1 )	0	1/1/0	a b
+TrimAll ( "a  b" ; 0 ; 1.9 )	106	2/2/0	?
+TrimAll ( "a  b" ; 0 ; "" )	0	1/1/0	a b
+TrimAll ( "a　b" ; 2 ; 0 )	0	1/1/0	a b
+TrimAll ( "a　b" ; -1 ; 0 )	0	1/1/0	a b
+TrimAll ( "a　b" ; 0.5 ; 0 )	106	2/2/0	?
+TrimAll ( "a　b" ; "" ; 0 )	0	1/1/0	a　b
+TrimAll ( "a" & Char ( 9 ) & Char ( 9 ) & "b" ; 0 ; 0 )	0	1/1/0	a\t\tb
+TrimAll ( "a¶¶b" ; 0 ; 0 )	0	1/1/0	a\r\rb
+TrimAll ( "a" & Char ( 160 ) & Char ( 160 ) & "b" ; 0 ; 0 )	0	1/1/0	a  b
+TrimAll ( "a" & Char ( 8194 ) & Char ( 8194 ) & "b" ; 0 ; 0 )	0	1/1/0	a  b
+TrimAll ( "a" & Char ( 8194 ) & Char ( 8194 ) & "b" ; 1 ; 0 )	0	1/1/0	a  b
+TrimAll ( " a ¶ b " ; 0 ; 0 )	0	1/1/0	a \r b
+TrimAll ( "漢 字" ; 0 ; 0 )	0	1/1/0	漢字
+TrimAll ( "漢 a" ; 0 ; 0 )	0	1/1/0	漢a
+TrimAll ( "a 漢" ; 0 ; 1 )	0	1/1/0	a 漢
+TrimAll ( "a漢" ; 0 ; 1 )	0	1/1/0	a 漢
+TrimAll ( "a漢b" ; 0 ; 1 )	0	1/1/0	a 漢 b
+TrimAll ( "1漢" ; 0 ; 1 )	0	1/1/0	1 漢
+TrimAll ( "。a" ; 0 ; 1 )	0	1/1/0	。 a
+TrimAll ( "a" & Char ( 12287 ) & "b" ; 0 ; 1 )	0	1/1/0	a ⿿ b
+TrimAll ( "a" & Char ( 12032 ) & "b" ; 0 ; 1 )	0	1/1/0	a ⼀ b
+TrimAll ( "a" & Char ( 12031 ) & "b" ; 0 ; 1 )	0	1/1/0	a⻿b
+TrimAll ( "a" & Char ( 65377 ) & "b" ; 0 ; 1 )	0	1/1/0	a ｡ b
+TrimAll ( "a" & Char ( 65393 ) & "b" ; 0 ; 1 )	0	1/1/0	a ｱ b
+TrimAll ( "a" & Char ( 44032 ) & "b" ; 0 ; 1 )	0	1/1/0	a 가 b
+TrimAll ( "a ﾞ b" ; 0 ; 0 )	0	1/1/0	aﾞb
+TrimAll ( "" ; 0 ; 0 )	0	1/1/0	
+TrimAll ( "   " ; 0 ; 0 )	0	1/1/0	
+TrimAll ( "   " ; 1 ; 1 )	0	1/1/0	
+TrimAll ( 1/0 ; 0 ; 0 )	15	1/1/0	?
+TrimAll ( " 12 " ; 0 ; 0 )	0	1/1/0	12
+TrimAll ( "a ア b" ; 1 ; 1 )	0	1/1/0	a ア b
+TrimAll ( "aア b" ; 1 ; 1 )	0	1/1/0	a ア b
+TrimAll ( "a アb" ; 1 ; 2 )	0	1/1/0	a アb
+TrimAll ( "a" & Char ( 8203 ) & "b" ; 0 ; 3 )	0	1/1/0	a​b
+GetAsCSS ( TrimAll ( TextStyleAdd ( "a  b" ; Bold ) ; 0 ; 0 ) )	0	1/1/0	<span style="font-weight: bold;" >a b</span>
+GetAsCSS ( TrimAll ( "a" & TextStyleAdd ( "ア" ; Bold ) ; 1 ; 1 ) )	0	1/1/0	<span style="" >a </span><span style="font-weight: bold;" >&#12450;</span>
+# URL
+GetAsURLEncoded ( ":-_.!~*'()" )	0	1/1/0	:-_.!~*'()
+GetAsURLEncoded ( "\"#$%&+,/;<=>?@[\\]^`{|}" )	0	1/1/0	%22%23%24%25%26%2B%2C%2F%3B%3C%3D%3E%3F%40%5B%5C%5D%5E%60%7B%7C%7D
+GetAsURLEncoded ( "a¶b" )	0	1/1/0	a%0Db
+GetAsURLEncoded ( "a" & Char ( 10 ) & Char ( 9 ) & Char ( 1 ) & Char ( 127 ) )	0	1/1/0	a%0A%09%01%7F
+GetAsURLEncoded ( "😀" )	0	1/1/0	%F0%9F%98%80
+GetAsURLEncoded ( "日本" )	0	1/1/0	%E6%97%A5%E6%9C%AC
+GetAsURLEncoded ( "" )	0	1/1/0	
+GetAsURLEncoded ( 1/0 )	15	1/1/0	%3F
+GetAsURLEncoded ( 12.5 )	106	2/2/0	?
+GetAsURLEncoded ( "ABCxyz0189" )	0	1/1/0	ABCxyz0189
+GetAsURLEncoded ( Char ( 160 ) )	0	1/1/0	%C2%A0
+GetAsURLEncoded ( Char ( 65279 ) )	0	1/1/0	%EF%BB%BF
+# GetAs
+GetAsText ( 1/3 )	0	1/1/0	,3333333333333333
+GetAsText ( Date ( 1 ; 2 ; 2003 ) )	0	1/1/0	02.01.2003
+GetAsText ( "" )	0	1/1/0	
+GetAsText ( 1/0 )	15	1/1/0	?
+GetAsCSS ( GetAsText ( TextStyleAdd ( "ab" ; Bold ) ) )	0	1/1/0	<span style="font-weight: bold;" >ab</span>
+GetAsNumber ( "" )	0	1/1/0	
+GetAsNumber ( " " )	0	2/2/0	
+GetAsNumber ( 1/0 )	15	2/2/0	?
+GetAsNumber ( Time ( 1 ; 0 ; 0 ) )	0	2/2/0	3600
+GetAsNumber ( "?" )	0	2/2/0	?
+GetAsNumber ( "1e3" )	0	2/2/0	1000
+GetAsNumber ( TextStyleAdd ( "12" ; Bold ) )	0	2/2/0	12
+GetAsCSS ( GetAsNumber ( TextStyleAdd ( "12" ; Bold ) ) )	0	1/1/0	<span style="" >12</span>
+GetAsNumber ( "12abc" ) & ""	0	1/1/0	12
+IsEmpty ( GetAsNumber ( " " ) )	0	2/2/0	1
+IsEmpty ( GetAsNumber ( "abc" ) )	0	2/2/0	1
+GetAsNumber ( "abc" ) + 1	0	2/2/0	1
+GetAsDate ( "" )	0	1/1/0	
+GetAsDate ( " " )	0	3/3/0	
+GetAsDate ( "abc" )	500	2/2/0	?
+GetAsDate ( 1/0 )	15	2/2/0	?
+GetAsDate ( Time ( 1 ; 0 ; 0 ) )	500	2/2/0	?
+GetAsTime ( "" )	0	1/1/0	
+GetAsTime ( "abc" )	501	2/2/0	?
+GetAsTime ( 1/0 )	15	2/2/0	?
+GetAsTimestamp ( "" )	0	1/1/0	
+GetAsTimestamp ( "abc" )	500	2/2/0	?
+GetAsTimestamp ( 1/0 )	15	2/2/0	?
+GetAsTimestamp ( Date ( 1 ; 2 ; 2003 ) )	0	5/5/0	02.01.2003 00:00
+Length ( "" )	0	2/2/0	0
+Length ( 1/0 )	15	2/2/0	1
+Length ( 10^20 )	0	2/2/0	7
+Length ( Date ( 1 ; 2 ; 2003 ) )	0	2/2/0	10
+Length ( 1/3 )	0	2/2/0	17
+Length ( TextStyleAdd ( "abc" ; Bold ) )	0	2/2/0	3
+# casing styles
+GetAsCSS ( Upper ( TextStyleAdd ( "ab" ; Bold ) & "c" ) )	0	1/1/0	<span style="font-weight: bold;" >AB</span><span style="" >C</span>
+GetAsCSS ( Proper ( TextStyleAdd ( "ab" ; Bold ) & "c" ) )	0	1/1/0	<span style="font-weight: bold;" >Ab</span><span style="" >c</span>
+GetAsCSS ( Quote ( TextStyleAdd ( "ab" ; Bold ) ) )	0	1/1/0	<span style="font-weight: bold;" >&quot;ab&quot;</span>
+GetAsCSS ( Substitute ( TextStyleAdd ( "abc" ; Bold ) ; "b" ; "XY" ) )	0	1/1/0	<span style="font-weight: bold;" >aXYc</span>
+GetAsCSS ( Substitute ( TextStyleAdd ( "abc" ; Bold ) ; "b" ; TextStyleAdd ( "XY" ; Italic ) ) )	0	1/1/0	<span style="font-weight: bold;" >a</span><span style="font-weight: bold;font-style:italic;" >XY</span><span style="font-weight: bold;" >c</span>
+GetAsCSS ( Substitute ( "a" & TextStyleAdd ( "b" ; Bold ) & "c" ; "bc" ; "X" ) )	0	1/1/0	<span style="" >a</span><span style="font-weight: bold;" >X</span>
+GetAsCSS ( Substitute ( "a" & TextStyleAdd ( "b" ; Bold ) & "c" ; "ab" ; "XYZ" ) )	0	1/1/0	<span style="" >XYZc</span>
+GetAsCSS ( Replace ( "a" & TextStyleAdd ( "b" ; Bold ) & "c" ; 2 ; 0 ; "X" ) )	0	1/1/0	<span style="" >a</span><span style="font-weight: bold;" >Xb</span><span style="" >c</span>
+GetAsCSS ( Replace ( "a" & TextStyleAdd ( "b" ; Bold ) & "c" ; 3 ; 0 ; "X" ) )	0	1/1/0	<span style="" >a</span><span style="font-weight: bold;" >b</span><span style="" >Xc</span>
+GetAsCSS ( Replace ( TextStyleAdd ( "a" ; Bold ) & "bc" ; 1 ; 0 ; "X" ) )	0	1/1/0	<span style="font-weight: bold;" >Xa</span><span style="" >bc</span>
+GetAsCSS ( Replace ( TextStyleAdd ( "abc" ; Bold ) ; 4 ; 0 ; "X" ) )	0	1/1/0	<span style="font-weight: bold;" >abcX</span>
+GetAsCSS ( Replace ( "" ; 1 ; 0 ; "X" ) )	0	1/1/0	<span style="" >X</span>
+GetAsCSS ( Filter ( TextStyleAdd ( "abc" ; Bold ) & "abc" ; "b" ) )	0	1/1/0	<span style="font-weight: bold;" >b</span><span style="" >b</span>
+GetAsCSS ( Char ( 65 ) )	0	1/1/0	<span style="" >A</span>
+GetAsCSS ( Middle ( TextStyleAdd ( "ab" ; Bold ) & "cd" ; 2 ; 2 ) )	0	1/1/0	<span style="font-weight: bold;" >b</span><span style="" >c</span>
+GetAsCSS ( Lower ( TextStyleAdd ( "AB" ; Bold ) & "C" ) )	0	1/1/0	<span style="font-weight: bold;" >ab</span><span style="" >c</span>
+GetAsCSS ( Substitute ( TextStyleAdd ( "abc" ; Bold ) ; "c" ; "XY" ) )	0	1/1/0	<span style="font-weight: bold;" >abXY</span>
+GetAsCSS ( Substitute ( TextStyleAdd ( "abc" ; Bold ) & "d" ; "c" ; "XY" ) )	0	1/1/0	<span style="font-weight: bold;" >abXY</span><span style="" >d</span>
+GetAsCSS ( Substitute ( "a" & TextStyleAdd ( "bc" ; Bold ) ; "a" ; "XY" ) )	0	1/1/0	<span style="" >XY</span><span style="font-weight: bold;" >bc</span>
+GetAsCSS ( Replace ( "a" & TextStyleAdd ( "bc" ; Bold ) ; 1 ; 1 ; "XY" ) )	0	1/1/0	<span style="" >XY</span><span style="font-weight: bold;" >bc</span>
+GetAsCSS ( Replace ( "a" & TextStyleAdd ( "bc" ; Bold ) ; 2 ; 1 ; "XY" ) )	0	1/1/0	<span style="" >a</span><span style="font-weight: bold;" >XYc</span>
+GetAsCSS ( Replace ( TextStyleAdd ( "ab" ; Bold ) & "c" ; 3 ; 1 ; "XY" ) )	0	1/1/0	<span style="font-weight: bold;" >ab</span><span style="" >XY</span>
+GetAsCSS ( Replace ( TextStyleAdd ( "ab" ; Bold ) & "c" ; 2 ; 2 ; "XY" ) )	0	1/1/0	<span style="font-weight: bold;" >aXY</span>
+WordCount ( "x😀y" )	0	2/2/0	1
+WordCount ( "😀" )	0	2/2/0	1
+WordCount ( "😀😀" )	0	2/2/0	1
+WordCount ( "x𐐀y" )	0	2/2/0	1
+WordCount ( "𐐀" )	0	2/2/0	1
+WordCount ( "x𠀀y" )	0	2/2/0	3
+WordCount ( "𠀀𠀀" )	0	2/2/0	1
+WordCount ( "漢𠀀" )	0	2/2/0	1
+WordCount ( "1😀2" )	0	2/2/0	1
+WordCount ( "a'😀" )	0	2/2/0	2
+WordCount ( "😀'a" )	0	2/2/0	2
+WordCount ( "1,😀" )	0	2/2/0	2
+Proper ( "x😀y" )	0	1/1/0	X😀y
+Proper ( "x𐐨y z" )	0	1/1/0	X𐐨y Z
+Proper ( "😀abc" )	0	1/1/0	😀abc
+Trim ( " 😀 " )	0	1/1/0	😀
+TrimAll ( "a 😀 b" ; 0 ; 0 )	0	1/1/0	a😀b
+TrimAll ( "a😀b" ; 0 ; 1 )	0	1/1/0	a 😀 b
+LeftWords ( "ab😀cd ef" ; 1 )	0	1/1/0	ab😀cd
+Lower ( "ΑΣ😀" )	0	1/1/0	ασ😀
+Lower ( "😀Σ" )	0	1/1/0	😀ς
+TrimAll ( "aア b" ; 0 ; 4 )	0	1/1/0	aアb
+TrimAll ( "aア b" ; 0 ; -1 )	0	1/1/0	aアb
+TrimAll ( "aア b" ; 0 ; 5 )	0	1/1/0	aアb
+TrimAll ( "aアb" ; 0 ; 4 )	0	1/1/0	aアb
+TrimAll ( "aアb" ; 0 ; -1 )	0	1/1/0	aアb
+TrimAll ( "aア  b" ; 0 ; 1.9 )	106	2/2/0	?
+TrimAll ( "aアb" ; 0 ; 4294967297 )	0	1/1/0	a ア b
+TrimAll ( "a　ア" ; 1 ; 2 )	0	1/1/0	a ア
+TrimAll ( "a 　 b" ; 0 ; 0 )	0	1/1/0	a　b
+TrimAll ( "a 　 b" ; 0 ; 3 )	0	1/1/0	a　b
+TrimAll ( "ア 　 イ" ; 0 ; 0 )	0	1/1/0	ア　イ
+TrimAll ( "a 　 ア" ; 0 ; 1 )	0	1/1/0	a　ア
+TrimAll ( "a 　　 b" ; 1 ; 0 )	0	1/1/0	a b
+TrimAll ( "a" & Char ( 12288 ) & Char ( 12288 ) & "b" ; 0 ; 1 )	0	1/1/0	a　　b
+TrimAll ( " " & Char ( 12288 ) & "a" ; 0 ; 0 )	0	1/1/0	　a
+SerialIncrement ( "abc" ; 0 )	0	1/1/0	abc0
+SerialIncrement ( "abc" ; -1 )	0	1/1/0	abc-1
+SerialIncrement ( "abc" ; 1.5 )	106	2/2/0	?
+SerialIncrement ( "abc" ; "" )	0	1/1/0	abc
+SerialIncrement ( "x０" ; -1 )	0	1/1/0	x－１
+SerialIncrement ( "x０９" ; 1 )	0	1/1/0	x１０
+SerialIncrement ( "x9０" ; 1 )	0	1/1/0	x９１
+SerialIncrement ( "x١٢" ; 15 )	0	1/1/0	x15
+SerialIncrement ( "x12" ; 10^30 )	0	1/1/0	x1000000000000000000000000000012
+SerialIncrement ( "x999999999" ; 1 )	0	1/1/0	x1000000000
+SerialIncrement ( "x1" ; 999999999 )	0	1/1/0	x1000000000
+SerialIncrement ( "1/2/2003" ; 1 )	0	1/1/0	1/2/2004
+SerialIncrement ( "a1b" ; GetAsNumber ( "?" ) )	0	1/1/0	a?b
+SortValues ( "ȧ¶ȃ¶ȁ¶ǻ¶ǡ¶ǟ¶ǎ¶ą¶ă¶ā¶å¶ä¶ã¶â¶á¶à¶a" )	0	1/1/0	a\rá\rà\ră\râ\rǎ\rå\rǻ\rǟ\rã\rȧ\rǡ\rą\rā\rȁ\rȃ\rä\r
+SortValues ( "ȧ¶ȃ¶ȁ¶ǻ¶ǡ¶ǟ¶ǎ¶ą¶ă¶ā¶å¶ä¶ã¶â¶á¶à¶a" ; 1 ; "French" )	0	1/1/0	a\rá\rǻ\rà\ră\râ\rǎ\rå\rä\rã\rȧ\rą\rā\rǟ\rǡ\rȁ\rȃ\r
+SortValues ( "č¶ċ¶ĉ¶ć¶ç¶c" )	0	1/1/0	c\rć\rĉ\rč\rċ\rç\r
+SortValues ( "č¶ċ¶ĉ¶ć¶ç¶c" ; 1 ; "French" )	0	1/1/0	c\rć\rĉ\rč\rċ\rç\r
+SortValues ( "ȩ¶ȇ¶ȅ¶ě¶ę¶ė¶ĕ¶ē¶ë¶ê¶é¶è¶e" )	0	1/1/0	e\ré\rè\rĕ\rê\rě\rë\rė\rȩ\rę\rē\rȅ\rȇ\r
+SortValues ( "ȩ¶ȇ¶ȅ¶ě¶ę¶ė¶ĕ¶ē¶ë¶ê¶é¶è¶e" ; 1 ; "French" )	0	1/1/0	e\ré\rè\rĕ\rê\rě\rë\rė\rȩ\rę\rē\rȅ\rȇ\r
+SortValues ( "ǹ¶ň¶ņ¶ń¶ñ¶n" )	0	1/1/0	n\rń\rǹ\rň\rñ\rņ\r
+SortValues ( "ǹ¶ň¶ņ¶ń¶ñ¶n" ; 1 ; "French" )	0	1/1/0	n\rń\rǹ\rň\rñ\rņ\r
+SortValues ( "ø¶ȱ¶ȯ¶ȭ¶ȫ¶ȏ¶ȍ¶ǭ¶ǫ¶ǒ¶ơ¶ő¶ŏ¶ō¶ö¶õ¶ô¶ó¶ò¶o" )	0	1/1/0	o\ró\rò\rŏ\rô\rǒ\rȫ\rő\rõ\rȭ\rȯ\rȱ\rø\rǫ\rǭ\rō\rȍ\rȏ\rơ\rö\r
+SortValues ( "ø¶ȱ¶ȯ¶ȭ¶ȫ¶ȏ¶ȍ¶ǭ¶ǫ¶ǒ¶ơ¶ő¶ŏ¶ō¶ö¶õ¶ô¶ó¶ò¶o" ; 1 ; "French" )	0	1/1/0	o\ró\rò\rŏ\rô\rǒ\rö\rő\rõ\rȯ\rø\rǫ\rō\rȫ\rȭ\rȱ\rǭ\rȍ\rȏ\rơ\r
+SortValues ( "ȗ¶ȕ¶ǜ¶ǚ¶ǘ¶ǖ¶ǔ¶ư¶ų¶ű¶ů¶ŭ¶ū¶ũ¶ü¶û¶ú¶ù¶u" )	0	1/1/0	u\rú\rù\rŭ\rû\rǔ\rů\rǘ\rǜ\rǚ\rǖ\rű\rũ\rų\rū\rȕ\rȗ\rư\rü\r
+SortValues ( "ȗ¶ȕ¶ǜ¶ǚ¶ǘ¶ǖ¶ǔ¶ư¶ų¶ű¶ů¶ŭ¶ū¶ũ¶ü¶û¶ú¶ù¶u" ; 1 ; "French" )	0	1/1/0	u\rú\rǘ\rù\rǜ\rŭ\rû\rǔ\rǚ\rů\rü\rű\rũ\rų\rū\rǖ\rȕ\rȗ\rư\r
+SortValues ( "ö¶ø¶o¶oe¶œ¶ô¶ó" )	0	1/1/0	o\ró\rô\rø\rö\roe\rœ\r
+SortValues ( "ba¶b" & Char ( 9 ) & "a¶b" & Char ( 173 ) & "a¶b" & Char ( 8203 ) & "a" )	0	1/1/0	b\ta\rb­a\rba\rb​a\r
+SortValues ( "e" & Char ( 769 ) & "¶é" )	0	1/1/0	é\ré\r
+SortValues ( "é¶e" & Char ( 769 ) )	0	1/1/0	é\ré\r
+SortValues ( "a¶A¶Ａ¶ａ¶ᴀ" )	0	1/1/0	a\rA\rＡ\rａ\rᴀ\r
+# more probes: Japanese index keys, conversions, odd inputs
+UniqueValues ( "a¶A" ; 1 ; "Japanese" )	0	1/1/0	a\r
+UniqueValues ( "é¶e" ; 1 ; "Japanese" )	0	1/1/0	é\r
+UniqueValues ( "ぁ¶あ" ; 1 ; "Japanese" )	0	1/1/0	ぁ\rあ\r
+UniqueValues ( "ァ¶ア¶ｧ" ; 1 ; "Japanese" )	0	1/1/0	ァ\rア\r
+UniqueValues ( "ー¶ｰ" ; 1 ; "Japanese" )	0	1/1/0	ー\r
+UniqueValues ( "Ａ¶A" ; 1 ; "Japanese" )	0	1/1/0	Ａ\r
+UniqueValues ( "か¶カ¶ｶ¶が" )	0	1/1/0	か\r
+UniqueValues ( "B¶b¶a" ; 1 ; "French" )	0	1/1/0	B\ra\r
+UniqueValues ( "côte¶cote" ; 1 ; "French" )	0	1/1/0	côte\r
+UniqueValues ( "a¶b" ; 1 ; "Turkish" )	0	1/1/0	a\rb\r
+UniqueValues ( "ab¶a" & Char ( 8203 ) & "b" )	0	1/1/0	ab\r
+SortValues ( "b¶a¶c" ; 1 ; "Unicode_Raw" )	0	1/1/0	a\rb\rc\r
+SortValues ( "b¶a¶c" ; -1 ; "Unicode_Raw" )	0	1/1/0	c\rb\ra\r
+SortValues ( "b¶a¶c" ; 1 ; "German_Dictionary" )	0	1/1/0	a\rb\rc\r
+SortValues ( "ab¶äb¶ae¶af" ; 1 ; "German" )	0	1/1/0	ab\rae\räb\raf\r
+SortValues ( "äb¶ab¶af¶ae" ; 1 ; "German" )	0	1/1/0	ab\rae\räb\raf\r
+SortValues ( "Äpfel¶Apfel¶Zebra¶Ähre" ; 1 ; "German" )	0	1/1/0	Ähre\rÄpfel\rApfel\rZebra\r
+SortValues ( "Äpfel¶Apfel¶Zebra¶Ähre" ; 1 ; "Swedish" )	0	1/1/0	Apfel\rZebra\rÄhre\rÄpfel\r
+SortValues ( "3:00¶1:00¶2:00" ; -4 )	0	1/1/0	3:00\r2:00\r1:00\r
+SortValues ( "1/1/2003 1:00¶1/1/2003 0:30" ; 5 )	0	1/1/0	1/1/2003 0:30\r1/1/2003 1:00\r
+SortValues ( "1e2¶99¶1e1" ; 2 )	0	1/1/0	1e1\r99\r1e2\r
+SortValues ( "-1¶-10¶-2" ; 2 )	0	1/1/0	-10\r-2\r-1\r
+SortValues ( ".5¶0.25¶1/3" ; 2 )	0	1/1/0	.5\r1/3\r0.25\r
+SortValues ( "12/31/2002¶1/1/2003" ; 1 )	0	1/1/0	1/1/2003\r12/31/2002\r
+UniqueValues ( "1:00 PM¶13:00" ; 4 )	0	1/1/0	1:00 PM\r13:00\r
+UniqueValues ( "-0¶0" ; 2 )	0	1/1/0	-0\r
+UniqueValues ( "10¶1e1¶ten" ; 2 )	0	1/1/0	10\rten\r
+GetAsSVG ( "a" )	0	1/1/0	<stylelist>\r<style#0>"", begin: 1, end: 1</style> \r</stylelist>\r<data>\r<span style="0">a</span>\r</data>
+GetAsSVG ( "a<b>&c" )	0	1/1/0	<stylelist>\r<style#0>"", begin: 1, end: 6</style> \r</stylelist>\r<data>\r<span style="0">a&lt;b&gt;&amp;c</span>\r</data>
+GetAsSVG ( "😀" )	0	1/1/0	<stylelist>\r<style#0>"", begin: 1, end: 2</style> \r</stylelist>\r<data>\r<span style="0">😀</span>\r</data>
+GetAsSVG ( Char ( 9 ) & Char ( 10 ) )	0	1/1/0	<stylelist>\r<style#0>"", begin: 1, end: 2</style> \r</stylelist>\r<data>\r<span style="0">&#9;<br/></span>\r</data>
+GetAsCSS ( "x" & Char ( 8364 ) & Char ( 8734 ) & Char ( 8733 ) & Char ( 913 ) )	0	1/1/0	<span style="" >x&euro;&prop;&#8733;&Alpha;</span>
+GetAsCSS ( Char ( 128 ) & Char ( 159 ) )	0	1/1/0	<span style="" >&#128;&#159;</span>
+Exact ( 1/3 ; 1/3 )	0	2/2/0	1
+Exact ( Time ( 1 ; 0 ; 0 ) ; Time ( 1 ; 0 ; 0 ) )	0	2/2/0	1
+Exact ( Timestamp ( Date ( 1 ; 2 ; 2003 ) ; Time ( 1 ; 0 ; 0 ) ) ; "1/2/2003 1:00 AM" )	0	2/2/0	0
+Exact ( "abc" ; "abc" & "" )	0	2/2/0	1
+Exact ( "" ; GetAsDate ( "" ) )	0	2/2/0	1
+Upper ( "ǅ" )	0	1/1/0	Ǆ
+Lower ( "Ǆ" )	0	1/1/0	ǆ
+Upper ( "µ" )	0	1/1/0	Μ
+Upper ( "ÿ" )	0	1/1/0	Ÿ
+Lower ( "Ÿ" )	0	1/1/0	ÿ
+Upper ( "ꙁ" )	0	1/1/0	Ꙁ
+Lower ( "ΑΣ Ω" )	0	1/1/0	ας ω
+Lower ( "ΟΔΟΣ." )	0	1/1/0	οδοσ.
+Lower ( "ΑΣ" & Char ( 13 ) & "ΑΣ" )	0	1/1/0	ας\rας
+Proper ( "ΑΣ ΣΑ" )	0	1/1/0	Ασ Σα
+Proper ( "abc-def ghi_jkl mno.pqr stu'vwx" )	0	1/1/0	Abc-Def Ghi_Jkl Mno.pqr Stu'vwx
+Proper ( "1abc 2DEF" )	0	1/1/0	1abc 2def
+Proper ( "ijk" & Char ( 9 ) & "lmn" )	0	1/1/0	Ijk\tLmn
+Proper ( "" )	0	1/1/0	
+Proper ( 1/3 )	0	1/1/0	,3333333333333333
+Proper ( "a" & Char ( 160 ) & "b" )	0	1/1/0	A b
+Proper ( "a" & Char ( 8203 ) & "b" )	0	1/1/0	A​B
+Proper ( "漢字abc" )	0	1/1/0	漢字Abc
+Proper ( "ꙁꙁ" )	0	1/1/0	Ꙁꙁ
+Code ( "😀a" )	0	2/2/0	975683255357
+Code ( Char ( 65 ) & Char ( 0 ) & Char ( 66 ) )	0	2/2/0	6600065
+Char ( "65" )	0	1/1/0	A
+Char ( "x65y" )	0	1/1/0	A
+Char ( 65.999 )	106	2/2/0	?
+Char ( 9800097.5 )	106	2/2/0	?
+Char ( -0.5 )	106	2/2/0	?
+Char ( 100000 )	0	1/1/0	\u0001
+Char ( 6553700065 )	0	1/1/0	A\u0001
+Char ( 65536 )	0	1/1/0	
+Code ( Char ( 65536 ) )	0	0/1/0	
+Code ( Char ( 128512 ) )	0	2/2/0	128512
+Code ( Char ( 97 ) & Char ( 13 ) )	0	2/2/0	1300097
+Code ( 1/3 )	0	2/2/0	5100051000510005100051000510005100051000510005100051000510005100051000510005100044
+Code ( Date ( 1 ; 2 ; 2003 ) )	0	2/2/0	51000480004800050000460004900048000460005000048
+TrimAll ( "a  b" ; 1 ; 0 )	0	1/1/0	a b
+TrimAll ( "aア" ; 1 ; 2 )	0	1/1/0	aア
+TrimAll ( "aア" ; 1 ; 3 )	0	1/1/0	aア
+TrimAll ( "ア a" ; 1 ; 0 )	0	1/1/0	アa
+TrimAll ( "ア a" ; 1 ; 2 )	0	1/1/0	ア a
+TrimAll ( "ア a" ; 1 ; 3 )	0	1/1/0	アa
+TrimAll ( "1 2  3" ; 1 ; 3 )	0	1/1/0	123
+TrimAll ( "a" & Char ( 12288 ) & "ア" ; 1 ; 3 )	0	1/1/0	aア
+TrimAll ( "a b" ; 1/0 ; 0 )	15	1/1/0	a b
+TrimAll ( "a b" ; 0 ; 1/0 )	15	1/1/0	a b
+Trim ( Char ( 8239 ) & "x" )	0	1/1/0	 x
+Trim ( Char ( 8287 ) & "x" & Char ( 8287 ) )	0	1/1/0	x
+Length ( Trim ( Char ( 6158 ) & "x" ) )	0	2/2/0	1
+Length ( Trim ( Char ( 8203 ) & "x" ) )	0	2/2/0	1
+Length ( Trim ( Char ( 65279 ) & "x" ) )	0	2/2/0	2
+Trim ( "a" & Char ( 13 ) )	0	1/1/0	a\r
+Trim ( Char ( 13 ) & " a" )	0	1/1/0	\r a
+Left ( "abcdef" ; (1/3) * 9 )	0	1/1/0	ab
+Middle ( "abcdef" ; (1/3) * 6 ; 2 )	0	1/1/0	ab
+Left ( "abcdef" ; Date ( 1 ; 2 ; 1 ) )	0	1/1/0	ab
+Left ( "abcdef" ; Time ( 0 ; 0 ; 3 ) )	0	1/1/0	abc
+Left ( "abcdef" ; "3,5" )	0	1/1/0	abc
+Right ( "abcdef" ; "" )	0	1/1/0	
+Right ( "abcdef" ; 1/0 )	15	1/1/0	
+Right ( "a" & Char ( 13 ) & Char ( 10 ) & "b" ; 2 )	0	1/1/0	\r\nb
+Middle ( "a😀b" ; 2 ; 1 )	0	1/1/0	😀
+Middle ( "e" & Char ( 769 ) & "x" ; 2 ; 1 )	0	1/1/0	x
+Replace ( "abc" ; 2 ; 1 ; "" )	0	1/1/0	ac
+Replace ( "abc" ; 1 ; 3 ; "xyz" )	0	1/1/0	xyz
+Replace ( "abc" ; 4 ; 5 ; "d" )	0	1/1/0	abcd
+Replace ( "abc" ; 2 ; 1 ; 1/0 )	15	1/1/0	a?c
+Replace ( 1/0 ; 1 ; 1 ; "x" )	15	1/1/0	x
+Replace ( "e" & Char ( 769 ) & "x" ; 1 ; 1 ; "y" )	0	1/1/0	yx
+Position ( "abc" ; "abcd" ; 1 ; 1 )	0	2/2/0	0
+Position ( "abcabc" ; "ABC" ; 1 ; 2 )	0	2/2/0	4
+Position ( "abcabc" ; "abc" ; 2 ; 1 )	0	2/2/0	4
+Position ( "abcabc" ; "abc" ; 6 ; -1 )	0	2/2/0	4
+Position ( "abcabc" ; "abc" ; 3 ; -1 )	0	2/2/0	1
+Position ( "a" & Char ( 13 ) & Char ( 10 ) ; Char ( 13 ) ; 1 ; 1 )	0	2/2/0	2
+Position ( 1/3 ; 3 ; 1 ; 3 )	0	2/2/0	4
+Position ( "ß" ; "ẞ" ; 1 ; 1 )	0	2/2/0	1
+Position ( "Ǆ" ; "ǅ" ; 1 ; 1 )	0	2/2/0	1
+PatternCount ( "ΣΣ" ; "σ" )	0	2/2/0	2
+PatternCount ( "aaa" ; "a" )	0	2/2/0	3
+PatternCount ( "abab" ; "BA" )	0	2/2/0	1
+PatternCount ( 1/0 ; "?" )	15	2/2/0	1
+PatternCount ( "😀" ; Char ( 55357 ) & Char ( 56832 ) )	0	2/2/0	1
+Substitute ( "a.b.c" ; "." ; "" )	0	1/1/0	abc
+Substitute ( "abc" ; "c" ; "¶" )	0	1/1/0	ab\r
+Substitute ( "a¶b" ; "¶" ; ", " )	0	1/1/0	a, b
+Substitute ( "aaa" ; "a" ; "aa" )	0	1/1/0	aaaaaa
+Substitute ( "abc" ; "B" ; "x" )	0	1/1/0	abc
+Substitute ( "abc" ; [ "a" ; "b" ] )	0	1/1/0	bbc
+Substitute ( "abc" ; [ "a" ; "" ] ; [ "" ; "x" ] )	0	1/1/0	bc
+Substitute ( 12345 ; 3 ; "" )	0	1/1/0	1245
+Filter ( "a1b2c3" ; 123 )	0	1/1/0	123
+Filter ( "aAbB" ; "AB" )	0	1/1/0	AB
+Filter ( "日本語" ; "本" )	0	1/1/0	本
+Filter ( "abc" ; "abc" & Char ( 769 ) )	0	1/1/0	ab
+GetValue ( "a¶b¶c" ; 3 )	0	1/1/0	c
+GetValue ( "a¶b¶c¶" ; 4 )	0	1/1/0	
+GetValue ( "a" & Char ( 8233 ) & "b" ; 2 )	0	1/1/0	b
+GetValue ( "a" & Char ( 133 ) & "b" ; 1 )	0	1/1/0	ab
+ValueCount ( Char ( 10 ) )	0	2/2/0	1
+ValueCount ( Char ( 13 ) & Char ( 10 ) )	0	2/2/0	2
+ValueCount ( "a" & Char ( 11 ) & "b" & Char ( 12 ) & "c" )	0	2/2/0	1
+LeftValues ( "a" & Char ( 8232 ) & "b" & Char ( 8232 ) & "c" ; 2 )	0	1/1/0	a b\r
+RightValues ( "a" & Char ( 8232 ) & "b" & Char ( 8232 ) & "c" ; 2 )	0	1/1/0	b c\r
+MiddleValues ( "a" & Char ( 8232 ) & "b" & Char ( 8232 ) & "c" ; 2 ; 2 )	0	1/1/0	b c\r
+RightValues ( "a¶b¶c" ; 0.9 )	106	2/2/0	?
+MiddleValues ( "a¶b¶c" ; 1/0 ; 1 )	15	1/1/0	a\r
+FilterValues ( "a¶b¶c" ; "c¶a¶x" )	0	1/1/0	a\rc\r
+FilterValues ( "a¶A¶a" ; "A" )	0	1/1/0	a\rA\ra\r
+FilterValues ( "x" & Char ( 8232 ) & "y" ; "x" )	0	1/1/0	x 
+FilterValues ( "1¶2¶3" ; 2 )	0	1/1/0	2\r
+WordCount ( "one  two" & Char ( 9 ) & "three¶four" )	0	2/2/0	4
+WordCount ( "--- ... '''" )	0	2/2/0	0
+WordCount ( "a-b-c" )	0	2/2/0	3
+WordCount ( "1-2-3" )	0	2/2/0	1
+WordCount ( "1.2.3.4" )	0	2/2/0	1
+WordCount ( "a.b" & Char ( 769 ) & ".c" )	0	2/2/0	1
+WordCount ( "ｶﾀｶﾅ ｶﾅ" )	0	2/2/0	2
+WordCount ( "ア・イ" )	0	2/2/0	2
+WordCount ( "漢字、かな。" )	0	2/2/0	2
+WordCount ( "한국어 텍스트" )	0	2/2/0	2
+WordCount ( "ﾞa" )	0	2/2/0	2
+LeftWords ( "  " ; 1 )	0	1/1/0	
+LeftWords ( "a" ; 0.9 )	106	2/2/0	?
+RightWords ( "one, two; three." ; 1 )	0	1/1/0	three
+RightWords ( "one two three" ; 2.5 )	106	2/2/0	?
+MiddleWords ( "a b c d" ; 2 ; 10 )	0	1/1/0	b c d
+MiddleWords ( "a b c d" ; 4 ; 1 )	0	1/1/0	d
+MiddleWords ( "a b c d" ; 5 ; 1 )	0	1/1/0	
+MiddleWords ( "漢字 かな abc" ; 2 ; 1 )	0	1/1/0	かな
+LeftWords ( "1/2/2003 is a date" ; 1 )	0	1/1/0	1
+LeftWords ( "1.5 points" ; 1 )	0	1/1/0	1.5
+GetAsURLEncoded ( "a b+c" )	0	1/1/0	a%20b%2Bc
+GetAsURLEncoded ( Char ( 13 ) & Char ( 10 ) )	0	1/1/0	%0D%0A
+GetAsURLEncoded ( "~*'()!" )	0	1/1/0	~*'()!
+GetAsURLEncoded ( Date ( 1 ; 2 ; 2003 ) )	0	1/1/0	02.01.2003
+GetAsText ( Time ( 1 ; 2 ; 3 ) )	0	1/1/0	01:02:03
+GetAsText ( GetAsTimestamp ( 50000 ) )	0	1/1/0	01.01.0001 13:53:20
+GetAsText ( 10^20 )	0	1/1/0	1,0E+20
+GetAsNumber ( "1,5" )	0	2/2/0	1,5
+GetAsNumber ( "1.234,56" )	0	2/2/0	1234,56
+GetAsNumber ( "  42  " )	0	2/2/0	42
+GetAsNumber ( "(12)" )	0	2/2/0	-12
+GetAsNumber ( "12abc" )	0	2/2/0	12
+GetAsDate ( "2003-01-02" )	500	2/2/0	?
+GetAsDate ( "1/2/03" )	0	3/3/0	01/02/2003
+GetAsDate ( Timestamp ( Date ( 1 ; 2 ; 2003 ) ; Time ( 1 ; 0 ; 0 ) ) )	0	3/3/0	02.01.2003
+GetAsTime ( 3600 )	0	4/4/0	01:00:00
+GetAsTime ( "1:30 PM" )	501	2/2/0	?
+GetAsTime ( " " )	0	4/4/0	
+GetAsTimestamp ( " " )	0	5/5/0	
+GetAsTimestamp ( "1/2/2003" )	0	5/5/0	01/02/2003 00:00
+GetAsTimestamp ( Time ( 1 ; 0 ; 0 ) )	0	5/5/0	01.01.0001 01:00
+Quote ( "a\b" )	0	1/1/0	"a\\b"
+Quote ( "\" & "\" )	1204	2/2/0	?
+Quote ( Char ( 182 ) & Char ( 13 ) & Char ( 182 ) )	0	1/1/0	"\\¶¶\\¶"
+Quote ( Quote ( "x" ) )	0	1/1/0	"\\"x\\""
+Quote ( Date ( 1 ; 2 ; 2003 ) )	0	1/1/0	"02.01.2003"
+Length ( Quote ( "" ) )	0	2/2/0	2
+SerialIncrement ( "" ; "" )	0	1/1/0	
+SerialIncrement ( "" ; -3 )	0	1/1/0	-3
+SerialIncrement ( "v1.9" ; 1 )	0	1/1/0	v1.10
+SerialIncrement ( "9" ; 1 )	0	1/1/0	10
+SerialIncrement ( "0" ; 0 )	0	1/1/0	0
+SerialIncrement ( "x5" ; -5 )	0	1/1/0	x0
+SerialIncrement ( "x05" ; -5 )	0	1/1/0	x00
+SerialIncrement ( "a1b2c3" ; 997 )	0	1/1/0	a1b2c1000
+SerialIncrement ( "1e3" ; 1 )	0	1/1/0	1e4
+SerialIncrement ( Date ( 1 ; 2 ; 2003 ) ; 1 )	0	1/1/0	02.01.2004
+SerialIncrement ( "x" & Char ( 1636 ) & "5" ; 1 )	0	1/1/0	x06
+SerialIncrement ( "x" & Char ( 2406 ) & Char ( 2407 ) ; 1 )	0	1/1/0	x01

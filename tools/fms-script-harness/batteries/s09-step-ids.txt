@@ -1,0 +1,121 @@
+# Steps reached on the server without parameters (script-runtime.md U7,
+# 10.2): window-only steps whose shared handler exists, mobile and AI steps
+# without the Server bit, and ids outside the valid range or obsolete
+# (2.5). Each "srv step N" script runs Step N with Allow User Abort Off and
+# reports Get(LastError). Base file: contacts-en.
+== srv step 0
+Allow User Abort [ Off ]
+Step 0
+Exit Script [ Get ( LastError ) ]
+== srv step 4
+Allow User Abort [ Off ]
+Step 4
+Exit Script [ Get ( LastError ) ]
+== srv step 5
+Allow User Abort [ Off ]
+Step 5
+Exit Script [ Get ( LastError ) ]
+== srv step 15
+Allow User Abort [ Off ]
+Step 15
+Exit Script [ Get ( LastError ) ]
+== srv step 52
+Allow User Abort [ Off ]
+Step 52
+Exit Script [ Get ( LastError ) ]
+== srv step 54
+Allow User Abort [ Off ]
+Step 54
+Exit Script [ Get ( LastError ) ]
+== srv step 58
+Allow User Abort [ Off ]
+Step 58
+Exit Script [ Get ( LastError ) ]
+== srv step 59
+Allow User Abort [ Off ]
+Step 59
+Exit Script [ Get ( LastError ) ]
+== srv step 78
+Allow User Abort [ Off ]
+Step 78
+Exit Script [ Get ( LastError ) ]
+== srv step 92
+Allow User Abort [ Off ]
+Step 92
+Exit Script [ Get ( LastError ) ]
+== srv step 97
+Allow User Abort [ Off ]
+Step 97
+Exit Script [ Get ( LastError ) ]
+== srv step 100
+Allow User Abort [ Off ]
+Step 100
+Exit Script [ Get ( LastError ) ]
+== srv step 146
+Allow User Abort [ Off ]
+Step 146
+Exit Script [ Get ( LastError ) ]
+== srv step 153
+Allow User Abort [ Off ]
+Step 153
+Exit Script [ Get ( LastError ) ]
+== srv step 161
+Allow User Abort [ Off ]
+Step 161
+Exit Script [ Get ( LastError ) ]
+== srv step 166
+Allow User Abort [ Off ]
+Step 166
+Exit Script [ Get ( LastError ) ]
+== srv step 176
+Allow User Abort [ Off ]
+Step 176
+Exit Script [ Get ( LastError ) ]
+== srv step 177
+Allow User Abort [ Off ]
+Step 177
+Exit Script [ Get ( LastError ) ]
+== srv step 178
+Allow User Abort [ Off ]
+Step 178
+Exit Script [ Get ( LastError ) ]
+== srv step 179
+Allow User Abort [ Off ]
+Step 179
+Exit Script [ Get ( LastError ) ]
+== srv step 180
+Allow User Abort [ Off ]
+Step 180
+Exit Script [ Get ( LastError ) ]
+== srv step 198
+Allow User Abort [ Off ]
+Step 198
+Exit Script [ Get ( LastError ) ]
+== srv step 202
+Allow User Abort [ Off ]
+Step 202
+Exit Script [ Get ( LastError ) ]
+== srv step 204
+Allow User Abort [ Off ]
+Step 204
+Exit Script [ Get ( LastError ) ]
+== srv step 210
+Allow User Abort [ Off ]
+Step 210
+Exit Script [ Get ( LastError ) ]
+== srv step 224
+Allow User Abort [ Off ]
+Step 224
+Exit Script [ Get ( LastError ) ]
+== srv step 239
+Allow User Abort [ Off ]
+Step 239
+Exit Script [ Get ( LastError ) ]
+== srv step 247
+Allow User Abort [ Off ]
+Step 247
+Exit Script [ Get ( LastError ) ]
+== srv step 248
+Allow User Abort [ Off ]
+Step 248
+Exit Script [ Get ( LastError ) ]

@@ -1,0 +1,27 @@
+# q20: which found set a summary column sees (execute-sql.md 12, S3; after
+# q19): joins with conditions on either table, FETCH and OFFSET, OR and NOT,
+# DISTINCT, subqueries. File and records as q19 (sumprobe; P_A is another
+# occurrence of Tasks). No record context.
+ExecuteSQLe ( "SELECT a.Task, a.S_Total, b.S_Total FROM Tasks a JOIN P_A b ON a.N = b.N WHERE a.Status = 'Done'" ; "|" ; "¶" )	0	1/1/0	d|6|15\rb|6|15
+ExecuteSQLe ( "SELECT a.Task, a.S_Total, b.S_Total FROM Tasks a, P_A b WHERE a.N = b.N AND a.Status = 'Done' AND b.Category = 'Home'" ; "|" ; "¶" )	0	1/1/0	b|6|15
+ExecuteSQLe ( "SELECT b.Task, b.S_Total, a.S_Total FROM P_A b JOIN Tasks a ON a.N = b.N WHERE b.Status = 'Done'" ; "|" ; "¶" )	0	1/1/0	d|6|15\rb|6|15
+ExecuteSQLe ( "SELECT a.Task, a.S_Total, b.S_Total FROM Tasks a, P_A b WHERE a.Status = 'Done' AND b.Status = 'Done'" ; "|" ; "¶" )	0	1/1/0	d|6|15\rd|6|15\rb|6|15\rb|6|15
+ExecuteSQLe ( "SELECT a.Task, a.S_Total, b.Task FROM Tasks a LEFT JOIN P_A b ON a.N = b.W WHERE a.Category = 'Home'" ; "|" ; "¶" )	0	1/1/0	a|3|e\ra|3|b\ra|3|\rb|3|a\rb|3|c\r|3|
+ExecuteSQLe ( "SELECT Task, S_Total FROM Tasks FETCH FIRST 2 ROWS ONLY" ; "|" ; "¶" )	0	1/1/0	e|6\ra|6
+ExecuteSQLe ( "SELECT Task, S_Total FROM Tasks ORDER BY Task FETCH FIRST 2 ROWS ONLY" ; "|" ; "¶" )	0	1/1/0	|1\ra|1
+ExecuteSQLe ( "SELECT Task, S_Total FROM Tasks OFFSET 2 ROWS FETCH FIRST 2 ROWS ONLY" ; "|" ; "¶" )	0	1/1/0	d|6\rb|6
+ExecuteSQLe ( "SELECT Task, S_Total FROM Tasks OFFSET 4 ROWS" ; "|" ; "¶" )	0	1/1/0	|3\rc|3
+ExecuteSQLe ( "SELECT Task, S_Total FROM Tasks WHERE Status = 'Pending' FETCH FIRST 2 ROWS ONLY" ; "|" ; "¶" )	0	1/1/0	e|6\ra|6
+ExecuteSQLe ( "SELECT Task, S_RunTotal FROM Tasks FETCH FIRST 3 ROWS ONLY" ; "|" ; "¶" )	0	1/1/0	e|5\ra|6\rd|10
+ExecuteSQLe ( "SELECT Task, S_Total FROM Tasks WHERE NOT (Status = 'Pending')" ; "|" ; "¶" )	0	1/1/0	d|6\rb|6
+ExecuteSQLe ( "SELECT Task, S_Total FROM Tasks WHERE Status = 'Done' OR Category = 'Work'" ; "|" ; "¶" )	0	1/1/0	e|14\rd|14\rb|14\rc|14
+ExecuteSQLe ( "SELECT Task, S_Total FROM Tasks WHERE N > 1 AND W = 1" ; "|" ; "¶" )	0	1/1/0	e|7\rb|7
+ExecuteSQLe ( "SELECT Task, S_Total FROM Tasks WHERE N > 1 AND (W = 1 OR Category = 'Home')" ; "|" ; "¶" )	0	1/1/0	e|7\rb|7
+ExecuteSQLe ( "SELECT Task, S_Total FROM Tasks WHERE N + W > 5" ; "|" ; "¶" )	0	1/1/0	e|9\rd|9
+ExecuteSQLe ( "SELECT Task, S_Total FROM Tasks WHERE UPPER(Task) = 'A' OR N = 5" ; "|" ; "¶" )	0	1/1/0	e|6\ra|6
+ExecuteSQLe ( "SELECT Task, S_RunTotal FROM Tasks WHERE N > 1 ORDER BY Task" ; "|" ; "¶" )	0	1/1/0	b|2\rc|5\rd|9\re|14
+ExecuteSQLe ( "SELECT DISTINCT Status, S_Total FROM Tasks" ; "|" ; "¶" )	0	1/1/0	Done|9\rPending|9
+ExecuteSQLe ( "SELECT COUNT(*), MAX(S_Total) FROM Tasks WHERE Status = 'Done'" ; "|" ; "¶" )	0	1/1/0	2|6
+ExecuteSQLe ( "SELECT Task, (SELECT MAX(S_Total) FROM P_A) FROM Tasks WHERE Status = 'Done'" ; "|" ; "¶" )	0	1/1/0	d|15\rb|15
+ExecuteSQLe ( "SELECT Task, (SELECT MAX(p.S_Total) FROM P_A p WHERE p.Category = 'Home') FROM Tasks WHERE Status = 'Done'" ; "|" ; "¶" )	0	1/1/0	d|3\rb|3
+ExecuteSQLe ( "SELECT Task, S_Total FROM Tasks WHERE Task IN (SELECT Task FROM P_A WHERE N > 3)" ; "|" ; "¶" )	0	1/1/0	e|9\rd|9

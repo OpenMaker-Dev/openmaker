@@ -1,0 +1,137 @@
+# scan srv unsupported steps: open 0 load 0 scan 0 commit 0; index:id=value (0-based): 0:93=0 1:79=0 2:87=0 3:32=0 4:38=0 5:92=0 6:169=0 7:180=0 8:167=0 9:93=0 10:103=0
+# scan srv capture on: open 0 load 0 scan 0 commit 0; index:id=value (0-based): 0:86=0 1:93=0 2:1=0 3:103=0
+# scan srv unknown abort on: open 0 load 0 scan 0 commit 0; index:id=value (0-based): 0:85=0 1:15=0 2:141=0 3:103=0
+# scan srv unknown abort off: open 0 load 0 scan 0 commit 0; index:id=value (0-based): 0:85=0 1:15=0 2:141=0 3:103=0
+# scan srv gated abort on: open 0 load 0 scan 0 commit 0; index:id=value (0-based): 0:85=0 1:224=0 2:103=0
+# scan srv unsupported abort on: open 0 load 0 scan 0 commit 0; index:id=value (0-based): 0:85=0 1:93=0 2:103=0
+# scan srv pause: open 0 load 0 scan 0 commit 0; index:id=value (0-based): 0:62=1 1:141=0 2:62=0 3:103=0
+# scan srv psos: open 0 load 0 scan 0 commit 0; index:id=value (0-based): 0:164=0 1:141=0 2:164=0 3:141=0 4:103=0
+# scan srv psos target: open 0 load 0 scan 0 commit 0; index:id=value (0-based): 0:103=0
+# scan srv context: open 0 load 0 scan 0 commit 0; index:id=value (0-based): 0:103=0
+# scan srv exit application: open 0 load 0 scan 0 commit 0; index:id=value (0-based): 0:141=0 1:44=0 2:141=0 3:103=0
+# scan: close 13
+srv unsupported steps		3	reached end 3	3	3
+!	3	work : srv unsupported steps : 1 : Beep
+>	1	srv unsupported steps	1	93	3	0	0	3
+!	3	work : srv unsupported steps : 2 : Freeze Window
+>	1	srv unsupported steps	2	79	3	0	0	3
+!	3	work : srv unsupported steps : 3 : Show Custom Dialog
+>	1	srv unsupported steps	3	87	3	0	0	3
+!	3	work : srv unsupported steps : 4 : Open Help
+>	1	srv unsupported steps	4	32	3	0	0	3
+!	3	work : srv unsupported steps : 5 : Open Manage Database
+>	1	srv unsupported steps	5	38	3	0	0	3
+>	1	srv unsupported steps	6	92	0	0	0	0
+!	3	work : srv unsupported steps : 7 : Close Popover
+>	1	srv unsupported steps	7	169	3	0	0	3
+!	3	work : srv unsupported steps : 8 : Refresh Portal
+>	1	srv unsupported steps	8	180	3	0	0	3
+!	3	work : srv unsupported steps : 9 : Refresh Object
+>	1	srv unsupported steps	9	167	3	0	0	3
+!	3	work : srv unsupported steps : 10 : Beep
+>	1	srv unsupported steps	10	93	3	0	0	3
+>	1	srv unsupported steps	11	103	0	0	1	3
+srv capture on		104	104	104	104
+>	1	srv capture on	1	86	0	0	0	0
+!	3	work : srv capture on : 2 : Beep
+>	1	srv capture on	2	93	3	0	0	3
+!	104	work : srv capture on : 3 : Perform Script
+>	1	srv capture on	3	1	104	0	0	104
+>	1	srv capture on	4	103	0	0	1	104
+srv unknown abort on		4		1	1	
+>	1	srv unknown abort on	1	85	0	0	0	0
+!	4	work : srv unknown abort on : 2 : <unknown> [15]
+>	1	srv unknown abort on	2	15	4	0	0	1
+srv unknown abort off		0	after unknown 0	0	0
+>	1	srv unknown abort off	1	85	0	0	0	0
+!	4	work : srv unknown abort off : 2 : <unknown> [15]
+>	1	srv unknown abort off	2	15	4	0	0	4
+>	1	srv unknown abort off	3	141	0	0	0	0
+>	1	srv unknown abort off	4	103	0	0	1	0
+srv gated abort on		4		1	1
+>	1	srv gated abort on	1	85	0	0	0	0
+!	4	work : srv gated abort on : 2 : Execute URL
+>	1	srv gated abort on	2	224	4	0	0	1
+srv unsupported abort on		3	after beep 3	3	3
+>	1	srv unsupported abort on	1	85	0	0	0	0
+!	3	work : srv unsupported abort on : 2 : Beep
+>	1	srv unsupported abort on	2	93	3	0	0	3
+>	1	srv unsupported abort on	3	103	0	0	1	3
+srv pause		0	0,0	0	0
+>	1	srv pause	1	62	0	0	0	0
+>	1	srv pause	2	141	0	0	0	0
+>	1	srv pause	3	62	0	0	0	0
+>	1	srv pause	4	103	0	0	1	0
+srv psos		0	3/,3	0	0
+!	3	work : srv psos : 1 : Perform Script on Server
+>	1	srv psos	1	164	3	0	0	3
+>	1	srv psos	2	141	0	0	0	0
+!	3	work : srv psos : 3 : Perform Script on Server
+>	1	srv psos	3	164	3	0	0	3
+>	1	srv psos	4	141	0	0	0	0
+>	1	srv psos	5	103	0	0	1	0
+srv context	Get ( ApplicationVersion )	0	Server 26.0.3	0
+>	1	srv context	1	103	0	0	1	0
+srv context	Get ( WindowName )	0	work	0
+>	1	srv context	1	103	0	0	1	0
+srv context	Get ( LayoutName )	0	Contact Details	0
+>	1	srv context	1	103	0	0	1	0
+srv context	Get ( LayoutTableName )	0	Contacts	0
+>	1	srv context	1	103	0	0	1	0
+srv context	Get ( WindowMode )	0	0	0
+>	1	srv context	1	103	0	0	1	0
+srv context	Get ( FoundCount )	0	0	0
+>	1	srv context	1	103	0	0	1	0
+srv context	Get ( RecordNumber )	0	0	0
+>	1	srv context	1	103	0	0	1	0
+srv context	Get ( ErrorCaptureState )	0	0	0
+>	1	srv context	1	103	0	0	1	0
+srv context	Get ( AllowAbortState )	0	1	0
+>	1	srv context	1	103	0	0	1	0
+srv context	Get ( ScriptAnimationState )	0	0	0
+>	1	srv context	1	103	0	0	1	0
+srv context	Get ( TransactionOpenState )	0	0	0
+>	1	srv context	1	103	0	0	1	0
+srv context	Get ( RevertTransactionOnErrorState )	0	1	0
+>	1	srv context	1	103	0	0	1	0
+srv context	Get ( AccountName )	0	Admin	0
+>	1	srv context	1	103	0	0	1	0
+srv context	Get ( AccountPrivilegeSetName )	0	[Read-Only Access]	0
+>	1	srv context	1	103	0	0	1	0
+srv context	Get ( UserName )	0	Admin	0
+>	1	srv context	1	103	0	0	1	0
+srv context	Get ( SystemPlatform )	0	8	0
+>	1	srv context	1	103	0	0	1	0
+srv context	Get ( Device )	0	6	0
+>	1	srv context	1	103	0	0	1	0
+srv context	Get ( MultiUserState )	0	0	0
+>	1	srv context	1	103	0	0	1	0
+srv context	Get ( WindowCount )	0	?	0
+>	1	srv context	1	103	0	0	1	0
+srv context	Get ( LastMessageChoice )	0	0	0
+>	1	srv context	1	103	0	0	1	0
+srv context	Get ( ScriptName )	0	srv context	0
+>	1	srv context	1	103	0	0	1	0
+srv context	Get ( ScriptParameter )	0	Get ( ScriptParameter )	0
+>	1	srv context	1	103	0	0	1	0
+srv context	Get ( FileName )	0	work	0
+>	1	srv context	1	103	0	0	1	0
+srv context	Get ( HostApplicationVersion )	0		0
+>	1	srv context	1	103	0	0	1	0
+srv context	Get ( ApplicationLanguage )	0	English	0
+>	1	srv context	1	103	0	0	1	0
+srv context	Get ( SystemLanguage )	0	English	0
+>	1	srv context	1	103	0	0	1	0
+srv context	Get ( WindowVisible )	0	1	0
+>	1	srv context	1	103	0	0	1	0
+srv context	Get ( ActiveFieldName )	0		0
+>	1	srv context	1	103	0	0	1	0
+srv context	Get ( CurrentHostTimestamp ) > 0	0	1	0
+>	1	srv context	1	103	0	0	1	0
+srv context	Get ( PersistentID )	0	D41D8CD98F00B204E9800998ECF8427E	0
+>	1	srv context	1	103	0	0	1	0
+srv context	Get ( ScriptAnimationState )	0	0	0
+>	1	srv context	1	103	0	0	1	0
+srv exit application		0		0	0	
+>	1	srv exit application	1	141	0	0	0	0
+>	1	srv exit application	2	44	13	0	0	0

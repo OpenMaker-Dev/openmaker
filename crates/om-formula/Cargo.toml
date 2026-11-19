@@ -1,0 +1,16 @@
+[package]
+name = "om-formula"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+rust-version.workspace = true
+
+[dependencies]
+om-scsu = { path = "../om-scsu" }
+
+[dev-dependencies]
+om-hbam = { path = "../om-hbam" }
+stats_alloc = "0.1"
+
+[lints]
+workspace = true

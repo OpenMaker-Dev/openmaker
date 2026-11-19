@@ -1,0 +1,815 @@
+# Claris examples (literal-only, field examples rewritten with literals)
+Date ( 10 ; 10 ; 2019 )	0	3/3/0	2019/10/10
+Date ( 13 ; 1 ; 2019 )	0	3/3/0	2020/01/01
+Date ( 6 ; 0 ; 2019 )	0	3/3/0	2019/05/31
+Date ( 6 ; -2 ; 2019 )	0	3/3/0	2019/05/29
+Date ( 7 ; 12 ; 2019 ) - Date ( 7 ; 2 ; 2019 )	0	2/2/0	10
+"Bill Due by: " & Date ( Month ( Date ( 1 ; 31 ; 2019 ) ) + 1 ; Day ( Date ( 1 ; 31 ; 2019 ) ) ; Year ( Date ( 1 ; 31 ; 2019 ) ) )	0	1/1/0	Bill Due by: 2019/03/03
+Day ( "5/15/2019" )	500	2/2/0	?
+If ( Day ( Date ( 3 ; 15 ; 2026 ) ) = 15 and Month ( Date ( 3 ; 15 ; 2026 ) ) = 3 ; "Beware the Ides of March" ; "" )	0	1/1/0	Beware the Ides of March
+DayName ( Date ( 10 ; 7 ; 2019 ) )	0	1/1/0	月曜日
+DayName ( "10/7/2019" )	500	2/2/0	?
+"Return your selection by " & DayName ( Date ( 10 ; 7 ; 2019 ) )	0	1/1/0	Return your selection by 月曜日
+DayOfWeek ( "10/8/2019" )	500	2/2/0	?
+DayOfWeek ( Date ( 10 ; 9 ; 2019 ) )	0	2/2/0	4
+DayOfYear ( Date ( 2 ; 1 ; 2019 ) )	0	2/2/0	32
+DayOfYear ( Date ( 12 ; 31 ; Year ( Date ( 6 ; 1 ; 2024 ) ) ) )	0	2/2/0	366
+DayOfYear ( Date ( 1 ; 1 ; Year ( Date ( 6 ; 1 ; 2023 ) ) + 1 ) - 1 )	0	2/2/0	365
+Month ( "3/19/2019" )	500	2/2/0	?
+Month ( Date ( 3 ; 19 ; 2019 ) )	0	2/2/0	3
+MonthName ( "6/6/2019" )	500	2/2/0	?
+"Payment due by the end of: " & MonthName ( Date ( Month ( Date ( 4 ; 4 ; 2019 ) ) + 1 ; Day ( Date ( 4 ; 4 ; 2019 ) ) ; Year ( Date ( 4 ; 4 ; 2019 ) ) ) )	0	1/1/0	Payment due by the end of: 5月
+WeekOfYear ( "1/1/2019" )	500	2/2/0	?
+WeekOfYear ( Date ( 2 ; 2 ; 2019 ) )	0	2/2/0	5
+WeekOfYearFiscal ( Date ( 1 ; 7 ; 2008 ) ; 1 )	0	2/2/0	2
+WeekOfYearFiscal ( Date ( 1 ; 1 ; 2009 ) ; 5 )	0	2/2/0	1
+WeekOfYearFiscal ( Date ( 1 ; 2 ; 2009 ) ; 1 )	0	2/2/0	53
+Year ( "5/5/2019" )	500	2/2/0	?
+Year ( Date ( Month ( Date ( 10 ; 28 ; 2026 ) ) + 48 ; Day ( Date ( 10 ; 28 ; 2026 ) ) ; Year ( Date ( 10 ; 28 ; 2026 ) ) ) )	0	2/2/0	2030
+Hour ( "12:15:23" )	0	2/2/0	12
+Hour ( "3:24" )	0	2/2/0	3
+Hour ( "2:30:15" ) + ( Minute ( "2:30:15" ) / 60 )	0	2/2/0	2.5
+If ( Hour ( "9:30" ) > 8 ; "Overtime Pay" ; " " )	0	1/1/0	Overtime Pay
+Minute ( "12:15:23" )	0	2/2/0	15
+Seconds ( "12:15:23" )	0	2/2/0	23
+Time ( 4 ; 14 ; 32 )	0	4/4/0	4:14:32
+Time ( 4.5 ; 10 ; 30 )	0	4/4/0	4:40:30
+Time ( 4 ; 15 ; 70 )	0	4/4/0	4:16:10
+Timestamp ( Date ( 10 ; 21 ; 2019 ) ; Time ( 9 ; 10 ; 30 ) )	0	5/5/0	2019/10/21 9:10:30
+Timestamp ( Date ( 10 ; 21 ; 2019 ) ; Time ( 13 ; 10 ; 30 ) )	0	5/5/0	2019/10/21 13:10:30
+Timestamp ( Date ( 10 ; 21 ; 2019 ) ; Time ( 10 ; 65 ; 5 ) )	0	5/5/0	2019/10/21 11:05:05
+Timestamp ( Date ( 10 ; 35 ; 2019 ) ; Time ( 4 ; 5 ; 6 ) )	0	5/5/0	2019/11/04 4:05:06
+# Spec unknowns U-13, U-14, U-22
+Hour ( Time ( 30 ; 0 ; 0 ) )	0	2/2/0	30
+Hour ( -Time ( 1 ; 30 ; 0 ) )	0	2/2/0	-1
+Minute ( -Time ( 1 ; 30 ; 0 ) )	0	2/2/0	-30
+Seconds ( Time ( 0 ; 0 ; 1.25 ) )	0	2/2/0	1.25
+WeekOfYearFiscal ( Date ( 1 ; 1 ; 2024 ) ; 0 )	0	2/2/0	1
+WeekOfYearFiscal ( Date ( 1 ; 1 ; 2024 ) ; 8 )	0	2/2/0	1
+WeekOfYearFiscal ( Date ( 1 ; 1 ; 2024 ) ; 1.9 )	0	2/2/0	1
+WeekOfYear ( Date ( 1 ; 7 ; 2024 ) )	0	2/2/0	2
+WeekOfYear ( Date ( 1 ; 6 ; 2024 ) )	0	2/2/0	1
+WeekOfYear ( Date ( 12 ; 31 ; 2024 ) )	0	2/2/0	53
+# Date: truncation, rollover, 16-bit month and day, year 0, empty and text components
+Date ( 1.9 ; 1.9 ; 2020.9 )	0	3/3/0	2020/01/01
+Date ( -1.5 ; 1 ; 2020 )	0	3/3/0	2019/11/01
+Date ( 1 ; -1.5 ; 2020 )	0	3/3/0	2019/12/30
+Date ( 1 ; 1 ; -1.5 )	500	2/2/0	?
+Date ( "" ; 1 ; 2020 )	500	2/2/0	?
+Date ( 1 ; "" ; 2020 )	500	2/2/0	?
+Date ( 1 ; 1 ; "" )	500	2/2/0	?
+Date ( "abc" ; 1 ; 2020 )	0	3/3/0	2019/12/01
+Date ( "a2" ; 1 ; 2020 )	0	3/3/0	2020/02/01
+Date ( 1 ; 1 ; "x2020" )	0	3/3/0	2020/01/01
+Date ( 1/0 ; 1 ; 2020 )	15	2/2/0	?
+Date ( 1 ; 1/0 ; 2020 )	15	2/2/0	?
+Date ( 1 ; 10^20 ; 2020 )	500	2/2/0	?
+Date ( 10^20 ; 1 ; 2020 )	500	2/2/0	?
+Date ( 1 ; 1 ; 10^20 )	500	2/2/0	?
+Date ( 1 ; 1460970 ; 1 )	500	2/2/0	?
+Date ( 4294967297 ; 1 ; 2020 )	500	2/2/0	?
+Date ( 1 ; 4294967297 ; 2020 )	500	2/2/0	?
+Date ( "1/2/2003" ; 1 ; 2020 )	500	2/2/0	?
+Date ( Date ( 1 ; 1 ; 2001 ) ; 1 ; 2020 )	500	2/2/0	?
+Date ( 12 ; 31 ; 4000 )	0	3/3/0	4000/12/31
+Date ( 13 ; 1 ; 4000 )	500	2/2/0	?
+Date ( 1 ; 0 ; 1 )	500	2/2/0	?
+Date ( 0 ; 31 ; 1 )	500	2/2/0	?
+Date ( 1 ; 1 ; 0 )	500	2/2/0	?
+Date ( 13 ; 1 ; 0 )	500	2/2/0	?
+Date ( 24 ; 1 ; 0 )	500	2/2/0	?
+Date ( 1 ; 366 ; 0 )	500	2/2/0	?
+Date ( 1 ; 1 ; 0.5 )	500	2/2/0	?
+Date ( 2 ; 29 ; 2024 )	0	3/3/0	2024/02/29
+Date ( 2 ; 29 ; 1900 )	0	3/3/0	1900/03/01
+Date ( 2 ; 29 ; 2000 )	0	3/3/0	2000/02/29
+Date ( 1 ; 1 ; 99 )	0	3/3/0	0099/01/01
+Date ( 1 ; 0 ; 2 )	0	3/3/0	0001/12/31
+Date ( 0 ; 1 ; 2 )	0	3/3/0	0001/12/01
+Date ( 1 ; -364 ; 2 )	0	3/3/0	0001/01/01
+Date ( 1 ; -365 ; 2 )	500	2/2/0	?
+Date ( 1 ; 32767 ; 2000 )	0	3/3/0	2089/09/16
+Date ( 1 ; 32768 ; 2000 )	500	2/2/0	?
+Date ( 1 ; -32768 ; 2000 )	0	3/3/0	1910/04/14
+Date ( 1 ; -32769 ; 2000 )	500	2/2/0	?
+Date ( 32767 ; 1 ; 1 )	0	3/3/0	2731/07/01
+Date ( 32768 ; 1 ; 1 )	500	2/2/0	?
+Date ( -32768 ; 1 ; 4000 )	0	3/3/0	1269/04/01
+Date ( -32768 ; -32768 ; 4000 )	0	3/3/0	1179/07/14
+Date ( 32767 ; 32767 ; 1 )	0	3/3/0	2821/03/16
+Date ( -23987 ; 1 ; 2000 )	0	3/3/0	0001/01/01
+Date ( -23988 ; 1 ; 2000 )	500	2/2/0	?
+Date ( -12 ; 1 ; 4001 )	0	3/3/0	3999/12/01
+Date ( 1 ; -365 ; 4001 )	0	3/3/0	4000/01/01
+Date ( -32768 ; 1 ; 6000 )	0	3/3/0	3269/04/01
+Date ( 100 ; 1 ; 2000 )	0	3/3/0	2008/04/01
+Date ( 10000 ; 1 ; 2000 )	0	3/3/0	2833/04/01
+Date ( -10000 ; 1 ; 2000 )	0	3/3/0	1166/08/01
+Date ( 1 ; 1 ; -1 )	500	2/2/0	?
+Date ( 13 ; 1 ; -1 )	500	2/2/0	?
+Date ( 25 ; 1 ; -1 )	0	3/3/0	?
+Date ( 1 ; 800 ; -1 )	0	3/3/0	?
+GetAsNumber ( Date ( 1 ; 1 ; 2001 ) )	0	2/2/0	730486
+GetAsNumber ( Date ( 25 ; 1 ; -1 ) )	0	2/2/0	1
+Date ( 1 ; 1 ; 2001 ) + 0	0	3/3/0	2001/01/01
+EvaluationError ( Date ( 1 ; 1 ; 0 ) )	0	2/2/0	500
+IsEmpty ( Date ( "" ; 1 ; 1 ) )	500	2/2/0	0
+# Date parts: numbers, text, timestamps, times, empty and blank arguments
+Day ( Date ( 2 ; 29 ; 2024 ) )	0	2/2/0	29
+Day ( 730486 )	0	2/2/0	1
+Day ( 730486.9 )	0	2/2/0	1
+Day ( 0 )	500	2/2/0	?
+Day ( -1 )	500	2/2/0	?
+Day ( 1460971 )	500	2/2/0	?
+Day ( "" )	0	1/1/0	
+Day ( " " )	500	2/2/0	?
+Day ( "abc" )	500	2/2/0	?
+Day ( Time ( 1 ; 0 ; 0 ) )	0	1/4/0	
+Day ( Timestamp ( Date ( 3 ; 4 ; 2005 ) ; Time ( 23 ; 0 ; 0 ) ) )	0	2/2/0	4
+Day ( "3/4/2005 1:00 PM" )	500	2/2/0	?
+Day ( 1/0 )	15	2/2/0	?
+Day ( "1/2" )	0	2/2/0	2
+Day ( "12:00" )	500	2/2/0	?
+Month ( Date ( 2 ; 29 ; 2024 ) )	0	2/2/0	2
+Month ( 730486 )	0	2/2/0	1
+Month ( 730486.9 )	0	2/2/0	1
+Month ( 0 )	500	2/2/0	?
+Month ( -1 )	500	2/2/0	?
+Month ( 1460971 )	500	2/2/0	?
+Month ( "" )	0	1/1/0	
+Month ( " " )	500	2/2/0	?
+Month ( "abc" )	500	2/2/0	?
+Month ( Time ( 1 ; 0 ; 0 ) )	0	1/4/0	
+Month ( Timestamp ( Date ( 3 ; 4 ; 2005 ) ; Time ( 23 ; 0 ; 0 ) ) )	0	2/2/0	3
+Month ( "3/4/2005 1:00 PM" )	500	2/2/0	?
+Month ( 1/0 )	15	2/2/0	?
+Month ( "1/2" )	0	2/2/0	1
+Month ( "12:00" )	500	2/2/0	?
+Year ( Date ( 2 ; 29 ; 2024 ) )	0	2/2/0	2024
+Year ( 730486 )	0	2/2/0	2001
+Year ( 730486.9 )	0	2/2/0	2001
+Year ( 0 )	500	2/2/0	?
+Year ( -1 )	500	2/2/0	?
+Year ( 1460971 )	500	2/2/0	?
+Year ( "" )	0	1/1/0	
+Year ( " " )	500	2/2/0	?
+Year ( "abc" )	500	2/2/0	?
+Year ( Time ( 1 ; 0 ; 0 ) )	0	1/4/0	
+Year ( Timestamp ( Date ( 3 ; 4 ; 2005 ) ; Time ( 23 ; 0 ; 0 ) ) )	0	2/2/0	2005
+Year ( "3/4/2005 1:00 PM" )	500	2/2/0	?
+Year ( 1/0 )	15	2/2/0	?
+Year ( "1/2" )	0	2/2/0	2026
+Year ( "12:00" )	500	2/2/0	?
+DayOfWeek ( Date ( 2 ; 29 ; 2024 ) )	0	2/2/0	5
+DayOfWeek ( 730486 )	0	2/2/0	2
+DayOfWeek ( 730486.9 )	0	2/2/0	2
+DayOfWeek ( 0 )	500	2/2/0	?
+DayOfWeek ( -1 )	500	2/2/0	?
+DayOfWeek ( 1460971 )	500	2/2/0	?
+DayOfWeek ( "" )	0	1/1/0	
+DayOfWeek ( " " )	500	2/2/0	?
+DayOfWeek ( "abc" )	500	2/2/0	?
+DayOfWeek ( Time ( 1 ; 0 ; 0 ) )	0	1/4/0	
+DayOfWeek ( Timestamp ( Date ( 3 ; 4 ; 2005 ) ; Time ( 23 ; 0 ; 0 ) ) )	0	2/2/0	6
+DayOfWeek ( "3/4/2005 1:00 PM" )	500	2/2/0	?
+DayOfWeek ( 1/0 )	15	2/2/0	?
+DayOfWeek ( "1/2" )	0	2/2/0	6
+DayOfWeek ( "12:00" )	500	2/2/0	?
+DayOfYear ( Date ( 2 ; 29 ; 2024 ) )	0	2/2/0	60
+DayOfYear ( 730486 )	0	2/2/0	1
+DayOfYear ( 730486.9 )	0	2/2/0	1
+DayOfYear ( 0 )	500	2/2/0	?
+DayOfYear ( -1 )	500	2/2/0	?
+DayOfYear ( 1460971 )	500	2/2/0	?
+DayOfYear ( "" )	0	1/1/0	
+DayOfYear ( " " )	500	2/2/0	?
+DayOfYear ( "abc" )	500	2/2/0	?
+DayOfYear ( Time ( 1 ; 0 ; 0 ) )	0	1/4/0	
+DayOfYear ( Timestamp ( Date ( 3 ; 4 ; 2005 ) ; Time ( 23 ; 0 ; 0 ) ) )	0	2/2/0	63
+DayOfYear ( "3/4/2005 1:00 PM" )	500	2/2/0	?
+DayOfYear ( 1/0 )	15	2/2/0	?
+DayOfYear ( "1/2" )	0	2/2/0	2
+DayOfYear ( "12:00" )	500	2/2/0	?
+DayName ( Date ( 2 ; 29 ; 2024 ) )	0	1/1/0	木曜日
+DayName ( 730486 )	0	1/1/0	月曜日
+DayName ( 730486.9 )	0	1/1/0	月曜日
+DayName ( 0 )	500	2/2/0	?
+DayName ( -1 )	500	2/2/0	?
+DayName ( 1460971 )	500	2/2/0	?
+DayName ( "" )	0	1/1/0	
+DayName ( " " )	500	2/2/0	?
+DayName ( "abc" )	500	2/2/0	?
+DayName ( Time ( 1 ; 0 ; 0 ) )	0	1/4/0	
+DayName ( Timestamp ( Date ( 3 ; 4 ; 2005 ) ; Time ( 23 ; 0 ; 0 ) ) )	0	1/1/0	金曜日
+DayName ( "3/4/2005 1:00 PM" )	500	2/2/0	?
+DayName ( 1/0 )	15	2/2/0	?
+DayName ( "1/2" )	0	1/1/0	金曜日
+DayName ( "12:00" )	500	2/2/0	?
+MonthName ( Date ( 2 ; 29 ; 2024 ) )	0	1/1/0	2月
+MonthName ( 730486 )	0	1/1/0	1月
+MonthName ( 730486.9 )	0	1/1/0	1月
+MonthName ( 0 )	500	2/2/0	?
+MonthName ( -1 )	500	2/2/0	?
+MonthName ( 1460971 )	500	2/2/0	?
+MonthName ( "" )	0	1/1/0	
+MonthName ( " " )	500	2/2/0	?
+MonthName ( "abc" )	500	2/2/0	?
+MonthName ( Time ( 1 ; 0 ; 0 ) )	0	1/4/0	
+MonthName ( Timestamp ( Date ( 3 ; 4 ; 2005 ) ; Time ( 23 ; 0 ; 0 ) ) )	0	1/1/0	3月
+MonthName ( "3/4/2005 1:00 PM" )	500	2/2/0	?
+MonthName ( 1/0 )	15	2/2/0	?
+MonthName ( "1/2" )	0	1/1/0	1月
+MonthName ( "12:00" )	500	2/2/0	?
+WeekOfYear ( Date ( 2 ; 29 ; 2024 ) )	0	2/2/0	9
+WeekOfYear ( 730486 )	0	2/2/0	1
+WeekOfYear ( 730486.9 )	0	2/2/0	1
+WeekOfYear ( 0 )	500	2/2/0	?
+WeekOfYear ( -1 )	500	2/2/0	?
+WeekOfYear ( 1460971 )	500	2/2/0	?
+WeekOfYear ( "" )	0	1/1/0	
+WeekOfYear ( " " )	500	2/2/0	?
+WeekOfYear ( "abc" )	500	2/2/0	?
+WeekOfYear ( Time ( 1 ; 0 ; 0 ) )	0	1/4/0	
+WeekOfYear ( Timestamp ( Date ( 3 ; 4 ; 2005 ) ; Time ( 23 ; 0 ; 0 ) ) )	0	2/2/0	10
+WeekOfYear ( "3/4/2005 1:00 PM" )	500	2/2/0	?
+WeekOfYear ( 1/0 )	15	2/2/0	?
+WeekOfYear ( "1/2" )	0	2/2/0	1
+WeekOfYear ( "12:00" )	500	2/2/0	?
+Day ( 1460970 )	0	2/2/0	31
+Year ( 1 )	0	2/2/0	1
+Year ( 1460970 )	0	2/2/0	4000
+Year ( Date ( 1 ; 1 ; 99 ) )	0	2/2/0	99
+DayOfWeek ( 1 )	0	2/2/0	2
+DayName ( 1 )	0	1/1/0	月曜日
+DayName ( 7 )	0	1/1/0	日曜日
+MonthName ( 1 )	0	1/1/0	1月
+Day ( TextStyleAdd ( "5/15/2019" ; Bold ) )	500	2/2/0	?
+Day ( "2/30/2003" )	500	2/2/0	?
+DayName ( "4/31/2019" )	500	2/2/0	?
+Day ( GetAsDate ( " " ) )	0	1/3/0	
+Day ( GetAsTimestamp ( " " ) )	0	1/5/0	
+Day ( GetAsTime ( " " ) )	0	1/4/0	
+Day ( GetAsNumber ( "" ) )	0	1/1/0	
+Day ( Time ( 1 ; 0 ; 0 ) ) + 1	0	4/4/0	0:00:01
+Day ( Time ( 1 ; 0 ; 0 ) ) & "x"	0	1/1/0	x
+IsEmpty ( Day ( Time ( 1 ; 0 ; 0 ) ) )	0	2/2/0	1
+IsEmpty ( Day ( "" ) )	0	2/2/0	1
+Day ( "" ) & "x"	0	1/1/0	x
+EvaluationError ( Day ( "abc" ) )	0	2/2/0	500
+EvaluationError ( Day ( " " ) )	0	2/2/0	500
+Day ( GetAsTimestamp ( 0 ) )	0	2/2/0	1
+DayOfYear ( Date ( 12 ; 31 ; 2023 ) )	0	2/2/0	365
+DayOfYear ( Date ( 12 ; 31 ; 1900 ) )	0	2/2/0	365
+DayOfYear ( Date ( 12 ; 31 ; 2000 ) )	0	2/2/0	366
+DayOfYear ( Date ( 1 ; 1 ; 1 ) )	0	2/2/0	1
+DayOfYear ( Timestamp ( Date ( 3 ; 1 ; 2024 ) ; Time ( 1 ; 0 ; 0 ) ) )	0	2/2/0	61
+DayOfYear ( Date ( 12 ; 31 ; 4000 ) )	0	2/2/0	366
+WeekOfYear ( Date ( 12 ; 31 ; 2022 ) )	0	2/2/0	53
+WeekOfYear ( Date ( 12 ; 31 ; 2033 ) )	0	2/2/0	53
+WeekOfYear ( Date ( 12 ; 31 ; 2000 ) )	0	2/2/0	54
+WeekOfYear ( Date ( 1 ; 1 ; 2023 ) )	0	2/2/0	1
+WeekOfYear ( Date ( 1 ; 8 ; 2024 ) )	0	2/2/0	2
+WeekOfYear ( Date ( 12 ; 31 ; 4000 ) )	0	2/2/0	54
+WeekOfYear ( 1 )	0	2/2/0	1
+DayName ( Date ( 1 ; 3 ; 2021 ) ) & "," & DayName ( Date ( 1 ; 4 ; 2021 ) ) & "," & DayName ( Date ( 1 ; 5 ; 2021 ) ) & "," & DayName ( Date ( 1 ; 6 ; 2021 ) ) & "," & DayName ( Date ( 1 ; 7 ; 2021 ) ) & "," & DayName ( Date ( 1 ; 8 ; 2021 ) ) & "," & DayName ( Date ( 1 ; 9 ; 2021 ) )	0	1/1/0	日曜日,月曜日,火曜日,水曜日,木曜日,金曜日,土曜日
+MonthName ( Date ( 1 ; 1 ; 2021 ) ) & "," & MonthName ( Date ( 2 ; 1 ; 2021 ) ) & "," & MonthName ( Date ( 3 ; 1 ; 2021 ) ) & "," & MonthName ( Date ( 4 ; 1 ; 2021 ) ) & "," & MonthName ( Date ( 5 ; 1 ; 2021 ) ) & "," & MonthName ( Date ( 6 ; 1 ; 2021 ) ) & "," & MonthName ( Date ( 7 ; 1 ; 2021 ) ) & "," & MonthName ( Date ( 8 ; 1 ; 2021 ) ) & "," & MonthName ( Date ( 9 ; 1 ; 2021 ) ) & "," & MonthName ( Date ( 10 ; 1 ; 2021 ) ) & "," & MonthName ( Date ( 11 ; 1 ; 2021 ) ) & "," & MonthName ( Date ( 12 ; 1 ; 2021 ) )	0	1/1/0	1月,2月,3月,4月,5月,6月,7月,8月,9月,10月,11月,12月
+# WeekOfYearFiscal: start days 0-8 on dates where they matter, out-of-range and odd start days
+WeekOfYearFiscal ( Date ( 1 ; 1 ; 2004 ) ; 0 ) & "," & WeekOfYearFiscal ( Date ( 1 ; 1 ; 2004 ) ; 1 ) & "," & WeekOfYearFiscal ( Date ( 1 ; 1 ; 2004 ) ; 2 ) & "," & WeekOfYearFiscal ( Date ( 1 ; 1 ; 2004 ) ; 3 ) & "," & WeekOfYearFiscal ( Date ( 1 ; 1 ; 2004 ) ; 4 ) & "," & WeekOfYearFiscal ( Date ( 1 ; 1 ; 2004 ) ; 5 ) & "," & WeekOfYearFiscal ( Date ( 1 ; 1 ; 2004 ) ; 6 ) & "," & WeekOfYearFiscal ( Date ( 1 ; 1 ; 2004 ) ; 7 ) & "," & WeekOfYearFiscal ( Date ( 1 ; 1 ; 2004 ) ; 8 )	0	1/1/0	53,53,1,1,1,1,52,52,52
+WeekOfYearFiscal ( Date ( 1 ; 2 ; 2004 ) ; 0 ) & "," & WeekOfYearFiscal ( Date ( 1 ; 2 ; 2004 ) ; 1 ) & "," & WeekOfYearFiscal ( Date ( 1 ; 2 ; 2004 ) ; 2 ) & "," & WeekOfYearFiscal ( Date ( 1 ; 2 ; 2004 ) ; 3 ) & "," & WeekOfYearFiscal ( Date ( 1 ; 2 ; 2004 ) ; 4 ) & "," & WeekOfYearFiscal ( Date ( 1 ; 2 ; 2004 ) ; 5 ) & "," & WeekOfYearFiscal ( Date ( 1 ; 2 ; 2004 ) ; 6 ) & "," & WeekOfYearFiscal ( Date ( 1 ; 2 ; 2004 ) ; 7 ) & "," & WeekOfYearFiscal ( Date ( 1 ; 2 ; 2004 ) ; 8 )	0	1/1/0	53,53,1,1,1,1,1,52,52
+WeekOfYearFiscal ( Date ( 1 ; 3 ; 2004 ) ; 0 ) & "," & WeekOfYearFiscal ( Date ( 1 ; 3 ; 2004 ) ; 1 ) & "," & WeekOfYearFiscal ( Date ( 1 ; 3 ; 2004 ) ; 2 ) & "," & WeekOfYearFiscal ( Date ( 1 ; 3 ; 2004 ) ; 3 ) & "," & WeekOfYearFiscal ( Date ( 1 ; 3 ; 2004 ) ; 4 ) & "," & WeekOfYearFiscal ( Date ( 1 ; 3 ; 2004 ) ; 5 ) & "," & WeekOfYearFiscal ( Date ( 1 ; 3 ; 2004 ) ; 6 ) & "," & WeekOfYearFiscal ( Date ( 1 ; 3 ; 2004 ) ; 7 ) & "," & WeekOfYearFiscal ( Date ( 1 ; 3 ; 2004 ) ; 8 )	0	1/1/0	53,53,1,1,1,1,1,1,1
+WeekOfYearFiscal ( Date ( 1 ; 4 ; 2004 ) ; 0 ) & "," & WeekOfYearFiscal ( Date ( 1 ; 4 ; 2004 ) ; 1 ) & "," & WeekOfYearFiscal ( Date ( 1 ; 4 ; 2004 ) ; 2 ) & "," & WeekOfYearFiscal ( Date ( 1 ; 4 ; 2004 ) ; 3 ) & "," & WeekOfYearFiscal ( Date ( 1 ; 4 ; 2004 ) ; 4 ) & "," & WeekOfYearFiscal ( Date ( 1 ; 4 ; 2004 ) ; 5 ) & "," & WeekOfYearFiscal ( Date ( 1 ; 4 ; 2004 ) ; 6 ) & "," & WeekOfYearFiscal ( Date ( 1 ; 4 ; 2004 ) ; 7 ) & "," & WeekOfYearFiscal ( Date ( 1 ; 4 ; 2004 ) ; 8 )	0	1/1/0	1,1,1,1,1,1,1,1,1
+WeekOfYearFiscal ( Date ( 1 ; 5 ; 2004 ) ; 0 ) & "," & WeekOfYearFiscal ( Date ( 1 ; 5 ; 2004 ) ; 1 ) & "," & WeekOfYearFiscal ( Date ( 1 ; 5 ; 2004 ) ; 2 ) & "," & WeekOfYearFiscal ( Date ( 1 ; 5 ; 2004 ) ; 3 ) & "," & WeekOfYearFiscal ( Date ( 1 ; 5 ; 2004 ) ; 4 ) & "," & WeekOfYearFiscal ( Date ( 1 ; 5 ; 2004 ) ; 5 ) & "," & WeekOfYearFiscal ( Date ( 1 ; 5 ; 2004 ) ; 6 ) & "," & WeekOfYearFiscal ( Date ( 1 ; 5 ; 2004 ) ; 7 ) & "," & WeekOfYearFiscal ( Date ( 1 ; 5 ; 2004 ) ; 8 )	0	1/1/0	1,1,2,1,1,1,1,1,1
+WeekOfYearFiscal ( Date ( 1 ; 6 ; 2004 ) ; 0 ) & "," & WeekOfYearFiscal ( Date ( 1 ; 6 ; 2004 ) ; 1 ) & "," & WeekOfYearFiscal ( Date ( 1 ; 6 ; 2004 ) ; 2 ) & "," & WeekOfYearFiscal ( Date ( 1 ; 6 ; 2004 ) ; 3 ) & "," & WeekOfYearFiscal ( Date ( 1 ; 6 ; 2004 ) ; 4 ) & "," & WeekOfYearFiscal ( Date ( 1 ; 6 ; 2004 ) ; 5 ) & "," & WeekOfYearFiscal ( Date ( 1 ; 6 ; 2004 ) ; 6 ) & "," & WeekOfYearFiscal ( Date ( 1 ; 6 ; 2004 ) ; 7 ) & "," & WeekOfYearFiscal ( Date ( 1 ; 6 ; 2004 ) ; 8 )	0	1/1/0	1,1,2,2,1,1,1,1,1
+WeekOfYearFiscal ( Date ( 1 ; 7 ; 2004 ) ; 0 ) & "," & WeekOfYearFiscal ( Date ( 1 ; 7 ; 2004 ) ; 1 ) & "," & WeekOfYearFiscal ( Date ( 1 ; 7 ; 2004 ) ; 2 ) & "," & WeekOfYearFiscal ( Date ( 1 ; 7 ; 2004 ) ; 3 ) & "," & WeekOfYearFiscal ( Date ( 1 ; 7 ; 2004 ) ; 4 ) & "," & WeekOfYearFiscal ( Date ( 1 ; 7 ; 2004 ) ; 5 ) & "," & WeekOfYearFiscal ( Date ( 1 ; 7 ; 2004 ) ; 6 ) & "," & WeekOfYearFiscal ( Date ( 1 ; 7 ; 2004 ) ; 7 ) & "," & WeekOfYearFiscal ( Date ( 1 ; 7 ; 2004 ) ; 8 )	0	1/1/0	1,1,2,2,2,1,1,1,1
+WeekOfYearFiscal ( Date ( 12 ; 25 ; 2004 ) ; 0 ) & "," & WeekOfYearFiscal ( Date ( 12 ; 25 ; 2004 ) ; 1 ) & "," & WeekOfYearFiscal ( Date ( 12 ; 25 ; 2004 ) ; 2 ) & "," & WeekOfYearFiscal ( Date ( 12 ; 25 ; 2004 ) ; 3 ) & "," & WeekOfYearFiscal ( Date ( 12 ; 25 ; 2004 ) ; 4 ) & "," & WeekOfYearFiscal ( Date ( 12 ; 25 ; 2004 ) ; 5 ) & "," & WeekOfYearFiscal ( Date ( 12 ; 25 ; 2004 ) ; 6 ) & "," & WeekOfYearFiscal ( Date ( 12 ; 25 ; 2004 ) ; 7 ) & "," & WeekOfYearFiscal ( Date ( 12 ; 25 ; 2004 ) ; 8 )	0	1/1/0	51,51,52,52,52,52,52,52,52
+WeekOfYearFiscal ( Date ( 12 ; 26 ; 2004 ) ; 0 ) & "," & WeekOfYearFiscal ( Date ( 12 ; 26 ; 2004 ) ; 1 ) & "," & WeekOfYearFiscal ( Date ( 12 ; 26 ; 2004 ) ; 2 ) & "," & WeekOfYearFiscal ( Date ( 12 ; 26 ; 2004 ) ; 3 ) & "," & WeekOfYearFiscal ( Date ( 12 ; 26 ; 2004 ) ; 4 ) & "," & WeekOfYearFiscal ( Date ( 12 ; 26 ; 2004 ) ; 5 ) & "," & WeekOfYearFiscal ( Date ( 12 ; 26 ; 2004 ) ; 6 ) & "," & WeekOfYearFiscal ( Date ( 12 ; 26 ; 2004 ) ; 7 ) & "," & WeekOfYearFiscal ( Date ( 12 ; 26 ; 2004 ) ; 8 )	0	1/1/0	52,52,52,52,52,52,52,52,52
+WeekOfYearFiscal ( Date ( 12 ; 27 ; 2004 ) ; 0 ) & "," & WeekOfYearFiscal ( Date ( 12 ; 27 ; 2004 ) ; 1 ) & "," & WeekOfYearFiscal ( Date ( 12 ; 27 ; 2004 ) ; 2 ) & "," & WeekOfYearFiscal ( Date ( 12 ; 27 ; 2004 ) ; 3 ) & "," & WeekOfYearFiscal ( Date ( 12 ; 27 ; 2004 ) ; 4 ) & "," & WeekOfYearFiscal ( Date ( 12 ; 27 ; 2004 ) ; 5 ) & "," & WeekOfYearFiscal ( Date ( 12 ; 27 ; 2004 ) ; 6 ) & "," & WeekOfYearFiscal ( Date ( 12 ; 27 ; 2004 ) ; 7 ) & "," & WeekOfYearFiscal ( Date ( 12 ; 27 ; 2004 ) ; 8 )	0	1/1/0	52,52,53,52,52,52,52,52,52
+WeekOfYearFiscal ( Date ( 12 ; 28 ; 2004 ) ; 0 ) & "," & WeekOfYearFiscal ( Date ( 12 ; 28 ; 2004 ) ; 1 ) & "," & WeekOfYearFiscal ( Date ( 12 ; 28 ; 2004 ) ; 2 ) & "," & WeekOfYearFiscal ( Date ( 12 ; 28 ; 2004 ) ; 3 ) & "," & WeekOfYearFiscal ( Date ( 12 ; 28 ; 2004 ) ; 4 ) & "," & WeekOfYearFiscal ( Date ( 12 ; 28 ; 2004 ) ; 5 ) & "," & WeekOfYearFiscal ( Date ( 12 ; 28 ; 2004 ) ; 6 ) & "," & WeekOfYearFiscal ( Date ( 12 ; 28 ; 2004 ) ; 7 ) & "," & WeekOfYearFiscal ( Date ( 12 ; 28 ; 2004 ) ; 8 )	0	1/1/0	52,52,53,53,52,52,52,52,52
+WeekOfYearFiscal ( Date ( 12 ; 29 ; 2004 ) ; 0 ) & "," & WeekOfYearFiscal ( Date ( 12 ; 29 ; 2004 ) ; 1 ) & "," & WeekOfYearFiscal ( Date ( 12 ; 29 ; 2004 ) ; 2 ) & "," & WeekOfYearFiscal ( Date ( 12 ; 29 ; 2004 ) ; 3 ) & "," & WeekOfYearFiscal ( Date ( 12 ; 29 ; 2004 ) ; 4 ) & "," & WeekOfYearFiscal ( Date ( 12 ; 29 ; 2004 ) ; 5 ) & "," & WeekOfYearFiscal ( Date ( 12 ; 29 ; 2004 ) ; 6 ) & "," & WeekOfYearFiscal ( Date ( 12 ; 29 ; 2004 ) ; 7 ) & "," & WeekOfYearFiscal ( Date ( 12 ; 29 ; 2004 ) ; 8 )	0	1/1/0	52,52,53,53,1,52,52,52,52
+WeekOfYearFiscal ( Date ( 12 ; 30 ; 2004 ) ; 0 ) & "," & WeekOfYearFiscal ( Date ( 12 ; 30 ; 2004 ) ; 1 ) & "," & WeekOfYearFiscal ( Date ( 12 ; 30 ; 2004 ) ; 2 ) & "," & WeekOfYearFiscal ( Date ( 12 ; 30 ; 2004 ) ; 3 ) & "," & WeekOfYearFiscal ( Date ( 12 ; 30 ; 2004 ) ; 4 ) & "," & WeekOfYearFiscal ( Date ( 12 ; 30 ; 2004 ) ; 5 ) & "," & WeekOfYearFiscal ( Date ( 12 ; 30 ; 2004 ) ; 6 ) & "," & WeekOfYearFiscal ( Date ( 12 ; 30 ; 2004 ) ; 7 ) & "," & WeekOfYearFiscal ( Date ( 12 ; 30 ; 2004 ) ; 8 )	0	1/1/0	52,52,53,53,1,1,52,52,52
+WeekOfYearFiscal ( Date ( 12 ; 31 ; 2004 ) ; 0 ) & "," & WeekOfYearFiscal ( Date ( 12 ; 31 ; 2004 ) ; 1 ) & "," & WeekOfYearFiscal ( Date ( 12 ; 31 ; 2004 ) ; 2 ) & "," & WeekOfYearFiscal ( Date ( 12 ; 31 ; 2004 ) ; 3 ) & "," & WeekOfYearFiscal ( Date ( 12 ; 31 ; 2004 ) ; 4 ) & "," & WeekOfYearFiscal ( Date ( 12 ; 31 ; 2004 ) ; 5 ) & "," & WeekOfYearFiscal ( Date ( 12 ; 31 ; 2004 ) ; 6 ) & "," & WeekOfYearFiscal ( Date ( 12 ; 31 ; 2004 ) ; 7 ) & "," & WeekOfYearFiscal ( Date ( 12 ; 31 ; 2004 ) ; 8 )	0	1/1/0	52,52,53,53,1,1,1,52,52
+WeekOfYearFiscal ( Date ( 1 ; 1 ; 2005 ) ; 0 ) & "," & WeekOfYearFiscal ( Date ( 1 ; 1 ; 2005 ) ; 1 ) & "," & WeekOfYearFiscal ( Date ( 1 ; 1 ; 2005 ) ; 2 ) & "," & WeekOfYearFiscal ( Date ( 1 ; 1 ; 2005 ) ; 3 ) & "," & WeekOfYearFiscal ( Date ( 1 ; 1 ; 2005 ) ; 4 ) & "," & WeekOfYearFiscal ( Date ( 1 ; 1 ; 2005 ) ; 5 ) & "," & WeekOfYearFiscal ( Date ( 1 ; 1 ; 2005 ) ; 6 ) & "," & WeekOfYearFiscal ( Date ( 1 ; 1 ; 2005 ) ; 7 ) & "," & WeekOfYearFiscal ( Date ( 1 ; 1 ; 2005 ) ; 8 )	0	1/1/0	52,52,53,53,1,1,1,1,1
+WeekOfYearFiscal ( Date ( 1 ; 2 ; 2005 ) ; 0 ) & "," & WeekOfYearFiscal ( Date ( 1 ; 2 ; 2005 ) ; 1 ) & "," & WeekOfYearFiscal ( Date ( 1 ; 2 ; 2005 ) ; 2 ) & "," & WeekOfYearFiscal ( Date ( 1 ; 2 ; 2005 ) ; 3 ) & "," & WeekOfYearFiscal ( Date ( 1 ; 2 ; 2005 ) ; 4 ) & "," & WeekOfYearFiscal ( Date ( 1 ; 2 ; 2005 ) ; 5 ) & "," & WeekOfYearFiscal ( Date ( 1 ; 2 ; 2005 ) ; 6 ) & "," & WeekOfYearFiscal ( Date ( 1 ; 2 ; 2005 ) ; 7 ) & "," & WeekOfYearFiscal ( Date ( 1 ; 2 ; 2005 ) ; 8 )	0	1/1/0	1,1,53,53,1,1,1,1,1
+WeekOfYearFiscal ( Date ( 1 ; 3 ; 2005 ) ; 0 ) & "," & WeekOfYearFiscal ( Date ( 1 ; 3 ; 2005 ) ; 1 ) & "," & WeekOfYearFiscal ( Date ( 1 ; 3 ; 2005 ) ; 2 ) & "," & WeekOfYearFiscal ( Date ( 1 ; 3 ; 2005 ) ; 3 ) & "," & WeekOfYearFiscal ( Date ( 1 ; 3 ; 2005 ) ; 4 ) & "," & WeekOfYearFiscal ( Date ( 1 ; 3 ; 2005 ) ; 5 ) & "," & WeekOfYearFiscal ( Date ( 1 ; 3 ; 2005 ) ; 6 ) & "," & WeekOfYearFiscal ( Date ( 1 ; 3 ; 2005 ) ; 7 ) & "," & WeekOfYearFiscal ( Date ( 1 ; 3 ; 2005 ) ; 8 )	0	1/1/0	1,1,1,53,1,1,1,1,1
+WeekOfYearFiscal ( Date ( 1 ; 4 ; 2005 ) ; 0 ) & "," & WeekOfYearFiscal ( Date ( 1 ; 4 ; 2005 ) ; 1 ) & "," & WeekOfYearFiscal ( Date ( 1 ; 4 ; 2005 ) ; 2 ) & "," & WeekOfYearFiscal ( Date ( 1 ; 4 ; 2005 ) ; 3 ) & "," & WeekOfYearFiscal ( Date ( 1 ; 4 ; 2005 ) ; 4 ) & "," & WeekOfYearFiscal ( Date ( 1 ; 4 ; 2005 ) ; 5 ) & "," & WeekOfYearFiscal ( Date ( 1 ; 4 ; 2005 ) ; 6 ) & "," & WeekOfYearFiscal ( Date ( 1 ; 4 ; 2005 ) ; 7 ) & "," & WeekOfYearFiscal ( Date ( 1 ; 4 ; 2005 ) ; 8 )	0	1/1/0	1,1,1,1,1,1,1,1,1
+WeekOfYearFiscal ( Date ( 1 ; 5 ; 2005 ) ; 0 ) & "," & WeekOfYearFiscal ( Date ( 1 ; 5 ; 2005 ) ; 1 ) & "," & WeekOfYearFiscal ( Date ( 1 ; 5 ; 2005 ) ; 2 ) & "," & WeekOfYearFiscal ( Date ( 1 ; 5 ; 2005 ) ; 3 ) & "," & WeekOfYearFiscal ( Date ( 1 ; 5 ; 2005 ) ; 4 ) & "," & WeekOfYearFiscal ( Date ( 1 ; 5 ; 2005 ) ; 5 ) & "," & WeekOfYearFiscal ( Date ( 1 ; 5 ; 2005 ) ; 6 ) & "," & WeekOfYearFiscal ( Date ( 1 ; 5 ; 2005 ) ; 7 ) & "," & WeekOfYearFiscal ( Date ( 1 ; 5 ; 2005 ) ; 8 )	0	1/1/0	1,1,1,1,2,1,1,1,1
+WeekOfYearFiscal ( Date ( 1 ; 6 ; 2005 ) ; 0 ) & "," & WeekOfYearFiscal ( Date ( 1 ; 6 ; 2005 ) ; 1 ) & "," & WeekOfYearFiscal ( Date ( 1 ; 6 ; 2005 ) ; 2 ) & "," & WeekOfYearFiscal ( Date ( 1 ; 6 ; 2005 ) ; 3 ) & "," & WeekOfYearFiscal ( Date ( 1 ; 6 ; 2005 ) ; 4 ) & "," & WeekOfYearFiscal ( Date ( 1 ; 6 ; 2005 ) ; 5 ) & "," & WeekOfYearFiscal ( Date ( 1 ; 6 ; 2005 ) ; 6 ) & "," & WeekOfYearFiscal ( Date ( 1 ; 6 ; 2005 ) ; 7 ) & "," & WeekOfYearFiscal ( Date ( 1 ; 6 ; 2005 ) ; 8 )	0	1/1/0	1,1,1,1,2,2,1,1,1
+WeekOfYearFiscal ( Date ( 1 ; 7 ; 2005 ) ; 0 ) & "," & WeekOfYearFiscal ( Date ( 1 ; 7 ; 2005 ) ; 1 ) & "," & WeekOfYearFiscal ( Date ( 1 ; 7 ; 2005 ) ; 2 ) & "," & WeekOfYearFiscal ( Date ( 1 ; 7 ; 2005 ) ; 3 ) & "," & WeekOfYearFiscal ( Date ( 1 ; 7 ; 2005 ) ; 4 ) & "," & WeekOfYearFiscal ( Date ( 1 ; 7 ; 2005 ) ; 5 ) & "," & WeekOfYearFiscal ( Date ( 1 ; 7 ; 2005 ) ; 6 ) & "," & WeekOfYearFiscal ( Date ( 1 ; 7 ; 2005 ) ; 7 ) & "," & WeekOfYearFiscal ( Date ( 1 ; 7 ; 2005 ) ; 8 )	0	1/1/0	1,1,1,1,2,2,2,1,1
+WeekOfYearFiscal ( Date ( 12 ; 25 ; 2005 ) ; 0 ) & "," & WeekOfYearFiscal ( Date ( 12 ; 25 ; 2005 ) ; 1 ) & "," & WeekOfYearFiscal ( Date ( 12 ; 25 ; 2005 ) ; 2 ) & "," & WeekOfYearFiscal ( Date ( 12 ; 25 ; 2005 ) ; 3 ) & "," & WeekOfYearFiscal ( Date ( 12 ; 25 ; 2005 ) ; 4 ) & "," & WeekOfYearFiscal ( Date ( 12 ; 25 ; 2005 ) ; 5 ) & "," & WeekOfYearFiscal ( Date ( 12 ; 25 ; 2005 ) ; 6 ) & "," & WeekOfYearFiscal ( Date ( 12 ; 25 ; 2005 ) ; 7 ) & "," & WeekOfYearFiscal ( Date ( 12 ; 25 ; 2005 ) ; 8 )	0	1/1/0	52,52,51,51,52,52,52,52,52
+WeekOfYearFiscal ( Date ( 12 ; 26 ; 2005 ) ; 0 ) & "," & WeekOfYearFiscal ( Date ( 12 ; 26 ; 2005 ) ; 1 ) & "," & WeekOfYearFiscal ( Date ( 12 ; 26 ; 2005 ) ; 2 ) & "," & WeekOfYearFiscal ( Date ( 12 ; 26 ; 2005 ) ; 3 ) & "," & WeekOfYearFiscal ( Date ( 12 ; 26 ; 2005 ) ; 4 ) & "," & WeekOfYearFiscal ( Date ( 12 ; 26 ; 2005 ) ; 5 ) & "," & WeekOfYearFiscal ( Date ( 12 ; 26 ; 2005 ) ; 6 ) & "," & WeekOfYearFiscal ( Date ( 12 ; 26 ; 2005 ) ; 7 ) & "," & WeekOfYearFiscal ( Date ( 12 ; 26 ; 2005 ) ; 8 )	0	1/1/0	52,52,52,51,52,52,52,52,52
+WeekOfYearFiscal ( Date ( 12 ; 27 ; 2005 ) ; 0 ) & "," & WeekOfYearFiscal ( Date ( 12 ; 27 ; 2005 ) ; 1 ) & "," & WeekOfYearFiscal ( Date ( 12 ; 27 ; 2005 ) ; 2 ) & "," & WeekOfYearFiscal ( Date ( 12 ; 27 ; 2005 ) ; 3 ) & "," & WeekOfYearFiscal ( Date ( 12 ; 27 ; 2005 ) ; 4 ) & "," & WeekOfYearFiscal ( Date ( 12 ; 27 ; 2005 ) ; 5 ) & "," & WeekOfYearFiscal ( Date ( 12 ; 27 ; 2005 ) ; 6 ) & "," & WeekOfYearFiscal ( Date ( 12 ; 27 ; 2005 ) ; 7 ) & "," & WeekOfYearFiscal ( Date ( 12 ; 27 ; 2005 ) ; 8 )	0	1/1/0	52,52,52,52,52,52,52,52,52
+WeekOfYearFiscal ( Date ( 12 ; 28 ; 2005 ) ; 0 ) & "," & WeekOfYearFiscal ( Date ( 12 ; 28 ; 2005 ) ; 1 ) & "," & WeekOfYearFiscal ( Date ( 12 ; 28 ; 2005 ) ; 2 ) & "," & WeekOfYearFiscal ( Date ( 12 ; 28 ; 2005 ) ; 3 ) & "," & WeekOfYearFiscal ( Date ( 12 ; 28 ; 2005 ) ; 4 ) & "," & WeekOfYearFiscal ( Date ( 12 ; 28 ; 2005 ) ; 5 ) & "," & WeekOfYearFiscal ( Date ( 12 ; 28 ; 2005 ) ; 6 ) & "," & WeekOfYearFiscal ( Date ( 12 ; 28 ; 2005 ) ; 7 ) & "," & WeekOfYearFiscal ( Date ( 12 ; 28 ; 2005 ) ; 8 )	0	1/1/0	52,52,52,52,53,52,52,52,52
+WeekOfYearFiscal ( Date ( 12 ; 29 ; 2005 ) ; 0 ) & "," & WeekOfYearFiscal ( Date ( 12 ; 29 ; 2005 ) ; 1 ) & "," & WeekOfYearFiscal ( Date ( 12 ; 29 ; 2005 ) ; 2 ) & "," & WeekOfYearFiscal ( Date ( 12 ; 29 ; 2005 ) ; 3 ) & "," & WeekOfYearFiscal ( Date ( 12 ; 29 ; 2005 ) ; 4 ) & "," & WeekOfYearFiscal ( Date ( 12 ; 29 ; 2005 ) ; 5 ) & "," & WeekOfYearFiscal ( Date ( 12 ; 29 ; 2005 ) ; 6 ) & "," & WeekOfYearFiscal ( Date ( 12 ; 29 ; 2005 ) ; 7 ) & "," & WeekOfYearFiscal ( Date ( 12 ; 29 ; 2005 ) ; 8 )	0	1/1/0	52,52,52,52,53,1,52,52,52
+WeekOfYearFiscal ( Date ( 12 ; 30 ; 2005 ) ; 0 ) & "," & WeekOfYearFiscal ( Date ( 12 ; 30 ; 2005 ) ; 1 ) & "," & WeekOfYearFiscal ( Date ( 12 ; 30 ; 2005 ) ; 2 ) & "," & WeekOfYearFiscal ( Date ( 12 ; 30 ; 2005 ) ; 3 ) & "," & WeekOfYearFiscal ( Date ( 12 ; 30 ; 2005 ) ; 4 ) & "," & WeekOfYearFiscal ( Date ( 12 ; 30 ; 2005 ) ; 5 ) & "," & WeekOfYearFiscal ( Date ( 12 ; 30 ; 2005 ) ; 6 ) & "," & WeekOfYearFiscal ( Date ( 12 ; 30 ; 2005 ) ; 7 ) & "," & WeekOfYearFiscal ( Date ( 12 ; 30 ; 2005 ) ; 8 )	0	1/1/0	52,52,52,52,53,1,1,52,52
+WeekOfYearFiscal ( Date ( 12 ; 31 ; 2005 ) ; 0 ) & "," & WeekOfYearFiscal ( Date ( 12 ; 31 ; 2005 ) ; 1 ) & "," & WeekOfYearFiscal ( Date ( 12 ; 31 ; 2005 ) ; 2 ) & "," & WeekOfYearFiscal ( Date ( 12 ; 31 ; 2005 ) ; 3 ) & "," & WeekOfYearFiscal ( Date ( 12 ; 31 ; 2005 ) ; 4 ) & "," & WeekOfYearFiscal ( Date ( 12 ; 31 ; 2005 ) ; 5 ) & "," & WeekOfYearFiscal ( Date ( 12 ; 31 ; 2005 ) ; 6 ) & "," & WeekOfYearFiscal ( Date ( 12 ; 31 ; 2005 ) ; 7 ) & "," & WeekOfYearFiscal ( Date ( 12 ; 31 ; 2005 ) ; 8 )	0	1/1/0	52,52,52,52,53,1,1,1,1
+WeekOfYearFiscal ( Date ( 1 ; 1 ; 2006 ) ; 0 ) & "," & WeekOfYearFiscal ( Date ( 1 ; 1 ; 2006 ) ; 1 ) & "," & WeekOfYearFiscal ( Date ( 1 ; 1 ; 2006 ) ; 2 ) & "," & WeekOfYearFiscal ( Date ( 1 ; 1 ; 2006 ) ; 3 ) & "," & WeekOfYearFiscal ( Date ( 1 ; 1 ; 2006 ) ; 4 ) & "," & WeekOfYearFiscal ( Date ( 1 ; 1 ; 2006 ) ; 5 ) & "," & WeekOfYearFiscal ( Date ( 1 ; 1 ; 2006 ) ; 6 ) & "," & WeekOfYearFiscal ( Date ( 1 ; 1 ; 2006 ) ; 7 ) & "," & WeekOfYearFiscal ( Date ( 1 ; 1 ; 2006 ) ; 8 )	0	1/1/0	1,1,52,52,53,1,1,1,1
+WeekOfYearFiscal ( Date ( 1 ; 2 ; 2006 ) ; 0 ) & "," & WeekOfYearFiscal ( Date ( 1 ; 2 ; 2006 ) ; 1 ) & "," & WeekOfYearFiscal ( Date ( 1 ; 2 ; 2006 ) ; 2 ) & "," & WeekOfYearFiscal ( Date ( 1 ; 2 ; 2006 ) ; 3 ) & "," & WeekOfYearFiscal ( Date ( 1 ; 2 ; 2006 ) ; 4 ) & "," & WeekOfYearFiscal ( Date ( 1 ; 2 ; 2006 ) ; 5 ) & "," & WeekOfYearFiscal ( Date ( 1 ; 2 ; 2006 ) ; 6 ) & "," & WeekOfYearFiscal ( Date ( 1 ; 2 ; 2006 ) ; 7 ) & "," & WeekOfYearFiscal ( Date ( 1 ; 2 ; 2006 ) ; 8 )	0	1/1/0	1,1,1,52,53,1,1,1,1
+WeekOfYearFiscal ( Date ( 1 ; 3 ; 2006 ) ; 0 ) & "," & WeekOfYearFiscal ( Date ( 1 ; 3 ; 2006 ) ; 1 ) & "," & WeekOfYearFiscal ( Date ( 1 ; 3 ; 2006 ) ; 2 ) & "," & WeekOfYearFiscal ( Date ( 1 ; 3 ; 2006 ) ; 3 ) & "," & WeekOfYearFiscal ( Date ( 1 ; 3 ; 2006 ) ; 4 ) & "," & WeekOfYearFiscal ( Date ( 1 ; 3 ; 2006 ) ; 5 ) & "," & WeekOfYearFiscal ( Date ( 1 ; 3 ; 2006 ) ; 6 ) & "," & WeekOfYearFiscal ( Date ( 1 ; 3 ; 2006 ) ; 7 ) & "," & WeekOfYearFiscal ( Date ( 1 ; 3 ; 2006 ) ; 8 )	0	1/1/0	1,1,1,1,53,1,1,1,1
+WeekOfYearFiscal ( Date ( 1 ; 4 ; 2006 ) ; 0 ) & "," & WeekOfYearFiscal ( Date ( 1 ; 4 ; 2006 ) ; 1 ) & "," & WeekOfYearFiscal ( Date ( 1 ; 4 ; 2006 ) ; 2 ) & "," & WeekOfYearFiscal ( Date ( 1 ; 4 ; 2006 ) ; 3 ) & "," & WeekOfYearFiscal ( Date ( 1 ; 4 ; 2006 ) ; 4 ) & "," & WeekOfYearFiscal ( Date ( 1 ; 4 ; 2006 ) ; 5 ) & "," & WeekOfYearFiscal ( Date ( 1 ; 4 ; 2006 ) ; 6 ) & "," & WeekOfYearFiscal ( Date ( 1 ; 4 ; 2006 ) ; 7 ) & "," & WeekOfYearFiscal ( Date ( 1 ; 4 ; 2006 ) ; 8 )	0	1/1/0	1,1,1,1,1,1,1,1,1
+WeekOfYearFiscal ( Date ( 1 ; 5 ; 2006 ) ; 0 ) & "," & WeekOfYearFiscal ( Date ( 1 ; 5 ; 2006 ) ; 1 ) & "," & WeekOfYearFiscal ( Date ( 1 ; 5 ; 2006 ) ; 2 ) & "," & WeekOfYearFiscal ( Date ( 1 ; 5 ; 2006 ) ; 3 ) & "," & WeekOfYearFiscal ( Date ( 1 ; 5 ; 2006 ) ; 4 ) & "," & WeekOfYearFiscal ( Date ( 1 ; 5 ; 2006 ) ; 5 ) & "," & WeekOfYearFiscal ( Date ( 1 ; 5 ; 2006 ) ; 6 ) & "," & WeekOfYearFiscal ( Date ( 1 ; 5 ; 2006 ) ; 7 ) & "," & WeekOfYearFiscal ( Date ( 1 ; 5 ; 2006 ) ; 8 )	0	1/1/0	1,1,1,1,1,2,1,1,1
+WeekOfYearFiscal ( Date ( 1 ; 6 ; 2006 ) ; 0 ) & "," & WeekOfYearFiscal ( Date ( 1 ; 6 ; 2006 ) ; 1 ) & "," & WeekOfYearFiscal ( Date ( 1 ; 6 ; 2006 ) ; 2 ) & "," & WeekOfYearFiscal ( Date ( 1 ; 6 ; 2006 ) ; 3 ) & "," & WeekOfYearFiscal ( Date ( 1 ; 6 ; 2006 ) ; 4 ) & "," & WeekOfYearFiscal ( Date ( 1 ; 6 ; 2006 ) ; 5 ) & "," & WeekOfYearFiscal ( Date ( 1 ; 6 ; 2006 ) ; 6 ) & "," & WeekOfYearFiscal ( Date ( 1 ; 6 ; 2006 ) ; 7 ) & "," & WeekOfYearFiscal ( Date ( 1 ; 6 ; 2006 ) ; 8 )	0	1/1/0	1,1,1,1,1,2,2,1,1
+WeekOfYearFiscal ( Date ( 1 ; 7 ; 2006 ) ; 0 ) & "," & WeekOfYearFiscal ( Date ( 1 ; 7 ; 2006 ) ; 1 ) & "," & WeekOfYearFiscal ( Date ( 1 ; 7 ; 2006 ) ; 2 ) & "," & WeekOfYearFiscal ( Date ( 1 ; 7 ; 2006 ) ; 3 ) & "," & WeekOfYearFiscal ( Date ( 1 ; 7 ; 2006 ) ; 4 ) & "," & WeekOfYearFiscal ( Date ( 1 ; 7 ; 2006 ) ; 5 ) & "," & WeekOfYearFiscal ( Date ( 1 ; 7 ; 2006 ) ; 6 ) & "," & WeekOfYearFiscal ( Date ( 1 ; 7 ; 2006 ) ; 7 ) & "," & WeekOfYearFiscal ( Date ( 1 ; 7 ; 2006 ) ; 8 )	0	1/1/0	1,1,1,1,1,2,2,2,2
+WeekOfYearFiscal ( Date ( 12 ; 25 ; 2006 ) ; 0 ) & "," & WeekOfYearFiscal ( Date ( 12 ; 25 ; 2006 ) ; 1 ) & "," & WeekOfYearFiscal ( Date ( 12 ; 25 ; 2006 ) ; 2 ) & "," & WeekOfYearFiscal ( Date ( 12 ; 25 ; 2006 ) ; 3 ) & "," & WeekOfYearFiscal ( Date ( 12 ; 25 ; 2006 ) ; 4 ) & "," & WeekOfYearFiscal ( Date ( 12 ; 25 ; 2006 ) ; 5 ) & "," & WeekOfYearFiscal ( Date ( 12 ; 25 ; 2006 ) ; 6 ) & "," & WeekOfYearFiscal ( Date ( 12 ; 25 ; 2006 ) ; 7 ) & "," & WeekOfYearFiscal ( Date ( 12 ; 25 ; 2006 ) ; 8 )	0	1/1/0	52,52,52,51,51,52,52,52,52
+WeekOfYearFiscal ( Date ( 12 ; 26 ; 2006 ) ; 0 ) & "," & WeekOfYearFiscal ( Date ( 12 ; 26 ; 2006 ) ; 1 ) & "," & WeekOfYearFiscal ( Date ( 12 ; 26 ; 2006 ) ; 2 ) & "," & WeekOfYearFiscal ( Date ( 12 ; 26 ; 2006 ) ; 3 ) & "," & WeekOfYearFiscal ( Date ( 12 ; 26 ; 2006 ) ; 4 ) & "," & WeekOfYearFiscal ( Date ( 12 ; 26 ; 2006 ) ; 5 ) & "," & WeekOfYearFiscal ( Date ( 12 ; 26 ; 2006 ) ; 6 ) & "," & WeekOfYearFiscal ( Date ( 12 ; 26 ; 2006 ) ; 7 ) & "," & WeekOfYearFiscal ( Date ( 12 ; 26 ; 2006 ) ; 8 )	0	1/1/0	52,52,52,52,51,52,52,52,52
+WeekOfYearFiscal ( Date ( 12 ; 27 ; 2006 ) ; 0 ) & "," & WeekOfYearFiscal ( Date ( 12 ; 27 ; 2006 ) ; 1 ) & "," & WeekOfYearFiscal ( Date ( 12 ; 27 ; 2006 ) ; 2 ) & "," & WeekOfYearFiscal ( Date ( 12 ; 27 ; 2006 ) ; 3 ) & "," & WeekOfYearFiscal ( Date ( 12 ; 27 ; 2006 ) ; 4 ) & "," & WeekOfYearFiscal ( Date ( 12 ; 27 ; 2006 ) ; 5 ) & "," & WeekOfYearFiscal ( Date ( 12 ; 27 ; 2006 ) ; 6 ) & "," & WeekOfYearFiscal ( Date ( 12 ; 27 ; 2006 ) ; 7 ) & "," & WeekOfYearFiscal ( Date ( 12 ; 27 ; 2006 ) ; 8 )	0	1/1/0	52,52,52,52,52,52,52,52,52
+WeekOfYearFiscal ( Date ( 12 ; 28 ; 2006 ) ; 0 ) & "," & WeekOfYearFiscal ( Date ( 12 ; 28 ; 2006 ) ; 1 ) & "," & WeekOfYearFiscal ( Date ( 12 ; 28 ; 2006 ) ; 2 ) & "," & WeekOfYearFiscal ( Date ( 12 ; 28 ; 2006 ) ; 3 ) & "," & WeekOfYearFiscal ( Date ( 12 ; 28 ; 2006 ) ; 4 ) & "," & WeekOfYearFiscal ( Date ( 12 ; 28 ; 2006 ) ; 5 ) & "," & WeekOfYearFiscal ( Date ( 12 ; 28 ; 2006 ) ; 6 ) & "," & WeekOfYearFiscal ( Date ( 12 ; 28 ; 2006 ) ; 7 ) & "," & WeekOfYearFiscal ( Date ( 12 ; 28 ; 2006 ) ; 8 )	0	1/1/0	52,52,52,52,52,53,52,52,52
+WeekOfYearFiscal ( Date ( 12 ; 29 ; 2006 ) ; 0 ) & "," & WeekOfYearFiscal ( Date ( 12 ; 29 ; 2006 ) ; 1 ) & "," & WeekOfYearFiscal ( Date ( 12 ; 29 ; 2006 ) ; 2 ) & "," & WeekOfYearFiscal ( Date ( 12 ; 29 ; 2006 ) ; 3 ) & "," & WeekOfYearFiscal ( Date ( 12 ; 29 ; 2006 ) ; 4 ) & "," & WeekOfYearFiscal ( Date ( 12 ; 29 ; 2006 ) ; 5 ) & "," & WeekOfYearFiscal ( Date ( 12 ; 29 ; 2006 ) ; 6 ) & "," & WeekOfYearFiscal ( Date ( 12 ; 29 ; 2006 ) ; 7 ) & "," & WeekOfYearFiscal ( Date ( 12 ; 29 ; 2006 ) ; 8 )	0	1/1/0	52,52,52,52,52,53,1,52,52
+WeekOfYearFiscal ( Date ( 12 ; 30 ; 2006 ) ; 0 ) & "," & WeekOfYearFiscal ( Date ( 12 ; 30 ; 2006 ) ; 1 ) & "," & WeekOfYearFiscal ( Date ( 12 ; 30 ; 2006 ) ; 2 ) & "," & WeekOfYearFiscal ( Date ( 12 ; 30 ; 2006 ) ; 3 ) & "," & WeekOfYearFiscal ( Date ( 12 ; 30 ; 2006 ) ; 4 ) & "," & WeekOfYearFiscal ( Date ( 12 ; 30 ; 2006 ) ; 5 ) & "," & WeekOfYearFiscal ( Date ( 12 ; 30 ; 2006 ) ; 6 ) & "," & WeekOfYearFiscal ( Date ( 12 ; 30 ; 2006 ) ; 7 ) & "," & WeekOfYearFiscal ( Date ( 12 ; 30 ; 2006 ) ; 8 )	0	1/1/0	52,52,52,52,52,53,1,1,1
+WeekOfYearFiscal ( Date ( 12 ; 31 ; 2006 ) ; 0 ) & "," & WeekOfYearFiscal ( Date ( 12 ; 31 ; 2006 ) ; 1 ) & "," & WeekOfYearFiscal ( Date ( 12 ; 31 ; 2006 ) ; 2 ) & "," & WeekOfYearFiscal ( Date ( 12 ; 31 ; 2006 ) ; 3 ) & "," & WeekOfYearFiscal ( Date ( 12 ; 31 ; 2006 ) ; 4 ) & "," & WeekOfYearFiscal ( Date ( 12 ; 31 ; 2006 ) ; 5 ) & "," & WeekOfYearFiscal ( Date ( 12 ; 31 ; 2006 ) ; 6 ) & "," & WeekOfYearFiscal ( Date ( 12 ; 31 ; 2006 ) ; 7 ) & "," & WeekOfYearFiscal ( Date ( 12 ; 31 ; 2006 ) ; 8 )	0	1/1/0	1,1,52,52,52,53,1,1,1
+WeekOfYearFiscal ( Date ( 1 ; 1 ; 2007 ) ; 0 ) & "," & WeekOfYearFiscal ( Date ( 1 ; 1 ; 2007 ) ; 1 ) & "," & WeekOfYearFiscal ( Date ( 1 ; 1 ; 2007 ) ; 2 ) & "," & WeekOfYearFiscal ( Date ( 1 ; 1 ; 2007 ) ; 3 ) & "," & WeekOfYearFiscal ( Date ( 1 ; 1 ; 2007 ) ; 4 ) & "," & WeekOfYearFiscal ( Date ( 1 ; 1 ; 2007 ) ; 5 ) & "," & WeekOfYearFiscal ( Date ( 1 ; 1 ; 2007 ) ; 6 ) & "," & WeekOfYearFiscal ( Date ( 1 ; 1 ; 2007 ) ; 7 ) & "," & WeekOfYearFiscal ( Date ( 1 ; 1 ; 2007 ) ; 8 )	0	1/1/0	1,1,1,52,52,53,1,1,1
+WeekOfYearFiscal ( Date ( 1 ; 2 ; 2007 ) ; 0 ) & "," & WeekOfYearFiscal ( Date ( 1 ; 2 ; 2007 ) ; 1 ) & "," & WeekOfYearFiscal ( Date ( 1 ; 2 ; 2007 ) ; 2 ) & "," & WeekOfYearFiscal ( Date ( 1 ; 2 ; 2007 ) ; 3 ) & "," & WeekOfYearFiscal ( Date ( 1 ; 2 ; 2007 ) ; 4 ) & "," & WeekOfYearFiscal ( Date ( 1 ; 2 ; 2007 ) ; 5 ) & "," & WeekOfYearFiscal ( Date ( 1 ; 2 ; 2007 ) ; 6 ) & "," & WeekOfYearFiscal ( Date ( 1 ; 2 ; 2007 ) ; 7 ) & "," & WeekOfYearFiscal ( Date ( 1 ; 2 ; 2007 ) ; 8 )	0	1/1/0	1,1,1,1,52,53,1,1,1
+WeekOfYearFiscal ( Date ( 1 ; 3 ; 2007 ) ; 0 ) & "," & WeekOfYearFiscal ( Date ( 1 ; 3 ; 2007 ) ; 1 ) & "," & WeekOfYearFiscal ( Date ( 1 ; 3 ; 2007 ) ; 2 ) & "," & WeekOfYearFiscal ( Date ( 1 ; 3 ; 2007 ) ; 3 ) & "," & WeekOfYearFiscal ( Date ( 1 ; 3 ; 2007 ) ; 4 ) & "," & WeekOfYearFiscal ( Date ( 1 ; 3 ; 2007 ) ; 5 ) & "," & WeekOfYearFiscal ( Date ( 1 ; 3 ; 2007 ) ; 6 ) & "," & WeekOfYearFiscal ( Date ( 1 ; 3 ; 2007 ) ; 7 ) & "," & WeekOfYearFiscal ( Date ( 1 ; 3 ; 2007 ) ; 8 )	0	1/1/0	1,1,1,1,1,53,1,1,1
+WeekOfYearFiscal ( Date ( 1 ; 4 ; 2007 ) ; 0 ) & "," & WeekOfYearFiscal ( Date ( 1 ; 4 ; 2007 ) ; 1 ) & "," & WeekOfYearFiscal ( Date ( 1 ; 4 ; 2007 ) ; 2 ) & "," & WeekOfYearFiscal ( Date ( 1 ; 4 ; 2007 ) ; 3 ) & "," & WeekOfYearFiscal ( Date ( 1 ; 4 ; 2007 ) ; 4 ) & "," & WeekOfYearFiscal ( Date ( 1 ; 4 ; 2007 ) ; 5 ) & "," & WeekOfYearFiscal ( Date ( 1 ; 4 ; 2007 ) ; 6 ) & "," & WeekOfYearFiscal ( Date ( 1 ; 4 ; 2007 ) ; 7 ) & "," & WeekOfYearFiscal ( Date ( 1 ; 4 ; 2007 ) ; 8 )	0	1/1/0	1,1,1,1,1,1,1,1,1
+WeekOfYearFiscal ( Date ( 1 ; 5 ; 2007 ) ; 0 ) & "," & WeekOfYearFiscal ( Date ( 1 ; 5 ; 2007 ) ; 1 ) & "," & WeekOfYearFiscal ( Date ( 1 ; 5 ; 2007 ) ; 2 ) & "," & WeekOfYearFiscal ( Date ( 1 ; 5 ; 2007 ) ; 3 ) & "," & WeekOfYearFiscal ( Date ( 1 ; 5 ; 2007 ) ; 4 ) & "," & WeekOfYearFiscal ( Date ( 1 ; 5 ; 2007 ) ; 5 ) & "," & WeekOfYearFiscal ( Date ( 1 ; 5 ; 2007 ) ; 6 ) & "," & WeekOfYearFiscal ( Date ( 1 ; 5 ; 2007 ) ; 7 ) & "," & WeekOfYearFiscal ( Date ( 1 ; 5 ; 2007 ) ; 8 )	0	1/1/0	1,1,1,1,1,1,2,1,1
+WeekOfYearFiscal ( Date ( 1 ; 6 ; 2007 ) ; 0 ) & "," & WeekOfYearFiscal ( Date ( 1 ; 6 ; 2007 ) ; 1 ) & "," & WeekOfYearFiscal ( Date ( 1 ; 6 ; 2007 ) ; 2 ) & "," & WeekOfYearFiscal ( Date ( 1 ; 6 ; 2007 ) ; 3 ) & "," & WeekOfYearFiscal ( Date ( 1 ; 6 ; 2007 ) ; 4 ) & "," & WeekOfYearFiscal ( Date ( 1 ; 6 ; 2007 ) ; 5 ) & "," & WeekOfYearFiscal ( Date ( 1 ; 6 ; 2007 ) ; 6 ) & "," & WeekOfYearFiscal ( Date ( 1 ; 6 ; 2007 ) ; 7 ) & "," & WeekOfYearFiscal ( Date ( 1 ; 6 ; 2007 ) ; 8 )	0	1/1/0	1,1,1,1,1,1,2,2,2
+WeekOfYearFiscal ( Date ( 1 ; 7 ; 2007 ) ; 0 ) & "," & WeekOfYearFiscal ( Date ( 1 ; 7 ; 2007 ) ; 1 ) & "," & WeekOfYearFiscal ( Date ( 1 ; 7 ; 2007 ) ; 2 ) & "," & WeekOfYearFiscal ( Date ( 1 ; 7 ; 2007 ) ; 3 ) & "," & WeekOfYearFiscal ( Date ( 1 ; 7 ; 2007 ) ; 4 ) & "," & WeekOfYearFiscal ( Date ( 1 ; 7 ; 2007 ) ; 5 ) & "," & WeekOfYearFiscal ( Date ( 1 ; 7 ; 2007 ) ; 6 ) & "," & WeekOfYearFiscal ( Date ( 1 ; 7 ; 2007 ) ; 7 ) & "," & WeekOfYearFiscal ( Date ( 1 ; 7 ; 2007 ) ; 8 )	0	1/1/0	2,2,1,1,1,1,2,2,2
+WeekOfYearFiscal ( Date ( 12 ; 25 ; 2007 ) ; 0 ) & "," & WeekOfYearFiscal ( Date ( 12 ; 25 ; 2007 ) ; 1 ) & "," & WeekOfYearFiscal ( Date ( 12 ; 25 ; 2007 ) ; 2 ) & "," & WeekOfYearFiscal ( Date ( 12 ; 25 ; 2007 ) ; 3 ) & "," & WeekOfYearFiscal ( Date ( 12 ; 25 ; 2007 ) ; 4 ) & "," & WeekOfYearFiscal ( Date ( 12 ; 25 ; 2007 ) ; 5 ) & "," & WeekOfYearFiscal ( Date ( 12 ; 25 ; 2007 ) ; 6 ) & "," & WeekOfYearFiscal ( Date ( 12 ; 25 ; 2007 ) ; 7 ) & "," & WeekOfYearFiscal ( Date ( 12 ; 25 ; 2007 ) ; 8 )	0	1/1/0	52,52,52,52,51,51,52,52,52
+WeekOfYearFiscal ( Date ( 12 ; 26 ; 2007 ) ; 0 ) & "," & WeekOfYearFiscal ( Date ( 12 ; 26 ; 2007 ) ; 1 ) & "," & WeekOfYearFiscal ( Date ( 12 ; 26 ; 2007 ) ; 2 ) & "," & WeekOfYearFiscal ( Date ( 12 ; 26 ; 2007 ) ; 3 ) & "," & WeekOfYearFiscal ( Date ( 12 ; 26 ; 2007 ) ; 4 ) & "," & WeekOfYearFiscal ( Date ( 12 ; 26 ; 2007 ) ; 5 ) & "," & WeekOfYearFiscal ( Date ( 12 ; 26 ; 2007 ) ; 6 ) & "," & WeekOfYearFiscal ( Date ( 12 ; 26 ; 2007 ) ; 7 ) & "," & WeekOfYearFiscal ( Date ( 12 ; 26 ; 2007 ) ; 8 )	0	1/1/0	52,52,52,52,52,51,52,52,52
+WeekOfYearFiscal ( Date ( 12 ; 27 ; 2007 ) ; 0 ) & "," & WeekOfYearFiscal ( Date ( 12 ; 27 ; 2007 ) ; 1 ) & "," & WeekOfYearFiscal ( Date ( 12 ; 27 ; 2007 ) ; 2 ) & "," & WeekOfYearFiscal ( Date ( 12 ; 27 ; 2007 ) ; 3 ) & "," & WeekOfYearFiscal ( Date ( 12 ; 27 ; 2007 ) ; 4 ) & "," & WeekOfYearFiscal ( Date ( 12 ; 27 ; 2007 ) ; 5 ) & "," & WeekOfYearFiscal ( Date ( 12 ; 27 ; 2007 ) ; 6 ) & "," & WeekOfYearFiscal ( Date ( 12 ; 27 ; 2007 ) ; 7 ) & "," & WeekOfYearFiscal ( Date ( 12 ; 27 ; 2007 ) ; 8 )	0	1/1/0	52,52,52,52,52,52,52,52,52
+WeekOfYearFiscal ( Date ( 12 ; 28 ; 2007 ) ; 0 ) & "," & WeekOfYearFiscal ( Date ( 12 ; 28 ; 2007 ) ; 1 ) & "," & WeekOfYearFiscal ( Date ( 12 ; 28 ; 2007 ) ; 2 ) & "," & WeekOfYearFiscal ( Date ( 12 ; 28 ; 2007 ) ; 3 ) & "," & WeekOfYearFiscal ( Date ( 12 ; 28 ; 2007 ) ; 4 ) & "," & WeekOfYearFiscal ( Date ( 12 ; 28 ; 2007 ) ; 5 ) & "," & WeekOfYearFiscal ( Date ( 12 ; 28 ; 2007 ) ; 6 ) & "," & WeekOfYearFiscal ( Date ( 12 ; 28 ; 2007 ) ; 7 ) & "," & WeekOfYearFiscal ( Date ( 12 ; 28 ; 2007 ) ; 8 )	0	1/1/0	52,52,52,52,52,52,53,52,52
+WeekOfYearFiscal ( Date ( 12 ; 29 ; 2007 ) ; 0 ) & "," & WeekOfYearFiscal ( Date ( 12 ; 29 ; 2007 ) ; 1 ) & "," & WeekOfYearFiscal ( Date ( 12 ; 29 ; 2007 ) ; 2 ) & "," & WeekOfYearFiscal ( Date ( 12 ; 29 ; 2007 ) ; 3 ) & "," & WeekOfYearFiscal ( Date ( 12 ; 29 ; 2007 ) ; 4 ) & "," & WeekOfYearFiscal ( Date ( 12 ; 29 ; 2007 ) ; 5 ) & "," & WeekOfYearFiscal ( Date ( 12 ; 29 ; 2007 ) ; 6 ) & "," & WeekOfYearFiscal ( Date ( 12 ; 29 ; 2007 ) ; 7 ) & "," & WeekOfYearFiscal ( Date ( 12 ; 29 ; 2007 ) ; 8 )	0	1/1/0	52,52,52,52,52,52,53,1,1
+WeekOfYearFiscal ( Date ( 12 ; 30 ; 2007 ) ; 0 ) & "," & WeekOfYearFiscal ( Date ( 12 ; 30 ; 2007 ) ; 1 ) & "," & WeekOfYearFiscal ( Date ( 12 ; 30 ; 2007 ) ; 2 ) & "," & WeekOfYearFiscal ( Date ( 12 ; 30 ; 2007 ) ; 3 ) & "," & WeekOfYearFiscal ( Date ( 12 ; 30 ; 2007 ) ; 4 ) & "," & WeekOfYearFiscal ( Date ( 12 ; 30 ; 2007 ) ; 5 ) & "," & WeekOfYearFiscal ( Date ( 12 ; 30 ; 2007 ) ; 6 ) & "," & WeekOfYearFiscal ( Date ( 12 ; 30 ; 2007 ) ; 7 ) & "," & WeekOfYearFiscal ( Date ( 12 ; 30 ; 2007 ) ; 8 )	0	1/1/0	1,1,52,52,52,52,53,1,1
+WeekOfYearFiscal ( Date ( 12 ; 31 ; 2007 ) ; 0 ) & "," & WeekOfYearFiscal ( Date ( 12 ; 31 ; 2007 ) ; 1 ) & "," & WeekOfYearFiscal ( Date ( 12 ; 31 ; 2007 ) ; 2 ) & "," & WeekOfYearFiscal ( Date ( 12 ; 31 ; 2007 ) ; 3 ) & "," & WeekOfYearFiscal ( Date ( 12 ; 31 ; 2007 ) ; 4 ) & "," & WeekOfYearFiscal ( Date ( 12 ; 31 ; 2007 ) ; 5 ) & "," & WeekOfYearFiscal ( Date ( 12 ; 31 ; 2007 ) ; 6 ) & "," & WeekOfYearFiscal ( Date ( 12 ; 31 ; 2007 ) ; 7 ) & "," & WeekOfYearFiscal ( Date ( 12 ; 31 ; 2007 ) ; 8 )	0	1/1/0	1,1,1,52,52,52,53,1,1
+WeekOfYearFiscal ( Date ( 1 ; 1 ; 2008 ) ; 0 ) & "," & WeekOfYearFiscal ( Date ( 1 ; 1 ; 2008 ) ; 1 ) & "," & WeekOfYearFiscal ( Date ( 1 ; 1 ; 2008 ) ; 2 ) & "," & WeekOfYearFiscal ( Date ( 1 ; 1 ; 2008 ) ; 3 ) & "," & WeekOfYearFiscal ( Date ( 1 ; 1 ; 2008 ) ; 4 ) & "," & WeekOfYearFiscal ( Date ( 1 ; 1 ; 2008 ) ; 5 ) & "," & WeekOfYearFiscal ( Date ( 1 ; 1 ; 2008 ) ; 6 ) & "," & WeekOfYearFiscal ( Date ( 1 ; 1 ; 2008 ) ; 7 ) & "," & WeekOfYearFiscal ( Date ( 1 ; 1 ; 2008 ) ; 8 )	0	1/1/0	1,1,1,1,52,52,53,1,1
+WeekOfYearFiscal ( Date ( 1 ; 2 ; 2008 ) ; 0 ) & "," & WeekOfYearFiscal ( Date ( 1 ; 2 ; 2008 ) ; 1 ) & "," & WeekOfYearFiscal ( Date ( 1 ; 2 ; 2008 ) ; 2 ) & "," & WeekOfYearFiscal ( Date ( 1 ; 2 ; 2008 ) ; 3 ) & "," & WeekOfYearFiscal ( Date ( 1 ; 2 ; 2008 ) ; 4 ) & "," & WeekOfYearFiscal ( Date ( 1 ; 2 ; 2008 ) ; 5 ) & "," & WeekOfYearFiscal ( Date ( 1 ; 2 ; 2008 ) ; 6 ) & "," & WeekOfYearFiscal ( Date ( 1 ; 2 ; 2008 ) ; 7 ) & "," & WeekOfYearFiscal ( Date ( 1 ; 2 ; 2008 ) ; 8 )	0	1/1/0	1,1,1,1,1,52,53,1,1
+WeekOfYearFiscal ( Date ( 1 ; 3 ; 2008 ) ; 0 ) & "," & WeekOfYearFiscal ( Date ( 1 ; 3 ; 2008 ) ; 1 ) & "," & WeekOfYearFiscal ( Date ( 1 ; 3 ; 2008 ) ; 2 ) & "," & WeekOfYearFiscal ( Date ( 1 ; 3 ; 2008 ) ; 3 ) & "," & WeekOfYearFiscal ( Date ( 1 ; 3 ; 2008 ) ; 4 ) & "," & WeekOfYearFiscal ( Date ( 1 ; 3 ; 2008 ) ; 5 ) & "," & WeekOfYearFiscal ( Date ( 1 ; 3 ; 2008 ) ; 6 ) & "," & WeekOfYearFiscal ( Date ( 1 ; 3 ; 2008 ) ; 7 ) & "," & WeekOfYearFiscal ( Date ( 1 ; 3 ; 2008 ) ; 8 )	0	1/1/0	1,1,1,1,1,1,53,1,1
+WeekOfYearFiscal ( Date ( 1 ; 4 ; 2008 ) ; 0 ) & "," & WeekOfYearFiscal ( Date ( 1 ; 4 ; 2008 ) ; 1 ) & "," & WeekOfYearFiscal ( Date ( 1 ; 4 ; 2008 ) ; 2 ) & "," & WeekOfYearFiscal ( Date ( 1 ; 4 ; 2008 ) ; 3 ) & "," & WeekOfYearFiscal ( Date ( 1 ; 4 ; 2008 ) ; 4 ) & "," & WeekOfYearFiscal ( Date ( 1 ; 4 ; 2008 ) ; 5 ) & "," & WeekOfYearFiscal ( Date ( 1 ; 4 ; 2008 ) ; 6 ) & "," & WeekOfYearFiscal ( Date ( 1 ; 4 ; 2008 ) ; 7 ) & "," & WeekOfYearFiscal ( Date ( 1 ; 4 ; 2008 ) ; 8 )	0	1/1/0	1,1,1,1,1,1,1,1,1
+WeekOfYearFiscal ( Date ( 1 ; 5 ; 2008 ) ; 0 ) & "," & WeekOfYearFiscal ( Date ( 1 ; 5 ; 2008 ) ; 1 ) & "," & WeekOfYearFiscal ( Date ( 1 ; 5 ; 2008 ) ; 2 ) & "," & WeekOfYearFiscal ( Date ( 1 ; 5 ; 2008 ) ; 3 ) & "," & WeekOfYearFiscal ( Date ( 1 ; 5 ; 2008 ) ; 4 ) & "," & WeekOfYearFiscal ( Date ( 1 ; 5 ; 2008 ) ; 5 ) & "," & WeekOfYearFiscal ( Date ( 1 ; 5 ; 2008 ) ; 6 ) & "," & WeekOfYearFiscal ( Date ( 1 ; 5 ; 2008 ) ; 7 ) & "," & WeekOfYearFiscal ( Date ( 1 ; 5 ; 2008 ) ; 8 )	0	1/1/0	1,1,1,1,1,1,1,2,2
+WeekOfYearFiscal ( Date ( 1 ; 6 ; 2008 ) ; 0 ) & "," & WeekOfYearFiscal ( Date ( 1 ; 6 ; 2008 ) ; 1 ) & "," & WeekOfYearFiscal ( Date ( 1 ; 6 ; 2008 ) ; 2 ) & "," & WeekOfYearFiscal ( Date ( 1 ; 6 ; 2008 ) ; 3 ) & "," & WeekOfYearFiscal ( Date ( 1 ; 6 ; 2008 ) ; 4 ) & "," & WeekOfYearFiscal ( Date ( 1 ; 6 ; 2008 ) ; 5 ) & "," & WeekOfYearFiscal ( Date ( 1 ; 6 ; 2008 ) ; 6 ) & "," & WeekOfYearFiscal ( Date ( 1 ; 6 ; 2008 ) ; 7 ) & "," & WeekOfYearFiscal ( Date ( 1 ; 6 ; 2008 ) ; 8 )	0	1/1/0	2,2,1,1,1,1,1,2,2
+WeekOfYearFiscal ( Date ( 1 ; 7 ; 2008 ) ; 0 ) & "," & WeekOfYearFiscal ( Date ( 1 ; 7 ; 2008 ) ; 1 ) & "," & WeekOfYearFiscal ( Date ( 1 ; 7 ; 2008 ) ; 2 ) & "," & WeekOfYearFiscal ( Date ( 1 ; 7 ; 2008 ) ; 3 ) & "," & WeekOfYearFiscal ( Date ( 1 ; 7 ; 2008 ) ; 4 ) & "," & WeekOfYearFiscal ( Date ( 1 ; 7 ; 2008 ) ; 5 ) & "," & WeekOfYearFiscal ( Date ( 1 ; 7 ; 2008 ) ; 6 ) & "," & WeekOfYearFiscal ( Date ( 1 ; 7 ; 2008 ) ; 7 ) & "," & WeekOfYearFiscal ( Date ( 1 ; 7 ; 2008 ) ; 8 )	0	1/1/0	2,2,2,1,1,1,1,2,2
+WeekOfYearFiscal ( Date ( 12 ; 25 ; 2008 ) ; 0 ) & "," & WeekOfYearFiscal ( Date ( 12 ; 25 ; 2008 ) ; 1 ) & "," & WeekOfYearFiscal ( Date ( 12 ; 25 ; 2008 ) ; 2 ) & "," & WeekOfYearFiscal ( Date ( 12 ; 25 ; 2008 ) ; 3 ) & "," & WeekOfYearFiscal ( Date ( 12 ; 25 ; 2008 ) ; 4 ) & "," & WeekOfYearFiscal ( Date ( 12 ; 25 ; 2008 ) ; 5 ) & "," & WeekOfYearFiscal ( Date ( 12 ; 25 ; 2008 ) ; 6 ) & "," & WeekOfYearFiscal ( Date ( 12 ; 25 ; 2008 ) ; 7 ) & "," & WeekOfYearFiscal ( Date ( 12 ; 25 ; 2008 ) ; 8 )	0	1/1/0	52,52,52,52,52,52,51,52,52
+WeekOfYearFiscal ( Date ( 12 ; 26 ; 2008 ) ; 0 ) & "," & WeekOfYearFiscal ( Date ( 12 ; 26 ; 2008 ) ; 1 ) & "," & WeekOfYearFiscal ( Date ( 12 ; 26 ; 2008 ) ; 2 ) & "," & WeekOfYearFiscal ( Date ( 12 ; 26 ; 2008 ) ; 3 ) & "," & WeekOfYearFiscal ( Date ( 12 ; 26 ; 2008 ) ; 4 ) & "," & WeekOfYearFiscal ( Date ( 12 ; 26 ; 2008 ) ; 5 ) & "," & WeekOfYearFiscal ( Date ( 12 ; 26 ; 2008 ) ; 6 ) & "," & WeekOfYearFiscal ( Date ( 12 ; 26 ; 2008 ) ; 7 ) & "," & WeekOfYearFiscal ( Date ( 12 ; 26 ; 2008 ) ; 8 )	0	1/1/0	52,52,52,52,52,52,52,52,52
+WeekOfYearFiscal ( Date ( 12 ; 27 ; 2008 ) ; 0 ) & "," & WeekOfYearFiscal ( Date ( 12 ; 27 ; 2008 ) ; 1 ) & "," & WeekOfYearFiscal ( Date ( 12 ; 27 ; 2008 ) ; 2 ) & "," & WeekOfYearFiscal ( Date ( 12 ; 27 ; 2008 ) ; 3 ) & "," & WeekOfYearFiscal ( Date ( 12 ; 27 ; 2008 ) ; 4 ) & "," & WeekOfYearFiscal ( Date ( 12 ; 27 ; 2008 ) ; 5 ) & "," & WeekOfYearFiscal ( Date ( 12 ; 27 ; 2008 ) ; 6 ) & "," & WeekOfYearFiscal ( Date ( 12 ; 27 ; 2008 ) ; 7 ) & "," & WeekOfYearFiscal ( Date ( 12 ; 27 ; 2008 ) ; 8 )	0	1/1/0	52,52,52,52,52,52,52,53,53
+WeekOfYearFiscal ( Date ( 12 ; 28 ; 2008 ) ; 0 ) & "," & WeekOfYearFiscal ( Date ( 12 ; 28 ; 2008 ) ; 1 ) & "," & WeekOfYearFiscal ( Date ( 12 ; 28 ; 2008 ) ; 2 ) & "," & WeekOfYearFiscal ( Date ( 12 ; 28 ; 2008 ) ; 3 ) & "," & WeekOfYearFiscal ( Date ( 12 ; 28 ; 2008 ) ; 4 ) & "," & WeekOfYearFiscal ( Date ( 12 ; 28 ; 2008 ) ; 5 ) & "," & WeekOfYearFiscal ( Date ( 12 ; 28 ; 2008 ) ; 6 ) & "," & WeekOfYearFiscal ( Date ( 12 ; 28 ; 2008 ) ; 7 ) & "," & WeekOfYearFiscal ( Date ( 12 ; 28 ; 2008 ) ; 8 )	0	1/1/0	53,53,52,52,52,52,52,53,53
+WeekOfYearFiscal ( Date ( 12 ; 29 ; 2008 ) ; 0 ) & "," & WeekOfYearFiscal ( Date ( 12 ; 29 ; 2008 ) ; 1 ) & "," & WeekOfYearFiscal ( Date ( 12 ; 29 ; 2008 ) ; 2 ) & "," & WeekOfYearFiscal ( Date ( 12 ; 29 ; 2008 ) ; 3 ) & "," & WeekOfYearFiscal ( Date ( 12 ; 29 ; 2008 ) ; 4 ) & "," & WeekOfYearFiscal ( Date ( 12 ; 29 ; 2008 ) ; 5 ) & "," & WeekOfYearFiscal ( Date ( 12 ; 29 ; 2008 ) ; 6 ) & "," & WeekOfYearFiscal ( Date ( 12 ; 29 ; 2008 ) ; 7 ) & "," & WeekOfYearFiscal ( Date ( 12 ; 29 ; 2008 ) ; 8 )	0	1/1/0	53,53,1,52,52,52,52,53,53
+WeekOfYearFiscal ( Date ( 12 ; 30 ; 2008 ) ; 0 ) & "," & WeekOfYearFiscal ( Date ( 12 ; 30 ; 2008 ) ; 1 ) & "," & WeekOfYearFiscal ( Date ( 12 ; 30 ; 2008 ) ; 2 ) & "," & WeekOfYearFiscal ( Date ( 12 ; 30 ; 2008 ) ; 3 ) & "," & WeekOfYearFiscal ( Date ( 12 ; 30 ; 2008 ) ; 4 ) & "," & WeekOfYearFiscal ( Date ( 12 ; 30 ; 2008 ) ; 5 ) & "," & WeekOfYearFiscal ( Date ( 12 ; 30 ; 2008 ) ; 6 ) & "," & WeekOfYearFiscal ( Date ( 12 ; 30 ; 2008 ) ; 7 ) & "," & WeekOfYearFiscal ( Date ( 12 ; 30 ; 2008 ) ; 8 )	0	1/1/0	53,53,1,1,52,52,52,53,53
+WeekOfYearFiscal ( Date ( 12 ; 31 ; 2008 ) ; 0 ) & "," & WeekOfYearFiscal ( Date ( 12 ; 31 ; 2008 ) ; 1 ) & "," & WeekOfYearFiscal ( Date ( 12 ; 31 ; 2008 ) ; 2 ) & "," & WeekOfYearFiscal ( Date ( 12 ; 31 ; 2008 ) ; 3 ) & "," & WeekOfYearFiscal ( Date ( 12 ; 31 ; 2008 ) ; 4 ) & "," & WeekOfYearFiscal ( Date ( 12 ; 31 ; 2008 ) ; 5 ) & "," & WeekOfYearFiscal ( Date ( 12 ; 31 ; 2008 ) ; 6 ) & "," & WeekOfYearFiscal ( Date ( 12 ; 31 ; 2008 ) ; 7 ) & "," & WeekOfYearFiscal ( Date ( 12 ; 31 ; 2008 ) ; 8 )	0	1/1/0	53,53,1,1,1,52,52,53,53
+WeekOfYearFiscal ( Date ( 1 ; 1 ; 2009 ) ; 0 ) & "," & WeekOfYearFiscal ( Date ( 1 ; 1 ; 2009 ) ; 1 ) & "," & WeekOfYearFiscal ( Date ( 1 ; 1 ; 2009 ) ; 2 ) & "," & WeekOfYearFiscal ( Date ( 1 ; 1 ; 2009 ) ; 3 ) & "," & WeekOfYearFiscal ( Date ( 1 ; 1 ; 2009 ) ; 4 ) & "," & WeekOfYearFiscal ( Date ( 1 ; 1 ; 2009 ) ; 5 ) & "," & WeekOfYearFiscal ( Date ( 1 ; 1 ; 2009 ) ; 6 ) & "," & WeekOfYearFiscal ( Date ( 1 ; 1 ; 2009 ) ; 7 ) & "," & WeekOfYearFiscal ( Date ( 1 ; 1 ; 2009 ) ; 8 )	0	1/1/0	53,53,1,1,1,1,52,53,53
+WeekOfYearFiscal ( Date ( 1 ; 2 ; 2009 ) ; 0 ) & "," & WeekOfYearFiscal ( Date ( 1 ; 2 ; 2009 ) ; 1 ) & "," & WeekOfYearFiscal ( Date ( 1 ; 2 ; 2009 ) ; 2 ) & "," & WeekOfYearFiscal ( Date ( 1 ; 2 ; 2009 ) ; 3 ) & "," & WeekOfYearFiscal ( Date ( 1 ; 2 ; 2009 ) ; 4 ) & "," & WeekOfYearFiscal ( Date ( 1 ; 2 ; 2009 ) ; 5 ) & "," & WeekOfYearFiscal ( Date ( 1 ; 2 ; 2009 ) ; 6 ) & "," & WeekOfYearFiscal ( Date ( 1 ; 2 ; 2009 ) ; 7 ) & "," & WeekOfYearFiscal ( Date ( 1 ; 2 ; 2009 ) ; 8 )	0	1/1/0	53,53,1,1,1,1,1,53,53
+WeekOfYearFiscal ( Date ( 1 ; 3 ; 2009 ) ; 0 ) & "," & WeekOfYearFiscal ( Date ( 1 ; 3 ; 2009 ) ; 1 ) & "," & WeekOfYearFiscal ( Date ( 1 ; 3 ; 2009 ) ; 2 ) & "," & WeekOfYearFiscal ( Date ( 1 ; 3 ; 2009 ) ; 3 ) & "," & WeekOfYearFiscal ( Date ( 1 ; 3 ; 2009 ) ; 4 ) & "," & WeekOfYearFiscal ( Date ( 1 ; 3 ; 2009 ) ; 5 ) & "," & WeekOfYearFiscal ( Date ( 1 ; 3 ; 2009 ) ; 6 ) & "," & WeekOfYearFiscal ( Date ( 1 ; 3 ; 2009 ) ; 7 ) & "," & WeekOfYearFiscal ( Date ( 1 ; 3 ; 2009 ) ; 8 )	0	1/1/0	53,53,1,1,1,1,1,1,1
+WeekOfYearFiscal ( Date ( 1 ; 4 ; 2009 ) ; 0 ) & "," & WeekOfYearFiscal ( Date ( 1 ; 4 ; 2009 ) ; 1 ) & "," & WeekOfYearFiscal ( Date ( 1 ; 4 ; 2009 ) ; 2 ) & "," & WeekOfYearFiscal ( Date ( 1 ; 4 ; 2009 ) ; 3 ) & "," & WeekOfYearFiscal ( Date ( 1 ; 4 ; 2009 ) ; 4 ) & "," & WeekOfYearFiscal ( Date ( 1 ; 4 ; 2009 ) ; 5 ) & "," & WeekOfYearFiscal ( Date ( 1 ; 4 ; 2009 ) ; 6 ) & "," & WeekOfYearFiscal ( Date ( 1 ; 4 ; 2009 ) ; 7 ) & "," & WeekOfYearFiscal ( Date ( 1 ; 4 ; 2009 ) ; 8 )	0	1/1/0	1,1,1,1,1,1,1,1,1
+WeekOfYearFiscal ( Date ( 1 ; 5 ; 2009 ) ; 0 ) & "," & WeekOfYearFiscal ( Date ( 1 ; 5 ; 2009 ) ; 1 ) & "," & WeekOfYearFiscal ( Date ( 1 ; 5 ; 2009 ) ; 2 ) & "," & WeekOfYearFiscal ( Date ( 1 ; 5 ; 2009 ) ; 3 ) & "," & WeekOfYearFiscal ( Date ( 1 ; 5 ; 2009 ) ; 4 ) & "," & WeekOfYearFiscal ( Date ( 1 ; 5 ; 2009 ) ; 5 ) & "," & WeekOfYearFiscal ( Date ( 1 ; 5 ; 2009 ) ; 6 ) & "," & WeekOfYearFiscal ( Date ( 1 ; 5 ; 2009 ) ; 7 ) & "," & WeekOfYearFiscal ( Date ( 1 ; 5 ; 2009 ) ; 8 )	0	1/1/0	1,1,2,1,1,1,1,1,1
+WeekOfYearFiscal ( Date ( 1 ; 6 ; 2009 ) ; 0 ) & "," & WeekOfYearFiscal ( Date ( 1 ; 6 ; 2009 ) ; 1 ) & "," & WeekOfYearFiscal ( Date ( 1 ; 6 ; 2009 ) ; 2 ) & "," & WeekOfYearFiscal ( Date ( 1 ; 6 ; 2009 ) ; 3 ) & "," & WeekOfYearFiscal ( Date ( 1 ; 6 ; 2009 ) ; 4 ) & "," & WeekOfYearFiscal ( Date ( 1 ; 6 ; 2009 ) ; 5 ) & "," & WeekOfYearFiscal ( Date ( 1 ; 6 ; 2009 ) ; 6 ) & "," & WeekOfYearFiscal ( Date ( 1 ; 6 ; 2009 ) ; 7 ) & "," & WeekOfYearFiscal ( Date ( 1 ; 6 ; 2009 ) ; 8 )	0	1/1/0	1,1,2,2,1,1,1,1,1
+WeekOfYearFiscal ( Date ( 1 ; 7 ; 2009 ) ; 0 ) & "," & WeekOfYearFiscal ( Date ( 1 ; 7 ; 2009 ) ; 1 ) & "," & WeekOfYearFiscal ( Date ( 1 ; 7 ; 2009 ) ; 2 ) & "," & WeekOfYearFiscal ( Date ( 1 ; 7 ; 2009 ) ; 3 ) & "," & WeekOfYearFiscal ( Date ( 1 ; 7 ; 2009 ) ; 4 ) & "," & WeekOfYearFiscal ( Date ( 1 ; 7 ; 2009 ) ; 5 ) & "," & WeekOfYearFiscal ( Date ( 1 ; 7 ; 2009 ) ; 6 ) & "," & WeekOfYearFiscal ( Date ( 1 ; 7 ; 2009 ) ; 7 ) & "," & WeekOfYearFiscal ( Date ( 1 ; 7 ; 2009 ) ; 8 )	0	1/1/0	1,1,2,2,2,1,1,1,1
+WeekOfYearFiscal ( Date ( 12 ; 25 ; 2009 ) ; 0 ) & "," & WeekOfYearFiscal ( Date ( 12 ; 25 ; 2009 ) ; 1 ) & "," & WeekOfYearFiscal ( Date ( 12 ; 25 ; 2009 ) ; 2 ) & "," & WeekOfYearFiscal ( Date ( 12 ; 25 ; 2009 ) ; 3 ) & "," & WeekOfYearFiscal ( Date ( 12 ; 25 ; 2009 ) ; 4 ) & "," & WeekOfYearFiscal ( Date ( 12 ; 25 ; 2009 ) ; 5 ) & "," & WeekOfYearFiscal ( Date ( 12 ; 25 ; 2009 ) ; 6 ) & "," & WeekOfYearFiscal ( Date ( 12 ; 25 ; 2009 ) ; 7 ) & "," & WeekOfYearFiscal ( Date ( 12 ; 25 ; 2009 ) ; 8 )	0	1/1/0	51,51,52,52,52,52,52,51,51
+WeekOfYearFiscal ( Date ( 12 ; 26 ; 2009 ) ; 0 ) & "," & WeekOfYearFiscal ( Date ( 12 ; 26 ; 2009 ) ; 1 ) & "," & WeekOfYearFiscal ( Date ( 12 ; 26 ; 2009 ) ; 2 ) & "," & WeekOfYearFiscal ( Date ( 12 ; 26 ; 2009 ) ; 3 ) & "," & WeekOfYearFiscal ( Date ( 12 ; 26 ; 2009 ) ; 4 ) & "," & WeekOfYearFiscal ( Date ( 12 ; 26 ; 2009 ) ; 5 ) & "," & WeekOfYearFiscal ( Date ( 12 ; 26 ; 2009 ) ; 6 ) & "," & WeekOfYearFiscal ( Date ( 12 ; 26 ; 2009 ) ; 7 ) & "," & WeekOfYearFiscal ( Date ( 12 ; 26 ; 2009 ) ; 8 )	0	1/1/0	51,51,52,52,52,52,52,52,52
+WeekOfYearFiscal ( Date ( 12 ; 27 ; 2009 ) ; 0 ) & "," & WeekOfYearFiscal ( Date ( 12 ; 27 ; 2009 ) ; 1 ) & "," & WeekOfYearFiscal ( Date ( 12 ; 27 ; 2009 ) ; 2 ) & "," & WeekOfYearFiscal ( Date ( 12 ; 27 ; 2009 ) ; 3 ) & "," & WeekOfYearFiscal ( Date ( 12 ; 27 ; 2009 ) ; 4 ) & "," & WeekOfYearFiscal ( Date ( 12 ; 27 ; 2009 ) ; 5 ) & "," & WeekOfYearFiscal ( Date ( 12 ; 27 ; 2009 ) ; 6 ) & "," & WeekOfYearFiscal ( Date ( 12 ; 27 ; 2009 ) ; 7 ) & "," & WeekOfYearFiscal ( Date ( 12 ; 27 ; 2009 ) ; 8 )	0	1/1/0	52,52,52,52,52,52,52,52,52
+WeekOfYearFiscal ( Date ( 12 ; 28 ; 2009 ) ; 0 ) & "," & WeekOfYearFiscal ( Date ( 12 ; 28 ; 2009 ) ; 1 ) & "," & WeekOfYearFiscal ( Date ( 12 ; 28 ; 2009 ) ; 2 ) & "," & WeekOfYearFiscal ( Date ( 12 ; 28 ; 2009 ) ; 3 ) & "," & WeekOfYearFiscal ( Date ( 12 ; 28 ; 2009 ) ; 4 ) & "," & WeekOfYearFiscal ( Date ( 12 ; 28 ; 2009 ) ; 5 ) & "," & WeekOfYearFiscal ( Date ( 12 ; 28 ; 2009 ) ; 6 ) & "," & WeekOfYearFiscal ( Date ( 12 ; 28 ; 2009 ) ; 7 ) & "," & WeekOfYearFiscal ( Date ( 12 ; 28 ; 2009 ) ; 8 )	0	1/1/0	52,52,53,52,52,52,52,52,52
+WeekOfYearFiscal ( Date ( 12 ; 29 ; 2009 ) ; 0 ) & "," & WeekOfYearFiscal ( Date ( 12 ; 29 ; 2009 ) ; 1 ) & "," & WeekOfYearFiscal ( Date ( 12 ; 29 ; 2009 ) ; 2 ) & "," & WeekOfYearFiscal ( Date ( 12 ; 29 ; 2009 ) ; 3 ) & "," & WeekOfYearFiscal ( Date ( 12 ; 29 ; 2009 ) ; 4 ) & "," & WeekOfYearFiscal ( Date ( 12 ; 29 ; 2009 ) ; 5 ) & "," & WeekOfYearFiscal ( Date ( 12 ; 29 ; 2009 ) ; 6 ) & "," & WeekOfYearFiscal ( Date ( 12 ; 29 ; 2009 ) ; 7 ) & "," & WeekOfYearFiscal ( Date ( 12 ; 29 ; 2009 ) ; 8 )	0	1/1/0	52,52,53,1,52,52,52,52,52
+WeekOfYearFiscal ( Date ( 12 ; 30 ; 2009 ) ; 0 ) & "," & WeekOfYearFiscal ( Date ( 12 ; 30 ; 2009 ) ; 1 ) & "," & WeekOfYearFiscal ( Date ( 12 ; 30 ; 2009 ) ; 2 ) & "," & WeekOfYearFiscal ( Date ( 12 ; 30 ; 2009 ) ; 3 ) & "," & WeekOfYearFiscal ( Date ( 12 ; 30 ; 2009 ) ; 4 ) & "," & WeekOfYearFiscal ( Date ( 12 ; 30 ; 2009 ) ; 5 ) & "," & WeekOfYearFiscal ( Date ( 12 ; 30 ; 2009 ) ; 6 ) & "," & WeekOfYearFiscal ( Date ( 12 ; 30 ; 2009 ) ; 7 ) & "," & WeekOfYearFiscal ( Date ( 12 ; 30 ; 2009 ) ; 8 )	0	1/1/0	52,52,53,1,1,52,52,52,52
+WeekOfYearFiscal ( Date ( 12 ; 31 ; 2009 ) ; 0 ) & "," & WeekOfYearFiscal ( Date ( 12 ; 31 ; 2009 ) ; 1 ) & "," & WeekOfYearFiscal ( Date ( 12 ; 31 ; 2009 ) ; 2 ) & "," & WeekOfYearFiscal ( Date ( 12 ; 31 ; 2009 ) ; 3 ) & "," & WeekOfYearFiscal ( Date ( 12 ; 31 ; 2009 ) ; 4 ) & "," & WeekOfYearFiscal ( Date ( 12 ; 31 ; 2009 ) ; 5 ) & "," & WeekOfYearFiscal ( Date ( 12 ; 31 ; 2009 ) ; 6 ) & "," & WeekOfYearFiscal ( Date ( 12 ; 31 ; 2009 ) ; 7 ) & "," & WeekOfYearFiscal ( Date ( 12 ; 31 ; 2009 ) ; 8 )	0	1/1/0	52,52,53,1,1,1,52,52,52
+WeekOfYearFiscal ( Date ( 1 ; 1 ; 2010 ) ; 0 ) & "," & WeekOfYearFiscal ( Date ( 1 ; 1 ; 2010 ) ; 1 ) & "," & WeekOfYearFiscal ( Date ( 1 ; 1 ; 2010 ) ; 2 ) & "," & WeekOfYearFiscal ( Date ( 1 ; 1 ; 2010 ) ; 3 ) & "," & WeekOfYearFiscal ( Date ( 1 ; 1 ; 2010 ) ; 4 ) & "," & WeekOfYearFiscal ( Date ( 1 ; 1 ; 2010 ) ; 5 ) & "," & WeekOfYearFiscal ( Date ( 1 ; 1 ; 2010 ) ; 6 ) & "," & WeekOfYearFiscal ( Date ( 1 ; 1 ; 2010 ) ; 7 ) & "," & WeekOfYearFiscal ( Date ( 1 ; 1 ; 2010 ) ; 8 )	0	1/1/0	52,52,53,1,1,1,1,52,52
+WeekOfYearFiscal ( Date ( 1 ; 2 ; 2010 ) ; 0 ) & "," & WeekOfYearFiscal ( Date ( 1 ; 2 ; 2010 ) ; 1 ) & "," & WeekOfYearFiscal ( Date ( 1 ; 2 ; 2010 ) ; 2 ) & "," & WeekOfYearFiscal ( Date ( 1 ; 2 ; 2010 ) ; 3 ) & "," & WeekOfYearFiscal ( Date ( 1 ; 2 ; 2010 ) ; 4 ) & "," & WeekOfYearFiscal ( Date ( 1 ; 2 ; 2010 ) ; 5 ) & "," & WeekOfYearFiscal ( Date ( 1 ; 2 ; 2010 ) ; 6 ) & "," & WeekOfYearFiscal ( Date ( 1 ; 2 ; 2010 ) ; 7 ) & "," & WeekOfYearFiscal ( Date ( 1 ; 2 ; 2010 ) ; 8 )	0	1/1/0	52,52,53,1,1,1,1,1,1
+WeekOfYearFiscal ( Date ( 1 ; 3 ; 2010 ) ; 0 ) & "," & WeekOfYearFiscal ( Date ( 1 ; 3 ; 2010 ) ; 1 ) & "," & WeekOfYearFiscal ( Date ( 1 ; 3 ; 2010 ) ; 2 ) & "," & WeekOfYearFiscal ( Date ( 1 ; 3 ; 2010 ) ; 3 ) & "," & WeekOfYearFiscal ( Date ( 1 ; 3 ; 2010 ) ; 4 ) & "," & WeekOfYearFiscal ( Date ( 1 ; 3 ; 2010 ) ; 5 ) & "," & WeekOfYearFiscal ( Date ( 1 ; 3 ; 2010 ) ; 6 ) & "," & WeekOfYearFiscal ( Date ( 1 ; 3 ; 2010 ) ; 7 ) & "," & WeekOfYearFiscal ( Date ( 1 ; 3 ; 2010 ) ; 8 )	0	1/1/0	1,1,53,1,1,1,1,1,1
+WeekOfYearFiscal ( Date ( 1 ; 4 ; 2010 ) ; 0 ) & "," & WeekOfYearFiscal ( Date ( 1 ; 4 ; 2010 ) ; 1 ) & "," & WeekOfYearFiscal ( Date ( 1 ; 4 ; 2010 ) ; 2 ) & "," & WeekOfYearFiscal ( Date ( 1 ; 4 ; 2010 ) ; 3 ) & "," & WeekOfYearFiscal ( Date ( 1 ; 4 ; 2010 ) ; 4 ) & "," & WeekOfYearFiscal ( Date ( 1 ; 4 ; 2010 ) ; 5 ) & "," & WeekOfYearFiscal ( Date ( 1 ; 4 ; 2010 ) ; 6 ) & "," & WeekOfYearFiscal ( Date ( 1 ; 4 ; 2010 ) ; 7 ) & "," & WeekOfYearFiscal ( Date ( 1 ; 4 ; 2010 ) ; 8 )	0	1/1/0	1,1,1,1,1,1,1,1,1
+WeekOfYearFiscal ( Date ( 1 ; 5 ; 2010 ) ; 0 ) & "," & WeekOfYearFiscal ( Date ( 1 ; 5 ; 2010 ) ; 1 ) & "," & WeekOfYearFiscal ( Date ( 1 ; 5 ; 2010 ) ; 2 ) & "," & WeekOfYearFiscal ( Date ( 1 ; 5 ; 2010 ) ; 3 ) & "," & WeekOfYearFiscal ( Date ( 1 ; 5 ; 2010 ) ; 4 ) & "," & WeekOfYearFiscal ( Date ( 1 ; 5 ; 2010 ) ; 5 ) & "," & WeekOfYearFiscal ( Date ( 1 ; 5 ; 2010 ) ; 6 ) & "," & WeekOfYearFiscal ( Date ( 1 ; 5 ; 2010 ) ; 7 ) & "," & WeekOfYearFiscal ( Date ( 1 ; 5 ; 2010 ) ; 8 )	0	1/1/0	1,1,1,2,1,1,1,1,1
+WeekOfYearFiscal ( Date ( 1 ; 6 ; 2010 ) ; 0 ) & "," & WeekOfYearFiscal ( Date ( 1 ; 6 ; 2010 ) ; 1 ) & "," & WeekOfYearFiscal ( Date ( 1 ; 6 ; 2010 ) ; 2 ) & "," & WeekOfYearFiscal ( Date ( 1 ; 6 ; 2010 ) ; 3 ) & "," & WeekOfYearFiscal ( Date ( 1 ; 6 ; 2010 ) ; 4 ) & "," & WeekOfYearFiscal ( Date ( 1 ; 6 ; 2010 ) ; 5 ) & "," & WeekOfYearFiscal ( Date ( 1 ; 6 ; 2010 ) ; 6 ) & "," & WeekOfYearFiscal ( Date ( 1 ; 6 ; 2010 ) ; 7 ) & "," & WeekOfYearFiscal ( Date ( 1 ; 6 ; 2010 ) ; 8 )	0	1/1/0	1,1,1,2,2,1,1,1,1
+WeekOfYearFiscal ( Date ( 1 ; 7 ; 2010 ) ; 0 ) & "," & WeekOfYearFiscal ( Date ( 1 ; 7 ; 2010 ) ; 1 ) & "," & WeekOfYearFiscal ( Date ( 1 ; 7 ; 2010 ) ; 2 ) & "," & WeekOfYearFiscal ( Date ( 1 ; 7 ; 2010 ) ; 3 ) & "," & WeekOfYearFiscal ( Date ( 1 ; 7 ; 2010 ) ; 4 ) & "," & WeekOfYearFiscal ( Date ( 1 ; 7 ; 2010 ) ; 5 ) & "," & WeekOfYearFiscal ( Date ( 1 ; 7 ; 2010 ) ; 6 ) & "," & WeekOfYearFiscal ( Date ( 1 ; 7 ; 2010 ) ; 7 ) & "," & WeekOfYearFiscal ( Date ( 1 ; 7 ; 2010 ) ; 8 )	0	1/1/0	1,1,1,2,2,2,1,1,1
+WeekOfYearFiscal ( Date ( 12 ; 25 ; 2010 ) ; 0 ) & "," & WeekOfYearFiscal ( Date ( 12 ; 25 ; 2010 ) ; 1 ) & "," & WeekOfYearFiscal ( Date ( 12 ; 25 ; 2010 ) ; 2 ) & "," & WeekOfYearFiscal ( Date ( 12 ; 25 ; 2010 ) ; 3 ) & "," & WeekOfYearFiscal ( Date ( 12 ; 25 ; 2010 ) ; 4 ) & "," & WeekOfYearFiscal ( Date ( 12 ; 25 ; 2010 ) ; 5 ) & "," & WeekOfYearFiscal ( Date ( 12 ; 25 ; 2010 ) ; 6 ) & "," & WeekOfYearFiscal ( Date ( 12 ; 25 ; 2010 ) ; 7 ) & "," & WeekOfYearFiscal ( Date ( 12 ; 25 ; 2010 ) ; 8 )	0	1/1/0	51,51,51,52,52,52,52,52,52
+WeekOfYearFiscal ( Date ( 12 ; 26 ; 2010 ) ; 0 ) & "," & WeekOfYearFiscal ( Date ( 12 ; 26 ; 2010 ) ; 1 ) & "," & WeekOfYearFiscal ( Date ( 12 ; 26 ; 2010 ) ; 2 ) & "," & WeekOfYearFiscal ( Date ( 12 ; 26 ; 2010 ) ; 3 ) & "," & WeekOfYearFiscal ( Date ( 12 ; 26 ; 2010 ) ; 4 ) & "," & WeekOfYearFiscal ( Date ( 12 ; 26 ; 2010 ) ; 5 ) & "," & WeekOfYearFiscal ( Date ( 12 ; 26 ; 2010 ) ; 6 ) & "," & WeekOfYearFiscal ( Date ( 12 ; 26 ; 2010 ) ; 7 ) & "," & WeekOfYearFiscal ( Date ( 12 ; 26 ; 2010 ) ; 8 )	0	1/1/0	52,52,51,52,52,52,52,52,52
+WeekOfYearFiscal ( Date ( 12 ; 27 ; 2010 ) ; 0 ) & "," & WeekOfYearFiscal ( Date ( 12 ; 27 ; 2010 ) ; 1 ) & "," & WeekOfYearFiscal ( Date ( 12 ; 27 ; 2010 ) ; 2 ) & "," & WeekOfYearFiscal ( Date ( 12 ; 27 ; 2010 ) ; 3 ) & "," & WeekOfYearFiscal ( Date ( 12 ; 27 ; 2010 ) ; 4 ) & "," & WeekOfYearFiscal ( Date ( 12 ; 27 ; 2010 ) ; 5 ) & "," & WeekOfYearFiscal ( Date ( 12 ; 27 ; 2010 ) ; 6 ) & "," & WeekOfYearFiscal ( Date ( 12 ; 27 ; 2010 ) ; 7 ) & "," & WeekOfYearFiscal ( Date ( 12 ; 27 ; 2010 ) ; 8 )	0	1/1/0	52,52,52,52,52,52,52,52,52
+WeekOfYearFiscal ( Date ( 12 ; 28 ; 2010 ) ; 0 ) & "," & WeekOfYearFiscal ( Date ( 12 ; 28 ; 2010 ) ; 1 ) & "," & WeekOfYearFiscal ( Date ( 12 ; 28 ; 2010 ) ; 2 ) & "," & WeekOfYearFiscal ( Date ( 12 ; 28 ; 2010 ) ; 3 ) & "," & WeekOfYearFiscal ( Date ( 12 ; 28 ; 2010 ) ; 4 ) & "," & WeekOfYearFiscal ( Date ( 12 ; 28 ; 2010 ) ; 5 ) & "," & WeekOfYearFiscal ( Date ( 12 ; 28 ; 2010 ) ; 6 ) & "," & WeekOfYearFiscal ( Date ( 12 ; 28 ; 2010 ) ; 7 ) & "," & WeekOfYearFiscal ( Date ( 12 ; 28 ; 2010 ) ; 8 )	0	1/1/0	52,52,52,53,52,52,52,52,52
+WeekOfYearFiscal ( Date ( 12 ; 29 ; 2010 ) ; 0 ) & "," & WeekOfYearFiscal ( Date ( 12 ; 29 ; 2010 ) ; 1 ) & "," & WeekOfYearFiscal ( Date ( 12 ; 29 ; 2010 ) ; 2 ) & "," & WeekOfYearFiscal ( Date ( 12 ; 29 ; 2010 ) ; 3 ) & "," & WeekOfYearFiscal ( Date ( 12 ; 29 ; 2010 ) ; 4 ) & "," & WeekOfYearFiscal ( Date ( 12 ; 29 ; 2010 ) ; 5 ) & "," & WeekOfYearFiscal ( Date ( 12 ; 29 ; 2010 ) ; 6 ) & "," & WeekOfYearFiscal ( Date ( 12 ; 29 ; 2010 ) ; 7 ) & "," & WeekOfYearFiscal ( Date ( 12 ; 29 ; 2010 ) ; 8 )	0	1/1/0	52,52,52,53,1,52,52,52,52
+WeekOfYearFiscal ( Date ( 12 ; 30 ; 2010 ) ; 0 ) & "," & WeekOfYearFiscal ( Date ( 12 ; 30 ; 2010 ) ; 1 ) & "," & WeekOfYearFiscal ( Date ( 12 ; 30 ; 2010 ) ; 2 ) & "," & WeekOfYearFiscal ( Date ( 12 ; 30 ; 2010 ) ; 3 ) & "," & WeekOfYearFiscal ( Date ( 12 ; 30 ; 2010 ) ; 4 ) & "," & WeekOfYearFiscal ( Date ( 12 ; 30 ; 2010 ) ; 5 ) & "," & WeekOfYearFiscal ( Date ( 12 ; 30 ; 2010 ) ; 6 ) & "," & WeekOfYearFiscal ( Date ( 12 ; 30 ; 2010 ) ; 7 ) & "," & WeekOfYearFiscal ( Date ( 12 ; 30 ; 2010 ) ; 8 )	0	1/1/0	52,52,52,53,1,1,52,52,52
+WeekOfYearFiscal ( Date ( 12 ; 31 ; 2010 ) ; 0 ) & "," & WeekOfYearFiscal ( Date ( 12 ; 31 ; 2010 ) ; 1 ) & "," & WeekOfYearFiscal ( Date ( 12 ; 31 ; 2010 ) ; 2 ) & "," & WeekOfYearFiscal ( Date ( 12 ; 31 ; 2010 ) ; 3 ) & "," & WeekOfYearFiscal ( Date ( 12 ; 31 ; 2010 ) ; 4 ) & "," & WeekOfYearFiscal ( Date ( 12 ; 31 ; 2010 ) ; 5 ) & "," & WeekOfYearFiscal ( Date ( 12 ; 31 ; 2010 ) ; 6 ) & "," & WeekOfYearFiscal ( Date ( 12 ; 31 ; 2010 ) ; 7 ) & "," & WeekOfYearFiscal ( Date ( 12 ; 31 ; 2010 ) ; 8 )	0	1/1/0	52,52,52,53,1,1,1,52,52
+WeekOfYearFiscal ( Date ( 1 ; 1 ; 2011 ) ; 0 ) & "," & WeekOfYearFiscal ( Date ( 1 ; 1 ; 2011 ) ; 1 ) & "," & WeekOfYearFiscal ( Date ( 1 ; 1 ; 2011 ) ; 2 ) & "," & WeekOfYearFiscal ( Date ( 1 ; 1 ; 2011 ) ; 3 ) & "," & WeekOfYearFiscal ( Date ( 1 ; 1 ; 2011 ) ; 4 ) & "," & WeekOfYearFiscal ( Date ( 1 ; 1 ; 2011 ) ; 5 ) & "," & WeekOfYearFiscal ( Date ( 1 ; 1 ; 2011 ) ; 6 ) & "," & WeekOfYearFiscal ( Date ( 1 ; 1 ; 2011 ) ; 7 ) & "," & WeekOfYearFiscal ( Date ( 1 ; 1 ; 2011 ) ; 8 )	0	1/1/0	52,52,52,53,1,1,1,1,1
+WeekOfYearFiscal ( Date ( 1 ; 2 ; 2011 ) ; 0 ) & "," & WeekOfYearFiscal ( Date ( 1 ; 2 ; 2011 ) ; 1 ) & "," & WeekOfYearFiscal ( Date ( 1 ; 2 ; 2011 ) ; 2 ) & "," & WeekOfYearFiscal ( Date ( 1 ; 2 ; 2011 ) ; 3 ) & "," & WeekOfYearFiscal ( Date ( 1 ; 2 ; 2011 ) ; 4 ) & "," & WeekOfYearFiscal ( Date ( 1 ; 2 ; 2011 ) ; 5 ) & "," & WeekOfYearFiscal ( Date ( 1 ; 2 ; 2011 ) ; 6 ) & "," & WeekOfYearFiscal ( Date ( 1 ; 2 ; 2011 ) ; 7 ) & "," & WeekOfYearFiscal ( Date ( 1 ; 2 ; 2011 ) ; 8 )	0	1/1/0	1,1,52,53,1,1,1,1,1
+WeekOfYearFiscal ( Date ( 1 ; 3 ; 2011 ) ; 0 ) & "," & WeekOfYearFiscal ( Date ( 1 ; 3 ; 2011 ) ; 1 ) & "," & WeekOfYearFiscal ( Date ( 1 ; 3 ; 2011 ) ; 2 ) & "," & WeekOfYearFiscal ( Date ( 1 ; 3 ; 2011 ) ; 3 ) & "," & WeekOfYearFiscal ( Date ( 1 ; 3 ; 2011 ) ; 4 ) & "," & WeekOfYearFiscal ( Date ( 1 ; 3 ; 2011 ) ; 5 ) & "," & WeekOfYearFiscal ( Date ( 1 ; 3 ; 2011 ) ; 6 ) & "," & WeekOfYearFiscal ( Date ( 1 ; 3 ; 2011 ) ; 7 ) & "," & WeekOfYearFiscal ( Date ( 1 ; 3 ; 2011 ) ; 8 )	0	1/1/0	1,1,1,53,1,1,1,1,1
+WeekOfYearFiscal ( Date ( 1 ; 4 ; 2011 ) ; 0 ) & "," & WeekOfYearFiscal ( Date ( 1 ; 4 ; 2011 ) ; 1 ) & "," & WeekOfYearFiscal ( Date ( 1 ; 4 ; 2011 ) ; 2 ) & "," & WeekOfYearFiscal ( Date ( 1 ; 4 ; 2011 ) ; 3 ) & "," & WeekOfYearFiscal ( Date ( 1 ; 4 ; 2011 ) ; 4 ) & "," & WeekOfYearFiscal ( Date ( 1 ; 4 ; 2011 ) ; 5 ) & "," & WeekOfYearFiscal ( Date ( 1 ; 4 ; 2011 ) ; 6 ) & "," & WeekOfYearFiscal ( Date ( 1 ; 4 ; 2011 ) ; 7 ) & "," & WeekOfYearFiscal ( Date ( 1 ; 4 ; 2011 ) ; 8 )	0	1/1/0	1,1,1,1,1,1,1,1,1
+WeekOfYearFiscal ( Date ( 1 ; 5 ; 2011 ) ; 0 ) & "," & WeekOfYearFiscal ( Date ( 1 ; 5 ; 2011 ) ; 1 ) & "," & WeekOfYearFiscal ( Date ( 1 ; 5 ; 2011 ) ; 2 ) & "," & WeekOfYearFiscal ( Date ( 1 ; 5 ; 2011 ) ; 3 ) & "," & WeekOfYearFiscal ( Date ( 1 ; 5 ; 2011 ) ; 4 ) & "," & WeekOfYearFiscal ( Date ( 1 ; 5 ; 2011 ) ; 5 ) & "," & WeekOfYearFiscal ( Date ( 1 ; 5 ; 2011 ) ; 6 ) & "," & WeekOfYearFiscal ( Date ( 1 ; 5 ; 2011 ) ; 7 ) & "," & WeekOfYearFiscal ( Date ( 1 ; 5 ; 2011 ) ; 8 )	0	1/1/0	1,1,1,1,2,1,1,1,1
+WeekOfYearFiscal ( Date ( 1 ; 6 ; 2011 ) ; 0 ) & "," & WeekOfYearFiscal ( Date ( 1 ; 6 ; 2011 ) ; 1 ) & "," & WeekOfYearFiscal ( Date ( 1 ; 6 ; 2011 ) ; 2 ) & "," & WeekOfYearFiscal ( Date ( 1 ; 6 ; 2011 ) ; 3 ) & "," & WeekOfYearFiscal ( Date ( 1 ; 6 ; 2011 ) ; 4 ) & "," & WeekOfYearFiscal ( Date ( 1 ; 6 ; 2011 ) ; 5 ) & "," & WeekOfYearFiscal ( Date ( 1 ; 6 ; 2011 ) ; 6 ) & "," & WeekOfYearFiscal ( Date ( 1 ; 6 ; 2011 ) ; 7 ) & "," & WeekOfYearFiscal ( Date ( 1 ; 6 ; 2011 ) ; 8 )	0	1/1/0	1,1,1,1,2,2,1,1,1
+WeekOfYearFiscal ( Date ( 1 ; 7 ; 2011 ) ; 0 ) & "," & WeekOfYearFiscal ( Date ( 1 ; 7 ; 2011 ) ; 1 ) & "," & WeekOfYearFiscal ( Date ( 1 ; 7 ; 2011 ) ; 2 ) & "," & WeekOfYearFiscal ( Date ( 1 ; 7 ; 2011 ) ; 3 ) & "," & WeekOfYearFiscal ( Date ( 1 ; 7 ; 2011 ) ; 4 ) & "," & WeekOfYearFiscal ( Date ( 1 ; 7 ; 2011 ) ; 5 ) & "," & WeekOfYearFiscal ( Date ( 1 ; 7 ; 2011 ) ; 6 ) & "," & WeekOfYearFiscal ( Date ( 1 ; 7 ; 2011 ) ; 7 ) & "," & WeekOfYearFiscal ( Date ( 1 ; 7 ; 2011 ) ; 8 )	0	1/1/0	1,1,1,1,2,2,2,1,1
+WeekOfYearFiscal ( Date ( 12 ; 25 ; 2011 ) ; 0 ) & "," & WeekOfYearFiscal ( Date ( 12 ; 25 ; 2011 ) ; 1 ) & "," & WeekOfYearFiscal ( Date ( 12 ; 25 ; 2011 ) ; 2 ) & "," & WeekOfYearFiscal ( Date ( 12 ; 25 ; 2011 ) ; 3 ) & "," & WeekOfYearFiscal ( Date ( 12 ; 25 ; 2011 ) ; 4 ) & "," & WeekOfYearFiscal ( Date ( 12 ; 25 ; 2011 ) ; 5 ) & "," & WeekOfYearFiscal ( Date ( 12 ; 25 ; 2011 ) ; 6 ) & "," & WeekOfYearFiscal ( Date ( 12 ; 25 ; 2011 ) ; 7 ) & "," & WeekOfYearFiscal ( Date ( 12 ; 25 ; 2011 ) ; 8 )	0	1/1/0	52,52,51,51,52,52,52,52,52
+WeekOfYearFiscal ( Date ( 12 ; 26 ; 2011 ) ; 0 ) & "," & WeekOfYearFiscal ( Date ( 12 ; 26 ; 2011 ) ; 1 ) & "," & WeekOfYearFiscal ( Date ( 12 ; 26 ; 2011 ) ; 2 ) & "," & WeekOfYearFiscal ( Date ( 12 ; 26 ; 2011 ) ; 3 ) & "," & WeekOfYearFiscal ( Date ( 12 ; 26 ; 2011 ) ; 4 ) & "," & WeekOfYearFiscal ( Date ( 12 ; 26 ; 2011 ) ; 5 ) & "," & WeekOfYearFiscal ( Date ( 12 ; 26 ; 2011 ) ; 6 ) & "," & WeekOfYearFiscal ( Date ( 12 ; 26 ; 2011 ) ; 7 ) & "," & WeekOfYearFiscal ( Date ( 12 ; 26 ; 2011 ) ; 8 )	0	1/1/0	52,52,52,51,52,52,52,52,52
+WeekOfYearFiscal ( Date ( 12 ; 27 ; 2011 ) ; 0 ) & "," & WeekOfYearFiscal ( Date ( 12 ; 27 ; 2011 ) ; 1 ) & "," & WeekOfYearFiscal ( Date ( 12 ; 27 ; 2011 ) ; 2 ) & "," & WeekOfYearFiscal ( Date ( 12 ; 27 ; 2011 ) ; 3 ) & "," & WeekOfYearFiscal ( Date ( 12 ; 27 ; 2011 ) ; 4 ) & "," & WeekOfYearFiscal ( Date ( 12 ; 27 ; 2011 ) ; 5 ) & "," & WeekOfYearFiscal ( Date ( 12 ; 27 ; 2011 ) ; 6 ) & "," & WeekOfYearFiscal ( Date ( 12 ; 27 ; 2011 ) ; 7 ) & "," & WeekOfYearFiscal ( Date ( 12 ; 27 ; 2011 ) ; 8 )	0	1/1/0	52,52,52,52,52,52,52,52,52
+WeekOfYearFiscal ( Date ( 12 ; 28 ; 2011 ) ; 0 ) & "," & WeekOfYearFiscal ( Date ( 12 ; 28 ; 2011 ) ; 1 ) & "," & WeekOfYearFiscal ( Date ( 12 ; 28 ; 2011 ) ; 2 ) & "," & WeekOfYearFiscal ( Date ( 12 ; 28 ; 2011 ) ; 3 ) & "," & WeekOfYearFiscal ( Date ( 12 ; 28 ; 2011 ) ; 4 ) & "," & WeekOfYearFiscal ( Date ( 12 ; 28 ; 2011 ) ; 5 ) & "," & WeekOfYearFiscal ( Date ( 12 ; 28 ; 2011 ) ; 6 ) & "," & WeekOfYearFiscal ( Date ( 12 ; 28 ; 2011 ) ; 7 ) & "," & WeekOfYearFiscal ( Date ( 12 ; 28 ; 2011 ) ; 8 )	0	1/1/0	52,52,52,52,53,52,52,52,52
+WeekOfYearFiscal ( Date ( 12 ; 29 ; 2011 ) ; 0 ) & "," & WeekOfYearFiscal ( Date ( 12 ; 29 ; 2011 ) ; 1 ) & "," & WeekOfYearFiscal ( Date ( 12 ; 29 ; 2011 ) ; 2 ) & "," & WeekOfYearFiscal ( Date ( 12 ; 29 ; 2011 ) ; 3 ) & "," & WeekOfYearFiscal ( Date ( 12 ; 29 ; 2011 ) ; 4 ) & "," & WeekOfYearFiscal ( Date ( 12 ; 29 ; 2011 ) ; 5 ) & "," & WeekOfYearFiscal ( Date ( 12 ; 29 ; 2011 ) ; 6 ) & "," & WeekOfYearFiscal ( Date ( 12 ; 29 ; 2011 ) ; 7 ) & "," & WeekOfYearFiscal ( Date ( 12 ; 29 ; 2011 ) ; 8 )	0	1/1/0	52,52,52,52,53,1,52,52,52
+WeekOfYearFiscal ( Date ( 12 ; 30 ; 2011 ) ; 0 ) & "," & WeekOfYearFiscal ( Date ( 12 ; 30 ; 2011 ) ; 1 ) & "," & WeekOfYearFiscal ( Date ( 12 ; 30 ; 2011 ) ; 2 ) & "," & WeekOfYearFiscal ( Date ( 12 ; 30 ; 2011 ) ; 3 ) & "," & WeekOfYearFiscal ( Date ( 12 ; 30 ; 2011 ) ; 4 ) & "," & WeekOfYearFiscal ( Date ( 12 ; 30 ; 2011 ) ; 5 ) & "," & WeekOfYearFiscal ( Date ( 12 ; 30 ; 2011 ) ; 6 ) & "," & WeekOfYearFiscal ( Date ( 12 ; 30 ; 2011 ) ; 7 ) & "," & WeekOfYearFiscal ( Date ( 12 ; 30 ; 2011 ) ; 8 )	0	1/1/0	52,52,52,52,53,1,1,52,52
+WeekOfYearFiscal ( Date ( 12 ; 31 ; 2011 ) ; 0 ) & "," & WeekOfYearFiscal ( Date ( 12 ; 31 ; 2011 ) ; 1 ) & "," & WeekOfYearFiscal ( Date ( 12 ; 31 ; 2011 ) ; 2 ) & "," & WeekOfYearFiscal ( Date ( 12 ; 31 ; 2011 ) ; 3 ) & "," & WeekOfYearFiscal ( Date ( 12 ; 31 ; 2011 ) ; 4 ) & "," & WeekOfYearFiscal ( Date ( 12 ; 31 ; 2011 ) ; 5 ) & "," & WeekOfYearFiscal ( Date ( 12 ; 31 ; 2011 ) ; 6 ) & "," & WeekOfYearFiscal ( Date ( 12 ; 31 ; 2011 ) ; 7 ) & "," & WeekOfYearFiscal ( Date ( 12 ; 31 ; 2011 ) ; 8 )	0	1/1/0	52,52,52,52,53,1,1,1,1
+WeekOfYearFiscal ( Date ( 1 ; 1 ; 2012 ) ; 0 ) & "," & WeekOfYearFiscal ( Date ( 1 ; 1 ; 2012 ) ; 1 ) & "," & WeekOfYearFiscal ( Date ( 1 ; 1 ; 2012 ) ; 2 ) & "," & WeekOfYearFiscal ( Date ( 1 ; 1 ; 2012 ) ; 3 ) & "," & WeekOfYearFiscal ( Date ( 1 ; 1 ; 2012 ) ; 4 ) & "," & WeekOfYearFiscal ( Date ( 1 ; 1 ; 2012 ) ; 5 ) & "," & WeekOfYearFiscal ( Date ( 1 ; 1 ; 2012 ) ; 6 ) & "," & WeekOfYearFiscal ( Date ( 1 ; 1 ; 2012 ) ; 7 ) & "," & WeekOfYearFiscal ( Date ( 1 ; 1 ; 2012 ) ; 8 )	0	1/1/0	1,1,52,52,53,1,1,1,1
+WeekOfYearFiscal ( Date ( 1 ; 2 ; 2012 ) ; 0 ) & "," & WeekOfYearFiscal ( Date ( 1 ; 2 ; 2012 ) ; 1 ) & "," & WeekOfYearFiscal ( Date ( 1 ; 2 ; 2012 ) ; 2 ) & "," & WeekOfYearFiscal ( Date ( 1 ; 2 ; 2012 ) ; 3 ) & "," & WeekOfYearFiscal ( Date ( 1 ; 2 ; 2012 ) ; 4 ) & "," & WeekOfYearFiscal ( Date ( 1 ; 2 ; 2012 ) ; 5 ) & "," & WeekOfYearFiscal ( Date ( 1 ; 2 ; 2012 ) ; 6 ) & "," & WeekOfYearFiscal ( Date ( 1 ; 2 ; 2012 ) ; 7 ) & "," & WeekOfYearFiscal ( Date ( 1 ; 2 ; 2012 ) ; 8 )	0	1/1/0	1,1,1,52,53,1,1,1,1
+WeekOfYearFiscal ( Date ( 1 ; 3 ; 2012 ) ; 0 ) & "," & WeekOfYearFiscal ( Date ( 1 ; 3 ; 2012 ) ; 1 ) & "," & WeekOfYearFiscal ( Date ( 1 ; 3 ; 2012 ) ; 2 ) & "," & WeekOfYearFiscal ( Date ( 1 ; 3 ; 2012 ) ; 3 ) & "," & WeekOfYearFiscal ( Date ( 1 ; 3 ; 2012 ) ; 4 ) & "," & WeekOfYearFiscal ( Date ( 1 ; 3 ; 2012 ) ; 5 ) & "," & WeekOfYearFiscal ( Date ( 1 ; 3 ; 2012 ) ; 6 ) & "," & WeekOfYearFiscal ( Date ( 1 ; 3 ; 2012 ) ; 7 ) & "," & WeekOfYearFiscal ( Date ( 1 ; 3 ; 2012 ) ; 8 )	0	1/1/0	1,1,1,1,53,1,1,1,1
+WeekOfYearFiscal ( Date ( 1 ; 4 ; 2012 ) ; 0 ) & "," & WeekOfYearFiscal ( Date ( 1 ; 4 ; 2012 ) ; 1 ) & "," & WeekOfYearFiscal ( Date ( 1 ; 4 ; 2012 ) ; 2 ) & "," & WeekOfYearFiscal ( Date ( 1 ; 4 ; 2012 ) ; 3 ) & "," & WeekOfYearFiscal ( Date ( 1 ; 4 ; 2012 ) ; 4 ) & "," & WeekOfYearFiscal ( Date ( 1 ; 4 ; 2012 ) ; 5 ) & "," & WeekOfYearFiscal ( Date ( 1 ; 4 ; 2012 ) ; 6 ) & "," & WeekOfYearFiscal ( Date ( 1 ; 4 ; 2012 ) ; 7 ) & "," & WeekOfYearFiscal ( Date ( 1 ; 4 ; 2012 ) ; 8 )	0	1/1/0	1,1,1,1,1,1,1,1,1
+WeekOfYearFiscal ( Date ( 1 ; 5 ; 2012 ) ; 0 ) & "," & WeekOfYearFiscal ( Date ( 1 ; 5 ; 2012 ) ; 1 ) & "," & WeekOfYearFiscal ( Date ( 1 ; 5 ; 2012 ) ; 2 ) & "," & WeekOfYearFiscal ( Date ( 1 ; 5 ; 2012 ) ; 3 ) & "," & WeekOfYearFiscal ( Date ( 1 ; 5 ; 2012 ) ; 4 ) & "," & WeekOfYearFiscal ( Date ( 1 ; 5 ; 2012 ) ; 5 ) & "," & WeekOfYearFiscal ( Date ( 1 ; 5 ; 2012 ) ; 6 ) & "," & WeekOfYearFiscal ( Date ( 1 ; 5 ; 2012 ) ; 7 ) & "," & WeekOfYearFiscal ( Date ( 1 ; 5 ; 2012 ) ; 8 )	0	1/1/0	1,1,1,1,1,2,1,1,1
+WeekOfYearFiscal ( Date ( 1 ; 6 ; 2012 ) ; 0 ) & "," & WeekOfYearFiscal ( Date ( 1 ; 6 ; 2012 ) ; 1 ) & "," & WeekOfYearFiscal ( Date ( 1 ; 6 ; 2012 ) ; 2 ) & "," & WeekOfYearFiscal ( Date ( 1 ; 6 ; 2012 ) ; 3 ) & "," & WeekOfYearFiscal ( Date ( 1 ; 6 ; 2012 ) ; 4 ) & "," & WeekOfYearFiscal ( Date ( 1 ; 6 ; 2012 ) ; 5 ) & "," & WeekOfYearFiscal ( Date ( 1 ; 6 ; 2012 ) ; 6 ) & "," & WeekOfYearFiscal ( Date ( 1 ; 6 ; 2012 ) ; 7 ) & "," & WeekOfYearFiscal ( Date ( 1 ; 6 ; 2012 ) ; 8 )	0	1/1/0	1,1,1,1,1,2,2,1,1
+WeekOfYearFiscal ( Date ( 1 ; 7 ; 2012 ) ; 0 ) & "," & WeekOfYearFiscal ( Date ( 1 ; 7 ; 2012 ) ; 1 ) & "," & WeekOfYearFiscal ( Date ( 1 ; 7 ; 2012 ) ; 2 ) & "," & WeekOfYearFiscal ( Date ( 1 ; 7 ; 2012 ) ; 3 ) & "," & WeekOfYearFiscal ( Date ( 1 ; 7 ; 2012 ) ; 4 ) & "," & WeekOfYearFiscal ( Date ( 1 ; 7 ; 2012 ) ; 5 ) & "," & WeekOfYearFiscal ( Date ( 1 ; 7 ; 2012 ) ; 6 ) & "," & WeekOfYearFiscal ( Date ( 1 ; 7 ; 2012 ) ; 7 ) & "," & WeekOfYearFiscal ( Date ( 1 ; 7 ; 2012 ) ; 8 )	0	1/1/0	1,1,1,1,1,2,2,2,2
+WeekOfYearFiscal ( Date ( 12 ; 25 ; 2012 ) ; 0 ) & "," & WeekOfYearFiscal ( Date ( 12 ; 25 ; 2012 ) ; 1 ) & "," & WeekOfYearFiscal ( Date ( 12 ; 25 ; 2012 ) ; 2 ) & "," & WeekOfYearFiscal ( Date ( 12 ; 25 ; 2012 ) ; 3 ) & "," & WeekOfYearFiscal ( Date ( 12 ; 25 ; 2012 ) ; 4 ) & "," & WeekOfYearFiscal ( Date ( 12 ; 25 ; 2012 ) ; 5 ) & "," & WeekOfYearFiscal ( Date ( 12 ; 25 ; 2012 ) ; 6 ) & "," & WeekOfYearFiscal ( Date ( 12 ; 25 ; 2012 ) ; 7 ) & "," & WeekOfYearFiscal ( Date ( 12 ; 25 ; 2012 ) ; 8 )	0	1/1/0	52,52,52,52,51,52,52,52,52
+WeekOfYearFiscal ( Date ( 12 ; 26 ; 2012 ) ; 0 ) & "," & WeekOfYearFiscal ( Date ( 12 ; 26 ; 2012 ) ; 1 ) & "," & WeekOfYearFiscal ( Date ( 12 ; 26 ; 2012 ) ; 2 ) & "," & WeekOfYearFiscal ( Date ( 12 ; 26 ; 2012 ) ; 3 ) & "," & WeekOfYearFiscal ( Date ( 12 ; 26 ; 2012 ) ; 4 ) & "," & WeekOfYearFiscal ( Date ( 12 ; 26 ; 2012 ) ; 5 ) & "," & WeekOfYearFiscal ( Date ( 12 ; 26 ; 2012 ) ; 6 ) & "," & WeekOfYearFiscal ( Date ( 12 ; 26 ; 2012 ) ; 7 ) & "," & WeekOfYearFiscal ( Date ( 12 ; 26 ; 2012 ) ; 8 )	0	1/1/0	52,52,52,52,52,52,52,52,52
+WeekOfYearFiscal ( Date ( 12 ; 27 ; 2012 ) ; 0 ) & "," & WeekOfYearFiscal ( Date ( 12 ; 27 ; 2012 ) ; 1 ) & "," & WeekOfYearFiscal ( Date ( 12 ; 27 ; 2012 ) ; 2 ) & "," & WeekOfYearFiscal ( Date ( 12 ; 27 ; 2012 ) ; 3 ) & "," & WeekOfYearFiscal ( Date ( 12 ; 27 ; 2012 ) ; 4 ) & "," & WeekOfYearFiscal ( Date ( 12 ; 27 ; 2012 ) ; 5 ) & "," & WeekOfYearFiscal ( Date ( 12 ; 27 ; 2012 ) ; 6 ) & "," & WeekOfYearFiscal ( Date ( 12 ; 27 ; 2012 ) ; 7 ) & "," & WeekOfYearFiscal ( Date ( 12 ; 27 ; 2012 ) ; 8 )	0	1/1/0	52,52,52,52,52,53,52,52,52
+WeekOfYearFiscal ( Date ( 12 ; 28 ; 2012 ) ; 0 ) & "," & WeekOfYearFiscal ( Date ( 12 ; 28 ; 2012 ) ; 1 ) & "," & WeekOfYearFiscal ( Date ( 12 ; 28 ; 2012 ) ; 2 ) & "," & WeekOfYearFiscal ( Date ( 12 ; 28 ; 2012 ) ; 3 ) & "," & WeekOfYearFiscal ( Date ( 12 ; 28 ; 2012 ) ; 4 ) & "," & WeekOfYearFiscal ( Date ( 12 ; 28 ; 2012 ) ; 5 ) & "," & WeekOfYearFiscal ( Date ( 12 ; 28 ; 2012 ) ; 6 ) & "," & WeekOfYearFiscal ( Date ( 12 ; 28 ; 2012 ) ; 7 ) & "," & WeekOfYearFiscal ( Date ( 12 ; 28 ; 2012 ) ; 8 )	0	1/1/0	52,52,52,52,52,53,53,52,52
+WeekOfYearFiscal ( Date ( 12 ; 29 ; 2012 ) ; 0 ) & "," & WeekOfYearFiscal ( Date ( 12 ; 29 ; 2012 ) ; 1 ) & "," & WeekOfYearFiscal ( Date ( 12 ; 29 ; 2012 ) ; 2 ) & "," & WeekOfYearFiscal ( Date ( 12 ; 29 ; 2012 ) ; 3 ) & "," & WeekOfYearFiscal ( Date ( 12 ; 29 ; 2012 ) ; 4 ) & "," & WeekOfYearFiscal ( Date ( 12 ; 29 ; 2012 ) ; 5 ) & "," & WeekOfYearFiscal ( Date ( 12 ; 29 ; 2012 ) ; 6 ) & "," & WeekOfYearFiscal ( Date ( 12 ; 29 ; 2012 ) ; 7 ) & "," & WeekOfYearFiscal ( Date ( 12 ; 29 ; 2012 ) ; 8 )	0	1/1/0	52,52,52,52,52,53,53,1,1
+WeekOfYearFiscal ( Date ( 12 ; 30 ; 2012 ) ; 0 ) & "," & WeekOfYearFiscal ( Date ( 12 ; 30 ; 2012 ) ; 1 ) & "," & WeekOfYearFiscal ( Date ( 12 ; 30 ; 2012 ) ; 2 ) & "," & WeekOfYearFiscal ( Date ( 12 ; 30 ; 2012 ) ; 3 ) & "," & WeekOfYearFiscal ( Date ( 12 ; 30 ; 2012 ) ; 4 ) & "," & WeekOfYearFiscal ( Date ( 12 ; 30 ; 2012 ) ; 5 ) & "," & WeekOfYearFiscal ( Date ( 12 ; 30 ; 2012 ) ; 6 ) & "," & WeekOfYearFiscal ( Date ( 12 ; 30 ; 2012 ) ; 7 ) & "," & WeekOfYearFiscal ( Date ( 12 ; 30 ; 2012 ) ; 8 )	0	1/1/0	1,1,52,52,52,53,53,1,1
+WeekOfYearFiscal ( Date ( 12 ; 31 ; 2012 ) ; 0 ) & "," & WeekOfYearFiscal ( Date ( 12 ; 31 ; 2012 ) ; 1 ) & "," & WeekOfYearFiscal ( Date ( 12 ; 31 ; 2012 ) ; 2 ) & "," & WeekOfYearFiscal ( Date ( 12 ; 31 ; 2012 ) ; 3 ) & "," & WeekOfYearFiscal ( Date ( 12 ; 31 ; 2012 ) ; 4 ) & "," & WeekOfYearFiscal ( Date ( 12 ; 31 ; 2012 ) ; 5 ) & "," & WeekOfYearFiscal ( Date ( 12 ; 31 ; 2012 ) ; 6 ) & "," & WeekOfYearFiscal ( Date ( 12 ; 31 ; 2012 ) ; 7 ) & "," & WeekOfYearFiscal ( Date ( 12 ; 31 ; 2012 ) ; 8 )	0	1/1/0	1,1,1,52,52,53,53,1,1
+WeekOfYearFiscal ( Date ( 1 ; 1 ; 2013 ) ; 0 ) & "," & WeekOfYearFiscal ( Date ( 1 ; 1 ; 2013 ) ; 1 ) & "," & WeekOfYearFiscal ( Date ( 1 ; 1 ; 2013 ) ; 2 ) & "," & WeekOfYearFiscal ( Date ( 1 ; 1 ; 2013 ) ; 3 ) & "," & WeekOfYearFiscal ( Date ( 1 ; 1 ; 2013 ) ; 4 ) & "," & WeekOfYearFiscal ( Date ( 1 ; 1 ; 2013 ) ; 5 ) & "," & WeekOfYearFiscal ( Date ( 1 ; 1 ; 2013 ) ; 6 ) & "," & WeekOfYearFiscal ( Date ( 1 ; 1 ; 2013 ) ; 7 ) & "," & WeekOfYearFiscal ( Date ( 1 ; 1 ; 2013 ) ; 8 )	0	1/1/0	1,1,1,1,52,53,53,1,1
+WeekOfYearFiscal ( Date ( 1 ; 2 ; 2013 ) ; 0 ) & "," & WeekOfYearFiscal ( Date ( 1 ; 2 ; 2013 ) ; 1 ) & "," & WeekOfYearFiscal ( Date ( 1 ; 2 ; 2013 ) ; 2 ) & "," & WeekOfYearFiscal ( Date ( 1 ; 2 ; 2013 ) ; 3 ) & "," & WeekOfYearFiscal ( Date ( 1 ; 2 ; 2013 ) ; 4 ) & "," & WeekOfYearFiscal ( Date ( 1 ; 2 ; 2013 ) ; 5 ) & "," & WeekOfYearFiscal ( Date ( 1 ; 2 ; 2013 ) ; 6 ) & "," & WeekOfYearFiscal ( Date ( 1 ; 2 ; 2013 ) ; 7 ) & "," & WeekOfYearFiscal ( Date ( 1 ; 2 ; 2013 ) ; 8 )	0	1/1/0	1,1,1,1,1,53,53,1,1
+WeekOfYearFiscal ( Date ( 1 ; 3 ; 2013 ) ; 0 ) & "," & WeekOfYearFiscal ( Date ( 1 ; 3 ; 2013 ) ; 1 ) & "," & WeekOfYearFiscal ( Date ( 1 ; 3 ; 2013 ) ; 2 ) & "," & WeekOfYearFiscal ( Date ( 1 ; 3 ; 2013 ) ; 3 ) & "," & WeekOfYearFiscal ( Date ( 1 ; 3 ; 2013 ) ; 4 ) & "," & WeekOfYearFiscal ( Date ( 1 ; 3 ; 2013 ) ; 5 ) & "," & WeekOfYearFiscal ( Date ( 1 ; 3 ; 2013 ) ; 6 ) & "," & WeekOfYearFiscal ( Date ( 1 ; 3 ; 2013 ) ; 7 ) & "," & WeekOfYearFiscal ( Date ( 1 ; 3 ; 2013 ) ; 8 )	0	1/1/0	1,1,1,1,1,1,53,1,1
+WeekOfYearFiscal ( Date ( 1 ; 4 ; 2013 ) ; 0 ) & "," & WeekOfYearFiscal ( Date ( 1 ; 4 ; 2013 ) ; 1 ) & "," & WeekOfYearFiscal ( Date ( 1 ; 4 ; 2013 ) ; 2 ) & "," & WeekOfYearFiscal ( Date ( 1 ; 4 ; 2013 ) ; 3 ) & "," & WeekOfYearFiscal ( Date ( 1 ; 4 ; 2013 ) ; 4 ) & "," & WeekOfYearFiscal ( Date ( 1 ; 4 ; 2013 ) ; 5 ) & "," & WeekOfYearFiscal ( Date ( 1 ; 4 ; 2013 ) ; 6 ) & "," & WeekOfYearFiscal ( Date ( 1 ; 4 ; 2013 ) ; 7 ) & "," & WeekOfYearFiscal ( Date ( 1 ; 4 ; 2013 ) ; 8 )	0	1/1/0	1,1,1,1,1,1,1,1,1
+WeekOfYearFiscal ( Date ( 1 ; 5 ; 2013 ) ; 0 ) & "," & WeekOfYearFiscal ( Date ( 1 ; 5 ; 2013 ) ; 1 ) & "," & WeekOfYearFiscal ( Date ( 1 ; 5 ; 2013 ) ; 2 ) & "," & WeekOfYearFiscal ( Date ( 1 ; 5 ; 2013 ) ; 3 ) & "," & WeekOfYearFiscal ( Date ( 1 ; 5 ; 2013 ) ; 4 ) & "," & WeekOfYearFiscal ( Date ( 1 ; 5 ; 2013 ) ; 5 ) & "," & WeekOfYearFiscal ( Date ( 1 ; 5 ; 2013 ) ; 6 ) & "," & WeekOfYearFiscal ( Date ( 1 ; 5 ; 2013 ) ; 7 ) & "," & WeekOfYearFiscal ( Date ( 1 ; 5 ; 2013 ) ; 8 )	0	1/1/0	1,1,1,1,1,1,1,2,2
+WeekOfYearFiscal ( Date ( 1 ; 6 ; 2013 ) ; 0 ) & "," & WeekOfYearFiscal ( Date ( 1 ; 6 ; 2013 ) ; 1 ) & "," & WeekOfYearFiscal ( Date ( 1 ; 6 ; 2013 ) ; 2 ) & "," & WeekOfYearFiscal ( Date ( 1 ; 6 ; 2013 ) ; 3 ) & "," & WeekOfYearFiscal ( Date ( 1 ; 6 ; 2013 ) ; 4 ) & "," & WeekOfYearFiscal ( Date ( 1 ; 6 ; 2013 ) ; 5 ) & "," & WeekOfYearFiscal ( Date ( 1 ; 6 ; 2013 ) ; 6 ) & "," & WeekOfYearFiscal ( Date ( 1 ; 6 ; 2013 ) ; 7 ) & "," & WeekOfYearFiscal ( Date ( 1 ; 6 ; 2013 ) ; 8 )	0	1/1/0	2,2,1,1,1,1,1,2,2
+WeekOfYearFiscal ( Date ( 1 ; 7 ; 2013 ) ; 0 ) & "," & WeekOfYearFiscal ( Date ( 1 ; 7 ; 2013 ) ; 1 ) & "," & WeekOfYearFiscal ( Date ( 1 ; 7 ; 2013 ) ; 2 ) & "," & WeekOfYearFiscal ( Date ( 1 ; 7 ; 2013 ) ; 3 ) & "," & WeekOfYearFiscal ( Date ( 1 ; 7 ; 2013 ) ; 4 ) & "," & WeekOfYearFiscal ( Date ( 1 ; 7 ; 2013 ) ; 5 ) & "," & WeekOfYearFiscal ( Date ( 1 ; 7 ; 2013 ) ; 6 ) & "," & WeekOfYearFiscal ( Date ( 1 ; 7 ; 2013 ) ; 7 ) & "," & WeekOfYearFiscal ( Date ( 1 ; 7 ; 2013 ) ; 8 )	0	1/1/0	2,2,2,1,1,1,1,2,2
+WeekOfYearFiscal ( Date ( 12 ; 25 ; 2013 ) ; 0 ) & "," & WeekOfYearFiscal ( Date ( 12 ; 25 ; 2013 ) ; 1 ) & "," & WeekOfYearFiscal ( Date ( 12 ; 25 ; 2013 ) ; 2 ) & "," & WeekOfYearFiscal ( Date ( 12 ; 25 ; 2013 ) ; 3 ) & "," & WeekOfYearFiscal ( Date ( 12 ; 25 ; 2013 ) ; 4 ) & "," & WeekOfYearFiscal ( Date ( 12 ; 25 ; 2013 ) ; 5 ) & "," & WeekOfYearFiscal ( Date ( 12 ; 25 ; 2013 ) ; 6 ) & "," & WeekOfYearFiscal ( Date ( 12 ; 25 ; 2013 ) ; 7 ) & "," & WeekOfYearFiscal ( Date ( 12 ; 25 ; 2013 ) ; 8 )	0	1/1/0	52,52,52,52,52,51,51,52,52
+WeekOfYearFiscal ( Date ( 12 ; 26 ; 2013 ) ; 0 ) & "," & WeekOfYearFiscal ( Date ( 12 ; 26 ; 2013 ) ; 1 ) & "," & WeekOfYearFiscal ( Date ( 12 ; 26 ; 2013 ) ; 2 ) & "," & WeekOfYearFiscal ( Date ( 12 ; 26 ; 2013 ) ; 3 ) & "," & WeekOfYearFiscal ( Date ( 12 ; 26 ; 2013 ) ; 4 ) & "," & WeekOfYearFiscal ( Date ( 12 ; 26 ; 2013 ) ; 5 ) & "," & WeekOfYearFiscal ( Date ( 12 ; 26 ; 2013 ) ; 6 ) & "," & WeekOfYearFiscal ( Date ( 12 ; 26 ; 2013 ) ; 7 ) & "," & WeekOfYearFiscal ( Date ( 12 ; 26 ; 2013 ) ; 8 )	0	1/1/0	52,52,52,52,52,52,51,52,52
+WeekOfYearFiscal ( Date ( 12 ; 27 ; 2013 ) ; 0 ) & "," & WeekOfYearFiscal ( Date ( 12 ; 27 ; 2013 ) ; 1 ) & "," & WeekOfYearFiscal ( Date ( 12 ; 27 ; 2013 ) ; 2 ) & "," & WeekOfYearFiscal ( Date ( 12 ; 27 ; 2013 ) ; 3 ) & "," & WeekOfYearFiscal ( Date ( 12 ; 27 ; 2013 ) ; 4 ) & "," & WeekOfYearFiscal ( Date ( 12 ; 27 ; 2013 ) ; 5 ) & "," & WeekOfYearFiscal ( Date ( 12 ; 27 ; 2013 ) ; 6 ) & "," & WeekOfYearFiscal ( Date ( 12 ; 27 ; 2013 ) ; 7 ) & "," & WeekOfYearFiscal ( Date ( 12 ; 27 ; 2013 ) ; 8 )	0	1/1/0	52,52,52,52,52,52,52,52,52
+WeekOfYearFiscal ( Date ( 12 ; 28 ; 2013 ) ; 0 ) & "," & WeekOfYearFiscal ( Date ( 12 ; 28 ; 2013 ) ; 1 ) & "," & WeekOfYearFiscal ( Date ( 12 ; 28 ; 2013 ) ; 2 ) & "," & WeekOfYearFiscal ( Date ( 12 ; 28 ; 2013 ) ; 3 ) & "," & WeekOfYearFiscal ( Date ( 12 ; 28 ; 2013 ) ; 4 ) & "," & WeekOfYearFiscal ( Date ( 12 ; 28 ; 2013 ) ; 5 ) & "," & WeekOfYearFiscal ( Date ( 12 ; 28 ; 2013 ) ; 6 ) & "," & WeekOfYearFiscal ( Date ( 12 ; 28 ; 2013 ) ; 7 ) & "," & WeekOfYearFiscal ( Date ( 12 ; 28 ; 2013 ) ; 8 )	0	1/1/0	52,52,52,52,52,52,52,53,53
+WeekOfYearFiscal ( Date ( 12 ; 29 ; 2013 ) ; 0 ) & "," & WeekOfYearFiscal ( Date ( 12 ; 29 ; 2013 ) ; 1 ) & "," & WeekOfYearFiscal ( Date ( 12 ; 29 ; 2013 ) ; 2 ) & "," & WeekOfYearFiscal ( Date ( 12 ; 29 ; 2013 ) ; 3 ) & "," & WeekOfYearFiscal ( Date ( 12 ; 29 ; 2013 ) ; 4 ) & "," & WeekOfYearFiscal ( Date ( 12 ; 29 ; 2013 ) ; 5 ) & "," & WeekOfYearFiscal ( Date ( 12 ; 29 ; 2013 ) ; 6 ) & "," & WeekOfYearFiscal ( Date ( 12 ; 29 ; 2013 ) ; 7 ) & "," & WeekOfYearFiscal ( Date ( 12 ; 29 ; 2013 ) ; 8 )	0	1/1/0	1,1,52,52,52,52,52,53,53
+WeekOfYearFiscal ( Date ( 12 ; 30 ; 2013 ) ; 0 ) & "," & WeekOfYearFiscal ( Date ( 12 ; 30 ; 2013 ) ; 1 ) & "," & WeekOfYearFiscal ( Date ( 12 ; 30 ; 2013 ) ; 2 ) & "," & WeekOfYearFiscal ( Date ( 12 ; 30 ; 2013 ) ; 3 ) & "," & WeekOfYearFiscal ( Date ( 12 ; 30 ; 2013 ) ; 4 ) & "," & WeekOfYearFiscal ( Date ( 12 ; 30 ; 2013 ) ; 5 ) & "," & WeekOfYearFiscal ( Date ( 12 ; 30 ; 2013 ) ; 6 ) & "," & WeekOfYearFiscal ( Date ( 12 ; 30 ; 2013 ) ; 7 ) & "," & WeekOfYearFiscal ( Date ( 12 ; 30 ; 2013 ) ; 8 )	0	1/1/0	1,1,1,52,52,52,52,53,53
+WeekOfYearFiscal ( Date ( 12 ; 31 ; 2013 ) ; 0 ) & "," & WeekOfYearFiscal ( Date ( 12 ; 31 ; 2013 ) ; 1 ) & "," & WeekOfYearFiscal ( Date ( 12 ; 31 ; 2013 ) ; 2 ) & "," & WeekOfYearFiscal ( Date ( 12 ; 31 ; 2013 ) ; 3 ) & "," & WeekOfYearFiscal ( Date ( 12 ; 31 ; 2013 ) ; 4 ) & "," & WeekOfYearFiscal ( Date ( 12 ; 31 ; 2013 ) ; 5 ) & "," & WeekOfYearFiscal ( Date ( 12 ; 31 ; 2013 ) ; 6 ) & "," & WeekOfYearFiscal ( Date ( 12 ; 31 ; 2013 ) ; 7 ) & "," & WeekOfYearFiscal ( Date ( 12 ; 31 ; 2013 ) ; 8 )	0	1/1/0	1,1,1,1,52,52,52,53,53
+WeekOfYearFiscal ( Date ( 1 ; 1 ; 2014 ) ; 0 ) & "," & WeekOfYearFiscal ( Date ( 1 ; 1 ; 2014 ) ; 1 ) & "," & WeekOfYearFiscal ( Date ( 1 ; 1 ; 2014 ) ; 2 ) & "," & WeekOfYearFiscal ( Date ( 1 ; 1 ; 2014 ) ; 3 ) & "," & WeekOfYearFiscal ( Date ( 1 ; 1 ; 2014 ) ; 4 ) & "," & WeekOfYearFiscal ( Date ( 1 ; 1 ; 2014 ) ; 5 ) & "," & WeekOfYearFiscal ( Date ( 1 ; 1 ; 2014 ) ; 6 ) & "," & WeekOfYearFiscal ( Date ( 1 ; 1 ; 2014 ) ; 7 ) & "," & WeekOfYearFiscal ( Date ( 1 ; 1 ; 2014 ) ; 8 )	0	1/1/0	1,1,1,1,1,52,52,53,53
+WeekOfYearFiscal ( Date ( 1 ; 2 ; 2014 ) ; 0 ) & "," & WeekOfYearFiscal ( Date ( 1 ; 2 ; 2014 ) ; 1 ) & "," & WeekOfYearFiscal ( Date ( 1 ; 2 ; 2014 ) ; 2 ) & "," & WeekOfYearFiscal ( Date ( 1 ; 2 ; 2014 ) ; 3 ) & "," & WeekOfYearFiscal ( Date ( 1 ; 2 ; 2014 ) ; 4 ) & "," & WeekOfYearFiscal ( Date ( 1 ; 2 ; 2014 ) ; 5 ) & "," & WeekOfYearFiscal ( Date ( 1 ; 2 ; 2014 ) ; 6 ) & "," & WeekOfYearFiscal ( Date ( 1 ; 2 ; 2014 ) ; 7 ) & "," & WeekOfYearFiscal ( Date ( 1 ; 2 ; 2014 ) ; 8 )	0	1/1/0	1,1,1,1,1,1,52,53,53
+WeekOfYearFiscal ( Date ( 1 ; 3 ; 2014 ) ; 0 ) & "," & WeekOfYearFiscal ( Date ( 1 ; 3 ; 2014 ) ; 1 ) & "," & WeekOfYearFiscal ( Date ( 1 ; 3 ; 2014 ) ; 2 ) & "," & WeekOfYearFiscal ( Date ( 1 ; 3 ; 2014 ) ; 3 ) & "," & WeekOfYearFiscal ( Date ( 1 ; 3 ; 2014 ) ; 4 ) & "," & WeekOfYearFiscal ( Date ( 1 ; 3 ; 2014 ) ; 5 ) & "," & WeekOfYearFiscal ( Date ( 1 ; 3 ; 2014 ) ; 6 ) & "," & WeekOfYearFiscal ( Date ( 1 ; 3 ; 2014 ) ; 7 ) & "," & WeekOfYearFiscal ( Date ( 1 ; 3 ; 2014 ) ; 8 )	0	1/1/0	1,1,1,1,1,1,1,53,53
+WeekOfYearFiscal ( Date ( 1 ; 4 ; 2014 ) ; 0 ) & "," & WeekOfYearFiscal ( Date ( 1 ; 4 ; 2014 ) ; 1 ) & "," & WeekOfYearFiscal ( Date ( 1 ; 4 ; 2014 ) ; 2 ) & "," & WeekOfYearFiscal ( Date ( 1 ; 4 ; 2014 ) ; 3 ) & "," & WeekOfYearFiscal ( Date ( 1 ; 4 ; 2014 ) ; 4 ) & "," & WeekOfYearFiscal ( Date ( 1 ; 4 ; 2014 ) ; 5 ) & "," & WeekOfYearFiscal ( Date ( 1 ; 4 ; 2014 ) ; 6 ) & "," & WeekOfYearFiscal ( Date ( 1 ; 4 ; 2014 ) ; 7 ) & "," & WeekOfYearFiscal ( Date ( 1 ; 4 ; 2014 ) ; 8 )	0	1/1/0	1,1,1,1,1,1,1,1,1
+WeekOfYearFiscal ( Date ( 1 ; 5 ; 2014 ) ; 0 ) & "," & WeekOfYearFiscal ( Date ( 1 ; 5 ; 2014 ) ; 1 ) & "," & WeekOfYearFiscal ( Date ( 1 ; 5 ; 2014 ) ; 2 ) & "," & WeekOfYearFiscal ( Date ( 1 ; 5 ; 2014 ) ; 3 ) & "," & WeekOfYearFiscal ( Date ( 1 ; 5 ; 2014 ) ; 4 ) & "," & WeekOfYearFiscal ( Date ( 1 ; 5 ; 2014 ) ; 5 ) & "," & WeekOfYearFiscal ( Date ( 1 ; 5 ; 2014 ) ; 6 ) & "," & WeekOfYearFiscal ( Date ( 1 ; 5 ; 2014 ) ; 7 ) & "," & WeekOfYearFiscal ( Date ( 1 ; 5 ; 2014 ) ; 8 )	0	1/1/0	2,2,1,1,1,1,1,1,1
+WeekOfYearFiscal ( Date ( 1 ; 6 ; 2014 ) ; 0 ) & "," & WeekOfYearFiscal ( Date ( 1 ; 6 ; 2014 ) ; 1 ) & "," & WeekOfYearFiscal ( Date ( 1 ; 6 ; 2014 ) ; 2 ) & "," & WeekOfYearFiscal ( Date ( 1 ; 6 ; 2014 ) ; 3 ) & "," & WeekOfYearFiscal ( Date ( 1 ; 6 ; 2014 ) ; 4 ) & "," & WeekOfYearFiscal ( Date ( 1 ; 6 ; 2014 ) ; 5 ) & "," & WeekOfYearFiscal ( Date ( 1 ; 6 ; 2014 ) ; 6 ) & "," & WeekOfYearFiscal ( Date ( 1 ; 6 ; 2014 ) ; 7 ) & "," & WeekOfYearFiscal ( Date ( 1 ; 6 ; 2014 ) ; 8 )	0	1/1/0	2,2,2,1,1,1,1,1,1
+WeekOfYearFiscal ( Date ( 1 ; 7 ; 2014 ) ; 0 ) & "," & WeekOfYearFiscal ( Date ( 1 ; 7 ; 2014 ) ; 1 ) & "," & WeekOfYearFiscal ( Date ( 1 ; 7 ; 2014 ) ; 2 ) & "," & WeekOfYearFiscal ( Date ( 1 ; 7 ; 2014 ) ; 3 ) & "," & WeekOfYearFiscal ( Date ( 1 ; 7 ; 2014 ) ; 4 ) & "," & WeekOfYearFiscal ( Date ( 1 ; 7 ; 2014 ) ; 5 ) & "," & WeekOfYearFiscal ( Date ( 1 ; 7 ; 2014 ) ; 6 ) & "," & WeekOfYearFiscal ( Date ( 1 ; 7 ; 2014 ) ; 7 ) & "," & WeekOfYearFiscal ( Date ( 1 ; 7 ; 2014 ) ; 8 )	0	1/1/0	2,2,2,2,1,1,1,1,1
+WeekOfYearFiscal ( Date ( 12 ; 25 ; 2014 ) ; 0 ) & "," & WeekOfYearFiscal ( Date ( 12 ; 25 ; 2014 ) ; 1 ) & "," & WeekOfYearFiscal ( Date ( 12 ; 25 ; 2014 ) ; 2 ) & "," & WeekOfYearFiscal ( Date ( 12 ; 25 ; 2014 ) ; 3 ) & "," & WeekOfYearFiscal ( Date ( 12 ; 25 ; 2014 ) ; 4 ) & "," & WeekOfYearFiscal ( Date ( 12 ; 25 ; 2014 ) ; 5 ) & "," & WeekOfYearFiscal ( Date ( 12 ; 25 ; 2014 ) ; 6 ) & "," & WeekOfYearFiscal ( Date ( 12 ; 25 ; 2014 ) ; 7 ) & "," & WeekOfYearFiscal ( Date ( 12 ; 25 ; 2014 ) ; 8 )	0	1/1/0	52,52,52,52,52,52,51,51,51
+WeekOfYearFiscal ( Date ( 12 ; 26 ; 2014 ) ; 0 ) & "," & WeekOfYearFiscal ( Date ( 12 ; 26 ; 2014 ) ; 1 ) & "," & WeekOfYearFiscal ( Date ( 12 ; 26 ; 2014 ) ; 2 ) & "," & WeekOfYearFiscal ( Date ( 12 ; 26 ; 2014 ) ; 3 ) & "," & WeekOfYearFiscal ( Date ( 12 ; 26 ; 2014 ) ; 4 ) & "," & WeekOfYearFiscal ( Date ( 12 ; 26 ; 2014 ) ; 5 ) & "," & WeekOfYearFiscal ( Date ( 12 ; 26 ; 2014 ) ; 6 ) & "," & WeekOfYearFiscal ( Date ( 12 ; 26 ; 2014 ) ; 7 ) & "," & WeekOfYearFiscal ( Date ( 12 ; 26 ; 2014 ) ; 8 )	0	1/1/0	52,52,52,52,52,52,52,51,51
+WeekOfYearFiscal ( Date ( 12 ; 27 ; 2014 ) ; 0 ) & "," & WeekOfYearFiscal ( Date ( 12 ; 27 ; 2014 ) ; 1 ) & "," & WeekOfYearFiscal ( Date ( 12 ; 27 ; 2014 ) ; 2 ) & "," & WeekOfYearFiscal ( Date ( 12 ; 27 ; 2014 ) ; 3 ) & "," & WeekOfYearFiscal ( Date ( 12 ; 27 ; 2014 ) ; 4 ) & "," & WeekOfYearFiscal ( Date ( 12 ; 27 ; 2014 ) ; 5 ) & "," & WeekOfYearFiscal ( Date ( 12 ; 27 ; 2014 ) ; 6 ) & "," & WeekOfYearFiscal ( Date ( 12 ; 27 ; 2014 ) ; 7 ) & "," & WeekOfYearFiscal ( Date ( 12 ; 27 ; 2014 ) ; 8 )	0	1/1/0	52,52,52,52,52,52,52,52,52
+WeekOfYearFiscal ( Date ( 12 ; 28 ; 2014 ) ; 0 ) & "," & WeekOfYearFiscal ( Date ( 12 ; 28 ; 2014 ) ; 1 ) & "," & WeekOfYearFiscal ( Date ( 12 ; 28 ; 2014 ) ; 2 ) & "," & WeekOfYearFiscal ( Date ( 12 ; 28 ; 2014 ) ; 3 ) & "," & WeekOfYearFiscal ( Date ( 12 ; 28 ; 2014 ) ; 4 ) & "," & WeekOfYearFiscal ( Date ( 12 ; 28 ; 2014 ) ; 5 ) & "," & WeekOfYearFiscal ( Date ( 12 ; 28 ; 2014 ) ; 6 ) & "," & WeekOfYearFiscal ( Date ( 12 ; 28 ; 2014 ) ; 7 ) & "," & WeekOfYearFiscal ( Date ( 12 ; 28 ; 2014 ) ; 8 )	0	1/1/0	53,53,52,52,52,52,52,52,52
+WeekOfYearFiscal ( Date ( 12 ; 29 ; 2014 ) ; 0 ) & "," & WeekOfYearFiscal ( Date ( 12 ; 29 ; 2014 ) ; 1 ) & "," & WeekOfYearFiscal ( Date ( 12 ; 29 ; 2014 ) ; 2 ) & "," & WeekOfYearFiscal ( Date ( 12 ; 29 ; 2014 ) ; 3 ) & "," & WeekOfYearFiscal ( Date ( 12 ; 29 ; 2014 ) ; 4 ) & "," & WeekOfYearFiscal ( Date ( 12 ; 29 ; 2014 ) ; 5 ) & "," & WeekOfYearFiscal ( Date ( 12 ; 29 ; 2014 ) ; 6 ) & "," & WeekOfYearFiscal ( Date ( 12 ; 29 ; 2014 ) ; 7 ) & "," & WeekOfYearFiscal ( Date ( 12 ; 29 ; 2014 ) ; 8 )	0	1/1/0	53,53,1,52,52,52,52,52,52
+WeekOfYearFiscal ( Date ( 12 ; 30 ; 2014 ) ; 0 ) & "," & WeekOfYearFiscal ( Date ( 12 ; 30 ; 2014 ) ; 1 ) & "," & WeekOfYearFiscal ( Date ( 12 ; 30 ; 2014 ) ; 2 ) & "," & WeekOfYearFiscal ( Date ( 12 ; 30 ; 2014 ) ; 3 ) & "," & WeekOfYearFiscal ( Date ( 12 ; 30 ; 2014 ) ; 4 ) & "," & WeekOfYearFiscal ( Date ( 12 ; 30 ; 2014 ) ; 5 ) & "," & WeekOfYearFiscal ( Date ( 12 ; 30 ; 2014 ) ; 6 ) & "," & WeekOfYearFiscal ( Date ( 12 ; 30 ; 2014 ) ; 7 ) & "," & WeekOfYearFiscal ( Date ( 12 ; 30 ; 2014 ) ; 8 )	0	1/1/0	53,53,1,1,52,52,52,52,52
+WeekOfYearFiscal ( Date ( 12 ; 31 ; 2014 ) ; 0 ) & "," & WeekOfYearFiscal ( Date ( 12 ; 31 ; 2014 ) ; 1 ) & "," & WeekOfYearFiscal ( Date ( 12 ; 31 ; 2014 ) ; 2 ) & "," & WeekOfYearFiscal ( Date ( 12 ; 31 ; 2014 ) ; 3 ) & "," & WeekOfYearFiscal ( Date ( 12 ; 31 ; 2014 ) ; 4 ) & "," & WeekOfYearFiscal ( Date ( 12 ; 31 ; 2014 ) ; 5 ) & "," & WeekOfYearFiscal ( Date ( 12 ; 31 ; 2014 ) ; 6 ) & "," & WeekOfYearFiscal ( Date ( 12 ; 31 ; 2014 ) ; 7 ) & "," & WeekOfYearFiscal ( Date ( 12 ; 31 ; 2014 ) ; 8 )	0	1/1/0	53,53,1,1,1,52,52,52,52
+WeekOfYearFiscal ( Date ( 1 ; 1 ; 2015 ) ; 0 ) & "," & WeekOfYearFiscal ( Date ( 1 ; 1 ; 2015 ) ; 1 ) & "," & WeekOfYearFiscal ( Date ( 1 ; 1 ; 2015 ) ; 2 ) & "," & WeekOfYearFiscal ( Date ( 1 ; 1 ; 2015 ) ; 3 ) & "," & WeekOfYearFiscal ( Date ( 1 ; 1 ; 2015 ) ; 4 ) & "," & WeekOfYearFiscal ( Date ( 1 ; 1 ; 2015 ) ; 5 ) & "," & WeekOfYearFiscal ( Date ( 1 ; 1 ; 2015 ) ; 6 ) & "," & WeekOfYearFiscal ( Date ( 1 ; 1 ; 2015 ) ; 7 ) & "," & WeekOfYearFiscal ( Date ( 1 ; 1 ; 2015 ) ; 8 )	0	1/1/0	53,53,1,1,1,1,52,52,52
+WeekOfYearFiscal ( Date ( 1 ; 2 ; 2015 ) ; 0 ) & "," & WeekOfYearFiscal ( Date ( 1 ; 2 ; 2015 ) ; 1 ) & "," & WeekOfYearFiscal ( Date ( 1 ; 2 ; 2015 ) ; 2 ) & "," & WeekOfYearFiscal ( Date ( 1 ; 2 ; 2015 ) ; 3 ) & "," & WeekOfYearFiscal ( Date ( 1 ; 2 ; 2015 ) ; 4 ) & "," & WeekOfYearFiscal ( Date ( 1 ; 2 ; 2015 ) ; 5 ) & "," & WeekOfYearFiscal ( Date ( 1 ; 2 ; 2015 ) ; 6 ) & "," & WeekOfYearFiscal ( Date ( 1 ; 2 ; 2015 ) ; 7 ) & "," & WeekOfYearFiscal ( Date ( 1 ; 2 ; 2015 ) ; 8 )	0	1/1/0	53,53,1,1,1,1,1,52,52
+WeekOfYearFiscal ( Date ( 1 ; 3 ; 2015 ) ; 0 ) & "," & WeekOfYearFiscal ( Date ( 1 ; 3 ; 2015 ) ; 1 ) & "," & WeekOfYearFiscal ( Date ( 1 ; 3 ; 2015 ) ; 2 ) & "," & WeekOfYearFiscal ( Date ( 1 ; 3 ; 2015 ) ; 3 ) & "," & WeekOfYearFiscal ( Date ( 1 ; 3 ; 2015 ) ; 4 ) & "," & WeekOfYearFiscal ( Date ( 1 ; 3 ; 2015 ) ; 5 ) & "," & WeekOfYearFiscal ( Date ( 1 ; 3 ; 2015 ) ; 6 ) & "," & WeekOfYearFiscal ( Date ( 1 ; 3 ; 2015 ) ; 7 ) & "," & WeekOfYearFiscal ( Date ( 1 ; 3 ; 2015 ) ; 8 )	0	1/1/0	53,53,1,1,1,1,1,1,1
+WeekOfYearFiscal ( Date ( 1 ; 4 ; 2015 ) ; 0 ) & "," & WeekOfYearFiscal ( Date ( 1 ; 4 ; 2015 ) ; 1 ) & "," & WeekOfYearFiscal ( Date ( 1 ; 4 ; 2015 ) ; 2 ) & "," & WeekOfYearFiscal ( Date ( 1 ; 4 ; 2015 ) ; 3 ) & "," & WeekOfYearFiscal ( Date ( 1 ; 4 ; 2015 ) ; 4 ) & "," & WeekOfYearFiscal ( Date ( 1 ; 4 ; 2015 ) ; 5 ) & "," & WeekOfYearFiscal ( Date ( 1 ; 4 ; 2015 ) ; 6 ) & "," & WeekOfYearFiscal ( Date ( 1 ; 4 ; 2015 ) ; 7 ) & "," & WeekOfYearFiscal ( Date ( 1 ; 4 ; 2015 ) ; 8 )	0	1/1/0	1,1,1,1,1,1,1,1,1
+WeekOfYearFiscal ( Date ( 1 ; 5 ; 2015 ) ; 0 ) & "," & WeekOfYearFiscal ( Date ( 1 ; 5 ; 2015 ) ; 1 ) & "," & WeekOfYearFiscal ( Date ( 1 ; 5 ; 2015 ) ; 2 ) & "," & WeekOfYearFiscal ( Date ( 1 ; 5 ; 2015 ) ; 3 ) & "," & WeekOfYearFiscal ( Date ( 1 ; 5 ; 2015 ) ; 4 ) & "," & WeekOfYearFiscal ( Date ( 1 ; 5 ; 2015 ) ; 5 ) & "," & WeekOfYearFiscal ( Date ( 1 ; 5 ; 2015 ) ; 6 ) & "," & WeekOfYearFiscal ( Date ( 1 ; 5 ; 2015 ) ; 7 ) & "," & WeekOfYearFiscal ( Date ( 1 ; 5 ; 2015 ) ; 8 )	0	1/1/0	1,1,2,1,1,1,1,1,1
+WeekOfYearFiscal ( Date ( 1 ; 6 ; 2015 ) ; 0 ) & "," & WeekOfYearFiscal ( Date ( 1 ; 6 ; 2015 ) ; 1 ) & "," & WeekOfYearFiscal ( Date ( 1 ; 6 ; 2015 ) ; 2 ) & "," & WeekOfYearFiscal ( Date ( 1 ; 6 ; 2015 ) ; 3 ) & "," & WeekOfYearFiscal ( Date ( 1 ; 6 ; 2015 ) ; 4 ) & "," & WeekOfYearFiscal ( Date ( 1 ; 6 ; 2015 ) ; 5 ) & "," & WeekOfYearFiscal ( Date ( 1 ; 6 ; 2015 ) ; 6 ) & "," & WeekOfYearFiscal ( Date ( 1 ; 6 ; 2015 ) ; 7 ) & "," & WeekOfYearFiscal ( Date ( 1 ; 6 ; 2015 ) ; 8 )	0	1/1/0	1,1,2,2,1,1,1,1,1
+WeekOfYearFiscal ( Date ( 1 ; 7 ; 2015 ) ; 0 ) & "," & WeekOfYearFiscal ( Date ( 1 ; 7 ; 2015 ) ; 1 ) & "," & WeekOfYearFiscal ( Date ( 1 ; 7 ; 2015 ) ; 2 ) & "," & WeekOfYearFiscal ( Date ( 1 ; 7 ; 2015 ) ; 3 ) & "," & WeekOfYearFiscal ( Date ( 1 ; 7 ; 2015 ) ; 4 ) & "," & WeekOfYearFiscal ( Date ( 1 ; 7 ; 2015 ) ; 5 ) & "," & WeekOfYearFiscal ( Date ( 1 ; 7 ; 2015 ) ; 6 ) & "," & WeekOfYearFiscal ( Date ( 1 ; 7 ; 2015 ) ; 7 ) & "," & WeekOfYearFiscal ( Date ( 1 ; 7 ; 2015 ) ; 8 )	0	1/1/0	1,1,2,2,2,1,1,1,1
+WeekOfYearFiscal ( Date ( 12 ; 25 ; 2015 ) ; 0 ) & "," & WeekOfYearFiscal ( Date ( 12 ; 25 ; 2015 ) ; 1 ) & "," & WeekOfYearFiscal ( Date ( 12 ; 25 ; 2015 ) ; 2 ) & "," & WeekOfYearFiscal ( Date ( 12 ; 25 ; 2015 ) ; 3 ) & "," & WeekOfYearFiscal ( Date ( 12 ; 25 ; 2015 ) ; 4 ) & "," & WeekOfYearFiscal ( Date ( 12 ; 25 ; 2015 ) ; 5 ) & "," & WeekOfYearFiscal ( Date ( 12 ; 25 ; 2015 ) ; 6 ) & "," & WeekOfYearFiscal ( Date ( 12 ; 25 ; 2015 ) ; 7 ) & "," & WeekOfYearFiscal ( Date ( 12 ; 25 ; 2015 ) ; 8 )	0	1/1/0	51,51,52,52,52,52,52,51,51
+WeekOfYearFiscal ( Date ( 12 ; 26 ; 2015 ) ; 0 ) & "," & WeekOfYearFiscal ( Date ( 12 ; 26 ; 2015 ) ; 1 ) & "," & WeekOfYearFiscal ( Date ( 12 ; 26 ; 2015 ) ; 2 ) & "," & WeekOfYearFiscal ( Date ( 12 ; 26 ; 2015 ) ; 3 ) & "," & WeekOfYearFiscal ( Date ( 12 ; 26 ; 2015 ) ; 4 ) & "," & WeekOfYearFiscal ( Date ( 12 ; 26 ; 2015 ) ; 5 ) & "," & WeekOfYearFiscal ( Date ( 12 ; 26 ; 2015 ) ; 6 ) & "," & WeekOfYearFiscal ( Date ( 12 ; 26 ; 2015 ) ; 7 ) & "," & WeekOfYearFiscal ( Date ( 12 ; 26 ; 2015 ) ; 8 )	0	1/1/0	51,51,52,52,52,52,52,52,52
+WeekOfYearFiscal ( Date ( 12 ; 27 ; 2015 ) ; 0 ) & "," & WeekOfYearFiscal ( Date ( 12 ; 27 ; 2015 ) ; 1 ) & "," & WeekOfYearFiscal ( Date ( 12 ; 27 ; 2015 ) ; 2 ) & "," & WeekOfYearFiscal ( Date ( 12 ; 27 ; 2015 ) ; 3 ) & "," & WeekOfYearFiscal ( Date ( 12 ; 27 ; 2015 ) ; 4 ) & "," & WeekOfYearFiscal ( Date ( 12 ; 27 ; 2015 ) ; 5 ) & "," & WeekOfYearFiscal ( Date ( 12 ; 27 ; 2015 ) ; 6 ) & "," & WeekOfYearFiscal ( Date ( 12 ; 27 ; 2015 ) ; 7 ) & "," & WeekOfYearFiscal ( Date ( 12 ; 27 ; 2015 ) ; 8 )	0	1/1/0	52,52,52,52,52,52,52,52,52
+WeekOfYearFiscal ( Date ( 12 ; 28 ; 2015 ) ; 0 ) & "," & WeekOfYearFiscal ( Date ( 12 ; 28 ; 2015 ) ; 1 ) & "," & WeekOfYearFiscal ( Date ( 12 ; 28 ; 2015 ) ; 2 ) & "," & WeekOfYearFiscal ( Date ( 12 ; 28 ; 2015 ) ; 3 ) & "," & WeekOfYearFiscal ( Date ( 12 ; 28 ; 2015 ) ; 4 ) & "," & WeekOfYearFiscal ( Date ( 12 ; 28 ; 2015 ) ; 5 ) & "," & WeekOfYearFiscal ( Date ( 12 ; 28 ; 2015 ) ; 6 ) & "," & WeekOfYearFiscal ( Date ( 12 ; 28 ; 2015 ) ; 7 ) & "," & WeekOfYearFiscal ( Date ( 12 ; 28 ; 2015 ) ; 8 )	0	1/1/0	52,52,53,52,52,52,52,52,52
+WeekOfYearFiscal ( Date ( 12 ; 29 ; 2015 ) ; 0 ) & "," & WeekOfYearFiscal ( Date ( 12 ; 29 ; 2015 ) ; 1 ) & "," & WeekOfYearFiscal ( Date ( 12 ; 29 ; 2015 ) ; 2 ) & "," & WeekOfYearFiscal ( Date ( 12 ; 29 ; 2015 ) ; 3 ) & "," & WeekOfYearFiscal ( Date ( 12 ; 29 ; 2015 ) ; 4 ) & "," & WeekOfYearFiscal ( Date ( 12 ; 29 ; 2015 ) ; 5 ) & "," & WeekOfYearFiscal ( Date ( 12 ; 29 ; 2015 ) ; 6 ) & "," & WeekOfYearFiscal ( Date ( 12 ; 29 ; 2015 ) ; 7 ) & "," & WeekOfYearFiscal ( Date ( 12 ; 29 ; 2015 ) ; 8 )	0	1/1/0	52,52,53,1,52,52,52,52,52
+WeekOfYearFiscal ( Date ( 12 ; 30 ; 2015 ) ; 0 ) & "," & WeekOfYearFiscal ( Date ( 12 ; 30 ; 2015 ) ; 1 ) & "," & WeekOfYearFiscal ( Date ( 12 ; 30 ; 2015 ) ; 2 ) & "," & WeekOfYearFiscal ( Date ( 12 ; 30 ; 2015 ) ; 3 ) & "," & WeekOfYearFiscal ( Date ( 12 ; 30 ; 2015 ) ; 4 ) & "," & WeekOfYearFiscal ( Date ( 12 ; 30 ; 2015 ) ; 5 ) & "," & WeekOfYearFiscal ( Date ( 12 ; 30 ; 2015 ) ; 6 ) & "," & WeekOfYearFiscal ( Date ( 12 ; 30 ; 2015 ) ; 7 ) & "," & WeekOfYearFiscal ( Date ( 12 ; 30 ; 2015 ) ; 8 )	0	1/1/0	52,52,53,1,1,52,52,52,52
+WeekOfYearFiscal ( Date ( 12 ; 31 ; 2015 ) ; 0 ) & "," & WeekOfYearFiscal ( Date ( 12 ; 31 ; 2015 ) ; 1 ) & "," & WeekOfYearFiscal ( Date ( 12 ; 31 ; 2015 ) ; 2 ) & "," & WeekOfYearFiscal ( Date ( 12 ; 31 ; 2015 ) ; 3 ) & "," & WeekOfYearFiscal ( Date ( 12 ; 31 ; 2015 ) ; 4 ) & "," & WeekOfYearFiscal ( Date ( 12 ; 31 ; 2015 ) ; 5 ) & "," & WeekOfYearFiscal ( Date ( 12 ; 31 ; 2015 ) ; 6 ) & "," & WeekOfYearFiscal ( Date ( 12 ; 31 ; 2015 ) ; 7 ) & "," & WeekOfYearFiscal ( Date ( 12 ; 31 ; 2015 ) ; 8 )	0	1/1/0	52,52,53,1,1,1,52,52,52
+WeekOfYearFiscal ( Date ( 1 ; 1 ; 2016 ) ; 0 ) & "," & WeekOfYearFiscal ( Date ( 1 ; 1 ; 2016 ) ; 1 ) & "," & WeekOfYearFiscal ( Date ( 1 ; 1 ; 2016 ) ; 2 ) & "," & WeekOfYearFiscal ( Date ( 1 ; 1 ; 2016 ) ; 3 ) & "," & WeekOfYearFiscal ( Date ( 1 ; 1 ; 2016 ) ; 4 ) & "," & WeekOfYearFiscal ( Date ( 1 ; 1 ; 2016 ) ; 5 ) & "," & WeekOfYearFiscal ( Date ( 1 ; 1 ; 2016 ) ; 6 ) & "," & WeekOfYearFiscal ( Date ( 1 ; 1 ; 2016 ) ; 7 ) & "," & WeekOfYearFiscal ( Date ( 1 ; 1 ; 2016 ) ; 8 )	0	1/1/0	52,52,53,1,1,1,1,52,52
+WeekOfYearFiscal ( Date ( 1 ; 2 ; 2016 ) ; 0 ) & "," & WeekOfYearFiscal ( Date ( 1 ; 2 ; 2016 ) ; 1 ) & "," & WeekOfYearFiscal ( Date ( 1 ; 2 ; 2016 ) ; 2 ) & "," & WeekOfYearFiscal ( Date ( 1 ; 2 ; 2016 ) ; 3 ) & "," & WeekOfYearFiscal ( Date ( 1 ; 2 ; 2016 ) ; 4 ) & "," & WeekOfYearFiscal ( Date ( 1 ; 2 ; 2016 ) ; 5 ) & "," & WeekOfYearFiscal ( Date ( 1 ; 2 ; 2016 ) ; 6 ) & "," & WeekOfYearFiscal ( Date ( 1 ; 2 ; 2016 ) ; 7 ) & "," & WeekOfYearFiscal ( Date ( 1 ; 2 ; 2016 ) ; 8 )	0	1/1/0	52,52,53,1,1,1,1,1,1
+WeekOfYearFiscal ( Date ( 1 ; 3 ; 2016 ) ; 0 ) & "," & WeekOfYearFiscal ( Date ( 1 ; 3 ; 2016 ) ; 1 ) & "," & WeekOfYearFiscal ( Date ( 1 ; 3 ; 2016 ) ; 2 ) & "," & WeekOfYearFiscal ( Date ( 1 ; 3 ; 2016 ) ; 3 ) & "," & WeekOfYearFiscal ( Date ( 1 ; 3 ; 2016 ) ; 4 ) & "," & WeekOfYearFiscal ( Date ( 1 ; 3 ; 2016 ) ; 5 ) & "," & WeekOfYearFiscal ( Date ( 1 ; 3 ; 2016 ) ; 6 ) & "," & WeekOfYearFiscal ( Date ( 1 ; 3 ; 2016 ) ; 7 ) & "," & WeekOfYearFiscal ( Date ( 1 ; 3 ; 2016 ) ; 8 )	0	1/1/0	1,1,53,1,1,1,1,1,1
+WeekOfYearFiscal ( Date ( 1 ; 4 ; 2016 ) ; 0 ) & "," & WeekOfYearFiscal ( Date ( 1 ; 4 ; 2016 ) ; 1 ) & "," & WeekOfYearFiscal ( Date ( 1 ; 4 ; 2016 ) ; 2 ) & "," & WeekOfYearFiscal ( Date ( 1 ; 4 ; 2016 ) ; 3 ) & "," & WeekOfYearFiscal ( Date ( 1 ; 4 ; 2016 ) ; 4 ) & "," & WeekOfYearFiscal ( Date ( 1 ; 4 ; 2016 ) ; 5 ) & "," & WeekOfYearFiscal ( Date ( 1 ; 4 ; 2016 ) ; 6 ) & "," & WeekOfYearFiscal ( Date ( 1 ; 4 ; 2016 ) ; 7 ) & "," & WeekOfYearFiscal ( Date ( 1 ; 4 ; 2016 ) ; 8 )	0	1/1/0	1,1,1,1,1,1,1,1,1
+WeekOfYearFiscal ( Date ( 1 ; 5 ; 2016 ) ; 0 ) & "," & WeekOfYearFiscal ( Date ( 1 ; 5 ; 2016 ) ; 1 ) & "," & WeekOfYearFiscal ( Date ( 1 ; 5 ; 2016 ) ; 2 ) & "," & WeekOfYearFiscal ( Date ( 1 ; 5 ; 2016 ) ; 3 ) & "," & WeekOfYearFiscal ( Date ( 1 ; 5 ; 2016 ) ; 4 ) & "," & WeekOfYearFiscal ( Date ( 1 ; 5 ; 2016 ) ; 5 ) & "," & WeekOfYearFiscal ( Date ( 1 ; 5 ; 2016 ) ; 6 ) & "," & WeekOfYearFiscal ( Date ( 1 ; 5 ; 2016 ) ; 7 ) & "," & WeekOfYearFiscal ( Date ( 1 ; 5 ; 2016 ) ; 8 )	0	1/1/0	1,1,1,2,1,1,1,1,1
+WeekOfYearFiscal ( Date ( 1 ; 6 ; 2016 ) ; 0 ) & "," & WeekOfYearFiscal ( Date ( 1 ; 6 ; 2016 ) ; 1 ) & "," & WeekOfYearFiscal ( Date ( 1 ; 6 ; 2016 ) ; 2 ) & "," & WeekOfYearFiscal ( Date ( 1 ; 6 ; 2016 ) ; 3 ) & "," & WeekOfYearFiscal ( Date ( 1 ; 6 ; 2016 ) ; 4 ) & "," & WeekOfYearFiscal ( Date ( 1 ; 6 ; 2016 ) ; 5 ) & "," & WeekOfYearFiscal ( Date ( 1 ; 6 ; 2016 ) ; 6 ) & "," & WeekOfYearFiscal ( Date ( 1 ; 6 ; 2016 ) ; 7 ) & "," & WeekOfYearFiscal ( Date ( 1 ; 6 ; 2016 ) ; 8 )	0	1/1/0	1,1,1,2,2,1,1,1,1
+WeekOfYearFiscal ( Date ( 1 ; 7 ; 2016 ) ; 0 ) & "," & WeekOfYearFiscal ( Date ( 1 ; 7 ; 2016 ) ; 1 ) & "," & WeekOfYearFiscal ( Date ( 1 ; 7 ; 2016 ) ; 2 ) & "," & WeekOfYearFiscal ( Date ( 1 ; 7 ; 2016 ) ; 3 ) & "," & WeekOfYearFiscal ( Date ( 1 ; 7 ; 2016 ) ; 4 ) & "," & WeekOfYearFiscal ( Date ( 1 ; 7 ; 2016 ) ; 5 ) & "," & WeekOfYearFiscal ( Date ( 1 ; 7 ; 2016 ) ; 6 ) & "," & WeekOfYearFiscal ( Date ( 1 ; 7 ; 2016 ) ; 7 ) & "," & WeekOfYearFiscal ( Date ( 1 ; 7 ; 2016 ) ; 8 )	0	1/1/0	1,1,1,2,2,2,1,1,1
+WeekOfYearFiscal ( Date ( 12 ; 25 ; 2016 ) ; 0 ) & "," & WeekOfYearFiscal ( Date ( 12 ; 25 ; 2016 ) ; 1 ) & "," & WeekOfYearFiscal ( Date ( 12 ; 25 ; 2016 ) ; 2 ) & "," & WeekOfYearFiscal ( Date ( 12 ; 25 ; 2016 ) ; 3 ) & "," & WeekOfYearFiscal ( Date ( 12 ; 25 ; 2016 ) ; 4 ) & "," & WeekOfYearFiscal ( Date ( 12 ; 25 ; 2016 ) ; 5 ) & "," & WeekOfYearFiscal ( Date ( 12 ; 25 ; 2016 ) ; 6 ) & "," & WeekOfYearFiscal ( Date ( 12 ; 25 ; 2016 ) ; 7 ) & "," & WeekOfYearFiscal ( Date ( 12 ; 25 ; 2016 ) ; 8 )	0	1/1/0	52,52,51,52,52,52,52,52,52
+WeekOfYearFiscal ( Date ( 12 ; 26 ; 2016 ) ; 0 ) & "," & WeekOfYearFiscal ( Date ( 12 ; 26 ; 2016 ) ; 1 ) & "," & WeekOfYearFiscal ( Date ( 12 ; 26 ; 2016 ) ; 2 ) & "," & WeekOfYearFiscal ( Date ( 12 ; 26 ; 2016 ) ; 3 ) & "," & WeekOfYearFiscal ( Date ( 12 ; 26 ; 2016 ) ; 4 ) & "," & WeekOfYearFiscal ( Date ( 12 ; 26 ; 2016 ) ; 5 ) & "," & WeekOfYearFiscal ( Date ( 12 ; 26 ; 2016 ) ; 6 ) & "," & WeekOfYearFiscal ( Date ( 12 ; 26 ; 2016 ) ; 7 ) & "," & WeekOfYearFiscal ( Date ( 12 ; 26 ; 2016 ) ; 8 )	0	1/1/0	52,52,52,52,52,52,52,52,52
+WeekOfYearFiscal ( Date ( 12 ; 27 ; 2016 ) ; 0 ) & "," & WeekOfYearFiscal ( Date ( 12 ; 27 ; 2016 ) ; 1 ) & "," & WeekOfYearFiscal ( Date ( 12 ; 27 ; 2016 ) ; 2 ) & "," & WeekOfYearFiscal ( Date ( 12 ; 27 ; 2016 ) ; 3 ) & "," & WeekOfYearFiscal ( Date ( 12 ; 27 ; 2016 ) ; 4 ) & "," & WeekOfYearFiscal ( Date ( 12 ; 27 ; 2016 ) ; 5 ) & "," & WeekOfYearFiscal ( Date ( 12 ; 27 ; 2016 ) ; 6 ) & "," & WeekOfYearFiscal ( Date ( 12 ; 27 ; 2016 ) ; 7 ) & "," & WeekOfYearFiscal ( Date ( 12 ; 27 ; 2016 ) ; 8 )	0	1/1/0	52,52,52,53,52,52,52,52,52
+WeekOfYearFiscal ( Date ( 12 ; 28 ; 2016 ) ; 0 ) & "," & WeekOfYearFiscal ( Date ( 12 ; 28 ; 2016 ) ; 1 ) & "," & WeekOfYearFiscal ( Date ( 12 ; 28 ; 2016 ) ; 2 ) & "," & WeekOfYearFiscal ( Date ( 12 ; 28 ; 2016 ) ; 3 ) & "," & WeekOfYearFiscal ( Date ( 12 ; 28 ; 2016 ) ; 4 ) & "," & WeekOfYearFiscal ( Date ( 12 ; 28 ; 2016 ) ; 5 ) & "," & WeekOfYearFiscal ( Date ( 12 ; 28 ; 2016 ) ; 6 ) & "," & WeekOfYearFiscal ( Date ( 12 ; 28 ; 2016 ) ; 7 ) & "," & WeekOfYearFiscal ( Date ( 12 ; 28 ; 2016 ) ; 8 )	0	1/1/0	52,52,52,53,53,52,52,52,52
+WeekOfYearFiscal ( Date ( 12 ; 29 ; 2016 ) ; 0 ) & "," & WeekOfYearFiscal ( Date ( 12 ; 29 ; 2016 ) ; 1 ) & "," & WeekOfYearFiscal ( Date ( 12 ; 29 ; 2016 ) ; 2 ) & "," & WeekOfYearFiscal ( Date ( 12 ; 29 ; 2016 ) ; 3 ) & "," & WeekOfYearFiscal ( Date ( 12 ; 29 ; 2016 ) ; 4 ) & "," & WeekOfYearFiscal ( Date ( 12 ; 29 ; 2016 ) ; 5 ) & "," & WeekOfYearFiscal ( Date ( 12 ; 29 ; 2016 ) ; 6 ) & "," & WeekOfYearFiscal ( Date ( 12 ; 29 ; 2016 ) ; 7 ) & "," & WeekOfYearFiscal ( Date ( 12 ; 29 ; 2016 ) ; 8 )	0	1/1/0	52,52,52,53,53,1,52,52,52
+WeekOfYearFiscal ( Date ( 12 ; 30 ; 2016 ) ; 0 ) & "," & WeekOfYearFiscal ( Date ( 12 ; 30 ; 2016 ) ; 1 ) & "," & WeekOfYearFiscal ( Date ( 12 ; 30 ; 2016 ) ; 2 ) & "," & WeekOfYearFiscal ( Date ( 12 ; 30 ; 2016 ) ; 3 ) & "," & WeekOfYearFiscal ( Date ( 12 ; 30 ; 2016 ) ; 4 ) & "," & WeekOfYearFiscal ( Date ( 12 ; 30 ; 2016 ) ; 5 ) & "," & WeekOfYearFiscal ( Date ( 12 ; 30 ; 2016 ) ; 6 ) & "," & WeekOfYearFiscal ( Date ( 12 ; 30 ; 2016 ) ; 7 ) & "," & WeekOfYearFiscal ( Date ( 12 ; 30 ; 2016 ) ; 8 )	0	1/1/0	52,52,52,53,53,1,1,52,52
+WeekOfYearFiscal ( Date ( 12 ; 31 ; 2016 ) ; 0 ) & "," & WeekOfYearFiscal ( Date ( 12 ; 31 ; 2016 ) ; 1 ) & "," & WeekOfYearFiscal ( Date ( 12 ; 31 ; 2016 ) ; 2 ) & "," & WeekOfYearFiscal ( Date ( 12 ; 31 ; 2016 ) ; 3 ) & "," & WeekOfYearFiscal ( Date ( 12 ; 31 ; 2016 ) ; 4 ) & "," & WeekOfYearFiscal ( Date ( 12 ; 31 ; 2016 ) ; 5 ) & "," & WeekOfYearFiscal ( Date ( 12 ; 31 ; 2016 ) ; 6 ) & "," & WeekOfYearFiscal ( Date ( 12 ; 31 ; 2016 ) ; 7 ) & "," & WeekOfYearFiscal ( Date ( 12 ; 31 ; 2016 ) ; 8 )	0	1/1/0	52,52,52,53,53,1,1,1,1
+WeekOfYearFiscal ( Date ( 1 ; 1 ; 2017 ) ; 0 ) & "," & WeekOfYearFiscal ( Date ( 1 ; 1 ; 2017 ) ; 1 ) & "," & WeekOfYearFiscal ( Date ( 1 ; 1 ; 2017 ) ; 2 ) & "," & WeekOfYearFiscal ( Date ( 1 ; 1 ; 2017 ) ; 3 ) & "," & WeekOfYearFiscal ( Date ( 1 ; 1 ; 2017 ) ; 4 ) & "," & WeekOfYearFiscal ( Date ( 1 ; 1 ; 2017 ) ; 5 ) & "," & WeekOfYearFiscal ( Date ( 1 ; 1 ; 2017 ) ; 6 ) & "," & WeekOfYearFiscal ( Date ( 1 ; 1 ; 2017 ) ; 7 ) & "," & WeekOfYearFiscal ( Date ( 1 ; 1 ; 2017 ) ; 8 )	0	1/1/0	1,1,52,53,53,1,1,1,1
+WeekOfYearFiscal ( Date ( 1 ; 2 ; 2017 ) ; 0 ) & "," & WeekOfYearFiscal ( Date ( 1 ; 2 ; 2017 ) ; 1 ) & "," & WeekOfYearFiscal ( Date ( 1 ; 2 ; 2017 ) ; 2 ) & "," & WeekOfYearFiscal ( Date ( 1 ; 2 ; 2017 ) ; 3 ) & "," & WeekOfYearFiscal ( Date ( 1 ; 2 ; 2017 ) ; 4 ) & "," & WeekOfYearFiscal ( Date ( 1 ; 2 ; 2017 ) ; 5 ) & "," & WeekOfYearFiscal ( Date ( 1 ; 2 ; 2017 ) ; 6 ) & "," & WeekOfYearFiscal ( Date ( 1 ; 2 ; 2017 ) ; 7 ) & "," & WeekOfYearFiscal ( Date ( 1 ; 2 ; 2017 ) ; 8 )	0	1/1/0	1,1,1,53,53,1,1,1,1
+WeekOfYearFiscal ( Date ( 1 ; 3 ; 2017 ) ; 0 ) & "," & WeekOfYearFiscal ( Date ( 1 ; 3 ; 2017 ) ; 1 ) & "," & WeekOfYearFiscal ( Date ( 1 ; 3 ; 2017 ) ; 2 ) & "," & WeekOfYearFiscal ( Date ( 1 ; 3 ; 2017 ) ; 3 ) & "," & WeekOfYearFiscal ( Date ( 1 ; 3 ; 2017 ) ; 4 ) & "," & WeekOfYearFiscal ( Date ( 1 ; 3 ; 2017 ) ; 5 ) & "," & WeekOfYearFiscal ( Date ( 1 ; 3 ; 2017 ) ; 6 ) & "," & WeekOfYearFiscal ( Date ( 1 ; 3 ; 2017 ) ; 7 ) & "," & WeekOfYearFiscal ( Date ( 1 ; 3 ; 2017 ) ; 8 )	0	1/1/0	1,1,1,1,53,1,1,1,1
+WeekOfYearFiscal ( Date ( 1 ; 4 ; 2017 ) ; 0 ) & "," & WeekOfYearFiscal ( Date ( 1 ; 4 ; 2017 ) ; 1 ) & "," & WeekOfYearFiscal ( Date ( 1 ; 4 ; 2017 ) ; 2 ) & "," & WeekOfYearFiscal ( Date ( 1 ; 4 ; 2017 ) ; 3 ) & "," & WeekOfYearFiscal ( Date ( 1 ; 4 ; 2017 ) ; 4 ) & "," & WeekOfYearFiscal ( Date ( 1 ; 4 ; 2017 ) ; 5 ) & "," & WeekOfYearFiscal ( Date ( 1 ; 4 ; 2017 ) ; 6 ) & "," & WeekOfYearFiscal ( Date ( 1 ; 4 ; 2017 ) ; 7 ) & "," & WeekOfYearFiscal ( Date ( 1 ; 4 ; 2017 ) ; 8 )	0	1/1/0	1,1,1,1,1,1,1,1,1
+WeekOfYearFiscal ( Date ( 1 ; 5 ; 2017 ) ; 0 ) & "," & WeekOfYearFiscal ( Date ( 1 ; 5 ; 2017 ) ; 1 ) & "," & WeekOfYearFiscal ( Date ( 1 ; 5 ; 2017 ) ; 2 ) & "," & WeekOfYearFiscal ( Date ( 1 ; 5 ; 2017 ) ; 3 ) & "," & WeekOfYearFiscal ( Date ( 1 ; 5 ; 2017 ) ; 4 ) & "," & WeekOfYearFiscal ( Date ( 1 ; 5 ; 2017 ) ; 5 ) & "," & WeekOfYearFiscal ( Date ( 1 ; 5 ; 2017 ) ; 6 ) & "," & WeekOfYearFiscal ( Date ( 1 ; 5 ; 2017 ) ; 7 ) & "," & WeekOfYearFiscal ( Date ( 1 ; 5 ; 2017 ) ; 8 )	0	1/1/0	1,1,1,1,1,2,1,1,1
+WeekOfYearFiscal ( Date ( 1 ; 6 ; 2017 ) ; 0 ) & "," & WeekOfYearFiscal ( Date ( 1 ; 6 ; 2017 ) ; 1 ) & "," & WeekOfYearFiscal ( Date ( 1 ; 6 ; 2017 ) ; 2 ) & "," & WeekOfYearFiscal ( Date ( 1 ; 6 ; 2017 ) ; 3 ) & "," & WeekOfYearFiscal ( Date ( 1 ; 6 ; 2017 ) ; 4 ) & "," & WeekOfYearFiscal ( Date ( 1 ; 6 ; 2017 ) ; 5 ) & "," & WeekOfYearFiscal ( Date ( 1 ; 6 ; 2017 ) ; 6 ) & "," & WeekOfYearFiscal ( Date ( 1 ; 6 ; 2017 ) ; 7 ) & "," & WeekOfYearFiscal ( Date ( 1 ; 6 ; 2017 ) ; 8 )	0	1/1/0	1,1,1,1,1,2,2,1,1
+WeekOfYearFiscal ( Date ( 1 ; 7 ; 2017 ) ; 0 ) & "," & WeekOfYearFiscal ( Date ( 1 ; 7 ; 2017 ) ; 1 ) & "," & WeekOfYearFiscal ( Date ( 1 ; 7 ; 2017 ) ; 2 ) & "," & WeekOfYearFiscal ( Date ( 1 ; 7 ; 2017 ) ; 3 ) & "," & WeekOfYearFiscal ( Date ( 1 ; 7 ; 2017 ) ; 4 ) & "," & WeekOfYearFiscal ( Date ( 1 ; 7 ; 2017 ) ; 5 ) & "," & WeekOfYearFiscal ( Date ( 1 ; 7 ; 2017 ) ; 6 ) & "," & WeekOfYearFiscal ( Date ( 1 ; 7 ; 2017 ) ; 7 ) & "," & WeekOfYearFiscal ( Date ( 1 ; 7 ; 2017 ) ; 8 )	0	1/1/0	1,1,1,1,1,2,2,2,2
+WeekOfYearFiscal ( Date ( 12 ; 25 ; 2017 ) ; 0 ) & "," & WeekOfYearFiscal ( Date ( 12 ; 25 ; 2017 ) ; 1 ) & "," & WeekOfYearFiscal ( Date ( 12 ; 25 ; 2017 ) ; 2 ) & "," & WeekOfYearFiscal ( Date ( 12 ; 25 ; 2017 ) ; 3 ) & "," & WeekOfYearFiscal ( Date ( 12 ; 25 ; 2017 ) ; 4 ) & "," & WeekOfYearFiscal ( Date ( 12 ; 25 ; 2017 ) ; 5 ) & "," & WeekOfYearFiscal ( Date ( 12 ; 25 ; 2017 ) ; 6 ) & "," & WeekOfYearFiscal ( Date ( 12 ; 25 ; 2017 ) ; 7 ) & "," & WeekOfYearFiscal ( Date ( 12 ; 25 ; 2017 ) ; 8 )	0	1/1/0	52,52,52,51,51,52,52,52,52
+WeekOfYearFiscal ( Date ( 12 ; 26 ; 2017 ) ; 0 ) & "," & WeekOfYearFiscal ( Date ( 12 ; 26 ; 2017 ) ; 1 ) & "," & WeekOfYearFiscal ( Date ( 12 ; 26 ; 2017 ) ; 2 ) & "," & WeekOfYearFiscal ( Date ( 12 ; 26 ; 2017 ) ; 3 ) & "," & WeekOfYearFiscal ( Date ( 12 ; 26 ; 2017 ) ; 4 ) & "," & WeekOfYearFiscal ( Date ( 12 ; 26 ; 2017 ) ; 5 ) & "," & WeekOfYearFiscal ( Date ( 12 ; 26 ; 2017 ) ; 6 ) & "," & WeekOfYearFiscal ( Date ( 12 ; 26 ; 2017 ) ; 7 ) & "," & WeekOfYearFiscal ( Date ( 12 ; 26 ; 2017 ) ; 8 )	0	1/1/0	52,52,52,52,51,52,52,52,52
+WeekOfYearFiscal ( Date ( 12 ; 27 ; 2017 ) ; 0 ) & "," & WeekOfYearFiscal ( Date ( 12 ; 27 ; 2017 ) ; 1 ) & "," & WeekOfYearFiscal ( Date ( 12 ; 27 ; 2017 ) ; 2 ) & "," & WeekOfYearFiscal ( Date ( 12 ; 27 ; 2017 ) ; 3 ) & "," & WeekOfYearFiscal ( Date ( 12 ; 27 ; 2017 ) ; 4 ) & "," & WeekOfYearFiscal ( Date ( 12 ; 27 ; 2017 ) ; 5 ) & "," & WeekOfYearFiscal ( Date ( 12 ; 27 ; 2017 ) ; 6 ) & "," & WeekOfYearFiscal ( Date ( 12 ; 27 ; 2017 ) ; 7 ) & "," & WeekOfYearFiscal ( Date ( 12 ; 27 ; 2017 ) ; 8 )	0	1/1/0	52,52,52,52,52,52,52,52,52
+WeekOfYearFiscal ( Date ( 12 ; 28 ; 2017 ) ; 0 ) & "," & WeekOfYearFiscal ( Date ( 12 ; 28 ; 2017 ) ; 1 ) & "," & WeekOfYearFiscal ( Date ( 12 ; 28 ; 2017 ) ; 2 ) & "," & WeekOfYearFiscal ( Date ( 12 ; 28 ; 2017 ) ; 3 ) & "," & WeekOfYearFiscal ( Date ( 12 ; 28 ; 2017 ) ; 4 ) & "," & WeekOfYearFiscal ( Date ( 12 ; 28 ; 2017 ) ; 5 ) & "," & WeekOfYearFiscal ( Date ( 12 ; 28 ; 2017 ) ; 6 ) & "," & WeekOfYearFiscal ( Date ( 12 ; 28 ; 2017 ) ; 7 ) & "," & WeekOfYearFiscal ( Date ( 12 ; 28 ; 2017 ) ; 8 )	0	1/1/0	52,52,52,52,52,53,52,52,52
+WeekOfYearFiscal ( Date ( 12 ; 29 ; 2017 ) ; 0 ) & "," & WeekOfYearFiscal ( Date ( 12 ; 29 ; 2017 ) ; 1 ) & "," & WeekOfYearFiscal ( Date ( 12 ; 29 ; 2017 ) ; 2 ) & "," & WeekOfYearFiscal ( Date ( 12 ; 29 ; 2017 ) ; 3 ) & "," & WeekOfYearFiscal ( Date ( 12 ; 29 ; 2017 ) ; 4 ) & "," & WeekOfYearFiscal ( Date ( 12 ; 29 ; 2017 ) ; 5 ) & "," & WeekOfYearFiscal ( Date ( 12 ; 29 ; 2017 ) ; 6 ) & "," & WeekOfYearFiscal ( Date ( 12 ; 29 ; 2017 ) ; 7 ) & "," & WeekOfYearFiscal ( Date ( 12 ; 29 ; 2017 ) ; 8 )	0	1/1/0	52,52,52,52,52,53,1,52,52
+WeekOfYearFiscal ( Date ( 12 ; 30 ; 2017 ) ; 0 ) & "," & WeekOfYearFiscal ( Date ( 12 ; 30 ; 2017 ) ; 1 ) & "," & WeekOfYearFiscal ( Date ( 12 ; 30 ; 2017 ) ; 2 ) & "," & WeekOfYearFiscal ( Date ( 12 ; 30 ; 2017 ) ; 3 ) & "," & WeekOfYearFiscal ( Date ( 12 ; 30 ; 2017 ) ; 4 ) & "," & WeekOfYearFiscal ( Date ( 12 ; 30 ; 2017 ) ; 5 ) & "," & WeekOfYearFiscal ( Date ( 12 ; 30 ; 2017 ) ; 6 ) & "," & WeekOfYearFiscal ( Date ( 12 ; 30 ; 2017 ) ; 7 ) & "," & WeekOfYearFiscal ( Date ( 12 ; 30 ; 2017 ) ; 8 )	0	1/1/0	52,52,52,52,52,53,1,1,1
+WeekOfYearFiscal ( Date ( 12 ; 31 ; 2017 ) ; 0 ) & "," & WeekOfYearFiscal ( Date ( 12 ; 31 ; 2017 ) ; 1 ) & "," & WeekOfYearFiscal ( Date ( 12 ; 31 ; 2017 ) ; 2 ) & "," & WeekOfYearFiscal ( Date ( 12 ; 31 ; 2017 ) ; 3 ) & "," & WeekOfYearFiscal ( Date ( 12 ; 31 ; 2017 ) ; 4 ) & "," & WeekOfYearFiscal ( Date ( 12 ; 31 ; 2017 ) ; 5 ) & "," & WeekOfYearFiscal ( Date ( 12 ; 31 ; 2017 ) ; 6 ) & "," & WeekOfYearFiscal ( Date ( 12 ; 31 ; 2017 ) ; 7 ) & "," & WeekOfYearFiscal ( Date ( 12 ; 31 ; 2017 ) ; 8 )	0	1/1/0	1,1,52,52,52,53,1,1,1
+WeekOfYearFiscal ( Date ( 1 ; 1 ; 2018 ) ; 0 ) & "," & WeekOfYearFiscal ( Date ( 1 ; 1 ; 2018 ) ; 1 ) & "," & WeekOfYearFiscal ( Date ( 1 ; 1 ; 2018 ) ; 2 ) & "," & WeekOfYearFiscal ( Date ( 1 ; 1 ; 2018 ) ; 3 ) & "," & WeekOfYearFiscal ( Date ( 1 ; 1 ; 2018 ) ; 4 ) & "," & WeekOfYearFiscal ( Date ( 1 ; 1 ; 2018 ) ; 5 ) & "," & WeekOfYearFiscal ( Date ( 1 ; 1 ; 2018 ) ; 6 ) & "," & WeekOfYearFiscal ( Date ( 1 ; 1 ; 2018 ) ; 7 ) & "," & WeekOfYearFiscal ( Date ( 1 ; 1 ; 2018 ) ; 8 )	0	1/1/0	1,1,1,52,52,53,1,1,1
+WeekOfYearFiscal ( Date ( 1 ; 2 ; 2018 ) ; 0 ) & "," & WeekOfYearFiscal ( Date ( 1 ; 2 ; 2018 ) ; 1 ) & "," & WeekOfYearFiscal ( Date ( 1 ; 2 ; 2018 ) ; 2 ) & "," & WeekOfYearFiscal ( Date ( 1 ; 2 ; 2018 ) ; 3 ) & "," & WeekOfYearFiscal ( Date ( 1 ; 2 ; 2018 ) ; 4 ) & "," & WeekOfYearFiscal ( Date ( 1 ; 2 ; 2018 ) ; 5 ) & "," & WeekOfYearFiscal ( Date ( 1 ; 2 ; 2018 ) ; 6 ) & "," & WeekOfYearFiscal ( Date ( 1 ; 2 ; 2018 ) ; 7 ) & "," & WeekOfYearFiscal ( Date ( 1 ; 2 ; 2018 ) ; 8 )	0	1/1/0	1,1,1,1,52,53,1,1,1
+WeekOfYearFiscal ( Date ( 1 ; 3 ; 2018 ) ; 0 ) & "," & WeekOfYearFiscal ( Date ( 1 ; 3 ; 2018 ) ; 1 ) & "," & WeekOfYearFiscal ( Date ( 1 ; 3 ; 2018 ) ; 2 ) & "," & WeekOfYearFiscal ( Date ( 1 ; 3 ; 2018 ) ; 3 ) & "," & WeekOfYearFiscal ( Date ( 1 ; 3 ; 2018 ) ; 4 ) & "," & WeekOfYearFiscal ( Date ( 1 ; 3 ; 2018 ) ; 5 ) & "," & WeekOfYearFiscal ( Date ( 1 ; 3 ; 2018 ) ; 6 ) & "," & WeekOfYearFiscal ( Date ( 1 ; 3 ; 2018 ) ; 7 ) & "," & WeekOfYearFiscal ( Date ( 1 ; 3 ; 2018 ) ; 8 )	0	1/1/0	1,1,1,1,1,53,1,1,1
+WeekOfYearFiscal ( Date ( 1 ; 4 ; 2018 ) ; 0 ) & "," & WeekOfYearFiscal ( Date ( 1 ; 4 ; 2018 ) ; 1 ) & "," & WeekOfYearFiscal ( Date ( 1 ; 4 ; 2018 ) ; 2 ) & "," & WeekOfYearFiscal ( Date ( 1 ; 4 ; 2018 ) ; 3 ) & "," & WeekOfYearFiscal ( Date ( 1 ; 4 ; 2018 ) ; 4 ) & "," & WeekOfYearFiscal ( Date ( 1 ; 4 ; 2018 ) ; 5 ) & "," & WeekOfYearFiscal ( Date ( 1 ; 4 ; 2018 ) ; 6 ) & "," & WeekOfYearFiscal ( Date ( 1 ; 4 ; 2018 ) ; 7 ) & "," & WeekOfYearFiscal ( Date ( 1 ; 4 ; 2018 ) ; 8 )	0	1/1/0	1,1,1,1,1,1,1,1,1
+WeekOfYearFiscal ( Date ( 1 ; 5 ; 2018 ) ; 0 ) & "," & WeekOfYearFiscal ( Date ( 1 ; 5 ; 2018 ) ; 1 ) & "," & WeekOfYearFiscal ( Date ( 1 ; 5 ; 2018 ) ; 2 ) & "," & WeekOfYearFiscal ( Date ( 1 ; 5 ; 2018 ) ; 3 ) & "," & WeekOfYearFiscal ( Date ( 1 ; 5 ; 2018 ) ; 4 ) & "," & WeekOfYearFiscal ( Date ( 1 ; 5 ; 2018 ) ; 5 ) & "," & WeekOfYearFiscal ( Date ( 1 ; 5 ; 2018 ) ; 6 ) & "," & WeekOfYearFiscal ( Date ( 1 ; 5 ; 2018 ) ; 7 ) & "," & WeekOfYearFiscal ( Date ( 1 ; 5 ; 2018 ) ; 8 )	0	1/1/0	1,1,1,1,1,1,2,1,1
+WeekOfYearFiscal ( Date ( 1 ; 6 ; 2018 ) ; 0 ) & "," & WeekOfYearFiscal ( Date ( 1 ; 6 ; 2018 ) ; 1 ) & "," & WeekOfYearFiscal ( Date ( 1 ; 6 ; 2018 ) ; 2 ) & "," & WeekOfYearFiscal ( Date ( 1 ; 6 ; 2018 ) ; 3 ) & "," & WeekOfYearFiscal ( Date ( 1 ; 6 ; 2018 ) ; 4 ) & "," & WeekOfYearFiscal ( Date ( 1 ; 6 ; 2018 ) ; 5 ) & "," & WeekOfYearFiscal ( Date ( 1 ; 6 ; 2018 ) ; 6 ) & "," & WeekOfYearFiscal ( Date ( 1 ; 6 ; 2018 ) ; 7 ) & "," & WeekOfYearFiscal ( Date ( 1 ; 6 ; 2018 ) ; 8 )	0	1/1/0	1,1,1,1,1,1,2,2,2
+WeekOfYearFiscal ( Date ( 1 ; 7 ; 2018 ) ; 0 ) & "," & WeekOfYearFiscal ( Date ( 1 ; 7 ; 2018 ) ; 1 ) & "," & WeekOfYearFiscal ( Date ( 1 ; 7 ; 2018 ) ; 2 ) & "," & WeekOfYearFiscal ( Date ( 1 ; 7 ; 2018 ) ; 3 ) & "," & WeekOfYearFiscal ( Date ( 1 ; 7 ; 2018 ) ; 4 ) & "," & WeekOfYearFiscal ( Date ( 1 ; 7 ; 2018 ) ; 5 ) & "," & WeekOfYearFiscal ( Date ( 1 ; 7 ; 2018 ) ; 6 ) & "," & WeekOfYearFiscal ( Date ( 1 ; 7 ; 2018 ) ; 7 ) & "," & WeekOfYearFiscal ( Date ( 1 ; 7 ; 2018 ) ; 8 )	0	1/1/0	2,2,1,1,1,1,2,2,2
+WeekOfYearFiscal ( Date ( 12 ; 25 ; 2018 ) ; 0 ) & "," & WeekOfYearFiscal ( Date ( 12 ; 25 ; 2018 ) ; 1 ) & "," & WeekOfYearFiscal ( Date ( 12 ; 25 ; 2018 ) ; 2 ) & "," & WeekOfYearFiscal ( Date ( 12 ; 25 ; 2018 ) ; 3 ) & "," & WeekOfYearFiscal ( Date ( 12 ; 25 ; 2018 ) ; 4 ) & "," & WeekOfYearFiscal ( Date ( 12 ; 25 ; 2018 ) ; 5 ) & "," & WeekOfYearFiscal ( Date ( 12 ; 25 ; 2018 ) ; 6 ) & "," & WeekOfYearFiscal ( Date ( 12 ; 25 ; 2018 ) ; 7 ) & "," & WeekOfYearFiscal ( Date ( 12 ; 25 ; 2018 ) ; 8 )	0	1/1/0	52,52,52,52,51,51,52,52,52
+WeekOfYearFiscal ( Date ( 12 ; 26 ; 2018 ) ; 0 ) & "," & WeekOfYearFiscal ( Date ( 12 ; 26 ; 2018 ) ; 1 ) & "," & WeekOfYearFiscal ( Date ( 12 ; 26 ; 2018 ) ; 2 ) & "," & WeekOfYearFiscal ( Date ( 12 ; 26 ; 2018 ) ; 3 ) & "," & WeekOfYearFiscal ( Date ( 12 ; 26 ; 2018 ) ; 4 ) & "," & WeekOfYearFiscal ( Date ( 12 ; 26 ; 2018 ) ; 5 ) & "," & WeekOfYearFiscal ( Date ( 12 ; 26 ; 2018 ) ; 6 ) & "," & WeekOfYearFiscal ( Date ( 12 ; 26 ; 2018 ) ; 7 ) & "," & WeekOfYearFiscal ( Date ( 12 ; 26 ; 2018 ) ; 8 )	0	1/1/0	52,52,52,52,52,51,52,52,52
+WeekOfYearFiscal ( Date ( 12 ; 27 ; 2018 ) ; 0 ) & "," & WeekOfYearFiscal ( Date ( 12 ; 27 ; 2018 ) ; 1 ) & "," & WeekOfYearFiscal ( Date ( 12 ; 27 ; 2018 ) ; 2 ) & "," & WeekOfYearFiscal ( Date ( 12 ; 27 ; 2018 ) ; 3 ) & "," & WeekOfYearFiscal ( Date ( 12 ; 27 ; 2018 ) ; 4 ) & "," & WeekOfYearFiscal ( Date ( 12 ; 27 ; 2018 ) ; 5 ) & "," & WeekOfYearFiscal ( Date ( 12 ; 27 ; 2018 ) ; 6 ) & "," & WeekOfYearFiscal ( Date ( 12 ; 27 ; 2018 ) ; 7 ) & "," & WeekOfYearFiscal ( Date ( 12 ; 27 ; 2018 ) ; 8 )	0	1/1/0	52,52,52,52,52,52,52,52,52
+WeekOfYearFiscal ( Date ( 12 ; 28 ; 2018 ) ; 0 ) & "," & WeekOfYearFiscal ( Date ( 12 ; 28 ; 2018 ) ; 1 ) & "," & WeekOfYearFiscal ( Date ( 12 ; 28 ; 2018 ) ; 2 ) & "," & WeekOfYearFiscal ( Date ( 12 ; 28 ; 2018 ) ; 3 ) & "," & WeekOfYearFiscal ( Date ( 12 ; 28 ; 2018 ) ; 4 ) & "," & WeekOfYearFiscal ( Date ( 12 ; 28 ; 2018 ) ; 5 ) & "," & WeekOfYearFiscal ( Date ( 12 ; 28 ; 2018 ) ; 6 ) & "," & WeekOfYearFiscal ( Date ( 12 ; 28 ; 2018 ) ; 7 ) & "," & WeekOfYearFiscal ( Date ( 12 ; 28 ; 2018 ) ; 8 )	0	1/1/0	52,52,52,52,52,52,53,52,52
+WeekOfYearFiscal ( Date ( 12 ; 29 ; 2018 ) ; 0 ) & "," & WeekOfYearFiscal ( Date ( 12 ; 29 ; 2018 ) ; 1 ) & "," & WeekOfYearFiscal ( Date ( 12 ; 29 ; 2018 ) ; 2 ) & "," & WeekOfYearFiscal ( Date ( 12 ; 29 ; 2018 ) ; 3 ) & "," & WeekOfYearFiscal ( Date ( 12 ; 29 ; 2018 ) ; 4 ) & "," & WeekOfYearFiscal ( Date ( 12 ; 29 ; 2018 ) ; 5 ) & "," & WeekOfYearFiscal ( Date ( 12 ; 29 ; 2018 ) ; 6 ) & "," & WeekOfYearFiscal ( Date ( 12 ; 29 ; 2018 ) ; 7 ) & "," & WeekOfYearFiscal ( Date ( 12 ; 29 ; 2018 ) ; 8 )	0	1/1/0	52,52,52,52,52,52,53,1,1
+WeekOfYearFiscal ( Date ( 12 ; 30 ; 2018 ) ; 0 ) & "," & WeekOfYearFiscal ( Date ( 12 ; 30 ; 2018 ) ; 1 ) & "," & WeekOfYearFiscal ( Date ( 12 ; 30 ; 2018 ) ; 2 ) & "," & WeekOfYearFiscal ( Date ( 12 ; 30 ; 2018 ) ; 3 ) & "," & WeekOfYearFiscal ( Date ( 12 ; 30 ; 2018 ) ; 4 ) & "," & WeekOfYearFiscal ( Date ( 12 ; 30 ; 2018 ) ; 5 ) & "," & WeekOfYearFiscal ( Date ( 12 ; 30 ; 2018 ) ; 6 ) & "," & WeekOfYearFiscal ( Date ( 12 ; 30 ; 2018 ) ; 7 ) & "," & WeekOfYearFiscal ( Date ( 12 ; 30 ; 2018 ) ; 8 )	0	1/1/0	1,1,52,52,52,52,53,1,1
+WeekOfYearFiscal ( Date ( 12 ; 31 ; 2018 ) ; 0 ) & "," & WeekOfYearFiscal ( Date ( 12 ; 31 ; 2018 ) ; 1 ) & "," & WeekOfYearFiscal ( Date ( 12 ; 31 ; 2018 ) ; 2 ) & "," & WeekOfYearFiscal ( Date ( 12 ; 31 ; 2018 ) ; 3 ) & "," & WeekOfYearFiscal ( Date ( 12 ; 31 ; 2018 ) ; 4 ) & "," & WeekOfYearFiscal ( Date ( 12 ; 31 ; 2018 ) ; 5 ) & "," & WeekOfYearFiscal ( Date ( 12 ; 31 ; 2018 ) ; 6 ) & "," & WeekOfYearFiscal ( Date ( 12 ; 31 ; 2018 ) ; 7 ) & "," & WeekOfYearFiscal ( Date ( 12 ; 31 ; 2018 ) ; 8 )	0	1/1/0	1,1,1,52,52,52,53,1,1
+WeekOfYearFiscal ( Date ( 1 ; 1 ; 2004 ) ; -1 )	0	2/2/0	53
+WeekOfYearFiscal ( Date ( 1 ; 1 ; 2004 ) ; 9 )	0	2/2/0	52
+WeekOfYearFiscal ( Date ( 1 ; 1 ; 2004 ) ; 100 )	0	2/2/0	52
+WeekOfYearFiscal ( Date ( 1 ; 1 ; 2004 ) ; 1.9 )	0	2/2/0	53
+WeekOfYearFiscal ( Date ( 1 ; 1 ; 2004 ) ; 7.9 )	0	2/2/0	52
+WeekOfYearFiscal ( Date ( 1 ; 1 ; 2004 ) ; -0.5 )	0	2/2/0	53
+WeekOfYearFiscal ( Date ( 1 ; 1 ; 2004 ) ; "" )	0	2/2/0	53
+WeekOfYearFiscal ( Date ( 1 ; 1 ; 2004 ) ; "abc" )	0	2/2/0	53
+WeekOfYearFiscal ( Date ( 1 ; 1 ; 2004 ) ; "7" )	0	2/2/0	52
+WeekOfYearFiscal ( Date ( 1 ; 1 ; 2004 ) ; 1/0 )	15	2/2/0	53
+WeekOfYearFiscal ( Date ( 1 ; 1 ; 2004 ) ; 10^20 )	0	2/2/0	53
+WeekOfYearFiscal ( Date ( 1 ; 1 ; 2004 ) ; -10^20 )	0	2/2/0	53
+WeekOfYearFiscal ( Date ( 1 ; 1 ; 2004 ) ; Date ( 1 ; 1 ; 2001 ) )	0	2/2/0	52
+WeekOfYearFiscal ( "" ; 1 )	0	1/1/0	
+WeekOfYearFiscal ( "" ; "" )	0	1/1/0	
+WeekOfYearFiscal ( "abc" ; 1 )	500	2/2/0	?
+WeekOfYearFiscal ( Time ( 1 ; 0 ; 0 ) ; 1 )	0	1/4/0	
+WeekOfYearFiscal ( "1/1/2004" ; 7 )	500	2/2/0	?
+WeekOfYearFiscal ( 731581 ; 7 )	0	2/2/0	52
+WeekOfYearFiscal ( 1/0 ; 1 )	15	2/2/0	?
+WeekOfYearFiscal ( Date ( 1 ; 1 ; 1 ) ; 1 ) & "," & WeekOfYearFiscal ( Date ( 1 ; 1 ; 1 ) ; 2 ) & "," & WeekOfYearFiscal ( Date ( 1 ; 1 ; 1 ) ; 3 ) & "," & WeekOfYearFiscal ( Date ( 1 ; 1 ; 1 ) ; 4 ) & "," & WeekOfYearFiscal ( Date ( 1 ; 1 ; 1 ) ; 5 ) & "," & WeekOfYearFiscal ( Date ( 1 ; 1 ; 1 ) ; 6 ) & "," & WeekOfYearFiscal ( Date ( 1 ; 1 ; 1 ) ; 7 )	0	1/1/0	1,1,52,53,53,1,1
+WeekOfYearFiscal ( Date ( 12 ; 31 ; 4000 ) ; 1 ) & "," & WeekOfYearFiscal ( Date ( 12 ; 31 ; 4000 ) ; 2 ) & "," & WeekOfYearFiscal ( Date ( 12 ; 31 ; 4000 ) ; 3 ) & "," & WeekOfYearFiscal ( Date ( 12 ; 31 ; 4000 ) ; 4 ) & "," & WeekOfYearFiscal ( Date ( 12 ; 31 ; 4000 ) ; 5 ) & "," & WeekOfYearFiscal ( Date ( 12 ; 31 ; 4000 ) ; 6 ) & "," & WeekOfYearFiscal ( Date ( 12 ; 31 ; 4000 ) ; 7 )	0	1/1/0	1,52,52,53,53,1,1
+WeekOfYearFiscal ( Date ( 1 ; 3 ; 4000 ) ; 1 ) & "," & WeekOfYearFiscal ( Date ( 1 ; 3 ; 4000 ) ; 2 ) & "," & WeekOfYearFiscal ( Date ( 1 ; 3 ; 4000 ) ; 3 ) & "," & WeekOfYearFiscal ( Date ( 1 ; 3 ; 4000 ) ; 4 ) & "," & WeekOfYearFiscal ( Date ( 1 ; 3 ; 4000 ) ; 5 ) & "," & WeekOfYearFiscal ( Date ( 1 ; 3 ; 4000 ) ; 6 ) & "," & WeekOfYearFiscal ( Date ( 1 ; 3 ; 4000 ) ; 7 )	0	1/1/0	1,1,53,1,1,1,1
+# Hour, Minute, Seconds: negative, over 24 hours, fractions, conversions, empty and blank
+Hour ( Time ( -1 ; -30 ; -5 ) )	0	2/2/0	-1
+Hour ( -Time ( 1 ; 30 ; 5 ) )	0	2/2/0	-1
+Hour ( Time ( 0 ; 0 ; -1.25 ) )	0	2/2/0	0
+Hour ( Time ( 0 ; 0 ; 1/3 ) )	0	2/2/0	0
+Hour ( 1.5 )	0	2/2/0	0
+Hour ( 3599.9 )	0	2/2/0	0
+Hour ( -3600 )	0	2/2/0	-1
+Hour ( 90 )	0	2/2/0	0
+Hour ( "" )	0	1/1/0	
+Hour ( " " )	0	2/2/0	0
+Hour ( "abc" )	501	2/2/0	?
+Hour ( "1:30 PM" )	501	2/2/0	?
+Hour ( Timestamp ( Date ( 1 ; 1 ; 2001 ) ; Time ( 25 ; 10 ; 5 ) ) )	0	2/2/0	1
+Hour ( Date ( 1 ; 2 ; 1 ) )	0	2/2/0	24
+Hour ( GetAsTime ( " " ) )	0	4/4/0	
+Hour ( GetAsTimestamp ( " " ) )	0	5/5/0	
+Hour ( GetAsNumber ( "" ) )	0	1/1/0	
+Hour ( 10^20 )	501	2/2/0	?
+Hour ( "-1:30" )	0	2/2/0	-1
+Hour ( "1.5" )	0	2/2/0	0
+Hour ( "90" )	0	2/2/0	90
+Hour ( "1:2:3.25" )	0	2/2/0	1
+Hour ( 1/0 )	15	2/2/0	?
+Hour ( "12:00:00 AM" )	501	2/2/0	?
+Hour ( "12 PM" )	501	2/2/0	?
+Minute ( Time ( -1 ; -30 ; -5 ) )	0	2/2/0	-30
+Minute ( -Time ( 1 ; 30 ; 5 ) )	0	2/2/0	-30
+Minute ( Time ( 0 ; 0 ; -1.25 ) )	0	2/2/0	0
+Minute ( Time ( 0 ; 0 ; 1/3 ) )	0	2/2/0	0
+Minute ( 1.5 )	0	2/2/0	0
+Minute ( 3599.9 )	0	2/2/0	59
+Minute ( -3600 )	0	2/2/0	0
+Minute ( 90 )	0	2/2/0	1
+Minute ( "" )	0	1/1/0	
+Minute ( " " )	0	2/2/0	0
+Minute ( "abc" )	501	2/2/0	?
+Minute ( "1:30 PM" )	501	2/2/0	?
+Minute ( Timestamp ( Date ( 1 ; 1 ; 2001 ) ; Time ( 25 ; 10 ; 5 ) ) )	0	2/2/0	10
+Minute ( Date ( 1 ; 2 ; 1 ) )	0	2/2/0	0
+Minute ( GetAsTime ( " " ) )	0	4/4/0	
+Minute ( GetAsTimestamp ( " " ) )	0	5/5/0	
+Minute ( GetAsNumber ( "" ) )	0	1/1/0	
+Minute ( 10^20 )	501	2/2/0	?
+Minute ( "-1:30" )	0	2/2/0	-30
+Minute ( "1.5" )	0	2/2/0	0
+Minute ( "90" )	0	2/2/0	0
+Minute ( "1:2:3.25" )	0	2/2/0	2
+Minute ( 1/0 )	15	2/2/0	?
+Minute ( "12:00:00 AM" )	501	2/2/0	?
+Minute ( "12 PM" )	501	2/2/0	?
+Seconds ( Time ( -1 ; -30 ; -5 ) )	0	2/2/0	-5
+Seconds ( -Time ( 1 ; 30 ; 5 ) )	0	2/2/0	-5
+Seconds ( Time ( 0 ; 0 ; -1.25 ) )	0	2/2/0	-1.25
+Seconds ( Time ( 0 ; 0 ; 1/3 ) )	0	2/2/0	.333333
+Seconds ( 1.5 )	0	2/2/0	1.5
+Seconds ( 3599.9 )	0	2/2/0	59.9
+Seconds ( -3600 )	0	2/2/0	0
+Seconds ( 90 )	0	2/2/0	30
+Seconds ( "" )	0	1/1/0	
+Seconds ( " " )	0	2/2/0	0
+Seconds ( "abc" )	501	2/2/0	?
+Seconds ( "1:30 PM" )	501	2/2/0	?
+Seconds ( Timestamp ( Date ( 1 ; 1 ; 2001 ) ; Time ( 25 ; 10 ; 5 ) ) )	0	2/2/0	5
+Seconds ( Date ( 1 ; 2 ; 1 ) )	0	2/2/0	0
+Seconds ( GetAsTime ( " " ) )	0	4/4/0	
+Seconds ( GetAsTimestamp ( " " ) )	0	5/5/0	
+Seconds ( GetAsNumber ( "" ) )	0	1/1/0	
+Seconds ( 10^20 )	501	2/2/0	?
+Seconds ( "-1:30" )	0	2/2/0	0
+Seconds ( "1.5" )	0	2/2/0	1.5
+Seconds ( "90" )	0	2/2/0	0
+Seconds ( "1:2:3.25" )	0	2/2/0	3.25
+Seconds ( 1/0 )	15	2/2/0	?
+Seconds ( "12:00:00 AM" )	501	2/2/0	?
+Seconds ( "12 PM" )	501	2/2/0	?
+Hour ( Time ( 1000000 ; 0 ; 0 ) )	0	2/2/0	1000000
+Hour ( Time ( 2147483647 ; 0 ; 0 ) )	0	2/2/0	2147483647
+Hour ( Time ( 2147483648 ; 0 ; 0 ) )	501	2/2/0	?
+Hour ( Date ( 1 ; 1 ; 2001 ) )	0	2/2/0	17531640
+Hour ( 2147483647 * 3600 + 3599 )	0	2/2/0	2147483647
+Hour ( 2147483648 * 3600 )	501	2/2/0	?
+Hour ( -7730941132800 )	501	2/2/0	?
+Hour ( Time ( -2147483648 ; 0 ; -1 ) )	0	2/2/0	-2147483648
+Seconds ( Time ( -2147483648 ; 0 ; -1 ) )	0	2/2/0	-1
+Seconds ( Time ( 0 ; 0 ; 59.9999999 ) )	0	2/2/0	59.999999
+Hour ( GetAsTimestamp ( 0 ) )	0	2/2/0	0
+Minute ( Time ( 1 ; 59 ; 60 ) )	0	2/2/0	0
+# Time: whole seconds from hours and minutes, 32-bit hours, empty and text components
+Time ( 0.5 ; 0.5 ; 0.5 )	0	4/4/0	0:30:30.5
+Time ( 1/3 ; 0 ; 0 )	0	4/4/0	0:19:59
+Time ( 1/3 ; 0 ; 0.5 )	0	4/4/0	0:19:59.5
+Time ( -1/3 ; 0 ; 0 )	0	4/4/0	-0:19:59
+Time ( 1/3 ; 1/3 ; 0 )	0	4/4/0	0:20:19
+Time ( 0 ; 1/3 ; 1/3 )	0	4/4/0	0:00:19.333333
+Time ( 1/3 ; 0 ; 1/3 )	0	4/4/0	0:19:59.333333
+Time ( 0.0001 ; 0 ; 0 )	0	4/4/0	0:00:00
+Time ( 0 ; 0.01 ; 0 )	0	4/4/0	0:00:00
+Time ( 0 ; 0.01 ; 0.5 )	0	4/4/0	0:00:00.5
+Time ( 0.1 ; 0.1 ; 0.1 )	0	4/4/0	0:06:06.1
+Time ( -0.5 ; 0 ; 0.25 )	0	4/4/0	-0:29:59.75
+Time ( 1 ; -0.5 ; 0 )	0	4/4/0	0:59:30
+Time ( 1 ; 0 ; -0.25 )	0	4/4/0	0:59:59.75
+Time ( 0 ; -0.01 ; 0.5 )	0	4/4/0	0:00:00.5
+Time ( 2/3 ; 0 ; 0 )	0	4/4/0	0:40:00
+Time ( 0 ; 2/3 ; 0 )	0	4/4/0	0:00:40
+Time ( 0 ; 1.5 ; 0 )	0	4/4/0	0:01:30
+Time ( 1.0000001 ; 0 ; 0 )	0	4/4/0	1:00:00
+Time ( 1.23456789 ; 0 ; 0 )	0	4/4/0	1:14:04
+Time ( 0 ; 0 ; 1.0000001 )	0	4/4/0	0:00:01
+Time ( 0 ; 0 ; 59.9999999 )	0	4/4/0	0:00:59.999999
+Time ( 0 ; 0 ; 2/3 )	0	4/4/0	0:00:00.666666
+Time ( 0 ; 0 ; 0.0000005 )	0	4/4/0	0:00:00
+Time ( 0 ; 0 ; -0.0000005 )	0	4/4/0	0:00:00
+Time ( "" ; "" ; "" )	0	4/4/0	0:00:00
+Time ( "" ; 1 ; "" )	0	4/4/0	0:01:00
+Time ( "abc" ; 1 ; 2 )	0	4/4/0	0:01:02
+Time ( "a1" ; 1 ; 2 )	0	4/4/0	1:01:02
+Time ( 1/0 ; 1 ; 2 )	15	2/2/0	?
+Time ( 1 ; 1/0 ; 0 )	15	2/2/0	?
+Time ( 1 ; 2 ; 1/0 )	15	2/2/0	?
+Time ( 0 ; 0 ; 0 )	0	4/4/0	0:00:00
+Time ( 0 ; 0 ; -0.5 )	0	4/4/0	-0:00:00.5
+Time ( -1 ; 30 ; 0 )	0	4/4/0	-0:30:00
+Time ( 1 ; -90 ; 0 )	0	4/4/0	-0:30:00
+Time ( 23 ; 59 ; 60 )	0	4/4/0	24:00:00
+Time ( "1:00" ; 0 ; 0 )	0	4/4/0	100:00:00
+Time ( Date ( 1 ; 1 ; 2001 ) ; 0 ; 0 )	0	4/4/0	730486:00:00
+Time ( 1000000 ; 0 ; 0 )	0	4/4/0	1000000:00:00
+Time ( 2147483647 ; 0 ; 0 )	0	4/4/0	2147483647:00:00
+Time ( 2147483648 ; 0 ; 0 )	501	2/2/0	?
+Time ( -2147483648 ; 0 ; 0 )	0	4/4/0	-0:00:00
+Time ( -2147483649 ; 0 ; 0 )	501	2/2/0	?
+Time ( 2147483647 ; 59 ; 59.999999 )	0	4/4/0	2147483647:59:59.999999
+Time ( 2147483647 ; 60 ; 0 )	501	2/2/0	?
+Time ( -2147483648 ; 0 ; -1 )	0	4/4/0	-0:00:01
+Time ( -2147483648 ; 0 ; 1 )	0	4/4/0	-2147483647:59:59
+Time ( -2147483647 ; -59 ; -59.999999 )	0	4/4/0	-2147483647:59:59.999999
+Time ( -2147483647 ; -60 ; 0 )	0	4/4/0	-0:00:00
+Time ( 10^20 ; 0 ; 0 )	501	2/2/0	?
+Time ( 0 ; 0 ; 10^20 )	501	2/2/0	?
+Time ( 0 ; 10^15 ; 0 )	501	2/2/0	?
+Time ( 0 ; 0 ; 7730941132799 )	0	4/4/0	2147483647:59:59
+Time ( 0 ; 0 ; 7730941132800 )	501	2/2/0	?
+Time ( 1/3 ; 0 ; 0 ) + 0	0	4/4/0	0:19:59
+GetAsNumber ( Time ( 1/3 ; 0 ; 0 ) )	0	2/2/0	1199
+GetAsNumber ( Time ( 0 ; 0 ; 1/3 ) )	0	2/2/0	.333333
+Time ( 1 ; 0 ; 0 ) + 0	0	4/4/0	1:00:00
+Time ( 2147483647 ; 0 ; 0 ) + 3600	501	2/2/0	?
+Time ( -2147483647 ; 0 ; 0 ) - 3600	501	2/2/0	?
+GetAsTime ( 2147483647 * 3600 )	0	4/4/0	2147483647:00:00
+GetAsTime ( 2147483648 * 3600 )	501	2/2/0	?
+GetAsTime ( -7730941132799 )	0	4/4/0	-2147483647:59:59
+GetAsTime ( -7730941132800 )	501	2/2/0	?
+GetAsTime ( 10^20 )	501	2/2/0	?
+EvaluationError ( Time ( 10^20 ; 0 ; 0 ) )	0	2/2/0	501
+# Timestamp: rollover, empty and ? times, conversions, lenient date text
+Timestamp ( Date ( 1 ; 1 ; 2024 ) ; Time ( 25 ; 0 ; 0 ) )	0	5/5/0	2024/01/02 1:00
+Timestamp ( Date ( 1 ; 1 ; 2024 ) ; Time ( -1 ; 0 ; 0 ) )	0	5/5/0	2023/12/31 23:00
+Timestamp ( Date ( 1 ; 1 ; 1 ) ; Time ( -1 ; 0 ; 0 ) )	500	2/2/0	?
+Timestamp ( Date ( 12 ; 31 ; 4000 ) ; Time ( 23 ; 59 ; 59.999999 ) )	0	5/5/0	4000/12/31 23:59:59.999999
+Timestamp ( Date ( 12 ; 31 ; 4000 ) ; Time ( 24 ; 0 ; 0 ) )	500	2/2/0	?
+Timestamp ( Date ( 1 ; 1 ; 2001 ) ; "" )	0	5/5/0	
+Timestamp ( "" ; Time ( 1 ; 0 ; 0 ) )	500	2/2/0	?
+Timestamp ( "" ; "" )	0	2/1/0	
+Timestamp ( " " ; Time ( 1 ; 0 ; 0 ) )	500	2/2/0	?
+Timestamp ( Date ( 1 ; 1 ; 2001 ) ; " " )	0	5/5/0	
+Timestamp ( "abc" ; Time ( 1 ; 0 ; 0 ) )	500	2/2/0	?
+Timestamp ( Date ( 1 ; 1 ; 2001 ) ; "abc" )	500	2/2/0	?
+Timestamp ( 730486 ; 3600 )	0	5/5/0	2001/01/01 1:00
+Timestamp ( "1/1/2001" ; "1:30 PM" )	500	2/2/0	?
+Timestamp ( "1/1/2001" ; "25:00" )	0	5/5/0	2006/06/25 1:00
+Timestamp ( "1/1/2001" ; "1.5" )	0	5/5/0	2006/06/24 0:00:01.5
+Timestamp ( Timestamp ( Date ( 1 ; 1 ; 2001 ) ; Time ( 5 ; 0 ; 0 ) ) ; Time ( 1 ; 0 ; 0 ) )	0	5/5/0	2001/01/01 1:00
+Timestamp ( Date ( 1 ; 1 ; 2001 ) ; Timestamp ( Date ( 1 ; 1 ; 2001 ) ; Time ( 5 ; 0 ; 0 ) ) )	0	5/5/0	2001/01/01 5:00
+Timestamp ( Date ( 1 ; 1 ; 2001 ) ; Date ( 1 ; 2 ; 1 ) )	0	5/5/0	2001/01/02 0:00
+Timestamp ( Time ( 1 ; 0 ; 0 ) ; Time ( 1 ; 0 ; 0 ) )	500	2/2/0	?
+Timestamp ( 0 ; Time ( 1 ; 0 ; 0 ) )	500	2/2/0	?
+Timestamp ( Date ( 1 ; 1 ; 2001 ) ; 1.5 )	0	5/5/0	2001/01/01 0:00:01.5
+Timestamp ( Date ( 1 ; 1 ; 2001 ) ; 10^20 )	500	2/2/0	?
+Timestamp ( 1/0 ; 1 )	15	2/2/0	?
+Timestamp ( Date ( 1 ; 1 ; 2001 ) ; 1/0 )	15	3/3/0	2001/01/01
+Timestamp ( "abc" ; 1/0 )	15	2/1/0	abc
+Timestamp ( "" ; 1/0 )	15	2/1/0	
+Timestamp ( "01-02-2003" ; Time ( 1 ; 0 ; 0 ) )	0	5/5/0	2006/07/27 1:00
+Timestamp ( Date ( 1 ; 1 ; 2001 ) ; GetAsTime ( "1:30 PM" ) )	501	3/3/0	2001/01/01
+Timestamp ( Date ( 1 ; 1 ; 2001 ) ; Time ( 0 ; 0 ; 1/3 ) )	0	5/5/0	2001/01/01 0:00:00.333333
+Timestamp ( Date ( 1 ; 1 ; 2001 ) ; 0 )	0	5/5/0	2001/01/01 0:00
+Timestamp ( "" ; 0 )	500	2/2/0	?
+Timestamp ( GetAsDate ( " " ) ; 0 )	500	2/2/0	?
+Timestamp ( Date ( 1 ; 1 ; 2001 ) ; GetAsTime ( " " ) )	0	5/5/0	
+Timestamp ( Date ( 1 ; 1 ; 2001 ) ; Time ( -2000000 ; 0 ; 0 ) )	0	5/5/0	1952/04/10 16:00
+Timestamp ( "2/30/2003" ; 0 )	0	5/5/0	2009/11/24 0:00
+Timestamp ( "13/45/2003" ; 0 )	0	5/5/0	2022/02/24 0:00
+Timestamp ( "0/0/2003" ; 0 )	0	5/5/0	2005/05/25 0:00
+Timestamp ( "1/2/2003 13:00" ; Time ( 1 ; 0 ; 0 ) )	0	5/5/0	2006/07/27 1:00
+Timestamp ( "1/2" ; 0 )	0	5/5/0	2026/01/02 0:00
+Timestamp ( "1/2/99999" ; 0 )	0	5/5/0	1916/01/05 0:00
+Timestamp ( "12/31/4000" ; Time ( 23 ; 0 ; 0 ) )	0	5/5/0	2025/06/12 23:00
+Timestamp ( "13/1/4000" ; 0 )	0	5/5/0	2023/12/14 0:00
+Timestamp ( "1/2/2003 abc" ; 0 )	0	5/5/0	2006/07/27 0:00
+Timestamp ( "1-2-2003" ; 0 )	0	5/5/0	2006/07/27 0:00
+Timestamp ( "1/2/2003" ; "13:00" )	0	5/5/0	2006/07/27 13:00
+Timestamp ( "12" ; 0 )	500	2/2/0	?
+Timestamp ( "730486" ; 0 )	500	2/2/0	?
+Timestamp ( "2.1" ; 0 )	500	2/2/0	?
+Timestamp ( "1/2/2003" ; "1/2/2003 13:00" )	500	2/2/0	?
+Timestamp ( "1/2/2003" ; "-1:00" )	0	5/5/0	2006/07/26 23:00
+Timestamp ( "02.01.2003" ; "13:05" )	0	5/5/0	2007/06/26 13:05
+Timestamp ( "2003-01-02" ; "13:05" )	0	5/5/0	2003/01/02 13:05
+Timestamp ( "1/2/0000" ; 0 )	0	5/5/0	2001/01/31 0:00
+Timestamp ( "" ; "" ) + 1	0	2/2/0	1
+Timestamp ( Date ( 1 ; 1 ; 2001 ) ; Time ( 0 ; 0 ; 0 ) ) + 0	0	5/5/0	2001/01/01 0:00
+Timestamp ( Date ( 1 ; 1 ; 2001 ) ; Time ( 1 ; 0 ; 0 ) ) & ""	0	1/1/0	2001/01/01 1:00
+EvaluationError ( Timestamp ( Date ( 1 ; 1 ; 2001 ) ; "abc" ) )	0	2/2/0	500
+IsEmpty ( Timestamp ( Date ( 1 ; 1 ; 2001 ) ; "" ) )	0	2/2/0	1
+# Date text as a time, 16-bit day-of-month and lenient fields
+Hour ( "1/2/2003" )	501	2/2/0	?
+Hour ( "1/2" )	0	2/2/0	0
+Hour ( "1/2/2003 abc" )	501	2/2/0	?
+Hour ( "2.1" )	0	2/2/0	0
+Hour ( "1/2/2003 13:30" )	501	2/2/0	?
+Hour ( "2/30/2003" )	501	2/2/0	?
+Hour ( "1/2/99999" )	501	2/2/0	?
+Hour ( "1/2/3/4" )	501	2/2/0	?
+Hour ( "1.5" )	0	2/2/0	0
+Hour ( "1,5" )	0	2/2/0	0
+Hour ( "31.2" )	0	2/2/0	0
+Minute ( "1.5.2003 13:30" )	501	2/2/0	?
+Timestamp ( Date ( 1 ; 1 ; 2001 ) ; "1/2/2003" )	500	2/2/0	?
+Timestamp ( Date ( 1 ; 1 ; 2001 ) ; "2/30/2003" )	500	2/2/0	?
+Timestamp ( Date ( 1 ; 1 ; 2001 ) ; "1.5" )	0	5/5/0	2001/01/01 0:00:01.5
+Timestamp ( Date ( 1 ; 1 ; 2001 ) ; Time ( -800000 ; 0 ; 0 ) )	0	5/5/0	2089/03/02 16:00
+Timestamp ( Date ( 1 ; 1 ; 2001 ) ; Time ( 800000 ; 0 ; 0 ) )	0	5/5/0	1912/11/01 8:00
+Timestamp ( Date ( 1 ; 1 ; 2001 ) ; Time ( 786432 ; 0 ; 0 ) )	0	5/5/0	1911/04/16 0:00
+Timestamp ( Date ( 12 ; 31 ; 2001 ) ; Time ( 786432 ; 0 ; 0 ) )	0	5/5/0	1912/04/14 0:00
+Timestamp ( Date ( 1 ; 31 ; 2001 ) ; Time ( 786000 ; 0 ; 0 ) )	0	5/5/0	1911/04/28 0:00
+Timestamp ( Date ( 1 ; 1 ; 2001 ) ; 32767 * 86400 )	0	5/5/0	1911/04/15 0:00
+Timestamp ( Date ( 1 ; 1 ; 2001 ) ; 32768 * 86400 )	0	5/5/0	1911/04/16 0:00
+Timestamp ( Date ( 1 ; 31 ; 2001 ) ; 32737 * 86400 )	0	5/5/0	1911/04/15 0:00
+Timestamp ( Date ( 1 ; 31 ; 2001 ) ; 32738 * 86400 )	0	5/5/0	1911/04/16 0:00
+Timestamp ( Date ( 6 ; 15 ; 2001 ) ; -32768 * 86400 )	0	5/5/0	1911/09/28 0:00
+Timestamp ( "1/99999/2003" ; 0 )	500	2/2/0	?
+Timestamp ( "99999/1/2003" ; 0 )	500	2/2/0	?
+Timestamp ( "70000/1/2003" ; 0 )	500	2/2/0	?
+Timestamp ( "1/40000/2003" ; Time ( 12 ; 0 ; 0 ) )	500	2/2/0	?
+# Date separators in text
+Day ( "1,5,2003" )	500	2/2/0	?
+Day ( "1;5;2003" )	500	2/2/0	?
+Day ( "1_5_2003" )	500	2/2/0	?
+Day ( "1|5|2003" )	500	2/2/0	?
+Day ( "1~5~2003" )	500	2/2/0	?
+Day ( "1#5#2003" )	500	2/2/0	?
+Day ( "1&5&2003" )	500	2/2/0	?
+Day ( "1*5*2003" )	500	2/2/0	?
+Day ( "1=5=2003" )	500	2/2/0	?
+Day ( "1?5?2003" )	500	2/2/0	?
+Day ( "1@5@2003" )	500	2/2/0	?
+Day ( "1^5^2003" )	500	2/2/0	?
+Day ( "1'5'2003" )	500	2/2/0	?
+Day ( "1+5+2003" )	500	2/2/0	?
+Day ( "1:5:2003" )	500	2/2/0	?
+Day ( "1 5 2003" )	500	2/2/0	?
+Day ( "1　5　2003" )	500	2/2/0	?
+Day ( "1・5・2003" )	500	2/2/0	?
+Day ( "1／5／2003" )	500	2/2/0	?
+Day ( "1，5，2003" )	500	2/2/0	?
+Day ( "1年5年2003" )	500	2/2/0	?
+Day ( "1日5日2003" )	500	2/2/0	?
+Day ( "1x5x2003" )	500	2/2/0	?
+Day ( "1é5é2003" )	500	2/2/0	?
+Day ( "1あ5あ2003" )	500	2/2/0	?
+Day ( "1Ａ5Ａ2003" )	500	2/2/0	?
+Day ( "1①5①2003" )	500	2/2/0	?
+Day ( "1·5·2003" )	500	2/2/0	?
+Day ( "1€5€2003" )	500	2/2/0	?
+Day ( "1°5°2003" )	500	2/2/0	?
+Day ( "1 5 2003" )	500	2/2/0	?
+Day ( "1​5​2003" )	500	2/2/0	?
+Day ( "1–5–2003" )	500	2/2/0	?
+Day ( "1、5、2003" )	500	2/2/0	?
+Day ( "1。5。2003" )	500	2/2/0	?
+Hour ( "1,5" )	0	2/2/0	0
+Hour ( "1;5" )	0	2/2/0	0
+Hour ( "1,000" )	501	2/2/0	?
+Hour ( "1,5,7" )	0	2/2/0	0
+Day ( "1,5" )	0	2/2/0	5
+Month ( "2,1" )	0	2/2/0	2
+Day ( "1/5-2003" )	500	2/2/0	?
+Day ( "-1/5/2003" )	500	2/2/0	?
+# Locale-sensitive text and display
+Day ( "15.5.2019" )	500	2/2/0	?
+Day ( "15/5/2019" )	500	2/2/0	?
+Day ( "2019-05-15" )	0	2/2/0	15
+Month ( "2019/5/15" )	0	2/2/0	5
+DayName ( "2019-05-15" )	0	1/1/0	水曜日
+MonthName ( "15.5.2019" )	500	2/2/0	?
+Hour ( "13:05:07,5" )	501	2/2/0	?
+Seconds ( "13:05:07,5" )	501	2/2/0	?
+Seconds ( "13:05:07.5" )	0	2/2/0	7.5
+Hour ( "1:05 午後" )	0	2/2/0	13
+Time ( 1 ; 2 ; 3,5 )	1202	2/2/0	?
+Timestamp ( Date ( 1 ; 2 ; 2003 ) ; Time ( 13 ; 5 ; 7 ) )	0	5/5/0	2003/01/02 13:05:07
+Seconds ( Time ( 0 ; 0 ; 1,25 ) )	1202	2/2/0	?
+Date ( 1 ; 2 ; 2003 )	0	3/3/0	2003/01/02
+Time ( -1 ; 0 ; -1 )	0	4/4/0	-1:00:01

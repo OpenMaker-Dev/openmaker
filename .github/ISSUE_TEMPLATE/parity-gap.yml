@@ -1,0 +1,46 @@
+name: Parity gap
+description: FileMaker has a feature or behavior that OpenMaker lacks or does differently.
+labels:
+  - parity-gap
+body:
+  - type: markdown
+    attributes:
+      value: |
+        One gap per issue; search existing issues first. Add an `area: ...` label after
+        filing. If the FileMaker behavior itself is not known yet, file a "Spec needed"
+        issue instead.
+
+  - type: textarea
+    id: filemaker
+    attributes:
+      label: What FileMaker does
+      description: The behavior, and how it is known (spec section in docs/re, capture, oracle vector, Claris documentation).
+    validations:
+      required: true
+
+  - type: textarea
+    id: openmaker
+    attributes:
+      label: What OpenMaker does
+      description: Missing, refused (which error), or different (how).
+    validations:
+      required: true
+
+  - type: textarea
+    id: where
+    attributes:
+      label: Where
+      description: Crates and files involved, and the doc that lists this limit (`path:line`).
+
+  - type: textarea
+    id: check
+    attributes:
+      label: How to check it
+      description: Steps or a test that shows the gap, and how a fix would be verified.
+
+  - type: input
+    id: filed-by
+    attributes:
+      label: Filed by
+      description: Person, or the model and harness that wrote this issue.
+      placeholder: Claude Opus 5.5 (claude-opus-5-5) in Claude Code, via T3 Code

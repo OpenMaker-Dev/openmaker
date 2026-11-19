@@ -1,0 +1,156 @@
+# Import Records probes (battery x04): the import review's P2 and P4
+# (script-steps.md, "Implementation notes (import/export)"). P2: updates
+# into a table other than the window's (Contacts' window, Addresses target):
+# which records "update existing" (Replace) and "update matching" (Update)
+# work on. P4: whether update matching compares match values as text or as
+# FileMaker's index does (case, numbers by value, dates). Hand-written; the
+# sources are in sources/x04.
+
+== Clear
+Go to Layout [ "Contact List" ]
+Show All Records
+Loop
+Exit Loop If [ Get ( FoundCount ) = 0 ]
+Delete Record/Request [ With dialog: Off ]
+End Loop
+
+== Dump
+Go to Layout [ "Contact List" ]
+Show All Records
+Step 21
+Set Variable [ $p0 ; Get ( DocumentsPath ) & "omprobe_r_" & Get ( ScriptParameter ) & ".xml" ]
+Export Records [ "file:$p0" ; Type: XMLE ; Charset: 4 ; Fields: Contacts::K | Contacts::First Name | Contacts::Last Name | Contacts::N | Contacts::D | Contacts::T | Contacts::TS | Contacts::R | Contacts::NR | Contacts::AE | Contacts::AEO | Contacts::VNE | Contacts::VNO | Contacts::VU | Contacts::CreatedBy | Contacts::PrimaryKey | Contacts::Title | Addresses::City ; With dialog: Off ]
+
+== Make
+# parameter: K values separated by returns; each record gets First Name old<K>
+Set Variable [ $i ; 1 ]
+Loop
+Exit Loop If [ $i > ValueCount ( Get ( ScriptParameter ) ) ]
+New Record/Request
+Set Field [ Contacts::K ; GetValue ( Get ( ScriptParameter ) ; $i ) ]
+Set Field [ Contacts::First Name ; "old" & GetValue ( Get ( ScriptParameter ) ; $i ) ]
+Set Field [ Contacts::VNE ; "pre" ]
+Set Field [ Contacts::VNO ; "pre" ]
+Set Field [ Contacts::PrimaryKey ; "C" & GetValue ( Get ( ScriptParameter ) ; $i ) ]
+Set Variable [ $i ; $i + 1 ]
+End Loop
+Commit Records/Requests [ With dialog: Off ]
+
+== MakeN
+# parameter: N values separated by returns; record i gets K n<i>, First Name old<i>
+Set Variable [ $i ; 1 ]
+Loop
+Exit Loop If [ $i > ValueCount ( Get ( ScriptParameter ) ) ]
+New Record/Request
+Set Field [ Contacts::K ; "n" & $i ]
+Set Field [ Contacts::First Name ; "old" & $i ]
+Set Field [ Contacts::N ; GetValue ( Get ( ScriptParameter ) ; $i ) ]
+Set Field [ Contacts::D ; Date ( $i ; 2 ; 2026 ) ]
+Set Field [ Contacts::VNE ; "pre" ]
+Set Field [ Contacts::VNO ; "pre" ]
+Set Variable [ $i ; $i + 1 ]
+End Loop
+Commit Records/Requests [ With dialog: Off ]
+
+== p2_setup
+Set Error Capture [ On ]
+Perform Script [ "Clear" ]
+Perform Script [ "Make" ; Parameter: "1" ]
+Go to Layout [ "Contact List" ]
+Show All Records
+Set Variable [ $p0 ; Get ( DocumentsPath ) & "omprobe_s4_addr3.tab" ]
+Import Records [ "file:$p0" ; Type: TABS ; Target: Addresses ; Charset: 5 ; Map: Addresses::ForeignKey | Addresses::City ; With dialog: Off ]
+Set Variable [ $$log ; $$log & "p2_setup" & Char ( 9 ) & Get ( LastError ) & Char ( 9 ) & Get ( FoundCount ) & Char ( 9 ) & Get ( TotalRecordCount ) & ¶ ]
+Perform Script [ "Dump" ; Parameter: "p2_setup" ]
+
+== p2_replace
+Set Error Capture [ On ]
+Go to Layout [ "Contact List" ]
+Show All Records
+Set Variable [ $p0 ; Get ( DocumentsPath ) & "omprobe_s4_replace.tab" ]
+Import Records [ "file:$p0" ; Type: TABS ; Target: Addresses ; Charset: 5 ; Action: Replace ; Map: Addresses::ForeignKey | Addresses::City ; With dialog: Off ]
+Set Variable [ $$log ; $$log & "p2_replace" & Char ( 9 ) & Get ( LastError ) & Char ( 9 ) & Get ( FoundCount ) & Char ( 9 ) & Get ( TotalRecordCount ) & ¶ ]
+Perform Script [ "Dump" ; Parameter: "p2_replace" ]
+
+== p2_replace_add
+Set Error Capture [ On ]
+Go to Layout [ "Contact List" ]
+Show All Records
+Set Variable [ $p0 ; Get ( DocumentsPath ) & "omprobe_s4_replace4.tab" ]
+Import Records [ "file:$p0" ; Type: TABS ; Target: Addresses ; Charset: 5 ; Action: Replace ; Add remaining: On ; Map: Addresses::ForeignKey | Addresses::City ; With dialog: Off ]
+Set Variable [ $$log ; $$log & "p2_replace_add" & Char ( 9 ) & Get ( LastError ) & Char ( 9 ) & Get ( FoundCount ) & Char ( 9 ) & Get ( TotalRecordCount ) & ¶ ]
+Perform Script [ "Dump" ; Parameter: "p2_replace_add" ]
+
+== p2_update
+Set Error Capture [ On ]
+Go to Layout [ "Contact List" ]
+Show All Records
+Set Variable [ $p0 ; Get ( DocumentsPath ) & "omprobe_s4_update.tab" ]
+Import Records [ "file:$p0" ; Type: TABS ; Target: Addresses ; Charset: 5 ; Action: Update ; Map: =Addresses::ForeignKey | Addresses::City ; With dialog: Off ]
+Set Variable [ $$log ; $$log & "p2_update" & Char ( 9 ) & Get ( LastError ) & Char ( 9 ) & Get ( FoundCount ) & Char ( 9 ) & Get ( TotalRecordCount ) & ¶ ]
+Perform Script [ "Dump" ; Parameter: "p2_update" ]
+
+== p4_case
+Set Error Capture [ On ]
+Perform Script [ "Clear" ]
+Perform Script [ "Make" ; Parameter: "Alpha¶Beta" ]
+Go to Layout [ "Contact List" ]
+Show All Records
+Set Variable [ $p0 ; Get ( DocumentsPath ) & "omprobe_s4_case.tab" ]
+Import Records [ "file:$p0" ; Type: TABS ; Target: Contacts ; Charset: 5 ; Action: Update ; Map: =Contacts::K | Contacts::First Name ; With dialog: Off ]
+Set Variable [ $$log ; $$log & "p4_case" & Char ( 9 ) & Get ( LastError ) & Char ( 9 ) & Get ( FoundCount ) & Char ( 9 ) & Get ( TotalRecordCount ) & ¶ ]
+Perform Script [ "Dump" ; Parameter: "p4_case" ]
+
+== p4_case_add
+Set Error Capture [ On ]
+Perform Script [ "Clear" ]
+Perform Script [ "Make" ; Parameter: "Alpha¶Beta" ]
+Go to Layout [ "Contact List" ]
+Show All Records
+Set Variable [ $p0 ; Get ( DocumentsPath ) & "omprobe_s4_case.tab" ]
+Import Records [ "file:$p0" ; Type: TABS ; Target: Contacts ; Charset: 5 ; Action: Update ; Add remaining: On ; Map: =Contacts::K | Contacts::First Name ; With dialog: Off ]
+Set Variable [ $$log ; $$log & "p4_case_add" & Char ( 9 ) & Get ( LastError ) & Char ( 9 ) & Get ( FoundCount ) & Char ( 9 ) & Get ( TotalRecordCount ) & ¶ ]
+Perform Script [ "Dump" ; Parameter: "p4_case_add" ]
+
+== p4_number
+Set Error Capture [ On ]
+Perform Script [ "Clear" ]
+Perform Script [ "MakeN" ; Parameter: "7¶2.5¶-3¶10" ]
+Go to Layout [ "Contact List" ]
+Show All Records
+Set Variable [ $p0 ; Get ( DocumentsPath ) & "omprobe_s4_number.tab" ]
+Import Records [ "file:$p0" ; Type: TABS ; Target: Contacts ; Charset: 5 ; Action: Update ; Map: =Contacts::N | Contacts::First Name ; With dialog: Off ]
+Set Variable [ $$log ; $$log & "p4_number" & Char ( 9 ) & Get ( LastError ) & Char ( 9 ) & Get ( FoundCount ) & Char ( 9 ) & Get ( TotalRecordCount ) & ¶ ]
+Perform Script [ "Dump" ; Parameter: "p4_number" ]
+
+== p4_date
+Set Error Capture [ On ]
+Perform Script [ "Clear" ]
+Perform Script [ "MakeN" ; Parameter: "1¶2¶3" ]
+Go to Layout [ "Contact List" ]
+Show All Records
+Set Variable [ $p0 ; Get ( DocumentsPath ) & "omprobe_s4_date.tab" ]
+Import Records [ "file:$p0" ; Type: TABS ; Target: Contacts ; Charset: 5 ; Action: Update ; Map: =Contacts::D | Contacts::First Name ; With dialog: Off ]
+Set Variable [ $$log ; $$log & "p4_date" & Char ( 9 ) & Get ( LastError ) & Char ( 9 ) & Get ( FoundCount ) & Char ( 9 ) & Get ( TotalRecordCount ) & ¶ ]
+Perform Script [ "Dump" ; Parameter: "p4_date" ]
+
+== Run
+Perform Script [ "p2_setup" ]
+Perform Script [ "p2_replace" ]
+Perform Script [ "p2_replace_add" ]
+Perform Script [ "p2_update" ]
+Perform Script [ "p4_case" ]
+Perform Script [ "p4_case_add" ]
+Perform Script [ "p4_number" ]
+Perform Script [ "p4_date" ]
+Perform Script [ "Clear" ]
+New Record/Request
+Set Field [ Contacts::VNE ; "log" ]
+Set Field [ Contacts::VNO ; "log" ]
+Set Field [ Contacts::VU ; "log" ]
+Set Field [ Contacts::LOG ; $$log ]
+Commit Records/Requests [ With dialog: Off ]
+Set Variable [ $p0 ; Get ( DocumentsPath ) & "omprobe_log.tab" ]
+Export Records [ "file:$p0" ; Type: TABS ; Charset: 4 ; Fields: Contacts::LOG ; With dialog: Off ]
+
+--- run

@@ -1,0 +1,162 @@
+# Evaluator probes without a table context (Contacts en-US): Let and While
+# slots, $ and $$ variables, Evaluate, EvaluationError, IsValid,
+# IsValidExpression, GetField, GetFieldName, SetPrecision, SetRecursion,
+# host-level functions. $ variables persist from line to line in one run.
+# Let and While scoping
+Let ( [ x = 1 ; y = 2 ] ; Let ( [ x = x + y ; y = x ] ; y ) )	0	2/2/0	3
+Let ( x = 1 ; Let ( y = x ; Let ( x = 5 ; y & x ) ) & x )	0	1/1/0	151
+Let ( [ a = 1 ; b = Let ( c = 2 ; c ) ] ; While ( [ i = 0 ] ; i < 2 ; [ i = i + 1 ] ; a & b & i ) )	0	1/1/0	122
+While ( [ i = 0 ] ; 0 ; [ x = 5 ; i = i + 1 ] ; x )	0	1/1/0	
+While ( [ i = 0 ] ; 0 ; [ x = 5 ; i = i + 1 ] ; x & "|" & i )	0	1/1/0	|0
+IsEmpty ( While ( [ i = 0 ] ; 0 ; [ x = 5 ; i = i + 1 ] ; x ) )	0	2/2/0	1
+Let ( q = 7 ; 0 ) & While ( [ i = 0 ] ; 0 ; [ x = 5 ; i = i + 1 ] ; x )	0	1/1/0	0
+While ( [ i = 0 ] ; Let ( z = i ; z < 3 ) ; [ i = i + 1 ; w = i * 2 ] ; w )	0	2/2/0	6
+While ( [ i = 0 ] ; i < 2 ; [ i = i + 1 ; x = i ] ; Let ( y = 3 ; x & y ) )	0	1/1/0	23
+While ( [ i = 0 ] ; i < 3 ; [ i = i + 1 ] ; Let ( [ a = 1 ] ; a & i ) )	0	1/1/0	13
+While ( [ i = 0 ; j = 10 ] ; i < 2 ; [ i = i + 1 ; k = j + i ] ; i & k )	0	1/1/0	212
+While ( [ i = 0 ] ; i < 3 ; [ x = If ( i = 0 ; "a" ; x & "b" ) ; i = i + 1 ] ; x )	106	2/2/0	?
+Let ( [ x = 1 ; $x = x + 1 ; x = $x * 2 ] ; x )	0	2/2/0	4
+Let ( [ x = 1 ; x = x + 1 ; y = x ; x = 10 ] ; x & y )	0	1/1/0	102
+Let ( x = 1 ; Let ( [ x = x + 1 ; x = x * 3 ] ; x ) & x )	0	1/1/0	61
+Let ( [ x = 2 ] ; While ( [ x = x * 5 ] ; x < 100 ; [ x = x * 2 ] ; x ) & x )	0	1/1/0	1602
+While ( [ i = 0 ] ; i < 3 ; [ i = i + 1 ; x = 1/0 ] ; i )	15	2/2/0	3
+EvaluationError ( While ( [ i = 0 ] ; i < 3 ; [ i = i + 1 ; x = 1/0 ] ; i ) )	0	2/2/0	15
+While ( [ i = 0 ] ; i < 50000 ; [ i = i + 1 ] ; i ) + While ( [ i = 0 ] ; i < 50000 ; [ i = i + 1 ] ; i )	0	2/2/0	100000
+SetRecursion ( While ( [ i = 0 ] ; i < 2 ; [ i = i + 1 ] ; While ( [ j = 0 ] ; j < 2 ; [ j = j + 1 ] ; j ) ) ; 2 )	0	2/2/0	2
+SetRecursion ( While ( [ i = 0 ] ; i < 2 ; [ i = i + 1 ] ; While ( [ j = 0 ] ; j < 3 ; [ j = j + 1 ] ; j ) ) ; 2 )	7	2/2/0	?
+SetRecursion ( While ( [ i = 0 ] ; i < 3 ; [ i = i + 1 ] ; i ) ; 1/0 )	7	2/2/0	?
+SetRecursion ( While ( [ i = 0 ] ; i < 3 ; [ i = i + 1 ] ; i ) ; 3.9 )	0	2/2/0	3
+SetRecursion ( While ( [ i = 0 ] ; i < 4 ; [ i = i + 1 ] ; i ) ; 3.9 )	7	2/2/0	?
+SetRecursion ( While ( [ i = 0 ] ; i < 3 ; [ i = i + 1 ] ; i ) ; "3abc" )	0	2/2/0	3
+SetRecursion ( SetRecursion ( While ( [ i = 0 ] ; i < 3 ; [ i = i + 1 ] ; i ) ; 5 ) ; 1 )	0	2/2/0	3
+SetRecursion ( SetRecursion ( 1 ; 5 ) & While ( [ i = 0 ] ; i < 3 ; [ i = i + 1 ] ; i ) ; 2 )	7	2/2/0	?
+SetRecursion ( "a" ; 5 ) & SetRecursion ( 1/0 ; 5 )	15	1/1/0	a?
+EvaluationError ( SetRecursion ( 1/0 ; 5 ) )	0	2/2/0	15
+SetPrecision ( 1/3 ; 1/0 )	15	2/2/0	.3333333333333333
+SetPrecision ( 1/3 ; "" )	0	2/2/0	.3333333333333333
+SetPrecision ( 1/3 ; "20abc" )	0	2/2/0	.33333333333333333333
+SetPrecision ( "abc" ; 20 )	0	1/1/0	abc
+SetPrecision ( Date ( 1 ; 1 ; 2001 ) ; 20 )	0	3/3/0	1/1/2001
+SetPrecision ( 2/3 ; 17.9 )	0	2/2/0	.66666666666666667
+While ( [ i = 0 ] ; i < 3 ; [ i = i + 1 ] ; SetRecursion ( i ; 0 ) )	0	2/2/0	3
+EvaluationError ( Let ( x = While ( [ i = 0 ] ; 1 ; [ i = i + 1 ] ; i ) ; 1 ) )	7	2/2/0	?
+"after abort"	0	1/1/0	after abort
+# $ and $$ variables
+Let ( $v[0] = "z" ; $v[0] & "|" & $v )	0	1/1/0	z|
+Let ( $v = 1 ; $v[1] )	0	2/2/0	1
+Let ( [ $q = 1 ; $q = "" ] ; IsEmpty ( $q ) )	0	2/2/0	1
+Let ( $r["2abc"] = 5 ; $r[2] )	0	2/2/0	5
+Let ( $r[1/0] = 5 ; $r[1] )	15	2/2/0	
+EvaluationError ( Let ( $r2[1/0] = 5 ; $r2[1] ) )	0	2/2/0	15
+Let ( $big[1000000000] = 5 ; $big[1000000000] & $big[999999999] )	0	1/1/0	5
+Let ( $neg[-3] = "n" ; $neg[-3] & $neg[3] )	0	1/1/0	n
+Let ( $$Gx = 1 ; $$gX )	0	2/2/0	1
+Let ( $$y[2] = "b" ; $$y[2] & "|" & $$y )	0	1/1/0	b|
+Let ( $t = Time ( 1 ; 0 ; 0 ) ; $t + 1 )	0	4/4/0	1:00:01
+Let ( $d = Date ( 1 ; 1 ; 2001 ) ; GetAsText ( $d ) & "|" & ( $d + 1 ) )	0	1/1/0	1/1/2001|1/2/2001
+Let ( $x = 5 ; Let ( $x = 6 ; $x ) & $x )	0	1/1/0	66
+Let ( $persist = 42 ; 1 )	0	2/2/0	1
+$persist	0	2/2/0	42
+$persist[1] & $Persist	0	1/1/0	4242
+Let ( $persist = "" ; 1 )	0	2/2/0	1
+IsEmpty ( $persist )	0	2/2/0	1
+$v[1 + 1]	0	2/2/0	
+$v["x"]	0	1/1/0	z
+$v[1/0]	15	2/2/0	
+EvaluationError ( $v[1/0] )	0	2/2/0	15
+$v[-0.5]	0	1/1/0	z
+Let ( $f[2.9] = "two" ; $f[2] )	0	1/1/0	two
+Let ( $f[-2.9] = "mtwo" ; $f[-2] )	0	1/1/0	mtwo
+Let ( [ $a = 1 ; $b = $a + 1 ; $a = $b * 10 ] ; $a & $b )	0	1/1/0	202
+Let ( [ $$g1 = 1 ; $g1 = 2 ] ; $$g1 & $g1 )	0	1/1/0	12
+Let ( $e = 1/0 ; $e & "|" & EvaluationError ( $e ) )	15	1/1/0	?|0
+Let ( [ $s = SetPrecision ( 2/3 ; 20 ) ] ; $s + 0 )	0	2/2/0	.66666666666666666667
+# Evaluate
+Evaluate ( "1/0" ) & "x"	15	1/1/0	?x
+EvaluationError ( Evaluate ( "1/0" ) & "x" )	0	2/2/0	15
+Evaluate ( 1/0 )	15	2/2/0	?
+Evaluate ( "?" )	106	2/2/0	?
+EvaluationError ( Evaluate ( "?" ) )	0	2/2/0	106
+Evaluate ( "$nosuchvar" ) & "|"	0	1/1/0	|
+Let ( x = 2 ; Evaluate ( "Let ( y = 3 ; y )" ) + x )	0	2/2/0	5
+Evaluate ( "Evaluate ( \"Evaluate ( \"\"1\"\" )\" )" )	0	2/2/0	1
+Evaluate ( "Evaluate ( \"Evaluate ( \\\"7\\\" )\" )" )	1212	2/2/0	?
+Evaluate ( "Let ( $ev = 9 ; 1 )" ) & $ev	0	1/1/0	19
+EvaluationError ( Evaluate ( "While ( [ i = 0 ] ; 1 ; [ i = i + 1 ] ; i )" ) )	7	2/2/0	?
+"after abort 2"	0	1/1/0	after abort 2
+Evaluate ( "1+" ) & Evaluate ( "1/0" )	1204	1/1/0	??
+EvaluationError ( Evaluate ( "1+" ) & Evaluate ( "1/0" ) )	0	2/2/0	1204
+EvaluationError ( Evaluate ( "1/0" ) & Evaluate ( "1+" ) )	0	2/2/0	15
+Evaluate ( "Self" )	1225	2/2/0	?
+Evaluate ( "x" ; [ ] )	106	2/2/0	?
+Evaluate ( "Pi" )	0	2/2/0	3.1415926535897932
+Evaluate ( "  2 * 3  " )	0	2/2/0	6
+Evaluate ( Char ( 13 ) & "4" )	0	2/2/0	4
+Evaluate ( "\"a\" & \"b\"" ; [ ] )	0	1/1/0	ab
+Evaluate ( "Date ( 1 ; 1 ; 2001 )" ) & ""	0	1/1/0	1/1/2001
+Length ( Evaluate ( "1/3" ) )	0	2/2/0	17
+Evaluate ( "Get ( CalculationRepetitionNumber )" ) & Get ( CalculationRepetitionNumber )	0	1/1/0	00
+# IsValid, IsValidExpression, EvaluationError
+IsValid ( Let ( x = 1/0 ; 1 ) )	0	2/2/0	0
+IsValid ( Evaluate ( "1+" ) )	0	2/2/0	0
+IsValid ( "?" )	0	2/2/0	1
+IsValid ( GetAsNumber ( "?" ) )	0	2/2/0	1
+IsValid ( "" )	0	2/2/0	1
+IsValid ( Date ( 1 ; 1 ; 5000 ) )	0	2/2/0	0
+IsValid ( 1/0 ) & EvaluationError ( IsValid ( 1/0 ) )	0	1/1/0	00
+EvaluationError ( IsValid ( 1/0 ) + 1/0 )	0	2/2/0	15
+IsValidExpression ( "" )	0	2/2/0	1
+IsValidExpression ( " " )	0	2/2/0	1
+IsValidExpression ( 1 )	0	2/2/0	1
+IsValidExpression ( "x" )	0	2/2/0	0
+IsValidExpression ( "1/0" )	0	2/2/0	1
+IsValidExpression ( "Let ( x = 1 ; x )" )	0	2/2/0	1
+IsValidExpression ( "$x" )	0	2/2/0	1
+IsValidExpression ( "Contacts::NoSuchField" )	0	2/2/0	0
+IsValidExpression ( "Self" )	0	2/2/0	0
+IsValidExpression ( 1/0 )	15	2/2/0	0
+EvaluationError ( IsValidExpression ( "1+" ) )	0	2/2/0	0
+EvaluationError ( EvaluationError ( 1/0 ) )	0	2/2/0	0
+EvaluationError ( 1/0 ) & EvaluationError ( Sqrt ( -1 ) )	0	1/1/0	1514
+EvaluationError ( Let ( [ a = Sqrt ( -1 ) ; b = 1/0 ] ; 1 ) )	0	2/2/0	14
+EvaluationError ( "x" & EvaluationError ( 1/0 ) & 1/0 )	0	2/2/0	15
+# GetField, GetFieldName
+GetField ( "" )	0	1/1/0	
+GetField ( "x" )	102	2/2/0	?
+GetField ( "Contacts::NoSuchField" )	102	2/2/0	?
+GetField ( 1/0 )	15	2/2/0	?
+EvaluationError ( GetField ( "x" ) )	0	2/2/0	102
+EvaluationError ( GetField ( "" ) )	0	2/2/0	0
+EvaluationError ( GetField ( "Contacts::NoSuchField" ) )	0	2/2/0	102
+GetField ( "$persist" )	102	2/2/0	?
+GetField ( "1+1" )	102	2/2/0	?
+GetFieldName ( "x" )	102	2/2/0	?
+GetFieldName ( 1 )	102	2/2/0	?
+GetFieldName ( GetField ( "x" ) )	102	2/2/0	?
+EvaluationError ( GetFieldName ( GetField ( "x" ) ) )	0	2/2/0	102
+GetFieldName ( $v )	102	2/2/0	?
+GetFieldName ( Evaluate ( "1" ) )	102	2/2/0	?
+GetBaseTableName ( "x" )	102	2/2/0	?
+# Choose, Case, If with errors
+Choose ( 1/0 ; "a" ; "b" ) & EvaluationError ( Choose ( 1/0 ; "a" ; "b" ) )	15	1/1/0	?15
+Case ( 1/0 ; "a" ; "b" )	15	1/1/0	a
+If ( 1/0 ; "a" ; "b" )	15	1/1/0	a
+If ( "?" ; "a" ; "b" )	0	1/1/0	a
+Case ( 0 ; 1/0 ; "b" ) & EvaluationError ( Case ( 0 ; 1/0 ; "b" ) )	0	1/1/0	b0
+Choose ( 0.5 ; "a" ; "b" )	0	1/1/0	a
+Choose ( "x" ; "a" ; "b" )	0	1/1/0	a
+Choose ( Date ( 1 ; 1 ; 1 ) ; "a" ; "b" )	0	1/1/0	b
+# host-level functions without a host context
+Random < 1 and Random >= 0	0	2/2/0	1
+Length ( Random ) > 3	0	2/2/0	1
+GetLayoutObjectAttribute ( "x" ; "content" ) & "|"	0	1/1/0	|
+EvaluationError ( GetLayoutObjectAttribute ( "x" ; "content" ) )	0	2/2/0	0
+ExecuteSQL ( "SELECT 1 FROM NoSuchTable" ; "" ; "" )	8309	2/2/0	?
+EvaluationError ( ExecuteSQL ( "SELECT 1 FROM NoSuchTable" ; "" ; "" ) )	0	2/2/0	8309
+GetNthRecord ( Contacts::First Name ; 1 )	1224	2/2/0	?
+Lookup ( Contacts::First Name )	1224	2/2/0	?
+Lookup ( Contacts::First Name ; "fail" )	1224	2/2/0	?
+Get ( RecordNumber ) & "|" & Get ( FoundCount ) & "|" & Get ( RecordID )	0	1/1/0	0|0|
+Get ( CalculationRepetitionNumber )	0	2/2/0	0
+GetAsBoolean ( "abc" ) & GetAsBoolean ( "a1" ) & GetAsBoolean ( "" ) & GetAsBoolean ( 1/0 )	15	1/1/0	0101
+IsEmpty ( "" ) & IsEmpty ( " " ) & IsEmpty ( 1/0 ) & IsEmpty ( GetAsNumber ( "" ) ) & IsEmpty ( Timestamp ( Date ( 1 ; 1 ; 2001 ) ; "" ) )	15	1/1/0	10011

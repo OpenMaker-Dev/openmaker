@@ -1,0 +1,46 @@
+# JSON numbers and text forms by locale
+JSONGetElement ( "[0.1]" ; 0 )	0	1/2/0	0,1
+JSONGetElement ( "[0.1]" ; 0 ) + 0	0	2/2/0	,1
+JSONGetElement ( "[1e2]" ; 0 ) * 2	0	2/2/0	200
+JSONGetElement ( "[1234.5]" ; 0 ) + 0	0	2/2/0	1234,5
+JSONListValues ( "[0.5,1e-7,100.0]" ; "" )	0	1/1/0	0,5\r0,0000001\r100,0
+JSONSetElement ( "{}" ; "a" ; 1/3 ; JSONNumber )	0	8/1/0	{"a":0.333333333333333}
+JSONSetElement ( "{}" ; "a" ; "1,5" ; JSONNumber )	0	8/1/0	{"a":1.5}
+JSONSetElement ( "{}" ; "a" ; "1.5" ; JSONNumber )	0	8/1/0	{"a":15}
+JSONSetElement ( "{}" ; "a" ; "1.234,5" ; JSONNumber )	0	8/1/0	{"a":1234.5}
+JSONSetElement ( "{}" ; "a" ; 1/3 ; JSONString )	0	8/1/0	{"a":",3333333333333333"}
+JSONSetElement ( "{}" ; "a" ; Date ( 1 ; 2 ; 2003 ) ; JSONString )	0	8/1/0	{"a":"02.01.2003"}
+JSONSetElement ( "{}" ; "a" ; Date ( 1 ; 2 ; 2003 ) ; JSONNumber )	0	8/1/0	{"a":731217}
+JSONSetElement ( "{}" ; "a" ; "0,5" ; JSONBoolean )	0	8/1/0	{"a":true}
+JSONMakeArray ( "1,5¶2.5¶3" ; "" ; JSONNumber )	0	8/1/0	[1.5,25,3]
+JSONMakeArray ( "1;5" ; ";" ; JSONNumber )	0	8/1/0	[1,5]
+JSONGetElement ( "[10,20]" ; "1,0" )	0	1/2/0	20
+JSONGetElement ( "[10,20]" ; "1.0" )	0	0/1/0	
+JSONGetElement ( "[10,20]" ; 1 )	0	1/2/0	20
+JSONValueExists ( "[1.5]" ; "" ; 1.5 )	106	2/2/0	?
+JSONValueExists ( "[\"1,5\"]" ; "" ; 1.5 )	106	2/2/0	?
+JSONValueExists ( "[\"STRASSE\",\"i\"]" ; "" ; "I" )	0	2/2/0	1
+JSONValueExists ( "[\"ı\"]" ; "" ; "I" )	0	2/2/0	0
+JSONUniqueValues ( "[\"é\",\"É\",\"i\",\"I\"]" ; "" )	0	8/1/0	["é","i"]
+JSONFormatElements ( "{\"a\":[1.5,2]}" )	0	8/1/0	{\r\t"a" : [ 1.5, 2 ]\r}
+JSONGetElement ( "{\"b\":1,\"a\":2,\"é\":3,\"Z\":4}" ; "" )	0	8/1/0	{"Z":4,"a":2,"b":1,"é":3}
+JSONListKeys ( "{\"b\":1,\"a\":2,\"é\":3,\"Z\":4,\"ä\":5}" ; "" )	0	1/1/0	Z\ra\rb\rä\ré
+JSONGetElement ( "[1," ; "" )	0	1/1/0	? * Line 1, Column 4\r  Syntax error: value, object or array expected.
+# value matching strength by locale
+JSONValueExists ( "[\"a\"]" ; "" ; "A" )	0	2/2/0	1
+JSONValueExists ( "[\"é\"]" ; "" ; "e" )	0	2/2/0	0
+JSONValueExists ( "[\"é\"]" ; "" ; "É" )	0	2/2/0	1
+JSONValueExists ( "[\"ｱ\"]" ; "" ; "ア" )	0	2/2/0	1
+JSONValueExists ( "[\"あ\"]" ; "" ; "ア" )	0	2/2/0	1
+JSONValueExists ( "[\"Ａ\"]" ; "" ; "A" )	0	2/2/0	1
+JSONValueExists ( "[\"ß\"]" ; "" ; "ss" )	0	2/2/0	0
+JSONValueExists ( "[\"ae\"]" ; "" ; "æ" )	0	2/2/0	0
+JSONValueExists ( "[\"a b\"]" ; "" ; "a  b" )	0	2/2/0	0
+JSONValueExists ( "[\"a\"]" ; "" ; "a " )	0	2/2/0	0
+JSONValueExists ( "[\"-\"]" ; "" ; "‐" )	0	2/2/0	0
+JSONValueExists ( "[\"1\"]" ; "" ; "１" )	0	2/2/0	1
+JSONValueExists ( "[\"Straße\"]" ; "" ; "STRASSE" )	0	2/2/0	0
+JSONValueExists ( "[\"i\"]" ; "" ; "İ" )	0	2/2/0	0
+JSONValueExists ( "[\"ı\"]" ; "" ; "I" )	0	2/2/0	0
+JSONValueExists ( "[\"ǅ\"]" ; "" ; "ǆ" )	0	2/2/0	1
+JSONUniqueValues ( "[\"a\",\"A\",\"Ａ\",\"あ\",\"ア\",\"ｱ\",\"é\",\"e\"]" ; "" )	0	8/1/0	["a","あ","é","e"]

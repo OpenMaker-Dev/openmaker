@@ -1,0 +1,149 @@
+# Validation timing inside a transaction on FileMaker Server's script
+# engine (findings: results/s35-findings.md, part D): which step returns
+# the validation error of an invalid Set Field (the step leaving the
+# record or Commit Transaction), whether the transaction reverts, and
+# Get ( LastError ) after each step; with Set Revert Transaction on Error
+# On (the default) and Off, with Open Transaction [ Skip data entry
+# validation ], and without a transaction.
+# Base file: tasks-en, generated, with two strict rules by calculation,
+# Length ( Self ) <= 3: Tasks::Description validated Always ("D"),
+# Tasks::Category only during data entry ("C"). "setup" adds tasks a, b,
+# c. Each probe resets task a (Description and Category "ok"), sets the
+# field to "toolong" on it and returns "open e / set e / leave e/record /
+# in tx state / commit tx e open state" (steps a reverted transaction
+# skips leave no entry), then task a's stored values, read in the window
+# and by SQL. The trace has every step's own error.
+@validate	Tasks::Description	Always	Length ( Self ) <= 3
+@validate	Tasks::Category	DataEntry	Length ( Self ) <= 3
+
+== setup
+Go to Layout [ "Task Details" ]
+New Record/Request
+Set Field [ Tasks::Task ; "a" ]
+New Record/Request
+Set Field [ Tasks::Task ; "b" ]
+New Record/Request
+Set Field [ Tasks::Task ; "c" ]
+Commit Records/Requests [ With dialog: Off ]
+Exit Script [ Get ( TotalRecordCount ) ]
+
+== reset
+Go to Layout [ "Task Details" ]
+Show All Records
+Go to Record/Request/Page [ First ]
+Set Field [ Tasks::Description ; "ok" ]
+Set Field [ Tasks::Category ; "ok" ]
+Commit Records/Requests [ With dialog: Off ]
+
+== stored
+Go to Record/Request/Page [ First ]
+Exit Script [ Tasks::Task & "=" & Tasks::Description & "/" & Tasks::Category & " sql " & ExecuteSQL ( "SELECT Description, Category FROM Tasks WHERE Task = 'a'" ; "/" ; "" ) & " records " & Get ( TotalRecordCount ) ]
+
+== tx
+# Parameter: field (D | C) ¶ leaving step (commit | next | none) ¶ keep
+# (Set Revert Transaction on Error [ Off ]) or empty
+Set Error Capture [ On ]
+Perform Script [ "reset" ]
+Set Variable [ $f ; GetValue ( Get ( ScriptParameter ) ; 1 ) ]
+Set Variable [ $l ; GetValue ( Get ( ScriptParameter ) ; 2 ) ]
+If [ GetValue ( Get ( ScriptParameter ) ; 3 ) = "keep" ]
+Set Revert Transaction on Error [ Off ]
+End If
+Open Transaction
+Set Variable [ $s ; "open " & Get ( LastError ) ]
+If [ $f = "D" ]
+Set Field [ Tasks::Description ; "toolong" ]
+Set Variable [ $s ; $s & " / set " & Get ( LastError ) ]
+Else
+Set Field [ Tasks::Category ; "toolong" ]
+Set Variable [ $s ; $s & " / set " & Get ( LastError ) ]
+End If
+If [ $l = "commit" ]
+Commit Records/Requests [ With dialog: Off ]
+Set Variable [ $s ; $s & " / leave " & Get ( LastError ) & "/" & Get ( RecordNumber ) ]
+Else If [ $l = "next" ]
+Go to Record/Request/Page [ Next ]
+Set Variable [ $s ; $s & " / leave " & Get ( LastError ) & "/" & Get ( RecordNumber ) ]
+End If
+Set Variable [ $s ; $s & " / in tx " & Get ( TransactionOpenState ) ]
+Commit Transaction
+Set Variable [ $s ; $s & " / commit tx " & Get ( LastError ) & " open " & Get ( TransactionOpenState ) ]
+Perform Script [ "stored" ]
+Exit Script [ $s & " | " & Get ( ScriptResult ) ]
+
+== tx skip
+# The same with Open Transaction [ Skip data entry validation ].
+Set Error Capture [ On ]
+Perform Script [ "reset" ]
+Set Variable [ $f ; GetValue ( Get ( ScriptParameter ) ; 1 ) ]
+Set Variable [ $l ; GetValue ( Get ( ScriptParameter ) ; 2 ) ]
+Open Transaction [ skip validation ]
+Set Variable [ $s ; "open " & Get ( LastError ) ]
+If [ $f = "D" ]
+Set Field [ Tasks::Description ; "toolong" ]
+Set Variable [ $s ; $s & " / set " & Get ( LastError ) ]
+Else
+Set Field [ Tasks::Category ; "toolong" ]
+Set Variable [ $s ; $s & " / set " & Get ( LastError ) ]
+End If
+If [ $l = "commit" ]
+Commit Records/Requests [ With dialog: Off ]
+Set Variable [ $s ; $s & " / leave " & Get ( LastError ) & "/" & Get ( RecordNumber ) ]
+Else If [ $l = "next" ]
+Go to Record/Request/Page [ Next ]
+Set Variable [ $s ; $s & " / leave " & Get ( LastError ) & "/" & Get ( RecordNumber ) ]
+End If
+Set Variable [ $s ; $s & " / in tx " & Get ( TransactionOpenState ) ]
+Commit Transaction
+Set Variable [ $s ; $s & " / commit tx " & Get ( LastError ) & " open " & Get ( TransactionOpenState ) ]
+Perform Script [ "stored" ]
+Exit Script [ $s & " | " & Get ( ScriptResult ) ]
+
+== plain
+# No transaction. Parameter: field (D | C) ¶ leaving step (commit | next |
+# skip: Commit Records [ Skip data entry validation ])
+Set Error Capture [ On ]
+Perform Script [ "reset" ]
+Set Variable [ $f ; GetValue ( Get ( ScriptParameter ) ; 1 ) ]
+Set Variable [ $l ; GetValue ( Get ( ScriptParameter ) ; 2 ) ]
+If [ $f = "D" ]
+Set Field [ Tasks::Description ; "toolong" ]
+Else
+Set Field [ Tasks::Category ; "toolong" ]
+End If
+Set Variable [ $s ; "set " & Get ( LastError ) ]
+If [ $l = "commit" ]
+Commit Records/Requests [ With dialog: Off ]
+Else If [ $l = "next" ]
+Go to Record/Request/Page [ Next ]
+Else If [ $l = "skip" ]
+Commit Records/Requests [ With dialog: Off ; skip validation ]
+End If
+Set Variable [ $s ; $s & " / leave " & Get ( LastError ) & "/" & Get ( RecordNumber ) ]
+Revert Record/Request [ With dialog: Off ]
+Perform Script [ "stored" ]
+Exit Script [ $s & " | " & Get ( ScriptResult ) ]
+
+--- run
+setup
+tx	D\rcommit
+tx	D\rnext
+tx	D\rnone
+tx	C\rcommit
+tx	C\rnext
+tx	C\rnone
+tx	D\rcommit\rkeep
+tx	D\rnext\rkeep
+tx	D\rnone\rkeep
+tx	C\rcommit\rkeep
+tx	C\rnone\rkeep
+tx skip	D\rcommit
+tx skip	D\rnext
+tx skip	D\rnone
+tx skip	C\rcommit
+plain	D\rcommit
+plain	D\rnext
+plain	D\rskip
+plain	C\rcommit
+plain	C\rnext
+stored

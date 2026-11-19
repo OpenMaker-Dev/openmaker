@@ -1,0 +1,69 @@
+# Validation of a repeating field (three repetitions), script-runtime.md
+# 13.19. Website: by calculation Length ( Self ) <= 3, strict, Always. Probe file contacts-calc.fmp12: crates/om-server
+# example validation_probe (rule calc) over contacts-en; the @trigger line
+# (never fired) makes runbat.sh run FMUpgradeTool's file generated from it.
+# Each probe exits with Set Field's errors, then Commit Records' ("set/commit");
+# a refused record is deleted (new) or reverted (Step 51), as a failed commit
+# otherwise leaves the file unable to close (803 on the next run).
+@trigger	Contact List	OnGestureTap	count
+== calc rep1 bad
+Set Error Capture [ On ]
+New Record/Request
+Set Field [ Contacts::Website[1] ; "toolong" ]
+Set Variable [ $set ; $set & Get ( LastError ) ]
+Commit Records/Requests [ With dialog: Off ]
+Set Variable [ $e ; Get ( LastError ) ]
+If [ $e ≠ 0 ]
+Delete Record/Request [ With dialog: Off ]
+End If
+Exit Script [ $set & "/" & $e ]
+== calc rep2 bad
+Set Error Capture [ On ]
+New Record/Request
+Set Field [ Contacts::Website[1] ; "ab" ]
+Set Variable [ $set ; $set & Get ( LastError ) ]
+Set Field [ Contacts::Website[2] ; "toolong" ]
+Set Variable [ $set ; $set & Get ( LastError ) ]
+Commit Records/Requests [ With dialog: Off ]
+Set Variable [ $e ; Get ( LastError ) ]
+If [ $e ≠ 0 ]
+Delete Record/Request [ With dialog: Off ]
+End If
+Exit Script [ $set & "/" & $e ]
+== calc rep2 only bad
+Set Error Capture [ On ]
+New Record/Request
+Set Field [ Contacts::Website[2] ; "toolong" ]
+Set Variable [ $set ; $set & Get ( LastError ) ]
+Commit Records/Requests [ With dialog: Off ]
+Set Variable [ $e ; Get ( LastError ) ]
+If [ $e ≠ 0 ]
+Delete Record/Request [ With dialog: Off ]
+End If
+Exit Script [ $set & "/" & $e ]
+== calc rep2 good
+Set Error Capture [ On ]
+New Record/Request
+Set Field [ Contacts::Website[1] ; "ab" ]
+Set Variable [ $set ; $set & Get ( LastError ) ]
+Set Field [ Contacts::Website[2] ; "cd" ]
+Set Variable [ $set ; $set & Get ( LastError ) ]
+Commit Records/Requests [ With dialog: Off ]
+Set Variable [ $e ; Get ( LastError ) ]
+If [ $e ≠ 0 ]
+Delete Record/Request [ With dialog: Off ]
+End If
+Exit Script [ $set & "/" & $e ]
+== calc rep3 empty set
+Set Error Capture [ On ]
+Go to Record/Request/Page [ Last ]
+Set Field [ Contacts::Website[3] ; "" ]
+Set Variable [ $set ; $set & Get ( LastError ) ]
+Commit Records/Requests [ With dialog: Off ]
+Set Variable [ $e ; Get ( LastError ) ]
+If [ $e ≠ 0 ]
+Step 51
+End If
+Exit Script [ $set & "/" & $e ]
+== count
+Exit Script [ ExecuteSQL ( "SELECT COUNT(*) FROM Contacts" ; "" ; "" ) ]

@@ -1,0 +1,45 @@
+[package]
+name = "om-admin"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+rust-version.workspace = true
+description = "OpenMaker Server's Admin Console: an HTTPS server with sign-in, sessions, the console's pages and the Admin API"
+
+[dependencies]
+axum = { version = "0.8", default-features = false, features = ["form", "http1", "json", "query", "tokio"] }
+# The Admin API's HTTP Basic credentials.
+base64 = "0.23"
+# Reading and writing the query strings of views' selection, search and
+# sort; already in the workspace through url.
+form_urlencoded = "1.2"
+getrandom = "0.2"
+hyper = { version = "1", features = ["http1", "server"] }
+hyper-util = { version = "0.1", features = ["http1", "server", "tokio"] }
+jiff = "0.2"
+log = "0.4"
+maud = "0.27"
+rustls = { version = "0.23", default-features = false, features = ["std", "ring", "tls12"] }
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+sha2 = "0.10"
+subtle = "2.6"
+tokio = { version = "1", features = ["macros", "net", "rt-multi-thread", "sync", "time"] }
+tokio-rustls = { version = "0.26", default-features = false, features = ["ring", "tls12"] }
+# Router::oneshot for each request of a connection served by hyper.
+tower = { version = "0.5", default-features = false, features = ["util"] }
+# The server certificate's names and dates (SSL Certificate, Dashboard).
+x509-parser = "0.18"
+
+[target.'cfg(unix)'.dependencies]
+# Volume Status reads the data folder's file system with statvfs; already
+# in the workspace through om-server and om-data.
+rustix = { version = "1.1", features = ["fs"] }
+
+[dev-dependencies]
+env_logger = { version = "0.11", default-features = false, features = ["auto-color", "humantime"] }
+rcgen = "0.14"
+ureq = { version = "2.12", default-features = false, features = ["tls"] }
+
+[lints]
+workspace = true

@@ -1,0 +1,524 @@
+opcode,stored,constant,english_name,source_name,kind,nargs,arity,min_args,max_args,polish_operands,resource,signature,corpus_templates,corpus_all
+0,00,kDBEmptyOp,,empty argument,data,Special,0,,,,130/0,,5,125
+1,01,kDBEofOp,,,internal,Unknown,0,,,,130/1,,0,0
+2,02,kDBErrorOp,,,internal,Unknown,0,,,,130/2,,0,0
+3,03,kDBSeparatorOp,,;,punctuation,Unknown,0,,,,130/3,,0,0
+4,04,kDBLParenOp,,(,punctuation,Unknown,0,,,,130/4,,0,0
+5,05,kDBRParenOp,,),punctuation,Unknown,0,,,,130/5,,0,0
+6,06,kDBLBraceOp,,[,punctuation,Unknown,0,,,,130/6,,0,0
+7,07,kDBRBraceOp,,],punctuation,Unknown,0,,,,130/7,,0,0
+11,0b,kDBSymbolOp,,symbol (unresolved or local name),data,Unknown,0,,,text(styled) u8,130/11,,0,0
+12,0c,kDBWhiteSpaceOp,,whitespace,layout,Unknown,0,,,,130/12,,0,0
+13,0d,kDBCCmmtOp,,/* comment */,layout,Unknown,0,,,,130/13,,0,0
+14,0e,kDBCmmtOp,,// comment,layout,Unknown,0,,,,130/14,,0,0
+16,10,kDBNumData,,number literal,data,NoArgs,0,,,fixpt,130/16,,652,34773
+17,11,kDBBoolData,,boolean literal (read as number; never written),data,NoArgs,0,,,fixpt,130/17,,0,0
+18,12,kDBDateTimeData,,date/time literal (never written),data,NoArgs,0,,,,130/18,,0,0
+19,13,kDBStringData,,text literal,data,NoArgs,0,,,text(styled),130/19,,4022,42840
+20,14,kDBKeyData,,function key,data,NoArgs,0,,,key,130/20,,0,352
+21,15,kDBPluginOpData,,plugin function id,data,NoArgs,0,,,quadchar u16,130/21,,0,15559
+22,16,kDBFieldOp,,field reference,data,Special,0,,,u8 key key u16,130/22,,859,7041
+23,17,kDBFieldRefOp,,field reference (field-type argument),data,Special,0,,,u8 key key u16,130/23,,22,187
+24,18,kDBVarOp,,local variable,data,Special,0,,,u16,130/24,,22,3161
+25,19,kDBListOp,,list [ ... ],data,Special,0,,,"u16 n, n exprs reversed",130/25,,0,1227
+26,1a,kDBScopedVarOp,,$ or $$ variable,data,Special,0,,,text,130/26,,110,22734
+27,1b,kDBFncCallOp,,custom function call,data,Special,0,,,"u16 n, key-expr, n exprs reversed",130/27,,0,185
+28,1c,kDBTailCallOp,,custom function tail call,data,Special,0,,,"u16 n, key-expr, n exprs reversed",130/28,,0,167
+29,1d,kDBPluginOp,,plugin function call,data,VarArgs,0,,,"u16 n, plugin-id-expr, n exprs reversed (00 for an empty argument)",130/29,,0,15559
+30,1e,kDBNotOp,not,not,operator,Unary,1,1,1,1 exprs,130/30,,46,560
+31,1f,kDBAndOp,and,and,operator,Binary,2,2,2,2 exprs,130/31,,9,334
+32,20,kDBOrOp,or,or,operator,Binary,2,2,2,2 exprs,130/32,,0,262
+33,21,kDBXorOp,xor,xor,operator,Binary,2,2,2,2 exprs,130/33,,0,0
+34,22,kDBTrueOp,True,True,constant,NoArgs,0,0,0,0 exprs,130/34,,0,17
+35,23,kDBFalseOp,False,False,constant,NoArgs,0,0,0,0 exprs,130/35,,0,25
+36,24,kDBParagraphOp,,¶,constant,NoArgs,0,0,0,0 exprs,130/36,,18,462
+37,25,,,+,operator,Binary,2,2,2,2 exprs,130/37,,11,1027
+38,26,,,-,operator,Binary,2,2,2,2 exprs,130/38,,22,595
+39,27,,,*,operator,Binary,2,2,2,2 exprs,130/39,,11,200
+40,28,,,/,operator,Binary,2,2,2,2 exprs,130/40,,0,214
+41,29,kDBPowerOp,,^,operator,Binary,2,2,2,2 exprs,130/41,,0,7
+42,2a,kDBDivOp,Div,Div,function,Binary,2,2,2,2 exprs,130/42,Div ( number ; divisor ),0,1
+43,2b,kDBModOp,Mod,Mod,function,Binary,2,2,2,2 exprs,130/43,Mod ( number ; divisor ),0,48
+44,2c,kDBNegateOp,,- (unary),operator,Unary,1,1,1,1 exprs,130/44,,0,510
+45,2d,kDBAbsOp,Abs,Abs,function,Unary,1,1,1,1 exprs,130/45,Abs ( number ),0,39
+46,2e,kDBExpOp,Exp,Exp,function,Unary,1,1,1,1 exprs,130/46,Exp ( number ),0,0
+47,2f,kDBIntOp,Int,Int,function,Unary,1,1,1,1 exprs,130/47,Int ( number ),0,26
+48,30,kDBGetAsTextOp,GetAsText,GetAsText,function,Unary,1,1,1,1 exprs,130/48,GetAsText ( data ),0,122
+49,31,kDBRandomOp,Random,Random,function,NoArgs,0,0,0,0 exprs,130/49,Random,0,13
+50,32,kDBRoundOp,Round,Round,function,Binary,2,2,2,2 exprs,130/50,Round ( number ; precision ),0,77
+51,33,kDBSignOp,Sign,Sign,function,Unary,1,1,1,1 exprs,130/51,Sign ( number ),0,0
+52,34,kDBSqrtOp,Sqrt,Sqrt,function,Unary,1,1,1,1 exprs,130/52,Sqrt ( number ),0,0
+53,35,kDBTruncateOp,Truncate,Truncate,function,Binary,2,2,2,2 exprs,130/53,Truncate ( number ; precision ),0,2
+54,36,kDBFloorOp,Floor,Floor,function,Unary,1,1,1,1 exprs,130/54,Floor ( number ),0,8
+55,37,kDBCeilingOp,Ceiling,Ceiling,function,Unary,1,1,1,1 exprs,130/55,Ceiling ( number ),0,1
+56,38,kDBLgOp,Lg,Lg,function,Unary,1,1,1,1 exprs,130/56,Lg ( number ),0,0
+57,39,kDBLnOp,Ln,Ln,function,Unary,1,1,1,1 exprs,130/57,Ln ( number ),0,0
+58,3a,kDBLogOp,Log,Log,function,Unary,1,1,1,1 exprs,130/58,Log ( number ),0,0
+59,3b,kDBFactorialOp,Factorial,Factorial,function,VarArgs,0,1,2,"u16 n, n exprs reversed",130/59,Factorial ( number {; numberOfFactors} ),0,0
+60,3c,kDBCombinationOp,Combination,Combination,function,Binary,2,2,2,2 exprs,130/60,Combination ( setSize ; numberOfChoices ),0,0
+61,3d,kDBSetPrecisionOp,SetPrecision,SetPrecision,function,Special,2,2,2,"2 exprs reversed (precision, expression)",130/61,SetPrecision ( expression ; precision ),0,2
+62,3e,kDBGetAsBooleanOp,GetAsBoolean,GetAsBoolean,function,Unary,1,1,1,1 exprs,130/62,GetAsBoolean ( data ),0,10
+63,3f,kDBGetValueOp,GetValue,GetValue,function,Binary,2,2,2,2 exprs,130/63,GetValue ( listOfValues ; valueNumber ),11,333
+64,40,kDBSetRecursionOp,SetRecursion,SetRecursion,function,Special,2,2,2,"2 exprs reversed (depth, expression)",130/64,SetRecursion ( expression ; maxIterations ),0,0
+65,41,kDBIsLessThanOp,,<,operator,Binary,2,2,2,2 exprs,130/65,,11,141
+66,42,kDBIsLessThanOrEqlOp,,<=,operator,Binary,2,2,2,2 exprs,130/66,,22,76
+67,43,kDBIsSingleCharLessThanOrEqlOp,,≤,operator,Binary,2,2,2,2 exprs,130/67,,0,37
+68,44,kDBIsEqualOp,,=,operator,Binary,2,2,2,2 exprs,130/68,,230,3045
+69,45,kDBIsNotEqualOp,,<>,operator,Binary,2,2,2,2 exprs,130/69,,0,38
+70,46,kDBIsSingleCharNotEqualOp,,≠,operator,Binary,2,2,2,2 exprs,130/70,,11,774
+71,47,kDBIsGrtrThanOrEqlOp,,>=,operator,Binary,2,2,2,2 exprs,130/71,,0,88
+72,48,kDBIsSingleCharGrtrThanOrEqlOp,,≥,operator,Binary,2,2,2,2 exprs,130/72,,0,106
+73,49,kDBIsGrtrThanOp,,>,operator,Binary,2,2,2,2 exprs,130/73,,11,786
+74,4a,kDBEvalErrorOp,EvaluationError,EvaluationError,function,Special,1,1,1,,130/74,EvaluationError ( expression ),0,11
+75,4b,kDBIfOp,If,If,function,Special,3,2,3,"3 exprs (test, then, else; 00 when omitted)",130/75,If ( test ; result1 {; result2} ),43,499
+76,4c,kDBCaseOp,Case,Case,function,Special,0,2,0,"u16 n pairs, n x (test, result)",130/76,Case ( test1 ; result1 {; test2 ; result2 ; ... ; defaultResult} ),45,399
+77,4d,kDBChooseOp,Choose,Choose,function,Special,0,2,0,"u16 n results, test, n results",130/77,Choose ( test ; result0 {; result1 ; result2...} ),0,22
+78,4e,kDBIsEmptyOp,IsEmpty,IsEmpty,function,Unary,1,1,1,1 exprs,130/78,IsEmpty ( field ),594,1319
+79,4f,kDBIsValidOp,IsValid,IsValid,function,Special,1,1,1,,130/79,IsValid ( field ),0,3
+80,50,kDBConcatOp,,&,operator,Binary,2,2,2,2 exprs,130/80,,103,5352
+81,51,kDBExactOp,Exact,Exact,function,Binary,2,2,2,2 exprs,130/81,Exact ( originalText ; comparisonText ),0,5
+82,52,kDBLengthOp,Length,Length,function,Unary,1,1,1,1 exprs,130/82,Length ( text ),0,483
+83,53,kDBWordCountOp,WordCount,WordCount,function,Unary,1,1,1,1 exprs,130/83,WordCount ( text ),0,0
+84,54,kDBLowerOp,Lower,Lower,function,Unary,1,1,1,1 exprs,130/84,Lower ( text ),0,13
+85,55,kDBUpperOp,Upper,Upper,function,Unary,1,1,1,1 exprs,130/85,Upper ( text ),0,5
+86,56,kDBProperOp,Proper,Proper,function,Unary,1,1,1,1 exprs,130/86,Proper ( text ),0,1
+87,57,kDBLeftOp,Left,Left,function,Binary,2,2,2,2 exprs,130/87,Left ( text ; numberOfCharacters ),46,251
+88,58,kDBMiddleOp,Middle,Middle,function,Trinary,3,3,3,3 exprs,130/88,Middle ( text ; start ; numberOfCharacters ),0,114
+89,59,kDBRightOp,Right,Right,function,Binary,2,2,2,2 exprs,130/89,Right ( text ; numberOfCharacters ),0,120
+90,5a,kDBLeftWordsOp,LeftWords,LeftWords,function,Binary,2,2,2,2 exprs,130/90,LeftWords ( text ; numberOfWords ),0,9
+91,5b,kDBMiddleWordsOp,MiddleWords,MiddleWords,function,Trinary,3,3,3,3 exprs,130/91,MiddleWords ( text ; startingWord ; numberOfWords ),0,27
+92,5c,kDBRightWordsOp,RightWords,RightWords,function,Binary,2,2,2,2 exprs,130/92,RightWords ( text ; numberOfWords ),0,10
+93,5d,kDBLeftValuesOp,LeftValues,LeftValues,function,Binary,2,2,2,2 exprs,130/93,LeftValues ( text ; numberOfValues ),0,28
+94,5e,kDBMiddleValuesOp,MiddleValues,MiddleValues,function,Trinary,3,3,3,3 exprs,130/94,MiddleValues ( text ; startingValue ; numberOfValues ),0,68
+95,5f,kDBRightValuesOp,RightValues,RightValues,function,Binary,2,2,2,2 exprs,130/95,RightValues ( text ; numberOfValues ),0,18
+96,60,kDBPatternCountOp,PatternCount,PatternCount,function,Binary,2,2,2,2 exprs,130/96,PatternCount ( text ; searchString ),0,142
+97,61,kDBPositionOp,Position,Position,function,Quad,4,4,4,4 exprs,130/97,Position ( text ; searchString ; start ; occurrence ),0,231
+98,62,kDBReplaceOp,Replace,Replace,function,Quad,4,4,4,4 exprs,130/98,Replace ( text ; start ; numberOfCharacters ; replacementText ),0,10
+99,63,kDBSubstituteOp,Substitute,Substitute,function,VarArgs,0,2,0,"u16 n, n exprs reversed",130/99,Substitute ( text ; searchString ; replaceString ),0,656
+100,64,kDBTrimOp,Trim,Trim,function,Unary,1,1,1,1 exprs,130/100,Trim ( text ),0,73
+101,65,kDBFilterOp,Filter,Filter,function,Binary,2,2,2,2 exprs,130/101,Filter ( textToFilter ; filterText ),0,18
+102,66,kDBFilterValuesOp,FilterValues,FilterValues,function,Binary,2,2,2,2 exprs,130/102,FilterValues ( textToFilter ; filterValues ),0,8
+104,68,kDBGetAsNumberOp,GetAsNumber,GetAsNumber,function,Unary,1,1,1,1 exprs,130/104,GetAsNumber ( text ),0,218
+105,69,kDBGetAsTimestampOp,GetAsTimeStamp,GetAsTimestamp,function,Unary,1,1,1,1 exprs,130/105,GetAsTimestamp ( text ),0,1
+106,6a,kDBGetAsTimeOp,GetAsTime,GetAsTime,function,Unary,1,1,1,1 exprs,130/106,GetAsTime ( text ),11,12
+107,6b,kDBGetAsDateOp,GetAsDate,GetAsDate,function,Unary,1,1,1,1 exprs,130/107,GetAsDate ( text ),0,5
+108,6c,kDBGetAsSVGOp,GetAsSVG,GetAsSVG,function,Unary,1,1,1,1 exprs,130/108,GetAsSVG ( text ),0,0
+109,6d,kDBGetAsCSSOp,GetAsCSS,GetAsCSS,function,Unary,1,1,1,1 exprs,130/109,GetAsCSS ( text ),0,11
+110,6e,kDBValueCountOp,ValueCount,ValueCount,function,Unary,1,1,1,1 exprs,130/110,ValueCount ( text ),11,172
+111,6f,kDBSerialIncrementOp,SerialIncrement,SerialIncrement,function,Binary,2,2,2,2 exprs,130/111,SerialIncrement ( text ; incrementBy ),0,6
+112,70,kDBDateOp,Date,Date,function,Trinary,3,3,3,3 exprs,130/112,Date ( month ; day ; year ),0,18
+113,71,kDBDayOp,Day,Day,function,Unary,1,1,1,1 exprs,130/113,Day ( date ),0,7
+114,72,kDBDayNameOp,DayName,DayName,function,Unary,1,1,1,1 exprs,130/114,DayName ( date ),0,0
+115,73,kDBDayOfWeekOp,DayOfWeek,DayOfWeek,function,Unary,1,1,1,1 exprs,130/115,DayOfWeek ( date ),0,42
+116,74,kDBDayOfYearOp,DayOfYear,DayOfYear,function,Unary,1,1,1,1 exprs,130/116,DayOfYear ( date ),0,0
+117,75,kDBMonthOp,Month,Month,function,Unary,1,1,1,1 exprs,130/117,Month ( date ),0,39
+118,76,kDBMonthNameOp,MonthName,MonthName,function,Unary,1,1,1,1 exprs,130/118,MonthName ( date ),0,0
+119,77,kDBWeekOfYearOp,WeekOfYear,WeekOfYear,function,Unary,1,1,1,1 exprs,130/119,WeekOfYear ( date ),0,24
+120,78,kDBWeekOfYearFiscalOp,WeekOfYearFiscal,WeekOfYearFiscal,function,Binary,2,2,2,2 exprs,130/120,WeekOfYearFiscal ( date ; startingDay ),0,0
+121,79,kDBYearOp,Year,Year,function,Unary,1,1,1,1 exprs,130/121,Year ( date ),0,74
+122,7a,kDBHourOp,Hour,Hour,function,Unary,1,1,1,1 exprs,130/122,Hour ( time ),0,1
+123,7b,kDBMinuteOp,Minute,Minute,function,Unary,1,1,1,1 exprs,130/123,Minute ( time ),0,1
+124,7c,kDBSecondsOp,Seconds,Seconds,function,Unary,1,1,1,1 exprs,130/124,Seconds ( time ),0,1
+125,7d,kDBTimeOp,Time,Time,function,Trinary,3,3,3,3 exprs,130/125,Time ( hours ; minutes ; seconds ),0,6
+126,7e,kDBTimestampOp,Timestamp,Timestamp,function,Binary,2,2,2,2 exprs,130/126,Timestamp ( date ; time ),0,6
+127,7f,kDBAverageOp,Average,Average,function,VarArgs,0,1,0,"u16 n, n exprs reversed",130/127,Average ( field {; field...} ),0,0
+128,80,kDBCountOp,Count,Count,function,VarArgs,0,1,0,"u16 n, n exprs reversed",130/128,Count ( field {; field...} ),0,32
+129,81,kDBMaxOp,Max,Max,function,VarArgs,0,1,0,"u16 n, n exprs reversed",130/129,Max ( field {; field...} ),0,10
+130,82,kDBMinOp,Min,Min,function,VarArgs,0,1,0,"u16 n, n exprs reversed",130/130,Min ( field {; field...} ),0,18
+131,83,kDBStdevOp,StDev,StDev,function,VarArgs,0,1,0,"u16 n, n exprs reversed",130/131,StDev ( field {; field...} ),0,0
+132,84,kDBStdevpOp,StDevP,StDevP,function,VarArgs,0,1,0,"u16 n, n exprs reversed",130/132,StDevP ( field {; field...} ),0,0
+133,85,kDBSumOp,Sum,Sum,function,VarArgs,0,1,0,"u16 n, n exprs reversed",130/133,Sum ( field {; field...} ),11,26
+134,86,kDBGetSummaryOp,GetSummary,GetSummary,function,BinaryField,2,2,2,2 exprs,130/134,GetSummary ( summaryField ; breakField ),0,0
+135,87,kDBAggregateListOp,List,List,function,VarArgs,0,1,0,"u16 n, n exprs reversed",130/135,List ( field {; field...} ),11,88
+136,88,kDBExtendOp,Extend,Extend,function,UnaryField,1,1,1,1 exprs,130/136,Extend ( non-repeatingField ),0,4
+137,89,kDBGetRepetitionOp,GetRepetition,GetRepetition,function,BinaryField,2,2,2,2 exprs,130/137,GetRepetition ( repeatingField ; number ),0,33
+138,8a,kDBLastOp,Last,Last,function,UnaryField,1,1,1,1 exprs,130/138,Last ( repeatingField ),0,0
+139,8b,kDBGetNthRecordOp,GetNthRecord,GetNthRecord,function,BinaryField,2,2,2,2 exprs,130/139,GetNthRecord ( field ; recordNumber ),0,52
+140,8c,kDBFvOp,FV,FV,function,Trinary,3,3,3,3 exprs,130/140,FV ( payment ; interestRate ; periods ),0,0
+141,8d,kDBNpvOp,NPV,NPV,function,BinaryField,2,2,2,2 exprs,130/141,NPV ( payment ; interestRate ),0,0
+142,8e,kDBPmtOp,PMT,PMT,function,Trinary,3,3,3,3 exprs,130/142,PMT ( principal ; interestRate ; term ),0,0
+143,8f,kDBPvOp,PV,PV,function,Trinary,3,3,3,3 exprs,130/143,PV ( payment ; interestRate ; periods ),0,0
+148,94,kDBATanOp,Atan,Atan,function,Unary,1,1,1,1 exprs,130/148,Atan ( number ),0,0
+149,95,kDBCosOp,Cos,Cos,function,Unary,1,1,1,1 exprs,130/149,Cos ( angleInRadians ),0,0
+150,96,kDBDegreesOp,Degrees,Degrees,function,Unary,1,1,1,1 exprs,130/150,Degrees ( angleInRadians ),0,0
+151,97,kDBPiOp,Pi,Pi,function,NoArgs,0,0,0,0 exprs,130/151,Pi,0,0
+152,98,kDBRadiansOp,Radians,Radians,function,Unary,1,1,1,1 exprs,130/152,Radians ( angleInDegrees ),0,0
+153,99,kDBSinOp,Sin,Sin,function,Unary,1,1,1,1 exprs,130/153,Sin ( angleInRadians ),0,0
+154,9a,kDBTanOp,Tan,Tan,function,Unary,1,1,1,1 exprs,130/154,Tan ( angleInRadians ),0,0
+155,9b,kDBGetOp,Get,Get,function,Special,0,1,1,u8 selector,130/155,Get ( flag ),324,3194
+156,9c,kDBGetParameterOp,,,internal,Unknown,0,,,u8 selector (formatted only),130/156,,0,0
+157,9d,kDBACosOp,Acos,Acos,function,Unary,1,1,1,1 exprs,130/157,Acos ( number ),0,0
+158,9e,kDBASinOp,Asin,Asin,function,Unary,1,1,1,1 exprs,130/158,Asin ( number ),0,0
+160,a0,kDBVarianceOp,Variance,Variance,function,VarArgs,0,1,0,"u16 n, n exprs reversed",130/160,Variance ( field {; field...} ),0,0
+161,a1,kDBVariancePOp,VarianceP,VarianceP,function,VarArgs,0,1,0,"u16 n, n exprs reversed",130/161,VarianceP ( field {; field...} ),0,0
+162,a2,kDBTextFontOp,TextFont,TextFont,function,VarArgs,0,2,3,"u16 n, n exprs reversed",130/162,TextFont ( text ; fontName ),0,7
+163,a3,kDBTextSizeOp,TextSize,TextSize,function,Binary,2,2,2,2 exprs,130/163,TextSize ( text ; fontSize ),0,30
+164,a4,kDBTextColorOp,TextColor,TextColor,function,Binary,2,2,2,2 exprs,130/164,TextColor ( text ; RGB ( red ; green ; blue ) ),0,34
+165,a5,kDBTextStyleAddOp,TextStyleAdd,TextStyleAdd,function,Binary,2,2,2,2 exprs,130/165,TextStyleAdd ( text ; styles ),0,16
+166,a6,kDBTextStyleRemoveOp,TextStyleRemove,TextStyleRemove,function,Binary,2,2,2,2 exprs,130/166,TextStyleRemove ( text ; styles ),0,0
+167,a7,kDBRgbOp,RGB,RGB,function,Trinary,3,3,3,3 exprs,130/167,RGB ( red ; green ; blue ),0,32
+168,a8,kDBTextColorRemoveOp,TextColorRemove,TextColorRemove,function,VarArgs,0,1,2,"u16 n, n exprs reversed",130/168,TextColorRemove ( text {; RGB  ( red ; green ; blue )} ),0,0
+169,a9,kDBTextFontRemoveOp,TextFontRemove,TextFontRemove,function,VarArgs,0,1,3,"u16 n, n exprs reversed",130/169,TextFontRemove ( text {; fontToRemove } ),0,1
+170,aa,kDBPlainOp,Plain,Plain,constant,NoArgs,0,0,0,0 exprs,130/170,,0,0
+171,ab,kDBBoldOp,Bold,Bold,constant,NoArgs,0,0,0,0 exprs,130/171,,0,13
+172,ac,kDBItalicOp,Italic,Italic,constant,NoArgs,0,0,0,0 exprs,130/172,,0,1
+173,ad,kDBUnderlineOp,Underline,Underline,constant,NoArgs,0,0,0,0 exprs,130/173,,0,0
+174,ae,kDBCondenseOp,Condense,Condense,constant,NoArgs,0,0,0,0 exprs,130/174,,0,1
+175,af,kDBExtendStyleOp,Extend,Extend,constant,NoArgs,0,0,0,0 exprs,130/175,,0,0
+176,b0,kDBStrikethroughOp,Strikethrough,Strikethrough,constant,NoArgs,0,0,0,0 exprs,130/176,,0,0
+177,b1,kDBSmallCapsOp,SmallCaps,SmallCaps,constant,NoArgs,0,0,0,0 exprs,130/177,,0,0
+178,b2,kDBSuperscriptOp,Superscript,Superscript,constant,NoArgs,0,0,0,0 exprs,130/178,,0,0
+179,b3,kDBSubscriptOp,Subscript,Subscript,constant,NoArgs,0,0,0,0 exprs,130/179,,0,0
+180,b4,kDBUppercaseOp,Uppercase,Uppercase,constant,NoArgs,0,0,0,0 exprs,130/180,,0,0
+181,b5,kDBLowercaseOp,Lowercase,Lowercase,constant,NoArgs,0,0,0,0 exprs,130/181,,0,0
+182,b6,kDBTitlecaseOp,Titlecase,Titlecase,constant,NoArgs,0,0,0,0 exprs,130/182,,0,0
+183,b7,kDBWordUnderlineOp,WordUnderline,WordUnderline,constant,NoArgs,0,0,0,0 exprs,130/183,,0,0
+184,b8,kDBDoubleUnderlineOp,DoubleUnderline,DoubleUnderline,constant,NoArgs,0,0,0,0 exprs,130/184,,0,0
+185,b9,kDBAllStylesOp,AllStyles,AllStyles,constant,NoArgs,0,0,0,0 exprs,130/185,,0,0
+186,ba,kDBTextSizeRemoveOp,TextSizeRemove,TextSizeRemove,function,VarArgs,0,1,2,"u16 n, n exprs reversed",130/186,TextSizeRemove ( text {; sizeToRemove } ),0,0
+187,bb,kDBTextFormatRemoveOp,TextFormatRemove,TextFormatRemove,function,Unary,1,1,1,1 exprs,130/187,TextFormatRemove ( text ),0,5
+188,bc,kDBLookupLowerOp,Lower,Lower,constant,NoArgs,0,0,0,0 exprs,130/188,,0,0
+189,bd,kDBLookupHigherOp,Higher,Higher,constant,NoArgs,0,0,0,0 exprs,130/189,,0,0
+190,be,kDBRomanOp,Roman,Roman,constant,NoArgs,0,0,0,0 exprs,130/190,,0,0
+191,bf,kDBGreekOp,Greek,Greek,constant,NoArgs,0,0,0,0 exprs,130/191,,0,0
+192,c0,kDBCyrillicOp,Cyrillic,Cyrillic,constant,NoArgs,0,0,0,0 exprs,130/192,,0,0
+193,c1,kDBCentralEuropeOp,CentralEurope,CentralEurope,constant,NoArgs,0,0,0,0 exprs,130/193,,0,0
+194,c2,kDBShiftJisOp,ShiftJIS,ShiftJIS,constant,NoArgs,0,0,0,0 exprs,130/194,,0,0
+195,c3,kDBTraditionalChineseOp,TraditionalChinese,TraditionalChinese,constant,NoArgs,0,0,0,0 exprs,130/195,,0,0
+196,c4,kDBSimplifiedChineseOp,SimplifiedChinese,SimplifiedChinese,constant,NoArgs,0,0,0,0 exprs,130/196,,0,0
+197,c5,kDBOEMOp,OEM,OEM,constant,NoArgs,0,0,0,0 exprs,130/197,,0,0
+198,c6,kDBSymbolCodeSetOp,Symbol,Symbol,constant,NoArgs,0,0,0,0 exprs,130/198,,0,0
+199,c7,kDBOtherOp,Other,Other,constant,NoArgs,0,0,0,0 exprs,130/199,,0,0
+200,c8,kDBHighlightOp,HighlightYellow,HighlightYellow,constant,NoArgs,0,0,0,0 exprs,130/200,,0,2
+220,dc,kDBEvaluateOp,Evaluate,Evaluate,function,Special,0,1,2,"u16 n, u16 flags, n exprs",130/220,Evaluate ( expression {; [field1 ; field2 ;...]} ),0,84
+221,dd,kDBGetFieldOp,GetField,GetField,function,Special,0,1,1,"u16 flags, 1 expr",130/221,GetField ( fieldName ),0,13
+222,de,kDBValidExprOp,IsValidExpression,IsValidExpression,function,Special,1,1,1,,130/222,IsValidExpression ( expression ),0,0
+223,df,kDBLetOp,Let,Let,function,Special,0,2,2,"u16 n, n bindings, body",130/223,Let ( {[} var1 = expression1 {; var2 = expression2...]} ; calculation ),11,382
+224,e0,kDBLookupOp,Lookup,Lookup,function,VarArgs,0,1,2,"u16 n, n exprs reversed",130/224,Lookup ( sourceField {; failExpression} ),0,0
+225,e1,kDBLookupNextOp,LookupNext,LookupNext,function,VarArgs,0,2,2,"u16 n, n exprs reversed",130/225,LookupNext ( sourceField ; lower/higherFlag ),0,0
+226,e2,kDBQuoteOp,Quote,Quote,function,Unary,1,1,1,1 exprs,130/226,Quote ( text ),0,46
+227,e3,kDBSetVariableOp,,,internal,Special,3,,,"3 exprs (value, repetition, target)",130/227,,0,366
+228,e4,kDBGetVarRepOp,,,internal,Special,2,,,"2 exprs (repetition, variable)",130/228,,0,61
+230,e6,kDBDayNameJOp,DayNameJ,DayNameJ,function,Unary,1,1,1,1 exprs,130/230,DayNameJ ( date ),0,0
+231,e7,kDBMonthNameJOp,MonthNameJ,MonthNameJ,function,Unary,1,1,1,1 exprs,130/231,MonthNameJ ( date ),0,0
+232,e8,kDBYearNameOp,YearName,YearName,function,Binary,2,2,2,2 exprs,130/232,YearName ( date ; format ),0,0
+233,e9,kDBLunarDateOp,LunarDate,LunarDate,function,Unary,1,1,1,1 exprs,130/233,,0,0
+234,ea,kDBSolarDateOp,SolarDate,SolarDate,function,Binary,2,2,2,2 exprs,130/234,,0,0
+235,eb,kDBKanjiNumeralOp,KanjiNumeral,KanjiNumeral,function,Unary,1,1,1,1 exprs,130/235,KanjiNumeral ( text ),0,0
+236,ec,kDBNumToJTextOp,NumToJText,NumToJText,function,Trinary,3,3,3,3 exprs,130/236,NumToJText ( number ; separator ; characterType ),0,0
+237,ed,kDBKatakanaOp,Katakana,Katakana,function,Unary,1,1,1,1 exprs,130/237,Katakana ( text ),0,0
+238,ee,kDBHiraganaOp,Hiragana,Hiragana,function,Unary,1,1,1,1 exprs,130/238,Hiragana ( text ),0,0
+239,ef,kDBKanaHankakuOp,KanaHankaku,KanaHankaku,function,Unary,1,1,1,1 exprs,130/239,KanaHankaku ( text ),0,0
+240,f0,kDBKanaZenkakuOp,KanaZenkaku,KanaZenkaku,function,Unary,1,1,1,1 exprs,130/240,KanaZenkaku ( text ),0,0
+241,f1,kDBRomanHankakuOp,RomanHankaku,RomanHankaku,function,Unary,1,1,1,1 exprs,130/241,RomanHankaku ( text ),0,0
+242,f2,kDBRomanZenkakuOp,RomanZenkaku,RomanZenkaku,function,Unary,1,1,1,1 exprs,130/242,RomanZenkaku ( text ),0,0
+243,f3,kDBTrimAllOp,TrimAll,TrimAll,function,Trinary,3,3,3,3 exprs,130/243,TrimAll ( text ; trimSpaces ; trimType ),0,0
+248,f8,kDBBeginSpecialOp,,,internal,Unknown,0,,,,,,0,0
+249,f9,kDBBeginVarArgsOp,,,internal,Unknown,0,,,,,,0,0
+250,fa,kDBBeginZeroArgOp,,,internal,Unknown,0,,,,,,0,0
+251,fb,kDBBeginOneArgOp,,,internal,Unknown,0,,,,,,0,0
+252,fc,kDBBeginTwoArgOp,,,internal,Unknown,0,,,,,,0,0
+253,fd,kDBBeginThreeArgOp,,,internal,Unknown,0,,,,,,0,0
+254,fe,kDBBeginFourArgOp,,,internal,Unknown,0,,,,,,0,0
+500,1f4,kDBSkipOp,,,internal,Unknown,0,,,,,,0,0
+501,1f5,kDBGetNextOp,,,internal,Unknown,0,,,,,,0,0
+502,1f6,kDBExitScopeOp,,,internal,Unknown,0,,,,,,0,0
+503,1f7,kDBSetVarOp,,,internal,Unknown,1,,,,,,0,0
+504,1f8,kDBMakeListOp,,,internal,Unknown,0,,,,,,0,0
+505,1f9,kDBPerformCallOp,,,internal,Unknown,0,,,,,,0,0
+506,1fa,kDBPerformTailCallOp,,,internal,Unknown,0,,,,,,0,0
+507,1fb,kDBExitFunctionOp,,,internal,Unknown,0,,,,,,0,0
+508,1fc,kDBBoolConverterOp,,,internal,Unknown,0,,,,,,0,0
+509,1fd,kDBSolvePluginOp,,,internal,Unknown,0,,,,,,0,0
+510,1fe,kDBSolveAggregateOp,,,internal,Unknown,0,,,,,,0,0
+511,1ff,kDBExitPrecScopeOp,,,internal,Unknown,0,,,,,,0,0
+512,200,kDBSolveSubstituteOp,,,internal,Unknown,0,,,,,,0,0
+513,201,kDBSolveFactorialOp,,,internal,Unknown,0,,,,,,0,0
+514,202,kDBSolveTextFontOp,,,internal,Unknown,0,,,,,,0,0
+515,203,kDBSolveLookupOp,,,internal,Unknown,0,,,,,,0,0
+516,204,kDBSolveLookupNextOp,,,internal,Unknown,0,,,,,,0,0
+517,205,kDBFalseArgOp,,,internal,Unknown,0,,,,,,0,0
+518,206,kDBTrueArgOp,,,internal,Unknown,0,,,,,,0,0
+519,207,kDBMakeLetOp,,,internal,Unknown,0,,,,,,0,0
+520,208,kDBMakeCaseOp,,,internal,Unknown,0,,,,,,0,0
+521,209,kDBMakeChooseOp,,,internal,Unknown,0,,,,,,0,0
+522,20a,kDBMakeTailCallOp,,,internal,Unknown,0,,,,,,0,0
+523,20b,kDBMakeFncCallOp,,,internal,Unknown,0,,,,,,0,0
+524,20c,kDBMakeEvaluateOp,,,internal,Unknown,0,,,,,,0,0
+525,20d,kDBMakeGetFieldOp,,,internal,Unknown,0,,,,,,0,0
+526,20e,kDBMakePluginOp,,,internal,Unknown,0,,,,,,0,0
+527,20f,kDBSolveEvalErrorOp,,,internal,Unknown,0,,,,,,0,0
+528,210,kDBSolveIsValidOp,,,internal,Unknown,0,,,,,,0,0
+529,211,kDBSolveTextColorRemoveOp,,,internal,Unknown,0,,,,,,0,0
+530,212,kDBSolveTextFontRemoveOp,,,internal,Unknown,0,,,,,,0,0
+531,213,kDBSolveTextSizeRemoveOp,,,internal,Unknown,0,,,,,,0,0
+532,214,kDBMakeLoop1Op,,,internal,Unknown,0,,,,,,0,0
+533,215,kDBMakeLoop2Op,,,internal,Unknown,0,,,,,,0,0
+534,216,kDBLoopMarkOp,,,internal,Unknown,0,,,,,,0,0
+535,217,kDBLoopIfOp,,,internal,Unknown,0,,,,,,0,0
+536,218,kDBLoopRewindOp,,,internal,Unknown,0,,,,,,0,0
+537,219,kDBExitRecurScopeOp,,,internal,Unknown,0,,,,,,0,0
+1000,9b 00,kDBBaseGetParameterOp,,,get-selector,,,,,,,,0,0
+1001,9b 01,kDBAppVersionOp,ApplicationVersion,,get-selector,,,,,,,,0,98
+1002,9b 02,kDBCurrentDateOp,CurrentDate,,get-selector,,,,,,,,0,56
+1003,9b 03,kDBLastErrorOp,LastError,,get-selector,,,,,,,,0,151
+1004,9b 04,kDBActiveFieldNameOp,ActiveFieldName,,get-selector,,,,,,,,0,1
+1005,9b 05,kDBFilenameOp,FileName,,get-selector,,,,,,,,0,444
+1006,9b 06,kDBFilesizeOp,FileSize,,get-selector,,,,,,,,0,0
+1007,9b 07,kDBFoundCountOp,FoundCount,,get-selector,,,,,,,,0,143
+1008,9b 08,kDBHostnameOp,HostName,,get-selector,,,,,,,,0,0
+1009,9b 09,kDBLayoutCountOp,LayoutCount,,get-selector,,,,,,,,0,0
+1010,9b 0a,kDBLayoutNameOp,LayoutName,,get-selector,,,,,,,,0,56
+1011,9b 0b,kDBLayoutNumberOp,LayoutNumber,,get-selector,,,,,,,,0,2
+1012,9b 0c,kDBSystemLanguageOp,SystemLanguage,,get-selector,,,,,,,,0,0
+1013,9b 0d,kDBWindowModeOp,WindowMode,,get-selector,,,,,,,,33,53
+1014,9b 0e,kDBMultiUserStateOp,MultiUserState,,get-selector,,,,,,,,0,0
+1015,9b 0f,kDBPageNumberOp,PageNumber,,get-selector,,,,,,,,0,3
+1016,9b 10,kDBSystemPlatformOp,SystemPlatform,,get-selector,,,,,,,,0,252
+1017,9b 11,kDBPortalRowNumberOp,ActivePortalRowNumber,,get-selector,,,,,,,,0,6
+1018,9b 12,kDBPrinterNameOp,PrinterName,,get-selector,,,,,,,,0,0
+1019,9b 13,kDBTotalRecordCountOp,TotalRecordCount,,get-selector,,,,,,,,0,45
+1020,9b 14,kDBRecordNumberOp,RecordNumber,,get-selector,,,,,,,,0,88
+1021,9b 15,kDBActiveRepetitionNumberOp,ActiveRepetitionNumber,,get-selector,,,,,,,,0,0
+1022,9b 16,kDBRequestCountOp,RequestCount,,get-selector,,,,,,,,0,1
+1023,9b 17,kDBScreenDepthOp,ScreenDepth,,get-selector,,,,,,,,0,0
+1024,9b 18,kDBScreenHeightOp,ScreenHeight,,get-selector,,,,,,,,0,5
+1025,9b 19,kDBScreenWidthOp,ScreenWidth,,get-selector,,,,,,,,0,3
+1026,9b 1a,kDBScriptNameOp,ScriptName,,get-selector,,,,,,,,0,32
+1027,9b 1b,kDBSortStateOp,SortState,,get-selector,,,,,,,,0,2
+1028,9b 1c,kDBSystemVersionOp,SystemVersion,,get-selector,,,,,,,,0,0
+1029,9b 1d,kDBCurrentTimeOp,CurrentTime,,get-selector,,,,,,,,0,4
+1030,9b 1e,kDBUserCountOp,UserCount,,get-selector,,,,,,,,0,0
+1031,9b 1f,kDBUserNameOp,UserName,,get-selector,,,,,,,,0,14
+1032,9b 20,kDBAccountNameOp,AccountName,,get-selector,,,,,,,,0,11
+1033,9b 21,kDBLastMessageChoiceOp,LastMessageChoice,,get-selector,,,,,,,,0,72
+1034,9b 22,kDBPrivilegeSetOp,CurrentPrivilegeSetName,,get-selector,,,,,,,,0,0
+1035,9b 23,kDBActiveModifierKeysOp,ActiveModifierKeys,,get-selector,,,,,,,,0,10
+1036,9b 24,kDBNetworkProtocolOp,NetworkProtocol,,get-selector,,,,,,,,0,0
+1037,9b 25,kDBRecordIDOp,RecordID,,get-selector,,,,,,,,0,19
+1038,9b 26,kDBRecordModCountOp,RecordModificationCount,,get-selector,,,,,,,,0,1
+1039,9b 27,kDBActiveFieldContentsOp,ActiveFieldContents,,get-selector,,,,,,,,0,2
+1040,9b 28,kDBFilePathOp,FilePath,,get-selector,,,,,,,,0,108
+1041,9b 29,kDBLastExternalErrorDetailOp,LastErrorDetail,,get-selector,,,,,,,,0,12
+1042,9b 2a,kDBLayoutAccessOp,LayoutAccess,,get-selector,,,,,,,,0,0
+1043,9b 2b,kDBRecordAccessOp,RecordAccess,,get-selector,,,,,,,,0,0
+1044,9b 2c,kDBHighContrastOp,HighContrastState,,get-selector,,,,,,,,0,0
+1045,9b 2d,kDBHighContrastColorOp,SystemAppearance,,get-selector,,,,,,,,0,2
+1046,9b 2e,kDBStatusAreaStateOp,StatusAreaState,,get-selector,,,,,,,,0,6
+1047,9b 2f,kDBLayoutViewStateOp,LayoutViewState,,get-selector,,,,,,,,0,2
+1048,9b 30,kDBWindowNameOp,WindowName,,get-selector,,,,,,,,0,66
+1049,9b 31,kDBWindowHeightOp,WindowHeight,,get-selector,,,,,,,,0,8
+1050,9b 32,kDBWindowLeftOp,WindowLeft,,get-selector,,,,,,,,0,16
+1051,9b 33,kDBWindowTopOp,WindowTop,,get-selector,,,,,,,,0,15
+1052,9b 34,kDBWindowVisibleOp,WindowVisible,,get-selector,,,,,,,,0,2
+1053,9b 35,kDBWindowWidthOp,WindowWidth,,get-selector,,,,,,,,0,13
+1054,9b 36,kDBSystemNICAddrOp,SystemNICAddress,,get-selector,,,,,,,,0,1
+1055,9b 37,kDBSystemIpAddrOp,SystemIPAddress,,get-selector,,,,,,,,0,4
+1056,9b 38,kDBActiveFieldTableNameOp,ActiveFieldTableName,,get-selector,,,,,,,,0,0
+1057,9b 39,kDBActiveSelectionSizeOp,ActiveSelectionSize,,get-selector,,,,,,,,0,3
+1058,9b 3a,kDBActiveSelectionStartOp,ActiveSelectionStart,,get-selector,,,,,,,,0,3
+1059,9b 3b,kDBAppLanguageOp,ApplicationLanguage,,get-selector,,,,,,,,0,1
+1060,9b 3c,kDBHostTimeStampOp,CurrentHostTimeStamp,,get-selector,,,,,,,,0,36
+1061,9b 3d,kDBLayoutTableNameOp,LayoutTableName,,get-selector,,,,,,,,0,9
+1062,9b 3e,kDBScriptParameterOp,ScriptParameter,,get-selector,,,,,,,,67,373
+1063,9b 3f,kDBLocalTimeStampOp,CurrentTimeStamp,,get-selector,,,,,,,,0,103
+1064,9b 40,kDBWindowDesktopHeightOp,WindowDesktopHeight,,get-selector,,,,,,,,0,1
+1065,9b 41,kDBWindowDesktopWidthOp,WindowDesktopWidth,,get-selector,,,,,,,,0,1
+1066,9b 42,kDBWindowContentHeightOp,WindowContentHeight,,get-selector,,,,,,,,0,4
+1067,9b 43,kDBWindowContentWidthOp,WindowContentWidth,,get-selector,,,,,,,,0,1
+1068,9b 44,kDBCalcRepNumberOp,CalculationRepetitionNumber,,get-selector,,,,,,,,0,17
+1069,9b 45,kDBExtendedPrivilegesOp,CurrentExtendedPrivileges,,get-selector,,,,,,,,0,0
+1070,9b 46,kDBAllowAbortStateOp,AllowAbortState,,get-selector,,,,,,,,0,0
+1071,9b 47,kDBErrorCaptureStateOp,ErrorCaptureState,,get-selector,,,,,,,,0,0
+1072,9b 48,kDBDesktopPathOp,DesktopPath,,get-selector,,,,,,,,0,15
+1073,9b 49,kDBDocumentsPathOp,DocumentsPath,,get-selector,,,,,,,,0,7
+1074,9b 4a,kDBFileMakerPathOp,FileMakerPath,,get-selector,,,,,,,,0,0
+1075,9b 4b,kDBHostIPAddressOp,HostIPAddress,,get-selector,,,,,,,,0,0
+1076,9b 4c,kDBRequestOmitStateOp,RequestOmitState,,get-selector,,,,,,,,0,0
+1077,9b 4d,kDBPreferencesPathOp,PreferencesPath,,get-selector,,,,,,,,0,10
+1078,9b 4e,kDBRecordOpenCountOp,RecordOpenCount,,get-selector,,,,,,,,0,0
+1079,9b 4f,kDBRecordOpenStateOp,RecordOpenState,,get-selector,,,,,,,,0,11
+1080,9b 50,kDBScriptResultOp,ScriptResult,,get-selector,,,,,,,,0,316
+1081,9b 51,kDBSystemDriveOp,SystemDrive,,get-selector,,,,,,,,0,4
+1082,9b 52,kDBTextRulerVisibleOp,TextRulerVisible,,get-selector,,,,,,,,0,0
+1083,9b 53,kDBAllowFormattingBarStateOp,AllowFormattingBarState,,get-selector,,,,,,,,0,0
+1084,9b 54,kDBUseSystemFormatsStateOp,UseSystemFormatsState,,get-selector,,,,,,,,0,0
+1085,9b 55,kDBWindowZoomLevelOp,WindowZoomLevel,,get-selector,,,,,,,,0,4
+1086,9b 56,kDBCustomMenuSetNameOp,CustomMenuSetName,,get-selector,,,,,,,,0,0
+1087,9b 57,kDBDBEngineVersionOp,DBEngineVersion,,get-selector,,,,,,,,0,0
+1088,9b 58,kDBActiveLayoutObjectNameOp,ActiveLayoutObjectName,,get-selector,,,,,,,,0,0
+1089,9b 59,kDBTemporaryPathOp,TemporaryPath,,get-selector,,,,,,,,0,3
+1090,9b 5a,,HostApplicationVersion,,get-selector,,,,,,,,0,3
+1091,9b 5b,kDBTriggerModifierKeysOp,TriggerModifierKeys,,get-selector,,,,,,,,0,0
+1092,9b 5c,kDBTriggerKeystrokeOp,TriggerKeystroke,,get-selector,,,,,,,,0,4
+1093,9b 5d,kDBDocumentsPathListingOp,DocumentsPathListing,,get-selector,,,,,,,,0,0
+1094,9b 5e,kDBAccountPrivilegeSetOp,AccountPrivilegeSetName,,get-selector,,,,,,,,0,5
+1095,9b 5f,kDBAccountExtendedPrivilegesOp,AccountExtendedPrivileges,,get-selector,,,,,,,,0,1
+1096,9b 60,kDBQuickFindTextOp,QuickFindText,,get-selector,,,,,,,,0,0
+1097,9b 61,kDBTriggerCurrentPanelOp,TriggerCurrentPanel,,get-selector,,,,,,,,0,0
+1098,9b 62,kDBTriggerTargetPanelOp,TriggerTargetPanel,,get-selector,,,,,,,,0,1
+1099,9b 63,kDBWindowStyleOp,WindowStyle,,get-selector,,,,,,,,0,2
+1100,9b 64,kDBInstalledFMPluginsOp,InstalledFMPlugins,,get-selector,,,,,,,,0,1
+1101,9b 65,kDBUUIDOp,UUID,,get-selector,,,,,,,,224,366
+1102,9b 66,kDBPersistentIDOp,PersistentID,,get-selector,,,,,,,,0,0
+1103,9b 67,kDBConnectionStateOp,ConnectionState,,get-selector,,,,,,,,0,0
+1104,9b 68,kDBUTCmSecsOp,CurrentTimeUTCMilliseconds,,get-selector,,,,,,,,0,44
+1105,9b 69,kDBDeviceOp,Device,,get-selector,,,,,,,,0,5
+1106,9b 6a,kDBWindowOrientationOp,WindowOrientation,,get-selector,,,,,,,,0,0
+1107,9b 6b,kDBTriggerGestureInfoOp,TriggerGestureInfo,,get-selector,,,,,,,,0,0
+1108,9b 6c,kDBEncryptionStateOp,EncryptionState,,get-selector,,,,,,,,0,0
+1109,9b 6d,kDBScriptAnimationOp,ScriptAnimationState,,get-selector,,,,,,,,0,0
+1110,9b 6e,kDBModifiedFieldsOp,ModifiedFields,,get-selector,,,,,,,,0,0
+1111,9b 6f,kDBNetworkTypeOp,NetworkType,,get-selector,,,,,,,,0,0
+1112,9b 70,kDBConnectionAttributesOp,ConnectionAttributes,,get-selector,,,,,,,,0,0
+1113,9b 71,kDBScreenScaleFactorOp,ScreenScaleFactor,,get-selector,,,,,,,,0,0
+1114,9b 72,kUnused1Op,,,get-selector,,,,,,,,0,0
+1115,9b 73,kDBAppArchitectureOp,ApplicationArchitecture,,get-selector,,,,,,,,0,2
+1116,9b 74,kTriggerExternalEventOp,TriggerExternalEvent,,get-selector,,,,,,,,0,0
+1117,9b 75,kTouchKeyboardStateOp,TouchKeyboardState,,get-selector,,,,,,,,0,0
+1118,9b 76,kDBMenubarStateOp,MenubarState,,get-selector,,,,,,,,0,0
+1119,9b 77,kTriggerRegionMonitorOp,RegionMonitorEvents,,get-selector,,,,,,,,0,0
+1120,9b 78,kDBAccountGroupNameOp,AccountGroupName,,get-selector,,,,,,,,0,0
+1121,9b 79,kDBActiveRecordNumberOp,ActiveRecordNumber,,get-selector,,,,,,,,0,2
+1122,9b 7a,kDBNumberUUIDOp,UUIDNumber,,get-selector,,,,,,,,0,5
+1123,9b 7b,kDBOpenDataFileInfoOp,OpenDataFileInfo,,get-selector,,,,,,,,0,0
+1124,9b 7c,kDBAccountTypeOp,AccountType,,get-selector,,,,,,,,0,0
+1125,9b 7d,kDBPageCountOp,PageCount,,get-selector,,,,,,,,0,0
+1126,9b 7e,kDBSysLocaleElementsOp,SystemLocaleElements,,get-selector,,,,,,,,0,1
+1127,9b 7f,kDBFileLocaleElementsOp,FileLocaleElements,,get-selector,,,,,,,,0,1
+1128,9b 80,kDBInstalledFMPluginsAsJSONOp,InstalledFMPluginsAsJSON,,get-selector,,,,,,,,0,0
+1129,9b 81,kDBSessionIdentifierOp,SessionIdentifier,,get-selector,,,,,,,,0,0
+1130,9b 82,kCacheFileNameOp,CacheFileName,,get-selector,,,,,,,,0,0
+1131,9b 83,kCacheFilePathOp,CacheFilePath,,get-selector,,,,,,,,0,0
+1132,9b 84,kDBTransactionStateOp,TransactionOpenState,,get-selector,,,,,,,,0,0
+1133,9b 85,kDBUTCMicroSecsOp,CurrentTimeUTCMicroseconds,,get-selector,,,,,,,,0,0
+1134,9b 86,kDBLastErrorLocationOp,LastErrorLocation,,get-selector,,,,,,,,0,0
+1135,9b 87,kDBLastStepTokensUsedOp,LastStepTokensUsed,,get-selector,,,,,,,,0,0
+1136,9b 88,kDBRevertTransactionOnErrorStateOp,RevertTransactionOnErrorState,,get-selector,,,,,,,,0,0
+1137,9b 89,,SystemStorageAvailable,,get-selector,,,,,,,,0,0
+1138,9b 8a,kStudioDatasourceOp,StudioDatasource,,get-selector,,,,,,,,0,0
+1139,9b 8b,kDBAccountPasswordDaysRemainingOp,AccountPasswordDaysRemaining,,get-selector,,,,,,,,0,0
+1140,9b 8c,kDBWindowUUIDOp,WindowUUID,,get-selector,,,,,,,,0,0
+1141,9b 8d,,GuidedAccessState,,get-selector,,,,,,,,0,0
+1142,9b 8e,kEndGetFuncOp,,,get-selector,,,,,,,,0,0
+2000,f8 00,kDBLoopOp,While,While,function,Special,0,4,4,"u16 a, a bindings, condition, u16 b, b bindings, result",139/0,While ( [ initialVariable ] ; condition ; [ logic ] ; result ),0,7
+2300,f9 00,,,,unused,VarArgs,0,,,,140/0,,0,0
+2301,f9 01,,GetLayoutObjectAttribute,GetLayoutObjectAttribute,function,VarArgs,0,2,4,"u16 n, n exprs reversed",140/1,GetLayoutObjectAttribute ( objectName ; attributeName {; repetitionNumber ; portalRowNumber} ),0,12
+2302,f9 02,kDBExecuteSQLOp,ExecuteSQL,ExecuteSQL,function,VarArgs,0,3,1000,"u16 n, n exprs reversed",140/2,ExecuteSQL ( sqlQuery ; fieldSeparator ; rowSeparator { ; arguments... } ),0,7
+2303,f9 03,kDBBase64DecodeOp,Base64Decode,Base64Decode,function,VarArgs,0,1,2,"u16 n, n exprs reversed",140/3,Base64Decode ( text {; fileNameWithExtension } ),0,3
+2304,f9 04,kDBFuriganaOp,Furigana,Furigana,function,VarArgs,0,1,2,"u16 n, n exprs reversed",140/4,Furigana ( text {; option } ),0,0
+2305,f9 05,kDBSortValuesOp,SortValues,SortValues,function,VarArgs,0,1,3,"u16 n, n exprs reversed",140/5,SortValues ( values {; datatype ; locale } ),0,3
+2306,f9 06,kDBUniqueValuesOp,UniqueValues,UniqueValues,function,VarArgs,0,1,3,"u16 n, n exprs reversed",140/6,UniqueValues ( values {; datatype ; locale } ),0,1
+2307,f9 07,kDBJsonSetOp,JSONSetElement,JSONSetElement,function,VarArgs,0,2,0,"u16 n, n exprs reversed",140/7,JSONSetElement ( json ; keyOrIndexOrPath ; value ; type ),0,264
+2308,f9 08,kDBHexDecodeOp,HexDecode,HexDecode,function,VarArgs,0,1,2,"u16 n, n exprs reversed",140/8,HexDecode ( data {; fileNameWithExtension } ),0,1
+2309,f9 09,kDBGetSensorOp,GetSensor,GetSensor,function,VarArgs,0,1,3,"u16 n, n exprs reversed",140/9,GetSensor ( sensorName {; option1 ; option2 } ),0,0
+2310,f9 0a,kDBComputeModelOp,ComputeModel,ComputeModel,function,VarArgs,0,1,65535,"u16 n, n exprs reversed",140/10,ComputeModel ( modelName ; name1 ; value1 {name2; value2;...nameN; valueN } ),0,1
+2311,f9 0b,kDBEmbeddedDataAsFileOp,GetEmbeddingAsFile,GetEmbeddingAsFile,function,VarArgs,0,1,2,"u16 n, n exprs reversed",140/11,GetEmbeddingAsFile ( text {; fileNameWithExtension } ),0,0
+2312,f9 0c,kDBExecuteSQLeOp,ExecuteSQLe,ExecuteSQLe,function,VarArgs,0,3,1000,"u16 n, n exprs reversed",140/12,ExecuteSQLe ( sqlQuery ; fieldSeparator ; rowSeparator { ; arguments... } ),0,0
+2313,f9 0d,kDBJsonUniqueValuesOp,JSONUniqueValues,JSONUniqueValues,function,VarArgs,0,2,4,"u16 n, n exprs reversed",140/13,JSONUniqueValues ( json ; keyOrIndexOrPath ),0,0
+2314,f9 0e,kDBJsonRemoveValuesOp,JSONRemoveValues,JSONRemoveValues,function,VarArgs,0,3,5,"u16 n, n exprs reversed",140/14,JSONRemoveValues ( json ; keyOrIndexOrPath ; jsonValuesArrayToRemove ),0,0
+2315,f9 0f,kDBNormalizeVectorOp,NormalizeEmbedding,NormalizeEmbedding,function,VarArgs,0,1,2,"u16 n, n exprs reversed",140/15,NormalizeEmbedding ( data { ; dimension } ),0,0
+2316,f9 10,kDBGetRecordIDsFromFoundSetVarOp,GetRecordIDsFromFoundSet,GetRecordIDsFromFoundSet,function,VarArgs,0,1,2,"u16 n, n exprs reversed",140/16,GetRecordIDsFromFoundSet ( type { ; tableOccurrenceOrPortal } ),0,0
+2317,f9 11,kDBGetRagSpaceInfoOp,GetRagSpaceInfo,GetRAGSpaceInfo,function,VarArgs,0,1,2,"u16 n, n exprs reversed",140/17,GetRAGSpaceInfo ( ragAccountName {; spaceID } ),0,0
+2900,fa 00,kDBSelfOp,Self,Self,function,NoArgs,0,0,0,0 exprs,141/0,Self,44,342
+2901,fa 01,kDBJsonStringOp,JSONString,JSONString,constant,NoArgs,0,0,0,0 exprs,141/1,,0,352
+2902,fa 02,kDBJsonNumberOp,JSONNumber,JSONNumber,constant,NoArgs,0,0,0,0 exprs,141/2,,0,136
+2903,fa 03,kDBJsonObjectOp,JSONObject,JSONObject,constant,NoArgs,0,0,0,0 exprs,141/3,,0,19
+2904,fa 04,kDBJsonArrayOp,JSONArray,JSONArray,constant,NoArgs,0,0,0,0 exprs,141/4,,0,6
+2905,fa 05,kDBJsonBooleanOp,JSONBoolean,JSONBoolean,constant,NoArgs,0,0,0,0 exprs,141/5,,0,3
+2906,fa 06,kDBJsonNullOp,JSONNull,JSONNull,constant,NoArgs,0,0,0,0 exprs,141/6,,0,4
+2907,fa 07,kDBJsonRawOp,JSONRaw,JSONRaw,constant,NoArgs,0,0,0,0 exprs,141/7,,0,4
+2908,fa 08,kDBPosixPathOp,PosixPath,PosixPath,constant,NoArgs,0,0,0,0 exprs,141/8,,0,2
+2909,fa 09,kDBURLPathOp,URLPath,URLPath,constant,NoArgs,0,0,0,0 exprs,141/9,,0,2
+2910,fa 0a,kDBWinPathOp,WinPath,WinPath,constant,NoArgs,0,0,0,0 exprs,141/10,,0,2
+2911,fa 0b,kDBLayoutObjectUUIDOp,LayoutObjectUUID,LayoutObjectUUID,function,NoArgs,0,0,0,0 exprs,141/11,LayoutObjectUUID,0,0
+2912,fa 0c,kDBValueNumberOp,ValueNumber,ValueNumber,constant,NoArgs,0,0,0,0 exprs,141/12,,0,0
+2913,fa 0d,kDBValueNumberRangesOp,ValueNumberRanges,ValueNumberRanges,constant,NoArgs,0,0,0,0 exprs,141/13,,0,0
+2914,fa 0e,kDBJSONStringRangesOp,JSONStringRanges,JSONStringRanges,constant,NoArgs,0,0,0,0 exprs,141/14,,0,0
+2915,fa 0f,kDBROWIDOp,ROWID,ROWID,constant,NoArgs,0,0,0,0 exprs,141/15,,0,0
+2916,fa 10,kDBROWMODIDOp,ROWMODID,ROWMODID,constant,NoArgs,0,0,0,0 exprs,141/16,,0,0
+3200,fb 00,kDBGetAsURLEncodedOp,GetAsURLEncoded,GetAsURLEncoded,function,Unary,1,1,1,1 exprs,142/0,GetAsURLEncoded ( text ),0,14
+3201,fb 01,kDBGetFieldNameOp,GetFieldName,GetFieldName,function,Unary,1,1,1,1 exprs,142/1,GetFieldName ( field ),0,14
+3202,fb 02,kDBCodeOp,Code,Code,function,Unary,1,1,1,1 exprs,142/2,Code ( text ),0,10
+3203,fb 03,kDBCharOp,Char,Char,function,Unary,1,1,1,1 exprs,142/3,Char ( number ),0,80
+3204,fb 04,,GetWidth,GetWidth,function,Unary,1,1,1,1 exprs,142/4,GetWidth ( field ),0,0
+3205,fb 05,,GetHeight,GetHeight,function,Unary,1,1,1,1 exprs,142/5,GetHeight ( field ),0,0
+3206,fb 06,,VerifyContainer,VerifyContainer,function,Unary,1,1,1,1 exprs,142/6,VerifyContainer ( field ),0,0
+3207,fb 07,kDBBase64EncodeOp,Base64Encode,Base64Encode,function,Unary,1,1,1,1 exprs,142/7,Base64Encode ( data ),0,19
+3208,fb 08,kDBAVPlayerAttrOp,GetAVPlayerAttribute,GetAVPlayerAttribute,function,Unary,1,1,1,1 exprs,142/8,GetAVPlayerAttribute ( attributeName ),0,0
+3209,fb 09,kDBJsonFormatOp,JSONFormatElements,JSONFormatElements,function,Unary,1,1,1,1 exprs,142/9,JSONFormatElements ( json ),0,5
+3210,fb 0a,kDBHexEncodeOp,HexEncode,HexEncode,function,Unary,1,1,1,1 exprs,142/10,HexEncode ( data ),0,1
+3211,fb 0b,kDBGetModelAttrOp,GetModelAttributes,GetModelAttributes,function,Unary,1,1,1,1 exprs,142/11,GetModelAttributes ( modelName ),0,0
+3212,fb 0c,kDBGetLayoutObjectOwnerInfoOp,GetLayoutObjectOwnerInfo,GetLayoutObjectOwnerInfo,function,Unary,1,1,1,1 exprs,142/12,GetLayoutObjectOwnerInfo ( objectID ),0,0
+3213,fb 0d,kDBGetAddonInfoOp,GetAddonInfo,GetAddonInfo,function,Unary,1,1,1,1 exprs,142/13,GetAddonInfo ( addonID ),0,0
+3215,fb 0f,kDBReadQRCodeOp,ReadQRCode,ReadQRCode,function,Unary,1,1,1,1 exprs,142/15,ReadQRCode ( container ),0,0
+3216,fb 10,kDBGetBaseTableNameOp,GetBaseTableName,GetBaseTableName,function,Unary,1,1,1,1 exprs,142/16,GetBaseTableName ( field ),0,0
+3217,fb 11,kDBEmbeddedDataAsTextOp,GetEmbeddingAsText,GetEmbeddingAsText,function,Unary,1,1,1,1 exprs,142/17,GetEmbeddingAsText ( data ),0,0
+3218,fb 12,kDBGetTokensCountOp,GetTokensCount,GetTokenCount,function,Unary,1,1,1,1 exprs,142/18,GetTokenCount ( text ),0,0
+3219,fb 13,kDBGenerateJSONLayoutSchemaOp,GetFieldsOnLayout,GetFieldsOnLayout,function,Unary,1,1,1,1 exprs,142/19,GetFieldsOnLayout ( layoutName ),0,0
+3220,fb 14,kDBExtractTextFromPDFOp,GetTextFromPDF,GetTextFromPDF,function,Unary,1,1,1,1 exprs,142/20,GetTextFromPDF ( container ),0,0
+3221,fb 15,kDBJsonParseOp,JSONParse,JSONParse,function,Unary,1,1,1,1 exprs,142/21,JSONParse ( json ),0,0
+3222,fb 16,kDBJsonParsedStateOp,JSONParsedState,JSONParsedState,function,Unary,1,1,1,1 exprs,142/22,JSONParsedState ( json ),0,0
+3223,fb 17,kDBListPersistentDataIDsOp,ListPersistentDataIDs,ListPersistentDataIDs,function,Unary,1,1,1,1 exprs,142/23,ListPersistentDataIDs ( name ),0,0
+3500,fc 00,kDBGetContainerAttrOp,GetContainerAttribute,GetContainerAttribute,function,Binary,2,2,2,2 exprs,143/0,GetContainerAttribute ( field ; attributeName ),0,8
+3501,fc 01,kDBJsonGetOp,JSONGetElement,JSONGetElement,function,Binary,2,2,2,2 exprs,143/1,JSONGetElement ( json ; keyOrIndexOrPath ),0,381
+3502,fc 02,kDBJsonDeleteOp,JSONDeleteElement,JSONDeleteElement,function,Binary,2,2,2,2 exprs,143/2,JSONDeleteElement ( json ; keyOrIndexOrPath ),0,2
+3503,fc 03,kDBJsonKeyListOp,JSONListKeys,JSONListKeys,function,Binary,2,2,2,2 exprs,143/3,JSONListKeys ( json ; keyOrIndexOrPath ),0,8
+3504,fc 04,kDBJsonValueListOp,JSONListValues,JSONListValues,function,Binary,2,2,2,2 exprs,143/4,JSONListValues ( json ; keyOrIndexOrPath ),0,8
+3505,fc 05,kDBCryptDigestOp,CryptDigest,CryptDigest,function,Binary,2,2,2,2 exprs,143/5,CryptDigest ( data ; algorithm ),0,0
+3506,fc 06,kDBBase64EncodeRFCOp,Base64EncodeRFC,Base64EncodeRFC,function,Binary,2,2,2,2 exprs,143/6,Base64EncodeRFC ( RFCNumber ; data ),0,0
+3507,fc 07,kDBTextDecodeOp,TextDecode,TextDecode,function,Binary,2,2,2,2 exprs,143/7,TextDecode ( container ; encoding ),0,0
+3508,fc 08,kDBCryptEncryptOp,CryptEncrypt,CryptEncrypt,function,Binary,2,2,2,2 exprs,143/8,CryptEncrypt ( data ; key ),0,0
+3509,fc 09,kDBCryptDecryptOp,CryptDecrypt,CryptDecrypt,function,Binary,2,2,2,2 exprs,143/9,CryptDecrypt ( container ; key ),0,0
+3510,fc 0a,kDBCryptEncryptB64Op,CryptEncryptBase64,CryptEncryptBase64,function,Binary,2,2,2,2 exprs,143/10,CryptEncryptBase64 ( data ; key ),0,0
+3511,fc 0b,kDBCryptDecryptB64Op,CryptDecryptBase64,CryptDecryptBase64,function,Binary,2,2,2,2 exprs,143/11,CryptDecryptBase64 ( text ; key ),0,0
+3512,fc 0c,kDBConvertFromFMPathOp,ConvertFromFileMakerPath,ConvertFromFileMakerPath,function,Binary,2,2,2,2 exprs,143/12,ConvertFromFileMakerPath ( filemakerPath ; format ),0,3
+3513,fc 0d,kDBConvertToFMPathOp,ConvertToFileMakerPath,ConvertToFileMakerPath,function,Binary,2,2,2,2 exprs,143/13,ConvertToFileMakerPath ( standardPath ; format ),0,3
+3514,fc 0e,kDBJsonGetElemTypeOp,JSONGetElementType,JSONGetElementType,function,Binary,2,2,2,2 exprs,143/14,JSONGetElementType ( json ; keyOrIndexOrPath ),0,0
+3515,fc 0f,kDBGetLiveTextOp,GetLiveText,GetLiveText,function,Binary,2,2,2,2 exprs,143/15,GetLiveText ( container ; language ),0,0
+3516,fc 10,kDBCosineSimilarityOp,CosineSimilarity,CosineSimilarity,function,Binary,2,2,2,2 exprs,143/16,CosineSimilarity ( v1 ; v2 ),0,0
+3517,fc 11,kDBGetLiveTextAsJSONOp,GetLiveTextAsJSON,GetLiveTextAsJSON,function,Binary,2,2,2,2 exprs,143/17,GetLiveTextAsJSON ( container ; language ),0,0
+3518,fc 12,kDBGenerateDDLOp,GetTableDDL,GetTableDDL,function,Binary,2,2,2,2 exprs,143/18,GetTableDDL ( tableOccurrenceNames ; ignoreError ),0,0
+3519,fc 13,kDBLLMPredictOp,PredictFromModel,PredictFromModel,function,Binary,2,2,2,2 exprs,143/19,PredictFromModel ( modelName ; v1 ),0,0
+3520,fc 14,kDBVectorAddOp,AddEmbeddings,AddEmbeddings,function,Binary,2,2,2,2 exprs,143/20,AddEmbeddings ( v1 ; v2 ),0,0
+3521,fc 15,kDBVectorSubOp,SubtractEmbeddings,SubtractEmbeddings,function,Binary,2,2,2,2 exprs,143/21,SubtractEmbeddings ( v1 ; v2 ),0,0
+3522,fc 16,kDBGetPersistentDataOp,GetPersistentData,GetPersistentData,function,Binary,2,2,2,2 exprs,143/22,GetPersistentData ( name ; instanceID ),0,0
+3800,fd 00,kDBGetThumbnailOp,GetThumbnail,GetThumbnail,function,Trinary,3,3,3,3 exprs,144/0,GetThumbnail ( field ; width ; height ),0,1
+3801,fd 01,kDBCryptAuthCodeOp,CryptAuthCode,CryptAuthCode,function,Trinary,3,3,3,3 exprs,144/1,CryptAuthCode ( data ; algorithm ; key ),0,0
+3802,fd 02,kDBTextEncodeOp,TextEncode,TextEncode,function,Trinary,3,3,3,3 exprs,144/2,TextEncode ( text ; encoding ; lineEndings ),0,0
+3803,fd 03,kDBJsonMakeArrayOp,JSONMakeArray,JSONMakeArray,function,Trinary,3,3,3,3 exprs,144/3,JSONMakeArray ( listOfValues ; separator ; type ),0,0
+3804,fd 04,kDBEmbeddingOp,GetEmbedding,GetEmbedding,function,Trinary,3,3,3,3 exprs,144/4,GetEmbedding ( account ; model ; input ),0,0
+3805,fd 05,kDBJsonValueExistsOp,JSONValueExists,JSONValueExists,function,Trinary,3,3,3,3 exprs,144/5,JSONValueExists ( json ; keyOrIndexOrPath ; value ),0,0
+3806,fd 06,kDBJsonValueCountOp,JSONValueCount,JSONValueCount,function,Trinary,3,3,3,3 exprs,144/6,JSONValueCount ( json ; keyOrIndexOrPath ; value ),0,0
+3807,fd 07,kDBJsonAnyValuesExistOp,JSONAnyValuesExist,JSONAnyValuesExist,function,Trinary,3,3,3,3 exprs,144/7,JSONAnyValuesExist ( json ; keyOrIndexOrPath ; jsonValuesArrayToFind ),0,0
+4100,fe 00,kDBCryptGenerateSignatureOp,CryptGenerateSignature,CryptGenerateSignature,function,Quad,4,4,4,4 exprs,145/0,CryptGenerateSignature ( data ; algorithm ; privateRSAKey ; keyPassword ),0,0
+4101,fe 01,kDBCryptVerifySignatureOp,CryptVerifySignature,CryptVerifySignature,function,Quad,4,4,4,4 exprs,145/1,CryptVerifySignature ( data ; algorithm ; publicRSAKey ; signature ),0,0
+,1d nnnn 15 464d4452 0001,,,DatabaseNames,builtin-plugin,,,,,"plugin call: u16 n, 15 FMDR 0001, n exprs reversed",134/1,DatabaseNames,,
+,1d nnnn 15 464d4452 0002,,,FieldBounds,builtin-plugin,,,,,"plugin call: u16 n, 15 FMDR 0002, n exprs reversed",134/2,FieldBounds ( fileName ; layoutName ; fieldName ),,
+,1d nnnn 15 464d4452 0003,,,FieldIDs,builtin-plugin,,,,,"plugin call: u16 n, 15 FMDR 0003, n exprs reversed",134/3,FieldIDs ( fileName ; layoutName ),,
+,1d nnnn 15 464d4452 0004,,,FieldNames,builtin-plugin,,,,,"plugin call: u16 n, 15 FMDR 0004, n exprs reversed",134/4,FieldNames ( fileName ; layoutName ),,
+,1d nnnn 15 464d4452 0005,,,FieldRepetitions,builtin-plugin,,,,,"plugin call: u16 n, 15 FMDR 0005, n exprs reversed",134/5,FieldRepetitions ( fileName ; layoutName ; fieldName ),,
+,1d nnnn 15 464d4452 0006,,,FieldStyle,builtin-plugin,,,,,"plugin call: u16 n, 15 FMDR 0006, n exprs reversed",134/6,FieldStyle ( fileName ; layoutName ; fieldName ),,
+,1d nnnn 15 464d4452 0007,,,FieldType,builtin-plugin,,,,,"plugin call: u16 n, 15 FMDR 0007, n exprs reversed",134/7,FieldType ( fileName ; fieldName ),,
+,1d nnnn 15 464d4452 0008,,,GetNextSerialValue,builtin-plugin,,,,,"plugin call: u16 n, 15 FMDR 0008, n exprs reversed",134/8,GetNextSerialValue ( fileName ; fieldName ),,
+,1d nnnn 15 464d4452 0009,,,LayoutIDs,builtin-plugin,,,,,"plugin call: u16 n, 15 FMDR 0009, n exprs reversed",134/9,LayoutIDs ( fileName ),,
+,1d nnnn 15 464d4452 000a,,,LayoutNames,builtin-plugin,,,,,"plugin call: u16 n, 15 FMDR 000a, n exprs reversed",134/10,LayoutNames ( fileName ),,
+,1d nnnn 15 464d4452 000b,,,TableIDs,builtin-plugin,,,,,"plugin call: u16 n, 15 FMDR 000b, n exprs reversed",134/11,TableIDs ( fileName ),,
+,1d nnnn 15 464d4452 000c,,,TableNames,builtin-plugin,,,,,"plugin call: u16 n, 15 FMDR 000c, n exprs reversed",134/12,TableNames ( fileName ),,
+,1d nnnn 15 464d4452 000d,,,RelationInfo,builtin-plugin,,,,,"plugin call: u16 n, 15 FMDR 000d, n exprs reversed",134/13,RelationInfo ( fileName ; tableName ),,
+,1d nnnn 15 464d4452 000e,,,ScriptIDs,builtin-plugin,,,,,"plugin call: u16 n, 15 FMDR 000e, n exprs reversed",134/14,ScriptIDs ( fileName ),,
+,1d nnnn 15 464d4452 000f,,,ScriptNames,builtin-plugin,,,,,"plugin call: u16 n, 15 FMDR 000f, n exprs reversed",134/15,ScriptNames ( fileName ),,
+,1d nnnn 15 464d4452 0010,,,ValueListIDs,builtin-plugin,,,,,"plugin call: u16 n, 15 FMDR 0010, n exprs reversed",134/16,ValueListIDs ( fileName ),,
+,1d nnnn 15 464d4452 0011,,,ValueListNames,builtin-plugin,,,,,"plugin call: u16 n, 15 FMDR 0011, n exprs reversed",134/17,ValueListNames ( fileName ),,
+,1d nnnn 15 464d4452 0012,,,ValueListItems,builtin-plugin,,,,,"plugin call: u16 n, 15 FMDR 0012, n exprs reversed",134/18,ValueListItems ( fileName ; valueList ),,
+,1d nnnn 15 464d4452 0013,,,WindowNames,builtin-plugin,,,,,"plugin call: u16 n, 15 FMDR 0013, n exprs reversed",134/19,WindowNames {( fileName )},,
+,1d nnnn 15 464d4452 0014,,,FieldComment,builtin-plugin,,,,,"plugin call: u16 n, 15 FMDR 0014, n exprs reversed",134/20,FieldComment ( fileName ; fieldName ),,
+,1d nnnn 15 464d4452 0015,,,LayoutObjectNames,builtin-plugin,,,,,"plugin call: u16 n, 15 FMDR 0015, n exprs reversed",134/21,LayoutObjectNames ( fileName ; layoutName ),,
+,1d nnnn 15 464d4452 0016,,,BaseTableIDs,builtin-plugin,,,,,"plugin call: u16 n, 15 FMDR 0016, n exprs reversed",134/22,BaseTableIDs ( fileName ),,
+,1d nnnn 15 464d4452 0017,,,BaseTableNames,builtin-plugin,,,,,"plugin call: u16 n, 15 FMDR 0017, n exprs reversed",134/23,BaseTableNames ( fileName ),,
+,1d nnnn 15 464d4452 0018,,,BaseTableComment,builtin-plugin,,,,,"plugin call: u16 n, 15 FMDR 0018, n exprs reversed",134/24,BaseTableComment ( fileName ; baseTableName ),,
+,1d nnnn 15 464d4452 0019,,,FieldAnnotation,builtin-plugin,,,,,"plugin call: u16 n, 15 FMDR 0019, n exprs reversed",134/25,FieldAnnotation ( fileName ; fieldName ),,
+,1d nnnn 15 464d4452 001a,,,FieldDisplayNames,builtin-plugin,,,,,"plugin call: u16 n, 15 FMDR 001a, n exprs reversed",134/26,FieldDisplayNames ( fileName ; fieldName ),,
+,1d nnnn 15 464d4d42 0001,,,Location,builtin-plugin,,,,,"plugin call: u16 n, 15 FMMB 0001, n exprs reversed",156/1,Location ( accuracy {; timeout} ),,
+,1d nnnn 15 464d4d42 0002,,,LocationValues,builtin-plugin,,,,,"plugin call: u16 n, 15 FMMB 0002, n exprs reversed",156/2,LocationValues ( accuracy {; timeout} ),,
+,1d nnnn 15 464d4d42 0003,,,RangeBeacons,builtin-plugin,,,,,"plugin call: u16 n, 15 FMMB 0003, n exprs reversed",156/3,RangeBeacons ( UUID {; timeout; major; minor} ),,

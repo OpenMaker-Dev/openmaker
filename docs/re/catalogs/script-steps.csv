@@ -1,0 +1,249 @@
+id,name,category,description
+0,,Miscellaneous,
+1,Perform Script,Control,Performs a script specified from a list or calculated by name.
+2,,,
+3,Save a Copy as XML,Files,"Saves a copy of an open file as an XML representation of the schema, layouts, and scripts."
+4,Go to Next Field,Navigation,Moves to the next field in the tab order of the current layout.
+5,Go to Previous Field,Navigation,Moves to the previous field in the tab order of the current layout.
+6,Go to Layout,Navigation,Switches to the specified layout.
+7,New Record/Request,Records,"Creates a new, blank record or a new find request."
+8,Duplicate Record/Request,Records,Duplicates the current record or the current find request.
+9,Delete Record/Request,Records,Deletes the current record or find request.
+10,Delete All Records,Records,Deletes all the records in the current found set.
+11,Insert from Index,Fields,Pastes a value from the index into a field.
+12,Insert from Last Visited,Fields,Pastes data from the last active record into the specified field in the current record or find request.
+13,Insert Current Date,Fields,Pastes the current system date into a field or variable.
+14,Insert Current Time,Fields,Pastes the current system time into a field or variable.
+15,,,
+16,Go to Record/Request/Page,Navigation,"Moves to a record or a report page, or displays a find request."
+17,Go to Field,Navigation,Moves to the specified field on the current layout.
+18,Check Selection,Spelling,Uses the spelling checker to check the selected text.
+19,Check Record,Spelling,Uses the spelling checker to check the contents of every field in the current record.
+20,Check Found Set,Spelling,Uses the spelling checker to check the contents of every field in the records being browsed.
+21,Unsort Records,Found Sets,Restores the records in the current found set to the order in which the records were entered.
+22,Enter Find Mode,Navigation,Switches to Find mode.
+23,Show All Records,Found Sets,Finds all records in the table underlying the foreground window and selects the current record.
+24,Modify Last Find,Found Sets,Changes the most recent find request.
+25,Omit Record,Found Sets,"Omits the current record from the found set, or switches the current find request between finding and omitting records."
+26,Omit Multiple Records,Found Sets,"Omits several records from the found set, starting with the current record, and selects the next record in the table."
+27,Show Omitted Only,Found Sets,Finds the records not in the current found set.
+28,Perform Find,Found Sets,Finds records using the current or stored find requests.
+29,Show/Hide Toolbars,Windows,Shows or hides the FileMaker Pro status toolbar and the FileMaker Go toolbar and editing toolbar.
+30,View As,Windows,Displays data in the specified format.
+31,Adjust Window,Windows,Hides or changes the size of a window.
+32,Open Help,Open Menu Item,Opens the onscreen Help.
+33,Open File,Files,Opens a FileMaker Pro file or connects to an ODBC data source.
+34,Close File,Files,Closes a FileMaker Pro file or disconnects from an ODBC data source.
+35,Import Records,Records,Imports records from a specified file or data source.
+36,Export Records,Records,Exports records to a specified file.
+37,Save a Copy as,Files,Saves a copy of the current file.
+38,Open Manage Database,Open Menu Item,Opens the Manage Database dialog box.
+39,Sort Records,Found Sets,Sorts the records in the current found set according to specified criteria.
+40,Relookup Field Contents,Fields,Copies new values from the lookup source field into the current found set.
+41,Enter Preview Mode,Navigation,Switches to Preview mode.
+42,Print Setup,Files,"Sets print options, such as paper size and orientation, which can be stored with this script step."
+43,Print,Files,Prints information that is in the current FileMaker Pro file.
+44,Exit Application,Miscellaneous,"Closes all open files; and in FileMaker Pro, exits the application."
+45,Undo/Redo,Editing,"Reverses, restores, or switches between the most recently performed actions in the file."
+46,Cut,Editing,Deletes the contents of the specified field in the current record and saves the contents to the Clipboard.
+47,Copy,Editing,Copies the contents of the specified field in the current record and saves the contents to the Clipboard.
+48,Paste,Editing,Pastes the contents of the Clipboard into the specified field in the current record.
+49,Clear,Editing,Deletes the contents of the specified field in the current record.
+50,Select All,Editing,Selects the entire contents of the active field.
+51,Revert Record/Request,Records,Returns the current record or find request to the way it was before editing began.
+52,,,
+53,,,
+54,,,
+55,Enter Browse Mode,Navigation,Switches to Browse mode.
+56,Insert Picture,Fields,Imports a graphic from another file into the current container field.
+57,Send Event,Miscellaneous,"In Windows, performs an action in another application; in macOS, sends an Apple event to another application."
+58,,,
+59,Insert QuickTime,Fields,Imports a QuickTime movie or sound file into the current container field.
+60,Insert Current User Name,Fields,Pastes the current user name into a field in the current record or into a variable.
+61,Insert Text,Fields,Pastes a text value into a field in the current record or into a variable.
+62,Pause/Resume Script,Control,Pauses a script so the user can perform other tasks in the current window.
+63,Send Mail,Miscellaneous,Sends an email message through an email application or via SMTP.
+64,Send DDE Execute,Miscellaneous,Sends a DDE command to another application to execute commands in that application.
+65,Dial Phone,Miscellaneous,Dials a phone from within a script.
+66,Speak,Miscellaneous,Produces speech from text.
+67,Perform AppleScript,Miscellaneous,Sends AppleScript commands to another application.
+68,If,Control,Evaluates a Boolean calculation and performs a conditional action based on that evaluation.
+69,Else,Control,Performs an alternate set of script steps when an If or Else If script step evaluates to false.
+70,End If,Control,Marks the end of an If script step structure.
+71,Loop,Control,"Repeats a set of script steps, to perform batch processes."
+72,Exit Loop If,Control,Exits a loop if the specified calculation is true (not zero).
+73,End Loop,Control,Marks the end of a Loop script structure.
+74,Go to Related Record,Navigation,Goes to the current related record(s) in a related table.
+75,Commit Records/Requests,Records,Commits a record or find request.
+76,Set Field,Fields,Replaces the entire contents of the specified field in the current record with a calculation result.
+77,Insert Calculated Result,Fields,Pastes the result of a calculation into the current field in the current record or into a variable.
+78,Insert Object,Fields,
+79,Freeze Window,Windows,Stops updating the active window.
+80,Refresh Window,Windows,"Updates the entire contents of the active window, including any related records."
+81,Scroll Window,Windows,"Scrolls a window or layout vertically, or brings the current field into view."
+82,New File,Files,Opens the Create window so users can create a new FileMaker Pro file.
+83,Change Password,Accounts,Changes the password for the current FileMaker file account.
+84,Set Multi-User,Files,Allows or disallows network access to a file.
+85,Allow User Abort,Control,Allows or prevents users from stopping a running script.
+86,Set Error Capture,Control,Suppresses or enables normal alert messages displayed by FileMaker clients.
+87,Show Custom Dialog,Miscellaneous,"Displays a custom message dialog box, with custom text and labels."
+88,Open Script Workspace,Open Menu Item,Opens the Script Workspace.
+89,# (comment),Miscellaneous,Adds comments to the list of steps in the script.
+90,Halt Script,Control,"Forces all scripts, sub-scripts, or external scripts running in the current FileMaker application to stop immediately."
+91,Replace Field Contents,Fields,Replaces the value in a field in every record in the found set with a different value.
+92,Show/Hide Text Ruler,Windows,Shows or hides the text ruler.
+93,Beep,Miscellaneous,Plays a system beep sound.
+94,Set Use System Formats,Files,Sets the formats either to those stored with the file or to the current system formats.
+95,Recover File,Files,Recovers a damaged FileMaker Pro file.
+96,Save a Copy as Add-on Package,Miscellaneous,Creates an add-on package from a FileMaker Pro file.
+97,Set Zoom Level,Windows,Enlarges or reduces the image on the screen.
+98,Copy All Records/Requests,Records,Copies the values of all records or the search criteria in all find requests to the Clipboard.
+99,Go to Portal Row,Navigation,Navigates among the rows in the active portal.
+100,,,
+101,Copy Record/Request,Records,Copies the values of a record or find request to the Clipboard.
+102,Flush Cache to Disk,Miscellaneous,Immediately flushes the internal file cache to the computer's hard disk.
+103,Exit Script,Control,"Forces the running script, sub-script, or external script to stop immediately."
+104,Delete Portal Row,Records,Deletes the selected portal row.
+105,Open Settings,Open Menu Item,Opens the Settings dialog box to the General tab.
+106,Correct Word,Spelling,Opens the Spelling dialog box so the user can correct a misspelled word.
+107,Spelling Options,Spelling,Opens the File Options dialog box to the Spelling tab.
+108,Select Dictionaries,Spelling,Opens the Select Dictionaries dialog box.
+109,Edit User Dictionary,Spelling,Opens the User Dictionary dialog box.
+110,,,
+111,Open URL,Miscellaneous,Allows the user to open a URL.
+112,Open Manage Value Lists,Open Menu Item,Opens the Manage Value Lists dialog box.
+113,Open Sharing,Open Menu Item,Opens the FileMaker Network Settings dialog box.
+114,Open File Options,Open Menu Item,Opens the File Options dialog box to the Open tab.
+115,Allow Formatting Bar,Miscellaneous,Enables or disables display of the formatting bar.
+116,Set Next Serial Value,Fields,Resets the next serial value in an auto-entry serial number field.
+117,Execute SQL,Miscellaneous,Executes any SQL statement on an ODBC data source.
+118,Open Hosts,Open Menu Item,Opens the Hosts dialog box.
+119,Move/Resize Window,Windows,Adjusts the size or location of the chosen window.
+120,Arrange All Windows,Windows,Adjusts the size and location of all open windows.
+121,Close Window,Windows,Closes the currently active window or any other window by name or UUID.
+122,New Window,Windows,Creates a new window based on the foreground window.
+123,Select Window,Windows,Specifies a window by name or UUID and makes it the foreground window.
+124,Set Window Title,Windows,Changes the title of a window.
+125,Else If,Control,"Evaluates a Boolean calculation and performs a conditional action based on that evaluation, like If."
+126,Constrain Found Set,Found Sets,Narrows the existing found set using the current or stored find requests.
+127,Extend Found Set,Found Sets,Broadens the existing found set using the current or stored find requests.
+128,Perform Find/Replace,Editing,Finds/replaces data according to the options in the Perform Find/Replace Options dialog box.
+129,Open Find/Replace,Open Menu Item,Opens the Find/Replace dialog box.
+130,Set Selection,Editing,Designates a selection or cursor location in a field.
+131,Insert File,Fields,Imports a file or file reference into the current container field or into a variable; configures the Insert File dialog box.
+132,Export Field Contents,Fields,Exports the contents of a single field in the active record to a new file.
+133,Open Record/Request,Records,Makes an existing record or find request available for editing if the current user has record-editing privileges.
+134,Add Account,Accounts,Adds a new account.
+135,Delete Account,Accounts,Deletes an account.
+136,Reset Account Password,Accounts,Resets the password of a FileMaker file account.
+137,Enable Account,Accounts,Enables or disables an account.
+138,Re-Login,Accounts,"Signs in again to an open file with a different FileMaker file account, external server account, or the Guest account."
+139,Convert File,Files,Converts a file in a supported format to a FileMaker Pro file.
+140,Open Manage Data Sources,Open Menu Item,Opens the Manage External Data Sources dialog box.
+141,Set Variable,Control,Sets a local or global variable to a specified value.
+142,Install Menu Set,Miscellaneous,Changes the menu set based on conditions established in the script.
+143,Save Records as Excel,Records,Saves records to a specified Excel worksheet.
+144,Save Records as PDF,PDF Files,Saves records to a specified PDF file.
+145,Go to Object,Navigation,Moves to the specified object on the current layout.
+146,Set Web Viewer,Miscellaneous,Controls the specified web viewer.
+147,Set Field By Name,Fields,Replaces the entire contents of a calculated target field in the current record with the calculated value.
+148,Install OnTimer Script,Control,Runs a specified script at the specified interval.
+149,Open Edit Saved Finds,Open Menu Item,Opens the Edit Saved Finds dialog box.
+150,Perform Quick Find,Found Sets,Performs a quick find based on specified text or on text returned by a calculation.
+151,Open Manage Layouts,Open Menu Item,Opens the Manage Layouts dialog box.
+152,Save Records as Snapshot Link,Records,Saves a found set of records to a FileMaker Pro Snapshot Link (FMPSL) file.
+153,,,
+154,Sort Records by Field,Found Sets,Sorts the records in the current found set according to the context of a specified field.
+155,Find Matching Records,Found Sets,Finds records based on the context of a specified field.
+156,Open Manage Containers,Open Menu Item,Opens the Manage Containers dialog box.
+157,Install Plug-In File,Miscellaneous,Installs or updates a plug-in file from a container field onto your computer.
+158,Insert PDF,Fields,Imports a PDF file or file reference into the current interactive container.
+159,Insert Audio/Video,Fields,"Imports an audio or video file, or a file reference, into the current interactive container."
+160,Insert from URL,Fields,Enters the content from a URL into a field or variable.
+161,Insert from Device,Fields,"In FileMaker Go, enters content from a device into a field."
+162,,,
+163,,,
+164,Perform Script on Server,Control,Performs a script specified from a list or calculated by name on the server that is hosting the current file.
+165,Open Manage Themes,Open Menu Item,Opens the Manage Themes dialog box.
+166,Show/Hide Menubar,Windows,Shows or hides the menu bar.
+167,Refresh Object,Miscellaneous,"Updates the contents, conditional formatting, and visibility state of the specified object."
+168,Set Layout Object Animation,Control,Enables or disables animations while a script is running.
+169,Close Popover,Navigation,Closes an open popover in the window in which the script step runs.
+170,,,
+171,,,
+172,Open Upload to Host,Open Menu Item,Opens the Upload to Host dialog box.
+173,,,
+174,Enable Touch Keyboard,Miscellaneous,Enables or disables the touch keyboard.
+175,Perform JavaScript in Web Viewer,Miscellaneous,Performs a JavaScript function in a web viewer.
+176,Set Allowed Orientations,Windows,Controls the orientation of FileMaker Go and layouts displayed in FileMaker Go.
+177,AVPlayer Play,Miscellaneous,"Plays audio, video, or images from a container field, layout object, or URL."
+178,AVPlayer Set Playback State,Miscellaneous,"Pauses, resumes, or stops playing a media file that is playing or is paused."
+179,AVPlayer Set Options,Miscellaneous,Changes the settings for a media file that is playing or is paused.
+180,Refresh Portal,Miscellaneous,Refreshes the relationship and contents of the named object.
+181,Get Folder Path,Miscellaneous,Sets a variable to the fully qualified path of a specified folder.
+182,Truncate Table,Records,Deletes all records in the specified source table regardless of the current found set.
+183,Open Favorites,Open Menu Item,Opens the Favorites window.
+184,,HACK_QUICKSTART_15,Open Starter Solution
+185,Configure Region Monitor Script,Control,Configures a specified script to run when an iOS or iPadOS device enters or exits a specified region.
+186,,,
+187,Configure Local Notification,Control,Queues or clears a local notification.
+188,Get File Exists,Files,"Returns 1 (true) if a file exists; otherwise, returns 0 (false)."
+189,Get File Size,Files,"Returns the size, in bytes, of a file."
+190,Create Data File,Files,"Creates an empty, closed data file, to then open with the Open Data File script step and add data to using the Write to Data File script step."
+191,Open Data File,Files,Opens a data file for use with other data file script steps.
+192,Write to Data File,Files,Writes data to an open data file.
+193,Read from Data File,Files,Reads data from an open data file.
+194,Get Data File Position,Files,Returns the read-write position in an open data file.
+195,Set Data File Position,Files,Sets the read-write position in an open data file.
+196,Close Data File,Files,Closes an open data file.
+197,Delete File,Files,Deletes a file.
+198,,,
+199,Rename File,Files,Renames a file.
+200,Set Error Logging,Control,Controls whether errors are logged while the current file's scripts are running.
+201,Configure NFC Reading,Control,Scans or stops scanning for NFC (near field communication) tags.
+202,Configure Machine Learning Model,Artificial Intelligence,Loads a Core ML (Machine Learning) model and prepares it for use.
+203,Execute FileMaker Data API,Miscellaneous,Executes a FileMaker Data API request.
+204,,,
+205,Open Transaction,Control,Starts a transaction; subsequent record changes are held in the transaction until a Commit Transaction or Revert Transaction script step is performed.
+206,Commit Transaction,Control,Saves all record changes and ends the current transaction.
+207,Revert Transaction,Control,Returns all records changed in the transaction to their original state and ends the current transaction.
+208,Set Session Identifier,Miscellaneous,Sets an identifier for the user's current session.
+209,Set Dictionary,Spelling,Changes Main Spelling Dictionary and User Spelling dictionary.
+210,Perform Script on Server with Callback,Control,Performs a script on the server that is hosting the current file without pausing the client and performs the specified callback script on the client when the server script is done.
+211,Trigger Claris Connect Flow,Control,Triggers a Claris Connect flow and sends the specified JSON data.
+212,Configure AI Account,Artificial Intelligence,"Sets up an AI account to use by name, given a model provider (or endpoint) and an API key."
+213,Fine-Tune Model,Artificial Intelligence,Fine-tunes a model with the specified training data set.
+214,Perform SQL Query by Natural Language,Artificial Intelligence,"Sends a natural language prompt and database schema to a model, which sends back an SQL query to get a result from the database to use in its response."
+215,Insert Embedding,Artificial Intelligence,Sends input data to an embedding model and inserts the returned vector representation into a field or variable.
+216,Insert Embedding in Found Set,Artificial Intelligence,"For every record in the found set, sends data from a source field to an embedding model and inserts the returned vector representation into a target field."
+217,Set AI Call Logging,Artificial Intelligence,Controls whether details of AI calls are saved to a log file.
+218,Perform Semantic Find,Artificial Intelligence,"Performs a semantic find in a target field for the specified text, image, or embedding vectors."
+219,Perform RAG Action,Artificial Intelligence,"Sends a prompt to, or adds and removes data from, a RAG space on the AI model server specified by a RAG account."
+220,Generate Response from Model,Artificial Intelligence,Gets a text response from an AI model given a user prompt.
+221,Perform Find by Natural Language,Artificial Intelligence,"Sends a natural language prompt and a list of fields on the current layout to a model, which returns a FileMaker find request, and performs a find."
+222,Configure Regression Model,Artificial Intelligence,"Trains, saves, loads, and unloads a regression model. Trains a model based on embedding vectors for text data and numeric target data."
+223,Set Revert Transaction on Error,Control,Controls whether transactions are immediately reverted when an error occurs.
+224,Execute URL,Miscellaneous,Perform a REST call on an API
+225,Save Records as JSONL,Records,Saves records to a specified JSONL file.
+226,Configure Prompt Template,Artificial Intelligence,"Sets up a prompt template to use by name in other AI script steps, given a model provider and predefined prompts you can customize."
+227,Configure RAG Account ,Artificial Intelligence,"Sets up a RAG account to use by name, given an endpoint and an API key."
+228,Go to List of Records,Navigation,Goes to a layout and returns the found set specified by a list of record IDs.
+229,,,
+230,,,
+231,,,
+232,,,
+233,,,
+234,,,
+235,,,
+236,,,
+237,Flush Web Viewer Cookies,Miscellaneous,Immediately flushes all web viewer cookies used in the FileMaker client.
+238,Configure Persistent Data,Control,Sets or deletes an entry in the persistent data store.
+239,Validate Scripts,Artificial Intelligence,Validate scripts by AI Model
+240,Insert Image Captions in Found Set,Artificial Intelligence,"For every record in the found set, sends an image from a source field to an image captioning model and inserts the returned caption into a target field."
+241,Insert Image Caption,Artificial Intelligence,Sends an image to an image captioning model and inserts the returned caption into a field or variable.
+242,Print PDF,PDF Files,"Prints a PDF file from the specified file path, container field, or variable."
+243,Create PDF,PDF Files,"Creates an empty PDF file in memory. Add pages using script steps such as Append PDF, then close and save the file using the Close PDF script step."
+244,Append PDF,PDF Files,Appends PDF pages to the file opened by the Open PDF script step or created by the Create PDF script step.
+245,Close PDF,PDF Files,"Closes and saves the open PDF file to a file path, variable, or container field."
+246,Open PDF,PDF Files,"Opens a PDF file. Add pages using script steps such as Append PDF, then close and save the file using the Close PDF script step."
+247,Cancel PDF,PDF Files,Closes the open PDF in memory without saving it.

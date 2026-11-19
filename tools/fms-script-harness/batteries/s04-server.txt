@@ -1,0 +1,100 @@
+# What the server script engine does with steps it does not support
+# (script-runtime.md 10, 4.9), unknown and obsolete ids, Allow User Abort,
+# error capture versus the event log, Pause/Resume, PSOS and Get selectors
+# in a server session. Base file: contacts-en.
+== srv unsupported steps
+Beep
+Freeze Window
+Show Custom Dialog [ "title" ; "message" ]
+Step 32
+Step 38
+Step 92
+Step 169
+Step 180
+Step 167
+Step 93
+Exit Script [ "reached end " & Get ( LastError ) ]
+== srv capture on
+Set Error Capture [ On ]
+Beep
+Perform Script [ By name: "no such script" ]
+Exit Script [ Get ( LastError ) ]
+== srv unknown abort on
+Allow User Abort [ On ]
+Step 15
+Set Variable [ $after ; 1 ]
+Exit Script [ "after unknown" ]
+== srv unknown abort off
+Allow User Abort [ Off ]
+Step 15
+Set Variable [ $after ; 1 ]
+Exit Script [ "after unknown " & Get ( LastError ) ]
+== srv gated abort on
+Allow User Abort [ On ]
+Step 224
+Exit Script [ "after 224" ]
+== srv unsupported abort on
+Allow User Abort [ On ]
+Beep
+Exit Script [ "after beep " & Get ( LastError ) ]
+== srv pause
+Pause/Resume Script [ Duration: .3 ]
+Set Variable [ $a ; Get ( LastError ) ]
+Pause/Resume Script
+Exit Script [ $a & "," & Get ( LastError ) ]
+== srv psos
+Perform Script on Server [ "srv psos target" ; Parameter: "p" ]
+Set Variable [ $e1 ; Get ( LastError ) & "/" & Get ( ScriptResult ) ]
+Perform Script on Server [ "srv psos target" ; Parameter: "p" ; Wait: Off ]
+Set Variable [ $e2 ; Get ( LastError ) ]
+Exit Script [ $e1 & "," & $e2 ]
+== srv psos target
+Exit Script [ "psos ran" ]
+== srv context
+Exit Script [ Evaluate ( Get ( ScriptParameter ) ) ]
+== srv exit application
+Set Variable [ $$x ; 1 ]
+Step 44
+Set Variable [ $$after ; 1 ]
+Exit Script [ "after exit application" ]
+--- run
+srv unsupported steps		Get ( LastError )
+srv capture on		Get ( LastError )
+srv unknown abort on		Get ( LastError )	$$x
+srv unknown abort off		Get ( LastError )
+srv gated abort on		Get ( LastError )
+srv unsupported abort on		Get ( LastError )
+srv pause		Get ( LastError )
+srv psos		Get ( LastError )
+srv context	Get ( ApplicationVersion )
+srv context	Get ( WindowName )
+srv context	Get ( LayoutName )
+srv context	Get ( LayoutTableName )
+srv context	Get ( WindowMode )
+srv context	Get ( FoundCount )
+srv context	Get ( RecordNumber )
+srv context	Get ( ErrorCaptureState )
+srv context	Get ( AllowAbortState )
+srv context	Get ( ScriptAnimationState )
+srv context	Get ( TransactionOpenState )
+srv context	Get ( RevertTransactionOnErrorState )
+srv context	Get ( AccountName )
+srv context	Get ( AccountPrivilegeSetName )
+srv context	Get ( UserName )
+srv context	Get ( SystemPlatform )
+srv context	Get ( Device )
+srv context	Get ( MultiUserState )
+srv context	Get ( WindowCount )
+srv context	Get ( LastMessageChoice )
+srv context	Get ( ScriptName )
+srv context	Get ( ScriptParameter )
+srv context	Get ( FileName )
+srv context	Get ( HostApplicationVersion )
+srv context	Get ( ApplicationLanguage )
+srv context	Get ( SystemLanguage )
+srv context	Get ( WindowVisible )
+srv context	Get ( ActiveFieldName )
+srv context	Get ( CurrentHostTimestamp ) > 0
+srv context	Get ( PersistentID )
+srv context	Get ( ScriptAnimationState )
+srv exit application		Get ( LastError )	$$after

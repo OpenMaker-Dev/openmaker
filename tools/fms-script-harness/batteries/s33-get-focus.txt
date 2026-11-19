@@ -1,0 +1,55 @@
+== s33 details new
+Go to Layout [ "Contact Details" ]
+New Record/Request
+Set Variable [ $$a ; Get ( ActiveFieldName ) & "|" & Get ( ActiveFieldTableName ) & "|" & Get ( ActiveSelectionStart ) & "|" & Get ( ActiveSelectionSize ) & "|" & Get ( ActiveRepetitionNumber ) & "|" & Get ( ActiveLayoutObjectName ) & "|" & Substitute ( Get ( ModifiedFields ) ; Char ( 13 ) ; "," ) & "|" & Get ( RecordOpenState ) & "|" & Get ( RequestCount ) & "|" & Get ( WindowMode ) ]
+Set Field [ Contacts::Last Name ; "Zed" ]
+Set Variable [ $$b ; Get ( ActiveFieldName ) & "|" & Get ( ActiveFieldTableName ) & "|" & Get ( ActiveSelectionStart ) & "|" & Get ( ActiveSelectionSize ) & "|" & Get ( ActiveRepetitionNumber ) & "|" & Get ( ActiveLayoutObjectName ) & "|" & Substitute ( Get ( ModifiedFields ) ; Char ( 13 ) ; "," ) & "|" & Get ( RecordOpenState ) & "|" & Get ( RequestCount ) & "|" & Get ( WindowMode ) ]
+Commit Records/Requests [ With dialog: Off ]
+Set Variable [ $$c ; Get ( ActiveFieldName ) & "|" & Get ( ActiveFieldTableName ) & "|" & Get ( ActiveSelectionStart ) & "|" & Get ( ActiveSelectionSize ) & "|" & Get ( ActiveRepetitionNumber ) & "|" & Get ( ActiveLayoutObjectName ) & "|" & Substitute ( Get ( ModifiedFields ) ; Char ( 13 ) ; "," ) & "|" & Get ( RecordOpenState ) & "|" & Get ( RequestCount ) & "|" & Get ( WindowMode ) ]
+Set Field [ Contacts::Company ; "Acme" ]
+Set Variable [ $$d ; Get ( ActiveFieldName ) & "|" & Get ( ActiveFieldTableName ) & "|" & Get ( ActiveSelectionStart ) & "|" & Get ( ActiveSelectionSize ) & "|" & Get ( ActiveRepetitionNumber ) & "|" & Get ( ActiveLayoutObjectName ) & "|" & Substitute ( Get ( ModifiedFields ) ; Char ( 13 ) ; "," ) & "|" & Get ( RecordOpenState ) & "|" & Get ( RequestCount ) & "|" & Get ( WindowMode ) ]
+Set Field [ Contacts::First Name ; "Ann" ]
+Set Variable [ $$e ; Get ( ActiveFieldName ) & "|" & Get ( ActiveFieldTableName ) & "|" & Get ( ActiveSelectionStart ) & "|" & Get ( ActiveSelectionSize ) & "|" & Get ( ActiveRepetitionNumber ) & "|" & Get ( ActiveLayoutObjectName ) & "|" & Substitute ( Get ( ModifiedFields ) ; Char ( 13 ) ; "," ) & "|" & Get ( RecordOpenState ) & "|" & Get ( RequestCount ) & "|" & Get ( WindowMode ) ]
+Commit Records/Requests [ With dialog: Off ]
+Set Variable [ $$f ; Get ( ActiveFieldName ) & "|" & Get ( ActiveFieldTableName ) & "|" & Get ( ActiveSelectionStart ) & "|" & Get ( ActiveSelectionSize ) & "|" & Get ( ActiveRepetitionNumber ) & "|" & Get ( ActiveLayoutObjectName ) & "|" & Substitute ( Get ( ModifiedFields ) ; Char ( 13 ) ; "," ) & "|" & Get ( RecordOpenState ) & "|" & Get ( RequestCount ) & "|" & Get ( WindowMode ) ]
+== s33 list new
+Go to Layout [ "Contact List" ]
+New Record/Request
+Set Variable [ $$a ; Get ( ActiveFieldName ) & "|" & Get ( ActiveFieldTableName ) & "|" & Get ( ActiveSelectionStart ) & "|" & Get ( ActiveSelectionSize ) & "|" & Get ( ActiveRepetitionNumber ) & "|" & Get ( ActiveLayoutObjectName ) & "|" & Substitute ( Get ( ModifiedFields ) ; Char ( 13 ) ; "," ) & "|" & Get ( RecordOpenState ) & "|" & Get ( RequestCount ) & "|" & Get ( WindowMode ) ]
+Revert Record/Request [ With dialog: Off ]
+Set Variable [ $$b ; Get ( ActiveFieldName ) & "|" & Get ( ActiveFieldTableName ) & "|" & Get ( ActiveSelectionStart ) & "|" & Get ( ActiveSelectionSize ) & "|" & Get ( ActiveRepetitionNumber ) & "|" & Get ( ActiveLayoutObjectName ) & "|" & Substitute ( Get ( ModifiedFields ) ; Char ( 13 ) ; "," ) & "|" & Get ( RecordOpenState ) & "|" & Get ( RequestCount ) & "|" & Get ( WindowMode ) ]
+== s33 details find
+Go to Layout [ "Contact Details" ]
+Enter Find Mode [ Pause: Off ]
+Set Variable [ $$a ; Get ( ActiveFieldName ) & "|" & Get ( ActiveFieldTableName ) & "|" & Get ( ActiveSelectionStart ) & "|" & Get ( ActiveSelectionSize ) & "|" & Get ( ActiveRepetitionNumber ) & "|" & Get ( ActiveLayoutObjectName ) & "|" & Substitute ( Get ( ModifiedFields ) ; Char ( 13 ) ; "," ) & "|" & Get ( RecordOpenState ) & "|" & Get ( RequestCount ) & "|" & Get ( WindowMode ) ]
+New Record/Request
+Set Variable [ $$b ; Get ( ActiveFieldName ) & "|" & Get ( ActiveFieldTableName ) & "|" & Get ( ActiveSelectionStart ) & "|" & Get ( ActiveSelectionSize ) & "|" & Get ( ActiveRepetitionNumber ) & "|" & Get ( ActiveLayoutObjectName ) & "|" & Substitute ( Get ( ModifiedFields ) ; Char ( 13 ) ; "," ) & "|" & Get ( RecordOpenState ) & "|" & Get ( RequestCount ) & "|" & Get ( WindowMode ) ]
+Enter Browse Mode [ Pause: Off ]
+Set Variable [ $$c ; Get ( ActiveFieldName ) & "|" & Get ( ActiveFieldTableName ) & "|" & Get ( ActiveSelectionStart ) & "|" & Get ( ActiveSelectionSize ) & "|" & Get ( ActiveRepetitionNumber ) & "|" & Get ( ActiveLayoutObjectName ) & "|" & Substitute ( Get ( ModifiedFields ) ; Char ( 13 ) ; "," ) & "|" & Get ( RecordOpenState ) & "|" & Get ( RequestCount ) & "|" & Get ( WindowMode ) ]
+Enter Find Mode [ Pause: Off ]
+Set Variable [ $$d ; Get ( ActiveFieldName ) & "|" & Get ( ActiveFieldTableName ) & "|" & Get ( ActiveSelectionStart ) & "|" & Get ( ActiveSelectionSize ) & "|" & Get ( ActiveRepetitionNumber ) & "|" & Get ( ActiveLayoutObjectName ) & "|" & Substitute ( Get ( ModifiedFields ) ; Char ( 13 ) ; "," ) & "|" & Get ( RecordOpenState ) & "|" & Get ( RequestCount ) & "|" & Get ( WindowMode ) ]
+Enter Browse Mode [ Pause: Off ]
+Set Variable [ $$e ; Get ( ActiveFieldName ) & "|" & Get ( ActiveFieldTableName ) & "|" & Get ( ActiveSelectionStart ) & "|" & Get ( ActiveSelectionSize ) & "|" & Get ( ActiveRepetitionNumber ) & "|" & Get ( ActiveLayoutObjectName ) & "|" & Substitute ( Get ( ModifiedFields ) ; Char ( 13 ) ; "," ) & "|" & Get ( RecordOpenState ) & "|" & Get ( RequestCount ) & "|" & Get ( WindowMode ) ]
+== s33 list find
+Go to Layout [ "Contact List" ]
+Enter Find Mode [ Pause: Off ]
+Set Variable [ $$a ; Get ( ActiveFieldName ) & "|" & Get ( ActiveFieldTableName ) & "|" & Get ( ActiveSelectionStart ) & "|" & Get ( ActiveSelectionSize ) & "|" & Get ( ActiveRepetitionNumber ) & "|" & Get ( ActiveLayoutObjectName ) & "|" & Substitute ( Get ( ModifiedFields ) ; Char ( 13 ) ; "," ) & "|" & Get ( RecordOpenState ) & "|" & Get ( RequestCount ) & "|" & Get ( WindowMode ) ]
+Enter Browse Mode [ Pause: Off ]
+Set Variable [ $$b ; Get ( ActiveFieldName ) & "|" & Get ( ActiveFieldTableName ) & "|" & Get ( ActiveSelectionStart ) & "|" & Get ( ActiveSelectionSize ) & "|" & Get ( ActiveRepetitionNumber ) & "|" & Get ( ActiveLayoutObjectName ) & "|" & Substitute ( Get ( ModifiedFields ) ; Char ( 13 ) ; "," ) & "|" & Get ( RecordOpenState ) & "|" & Get ( RequestCount ) & "|" & Get ( WindowMode ) ]
+== s33 go to field
+Go to Layout [ "Contact Details" ]
+Go to Record/Request/Page [ First ]
+Go to Field [ Contacts::First Name ]
+Set Variable [ $$a ; Get ( ActiveFieldName ) & "|" & Get ( ActiveFieldTableName ) & "|" & Get ( ActiveSelectionStart ) & "|" & Get ( ActiveSelectionSize ) & "|" & Get ( ActiveRepetitionNumber ) & "|" & Get ( ActiveLayoutObjectName ) & "|" & Substitute ( Get ( ModifiedFields ) ; Char ( 13 ) ; "," ) & "|" & Get ( RecordOpenState ) & "|" & Get ( RequestCount ) & "|" & Get ( WindowMode ) ]
+Insert Text [ Select: Off ; Contacts::First Name ; "Bo" ]
+Set Variable [ $$b ; Get ( ActiveFieldName ) & "|" & Get ( ActiveFieldTableName ) & "|" & Get ( ActiveSelectionStart ) & "|" & Get ( ActiveSelectionSize ) & "|" & Get ( ActiveRepetitionNumber ) & "|" & Get ( ActiveLayoutObjectName ) & "|" & Substitute ( Get ( ModifiedFields ) ; Char ( 13 ) ; "," ) & "|" & Get ( RecordOpenState ) & "|" & Get ( RequestCount ) & "|" & Get ( WindowMode ) ]
+Go to Field [ ]
+Set Variable [ $$c ; Get ( ActiveFieldName ) & "|" & Get ( ActiveFieldTableName ) & "|" & Get ( ActiveSelectionStart ) & "|" & Get ( ActiveSelectionSize ) & "|" & Get ( ActiveRepetitionNumber ) & "|" & Get ( ActiveLayoutObjectName ) & "|" & Substitute ( Get ( ModifiedFields ) ; Char ( 13 ) ; "," ) & "|" & Get ( RecordOpenState ) & "|" & Get ( RequestCount ) & "|" & Get ( WindowMode ) ]
+Commit Records/Requests [ With dialog: Off ]
+Set Variable [ $$d ; Get ( ActiveFieldName ) & "|" & Get ( ActiveFieldTableName ) & "|" & Get ( ActiveSelectionStart ) & "|" & Get ( ActiveSelectionSize ) & "|" & Get ( ActiveRepetitionNumber ) & "|" & Get ( ActiveLayoutObjectName ) & "|" & Substitute ( Get ( ModifiedFields ) ; Char ( 13 ) ; "," ) & "|" & Get ( RecordOpenState ) & "|" & Get ( RequestCount ) & "|" & Get ( WindowMode ) ]
+--- run
+s33 details new		$$a	$$b	$$c	$$d	$$e	$$f	Get ( FoundCount )
+s33 list new		$$a	$$b	Get ( FoundCount )
+s33 details find		$$a	$$b	$$c	$$d	$$e	Get ( FoundCount )
+s33 list find		$$a	$$b
+s33 go to field		$$a	$$b	$$c	$$d	Contacts::First Name

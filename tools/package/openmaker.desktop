@@ -1,0 +1,8 @@
+[Desktop Entry]
+Type=Application
+Name=OpenMaker
+Comment=Open and edit FileMaker Pro files
+Exec=om-gui
+Icon=openmaker
+Terminal=false
+Categories=Office;Database;

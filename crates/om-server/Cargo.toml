@@ -1,0 +1,72 @@
+[package]
+name = "om-server"
+# `cargo run -p om-server` runs the server, not its PDF worker (src/bin).
+default-run = "om-server"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+rust-version.workspace = true
+description = "OpenMaker Server: hosts .fmp12 files over the RCFMP12 protocol"
+
+[features]
+default = ["admin-console"]
+# The Admin Console (om-admin) in the om-server program. The desktop's
+# private hosts (om-provider) have no console, and leave it and its web
+# stack out.
+admin-console = ["dep:om-admin"]
+
+[dependencies]
+om-admin = { path = "../om-admin", optional = true }
+om-calc = { path = "../om-calc" }
+om-collate = { path = "../om-collate" }
+# Checking local files' account passwords (LocalHost).
+om-crypto = { path = "../om-crypto" }
+om-data = { path = "../om-data" }
+om-formula = { path = "../om-formula" }
+om-giop = { path = "../om-giop" }
+om-hbam = { path = "../om-hbam" }
+om-layout = { path = "../om-layout" }
+om-protocol = { path = "../om-protocol" }
+om-query = { path = "../om-query" }
+om-scripts = { path = "../om-scripts" }
+om-rctransaction = { path = "../om-rctransaction" }
+om-scsu = { path = "../om-scsu" }
+om-transfer = { path = "../om-transfer" }
+om-url = { path = "../om-url" }
+image = { version = "0.25", default-features = false, features = ["bmp", "gif", "jpeg", "png", "tiff", "webp"] }
+jiff = "0.2"
+log = "0.4"
+# The PDF worker executable's limiting allocator (om-server-pdf-worker; MIT OR Apache-2.0).
+cap = "0.1"
+md-5 = "0.10"
+zeroize = "1"
+env_logger = { version = "0.11", default-features = false, features = ["auto-color", "humantime"] }
+rcgen = "0.14"
+ring = "0.17"
+rustls = { version = "0.23", default-features = false, features = ["std", "ring", "tls12"] }
+rustls-pemfile = "2"
+
+[target.'cfg(unix)'.dependencies]
+# Script file steps open paths beneath their folders' handles a name at a
+# time without following symbolic links (openat with O_NOFOLLOW, Linux and
+# macOS); already in the workspace through the desktop's window stack.
+# "system": the host name the event log's lines carry (uname).
+rustix = { version = "1.1", features = ["fs", "process", "system"] }
+# om-server stops as an administrator's stop does at SIGTERM and SIGINT.
+signal-hook = "0.4"
+
+[dev-dependencies]
+om-session = { path = "../om-session" }
+
+[target.'cfg(target_os = "linux")'.dev-dependencies]
+# tests/logins.rs connects from other loopback addresses, as other
+# computers would (a socket bound before it connects); already in the
+# workspace through tokio.
+socket2 = "0.6"
+
+[target.'cfg(unix)'.dev-dependencies]
+# psos_sql_memory reads the process's peak memory with getrusage.
+nix = { version = "0.29", default-features = false, features = ["resource"] }
+
+[lints]
+workspace = true

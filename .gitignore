@@ -1,0 +1,11 @@
+*.pyc
+.env
+/.secrets/
+/crates/om-gui/screenshots/
+/fm-installers/
+/re/captures/
+/re/extracted/
+/re/work/
+/target
+/target/
+__pycache__/

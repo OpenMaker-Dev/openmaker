@@ -1,0 +1,82 @@
+# Record context (calceval, "@ <context> <record ID>" lines): MBS example
+# Examples/Third Party/Apple TouchBar/AppleTouchBar.fmp12, table occurrence ATB
+# (03d00001), record ID 2. flex_Label, flex_Function, flex_Script, flex_Icon:
+# text, 9 repetitions; _default: text, 12 repetitions; _flex_Add: calculation,
+# 9 repetitions, Let ( [ n = Get ( CalculationRepetitionNumber ) ; ... GetRepetition
+# ( flex_Label ; n ) ... ] ; ... & flex_Script & ... ); f_Add: List ( Extend ( _flex_Add ) ).
+# @ 03d00001 2 records=4
+Get ( RecordID )	0	2/2/0	2
+Get ( CalculationRepetitionNumber )	0	2/2/0	0
+While ( [ i = 1 ; r = "" ] ; i <= 10 ; [ r = r & i & "=" & GetRepetition ( ATB::flex_Label ; i ) & ";" ; i = i + 1 ] ; r )	14	1/1/0	1="+add";2="Text";3=;4=;5=;6=;7=;8=;9=;10=?;
+While ( [ i = 1 ; r = "" ] ; i <= 10 ; [ r = r & i & "=" & GetRepetition ( ATB::flex_Script ; i ) & ";" ; i = i + 1 ] ; r )	14	1/1/0	1=ADR1_AddRec;2=ADR1_DeleteRec;3=;4=;5=;6=;7=;8=;9=;10=?;
+ATB::flex_Label	0	1/1/0	"+add"
+flex_Label	0	1/1/0	"+add"
+ATB::flex_Label[1]	0	1/1/0	"+add"
+ATB::flex_Label[2]	0	1/1/0	"Text"
+ATB::flex_Label[9]	0	1/1/0	
+ATB::flex_Label[10]	14	2/2/0	?
+ATB::flex_Label[0]	14	2/2/0	?
+ATB::flex_Label[-1]	14	2/2/0	?
+ATB::flex_Label[1.9]	0	1/1/0	"+add"
+GetRepetition ( ATB::flex_Label ; 2 )	0	1/1/0	"Text"
+Last ( ATB::flex_Label )	0	1/1/0	"Text"
+Last ( ATB::_default )	0	1/1/0	home
+Extend ( ATB::flex_Label )	0	1/1/0	"+add"
+List ( ATB::flex_Label )	0	1/1/0	"+add"\r"Text"
+List ( ATB::flex_Label ; ATB::flex_Script )	0	1/1/0	"+add"\rADR1_AddRec
+Count ( ATB::flex_Label )	0	2/2/0	2
+Count ( ATB::_default )	0	2/2/0	5
+ValueCount ( List ( ATB::_default ) )	0	2/2/0	5
+Max ( ATB::flex_Label )	0	1/1/0	"Text"
+ATB::flex_Label & "|"	0	1/1/0	"+add"|
+ATB::flex_Label = GetRepetition ( ATB::flex_Label ; 1 )	0	2/2/0	1
+IsEmpty ( ATB::flex_Label[9] )	0	2/2/0	1
+ATB::_Table	0	1/1/0	ATB_Icons
+ATB::_Set	0	1/1/0	ADR1
+ATB::_flex_Add	0	1/1/0	$r = MBS( "TouchBar.AddButton"; $t; "AddRec"; "+add"; ; "AddRec"; 0; Get(FileName); "ADR1_AddRec"); 
+GetRepetition ( ATB::_flex_Add ; 2 )	0	1/1/0	$r = MBS( "TouchBar.AddButton"; $t; "Delete"; "Text"; ; "Delete"; 0; Get(FileName); "ADR1_DeleteRec"); 
+ATB::_flex_Add[3]	0	1/1/0	$r = MBS( "TouchBar.AddButton"; $t; "home"; ; ATB_Icons::Info; "home"; 0; Get(FileName); ""); 
+ATB::f_Add	0	1/1/0	$r = MBS( "TouchBar.AddButton"; $t; "AddRec"; "+add"; ; "AddRec"; 0; Get(FileName); "ADR1_AddRec"); \r$r = MBS( "TouchBar.AddButton"; $t; "Delete"; "Text"; ; "Delete"; 0; Get(FileName); "ADR1_DeleteRec"); \r$r = MBS( "TouchBar.AddButton"; $t; "home"; ; ATB_Icons::Info; "home"; 0; Get(FileName); ""); 
+Last ( ATB::_flex_Add )	0	1/1/0	$r = MBS( "TouchBar.AddButton"; $t; "home"; ; ATB_Icons::Info; "home"; 0; Get(FileName); ""); 
+Count ( ATB::_flex_Add )	0	2/2/0	3
+GetNthRecord ( ATB::flex_Label ; 1 )	0	1/1/0	"+add"
+GetNthRecord ( ATB::flex_Label[2] ; 1 )	0	1/1/0	"Text"
+GetNthRecord ( ATB::_Table ; 2 )	0	1/1/0	ATB_Icons
+# field[n] as the only argument of an aggregate (GetRepetition ( fieldref ; n ))
+Count ( ATB::flex_Label[2] )	0	2/2/0	2
+List ( ATB::flex_Label[2] )	0	1/1/0	"+add"\r"Text"
+Count ( ATB::_default[3] )	0	2/2/0	5
+List ( ATB::_default )	0	1/1/0	AddRec\rDelete\rSTouchBarItemIdentifierFixedSpaceLarge\rSTouchBarItemIdentifierFlexibleSpace\rhome
+List ( ATB::_default[3] )	0	1/1/0	AddRec\rDelete\rSTouchBarItemIdentifierFixedSpaceLarge\rSTouchBarItemIdentifierFlexibleSpace\rhome
+List ( GetRepetition ( ATB::_default ; 3 ) )	0	1/1/0	AddRec\rDelete\rSTouchBarItemIdentifierFixedSpaceLarge\rSTouchBarItemIdentifierFlexibleSpace\rhome
+List ( Extend ( ATB::flex_Label ) )	0	1/1/0	"+add"\r"Text"
+# @rep 2
+# repetition 2 of a repeating calculation (DBExpressionEnv::mRepetition = 2)
+Get ( CalculationRepetitionNumber )	0	2/2/0	2
+ATB::flex_Label	0	1/1/0	"Text"
+flex_Label	0	1/1/0	"Text"
+ATB::flex_Label[1]	0	1/1/0	"+add"
+GetRepetition ( ATB::flex_Label ; 1 )	0	1/1/0	"+add"
+Extend ( ATB::flex_Label )	0	1/1/0	"+add"
+List ( ATB::flex_Label )	0	1/1/0	"+add"\r"Text"
+Last ( ATB::flex_Label )	0	1/1/0	"Text"
+ATB::_Table	0	1/1/0	
+Extend ( ATB::_Table )	0	1/1/0	ATB_Icons
+ATB::_Table & "|" & Extend ( ATB::_Table )	0	1/1/0	|ATB_Icons
+IsEmpty ( ATB::_Table )	0	2/2/0	1
+ATB::_flex_Add	0	1/1/0	$r = MBS( "TouchBar.AddButton"; $t; "Delete"; "Text"; ; "Delete"; 0; Get(FileName); "ADR1_DeleteRec"); 
+ATB::f_Add	0	1/1/0	
+# @rep 9
+Get ( CalculationRepetitionNumber )	0	2/2/0	9
+ATB::flex_Label	0	1/1/0	
+ATB::_default	0	1/1/0	
+# @rep 10
+Get ( CalculationRepetitionNumber )	0	2/2/0	10
+ATB::flex_Label	0	1/1/0	
+ATB::_default	0	1/1/0	
+# @rep 12
+ATB::_default	0	1/1/0	
+# @rep 1
+Get ( CalculationRepetitionNumber )	0	2/2/0	1
+ATB::flex_Label	0	1/1/0	"+add"
+ATB::_Table	0	1/1/0	ATB_Icons

@@ -1,0 +1,7 @@
+# FileMaker Server 26.0.3 script engine (tools/fms-script-harness, s33-account-privileges) on
+# s33-accounts.fmp12 (contacts-en generated with accounts Entry, Viewer and Prober): each account's answers
+# after its login. Columns: script, parameter, error, result, LastError, then the run line's expressions.
+acct probe		0	acct probe	0	Admin	[Full Access]	[Full Access]	fmreauthenticate10	fmreauthenticate10	2	2	FileMaker File
+acct probe		0	acct probe	0	Entry	[Data Entry Only]	[Data Entry Only]	fmapp\rfmreauthenticate10\rfmrest	fmapp\rfmreauthenticate10\rfmrest	2	2	FileMaker File
+acct probe		0	acct probe	0	Viewer	[Read-Only Access]	[Read-Only Access]	fmreauthenticate10	fmreauthenticate10	2	1	FileMaker File
+acct probe		0	acct probe	0	Prober	Probe Set	Probe Set	fmrest\rfmxml	fmrest\rfmxml	2	2	FileMaker File

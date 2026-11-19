@@ -1,0 +1,30 @@
+# scan ovc rep1 bad: open 0 load 0 scan 0 commit 0; index:id=value (0-based): 0:86=0 1:7=0 2:76=0 3:141=0 4:75=0 5:141=0 6:68=8 7:9=0 8:70=0 9:103=0
+# scan ovc rep2 bad: open 0 load 0 scan 0 commit 0; index:id=value (0-based): 0:86=0 1:7=0 2:76=0 3:141=0 4:75=0 5:141=0 6:68=8 7:9=0 8:70=0 9:103=0
+# scan count: open 0 load 0 scan 0 commit 0; index:id=value (0-based): 0:103=0
+# scan: close 13
+ovc rep1 bad		0	0/507	0
+>	1	ovc rep1 bad	1	86	0	0	0	0
+>	1	ovc rep1 bad	2	7	0	0	0	0
+>	1	ovc rep1 bad	3	76	0	0	0	0
+>	1	ovc rep1 bad	4	141	0	0	0	0
+!	507	work : ovc rep1 bad : 5 : Commit Records/Requests
+>	1	ovc rep1 bad	5	75	1	0	0	507
+>	1	ovc rep1 bad	6	141	0	0	0	0
+>	1	ovc rep1 bad	7	68	0	0	1	0
+>	1	ovc rep1 bad	8	9	0	0	0	0
+>	1	ovc rep1 bad	9	70	0	0	1	0
+>	1	ovc rep1 bad	10	103	0	0	1	0
+ovc rep2 bad		0	0/507	0
+>	1	ovc rep2 bad	1	86	0	0	0	0
+>	1	ovc rep2 bad	2	7	0	0	0	0
+>	1	ovc rep2 bad	3	76	0	0	0	0
+>	1	ovc rep2 bad	4	141	0	0	0	0
+!	507	work : ovc rep2 bad : 5 : Commit Records/Requests
+>	1	ovc rep2 bad	5	75	1	0	0	507
+>	1	ovc rep2 bad	6	141	0	0	0	0
+>	1	ovc rep2 bad	7	68	0	0	1	0
+>	1	ovc rep2 bad	8	9	0	0	0	0
+>	1	ovc rep2 bad	9	70	0	0	1	0
+>	1	ovc rep2 bad	10	103	0	0	1	0
+count		0	0	0
+>	1	count	1	103	0	0	1	0

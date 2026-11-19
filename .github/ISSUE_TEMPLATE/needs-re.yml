@@ -1,0 +1,45 @@
+name: Spec needed
+description: The docs/re spec is missing, ambiguous or contradicted, so implementation cannot proceed cleanly.
+labels:
+  - needs-re
+body:
+  - type: markdown
+    attributes:
+      value: |
+        This is the clean-room boundary: the answer goes into the spec in docs/re, and
+        implementation reads the spec. Add an `area: ...` label after filing.
+
+  - type: textarea
+    id: question
+    attributes:
+      label: Question
+      description: What needs to be known about FileMaker, as precisely as possible.
+    validations:
+      required: true
+
+  - type: textarea
+    id: needed-for
+    attributes:
+      label: Needed for
+      description: The feature or issue this blocks.
+    validations:
+      required: true
+
+  - type: textarea
+    id: known
+    attributes:
+      label: What is known
+      description: Spec sections, captures, oracle results or contradictions so far (`path:line`).
+
+  - type: textarea
+    id: method
+    attributes:
+      label: Suggested method
+      description: How it could be settled - a capture, an oracle battery, a live probe, binary analysis.
+
+  - type: input
+    id: filed-by
+    attributes:
+      label: Filed by
+      description: Person, or the model and harness that wrote this issue.
+      placeholder: Claude Opus 5.5 (claude-opus-5-5) in Claude Code, via T3 Code

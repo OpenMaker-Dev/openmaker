@@ -1,0 +1,7 @@
+# GetFieldName of a reference to repetition 1 (MBS AppleTouchBar, as e04).
+@ 03d00001 2
+GetFieldName ( ATB::flex_Label[1] )
+GetFieldName ( GetRepetition ( ATB::flex_Label ; 1 ) )
+GetFieldName ( Extend ( ATB::flex_Label ) )
+GetFieldName ( ATB::_Table[1] )
+GetFieldName ( GetField ( "ATB::flex_Label[3]" ) )

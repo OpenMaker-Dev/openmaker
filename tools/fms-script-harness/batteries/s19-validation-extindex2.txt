@@ -1,0 +1,89 @@
+# Validation of a repeating field (three repetitions) reading a field that
+# does not repeat, script-runtime.md 13.22 (battery s19). First Name: by
+# calculation IsEmpty ( Company[2] ) (Company has one repetition), strict, Always.
+# Probe file contacts-extindex2.fmp12: crates/om-server example
+# validation_probe (rule extindex2) over contacts-en; the @trigger line (never
+# fired) makes runbat.sh run FMUpgradeTool's file generated from it. Each
+# probe exits with Set Field's errors, then Commit Records' ("set/commit");
+# a refused record is deleted.
+@trigger	Contact List	OnGestureTap	count
+== ext rep1
+Set Error Capture [ On ]
+New Record/Request
+Set Field [ Contacts::Company ; "Acme" ]
+Set Variable [ $set ; $set & Get ( LastError ) ]
+Set Field [ Contacts::First Name[1] ; "Acme" ]
+Set Variable [ $set ; $set & Get ( LastError ) ]
+Commit Records/Requests [ With dialog: Off ]
+Set Variable [ $e ; Get ( LastError ) ]
+If [ $e ≠ 0 ]
+Delete Record/Request [ With dialog: Off ]
+End If
+Exit Script [ $set & "/" & $e ]
+== ext rep2
+Set Error Capture [ On ]
+New Record/Request
+Set Field [ Contacts::Company ; "Acme" ]
+Set Variable [ $set ; $set & Get ( LastError ) ]
+Set Field [ Contacts::First Name[1] ; "Acme" ]
+Set Variable [ $set ; $set & Get ( LastError ) ]
+Set Field [ Contacts::First Name[2] ; "Acme" ]
+Set Variable [ $set ; $set & Get ( LastError ) ]
+Commit Records/Requests [ With dialog: Off ]
+Set Variable [ $e ; Get ( LastError ) ]
+If [ $e ≠ 0 ]
+Delete Record/Request [ With dialog: Off ]
+End If
+Exit Script [ $set & "/" & $e ]
+== ext rep2 only
+Set Error Capture [ On ]
+New Record/Request
+Set Field [ Contacts::Company ; "Acme" ]
+Set Variable [ $set ; $set & Get ( LastError ) ]
+Set Field [ Contacts::First Name[2] ; "Acme" ]
+Set Variable [ $set ; $set & Get ( LastError ) ]
+Commit Records/Requests [ With dialog: Off ]
+Set Variable [ $e ; Get ( LastError ) ]
+If [ $e ≠ 0 ]
+Delete Record/Request [ With dialog: Off ]
+End If
+Exit Script [ $set & "/" & $e ]
+== ext rep3 only
+Set Error Capture [ On ]
+New Record/Request
+Set Field [ Contacts::Company ; "Acme" ]
+Set Variable [ $set ; $set & Get ( LastError ) ]
+Set Field [ Contacts::First Name[3] ; "Acme" ]
+Set Variable [ $set ; $set & Get ( LastError ) ]
+Commit Records/Requests [ With dialog: Off ]
+Set Variable [ $e ; Get ( LastError ) ]
+If [ $e ≠ 0 ]
+Delete Record/Request [ With dialog: Off ]
+End If
+Exit Script [ $set & "/" & $e ]
+== ext rep2 other
+Set Error Capture [ On ]
+New Record/Request
+Set Field [ Contacts::Company ; "Acme" ]
+Set Variable [ $set ; $set & Get ( LastError ) ]
+Set Field [ Contacts::First Name[2] ; "Zed" ]
+Set Variable [ $set ; $set & Get ( LastError ) ]
+Commit Records/Requests [ With dialog: Off ]
+Set Variable [ $e ; Get ( LastError ) ]
+If [ $e ≠ 0 ]
+Delete Record/Request [ With dialog: Off ]
+End If
+Exit Script [ $set & "/" & $e ]
+== ext rep2 no company
+Set Error Capture [ On ]
+New Record/Request
+Set Field [ Contacts::First Name[2] ; "x" ]
+Set Variable [ $set ; $set & Get ( LastError ) ]
+Commit Records/Requests [ With dialog: Off ]
+Set Variable [ $e ; Get ( LastError ) ]
+If [ $e ≠ 0 ]
+Delete Record/Request [ With dialog: Off ]
+End If
+Exit Script [ $set & "/" & $e ]
+== count
+Exit Script [ ExecuteSQL ( "SELECT COUNT(*) FROM Contacts" ; "" ; "" ) ]

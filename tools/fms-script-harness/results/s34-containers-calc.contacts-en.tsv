@@ -1,0 +1,40 @@
+# scan store: open 0 load 0 scan 0 commit 0; index:id=value (0-based): 0:86=0 1:7=0 2:76=0 3:141=0 4:75=0 5:141=0 6:76=0 7:75=0 8:141=0 9:103=0
+# scan data: open 0 load 0 scan 0 commit 0; index:id=value (0-based): 0:141=0 1:1=0 2:103=0
+# scan picture: open 0 load 0 scan 0 commit 0; index:id=value (0-based): 0:141=0 1:1=0 2:103=0
+# scan text: open 0 load 0 scan 0 commit 0; index:id=value (0-based): 0:86=0 1:7=0 2:76=0 3:75=0 4:141=0 5:103=0
+# scan: close 13
+data		0	0	0	a.txt~5~aGVsbG8=\r\n~5|a.txt|0~a.txt|0	a.txt~5~aGVsbG8=\r\n~5|a.txt|0~a.txt|0	~~~~
+>	1	data	1	141	0	0	0	0
+>	1	data	2	1	0	0	0	0
+>	2	store	1	86	0	0	0	0
+>	2	store	2	7	0	0	0	0
+>	2	store	3	76	0	0	0	0
+>	2	store	4	141	0	0	0	0
+>	2	store	5	75	0	0	0	0
+>	2	store	6	141	0	0	0	0
+>	2	store	7	76	0	0	0	0
+>	2	store	8	75	0	0	0	0
+>	2	store	9	141	0	0	0	0
+>	2	store	10	103	0	0	1	0
+>	1	data	3	103	0	0	1	0
+picture		0	0	0	red.png~72~iVBORw0KGgoAAAANSUhEUgAAAAMAAAACCAIAAAASFvFNAAAAEElEQVQI12P8zwAFTDAKADMpAQM7\r\nsWkeAAAAAElFTkSuQmCC\r\n~72|red.png|0~red.png|0	red.png~72~iVBORw0KGgoAAAANSUhEUgAAAAMAAAACCAIAAAASFvFNAAAAEElEQVQI12P8zwAFTDAKADMpAQM7\r\nsWkeAAAAAElFTkSuQmCC\r\n~72|red.png|0~red.png|0	~~~~
+>	1	picture	1	141	0	0	0	0
+>	1	picture	2	1	0	0	0	0
+>	2	store	1	86	0	0	0	0
+>	2	store	2	7	0	0	0	0
+>	2	store	3	76	0	0	0	0
+>	2	store	4	141	0	0	0	0
+>	2	store	5	75	0	0	0	0
+>	2	store	6	141	0	0	0	0
+>	2	store	7	76	0	0	0	0
+>	2	store	8	75	0	0	0	0
+>	2	store	9	141	0	0	0	0
+>	2	store	10	103	0	0	1	0
+>	1	picture	3	103	0	0	1	0
+text		0	0	0	~5~aGVsbG8=\r\n~5|hello|0~hello|0
+>	1	text	1	86	0	0	0	0
+>	1	text	2	7	0	0	0	0
+>	1	text	3	76	0	0	0	0
+>	1	text	4	75	0	0	0	0
+>	1	text	5	141	0	0	0	0
+>	1	text	6	103	0	0	1	0

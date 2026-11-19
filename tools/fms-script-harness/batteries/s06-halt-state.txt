@@ -1,0 +1,49 @@
+# Halt Script in nested scripts, the runtime states (error capture, allow
+# user abort, revert transaction on error) across Perform Script, Halt and
+# the end of the top script (script-runtime.md 3.4, 3.5, 4.4). Base file:
+# contacts-en.
+== halt top
+Set Variable [ $$before ; 1 ]
+Set Error Capture [ On ]
+Allow User Abort [ Off ]
+Set Revert Transaction on Error [ Off ]
+Perform Script [ "halt mid" ]
+Set Variable [ $$after_top ; 1 ]
+Exit Script [ "top end" ]
+== halt mid
+Perform Script [ "halt bottom" ]
+Set Variable [ $$after_mid ; 1 ]
+Exit Script [ "mid" ]
+== halt bottom
+Perform Script [ By name: "no such script" ]
+Halt Script
+Set Variable [ $$after_bottom ; 1 ]
+== halt at top
+Exit Script [ "never" ]
+== state from sub persists
+Perform Script [ "state sub sets" ]
+Exit Script [ Get ( ErrorCaptureState ) & Get ( AllowAbortState ) & Get ( RevertTransactionOnErrorState ) ]
+== state sub sets
+Set Error Capture [ On ]
+Allow User Abort [ Off ]
+Set Revert Transaction on Error [ Off ]
+== state inherited by sub
+Set Error Capture [ On ]
+Allow User Abort [ Off ]
+Set Revert Transaction on Error [ Off ]
+Perform Script [ "state sub reads" ]
+Exit Script [ Get ( ScriptResult ) ]
+== state sub reads
+Exit Script [ Get ( ErrorCaptureState ) & Get ( AllowAbortState ) & Get ( RevertTransactionOnErrorState ) ]
+== state at start
+Exit Script [ Get ( ErrorCaptureState ) & Get ( AllowAbortState ) & Get ( RevertTransactionOnErrorState ) ]
+== halt then trigger layout
+Go to Layout [ "Contact Details" ]
+Go to Layout [ "Contact List" ]
+Halt Script
+--- run
+halt top		Get ( LastError )	$$before	$$after_top	$$after_mid	$$after_bottom	Get ( ErrorCaptureState )	Get ( AllowAbortState )	Get ( RevertTransactionOnErrorState )
+state from sub persists		Get ( ErrorCaptureState )
+state inherited by sub
+state at start
+halt then trigger layout		Get ( LastError )

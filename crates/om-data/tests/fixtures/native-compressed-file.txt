@@ -1,0 +1,13 @@
+native-compressed-file.gz is the 60-byte ZLIB main stream of a synthetic
+text file inserted by FileMaker Pro 26.0.3 with "Compress when possible".
+The stream format is gzip, despite its native ZLIB type code.
+
+The original UTF-8 bytes are:
+  OpenMaker native container oracle<CR><LF>hé<LF>
+Filename: openmaker-oracle.txt
+Logical size: 39 bytes
+Stored stream MD5: 274803A1970D4A12FE94A7F2FD07E9E4
+Internal size with the 31-byte FNAM and two directory entries: 107 bytes
+
+The fixture contains only generated test data. The native template file,
+catalogs, user paths and customer data are not included.

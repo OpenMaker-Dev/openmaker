@@ -1,0 +1,123 @@
+# text to number (GetAsNumber and implicit)
+GetAsNumber("abc12d3.4")
+GetAsNumber("12")
+GetAsNumber(" 12 ")
+GetAsNumber("1 2")
+GetAsNumber("-12")
+GetAsNumber("- 12")
+GetAsNumber("12-")
+GetAsNumber("--12")
+GetAsNumber("+12")
+GetAsNumber("1-2")
+GetAsNumber("a-1")
+GetAsNumber("-a1")
+GetAsNumber("a-b-1")
+GetAsNumber("(12)")
+GetAsNumber("$1,234.56")
+GetAsNumber("1,234.56")
+GetAsNumber("1.234,56")
+GetAsNumber("1,5")
+GetAsNumber("1.2.3")
+GetAsNumber("1..2")
+GetAsNumber(".5")
+GetAsNumber("5.")
+GetAsNumber("-.5")
+GetAsNumber("1e3")
+GetAsNumber("1E3")
+GetAsNumber("1e+3")
+GetAsNumber("1e-3")
+GetAsNumber("2e")
+GetAsNumber("e5")
+GetAsNumber("1.5e2x")
+GetAsNumber("abc")
+GetAsNumber("")
+GetAsNumber(" ")
+GetAsNumber("0")
+GetAsNumber("-0")
+GetAsNumber("00012.500")
+GetAsNumber("12abc")
+GetAsNumber("abc12")
+GetAsNumber("12 34.5")
+GetAsNumber("3/4")
+GetAsNumber("1/2/2003")
+GetAsNumber("12:30")
+GetAsNumber("1:30 PM")
+GetAsNumber("¼")
+GetAsNumber("١٢٣")
+GetAsNumber("１２３")
+GetAsNumber("12%")
+GetAsNumber("1" & ¶ & "2")
+GetAsNumber("true")
+GetAsNumber("Infinity")
+GetAsNumber("1e400")
+GetAsNumber("1e800")
+GetAsNumber("1e801")
+GetAsNumber("123456789012345678901234567890")
+GetAsNumber("0.000000000000000000001")
+GetAsNumber("-abc")
+GetAsNumber("-")
+GetAsNumber(".")
+GetAsNumber("-.")
+GetAsNumber("e")
+GetAsNumber("a.5")
+GetAsNumber("a.b5")
+GetAsNumber("1.a5")
+GetAsNumber("5-3")
+GetAsNumber("x-5")
+GetAsNumber("--")
+GetAsNumber("1e3e4")
+GetAsNumber("1 e3")
+GetAsNumber("1e 3")
+GetAsNumber("1.5.e3")
+"abc12d3.4" + 0
+"12abc" * 2
+"abc" + 0
+"abc" + 1
+"" + 0
+"" + 1
+"" * 2
+"" - ""
+"" + ""
+"5" + "5"
+"5" & "5"
+"1,5" + 0
+-"5"
+-"abc"
+-""
+GetAsNumber(-"")
+Abs("")
+Abs("abc")
+Abs("-5x")
+Int("")
+Int("abc")
+Round("";2)
+Round("abc";2)
+Round("1.25";1)
+# number to text
+GetAsText(1/3)
+GetAsText(-0.5)
+GetAsText(100)
+GetAsText(1.50)
+GetAsText(10^9)
+GetAsText(123456789)
+GetAsText(1234567890)
+GetAsText(-1234567890)
+1/3 & ""
+"" & 2/3
+2/3 & 1/3
+(1+1) & ""
+1+1 & ""
+"x" & 1+1
+"x" & 1 + 1
+"x" & -1
+"x" & 1/0
+GetAsText("")
+GetAsText(GetAsNumber(""))
+Length(1/3)
+Length(10^20)
+Length(-0.5)
+Left(1/3;3)
+Middle(2/3;14;5)
+Right(10^15;5)
+Position(1/3;"3";1;1)
+Substitute(1/3;"3";"x")

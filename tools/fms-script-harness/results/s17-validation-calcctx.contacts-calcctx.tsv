@@ -1,0 +1,58 @@
+# scan ctx no company: open 0 load 0 scan 0 commit 0; index:id=value (0-based): 0:86=0 1:7=0 2:76=0 3:141=0 4:75=0 5:141=0 6:68=8 7:9=0 8:70=0 9:103=0
+# scan ctx rep1: open 0 load 0 scan 0 commit 0; index:id=value (0-based): 0:86=0 1:7=0 2:76=0 3:141=0 4:76=0 5:141=0 6:75=0 7:141=0 8:68=10 9:9=0 10:70=0 11:103=0
+# scan ctx rep2: open 0 load 0 scan 0 commit 0; index:id=value (0-based): 0:86=0 1:7=0 2:76=0 3:141=0 4:76=0 5:141=0 6:76=0 7:141=0 8:75=0 9:141=0 10:68=12 11:9=0 12:70=0 13:103=0
+# scan ctx rep2 only: open 0 load 0 scan 0 commit 0; index:id=value (0-based): 0:86=0 1:7=0 2:76=0 3:141=0 4:76=0 5:141=0 6:75=0 7:141=0 8:68=10 9:9=0 10:70=0 11:103=0
+# scan count: open 0 load 0 scan 0 commit 0; index:id=value (0-based): 0:103=0
+# scan: close 13
+ctx no company		0	0/507	0
+>	1	ctx no company	1	86	0	0	0	0
+>	1	ctx no company	2	7	0	0	0	0
+>	1	ctx no company	3	76	0	0	0	0
+>	1	ctx no company	4	141	0	0	0	0
+!	507	work : ctx no company : 5 : Commit Records/Requests
+>	1	ctx no company	5	75	1	0	0	507
+>	1	ctx no company	6	141	0	0	0	0
+>	1	ctx no company	7	68	0	0	1	0
+>	1	ctx no company	8	9	0	0	0	0
+>	1	ctx no company	9	70	0	0	1	0
+>	1	ctx no company	10	103	0	0	1	0
+ctx rep1		0	00/0	0
+>	1	ctx rep1	1	86	0	0	0	0
+>	1	ctx rep1	2	7	0	0	0	0
+>	1	ctx rep1	3	76	0	0	0	0
+>	1	ctx rep1	4	141	0	0	0	0
+>	1	ctx rep1	5	76	0	0	0	0
+>	1	ctx rep1	6	141	0	0	0	0
+>	1	ctx rep1	7	75	0	0	0	0
+>	1	ctx rep1	8	141	0	0	0	0
+>	1	ctx rep1	9	68	0	0	1	0
+>	1	ctx rep1	11	70	0	0	1	0
+>	1	ctx rep1	12	103	0	0	1	0
+ctx rep2		0	000/0	0
+>	1	ctx rep2	1	86	0	0	0	0
+>	1	ctx rep2	2	7	0	0	0	0
+>	1	ctx rep2	3	76	0	0	0	0
+>	1	ctx rep2	4	141	0	0	0	0
+>	1	ctx rep2	5	76	0	0	0	0
+>	1	ctx rep2	6	141	0	0	0	0
+>	1	ctx rep2	7	76	0	0	0	0
+>	1	ctx rep2	8	141	0	0	0	0
+>	1	ctx rep2	9	75	0	0	0	0
+>	1	ctx rep2	10	141	0	0	0	0
+>	1	ctx rep2	11	68	0	0	1	0
+>	1	ctx rep2	13	70	0	0	1	0
+>	1	ctx rep2	14	103	0	0	1	0
+ctx rep2 only		0	00/0	0
+>	1	ctx rep2 only	1	86	0	0	0	0
+>	1	ctx rep2 only	2	7	0	0	0	0
+>	1	ctx rep2 only	3	76	0	0	0	0
+>	1	ctx rep2 only	4	141	0	0	0	0
+>	1	ctx rep2 only	5	76	0	0	0	0
+>	1	ctx rep2 only	6	141	0	0	0	0
+>	1	ctx rep2 only	7	75	0	0	0	0
+>	1	ctx rep2 only	8	141	0	0	0	0
+>	1	ctx rep2 only	9	68	0	0	1	0
+>	1	ctx rep2 only	11	70	0	0	1	0
+>	1	ctx rep2 only	12	103	0	0	1	0
+count		0	3	0
+>	1	count	1	103	0	0	1	0

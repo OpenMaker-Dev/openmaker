@@ -1,0 +1,16 @@
+[package]
+name = "om-hbam"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+rust-version.workspace = true
+
+[dependencies]
+om-scsu = { path = "../om-scsu" }
+
+[lints]
+workspace = true
+
+[[bench]]
+name = "rebuild"
+harness = false

@@ -1,0 +1,5 @@
+# scan priv probe: open 0 load 0 scan 0 commit 0; index:id=value (0-based): 0:103=0
+# scan: close 13
+# @account Admin
+priv probe		0	priv probe	0	fmapp\rfmextscriptaccess\rfmreauthenticate10\rfmrest\rfmxml	fmapp\rfmextscriptaccess\rfmreauthenticate10\rfmrest\rfmxml	[Full Access]	[Full Access]	1
+>	1	priv probe	1	103	0	0	1	0

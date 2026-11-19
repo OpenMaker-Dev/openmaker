@@ -1,0 +1,514 @@
+# Claris examples (results are images in the docs; literal forms)
+DayNameJ ( Date ( 1 ; 1 ; 2021 ) )	0	1/1/0	金曜日
+KanjiNumeral ( 123 )	0	2/2/0	一二三
+MonthNameJ ( "6/6/2019" )	500	2/2/0	?
+NumToJText ( 123456789 ; 2 ; 0 )	0	2/2/0	1億2345万6789
+NumToJText ( 123456789 ; 3 ; 2 )	0	2/2/0	一億二千三百四十五万六千七百八十九
+RomanHankaku ( "Ｍａｃｉｎｔｏｓｈ" )	0	1/1/0	Macintosh
+RomanZenkaku ( "Macintosh" )	0	1/1/0	Ｍａｃｉｎｔｏｓｈ
+YearName ( Date ( 7 ; 15 ; 2008 ) ; 0 )	0	1/1/0	平成20
+YearName ( Date ( 5 ; 1 ; 2019 ) ; 1 )	0	1/1/0	(令)元
+Hiragana ( "カタカナ" )	0	1/1/0	かたかな
+Katakana ( "ひらがな" )	0	1/1/0	ヒラガナ
+KanaHankaku ( "カタカナ" )	0	1/1/0	ｶﾀｶﾅ
+KanaZenkaku ( "ｶﾀｶﾅ" )	0	1/1/0	カタカナ
+KanjiNumeral ( "第1234号" )	0	1/1/0	第一二三四号
+# DayNameJ and MonthNameJ
+DayNameJ ( Date ( 1 ; 3 ; 2021 ) ) & "," & DayNameJ ( Date ( 1 ; 4 ; 2021 ) ) & "," & DayNameJ ( Date ( 1 ; 5 ; 2021 ) ) & "," & DayNameJ ( Date ( 1 ; 6 ; 2021 ) ) & "," & DayNameJ ( Date ( 1 ; 7 ; 2021 ) ) & "," & DayNameJ ( Date ( 1 ; 8 ; 2021 ) ) & "," & DayNameJ ( Date ( 1 ; 9 ; 2021 ) )	0	1/1/0	日曜日,月曜日,火曜日,水曜日,木曜日,金曜日,土曜日
+MonthNameJ ( Date ( 1 ; 1 ; 2019 ) ) & "," & MonthNameJ ( Date ( 2 ; 1 ; 2019 ) ) & "," & MonthNameJ ( Date ( 3 ; 1 ; 2019 ) ) & "," & MonthNameJ ( Date ( 4 ; 1 ; 2019 ) ) & "," & MonthNameJ ( Date ( 5 ; 1 ; 2019 ) ) & "," & MonthNameJ ( Date ( 6 ; 1 ; 2019 ) ) & "," & MonthNameJ ( Date ( 7 ; 1 ; 2019 ) ) & "," & MonthNameJ ( Date ( 8 ; 1 ; 2019 ) ) & "," & MonthNameJ ( Date ( 9 ; 1 ; 2019 ) ) & "," & MonthNameJ ( Date ( 10 ; 1 ; 2019 ) ) & "," & MonthNameJ ( Date ( 11 ; 1 ; 2019 ) ) & "," & MonthNameJ ( Date ( 12 ; 1 ; 2019 ) )	0	1/1/0	1月,2月,3月,4月,5月,6月,7月,8月,9月,10月,11月,12月
+DayNameJ ( "" )	0	1/1/0	
+DayNameJ ( " " )	500	2/2/0	?
+DayNameJ ( "abc" )	500	2/2/0	?
+DayNameJ ( Time ( 1 ; 0 ; 0 ) )	0	1/4/0	
+DayNameJ ( 1 )	0	1/1/0	月曜日
+DayNameJ ( 730486 )	0	1/1/0	月曜日
+DayNameJ ( 0 )	500	2/2/0	?
+DayNameJ ( GetAsDate ( " " ) )	0	1/3/0	
+DayNameJ ( Timestamp ( Date ( 3 ; 4 ; 2005 ) ; Time ( 1 ; 0 ; 0 ) ) )	0	1/1/0	金曜日
+DayNameJ ( "2019/6/6" )	0	1/1/0	木曜日
+DayNameJ ( "6.6.2019" )	500	2/2/0	?
+DayNameJ ( 1/0 )	15	2/2/0	?
+MonthNameJ ( "" )	0	1/1/0	
+MonthNameJ ( " " )	500	2/2/0	?
+MonthNameJ ( "abc" )	500	2/2/0	?
+MonthNameJ ( Time ( 1 ; 0 ; 0 ) )	0	1/4/0	
+MonthNameJ ( 1 )	0	1/1/0	1月
+MonthNameJ ( 730486 )	0	1/1/0	1月
+MonthNameJ ( 0 )	500	2/2/0	?
+MonthNameJ ( GetAsDate ( " " ) )	0	1/3/0	
+MonthNameJ ( Timestamp ( Date ( 3 ; 4 ; 2005 ) ; Time ( 1 ; 0 ; 0 ) ) )	0	1/1/0	3月
+MonthNameJ ( "2019/6/6" )	0	1/1/0	6月
+MonthNameJ ( "6.6.2019" )	500	2/2/0	?
+MonthNameJ ( 1/0 )	15	2/2/0	?
+# YearName: eras and their first days, formats, arguments that are not dates
+YearName ( Date ( 7 ; 15 ; 2008 ) ; 0 ) & "|" & YearName ( Date ( 7 ; 15 ; 2008 ) ; 1 ) & "|" & YearName ( Date ( 7 ; 15 ; 2008 ) ; 2 )	0	1/1/0	平成20|(平)20|H20
+YearName ( Date ( 5 ; 1 ; 2019 ) ; 0 ) & "|" & YearName ( Date ( 5 ; 1 ; 2019 ) ; 1 ) & "|" & YearName ( Date ( 5 ; 1 ; 2019 ) ; 2 )	0	1/1/0	令和元|(令)元|R1
+YearName ( Date ( 4 ; 30 ; 2019 ) ; 0 ) & "|" & YearName ( Date ( 4 ; 30 ; 2019 ) ; 1 ) & "|" & YearName ( Date ( 4 ; 30 ; 2019 ) ; 2 )	0	1/1/0	平成31|(平)31|H31
+YearName ( Date ( 1 ; 8 ; 1989 ) ; 0 ) & "|" & YearName ( Date ( 1 ; 8 ; 1989 ) ; 1 ) & "|" & YearName ( Date ( 1 ; 8 ; 1989 ) ; 2 )	0	1/1/0	平成元|(平)元|H1
+YearName ( Date ( 1 ; 7 ; 1989 ) ; 0 ) & "|" & YearName ( Date ( 1 ; 7 ; 1989 ) ; 1 ) & "|" & YearName ( Date ( 1 ; 7 ; 1989 ) ; 2 )	0	1/1/0	昭和64|(昭)64|S64
+YearName ( Date ( 12 ; 25 ; 1926 ) ; 0 ) & "|" & YearName ( Date ( 12 ; 25 ; 1926 ) ; 1 ) & "|" & YearName ( Date ( 12 ; 25 ; 1926 ) ; 2 )	0	1/1/0	昭和元|(昭)元|S1
+YearName ( Date ( 12 ; 24 ; 1926 ) ; 0 ) & "|" & YearName ( Date ( 12 ; 24 ; 1926 ) ; 1 ) & "|" & YearName ( Date ( 12 ; 24 ; 1926 ) ; 2 )	0	1/1/0	大正15|(大)15|T15
+YearName ( Date ( 7 ; 30 ; 1912 ) ; 0 ) & "|" & YearName ( Date ( 7 ; 30 ; 1912 ) ; 1 ) & "|" & YearName ( Date ( 7 ; 30 ; 1912 ) ; 2 )	0	1/1/0	大正元|(大)元|T1
+YearName ( Date ( 7 ; 29 ; 1912 ) ; 0 ) & "|" & YearName ( Date ( 7 ; 29 ; 1912 ) ; 1 ) & "|" & YearName ( Date ( 7 ; 29 ; 1912 ) ; 2 )	0	1/1/0	明治45|(明)45|M45
+YearName ( Date ( 9 ; 8 ; 1868 ) ; 0 ) & "|" & YearName ( Date ( 9 ; 8 ; 1868 ) ; 1 ) & "|" & YearName ( Date ( 9 ; 8 ; 1868 ) ; 2 )	0	1/1/0	明治元|(明)元|M1
+YearName ( Date ( 9 ; 7 ; 1868 ) ; 0 ) & "|" & YearName ( Date ( 9 ; 7 ; 1868 ) ; 1 ) & "|" & YearName ( Date ( 9 ; 7 ; 1868 ) ; 2 )	0	1/1/0	西暦1868|(西)1868|1868 CE
+YearName ( Date ( 1 ; 1 ; 1 ) ; 0 ) & "|" & YearName ( Date ( 1 ; 1 ; 1 ) ; 1 ) & "|" & YearName ( Date ( 1 ; 1 ; 1 ) ; 2 )	0	1/1/0	西暦1|(西)1|1 CE
+YearName ( Date ( 1 ; 1 ; 2026 ) ; 0 ) & "|" & YearName ( Date ( 1 ; 1 ; 2026 ) ; 1 ) & "|" & YearName ( Date ( 1 ; 1 ; 2026 ) ; 2 )	0	1/1/0	令和8|(令)8|R8
+YearName ( Date ( 12 ; 31 ; 4000 ) ; 0 ) & "|" & YearName ( Date ( 12 ; 31 ; 4000 ) ; 1 ) & "|" & YearName ( Date ( 12 ; 31 ; 4000 ) ; 2 )	0	1/1/0	令和1982|(令)1982|R1982
+YearName ( Date ( 12 ; 31 ; 1868 ) ; 0 ) & "|" & YearName ( Date ( 12 ; 31 ; 1868 ) ; 1 ) & "|" & YearName ( Date ( 12 ; 31 ; 1868 ) ; 2 )	0	1/1/0	明治元|(明)元|M1
+YearName ( Date ( 1 ; 1 ; 1869 ) ; 0 ) & "|" & YearName ( Date ( 1 ; 1 ; 1869 ) ; 1 ) & "|" & YearName ( Date ( 1 ; 1 ; 1869 ) ; 2 )	0	1/1/0	明治2|(明)2|M2
+YearName ( Date ( 1 ; 1 ; 1927 ) ; 0 ) & "|" & YearName ( Date ( 1 ; 1 ; 1927 ) ; 1 ) & "|" & YearName ( Date ( 1 ; 1 ; 1927 ) ; 2 )	0	1/1/0	昭和2|(昭)2|S2
+YearName ( Date ( 1 ; 1 ; 2019 ) ; 0 ) & "|" & YearName ( Date ( 1 ; 1 ; 2019 ) ; 1 ) & "|" & YearName ( Date ( 1 ; 1 ; 2019 ) ; 2 )	0	1/1/0	平成31|(平)31|H31
+YearName ( Date ( 12 ; 31 ; 2019 ) ; 0 ) & "|" & YearName ( Date ( 12 ; 31 ; 2019 ) ; 1 ) & "|" & YearName ( Date ( 12 ; 31 ; 2019 ) ; 2 )	0	1/1/0	令和元|(令)元|R1
+YearName ( Date ( 1 ; 1 ; 2020 ) ; 0 ) & "|" & YearName ( Date ( 1 ; 1 ; 2020 ) ; 1 ) & "|" & YearName ( Date ( 1 ; 1 ; 2020 ) ; 2 )	0	1/1/0	令和2|(令)2|R2
+YearName ( Date ( 1 ; 1 ; 1990 ) ; 0 ) & "|" & YearName ( Date ( 1 ; 1 ; 1990 ) ; 1 ) & "|" & YearName ( Date ( 1 ; 1 ; 1990 ) ; 2 )	0	1/1/0	平成2|(平)2|H2
+YearName ( Date ( 1 ; 1 ; 1912 ) ; 0 ) & "|" & YearName ( Date ( 1 ; 1 ; 1912 ) ; 1 ) & "|" & YearName ( Date ( 1 ; 1 ; 1912 ) ; 2 )	0	1/1/0	明治45|(明)45|M45
+YearName ( Date ( 1 ; 1 ; 1868 ) ; 0 ) & "|" & YearName ( Date ( 1 ; 1 ; 1868 ) ; 1 ) & "|" & YearName ( Date ( 1 ; 1 ; 1868 ) ; 2 )	0	1/1/0	西暦1868|(西)1868|1868 CE
+YearName ( Date ( 7 ; 15 ; 2008 ) ; 3 )	0	1/1/0	平成20
+YearName ( Date ( 7 ; 15 ; 2008 ) ; -1 )	0	1/1/0	平成20
+YearName ( Date ( 7 ; 15 ; 2008 ) ; "" )	0	1/1/0	平成20
+YearName ( Date ( 7 ; 15 ; 2008 ) ; 1.9 )	0	1/1/0	(平)20
+YearName ( Date ( 7 ; 15 ; 2008 ) ; 2.9 )	0	1/1/0	H20
+YearName ( Date ( 7 ; 15 ; 2008 ) ; 1/0 )	15	1/1/0	平成20
+YearName ( Date ( 7 ; 15 ; 2008 ) ; "1" )	0	1/1/0	(平)20
+YearName ( Date ( 7 ; 15 ; 2008 ) ; 10^20 )	0	1/1/0	平成20
+YearName ( "" ; 0 )	0	1/1/0	
+YearName ( " " ; 0 )	0	1/1/0	西暦0
+YearName ( "abc" ; 0 )	0	1/1/0	西暦0
+YearName ( "12abc" ; 0 )	0	1/1/0	西暦0
+YearName ( "12" ; 0 )	0	1/1/0	西暦0
+YearName ( "730486" ; 0 )	0	1/1/0	西暦0
+YearName ( Time ( 1 ; 0 ; 0 ) ; 0 )	0	1/4/0	
+YearName ( Timestamp ( Date ( 1 ; 7 ; 1989 ) ; Time ( 23 ; 0 ; 0 ) ) ; 0 )	0	1/1/0	昭和64
+YearName ( 730486 ; 0 )	0	1/1/0	平成13
+YearName ( 1 ; 0 )	0	1/1/0	西暦1
+YearName ( 0 ; 0 )	0	1/1/0	西暦0
+YearName ( -5 ; 0 )	0	1/1/0	西暦0
+YearName ( 1460970 ; 0 )	0	1/1/0	令和1982
+YearName ( 1460971 ; 0 )	0	1/1/0	令和1983
+YearName ( 1/0 ; 0 )	15	1/1/0	西暦0
+YearName ( "1/2/2003" ; 0 )	0	1/1/0	平成18
+YearName ( "1/2/2003 13:00" ; 0 )	0	1/1/0	平成18
+YearName ( "4/30/2019 24:00" ; 0 )	0	1/1/0	平成23
+YearName ( "4/31/2019" ; 0 )	0	1/1/0	平成21
+YearName ( "5/0/2019" ; 0 )	0	1/1/0	平成22
+YearName ( "13/1/2019" ; 0 )	0	1/1/0	平成30
+YearName ( "0/1/2019" ; 0 )	0	1/1/0	平成17
+YearName ( "12/32/2018" ; 0 )	0	1/1/0	平成29
+YearName ( "99/99/2019" ; 0 )	0	1/1/0	平成16
+YearName ( "1/2" ; 0 )	0	1/1/0	令和8
+YearName ( "4/31" ; 0 )	0	1/1/0	令和8
+YearName ( "1/2/0000" ; 0 )	0	1/1/0	平成13
+YearName ( "1/2/19" ; 0 )	0	1/1/0	平成13
+YearName ( "1/2/3/4" ; 0 )	0	1/1/0	西暦0
+YearName ( "4-31-2019" ; 0 )	0	1/1/0	平成21
+YearName ( "1/99999/2003" ; 0 )	0	1/1/0	平成18
+YearName ( "70000/1/2003" ; 0 )	0	1/1/0	西暦0
+YearName ( "1/40000/2003" ; 0 )	0	1/1/0	平成18
+YearName ( "2019-04-31" ; 0 )	0	1/1/0	令和元
+YearName ( "31.4.2019" ; 0 )	0	1/1/0	令和18
+YearName ( Date ( 4 ; 30 ; 2019 ) + 1 ; 0 )	0	1/1/0	令和元
+YearName ( "abc" ; 1 )	0	1/1/0	(西)0
+YearName ( "abc" ; 2 )	0	1/1/0	0 CE
+YearName ( 1 ; 2 )	0	1/1/0	1 CE
+YearName ( Date ( 4 ; 30 ; 2019 ) + 1 ; 2 )	0	1/1/0	R1
+GetAsSVG ( YearName ( TextStyleAdd ( "1/2/2003" ; Bold ) ; 0 ) )	0	1/1/0	<stylelist>\r<style#0>"", begin: 1, end: 4</style> \r</stylelist>\r<data>\r<span style="0">&#24179;&#25104;18</span>\r</data>
+# Hiragana
+Hiragana ( "アイウエオ" )	0	1/1/0	あいうえお
+Hiragana ( "ｱｲｳｴｵ" )	0	1/1/0	あいうえお
+Hiragana ( "ガギグパピプ" )	0	1/1/0	がぎぐぱぴぷ
+Hiragana ( "ｶﾞｷﾞﾊﾟﾋﾟ" )	0	1/1/0	がぎぱぴ
+Hiragana ( "ヴヵヶヽヾヷヸヹヺー・ヮヰヱヲン" )	0	1/1/0	ゔゕゖヽヾヷヸヹヺー・ゎゐゑをん
+Hiragana ( "ｰ｡｢｣､･ｦｧｨｯﾝﾞﾟ" )	0	1/1/0	ー｡｢｣､･をぁぃっんﾞﾟ
+Hiragana ( "abc漢字あいう１２３" )	0	1/1/0	abc漢字あいう１２３
+Hiragana ( "ｳﾞﾜﾞｦﾞｶﾟｱﾞ" )	0	1/1/0	ヴヷヺかﾟあﾞ
+Hiragana ( "ヷヸ" )	0	1/1/0	ヷヸ
+Hiragana ( "ヽヾヿ" )	0	1/1/0	ヽヾヿ
+Hiragana ( "ﾊﾞﾋﾞﾌﾞﾍﾞﾎﾞﾊﾟﾋﾟﾌﾟﾍﾟﾎﾟｻﾞｼﾞｽﾞｾﾞｿﾞﾀﾞﾁﾞﾂﾞﾃﾞﾄﾞ" )	0	1/1/0	ばびぶべぼぱぴぷぺぽざじずぜぞだぢづでど
+Hiragana ( "ｶﾞｷﾞｸﾞｹﾞｺﾞﾅﾞﾏﾟﾔﾞ" )	0	1/1/0	がぎぐげごなﾞまﾟやﾞ
+Hiragana ( "ァアィイゥウェエォオカガキギクグケゲコゴサザシジスズセゼソゾタダチヂッツヅテデトドナニヌネノハバパヒビピフブプヘベペホボポマミムメモャヤュユョヨラリルレロヮワヰヱヲンヴヵヶ" )	0	1/1/0	ぁあぃいぅうぇえぉおかがきぎくぐけげこごさざしじすずせぜそぞただちぢっつづてでとどなにぬねのはばぱひびぴふぶぷへべぺほぼぽまみむめもゃやゅゆょよらりるれろゎわゐゑをんゔゕゖ
+Hiragana ( "ｦｧｨｩｪｫｬｭｮｯｰｱｲｳｴｵｶｷｸｹｺｻｼｽｾｿﾀﾁﾂﾃﾄﾅﾆﾇﾈﾉﾊﾋﾌﾍﾎﾏﾐﾑﾒﾓﾔﾕﾖﾗﾘﾙﾚﾛﾜﾝ" )	0	1/1/0	をぁぃぅぇぉゃゅょっーあいうえおかきくけこさしすせそたちつてとなにぬねのはひふへほまみむめもやゆよらりるれろわん
+Hiragana ( "ﾞ" )	0	1/1/0	ﾞ
+Hiragana ( "ｶ" )	0	1/1/0	か
+Hiragana ( 123 )	0	2/2/0	123
+Hiragana ( "" )	0	1/1/0	
+Hiragana ( 123 ) + 1	0	2/2/0	124
+Hiragana ( "ア" & Char ( 12441 ) )	0	1/1/0	あ゙
+Hiragana ( Time ( 1 ; 2 ; 3 ) )	0	4/4/0	1:02:03
+Hiragana ( 1/0 )	15	2/2/0	?
+GetAsSVG ( Hiragana ( TextStyleAdd ( "アイ" ; Bold ) & "ウ" ) )	0	1/1/0	<stylelist>\r<style#0>"font-weight: bold;", begin: 1, end: 2</style> \r<style#1>"", begin: 3, end: 3</style> \r</stylelist>\r<data>\r<span style="0">&#12354;&#12356;</span>\r<span style="1">&#12358;</span>\r</data>
+GetAsSVG ( Hiragana ( TextStyleAdd ( "ｶ" ; Bold ) & "ﾞ" ) )	0	1/1/0	<stylelist>\r<style#0>"font-weight: bold;", begin: 1, end: 1</style> \r</stylelist>\r<data>\r<span style="0">&#12364;</span>\r</data>
+GetAsSVG ( Hiragana ( "ｶ" & TextStyleAdd ( "ﾞ" ; Bold ) ) )	0	1/1/0	<stylelist>\r<style#0>"", begin: 1, end: 1</style> \r</stylelist>\r<data>\r<span style="0">&#12364;</span>\r</data>
+# Katakana
+Katakana ( "あいうえお" )	0	1/1/0	アイウエオ
+Katakana ( "がぎぐぱぴぷゔゕゖゝゞゐゑをんぁぃっゎ" )	0	1/1/0	ガギグパピプヴヵヶヽヾヰヱヲンァィッヮ
+Katakana ( "ｱｲｳｶﾞ" )	0	1/1/0	ｱｲｳｶﾞ
+Katakana ( "abc漢字アイウ１２３ー" )	0	1/1/0	abc漢字アイウ１２３ー
+Katakana ( "ゟゝ゛゜ゔ" )	0	1/1/0	ゟヽ゛゜ヴ
+Katakana ( "ゝゞゟ" )	0	1/1/0	ヽヾゟ
+Katakana ( "ぁあぃいぅうぇえぉおかがきぎくぐけげこごさざしじすずせぜそぞただちぢっつづてでとどなにぬねのはばぱひびぴふぶぷへべぺほぼぽまみむめもゃやゅゆょよらりるれろゎわゐゑをんゔゕゖ" )	0	1/1/0	ァアィイゥウェエォオカガキギクグケゲコゴサザシジスズセゼソゾタダチヂッツヅテデトドナニヌネノハバパヒビピフブプヘベペホボポマミムメモャヤュユョヨラリルレロヮワヰヱヲンヴヵヶ
+Katakana ( "" )	0	1/1/0	
+Katakana ( 12 )	0	2/2/0	12
+GetAsSVG ( Katakana ( TextColor ( "あ" ; 255 ) & "い" ) )	0	1/1/0	<stylelist>\r<style#0>"color: #0000FF;", begin: 1, end: 1</style> \r<style#1>"", begin: 2, end: 2</style> \r</stylelist>\r<data>\r<span style="0">&#12450;</span>\r<span style="1">&#12452;</span>\r</data>
+# KanaHankaku
+KanaHankaku ( "アイウエオ" )	0	1/1/0	ｱｲｳｴｵ
+KanaHankaku ( "ガギグパピプヴ" )	0	1/1/0	ｶﾞｷﾞｸﾞﾊﾟﾋﾟﾌﾟｳﾞ
+KanaHankaku ( "ー。「」、・ヲァィッンヮヰヱヵヶヽヾ゛゜" )	0	1/1/0	ｰ。「」、･ｦｧｨｯﾝヮヰヱヵヶヽヾ゛゜
+KanaHankaku ( "あいうがぱ" )	0	1/1/0	あいうがぱ
+KanaHankaku ( "ＡＢＣ１２３abc漢字" )	0	1/1/0	ＡＢＣ１２３abc漢字
+KanaHankaku ( "ヷヸヹヺ" )	0	1/1/0	ﾜﾞヸヹｦﾞ
+KanaHankaku ( "ヴァ　ア" )	0	1/1/0	ｳﾞｧ　ｱ
+KanaHankaku ( "ァアィイゥウェエォオカガキギクグケゲコゴサザシジスズセゼソゾタダチヂッツヅテデトドナニヌネノハバパヒビピフブプヘベペホボポマミムメモャヤュユョヨラリルレロヮワヰヱヲンヴヵヶ" )	0	1/1/0	ｧｱｨｲｩｳｪｴｫｵｶｶﾞｷｷﾞｸｸﾞｹｹﾞｺｺﾞｻｻﾞｼｼﾞｽｽﾞｾｾﾞｿｿﾞﾀﾀﾞﾁﾁﾞｯﾂﾂﾞﾃﾃﾞﾄﾄﾞﾅﾆﾇﾈﾉﾊﾊﾞﾊﾟﾋﾋﾞﾋﾟﾌﾌﾞﾌﾟﾍﾍﾞﾍﾟﾎﾎﾞﾎﾟﾏﾐﾑﾒﾓｬﾔｭﾕｮﾖﾗﾘﾙﾚﾛヮﾜヰヱｦﾝｳﾞヵヶ
+KanaHankaku ( "ア" & Char ( 12441 ) & "カ" & Char ( 12442 ) )	0	1/1/0	ｱ゙ｶ゚
+Length ( KanaHankaku ( "ガ" ) )	0	2/2/0	2
+KanaHankaku ( "" )	0	1/1/0	
+GetAsSVG ( KanaHankaku ( TextStyleAdd ( "ガ" ; Bold ) & "ア" ) )	0	1/1/0	<stylelist>\r<style#0>"font-weight: bold;", begin: 1, end: 2</style> \r<style#1>"", begin: 3, end: 3</style> \r</stylelist>\r<data>\r<span style="0">&#65398;&#65438;</span>\r<span style="1">&#65393;</span>\r</data>
+# KanaZenkaku
+KanaZenkaku ( "ｱｲｳｴｵ" )	0	1/1/0	アイウエオ
+KanaZenkaku ( "ｶﾞｷﾞﾊﾟﾋﾟｳﾞ" )	0	1/1/0	ガギパピヴ
+KanaZenkaku ( "ｰ｡｢｣､･ｦｧｨｯﾝﾞﾟｱﾞﾜﾞ" )	0	1/1/0	ー｡｢｣､・ヲァィッンﾞﾟアﾞヷ
+KanaZenkaku ( "abc123ABC" )	0	1/1/0	abc123ABC
+KanaZenkaku ( "あいう" )	0	1/1/0	あいう
+KanaZenkaku ( "ｦﾞｳﾞｶﾟﾊﾞﾍﾟ" )	0	1/1/0	ヺヴカﾟバペ
+KanaZenkaku ( "ﾞﾞﾟ" )	0	1/1/0	ﾞﾞﾟ
+KanaZenkaku ( "ｳﾞｧ ｱ" )	0	1/1/0	ヴァ ア
+KanaZenkaku ( "ｶﾞｷﾞｸﾞｹﾞｺﾞﾅﾞﾏﾟﾔﾞ" )	0	1/1/0	ガギグゲゴナﾞマﾟヤﾞ
+KanaZenkaku ( "ｦｧｨｩｪｫｬｭｮｯｰｱｲｳｴｵｶｷｸｹｺｻｼｽｾｿﾀﾁﾂﾃﾄﾅﾆﾇﾈﾉﾊﾋﾌﾍﾎﾏﾐﾑﾒﾓﾔﾕﾖﾗﾘﾙﾚﾛﾜﾝ" )	0	1/1/0	ヲァィゥェォャュョッーアイウエオカキクケコサシスセソタチツテトナニヌネノハヒフヘホマミムメモヤユヨラリルレロワン
+KanaZenkaku ( "ｶﾞｷﾞｸﾞｹﾞｺﾞｻﾞｼﾞｽﾞｾﾞｿﾞﾀﾞﾁﾞﾂﾞﾃﾞﾄﾞﾊﾞﾋﾞﾌﾞﾍﾞﾎﾞﾊﾟﾋﾟﾌﾟﾍﾟﾎﾟ" )	0	1/1/0	ガギグゲゴザジズゼゾダヂヅデドバビブベボパピプペポ
+Length ( KanaZenkaku ( "ｶﾞ" ) )	0	2/2/0	1
+KanaZenkaku ( "" )	0	1/1/0	
+GetAsSVG ( KanaZenkaku ( TextStyleAdd ( "ｶ" ; Bold ) & "ﾞ" ) )	0	1/1/0	<stylelist>\r<style#0>"font-weight: bold;", begin: 1, end: 1</style> \r</stylelist>\r<data>\r<span style="0">&#12460;</span>\r</data>
+GetAsSVG ( KanaZenkaku ( "ｶ" & TextStyleAdd ( "ﾞ" ; Bold ) & "ｱ" ) )	0	1/1/0	<stylelist>\r<style#0>"", begin: 1, end: 2</style> \r</stylelist>\r<data>\r<span style="0">&#12460;&#12450;</span>\r</data>
+# RomanHankaku and RomanZenkaku
+RomanHankaku ( "０１２３４５６７８９ＡＺａｚ" )	0	1/1/0	0123456789AZaz
+RomanHankaku ( "！＃＄％＆＇（）＊＋，－．／" )	0	1/1/0	!#$%&'()*+,-./
+RomanHankaku ( "：；＜＝＞？＠［＼］＾＿｀｛｜｝～" )	0	1/1/0	:;<=>?@[\\]^_`{|}~
+RomanHankaku ( "　￥￣￠￡￢￤￦" )	0	1/1/0	 ¥¯¢£¬¦₩
+RomanHankaku ( "アイウ。ｱｲｳ" )	0	1/1/0	アイウ。ｱｲｳ
+RomanHankaku ( "ａ・ｂ" )	0	1/1/0	a・b
+RomanHankaku ( "ＡＢＣ　ｄｅｆ" )	0	1/1/0	ABC def
+RomanHankaku ( Char ( 65282 ) )	0	1/1/0	"
+RomanHankaku ( Char ( 12317 ) & Char ( 12318 ) & Char ( 12319 ) )	0	1/1/0	“”〟
+RomanHankaku ( Char ( 8220 ) & Char ( 8221 ) & Char ( 8216 ) & Char ( 8217 ) )	0	1/1/0	“”‘’
+RomanHankaku ( Char ( 65512 ) & Char ( 65377 ) & Char ( 12290 ) )	0	1/1/0	￨｡。
+RomanHankaku ( "" )	0	1/1/0	
+GetAsSVG ( RomanHankaku ( TextStyleAdd ( "Ａ" ; Bold ) & "Ｂ" ) )	0	1/1/0	<stylelist>\r<style#0>"font-weight: bold;", begin: 1, end: 1</style> \r<style#1>"", begin: 2, end: 2</style> \r</stylelist>\r<data>\r<span style="0">A</span>\r<span style="1">B</span>\r</data>
+RomanZenkaku ( "Macintosh" )	0	1/1/0	Ｍａｃｉｎｔｏｓｈ
+RomanZenkaku ( "0123456789AZaz" )	0	1/1/0	０１２３４５６７８９ＡＺａｚ
+RomanZenkaku ( "!#$%&'()*+,-./" )	0	1/1/0	！＃＄％＆＇（）＊＋，－．／
+RomanZenkaku ( ":;<=>?@[]^_`{|}~" )	0	1/1/0	：；＜＝＞？＠［］＾＿｀｛｜｝～
+RomanZenkaku ( " a b " )	0	1/1/0	　ａ　ｂ　
+RomanZenkaku ( "ｱｲｳアイウ" )	0	1/1/0	ｱｲｳアイウ
+RomanZenkaku ( "¥¢£¬¯¦₩" )	0	1/1/0	¥¢£¬¯¦₩
+RomanZenkaku ( "\\" )	1206	2/2/0	?
+RomanZenkaku ( "\"" )	0	1/1/0	＂
+RomanZenkaku ( Char ( 8220 ) & Char ( 8221 ) & Char ( 8216 ) & Char ( 8217 ) )	0	1/1/0	〝〞‘’
+RomanZenkaku ( 12 ) + 1	0	2/2/0	13
+RomanZenkaku ( 1/3 )	0	2/2/0	．３３３３３３３３３３３３３３３３
+RomanZenkaku ( Date ( 1 ; 2 ; 2003 ) )	0	3/3/0	２００３／０１／０２
+RomanZenkaku ( "" )	0	1/1/0	
+GetAsSVG ( RomanZenkaku ( TextStyleAdd ( "A" ; Italic ) & "B" ) )	0	1/1/0	<stylelist>\r<style#0>"font-style:italic;", begin: 1, end: 1</style> \r<style#1>"", begin: 2, end: 2</style> \r</stylelist>\r<data>\r<span style="0">&#65313;</span>\r<span style="1">&#65314;</span>\r</data>
+# KanjiNumeral
+KanjiNumeral ( "0123456789" )	0	1/1/0	〇一二三四五六七八九
+KanjiNumeral ( "２０２４年" )	0	1/1/0	二〇二四年
+KanjiNumeral ( "1.5-3,000" )	0	1/1/0	一.五-三,〇〇〇
+KanjiNumeral ( "" )	0	1/1/0	
+KanjiNumeral ( "abc" )	0	1/1/0	abc
+KanjiNumeral ( "٣٤" )	0	1/1/0	٣٤
+KanjiNumeral ( "¹²³" )	0	1/1/0	¹²³
+KanjiNumeral ( "①" )	0	1/1/0	①
+KanjiNumeral ( "ⅠⅡ" )	0	1/1/0	ⅠⅡ
+KanjiNumeral ( "1/2/2003" )	0	1/1/0	一/二/二〇〇三
+KanjiNumeral ( 1/3 )	0	2/2/0	.三三三三三三三三三三三三三三三三
+KanjiNumeral ( -12.5 )	0	2/2/0	-一二.五
+KanjiNumeral ( 123 ) + 1	0	2/2/0	124
+GetAsNumber ( KanjiNumeral ( 123 ) )	0	2/2/0	123
+KanjiNumeral ( Date ( 1 ; 2 ; 2003 ) )	0	3/3/0	二〇〇三/〇一/〇二
+KanjiNumeral ( 1/0 )	15	2/2/0	?
+KanjiNumeral ( 10^20 )	0	2/2/0	一.〇E+二〇
+GetAsSVG ( KanjiNumeral ( TextColor ( "12" ; 255 ) ) )	0	1/1/0	<stylelist>\r<style#0>"color: #0000FF;", begin: 1, end: 2</style> \r</stylelist>\r<data>\r<span style="0">&#19968;&#20108;</span>\r</data>
+GetAsSVG ( KanjiNumeral ( TextStyleAdd ( 12 ; Bold ) ) )	0	1/1/0	<stylelist>\r<style#0>"font-weight: bold;", begin: 1, end: 2</style> \r</stylelist>\r<data>\r<span style="0">&#19968;&#20108;</span>\r</data>
+# NumToJText: every separator and character type
+NumToJText ( 0 ; 0 ; 0 ) & "|" & NumToJText ( 0 ; 0 ; 1 ) & "|" & NumToJText ( 0 ; 0 ; 2 ) & "|" & NumToJText ( 0 ; 0 ; 3 )	0	1/1/0	0|０|〇|〇
+NumToJText ( 0 ; 1 ; 0 ) & "|" & NumToJText ( 0 ; 1 ; 1 ) & "|" & NumToJText ( 0 ; 1 ; 2 ) & "|" & NumToJText ( 0 ; 1 ; 3 )	0	1/1/0	0|０|〇|〇
+NumToJText ( 0 ; 2 ; 0 ) & "|" & NumToJText ( 0 ; 2 ; 1 ) & "|" & NumToJText ( 0 ; 2 ; 2 ) & "|" & NumToJText ( 0 ; 2 ; 3 )	0	1/1/0	0|０|〇|〇
+NumToJText ( 0 ; 3 ; 0 ) & "|" & NumToJText ( 0 ; 3 ; 1 ) & "|" & NumToJText ( 0 ; 3 ; 2 ) & "|" & NumToJText ( 0 ; 3 ; 3 )	0	1/1/0	0|０|〇|〇
+NumToJText ( 1 ; 0 ; 0 ) & "|" & NumToJText ( 1 ; 0 ; 1 ) & "|" & NumToJText ( 1 ; 0 ; 2 ) & "|" & NumToJText ( 1 ; 0 ; 3 )	0	1/1/0	1|１|一|壱
+NumToJText ( 1 ; 1 ; 0 ) & "|" & NumToJText ( 1 ; 1 ; 1 ) & "|" & NumToJText ( 1 ; 1 ; 2 ) & "|" & NumToJText ( 1 ; 1 ; 3 )	0	1/1/0	1|１|一|壱
+NumToJText ( 1 ; 2 ; 0 ) & "|" & NumToJText ( 1 ; 2 ; 1 ) & "|" & NumToJText ( 1 ; 2 ; 2 ) & "|" & NumToJText ( 1 ; 2 ; 3 )	0	1/1/0	1|１|一|壱
+NumToJText ( 1 ; 3 ; 0 ) & "|" & NumToJText ( 1 ; 3 ; 1 ) & "|" & NumToJText ( 1 ; 3 ; 2 ) & "|" & NumToJText ( 1 ; 3 ; 3 )	0	1/1/0	1|１|一|壱
+NumToJText ( 10 ; 0 ; 0 ) & "|" & NumToJText ( 10 ; 0 ; 1 ) & "|" & NumToJText ( 10 ; 0 ; 2 ) & "|" & NumToJText ( 10 ; 0 ; 3 )	0	1/1/0	10|１０|一〇|壱〇
+NumToJText ( 10 ; 1 ; 0 ) & "|" & NumToJText ( 10 ; 1 ; 1 ) & "|" & NumToJText ( 10 ; 1 ; 2 ) & "|" & NumToJText ( 10 ; 1 ; 3 )	0	1/1/0	10|１０|一〇|壱〇
+NumToJText ( 10 ; 2 ; 0 ) & "|" & NumToJText ( 10 ; 2 ; 1 ) & "|" & NumToJText ( 10 ; 2 ; 2 ) & "|" & NumToJText ( 10 ; 2 ; 3 )	0	1/1/0	10|１０|一〇|壱〇
+NumToJText ( 10 ; 3 ; 0 ) & "|" & NumToJText ( 10 ; 3 ; 1 ) & "|" & NumToJText ( 10 ; 3 ; 2 ) & "|" & NumToJText ( 10 ; 3 ; 3 )	0	1/1/0	十|十|十|壱拾
+NumToJText ( 11 ; 0 ; 0 ) & "|" & NumToJText ( 11 ; 0 ; 1 ) & "|" & NumToJText ( 11 ; 0 ; 2 ) & "|" & NumToJText ( 11 ; 0 ; 3 )	0	1/1/0	11|１１|一一|壱壱
+NumToJText ( 11 ; 1 ; 0 ) & "|" & NumToJText ( 11 ; 1 ; 1 ) & "|" & NumToJText ( 11 ; 1 ; 2 ) & "|" & NumToJText ( 11 ; 1 ; 3 )	0	1/1/0	11|１１|一一|壱壱
+NumToJText ( 11 ; 2 ; 0 ) & "|" & NumToJText ( 11 ; 2 ; 1 ) & "|" & NumToJText ( 11 ; 2 ; 2 ) & "|" & NumToJText ( 11 ; 2 ; 3 )	0	1/1/0	11|１１|一一|壱壱
+NumToJText ( 11 ; 3 ; 0 ) & "|" & NumToJText ( 11 ; 3 ; 1 ) & "|" & NumToJText ( 11 ; 3 ; 2 ) & "|" & NumToJText ( 11 ; 3 ; 3 )	0	1/1/0	十1|十１|十一|壱拾壱
+NumToJText ( 100 ; 0 ; 0 ) & "|" & NumToJText ( 100 ; 0 ; 1 ) & "|" & NumToJText ( 100 ; 0 ; 2 ) & "|" & NumToJText ( 100 ; 0 ; 3 )	0	1/1/0	100|１００|一〇〇|壱〇〇
+NumToJText ( 100 ; 1 ; 0 ) & "|" & NumToJText ( 100 ; 1 ; 1 ) & "|" & NumToJText ( 100 ; 1 ; 2 ) & "|" & NumToJText ( 100 ; 1 ; 3 )	0	1/1/0	100|１００|一〇〇|壱〇〇
+NumToJText ( 100 ; 2 ; 0 ) & "|" & NumToJText ( 100 ; 2 ; 1 ) & "|" & NumToJText ( 100 ; 2 ; 2 ) & "|" & NumToJText ( 100 ; 2 ; 3 )	0	1/1/0	100|１００|一〇〇|壱〇〇
+NumToJText ( 100 ; 3 ; 0 ) & "|" & NumToJText ( 100 ; 3 ; 1 ) & "|" & NumToJText ( 100 ; 3 ; 2 ) & "|" & NumToJText ( 100 ; 3 ; 3 )	0	1/1/0	百|百|百|壱陌
+NumToJText ( 101 ; 0 ; 0 ) & "|" & NumToJText ( 101 ; 0 ; 1 ) & "|" & NumToJText ( 101 ; 0 ; 2 ) & "|" & NumToJText ( 101 ; 0 ; 3 )	0	1/1/0	101|１０１|一〇一|壱〇壱
+NumToJText ( 101 ; 1 ; 0 ) & "|" & NumToJText ( 101 ; 1 ; 1 ) & "|" & NumToJText ( 101 ; 1 ; 2 ) & "|" & NumToJText ( 101 ; 1 ; 3 )	0	1/1/0	101|１０１|一〇一|壱〇壱
+NumToJText ( 101 ; 2 ; 0 ) & "|" & NumToJText ( 101 ; 2 ; 1 ) & "|" & NumToJText ( 101 ; 2 ; 2 ) & "|" & NumToJText ( 101 ; 2 ; 3 )	0	1/1/0	101|１０１|一〇一|壱〇壱
+NumToJText ( 101 ; 3 ; 0 ) & "|" & NumToJText ( 101 ; 3 ; 1 ) & "|" & NumToJText ( 101 ; 3 ; 2 ) & "|" & NumToJText ( 101 ; 3 ; 3 )	0	1/1/0	百1|百１|百一|壱陌壱
+NumToJText ( 110 ; 0 ; 0 ) & "|" & NumToJText ( 110 ; 0 ; 1 ) & "|" & NumToJText ( 110 ; 0 ; 2 ) & "|" & NumToJText ( 110 ; 0 ; 3 )	0	1/1/0	110|１１０|一一〇|壱壱〇
+NumToJText ( 110 ; 1 ; 0 ) & "|" & NumToJText ( 110 ; 1 ; 1 ) & "|" & NumToJText ( 110 ; 1 ; 2 ) & "|" & NumToJText ( 110 ; 1 ; 3 )	0	1/1/0	110|１１０|一一〇|壱壱〇
+NumToJText ( 110 ; 2 ; 0 ) & "|" & NumToJText ( 110 ; 2 ; 1 ) & "|" & NumToJText ( 110 ; 2 ; 2 ) & "|" & NumToJText ( 110 ; 2 ; 3 )	0	1/1/0	110|１１０|一一〇|壱壱〇
+NumToJText ( 110 ; 3 ; 0 ) & "|" & NumToJText ( 110 ; 3 ; 1 ) & "|" & NumToJText ( 110 ; 3 ; 2 ) & "|" & NumToJText ( 110 ; 3 ; 3 )	0	1/1/0	百十|百十|百十|壱陌壱拾
+NumToJText ( 1000 ; 0 ; 0 ) & "|" & NumToJText ( 1000 ; 0 ; 1 ) & "|" & NumToJText ( 1000 ; 0 ; 2 ) & "|" & NumToJText ( 1000 ; 0 ; 3 )	0	1/1/0	1000|１０００|一〇〇〇|壱〇〇〇
+NumToJText ( 1000 ; 1 ; 0 ) & "|" & NumToJText ( 1000 ; 1 ; 1 ) & "|" & NumToJText ( 1000 ; 1 ; 2 ) & "|" & NumToJText ( 1000 ; 1 ; 3 )	0	1/1/0	1,000|１，０００|一,〇〇〇|壱,〇〇〇
+NumToJText ( 1000 ; 2 ; 0 ) & "|" & NumToJText ( 1000 ; 2 ; 1 ) & "|" & NumToJText ( 1000 ; 2 ; 2 ) & "|" & NumToJText ( 1000 ; 2 ; 3 )	0	1/1/0	1000|１０００|一〇〇〇|壱〇〇〇
+NumToJText ( 1000 ; 3 ; 0 ) & "|" & NumToJText ( 1000 ; 3 ; 1 ) & "|" & NumToJText ( 1000 ; 3 ; 2 ) & "|" & NumToJText ( 1000 ; 3 ; 3 )	0	1/1/0	千|千|千|壱阡
+NumToJText ( 1001 ; 0 ; 0 ) & "|" & NumToJText ( 1001 ; 0 ; 1 ) & "|" & NumToJText ( 1001 ; 0 ; 2 ) & "|" & NumToJText ( 1001 ; 0 ; 3 )	0	1/1/0	1001|１００１|一〇〇一|壱〇〇壱
+NumToJText ( 1001 ; 1 ; 0 ) & "|" & NumToJText ( 1001 ; 1 ; 1 ) & "|" & NumToJText ( 1001 ; 1 ; 2 ) & "|" & NumToJText ( 1001 ; 1 ; 3 )	0	1/1/0	1,001|１，００１|一,〇〇一|壱,〇〇壱
+NumToJText ( 1001 ; 2 ; 0 ) & "|" & NumToJText ( 1001 ; 2 ; 1 ) & "|" & NumToJText ( 1001 ; 2 ; 2 ) & "|" & NumToJText ( 1001 ; 2 ; 3 )	0	1/1/0	1001|１００１|一〇〇一|壱〇〇壱
+NumToJText ( 1001 ; 3 ; 0 ) & "|" & NumToJText ( 1001 ; 3 ; 1 ) & "|" & NumToJText ( 1001 ; 3 ; 2 ) & "|" & NumToJText ( 1001 ; 3 ; 3 )	0	1/1/0	千1|千１|千一|壱阡壱
+NumToJText ( 1010 ; 0 ; 0 ) & "|" & NumToJText ( 1010 ; 0 ; 1 ) & "|" & NumToJText ( 1010 ; 0 ; 2 ) & "|" & NumToJText ( 1010 ; 0 ; 3 )	0	1/1/0	1010|１０１０|一〇一〇|壱〇壱〇
+NumToJText ( 1010 ; 1 ; 0 ) & "|" & NumToJText ( 1010 ; 1 ; 1 ) & "|" & NumToJText ( 1010 ; 1 ; 2 ) & "|" & NumToJText ( 1010 ; 1 ; 3 )	0	1/1/0	1,010|１，０１０|一,〇一〇|壱,〇壱〇
+NumToJText ( 1010 ; 2 ; 0 ) & "|" & NumToJText ( 1010 ; 2 ; 1 ) & "|" & NumToJText ( 1010 ; 2 ; 2 ) & "|" & NumToJText ( 1010 ; 2 ; 3 )	0	1/1/0	1010|１０１０|一〇一〇|壱〇壱〇
+NumToJText ( 1010 ; 3 ; 0 ) & "|" & NumToJText ( 1010 ; 3 ; 1 ) & "|" & NumToJText ( 1010 ; 3 ; 2 ) & "|" & NumToJText ( 1010 ; 3 ; 3 )	0	1/1/0	千十|千十|千十|壱阡壱拾
+NumToJText ( 1100 ; 0 ; 0 ) & "|" & NumToJText ( 1100 ; 0 ; 1 ) & "|" & NumToJText ( 1100 ; 0 ; 2 ) & "|" & NumToJText ( 1100 ; 0 ; 3 )	0	1/1/0	1100|１１００|一一〇〇|壱壱〇〇
+NumToJText ( 1100 ; 1 ; 0 ) & "|" & NumToJText ( 1100 ; 1 ; 1 ) & "|" & NumToJText ( 1100 ; 1 ; 2 ) & "|" & NumToJText ( 1100 ; 1 ; 3 )	0	1/1/0	1,100|１，１００|一,一〇〇|壱,壱〇〇
+NumToJText ( 1100 ; 2 ; 0 ) & "|" & NumToJText ( 1100 ; 2 ; 1 ) & "|" & NumToJText ( 1100 ; 2 ; 2 ) & "|" & NumToJText ( 1100 ; 2 ; 3 )	0	1/1/0	1100|１１００|一一〇〇|壱壱〇〇
+NumToJText ( 1100 ; 3 ; 0 ) & "|" & NumToJText ( 1100 ; 3 ; 1 ) & "|" & NumToJText ( 1100 ; 3 ; 2 ) & "|" & NumToJText ( 1100 ; 3 ; 3 )	0	1/1/0	千百|千百|千百|壱阡壱陌
+NumToJText ( 10000 ; 0 ; 0 ) & "|" & NumToJText ( 10000 ; 0 ; 1 ) & "|" & NumToJText ( 10000 ; 0 ; 2 ) & "|" & NumToJText ( 10000 ; 0 ; 3 )	0	1/1/0	10000|１００００|一〇〇〇〇|壱〇〇〇〇
+NumToJText ( 10000 ; 1 ; 0 ) & "|" & NumToJText ( 10000 ; 1 ; 1 ) & "|" & NumToJText ( 10000 ; 1 ; 2 ) & "|" & NumToJText ( 10000 ; 1 ; 3 )	0	1/1/0	10,000|１０，０００|一〇,〇〇〇|壱〇,〇〇〇
+NumToJText ( 10000 ; 2 ; 0 ) & "|" & NumToJText ( 10000 ; 2 ; 1 ) & "|" & NumToJText ( 10000 ; 2 ; 2 ) & "|" & NumToJText ( 10000 ; 2 ; 3 )	0	1/1/0	1万|１万|一万|壱万
+NumToJText ( 10000 ; 3 ; 0 ) & "|" & NumToJText ( 10000 ; 3 ; 1 ) & "|" & NumToJText ( 10000 ; 3 ; 2 ) & "|" & NumToJText ( 10000 ; 3 ; 3 )	0	1/1/0	1万|１万|一万|壱萬
+NumToJText ( 10001 ; 0 ; 0 ) & "|" & NumToJText ( 10001 ; 0 ; 1 ) & "|" & NumToJText ( 10001 ; 0 ; 2 ) & "|" & NumToJText ( 10001 ; 0 ; 3 )	0	1/1/0	10001|１０００１|一〇〇〇一|壱〇〇〇壱
+NumToJText ( 10001 ; 1 ; 0 ) & "|" & NumToJText ( 10001 ; 1 ; 1 ) & "|" & NumToJText ( 10001 ; 1 ; 2 ) & "|" & NumToJText ( 10001 ; 1 ; 3 )	0	1/1/0	10,001|１０，００１|一〇,〇〇一|壱〇,〇〇壱
+NumToJText ( 10001 ; 2 ; 0 ) & "|" & NumToJText ( 10001 ; 2 ; 1 ) & "|" & NumToJText ( 10001 ; 2 ; 2 ) & "|" & NumToJText ( 10001 ; 2 ; 3 )	0	1/1/0	1万1|１万１|一万一|壱万壱
+NumToJText ( 10001 ; 3 ; 0 ) & "|" & NumToJText ( 10001 ; 3 ; 1 ) & "|" & NumToJText ( 10001 ; 3 ; 2 ) & "|" & NumToJText ( 10001 ; 3 ; 3 )	0	1/1/0	1万1|１万１|一万一|壱萬壱
+NumToJText ( 11000 ; 0 ; 0 ) & "|" & NumToJText ( 11000 ; 0 ; 1 ) & "|" & NumToJText ( 11000 ; 0 ; 2 ) & "|" & NumToJText ( 11000 ; 0 ; 3 )	0	1/1/0	11000|１１０００|一一〇〇〇|壱壱〇〇〇
+NumToJText ( 11000 ; 1 ; 0 ) & "|" & NumToJText ( 11000 ; 1 ; 1 ) & "|" & NumToJText ( 11000 ; 1 ; 2 ) & "|" & NumToJText ( 11000 ; 1 ; 3 )	0	1/1/0	11,000|１１，０００|一一,〇〇〇|壱壱,〇〇〇
+NumToJText ( 11000 ; 2 ; 0 ) & "|" & NumToJText ( 11000 ; 2 ; 1 ) & "|" & NumToJText ( 11000 ; 2 ; 2 ) & "|" & NumToJText ( 11000 ; 2 ; 3 )	0	1/1/0	1万1000|１万１０００|一万一〇〇〇|壱万壱〇〇〇
+NumToJText ( 11000 ; 3 ; 0 ) & "|" & NumToJText ( 11000 ; 3 ; 1 ) & "|" & NumToJText ( 11000 ; 3 ; 2 ) & "|" & NumToJText ( 11000 ; 3 ; 3 )	0	1/1/0	1万千|１万千|一万千|壱萬壱阡
+NumToJText ( 20000 ; 0 ; 0 ) & "|" & NumToJText ( 20000 ; 0 ; 1 ) & "|" & NumToJText ( 20000 ; 0 ; 2 ) & "|" & NumToJText ( 20000 ; 0 ; 3 )	0	1/1/0	20000|２００００|二〇〇〇〇|弐〇〇〇〇
+NumToJText ( 20000 ; 1 ; 0 ) & "|" & NumToJText ( 20000 ; 1 ; 1 ) & "|" & NumToJText ( 20000 ; 1 ; 2 ) & "|" & NumToJText ( 20000 ; 1 ; 3 )	0	1/1/0	20,000|２０，０００|二〇,〇〇〇|弐〇,〇〇〇
+NumToJText ( 20000 ; 2 ; 0 ) & "|" & NumToJText ( 20000 ; 2 ; 1 ) & "|" & NumToJText ( 20000 ; 2 ; 2 ) & "|" & NumToJText ( 20000 ; 2 ; 3 )	0	1/1/0	2万|２万|二万|弐万
+NumToJText ( 20000 ; 3 ; 0 ) & "|" & NumToJText ( 20000 ; 3 ; 1 ) & "|" & NumToJText ( 20000 ; 3 ; 2 ) & "|" & NumToJText ( 20000 ; 3 ; 3 )	0	1/1/0	2万|２万|二万|弐萬
+NumToJText ( 100000 ; 0 ; 0 ) & "|" & NumToJText ( 100000 ; 0 ; 1 ) & "|" & NumToJText ( 100000 ; 0 ; 2 ) & "|" & NumToJText ( 100000 ; 0 ; 3 )	0	1/1/0	100000|１０００００|一〇〇〇〇〇|壱〇〇〇〇〇
+NumToJText ( 100000 ; 1 ; 0 ) & "|" & NumToJText ( 100000 ; 1 ; 1 ) & "|" & NumToJText ( 100000 ; 1 ; 2 ) & "|" & NumToJText ( 100000 ; 1 ; 3 )	0	1/1/0	100,000|１００，０００|一〇〇,〇〇〇|壱〇〇,〇〇〇
+NumToJText ( 100000 ; 2 ; 0 ) & "|" & NumToJText ( 100000 ; 2 ; 1 ) & "|" & NumToJText ( 100000 ; 2 ; 2 ) & "|" & NumToJText ( 100000 ; 2 ; 3 )	0	1/1/0	10万|１０万|一〇万|壱〇万
+NumToJText ( 100000 ; 3 ; 0 ) & "|" & NumToJText ( 100000 ; 3 ; 1 ) & "|" & NumToJText ( 100000 ; 3 ; 2 ) & "|" & NumToJText ( 100000 ; 3 ; 3 )	0	1/1/0	十万|十万|十万|壱拾萬
+NumToJText ( 1000000 ; 0 ; 0 ) & "|" & NumToJText ( 1000000 ; 0 ; 1 ) & "|" & NumToJText ( 1000000 ; 0 ; 2 ) & "|" & NumToJText ( 1000000 ; 0 ; 3 )	0	1/1/0	1000000|１００００００|一〇〇〇〇〇〇|壱〇〇〇〇〇〇
+NumToJText ( 1000000 ; 1 ; 0 ) & "|" & NumToJText ( 1000000 ; 1 ; 1 ) & "|" & NumToJText ( 1000000 ; 1 ; 2 ) & "|" & NumToJText ( 1000000 ; 1 ; 3 )	0	1/1/0	1,000,000|１，０００，０００|一,〇〇〇,〇〇〇|壱,〇〇〇,〇〇〇
+NumToJText ( 1000000 ; 2 ; 0 ) & "|" & NumToJText ( 1000000 ; 2 ; 1 ) & "|" & NumToJText ( 1000000 ; 2 ; 2 ) & "|" & NumToJText ( 1000000 ; 2 ; 3 )	0	1/1/0	100万|１００万|一〇〇万|壱〇〇万
+NumToJText ( 1000000 ; 3 ; 0 ) & "|" & NumToJText ( 1000000 ; 3 ; 1 ) & "|" & NumToJText ( 1000000 ; 3 ; 2 ) & "|" & NumToJText ( 1000000 ; 3 ; 3 )	0	1/1/0	百万|百万|百万|壱陌萬
+NumToJText ( 10000000 ; 0 ; 0 ) & "|" & NumToJText ( 10000000 ; 0 ; 1 ) & "|" & NumToJText ( 10000000 ; 0 ; 2 ) & "|" & NumToJText ( 10000000 ; 0 ; 3 )	0	1/1/0	10000000|１０００００００|一〇〇〇〇〇〇〇|壱〇〇〇〇〇〇〇
+NumToJText ( 10000000 ; 1 ; 0 ) & "|" & NumToJText ( 10000000 ; 1 ; 1 ) & "|" & NumToJText ( 10000000 ; 1 ; 2 ) & "|" & NumToJText ( 10000000 ; 1 ; 3 )	0	1/1/0	10,000,000|１０，０００，０００|一〇,〇〇〇,〇〇〇|壱〇,〇〇〇,〇〇〇
+NumToJText ( 10000000 ; 2 ; 0 ) & "|" & NumToJText ( 10000000 ; 2 ; 1 ) & "|" & NumToJText ( 10000000 ; 2 ; 2 ) & "|" & NumToJText ( 10000000 ; 2 ; 3 )	0	1/1/0	1000万|１０００万|一〇〇〇万|壱〇〇〇万
+NumToJText ( 10000000 ; 3 ; 0 ) & "|" & NumToJText ( 10000000 ; 3 ; 1 ) & "|" & NumToJText ( 10000000 ; 3 ; 2 ) & "|" & NumToJText ( 10000000 ; 3 ; 3 )	0	1/1/0	千万|千万|千万|壱阡萬
+NumToJText ( 100000000 ; 0 ; 0 ) & "|" & NumToJText ( 100000000 ; 0 ; 1 ) & "|" & NumToJText ( 100000000 ; 0 ; 2 ) & "|" & NumToJText ( 100000000 ; 0 ; 3 )	0	1/1/0	100000000|１００００００００|一〇〇〇〇〇〇〇〇|壱〇〇〇〇〇〇〇〇
+NumToJText ( 100000000 ; 1 ; 0 ) & "|" & NumToJText ( 100000000 ; 1 ; 1 ) & "|" & NumToJText ( 100000000 ; 1 ; 2 ) & "|" & NumToJText ( 100000000 ; 1 ; 3 )	0	1/1/0	100,000,000|１００，０００，０００|一〇〇,〇〇〇,〇〇〇|壱〇〇,〇〇〇,〇〇〇
+NumToJText ( 100000000 ; 2 ; 0 ) & "|" & NumToJText ( 100000000 ; 2 ; 1 ) & "|" & NumToJText ( 100000000 ; 2 ; 2 ) & "|" & NumToJText ( 100000000 ; 2 ; 3 )	0	1/1/0	1億|１億|一億|壱億
+NumToJText ( 100000000 ; 3 ; 0 ) & "|" & NumToJText ( 100000000 ; 3 ; 1 ) & "|" & NumToJText ( 100000000 ; 3 ; 2 ) & "|" & NumToJText ( 100000000 ; 3 ; 3 )	0	1/1/0	1億|１億|一億|壱億
+NumToJText ( 100000001 ; 0 ; 0 ) & "|" & NumToJText ( 100000001 ; 0 ; 1 ) & "|" & NumToJText ( 100000001 ; 0 ; 2 ) & "|" & NumToJText ( 100000001 ; 0 ; 3 )	0	1/1/0	100000001|１０００００００１|一〇〇〇〇〇〇〇一|壱〇〇〇〇〇〇〇壱
+NumToJText ( 100000001 ; 1 ; 0 ) & "|" & NumToJText ( 100000001 ; 1 ; 1 ) & "|" & NumToJText ( 100000001 ; 1 ; 2 ) & "|" & NumToJText ( 100000001 ; 1 ; 3 )	0	1/1/0	100,000,001|１００，０００，００１|一〇〇,〇〇〇,〇〇一|壱〇〇,〇〇〇,〇〇壱
+NumToJText ( 100000001 ; 2 ; 0 ) & "|" & NumToJText ( 100000001 ; 2 ; 1 ) & "|" & NumToJText ( 100000001 ; 2 ; 2 ) & "|" & NumToJText ( 100000001 ; 2 ; 3 )	0	1/1/0	1億1|１億１|一億一|壱億壱
+NumToJText ( 100000001 ; 3 ; 0 ) & "|" & NumToJText ( 100000001 ; 3 ; 1 ) & "|" & NumToJText ( 100000001 ; 3 ; 2 ) & "|" & NumToJText ( 100000001 ; 3 ; 3 )	0	1/1/0	1億1|１億１|一億一|壱億壱
+NumToJText ( 110000000 ; 0 ; 0 ) & "|" & NumToJText ( 110000000 ; 0 ; 1 ) & "|" & NumToJText ( 110000000 ; 0 ; 2 ) & "|" & NumToJText ( 110000000 ; 0 ; 3 )	0	1/1/0	110000000|１１０００００００|一一〇〇〇〇〇〇〇|壱壱〇〇〇〇〇〇〇
+NumToJText ( 110000000 ; 1 ; 0 ) & "|" & NumToJText ( 110000000 ; 1 ; 1 ) & "|" & NumToJText ( 110000000 ; 1 ; 2 ) & "|" & NumToJText ( 110000000 ; 1 ; 3 )	0	1/1/0	110,000,000|１１０，０００，０００|一一〇,〇〇〇,〇〇〇|壱壱〇,〇〇〇,〇〇〇
+NumToJText ( 110000000 ; 2 ; 0 ) & "|" & NumToJText ( 110000000 ; 2 ; 1 ) & "|" & NumToJText ( 110000000 ; 2 ; 2 ) & "|" & NumToJText ( 110000000 ; 2 ; 3 )	0	1/1/0	1億1000万|１億１０００万|一億一〇〇〇万|壱億壱〇〇〇万
+NumToJText ( 110000000 ; 3 ; 0 ) & "|" & NumToJText ( 110000000 ; 3 ; 1 ) & "|" & NumToJText ( 110000000 ; 3 ; 2 ) & "|" & NumToJText ( 110000000 ; 3 ; 3 )	0	1/1/0	1億千万|１億千万|一億千万|壱億壱阡萬
+NumToJText ( 1000000000000 ; 0 ; 0 ) & "|" & NumToJText ( 1000000000000 ; 0 ; 1 ) & "|" & NumToJText ( 1000000000000 ; 0 ; 2 ) & "|" & NumToJText ( 1000000000000 ; 0 ; 3 )	0	1/1/0	1000000000000|１００００００００００００|一〇〇〇〇〇〇〇〇〇〇〇〇|壱〇〇〇〇〇〇〇〇〇〇〇〇
+NumToJText ( 1000000000000 ; 1 ; 0 ) & "|" & NumToJText ( 1000000000000 ; 1 ; 1 ) & "|" & NumToJText ( 1000000000000 ; 1 ; 2 ) & "|" & NumToJText ( 1000000000000 ; 1 ; 3 )	0	1/1/0	1,000,000,000,000|１，０００，０００，０００，０００|一,〇〇〇,〇〇〇,〇〇〇,〇〇〇|壱,〇〇〇,〇〇〇,〇〇〇,〇〇〇
+NumToJText ( 1000000000000 ; 2 ; 0 ) & "|" & NumToJText ( 1000000000000 ; 2 ; 1 ) & "|" & NumToJText ( 1000000000000 ; 2 ; 2 ) & "|" & NumToJText ( 1000000000000 ; 2 ; 3 )	0	1/1/0	1兆|１兆|一兆|壱兆
+NumToJText ( 1000000000000 ; 3 ; 0 ) & "|" & NumToJText ( 1000000000000 ; 3 ; 1 ) & "|" & NumToJText ( 1000000000000 ; 3 ; 2 ) & "|" & NumToJText ( 1000000000000 ; 3 ; 3 )	0	1/1/0	1兆|１兆|一兆|壱兆
+NumToJText ( 1234567890123 ; 0 ; 0 ) & "|" & NumToJText ( 1234567890123 ; 0 ; 1 ) & "|" & NumToJText ( 1234567890123 ; 0 ; 2 ) & "|" & NumToJText ( 1234567890123 ; 0 ; 3 )	0	1/1/0	1234567890123|１２３４５６７８９０１２３|一二三四五六七八九〇一二三|壱弐参四伍六七八九〇壱弐参
+NumToJText ( 1234567890123 ; 1 ; 0 ) & "|" & NumToJText ( 1234567890123 ; 1 ; 1 ) & "|" & NumToJText ( 1234567890123 ; 1 ; 2 ) & "|" & NumToJText ( 1234567890123 ; 1 ; 3 )	0	1/1/0	1,234,567,890,123|１，２３４，５６７，８９０，１２３|一,二三四,五六七,八九〇,一二三|壱,弐参四,伍六七,八九〇,壱弐参
+NumToJText ( 1234567890123 ; 2 ; 0 ) & "|" & NumToJText ( 1234567890123 ; 2 ; 1 ) & "|" & NumToJText ( 1234567890123 ; 2 ; 2 ) & "|" & NumToJText ( 1234567890123 ; 2 ; 3 )	0	1/1/0	1兆2345億6789万123|１兆２３４５億６７８９万１２３|一兆二三四五億六七八九万一二三|壱兆弐参四伍億六七八九万壱弐参
+NumToJText ( 1234567890123 ; 3 ; 0 ) & "|" & NumToJText ( 1234567890123 ; 3 ; 1 ) & "|" & NumToJText ( 1234567890123 ; 3 ; 2 ) & "|" & NumToJText ( 1234567890123 ; 3 ; 3 )	0	1/1/0	1兆2千3百4十5億6千7百8十9万百2十3|１兆２千３百４十５億６千７百８十９万百２十３|一兆二千三百四十五億六千七百八十九万百二十三|壱兆弐阡参陌四拾伍億六阡七陌八拾九萬壱陌弐拾参
+NumToJText ( 10000000000000000 ; 0 ; 0 ) & "|" & NumToJText ( 10000000000000000 ; 0 ; 1 ) & "|" & NumToJText ( 10000000000000000 ; 0 ; 2 ) & "|" & NumToJText ( 10000000000000000 ; 0 ; 3 )	0	1/1/0	10000000000000000|１００００００００００００００００|一〇〇〇〇〇〇〇〇〇〇〇〇〇〇〇〇|壱〇〇〇〇〇〇〇〇〇〇〇〇〇〇〇〇
+NumToJText ( 10000000000000000 ; 1 ; 0 ) & "|" & NumToJText ( 10000000000000000 ; 1 ; 1 ) & "|" & NumToJText ( 10000000000000000 ; 1 ; 2 ) & "|" & NumToJText ( 10000000000000000 ; 1 ; 3 )	0	1/1/0	10,000,000,000,000,000|１０，０００，０００，０００，０００，０００|一〇,〇〇〇,〇〇〇,〇〇〇,〇〇〇,〇〇〇|壱〇,〇〇〇,〇〇〇,〇〇〇,〇〇〇,〇〇〇
+NumToJText ( 10000000000000000 ; 2 ; 0 ) & "|" & NumToJText ( 10000000000000000 ; 2 ; 1 ) & "|" & NumToJText ( 10000000000000000 ; 2 ; 2 ) & "|" & NumToJText ( 10000000000000000 ; 2 ; 3 )	0	1/1/0	1京|１京|一京|壱京
+NumToJText ( 10000000000000000 ; 3 ; 0 ) & "|" & NumToJText ( 10000000000000000 ; 3 ; 1 ) & "|" & NumToJText ( 10000000000000000 ; 3 ; 2 ) & "|" & NumToJText ( 10000000000000000 ; 3 ; 3 )	0	1/1/0	1京|１京|一京|壱京
+NumToJText ( 12345678901234567890 ; 0 ; 0 ) & "|" & NumToJText ( 12345678901234567890 ; 0 ; 1 ) & "|" & NumToJText ( 12345678901234567890 ; 0 ; 2 ) & "|" & NumToJText ( 12345678901234567890 ; 0 ; 3 )	0	1/1/0	12345678901234567890|１２３４５６７８９０１２３４５６７８９０|一二三四五六七八九〇一二三四五六七八九〇|壱弐参四伍六七八九〇壱弐参四伍六七八九〇
+NumToJText ( 12345678901234567890 ; 1 ; 0 ) & "|" & NumToJText ( 12345678901234567890 ; 1 ; 1 ) & "|" & NumToJText ( 12345678901234567890 ; 1 ; 2 ) & "|" & NumToJText ( 12345678901234567890 ; 1 ; 3 )	0	1/1/0	12,345,678,901,234,567,890|１２，３４５，６７８，９０１，２３４，５６７，８９０|一二,三四五,六七八,九〇一,二三四,五六七,八九〇|壱弐,参四伍,六七八,九〇壱,弐参四,伍六七,八九〇
+NumToJText ( 12345678901234567890 ; 2 ; 0 ) & "|" & NumToJText ( 12345678901234567890 ; 2 ; 1 ) & "|" & NumToJText ( 12345678901234567890 ; 2 ; 2 ) & "|" & NumToJText ( 12345678901234567890 ; 2 ; 3 )	0	1/1/0	1234京5678兆9012億3456万7890|１２３４京５６７８兆９０１２億３４５６万７８９０|一二三四京五六七八兆九〇一二億三四五六万七八九〇|壱弐参四京伍六七八兆九〇壱弐億参四伍六万七八九〇
+NumToJText ( 12345678901234567890 ; 3 ; 0 ) & "|" & NumToJText ( 12345678901234567890 ; 3 ; 1 ) & "|" & NumToJText ( 12345678901234567890 ; 3 ; 2 ) & "|" & NumToJText ( 12345678901234567890 ; 3 ; 3 )	0	1/1/0	千2百3十4京5千6百7十8兆9千十2億3千4百5十6万7千8百9十|千２百３十４京５千６百７十８兆９千十２億３千４百５十６万７千８百９十|千二百三十四京五千六百七十八兆九千十二億三千四百五十六万七千八百九十|壱阡弐陌参拾四京伍阡六陌七拾八兆九阡壱拾弐億参阡四陌伍拾六萬七阡八陌九拾
+NumToJText ( 100000000000000000000 ; 0 ; 0 ) & "|" & NumToJText ( 100000000000000000000 ; 0 ; 1 ) & "|" & NumToJText ( 100000000000000000000 ; 0 ; 2 ) & "|" & NumToJText ( 100000000000000000000 ; 0 ; 3 )	0	1/1/0	100000000000000000000|１００００００００００００００００００００|一〇〇〇〇〇〇〇〇〇〇〇〇〇〇〇〇〇〇〇〇|壱〇〇〇〇〇〇〇〇〇〇〇〇〇〇〇〇〇〇〇〇
+NumToJText ( 100000000000000000000 ; 1 ; 0 ) & "|" & NumToJText ( 100000000000000000000 ; 1 ; 1 ) & "|" & NumToJText ( 100000000000000000000 ; 1 ; 2 ) & "|" & NumToJText ( 100000000000000000000 ; 1 ; 3 )	0	1/1/0	100,000,000,000,000,000,000|１００，０００，０００，０００，０００，０００，０００|一〇〇,〇〇〇,〇〇〇,〇〇〇,〇〇〇,〇〇〇,〇〇〇|壱〇〇,〇〇〇,〇〇〇,〇〇〇,〇〇〇,〇〇〇,〇〇〇
+NumToJText ( 100000000000000000000 ; 2 ; 0 ) & "|" & NumToJText ( 100000000000000000000 ; 2 ; 1 ) & "|" & NumToJText ( 100000000000000000000 ; 2 ; 2 ) & "|" & NumToJText ( 100000000000000000000 ; 2 ; 3 )	0	1/1/0	1垓|１垓|一垓|壱垓
+NumToJText ( 100000000000000000000 ; 3 ; 0 ) & "|" & NumToJText ( 100000000000000000000 ; 3 ; 1 ) & "|" & NumToJText ( 100000000000000000000 ; 3 ; 2 ) & "|" & NumToJText ( 100000000000000000000 ; 3 ; 3 )	0	1/1/0	1垓|１垓|一垓|壱垓
+NumToJText ( -123 ; 0 ; 0 ) & "|" & NumToJText ( -123 ; 0 ; 1 ) & "|" & NumToJText ( -123 ; 0 ; 2 ) & "|" & NumToJText ( -123 ; 0 ; 3 )	0	1/1/0	-123|－１２３|-一二三|-壱弐参
+NumToJText ( -123 ; 1 ; 0 ) & "|" & NumToJText ( -123 ; 1 ; 1 ) & "|" & NumToJText ( -123 ; 1 ; 2 ) & "|" & NumToJText ( -123 ; 1 ; 3 )	0	1/1/0	-123|－１２３|-一二三|-壱弐参
+NumToJText ( -123 ; 2 ; 0 ) & "|" & NumToJText ( -123 ; 2 ; 1 ) & "|" & NumToJText ( -123 ; 2 ; 2 ) & "|" & NumToJText ( -123 ; 2 ; 3 )	0	1/1/0	-123|－１２３|-一二三|-壱弐参
+NumToJText ( -123 ; 3 ; 0 ) & "|" & NumToJText ( -123 ; 3 ; 1 ) & "|" & NumToJText ( -123 ; 3 ; 2 ) & "|" & NumToJText ( -123 ; 3 ; 3 )	0	1/1/0	-百2十3|－百２十３|-百二十三|-壱陌弐拾参
+NumToJText ( -12345 ; 0 ; 0 ) & "|" & NumToJText ( -12345 ; 0 ; 1 ) & "|" & NumToJText ( -12345 ; 0 ; 2 ) & "|" & NumToJText ( -12345 ; 0 ; 3 )	0	1/1/0	-12345|－１２３４５|-一二三四五|-壱弐参四伍
+NumToJText ( -12345 ; 1 ; 0 ) & "|" & NumToJText ( -12345 ; 1 ; 1 ) & "|" & NumToJText ( -12345 ; 1 ; 2 ) & "|" & NumToJText ( -12345 ; 1 ; 3 )	0	1/1/0	-12,345|－１２，３４５|-一二,三四五|-壱弐,参四伍
+NumToJText ( -12345 ; 2 ; 0 ) & "|" & NumToJText ( -12345 ; 2 ; 1 ) & "|" & NumToJText ( -12345 ; 2 ; 2 ) & "|" & NumToJText ( -12345 ; 2 ; 3 )	0	1/1/0	-1万2345|－１万２３４５|-一万二三四五|-壱万弐参四伍
+NumToJText ( -12345 ; 3 ; 0 ) & "|" & NumToJText ( -12345 ; 3 ; 1 ) & "|" & NumToJText ( -12345 ; 3 ; 2 ) & "|" & NumToJText ( -12345 ; 3 ; 3 )	0	1/1/0	-1万2千3百4十5|－１万２千３百４十５|-一万二千三百四十五|-壱萬弐阡参陌四拾伍
+NumToJText ( 1.5 ; 0 ; 0 ) & "|" & NumToJText ( 1.5 ; 0 ; 1 ) & "|" & NumToJText ( 1.5 ; 0 ; 2 ) & "|" & NumToJText ( 1.5 ; 0 ; 3 )	0	1/1/0	1.5|１．５|一.五|壱.伍
+NumToJText ( 1.5 ; 1 ; 0 ) & "|" & NumToJText ( 1.5 ; 1 ; 1 ) & "|" & NumToJText ( 1.5 ; 1 ; 2 ) & "|" & NumToJText ( 1.5 ; 1 ; 3 )	0	1/1/0	1.5|１．５|一.五|壱.伍
+NumToJText ( 1.5 ; 2 ; 0 ) & "|" & NumToJText ( 1.5 ; 2 ; 1 ) & "|" & NumToJText ( 1.5 ; 2 ; 2 ) & "|" & NumToJText ( 1.5 ; 2 ; 3 )	0	1/1/0	1.5|１．５|一.五|壱.伍
+NumToJText ( 1.5 ; 3 ; 0 ) & "|" & NumToJText ( 1.5 ; 3 ; 1 ) & "|" & NumToJText ( 1.5 ; 3 ; 2 ) & "|" & NumToJText ( 1.5 ; 3 ; 3 )	0	1/1/0	1.5|１．５|一.五|壱.伍
+NumToJText ( 123.456 ; 0 ; 0 ) & "|" & NumToJText ( 123.456 ; 0 ; 1 ) & "|" & NumToJText ( 123.456 ; 0 ; 2 ) & "|" & NumToJText ( 123.456 ; 0 ; 3 )	0	1/1/0	123.456|１２３．４５６|一二三.四五六|壱弐参.四伍六
+NumToJText ( 123.456 ; 1 ; 0 ) & "|" & NumToJText ( 123.456 ; 1 ; 1 ) & "|" & NumToJText ( 123.456 ; 1 ; 2 ) & "|" & NumToJText ( 123.456 ; 1 ; 3 )	0	1/1/0	123.456|１２３．４５６|一二三.四五六|壱弐参.四伍六
+NumToJText ( 123.456 ; 2 ; 0 ) & "|" & NumToJText ( 123.456 ; 2 ; 1 ) & "|" & NumToJText ( 123.456 ; 2 ; 2 ) & "|" & NumToJText ( 123.456 ; 2 ; 3 )	0	1/1/0	123.456|１２３．４５６|一二三.四五六|壱弐参.四伍六
+NumToJText ( 123.456 ; 3 ; 0 ) & "|" & NumToJText ( 123.456 ; 3 ; 1 ) & "|" & NumToJText ( 123.456 ; 3 ; 2 ) & "|" & NumToJText ( 123.456 ; 3 ; 3 )	0	1/1/0	百2十3.456|百２十３．４５６|百二十三.四五六|壱陌弐拾参.四伍六
+NumToJText ( -0.5 ; 0 ; 0 ) & "|" & NumToJText ( -0.5 ; 0 ; 1 ) & "|" & NumToJText ( -0.5 ; 0 ; 2 ) & "|" & NumToJText ( -0.5 ; 0 ; 3 )	0	1/1/0	-.5|－．５|-.五|-.伍
+NumToJText ( -0.5 ; 1 ; 0 ) & "|" & NumToJText ( -0.5 ; 1 ; 1 ) & "|" & NumToJText ( -0.5 ; 1 ; 2 ) & "|" & NumToJText ( -0.5 ; 1 ; 3 )	0	1/1/0	-.5|－．５|-.五|-.伍
+NumToJText ( -0.5 ; 2 ; 0 ) & "|" & NumToJText ( -0.5 ; 2 ; 1 ) & "|" & NumToJText ( -0.5 ; 2 ; 2 ) & "|" & NumToJText ( -0.5 ; 2 ; 3 )	0	1/1/0	-0.5|－０．５|-〇.五|-〇.伍
+NumToJText ( -0.5 ; 3 ; 0 ) & "|" & NumToJText ( -0.5 ; 3 ; 1 ) & "|" & NumToJText ( -0.5 ; 3 ; 2 ) & "|" & NumToJText ( -0.5 ; 3 ; 3 )	0	1/1/0	-0.5|－０．５|-〇.五|-〇.伍
+NumToJText ( 1/3 ; 0 ; 0 ) & "|" & NumToJText ( 1/3 ; 0 ; 1 ) & "|" & NumToJText ( 1/3 ; 0 ; 2 ) & "|" & NumToJText ( 1/3 ; 0 ; 3 )	0	1/1/0	.3333333333333333|．３３３３３３３３３３３３３３３３|.三三三三三三三三三三三三三三三三|.参参参参参参参参参参参参参参参参
+NumToJText ( 1/3 ; 1 ; 0 ) & "|" & NumToJText ( 1/3 ; 1 ; 1 ) & "|" & NumToJText ( 1/3 ; 1 ; 2 ) & "|" & NumToJText ( 1/3 ; 1 ; 3 )	0	1/1/0	.3333333333333333|．３３３３３３３３３３３３３３３３|.三三三三三三三三三三三三三三三三|.参参参参参参参参参参参参参参参参
+NumToJText ( 1/3 ; 2 ; 0 ) & "|" & NumToJText ( 1/3 ; 2 ; 1 ) & "|" & NumToJText ( 1/3 ; 2 ; 2 ) & "|" & NumToJText ( 1/3 ; 2 ; 3 )	0	1/1/0	0.3333333333333333|０．３３３３３３３３３３３３３３３３|〇.三三三三三三三三三三三三三三三三|〇.参参参参参参参参参参参参参参参参
+NumToJText ( 1/3 ; 3 ; 0 ) & "|" & NumToJText ( 1/3 ; 3 ; 1 ) & "|" & NumToJText ( 1/3 ; 3 ; 2 ) & "|" & NumToJText ( 1/3 ; 3 ; 3 )	0	1/1/0	0.3333333333333333|０．３３３３３３３３３３３３３３３３|〇.三三三三三三三三三三三三三三三三|〇.参参参参参参参参参参参参参参参参
+NumToJText ( 10^21 ; 0 ; 0 ) & "|" & NumToJText ( 10^21 ; 0 ; 1 ) & "|" & NumToJText ( 10^21 ; 0 ; 2 ) & "|" & NumToJText ( 10^21 ; 0 ; 3 )	0	1/1/0	1000000000000000000000|１０００００００００００００００００００００|一〇〇〇〇〇〇〇〇〇〇〇〇〇〇〇〇〇〇〇〇〇|壱〇〇〇〇〇〇〇〇〇〇〇〇〇〇〇〇〇〇〇〇〇
+NumToJText ( 10^21 ; 1 ; 0 ) & "|" & NumToJText ( 10^21 ; 1 ; 1 ) & "|" & NumToJText ( 10^21 ; 1 ; 2 ) & "|" & NumToJText ( 10^21 ; 1 ; 3 )	0	1/1/0	1,000,000,000,000,000,000,000|１，０００，０００，０００，０００，０００，０００，０００|一,〇〇〇,〇〇〇,〇〇〇,〇〇〇,〇〇〇,〇〇〇,〇〇〇|壱,〇〇〇,〇〇〇,〇〇〇,〇〇〇,〇〇〇,〇〇〇,〇〇〇
+NumToJText ( 10^21 ; 2 ; 0 ) & "|" & NumToJText ( 10^21 ; 2 ; 1 ) & "|" & NumToJText ( 10^21 ; 2 ; 2 ) & "|" & NumToJText ( 10^21 ; 2 ; 3 )	0	1/1/0	10垓|１０垓|一〇垓|壱〇垓
+NumToJText ( 10^21 ; 3 ; 0 ) & "|" & NumToJText ( 10^21 ; 3 ; 1 ) & "|" & NumToJText ( 10^21 ; 3 ; 2 ) & "|" & NumToJText ( 10^21 ; 3 ; 3 )	0	1/1/0	十垓|十垓|十垓|壱拾垓
+NumToJText ( "" ; 0 ; 0 ) & "|" & NumToJText ( "" ; 0 ; 1 ) & "|" & NumToJText ( "" ; 0 ; 2 ) & "|" & NumToJText ( "" ; 0 ; 3 )	0	1/1/0	|||
+NumToJText ( "" ; 1 ; 0 ) & "|" & NumToJText ( "" ; 1 ; 1 ) & "|" & NumToJText ( "" ; 1 ; 2 ) & "|" & NumToJText ( "" ; 1 ; 3 )	0	1/1/0	|||
+NumToJText ( "" ; 2 ; 0 ) & "|" & NumToJText ( "" ; 2 ; 1 ) & "|" & NumToJText ( "" ; 2 ; 2 ) & "|" & NumToJText ( "" ; 2 ; 3 )	0	1/1/0	|||
+NumToJText ( "" ; 3 ; 0 ) & "|" & NumToJText ( "" ; 3 ; 1 ) & "|" & NumToJText ( "" ; 3 ; 2 ) & "|" & NumToJText ( "" ; 3 ; 3 )	0	1/1/0	|||
+NumToJText ( "abc" ; 0 ; 0 ) & "|" & NumToJText ( "abc" ; 0 ; 1 ) & "|" & NumToJText ( "abc" ; 0 ; 2 ) & "|" & NumToJText ( "abc" ; 0 ; 3 )	0	1/1/0	abc|abc|abc|abc
+NumToJText ( "abc" ; 1 ; 0 ) & "|" & NumToJText ( "abc" ; 1 ; 1 ) & "|" & NumToJText ( "abc" ; 1 ; 2 ) & "|" & NumToJText ( "abc" ; 1 ; 3 )	0	1/1/0	abc|abc|abc|abc
+NumToJText ( "abc" ; 2 ; 0 ) & "|" & NumToJText ( "abc" ; 2 ; 1 ) & "|" & NumToJText ( "abc" ; 2 ; 2 ) & "|" & NumToJText ( "abc" ; 2 ; 3 )	0	1/1/0	abc|abc|abc|abc
+NumToJText ( "abc" ; 3 ; 0 ) & "|" & NumToJText ( "abc" ; 3 ; 1 ) & "|" & NumToJText ( "abc" ; 3 ; 2 ) & "|" & NumToJText ( "abc" ; 3 ; 3 )	0	1/1/0	abc|abc|abc|abc
+NumToJText ( "12abc" ; 0 ; 0 ) & "|" & NumToJText ( "12abc" ; 0 ; 1 ) & "|" & NumToJText ( "12abc" ; 0 ; 2 ) & "|" & NumToJText ( "12abc" ; 0 ; 3 )	0	1/1/0	12|１２|一二|壱弐
+NumToJText ( "12abc" ; 1 ; 0 ) & "|" & NumToJText ( "12abc" ; 1 ; 1 ) & "|" & NumToJText ( "12abc" ; 1 ; 2 ) & "|" & NumToJText ( "12abc" ; 1 ; 3 )	0	1/1/0	12|１２|一二|壱弐
+NumToJText ( "12abc" ; 2 ; 0 ) & "|" & NumToJText ( "12abc" ; 2 ; 1 ) & "|" & NumToJText ( "12abc" ; 2 ; 2 ) & "|" & NumToJText ( "12abc" ; 2 ; 3 )	0	1/1/0	12|１２|一二|壱弐
+NumToJText ( "12abc" ; 3 ; 0 ) & "|" & NumToJText ( "12abc" ; 3 ; 1 ) & "|" & NumToJText ( "12abc" ; 3 ; 2 ) & "|" & NumToJText ( "12abc" ; 3 ; 3 )	0	1/1/0	十2|十２|十二|壱拾弐
+NumToJText ( "1,234" ; 0 ; 0 ) & "|" & NumToJText ( "1,234" ; 0 ; 1 ) & "|" & NumToJText ( "1,234" ; 0 ; 2 ) & "|" & NumToJText ( "1,234" ; 0 ; 3 )	0	1/1/0	1234|１２３４|一二三四|壱弐参四
+NumToJText ( "1,234" ; 1 ; 0 ) & "|" & NumToJText ( "1,234" ; 1 ; 1 ) & "|" & NumToJText ( "1,234" ; 1 ; 2 ) & "|" & NumToJText ( "1,234" ; 1 ; 3 )	0	1/1/0	1,234|１，２３４|一,二三四|壱,弐参四
+NumToJText ( "1,234" ; 2 ; 0 ) & "|" & NumToJText ( "1,234" ; 2 ; 1 ) & "|" & NumToJText ( "1,234" ; 2 ; 2 ) & "|" & NumToJText ( "1,234" ; 2 ; 3 )	0	1/1/0	1234|１２３４|一二三四|壱弐参四
+NumToJText ( "1,234" ; 3 ; 0 ) & "|" & NumToJText ( "1,234" ; 3 ; 1 ) & "|" & NumToJText ( "1,234" ; 3 ; 2 ) & "|" & NumToJText ( "1,234" ; 3 ; 3 )	0	1/1/0	千2百3十4|千２百３十４|千二百三十四|壱阡弐陌参拾四
+NumToJText ( " " ; 0 ; 0 ) & "|" & NumToJText ( " " ; 0 ; 1 ) & "|" & NumToJText ( " " ; 0 ; 2 ) & "|" & NumToJText ( " " ; 0 ; 3 )	0	1/1/0	|||
+NumToJText ( " " ; 1 ; 0 ) & "|" & NumToJText ( " " ; 1 ; 1 ) & "|" & NumToJText ( " " ; 1 ; 2 ) & "|" & NumToJText ( " " ; 1 ; 3 )	0	1/1/0	|||
+NumToJText ( " " ; 2 ; 0 ) & "|" & NumToJText ( " " ; 2 ; 1 ) & "|" & NumToJText ( " " ; 2 ; 2 ) & "|" & NumToJText ( " " ; 2 ; 3 )	0	1/1/0	0|０|〇|〇
+NumToJText ( " " ; 3 ; 0 ) & "|" & NumToJText ( " " ; 3 ; 1 ) & "|" & NumToJText ( " " ; 3 ; 2 ) & "|" & NumToJText ( " " ; 3 ; 3 )	0	1/1/0	0|０|〇|〇
+NumToJText ( "-" ; 0 ; 0 ) & "|" & NumToJText ( "-" ; 0 ; 1 ) & "|" & NumToJText ( "-" ; 0 ; 2 ) & "|" & NumToJText ( "-" ; 0 ; 3 )	0	1/1/0	-|-|-|-
+NumToJText ( "-" ; 1 ; 0 ) & "|" & NumToJText ( "-" ; 1 ; 1 ) & "|" & NumToJText ( "-" ; 1 ; 2 ) & "|" & NumToJText ( "-" ; 1 ; 3 )	0	1/1/0	-|-|-|-
+NumToJText ( "-" ; 2 ; 0 ) & "|" & NumToJText ( "-" ; 2 ; 1 ) & "|" & NumToJText ( "-" ; 2 ; 2 ) & "|" & NumToJText ( "-" ; 2 ; 3 )	0	1/1/0	-|-|-|-
+NumToJText ( "-" ; 3 ; 0 ) & "|" & NumToJText ( "-" ; 3 ; 1 ) & "|" & NumToJText ( "-" ; 3 ; 2 ) & "|" & NumToJText ( "-" ; 3 ; 3 )	0	1/1/0	-|-|-|-
+NumToJText ( "." ; 0 ; 0 ) & "|" & NumToJText ( "." ; 0 ; 1 ) & "|" & NumToJText ( "." ; 0 ; 2 ) & "|" & NumToJText ( "." ; 0 ; 3 )	0	1/1/0	.|.|.|.
+NumToJText ( "." ; 1 ; 0 ) & "|" & NumToJText ( "." ; 1 ; 1 ) & "|" & NumToJText ( "." ; 1 ; 2 ) & "|" & NumToJText ( "." ; 1 ; 3 )	0	1/1/0	.|.|.|.
+NumToJText ( "." ; 2 ; 0 ) & "|" & NumToJText ( "." ; 2 ; 1 ) & "|" & NumToJText ( "." ; 2 ; 2 ) & "|" & NumToJText ( "." ; 2 ; 3 )	0	1/1/0	.|.|.|.
+NumToJText ( "." ; 3 ; 0 ) & "|" & NumToJText ( "." ; 3 ; 1 ) & "|" & NumToJText ( "." ; 3 ; 2 ) & "|" & NumToJText ( "." ; 3 ; 3 )	0	1/1/0	.|.|.|.
+NumToJText ( 1/0 ; 0 ; 0 ) & "|" & NumToJText ( 1/0 ; 0 ; 1 ) & "|" & NumToJText ( 1/0 ; 0 ; 2 ) & "|" & NumToJText ( 1/0 ; 0 ; 3 )	15	1/1/0	?|？|?|?
+NumToJText ( 1/0 ; 1 ; 0 ) & "|" & NumToJText ( 1/0 ; 1 ; 1 ) & "|" & NumToJText ( 1/0 ; 1 ; 2 ) & "|" & NumToJText ( 1/0 ; 1 ; 3 )	15	1/1/0	?|？|?|?
+NumToJText ( 1/0 ; 2 ; 0 ) & "|" & NumToJText ( 1/0 ; 2 ; 1 ) & "|" & NumToJText ( 1/0 ; 2 ; 2 ) & "|" & NumToJText ( 1/0 ; 2 ; 3 )	15	1/1/0	0|０|〇|〇
+NumToJText ( 1/0 ; 3 ; 0 ) & "|" & NumToJText ( 1/0 ; 3 ; 1 ) & "|" & NumToJText ( 1/0 ; 3 ; 2 ) & "|" & NumToJText ( 1/0 ; 3 ; 3 )	15	1/1/0	0|０|〇|〇
+NumToJText ( 123456789 ; 0 ; 0 ) & "|" & NumToJText ( 123456789 ; 0 ; 1 ) & "|" & NumToJText ( 123456789 ; 0 ; 2 ) & "|" & NumToJText ( 123456789 ; 0 ; 3 )	0	1/1/0	123456789|１２３４５６７８９|一二三四五六七八九|壱弐参四伍六七八九
+NumToJText ( 123456789 ; 1 ; 0 ) & "|" & NumToJText ( 123456789 ; 1 ; 1 ) & "|" & NumToJText ( 123456789 ; 1 ; 2 ) & "|" & NumToJText ( 123456789 ; 1 ; 3 )	0	1/1/0	123,456,789|１２３，４５６，７８９|一二三,四五六,七八九|壱弐参,四伍六,七八九
+NumToJText ( 123456789 ; 2 ; 0 ) & "|" & NumToJText ( 123456789 ; 2 ; 1 ) & "|" & NumToJText ( 123456789 ; 2 ; 2 ) & "|" & NumToJText ( 123456789 ; 2 ; 3 )	0	1/1/0	1億2345万6789|１億２３４５万６７８９|一億二三四五万六七八九|壱億弐参四伍万六七八九
+NumToJText ( 123456789 ; 3 ; 0 ) & "|" & NumToJText ( 123456789 ; 3 ; 1 ) & "|" & NumToJText ( 123456789 ; 3 ; 2 ) & "|" & NumToJText ( 123456789 ; 3 ; 3 )	0	1/1/0	1億2千3百4十5万6千7百8十9|１億２千３百４十５万６千７百８十９|一億二千三百四十五万六千七百八十九|壱億弐阡参陌四拾伍萬六阡七陌八拾九
+NumToJText ( 1000001 ; 0 ; 0 ) & "|" & NumToJText ( 1000001 ; 0 ; 1 ) & "|" & NumToJText ( 1000001 ; 0 ; 2 ) & "|" & NumToJText ( 1000001 ; 0 ; 3 )	0	1/1/0	1000001|１０００００１|一〇〇〇〇〇一|壱〇〇〇〇〇壱
+NumToJText ( 1000001 ; 1 ; 0 ) & "|" & NumToJText ( 1000001 ; 1 ; 1 ) & "|" & NumToJText ( 1000001 ; 1 ; 2 ) & "|" & NumToJText ( 1000001 ; 1 ; 3 )	0	1/1/0	1,000,001|１，０００，００１|一,〇〇〇,〇〇一|壱,〇〇〇,〇〇壱
+NumToJText ( 1000001 ; 2 ; 0 ) & "|" & NumToJText ( 1000001 ; 2 ; 1 ) & "|" & NumToJText ( 1000001 ; 2 ; 2 ) & "|" & NumToJText ( 1000001 ; 2 ; 3 )	0	1/1/0	100万1|１００万１|一〇〇万一|壱〇〇万壱
+NumToJText ( 1000001 ; 3 ; 0 ) & "|" & NumToJText ( 1000001 ; 3 ; 1 ) & "|" & NumToJText ( 1000001 ; 3 ; 2 ) & "|" & NumToJText ( 1000001 ; 3 ; 3 )	0	1/1/0	百万1|百万１|百万一|壱陌萬壱
+NumToJText ( 1010101010 ; 0 ; 0 ) & "|" & NumToJText ( 1010101010 ; 0 ; 1 ) & "|" & NumToJText ( 1010101010 ; 0 ; 2 ) & "|" & NumToJText ( 1010101010 ; 0 ; 3 )	0	1/1/0	1010101010|１０１０１０１０１０|一〇一〇一〇一〇一〇|壱〇壱〇壱〇壱〇壱〇
+NumToJText ( 1010101010 ; 1 ; 0 ) & "|" & NumToJText ( 1010101010 ; 1 ; 1 ) & "|" & NumToJText ( 1010101010 ; 1 ; 2 ) & "|" & NumToJText ( 1010101010 ; 1 ; 3 )	0	1/1/0	1,010,101,010|１，０１０，１０１，０１０|一,〇一〇,一〇一,〇一〇|壱,〇壱〇,壱〇壱,〇壱〇
+NumToJText ( 1010101010 ; 2 ; 0 ) & "|" & NumToJText ( 1010101010 ; 2 ; 1 ) & "|" & NumToJText ( 1010101010 ; 2 ; 2 ) & "|" & NumToJText ( 1010101010 ; 2 ; 3 )	0	1/1/0	10億1010万1010|１０億１０１０万１０１０|一〇億一〇一〇万一〇一〇|壱〇億壱〇壱〇万壱〇壱〇
+NumToJText ( 1010101010 ; 3 ; 0 ) & "|" & NumToJText ( 1010101010 ; 3 ; 1 ) & "|" & NumToJText ( 1010101010 ; 3 ; 2 ) & "|" & NumToJText ( 1010101010 ; 3 ; 3 )	0	1/1/0	十億千十万千十|十億千十万千十|十億千十万千十|壱拾億壱阡壱拾萬壱阡壱拾
+NumToJText ( 1000000010000 ; 0 ; 0 ) & "|" & NumToJText ( 1000000010000 ; 0 ; 1 ) & "|" & NumToJText ( 1000000010000 ; 0 ; 2 ) & "|" & NumToJText ( 1000000010000 ; 0 ; 3 )	0	1/1/0	1000000010000|１０００００００１００００|一〇〇〇〇〇〇〇一〇〇〇〇|壱〇〇〇〇〇〇〇壱〇〇〇〇
+NumToJText ( 1000000010000 ; 1 ; 0 ) & "|" & NumToJText ( 1000000010000 ; 1 ; 1 ) & "|" & NumToJText ( 1000000010000 ; 1 ; 2 ) & "|" & NumToJText ( 1000000010000 ; 1 ; 3 )	0	1/1/0	1,000,000,010,000|１，０００，０００，０１０，０００|一,〇〇〇,〇〇〇,〇一〇,〇〇〇|壱,〇〇〇,〇〇〇,〇壱〇,〇〇〇
+NumToJText ( 1000000010000 ; 2 ; 0 ) & "|" & NumToJText ( 1000000010000 ; 2 ; 1 ) & "|" & NumToJText ( 1000000010000 ; 2 ; 2 ) & "|" & NumToJText ( 1000000010000 ; 2 ; 3 )	0	1/1/0	1兆1万|１兆１万|一兆一万|壱兆壱万
+NumToJText ( 1000000010000 ; 3 ; 0 ) & "|" & NumToJText ( 1000000010000 ; 3 ; 1 ) & "|" & NumToJText ( 1000000010000 ; 3 ; 2 ) & "|" & NumToJText ( 1000000010000 ; 3 ; 3 )	0	1/1/0	1兆1万|１兆１万|一兆一万|壱兆壱萬
+NumToJText ( 10.05 ; 0 ; 0 ) & "|" & NumToJText ( 10.05 ; 0 ; 1 ) & "|" & NumToJText ( 10.05 ; 0 ; 2 ) & "|" & NumToJText ( 10.05 ; 0 ; 3 )	0	1/1/0	10.05|１０．０５|一〇.〇五|壱〇.〇伍
+NumToJText ( 10.05 ; 1 ; 0 ) & "|" & NumToJText ( 10.05 ; 1 ; 1 ) & "|" & NumToJText ( 10.05 ; 1 ; 2 ) & "|" & NumToJText ( 10.05 ; 1 ; 3 )	0	1/1/0	10.05|１０．０５|一〇.〇五|壱〇.〇伍
+NumToJText ( 10.05 ; 2 ; 0 ) & "|" & NumToJText ( 10.05 ; 2 ; 1 ) & "|" & NumToJText ( 10.05 ; 2 ; 2 ) & "|" & NumToJText ( 10.05 ; 2 ; 3 )	0	1/1/0	10.05|１０．０５|一〇.〇五|壱〇.〇伍
+NumToJText ( 10.05 ; 3 ; 0 ) & "|" & NumToJText ( 10.05 ; 3 ; 1 ) & "|" & NumToJText ( 10.05 ; 3 ; 2 ) & "|" & NumToJText ( 10.05 ; 3 ; 3 )	0	1/1/0	十.05|十．０５|十.〇五|壱拾.〇伍
+NumToJText ( -1234.5 ; 0 ; 0 ) & "|" & NumToJText ( -1234.5 ; 0 ; 1 ) & "|" & NumToJText ( -1234.5 ; 0 ; 2 ) & "|" & NumToJText ( -1234.5 ; 0 ; 3 )	0	1/1/0	-1234.5|－１２３４．５|-一二三四.五|-壱弐参四.伍
+NumToJText ( -1234.5 ; 1 ; 0 ) & "|" & NumToJText ( -1234.5 ; 1 ; 1 ) & "|" & NumToJText ( -1234.5 ; 1 ; 2 ) & "|" & NumToJText ( -1234.5 ; 1 ; 3 )	0	1/1/0	-1,234.5|－１，２３４．５|-一,二三四.五|-壱,弐参四.伍
+NumToJText ( -1234.5 ; 2 ; 0 ) & "|" & NumToJText ( -1234.5 ; 2 ; 1 ) & "|" & NumToJText ( -1234.5 ; 2 ; 2 ) & "|" & NumToJText ( -1234.5 ; 2 ; 3 )	0	1/1/0	-1234.5|－１２３４．５|-一二三四.五|-壱弐参四.伍
+NumToJText ( -1234.5 ; 3 ; 0 ) & "|" & NumToJText ( -1234.5 ; 3 ; 1 ) & "|" & NumToJText ( -1234.5 ; 3 ; 2 ) & "|" & NumToJText ( -1234.5 ; 3 ; 3 )	0	1/1/0	-千2百3十4.5|－千２百３十４．５|-千二百三十四.五|-壱阡弐陌参拾四.伍
+NumToJText ( 1.5 * 10^9 ; 0 ; 0 ) & "|" & NumToJText ( 1.5 * 10^9 ; 0 ; 1 ) & "|" & NumToJText ( 1.5 * 10^9 ; 0 ; 2 ) & "|" & NumToJText ( 1.5 * 10^9 ; 0 ; 3 )	0	1/1/0	1500000000|１５００００００００|一五〇〇〇〇〇〇〇〇|壱伍〇〇〇〇〇〇〇〇
+NumToJText ( 1.5 * 10^9 ; 1 ; 0 ) & "|" & NumToJText ( 1.5 * 10^9 ; 1 ; 1 ) & "|" & NumToJText ( 1.5 * 10^9 ; 1 ; 2 ) & "|" & NumToJText ( 1.5 * 10^9 ; 1 ; 3 )	0	1/1/0	1,500,000,000|１，５００，０００，０００|一,五〇〇,〇〇〇,〇〇〇|壱,伍〇〇,〇〇〇,〇〇〇
+NumToJText ( 1.5 * 10^9 ; 2 ; 0 ) & "|" & NumToJText ( 1.5 * 10^9 ; 2 ; 1 ) & "|" & NumToJText ( 1.5 * 10^9 ; 2 ; 2 ) & "|" & NumToJText ( 1.5 * 10^9 ; 2 ; 3 )	0	1/1/0	15億|１５億|一五億|壱伍億
+NumToJText ( 1.5 * 10^9 ; 3 ; 0 ) & "|" & NumToJText ( 1.5 * 10^9 ; 3 ; 1 ) & "|" & NumToJText ( 1.5 * 10^9 ; 3 ; 2 ) & "|" & NumToJText ( 1.5 * 10^9 ; 3 ; 3 )	0	1/1/0	十5億|十５億|十五億|壱拾伍億
+NumToJText ( 10^9 + 0.5 ; 0 ; 0 ) & "|" & NumToJText ( 10^9 + 0.5 ; 0 ; 1 ) & "|" & NumToJText ( 10^9 + 0.5 ; 0 ; 2 ) & "|" & NumToJText ( 10^9 + 0.5 ; 0 ; 3 )	0	1/1/0	1000000000.5|１０００００００００．５|一〇〇〇〇〇〇〇〇〇.五|壱〇〇〇〇〇〇〇〇〇.伍
+NumToJText ( 10^9 + 0.5 ; 1 ; 0 ) & "|" & NumToJText ( 10^9 + 0.5 ; 1 ; 1 ) & "|" & NumToJText ( 10^9 + 0.5 ; 1 ; 2 ) & "|" & NumToJText ( 10^9 + 0.5 ; 1 ; 3 )	0	1/1/0	1,000,000,000.5|１，０００，０００，０００．５|一,〇〇〇,〇〇〇,〇〇〇.五|壱,〇〇〇,〇〇〇,〇〇〇.伍
+NumToJText ( 10^9 + 0.5 ; 2 ; 0 ) & "|" & NumToJText ( 10^9 + 0.5 ; 2 ; 1 ) & "|" & NumToJText ( 10^9 + 0.5 ; 2 ; 2 ) & "|" & NumToJText ( 10^9 + 0.5 ; 2 ; 3 )	0	1/1/0	10億.5|１０億．５|一〇億.五|壱〇億.伍
+NumToJText ( 10^9 + 0.5 ; 3 ; 0 ) & "|" & NumToJText ( 10^9 + 0.5 ; 3 ; 1 ) & "|" & NumToJText ( 10^9 + 0.5 ; 3 ; 2 ) & "|" & NumToJText ( 10^9 + 0.5 ; 3 ; 3 )	0	1/1/0	十億.5|十億．５|十億.五|壱拾億.伍
+NumToJText ( 0.00000000099 ; 0 ; 0 ) & "|" & NumToJText ( 0.00000000099 ; 0 ; 1 ) & "|" & NumToJText ( 0.00000000099 ; 0 ; 2 ) & "|" & NumToJText ( 0.00000000099 ; 0 ; 3 )	0	1/1/0	.00000000099|．０００００００００９９|.〇〇〇〇〇〇〇〇〇九九|.〇〇〇〇〇〇〇〇〇九九
+NumToJText ( 0.00000000099 ; 1 ; 0 ) & "|" & NumToJText ( 0.00000000099 ; 1 ; 1 ) & "|" & NumToJText ( 0.00000000099 ; 1 ; 2 ) & "|" & NumToJText ( 0.00000000099 ; 1 ; 3 )	0	1/1/0	.00000000099|．０００００００００９９|.〇〇〇〇〇〇〇〇〇九九|.〇〇〇〇〇〇〇〇〇九九
+NumToJText ( 0.00000000099 ; 2 ; 0 ) & "|" & NumToJText ( 0.00000000099 ; 2 ; 1 ) & "|" & NumToJText ( 0.00000000099 ; 2 ; 2 ) & "|" & NumToJText ( 0.00000000099 ; 2 ; 3 )	0	1/1/0	09.9E-10|０９．９Ｅ－１０|〇九.九E-一〇|〇九.九E-壱〇
+NumToJText ( 0.00000000099 ; 3 ; 0 ) & "|" & NumToJText ( 0.00000000099 ; 3 ; 1 ) & "|" & NumToJText ( 0.00000000099 ; 3 ; 2 ) & "|" & NumToJText ( 0.00000000099 ; 3 ; 3 )	0	1/1/0	09.9E-10|０９．９Ｅ－１０|〇九.九E-一〇|〇九.九E-壱〇
+NumToJText ( 1.0000000000000000001 ; 0 ; 0 ) & "|" & NumToJText ( 1.0000000000000000001 ; 0 ; 1 ) & "|" & NumToJText ( 1.0000000000000000001 ; 0 ; 2 ) & "|" & NumToJText ( 1.0000000000000000001 ; 0 ; 3 )	0	1/1/0	1.0000000000000000001|１．００００００００００００００００００１|一.〇〇〇〇〇〇〇〇〇〇〇〇〇〇〇〇〇〇一|壱.〇〇〇〇〇〇〇〇〇〇〇〇〇〇〇〇〇〇壱
+NumToJText ( 1.0000000000000000001 ; 1 ; 0 ) & "|" & NumToJText ( 1.0000000000000000001 ; 1 ; 1 ) & "|" & NumToJText ( 1.0000000000000000001 ; 1 ; 2 ) & "|" & NumToJText ( 1.0000000000000000001 ; 1 ; 3 )	0	1/1/0	1.0000000000000000001|１．００００００００００００００００００１|一.〇〇〇〇〇〇〇〇〇〇〇〇〇〇〇〇〇〇一|壱.〇〇〇〇〇〇〇〇〇〇〇〇〇〇〇〇〇〇壱
+NumToJText ( 1.0000000000000000001 ; 2 ; 0 ) & "|" & NumToJText ( 1.0000000000000000001 ; 2 ; 1 ) & "|" & NumToJText ( 1.0000000000000000001 ; 2 ; 2 ) & "|" & NumToJText ( 1.0000000000000000001 ; 2 ; 3 )	0	1/1/0	11.0E-19|１１．０Ｅ－１９|一一.〇E-一九|壱壱.〇E-壱九
+NumToJText ( 1.0000000000000000001 ; 3 ; 0 ) & "|" & NumToJText ( 1.0000000000000000001 ; 3 ; 1 ) & "|" & NumToJText ( 1.0000000000000000001 ; 3 ; 2 ) & "|" & NumToJText ( 1.0000000000000000001 ; 3 ; 3 )	0	1/1/0	11.0E-19|１１．０Ｅ－１９|一一.〇E-一九|壱壱.〇E-壱九
+NumToJText ( 1/7 * 10^5 ; 0 ; 0 ) & "|" & NumToJText ( 1/7 * 10^5 ; 0 ; 1 ) & "|" & NumToJText ( 1/7 * 10^5 ; 0 ; 2 ) & "|" & NumToJText ( 1/7 * 10^5 ; 0 ; 3 )	0	1/1/0	14285.7142857142857|１４２８５．７１４２８５７１４２８５７|一四二八五.七一四二八五七一四二八五七|壱四弐八伍.七壱四弐八伍七壱四弐八伍七
+NumToJText ( 1/7 * 10^5 ; 1 ; 0 ) & "|" & NumToJText ( 1/7 * 10^5 ; 1 ; 1 ) & "|" & NumToJText ( 1/7 * 10^5 ; 1 ; 2 ) & "|" & NumToJText ( 1/7 * 10^5 ; 1 ; 3 )	0	1/1/0	14,285.7142857142857|１４，２８５．７１４２８５７１４２８５７|一四,二八五.七一四二八五七一四二八五七|壱四,弐八伍.七壱四弐八伍七壱四弐八伍七
+NumToJText ( 1/7 * 10^5 ; 2 ; 0 ) & "|" & NumToJText ( 1/7 * 10^5 ; 2 ; 1 ) & "|" & NumToJText ( 1/7 * 10^5 ; 2 ; 2 ) & "|" & NumToJText ( 1/7 * 10^5 ; 2 ; 3 )	0	1/1/0	1万4285.7142857142857|１万４２８５．７１４２８５７１４２８５７|一万四二八五.七一四二八五七一四二八五七|壱万四弐八伍.七壱四弐八伍七壱四弐八伍七
+NumToJText ( 1/7 * 10^5 ; 3 ; 0 ) & "|" & NumToJText ( 1/7 * 10^5 ; 3 ; 1 ) & "|" & NumToJText ( 1/7 * 10^5 ; 3 ; 2 ) & "|" & NumToJText ( 1/7 * 10^5 ; 3 ; 3 )	0	1/1/0	1万4千2百8十5.7142857142857|１万４千２百８十５．７１４２８５７１４２８５７|一万四千二百八十五.七一四二八五七一四二八五七|壱萬四阡弐陌八拾伍.七壱四弐八伍七壱四弐八伍七
+NumToJText ( 2^70 ; 0 ; 0 ) & "|" & NumToJText ( 2^70 ; 0 ; 1 ) & "|" & NumToJText ( 2^70 ; 0 ; 2 ) & "|" & NumToJText ( 2^70 ; 0 ; 3 )	0	1/1/0	1180591620717411303424|１１８０５９１６２０７１７４１１３０３４２４|一一八〇五九一六二〇七一七四一一三〇三四二四|壱壱八〇伍九壱六弐〇七壱七四壱壱参〇参四弐四
+NumToJText ( 2^70 ; 1 ; 0 ) & "|" & NumToJText ( 2^70 ; 1 ; 1 ) & "|" & NumToJText ( 2^70 ; 1 ; 2 ) & "|" & NumToJText ( 2^70 ; 1 ; 3 )	0	1/1/0	1,180,591,620,717,411,303,424|１，１８０，５９１，６２０，７１７，４１１，３０３，４２４|一,一八〇,五九一,六二〇,七一七,四一一,三〇三,四二四|壱,壱八〇,伍九壱,六弐〇,七壱七,四壱壱,参〇参,四弐四
+NumToJText ( 2^70 ; 2 ; 0 ) & "|" & NumToJText ( 2^70 ; 2 ; 1 ) & "|" & NumToJText ( 2^70 ; 2 ; 2 ) & "|" & NumToJText ( 2^70 ; 2 ; 3 )	0	1/1/0	11垓8059京1620兆7174億1130万3424|１１垓８０５９京１６２０兆７１７４億１１３０万３４２４|一一垓八〇五九京一六二〇兆七一七四億一一三〇万三四二四|壱壱垓八〇伍九京壱六弐〇兆七壱七四億壱壱参〇万参四弐四
+NumToJText ( 2^70 ; 3 ; 0 ) & "|" & NumToJText ( 2^70 ; 3 ; 1 ) & "|" & NumToJText ( 2^70 ; 3 ; 2 ) & "|" & NumToJText ( 2^70 ; 3 ; 3 )	0	1/1/0	十1垓8千5十9京千6百2十兆7千百7十4億千百3十万3千4百2十4|十１垓８千５十９京千６百２十兆７千百７十４億千百３十万３千４百２十４|十一垓八千五十九京千六百二十兆七千百七十四億千百三十万三千四百二十四|壱拾壱垓八阡伍拾九京壱阡六陌弐拾兆七阡壱陌七拾四億壱阡壱陌参拾萬参阡四陌弐拾四
+NumToJText ( 1.5E+30 ; 0 ; 0 ) & "|" & NumToJText ( 1.5E+30 ; 0 ; 1 ) & "|" & NumToJText ( 1.5E+30 ; 0 ; 2 ) & "|" & NumToJText ( 1.5E+30 ; 0 ; 3 )	0	1/1/0	1500000000000000000000000000000|１５０００００００００００００００００００００００００００００|一五〇〇〇〇〇〇〇〇〇〇〇〇〇〇〇〇〇〇〇〇〇〇〇〇〇〇〇〇〇|壱伍〇〇〇〇〇〇〇〇〇〇〇〇〇〇〇〇〇〇〇〇〇〇〇〇〇〇〇〇〇
+NumToJText ( 1.5E+30 ; 1 ; 0 ) & "|" & NumToJText ( 1.5E+30 ; 1 ; 1 ) & "|" & NumToJText ( 1.5E+30 ; 1 ; 2 ) & "|" & NumToJText ( 1.5E+30 ; 1 ; 3 )	0	1/1/0	1,500,000,000,000,000,000,000,000,000,000|１，５００，０００，０００，０００，０００，０００，０００，０００，０００，０００|一,五〇〇,〇〇〇,〇〇〇,〇〇〇,〇〇〇,〇〇〇,〇〇〇,〇〇〇,〇〇〇,〇〇〇|壱,伍〇〇,〇〇〇,〇〇〇,〇〇〇,〇〇〇,〇〇〇,〇〇〇,〇〇〇,〇〇〇,〇〇〇
+NumToJText ( 1.5E+30 ; 2 ; 0 ) & "|" & NumToJText ( 1.5E+30 ; 2 ; 1 ) & "|" & NumToJText ( 1.5E+30 ; 2 ; 2 ) & "|" & NumToJText ( 1.5E+30 ; 2 ; 3 )	0	1/1/0	150穰|１５０穰|一五〇穰|壱伍〇穰
+NumToJText ( 1.5E+30 ; 3 ; 0 ) & "|" & NumToJText ( 1.5E+30 ; 3 ; 1 ) & "|" & NumToJText ( 1.5E+30 ; 3 ; 2 ) & "|" & NumToJText ( 1.5E+30 ; 3 ; 3 )	0	1/1/0	百5十穰|百５十穰|百五十穰|壱陌伍拾穣
+NumToJText ( 1.5E-30 ; 0 ; 0 ) & "|" & NumToJText ( 1.5E-30 ; 0 ; 1 ) & "|" & NumToJText ( 1.5E-30 ; 0 ; 2 ) & "|" & NumToJText ( 1.5E-30 ; 0 ; 3 )	0	1/1/0	.0000000000000000000000000000015|．０００００００００００００００００００００００００００００１５|.〇〇〇〇〇〇〇〇〇〇〇〇〇〇〇〇〇〇〇〇〇〇〇〇〇〇〇〇〇一五|.〇〇〇〇〇〇〇〇〇〇〇〇〇〇〇〇〇〇〇〇〇〇〇〇〇〇〇〇〇壱伍
+NumToJText ( 1.5E-30 ; 1 ; 0 ) & "|" & NumToJText ( 1.5E-30 ; 1 ; 1 ) & "|" & NumToJText ( 1.5E-30 ; 1 ; 2 ) & "|" & NumToJText ( 1.5E-30 ; 1 ; 3 )	0	1/1/0	.0000000000000000000000000000015|．０００００００００００００００００００００００００００００１５|.〇〇〇〇〇〇〇〇〇〇〇〇〇〇〇〇〇〇〇〇〇〇〇〇〇〇〇〇〇一五|.〇〇〇〇〇〇〇〇〇〇〇〇〇〇〇〇〇〇〇〇〇〇〇〇〇〇〇〇〇壱伍
+NumToJText ( 1.5E-30 ; 2 ; 0 ) & "|" & NumToJText ( 1.5E-30 ; 2 ; 1 ) & "|" & NumToJText ( 1.5E-30 ; 2 ; 2 ) & "|" & NumToJText ( 1.5E-30 ; 2 ; 3 )	0	1/1/0	01.5E-30|０１．５Ｅ－３０|〇一.五E-三〇|〇壱.伍E-参〇
+NumToJText ( 1.5E-30 ; 3 ; 0 ) & "|" & NumToJText ( 1.5E-30 ; 3 ; 1 ) & "|" & NumToJText ( 1.5E-30 ; 3 ; 2 ) & "|" & NumToJText ( 1.5E-30 ; 3 ; 3 )	0	1/1/0	01.5E-30|０１．５Ｅ－３０|〇一.五E-三〇|〇壱.伍E-参〇
+# NumToJText: units up to 極 and past it
+NumToJText ( 1234 * 10^0 ; 2 ; 0 ) & "|" & NumToJText ( 1234 * 10^4 ; 2 ; 0 ) & "|" & NumToJText ( 1234 * 10^8 ; 2 ; 0 ) & "|" & NumToJText ( 1234 * 10^12 ; 2 ; 0 ) & "|" & NumToJText ( 1234 * 10^16 ; 2 ; 0 ) & "|" & NumToJText ( 1234 * 10^20 ; 2 ; 0 ) & "|" & NumToJText ( 1234 * 10^24 ; 2 ; 0 ) & "|" & NumToJText ( 1234 * 10^28 ; 2 ; 0 ) & "|" & NumToJText ( 1234 * 10^32 ; 2 ; 0 ) & "|" & NumToJText ( 1234 * 10^36 ; 2 ; 0 ) & "|" & NumToJText ( 1234 * 10^40 ; 2 ; 0 ) & "|" & NumToJText ( 1234 * 10^44 ; 2 ; 0 ) & "|" & NumToJText ( 1234 * 10^48 ; 2 ; 0 ) & "|" & NumToJText ( 1234 * 10^52 ; 2 ; 0 ) & "|" & NumToJText ( 1234 * 10^56 ; 2 ; 0 )	0	1/1/0	1234|1234万|1234億|1234兆|1234京|1234垓|1234し|1234穰|1234溝|1234澗|1234正|1234載|1234極|1234|1234
+NumToJText ( 1234 * 10^0 ; 2 ; 1 ) & "|" & NumToJText ( 1234 * 10^4 ; 2 ; 1 ) & "|" & NumToJText ( 1234 * 10^8 ; 2 ; 1 ) & "|" & NumToJText ( 1234 * 10^12 ; 2 ; 1 ) & "|" & NumToJText ( 1234 * 10^16 ; 2 ; 1 ) & "|" & NumToJText ( 1234 * 10^20 ; 2 ; 1 ) & "|" & NumToJText ( 1234 * 10^24 ; 2 ; 1 ) & "|" & NumToJText ( 1234 * 10^28 ; 2 ; 1 ) & "|" & NumToJText ( 1234 * 10^32 ; 2 ; 1 ) & "|" & NumToJText ( 1234 * 10^36 ; 2 ; 1 ) & "|" & NumToJText ( 1234 * 10^40 ; 2 ; 1 ) & "|" & NumToJText ( 1234 * 10^44 ; 2 ; 1 ) & "|" & NumToJText ( 1234 * 10^48 ; 2 ; 1 ) & "|" & NumToJText ( 1234 * 10^52 ; 2 ; 1 ) & "|" & NumToJText ( 1234 * 10^56 ; 2 ; 1 )	0	1/1/0	１２３４|１２３４万|１２３４億|１２３４兆|１２３４京|１２３４垓|１２３４し|１２３４穰|１２３４溝|１２３４澗|１２３４正|１２３４載|１２３４極|１２３４|１２３４
+NumToJText ( 1234 * 10^0 ; 2 ; 2 ) & "|" & NumToJText ( 1234 * 10^4 ; 2 ; 2 ) & "|" & NumToJText ( 1234 * 10^8 ; 2 ; 2 ) & "|" & NumToJText ( 1234 * 10^12 ; 2 ; 2 ) & "|" & NumToJText ( 1234 * 10^16 ; 2 ; 2 ) & "|" & NumToJText ( 1234 * 10^20 ; 2 ; 2 ) & "|" & NumToJText ( 1234 * 10^24 ; 2 ; 2 ) & "|" & NumToJText ( 1234 * 10^28 ; 2 ; 2 ) & "|" & NumToJText ( 1234 * 10^32 ; 2 ; 2 ) & "|" & NumToJText ( 1234 * 10^36 ; 2 ; 2 ) & "|" & NumToJText ( 1234 * 10^40 ; 2 ; 2 ) & "|" & NumToJText ( 1234 * 10^44 ; 2 ; 2 ) & "|" & NumToJText ( 1234 * 10^48 ; 2 ; 2 ) & "|" & NumToJText ( 1234 * 10^52 ; 2 ; 2 ) & "|" & NumToJText ( 1234 * 10^56 ; 2 ; 2 )	0	1/1/0	一二三四|一二三四万|一二三四億|一二三四兆|一二三四京|一二三四垓|一二三四し|一二三四穰|一二三四溝|一二三四澗|一二三四正|一二三四載|一二三四極|一二三四|一二三四
+NumToJText ( 1234 * 10^0 ; 2 ; 3 ) & "|" & NumToJText ( 1234 * 10^4 ; 2 ; 3 ) & "|" & NumToJText ( 1234 * 10^8 ; 2 ; 3 ) & "|" & NumToJText ( 1234 * 10^12 ; 2 ; 3 ) & "|" & NumToJText ( 1234 * 10^16 ; 2 ; 3 ) & "|" & NumToJText ( 1234 * 10^20 ; 2 ; 3 ) & "|" & NumToJText ( 1234 * 10^24 ; 2 ; 3 ) & "|" & NumToJText ( 1234 * 10^28 ; 2 ; 3 ) & "|" & NumToJText ( 1234 * 10^32 ; 2 ; 3 ) & "|" & NumToJText ( 1234 * 10^36 ; 2 ; 3 ) & "|" & NumToJText ( 1234 * 10^40 ; 2 ; 3 ) & "|" & NumToJText ( 1234 * 10^44 ; 2 ; 3 ) & "|" & NumToJText ( 1234 * 10^48 ; 2 ; 3 ) & "|" & NumToJText ( 1234 * 10^52 ; 2 ; 3 ) & "|" & NumToJText ( 1234 * 10^56 ; 2 ; 3 )	0	1/1/0	壱弐参四|壱弐参四万|壱弐参四億|壱弐参四兆|壱弐参四京|壱弐参四垓|壱弐参四し|壱弐参四穰|壱弐参四溝|壱弐参四澗|壱弐参四正|壱弐参四載|壱弐参四極|壱弐参四|壱弐参四
+NumToJText ( 1234 * 10^0 ; 3 ; 0 ) & "|" & NumToJText ( 1234 * 10^4 ; 3 ; 0 ) & "|" & NumToJText ( 1234 * 10^8 ; 3 ; 0 ) & "|" & NumToJText ( 1234 * 10^12 ; 3 ; 0 ) & "|" & NumToJText ( 1234 * 10^16 ; 3 ; 0 ) & "|" & NumToJText ( 1234 * 10^20 ; 3 ; 0 ) & "|" & NumToJText ( 1234 * 10^24 ; 3 ; 0 ) & "|" & NumToJText ( 1234 * 10^28 ; 3 ; 0 ) & "|" & NumToJText ( 1234 * 10^32 ; 3 ; 0 ) & "|" & NumToJText ( 1234 * 10^36 ; 3 ; 0 ) & "|" & NumToJText ( 1234 * 10^40 ; 3 ; 0 ) & "|" & NumToJText ( 1234 * 10^44 ; 3 ; 0 ) & "|" & NumToJText ( 1234 * 10^48 ; 3 ; 0 ) & "|" & NumToJText ( 1234 * 10^52 ; 3 ; 0 ) & "|" & NumToJText ( 1234 * 10^56 ; 3 ; 0 )	0	1/1/0	千2百3十4|千2百3十4万|千2百3十4億|千2百3十4兆|千2百3十4京|千2百3十4垓|千2百3十4し|千2百3十4穰|千2百3十4溝|千2百3十4澗|千2百3十4正|千2百3十4載|1234極|1234|1234
+NumToJText ( 1234 * 10^0 ; 3 ; 1 ) & "|" & NumToJText ( 1234 * 10^4 ; 3 ; 1 ) & "|" & NumToJText ( 1234 * 10^8 ; 3 ; 1 ) & "|" & NumToJText ( 1234 * 10^12 ; 3 ; 1 ) & "|" & NumToJText ( 1234 * 10^16 ; 3 ; 1 ) & "|" & NumToJText ( 1234 * 10^20 ; 3 ; 1 ) & "|" & NumToJText ( 1234 * 10^24 ; 3 ; 1 ) & "|" & NumToJText ( 1234 * 10^28 ; 3 ; 1 ) & "|" & NumToJText ( 1234 * 10^32 ; 3 ; 1 ) & "|" & NumToJText ( 1234 * 10^36 ; 3 ; 1 ) & "|" & NumToJText ( 1234 * 10^40 ; 3 ; 1 ) & "|" & NumToJText ( 1234 * 10^44 ; 3 ; 1 ) & "|" & NumToJText ( 1234 * 10^48 ; 3 ; 1 ) & "|" & NumToJText ( 1234 * 10^52 ; 3 ; 1 ) & "|" & NumToJText ( 1234 * 10^56 ; 3 ; 1 )	0	1/1/0	千２百３十４|千２百３十４万|千２百３十４億|千２百３十４兆|千２百３十４京|千２百３十４垓|千２百３十４し|千２百３十４穰|千２百３十４溝|千２百３十４澗|千２百３十４正|千２百３十４載|１２３４極|１２３４|１２３４
+NumToJText ( 1234 * 10^0 ; 3 ; 2 ) & "|" & NumToJText ( 1234 * 10^4 ; 3 ; 2 ) & "|" & NumToJText ( 1234 * 10^8 ; 3 ; 2 ) & "|" & NumToJText ( 1234 * 10^12 ; 3 ; 2 ) & "|" & NumToJText ( 1234 * 10^16 ; 3 ; 2 ) & "|" & NumToJText ( 1234 * 10^20 ; 3 ; 2 ) & "|" & NumToJText ( 1234 * 10^24 ; 3 ; 2 ) & "|" & NumToJText ( 1234 * 10^28 ; 3 ; 2 ) & "|" & NumToJText ( 1234 * 10^32 ; 3 ; 2 ) & "|" & NumToJText ( 1234 * 10^36 ; 3 ; 2 ) & "|" & NumToJText ( 1234 * 10^40 ; 3 ; 2 ) & "|" & NumToJText ( 1234 * 10^44 ; 3 ; 2 ) & "|" & NumToJText ( 1234 * 10^48 ; 3 ; 2 ) & "|" & NumToJText ( 1234 * 10^52 ; 3 ; 2 ) & "|" & NumToJText ( 1234 * 10^56 ; 3 ; 2 )	0	1/1/0	千二百三十四|千二百三十四万|千二百三十四億|千二百三十四兆|千二百三十四京|千二百三十四垓|千二百三十四し|千二百三十四穰|千二百三十四溝|千二百三十四澗|千二百三十四正|千二百三十四載|一二三四極|一二三四|一二三四
+NumToJText ( 1234 * 10^0 ; 3 ; 3 ) & "|" & NumToJText ( 1234 * 10^4 ; 3 ; 3 ) & "|" & NumToJText ( 1234 * 10^8 ; 3 ; 3 ) & "|" & NumToJText ( 1234 * 10^12 ; 3 ; 3 ) & "|" & NumToJText ( 1234 * 10^16 ; 3 ; 3 ) & "|" & NumToJText ( 1234 * 10^20 ; 3 ; 3 ) & "|" & NumToJText ( 1234 * 10^24 ; 3 ; 3 ) & "|" & NumToJText ( 1234 * 10^28 ; 3 ; 3 ) & "|" & NumToJText ( 1234 * 10^32 ; 3 ; 3 ) & "|" & NumToJText ( 1234 * 10^36 ; 3 ; 3 ) & "|" & NumToJText ( 1234 * 10^40 ; 3 ; 3 ) & "|" & NumToJText ( 1234 * 10^44 ; 3 ; 3 ) & "|" & NumToJText ( 1234 * 10^48 ; 3 ; 3 ) & "|" & NumToJText ( 1234 * 10^52 ; 3 ; 3 ) & "|" & NumToJText ( 1234 * 10^56 ; 3 ; 3 )	0	1/1/0	壱阡弐陌参拾四|壱阡弐陌参拾四萬|壱阡弐陌参拾四億|壱阡弐陌参拾四兆|壱阡弐陌参拾四京|壱阡弐陌参拾四垓|壱阡弐陌参拾四し|壱阡弐陌参拾四穣|壱阡弐陌参拾四溝|壱阡弐陌参拾四澗|壱阡弐陌参拾四正|壱阡弐陌参拾四載|壱弐参四極|壱弐参四|壱弐参四
+NumToJText ( 12345 * 10^48 ; 3 ; 2 )	0	2/2/0	一二三四五極
+NumToJText ( 10^52 + 12345 ; 3 ; 2 )	0	2/2/0	一一万二千三百四十五
+NumToJText ( 10^52 + 12345 ; 2 ; 0 )	0	2/2/0	11万2345
+NumToJText ( 123456789 * 10^48 ; 2 ; 0 )	0	2/2/0	123456789極
+NumToJText ( 10^56 * 5 + 10^48 * 7 ; 2 ; 0 )	0	2/2/0	57極
+NumToJText ( 10^24 * 3 + 10^28 * 2 ; 3 ; 3 )	0	2/2/0	弐穣参し
+NumToJText ( 10^48 * 1001 ; 3 ; 2 )	0	2/2/0	一一極
+NumToJText ( 10^48 * 10 ; 3 ; 2 )	0	2/2/0	一
+NumToJText ( 10^72 * 123 ; 3 ; 2 )	0	2/2/0	一二三
+NumToJText ( 10^100 ; 2 ; 0 )	0	2/2/0	1
+NumToJText ( 10^400 ; 2 ; 0 )	0	2/2/0	1
+NumToJText ( 10^400 ; 1 ; 2 )	0	1/1/0	一〇,〇〇〇,〇〇〇,〇〇〇,〇〇〇,〇〇〇,〇〇〇,〇〇〇,〇〇〇,〇〇〇,〇〇〇,〇〇〇,〇〇〇,〇〇〇,〇〇〇,〇〇〇,〇〇〇,〇〇〇,〇〇〇,〇〇〇,〇〇〇,〇〇〇,〇〇〇,〇〇〇,〇〇〇,〇〇〇,〇〇〇,〇〇〇,〇〇〇,〇〇〇,〇〇〇,〇〇〇,〇〇〇,〇〇〇,〇〇〇,〇〇〇,〇〇〇,〇〇〇,〇〇〇,〇〇〇,〇〇〇,〇〇〇,〇〇〇,〇〇〇,〇〇〇,〇〇〇,〇〇〇,〇〇〇,〇〇〇,〇〇〇,〇〇〇,〇〇〇,〇〇〇,〇〇〇,〇〇〇,〇〇〇,〇〇〇,〇〇〇,〇〇〇,〇〇〇,〇〇〇,〇〇〇,〇〇〇,〇〇〇,〇〇〇,〇〇〇,〇〇〇,〇〇〇,〇〇〇,〇〇〇,〇〇〇,〇〇〇,〇〇〇,〇〇〇,〇〇〇,〇〇〇,〇〇〇,〇〇〇,〇〇〇,〇〇〇,〇〇〇,〇〇〇,〇〇〇,〇〇〇,〇〇〇,〇〇〇,〇〇〇,〇〇〇,〇〇〇,〇〇〇,〇〇〇,〇〇〇,〇〇〇,〇〇〇,〇〇〇,〇〇〇,〇〇〇,〇〇〇,〇〇〇,〇〇〇,〇〇〇,〇〇〇,〇〇〇,〇〇〇,〇〇〇,〇〇〇,〇〇〇,〇〇〇,〇〇〇,〇〇〇,〇〇〇,〇〇〇,〇〇〇,〇〇〇,〇〇〇,〇〇〇,〇〇〇,〇〇〇,〇〇〇,〇〇〇,〇〇〇,〇〇〇,〇〇〇,〇〇〇,〇〇〇,〇〇〇,〇〇〇,〇〇〇,〇〇〇,〇〇〇,〇〇〇,〇〇〇,〇〇〇,〇〇〇
+NumToJText ( 10^400 ; 3 ; 0 )	0	2/2/0	1
+NumToJText ( SetPrecision ( 1/3 ; 20 ) ; 3 ; 2 )	0	2/2/0	〇.三三三三三三三三三三三三三三三三三三三三
+# NumToJText: separator and type arguments, other value types
+NumToJText ( 1234 ; 4 ; 0 )	0	1/1/0	1234
+NumToJText ( 1234 ; -1 ; 0 )	0	1/1/0	1234
+NumToJText ( 1234 ; "" ; 0 )	0	1/1/0	1234
+NumToJText ( 1234 ; 2.9 ; 0 )	0	2/2/0	1234
+NumToJText ( 1234 ; 3 ; 4 )	0	2/2/0	千2百3十4
+NumToJText ( 1234 ; 3 ; -1 )	0	2/2/0	千2百3十4
+NumToJText ( 1234 ; 3 ; "" )	0	2/2/0	千2百3十4
+NumToJText ( 1234 ; 3 ; 2.9 )	0	2/2/0	千二百三十四
+NumToJText ( 1234 ; "abc" ; "abc" )	0	1/1/0	1234
+NumToJText ( 12 ; 1/0 ; 0 )	15	1/1/0	12
+NumToJText ( 1234 ; 10^20 ; 0 )	0	1/1/0	1234
+NumToJText ( Date ( 1 ; 1 ; 2001 ) ; 3 ; 2 )	0	3/3/0	七十三万四百八十六
+NumToJText ( Date ( 1 ; 1 ; 2001 ) ; 0 ; 0 )	0	1/1/0	730486
+NumToJText ( Time ( 1 ; 0 ; 0 ) ; 0 ; 0 )	0	1/1/0	3600
+NumToJText ( Time ( 1 ; 0 ; 0 ) ; 3 ; 0 )	0	4/4/0	3千6百
+NumToJText ( "1/2/2003" ; 0 ; 0 )	0	1/1/0	122003
+NumToJText ( 1e-5 ; 0 ; 0 )	0	1/1/0	.00001
+NumToJText ( 0.0 ; 3 ; 2 )	0	2/2/0	〇
+NumToJText ( -0 ; 3 ; 2 )	0	2/2/0	〇
+NumToJText ( 1234567,5 ; 1 ; 0 )	1202	2/2/0	?
+NumToJText ( 1234567.5 ; 1 ; 0 )	0	1/1/0	1,234,567.5
+NumToJText ( 1234567.5 ; 1 ; 1 )	0	1/1/0	１，２３４，５６７．５
+NumToJText ( 1234567,5 ; 3 ; 1 )	1202	2/2/0	?
+NumToJText ( "1.234,5" ; 0 ; 0 )	0	1/1/0	1.2345
+NumToJText ( "1,234.5" ; 0 ; 0 )	0	1/1/0	1234.5
+NumToJText ( TextStyleAdd ( "12" ; Bold ) ; 0 ; 0 )	0	1/1/0	12
+NumToJText ( 123456789 ; 2 ; 0 ) + 1	0	2/2/0	123456790
+GetAsNumber ( NumToJText ( 123456789 ; 2 ; 0 ) )	0	2/2/0	123456789
+NumToJText ( 123456789 ; 1 ; 0 ) + 1	0	2/2/0	123456790
+NumToJText ( 12 ; 3 ; 1 ) + 1	0	2/2/0	13
+IsEmpty ( NumToJText ( "" ; 3 ; 0 ) )	0	2/2/0	1
+GetAsSVG ( NumToJText ( TextStyleAdd ( "12" ; Bold ) ; 3 ; 2 ) )	0	1/1/0	<stylelist>\r<style#0>"", begin: 1, end: 2</style> \r</stylelist>\r<data>\r<span style="0">&#21313;&#20108;</span>\r</data>
+GetAsSVG ( NumToJText ( TextStyleAdd ( "12" ; Bold ) ; 0 ; 2 ) )	0	1/1/0	<stylelist>\r<style#0>"", begin: 1, end: 2</style> \r</stylelist>\r<data>\r<span style="0">&#19968;&#20108;</span>\r</data>
+# LunarDate and SolarDate: parsed, not implemented
+LunarDate ( Date ( 1 ; 1 ; 2024 ) )	1223	2/2/0	?
+SolarDate ( Date ( 1 ; 1 ; 2024 ) ; 0 )	1223	2/2/0	?
+LunarDate ( "" )	1223	2/2/0	?
+EvaluationError ( LunarDate ( 1 ) )	0	2/2/0	1223
+If ( 1 ; "a" ; LunarDate ( 1 ) )	0	1/1/0	a

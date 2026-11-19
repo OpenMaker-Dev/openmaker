@@ -1,0 +1,475 @@
+# Export Records probes (battery x01): every output format and character set
+# over five records with edge-case values, group-by summaries, paths.
+# Run on FileMaker Server 26.0.3 (the lab server's probe database) by run_fms.py;
+# Setup and the logging steps also run in the local harness.
+
+== Setup
+Set Error Capture [ On ]
+Go to Layout [ "Contact List" ]
+Show All Records
+Loop
+Exit Loop If [ Get ( FoundCount ) = 0 ]
+Delete Record/Request [ With dialog: Off ]
+End Loop
+Set Field [ Contacts::G ; "glob" ]
+New Record/Request
+Set Field [ Contacts::K ; "1" ]
+Set Field [ Contacts::VNE ; "v1" ]
+Set Field [ Contacts::VU ; "u1" ]
+Set Field [ Contacts::PrimaryKey ; "C1" ]
+Set Field [ Contacts::First Name ; "Ada" ]
+Set Field [ Contacts::Last Name ; "Lovelace" ]
+Set Field [ Contacts::Company ; "Analytical" ]
+Set Field [ Contacts::Title ; "He said \"hi\", ok" ]
+Set Field [ Contacts::Job Title ; "a" & Char ( 9 ) & "b¶c" ]
+Set Field [ Contacts::Website ; "naïve – €100 😀 日本" ]
+Set Field [ Contacts::N ; 1234.5 ]
+Set Field [ Contacts::D ; Date ( 12 ; 10 ; 1815 ) ]
+Set Field [ Contacts::T ; Time ( 13 ; 5 ; 9 ) ]
+Set Field [ Contacts::TS ; Timestamp ( Date ( 1 ; 2 ; 2020 ) ; Time ( 15 ; 4 ; 5 ) ) ]
+Set Field [ Contacts::R[1] ; "r1" ]
+Set Field [ Contacts::R[3] ; "r3" ]
+Set Field [ Contacts::NR[1] ; 1 ]
+Set Field [ Contacts::NR[2] ; "2.50" ]
+Set Field [ Contacts::NR[3] ; -3 ]
+Set Field [ Contacts::Photo ; Base64Decode ( "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mP8z8BQDwAEhQGAhKmMIQAAAABJRU5ErkJggg==" ; "dot.png" ) ]
+Set Field [ Addresses::City ; "London" ]
+New Record/Request
+Set Field [ Contacts::K ; "2" ]
+Set Field [ Contacts::VNE ; "v2" ]
+Set Field [ Contacts::VU ; "u2" ]
+Set Field [ Contacts::PrimaryKey ; "C2" ]
+Set Field [ Contacts::First Name ; "Bob" ]
+Set Field [ Contacts::Company ; "Analytical" ]
+Set Field [ Contacts::Title ; "a,b" ]
+Set Field [ Contacts::Job Title ; "x" & Char ( 11 ) & "y" ]
+Set Field [ Contacts::Website ; "Ünïcödé" ]
+Set Field [ Contacts::N ; "-0.001" ]
+Set Field [ Contacts::T ; Time ( 0 ; 0 ; 0 ) ]
+Set Field [ Contacts::NR[2] ; 5 ]
+New Record/Request
+Set Field [ Contacts::K ; "3" ]
+Set Field [ Contacts::VNE ; "v3" ]
+Set Field [ Contacts::VU ; "u3" ]
+Set Field [ Contacts::PrimaryKey ; "C3" ]
+Set Field [ Contacts::First Name ; "Ünïcödé Ωμέγα" ]
+Set Field [ Contacts::Last Name ; "日本語テキスト" ]
+Set Field [ Contacts::Company ; "Beta" ]
+Set Field [ Contacts::Title ; "trailing space " ]
+Set Field [ Contacts::Job Title ; "line1¶line2¶" ]
+Set Field [ Contacts::N ; "007" ]
+Set Field [ Contacts::D ; Date ( 2 ; 29 ; 2024 ) ]
+Set Field [ Contacts::T ; Time ( 25 ; 61 ; 0 ) ]
+Set Field [ Contacts::TS ; Timestamp ( Date ( 12 ; 31 ; 1999 ) ; Time ( 23 ; 59 ; 59.5 ) ) ]
+New Record/Request
+Set Field [ Contacts::K ; "4" ]
+Set Field [ Contacts::VNE ; "v4" ]
+Set Field [ Contacts::VU ; "u4" ]
+New Record/Request
+Set Field [ Contacts::K ; "5" ]
+Set Field [ Contacts::VNE ; "v5" ]
+Set Field [ Contacts::VU ; "u5" ]
+Set Field [ Contacts::PrimaryKey ; "C5" ]
+Set Field [ Contacts::First Name ; "Eve" ]
+Set Field [ Contacts::Last Name ; "Tab" & Char ( 9 ) & "End" ]
+Set Field [ Contacts::Company ; "Beta" ]
+Set Field [ Contacts::Title ; "<b>&amp;</b> 'q'" ]
+Set Field [ Contacts::N ; 12345678901234567890.125 ]
+Set Field [ Contacts::D ; Date ( 1 ; 1 ; 1 ) ]
+Set Field [ Contacts::T ; Time ( -1 ; 0 ; 0 ) ]
+Set Field [ Contacts::NR[3] ; .1 ]
+Commit Records/Requests [ With dialog: Off ]
+Show All Records
+Set Variable [ $$log ; "setup" & Char ( 9 ) & Get ( LastError ) & Char ( 9 ) & Get ( FoundCount ) & ¶ ]
+
+== x_tabs_c0
+Set Error Capture [ On ]
+Go to Layout [ "Contact List" ]
+Show All Records
+Set Variable [ $p0 ; Get ( DocumentsPath ) & "omprobe_x_tabs_c0.tab" ]
+Export Records [ "file:$p0" ; Type: TABS ; Charset: 0 ; Fields: Contacts::K | Contacts::First Name | Contacts::Last Name | Contacts::Company | Contacts::Title | Contacts::Job Title | Contacts::Website | Contacts::N | Contacts::D | Contacts::T | Contacts::TS | Contacts::R | Contacts::NR | Contacts::CN | Contacts::CU | Contacts::G | Contacts::Photo | Addresses::City | Contacts::AE | Contacts::S ; With dialog: Off ]
+Set Variable [ $$log ; $$log & "x_tabs_c0" & Char ( 9 ) & Get ( LastError ) & Char ( 9 ) & Get ( FoundCount ) & ¶ ]
+
+== x_tabs_c1
+Set Error Capture [ On ]
+Go to Layout [ "Contact List" ]
+Show All Records
+Set Variable [ $p0 ; Get ( DocumentsPath ) & "omprobe_x_tabs_c1.tab" ]
+Export Records [ "file:$p0" ; Type: TABS ; Charset: 1 ; Fields: Contacts::K | Contacts::First Name | Contacts::Last Name | Contacts::Company | Contacts::Title | Contacts::Job Title | Contacts::Website | Contacts::N | Contacts::D | Contacts::T | Contacts::TS | Contacts::R | Contacts::NR | Contacts::CN | Contacts::CU | Contacts::G | Contacts::Photo | Addresses::City | Contacts::AE | Contacts::S ; With dialog: Off ]
+Set Variable [ $$log ; $$log & "x_tabs_c1" & Char ( 9 ) & Get ( LastError ) & Char ( 9 ) & Get ( FoundCount ) & ¶ ]
+
+== x_tabs_c2
+Set Error Capture [ On ]
+Go to Layout [ "Contact List" ]
+Show All Records
+Set Variable [ $p0 ; Get ( DocumentsPath ) & "omprobe_x_tabs_c2.tab" ]
+Export Records [ "file:$p0" ; Type: TABS ; Charset: 2 ; Fields: Contacts::K | Contacts::First Name | Contacts::Last Name | Contacts::Company | Contacts::Title | Contacts::Job Title | Contacts::Website | Contacts::N | Contacts::D | Contacts::T | Contacts::TS | Contacts::R | Contacts::NR | Contacts::CN | Contacts::CU | Contacts::G | Contacts::Photo | Addresses::City | Contacts::AE | Contacts::S ; With dialog: Off ]
+Set Variable [ $$log ; $$log & "x_tabs_c2" & Char ( 9 ) & Get ( LastError ) & Char ( 9 ) & Get ( FoundCount ) & ¶ ]
+
+== x_tabs_c3
+Set Error Capture [ On ]
+Go to Layout [ "Contact List" ]
+Show All Records
+Set Variable [ $p0 ; Get ( DocumentsPath ) & "omprobe_x_tabs_c3.tab" ]
+Export Records [ "file:$p0" ; Type: TABS ; Charset: 3 ; Fields: Contacts::K | Contacts::First Name | Contacts::Last Name | Contacts::Company | Contacts::Title | Contacts::Job Title | Contacts::Website | Contacts::N | Contacts::D | Contacts::T | Contacts::TS | Contacts::R | Contacts::NR | Contacts::CN | Contacts::CU | Contacts::G | Contacts::Photo | Addresses::City | Contacts::AE | Contacts::S ; With dialog: Off ]
+Set Variable [ $$log ; $$log & "x_tabs_c3" & Char ( 9 ) & Get ( LastError ) & Char ( 9 ) & Get ( FoundCount ) & ¶ ]
+
+== x_tabs_c4
+Set Error Capture [ On ]
+Go to Layout [ "Contact List" ]
+Show All Records
+Set Variable [ $p0 ; Get ( DocumentsPath ) & "omprobe_x_tabs_c4.tab" ]
+Export Records [ "file:$p0" ; Type: TABS ; Charset: 4 ; Fields: Contacts::K | Contacts::First Name | Contacts::Last Name | Contacts::Company | Contacts::Title | Contacts::Job Title | Contacts::Website | Contacts::N | Contacts::D | Contacts::T | Contacts::TS | Contacts::R | Contacts::NR | Contacts::CN | Contacts::CU | Contacts::G | Contacts::Photo | Addresses::City | Contacts::AE | Contacts::S ; With dialog: Off ]
+Set Variable [ $$log ; $$log & "x_tabs_c4" & Char ( 9 ) & Get ( LastError ) & Char ( 9 ) & Get ( FoundCount ) & ¶ ]
+
+== x_tabs_c6
+Set Error Capture [ On ]
+Go to Layout [ "Contact List" ]
+Show All Records
+Set Variable [ $p0 ; Get ( DocumentsPath ) & "omprobe_x_tabs_c6.tab" ]
+Export Records [ "file:$p0" ; Type: TABS ; Charset: 6 ; Fields: Contacts::K | Contacts::First Name | Contacts::Last Name | Contacts::Company | Contacts::Title | Contacts::Job Title | Contacts::Website | Contacts::N | Contacts::D | Contacts::T | Contacts::TS | Contacts::R | Contacts::NR | Contacts::CN | Contacts::CU | Contacts::G | Contacts::Photo | Addresses::City | Contacts::AE | Contacts::S ; With dialog: Off ]
+Set Variable [ $$log ; $$log & "x_tabs_c6" & Char ( 9 ) & Get ( LastError ) & Char ( 9 ) & Get ( FoundCount ) & ¶ ]
+
+== x_tabs_c8
+Set Error Capture [ On ]
+Go to Layout [ "Contact List" ]
+Show All Records
+Set Variable [ $p0 ; Get ( DocumentsPath ) & "omprobe_x_tabs_c8.tab" ]
+Export Records [ "file:$p0" ; Type: TABS ; Charset: 8 ; Fields: Contacts::K | Contacts::First Name | Contacts::Last Name | Contacts::Company | Contacts::Title | Contacts::Job Title | Contacts::Website | Contacts::N | Contacts::D | Contacts::T | Contacts::TS | Contacts::R | Contacts::NR | Contacts::CN | Contacts::CU | Contacts::G | Contacts::Photo | Addresses::City | Contacts::AE | Contacts::S ; With dialog: Off ]
+Set Variable [ $$log ; $$log & "x_tabs_c8" & Char ( 9 ) & Get ( LastError ) & Char ( 9 ) & Get ( FoundCount ) & ¶ ]
+
+== x_tabs_c9
+Set Error Capture [ On ]
+Go to Layout [ "Contact List" ]
+Show All Records
+Set Variable [ $p0 ; Get ( DocumentsPath ) & "omprobe_x_tabs_c9.tab" ]
+Export Records [ "file:$p0" ; Type: TABS ; Charset: 9 ; Fields: Contacts::K | Contacts::First Name | Contacts::Last Name | Contacts::Company | Contacts::Title | Contacts::Job Title | Contacts::Website | Contacts::N | Contacts::D | Contacts::T | Contacts::TS | Contacts::R | Contacts::NR | Contacts::CN | Contacts::CU | Contacts::G | Contacts::Photo | Addresses::City | Contacts::AE | Contacts::S ; With dialog: Off ]
+Set Variable [ $$log ; $$log & "x_tabs_c9" & Char ( 9 ) & Get ( LastError ) & Char ( 9 ) & Get ( FoundCount ) & ¶ ]
+
+== x_tabs_c10
+Set Error Capture [ On ]
+Go to Layout [ "Contact List" ]
+Show All Records
+Set Variable [ $p0 ; Get ( DocumentsPath ) & "omprobe_x_tabs_c10.tab" ]
+Export Records [ "file:$p0" ; Type: TABS ; Charset: 10 ; Fields: Contacts::K | Contacts::First Name | Contacts::Last Name | Contacts::Company | Contacts::Title | Contacts::Job Title | Contacts::Website | Contacts::N | Contacts::D | Contacts::T | Contacts::TS | Contacts::R | Contacts::NR | Contacts::CN | Contacts::CU | Contacts::G | Contacts::Photo | Addresses::City | Contacts::AE | Contacts::S ; With dialog: Off ]
+Set Variable [ $$log ; $$log & "x_tabs_c10" & Char ( 9 ) & Get ( LastError ) & Char ( 9 ) & Get ( FoundCount ) & ¶ ]
+
+== x_coms_c3
+Set Error Capture [ On ]
+Go to Layout [ "Contact List" ]
+Show All Records
+Set Variable [ $p0 ; Get ( DocumentsPath ) & "omprobe_x_coms_c3.csv" ]
+Export Records [ "file:$p0" ; Type: COMS ; Charset: 3 ; Fields: Contacts::K | Contacts::First Name | Contacts::Last Name | Contacts::Company | Contacts::Title | Contacts::Job Title | Contacts::Website | Contacts::N | Contacts::D | Contacts::T | Contacts::TS | Contacts::R | Contacts::NR | Contacts::CN | Contacts::CU | Contacts::G | Contacts::Photo | Addresses::City | Contacts::AE | Contacts::S ; With dialog: Off ]
+Set Variable [ $$log ; $$log & "x_coms_c3" & Char ( 9 ) & Get ( LastError ) & Char ( 9 ) & Get ( FoundCount ) & ¶ ]
+
+== x_mrge_c3
+Set Error Capture [ On ]
+Go to Layout [ "Contact List" ]
+Show All Records
+Set Variable [ $p0 ; Get ( DocumentsPath ) & "omprobe_x_mrge_c3.mer" ]
+Export Records [ "file:$p0" ; Type: MRGE ; Charset: 3 ; Fields: Contacts::K | Contacts::First Name | Contacts::Last Name | Contacts::Company | Contacts::Title | Contacts::Job Title | Contacts::Website | Contacts::N | Contacts::D | Contacts::T | Contacts::TS | Contacts::R | Contacts::NR | Contacts::CN | Contacts::CU | Contacts::G | Contacts::Photo | Addresses::City | Contacts::AE | Contacts::S ; With dialog: Off ]
+Set Variable [ $$log ; $$log & "x_mrge_c3" & Char ( 9 ) & Get ( LastError ) & Char ( 9 ) & Get ( FoundCount ) & ¶ ]
+
+== x_html_c3
+Set Error Capture [ On ]
+Go to Layout [ "Contact List" ]
+Show All Records
+Set Variable [ $p0 ; Get ( DocumentsPath ) & "omprobe_x_html_c3.htm" ]
+Export Records [ "file:$p0" ; Type: HTML ; Charset: 3 ; Fields: Contacts::K | Contacts::First Name | Contacts::Last Name | Contacts::Company | Contacts::Title | Contacts::Job Title | Contacts::Website | Contacts::N | Contacts::D | Contacts::T | Contacts::TS | Contacts::R | Contacts::NR | Contacts::CN | Contacts::CU | Contacts::G | Contacts::Photo | Addresses::City | Contacts::AE | Contacts::S ; With dialog: Off ]
+Set Variable [ $$log ; $$log & "x_html_c3" & Char ( 9 ) & Get ( LastError ) & Char ( 9 ) & Get ( FoundCount ) & ¶ ]
+
+== x_xmle_c3
+Set Error Capture [ On ]
+Go to Layout [ "Contact List" ]
+Show All Records
+Set Variable [ $p0 ; Get ( DocumentsPath ) & "omprobe_x_xmle_c3.xml" ]
+Export Records [ "file:$p0" ; Type: XMLE ; Charset: 3 ; Fields: Contacts::K | Contacts::First Name | Contacts::Last Name | Contacts::Company | Contacts::Title | Contacts::Job Title | Contacts::Website | Contacts::N | Contacts::D | Contacts::T | Contacts::TS | Contacts::R | Contacts::NR | Contacts::CN | Contacts::CU | Contacts::G | Contacts::Photo | Addresses::City | Contacts::AE | Contacts::S ; With dialog: Off ]
+Set Variable [ $$log ; $$log & "x_xmle_c3" & Char ( 9 ) & Get ( LastError ) & Char ( 9 ) & Get ( FoundCount ) & ¶ ]
+
+== x_coms_c4
+Set Error Capture [ On ]
+Go to Layout [ "Contact List" ]
+Show All Records
+Set Variable [ $p0 ; Get ( DocumentsPath ) & "omprobe_x_coms_c4.csv" ]
+Export Records [ "file:$p0" ; Type: COMS ; Charset: 4 ; Fields: Contacts::K | Contacts::First Name | Contacts::Last Name | Contacts::Company | Contacts::Title | Contacts::Job Title | Contacts::Website | Contacts::N | Contacts::D | Contacts::T | Contacts::TS | Contacts::R | Contacts::NR | Contacts::CN | Contacts::CU | Contacts::G | Contacts::Photo | Addresses::City | Contacts::AE | Contacts::S ; With dialog: Off ]
+Set Variable [ $$log ; $$log & "x_coms_c4" & Char ( 9 ) & Get ( LastError ) & Char ( 9 ) & Get ( FoundCount ) & ¶ ]
+
+== x_mrge_c4
+Set Error Capture [ On ]
+Go to Layout [ "Contact List" ]
+Show All Records
+Set Variable [ $p0 ; Get ( DocumentsPath ) & "omprobe_x_mrge_c4.mer" ]
+Export Records [ "file:$p0" ; Type: MRGE ; Charset: 4 ; Fields: Contacts::K | Contacts::First Name | Contacts::Last Name | Contacts::Company | Contacts::Title | Contacts::Job Title | Contacts::Website | Contacts::N | Contacts::D | Contacts::T | Contacts::TS | Contacts::R | Contacts::NR | Contacts::CN | Contacts::CU | Contacts::G | Contacts::Photo | Addresses::City | Contacts::AE | Contacts::S ; With dialog: Off ]
+Set Variable [ $$log ; $$log & "x_mrge_c4" & Char ( 9 ) & Get ( LastError ) & Char ( 9 ) & Get ( FoundCount ) & ¶ ]
+
+== x_html_c4
+Set Error Capture [ On ]
+Go to Layout [ "Contact List" ]
+Show All Records
+Set Variable [ $p0 ; Get ( DocumentsPath ) & "omprobe_x_html_c4.htm" ]
+Export Records [ "file:$p0" ; Type: HTML ; Charset: 4 ; Fields: Contacts::K | Contacts::First Name | Contacts::Last Name | Contacts::Company | Contacts::Title | Contacts::Job Title | Contacts::Website | Contacts::N | Contacts::D | Contacts::T | Contacts::TS | Contacts::R | Contacts::NR | Contacts::CN | Contacts::CU | Contacts::G | Contacts::Photo | Addresses::City | Contacts::AE | Contacts::S ; With dialog: Off ]
+Set Variable [ $$log ; $$log & "x_html_c4" & Char ( 9 ) & Get ( LastError ) & Char ( 9 ) & Get ( FoundCount ) & ¶ ]
+
+== x_xmle_c4
+Set Error Capture [ On ]
+Go to Layout [ "Contact List" ]
+Show All Records
+Set Variable [ $p0 ; Get ( DocumentsPath ) & "omprobe_x_xmle_c4.xml" ]
+Export Records [ "file:$p0" ; Type: XMLE ; Charset: 4 ; Fields: Contacts::K | Contacts::First Name | Contacts::Last Name | Contacts::Company | Contacts::Title | Contacts::Job Title | Contacts::Website | Contacts::N | Contacts::D | Contacts::T | Contacts::TS | Contacts::R | Contacts::NR | Contacts::CN | Contacts::CU | Contacts::G | Contacts::Photo | Addresses::City | Contacts::AE | Contacts::S ; With dialog: Off ]
+Set Variable [ $$log ; $$log & "x_xmle_c4" & Char ( 9 ) & Get ( LastError ) & Char ( 9 ) & Get ( FoundCount ) & ¶ ]
+
+== x_coms_c0
+Set Error Capture [ On ]
+Go to Layout [ "Contact List" ]
+Show All Records
+Set Variable [ $p0 ; Get ( DocumentsPath ) & "omprobe_x_coms_c0.csv" ]
+Export Records [ "file:$p0" ; Type: COMS ; Charset: 0 ; Fields: Contacts::K | Contacts::First Name | Contacts::Last Name | Contacts::Company | Contacts::Title | Contacts::Job Title | Contacts::Website | Contacts::N | Contacts::D | Contacts::T | Contacts::TS | Contacts::R | Contacts::NR | Contacts::CN | Contacts::CU | Contacts::G | Contacts::Photo | Addresses::City | Contacts::AE | Contacts::S ; With dialog: Off ]
+Set Variable [ $$log ; $$log & "x_coms_c0" & Char ( 9 ) & Get ( LastError ) & Char ( 9 ) & Get ( FoundCount ) & ¶ ]
+
+== x_coms_c2
+Set Error Capture [ On ]
+Go to Layout [ "Contact List" ]
+Show All Records
+Set Variable [ $p0 ; Get ( DocumentsPath ) & "omprobe_x_coms_c2.csv" ]
+Export Records [ "file:$p0" ; Type: COMS ; Charset: 2 ; Fields: Contacts::K | Contacts::First Name | Contacts::Last Name | Contacts::Company | Contacts::Title | Contacts::Job Title | Contacts::Website | Contacts::N | Contacts::D | Contacts::T | Contacts::TS | Contacts::R | Contacts::NR | Contacts::CN | Contacts::CU | Contacts::G | Contacts::Photo | Addresses::City | Contacts::AE | Contacts::S ; With dialog: Off ]
+Set Variable [ $$log ; $$log & "x_coms_c2" & Char ( 9 ) & Get ( LastError ) & Char ( 9 ) & Get ( FoundCount ) & ¶ ]
+
+== x_dbf
+Set Error Capture [ On ]
+Go to Layout [ "Contact List" ]
+Show All Records
+Set Variable [ $p0 ; Get ( DocumentsPath ) & "omprobe_x_dbf.dbf" ]
+Export Records [ "file:$p0" ; Type: DBF ; Charset: 0 ; Fields: Contacts::K | Contacts::First Name | Contacts::Last Name | Contacts::Company | Contacts::Title | Contacts::Job Title | Contacts::Website | Contacts::N | Contacts::D | Contacts::T | Contacts::TS | Contacts::R | Contacts::NR | Contacts::CN | Contacts::CU | Contacts::G | Contacts::Photo | Addresses::City | Contacts::AE | Contacts::S ; With dialog: Off ]
+Set Variable [ $$log ; $$log & "x_dbf" & Char ( 9 ) & Get ( LastError ) & Char ( 9 ) & Get ( FoundCount ) & ¶ ]
+
+== x_xlsx
+Set Error Capture [ On ]
+Go to Layout [ "Contact List" ]
+Show All Records
+Set Variable [ $p0 ; Get ( DocumentsPath ) & "omprobe_x_xlsx.xlsx" ]
+Export Records [ "file:$p0" ; Type: XLXE ; Charset: 4 ; Fields: Contacts::K | Contacts::First Name | Contacts::Last Name | Contacts::Company | Contacts::Title | Contacts::Job Title | Contacts::Website | Contacts::N | Contacts::D | Contacts::T | Contacts::TS | Contacts::R | Contacts::NR | Contacts::CN | Contacts::CU | Contacts::G | Contacts::Photo | Addresses::City | Contacts::AE | Contacts::S ; With dialog: Off ]
+Set Variable [ $$log ; $$log & "x_xlsx" & Char ( 9 ) & Get ( LastError ) & Char ( 9 ) & Get ( FoundCount ) & ¶ ]
+
+== x_fmt
+Set Error Capture [ On ]
+Go to Layout [ "Contact List" ]
+Show All Records
+Set Variable [ $p0 ; Get ( DocumentsPath ) & "omprobe_x_fmt.tab" ]
+Export Records [ "file:$p0" ; Type: TABS ; Charset: 4 ; Formatting: On ; Fields: Contacts::K | Contacts::First Name | Contacts::Last Name | Contacts::Company | Contacts::Title | Contacts::Job Title | Contacts::Website | Contacts::N | Contacts::D | Contacts::T | Contacts::TS | Contacts::R | Contacts::NR | Contacts::CN | Contacts::CU | Contacts::G | Contacts::Photo | Addresses::City | Contacts::AE | Contacts::S ; With dialog: Off ]
+Set Variable [ $$log ; $$log & "x_fmt" & Char ( 9 ) & Get ( LastError ) & Char ( 9 ) & Get ( FoundCount ) & ¶ ]
+
+== x_grp_tabs
+Set Error Capture [ On ]
+Go to Layout [ "Contact List" ]
+Show All Records
+Sort Records [ Contacts::Company ; Contacts::First Name ]
+Set Variable [ $p0 ; Get ( DocumentsPath ) & "omprobe_x_grp_tabs.tab" ]
+Export Records [ "file:$p0" ; Type: TABS ; Charset: 4 ; Fields: Contacts::Company | Contacts::First Name | Contacts::N | Contacts::S > Contacts::Company | Contacts::SC > Contacts::Company | Contacts::S ; Group: Contacts::Company ; With dialog: Off ]
+Set Variable [ $$log ; $$log & "x_grp_tabs" & Char ( 9 ) & Get ( LastError ) & Char ( 9 ) & Get ( FoundCount ) & ¶ ]
+
+== x_grp_coms
+Set Error Capture [ On ]
+Go to Layout [ "Contact List" ]
+Show All Records
+Sort Records [ Contacts::Company ; Contacts::First Name ]
+Set Variable [ $p0 ; Get ( DocumentsPath ) & "omprobe_x_grp_coms.csv" ]
+Export Records [ "file:$p0" ; Type: COMS ; Charset: 4 ; Fields: Contacts::Company | Contacts::First Name | Contacts::N | Contacts::S > Contacts::Company | Contacts::SC > Contacts::Company | Contacts::S ; Group: Contacts::Company ; With dialog: Off ]
+Set Variable [ $$log ; $$log & "x_grp_coms" & Char ( 9 ) & Get ( LastError ) & Char ( 9 ) & Get ( FoundCount ) & ¶ ]
+
+== x_grp_mrge
+Set Error Capture [ On ]
+Go to Layout [ "Contact List" ]
+Show All Records
+Sort Records [ Contacts::Company ; Contacts::First Name ]
+Set Variable [ $p0 ; Get ( DocumentsPath ) & "omprobe_x_grp_mrge.mer" ]
+Export Records [ "file:$p0" ; Type: MRGE ; Charset: 4 ; Fields: Contacts::Company | Contacts::First Name | Contacts::N | Contacts::S > Contacts::Company | Contacts::SC > Contacts::Company | Contacts::S ; Group: Contacts::Company ; With dialog: Off ]
+Set Variable [ $$log ; $$log & "x_grp_mrge" & Char ( 9 ) & Get ( LastError ) & Char ( 9 ) & Get ( FoundCount ) & ¶ ]
+
+== x_grp_html
+Set Error Capture [ On ]
+Go to Layout [ "Contact List" ]
+Show All Records
+Sort Records [ Contacts::Company ; Contacts::First Name ]
+Set Variable [ $p0 ; Get ( DocumentsPath ) & "omprobe_x_grp_html.htm" ]
+Export Records [ "file:$p0" ; Type: HTML ; Charset: 4 ; Fields: Contacts::Company | Contacts::First Name | Contacts::N | Contacts::S > Contacts::Company | Contacts::SC > Contacts::Company | Contacts::S ; Group: Contacts::Company ; With dialog: Off ]
+Set Variable [ $$log ; $$log & "x_grp_html" & Char ( 9 ) & Get ( LastError ) & Char ( 9 ) & Get ( FoundCount ) & ¶ ]
+
+== x_grp_xmle
+Set Error Capture [ On ]
+Go to Layout [ "Contact List" ]
+Show All Records
+Sort Records [ Contacts::Company ; Contacts::First Name ]
+Set Variable [ $p0 ; Get ( DocumentsPath ) & "omprobe_x_grp_xmle.xml" ]
+Export Records [ "file:$p0" ; Type: XMLE ; Charset: 4 ; Fields: Contacts::Company | Contacts::First Name | Contacts::N | Contacts::S > Contacts::Company | Contacts::SC > Contacts::Company | Contacts::S ; Group: Contacts::Company ; With dialog: Off ]
+Set Variable [ $$log ; $$log & "x_grp_xmle" & Char ( 9 ) & Get ( LastError ) & Char ( 9 ) & Get ( FoundCount ) & ¶ ]
+
+== x_grp_xlxe
+Set Error Capture [ On ]
+Go to Layout [ "Contact List" ]
+Show All Records
+Sort Records [ Contacts::Company ; Contacts::First Name ]
+Set Variable [ $p0 ; Get ( DocumentsPath ) & "omprobe_x_grp_xlxe.xlsx" ]
+Export Records [ "file:$p0" ; Type: XLXE ; Charset: 4 ; Fields: Contacts::Company | Contacts::First Name | Contacts::N | Contacts::S > Contacts::Company | Contacts::SC > Contacts::Company | Contacts::S ; Group: Contacts::Company ; With dialog: Off ]
+Set Variable [ $$log ; $$log & "x_grp_xlxe" & Char ( 9 ) & Get ( LastError ) & Char ( 9 ) & Get ( FoundCount ) & ¶ ]
+
+== x_grp_unsorted
+Set Error Capture [ On ]
+Go to Layout [ "Contact List" ]
+Show All Records
+Set Variable [ $p0 ; Get ( DocumentsPath ) & "omprobe_x_grp_unsorted.tab" ]
+Export Records [ "file:$p0" ; Type: TABS ; Charset: 4 ; Fields: Contacts::Company | Contacts::First Name | Contacts::N | Contacts::S > Contacts::Company | Contacts::SC > Contacts::Company | Contacts::S ; Group: Contacts::Company ; With dialog: Off ]
+Set Variable [ $$log ; $$log & "x_grp_unsorted" & Char ( 9 ) & Get ( LastError ) & Char ( 9 ) & Get ( FoundCount ) & ¶ ]
+
+== x_sorted
+Set Error Capture [ On ]
+Go to Layout [ "Contact List" ]
+Show All Records
+Sort Records [ Contacts::Company ; Contacts::First Name ]
+Set Variable [ $p0 ; Get ( DocumentsPath ) & "omprobe_x_sorted.tab" ]
+Export Records [ "file:$p0" ; Type: TABS ; Charset: 4 ; Fields: Contacts::Company | Contacts::First Name | Contacts::N | Contacts::S > Contacts::Company | Contacts::SC > Contacts::Company | Contacts::S ; With dialog: Off ]
+Set Variable [ $$log ; $$log & "x_sorted" & Char ( 9 ) & Get ( LastError ) & Char ( 9 ) & Get ( FoundCount ) & ¶ ]
+
+== x_empty
+Set Error Capture [ On ]
+Go to Layout [ "Contact List" ]
+Show All Records
+Show Omitted Only
+Set Variable [ $p0 ; Get ( DocumentsPath ) & "omprobe_x_empty.tab" ]
+Export Records [ "file:$p0" ; Type: TABS ; Charset: 4 ; Fields: Contacts::K ; With dialog: Off ]
+Set Variable [ $$log ; $$log & "x_empty" & Char ( 9 ) & Get ( LastError ) & Char ( 9 ) & Get ( FoundCount ) & ¶ ]
+
+== x_nofolder
+Set Error Capture [ On ]
+Go to Layout [ "Contact List" ]
+Show All Records
+Set Variable [ $p0 ; Get ( DocumentsPath ) & "omprobe_dir/x.tab" ]
+Export Records [ "file:$p0" ; Type: TABS ; Charset: 4 ; Fields: Contacts::K ; With dialog: Off ]
+Set Variable [ $$log ; $$log & "x_nofolder" & Char ( 9 ) & Get ( LastError ) & Char ( 9 ) & Get ( FoundCount ) & ¶ ]
+
+== x_folder
+Set Error Capture [ On ]
+Go to Layout [ "Contact List" ]
+Show All Records
+Set Variable [ $p0 ; Get ( DocumentsPath ) & "omprobe_dir2/x.tab" ]
+Export Records [ "file:$p0" ; Type: TABS ; Charset: 4 ; Fields: Contacts::K ; With dialog: Off ; Create folders: On ]
+Set Variable [ $$log ; $$log & "x_folder" & Char ( 9 ) & Get ( LastError ) & Char ( 9 ) & Get ( FoundCount ) & ¶ ]
+
+== x_abs
+Set Error Capture [ On ]
+Go to Layout [ "Contact List" ]
+Show All Records
+Set Variable [ $p ; Get ( DocumentsPath ) & "omprobe_x_abs.tab" ]
+Export Records [ "file:$p" ; Type: TABS ; Charset: 4 ; Fields: Contacts::K ; With dialog: Off ]
+Set Variable [ $$log ; $$log & "x_abs" & Char ( 9 ) & Get ( LastError ) & Char ( 9 ) & Get ( FoundCount ) & ¶ ]
+
+== x_tmp
+Set Error Capture [ On ]
+Go to Layout [ "Contact List" ]
+Show All Records
+Set Variable [ $p ; Get ( TemporaryPath ) & "omprobe_x_tmp.tab" ]
+Export Records [ "file:$p" ; Type: TABS ; Charset: 4 ; Fields: Contacts::K ; With dialog: Off ]
+Set Variable [ $$log ; $$log & "x_tmp" & Char ( 9 ) & Get ( LastError ) & Char ( 9 ) & Get ( FoundCount ) & ¶ ]
+
+== x_outside
+Set Error Capture [ On ]
+Go to Layout [ "Contact List" ]
+Show All Records
+Export Records [ "file:/tmp/omprobe_x_outside.tab" ; Type: TABS ; Charset: 4 ; Fields: Contacts::K ; With dialog: Off ]
+Set Variable [ $$log ; $$log & "x_outside" & Char ( 9 ) & Get ( LastError ) & Char ( 9 ) & Get ( FoundCount ) & ¶ ]
+
+== x_second
+Set Error Capture [ On ]
+Go to Layout [ "Contact List" ]
+Show All Records
+Set Variable [ $p0 ; Get ( DocumentsPath ) & "omprobe_missing/a.tab" ]
+Set Variable [ $p1 ; Get ( DocumentsPath ) & "omprobe_x_second.tab" ]
+Export Records [ "file:$p0" ; "file:$p1" ; Type: TABS ; Charset: 4 ; Fields: Contacts::K ; With dialog: Off ]
+Set Variable [ $$log ; $$log & "x_second" & Char ( 9 ) & Get ( LastError ) & Char ( 9 ) & Get ( FoundCount ) & ¶ ]
+
+== x_over
+Set Error Capture [ On ]
+Go to Layout [ "Contact List" ]
+Show All Records
+Set Variable [ $p0 ; Get ( DocumentsPath ) & "omprobe_x_over.tab" ]
+Export Records [ "file:$p0" ; Type: TABS ; Charset: 4 ; Fields: Contacts::First Name ; With dialog: Off ]
+Set Variable [ $p0 ; Get ( DocumentsPath ) & "omprobe_x_over.tab" ]
+Export Records [ "file:$p0" ; Type: TABS ; Charset: 4 ; Fields: Contacts::K ; With dialog: Off ]
+Set Variable [ $$log ; $$log & "x_over" & Char ( 9 ) & Get ( LastError ) & Char ( 9 ) & Get ( FoundCount ) & ¶ ]
+
+== x_nofields
+Set Error Capture [ On ]
+Go to Layout [ "Contact List" ]
+Show All Records
+Set Variable [ $p0 ; Get ( DocumentsPath ) & "omprobe_x_nofields.tab" ]
+Export Records [ "file:$p0" ; Type: TABS ; Charset: 4 ; With dialog: Off ]
+Set Variable [ $$log ; $$log & "x_nofields" & Char ( 9 ) & Get ( LastError ) & Char ( 9 ) & Get ( FoundCount ) & ¶ ]
+
+== x_rel
+Set Error Capture [ On ]
+Go to Layout [ "Contact List" ]
+Show All Records
+Export Records [ "file:omprobe_x_rel.tab" ; Type: TABS ; Charset: 4 ; Fields: Contacts::K ; With dialog: Off ]
+Set Variable [ $$log ; $$log & "x_rel" & Char ( 9 ) & Get ( LastError ) & Char ( 9 ) & Get ( FoundCount ) & ¶ ]
+Export Records [ "omprobe_x_rel2.tab" ; Type: TABS ; Charset: 4 ; Fields: Contacts::K ; With dialog: Off ]
+Set Variable [ $$log ; $$log & "x_rel2" & Char ( 9 ) & Get ( LastError ) & Char ( 9 ) & Get ( FoundCount ) & ¶ ]
+Set Variable [ $p0 ; "omprobe_x_rel3.tab" ]
+Export Records [ "file:$p0" ; Type: TABS ; Charset: 4 ; Fields: Contacts::K ; With dialog: Off ]
+Set Variable [ $$log ; $$log & "x_rel3" & Char ( 9 ) & Get ( LastError ) & Char ( 9 ) & Get ( FoundCount ) & ¶ ]
+
+== Run
+Perform Script [ "Setup" ]
+Perform Script [ "x_tabs_c0" ]
+Perform Script [ "x_tabs_c1" ]
+Perform Script [ "x_tabs_c2" ]
+Perform Script [ "x_tabs_c3" ]
+Perform Script [ "x_tabs_c4" ]
+Perform Script [ "x_tabs_c6" ]
+Perform Script [ "x_tabs_c8" ]
+Perform Script [ "x_tabs_c9" ]
+Perform Script [ "x_tabs_c10" ]
+Perform Script [ "x_coms_c3" ]
+Perform Script [ "x_mrge_c3" ]
+Perform Script [ "x_html_c3" ]
+Perform Script [ "x_xmle_c3" ]
+Perform Script [ "x_coms_c4" ]
+Perform Script [ "x_mrge_c4" ]
+Perform Script [ "x_html_c4" ]
+Perform Script [ "x_xmle_c4" ]
+Perform Script [ "x_coms_c0" ]
+Perform Script [ "x_coms_c2" ]
+Perform Script [ "x_dbf" ]
+Perform Script [ "x_xlsx" ]
+Perform Script [ "x_fmt" ]
+Perform Script [ "x_grp_tabs" ]
+Perform Script [ "x_grp_coms" ]
+Perform Script [ "x_grp_mrge" ]
+Perform Script [ "x_grp_html" ]
+Perform Script [ "x_grp_xmle" ]
+Perform Script [ "x_grp_xlxe" ]
+Perform Script [ "x_grp_unsorted" ]
+Perform Script [ "x_sorted" ]
+Perform Script [ "x_empty" ]
+Perform Script [ "x_nofolder" ]
+Perform Script [ "x_folder" ]
+Perform Script [ "x_abs" ]
+Perform Script [ "x_tmp" ]
+Perform Script [ "x_outside" ]
+Perform Script [ "x_second" ]
+Perform Script [ "x_over" ]
+Perform Script [ "x_nofields" ]
+Perform Script [ "x_rel" ]
+Go to Layout [ "Contact List" ]
+Show All Records
+Show Omitted Only
+New Record/Request
+Set Field [ Contacts::VNE ; "log" ]
+Set Field [ Contacts::VU ; "log" ]
+Set Field [ Contacts::LOG ; $$log & "paths" & Char ( 9 ) & Get ( DocumentsPath ) & Char ( 9 ) & Get ( TemporaryPath ) & Char ( 9 ) & Get ( ApplicationVersion ) & Char ( 9 ) & Get ( SystemPlatform ) ]
+Commit Records/Requests [ With dialog: Off ]
+Set Variable [ $p0 ; Get ( DocumentsPath ) & "omprobe_log.tab" ]
+Export Records [ "file:$p0" ; Type: TABS ; Charset: 4 ; Fields: Contacts::LOG ; With dialog: Off ]
+Exit Script [ $$log ]
+
+--- run
+Setup		Get ( FoundCount )	Get ( LastError )	$$log
+Run		Get ( FoundCount )	Get ( LastError )

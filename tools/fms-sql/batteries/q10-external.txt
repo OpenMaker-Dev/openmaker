@@ -1,0 +1,18 @@
+# q10: occurrences of another file and calculated fields. File: MBS example
+# "Event Management with Audit": AuditLog is an occurrence of a table in the
+# file Event_Management_AuditLog, which is not open; the other occurrences
+# hold one record each. No record context.
+ExecuteSQL ( "SELECT TableName, BaseTableName, BaseFileName FROM FileMaker_Tables" ; "|" ; "¶" )
+ExecuteSQL ( "SELECT FieldName, FieldType FROM FileMaker_Fields WHERE TableName = 'AuditLog'" ; "|" ; "¶" )
+ExecuteSQLe ( "SELECT COUNT(*) FROM AuditLog" ; "|" ; "¶" )
+ExecuteSQLe ( "SELECT * FROM AuditLog" ; "|" ; "¶" )
+ExecuteSQLe ( "SELECT Taskz FROM AuditLog" ; "|" ; "¶" )
+ExecuteSQLe ( "SELECT * FROM Events" ; "|" ; "¶" )
+ExecuteSQLe ( "SELECT Event, \"Date\", \"Task Number | All\", \"Guest Number | All\", \"Time Frame\" FROM Events" ; "|" ; "¶" )
+ExecuteSQLe ( "SELECT * FROM Tasks" ; "|" ; "¶" )
+ExecuteSQLe ( "SELECT * FROM \"Venue Looked Up\"" ; "|" ; "¶" )
+ExecuteSQLe ( "SELECT COUNT(*) FROM \"Guests | Contacts\"" ; "|" ; "¶" )
+ExecuteSQLe ( "SELECT * FROM Contacts" ; "|" ; "¶" )
+ExecuteSQLe ( "SELECT \"Sort Selection\", \"Sort List Key\", \"Address Short\", Initial FROM Contacts" ; "|" ; "¶" )
+ExecuteSQLe ( "SELECT e.Event, t.Task FROM Events e JOIN Tasks t ON t.\"EVENT ID MATCH FIELD\" = e.\"EVENT ID MATCH FIELD\"" ; "|" ; "¶" )
+ExecuteSQLe ( "SELECT COUNT(*) FROM Events e, Tasks t, Guests g, Contacts c, Contributors x" ; "|" ; "¶" )

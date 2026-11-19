@@ -1,0 +1,20 @@
+# Follow-up of s34-containers-release: Delete All Records over a found set
+# without the first record (Omit Record): whether the library goes when
+# records remain (the run copy's [80 02, 1f]). Base file: contacts-en.
+== fill
+New Record/Request
+Set Field [ Contacts::Photo ; Base64Decode ( "c2hhcmVk" ; "shared.txt" ) ]
+New Record/Request
+Set Field [ Contacts::Photo ; Base64Decode ( "c2hhcmVk" ; "shared.txt" ) ]
+New Record/Request
+Set Field [ Contacts::Photo ; Base64Decode ( "b3du" ; "own.txt" ) ]
+Commit Records/Requests [ With dialog: Off ]
+Exit Script [ Get ( TotalRecordCount ) ]
+== partial
+Go to Record/Request/Page [ First ]
+Omit Record
+Delete All Records [ With dialog: Off ]
+Exit Script [ Get ( LastError ) & "|" & Get ( TotalRecordCount ) ]
+--- run
+fill
+partial

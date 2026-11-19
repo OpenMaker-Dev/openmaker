@@ -1,0 +1,52 @@
+# scan txe set field calc field on: open 0 load 0 scan 0 commit 0; index:id=value (0-based): 0:141=0 1:205=5 2:7=0 3:76=0 4:141=0 5:206=5 6:103=0
+# scan txe set field calc field off: open 0 load 0 scan 0 commit 0; index:id=value (0-based): 0:141=0 1:223=0 2:205=6 3:7=0 4:76=0 5:141=0 6:206=6 7:103=0
+# scan txe navigation error: open 0 load 0 scan 0 commit 0; index:id=value (0-based): 0:141=0 1:205=6 2:7=0 3:16=4 4:93=0 5:141=0 6:206=6 7:103=0
+# scan txe set field outside: open 0 load 0 scan 0 commit 0; index:id=value (0-based): 0:76=0 1:103=0
+# scan txe sub data error: open 0 load 0 scan 0 commit 0; index:id=value (0-based): 0:141=0 1:205=5 2:7=0 3:1=0 4:141=0 5:206=5 6:103=0
+# scan txe sub sets calc field: open 0 load 0 scan 0 commit 0; index:id=value (0-based): 0:76=0 1:141=0
+# scan: close 13
+txe set field outside		201	201	201	201
+!	201	work : txe set field outside : 1 : Set Field
+>	1	txe set field outside	1	76	201	0	0	201
+>	1	txe set field outside	2	103	0	0	1	201
+txe set field calc field on		201	201\r[]\rtxe set field calc field on/Commit Transaction/6\rtxe set field calc field on\rSet Field\r4\r0\r0	201	201	txe set field calc field on\rCommit Transaction\r6	txe set field calc field on\rSet Field\r4
+>	1	txe set field calc field on	1	141	0	0	0	0
+>	1	txe set field calc field on	2	205	0	0	0	0
+>	1	txe set field calc field on	3	7	0	0	0	0
+!	201	work : txe set field calc field on : 4 : Set Field
+>	1	txe set field calc field on	4	76	201	0	0	201
+>	1	txe set field calc field on	5	141	0	0	1	201
+>	1	txe set field calc field on	6	206	201	0	1	201
+>	1	txe set field calc field on	7	103	0	0	1	201
+txe set field calc field off		0	0\r[not skipped]\r0\r1	0	0
+>	1	txe set field calc field off	1	141	0	0	0	0
+>	1	txe set field calc field off	2	223	0	0	0	0
+>	1	txe set field calc field off	3	205	0	0	0	0
+>	1	txe set field calc field off	4	7	0	0	0	0
+!	201	work : txe set field calc field off : 5 : Set Field
+>	1	txe set field calc field off	5	76	201	0	0	201
+>	1	txe set field calc field off	6	141	0	0	0	0
+>	1	txe set field calc field off	7	206	0	0	0	0
+>	1	txe set field calc field off	8	103	0	0	1	0
+txe navigation error		0	0\r[not skipped]\r1\r2	0	0
+>	1	txe navigation error	1	141	0	0	0	0
+>	1	txe navigation error	2	205	0	0	0	0
+>	1	txe navigation error	3	7	0	0	0	0
+!	101	work : txe navigation error : 4 : Go to Record/Request/Page
+>	1	txe navigation error	4	16	101	0	0	101
+!	3	work : txe navigation error : 5 : Beep
+>	1	txe navigation error	5	93	3	0	0	3
+>	1	txe navigation error	6	141	0	0	0	0
+>	1	txe navigation error	7	206	0	0	0	0
+>	1	txe navigation error	8	103	0	0	1	0
+txe sub data error		201	201\r[]\r[]\r2\r2	201	201
+>	1	txe sub data error	1	141	0	0	0	0
+>	1	txe sub data error	2	205	0	0	0	0
+>	1	txe sub data error	3	7	0	0	0	0
+>	1	txe sub data error	4	1	0	0	0	0
+!	201	work : txe sub sets calc field : 1 : Set Field
+>	2	txe sub sets calc field	1	76	201	0	0	201
+>	2	txe sub sets calc field	2	141	0	0	1	201
+>	1	txe sub data error	5	141	0	0	1	201
+>	1	txe sub data error	6	206	201	0	1	201
+>	1	txe sub data error	7	103	0	0	1	201

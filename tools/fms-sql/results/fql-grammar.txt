@@ -1,0 +1,1379 @@
+// lexer grammar FQLSQLLexer: 303 rules, ATN of 2739 states, 28 decisions
+ABSOLUTE_
+    : [Aa] [Bb] [Ss] [Oo] [Ll] [Uu] [Tt] [Ee]
+    ;
+ACTION
+    : [Aa] [Cc] [Tt] [Ii] [Oo] [Nn]
+    ;
+ADD
+    : [Aa] [Dd] [Dd]
+    ;
+ALL
+    : [Aa] [Ll] [Ll]
+    ;
+ALLOCATE
+    : [Aa] [Ll] [Ll] [Oo] [Cc] [Aa] [Tt] [Ee]
+    ;
+ALTER
+    : [Aa] [Ll] [Tt] [Ee] [Rr]
+    ;
+AND
+    : [Aa] [Nn] [Dd]
+    ;
+ANY
+    : [Aa] [Nn] [Yy]
+    ;
+ARE
+    : [Aa] [Rr] [Ee]
+    ;
+AS
+    : [Aa] [Ss]
+    ;
+ASC
+    : [Aa] [Ss] [Cc]
+    ;
+ASSERTION
+    : [Aa] [Ss] [Ss] [Ee] [Rr] [Tt] [Ii] [Oo] [Nn]
+    ;
+AT
+    : [Aa] [Tt]
+    ;
+AUTHORIZATION
+    : [Aa] [Uu] [Tt] [Hh] [Oo] [Rr] [Ii] [Zz] [Aa] [Tt] [Ii] [Oo] [Nn]
+    ;
+AVG
+    : [Aa] [Vv] [Gg]
+    ;
+BEGIN
+    : [Bb] [Ee] [Gg] [Ii] [Nn]
+    ;
+BETWEEN
+    : [Bb] [Ee] [Tt] [Ww] [Ee] [Ee] [Nn]
+    ;
+BINARY
+    : [Bb] [Ii] [Nn] [Aa] [Rr] [Yy]
+    ;
+BIT
+    : [Bb] [Ii] [Tt]
+    ;
+BIT_LENGTH
+    : [Bb] [Ii] [Tt] '_' [Ll] [Ee] [Nn] [Gg] [Tt] [Hh]
+    ;
+BLOB
+    : [Bb] [Ll] [Oo] [Bb]
+    ;
+BOOLEAN
+    : [Bb] [Oo] [Oo] [Ll] [Ee] [Aa] [Nn]
+    ;
+BOTH
+    : [Bb] [Oo] [Tt] [Hh]
+    ;
+BY
+    : [Bb] [Yy]
+    ;
+CASCADE
+    : [Cc] [Aa] [Ss] [Cc] [Aa] [Dd] [Ee]
+    ;
+CASCADED
+    : [Cc] [Aa] [Ss] [Cc] [Aa] [Dd] [Ee] [Dd]
+    ;
+CASE
+    : [Cc] [Aa] [Ss] [Ee]
+    ;
+CAST
+    : [Cc] [Aa] [Ss] [Tt]
+    ;
+CATALOG
+    : [Cc] [Aa] [Tt] [Aa] [Ll] [Oo] [Gg]
+    ;
+CHAR
+    : [Cc] [Hh] [Aa] [Rr]
+    ;
+CHARACTER
+    : [Cc] [Hh] [Aa] [Rr] [Aa] [Cc] [Tt] [Ee] [Rr]
+    ;
+CHAR_LENGTH
+    : [Cc] [Hh] [Aa] [Rr] '_' [Ll] [Ee] [Nn] [Gg] [Tt] [Hh]
+    ;
+CHARACTER_LENGTH
+    : [Cc] [Hh] [Aa] [Rr] [Aa] [Cc] [Tt] [Ee] [Rr] '_' [Ll] [Ee] [Nn] [Gg] [Tt] [Hh]
+    ;
+CHR
+    : [Cc] [Hh] [Rr]
+    ;
+CHECK
+    : [Cc] [Hh] [Ee] [Cc] [Kk]
+    ;
+CLOSE
+    : [Cc] [Ll] [Oo] [Ss] [Ee]
+    ;
+COALESCE
+    : [Cc] [Oo] [Aa] [Ll] [Ee] [Ss] [Cc] [Ee]
+    ;
+COLLATE
+    : [Cc] [Oo] [Ll] [Ll] [Aa] [Tt] [Ee]
+    ;
+COLLATION
+    : [Cc] [Oo] [Ll] [Ll] [Aa] [Tt] [Ii] [Oo] [Nn]
+    ;
+COLON
+    : ':'
+    ;
+COLUMN
+    : [Cc] [Oo] [Ll] [Uu] [Mm] [Nn]
+    ;
+COMMIT
+    : [Cc] [Oo] [Mm] [Mm] [Ii] [Tt]
+    ;
+CONNECT
+    : [Cc] [Oo] [Nn] [Nn] [Ee] [Cc] [Tt]
+    ;
+CONNECTION
+    : [Cc] [Oo] [Nn] [Nn] [Ee] [Cc] [Tt] [Ii] [Oo] [Nn]
+    ;
+CONSTRAINT
+    : [Cc] [Oo] [Nn] [Ss] [Tt] [Rr] [Aa] [Ii] [Nn] [Tt]
+    ;
+CONSTRAINTS
+    : [Cc] [Oo] [Nn] [Ss] [Tt] [Rr] [Aa] [Ii] [Nn] [Tt] [Ss]
+    ;
+CONTINUE
+    : [Cc] [Oo] [Nn] [Tt] [Ii] [Nn] [Uu] [Ee]
+    ;
+CONVERT
+    : [Cc] [Oo] [Nn] [Vv] [Ee] [Rr] [Tt]
+    ;
+CORRESPONDING
+    : [Cc] [Oo] [Rr] [Rr] [Ee] [Ss] [Pp] [Oo] [Nn] [Dd] [Ii] [Nn] [Gg]
+    ;
+COUNT
+    : [Cc] [Oo] [Uu] [Nn] [Tt]
+    ;
+CREATE
+    : [Cc] [Rr] [Ee] [Aa] [Tt] [Ee]
+    ;
+CROSS
+    : [Cc] [Rr] [Oo] [Ss] [Ss]
+    ;
+CURDATE
+    : [Cc] [Uu] [Rr] [Dd] [Aa] [Tt] [Ee]
+    ;
+CURRENT
+    : [Cc] [Uu] [Rr] [Rr] [Ee] [Nn] [Tt]
+    ;
+CURRENT_DATE
+    : [Cc] [Uu] [Rr] [Rr] [Ee] [Nn] [Tt] '_' [Dd] [Aa] [Tt] [Ee]
+    ;
+CURRENT_TIME
+    : [Cc] [Uu] [Rr] [Rr] [Ee] [Nn] [Tt] '_' [Tt] [Ii] [Mm] [Ee]
+    ;
+CURRENT_TIMESTAMP
+    : [Cc] [Uu] [Rr] [Rr] [Ee] [Nn] [Tt] '_' [Tt] [Ii] [Mm] [Ee] [Ss] [Tt] [Aa] [Mm] [Pp]
+    ;
+CURRENT_USER
+    : [Cc] [Uu] [Rr] [Rr] [Ee] [Nn] [Tt] '_' [Uu] [Ss] [Ee] [Rr]
+    ;
+CURSOR
+    : [Cc] [Uu] [Rr] [Ss] [Oo] [Rr]
+    ;
+CURTIME
+    : [Cc] [Uu] [Rr] [Tt] [Ii] [Mm] [Ee]
+    ;
+CURTIMESTAMP
+    : [Cc] [Uu] [Rr] [Tt] [Ii] [Mm] [Ee] [Ss] [Tt] [Aa] [Mm] [Pp]
+    ;
+DATE
+    : [Dd] [Aa] [Tt] [Ee]
+    ;
+DATEVAL
+    : [Dd] [Aa] [Tt] [Ee] [Vv] [Aa] [Ll]
+    ;
+DAY
+    : [Dd] [Aa] [Yy]
+    ;
+DAYNAME
+    : [Dd] [Aa] [Yy] [Nn] [Aa] [Mm] [Ee]
+    ;
+DAYOFWEEK
+    : [Dd] [Aa] [Yy] [Oo] [Ff] [Ww] [Ee] [Ee] [Kk]
+    ;
+DEALLOCATE
+    : [Dd] [Ee] [Aa] [Ll] [Ll] [Oo] [Cc] [Aa] [Tt] [Ee]
+    ;
+DEC
+    : [Dd] [Ee] [Cc]
+    ;
+DECIMAL
+    : [Dd] [Ee] [Cc] [Ii] [Mm] [Aa] [Ll]
+    ;
+DECLARE
+    : [Dd] [Ee] [Cc] [Ll] [Aa] [Rr] [Ee]
+    ;
+DEFAULT
+    : [Dd] [Ee] [Ff] [Aa] [Uu] [Ll] [Tt]
+    ;
+DEFERRABLE
+    : [Dd] [Ee] [Ff] [Ee] [Rr] [Rr] [Aa] [Bb] [Ll] [Ee]
+    ;
+DEFERRED
+    : [Dd] [Ee] [Ff] [Ee] [Rr] [Rr] [Ee] [Dd]
+    ;
+DELETE_
+    : [Dd] [Ee] [Ll] [Ee] [Tt] [Ee]
+    ;
+DESC
+    : [Dd] [Ee] [Ss] [Cc]
+    ;
+DESCRIBE
+    : [Dd] [Ee] [Ss] [Cc] [Rr] [Ii] [Bb] [Ee]
+    ;
+DESCRIPTOR
+    : [Dd] [Ee] [Ss] [Cc] [Rr] [Ii] [Pp] [Tt] [Oo] [Rr]
+    ;
+DIAGNOSTICS
+    : [Dd] [Ii] [Aa] [Gg] [Nn] [Oo] [Ss] [Tt] [Ii] [Cc] [Ss]
+    ;
+DISCONNECT
+    : [Dd] [Ii] [Ss] [Cc] [Oo] [Nn] [Nn] [Ee] [Cc] [Tt]
+    ;
+DISTINCT
+    : [Dd] [Ii] [Ss] [Tt] [Ii] [Nn] [Cc] [Tt]
+    ;
+DOMAIN_
+    : [Dd] [Oo] [Mm] [Aa] [Ii] [Nn]
+    ;
+DOUBLE
+    : [Dd] [Oo] [Uu] [Bb] [Ll] [Ee]
+    ;
+DROP
+    : [Dd] [Rr] [Oo] [Pp]
+    ;
+ELSE
+    : [Ee] [Ll] [Ss] [Ee]
+    ;
+END
+    : [Ee] [Nn] [Dd]
+    ;
+END_EXEC
+    : [Ee] [Nn] [Dd] '-' [Ee] [Xx] [Ee] [Cc]
+    ;
+ESCAPE
+    : [Ee] [Ss] [Cc] [Aa] [Pp] [Ee]
+    ;
+EVERY
+    : [Ee] [Vv] [Ee] [Rr] [Yy]
+    ;
+EXCEPT
+    : [Ee] [Xx] [Cc] [Ee] [Pp] [Tt]
+    ;
+EXCEPTION_
+    : [Ee] [Xx] [Cc] [Ee] [Pp] [Tt] [Ii] [Oo] [Nn]
+    ;
+EXEC
+    : [Ee] [Xx] [Ee] [Cc]
+    ;
+EXECUTE
+    : [Ee] [Xx] [Ee] [Cc] [Uu] [Tt] [Ee]
+    ;
+EXISTS
+    : [Ee] [Xx] [Ii] [Ss] [Tt] [Ss]
+    ;
+EXTERNAL
+    : [Ee] [Xx] [Tt] [Ee] [Rr] [Nn] [Aa] [Ll]
+    ;
+EXTRACT
+    : [Ee] [Xx] [Tt] [Rr] [Aa] [Cc] [Tt]
+    ;
+FQL_FALSE
+    : [Ff] [Aa] [Ll] [Ss] [Ee]
+    ;
+FETCH
+    : [Ff] [Ee] [Tt] [Cc] [Hh]
+    ;
+FIRST
+    : [Ff] [Ii] [Rr] [Ss] [Tt]
+    ;
+FLOAT
+    : [Ff] [Ll] [Oo] [Aa] [Tt]
+    ;
+FOR
+    : [Ff] [Oo] [Rr]
+    ;
+FOREIGN
+    : [Ff] [Oo] [Rr] [Ee] [Ii] [Gg] [Nn]
+    ;
+FOUND
+    : [Ff] [Oo] [Uu] [Nn] [Dd]
+    ;
+FROM
+    : [Ff] [Rr] [Oo] [Mm]
+    ;
+FULL
+    : [Ff] [Uu] [Ll] [Ll]
+    ;
+GET
+    : [Gg] [Ee] [Tt]
+    ;
+GETAS
+    : [Gg] [Ee] [Tt] [Aa] [Ss]
+    ;
+GLOBAL
+    : [Gg] [Ll] [Oo] [Bb] [Aa] [Ll]
+    ;
+GO
+    : [Gg] [Oo]
+    ;
+GOTO
+    : [Gg] [Oo] [Tt] [Oo]
+    ;
+GRANT
+    : [Gg] [Rr] [Aa] [Nn] [Tt]
+    ;
+GROUP
+    : [Gg] [Rr] [Oo] [Uu] [Pp]
+    ;
+HAVING
+    : [Hh] [Aa] [Vv] [Ii] [Nn] [Gg]
+    ;
+HOUR
+    : [Hh] [Oo] [Uu] [Rr]
+    ;
+IDENTITY
+    : [Ii] [Dd] [Ee] [Nn] [Tt] [Ii] [Tt] [Yy]
+    ;
+IMMEDIATE
+    : [Ii] [Mm] [Mm] [Ee] [Dd] [Ii] [Aa] [Tt] [Ee]
+    ;
+IN_
+    : [Ii] [Nn]
+    ;
+INDEX_
+    : [Ii] [Nn] [Dd] [Ee] [Xx]
+    ;
+INDICATOR
+    : [Ii] [Nn] [Dd] [Ii] [Cc] [Aa] [Tt] [Oo] [Rr]
+    ;
+INITIALLY
+    : [Ii] [Nn] [Ii] [Tt] [Ii] [Aa] [Ll] [Ll] [Yy]
+    ;
+INNER
+    : [Ii] [Nn] [Nn] [Ee] [Rr]
+    ;
+INPUT_
+    : [Ii] [Nn] [Pp] [Uu] [Tt]
+    ;
+INSENSITIVE
+    : [Ii] [Nn] [Ss] [Ee] [Nn] [Ss] [Ii] [Tt] [Ii] [Vv] [Ee]
+    ;
+INSERT
+    : [Ii] [Nn] [Ss] [Ee] [Rr] [Tt]
+    ;
+INT
+    : [Ii] [Nn] [Tt]
+    ;
+INTEGER
+    : [Ii] [Nn] [Tt] [Ee] [Gg] [Ee] [Rr]
+    ;
+INTERSECT
+    : [Ii] [Nn] [Tt] [Ee] [Rr] [Ss] [Ee] [Cc] [Tt]
+    ;
+INTERVAL
+    : [Ii] [Nn] [Tt] [Ee] [Rr] [Vv] [Aa] [Ll]
+    ;
+INTO
+    : [Ii] [Nn] [Tt] [Oo]
+    ;
+IS
+    : [Ii] [Ss]
+    ;
+ISOLATION
+    : [Ii] [Ss] [Oo] [Ll] [Aa] [Tt] [Ii] [Oo] [Nn]
+    ;
+JOIN
+    : [Jj] [Oo] [Ii] [Nn]
+    ;
+KEY
+    : [Kk] [Ee] [Yy]
+    ;
+LANGUAGE
+    : [Ll] [Aa] [Nn] [Gg] [Uu] [Aa] [Gg] [Ee]
+    ;
+LAST
+    : [Ll] [Aa] [Ss] [Tt]
+    ;
+LEADING
+    : [Ll] [Ee] [Aa] [Dd] [Ii] [Nn] [Gg]
+    ;
+LEFT
+    : [Ll] [Ee] [Ff] [Tt]
+    ;
+LENGTH
+    : [Ll] [Ee] [Nn] [Gg] [Tt] [Hh]
+    ;
+FEWER_FOLDERS
+    : [Ff] [Ee] [Ww] [Ee] [Rr] '_' [Ff] [Oo] [Ll] [Dd] [Ee] [Rr] [Ss]
+    ;
+LEVEL
+    : [Ll] [Ee] [Vv] [Ee] [Ll]
+    ;
+LIKE
+    : [Ll] [Ii] [Kk] [Ee]
+    ;
+LOCAL
+    : [Ll] [Oo] [Cc] [Aa] [Ll]
+    ;
+LONGVARBINARY
+    : [Ll] [Oo] [Nn] [Gg] [Vv] [Aa] [Rr] [Bb] [Ii] [Nn] [Aa] [Rr] [Yy]
+    ;
+LOWER
+    : [Ll] [Oo] [Ww] [Ee] [Rr]
+    ;
+LTRIM
+    : [Ll] [Tt] [Rr] [Ii] [Mm]
+    ;
+MATCH
+    : [Mm] [Aa] [Tt] [Cc] [Hh]
+    ;
+MAX_
+    : [Mm] [Aa] [Xx]
+    ;
+MIN_
+    : [Mm] [Ii] [Nn]
+    ;
+MINUTE
+    : [Mm] [Ii] [Nn] [Uu] [Tt] [Ee]
+    ;
+MODULE
+    : [Mm] [Oo] [Dd] [Uu] [Ll] [Ee]
+    ;
+MONTH
+    : [Mm] [Oo] [Nn] [Tt] [Hh]
+    ;
+MONTHNAME
+    : [Mm] [Oo] [Nn] [Tt] [Hh] [Nn] [Aa] [Mm] [Ee]
+    ;
+NAMES
+    : [Nn] [Aa] [Mm] [Ee] [Ss]
+    ;
+NATURAL
+    : [Nn] [Aa] [Tt] [Uu] [Rr] [Aa] [Ll]
+    ;
+NCHAR
+    : [Nn] [Cc] [Hh] [Aa] [Rr]
+    ;
+NEXT
+    : [Nn] [Ee] [Xx] [Tt]
+    ;
+NO
+    : [Nn] [Oo]
+    ;
+NOT
+    : [Nn] [Oo] [Tt]
+    ;
+NULL_
+    : [Nn] [Uu] [Ll] [Ll]
+    ;
+NULLIF
+    : [Nn] [Uu] [Ll] [Ll] [Ii] [Ff]
+    ;
+NUMERIC
+    : [Nn] [Uu] [Mm] [Ee] [Rr] [Ii] [Cc]
+    ;
+NUMVAL
+    : [Nn] [Uu] [Mm] [Vv] [Aa] [Ll]
+    ;
+OCTET_LENGTH
+    : [Oo] [Cc] [Tt] [Ee] [Tt] '_' [Ll] [Ee] [Nn] [Gg] [Tt] [Hh]
+    ;
+OF
+    : [Oo] [Ff]
+    ;
+OFFSET
+    : [Oo] [Ff] [Ff] [Ss] [Ee] [Tt]
+    ;
+ON
+    : [Oo] [Nn]
+    ;
+ONLY
+    : [Oo] [Nn] [Ll] [Yy]
+    ;
+OPEN
+    : [Oo] [Pp] [Ee] [Nn]
+    ;
+OPTION
+    : [Oo] [Pp] [Tt] [Ii] [Oo] [Nn]
+    ;
+OR
+    : [Oo] [Rr]
+    ;
+ORDER
+    : [Oo] [Rr] [Dd] [Ee] [Rr]
+    ;
+OUTER
+    : [Oo] [Uu] [Tt] [Ee] [Rr]
+    ;
+OUTPUT
+    : [Oo] [Uu] [Tt] [Pp] [Uu] [Tt]
+    ;
+OVERLAPS
+    : [Oo] [Vv] [Ee] [Rr] [Ll] [Aa] [Pp] [Ss]
+    ;
+PAD
+    : [Pp] [Aa] [Dd]
+    ;
+PART
+    : [Pp] [Aa] [Rr] [Tt]
+    ;
+PARTIAL
+    : [Pp] [Aa] [Rr] [Tt] [Ii] [Aa] [Ll]
+    ;
+PERCENT
+    : [Pp] [Ee] [Rr] [Cc] [Ee] [Nn] [Tt]
+    ;
+POSITION
+    : [Pp] [Oo] [Ss] [Ii] [Tt] [Ii] [Oo] [Nn]
+    ;
+PRECISION
+    : [Pp] [Rr] [Ee] [Cc] [Ii] [Ss] [Ii] [Oo] [Nn]
+    ;
+PREPARE
+    : [Pp] [Rr] [Ee] [Pp] [Aa] [Rr] [Ee]
+    ;
+PRESERVE
+    : [Pp] [Rr] [Ee] [Ss] [Ee] [Rr] [Vv] [Ee]
+    ;
+PRIMARY
+    : [Pp] [Rr] [Ii] [Mm] [Aa] [Rr] [Yy]
+    ;
+PRIOR
+    : [Pp] [Rr] [Ii] [Oo] [Rr]
+    ;
+PRIVILEGES
+    : [Pp] [Rr] [Ii] [Vv] [Ii] [Ll] [Ee] [Gg] [Ee] [Ss]
+    ;
+PROCEDURE
+    : [Pp] [Rr] [Oo] [Cc] [Ee] [Dd] [Uu] [Rr] [Ee]
+    ;
+PUBLIC
+    : [Pp] [Uu] [Bb] [Ll] [Ii] [Cc]
+    ;
+PUTAS
+    : [Pp] [Uu] [Tt] [Aa] [Ss]
+    ;
+RANDOM
+    : [Rr] [Aa] [Nn] [Dd] [Oo] [Mm]
+    ;
+READ
+    : [Rr] [Ee] [Aa] [Dd]
+    ;
+REAL
+    : [Rr] [Ee] [Aa] [Ll]
+    ;
+REFERENCES
+    : [Rr] [Ee] [Ff] [Ee] [Rr] [Ee] [Nn] [Cc] [Ee] [Ss]
+    ;
+RELATIVE_
+    : [Rr] [Ee] [Ll] [Aa] [Tt] [Ii] [Vv] [Ee]
+    ;
+RENAME
+    : [Rr] [Ee] [Nn] [Aa] [Mm] [Ee]
+    ;
+RESTRICT
+    : [Rr] [Ee] [Ss] [Tt] [Rr] [Ii] [Cc] [Tt]
+    ;
+REVOKE
+    : [Rr] [Ee] [Vv] [Oo] [Kk] [Ee]
+    ;
+RIGHT
+    : [Rr] [Ii] [Gg] [Hh] [Tt]
+    ;
+ROLLBACK
+    : [Rr] [Oo] [Ll] [Ll] [Bb] [Aa] [Cc] [Kk]
+    ;
+ROUND
+    : [Rr] [Oo] [Uu] [Nn] [Dd]
+    ;
+ROW
+    : [Rr] [Oo] [Ww]
+    ;
+ROWS
+    : [Rr] [Oo] [Ww] [Ss]
+    ;
+ROWID
+    : [Rr] [Oo] [Ww] [Ii] [Dd]
+    ;
+RTRIM
+    : [Rr] [Tt] [Rr] [Ii] [Mm]
+    ;
+SCHEMA
+    : [Ss] [Cc] [Hh] [Ee] [Mm] [Aa]
+    ;
+SCROLL
+    : [Ss] [Cc] [Rr] [Oo] [Ll] [Ll]
+    ;
+SECOND
+    : [Ss] [Ee] [Cc] [Oo] [Nn] [Dd]
+    ;
+SECTION
+    : [Ss] [Ee] [Cc] [Tt] [Ii] [Oo] [Nn]
+    ;
+SECURE
+    : [Ss] [Ee] [Cc] [Uu] [Rr] [Ee]
+    ;
+SELECT
+    : [Ss] [Ee] [Ll] [Ee] [Cc] [Tt]
+    ;
+SESSION
+    : [Ss] [Ee] [Ss] [Ss] [Ii] [Oo] [Nn]
+    ;
+SESSION_USER
+    : [Ss] [Ee] [Ss] [Ss] [Ii] [Oo] [Nn] '_' [Uu] [Ss] [Ee] [Rr]
+    ;
+SET
+    : [Ss] [Ee] [Tt]
+    ;
+SIZE
+    : [Ss] [Ii] [Zz] [Ee]
+    ;
+SMALLINT
+    : [Ss] [Mm] [Aa] [Ll] [Ll] [Ii] [Nn] [Tt]
+    ;
+SOME
+    : [Ss] [Oo] [Mm] [Ee]
+    ;
+SPACE
+    : [Ss] [Pp] [Aa] [Cc] [Ee]
+    ;
+SQL
+    : [Ss] [Qq] [Ll]
+    ;
+SQLCODE
+    : [Ss] [Qq] [Ll] [Cc] [Oo] [Dd] [Ee]
+    ;
+SQLERROR
+    : [Ss] [Qq] [Ll] [Ee] [Rr] [Rr] [Oo] [Rr]
+    ;
+SQLSTATE
+    : [Ss] [Qq] [Ll] [Ss] [Tt] [Aa] [Tt] [Ee]
+    ;
+STRVAL
+    : [Ss] [Tt] [Rr] [Vv] [Aa] [Ll]
+    ;
+SUBSTR
+    : [Ss] [Uu] [Bb] [Ss] [Tt] [Rr]
+    ;
+SUBSTRING
+    : [Ss] [Uu] [Bb] [Ss] [Tt] [Rr] [Ii] [Nn] [Gg]
+    ;
+SUM
+    : [Ss] [Uu] [Mm]
+    ;
+SYSTEM_USER
+    : [Ss] [Yy] [Ss] [Tt] [Ee] [Mm] '_' [Uu] [Ss] [Ee] [Rr]
+    ;
+TABLE
+    : [Tt] [Aa] [Bb] [Ll] [Ee]
+    ;
+TEMPORARY
+    : [Tt] [Ee] [Mm] [Pp] [Oo] [Rr] [Aa] [Rr] [Yy]
+    ;
+THEN
+    : [Tt] [Hh] [Ee] [Nn]
+    ;
+TIES
+    : [Tt] [Ii] [Ee] [Ss]
+    ;
+TIME
+    : [Tt] [Ii] [Mm] [Ee]
+    ;
+TIMESTAMP
+    : [Tt] [Ii] [Mm] [Ee] [Ss] [Tt] [Aa] [Mm] [Pp]
+    ;
+TIMESTAMPVAL
+    : [Tt] [Ii] [Mm] [Ee] [Ss] [Tt] [Aa] [Mm] [Pp] [Vv] [Aa] [Ll]
+    ;
+TIMEVAL
+    : [Tt] [Ii] [Mm] [Ee] [Vv] [Aa] [Ll]
+    ;
+TIMEZONE_HOUR
+    : [Tt] [Ii] [Mm] [Ee] [Zz] [Oo] [Nn] [Ee] '_' [Hh] [Oo] [Uu] [Rr]
+    ;
+TIMEZONE_MINUTE
+    : [Tt] [Ii] [Mm] [Ee] [Zz] [Oo] [Nn] [Ee] '_' [Mm] [Ii] [Nn] [Uu] [Tt] [Ee]
+    ;
+TO
+    : [Tt] [Oo]
+    ;
+TODAY
+    : [Tt] [Oo] [Dd] [Aa] [Yy]
+    ;
+TRAILING
+    : [Tt] [Rr] [Aa] [Ii] [Ll] [Ii] [Nn] [Gg]
+    ;
+TRANSACTION
+    : [Tt] [Rr] [Aa] [Nn] [Ss] [Aa] [Cc] [Tt] [Ii] [Oo] [Nn]
+    ;
+TRANSLATE
+    : [Tt] [Rr] [Aa] [Nn] [Ss] [Ll] [Aa] [Tt] [Ee]
+    ;
+TRANSLATION
+    : [Tt] [Rr] [Aa] [Nn] [Ss] [Ll] [Aa] [Tt] [Ii] [Oo] [Nn]
+    ;
+TRIM
+    : [Tt] [Rr] [Ii] [Mm]
+    ;
+TRUNCATE
+    : [Tt] [Rr] [Uu] [Nn] [Cc] [Aa] [Tt] [Ee]
+    ;
+FQL_TRUE
+    : [Tt] [Rr] [Uu] [Ee]
+    ;
+UNION
+    : [Uu] [Nn] [Ii] [Oo] [Nn]
+    ;
+UNIQUE
+    : [Uu] [Nn] [Ii] [Qq] [Uu] [Ee]
+    ;
+UNKNOWN
+    : [Uu] [Nn] [Kk] [Nn] [Oo] [Ww] [Nn]
+    ;
+UPDATE
+    : [Uu] [Pp] [Dd] [Aa] [Tt] [Ee]
+    ;
+UPPER
+    : [Uu] [Pp] [Pp] [Ee] [Rr]
+    ;
+USAGE
+    : [Uu] [Ss] [Aa] [Gg] [Ee]
+    ;
+USER
+    : [Uu] [Ss] [Ee] [Rr]
+    ;
+USERNAME
+    : [Uu] [Ss] [Ee] [Rr] [Nn] [Aa] [Mm] [Ee]
+    ;
+USING
+    : [Uu] [Ss] [Ii] [Nn] [Gg]
+    ;
+VALUE
+    : [Vv] [Aa] [Ll] [Uu] [Ee]
+    ;
+VALUES
+    : [Vv] [Aa] [Ll] [Uu] [Ee] [Ss]
+    ;
+VARBINARY
+    : [Vv] [Aa] [Rr] [Bb] [Ii] [Nn] [Aa] [Rr] [Yy]
+    ;
+VARCHAR
+    : [Vv] [Aa] [Rr] [Cc] [Hh] [Aa] [Rr]
+    ;
+VARYING
+    : [Vv] [Aa] [Rr] [Yy] [Ii] [Nn] [Gg]
+    ;
+VIEW
+    : [Vv] [Ii] [Ee] [Ww]
+    ;
+WHEN
+    : [Ww] [Hh] [Ee] [Nn]
+    ;
+WHENEVER
+    : [Ww] [Hh] [Ee] [Nn] [Ee] [Vv] [Ee] [Rr]
+    ;
+WHERE
+    : [Ww] [Hh] [Ee] [Rr] [Ee]
+    ;
+WITH
+    : [Ww] [Ii] [Tt] [Hh]
+    ;
+WORK
+    : [Ww] [Oo] [Rr] [Kk]
+    ;
+WRITE
+    : [Ww] [Rr] [Ii] [Tt] [Ee]
+    ;
+YEAR
+    : [Yy] [Ee] [Aa] [Rr]
+    ;
+ZONE
+    : [Zz] [Oo] [Nn] [Ee]
+    ;
+QUOTED_ROWID
+    : '"' ROWID '"'
+    ;
+NEQ
+    : '<' '>'
+    | '!' '='
+    ;
+OPAREN
+    : '('
+    ;
+CPAREN
+    : ')'
+    ;
+OBRACE
+    : '{'
+    ;
+CBRACE
+    : '}'
+    ;
+OBRACKET
+    : '['
+    ;
+CBRACKET
+    : ']'
+    ;
+PERIOD
+    : '.'
+    ;
+PLUS
+    : '+'
+    ;
+MINUS
+    : '-'
+    ;
+DIV
+    : '/'
+    ;
+STAR
+    : '*'
+    ;
+COMMA
+    : ','
+    ;
+APOSTROPHE
+    : '\''
+    ;
+QUOTE
+    : '"'
+    ;
+EQUALS
+    : '='
+    ;
+LESS
+    : '<'
+    ;
+LEQ
+    : '<' '='
+    ;
+GREATER
+    : '>'
+    ;
+GEQ
+    : '>' '='
+    ;
+QUESTION_MARK
+    : '?'
+    ;
+CONCAT
+    : '|' '|'
+    ;
+fragment DecimalDigit
+    : [0-9]
+    ;
+fragment ExactNumericLiteral
+    : DecimalDigit* '.' DecimalDigit+
+    ;
+fragment AsciiLetters
+    : [A-Za-z]
+    ;
+WS
+    : ([\t-\n\r ])+ {action skip}
+    ;
+COMMENT
+    : ('/' '/' ~[\n\r]* '\r'? '\n' | '/' '*' .*? '*' '/') {action skip}
+    ;
+fragment HexDigit
+    : DecimalDigit
+    | [A-Fa-f]
+    ;
+FLOAT_CONST
+    : ExactNumericLiteral ([Ee] [+-]? DecimalDigit+)?
+    | DecimalDigit+ [Ee] [+-]? DecimalDigit+
+    ;
+UNSIGNED_CONST
+    : DecimalDigit+
+    ;
+STRING_CONST
+    : '\'' (~[\'] | '\'' '\'')* '\''
+    ;
+BIT_CONST
+    : [Bb] '\'' '0'..'1'+ '\''
+    ;
+HEX_CONST
+    : [Xx] '\'' HexDigit+ '\''
+    ;
+fragment QuotedString
+    : '"' (~["] | '"' '"')* '"'
+    ;
+IDENTIFIER
+    : AsciiLetters (AsciiLetters | DecimalDigit | '_')*
+    | QuotedString
+    ;
+RAISE
+    : '^'
+    | '*' '*'
+    ;
+
+// parser grammar FQLSQLSemanticAnalyzer: 97 rules, ATN of 1369 states, 145 decisions
+statement
+    : ddl_statement EOF
+    | dml_statement EOF
+    ;
+ddl_statement
+    : create_index_statement
+    | create_table_statement
+    | drop_index_statement
+    | drop_table_statement
+    | alter_table_statement
+    ;
+dml_statement
+    : query_statement
+    | update_statement
+    | delete_statement
+    | insert_statement
+    | declare_cursor_statement
+    | deallocate_cursor_statement
+    | open_cursor_statement
+    | close_cursor_statement
+    | fetch_cursor_statement
+    | truncate_table_statement
+    ;
+create_index_statement
+    : 'CREATE' 'INDEX' 'ON'? IDENTIFIER '.' IDENTIFIER
+    | 'CREATE' 'INDEX' 'ON'? IDENTIFIER '(' IDENTIFIER ')'
+    ;
+create_table_statement
+    : 'CREATE' 'TABLE' IDENTIFIER '(' column_definitions ')'
+    ;
+column_definitions
+    : column_definition (',' column_definition)*
+    ;
+column_definition
+    : identifier data_type repetitions? default_clause? column_constraints?
+    | column_definition_foreignkey
+    ;
+column_definition_foreignkey
+    : identifier data_type 'FOREIGN' 'KEY' 'REFERENCES' identifier '(' identifier ')'
+    ;
+repetitions
+    : '[' UNSIGNED_CONST ']'
+    ;
+default_clause
+    : 'DEFAULT' default_option
+    ;
+data_type
+    : 'INT'
+    | ('DECIMAL' | 'NUMERIC') ('(' UNSIGNED_CONST (',' UNSIGNED_CONST)? ')')?
+    | 'BOOLEAN'
+    | 'DATE'
+    | 'TIME' ('(' UNSIGNED_CONST ')')?
+    | 'TIMESTAMP' ('(' UNSIGNED_CONST ')')?
+    | ('VARCHAR' | 'CHARACTER' 'VARYING') ('(' UNSIGNED_CONST ')')?
+    | ('BLOB' | 'VARBINARY' | 'LONGVARBINARY' | 'BINARY' 'VARYING') ('EXTERNAL' STRING_CONST ('SECURE' 'FEWER_FOLDERS'? | 'OPEN' STRING_CONST))?
+    ;
+default_option
+    : default_literal
+    | ('CURRENT_USER' | 'USER' | 'USERNAME')
+    | 'NULL'
+    | ('CURDATE' | 'CURRENT_DATE')
+    | ('CURRENT_TIME' | 'CURTIME')
+    | ('CURRENT_TIMESTAMP' | 'CURTIMESTAMP')
+    ;
+column_constraint
+    : 'NOT' 'NULL'
+    | 'UNIQUE'
+    | 'PRIMARY' 'KEY'
+    | 'GLOBAL'
+    ;
+default_literal
+    : ('+' | '-')? (UNSIGNED_CONST | FLOAT_CONST)
+    | STRING_CONST
+    | BIT_CONST
+    | HEX_CONST
+    | 'TIME' STRING_CONST
+    | 'DATE' STRING_CONST
+    | 'TIMESTAMP' STRING_CONST
+    | 'TRUE'
+    | 'FALSE'
+    ;
+column_constraints
+    : column_constraint+
+    ;
+drop_table_statement
+    : 'DROP' 'TABLE' IDENTIFIER
+    ;
+drop_index_statement
+    : 'DROP' 'INDEX' 'ON'? IDENTIFIER '.' IDENTIFIER
+    | 'DROP' 'INDEX' 'ON'? IDENTIFIER '(' IDENTIFIER ')'
+    ;
+alter_table_action
+    : 'ADD' 'COLUMN'? column_definition
+    | 'ADD' 'COLUMN'? '(' column_definition ')'
+    | 'DROP' 'COLUMN'? IDENTIFIER
+    | 'ALTER' 'COLUMN'? IDENTIFIER 'SET' default_clause
+    | 'ALTER' 'COLUMN'? IDENTIFIER 'DROP' 'DEFAULT'
+    | 'RENAME' 'TO' IDENTIFIER
+    | 'RENAME' 'COLUMN' IDENTIFIER 'TO' IDENTIFIER
+    ;
+alter_table_statement
+    : 'ALTER' 'TABLE' IDENTIFIER alter_table_action
+    ;
+declare_cursor_statement
+    : 'DECLARE' IDENTIFIER 'CURSOR' 'FOR' query_statement
+    ;
+fetch_cursor_statement
+    : 'FETCH' fetch_type 'FROM'? IDENTIFIER
+    ;
+fetch_type
+    : 'NEXT'
+    | 'PRIOR'
+    | 'FIRST'
+    | 'LAST'
+    | 'ABSOLUTE' '-'? UNSIGNED_CONST
+    | 'RELATIVE' '-'? UNSIGNED_CONST
+    | /* empty */
+    ;
+open_cursor_statement
+    : 'OPEN' IDENTIFIER
+    ;
+close_cursor_statement
+    : 'CLOSE' IDENTIFIER
+    ;
+deallocate_cursor_statement
+    : 'DEALLOCATE' IDENTIFIER
+    ;
+query_statement
+    : query_expression order_by? result_offset? fetch_first? ('FOR' 'UPDATE' ('OF' column_reference_list)?)?
+    ;
+order_by
+    : 'ORDER' 'BY' order_spec (',' order_spec)*
+    ;
+order_spec
+    : value_expression ('ASC' | 'DESC')?
+    ;
+result_offset
+    : 'OFFSET' constant ('ROW' | 'ROWS')
+    ;
+fetch_first
+    : 'FETCH' ('FIRST' | 'NEXT') (constant 'PERCENT'?)? ('ROW' | 'ROWS') ('ONLY' | 'WITH' 'TIES')
+    ;
+query_expression
+    : query_expression_primary query_expression_union*
+    ;
+query_expression_union
+    : 'UNION' query_dup_opt? query_expression_primary
+    ;
+query_expression_primary
+    : 'TABLE' IDENTIFIER
+    | query_spec
+    | '(' query_expression ')'
+    ;
+query_spec
+    : 'SELECT' query_dup_opt? select_list from_clause where_clause? group_by_clause? having_clause?
+    ;
+query_dup_opt
+    : ('ALL' | 'DISTINCT')
+    ;
+select_list
+    : '*'
+    | select_list_item (',' select_list_item)*
+    ;
+select_list_item
+    : IDENTIFIER '.' '*'
+    | 'GETAS' '(' value_expression ',' STRING_CONST ')' ('AS'? IDENTIFIER)?
+    | 'GETAS' '(' value_expression ',' 'DEFAULT' ')' ('AS'? IDENTIFIER)?
+    | value_expression ('AS'? IDENTIFIER)?
+    ;
+value_expression  // left-recursive (precedence rule)
+    : {action 37:-1} value_term (('+' | '-' | '||') value_term)* ({precpred 1}? ('+' | '-') 'INTERVAL' value_term extract_operation)* {precedence loop}
+    ;
+value_term
+    : value_pow (('/' | '*') value_pow)*
+    ;
+value_pow
+    : value_factor (RAISE value_factor)*
+    ;
+value_factor
+    : ('+' | '-')? value_primary
+    ;
+from_clause
+    : 'FROM' table_reference (',' table_reference)*
+    ;
+table_reference
+    : simple_table_reference table_join_reference*
+    ;
+simple_table_reference
+    : IDENTIFIER ('AS'? IDENTIFIER)?
+    | '(' table_reference ')'
+    ;
+table_join_reference
+    : table_inner_join_reference
+    | table_outer_join_reference
+    | table_cross_join_reference
+    ;
+table_inner_join_reference
+    : 'INNER'? 'JOIN' simple_table_reference 'ON' search_term
+    ;
+table_outer_join_reference
+    : 'LEFT' 'OUTER'? 'JOIN' simple_table_reference 'ON' search_term
+    ;
+table_cross_join_reference
+    : 'CROSS' 'JOIN' simple_table_reference
+    ;
+identifier_list
+    : identifier_list_entry+
+    ;
+identifier_list_entry
+    : IDENTIFIER
+    ;
+where_clause
+    : 'WHERE' search_term
+    ;
+search_term
+    : boolean_term ('OR' boolean_term)*
+    ;
+boolean_term
+    : boolean_factor ('AND' boolean_factor)*
+    ;
+boolean_factor
+    : 'NOT'? boolean_primary
+    ;
+boolean_primary
+    : value_expression binary_comparison_operator quantifier_op '(' (value_expression_list | subquery) ')'
+    | value_expression binary_comparison_operator value_expression
+    | value_expression 'NOT'? 'IN' '(' (value_expression_list | subquery) ')'
+    | value_expression 'IS' 'NOT'? is_operator
+    | value_expression 'NOT'? 'BETWEEN' value_expression 'AND' value_expression
+    | value_expression 'NOT'? 'LIKE' value_expression
+    | value_expression 'NOT'? 'PART' 'OF' value_expression
+    | value_expression ('+' | '-') 'INTERVAL' value_expression extract_operation
+    | ('EXISTS' | 'UNIQUE') subquery
+    | '(' search_term ')'
+    ;
+value_primary
+    : column_reference
+    | constant
+    | case_expression
+    | cast_expression
+    | aggregation_function
+    | sql_function
+    | '(' value_expression ')'
+    | subquery
+    | 'NULLIF' '(' value_expression ',' value_expression ')'
+    | 'COALESCE' '(' value_expression_list ')'
+    ;
+value_expression_list
+    : common_expression (',' common_expression)*
+    ;
+group_by_clause
+    : 'GROUP' 'BY' column_reference_list
+    ;
+column_reference_list
+    : column_reference (',' column_reference)*
+    ;
+having_clause
+    : 'HAVING' search_term
+    ;
+expression
+    : unary_operator expression
+    | primary_expression logical_binary_operator primary_expression
+    | primary_expression non_logical_binary_operator expression
+    | primary_expression 'NOT'? 'BETWEEN' expression 'AND' expression
+    | primary_expression 'NOT'? 'LIKE' expression
+    | primary_expression 'IS' 'NOT'? is_operator
+    | primary_expression 'NOT'? 'IN' '(' expression_list ')'
+    | subquery
+    | primary_expression
+    | primary_expression binary_comparison_operator quantifier_op '(' (expression_list | subquery) ')'
+    | primary_expression ('+' | '-') 'INTERVAL' expression extract_operation
+    | '(' search_term ')'
+    ;
+primary_expression
+    : ('EXISTS' | 'UNIQUE') '(' query_spec ')'
+    | 'NULLIF' '(' expression ',' expression ')'
+    | 'COALESCE' '(' expression_list ')'
+    | cast_expression
+    | column_reference
+    | constant
+    | aggregation_function
+    | sql_function
+    | case_expression
+    | '(' expression ')'
+    ;
+is_operator
+    : ('FALSE' | 'NULL' | 'TRUE' | 'UNKNOWN')
+    ;
+sql_function
+    : 'EXTRACT' '(' extract_operation 'FROM' value_expression ')'
+    | 'TRIM' '(' trim_option value_expression? 'FROM' value_expression ')'
+    | 'TRIM' '(' value_expression 'FROM' value_expression ')'
+    | 'TRIM' '(' value_expression ')'
+    | function_name ('(' value_expression_list ')')?
+    | IDENTIFIER '(' value_expression_list? ')'
+    | ('DATE' | 'TIME' | 'TIMESTAMP') '(' ')'
+    ;
+extract_operation
+    : ('DAY' | 'HOUR' | 'MINUTE' | 'MONTH' | 'SECOND' | 'YEAR')
+    ;
+trim_option
+    : ('BOTH' | 'LEADING' | 'TRAILING')
+    ;
+function_name
+    : 'CHR'
+    | 'CURDATE'
+    | 'CURRENT_DATE'
+    | 'CURRENT_TIME'
+    | 'CURRENT_TIMESTAMP'
+    | 'CURRENT_USER'
+    | 'CURTIME'
+    | 'CURTIMESTAMP'
+    | 'DATEVAL'
+    | 'DAY'
+    | 'DAYNAME'
+    | 'DAYOFWEEK'
+    | 'HOUR'
+    | 'INT'
+    | 'LEFT'
+    | 'LENGTH'
+    | 'LOWER'
+    | 'LTRIM'
+    | 'MAX'
+    | 'MIN'
+    | 'MINUTE'
+    | 'MONTH'
+    | 'MONTHNAME'
+    | 'NUMVAL'
+    | 'PART'
+    | 'RIGHT'
+    | 'ROUND'
+    | 'RTRIM'
+    | 'SECOND'
+    | 'SPACE'
+    | 'STRVAL'
+    | 'SUBSTR'
+    | 'SUBSTRING'
+    | 'TIMESTAMPVAL'
+    | 'TIMEVAL'
+    | 'TODAY'
+    | 'UPPER'
+    | ('USER' | 'USERNAME')
+    | 'YEAR'
+    ;
+quantifier_op
+    : ('ALL' | 'ANY' | 'SOME')
+    ;
+binary_comparison_operator
+    : (NEQ | '=' | '<' | '<=' | '>' | '>=')
+    ;
+non_logical_binary_operator
+    : ('PART' | '+' | '-' | '/' | '*' | '||' | RAISE)
+    ;
+logical_binary_operator
+    : binary_comparison_operator
+    | 'OR'
+    | 'AND'
+    ;
+unary_operator
+    : ('NOT' | '+' | '-')
+    ;
+subquery
+    : '(' query_expression ')'
+    | query_expression
+    ;
+column_reference
+    : (IDENTIFIER '.')? ('ROWID' | QUOTED_ROWID)
+    | (IDENTIFIER '.')? IDENTIFIER ('[' value_expression ']')?
+    ;
+identifier
+    : IDENTIFIER
+    ;
+constant
+    : (FLOAT_CONST | UNSIGNED_CONST)
+    | STRING_CONST
+    | '\\u003F'
+    | ':' IDENTIFIER
+    | 'DATE' STRING_CONST
+    | 'TIME' STRING_CONST
+    | 'TIMESTAMP' STRING_CONST
+    | BIT_CONST
+    | HEX_CONST
+    | 'DEFAULT'
+    | 'NULL'
+    | 'TRUE'
+    | 'FALSE'
+    ;
+aggregation_function
+    : 'COUNT' '(' '*' ')'
+    | ('AVG' | 'COUNT' | 'EVERY' | 'MAX' | 'MIN' | 'SOME' | 'SUM') '(' ('ALL' | 'DISTINCT')? value_expression ')'
+    ;
+update_statement
+    : 'UPDATE' simple_table 'SET' set_clause_list (where_clause? | where_cursor?)
+    ;
+set_clause_list
+    : update_assignment (',' update_assignment)*
+    ;
+where_cursor
+    : 'WHERE' 'CURRENT' 'OF' IDENTIFIER
+    ;
+simple_table
+    : IDENTIFIER
+    ;
+update_assignment
+    : IDENTIFIER ('[' value_expression ']')? '=' value_expression
+    | IDENTIFIER ('[' value_expression ']')? '=' 'PUTAS' '(' value_expression ',' STRING_CONST ')'
+    | IDENTIFIER ('[' value_expression ']')? '=' value_expression 'AS' STRING_CONST
+    ;
+delete_statement
+    : 'DELETE' 'FROM' simple_table (where_clause? | where_cursor)
+    ;
+insert_statement
+    : 'INSERT' 'INTO' simple_table ('(' insert_columns ')')? insert_value_source
+    | 'INSERT' 'INTO' simple_table ('(' insert_columns ')')? query_expression order_by?
+    | 'INSERT' 'INTO' simple_table 'DEFAULT' 'VALUES'
+    ;
+insert_value_source
+    : 'VALUES' row_value_list_entry (',' row_value_list_entry)*
+    ;
+insert_columns
+    : insert_column_item (',' insert_column_item)*
+    | /* empty */
+    ;
+insert_column_item
+    : IDENTIFIER ('[' UNSIGNED_CONST ']' | {action 86:-1})
+    ;
+row_value_list_entry
+    : '(' row_value_element (',' row_value_element)* ')'
+    ;
+row_value_element
+    : 'PUTAS' '(' value_expression ',' STRING_CONST ')'
+    | value_expression 'AS' STRING_CONST
+    | value_expression
+    ;
+expression_list
+    : expression (',' expression)*
+    ;
+common_expression
+    : search_term
+    | value_expression
+    ;
+case_expression
+    : 'CASE' case_searched_when_then+ case_else 'END'
+    | 'CASE' value_expression case_simple_when_then+ case_else 'END'
+    ;
+case_simple_when_then
+    : 'WHEN' common_expression 'THEN' value_expression
+    ;
+case_searched_when_then
+    : 'WHEN' search_term 'THEN' value_expression
+    ;
+case_else
+    : 'ELSE' (value_expression | 'NULL')
+    | /* empty */
+    ;
+cast_expression
+    : 'CAST' '(' value_expression 'AS' data_type ')'
+    ;
+truncate_table_statement
+    : 'TRUNCATE' 'TABLE' IDENTIFIER
+    ;
+

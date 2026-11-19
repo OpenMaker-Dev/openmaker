@@ -1,0 +1,283 @@
+# Every Get selector (catalogs/get-selectors.csv) in file context: no table occurrence
+Get ( ApplicationVersion )	0	1/1/0	FMDeveloperTool 26.0.3.309 (08-26-2026)
+Get ( CurrentDate )	0	3/3/0	10/29/2026
+Get ( LastError )	0	1/1/0	
+Get ( ActiveFieldName )	0	1/1/0	
+Get ( FileName )	0	1/1/0	work
+Get ( FileSize )	0	2/2/0	573440
+Get ( FoundCount )	0	2/2/0	0
+Get ( HostName )	0	1/1/0	23112e0a22c1
+Get ( LayoutCount )	0	1/1/0	
+Get ( LayoutName )	0	1/1/0	
+Get ( LayoutNumber )	0	1/1/0	
+Get ( SystemLanguage )	0	1/1/0	English
+Get ( WindowMode )	0	1/1/0	
+Get ( MultiUserState )	0	2/2/0	0
+Get ( PageNumber )	0	1/1/0	
+Get ( SystemPlatform )	0	2/2/0	8
+Get ( ActivePortalRowNumber )	0	1/1/0	
+Get ( PrinterName )	1223	1/1/0	
+Get ( TotalRecordCount )	0	2/2/0	0
+Get ( RecordNumber )	0	2/2/0	0
+Get ( ActiveRepetitionNumber )	0	1/1/0	
+Get ( RequestCount )	0	1/1/0	
+Get ( ScreenDepth )	0	1/1/0	
+Get ( ScreenHeight )	0	1/1/0	
+Get ( ScreenWidth )	0	1/1/0	
+Get ( ScriptName )	0	1/1/0	
+Get ( SortState )	0	2/2/0	0
+Get ( SystemVersion )	0	1/1/0	24.04.5
+Get ( CurrentTime )	0	4/4/0	4:24:57 PM
+Get ( UserCount )	0	2/2/0	1
+Get ( UserName )	0	1/1/0	Admin
+Get ( AccountName )	0	1/1/0	Admin
+Get ( LastMessageChoice )	0	1/1/0	
+Get ( CurrentPrivilegeSetName )	0	1/1/0	[Full Access]
+Get ( ActiveModifierKeys )	0	1/1/0	
+Get ( NetworkProtocol )	0	1/1/0	TCP/IP
+Get ( RecordID )	0	1/1/0	
+Get ( RecordModificationCount )	0	1/1/0	
+Get ( ActiveFieldContents )	0	1/1/0	
+Get ( FilePath )	0	1/1/0	file:/tmp/work.fmp12
+Get ( LastErrorDetail )	0	1/1/0	
+Get ( LayoutAccess )	0	1/1/0	
+Get ( RecordAccess )	0	2/2/0	0
+Get ( HighContrastState )	0	1/1/0	
+Get ( SystemAppearance )	0	1/1/0	
+Get ( StatusAreaState )	0	1/1/0	
+Get ( LayoutViewState )	0	1/1/0	
+Get ( WindowName )	0	1/1/0	
+Get ( WindowHeight )	0	1/1/0	
+Get ( WindowLeft )	0	1/1/0	
+Get ( WindowTop )	0	1/1/0	
+Get ( WindowVisible )	0	1/1/0	
+Get ( WindowWidth )	0	1/1/0	
+Get ( SystemNICAddress )	0	1/1/0	
+Get ( SystemIPAddress )	0	1/1/0	
+Get ( ActiveFieldTableName )	0	1/1/0	
+Get ( ActiveSelectionSize )	0	1/1/0	
+Get ( ActiveSelectionStart )	0	1/1/0	
+Get ( ApplicationLanguage )	1223	1/1/0	
+Get ( CurrentHostTimestamp )	0	5/5/0	10/29/2026 4:24:57 PM
+Get ( LayoutTableName )	0	1/1/0	
+Get ( ScriptParameter )	0	1/1/0	
+Get ( CurrentTimestamp )	0	5/5/0	10/29/2026 4:24:57 PM
+Get ( WindowDesktopHeight )	0	1/1/0	
+Get ( WindowDesktopWidth )	0	1/1/0	
+Get ( WindowContentHeight )	0	1/1/0	
+Get ( WindowContentWidth )	0	1/1/0	
+Get ( CalculationRepetitionNumber )	0	2/2/0	0
+Get ( CurrentExtendedPrivileges )	0	1/1/0	fmreauthenticate10
+Get ( AllowAbortState )	0	1/1/0	
+Get ( ErrorCaptureState )	0	1/1/0	
+Get ( DesktopPath )	0	1/1/0	
+Get ( DocumentsPath )	0	1/1/0	
+Get ( FileMakerPath )	0	1/1/0	
+Get ( HostIPAddress )	0	1/1/0	
+Get ( RequestOmitState )	0	1/1/0	
+Get ( PreferencesPath )	0	1/1/0	
+Get ( RecordOpenCount )	0	1/1/0	
+Get ( RecordOpenState )	0	1/1/0	
+Get ( ScriptResult )	0	1/1/0	
+Get ( SystemDrive )	0	1/1/0	
+Get ( TextRulerVisible )	0	1/1/0	
+Get ( AllowFormattingBarState )	0	1/1/0	
+Get ( UseSystemFormatsState )	0	1/1/0	
+Get ( WindowZoomLevel )	0	2/2/0	100
+Get ( CustomMenuSetName )	0	1/1/0	
+Get ( DBEngineVersion )	0	2/2/0	260030309
+Get ( ActiveLayoutObjectName )	0	1/1/0	
+Get ( TemporaryPath )	0	1/1/0	
+Get ( HostApplicationVersion )	0	1/1/0	
+Get ( TriggerModifierKeys )	0	1/1/0	
+Get ( TriggerKeystroke )	0	1/1/0	
+Get ( DocumentsPathListing )	0	1/1/0	
+Get ( AccountPrivilegeSetName )	0	1/1/0	[Read-Only Access]
+Get ( AccountExtendedPrivileges )	0	1/1/0	fmreauthenticate10
+Get ( QuickFindText )	0	1/1/0	
+Get ( TriggerCurrentPanel )	0	1/1/0	
+Get ( TriggerTargetPanel )	0	1/1/0	
+Get ( WindowStyle )	0	1/1/0	
+Get ( InstalledFMPlugins )	0	1/1/0	
+Get ( UUID )	0	1/1/0	60CD1316-C393-454B-BD01-B13B18EA4156
+Get ( PersistentID )	0	1/1/0	D41D8CD98F00B204E9800998ECF8427E
+Get ( ConnectionState )	0	2/2/0	0
+Get ( CurrentTimeUTCMilliseconds )	0	2/2/0	63928887897958
+Get ( Device )	0	1/1/0	6
+Get ( WindowOrientation )	0	1/1/0	
+Get ( TriggerGestureInfo )	0	1/1/0	
+Get ( EncryptionState )	0	1/1/0	0
+Get ( ScriptAnimationState )	0	1/1/0	
+Get ( ModifiedFields )	0	1/1/0	
+Get ( NetworkType )	0	1/1/0	
+Get ( ConnectionAttributes )	0	1/1/0	
+Get ( ScreenScaleFactor )	0	1/1/0	
+Get ( ApplicationArchitecture )	0	1/1/0	x86_64
+Get ( TriggerExternalEvent )	0	1/1/0	
+Get ( TouchKeyboardState )	0	1/1/0	
+Get ( MenubarState )	0	1/1/0	
+Get ( RegionMonitorEvents )	0	1/1/0	
+Get ( AccountGroupName )	0	1/1/0	
+Get ( ActiveRecordNumber )	0	1/1/0	
+Get ( UUIDNumber )	0	2/2/0	1052243454903920023607232921453195591615586901251387690340
+Get ( OpenDataFileInfo )	0	1/1/0	
+Get ( AccountType )	0	1/1/0	Guest
+Get ( PageCount )	0	1/1/0	
+Get ( SystemLocaleElements )	0	1/1/0	{\r\t"APIVers" : 1,\r\t"Currency" : \r\t{\r\t\t"Leading" : true,\r\t\t"Symbol" : "$"\r\t},\r\t"Date" : \r\t{\r\t\t"DMQ" : \r\t\t{\r\t\t\t"1stDayOfWeek" : 1,\r\t\t\t"DaysOfWeek" : \r\t\t\t{\r\t\t\t\t"AbbrvList" : \r\t\t\t\t[\r\t\t\t\t\t"Sun",\r\t\t\t\t\t"Mon",\r\t\t\t\t\t"Tue",\r\t\t\t\t\t"Wed",\r\t\t\t\t\t"Thu",\r\t\t\t\t\t"Fri",\r\t\t\t\t\t"Sat"\r\t\t\t\t],\r\t\t\t\t"NameList" : \r\t\t\t\t[\r\t\t\t\t\t"Sunday",\r\t\t\t\t\t"Monday",\r\t\t\t\t\t"Tuesday",\r\t\t\t\t\t"Wednesday",\r\t\t\t\t\t"Thursday",\r\t\t\t\t\t"Friday",\r\t\t\t\t\t"Saturday"\r\t\t\t\t]\r\t\t\t},\r\t\t\t"Months" : \r\t\t\t{\r\t\t\t\t"AbbrvList" : \r\t\t\t\t[\r\t\t\t\t\t"Jan",\r\t\t\t\t\t"Feb",\r\t\t\t\t\t"Mar",\r\t\t\t\t\t"Apr",\r\t\t\t\t\t"May",\r\t\t\t\t\t"Jun",\r\t\t\t\t\t"Jul",\r\t\t\t\t\t"Aug",\r\t\t\t\t\t"Sep",\r\t\t\t\t\t"Oct",\r\t\t\t\t\t"Nov",\r\t\t\t\t\t"Dec"\r\t\t\t\t],\r\t\t\t\t"NameList" : \r\t\t\t\t[\r\t\t\t\t\t"January",\r\t\t\t\t\t"February",\r\t\t\t\t\t"March",\r\t\t\t\t\t"April",\r\t\t\t\t\t"May",\r\t\t\t\t\t"June",\r\t\t\t\t\t"July",\r\t\t\t\t\t"August",\r\t\t\t\t\t"September",\r\t\t\t\t\t"October",\r\t\t\t\t\t"November",\r\t\t\t\t\t"December"\r\t\t\t\t]\r\t\t\t},\r\t\t\t"Quarters" : \r\t\t\t{\r\t\t\t\t"AbbrvList" : \r\t\t\t\t[\r\t\t\t\t\t"Q1",\r\t\t\t\t\t"Q2",\r\t\t\t\t\t"Q3",\r\t\t\t\t\t"Q4"\r\t\t\t\t],\r\t\t\t\t"NameList" : \r\t\t\t\t[\r\t\t\t\t\t"1st Quarter",\r\t\t\t\t\t"2nd Quarter",\r\t\t\t\t\t"3rd Quarter",\r\t\t\t\t\t"4th Quarter"\r\t\t\t\t]\r\t\t\t}\r\t\t},\r\t\t"DateNums" : \r\t\t{\r\t\t\t"0d" : true,\r\t\t\t"0m" : true,\r\t\t\t"YYyy" : true\r\t\t},\r\t\t"DateOrderID" : 0,\r\t\t"DateOrderName" : "MDY",\r\t\t"MDY" : \r\t\t{\r\t\t\t"ElementArray" : \r\t\t\t{\r\t\t\t\t"NameList" : \r\t\t\t\t[\r\t\t\t\t\t"M#",\r\t\t\t\t\t"D#",\r\t\t\t\t\t"D$",\r\t\t\t\t\t"D$"\r\t\t\t\t],\r\t\t\t\t"SepList" : \r\t\t\t\t[\r\t\t\t\t\t" ",\r\t\t\t\t\t" ",\r\t\t\t\t\t", ",\r\t\t\t\t\t""\r\t\t\t\t]\r\t\t\t},\r\t\t\t"MustUseLocalesSep" : false\r\t\t},\r\t\t"Sep" : "/"\r\t},\r\t"LocaleID" : \r\t{\r\t\t"IDNum" : 21,\r\t\t"IDStr" : "English",\r\t\t"ISOLangCode" : "en",\r\t\t"LID" : "English",\r\t\t"Name" : "English"\r\t},\r\t"Misc" : \r\t{\r\t\t"Active" : false,\r\t\t"Metric" : false\r\t},\r\t"Num" : \r\t{\r\t\t"1000s" : ",",\r\t\t"Decimal" : ".",\r\t\t"Lead0" : true\r\t},\r\t"Text" : \r\t{\r\t\t"SQuotLead" : "“",\r\t\t"SQuotTrail" : "”",\r\t\t"Sep" : ","\r\t},\r\t"Time" : \r\t{\r\t\t"12h" : true,\r\t\t"HMS" : \r\t\t{\r\t\t\t"0h" : true,\r\t\t\t"24h" : "",\r\t\t\t"Seconds" : false\r\t\t},\r\t\t"NightDay" : \r\t\t{\r\t\t\t"12hSuffix" : true,\r\t\t\t"amStr" : " AM",\r\t\t\t"pmStr" : " PM"\r\t\t},\r\t\t"Sep" : ":"\r\t}\r}
+Get ( FileLocaleElements )	0	1/1/0	{\r\t"APIVers" : 1,\r\t"Currency" : \r\t{\r\t\t"Leading" : true,\r\t\t"Symbol" : "$"\r\t},\r\t"Date" : \r\t{\r\t\t"DMQ" : \r\t\t{\r\t\t\t"1stDayOfWeek" : 1,\r\t\t\t"DaysOfWeek" : \r\t\t\t{\r\t\t\t\t"AbbrvList" : \r\t\t\t\t[\r\t\t\t\t\t"Sun",\r\t\t\t\t\t"Mon",\r\t\t\t\t\t"Tue",\r\t\t\t\t\t"Wed",\r\t\t\t\t\t"Thu",\r\t\t\t\t\t"Fri",\r\t\t\t\t\t"Sat"\r\t\t\t\t],\r\t\t\t\t"NameList" : \r\t\t\t\t[\r\t\t\t\t\t"Sunday",\r\t\t\t\t\t"Monday",\r\t\t\t\t\t"Tuesday",\r\t\t\t\t\t"Wednesday",\r\t\t\t\t\t"Thursday",\r\t\t\t\t\t"Friday",\r\t\t\t\t\t"Saturday"\r\t\t\t\t]\r\t\t\t},\r\t\t\t"Months" : \r\t\t\t{\r\t\t\t\t"AbbrvList" : \r\t\t\t\t[\r\t\t\t\t\t"Jan",\r\t\t\t\t\t"Feb",\r\t\t\t\t\t"Mar",\r\t\t\t\t\t"Apr",\r\t\t\t\t\t"May",\r\t\t\t\t\t"Jun",\r\t\t\t\t\t"Jul",\r\t\t\t\t\t"Aug",\r\t\t\t\t\t"Sep",\r\t\t\t\t\t"Oct",\r\t\t\t\t\t"Nov",\r\t\t\t\t\t"Dec"\r\t\t\t\t],\r\t\t\t\t"NameList" : \r\t\t\t\t[\r\t\t\t\t\t"January",\r\t\t\t\t\t"February",\r\t\t\t\t\t"March",\r\t\t\t\t\t"April",\r\t\t\t\t\t"May",\r\t\t\t\t\t"June",\r\t\t\t\t\t"July",\r\t\t\t\t\t"August",\r\t\t\t\t\t"September",\r\t\t\t\t\t"October",\r\t\t\t\t\t"November",\r\t\t\t\t\t"December"\r\t\t\t\t]\r\t\t\t},\r\t\t\t"Quarters" : \r\t\t\t{\r\t\t\t\t"AbbrvList" : \r\t\t\t\t[\r\t\t\t\t\t"Q1",\r\t\t\t\t\t"Q2",\r\t\t\t\t\t"Q3",\r\t\t\t\t\t"Q4"\r\t\t\t\t],\r\t\t\t\t"NameList" : \r\t\t\t\t[\r\t\t\t\t\t"1st Quarter",\r\t\t\t\t\t"2nd Quarter",\r\t\t\t\t\t"3rd Quarter",\r\t\t\t\t\t"4th Quarter"\r\t\t\t\t]\r\t\t\t}\r\t\t},\r\t\t"DateNums" : \r\t\t{\r\t\t\t"0d" : false,\r\t\t\t"0m" : false,\r\t\t\t"YYyy" : false\r\t\t},\r\t\t"DateOrderID" : 0,\r\t\t"DateOrderName" : "MDY",\r\t\t"MDY" : \r\t\t{\r\t\t\t"ElementArray" : \r\t\t\t{\r\t\t\t\t"NameList" : \r\t\t\t\t[\r\t\t\t\t\t"M$",\r\t\t\t\t\t"D#",\r\t\t\t\t\t"YYYY#",\r\t\t\t\t\t"D$"\r\t\t\t\t],\r\t\t\t\t"SepList" : \r\t\t\t\t[\r\t\t\t\t\t", ",\r\t\t\t\t\t" ",\r\t\t\t\t\t", ",\r\t\t\t\t\t""\r\t\t\t\t]\r\t\t\t},\r\t\t\t"MustUseLocalesSep" : false\r\t\t},\r\t\t"Sep" : "/"\r\t},\r\t"LocaleID" : \r\t{\r\t\t"IDNum" : 21,\r\t\t"IDStr" : "English",\r\t\t"ISOLangCode" : "en",\r\t\t"LID" : "English",\r\t\t"Name" : "English"\r\t},\r\t"Misc" : \r\t{\r\t\t"Active" : true,\r\t\t"Metric" : false\r\t},\r\t"Num" : \r\t{\r\t\t"1000s" : ",",\r\t\t"Decimal" : ".",\r\t\t"Lead0" : true\r\t},\r\t"Text" : \r\t{\r\t\t"SQuotLead" : "“",\r\t\t"SQuotTrail" : "”",\r\t\t"Sep" : ","\r\t},\r\t"Time" : \r\t{\r\t\t"12h" : true,\r\t\t"HMS" : \r\t\t{\r\t\t\t"0h" : false,\r\t\t\t"24h" : "",\r\t\t\t"Seconds" : false\r\t\t},\r\t\t"NightDay" : \r\t\t{\r\t\t\t"12hSuffix" : true,\r\t\t\t"amStr" : " AM",\r\t\t\t"pmStr" : " PM"\r\t\t},\r\t\t"Sep" : ":"\r\t}\r}
+Get ( InstalledFMPluginsAsJSON )	0	1/1/0	{\r\t"APIVers" : 2,\r\t"environment" : \r\t{\r\t\t"architecture" : "x86_64",\r\t\t"platform" : 8,\r\t\t"version" : "24.04.5"\r\t},\r\t"plugins" : null\r}
+Get ( SessionIdentifier )	0	1/1/0	
+Get ( CacheFileName )	0	1/1/0	
+Get ( CacheFilePath )	0	1/1/0	
+Get ( TransactionOpenState )	0	1/1/0	
+Get ( CurrentTimeUTCMicroseconds )	0	2/2/0	63928887897963503
+Get ( LastErrorLocation )	0	1/1/0	
+Get ( LastStepTokensUsed )	0	1/1/0	
+Get ( RevertTransactionOnErrorState )	0	1/1/0	
+Get ( SystemStorageAvailable )	0	2/2/0	419607437312
+Get ( StudioDatasource )	0	2/2/0	0
+Get ( AccountPasswordDaysRemaining )	0	2/2/0	-1
+Get ( WindowUUID )	0	1/1/0	
+Get ( GuidedAccessState )	0	1/1/0	
+# the same in the Contacts occurrence, no record
+# @ 03d00002 records=0
+Get ( ApplicationVersion )	0	1/1/0	FMDeveloperTool 26.0.3.309 (08-26-2026)
+Get ( CurrentDate )	0	3/3/0	10/29/2026
+Get ( LastError )	0	1/1/0	
+Get ( ActiveFieldName )	0	1/1/0	
+Get ( FileName )	0	1/1/0	work
+Get ( FileSize )	0	2/2/0	573440
+Get ( FoundCount )	0	2/2/0	0
+Get ( HostName )	0	1/1/0	23112e0a22c1
+Get ( LayoutCount )	0	1/1/0	
+Get ( LayoutName )	0	1/1/0	
+Get ( LayoutNumber )	0	1/1/0	
+Get ( SystemLanguage )	0	1/1/0	English
+Get ( WindowMode )	0	1/1/0	
+Get ( MultiUserState )	0	2/2/0	0
+Get ( PageNumber )	0	1/1/0	
+Get ( SystemPlatform )	0	2/2/0	8
+Get ( ActivePortalRowNumber )	0	1/1/0	
+Get ( PrinterName )	1223	1/1/0	
+Get ( TotalRecordCount )	0	2/2/0	0
+Get ( RecordNumber )	0	2/2/0	0
+Get ( ActiveRepetitionNumber )	0	1/1/0	
+Get ( RequestCount )	0	1/1/0	
+Get ( ScreenDepth )	0	1/1/0	
+Get ( ScreenHeight )	0	1/1/0	
+Get ( ScreenWidth )	0	1/1/0	
+Get ( ScriptName )	0	1/1/0	
+Get ( SortState )	0	2/2/0	0
+Get ( SystemVersion )	0	1/1/0	24.04.5
+Get ( CurrentTime )	0	4/4/0	4:24:57 PM
+Get ( UserCount )	0	2/2/0	1
+Get ( UserName )	0	1/1/0	Admin
+Get ( AccountName )	0	1/1/0	Admin
+Get ( LastMessageChoice )	0	1/1/0	
+Get ( CurrentPrivilegeSetName )	0	1/1/0	[Full Access]
+Get ( ActiveModifierKeys )	0	1/1/0	
+Get ( NetworkProtocol )	0	1/1/0	TCP/IP
+Get ( RecordID )	0	1/1/0	
+Get ( RecordModificationCount )	0	1/1/0	
+Get ( ActiveFieldContents )	0	1/1/0	
+Get ( FilePath )	0	1/1/0	file:/tmp/work.fmp12
+Get ( LastErrorDetail )	0	1/1/0	
+Get ( LayoutAccess )	0	1/1/0	
+Get ( RecordAccess )	0	2/2/0	0
+Get ( HighContrastState )	0	1/1/0	
+Get ( SystemAppearance )	0	1/1/0	
+Get ( StatusAreaState )	0	1/1/0	
+Get ( LayoutViewState )	0	1/1/0	
+Get ( WindowName )	0	1/1/0	
+Get ( WindowHeight )	0	1/1/0	
+Get ( WindowLeft )	0	1/1/0	
+Get ( WindowTop )	0	1/1/0	
+Get ( WindowVisible )	0	1/1/0	
+Get ( WindowWidth )	0	1/1/0	
+Get ( SystemNICAddress )	0	1/1/0	
+Get ( SystemIPAddress )	0	1/1/0	
+Get ( ActiveFieldTableName )	0	1/1/0	
+Get ( ActiveSelectionSize )	0	1/1/0	
+Get ( ActiveSelectionStart )	0	1/1/0	
+Get ( ApplicationLanguage )	1223	1/1/0	
+Get ( CurrentHostTimestamp )	0	5/5/0	10/29/2026 4:24:57 PM
+Get ( LayoutTableName )	0	1/1/0	
+Get ( ScriptParameter )	0	1/1/0	
+Get ( CurrentTimestamp )	0	5/5/0	10/29/2026 4:24:57 PM
+Get ( WindowDesktopHeight )	0	1/1/0	
+Get ( WindowDesktopWidth )	0	1/1/0	
+Get ( WindowContentHeight )	0	1/1/0	
+Get ( WindowContentWidth )	0	1/1/0	
+Get ( CalculationRepetitionNumber )	0	2/2/0	0
+Get ( CurrentExtendedPrivileges )	0	1/1/0	fmreauthenticate10
+Get ( AllowAbortState )	0	1/1/0	
+Get ( ErrorCaptureState )	0	1/1/0	
+Get ( DesktopPath )	0	1/1/0	
+Get ( DocumentsPath )	0	1/1/0	
+Get ( FileMakerPath )	0	1/1/0	
+Get ( HostIPAddress )	0	1/1/0	
+Get ( RequestOmitState )	0	1/1/0	
+Get ( PreferencesPath )	0	1/1/0	
+Get ( RecordOpenCount )	0	1/1/0	
+Get ( RecordOpenState )	0	1/1/0	
+Get ( ScriptResult )	0	1/1/0	
+Get ( SystemDrive )	0	1/1/0	
+Get ( TextRulerVisible )	0	1/1/0	
+Get ( AllowFormattingBarState )	0	1/1/0	
+Get ( UseSystemFormatsState )	0	1/1/0	
+Get ( WindowZoomLevel )	0	2/2/0	100
+Get ( CustomMenuSetName )	0	1/1/0	
+Get ( DBEngineVersion )	0	2/2/0	260030309
+Get ( ActiveLayoutObjectName )	0	1/1/0	
+Get ( TemporaryPath )	0	1/1/0	
+Get ( HostApplicationVersion )	0	1/1/0	
+Get ( TriggerModifierKeys )	0	1/1/0	
+Get ( TriggerKeystroke )	0	1/1/0	
+Get ( DocumentsPathListing )	0	1/1/0	
+Get ( AccountPrivilegeSetName )	0	1/1/0	[Read-Only Access]
+Get ( AccountExtendedPrivileges )	0	1/1/0	fmreauthenticate10
+Get ( QuickFindText )	0	1/1/0	
+Get ( TriggerCurrentPanel )	0	1/1/0	
+Get ( TriggerTargetPanel )	0	1/1/0	
+Get ( WindowStyle )	0	1/1/0	
+Get ( InstalledFMPlugins )	0	1/1/0	
+Get ( UUID )	0	1/1/0	CB1BBE72-EA62-41A5-A549-95F8C3CE6E34
+Get ( PersistentID )	0	1/1/0	D41D8CD98F00B204E9800998ECF8427E
+Get ( ConnectionState )	0	2/2/0	0
+Get ( CurrentTimeUTCMilliseconds )	0	2/2/0	63928887897970
+Get ( Device )	0	1/1/0	6
+Get ( WindowOrientation )	0	1/1/0	
+Get ( TriggerGestureInfo )	0	1/1/0	
+Get ( EncryptionState )	0	1/1/0	0
+Get ( ScriptAnimationState )	0	1/1/0	
+Get ( ModifiedFields )	0	1/1/0	
+Get ( NetworkType )	0	1/1/0	
+Get ( ConnectionAttributes )	0	1/1/0	
+Get ( ScreenScaleFactor )	0	1/1/0	
+Get ( ApplicationArchitecture )	0	1/1/0	x86_64
+Get ( TriggerExternalEvent )	0	1/1/0	
+Get ( TouchKeyboardState )	0	1/1/0	
+Get ( MenubarState )	0	1/1/0	
+Get ( RegionMonitorEvents )	0	1/1/0	
+Get ( AccountGroupName )	0	1/1/0	
+Get ( ActiveRecordNumber )	0	1/1/0	
+Get ( UUIDNumber )	0	2/2/0	3916533023746202219916694772891002271477348685763960978802
+Get ( OpenDataFileInfo )	0	1/1/0	
+Get ( AccountType )	0	1/1/0	Guest
+Get ( PageCount )	0	1/1/0	
+Get ( SystemLocaleElements )	0	1/1/0	{\r\t"APIVers" : 1,\r\t"Currency" : \r\t{\r\t\t"Leading" : true,\r\t\t"Symbol" : "$"\r\t},\r\t"Date" : \r\t{\r\t\t"DMQ" : \r\t\t{\r\t\t\t"1stDayOfWeek" : 1,\r\t\t\t"DaysOfWeek" : \r\t\t\t{\r\t\t\t\t"AbbrvList" : \r\t\t\t\t[\r\t\t\t\t\t"Sun",\r\t\t\t\t\t"Mon",\r\t\t\t\t\t"Tue",\r\t\t\t\t\t"Wed",\r\t\t\t\t\t"Thu",\r\t\t\t\t\t"Fri",\r\t\t\t\t\t"Sat"\r\t\t\t\t],\r\t\t\t\t"NameList" : \r\t\t\t\t[\r\t\t\t\t\t"Sunday",\r\t\t\t\t\t"Monday",\r\t\t\t\t\t"Tuesday",\r\t\t\t\t\t"Wednesday",\r\t\t\t\t\t"Thursday",\r\t\t\t\t\t"Friday",\r\t\t\t\t\t"Saturday"\r\t\t\t\t]\r\t\t\t},\r\t\t\t"Months" : \r\t\t\t{\r\t\t\t\t"AbbrvList" : \r\t\t\t\t[\r\t\t\t\t\t"Jan",\r\t\t\t\t\t"Feb",\r\t\t\t\t\t"Mar",\r\t\t\t\t\t"Apr",\r\t\t\t\t\t"May",\r\t\t\t\t\t"Jun",\r\t\t\t\t\t"Jul",\r\t\t\t\t\t"Aug",\r\t\t\t\t\t"Sep",\r\t\t\t\t\t"Oct",\r\t\t\t\t\t"Nov",\r\t\t\t\t\t"Dec"\r\t\t\t\t],\r\t\t\t\t"NameList" : \r\t\t\t\t[\r\t\t\t\t\t"January",\r\t\t\t\t\t"February",\r\t\t\t\t\t"March",\r\t\t\t\t\t"April",\r\t\t\t\t\t"May",\r\t\t\t\t\t"June",\r\t\t\t\t\t"July",\r\t\t\t\t\t"August",\r\t\t\t\t\t"September",\r\t\t\t\t\t"October",\r\t\t\t\t\t"November",\r\t\t\t\t\t"December"\r\t\t\t\t]\r\t\t\t},\r\t\t\t"Quarters" : \r\t\t\t{\r\t\t\t\t"AbbrvList" : \r\t\t\t\t[\r\t\t\t\t\t"Q1",\r\t\t\t\t\t"Q2",\r\t\t\t\t\t"Q3",\r\t\t\t\t\t"Q4"\r\t\t\t\t],\r\t\t\t\t"NameList" : \r\t\t\t\t[\r\t\t\t\t\t"1st Quarter",\r\t\t\t\t\t"2nd Quarter",\r\t\t\t\t\t"3rd Quarter",\r\t\t\t\t\t"4th Quarter"\r\t\t\t\t]\r\t\t\t}\r\t\t},\r\t\t"DateNums" : \r\t\t{\r\t\t\t"0d" : true,\r\t\t\t"0m" : true,\r\t\t\t"YYyy" : true\r\t\t},\r\t\t"DateOrderID" : 0,\r\t\t"DateOrderName" : "MDY",\r\t\t"MDY" : \r\t\t{\r\t\t\t"ElementArray" : \r\t\t\t{\r\t\t\t\t"NameList" : \r\t\t\t\t[\r\t\t\t\t\t"M#",\r\t\t\t\t\t"D#",\r\t\t\t\t\t"D$",\r\t\t\t\t\t"D$"\r\t\t\t\t],\r\t\t\t\t"SepList" : \r\t\t\t\t[\r\t\t\t\t\t" ",\r\t\t\t\t\t" ",\r\t\t\t\t\t", ",\r\t\t\t\t\t""\r\t\t\t\t]\r\t\t\t},\r\t\t\t"MustUseLocalesSep" : false\r\t\t},\r\t\t"Sep" : "/"\r\t},\r\t"LocaleID" : \r\t{\r\t\t"IDNum" : 21,\r\t\t"IDStr" : "English",\r\t\t"ISOLangCode" : "en",\r\t\t"LID" : "English",\r\t\t"Name" : "English"\r\t},\r\t"Misc" : \r\t{\r\t\t"Active" : false,\r\t\t"Metric" : false\r\t},\r\t"Num" : \r\t{\r\t\t"1000s" : ",",\r\t\t"Decimal" : ".",\r\t\t"Lead0" : true\r\t},\r\t"Text" : \r\t{\r\t\t"SQuotLead" : "“",\r\t\t"SQuotTrail" : "”",\r\t\t"Sep" : ","\r\t},\r\t"Time" : \r\t{\r\t\t"12h" : true,\r\t\t"HMS" : \r\t\t{\r\t\t\t"0h" : true,\r\t\t\t"24h" : "",\r\t\t\t"Seconds" : false\r\t\t},\r\t\t"NightDay" : \r\t\t{\r\t\t\t"12hSuffix" : true,\r\t\t\t"amStr" : " AM",\r\t\t\t"pmStr" : " PM"\r\t\t},\r\t\t"Sep" : ":"\r\t}\r}
+Get ( FileLocaleElements )	0	1/1/0	{\r\t"APIVers" : 1,\r\t"Currency" : \r\t{\r\t\t"Leading" : true,\r\t\t"Symbol" : "$"\r\t},\r\t"Date" : \r\t{\r\t\t"DMQ" : \r\t\t{\r\t\t\t"1stDayOfWeek" : 1,\r\t\t\t"DaysOfWeek" : \r\t\t\t{\r\t\t\t\t"AbbrvList" : \r\t\t\t\t[\r\t\t\t\t\t"Sun",\r\t\t\t\t\t"Mon",\r\t\t\t\t\t"Tue",\r\t\t\t\t\t"Wed",\r\t\t\t\t\t"Thu",\r\t\t\t\t\t"Fri",\r\t\t\t\t\t"Sat"\r\t\t\t\t],\r\t\t\t\t"NameList" : \r\t\t\t\t[\r\t\t\t\t\t"Sunday",\r\t\t\t\t\t"Monday",\r\t\t\t\t\t"Tuesday",\r\t\t\t\t\t"Wednesday",\r\t\t\t\t\t"Thursday",\r\t\t\t\t\t"Friday",\r\t\t\t\t\t"Saturday"\r\t\t\t\t]\r\t\t\t},\r\t\t\t"Months" : \r\t\t\t{\r\t\t\t\t"AbbrvList" : \r\t\t\t\t[\r\t\t\t\t\t"Jan",\r\t\t\t\t\t"Feb",\r\t\t\t\t\t"Mar",\r\t\t\t\t\t"Apr",\r\t\t\t\t\t"May",\r\t\t\t\t\t"Jun",\r\t\t\t\t\t"Jul",\r\t\t\t\t\t"Aug",\r\t\t\t\t\t"Sep",\r\t\t\t\t\t"Oct",\r\t\t\t\t\t"Nov",\r\t\t\t\t\t"Dec"\r\t\t\t\t],\r\t\t\t\t"NameList" : \r\t\t\t\t[\r\t\t\t\t\t"January",\r\t\t\t\t\t"February",\r\t\t\t\t\t"March",\r\t\t\t\t\t"April",\r\t\t\t\t\t"May",\r\t\t\t\t\t"June",\r\t\t\t\t\t"July",\r\t\t\t\t\t"August",\r\t\t\t\t\t"September",\r\t\t\t\t\t"October",\r\t\t\t\t\t"November",\r\t\t\t\t\t"December"\r\t\t\t\t]\r\t\t\t},\r\t\t\t"Quarters" : \r\t\t\t{\r\t\t\t\t"AbbrvList" : \r\t\t\t\t[\r\t\t\t\t\t"Q1",\r\t\t\t\t\t"Q2",\r\t\t\t\t\t"Q3",\r\t\t\t\t\t"Q4"\r\t\t\t\t],\r\t\t\t\t"NameList" : \r\t\t\t\t[\r\t\t\t\t\t"1st Quarter",\r\t\t\t\t\t"2nd Quarter",\r\t\t\t\t\t"3rd Quarter",\r\t\t\t\t\t"4th Quarter"\r\t\t\t\t]\r\t\t\t}\r\t\t},\r\t\t"DateNums" : \r\t\t{\r\t\t\t"0d" : false,\r\t\t\t"0m" : false,\r\t\t\t"YYyy" : false\r\t\t},\r\t\t"DateOrderID" : 0,\r\t\t"DateOrderName" : "MDY",\r\t\t"MDY" : \r\t\t{\r\t\t\t"ElementArray" : \r\t\t\t{\r\t\t\t\t"NameList" : \r\t\t\t\t[\r\t\t\t\t\t"M$",\r\t\t\t\t\t"D#",\r\t\t\t\t\t"YYYY#",\r\t\t\t\t\t"D$"\r\t\t\t\t],\r\t\t\t\t"SepList" : \r\t\t\t\t[\r\t\t\t\t\t", ",\r\t\t\t\t\t" ",\r\t\t\t\t\t", ",\r\t\t\t\t\t""\r\t\t\t\t]\r\t\t\t},\r\t\t\t"MustUseLocalesSep" : false\r\t\t},\r\t\t"Sep" : "/"\r\t},\r\t"LocaleID" : \r\t{\r\t\t"IDNum" : 21,\r\t\t"IDStr" : "English",\r\t\t"ISOLangCode" : "en",\r\t\t"LID" : "English",\r\t\t"Name" : "English"\r\t},\r\t"Misc" : \r\t{\r\t\t"Active" : true,\r\t\t"Metric" : false\r\t},\r\t"Num" : \r\t{\r\t\t"1000s" : ",",\r\t\t"Decimal" : ".",\r\t\t"Lead0" : true\r\t},\r\t"Text" : \r\t{\r\t\t"SQuotLead" : "“",\r\t\t"SQuotTrail" : "”",\r\t\t"Sep" : ","\r\t},\r\t"Time" : \r\t{\r\t\t"12h" : true,\r\t\t"HMS" : \r\t\t{\r\t\t\t"0h" : false,\r\t\t\t"24h" : "",\r\t\t\t"Seconds" : false\r\t\t},\r\t\t"NightDay" : \r\t\t{\r\t\t\t"12hSuffix" : true,\r\t\t\t"amStr" : " AM",\r\t\t\t"pmStr" : " PM"\r\t\t},\r\t\t"Sep" : ":"\r\t}\r}
+Get ( InstalledFMPluginsAsJSON )	0	1/1/0	{\r\t"APIVers" : 2,\r\t"environment" : \r\t{\r\t\t"architecture" : "x86_64",\r\t\t"platform" : 8,\r\t\t"version" : "24.04.5"\r\t},\r\t"plugins" : null\r}
+Get ( SessionIdentifier )	0	1/1/0	
+Get ( CacheFileName )	0	1/1/0	
+Get ( CacheFilePath )	0	1/1/0	
+Get ( TransactionOpenState )	0	1/1/0	
+Get ( CurrentTimeUTCMicroseconds )	0	2/2/0	63928887897972916
+Get ( LastErrorLocation )	0	1/1/0	
+Get ( LastStepTokensUsed )	0	1/1/0	
+Get ( RevertTransactionOnErrorState )	0	1/1/0	
+Get ( SystemStorageAvailable )	0	2/2/0	419607265280
+Get ( StudioDatasource )	0	2/2/0	0
+Get ( AccountPasswordDaysRemaining )	0	2/2/0	-1
+Get ( WindowUUID )	0	1/1/0	
+Get ( GuidedAccessState )	0	1/1/0	

@@ -1,0 +1,41 @@
+# scan max rep1: open 0 load 0 scan 0 commit 0; index:id=value (0-based): 0:86=0 1:7=0 2:76=0 3:141=0 4:75=0 5:141=0 6:68=8 7:9=0 8:70=0 9:103=0
+# scan max rep2: open 0 load 0 scan 0 commit 0; index:id=value (0-based): 0:86=0 1:7=0 2:76=0 3:141=0 4:75=0 5:141=0 6:68=8 7:9=0 8:70=0 9:103=0
+# scan max ok: open 0 load 0 scan 0 commit 0; index:id=value (0-based): 0:86=0 1:7=0 2:76=0 3:141=0 4:76=0 5:141=0 6:75=0 7:141=0 8:68=10 9:9=0 10:70=0 11:103=0
+# scan count: open 0 load 0 scan 0 commit 0; index:id=value (0-based): 0:103=0
+# scan: close 13
+max rep1		0	511/0	0
+>	1	max rep1	1	86	0	0	0	0
+>	1	max rep1	2	7	0	0	0	0
+!	511	work : max rep1 : 3 : Set Field
+>	1	max rep1	3	76	511	0	0	511
+>	1	max rep1	4	141	0	0	0	0
+>	1	max rep1	5	75	0	0	0	0
+>	1	max rep1	6	141	0	0	0	0
+>	1	max rep1	7	68	0	0	1	0
+>	1	max rep1	9	70	0	0	1	0
+>	1	max rep1	10	103	0	0	1	0
+max rep2		0	511/0	0
+>	1	max rep2	1	86	0	0	0	0
+>	1	max rep2	2	7	0	0	0	0
+!	511	work : max rep2 : 3 : Set Field
+>	1	max rep2	3	76	511	0	0	511
+>	1	max rep2	4	141	0	0	0	0
+>	1	max rep2	5	75	0	0	0	0
+>	1	max rep2	6	141	0	0	0	0
+>	1	max rep2	7	68	0	0	1	0
+>	1	max rep2	9	70	0	0	1	0
+>	1	max rep2	10	103	0	0	1	0
+max ok		0	00/0	0
+>	1	max ok	1	86	0	0	0	0
+>	1	max ok	2	7	0	0	0	0
+>	1	max ok	3	76	0	0	0	0
+>	1	max ok	4	141	0	0	0	0
+>	1	max ok	5	76	0	0	0	0
+>	1	max ok	6	141	0	0	0	0
+>	1	max ok	7	75	0	0	0	0
+>	1	max ok	8	141	0	0	0	0
+>	1	max ok	9	68	0	0	1	0
+>	1	max ok	11	70	0	0	1	0
+>	1	max ok	12	103	0	0	1	0
+count		0	3	0
+>	1	count	1	103	0	0	1	0

@@ -1,0 +1,26 @@
+# Argument evaluation order, seen through $ variable side effects (Contacts
+# en-US, design functions registered): counted (VarArgs) functions store
+# their arguments last first.
+Let ( $a = "" ; 0 ) & List ( Let ( $a = $a & "1" ; 1 ) ; Let ( $a = $a & "2" ; 2 ) ; Let ( $a = $a & "3" ; 3 ) ) & "|" & $a
+Let ( $a = "" ; 0 ) & Max ( Let ( $a = $a & "1" ; 1 ) ; Let ( $a = $a & "2" ; 2 ) ) & "|" & $a
+Let ( $a = "" ; 0 ) & Substitute ( Let ( $a = $a & "1" ; "abc" ) ; Let ( $a = $a & "2" ; "a" ) ; Let ( $a = $a & "3" ; "x" ) ) & "|" & $a
+Let ( $a = "" ; 0 ) & Substitute ( Let ( $a = $a & "1" ; "abc" ) ; [ Let ( $a = $a & "2" ; "a" ) ; Let ( $a = $a & "3" ; "x" ) ] ; [ Let ( $a = $a & "4" ; "b" ) ; Let ( $a = $a & "5" ; "y" ) ] ) & "|" & $a
+Let ( $a = "" ; 0 ) & Left ( Let ( $a = $a & "1" ; "abc" ) ; Let ( $a = $a & "2" ; 2 ) ) & "|" & $a
+Let ( $a = "" ; 0 ) & Middle ( Let ( $a = $a & "1" ; "abc" ) ; Let ( $a = $a & "2" ; 2 ) ; Let ( $a = $a & "3" ; 1 ) ) & "|" & $a
+Let ( $a = "" ; 0 ) & Date ( Let ( $a = $a & "1" ; 1 ) ; Let ( $a = $a & "2" ; 2 ) ; Let ( $a = $a & "3" ; 2003 ) ) & "|" & $a
+Let ( $a = "" ; 0 ) & JSONSetElement ( Let ( $a = $a & "1" ; "{}" ) ; Let ( $a = $a & "2" ; "k" ) ; Let ( $a = $a & "3" ; 1 ) ; Let ( $a = $a & "4" ; JSONNumber ) ) & "|" & $a
+Let ( $a = "" ; 0 ) & Case ( Let ( $a = $a & "1" ; 0 ) ; "a" ; Let ( $a = $a & "2" ; 1 ) ; Let ( $a = $a & "3" ; "b" ) ) & "|" & $a
+Let ( $a = "" ; 0 ) & Choose ( Let ( $a = $a & "1" ; 1 ) ; Let ( $a = $a & "2" ; "a" ) ; Let ( $a = $a & "3" ; "b" ) ) & "|" & $a
+Let ( $a = "" ; 0 ) & Evaluate ( Let ( $a = $a & "1" ; "1" ) ) & "|" & $a
+Let ( $a = "" ; 0 ) & SetPrecision ( Let ( $a = $a & "1" ; 1/3 ) ; Let ( $a = $a & "2" ; 20 ) ) & "|" & $a
+Let ( $a = "" ; 0 ) & SetRecursion ( Let ( $a = $a & "1" ; 1 ) ; Let ( $a = $a & "2" ; 5 ) ) & "|" & $a
+Let ( $a = "" ; 0 ) & ( Let ( $a = $a & "1" ; 1 ) & Let ( $a = $a & "2" ; 2 ) ) & "|" & $a
+Let ( $a = "" ; 0 ) & ( Let ( $a = $a & "1" ; 1 ) < Let ( $a = $a & "2" ; 2 ) ) & "|" & $a
+Let ( $a = "" ; 0 ) & GetValue ( Let ( $a = $a & "1" ; "x¶y" ) ; Let ( $a = $a & "2" ; 2 ) ) & "|" & $a
+Let ( $a = "" ; 0 ) & ExecuteSQL ( Let ( $a = $a & "1" ; "SELECT 1 FROM Contacts" ) ; Let ( $a = $a & "2" ; "" ) ; Let ( $a = $a & "3" ; "" ) ) & "|" & $a
+Let ( $a = "" ; 0 ) & GetLayoutObjectAttribute ( Let ( $a = $a & "1" ; "x" ) ; Let ( $a = $a & "2" ; "content" ) ) & "|" & $a
+Let ( $a = "" ; 0 ) & FieldNames ( Let ( $a = $a & "1" ; "x" ) ; Let ( $a = $a & "2" ; "y" ) ) & "|" & $a
+Let ( $a = "" ; 0 ) & Let ( [ x = Let ( $a = $a & "1" ; 1 ) ; y = Let ( $a = $a & "2" ; 2 ) ] ; x ) & "|" & $a
+Let ( $a = "" ; 0 ) & While ( [ i = Let ( $a = $a & "1" ; 0 ) ] ; Let ( $a = $a & "c" ; i < 1 ) ; [ i = Let ( $a = $a & "L" ; i + 1 ) ] ; Let ( $a = $a & "R" ; i ) ) & "|" & $a
+Let ( $a = "" ; 0 ) & Max ( Let ( $a = $a & "1" ; 1 ) ; Let ( $a = $a & "2" ; 1/0 ) ; Let ( $a = $a & "3" ; Sqrt ( -1 ) ) ) & "|" & $a & "|" & EvaluationError ( Max ( 1/0 ; Sqrt ( -1 ) ) )
+EvaluationError ( List ( 1/0 ; Sqrt ( -1 ) ) ) & EvaluationError ( Substitute ( 1/0 ; Sqrt ( -1 ) ; "" ) ) & EvaluationError ( Left ( 1/0 ; Sqrt ( -1 ) ) )

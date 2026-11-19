@@ -1,0 +1,52 @@
+# scan empty new: open 0 load 0 scan 0 commit 0; index:id=value (0-based): 0:86=0 1:7=0 2:76=0 3:141=0 4:75=0 5:141=0 6:68=8 7:9=0 8:70=0 9:103=0
+# scan empty set: open 0 load 0 scan 0 commit 0; index:id=value (0-based): 0:86=0 1:7=0 2:76=0 3:141=0 4:76=0 5:141=0 6:75=0 7:141=0 8:68=10 9:9=0 10:70=0 11:103=0
+# scan filled: open 0 load 0 scan 0 commit 0; index:id=value (0-based): 0:86=0 1:7=0 2:76=0 3:141=0 4:75=0 5:141=0 6:68=8 7:9=0 8:70=0 9:103=0
+# scan cleared: open 0 load 0 scan 0 commit 0; index:id=value (0-based): 0:86=0 1:16=2 2:76=0 3:141=0 4:75=0 5:141=0 6:68=8 7:51=0 8:70=0 9:103=0
+# scan count: open 0 load 0 scan 0 commit 0; index:id=value (0-based): 0:103=0
+# scan: close 13
+empty new		0	0/0	0
+>	1	empty new	1	86	0	0	0	0
+>	1	empty new	2	7	0	0	0	0
+>	1	empty new	3	76	0	0	0	0
+>	1	empty new	4	141	0	0	0	0
+>	1	empty new	5	75	0	0	0	0
+>	1	empty new	6	141	0	0	0	0
+>	1	empty new	7	68	0	0	1	0
+>	1	empty new	9	70	0	0	1	0
+>	1	empty new	10	103	0	0	1	0
+empty set		0	00/0	0
+>	1	empty set	1	86	0	0	0	0
+>	1	empty set	2	7	0	0	0	0
+>	1	empty set	3	76	0	0	0	0
+>	1	empty set	4	141	0	0	0	0
+>	1	empty set	5	76	0	0	0	0
+>	1	empty set	6	141	0	0	0	0
+>	1	empty set	7	75	0	0	0	0
+>	1	empty set	8	141	0	0	0	0
+>	1	empty set	9	68	0	0	1	0
+>	1	empty set	11	70	0	0	1	0
+>	1	empty set	12	103	0	0	1	0
+filled		0	0/0	0
+>	1	filled	1	86	0	0	0	0
+>	1	filled	2	7	0	0	0	0
+>	1	filled	3	76	0	0	0	0
+>	1	filled	4	141	0	0	0	0
+>	1	filled	5	75	0	0	0	0
+>	1	filled	6	141	0	0	0	0
+>	1	filled	7	68	0	0	1	0
+>	1	filled	9	70	0	0	1	0
+>	1	filled	10	103	0	0	1	0
+cleared		0	0/507	0
+>	1	cleared	1	86	0	0	0	0
+>	1	cleared	2	16	0	0	0	0
+>	1	cleared	3	76	0	0	0	0
+>	1	cleared	4	141	0	0	0	0
+!	507	work : cleared : 5 : Commit Records/Requests
+>	1	cleared	5	75	1	0	0	507
+>	1	cleared	6	141	0	0	0	0
+>	1	cleared	7	68	0	0	1	0
+>	1	cleared	8	51	0	0	0	0
+>	1	cleared	9	70	0	0	1	0
+>	1	cleared	10	103	0	0	1	0
+count		0	3	0
+>	1	count	1	103	0	0	1	0

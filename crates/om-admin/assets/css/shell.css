@@ -1,0 +1,567 @@
+/* OpenMaker Server Admin Console. Written for OpenMaker; sizes and colors
+   follow the measurements of FileMaker Server's console in
+   docs/re/admin-console.md section 6. */
+
+:root {
+  --text: #222222;
+  --label: #888888;
+  --accent: #2f54e5;
+  --chrome: #f6f6f6;
+  --border: #dddddd;
+  --input-border: #cccccc;
+  --selected: #eceff3;
+  --critical: #d0021b;
+  --warning: #e8900c;
+  --font: Helvetica, Arial, "Liberation Sans", sans-serif;
+}
+
+html {
+  -webkit-text-size-adjust: 100%;
+}
+
+body {
+  margin: 0;
+  background: #ffffff;
+  color: var(--text);
+  font: 500 13px/22px var(--font);
+  letter-spacing: 0.195px;
+}
+
+a {
+  color: var(--accent);
+}
+
+button,
+input {
+  font-family: var(--font);
+}
+
+:focus-visible {
+  outline: 2px solid var(--accent);
+  outline-offset: 2px;
+}
+
+.visually-hidden {
+  position: absolute;
+  width: 1px;
+  height: 1px;
+  margin: -1px;
+  overflow: hidden;
+  clip: rect(0 0 0 0);
+  white-space: nowrap;
+  border: 0;
+}
+
+.link-button {
+  padding: 5.2px 13px;
+  border: 0;
+  background: none;
+  color: var(--accent);
+  font: 400 13px/19.5px var(--font);
+  letter-spacing: normal;
+  text-decoration: none;
+  white-space: nowrap;
+  cursor: pointer;
+}
+
+.link-button:hover {
+  text-decoration: underline;
+}
+
+/* The wordmark: OpenMaker's mark, then the name. */
+
+.wordmark {
+  display: inline-flex;
+  align-items: center;
+  gap: 9px;
+  color: var(--text);
+  font-size: 20px;
+  line-height: 1;
+  letter-spacing: -0.2px;
+  white-space: nowrap;
+}
+
+.wordmark .mark {
+  flex: none;
+}
+
+.wordmark-name {
+  font-weight: 600;
+}
+
+.wordmark-product {
+  margin-left: -3px;
+  color: var(--label);
+  font-weight: 300;
+}
+
+/* Top bar: 60 px and a 1 px border, on the chrome gray. */
+
+.topbar {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  height: 60px;
+  padding: 0 30px;
+  border-bottom: 1px solid var(--border);
+  background: var(--chrome);
+}
+
+.topbar-home {
+  display: flex;
+  align-items: center;
+  height: 100%;
+  text-decoration: none;
+}
+
+.topbar-tools {
+  display: flex;
+  align-items: center;
+  height: 100%;
+}
+
+.clock {
+  white-space: nowrap;
+}
+
+.time-toggle {
+  margin-left: 8px;
+  padding: 2.6px 6.5px;
+  border: 0;
+  border-radius: 2px;
+  background: #aaaaaa;
+  color: #ffffff;
+  font: 400 8.45px/1 var(--font);
+  letter-spacing: 0.3px;
+  text-transform: uppercase;
+  cursor: pointer;
+}
+
+.time-toggle[hidden] {
+  display: none;
+}
+
+.divider {
+  align-self: stretch;
+  width: 1px;
+  margin: 10px 18px;
+  background: var(--border);
+}
+
+/* The alerts bell and its panel. */
+
+.bell {
+  position: relative;
+}
+
+.bell-button {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  padding: 4px 2px;
+  color: var(--text);
+  list-style: none;
+  cursor: pointer;
+}
+
+.bell-button::-webkit-details-marker {
+  display: none;
+}
+
+.badge {
+  min-width: 18px;
+  box-sizing: border-box;
+  padding: 4px 6px;
+  border-radius: 3px;
+  background: var(--accent);
+  color: #ffffff;
+  font: 400 10.4px/10px var(--font);
+  text-align: center;
+}
+
+.bell-panel {
+  position: absolute;
+  top: calc(100% + 14px);
+  right: -24px;
+  z-index: 10;
+  width: 480px;
+  border: 1px solid var(--border);
+  border-radius: 3px;
+  background: #ffffff;
+  box-shadow: 0 4px 14px rgba(0, 0, 0, 0.08);
+}
+
+.bell-panel::before {
+  position: absolute;
+  top: -7px;
+  right: 30px;
+  width: 12px;
+  height: 12px;
+  border-top: 1px solid var(--border);
+  border-left: 1px solid var(--border);
+  background: #ffffff;
+  content: "";
+  transform: rotate(45deg);
+}
+
+.alert {
+  padding: 12px 20px 6px;
+  border-bottom: 1px solid var(--border);
+}
+
+.alert-time {
+  color: var(--label);
+  font-size: 12px;
+}
+
+.alert-message {
+  display: flex;
+  align-items: flex-start;
+  gap: 8px;
+}
+
+.alert-message .severity {
+  margin-top: 2px;
+}
+
+.alert-ack .link-button {
+  padding-left: 0;
+  text-decoration: underline;
+}
+
+.bell-empty,
+.bell-count {
+  margin: 0;
+  padding: 10px 20px;
+  color: var(--label);
+  text-align: center;
+}
+
+.severity {
+  display: inline-flex;
+  flex: none;
+  align-items: center;
+  justify-content: center;
+  width: 18px;
+  height: 18px;
+  border-radius: 50%;
+  color: #ffffff;
+  font: 700 12px/1 Arial, var(--font);
+}
+
+.severity.critical {
+  background: var(--critical);
+}
+
+.severity.warning {
+  background: var(--warning);
+}
+
+.severity.information {
+  background: var(--accent);
+}
+
+.signout {
+  margin: 0;
+}
+
+/* Tab row: 56 px and a 1 px border; the current tab is underlined. */
+
+.tabs {
+  border-bottom: 1px solid var(--border);
+  background: var(--chrome);
+  overflow-x: auto;
+}
+
+.tabs ul {
+  display: flex;
+  height: 56px;
+  margin: 0;
+  padding: 0 30px;
+  list-style: none;
+}
+
+.tab {
+  display: block;
+  box-sizing: border-box;
+  height: 56px;
+  margin-right: 10px;
+  padding: 20px 20px 12px;
+  border-bottom: 2px solid transparent;
+  color: var(--text);
+  font-size: 13.65px;
+  font-weight: 500;
+  text-decoration: none;
+  white-space: nowrap;
+}
+
+.tab.active {
+  border-bottom-color: var(--text);
+}
+
+/* Content: a 20 px gutter, 23 px below the tab row; a 350 px sidebar on
+   every tab but the Dashboard and Databases. */
+
+.content {
+  padding: 23px 20px 0;
+}
+
+.two-column {
+  display: flex;
+  align-items: stretch;
+}
+
+.sidebar {
+  flex: 0 0 350px;
+  box-sizing: border-box;
+  padding: 0 0 50px 9.75px;
+  border-right: 1px solid var(--border);
+}
+
+.view {
+  flex: 1;
+  min-width: 0;
+  padding: 0 9.75px 0 25px;
+}
+
+.full-width .view {
+  padding: 0 9.75px;
+}
+
+.m-title {
+  margin: 0;
+  padding-bottom: 20px;
+  font-size: 16.25px;
+  font-weight: 500;
+  line-height: 22px;
+}
+
+.sidebar-intro {
+  margin: 0;
+  padding: 0 15px 20px 0;
+}
+
+.sidebar-nav {
+  margin: 0;
+  padding: 0;
+  border-top: 1px solid var(--border);
+  list-style: none;
+}
+
+.sidebar-nav a {
+  position: relative;
+  display: block;
+  box-sizing: border-box;
+  height: 55px;
+  padding: 16.5px 6.5px 14.5px 46.8px;
+  border-bottom: 1px solid var(--border);
+  color: var(--text);
+  text-decoration: none;
+}
+
+.sidebar-nav.compact a {
+  height: 49px;
+  padding-top: 13.5px;
+  padding-bottom: 11.5px;
+}
+
+.sidebar-nav a.active {
+  background: var(--selected);
+}
+
+.sidebar-nav .icon {
+  position: absolute;
+  top: 50%;
+  left: 15px;
+  color: var(--accent);
+  transform: translateY(-50%);
+}
+
+.unavailable {
+  margin: 0;
+  color: var(--label);
+}
+
+/* Footer. */
+
+.footer {
+  padding: 70px 20px 40px;
+  color: var(--label);
+  text-align: center;
+}
+
+.footer p {
+  margin: 0;
+}
+
+.footer-note {
+  font-size: 12px;
+}
+
+/* Sign-in: the wordmark, two stacked 320x41 fields, a 260x38 button. */
+
+.signin {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  padding-top: 190px;
+}
+
+.signin-brand .wordmark {
+  gap: 12px;
+  font-size: 36px;
+}
+
+.signin-brand .wordmark-product {
+  margin-left: -4px;
+}
+
+.signin-caption {
+  margin: 2px 0 0 52px;
+  color: #555555;
+  font-size: 13.5px;
+  letter-spacing: 0.4px;
+}
+
+.signin-form {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  width: 320px;
+  margin-top: 40px;
+}
+
+.signin-message {
+  margin: 0 0 14px;
+  color: var(--critical);
+  text-align: center;
+}
+
+.signin-fields {
+  width: 320px;
+}
+
+.signin-fields input {
+  position: relative;
+  display: block;
+  box-sizing: border-box;
+  width: 100%;
+  height: 41px;
+  padding: 7.8px 11.7px;
+  border: 1px solid var(--input-border);
+  background: #ffffff;
+  color: #212529;
+  font: 400 13px/19.5px var(--font);
+}
+
+.signin-fields input:first-child {
+  border-radius: 3.25px 3.25px 0 0;
+}
+
+.signin-fields input:last-child {
+  margin-top: -1px;
+  border-radius: 0 0 3.25px 3.25px;
+}
+
+.signin-fields input:focus {
+  z-index: 1;
+  border-color: var(--accent);
+  outline: none;
+  box-shadow: 0 0 0 1px var(--accent);
+}
+
+.signin-fields input::placeholder {
+  color: #999999;
+}
+
+.signin-button {
+  width: 260px;
+  height: 38px;
+  margin-top: 30px;
+  border: 0;
+  border-radius: 3.25px;
+  background: var(--accent);
+  color: #ffffff;
+  font: 400 13px/19.5px var(--font);
+  cursor: pointer;
+}
+
+.signin-button.is-incomplete {
+  color: rgba(255, 255, 255, 0.6);
+}
+
+.password-help {
+  width: 320px;
+  margin-top: 36px;
+  text-align: center;
+}
+
+.password-help summary {
+  color: var(--accent);
+  font-weight: 400;
+  list-style: none;
+  cursor: pointer;
+}
+
+.password-help summary::-webkit-details-marker {
+  display: none;
+}
+
+.password-help p {
+  margin: 8px 0 0;
+  color: var(--label);
+}
+
+.signin-page .footer {
+  padding-top: 220px;
+}
+
+/* A page outside the application (not found, refused). */
+
+.message {
+  max-width: 560px;
+  margin: 0 auto;
+  padding: 120px 20px 0;
+}
+
+.message .wordmark {
+  margin-bottom: 40px;
+}
+
+@media (max-width: 760px) {
+  .topbar {
+    padding: 0 16px;
+  }
+
+  .clock,
+  .time-toggle {
+    display: none;
+  }
+
+  /* Without the clock, its divider separates nothing; the narrower
+     dividers keep the bar within a 390 px screen. */
+  .time-toggle + .divider {
+    display: none;
+  }
+
+  .divider {
+    margin: 10px 12px;
+  }
+
+  .two-column {
+    display: block;
+  }
+
+  .sidebar {
+    padding-bottom: 20px;
+    border-right: 0;
+  }
+
+  .view {
+    padding: 20px 9.75px 0;
+  }
+
+  .bell-panel {
+    width: min(480px, calc(100vw - 32px));
+  }
+}

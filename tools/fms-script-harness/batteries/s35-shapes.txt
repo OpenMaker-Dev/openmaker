@@ -1,0 +1,41 @@
+# The step shapes make_patch.py writes for the s35 batteries, checked by
+# FileMaker's own export: the generated file is saved as XML again
+# (FMDeveloperTool --saveAsXML of $WORK/s35-shapes.tasks-en.gen.fmp12) and
+# each step's parameters compared with what was written. Nothing runs.
+# Base file: tasks-en (generated) with the s35 schema directives.
+@layout	Attachment List	Attachments	Assignments
+@name	Task Details	portal:Attachments	Attachments Portal
+@name	Task Details	Attachments::Description	att desc
+@validate	Attachments::Description	Always	Length ( Self ) <= 3
+@relationship	Attachments	Tasks	cascadeCreate=False	cascadeDelete=True
+@portal	Task Details	Attachments	273
+@filetrigger	OnWindowTransaction	shapes	Description
+
+== shapes
+Go to Portal Row [ First ]
+Go to Portal Row [ Last ; Select: On ]
+Go to Portal Row [ Previous ; Exit after last: On ]
+Go to Portal Row [ Next ; Exit after last: On ]
+Go to Portal Row [ Next ]
+Go to Portal Row [ By calculation: 2 ; Select: On ; With dialog: Off ]
+Go to Object [ Object Name: "att desc" ; Repetition: 2 ]
+Go to Object [ "Assignee Portal" ]
+Go to Field [ Select/perform ; Attachments::Description ]
+Go to Field [ Attachments::Description[2] ]
+Go to Related Record [ Show only related records: On ; From table: "Attachments" ; Using layout: "Attachment List" ]
+Go to Related Record [ From table: "Attachments" ; Using layout: "Attachment List" ]
+New Window [ Name: "W2" ; Layout: "Task List" ]
+New Window [ ]
+New Window [ Name: "W3" ; Height: 400 ; Width: 600 ; Top: 10 ; Left: 20 ]
+Select Window [ Name: "W2" ; Current file ]
+Select Window [ Name: "W2" ]
+Select Window [ Current Window ]
+Close Window [ Name: "W2" ; Current file ]
+Close Window [ Current Window ]
+Enter Find Mode [ Pause: Off ]
+Perform Find
+Revert Record/Request [ With dialog: Off ]
+Delete Portal Row [ With dialog: Off ]
+Delete Portal Row [ With dialog: On ]
+Set Field By Name [ "Attachments::Description" ; "by name" ]
+--- run

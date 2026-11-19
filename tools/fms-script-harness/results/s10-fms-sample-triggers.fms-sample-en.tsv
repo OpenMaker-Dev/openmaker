@@ -1,0 +1,99 @@
+# Triggers on the server: RunScriptAndClose opens the file's window, which
+# runs OnFirstWindowOpen before the requested script; layout and record
+# triggers fired by script steps run as frames pushed above the caller.
+# Existing scripts of the FileMaker Server sample (en_FMServer_Sample), no
+# patch.
+Show All Task List | Web		0		0	Tasks	12
+>	1	Trigger | On First Window Open	1	76	0	0	0	0
+>	1	Trigger | On First Window Open	2	76	0	0	0	0
+>	1	Trigger | On First Window Open	3	68	0	0	1	0
+>	1	Trigger | On First Window Open	5	125	0	0	1	0
+>	1	Trigger | On First Window Open	7	125	0	0	1	0
+>	1	Trigger | On First Window Open	9	69	0	0	1	0
+>	1	Trigger | On First Window Open	10	6	0	0	0	0
+>	3	Trigger | Sort Task List	1	68	0	0	1	0
+>	3	Trigger | Sort Task List	4	70	0	0	1	0
+>	3	Trigger | Sort Task List	5	141	0	0	0	0
+>	3	Trigger | Sort Task List	6	68	0	0	1	0
+>	3	Trigger | Sort Task List	7	39	0	0	0	0
+>	3	Trigger | Sort Task List	8	125	0	0	1	0
+>	3	Trigger | Sort Task List	14	70	0	0	1	0
+>	3	Trigger | Sort Task List	15	68	0	0	1	0
+>	3	Trigger | Sort Task List	17	70	0	0	1	0
+>	3	Trigger | Sort Task List	18	16	0	0	0	0
+>	2	Trigger | Create Task in List View 	1	68	0	0	1	0
+>	2	Trigger | Create Task in List View 	2	103	0	0	1	0
+>	1	Trigger | On First Window Open	11	29	0	0	0	0
+>	1	Trigger | On First Window Open	12	70	0	0	1	0
+>	1	Trigger | On First Window Open	13	68	0	0	1	0
+>	1	Trigger | On First Window Open	16	69	0	0	1	0
+>	1	Trigger | On First Window Open	17	97	0	0	0	0
+>	1	Trigger | On First Window Open	18	70	0	0	1	0
+>	1	Trigger | On First Window Open	19	68	0	0	1	0
+>	1	Trigger | On First Window Open	21	70	0	0	1	0
+>	1	Show All Task List | Web	1	141	0	0	0	0
+>	1	Show All Task List | Web	2	76	0	0	0	0
+>	1	Show All Task List | Web	3	76	0	0	0	0
+>	1	Show All Task List | Web	4	23	0	0	0	0
+>	1	Show All Task List | Web	5	1	0	0	0	0
+>	2	Trigger | Sort Task List	1	68	0	0	1	0
+>	2	Trigger | Sort Task List	4	70	0	0	1	0
+>	2	Trigger | Sort Task List	5	141	0	0	0	0
+>	2	Trigger | Sort Task List	6	68	0	0	1	0
+>	2	Trigger | Sort Task List	7	39	0	0	0	0
+>	2	Trigger | Sort Task List	8	125	0	0	1	0
+>	2	Trigger | Sort Task List	14	70	0	0	1	0
+>	2	Trigger | Sort Task List	15	68	0	0	1	0
+>	2	Trigger | Sort Task List	17	70	0	0	1	0
+>	2	Trigger | Sort Task List	18	16	0	0	0	0
+>	1	Trigger | On Window Close	1	68	0	0	1	0
+>	1	Trigger | On Window Close	2	123	0	0	0	0
+>	1	Trigger | On Window Close	3	29	0	0	0	0
+>	1	Trigger | On Window Close	4	70	0	0	1	0
+Trigger | On First Window Open		0		0	Tasks
+>	1	Trigger | On First Window Open	1	76	0	0	0	0
+>	1	Trigger | On First Window Open	2	76	0	0	0	0
+>	1	Trigger | On First Window Open	3	68	0	0	1	0
+>	1	Trigger | On First Window Open	5	125	0	0	1	0
+>	1	Trigger | On First Window Open	7	125	0	0	1	0
+>	1	Trigger | On First Window Open	9	69	0	0	1	0
+>	1	Trigger | On First Window Open	10	6	0	0	0	0
+>	3	Trigger | Sort Task List	1	68	0	0	1	0
+>	3	Trigger | Sort Task List	4	70	0	0	1	0
+>	3	Trigger | Sort Task List	5	141	0	0	0	0
+>	3	Trigger | Sort Task List	6	68	0	0	1	0
+>	3	Trigger | Sort Task List	7	39	0	0	0	0
+>	3	Trigger | Sort Task List	8	125	0	0	1	0
+>	3	Trigger | Sort Task List	14	70	0	0	1	0
+>	3	Trigger | Sort Task List	15	68	0	0	1	0
+>	3	Trigger | Sort Task List	17	70	0	0	1	0
+>	3	Trigger | Sort Task List	18	16	0	0	0	0
+>	2	Trigger | Create Task in List View 	1	68	0	0	1	0
+>	2	Trigger | Create Task in List View 	2	103	0	0	1	0
+>	1	Trigger | On First Window Open	11	29	0	0	0	0
+>	1	Trigger | On First Window Open	12	70	0	0	1	0
+>	1	Trigger | On First Window Open	13	68	0	0	1	0
+>	1	Trigger | On First Window Open	16	69	0	0	1	0
+>	1	Trigger | On First Window Open	17	97	0	0	0	0
+>	1	Trigger | On First Window Open	18	70	0	0	1	0
+>	1	Trigger | On First Window Open	19	68	0	0	1	0
+>	1	Trigger | On First Window Open	21	70	0	0	1	0
+>	1	Trigger | On First Window Open	1	76	0	0	0	0
+>	1	Trigger | On First Window Open	2	76	0	0	0	0
+>	1	Trigger | On First Window Open	3	68	0	0	1	0
+>	1	Trigger | On First Window Open	5	125	0	0	1	0
+>	1	Trigger | On First Window Open	7	125	0	0	1	0
+>	1	Trigger | On First Window Open	9	69	0	0	1	0
+>	1	Trigger | On First Window Open	10	6	0	0	0	0
+>	1	Trigger | On First Window Open	11	29	0	0	0	0
+>	1	Trigger | On First Window Open	12	70	0	0	1	0
+>	1	Trigger | On First Window Open	13	68	0	0	1	0
+>	1	Trigger | On First Window Open	16	69	0	0	1	0
+>	1	Trigger | On First Window Open	17	97	0	0	0	0
+>	1	Trigger | On First Window Open	18	70	0	0	1	0
+>	1	Trigger | On First Window Open	19	68	0	0	1	0
+>	1	Trigger | On First Window Open	21	70	0	0	1	0
+>	1	Trigger | On Window Close	1	68	0	0	1	0
+>	1	Trigger | On Window Close	2	123	0	0	0	0
+>	1	Trigger | On Window Close	3	29	0	0	0	0
+>	1	Trigger | On Window Close	4	70	0	0	1	0

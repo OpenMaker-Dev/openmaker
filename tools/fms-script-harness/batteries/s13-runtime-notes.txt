@@ -1,0 +1,82 @@
+# Points script-runtime.md's implementation notes left unconfirmed that a
+# server run can settle: a repetition that evaluates to "?", when
+# Get ( LastErrorLocation ) is cleared, Exit after last on an empty found
+# set, in a loop over records and outside a loop, Perform Script by name
+# (case, "source::script", trailing space), an unknown step in a
+# sub-script with Allow User Abort On, and an Exit Script [ "" ] result of
+# the top script. Base file: contacts-en (no records until "rn records").
+== rn repetition error
+Set Variable [ $v[GetField ( "x" )] ; "q" ]
+Set Variable [ $e ; Get ( LastError ) ]
+Exit Script [ List ( "[" & $v & "]" ; "[" & $v[0] & "]" ; $e ) ]
+== rn location cleared
+Perform Script [ By name: "no such script" ]
+Set Variable [ $loc1 ; Get ( LastErrorLocation ) ]
+Set Variable [ $loc2 ; Get ( LastErrorLocation ) ]
+Exit Script [ Substitute ( $loc1 ; ¶ ; "/" ) & "|" & $loc2 ]
+== rn exit after last empty
+Loop
+Go to Record/Request/Page [ Next ; Exit after last: On ]
+Set Variable [ $$inloop ; Get ( LastError ) ]
+Exit Loop If [ 1 ]
+End Loop
+Exit Script [ "after loop " & Get ( LastError ) & " [" & $$inloop & "]" ]
+== rn exit after last outside loop
+Go to Record/Request/Page [ Next ; Exit after last: On ]
+Set Variable [ $$outside ; Get ( LastError ) ]
+Exit Script [ "after step " & Get ( LastError ) ]
+== rn records
+New Record/Request
+Set Field [ Contacts::First Name ; "r1" ]
+New Record/Request
+Set Field [ Contacts::First Name ; "r2" ]
+New Record/Request
+Set Field [ Contacts::First Name ; "r3" ]
+Commit Records/Requests [ With dialog: Off ]
+Exit Script [ Get ( FoundCount ) ]
+== rn exit after last loop
+Go to Record/Request/Page [ First ]
+Set Variable [ $i ; 0 ]
+Loop
+Set Variable [ $i ; $i + 1 ]
+Go to Record/Request/Page [ Next ; Exit after last: On ]
+Exit Loop If [ $i ≥ 10 ]
+End Loop
+Exit Script [ $i & " " & Get ( LastError ) & " " & Get ( RecordNumber ) & " " & Get ( FoundCount ) ]
+== rn exit after last at end outside loop
+Go to Record/Request/Page [ Last ]
+Go to Record/Request/Page [ Next ; Exit after last: On ]
+Set Variable [ $$atend ; Get ( LastError ) ]
+Exit Script [ "after step" ]
+== rn by name
+Perform Script [ By name: "RN SUB" ]
+Set Variable [ $a ; Get ( LastError ) & "/" & Get ( ScriptResult ) ]
+Perform Script [ By name: "work::rn sub" ]
+Set Variable [ $b ; Get ( LastError ) & "/" & Get ( ScriptResult ) ]
+Perform Script [ By name: "rn sub " ]
+Set Variable [ $c ; Get ( LastError ) ]
+Exit Script [ $a & "," & $b & "," & $c ]
+== rn sub
+Exit Script [ "sub" ]
+== rn unknown in sub
+Allow User Abort [ On ]
+Perform Script [ "rn sub unknown" ]
+Set Variable [ $$after ; 1 ]
+Exit Script [ "after sub" ]
+== rn sub unknown
+Set Variable [ $$subbefore ; 1 ]
+Step 15
+Set Variable [ $$subafter ; 1 ]
+== rn exit empty
+Exit Script [ "" ]
+--- run
+rn repetition error		Get ( LastError )
+rn location cleared		Get ( LastError )	Get ( LastErrorLocation )
+rn exit after last empty		Get ( LastError )	$$inloop
+rn exit after last outside loop		Get ( LastError )	$$outside
+rn records		Get ( LastError )
+rn exit after last loop		Get ( LastError )
+rn exit after last at end outside loop		Get ( LastError )	$$atend
+rn by name		Get ( LastError )
+rn unknown in sub		Get ( LastError )	$$subbefore	$$subafter	$$after
+rn exit empty		Get ( LastError )	Get ( ScriptResult )

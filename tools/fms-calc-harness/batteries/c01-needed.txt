@@ -1,0 +1,284 @@
+# Compile mode (calceval -c -d), calc-oracle.fmp12, context table occurrence "Table" (03d00001,
+# fields Input = 6, Output = 7). Sections 1-14 of re/work/calc-encoding/needed-expressions.txt
+# (calc-encoding.md section 10) with backslashes doubled for the harness, plus additions marked "+".
+# --- 1. Precedence and associativity (docs/re/calc-encoding.md 6.2)
+not 1 = 2
+not not 1
+-2^2
+- -1
+-1
++"3"
+2^3^2
+1 - 2 - 3
+8 / 4 / 2
+1 & 2 + 3
+1 = 1 and 0 or 1
+1 or 0 and 0
+1 xor 0
+1 < 2 = 1
+1 <> 2
+1 ≠ 2
+1 <= 2
+1 ≤ 2
+1 >= 2
+1 ≥ 2
+#
+# --- 2. Number literals (formatted number word 0x0020 / 0x0040)
+1E3
+1e3
+1.5E-2
+1E+3
+.5
+5.
+0001
+1.50
+12345678901234567890
+0.12345678901234567890123
+1234567890.123456789
+#
+# --- 3. Text literals and escapes
+"a¶b"
+"a\\¶b"
+"a\\"b"
+"a\\\\b"
+"a\\nb"
+""""
+# + typed Return (CR), LF, U+E004, U+2028, tab inside a literal; quote and backslash forms
+"ab\rc"
+"ab\nc"
+"ab\uE004c"
+"ab\u2028c"
+"a\tb"
+"a\\¶b" & "x"
+"a\\\\¶b"
+"a\\"
+"a\\x"
+"\\"
+"¶"
+"a""b"
+"a" "b"
+"\\¶"
+"a\\\rb"
+"＂full-width quotes＂"
+#
+# --- 4. Comments and layout
+1 // trailing comment
+/* block */ 1
+1 /* inner */ + 2
+// only a comment
+1 +\t2
+#
+# --- 5. Names, case and quoting
+abs ( -1 )
+ABS(-1)
+Get ( currentdate )
+get(CURRENTDATE)
+Let ( ${a b} = 1 ; ${a b} )
+Let ( A = 1 ; a )
+Table::Input
+Input
+${Input}
+Table::${Input}
+Input[2]
+Table::Input[2]
+nonexistent_name + 1
+Länge ( "abc" )
+#
+# --- 6. Let, While, variables
+Let ( x = 1 ; x )
+Let ( [ x = 1 ; x = x + 1 ] ; x )
+Let ( [ $a = 1 ; $$b = 2 ] ; $a + $$b )
+Let ( $a[2] = 1 ; $a[2] )
+Let ( x = 1 ; Let ( y = 2 ; x + y ) )
+Let ( [ x = 1 ; y = Let ( z = 3 ; z ) ; w = 4 ] ; x + y + w )
+While ( [ i = 0 ] ; i < 3 ; [ i = i + 1 ] ; i )
+While ( [ i = 0 ; r = "" ] ; i < 3 ; [ i = i + 1 ; r = r & i ] ; r )
+While ( [ i = 0 ] ; i < 3 ; [ i = i + 1 ; j = i ] ; j )
+Let ( x = 1 ; While ( [ i = x ] ; i < 3 ; [ i = i + 1 ] ; i + x ) )
+#
+# --- 7. Evaluate / GetField and field-reference positions (mNeedFieldRef)
+Evaluate ( "1" )
+Evaluate ( "1" ; Table::Input )
+Evaluate ( "1" ; [ Table::Input ; Table::Output ] )
+List ( Evaluate ( "1" ) )
+Sum ( Evaluate ( "1" ) )
+List ( Let ( x = 1 ; Evaluate ( "x" ) ) )
+List ( If ( 1 ; Evaluate ( "1" ) ; GetField ( "Input" ) ) )
+GetField ( "Input" )
+GetRepetition ( GetField ( "Input" ) ; 1 )
+While ( [ i = 0 ] ; i < 1 ; [ i = i + 1 ] ; Let ( a = 1 ; Evaluate ( "a" ) ) )
+EvaluationError ( Evaluate ( "1+" ) )
+IsValid ( Table::Input )
+IsValidExpression ( "1+" )
+#
+# --- 8. Control forms
+If ( 1 ; 2 )
+If ( 1 ; 2 ; 3 )
+If ( 1 ; 2 ; )
+Case ( 1 ; "a" )
+Case ( 1 ; "a" ; "b" )
+Case ( 0 ; "a" ; 1 ; "b" ; "c" )
+Case ( 1 ; "a" ; )
+Choose ( 1 ; "a" ; "b" )
+SetPrecision ( 1/3 ; 50 )
+SetRecursion ( 1 ; 100 )
+Get ( LastError )
+Get ( UUID )
+#
+# --- 9. Field-type arguments (0x16 versus 0x17)
+Sum ( Table::Input )
+Sum ( Table::Input ; Table::Output )
+Count ( Table::Input )
+List ( Table::Input ; 1 )
+Max ( 1 ; 2 )
+Average ( Table::Input + 1 )
+Last ( Table::Input )
+Extend ( Table::Input )
+GetRepetition ( Table::Input ; 2 )
+GetNthRecord ( Table::Input ; 1 )
+GetSummary ( Table::Input ; Table::Output )
+GetFieldName ( Table::Input )
+Lookup ( Table::Input )
+Lookup ( Table::Input ; "x" )
+LookupNext ( Table::Input ; Lower )
+NPV ( Table::Input ; 0.1 )
+IsEmpty ( Table::Input[2] )
+#
+# --- 10. Variable-argument functions and lists
+Substitute ( "abc" ; "a" ; "b" )
+Substitute ( "abc" ; [ "a" ; "b" ] ; [ "c" ; "d" ] )
+JSONSetElement ( "{}" ; "a" ; 1 ; JSONNumber )
+JSONSetElement ( "{}" ; [ "a" ; 1 ; JSONNumber ] ; [ "b" ; "x" ; JSONString ] )
+Factorial ( 5 )
+Factorial ( 5 ; 2 )
+TextFont ( "a" ; "Arial" )
+TextFont ( "a" ; "Arial" ; Roman )
+TextSizeRemove ( "a" )
+TextSizeRemove ( "a" ; 12 )
+TextColorRemove ( "a" ; RGB ( 1 ; 2 ; 3 ) )
+TextFontRemove ( "a" ; "Arial" ; Roman )
+ExecuteSQL ( "select 1" ; "" ; "" )
+ExecuteSQL ( "select ?" ; "" ; "" ; 1 ; 2 )
+List ( 1 ; ; 3 )
+Average ( 1 ; 2 ; 3 )
+#
+# --- 11. Constants and zero-argument functions
+Pi
+Random
+Self
+True + False
+¶
+JSONString
+ValueNumber
+ROWID
+PosixPath
+LayoutObjectUUID
+HighlightYellow
+TextStyleAdd ( "a" ; Bold + Italic )
+TextStyleRemove ( "a" ; AllStyles )
+SortValues ( "b¶a" ; ValueNumber )
+#
+# --- 12. One function per arity class absent from the corpus
+Sqrt ( 4 )
+Exp ( 1 )
+Combination ( 5 ; 2 )
+WeekOfYearFiscal ( Date ( 1 ; 1 ; 2024 ) ; 1 )
+FV ( 1 ; 0.1 ; 2 )
+Atan ( 1 )
+TrimAll ( "a" ; 1 ; 0 )
+NumToJText ( 1 ; 1 ; 0 )
+Quote ( "a" )
+GetAsSVG ( Table::Input )
+CryptDigest ( "a" ; "SHA256" )
+JSONParse ( "{}" )
+GetTokenCount ( "a" )
+TextEncode ( "a" ; "utf-8" ; 1 )
+JSONMakeArray ( "1¶2" ; "¶" ; JSONNumber )
+CryptGenerateSignature ( "a" ; "SHA256" ; "k" ; "" )
+#
+# --- 13. Built-in plug-in functions (FMDR design group, FMMB mobile group)
+DatabaseNames
+WindowNames
+WindowNames ( Get ( FileName ) )
+FieldNames ( Get ( FileName ) ; "" )
+FieldDisplayNames ( Get ( FileName ) ; "Table::Input" )
+Location ( 1 )
+LocationValues ( 1 ; 1 )
+RangeBeacons ( "x" )
+#
+# --- 14. Errors (record FileMaker's error number and highlighted span)
+1 +
+( 1
+"abc
+/* open
+Abs ( 1 ; 2 )
+Abs ( )
+Get ( NoSuchSelector )
+Let ( [ x = 1 ; x = 2 ] ; x )
+#
+#
+# --- 16. (+) Field reference flags, quoting, plug-in arguments, locales
+${Table}::Input
+${Table}::${Input}
+Table::Input + ${Input}
+Let ( ${x} = 1 ; x )
+Let ( x = 1 ; ${x} )
+FieldNames ( "a" ; List ( Table::Input ) )
+FieldNames ( Sum ( Table::Input ) ; "a" )
+Location ( Sum ( Table::Input ) )
+List ( Table::Input ; Location ( 1 ) )
+1,5
+1.5e2
+1e
+1e+
+1.2.3
+.
+1.
+00.50
+1E-400
+1E400
+1.5E-2 + 0
+#
+# --- 17. (+) More error positions
+Abs ( 1
+Abs ( 1 ;
+Abs 1
+1 + * 2
+) 1
+"abc" "def"
+Left ( "a" )
+Left ( "a" ; 1 ; 2 )
+NoSuchFunction ( 1 )
+Table::NoSuchField
+NoSuchTable::Input
+Let ( [ x = 1 ; x = 2 ] ; x )
+Let ( x = 1 ; y )
+Let ( 1 = 1 ; 1 )
+Get ( )
+Get ( 1 )
+GetRepetition ( 1 ; 1 )
+Sum ( 1 + 1 )
+Extend ( 1 )
+Last ( "a" )
+GetSummary ( Table::Input ; 1 )
+Self
+%16 Self
+Case ( )
+Case ( 1 )
+If ( 1 )
+Choose ( 1 )
+Evaluate ( )
+While ( [ i = 0 ] ; i < 3 ; i + 1 )
+${abc
+"
+/*
+1 // x
+[ 1 ; 2 ]
+List ( [ 1 ; 2 ] )
+Substitute ( "a" ; [ "a" ] ; "b" )
+Let ( [ $x[2] = 1 ] ; $x[2] )
+x[2]
+Let ( x = 1 ; x[2] )
+Table::Input[0]
+Table::Input[-1]
+Table::Input[1+1]

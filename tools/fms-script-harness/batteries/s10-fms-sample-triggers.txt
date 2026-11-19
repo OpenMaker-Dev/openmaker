@@ -1,0 +1,7 @@
+# Triggers on the server: RunScriptAndClose opens the file's window, which
+# runs OnFirstWindowOpen before the requested script; layout and record
+# triggers fired by script steps run as frames pushed above the caller.
+# Existing scripts of the FileMaker Server sample (en_FMServer_Sample), no
+# patch.
+Show All Task List | Web		Get ( LayoutName )	Get ( FoundCount )
+Trigger | On First Window Open		Get ( LayoutName )

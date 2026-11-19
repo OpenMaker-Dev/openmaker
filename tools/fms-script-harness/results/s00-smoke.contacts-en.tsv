@@ -1,0 +1,62 @@
+# scan smoke branch: open 0 load 0 scan 0 commit 0; index:id=value (0-based): 0:141=0 1:68=3 2:141=0 3:125=5 4:141=0 5:69=7 6:141=0 7:70=0 8:141=0 9:71=12 10:141=0 11:72=12 12:73=9 13:1=0 14:103=0
+# scan smoke sub: open 0 load 0 scan 0 commit 0; index:id=value (0-based): 0:103=0
+# scan: close 13
+smoke branch	1	0	one|3|sub(one)	0
+>	1	smoke branch	1	141	0	0	0	0
+>	1	smoke branch	2	68	0	0	1	0
+>	1	smoke branch	3	141	0	0	0	0
+>	1	smoke branch	4	125	0	0	1	0
+>	1	smoke branch	8	70	0	0	1	0
+>	1	smoke branch	9	141	0	0	0	0
+>	1	smoke branch	10	71	0	0	1	0
+>	1	smoke branch	11	141	0	0	0	0
+>	1	smoke branch	12	72	0	0	1	0
+>	1	smoke branch	13	73	0	0	1	0
+>	1	smoke branch	11	141	0	0	0	0
+>	1	smoke branch	12	72	0	0	1	0
+>	1	smoke branch	13	73	0	0	1	0
+>	1	smoke branch	11	141	0	0	0	0
+>	1	smoke branch	12	72	0	0	1	0
+>	1	smoke branch	14	1	0	0	0	0
+>	2	smoke sub	1	103	0	0	1	0
+>	1	smoke branch	15	103	0	0	1	0
+smoke branch	2	0	two|3|sub(two)	0
+>	1	smoke branch	1	141	0	0	0	0
+>	1	smoke branch	2	68	0	0	1	0
+>	1	smoke branch	4	125	0	0	1	0
+>	1	smoke branch	5	141	0	0	0	0
+>	1	smoke branch	6	69	0	0	1	0
+>	1	smoke branch	8	70	0	0	1	0
+>	1	smoke branch	9	141	0	0	0	0
+>	1	smoke branch	10	71	0	0	1	0
+>	1	smoke branch	11	141	0	0	0	0
+>	1	smoke branch	12	72	0	0	1	0
+>	1	smoke branch	13	73	0	0	1	0
+>	1	smoke branch	11	141	0	0	0	0
+>	1	smoke branch	12	72	0	0	1	0
+>	1	smoke branch	13	73	0	0	1	0
+>	1	smoke branch	11	141	0	0	0	0
+>	1	smoke branch	12	72	0	0	1	0
+>	1	smoke branch	14	1	0	0	0	0
+>	2	smoke sub	1	103	0	0	1	0
+>	1	smoke branch	15	103	0	0	1	0
+smoke branch	3	0	other|3|sub(other)	0
+>	1	smoke branch	1	141	0	0	0	0
+>	1	smoke branch	2	68	0	0	1	0
+>	1	smoke branch	4	125	0	0	1	0
+>	1	smoke branch	6	69	0	0	1	0
+>	1	smoke branch	7	141	0	0	0	0
+>	1	smoke branch	8	70	0	0	1	0
+>	1	smoke branch	9	141	0	0	0	0
+>	1	smoke branch	10	71	0	0	1	0
+>	1	smoke branch	11	141	0	0	0	0
+>	1	smoke branch	12	72	0	0	1	0
+>	1	smoke branch	13	73	0	0	1	0
+>	1	smoke branch	11	141	0	0	0	0
+>	1	smoke branch	12	72	0	0	1	0
+>	1	smoke branch	13	73	0	0	1	0
+>	1	smoke branch	11	141	0	0	0	0
+>	1	smoke branch	12	72	0	0	1	0
+>	1	smoke branch	14	1	0	0	0	0
+>	2	smoke sub	1	103	0	0	1	0
+>	1	smoke branch	15	103	0	0	1	0

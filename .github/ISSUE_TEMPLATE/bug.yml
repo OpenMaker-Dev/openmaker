@@ -1,0 +1,59 @@
+name: Bug
+description: OpenMaker does something wrong - a crash, hang, wrong result or lost data.
+labels:
+  - bug
+body:
+  - type: markdown
+    attributes:
+      value: |
+        One problem per issue; search existing issues first. Add an `area: ...` label
+        after filing. Never paste credentials, license keys or capture contents.
+
+  - type: textarea
+    id: what-happened
+    attributes:
+      label: What happens
+      description: What OpenMaker did, with the exact error or symptom.
+    validations:
+      required: true
+
+  - type: textarea
+    id: expected
+    attributes:
+      label: What should happen
+      description: What FileMaker does in the same situation, and how that is known (spec section, capture, oracle vector, or "unmeasured").
+    validations:
+      required: true
+
+  - type: textarea
+    id: steps
+    attributes:
+      label: Steps to reproduce
+      description: A minimal, deterministic repro. Use a synthetic or template file, not private data.
+    validations:
+      required: true
+
+  - type: textarea
+    id: where
+    attributes:
+      label: Where
+      description: Crate, `path:line`, or doc section, if known.
+
+  - type: input
+    id: version
+    attributes:
+      label: Commit
+      placeholder: main @ abc1234
+
+  - type: input
+    id: environment
+    attributes:
+      label: Environment
+      placeholder: Ubuntu 24.04, X11; FileMaker Server 26.0.3 or OpenMaker Server
+
+  - type: input
+    id: filed-by
+    attributes:
+      label: Filed by
+      description: Person, or the model and harness that wrote this issue.
+      placeholder: Claude Opus 5.5 (claude-opus-5-5) in Claude Code, via T3 Code

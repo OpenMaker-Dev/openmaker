@@ -1,0 +1,363 @@
+# FileMaker Server 26.0.3 script engine (tools/fms-script-harness, s30-design),
+# expressions evaluated after a session opened mbs-atb.fmp12 as "work" on its
+# default layout, with no table occurrence (no script ran).
+# file	mbs-atb.fmp12
+# layout	ATB
+DatabaseNames	work
+TableNames ( "" )	ATB\rATB_Icons\rATB_NSImageTemplates
+TableIDs ( "" )	1065089\r1065091\r1065092
+BaseTableNames ( "" )	ATB\rATB_Icons\rATB_NSImageTemplates
+BaseTableIDs ( "" )	129\r131\r132
+LayoutNames ( "" )	ATB\rATB_Icons\rObject_Trigger\rATB_NSImageTemplates\rObject_Trigger_Flex
+LayoutIDs ( "" )	1\r3\r4\r5\r6
+ScriptNames ( "" )	Start\rObject_Trigger\rObject_Trigger_Flex\rΩNS_templates\rshowMenu_OR_FullAccess\rZoom_In_Out\rclose_PC\rATB_customFunction\rATB_Flex\rATB_MBS\ralpha\rbeta\rdelta\repsilon\rgamma\riota\rlambda\romega\rsigma\rzeta\rATB_hardCoded\rBuildAppTouchBar_test\rRefresh\rBuildWindowTouchBar
+ScriptIDs ( "" )	5\r30\r41\r31\r2\r3\r4\r20\r40\r19\r42\r43\r45\r46\r44\r48\r49\r51\r50\r47\r29\r21\r34\r22
+ValueListNames ( "" )	Functions\rDefault
+ValueListIDs ( "" )	1\r2
+WindowNames	work
+TableNames ( "work" )	ATB\rATB_Icons\rATB_NSImageTemplates
+TableNames ( "WORK" )	ATB\rATB_Icons\rATB_NSImageTemplates
+TableNames ( "work.fmp12" )	ATB\rATB_Icons\rATB_NSImageTemplates
+TableNames ( "work.FMP12" )	ATB\rATB_Icons\rATB_NSImageTemplates
+TableNames ( " work" )	
+TableNames ( "no such file" )	
+TableNames ( "?" )	
+LayoutNames ( "work" )	ATB\rATB_Icons\rObject_Trigger\rATB_NSImageTemplates\rObject_Trigger_Flex
+ScriptNames ( "work" )	Start\rObject_Trigger\rObject_Trigger_Flex\rΩNS_templates\rshowMenu_OR_FullAccess\rZoom_In_Out\rclose_PC\rATB_customFunction\rATB_Flex\rATB_MBS\ralpha\rbeta\rdelta\repsilon\rgamma\riota\rlambda\romega\rsigma\rzeta\rATB_hardCoded\rBuildAppTouchBar_test\rRefresh\rBuildWindowTouchBar
+ValueListNames ( "work" )	Functions\rDefault
+BaseTableNames ( "work" )	ATB\rATB_Icons\rATB_NSImageTemplates
+WindowNames ( "work" )	work
+LayoutNames ( "no such file" )	
+ScriptNames ( "no such file" )	
+ValueListNames ( "no such file" )	
+BaseTableNames ( "no such file" )	
+WindowNames ( "no such file" )	
+WindowNames ( "" )	work
+EvaluationError ( TableNames ( 1 / 0 ) )	15
+FieldNames ( "" ; "ATB" )	flex_Function\rflex_Icon\rflex_Script\rflex_Label\rflex_Formula\r_default\r_primary\r_config\rDev_Notes
+FieldIDs ( "" ; "ATB" )	15\r18\r16\r19\r14\r22\r24\r25\r3
+RelationInfo ( "" ; "ATB" )	Source:work\rTable:ATB_Icons\rOptions:\rATB_Icons::rel_1 = ATB::rel1
+FieldNames ( "" ; "ATB_Icons" )	AddRec\rPrevRec\rNextRec\rDeleteRec\rInfo\rADRESSEN\rAGENDA\rRECHNUNGEN\rSETUP\rSEARCH\rTARIFE\rLISTE\rschliessen\rForm\rPrint\rPreview\rcheck\remail\rinfoi\rPDF\rread\rExcel\rreturn
+FieldIDs ( "" ; "ATB_Icons" )	2\r3\r4\r5\r6\r9\r10\r11\r12\r13\r14\r15\r19\r20\r21\r22\r27\r28\r29\r30\r31\r32\r33
+RelationInfo ( "" ; "ATB_Icons" )	Source:work\rTable:ATB\rOptions:\rATB::rel1 = ATB_Icons::rel_1
+FieldNames ( "" ; "ATB_NSImageTemplates" )	Template\rpict
+FieldIDs ( "" ; "ATB_NSImageTemplates" )	4\r6
+RelationInfo ( "" ; "ATB_NSImageTemplates" )	
+BaseTableComment ( "" ; "ATB" )	
+BaseTableComment ( "" ; "ATB_Icons" )	
+BaseTableComment ( "" ; "ATB_NSImageTemplates" )	
+FieldNames ( "" ; "" )	zzz\rZoom\rDev_Notes\r_empty\rrel1\r_Set\r_Table\r_Functions\rcf_Formula\rIcons\rScripts\rTouchBar\rtest_TB_Icon\rflex_Formula\rflex_Function\rflex_Script\r_flex_Add\rflex_Icon\rflex_Label\rf_Add\rVL_Functions\r_default\rVL_Default\r_primary\r_config
+FieldIDs ( "" ; "" )	1\r2\r3\r4\r5\r6\r7\r8\r9\r10\r11\r12\r13\r14\r15\r16\r17\r18\r19\r20\r21\r22\r23\r24\r25
+FieldNames ( "" ; "no such" )	
+RelationInfo ( "" ; "no such" )	
+BaseTableComment ( "" ; "no such" )	
+FieldNames ( "no such file" ; "" )	
+RelationInfo ( "" ; "atb" )	Source:work\rTable:ATB_Icons\rOptions:\rATB_Icons::rel_1 = ATB::rel1
+LayoutObjectNames ( "" ; "ATB" )	<\r>\r<\r<\r>\r>\r<\r>\r
+LayoutObjectNames ( "" ; "ATB_Icons" )	
+FieldNames ( "" ; "Object_Trigger" )	
+FieldIDs ( "" ; "Object_Trigger" )	
+LayoutObjectNames ( "" ; "Object_Trigger" )	
+LayoutObjectNames ( "" ; "ATB_NSImageTemplates" )	
+FieldNames ( "" ; "Object_Trigger_Flex" )	
+FieldIDs ( "" ; "Object_Trigger_Flex" )	
+LayoutObjectNames ( "" ; "Object_Trigger_Flex" )	
+LayoutObjectNames ( "" ; "no such" )	
+LayoutObjectNames ( "" ; "" )	
+FieldType ( "" ; "ATB::flex_Function" )	Standard Text Unindexed 9
+FieldComment ( "" ; "ATB::flex_Function" )	
+FieldAnnotation ( "" ; "ATB::flex_Function" )	
+FieldDisplayNames ( "" ; "ATB::flex_Function" )	
+GetNextSerialValue ( "" ; "ATB::flex_Function" )	
+FieldType ( "" ; "ATB::flex_Icon" )	Standard Text Unindexed 9
+FieldComment ( "" ; "ATB::flex_Icon" )	
+FieldAnnotation ( "" ; "ATB::flex_Icon" )	
+FieldDisplayNames ( "" ; "ATB::flex_Icon" )	
+GetNextSerialValue ( "" ; "ATB::flex_Icon" )	
+FieldType ( "" ; "ATB::flex_Script" )	Standard Text Unindexed 9
+FieldComment ( "" ; "ATB::flex_Script" )	
+FieldAnnotation ( "" ; "ATB::flex_Script" )	
+FieldDisplayNames ( "" ; "ATB::flex_Script" )	
+GetNextSerialValue ( "" ; "ATB::flex_Script" )	
+FieldType ( "" ; "ATB::flex_Label" )	Standard Text Unindexed 9
+FieldComment ( "" ; "ATB::flex_Label" )	
+FieldAnnotation ( "" ; "ATB::flex_Label" )	
+FieldDisplayNames ( "" ; "ATB::flex_Label" )	
+GetNextSerialValue ( "" ; "ATB::flex_Label" )	
+FieldType ( "" ; "ATB::flex_Formula" )	StoredCalc Text Unindexed 1
+FieldComment ( "" ; "ATB::flex_Formula" )	
+FieldAnnotation ( "" ; "ATB::flex_Formula" )	
+FieldDisplayNames ( "" ; "ATB::flex_Formula" )	
+GetNextSerialValue ( "" ; "ATB::flex_Formula" )	
+FieldType ( "" ; "ATB::_default" )	Standard Text Unindexed 12
+FieldComment ( "" ; "ATB::_default" )	
+FieldAnnotation ( "" ; "ATB::_default" )	
+FieldDisplayNames ( "" ; "ATB::_default" )	
+GetNextSerialValue ( "" ; "ATB::_default" )	
+FieldType ( "" ; "ATB::_primary" )	Standard Text Unindexed 1
+FieldComment ( "" ; "ATB::_primary" )	
+FieldAnnotation ( "" ; "ATB::_primary" )	
+FieldDisplayNames ( "" ; "ATB::_primary" )	
+GetNextSerialValue ( "" ; "ATB::_primary" )	
+FieldType ( "" ; "ATB::_config" )	Standard Text Unindexed 1
+FieldComment ( "" ; "ATB::_config" )	
+FieldAnnotation ( "" ; "ATB::_config" )	
+FieldDisplayNames ( "" ; "ATB::_config" )	
+GetNextSerialValue ( "" ; "ATB::_config" )	
+FieldType ( "" ; "ATB::Dev_Notes" )	Global Text Unindexed 1
+FieldComment ( "" ; "ATB::Dev_Notes" )	
+FieldAnnotation ( "" ; "ATB::Dev_Notes" )	
+FieldDisplayNames ( "" ; "ATB::Dev_Notes" )	
+GetNextSerialValue ( "" ; "ATB::Dev_Notes" )	
+FieldType ( "" ; "ATB_Icons::AddRec" )	Standard Container Unindexed 1
+FieldComment ( "" ; "ATB_Icons::AddRec" )	
+FieldAnnotation ( "" ; "ATB_Icons::AddRec" )	
+FieldDisplayNames ( "" ; "ATB_Icons::AddRec" )	
+GetNextSerialValue ( "" ; "ATB_Icons::AddRec" )	
+FieldType ( "" ; "ATB_Icons::PrevRec" )	Standard Container Unindexed 1
+FieldComment ( "" ; "ATB_Icons::PrevRec" )	
+FieldAnnotation ( "" ; "ATB_Icons::PrevRec" )	
+FieldDisplayNames ( "" ; "ATB_Icons::PrevRec" )	
+GetNextSerialValue ( "" ; "ATB_Icons::PrevRec" )	
+FieldType ( "" ; "ATB_Icons::NextRec" )	Standard Container Unindexed 1
+FieldComment ( "" ; "ATB_Icons::NextRec" )	
+FieldAnnotation ( "" ; "ATB_Icons::NextRec" )	
+FieldDisplayNames ( "" ; "ATB_Icons::NextRec" )	
+GetNextSerialValue ( "" ; "ATB_Icons::NextRec" )	
+FieldType ( "" ; "ATB_Icons::DeleteRec" )	Standard Container Unindexed 1
+FieldComment ( "" ; "ATB_Icons::DeleteRec" )	
+FieldAnnotation ( "" ; "ATB_Icons::DeleteRec" )	
+FieldDisplayNames ( "" ; "ATB_Icons::DeleteRec" )	
+GetNextSerialValue ( "" ; "ATB_Icons::DeleteRec" )	
+FieldType ( "" ; "ATB_Icons::Info" )	Standard Container Unindexed 1
+FieldComment ( "" ; "ATB_Icons::Info" )	
+FieldAnnotation ( "" ; "ATB_Icons::Info" )	
+FieldDisplayNames ( "" ; "ATB_Icons::Info" )	
+GetNextSerialValue ( "" ; "ATB_Icons::Info" )	
+FieldType ( "" ; "ATB_Icons::ADRESSEN" )	Standard Container Unindexed 1
+FieldComment ( "" ; "ATB_Icons::ADRESSEN" )	
+FieldAnnotation ( "" ; "ATB_Icons::ADRESSEN" )	
+FieldDisplayNames ( "" ; "ATB_Icons::ADRESSEN" )	
+GetNextSerialValue ( "" ; "ATB_Icons::ADRESSEN" )	
+FieldType ( "" ; "ATB_Icons::AGENDA" )	Standard Container Unindexed 1
+FieldComment ( "" ; "ATB_Icons::AGENDA" )	
+FieldAnnotation ( "" ; "ATB_Icons::AGENDA" )	
+FieldDisplayNames ( "" ; "ATB_Icons::AGENDA" )	
+GetNextSerialValue ( "" ; "ATB_Icons::AGENDA" )	
+FieldType ( "" ; "ATB_Icons::RECHNUNGEN" )	Standard Container Unindexed 1
+FieldComment ( "" ; "ATB_Icons::RECHNUNGEN" )	
+FieldAnnotation ( "" ; "ATB_Icons::RECHNUNGEN" )	
+FieldDisplayNames ( "" ; "ATB_Icons::RECHNUNGEN" )	
+GetNextSerialValue ( "" ; "ATB_Icons::RECHNUNGEN" )	
+FieldType ( "" ; "ATB_Icons::SETUP" )	Standard Container Unindexed 1
+FieldComment ( "" ; "ATB_Icons::SETUP" )	
+FieldAnnotation ( "" ; "ATB_Icons::SETUP" )	
+FieldDisplayNames ( "" ; "ATB_Icons::SETUP" )	
+GetNextSerialValue ( "" ; "ATB_Icons::SETUP" )	
+FieldType ( "" ; "ATB_Icons::SEARCH" )	Standard Container Unindexed 1
+FieldComment ( "" ; "ATB_Icons::SEARCH" )	
+FieldAnnotation ( "" ; "ATB_Icons::SEARCH" )	
+FieldDisplayNames ( "" ; "ATB_Icons::SEARCH" )	
+GetNextSerialValue ( "" ; "ATB_Icons::SEARCH" )	
+FieldType ( "" ; "ATB_Icons::TARIFE" )	Standard Container Unindexed 1
+FieldComment ( "" ; "ATB_Icons::TARIFE" )	
+FieldAnnotation ( "" ; "ATB_Icons::TARIFE" )	
+FieldDisplayNames ( "" ; "ATB_Icons::TARIFE" )	
+GetNextSerialValue ( "" ; "ATB_Icons::TARIFE" )	
+FieldType ( "" ; "ATB_Icons::LISTE" )	Standard Container Unindexed 1
+FieldComment ( "" ; "ATB_Icons::LISTE" )	
+FieldAnnotation ( "" ; "ATB_Icons::LISTE" )	
+FieldDisplayNames ( "" ; "ATB_Icons::LISTE" )	
+GetNextSerialValue ( "" ; "ATB_Icons::LISTE" )	
+FieldType ( "" ; "ATB_Icons::schliessen" )	Standard Container Unindexed 1
+FieldComment ( "" ; "ATB_Icons::schliessen" )	
+FieldAnnotation ( "" ; "ATB_Icons::schliessen" )	
+FieldDisplayNames ( "" ; "ATB_Icons::schliessen" )	
+GetNextSerialValue ( "" ; "ATB_Icons::schliessen" )	
+FieldType ( "" ; "ATB_Icons::Form" )	Standard Container Unindexed 1
+FieldComment ( "" ; "ATB_Icons::Form" )	
+FieldAnnotation ( "" ; "ATB_Icons::Form" )	
+FieldDisplayNames ( "" ; "ATB_Icons::Form" )	
+GetNextSerialValue ( "" ; "ATB_Icons::Form" )	
+FieldType ( "" ; "ATB_Icons::Print" )	Standard Container Unindexed 1
+FieldComment ( "" ; "ATB_Icons::Print" )	
+FieldAnnotation ( "" ; "ATB_Icons::Print" )	
+FieldDisplayNames ( "" ; "ATB_Icons::Print" )	
+GetNextSerialValue ( "" ; "ATB_Icons::Print" )	
+FieldType ( "" ; "ATB_Icons::Preview" )	Standard Container Unindexed 1
+FieldComment ( "" ; "ATB_Icons::Preview" )	
+FieldAnnotation ( "" ; "ATB_Icons::Preview" )	
+FieldDisplayNames ( "" ; "ATB_Icons::Preview" )	
+GetNextSerialValue ( "" ; "ATB_Icons::Preview" )	
+FieldType ( "" ; "ATB_Icons::check" )	Standard Container Unindexed 1
+FieldComment ( "" ; "ATB_Icons::check" )	
+FieldAnnotation ( "" ; "ATB_Icons::check" )	
+FieldDisplayNames ( "" ; "ATB_Icons::check" )	
+GetNextSerialValue ( "" ; "ATB_Icons::check" )	
+FieldType ( "" ; "ATB_Icons::email" )	Standard Container Unindexed 1
+FieldComment ( "" ; "ATB_Icons::email" )	
+FieldAnnotation ( "" ; "ATB_Icons::email" )	
+FieldDisplayNames ( "" ; "ATB_Icons::email" )	
+GetNextSerialValue ( "" ; "ATB_Icons::email" )	
+FieldType ( "" ; "ATB_Icons::infoi" )	Standard Container Unindexed 1
+FieldComment ( "" ; "ATB_Icons::infoi" )	
+FieldAnnotation ( "" ; "ATB_Icons::infoi" )	
+FieldDisplayNames ( "" ; "ATB_Icons::infoi" )	
+GetNextSerialValue ( "" ; "ATB_Icons::infoi" )	
+FieldType ( "" ; "ATB_Icons::PDF" )	Standard Container Unindexed 1
+FieldComment ( "" ; "ATB_Icons::PDF" )	
+FieldAnnotation ( "" ; "ATB_Icons::PDF" )	
+FieldDisplayNames ( "" ; "ATB_Icons::PDF" )	
+GetNextSerialValue ( "" ; "ATB_Icons::PDF" )	
+FieldType ( "" ; "ATB_Icons::read" )	Standard Container Unindexed 1
+FieldComment ( "" ; "ATB_Icons::read" )	
+FieldAnnotation ( "" ; "ATB_Icons::read" )	
+FieldDisplayNames ( "" ; "ATB_Icons::read" )	
+GetNextSerialValue ( "" ; "ATB_Icons::read" )	
+FieldType ( "" ; "ATB_Icons::Excel" )	Standard Container Unindexed 1
+FieldComment ( "" ; "ATB_Icons::Excel" )	
+FieldAnnotation ( "" ; "ATB_Icons::Excel" )	
+FieldDisplayNames ( "" ; "ATB_Icons::Excel" )	
+GetNextSerialValue ( "" ; "ATB_Icons::Excel" )	
+FieldType ( "" ; "ATB_Icons::return" )	Standard Container Unindexed 1
+FieldComment ( "" ; "ATB_Icons::return" )	
+FieldAnnotation ( "" ; "ATB_Icons::return" )	
+FieldDisplayNames ( "" ; "ATB_Icons::return" )	
+GetNextSerialValue ( "" ; "ATB_Icons::return" )	
+FieldType ( "" ; "ATB_NSImageTemplates::Template" )	Standard Text Unindexed 1
+FieldComment ( "" ; "ATB_NSImageTemplates::Template" )	
+FieldAnnotation ( "" ; "ATB_NSImageTemplates::Template" )	
+FieldDisplayNames ( "" ; "ATB_NSImageTemplates::Template" )	
+GetNextSerialValue ( "" ; "ATB_NSImageTemplates::Template" )	
+FieldType ( "" ; "ATB_NSImageTemplates::pict" )	Standard Container Unindexed 1
+FieldComment ( "" ; "ATB_NSImageTemplates::pict" )	
+FieldAnnotation ( "" ; "ATB_NSImageTemplates::pict" )	
+FieldDisplayNames ( "" ; "ATB_NSImageTemplates::pict" )	
+GetNextSerialValue ( "" ; "ATB_NSImageTemplates::pict" )	
+FieldType ( "" ; "flex_Function" )	
+FieldComment ( "" ; "flex_Function" )	
+GetNextSerialValue ( "" ; "flex_Function" )	
+FieldType ( "" ; "flex_Icon" )	
+FieldComment ( "" ; "flex_Icon" )	
+GetNextSerialValue ( "" ; "flex_Icon" )	
+FieldType ( "" ; "flex_Script" )	
+FieldComment ( "" ; "flex_Script" )	
+GetNextSerialValue ( "" ; "flex_Script" )	
+FieldType ( "" ; "flex_Label" )	
+FieldComment ( "" ; "flex_Label" )	
+GetNextSerialValue ( "" ; "flex_Label" )	
+FieldType ( "" ; "no such" )	
+FieldType ( "" ; "no such::x" )	
+FieldComment ( "" ; "" )	
+FieldStyle ( "" ; "ATB" ; "flex_Function" )	Standard
+FieldRepetitions ( "" ; "ATB" ; "flex_Function" )	9 horizontal
+FieldBounds ( "" ; "ATB" ; "flex_Function" )	105 89 997 110 0
+FieldStyle ( "" ; "ATB" ; "flex_Icon" )	Standard
+FieldRepetitions ( "" ; "ATB" ; "flex_Icon" )	9 horizontal
+FieldBounds ( "" ; "ATB" ; "flex_Icon" )	105 133 997 154 0
+FieldStyle ( "" ; "ATB" ; "flex_Script" )	Standard
+FieldRepetitions ( "" ; "ATB" ; "flex_Script" )	9 horizontal
+FieldBounds ( "" ; "ATB" ; "flex_Script" )	105 155 997 176 0
+FieldStyle ( "" ; "ATB" ; "flex_Label" )	Standard
+FieldRepetitions ( "" ; "ATB" ; "flex_Label" )	9 horizontal
+FieldBounds ( "" ; "ATB" ; "flex_Label" )	105 111 997 132 0
+FieldStyle ( "" ; "ATB" ; "flex_Formula" )	Scrolling
+FieldRepetitions ( "" ; "ATB" ; "flex_Formula" )	1 vertical
+FieldBounds ( "" ; "ATB" ; "flex_Formula" )	26 280 1006 597 0
+FieldStyle ( "" ; "ATB" ; "_default" )	Popuplist Default
+FieldRepetitions ( "" ; "ATB" ; "_default" )	12 horizontal
+FieldBounds ( "" ; "ATB" ; "_default" )	106 180 997 201 0
+FieldStyle ( "" ; "ATB" ; "_primary" )	RadioButton Functions
+FieldRepetitions ( "" ; "ATB" ; "_primary" )	1 horizontal
+FieldBounds ( "" ; "ATB" ; "_primary" )	106 205 998 226 0
+FieldStyle ( "" ; "ATB" ; "_config" )	Checkbox Functions
+FieldRepetitions ( "" ; "ATB" ; "_config" )	1 horizontal
+FieldBounds ( "" ; "ATB" ; "_config" )	106 230 998 251 0
+FieldStyle ( "" ; "ATB" ; "Dev_Notes" )	Scrolling
+FieldRepetitions ( "" ; "ATB" ; "Dev_Notes" )	1 vertical
+FieldBounds ( "" ; "ATB" ; "Dev_Notes" )	24 87 1004 627 0
+FieldStyle ( "" ; "ATB" ; "no such" )	
+FieldBounds ( "" ; "ATB" ; "no such" )	
+FieldStyle ( "" ; "ATB_Icons" ; "AddRec" )	Standard
+FieldRepetitions ( "" ; "ATB_Icons" ; "AddRec" )	1 vertical
+FieldBounds ( "" ; "ATB_Icons" ; "AddRec" )	207 62 271 126 0
+FieldStyle ( "" ; "ATB_Icons" ; "PrevRec" )	Standard
+FieldRepetitions ( "" ; "ATB_Icons" ; "PrevRec" )	1 vertical
+FieldBounds ( "" ; "ATB_Icons" ; "PrevRec" )	215 133 279 197 0
+FieldStyle ( "" ; "ATB_Icons" ; "NextRec" )	Standard
+FieldRepetitions ( "" ; "ATB_Icons" ; "NextRec" )	1 vertical
+FieldBounds ( "" ; "ATB_Icons" ; "NextRec" )	220 204 284 268 0
+FieldStyle ( "" ; "ATB_Icons" ; "DeleteRec" )	Standard
+FieldRepetitions ( "" ; "ATB_Icons" ; "DeleteRec" )	1 vertical
+FieldBounds ( "" ; "ATB_Icons" ; "DeleteRec" )	220 273 284 337 0
+FieldStyle ( "" ; "ATB_Icons" ; "Info" )	Standard
+FieldRepetitions ( "" ; "ATB_Icons" ; "Info" )	1 vertical
+FieldBounds ( "" ; "ATB_Icons" ; "Info" )	220 342 284 406 0
+FieldStyle ( "" ; "ATB_Icons" ; "ADRESSEN" )	Standard
+FieldRepetitions ( "" ; "ATB_Icons" ; "ADRESSEN" )	1 vertical
+FieldBounds ( "" ; "ATB_Icons" ; "ADRESSEN" )	426 62 490 126 0
+FieldStyle ( "" ; "ATB_Icons" ; "AGENDA" )	Standard
+FieldRepetitions ( "" ; "ATB_Icons" ; "AGENDA" )	1 vertical
+FieldBounds ( "" ; "ATB_Icons" ; "AGENDA" )	434 132 498 196 0
+FieldStyle ( "" ; "ATB_Icons" ; "RECHNUNGEN" )	Standard
+FieldRepetitions ( "" ; "ATB_Icons" ; "RECHNUNGEN" )	1 vertical
+FieldBounds ( "" ; "ATB_Icons" ; "RECHNUNGEN" )	434 201 498 265 0
+FieldStyle ( "" ; "ATB_Icons" ; "SETUP" )	Standard
+FieldRepetitions ( "" ; "ATB_Icons" ; "SETUP" )	1 vertical
+FieldBounds ( "" ; "ATB_Icons" ; "SETUP" )	434 266 498 330 0
+FieldStyle ( "" ; "ATB_Icons" ; "SEARCH" )	Standard
+FieldRepetitions ( "" ; "ATB_Icons" ; "SEARCH" )	1 vertical
+FieldBounds ( "" ; "ATB_Icons" ; "SEARCH" )	434 335 498 399 0
+FieldStyle ( "" ; "ATB_Icons" ; "TARIFE" )	Standard
+FieldRepetitions ( "" ; "ATB_Icons" ; "TARIFE" )	1 vertical
+FieldBounds ( "" ; "ATB_Icons" ; "TARIFE" )	434 404 498 468 0
+FieldStyle ( "" ; "ATB_Icons" ; "LISTE" )	Standard
+FieldRepetitions ( "" ; "ATB_Icons" ; "LISTE" )	1 vertical
+FieldBounds ( "" ; "ATB_Icons" ; "LISTE" )	434 477 498 541 0
+FieldStyle ( "" ; "ATB_Icons" ; "schliessen" )	Standard
+FieldRepetitions ( "" ; "ATB_Icons" ; "schliessen" )	1 vertical
+FieldBounds ( "" ; "ATB_Icons" ; "schliessen" )	446 623 510 687 0
+FieldStyle ( "" ; "ATB_Icons" ; "Form" )	Standard
+FieldRepetitions ( "" ; "ATB_Icons" ; "Form" )	1 vertical
+FieldBounds ( "" ; "ATB_Icons" ; "Form" )	220 629 284 693 0
+FieldStyle ( "" ; "ATB_Icons" ; "Print" )	Standard
+FieldRepetitions ( "" ; "ATB_Icons" ; "Print" )	1 vertical
+FieldBounds ( "" ; "ATB_Icons" ; "Print" )	220 699 284 763 0
+FieldStyle ( "" ; "ATB_Icons" ; "Preview" )	Standard
+FieldRepetitions ( "" ; "ATB_Icons" ; "Preview" )	1 vertical
+FieldBounds ( "" ; "ATB_Icons" ; "Preview" )	220 769 284 833 0
+FieldStyle ( "" ; "ATB_Icons" ; "check" )	Standard
+FieldRepetitions ( "" ; "ATB_Icons" ; "check" )	1 vertical
+FieldBounds ( "" ; "ATB_Icons" ; "check" )	709 339 773 403 0
+FieldStyle ( "" ; "ATB_Icons" ; "email" )	Standard
+FieldRepetitions ( "" ; "ATB_Icons" ; "email" )	1 vertical
+FieldBounds ( "" ; "ATB_Icons" ; "email" )	709 410 773 474 0
+FieldStyle ( "" ; "ATB_Icons" ; "infoi" )	Standard
+FieldRepetitions ( "" ; "ATB_Icons" ; "infoi" )	1 vertical
+FieldBounds ( "" ; "ATB_Icons" ; "infoi" )	709 486 773 550 0
+FieldStyle ( "" ; "ATB_Icons" ; "PDF" )	Standard
+FieldRepetitions ( "" ; "ATB_Icons" ; "PDF" )	1 vertical
+FieldBounds ( "" ; "ATB_Icons" ; "PDF" )	709 550 773 614 0
+FieldStyle ( "" ; "ATB_Icons" ; "read" )	Standard
+FieldRepetitions ( "" ; "ATB_Icons" ; "read" )	1 vertical
+FieldBounds ( "" ; "ATB_Icons" ; "read" )	709 626 773 690 0
+FieldStyle ( "" ; "ATB_Icons" ; "Excel" )	Standard
+FieldRepetitions ( "" ; "ATB_Icons" ; "Excel" )	1 vertical
+FieldBounds ( "" ; "ATB_Icons" ; "Excel" )	709 696 773 760 0
+FieldStyle ( "" ; "ATB_Icons" ; "return" )	Standard
+FieldRepetitions ( "" ; "ATB_Icons" ; "return" )	1 vertical
+FieldBounds ( "" ; "ATB_Icons" ; "return" )	709 766 773 830 0
+FieldStyle ( "" ; "ATB_Icons" ; "no such" )	
+FieldBounds ( "" ; "ATB_Icons" ; "no such" )	
+FieldStyle ( "" ; "Object_Trigger" ; "no such" )	
+FieldBounds ( "" ; "Object_Trigger" ; "no such" )	
+FieldStyle ( "" ; "ATB_NSImageTemplates" ; "Template" )	Standard
+FieldRepetitions ( "" ; "ATB_NSImageTemplates" ; "Template" )	1 vertical
+FieldBounds ( "" ; "ATB_NSImageTemplates" ; "Template" )	132 58 626 79 0
+FieldStyle ( "" ; "ATB_NSImageTemplates" ; "pict" )	Standard
+FieldRepetitions ( "" ; "ATB_NSImageTemplates" ; "pict" )	1 vertical
+FieldBounds ( "" ; "ATB_NSImageTemplates" ; "pict" )	27 55 117 119 0
+FieldStyle ( "" ; "ATB_NSImageTemplates" ; "no such" )	
+FieldBounds ( "" ; "ATB_NSImageTemplates" ; "no such" )	
+FieldStyle ( "" ; "Object_Trigger_Flex" ; "no such" )	
+FieldBounds ( "" ; "Object_Trigger_Flex" ; "no such" )	

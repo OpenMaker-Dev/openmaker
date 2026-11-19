@@ -1,0 +1,8 @@
+# Compile mode (calceval -c), MBS example Examples/Barcode/Swiss QR-Code for invoices/
+# Swiss QR-Code for invoices ISO 20022.fmp12, context base_test (03d00001): ID number
+# field 10, id_stat_max summary field 11 (the only summary field found in the corpus files
+# with data; its one record has no ID, so summary values stay untested).
+GetSummary ( base_test::id_stat_max ; base_test::ID )
+GetSummary ( id_stat_max ; ID )
+GetSummary ( base_test::ID ; base_test::ID )
+Sum ( base_test::id_stat_max )

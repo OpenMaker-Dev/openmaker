@@ -1,0 +1,930 @@
+# scan setup: open 0 load 0 scan 0 commit 0; index:id=value (0-based): 0:6=5 1:7=0 2:76=0 3:76=0 4:76=0 5:76=0 6:76=0 7:7=0 8:76=0 9:76=0 10:76=0 11:76=0 12:76=0 13:7=0 14:76=0 15:76=0 16:76=0 17:76=0 18:76=0 19:7=0 20:76=0 21:76=0 22:76=0 23:76=0 24:76=0 25:7=0 26:76=0 27:76=0 28:76=0 29:7=0 30:76=0 31:76=0 32:76=0 33:76=0 34:76=0 35:75=0 36:103=0
+# scan list: open 0 load 0 scan 0 commit 0; index:id=value (0-based): 0:141=0 1:68=7 2:16=1 3:71=6 4:141=0 5:16=4 6:73=3 7:70=0
+# scan find: open 0 load 0 scan 0 commit 0; index:id=value (0-based): 0:89=0 1:86=0 2:6=5 3:22=0 4:68=6 5:76=0 6:125=8 7:76=0 8:125=10 9:76=0 10:125=12 11:76=0 12:125=14 13:76=0 14:125=16 15:76=0 16:125=18 17:76=0 18:70=0 19:141=0 20:68=22 21:76=0 22:70=0 23:28=0 24:141=0 25:141=0 26:1=0 27:103=0
+# scan find after e: open 0 load 0 scan 0 commit 0; index:id=value (0-based): 0:89=0 1:86=0 2:6=5 3:22=0 4:76=0 5:28=0 6:22=0 7:76=0 8:28=0 9:141=0 10:1=0 11:103=0
+# scan global: open 0 load 0 scan 0 commit 0; index:id=value (0-based): 0:89=0 1:86=0 2:6=5 3:76=0 4:141=0 5:22=0 6:76=0 7:141=0 8:141=0 9:76=0 10:28=0 11:141=0 12:1=0 13:103=0
+# scan: close 13
+setup		0	6:6	0
+>	1	setup	1	6	0	0	0	0
+>	2	Sort by Status	1	39	0	0	0	0
+>	1	setup	2	7	0	0	0	0
+>	1	setup	3	76	0	0	0	0
+>	1	setup	4	76	0	0	0	0
+>	1	setup	5	76	0	0	0	0
+>	1	setup	6	76	0	0	0	0
+>	1	setup	7	76	0	0	0	0
+>	1	setup	8	7	0	0	0	0
+>	1	setup	9	76	0	0	0	0
+>	1	setup	10	76	0	0	0	0
+>	1	setup	11	76	0	0	0	0
+>	1	setup	12	76	0	0	0	0
+>	1	setup	13	76	0	0	0	0
+>	1	setup	14	7	0	0	0	0
+>	1	setup	15	76	0	0	0	0
+>	1	setup	16	76	0	0	0	0
+>	1	setup	17	76	0	0	0	0
+>	1	setup	18	76	0	0	0	0
+>	1	setup	19	76	0	0	0	0
+>	1	setup	20	7	0	0	0	0
+>	1	setup	21	76	0	0	0	0
+>	1	setup	22	76	0	0	0	0
+>	1	setup	23	76	0	0	0	0
+>	1	setup	24	76	0	0	0	0
+>	1	setup	25	76	0	0	0	0
+>	1	setup	26	7	0	0	0	0
+>	1	setup	27	76	0	0	0	0
+>	1	setup	28	76	0	0	0	0
+>	1	setup	29	76	0	0	0	0
+>	1	setup	30	7	0	0	0	0
+>	1	setup	31	76	0	0	0	0
+>	1	setup	32	76	0	0	0	0
+>	1	setup	33	76	0	0	0	0
+>	1	setup	34	76	0	0	0	0
+>	1	setup	35	76	0	0	0	0
+>	1	setup	36	75	0	0	0	0
+>	1	setup	37	103	0	0	1	0
+find	U\r8	101	0/0:1:d m0	101
+>	1	find	2	86	0	0	0	0
+>	1	find	3	6	0	0	0	0
+>	2	Sort by Status	1	39	0	0	0	0
+>	1	find	4	22	0	0	0	0
+>	1	find	5	68	0	0	1	0
+>	1	find	6	76	0	0	0	0
+>	1	find	7	125	0	0	1	0
+>	1	find	19	70	0	0	1	0
+>	1	find	20	141	0	0	0	0
+>	1	find	21	68	0	0	1	0
+>	1	find	23	70	0	0	1	0
+>	1	find	24	28	0	0	0	0
+>	1	find	25	141	0	0	0	0
+>	1	find	26	141	0	0	0	0
+>	1	find	27	1	0	0	0	0
+>	2	list	1	141	0	0	0	0
+>	2	list	2	68	0	0	1	0
+>	2	list	3	16	0	0	0	0
+>	2	list	4	71	0	0	1	0
+>	2	list	5	141	0	0	0	0
+!	101	work : list : 7 : Go to Record/Request/Page
+>	2	list	6	16	101	0	0	101
+>	2	list	8	70	0	0	1	101
+>	1	find	28	103	0	0	1	101
+find	U\r>5	101	0/0:3:e d c m0	101
+>	1	find	2	86	0	0	0	0
+>	1	find	3	6	0	0	0	0
+>	2	Sort by Status	1	39	0	0	0	0
+>	1	find	4	22	0	0	0	0
+>	1	find	5	68	0	0	1	0
+>	1	find	6	76	0	0	0	0
+>	1	find	7	125	0	0	1	0
+>	1	find	19	70	0	0	1	0
+>	1	find	20	141	0	0	0	0
+>	1	find	21	68	0	0	1	0
+>	1	find	23	70	0	0	1	0
+>	1	find	24	28	0	0	0	0
+>	1	find	25	141	0	0	0	0
+>	1	find	26	141	0	0	0	0
+>	1	find	27	1	0	0	0	0
+>	2	list	1	141	0	0	0	0
+>	2	list	2	68	0	0	1	0
+>	2	list	3	16	0	0	0	0
+>	2	list	4	71	0	0	1	0
+>	2	list	5	141	0	0	0	0
+>	2	list	6	16	0	0	0	0
+>	2	list	7	73	0	0	1	0
+>	2	list	5	141	0	0	0	0
+>	2	list	6	16	0	0	0	0
+>	2	list	7	73	0	0	1	0
+>	2	list	5	141	0	0	0	0
+!	101	work : list : 7 : Go to Record/Request/Page
+>	2	list	6	16	101	0	0	101
+>	2	list	8	70	0	0	1	101
+>	1	find	28	103	0	0	1	101
+find	U\r#	101	0/0:4:a d b c m0	101
+>	1	find	2	86	0	0	0	0
+>	1	find	3	6	0	0	0	0
+>	2	Sort by Status	1	39	0	0	0	0
+>	1	find	4	22	0	0	0	0
+>	1	find	5	68	0	0	1	0
+>	1	find	6	76	0	0	0	0
+>	1	find	7	125	0	0	1	0
+>	1	find	19	70	0	0	1	0
+>	1	find	20	141	0	0	0	0
+>	1	find	21	68	0	0	1	0
+>	1	find	23	70	0	0	1	0
+>	1	find	24	28	0	0	0	0
+>	1	find	25	141	0	0	0	0
+>	1	find	26	141	0	0	0	0
+>	1	find	27	1	0	0	0	0
+>	2	list	1	141	0	0	0	0
+>	2	list	2	68	0	0	1	0
+>	2	list	3	16	0	0	0	0
+>	2	list	4	71	0	0	1	0
+>	2	list	5	141	0	0	0	0
+>	2	list	6	16	0	0	0	0
+>	2	list	7	73	0	0	1	0
+>	2	list	5	141	0	0	0	0
+>	2	list	6	16	0	0	0	0
+>	2	list	7	73	0	0	1	0
+>	2	list	5	141	0	0	0	0
+>	2	list	6	16	0	0	0	0
+>	2	list	7	73	0	0	1	0
+>	2	list	5	141	0	0	0	0
+!	101	work : list : 7 : Go to Record/Request/Page
+>	2	list	6	16	101	0	0	101
+>	2	list	8	70	0	0	1	101
+>	1	find	28	103	0	0	1	101
+find	U\r=	101	0/0:1:- m0	101
+>	1	find	2	86	0	0	0	0
+>	1	find	3	6	0	0	0	0
+>	2	Sort by Status	1	39	0	0	0	0
+>	1	find	4	22	0	0	0	0
+>	1	find	5	68	0	0	1	0
+>	1	find	6	76	0	0	0	0
+>	1	find	7	125	0	0	1	0
+>	1	find	19	70	0	0	1	0
+>	1	find	20	141	0	0	0	0
+>	1	find	21	68	0	0	1	0
+>	1	find	23	70	0	0	1	0
+>	1	find	24	28	0	0	0	0
+>	1	find	25	141	0	0	0	0
+>	1	find	26	141	0	0	0	0
+>	1	find	27	1	0	0	0	0
+>	2	list	1	141	0	0	0	0
+>	2	list	2	68	0	0	1	0
+>	2	list	3	16	0	0	0	0
+>	2	list	4	71	0	0	1	0
+>	2	list	5	141	0	0	0	0
+!	101	work : list : 7 : Go to Record/Request/Page
+>	2	list	6	16	101	0	0	101
+>	2	list	8	70	0	0	1	101
+>	1	find	28	103	0	0	1	101
+find	U\r*	101	0/0:5:e a d b c m0	101
+>	1	find	2	86	0	0	0	0
+>	1	find	3	6	0	0	0	0
+>	2	Sort by Status	1	39	0	0	0	0
+>	1	find	4	22	0	0	0	0
+>	1	find	5	68	0	0	1	0
+>	1	find	6	76	0	0	0	0
+>	1	find	7	125	0	0	1	0
+>	1	find	19	70	0	0	1	0
+>	1	find	20	141	0	0	0	0
+>	1	find	21	68	0	0	1	0
+>	1	find	23	70	0	0	1	0
+>	1	find	24	28	0	0	0	0
+>	1	find	25	141	0	0	0	0
+>	1	find	26	141	0	0	0	0
+>	1	find	27	1	0	0	0	0
+>	2	list	1	141	0	0	0	0
+>	2	list	2	68	0	0	1	0
+>	2	list	3	16	0	0	0	0
+>	2	list	4	71	0	0	1	0
+>	2	list	5	141	0	0	0	0
+>	2	list	6	16	0	0	0	0
+>	2	list	7	73	0	0	1	0
+>	2	list	5	141	0	0	0	0
+>	2	list	6	16	0	0	0	0
+>	2	list	7	73	0	0	1	0
+>	2	list	5	141	0	0	0	0
+>	2	list	6	16	0	0	0	0
+>	2	list	7	73	0	0	1	0
+>	2	list	5	141	0	0	0	0
+>	2	list	6	16	0	0	0	0
+>	2	list	7	73	0	0	1	0
+>	2	list	5	141	0	0	0	0
+!	101	work : list : 7 : Go to Record/Request/Page
+>	2	list	6	16	101	0	0	101
+>	2	list	8	70	0	0	1	101
+>	1	find	28	103	0	0	1	101
+find	U\r==8	101	0/0:1:d m0	101
+>	1	find	2	86	0	0	0	0
+>	1	find	3	6	0	0	0	0
+>	2	Sort by Status	1	39	0	0	0	0
+>	1	find	4	22	0	0	0	0
+>	1	find	5	68	0	0	1	0
+>	1	find	6	76	0	0	0	0
+>	1	find	7	125	0	0	1	0
+>	1	find	19	70	0	0	1	0
+>	1	find	20	141	0	0	0	0
+>	1	find	21	68	0	0	1	0
+>	1	find	23	70	0	0	1	0
+>	1	find	24	28	0	0	0	0
+>	1	find	25	141	0	0	0	0
+>	1	find	26	141	0	0	0	0
+>	1	find	27	1	0	0	0	0
+>	2	list	1	141	0	0	0	0
+>	2	list	2	68	0	0	1	0
+>	2	list	3	16	0	0	0	0
+>	2	list	4	71	0	0	1	0
+>	2	list	5	141	0	0	0	0
+!	101	work : list : 7 : Go to Record/Request/Page
+>	2	list	6	16	101	0	0	101
+>	2	list	8	70	0	0	1	101
+>	1	find	28	103	0	0	1	101
+find	U\r4...8	101	0/0:3:d b c m0	101
+>	1	find	2	86	0	0	0	0
+>	1	find	3	6	0	0	0	0
+>	2	Sort by Status	1	39	0	0	0	0
+>	1	find	4	22	0	0	0	0
+>	1	find	5	68	0	0	1	0
+>	1	find	6	76	0	0	0	0
+>	1	find	7	125	0	0	1	0
+>	1	find	19	70	0	0	1	0
+>	1	find	20	141	0	0	0	0
+>	1	find	21	68	0	0	1	0
+>	1	find	23	70	0	0	1	0
+>	1	find	24	28	0	0	0	0
+>	1	find	25	141	0	0	0	0
+>	1	find	26	141	0	0	0	0
+>	1	find	27	1	0	0	0	0
+>	2	list	1	141	0	0	0	0
+>	2	list	2	68	0	0	1	0
+>	2	list	3	16	0	0	0	0
+>	2	list	4	71	0	0	1	0
+>	2	list	5	141	0	0	0	0
+>	2	list	6	16	0	0	0	0
+>	2	list	7	73	0	0	1	0
+>	2	list	5	141	0	0	0	0
+>	2	list	6	16	0	0	0	0
+>	2	list	7	73	0	0	1	0
+>	2	list	5	141	0	0	0	0
+!	101	work : list : 7 : Go to Record/Request/Page
+>	2	list	6	16	101	0	0	101
+>	2	list	8	70	0	0	1	101
+>	1	find	28	103	0	0	1	101
+find	U\r!	0	0/401:0:m0	0
+>	1	find	2	86	0	0	0	0
+>	1	find	3	6	0	0	0	0
+>	2	Sort by Status	1	39	0	0	0	0
+>	1	find	4	22	0	0	0	0
+>	1	find	5	68	0	0	1	0
+>	1	find	6	76	0	0	0	0
+>	1	find	7	125	0	0	1	0
+>	1	find	19	70	0	0	1	0
+>	1	find	20	141	0	0	0	0
+>	1	find	21	68	0	0	1	0
+>	1	find	23	70	0	0	1	0
+!	401	work : find : 24 : Perform Find
+>	1	find	24	28	401	0	0	401
+>	1	find	25	141	0	0	0	0
+>	1	find	26	141	0	0	0	0
+>	1	find	27	1	0	0	0	0
+>	2	list	1	141	0	0	0	0
+>	2	list	2	68	0	0	1	0
+>	2	list	8	70	0	0	1	0
+>	1	find	28	103	0	0	1	0
+find	UT\rpend	101	0/0:4:e a - c m0	101
+>	1	find	2	86	0	0	0	0
+>	1	find	3	6	0	0	0	0
+>	2	Sort by Status	1	39	0	0	0	0
+>	1	find	4	22	0	0	0	0
+>	1	find	5	68	0	0	1	0
+>	1	find	7	125	0	0	1	0
+>	1	find	8	76	0	0	0	0
+>	1	find	9	125	0	0	1	0
+>	1	find	19	70	0	0	1	0
+>	1	find	20	141	0	0	0	0
+>	1	find	21	68	0	0	1	0
+>	1	find	23	70	0	0	1	0
+>	1	find	24	28	0	0	0	0
+>	1	find	25	141	0	0	0	0
+>	1	find	26	141	0	0	0	0
+>	1	find	27	1	0	0	0	0
+>	2	list	1	141	0	0	0	0
+>	2	list	2	68	0	0	1	0
+>	2	list	3	16	0	0	0	0
+>	2	list	4	71	0	0	1	0
+>	2	list	5	141	0	0	0	0
+>	2	list	6	16	0	0	0	0
+>	2	list	7	73	0	0	1	0
+>	2	list	5	141	0	0	0	0
+>	2	list	6	16	0	0	0	0
+>	2	list	7	73	0	0	1	0
+>	2	list	5	141	0	0	0	0
+>	2	list	6	16	0	0	0	0
+>	2	list	7	73	0	0	1	0
+>	2	list	5	141	0	0	0	0
+!	101	work : list : 7 : Go to Record/Request/Page
+>	2	list	6	16	101	0	0	101
+>	2	list	8	70	0	0	1	101
+>	1	find	28	103	0	0	1	101
+find	UT\r==a Pending	101	0/0:1:a m0	101
+>	1	find	2	86	0	0	0	0
+>	1	find	3	6	0	0	0	0
+>	2	Sort by Status	1	39	0	0	0	0
+>	1	find	4	22	0	0	0	0
+>	1	find	5	68	0	0	1	0
+>	1	find	7	125	0	0	1	0
+>	1	find	8	76	0	0	0	0
+>	1	find	9	125	0	0	1	0
+>	1	find	19	70	0	0	1	0
+>	1	find	20	141	0	0	0	0
+>	1	find	21	68	0	0	1	0
+>	1	find	23	70	0	0	1	0
+>	1	find	24	28	0	0	0	0
+>	1	find	25	141	0	0	0	0
+>	1	find	26	141	0	0	0	0
+>	1	find	27	1	0	0	0	0
+>	2	list	1	141	0	0	0	0
+>	2	list	2	68	0	0	1	0
+>	2	list	3	16	0	0	0	0
+>	2	list	4	71	0	0	1	0
+>	2	list	5	141	0	0	0	0
+!	101	work : list : 7 : Go to Record/Request/Page
+>	2	list	6	16	101	0	0	101
+>	2	list	8	70	0	0	1	101
+>	1	find	28	103	0	0	1	101
+find	UT\rd*	101	0/0:2:d b m0	101
+>	1	find	2	86	0	0	0	0
+>	1	find	3	6	0	0	0	0
+>	2	Sort by Status	1	39	0	0	0	0
+>	1	find	4	22	0	0	0	0
+>	1	find	5	68	0	0	1	0
+>	1	find	7	125	0	0	1	0
+>	1	find	8	76	0	0	0	0
+>	1	find	9	125	0	0	1	0
+>	1	find	19	70	0	0	1	0
+>	1	find	20	141	0	0	0	0
+>	1	find	21	68	0	0	1	0
+>	1	find	23	70	0	0	1	0
+>	1	find	24	28	0	0	0	0
+>	1	find	25	141	0	0	0	0
+>	1	find	26	141	0	0	0	0
+>	1	find	27	1	0	0	0	0
+>	2	list	1	141	0	0	0	0
+>	2	list	2	68	0	0	1	0
+>	2	list	3	16	0	0	0	0
+>	2	list	4	71	0	0	1	0
+>	2	list	5	141	0	0	0	0
+>	2	list	6	16	0	0	0	0
+>	2	list	7	73	0	0	1	0
+>	2	list	5	141	0	0	0	0
+!	101	work : list : 7 : Go to Record/Request/Page
+>	2	list	6	16	101	0	0	101
+>	2	list	8	70	0	0	1	101
+>	1	find	28	103	0	0	1	101
+find	UT\r"b Done"	101	0/0:1:b m0	101
+>	1	find	2	86	0	0	0	0
+>	1	find	3	6	0	0	0	0
+>	2	Sort by Status	1	39	0	0	0	0
+>	1	find	4	22	0	0	0	0
+>	1	find	5	68	0	0	1	0
+>	1	find	7	125	0	0	1	0
+>	1	find	8	76	0	0	0	0
+>	1	find	9	125	0	0	1	0
+>	1	find	19	70	0	0	1	0
+>	1	find	20	141	0	0	0	0
+>	1	find	21	68	0	0	1	0
+>	1	find	23	70	0	0	1	0
+>	1	find	24	28	0	0	0	0
+>	1	find	25	141	0	0	0	0
+>	1	find	26	141	0	0	0	0
+>	1	find	27	1	0	0	0	0
+>	2	list	1	141	0	0	0	0
+>	2	list	2	68	0	0	1	0
+>	2	list	3	16	0	0	0	0
+>	2	list	4	71	0	0	1	0
+>	2	list	5	141	0	0	0	0
+!	101	work : list : 7 : Go to Record/Request/Page
+>	2	list	6	16	101	0	0	101
+>	2	list	8	70	0	0	1	101
+>	1	find	28	103	0	0	1	101
+find	U\r>3\rTask\rb	101	0/0:1:b m0	101
+>	1	find	2	86	0	0	0	0
+>	1	find	3	6	0	0	0	0
+>	2	Sort by Status	1	39	0	0	0	0
+>	1	find	4	22	0	0	0	0
+>	1	find	5	68	0	0	1	0
+>	1	find	6	76	0	0	0	0
+>	1	find	7	125	0	0	1	0
+>	1	find	19	70	0	0	1	0
+>	1	find	20	141	0	0	0	0
+>	1	find	21	68	0	0	1	0
+>	1	find	22	76	0	0	0	0
+>	1	find	23	70	0	0	1	0
+>	1	find	24	28	0	0	0	0
+>	1	find	25	141	0	0	0	0
+>	1	find	26	141	0	0	0	0
+>	1	find	27	1	0	0	0	0
+>	2	list	1	141	0	0	0	0
+>	2	list	2	68	0	0	1	0
+>	2	list	3	16	0	0	0	0
+>	2	list	4	71	0	0	1	0
+>	2	list	5	141	0	0	0	0
+!	101	work : list : 7 : Go to Record/Request/Page
+>	2	list	6	16	101	0	0	101
+>	2	list	8	70	0	0	1	101
+>	1	find	28	103	0	0	1	101
+find	U\r>3\rTask\re	101	0/0:1:e m0	101
+>	1	find	2	86	0	0	0	0
+>	1	find	3	6	0	0	0	0
+>	2	Sort by Status	1	39	0	0	0	0
+>	1	find	4	22	0	0	0	0
+>	1	find	5	68	0	0	1	0
+>	1	find	6	76	0	0	0	0
+>	1	find	7	125	0	0	1	0
+>	1	find	19	70	0	0	1	0
+>	1	find	20	141	0	0	0	0
+>	1	find	21	68	0	0	1	0
+>	1	find	22	76	0	0	0	0
+>	1	find	23	70	0	0	1	0
+>	1	find	24	28	0	0	0	0
+>	1	find	25	141	0	0	0	0
+>	1	find	26	141	0	0	0	0
+>	1	find	27	1	0	0	0	0
+>	2	list	1	141	0	0	0	0
+>	2	list	2	68	0	0	1	0
+>	2	list	3	16	0	0	0	0
+>	2	list	4	71	0	0	1	0
+>	2	list	5	141	0	0	0	0
+!	101	work : list : 7 : Go to Record/Request/Page
+>	2	list	6	16	101	0	0	101
+>	2	list	8	70	0	0	1	101
+>	1	find	28	103	0	0	1	101
+find	S_Total\r15	101	201/400:1:b m0	101
+>	1	find	2	86	0	0	0	0
+>	1	find	3	6	0	0	0	0
+>	2	Sort by Status	1	39	0	0	0	0
+>	1	find	4	22	0	0	0	0
+>	1	find	5	68	0	0	1	0
+>	1	find	7	125	0	0	1	0
+>	1	find	9	125	0	0	1	0
+!	201	work : find : 10 : Set Field
+>	1	find	10	76	201	0	0	201
+>	1	find	11	125	0	0	1	201
+>	1	find	19	70	0	0	1	201
+>	1	find	20	141	0	0	0	0
+>	1	find	21	68	0	0	1	0
+>	1	find	23	70	0	0	1	0
+!	400	work : find : 24 : Perform Find
+>	1	find	24	28	400	0	0	400
+>	1	find	25	141	0	0	0	0
+>	1	find	26	141	0	0	0	0
+>	1	find	27	1	0	0	0	0
+>	2	list	1	141	0	0	0	0
+>	2	list	2	68	0	0	1	0
+>	2	list	3	16	0	0	0	0
+>	2	list	4	71	0	0	1	0
+>	2	list	5	141	0	0	0	0
+!	101	work : list : 7 : Go to Record/Request/Page
+>	2	list	6	16	101	0	0	101
+>	2	list	8	70	0	0	1	101
+>	1	find	28	103	0	0	1	101
+find	S_Total\r14	101	201/400:1:b m0	101
+>	1	find	2	86	0	0	0	0
+>	1	find	3	6	0	0	0	0
+>	2	Sort by Status	1	39	0	0	0	0
+>	1	find	4	22	0	0	0	0
+>	1	find	5	68	0	0	1	0
+>	1	find	7	125	0	0	1	0
+>	1	find	9	125	0	0	1	0
+!	201	work : find : 10 : Set Field
+>	1	find	10	76	201	0	0	201
+>	1	find	11	125	0	0	1	201
+>	1	find	19	70	0	0	1	201
+>	1	find	20	141	0	0	0	0
+>	1	find	21	68	0	0	1	0
+>	1	find	23	70	0	0	1	0
+!	400	work : find : 24 : Perform Find
+>	1	find	24	28	400	0	0	400
+>	1	find	25	141	0	0	0	0
+>	1	find	26	141	0	0	0	0
+>	1	find	27	1	0	0	0	0
+>	2	list	1	141	0	0	0	0
+>	2	list	2	68	0	0	1	0
+>	2	list	3	16	0	0	0	0
+>	2	list	4	71	0	0	1	0
+>	2	list	5	141	0	0	0	0
+!	101	work : list : 7 : Go to Record/Request/Page
+>	2	list	6	16	101	0	0	101
+>	2	list	8	70	0	0	1	101
+>	1	find	28	103	0	0	1	101
+find	S_Total\r*	101	201/400:1:b m0	101
+>	1	find	2	86	0	0	0	0
+>	1	find	3	6	0	0	0	0
+>	2	Sort by Status	1	39	0	0	0	0
+>	1	find	4	22	0	0	0	0
+>	1	find	5	68	0	0	1	0
+>	1	find	7	125	0	0	1	0
+>	1	find	9	125	0	0	1	0
+!	201	work : find : 10 : Set Field
+>	1	find	10	76	201	0	0	201
+>	1	find	11	125	0	0	1	201
+>	1	find	19	70	0	0	1	201
+>	1	find	20	141	0	0	0	0
+>	1	find	21	68	0	0	1	0
+>	1	find	23	70	0	0	1	0
+!	400	work : find : 24 : Perform Find
+>	1	find	24	28	400	0	0	400
+>	1	find	25	141	0	0	0	0
+>	1	find	26	141	0	0	0	0
+>	1	find	27	1	0	0	0	0
+>	2	list	1	141	0	0	0	0
+>	2	list	2	68	0	0	1	0
+>	2	list	3	16	0	0	0	0
+>	2	list	4	71	0	0	1	0
+>	2	list	5	141	0	0	0	0
+!	101	work : list : 7 : Go to Record/Request/Page
+>	2	list	6	16	101	0	0	101
+>	2	list	8	70	0	0	1	101
+>	1	find	28	103	0	0	1	101
+find	S_Total\r=	101	201/400:1:b m0	101
+>	1	find	2	86	0	0	0	0
+>	1	find	3	6	0	0	0	0
+>	2	Sort by Status	1	39	0	0	0	0
+>	1	find	4	22	0	0	0	0
+>	1	find	5	68	0	0	1	0
+>	1	find	7	125	0	0	1	0
+>	1	find	9	125	0	0	1	0
+!	201	work : find : 10 : Set Field
+>	1	find	10	76	201	0	0	201
+>	1	find	11	125	0	0	1	201
+>	1	find	19	70	0	0	1	201
+>	1	find	20	141	0	0	0	0
+>	1	find	21	68	0	0	1	0
+>	1	find	23	70	0	0	1	0
+!	400	work : find : 24 : Perform Find
+>	1	find	24	28	400	0	0	400
+>	1	find	25	141	0	0	0	0
+>	1	find	26	141	0	0	0	0
+>	1	find	27	1	0	0	0	0
+>	2	list	1	141	0	0	0	0
+>	2	list	2	68	0	0	1	0
+>	2	list	3	16	0	0	0	0
+>	2	list	4	71	0	0	1	0
+>	2	list	5	141	0	0	0	0
+!	101	work : list : 7 : Go to Record/Request/Page
+>	2	list	6	16	101	0	0	101
+>	2	list	8	70	0	0	1	101
+>	1	find	28	103	0	0	1	101
+find	S_RunTotal\r12	101	201/400:1:b m0	101
+>	1	find	2	86	0	0	0	0
+>	1	find	3	6	0	0	0	0
+>	2	Sort by Status	1	39	0	0	0	0
+>	1	find	4	22	0	0	0	0
+>	1	find	5	68	0	0	1	0
+>	1	find	7	125	0	0	1	0
+>	1	find	9	125	0	0	1	0
+>	1	find	11	125	0	0	1	0
+!	201	work : find : 12 : Set Field
+>	1	find	12	76	201	0	0	201
+>	1	find	13	125	0	0	1	201
+>	1	find	19	70	0	0	1	201
+>	1	find	20	141	0	0	0	0
+>	1	find	21	68	0	0	1	0
+>	1	find	23	70	0	0	1	0
+!	400	work : find : 24 : Perform Find
+>	1	find	24	28	400	0	0	400
+>	1	find	25	141	0	0	0	0
+>	1	find	26	141	0	0	0	0
+>	1	find	27	1	0	0	0	0
+>	2	list	1	141	0	0	0	0
+>	2	list	2	68	0	0	1	0
+>	2	list	3	16	0	0	0	0
+>	2	list	4	71	0	0	1	0
+>	2	list	5	141	0	0	0	0
+!	101	work : list : 7 : Go to Record/Request/Page
+>	2	list	6	16	101	0	0	101
+>	2	list	8	70	0	0	1	101
+>	1	find	28	103	0	0	1	101
+find	S_RunTotal\r>10	101	201/400:1:b m0	101
+>	1	find	2	86	0	0	0	0
+>	1	find	3	6	0	0	0	0
+>	2	Sort by Status	1	39	0	0	0	0
+>	1	find	4	22	0	0	0	0
+>	1	find	5	68	0	0	1	0
+>	1	find	7	125	0	0	1	0
+>	1	find	9	125	0	0	1	0
+>	1	find	11	125	0	0	1	0
+!	201	work : find : 12 : Set Field
+>	1	find	12	76	201	0	0	201
+>	1	find	13	125	0	0	1	201
+>	1	find	19	70	0	0	1	201
+>	1	find	20	141	0	0	0	0
+>	1	find	21	68	0	0	1	0
+>	1	find	23	70	0	0	1	0
+!	400	work : find : 24 : Perform Find
+>	1	find	24	28	400	0	0	400
+>	1	find	25	141	0	0	0	0
+>	1	find	26	141	0	0	0	0
+>	1	find	27	1	0	0	0	0
+>	2	list	1	141	0	0	0	0
+>	2	list	2	68	0	0	1	0
+>	2	list	3	16	0	0	0	0
+>	2	list	4	71	0	0	1	0
+>	2	list	5	141	0	0	0	0
+!	101	work : list : 7 : Go to Record/Request/Page
+>	2	list	6	16	101	0	0	101
+>	2	list	8	70	0	0	1	101
+>	1	find	28	103	0	0	1	101
+find	S_Count\r5	101	201/400:1:b m0	101
+>	1	find	2	86	0	0	0	0
+>	1	find	3	6	0	0	0	0
+>	2	Sort by Status	1	39	0	0	0	0
+>	1	find	4	22	0	0	0	0
+>	1	find	5	68	0	0	1	0
+>	1	find	7	125	0	0	1	0
+>	1	find	9	125	0	0	1	0
+>	1	find	11	125	0	0	1	0
+>	1	find	13	125	0	0	1	0
+!	201	work : find : 14 : Set Field
+>	1	find	14	76	201	0	0	201
+>	1	find	15	125	0	0	1	201
+>	1	find	19	70	0	0	1	201
+>	1	find	20	141	0	0	0	0
+>	1	find	21	68	0	0	1	0
+>	1	find	23	70	0	0	1	0
+!	400	work : find : 24 : Perform Find
+>	1	find	24	28	400	0	0	400
+>	1	find	25	141	0	0	0	0
+>	1	find	26	141	0	0	0	0
+>	1	find	27	1	0	0	0	0
+>	2	list	1	141	0	0	0	0
+>	2	list	2	68	0	0	1	0
+>	2	list	3	16	0	0	0	0
+>	2	list	4	71	0	0	1	0
+>	2	list	5	141	0	0	0	0
+!	101	work : list : 7 : Go to Record/Request/Page
+>	2	list	6	16	101	0	0	101
+>	2	list	8	70	0	0	1	101
+>	1	find	28	103	0	0	1	101
+find	S_List\ra	101	201/400:1:b m0	101
+>	1	find	2	86	0	0	0	0
+>	1	find	3	6	0	0	0	0
+>	2	Sort by Status	1	39	0	0	0	0
+>	1	find	4	22	0	0	0	0
+>	1	find	5	68	0	0	1	0
+>	1	find	7	125	0	0	1	0
+>	1	find	9	125	0	0	1	0
+>	1	find	11	125	0	0	1	0
+>	1	find	13	125	0	0	1	0
+>	1	find	15	125	0	0	1	0
+!	201	work : find : 16 : Set Field
+>	1	find	16	76	201	0	0	201
+>	1	find	17	125	0	0	1	201
+>	1	find	19	70	0	0	1	201
+>	1	find	20	141	0	0	0	0
+>	1	find	21	68	0	0	1	0
+>	1	find	23	70	0	0	1	0
+!	400	work : find : 24 : Perform Find
+>	1	find	24	28	400	0	0	400
+>	1	find	25	141	0	0	0	0
+>	1	find	26	141	0	0	0	0
+>	1	find	27	1	0	0	0	0
+>	2	list	1	141	0	0	0	0
+>	2	list	2	68	0	0	1	0
+>	2	list	3	16	0	0	0	0
+>	2	list	4	71	0	0	1	0
+>	2	list	5	141	0	0	0	0
+!	101	work : list : 7 : Go to Record/Request/Page
+>	2	list	6	16	101	0	0	101
+>	2	list	8	70	0	0	1	101
+>	1	find	28	103	0	0	1	101
+find	S_Frac\r>.2	101	201/400:1:b m0	101
+>	1	find	2	86	0	0	0	0
+>	1	find	3	6	0	0	0	0
+>	2	Sort by Status	1	39	0	0	0	0
+>	1	find	4	22	0	0	0	0
+>	1	find	5	68	0	0	1	0
+>	1	find	7	125	0	0	1	0
+>	1	find	9	125	0	0	1	0
+>	1	find	11	125	0	0	1	0
+>	1	find	13	125	0	0	1	0
+>	1	find	15	125	0	0	1	0
+>	1	find	17	125	0	0	1	0
+!	201	work : find : 18 : Set Field
+>	1	find	18	76	201	0	0	201
+>	1	find	19	70	0	0	1	201
+>	1	find	20	141	0	0	0	0
+>	1	find	21	68	0	0	1	0
+>	1	find	23	70	0	0	1	0
+!	400	work : find : 24 : Perform Find
+>	1	find	24	28	400	0	0	400
+>	1	find	25	141	0	0	0	0
+>	1	find	26	141	0	0	0	0
+>	1	find	27	1	0	0	0	0
+>	2	list	1	141	0	0	0	0
+>	2	list	2	68	0	0	1	0
+>	2	list	3	16	0	0	0	0
+>	2	list	4	71	0	0	1	0
+>	2	list	5	141	0	0	0	0
+!	101	work : list : 7 : Go to Record/Request/Page
+>	2	list	6	16	101	0	0	101
+>	2	list	8	70	0	0	1	101
+>	1	find	28	103	0	0	1	101
+find	S_Total\r15\rTask\ra	101	201/0:1:a m0	101
+>	1	find	2	86	0	0	0	0
+>	1	find	3	6	0	0	0	0
+>	2	Sort by Status	1	39	0	0	0	0
+>	1	find	4	22	0	0	0	0
+>	1	find	5	68	0	0	1	0
+>	1	find	7	125	0	0	1	0
+>	1	find	9	125	0	0	1	0
+!	201	work : find : 10 : Set Field
+>	1	find	10	76	201	0	0	201
+>	1	find	11	125	0	0	1	201
+>	1	find	19	70	0	0	1	201
+>	1	find	20	141	0	0	0	0
+>	1	find	21	68	0	0	1	0
+>	1	find	22	76	0	0	0	0
+>	1	find	23	70	0	0	1	0
+>	1	find	24	28	0	0	0	0
+>	1	find	25	141	0	0	0	0
+>	1	find	26	141	0	0	0	0
+>	1	find	27	1	0	0	0	0
+>	2	list	1	141	0	0	0	0
+>	2	list	2	68	0	0	1	0
+>	2	list	3	16	0	0	0	0
+>	2	list	4	71	0	0	1	0
+>	2	list	5	141	0	0	0	0
+!	101	work : list : 7 : Go to Record/Request/Page
+>	2	list	6	16	101	0	0	101
+>	2	list	8	70	0	0	1	101
+>	1	find	28	103	0	0	1	101
+find after e	5	101	400:1:e 	101
+>	1	find after e	2	86	0	0	0	0
+>	1	find after e	3	6	0	0	0	0
+>	2	Sort by Status	1	39	0	0	0	0
+>	1	find after e	4	22	0	0	0	0
+>	1	find after e	5	76	0	0	0	0
+>	1	find after e	6	28	0	0	0	0
+>	1	find after e	7	22	0	0	0	0
+!	201	work : find after e : 8 : Set Field
+>	1	find after e	8	76	201	0	0	201
+!	400	work : find after e : 9 : Perform Find
+>	1	find after e	9	28	400	0	0	400
+>	1	find after e	10	141	0	0	0	0
+>	1	find after e	11	1	0	0	0	0
+>	2	list	1	141	0	0	0	0
+>	2	list	2	68	0	0	1	0
+>	2	list	3	16	0	0	0	0
+>	2	list	4	71	0	0	1	0
+>	2	list	5	141	0	0	0	0
+!	101	work : list : 7 : Go to Record/Request/Page
+>	2	list	6	16	101	0	0	101
+>	2	list	8	70	0	0	1	101
+>	1	find after e	12	103	0	0	1	101
+find after e	15	101	400:1:e 	101
+>	1	find after e	2	86	0	0	0	0
+>	1	find after e	3	6	0	0	0	0
+>	2	Sort by Status	1	39	0	0	0	0
+>	1	find after e	4	22	0	0	0	0
+>	1	find after e	5	76	0	0	0	0
+>	1	find after e	6	28	0	0	0	0
+>	1	find after e	7	22	0	0	0	0
+!	201	work : find after e : 8 : Set Field
+>	1	find after e	8	76	201	0	0	201
+!	400	work : find after e : 9 : Perform Find
+>	1	find after e	9	28	400	0	0	400
+>	1	find after e	10	141	0	0	0	0
+>	1	find after e	11	1	0	0	0	0
+>	2	list	1	141	0	0	0	0
+>	2	list	2	68	0	0	1	0
+>	2	list	3	16	0	0	0	0
+>	2	list	4	71	0	0	1	0
+>	2	list	5	141	0	0	0	0
+!	101	work : list : 7 : Go to Record/Request/Page
+>	2	list	6	16	101	0	0	101
+>	2	list	8	70	0	0	1	101
+>	1	find after e	12	103	0	0	1	101
+global	x\rx\r	101	0/0/400:1:b G=x in find=x	101
+>	1	global	2	86	0	0	0	0
+>	1	global	3	6	0	0	0	0
+>	2	Sort by Status	1	39	0	0	0	0
+>	1	global	4	76	0	0	0	0
+>	1	global	5	141	0	0	0	0
+>	1	global	6	22	0	0	0	0
+>	1	global	7	76	0	0	0	0
+>	1	global	8	141	0	0	0	0
+>	1	global	9	141	0	0	0	0
+>	1	global	10	76	0	0	0	0
+!	400	work : global : 11 : Perform Find
+>	1	global	11	28	400	0	0	400
+>	1	global	12	141	0	0	0	0
+>	1	global	13	1	0	0	0	0
+>	2	list	1	141	0	0	0	0
+>	2	list	2	68	0	0	1	0
+>	2	list	3	16	0	0	0	0
+>	2	list	4	71	0	0	1	0
+>	2	list	5	141	0	0	0	0
+!	101	work : list : 7 : Go to Record/Request/Page
+>	2	list	6	16	101	0	0	101
+>	2	list	8	70	0	0	1	101
+>	1	global	14	103	0	0	1	101
+global	x\ry\r	101	0/0/400:1:b G=y in find=y	101
+>	1	global	2	86	0	0	0	0
+>	1	global	3	6	0	0	0	0
+>	2	Sort by Status	1	39	0	0	0	0
+>	1	global	4	76	0	0	0	0
+>	1	global	5	141	0	0	0	0
+>	1	global	6	22	0	0	0	0
+>	1	global	7	76	0	0	0	0
+>	1	global	8	141	0	0	0	0
+>	1	global	9	141	0	0	0	0
+>	1	global	10	76	0	0	0	0
+!	400	work : global : 11 : Perform Find
+>	1	global	11	28	400	0	0	400
+>	1	global	12	141	0	0	0	0
+>	1	global	13	1	0	0	0	0
+>	2	list	1	141	0	0	0	0
+>	2	list	2	68	0	0	1	0
+>	2	list	3	16	0	0	0	0
+>	2	list	4	71	0	0	1	0
+>	2	list	5	141	0	0	0	0
+!	101	work : list : 7 : Go to Record/Request/Page
+>	2	list	6	16	101	0	0	101
+>	2	list	8	70	0	0	1	101
+>	1	global	14	103	0	0	1	101
+global	x\rx\ra	101	0/0/0:1:a G=x in find=x	101
+>	1	global	2	86	0	0	0	0
+>	1	global	3	6	0	0	0	0
+>	2	Sort by Status	1	39	0	0	0	0
+>	1	global	4	76	0	0	0	0
+>	1	global	5	141	0	0	0	0
+>	1	global	6	22	0	0	0	0
+>	1	global	7	76	0	0	0	0
+>	1	global	8	141	0	0	0	0
+>	1	global	9	141	0	0	0	0
+>	1	global	10	76	0	0	0	0
+>	1	global	11	28	0	0	0	0
+>	1	global	12	141	0	0	0	0
+>	1	global	13	1	0	0	0	0
+>	2	list	1	141	0	0	0	0
+>	2	list	2	68	0	0	1	0
+>	2	list	3	16	0	0	0	0
+>	2	list	4	71	0	0	1	0
+>	2	list	5	141	0	0	0	0
+!	101	work : list : 7 : Go to Record/Request/Page
+>	2	list	6	16	101	0	0	101
+>	2	list	8	70	0	0	1	101
+>	1	global	14	103	0	0	1	101
+global	x\ry\ra	101	0/0/0:1:a G=y in find=y	101
+>	1	global	2	86	0	0	0	0
+>	1	global	3	6	0	0	0	0
+>	2	Sort by Status	1	39	0	0	0	0
+>	1	global	4	76	0	0	0	0
+>	1	global	5	141	0	0	0	0
+>	1	global	6	22	0	0	0	0
+>	1	global	7	76	0	0	0	0
+>	1	global	8	141	0	0	0	0
+>	1	global	9	141	0	0	0	0
+>	1	global	10	76	0	0	0	0
+>	1	global	11	28	0	0	0	0
+>	1	global	12	141	0	0	0	0
+>	1	global	13	1	0	0	0	0
+>	2	list	1	141	0	0	0	0
+>	2	list	2	68	0	0	1	0
+>	2	list	3	16	0	0	0	0
+>	2	list	4	71	0	0	1	0
+>	2	list	5	141	0	0	0	0
+!	101	work : list : 7 : Go to Record/Request/Page
+>	2	list	6	16	101	0	0	101
+>	2	list	8	70	0	0	1	101
+>	1	global	14	103	0	0	1	101
+global	x\r*\r	101	0/0/400:1:a G=* in find=*	101
+>	1	global	2	86	0	0	0	0
+>	1	global	3	6	0	0	0	0
+>	2	Sort by Status	1	39	0	0	0	0
+>	1	global	4	76	0	0	0	0
+>	1	global	5	141	0	0	0	0
+>	1	global	6	22	0	0	0	0
+>	1	global	7	76	0	0	0	0
+>	1	global	8	141	0	0	0	0
+>	1	global	9	141	0	0	0	0
+>	1	global	10	76	0	0	0	0
+!	400	work : global : 11 : Perform Find
+>	1	global	11	28	400	0	0	400
+>	1	global	12	141	0	0	0	0
+>	1	global	13	1	0	0	0	0
+>	2	list	1	141	0	0	0	0
+>	2	list	2	68	0	0	1	0
+>	2	list	3	16	0	0	0	0
+>	2	list	4	71	0	0	1	0
+>	2	list	5	141	0	0	0	0
+!	101	work : list : 7 : Go to Record/Request/Page
+>	2	list	6	16	101	0	0	101
+>	2	list	8	70	0	0	1	101
+>	1	global	14	103	0	0	1	101
+global	\r=\r	101	0/0/400:1:a G== in find==	101
+>	1	global	2	86	0	0	0	0
+>	1	global	3	6	0	0	0	0
+>	2	Sort by Status	1	39	0	0	0	0
+>	1	global	4	76	0	0	0	0
+>	1	global	5	141	0	0	0	0
+>	1	global	6	22	0	0	0	0
+>	1	global	7	76	0	0	0	0
+>	1	global	8	141	0	0	0	0
+>	1	global	9	141	0	0	0	0
+>	1	global	10	76	0	0	0	0
+!	400	work : global : 11 : Perform Find
+>	1	global	11	28	400	0	0	400
+>	1	global	12	141	0	0	0	0
+>	1	global	13	1	0	0	0	0
+>	2	list	1	141	0	0	0	0
+>	2	list	2	68	0	0	1	0
+>	2	list	3	16	0	0	0	0
+>	2	list	4	71	0	0	1	0
+>	2	list	5	141	0	0	0	0
+!	101	work : list : 7 : Go to Record/Request/Page
+>	2	list	6	16	101	0	0	101
+>	2	list	8	70	0	0	1	101
+>	1	global	14	103	0	0	1	101

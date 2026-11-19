@@ -1,0 +1,54 @@
+# Auto-entered calculations and a validation calculation over a related
+# field on FileMaker Server's script engine (#431). Base file: contacts-en
+# with three Contacts fields added by FMUpgradeTool: A1 = Phone Numbers::
+# Number (replacing), A2 = the same with "Do not replace existing value",
+# V1 validated Always by Phone Numbers::Number ≠ "". Contacts::PrimaryKey
+# = Phone Numbers::ForeignKey, creation allowed on the Phone Numbers side.
+
+== probe
+Go to Layout [ "Contact Details" ]
+New Record/Request
+Set Field [ Contacts::PrimaryKey ; "K1" ]
+Commit Records/Requests [ With dialog: Off ]
+Set Variable [ $log ; "1 key K1 " & Contacts::A1 & "/" & Contacts::A2 ]
+Set Field [ Phone Numbers::Number ; "555" ]
+Commit Records/Requests [ With dialog: Off ]
+Set Variable [ $log ; $log & ¶ & "2 related made " & Contacts::A1 & "/" & Contacts::A2 ]
+Set Field [ Contacts::First Name ; "x" ]
+Commit Records/Requests [ With dialog: Off ]
+Set Variable [ $log ; $log & ¶ & "3 other field " & Contacts::A1 & "/" & Contacts::A2 ]
+Set Field [ Contacts::PrimaryKey ; "K1" ]
+Commit Records/Requests [ With dialog: Off ]
+Set Variable [ $log ; $log & ¶ & "4 same key " & Contacts::A1 & "/" & Contacts::A2 ]
+Set Field [ Contacts::PrimaryKey ; "K2" ]
+Commit Records/Requests [ With dialog: Off ]
+Set Variable [ $log ; $log & ¶ & "5 key K2 " & Contacts::A1 & "/" & Contacts::A2 ]
+Set Field [ Contacts::PrimaryKey ; "K1" ]
+Commit Records/Requests [ With dialog: Off ]
+Set Variable [ $log ; $log & ¶ & "6 key K1 " & Contacts::A1 & "/" & Contacts::A2 ]
+Set Field [ Phone Numbers::Number ; "777" ]
+Commit Records/Requests [ With dialog: Off ]
+Set Variable [ $log ; $log & ¶ & "7 related 777 " & Contacts::A1 & "/" & Contacts::A2 ]
+Set Field [ Contacts::PrimaryKey ; "K2" ]
+Set Field [ Contacts::PrimaryKey ; "K1" ]
+Commit Records/Requests [ With dialog: Off ]
+Set Variable [ $log ; $log & ¶ & "8 key K2 then K1 " & Contacts::A1 & "/" & Contacts::A2 ]
+Exit Script [ $log ]
+
+== valid
+Go to Layout [ "Contact Details" ]
+New Record/Request
+Set Field [ Contacts::PrimaryKey ; "K9" ]
+Set Field [ Contacts::V1 ; "v" ]
+Commit Records/Requests [ With dialog: Off ]
+Set Variable [ $e ; Get ( LastError ) ]
+Set Field [ Phone Numbers::Number ; "1" ]
+Commit Records/Requests [ With dialog: Off ]
+Set Variable [ $f ; Get ( LastError ) ]
+Set Field [ Contacts::V1 ; "w" ]
+Commit Records/Requests [ With dialog: Off ]
+Exit Script [ "no related " & $e & " related made " & $f & " then V1 " & Get ( LastError ) & " V1=" & Contacts::V1 ]
+
+--- run
+probe
+valid

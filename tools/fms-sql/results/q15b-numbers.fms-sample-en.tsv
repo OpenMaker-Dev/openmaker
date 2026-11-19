@@ -1,0 +1,23 @@
+# q15b: the boundaries of the exponent form. File: FileMaker Server sample (en).
+ExecuteSQLe ( "SELECT 1e-9 FROM Tasks WHERE \"TASK ID MATCH FIELD\" = 3" ; "|" ; "¶" )	0	1/1/0	.000000001
+ExecuteSQLe ( "SELECT 1.5e-9 FROM Tasks WHERE \"TASK ID MATCH FIELD\" = 3" ; "|" ; "¶" )	0	1/1/0	.0000000015
+ExecuteSQLe ( "SELECT 15e-10 FROM Tasks WHERE \"TASK ID MATCH FIELD\" = 3" ; "|" ; "¶" )	0	1/1/0	.0000000015
+ExecuteSQLe ( "SELECT 1.25e-9 FROM Tasks WHERE \"TASK ID MATCH FIELD\" = 3" ; "|" ; "¶" )	0	1/1/0	.00000000125
+ExecuteSQLe ( "SELECT 1e-9 * 3 FROM Tasks WHERE \"TASK ID MATCH FIELD\" = 3" ; "|" ; "¶" )	0	1/1/0	.000000003
+ExecuteSQLe ( "SELECT 0.000000001 FROM Tasks WHERE \"TASK ID MATCH FIELD\" = 3" ; "|" ; "¶" )	0	1/1/0	.000000001
+ExecuteSQLe ( "SELECT 0.0000000012 FROM Tasks WHERE \"TASK ID MATCH FIELD\" = 3" ; "|" ; "¶" )	0	1/1/0	.0000000012
+ExecuteSQLe ( "SELECT 1500000000 FROM Tasks WHERE \"TASK ID MATCH FIELD\" = 3" ; "|" ; "¶" )	0	1/1/0	1500000000
+ExecuteSQLe ( "SELECT 15000000000 FROM Tasks WHERE \"TASK ID MATCH FIELD\" = 3" ; "|" ; "¶" )	0	1/1/0	1.5E+10
+ExecuteSQLe ( "SELECT 1.5e10 FROM Tasks WHERE \"TASK ID MATCH FIELD\" = 3" ; "|" ; "¶" )	0	1/1/0	1.5E+10
+ExecuteSQLe ( "SELECT 123456789e9 FROM Tasks WHERE \"TASK ID MATCH FIELD\" = 3" ; "|" ; "¶" )	0	1/1/0	1.23456789E+17
+ExecuteSQLe ( "SELECT 123456789e8 FROM Tasks WHERE \"TASK ID MATCH FIELD\" = 3" ; "|" ; "¶" )	0	1/1/0	12345678900000000
+ExecuteSQLe ( "SELECT 1.2345e-12 FROM Tasks WHERE \"TASK ID MATCH FIELD\" = 3" ; "|" ; "¶" )	0	1/1/0	1.2345E-12
+ExecuteSQLe ( "SELECT 9.99e8 FROM Tasks WHERE \"TASK ID MATCH FIELD\" = 3" ; "|" ; "¶" )	0	1/1/0	999000000
+ExecuteSQLe ( "SELECT 999000000000 FROM Tasks WHERE \"TASK ID MATCH FIELD\" = 3" ; "|" ; "¶" )	0	1/1/0	9.99E+11
+ExecuteSQLe ( "SELECT 1000000001000000000 FROM Tasks WHERE \"TASK ID MATCH FIELD\" = 3" ; "|" ; "¶" )	0	1/1/0	1.000000001E+18
+ExecuteSQLe ( "SELECT -1e9 FROM Tasks WHERE \"TASK ID MATCH FIELD\" = 3" ; "|" ; "¶" )	0	1/1/0	-1.0E+9
+ExecuteSQLe ( "SELECT -1.5e-10 FROM Tasks WHERE \"TASK ID MATCH FIELD\" = 3" ; "|" ; "¶" )	0	1/1/0	-1.5E-10
+ExecuteSQLe ( "SELECT 1e9 + 0.5 FROM Tasks WHERE \"TASK ID MATCH FIELD\" = 3" ; "|" ; "¶" )	0	1/1/0	1.0000000005E+9
+ExecuteSQLe ( "SELECT 1e9 / 2 FROM Tasks WHERE \"TASK ID MATCH FIELD\" = 3" ; "|" ; "¶" )	0	1/1/0	500000000
+ExecuteSQLe ( "SELECT 2^31 FROM Tasks WHERE \"TASK ID MATCH FIELD\" = 3" ; "|" ; "¶" )	0	1/1/0	2147483648
+ExecuteSQLe ( "SELECT 2^33 FROM Tasks WHERE \"TASK ID MATCH FIELD\" = 3" ; "|" ; "¶" )	0	1/1/0	8589934592

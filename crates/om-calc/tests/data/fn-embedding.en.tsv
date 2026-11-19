@@ -1,0 +1,491 @@
+# The embedding vector functions (functions/embedding.rs; calc-values.md 13,
+# value-core answers). GetTokenCount is the host's (tokenizer) and not here.
+# documented examples
+AddEmbeddings ( "[1, 2, 3]" ; "[4, 5, 6]" )	0	1/1/0	[0.40160966445124940405, 0.56225353023174917677, 0.722897396012249005]
+SubtractEmbeddings ( "[1, 2, 3]" ; "[4, 5, 6]" )	0	1/1/0	[-0.57735026918962573106, -0.57735026918962573106, -0.57735026918962573106]
+NormalizeEmbedding ( "[3, 4]" )	0	1/1/0	[0.5999999999999999778, 0.80000000000000004441]
+# NormalizeEmbedding
+NormalizeEmbedding ( "[3,4]" )	0	1/1/0	[0.5999999999999999778, 0.80000000000000004441]
+NormalizeEmbedding ( "[3, 4]" ; 1 )	0	1/1/0	[1]
+NormalizeEmbedding ( "[3, 4]" ; 2 )	0	1/1/0	[0.5999999999999999778, 0.80000000000000004441]
+NormalizeEmbedding ( "[3, 4]" ; 3 )	0	1/1/0	[0.5999999999999999778, 0.80000000000000004441]
+NormalizeEmbedding ( "[3, 4]" ; 0 )	0	1/1/0	[0.5999999999999999778, 0.80000000000000004441]
+NormalizeEmbedding ( "[3, 4]" ; -1 )	0	1/1/0	[0.5999999999999999778, 0.80000000000000004441]
+NormalizeEmbedding ( "[3, 4]" ; 1.5 )	0	1/1/0	[1]
+NormalizeEmbedding ( "[3, 4]" ; 1.9 )	0	1/1/0	[1]
+NormalizeEmbedding ( "[3, 4]" ; "" )	0	1/1/0	[0.5999999999999999778, 0.80000000000000004441]
+NormalizeEmbedding ( "[3, 4]" ; "abc" )	0	1/1/0	[0.5999999999999999778, 0.80000000000000004441]
+NormalizeEmbedding ( "[3, 4]" ; "2" )	0	1/1/0	[0.5999999999999999778, 0.80000000000000004441]
+NormalizeEmbedding ( "[3, 4, 12]" ; 2 )	0	1/1/0	[0.5999999999999999778, 0.80000000000000004441]
+NormalizeEmbedding ( "[3, 4, 12]" )	0	1/1/0	[0.23076923076923078204, 0.30769230769230770939, 0.92307692307692312816]
+NormalizeEmbedding ( "[0, 0]" )	0	2/2/0	?
+NormalizeEmbedding ( "[]" )	0	2/2/0	?
+NormalizeEmbedding ( "" )	0	1/1/0	
+NormalizeEmbedding ( "abc" )	0	2/2/0	?
+NormalizeEmbedding ( "[1]" )	0	8/1/0	[1]
+NormalizeEmbedding ( "[-2]" )	0	1/1/0	[-1]
+NormalizeEmbedding ( "[1e308, 1e308]" )	0	1/1/0	[0, 0]
+NormalizeEmbedding ( "[1e-320, 0]" )	0	2/2/0	?
+NormalizeEmbedding ( "[\"3\", \"4\"]" )	0	2/2/0	?
+NormalizeEmbedding ( "[true, false]" )	0	8/1/0	[true, false]
+NormalizeEmbedding ( "[null, 1]" )	0	8/1/0	[null, 1]
+NormalizeEmbedding ( "[[3], 4]" )	0	2/2/0	?
+NormalizeEmbedding ( "{\"a\": 3}" )	0	2/2/0	?
+NormalizeEmbedding ( "3, 4" )	0	2/2/0	?
+NormalizeEmbedding ( "[3, 4" )	0	2/2/0	?
+NormalizeEmbedding ( " [3, 4] " )	0	1/1/0	[0.5999999999999999778, 0.80000000000000004441]
+NormalizeEmbedding ( "[3, 4] x" )	0	2/2/0	?
+NormalizeEmbedding ( "[3,4,]" )	0	2/2/0	?
+NormalizeEmbedding ( "[0.1, 0.2, 0.3]" )	0	1/1/0	[0.26726124191242439654, 0.53452248382484879308, 0.80178372573727307859]
+NormalizeEmbedding ( "[1, 1, 1]" )	0	1/1/0	[0.57735026918962584208, 0.57735026918962584208, 0.57735026918962584208]
+NormalizeEmbedding ( "[1, 2, 2]" )	0	1/1/0	[0.33333333333333331483, 0.66666666666666662966, 0.66666666666666662966]
+NormalizeEmbedding ( "[0.5]" )	0	1/1/0	[1]
+NormalizeEmbedding ( "[1e400]" )	0	2/2/0	?
+NormalizeEmbedding ( "[3, 4]" ; 2^32 + 1 )	0	1/1/0	[1]
+NormalizeEmbedding ( 5 )	0	2/2/0	?
+NormalizeEmbedding ( 1/0 )	15	2/2/0	?
+NormalizeEmbedding ( "[3,4]" ; 1/0 )	15	1/1/0	[0.5999999999999999778, 0.80000000000000004441]
+NormalizeEmbedding ( "[1, 2, 3, 4, 5, 6, 7, 8, 9, 10]" )	0	1/1/0	[0.05096471914376255602, 0.10192943828752511204, 0.152894157431287675, 0.20385887657505022408, 0.25482359571881280091, 0.30578831486257534999, 0.35675303400633789908, 0.40771775315010044816, 0.45868247229386299724, 0.50964719143762560183]
+NormalizeEmbedding ( "[0.123456789012345678901234567890]" )	0	1/1/0	[1]
+NormalizeEmbedding ( "[1e-5, 1]" )	0	8/1/0	[1e-5, 1]
+NormalizeEmbedding ( "[1e-30, 1]" )	0	8/1/0	[1e-30, 1]
+NormalizeEmbedding ( "[123456789, 1]" )	0	1/1/0	[1, 0.0000000081000000737100012582]
+NormalizeEmbedding ( "[3 , 4]" )	0	1/1/0	[0.5999999999999999778, 0.80000000000000004441]
+NormalizeEmbedding ( "[ 3, 4 ]" )	0	1/1/0	[0.5999999999999999778, 0.80000000000000004441]
+NormalizeEmbedding ( "[3,\n4]" )	0	1/1/0	[0.5999999999999999778, 0.80000000000000004441]
+NormalizeEmbedding ( "[-0, 1]" )	0	8/1/0	[-0, 1]
+NormalizeEmbedding ( "[1, -1]" )	0	1/1/0	[0.70710678118654746172, -0.70710678118654746172]
+NormalizeEmbedding ( "[2, 0]" )	0	1/1/0	[1, 0]
+NormalizeEmbedding ( "[1.5, 2]" )	0	1/1/0	[0.5999999999999999778, 0.80000000000000004441]
+NormalizeEmbedding ( "[1E2, 0]" )	0	1/1/0	[1, 0]
+NormalizeEmbedding ( "[0x10, 1]" )	0	2/2/0	?
+NormalizeEmbedding ( "[.5, 1]" )	0	2/2/0	?
+NormalizeEmbedding ( "[+1, 1]" )	0	1/1/0	[0.70710678118654746172, 0.70710678118654746172]
+NormalizeEmbedding ( "[1, 2] [3]" )	0	2/2/0	?
+# CosineSimilarity
+CosineSimilarity ( "[1, 0]" ; "[0, 1]" )	0	2/2/0	0
+CosineSimilarity ( "[1, 2, 3]" ; "[1, 2, 3]" )	0	2/2/0	?
+CosineSimilarity ( "[1, 2, 3]" ; "[4, 5, 6]" )	0	2/2/0	?
+CosineSimilarity ( "[1, 2, 3]" ; "[4, 5, 6]" ) * 10^25	0	2/2/0	?
+GetAsText ( CosineSimilarity ( "[1, 2, 3]" ; "[4, 5, 6]" ) )	0	1/1/0	?
+CosineSimilarity ( "[1, 2, 3]" ; "[-1, -2, -3]" )	0	2/2/0	?
+CosineSimilarity ( "[1, 2]" ; "[1, 2, 3]" )	0	2/2/0	?
+CosineSimilarity ( "[1, 2, 3]" ; "[1, 2]" )	0	2/2/0	?
+CosineSimilarity ( "[0, 0]" ; "[1, 1]" )	0	2/2/0	0
+CosineSimilarity ( "[0, 0]" ; "[0, 0]" )	0	2/2/0	0
+CosineSimilarity ( "" ; "" )	0	2/2/0	?
+CosineSimilarity ( "[1]" ; "" )	0	2/2/0	?
+CosineSimilarity ( "" ; "[1]" )	0	2/2/0	?
+CosineSimilarity ( "[]" ; "[]" )	0	2/2/0	?
+CosineSimilarity ( "abc" ; "[1]" )	0	2/2/0	?
+CosineSimilarity ( "[1]" ; "abc" )	0	2/2/0	?
+CosineSimilarity ( "[1]" ; "[2]" )	0	2/2/0	?
+CosineSimilarity ( "[1]" ; "[-2]" )	0	2/2/0	?
+CosineSimilarity ( "[0.1, 0.2]" ; "[0.3, 0.4]" )	0	2/2/0	.11000000000000001443
+CosineSimilarity ( "[1, 1]" ; "[1, 0]" )	0	2/2/0	1
+CosineSimilarity ( "[3, 4]" ; "[4, 3]" )	0	2/2/0	?
+CosineSimilarity ( "[\"1\", 2]" ; "[1, 2]" )	0	2/2/0	?
+CosineSimilarity ( "[1e308, 1e308]" ; "[1, 1]" )	0	2/2/0	0
+CosineSimilarity ( "[1, 2, 3]" ; "[1, 2, 3.0000001]" )	0	2/2/0	?
+CosineSimilarity ( 1 ; 1 )	0	2/2/0	0
+CosineSimilarity ( "[1,2]" ; 1/0 )	15	2/2/0	?
+CosineSimilarity ( "[1, 1]" ; "[1, 1.0000001]" )	0	2/2/0	?
+CosineSimilarity ( "[-0.043686170000000003333, 0.042094484000000001456]" ; "[-0.049242082999999998993, 0.040926795000000001923]" )	0	2/2/0	.003873990326390890776
+CosineSimilarity ( "{\"a\":1}" ; "[1]" )	0	2/2/0	?
+CosineSimilarity ( "[true]" ; "[1]" )	0	2/2/0	1
+CosineSimilarity ( "[null]" ; "[1]" )	0	2/2/0	0
+CosineSimilarity ( "[[1]]" ; "[1]" )	0	2/2/0	?
+EvaluationError ( CosineSimilarity ( "[1, 2]" ; "[1, 2, 3]" ) )	0	2/2/0	0
+EvaluationError ( CosineSimilarity ( "abc" ; "[1]" ) )	0	2/2/0	0
+EvaluationError ( NormalizeEmbedding ( "abc" ) )	0	2/2/0	0
+EvaluationError ( AddEmbeddings ( "[1, 2]" ; "[1, 2, 3]" ) )	0	2/2/0	0
+# Add and Subtract
+AddEmbeddings ( "[1, 2]" ; "[1, 2, 3]" )	0	2/2/0	?
+AddEmbeddings ( "[1, -1]" ; "[-1, 1]" )	0	2/2/0	?
+AddEmbeddings ( "[0]" ; "[0]" )	0	2/2/0	?
+AddEmbeddings ( "[1]" ; "[2]" )	0	1/1/0	[1]
+AddEmbeddings ( "" ; "[1]" )	0	1/1/0	
+AddEmbeddings ( "[1]" ; "" )	0	1/1/0	[1]
+AddEmbeddings ( "abc" ; "[1]" )	0	2/2/0	?
+AddEmbeddings ( "[]" ; "[]" )	0	2/2/0	?
+AddEmbeddings ( "[0.1]" ; "[0.2]" )	0	1/1/0	[1]
+AddEmbeddings ( "[0.1, 0.2]" ; "[0.3, 0.4]" )	0	1/1/0	[0.55470019622522914737, 0.83205029433784372106]
+AddEmbeddings ( "[1e308]" ; "[1e308]" )	0	1/1/0	[0]
+AddEmbeddings ( "[\"1\"]" ; "[1]" )	0	2/2/0	?
+SubtractEmbeddings ( "[1, 2]" ; "[1, 2]" )	0	2/2/0	?
+SubtractEmbeddings ( "[3, 4]" ; "[0, 0]" )	0	1/1/0	[0.5999999999999999778, 0.80000000000000004441]
+SubtractEmbeddings ( "[1, 2]" ; "[1, 2, 3]" )	0	2/2/0	?
+SubtractEmbeddings ( "[5, 5]" ; "[2, 1]" )	0	1/1/0	[0.5999999999999999778, 0.80000000000000004441]
+SubtractEmbeddings ( "" ; "" )	0	1/1/0	
+# text and file forms
+GetEmbeddingAsText ( "[1, 2, 3]" )	-1	2/2/0	?
+GetEmbeddingAsText ( "" )	0	1/1/0	
+GetEmbeddingAsText ( "abc" )	-1	2/2/0	?
+GetEmbeddingAsText ( 5 )	-1	2/2/0	?
+GetEmbeddingAsFile ( "[1, 2, 3]" )	0	6/6/0	emb_03D8B.fve
+GetEmbeddingAsFile ( "[1, 2, 3]" ; "x.fve" )	0	6/6/0	x.fve
+GetEmbeddingAsFile ( "[1, 2, 3]" ; "x" )	0	6/6/0	x
+GetEmbeddingAsFile ( "[1, 2, 3]" ; "" )	0	6/6/0	emb_03D8B.fve
+GetEmbeddingAsFile ( "" )	0	1/1/0	
+GetEmbeddingAsFile ( "abc" )	5	2/2/0	?
+GetEmbeddingAsFile ( "[]" )	5	2/2/0	?
+GetEmbeddingAsFile ( "[\"1\"]" )	5	2/2/0	?
+GetEmbeddingAsFile ( "[true]" )	0	6/6/0	emb_92B81.fve
+GetEmbeddingAsFile ( "[1, 2" )	5	2/2/0	?
+GetEmbeddingAsFile ( "{\"a\":1}" )	5	2/2/0	?
+HexEncode ( GetEmbeddingAsFile ( "[1, 2, 3]" ) )	0	1/1/0	4656452E32313030000000000000F03F00000000000000400000000000000840
+HexEncode ( GetEmbeddingAsFile ( "[1]" ) )	0	1/1/0	4656452E32313030000000000000F03F
+HexEncode ( GetEmbeddingAsFile ( "[0.5, -0.25]" ) )	0	1/1/0	4656452E32313030000000000000E03F000000000000D0BF
+HexEncode ( GetEmbeddingAsFile ( "[0.1]" ) )	0	1/1/0	4656452E323130309A9999999999B93F
+HexEncode ( GetEmbeddingAsFile ( "[1e308]" ) )	0	1/1/0	4656452E32313030A0C8EB85F3CCE17F
+HexEncode ( GetEmbeddingAsFile ( "[1e39]" ) )	0	1/1/0	4656452E323130301D4A9CF487820748
+HexEncode ( GetEmbeddingAsFile ( "[1e-46]" ) )	0	1/1/0	4656452E3231303061552C24CE446236
+HexEncode ( GetEmbeddingAsFile ( "[]" ) )	5	1/1/0	3F
+HexEncode ( GetEmbeddingAsFile ( "[\"1\"]" ) )	5	1/1/0	3F
+HexEncode ( GetEmbeddingAsFile ( "[true, null]" ) )	0	1/1/0	4656452E32313030000000000000F03F0000000000000000
+HexEncode ( GetEmbeddingAsFile ( "[1, 2, 3]" ; "a.txt" ) )	0	1/1/0	4656452E32313030000000000000F03F00000000000000400000000000000840
+HexEncode ( GetEmbeddingAsFile ( "[-0]" ) )	0	1/1/0	4656452E323130300000000000000000
+HexEncode ( GetEmbeddingAsFile ( "[0.123456789012345678]" ) )	0	1/1/0	4656452E323130305FF64637DD9ABF3F
+Base64Encode ( GetEmbeddingAsFile ( "[1, 2, 3]" ) )	0	1/1/0	RlZFLjIxMDAAAAAAAADwPwAAAAAAAABAAAAAAAAACEA=\r\n
+Length ( GetEmbeddingAsFile ( "[1, 2, 3]" ) )	0	2/2/0	32
+Length ( GetEmbeddingAsFile ( "[]" ) )	5	2/2/0	1
+GetAsText ( GetEmbeddingAsFile ( "[1, 2, 3]" ) )	0	1/1/0	emb_03D8B.fve
+GetAsText ( GetEmbeddingAsFile ( "[1, 2, 3]" ; "x" ) )	0	1/1/0	x
+GetEmbeddingAsText ( GetEmbeddingAsFile ( "[1, 2, 3]" ) )	0	1/1/0	[1, 2, 3]
+GetEmbeddingAsText ( GetEmbeddingAsFile ( "[0.1, 0.2]" ) )	0	1/1/0	[0.10000000000000000555, 0.2000000000000000111]
+GetEmbeddingAsText ( GetEmbeddingAsFile ( "[3, 4]" ) )	0	1/1/0	[3, 4]
+GetEmbeddingAsText ( GetEmbeddingAsFile ( "[1e-7, 123456789]" ) )	0	1/1/0	[0.000000099999999999999995475, 123456789]
+GetEmbeddingAsText ( GetEmbeddingAsFile ( "[0.123456789012345678]" ) )	0	1/1/0	[0.12345678901234567737]
+GetEmbeddingAsText ( GetEmbeddingAsFile ( "[1e39]" ) )	0	1/1/0	[9.9999999999999993971E+38]
+GetEmbeddingAsText ( GetEmbeddingAsFile ( "[1e-46]" ) )	0	1/1/0	[1.000000000000000023E-46]
+GetEmbeddingAsText ( GetEmbeddingAsFile ( "[-0]" ) )	0	1/1/0	[0]
+GetEmbeddingAsText ( GetEmbeddingAsFile ( "[]" ) )	5	2/2/0	?
+GetEmbeddingAsText ( GetEmbeddingAsFile ( "[1, 2, 3]" ; "x.txt" ) )	408	2/2/0	?
+GetEmbeddingAsText ( HexDecode ( "0000803f" ; "x.fve" ) )	1708	2/2/0	?
+GetEmbeddingAsText ( HexDecode ( "0000803f00000040" ; "x.fve" ) )	1708	2/2/0	?
+GetEmbeddingAsText ( HexDecode ( "0000803f" ; "x.bin" ) )	1708	2/2/0	?
+GetEmbeddingAsText ( HexDecode ( "00" ; "x.fve" ) )	1708	2/2/0	?
+GetEmbeddingAsText ( HexDecode ( "000080" ; "x.fve" ) )	1708	2/2/0	?
+GetEmbeddingAsText ( HexDecode ( "" ; "x.fve" ) )	1708	2/2/0	?
+GetEmbeddingAsText ( HexDecode ( "0000c07f" ; "x.fve" ) )	1708	2/2/0	?
+GetEmbeddingAsText ( HexDecode ( "0000807f" ; "x.fve" ) )	1708	2/2/0	?
+GetEmbeddingAsText ( HexDecode ( "01000000" ; "x.fve" ) )	1708	2/2/0	?
+GetEmbeddingAsText ( HexDecode ( "cdcccc3d" ; "x.fve" ) )	1708	2/2/0	?
+GetEmbeddingAsText ( HexDecode ( "000000000000f03f" ; "x.fve" ) )	1708	2/2/0	?
+GetEmbeddingAsText ( HexDecode ( "5b312c325d" ; "x.fve" ) )	1708	2/2/0	?
+GetEmbeddingAsText ( TextEncode ( "[1, 2]" ; "utf-8" ; 1 ) )	1708	2/2/0	?
+# container inputs
+AddEmbeddings ( GetEmbeddingAsFile ( "[1, 2, 3]" ) ; GetEmbeddingAsFile ( "[4, 5, 6]" ) )	0	6/6/0	embf_D935B.fve
+HexEncode ( AddEmbeddings ( GetEmbeddingAsFile ( "[1, 2, 3]" ) ; GetEmbeddingAsFile ( "[4, 5, 6]" ) ) )	0	1/1/0	4656452E3231303073D7A405F9B3D93F37FD8C1DFBFDE13FB58E47B8F921E73F
+GetEmbeddingAsText ( AddEmbeddings ( GetEmbeddingAsFile ( "[1, 2, 3]" ) ; GetEmbeddingAsFile ( "[4, 5, 6]" ) ) )	0	1/1/0	[0.40160966445124940405, 0.56225353023174917677, 0.722897396012249005]
+AddEmbeddings ( GetEmbeddingAsFile ( "[1, 2, 3]" ) ; "[4, 5, 6]" )	0	6/6/0	embf_D935B.fve
+AddEmbeddings ( "[1, 2, 3]" ; GetEmbeddingAsFile ( "[4, 5, 6]" ) )	0	1/1/0	[0.40160966445124940405, 0.56225353023174917677, 0.722897396012249005]
+HexEncode ( AddEmbeddings ( "[1, 2, 3]" ; GetEmbeddingAsFile ( "[4, 5, 6]" ) ) )	0	1/1/0	5B302E34303136303936363434353132343934303430352C20302E35363232353335333032333137343931373637372C20302E3732323839373339363031323234393030355D
+HexEncode ( AddEmbeddings ( GetEmbeddingAsFile ( "[1, 2, 3]" ) ; "[4, 5, 6]" ) )	0	1/1/0	4656452E3231303073D7A405F9B3D93F37FD8C1DFBFDE13FB58E47B8F921E73F
+GetAsText ( AddEmbeddings ( GetEmbeddingAsFile ( "[1, 2, 3]" ) ; "[4, 5, 6]" ) )	0	1/1/0	embf_D935B.fve
+GetAsText ( AddEmbeddings ( GetEmbeddingAsFile ( "[1, 2, 3]" ; "q.fve" ) ; GetEmbeddingAsFile ( "[4, 5, 6]" ; "r.fve" ) ) )	0	1/1/0	embf_D935B.fve
+GetAsText ( SubtractEmbeddings ( GetEmbeddingAsFile ( "[1, 2, 3]" ; "q.fve" ) ; GetEmbeddingAsFile ( "[4, 5, 6]" ; "r.fve" ) ) )	0	1/1/0	embf_F971E.fve
+HexEncode ( SubtractEmbeddings ( GetEmbeddingAsFile ( "[1, 2, 3]" ) ; GetEmbeddingAsFile ( "[4, 5, 6]" ) ) )	0	1/1/0	4656452E323130301C339045A779E2BF1C339045A779E2BF1C339045A779E2BF
+NormalizeEmbedding ( GetEmbeddingAsFile ( "[3, 4]" ) )	0	6/6/0	embf_250D5.fve
+HexEncode ( NormalizeEmbedding ( GetEmbeddingAsFile ( "[3, 4]" ) ) )	0	1/1/0	4656452E32313030333333333333E33F9A9999999999E93F
+HexEncode ( NormalizeEmbedding ( GetEmbeddingAsFile ( "[3, 4, 12]" ) ; 2 ) )	0	1/1/0	4656452E32313030333333333333E33F9A9999999999E93F
+GetAsText ( NormalizeEmbedding ( GetEmbeddingAsFile ( "[3, 4]" ; "q.fve" ) ) )	0	1/1/0	embf_250D5.fve
+CosineSimilarity ( GetEmbeddingAsFile ( "[1, 2, 3]" ) ; "[4, 5, 6]" )	0	2/2/0	?
+CosineSimilarity ( GetEmbeddingAsFile ( "[1, 2, 3]" ) ; GetEmbeddingAsFile ( "[4, 5, 6]" ) )	0	2/2/0	?
+CosineSimilarity ( GetEmbeddingAsFile ( "[0.1, 0.2]" ) ; "[0.1, 0.2]" )	0	2/2/0	.050000000000000009714
+CosineSimilarity ( GetEmbeddingAsFile ( "[0.1, 0.2]" ) ; "[0.3, 0.4]" )	0	2/2/0	.11000000000000001443
+CosineSimilarity ( HexDecode ( "0000803f" ; "x.fve" ) ; "[1]" )	0	2/2/0	?
+CosineSimilarity ( HexDecode ( "0000803f" ; "x.bin" ) ; "[1]" )	0	2/2/0	?
+CosineSimilarity ( TextEncode ( "[1]" ; "utf-8" ; 1 ) ; "[1]" )	0	2/2/0	?
+NormalizeEmbedding ( HexDecode ( "0000803f" ; "x.bin" ) )	0	2/2/0	?
+GetAsText ( NormalizeEmbedding ( HexDecode ( "0000803f" ; "x.bin" ) ) )	0	1/1/0	?
+NormalizeEmbedding ( TextEncode ( "[3, 4]" ; "utf-8" ; 1 ) )	0	2/2/0	?
+# embeddings 2
+GetAsText ( GetEmbeddingAsFile ( "[1]" ) )	0	1/1/0	emb_92B81.fve
+GetAsText ( GetEmbeddingAsFile ( "[1.0]" ) )	0	1/1/0	emb_92B81.fve
+GetAsText ( GetEmbeddingAsFile ( "[true]" ) )	0	1/1/0	emb_92B81.fve
+GetAsText ( GetEmbeddingAsFile ( "[3, 4]" ) )	0	1/1/0	emb_EF014.fve
+GetEmbeddingAsText ( GetEmbeddingAsFile ( "[1, 2, 3]" ; "x" ) )	408	2/2/0	?
+GetEmbeddingAsText ( GetEmbeddingAsFile ( "[1, 2, 3]" ; "x.FVE" ) )	0	1/1/0	[1, 2, 3]
+GetEmbeddingAsText ( GetEmbeddingAsFile ( "[1, 2, 3]" ; "x.fve.txt" ) )	408	2/2/0	?
+GetEmbeddingAsText ( GetEmbeddingAsFile ( "[1, 2, 3]" ; "x.bin" ) )	408	2/2/0	?
+GetEmbeddingAsText ( GetEmbeddingAsFile ( "[1, 2, 3]" ; ".fve" ) )	0	1/1/0	[1, 2, 3]
+GetEmbeddingAsText ( GetEmbeddingAsFile ( "[1, 2, 3]" ; "x.txt" ) )	408	2/2/0	?
+EvaluationError ( GetEmbeddingAsText ( GetEmbeddingAsFile ( "[1, 2, 3]" ; "x.txt" ) ) )	0	2/2/0	408
+GetEmbeddingAsText ( HexDecode ( "4656452E32313030000000000000F03F" ; "x.fve" ) )	0	1/1/0	[1]
+GetEmbeddingAsText ( HexDecode ( "4656452E32313030000000000000F03F" ; "x.txt" ) )	408	2/2/0	?
+GetEmbeddingAsText ( HexDecode ( "4656452E32313030000000000000F03F" ; "x" ) )	408	2/2/0	?
+GetEmbeddingAsText ( HexDecode ( "4656452E32313030000000000000F03F" ) )	-1	2/2/0	?
+GetEmbeddingAsText ( HexDecode ( "4656452E32313030" ; "x.fve" ) )	408	2/2/0	?
+GetEmbeddingAsText ( HexDecode ( "4656452E32313031000000000000F03F" ; "x.fve" ) )	1708	2/2/0	?
+GetEmbeddingAsText ( HexDecode ( "4656452E32313030000000000000F0" ; "x.fve" ) )	408	2/2/0	?
+GetEmbeddingAsText ( HexDecode ( "4656452E32313030000000000000F03F00" ; "x.fve" ) )	408	2/2/0	?
+GetEmbeddingAsText ( HexDecode ( "4656452E32313030000000000000F87F" ; "x.fve" ) )	0	1/1/0	[0]
+GetEmbeddingAsText ( HexDecode ( "4656452E32313030000000000000F07F" ; "x.fve" ) )	0	1/1/0	[0]
+GetEmbeddingAsText ( HexDecode ( "4656452E32313030000000000000F0FF" ; "x.fve" ) )	0	1/1/0	[0]
+GetEmbeddingAsText ( HexDecode ( "4656452E323130300100000000000000" ; "x.fve" ) )	0	1/1/0	[4.9406564584124654418E-324]
+GetEmbeddingAsText ( Base64Decode ( "RlZFLjIxMDAAAAAAAADwPwAAAAAAAABAAAAAAAAACEA=" ; "y.fve" ) )	0	1/1/0	[1, 2, 3]
+GetEmbeddingAsText ( Base64Decode ( "RlZFLjIxMDAAAAAAAADwPwAAAAAAAABAAAAAAAAACEA=" ; "y.txt" ) )	408	2/2/0	?
+GetEmbeddingAsText ( TextEncode ( "x" ; "utf-8" ; 1 ) )	1708	2/2/0	?
+GetEmbeddingAsText ( HexDecode ( "4656452E32313030000000000000F03F" ; "x.FVE" ) )	0	1/1/0	[1]
+CosineSimilarity ( HexDecode ( "4656452E32313030000000000000F03F" ; "x.fve" ) ; "[1]" )	0	2/2/0	1
+CosineSimilarity ( HexDecode ( "4656452E32313030000000000000F03F" ; "x.txt" ) ; "[1]" )	0	2/2/0	?
+CosineSimilarity ( HexDecode ( "4656452E32313030000000000000F03F" ; "x.fve" ) ; HexDecode ( "4656452E32313030000000000000F03F" ; "y.fve" ) )	0	2/2/0	1
+CosineSimilarity ( GetEmbeddingAsFile ( "[1]" ; "x.txt" ) ; "[1]" )	0	2/2/0	?
+NormalizeEmbedding ( HexDecode ( "4656452E32313030000000000000F03F" ; "x.fve" ) )	0	6/6/0	x.fve
+GetAsText ( NormalizeEmbedding ( HexDecode ( "4656452E323130300000000000000840" ; "x.fve" ) ) )	0	1/1/0	embf_92B81.fve
+HexEncode ( NormalizeEmbedding ( HexDecode ( "4656452E323130300000000000000840" ; "x.fve" ) ) )	0	1/1/0	4656452E32313030000000000000F03F
+HexEncode ( NormalizeEmbedding ( HexDecode ( "4656452E32313030000000000000F03F" ; "x.fve" ) ) )	0	1/1/0	4656452E32313030000000000000F03F
+GetAsText ( NormalizeEmbedding ( GetEmbeddingAsFile ( "[1]" ; "z.fve" ) ) )	0	1/1/0	z.fve
+GetAsText ( NormalizeEmbedding ( GetEmbeddingAsFile ( "[3]" ; "z.fve" ) ) )	0	1/1/0	embf_92B81.fve
+GetAsText ( NormalizeEmbedding ( GetEmbeddingAsFile ( "[1]" ; "z.txt" ) ) )	0	1/1/0	?
+GetAsText ( AddEmbeddings ( GetEmbeddingAsFile ( "[1]" ; "z.txt" ) ; "[1]" ) )	0	1/1/0	?
+GetAsText ( AddEmbeddings ( HexDecode ( "4656452E32313030000000000000F03F" ; "x.fve" ) ; "[1]" ) )	0	1/1/0	embf_92B81.fve
+GetEmbeddingAsText ( GetEmbeddingAsFile ( "[1e-5, 1]" ) )	0	1/1/0	[0.000010000000000000000818, 1]
+GetEmbeddingAsText ( NormalizeEmbedding ( GetEmbeddingAsFile ( "[1e-5, 1]" ) ) )	0	1/1/0	[0.000010000000000000000818, 1]
+NormalizeEmbedding ( "[0.6, 0.8]" )	0	8/1/0	[0.6, 0.8]
+NormalizeEmbedding ( "[0.6, 0.8000001]" )	0	8/1/0	[0.6, 0.8000001]
+NormalizeEmbedding ( "[1.0000001]" )	0	8/1/0	[1.0000001]
+NormalizeEmbedding ( "[1.000001]" )	0	8/1/0	[1.000001]
+NormalizeEmbedding ( "[1.00001]" )	0	1/1/0	[1]
+NormalizeEmbedding ( "[1.0001]" )	0	1/1/0	[1]
+NormalizeEmbedding ( "[1.001]" )	0	1/1/0	[1]
+NormalizeEmbedding ( "[1.01]" )	0	1/1/0	[1]
+NormalizeEmbedding ( "[0.9999999]" )	0	1/1/0	[1]
+NormalizeEmbedding ( "[0.999999]" )	0	1/1/0	[1]
+NormalizeEmbedding ( "[0.99999]" )	0	1/1/0	[1]
+NormalizeEmbedding ( "[0.9999]" )	0	1/1/0	[1]
+NormalizeEmbedding ( "[0.999]" )	0	1/1/0	[1]
+NormalizeEmbedding ( "[1.000000001]" )	0	8/1/0	[1.000000001]
+NormalizeEmbedding ( "[1e-5, 1]" ; 1 )	0	1/1/0	[1]
+NormalizeEmbedding ( "[1, 1e-5]" ; 1 )	0	8/1/0	[1, 1e-5]
+NormalizeEmbedding ( "[1, 2]" ; 1 )	0	8/1/0	[1, 2]
+NormalizeEmbedding ( "[0.003, 1]" )	0	8/1/0	[0.003, 1]
+NormalizeEmbedding ( "[0.001, 1]" )	0	8/1/0	[0.001, 1]
+NormalizeEmbedding ( "[0.0003, 1]" )	0	8/1/0	[0.0003, 1]
+NormalizeEmbedding ( "[0.0001, 1]" )	0	8/1/0	[0.0001, 1]
+NormalizeEmbedding ( "[0.00003, 1]" )	0	8/1/0	[0.00003, 1]
+JSONParsedState ( NormalizeEmbedding ( "[1]" ) )	0	2/2/0	4
+JSONParsedState ( NormalizeEmbedding ( "[3, 4]" ) )	0	2/2/0	0
+JSONParsedState ( AddEmbeddings ( "[1]" ; "[2]" ) )	0	2/2/0	0
+JSONParsedState ( AddEmbeddings ( "[1]" ; "" ) )	0	2/2/0	0
+NormalizeEmbedding ( "[ 1 ]" )	0	8/1/0	[ 1 ]
+NormalizeEmbedding ( " [1] " )	0	8/1/0	 [1] 
+NormalizeEmbedding ( TextStyleAdd ( "[1]" ; Bold ) )	0	8/1/0	[1]
+GetAsSVG ( NormalizeEmbedding ( TextStyleAdd ( "[1]" ; Bold ) ) )	0	1/1/0	<stylelist>\r<style#0>"font-weight: bold;", begin: 1, end: 3</style> \r</stylelist>\r<data>\r<span style="0">[1]</span>\r</data>
+GetAsSVG ( NormalizeEmbedding ( TextStyleAdd ( "[3, 4]" ; Bold ) ) )	0	1/1/0	<stylelist>\r<style#0>"", begin: 1, end: 47</style> \r</stylelist>\r<data>\r<span style="0">[0.5999999999999999778, 0.80000000000000004441]</span>\r</data>
+AddEmbeddings ( "[3, 4]" ; "" )	0	1/1/0	[3, 4]
+AddEmbeddings ( "[0.6, 0.8]" ; "" )	0	1/1/0	[0.6, 0.8]
+AddEmbeddings ( "[3 , 4]" ; "" )	0	1/1/0	[3 , 4]
+JSONParsedState ( AddEmbeddings ( "[0.6, 0.8]" ; "" ) )	0	2/2/0	0
+SubtractEmbeddings ( "[3, 4]" ; "" )	0	1/1/0	[3, 4]
+SubtractEmbeddings ( "" ; "[3, 4]" )	0	1/1/0	
+AddEmbeddings ( "[1]" ; "abc" )	0	2/2/0	?
+AddEmbeddings ( "abc" ; "" )	0	1/1/0	abc
+AddEmbeddings ( "[1, 2]" ; "[1]" )	0	2/2/0	?
+AddEmbeddings ( "[0.5, 0]" ; "[0.5, 0]" )	0	1/1/0	[1, 0]
+AddEmbeddings ( "[1, 0]" ; "[0, 0]" )	0	1/1/0	[1, 0]
+AddEmbeddings ( "[true]" ; "[null]" )	0	1/1/0	[1]
+AddEmbeddings ( "[1e308, 1]" ; "[1e308, 1]" )	0	1/1/0	[0, 0]
+AddEmbeddings ( "[1e-320]" ; "[1e-320]" )	0	2/2/0	?
+AddEmbeddings ( GetEmbeddingAsFile ( "[1, 2, 3]" ) ; "" )	0	6/6/0	emb_03D8B.fve
+GetAsText ( AddEmbeddings ( GetEmbeddingAsFile ( "[1, 2, 3]" ) ; "" ) )	0	1/1/0	emb_03D8B.fve
+HexEncode ( AddEmbeddings ( GetEmbeddingAsFile ( "[1, 2, 3]" ) ; "" ) )	0	1/1/0	4656452E32313030000000000000F03F00000000000000400000000000000840
+AddEmbeddings ( "" ; GetEmbeddingAsFile ( "[1, 2, 3]" ) )	0	1/1/0	
+AddEmbeddings ( 5 ; "[1]" )	0	2/2/0	?
+AddEmbeddings ( "[1]" ; 5 )	0	2/2/0	?
+AddEmbeddings ( "[1]" ; 1/0 )	15	2/2/0	?
+CosineSimilarity ( "[0.1]" ; "[0.1, 0.2]" )	0	2/2/0	?
+CosineSimilarity ( "[0.1, 0.2]" ; "[0.1]" )	0	2/2/0	?
+CosineSimilarity ( "[0.1, 0.2]" ; "" )	0	2/2/0	?
+CosineSimilarity ( NormalizeEmbedding ( "[1, 1, 1]" ) ; NormalizeEmbedding ( "[1, 1, 1]" ) )	0	2/2/0	1.000000000000000222
+CosineSimilarity ( NormalizeEmbedding ( "[1, 2, 3]" ) ; NormalizeEmbedding ( "[4, 5, 6]" ) )	0	2/2/0	.97463184619707621259
+CosineSimilarity ( "[0.6, 0.8]" ; "[0.6, 0.8]" )	0	2/2/0	1
+CosineSimilarity ( "[1]" ; "[1]" )	0	2/2/0	1
+CosineSimilarity ( "[-1]" ; "[1]" )	0	2/2/0	-1
+CosineSimilarity ( "[1.0000000000000002]" ; "[1]" )	0	2/2/0	1.000000000000000222
+CosineSimilarity ( "[1.000000000000001]" ; "[1]" )	0	2/2/0	1.0000000000000011102
+CosineSimilarity ( "[1.0000001]" ; "[1]" )	0	2/2/0	1.0000001000000000584
+CosineSimilarity ( "[-1.0000001]" ; "[1]" )	0	2/2/0	-1.0000001000000000584
+CosineSimilarity ( "[-1.0000000000000002]" ; "[1]" )	0	2/2/0	-1.000000000000000222
+CosineSimilarity ( "[1e308, 1e308]" ; "[-1, -1]" )	0	2/2/0	0
+CosineSimilarity ( "[1e308]" ; "[10]" )	0	2/2/0	0
+CosineSimilarity ( "[1e200]" ; "[1e200]" )	0	2/2/0	0
+CosineSimilarity ( "[1e-200]" ; "[1e-200]" )	0	2/2/0	0
+CosineSimilarity ( "[1e-5]" ; "[1e-5]" )	0	2/2/0	1.0000000000000001657E-10
+CosineSimilarity ( "[0.3]" ; "[0.1]" )	0	2/2/0	.02999999999999999889
+CosineSimilarity ( "[0.5, 0.5]" ; "[0.5, 0.5]" )	0	2/2/0	.5
+CosineSimilarity ( "[ 0.5 ]" ; "[0.5]" )	0	2/2/0	.25
+CosineSimilarity ( "[1]" ; "[]" )	0	2/2/0	?
+CosineSimilarity ( "[]" ; "[1]" )	0	2/2/0	?
+CosineSimilarity ( "[0]" ; "[]" )	0	2/2/0	?
+CosineSimilarity ( "[1e-7]" ; "[1]" )	0	2/2/0	.000000099999999999999995475
+CosineSimilarity ( "[1e-30]" ; "[1]" )	0	2/2/0	1.0000000000000000833E-30
+CosineSimilarity ( "[-0.5]" ; "[1]" )	0	2/2/0	-.5
+CosineSimilarity ( "[0.123456789012345678]" ; "[1]" )	0	2/2/0	.12345678901234567737
+CosineSimilarity ( "[0.1, 0.2]" ; "[0.3, 0.4]" ) * 10^20	0	2/2/0	11000000000000001443
+EvaluationError ( GetEmbeddingAsFile ( "abc" ) )	0	2/2/0	5
+GetEmbeddingAsFile ( "[1e400]" )	5	2/2/0	?
+GetEmbeddingAsFile ( "[1, \"a\"]" )	5	2/2/0	?
+GetEmbeddingAsFile ( 5 )	5	2/2/0	?
+GetEmbeddingAsFile ( "[5]" ; 1/0 )	15	6/6/0	_
+GetEmbeddingAsFile ( 1/0 )	15	2/2/0	?
+GetEmbeddingAsFile ( " [1] " )	0	6/6/0	emb_92B81.fve
+GetEmbeddingAsFile ( "[1, [2]]" )	5	2/2/0	?
+GetEmbeddingAsFile ( "[0, 0]" )	0	6/6/0	emb_10B48.fve
+GetEmbeddingAsFile ( "[1] x" )	5	2/2/0	?
+HexEncode ( GetEmbeddingAsFile ( "[null]" ) )	0	1/1/0	4656452E323130300000000000000000
+HexEncode ( GetEmbeddingAsFile ( "[false]" ) )	0	1/1/0	4656452E323130300000000000000000
+HexEncode ( GetEmbeddingAsFile ( "[1e-320]" ) )	0	1/1/0	4656452E32313030E807000000000000
+GetEmbeddingAsFile ( "[1]" ; "a/b.fve" )	0	6/6/0	b.fve
+GetEmbeddingAsFile ( "[1]" ; "  " )	0	6/6/0	  
+GetEmbeddingAsFile ( "[1]" ; 5 )	0	6/6/0	5
+GetEmbeddingAsText ( GetEmbeddingAsFile ( "[0.5, -0.25]" ) )	0	1/1/0	[0.5, -0.25]
+GetEmbeddingAsText ( GetEmbeddingAsFile ( "[1e21]" ) )	0	1/1/0	[1.0E+21]
+GetEmbeddingAsText ( GetEmbeddingAsFile ( "[1e20]" ) )	0	1/1/0	[1.0E+20]
+GetEmbeddingAsText ( GetEmbeddingAsFile ( "[123456789012345678901]" ) )	0	1/1/0	[123456789012345683970]
+GetEmbeddingAsText ( GetEmbeddingAsFile ( "[0.001]" ) )	0	1/1/0	[0.0010000000000000000208]
+GetEmbeddingAsText ( GetEmbeddingAsFile ( "[1e-10]" ) )	0	1/1/0	[1.0000000000000000364E-10]
+GetEmbeddingAsText ( GetEmbeddingAsFile ( "[1e-9]" ) )	0	1/1/0	[0.0000000010000000000000000623]
+GetEmbeddingAsText ( GetEmbeddingAsFile ( "[-1e-9]" ) )	0	1/1/0	[-0.0000000010000000000000000623]
+GetEmbeddingAsText ( GetEmbeddingAsFile ( "[1e-11]" ) )	0	1/1/0	[9.999999999999999395E-12]
+GetEmbeddingAsText ( GetEmbeddingAsFile ( "[1e-12]" ) )	0	1/1/0	[9.9999999999999997989E-13]
+GetEmbeddingAsText ( GetEmbeddingAsFile ( "[1e-20]" ) )	0	1/1/0	[9.9999999999999994515E-21]
+GetEmbeddingAsText ( GetEmbeddingAsFile ( "[1e-30]" ) )	0	1/1/0	[1.0000000000000000833E-30]
+GetEmbeddingAsText ( GetEmbeddingAsFile ( "[1e10]" ) )	0	1/1/0	[1.0E+10]
+GetEmbeddingAsText ( GetEmbeddingAsFile ( "[1e15]" ) )	0	1/1/0	[1.0E+15]
+GetEmbeddingAsText ( GetEmbeddingAsFile ( "[12345678901]" ) )	0	1/1/0	[12345678901]
+GetEmbeddingAsText ( GetEmbeddingAsFile ( "[1.5e300]" ) )	0	1/1/0	[1.5000000000000000788E+300]
+GetEmbeddingAsText ( GetEmbeddingAsFile ( "[5e-324]" ) )	0	1/1/0	[4.9406564584124654418E-324]
+GetEmbeddingAsText ( GetEmbeddingAsFile ( "[-0.5]" ) )	0	1/1/0	[-0.5]
+GetEmbeddingAsText ( GetEmbeddingAsFile ( "[100]" ) )	0	1/1/0	[100]
+GetEmbeddingAsText ( GetEmbeddingAsFile ( "[0.30000000000000004]" ) )	0	1/1/0	[0.30000000000000004441]
+GetEmbeddingAsText ( GetEmbeddingAsFile ( "[1e-320]" ) )	0	1/1/0	[9.9998886718268300541E-321]
+GetEmbeddingAsText ( GetEmbeddingAsFile ( "[1.7976931348623157e308]" ) )	0	1/1/0	[1.7976931348623157081E+308]
+GetEmbeddingAsText ( GetEmbeddingAsFile ( "[123456789.123456789]" ) )	0	1/1/0	[123456789.12345679104]
+GetEmbeddingAsText ( GetEmbeddingAsFile ( "[1, 2, 3]" ) ) & ""	0	1/1/0	[1, 2, 3]
+JSONParsedState ( GetEmbeddingAsText ( GetEmbeddingAsFile ( "[1, 2, 3]" ) ) )	0	2/2/0	0
+NormalizeEmbedding ( "[1e-7, 2e-7]" )	0	1/1/0	[0.44721359549995798321, 0.89442719099991596643]
+NormalizeEmbedding ( "[1e300, 2e300]" )	0	1/1/0	[0, 0]
+NormalizeEmbedding ( "[1e-160, 2e-160]" )	0	1/1/0	[0.44721608489437364442, 0.89443216978874728884]
+NormalizeEmbedding ( "[1e160, 2e160]" )	0	1/1/0	[0, 0]
+NormalizeEmbedding ( "[1e154, 2e154]" )	0	1/1/0	[0, 0]
+NormalizeEmbedding ( "[123456789012345678901234567890, 1]" )	0	1/1/0	[1, 8.1000000729000001157E-30]
+NormalizeEmbedding ( "[1, 123456789012345678901234567890]" )	0	1/1/0	[8.1000000729000001157E-30, 1]
+NormalizeEmbedding ( "[2, 1e-20]" )	0	1/1/0	[1, 4.9999999999999997258E-21]
+NormalizeEmbedding ( "[-3, -4]" )	0	1/1/0	[-0.5999999999999999778, -0.80000000000000004441]
+NormalizeEmbedding ( "[3, 4]" ; 1 ) & ""	0	1/1/0	[1]
+AddEmbeddings ( "[1, 2, 3]" ; "[4, 5, 6]" ) & ""	0	1/1/0	[0.40160966445124940405, 0.56225353023174917677, 0.722897396012249005]
+CosineSimilarity ( "[1.000001]" ; "[1]" )	0	2/2/0	?
+CosineSimilarity ( "[1.00001]" ; "[1]" )	0	2/2/0	?
+CosineSimilarity ( "[1.0001]" ; "[1]" )	0	2/2/0	?
+CosineSimilarity ( "[1.001]" ; "[1]" )	0	2/2/0	?
+CosineSimilarity ( "[1.01]" ; "[1]" )	0	2/2/0	?
+CosineSimilarity ( "[1.1]" ; "[1]" )	0	2/2/0	?
+CosineSimilarity ( "[1.5]" ; "[1]" )	0	2/2/0	?
+CosineSimilarity ( "[1.9999]" ; "[1]" )	0	2/2/0	?
+CosineSimilarity ( "[-1.5]" ; "[1]" )	0	2/2/0	?
+CosineSimilarity ( "[-1.01]" ; "[1]" )	0	2/2/0	?
+CosineSimilarity ( "[-1.001]" ; "[1]" )	0	2/2/0	?
+CosineSimilarity ( "[-1.0001]" ; "[1]" )	0	2/2/0	?
+CosineSimilarity ( "[-1.00001]" ; "[1]" )	0	2/2/0	?
+CosineSimilarity ( "[-1.000001]" ; "[1]" )	0	2/2/0	?
+CosineSimilarity ( "[0.5, 0.6]" ; "[1, 1]" )	0	2/2/0	?
+CosineSimilarity ( "[1e308]" ; "[-10]" )	0	2/2/0	0
+CosineSimilarity ( "[0]" ; "[1]" )	0	2/2/0	0
+CosineSimilarity ( "[0]" ; "[0]" )	0	2/2/0	0
+CosineSimilarity ( HexDecode ( "4656452E32313030000000000000F87F" ; "x.fve" ) ; "[1]" )	0	2/2/0	?
+CosineSimilarity ( HexDecode ( "4656452E32313030000000000000F07F" ; "x.fve" ) ; "[1]" )	0	2/2/0	0
+NormalizeEmbedding ( "[1.000005]" )	0	1/1/0	[1]
+NormalizeEmbedding ( "[1.000009]" )	0	1/1/0	[1]
+NormalizeEmbedding ( "[1.0000099]" )	0	1/1/0	[1]
+NormalizeEmbedding ( "[1.00001]" )	0	1/1/0	[1]
+NormalizeEmbedding ( "[1.0000100001]" )	0	1/1/0	[1]
+NormalizeEmbedding ( "[0.99999999999]" )	0	8/1/0	[0.99999999999]
+NormalizeEmbedding ( "[0.9999999999999999]" )	0	8/1/0	[0.9999999999999999]
+NormalizeEmbedding ( "[0.99999999999999999]" )	0	8/1/0	[0.99999999999999999]
+NormalizeEmbedding ( "[0.70710678118654746172, 0.70710678118654746172]" )	0	8/1/0	[0.70710678118654746172, 0.70710678118654746172]
+NormalizeEmbedding ( "[0.70710678118654757, 0.70710678118654757]" )	0	8/1/0	[0.70710678118654757, 0.70710678118654757]
+NormalizeEmbedding ( "[-1]" )	0	8/1/0	[-1]
+NormalizeEmbedding ( "[0, -1]" )	0	8/1/0	[0, -1]
+NormalizeEmbedding ( "[0.6, -0.8]" )	0	8/1/0	[0.6, -0.8]
+NormalizeEmbedding ( "[1, 1e-3]" )	0	8/1/0	[1, 1e-3]
+NormalizeEmbedding ( "[1, 3e-3]" )	0	8/1/0	[1, 3e-3]
+NormalizeEmbedding ( "[1, 3.1e-3]" )	0	8/1/0	[1, 3.1e-3]
+NormalizeEmbedding ( "[1, 3.2e-3]" )	0	1/1/0	[0.99999488003932124336, 0.0031999836161258283021]
+NormalizeEmbedding ( "[1, 4e-3]" )	0	1/1/0	[0.99999200009599875649, 0.0039999680003839944986]
+NormalizeEmbedding ( "[0.999995]" )	0	1/1/0	[1]
+NormalizeEmbedding ( "[1, 2, 3]" ; 0.5 )	0	1/1/0	[0.26726124191242439654, 0.53452248382484879308, 0.80178372573727318962]
+NormalizeEmbedding ( "[1, 2, 3]" ; -0.5 )	0	1/1/0	[0.26726124191242439654, 0.53452248382484879308, 0.80178372573727318962]
+NormalizeEmbedding ( "[1, 2, 3]" ; 2^32 )	0	1/1/0	[0.26726124191242439654, 0.53452248382484879308, 0.80178372573727318962]
+NormalizeEmbedding ( "[1, 2, 3]" ; 2^32 + 2 )	0	1/1/0	[0.4472135954999579277, 0.89442719099991585541]
+NormalizeEmbedding ( "[1, 2, 3]" ; 2^31 + 2 )	0	1/1/0	[0.26726124191242439654, 0.53452248382484879308, 0.80178372573727318962]
+NormalizeEmbedding ( "[1, 2, 3]" ; -2^32 + 2 )	0	1/1/0	[0.4472135954999579277, 0.89442719099991585541]
+NormalizeEmbedding ( "[1, 2, 3]" ; Date ( 1 ; 2 ; 1 ) )	0	1/1/0	[0.4472135954999579277, 0.89442719099991585541]
+GetAsText ( GetEmbeddingAsFile ( "[1]" ; "a:b.fve" ) )	0	1/1/0	b.fve
+GetAsText ( GetEmbeddingAsFile ( "[1]" ; "x?.fve" ) )	0	1/1/0	x_.fve
+GetAsText ( GetEmbeddingAsFile ( "[1]" ; "dir/" ) )	0	1/1/0	
+GetAsText ( GetEmbeddingAsFile ( "[1]" ; "a¶b.fve" ) )	0	1/1/0	a
+GetAsText ( GetEmbeddingAsFile ( "[1]" ; "image:x.fve" ) )	0	1/1/0	x.fve
+GetAsText ( GetEmbeddingAsFile ( "[1]" ; "a\\b.fve" ) )	0	1/1/0	a_b.fve
+GetAsText ( GetEmbeddingAsFile ( "[1]" ; TextStyleAdd ( "s.fve" ; Bold ) ) )	0	1/1/0	s.fve
+GetAsText ( GetEmbeddingAsFile ( "[1]" ; "" ) )	0	1/1/0	emb_92B81.fve
+GetEmbeddingAsText ( GetEmbeddingAsFile ( "[1]" ; "a:b.fve" ) )	0	1/1/0	[1]
+GetEmbeddingAsText ( GetEmbeddingAsFile ( "[1]" ; "dir/" ) )	408	2/2/0	?
+GetAsText ( GetEmbeddingAsFile ( "[1, 2]" ) )	0	1/1/0	emb_09429.fve
+GetAsText ( GetEmbeddingAsFile ( "[3, 4, 12]" ) )	0	1/1/0	emb_5B004.fve
+GetAsText ( NormalizeEmbedding ( GetEmbeddingAsFile ( "[3, 4, 12]" ) ; 2 ) )	0	1/1/0	embf_250D5.fve
+GetAsText ( SubtractEmbeddings ( GetEmbeddingAsFile ( "[1, 2]" ) ; "[1, 2]" ) )	0	1/1/0	?
+EvaluationError ( AddEmbeddings ( GetEmbeddingAsFile ( "[1]" ; "x.txt" ) ; "[1]" ) )	0	2/2/0	0
+GetEmbeddingAsText ( GetEmbeddingAsFile ( "[1, 2, 3]" ; "x.fve" ) & "" )	-1	2/2/0	?
+GetEmbeddingAsFile ( "[1, 2]" ) & ""	0	1/1/0	emb_09429.fve
+Length ( GetEmbeddingAsFile ( "[1, 2]" ) & "" )	0	2/2/0	13
+IsEmpty ( GetEmbeddingAsFile ( "" ) )	0	2/2/0	1
+GetEmbeddingAsFile ( "" ; "x.fve" )	0	1/1/0	
+IsEmpty ( NormalizeEmbedding ( "" ) )	0	2/2/0	1
+GetEmbeddingAsText ( GetEmbeddingAsFile ( "[1, 2, 3]" ) ; 1 )	1202	2/2/0	?
+NormalizeEmbedding ( " " )	0	2/2/0	?
+CosineSimilarity ( " " ; "[1]" )	0	2/2/0	?
+AddEmbeddings ( " " ; "[1]" )	0	2/2/0	?
+AddEmbeddings ( "[1]" ; " " )	0	2/2/0	?
+GetEmbeddingAsFile ( " " )	5	2/2/0	?
+GetEmbeddingAsText ( " " )	-1	2/2/0	?
+CosineSimilarity ( "[1.0000002]" ; "[1]" )	0	2/2/0	1.0000001999999998947
+CosineSimilarity ( "[1.0000003]" ; "[1]" )	0	2/2/0	1.0000002999999999531
+CosineSimilarity ( "[1.0000005]" ; "[1]" )	0	2/2/0	?
+CosineSimilarity ( "[1.0000007]" ; "[1]" )	0	2/2/0	?
+CosineSimilarity ( "[1.0000009]" ; "[1]" )	0	2/2/0	?
+CosineSimilarity ( "[1.00000095]" ; "[1]" )	0	2/2/0	?
+CosineSimilarity ( "[1.00000099]" ; "[1]" )	0	2/2/0	?
+CosineSimilarity ( "[-1.0000009]" ; "[1]" )	0	2/2/0	?
+CosineSimilarity ( "[-1.00000099]" ; "[1]" )	0	2/2/0	?
+CosineSimilarity ( "[0.99999]" ; "[1]" )	0	2/2/0	.99999000000000004551
+NormalizeEmbedding ( "[0.9999999999]" )	0	8/1/0	[0.9999999999]
+NormalizeEmbedding ( "[0.999999999]" )	0	8/1/0	[0.999999999]
+NormalizeEmbedding ( "[0.99999999]" )	0	8/1/0	[0.99999999]
+NormalizeEmbedding ( "[0.99999995]" )	0	1/1/0	[1]
+NormalizeEmbedding ( "[0.9999998]" )	0	1/1/0	[1]
+NormalizeEmbedding ( "[1, 3.15e-3]" )	0	8/1/0	[1, 3.15e-3]
+NormalizeEmbedding ( "[1, 3.16e-3]" )	0	1/1/0	[0.99999500723739176422, 0.003159984222870157889]
+NormalizeEmbedding ( "[1, 3.162e-3]" )	0	1/1/0	[0.99999500091548643166, 0.003161984192894767929]
+NormalizeEmbedding ( "[1, 3.1623e-3]" )	0	1/1/0	[0.99999499996685581316, 0.0031622841883951879199]
+NormalizeEmbedding ( "[0.9999995]" )	0	1/1/0	[1]
+NormalizeEmbedding ( "[0.9999997]" )	0	1/1/0	[1]
+NormalizeEmbedding ( "[1.0000049]" )	0	8/1/0	[1.0000049]
+NormalizeEmbedding ( "[1.00000499]" )	0	1/1/0	[1]
+CosineSimilarity ( "[1.0000004]" ; "[1]" )	0	2/2/0	1.0000004000000000115
+CosineSimilarity ( "[1.00000042]" ; "[1]" )	0	2/2/0	1.00000041999999989
+CosineSimilarity ( "[1.00000045]" ; "[1]" )	0	2/2/0	1.0000004499999999297
+CosineSimilarity ( "[1.00000035]" ; "[1]" )	0	2/2/0	1.0000003500000000933
+CosineSimilarity ( "[1.00000038]" ; "[1]" )	0	2/2/0	1.000000379999999911
+CosineSimilarity ( "[-1.0000004]" ; "[1]" )	0	2/2/0	-1.0000004000000000115
+CosineSimilarity ( "[-1.00000042]" ; "[1]" )	0	2/2/0	-1.00000041999999989
+CosineSimilarity ( "[-1.0000003]" ; "[1]" )	0	2/2/0	-1.0000002999999999531
+NormalizeEmbedding ( "[0.99999997]" )	0	1/1/0	[1]
+NormalizeEmbedding ( "[0.999999975]" )	0	1/1/0	[1]
+NormalizeEmbedding ( "[0.99999998]" )	0	1/1/0	[1]
+NormalizeEmbedding ( "[0.99999996]" )	0	1/1/0	[1]
+NormalizeEmbedding ( "[1, 3.155e-3]" )	0	1/1/0	[0.9999950230246557048, 0.0031549842976427884544]
+NormalizeEmbedding ( "[1, 3.157e-3]" )	0	1/1/0	[0.99999501671274981796, 0.003156984267762151259]
+NormalizeEmbedding ( "[1.00000498]" )	0	1/1/0	[1]
+NormalizeEmbedding ( "[1.00000497]" )	0	8/1/0	[1.00000497]

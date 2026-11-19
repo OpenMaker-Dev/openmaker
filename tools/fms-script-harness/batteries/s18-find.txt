@@ -1,0 +1,108 @@
+# Find mode details (script-runtime.md 13.21): the window after a Perform
+# Find without criteria (400), and reading fields without a current record
+# (in Find mode, with an empty found set). Probe file s18-find.fmp12:
+# contacts-en with Website made a global text field by crates/om-server's
+# example validation_probe (spec 7=1,0,1,10000); the @trigger line (never
+# fired) makes runbat.sh run the file FMUpgradeTool generates from its XML
+# export. "state" is "window mode:found count:record number:First
+# Name:request count".
+@trigger	Contact List	OnGestureTap	state
+== setup
+Go to Layout [ "Contact Details" ]
+New Record/Request
+Set Field [ Contacts::First Name ; "a" ]
+New Record/Request
+Set Field [ Contacts::First Name ; "b" ]
+New Record/Request
+Set Field [ Contacts::First Name ; "c" ]
+Commit Records/Requests [ With dialog: Off ]
+Exit Script [ Get ( FoundCount ) ]
+== state
+Exit Script [ Get ( WindowMode ) & ":" & Get ( FoundCount ) & ":" & Get ( RecordNumber ) & ":" & Contacts::First Name & ":" & Get ( RequestCount ) ]
+== find400
+Set Error Capture [ On ]
+Go to Layout [ "Contact Details" ]
+Go to Record/Request/Page [ Last ]
+Perform Script [ "state" ]
+Set Variable [ $before ; Get ( ScriptResult ) ]
+Step 22
+Step 28
+Set Variable [ $e ; Get ( LastError ) ]
+Perform Script [ "state" ]
+Exit Script [ $before & "/" & $e & "/" & Get ( ScriptResult ) ]
+== find400 after b
+Set Error Capture [ On ]
+Go to Layout [ "Contact Details" ]
+Step 22
+Set Field [ Contacts::First Name ; "b" ]
+Step 28
+Perform Script [ "state" ]
+Set Variable [ $before ; Get ( ScriptResult ) ]
+Step 22
+Step 28
+Set Variable [ $e ; Get ( LastError ) ]
+Perform Script [ "state" ]
+Exit Script [ $before & "/" & $e & "/" & Get ( ScriptResult ) ]
+== find400 two requests
+Set Error Capture [ On ]
+Go to Layout [ "Contact Details" ]
+Go to Record/Request/Page [ First ]
+Step 22
+New Record/Request
+Step 28
+Set Variable [ $e ; Get ( LastError ) ]
+Perform Script [ "state" ]
+Exit Script [ $e & "/" & Get ( ScriptResult ) ]
+== reads in find
+Set Error Capture [ On ]
+Go to Layout [ "Contact Details" ]
+Set Field [ Contacts::Website ; "g1" ]
+Step 22
+Set Variable [ $g ; Contacts::Website & "," & EvaluationError ( Contacts::Website ) ]
+Set Variable [ $n ; Contacts::First Name & "," & EvaluationError ( Contacts::First Name ) & "," & IsEmpty ( Contacts::First Name ) ]
+Set Field [ Contacts::First Name ; "b" ]
+Set Variable [ $c ; Contacts::First Name & "," & EvaluationError ( Contacts::First Name ) ]
+Exit Script [ $g & "/" & $n & "/" & $c ]
+== reads empty
+Set Error Capture [ On ]
+Go to Layout [ "Contact Details" ]
+Set Field [ Contacts::Website ; "g2" ]
+Step 22
+Set Field [ Contacts::First Name ; "zzz" ]
+Step 28
+Set Variable [ $e ; Get ( LastError ) ]
+Set Variable [ $g ; Contacts::Website & "," & EvaluationError ( Contacts::Website ) ]
+Set Variable [ $n ; Contacts::First Name & "," & EvaluationError ( Contacts::First Name ) & "," & IsEmpty ( Contacts::First Name ) ]
+Exit Script [ $e & "/" & Get ( WindowMode ) & ":" & Get ( FoundCount ) & "/" & $g & "/" & $n ]
+== find400 after show all
+Set Error Capture [ On ]
+Go to Layout [ "Contact Details" ]
+Step 22
+Set Field [ Contacts::First Name ; "b" ]
+Step 28
+Step 23
+Go to Record/Request/Page [ Last ]
+Perform Script [ "state" ]
+Set Variable [ $before ; Get ( ScriptResult ) ]
+Step 22
+Step 28
+Set Variable [ $e ; Get ( LastError ) ]
+Perform Script [ "state" ]
+Exit Script [ $before & "/" & $e & "/" & Get ( ScriptResult ) ]
+== fresh state
+Perform Script [ "state" ]
+Exit Script [ Get ( ScriptResult ) ]
+== global start
+Exit Script [ Contacts::Website & "," & EvaluationError ( Contacts::Website ) ]
+--- run
+global start
+setup
+find400
+find400 after b
+fresh state
+find400 two requests
+find400 after show all
+fresh state
+reads in find
+reads empty
+global start

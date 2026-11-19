@@ -1,0 +1,111 @@
+# scan store: open 0 load 0 scan 0 commit 0; index:id=value (0-based): 0:7=0 1:76=0 2:141=0 3:75=0 4:141=0 5:141=0 6:103=0
+# scan red png: open 0 load 0 scan 0 commit 0; index:id=value (0-based): 0:141=0 1:1=0 2:141=0 3:103=0
+# scan png named txt: open 0 load 0 scan 0 commit 0; index:id=value (0-based): 0:141=0 1:1=0 2:103=0
+# scan text named png: open 0 load 0 scan 0 commit 0; index:id=value (0-based): 0:141=0 1:1=0 2:103=0
+# scan gif: open 0 load 0 scan 0 commit 0; index:id=value (0-based): 0:141=0 1:1=0 2:103=0
+# scan jpg: open 0 load 0 scan 0 commit 0; index:id=value (0-based): 0:141=0 1:1=0 2:103=0
+# scan pdf: open 0 load 0 scan 0 commit 0; index:id=value (0-based): 0:141=0 1:1=0 2:103=0
+# scan mp3: open 0 load 0 scan 0 commit 0; index:id=value (0-based): 0:141=0 1:1=0 2:103=0
+# scan upper: open 0 load 0 scan 0 commit 0; index:id=value (0-based): 0:141=0 1:1=0 2:103=0
+# scan noname: open 0 load 0 scan 0 commit 0; index:id=value (0-based): 0:141=0 1:1=0 2:103=0
+# scan: close 13
+red png		0	0	0	red.png|72|0x0|107	red.png|72|0x0|107|red.png|?|?	0	1
+>	1	red png	1	141	0	0	0	0
+>	1	red png	2	1	0	0	0	0
+>	2	store	1	7	0	0	0	0
+>	2	store	2	76	0	0	0	0
+>	2	store	3	141	0	0	0	0
+>	2	store	4	75	0	0	0	0
+>	2	store	5	141	0	0	0	0
+>	2	store	6	141	0	0	0	0
+>	2	store	7	103	0	0	1	0
+>	1	red png	3	141	0	0	0	0
+>	1	red png	4	103	0	0	1	0
+png named txt		0	0	0	red.txt|72|0x0|106	red.txt|72|0x0|106|?|?|?	2
+>	1	png named txt	1	141	0	0	0	0
+>	1	png named txt	2	1	0	0	0	0
+>	2	store	1	7	0	0	0	0
+>	2	store	2	76	0	0	0	0
+>	2	store	3	141	0	0	0	0
+>	2	store	4	75	0	0	0	0
+>	2	store	5	141	0	0	0	0
+>	2	store	6	141	0	0	0	0
+>	2	store	7	103	0	0	1	0
+>	1	png named txt	3	103	0	0	1	0
+text named png		0	0	0	fake.png|5|0x0|41	fake.png|5|0x0|41|fake.png|?|?	3
+>	1	text named png	1	141	0	0	0	0
+>	1	text named png	2	1	0	0	0	0
+>	2	store	1	7	0	0	0	0
+>	2	store	2	76	0	0	0	0
+>	2	store	3	141	0	0	0	0
+>	2	store	4	75	0	0	0	0
+>	2	store	5	141	0	0	0	0
+>	2	store	6	141	0	0	0	0
+>	2	store	7	103	0	0	1	0
+>	1	text named png	3	103	0	0	1	0
+gif		0	0	0	dot.gif|35|1x1|82	dot.gif|35|1x1|82|dot.gif|1|?	4
+>	1	gif	1	141	0	0	0	0
+>	1	gif	2	1	0	0	0	0
+>	2	store	1	7	0	0	0	0
+>	2	store	2	76	0	0	0	0
+>	2	store	3	141	0	0	0	0
+>	2	store	4	75	0	0	0	0
+>	2	store	5	141	0	0	0	0
+>	2	store	6	141	0	0	0	0
+>	2	store	7	103	0	0	1	0
+>	1	gif	3	103	0	0	1	0
+jpg		0	0	0	x.jpg|134|1x1|191	x.jpg|134|1x1|191|x.jpg|1|?	5
+>	1	jpg	1	141	0	0	0	0
+>	1	jpg	2	1	0	0	0	0
+>	2	store	1	7	0	0	0	0
+>	2	store	2	76	0	0	0	0
+>	2	store	3	141	0	0	0	0
+>	2	store	4	75	0	0	0	0
+>	2	store	5	141	0	0	0	0
+>	2	store	6	141	0	0	0	0
+>	2	store	7	103	0	0	1	0
+>	1	jpg	3	103	0	0	1	0
+pdf		0	0	0	doc.pdf|318|20x10|515	doc.pdf|318|20x10|515|doc.png|20|?	6
+>	1	pdf	1	141	0	0	0	0
+>	1	pdf	2	1	0	0	0	0
+>	2	store	1	7	0	0	0	0
+>	2	store	2	76	0	0	0	0
+>	2	store	3	141	0	0	0	0
+>	2	store	4	75	0	0	0	0
+>	2	store	5	141	0	0	0	0
+>	2	store	6	141	0	0	0	0
+>	2	store	7	103	0	0	1	0
+>	1	pdf	3	103	0	0	1	0
+mp3		0	0	0	a.mp3|5|0x0|38	a.mp3|5|0x0|38|?|?|?	7
+>	1	mp3	1	141	0	0	0	0
+>	1	mp3	2	1	0	0	0	0
+>	2	store	1	7	0	0	0	0
+>	2	store	2	76	0	0	0	0
+>	2	store	3	141	0	0	0	0
+>	2	store	4	75	0	0	0	0
+>	2	store	5	141	0	0	0	0
+>	2	store	6	141	0	0	0	0
+>	2	store	7	103	0	0	1	0
+>	1	mp3	3	103	0	0	1	0
+upper		0	0	0	RED.PNG|72|0x0|107	RED.PNG|72|0x0|107|RED.PNG|?|?	8
+>	1	upper	1	141	0	0	0	0
+>	1	upper	2	1	0	0	0	0
+>	2	store	1	7	0	0	0	0
+>	2	store	2	76	0	0	0	0
+>	2	store	3	141	0	0	0	0
+>	2	store	4	75	0	0	0	0
+>	2	store	5	141	0	0	0	0
+>	2	store	6	141	0	0	0	0
+>	2	store	7	103	0	0	1	0
+>	1	upper	3	103	0	0	1	0
+noname		0	0	0	�PNG\r\u001A\r\u0000\u0000\u0000\rIHDR\u0000\u0000\u0000\u0003\u0000\u0000\u0000\u0002\u0008\u0002\u0000\u0000\u0000\u0012\u0016�M\u0000\u0000\u0000\u0010IDAT\u0008�c��\u0000\u0005L0\r\u00003)\u0001\u0003;�i\u001E\u0000\u0000\u0000\u0000IEND�B`�|71|0x0|71	�PNG\r\u001A\r\u0000\u0000\u0000\rIHDR\u0000\u0000\u0000\u0003\u0000\u0000\u0000\u0002\u0008\u0002\u0000\u0000\u0000\u0012\u0016�M\u0000\u0000\u0000\u0010IDAT\u0008�c��\u0000\u0005L0\r\u00003)\u0001\u0003;�i\u001E\u0000\u0000\u0000\u0000IEND�B`�|71|0x0|71|?|?|?	9
+>	1	noname	1	141	0	0	0	0
+>	1	noname	2	1	0	0	0	0
+>	2	store	1	7	0	0	0	0
+>	2	store	2	76	0	0	0	0
+>	2	store	3	141	0	0	0	0
+>	2	store	4	75	0	0	0	0
+>	2	store	5	141	0	0	0	0
+>	2	store	6	141	0	0	0	0
+>	2	store	7	103	0	0	1	0
+>	1	noname	3	103	0	0	1	0

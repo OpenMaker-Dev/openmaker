@@ -1,0 +1,441 @@
+# FileMaker Server 26.0.3 script engine (tools/fms-script-harness, s30-design),
+# expressions evaluated after a session opened tasks-en.fmp12 as "work" on its
+# default layout, with no table occurrence (no script ran).
+# file	tasks-en.fmp12
+# layout	Task Details
+DatabaseNames	work
+TableNames ( "" )	Assignees\rAssignments\rAttachments\rTasks
+TableIDs ( "" )	1065092\r1065093\r1065091\r1065090
+BaseTableNames ( "" )	Assignees\rAssignments\rAttachments\rTasks
+BaseTableIDs ( "" )	132\r133\r131\r130
+LayoutNames ( "" )	Task List\rTask Details\rAssignee List\rAssignee Details\r-\rAssignee Chooser\rAdd Assignee\rAssignments
+LayoutIDs ( "" )	2\r3\r6\r7\r8\r9\r10\r11
+ScriptNames ( "" )	Go to Entry Field\rAdd Related Record\rChoose Assignee\rCreate Assignee Entry\rCancel Add Assignee\rSort by Name\rSort by Status
+ScriptIDs ( "" )	2\r3\r4\r5\r6\r7\r8
+ValueListNames ( "" )	Priority\rStatus\rCategory\rTitle\rCompany
+ValueListIDs ( "" )	1\r2\r3\r4\r5
+WindowNames	work
+TableNames ( "work" )	Assignees\rAssignments\rAttachments\rTasks
+TableNames ( "WORK" )	Assignees\rAssignments\rAttachments\rTasks
+TableNames ( "work.fmp12" )	Assignees\rAssignments\rAttachments\rTasks
+TableNames ( "work.FMP12" )	Assignees\rAssignments\rAttachments\rTasks
+TableNames ( " work" )	
+TableNames ( "no such file" )	
+TableNames ( "?" )	
+LayoutNames ( "work" )	Task List\rTask Details\rAssignee List\rAssignee Details\r-\rAssignee Chooser\rAdd Assignee\rAssignments
+ScriptNames ( "work" )	Go to Entry Field\rAdd Related Record\rChoose Assignee\rCreate Assignee Entry\rCancel Add Assignee\rSort by Name\rSort by Status
+ValueListNames ( "work" )	Priority\rStatus\rCategory\rTitle\rCompany
+BaseTableNames ( "work" )	Assignees\rAssignments\rAttachments\rTasks
+WindowNames ( "work" )	work
+LayoutNames ( "no such file" )	
+ScriptNames ( "no such file" )	
+ValueListNames ( "no such file" )	
+BaseTableNames ( "no such file" )	
+WindowNames ( "no such file" )	
+WindowNames ( "" )	work
+EvaluationError ( TableNames ( 1 / 0 ) )	15
+FieldNames ( "" ; "Assignees" )	First Name\rLast Name\rPhoto\rTitle\rCompany\rGroup\rPhone\rEmail\rName\rInitial\rPrimaryKey\rCreatedBy\rModifiedBy\rCreationTimestamp\rModificationTimestamp
+FieldIDs ( "" ; "Assignees" )	1\r2\r3\r4\r5\r6\r7\r8\r9\r10\r11\r12\r13\r14\r15
+RelationInfo ( "" ; "Assignees" )	Source:work\rTable:Assignments\rOptions:\rAssignments::AssigneeForeignKey = Assignees::PrimaryKey
+FieldNames ( "" ; "Assignments" )	AssigneeForeignKey\rPrimaryKey\rCreatedBy\rModifiedBy\rTaskForeignKey\rModificationTimestamp\rCreationTimestamp
+FieldIDs ( "" ; "Assignments" )	1\r2\r3\r4\r5\r7\r6
+RelationInfo ( "" ; "Assignments" )	Source:work\rTable:Tasks\rOptions:\rTasks::PrimaryKey = Assignments::TaskForeignKey\r\rSource:work\rTable:Assignees\rOptions:\rAssignees::PrimaryKey = Assignments::AssigneeForeignKey
+FieldNames ( "" ; "Attachments" )	Attachment\rDescription\rForeignKey\rPrimaryKey\rCreatedBy\rModifiedBy\rCreationTimestamp\rModificationTimestamp
+FieldIDs ( "" ; "Attachments" )	1\r2\r3\r4\r5\r6\r7\r8
+RelationInfo ( "" ; "Attachments" )	Source:work\rTable:Tasks\rOptions:\rTasks::PrimaryKey = Attachments::ForeignKey
+FieldNames ( "" ; "Tasks" )	Task\rDue Date\rDescription\rStatus\rCategory\rCompletion Date\rPriority\rPrimaryKey\rCreatedBy\rModifiedBy\rCreationTimestamp\rModificationTimestamp
+FieldIDs ( "" ; "Tasks" )	1\r2\r3\r4\r5\r6\r7\r8\r9\r10\r11\r12
+RelationInfo ( "" ; "Tasks" )	Source:work\rTable:Attachments\rOptions:Create\rAttachments::ForeignKey = Tasks::PrimaryKey\r\rSource:work\rTable:Assignments\rOptions:\rAssignments::TaskForeignKey = Tasks::PrimaryKey
+BaseTableComment ( "" ; "Assignees" )	
+BaseTableComment ( "" ; "Assignments" )	
+BaseTableComment ( "" ; "Attachments" )	
+BaseTableComment ( "" ; "Tasks" )	
+FieldNames ( "" ; "" )	Task\rDue Date\rDescription\rStatus\rCategory\rCompletion Date\rPriority\rPrimaryKey\rCreatedBy\rModifiedBy\rCreationTimestamp\rModificationTimestamp
+FieldIDs ( "" ; "" )	1\r2\r3\r4\r5\r6\r7\r8\r9\r10\r11\r12
+FieldNames ( "" ; "no such" )	
+RelationInfo ( "" ; "no such" )	
+BaseTableComment ( "" ; "no such" )	
+FieldNames ( "no such file" ; "" )	
+FieldNames ( "" ; "ASSIGNEES" )	First Name\rLast Name\rPhoto\rTitle\rCompany\rGroup\rPhone\rEmail\rName\rInitial\rPrimaryKey\rCreatedBy\rModifiedBy\rCreationTimestamp\rModificationTimestamp
+RelationInfo ( "" ; "assignees" )	Source:work\rTable:Assignments\rOptions:\rAssignments::AssigneeForeignKey = Assignees::PrimaryKey
+FieldNames ( "" ; "Task List" )	Due Date\rCategory\rStatus\rTask
+FieldIDs ( "" ; "Task List" )	2\r5\r4\r1
+LayoutObjectNames ( "" ; "Task List" )	<\rTasks\rAssignees\r>\rGo to details.
+FieldNames ( "" ; "Task Details" )	Description\rAttachments::Description\rAttachments::Attachment\rAssignees::Email\rAssignees::Name\rCompletion Date\rStatus\rPriority\rCategory\rDue Date\rTask
+FieldIDs ( "" ; "Task Details" )	3\r1065091::2\r1065091::1\r1065092::8\r1065092::9\r6\r4\r7\r5\r2\r1
+LayoutObjectNames ( "" ; "Task Details" )	<\r>\rGo to Tasks.\r<\r>\rAssignee Portal\r<\r>\rStatus\rCategory\rDue Date\rTask
+FieldNames ( "" ; "Assignee List" )	Email\rPhone\rLast Name\rFirst Name\rPhoto
+FieldIDs ( "" ; "Assignee List" )	8\r7\r2\r1\r3
+LayoutObjectNames ( "" ; "Assignee List" )	<\rTasks\rAssignees\r>\rGo to details.
+FieldNames ( "" ; "Assignee Details" )	Email\rPhone\rGroup\rCompany\rLast Name\rFirst Name\rTitle\rPhoto\rPhoto
+FieldIDs ( "" ; "Assignee Details" )	8\r7\r6\r5\r2\r1\r4\r3\r3
+LayoutObjectNames ( "" ; "Assignee Details" )	<\r>\rGo to Assignees.\rEmail\rPhone\rLast Name\rFirst Name\rItem
+FieldNames ( "" ; "Assignee Chooser" )	Photo
+FieldIDs ( "" ; "Assignee Chooser" )	3
+LayoutObjectNames ( "" ; "Assignee Chooser" )	<\r>\rSelect Assignee button
+FieldNames ( "" ; "Add Assignee" )	Email\rLast Name\rFirst Name\rPhoto
+FieldIDs ( "" ; "Add Assignee" )	8\r2\r1\r3
+LayoutObjectNames ( "" ; "Add Assignee" )	<\r>\rEmail\rLast Name\rFirst Name
+LayoutObjectNames ( "" ; "Assignments" )	
+LayoutObjectNames ( "" ; "no such" )	
+LayoutObjectNames ( "" ; "" )	
+LayoutObjectNames ( "" ; "TASK LIST" )	<\rTasks\rAssignees\r>\rGo to details.
+FieldType ( "" ; "Assignees::First Name" )	Standard Text Unindexed 1
+FieldComment ( "" ; "Assignees::First Name" )	
+FieldAnnotation ( "" ; "Assignees::First Name" )	
+FieldDisplayNames ( "" ; "Assignees::First Name" )	
+GetNextSerialValue ( "" ; "Assignees::First Name" )	
+FieldType ( "" ; "Assignees::Last Name" )	Standard Text Unindexed 1
+FieldComment ( "" ; "Assignees::Last Name" )	
+FieldAnnotation ( "" ; "Assignees::Last Name" )	
+FieldDisplayNames ( "" ; "Assignees::Last Name" )	
+GetNextSerialValue ( "" ; "Assignees::Last Name" )	
+FieldType ( "" ; "Assignees::Photo" )	Standard Container Unindexed 1
+FieldComment ( "" ; "Assignees::Photo" )	
+FieldAnnotation ( "" ; "Assignees::Photo" )	
+FieldDisplayNames ( "" ; "Assignees::Photo" )	
+GetNextSerialValue ( "" ; "Assignees::Photo" )	
+FieldType ( "" ; "Assignees::Title" )	Standard Text Unindexed 1
+FieldComment ( "" ; "Assignees::Title" )	
+FieldAnnotation ( "" ; "Assignees::Title" )	
+FieldDisplayNames ( "" ; "Assignees::Title" )	
+GetNextSerialValue ( "" ; "Assignees::Title" )	
+FieldType ( "" ; "Assignees::Company" )	Standard Text Indexed 1
+FieldComment ( "" ; "Assignees::Company" )	
+FieldAnnotation ( "" ; "Assignees::Company" )	
+FieldDisplayNames ( "" ; "Assignees::Company" )	
+GetNextSerialValue ( "" ; "Assignees::Company" )	
+FieldType ( "" ; "Assignees::Group" )	Standard Text Unindexed 1
+FieldComment ( "" ; "Assignees::Group" )	
+FieldAnnotation ( "" ; "Assignees::Group" )	
+FieldDisplayNames ( "" ; "Assignees::Group" )	
+GetNextSerialValue ( "" ; "Assignees::Group" )	
+FieldType ( "" ; "Assignees::Phone" )	Standard Text Unindexed 1
+FieldComment ( "" ; "Assignees::Phone" )	
+FieldAnnotation ( "" ; "Assignees::Phone" )	
+FieldDisplayNames ( "" ; "Assignees::Phone" )	
+GetNextSerialValue ( "" ; "Assignees::Phone" )	
+FieldType ( "" ; "Assignees::Email" )	Standard Text Indexed 1
+FieldComment ( "" ; "Assignees::Email" )	
+FieldAnnotation ( "" ; "Assignees::Email" )	
+FieldDisplayNames ( "" ; "Assignees::Email" )	
+GetNextSerialValue ( "" ; "Assignees::Email" )	
+FieldType ( "" ; "Assignees::Name" )	StoredCalc Text Indexed 1
+FieldComment ( "" ; "Assignees::Name" )	
+FieldAnnotation ( "" ; "Assignees::Name" )	
+FieldDisplayNames ( "" ; "Assignees::Name" )	
+GetNextSerialValue ( "" ; "Assignees::Name" )	
+FieldType ( "" ; "Assignees::Initial" )	StoredCalc Text Unindexed 1
+FieldComment ( "" ; "Assignees::Initial" )	
+FieldAnnotation ( "" ; "Assignees::Initial" )	
+FieldDisplayNames ( "" ; "Assignees::Initial" )	
+GetNextSerialValue ( "" ; "Assignees::Initial" )	
+FieldType ( "" ; "Assignees::PrimaryKey" )	Standard Text Indexed 1
+FieldComment ( "" ; "Assignees::PrimaryKey" )	Unique identifier of each record in this table
+FieldAnnotation ( "" ; "Assignees::PrimaryKey" )	
+FieldDisplayNames ( "" ; "Assignees::PrimaryKey" )	
+GetNextSerialValue ( "" ; "Assignees::PrimaryKey" )	
+FieldType ( "" ; "Assignees::CreatedBy" )	Standard Text Unindexed 1
+FieldComment ( "" ; "Assignees::CreatedBy" )	Account name of the user who created each record
+FieldAnnotation ( "" ; "Assignees::CreatedBy" )	
+FieldDisplayNames ( "" ; "Assignees::CreatedBy" )	
+GetNextSerialValue ( "" ; "Assignees::CreatedBy" )	
+FieldType ( "" ; "Assignees::ModifiedBy" )	Standard Text Unindexed 1
+FieldComment ( "" ; "Assignees::ModifiedBy" )	Account name of the user who last modified each record
+FieldAnnotation ( "" ; "Assignees::ModifiedBy" )	
+FieldDisplayNames ( "" ; "Assignees::ModifiedBy" )	
+GetNextSerialValue ( "" ; "Assignees::ModifiedBy" )	
+FieldType ( "" ; "Assignees::CreationTimestamp" )	Standard Timestamp Unindexed 1
+FieldComment ( "" ; "Assignees::CreationTimestamp" )	Date and time each record was created
+FieldAnnotation ( "" ; "Assignees::CreationTimestamp" )	
+FieldDisplayNames ( "" ; "Assignees::CreationTimestamp" )	
+GetNextSerialValue ( "" ; "Assignees::CreationTimestamp" )	
+FieldType ( "" ; "Assignees::ModificationTimestamp" )	Standard Timestamp Unindexed 1
+FieldComment ( "" ; "Assignees::ModificationTimestamp" )	Date and time each record was last modified
+FieldAnnotation ( "" ; "Assignees::ModificationTimestamp" )	
+FieldDisplayNames ( "" ; "Assignees::ModificationTimestamp" )	
+GetNextSerialValue ( "" ; "Assignees::ModificationTimestamp" )	
+FieldType ( "" ; "Assignments::AssigneeForeignKey" )	Standard Text Indexed 1
+FieldComment ( "" ; "Assignments::AssigneeForeignKey" )	Unique identifier of each record in the related table
+FieldAnnotation ( "" ; "Assignments::AssigneeForeignKey" )	
+FieldDisplayNames ( "" ; "Assignments::AssigneeForeignKey" )	
+GetNextSerialValue ( "" ; "Assignments::AssigneeForeignKey" )	
+FieldType ( "" ; "Assignments::PrimaryKey" )	Standard Text Indexed 1
+FieldComment ( "" ; "Assignments::PrimaryKey" )	Unique identifier of each record in this table
+FieldAnnotation ( "" ; "Assignments::PrimaryKey" )	
+FieldDisplayNames ( "" ; "Assignments::PrimaryKey" )	
+GetNextSerialValue ( "" ; "Assignments::PrimaryKey" )	
+FieldType ( "" ; "Assignments::CreatedBy" )	Standard Text Unindexed 1
+FieldComment ( "" ; "Assignments::CreatedBy" )	Account name of the user who created each record
+FieldAnnotation ( "" ; "Assignments::CreatedBy" )	
+FieldDisplayNames ( "" ; "Assignments::CreatedBy" )	
+GetNextSerialValue ( "" ; "Assignments::CreatedBy" )	
+FieldType ( "" ; "Assignments::ModifiedBy" )	Standard Text Unindexed 1
+FieldComment ( "" ; "Assignments::ModifiedBy" )	Account name of the user who last modified each record
+FieldAnnotation ( "" ; "Assignments::ModifiedBy" )	
+FieldDisplayNames ( "" ; "Assignments::ModifiedBy" )	
+GetNextSerialValue ( "" ; "Assignments::ModifiedBy" )	
+FieldType ( "" ; "Assignments::TaskForeignKey" )	Standard Text Indexed 1
+FieldComment ( "" ; "Assignments::TaskForeignKey" )	Unique identifier of each record in the related table
+FieldAnnotation ( "" ; "Assignments::TaskForeignKey" )	
+FieldDisplayNames ( "" ; "Assignments::TaskForeignKey" )	
+GetNextSerialValue ( "" ; "Assignments::TaskForeignKey" )	
+FieldType ( "" ; "Assignments::ModificationTimestamp" )	Standard Timestamp Unindexed 1
+FieldComment ( "" ; "Assignments::ModificationTimestamp" )	Date and time each record was last modified
+FieldAnnotation ( "" ; "Assignments::ModificationTimestamp" )	
+FieldDisplayNames ( "" ; "Assignments::ModificationTimestamp" )	
+GetNextSerialValue ( "" ; "Assignments::ModificationTimestamp" )	
+FieldType ( "" ; "Assignments::CreationTimestamp" )	Standard Timestamp Unindexed 1
+FieldComment ( "" ; "Assignments::CreationTimestamp" )	Date and time each record was created
+FieldAnnotation ( "" ; "Assignments::CreationTimestamp" )	
+FieldDisplayNames ( "" ; "Assignments::CreationTimestamp" )	
+GetNextSerialValue ( "" ; "Assignments::CreationTimestamp" )	
+FieldType ( "" ; "Attachments::Attachment" )	Standard Container Unindexed 1
+FieldComment ( "" ; "Attachments::Attachment" )	
+FieldAnnotation ( "" ; "Attachments::Attachment" )	
+FieldDisplayNames ( "" ; "Attachments::Attachment" )	
+GetNextSerialValue ( "" ; "Attachments::Attachment" )	
+FieldType ( "" ; "Attachments::Description" )	Standard Text Unindexed 1
+FieldComment ( "" ; "Attachments::Description" )	
+FieldAnnotation ( "" ; "Attachments::Description" )	
+FieldDisplayNames ( "" ; "Attachments::Description" )	
+GetNextSerialValue ( "" ; "Attachments::Description" )	
+FieldType ( "" ; "Attachments::ForeignKey" )	Standard Text Indexed 1
+FieldComment ( "" ; "Attachments::ForeignKey" )	Unique identifier of each record in the related table
+FieldAnnotation ( "" ; "Attachments::ForeignKey" )	
+FieldDisplayNames ( "" ; "Attachments::ForeignKey" )	
+GetNextSerialValue ( "" ; "Attachments::ForeignKey" )	
+FieldType ( "" ; "Attachments::PrimaryKey" )	Standard Text Indexed 1
+FieldComment ( "" ; "Attachments::PrimaryKey" )	Unique identifier of each record in this table
+FieldAnnotation ( "" ; "Attachments::PrimaryKey" )	
+FieldDisplayNames ( "" ; "Attachments::PrimaryKey" )	
+GetNextSerialValue ( "" ; "Attachments::PrimaryKey" )	
+FieldType ( "" ; "Attachments::CreatedBy" )	Standard Text Unindexed 1
+FieldComment ( "" ; "Attachments::CreatedBy" )	Account name of the user who created each record
+FieldAnnotation ( "" ; "Attachments::CreatedBy" )	
+FieldDisplayNames ( "" ; "Attachments::CreatedBy" )	
+GetNextSerialValue ( "" ; "Attachments::CreatedBy" )	
+FieldType ( "" ; "Attachments::ModifiedBy" )	Standard Text Unindexed 1
+FieldComment ( "" ; "Attachments::ModifiedBy" )	Account name of the user who last modified each record
+FieldAnnotation ( "" ; "Attachments::ModifiedBy" )	
+FieldDisplayNames ( "" ; "Attachments::ModifiedBy" )	
+GetNextSerialValue ( "" ; "Attachments::ModifiedBy" )	
+FieldType ( "" ; "Attachments::CreationTimestamp" )	Standard Timestamp Unindexed 1
+FieldComment ( "" ; "Attachments::CreationTimestamp" )	Date and time each record was created
+FieldAnnotation ( "" ; "Attachments::CreationTimestamp" )	
+FieldDisplayNames ( "" ; "Attachments::CreationTimestamp" )	
+GetNextSerialValue ( "" ; "Attachments::CreationTimestamp" )	
+FieldType ( "" ; "Attachments::ModificationTimestamp" )	Standard Timestamp Unindexed 1
+FieldComment ( "" ; "Attachments::ModificationTimestamp" )	Date and time each record was last modified
+FieldAnnotation ( "" ; "Attachments::ModificationTimestamp" )	
+FieldDisplayNames ( "" ; "Attachments::ModificationTimestamp" )	
+GetNextSerialValue ( "" ; "Attachments::ModificationTimestamp" )	
+FieldType ( "" ; "Tasks::Task" )	Standard Text Unindexed 1
+FieldComment ( "" ; "Tasks::Task" )	
+FieldAnnotation ( "" ; "Tasks::Task" )	
+FieldDisplayNames ( "" ; "Tasks::Task" )	
+GetNextSerialValue ( "" ; "Tasks::Task" )	
+FieldType ( "" ; "Tasks::Due Date" )	Standard Date Unindexed 1
+FieldComment ( "" ; "Tasks::Due Date" )	
+FieldAnnotation ( "" ; "Tasks::Due Date" )	
+FieldDisplayNames ( "" ; "Tasks::Due Date" )	
+GetNextSerialValue ( "" ; "Tasks::Due Date" )	
+FieldType ( "" ; "Tasks::Description" )	Standard Text Unindexed 1
+FieldComment ( "" ; "Tasks::Description" )	
+FieldAnnotation ( "" ; "Tasks::Description" )	
+FieldDisplayNames ( "" ; "Tasks::Description" )	
+GetNextSerialValue ( "" ; "Tasks::Description" )	
+FieldType ( "" ; "Tasks::Status" )	Standard Text Unindexed 1
+FieldComment ( "" ; "Tasks::Status" )	
+FieldAnnotation ( "" ; "Tasks::Status" )	
+FieldDisplayNames ( "" ; "Tasks::Status" )	
+GetNextSerialValue ( "" ; "Tasks::Status" )	
+FieldType ( "" ; "Tasks::Category" )	Standard Text Unindexed 1
+FieldComment ( "" ; "Tasks::Category" )	
+FieldAnnotation ( "" ; "Tasks::Category" )	
+FieldDisplayNames ( "" ; "Tasks::Category" )	
+GetNextSerialValue ( "" ; "Tasks::Category" )	
+FieldType ( "" ; "Tasks::Completion Date" )	Standard Date Unindexed 1
+FieldComment ( "" ; "Tasks::Completion Date" )	
+FieldAnnotation ( "" ; "Tasks::Completion Date" )	
+FieldDisplayNames ( "" ; "Tasks::Completion Date" )	
+GetNextSerialValue ( "" ; "Tasks::Completion Date" )	
+FieldType ( "" ; "Tasks::Priority" )	Standard Text Unindexed 1
+FieldComment ( "" ; "Tasks::Priority" )	
+FieldAnnotation ( "" ; "Tasks::Priority" )	
+FieldDisplayNames ( "" ; "Tasks::Priority" )	
+GetNextSerialValue ( "" ; "Tasks::Priority" )	
+FieldType ( "" ; "Tasks::PrimaryKey" )	Standard Text Indexed 1
+FieldComment ( "" ; "Tasks::PrimaryKey" )	Unique identifier of each record in this table
+FieldAnnotation ( "" ; "Tasks::PrimaryKey" )	
+FieldDisplayNames ( "" ; "Tasks::PrimaryKey" )	
+GetNextSerialValue ( "" ; "Tasks::PrimaryKey" )	
+FieldType ( "" ; "Tasks::CreatedBy" )	Standard Text Unindexed 1
+FieldComment ( "" ; "Tasks::CreatedBy" )	Account name of the user who created each record
+FieldAnnotation ( "" ; "Tasks::CreatedBy" )	
+FieldDisplayNames ( "" ; "Tasks::CreatedBy" )	
+GetNextSerialValue ( "" ; "Tasks::CreatedBy" )	
+FieldType ( "" ; "Tasks::ModifiedBy" )	Standard Text Unindexed 1
+FieldComment ( "" ; "Tasks::ModifiedBy" )	Account name of the user who last modified each record
+FieldAnnotation ( "" ; "Tasks::ModifiedBy" )	
+FieldDisplayNames ( "" ; "Tasks::ModifiedBy" )	
+GetNextSerialValue ( "" ; "Tasks::ModifiedBy" )	
+FieldType ( "" ; "Tasks::CreationTimestamp" )	Standard Timestamp Unindexed 1
+FieldComment ( "" ; "Tasks::CreationTimestamp" )	Date and time each record was created
+FieldAnnotation ( "" ; "Tasks::CreationTimestamp" )	
+FieldDisplayNames ( "" ; "Tasks::CreationTimestamp" )	
+GetNextSerialValue ( "" ; "Tasks::CreationTimestamp" )	
+FieldType ( "" ; "Tasks::ModificationTimestamp" )	Standard Timestamp Unindexed 1
+FieldComment ( "" ; "Tasks::ModificationTimestamp" )	Date and time each record was last modified
+FieldAnnotation ( "" ; "Tasks::ModificationTimestamp" )	
+FieldDisplayNames ( "" ; "Tasks::ModificationTimestamp" )	
+GetNextSerialValue ( "" ; "Tasks::ModificationTimestamp" )	
+FieldType ( "" ; "Task" )	
+FieldComment ( "" ; "Task" )	
+GetNextSerialValue ( "" ; "Task" )	
+FieldType ( "" ; "Due Date" )	
+FieldComment ( "" ; "Due Date" )	
+GetNextSerialValue ( "" ; "Due Date" )	
+FieldType ( "" ; "Description" )	
+FieldComment ( "" ; "Description" )	
+GetNextSerialValue ( "" ; "Description" )	
+FieldType ( "" ; "Status" )	
+FieldComment ( "" ; "Status" )	
+GetNextSerialValue ( "" ; "Status" )	
+FieldType ( "" ; "no such" )	
+FieldType ( "" ; "no such::x" )	
+FieldComment ( "" ; "" )	
+FieldStyle ( "" ; "Task List" ; "Due Date" )	Calendar 
+FieldRepetitions ( "" ; "Task List" ; "Due Date" )	1 vertical
+FieldBounds ( "" ; "Task List" ; "Due Date" )	776 112 976 156 0
+FieldStyle ( "" ; "Task List" ; "Category" )	Popupmenu Category
+FieldRepetitions ( "" ; "Task List" ; "Category" )	1 vertical
+FieldBounds ( "" ; "Task List" ; "Category" )	542 112 772 156 0
+FieldStyle ( "" ; "Task List" ; "Status" )	Popupmenu Status
+FieldRepetitions ( "" ; "Task List" ; "Status" )	1 vertical
+FieldBounds ( "" ; "Task List" ; "Status" )	308 112 538 156 0
+FieldStyle ( "" ; "Task List" ; "Task" )	Standard
+FieldRepetitions ( "" ; "Task List" ; "Task" )	1 vertical
+FieldBounds ( "" ; "Task List" ; "Task" )	9 112 304 156 0
+FieldStyle ( "" ; "Task List" ; "no such" )	
+FieldBounds ( "" ; "Task List" ; "no such" )	
+FieldStyle ( "" ; "Task Details" ; "Description" )	Standard
+FieldRepetitions ( "" ; "Task Details" ; "Description" )	1 vertical
+FieldBounds ( "" ; "Task Details" ; "Description" )	700 492 991 536 0
+FieldStyle ( "" ; "Task Details" ; "Attachments::Description" )	Standard
+FieldRepetitions ( "" ; "Task Details" ; "Attachments::Description" )	1 vertical
+FieldBounds ( "" ; "Task Details" ; "Attachments::Description" )	795 172 981 236 0
+FieldStyle ( "" ; "Task Details" ; "Attachments::Attachment" )	Standard
+FieldRepetitions ( "" ; "Task Details" ; "Attachments::Attachment" )	1 vertical
+FieldBounds ( "" ; "Task Details" ; "Attachments::Attachment" )	727 172 791 236 0
+FieldStyle ( "" ; "Task Details" ; "Assignees::Email" )	Standard
+FieldRepetitions ( "" ; "Task Details" ; "Assignees::Email" )	1 vertical
+FieldBounds ( "" ; "Task Details" ; "Assignees::Email" )	394 220 647 264 0
+FieldStyle ( "" ; "Task Details" ; "Assignees::Name" )	Standard
+FieldRepetitions ( "" ; "Task Details" ; "Assignees::Name" )	1 vertical
+FieldBounds ( "" ; "Task Details" ; "Assignees::Name" )	394 172 647 216 0
+FieldStyle ( "" ; "Task Details" ; "Completion Date" )	Calendar 
+FieldRepetitions ( "" ; "Task Details" ; "Completion Date" )	1 vertical
+FieldBounds ( "" ; "Task Details" ; "Completion Date" )	32 483 323 527 0
+FieldStyle ( "" ; "Task Details" ; "Status" )	Popupmenu Status
+FieldRepetitions ( "" ; "Task Details" ; "Status" )	1 vertical
+FieldBounds ( "" ; "Task Details" ; "Status" )	32 398 323 442 0
+FieldStyle ( "" ; "Task Details" ; "Priority" )	Popupmenu Priority
+FieldRepetitions ( "" ; "Task Details" ; "Priority" )	1 vertical
+FieldBounds ( "" ; "Task Details" ; "Priority" )	32 350 323 394 0
+FieldStyle ( "" ; "Task Details" ; "Category" )	Popupmenu Category
+FieldRepetitions ( "" ; "Task Details" ; "Category" )	1 vertical
+FieldBounds ( "" ; "Task Details" ; "Category" )	32 302 323 346 0
+FieldStyle ( "" ; "Task Details" ; "Due Date" )	Calendar 
+FieldRepetitions ( "" ; "Task Details" ; "Due Date" )	1 vertical
+FieldBounds ( "" ; "Task Details" ; "Due Date" )	32 243 323 287 0
+FieldStyle ( "" ; "Task Details" ; "Task" )	Standard
+FieldRepetitions ( "" ; "Task Details" ; "Task" )	1 vertical
+FieldBounds ( "" ; "Task Details" ; "Task" )	32 163 323 207 0
+FieldStyle ( "" ; "Task Details" ; "no such" )	
+FieldBounds ( "" ; "Task Details" ; "no such" )	
+FieldStyle ( "" ; "Assignee List" ; "Email" )	Standard
+FieldRepetitions ( "" ; "Assignee List" ; "Email" )	1 vertical
+FieldBounds ( "" ; "Assignee List" ; "Email" )	746 112 976 156 0
+FieldStyle ( "" ; "Assignee List" ; "Phone" )	Standard
+FieldRepetitions ( "" ; "Assignee List" ; "Phone" )	1 vertical
+FieldBounds ( "" ; "Assignee List" ; "Phone" )	564 112 742 156 0
+FieldStyle ( "" ; "Assignee List" ; "Last Name" )	Standard
+FieldRepetitions ( "" ; "Assignee List" ; "Last Name" )	1 vertical
+FieldBounds ( "" ; "Assignee List" ; "Last Name" )	330 112 560 156 0
+FieldStyle ( "" ; "Assignee List" ; "First Name" )	Standard
+FieldRepetitions ( "" ; "Assignee List" ; "First Name" )	1 vertical
+FieldBounds ( "" ; "Assignee List" ; "First Name" )	96 112 326 156 0
+FieldStyle ( "" ; "Assignee List" ; "Photo" )	Standard
+FieldRepetitions ( "" ; "Assignee List" ; "Photo" )	1 vertical
+FieldBounds ( "" ; "Assignee List" ; "Photo" )	9 112 89 156 0
+FieldStyle ( "" ; "Assignee List" ; "no such" )	
+FieldBounds ( "" ; "Assignee List" ; "no such" )	
+FieldStyle ( "" ; "Assignee Details" ; "Email" )	Standard
+FieldRepetitions ( "" ; "Assignee Details" ; "Email" )	1 vertical
+FieldBounds ( "" ; "Assignee Details" ; "Email" )	366 403 657 447 0
+FieldStyle ( "" ; "Assignee Details" ; "Phone" )	Standard
+FieldRepetitions ( "" ; "Assignee Details" ; "Phone" )	1 vertical
+FieldBounds ( "" ; "Assignee Details" ; "Phone" )	366 323 657 367 0
+FieldStyle ( "" ; "Assignee Details" ; "Group" )	Standard
+FieldRepetitions ( "" ; "Assignee Details" ; "Group" )	1 vertical
+FieldBounds ( "" ; "Assignee Details" ; "Group" )	366 243 657 287 0
+FieldStyle ( "" ; "Assignee Details" ; "Company" )	Popuplist Company
+FieldRepetitions ( "" ; "Assignee Details" ; "Company" )	1 vertical
+FieldBounds ( "" ; "Assignee Details" ; "Company" )	366 163 657 207 0
+FieldStyle ( "" ; "Assignee Details" ; "Last Name" )	Standard
+FieldRepetitions ( "" ; "Assignee Details" ; "Last Name" )	1 vertical
+FieldBounds ( "" ; "Assignee Details" ; "Last Name" )	32 441 323 485 0
+FieldStyle ( "" ; "Assignee Details" ; "First Name" )	Standard
+FieldRepetitions ( "" ; "Assignee Details" ; "First Name" )	1 vertical
+FieldBounds ( "" ; "Assignee Details" ; "First Name" )	32 393 323 437 0
+FieldStyle ( "" ; "Assignee Details" ; "Title" )	Popupmenu Title
+FieldRepetitions ( "" ; "Assignee Details" ; "Title" )	1 vertical
+FieldBounds ( "" ; "Assignee Details" ; "Title" )	32 345 323 389 0
+FieldStyle ( "" ; "Assignee Details" ; "Photo" )	Standard
+FieldRepetitions ( "" ; "Assignee Details" ; "Photo" )	1 vertical
+FieldBounds ( "" ; "Assignee Details" ; "Photo" )	15 116 340 331 0
+FieldStyle ( "" ; "Assignee Details" ; "no such" )	
+FieldBounds ( "" ; "Assignee Details" ; "no such" )	
+FieldStyle ( "" ; "Assignee Chooser" ; "Photo" )	Standard
+FieldRepetitions ( "" ; "Assignee Chooser" ; "Photo" )	1 vertical
+FieldBounds ( "" ; "Assignee Chooser" ; "Photo" )	9 112 89 156 0
+FieldStyle ( "" ; "Assignee Chooser" ; "no such" )	
+FieldBounds ( "" ; "Assignee Chooser" ; "no such" )	
+FieldStyle ( "" ; "Add Assignee" ; "Email" )	Standard
+FieldRepetitions ( "" ; "Add Assignee" ; "Email" )	1 vertical
+FieldBounds ( "" ; "Add Assignee" ; "Email" )	93 101 657 145 0
+FieldStyle ( "" ; "Add Assignee" ; "Last Name" )	Standard
+FieldRepetitions ( "" ; "Add Assignee" ; "Last Name" )	1 vertical
+FieldBounds ( "" ; "Add Assignee" ; "Last Name" )	377 53 657 97 0
+FieldStyle ( "" ; "Add Assignee" ; "First Name" )	Standard
+FieldRepetitions ( "" ; "Add Assignee" ; "First Name" )	1 vertical
+FieldBounds ( "" ; "Add Assignee" ; "First Name" )	93 53 373 97 0
+FieldStyle ( "" ; "Add Assignee" ; "Photo" )	Standard
+FieldRepetitions ( "" ; "Add Assignee" ; "Photo" )	1 vertical
+FieldBounds ( "" ; "Add Assignee" ; "Photo" )	9 53 89 97 0
+FieldStyle ( "" ; "Add Assignee" ; "no such" )	
+FieldBounds ( "" ; "Add Assignee" ; "no such" )	
+FieldStyle ( "" ; "Assignments" ; "AssigneeForeignKey" )	Standard
+FieldRepetitions ( "" ; "Assignments" ; "AssigneeForeignKey" )	1 vertical
+FieldBounds ( "" ; "Assignments" ; "AssigneeForeignKey" )	41 126 294 170 0
+FieldStyle ( "" ; "Assignments" ; "PrimaryKey" )	Standard
+FieldRepetitions ( "" ; "Assignments" ; "PrimaryKey" )	1 vertical
+FieldBounds ( "" ; "Assignments" ; "PrimaryKey" )	41 174 294 218 0
+FieldStyle ( "" ; "Assignments" ; "CreatedBy" )	Standard
+FieldRepetitions ( "" ; "Assignments" ; "CreatedBy" )	1 vertical
+FieldBounds ( "" ; "Assignments" ; "CreatedBy" )	41 270 294 314 0
+FieldStyle ( "" ; "Assignments" ; "ModifiedBy" )	Standard
+FieldRepetitions ( "" ; "Assignments" ; "ModifiedBy" )	1 vertical
+FieldBounds ( "" ; "Assignments" ; "ModifiedBy" )	41 366 294 410 0
+FieldStyle ( "" ; "Assignments" ; "TaskForeignKey" )	Standard
+FieldRepetitions ( "" ; "Assignments" ; "TaskForeignKey" )	1 vertical
+FieldBounds ( "" ; "Assignments" ; "TaskForeignKey" )	41 414 294 458 0
+FieldStyle ( "" ; "Assignments" ; "ModificationTimestamp" )	Standard
+FieldRepetitions ( "" ; "Assignments" ; "ModificationTimestamp" )	1 vertical
+FieldBounds ( "" ; "Assignments" ; "ModificationTimestamp" )	41 318 294 362 0
+FieldStyle ( "" ; "Assignments" ; "CreationTimestamp" )	Standard
+FieldRepetitions ( "" ; "Assignments" ; "CreationTimestamp" )	1 vertical
+FieldBounds ( "" ; "Assignments" ; "CreationTimestamp" )	41 222 294 266 0
+FieldStyle ( "" ; "Assignments" ; "no such" )	
+FieldBounds ( "" ; "Assignments" ; "no such" )	

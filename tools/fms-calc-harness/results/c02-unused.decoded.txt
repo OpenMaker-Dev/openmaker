@@ -1,0 +1,1204 @@
+# Compile mode (calceval -c -d), calc-oracle.fmp12, context table occurrence "Table" (03d00001).
+# One minimal call per calc-tokens.csv row with corpus_all = 0 and per built-in plug-in
+# function; a second line calls it with every optional argument.
+# 33 21 operator
+1 xor 0	err=0 pos=0:0
+  P: (xor 1 0)
+  F: num 1 fmt=0020 | ws ' ' | xor | ws ' ' | num 0 fmt=0020
+  spec compiler: same
+# 46 2e Exp nargs=Unary min=1 max=1
+Exp ( 1 )	err=0 pos=0:0
+  P: (Exp 1)
+  F: Exp | ws ' ' | ( | ws ' ' | num 1 fmt=0020 | ws ' ' | )
+  spec compiler: same
+# 51 33 Sign nargs=Unary min=1 max=1
+Sign ( 1 )	err=0 pos=0:0
+  P: (Sign 1)
+  F: Sign | ws ' ' | ( | ws ' ' | num 1 fmt=0020 | ws ' ' | )
+  spec compiler: same
+# 52 34 Sqrt nargs=Unary min=1 max=1
+Sqrt ( 1 )	err=0 pos=0:0
+  P: (Sqrt 1)
+  F: Sqrt | ws ' ' | ( | ws ' ' | num 1 fmt=0020 | ws ' ' | )
+  spec compiler: same
+# 56 38 Lg nargs=Unary min=1 max=1
+Lg ( 1 )	err=0 pos=0:0
+  P: (Lg 1)
+  F: Lg | ws ' ' | ( | ws ' ' | num 1 fmt=0020 | ws ' ' | )
+  spec compiler: same
+# 57 39 Ln nargs=Unary min=1 max=1
+Ln ( 1 )	err=0 pos=0:0
+  P: (Ln 1)
+  F: Ln | ws ' ' | ( | ws ' ' | num 1 fmt=0020 | ws ' ' | )
+  spec compiler: same
+# 58 3a Log nargs=Unary min=1 max=1
+Log ( 1 )	err=0 pos=0:0
+  P: (Log 1)
+  F: Log | ws ' ' | ( | ws ' ' | num 1 fmt=0020 | ws ' ' | )
+  spec compiler: same
+# 59 3b Factorial nargs=VarArgs min=1 max=2
+Factorial ( 1 )	err=0 pos=0:0
+  P: (Factorial 1)
+  F: Factorial | ws ' ' | ( | ws ' ' | num 1 fmt=0020 | ws ' ' | )
+  spec compiler: same
+Factorial ( 1 ; 1 )	err=0 pos=0:0
+  P: (Factorial 1 1)
+  F: Factorial | ws ' ' | ( | ws ' ' | num 1 fmt=0020 | ws ' ' | ; | ws ' ' | num 1 fmt=0020 | ws ' ' | )
+  spec compiler: same
+# 60 3c Combination nargs=Binary min=2 max=2
+Combination ( 1 ; 1 )	err=0 pos=0:0
+  P: (Combination 1 1)
+  F: Combination | ws ' ' | ( | ws ' ' | num 1 fmt=0020 | ws ' ' | ; | ws ' ' | num 1 fmt=0020 | ws ' ' | )
+  spec compiler: same
+# 64 40 SetRecursion nargs=Special min=2 max=2
+SetRecursion ( "a" ; "a" )	err=0 pos=0:0
+  P: (SetRecursion 'a' 'a')
+  F: SetRecursion | ws ' ' | ( | ws ' ' | text 'a' | ws ' ' | ; | ws ' ' | text 'a' | ws ' ' | )
+  spec compiler: same
+# 83 53 WordCount nargs=Unary min=1 max=1
+WordCount ( "a" )	err=0 pos=0:0
+  P: (WordCount 'a')
+  F: WordCount | ws ' ' | ( | ws ' ' | text 'a' | ws ' ' | )
+  spec compiler: same
+# 108 6c GetAsSVG nargs=Unary min=1 max=1
+GetAsSVG ( "a" )	err=0 pos=0:0
+  P: (GetAsSVG 'a')
+  F: GetAsSVG | ws ' ' | ( | ws ' ' | text 'a' | ws ' ' | )
+  spec compiler: same
+# 114 72 DayName nargs=Unary min=1 max=1
+DayName ( Date ( 1 ; 2 ; 2024 ) )	err=0 pos=0:0
+  P: (DayName (Date 1 2 2024))
+  F: DayName | ws ' ' | ( | ws ' ' | Date | ws ' ' | ( | ws ' ' | num 1 fmt=0020 | ws ' ' | ; | ws ' ' | num 2 fmt=0020 | ws ' ' | ; | ws ' ' | num 2024 fmt=0020 | ws ' ' | ) | ws ' ' | )
+  spec compiler: same
+# 116 74 DayOfYear nargs=Unary min=1 max=1
+DayOfYear ( Date ( 1 ; 2 ; 2024 ) )	err=0 pos=0:0
+  P: (DayOfYear (Date 1 2 2024))
+  F: DayOfYear | ws ' ' | ( | ws ' ' | Date | ws ' ' | ( | ws ' ' | num 1 fmt=0020 | ws ' ' | ; | ws ' ' | num 2 fmt=0020 | ws ' ' | ; | ws ' ' | num 2024 fmt=0020 | ws ' ' | ) | ws ' ' | )
+  spec compiler: same
+# 118 76 MonthName nargs=Unary min=1 max=1
+MonthName ( Date ( 1 ; 2 ; 2024 ) )	err=0 pos=0:0
+  P: (MonthName (Date 1 2 2024))
+  F: MonthName | ws ' ' | ( | ws ' ' | Date | ws ' ' | ( | ws ' ' | num 1 fmt=0020 | ws ' ' | ; | ws ' ' | num 2 fmt=0020 | ws ' ' | ; | ws ' ' | num 2024 fmt=0020 | ws ' ' | ) | ws ' ' | )
+  spec compiler: same
+# 120 78 WeekOfYearFiscal nargs=Binary min=2 max=2
+WeekOfYearFiscal ( Date ( 1 ; 2 ; 2024 ) ; 1 )	err=0 pos=0:0
+  P: (WeekOfYearFiscal (Date 1 2 2024) 1)
+  F: WeekOfYearFiscal | ws ' ' | ( | ws ' ' | Date | ws ' ' | ( | ws ' ' | num 1 fmt=0020 | ws ' ' | ; | ws ' ' | num 2 fmt=0020 | ws ' ' | ; | ws ' ' | num 2024 fmt=0020 | ws ' ' | ) | ws ' ' | ; | ws ' ' | num 1 fmt=0020 | ws ' ' | )
+  spec compiler: same
+# 127 7f Average nargs=VarArgs min=1 max=0
+Average ( Table::Input )	err=0 pos=0:0
+  P: (Average fieldref[03d00001:0106 r1 f4])
+  F: Average | ws ' ' | ( | ws ' ' | field 03d00001:0106 r1 flags=4 | ws ' ' | )
+  spec compiler: same
+Average ( 1 ; 2 ; 3 )	err=0 pos=0:0
+  P: (Average 1 2 3)
+  F: Average | ws ' ' | ( | ws ' ' | num 1 fmt=0020 | ws ' ' | ; | ws ' ' | num 2 fmt=0020 | ws ' ' | ; | ws ' ' | num 3 fmt=0020 | ws ' ' | )
+  spec compiler: same
+# 131 83 StDev nargs=VarArgs min=1 max=0
+StDev ( Table::Input )	err=0 pos=0:0
+  P: (StDev fieldref[03d00001:0106 r1 f4])
+  F: StDev | ws ' ' | ( | ws ' ' | field 03d00001:0106 r1 flags=4 | ws ' ' | )
+  spec compiler: same
+# 132 84 StDevP nargs=VarArgs min=1 max=0
+StDevP ( Table::Input )	err=0 pos=0:0
+  P: (StDevP fieldref[03d00001:0106 r1 f4])
+  F: StDevP | ws ' ' | ( | ws ' ' | field 03d00001:0106 r1 flags=4 | ws ' ' | )
+  spec compiler: same
+# 134 86 GetSummary nargs=BinaryField min=2 max=2
+GetSummary ( Table::Input ; Table::Input )	err=1216 pos=20:25
+# 138 8a Last nargs=UnaryField min=1 max=1
+Last ( Table::Input )	err=0 pos=0:0
+  P: (Last fieldref[03d00001:0106 r1 f4])
+  F: Last | ws ' ' | ( | ws ' ' | field 03d00001:0106 r1 flags=4 | ws ' ' | )
+  spec compiler: same
+# 140 8c FV nargs=Trinary min=3 max=3
+FV ( 1 ; 1 ; 1 )	err=0 pos=0:0
+  P: (FV 1 1 1)
+  F: FV | ws ' ' | ( | ws ' ' | num 1 fmt=0020 | ws ' ' | ; | ws ' ' | num 1 fmt=0020 | ws ' ' | ; | ws ' ' | num 1 fmt=0020 | ws ' ' | )
+  spec compiler: same
+# 141 8d NPV nargs=BinaryField min=2 max=2
+NPV ( Table::Input ; 1 )	err=0 pos=0:0
+  P: (NPV fieldref[03d00001:0106 r1 f4] 1)
+  F: NPV | ws ' ' | ( | ws ' ' | field 03d00001:0106 r1 flags=4 | ws ' ' | ; | ws ' ' | num 1 fmt=0020 | ws ' ' | )
+  spec compiler: same
+# 142 8e PMT nargs=Trinary min=3 max=3
+PMT ( 1 ; 1 ; 1 )	err=0 pos=0:0
+  P: (PMT 1 1 1)
+  F: PMT | ws ' ' | ( | ws ' ' | num 1 fmt=0020 | ws ' ' | ; | ws ' ' | num 1 fmt=0020 | ws ' ' | ; | ws ' ' | num 1 fmt=0020 | ws ' ' | )
+  spec compiler: same
+# 143 8f PV nargs=Trinary min=3 max=3
+PV ( 1 ; 1 ; 1 )	err=0 pos=0:0
+  P: (PV 1 1 1)
+  F: PV | ws ' ' | ( | ws ' ' | num 1 fmt=0020 | ws ' ' | ; | ws ' ' | num 1 fmt=0020 | ws ' ' | ; | ws ' ' | num 1 fmt=0020 | ws ' ' | )
+  spec compiler: same
+# 148 94 Atan nargs=Unary min=1 max=1
+Atan ( 1 )	err=0 pos=0:0
+  P: (Atan 1)
+  F: Atan | ws ' ' | ( | ws ' ' | num 1 fmt=0020 | ws ' ' | )
+  spec compiler: same
+# 149 95 Cos nargs=Unary min=1 max=1
+Cos ( 1 )	err=0 pos=0:0
+  P: (Cos 1)
+  F: Cos | ws ' ' | ( | ws ' ' | num 1 fmt=0020 | ws ' ' | )
+  spec compiler: same
+# 150 96 Degrees nargs=Unary min=1 max=1
+Degrees ( 1 )	err=0 pos=0:0
+  P: (Degrees 1)
+  F: Degrees | ws ' ' | ( | ws ' ' | num 1 fmt=0020 | ws ' ' | )
+  spec compiler: same
+# 151 97 Pi nargs=NoArgs min=0 max=0
+Pi	err=0 pos=0:0
+  P: (Pi)
+  F: Pi
+  spec compiler: same
+# 152 98 Radians nargs=Unary min=1 max=1
+Radians ( 1 )	err=0 pos=0:0
+  P: (Radians 1)
+  F: Radians | ws ' ' | ( | ws ' ' | num 1 fmt=0020 | ws ' ' | )
+  spec compiler: same
+# 153 99 Sin nargs=Unary min=1 max=1
+Sin ( 1 )	err=0 pos=0:0
+  P: (Sin 1)
+  F: Sin | ws ' ' | ( | ws ' ' | num 1 fmt=0020 | ws ' ' | )
+  spec compiler: same
+# 154 9a Tan nargs=Unary min=1 max=1
+Tan ( 1 )	err=0 pos=0:0
+  P: (Tan 1)
+  F: Tan | ws ' ' | ( | ws ' ' | num 1 fmt=0020 | ws ' ' | )
+  spec compiler: same
+# 157 9d Acos nargs=Unary min=1 max=1
+Acos ( 1 )	err=0 pos=0:0
+  P: (Acos 1)
+  F: Acos | ws ' ' | ( | ws ' ' | num 1 fmt=0020 | ws ' ' | )
+  spec compiler: same
+# 158 9e Asin nargs=Unary min=1 max=1
+Asin ( 1 )	err=0 pos=0:0
+  P: (Asin 1)
+  F: Asin | ws ' ' | ( | ws ' ' | num 1 fmt=0020 | ws ' ' | )
+  spec compiler: same
+# 160 a0 Variance nargs=VarArgs min=1 max=0
+Variance ( Table::Input )	err=0 pos=0:0
+  P: (Variance fieldref[03d00001:0106 r1 f4])
+  F: Variance | ws ' ' | ( | ws ' ' | field 03d00001:0106 r1 flags=4 | ws ' ' | )
+  spec compiler: same
+# 161 a1 VarianceP nargs=VarArgs min=1 max=0
+VarianceP ( Table::Input )	err=0 pos=0:0
+  P: (VarianceP fieldref[03d00001:0106 r1 f4])
+  F: VarianceP | ws ' ' | ( | ws ' ' | field 03d00001:0106 r1 flags=4 | ws ' ' | )
+  spec compiler: same
+# 166 a6 TextStyleRemove nargs=Binary min=2 max=2
+TextStyleRemove ( "a" ; "a" )	err=0 pos=0:0
+  P: (TextStyleRemove 'a' 'a')
+  F: TextStyleRemove | ws ' ' | ( | ws ' ' | text 'a' | ws ' ' | ; | ws ' ' | text 'a' | ws ' ' | )
+  spec compiler: same
+# 168 a8 TextColorRemove nargs=VarArgs min=1 max=2
+TextColorRemove ( "a" )	err=0 pos=0:0
+  P: (TextColorRemove 'a')
+  F: TextColorRemove | ws ' ' | ( | ws ' ' | text 'a' | ws ' ' | )
+  spec compiler: same
+TextColorRemove ( "a" ; RGB ( 1 ; 2 ; 3 ) )	err=0 pos=0:0
+  P: (TextColorRemove 'a' (RGB 1 2 3))
+  F: TextColorRemove | ws ' ' | ( | ws ' ' | text 'a' | ws ' ' | ; | ws ' ' | RGB | ws ' ' | ( | ws ' ' | num 1 fmt=0020 | ws ' ' | ; | ws ' ' | num 2 fmt=0020 | ws ' ' | ; | ws ' ' | num 3 fmt=0020 | ws ' ' | ) | ws ' ' | )
+  spec compiler: same
+# 170 aa constant
+Plain	err=0 pos=0:0
+  P: (Plain)
+  F: Plain
+  spec compiler: same
+# 173 ad constant
+Underline	err=0 pos=0:0
+  P: (Underline)
+  F: Underline
+  spec compiler: same
+# 175 af constant
+Extend	err=0 pos=0:0
+  P: (Extend)
+  F: Extend
+  spec compiler: same
+# 176 b0 constant
+Strikethrough	err=0 pos=0:0
+  P: (Strikethrough)
+  F: Strikethrough
+  spec compiler: same
+# 177 b1 constant
+SmallCaps	err=0 pos=0:0
+  P: (SmallCaps)
+  F: SmallCaps
+  spec compiler: same
+# 178 b2 constant
+Superscript	err=0 pos=0:0
+  P: (Superscript)
+  F: Superscript
+  spec compiler: same
+# 179 b3 constant
+Subscript	err=0 pos=0:0
+  P: (Subscript)
+  F: Subscript
+  spec compiler: same
+# 180 b4 constant
+Uppercase	err=0 pos=0:0
+  P: (Uppercase)
+  F: Uppercase
+  spec compiler: same
+# 181 b5 constant
+Lowercase	err=0 pos=0:0
+  P: (Lowercase)
+  F: Lowercase
+  spec compiler: same
+# 182 b6 constant
+Titlecase	err=0 pos=0:0
+  P: (Titlecase)
+  F: Titlecase
+  spec compiler: same
+# 183 b7 constant
+WordUnderline	err=0 pos=0:0
+  P: (WordUnderline)
+  F: WordUnderline
+  spec compiler: same
+# 184 b8 constant
+DoubleUnderline	err=0 pos=0:0
+  P: (DoubleUnderline)
+  F: DoubleUnderline
+  spec compiler: same
+# 185 b9 constant
+AllStyles	err=0 pos=0:0
+  P: (AllStyles)
+  F: AllStyles
+  spec compiler: same
+# 186 ba TextSizeRemove nargs=VarArgs min=1 max=2
+TextSizeRemove ( "a" )	err=0 pos=0:0
+  P: (TextSizeRemove 'a')
+  F: TextSizeRemove | ws ' ' | ( | ws ' ' | text 'a' | ws ' ' | )
+  spec compiler: same
+TextSizeRemove ( "a" ; 1 )	err=0 pos=0:0
+  P: (TextSizeRemove 'a' 1)
+  F: TextSizeRemove | ws ' ' | ( | ws ' ' | text 'a' | ws ' ' | ; | ws ' ' | num 1 fmt=0020 | ws ' ' | )
+  spec compiler: same
+# 188 bc constant
+Lower	err=0 pos=0:0
+  P: (Lower)
+  F: Lower
+  spec compiler: same
+# 189 bd constant
+Higher	err=0 pos=0:0
+  P: (Higher)
+  F: Higher
+  spec compiler: same
+# 190 be constant
+Roman	err=0 pos=0:0
+  P: (Roman)
+  F: Roman
+  spec compiler: same
+# 191 bf constant
+Greek	err=0 pos=0:0
+  P: (Greek)
+  F: Greek
+  spec compiler: same
+# 192 c0 constant
+Cyrillic	err=0 pos=0:0
+  P: (Cyrillic)
+  F: Cyrillic
+  spec compiler: same
+# 193 c1 constant
+CentralEurope	err=0 pos=0:0
+  P: (CentralEurope)
+  F: CentralEurope
+  spec compiler: same
+# 194 c2 constant
+ShiftJIS	err=0 pos=0:0
+  P: (ShiftJIS)
+  F: ShiftJIS
+  spec compiler: same
+# 195 c3 constant
+TraditionalChinese	err=0 pos=0:0
+  P: (TraditionalChinese)
+  F: TraditionalChinese
+  spec compiler: same
+# 196 c4 constant
+SimplifiedChinese	err=0 pos=0:0
+  P: (SimplifiedChinese)
+  F: SimplifiedChinese
+  spec compiler: same
+# 197 c5 constant
+OEM	err=0 pos=0:0
+  P: (OEM)
+  F: OEM
+  spec compiler: same
+# 198 c6 constant
+Symbol	err=0 pos=0:0
+  P: (Symbol)
+  F: Symbol
+  spec compiler: same
+# 199 c7 constant
+Other	err=0 pos=0:0
+  P: (Other)
+  F: Other
+  spec compiler: same
+# 222 de IsValidExpression nargs=Special min=1 max=1
+IsValidExpression ( "a" )	err=0 pos=0:0
+  P: (IsValidExpression 'a')
+  F: IsValidExpression | ws ' ' | ( | ws ' ' | text 'a' | ws ' ' | )
+  spec compiler: same
+# 224 e0 Lookup nargs=VarArgs min=1 max=2
+Lookup ( Table::Input )	err=0 pos=0:0
+  P: (Lookup fieldref[03d00001:0106 r1 f4])
+  F: Lookup | ws ' ' | ( | ws ' ' | field 03d00001:0106 r1 flags=4 | ws ' ' | )
+  spec compiler: same
+Lookup ( Table::Input ; "a" )	err=0 pos=0:0
+  P: (Lookup fieldref[03d00001:0106 r1 f4] 'a')
+  F: Lookup | ws ' ' | ( | ws ' ' | field 03d00001:0106 r1 flags=4 | ws ' ' | ; | ws ' ' | text 'a' | ws ' ' | )
+  spec compiler: same
+# 225 e1 LookupNext nargs=VarArgs min=2 max=2
+LookupNext ( Table::Input ; 1 )	err=0 pos=0:0
+  P: (LookupNext fieldref[03d00001:0106 r1 f4] 1)
+  F: LookupNext | ws ' ' | ( | ws ' ' | field 03d00001:0106 r1 flags=4 | ws ' ' | ; | ws ' ' | num 1 fmt=0020 | ws ' ' | )
+  spec compiler: same
+# 230 e6 DayNameJ nargs=Unary min=1 max=1
+DayNameJ ( Date ( 1 ; 2 ; 2024 ) )	err=0 pos=0:0
+  P: (DayNameJ (Date 1 2 2024))
+  F: DayNameJ | ws ' ' | ( | ws ' ' | Date | ws ' ' | ( | ws ' ' | num 1 fmt=0020 | ws ' ' | ; | ws ' ' | num 2 fmt=0020 | ws ' ' | ; | ws ' ' | num 2024 fmt=0020 | ws ' ' | ) | ws ' ' | )
+  spec compiler: same
+# 231 e7 MonthNameJ nargs=Unary min=1 max=1
+MonthNameJ ( Date ( 1 ; 2 ; 2024 ) )	err=0 pos=0:0
+  P: (MonthNameJ (Date 1 2 2024))
+  F: MonthNameJ | ws ' ' | ( | ws ' ' | Date | ws ' ' | ( | ws ' ' | num 1 fmt=0020 | ws ' ' | ; | ws ' ' | num 2 fmt=0020 | ws ' ' | ; | ws ' ' | num 2024 fmt=0020 | ws ' ' | ) | ws ' ' | )
+  spec compiler: same
+# 232 e8 YearName nargs=Binary min=2 max=2
+YearName ( Date ( 1 ; 2 ; 2024 ) ; "a" )	err=0 pos=0:0
+  P: (YearName (Date 1 2 2024) 'a')
+  F: YearName | ws ' ' | ( | ws ' ' | Date | ws ' ' | ( | ws ' ' | num 1 fmt=0020 | ws ' ' | ; | ws ' ' | num 2 fmt=0020 | ws ' ' | ; | ws ' ' | num 2024 fmt=0020 | ws ' ' | ) | ws ' ' | ; | ws ' ' | text 'a' | ws ' ' | )
+  spec compiler: same
+# 233 e9 LunarDate nargs=Unary min=1 max=1
+LunarDate ( 1 )	err=0 pos=0:0
+  P: (LunarDate 1)
+  F: LunarDate | ws ' ' | ( | ws ' ' | num 1 fmt=0020 | ws ' ' | )
+  spec compiler: same
+# 234 ea SolarDate nargs=Binary min=2 max=2
+SolarDate ( 1 ; 1 )	err=0 pos=0:0
+  P: (SolarDate 1 1)
+  F: SolarDate | ws ' ' | ( | ws ' ' | num 1 fmt=0020 | ws ' ' | ; | ws ' ' | num 1 fmt=0020 | ws ' ' | )
+  spec compiler: same
+# 235 eb KanjiNumeral nargs=Unary min=1 max=1
+KanjiNumeral ( "a" )	err=0 pos=0:0
+  P: (KanjiNumeral 'a')
+  F: KanjiNumeral | ws ' ' | ( | ws ' ' | text 'a' | ws ' ' | )
+  spec compiler: same
+# 236 ec NumToJText nargs=Trinary min=3 max=3
+NumToJText ( 1 ; 1 ; 1 )	err=0 pos=0:0
+  P: (NumToJText 1 1 1)
+  F: NumToJText | ws ' ' | ( | ws ' ' | num 1 fmt=0020 | ws ' ' | ; | ws ' ' | num 1 fmt=0020 | ws ' ' | ; | ws ' ' | num 1 fmt=0020 | ws ' ' | )
+  spec compiler: same
+# 237 ed Katakana nargs=Unary min=1 max=1
+Katakana ( "a" )	err=0 pos=0:0
+  P: (Katakana 'a')
+  F: Katakana | ws ' ' | ( | ws ' ' | text 'a' | ws ' ' | )
+  spec compiler: same
+# 238 ee Hiragana nargs=Unary min=1 max=1
+Hiragana ( "a" )	err=0 pos=0:0
+  P: (Hiragana 'a')
+  F: Hiragana | ws ' ' | ( | ws ' ' | text 'a' | ws ' ' | )
+  spec compiler: same
+# 239 ef KanaHankaku nargs=Unary min=1 max=1
+KanaHankaku ( "a" )	err=0 pos=0:0
+  P: (KanaHankaku 'a')
+  F: KanaHankaku | ws ' ' | ( | ws ' ' | text 'a' | ws ' ' | )
+  spec compiler: same
+# 240 f0 KanaZenkaku nargs=Unary min=1 max=1
+KanaZenkaku ( "a" )	err=0 pos=0:0
+  P: (KanaZenkaku 'a')
+  F: KanaZenkaku | ws ' ' | ( | ws ' ' | text 'a' | ws ' ' | )
+  spec compiler: same
+# 241 f1 RomanHankaku nargs=Unary min=1 max=1
+RomanHankaku ( "a" )	err=0 pos=0:0
+  P: (RomanHankaku 'a')
+  F: RomanHankaku | ws ' ' | ( | ws ' ' | text 'a' | ws ' ' | )
+  spec compiler: same
+# 242 f2 RomanZenkaku nargs=Unary min=1 max=1
+RomanZenkaku ( "a" )	err=0 pos=0:0
+  P: (RomanZenkaku 'a')
+  F: RomanZenkaku | ws ' ' | ( | ws ' ' | text 'a' | ws ' ' | )
+  spec compiler: same
+# 243 f3 TrimAll nargs=Trinary min=3 max=3
+TrimAll ( "a" ; 1 ; 1 )	err=0 pos=0:0
+  P: (TrimAll 'a' 1 1)
+  F: TrimAll | ws ' ' | ( | ws ' ' | text 'a' | ws ' ' | ; | ws ' ' | num 1 fmt=0020 | ws ' ' | ; | ws ' ' | num 1 fmt=0020 | ws ' ' | )
+  spec compiler: same
+# 1000 9b 00
+# 1006 9b 06
+Get ( FileSize )	err=0 pos=0:0
+  P: Get(FileSize)
+  F: Get | ws ' ' | ( | ws ' ' | getsel FileSize | ws ' ' | )
+  spec compiler: same
+# 1008 9b 08
+Get ( HostName )	err=0 pos=0:0
+  P: Get(HostName)
+  F: Get | ws ' ' | ( | ws ' ' | getsel HostName | ws ' ' | )
+  spec compiler: same
+# 1009 9b 09
+Get ( LayoutCount )	err=0 pos=0:0
+  P: Get(LayoutCount)
+  F: Get | ws ' ' | ( | ws ' ' | getsel LayoutCount | ws ' ' | )
+  spec compiler: same
+# 1012 9b 0c
+Get ( SystemLanguage )	err=0 pos=0:0
+  P: Get(SystemLanguage)
+  F: Get | ws ' ' | ( | ws ' ' | getsel SystemLanguage | ws ' ' | )
+  spec compiler: same
+# 1014 9b 0e
+Get ( MultiUserState )	err=0 pos=0:0
+  P: Get(MultiUserState)
+  F: Get | ws ' ' | ( | ws ' ' | getsel MultiUserState | ws ' ' | )
+  spec compiler: same
+# 1018 9b 12
+Get ( PrinterName )	err=0 pos=0:0
+  P: Get(PrinterName)
+  F: Get | ws ' ' | ( | ws ' ' | getsel PrinterName | ws ' ' | )
+  spec compiler: same
+# 1021 9b 15
+Get ( ActiveRepetitionNumber )	err=0 pos=0:0
+  P: Get(ActiveRepetitionNumber)
+  F: Get | ws ' ' | ( | ws ' ' | getsel ActiveRepetitionNumber | ws ' ' | )
+  spec compiler: same
+# 1023 9b 17
+Get ( ScreenDepth )	err=0 pos=0:0
+  P: Get(ScreenDepth)
+  F: Get | ws ' ' | ( | ws ' ' | getsel ScreenDepth | ws ' ' | )
+  spec compiler: same
+# 1028 9b 1c
+Get ( SystemVersion )	err=0 pos=0:0
+  P: Get(SystemVersion)
+  F: Get | ws ' ' | ( | ws ' ' | getsel SystemVersion | ws ' ' | )
+  spec compiler: same
+# 1030 9b 1e
+Get ( UserCount )	err=0 pos=0:0
+  P: Get(UserCount)
+  F: Get | ws ' ' | ( | ws ' ' | getsel UserCount | ws ' ' | )
+  spec compiler: same
+# 1034 9b 22
+Get ( CurrentPrivilegeSetName )	err=0 pos=0:0
+  P: Get(CurrentPrivilegeSetName)
+  F: Get | ws ' ' | ( | ws ' ' | getsel CurrentPrivilegeSetName | ws ' ' | )
+  spec compiler: same
+# 1036 9b 24
+Get ( NetworkProtocol )	err=0 pos=0:0
+  P: Get(NetworkProtocol)
+  F: Get | ws ' ' | ( | ws ' ' | getsel NetworkProtocol | ws ' ' | )
+  spec compiler: same
+# 1042 9b 2a
+Get ( LayoutAccess )	err=0 pos=0:0
+  P: Get(LayoutAccess)
+  F: Get | ws ' ' | ( | ws ' ' | getsel LayoutAccess | ws ' ' | )
+  spec compiler: same
+# 1043 9b 2b
+Get ( RecordAccess )	err=0 pos=0:0
+  P: Get(RecordAccess)
+  F: Get | ws ' ' | ( | ws ' ' | getsel RecordAccess | ws ' ' | )
+  spec compiler: same
+# 1044 9b 2c
+Get ( HighContrastState )	err=0 pos=0:0
+  P: Get(HighContrastState)
+  F: Get | ws ' ' | ( | ws ' ' | getsel HighContrastState | ws ' ' | )
+  spec compiler: same
+# 1056 9b 38
+Get ( ActiveFieldTableName )	err=0 pos=0:0
+  P: Get(ActiveFieldTableName)
+  F: Get | ws ' ' | ( | ws ' ' | getsel ActiveFieldTableName | ws ' ' | )
+  spec compiler: same
+# 1069 9b 45
+Get ( CurrentExtendedPrivileges )	err=0 pos=0:0
+  P: Get(CurrentExtendedPrivileges)
+  F: Get | ws ' ' | ( | ws ' ' | getsel CurrentExtendedPrivileges | ws ' ' | )
+  spec compiler: same
+# 1070 9b 46
+Get ( AllowAbortState )	err=0 pos=0:0
+  P: Get(AllowAbortState)
+  F: Get | ws ' ' | ( | ws ' ' | getsel AllowAbortState | ws ' ' | )
+  spec compiler: same
+# 1071 9b 47
+Get ( ErrorCaptureState )	err=0 pos=0:0
+  P: Get(ErrorCaptureState)
+  F: Get | ws ' ' | ( | ws ' ' | getsel ErrorCaptureState | ws ' ' | )
+  spec compiler: same
+# 1074 9b 4a
+Get ( FileMakerPath )	err=0 pos=0:0
+  P: Get(FileMakerPath)
+  F: Get | ws ' ' | ( | ws ' ' | getsel FileMakerPath | ws ' ' | )
+  spec compiler: same
+# 1075 9b 4b
+Get ( HostIPAddress )	err=0 pos=0:0
+  P: Get(HostIPAddress)
+  F: Get | ws ' ' | ( | ws ' ' | getsel HostIPAddress | ws ' ' | )
+  spec compiler: same
+# 1076 9b 4c
+Get ( RequestOmitState )	err=0 pos=0:0
+  P: Get(RequestOmitState)
+  F: Get | ws ' ' | ( | ws ' ' | getsel RequestOmitState | ws ' ' | )
+  spec compiler: same
+# 1078 9b 4e
+Get ( RecordOpenCount )	err=0 pos=0:0
+  P: Get(RecordOpenCount)
+  F: Get | ws ' ' | ( | ws ' ' | getsel RecordOpenCount | ws ' ' | )
+  spec compiler: same
+# 1082 9b 52
+Get ( TextRulerVisible )	err=0 pos=0:0
+  P: Get(TextRulerVisible)
+  F: Get | ws ' ' | ( | ws ' ' | getsel TextRulerVisible | ws ' ' | )
+  spec compiler: same
+# 1083 9b 53
+Get ( AllowFormattingBarState )	err=0 pos=0:0
+  P: Get(AllowFormattingBarState)
+  F: Get | ws ' ' | ( | ws ' ' | getsel AllowFormattingBarState | ws ' ' | )
+  spec compiler: same
+# 1084 9b 54
+Get ( UseSystemFormatsState )	err=0 pos=0:0
+  P: Get(UseSystemFormatsState)
+  F: Get | ws ' ' | ( | ws ' ' | getsel UseSystemFormatsState | ws ' ' | )
+  spec compiler: same
+# 1086 9b 56
+Get ( CustomMenuSetName )	err=0 pos=0:0
+  P: Get(CustomMenuSetName)
+  F: Get | ws ' ' | ( | ws ' ' | getsel CustomMenuSetName | ws ' ' | )
+  spec compiler: same
+# 1087 9b 57
+Get ( DBEngineVersion )	err=0 pos=0:0
+  P: Get(DBEngineVersion)
+  F: Get | ws ' ' | ( | ws ' ' | getsel DBEngineVersion | ws ' ' | )
+  spec compiler: same
+# 1088 9b 58
+Get ( ActiveLayoutObjectName )	err=0 pos=0:0
+  P: Get(ActiveLayoutObjectName)
+  F: Get | ws ' ' | ( | ws ' ' | getsel ActiveLayoutObjectName | ws ' ' | )
+  spec compiler: same
+# 1091 9b 5b
+Get ( TriggerModifierKeys )	err=0 pos=0:0
+  P: Get(TriggerModifierKeys)
+  F: Get | ws ' ' | ( | ws ' ' | getsel TriggerModifierKeys | ws ' ' | )
+  spec compiler: same
+# 1093 9b 5d
+Get ( DocumentsPathListing )	err=0 pos=0:0
+  P: Get(DocumentsPathListing)
+  F: Get | ws ' ' | ( | ws ' ' | getsel DocumentsPathListing | ws ' ' | )
+  spec compiler: same
+# 1096 9b 60
+Get ( QuickFindText )	err=0 pos=0:0
+  P: Get(QuickFindText)
+  F: Get | ws ' ' | ( | ws ' ' | getsel QuickFindText | ws ' ' | )
+  spec compiler: same
+# 1097 9b 61
+Get ( TriggerCurrentPanel )	err=0 pos=0:0
+  P: Get(TriggerCurrentPanel)
+  F: Get | ws ' ' | ( | ws ' ' | getsel TriggerCurrentPanel | ws ' ' | )
+  spec compiler: same
+# 1102 9b 66
+Get ( PersistentID )	err=0 pos=0:0
+  P: Get(PersistentID)
+  F: Get | ws ' ' | ( | ws ' ' | getsel PersistentID | ws ' ' | )
+  spec compiler: same
+# 1103 9b 67
+Get ( ConnectionState )	err=0 pos=0:0
+  P: Get(ConnectionState)
+  F: Get | ws ' ' | ( | ws ' ' | getsel ConnectionState | ws ' ' | )
+  spec compiler: same
+# 1106 9b 6a
+Get ( WindowOrientation )	err=0 pos=0:0
+  P: Get(WindowOrientation)
+  F: Get | ws ' ' | ( | ws ' ' | getsel WindowOrientation | ws ' ' | )
+  spec compiler: same
+# 1107 9b 6b
+Get ( TriggerGestureInfo )	err=0 pos=0:0
+  P: Get(TriggerGestureInfo)
+  F: Get | ws ' ' | ( | ws ' ' | getsel TriggerGestureInfo | ws ' ' | )
+  spec compiler: same
+# 1108 9b 6c
+Get ( EncryptionState )	err=0 pos=0:0
+  P: Get(EncryptionState)
+  F: Get | ws ' ' | ( | ws ' ' | getsel EncryptionState | ws ' ' | )
+  spec compiler: same
+# 1109 9b 6d
+Get ( ScriptAnimationState )	err=0 pos=0:0
+  P: Get(ScriptAnimationState)
+  F: Get | ws ' ' | ( | ws ' ' | getsel ScriptAnimationState | ws ' ' | )
+  spec compiler: same
+# 1110 9b 6e
+Get ( ModifiedFields )	err=0 pos=0:0
+  P: Get(ModifiedFields)
+  F: Get | ws ' ' | ( | ws ' ' | getsel ModifiedFields | ws ' ' | )
+  spec compiler: same
+# 1111 9b 6f
+Get ( NetworkType )	err=0 pos=0:0
+  P: Get(NetworkType)
+  F: Get | ws ' ' | ( | ws ' ' | getsel NetworkType | ws ' ' | )
+  spec compiler: same
+# 1112 9b 70
+Get ( ConnectionAttributes )	err=0 pos=0:0
+  P: Get(ConnectionAttributes)
+  F: Get | ws ' ' | ( | ws ' ' | getsel ConnectionAttributes | ws ' ' | )
+  spec compiler: same
+# 1113 9b 71
+Get ( ScreenScaleFactor )	err=0 pos=0:0
+  P: Get(ScreenScaleFactor)
+  F: Get | ws ' ' | ( | ws ' ' | getsel ScreenScaleFactor | ws ' ' | )
+  spec compiler: same
+# 1114 9b 72
+# 1116 9b 74
+Get ( TriggerExternalEvent )	err=0 pos=0:0
+  P: Get(TriggerExternalEvent)
+  F: Get | ws ' ' | ( | ws ' ' | getsel TriggerExternalEvent | ws ' ' | )
+  spec compiler: same
+# 1117 9b 75
+Get ( TouchKeyboardState )	err=0 pos=0:0
+  P: Get(TouchKeyboardState)
+  F: Get | ws ' ' | ( | ws ' ' | getsel TouchKeyboardState | ws ' ' | )
+  spec compiler: same
+# 1118 9b 76
+Get ( MenubarState )	err=0 pos=0:0
+  P: Get(MenubarState)
+  F: Get | ws ' ' | ( | ws ' ' | getsel MenubarState | ws ' ' | )
+  spec compiler: same
+# 1119 9b 77
+Get ( RegionMonitorEvents )	err=0 pos=0:0
+  P: Get(RegionMonitorEvents)
+  F: Get | ws ' ' | ( | ws ' ' | getsel RegionMonitorEvents | ws ' ' | )
+  spec compiler: same
+# 1120 9b 78
+Get ( AccountGroupName )	err=0 pos=0:0
+  P: Get(AccountGroupName)
+  F: Get | ws ' ' | ( | ws ' ' | getsel AccountGroupName | ws ' ' | )
+  spec compiler: same
+# 1123 9b 7b
+Get ( OpenDataFileInfo )	err=0 pos=0:0
+  P: Get(OpenDataFileInfo)
+  F: Get | ws ' ' | ( | ws ' ' | getsel OpenDataFileInfo | ws ' ' | )
+  spec compiler: same
+# 1124 9b 7c
+Get ( AccountType )	err=0 pos=0:0
+  P: Get(AccountType)
+  F: Get | ws ' ' | ( | ws ' ' | getsel AccountType | ws ' ' | )
+  spec compiler: same
+# 1125 9b 7d
+Get ( PageCount )	err=0 pos=0:0
+  P: Get(PageCount)
+  F: Get | ws ' ' | ( | ws ' ' | getsel PageCount | ws ' ' | )
+  spec compiler: same
+# 1128 9b 80
+Get ( InstalledFMPluginsAsJSON )	err=0 pos=0:0
+  P: Get(InstalledFMPluginsAsJSON)
+  F: Get | ws ' ' | ( | ws ' ' | getsel InstalledFMPluginsAsJSON | ws ' ' | )
+  spec compiler: same
+# 1129 9b 81
+Get ( SessionIdentifier )	err=0 pos=0:0
+  P: Get(SessionIdentifier)
+  F: Get | ws ' ' | ( | ws ' ' | getsel SessionIdentifier | ws ' ' | )
+  spec compiler: same
+# 1130 9b 82
+Get ( CacheFileName )	err=0 pos=0:0
+  P: Get(CacheFileName)
+  F: Get | ws ' ' | ( | ws ' ' | getsel CacheFileName | ws ' ' | )
+  spec compiler: same
+# 1131 9b 83
+Get ( CacheFilePath )	err=0 pos=0:0
+  P: Get(CacheFilePath)
+  F: Get | ws ' ' | ( | ws ' ' | getsel CacheFilePath | ws ' ' | )
+  spec compiler: same
+# 1132 9b 84
+Get ( TransactionOpenState )	err=0 pos=0:0
+  P: Get(TransactionOpenState)
+  F: Get | ws ' ' | ( | ws ' ' | getsel TransactionOpenState | ws ' ' | )
+  spec compiler: same
+# 1133 9b 85
+Get ( CurrentTimeUTCMicroseconds )	err=0 pos=0:0
+  P: Get(CurrentTimeUTCMicroseconds)
+  F: Get | ws ' ' | ( | ws ' ' | getsel CurrentTimeUTCMicroseconds | ws ' ' | )
+  spec compiler: same
+# 1134 9b 86
+Get ( LastErrorLocation )	err=0 pos=0:0
+  P: Get(LastErrorLocation)
+  F: Get | ws ' ' | ( | ws ' ' | getsel LastErrorLocation | ws ' ' | )
+  spec compiler: same
+# 1135 9b 87
+Get ( LastStepTokensUsed )	err=0 pos=0:0
+  P: Get(LastStepTokensUsed)
+  F: Get | ws ' ' | ( | ws ' ' | getsel LastStepTokensUsed | ws ' ' | )
+  spec compiler: same
+# 1136 9b 88
+Get ( RevertTransactionOnErrorState )	err=0 pos=0:0
+  P: Get(RevertTransactionOnErrorState)
+  F: Get | ws ' ' | ( | ws ' ' | getsel RevertTransactionOnErrorState | ws ' ' | )
+  spec compiler: same
+# 1137 9b 89
+Get ( SystemStorageAvailable )	err=0 pos=0:0
+  P: Get(SystemStorageAvailable)
+  F: Get | ws ' ' | ( | ws ' ' | getsel SystemStorageAvailable | ws ' ' | )
+  spec compiler: same
+# 1138 9b 8a
+Get ( StudioDatasource )	err=0 pos=0:0
+  P: Get(StudioDatasource)
+  F: Get | ws ' ' | ( | ws ' ' | getsel StudioDatasource | ws ' ' | )
+  spec compiler: same
+# 1139 9b 8b
+Get ( AccountPasswordDaysRemaining )	err=0 pos=0:0
+  P: Get(AccountPasswordDaysRemaining)
+  F: Get | ws ' ' | ( | ws ' ' | getsel AccountPasswordDaysRemaining | ws ' ' | )
+  spec compiler: same
+# 1140 9b 8c
+Get ( WindowUUID )	err=0 pos=0:0
+  P: Get(WindowUUID)
+  F: Get | ws ' ' | ( | ws ' ' | getsel WindowUUID | ws ' ' | )
+  spec compiler: same
+# 1141 9b 8d
+Get ( GuidedAccessState )	err=0 pos=0:0
+  P: Get(GuidedAccessState)
+  F: Get | ws ' ' | ( | ws ' ' | getsel GuidedAccessState | ws ' ' | )
+  spec compiler: same
+# 1142 9b 8e
+# 2304 f9 04 Furigana nargs=VarArgs min=1 max=2
+Furigana ( "a" )	err=0 pos=0:0
+  P: (Furigana 'a')
+  F: Furigana | ws ' ' | ( | ws ' ' | text 'a' | ws ' ' | )
+  spec compiler: same
+Furigana ( "a" ; 1 )	err=0 pos=0:0
+  P: (Furigana 'a' 1)
+  F: Furigana | ws ' ' | ( | ws ' ' | text 'a' | ws ' ' | ; | ws ' ' | num 1 fmt=0020 | ws ' ' | )
+  spec compiler: same
+# 2309 f9 09 GetSensor nargs=VarArgs min=1 max=3
+GetSensor ( "a" )	err=0 pos=0:0
+  P: (GetSensor 'a')
+  F: GetSensor | ws ' ' | ( | ws ' ' | text 'a' | ws ' ' | )
+  spec compiler: same
+GetSensor ( "a" ; 1 ; 1 )	err=0 pos=0:0
+  P: (GetSensor 'a' 1 1)
+  F: GetSensor | ws ' ' | ( | ws ' ' | text 'a' | ws ' ' | ; | ws ' ' | num 1 fmt=0020 | ws ' ' | ; | ws ' ' | num 1 fmt=0020 | ws ' ' | )
+  spec compiler: same
+# 2311 f9 0b GetEmbeddingAsFile nargs=VarArgs min=1 max=2
+GetEmbeddingAsFile ( "a" )	err=0 pos=0:0
+  P: (GetEmbeddingAsFile 'a')
+  F: GetEmbeddingAsFile | ws ' ' | ( | ws ' ' | text 'a' | ws ' ' | )
+  spec compiler: same
+GetEmbeddingAsFile ( "a" ; "a" )	err=0 pos=0:0
+  P: (GetEmbeddingAsFile 'a' 'a')
+  F: GetEmbeddingAsFile | ws ' ' | ( | ws ' ' | text 'a' | ws ' ' | ; | ws ' ' | text 'a' | ws ' ' | )
+  spec compiler: same
+# 2312 f9 0c ExecuteSQLe nargs=VarArgs min=3 max=1000
+ExecuteSQLe ( "a" ; "b" ; "c" )	err=0 pos=0:0
+  P: (ExecuteSQLe 'a' 'b' 'c')
+  F: ExecuteSQLe | ws ' ' | ( | ws ' ' | text 'a' | ws ' ' | ; | ws ' ' | text 'b' | ws ' ' | ; | ws ' ' | text 'c' | ws ' ' | )
+  spec compiler: same
+ExecuteSQLe ( "a" ; "b" ; "c" ; 1 ; 2 )	err=0 pos=0:0
+  P: (ExecuteSQLe 'a' 'b' 'c' 1 2)
+  F: ExecuteSQLe | ws ' ' | ( | ws ' ' | text 'a' | ws ' ' | ; | ws ' ' | text 'b' | ws ' ' | ; | ws ' ' | text 'c' | ws ' ' | ; | ws ' ' | num 1 fmt=0020 | ws ' ' | ; | ws ' ' | num 2 fmt=0020 | ws ' ' | )
+  spec compiler: same
+# 2313 f9 0d JSONUniqueValues nargs=VarArgs min=2 max=4
+JSONUniqueValues ( "a" ; "a" )	err=0 pos=0:0
+  P: (JSONUniqueValues 'a' 'a')
+  F: JSONUniqueValues | ws ' ' | ( | ws ' ' | text 'a' | ws ' ' | ; | ws ' ' | text 'a' | ws ' ' | )
+  spec compiler: same
+# 2314 f9 0e JSONRemoveValues nargs=VarArgs min=3 max=5
+JSONRemoveValues ( "a" ; "a" ; "a" )	err=0 pos=0:0
+  P: (JSONRemoveValues 'a' 'a' 'a')
+  F: JSONRemoveValues | ws ' ' | ( | ws ' ' | text 'a' | ws ' ' | ; | ws ' ' | text 'a' | ws ' ' | ; | ws ' ' | text 'a' | ws ' ' | )
+  spec compiler: same
+# 2315 f9 0f NormalizeEmbedding nargs=VarArgs min=1 max=2
+NormalizeEmbedding ( "a" )	err=0 pos=0:0
+  P: (NormalizeEmbedding 'a')
+  F: NormalizeEmbedding | ws ' ' | ( | ws ' ' | text 'a' | ws ' ' | )
+  spec compiler: same
+NormalizeEmbedding ( "a" ; 1 )	err=0 pos=0:0
+  P: (NormalizeEmbedding 'a' 1)
+  F: NormalizeEmbedding | ws ' ' | ( | ws ' ' | text 'a' | ws ' ' | ; | ws ' ' | num 1 fmt=0020 | ws ' ' | )
+  spec compiler: same
+# 2316 f9 10 GetRecordIDsFromFoundSet nargs=VarArgs min=1 max=2
+GetRecordIDsFromFoundSet ( "a" )	err=0 pos=0:0
+  P: (GetRecordIDsFromFoundSet 'a')
+  F: GetRecordIDsFromFoundSet | ws ' ' | ( | ws ' ' | text 'a' | ws ' ' | )
+  spec compiler: same
+GetRecordIDsFromFoundSet ( "a" ; "a" )	err=0 pos=0:0
+  P: (GetRecordIDsFromFoundSet 'a' 'a')
+  F: GetRecordIDsFromFoundSet | ws ' ' | ( | ws ' ' | text 'a' | ws ' ' | ; | ws ' ' | text 'a' | ws ' ' | )
+  spec compiler: same
+# 2317 f9 11 GetRAGSpaceInfo nargs=VarArgs min=1 max=2
+GetRAGSpaceInfo ( 1 )	err=0 pos=0:0
+  P: (GetRAGSpaceInfo 1)
+  F: GetRAGSpaceInfo | ws ' ' | ( | ws ' ' | num 1 fmt=0020 | ws ' ' | )
+  spec compiler: same
+GetRAGSpaceInfo ( 1 ; "a" )	err=0 pos=0:0
+  P: (GetRAGSpaceInfo 1 'a')
+  F: GetRAGSpaceInfo | ws ' ' | ( | ws ' ' | num 1 fmt=0020 | ws ' ' | ; | ws ' ' | text 'a' | ws ' ' | )
+  spec compiler: same
+# 2911 fa 0b LayoutObjectUUID nargs=NoArgs min=0 max=0
+LayoutObjectUUID	err=0 pos=0:0
+  P: (LayoutObjectUUID)
+  F: LayoutObjectUUID
+  spec compiler: same
+# 2912 fa 0c constant
+ValueNumber	err=0 pos=0:0
+  P: (ValueNumber)
+  F: ValueNumber
+  spec compiler: same
+# 2913 fa 0d constant
+ValueNumberRanges	err=0 pos=0:0
+  P: (ValueNumberRanges)
+  F: ValueNumberRanges
+  spec compiler: same
+# 2914 fa 0e constant
+JSONStringRanges	err=0 pos=0:0
+  P: (JSONStringRanges)
+  F: JSONStringRanges
+  spec compiler: same
+# 2915 fa 0f constant
+ROWID	err=0 pos=0:0
+  P: (ROWID)
+  F: ROWID
+  spec compiler: same
+# 2916 fa 10 constant
+ROWMODID	err=0 pos=0:0
+  P: (ROWMODID)
+  F: ROWMODID
+  spec compiler: same
+# 3204 fb 04 GetWidth nargs=Unary min=1 max=1
+GetWidth ( Table::Input )	err=0 pos=0:0
+  P: (GetWidth field[03d00001:0106 r1 f4])
+  F: GetWidth | ws ' ' | ( | ws ' ' | field 03d00001:0106 r1 flags=4 | ws ' ' | )
+  spec compiler: same
+# 3205 fb 05 GetHeight nargs=Unary min=1 max=1
+GetHeight ( Table::Input )	err=0 pos=0:0
+  P: (GetHeight field[03d00001:0106 r1 f4])
+  F: GetHeight | ws ' ' | ( | ws ' ' | field 03d00001:0106 r1 flags=4 | ws ' ' | )
+  spec compiler: same
+# 3206 fb 06 VerifyContainer nargs=Unary min=1 max=1
+VerifyContainer ( Table::Input )	err=0 pos=0:0
+  P: (VerifyContainer field[03d00001:0106 r1 f4])
+  F: VerifyContainer | ws ' ' | ( | ws ' ' | field 03d00001:0106 r1 flags=4 | ws ' ' | )
+  spec compiler: same
+# 3208 fb 08 GetAVPlayerAttribute nargs=Unary min=1 max=1
+GetAVPlayerAttribute ( "a" )	err=0 pos=0:0
+  P: (GetAVPlayerAttribute 'a')
+  F: GetAVPlayerAttribute | ws ' ' | ( | ws ' ' | text 'a' | ws ' ' | )
+  spec compiler: same
+# 3211 fb 0b GetModelAttributes nargs=Unary min=1 max=1
+GetModelAttributes ( "a" )	err=0 pos=0:0
+  P: (GetModelAttributes 'a')
+  F: GetModelAttributes | ws ' ' | ( | ws ' ' | text 'a' | ws ' ' | )
+  spec compiler: same
+# 3212 fb 0c GetLayoutObjectOwnerInfo nargs=Unary min=1 max=1
+GetLayoutObjectOwnerInfo ( "a" )	err=0 pos=0:0
+  P: (GetLayoutObjectOwnerInfo 'a')
+  F: GetLayoutObjectOwnerInfo | ws ' ' | ( | ws ' ' | text 'a' | ws ' ' | )
+  spec compiler: same
+# 3213 fb 0d GetAddonInfo nargs=Unary min=1 max=1
+GetAddonInfo ( "a" )	err=0 pos=0:0
+  P: (GetAddonInfo 'a')
+  F: GetAddonInfo | ws ' ' | ( | ws ' ' | text 'a' | ws ' ' | )
+  spec compiler: same
+# 3215 fb 0f ReadQRCode nargs=Unary min=1 max=1
+ReadQRCode ( "a" )	err=0 pos=0:0
+  P: (ReadQRCode 'a')
+  F: ReadQRCode | ws ' ' | ( | ws ' ' | text 'a' | ws ' ' | )
+  spec compiler: same
+# 3216 fb 10 GetBaseTableName nargs=Unary min=1 max=1
+GetBaseTableName ( Table::Input )	err=0 pos=0:0
+  P: (GetBaseTableName field[03d00001:0106 r1 f4])
+  F: GetBaseTableName | ws ' ' | ( | ws ' ' | field 03d00001:0106 r1 flags=4 | ws ' ' | )
+  spec compiler: same
+# 3217 fb 11 GetEmbeddingAsText nargs=Unary min=1 max=1
+GetEmbeddingAsText ( "a" )	err=0 pos=0:0
+  P: (GetEmbeddingAsText 'a')
+  F: GetEmbeddingAsText | ws ' ' | ( | ws ' ' | text 'a' | ws ' ' | )
+  spec compiler: same
+# 3218 fb 12 GetTokenCount nargs=Unary min=1 max=1
+GetTokenCount ( "a" )	err=0 pos=0:0
+  P: (GetTokenCount 'a')
+  F: GetTokenCount | ws ' ' | ( | ws ' ' | text 'a' | ws ' ' | )
+  spec compiler: same
+# 3219 fb 13 GetFieldsOnLayout nargs=Unary min=1 max=1
+GetFieldsOnLayout ( "a" )	err=0 pos=0:0
+  P: (GetFieldsOnLayout 'a')
+  F: GetFieldsOnLayout | ws ' ' | ( | ws ' ' | text 'a' | ws ' ' | )
+  spec compiler: same
+# 3220 fb 14 GetTextFromPDF nargs=Unary min=1 max=1
+GetTextFromPDF ( "a" )	err=0 pos=0:0
+  P: (GetTextFromPDF 'a')
+  F: GetTextFromPDF | ws ' ' | ( | ws ' ' | text 'a' | ws ' ' | )
+  spec compiler: same
+# 3221 fb 15 JSONParse nargs=Unary min=1 max=1
+JSONParse ( "a" )	err=0 pos=0:0
+  P: (JSONParse 'a')
+  F: JSONParse | ws ' ' | ( | ws ' ' | text 'a' | ws ' ' | )
+  spec compiler: same
+# 3222 fb 16 JSONParsedState nargs=Unary min=1 max=1
+JSONParsedState ( "a" )	err=0 pos=0:0
+  P: (JSONParsedState 'a')
+  F: JSONParsedState | ws ' ' | ( | ws ' ' | text 'a' | ws ' ' | )
+  spec compiler: same
+# 3223 fb 17 ListPersistentDataIDs nargs=Unary min=1 max=1
+ListPersistentDataIDs ( "a" )	err=0 pos=0:0
+  P: (ListPersistentDataIDs 'a')
+  F: ListPersistentDataIDs | ws ' ' | ( | ws ' ' | text 'a' | ws ' ' | )
+  spec compiler: same
+# 3505 fc 05 CryptDigest nargs=Binary min=2 max=2
+CryptDigest ( "a" ; "a" )	err=0 pos=0:0
+  P: (CryptDigest 'a' 'a')
+  F: CryptDigest | ws ' ' | ( | ws ' ' | text 'a' | ws ' ' | ; | ws ' ' | text 'a' | ws ' ' | )
+  spec compiler: same
+# 3506 fc 06 Base64EncodeRFC nargs=Binary min=2 max=2
+Base64EncodeRFC ( 1 ; "a" )	err=0 pos=0:0
+  P: (Base64EncodeRFC 1 'a')
+  F: Base64EncodeRFC | ws ' ' | ( | ws ' ' | num 1 fmt=0020 | ws ' ' | ; | ws ' ' | text 'a' | ws ' ' | )
+  spec compiler: same
+# 3507 fc 07 TextDecode nargs=Binary min=2 max=2
+TextDecode ( "a" ; "a" )	err=0 pos=0:0
+  P: (TextDecode 'a' 'a')
+  F: TextDecode | ws ' ' | ( | ws ' ' | text 'a' | ws ' ' | ; | ws ' ' | text 'a' | ws ' ' | )
+  spec compiler: same
+# 3508 fc 08 CryptEncrypt nargs=Binary min=2 max=2
+CryptEncrypt ( "a" ; "a" )	err=0 pos=0:0
+  P: (CryptEncrypt 'a' 'a')
+  F: CryptEncrypt | ws ' ' | ( | ws ' ' | text 'a' | ws ' ' | ; | ws ' ' | text 'a' | ws ' ' | )
+  spec compiler: same
+# 3509 fc 09 CryptDecrypt nargs=Binary min=2 max=2
+CryptDecrypt ( "a" ; "a" )	err=0 pos=0:0
+  P: (CryptDecrypt 'a' 'a')
+  F: CryptDecrypt | ws ' ' | ( | ws ' ' | text 'a' | ws ' ' | ; | ws ' ' | text 'a' | ws ' ' | )
+  spec compiler: same
+# 3510 fc 0a CryptEncryptBase64 nargs=Binary min=2 max=2
+CryptEncryptBase64 ( "a" ; "a" )	err=0 pos=0:0
+  P: (CryptEncryptBase64 'a' 'a')
+  F: CryptEncryptBase64 | ws ' ' | ( | ws ' ' | text 'a' | ws ' ' | ; | ws ' ' | text 'a' | ws ' ' | )
+  spec compiler: same
+# 3511 fc 0b CryptDecryptBase64 nargs=Binary min=2 max=2
+CryptDecryptBase64 ( "a" ; "a" )	err=0 pos=0:0
+  P: (CryptDecryptBase64 'a' 'a')
+  F: CryptDecryptBase64 | ws ' ' | ( | ws ' ' | text 'a' | ws ' ' | ; | ws ' ' | text 'a' | ws ' ' | )
+  spec compiler: same
+# 3514 fc 0e JSONGetElementType nargs=Binary min=2 max=2
+JSONGetElementType ( "a" ; "a" )	err=0 pos=0:0
+  P: (JSONGetElementType 'a' 'a')
+  F: JSONGetElementType | ws ' ' | ( | ws ' ' | text 'a' | ws ' ' | ; | ws ' ' | text 'a' | ws ' ' | )
+  spec compiler: same
+# 3515 fc 0f GetLiveText nargs=Binary min=2 max=2
+GetLiveText ( "a" ; "a" )	err=0 pos=0:0
+  P: (GetLiveText 'a' 'a')
+  F: GetLiveText | ws ' ' | ( | ws ' ' | text 'a' | ws ' ' | ; | ws ' ' | text 'a' | ws ' ' | )
+  spec compiler: same
+# 3516 fc 10 CosineSimilarity nargs=Binary min=2 max=2
+CosineSimilarity ( "a" ; "a" )	err=0 pos=0:0
+  P: (CosineSimilarity 'a' 'a')
+  F: CosineSimilarity | ws ' ' | ( | ws ' ' | text 'a' | ws ' ' | ; | ws ' ' | text 'a' | ws ' ' | )
+  spec compiler: same
+# 3517 fc 11 GetLiveTextAsJSON nargs=Binary min=2 max=2
+GetLiveTextAsJSON ( "a" ; "a" )	err=0 pos=0:0
+  P: (GetLiveTextAsJSON 'a' 'a')
+  F: GetLiveTextAsJSON | ws ' ' | ( | ws ' ' | text 'a' | ws ' ' | ; | ws ' ' | text 'a' | ws ' ' | )
+  spec compiler: same
+# 3518 fc 12 GetTableDDL nargs=Binary min=2 max=2
+GetTableDDL ( "a" ; 1 )	err=0 pos=0:0
+  P: (GetTableDDL 'a' 1)
+  F: GetTableDDL | ws ' ' | ( | ws ' ' | text 'a' | ws ' ' | ; | ws ' ' | num 1 fmt=0020 | ws ' ' | )
+  spec compiler: same
+# 3519 fc 13 PredictFromModel nargs=Binary min=2 max=2
+PredictFromModel ( "a" ; "a" )	err=0 pos=0:0
+  P: (PredictFromModel 'a' 'a')
+  F: PredictFromModel | ws ' ' | ( | ws ' ' | text 'a' | ws ' ' | ; | ws ' ' | text 'a' | ws ' ' | )
+  spec compiler: same
+# 3520 fc 14 AddEmbeddings nargs=Binary min=2 max=2
+AddEmbeddings ( "a" ; "a" )	err=0 pos=0:0
+  P: (AddEmbeddings 'a' 'a')
+  F: AddEmbeddings | ws ' ' | ( | ws ' ' | text 'a' | ws ' ' | ; | ws ' ' | text 'a' | ws ' ' | )
+  spec compiler: same
+# 3521 fc 15 SubtractEmbeddings nargs=Binary min=2 max=2
+SubtractEmbeddings ( "a" ; "a" )	err=0 pos=0:0
+  P: (SubtractEmbeddings 'a' 'a')
+  F: SubtractEmbeddings | ws ' ' | ( | ws ' ' | text 'a' | ws ' ' | ; | ws ' ' | text 'a' | ws ' ' | )
+  spec compiler: same
+# 3522 fc 16 GetPersistentData nargs=Binary min=2 max=2
+GetPersistentData ( "a" ; "a" )	err=0 pos=0:0
+  P: (GetPersistentData 'a' 'a')
+  F: GetPersistentData | ws ' ' | ( | ws ' ' | text 'a' | ws ' ' | ; | ws ' ' | text 'a' | ws ' ' | )
+  spec compiler: same
+# 3801 fd 01 CryptAuthCode nargs=Trinary min=3 max=3
+CryptAuthCode ( "a" ; "a" ; "a" )	err=0 pos=0:0
+  P: (CryptAuthCode 'a' 'a' 'a')
+  F: CryptAuthCode | ws ' ' | ( | ws ' ' | text 'a' | ws ' ' | ; | ws ' ' | text 'a' | ws ' ' | ; | ws ' ' | text 'a' | ws ' ' | )
+  spec compiler: same
+# 3802 fd 02 TextEncode nargs=Trinary min=3 max=3
+TextEncode ( "a" ; "a" ; 1 )	err=0 pos=0:0
+  P: (TextEncode 'a' 'a' 1)
+  F: TextEncode | ws ' ' | ( | ws ' ' | text 'a' | ws ' ' | ; | ws ' ' | text 'a' | ws ' ' | ; | ws ' ' | num 1 fmt=0020 | ws ' ' | )
+  spec compiler: same
+# 3803 fd 03 JSONMakeArray nargs=Trinary min=3 max=3
+JSONMakeArray ( "a" ; 1 ; "a" )	err=0 pos=0:0
+  P: (JSONMakeArray 'a' 1 'a')
+  F: JSONMakeArray | ws ' ' | ( | ws ' ' | text 'a' | ws ' ' | ; | ws ' ' | num 1 fmt=0020 | ws ' ' | ; | ws ' ' | text 'a' | ws ' ' | )
+  spec compiler: same
+# 3804 fd 04 GetEmbedding nargs=Trinary min=3 max=3
+GetEmbedding ( 1 ; "a" ; "a" )	err=0 pos=0:0
+  P: (GetEmbedding 1 'a' 'a')
+  F: GetEmbedding | ws ' ' | ( | ws ' ' | num 1 fmt=0020 | ws ' ' | ; | ws ' ' | text 'a' | ws ' ' | ; | ws ' ' | text 'a' | ws ' ' | )
+  spec compiler: same
+# 3805 fd 05 JSONValueExists nargs=Trinary min=3 max=3
+JSONValueExists ( "a" ; "a" ; "a" )	err=0 pos=0:0
+  P: (JSONValueExists 'a' 'a' 'a')
+  F: JSONValueExists | ws ' ' | ( | ws ' ' | text 'a' | ws ' ' | ; | ws ' ' | text 'a' | ws ' ' | ; | ws ' ' | text 'a' | ws ' ' | )
+  spec compiler: same
+# 3806 fd 06 JSONValueCount nargs=Trinary min=3 max=3
+JSONValueCount ( "a" ; "a" ; "a" )	err=0 pos=0:0
+  P: (JSONValueCount 'a' 'a' 'a')
+  F: JSONValueCount | ws ' ' | ( | ws ' ' | text 'a' | ws ' ' | ; | ws ' ' | text 'a' | ws ' ' | ; | ws ' ' | text 'a' | ws ' ' | )
+  spec compiler: same
+# 3807 fd 07 JSONAnyValuesExist nargs=Trinary min=3 max=3
+JSONAnyValuesExist ( "a" ; "a" ; "a" )	err=0 pos=0:0
+  P: (JSONAnyValuesExist 'a' 'a' 'a')
+  F: JSONAnyValuesExist | ws ' ' | ( | ws ' ' | text 'a' | ws ' ' | ; | ws ' ' | text 'a' | ws ' ' | ; | ws ' ' | text 'a' | ws ' ' | )
+  spec compiler: same
+# 4100 fe 00 CryptGenerateSignature nargs=Quad min=4 max=4
+CryptGenerateSignature ( "a" ; "a" ; "a" ; "a" )	err=0 pos=0:0
+  P: (CryptGenerateSignature 'a' 'a' 'a' 'a')
+  F: CryptGenerateSignature | ws ' ' | ( | ws ' ' | text 'a' | ws ' ' | ; | ws ' ' | text 'a' | ws ' ' | ; | ws ' ' | text 'a' | ws ' ' | ; | ws ' ' | text 'a' | ws ' ' | )
+  spec compiler: same
+# 4101 fe 01 CryptVerifySignature nargs=Quad min=4 max=4
+CryptVerifySignature ( "a" ; "a" ; "a" ; "a" )	err=0 pos=0:0
+  P: (CryptVerifySignature 'a' 'a' 'a' 'a')
+  F: CryptVerifySignature | ws ' ' | ( | ws ' ' | text 'a' | ws ' ' | ; | ws ' ' | text 'a' | ws ' ' | ; | ws ' ' | text 'a' | ws ' ' | ; | ws ' ' | text 'a' | ws ' ' | )
+  spec compiler: same
+#  1d nnnn 15 464d4452 0001 DatabaseNames nargs= min= max=
+DatabaseNames	err=0 pos=0:0
+  P: (plugin function call fn=plugin:FMDR/1)
+  F: plugin FMDR/1 count=0
+  spec compiler: same
+#  1d nnnn 15 464d4452 0002 FieldBounds nargs= min= max=
+FieldBounds ( "a" ; "a" ; "a" )	err=0 pos=0:0
+  P: (plugin function call fn=plugin:FMDR/2 'a' 'a' 'a')
+  F: plugin FMDR/2 count=0 | ws ' ' | ( | ws ' ' | text 'a' | ws ' ' | ; | ws ' ' | text 'a' | ws ' ' | ; | ws ' ' | text 'a' | ws ' ' | )
+  spec compiler: same
+#  1d nnnn 15 464d4452 0003 FieldIDs nargs= min= max=
+FieldIDs ( "a" ; "a" )	err=0 pos=0:0
+  P: (plugin function call fn=plugin:FMDR/3 'a' 'a')
+  F: plugin FMDR/3 count=0 | ws ' ' | ( | ws ' ' | text 'a' | ws ' ' | ; | ws ' ' | text 'a' | ws ' ' | )
+  spec compiler: same
+#  1d nnnn 15 464d4452 0004 FieldNames nargs= min= max=
+FieldNames ( "a" ; "a" )	err=0 pos=0:0
+  P: (plugin function call fn=plugin:FMDR/4 'a' 'a')
+  F: plugin FMDR/4 count=0 | ws ' ' | ( | ws ' ' | text 'a' | ws ' ' | ; | ws ' ' | text 'a' | ws ' ' | )
+  spec compiler: same
+#  1d nnnn 15 464d4452 0005 FieldRepetitions nargs= min= max=
+FieldRepetitions ( "a" ; "a" ; "a" )	err=0 pos=0:0
+  P: (plugin function call fn=plugin:FMDR/5 'a' 'a' 'a')
+  F: plugin FMDR/5 count=0 | ws ' ' | ( | ws ' ' | text 'a' | ws ' ' | ; | ws ' ' | text 'a' | ws ' ' | ; | ws ' ' | text 'a' | ws ' ' | )
+  spec compiler: same
+#  1d nnnn 15 464d4452 0006 FieldStyle nargs= min= max=
+FieldStyle ( "a" ; "a" ; "a" )	err=0 pos=0:0
+  P: (plugin function call fn=plugin:FMDR/6 'a' 'a' 'a')
+  F: plugin FMDR/6 count=0 | ws ' ' | ( | ws ' ' | text 'a' | ws ' ' | ; | ws ' ' | text 'a' | ws ' ' | ; | ws ' ' | text 'a' | ws ' ' | )
+  spec compiler: same
+#  1d nnnn 15 464d4452 0007 FieldType nargs= min= max=
+FieldType ( "a" ; "a" )	err=0 pos=0:0
+  P: (plugin function call fn=plugin:FMDR/7 'a' 'a')
+  F: plugin FMDR/7 count=0 | ws ' ' | ( | ws ' ' | text 'a' | ws ' ' | ; | ws ' ' | text 'a' | ws ' ' | )
+  spec compiler: same
+#  1d nnnn 15 464d4452 0008 GetNextSerialValue nargs= min= max=
+GetNextSerialValue ( "a" ; "a" )	err=0 pos=0:0
+  P: (plugin function call fn=plugin:FMDR/8 'a' 'a')
+  F: plugin FMDR/8 count=0 | ws ' ' | ( | ws ' ' | text 'a' | ws ' ' | ; | ws ' ' | text 'a' | ws ' ' | )
+  spec compiler: same
+#  1d nnnn 15 464d4452 0009 LayoutIDs nargs= min= max=
+LayoutIDs ( "a" )	err=0 pos=0:0
+  P: (plugin function call fn=plugin:FMDR/9 'a')
+  F: plugin FMDR/9 count=0 | ws ' ' | ( | ws ' ' | text 'a' | ws ' ' | )
+  spec compiler: same
+#  1d nnnn 15 464d4452 000a LayoutNames nargs= min= max=
+LayoutNames ( "a" )	err=0 pos=0:0
+  P: (plugin function call fn=plugin:FMDR/10 'a')
+  F: plugin FMDR/10 count=0 | ws ' ' | ( | ws ' ' | text 'a' | ws ' ' | )
+  spec compiler: same
+#  1d nnnn 15 464d4452 000b TableIDs nargs= min= max=
+TableIDs ( "a" )	err=0 pos=0:0
+  P: (plugin function call fn=plugin:FMDR/11 'a')
+  F: plugin FMDR/11 count=0 | ws ' ' | ( | ws ' ' | text 'a' | ws ' ' | )
+  spec compiler: same
+#  1d nnnn 15 464d4452 000c TableNames nargs= min= max=
+TableNames ( "a" )	err=0 pos=0:0
+  P: (plugin function call fn=plugin:FMDR/12 'a')
+  F: plugin FMDR/12 count=0 | ws ' ' | ( | ws ' ' | text 'a' | ws ' ' | )
+  spec compiler: same
+#  1d nnnn 15 464d4452 000d RelationInfo nargs= min= max=
+RelationInfo ( "a" ; "a" )	err=0 pos=0:0
+  P: (plugin function call fn=plugin:FMDR/13 'a' 'a')
+  F: plugin FMDR/13 count=0 | ws ' ' | ( | ws ' ' | text 'a' | ws ' ' | ; | ws ' ' | text 'a' | ws ' ' | )
+  spec compiler: same
+#  1d nnnn 15 464d4452 000e ScriptIDs nargs= min= max=
+ScriptIDs ( "a" )	err=0 pos=0:0
+  P: (plugin function call fn=plugin:FMDR/14 'a')
+  F: plugin FMDR/14 count=0 | ws ' ' | ( | ws ' ' | text 'a' | ws ' ' | )
+  spec compiler: same
+#  1d nnnn 15 464d4452 000f ScriptNames nargs= min= max=
+ScriptNames ( "a" )	err=0 pos=0:0
+  P: (plugin function call fn=plugin:FMDR/15 'a')
+  F: plugin FMDR/15 count=0 | ws ' ' | ( | ws ' ' | text 'a' | ws ' ' | )
+  spec compiler: same
+#  1d nnnn 15 464d4452 0010 ValueListIDs nargs= min= max=
+ValueListIDs ( "a" )	err=0 pos=0:0
+  P: (plugin function call fn=plugin:FMDR/16 'a')
+  F: plugin FMDR/16 count=0 | ws ' ' | ( | ws ' ' | text 'a' | ws ' ' | )
+  spec compiler: same
+#  1d nnnn 15 464d4452 0011 ValueListNames nargs= min= max=
+ValueListNames ( "a" )	err=0 pos=0:0
+  P: (plugin function call fn=plugin:FMDR/17 'a')
+  F: plugin FMDR/17 count=0 | ws ' ' | ( | ws ' ' | text 'a' | ws ' ' | )
+  spec compiler: same
+#  1d nnnn 15 464d4452 0012 ValueListItems nargs= min= max=
+ValueListItems ( "a" ; "a" )	err=0 pos=0:0
+  P: (plugin function call fn=plugin:FMDR/18 'a' 'a')
+  F: plugin FMDR/18 count=0 | ws ' ' | ( | ws ' ' | text 'a' | ws ' ' | ; | ws ' ' | text 'a' | ws ' ' | )
+  spec compiler: same
+#  1d nnnn 15 464d4452 0013 WindowNames nargs= min= max=
+WindowNames	err=0 pos=0:0
+  P: (plugin function call fn=plugin:FMDR/19)
+  F: plugin FMDR/19 count=0
+  spec compiler: same
+WindowNames ( "a" )	err=0 pos=0:0
+  P: (plugin function call fn=plugin:FMDR/19 'a')
+  F: plugin FMDR/19 count=0 | ws ' ' | ( | ws ' ' | text 'a' | ws ' ' | )
+  spec compiler: same
+#  1d nnnn 15 464d4452 0014 FieldComment nargs= min= max=
+FieldComment ( "a" ; "a" )	err=0 pos=0:0
+  P: (plugin function call fn=plugin:FMDR/20 'a' 'a')
+  F: plugin FMDR/20 count=0 | ws ' ' | ( | ws ' ' | text 'a' | ws ' ' | ; | ws ' ' | text 'a' | ws ' ' | )
+  spec compiler: same
+#  1d nnnn 15 464d4452 0015 LayoutObjectNames nargs= min= max=
+LayoutObjectNames ( "a" ; "a" )	err=0 pos=0:0
+  P: (plugin function call fn=plugin:FMDR/21 'a' 'a')
+  F: plugin FMDR/21 count=0 | ws ' ' | ( | ws ' ' | text 'a' | ws ' ' | ; | ws ' ' | text 'a' | ws ' ' | )
+  spec compiler: same
+#  1d nnnn 15 464d4452 0016 BaseTableIDs nargs= min= max=
+BaseTableIDs ( "a" )	err=0 pos=0:0
+  P: (plugin function call fn=plugin:FMDR/22 'a')
+  F: plugin FMDR/22 count=0 | ws ' ' | ( | ws ' ' | text 'a' | ws ' ' | )
+  spec compiler: same
+#  1d nnnn 15 464d4452 0017 BaseTableNames nargs= min= max=
+BaseTableNames ( "a" )	err=0 pos=0:0
+  P: (plugin function call fn=plugin:FMDR/23 'a')
+  F: plugin FMDR/23 count=0 | ws ' ' | ( | ws ' ' | text 'a' | ws ' ' | )
+  spec compiler: same
+#  1d nnnn 15 464d4452 0018 BaseTableComment nargs= min= max=
+BaseTableComment ( "a" ; "a" )	err=0 pos=0:0
+  P: (plugin function call fn=plugin:FMDR/24 'a' 'a')
+  F: plugin FMDR/24 count=0 | ws ' ' | ( | ws ' ' | text 'a' | ws ' ' | ; | ws ' ' | text 'a' | ws ' ' | )
+  spec compiler: same
+#  1d nnnn 15 464d4452 0019 FieldAnnotation nargs= min= max=
+FieldAnnotation ( "a" ; "a" )	err=0 pos=0:0
+  P: (plugin function call fn=plugin:FMDR/25 'a' 'a')
+  F: plugin FMDR/25 count=0 | ws ' ' | ( | ws ' ' | text 'a' | ws ' ' | ; | ws ' ' | text 'a' | ws ' ' | )
+  spec compiler: same
+#  1d nnnn 15 464d4452 001a FieldDisplayNames nargs= min= max=
+FieldDisplayNames ( "a" ; "a" )	err=0 pos=0:0
+  P: (plugin function call fn=plugin:FMDR/26 'a' 'a')
+  F: plugin FMDR/26 count=0 | ws ' ' | ( | ws ' ' | text 'a' | ws ' ' | ; | ws ' ' | text 'a' | ws ' ' | )
+  spec compiler: same
+#  1d nnnn 15 464d4d42 0001 Location nargs= min= max=
+Location ( 1 )	err=1208 pos=0:8
+Location ( 1 ; 1 )	err=1208 pos=0:8
+#  1d nnnn 15 464d4d42 0002 LocationValues nargs= min= max=
+LocationValues ( 1 )	err=1208 pos=0:14
+LocationValues ( 1 ; 1 )	err=1208 pos=0:14
+#  1d nnnn 15 464d4d42 0003 RangeBeacons nargs= min= max=
+RangeBeacons ( "a" )	err=1208 pos=0:12
+RangeBeacons ( "a" ; 1 ; 1 ; 1 )	err=1208 pos=0:12

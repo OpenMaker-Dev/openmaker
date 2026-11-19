@@ -1,0 +1,24 @@
+# q18: lexer errors against parser errors, text arguments against number
+# columns. File: FileMaker Server sample (en), no record context.
+ExecuteSQLe ( "SELEC Task FROM Tasks _" ; "|" ; "¶" )	8310	1/1/0	? ERROR: FQL0001/(1:1): There is an error in the syntax of the query.
+ExecuteSQLe ( "SELECT Task FROM Tasks WHERE _x = 1" ; "|" ; "¶" )	8310	1/1/0	? ERROR: FQL0001/(1:30): There is an error in the syntax of the query.
+ExecuteSQLe ( "SELECT Task FROM Taskz WHERE Task = 'ä' _" ; "|" ; "¶" )	8310	1/1/0	? ERROR: FQL0001/(1:41): There is an error in the syntax of the query.
+ExecuteSQLe ( "SELECT Task, FROM Tasks _" ; "|" ; "¶" )	8310	1/1/0	? ERROR: FQL0001/(1:14): There is an error in the syntax of the query.
+GetAsNumber ( "3¶4" ) & "|" & GetAsNumber ( "3abc" ) & "|" & GetAsNumber ( "a3b4" ) & "|" & GetAsNumber ( "1,234.5" )	0	1/1/0	34|3|34|1234.5
+ExecuteSQLe ( "SELECT Task FROM Tasks WHERE \"TASK ID MATCH FIELD\" = ?" ; "|" ; "¶" ; "3¶4" )	0	1/1/0	Hire New Sales Person
+ExecuteSQLe ( "SELECT Task FROM Tasks WHERE \"TASK ID MATCH FIELD\" = ?" ; "|" ; "¶" ; "a3b4" )	0	0/1/0	
+ExecuteSQLe ( "SELECT Task FROM Tasks WHERE \"TASK ID MATCH FIELD\" = ?" ; "|" ; "¶" ; "34" )	0	0/1/0	
+ExecuteSQLe ( "SELECT Task FROM Tasks WHERE \"TASK ID MATCH FIELD\" = ?" ; "|" ; "¶" ; "1,2" )	0	1/1/0	Update Web Page
+ExecuteSQLe ( "SELECT ? + 0 FROM Tasks WHERE \"TASK ID MATCH FIELD\" = 3" ; "|" ; "¶" ; "3¶4" )	0	1/1/0	34
+ExecuteSQLe ( "SELECT ? + 0 FROM Tasks WHERE \"TASK ID MATCH FIELD\" = 3" ; "|" ; "¶" ; "a3b4" )	0	1/1/0	34
+ExecuteSQLe ( "SELECT ? * 1 FROM Tasks WHERE \"TASK ID MATCH FIELD\" = 3" ; "|" ; "¶" ; Date ( 2 ; 17 ; 2014 ) )	0	0/1/0	
+ExecuteSQLe ( "SELECT ? + 0 FROM Tasks WHERE \"TASK ID MATCH FIELD\" = 3" ; "|" ; "¶" ; Time ( 1 ; 0 ; 0 ) )	0	1/1/0	10000
+ExecuteSQLe ( "SELECT 'a' || 1, 'a' || DATE '2014-02-17', 'a' || TIME '13:45:10' FROM Tasks WHERE \"TASK ID MATCH FIELD\" = 3" ; "|" ; "¶" )	0	1/1/0	a1|a2-17-2014|a13:45:10
+ExecuteSQLe ( "SELECT 1 + NULL FROM Tasks WHERE \"TASK ID MATCH FIELD\" = 3" ; "|" ; "¶" )	0	0/1/0	
+ExecuteSQLe ( "SELECT NULL + 1 FROM Tasks WHERE \"TASK ID MATCH FIELD\" = 3" ; "|" ; "¶" )	0	0/1/0	
+ExecuteSQLe ( "SELECT 'a' - 'b', 'a' + 1 FROM Tasks WHERE \"TASK ID MATCH FIELD\" = 3" ; "|" ; "¶" )	0	1/1/0	ab|1
+ExecuteSQLe ( "SELECT 'ab' / 'a' FROM Tasks WHERE \"TASK ID MATCH FIELD\" = 3" ; "|" ; "¶" )	8309	1/1/0	? ERROR: FQL0018/(1:7): An expression contains incompatible data types.
+ExecuteSQLe ( "SELECT DATE '2014-02-17' + 'x' FROM Tasks WHERE \"TASK ID MATCH FIELD\" = 3" ; "|" ; "¶" )	0	1/1/0	2014-02-17
+ExecuteSQLe ( "SELECT DATE '2014-02-17' || 'x' FROM Tasks WHERE \"TASK ID MATCH FIELD\" = 3" ; "|" ; "¶" )	8309	1/1/0	? ERROR: FQL0018/(1:7): An expression contains incompatible data types.
+ExecuteSQLe ( "SELECT Task || \"TASK ID MATCH FIELD\" FROM Tasks WHERE \"TASK ID MATCH FIELD\" = 3" ; "|" ; "¶" )	0	1/1/0	Hire New Sales Person3
+ExecuteSQLe ( "SELECT Task || \"Due Date\" FROM Tasks WHERE \"TASK ID MATCH FIELD\" = 3" ; "|" ; "¶" )	0	1/1/0	Hire New Sales Person11/24/2014

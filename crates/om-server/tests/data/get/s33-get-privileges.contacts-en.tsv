@@ -1,0 +1,3 @@
+# FileMaker Server 26.0.3 script engine (tools/fms-script-harness, s33-get-privileges): the run lines' answers,
+# each value the probe expression after a step (see the battery).
+priv probe		0	priv probe	0	fmapp\rfmextscriptaccess\rfmreauthenticate10\rfmrest\rfmxml	fmapp\rfmextscriptaccess\rfmreauthenticate10\rfmrest\rfmxml	[Full Access]	[Full Access]	1

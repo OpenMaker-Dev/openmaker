@@ -1,0 +1,87 @@
+# scan ne none: open 0 load 0 scan 0 commit 0; index:id=value (0-based): 0:86=0 1:7=0 2:76=0 3:141=0 4:75=0 5:141=0 6:68=8 7:9=0 8:70=0 9:103=0
+# scan ne rep1 only: open 0 load 0 scan 0 commit 0; index:id=value (0-based): 0:86=0 1:7=0 2:76=0 3:141=0 4:75=0 5:141=0 6:68=8 7:9=0 8:70=0 9:103=0
+# scan ne rep2 only: open 0 load 0 scan 0 commit 0; index:id=value (0-based): 0:86=0 1:7=0 2:76=0 3:141=0 4:75=0 5:141=0 6:68=8 7:9=0 8:70=0 9:103=0
+# scan ne all three: open 0 load 0 scan 0 commit 0; index:id=value (0-based): 0:86=0 1:7=0 2:76=0 3:141=0 4:76=0 5:141=0 6:76=0 7:141=0 8:75=0 9:141=0 10:68=12 11:9=0 12:70=0 13:103=0
+# scan ne clear rep2: open 0 load 0 scan 0 commit 0; index:id=value (0-based): 0:86=0 1:16=2 2:76=0 3:141=0 4:75=0 5:141=0 6:68=8 7:51=0 8:70=0 9:103=0
+# scan ne edit other: open 0 load 0 scan 0 commit 0; index:id=value (0-based): 0:86=0 1:16=2 2:76=0 3:141=0 4:75=0 5:141=0 6:68=8 7:51=0 8:70=0 9:103=0
+# scan ne clear rep1: open 0 load 0 scan 0 commit 0; index:id=value (0-based): 0:86=0 1:16=2 2:76=0 3:141=0 4:75=0 5:141=0 6:68=8 7:51=0 8:70=0 9:103=0
+# scan count: open 0 load 0 scan 0 commit 0; index:id=value (0-based): 0:103=0
+# scan: close 13
+ne none		0	0/509	0
+>	1	ne none	1	86	0	0	0	0
+>	1	ne none	2	7	0	0	0	0
+>	1	ne none	3	76	0	0	0	0
+>	1	ne none	4	141	0	0	0	0
+!	509	work : ne none : 5 : Commit Records/Requests
+>	1	ne none	5	75	1	0	0	509
+>	1	ne none	6	141	0	0	0	0
+>	1	ne none	7	68	0	0	1	0
+>	1	ne none	8	9	0	0	0	0
+>	1	ne none	9	70	0	0	1	0
+>	1	ne none	10	103	0	0	1	0
+ne rep1 only		0	0/0	0
+>	1	ne rep1 only	1	86	0	0	0	0
+>	1	ne rep1 only	2	7	0	0	0	0
+>	1	ne rep1 only	3	76	0	0	0	0
+>	1	ne rep1 only	4	141	0	0	0	0
+>	1	ne rep1 only	5	75	0	0	0	0
+>	1	ne rep1 only	6	141	0	0	0	0
+>	1	ne rep1 only	7	68	0	0	1	0
+>	1	ne rep1 only	9	70	0	0	1	0
+>	1	ne rep1 only	10	103	0	0	1	0
+ne rep2 only		0	0/0	0
+>	1	ne rep2 only	1	86	0	0	0	0
+>	1	ne rep2 only	2	7	0	0	0	0
+>	1	ne rep2 only	3	76	0	0	0	0
+>	1	ne rep2 only	4	141	0	0	0	0
+>	1	ne rep2 only	5	75	0	0	0	0
+>	1	ne rep2 only	6	141	0	0	0	0
+>	1	ne rep2 only	7	68	0	0	1	0
+>	1	ne rep2 only	9	70	0	0	1	0
+>	1	ne rep2 only	10	103	0	0	1	0
+ne all three		0	000/0	0
+>	1	ne all three	1	86	0	0	0	0
+>	1	ne all three	2	7	0	0	0	0
+>	1	ne all three	3	76	0	0	0	0
+>	1	ne all three	4	141	0	0	0	0
+>	1	ne all three	5	76	0	0	0	0
+>	1	ne all three	6	141	0	0	0	0
+>	1	ne all three	7	76	0	0	0	0
+>	1	ne all three	8	141	0	0	0	0
+>	1	ne all three	9	75	0	0	0	0
+>	1	ne all three	10	141	0	0	0	0
+>	1	ne all three	11	68	0	0	1	0
+>	1	ne all three	13	70	0	0	1	0
+>	1	ne all three	14	103	0	0	1	0
+ne clear rep2		0	0/0	0
+>	1	ne clear rep2	1	86	0	0	0	0
+>	1	ne clear rep2	2	16	0	0	0	0
+>	1	ne clear rep2	3	76	0	0	0	0
+>	1	ne clear rep2	4	141	0	0	0	0
+>	1	ne clear rep2	5	75	0	0	0	0
+>	1	ne clear rep2	6	141	0	0	0	0
+>	1	ne clear rep2	7	68	0	0	1	0
+>	1	ne clear rep2	9	70	0	0	1	0
+>	1	ne clear rep2	10	103	0	0	1	0
+ne edit other		0	0/0	0
+>	1	ne edit other	1	86	0	0	0	0
+>	1	ne edit other	2	16	0	0	0	0
+>	1	ne edit other	3	76	0	0	0	0
+>	1	ne edit other	4	141	0	0	0	0
+>	1	ne edit other	5	75	0	0	0	0
+>	1	ne edit other	6	141	0	0	0	0
+>	1	ne edit other	7	68	0	0	1	0
+>	1	ne edit other	9	70	0	0	1	0
+>	1	ne edit other	10	103	0	0	1	0
+ne clear rep1		0	0/0	0
+>	1	ne clear rep1	1	86	0	0	0	0
+>	1	ne clear rep1	2	16	0	0	0	0
+>	1	ne clear rep1	3	76	0	0	0	0
+>	1	ne clear rep1	4	141	0	0	0	0
+>	1	ne clear rep1	5	75	0	0	0	0
+>	1	ne clear rep1	6	141	0	0	0	0
+>	1	ne clear rep1	7	68	0	0	1	0
+>	1	ne clear rep1	9	70	0	0	1	0
+>	1	ne clear rep1	10	103	0	0	1	0
+count		0	3	0
+>	1	count	1	103	0	0	1	0

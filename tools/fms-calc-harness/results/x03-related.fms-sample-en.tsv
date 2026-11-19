@@ -1,0 +1,65 @@
+# Record context: FileMaker Server sample en_FMServer_Sample.fmp12. Table
+# occurrences Tasks (03d00001), Related Tasks (03d00003, self-join of Tasks),
+# Assignees (03d00004, no records), Attachments (03d00005, no records). Tasks
+# has 12 records, IDs 27..38; TASK ID MATCH FIELD = 7 1 3 12 5 6 8 11 9 2 10 4.
+# @ 03d00001 30 records=12
+Get ( RecordID ) & " " & Task & " " & ${TASK ID MATCH FIELD}	0	1/1/0	30 Update Web Page 12
+Get ( RecordNumber )	0	2/2/0	4
+Get ( FoundCount )	0	2/2/0	12
+Get ( TotalRecordCount )	0	2/2/0	12
+${Related Tasks}::Task	0	1/1/0	Site Map Sketch
+${Related Tasks}::${TASK ID MATCH FIELD}	0	1/2/0	7
+List ( ${Related Tasks}::Task )	0	1/1/0	Site Map Sketch\rChecklist\rHire New Sales Person\rUpdate Web Page\rPay Internet Service Bill\rPlan Holiday\rReview mock ups\rWrite Page Text\rNew Logo Art\rDetermine Budget for Marketing Campaign\rSend Art to Vendor\rRepair Water Damage in Kitchen
+Count ( ${Related Tasks}::Task )	0	2/2/0	12
+Sum ( ${Related Tasks}::${TASK ID MATCH FIELD} )	0	2/2/0	78
+Average ( ${Related Tasks}::${TASK ID MATCH FIELD} )	0	2/2/0	6.5
+Min ( ${Related Tasks}::${TASK ID MATCH FIELD} )	0	2/2/0	1
+Max ( ${Related Tasks}::${TASK ID MATCH FIELD} )	0	2/2/0	12
+StDev ( ${Related Tasks}::${TASK ID MATCH FIELD} )	0	2/2/0	3.6055512754639893
+Sum ( ${Related Tasks}::${TASK ID MATCH FIELD} ; 100 )	0	2/2/0	107
+Sum ( ${Related Tasks}::${TASK ID MATCH FIELD} ; ${TASK ID MATCH FIELD} )	0	2/2/0	19
+Last ( ${Related Tasks}::Task )	0	1/1/0	Repair Water Damage in Kitchen
+GetNthRecord ( ${Related Tasks}::Task ; 1 )	0	1/1/0	Site Map Sketch
+GetNthRecord ( ${Related Tasks}::Task ; 2 )	0	1/1/0	Checklist
+GetNthRecord ( ${Related Tasks}::Task ; 12 )	0	1/1/0	Repair Water Damage in Kitchen
+GetNthRecord ( ${Related Tasks}::Task ; 13 )	14	2/2/0	?
+GetNthRecord ( ${Related Tasks}::Task ; 0 )	14	2/2/0	?
+GetNthRecord ( ${Related Tasks}::Task ; -1 )	14	2/2/0	?
+GetNthRecord ( Task ; 1 )	0	1/1/0	Site Map Sketch
+GetNthRecord ( Task ; 2 )	0	1/1/0	Checklist
+GetNthRecord ( Task ; 4 )	0	1/1/0	Update Web Page
+GetNthRecord ( Task ; 13 )	14	2/2/0	?
+${Related Tasks}::Task[1]	0	1/1/0	Site Map Sketch
+${Related Tasks}::Task[2]	14	2/2/0	?
+GetRepetition ( ${Related Tasks}::Task ; 1 )	0	1/1/0	Site Map Sketch
+IsEmpty ( Assignees::Name )	0	2/2/0	1
+Assignees::Name & "|"	0	1/1/0	|
+Assignees::${TASK ID MATCH FIELD} + 1	0	2/2/0	1
+Count ( Assignees::Name )	0	2/2/0	0
+Sum ( Assignees::${TASK ID MATCH FIELD} )	0	2/2/0	
+Sum ( Assignees::${TASK ID MATCH FIELD} ) + 1	0	2/2/0	1
+Average ( Assignees::${TASK ID MATCH FIELD} )	0	2/2/0	
+Max ( Assignees::${TASK ID MATCH FIELD} )	0	1/1/0	
+List ( Assignees::Name )	0	1/1/0	
+Last ( Assignees::Name )	0	1/1/0	
+GetNthRecord ( Assignees::Name ; 1 )	14	2/2/0	?
+Count ( Assignees::Name ; Attachments::${File Name} )	102	2/2/0	?
+${Assignee Number}	0	2/2/0	0
+${Attachment Number}	0	2/2/0	0
+${Days Till Due}	0	2/2/0	0
+${Time Frame}	0	2/1/0	2015
+${Time Frame Order}	0	2/2/0	7
+# @ 03d00003 33 records=12
+Get ( RecordID ) & " " & Task	0	1/1/0	33 Review mock ups
+${Related Tasks}::Task	0	1/1/0	Review mock ups
+Tasks::Task	0	1/1/0	Site Map Sketch
+List ( Tasks::Task )	0	1/1/0	Site Map Sketch\rChecklist\rHire New Sales Person\rUpdate Web Page\rPay Internet Service Bill\rPlan Holiday\rReview mock ups\rWrite Page Text\rNew Logo Art\rDetermine Budget for Marketing Campaign\rSend Art to Vendor\rRepair Water Damage in Kitchen
+# @ 03d00001 38 records=12
+Get ( RecordID ) & " " & Task	0	1/1/0	38 Repair Water Damage in Kitchen
+${Related Tasks}::Task	0	1/1/0	Site Map Sketch
+Count ( ${Related Tasks}::Task )	0	2/2/0	12
+# @ 03d00001 records=12
+${Related Tasks}::Task	1224	2/2/0	?
+Task	1224	2/2/0	?
+Count ( ${Related Tasks}::Task )	1224	2/2/0	?
+Get ( RecordNumber )	0	2/2/0	0

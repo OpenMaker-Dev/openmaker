@@ -1,0 +1,20 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="1120" height="380" viewBox="0 0 1120 380" role="img" aria-labelledby="title desc">
+<title id="title">OpenMaker client capability coverage</title>
+<desc id="desc">68 unequal groups. Baseline: 21 implemented, 24 partial, 19 unavailable, 4 unverified. Current: 21 implemented, 31 partial, 12 unavailable, 4 unverified. These counts are not a native parity percentage.</desc>
+<rect width="1120" height="380" fill="#ffffff"/>
+<g font-family="sans-serif" fill="#17212f"><text x="32" y="40" font-size="24" font-weight="700">Client capability coverage</text><text x="32" y="67" font-size="15">68 unequal groups · implementation scope, not a native parity percentage</text>
+<text x="32" y="144" font-size="16">November 1</text>
+<rect x="178" y="117" width="273" height="46" fill="#28794e"/><text x="314.5" y="146" fill="white" text-anchor="middle" font-size="16">21</text>
+<rect x="451" y="117" width="312" height="46" fill="#86600f"/><text x="607.0" y="146" fill="white" text-anchor="middle" font-size="16">24</text>
+<rect x="763" y="117" width="247" height="46" fill="#ae3d43"/><text x="886.5" y="146" fill="white" text-anchor="middle" font-size="16">19</text>
+<rect x="1010" y="117" width="52" height="46" fill="#6b7280"/><text x="1036.0" y="146" fill="white" text-anchor="middle" font-size="16">4</text>
+<text x="32" y="230" font-size="16">Current</text>
+<rect x="178" y="203" width="273" height="46" fill="#28794e"/><text x="314.5" y="232" fill="white" text-anchor="middle" font-size="16">21</text>
+<rect x="451" y="203" width="403" height="46" fill="#86600f"/><text x="652.5" y="232" fill="white" text-anchor="middle" font-size="16">31</text>
+<rect x="854" y="203" width="156" height="46" fill="#ae3d43"/><text x="932.0" y="232" fill="white" text-anchor="middle" font-size="16">12</text>
+<rect x="1010" y="203" width="52" height="46" fill="#6b7280"/><text x="1036.0" y="232" fill="white" text-anchor="middle" font-size="16">4</text>
+<rect x="32" y="287" width="16" height="16" fill="#28794e"/><text x="56" y="301" font-size="15">Implemented</text>
+<rect x="300" y="287" width="16" height="16" fill="#86600f"/><text x="324" y="301" font-size="15">Partial</text>
+<rect x="568" y="287" width="16" height="16" fill="#ae3d43"/><text x="592" y="301" font-size="15">Unavailable</text>
+<rect x="836" y="287" width="16" height="16" fill="#6b7280"/><text x="860" y="301" font-size="15">Unverified</text>
+<text x="32" y="348" font-size="14">Native paired acceptance remains incomplete; see the capability map for limits.</text></g></svg>

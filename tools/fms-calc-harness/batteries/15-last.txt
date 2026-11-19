@@ -1,0 +1,28 @@
+Let([$Case1=1];$case1)
+Let([$$Case2=1];$$CASE2)
+Let([cAse=1];case)
+SetPrecision(Evaluate("1/3");30)
+Evaluate("SetPrecision(1/3;30)")
+SetPrecision(SetPrecision(1/3;30)+0;20)
+SetPrecision(1/3 + SetPrecision(1/3;30);20)
+SetPrecision(Let(x=1/3;x);25)
+SetPrecision(If(1;1/3;0);25)
+SetPrecision(Sqrt(2);20)
+SetPrecision(Sin(1);20)
+SetPrecision(Exp(1);16)
+SetPrecision(Round(2/3;20);25)
+Let([$p=SetPrecision(1/3;30)];$p & "")
+GetAsText(SetPrecision(1/3;30))
+-12345678901234567890
+-(10^20)+1
+-1/3
+-0.000000000001
+Truncate(-0.5;0) & ""
+Round(-0.4;0) & ""
+Int(-0.9) & ""
+0 * -5 & ""
+-5 + 5 & ""
+"abc" & 0.10
+"abc" & 1.50
+"abc" & 1e3
+"abc" & .5

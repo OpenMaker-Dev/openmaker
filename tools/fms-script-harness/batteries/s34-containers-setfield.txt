@@ -1,0 +1,72 @@
+# Set Field into a container field in a server script session
+# (containers.md, "Implementation notes (OpenMaker Server scripts)"):
+# calculated data, a picture, text, numbers and dates, another record's
+# container value, clearing, and what calculations read back before and
+# after the commit. Base file: contacts-en (Contacts::Photo is a container
+# field). The library members the run writes are read from the run copy.
+== data
+New Record/Request
+Set Field [ Contacts::Photo ; Base64Decode ( "aGVsbG8=" ; "a.txt" ) ]
+Set Variable [ $$open ; GetAsText ( Contacts::Photo ) & "|" & Length ( Contacts::Photo ) & "|" & GetContainerAttribute ( Contacts::Photo ; "filename" ) & "|" & Base64Encode ( Contacts::Photo ) & "|" & VerifyContainer ( Contacts::Photo ) & "|" & IsEmpty ( Contacts::Photo ) & "|" & GetAsNumber ( Contacts::Photo ) ]
+Commit Records/Requests [ With dialog: Off ]
+Set Variable [ $$committed ; GetAsText ( Contacts::Photo ) & "|" & Length ( Contacts::Photo ) & "|" & GetContainerAttribute ( Contacts::Photo ; "filename" ) & "|" & Base64Encode ( Contacts::Photo ) & "|" & VerifyContainer ( Contacts::Photo ) & "|" & GetContainerAttribute ( Contacts::Photo ; "internalSize" ) ]
+Set Variable [ $$id ; Get ( RecordID ) ]
+Exit Script [ Get ( LastError ) ]
+== picture
+New Record/Request
+Set Field [ Contacts::Photo ; Base64Decode ( "iVBORw0KGgoAAAANSUhEUgAAAAMAAAACCAIAAAASFvFNAAAAEElEQVQI12P8zwAFTDAKADMpAQM7sWkeAAAAAElFTkSuQmCC" ; "red.png" ) ]
+Commit Records/Requests [ With dialog: Off ]
+Set Variable [ $$committed ; GetAsText ( Contacts::Photo ) & "|" & Length ( Contacts::Photo ) & "|" & GetWidth ( Contacts::Photo ) & "x" & GetHeight ( Contacts::Photo ) & "|" & GetContainerAttribute ( Contacts::Photo ; "internalSize" ) & "|" & VerifyContainer ( Contacts::Photo ) ]
+Exit Script [ Get ( LastError ) ]
+== text
+New Record/Request
+Set Field [ Contacts::Photo ; "hello" ]
+Set Variable [ $$text ; Get ( LastError ) & "|" & GetAsText ( Contacts::Photo ) & "|" & Length ( Contacts::Photo ) & "|" & Base64Encode ( Contacts::Photo ) & "|" & IsEmpty ( Contacts::Photo ) & "|" & GetContainerAttribute ( Contacts::Photo ; "filename" ) & "|" & VerifyContainer ( Contacts::Photo ) ]
+Commit Records/Requests [ With dialog: Off ]
+Set Variable [ $$committed ; GetAsText ( Contacts::Photo ) & "|" & Length ( Contacts::Photo ) & "|" & Base64Encode ( Contacts::Photo ) & "|" & GetContainerAttribute ( Contacts::Photo ; "filename" ) & "|" & VerifyContainer ( Contacts::Photo ) ]
+Set Field [ Contacts::Photo ; "image:/photo.png" ]
+Set Variable [ $$path ; Get ( LastError ) & "|" & GetAsText ( Contacts::Photo ) & "|" & Length ( Contacts::Photo ) & "|" & GetContainerAttribute ( Contacts::Photo ; "filename" ) ]
+Set Field [ Contacts::Photo ; 12 ]
+Set Variable [ $$number ; Get ( LastError ) & "|" & GetAsText ( Contacts::Photo ) & "|" & GetAsNumber ( Contacts::Photo ) ]
+Set Field [ Contacts::Photo ; Date ( 10 ; 29 ; 2026 ) ]
+Set Variable [ $$date ; Get ( LastError ) & "|" & GetAsText ( Contacts::Photo ) ]
+Commit Records/Requests [ With dialog: Off ]
+Set Variable [ $$after ; GetAsText ( Contacts::Photo ) ]
+Exit Script [ Get ( LastError ) ]
+== copy
+New Record/Request
+Set Field [ Contacts::Photo ; Base64Decode ( "Y29weQ==" ; "copy.txt" ) ]
+Commit Records/Requests [ With dialog: Off ]
+Set Variable [ $c ; Contacts::Photo ]
+New Record/Request
+Set Field [ Contacts::Photo ; $c ]
+Commit Records/Requests [ With dialog: Off ]
+Set Variable [ $$copy ; GetAsText ( Contacts::Photo ) & "|" & Base64Encode ( Contacts::Photo ) & "|" & ( Contacts::Photo = $c ) ]
+New Record/Request
+Set Field [ Contacts::Photo ; Base64Decode ( "Y29weQ==" ; "copy.txt" ) ]
+Commit Records/Requests [ With dialog: Off ]
+Set Variable [ $$same ; GetAsText ( Contacts::Photo ) & "|" & ( Contacts::Photo = $c ) ]
+Exit Script [ Get ( LastError ) ]
+== clear
+New Record/Request
+Set Field [ Contacts::Photo ; Base64Decode ( "Y2xlYXI=" ; "clear.txt" ) ]
+Commit Records/Requests [ With dialog: Off ]
+Set Field [ Contacts::Photo ; "" ]
+Set Variable [ $$cleared ; Get ( LastError ) & "|" & IsEmpty ( Contacts::Photo ) & "|" & GetAsText ( Contacts::Photo ) ]
+Commit Records/Requests [ With dialog: Off ]
+Exit Script [ Get ( LastError ) ]
+== variable
+Set Variable [ $v ; Base64Decode ( "dmFy" ; "v.txt" ) ]
+New Record/Request
+Set Field [ Contacts::Photo ; $v ]
+Set Field [ Contacts::Photo ; $v ]
+Commit Records/Requests [ With dialog: Off ]
+Set Variable [ $$var ; GetAsText ( Contacts::Photo ) & "|" & Base64Encode ( Contacts::Photo ) ]
+Exit Script [ Get ( LastError ) ]
+--- run
+data		$$open	$$committed	$$id
+picture		$$committed
+text		$$text	$$committed	$$path	$$number	$$date	$$after
+copy		$$copy	$$same
+clear		$$cleared
+variable		$$var

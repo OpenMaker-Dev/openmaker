@@ -1,0 +1,66 @@
+# scan data: open 0 load 0 scan 0 commit 0; index:id=value (0-based): 0:7=0 1:76=0 2:141=0 3:75=0 4:141=0 5:141=0 6:103=0
+# scan picture: open 0 load 0 scan 0 commit 0; index:id=value (0-based): 0:7=0 1:76=0 2:75=0 3:141=0 4:103=0
+# scan text: open 0 load 0 scan 0 commit 0; index:id=value (0-based): 0:7=0 1:76=0 2:141=0 3:75=0 4:141=0 5:76=0 6:141=0 7:76=0 8:141=0 9:76=0 10:141=0 11:75=0 12:141=0 13:103=0
+# scan copy: open 0 load 0 scan 0 commit 0; index:id=value (0-based): 0:7=0 1:76=0 2:75=0 3:141=0 4:7=0 5:76=0 6:75=0 7:141=0 8:7=0 9:76=0 10:75=0 11:141=0 12:103=0
+# scan clear: open 0 load 0 scan 0 commit 0; index:id=value (0-based): 0:7=0 1:76=0 2:75=0 3:76=0 4:141=0 5:75=0 6:103=0
+# scan variable: open 0 load 0 scan 0 commit 0; index:id=value (0-based): 0:141=0 1:7=0 2:76=0 3:76=0 4:75=0 5:141=0 6:103=0
+# scan: close 13
+data		0	0	0	a.txt|5|a.txt|aGVsbG8=\r\n|?|0|0	a.txt|5|a.txt|aGVsbG8=\r\n|?|37	1
+>	1	data	1	7	0	0	0	0
+>	1	data	2	76	0	0	0	0
+>	1	data	3	141	0	0	0	0
+>	1	data	4	75	0	0	0	0
+>	1	data	5	141	0	0	0	0
+>	1	data	6	141	0	0	0	0
+>	1	data	7	103	0	0	1	0
+picture		0	0	0	red.png|72|0x0|107|?
+>	1	picture	1	7	0	0	0	0
+>	1	picture	2	76	0	0	0	0
+>	1	picture	3	75	0	0	0	0
+>	1	picture	4	141	0	0	0	0
+>	1	picture	5	103	0	0	1	0
+text		0	0	0	0|hello|5|aGVsbG8=\r\n|0||?	hello|5|aGVsbG8=\r\n||?	0|image:/photo.png|16|	0|12|	0|10/29/2026	10/29/2026
+>	1	text	1	7	0	0	0	0
+>	1	text	2	76	0	0	0	0
+>	1	text	3	141	0	0	0	0
+>	1	text	4	75	0	0	0	0
+>	1	text	5	141	0	0	0	0
+>	1	text	6	76	0	0	0	0
+>	1	text	7	141	0	0	0	0
+>	1	text	8	76	0	0	0	0
+>	1	text	9	141	0	0	0	0
+>	1	text	10	76	0	0	0	0
+>	1	text	11	141	0	0	0	0
+>	1	text	12	75	0	0	0	0
+>	1	text	13	141	0	0	0	0
+>	1	text	14	103	0	0	1	0
+copy		0	0	0	copy.txt|Y29weQ==\r\n|1	copy.txt|1
+>	1	copy	1	7	0	0	0	0
+>	1	copy	2	76	0	0	0	0
+>	1	copy	3	75	0	0	0	0
+>	1	copy	4	141	0	0	0	0
+>	1	copy	5	7	0	0	0	0
+>	1	copy	6	76	0	0	0	0
+>	1	copy	7	75	0	0	0	0
+>	1	copy	8	141	0	0	0	0
+>	1	copy	9	7	0	0	0	0
+>	1	copy	10	76	0	0	0	0
+>	1	copy	11	75	0	0	0	0
+>	1	copy	12	141	0	0	0	0
+>	1	copy	13	103	0	0	1	0
+clear		0	0	0	0|1|
+>	1	clear	1	7	0	0	0	0
+>	1	clear	2	76	0	0	0	0
+>	1	clear	3	75	0	0	0	0
+>	1	clear	4	76	0	0	0	0
+>	1	clear	5	141	0	0	0	0
+>	1	clear	6	75	0	0	0	0
+>	1	clear	7	103	0	0	1	0
+variable		0	0	0	v.txt|dmFy\r\n
+>	1	variable	1	141	0	0	0	0
+>	1	variable	2	7	0	0	0	0
+>	1	variable	3	76	0	0	0	0
+>	1	variable	4	76	0	0	0	0
+>	1	variable	5	75	0	0	0	0
+>	1	variable	6	141	0	0	0	0
+>	1	variable	7	103	0	0	1	0

@@ -1,0 +1,367 @@
+/* The Dashboard (src/views/dashboard.rs), laid out as FileMaker Server's
+   at 1440 px (docs/re/admin-console.md 4.1): System Overview across the
+   page, then Volume Status in the left third and System Statistics in the
+   right two thirds. */
+
+/* The counters: big light numbers over gray captions, with a rule
+   between them. */
+
+.overview-counters {
+  display: flex;
+}
+
+.counter {
+  box-sizing: border-box;
+  width: 223px;
+}
+
+.counter + .counter {
+  padding-left: 9.75px;
+  border-left: 1px solid var(--border);
+}
+
+.counter-number {
+  font-size: 29.9px;
+  font-weight: 300;
+  line-height: 38px;
+  letter-spacing: normal;
+}
+
+.counter-total {
+  margin-left: 3px;
+  font-size: 13px;
+  font-weight: 400;
+  line-height: 1;
+}
+
+.counter-caption {
+  margin-top: 4px;
+  color: var(--label);
+}
+
+/* The client types: a colored chip, the count and "Connections". */
+
+.client-types {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 10px 20px;
+  margin-top: 27px;
+}
+
+.client-type {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+}
+
+.client-chip {
+  padding: 4px 10px;
+  color: #ffffff;
+  font-size: 11.7px;
+  font-weight: 500;
+  line-height: 16px;
+  letter-spacing: normal;
+  white-space: nowrap;
+}
+
+.client-chip.pro {
+  background: #1d2e6b;
+}
+
+.client-chip.go {
+  background: #2440a8;
+}
+
+.client-chip.webdirect {
+  background: #2a4bc7;
+}
+
+.client-chip.additional {
+  background: var(--accent);
+}
+
+.client-count {
+  font-size: 16px;
+  font-weight: 400;
+}
+
+.client-caption {
+  color: var(--label);
+  font-size: 11.7px;
+  font-weight: 400;
+}
+
+/* The server's facts: three columns of label and value, ruled apart. */
+
+.server-facts {
+  display: grid;
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+  margin: 30px -9.75px 0;
+}
+
+.facts-column {
+  padding: 0 9.75px;
+}
+
+.facts-column + .facts-column {
+  border-left: 1px solid var(--border);
+}
+
+.fact + .fact {
+  margin-top: 12px;
+}
+
+.fact-label {
+  color: var(--label);
+}
+
+.fact-value {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+  margin-top: 3px;
+  overflow-wrap: anywhere;
+}
+
+.fact-value .link-button {
+  margin-right: -3.25px;
+  padding-top: 0;
+  padding-bottom: 0;
+  line-height: 22px;
+}
+
+/* Volume Status and System Statistics, below a rule. */
+
+.dashboard-lower {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) minmax(0, 2fr);
+  margin: 37px -9.75px 0;
+  border-top: 1px solid var(--border);
+}
+
+.volume {
+  padding: 27px 30px 0 9.75px;
+}
+
+.statistics {
+  padding: 27px 9.75px 38px;
+  border-left: 1px solid var(--border);
+}
+
+.volume-chart {
+  position: relative;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  height: 180px;
+  margin-bottom: 22px;
+}
+
+.doughnut-ring {
+  display: block;
+}
+
+.doughnut-free,
+.doughnut-used {
+  fill: none;
+  stroke-width: 16;
+}
+
+.doughnut-free {
+  stroke: #ececec;
+}
+
+.doughnut-used {
+  stroke: var(--accent);
+}
+
+.volume-center {
+  position: absolute;
+  inset: 0;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+}
+
+.volume-percent {
+  font-size: 29.9px;
+  font-weight: 300;
+  line-height: 34px;
+  letter-spacing: normal;
+}
+
+.volume-unit {
+  margin-left: 3px;
+  font-size: 20px;
+}
+
+.volume-caption {
+  margin-top: 2px;
+  color: var(--label);
+}
+
+.volume-rows {
+  margin: 0;
+  padding-top: 27px;
+  border-top: 1px solid var(--border);
+}
+
+.volume-row {
+  display: flex;
+  justify-content: space-between;
+  gap: 12px;
+}
+
+.volume-row + .volume-row {
+  margin-top: 16.5px;
+}
+
+.volume-row dt {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+}
+
+.volume-row dd {
+  margin: 0;
+  text-align: right;
+  white-space: nowrap;
+}
+
+.volume-error {
+  margin: 16px 0 0;
+}
+
+.volume-key {
+  width: 8px;
+  height: 8px;
+}
+
+.volume-key.used {
+  background: var(--accent);
+}
+
+.volume-key.free {
+  background: #e2e2e2;
+}
+
+/* The line chart (src/chart.rs) and the tabs under it. */
+
+.chart-frame {
+  padding-left: 43px;
+}
+
+.chart {
+  display: block;
+  width: 100%;
+  max-width: 680px;
+  height: auto;
+}
+
+.chart text {
+  font-family: var(--font);
+  letter-spacing: normal;
+}
+
+.chart-title {
+  fill: #666666;
+  font-size: 12px;
+  font-weight: 700;
+}
+
+.chart-tick,
+.chart-axis-title {
+  fill: #666666;
+  font-size: 12px;
+  font-weight: 400;
+}
+
+.chart-grid {
+  stroke: rgba(0, 0, 0, 0.1);
+  stroke-width: 1;
+  shape-rendering: crispEdges;
+}
+
+.chart-fill {
+  fill: rgba(47, 84, 229, 0.06);
+}
+
+.chart-line {
+  fill: none;
+  stroke: var(--accent);
+  stroke-width: 1.2;
+}
+
+.chart-point {
+  fill: #222222;
+}
+
+.statistics-unavailable {
+  padding: 40px 0;
+}
+
+.chart-tabs {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  margin-top: 21px;
+  padding-left: 14px;
+  font-weight: 400;
+}
+
+.chart-tab {
+  text-decoration: none;
+}
+
+a.chart-tab:hover {
+  text-decoration: underline;
+}
+
+.chart-tab.current {
+  color: var(--label);
+}
+
+.chart-tab-separator {
+  margin: 0 13px;
+  color: #cccccc;
+}
+
+@media (max-width: 760px) {
+  .server-facts {
+    grid-template-columns: minmax(0, 1fr);
+    gap: 12px;
+    margin-top: 24px;
+  }
+
+  .facts-column + .facts-column {
+    border-left: 0;
+  }
+
+  .dashboard-lower {
+    grid-template-columns: minmax(0, 1fr);
+  }
+
+  .volume {
+    padding-right: 9.75px;
+  }
+
+  .statistics {
+    margin-top: 27px;
+    border-top: 1px solid var(--border);
+    border-left: 0;
+  }
+
+  /* Scaled to a phone's width the chart's text would be unreadable: it
+     keeps a legible size and scrolls on its own. */
+  .chart-frame {
+    padding-left: 0;
+    overflow-x: auto;
+  }
+
+  .chart {
+    min-width: 520px;
+  }
+}

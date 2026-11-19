@@ -1,0 +1,49 @@
+# Error -1: the JSON functions that report it and how it travels
+# (calc-values.md 13, value-core answers).
+JSONMakeArray ( "" ; "" ; JSONString )	-1	2/2/0	?
+EvaluationError ( JSONMakeArray ( "" ; "" ; JSONString ) )	0	2/2/0	-1
+EvaluationError ( JSONMakeArray ( "" ; "," ; JSONString ) )	0	2/2/0	-1
+EvaluationError ( JSONUniqueValues ( "[1,2]" ; "" ; 1 ; 2 ) )	0	2/2/0	-1
+EvaluationError ( JSONUniqueValues ( "[1,2]" ; "" ; 1 ) )	0	2/2/0	-1
+EvaluationError ( JSONRemoveValues ( "[1,2]" ; "" ; "[1]" ; 1 ) )	0	2/2/0	-1
+EvaluationError ( JSONMakeArray ( "" ; "" ; JSONString ) ) + 1	0	2/2/0	0
+EvaluationError ( JSONMakeArray ( "" ; "" ; JSONString ) ) & "x"	0	1/1/0	-1x
+GetAsText ( EvaluationError ( JSONMakeArray ( "" ; "" ; JSONString ) ) )	0	1/1/0	-1
+EvaluationError ( JSONMakeArray ( "" ; "" ; JSONString ) & 1/0 )	0	2/2/0	-1
+EvaluationError ( 1/0 & JSONMakeArray ( "" ; "" ; JSONString ) )	0	2/2/0	15
+1/0 & JSONMakeArray ( "" ; "" ; JSONString )	15	1/1/0	??
+JSONMakeArray ( "" ; "" ; JSONString ) & 1/0	-1	1/1/0	??
+JSONMakeArray ( "" ; "" ; JSONString ) & "x"	-1	1/1/0	?x
+JSONMakeArray ( "" ; "" ; JSONString ) + 1	-1	2/2/0	?
+IsValid ( JSONMakeArray ( "" ; "" ; JSONString ) )	0	2/2/0	0
+If ( JSONMakeArray ( "" ; "" ; JSONString ) ; "t" ; "f" )	-1	1/1/0	t
+EvaluationError ( EvaluationError ( JSONMakeArray ( "" ; "" ; JSONString ) ) )	0	2/2/0	0
+Let ( x = JSONMakeArray ( "" ; "" ; JSONString ) ; "ok" )	-1	1/1/0	ok
+EvaluationError ( Let ( x = JSONMakeArray ( "" ; "" ; JSONString ) ; "ok" ) )	0	2/2/0	-1
+IsEmpty ( JSONMakeArray ( "" ; "" ; JSONString ) )	-1	2/2/0	0
+Length ( JSONMakeArray ( "" ; "" ; JSONString ) )	-1	2/2/0	1
+Evaluate ( "JSONMakeArray ( \"\" ; \"\" ; JSONString )" )	-1	2/2/0	?
+EvaluationError ( Evaluate ( "JSONMakeArray ( \"\" ; \"\" ; JSONString )" ) )	0	2/2/0	-1
+JSONMakeArray ( "" ; "" ; JSONNumber )	-1	2/2/0	?
+JSONMakeArray ( "" ; "¶" ; JSONRaw )	-1	2/2/0	?
+JSONMakeArray ( " " ; "" ; JSONString )	0	8/1/0	[" "]
+JSONMakeArray ( "a" ; "" ; JSONString )	0	8/1/0	["a"]
+JSONMakeArray ( 1/0 ; "" ; JSONString )	15	8/1/0	["?"]
+JSONMakeArray ( TextColor ( "" ; 255 ) ; "" ; JSONString )	-1	2/2/0	?
+JSONMakeArray ( GetAsNumber ( "" ) ; "" ; JSONString )	-1	2/2/0	?
+JSONMakeArray ( "¶" ; "" ; JSONString )	0	8/1/0	[""]
+JSONUniqueValues ( "[1,2]" ; "" ; 1 ; 2 )	-1	2/2/0	?
+JSONValueExists ( "[1,2]" ; "" ; 1 ; 2 )	1202	2/2/0	?
+JSONValueCount ( "[1,2]" ; "" ; 1 ; 2 )	1202	2/2/0	?
+JSONAnyValuesExist ( "[1,2]" ; "" ; "[1]" ; 2 )	1202	2/2/0	?
+EvaluationError ( JSONValueExists ( "[1,2]" ; "" ; 1 ; 2 ) )	1202	2/2/0	?
+GetAsBoolean ( JSONMakeArray ( "" ; "" ; JSONString ) )	-1	2/2/0	1
+Abs ( EvaluationError ( JSONMakeArray ( "" ; "" ; JSONString ) ) )	0	2/2/0	1
+EvaluationError ( JSONMakeArray ( "" ; "" ; JSONString ) ) < 0	0	2/2/0	1
+List ( JSONMakeArray ( "" ; "" ; JSONString ) ; 1 )	-1	1/1/0	?\r1
+JSONParsedState ( JSONMakeArray ( "" ; "" ; JSONString ) )	-1	2/2/0	0
+JSONMakeArray ( JSONMakeArray ( "" ; "" ; JSONString ) ; "" ; JSONString )	-1	8/1/0	["?"]
+EvaluationError ( JSONMakeArray ( JSONMakeArray ( "" ; "" ; JSONString ) ; "" ; JSONString ) )	0	2/2/0	-1
+JSONMakeArray ( "" ; "" ; JSONString ) = "?"	-1	2/2/0	1
+EvaluationError ( Abs ( 1 ; 2 ) )	1202	2/2/0	?
+EvaluationError ( Sqrt ( -1 ) & JSONMakeArray ( "" ; "" ; JSONString ) )	0	2/2/0	14

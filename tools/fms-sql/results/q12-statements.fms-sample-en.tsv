@@ -1,0 +1,47 @@
+# q12: statements other than SELECT through ExecuteSQL. File: FileMaker
+# Server sample (en), no record context; the harness works on a private copy
+# of the file, so a statement that did change data would show in the COUNT
+# and SELECT probes after it.
+ExecuteSQLe ( "SELECT COUNT(*) FROM Tasks" ; "|" ; "¶" )	0	1/1/0	12
+ExecuteSQLe ( "INSERT INTO Tasks (Task) VALUES ('x')" ; "|" ; "¶" )	3	1/1/0	? ERROR:  (3): Unavailable command
+ExecuteSQLe ( "SELECT COUNT(*) FROM Tasks" ; "|" ; "¶" )	0	1/1/0	12
+ExecuteSQLe ( "INSERT INTO Tasks VALUES (99, 'x')" ; "|" ; "¶" )	8309	1/1/0	? ERROR: FQL0014/(1:25): The number of values in a VALUES row value constructor does not match the number of values in the target.
+ExecuteSQLe ( "INSERT INTO Tasks DEFAULT VALUES" ; "|" ; "¶" )	3	1/1/0	? ERROR:  (3): Unavailable command
+ExecuteSQLe ( "INSERT INTO Tasks (Task) SELECT Task FROM Tasks" ; "|" ; "¶" )	3	1/1/0	? ERROR:  (3): Unavailable command
+ExecuteSQLe ( "UPDATE Tasks SET Task = 'x' WHERE \"TASK ID MATCH FIELD\" = 3" ; "|" ; "¶" )	3	1/1/0	? ERROR:  (3): Unavailable command
+ExecuteSQLe ( "SELECT Task FROM Tasks WHERE \"TASK ID MATCH FIELD\" = 3" ; "|" ; "¶" )	0	1/1/0	Hire New Sales Person
+ExecuteSQLe ( "UPDATE Tasks SET Taskz = 'x'" ; "|" ; "¶" )	8309	1/1/0	? ERROR: FQL0007/(1:17): The column named "Taskz" does not exist in any table in the column reference's scope.
+ExecuteSQLe ( "DELETE FROM Tasks WHERE \"TASK ID MATCH FIELD\" = 3" ; "|" ; "¶" )	3	1/1/0	? ERROR:  (3): Unavailable command
+ExecuteSQLe ( "DELETE FROM Tasks" ; "|" ; "¶" )	3	1/1/0	? ERROR:  (3): Unavailable command
+ExecuteSQLe ( "SELECT COUNT(*) FROM Tasks" ; "|" ; "¶" )	0	1/1/0	12
+ExecuteSQLe ( "CREATE TABLE NewT (a VARCHAR(10), b INT)" ; "|" ; "¶" )	3	1/1/0	? ERROR:  (3): Unavailable command
+ExecuteSQLe ( "SELECT COUNT(*) FROM NewT" ; "|" ; "¶" )	8309	1/1/0	? ERROR: FQL0002/(1:21): The table named "NewT" does not exist.
+ExecuteSQLe ( "DROP TABLE Assignees" ; "|" ; "¶" )	3	1/1/0	? ERROR:  (3): Unavailable command
+ExecuteSQLe ( "SELECT COUNT(*) FROM Assignees" ; "|" ; "¶" )	0	1/1/0	0
+ExecuteSQLe ( "ALTER TABLE Tasks ADD Extra VARCHAR" ; "|" ; "¶" )	3	1/1/0	? ERROR:  (3): Unavailable command
+ExecuteSQLe ( "ALTER TABLE Tasks DROP Task" ; "|" ; "¶" )	3	1/1/0	? ERROR:  (3): Unavailable command
+ExecuteSQLe ( "CREATE INDEX ON Tasks.Task" ; "|" ; "¶" )	3	1/1/0	? ERROR:  (3): Unavailable command
+ExecuteSQLe ( "DROP INDEX ON Tasks.Task" ; "|" ; "¶" )	3	1/1/0	? ERROR:  (3): Unavailable command
+ExecuteSQLe ( "TRUNCATE TABLE Assignees" ; "|" ; "¶" )	3	1/1/0	? ERROR:  (3): Unavailable command
+ExecuteSQLe ( "DECLARE c CURSOR FOR SELECT * FROM Tasks" ; "|" ; "¶" )	3	1/1/0	? ERROR:  (3): Unavailable command
+ExecuteSQLe ( "OPEN c" ; "|" ; "¶" )	8309	1/1/0	? ERROR: FQL0037/(1:5): There is no cursor with the name "c".
+ExecuteSQLe ( "FETCH NEXT FROM c" ; "|" ; "¶" )	8309	1/1/0	? ERROR: FQL0037/(1:16): There is no cursor with the name "c".
+ExecuteSQLe ( "CLOSE c" ; "|" ; "¶" )	8309	1/1/0	? ERROR: FQL0037/(1:6): There is no cursor with the name "c".
+ExecuteSQLe ( "DEALLOCATE c" ; "|" ; "¶" )	8309	1/1/0	? ERROR: FQL0037/(1:11): There is no cursor with the name "c".
+ExecuteSQLe ( "SELECT * FROM Tasks FOR UPDATE" ; "|" ; "¶" )	0	1/1/0	7|Site Map Sketch|2014-02-17|Review this sketch with the team and provide comments.|Business|In Progress|2014|Time Frame|7|2014||0|0|0|-|Days|Results\r1|Checklist|2014-09-30|Create checklist prior to business trip.|Personal|In Progress|2014|Time Frame|7|2014||0|0|0|-|Days|Results\r3|Hire New Sales Person|2014-11-24|Schedule interview with the top ten candidates.|Business|In Progress|2014|Time Frame|7|2014||0|0|0|-|Days|Results\r12|Update Web Page|2015-08-02|Add information about our new products.|Business|In Progress|2015|Time Frame|7|2015||0|0|0|-|Days|Results\r5|Pay Internet Service Bill|2015-08-12|This bill will be paid automatically.|Home|Completed|2015|Time Frame|7|2015||0|0|0|-|Days|Results\r6|Plan Holiday|2015-09-05|Buy airline tickets and book a hotel room.|Home|In Progress|2015|Time Frame|7|2015||0|0|0|-|Days|Results\r8|Review mock ups|2015-09-05|Please include the complete workflow.|Business|Completed|2015|Time Frame|7|2015||0|0|0|-|Days|Results\r11|Write Page Text|2015-09-11|Use the text from the previous version of the web page.|Business|Completed|2015|Time Frame|7|2015||0|0|0|-|Days|Results\r9|New Logo Art|2015-09-13|We need the logo in three different sizes.|Business|In Progress|2015|Time Frame|7|2015||0|0|0|-|Days|Results\r2|Determine Budget for Marketing Campaign|2015-09-19|Tim needs to have the final approval on this.|Business|Completed|2015|Time Frame|7|2015||0|0|0|-|Days|Results\r10|Send Art to Vendor|2015-10-09|Create the new logo for all company materials|Business|In Progress|2015|Time Frame|7|2015||0|0|0|-|Days|Results\r4|Repair Water Damage in Kitchen|2019-08-08|Call plumber to fix a broken valve.|Personal|In Progress|2019|Time Frame|7|2019||0|0|0|-|Days|Results
+ExecuteSQLe ( "SELECT Task FROM Tasks WHERE \"TASK ID MATCH FIELD\" = 3 FOR UPDATE OF Task" ; "|" ; "¶" )	0	1/1/0	Hire New Sales Person
+ExecuteSQLe ( "UPDATE Tasks SET Task = 'x' WHERE CURRENT OF c" ; "|" ; "¶" )	8309	1/1/0	? ERROR: FQL0037/(1:45): There is no cursor with the name "c".
+ExecuteSQLe ( "DELETE FROM FileMaker_Tables" ; "|" ; "¶" )	8309	1/1/0	? ERROR: FQL0048/(1:12): This statement contains an invalid operation on FileMaker system table "FileMaker_Tables".
+ExecuteSQLe ( "INSERT INTO FileMaker_Tables (TableName) VALUES ('x')" ; "|" ; "¶" )	8309	1/1/0	? ERROR: FQL0048/(1:12): This statement contains an invalid operation on FileMaker system table "FileMaker_Tables".
+ExecuteSQLe ( "COMMIT" ; "|" ; "¶" )	8310	1/1/0	? ERROR: FQL0001/(1:1): There is an error in the syntax of the query.
+ExecuteSQLe ( "ROLLBACK" ; "|" ; "¶" )	8310	1/1/0	? ERROR: FQL0001/(1:1): There is an error in the syntax of the query.
+ExecuteSQLe ( "GRANT SELECT ON Tasks TO PUBLIC" ; "|" ; "¶" )	8310	1/1/0	? ERROR: FQL0001/(1:1): There is an error in the syntax of the query.
+ExecuteSQLe ( "CREATE VIEW v AS SELECT * FROM Tasks" ; "|" ; "¶" )	8310	1/1/0	? ERROR: FQL0001/(1:8): There is an error in the syntax of the query.
+ExecuteSQLe ( "WITH x AS (SELECT 1 FROM Tasks) SELECT * FROM x" ; "|" ; "¶" )	8310	1/1/0	? ERROR: FQL0001/(1:1): There is an error in the syntax of the query.
+ExecuteSQLe ( "EXPLAIN SELECT * FROM Tasks" ; "|" ; "¶" )	8310	1/1/0	? ERROR: FQL0001/(1:1): There is an error in the syntax of the query.
+ExecuteSQLe ( "SELECT COUNT(*) FROM Tasks" ; "|" ; "¶" )	0	1/1/0	12
+ExecuteSQLe ( "SELECT Task FROM Tasks WHERE \"TASK ID MATCH FIELD\" = 3" ; "|" ; "¶" )	0	1/1/0	Hire New Sales Person
+EvaluationError ( ExecuteSQL ( "DELETE FROM Tasks" ; "" ; "" ) )	0	2/2/0	3
+EvaluationError ( ExecuteSQL ( "INSERT INTO Tasks (Task) VALUES ('x')" ; "" ; "" ) )	0	2/2/0	3
+EvaluationError ( ExecuteSQL ( "CREATE TABLE NewT (a VARCHAR(10))" ; "" ; "" ) )	0	2/2/0	3
+ExecuteSQL ( "DELETE FROM Tasks" ; "" ; "" )	3	2/2/0	?

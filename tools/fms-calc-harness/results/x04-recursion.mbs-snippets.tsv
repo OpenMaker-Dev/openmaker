@@ -1,0 +1,51 @@
+# Custom functions (no record needed): MBS example Examples/Third Party/
+# FileMaker_Snippet_Storage.fmp12, table occurrence SnippetStorageDB (03d00001).
+# __GEN_Range_ID ( pBeginn ; pEnde ; pAbstand ) = Let ( [ b = pBeginn ] ; Case ( b > pEnde ; "" ;
+#   IsEmpty ( pBeginn ) or IsEmpty ( pEnde ) ; "" ; b = pEnde ; b ; 1 ; b & ¶ & __GEN_Range_ID ( b + pAbstand ; pEnde ; pAbstand ) ) )
+#   (not a tail call: depth = pEnde - pBeginn + 1)
+# __GEN_RandomPW ( pAnzahlZeichen ; pReturn ; pMethod ) = Let ( [ ... ; r = pReturn & <one random character> ] ;
+#   Case ( Length ( r ) < pAnzahlZeichen ; __GEN_RandomPW ( pAnzahlZeichen ; r ; pMethod ) ; 1 ; r ) )
+#   (tail call: depth = pAnzahlZeichen)
+# @ 03d00001 records=0
+__GEN_Range_ID ( 1 ; 5 ; 1 )	0	1/1/0	1\r2\r3\r4\r5
+__GEN_Rabatt ( 100 ; 10 )	0	2/2/0	10
+ValueCount ( __GEN_Range_ID ( 1 ; 9999 ; 1 ) )	0	2/2/0	9999
+ValueCount ( __GEN_Range_ID ( 1 ; 10000 ; 1 ) )	0	2/2/0	10000
+ValueCount ( __GEN_Range_ID ( 1 ; 10001 ; 1 ) )	0	2/2/0	10001
+EvaluationError ( __GEN_Range_ID ( 1 ; 10001 ; 1 ) )	0	2/2/0	0
+Length ( "x" & __GEN_Range_ID ( 1 ; 10001 ; 1 ) & "y" )	0	2/2/0	48901
+Right ( Let ( $a = 1 ; __GEN_Range_ID ( 1 ; 10001 ; 1 ) ) & $a ; 7 )	0	1/1/0	\r100011
+SetRecursion ( ValueCount ( __GEN_Range_ID ( 1 ; 10001 ; 1 ) ) ; 20000 )	0	2/2/0	10001
+SetRecursion ( ValueCount ( __GEN_Range_ID ( 1 ; 20000 ; 1 ) ) ; 20000 )	0	2/2/0	20000
+SetRecursion ( ValueCount ( __GEN_Range_ID ( 1 ; 20001 ; 1 ) ) ; 20000 )	7	2/2/0	?
+SetRecursion ( ValueCount ( __GEN_Range_ID ( 1 ; 50 ; 1 ) ) ; 50 )	0	2/2/0	50
+SetRecursion ( ValueCount ( __GEN_Range_ID ( 1 ; 51 ; 1 ) ) ; 50 )	7	2/2/0	?
+SetRecursion ( ValueCount ( __GEN_Range_ID ( 1 ; 50 ; 1 ) ) ; 49 )	7	2/2/0	?
+Length ( __GEN_RandomPW ( 10 ; "" ; 1 ) )	0	2/2/0	10
+Length ( __GEN_RandomPW ( 10001 ; "" ; 1 ) )	0	2/2/0	10001
+Length ( __GEN_RandomPW ( 49999 ; "" ; 1 ) )	0	2/2/0	49999
+Length ( __GEN_RandomPW ( 50000 ; "" ; 1 ) )	7	2/2/0	?
+Length ( __GEN_RandomPW ( 50001 ; "" ; 1 ) )	7	2/2/0	?
+EvaluationError ( __GEN_RandomPW ( 50001 ; "" ; 1 ) )	7	2/2/0	?
+SetRecursion ( Length ( __GEN_RandomPW ( 50001 ; "" ; 1 ) ) ; 60000 )	0	2/2/0	50001
+SetRecursion ( Length ( __GEN_RandomPW ( 60000 ; "" ; 1 ) ) ; 60000 )	0	2/2/0	60000
+SetRecursion ( Length ( __GEN_RandomPW ( 60001 ; "" ; 1 ) ) ; 60000 )	7	2/2/0	?
+SetRecursion ( Length ( __GEN_RandomPW ( 100 ; "" ; 1 ) ) ; 100 )	0	2/2/0	100
+SetRecursion ( Length ( __GEN_RandomPW ( 101 ; "" ; 1 ) ) ; 100 )	7	2/2/0	?
+While ( [ i = 0 ; n = 0 ] ; i < 6 ; [ n = n + ValueCount ( __GEN_Range_ID ( 1 ; 9000 ; 1 ) ) ; i = i + 1 ] ; n )	7	2/2/0	?
+Length ( __GEN_RandomPW ( 30000 ; "" ; 1 ) & __GEN_RandomPW ( 30000 ; "" ; 1 ) )	7	2/2/0	?
+Length ( __GEN_RandomPW ( 49999 ; "" ; 1 ) )	0	2/2/0	49999
+Length ( __GEN_RandomPW ( 50000 ; "" ; 1 ) )	7	2/2/0	?
+SetRecursion ( Length ( __GEN_RandomPW ( 50000 ; "" ; 1 ) ) ; 50000 )	0	2/2/0	50000
+SetRecursion ( Length ( __GEN_RandomPW ( 49999 ; "" ; 1 ) ) ; 49999 )	0	2/2/0	49999
+SetRecursion ( Length ( __GEN_RandomPW ( 1 ; "" ; 1 ) ) ; 1 )	0	2/2/0	1
+SetRecursion ( Length ( __GEN_RandomPW ( 1 ; "" ; 1 ) ) ; 0 )	7	2/2/0	?
+SetRecursion ( Length ( __GEN_RandomPW ( 2 ; "" ; 1 ) ) ; 1 )	7	2/2/0	?
+ValueCount ( __GEN_Range_ID ( 1 ; 30000 ; 1 ) )	0	2/2/0	30000
+ValueCount ( __GEN_Range_ID ( 1 ; 49999 ; 1 ) )	0	2/2/0	49999
+ValueCount ( __GEN_Range_ID ( 1 ; 50000 ; 1 ) )	7	2/2/0	?
+# While iterations and custom function calls are counted separately; Evaluate starts a new count
+While ( [ i = 0 ] ; i < 40000 ; [ i = i + 1 ] ; i ) & "/" & Length ( __GEN_RandomPW ( 40000 ; "" ; 1 ) )	0	1/1/0	40000/40000
+While ( [ i = 0 ; n = 0 ] ; i < 3 ; [ n = n + Length ( __GEN_RandomPW ( 20000 ; "" ; 1 ) ) ; i = i + 1 ] ; n )	7	2/2/0	?
+Length ( __GEN_RandomPW ( 30000 ; "" ; 1 ) ) & "/" & Evaluate ( "Length ( __GEN_RandomPW ( 30000 ; \"\" ; 1 ) )" )	0	1/1/0	30000/30000
+"after"	0	1/1/0	after

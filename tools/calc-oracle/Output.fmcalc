@@ -1,0 +1,11 @@
+Let ( [ r = Evaluate ( Input ) ; e = EvaluationError ( Evaluate ( Input ) ) ] ;
+  JSONSetElement ( "{}" ;
+    [ "text" ; GetAsText ( r ) ; JSONString ] ;
+    [ "error" ; e ; JSONNumber ] ;
+    [ "number" ; GetAsText ( GetAsNumber ( r ) ) ; JSONString ] ;
+    [ "length" ; Length ( r ) ; JSONNumber ] ;
+    [ "date" ; GetAsText ( GetAsDate ( r ) ) ; JSONString ] ;
+    [ "time" ; GetAsText ( GetAsTime ( r ) ) ; JSONString ] ;
+    [ "timestamp" ; GetAsText ( GetAsTimestamp ( r ) ) ; JSONString ]
+  )
+)

@@ -1,0 +1,37 @@
+[package]
+name = "om-provider"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+rust-version.workspace = true
+
+[dependencies]
+om-collate = { path = "../om-collate" }
+om-crypto = { path = "../om-crypto" }
+om-data = { path = "../om-data" }
+om-formula = { path = "../om-formula" }
+om-giop = { path = "../om-giop" }
+om-hbam = { path = "../om-hbam" }
+om-layout = { path = "../om-layout" }
+om-protocol = { path = "../om-protocol" }
+om-query = { path = "../om-query" }
+om-session = { path = "../om-session" }
+om-scsu = { path = "../om-scsu" }
+# Files on this computer are opened through a private embedded host
+# (`om_server::LocalHost`), the engine OpenMaker Server saves with.
+om-server = { path = "../om-server", default-features = false }
+zeroize = "1"
+rcgen = "0.13"
+getrandom = "0.2.17"
+log = "0.4"
+chrono = { version = "0.4", default-features = false, features = ["clock"] }
+
+[dev-dependencies]
+om-calc = { path = "../om-calc" }
+om-rctransaction = { path = "../om-rctransaction" }
+om-scripts = { path = "../om-scripts" }
+om-sql = { path = "../om-sql", features = ["fmp12"] }
+rustls = { version = "0.23", default-features = false, features = ["ring", "std", "tls12"] }
+
+[lints]
+workspace = true

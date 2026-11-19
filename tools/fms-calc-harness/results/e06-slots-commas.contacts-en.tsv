@@ -1,0 +1,37 @@
+# Evaluator probes (Contacts en-US, no table context): Let slots shared by a
+# While condition and its logic, slots a loop never wrote, Lookup keywords,
+# unset variable repetitions, and commas between arguments.
+While ( [ i = 0 ] ; Let ( z = i * 100 ; z < 300 ) ; [ w = i ; i = i + 1 ] ; w )	0	2/2/0	300
+While ( [ i = 0 ] ; Let ( z = i * 100 ; z < 300 ) ; [ i = i + 1 ; w = i ] ; w )	0	2/2/0	300
+Let ( [ a = 1 ; b = 7 ] ; 0 ) & While ( [ i = 0 ] ; 0 ; [ x = 5 ] ; x )	0	1/1/0	0
+Let ( [ a = 1 ; b = 7 ] ; 0 ) & While ( [ i = 0 ] ; 0 ; [ x = 5 ] ; IsEmpty ( x ) )	0	1/1/0	01
+While ( [ i = 0 ] ; i < 2 ; [ i = i + 1 ; x = Let ( q = 50 ; q ) ] ; x )	0	2/2/0	50
+Let ( x = Let ( [ a = 1 ; b = 2 ; c = 3 ] ; c ) ; Let ( [ y = 5 ; z = 6 ] ; x & y & z ) )	0	1/1/0	356
+Lower & "|" & Higher	0	1/1/0	0|1
+True & "|" & False	0	1/1/0	1|0
+$nope[1]	0	2/2/0	
+$nope[3]	0	2/2/0	
+$nope	0	1/1/0	
+$nope[1] & "x"	0	1/1/0	x
+IsEmpty ( $nope[2] )	0	2/2/0	1
+Let ( $set[2] = "two" ; $set[2] )	0	1/1/0	two
+# commas between arguments
+List ( 1,5 ; 2 )	0	1/1/0	1\r5\r2
+List ( 1,5,2 )	0	1/1/0	1\r5\r2
+Max ( 1 , 2 )	0	2/2/0	2
+Let ( [ a = 1 , b = 2 ] ; a + b )	0	2/2/0	3
+Let ( x = 1 , x + 1 )	0	2/2/0	2
+Case ( 0 , 1 , 2 )	0	2/2/0	2
+If ( 1 , "y" , "n" )	0	1/1/0	y
+Substitute ( "abc" ; [ "a" , "x" ] )	0	1/1/0	xbc
+Substitute ( "abc" , "a" , "x" )	0	1/1/0	xbc
+GetValue ( "a¶b" , 2 )	0	1/1/0	b
+Abs ( 1,5 )	1202	2/2/0	?
+Abs ( 1 , 5 )	1202	2/2/0	?
+( 1 , 2 )	1207	2/2/0	?
+1 , 2	1212	2/2/0	?
+Evaluate ( "Max ( 1 , 2 )" )	0	2/2/0	2
+Evaluate ( "1 , 2" )	1212	2/2/0	?
+While ( [ i = 0 , j = 1 ] , i < 2 , [ i = i + 1 ] , i & j )	0	1/1/0	21
+Get ( CalculationRepetitionNumber , 1 )	1202	2/2/0	?
+Let ( $c[1,2] = 1 ; 1 )	1204	2/2/0	?

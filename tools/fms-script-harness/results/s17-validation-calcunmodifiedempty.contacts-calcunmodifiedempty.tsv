@@ -1,0 +1,43 @@
+# scan none: open 0 load 0 scan 0 commit 0; index:id=value (0-based): 0:86=0 1:7=0 2:76=0 3:141=0 4:75=0 5:141=0 6:68=8 7:9=0 8:70=0 9:103=0
+# scan only rep1: open 0 load 0 scan 0 commit 0; index:id=value (0-based): 0:86=0 1:7=0 2:76=0 3:141=0 4:75=0 5:141=0 6:68=8 7:9=0 8:70=0 9:103=0
+# scan all three: open 0 load 0 scan 0 commit 0; index:id=value (0-based): 0:86=0 1:7=0 2:76=0 3:141=0 4:76=0 5:141=0 6:76=0 7:141=0 8:75=0 9:141=0 10:68=12 11:9=0 12:70=0 13:103=0
+# scan count: open 0 load 0 scan 0 commit 0; index:id=value (0-based): 0:103=0
+# scan: close 13
+none		0	0/507	0
+>	1	none	1	86	0	0	0	0
+>	1	none	2	7	0	0	0	0
+>	1	none	3	76	0	0	0	0
+>	1	none	4	141	0	0	0	0
+!	507	work : none : 5 : Commit Records/Requests
+>	1	none	5	75	1	0	0	507
+>	1	none	6	141	0	0	0	0
+>	1	none	7	68	0	0	1	0
+>	1	none	8	9	0	0	0	0
+>	1	none	9	70	0	0	1	0
+>	1	none	10	103	0	0	1	0
+only rep1		0	0/0	0
+>	1	only rep1	1	86	0	0	0	0
+>	1	only rep1	2	7	0	0	0	0
+>	1	only rep1	3	76	0	0	0	0
+>	1	only rep1	4	141	0	0	0	0
+>	1	only rep1	5	75	0	0	0	0
+>	1	only rep1	6	141	0	0	0	0
+>	1	only rep1	7	68	0	0	1	0
+>	1	only rep1	9	70	0	0	1	0
+>	1	only rep1	10	103	0	0	1	0
+all three		0	000/0	0
+>	1	all three	1	86	0	0	0	0
+>	1	all three	2	7	0	0	0	0
+>	1	all three	3	76	0	0	0	0
+>	1	all three	4	141	0	0	0	0
+>	1	all three	5	76	0	0	0	0
+>	1	all three	6	141	0	0	0	0
+>	1	all three	7	76	0	0	0	0
+>	1	all three	8	141	0	0	0	0
+>	1	all three	9	75	0	0	0	0
+>	1	all three	10	141	0	0	0	0
+>	1	all three	11	68	0	0	1	0
+>	1	all three	13	70	0	0	1	0
+>	1	all three	14	103	0	0	1	0
+count		0	2	0
+>	1	count	1	103	0	0	1	0

@@ -1,0 +1,90 @@
+# q11: ? parameters bound from ExecuteSQL's arguments. File: FileMaker Server
+# sample (en), no record context. Arguments are calculation expressions.
+# --- binding by type
+ExecuteSQLe ( "SELECT Task FROM Tasks WHERE \"TASK ID MATCH FIELD\" = ?" ; "|" ; "¶" ; 3 )	0	1/1/0	Hire New Sales Person
+ExecuteSQLe ( "SELECT Task FROM Tasks WHERE \"TASK ID MATCH FIELD\" = ?" ; "|" ; "¶" ; "3" )	0	1/1/0	Hire New Sales Person
+ExecuteSQLe ( "SELECT Task FROM Tasks WHERE \"TASK ID MATCH FIELD\" = ?" ; "|" ; "¶" ; "3abc" )	0	1/1/0	Hire New Sales Person
+ExecuteSQLe ( "SELECT Task FROM Tasks WHERE \"TASK ID MATCH FIELD\" = ?" ; "|" ; "¶" ; "abc" )	0	0/1/0	
+ExecuteSQLe ( "SELECT Task FROM Tasks WHERE \"TASK ID MATCH FIELD\" = ?" ; "|" ; "¶" ; 3.0 )	0	1/1/0	Hire New Sales Person
+ExecuteSQLe ( "SELECT Task FROM Tasks WHERE \"TASK ID MATCH FIELD\" = ?" ; "|" ; "¶" ; "" )	0	0/1/0	
+ExecuteSQLe ( "SELECT Task FROM Tasks WHERE \"TASK ID MATCH FIELD\" = ?" ; "|" ; "¶" ; Date ( 1 ; 3 ; 0001 ) )	0	0/1/0	
+ExecuteSQLe ( "SELECT Task FROM Tasks WHERE Task = ?" ; "|" ; "¶" ; "Checklist" )	0	1/1/0	Checklist
+ExecuteSQLe ( "SELECT Task FROM Tasks WHERE Task = ?" ; "|" ; "¶" ; "checklist" )	0	0/1/0	
+ExecuteSQLe ( "SELECT Task FROM Tasks WHERE Task = ?" ; "|" ; "¶" ; 3 )	0	0/1/0	
+ExecuteSQLe ( "SELECT Task FROM Tasks WHERE Task LIKE ?" ; "|" ; "¶" ; "Check%" )	0	1/1/0	Checklist
+ExecuteSQLe ( "SELECT Task FROM Tasks WHERE Task LIKE ? || '%'" ; "|" ; "¶" ; "Check" )	0	1/1/0	Checklist
+ExecuteSQLe ( "SELECT Task FROM Tasks WHERE Task LIKE '%' || ? || '%'" ; "|" ; "¶" ; "Art" )	0	1/1/0	New Logo Art\rSend Art to Vendor
+ExecuteSQLe ( "SELECT Task FROM Tasks WHERE \"Due Date\" = ?" ; "|" ; "¶" ; Date ( 11 ; 24 ; 2014 ) )	0	1/1/0	Hire New Sales Person
+ExecuteSQLe ( "SELECT Task FROM Tasks WHERE \"Due Date\" = ?" ; "|" ; "¶" ; "11/24/2014" )	0	1/1/0	Hire New Sales Person
+ExecuteSQLe ( "SELECT Task FROM Tasks WHERE \"Due Date\" = ?" ; "|" ; "¶" ; "2014-11-24" )	0	0/1/0	
+ExecuteSQLe ( "SELECT Task FROM Tasks WHERE \"Due Date\" = ?" ; "|" ; "¶" ; 735561 )	0	0/1/0	
+ExecuteSQLe ( "SELECT Task FROM Tasks WHERE \"Due Date\" = ?" ; "|" ; "¶" ; Timestamp ( Date ( 11 ; 24 ; 2014 ) ; 0 ) )	0	0/1/0	
+ExecuteSQLe ( "SELECT Task FROM Tasks WHERE \"Due Date\" > ?" ; "|" ; "¶" ; Date ( 9 ; 12 ; 2015 ) )	0	1/1/0	New Logo Art\rDetermine Budget for Marketing Campaign\rSend Art to Vendor\rRepair Water Damage in Kitchen
+ExecuteSQLe ( "SELECT Task FROM Tasks WHERE \"Due Date\" BETWEEN ? AND ?" ; "|" ; "¶" ; Date ( 1 ; 1 ; 2014 ) ; Date ( 12 ; 31 ; 2014 ) )	0	1/1/0	Site Map Sketch\rChecklist\rHire New Sales Person
+ExecuteSQLe ( "SELECT Task FROM Tasks WHERE \"TASK ID MATCH FIELD\" IN (?, ?, ?)" ; "|" ; "¶" ; 1 ; 2 ; 3 )	0	1/1/0	Checklist\rHire New Sales Person\rDetermine Budget for Marketing Campaign
+ExecuteSQLe ( "SELECT Task FROM Tasks WHERE \"TASK ID MATCH FIELD\" = ? OR \"TASK ID MATCH FIELD\" = ?" ; "|" ; "¶" ; 1 ; 2 )	0	1/1/0	Checklist\rDetermine Budget for Marketing Campaign
+ExecuteSQLe ( "SELECT Task FROM Tasks WHERE \"TASK ID MATCH FIELD\" = ? OR \"TASK ID MATCH FIELD\" = ?" ; "|" ; "¶" ; 2 ; 1 )	0	1/1/0	Checklist\rDetermine Budget for Marketing Campaign
+# --- parameters as values
+ExecuteSQLe ( "SELECT ? FROM Tasks WHERE \"TASK ID MATCH FIELD\" = 3" ; "|" ; "¶" ; "x" )	0	1/1/0	x
+ExecuteSQLe ( "SELECT ? FROM Tasks WHERE \"TASK ID MATCH FIELD\" = 3" ; "|" ; "¶" ; 12.50 )	0	1/1/0	12.5
+ExecuteSQLe ( "SELECT ? FROM Tasks WHERE \"TASK ID MATCH FIELD\" = 3" ; "|" ; "¶" ; Date ( 2 ; 17 ; 2014 ) )	0	1/1/0	2/17/2014
+ExecuteSQLe ( "SELECT ? FROM Tasks WHERE \"TASK ID MATCH FIELD\" = 3" ; "|" ; "¶" ; Time ( 13 ; 45 ; 10 ) )	0	1/1/0	13:45:10
+ExecuteSQLe ( "SELECT ? FROM Tasks WHERE \"TASK ID MATCH FIELD\" = 3" ; "|" ; "¶" ; Timestamp ( Date ( 2 ; 17 ; 2014 ) ; Time ( 13 ; 45 ; 10 ) ) )	0	1/1/0	2/17/2014 1:45:10 PM
+ExecuteSQLe ( "SELECT ? FROM Tasks WHERE \"TASK ID MATCH FIELD\" = 3" ; "|" ; "¶" ; "" )	0	0/1/0	
+ExecuteSQLe ( "SELECT ? FROM Tasks WHERE \"TASK ID MATCH FIELD\" = 3" ; "|" ; "¶" ; 1/3 )	0	1/1/0	.3333333333333333
+ExecuteSQLe ( "SELECT ? FROM Tasks WHERE \"TASK ID MATCH FIELD\" = 3" ; "|" ; "¶" ; 10^20 )	0	1/1/0	1.0E+20
+ExecuteSQLe ( "SELECT ? FROM Tasks WHERE \"TASK ID MATCH FIELD\" = 3" ; "|" ; "¶" ; "a¶b" )	0	1/1/0	a\rb
+ExecuteSQLe ( "SELECT ? FROM Tasks WHERE \"TASK ID MATCH FIELD\" = 3" ; "|" ; "¶" ; TextColor ( "red" ; RGB ( 255 ; 0 ; 0 ) ) )	0	1/1/0	red
+ExecuteSQLe ( "SELECT ? FROM Tasks WHERE \"TASK ID MATCH FIELD\" = 3" ; "|" ; "¶" ; 1 = 1 )	0	1/1/0	1
+ExecuteSQLe ( "SELECT ? FROM Tasks WHERE \"TASK ID MATCH FIELD\" = 3" ; "|" ; "¶" ; 1/0 )	15	1/1/0	?
+ExecuteSQLe ( "SELECT ? FROM Tasks WHERE \"TASK ID MATCH FIELD\" = 3" ; "|" ; "¶" ; GetAsNumber ( "12abc" ) )	0	1/1/0	12
+ExecuteSQLe ( "SELECT ? FROM Tasks WHERE \"TASK ID MATCH FIELD\" = 3" ; "|" ; "¶" ; "12abc" + 0 )	0	1/1/0	12
+ExecuteSQLe ( "SELECT ?, ? FROM Tasks WHERE \"TASK ID MATCH FIELD\" = 3" ; "|" ; "¶" ; 1 ; "a" )	0	1/1/0	1|a
+ExecuteSQLe ( "SELECT ? + 1 FROM Tasks WHERE \"TASK ID MATCH FIELD\" = 3" ; "|" ; "¶" ; 2 )	0	1/1/0	3
+ExecuteSQLe ( "SELECT ? + 1 FROM Tasks WHERE \"TASK ID MATCH FIELD\" = 3" ; "|" ; "¶" ; "2" )	0	1/1/0	3
+ExecuteSQLe ( "SELECT ? || 'x' FROM Tasks WHERE \"TASK ID MATCH FIELD\" = 3" ; "|" ; "¶" ; 2 )	0	1/1/0	2x
+ExecuteSQLe ( "SELECT ? + ? FROM Tasks WHERE \"TASK ID MATCH FIELD\" = 3" ; "|" ; "¶" ; 1 ; 2 )	8309	1/1/0	? ERROR: FQL0031/(1:7): The the parameter's type cannot be inferred in this context. At least one query parameter must be an expression, a column or a constant.
+ExecuteSQLe ( "SELECT ? + ? FROM Tasks WHERE \"TASK ID MATCH FIELD\" = 3" ; "|" ; "¶" ; "a" ; "b" )	8309	1/1/0	? ERROR: FQL0031/(1:7): The the parameter's type cannot be inferred in this context. At least one query parameter must be an expression, a column or a constant.
+ExecuteSQLe ( "SELECT UPPER(?) FROM Tasks WHERE \"TASK ID MATCH FIELD\" = 3" ; "|" ; "¶" ; "abc" )	0	1/1/0	ABC
+ExecuteSQLe ( "SELECT UPPER(?) FROM Tasks WHERE \"TASK ID MATCH FIELD\" = 3" ; "|" ; "¶" ; 12 )	0	1/1/0	12
+ExecuteSQLe ( "SELECT ABS(?) FROM Tasks WHERE \"TASK ID MATCH FIELD\" = 3" ; "|" ; "¶" ; -2 )	0	1/1/0	2
+ExecuteSQLe ( "SELECT ABS(?) FROM Tasks WHERE \"TASK ID MATCH FIELD\" = 3" ; "|" ; "¶" ; "-2" )	0	1/1/0	2
+ExecuteSQLe ( "SELECT LENGTH(?) FROM Tasks WHERE \"TASK ID MATCH FIELD\" = 3" ; "|" ; "¶" ; "abc" )	0	1/1/0	3
+ExecuteSQLe ( "SELECT CAST(? AS INT) FROM Tasks WHERE \"TASK ID MATCH FIELD\" = 3" ; "|" ; "¶" ; "12" )	0	1/1/0	12
+ExecuteSQLe ( "SELECT CAST(? AS DATE) FROM Tasks WHERE \"TASK ID MATCH FIELD\" = 3" ; "|" ; "¶" ; "2014-02-17" )	0	1/1/0	2014-02-17
+ExecuteSQLe ( "SELECT YEAR(?) FROM Tasks WHERE \"TASK ID MATCH FIELD\" = 3" ; "|" ; "¶" ; Date ( 2 ; 17 ; 2014 ) )	0	1/1/0	2014
+ExecuteSQLe ( "SELECT ? - 1 FROM Tasks WHERE \"TASK ID MATCH FIELD\" = 3" ; "|" ; "¶" ; Date ( 2 ; 17 ; 2014 ) )	0	1/1/0	2162014
+ExecuteSQLe ( "SELECT COALESCE(?, 'none') FROM Tasks WHERE \"TASK ID MATCH FIELD\" = 3" ; "|" ; "¶" ; "" )	0	1/1/0	none
+ExecuteSQLe ( "SELECT CASE WHEN ? = 1 THEN 'one' ELSE 'other' END FROM Tasks WHERE \"TASK ID MATCH FIELD\" = 3" ; "|" ; "¶" ; 1 )	0	1/1/0	one
+ExecuteSQLe ( "SELECT Task FROM Tasks WHERE ? = ?" ; "|" ; "¶" ; 1 ; 1 )	8309	1/1/0	? ERROR: FQL0031/(1:31): The the parameter's type cannot be inferred in this context. At least one query parameter must be an expression, a column or a constant.
+ExecuteSQLe ( "SELECT Task FROM Tasks WHERE ? IS NULL" ; "|" ; "¶" ; "" )	0	1/1/0	Site Map Sketch\rChecklist\rHire New Sales Person\rUpdate Web Page\rPay Internet Service Bill\rPlan Holiday\rReview mock ups\rWrite Page Text\rNew Logo Art\rDetermine Budget for Marketing Campaign\rSend Art to Vendor\rRepair Water Damage in Kitchen
+ExecuteSQLe ( "SELECT Task FROM Tasks WHERE ? IS NOT NULL" ; "|" ; "¶" ; "x" )	0	1/1/0	Site Map Sketch\rChecklist\rHire New Sales Person\rUpdate Web Page\rPay Internet Service Bill\rPlan Holiday\rReview mock ups\rWrite Page Text\rNew Logo Art\rDetermine Budget for Marketing Campaign\rSend Art to Vendor\rRepair Water Damage in Kitchen
+# --- count of arguments
+ExecuteSQLe ( "SELECT Task FROM Tasks WHERE \"TASK ID MATCH FIELD\" = ?" ; "|" ; "¶" )	0	0/1/0	
+ExecuteSQLe ( "SELECT Task FROM Tasks WHERE \"TASK ID MATCH FIELD\" = ? OR \"TASK ID MATCH FIELD\" = ?" ; "|" ; "¶" ; 1 )	0	1/1/0	Checklist
+ExecuteSQLe ( "SELECT Task FROM Tasks WHERE \"TASK ID MATCH FIELD\" = ?" ; "|" ; "¶" ; 1 ; 2 ; 3 )	0	1/1/0	Checklist
+ExecuteSQLe ( "SELECT Task FROM Tasks WHERE \"TASK ID MATCH FIELD\" = 3" ; "|" ; "¶" ; 1 )	0	1/1/0	Hire New Sales Person
+ExecuteSQLe ( "SELECT ? FROM Tasks WHERE \"TASK ID MATCH FIELD\" = 3" ; "|" ; "¶" )	0	0/1/0	
+# --- named parameters
+ExecuteSQLe ( "SELECT Task FROM Tasks WHERE \"TASK ID MATCH FIELD\" = :id" ; "|" ; "¶" ; 3 )	0	0/1/0	
+ExecuteSQLe ( "SELECT Task FROM Tasks WHERE \"TASK ID MATCH FIELD\" = :id" ; "|" ; "¶" )	0	0/1/0	
+ExecuteSQLe ( "SELECT :x FROM Tasks WHERE \"TASK ID MATCH FIELD\" = 3" ; "|" ; "¶" ; "a" )	0	0/1/0	
+ExecuteSQLe ( "SELECT Task FROM Tasks WHERE \"TASK ID MATCH FIELD\" = :id AND Task = ?" ; "|" ; "¶" ; 3 ; "x" )	8309	1/1/0	? ERROR: FQL0032/(1:68): A query may contain either named parameters or dynamic parameters, but not both.
+Let ( $id = 3 ; ExecuteSQLe ( "SELECT Task FROM Tasks WHERE \"TASK ID MATCH FIELD\" = :id" ; "|" ; "¶" ) )	0	0/1/0	
+Let ( $$id = 3 ; ExecuteSQLe ( "SELECT Task FROM Tasks WHERE \"TASK ID MATCH FIELD\" = :id" ; "|" ; "¶" ) )	0	0/1/0	
+Let ( $$id = 3 ; ExecuteSQLe ( "SELECT Task FROM Tasks WHERE \"TASK ID MATCH FIELD\" = :\"$$id\"" ; "|" ; "¶" ) )	0	0/1/0	
+# --- parameters elsewhere
+ExecuteSQLe ( "SELECT Task FROM Tasks ORDER BY ?" ; "|" ; "¶" ; 1 )	0	1/1/0	Site Map Sketch\rChecklist\rHire New Sales Person\rUpdate Web Page\rPay Internet Service Bill\rPlan Holiday\rReview mock ups\rWrite Page Text\rNew Logo Art\rDetermine Budget for Marketing Campaign\rSend Art to Vendor\rRepair Water Damage in Kitchen
+ExecuteSQLe ( "SELECT \"TASK ID MATCH FIELD\" FROM Tasks FETCH FIRST ? ROWS ONLY" ; "|" ; "¶" ; 2 )	8309	1/1/0	? ERROR: FQL0052/(1:40): The fetch count in FETCH clause is not valid. 
+ExecuteSQLe ( "SELECT \"TASK ID MATCH FIELD\" FROM Tasks OFFSET ? ROWS" ; "|" ; "¶" ; 10 )	8309	1/1/0	? ERROR: FQL0050/(1:40): The offset count in OFFSET clause is not valid. 
+ExecuteSQLe ( "SELECT Task FROM ?" ; "|" ; "¶" ; "Tasks" )	8310	1/1/0	? ERROR: FQL0001/(1:18): There is an error in the syntax of the query.
+ExecuteSQLe ( "SELECT Task FROM Tasks WHERE \"TASK ID MATCH FIELD\" = ?" ; "|" ; "¶" ; List ( 3 ; 4 ) )	0	1/1/0	Hire New Sales Person
+ExecuteSQLe ( "SELECT Task FROM Tasks WHERE \"TASK ID MATCH FIELD\" IN (?)" ; "|" ; "¶" ; "3,4" )	0	0/1/0	
+ExecuteSQLe ( "SELECT Task FROM Tasks WHERE Task = '?'" ; "|" ; "¶" ; "Checklist" )	0	0/1/0	
+ExecuteSQLe ( "SELECT Task FROM Tasks WHERE Task = \"?\"" ; "|" ; "¶" ; "Checklist" )	8309	1/1/0	? ERROR: FQL0007/(1:36): The column named "?" does not exist in any table in the column reference's scope.
+ExecuteSQLe ( "SELECT Task FROM Tasks WHERE Task = ??" ; "|" ; "¶" ; "Checklist" )	8310	1/1/0	? ERROR: FQL0001/(1:38): There is an error in the syntax of the query.
+ExecuteSQLe ( "SELECT '?', ? FROM Tasks WHERE \"TASK ID MATCH FIELD\" = 3" ; "|" ; "¶" ; "x" )	0	1/1/0	?|x
+ExecuteSQL ( "SELECT Task FROM Tasks WHERE \"TASK ID MATCH FIELD\" = ?" ; "|" ; "¶" ; "" ; 3 )	0	0/1/0	
+ExecuteSQL ( "SELECT ? FROM Tasks WHERE \"TASK ID MATCH FIELD\" = 3" ; "|" ; "¶" ; Tasks::Task )	1224	2/2/0	?
+ExecuteSQL ( "SELECT ? FROM Tasks WHERE \"TASK ID MATCH FIELD\" = 3" ; "|" ; "¶" ; Tasks::QuickFind )	1224	2/2/0	?
+ExecuteSQL ( "SELECT ? FROM Tasks WHERE \"TASK ID MATCH FIELD\" = 3" ; "|" ; "¶" ; Get ( ApplicationVersion ) )	0	1/1/0	FMDeveloperTool 26.0.3.309 (08-26-2026)

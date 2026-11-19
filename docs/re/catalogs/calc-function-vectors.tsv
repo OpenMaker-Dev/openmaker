@@ -1,0 +1,581 @@
+function	expression	expected	source	conditions	doc_url
+Char	Char(0)	an empty string ("")	doc		https://help.claris.com/en/pro-help/content/char.html
+Char	Char(97)	a	doc		https://help.claris.com/en/pro-help/content/char.html
+Char	Char(98)	b	doc		https://help.claris.com/en/pro-help/content/char.html
+Char	Char(9800097)	ab	doc		https://help.claris.com/en/pro-help/content/char.html
+Char	Char(228)	ä	doc		https://help.claris.com/en/pro-help/content/char.html
+Char	Char(77600097)	ä	doc	context described on the Claris page	https://help.claris.com/en/pro-help/content/char.html
+Code	Code ( "a" )	97	doc		https://help.claris.com/en/pro-help/content/code.html
+Code	Code ( "b" )	98	doc		https://help.claris.com/en/pro-help/content/code.html
+Code	Code ( "ab" )	9800097	doc		https://help.claris.com/en/pro-help/content/code.html
+Code	Code ( "ä" )	228	doc		https://help.claris.com/en/pro-help/content/code.html
+Exact	Exact ( "McDonald" ; "McDonald" )	1	doc		https://help.claris.com/en/pro-help/content/exact.html
+Exact	Exact ( "McDonald" ; "MCDONALD" )	0	doc		https://help.claris.com/en/pro-help/content/exact.html
+Exact	Exact ( "John" ; "John " )	0	doc		https://help.claris.com/en/pro-help/content/exact.html
+Exact	Exact ( Upper ( "McDonald" ) ; Upper ( "MCDONALD" ) )	1	doc		https://help.claris.com/en/pro-help/content/exact.html
+Exact	Exact ( BillTo ; ShipTo )	1	doc	BillTo; ShipTo; context described on the Claris page	https://help.claris.com/en/pro-help/content/exact.html
+Exact	Exact ( Recipient ; Upper ( Recipient ) )	1	doc	Recipient; context described on the Claris page	https://help.claris.com/en/pro-help/content/exact.html
+Filter	Filter ( "(408)555-1212" ; "0123456789" )	4085551212	doc		https://help.claris.com/en/pro-help/content/filter.html
+Filter	Filter ( "AaBb" ; "AB" )	AB	doc		https://help.claris.com/en/pro-help/content/filter.html
+Filter	Let ( \n   phone = filter ( theField ; "0123456789" ) ; \n   "(" & Left ( phone ; 3 ) & ")" & Middle ( phone ; 4 ; 3 ) & "-" & \n   Middle ( phone ; 7 ; 4 ) \n)	(408)555-1212	doc	theField	https://help.claris.com/en/pro-help/content/filter.html
+FilterValues	FilterValues ( "Plaid¶Canvas¶Suitcase" ; "Plaid¶Canvas" )	Plaid¶Canvas¶	doc		https://help.claris.com/en/pro-help/content/filtervalues.html
+FilterValues	FilterValues ( ValueListItems ( "Database" ; "Sizes" ) ; "Medium¶Small" )	Small¶Medium¶	doc	context described on the Claris page	https://help.claris.com/en/pro-help/content/filtervalues.html
+GetAsDate	GetAsDate ( "03/03/2019" )	3/3/2019	doc		https://help.claris.com/en/pro-help/content/getasdate.html
+GetAsDate	GetAsDate ( 737342 )	10/10/2019	doc		https://help.claris.com/en/pro-help/content/getasdate.html
+GetAsDate	GetAsDate ( EndDate ) - GetAsDate ( StartDate )	90	doc	EndDate; StartDate; context described on the Claris page	https://help.claris.com/en/pro-help/content/getasdate.html
+GetAsNumber	GetAsNumber ( "FY20" )	20	doc		https://help.claris.com/en/pro-help/content/getasnumber.html
+GetAsNumber	GetAsNumber ( "$1,254.50" )	1254.5	doc		https://help.claris.com/en/pro-help/content/getasnumber.html
+GetAsNumber	GetAsNumber ( "2 - 2" )	22	doc		https://help.claris.com/en/pro-help/content/getasnumber.html
+GetAsNumber	GetAsNumber ( "-22" )	-22	doc		https://help.claris.com/en/pro-help/content/getasnumber.html
+GetAsNumber	GetAsNumber ( ".(22)" )	.22	doc		https://help.claris.com/en/pro-help/content/getasnumber.html
+GetAsNumber	GetAsNumber ( SerialNumber )	35684	doc	SerialNumber; context described on the Claris page	https://help.claris.com/en/pro-help/content/getasnumber.html
+GetAsNumber	GetAsNumber ( DateOfBirth )	737342	doc	DateOfBirth; context described on the Claris page	https://help.claris.com/en/pro-help/content/getasnumber.html
+GetAsText	GetAsText ( 45 )	45	doc		https://help.claris.com/en/pro-help/content/getastext.html
+GetAsText	"You are " & GetAsText ( DaysDelinquent ) & " days late."	You are 3 days late.	doc	DaysDelinquent; context described on the Claris page	https://help.claris.com/en/pro-help/content/getastext.html
+GetAsText	"FY" & GetAsText ( FiscalYear )	FY98	doc	FiscalYear; context described on the Claris page	https://help.claris.com/en/pro-help/content/getastext.html
+GetAsTime	GetAsTime ( "02:47:35" )	2:47:35	doc	context described on the Claris page	https://help.claris.com/en/pro-help/content/getastime.html
+GetAsTime	GetAsTime ( "02:47:35" )	1/1/0001	doc	context described on the Claris page	https://help.claris.com/en/pro-help/content/getastime.html
+GetAsTime	Abs (GetAsTime ( "12:15 pm" ) - CheckOut )	3:00:00	doc	CheckOut; context described on the Claris page	https://help.claris.com/en/pro-help/content/getastime.html
+GetAsTimestamp	GetAsTimestamp ("4/5/2019 4:05:06" )	4/5/2019 4:05:06 AM	doc		https://help.claris.com/en/pro-help/content/getastimestamp.html
+GetAsTimestamp	GetAsTimestamp ( 50000 )	1/1/0001 1:53:20 PM	doc		https://help.claris.com/en/pro-help/content/getastimestamp.html
+GetAsURLEncoded	GetAsURLEncoded("Hello")	Hello	doc		https://help.claris.com/en/pro-help/content/getasurlencoded.html
+GetAsURLEncoded	GetAsURLEncoded("San Francisco")	San%20Francisco	doc		https://help.claris.com/en/pro-help/content/getasurlencoded.html
+GetAsURLEncoded	GetAsURLEncoded("français")	fran%c3%a7ais	doc		https://help.claris.com/en/pro-help/content/getasurlencoded.html
+GetValue	GetValue ( "London¶Paris¶Hong Kong" ; 2 )	Paris	doc		https://help.claris.com/en/pro-help/content/getvalue.html
+Left	Left ( "Manufacturing" ; 4 )	Manu	doc		https://help.claris.com/en/pro-help/content/left.html
+Left	Left ( Name ; Position ( Name ; " " ; 1 ; 1 ) - 1 )	Sophie	doc	Name; context described on the Claris page	https://help.claris.com/en/pro-help/content/left.html
+Left	Left ( PostalCode ; 3 ) & Upper ( Left ( LastName ; 4 ) )	481JOHN	doc	LastName; PostalCode; context described on the Claris page	https://help.claris.com/en/pro-help/content/left.html
+LeftValues	LeftValues ( "Plaid¶Canvas¶Suitcase" ; 2 )	Plaid¶Canvas¶	doc		https://help.claris.com/en/pro-help/content/leftvalues.html
+LeftValues	LeftValues ( list ; 1 )	Sophie¶	doc	context described on the Claris page	https://help.claris.com/en/pro-help/content/leftvalues.html
+LeftWords	LeftWords ( "Plaid Canvas Suitcase" ; 2 )	Plaid Canvas	doc		https://help.claris.com/en/pro-help/content/leftwords.html
+LeftWords	LeftWords ( Name ; 1 )	Sophie	doc	Name; context described on the Claris page	https://help.claris.com/en/pro-help/content/leftwords.html
+Length	Length ( "John" )	4	doc		https://help.claris.com/en/pro-help/content/length.html
+Length	Length ( Description )	12	doc	Description; context described on the Claris page	https://help.claris.com/en/pro-help/content/length.html
+Length	Length ("M1" & Left ( Product ; 5 ) )	7	doc	Product; context described on the Claris page	https://help.claris.com/en/pro-help/content/length.html
+Lower	Lower ( "ABCD" )	abcd	doc		https://help.claris.com/en/pro-help/content/lower.html
+Lower	Lower ( Course )	history	doc	Course; context described on the Claris page	https://help.claris.com/en/pro-help/content/lower.html
+Lower	Lower ( "YOUR BILL IS OVERDUE" )	your bill is overdue	doc		https://help.claris.com/en/pro-help/content/lower.html
+Middle	Middle ( "(408)555-9054" ; 2 ; 3 )	408	doc		https://help.claris.com/en/pro-help/content/middle.html
+Middle	Middle ( PhoneNumber ; 2 ; 3 )	408	doc	PhoneNumber; context described on the Claris page	https://help.claris.com/en/pro-help/content/middle.html
+Middle	Middle ("abcdefghij" ; 5 ; 2 )	ef	doc		https://help.claris.com/en/pro-help/content/middle.html
+Middle	Middle ( Name ; Position ( Name ; " " ; 1 ; 1 ) + 1 ; 3 )	Smi	doc	Name; context described on the Claris page	https://help.claris.com/en/pro-help/content/middle.html
+MiddleValues	MiddleValues ( "Plaid¶Canvas¶Suitcase" ; 2 ; 1 )	Canvas¶	doc		https://help.claris.com/en/pro-help/content/middlevalues.html
+MiddleValues	MiddleValues ( list ; 2 ; 2 )	Bill¶John¶ 	doc	context described on the Claris page	https://help.claris.com/en/pro-help/content/middlevalues.html
+MiddleWords	MiddleWords("Plaid, Canvas, Suitcase";2;2)	Canvas, Suitcase	doc		https://help.claris.com/en/pro-help/content/middlewords.html
+MiddleWords	MiddleWords(Name;1;2)	Brigitte Erika	doc	Name; context described on the Claris page	https://help.claris.com/en/pro-help/content/middlewords.html
+PatternCount	PatternCount ( "Mississippi" ; "is" )	2	doc		https://help.claris.com/en/pro-help/content/patterncount.html
+PatternCount	PatternCount ( "Mississippi" ; "issi" )	1	doc		https://help.claris.com/en/pro-help/content/patterncount.html
+PatternCount	PatternCount ( Attending ; "Guest" )	1	doc	Attending; context described on the Claris page	https://help.claris.com/en/pro-help/content/patterncount.html
+PatternCount	PatternCount ( Get ( AccountPrivilegeSetName ) ; "Read-Only Access" )	0	doc	AccountPrivilegeSetName; context described on the Claris page	https://help.claris.com/en/pro-help/content/patterncount.html
+Position	Position ( "Mississippi" ; "iss" ; 1 ; 1 )	2	doc		https://help.claris.com/en/pro-help/content/position.html
+Position	Position ( "Mississippi" ; "iss" ; 1 ; 2 )	5	doc		https://help.claris.com/en/pro-help/content/position.html
+Position	Position ( "Mississippi" ; "iss" ; 3 ; 1 )	5	doc		https://help.claris.com/en/pro-help/content/position.html
+Position	Left ( Name ; Position ( Name ; " " ; 1 ; 1 ) - 1 )	William	doc	Name; context described on the Claris page	https://help.claris.com/en/pro-help/content/position.html
+Position	Right ( Name ; Length ( Name ) - Position ( Name ; " " ; Length ( Name ) ; - 1 ) )	Smith	doc	Name	https://help.claris.com/en/pro-help/content/position.html
+Proper	Proper ( "ABCD" )	Abcd	doc		https://help.claris.com/en/pro-help/content/proper.html
+Proper	Proper ( Name )	Yumiko Kitagawa	doc	Name; context described on the Claris page	https://help.claris.com/en/pro-help/content/proper.html
+Quote	Quote ( "hello" )	 "hello"	doc		https://help.claris.com/en/pro-help/content/quote.html
+Quote	Quote ( "abc\\¶" )	"abc\\¶"	doc		https://help.claris.com/en/pro-help/content/quote.html
+Quote	Quote ( "say \\"hello\\" fred" )	"say \\"hello\\" fred"	doc		https://help.claris.com/en/pro-help/content/quote.html
+Quote	Evaluate ( Quote ( "1 + 2" ) )	1 + 2	doc		https://help.claris.com/en/pro-help/content/quote.html
+Quote	Evaluate ( "1 + 2&" & Quote ( " - 1 + 2" ) )	3 - 1 + 2	doc		https://help.claris.com/en/pro-help/content/quote.html
+Replace	Replace ( "1234567" ; 5 ; 1 ; "X" )	1234X67	doc		https://help.claris.com/en/pro-help/content/replace.html
+Replace	Replace ( "1234567" ; 5 ; 1 ; "XX" )	1234XX67	doc		https://help.claris.com/en/pro-help/content/replace.html
+Replace	Replace ( "1234567" ; 5 ; 2 ; "X" )	1234X7	doc		https://help.claris.com/en/pro-help/content/replace.html
+Replace	Replace ( "1234567" ; 5 ; 0 ; "X" )	1234X567	doc		https://help.claris.com/en/pro-help/content/replace.html
+Replace	Replace ( "William" ; 3 ; 4 ; "NEW TEXT" )	WiNEW TEXTm	doc		https://help.claris.com/en/pro-help/content/replace.html
+Replace	Replace ( PhoneNumber ; 1 ; 3 ; "415" )	415-555-9054	doc	PhoneNumber; context described on the Claris page	https://help.claris.com/en/pro-help/content/replace.html
+Right	Right ( "Manufacturing" ; 4 )	ring	doc		https://help.claris.com/en/pro-help/content/right.html
+Right	Right ( Name ; Length ( Name ) - Position ( Name ; " " ; 1 ; 1 ) )	Cannon	doc	Name; context described on the Claris page	https://help.claris.com/en/pro-help/content/right.html
+Right	Right ( SerialNumber ; 3 ) & Upper ( Left ( LastName ; 4 ) )	187FERR	doc	LastName; SerialNumber; context described on the Claris page	https://help.claris.com/en/pro-help/content/right.html
+RightValues	RightValues ( "Plaid¶Canvas¶Suitcase" ; 2 )	Canvas¶Suitcase¶	doc		https://help.claris.com/en/pro-help/content/rightvalues.html
+RightValues	RightValues ( names ; 1 )	John¶	doc	context described on the Claris page; names	https://help.claris.com/en/pro-help/content/rightvalues.html
+RightWords	RightWords ( "Plaid Canvas Suitcase" ; 2 )	Canvas Suitcase	doc		https://help.claris.com/en/pro-help/content/rightwords.html
+RightWords	RightWords ( Name ; 1 )	Virtanen	doc	Name; context described on the Claris page	https://help.claris.com/en/pro-help/content/rightwords.html
+SerialIncrement	SerialIncrement ( "abc12" ; 1 )	abc13	doc		https://help.claris.com/en/pro-help/content/serialincrement.html
+SerialIncrement	SerialIncrement ( "abc12" ; 7 )	abc19	doc		https://help.claris.com/en/pro-help/content/serialincrement.html
+SerialIncrement	SerialIncrement ( "abc12" ; -1 )	abc11	doc		https://help.claris.com/en/pro-help/content/serialincrement.html
+SerialIncrement	SerialIncrement ( "abc12" ; 1.2 )	abc13	doc		https://help.claris.com/en/pro-help/content/serialincrement.html
+SerialIncrement	SerialIncrement ( "abc1.2" ; 1.2 )	abc1.3	doc		https://help.claris.com/en/pro-help/content/serialincrement.html
+SerialIncrement	SerialIncrement ( "abc123;999" ; 1)	abc123;1000	doc		https://help.claris.com/en/pro-help/content/serialincrement.html
+SortValues	SortValues ( "34¶600¶18¶29" ; -2 )	600¶34¶29¶18¶	doc		https://help.claris.com/en/pro-help/content/sortvalues.html
+Trim	Trim ( " Tom " )	Tom	doc		https://help.claris.com/en/pro-help/content/trim.html
+Trim	Trim ( Middle ( "00230013 William 1234" ; 9 ; 9 ) )	William	doc		https://help.claris.com/en/pro-help/content/trim.html
+TrimAll	TrimAll(" Julian       Scott Dunn ";0;0)	Julian Scott Dunn	doc		https://help.claris.com/en/pro-help/content/trimall.html
+TrimAll	TrimAll([image: Japanese text string field name trimSpace parameter set to 1 (true) and trimType parameter set to zero])	[image: Japanese text string]	doc	not machine-checkable (image or fragment)	https://help.claris.com/en/pro-help/content/trimall.html
+TrimAll	TrimAll([image: Japanese text string containing some roman characters, trimSpace parameter set to 1 (true) and trimType parameter set to zero])	[image: Japanese text string containing some roman characters, with all spaces between non-roman and roman characters removed]	doc	not machine-checkable (image or fragment)	https://help.claris.com/en/pro-help/content/trimall.html
+UniqueValues	UniqueValues ( "34¶600¶18¶600¶18.0" ; 2 )	34¶600¶18¶	doc		https://help.claris.com/en/pro-help/content/uniquevalues.html
+Upper	Upper ( "Ca" )	CA	doc		https://help.claris.com/en/pro-help/content/upper.html
+Upper	Upper ( "12n34p" )	12N34P	doc		https://help.claris.com/en/pro-help/content/upper.html
+ValueCount	ValueCount ( "Item 1¶Item 2¶Item 3¶" )	3	doc		https://help.claris.com/en/pro-help/content/valuecount.html
+ValueCount	ValueCount ( "Item 1¶Item 2¶Item 3¶¶" )	4	doc		https://help.claris.com/en/pro-help/content/valuecount.html
+WordCount	WordCount ( "The sun is rising." )	4	doc		https://help.claris.com/en/pro-help/content/wordcount.html
+WordCount	WordCount ( Letter ) returns the total number of words in the Letter field. If the Letter field contains the text x=y=1.5	3	doc	Letter; contains; field; in; number; of; returns; text; the; total; words	https://help.claris.com/en/pro-help/content/wordcount.html
+RGB	RGB(255;0;0)	16711680	doc		https://help.claris.com/en/pro-help/content/rgb.html
+RGB	RGB(0;255;0)	65280	doc		https://help.claris.com/en/pro-help/content/rgb.html
+RGB	RGB(0;0;255)	255	doc		https://help.claris.com/en/pro-help/content/rgb.html
+RGB	RGB(0;0;0)	0	doc		https://help.claris.com/en/pro-help/content/rgb.html
+RGB	RGB(255;255;255)	16777215	doc		https://help.claris.com/en/pro-help/content/rgb.html
+TextColor	TextColor ( "Plaid" ; RGB ( 255 ; 0 ; 0 ) )	Plaid	doc		https://help.claris.com/en/pro-help/content/textcolor.html
+TextColor	TextColor ( "Plaid" ; RGB ( 0 ; 255 ; 0 ) )	Plaid	doc		https://help.claris.com/en/pro-help/content/textcolor.html
+TextColor	TextColor ( "Plaid" ; RGB ( 0 ; 0 ; 255 ) )	Plaid	doc		https://help.claris.com/en/pro-help/content/textcolor.html
+TextColor	TextColor ( "Plaid" ; RGB ( 0 ; 0 ; 0 ) )	Plaid	doc		https://help.claris.com/en/pro-help/content/textcolor.html
+TextColor	TextSize ( TextFont ( TextColor ( MyTable::MyText ; RGB ( 0 ; 125 ; 125 ) ) ; "Courier" ) ; 12 ) 	MyTable::MyText	doc	MyTable::MyText 	https://help.claris.com/en/pro-help/content/textcolor.html
+TextColorRemove	TextColorRemove ( "Red Text and Green Text" )	Red Text and Green Text	doc	context described on the Claris page	https://help.claris.com/en/pro-help/content/textcolorremove.html
+TextColorRemove	TextColorRemove ( "Red Text and Green Text" ; RGB ( 255 ; 0 ; 0 ) )	Red Text and Green Text 	doc		https://help.claris.com/en/pro-help/content/textcolorremove.html
+TextFont	TextFont ( "Plaid" ; "Courier" )	Plaid	doc		https://help.claris.com/en/pro-help/content/textfont.html
+TextFont	TextFont ( "Plaid" ; "Arial" )	Plaid	doc		https://help.claris.com/en/pro-help/content/textfont.html
+TextFont	TextSize ( TextFont ( TextColor ( MyTable::MyText ; RGB ( 0 ; 125 ; 125 ) ) ; "Courier" ) ; 12 ) 	MyTable::MyText	doc	MyTable::MyText 	https://help.claris.com/en/pro-help/content/textfont.html
+TextFontRemove	TextFontRemove ( "Arial Text and Courier Text" )	Arial Text and Courier Text 	doc	context described on the Claris page	https://help.claris.com/en/pro-help/content/textfontremove.html
+TextFontRemove	TextFontRemove ( "Arial Text and Courier Text" ; "Arial" )	Arial Text and Courier Text 	doc		https://help.claris.com/en/pro-help/content/textfontremove.html
+TextFormatRemove	TextFormatRemove ( "Plaid" )	Plaid	doc		https://help.claris.com/en/pro-help/content/textformatremove.html
+TextSize	TextSize ( "Plaid" ; 18 )	Plaid	doc		https://help.claris.com/en/pro-help/content/textsize.html
+TextSize	TextSize ( "Plaid" ; 24 )	Plaid	doc		https://help.claris.com/en/pro-help/content/textsize.html
+TextSize	TextSize ( TextFont ( TextColor ( MyTable::MyText ; RGB ( 0 ; 125 ; 125 ) ) ; "Courier" ) ; 12 ) 	MyTable::MyText	doc	MyTable::MyText 	https://help.claris.com/en/pro-help/content/textsize.html
+TextSizeRemove	TextSizeRemove ( "10 Point Text and 18 Point Text" )	10 Point Text and 18 Point Text 	doc	context described on the Claris page	https://help.claris.com/en/pro-help/content/textsizeremove.html
+TextSizeRemove	TextSizeRemove ( "10 Point Text and 18 Point Text" ; 18 )	10 Point Text and 18 Point Text	doc		https://help.claris.com/en/pro-help/content/textsizeremove.html
+TextStyleAdd	TextStyleAdd ( "Plaid" ; Italic )	Plaid	doc		https://help.claris.com/en/pro-help/content/textstyleadd.html
+TextStyleAdd	TextStyleAdd ( FirstName ; Bold+Underline )	Sophie	doc	FirstName; context described on the Claris page	https://help.claris.com/en/pro-help/content/textstyleadd.html
+TextStyleRemove	TextStyleRemove ( "Plaid" ; Italic )	Plaid	doc		https://help.claris.com/en/pro-help/content/textstyleremove.html
+TextStyleRemove	TextStyleRemove ( FirstName ; Bold + Underline )	Sophie	doc	FirstName; context described on the Claris page	https://help.claris.com/en/pro-help/content/textstyleremove.html
+TextStyleRemove	TextStyleRemove ( FirstName ; AllStyles )	Sophie	doc	FirstName	https://help.claris.com/en/pro-help/content/textstyleremove.html
+TextStyleRemove	TextStyleRemove ( MyTable::MyText ; HighlightYellow )	MyTable::MyText	doc	MyTable::MyText 	https://help.claris.com/en/pro-help/content/textstyleremove.html
+Abs	Abs(-123)	123	doc		https://help.claris.com/en/pro-help/content/abs.html
+Ceiling	Ceiling(1.25)	2	doc		https://help.claris.com/en/pro-help/content/ceiling.html
+Ceiling	Ceiling(-1.25)	 -1	doc		https://help.claris.com/en/pro-help/content/ceiling.html
+Combination	Combination(5;2)	10	doc	context described on the Claris page	https://help.claris.com/en/pro-help/content/combination.html
+Combination	(13 * 12 * Combination(4;2) * Combination(4;3)) / Combination(52;5)	0.00144057...	doc		https://help.claris.com/en/pro-help/content/combination.html
+Div	Div(2.5;2)	1	doc		https://help.claris.com/en/pro-help/content/div.html
+Div	Div(-2.5;2)	-2	doc		https://help.claris.com/en/pro-help/content/div.html
+Exp	Exp(1)	2.71828182...	doc		https://help.claris.com/en/pro-help/content/exp.html
+Exp	Exp(Ln(2))	2	doc		https://help.claris.com/en/pro-help/content/exp.html
+Exp	Exp(0)	1	doc		https://help.claris.com/en/pro-help/content/exp.html
+Factorial	Factorial(3)	6	doc		https://help.claris.com/en/pro-help/content/factorial.html
+Factorial	Factorial(10;3)	720	doc		https://help.claris.com/en/pro-help/content/factorial.html
+Floor	Floor(1.25)	1	doc		https://help.claris.com/en/pro-help/content/floor.html
+Floor	Floor(-1.25)	-2	doc		https://help.claris.com/en/pro-help/content/floor.html
+Int	Int(1.45)	1	doc		https://help.claris.com/en/pro-help/content/int.html
+Int	Int(-3.9)	3	doc		https://help.claris.com/en/pro-help/content/int.html
+Int	Int(123.9)	123	doc		https://help.claris.com/en/pro-help/content/int.html
+Int	Int(Players/3)	4	doc	Players; context described on the Claris page	https://help.claris.com/en/pro-help/content/int.html
+Lg	Lg(1)	0	doc		https://help.claris.com/en/pro-help/content/lg.html
+Lg	Lg(2)	1	doc		https://help.claris.com/en/pro-help/content/lg.html
+Lg	Lg(32)	5	doc		https://help.claris.com/en/pro-help/content/lg.html
+Ln	Ln(2.7182818)	.99999998...	doc		https://help.claris.com/en/pro-help/content/ln.html
+Ln	Ln(Exp(5))	5	doc		https://help.claris.com/en/pro-help/content/ln.html
+Log	Log(1)	0	doc		https://help.claris.com/en/pro-help/content/log.html
+Log	Log(100)	2	doc		https://help.claris.com/en/pro-help/content/log.html
+Mod	Mod ( 210 ; 4 )	2	doc		https://help.claris.com/en/pro-help/content/mod.html
+Mod	Mod ( 24hTime ; 12 )	4	doc	hTime	https://help.claris.com/en/pro-help/content/mod.html
+Mod	Int ( NumberOfMonths / 12 ) & " years, " & Mod ( NumberOfMonths ; 12 ) & " months"	2 years, 7 months	doc	NumberOfMonths	https://help.claris.com/en/pro-help/content/mod.html
+Round	Round(123.456;2)	123.46	doc		https://help.claris.com/en/pro-help/content/round.html
+Round	Round(14.5;0)	15	doc		https://help.claris.com/en/pro-help/content/round.html
+Round	Round(14.5;2)	14.5	doc		https://help.claris.com/en/pro-help/content/round.html
+Round	Round(29343.98;-3)	29000	doc		https://help.claris.com/en/pro-help/content/round.html
+Round	Round(123.456;-1)	120	doc		https://help.claris.com/en/pro-help/content/round.html
+SetPrecision	SetPrecision(5/9;30)	0.555555555555555555555555555556	doc		https://help.claris.com/en/pro-help/content/setprecision.html
+SetPrecision	SetPrecision(1.321321321321321321321321321;0)	1.3213213213213213	doc		https://help.claris.com/en/pro-help/content/setprecision.html
+Sign	Sign(15.12)	1	doc		https://help.claris.com/en/pro-help/content/sign.html
+Sign	Sign(-175	-1	doc	not machine-checkable (image or fragment)	https://help.claris.com/en/pro-help/content/sign.html
+Sign	Sign(BalanceDue)	0	doc	BalanceDue; context described on the Claris page	https://help.claris.com/en/pro-help/content/sign.html
+Sqrt	Sqrt(4)	2	doc		https://help.claris.com/en/pro-help/content/sqrt.html
+Sqrt	Sqrt(SquareFeet)	6	doc	SquareFeet; context described on the Claris page	https://help.claris.com/en/pro-help/content/sqrt.html
+Truncate	Truncate(123.456;2)	123.45	doc		https://help.claris.com/en/pro-help/content/truncate.html
+Truncate	Truncate(-14.6;0)	-14	doc		https://help.claris.com/en/pro-help/content/truncate.html
+Truncate	Truncate(29343.98;-3)	29000	doc		https://help.claris.com/en/pro-help/content/truncate.html
+Truncate	Truncate(123.456;4)	123.456	doc		https://help.claris.com/en/pro-help/content/truncate.html
+Truncate	Truncate(29343.98;5)	29343.98	doc		https://help.claris.com/en/pro-help/content/truncate.html
+Date	Date ( 10 ; 10 ; 2019 )	10/10/2019	doc		https://help.claris.com/en/pro-help/content/date.html
+Date	Date ( 13 ; 1 ; 2019 )	1/1/2020	doc		https://help.claris.com/en/pro-help/content/date.html
+Date	Date ( 6 ; 0 ; 2019 )	5/31/2019	doc		https://help.claris.com/en/pro-help/content/date.html
+Date	Date ( 6 ; -2 ; 2019 )	5/29/2019	doc		https://help.claris.com/en/pro-help/content/date.html
+Date	Date ( 7 ; 12 ; 2019 ) - Date ( 7 ; 2 ; 2019 )	10	doc		https://help.claris.com/en/pro-help/content/date.html
+Date	"Bill Due by: " & Date ( Month ( DateSold ) + 1 ; Day ( DateSold ) ; Year ( DateSold ) )	Bill Due by:	doc	DateSold	https://help.claris.com/en/pro-help/content/date.html
+Day	Day ( "5/15/2019" )	15	doc		https://help.claris.com/en/pro-help/content/day.html
+Day	If ( \n   Day ( Get ( CurrentDate ) ) = 15 and Month ( Get ( CurrentDate ) ) = 3;\n   "Beware the Ides of March" ; \n   ""\n) 	Beware the Ides of March	doc	CurrentDate; context described on the Claris page	https://help.claris.com/en/pro-help/content/day.html
+DayName	DayName ( Date ( 10 ; 7 ; 2019 ) )	Monday	doc		https://help.claris.com/en/pro-help/content/dayname.html
+DayName	DayName ( ProjectDue )	Monday	doc	ProjectDue; context described on the Claris page	https://help.claris.com/en/pro-help/content/dayname.html
+DayName	DayName ( "10/7/2019" )	Monday	doc		https://help.claris.com/en/pro-help/content/dayname.html
+DayName	"Return your selection by " & DayName ( DueDate )	Return your selection	doc	DueDate	https://help.claris.com/en/pro-help/content/dayname.html
+DayOfWeek	DayOfWeek ( "10/8/2019" )	3	doc		https://help.claris.com/en/pro-help/content/dayofweek.html
+DayOfWeek	DayOfWeek ( Date ( 10 ; 9 ; 2019 ) )	4	doc		https://help.claris.com/en/pro-help/content/dayofweek.html
+DayOfWeek	DayOfWeek ( ProjectDue )	4 	doc	ProjectDue; context described on the Claris page	https://help.claris.com/en/pro-help/content/dayofweek.html
+DayOfYear	DayOfYear ( Billing Date )	32	doc	Billing; context described on the Claris page	https://help.claris.com/en/pro-help/content/dayofyear.html
+Month	Month ( "3/19/2019" )	3	doc		https://help.claris.com/en/pro-help/content/month.html
+Month	Month ( Payment )	3	doc	Payment; context described on the Claris page	https://help.claris.com/en/pro-help/content/month.html
+Month	"Bill Due by: " & \nDate ( \n   Month ( DateSold ) + 1 ; \n   Day ( DateSold ) ; \n   Year ( DateSold ) \n)	Bill Due by:	doc	DateSold	https://help.claris.com/en/pro-help/content/month.html
+MonthName	MonthName ( "6/6/2019" )	June	doc		https://help.claris.com/en/pro-help/content/monthname.html
+MonthName	"Payment due by the end of: " & \nMonthName ( \n   Date ( \n      Month ( InvoiceDate ) + 1 ; \n      Day ( InvoiceDate ) ; \n      Year ( InvoiceDate ) \n   )\n)	Payment due by the end of May	doc	InvoiceDate	https://help.claris.com/en/pro-help/content/monthname.html
+MonthName	"Payment for: " & \nMonthName (\n   Date ( \n      Month ( Payment ) + 1 ;\n      Day ( Payment ) ; \n      Year ( Payment ) \n   )\n) 	Payment for:	doc	Payment	https://help.claris.com/en/pro-help/content/monthname.html
+WeekOfYear	WeekOfYear ( "1/1/2019" )	1	doc		https://help.claris.com/en/pro-help/content/weekofyear.html
+WeekOfYear	WeekOfYear ( ProjectDue )	5	doc	ProjectDue; context described on the Claris page	https://help.claris.com/en/pro-help/content/weekofyear.html
+WeekOfYearFiscal	WeekOfYearFiscal ( Date ( 1 ; 7 ; 2008 ) ; 1 )	2	doc		https://help.claris.com/en/pro-help/content/weekofyearfiscal.html
+WeekOfYearFiscal	WeekOfYearFiscal ( Date ( 1 ; 1 ; 2009 ) ; 5 )	1	doc		https://help.claris.com/en/pro-help/content/weekofyearfiscal.html
+WeekOfYearFiscal	WeekOfYearFiscal ( Date ( 1 ; 2 ; 2009 ) ; 1 )	53	doc		https://help.claris.com/en/pro-help/content/weekofyearfiscal.html
+Year	Year ( "5/5/2019" )	2019	doc		https://help.claris.com/en/pro-help/content/year.html
+Hour	Hour ( "12:15:23" )	12	doc		https://help.claris.com/en/pro-help/content/hour.html
+Hour	Hour ( CheckIn )	3	doc	CheckIn; context described on the Claris page	https://help.claris.com/en/pro-help/content/hour.html
+Hour	Hour ( Duration ) + ( Minute ( Duration ) / 60 )	2.5	doc	Duration; context described on the Claris page	https://help.claris.com/en/pro-help/content/hour.html
+Hour	If ( Hour ( HoursWorked ) > 8 ; "Overtime Pay" ; " " )	Overtime Pay	doc	HoursWorked; context described on the Claris page	https://help.claris.com/en/pro-help/content/hour.html
+Minute	Minute ( "12:15:23" )	15	doc		https://help.claris.com/en/pro-help/content/minute.html
+Minute	Hour ( Duration ) + ( Minute ( Duration ) / 60 )	2.5	doc	Duration; context described on the Claris page	https://help.claris.com/en/pro-help/content/minute.html
+Seconds	Seconds ( "12:15:23" )	23	doc		https://help.claris.com/en/pro-help/content/seconds.html
+Time	Time(4;14;32)	4:14:32	doc		https://help.claris.com/en/pro-help/content/time.html
+Time	Time(4.5;10;30)	4:40:30	doc		https://help.claris.com/en/pro-help/content/time.html
+Time	Time(4;15;70)	4:16:10	doc		https://help.claris.com/en/pro-help/content/time.html
+Timestamp	Timestamp ( Date ( 10 ; 21 ; 2019 ) ; Time ( 9 ; 10 ; 30 ) )	10/21/2019 9:10:30 AM	doc		https://help.claris.com/en/pro-help/content/timestamp.html
+Timestamp	Timestamp ( Date ( 10 ; 21 ; 2019 ) ; Time ( 13 ; 10 ; 30 ) )	10/21/2019 1:10:30 PM	doc		https://help.claris.com/en/pro-help/content/timestamp.html
+Timestamp	Timestamp ( Date ( 10 ; 21 ; 2019 ) ; Time ( 10 ; 65 ; 5 ) )	10/21/2019 11:05:05 AM	doc		https://help.claris.com/en/pro-help/content/timestamp.html
+Timestamp	Timestamp ( Date ( 10 ; 35 ; 2019 ) ; Time ( 4 ; 5 ; 6 ) )	11/4/2019 4:05:06 AM	doc		https://help.claris.com/en/pro-help/content/timestamp.html
+Base64Decode	Base64Decode(Products::Base64;"question.png")	[image: Help button]	doc	Products::Base64; context described on the Claris page	https://help.claris.com/en/pro-help/content/base64decode.html
+Base64Encode	Base64Encode(Products::Color)	QmxhY2s=	doc	Products::Color; context described on the Claris page	https://help.claris.com/en/pro-help/content/base64encode.html
+Base64Encode	Base64Encode(Products::Container)	iVBORw0KGgoAAAANSUhEUgAAAB8	doc	Products::Container; context described on the Claris page	https://help.claris.com/en/pro-help/content/base64encode.html
+Base64EncodeRFC	Base64EncodeRFC ( 4648 ; Products::Color )	QmxhY2s=	doc	Products::Color ; context described on the Claris page	https://help.claris.com/en/pro-help/content/base64encoderfc.html
+CryptDecrypt	CryptDecrypt ( \n    CryptEncrypt ( "This needs protection" ; "My secret password" ) ; \n    "My secret password" \n)	This needs protection	doc		https://help.claris.com/en/pro-help/content/cryptdecrypt.html
+CryptDecryptBase64	CryptDecryptBase64 ( \n    CryptEncryptBase64 ( "This needs protection" ; "My secret password" ) ; \n    "My secret password" \n)	This needs protection	doc		https://help.claris.com/en/pro-help/content/cryptdecryptbase64.html
+CryptVerifySignature	CryptVerifySignature ( \n    Table::SignedText ; "SHA512" ; Table::PublicRSAKey ;     \n    Base64Decode (         \n        Table::Signature ; "sig.data"     \n    ) \n)	1	doc	Table::PublicRSAKey ; Table::Signature ; Table::SignedText 	https://help.claris.com/en/pro-help/content/cryptverifysignature.html
+GetHeight	GetHeight(product)	768	doc	product	https://help.claris.com/en/pro-help/content/getheight.html
+GetWidth	GetWidth(Product)	1024	doc	Product	https://help.claris.com/en/pro-help/content/getwidth.html
+HexDecode	HexDecode ( "46696C654D616B6572" )	FileMaker	doc		https://help.claris.com/en/pro-help/content/hexdecode.html
+HexEncode	HexEncode ( "FileMaker" )	46696C654D616B6572	doc		https://help.claris.com/en/pro-help/content/hexencode.html
+DayNameJ	DayNameJ ( Date ( 1 ; 1 ; 2021 ) )	[image: Japanese text for the full name of the weekday occurring on January 1, 2021]	doc		https://help.claris.com/en/pro-help/content/daynamej.html
+Furigana	Furigana ( "[image: Japanese kanji characters pronounced tokyoto]" )	[image: Japanese hiragana pronounced tokyoto]	doc	not machine-checkable (image or fragment)	https://help.claris.com/en/pro-help/content/furigana.html
+Furigana	Furigana ( "[image: Japanese kanji characters pronounced tokyoto]" ; 5 )	toukyouto	doc	not machine-checkable (image or fragment)	https://help.claris.com/en/pro-help/content/furigana.html
+Hiragana	" )	[image: Japanese text string of hiragana characters]	doc	not machine-checkable (image or fragment)	https://help.claris.com/en/pro-help/content/hiragana.html
+KanaHankaku	" )	[image: Japanese text string of hankaku (1-byte) katakana characters]	doc	not machine-checkable (image or fragment)	https://help.claris.com/en/pro-help/content/kanahankaku.html
+KanaZenkaku	" )	[image: Japanese text string of zenkaku (2-byte) katakana characters]	doc	not machine-checkable (image or fragment)	https://help.claris.com/en/pro-help/content/kanazenkaku.html
+KanjiNumeral	KanjiNumeral ( 123 )	[image: Japanese text string of kanji numerals 1 2 3]	doc		https://help.claris.com/en/pro-help/content/kanjinumeral.html
+KanjiNumeral	" )	[image: Japanese text string of kanji numerals]	doc	not machine-checkable (image or fragment)	https://help.claris.com/en/pro-help/content/kanjinumeral.html
+Katakana	" )	[image: Japanese text string of zenkaku (2-byte) katakana characters]	doc	not machine-checkable (image or fragment)	https://help.claris.com/en/pro-help/content/katakana.html
+MonthNameJ	MonthNameJ ( "6/6/2019" )	[image: Japanese text for the name of the month occurring on June 6, 2014]	doc		https://help.claris.com/en/pro-help/content/monthnamej.html
+NumToJText	NumToJText(123456789;2;0)	[image: Arabic numeral 123456789 with half-width hankaku (1-byte) separators between the thousands and ten thousands places, and between the ten millions and hundred millions places]	doc		https://help.claris.com/en/pro-help/content/numtojtext.html
+NumToJText	NumToJText(123456789;3;2)	[image: Japanese text for the arabic numeral 123456789 using a kanji number separator between the tens, hundreds, thousands, ten thousands, and millions places]	doc		https://help.claris.com/en/pro-help/content/numtojtext.html
+RomanHankaku	RomanHankaku ( "M  a  c  i  n  t  o  s  h" )	Macintosh	doc		https://help.claris.com/en/pro-help/content/romanhankaku.html
+RomanZenkaku	RomanZenkaku ( "Macintosh" )	M  a  c  i  n  t  o  s  h	doc		https://help.claris.com/en/pro-help/content/romanzenkaku.html
+YearName	YearName ( DateField ; 0 )	[image: Japanese text for the year name occurring on July 15, 2008]	doc	DateField; context described on the Claris page	https://help.claris.com/en/pro-help/content/yearname.html
+JSONDeleteElement	JSONDeleteElement ( "{ \\"a\\" : 11 , \\"b\\" : 12 , \\"c\\" : 13 }" ; "b" )	{"a":11,"c":13}	doc		https://help.claris.com/en/pro-help/content/jsondeleteelement.html
+JSONFormatElements	JSONFormatElements ( "{ \\"a\\" : { \\"lnk\\" : false, \\"id\\" : 12 } }" )	{\n    "a" : \n    {\n        "id" : 12,\n        "lnk" : false\n    }\n}	doc		https://help.claris.com/en/pro-help/content/jsonformatelements.html
+JSONGetElement	JSONGetElement ( "{ \\"a\\" : 11, \\"b\\" : 22, \\"c\\" : 33 }" ; "b" )	22	doc		https://help.claris.com/en/pro-help/content/jsongetelement.html
+JSONGetElement	JSONGetElement ( "[ true, false, true ]" ; 1 )	0	doc		https://help.claris.com/en/pro-help/content/jsongetelement.html
+JSONGetElement	JSONGetElement ( "[ 1, 2, 3, 5 ]" ; "[:]" )	5	doc		https://help.claris.com/en/pro-help/content/jsongetelement.html
+JSONGetElement	JSONGetElement ( $$JSON ; "bakery.product[1]name" )	Chocolate Cake	doc	$$JSON	https://help.claris.com/en/pro-help/content/jsongetelement.html
+JSONGetElement	JSONGetElement ( $$JSON ; "['bakery']['product'][0]['product.name']" )	Donuts	doc	$$JSON	https://help.claris.com/en/pro-help/content/jsongetelement.html
+JSONGetElementType	(JSONGetElementType( "{ \\"a\\" : 11 }"; "" ) = JSONObject)	1	doc		https://help.claris.com/en/pro-help/content/jsongetelementtype.html
+JSONGetElementType	(JSONGetElementType( "{ a : 11 }"; "" ) = JSONObject)	0	doc		https://help.claris.com/en/pro-help/content/jsongetelementtype.html
+JSONGetElementType	JSONGetElementType( "{ \\"a\\" : 11 , \\"b\\" : false }"; "b" )	5	doc		https://help.claris.com/en/pro-help/content/jsongetelementtype.html
+JSONGetElementType	JSONGetElementType( "[100, 200]"; "3" )	"? Incorrect key, index, or path"	doc		https://help.claris.com/en/pro-help/content/jsongetelementtype.html
+JSONListKeys	JSONListKeys( "{ \\"a\\" : 11, \\"b\\" : 22, \\"c\\" : 33 }" ; "" )	a¶b¶c	doc		https://help.claris.com/en/pro-help/content/jsonlistkeys.html
+JSONListKeys	JSONListKeys ( $$JSON ; "bakery.product" )	0¶1¶2	doc	$$JSON	https://help.claris.com/en/pro-help/content/jsonlistkeys.html
+JSONListKeys	JSONListKeys ( $$JSON ; "bakery.product[0]" )	category¶id¶name¶price¶special¶stock	doc	$$JSON	https://help.claris.com/en/pro-help/content/jsonlistkeys.html
+JSONListValues	JSONListValues( "{ \\"a\\" : 11, \\"b\\" : 22, \\"c\\" : 33 }" ; "" )	11¶22¶33	doc		https://help.claris.com/en/pro-help/content/jsonlistvalues.html
+JSONListValues	JSONListValues ( $$JSON ; "bakery.product[0]" )	Breads¶FB1¶Donuts¶1.99¶1¶43	doc	$$JSON	https://help.claris.com/en/pro-help/content/jsonlistvalues.html
+JSONMakeArray	JSONMakeArray ( "34,600,18,600,18.0" ; "," ; JSONNumber )	[34,600,18,600,18]	doc		https://help.claris.com/en/pro-help/content/jsonmakearray.html
+JSONMakeArray	JSONMakeArray ( Product::Colors ; "" ; JSONString )	["green","red","yellow"]	doc	Product::Colors 	https://help.claris.com/en/pro-help/content/jsonmakearray.html
+JSONParse	JSONParse ( "{ \\"name\\": \\"Alea\\", \\"age\\": 30, \\"city\\": \\"New York\\" }" )	{ "name": "Alea", "age": 30, "city": "New York" }	doc		https://help.claris.com/en/pro-help/content/jsonparse.html
+JSONParsedState	JSONParse ( "[3]" )	[3]	doc		https://help.claris.com/en/pro-help/content/jsonparsedstate.html
+JSONParsedState	Let ( $a = JSONParse ("[3") ; JSONParsedState ($a) )	-1	doc		https://help.claris.com/en/pro-help/content/jsonparsedstate.html
+JSONParsedState	Let ( $a = "[3]" ; JSONParsedState ($a) )	0	doc		https://help.claris.com/en/pro-help/content/jsonparsedstate.html
+JSONParsedState	JSONParsedState ( JSONParse (Pi) )	-1	doc		https://help.claris.com/en/pro-help/content/jsonparsedstate.html
+JSONParsedState	Let ( $a = JSONSetElement ( "" ; "a" ; "b" ; JSONString ) ; JSONParsedState ($a) )	3	doc		https://help.claris.com/en/pro-help/content/jsonparsedstate.html
+JSONParsedState	Let ( $a = JSONParse ("[3]") ; JSONParsedState ($a) )	4	doc	context described on the Claris page	https://help.claris.com/en/pro-help/content/jsonparsedstate.html
+JSONParsedState	JSONParsedState ( JSONParse ("") )	-1	doc		https://help.claris.com/en/pro-help/content/jsonparsedstate.html
+JSONSetElement	JSONSetElement ( "{ \\"a\\" : 11 }" ; "b" ; 22.23 ; JSONNumber )	{"a":11,"b":22.23}	doc		https://help.claris.com/en/pro-help/content/jsonsetelement.html
+JSONSetElement	JSONSetElement( "[]"; \n    ["[+].a" ; 5 ; JSONNumber] ; \n    ["[:].b" ; 6 ; JSONNumber]\n)	[{"a":5,"b":6}]	doc		https://help.claris.com/en/pro-help/content/jsonsetelement.html
+Average	Average(Field2)	6.5	doc	Field2; context described on the Claris page	https://help.claris.com/en/pro-help/content/average.html
+Average	Average(Field1;Field2;Field3)	4	doc	Field1; Field2; Field3; context described on the Claris page	https://help.claris.com/en/pro-help/content/average.html
+Count	Count(Field2)	4	doc	Field2; context described on the Claris page	https://help.claris.com/en/pro-help/content/count.html
+Count	Count(Field1;Field2;Field3)	3	doc	Field1; Field2; Field3; context described on the Claris page	https://help.claris.com/en/pro-help/content/count.html
+Max	Max(Field2)	8	doc	Field2; context described on the Claris page	https://help.claris.com/en/pro-help/content/max.html
+Max	Max(Field1;Field2;Field3)	6	doc	Field1; Field2; Field3; context described on the Claris page	https://help.claris.com/en/pro-help/content/max.html
+Min	Min(Field2)	5	doc	Field2; context described on the Claris page	https://help.claris.com/en/pro-help/content/min.html
+Min	Min(Field1;Field2;Field3)	1	doc	Field1; Field2; Field3; context described on the Claris page	https://help.claris.com/en/pro-help/content/min.html
+StDev	StDev(table::Scores)	1.29099444...	doc	table::Scores	https://help.claris.com/en/pro-help/content/stdev.html
+StDev	StDev(Field1;Field2;Field3)	2.64575131...	doc	Field1; Field2; Field3; context described on the Claris page	https://help.claris.com/en/pro-help/content/stdev.html
+StDevP	StDevP(table::Scores)	1.11803398...	doc	table::Scores	https://help.claris.com/en/pro-help/content/stdevp.html
+StDevP	StDevP(Field2)	1.11803398...	doc	Field2; context described on the Claris page	https://help.claris.com/en/pro-help/content/stdevp.html
+StDevP	StDevP(Field1;Field2;Field3)	2.16024689...	doc	Field1; Field2; Field3	https://help.claris.com/en/pro-help/content/stdevp.html
+Variance	Variance(table::Scores)	1.66666666...	doc	table::Scores	https://help.claris.com/en/pro-help/content/variance.html
+Variance	Variance(Field1;Field2;Field3)	7, 9.33333333...	doc	Field1; Field2; Field3; context described on the Claris page	https://help.claris.com/en/pro-help/content/variance.html
+VarianceP	VarianceP(table::Scores)	1.25	doc	table::Scores	https://help.claris.com/en/pro-help/content/variancep.html
+VarianceP	VarianceP(Field1;Field2;Field3)	4.66666666..., 6.22222222..., 2.25, 4	doc	Field1; Field2; Field3; context described on the Claris page	https://help.claris.com/en/pro-help/content/variancep.html
+Extend	Extend(TaxRate) * Quantity * ItemPrice	1.197	doc	ItemPrice; Quantity; TaxRate; context described on the Claris page	https://help.claris.com/en/pro-help/content/extend.html
+Extend	Item Count * Extend(if(Company Size > 100; Reduced Price; Price)) 	$1250	doc	Company; Item; Price; Reduced; Size; context described on the Claris page	https://help.claris.com/en/pro-help/content/extend.html
+Extend	Reduced Price contains $50; the repeating field Item Count contains 25, 10, and 15; and Company Size is greater than 100. If Company Size is less than 100 and Price	$2500	doc	$50; Company; Item; Price; Reduced; Size; contains; field; greater; is; less; repeating; than; the	https://help.claris.com/en/pro-help/content/extend.html
+GetRepetition	GetRepetition ( ParcelBids ; 2 )	1200	doc	ParcelBids	https://help.claris.com/en/pro-help/content/getrepetition.html
+GetRepetition	GetRepetition ( If ( IsEmpty ( ParcelBids ) 	1200	doc	not machine-checkable (image or fragment)	https://help.claris.com/en/pro-help/content/getrepetition.html
+Last	Last(ParcelBids)	1500	doc	ParcelBids; context described on the Claris page	https://help.claris.com/en/pro-help/content/last.html
+FV	FV(50;.11/12;5 * 12)	3975.90398429...	doc		https://help.claris.com/en/pro-help/content/fv.html
+FV	FV(2000;.12;30) + 5000 * (.12 + 1) ^ 30	632464.97928640...	doc		https://help.claris.com/en/pro-help/content/fv.html
+FV	FV(500;.11/5;60)	61141.65130790...	doc		https://help.claris.com/en/pro-help/content/fv.html
+NPV	NPV(Loan;.05)	156.91277445...	doc	Loan; context described on the Claris page	https://help.claris.com/en/pro-help/content/npv.html
+NPV	NPV(Amounts;.10)	16758.35604870...	doc	Amounts; context described on the Claris page	https://help.claris.com/en/pro-help/content/npv.html
+PMT	PMT(21000;.069/12;48)	$501.90	doc		https://help.claris.com/en/pro-help/content/pmt.html
+PMT	"Your payment will be " & PMT (150000 ; .13/12 ; Months ) & "."	Your payment will be	doc	Months	https://help.claris.com/en/pro-help/content/pmt.html
+PV	PV(500;.05;5)	2164.73833531...	doc		https://help.claris.com/en/pro-help/content/pv.html
+Acos	Acos(-0.5)	2.0943951	doc		https://help.claris.com/en/pro-help/content/acos.html
+Acos	Acos(-0.5)*180/Pi	120	doc		https://help.claris.com/en/pro-help/content/acos.html
+Acos	Degrees(Acos(-0.5))	120	doc		https://help.claris.com/en/pro-help/content/acos.html
+Asin	Asin(-0.5)	 -0.523598776	doc		https://help.claris.com/en/pro-help/content/asin.html
+Asin	Asin(-0.5)*180/Pi 	-30	doc		https://help.claris.com/en/pro-help/content/asin.html
+Asin	Degrees(Asin(-0.5))	-30	doc		https://help.claris.com/en/pro-help/content/asin.html
+Atan	Atan(1)	.78539816...	doc		https://help.claris.com/en/pro-help/content/atan.html
+Atan	Degrees(Atan(1))	45	doc		https://help.claris.com/en/pro-help/content/atan.html
+Cos	Cos(1.047)	.50017107...	doc		https://help.claris.com/en/pro-help/content/cos.html
+Cos	Cos(Radians(60))	.5	doc		https://help.claris.com/en/pro-help/content/cos.html
+Degrees	Degrees(Atan(1))	45	doc		https://help.claris.com/en/pro-help/content/degrees.html
+Degrees	Degrees(1.0472)	60.00014030...	doc		https://help.claris.com/en/pro-help/content/degrees.html
+Pi	Pi * 15	47.124	doc		https://help.claris.com/en/pro-help/content/pi.html
+Radians	Radians(45)	.78539816...	doc		https://help.claris.com/en/pro-help/content/radians.html
+Radians	Sin(Radians(30))	.5	doc		https://help.claris.com/en/pro-help/content/radians.html
+Sin	Sin(Radians(60))	.86602	doc		https://help.claris.com/en/pro-help/content/sin.html
+Sin	Sin(.610865)	.57357624...	doc		https://help.claris.com/en/pro-help/content/sin.html
+Tan	Tan(.13)	.13073731...	doc		https://help.claris.com/en/pro-help/content/tan.html
+Tan	Tan(Radians(34))	.6745085	doc		https://help.claris.com/en/pro-help/content/tan.html
+Case	Case ( Score >= 90 ; "Excellent" ; Score > 50 ; "Satisfactory" ; "Needs Improvement" )	Excellent	doc	Score; context described on the Claris page	https://help.claris.com/en/pro-help/content/case.html
+Case	Case ( Shipment Method="Ground" ; 2 ; Shipment Method="Air" ; 10)	2	doc	Shipment; context described on the Claris page	https://help.claris.com/en/pro-help/content/case.html
+Choose	Choose ( Rating ; "Not Applicable" ; "Good" ; "Fair" ; "Poor" )	Not Applicable	doc	Rating; context described on the Claris page	https://help.claris.com/en/pro-help/content/choose.html
+Evaluate	Evaluate(TextField)	4 	doc	TextField; context described on the Claris page	https://help.claris.com/en/pro-help/content/evaluate.html
+Evaluate	Evaluate("textfield")	2 + 2	doc	context described on the Claris page	https://help.claris.com/en/pro-help/content/evaluate.html
+Evaluate	Evaluate(GetField("textfield"))	4	doc	context described on the Claris page	https://help.claris.com/en/pro-help/content/evaluate.html
+Evaluate	Evaluate(TextField;[Amount])	.80	doc	Amount; TextField; context described on the Claris page	https://help.claris.com/en/pro-help/content/evaluate.html
+Evaluate	Evaluate( "Let ( TaxRate = .05 ;" & Tax Rate Calculation & ")" )	.50	doc	Calculation; Rate; Tax; context described on the Claris page	https://help.claris.com/en/pro-help/content/evaluate.html
+Evaluate	Evaluate, Let, and Get(ScriptParameter) functions, allowing access only to variable "a"	6	doc	ScriptParameter; access; allowing; functions; only; to; variable	https://help.claris.com/en/pro-help/content/evaluate.html
+Evaluate	Let	6,	doc		https://help.claris.com/en/pro-help/content/evaluate.html
+EvaluationError	EvaluationError( GetField ( "total" ) + 1 )	102	doc	context described on the Claris page	https://help.claris.com/en/pro-help/content/evaluationerror.html
+EvaluationError	EvaluationError( Evaluate ( calculationField ) )	1207	doc	calculationField; context described on the Claris page	https://help.claris.com/en/pro-help/content/evaluationerror.html
+ExecuteSQL	ExecuteSQL ( "SELECT Department FROM Employees WHERE EmpID = 1"; ""; "" )	Development	doc	context described on the Claris page	https://help.claris.com/en/pro-help/content/executesql.html
+GetAsBoolean	GetAsBoolean ( "" )	0	doc		https://help.claris.com/en/pro-help/content/getasboolean.html
+GetAsBoolean	GetAsBoolean ( "Some text here." )	0	doc		https://help.claris.com/en/pro-help/content/getasboolean.html
+GetAsBoolean	GetAsBoolean ( Container Field )	1	doc	Container; Field; context described on the Claris page	https://help.claris.com/en/pro-help/content/getasboolean.html
+GetSummary	If(ThisCharge > 3 * GetSummary(AvgCharge;Customer), "Verify this charge", " ")	Verify this charge	doc	AvgCharge; Customer; ThisCharge; context described on the Claris page	https://help.claris.com/en/pro-help/content/getsummary.html
+If	If ( Country = "USA" ; "US Tech Support" ; "International Tech Support" )	International Tech Support	doc	context described on the Claris page	https://help.claris.com/en/pro-help/content/if-function.html
+IsEmpty	IsEmpty ( OrderNum )	1	doc	OrderNum; context described on the Claris page	https://help.claris.com/en/pro-help/content/isempty.html
+IsEmpty	If ( IsEmpty ( LastName ) ; "Invalid record" ; "" )	Invalid Record	doc	LastName; context described on the Claris page	https://help.claris.com/en/pro-help/content/isempty.html
+IsEmpty	IsEmpty ( Payments::DatePaid )	1	doc	Payments::DatePaid 	https://help.claris.com/en/pro-help/content/isempty.html
+IsEmpty	IsEmpty ( "text" )	0	doc		https://help.claris.com/en/pro-help/content/isempty.html
+IsValid	IsValid(Datefield)	0	doc	Datefield	https://help.claris.com/en/pro-help/content/isvalid.html
+IsValid	IsValid(Amount)	0	doc	Amount; context described on the Claris page	https://help.claris.com/en/pro-help/content/isvalid.html
+IsValid	IsValid(table::field)	0	doc	context described on the Claris page; table::field	https://help.claris.com/en/pro-help/content/isvalid.html
+IsValidExpression	IsValidExpression(calculationField)	1	doc	calculationField	https://help.claris.com/en/pro-help/content/isvalidexpression.html
+IsValidExpression	IsValidExpression(calculationField)	0	doc	calculationField	https://help.claris.com/en/pro-help/content/isvalidexpression.html
+Let	Let ( x = 5; x*x )	25	doc		https://help.claris.com/en/pro-help/content/let.html
+Let	Let ( [ x = 5; squared = x*x; cubed = squared*x ]; cubed )	125	doc		https://help.claris.com/en/pro-help/content/let.html
+Let	Let (\n    City = "Paris";\n    Let (\n        City = "San Francisco";\n        City & " - "\n    )\n& City )	San Francisco 	doc		https://help.claris.com/en/pro-help/content/let.html
+Let	Let ( $PRIVILEGE_SET = Get(AccountPrivilegeSetName) ; $PRIVILEGE_SET )	[Full Access]	doc	AccountPrivilegeSetName	https://help.claris.com/en/pro-help/content/let.html
+Let	Let ( $counter[50] = 120; $counter[50]*2 )	240	doc	$counter	https://help.claris.com/en/pro-help/content/let.html
+Let	"a"	6	doc		https://help.claris.com/en/pro-help/content/let.html
+Let	Evaluate ( \n    "Let ( ["\n        & Get(ScriptParameter) & "\n    ];\n    a+1 & \\", \\" & b+2 )" \n)	6,	doc	ScriptParameter	https://help.claris.com/en/pro-help/content/let.html
+Let	Let ( [\n    a = Evaluate ( \n        "Let ( ["\n            & Get(ScriptParameter) & "\n        ];\n        a )" \n    ),\n    b = Evaluate ( \n        "Let ( ["\n            & Get(ScriptParameter) & "\n        ];\n        b )"\n    )\n]; \na+1 & ", " & b+2 )	6,	doc	ScriptParameter	https://help.claris.com/en/pro-help/content/let.html
+Lookup	CompanyName = Lookup ( Company::CompanyName ; "Not found" )	Apple	doc	Company::CompanyName ; context described on the Claris page	https://help.claris.com/en/pro-help/content/lookup.html
+Self	self > 10	1	doc	context described on the Claris page	https://help.claris.com/en/pro-help/content/self.html
+SetRecursion	SetRecursion ( \n    While (  \n        i = 0 ; \n        i < 100000 ; \n        i = i + 1 ; \n        i \n    ) ; \n200000 )	100000	doc		https://help.claris.com/en/pro-help/content/set-recursion.html
+While	$a. Each loop iteration increments count, uses it to specify the $a variable repetition, and adds the value to the running total	150	doc	$a; $a.; Each; adds; increments; it; iteration; loop; repetition; running; specify; the; to; total; uses; value; variable	https://help.claris.com/en/pro-help/content/while.html
+While	City	San Francisco.....San Francisco.....	doc	City	https://help.claris.com/en/pro-help/content/while.html
+AddEmbeddings	AddEmbeddings ( "[1, 2, 3]" ; "[4, 5, 6]" )	[0.40160966445124940405, 0.56225353023174917677, 0.722897396012249005]	doc		https://help.claris.com/en/pro-help/content/addembeddings.html
+CosineSimilarity	CosineSimilarity ( "[-0.043686170000000003333, 0.042094484000000001456, ... ]" ; "[-0.049242082999999998993, 0.040926795000000001923, ... ]" )	.90848158767415143622	doc		https://help.claris.com/en/pro-help/content/cosinesimilarity.html
+CosineSimilarity	CosineSimilarity ( v1 ; v2 )	.54682693950088512302	doc	context described on the Claris page; v1; v2	https://help.claris.com/en/pro-help/content/cosinesimilarity.html
+GetEmbeddingAsText	GetEmbeddingAsFile ( Meetings::Note_Embedding )	[-0.06650865,0.0034368848,0.051363964,...]	doc	Meetings::Note_Embedding ; context described on the Claris page	https://help.claris.com/en/pro-help/content/getembeddingastext.html
+GetModelAttributes	Let ( [\n    modelAttributes = GetModelAttributes ( "TestModel" ) ;\n    firstInput = "modelDescription.inputDescriptions.[0]" ;\n    inputKeys = JSONListKeys ( modelAttributes ; firstInput ) ;\n    keyCount = PatternCount ( inputKeys ; "sizeRange" )\n] ; \n    If ( keyCount > 0 ; 1 ; 0 )\n)	1	doc	context described on the Claris page	https://help.claris.com/en/pro-help/content/getmodelattributes.html
+GetTokenCount	GetTokenCount ( "Claris FileMaker" )	4	doc		https://help.claris.com/en/pro-help/content/gettokencount.html
+NormalizeEmbedding	NormalizeEmbedding ( "[3, 4]" )	[0.5999999999999999778, 0.80000000000000004441]	doc		https://help.claris.com/en/pro-help/content/normalizeembedding.html
+SubtractEmbeddings	SubtractEmbeddings ( "[1, 2, 3]" ; "[4, 5, 6]" )	[-0.57735026918962573106, -0.57735026918962573106, -0.57735026918962573106]	doc		https://help.claris.com/en/pro-help/content/subtractembeddings.html
+ConvertFromFileMakerPath	filemakerPath	Returns for format	doc	filemakerPath	https://help.claris.com/en/pro-help/content/convert-from-filemaker-path.html
+ConvertFromFileMakerPath	ConvertFromFileMakerPath ( "file:Import/Sales.xlsx" ; PosixPath )	Import/Sales.xlsx	doc		https://help.claris.com/en/pro-help/content/convert-from-filemaker-path.html
+ConvertFromFileMakerPath	ConvertFromFileMakerPath ( \n    "file:" & Get ( DocumentsPath ) & Table::Filename ; 3 \n)	file:///Users/UserName/Documents/contacts.txt	doc	DocumentsPath; Table::Filename ; context described on the Claris page	https://help.claris.com/en/pro-help/content/convert-from-filemaker-path.html
+ConvertToFileMakerPath	ConvertToFileMakerPath ( "C:\\Users\\John Smith\\Documents\\test.xlsx" ; WinPath )	file:/C:/Users/John Smith/Documents/test.xlsx	doc		https://help.claris.com/en/pro-help/content/convert-to-filemaker-path.html
+ConvertToFileMakerPath	Set Variable [ $URL ; Value: "fmp://fmhost.example.com/My%20Clients.fmp12" ]\nShow Custom Dialog [ ConvertToFileMakerPath ( $URL ; URLPath ) ]	fmnet:/fmhost.example.com/My Clients.fmp12	doc	$URL; Custom; Dialog; Set; Show; Value; Variable	https://help.claris.com/en/pro-help/content/convert-to-filemaker-path.html
+GetPersistentData	GetPersistentData ( "AppVersion" ; "" )	2.1.0	doc		https://help.claris.com/en/pro-help/content/getpersistentdata.html
+LayoutObjectUUID	If ( LayoutObjectUUID = "393877C5-D0A2-43D0-88B5-08F9305852DA" ; 1 ; 0 )	1	doc	context described on the Claris page	https://help.claris.com/en/pro-help/content/layoutobjectuuid.html
+Get(AccountExtendedPrivileges)	Get ( AccountExtendedPrivileges )	fmwebdirect	doc	AccountExtendedPrivileges	https://help.claris.com/en/pro-help/content/get-accountextendedprivileges.html
+Get(AccountExtendedPrivileges)	Get ( AccountExtendedPrivileges )	fmapp	doc	AccountExtendedPrivileges	https://help.claris.com/en/pro-help/content/get-accountextendedprivileges.html
+Get(AccountGroupName)	Get ( AccountGroupName )	Sales	doc	AccountGroupName	https://help.claris.com/en/pro-help/content/get-accountgroupname.html
+Get(AccountGroupName)	Get ( AccountGroupName )	Marketing	doc	AccountGroupName	https://help.claris.com/en/pro-help/content/get-accountgroupname.html
+Get(AccountGroupName)	Get ( AccountGroupName )	e849544f-8a50-4c6e-b1c3-d38c7dc2bfd3	doc	AccountGroupName	https://help.claris.com/en/pro-help/content/get-accountgroupname.html
+Get(AccountName)	Get ( AccountName )	bob@example.com	doc	AccountName; context described on the Claris page	https://help.claris.com/en/pro-help/content/get-accountname.html
+Get(AccountPasswordDaysRemaining)	Get ( AccountPasswordDaysRemaining )	5	doc	AccountPasswordDaysRemaining; context described on the Claris page	https://help.claris.com/en/pro-help/content/get-accountpassworddaysremaining.html
+Get(AccountPasswordDaysRemaining)	Get ( AccountPasswordDaysRemaining )	0	doc	AccountPasswordDaysRemaining; context described on the Claris page	https://help.claris.com/en/pro-help/content/get-accountpassworddaysremaining.html
+Get(AccountPrivilegeSetName)	Get(AccountPrivilegeSetName)	[Full Access]	doc	AccountPrivilegeSetName	https://help.claris.com/en/pro-help/content/get-accountprivilegesetname.html
+Get(AccountPrivilegeSetName)	Get(AccountPrivilegeSetName)	[Data Entry Only]	doc	AccountPrivilegeSetName	https://help.claris.com/en/pro-help/content/get-accountprivilegesetname.html
+Get(AccountPrivilegeSetName)	Get(AccountPrivilegeSetName)	[Read-Only Access]	doc	AccountPrivilegeSetName	https://help.claris.com/en/pro-help/content/get-accountprivilegesetname.html
+Get(AccountPrivilegeSetName)	Get(CurrentPrivilegeSetName)	[Full Access]	doc	CurrentPrivilegeSetName; context described on the Claris page	https://help.claris.com/en/pro-help/content/get-accountprivilegesetname.html
+Get(ActiveFieldContents)	Get ( ActiveFieldContents )	SomeShop	doc	ActiveFieldContents; context described on the Claris page	https://help.claris.com/en/pro-help/content/get-activefieldcontents.html
+Get(ActiveFieldName)	Get ( ActiveFieldName )	Country	doc	ActiveFieldName; context described on the Claris page	https://help.claris.com/en/pro-help/content/get-activefieldname.html
+Get(ActiveFieldTableName)	Get(ActiveFieldTableName)	Teachers	doc	ActiveFieldTableName; context described on the Claris page	https://help.claris.com/en/pro-help/content/get-activefieldtablename.html
+Get(ActiveLayoutObjectName)	customerName. When the focus is on the field, Get(ActiveLayoutObjectName)	customerName	doc	ActiveLayoutObjectName; When; customerName; field; focus; is; on; the	https://help.claris.com/en/pro-help/content/get-activelayoutobjectname.html
+Get(ActiveModifierKeys)	Get ( ActiveModifierKeys )	9	doc	ActiveModifierKeys; context described on the Claris page	https://help.claris.com/en/pro-help/content/get-activemodifierkeys.html
+Get(ActivePortalRowNumber)	Get ( ActivePortalRowNumber )	5	doc	ActivePortalRowNumber; context described on the Claris page	https://help.claris.com/en/pro-help/content/get-activeportalrownumber.html
+Get(ActivePortalRowNumber)	Get ( ActivePortalRowNumber )	1	doc	ActivePortalRowNumber	https://help.claris.com/en/pro-help/content/get-activeportalrownumber.html
+Get(ActivePortalRowNumber)	Get ( ActivePortalRowNumber )	0	doc	ActivePortalRowNumber; context described on the Claris page	https://help.claris.com/en/pro-help/content/get-activeportalrownumber.html
+Get(ActiveRecordNumber)	Get ( ActiveRecordNumber )	4	doc	ActiveRecordNumber; context described on the Claris page	https://help.claris.com/en/pro-help/content/get-activerecordnumber.html
+Get(ActiveRepetitionNumber)	Get ( ActiveRepetitionNumber )	5	doc	ActiveRepetitionNumber; context described on the Claris page	https://help.claris.com/en/pro-help/content/get-activerepetitionnumber.html
+Get(ActiveSelectionSize)	Get ( ActiveSelectionSize )	4	doc	ActiveSelectionSize; context described on the Claris page	https://help.claris.com/en/pro-help/content/get-activeselectionsize.html
+Get(ActiveSelectionStart)	Get ( ActiveSelectionStart )	5	doc	ActiveSelectionStart; context described on the Claris page	https://help.claris.com/en/pro-help/content/get-activeselectionstart.html
+Get(AllowAbortState)	Get ( AllowAbortState )	1	doc	AllowAbortState; context described on the Claris page	https://help.claris.com/en/pro-help/content/get-allowabortstate.html
+Get(AllowFormattingBarState)	Get ( AllowFormattingBarState )	1	doc	AllowFormattingBarState; context described on the Claris page	https://help.claris.com/en/pro-help/content/get-allowformattingbarstate.html
+Get(ApplicationArchitecture)	If ( \n    Get ( SystemPlatform ) = 1 and Get ( ApplicationArchitecture ) = "arm64" ; \n    "Apple silicon"\n)	Apple silicon	doc	ApplicationArchitecture; SystemPlatform	https://help.claris.com/en/pro-help/content/get-applicationarchitecture.html
+Get(ApplicationLanguage)	Get ( ApplicationLanguage )	English	doc	ApplicationLanguage; context described on the Claris page	https://help.claris.com/en/pro-help/content/get-applicationlanguage.html
+Get(ApplicationVersion)	Get ( ApplicationVersion )	Pro 26.0.1	doc	ApplicationVersion	https://help.claris.com/en/pro-help/content/get-applicationversion.html
+Get(CacheFileName)	Get ( CacheFileName )	FMTEMPFM9912_2.tmp	doc	CacheFileName	https://help.claris.com/en/pro-help/content/get-cachefilename.html
+Get(CacheFileName)	Get ( CacheFileName )	FMS_E298711A83921EA362CEE21A73046B7B.fch	doc	CacheFileName	https://help.claris.com/en/pro-help/content/get-cachefilename.html
+Get(CacheFilePath)	Get ( CacheFilePath )	/C:/Users/username/AppData/Local/Temp/	doc	CacheFilePath	https://help.claris.com/en/pro-help/content/get-cachefilepath.html
+Get(CacheFilePath)	Get ( CacheFilePath )	/C:/Users/username/AppData/Local/Temp/FileMaker/DBCache/0C1955466C685EB0BE9D9A99887601FB/	doc	CacheFilePath	https://help.claris.com/en/pro-help/content/get-cachefilepath.html
+Get(CacheFilePath)	Get ( CacheFilePath )	/Macintosh HD/var/folders/r8/k3_nw76d6t95mh6cf3d21fpc0000gn/T/	doc	CacheFilePath	https://help.claris.com/en/pro-help/content/get-cachefilepath.html
+Get(CacheFilePath)	Get ( CacheFilePath )	/Macintosh HD/Users/username/Library/Caches/FileMaker/DBCache/0C1955466C685EB0BE9D9A99887601FB/	doc	CacheFilePath	https://help.claris.com/en/pro-help/content/get-cachefilepath.html
+Get(CalculationRepetitionNumber)	Get ( CalculationRepetitionNumber )	5	doc	CalculationRepetitionNumber; context described on the Claris page	https://help.claris.com/en/pro-help/content/get-calculationrepetitionnumber.html
+Get(CalculationRepetitionNumber)	Quiz::Score * Get ( CalculationRepetitionNumber )	85	doc	CalculationRepetitionNumber; Quiz::Score 	https://help.claris.com/en/pro-help/content/get-calculationrepetitionnumber.html
+Get(CalculationRepetitionNumber)	Time ( Hour ( Extend ( Timer::Start Time ) ) ; Minute ( Extend ( Timer::Start Time ) ) + ( Extend ( Timer::Snooze Minutes ) * Get ( CalculationRepetitionNumber ) ) ; Seconds ( Extend ( Timer::Start Time ) ) )	12:06:00	doc	CalculationRepetitionNumber; Timer::Snooze Minutes ; Timer::Start Time 	https://help.claris.com/en/pro-help/content/get-calculationrepetitionnumber.html
+Get(ConnectionState)	Get ( ConnectionState )	3	doc	ConnectionState; context described on the Claris page	https://help.claris.com/en/pro-help/content/get-connectionstate.html
+Get(CurrentDate)	Get ( CurrentDate ) - Date ( 1 ; 5 ; 2019 )	4	doc	CurrentDate; context described on the Claris page	https://help.claris.com/en/pro-help/content/get-currentdate.html
+Get(CurrentHostTimestamp)	Get ( CurrentHostTimestamp )	1/1/2019 11:30:01 AM	doc	CurrentHostTimestamp; context described on the Claris page	https://help.claris.com/en/pro-help/content/get-currenthosttimestamp.html
+Get(CurrentHostTimestamp)	Get ( CurrentHostTimestamp ) - 8 * 3600	12/31/2018 6:19:01 PM	doc	CurrentHostTimestamp; context described on the Claris page	https://help.claris.com/en/pro-help/content/get-currenthosttimestamp.html
+Get(CurrentPrivilegeSetName)	Get(CurrentPrivilegeSetName)	[Full Access]	doc	CurrentPrivilegeSetName	https://help.claris.com/en/pro-help/content/get-currentprivilegesetname.html
+Get(CurrentPrivilegeSetName)	Get(CurrentPrivilegeSetName)	[Data Entry Only]	doc	CurrentPrivilegeSetName	https://help.claris.com/en/pro-help/content/get-currentprivilegesetname.html
+Get(CurrentTime)	Get ( CurrentTime )	11:30:01 AM 	doc	CurrentTime; context described on the Claris page	https://help.claris.com/en/pro-help/content/get-currenttime.html
+Get(CurrentTimestamp)	Get ( CurrentTimestamp )	1/1/2019 11:30:01 AM	doc	CurrentTimestamp; context described on the Claris page	https://help.claris.com/en/pro-help/content/get-currenttimestamp.html
+Get(CurrentTimeUTCMicroseconds)	GetAsTime ( GetAsTimestamp ( Get ( CurrentTimeUTCMicroseconds ) / 1000000 ) + ( Location::TimeAdjustment * 3600 ) )	1:43:55.304 PM	doc	CurrentTimeUTCMicroseconds; Location::TimeAdjustment 	https://help.claris.com/en/pro-help/content/get-currenttimeutcmicroseconds.html
+Get(CurrentTimeUTCMilliseconds)	GetAsTime ( GetAsTimestamp ( Get ( CurrentTimeUTCMilliseconds ) / 1000 ) + ( Location::TimeAdjustment * 3600 ) )	1:43:55.304 PM	doc	CurrentTimeUTCMilliseconds; Location::TimeAdjustment 	https://help.claris.com/en/pro-help/content/get-currenttimeutcmilliseconds.html
+Get(CustomMenuSetName)	Get ( CustomMenuSetName )	Custom Menu Set #1 	doc	CustomMenuSetName; context described on the Claris page	https://help.claris.com/en/pro-help/content/get-custommenusetname.html
+Get(DesktopPath)	Get ( DesktopPath )	/C:/Users/John Smith/Desktop/	doc	DesktopPath	https://help.claris.com/en/pro-help/content/get-desktoppath.html
+Get(DesktopPath)	Get ( DesktopPath )	/Macintosh HD/Users/johnsmith/Desktop/	doc	DesktopPath	https://help.claris.com/en/pro-help/content/get-desktoppath.html
+Get(Device)	Get ( Device )	2	doc	Device	https://help.claris.com/en/pro-help/content/get-device.html
+Get(Device)	Get ( Device )	3	doc	Device	https://help.claris.com/en/pro-help/content/get-device.html
+Get(Device)	Get ( Device )	6	doc	Device; context described on the Claris page	https://help.claris.com/en/pro-help/content/get-device.html
+Get(ErrorCaptureState)	Get ( ErrorCaptureState )	1	doc	ErrorCaptureState; context described on the Claris page	https://help.claris.com/en/pro-help/content/get-errorcapturestate.html
+Get(FileLocaleElements)	JSONGetElement ( Get ( FileLocaleElements ) ; "Time.12h" )	0	doc	FileLocaleElements; context described on the Claris page	https://help.claris.com/en/pro-help/content/get-filelocaleelements.html
+Get(FileMakerPath)	Get ( FileMakerPath )	/C:/Program Files/FileMaker/FileMaker Pro/	doc	FileMakerPath	https://help.claris.com/en/pro-help/content/get-filemakerpath.html
+Get(FileMakerPath)	Get ( FileMakerPath )	/Macintosh HD/Applications/	doc	FileMakerPath	https://help.claris.com/en/pro-help/content/get-filemakerpath.html
+Get(FileName)	Get ( FileName )	Contacts	doc	FileName; context described on the Claris page	https://help.claris.com/en/pro-help/content/get-filename.html
+Get(FilePath)	Get ( FilePath )	file:/C:/Users/Username/Documents/Clients.fmp12	doc	FilePath	https://help.claris.com/en/pro-help/content/get-filepath.html
+Get(FilePath)	Get ( FilePath )	file:/Sharename/Documents/Clients.fmp12	doc	FilePath	https://help.claris.com/en/pro-help/content/get-filepath.html
+Get(FilePath)	Get ( FilePath )	file:/Macintosh HD/Users/Username/Documents/Clients.fmp12	doc	FilePath	https://help.claris.com/en/pro-help/content/get-filepath.html
+Get(FilePath)	Get ( FilePath )	fmnet:/192.168.10.10/Clients.fmp12	doc	FilePath	https://help.claris.com/en/pro-help/content/get-filepath.html
+Get(FileSize)	Get ( FileSize )	15000	doc	FileSize; context described on the Claris page	https://help.claris.com/en/pro-help/content/get-filesize.html
+Get(FoundCount)	Get ( FoundCount )	7	doc	FoundCount; context described on the Claris page	https://help.claris.com/en/pro-help/content/get-foundcount.html
+Get(HostApplicationVersion)	Get ( HostApplicationVersion )	Pro 26.0.1	doc	HostApplicationVersion; context described on the Claris page	https://help.claris.com/en/pro-help/content/get-hostapplicationversion.html
+Get(HostApplicationVersion)	Get ( HostApplicationVersion )	Server 26.0.1	doc	HostApplicationVersion; context described on the Claris page	https://help.claris.com/en/pro-help/content/get-hostapplicationversion.html
+Get(HostApplicationVersion)	Get ( HostApplicationVersion )	Cloud Server 2.26.0.57	doc	HostApplicationVersion; context described on the Claris page	https://help.claris.com/en/pro-help/content/get-hostapplicationversion.html
+Get(HostName)	Get ( HostName )	fms.example.com	doc	HostName; context described on the Claris page	https://help.claris.com/en/pro-help/content/get-hostname.html
+Get(InstalledFMPluginsAsJSON)	While ( \n    [ \n    plugin_json = Get ( InstalledFMPluginsAsJSON ) ;\n    total = ValueCount ( JSONListKeys ( plugin_json ; "plugins" ) ) ;\n    index = 0 ;\n    version = "" \n    ] ; \n\n    index < total ; \n\n    [ \n    version = If ( JSONGetElement ( plugin_json ; "plugins[" & index & "].id" ) = $$id ; \n        JSONGetElement ( plugin_json ; "plugins[" & index & "].version" ) ; "" ) ;\n    index = If ( version = "" ; index + 1 ; total )\n    ] ; \n\n    version \n)	1.0	doc	$$id; InstalledFMPluginsAsJSON	https://help.claris.com/en/pro-help/content/get-installedfmpluginsasjson.html
+Get(LastError)	Get ( LastError )	0	doc	LastError; context described on the Claris page	https://help.claris.com/en/pro-help/content/get-lasterror.html
+Get(LastError)	Get ( LastError )	401	doc	LastError; context described on the Claris page	https://help.claris.com/en/pro-help/content/get-lasterror.html
+Get(LastStepTokensUsed)	JSONGetElement ( Get ( LastStepTokensUsed ) ; "usage.total_tokens" )	177	doc	LastStepTokensUsed	https://help.claris.com/en/pro-help/content/get-laststeptokensused.html
+Get(LayoutAccess)	Get ( LayoutAccess )	1	doc	LayoutAccess; context described on the Claris page	https://help.claris.com/en/pro-help/content/get-layoutaccess.html
+Get(LayoutCount)	Get ( LayoutCount )	3	doc	LayoutCount; context described on the Claris page	https://help.claris.com/en/pro-help/content/get-layoutcount.html
+Get(LayoutName)	Get ( LayoutName )	Product List	doc	LayoutName; context described on the Claris page	https://help.claris.com/en/pro-help/content/get-layoutname.html
+Get(LayoutName)	Get ( LayoutName )	Customer Invoice	doc	LayoutName; context described on the Claris page	https://help.claris.com/en/pro-help/content/get-layoutname.html
+Get(LayoutNumber)	Get ( LayoutNumber )	3	doc	LayoutNumber; context described on the Claris page	https://help.claris.com/en/pro-help/content/get-layoutnumber.html
+Get(LayoutTableName)	Get(LayoutTableName)	Teachers	doc	LayoutTableName; context described on the Claris page	https://help.claris.com/en/pro-help/content/get-layouttablename.html
+Get(MenubarState)	Get ( MenubarState )	1	doc	MenubarState; context described on the Claris page	https://help.claris.com/en/pro-help/content/get-menubarstate.html
+Get(MultiUserState)	Get ( MultiUserState )	0	doc	MultiUserState; context described on the Claris page	https://help.claris.com/en/pro-help/content/get-multiuserstate.html
+Get(NetworkProtocol)	Get ( NetworkProtocol )	TCP/IP	doc	NetworkProtocol; context described on the Claris page	https://help.claris.com/en/pro-help/content/get-networkprotocol.html
+Get(NetworkProtocol)	Get ( NetworkProtocol )	HTTPS	doc	NetworkProtocol; context described on the Claris page	https://help.claris.com/en/pro-help/content/get-networkprotocol.html
+Get(NetworkType)	Get ( NetworkType )	3	doc	NetworkType; context described on the Claris page	https://help.claris.com/en/pro-help/content/get-networktype.html
+Get(PageNumber)	Get ( PageNumber )	4	doc	PageNumber; context described on the Claris page	https://help.claris.com/en/pro-help/content/get-pagenumber.html
+Get(PreferencesPath)	Get ( PreferencesPath )	/C:/Users/John Smith/AppData/Local/ 	doc	PreferencesPath	https://help.claris.com/en/pro-help/content/get-preferencespath.html
+Get(PreferencesPath)	Get ( PreferencesPath )	/Macintosh HD/Users/John Smith/Library/Preferences/ 	doc	PreferencesPath	https://help.claris.com/en/pro-help/content/get-preferencespath.html
+Get(PrinterName)	Get ( PrinterName )	HP LaserJet P4015, winspool, Ne03 	doc	PrinterName	https://help.claris.com/en/pro-help/content/get-printername.html
+Get(PrinterName)	Get ( PrinterName )	24.109.265.43	doc	PrinterName	https://help.claris.com/en/pro-help/content/get-printername.html
+Get(RecordAccess)	Get ( RecordAccess )	1	doc	RecordAccess; context described on the Claris page	https://help.claris.com/en/pro-help/content/get-recordaccess.html
+Get(RecordModificationCount)	Get ( RecordModificationCount )	0	doc	RecordModificationCount; context described on the Claris page	https://help.claris.com/en/pro-help/content/get-recordmodificationcount.html
+Get(RecordNumber)	Get ( RecordNumber )	3	doc	RecordNumber; context described on the Claris page	https://help.claris.com/en/pro-help/content/get-recordnumber.html
+Get(RecordOpenCount)	Get ( RecordOpenCount )	4 	doc	RecordOpenCount; context described on the Claris page	https://help.claris.com/en/pro-help/content/get-recordopencount.html
+Get(RecordOpenState)	Get ( RecordOpenState )	1 	doc	RecordOpenState; context described on the Claris page	https://help.claris.com/en/pro-help/content/get-recordopenstate.html
+Get(RequestCount)	Get ( RequestCount )	5	doc	RequestCount; context described on the Claris page	https://help.claris.com/en/pro-help/content/get-requestcount.html
+Get(RequestOmitState)	Get ( RequestOmitState )	1 	doc	RequestOmitState; context described on the Claris page	https://help.claris.com/en/pro-help/content/get-requestomitstate.html
+Get(RevertTransactionOnErrorState)	Get ( RevertTransactionOnErrorState )	0	doc	RevertTransactionOnErrorState; context described on the Claris page	https://help.claris.com/en/pro-help/content/get-reverttransactiononerrorstate.html
+Get(ScreenDepth)	Get ( ScreenDepth )	32	doc	ScreenDepth	https://help.claris.com/en/pro-help/content/get-screendepth.html
+Get(ScreenDepth)	Get ( ScreenDepth )	16	doc	ScreenDepth	https://help.claris.com/en/pro-help/content/get-screendepth.html
+Get(ScreenDepth)	Get ( ScreenDepth )	4	doc	ScreenDepth	https://help.claris.com/en/pro-help/content/get-screendepth.html
+Get(ScreenDepth)	Get ( ScreenDepth )	1	doc	ScreenDepth	https://help.claris.com/en/pro-help/content/get-screendepth.html
+Get(ScreenHeight)	Get ( ScreenHeight )	480	doc	ScreenHeight; context described on the Claris page	https://help.claris.com/en/pro-help/content/get-screenheight.html
+Get(ScreenScaleFactor)	Get(ScreenScaleFactor)	2	doc	ScreenScaleFactor	https://help.claris.com/en/pro-help/content/get-screenscalefactor.html
+Get(ScreenWidth)	Get ( ScreenWidth )	640	doc	ScreenWidth; context described on the Claris page	https://help.claris.com/en/pro-help/content/get-screenwidth.html
+Get(ScriptAnimationState)	Get ( ScriptAnimationState )	1	doc	ScriptAnimationState; context described on the Claris page	https://help.claris.com/en/pro-help/content/get-scriptanimationstate.html
+Get(ScriptName)	Get ( ScriptName )	Print Report	doc	ScriptName; context described on the Claris page	https://help.claris.com/en/pro-help/content/get-scriptname.html
+Get(ScriptName)	Get ( ScriptName )	Update Customer	doc	ScriptName; context described on the Claris page	https://help.claris.com/en/pro-help/content/get-scriptname.html
+Get(SessionIdentifier)	Get ( SessionIdentifier )	Sharon Lloyd A9oCnLQ	doc	SessionIdentifier; context described on the Claris page	https://help.claris.com/en/pro-help/content/get-sessionidentifier.html
+Get(SortState)	Get ( SortState )	1	doc	SortState; context described on the Claris page	https://help.claris.com/en/pro-help/content/get-sortstate.html
+Get(StatusAreaState)	Get ( StatusAreaState )	1	doc	StatusAreaState; context described on the Claris page	https://help.claris.com/en/pro-help/content/get-statusareastate.html
+Get(SystemAppearance)	Get ( SystemAppearance )	High Contrast White	doc	SystemAppearance; context described on the Claris page	https://help.claris.com/en/pro-help/content/get-systemappearance.html
+Get(SystemAppearance)	Get ( SystemAppearance )	DarkAqua	doc	SystemAppearance; context described on the Claris page	https://help.claris.com/en/pro-help/content/get-systemappearance.html
+Get(SystemDrive)	Get ( SystemDrive )	/C:/ 	doc	SystemDrive; context described on the Claris page	https://help.claris.com/en/pro-help/content/get-systemdrive.html
+Get(SystemDrive)	Get ( SystemDrive )	/DriveName/ 	doc	SystemDrive; context described on the Claris page	https://help.claris.com/en/pro-help/content/get-systemdrive.html
+Get(SystemLanguage)	Get ( SystemLanguage )	Japanese	doc	SystemLanguage; context described on the Claris page	https://help.claris.com/en/pro-help/content/get-systemlanguage.html
+Get(SystemLocaleElements)	JSONGetElement ( Get ( FileLocaleElements ) ; "Time.12h" )	1	doc	FileLocaleElements; context described on the Claris page	https://help.claris.com/en/pro-help/content/get-systemlocaleelements.html
+Get(SystemNICAddress)	Get ( SystemNICAddress )	00:07:34:4e:c2:0d	doc	SystemNICAddress	https://help.claris.com/en/pro-help/content/get-systemnicaddress.html
+Get(SystemPlatform)	Get(SystemPlatform)	-	doc	SystemPlatform; context described on the Claris page	https://help.claris.com/en/pro-help/content/get-systemplatform.html
+Get(SystemPlatform)	Get(SystemPlatform)	1	doc	SystemPlatform; context described on the Claris page	https://help.claris.com/en/pro-help/content/get-systemplatform.html
+Get(SystemStorageAvailable)	Get ( SystemStorageAvailable )	417048244224	doc	SystemStorageAvailable	https://help.claris.com/en/pro-help/content/get-systemstorageavailable.html
+Get(SystemVersion)	Get ( SystemVersion )	26.0	doc	SystemVersion; context described on the Claris page	https://help.claris.com/en/pro-help/content/get-systemversion.html
+Get(SystemVersion)	Get ( SystemVersion )	iPad Safari 26.0	doc	SystemVersion	https://help.claris.com/en/pro-help/content/get-systemversion.html
+Get(SystemVersion)	Get ( SystemVersion )	Win Chrome 148.0	doc	SystemVersion	https://help.claris.com/en/pro-help/content/get-systemversion.html
+Get(TextRulerVisible)	Get ( TextRulerVisible )	1	doc	TextRulerVisible; context described on the Claris page	https://help.claris.com/en/pro-help/content/get-textrulervisible.html
+Get(TotalRecordCount)	Get ( TotalRecordCount )	876	doc	TotalRecordCount; context described on the Claris page	https://help.claris.com/en/pro-help/content/get-totalrecordcount.html
+Get(TransactionOpenState)	Open Transaction []\n    Set Variable [ $transaction_open_state ; Value: Get ( TransactionOpenState ) ]\nCommit Transaction	1	doc	$transaction_open_state; Commit; Open; Set; Transaction; TransactionOpenState; Value; Variable	https://help.claris.com/en/pro-help/content/get-transactionopenstate.html
+Get(TriggerKeystroke)	If [ Code ( Get(TriggerKeystroke) ) = 13 ]\n    Show Custom Dialog ["Processing input..."]\nEnd If	Processing input...	doc	Custom; Dialog; End; Show; TriggerKeystroke; context described on the Claris page	https://help.claris.com/en/pro-help/content/get-triggerkeystroke.html
+Get(UserCount)	Get ( UserCount )	10	doc	UserCount; context described on the Claris page	https://help.claris.com/en/pro-help/content/get-usercount.html
+Get(UserCount)	Get ( UserCount )	5	doc	UserCount; context described on the Claris page	https://help.claris.com/en/pro-help/content/get-usercount.html
+Get(UserName)	Get ( UserName )	Sharon Lloyd	doc	UserName; context described on the Claris page	https://help.claris.com/en/pro-help/content/get-username.html
+Get(UseSystemFormatsState)	Get ( UseSystemFormatsState )	1 	doc	UseSystemFormatsState; context described on the Claris page	https://help.claris.com/en/pro-help/content/get-usesystemformatsstate.html
+Get(WindowContentHeight)	Get(WindowHeight) 	37	doc	WindowHeight; context described on the Claris page	https://help.claris.com/en/pro-help/content/get-windowcontentheight.html
+Get(WindowContentWidth)	Get ( WindowContentWidth )	400	doc	WindowContentWidth; context described on the Claris page	https://help.claris.com/en/pro-help/content/get-windowcontentwidth.html
+Get(WindowContentWidth)	Get(WindowWidth) 	15	doc	WindowWidth; context described on the Claris page	https://help.claris.com/en/pro-help/content/get-windowcontentwidth.html
+Get(WindowDesktopHeight)	Get ( WindowDesktopHeight )	1040	doc	WindowDesktopHeight; context described on the Claris page	https://help.claris.com/en/pro-help/content/get-windowdesktopheight.html
+Get(WindowDesktopHeight)	Get ( WindowDesktopHeight )	1347 	doc	WindowDesktopHeight; context described on the Claris page	https://help.claris.com/en/pro-help/content/get-windowdesktopheight.html
+Get(WindowDesktopWidth)	Get ( WindowDesktopWidth )	1920	doc	WindowDesktopWidth; context described on the Claris page	https://help.claris.com/en/pro-help/content/get-windowdesktopwidth.html
+Get(WindowDesktopWidth)	Get ( WindowDesktopWidth )	2560	doc	WindowDesktopWidth; context described on the Claris page	https://help.claris.com/en/pro-help/content/get-windowdesktopwidth.html
+Get(WindowHeight)	Get(WindowHeight)	300	doc	WindowHeight; context described on the Claris page	https://help.claris.com/en/pro-help/content/get-windowheight.html
+Get(WindowLeft)	Get ( WindowLeft )	52	doc	WindowLeft; context described on the Claris page	https://help.claris.com/en/pro-help/content/get-windowleft.html
+Get(WindowLeft)	Get ( WindowLeft )	0	doc	WindowLeft; context described on the Claris page	https://help.claris.com/en/pro-help/content/get-windowleft.html
+Get(WindowMode)	Get ( WindowMode )	2	doc	WindowMode; context described on the Claris page	https://help.claris.com/en/pro-help/content/get-windowmode.html
+Get(WindowStyle)	Get ( WindowStyle )	0 	doc	WindowStyle; context described on the Claris page	https://help.claris.com/en/pro-help/content/get-windowstyle.html
+Get(WindowTop)	Get ( WindowTop )	52	doc	WindowTop; context described on the Claris page	https://help.claris.com/en/pro-help/content/get-windowtop.html
+Get(WindowTop)	Get ( WindowTop )	0	doc	WindowTop; context described on the Claris page	https://help.claris.com/en/pro-help/content/get-windowtop.html
+Get(WindowVisible)	Get ( WindowVisible )	1	doc	WindowVisible; context described on the Claris page	https://help.claris.com/en/pro-help/content/get-windowvisible.html
+Get(WindowVisible)	Get ( WindowVisible )	0	doc	WindowVisible; context described on the Claris page	https://help.claris.com/en/pro-help/content/get-windowvisible.html
+Get(WindowWidth)	Get ( WindowWidth )	300	doc	WindowWidth; context described on the Claris page	https://help.claris.com/en/pro-help/content/get-windowwidth.html
+Get(WindowZoomLevel)	Get ( WindowZoomLevel )	200	doc	WindowZoomLevel; context described on the Claris page	https://help.claris.com/en/pro-help/content/get-windowzoomlevel.html
+BaseTableComment	BaseTableComment  ( "" ; "Contacts" )	Contacts at companies stored in the Customers table	doc		https://help.claris.com/en/pro-help/content/basetablecomment.html
+FieldBounds	FieldBounds ( "Customers" ; "Layout #1" ; "Field" )	36 48 295 65 0	doc		https://help.claris.com/en/pro-help/content/fieldbounds.html
+FieldComment	FieldComment ( "Customers" ; "Phone Number" )	"Customer's home telephone number"	doc	context described on the Claris page	https://help.claris.com/en/pro-help/content/fieldcomment.html
+FieldComment	FieldComment ( "Customers" ; "Accounts::Current Balance" )	"Customer's current balance	doc	context described on the Claris page	https://help.claris.com/en/pro-help/content/fieldcomment.html
+FieldDisplayNames	JSONGetElement ( FieldDisplayNames ( "" ; "Customers::FirstName" ) ; "fm_table_view" )	Given Name	doc		https://help.claris.com/en/pro-help/content/fielddisplaynames.html
+FieldRepetitions	FieldRepetitions ( "Customers" ; "Data Entry" ; "Business Phone" )	3 vertical	doc	context described on the Claris page	https://help.claris.com/en/pro-help/content/fieldrepetitions.html
+FieldStyle	FieldStyle ( "Customers" ; "Data Entry" ; "Current Customer" )	RadioButton Yes/No List	doc	context described on the Claris page	https://help.claris.com/en/pro-help/content/fieldstyle.html
+FieldType	FieldType ( "Customers" ; "Phone Number" )	Standard Text Unindexed 3	doc	context described on the Claris page	https://help.claris.com/en/pro-help/content/fieldtype.html
+FieldType	FieldType ( "Customers" ; "Current Balance" )	StoredCalc Number Indexed 1	doc	context described on the Claris page	https://help.claris.com/en/pro-help/content/fieldtype.html
+FieldType	FieldType ( "Customers" ; "Today's Date" )	Global Date Unindexed 1	doc	context described on the Claris page	https://help.claris.com/en/pro-help/content/fieldtype.html
+FieldType	FieldType ( "Customers" ; "Statement" )	External(Secure) Container Unindexed 1	doc	context described on the Claris page	https://help.claris.com/en/pro-help/content/fieldtype.html
+WindowNames	WindowNames	Customers	doc	context described on the Claris page	https://help.claris.com/en/pro-help/content/windownames.html
+GetSensor	GetSensor ( "stepCount"; 3600 )	8000	doc	context described on the Claris page	https://help.claris.com/en/pro-help/content/getsensor.html
+PatternCount	PatternCount ( "aaaa" ; "aa" )	2	engine	non-overlapping	
+PatternCount	PatternCount ( "Abc abc ABC" ; "abc" )	3	engine	case-insensitive	
+PatternCount	PatternCount ( "abc" ; "" )	0	engine	empty search string	
+Middle	Middle ( "abcdef" ; 0 ; 2 )	ab	engine	start <= 0 treated as 1	
+Middle	Middle ( "abcdef" ; -5 ; 2 )	ab	engine	start <= 0 treated as 1	
+Middle	Middle ( "abcdef" ; 3 ; -1 )	cdef	inferred	negative count read as unsigned => rest	
+Middle	Middle ( "abcdef" ; 2.9 ; 2.9 )	bc	engine	arguments truncated toward zero	
+Left	Left ( "abcdef" ; 2.9 )	ab	engine	truncation toward zero	
+Left	Left ( "abcdef" ; -1 )	abcdef	inferred	negative count read as unsigned 32-bit; confirm	
+Left	Left ( "abc" ; 4294967296 )		inferred	count taken modulo 2^32; confirm	
+Length	Length ( "e" & Char ( 769 ) )	1	engine	grapheme cluster (e + combining acute)	
+Length	Length ( Char ( 66560 ) )	1	engine	U+10400 (surrogate pair) is one grapheme	
+Position	Position ( "ABCabc" ; "c" ; 1 ; 1 )	3	engine	case-insensitive	
+Substitute	Substitute ( "aAa" ; "a" ; "x" )	xAx	engine	case-sensitive	
+Exact	Exact ( "a" ; "A" )	0	engine	case-sensitive	
+Filter	Filter ( "AbCabc" ; "abc" )	babc	engine	case-sensitive grapheme match	
+Trim	Code ( Trim ( Char ( 12288 ) & "x" & Char ( 12288 ) ) )	120	engine	U+3000 is trimmed	
+Trim	Length ( Trim ( Char ( 160 ) & "x" ) )	2	inferred	U+00A0 (category 11) is not trimmed; confirm	
+Trim	Length ( Trim ( Char ( 9 ) & "x" ) )	2	engine	tab is not trimmed	
+ValueCount	ValueCount ( "a" & Char ( 10 ) & "b" )	2	engine	LF separates values	
+ValueCount	ValueCount ( "a" & Char ( 8232 ) & "b" & Char ( 8233 ) & "c" )	3	engine	U+2028/U+2029 separate values	
+ValueCount	ValueCount ( "a" & Char ( 133 ) & "b" )	1	engine	NEL is not a separator	
+ValueCount	ValueCount ( "a" & Char ( 13 ) & Char ( 10 ) & "b" )	3	inferred	CR LF counts as two separators; confirm	
+Int	Int ( -2.7 )	-2	engine	toward zero	
+Div	Div ( -7 ; 2 )	-4	engine	floor	
+WeekOfYearFiscal	WeekOfYearFiscal ( Date ( 1 ; 1 ; 2024 ) ; 8 )	?	inferred	startingDay outside 1..7; result form to confirm	
+JSONGetElement	JSONGetElement ( "{\\"a\\":1,\\"a\\":2}" ; "a" )	? * Line 1, Column 9\r  Duplicate key: 'a'	inferred	jsoncpp rejectDupKeys; exact column and trailing text to confirm	
+JSONGetElement	JSONGetElement ( "1" ; "" )	? * Line 1, Column 1\r  A valid JSON document must be either an array or an object value.	inferred	jsoncpp strictRoot; exact text to confirm	
+JSONSetElement	JSONSetElement ( "{}" ; "b" ; 1 ; JSONNumber ) 	{"b":1}	inferred	compact writer	
+JSONSetElement	JSONSetElement ( "{\\"b\\":1}" ; "a" ; "x" ; JSONString )	{"a":"x","b":1}	inferred	keys sorted	
+JSONGetElementType	JSONGetElementType ( "{\\"a\\":[]}" ; "a" )	4	engine	kJSONArrayValue = 4	

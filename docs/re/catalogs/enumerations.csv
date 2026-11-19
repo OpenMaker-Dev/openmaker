@@ -1,0 +1,249 @@
+enumeration,resource_id,index,value
+script-step-category,133,0,Control
+script-step-category,133,1,Navigation
+script-step-category,133,2,Editing
+script-step-category,133,3,Fields
+script-step-category,133,4,Records
+script-step-category,133,5,Found Sets
+script-step-category,133,6,Windows
+script-step-category,133,7,Files
+script-step-category,133,8,Accounts
+script-step-category,133,9,Artificial Intelligence
+script-step-category,133,10,Spelling
+script-step-category,133,11,PDF Files
+script-step-category,133,12,Open Menu Item
+script-step-category,133,13,Miscellaneous
+function-category (category_id = index + 1),135,0,Name
+function-category (category_id = index + 1),135,1,Type
+function-category (category_id = index + 1),135,2,Text
+function-category (category_id = index + 1),135,3,Text formatting
+function-category (category_id = index + 1),135,4,Number
+function-category (category_id = index + 1),135,5,Date
+function-category (category_id = index + 1),135,6,Time
+function-category (category_id = index + 1),135,7,Timestamp
+function-category (category_id = index + 1),135,8,Container
+function-category (category_id = index + 1),135,9,Japanese
+function-category (category_id = index + 1),135,10,JSON
+function-category (category_id = index + 1),135,11,Aggregate
+function-category (category_id = index + 1),135,12,Repeating
+function-category (category_id = index + 1),135,13,Financial
+function-category (category_id = index + 1),135,14,Trigonometric
+function-category (category_id = index + 1),135,15,Logical
+function-category (category_id = index + 1),135,16,Artificial Intelligence
+function-category (category_id = index + 1),135,17,Miscellaneous
+function-category (category_id = index + 1),135,18,Get
+function-category (category_id = index + 1),135,19,Design
+function-category (category_id = index + 1),135,20,Mobile
+function-category (category_id = index + 1),135,21,Custom
+function-category (category_id = index + 1),135,22,External
+GetLayoutObjectAttribute attribute,146,0,objectType
+GetLayoutObjectAttribute attribute,146,1,hasFocus
+GetLayoutObjectAttribute attribute,146,2,containsFocus
+GetLayoutObjectAttribute attribute,146,3,bounds
+GetLayoutObjectAttribute attribute,146,4,left
+GetLayoutObjectAttribute attribute,146,5,right
+GetLayoutObjectAttribute attribute,146,6,top
+GetLayoutObjectAttribute attribute,146,7,bottom
+GetLayoutObjectAttribute attribute,146,8,width
+GetLayoutObjectAttribute attribute,146,9,height
+GetLayoutObjectAttribute attribute,146,10,rotation
+GetLayoutObjectAttribute attribute,146,11,startPoint
+GetLayoutObjectAttribute attribute,146,12,endPoint
+GetLayoutObjectAttribute attribute,146,13,source
+GetLayoutObjectAttribute attribute,146,14,content
+GetLayoutObjectAttribute attribute,146,15,enclosingObject
+GetLayoutObjectAttribute attribute,146,16,containedObjects
+GetLayoutObjectAttribute attribute,146,17,isFrontTabPanel
+GetLayoutObjectAttribute attribute,146,18,isFrontPanel
+GetLayoutObjectAttribute attribute,146,19,isObjectHidden
+GetLayoutObjectAttribute attribute,146,20,isActive
+GetLayoutObjectAttribute attribute,146,21,UUID
+GetLayoutObjectAttribute objectType value,147,0,unknown
+GetLayoutObjectAttribute objectType value,147,1,field
+GetLayoutObjectAttribute objectType value,147,2,text
+GetLayoutObjectAttribute objectType value,147,3,graphic
+GetLayoutObjectAttribute objectType value,147,4,line
+GetLayoutObjectAttribute objectType value,147,5,rectangle
+GetLayoutObjectAttribute objectType value,147,6,rounded rectangle
+GetLayoutObjectAttribute objectType value,147,7,oval
+GetLayoutObjectAttribute objectType value,147,8,group
+GetLayoutObjectAttribute objectType value,147,9,button group
+GetLayoutObjectAttribute objectType value,147,10,portal
+GetLayoutObjectAttribute objectType value,147,11,tab panel
+GetLayoutObjectAttribute objectType value,147,12,web viewer
+GetLayoutObjectAttribute objectType value,147,13,external
+GetLayoutObjectAttribute objectType value,147,14,chart
+GetLayoutObjectAttribute objectType value,147,15,button
+GetLayoutObjectAttribute objectType value,147,16,slide panel
+GetLayoutObjectAttribute objectType value,147,17,popover button
+GetLayoutObjectAttribute objectType value,147,18,popover
+GetLayoutObjectAttribute objectType value,147,19,button bar
+catalog kind,148,0,unknown catalog
+catalog kind,148,1,layout catalog
+catalog kind,148,2,script catalog
+catalog kind,148,3,value list catalog
+catalog kind,148,4,font catalog
+catalog kind,148,5,field catalog
+catalog kind,148,6,table catalog
+catalog kind,148,7,table alias catalog
+catalog kind,148,8,relation catalog
+catalog kind,148,9,library catalog
+catalog kind,148,10,data source catalog
+catalog kind,148,11,custom menu set catalog
+catalog kind,148,12,custom menu catalog
+catalog kind,148,13,user account catalog
+catalog kind,148,14,privilege set catalog
+catalog kind,148,15,extended privileges catalog
+catalog kind,148,16,authorized files catalog
+catalog kind,148,17,custom function catalog
+catalog kind,148,18,theme catalog
+catalog kind,148,19,base directory catalog
+catalog kind,148,20,add-on catalog
+catalog kind,148,21,persistent store catalog
+catalog item kind,149,0,unknown item
+catalog item kind,149,1,layout
+catalog item kind,149,2,script
+catalog item kind,149,3,value list
+catalog item kind,149,4,font
+catalog item kind,149,5,field
+catalog item kind,149,6,table
+catalog item kind,149,7,table alias
+catalog item kind,149,8,relation
+catalog item kind,149,9,library
+catalog item kind,149,10,data source
+catalog item kind,149,11,custom menu set
+catalog item kind,149,12,custom menu
+catalog item kind,149,13,user account
+catalog item kind,149,14,privilege set
+catalog item kind,149,15,extended privilege
+catalog item kind,149,16,authorized file
+catalog item kind,149,17,custom function
+catalog item kind,149,18,theme
+catalog item kind,149,19,base directory
+catalog item kind,149,20,add-on
+catalog item kind,149,21,persistent store
+index/sort language,136,0,Catalan
+index/sort language,136,1,Danish
+index/sort language,136,2,Dutch
+index/sort language,136,3,English
+index/sort language,136,4,Finnish
+index/sort language,136,5,Finnish (v<>w)
+index/sort language,136,6,French
+index/sort language,136,7,German
+index/sort language,136,8,German (ä=a)
+index/sort language,136,9,Icelandic
+index/sort language,136,10,Italian
+index/sort language,136,11,Norwegian
+index/sort language,136,12,Portuguese
+index/sort language,136,13,Spanish
+index/sort language,136,14,Spanish (Modern)
+index/sort language,136,15,Swedish
+index/sort language,136,16,Swedish (v<>w)
+index/sort language,136,17,-
+index/sort language,136,18,Japanese
+index/sort language,136,19,Chinese (Pinyin)
+index/sort language,136,20,Chinese (Stroke)
+index/sort language,136,21,Korean
+index/sort language,136,22,-
+index/sort language,136,23,Czech
+index/sort language,136,24,Slovak
+index/sort language,136,25,Hungarian
+index/sort language,136,26,Polish
+index/sort language,136,27,Romanian
+index/sort language,136,28,Slovenian
+index/sort language,136,29,Croatian
+index/sort language,136,30,Turkish
+index/sort language,136,31,Estonian
+index/sort language,136,32,Lithuanian
+index/sort language,136,33,Latvian
+index/sort language,136,34,Serbian (Latin)
+index/sort language,136,35,-
+index/sort language,136,36,Bulgarian
+index/sort language,136,37,Russian
+index/sort language,136,38,Ukrainian
+index/sort language,136,39,-
+index/sort language,136,40,Greek
+index/sort language,136,41,Greek (Mixed)
+index/sort language,136,42,-
+index/sort language,136,43,Arabic
+index/sort language,136,44,Farsi
+index/sort language,136,45,Hebrew
+index/sort language,136,46,-
+index/sort language,136,47,Hindi
+index/sort language,136,48,Marathi
+index/sort language,136,49,Bengali
+index/sort language,136,50,Panjabi
+index/sort language,136,51,Gujarati
+index/sort language,136,52,Tamil
+index/sort language,136,53,Telugu
+index/sort language,136,54,Kannada
+index/sort language,136,55,Malayalam
+index/sort language,136,56,-
+index/sort language,136,57,Vietnamese
+index/sort language,136,58,Thai
+index/sort language,136,59,-
+index/sort language,136,60,Default
+index/sort language,136,61,Unicode
+GetAVPlayerAttribute attribute,158,0,all
+GetAVPlayerAttribute attribute,158,1,Source Type
+GetAVPlayerAttribute attribute,158,2,Source
+GetAVPlayerAttribute attribute,158,3,Playback State
+GetAVPlayerAttribute attribute,158,4,Presentation
+GetAVPlayerAttribute attribute,158,5,Position
+GetAVPlayerAttribute attribute,158,6,Start Offset
+GetAVPlayerAttribute attribute,158,7,End Offset
+GetAVPlayerAttribute attribute,158,8,Duration
+GetAVPlayerAttribute attribute,158,9,Trigger Event
+GetAVPlayerAttribute attribute,158,10,Trigger Event Detail
+GetAVPlayerAttribute attribute,158,11,Sequence
+GetAVPlayerAttribute attribute,158,12,Result
+GetAVPlayerAttribute attribute,158,13,Hide Controls
+GetAVPlayerAttribute attribute,158,14,Disable Interaction
+GetAVPlayerAttribute attribute,158,15,Disable External Controls
+GetAVPlayerAttribute attribute,158,16,Pause in Background
+GetAVPlayerAttribute attribute,158,17,Image Source Type
+GetAVPlayerAttribute attribute,158,18,Image Source
+GetAVPlayerAttribute attribute,158,19,Image Duration
+GetAVPlayerAttribute attribute,158,20,Zoom
+GetAVPlayerAttribute attribute,158,21,Volume
+GetAVPlayerAttribute attribute,158,22,External Playback
+GetAVPlayerAttribute attribute,158,23,Picture In Picture
+GetSensor sensor name,162,0,available
+GetSensor sensor name,162,1,batteryLevel
+GetSensor sensor name,162,2,batteryStatus
+GetSensor sensor name,162,3,proximityState
+GetSensor sensor name,162,4,location
+GetSensor sensor name,162,5,locationValues
+GetSensor sensor name,162,6,attitude
+GetSensor sensor name,162,7,rotationRate
+GetSensor sensor name,162,8,accelerationByUser
+GetSensor sensor name,162,9,accelerationByGravity
+GetSensor sensor name,162,10,speed
+GetSensor sensor name,162,11,heading
+GetSensor sensor name,162,12,magneticField
+GetSensor sensor name,162,13,compassMagneticHeading
+GetSensor sensor name,162,14,compassTrueHeading
+GetSensor sensor name,162,15,stepCount
+GetSensor sensor name,162,16,stepDistance
+GetSensor sensor name,162,17,stepFloorsUp
+GetSensor sensor name,162,18,stepFloorsDown
+GetSensor sensor name,162,19,airPressure
+certificate status message,161,0,Unencrypted connection
+certificate status message,161,1,The certificate has expired
+certificate status message,161,2,A certificate verification error occurred
+certificate status message,161,3,The certificate is self-signed
+certificate status message,161,4,There is an error in the certificate chain.
+certificate status message,161,5,This certificate or a certificate in the certificate chain isn't time valid.
+certificate status message,161,6,Trust has been revoked for this certificate or a certificate in the certificate chain.
+certificate status message,161,7,The certificate or certificate chain isn't valid for its intended use.
+certificate status message,161,8,The certificate or certificate chain is based on an untrusted root certificate.
+certificate status message,161,9,The revocation status is unknown for the certificate or a certificate in the certificate chain.
+certificate status message,161,10,A certificate in the chain was issued by a certification authority that the original certificate had certified.
+certificate status message,161,11,The certificate chain isn't complete.
+certificate status message,161,12,A certificate trust list (CTL) used to create this chain wasn't time valid.
+certificate status message,161,13,A certificate trust list (CTL) used to create this certificate chain didn't have a valid signature.
+certificate status message,161,14,A certificate trust list (CTL) used to create this certificate chain isn't valid for this use.
+certificate status message,161,15,The certificate chain context isn't available.
+certificate status message,161,16,Certificate chain policy verification wasn't performed.
+certificate status message,161,17,Certificate chain policy verification failed
+certificate status message,161,18,fmp URLs permitted

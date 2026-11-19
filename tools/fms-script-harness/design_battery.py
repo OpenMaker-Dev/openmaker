@@ -1,0 +1,212 @@
+#!/usr/bin/env python3
+"""Design-function batteries (s30-design) for tools/fms-script-harness.
+
+  design_battery.py discover > s30-design-disc.txt
+  design_battery.py battery <disc results> > s30-design-names-<file>.txt
+  design_battery.py pairs <battery> <results> > names.pairs        (expression TAB result)
+  design_battery.py fields <disc results> <names.pairs> > s30-design-fields-<file>.txt
+  design_battery.py inscript <names battery> <fields battery> > s30-design-in-<file>.txt
+  design_battery.py inscript-pairs <in battery> <results>
+
+The discover, names and fields batteries name no script of the file ("no
+such script", error 104): the session opens the file on its default layout
+(running its OnFirstWindowOpen script) and evaluates the run line's
+expressions after it, with no table occurrence, so the file needs no patch
+and keeps its own script list. After the script, ValueListItems answers
+empty and unqualified field names resolve nowhere; the in-script battery
+adds a probe script "design" that evaluates each expression of its
+parameter in the window (on the default layout's occurrence) and returns
+a JSON array of the answers, "#<error>" for one that fails.
+"""
+import sys
+
+RUN = "no such script"
+PER_LINE = 20
+
+
+def q(text):
+    return '"' + text.replace("\\", "\\\\").replace('"', '\\"') + '"'
+
+
+def lines(exprs):
+    out = []
+    for i in range(0, len(exprs), PER_LINE):
+        out.append("\t".join([RUN, ""] + exprs[i:i + PER_LINE]))
+    return out
+
+
+LISTS = [
+    'DatabaseNames', 'TableNames ( "" )', 'TableIDs ( "" )', 'BaseTableNames ( "" )',
+    'BaseTableIDs ( "" )', 'LayoutNames ( "" )', 'LayoutIDs ( "" )', 'ScriptNames ( "" )',
+    'ScriptIDs ( "" )', 'ValueListNames ( "" )', 'ValueListIDs ( "" )', 'WindowNames',
+    'Get ( LayoutName )', 'Get ( LayoutTableName )', 'Get ( FileName )',
+]
+
+
+def discover():
+    print("# Design functions: what the file holds (names for the battery)")
+    for l in lines(LISTS):
+        print(l)
+
+
+def parse_results(path):
+    """The result lines of a battery made here, split at tabs."""
+    for line in open(path, encoding="utf-8"):
+        if line.startswith((">", "!", "#", "@")):
+            continue
+        cols = line.rstrip("\n").split("\t")
+        if len(cols) < 5:
+            continue
+        yield cols
+
+
+def pairs(battery, results):
+    exprs = [l.rstrip("\n").split("\t")[2:] for l in open(battery, encoding="utf-8")
+             if l.startswith(RUN + "\t")]
+    rows = [c for c in parse_results(results) if c[0] == RUN]
+    assert len(exprs) == len(rows), (len(exprs), len(rows))
+    for ex, row in zip(exprs, rows):
+        values = row[5:]
+        assert len(values) == len(ex), (ex, values)
+        for e, v in zip(ex, values):
+            print(e + "\t" + v)
+
+
+def split(v):
+    return [x for x in v.split("\\r")] if v else []
+
+
+def battery(disc_results):
+    rows = [c for c in parse_results(disc_results) if c[0] == RUN]
+    values = [v for r in rows for v in r[5:]]
+    d = dict(zip(LISTS, values))
+    tos = split(d['TableNames ( "" )'])
+    bts = split(d['BaseTableNames ( "" )'])
+    layouts = [l for l in split(d['LayoutNames ( "" )']) if l != "-"]
+    vls = split(d['ValueListNames ( "" )'])
+    file = d['Get ( FileName )']
+    ex = []
+    # lists and the file name argument
+    ex += LISTS[:-3]
+    for f in ["", file, file.upper(), file + ".fmp12", file + ".FMP12", " " + file, "no such file", "?"]:
+        ex.append("TableNames ( %s )" % q(f))
+    for f in [file, "no such file"]:
+        for fn in ["LayoutNames", "ScriptNames", "ValueListNames", "BaseTableNames", "WindowNames"]:
+            ex.append("%s ( %s )" % (fn, q(f)))
+    ex += ['WindowNames ( "" )', 'EvaluationError ( TableNames ( 1 / 0 ) )']
+    # occurrences and base tables
+    for t in tos:
+        ex += ['FieldNames ( "" ; %s )' % q(t), 'FieldIDs ( "" ; %s )' % q(t), 'RelationInfo ( "" ; %s )' % q(t)]
+    for t in bts:
+        ex += ['FieldNames ( "" ; %s )' % q(t), 'BaseTableComment ( "" ; %s )' % q(t)]
+    ex += ['FieldNames ( "" ; "" )', 'FieldIDs ( "" ; "" )', 'FieldNames ( "" ; "no such" )',
+           'RelationInfo ( "" ; "no such" )', 'BaseTableComment ( "" ; "no such" )',
+           'FieldNames ( "no such file" ; "" )']
+    if tos:
+        ex += ['FieldNames ( "" ; %s )' % q(tos[0].upper()), 'RelationInfo ( "" ; %s )' % q(tos[0].lower())]
+    # layouts
+    for l in layouts:
+        ex += ['FieldNames ( "" ; %s )' % q(l), 'FieldIDs ( "" ; %s )' % q(l),
+               'LayoutObjectNames ( "" ; %s )' % q(l)]
+    ex += ['LayoutObjectNames ( "" ; "no such" )', 'LayoutObjectNames ( "" ; "" )']
+    if layouts:
+        ex += ['LayoutObjectNames ( "" ; %s )' % q(layouts[0].upper())]
+    # value lists
+    for v in vls:
+        ex.append('ValueListItems ( "" ; %s )' % q(v))
+    ex += ['ValueListItems ( "" ; "no such" )', 'ValueListItems ( "" ; "" )']
+    print("# Design functions per name (generated by design.py)")
+    for l in lines(ex):
+        print(l)
+    return d
+
+
+def fields(disc_results, battery_results):
+    """Third stage: per field and per layout field."""
+    rows = [c for c in parse_results(disc_results) if c[0] == RUN]
+    values = [v for r in rows for v in r[5:]]
+    d = dict(zip(LISTS, values))
+    got = {}
+    for line in open(battery_results, encoding="utf-8"):
+        e, _, v = line.rstrip("\n").partition("\t")
+        got[e] = v
+    tos = split(d['TableNames ( "" )'])
+    layouts = [l for l in split(d['LayoutNames ( "" )']) if l != "-"]
+    home = d['Get ( LayoutTableName )']
+    ex = []
+    for t in tos:
+        for f in split(got.get('FieldNames ( "" ; %s )' % q(t), "")):
+            name = t + "::" + f
+            ex += ['FieldType ( "" ; %s )' % q(name), 'FieldComment ( "" ; %s )' % q(name),
+                   'FieldAnnotation ( "" ; %s )' % q(name), 'FieldDisplayNames ( "" ; %s )' % q(name),
+                   'GetNextSerialValue ( "" ; %s )' % q(name)]
+    for f in split(got.get('FieldNames ( "" ; %s )' % q(home), ""))[:4]:
+        ex += ['FieldType ( "" ; %s )' % q(f), 'FieldComment ( "" ; %s )' % q(f),
+               'GetNextSerialValue ( "" ; %s )' % q(f)]
+    ex += ['FieldType ( "" ; "no such" )', 'FieldType ( "" ; "no such::x" )', 'FieldComment ( "" ; "" )']
+    for l in layouts:
+        seen = []
+        for f in split(got.get('FieldNames ( "" ; %s )' % q(l), "")):
+            if f in seen:
+                continue
+            seen.append(f)
+            for fn in ["FieldStyle", "FieldRepetitions", "FieldBounds"]:
+                ex.append('%s ( "" ; %s ; %s )' % (fn, q(l), q(f)))
+        ex += ['FieldStyle ( "" ; %s ; "no such" )' % q(l), 'FieldBounds ( "" ; %s ; "no such" )' % q(l)]
+    print("# Design functions per field (generated by design.py)")
+    for l in lines(ex):
+        print(l)
+
+
+if __name__ == "__main__":
+    cmd = sys.argv[1]
+    if cmd == "discover":
+        discover()
+    elif cmd == "battery":
+        battery(sys.argv[2])
+    elif cmd == "fields":
+        fields(sys.argv[2], sys.argv[3])
+    elif cmd == "pairs":
+        pairs(sys.argv[2], sys.argv[3])
+
+
+# In-script mode: the probe script evaluates each expression of its
+# parameter (one per line) in the session's window and returns a JSON array
+# of the results, "#<error>" for an expression that fails.
+PROBE = """== design
+Set Variable [ $p ; Get ( ScriptParameter ) ]
+Exit Script [ While ( [ ~i = 0 ; ~r = "[]" ] ; ~i < ValueCount ( $p ) ; [ ~i = ~i + 1 ; ~e = GetValue ( $p ; ~i ) ; ~r = JSONSetElement ( ~r ; "[" & ( ~i - 1 ) & "]" ; If ( EvaluationError ( Evaluate ( ~e ) ) ; "#" & EvaluationError ( Evaluate ( ~e ) ) ; Evaluate ( ~e ) ) ; JSONString ) ] ; ~r ) ]
+--- run"""
+
+
+def inscript(batteries):
+    exprs = []
+    for b in batteries:
+        for l in open(b, encoding="utf-8"):
+            if l.startswith(RUN + "\t"):
+                exprs += l.rstrip("\n").split("\t")[2:]
+    print(PROBE)
+    for i in range(0, len(exprs), 60):
+        chunk = exprs[i:i + 60]
+        print("design\t" + "\\r".join(e.replace("\\", "\\\\") for e in chunk))
+
+
+def inscript_pairs(battery, results):
+    import json
+    exprs = [l.rstrip("\n").split("\t")[1] for l in open(battery, encoding="utf-8") if l.startswith("design\t")]
+    rows = [c for c in parse_results(results) if c[0] == "design"]
+    assert len(exprs) == len(rows), (len(exprs), len(rows))
+    for ex, row in zip(exprs, rows):
+        ex = ex.replace("\\\\", "\x00").split("\\r")
+        ex = [e.replace("\x00", "\\") for e in ex]
+        text = row[3].replace("\\\\", "\x00").replace("\\r", "\r").replace("\\t", "\t").replace("\x00", "\\")
+        values = json.loads(text)
+        assert len(values) == len(ex), (len(values), len(ex), row[:3])
+        for e, v in zip(ex, values):
+            print(e + "\t" + v.replace("\\", "\\\\").replace("\r", "\\r").replace("\n", "\\n").replace("\t", "\\t"))
+
+
+if __name__ == "__main__" and sys.argv[1] == "inscript":
+    inscript(sys.argv[2:])
+if __name__ == "__main__" and sys.argv[1] == "inscript-pairs":
+    inscript_pairs(sys.argv[2], sys.argv[3])

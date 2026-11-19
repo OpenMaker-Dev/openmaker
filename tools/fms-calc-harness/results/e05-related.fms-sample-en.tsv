@@ -1,0 +1,29 @@
+# More record-context probes on the FileMaker Server sample (as e02-record).
+# @ 03d00001 30 records=12
+Let ( f = ${Related Tasks}::Task[2] ; 1 )	14	2/2/0	1
+EvaluationError ( Let ( f = ${Related Tasks}::Task[2] ; 1 ) )	0	2/2/0	14
+Count ( ${Related Tasks}::Task[2] )	14	2/2/0	?
+EvaluationError ( Count ( ${Related Tasks}::Task[2] ) )	0	2/2/0	14
+Let ( $f = ${Related Tasks}::Task ; Count ( $f ) & "|" & $f )	102	1/1/0	?|Site Map Sketch
+Let ( f = Assignees::Name ; IsValid ( f ) )	0	2/2/0	1
+IsValid ( Assignees::Name & "" )	0	2/2/0	0
+IsValid ( Extend ( Assignees::Name ) )	0	2/2/0	0
+IsValid ( Assignees::NoSuch )	102	2/2/0	?
+Count ( Assignees::Name ; Assignees::Email )	0	2/2/0	0
+List ( Assignees::Name ; "x" )	0	1/1/0	x
+Last ( Assignees::Name )	0	1/1/0	
+Extend ( ${Related Tasks}::Task )	0	1/1/0	Site Map Sketch
+GetRepetition ( ${Related Tasks}::Task ; 1 ) & "|" & GetNthRecord ( ${Related Tasks}::Task[1] ; 3 )	0	1/1/0	Site Map Sketch|Hire New Sales Person
+${Related Tasks}::${TASK ID MATCH FIELD} + Tasks::${TASK ID MATCH FIELD}	0	2/2/0	19
+GetSummary ( Task ; Task )	1216	2/2/0	?
+# @ 03d00001 records=12
+Let ( f = Task ; 1 )	1224	2/2/0	?
+EvaluationError ( Let ( f = Task ; 1 ) )	1224	2/2/0	?
+GetField ( "Task" )	1224	2/2/0	?
+GetFieldName ( Task )	1224	2/2/0	?
+Get ( RecordNumber ) & "|" & Get ( FoundCount ) & "|" & Get ( RecordID )	0	1/1/0	0|0|
+${Related | Sort Selection} & "|" & EvaluationError ( ${Related | Sort Selection} )	1224	2/2/0	?
+GetNthRecord ( Task ; 1 )	1224	2/2/0	?
+IsValid ( Task )	1224	2/2/0	?
+IsEmpty ( Task )	1224	2/2/0	?
+Evaluate ( "1+1" )	0	2/2/0	2

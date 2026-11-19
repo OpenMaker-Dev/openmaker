@@ -1,0 +1,179 @@
+# Open / Commit / Revert Transaction, Set Revert Transaction on Error, the
+# skip-to-Commit rule, transactions across Perform Script, Halt and Exit
+# Script inside a transaction (script-runtime.md 8). Base file: contacts-en.
+# Records persist across run lines (one scratch copy per battery); every
+# probe reports the Contacts row count before and after (ExecuteSQL).
+== tx basic
+Set Variable [ $n0 ; ExecuteSQL ( "SELECT COUNT(*) FROM Contacts" ; "" ; "" ) ]
+Set Variable [ $s0 ; Get ( TransactionOpenState ) ]
+Open Transaction
+Set Variable [ $s1 ; Get ( TransactionOpenState ) ]
+New Record/Request
+Set Field [ Contacts::First Name ; "tx basic" ]
+Commit Transaction
+Set Variable [ $s2 ; Get ( TransactionOpenState ) ]
+Exit Script [ List ( $n0 ; $s0 ; $s1 ; $s2 ; ExecuteSQL ( "SELECT COUNT(*) FROM Contacts" ; "" ; "" ) ; Get ( LastError ) ) ]
+== tx commit without open
+Commit Transaction
+Set Variable [ $e1 ; Get ( LastError ) ]
+Revert Transaction
+Set Variable [ $e2 ; Get ( LastError ) ]
+Revert Transaction [ Error: 5005 ; Message: "m" ]
+Exit Script [ $e1 & "," & $e2 & "," & Get ( LastError ) ]
+== tx open twice
+Open Transaction
+Open Transaction
+Set Variable [ $e1 ; Get ( LastError ) ]
+Commit Transaction
+Exit Script [ $e1 & "," & Get ( LastError ) & "," & Get ( TransactionOpenState ) ]
+== tx open in sub
+Open Transaction
+Perform Script [ "tx sub open commit" ]
+Set Variable [ $sub ; Get ( ScriptResult ) ]
+Set Variable [ $s ; Get ( TransactionOpenState ) ]
+Commit Transaction
+Exit Script [ $sub & " | " & $s & "," & Get ( LastError ) ]
+== tx sub open commit
+Set Variable [ $s ; Get ( TransactionOpenState ) ]
+Open Transaction
+Set Variable [ $e1 ; Get ( LastError ) ]
+Commit Transaction
+Set Variable [ $e2 ; Get ( LastError ) ]
+Exit Script [ $s & "," & $e1 & "," & $e2 ]
+== tx revert custom
+Set Variable [ $n0 ; ExecuteSQL ( "SELECT COUNT(*) FROM Contacts" ; "" ; "" ) ]
+Open Transaction
+New Record/Request
+Set Field [ Contacts::First Name ; "tx revert custom" ]
+Revert Transaction [ Error: 5001 ; Message: "custom message" ]
+Set Variable [ $inside ; "not skipped" ]
+Commit Transaction
+Exit Script [ List ( Get ( LastError ) ; Get ( LastErrorDetail ) ; Substitute ( Get ( LastErrorLocation ) ; ¶ ; "/" ) ; "[" & $inside & "]" ; $n0 ; ExecuteSQL ( "SELECT COUNT(*) FROM Contacts" ; "" ; "" ) ) ]
+== tx revert code out of range
+Open Transaction
+Revert Transaction [ Error: 4999 ; Message: "x" ]
+Commit Transaction
+Set Variable [ $e1 ; Get ( LastError ) ]
+Open Transaction
+Revert Transaction [ Error: "abc" ]
+Commit Transaction
+Exit Script [ $e1 & "," & Get ( LastError ) ]
+== tx revert plain
+Set Variable [ $n0 ; ExecuteSQL ( "SELECT COUNT(*) FROM Contacts" ; "" ; "" ) ]
+Open Transaction
+New Record/Request
+Revert Transaction
+Set Variable [ $inside ; "not skipped" ]
+Commit Transaction
+Exit Script [ List ( Get ( LastError ) ; "[" & $inside & "]" ; $n0 ; ExecuteSQL ( "SELECT COUNT(*) FROM Contacts" ; "" ; "" ) ) ]
+== tx revert condition
+Set Variable [ $n0 ; ExecuteSQL ( "SELECT COUNT(*) FROM Contacts" ; "" ; "" ) ]
+Open Transaction
+New Record/Request
+Revert Transaction [ Condition: 0 ]
+Set Variable [ $e1 ; Get ( LastError ) ]
+Commit Transaction
+Exit Script [ List ( $e1 ; Get ( LastError ) ; $n0 ; ExecuteSQL ( "SELECT COUNT(*) FROM Contacts" ; "" ; "" ) ) ]
+== tx error revert on
+Set Variable [ $n0 ; ExecuteSQL ( "SELECT COUNT(*) FROM Contacts" ; "" ; "" ) ]
+Set Variable [ $state ; Get ( RevertTransactionOnErrorState ) ]
+Open Transaction
+New Record/Request
+Perform Script [ By name: "no such script" ]
+Set Variable [ $inside ; "not skipped" ]
+Commit Transaction
+Exit Script [ List ( $state ; Get ( LastError ) ; "[" & $inside & "]" ; Substitute ( Get ( LastErrorLocation ) ; ¶ ; "/" ) ; Get ( LastErrorDetail ) ; $n0 ; ExecuteSQL ( "SELECT COUNT(*) FROM Contacts" ; "" ; "" ) ) ]
+== tx error revert off
+Set Variable [ $n0 ; ExecuteSQL ( "SELECT COUNT(*) FROM Contacts" ; "" ; "" ) ]
+Set Revert Transaction on Error [ Off ]
+Set Variable [ $state ; Get ( RevertTransactionOnErrorState ) ]
+Open Transaction
+New Record/Request
+Perform Script [ By name: "no such script" ]
+Set Variable [ $inside ; "not skipped" ]
+Commit Transaction
+Exit Script [ List ( $state ; Get ( LastError ) ; "[" & $inside & "]" ; $n0 ; ExecuteSQL ( "SELECT COUNT(*) FROM Contacts" ; "" ; "" ) ) ]
+== tx error in sub
+Set Variable [ $n0 ; ExecuteSQL ( "SELECT COUNT(*) FROM Contacts" ; "" ; "" ) ]
+Open Transaction
+New Record/Request
+Perform Script [ "tx sub fails" ]
+Set Variable [ $inside ; "not skipped" ]
+Commit Transaction
+Exit Script [ List ( Get ( LastError ) ; "[" & $inside & "]" ; "[" & $$subafter & "]" ; $n0 ; ExecuteSQL ( "SELECT COUNT(*) FROM Contacts" ; "" ; "" ) ) ]
+== tx sub fails
+Perform Script [ By name: "no such script" ]
+Set Variable [ $$subafter ; "sub continued" ]
+Exit Script [ "sub" ]
+== tx sub commits
+Set Variable [ $n0 ; ExecuteSQL ( "SELECT COUNT(*) FROM Contacts" ; "" ; "" ) ]
+Open Transaction
+New Record/Request
+Perform Script [ "tx sub commit" ]
+Set Variable [ $sub ; Get ( ScriptResult ) ]
+Set Variable [ $s ; Get ( TransactionOpenState ) ]
+Commit Transaction
+Exit Script [ List ( $sub ; $s ; Get ( LastError ) ; $n0 ; ExecuteSQL ( "SELECT COUNT(*) FROM Contacts" ; "" ; "" ) ) ]
+== tx sub commit
+Commit Transaction
+Exit Script [ Get ( LastError ) ]
+== tx sub reverts
+Set Variable [ $n0 ; ExecuteSQL ( "SELECT COUNT(*) FROM Contacts" ; "" ; "" ) ]
+Open Transaction
+New Record/Request
+Perform Script [ "tx sub revert" ]
+Set Variable [ $inside ; "not skipped" ]
+Commit Transaction
+Exit Script [ List ( Get ( LastError ) ; "[" & $inside & "]" ; "[" & $$subrev & "]" ; $n0 ; ExecuteSQL ( "SELECT COUNT(*) FROM Contacts" ; "" ; "" ) ) ]
+== tx sub revert
+Revert Transaction
+Set Variable [ $$subrev ; Get ( LastError ) & " sub continued" ]
+== tx halt inside
+Open Transaction
+New Record/Request
+Set Field [ Contacts::First Name ; "tx halt inside" ]
+Halt Script
+== tx exit inside
+Open Transaction
+New Record/Request
+Set Field [ Contacts::First Name ; "tx exit inside" ]
+Exit Script [ "exited" ]
+== tx end inside
+Open Transaction
+New Record/Request
+Set Field [ Contacts::First Name ; "tx end inside" ]
+== tx exit loop past commit
+Set Variable [ $n0 ; ExecuteSQL ( "SELECT COUNT(*) FROM Contacts" ; "" ; "" ) ]
+Loop
+Open Transaction
+New Record/Request
+Exit Loop If [ 1 ]
+Commit Transaction
+End Loop
+Exit Script [ List ( Get ( LastError ) ; Get ( TransactionOpenState ) ; $n0 ; ExecuteSQL ( "SELECT COUNT(*) FROM Contacts" ; "" ; "" ) ) ]
+== tx count
+Exit Script [ ExecuteSQL ( "SELECT COUNT(*) FROM Contacts" ; "" ; "" ) & " " & Substitute ( ExecuteSQL ( "SELECT \"First Name\" FROM Contacts" ; "" ; "," ) ; ¶ ; "," ) ]
+--- run
+tx count
+tx basic		Get ( LastError )
+tx commit without open		Get ( LastError )
+tx open twice		Get ( LastError )
+tx open in sub		Get ( LastError )
+tx revert custom		Get ( LastError )	Get ( LastErrorDetail )	Get ( LastErrorLocation )
+tx revert code out of range		Get ( LastError )
+tx revert plain		Get ( LastError )
+tx revert condition		Get ( LastError )
+tx error revert on		Get ( LastError )	Get ( LastErrorLocation )
+tx error revert off		Get ( LastError )	Get ( RevertTransactionOnErrorState )
+tx error in sub		Get ( LastError )
+tx sub commits		Get ( LastError )
+tx sub reverts		Get ( LastError )
+tx count
+tx halt inside		Get ( LastError )	Get ( TransactionOpenState )
+tx count
+tx exit inside		Get ( LastError )	Get ( TransactionOpenState )
+tx count
+tx end inside		Get ( LastError )	Get ( TransactionOpenState )
+tx count
+tx exit loop past commit		Get ( LastError )
+tx count

@@ -1,0 +1,35 @@
+# Design functions in file context (no session window, no script): every
+# function named with "", the copy's name "work", in other cases and with
+# .fmp12. Run with -d (registers the design functions).
+DatabaseNames	0	1/1/0	work
+WindowNames	0	1/1/0	
+WindowNames ( "work" )	0	1/1/0	
+TableNames ( "" )	0	1/1/0	
+TableNames ( "work" )	0	1/1/0	
+TableNames ( "WORK.fmp12" )	0	1/1/0	
+TableIDs ( "work" )	0	1/1/0	
+BaseTableNames ( "work" )	0	1/1/0	
+BaseTableIDs ( "work" )	0	1/1/0	
+LayoutNames ( "work" )	0	1/1/0	
+LayoutIDs ( "work" )	0	1/1/0	
+ScriptNames ( "work" )	0	1/1/0	
+ScriptIDs ( "work" )	0	1/1/0	
+ValueListNames ( "work" )	0	1/1/0	
+ValueListIDs ( "work" )	0	1/1/0	
+ValueListItems ( "work" ; "Phone Type" )	0	1/1/0	
+FieldNames ( "work" ; "Contacts" )	0	1/1/0	
+FieldNames ( "work" ; "Contact Details" )	0	1/1/0	
+FieldIDs ( "work" ; "" )	0	1/1/0	
+LayoutObjectNames ( "work" ; "Contact Details" )	0	1/1/0	
+FieldType ( "work" ; "Contacts::First Name" )	0	1/1/0	
+FieldComment ( "work" ; "x" )	0	1/1/0	
+FieldAnnotation ( "work" ; "x" )	0	1/1/0	
+FieldDisplayNames ( "work" ; "x" )	0	1/1/0	
+GetNextSerialValue ( "work" ; "x" )	0	1/1/0	
+FieldStyle ( "work" ; "Contact Details" ; "Company" )	0	1/1/0	
+FieldRepetitions ( "work" ; "x" ; "y" )	0	1/1/0	
+FieldBounds ( "work" ; "Contact Details" ; "First Name" )	0	1/1/0	
+RelationInfo ( "work" ; "Contacts" )	0	1/1/0	
+BaseTableComment ( "work" ; "x" )	0	1/1/0	
+GetLayoutObjectAttribute ( "First Name" ; "bounds" )	0	0/1/0	
+EvaluationError ( TableNames ( 1 / 0 ) )	0	2/2/0	15

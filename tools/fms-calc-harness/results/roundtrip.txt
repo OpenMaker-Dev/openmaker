@@ -1,0 +1,30 @@
+# Engine round trip (roundtrip.py, calceval -r), FileMaker Server 26.0.3.309, 2026-10-28.
+# Each stored formatted stream -> DBCalcScan::UnTokenize -> compile in the stored context -> compare.
+
+## 66 shipped templates + test project (re/work/calc-encoding/calcs.tsv)
+owner	formulas	compiled	same formatted	same Polish	kSupportSelf
+custom-menu	288	288	288	288	0
+field-calc	346	346	346	346	0
+layout-object	4383	4383	4383	4383	44
+script-step	287	287	287	287	0
+all	5304	5304	5304	5304	44
+
+## FileMaker Server samples (6 languages) + oracle smoke file (calcs-extra.tsv)
+owner	formulas	compiled	same formatted	same Polish
+custom-menu	24	24	24	24
+field-calc	2	2	2	2
+layout-object	459	449	449	449
+script-step	6	6	6	6
+all	491	481	481	481
+
+## Formulas not reproduced
+ja_FMServer_Sample.fmp12|4/5/1/5/33005/3	102	"取り除く " & 担当者::<Field Missing>
+ja_FMServer_Sample.fmp12|4/5/1/5/33050/17/4/5	102	"タスク:¶" & \rタスク::タスク & "¶¶" &\r \r"期限:¶" & \rタスク::期限 & ¶ &  \rタスク::期間 & "¶¶" & \r\r"詳細:¶" & \rタスク::詳細 & "¶¶" & \r"担当者:¶" & \rList ( 担当者::<Field Missing> )
+ja_FMServer_Sample.fmp12|4/5/1/13/5/33299/17/4/5	102	"タスク:¶" & \rタスク::タスク & "¶¶" &\r \r"期限:¶" & \rタスク::期限 & ¶ &  \rタスク::期間 & "¶¶" & \r\r"詳細:¶" & \rタスク::詳細 & "¶¶" & \r"担当者:¶" & \rList ( 担当者::<Field Missing> )
+ja_FMServer_Sample.fmp12|4/5/31/5/32778/17/0/5	102	担当者::<Field Missing> & " <" & 担当者::電子メール & ">"
+ja_FMServer_Sample.fmp12|4/5/31/5/32778/17/4/5	102	担当者::<Field Missing> & " 様、"
+ja_FMServer_Sample.fmp12|4/5/35/5/104/17/0/5	102	担当者::<Field Missing> & " <" & 担当者::電子メール & ">"
+ja_FMServer_Sample.fmp12|4/5/35/5/104/17/4/5	102	" 様、" & 担当者::<Field Missing> & ","
+ja_FMServer_Sample.fmp12|4/5/35/5/106/17/0/5	102	担当者::<Field Missing>
+ja_FMServer_Sample.fmp12|4/5/68/5/120/17/0/5	102	担当者::<Field Missing> & " <" & 担当者::電子メール & ">"
+ja_FMServer_Sample.fmp12|4/5/68/5/120/17/4/5	102	" 様、" & 担当者::<Field Missing> & ","

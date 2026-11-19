@@ -1,0 +1,41 @@
+# scan seed: open 0 load 0 scan 0 commit 0; index:id=value (0-based): 0:86=0 1:223=0 2:205=7 3:7=0 4:76=0 5:75=0 6:141=0 7:206=7 8:103=0
+# scan edit other: open 0 load 0 scan 0 commit 0; index:id=value (0-based): 0:86=0 1:16=2 2:76=0 3:141=0 4:75=0 5:141=0 6:68=8 7:51=0 8:70=0 9:103=0
+# scan edit rep2: open 0 load 0 scan 0 commit 0; index:id=value (0-based): 0:86=0 1:16=2 2:76=0 3:141=0 4:75=0 5:141=0 6:68=8 7:51=0 8:70=0 9:103=0
+# scan count: open 0 load 0 scan 0 commit 0; index:id=value (0-based): 0:103=0
+# scan: close 13
+seed		0	0/0/toolong	0
+>	1	seed	1	86	0	0	0	0
+>	1	seed	2	223	0	0	0	0
+>	1	seed	3	205	0	0	0	0
+>	1	seed	4	7	0	0	0	0
+>	1	seed	5	76	0	0	0	0
+>	1	seed	6	75	0	0	0	0
+>	1	seed	7	141	0	0	0	0
+>	1	seed	8	206	0	0	0	0
+>	1	seed	9	103	0	0	1	0
+edit other		0	0/507	0
+>	1	edit other	1	86	0	0	0	0
+>	1	edit other	2	16	0	0	0	0
+>	1	edit other	3	76	0	0	0	0
+>	1	edit other	4	141	0	0	0	0
+!	507	work : edit other : 5 : Commit Records/Requests
+>	1	edit other	5	75	1	0	0	507
+>	1	edit other	6	141	0	0	0	0
+>	1	edit other	7	68	0	0	1	0
+>	1	edit other	8	51	0	0	0	0
+>	1	edit other	9	70	0	0	1	0
+>	1	edit other	10	103	0	0	1	0
+edit rep2		0	0/507	0
+>	1	edit rep2	1	86	0	0	0	0
+>	1	edit rep2	2	16	0	0	0	0
+>	1	edit rep2	3	76	0	0	0	0
+>	1	edit rep2	4	141	0	0	0	0
+!	507	work : edit rep2 : 5 : Commit Records/Requests
+>	1	edit rep2	5	75	1	0	0	507
+>	1	edit rep2	6	141	0	0	0	0
+>	1	edit rep2	7	68	0	0	1	0
+>	1	edit rep2	8	51	0	0	0	0
+>	1	edit rep2	9	70	0	0	1	0
+>	1	edit rep2	10	103	0	0	1	0
+count		0	1	0
+>	1	count	1	103	0	0	1	0

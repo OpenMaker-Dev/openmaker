@@ -1,0 +1,82 @@
+# Record context (calceval, "@ <context> <record ID>" lines): MBS example
+# Examples/Third Party/Apple TouchBar/AppleTouchBar.fmp12, table occurrence ATB
+# (03d00001), record ID 2. flex_Label, flex_Function, flex_Script, flex_Icon:
+# text, 9 repetitions; _default: text, 12 repetitions; _flex_Add: calculation,
+# 9 repetitions, Let ( [ n = Get ( CalculationRepetitionNumber ) ; ... GetRepetition
+# ( flex_Label ; n ) ... ] ; ... & flex_Script & ... ); f_Add: List ( Extend ( _flex_Add ) ).
+@ 03d00001 2
+Get ( RecordID )
+Get ( CalculationRepetitionNumber )
+While ( [ i = 1 ; r = "" ] ; i <= 10 ; [ r = r & i & "=" & GetRepetition ( ATB::flex_Label ; i ) & ";" ; i = i + 1 ] ; r )
+While ( [ i = 1 ; r = "" ] ; i <= 10 ; [ r = r & i & "=" & GetRepetition ( ATB::flex_Script ; i ) & ";" ; i = i + 1 ] ; r )
+ATB::flex_Label
+flex_Label
+ATB::flex_Label[1]
+ATB::flex_Label[2]
+ATB::flex_Label[9]
+ATB::flex_Label[10]
+ATB::flex_Label[0]
+ATB::flex_Label[-1]
+ATB::flex_Label[1.9]
+GetRepetition ( ATB::flex_Label ; 2 )
+Last ( ATB::flex_Label )
+Last ( ATB::_default )
+Extend ( ATB::flex_Label )
+List ( ATB::flex_Label )
+List ( ATB::flex_Label ; ATB::flex_Script )
+Count ( ATB::flex_Label )
+Count ( ATB::_default )
+ValueCount ( List ( ATB::_default ) )
+Max ( ATB::flex_Label )
+ATB::flex_Label & "|"
+ATB::flex_Label = GetRepetition ( ATB::flex_Label ; 1 )
+IsEmpty ( ATB::flex_Label[9] )
+ATB::_Table
+ATB::_Set
+ATB::_flex_Add
+GetRepetition ( ATB::_flex_Add ; 2 )
+ATB::_flex_Add[3]
+ATB::f_Add
+Last ( ATB::_flex_Add )
+Count ( ATB::_flex_Add )
+GetNthRecord ( ATB::flex_Label ; 1 )
+GetNthRecord ( ATB::flex_Label[2] ; 1 )
+GetNthRecord ( ATB::_Table ; 2 )
+# field[n] as the only argument of an aggregate (GetRepetition ( fieldref ; n ))
+Count ( ATB::flex_Label[2] )
+List ( ATB::flex_Label[2] )
+Count ( ATB::_default[3] )
+List ( ATB::_default )
+List ( ATB::_default[3] )
+List ( GetRepetition ( ATB::_default ; 3 ) )
+List ( Extend ( ATB::flex_Label ) )
+@rep 2
+# repetition 2 of a repeating calculation (DBExpressionEnv::mRepetition = 2)
+Get ( CalculationRepetitionNumber )
+ATB::flex_Label
+flex_Label
+ATB::flex_Label[1]
+GetRepetition ( ATB::flex_Label ; 1 )
+Extend ( ATB::flex_Label )
+List ( ATB::flex_Label )
+Last ( ATB::flex_Label )
+ATB::_Table
+Extend ( ATB::_Table )
+ATB::_Table & "|" & Extend ( ATB::_Table )
+IsEmpty ( ATB::_Table )
+ATB::_flex_Add
+ATB::f_Add
+@rep 9
+Get ( CalculationRepetitionNumber )
+ATB::flex_Label
+ATB::_default
+@rep 10
+Get ( CalculationRepetitionNumber )
+ATB::flex_Label
+ATB::_default
+@rep 12
+ATB::_default
+@rep 1
+Get ( CalculationRepetitionNumber )
+ATB::flex_Label
+ATB::_Table

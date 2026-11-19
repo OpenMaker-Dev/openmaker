@@ -1,0 +1,45 @@
+# scan probe: open 0 load 0 scan 0 commit 0; index:id=value (0-based): 0:6=5 1:7=0 2:76=0 3:75=0 4:141=0 5:76=0 6:76=0 7:75=0 8:141=0 9:76=0 10:75=0 11:76=0 12:75=0 13:76=0 14:75=0 15:141=0 16:76=0 17:75=0 18:141=0 19:103=0
+# scan reversed: open 0 load 0 scan 0 commit 0; index:id=value (0-based): 0:6=5 1:7=0 2:76=0 3:75=0 4:141=0 5:76=0 6:75=0 7:141=0 8:76=0 9:75=0 10:76=0 11:76=0 12:75=0 13:76=0 14:75=0 15:141=0 16:76=0 17:75=0 18:141=0 19:103=0
+# scan: close 13
+probe		0	1 first made []\r2 second made []\r3 key back, related 2, first in sort second [second]	0
+>	1	probe	1	6	0	0	0	0
+>	1	probe	2	7	0	0	0	0
+>	1	probe	3	76	0	0	0	0
+>	1	probe	4	75	0	0	0	0
+>	1	probe	5	141	0	0	0	0
+>	1	probe	6	76	0	0	0	0
+>	1	probe	7	76	0	0	0	0
+>	1	probe	8	75	0	0	0	0
+>	1	probe	9	141	0	0	0	0
+>	1	probe	10	76	0	0	0	0
+>	1	probe	11	75	0	0	0	0
+>	1	probe	12	76	0	0	0	0
+>	1	probe	13	75	0	0	0	0
+>	1	probe	14	76	0	0	0	0
+>	1	probe	15	75	0	0	0	0
+>	1	probe	16	141	0	0	0	0
+>	1	probe	17	76	0	0	0	0
+>	1	probe	18	75	0	0	0	0
+>	1	probe	19	141	0	0	0	0
+>	1	probe	20	103	0	0	1	0
+reversed		0	1 early made []\r2 late made []\r3 key back, related 2, first in sort early [early]	0
+>	1	reversed	1	6	0	0	0	0
+>	1	reversed	2	7	0	0	0	0
+>	1	reversed	3	76	0	0	0	0
+>	1	reversed	4	75	0	0	0	0
+>	1	reversed	5	141	0	0	0	0
+>	1	reversed	6	76	0	0	0	0
+>	1	reversed	7	75	0	0	0	0
+>	1	reversed	8	141	0	0	0	0
+>	1	reversed	9	76	0	0	0	0
+>	1	reversed	10	75	0	0	0	0
+>	1	reversed	11	76	0	0	0	0
+>	1	reversed	12	76	0	0	0	0
+>	1	reversed	13	75	0	0	0	0
+>	1	reversed	14	76	0	0	0	0
+>	1	reversed	15	75	0	0	0	0
+>	1	reversed	16	141	0	0	0	0
+>	1	reversed	17	76	0	0	0	0
+>	1	reversed	18	75	0	0	0	0
+>	1	reversed	19	141	0	0	0	0
+>	1	reversed	20	103	0	0	1	0

@@ -1,0 +1,135 @@
+# The script stack memory guard (script-runtime.md 2.6): deep Perform Script
+# recursion whose frames hold a large parameter, a large script result or a
+# large $ variable, until a call fails. Base file: contacts-en.
+# Run with STEP_LIMIT=10000000. A start script's parameter is
+# "<length of $$big> CR <maximum depth> [CR <character, emoji or
+# combining>]" ($$big repeats the character, x by default; combining is e
+# and U+0301); it returns "<frames started> <frames when a call failed>
+# <that call's error> <Length ( $$big )>" ("sg start mixed" also
+# "<frames:error when a call of sg nop failed>"). Probes keep their state in
+# $$ variables: $ variables would add to the frames' size. Pairs of lines
+# straddle a boundary; findings in script-runtime.md 13.14.
+== sg param
+Set Variable [ $$depth ; $$depth + 1 ]
+If [ $$depth < $$max ]
+Perform Script [ "sg param" ; Parameter: Get ( ScriptParameter ) ]
+Set Variable [ $$e ; Get ( LastError ) ]
+If [ $$e <> 0 and IsEmpty ( $$fail ) ]
+Set Variable [ $$fail ; $$depth ]
+Set Variable [ $$failerr ; $$e ]
+End If
+End If
+== sg big
+Exit Script [ $$big ]
+== sg nop
+Exit Script
+== sg result
+Set Variable [ $$depth ; $$depth + 1 ]
+If [ $$depth < $$max ]
+Perform Script [ "sg big" ]
+Perform Script [ "sg result" ]
+Set Variable [ $$e ; Get ( LastError ) ]
+If [ $$e <> 0 and IsEmpty ( $$fail ) ]
+Set Variable [ $$fail ; $$depth ]
+Set Variable [ $$failerr ; $$e ]
+End If
+End If
+== sg local
+Set Variable [ $$depth ; $$depth + 1 ]
+Set Variable [ $v ; $$big ]
+If [ $$depth < $$max ]
+Perform Script [ "sg local" ]
+Set Variable [ $$e ; Get ( LastError ) ]
+If [ $$e <> 0 and IsEmpty ( $$fail ) ]
+Set Variable [ $$fail ; $$depth ]
+Set Variable [ $$failerr ; $$e ]
+End If
+End If
+== sg local param
+Set Variable [ $$depth ; $$depth + 1 ]
+Set Variable [ $v ; $$big ]
+If [ $$depth < $$max ]
+Perform Script [ "sg local param" ; Parameter: "a" ]
+Set Variable [ $$e ; Get ( LastError ) ]
+If [ $$e <> 0 and IsEmpty ( $$fail ) ]
+Set Variable [ $$fail ; $$depth ]
+Set Variable [ $$failerr ; $$e ]
+End If
+End If
+== sg local2
+Set Variable [ $$depth ; $$depth + 1 ]
+Set Variable [ $v ; $$big ]
+Set Variable [ $w ; "a" ]
+If [ $$depth < $$max ]
+Perform Script [ "sg local2" ]
+Set Variable [ $$e ; Get ( LastError ) ]
+If [ $$e <> 0 and IsEmpty ( $$fail ) ]
+Set Variable [ $$fail ; $$depth ]
+Set Variable [ $$failerr ; $$e ]
+End If
+End If
+== sg mixed
+Set Variable [ $$depth ; $$depth + 1 ]
+If [ $$depth < $$max ]
+Perform Script [ "sg nop" ]
+Set Variable [ $$e ; Get ( LastError ) ]
+If [ $$e <> 0 and IsEmpty ( $$failnop ) ]
+Set Variable [ $$failnop ; $$depth & ":" & $$e ]
+End If
+Perform Script [ "sg mixed" ; Parameter: Get ( ScriptParameter ) ]
+Set Variable [ $$e ; Get ( LastError ) ]
+If [ $$e <> 0 and IsEmpty ( $$fail ) ]
+Set Variable [ $$fail ; $$depth ]
+Set Variable [ $$failerr ; $$e ]
+End If
+End If
+== sg build
+Set Variable [ $$max ; GetAsNumber ( GetValue ( Get ( ScriptParameter ) ; 2 ) ) ]
+Set Variable [ $$big ; Let ( [ p = Get ( ScriptParameter ) ; n = GetAsNumber ( GetValue ( p ; 1 ) ) ; c = Case ( GetValue ( p ; 3 ) = "emoji" ; Char ( 128512 ) ; GetValue ( p ; 3 ) = "combining" ; "e" & Char ( 769 ) ; IsEmpty ( GetValue ( p ; 3 ) ) ; "x" ; GetValue ( p ; 3 ) ) ; a1 = Substitute ( "xxxxxxxxxx" ; "x" ; c ) ; a2 = Substitute ( a1 ; c ; a1 ) ; a3 = Substitute ( a2 ; c ; a1 ) ; a4 = Substitute ( a3 ; c ; a1 ) ; a5 = Substitute ( a4 ; c ; a1 ) ; a6 = Substitute ( a5 ; c ; a1 ) ; a7 = Substitute ( a6 ; c ; a1 ) ] ; Left ( a7 ; n ) ) ]
+== sg start param
+Perform Script [ "sg build" ; Parameter: Get ( ScriptParameter ) ]
+Perform Script [ "sg param" ; Parameter: $$big ]
+Exit Script [ $$depth & " " & $$fail & " " & $$failerr & " " & Length ( $$big ) ]
+== sg start result
+Perform Script [ "sg build" ; Parameter: Get ( ScriptParameter ) ]
+Perform Script [ "sg result" ]
+Exit Script [ $$depth & " " & $$fail & " " & $$failerr & " " & Length ( $$big ) ]
+== sg start local
+Perform Script [ "sg build" ; Parameter: Get ( ScriptParameter ) ]
+Perform Script [ "sg local" ]
+Exit Script [ $$depth & " " & $$fail & " " & $$failerr & " " & Length ( $$big ) ]
+== sg start local param
+Perform Script [ "sg build" ; Parameter: Get ( ScriptParameter ) ]
+Perform Script [ "sg local param" ; Parameter: "a" ]
+Exit Script [ $$depth & " " & $$fail & " " & $$failerr & " " & Length ( $$big ) ]
+== sg start local2
+Perform Script [ "sg build" ; Parameter: Get ( ScriptParameter ) ]
+Perform Script [ "sg local2" ]
+Exit Script [ $$depth & " " & $$fail & " " & $$failerr & " " & Length ( $$big ) ]
+== sg start mixed
+Perform Script [ "sg build" ; Parameter: Get ( ScriptParameter ) ]
+Perform Script [ "sg mixed" ; Parameter: $$big ]
+Exit Script [ $$depth & " " & $$fail & " " & $$failerr & " " & Length ( $$big ) & " " & $$failnop ]
+--- run
+@trace off
+sg start param	1000000\r3000
+sg start param	500000\r3000
+sg start param	250000\r6000
+sg start result	500000\r3000
+sg start local	500000\r3000
+sg start mixed	1000000\r3000
+sg start param	487099\r1300
+sg start param	487100\r1300
+sg start param	894866\r700
+sg start param	894868\r700
+sg start param	2696420\r250
+sg start param	2696428\r250
+sg start param	500000\r3000\ré
+sg start param	250000\r3000\remoji
+sg start param	250000\r3000\rcombining
+sg start local	487075\r1300
+sg start local	487085\r1300
+sg start local param	486450\r1300
+sg start local param	486460\r1300
+sg start local2	486400\r1300
+sg start local2	486450\r1300

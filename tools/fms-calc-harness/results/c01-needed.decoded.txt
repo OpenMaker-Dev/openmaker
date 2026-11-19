@@ -1,0 +1,833 @@
+# Compile mode (calceval -c -d), calc-oracle.fmp12, context table occurrence "Table" (03d00001,
+# fields Input = 6, Output = 7). Sections 1-14 of re/work/calc-encoding/needed-expressions.txt
+# (calc-encoding.md section 10) with backslashes doubled for the harness, plus additions marked "+".
+# --- 1. Precedence and associativity (docs/re/calc-encoding.md 6.2)
+not 1 = 2	err=0 pos=0:0
+  P: (= (not 1) 2)
+  F: not | ws ' ' | num 1 fmt=0020 | ws ' ' | = | ws ' ' | num 2 fmt=0020
+  spec compiler: same
+not not 1	err=0 pos=0:0
+  P: (not (not 1))
+  F: not | ws ' ' | not | ws ' ' | num 1 fmt=0020
+  spec compiler: same
+-2^2	err=0 pos=0:0
+  P: (^ (- (unary) 2) 2)
+  F: - | num 2 fmt=0020 | ^ | num 2 fmt=0020
+  spec compiler: same
+- -1	err=0 pos=0:0
+  P: (- (unary) (- (unary) 1))
+  F: - | ws ' ' | - | num 1 fmt=0020
+  spec compiler: same
+-1	err=0 pos=0:0
+  P: (- (unary) 1)
+  F: - | num 1 fmt=0020
+  spec compiler: same
++"3"	err=0 pos=0:0
+  P: (GetAsNumber '3')
+  F: + | text '3'
+  spec compiler: same
+2^3^2	err=0 pos=0:0
+  P: (^ (^ 2 3) 2)
+  F: num 2 fmt=0020 | ^ | num 3 fmt=0020 | ^ | num 2 fmt=0020
+  spec compiler: same
+1 - 2 - 3	err=0 pos=0:0
+  P: (- (- 1 2) 3)
+  F: num 1 fmt=0020 | ws ' ' | - | ws ' ' | num 2 fmt=0020 | ws ' ' | - | ws ' ' | num 3 fmt=0020
+  spec compiler: same
+8 / 4 / 2	err=0 pos=0:0
+  P: (/ (/ 8 4) 2)
+  F: num 8 fmt=0020 | ws ' ' | / | ws ' ' | num 4 fmt=0020 | ws ' ' | / | ws ' ' | num 2 fmt=0020
+  spec compiler: same
+1 & 2 + 3	err=0 pos=0:0
+  P: (& 1 (+ 2 3))
+  F: num 1 fmt=0020 | ws ' ' | & | ws ' ' | num 2 fmt=0020 | ws ' ' | + | ws ' ' | num 3 fmt=0020
+  spec compiler: same
+1 = 1 and 0 or 1	err=0 pos=0:0
+  P: (or (and (= 1 1) 0) 1)
+  F: num 1 fmt=0020 | ws ' ' | = | ws ' ' | num 1 fmt=0020 | ws ' ' | and | ws ' ' | num 0 fmt=0020 | ws ' ' | or | ws ' ' | num 1 fmt=0020
+  spec compiler: same
+1 or 0 and 0	err=0 pos=0:0
+  P: (or 1 (and 0 0))
+  F: num 1 fmt=0020 | ws ' ' | or | ws ' ' | num 0 fmt=0020 | ws ' ' | and | ws ' ' | num 0 fmt=0020
+  spec compiler: same
+1 xor 0	err=0 pos=0:0
+  P: (xor 1 0)
+  F: num 1 fmt=0020 | ws ' ' | xor | ws ' ' | num 0 fmt=0020
+  spec compiler: same
+1 < 2 = 1	err=0 pos=0:0
+  P: (= (< 1 2) 1)
+  F: num 1 fmt=0020 | ws ' ' | < | ws ' ' | num 2 fmt=0020 | ws ' ' | = | ws ' ' | num 1 fmt=0020
+  spec compiler: same
+1 <> 2	err=0 pos=0:0
+  P: (<> 1 2)
+  F: num 1 fmt=0020 | ws ' ' | <> | ws ' ' | num 2 fmt=0020
+  spec compiler: same
+1 ≠ 2	err=0 pos=0:0
+  P: (≠ 1 2)
+  F: num 1 fmt=0020 | ws ' ' | ≠ | ws ' ' | num 2 fmt=0020
+  spec compiler: same
+1 <= 2	err=0 pos=0:0
+  P: (<= 1 2)
+  F: num 1 fmt=0020 | ws ' ' | <= | ws ' ' | num 2 fmt=0020
+  spec compiler: same
+1 ≤ 2	err=0 pos=0:0
+  P: (≤ 1 2)
+  F: num 1 fmt=0020 | ws ' ' | ≤ | ws ' ' | num 2 fmt=0020
+  spec compiler: same
+1 >= 2	err=0 pos=0:0
+  P: (>= 1 2)
+  F: num 1 fmt=0020 | ws ' ' | >= | ws ' ' | num 2 fmt=0020
+  spec compiler: same
+1 ≥ 2	err=0 pos=0:0
+  P: (≥ 1 2)
+  F: num 1 fmt=0020 | ws ' ' | ≥ | ws ' ' | num 2 fmt=0020
+  spec compiler: same
+#
+# --- 2. Number literals (formatted number word 0x0020 / 0x0040)
+1E3	err=0 pos=0:0
+  P: 1000
+  F: num 1000 fmt=0040
+  spec compiler: same
+1e3	err=0 pos=0:0
+  P: 1000
+  F: num 1000 fmt=0040
+  spec compiler: same
+1.5E-2	err=0 pos=0:0
+  P: 0.015
+  F: num 0.015 fmt=0040
+  spec compiler: same
+1E+3	err=0 pos=0:0
+  P: 1000
+  F: num 1000 fmt=0040
+  spec compiler: same
+.5	err=0 pos=0:0
+  P: 0.5
+  F: num 0.5 fmt=0020
+  spec compiler: same
+5.	err=1218 pos=0:2
+0001	err=0 pos=0:0
+  P: 1
+  F: num 1 fmt=0020
+  spec compiler: same
+1.50	err=0 pos=0:0
+  P: 1.5
+  F: num 1.5 fmt=0020
+  spec compiler: same
+12345678901234567890	err=0 pos=0:0
+  P: 12345678901234567890
+  F: num 12345678901234567890 fmt=0020
+  spec compiler: same
+0.12345678901234567890123	err=0 pos=0:0
+  P: 0.12345678901234567890123
+  F: num 0.12345678901234567890123 fmt=0020
+  spec compiler: same
+1234567890.123456789	err=0 pos=0:0
+  P: 1234567890.123456789
+  F: num 1234567890.123456789 fmt=0020
+  spec compiler: same
+#
+# --- 3. Text literals and escapes
+"a¶b"	err=0 pos=0:0
+  P: 'a\rb'
+  F: text 'a\rb'
+  spec compiler: same
+"a\\¶b"	err=0 pos=0:0
+  P: 'a¶b'
+  F: text 'a¶b'
+  spec compiler: same
+"a\\"b"	err=0 pos=0:0
+  P: 'a"b'
+  F: text 'a"b'
+  spec compiler: same
+"a\\\\b"	err=0 pos=0:0
+  P: 'a\\b'
+  F: text 'a\\b'
+  spec compiler: same
+"a\\nb"	err=0 pos=0:0
+  P: 'a\\nb'
+  F: text 'a\\nb'
+  spec compiler: same
+""""	err=0 pos=0:0
+  P: '"'
+  F: text '"'
+  spec compiler: same
+# + typed Return (CR), LF, U+E004, U+2028, tab inside a literal; quote and backslash forms
+"ab\rc"	err=0 pos=0:0
+  P: 'ab c'
+  F: text 'ab\ue004c'
+  spec compiler: same
+"ab\nc"	err=0 pos=0:0
+  P: 'ab\nc'
+  F: text 'ab\nc'
+  spec compiler: same
+"ab\uE004c"	err=0 pos=0:0
+  P: 'ab c'
+  F: text 'ab\ue004c'
+  spec compiler: same
+"ab\u2028c"	err=0 pos=0:0
+  P: 'ab\u2028c'
+  F: text 'ab\u2028c'
+  spec compiler: same
+"a\tb"	err=0 pos=0:0
+  P: 'a\tb'
+  F: text 'a\tb'
+  spec compiler: same
+"a\\¶b" & "x"	err=0 pos=0:0
+  P: (& 'a¶b' 'x')
+  F: text 'a¶b' | ws ' ' | & | ws ' ' | text 'x'
+  spec compiler: same
+"a\\\\¶b"	err=0 pos=0:0
+  P: 'a\\\rb'
+  F: text 'a\\\rb'
+  spec compiler: same
+"a\\"	err=1206 pos=0:4
+"a\\x"	err=0 pos=0:0
+  P: 'a\\x'
+  F: text 'a\\x'
+  spec compiler: same
+"\\"	err=1206 pos=0:3
+"¶"	err=0 pos=0:0
+  P: '\r'
+  F: text '\r'
+  spec compiler: same
+"a""b"	err=0 pos=0:0
+  P: 'a"b'
+  F: text 'a"b'
+  spec compiler: same
+"a" "b"	err=1212 pos=4:7
+"\\¶"	err=0 pos=0:0
+  P: '¶'
+  F: text '¶'
+  spec compiler: same
+"a\\\rb"	err=0 pos=0:0
+  P: 'a\\ b'
+  F: text 'a\\\ue004b'
+  spec compiler: same
+"＂full-width quotes＂"	err=102 pos=2:6
+#
+# --- 4. Comments and layout
+1 // trailing comment	err=0 pos=0:0
+  P: 1
+  F: num 1 fmt=0020 | ws ' ' | linecomment ' trailing comment'
+  spec compiler: same
+/* block */ 1	err=0 pos=0:0
+  P: 1
+  F: comment ' block ' | ws ' ' | num 1 fmt=0020
+  spec compiler: same
+1 /* inner */ + 2	err=0 pos=0:0
+  P: (+ 1 2)
+  F: num 1 fmt=0020 | ws ' ' | comment ' inner ' | ws ' ' | + | ws ' ' | num 2 fmt=0020
+  spec compiler: same
+// only a comment	err=0 pos=0:0
+  P: <00>
+  F: linecomment ' only a comment'
+  spec compiler: same
+1 +\t2	err=0 pos=0:0
+  P: (+ 1 2)
+  F: num 1 fmt=0020 | ws ' ' | + | ws '\t' | num 2 fmt=0020
+  spec compiler: same
+#
+# --- 5. Names, case and quoting
+abs ( -1 )	err=0 pos=0:0
+  P: (Abs (- (unary) 1))
+  F: Abs | ws ' ' | ( | ws ' ' | - | num 1 fmt=0020 | ws ' ' | )
+  spec compiler: same
+ABS(-1)	err=0 pos=0:0
+  P: (Abs (- (unary) 1))
+  F: Abs | ( | - | num 1 fmt=0020 | )
+  spec compiler: same
+Get ( currentdate )	err=0 pos=0:0
+  P: Get(CurrentDate)
+  F: Get | ws ' ' | ( | ws ' ' | getsel CurrentDate | ws ' ' | )
+  spec compiler: same
+get(CURRENTDATE)	err=0 pos=0:0
+  P: Get(CurrentDate)
+  F: Get | ( | getsel CurrentDate | )
+  spec compiler: same
+Let ( ${a b} = 1 ; ${a b} )	err=0 pos=0:0
+  P: (Let 1 v0)
+  F: Let | ws ' ' | ( | ws ' ' | symbol 'a b' flag=1 | ws ' ' | = | ws ' ' | num 1 fmt=0020 | ws ' ' | ; | ws ' ' | symbol 'a b' flag=1 | ws ' ' | )
+  spec compiler: same
+Let ( A = 1 ; a )	err=0 pos=0:0
+  P: (Let 1 v0)
+  F: Let | ws ' ' | ( | ws ' ' | symbol 'A' flag=0 | ws ' ' | = | ws ' ' | num 1 fmt=0020 | ws ' ' | ; | ws ' ' | symbol 'a' flag=0 | ws ' ' | )
+  spec compiler: same
+Table::Input	err=0 pos=0:0
+  P: field[03d00001:0106 r1 f4]
+  F: field 03d00001:0106 r1 flags=4
+  spec compiler: same
+Input	err=0 pos=0:0
+  P: field[03d00001:0106 r1 f0]
+  F: field 03d00001:0106 r1 flags=0
+  spec compiler: same
+${Input}	err=0 pos=0:0
+  P: field[03d00001:0106 r1 f1]
+  F: field 03d00001:0106 r1 flags=1
+  spec compiler: same
+Table::${Input}	err=0 pos=0:0
+  P: field[03d00001:0106 r1 f5]
+  F: field 03d00001:0106 r1 flags=5
+  spec compiler: same
+Input[2]	err=0 pos=0:0
+  P: (GetRepetition fieldref[03d00001:0106 r1 f0] 2)
+  F: field 03d00001:0106 r1 flags=0 | [ | num 2 fmt=0020 | ]
+  spec compiler: same
+Table::Input[2]	err=0 pos=0:0
+  P: (GetRepetition fieldref[03d00001:0106 r1 f4] 2)
+  F: field 03d00001:0106 r1 flags=4 | [ | num 2 fmt=0020 | ]
+  spec compiler: same
+nonexistent_name + 1	err=102 pos=0:16
+Länge ( "abc" )	err=1208 pos=0:5
+#
+# --- 6. Let, While, variables
+Let ( x = 1 ; x )	err=0 pos=0:0
+  P: (Let 1 v0)
+  F: Let | ws ' ' | ( | ws ' ' | symbol 'x' flag=0 | ws ' ' | = | ws ' ' | num 1 fmt=0020 | ws ' ' | ; | ws ' ' | symbol 'x' flag=0 | ws ' ' | )
+  spec compiler: same
+Let ( [ x = 1 ; x = x + 1 ] ; x )	err=0 pos=0:0
+  P: (Let 1 (op227 (+ v0 1) 1 v0) v0)
+  F: Let | ws ' ' | ( | ws ' ' | [ | ws ' ' | symbol 'x' flag=0 | ws ' ' | = | ws ' ' | num 1 fmt=0020 | ws ' ' | ; | ws ' ' | symbol 'x' flag=0 | ws ' ' | = | ws ' ' | symbol 'x' flag=0 | ws ' ' | + | ws ' ' | num 1 fmt=0020 | ws ' ' | ] | ws ' ' | ; | ws ' ' | symbol 'x' flag=0 | ws ' ' | )
+  spec compiler: same
+Let ( [ $a = 1 ; $$b = 2 ] ; $a + $$b )	err=0 pos=0:0
+  P: (Let (op227 1 1 $a) (op227 2 1 $$b) (+ $a $$b))
+  F: Let | ws ' ' | ( | ws ' ' | [ | ws ' ' | var '$a' | ws ' ' | = | ws ' ' | num 1 fmt=0020 | ws ' ' | ; | ws ' ' | var '$$b' | ws ' ' | = | ws ' ' | num 2 fmt=0020 | ws ' ' | ] | ws ' ' | ; | ws ' ' | var '$a' | ws ' ' | + | ws ' ' | var '$$b' | ws ' ' | )
+  spec compiler: same
+Let ( $a[2] = 1 ; $a[2] )	err=0 pos=0:0
+  P: (Let (op227 1 2 $a) (op228 2 $a))
+  F: Let | ws ' ' | ( | ws ' ' | var '$a' | [ | num 2 fmt=0020 | ] | ws ' ' | = | ws ' ' | num 1 fmt=0020 | ws ' ' | ; | ws ' ' | var '$a' | [ | num 2 fmt=0020 | ] | ws ' ' | )
+  spec compiler: same
+Let ( x = 1 ; Let ( y = 2 ; x + y ) )	err=0 pos=0:0
+  P: (Let 1 (Let 2 (+ v0 v1)))
+  F: Let | ws ' ' | ( | ws ' ' | symbol 'x' flag=0 | ws ' ' | = | ws ' ' | num 1 fmt=0020 | ws ' ' | ; | ws ' ' | Let | ws ' ' | ( | ws ' ' | symbol 'y' flag=0 | ws ' ' | = | ws ' ' | num 2 fmt=0020 | ws ' ' | ; | ws ' ' | symbol 'x' flag=0 | ws ' ' | + | ws ' ' | symbol 'y' flag=0 | ws ' ' | ) | ws ' ' | )
+  spec compiler: same
+Let ( [ x = 1 ; y = Let ( z = 3 ; z ) ; w = 4 ] ; x + y + w )	err=0 pos=0:0
+  P: (Let 1 (Let 3 v1) 4 (+ (+ v0 v1) v2))
+  F: Let | ws ' ' | ( | ws ' ' | [ | ws ' ' | symbol 'x' flag=0 | ws ' ' | = | ws ' ' | num 1 fmt=0020 | ws ' ' | ; | ws ' ' | symbol 'y' flag=0 | ws ' ' | = | ws ' ' | Let | ws ' ' | ( | ws ' ' | symbol 'z' flag=0 | ws ' ' | = | ws ' ' | num 3 fmt=0020 | ws ' ' | ; | ws ' ' | symbol 'z' flag=0 | ws ' ' | ) | ws ' ' | ; | ws ' ' | symbol 'w' flag=0 | ws ' ' | = | ws ' ' | num 4 fmt=0020 | ws ' ' | ] | ws ' ' | ; | ws ' ' | symbol 'x' flag=0 | ws ' ' | + | ws ' ' | symbol 'y' flag=0 | ws ' ' | + | ws ' ' | symbol 'w' flag=0 | ws ' ' | )
+  spec compiler: same
+While ( [ i = 0 ] ; i < 3 ; [ i = i + 1 ] ; i )	err=0 pos=0:0
+  P: (While split=1 0 (< v0 3) (op227 (+ v0 1) 1 v0) v0)
+  F: While | ws ' ' | ( | ws ' ' | [ | ws ' ' | symbol 'i' flag=0 | ws ' ' | = | ws ' ' | num 0 fmt=0020 | ws ' ' | ] | ws ' ' | ; | ws ' ' | symbol 'i' flag=0 | ws ' ' | < | ws ' ' | num 3 fmt=0020 | ws ' ' | ; | ws ' ' | [ | ws ' ' | symbol 'i' flag=0 | ws ' ' | = | ws ' ' | symbol 'i' flag=0 | ws ' ' | + | ws ' ' | num 1 fmt=0020 | ws ' ' | ] | ws ' ' | ; | ws ' ' | symbol 'i' flag=0 | ws ' ' | )
+  spec compiler: same
+While ( [ i = 0 ; r = "" ] ; i < 3 ; [ i = i + 1 ; r = r & i ] ; r )	err=0 pos=0:0
+  P: (While split=2 0 '' (< v0 3) (op227 (+ v0 1) 1 v0) (op227 (& v1 v0) 1 v1) v1)
+  F: While | ws ' ' | ( | ws ' ' | [ | ws ' ' | symbol 'i' flag=0 | ws ' ' | = | ws ' ' | num 0 fmt=0020 | ws ' ' | ; | ws ' ' | symbol 'r' flag=0 | ws ' ' | = | ws ' ' | text '' | ws ' ' | ] | ws ' ' | ; | ws ' ' | symbol 'i' flag=0 | ws ' ' | < | ws ' ' | num 3 fmt=0020 | ws ' ' | ; | ws ' ' | [ | ws ' ' | symbol 'i' flag=0 | ws ' ' | = | ws ' ' | symbol 'i' flag=0 | ws ' ' | + | ws ' ' | num 1 fmt=0020 | ws ' ' | ; | ws ' ' | symbol 'r' flag=0 | ws ' ' | = | ws ' ' | symbol 'r' flag=0 | ws ' ' | & | ws ' ' | symbol 'i' flag=0 | ws ' ' | ] | ws ' ' | ; | ws ' ' | symbol 'r' flag=0 | ws ' ' | )
+  spec compiler: same
+While ( [ i = 0 ] ; i < 3 ; [ i = i + 1 ; j = i ] ; j )	err=0 pos=0:0
+  P: (While split=1 0 (< v0 3) (op227 (+ v0 1) 1 v0) v0 v2)
+  F: While | ws ' ' | ( | ws ' ' | [ | ws ' ' | symbol 'i' flag=0 | ws ' ' | = | ws ' ' | num 0 fmt=0020 | ws ' ' | ] | ws ' ' | ; | ws ' ' | symbol 'i' flag=0 | ws ' ' | < | ws ' ' | num 3 fmt=0020 | ws ' ' | ; | ws ' ' | [ | ws ' ' | symbol 'i' flag=0 | ws ' ' | = | ws ' ' | symbol 'i' flag=0 | ws ' ' | + | ws ' ' | num 1 fmt=0020 | ws ' ' | ; | ws ' ' | symbol 'j' flag=0 | ws ' ' | = | ws ' ' | symbol 'i' flag=0 | ws ' ' | ] | ws ' ' | ; | ws ' ' | symbol 'j' flag=0 | ws ' ' | )
+  spec compiler: same
+Let ( x = 1 ; While ( [ i = x ] ; i < 3 ; [ i = i + 1 ] ; i + x ) )	err=0 pos=0:0
+  P: (Let 1 (While split=1 v0 (< v1 3) (op227 (+ v1 1) 1 v1) (+ v1 v0)))
+  F: Let | ws ' ' | ( | ws ' ' | symbol 'x' flag=0 | ws ' ' | = | ws ' ' | num 1 fmt=0020 | ws ' ' | ; | ws ' ' | While | ws ' ' | ( | ws ' ' | [ | ws ' ' | symbol 'i' flag=0 | ws ' ' | = | ws ' ' | symbol 'x' flag=0 | ws ' ' | ] | ws ' ' | ; | ws ' ' | symbol 'i' flag=0 | ws ' ' | < | ws ' ' | num 3 fmt=0020 | ws ' ' | ; | ws ' ' | [ | ws ' ' | symbol 'i' flag=0 | ws ' ' | = | ws ' ' | symbol 'i' flag=0 | ws ' ' | + | ws ' ' | num 1 fmt=0020 | ws ' ' | ] | ws ' ' | ; | ws ' ' | symbol 'i' flag=0 | ws ' ' | + | ws ' ' | symbol 'x' flag=0 | ws ' ' | ) | ws ' ' | )
+  spec compiler: same
+#
+# --- 7. Evaluate / GetField and field-reference positions (mNeedFieldRef)
+Evaluate ( "1" )	err=0 pos=0:0
+  P: (Evaluate x=0 '1')
+  F: Evaluate | ws ' ' | ( | ws ' ' | text '1' | ws ' ' | )
+  spec compiler: same
+Evaluate ( "1" ; Table::Input )	err=0 pos=0:0
+  P: (Evaluate x=0 '1' field[03d00001:0106 r1 f4])
+  F: Evaluate | ws ' ' | ( | ws ' ' | text '1' | ws ' ' | ; | ws ' ' | field 03d00001:0106 r1 flags=4 | ws ' ' | )
+  spec compiler: same
+Evaluate ( "1" ; [ Table::Input ; Table::Output ] )	err=0 pos=0:0
+  P: (Evaluate x=0 '1' field[03d00001:0106 r1 f4] field[03d00001:0107 r1 f4])
+  F: Evaluate | ws ' ' | ( | ws ' ' | text '1' | ws ' ' | ; | ws ' ' | [ | ws ' ' | field 03d00001:0106 r1 flags=4 | ws ' ' | ; | ws ' ' | field 03d00001:0107 r1 flags=4 | ws ' ' | ] | ws ' ' | )
+  spec compiler: same
+List ( Evaluate ( "1" ) )	err=0 pos=0:0
+  P: (List (Evaluate x=1 '1'))
+  F: List | ws ' ' | ( | ws ' ' | Evaluate | ws ' ' | ( | ws ' ' | text '1' | ws ' ' | ) | ws ' ' | )
+  spec compiler: same
+Sum ( Evaluate ( "1" ) )	err=0 pos=0:0
+  P: (Sum (Evaluate x=1 '1'))
+  F: Sum | ws ' ' | ( | ws ' ' | Evaluate | ws ' ' | ( | ws ' ' | text '1' | ws ' ' | ) | ws ' ' | )
+  spec compiler: same
+List ( Let ( x = 1 ; Evaluate ( "x" ) ) )	err=0 pos=0:0
+  P: (List (Let 1 (Evaluate x=1 'x')))
+  F: List | ws ' ' | ( | ws ' ' | Let | ws ' ' | ( | ws ' ' | symbol 'x' flag=0 | ws ' ' | = | ws ' ' | num 1 fmt=0020 | ws ' ' | ; | ws ' ' | Evaluate | ws ' ' | ( | ws ' ' | text 'x' | ws ' ' | ) | ws ' ' | ) | ws ' ' | )
+  spec compiler: same
+List ( If ( 1 ; Evaluate ( "1" ) ; GetField ( "Input" ) ) )	err=0 pos=0:0
+  P: (List (If 1 (Evaluate x=1 '1') (GetField x=1 'Input')))
+  F: List | ws ' ' | ( | ws ' ' | If | ws ' ' | ( | ws ' ' | num 1 fmt=0020 | ws ' ' | ; | ws ' ' | Evaluate | ws ' ' | ( | ws ' ' | text '1' | ws ' ' | ) | ws ' ' | ; | ws ' ' | GetField | ws ' ' | ( | ws ' ' | text 'Input' | ws ' ' | ) | ws ' ' | ) | ws ' ' | )
+  spec compiler: same
+GetField ( "Input" )	err=0 pos=0:0
+  P: (GetField x=0 'Input')
+  F: GetField | ws ' ' | ( | ws ' ' | text 'Input' | ws ' ' | )
+  spec compiler: same
+GetRepetition ( GetField ( "Input" ) ; 1 )	err=0 pos=0:0
+  P: (GetRepetition (GetField x=1 'Input') 1)
+  F: GetRepetition | ws ' ' | ( | ws ' ' | GetField | ws ' ' | ( | ws ' ' | text 'Input' | ws ' ' | ) | ws ' ' | ; | ws ' ' | num 1 fmt=0020 | ws ' ' | )
+  spec compiler: same
+While ( [ i = 0 ] ; i < 1 ; [ i = i + 1 ] ; Let ( a = 1 ; Evaluate ( "a" ) ) )	err=0 pos=0:0
+  P: (While split=1 0 (< v0 1) (op227 (+ v0 1) 1 v0) (Let 1 (Evaluate x=0 'a')))
+  F: While | ws ' ' | ( | ws ' ' | [ | ws ' ' | symbol 'i' flag=0 | ws ' ' | = | ws ' ' | num 0 fmt=0020 | ws ' ' | ] | ws ' ' | ; | ws ' ' | symbol 'i' flag=0 | ws ' ' | < | ws ' ' | num 1 fmt=0020 | ws ' ' | ; | ws ' ' | [ | ws ' ' | symbol 'i' flag=0 | ws ' ' | = | ws ' ' | symbol 'i' flag=0 | ws ' ' | + | ws ' ' | num 1 fmt=0020 | ws ' ' | ] | ws ' ' | ; | ws ' ' | Let | ws ' ' | ( | ws ' ' | symbol 'a' flag=0 | ws ' ' | = | ws ' ' | num 1 fmt=0020 | ws ' ' | ; | ws ' ' | Evaluate | ws ' ' | ( | ws ' ' | text 'a' | ws ' ' | ) | ws ' ' | ) | ws ' ' | )
+  spec compiler: same
+EvaluationError ( Evaluate ( "1+" ) )	err=0 pos=0:0
+  P: (EvaluationError (Evaluate x=0 '1+'))
+  F: EvaluationError | ws ' ' | ( | ws ' ' | Evaluate | ws ' ' | ( | ws ' ' | text '1+' | ws ' ' | ) | ws ' ' | )
+  spec compiler: same
+IsValid ( Table::Input )	err=0 pos=0:0
+  P: (IsValid field[03d00001:0106 r1 f4])
+  F: IsValid | ws ' ' | ( | ws ' ' | field 03d00001:0106 r1 flags=4 | ws ' ' | )
+  spec compiler: same
+IsValidExpression ( "1+" )	err=0 pos=0:0
+  P: (IsValidExpression '1+')
+  F: IsValidExpression | ws ' ' | ( | ws ' ' | text '1+' | ws ' ' | )
+  spec compiler: same
+#
+# --- 8. Control forms
+If ( 1 ; 2 )	err=0 pos=0:0
+  P: (If 1 2 <00>)
+  F: If | ws ' ' | ( | ws ' ' | num 1 fmt=0020 | ws ' ' | ; | ws ' ' | num 2 fmt=0020 | ws ' ' | )
+  spec compiler: same
+If ( 1 ; 2 ; 3 )	err=0 pos=0:0
+  P: (If 1 2 3)
+  F: If | ws ' ' | ( | ws ' ' | num 1 fmt=0020 | ws ' ' | ; | ws ' ' | num 2 fmt=0020 | ws ' ' | ; | ws ' ' | num 3 fmt=0020 | ws ' ' | )
+  spec compiler: same
+If ( 1 ; 2 ; )	err=1204 pos=13:14
+Case ( 1 ; "a" )	err=0 pos=0:0
+  P: (Case 1 'a')
+  F: Case | ws ' ' | ( | ws ' ' | num 1 fmt=0020 | ws ' ' | ; | ws ' ' | text 'a' | ws ' ' | )
+  spec compiler: same
+Case ( 1 ; "a" ; "b" )	err=0 pos=0:0
+  P: (Case 1 'a' 1 'b')
+  F: Case | ws ' ' | ( | ws ' ' | num 1 fmt=0020 | ws ' ' | ; | ws ' ' | text 'a' | ws ' ' | ; | ws ' ' | text 'b' | ws ' ' | )
+  spec compiler: same
+Case ( 0 ; "a" ; 1 ; "b" ; "c" )	err=0 pos=0:0
+  P: (Case 0 'a' 1 'b' 1 'c')
+  F: Case | ws ' ' | ( | ws ' ' | num 0 fmt=0020 | ws ' ' | ; | ws ' ' | text 'a' | ws ' ' | ; | ws ' ' | num 1 fmt=0020 | ws ' ' | ; | ws ' ' | text 'b' | ws ' ' | ; | ws ' ' | text 'c' | ws ' ' | )
+  spec compiler: same
+Case ( 1 ; "a" ; )	err=0 pos=0:0
+  P: (Case 1 'a')
+  F: Case | ws ' ' | ( | ws ' ' | num 1 fmt=0020 | ws ' ' | ; | ws ' ' | text 'a' | ws ' ' | ; | ws ' ' | )
+  spec compiler: same
+Choose ( 1 ; "a" ; "b" )	err=0 pos=0:0
+  P: (Choose 1 'a' 'b')
+  F: Choose | ws ' ' | ( | ws ' ' | num 1 fmt=0020 | ws ' ' | ; | ws ' ' | text 'a' | ws ' ' | ; | ws ' ' | text 'b' | ws ' ' | )
+  spec compiler: same
+SetPrecision ( 1/3 ; 50 )	err=0 pos=0:0
+  P: (SetPrecision (/ 1 3) 50)
+  F: SetPrecision | ws ' ' | ( | ws ' ' | num 1 fmt=0020 | / | num 3 fmt=0020 | ws ' ' | ; | ws ' ' | num 50 fmt=0020 | ws ' ' | )
+  spec compiler: same
+SetRecursion ( 1 ; 100 )	err=0 pos=0:0
+  P: (SetRecursion 1 100)
+  F: SetRecursion | ws ' ' | ( | ws ' ' | num 1 fmt=0020 | ws ' ' | ; | ws ' ' | num 100 fmt=0020 | ws ' ' | )
+  spec compiler: same
+Get ( LastError )	err=0 pos=0:0
+  P: Get(LastError)
+  F: Get | ws ' ' | ( | ws ' ' | getsel LastError | ws ' ' | )
+  spec compiler: same
+Get ( UUID )	err=0 pos=0:0
+  P: Get(UUID)
+  F: Get | ws ' ' | ( | ws ' ' | getsel UUID | ws ' ' | )
+  spec compiler: same
+#
+# --- 9. Field-type arguments (0x16 versus 0x17)
+Sum ( Table::Input )	err=0 pos=0:0
+  P: (Sum fieldref[03d00001:0106 r1 f4])
+  F: Sum | ws ' ' | ( | ws ' ' | field 03d00001:0106 r1 flags=4 | ws ' ' | )
+  spec compiler: same
+Sum ( Table::Input ; Table::Output )	err=0 pos=0:0
+  P: (Sum fieldref[03d00001:0106 r1 f4] fieldref[03d00001:0107 r1 f4])
+  F: Sum | ws ' ' | ( | ws ' ' | field 03d00001:0106 r1 flags=4 | ws ' ' | ; | ws ' ' | field 03d00001:0107 r1 flags=4 | ws ' ' | )
+  spec compiler: same
+Count ( Table::Input )	err=0 pos=0:0
+  P: (Count fieldref[03d00001:0106 r1 f4])
+  F: Count | ws ' ' | ( | ws ' ' | field 03d00001:0106 r1 flags=4 | ws ' ' | )
+  spec compiler: same
+List ( Table::Input ; 1 )	err=0 pos=0:0
+  P: (List fieldref[03d00001:0106 r1 f4] 1)
+  F: List | ws ' ' | ( | ws ' ' | field 03d00001:0106 r1 flags=4 | ws ' ' | ; | ws ' ' | num 1 fmt=0020 | ws ' ' | )
+  spec compiler: same
+Max ( 1 ; 2 )	err=0 pos=0:0
+  P: (Max 1 2)
+  F: Max | ws ' ' | ( | ws ' ' | num 1 fmt=0020 | ws ' ' | ; | ws ' ' | num 2 fmt=0020 | ws ' ' | )
+  spec compiler: same
+Average ( Table::Input + 1 )	err=1214 pos=17:26
+Last ( Table::Input )	err=0 pos=0:0
+  P: (Last fieldref[03d00001:0106 r1 f4])
+  F: Last | ws ' ' | ( | ws ' ' | field 03d00001:0106 r1 flags=4 | ws ' ' | )
+  spec compiler: same
+Extend ( Table::Input )	err=0 pos=0:0
+  P: (Extend fieldref[03d00001:0106 r1 f4])
+  F: Extend | ws ' ' | ( | ws ' ' | field 03d00001:0106 r1 flags=4 | ws ' ' | )
+  spec compiler: same
+GetRepetition ( Table::Input ; 2 )	err=0 pos=0:0
+  P: (GetRepetition fieldref[03d00001:0106 r1 f4] 2)
+  F: GetRepetition | ws ' ' | ( | ws ' ' | field 03d00001:0106 r1 flags=4 | ws ' ' | ; | ws ' ' | num 2 fmt=0020 | ws ' ' | )
+  spec compiler: same
+GetNthRecord ( Table::Input ; 1 )	err=0 pos=0:0
+  P: (GetNthRecord fieldref[03d00001:0106 r1 f4] 1)
+  F: GetNthRecord | ws ' ' | ( | ws ' ' | field 03d00001:0106 r1 flags=4 | ws ' ' | ; | ws ' ' | num 1 fmt=0020 | ws ' ' | )
+  spec compiler: same
+GetSummary ( Table::Input ; Table::Output )	err=1216 pos=20:25
+GetFieldName ( Table::Input )	err=0 pos=0:0
+  P: (GetFieldName field[03d00001:0106 r1 f4])
+  F: GetFieldName | ws ' ' | ( | ws ' ' | field 03d00001:0106 r1 flags=4 | ws ' ' | )
+  spec compiler: same
+Lookup ( Table::Input )	err=0 pos=0:0
+  P: (Lookup fieldref[03d00001:0106 r1 f4])
+  F: Lookup | ws ' ' | ( | ws ' ' | field 03d00001:0106 r1 flags=4 | ws ' ' | )
+  spec compiler: same
+Lookup ( Table::Input ; "x" )	err=0 pos=0:0
+  P: (Lookup fieldref[03d00001:0106 r1 f4] 'x')
+  F: Lookup | ws ' ' | ( | ws ' ' | field 03d00001:0106 r1 flags=4 | ws ' ' | ; | ws ' ' | text 'x' | ws ' ' | )
+  spec compiler: same
+LookupNext ( Table::Input ; Lower )	err=0 pos=0:0
+  P: (LookupNext fieldref[03d00001:0106 r1 f4] (Lower))
+  F: LookupNext | ws ' ' | ( | ws ' ' | field 03d00001:0106 r1 flags=4 | ws ' ' | ; | ws ' ' | Lower | ws ' ' | )
+  spec compiler: same
+NPV ( Table::Input ; 0.1 )	err=0 pos=0:0
+  P: (NPV fieldref[03d00001:0106 r1 f4] 0.1)
+  F: NPV | ws ' ' | ( | ws ' ' | field 03d00001:0106 r1 flags=4 | ws ' ' | ; | ws ' ' | num 0.1 fmt=0020 | ws ' ' | )
+  spec compiler: same
+IsEmpty ( Table::Input[2] )	err=0 pos=0:0
+  P: (IsEmpty (GetRepetition fieldref[03d00001:0106 r1 f4] 2))
+  F: IsEmpty | ws ' ' | ( | ws ' ' | field 03d00001:0106 r1 flags=4 | [ | num 2 fmt=0020 | ] | ws ' ' | )
+  spec compiler: same
+#
+# --- 10. Variable-argument functions and lists
+Substitute ( "abc" ; "a" ; "b" )	err=0 pos=0:0
+  P: (Substitute 'abc' 'a' 'b')
+  F: Substitute | ws ' ' | ( | ws ' ' | text 'abc' | ws ' ' | ; | ws ' ' | text 'a' | ws ' ' | ; | ws ' ' | text 'b' | ws ' ' | )
+  spec compiler: same
+Substitute ( "abc" ; [ "a" ; "b" ] ; [ "c" ; "d" ] )	err=0 pos=0:0
+  P: (Substitute 'abc' (list [ ... ] 'a' 'b') (list [ ... ] 'c' 'd'))
+  F: Substitute | ws ' ' | ( | ws ' ' | text 'abc' | ws ' ' | ; | ws ' ' | [ | ws ' ' | text 'a' | ws ' ' | ; | ws ' ' | text 'b' | ws ' ' | ] | ws ' ' | ; | ws ' ' | [ | ws ' ' | text 'c' | ws ' ' | ; | ws ' ' | text 'd' | ws ' ' | ] | ws ' ' | )
+  spec compiler: same
+JSONSetElement ( "{}" ; "a" ; 1 ; JSONNumber )	err=0 pos=0:0
+  P: (JSONSetElement '{}' 'a' 1 (JSONNumber))
+  F: JSONSetElement | ws ' ' | ( | ws ' ' | text '{}' | ws ' ' | ; | ws ' ' | text 'a' | ws ' ' | ; | ws ' ' | num 1 fmt=0020 | ws ' ' | ; | ws ' ' | JSONNumber | ws ' ' | )
+  spec compiler: same
+JSONSetElement ( "{}" ; [ "a" ; 1 ; JSONNumber ] ; [ "b" ; "x" ; JSONString ] )	err=0 pos=0:0
+  P: (JSONSetElement '{}' (list [ ... ] 'a' 1 (JSONNumber)) (list [ ... ] 'b' 'x' (JSONString)))
+  F: JSONSetElement | ws ' ' | ( | ws ' ' | text '{}' | ws ' ' | ; | ws ' ' | [ | ws ' ' | text 'a' | ws ' ' | ; | ws ' ' | num 1 fmt=0020 | ws ' ' | ; | ws ' ' | JSONNumber | ws ' ' | ] | ws ' ' | ; | ws ' ' | [ | ws ' ' | text 'b' | ws ' ' | ; | ws ' ' | text 'x' | ws ' ' | ; | ws ' ' | JSONString | ws ' ' | ] | ws ' ' | )
+  spec compiler: same
+Factorial ( 5 )	err=0 pos=0:0
+  P: (Factorial 5)
+  F: Factorial | ws ' ' | ( | ws ' ' | num 5 fmt=0020 | ws ' ' | )
+  spec compiler: same
+Factorial ( 5 ; 2 )	err=0 pos=0:0
+  P: (Factorial 5 2)
+  F: Factorial | ws ' ' | ( | ws ' ' | num 5 fmt=0020 | ws ' ' | ; | ws ' ' | num 2 fmt=0020 | ws ' ' | )
+  spec compiler: same
+TextFont ( "a" ; "Arial" )	err=0 pos=0:0
+  P: (TextFont 'a' 'Arial')
+  F: TextFont | ws ' ' | ( | ws ' ' | text 'a' | ws ' ' | ; | ws ' ' | text 'Arial' | ws ' ' | )
+  spec compiler: same
+TextFont ( "a" ; "Arial" ; Roman )	err=0 pos=0:0
+  P: (TextFont 'a' 'Arial' (Roman))
+  F: TextFont | ws ' ' | ( | ws ' ' | text 'a' | ws ' ' | ; | ws ' ' | text 'Arial' | ws ' ' | ; | ws ' ' | Roman | ws ' ' | )
+  spec compiler: same
+TextSizeRemove ( "a" )	err=0 pos=0:0
+  P: (TextSizeRemove 'a')
+  F: TextSizeRemove | ws ' ' | ( | ws ' ' | text 'a' | ws ' ' | )
+  spec compiler: same
+TextSizeRemove ( "a" ; 12 )	err=0 pos=0:0
+  P: (TextSizeRemove 'a' 12)
+  F: TextSizeRemove | ws ' ' | ( | ws ' ' | text 'a' | ws ' ' | ; | ws ' ' | num 12 fmt=0020 | ws ' ' | )
+  spec compiler: same
+TextColorRemove ( "a" ; RGB ( 1 ; 2 ; 3 ) )	err=0 pos=0:0
+  P: (TextColorRemove 'a' (RGB 1 2 3))
+  F: TextColorRemove | ws ' ' | ( | ws ' ' | text 'a' | ws ' ' | ; | ws ' ' | RGB | ws ' ' | ( | ws ' ' | num 1 fmt=0020 | ws ' ' | ; | ws ' ' | num 2 fmt=0020 | ws ' ' | ; | ws ' ' | num 3 fmt=0020 | ws ' ' | ) | ws ' ' | )
+  spec compiler: same
+TextFontRemove ( "a" ; "Arial" ; Roman )	err=0 pos=0:0
+  P: (TextFontRemove 'a' 'Arial' (Roman))
+  F: TextFontRemove | ws ' ' | ( | ws ' ' | text 'a' | ws ' ' | ; | ws ' ' | text 'Arial' | ws ' ' | ; | ws ' ' | Roman | ws ' ' | )
+  spec compiler: same
+ExecuteSQL ( "select 1" ; "" ; "" )	err=0 pos=0:0
+  P: (ExecuteSQL 'select 1' '' '')
+  F: ExecuteSQL | ws ' ' | ( | ws ' ' | text 'select 1' | ws ' ' | ; | ws ' ' | text '' | ws ' ' | ; | ws ' ' | text '' | ws ' ' | )
+  spec compiler: same
+ExecuteSQL ( "select ?" ; "" ; "" ; 1 ; 2 )	err=0 pos=0:0
+  P: (ExecuteSQL 'select ?' '' '' 1 2)
+  F: ExecuteSQL | ws ' ' | ( | ws ' ' | text 'select ?' | ws ' ' | ; | ws ' ' | text '' | ws ' ' | ; | ws ' ' | text '' | ws ' ' | ; | ws ' ' | num 1 fmt=0020 | ws ' ' | ; | ws ' ' | num 2 fmt=0020 | ws ' ' | )
+  spec compiler: same
+List ( 1 ; ; 3 )	err=1204 pos=11:12
+Average ( 1 ; 2 ; 3 )	err=0 pos=0:0
+  P: (Average 1 2 3)
+  F: Average | ws ' ' | ( | ws ' ' | num 1 fmt=0020 | ws ' ' | ; | ws ' ' | num 2 fmt=0020 | ws ' ' | ; | ws ' ' | num 3 fmt=0020 | ws ' ' | )
+  spec compiler: same
+#
+# --- 11. Constants and zero-argument functions
+Pi	err=0 pos=0:0
+  P: (Pi)
+  F: Pi
+  spec compiler: same
+Random	err=0 pos=0:0
+  P: (Random)
+  F: Random
+  spec compiler: same
+Self	err=1225 pos=0:4
+True + False	err=0 pos=0:0
+  P: (+ (True) (False))
+  F: True | ws ' ' | + | ws ' ' | False
+  spec compiler: same
+¶	err=0 pos=0:0
+  P: (¶)
+  F: ¶
+  spec compiler: same
+JSONString	err=0 pos=0:0
+  P: (JSONString)
+  F: JSONString
+  spec compiler: same
+ValueNumber	err=0 pos=0:0
+  P: (ValueNumber)
+  F: ValueNumber
+  spec compiler: same
+ROWID	err=0 pos=0:0
+  P: (ROWID)
+  F: ROWID
+  spec compiler: same
+PosixPath	err=0 pos=0:0
+  P: (PosixPath)
+  F: PosixPath
+  spec compiler: same
+LayoutObjectUUID	err=0 pos=0:0
+  P: (LayoutObjectUUID)
+  F: LayoutObjectUUID
+  spec compiler: same
+HighlightYellow	err=0 pos=0:0
+  P: (HighlightYellow)
+  F: HighlightYellow
+  spec compiler: same
+TextStyleAdd ( "a" ; Bold + Italic )	err=0 pos=0:0
+  P: (TextStyleAdd 'a' (+ (Bold) (Italic)))
+  F: TextStyleAdd | ws ' ' | ( | ws ' ' | text 'a' | ws ' ' | ; | ws ' ' | Bold | ws ' ' | + | ws ' ' | Italic | ws ' ' | )
+  spec compiler: same
+TextStyleRemove ( "a" ; AllStyles )	err=0 pos=0:0
+  P: (TextStyleRemove 'a' (AllStyles))
+  F: TextStyleRemove | ws ' ' | ( | ws ' ' | text 'a' | ws ' ' | ; | ws ' ' | AllStyles | ws ' ' | )
+  spec compiler: same
+SortValues ( "b¶a" ; ValueNumber )	err=0 pos=0:0
+  P: (SortValues 'b\ra' (ValueNumber))
+  F: SortValues | ws ' ' | ( | ws ' ' | text 'b\ra' | ws ' ' | ; | ws ' ' | ValueNumber | ws ' ' | )
+  spec compiler: same
+#
+# --- 12. One function per arity class absent from the corpus
+Sqrt ( 4 )	err=0 pos=0:0
+  P: (Sqrt 4)
+  F: Sqrt | ws ' ' | ( | ws ' ' | num 4 fmt=0020 | ws ' ' | )
+  spec compiler: same
+Exp ( 1 )	err=0 pos=0:0
+  P: (Exp 1)
+  F: Exp | ws ' ' | ( | ws ' ' | num 1 fmt=0020 | ws ' ' | )
+  spec compiler: same
+Combination ( 5 ; 2 )	err=0 pos=0:0
+  P: (Combination 5 2)
+  F: Combination | ws ' ' | ( | ws ' ' | num 5 fmt=0020 | ws ' ' | ; | ws ' ' | num 2 fmt=0020 | ws ' ' | )
+  spec compiler: same
+WeekOfYearFiscal ( Date ( 1 ; 1 ; 2024 ) ; 1 )	err=0 pos=0:0
+  P: (WeekOfYearFiscal (Date 1 1 2024) 1)
+  F: WeekOfYearFiscal | ws ' ' | ( | ws ' ' | Date | ws ' ' | ( | ws ' ' | num 1 fmt=0020 | ws ' ' | ; | ws ' ' | num 1 fmt=0020 | ws ' ' | ; | ws ' ' | num 2024 fmt=0020 | ws ' ' | ) | ws ' ' | ; | ws ' ' | num 1 fmt=0020 | ws ' ' | )
+  spec compiler: same
+FV ( 1 ; 0.1 ; 2 )	err=0 pos=0:0
+  P: (FV 1 0.1 2)
+  F: FV | ws ' ' | ( | ws ' ' | num 1 fmt=0020 | ws ' ' | ; | ws ' ' | num 0.1 fmt=0020 | ws ' ' | ; | ws ' ' | num 2 fmt=0020 | ws ' ' | )
+  spec compiler: same
+Atan ( 1 )	err=0 pos=0:0
+  P: (Atan 1)
+  F: Atan | ws ' ' | ( | ws ' ' | num 1 fmt=0020 | ws ' ' | )
+  spec compiler: same
+TrimAll ( "a" ; 1 ; 0 )	err=0 pos=0:0
+  P: (TrimAll 'a' 1 0)
+  F: TrimAll | ws ' ' | ( | ws ' ' | text 'a' | ws ' ' | ; | ws ' ' | num 1 fmt=0020 | ws ' ' | ; | ws ' ' | num 0 fmt=0020 | ws ' ' | )
+  spec compiler: same
+NumToJText ( 1 ; 1 ; 0 )	err=0 pos=0:0
+  P: (NumToJText 1 1 0)
+  F: NumToJText | ws ' ' | ( | ws ' ' | num 1 fmt=0020 | ws ' ' | ; | ws ' ' | num 1 fmt=0020 | ws ' ' | ; | ws ' ' | num 0 fmt=0020 | ws ' ' | )
+  spec compiler: same
+Quote ( "a" )	err=0 pos=0:0
+  P: (Quote 'a')
+  F: Quote | ws ' ' | ( | ws ' ' | text 'a' | ws ' ' | )
+  spec compiler: same
+GetAsSVG ( Table::Input )	err=0 pos=0:0
+  P: (GetAsSVG field[03d00001:0106 r1 f4])
+  F: GetAsSVG | ws ' ' | ( | ws ' ' | field 03d00001:0106 r1 flags=4 | ws ' ' | )
+  spec compiler: same
+CryptDigest ( "a" ; "SHA256" )	err=0 pos=0:0
+  P: (CryptDigest 'a' 'SHA256')
+  F: CryptDigest | ws ' ' | ( | ws ' ' | text 'a' | ws ' ' | ; | ws ' ' | text 'SHA256' | ws ' ' | )
+  spec compiler: same
+JSONParse ( "{}" )	err=0 pos=0:0
+  P: (JSONParse '{}')
+  F: JSONParse | ws ' ' | ( | ws ' ' | text '{}' | ws ' ' | )
+  spec compiler: same
+GetTokenCount ( "a" )	err=0 pos=0:0
+  P: (GetTokenCount 'a')
+  F: GetTokenCount | ws ' ' | ( | ws ' ' | text 'a' | ws ' ' | )
+  spec compiler: same
+TextEncode ( "a" ; "utf-8" ; 1 )	err=0 pos=0:0
+  P: (TextEncode 'a' 'utf-8' 1)
+  F: TextEncode | ws ' ' | ( | ws ' ' | text 'a' | ws ' ' | ; | ws ' ' | text 'utf-8' | ws ' ' | ; | ws ' ' | num 1 fmt=0020 | ws ' ' | )
+  spec compiler: same
+JSONMakeArray ( "1¶2" ; "¶" ; JSONNumber )	err=0 pos=0:0
+  P: (JSONMakeArray '1\r2' '\r' (JSONNumber))
+  F: JSONMakeArray | ws ' ' | ( | ws ' ' | text '1\r2' | ws ' ' | ; | ws ' ' | text '\r' | ws ' ' | ; | ws ' ' | JSONNumber | ws ' ' | )
+  spec compiler: same
+CryptGenerateSignature ( "a" ; "SHA256" ; "k" ; "" )	err=0 pos=0:0
+  P: (CryptGenerateSignature 'a' 'SHA256' 'k' '')
+  F: CryptGenerateSignature | ws ' ' | ( | ws ' ' | text 'a' | ws ' ' | ; | ws ' ' | text 'SHA256' | ws ' ' | ; | ws ' ' | text 'k' | ws ' ' | ; | ws ' ' | text '' | ws ' ' | )
+  spec compiler: same
+#
+# --- 13. Built-in plug-in functions (FMDR design group, FMMB mobile group)
+DatabaseNames	err=0 pos=0:0
+  P: (plugin function call fn=plugin:FMDR/1)
+  F: plugin FMDR/1 count=0
+  spec compiler: same
+WindowNames	err=0 pos=0:0
+  P: (plugin function call fn=plugin:FMDR/19)
+  F: plugin FMDR/19 count=0
+  spec compiler: same
+WindowNames ( Get ( FileName ) )	err=0 pos=0:0
+  P: (plugin function call fn=plugin:FMDR/19 Get(FileName))
+  F: plugin FMDR/19 count=0 | ws ' ' | ( | ws ' ' | Get | ws ' ' | ( | ws ' ' | getsel FileName | ws ' ' | ) | ws ' ' | )
+  spec compiler: same
+FieldNames ( Get ( FileName ) ; "" )	err=0 pos=0:0
+  P: (plugin function call fn=plugin:FMDR/4 Get(FileName) '')
+  F: plugin FMDR/4 count=0 | ws ' ' | ( | ws ' ' | Get | ws ' ' | ( | ws ' ' | getsel FileName | ws ' ' | ) | ws ' ' | ; | ws ' ' | text '' | ws ' ' | )
+  spec compiler: same
+FieldDisplayNames ( Get ( FileName ) ; "Table::Input" )	err=0 pos=0:0
+  P: (plugin function call fn=plugin:FMDR/26 Get(FileName) 'Table::Input')
+  F: plugin FMDR/26 count=0 | ws ' ' | ( | ws ' ' | Get | ws ' ' | ( | ws ' ' | getsel FileName | ws ' ' | ) | ws ' ' | ; | ws ' ' | text 'Table::Input' | ws ' ' | )
+  spec compiler: same
+Location ( 1 )	err=1208 pos=0:8
+LocationValues ( 1 ; 1 )	err=1208 pos=0:14
+RangeBeacons ( "x" )	err=1208 pos=0:12
+#
+# --- 14. Errors (record FileMaker's error number and highlighted span)
+1 +	err=1204 pos=3:3
+( 1	err=1207 pos=3:3
+"abc	err=1206 pos=0:4
+/* open	err=1205 pos=0:7
+Abs ( 1 ; 2 )	err=1202 pos=8:9
+Abs ( )	err=1204 pos=6:7
+Get ( NoSuchSelector )	err=1215 pos=6:20
+Let ( [ x = 1 ; x = 2 ] ; x )	err=0 pos=0:0
+  P: (Let 1 (op227 2 1 v0) v0)
+  F: Let | ws ' ' | ( | ws ' ' | [ | ws ' ' | symbol 'x' flag=0 | ws ' ' | = | ws ' ' | num 1 fmt=0020 | ws ' ' | ; | ws ' ' | symbol 'x' flag=0 | ws ' ' | = | ws ' ' | num 2 fmt=0020 | ws ' ' | ] | ws ' ' | ; | ws ' ' | symbol 'x' flag=0 | ws ' ' | )
+  spec compiler: same
+#
+#
+# --- 16. (+) Field reference flags, quoting, plug-in arguments, locales
+${Table}::Input	err=0 pos=0:0
+  P: field[03d00001:0106 r1 f6]
+  F: field 03d00001:0106 r1 flags=6
+  spec compiler: same
+${Table}::${Input}	err=0 pos=0:0
+  P: field[03d00001:0106 r1 f7]
+  F: field 03d00001:0106 r1 flags=7
+  spec compiler: same
+Table::Input + ${Input}	err=0 pos=0:0
+  P: (+ field[03d00001:0106 r1 f4] field[03d00001:0106 r1 f1])
+  F: field 03d00001:0106 r1 flags=4 | ws ' ' | + | ws ' ' | field 03d00001:0106 r1 flags=1
+  spec compiler: same
+Let ( ${x} = 1 ; x )	err=0 pos=0:0
+  P: (Let 1 v0)
+  F: Let | ws ' ' | ( | ws ' ' | symbol 'x' flag=1 | ws ' ' | = | ws ' ' | num 1 fmt=0020 | ws ' ' | ; | ws ' ' | symbol 'x' flag=0 | ws ' ' | )
+  spec compiler: same
+Let ( x = 1 ; ${x} )	err=0 pos=0:0
+  P: (Let 1 v0)
+  F: Let | ws ' ' | ( | ws ' ' | symbol 'x' flag=0 | ws ' ' | = | ws ' ' | num 1 fmt=0020 | ws ' ' | ; | ws ' ' | symbol 'x' flag=1 | ws ' ' | )
+  spec compiler: same
+FieldNames ( "a" ; List ( Table::Input ) )	err=0 pos=0:0
+  P: (plugin function call fn=plugin:FMDR/4 'a' (List field[03d00001:0106 r1 f4]))
+  F: plugin FMDR/4 count=0 | ws ' ' | ( | ws ' ' | text 'a' | ws ' ' | ; | ws ' ' | List | ws ' ' | ( | ws ' ' | field 03d00001:0106 r1 flags=4 | ws ' ' | ) | ws ' ' | )
+  spec compiler: same
+FieldNames ( Sum ( Table::Input ) ; "a" )	err=0 pos=0:0
+  P: (plugin function call fn=plugin:FMDR/4 (Sum field[03d00001:0106 r1 f4]) 'a')
+  F: plugin FMDR/4 count=0 | ws ' ' | ( | ws ' ' | Sum | ws ' ' | ( | ws ' ' | field 03d00001:0106 r1 flags=4 | ws ' ' | ) | ws ' ' | ; | ws ' ' | text 'a' | ws ' ' | )
+  spec compiler: same
+Location ( Sum ( Table::Input ) )	err=1208 pos=0:8
+List ( Table::Input ; Location ( 1 ) )	err=1208 pos=22:30
+1,5	err=1212 pos=1:3
+1.5e2	err=0 pos=0:0
+  P: 150
+  F: num 150 fmt=0040
+  spec compiler: same
+1e	err=1218 pos=0:2
+1e+	err=1218 pos=0:3
+1.2.3	err=1212 pos=3:5
+.	err=1218 pos=0:1
+1.	err=1218 pos=0:2
+00.50	err=0 pos=0:0
+  P: 0.5
+  F: num 0.5 fmt=0020
+  spec compiler: same
+1E-400	err=0 pos=0:0
+  P: 0.0000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000001
+  F: num 0.0000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000001 fmt=0040
+  spec compiler: same
+1E400	err=0 pos=0:0
+  P: 10000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000
+  F: num 10000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000 fmt=0040
+  spec compiler: same
+1.5E-2 + 0	err=0 pos=0:0
+  P: (+ 0.015 0)
+  F: num 0.015 fmt=0040 | ws ' ' | + | ws ' ' | num 0 fmt=0020
+  spec compiler: same
+#
+# --- 17. (+) More error positions
+Abs ( 1	err=1207 pos=7:7
+Abs ( 1 ;	err=1202 pos=8:9
+Abs 1	err=102 pos=0:5
+1 + * 2	err=1204 pos=4:5
+) 1	err=1204 pos=0:1
+"abc" "def"	err=1212 pos=6:11
+Left ( "a" )	err=1201 pos=11:12
+Left ( "a" ; 1 ; 2 )	err=1202 pos=15:16
+NoSuchFunction ( 1 )	err=1208 pos=0:14
+Table::NoSuchField	err=102 pos=7:18
+NoSuchTable::Input	err=106 pos=0:11
+Let ( [ x = 1 ; x = 2 ] ; x )	err=0 pos=0:0
+  P: (Let 1 (op227 2 1 v0) v0)
+  F: Let | ws ' ' | ( | ws ' ' | [ | ws ' ' | symbol 'x' flag=0 | ws ' ' | = | ws ' ' | num 1 fmt=0020 | ws ' ' | ; | ws ' ' | symbol 'x' flag=0 | ws ' ' | = | ws ' ' | num 2 fmt=0020 | ws ' ' | ] | ws ' ' | ; | ws ' ' | symbol 'x' flag=0 | ws ' ' | )
+  spec compiler: same
+Let ( x = 1 ; y )	err=102 pos=14:15
+Let ( 1 = 1 ; 1 )	err=1204 pos=6:7
+Get ( )	err=1204 pos=6:7
+Get ( 1 )	err=1215 pos=6:7
+GetRepetition ( 1 ; 1 )	err=1214 pos=16:17
+Sum ( 1 + 1 )	err=1214 pos=6:11
+Extend ( 1 )	err=1214 pos=9:10
+Last ( "a" )	err=1214 pos=7:10
+GetSummary ( Table::Input ; 1 )	err=1216 pos=20:25
+Self	err=1225 pos=0:4
+%16 Self	err=0 pos=0:0
+  P: (Self)
+  F: Self
+  spec compiler: same
+Case ( )	err=1204 pos=7:8
+Case ( 1 )	err=1201 pos=9:10
+If ( 1 )	err=1201 pos=7:8
+Choose ( 1 )	err=1201 pos=11:12
+Evaluate ( )	err=1204 pos=11:12
+While ( [ i = 0 ] ; i < 3 ; i + 1 )	err=1204 pos=30:31
+${abc	err=1207 pos=5:5
+"	err=1206 pos=0:1
+/*	err=1205 pos=0:2
+1 // x	err=0 pos=0:0
+  P: 1
+  F: num 1 fmt=0020 | ws ' ' | linecomment ' x'
+  spec compiler: same
+[ 1 ; 2 ]	err=1204 pos=0:1
+List ( [ 1 ; 2 ] )	err=1204 pos=7:8
+Substitute ( "a" ; [ "a" ] ; "b" )	err=1201 pos=25:26
+Let ( [ $x[2] = 1 ] ; $x[2] )	err=0 pos=0:0
+  P: (Let (op227 1 2 $x) (op228 2 $x))
+  F: Let | ws ' ' | ( | ws ' ' | [ | ws ' ' | var '$x' | [ | num 2 fmt=0020 | ] | ws ' ' | = | ws ' ' | num 1 fmt=0020 | ws ' ' | ] | ws ' ' | ; | ws ' ' | var '$x' | [ | num 2 fmt=0020 | ] | ws ' ' | )
+  spec compiler: same
+x[2]	err=102 pos=0:1
+Let ( x = 1 ; x[2] )	err=1212 pos=15:16
+Table::Input[0]	err=0 pos=0:0
+  P: (GetRepetition fieldref[03d00001:0106 r1 f4] 0)
+  F: field 03d00001:0106 r1 flags=4 | [ | num 0 fmt=0020 | ]
+  spec compiler: same
+Table::Input[-1]	err=0 pos=0:0
+  P: (GetRepetition fieldref[03d00001:0106 r1 f4] (- (unary) 1))
+  F: field 03d00001:0106 r1 flags=4 | [ | - | num 1 fmt=0020 | ]
+  spec compiler: same
+Table::Input[1+1]	err=0 pos=0:0
+  P: (GetRepetition fieldref[03d00001:0106 r1 f4] (+ 1 1))
+  F: field 03d00001:0106 r1 flags=4 | [ | num 1 fmt=0020 | + | num 1 fmt=0020 | ]
+  spec compiler: same

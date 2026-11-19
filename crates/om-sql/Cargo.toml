@@ -1,0 +1,35 @@
+[package]
+name = "om-sql"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+rust-version.workspace = true
+description = "FileMaker's SQL engine (FQL): the ExecuteSQL grammar, name resolution, typing, execution and result text"
+
+[features]
+# A `SqlSource` and `CalcHost` over a local `.fmp12` file (tables, fields,
+# records, value lists, stored and unstored calculations), for tests and tools.
+fmp12 = ["dep:om-hbam", "dep:om-formula", "dep:om-scsu"]
+
+[dependencies]
+om-calc = { path = "../om-calc" }
+om-formula = { path = "../om-formula", optional = true }
+om-hbam = { path = "../om-hbam", optional = true }
+om-scsu = { path = "../om-scsu", optional = true }
+stacker = "0.1"
+
+[dev-dependencies]
+# The SHA-256 of results the vector catalog keeps only as a digest.
+om-crypto = { path = "../om-crypto" }
+om-formula = { path = "../om-formula" }
+
+[[test]]
+name = "vectors"
+required-features = ["fmp12"]
+
+[[example]]
+name = "sql_vectors"
+required-features = ["fmp12"]
+
+[lints]
+workspace = true

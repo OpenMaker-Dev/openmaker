@@ -1,0 +1,982 @@
+[
+  {
+    "id": "c001",
+    "expr": "1/3"
+  },
+  {
+    "id": "c002",
+    "expr": "2^0.5"
+  },
+  {
+    "id": "c003",
+    "expr": "10^400"
+  },
+  {
+    "id": "c004",
+    "expr": "SetPrecision(1/3;50)"
+  },
+  {
+    "id": "c005",
+    "expr": "\"abc12d3.4\" + 0"
+  },
+  {
+    "id": "c006",
+    "expr": "GetAsNumber(\"1e3\")"
+  },
+  {
+    "id": "c007",
+    "expr": "\"10\" < \"9\""
+  },
+  {
+    "id": "c008",
+    "expr": "10 < \"9\""
+  },
+  {
+    "id": "c009",
+    "expr": "Date(2;30;2024)"
+  },
+  {
+    "id": "c010",
+    "expr": "Time(25;0;0)"
+  },
+  {
+    "id": "c011",
+    "expr": "GetAsText(Timestamp(Date(1;1;2024);Time(1;2;3.5)))"
+  },
+  {
+    "id": "c012",
+    "expr": "Substitute(\"ababa\";[\"a\";\"b\"];[\"b\";\"c\"])"
+  },
+  {
+    "id": "c013",
+    "expr": "PatternCount(\"aAaAa\";\"aa\")"
+  },
+  {
+    "id": "c014",
+    "expr": "Position(\"abcabcabc\";\"abc\";9;-2)"
+  },
+  {
+    "id": "c015",
+    "expr": "Proper(\"mCDONALD o'BRIEN déjà VU\")"
+  },
+  {
+    "id": "c016",
+    "expr": "Trim(\"  a  b  \")"
+  },
+  {
+    "id": "c017",
+    "expr": "ValueCount(\"a¶b¶\")"
+  },
+  {
+    "id": "c018",
+    "expr": "GetValue(\"a¶b¶\";3)"
+  },
+  {
+    "id": "c019",
+    "expr": "JSONSetElement(\"{}\";[\"z\";1;JSONNumber];[\"a\";\"x¶y\";JSONString])"
+  },
+  {
+    "id": "c020",
+    "expr": "JSONFormatElements(\"{\\\"z\\\":1,\\\"a\\\":2}\")"
+  },
+  {
+    "id": "c021",
+    "expr": "JSONListKeys(\"{\\\"z\\\":1,\\\"a\\\":2}\";\"\")"
+  },
+  {
+    "id": "c022",
+    "expr": "1/0"
+  },
+  {
+    "id": "c023",
+    "expr": "Evaluate(\"1+\")"
+  },
+  {
+    "id": "c024",
+    "expr": "Let(x=1;y)"
+  },
+  {
+    "id": "c025",
+    "expr": "While([i=0;s=0];i<10;[i=i+1;s=s+i];s)"
+  },
+  {
+    "id": "c026",
+    "expr": "Let([x=2;y=x+1];x*y)"
+  },
+  {
+    "id": "c027",
+    "expr": "Case(0;1/0;1;42;99)"
+  },
+  {
+    "id": "c028",
+    "expr": "Choose(1;1/0;42;99)"
+  },
+  {
+    "id": "c029",
+    "expr": "If(1;42;1/0)"
+  },
+  {
+    "id": "c030",
+    "expr": "Get(ApplicationVersion)"
+  },
+  {
+    "id": "c031",
+    "expr": "\"tab\" & Char(9) & \"return\" & Char(13) & \"LF\" & Char(10) & \"😀\""
+  },
+  {
+    "id": "c032",
+    "expr": "-10/3"
+  },
+  {
+    "id": "c033",
+    "expr": "-10^2"
+  },
+  {
+    "id": "c034",
+    "expr": "Round(-10/7;4)"
+  },
+  {
+    "id": "c035",
+    "expr": "Mod(-10;3)"
+  },
+  {
+    "id": "c036",
+    "expr": "Div(-10;3)"
+  },
+  {
+    "id": "c037",
+    "expr": "Abs(-10)"
+  },
+  {
+    "id": "c038",
+    "expr": "Ceiling(-10/3)"
+  },
+  {
+    "id": "c039",
+    "expr": "Floor(-10/3)"
+  },
+  {
+    "id": "c040",
+    "expr": "-2/3"
+  },
+  {
+    "id": "c041",
+    "expr": "-2^2"
+  },
+  {
+    "id": "c042",
+    "expr": "Round(-2/7;4)"
+  },
+  {
+    "id": "c043",
+    "expr": "Mod(-2;3)"
+  },
+  {
+    "id": "c044",
+    "expr": "Div(-2;3)"
+  },
+  {
+    "id": "c045",
+    "expr": "Abs(-2)"
+  },
+  {
+    "id": "c046",
+    "expr": "Ceiling(-2/3)"
+  },
+  {
+    "id": "c047",
+    "expr": "Floor(-2/3)"
+  },
+  {
+    "id": "c048",
+    "expr": "-1/3"
+  },
+  {
+    "id": "c049",
+    "expr": "-1^2"
+  },
+  {
+    "id": "c050",
+    "expr": "Round(-1/7;4)"
+  },
+  {
+    "id": "c051",
+    "expr": "Mod(-1;3)"
+  },
+  {
+    "id": "c052",
+    "expr": "Div(-1;3)"
+  },
+  {
+    "id": "c053",
+    "expr": "Abs(-1)"
+  },
+  {
+    "id": "c054",
+    "expr": "Ceiling(-1/3)"
+  },
+  {
+    "id": "c055",
+    "expr": "Floor(-1/3)"
+  },
+  {
+    "id": "c056",
+    "expr": "0/3"
+  },
+  {
+    "id": "c057",
+    "expr": "0^2"
+  },
+  {
+    "id": "c058",
+    "expr": "Round(0/7;4)"
+  },
+  {
+    "id": "c059",
+    "expr": "Mod(0;3)"
+  },
+  {
+    "id": "c060",
+    "expr": "Div(0;3)"
+  },
+  {
+    "id": "c061",
+    "expr": "Abs(0)"
+  },
+  {
+    "id": "c062",
+    "expr": "Ceiling(0/3)"
+  },
+  {
+    "id": "c063",
+    "expr": "Floor(0/3)"
+  },
+  {
+    "id": "c064",
+    "expr": "1/3"
+  },
+  {
+    "id": "c065",
+    "expr": "1^2"
+  },
+  {
+    "id": "c066",
+    "expr": "Round(1/7;4)"
+  },
+  {
+    "id": "c067",
+    "expr": "Mod(1;3)"
+  },
+  {
+    "id": "c068",
+    "expr": "Div(1;3)"
+  },
+  {
+    "id": "c069",
+    "expr": "Abs(1)"
+  },
+  {
+    "id": "c070",
+    "expr": "Ceiling(1/3)"
+  },
+  {
+    "id": "c071",
+    "expr": "Floor(1/3)"
+  },
+  {
+    "id": "c072",
+    "expr": "2/3"
+  },
+  {
+    "id": "c073",
+    "expr": "2^2"
+  },
+  {
+    "id": "c074",
+    "expr": "Round(2/7;4)"
+  },
+  {
+    "id": "c075",
+    "expr": "Mod(2;3)"
+  },
+  {
+    "id": "c076",
+    "expr": "Div(2;3)"
+  },
+  {
+    "id": "c077",
+    "expr": "Abs(2)"
+  },
+  {
+    "id": "c078",
+    "expr": "Ceiling(2/3)"
+  },
+  {
+    "id": "c079",
+    "expr": "Floor(2/3)"
+  },
+  {
+    "id": "c080",
+    "expr": "3/3"
+  },
+  {
+    "id": "c081",
+    "expr": "3^2"
+  },
+  {
+    "id": "c082",
+    "expr": "Round(3/7;4)"
+  },
+  {
+    "id": "c083",
+    "expr": "Mod(3;3)"
+  },
+  {
+    "id": "c084",
+    "expr": "Div(3;3)"
+  },
+  {
+    "id": "c085",
+    "expr": "Abs(3)"
+  },
+  {
+    "id": "c086",
+    "expr": "Ceiling(3/3)"
+  },
+  {
+    "id": "c087",
+    "expr": "Floor(3/3)"
+  },
+  {
+    "id": "c088",
+    "expr": "9/3"
+  },
+  {
+    "id": "c089",
+    "expr": "9^2"
+  },
+  {
+    "id": "c090",
+    "expr": "Round(9/7;4)"
+  },
+  {
+    "id": "c091",
+    "expr": "Mod(9;3)"
+  },
+  {
+    "id": "c092",
+    "expr": "Div(9;3)"
+  },
+  {
+    "id": "c093",
+    "expr": "Abs(9)"
+  },
+  {
+    "id": "c094",
+    "expr": "Ceiling(9/3)"
+  },
+  {
+    "id": "c095",
+    "expr": "Floor(9/3)"
+  },
+  {
+    "id": "c096",
+    "expr": "10/3"
+  },
+  {
+    "id": "c097",
+    "expr": "10^2"
+  },
+  {
+    "id": "c098",
+    "expr": "Round(10/7;4)"
+  },
+  {
+    "id": "c099",
+    "expr": "Mod(10;3)"
+  },
+  {
+    "id": "c100",
+    "expr": "Div(10;3)"
+  },
+  {
+    "id": "c101",
+    "expr": "Abs(10)"
+  },
+  {
+    "id": "c102",
+    "expr": "Ceiling(10/3)"
+  },
+  {
+    "id": "c103",
+    "expr": "Floor(10/3)"
+  },
+  {
+    "id": "c104",
+    "expr": "100/3"
+  },
+  {
+    "id": "c105",
+    "expr": "100^2"
+  },
+  {
+    "id": "c106",
+    "expr": "Round(100/7;4)"
+  },
+  {
+    "id": "c107",
+    "expr": "Mod(100;3)"
+  },
+  {
+    "id": "c108",
+    "expr": "Div(100;3)"
+  },
+  {
+    "id": "c109",
+    "expr": "Abs(100)"
+  },
+  {
+    "id": "c110",
+    "expr": "Ceiling(100/3)"
+  },
+  {
+    "id": "c111",
+    "expr": "Floor(100/3)"
+  },
+  {
+    "id": "c112",
+    "expr": "Length(\"\")"
+  },
+  {
+    "id": "c113",
+    "expr": "ValueCount(\"\")"
+  },
+  {
+    "id": "c114",
+    "expr": "Trim(\"\")"
+  },
+  {
+    "id": "c115",
+    "expr": "Left(\"\";2)"
+  },
+  {
+    "id": "c116",
+    "expr": "Right(\"\";2)"
+  },
+  {
+    "id": "c117",
+    "expr": "Middle(\"\";0;2)"
+  },
+  {
+    "id": "c118",
+    "expr": "GetValue(\"\";-1)"
+  },
+  {
+    "id": "c119",
+    "expr": "GetValue(\"\";1)"
+  },
+  {
+    "id": "c120",
+    "expr": "GetValue(\"\";2)"
+  },
+  {
+    "id": "c121",
+    "expr": "GetValue(\"\";3)"
+  },
+  {
+    "id": "c122",
+    "expr": "Length(\"a\")"
+  },
+  {
+    "id": "c123",
+    "expr": "ValueCount(\"a\")"
+  },
+  {
+    "id": "c124",
+    "expr": "Trim(\"a\")"
+  },
+  {
+    "id": "c125",
+    "expr": "Left(\"a\";2)"
+  },
+  {
+    "id": "c126",
+    "expr": "Right(\"a\";2)"
+  },
+  {
+    "id": "c127",
+    "expr": "Middle(\"a\";0;2)"
+  },
+  {
+    "id": "c128",
+    "expr": "GetValue(\"a\";-1)"
+  },
+  {
+    "id": "c129",
+    "expr": "GetValue(\"a\";1)"
+  },
+  {
+    "id": "c130",
+    "expr": "GetValue(\"a\";2)"
+  },
+  {
+    "id": "c131",
+    "expr": "GetValue(\"a\";3)"
+  },
+  {
+    "id": "c132",
+    "expr": "Length(\"a¶b¶\")"
+  },
+  {
+    "id": "c133",
+    "expr": "ValueCount(\"a¶b¶\")"
+  },
+  {
+    "id": "c134",
+    "expr": "Trim(\"a¶b¶\")"
+  },
+  {
+    "id": "c135",
+    "expr": "Left(\"a¶b¶\";2)"
+  },
+  {
+    "id": "c136",
+    "expr": "Right(\"a¶b¶\";2)"
+  },
+  {
+    "id": "c137",
+    "expr": "Middle(\"a¶b¶\";0;2)"
+  },
+  {
+    "id": "c138",
+    "expr": "GetValue(\"a¶b¶\";-1)"
+  },
+  {
+    "id": "c139",
+    "expr": "GetValue(\"a¶b¶\";1)"
+  },
+  {
+    "id": "c140",
+    "expr": "GetValue(\"a¶b¶\";2)"
+  },
+  {
+    "id": "c141",
+    "expr": "GetValue(\"a¶b¶\";3)"
+  },
+  {
+    "id": "c142",
+    "expr": "Length(\"a¶¶b\")"
+  },
+  {
+    "id": "c143",
+    "expr": "ValueCount(\"a¶¶b\")"
+  },
+  {
+    "id": "c144",
+    "expr": "Trim(\"a¶¶b\")"
+  },
+  {
+    "id": "c145",
+    "expr": "Left(\"a¶¶b\";2)"
+  },
+  {
+    "id": "c146",
+    "expr": "Right(\"a¶¶b\";2)"
+  },
+  {
+    "id": "c147",
+    "expr": "Middle(\"a¶¶b\";0;2)"
+  },
+  {
+    "id": "c148",
+    "expr": "GetValue(\"a¶¶b\";-1)"
+  },
+  {
+    "id": "c149",
+    "expr": "GetValue(\"a¶¶b\";1)"
+  },
+  {
+    "id": "c150",
+    "expr": "GetValue(\"a¶¶b\";2)"
+  },
+  {
+    "id": "c151",
+    "expr": "GetValue(\"a¶¶b\";3)"
+  },
+  {
+    "id": "c152",
+    "expr": "Length(\"  abc  \")"
+  },
+  {
+    "id": "c153",
+    "expr": "ValueCount(\"  abc  \")"
+  },
+  {
+    "id": "c154",
+    "expr": "Trim(\"  abc  \")"
+  },
+  {
+    "id": "c155",
+    "expr": "Left(\"  abc  \";2)"
+  },
+  {
+    "id": "c156",
+    "expr": "Right(\"  abc  \";2)"
+  },
+  {
+    "id": "c157",
+    "expr": "Middle(\"  abc  \";0;2)"
+  },
+  {
+    "id": "c158",
+    "expr": "GetValue(\"  abc  \";-1)"
+  },
+  {
+    "id": "c159",
+    "expr": "GetValue(\"  abc  \";1)"
+  },
+  {
+    "id": "c160",
+    "expr": "GetValue(\"  abc  \";2)"
+  },
+  {
+    "id": "c161",
+    "expr": "GetValue(\"  abc  \";3)"
+  },
+  {
+    "id": "c162",
+    "expr": "Length(\"é😀\")"
+  },
+  {
+    "id": "c163",
+    "expr": "ValueCount(\"é😀\")"
+  },
+  {
+    "id": "c164",
+    "expr": "Trim(\"é😀\")"
+  },
+  {
+    "id": "c165",
+    "expr": "Left(\"é😀\";2)"
+  },
+  {
+    "id": "c166",
+    "expr": "Right(\"é😀\";2)"
+  },
+  {
+    "id": "c167",
+    "expr": "Middle(\"é😀\";0;2)"
+  },
+  {
+    "id": "c168",
+    "expr": "GetValue(\"é😀\";-1)"
+  },
+  {
+    "id": "c169",
+    "expr": "GetValue(\"é😀\";1)"
+  },
+  {
+    "id": "c170",
+    "expr": "GetValue(\"é😀\";2)"
+  },
+  {
+    "id": "c171",
+    "expr": "GetValue(\"é😀\";3)"
+  },
+  {
+    "id": "c172",
+    "expr": "GetAsNumber(\"1,234.56\")"
+  },
+  {
+    "id": "c173",
+    "expr": "GetAsDate(\"1,234.56\")"
+  },
+  {
+    "id": "c174",
+    "expr": "GetAsTime(\"1,234.56\")"
+  },
+  {
+    "id": "c175",
+    "expr": "GetAsNumber(\"-12.3e-4\")"
+  },
+  {
+    "id": "c176",
+    "expr": "GetAsDate(\"-12.3e-4\")"
+  },
+  {
+    "id": "c177",
+    "expr": "GetAsTime(\"-12.3e-4\")"
+  },
+  {
+    "id": "c178",
+    "expr": "GetAsNumber(\"abc12d3.4\")"
+  },
+  {
+    "id": "c179",
+    "expr": "GetAsDate(\"abc12d3.4\")"
+  },
+  {
+    "id": "c180",
+    "expr": "GetAsTime(\"abc12d3.4\")"
+  },
+  {
+    "id": "c181",
+    "expr": "GetAsNumber(\"1e3\")"
+  },
+  {
+    "id": "c182",
+    "expr": "GetAsDate(\"1e3\")"
+  },
+  {
+    "id": "c183",
+    "expr": "GetAsTime(\"1e3\")"
+  },
+  {
+    "id": "c184",
+    "expr": "GetAsNumber(\".5\")"
+  },
+  {
+    "id": "c185",
+    "expr": "GetAsDate(\".5\")"
+  },
+  {
+    "id": "c186",
+    "expr": "GetAsTime(\".5\")"
+  },
+  {
+    "id": "c187",
+    "expr": "GetAsNumber(\"\")"
+  },
+  {
+    "id": "c188",
+    "expr": "GetAsDate(\"\")"
+  },
+  {
+    "id": "c189",
+    "expr": "GetAsTime(\"\")"
+  },
+  {
+    "id": "c190",
+    "expr": "GetAsNumber(\"?\")"
+  },
+  {
+    "id": "c191",
+    "expr": "GetAsDate(\"?\")"
+  },
+  {
+    "id": "c192",
+    "expr": "GetAsTime(\"?\")"
+  },
+  {
+    "id": "c193",
+    "expr": "GetAsNumber(\"1/2/2024\")"
+  },
+  {
+    "id": "c194",
+    "expr": "GetAsDate(\"1/2/2024\")"
+  },
+  {
+    "id": "c195",
+    "expr": "GetAsTime(\"1/2/2024\")"
+  },
+  {
+    "id": "c196",
+    "expr": "10 = \"9\""
+  },
+  {
+    "id": "c197",
+    "expr": "10 ≠ \"9\""
+  },
+  {
+    "id": "c198",
+    "expr": "10 < \"9\""
+  },
+  {
+    "id": "c199",
+    "expr": "10 > \"9\""
+  },
+  {
+    "id": "c200",
+    "expr": "10 ≤ \"9\""
+  },
+  {
+    "id": "c201",
+    "expr": "10 ≥ \"9\""
+  },
+  {
+    "id": "c202",
+    "expr": "\"10\" = \"9\""
+  },
+  {
+    "id": "c203",
+    "expr": "\"10\" ≠ \"9\""
+  },
+  {
+    "id": "c204",
+    "expr": "\"10\" < \"9\""
+  },
+  {
+    "id": "c205",
+    "expr": "\"10\" > \"9\""
+  },
+  {
+    "id": "c206",
+    "expr": "\"10\" ≤ \"9\""
+  },
+  {
+    "id": "c207",
+    "expr": "\"10\" ≥ \"9\""
+  },
+  {
+    "id": "c208",
+    "expr": "0 = \"\""
+  },
+  {
+    "id": "c209",
+    "expr": "0 ≠ \"\""
+  },
+  {
+    "id": "c210",
+    "expr": "0 < \"\""
+  },
+  {
+    "id": "c211",
+    "expr": "0 > \"\""
+  },
+  {
+    "id": "c212",
+    "expr": "0 ≤ \"\""
+  },
+  {
+    "id": "c213",
+    "expr": "0 ≥ \"\""
+  },
+  {
+    "id": "c214",
+    "expr": "\"a\" = \"A\""
+  },
+  {
+    "id": "c215",
+    "expr": "\"a\" ≠ \"A\""
+  },
+  {
+    "id": "c216",
+    "expr": "\"a\" < \"A\""
+  },
+  {
+    "id": "c217",
+    "expr": "\"a\" > \"A\""
+  },
+  {
+    "id": "c218",
+    "expr": "\"a\" ≤ \"A\""
+  },
+  {
+    "id": "c219",
+    "expr": "\"a\" ≥ \"A\""
+  },
+  {
+    "id": "c220",
+    "expr": "\"é\" = \"e\""
+  },
+  {
+    "id": "c221",
+    "expr": "\"é\" ≠ \"e\""
+  },
+  {
+    "id": "c222",
+    "expr": "\"é\" < \"e\""
+  },
+  {
+    "id": "c223",
+    "expr": "\"é\" > \"e\""
+  },
+  {
+    "id": "c224",
+    "expr": "\"é\" ≤ \"e\""
+  },
+  {
+    "id": "c225",
+    "expr": "\"é\" ≥ \"e\""
+  },
+  {
+    "id": "c226",
+    "expr": "Date(0;1;2024)"
+  },
+  {
+    "id": "c227",
+    "expr": "Date(13;1;2024)"
+  },
+  {
+    "id": "c228",
+    "expr": "Date(2;29;2023)"
+  },
+  {
+    "id": "c229",
+    "expr": "Date(1;0;2024)"
+  },
+  {
+    "id": "c230",
+    "expr": "Time(-1;0;0)"
+  },
+  {
+    "id": "c231",
+    "expr": "Time(0;0;0.1234567)"
+  },
+  {
+    "id": "c232",
+    "expr": "Time(0;61;0)"
+  },
+  {
+    "id": "c233",
+    "expr": "If(0;1/0;7)"
+  },
+  {
+    "id": "c234",
+    "expr": "Choose(-1;10;20)"
+  },
+  {
+    "id": "c235",
+    "expr": "Choose(9;10;20)"
+  },
+  {
+    "id": "c236",
+    "expr": "Case(0;1;0;2)"
+  },
+  {
+    "id": "c237",
+    "expr": "Let([x=1;x=x+1];x)"
+  },
+  {
+    "id": "c238",
+    "expr": "While([i=0];i<0;[i=i+1];i)"
+  },
+  {
+    "id": "c239",
+    "expr": "EvaluationError(Evaluate(\"1+\"))"
+  },
+  {
+    "id": "c240",
+    "expr": "JSONGetElement(\"null\";\"\")"
+  },
+  {
+    "id": "c241",
+    "expr": "JSONGetElement(\"true\";\"\")"
+  },
+  {
+    "id": "c242",
+    "expr": "JSONGetElement(\"{}\";\"missing\")"
+  },
+  {
+    "id": "c243",
+    "expr": "JSONFormatElements(\"[1,2,3]\")"
+  },
+  {
+    "id": "c244",
+    "expr": "Position(\"abcabc\";\"abc\";1;0)"
+  },
+  {
+    "id": "c245",
+    "expr": "PatternCount(\"aaaa\";\"aa\")"
+  }
+]

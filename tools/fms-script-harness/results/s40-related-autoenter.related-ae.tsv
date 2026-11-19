@@ -1,0 +1,46 @@
+# scan probe: open 0 load 0 scan 0 commit 0; index:id=value (0-based): 0:6=5 1:7=0 2:76=0 3:75=0 4:141=0 5:76=0 6:75=0 7:141=0 8:76=0 9:75=0 10:141=0 11:76=0 12:75=0 13:141=0 14:76=0 15:75=0 16:141=0 17:76=0 18:75=0 19:141=0 20:76=0 21:75=0 22:141=0 23:76=0 24:76=0 25:75=0 26:141=0 27:103=0
+# scan valid: open 0 load 0 scan 0 commit 0; index:id=value (0-based): 0:6=5 1:7=0 2:76=0 3:76=0 4:75=0 5:141=0 6:76=0 7:75=0 8:141=0 9:76=0 10:75=0 11:103=0
+# scan: close 13
+probe		0	1 key K1 /\r2 related made /\r3 other field /\r4 same key 555/555\r5 key K2 /555\r6 key K1 555/555\r7 related 777 555/555\r8 key K2 then K1 777/555	0
+>	1	probe	1	6	0	0	0	0
+>	1	probe	2	7	0	0	0	0
+>	1	probe	3	76	0	0	0	0
+>	1	probe	4	75	0	0	0	0
+>	1	probe	5	141	0	0	0	0
+>	1	probe	6	76	0	0	0	0
+>	1	probe	7	75	0	0	0	0
+>	1	probe	8	141	0	0	0	0
+>	1	probe	9	76	0	0	0	0
+>	1	probe	10	75	0	0	0	0
+>	1	probe	11	141	0	0	0	0
+>	1	probe	12	76	0	0	0	0
+>	1	probe	13	75	0	0	0	0
+>	1	probe	14	141	0	0	0	0
+>	1	probe	15	76	0	0	0	0
+>	1	probe	16	75	0	0	0	0
+>	1	probe	17	141	0	0	0	0
+>	1	probe	18	76	0	0	0	0
+>	1	probe	19	75	0	0	0	0
+>	1	probe	20	141	0	0	0	0
+>	1	probe	21	76	0	0	0	0
+>	1	probe	22	75	0	0	0	0
+>	1	probe	23	141	0	0	0	0
+>	1	probe	24	76	0	0	0	0
+>	1	probe	25	76	0	0	0	0
+>	1	probe	26	75	0	0	0	0
+>	1	probe	27	141	0	0	0	0
+>	1	probe	28	103	0	0	1	0
+valid		0	no related 507 related made 0 then V1 0 V1=w	0
+>	1	valid	1	6	0	0	0	0
+>	1	valid	2	7	0	0	0	0
+>	1	valid	3	76	0	0	0	0
+>	1	valid	4	76	0	0	0	0
+!	1	work : valid : 5 : Commit Records/Requests
+>	1	valid	5	75	1	0	0	507
+>	1	valid	6	141	0	0	0	0
+>	1	valid	7	76	0	0	0	0
+>	1	valid	8	75	0	0	0	0
+>	1	valid	9	141	0	0	0	0
+>	1	valid	10	76	0	0	0	0
+>	1	valid	11	75	0	0	0	0
+>	1	valid	12	103	0	0	1	0

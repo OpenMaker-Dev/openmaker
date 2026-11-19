@@ -1,0 +1,14 @@
+# scan acct probe: open 0 load 0 scan 0 commit 0; index:id=value (0-based): 0:103=0
+# scan: close 13
+# @account Admin
+acct probe		0	acct probe	0	Admin	[Full Access]	[Full Access]	fmreauthenticate10	fmreauthenticate10	2	2	FileMaker File
+>	1	acct probe	1	103	0	0	1	0
+# @account Entry
+acct probe		0	acct probe	0	Entry	[Data Entry Only]	[Data Entry Only]	fmapp\rfmreauthenticate10\rfmrest	fmapp\rfmreauthenticate10\rfmrest	2	2	FileMaker File
+>	1	acct probe	1	103	0	0	1	0
+# @account Viewer
+acct probe		0	acct probe	0	Viewer	[Read-Only Access]	[Read-Only Access]	fmreauthenticate10	fmreauthenticate10	2	1	FileMaker File
+>	1	acct probe	1	103	0	0	1	0
+# @account Prober
+acct probe		0	acct probe	0	Prober	Probe Set	Probe Set	fmrest\rfmxml	fmrest\rfmxml	2	2	FileMaker File
+>	1	acct probe	1	103	0	0	1	0

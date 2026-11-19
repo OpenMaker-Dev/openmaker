@@ -1,0 +1,589 @@
+# Field auto-entry and validation metadata
+
+Status: metadata recognition is implemented in `om-hbam::FieldOptions`;
+`om_data::rules` (used by `om-provider` and by OpenMaker Server's scripts)
+evaluates auto-entry, stored calculations and validation for native
+creation and text updates with `om-calc`. It supports
+auto-enter calculations and stored calculations of any result type but
+container (recomputed when a field they read changes, honoring "do not
+evaluate if all referenced fields are empty", option `0x20`), clock, account,
+user and UUID `Get` selectors, constants (`0d`), account and date/time audit
+variables, required values, maximum length, validation by calculation with
+the field's message, and uniqueness of text fields. Contacts' actual stored
+Initial formula is decoded from its compiled stream without field-name
+special cases. Lookups are performed only in the exact-match form below
+(Lookups); serial numbers as below (Serial numbers), reserved on the host.
+Other lookups, entry from the last visited record, related, global,
+container, summary and unstored-calculation dependencies, plug-in
+functions, custom functions that read fields and dependency cycles fail
+preflight (docs/record-writes.md, Limits).
+
+The provider preserves creation metadata on updates, refreshes modification
+variables, checks unique values with the server under a lock on the field's
+index (write-path.md 1.3), uploads the complete record, commits it and verifies
+generated values and the modification count by reading the record back.
+Local dates/timestamps use the observed US storage form; user-name variables
+use the desktop's user name (Settings' User Name, calc-functions.md 6.1.3),
+separately from the authenticated account. Full locale, expression and validation coverage remains
+incomplete. The static observations below supplied the implementation boundary.
+
+## Evidence boundary
+
+Read-only corroboration used the user's local `test project.fmp12` capture
+copy. Static evidence comes from the installed FileMaker Pro 26.0.3.307 arm64
+frameworks, before ASLR:
+
+| Thin image | SHA-256 |
+| --- | --- |
+| DBEngine | `43ddff25a568fe3843b1aaadf4f295ca1c1a20c87ce91add75b990f0175bdb61` |
+| FMEngine | `a134427e0d7294403c1e0a903a12ab02b3ea665f28ee11bfa6f137efd7e80921` |
+
+Focused LLVM disassembly and exported symbols supplied these observations.
+The shared REA large-image Ghidra startup timed out, so this investigation has
+no REA Evidence IDs. None of the observations below are a successful native
+write or a demonstration of the server's behavior after a raw op70 commit.
+
+## Auto-entered calculations reading their own field
+
+Claris's [Self reference](https://help.claris.com/en/pro-help/content/self.html)
+says that `Self` returns the associated object's content and is allowed in
+field auto-enter calculations. Its [automatic entry help](https://help.claris.com/en/pro-help/content/automatic-data-entry.html)
+describes self-modifying auto-entry with replacement enabled.
+
+**Inference (#1156):** a named reference to the auto-entered field itself
+reads its current value, just as `Self` does, rather than forming a stored
+calculation cycle. Keep this reference for change triggers and the
+"all referenced fields are empty" guard; omit only its ordering edge.
+An explicit change to that field can therefore evaluate its replacement
+formula once, using the entered value. A stored calculation referencing
+itself, or a dependency cycle involving different fields, is outside this
+inference and remains refused. Native timing and the named-reference
+substitution have not been measured for this slice.
+
+## Fixed field definition
+
+The definition is at `<base-table>/3/5/<field>/2`. The decoder accepts exactly
+26 bytes and preserves all of them. `DBField::FieldDefinition::Read`
+(`0x17e7eb4`) reads the structure and byte-swaps the five words at offsets
+4, 8, 12, 16 and 20 and the final halfword at 24. `Write` (`0x17e7f54`) reverses
+that transformation. Bytes 0..3 are not swapped.
+
+| Offset | Size | Meaning |
+| --- | ---: | --- |
+| 0 | 1 | Field kind: normal 1, calculation 2, summary 3 |
+| 1 | 1 | Data type, using the existing `DataType` identifiers |
+| 2 | 1 | Opaque |
+| 3 | 1 | Selected `EntryVariable`; it is active only with option bit 0 |
+| 4 | 4 | Big-endian index-language identifier; retained raw |
+| 8 | 4 | Big-endian option word |
+| 12 | 4 | Big-endian validation word |
+| 16, 20 | 4 each | Opaque |
+| 24 | 2 | Big-endian maximum repetitions |
+
+`SetOptions` (`0x17ead9c`), `SetValidationOptions` (`0x17eb1a4`),
+`SetEntryVariable` (`0x17eb1d4`), and `GetIndexLanguage` (`0x17eacac`)
+independently confirm their offsets.
+
+For normal fields, the supported option masks are:
+
+| Mask | Meaning | Static evidence |
+| --- | --- | --- |
+| `0x1` | Auto-enter selected variable | `AutoEnterData`, `0x17552c4` |
+| `0x2` | Auto-enter serial | Same; `DoAutoEnterSerial`, `0x175598c` |
+| `0x4` | Auto-enter constant | Same; FMEngine XML attribute `constant` |
+| `0x8` | Auto-enter calculation | Same; XML attribute `calculation` at `0x2eb04` |
+| `0x80` | Calculation replaces an existing value | Existing-value guard at `0x17555d0`; XML `overwriteExistingValue` at `0x2ec18` |
+| `0x100` | Prohibit editing auto-entered value | XML `allowEditing` is the inverse at `0x2ecec` |
+| `0x10` | Auto-enter the value from the last visited record | FileMaker Pro 26's own save (schema-path.md 5.9, E30) |
+| `0x200` | Auto-enter serial generated on commit, set instead of `0x2` | FileMaker Pro 26's own save (schema-path.md 5.9, E41) |
+
+The validation word masks `0x4`, `0x8`, `0x10` correspond to XML children
+`StrictValidation`, `NotEmpty`, `Unique`, respectively, in
+`XMLField::GetValidationNode` (`0x2f2dc`, `0x2f0fc`, `0x2f150`). Other bits
+remain raw. In particular, timestamp validation `0x2000` is not interpreted.
+These flags describe requirements; recognizing them does not perform them.
+
+## Index bits
+
+schema-path.md 5.5 names the option word's index bits: `0x80000000` value
+index, `0x20000000` word index, `0x10000000` and `0x08000000` their relaxed
+forms, `0x40000000` prevent index. The files agree [O]: `0x80000000` is set
+exactly when the field has a value index (`<table>/1/<field>` holds its counts
+leaf `0x10`), `0x20000000` exactly when it has a word index (leaf `0x11`);
+query-program.md 7.1 describes both indexes. Checked on all 4,750 fields of
+test project and the 132 `.fmp12` files shipped with FileMaker Pro and
+FileMaker Server (templates and samples), with no exception. No shipped file
+sets any other bit of the top byte. FileMaker Server sets the bits when it
+builds an index on demand (query-program.md 7.1); they do not change entry or
+calculation behavior. `0x40000000` ("Automatically create indexes as needed"
+off, schema-path.md E38) is set in a solution FileMaker Server hosts, whose
+data entry is in production use, on four fields of one table: two
+auto-entered calculations (`0xc0000008`) and the modification date and time
+(`0x40000001`) [O, #994]. That it changes nothing but indexing is [I] from
+its name and E38; OpenMaker's record planner reads it as an index bit, and
+reads whether a field has a value index from `0x80000000` alone. Bytes 4..7 hold the index language (query-program.md
+7.2): 21 (English) in test project and the English templates; each localized
+template uses its own (20, 24, 25, 30, 31, 34, 39, 41, 45 or 76).
+
+For a nonglobal calculation field, option `0x20000` disables stored calculation
+results: `XMLField::GetStorageNode` tests kind 2, excludes global fields, and
+exports `storeCalculationResults` as the inverse of this bit at `0x2f898`.
+Contacts::Initial has kind 2 and option word 0, so its result is stored.
+
+`0x80` (`kOverwriteExisting`, the auto-entry "replace existing value" bit)
+is set on an unstored Date calculation (`0x00060080`) in a solution FileMaker
+Server hosts, in production use [O, PM relay, sanitized]. No other
+calculation field carries it: none of the 110 in the 66 `.fmp12` files
+FileMaker Pro 26 for macOS ships, nor the 402 in the maintainer's other test
+files [O]. It has no
+auto-entry for it to qualify; that it is left over from an earlier
+definition of the field, and changes nothing, is [I]. What FileMaker Pro's
+dialogs show for it is unmeasured.
+
+## Built-in variables and Get() expressions
+
+| Byte 3 | Variable | Byte 3 | Variable |
+| ---: | --- | ---: | --- |
+| 0 | Creation date | 5 | Modification date |
+| 1 | Creation time | 6 | Modification time |
+| 2 | Creation timestamp | 7 | Modification timestamp |
+| 3 | Creation user name | 8 | Modification user name |
+| 4 | Creation account name | 9 | Modification account name |
+
+`DBDependencyList::DoAutoEnterVariable` (`0x1755b18`) selects these pairs and
+requests `kDBCurrentDateOp`, `kDBCurrentTimeOp`, `kDBLocalTimeStampOp`,
+`kDBUserNameOp`, or `kDBAccountNameOp` from the expression environment. Account
+name and user name are distinct variables. The table describes the selected
+variable; it does not establish when creation and modification defaults are
+scheduled, including initialization of modification fields on creation.
+
+In this file, a field calculation subtree is `<base-table>/3/5/<field>/5`.
+Child 4 contains its context, child 5 the formatted stream and child 6 the
+unformatted stream. `DBGetFunction::WriteAsPolish` (`0x16c6930`) writes
+opcode `9b` followed by a one-byte selector. `DBCalcSolver::SolveGetFunction`
+(`0x17032c8`) reads that byte, adds 1000 and requests the corresponding value
+from the expression environment. `DBCalcScan::LoadGetFunctionRow`
+(`0x1a54934`) maps the same selector to DBResource131; the names are in
+[`catalogs/get-selectors.csv`](catalogs/get-selectors.csv).
+
+| Unformatted bytes | Expression |
+| --- | --- |
+| `9b 02` | `Get(CurrentDate)` |
+| `9b 1d` | `Get(CurrentTime)` |
+| `9b 1f` | `Get(UserName)` |
+| `9b 20` | `Get(AccountName)` |
+| `9b 3e` | `Get(ScriptParameter)` |
+| `9b 3f` | `Get(CurrentTimestamp)` |
+| `9b 65` | `Get(UUID)` |
+
+`SimpleGetSelector` recognizes only an entire two-byte expression. A longer
+calculation beginning with those bytes is not classified as a simple Get().
+Unknown selectors stay explicit. The parser does not generate UUIDs, convert
+timestamps, execute formulas, or interpret the formatted source stream.
+
+## Actual Contacts requirements
+
+Contacts is base table `0x8002`. All fields below have one repetition.
+
+| ID | Field | Options | Validation | Generated value |
+| ---: | --- | --- | --- | --- |
+| 8 | Initial | `0` | `0` | Stored calculation of names; not auto-entry |
+| 9 | PrimaryKey | `0x80000188` | `0x1c` | Auto-entry calculation `Get(UUID)` |
+| 10 | CreatedBy | `0x101` | `0xc` | Variable 4, creation account name |
+| 11 | ModifiedBy | `0x101` | `0xc` | Variable 9, modification account name |
+| 12 | CreationTimestamp | `0x101` | `0x200c` | Variable 2, creation timestamp |
+| 13 | ModificationTimestamp | `0x101` | `0x200c` | Variable 7, modification timestamp |
+
+All five fields 9..13 prohibit manual editing and require nonempty values with
+strict validation. PrimaryKey also requires uniqueness. Its complete
+unformatted calculation is exactly `9b 65`; context child 4 is `03 d0 00 02`.
+The formatted stream is 20 bytes and must not be confused with that two-byte
+code. The high option bit in PrimaryKey is preserved, not treated as an
+auto-entry flag. Fields 1..7 have none of the four supported auto-entry modes.
+
+## Lookups
+
+Option `0x400` auto-enters a looked-up value. Its definition is the
+field member's `08` (schema-path.md 5.5): the occurrence the lookup
+starts from, the occurrence it looks up from and the field it copies,
+and "don't copy contents if empty".
+
+**Calculated match fields (#1194).** Claris's primary
+[relationship help](https://help.claris.com/en/pro-help/content/relationships.html)
+allows calculation results as match fields and requires the related-side
+match field to be indexable. Its
+[Relookup Field Contents help](https://help.claris.com/en/pro-help/content/relookup-field-contents.html)
+says that, when the matching value is calculated, a relookup targets an
+editable input of that calculation. This documents calculated matching,
+not the timing of automatic lookups during creation or an input edit.
+
+**Observed, bounded local case (#1194):** in FileMaker Pro 26.0.3, one
+new record in a two-table fixture used stored Text calculation match
+fields with option word `0xa0000020`. After an input field lost focus,
+the key and looked-up Text changed to the uniquely matching payload,
+first for one input value and then for its replacement. While the
+replacement was still focused, the previous key and copied value remained
+visible. The second field exit updated both before one deliberate blank
+layout click. The closed source contained the replacement key and payload;
+the target's entire active branch and field/layout/hook definitions were
+byte-identical. The private result, raw delta and screenshots are sealed
+by manifest `e609e98b5116b5192630a2839bdf4ae489a4318b77354d3e5809f51cd81b5011`.
+
+**Inference and limits:** OpenMaker orders the copied field after the
+calculated key and its consumers after the copy. A missing or deferred
+key is not an empty match value. The native case does not isolate any
+implicit commit during field exit or establish same-value input writes,
+hosted behavior, general related calculations, or keys with option
+`0xa0000000` and all inputs empty. Those conditions remain unmeasured;
+the C126 aggregate observations do not establish them. A private read-only
+complete-table planning check established a source-key type refusal,
+not runtime creation or successful lookups in that application.
+
+What FileMaker Pro 26.0.3.307 does [O, local, one A record over two B
+records, `A::k = B::k`, both lookups "if no exact match: do not copy"]:
+
+| A::k becomes | empty OFF | empty ON |
+|---|---|---|
+| a key B holds with `x` = `COPIED_VALUE` (new A record) | `COPIED_VALUE` | `COPIED_VALUE` |
+| a key no B record holds, after both were typed over by hand | the typed value | the typed value |
+| a key B holds with an empty `x` | empty | the typed value |
+
+- The copy is made when the match field gets its new value: the value is
+  visible once Tab leaves the field, before the commit, and stays after
+  the commit and after closing and reopening the file.
+- The copied value replaces what the field held, including a value typed
+  by hand. With no matching record, "do not copy" leaves the field as it
+  is.
+- With a matching record whose value is empty, the lookup copies the
+  empty value, unless "don't copy contents if empty" is on.
+- The dialog says the lookup "will copy the value from the first matching
+  related record in the table" [O, dialog text]. Through a sorted
+  relationship that is the first in its sort order (s42, below); which
+  record is first through an unsorted one is not measured.
+
+**From a parent table** [O-run: script harness battery s41 on contacts-en
+with Contacts::L2 added by FMUpgradeTool, looked up from
+`Phone Numbers::Number` starting from Contacts, "Do not copy", "Don't copy
+contents if empty" off; Contacts::PrimaryKey, an auto-entered and
+replacing `Get ( UUID )`, = Phone Numbers::ForeignKey, creation allowed on
+the Phone Numbers side]. Each step is Set Field and Commit Records in one
+Contacts record:
+
+| step | L2 after it |
+|---|---|
+| new record, PrimaryKey auto-entered, nothing related | empty |
+| a related record made through the relationship, Number "555" | empty |
+| First Name set (not a match field) | empty |
+| PrimaryKey set to its own value | `555` |
+| L2 typed over with "typed" | `typed` |
+| PrimaryKey set to its own value | `555` |
+
+- FileMaker Server's engine performs the lookup when the starting match
+  field is set, as from a child table, even to the value it had. Making
+  a related record does not perform it. The calculated values of
+  "Calculations over related fields" below behave the same.
+- So a lookup keyed on a parent's auto-entered `Get ( UUID )` is performed
+  when the record is created. Nothing can match a new key, so it copies
+  nothing, and it is performed again only when the key is set again.
+
+**Through a sorted relationship** [O-run: script harness battery s42 on
+assets-en with Assets::LA added by FMUpgradeTool, looked up from
+`Assignments::Note` starting from Assets, "Do not copy"; the starter's
+relationship Assets::PrimaryKey = Assignments::AssetForeignKey, sorted by
+Assignments::Sort By descending (`If ( IsEmpty ( Date Returned ) ;
+1/1/2099 ; Date Returned )`), creation allowed on the Assignments side].
+Two assignments are made for one asset, one returned on 1/1/2020 and one
+not returned, and then the asset's key is set to its own value:
+
+| made first | made second | first in the sort | LA after the key is set |
+|---|---|---|---|
+| `first` (returned) | `second` (not returned) | `second` | `second` |
+| `early` (not returned) | `late` (returned) | `early` | `early` |
+
+- The lookup copies the first related record in the relationship's sort
+  order, whichever was made first.
+- Neither related record made performs the lookup; setting the key does,
+  as in s41.
+
+**Other data types** [O-run: script harness battery s43 on assets-en
+with, added by FMUpgradeTool, Assets::AT (Time) and eight Assignments
+lookups from Assets through the starter's relationship, "Do not copy",
+"Don't copy contents if empty" off]. Each asset gets one assignment made
+through the relationship, which sets its foreign key and performs the
+lookups; the values are then read through it:
+
+| lookup | from | asset 1 | asset 2 |
+|---|---|---|---|
+| LN, Number | Price (Number) | `12.50` (+1: 13.5) | `7 units` (+1: 8) |
+| LD, Date | Purchase Date | `1/2/2020` (+1: 1/3/2020) | empty |
+| LT, Time | AT (Time) | `13:45:30` (+60: 13:46:30) | empty |
+| LTS, Timestamp | CreationTimestamp | the asset's own | |
+| LXN, Text | Price | `12.50` (length 5) | `7 units` |
+| LXD, Text | Purchase Date | `1/2/2020` | |
+| LNT, Number | Name | `Widget 42` (+1: 43) | `1/2/2020` (+1: 122021) |
+| LDT, Date | Name | `Widget 42` (+1: 1/1/0001) | `1/2/2020` (+1: 1/3/2020) |
+
+- A lookup copies the related field's stored text as it is, whatever the
+  two fields' types: a price entered as `12.50` stays `12.50`, not the
+  number 12.5, and a date copied into a text field is its stored text.
+- The target keeps text that is not of its type ("Widget 42" in a date
+  field, "7 units" in a number field) and reads it as its type does
+  elsewhere: the number of its digits, an invalid date. No validation or
+  data-entry conversion is applied.
+- An empty related value is copied as empty (asset 2's date and time).
+
+Not measured: scripts (Set Field) and imports in FileMaker Pro, which of
+several matching records an unsorted relationship gives, container
+fields, Relookup Field Contents, and the next lower or higher value or a
+constant.
+
+## Calculations over related fields
+
+**Stored calculated match fields (#1204).** Claris's
+[relationship help](https://help.claris.com/en/pro-help/content/relationships.html)
+permits calculated match values. A private complete-table static planning
+check independently established a local kind-1 restriction as a refusal
+for a general related-field read: both keys were stored Text calculations,
+nonglobal and one repetition, with own stored inputs. The related Number
+was stored; reading it does not imply evaluating its auto-entry formula.
+This is separate from the lookup path described above.
+
+**Inference:** compute a stored source key after its inputs, then evaluate
+the general related read with that final key, followed by its consumers.
+An input edit can recompute the key and reader. A stale prefetched answer
+or a key whose calculation has not settled is not a successful empty read.
+Native automatic timing, replacement and pending-value order for this
+specific calculated-key related-read case remain unmeasured. These facts
+do not establish all calculated joins or application creation support.
+
+What FileMaker Server 26.0.3's script engine does with an auto-entered
+calculation and a validation calculation that read a related field
+[O-run: script harness battery s40 on contacts-en with three Contacts
+fields added by FMUpgradeTool: A1 = `Phone Numbers::Number`, A2 the same
+with "Do not replace existing value of field", V1 validated Always by
+`Phone Numbers::Number ≠ ""`; `Contacts::PrimaryKey =
+Phone Numbers::ForeignKey`, creation allowed on the Phone Numbers side].
+Each step is Set Field and Commit Records in a Contacts record:
+
+| step | A1 / A2 after it |
+|---|---|
+| new record, PrimaryKey "K1", nothing related | empty / empty |
+| a related record made through the relationship, Number "555" | empty / empty |
+| First Name set (not read by the formulas) | empty / empty |
+| PrimaryKey set again to "K1" | `555` / `555` |
+| PrimaryKey "K2", nothing related | empty / `555` |
+| PrimaryKey "K1" | `555` / `555` |
+| the related record's Number set to "777" | `555` / `555` |
+| PrimaryKey "K2" then "K1" in one commit | `777` / `555` |
+
+- The formula is evaluated when the record's match field of the
+  relationship it reads through is set, even to the value it had, and
+  then reads the related record as it is. These are the triggers
+  schema-path.md 5.13 derives from the field's `fb` node. Making or
+  changing the related record does not evaluate it.
+- "Do not replace existing value" keeps a value the field has; the
+  replacing formula writes what it reads, empty with nothing related.
+- V1: a commit with V1 set and nothing related fails with 507; once a
+  related record exists the same record commits (0). The validation
+  calculation reads the related record as it is at the commit.
+
+Not measured: several related records (which is first), sorted
+relationships, paths of more than one relationship, aggregates of related
+fields, and FileMaker Pro's own data entry.
+
+## A new record's own self-join
+
+A new record's auto-entered calculation, reading its own table through a
+self-join that no other record matches, reads the relationship as empty
+[O, #1035's two native runs: FileMaker Pro 26.0.3, a local file, one portal
+creation each].
+
+- **Count/List case.** The witness `v & "|" & Count ( S::k ) & "|" &
+  List ( S::v ) & "|" & List ( S::w )` is entered on a new portal row
+  (k given by the portal, v typed 5) with no other record. It stores
+  `5|0||`.
+- **First-record case.** The witness reads the first related record's `g`
+  and `r` through a self-join on `k` and `g`, both given. It shows them
+  empty, while the same evaluation shows the record's own `k`, `g` and
+  `r`. The table's only other record does not match.
+
+**Computed non-empty key (C126).** A third local FileMaker Pro 26.0.3
+portal-creation case starts with an empty child table. Typing `e=E1`
+auto-enters `kk=KE1`; entering `v=5` and saving leaves the witness
+`kk=KE1|n=0|vs=` (Count of the self-join's key and List of its value).
+The closed file has exactly one child record with those values. This
+observes an empty self-join at the witness's last stored evaluation,
+including with a computed non-empty key; it does not establish a general
+evaluation order. The only changed field-definition bit activates the
+key's value index; other field definitions, formulas and relationship
+catalogs are unchanged. Evidence: retained private C126 relay, four
+checksum-verified artifacts, including closed-cell and raw-delta reports.
+
+**One existing match (C126 matching follow-up).** The next disposable
+local case starts with that committed row (`e=E1`, `kk=KE1`, `v=5`). A
+new portal row is given `e=E1`; after Tab, before `v` is typed, its witness
+shows `kk=KE1|n=1|vs=5`. It stays so while `v=7` has focus, after one
+blank-layout click to save, and in the closed file. The old row and the
+parent's active record leaves remain byte-equal. Thus at the witness's
+last stored evaluation it saw the older matching row, without the new
+row's value. This is a timing-bound observation, not proof of persistent
+self-exclusion or its internal cause.
+
+Evidence: five checksum-verified matching-relay files, including a closed
+audit and all 28 raw deltas (11 new record paths, 9 index changes, 8
+system/table-metadata or unclassified paths). Field definitions, graph,
+layouts and trigger caches, scripts and file options are unchanged;
+globals are absent. Base-catalog/table-version counters change: neither
+the whole file nor every metadata byte is unchanged.
+
+The first three cases had no other related record; the fourth has exactly
+one older match. Still unmeasured:
+- more than one matching row, sorted or non-equality joins, another held
+  row, stored/validation formulas, an edited record, or a hosted file;
+- persistence across later reevaluations, and the original solution's
+  context. Applying this result to analogous final auto-entered keys and
+  aggregate fields is inference. It does not establish evaluation order,
+  index visibility, or transaction visibility as the cause.
+
+## Auto-entered value checked against a value list
+
+One local FileMaker Pro 26.0.3 synthetic portal-creation case (C125,
+outcome B) saved an auto-entered value absent from its custom value list
+without a validation dialog. The closed record stores that value and a
+second witness field that reads it. Its field-definition/formula subtree,
+including auto-entry `0x8` and validation `0x8180`, is unchanged across
+166 keys; relationship and list catalogs are unchanged too (retained
+private relay, closed raw differential).
+
+This is a native-authored calculated-literal-message `0x8180` variant.
+It does not directly measure the legacy `0x180` plain-message definition
+or related-values lists. Carry-over to them is inference, and this case
+does not distinguish validation being skipped from other internal timing
+that saves without a dialog. Hosted behavior is unmeasured.
+
+## Get ( RecordNumber )
+
+Two cases [O: FileMaker Pro 26.0.3, a local disposable pair made in the
+native UI, #1038, relayed sanitized].
+
+**The setup.**
+- Root has two records, and its current record is at position 2.
+- B has five records.
+- `Root::MatchKey = B::MatchKey`, with creation allowed in B.
+- Root's layout has a portal on B that neither sorts nor filters.
+- B's Number field auto-enters `Get ( RecordNumber )`, with "Do not
+  replace existing value" on.
+- The two cases differ in what was related before:
+  - none of B's records;
+  - B's records 1 and 2, shown as the portal's first two rows.
+
+**What happened.** A value was typed into the portal's creation row (the
+first row, then the third), then an ordinary commit (a click on the
+layout):
+- **While typing,** the field stayed empty. OnObjectEnter and
+  OnObjectModify scripts reading `B::Number & "|" & Get ( RecordNumber )`
+  gave `|2`.
+- **At the commit,** the row showed `1`, then `3`. An OnObjectSave
+  script gave `1|2`, then `3|2`.
+- **The closed file's new B record 6** stores `1`, then `3`.
+- Schema, field options, layouts and relationships were unchanged by the
+  second case [O: raw catalog comparison].
+
+**The reading.**
+- **The value is entered at the save,** and an OnObjectSave script
+  already sees it. The script's own `Get ( RecordNumber )` is Root's
+  position, 2.
+- **The value is the new row's place among the portal's related records,**
+  after those related before. It is not Root's position (2) or B's record
+  count (6).
+- **That a hosted file answers the same** is [I], OpenMaker's choice
+  (parity-unverified).
+
+Unmeasured [U]:
+- portals that sort or filter their rows;
+- more than one new row in one commit;
+- other ways of creating a record: New Record in B's own window, a
+  script, Perform Script on Server.
+
+## Serial numbers
+
+Option `0x2` generates a serial number when the record is created, `0x200`
+(set instead) when it is committed; the increment is `mSerialIncrement`
+and the next value is the field member's `0c`, text (schema-path.md 5.5,
+5.9 E41). What FileMaker does:
+
+- The client takes each value from the host: op72 with `kIncrement` and
+  the field's increment returns the next value and stores the one after
+  it (write-path.md 3.2) [O, cap:916]. On creation, FileMaker Pro sends it
+  right after New Record's op71, before the user sees the record [O,
+  cap:914-916]. On commit, the value is taken when the record is
+  committed [doc: `automatic-data-entry.html`]; its op72 was not captured.
+- The host advances the text's last run of digits and keeps the run's
+  width ("INV0099" + 1 = "INV0100") [Med, write-path.md 3.2].
+- Duplicate Record does not copy an auto-entered value: the copy gets a
+  new one, a lookup's or a calculation that does not replace an existing
+  value excepted [doc: `duplicate-record-request.html`].
+- Revert Transaction does not take back a serial number's increment [doc:
+  `revert-transaction.html`].
+
+Not measured: whether reverting a new record outside a transaction gives
+its serial back, whether an existing record whose on-commit field is
+empty gets a serial when it is next committed, which value a record keeps
+when a script or the user sets the field before an on-commit serial is
+generated, text without digits, and increments below 1.
+
+## A stored calculation before the commit
+
+A stored calculation of the record being edited reads its new inputs
+before the record is committed [O, #1104's native run: FileMaker Pro
+26.0.3, a local file, one script run]. A script on a new record does Set
+Field `Count` to 4. Then, before any commit, it reads `Doubled` (a stored
+`Count * 2` in the same table, own context) as 8, with
+`Get ( RecordOpenState )` 1. It then reverts. The closed file holds no
+record, and its schema is unchanged.
+
+The run covers only this: a script's Set Field, a local file, a stored
+calculation of the record's own table over its own field. The user's
+typing, OnObjectModify, a hosted file, related or lookup inputs, and
+auto-entered calculations are not measured.
+
+## Client versus server: what is established
+
+The desktop DBEngine implements default evaluation, not just metadata
+forwarding. `DBDependencyList::EvalOneRep` (`0x1754de4`) calls
+`AutoEnterData`; its calculation branch reads the calculation code, calls
+`DBCalcFormula::Solve` (`0x17556d4`) and writes the resulting typed value
+through the record cursor. `DoAutoEnterSerial` explicitly calls
+`DBField::GenerateSerialValue` for a newly created record. Serial reservation
+must not be replaced by a local counter.
+
+This supports treating auto-entry, dependency recalculation and validation as
+client responsibilities until an official-client capture and a native
+round trip establish otherwise. It does **not** prove that the server never
+evaluates them in other execution contexts, or that the server repairs an
+incomplete raw upload. The op70 commit framing alone provides no such promise.
+
+Creating a row with a blank PrimaryKey or blank required audit fields is
+therefore not a valid CRUD implementation. Updating First Name or Last Name
+also requires the stored Initial result to be recalculated. Creation values
+are preserved by the bounded planner during later updates; the hosted round
+trip verifies account/timestamp generation, UUID uniqueness, stored Initial
+recalculation and exact version advancement. General formula coverage,
+additional validation and storage conversions remain unsupported and fail
+schema preflight. A successful string upload alone is insufficient to expose
+editing on an unsupported schema.
+
+## Reproduction
+
+`cargo run -p om-provider --example field_options -- <owned-local-file>` prints
+only field metadata and recognized selectors, without record values or full
+calculation bodies. The opt-in real-file test is:
+
+```sh
+OPENMAKER_CONTACTS_TEMPLATE='<owned-local-file>' cargo test -p om-hbam --test auto_entry -- --ignored
+```
+
+Unit tests cover inactive variable 0, unknown bits/codes, exact definition
+length, validation masks and complete-expression recognition. The real-file
+test checks all definitions, the five actual generated fields, UUID code and
+Initial's stored-calculation flag without making changes.

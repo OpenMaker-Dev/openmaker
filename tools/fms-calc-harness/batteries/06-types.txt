@@ -1,0 +1,129 @@
+# operator result types
+Date(1;1;2001) + 1
+Date(1;1;2001) - 1
+1 + Date(1;1;2001)
+Date(1;1;2001) - Date(1;1;2000)
+Date(1;1;2001) * 1
+Date(1;1;2001) / 1
+-Date(1;1;2001)
+Date(1;1;2001) + 0.5
+Date(1;1;2001) + 1.5
+Date(1;1;2001) + Time(1;0;0)
+Time(1;0;0) + Date(1;1;2001)
+Date(1;1;2001) - Time(1;0;0)
+Date(1;1;2001) + Date(1;1;2001)
+Time(1;0;0) + 1
+Time(1;0;0) - 1
+1 + Time(1;0;0)
+Time(1;0;0) * 2
+Time(1;0;0) / 2
+Time(1;0;0) + Time(1;0;0)
+Time(1;0;0) - Time(2;0;0)
+Time(2;0;0) - Time(1;0;0)
+-Time(1;0;0)
+Time(1;0;0) + 0.25
+Time(23;59;59) + 1
+Time(0;0;0) - 1
+Timestamp(Date(1;1;2001);Time(0;0;0)) + 1
+Timestamp(Date(1;1;2001);Time(0;0;0)) - 1
+Timestamp(Date(1;1;2001);Time(0;0;0)) + 86400
+Timestamp(Date(1;1;2001);Time(0;0;0)) + 0.5
+Timestamp(Date(1;1;2001);Time(0;0;0)) - Timestamp(Date(1;1;2000);Time(0;0;0))
+Timestamp(Date(1;1;2001);Time(0;0;0)) - Date(1;1;2000)
+Timestamp(Date(1;1;2001);Time(0;0;0)) + Time(1;0;0)
+Timestamp(Date(1;1;2001);Time(0;0;0)) * 1
+Timestamp(Date(1;1;2001);Time(0;0;0)) + Date(1;1;2001)
+Date(1;1;2001) & ""
+Time(13;5;7) & ""
+Timestamp(Date(1;1;2001);Time(13;5;7)) & ""
+(Date(1;1;2001) + 1) & ""
+(Time(1;0;0) * 2) & ""
+Max(Date(1;1;2001);Date(1;1;2002))
+Max(Date(1;1;2001);5)
+Min(Time(1;0;0);Time(2;0;0))
+Max(Time(1;0;0);5)
+Max("10";9)
+Max("abc";9)
+Max("abc";"abd")
+Sum(Date(1;1;2001);1)
+Average(Time(1;0;0);Time(2;0;0))
+Abs(Date(1;1;2001))
+Abs(Time(-1;0;0))
+Abs(-Time(1;0;0))
+Int(Time(1;30;0))
+Round(Time(1;0;0.6);0)
+Round(Timestamp(Date(1;1;2001);Time(1;0;0.6));0)
+If(1;Date(1;1;2001);"x")
+If(0;Date(1;1;2001);"x")
+If(1;Time(1;0;0);0) + 1
+Case(1;Date(1;1;2001)) + 1
+Choose(0;Date(1;1;2001)) + 1
+Let(x=Date(1;1;2001);x+1)
+GetAsDate(Date(1;1;2001)+1)
+GetAsNumber(Date(1;1;2001))
+GetAsNumber(Time(1;0;0))
+GetAsNumber(Timestamp(Date(1;1;2001);Time(1;0;0)))
+GetAsNumber(Timestamp(Date(1;1;1);Time(0;0;0)))
+GetAsNumber(Timestamp(Date(1;2;1);Time(0;0;0)))
+GetAsText(Date(1;1;2001))
+GetAsText(Time(1;0;0))
+GetAsText(Timestamp(Date(1;1;2001);Time(1;0;0)))
+GetAsTimestamp(0)
+GetAsTimestamp(1)
+GetAsTimestamp(86400)
+GetAsTimestamp(63113904000)
+GetAsTimestamp(Date(1;1;2001))
+GetAsTimestamp(Time(1;0;0))
+GetAsTimestamp(-1)
+GetAsDate(Timestamp(Date(1;1;2001);Time(23;0;0)))
+GetAsTime(Timestamp(Date(1;1;2001);Time(23;0;0)))
+GetAsDate(730486)
+GetAsDate(0)
+GetAsDate(1)
+GetAsDate(-1)
+GetAsDate(1.5)
+GetAsDate(1.9)
+GetAsDate(3652059)
+GetAsDate(3652060)
+GetAsDate(3652061)
+GetAsTime(3600)
+GetAsTime(-3600)
+GetAsTime(100000)
+GetAsTime(1.5)
+GetAsTime(0.001)
+GetAsTime(0.0000001)
+GetAsTime(86400*365)
+GetAsTime(Date(1;1;2001))
+# declared result type conversions (!N = convert to type N)
+!1 Date(1;1;2001)
+!2 Date(1;1;2001)
+!4 Date(1;1;2001)
+!5 Date(1;1;2001)
+!2 Time(1;0;0)
+!3 Time(1;0;0)
+!5 Time(1;0;0)
+!2 Timestamp(Date(1;1;2001);Time(1;0;0))
+!3 Timestamp(Date(1;1;2001);Time(1;0;0))
+!4 Timestamp(Date(1;1;2001);Time(1;0;0))
+!2 "abc"
+!2 "12abc"
+!2 ""
+!3 "abc"
+!3 "1/2/2003"
+!3 "2003-01-02"
+!3 730486
+!3 "730486"
+!4 "abc"
+!4 "1:30"
+!4 90
+!4 "90"
+!5 "1/2/2003 1:30 PM"
+!5 0
+!1 1/3
+!2 1/3
+!2 "1/3"
+!3 1/3
+!4 1/3
+!4 1.5
+!5 1.5
+!2 True

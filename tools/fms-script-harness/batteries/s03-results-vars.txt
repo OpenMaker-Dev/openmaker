@@ -1,0 +1,117 @@
+# Get(ScriptResult) through nested Perform Script, script parameters,
+# $ and $$ scoping, variable names and repetitions. Base file: contacts-en.
+== res sequence
+Set Variable [ $r0 ; Get ( ScriptResult ) ]
+Perform Script [ "res b exits b" ]
+Set Variable [ $r1 ; Get ( ScriptResult ) ]
+Perform Script [ "res c exits without result" ]
+Set Variable [ $r2 ; Get ( ScriptResult ) ]
+Perform Script [ "res d ends" ]
+Set Variable [ $r3 ; Get ( ScriptResult ) ]
+Perform Script [ "res e exits empty" ]
+Set Variable [ $r4 ; Get ( ScriptResult ) ]
+Exit Script [ "[" & $r0 & "] " & $r1 & " [" & $r2 & "] [" & $r3 & "] [" & $r4 & "]" ]
+== res b exits b
+Exit Script [ "b" ]
+== res c exits without result
+Exit Script
+== res d ends
+Set Variable [ $x ; 1 ]
+== res e exits empty
+Exit Script [ "" ]
+== res deep
+Perform Script [ "res mid" ]
+Exit Script [ "top saw [" & Get ( ScriptResult ) & "]" ]
+== res mid
+Perform Script [ "res b exits b" ]
+Set Variable [ $$mid ; Get ( ScriptResult ) ]
+Exit Script
+== res deep ends
+Perform Script [ "res mid ends" ]
+Exit Script [ "top saw [" & Get ( ScriptResult ) & "]" ]
+== res mid ends
+Perform Script [ "res b exits b" ]
+== res top no exit
+Perform Script [ "res b exits b" ]
+== res typed
+Perform Script [ "res date" ]
+Set Variable [ $t1 ; Get ( ScriptResult ) + 1 ]
+Perform Script [ "res number" ]
+Set Variable [ $t2 ; Get ( ScriptResult ) & "|" & ( Get ( ScriptResult ) + 1 ) ]
+Exit Script [ GetAsText ( $t1 ) & " " & $t2 ]
+== res date
+Exit Script [ Date ( 1 ; 2 ; 2020 ) ]
+== res number
+Exit Script [ 0012.50 ]
+== res exit top date
+Exit Script [ Date ( 1 ; 2 ; 2020 ) ]
+== par sub
+Perform Script [ "par show" ; Parameter: "p1" ]
+Set Variable [ $a ; Get ( ScriptResult ) ]
+Perform Script [ "par show" ]
+Set Variable [ $b ; Get ( ScriptResult ) ]
+Perform Script [ "par show" ; Parameter: Date ( 1 ; 2 ; 2020 ) ]
+Set Variable [ $c ; Get ( ScriptResult ) ]
+Exit Script [ Get ( ScriptParameter ) & " | " & $a & " | " & $b & " | " & $c ]
+== par show
+Exit Script [ Get ( ScriptName ) & ":[" & Get ( ScriptParameter ) & "]" & ( Get ( ScriptParameter ) + 1 ) ]
+== var scope
+Set Variable [ $x ; 1 ]
+Set Variable [ $$g ; 1 ]
+Perform Script [ "var scope sub" ]
+Exit Script [ Get ( ScriptResult ) & " | x=" & $x & " g=" & $$g & " y=" & $y & " gy=" & $$gy ]
+== var scope sub
+Set Variable [ $seen ; "sub saw x=[" & $x & "] g=" & $$g ]
+Set Variable [ $x ; 2 ]
+Set Variable [ $y ; 3 ]
+Set Variable [ $$g ; 2 ]
+Set Variable [ $$gy ; 4 ]
+Exit Script [ $seen ]
+== var reps
+Set Variable [ $v[2] ; "b" ]
+Set Variable [ $v ; "a" ]
+Set Variable [ $v[3] ; "c" ]
+Set Variable [ $v[3] ; "" ]
+Set Variable [ $w[1+1] ; "w2" ]
+Set Variable [ $k[0] ; "zero" ]
+Set Variable [ $k[-1] ; "neg" ]
+Set Variable [ $k[1.7] ; "frac" ]
+Exit Script [ List ( $v ; $v[1] ; $v[2] ; "[" & $v[3] & "]" ; $w[2] ; "[" & $k[0] & "]" ; "[" & $k[-1] & "]" ; "[" & $k[1] & "]" ; "[" & $k[2] & "]" ) ]
+== var let
+Set Variable [ $d ; Let ( [ $w = 5 ; $$lw = 6 ] ; 0 ) ]
+Perform Script [ "var let sub" ]
+Exit Script [ $w & "," & $$lw & "," & Get ( ScriptResult ) ]
+== var let sub
+Exit Script [ "[" & $w & "]" & $$lw ]
+== var case
+Set Variable [ $Abc ; "x" ]
+Set Variable [ $$GLOB ; "y" ]
+Exit Script [ $abc & $ABC & $$glob ]
+== var names
+Set Variable [ $ok ; 1 ]
+Set Variable [ $ ; 1 ]
+Set Variable [ $$ ; 1 ]
+Set Variable [ $1x ; 1 ]
+Set Variable [ $a b ; 1 ]
+Set Variable [ $ok2 ; 1 ]
+Exit Script [ Get ( LastError ) ]
+== var global set
+Set Variable [ $$persist ; "set" ]
+== var global read
+Exit Script [ "[" & $$persist & "]" ]
+--- run
+res sequence		Get ( ScriptResult )
+res deep		$$mid
+res deep ends
+res top no exit		Get ( ScriptResult )
+res typed
+res exit top date
+par sub	top
+par sub
+var scope		$$g	$$gy	$x
+var reps
+var let		$$lw
+var case
+var names		Get ( LastError )
+var global set		$$persist
+var global read		$$persist

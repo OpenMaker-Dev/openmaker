@@ -1,0 +1,27 @@
+# FileMaker Server 26.0.3 script engine (tools/fms-script-harness, s30-design),
+# expressions evaluated by a script in design-contacts-en.fmp12 (the file with the probe
+# script "design" added) in its window, on the default layout's occurrence.
+# file	design-contacts-en.fmp12
+# layout	Contact Details
+ValueListItems ( "" ; "Phone Type" )	Home\rMobile\rWork\rFax
+ValueListItems ( "" ; "Email Type" )	Work\rPersonal
+ValueListItems ( "" ; "Title" )	Mr.\rMrs.\rMs.\r-\rProf.\r-
+ValueListItems ( "" ; "Address Type" )	Home\rWork
+ValueListItems ( "" ; "Company" )	
+ValueListItems ( "" ; "Job Title" )	
+ValueListItems ( "" ; "no such" )	
+ValueListItems ( "" ; "" )	
+FieldType ( "" ; "First Name" )	Standard Text Unindexed 1
+FieldComment ( "" ; "First Name" )	
+GetNextSerialValue ( "" ; "First Name" )	
+FieldType ( "" ; "Last Name" )	Standard Text Unindexed 1
+FieldComment ( "" ; "Last Name" )	
+GetNextSerialValue ( "" ; "Last Name" )	
+FieldType ( "" ; "Photo" )	Standard Container Unindexed 1
+FieldComment ( "" ; "Photo" )	
+GetNextSerialValue ( "" ; "Photo" )	
+FieldType ( "" ; "Title" )	Standard Text Unindexed 1
+FieldComment ( "" ; "Title" )	
+GetNextSerialValue ( "" ; "Title" )	
+FieldType ( "" ; "no such" )	
+FieldComment ( "" ; "" )	

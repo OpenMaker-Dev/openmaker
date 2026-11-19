@@ -1,0 +1,22 @@
+# Follow-up of s34-containers-release: the same three records deleted one
+# at a time (Delete Record on the last record each time), then whether the
+# library's header stays once its last member is released (the run copy's
+# [80 02, 1f]). Base file: contacts-en.
+== fill
+New Record/Request
+Set Field [ Contacts::Photo ; Base64Decode ( "c2hhcmVk" ; "shared.txt" ) ]
+New Record/Request
+Set Field [ Contacts::Photo ; Base64Decode ( "c2hhcmVk" ; "shared.txt" ) ]
+New Record/Request
+Set Field [ Contacts::Photo ; Base64Decode ( "b3du" ; "own.txt" ) ]
+Commit Records/Requests [ With dialog: Off ]
+Exit Script [ Get ( TotalRecordCount ) ]
+== delete last
+Go to Record/Request/Page [ Last ]
+Delete Record/Request [ With dialog: Off ]
+Exit Script [ Get ( LastError ) & "|" & Get ( TotalRecordCount ) ]
+--- run
+fill
+delete last
+delete last
+delete last

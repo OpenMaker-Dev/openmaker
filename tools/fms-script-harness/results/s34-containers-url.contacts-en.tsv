@@ -1,0 +1,145 @@
+# scan url: open 0 load 0 scan 0 commit 0; index:id=value (0-based): 0:86=0 1:7=0 2:160=0 3:141=0 4:75=0 5:103=0
+# scan text: open 0 load 0 scan 0 commit 0; index:id=value (0-based): 0:86=0 1:7=0 2:160=0 3:141=0 4:75=0 5:103=0
+# scan append: open 0 load 0 scan 0 commit 0; index:id=value (0-based): 0:86=0 1:7=0 2:160=0 3:160=0 4:141=0 5:75=0 6:103=0
+# scan paths: open 0 load 0 scan 0 commit 0; index:id=value (0-based): 0:103=0
+# scan: close 13
+paths		0	|	0
+>	1	paths	1	103	0	0	1	0
+url	file:///work/s34url/red.png	0	100||0|0x0|0|1|1	0
+>	1	url	1	86	0	0	0	0
+>	1	url	2	7	0	0	0	0
+!	100	work : url : 3 : Insert from URL
+>	1	url	3	160	100	0	0	100
+>	1	url	4	141	0	0	0	0
+>	1	url	5	75	0	0	0	0
+>	1	url	6	103	0	0	1	0
+url	file:///work/s34url/red.txt	0	100||0|0x0|0|1|2	0
+>	1	url	1	86	0	0	0	0
+>	1	url	2	7	0	0	0	0
+!	100	work : url : 3 : Insert from URL
+>	1	url	3	160	100	0	0	100
+>	1	url	4	141	0	0	0	0
+>	1	url	5	75	0	0	0	0
+>	1	url	6	103	0	0	1	0
+url	file:///work/s34url/hello.png	0	100||0|0x0|0|1|3	0
+>	1	url	1	86	0	0	0	0
+>	1	url	2	7	0	0	0	0
+!	100	work : url : 3 : Insert from URL
+>	1	url	3	160	100	0	0	100
+>	1	url	4	141	0	0	0	0
+>	1	url	5	75	0	0	0	0
+>	1	url	6	103	0	0	1	0
+url	file:///work/s34url/noext	0	100||0|0x0|0|1|4	0
+>	1	url	1	86	0	0	0	0
+>	1	url	2	7	0	0	0	0
+!	100	work : url : 3 : Insert from URL
+>	1	url	3	160	100	0	0	100
+>	1	url	4	141	0	0	0	0
+>	1	url	5	75	0	0	0	0
+>	1	url	6	103	0	0	1	0
+url	file:///work/s34url/a%20b.png	0	100||0|0x0|0|1|5	0
+>	1	url	1	86	0	0	0	0
+>	1	url	2	7	0	0	0	0
+!	100	work : url : 3 : Insert from URL
+>	1	url	3	160	100	0	0	100
+>	1	url	4	141	0	0	0	0
+>	1	url	5	75	0	0	0	0
+>	1	url	6	103	0	0	1	0
+url	file:///work/s34url/a b.png	0	100||0|0x0|0|1|6	0
+>	1	url	1	86	0	0	0	0
+>	1	url	2	7	0	0	0	0
+!	100	work : url : 3 : Insert from URL
+>	1	url	3	160	100	0	0	100
+>	1	url	4	141	0	0	0	0
+>	1	url	5	75	0	0	0	0
+>	1	url	6	103	0	0	1	0
+url	file:///work/s34url/hello.txt	0	100||0|0x0|0|1|7	0
+>	1	url	1	86	0	0	0	0
+>	1	url	2	7	0	0	0	0
+!	100	work : url : 3 : Insert from URL
+>	1	url	3	160	100	0	0	100
+>	1	url	4	141	0	0	0	0
+>	1	url	5	75	0	0	0	0
+>	1	url	6	103	0	0	1	0
+url	file:///work/s34url/RED.JPG	0	100||0|0x0|0|1|8	0
+>	1	url	1	86	0	0	0	0
+>	1	url	2	7	0	0	0	0
+!	100	work : url : 3 : Insert from URL
+>	1	url	3	160	100	0	0	100
+>	1	url	4	141	0	0	0	0
+>	1	url	5	75	0	0	0	0
+>	1	url	6	103	0	0	1	0
+url	file:///work/s34url/x.mp3	0	100||0|0x0|0|1|9	0
+>	1	url	1	86	0	0	0	0
+>	1	url	2	7	0	0	0	0
+!	100	work : url : 3 : Insert from URL
+>	1	url	3	160	100	0	0	100
+>	1	url	4	141	0	0	0	0
+>	1	url	5	75	0	0	0	0
+>	1	url	6	103	0	0	1	0
+url	file:///work/s34url/page.html	0	100||0|0x0|0|1|10	0
+>	1	url	1	86	0	0	0	0
+>	1	url	2	7	0	0	0	0
+!	100	work : url : 3 : Insert from URL
+>	1	url	3	160	100	0	0	100
+>	1	url	4	141	0	0	0	0
+>	1	url	5	75	0	0	0	0
+>	1	url	6	103	0	0	1	0
+url	file:///work/s34url/red.png?size=2	0	100||0|0x0|0|1|11	0
+>	1	url	1	86	0	0	0	0
+>	1	url	2	7	0	0	0	0
+!	100	work : url : 3 : Insert from URL
+>	1	url	3	160	100	0	0	100
+>	1	url	4	141	0	0	0	0
+>	1	url	5	75	0	0	0	0
+>	1	url	6	103	0	0	1	0
+url	file:///work/s34url/	0	100||0|0x0|0|1|12	0
+>	1	url	1	86	0	0	0	0
+>	1	url	2	7	0	0	0	0
+!	100	work : url : 3 : Insert from URL
+>	1	url	3	160	100	0	0	100
+>	1	url	4	141	0	0	0	0
+>	1	url	5	75	0	0	0	0
+>	1	url	6	103	0	0	1	0
+url	file:///work/s34url/missing.png	0	100||0|0x0|0|1|13	0
+>	1	url	1	86	0	0	0	0
+>	1	url	2	7	0	0	0	0
+!	100	work : url : 3 : Insert from URL
+>	1	url	3	160	100	0	0	100
+>	1	url	4	141	0	0	0	0
+>	1	url	5	75	0	0	0	0
+>	1	url	6	103	0	0	1	0
+url	file:///etc/hostname	0	100||0|0x0|0|1|14	0
+>	1	url	1	86	0	0	0	0
+>	1	url	2	7	0	0	0	0
+!	100	work : url : 3 : Insert from URL
+>	1	url	3	160	100	0	0	100
+>	1	url	4	141	0	0	0	0
+>	1	url	5	75	0	0	0	0
+>	1	url	6	103	0	0	1	0
+text	file:///work/s34url/hello.txt	0	100||0|15	0
+>	1	text	1	86	0	0	0	0
+>	1	text	2	7	0	0	0	0
+!	100	work : text : 3 : Insert from URL
+>	1	text	3	160	100	0	0	100
+>	1	text	4	141	0	0	0	0
+>	1	text	5	75	0	0	0	0
+>	1	text	6	103	0	0	1	0
+text	file:///work/s34url/red.png	0	100||0|16	0
+>	1	text	1	86	0	0	0	0
+>	1	text	2	7	0	0	0	0
+!	100	work : text : 3 : Insert from URL
+>	1	text	3	160	100	0	0	100
+>	1	text	4	141	0	0	0	0
+>	1	text	5	75	0	0	0	0
+>	1	text	6	103	0	0	1	0
+append		0	100||0|17	0
+>	1	append	1	86	0	0	0	0
+>	1	append	2	7	0	0	0	0
+!	100	work : append : 3 : Insert from URL
+>	1	append	3	160	100	0	0	100
+!	100	work : append : 4 : Insert from URL
+>	1	append	4	160	100	0	0	100
+>	1	append	5	141	0	0	0	0
+>	1	append	6	75	0	0	0	0
+>	1	append	7	103	0	0	1	0

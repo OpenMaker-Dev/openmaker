@@ -1,0 +1,161 @@
+# scan cond if: open 0 load 0 scan 0 commit 0; index:id=value (0-based): 0:141=0 1:68=3 2:103=0 3:69=5 4:103=0 5:70=0
+# scan cond direct: open 0 load 0 scan 0 commit 0; index:id=value (0-based): 0:141=0 1:68=3 2:141=0 3:69=5 4:141=0 5:70=0 6:68=8 7:141=0 8:69=10 9:141=0 10:70=0 11:68=13 12:141=0 13:69=15 14:141=0 15:70=0 16:68=18 17:141=0 18:69=20 19:141=0 20:70=0 21:68=23 22:141=0 23:69=25 24:141=0 25:70=0 26:68=28 27:141=0 28:69=30 29:141=0 30:70=0 31:68=32 32:125=34 33:141=0 34:69=36 35:141=0 36:70=0 37:141=0 38:71=42 39:141=0 40:72=42 41:72=42 42:73=38 43:103=0
+# scan cond nested: open 0 load 0 scan 0 commit 0; index:id=value (0-based): 0:141=0 1:68=10 2:141=0 3:68=5 4:141=0 5:125=7 6:141=0 7:69=9 8:141=0 9:70=0 10:125=12 11:141=0 12:69=14 13:141=0 14:70=0 15:68=17 16:141=0 17:125=19 18:141=0 19:125=24 20:141=0 21:68=23 22:141=0 23:70=0 24:69=26 25:141=0 26:70=0 27:141=0 28:71=37 29:141=0 30:141=0 31:71=34 32:141=0 33:72=34 34:73=31 35:141=0 36:72=37 37:73=28 38:103=0
+# scan cond loop flush: open 0 load 0 scan 0 commit 0; index:id=value (0-based): 0:141=0 1:71=4 2:141=0 3:72=4 4:73=1 5:71=8 6:141=0 7:72=8 8:73=5 9:71=12 10:141=0 11:72=12 12:73=9 13:103=0
+# scan: close 13
+cond direct		0	a1 b1 c1 d1 e0 f0 g1 loop1	0	0
+>	1	cond direct	1	141	0	0	0	0
+>	1	cond direct	2	68	0	0	1	0
+>	1	cond direct	3	141	0	0	0	0
+>	1	cond direct	4	69	0	0	1	0
+>	1	cond direct	6	70	0	0	1	0
+>	1	cond direct	7	68	0	0	1	0
+>	1	cond direct	8	141	0	0	0	0
+>	1	cond direct	9	69	0	0	1	0
+>	1	cond direct	11	70	0	0	1	0
+>	1	cond direct	12	68	0	0	1	0
+>	1	cond direct	13	141	0	0	0	0
+>	1	cond direct	14	69	0	0	1	0
+>	1	cond direct	16	70	0	0	1	0
+>	1	cond direct	17	68	0	0	1	0
+>	1	cond direct	18	141	0	0	0	0
+>	1	cond direct	19	69	0	0	1	0
+>	1	cond direct	21	70	0	0	1	0
+>	1	cond direct	22	68	0	0	1	0
+>	1	cond direct	24	69	0	0	1	0
+>	1	cond direct	25	141	0	0	0	0
+>	1	cond direct	26	70	0	0	1	0
+>	1	cond direct	27	68	0	0	1	0
+>	1	cond direct	29	69	0	0	1	0
+>	1	cond direct	30	141	0	0	0	0
+>	1	cond direct	31	70	0	0	1	0
+>	1	cond direct	32	68	0	0	1	0
+>	1	cond direct	33	125	0	0	1	0
+>	1	cond direct	34	141	0	0	0	0
+>	1	cond direct	35	69	0	0	1	0
+>	1	cond direct	37	70	0	0	1	0
+>	1	cond direct	38	141	0	0	0	0
+>	1	cond direct	39	71	0	0	1	0
+>	1	cond direct	40	141	0	0	0	0
+>	1	cond direct	41	72	0	0	1	0
+>	1	cond direct	44	103	0	0	1	0
+cond nested		0	ABCD1222	0	0
+>	1	cond nested	1	141	0	0	0	0
+>	1	cond nested	2	68	0	0	1	0
+>	1	cond nested	3	141	0	0	0	0
+>	1	cond nested	4	68	0	0	1	0
+>	1	cond nested	6	125	0	0	1	0
+>	1	cond nested	7	141	0	0	0	0
+>	1	cond nested	8	69	0	0	1	0
+>	1	cond nested	10	70	0	0	1	0
+>	1	cond nested	11	125	0	0	1	0
+>	1	cond nested	15	70	0	0	1	0
+>	1	cond nested	16	68	0	0	1	0
+>	1	cond nested	18	125	0	0	1	0
+>	1	cond nested	20	125	0	0	1	0
+>	1	cond nested	21	141	0	0	0	0
+>	1	cond nested	22	68	0	0	1	0
+>	1	cond nested	23	141	0	0	0	0
+>	1	cond nested	24	70	0	0	1	0
+>	1	cond nested	25	69	0	0	1	0
+>	1	cond nested	27	70	0	0	1	0
+>	1	cond nested	28	141	0	0	0	0
+>	1	cond nested	29	71	0	0	1	0
+>	1	cond nested	30	141	0	0	0	0
+>	1	cond nested	31	141	0	0	0	0
+>	1	cond nested	32	71	0	0	1	0
+>	1	cond nested	33	141	0	0	0	0
+>	1	cond nested	34	72	0	0	1	0
+>	1	cond nested	35	73	0	0	1	0
+>	1	cond nested	33	141	0	0	0	0
+>	1	cond nested	34	72	0	0	1	0
+>	1	cond nested	36	141	0	0	0	0
+>	1	cond nested	37	72	0	0	1	0
+>	1	cond nested	38	73	0	0	1	0
+>	1	cond nested	30	141	0	0	0	0
+>	1	cond nested	31	141	0	0	0	0
+>	1	cond nested	32	71	0	0	1	0
+>	1	cond nested	33	141	0	0	0	0
+>	1	cond nested	34	72	0	0	1	0
+>	1	cond nested	35	73	0	0	1	0
+>	1	cond nested	33	141	0	0	0	0
+>	1	cond nested	34	72	0	0	1	0
+>	1	cond nested	36	141	0	0	0	0
+>	1	cond nested	37	72	0	0	1	0
+>	1	cond nested	39	103	0	0	1	0
+cond loop flush		0	6	0	0
+>	1	cond loop flush	1	141	0	0	0	0
+>	1	cond loop flush	2	71	0	0	1	0
+>	1	cond loop flush	3	141	0	0	0	0
+>	1	cond loop flush	4	72	0	0	1	0
+>	1	cond loop flush	5	73	0	0	1	0
+>	1	cond loop flush	3	141	0	0	0	0
+>	1	cond loop flush	4	72	0	0	1	0
+>	1	cond loop flush	6	71	0	0	1	0
+>	1	cond loop flush	7	141	0	0	0	0
+>	1	cond loop flush	8	72	0	0	1	0
+>	1	cond loop flush	9	73	0	0	1	0
+>	1	cond loop flush	7	141	0	0	0	0
+>	1	cond loop flush	8	72	0	0	1	0
+>	1	cond loop flush	10	71	0	0	1	0
+>	1	cond loop flush	11	141	0	0	0	0
+>	1	cond loop flush	12	72	0	0	1	0
+>	1	cond loop flush	13	73	0	0	1	0
+>	1	cond loop flush	11	141	0	0	0	0
+>	1	cond loop flush	12	72	0	0	1	0
+>	1	cond loop flush	14	103	0	0	1	0
+cond if	1	0	then	0
+>	1	cond if	1	141	0	0	0	0
+>	1	cond if	2	68	0	0	1	0
+>	1	cond if	3	103	0	0	1	0
+cond if	0	0	else	0
+>	1	cond if	1	141	0	0	0	0
+>	1	cond if	2	68	0	0	1	0
+>	1	cond if	4	69	0	0	1	0
+>	1	cond if	5	103	0	0	1	0
+cond if	""	0	else	0
+>	1	cond if	1	141	0	0	0	0
+>	1	cond if	2	68	0	0	1	0
+>	1	cond if	4	69	0	0	1	0
+>	1	cond if	5	103	0	0	1	0
+cond if	"?"	0	then	0
+>	1	cond if	1	141	0	0	0	0
+>	1	cond if	2	68	0	0	1	0
+>	1	cond if	3	103	0	0	1	0
+cond if	"abc"	0	else	0
+>	1	cond if	1	141	0	0	0	0
+>	1	cond if	2	68	0	0	1	0
+>	1	cond if	4	69	0	0	1	0
+>	1	cond if	5	103	0	0	1	0
+cond if	"a1"	0	then	0
+>	1	cond if	1	141	0	0	0	0
+>	1	cond if	2	68	0	0	1	0
+>	1	cond if	3	103	0	0	1	0
+cond if	1/0	0	then	0
+>	1	cond if	1	141	0	0	0	0
+>	1	cond if	2	68	0	0	1	0
+>	1	cond if	3	103	0	0	1	0
+cond if	GetField ( "x" )	0	then	0
+>	1	cond if	1	141	0	0	0	0
+>	1	cond if	2	68	0	0	1	0
+>	1	cond if	3	103	0	0	1	0
+cond if	Evaluate ( "1+" )	0	then	0
+>	1	cond if	1	141	0	0	0	0
+>	1	cond if	2	68	0	0	1	0
+>	1	cond if	3	103	0	0	1	0
+cond if	Contacts::NoSuchField	0	then	0
+>	1	cond if	1	141	0	0	0	0
+>	1	cond if	2	68	0	0	1	0
+>	1	cond if	3	103	0	0	1	0
+cond if	Length ( GetField ( "x" ) )	0	then	0
+>	1	cond if	1	141	0	0	0	0
+>	1	cond if	2	68	0	0	1	0
+>	1	cond if	3	103	0	0	1	0
+cond if	EvaluationError ( GetField ( "x" ) )	0	then	0
+>	1	cond if	1	141	0	0	0	0
+>	1	cond if	2	68	0	0	1	0
+>	1	cond if	3	103	0	0	1	0
+cond if	1+	0	then	0
+>	1	cond if	1	141	0	0	0	0
+>	1	cond if	2	68	0	0	1	0
+>	1	cond if	3	103	0	0	1	0

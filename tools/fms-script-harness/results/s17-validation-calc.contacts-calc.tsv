@@ -1,0 +1,69 @@
+# scan calc rep1 bad: open 0 load 0 scan 0 commit 0; index:id=value (0-based): 0:86=0 1:7=0 2:76=0 3:141=0 4:75=0 5:141=0 6:68=8 7:9=0 8:70=0 9:103=0
+# scan calc rep2 bad: open 0 load 0 scan 0 commit 0; index:id=value (0-based): 0:86=0 1:7=0 2:76=0 3:141=0 4:76=0 5:141=0 6:75=0 7:141=0 8:68=10 9:9=0 10:70=0 11:103=0
+# scan calc rep2 only bad: open 0 load 0 scan 0 commit 0; index:id=value (0-based): 0:86=0 1:7=0 2:76=0 3:141=0 4:75=0 5:141=0 6:68=8 7:9=0 8:70=0 9:103=0
+# scan calc rep2 good: open 0 load 0 scan 0 commit 0; index:id=value (0-based): 0:86=0 1:7=0 2:76=0 3:141=0 4:76=0 5:141=0 6:75=0 7:141=0 8:68=10 9:9=0 10:70=0 11:103=0
+# scan calc rep3 empty set: open 0 load 0 scan 0 commit 0; index:id=value (0-based): 0:86=0 1:16=2 2:76=0 3:141=0 4:75=0 5:141=0 6:68=8 7:51=0 8:70=0 9:103=0
+# scan count: open 0 load 0 scan 0 commit 0; index:id=value (0-based): 0:103=0
+# scan: close 13
+calc rep1 bad		0	0/507	0
+>	1	calc rep1 bad	1	86	0	0	0	0
+>	1	calc rep1 bad	2	7	0	0	0	0
+>	1	calc rep1 bad	3	76	0	0	0	0
+>	1	calc rep1 bad	4	141	0	0	0	0
+!	507	work : calc rep1 bad : 5 : Commit Records/Requests
+>	1	calc rep1 bad	5	75	1	0	0	507
+>	1	calc rep1 bad	6	141	0	0	0	0
+>	1	calc rep1 bad	7	68	0	0	1	0
+>	1	calc rep1 bad	8	9	0	0	0	0
+>	1	calc rep1 bad	9	70	0	0	1	0
+>	1	calc rep1 bad	10	103	0	0	1	0
+calc rep2 bad		0	00/507	0
+>	1	calc rep2 bad	1	86	0	0	0	0
+>	1	calc rep2 bad	2	7	0	0	0	0
+>	1	calc rep2 bad	3	76	0	0	0	0
+>	1	calc rep2 bad	4	141	0	0	0	0
+>	1	calc rep2 bad	5	76	0	0	0	0
+>	1	calc rep2 bad	6	141	0	0	0	0
+!	507	work : calc rep2 bad : 7 : Commit Records/Requests
+>	1	calc rep2 bad	7	75	1	0	0	507
+>	1	calc rep2 bad	8	141	0	0	0	0
+>	1	calc rep2 bad	9	68	0	0	1	0
+>	1	calc rep2 bad	10	9	0	0	0	0
+>	1	calc rep2 bad	11	70	0	0	1	0
+>	1	calc rep2 bad	12	103	0	0	1	0
+calc rep2 only bad		0	0/507	0
+>	1	calc rep2 only bad	1	86	0	0	0	0
+>	1	calc rep2 only bad	2	7	0	0	0	0
+>	1	calc rep2 only bad	3	76	0	0	0	0
+>	1	calc rep2 only bad	4	141	0	0	0	0
+!	507	work : calc rep2 only bad : 5 : Commit Records/Requests
+>	1	calc rep2 only bad	5	75	1	0	0	507
+>	1	calc rep2 only bad	6	141	0	0	0	0
+>	1	calc rep2 only bad	7	68	0	0	1	0
+>	1	calc rep2 only bad	8	9	0	0	0	0
+>	1	calc rep2 only bad	9	70	0	0	1	0
+>	1	calc rep2 only bad	10	103	0	0	1	0
+calc rep2 good		0	00/0	0
+>	1	calc rep2 good	1	86	0	0	0	0
+>	1	calc rep2 good	2	7	0	0	0	0
+>	1	calc rep2 good	3	76	0	0	0	0
+>	1	calc rep2 good	4	141	0	0	0	0
+>	1	calc rep2 good	5	76	0	0	0	0
+>	1	calc rep2 good	6	141	0	0	0	0
+>	1	calc rep2 good	7	75	0	0	0	0
+>	1	calc rep2 good	8	141	0	0	0	0
+>	1	calc rep2 good	9	68	0	0	1	0
+>	1	calc rep2 good	11	70	0	0	1	0
+>	1	calc rep2 good	12	103	0	0	1	0
+calc rep3 empty set		0	0/0	0
+>	1	calc rep3 empty set	1	86	0	0	0	0
+>	1	calc rep3 empty set	2	16	0	0	0	0
+>	1	calc rep3 empty set	3	76	0	0	0	0
+>	1	calc rep3 empty set	4	141	0	0	0	0
+>	1	calc rep3 empty set	5	75	0	0	0	0
+>	1	calc rep3 empty set	6	141	0	0	0	0
+>	1	calc rep3 empty set	7	68	0	0	1	0
+>	1	calc rep3 empty set	9	70	0	0	1	0
+>	1	calc rep3 empty set	10	103	0	0	1	0
+count		0	1	0
+>	1	count	1	103	0	0	1	0

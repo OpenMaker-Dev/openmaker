@@ -1,0 +1,133 @@
+# scan res sequence: open 0 load 0 scan 0 commit 0; index:id=value (0-based): 0:141=0 1:1=0 2:141=0 3:1=0 4:141=0 5:1=0 6:141=0 7:1=0 8:141=0 9:103=0
+# scan res b exits b: open 0 load 0 scan 0 commit 0; index:id=value (0-based): 0:103=0
+# scan res c exits without result: open 0 load 0 scan 0 commit 0; index:id=value (0-based): 0:103=0
+# scan res d ends: open 0 load 0 scan 0 commit 0; index:id=value (0-based): 0:141=0
+# scan res e exits empty: open 0 load 0 scan 0 commit 0; index:id=value (0-based): 0:103=0
+# scan res deep: open 0 load 0 scan 0 commit 0; index:id=value (0-based): 0:1=0 1:103=0
+# scan res mid: open 0 load 0 scan 0 commit 0; index:id=value (0-based): 0:1=0 1:141=0 2:103=0
+# scan res deep ends: open 0 load 0 scan 0 commit 0; index:id=value (0-based): 0:1=0 1:103=0
+# scan res mid ends: open 0 load 0 scan 0 commit 0; index:id=value (0-based): 0:1=0
+# scan res top no exit: open 0 load 0 scan 0 commit 0; index:id=value (0-based): 0:1=0
+# scan res typed: open 0 load 0 scan 0 commit 0; index:id=value (0-based): 0:1=0 1:141=0 2:1=0 3:141=0 4:103=0
+# scan res date: open 0 load 0 scan 0 commit 0; index:id=value (0-based): 0:103=0
+# scan res number: open 0 load 0 scan 0 commit 0; index:id=value (0-based): 0:103=0
+# scan res exit top date: open 0 load 0 scan 0 commit 0; index:id=value (0-based): 0:103=0
+# scan par sub: open 0 load 0 scan 0 commit 0; index:id=value (0-based): 0:1=0 1:141=0 2:1=0 3:141=0 4:1=0 5:141=0 6:103=0
+# scan par show: open 0 load 0 scan 0 commit 0; index:id=value (0-based): 0:103=0
+# scan var scope: open 0 load 0 scan 0 commit 0; index:id=value (0-based): 0:141=0 1:141=0 2:1=0 3:103=0
+# scan var scope sub: open 0 load 0 scan 0 commit 0; index:id=value (0-based): 0:141=0 1:141=0 2:141=0 3:141=0 4:141=0 5:103=0
+# scan var reps: open 0 load 0 scan 0 commit 0; index:id=value (0-based): 0:141=0 1:141=0 2:141=0 3:141=0 4:141=0 5:141=0 6:141=0 7:141=0 8:103=0
+# scan var let: open 0 load 0 scan 0 commit 0; index:id=value (0-based): 0:141=0 1:1=0 2:103=0
+# scan var let sub: open 0 load 0 scan 0 commit 0; index:id=value (0-based): 0:103=0
+# scan var case: open 0 load 0 scan 0 commit 0; index:id=value (0-based): 0:141=0 1:141=0 2:103=0
+# scan var names: open 0 load 0 scan 0 commit 0; index:id=value (0-based): 0:141=0 1:141=0 2:141=0 3:141=0 4:141=0 5:141=0 6:103=0
+# scan var global set: open 0 load 0 scan 0 commit 0; index:id=value (0-based): 0:141=0
+# scan var global read: open 0 load 0 scan 0 commit 0; index:id=value (0-based): 0:103=0
+# scan: close 13
+res sequence		0	[] b [b] [b] []	0	
+>	1	res sequence	1	141	0	0	0	0
+>	1	res sequence	2	1	0	0	0	0
+>	2	res b exits b	1	103	0	0	1	0
+>	1	res sequence	3	141	0	0	0	0
+>	1	res sequence	4	1	0	0	0	0
+>	2	res c exits without result	1	103	0	0	1	0
+>	1	res sequence	5	141	0	0	0	0
+>	1	res sequence	6	1	0	0	0	0
+>	2	res d ends	1	141	0	0	0	0
+>	1	res sequence	7	141	0	0	0	0
+>	1	res sequence	8	1	0	0	0	0
+>	2	res e exits empty	1	103	0	0	1	0
+>	1	res sequence	9	141	0	0	0	0
+>	1	res sequence	10	103	0	0	1	0
+res deep		0	top saw []	0	b
+>	1	res deep	1	1	0	0	0	0
+>	2	res mid	1	1	0	0	0	0
+>	3	res b exits b	1	103	0	0	1	0
+>	2	res mid	2	141	0	0	0	0
+>	2	res mid	3	103	0	0	1	0
+>	1	res deep	2	103	0	0	1	0
+res deep ends		0	top saw []	0
+>	1	res deep ends	1	1	0	0	0	0
+>	2	res mid ends	1	1	0	0	0	0
+>	3	res b exits b	1	103	0	0	1	0
+>	1	res deep ends	2	103	0	0	1	0
+res top no exit		0		0	
+>	1	res top no exit	1	1	0	0	0	0
+>	2	res b exits b	1	103	0	0	1	0
+res typed		0	1/3/2020 12.5|13.5	0
+>	1	res typed	1	1	0	0	0	0
+>	2	res date	1	103	0	0	1	0
+>	1	res typed	2	141	0	0	0	0
+>	1	res typed	3	1	0	0	0	0
+>	2	res number	1	103	0	0	1	0
+>	1	res typed	4	141	0	0	0	0
+>	1	res typed	5	103	0	0	1	0
+res exit top date		0	1/2/2020	0
+>	1	res exit top date	1	103	0	0	1	0
+par sub	top	0	top | par show:[p1]2 | par show:[]1 | par show:[1/2/2020]1/3/2020	0
+>	1	par sub	1	1	0	0	0	0
+>	2	par show	1	103	0	0	1	0
+>	1	par sub	2	141	0	0	0	0
+>	1	par sub	3	1	0	0	0	0
+>	2	par show	1	103	0	0	1	0
+>	1	par sub	4	141	0	0	0	0
+>	1	par sub	5	1	0	0	0	0
+>	2	par show	1	103	0	0	1	0
+>	1	par sub	6	141	0	0	0	0
+>	1	par sub	7	103	0	0	1	0
+par sub		0	 | par show:[p1]2 | par show:[]1 | par show:[1/2/2020]1/3/2020	0
+>	1	par sub	1	1	0	0	0	0
+>	2	par show	1	103	0	0	1	0
+>	1	par sub	2	141	0	0	0	0
+>	1	par sub	3	1	0	0	0	0
+>	2	par show	1	103	0	0	1	0
+>	1	par sub	4	141	0	0	0	0
+>	1	par sub	5	1	0	0	0	0
+>	2	par show	1	103	0	0	1	0
+>	1	par sub	6	141	0	0	0	0
+>	1	par sub	7	103	0	0	1	0
+var scope		0	sub saw x=[] g=1 | x=1 g=2 y= gy=4	0	2	4	
+>	1	var scope	1	141	0	0	0	0
+>	1	var scope	2	141	0	0	0	0
+>	1	var scope	3	1	0	0	0	0
+>	2	var scope sub	1	141	0	0	0	0
+>	2	var scope sub	2	141	0	0	0	0
+>	2	var scope sub	3	141	0	0	0	0
+>	2	var scope sub	4	141	0	0	0	0
+>	2	var scope sub	5	141	0	0	0	0
+>	2	var scope sub	6	103	0	0	1	0
+>	1	var scope	4	103	0	0	1	0
+var reps		0	a\ra\rb\r[]\rw2\r[zero]\r[neg]\r[frac]\r[]	0
+>	1	var reps	1	141	0	0	0	0
+>	1	var reps	2	141	0	0	0	0
+>	1	var reps	3	141	0	0	0	0
+>	1	var reps	4	141	0	0	0	0
+>	1	var reps	5	141	0	0	0	0
+>	1	var reps	6	141	0	0	0	0
+>	1	var reps	7	141	0	0	0	0
+>	1	var reps	8	141	0	0	0	0
+>	1	var reps	9	103	0	0	1	0
+var let		0	5,6,[]6	0	6
+>	1	var let	1	141	0	0	0	0
+>	1	var let	2	1	0	0	0	0
+>	2	var let sub	1	103	0	0	1	0
+>	1	var let	3	103	0	0	1	0
+var case		0	xxy	0
+>	1	var case	1	141	0	0	0	0
+>	1	var case	2	141	0	0	0	0
+>	1	var case	3	103	0	0	1	0
+var names		0	0	0	0
+>	1	var names	1	141	0	0	0	0
+!	5	work : var names : 2 : Set Variable
+>	1	var names	2	141	5	0	0	5
+!	5	work : var names : 3 : Set Variable
+>	1	var names	3	141	5	0	0	5
+!	5	work : var names : 4 : Set Variable
+>	1	var names	4	141	5	0	0	5
+>	1	var names	5	141	0	0	0	0
+>	1	var names	6	141	0	0	0	0
+>	1	var names	7	103	0	0	1	0
+var global set		0		0	set
+>	1	var global set	1	141	0	0	0	0
+var global read		0	[]	0	
+>	1	var global read	1	103	0	0	1	0

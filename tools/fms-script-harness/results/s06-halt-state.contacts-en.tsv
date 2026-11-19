@@ -1,0 +1,41 @@
+# scan halt top: open 0 load 0 scan 0 commit 0; index:id=value (0-based): 0:141=0 1:86=0 2:85=0 3:223=0 4:1=0 5:141=0 6:103=0
+# scan halt mid: open 0 load 0 scan 0 commit 0; index:id=value (0-based): 0:1=0 1:141=0 2:103=0
+# scan halt bottom: open 0 load 0 scan 0 commit 0; index:id=value (0-based): 0:1=0 1:90=0 2:141=0
+# scan halt at top: open 0 load 0 scan 0 commit 0; index:id=value (0-based): 0:103=0
+# scan state from sub persists: open 0 load 0 scan 0 commit 0; index:id=value (0-based): 0:1=0 1:103=0
+# scan state sub sets: open 0 load 0 scan 0 commit 0; index:id=value (0-based): 0:86=0 1:85=0 2:223=0
+# scan state inherited by sub: open 0 load 0 scan 0 commit 0; index:id=value (0-based): 0:86=0 1:85=0 2:223=0 3:1=0 4:103=0
+# scan state sub reads: open 0 load 0 scan 0 commit 0; index:id=value (0-based): 0:103=0
+# scan state at start: open 0 load 0 scan 0 commit 0; index:id=value (0-based): 0:103=0
+# scan halt then trigger layout: open 0 load 0 scan 0 commit 0; index:id=value (0-based): 0:6=5 1:6=5 2:90=0
+# scan: close 13
+halt top		104		104	104	1				0	1	1
+>	1	halt top	1	141	0	0	0	0
+>	1	halt top	2	86	0	0	0	0
+>	1	halt top	3	85	0	0	0	0
+>	1	halt top	4	223	0	0	0	0
+>	1	halt top	5	1	0	0	0	0
+>	2	halt mid	1	1	0	0	0	0
+!	104	work : halt bottom : 1 : Perform Script
+>	3	halt bottom	1	1	104	0	0	104
+>	3	halt bottom	2	90	0	0	1	104
+state from sub persists		0	100	0	0
+>	1	state from sub persists	1	1	0	0	0	0
+>	2	state sub sets	1	86	0	0	0	0
+>	2	state sub sets	2	85	0	0	0	0
+>	2	state sub sets	3	223	0	0	0	0
+>	1	state from sub persists	2	103	0	0	1	0
+state inherited by sub		0	100	0
+>	1	state inherited by sub	1	86	0	0	0	0
+>	1	state inherited by sub	2	85	0	0	0	0
+>	1	state inherited by sub	3	223	0	0	0	0
+>	1	state inherited by sub	4	1	0	0	0	0
+>	2	state sub reads	1	103	0	0	1	0
+>	1	state inherited by sub	5	103	0	0	1	0
+state at start		0	011	0
+>	1	state at start	1	103	0	0	1	0
+halt then trigger layout		0		0	0
+>	1	halt then trigger layout	1	6	0	0	0	0
+>	1	halt then trigger layout	2	6	0	0	0	0
+>	2	Sort by Name	1	39	0	0	0	0
+>	1	halt then trigger layout	3	90	0	0	1	0

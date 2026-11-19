@@ -1,0 +1,72 @@
+# scan url: open 0 load 0 scan 0 commit 0; index:id=value (0-based): 0:86=0 1:7=0 2:160=0 3:141=0 4:75=0 5:103=0
+# scan: close 13
+url	http://127.0.0.1:8080/image+png/-/x.gif	0	0|x.gif|73|3x2|117|0|1	0
+>	1	url	1	86	0	0	0	0
+>	1	url	2	7	0	0	0	0
+>	1	url	3	160	0	0	0	0
+>	1	url	4	141	0	0	0	0
+>	1	url	5	75	0	0	0	0
+>	1	url	6	103	0	0	1	0
+url	http://127.0.0.1:8080/text+plain/-/x.gif	0	0|x.gif|73|3x2|117|0|2	0
+>	1	url	1	86	0	0	0	0
+>	1	url	2	7	0	0	0	0
+>	1	url	3	160	0	0	0	0
+>	1	url	4	141	0	0	0	0
+>	1	url	5	75	0	0	0	0
+>	1	url	6	103	0	0	1	0
+url	http://127.0.0.1:8080/image+gif/-/x.gif	0	0|x.gif|73|3x2|117|0|3	0
+>	1	url	1	86	0	0	0	0
+>	1	url	2	7	0	0	0	0
+>	1	url	3	160	0	0	0	0
+>	1	url	4	141	0	0	0	0
+>	1	url	5	75	0	0	0	0
+>	1	url	6	103	0	0	1	0
+url	http://127.0.0.1:8080/-/-/x.gif	0	0|x.gif|73|3x2|117|0|4	0
+>	1	url	1	86	0	0	0	0
+>	1	url	2	7	0	0	0	0
+>	1	url	3	160	0	0	0	0
+>	1	url	4	141	0	0	0	0
+>	1	url	5	75	0	0	0	0
+>	1	url	6	103	0	0	1	0
+url	http://127.0.0.1:8080/image+gif/-/dot.png	0	0|dot.png|35|1x1|81|0|5	0
+>	1	url	1	86	0	0	0	0
+>	1	url	2	7	0	0	0	0
+>	1	url	3	160	0	0	0	0
+>	1	url	4	141	0	0	0	0
+>	1	url	5	75	0	0	0	0
+>	1	url	6	103	0	0	1	0
+url	http://127.0.0.1:8080/-/-/dot.png	0	0|dot.png|35|1x1|81|0|6	0
+>	1	url	1	86	0	0	0	0
+>	1	url	2	7	0	0	0	0
+>	1	url	3	160	0	0	0	0
+>	1	url	4	141	0	0	0	0
+>	1	url	5	75	0	0	0	0
+>	1	url	6	103	0	0	1	0
+url	http://127.0.0.1:8080/image+png/-/RED.JPG	0	0|RED.JPG|73|3x2|119|0|7	0
+>	1	url	1	86	0	0	0	0
+>	1	url	2	7	0	0	0	0
+>	1	url	3	160	0	0	0	0
+>	1	url	4	141	0	0	0	0
+>	1	url	5	75	0	0	0	0
+>	1	url	6	103	0	0	1	0
+url	http://127.0.0.1:8080/image+jpeg/-/red.png	0	0|red.png|73|3x2|119|0|8	0
+>	1	url	1	86	0	0	0	0
+>	1	url	2	7	0	0	0	0
+>	1	url	3	160	0	0	0	0
+>	1	url	4	141	0	0	0	0
+>	1	url	5	75	0	0	0	0
+>	1	url	6	103	0	0	1	0
+url	http://127.0.0.1:8080/image+png/attachment;%20filename=x.gif/red.png	0	0|x.gif|73|3x2|117|0|9	0
+>	1	url	1	86	0	0	0	0
+>	1	url	2	7	0	0	0	0
+>	1	url	3	160	0	0	0	0
+>	1	url	4	141	0	0	0	0
+>	1	url	5	75	0	0	0	0
+>	1	url	6	103	0	0	1	0
+url	http://127.0.0.1:8080/text+plain/attachment;%20filename=x.gif/red.png	0	0|x.gif|73|3x2|117|0|10	0
+>	1	url	1	86	0	0	0	0
+>	1	url	2	7	0	0	0	0
+>	1	url	3	160	0	0	0	0
+>	1	url	4	141	0	0	0	0
+>	1	url	5	75	0	0	0	0
+>	1	url	6	103	0	0	1	0

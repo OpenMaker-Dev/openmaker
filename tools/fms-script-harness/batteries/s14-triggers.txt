@@ -1,0 +1,156 @@
+# Layout triggers whose script returns False, True, a text, an empty
+# result, no result, halts or fails (script-runtime.md 7.4 and the
+# implementation notes' "Triggers"): pre-event OnLayoutExit (Go to Layout)
+# and OnRecordCommit (Commit Records), post-event OnLayoutEnter and
+# OnRecordLoad, a trigger fired in a sub-script. The probe file is generated
+# with these triggers (Contact List's own OnLayoutEnter, Sort by Name, is
+# replaced). Each trigger script logs to $$log and ends as the word of $$m
+# (the run's parameter) its event reads: 1 OnLayoutExit, 2 OnLayoutEnter,
+# 3 OnRecordCommit, 4 OnRecordLoad ("t first" uses word 5 for its Go to
+# Record); true, false, text ("abc"), empty (""), none (no Exit Script),
+# halt, error (Perform Script of a missing script, no Exit Script). Base
+# file: contacts-en (generated; no records until "t commit records").
+@trigger	Contact Details	OnLayoutExit	t exit
+@trigger	Contact Details	OnRecordCommit	t commit
+@trigger	Contact List	OnLayoutEnter	t enter
+@trigger	Contact List	OnRecordLoad	t load
+== t exit
+Set Variable [ $$log ; $$log & " X" & MiddleWords ( $$m ; 1 ; 1 ) & "(" & Get ( LayoutName ) & "/" & Get ( LastError ) & ")" ]
+Set Variable [ $v ; MiddleWords ( $$m ; 1 ; 1 ) ]
+If [ $v = "true" ]
+Exit Script [ True ]
+Else If [ $v = "false" ]
+Exit Script [ False ]
+Else If [ $v = "text" ]
+Exit Script [ "abc" ]
+Else If [ $v = "empty" ]
+Exit Script [ "" ]
+Else If [ $v = "halt" ]
+Halt Script
+Else If [ $v = "error" ]
+Perform Script [ By name: "no such script" ]
+End If
+== t enter
+Set Variable [ $$log ; $$log & " E" & MiddleWords ( $$m ; 2 ; 1 ) & "(" & Get ( LayoutName ) & "/" & Get ( LastError ) & ")" ]
+Set Variable [ $v ; MiddleWords ( $$m ; 2 ; 1 ) ]
+If [ $v = "true" ]
+Exit Script [ True ]
+Else If [ $v = "false" ]
+Exit Script [ False ]
+Else If [ $v = "text" ]
+Exit Script [ "abc" ]
+Else If [ $v = "halt" ]
+Halt Script
+Else If [ $v = "error" ]
+Perform Script [ By name: "no such script" ]
+End If
+== t commit
+Set Variable [ $$log ; $$log & " C" & MiddleWords ( $$m ; 3 ; 1 ) & "(" & Get ( LastError ) & ")" ]
+Set Variable [ $v ; MiddleWords ( $$m ; 3 ; 1 ) ]
+If [ $v = "true" ]
+Exit Script [ True ]
+Else If [ $v = "false" ]
+Exit Script [ False ]
+Else If [ $v = "halt" ]
+Halt Script
+Else If [ $v = "error" ]
+Perform Script [ By name: "no such script" ]
+End If
+== t load
+Set Variable [ $$log ; $$log & " L" & MiddleWords ( $$m ; 4 ; 1 ) & "(" & Get ( RecordNumber ) & "/" & Get ( LastError ) & ")" ]
+Set Variable [ $v ; MiddleWords ( $$m ; 4 ; 1 ) ]
+If [ $v = "true" ]
+Exit Script [ True ]
+Else If [ $v = "false" ]
+Exit Script [ False ]
+Else If [ $v = "halt" ]
+Halt Script
+End If
+== t goto
+Set Variable [ $$m ; Get ( ScriptParameter ) ]
+Set Variable [ $$log ; "A" ]
+Go to Layout [ "Contact List" ]
+Set Variable [ $$log ; $$log & " B(" & Get ( LayoutName ) & "/" & Get ( LastError ) & "/" & Get ( ScriptResult ) & ")" ]
+Exit Script [ $$log ]
+== t goto after error
+Set Variable [ $$m ; Get ( ScriptParameter ) ]
+Set Variable [ $$log ; "A" ]
+Perform Script [ By name: "no such script" ]
+Go to Layout [ "Contact List" ]
+Set Variable [ $$log ; $$log & " B(" & Get ( LayoutName ) & "/" & Get ( LastError ) & ")" ]
+Exit Script [ $$log ]
+== t goto sub
+Set Variable [ $$m ; Get ( ScriptParameter ) ]
+Set Variable [ $$log ; "A" ]
+Perform Script [ "t goto inner" ]
+Set Variable [ $$log ; $$log & " D(" & Get ( LayoutName ) & "/" & Get ( LastError ) & "/" & Get ( ScriptResult ) & ")" ]
+Exit Script [ $$log ]
+== t goto inner
+Go to Layout [ "Contact List" ]
+== t goto back
+Set Variable [ $$m ; Get ( ScriptParameter ) ]
+Set Variable [ $$log ; "A" ]
+Go to Layout [ "Contact List" ]
+Go to Layout [ "Contact Details" ]
+Set Variable [ $$log ; $$log & " B(" & Get ( LayoutName ) & "/" & Get ( LastError ) & ")" ]
+Exit Script [ $$log ]
+== t commit records
+Set Variable [ $$m ; Get ( ScriptParameter ) ]
+Set Variable [ $$log ; "A" ]
+New Record/Request
+Set Field [ Contacts::First Name ; "c " & MiddleWords ( $$m ; 3 ; 1 ) ]
+Commit Records/Requests [ With dialog: Off ]
+Set Variable [ $$log ; $$log & " B(" & Get ( LastError ) & "/" & Get ( FoundCount ) & ")" ]
+Exit Script [ $$log ]
+== t next
+Set Variable [ $$m ; Get ( ScriptParameter ) ]
+Set Variable [ $$log ; "A" ]
+Go to Layout [ "Contact List" ]
+Set Variable [ $$log ; $$log & " B(" & Get ( RecordNumber ) & "/" & Get ( LastError ) & ")" ]
+Go to Record/Request/Page [ Next ]
+Set Variable [ $$log ; $$log & " N(" & Get ( RecordNumber ) & "/" & Get ( LastError ) & ")" ]
+Exit Script [ $$log ]
+== t first
+Set Variable [ $$m ; Get ( ScriptParameter ) ]
+Set Variable [ $$log ; "A" ]
+Go to Layout [ "Contact List" ]
+Set Variable [ $$m ; "x x x " & MiddleWords ( $$m ; 5 ; 1 ) ]
+Go to Record/Request/Page [ First ]
+Set Variable [ $$log ; $$log & " F(" & Get ( RecordNumber ) & "/" & Get ( LastError ) & ")" ]
+Exit Script [ $$log ]
+== t count
+Exit Script [ ExecuteSQL ( "SELECT COUNT(*) FROM Contacts" ; "" ; "" ) & " " & Substitute ( ExecuteSQL ( "SELECT \"First Name\" FROM Contacts" ; "" ; "," ) ; ¶ ; "," ) ]
+--- run
+t goto	true true	Get ( LayoutName )	Get ( LastError )
+t goto	false true	Get ( LayoutName )	Get ( LastError )
+t goto	text true	Get ( LayoutName )	Get ( LastError )
+t goto	empty true	Get ( LayoutName )	Get ( LastError )
+t goto	none true	Get ( LayoutName )	Get ( LastError )
+t goto	halt true	Get ( LayoutName )	Get ( LastError )	$$log
+t goto	error true	Get ( LayoutName )	Get ( LastError )
+t goto	true false	Get ( LayoutName )	Get ( LastError )
+t goto	true text	Get ( LayoutName )	Get ( LastError )
+t goto	true halt	Get ( LayoutName )	Get ( LastError )	$$log
+t goto	true error	Get ( LayoutName )	Get ( LastError )
+t goto after error	none true	Get ( LayoutName )	Get ( LastError )
+t goto after error	false true	Get ( LayoutName )	Get ( LastError )
+t goto sub	false true	Get ( LayoutName )	Get ( LastError )
+t goto sub	true true	Get ( LayoutName )	Get ( LastError )
+t goto back	true true	Get ( LayoutName )	Get ( LastError )
+t goto back	true false	Get ( LayoutName )	Get ( LastError )
+t commit records	x x true	Get ( LastError )
+t count
+t commit records	x x false	Get ( LastError )
+t count
+t commit records	x x none	Get ( LastError )
+t count
+t commit records	x x error	Get ( LastError )
+t count
+t commit records	x x halt	Get ( LastError )	$$log
+t count
+t next	true true x true	Get ( RecordNumber )	Get ( LastError )
+t next	true true x false	Get ( RecordNumber )	Get ( LastError )
+t next	true true x halt	Get ( RecordNumber )	Get ( LastError )	$$log
+t first	true true x true true	Get ( RecordNumber )	Get ( LastError )
+t first	true true x true false	Get ( RecordNumber )	Get ( LastError )
+t first	true true x true halt	Get ( RecordNumber )	Get ( LastError )	$$log

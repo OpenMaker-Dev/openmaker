@@ -1,0 +1,11 @@
+# s34-containers-release's scripts run on the file step_table_probe makes
+# from its patched copy: the Truncate Table step given base table Contacts
+# (80 02), which FMUpgradeTool's import drops (no sample holds the step's
+# XML form). Make it and run it from a folder of its own:
+#   cargo run -p om-server --example step_table_probe -- \
+#       $WORK/s34-containers-release.contacts-en.patch.fmp12 $DIR/s34-truncate.fmp12 truncate 0 8002
+#   FILES=$DIR runbat.sh s34-containers-release-truncate.txt s34-truncate.fmp12
+# The run copy (s34-truncate.run.fmp12 in WORK) holds the library after.
+@scan	fill	truncate
+fill
+truncate

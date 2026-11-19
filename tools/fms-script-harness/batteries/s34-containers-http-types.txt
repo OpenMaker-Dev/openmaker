@@ -1,0 +1,21 @@
+# Follow-up of s34-containers-http: which picture type Insert from URL stores
+# when the name's extension, the bytes and the Content-Type disagree (x.gif
+# holds a PNG, dot.png a GIF). Same server and scripts. Base file: contacts-en.
+== url
+Set Error Capture [ On ]
+New Record/Request
+Insert from URL [ Select: On ; Contacts::Photo ; Get ( ScriptParameter ) ]
+Set Variable [ $$r ; Get ( LastError ) & "|" & GetAsText ( Contacts::Photo ) & "|" & Length ( Contacts::Photo ) & "|" & GetWidth ( Contacts::Photo ) & "x" & GetHeight ( Contacts::Photo ) & "|" & GetContainerAttribute ( Contacts::Photo ; "internalSize" ) & "|" & IsEmpty ( Contacts::Photo ) ]
+Commit Records/Requests [ With dialog: Off ]
+Exit Script [ $$r & "|" & Get ( RecordID ) ]
+--- run
+url	http://127.0.0.1:8080/image+png/-/x.gif
+url	http://127.0.0.1:8080/text+plain/-/x.gif
+url	http://127.0.0.1:8080/image+gif/-/x.gif
+url	http://127.0.0.1:8080/-/-/x.gif
+url	http://127.0.0.1:8080/image+gif/-/dot.png
+url	http://127.0.0.1:8080/-/-/dot.png
+url	http://127.0.0.1:8080/image+png/-/RED.JPG
+url	http://127.0.0.1:8080/image+jpeg/-/red.png
+url	http://127.0.0.1:8080/image+png/attachment;%20filename=x.gif/red.png
+url	http://127.0.0.1:8080/text+plain/attachment;%20filename=x.gif/red.png

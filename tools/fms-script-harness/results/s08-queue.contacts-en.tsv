@@ -1,0 +1,304 @@
+# scan q paused: open 0 load 0 scan 0 commit 0; index:id=value (0-based): 0:141=0 1:62=0 2:141=0 3:103=0
+# scan q running: open 0 load 0 scan 0 commit 0; index:id=value (0-based): 0:141=0 1:141=0 2:141=0 3:103=0
+# scan q nested: open 0 load 0 scan 0 commit 0; index:id=value (0-based): 0:141=0 1:1=0 2:141=0 3:103=0
+# scan q nested sub: open 0 load 0 scan 0 commit 0; index:id=value (0-based): 0:141=0 1:141=0 2:141=0
+# scan q other: open 0 load 0 scan 0 commit 0; index:id=value (0-based): 0:141=0 1:103=0
+# scan: close 13
+# @call	q paused	2	q other	0	0
+q paused		0	A1 B() A3 result(b)	0	A1 B() A3	0
+>	1	q paused	1	141	0	0	0	0
+>	1	q paused	2	62	0	0	0	0
+@	call q other state 0 bottom 0 -> error 0	depth 2
+>	2	q other	1	141	0	0	0	0
+>	2	q other	2	103	0	0	1	0
+>	1	q paused	3	141	0	0	0	0
+>	1	q paused	4	103	0	0	1	0
+# @call
+# @call	q paused	2	q other	0	1
+q paused		0	A1 A3 result()	0	A1 A3 B()	0
+>	1	q paused	1	141	0	0	0	0
+>	1	q paused	2	62	0	0	0	0
+@	call q other state 0 bottom 1 -> error 0	depth 2
+>	2	q paused	3	141	0	0	0	0
+>	2	q paused	4	103	0	0	1	0
+>	1	q other	1	141	0	0	0	0
+>	1	q other	2	103	0	0	1	0
+# @call
+# @call	q paused	2	q other	1	0
+q paused		0		0	A1 B()	0
+>	1	q paused	1	141	0	0	0	0
+>	1	q paused	2	62	0	0	0	0
+@	call q other state 1 bottom 0 -> error 0	depth 1
+>	1	q other	1	141	0	0	0	0
+>	1	q other	2	103	0	0	1	0
+# @call
+# @call	q paused	2	q other	1	1
+q paused		0		0	A1 B()	0
+>	1	q paused	1	141	0	0	0	0
+>	1	q paused	2	62	0	0	0	0
+@	call q other state 1 bottom 1 -> error 0	depth 1
+>	1	q other	1	141	0	0	0	0
+>	1	q other	2	103	0	0	1	0
+# @call
+# @call	q paused	2	q other	2	0
+q paused		0		0	A1 B()	0
+>	1	q paused	1	141	0	0	0	0
+>	1	q paused	2	62	0	0	0	0
+@	call q other state 2 bottom 0 -> error 0	depth 1
+>	1	q other	1	141	0	0	0	0
+>	1	q other	2	103	0	0	1	0
+# @call
+# @call	q paused	2	q other	2	1
+q paused		0		0	A1 B()	0
+>	1	q paused	1	141	0	0	0	0
+>	1	q paused	2	62	0	0	0	0
+@	call q other state 2 bottom 1 -> error 0	depth 1
+>	1	q other	1	141	0	0	0	0
+>	1	q other	2	103	0	0	1	0
+# @call
+# @call	q paused	2	q other	3	0
+q paused		0	A1 B() A3 result(b)	0	A1 B() A3	0
+>	1	q paused	1	141	0	0	0	0
+>	1	q paused	2	62	0	0	0	0
+@	call q other state 3 bottom 0 -> error 0	depth 2
+>	2	q other	1	141	0	0	0	0
+>	2	q other	2	103	0	0	1	0
+>	1	q paused	3	141	0	0	0	0
+>	1	q paused	4	103	0	0	1	0
+# @call
+# @call	q paused	2	q other	3	1
+q paused		0	A1 A3 result()	0	A1 A3 B()	0
+>	1	q paused	1	141	0	0	0	0
+>	1	q paused	2	62	0	0	0	0
+@	call q other state 3 bottom 1 -> error 0	depth 2
+>	2	q paused	3	141	0	0	0	0
+>	2	q paused	4	103	0	0	1	0
+>	1	q other	1	141	0	0	0	0
+>	1	q other	2	103	0	0	1	0
+# @call
+# @call	q paused	2	q other	4	0
+q paused		0	A1 B() A3 result(b)	0	A1 B() A3	0
+>	1	q paused	1	141	0	0	0	0
+>	1	q paused	2	62	0	0	0	0
+@	call q other state 4 bottom 0 -> error 0	depth 2
+>	2	q other	1	141	0	0	0	0
+>	2	q other	2	103	0	0	1	0
+>	1	q paused	3	141	0	0	0	0
+>	1	q paused	4	103	0	0	1	0
+# @call
+# @call	q paused	2	q other	4	1
+q paused		0	A1 A3 result()	0	A1 A3 B()	0
+>	1	q paused	1	141	0	0	0	0
+>	1	q paused	2	62	0	0	0	0
+@	call q other state 4 bottom 1 -> error 0	depth 2
+>	2	q paused	3	141	0	0	0	0
+>	2	q paused	4	103	0	0	1	0
+>	1	q other	1	141	0	0	0	0
+>	1	q other	2	103	0	0	1	0
+# @call
+# @call	q paused	2	q other	5	0
+q paused		0	A1 B() A3 result(b)	0	A1 B() A3	0
+>	1	q paused	1	141	0	0	0	0
+>	1	q paused	2	62	0	0	0	0
+@	call q other state 5 bottom 0 -> error 0	depth 2
+>	2	q other	1	141	0	0	0	0
+>	2	q other	2	103	0	0	1	0
+>	1	q paused	3	141	0	0	0	0
+>	1	q paused	4	103	0	0	1	0
+# @call
+# @call	q paused	2	q other	5	1
+q paused		0	A1 A3 result()	0	A1 A3 B()	0
+>	1	q paused	1	141	0	0	0	0
+>	1	q paused	2	62	0	0	0	0
+@	call q other state 5 bottom 1 -> error 0	depth 2
+>	2	q paused	3	141	0	0	0	0
+>	2	q paused	4	103	0	0	1	0
+>	1	q other	1	141	0	0	0	0
+>	1	q other	2	103	0	0	1	0
+# @call
+# @call	q running	2	q other	0	0
+q running		0	A1 A2 B() A3 result(b)	0	A1 A2 B() A3	0
+>	1	q running	1	141	0	0	0	0
+>	1	q running	2	141	0	0	0	0
+@	call q other state 0 bottom 0 -> error 0	depth 2
+>	2	q other	1	141	0	0	0	0
+>	2	q other	2	103	0	0	1	0
+>	1	q running	3	141	0	0	0	0
+>	1	q running	4	103	0	0	1	0
+# @call
+# @call	q running	2	q other	0	1
+q running		0	A1 A2 A3 result()	0	A1 A2 A3 B()	0
+>	1	q running	1	141	0	0	0	0
+>	1	q running	2	141	0	0	0	0
+@	call q other state 0 bottom 1 -> error 0	depth 2
+>	2	q running	3	141	0	0	0	0
+>	2	q running	4	103	0	0	1	0
+>	1	q other	1	141	0	0	0	0
+>	1	q other	2	103	0	0	1	0
+# @call
+# @call	q running	2	q other	1	0
+q running		0		0	A1 A2 B()	0
+>	1	q running	1	141	0	0	0	0
+>	1	q running	2	141	0	0	0	0
+@	call q other state 1 bottom 0 -> error 0	depth 1
+>	1	q other	1	141	0	0	0	0
+>	1	q other	2	103	0	0	1	0
+# @call
+# @call	q running	2	q other	1	1
+q running		0		0	A1 A2 B()	0
+>	1	q running	1	141	0	0	0	0
+>	1	q running	2	141	0	0	0	0
+@	call q other state 1 bottom 1 -> error 0	depth 1
+>	1	q other	1	141	0	0	0	0
+>	1	q other	2	103	0	0	1	0
+# @call
+# @call	q running	2	q other	2	0
+q running		0		0	A1 A2 B()	0
+>	1	q running	1	141	0	0	0	0
+>	1	q running	2	141	0	0	0	0
+@	call q other state 2 bottom 0 -> error 0	depth 1
+>	1	q other	1	141	0	0	0	0
+>	1	q other	2	103	0	0	1	0
+# @call
+# @call	q running	2	q other	2	1
+q running		0		0	A1 A2 B()	0
+>	1	q running	1	141	0	0	0	0
+>	1	q running	2	141	0	0	0	0
+@	call q other state 2 bottom 1 -> error 0	depth 1
+>	1	q other	1	141	0	0	0	0
+>	1	q other	2	103	0	0	1	0
+# @call
+# @call	q running	2	q other	3	0
+q running		0	A1 A2 B() A3 result(b)	0	A1 A2 B() A3	0
+>	1	q running	1	141	0	0	0	0
+>	1	q running	2	141	0	0	0	0
+@	call q other state 3 bottom 0 -> error 0	depth 2
+>	2	q other	1	141	0	0	0	0
+>	2	q other	2	103	0	0	1	0
+>	1	q running	3	141	0	0	0	0
+>	1	q running	4	103	0	0	1	0
+# @call
+# @call	q running	2	q other	3	1
+q running		0	A1 A2 A3 result()	0	A1 A2 A3 B()	0
+>	1	q running	1	141	0	0	0	0
+>	1	q running	2	141	0	0	0	0
+@	call q other state 3 bottom 1 -> error 0	depth 2
+>	2	q running	3	141	0	0	0	0
+>	2	q running	4	103	0	0	1	0
+>	1	q other	1	141	0	0	0	0
+>	1	q other	2	103	0	0	1	0
+# @call
+# @call	q running	2	q other	4	0
+q running		0	A1 A2 B() A3 result(b)	0	A1 A2 B() A3	0
+>	1	q running	1	141	0	0	0	0
+>	1	q running	2	141	0	0	0	0
+@	call q other state 4 bottom 0 -> error 0	depth 2
+>	2	q other	1	141	0	0	0	0
+>	2	q other	2	103	0	0	1	0
+>	1	q running	3	141	0	0	0	0
+>	1	q running	4	103	0	0	1	0
+# @call
+# @call	q running	2	q other	4	1
+q running		0	A1 A2 A3 result()	0	A1 A2 A3 B()	0
+>	1	q running	1	141	0	0	0	0
+>	1	q running	2	141	0	0	0	0
+@	call q other state 4 bottom 1 -> error 0	depth 2
+>	2	q running	3	141	0	0	0	0
+>	2	q running	4	103	0	0	1	0
+>	1	q other	1	141	0	0	0	0
+>	1	q other	2	103	0	0	1	0
+# @call
+# @call	q running	2	q other	5	0
+q running		0	A1 A2 B() A3 result(b)	0	A1 A2 B() A3	0
+>	1	q running	1	141	0	0	0	0
+>	1	q running	2	141	0	0	0	0
+@	call q other state 5 bottom 0 -> error 0	depth 2
+>	2	q other	1	141	0	0	0	0
+>	2	q other	2	103	0	0	1	0
+>	1	q running	3	141	0	0	0	0
+>	1	q running	4	103	0	0	1	0
+# @call
+# @call	q running	2	q other	5	1
+q running		0	A1 A2 A3 result()	0	A1 A2 A3 B()	0
+>	1	q running	1	141	0	0	0	0
+>	1	q running	2	141	0	0	0	0
+@	call q other state 5 bottom 1 -> error 0	depth 2
+>	2	q running	3	141	0	0	0	0
+>	2	q running	4	103	0	0	1	0
+>	1	q other	1	141	0	0	0	0
+>	1	q other	2	103	0	0	1	0
+# @call
+# @call	q nested sub	2	q other	0	0
+q nested		0	A1 S1 S2 B() S3 A3 result()	0	A1 S1 S2 B() S3 A3
+>	1	q nested	1	141	0	0	0	0
+>	1	q nested	2	1	0	0	0	0
+>	2	q nested sub	1	141	0	0	0	0
+>	2	q nested sub	2	141	0	0	0	0
+@	call q other state 0 bottom 0 -> error 0	depth 3
+>	3	q other	1	141	0	0	0	0
+>	3	q other	2	103	0	0	1	0
+>	2	q nested sub	3	141	0	0	0	0
+>	1	q nested	3	141	0	0	0	0
+>	1	q nested	4	103	0	0	1	0
+# @call
+# @call	q nested sub	2	q other	1	0
+q nested		0		0	A1 S1 S2 B()
+>	1	q nested	1	141	0	0	0	0
+>	1	q nested	2	1	0	0	0	0
+>	2	q nested sub	1	141	0	0	0	0
+>	2	q nested sub	2	141	0	0	0	0
+@	call q other state 1 bottom 0 -> error 0	depth 1
+>	1	q other	1	141	0	0	0	0
+>	1	q other	2	103	0	0	1	0
+# @call
+# @call	q nested sub	2	q other	2	0
+q nested		0	A1 S1 S2 B() A3 result(b)	0	A1 S1 S2 B() A3
+>	1	q nested	1	141	0	0	0	0
+>	1	q nested	2	1	0	0	0	0
+>	2	q nested sub	1	141	0	0	0	0
+>	2	q nested sub	2	141	0	0	0	0
+@	call q other state 2 bottom 0 -> error 0	depth 2
+>	2	q other	1	141	0	0	0	0
+>	2	q other	2	103	0	0	1	0
+>	1	q nested	3	141	0	0	0	0
+>	1	q nested	4	103	0	0	1	0
+# @call
+# @call	q nested sub	2	q other	3	0
+q nested		0	A1 S1 S2 B() S3 A3 result()	0	A1 S1 S2 B() S3 A3
+>	1	q nested	1	141	0	0	0	0
+>	1	q nested	2	1	0	0	0	0
+>	2	q nested sub	1	141	0	0	0	0
+>	2	q nested sub	2	141	0	0	0	0
+@	call q other state 3 bottom 0 -> error 0	depth 3
+>	3	q other	1	141	0	0	0	0
+>	3	q other	2	103	0	0	1	0
+>	2	q nested sub	3	141	0	0	0	0
+>	1	q nested	3	141	0	0	0	0
+>	1	q nested	4	103	0	0	1	0
+# @call
+# @call	q nested sub	2	q other	4	0
+q nested		0	A1 S1 S2 B() S3 A3 result()	0	A1 S1 S2 B() S3 A3
+>	1	q nested	1	141	0	0	0	0
+>	1	q nested	2	1	0	0	0	0
+>	2	q nested sub	1	141	0	0	0	0
+>	2	q nested sub	2	141	0	0	0	0
+@	call q other state 4 bottom 0 -> error 0	depth 3
+>	3	q other	1	141	0	0	0	0
+>	3	q other	2	103	0	0	1	0
+>	2	q nested sub	3	141	0	0	0	0
+>	1	q nested	3	141	0	0	0	0
+>	1	q nested	4	103	0	0	1	0
+# @call
+# @call	q nested sub	2	q other	5	0
+q nested		0	A1 S1 S2 B() S3 A3 result()	0	A1 S1 S2 B() S3 A3
+>	1	q nested	1	141	0	0	0	0
+>	1	q nested	2	1	0	0	0	0
+>	2	q nested sub	1	141	0	0	0	0
+>	2	q nested sub	2	141	0	0	0	0
+@	call q other state 5 bottom 0 -> error 0	depth 3
+>	3	q other	1	141	0	0	0	0
+>	3	q other	2	103	0	0	1	0
+>	2	q nested sub	3	141	0	0	0	0
+>	1	q nested	3	141	0	0	0	0
+>	1	q nested	4	103	0	0	1	0
+# @call

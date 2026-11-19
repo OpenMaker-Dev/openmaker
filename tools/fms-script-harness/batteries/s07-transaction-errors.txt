@@ -1,0 +1,50 @@
+# Which errors make an open transaction revert under Set Revert Transaction
+# on Error (script-runtime.md 8.4): data-layer errors (Set Field into a
+# calculation field, Delete Record without a record) versus navigation and
+# unsupported-step errors. Base file: contacts-en; row counts before/after.
+== txe set field calc field on
+Set Variable [ $n0 ; ExecuteSQL ( "SELECT COUNT(*) FROM Contacts" ; "" ; "" ) ]
+Open Transaction
+New Record/Request
+Set Field [ Contacts::Initial ; "x" ]
+Set Variable [ $inside ; "not skipped" ]
+Commit Transaction
+Exit Script [ List ( Get ( LastError ) ; "[" & $inside & "]" ; Substitute ( Get ( LastErrorLocation ) ; ¶ ; "/" ) ; Get ( LastErrorDetail ) ; $n0 ; ExecuteSQL ( "SELECT COUNT(*) FROM Contacts" ; "" ; "" ) ) ]
+== txe set field calc field off
+Set Variable [ $n0 ; ExecuteSQL ( "SELECT COUNT(*) FROM Contacts" ; "" ; "" ) ]
+Set Revert Transaction on Error [ Off ]
+Open Transaction
+New Record/Request
+Set Field [ Contacts::Initial ; "x" ]
+Set Variable [ $inside ; "not skipped" ]
+Commit Transaction
+Exit Script [ List ( Get ( LastError ) ; "[" & $inside & "]" ; $n0 ; ExecuteSQL ( "SELECT COUNT(*) FROM Contacts" ; "" ; "" ) ) ]
+== txe navigation error
+Set Variable [ $n0 ; ExecuteSQL ( "SELECT COUNT(*) FROM Contacts" ; "" ; "" ) ]
+Open Transaction
+New Record/Request
+Go to Record/Request/Page [ Next ]
+Beep
+Set Variable [ $inside ; "not skipped" ]
+Commit Transaction
+Exit Script [ List ( Get ( LastError ) ; "[" & $inside & "]" ; $n0 ; ExecuteSQL ( "SELECT COUNT(*) FROM Contacts" ; "" ; "" ) ) ]
+== txe set field outside
+Set Field [ Contacts::Initial ; "x" ]
+Exit Script [ Get ( LastError ) ]
+== txe sub data error
+Set Variable [ $n0 ; ExecuteSQL ( "SELECT COUNT(*) FROM Contacts" ; "" ; "" ) ]
+Open Transaction
+New Record/Request
+Perform Script [ "txe sub sets calc field" ]
+Set Variable [ $inside ; "not skipped" ]
+Commit Transaction
+Exit Script [ List ( Get ( LastError ) ; "[" & $inside & "]" ; "[" & $$subafter & "]" ; $n0 ; ExecuteSQL ( "SELECT COUNT(*) FROM Contacts" ; "" ; "" ) ) ]
+== txe sub sets calc field
+Set Field [ Contacts::Initial ; "x" ]
+Set Variable [ $$subafter ; "sub continued" ]
+--- run
+txe set field outside		Get ( LastError )
+txe set field calc field on		Get ( LastError )	Get ( LastErrorLocation )	Get ( LastErrorDetail )
+txe set field calc field off		Get ( LastError )
+txe navigation error		Get ( LastError )
+txe sub data error		Get ( LastError )

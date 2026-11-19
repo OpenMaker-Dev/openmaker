@@ -1,0 +1,169 @@
+# scan url: open 0 load 0 scan 0 commit 0; index:id=value (0-based): 0:86=0 1:7=0 2:160=0 3:141=0 4:75=0 5:103=0
+# scan text: open 0 load 0 scan 0 commit 0; index:id=value (0-based): 0:86=0 1:7=0 2:160=0 3:141=0 4:75=0 5:103=0
+# scan append: open 0 load 0 scan 0 commit 0; index:id=value (0-based): 0:86=0 1:7=0 2:160=0 3:160=0 4:141=0 5:75=0 6:103=0
+# scan: close 13
+url	http://127.0.0.1:8080/image+png/-/red.png	0	0|red.png|73|3x2|119|0|1	0
+>	1	url	1	86	0	0	0	0
+>	1	url	2	7	0	0	0	0
+>	1	url	3	160	0	0	0	0
+>	1	url	4	141	0	0	0	0
+>	1	url	5	75	0	0	0	0
+>	1	url	6	103	0	0	1	0
+url	http://127.0.0.1:8080/-/-/red.png	0	0|red.png|73|3x2|119|0|2	0
+>	1	url	1	86	0	0	0	0
+>	1	url	2	7	0	0	0	0
+>	1	url	3	160	0	0	0	0
+>	1	url	4	141	0	0	0	0
+>	1	url	5	75	0	0	0	0
+>	1	url	6	103	0	0	1	0
+url	http://127.0.0.1:8080/application+octet-stream/-/red.png	0	0|red.png|73|3x2|119|0|3	0
+>	1	url	1	86	0	0	0	0
+>	1	url	2	7	0	0	0	0
+>	1	url	3	160	0	0	0	0
+>	1	url	4	141	0	0	0	0
+>	1	url	5	75	0	0	0	0
+>	1	url	6	103	0	0	1	0
+url	http://127.0.0.1:8080/text+plain/-/red.png	0	0|red.png|73|3x2|119|0|4	0
+>	1	url	1	86	0	0	0	0
+>	1	url	2	7	0	0	0	0
+>	1	url	3	160	0	0	0	0
+>	1	url	4	141	0	0	0	0
+>	1	url	5	75	0	0	0	0
+>	1	url	6	103	0	0	1	0
+url	http://127.0.0.1:8080/image+png/-/red.txt	0	0|red.txt|73|0x0|107|0|5	0
+>	1	url	1	86	0	0	0	0
+>	1	url	2	7	0	0	0	0
+>	1	url	3	160	0	0	0	0
+>	1	url	4	141	0	0	0	0
+>	1	url	5	75	0	0	0	0
+>	1	url	6	103	0	0	1	0
+url	http://127.0.0.1:8080/image+png/-/hello.png	0	0|hello.png|5|0x0|41|0|6	0
+>	1	url	1	86	0	0	0	0
+>	1	url	2	7	0	0	0	0
+>	1	url	3	160	0	0	0	0
+>	1	url	4	141	0	0	0	0
+>	1	url	5	75	0	0	0	0
+>	1	url	6	103	0	0	1	0
+url	http://127.0.0.1:8080/image+png/-/noext	0	0|noext|5|0x0|37|0|7	0
+>	1	url	1	86	0	0	0	0
+>	1	url	2	7	0	0	0	0
+>	1	url	3	160	0	0	0	0
+>	1	url	4	141	0	0	0	0
+>	1	url	5	75	0	0	0	0
+>	1	url	6	103	0	0	1	0
+url	http://127.0.0.1:8080/-/-/noext	0	0|noext|5|0x0|37|0|8	0
+>	1	url	1	86	0	0	0	0
+>	1	url	2	7	0	0	0	0
+>	1	url	3	160	0	0	0	0
+>	1	url	4	141	0	0	0	0
+>	1	url	5	75	0	0	0	0
+>	1	url	6	103	0	0	1	0
+url	http://127.0.0.1:8080/image+jpeg/-/RED.JPG	0	0|RED.JPG|73|3x2|119|0|9	0
+>	1	url	1	86	0	0	0	0
+>	1	url	2	7	0	0	0	0
+>	1	url	3	160	0	0	0	0
+>	1	url	4	141	0	0	0	0
+>	1	url	5	75	0	0	0	0
+>	1	url	6	103	0	0	1	0
+url	http://127.0.0.1:8080/audio+mpeg/-/x.mp3	0	0|x.mp3|5|0x0|37|0|10	0
+>	1	url	1	86	0	0	0	0
+>	1	url	2	7	0	0	0	0
+>	1	url	3	160	0	0	0	0
+>	1	url	4	141	0	0	0	0
+>	1	url	5	75	0	0	0	0
+>	1	url	6	103	0	0	1	0
+url	http://127.0.0.1:8080/text+html/-/page.html	0	0|page.html|28|0x0|64|0|11	0
+>	1	url	1	86	0	0	0	0
+>	1	url	2	7	0	0	0	0
+>	1	url	3	160	0	0	0	0
+>	1	url	4	141	0	0	0	0
+>	1	url	5	75	0	0	0	0
+>	1	url	6	103	0	0	1	0
+url	http://127.0.0.1:8080/text+plain/-/hello.txt	0	0|hello.txt|6|0x0|42|0|12	0
+>	1	url	1	86	0	0	0	0
+>	1	url	2	7	0	0	0	0
+>	1	url	3	160	0	0	0	0
+>	1	url	4	141	0	0	0	0
+>	1	url	5	75	0	0	0	0
+>	1	url	6	103	0	0	1	0
+url	http://127.0.0.1:8080/image+png/-/a%20b.png	0	0|a b.png|73|3x2|119|0|13	0
+>	1	url	1	86	0	0	0	0
+>	1	url	2	7	0	0	0	0
+>	1	url	3	160	0	0	0	0
+>	1	url	4	141	0	0	0	0
+>	1	url	5	75	0	0	0	0
+>	1	url	6	103	0	0	1	0
+url	http://127.0.0.1:8080/image+png/-/red.png?x=1&y=2	0	0|red.png|73|3x2|119|0|14	0
+>	1	url	1	86	0	0	0	0
+>	1	url	2	7	0	0	0	0
+>	1	url	3	160	0	0	0	0
+>	1	url	4	141	0	0	0	0
+>	1	url	5	75	0	0	0	0
+>	1	url	6	103	0	0	1	0
+url	http://127.0.0.1:8080/image+png/attachment;%20filename=%22other.png%22/red.png	0	0|other.png|73|3x2|121|0|15	0
+>	1	url	1	86	0	0	0	0
+>	1	url	2	7	0	0	0	0
+>	1	url	3	160	0	0	0	0
+>	1	url	4	141	0	0	0	0
+>	1	url	5	75	0	0	0	0
+>	1	url	6	103	0	0	1	0
+url	http://127.0.0.1:8080/image+png/inline;%20filename=other.gif/red.png	0	0|other.gif|73|3x2|121|0|16	0
+>	1	url	1	86	0	0	0	0
+>	1	url	2	7	0	0	0	0
+>	1	url	3	160	0	0	0	0
+>	1	url	4	141	0	0	0	0
+>	1	url	5	75	0	0	0	0
+>	1	url	6	103	0	0	1	0
+url	http://127.0.0.1:8080/image+png/-/red.png#frag	0	0|red.png#frag|73|0x0|112|0|17	0
+>	1	url	1	86	0	0	0	0
+>	1	url	2	7	0	0	0	0
+>	1	url	3	160	0	0	0	0
+>	1	url	4	141	0	0	0	0
+>	1	url	5	75	0	0	0	0
+>	1	url	6	103	0	0	1	0
+url	http://127.0.0.1:8080/image+png/-/	0	1631||0|0x0|0|1|18	0
+>	1	url	1	86	0	0	0	0
+>	1	url	2	7	0	0	0	0
+!	1631	work : url : 3 : Insert from URL
+>	1	url	3	160	1631	0	0	1631
+>	1	url	4	141	0	0	0	0
+>	1	url	5	75	0	0	0	0
+>	1	url	6	103	0	0	1	0
+url	http://127.0.0.1:8080/image+png/-	0	1631||0|0x0|0|1|19	0
+>	1	url	1	86	0	0	0	0
+>	1	url	2	7	0	0	0	0
+!	1631	work : url : 3 : Insert from URL
+>	1	url	3	160	1631	0	0	1631
+>	1	url	4	141	0	0	0	0
+>	1	url	5	75	0	0	0	0
+>	1	url	6	103	0	0	1	0
+text	http://127.0.0.1:8080/text+plain;%20charset=utf-8/-/hello.txt	0	0|héllo|5|20	0
+>	1	text	1	86	0	0	0	0
+>	1	text	2	7	0	0	0	0
+>	1	text	3	160	0	0	0	0
+>	1	text	4	141	0	0	0	0
+>	1	text	5	75	0	0	0	0
+>	1	text	6	103	0	0	1	0
+text	http://127.0.0.1:8080/text+plain/-/hello.txt	0	0|héllo|5|21	0
+>	1	text	1	86	0	0	0	0
+>	1	text	2	7	0	0	0	0
+>	1	text	3	160	0	0	0	0
+>	1	text	4	141	0	0	0	0
+>	1	text	5	75	0	0	0	0
+>	1	text	6	103	0	0	1	0
+text	http://127.0.0.1:8080/image+png/-/red.png	0	507||0|22	0
+>	1	text	1	86	0	0	0	0
+>	1	text	2	7	0	0	0	0
+!	507	work : text : 3 : Insert from URL
+>	1	text	3	160	507	0	0	507
+>	1	text	4	141	0	0	0	0
+>	1	text	5	75	0	0	0	0
+>	1	text	6	103	0	0	1	0
+append		0	0|hello.txt|6|23	0
+>	1	append	1	86	0	0	0	0
+>	1	append	2	7	0	0	0	0
+>	1	append	3	160	0	0	0	0
+>	1	append	4	160	0	0	0	0
+>	1	append	5	141	0	0	0	0
+>	1	append	6	75	0	0	0	0
+>	1	append	7	103	0	0	1	0

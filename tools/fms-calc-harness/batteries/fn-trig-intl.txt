@@ -1,0 +1,14 @@
+# fn-trig-intl: locale-dependent conversions of the trigonometric functions. Run in contacts-de, -fr, -sv, -ja.
+Sin("0,5")
+Sin("0.5")
+Cos(1/2)
+Atan("1,0")
+Asin("-0,5")
+Acos("2,0")
+Degrees(Pi/4)
+Degrees("0,5")
+Radians(10/4)
+Radians("22,5")
+Pi
+Pi*15
+Tan(Radians(34))

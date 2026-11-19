@@ -1,0 +1,40 @@
+# Stored calculations and an auto-enter calculation that read a container
+# field: what they see of decoded data, a picture and text Set Field puts
+# into Contacts::Photo, before and after the commit, and after the value
+# is cleared. Run on contacts-en with fields 14-18 added by
+# s34_calc_schema.py (SCHEMA=<its output>): PhotoName =
+# GetContainerAttribute ( Photo ; "filename" ), PhotoLength = Length (
+# Photo ), PhotoB64 = Base64Encode ( Photo ), PhotoText = GetAsText (
+# Photo ) & "|" & GetHeight ( Photo ), all stored, and PhotoAE, text
+# auto-entered with Length ( Photo ) & "|" & GetAsText ( Photo ) & "|" &
+# GetWidth ( Photo ), replacing the value.
+== store
+Set Error Capture [ On ]
+New Record/Request
+Set Field [ Contacts::Photo ; Base64Decode ( Get ( ScriptParameter ) ; GetValue ( $$names ; 1 ) ) ]
+Set Variable [ $$open ; Contacts::PhotoName & "~" & Contacts::PhotoLength & "~" & Contacts::PhotoB64 & "~" & Contacts::PhotoAE & "~" & Contacts::PhotoText ]
+Commit Records/Requests [ With dialog: Off ]
+Set Variable [ $$committed ; Contacts::PhotoName & "~" & Contacts::PhotoLength & "~" & Contacts::PhotoB64 & "~" & Contacts::PhotoAE & "~" & Contacts::PhotoText ]
+Set Field [ Contacts::Photo ; "" ]
+Commit Records/Requests [ With dialog: Off ]
+Set Variable [ $$cleared ; Contacts::PhotoName & "~" & Contacts::PhotoLength & "~" & Contacts::PhotoB64 & "~" & Contacts::PhotoAE & "~" & Contacts::PhotoText ]
+Exit Script [ Get ( LastError ) ]
+== data
+Set Variable [ $$names ; "a.txt" ]
+Perform Script [ "store" ; Parameter: "aGVsbG8=" ]
+Exit Script [ Get ( ScriptResult ) ]
+== picture
+Set Variable [ $$names ; "red.png" ]
+Perform Script [ "store" ; Parameter: "iVBORw0KGgoAAAANSUhEUgAAAAMAAAACCAIAAAASFvFNAAAAEElEQVQI12P8zwAFTDAKADMpAQM7sWkeAAAAAElFTkSuQmCC" ]
+Exit Script [ Get ( ScriptResult ) ]
+== text
+Set Error Capture [ On ]
+New Record/Request
+Set Field [ Contacts::Photo ; "hello" ]
+Commit Records/Requests [ With dialog: Off ]
+Set Variable [ $$committed ; Contacts::PhotoName & "~" & Contacts::PhotoLength & "~" & Contacts::PhotoB64 & "~" & Contacts::PhotoAE & "~" & Contacts::PhotoText ]
+Exit Script [ Get ( LastError ) ]
+--- run
+data		$$open	$$committed	$$cleared
+picture		$$open	$$committed	$$cleared
+text		$$committed

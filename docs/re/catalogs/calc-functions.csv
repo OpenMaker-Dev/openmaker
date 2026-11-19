@@ -1,0 +1,417 @@
+resource_id,index,group,kind,name,signature,category_id,category,display_name,description
+130,0,base table (index presumed = function token id),placeholder,#Used#,,,,,
+130,1,base table (index presumed = function token id),placeholder,#Used#,,,,,
+130,2,base table (index presumed = function token id),placeholder,#Used#,,,,,
+130,3,base table (index presumed = function token id),placeholder,#Used#,,,,,
+130,4,base table (index presumed = function token id),placeholder,#Used#,,,,,
+130,5,base table (index presumed = function token id),placeholder,#Used#,,,,,
+130,6,base table (index presumed = function token id),placeholder,#Used#,,,,,
+130,7,base table (index presumed = function token id),placeholder,#Used#,,,,,
+130,8,base table (index presumed = function token id),placeholder,#Used#,,,,,
+130,9,base table (index presumed = function token id),placeholder,#Used#,,,,,
+130,10,base table (index presumed = function token id),placeholder,#Used#,,,,,
+130,11,base table (index presumed = function token id),placeholder,#Used#,,,,,
+130,12,base table (index presumed = function token id),placeholder,#Used#,,,,,
+130,13,base table (index presumed = function token id),placeholder,#Used#,,,,,
+130,14,base table (index presumed = function token id),placeholder,#Used#,,,,,
+130,15,base table (index presumed = function token id),placeholder,#Used#,,,,,
+130,16,base table (index presumed = function token id),placeholder,#Used#,,,,,
+130,17,base table (index presumed = function token id),placeholder,#Used#,,,,,
+130,18,base table (index presumed = function token id),placeholder,#Used#,,,,,
+130,19,base table (index presumed = function token id),placeholder,#Used#,,,,,
+130,20,base table (index presumed = function token id),placeholder,#Used#,,,,,
+130,21,base table (index presumed = function token id),placeholder,#Used#,,,,,
+130,22,base table (index presumed = function token id),placeholder,#Used#,,,,,
+130,23,base table (index presumed = function token id),placeholder,#Used#,,,,,
+130,24,base table (index presumed = function token id),placeholder,#Used#,,,,,
+130,25,base table (index presumed = function token id),placeholder,#Used#,,,,,
+130,26,base table (index presumed = function token id),placeholder,#NotUsed#,,,,,
+130,27,base table (index presumed = function token id),placeholder,#Used#,,,,,
+130,28,base table (index presumed = function token id),placeholder,#Used#,,,,,
+130,29,base table (index presumed = function token id),placeholder,#Used#,,,,,
+130,30,base table (index presumed = function token id),keyword-or-constant,not,,,,,
+130,31,base table (index presumed = function token id),keyword-or-constant,and,,,,,
+130,32,base table (index presumed = function token id),keyword-or-constant,or,,,,,
+130,33,base table (index presumed = function token id),keyword-or-constant,xor,,,,,
+130,34,base table (index presumed = function token id),keyword-or-constant,True,,,,,
+130,35,base table (index presumed = function token id),keyword-or-constant,False,,,,,
+130,36,base table (index presumed = function token id),placeholder,#Used#,,,,,
+130,37,base table (index presumed = function token id),placeholder,#Used#,,,,,
+130,38,base table (index presumed = function token id),placeholder,#Used#,,,,,
+130,39,base table (index presumed = function token id),placeholder,#Used#,,,,,
+130,40,base table (index presumed = function token id),placeholder,#Used#,,,,,
+130,41,base table (index presumed = function token id),placeholder,#Used#,,,,,
+130,42,base table (index presumed = function token id),function,Div,Div ( number ; divisor ),5,Number,Div,Returns the next lowest integer value after dividing a number by a divisor.
+130,43,base table (index presumed = function token id),function,Mod,Mod ( number ; divisor ),5,Number,Mod,Returns the remainder after a number is divided by a divisor.
+130,44,base table (index presumed = function token id),placeholder,#Used#,,,,,
+130,45,base table (index presumed = function token id),function,Abs,Abs ( number ),5,Number,Abs,Returns the absolute value of a number.
+130,46,base table (index presumed = function token id),function,Exp,Exp ( number ),5,Number,Exp,Returns the value of the constant e raised to the power of a number.
+130,47,base table (index presumed = function token id),function,Int,Int ( number ),5,Number,Int,Drops digits to the right of the decimal point and returns the integer part of a number without rounding.
+130,48,base table (index presumed = function token id),function,GetAsText,GetAsText ( data ),3,Text,Get As Text,Returns data as field type text.
+130,49,base table (index presumed = function token id),function,Random,Random,5,Number,Random,"Returns a number between 0 and 1, including 0 but not including 1."
+130,50,base table (index presumed = function token id),function,Round,Round ( number ; precision ),5,Number,Round,Returns a number rounded to the specified precision (number of decimal places).
+130,51,base table (index presumed = function token id),function,Sign,Sign ( number ),5,Number,Sign,"Returns -1 when a number is negative, 0 when zero, 1 when positive."
+130,52,base table (index presumed = function token id),function,Sqrt,Sqrt ( number ),5,Number,Sqrt,Calculates the square root of a number.
+130,53,base table (index presumed = function token id),function,Truncate,Truncate ( number ; precision ),5,Number,Truncate,Returns a number truncated to the specified number of decimal places.
+130,54,base table (index presumed = function token id),function,Floor,Floor ( number ),5,Number,Floor,Returns a number rounded down to the next lower integer.
+130,55,base table (index presumed = function token id),function,Ceiling,Ceiling ( number ),5,Number,Ceiling,Returns a number rounded up to the next integer.
+130,56,base table (index presumed = function token id),function,Lg,Lg ( number ),5,Number,Lg,Returns the base-2 logarithm of a number.
+130,57,base table (index presumed = function token id),function,Ln,Ln ( number ),5,Number,Ln,Returns the base-e (natural) logarithm of a number.
+130,58,base table (index presumed = function token id),function,Log,Log ( number ),5,Number,Log,Returns the base-10 (common) logarithm of a number.
+130,59,base table (index presumed = function token id),function,Factorial,Factorial ( number {; numberOfFactors} ),5,Number,Factorial,"Returns the factorial of a number, stopping at 1 or at the optional numberOfFactors."
+130,60,base table (index presumed = function token id),function,Combination,Combination ( setSize ; numberOfChoices ),5,Number,Combination,Returns the number of unique ways to choose numberOfChoices items from a set of setSize.
+130,61,base table (index presumed = function token id),function,SetPrecision,SetPrecision ( expression ; precision ),5,Number,Set Precision,Computes any math function with a precision of 16 to 400 digits to the right of the decimal point.
+130,62,base table (index presumed = function token id),function,GetAsBoolean,GetAsBoolean ( data ),16,Logical,Get As Boolean,"Returns 1 (true) if data converts to a non-zero numeric value or a container field holds data; otherwise, returns 0 (false)."
+130,63,base table (index presumed = function token id),function,GetValue,GetValue ( listOfValues ; valueNumber ),3,Text,Get Value,Returns the requested value given by valueNumber from listOfValues.
+130,64,base table (index presumed = function token id),function,SetRecursion,SetRecursion ( expression ; maxIterations ),16,Logical,Set Recursion,Sets the maximum number of iterations for recursion and loops within an expression.
+130,65,base table (index presumed = function token id),placeholder,#Used#,,,,,
+130,66,base table (index presumed = function token id),placeholder,#Used#,,,,,
+130,67,base table (index presumed = function token id),placeholder,#Used#,,,,,
+130,68,base table (index presumed = function token id),placeholder,#Used#,,,,,
+130,69,base table (index presumed = function token id),placeholder,#Used#,,,,,
+130,70,base table (index presumed = function token id),placeholder,#Used#,,,,,
+130,71,base table (index presumed = function token id),placeholder,#Used#,,,,,
+130,72,base table (index presumed = function token id),placeholder,#Used#,,,,,
+130,73,base table (index presumed = function token id),placeholder,#Used#,,,,,
+130,74,base table (index presumed = function token id),function,EvaluationError,EvaluationError ( expression ),16,Logical,Evaluation Error,"Returns an error code, if any, from an expression."
+130,75,base table (index presumed = function token id),function,If,If ( test ; result1 {; result2} ),16,Logical,If,Returns result1 if the test is true; returns result2 if the test is false.
+130,76,base table (index presumed = function token id),function,Case,Case ( test1 ; result1 {; test2 ; result2 ; ... ; defaultResult} ),16,Logical,Case,Returns one of several possible results based on a series of tests.
+130,77,base table (index presumed = function token id),function,Choose,Choose ( test ; result0 {; result1 ; result2...} ),16,Logical,Choose,"Returns one result value, according to the integer value of a test."
+130,78,base table (index presumed = function token id),function,IsEmpty,IsEmpty ( field ),16,Logical,Is Empty,"Returns 1 (true) if a field is empty or if other errors occur; otherwise, returns 0 (false)."
+130,79,base table (index presumed = function token id),function,IsValid,IsValid ( field ),16,Logical,Is Valid,"Returns 0 (false) if the data is invalid; otherwise, returns 1 (true)."
+130,80,base table (index presumed = function token id),placeholder,#Delete Me#,,,,,
+130,81,base table (index presumed = function token id),function,Exact,Exact ( originalText ; comparisonText ),3,Text,Exact,"Returns 1 (true) if the contents of any two fields match; otherwise, returns 0 (false)."
+130,82,base table (index presumed = function token id),function,Length,Length ( text ),3,Text,Length,"Returns the number of characters in a field, including all spaces, numbers, and special characters."
+130,83,base table (index presumed = function token id),function,WordCount,WordCount ( text ),3,Text,Word Count,Returns a count of the total number of words in specified text.
+130,84,base table (index presumed = function token id),function,Lower,Lower ( text ),3,Text,Lower,Returns all letters in specified text as lowercase.
+130,85,base table (index presumed = function token id),function,Upper,Upper ( text ),3,Text,Upper,Returns all letters in specified text as uppercase.
+130,86,base table (index presumed = function token id),function,Proper,Proper ( text ),3,Text,Proper,Returns the first letter of each word in text as uppercase and all other letters as lowercase.
+130,87,base table (index presumed = function token id),function,Left,Left ( text ; numberOfCharacters ),3,Text,Left,"Returns the specified numberOfCharacters in text, counting from the left."
+130,88,base table (index presumed = function token id),function,Middle,Middle ( text ; start ; numberOfCharacters ),3,Text,Middle,"Extracts the specified numberOfCharacters from text, starting at the specified character position."
+130,89,base table (index presumed = function token id),function,Right,Right ( text ; numberOfCharacters ),3,Text,Right,"Returns the specified numberOfCharacters in text, counting from the right."
+130,90,base table (index presumed = function token id),function,LeftWords,LeftWords ( text ; numberOfWords ),3,Text,Left Words,"Returns text containing the specified numberOfWords in text, counting from the left."
+130,91,base table (index presumed = function token id),function,MiddleWords,MiddleWords ( text ; startingWord ; numberOfWords ),3,Text,Middle Words,"Returns text containing the specified numberOfWords from specified text, starting at startingWord."
+130,92,base table (index presumed = function token id),function,RightWords,RightWords ( text ; numberOfWords ),3,Text,Right Words,"Returns text containing the specified numberOfWords in text, counting from the right."
+130,93,base table (index presumed = function token id),function,LeftValues,LeftValues ( text ; numberOfValues ),3,Text,Left Values,"Returns values contained in text, according to the specified numberOfValues, counting from the left."
+130,94,base table (index presumed = function token id),function,MiddleValues,MiddleValues ( text ; startingValue ; numberOfValues ),3,Text,Middle Values,"Returns text containing the specified numberOfValues in text, starting at startingValue."
+130,95,base table (index presumed = function token id),function,RightValues,RightValues ( text ; numberOfValues ),3,Text,Right Values,"Returns values contained in text, according to the specified numberOfValues, counting from the right."
+130,96,base table (index presumed = function token id),function,PatternCount,PatternCount ( text ; searchString ),3,Text,Pattern Count,Returns the number of occurrences of searchString in text.
+130,97,base table (index presumed = function token id),function,Position,Position ( text ; searchString ; start ; occurrence ),3,Text,Position,Returns the starting position of the specified occurrence of searchString in text.
+130,98,base table (index presumed = function token id),function,Replace,Replace ( text ; start ; numberOfCharacters ; replacementText ),3,Text,Replace,Replaces a string of characters in specified text with replacementText.
+130,99,base table (index presumed = function token id),function,Substitute,Substitute ( text ; searchString ; replaceString ),3,Text,Substitute,Returns a text string with every occurrence of searchString in specified text replaced by replaceString.
+130,100,base table (index presumed = function token id),function,Trim,Trim ( text ),3,Text,Trim,Returns text stripped of all leading and trailing spaces.
+130,101,base table (index presumed = function token id),function,Filter,Filter ( textToFilter ; filterText ),3,Text,Filter,"Returns from textToFilter only those characters specified in filterText, in the order they were originally entered in textToFilter."
+130,102,base table (index presumed = function token id),function,FilterValues,FilterValues ( textToFilter ; filterValues ),3,Text,Filter Values,"Returns a text result containing only the values that were provided in filterValues, in the order they were originally entered in textToFilter."
+130,103,base table (index presumed = function token id),placeholder,#NotUsed#,,,,,
+130,104,base table (index presumed = function token id),function,GetAsNumber,GetAsNumber ( text ),3,Text,Get As Number,"Returns only the numbers in text, as field type number."
+130,105,base table (index presumed = function token id),function,GetAsTimestamp,GetAsTimestamp ( text ),3,Text,Get As Timestamp,Returns text as field type timestamp.
+130,106,base table (index presumed = function token id),function,GetAsTime,GetAsTime ( text ),3,Text,Get As Time,Returns times or timestamps in text as field type time.
+130,107,base table (index presumed = function token id),function,GetAsDate,GetAsDate ( text ),3,Text,Get As Date,Returns dates in text as field type date.
+130,108,base table (index presumed = function token id),function,GetAsSVG,GetAsSVG ( text ),3,Text,Get As SVG,Returns text converted to the SVG (Scalable Vector Graphics) format.
+130,109,base table (index presumed = function token id),function,GetAsCSS,GetAsCSS ( text ),3,Text,Get As CSS,Returns text converted to the CSS (Cascading Style Sheets) format.
+130,110,base table (index presumed = function token id),function,ValueCount,ValueCount ( text ),3,Text,Value Count,Returns a count of the total number of values in specified text.
+130,111,base table (index presumed = function token id),function,SerialIncrement,SerialIncrement ( text ; incrementBy ),3,Text,Serial Increment,"Returns specified text and numbers, with the numbers incremented by the specified amount."
+130,112,base table (index presumed = function token id),function,Date,Date ( month ; day ; year ),6,Date,Date,"Returns the calendar date for a month, day, and year."
+130,113,base table (index presumed = function token id),function,Day,Day ( date ),6,Date,Day,"Returns a number from 1 to 31, for the day of the month on which a date occurs."
+130,114,base table (index presumed = function token id),function,DayName,DayName ( date ),6,Date,Day Name,Returns text that is the full name of the weekday for a date.
+130,115,base table (index presumed = function token id),function,DayOfWeek,DayOfWeek ( date ),6,Date,Day Of Week,Returns a number representing the day of the week on which a date occurs.
+130,116,base table (index presumed = function token id),function,DayOfYear,DayOfYear ( date ),6,Date,Day Of Year,Returns the number of days from the beginning of the year of a date.
+130,117,base table (index presumed = function token id),function,Month,Month ( date ),6,Date,Month,"Returns a number from 1 to 12, representing the month of the year in which a date occurs."
+130,118,base table (index presumed = function token id),function,MonthName,MonthName ( date ),6,Date,Month Name,Returns the full name of the month for a date.
+130,119,base table (index presumed = function token id),function,WeekOfYear,WeekOfYear ( date ),6,Date,Week Of Year,Returns the number of weeks after January 1 of the year of a date.
+130,120,base table (index presumed = function token id),function,WeekOfYearFiscal,WeekOfYearFiscal ( date ; startingDay ),6,Date,Week Of Year Fiscal,"Returns a number from 1 to 53, representing the week containing a date, from a starting day."
+130,121,base table (index presumed = function token id),function,Year,Year ( date ),6,Date,Year,Returns a number representing the year in which a date occurs.
+130,122,base table (index presumed = function token id),function,Hour,Hour ( time ),7,Time,Hour,Returns a number representing the hour portion (0 to 23) of a specified time.
+130,123,base table (index presumed = function token id),function,Minute,Minute ( time ),7,Time,Minute,Returns a number representing the minute portion (0 to 59) of a specified time.
+130,124,base table (index presumed = function token id),function,Seconds,Seconds ( time ),7,Time,Seconds,Returns a number representing the seconds portion (0 to 59) of a specified time.
+130,125,base table (index presumed = function token id),function,Time,Time ( hours ; minutes ; seconds ),7,Time,Time,"Returns a time result with the specified number of hours, minutes, and seconds."
+130,126,base table (index presumed = function token id),function,Timestamp,Timestamp ( date ; time ),8,Timestamp,Timestamp,Returns a timestamp containing a date as a calendar date and a time as a time of day.
+130,127,base table (index presumed = function token id),function,Average,Average ( field {; field...} ),12,Aggregate,Average,"Returns a value that is the average of all valid, non-blank values in a field."
+130,128,base table (index presumed = function token id),function,Count,Count ( field {; field...} ),12,Aggregate,Count,"Returns the number of valid, non-blank values in a field."
+130,129,base table (index presumed = function token id),function,Max,Max ( field {; field...} ),12,Aggregate,Max,Returns the highest valid value in a field.
+130,130,base table (index presumed = function token id),function,Min,Min ( field {; field...} ),12,Aggregate,Min,"Returns the smallest valid, non-blank value in a field."
+130,131,base table (index presumed = function token id),function,StDev,StDev ( field {; field...} ),12,Aggregate,St Dev,Returns the standard deviation of the sample represented by a series of non-blank values in a field.
+130,132,base table (index presumed = function token id),function,StDevP,StDevP ( field {; field...} ),12,Aggregate,St DevP,Returns the standard deviation of a population represented by a series of non-blank values in a field.
+130,133,base table (index presumed = function token id),function,Sum,Sum ( field {; field...} ),12,Aggregate,Sum,"Returns the total of all valid, non-blank values in a field."
+130,134,base table (index presumed = function token id),function,GetSummary,GetSummary ( summaryField ; breakField ),16,Logical,Get Summary,Returns the value of summaryField for the current range of records when the file is sorted by breakField.
+130,135,base table (index presumed = function token id),function,List,List ( field {; field...} ),12,Aggregate,List,Returns a concatenated list of non-blank values for a field or fields.
+130,136,base table (index presumed = function token id),function,Extend,Extend ( non-repeatingField ),13,Repeating,Extend,Allows a value in a non-repeating field to be used with every repetition in a repeating field.
+130,137,base table (index presumed = function token id),function,GetRepetition,GetRepetition ( repeatingField ; number ),13,Repeating,Get Repetition,Returns the contents of the repeating field specified by a number.
+130,138,base table (index presumed = function token id),function,Last,Last ( repeatingField ),13,Repeating,Last,"Returns the last valid, non-blank value in a field."
+130,139,base table (index presumed = function token id),function,GetNthRecord,GetNthRecord ( field ; recordNumber ),16,Logical,Get Nth Record,Returns the contents of a field from the specified record number.
+130,140,base table (index presumed = function token id),function,FV,FV ( payment ; interestRate ; periods ),14,Financial,FV,"Returns the future value (FV) of an initial investment, based on a constant interest rate and payment amount for the number of periods in months."
+130,141,base table (index presumed = function token id),function,NPV,NPV ( payment ; interestRate ),14,Financial,NPV,"Returns the net present value (NPV) of a series of unequal payments made at regular intervals, assuming a fixed interest rate per interval."
+130,142,base table (index presumed = function token id),function,PMT,PMT ( principal ; interestRate ; term ),14,Financial,PMT,"Returns the payment (PMT) required by the term, interest rate, and principal."
+130,143,base table (index presumed = function token id),function,PV,PV ( payment ; interestRate ; periods ),14,Financial,PV,"Returns the present value (PV) of a series of equal payments made at regular intervals, assuming a fixed interest rate per interval."
+130,144,base table (index presumed = function token id),placeholder,#NotUsed#,,,,,
+130,145,base table (index presumed = function token id),placeholder,#NotUsed#,,,,,
+130,146,base table (index presumed = function token id),placeholder,#NotUsed#,,,,,
+130,147,base table (index presumed = function token id),placeholder,#NotUsed#,,,,,
+130,148,base table (index presumed = function token id),function,Atan,Atan ( number ),15,Trigonometric,A tan,"Returns the trigonometric arc tangent (Atan), or inverse tangent, of a number."
+130,149,base table (index presumed = function token id),function,Cos,Cos ( angleInRadians ),15,Trigonometric,Cos,Returns the cosine (Cos) of angleInRadians.
+130,150,base table (index presumed = function token id),function,Degrees,Degrees ( angleInRadians ),15,Trigonometric,Degrees,Converts angleInRadians to degrees.
+130,151,base table (index presumed = function token id),function,Pi,Pi,15,Trigonometric,Pi,Calculates the value of the constant Pi.
+130,152,base table (index presumed = function token id),function,Radians,Radians ( angleInDegrees ),15,Trigonometric,Radians,Converts angleInDegrees to radians.
+130,153,base table (index presumed = function token id),function,Sin,Sin ( angleInRadians ),15,Trigonometric,Sin,Returns the sine (Sin) of angleInRadians expressed in radians.
+130,154,base table (index presumed = function token id),function,Tan,Tan ( angleInRadians ),15,Trigonometric,Tan,Returns the tangent (Tan) of angleInRadians.
+130,155,base table (index presumed = function token id),function,Get,Get ( flag ),19,Get,Get,"Get functions monitor errors in scripts, or capture information about file status or actions being performed."
+130,156,base table (index presumed = function token id),placeholder,#NotUsed#,,,,,
+130,157,base table (index presumed = function token id),function,Acos,Acos ( number ),15,Trigonometric,A cos,"Returns the arccosine (Acos), or inverse cosine, of a number."
+130,158,base table (index presumed = function token id),function,Asin,Asin ( number ),15,Trigonometric,A sin,"Returns the arcsine (Asin), or inverse sine, of a number."
+130,159,base table (index presumed = function token id),placeholder,#NotUsed#,,,,,
+130,160,base table (index presumed = function token id),function,Variance,Variance ( field {; field...} ),12,Aggregate,Variance,Returns the variance of a sample represented by a series of non-blank values in a field.
+130,161,base table (index presumed = function token id),function,VarianceP,VarianceP ( field {; field...} ),12,Aggregate,Variance P,Returns the variance of a population represented by a series of non-blank values in a field.
+130,162,base table (index presumed = function token id),function,TextFont,TextFont ( text ; fontName ),4,Text formatting,Text Font,Changes the font of text to the specified fontName.
+130,163,base table (index presumed = function token id),function,TextSize,TextSize ( text ; fontSize ),4,Text formatting,Text Size,Changes the font size of specified text to fontSize.
+130,164,base table (index presumed = function token id),function,TextColor,TextColor ( text ; RGB ( red ; green ; blue ) ),4,Text formatting,Text Color,Changes the color of text to the color specified by the RGB function.
+130,165,base table (index presumed = function token id),function,TextStyleAdd,TextStyleAdd ( text ; styles ),4,Text formatting,Text Style Add,Adds the specified styles to text in a single action.
+130,166,base table (index presumed = function token id),function,TextStyleRemove,TextStyleRemove ( text ; styles ),4,Text formatting,Text Style Remove,Removes the specified styles from text in a single action.
+130,167,base table (index presumed = function token id),function,RGB,RGB ( red ; green ; blue ),4,Text formatting,RGB,"Returns an integer number from 0 to 16777215, obtained by combining color values for red, green, and blue."
+130,168,base table (index presumed = function token id),function,TextColorRemove,TextColorRemove ( text {; RGB  ( red ; green ; blue )} ),4,Text formatting,Text Color Remove,"Removes all font colors in specified text, or removes the font color specified by the RGB function."
+130,169,base table (index presumed = function token id),function,TextFontRemove,TextFontRemove ( text {; fontToRemove } ),4,Text formatting,Text Font Remove,Removes all fonts or the fontToRemove from specified text.
+130,170,base table (index presumed = function token id),keyword-or-constant,Plain,,,,,
+130,171,base table (index presumed = function token id),keyword-or-constant,Bold,,,,,
+130,172,base table (index presumed = function token id),keyword-or-constant,Italic,,,,,
+130,173,base table (index presumed = function token id),keyword-or-constant,Underline,,,,,
+130,174,base table (index presumed = function token id),keyword-or-constant,Condense,,,,,
+130,175,base table (index presumed = function token id),keyword-or-constant,Extend,,,,,
+130,176,base table (index presumed = function token id),keyword-or-constant,Strikethrough,,,,,
+130,177,base table (index presumed = function token id),keyword-or-constant,SmallCaps,,,,,
+130,178,base table (index presumed = function token id),keyword-or-constant,Superscript,,,,,
+130,179,base table (index presumed = function token id),keyword-or-constant,Subscript,,,,,
+130,180,base table (index presumed = function token id),keyword-or-constant,Uppercase,,,,,
+130,181,base table (index presumed = function token id),keyword-or-constant,Lowercase,,,,,
+130,182,base table (index presumed = function token id),keyword-or-constant,Titlecase,,,,,
+130,183,base table (index presumed = function token id),keyword-or-constant,WordUnderline,,,,,
+130,184,base table (index presumed = function token id),keyword-or-constant,DoubleUnderline,,,,,
+130,185,base table (index presumed = function token id),keyword-or-constant,AllStyles,,,,,
+130,186,base table (index presumed = function token id),function,TextSizeRemove,TextSizeRemove ( text {; sizeToRemove } ),4,Text formatting,Text Size Remove,Removes all font sizes in text or the font sizeToRemove.
+130,187,base table (index presumed = function token id),function,TextFormatRemove,TextFormatRemove ( text ),4,Text formatting,Text Format Remove,Removes all text formatting from specified text in a single action.
+130,188,base table (index presumed = function token id),keyword-or-constant,Lower,,,,,
+130,189,base table (index presumed = function token id),keyword-or-constant,Higher,,,,,
+130,190,base table (index presumed = function token id),keyword-or-constant,Roman,,,,,
+130,191,base table (index presumed = function token id),keyword-or-constant,Greek,,,,,
+130,192,base table (index presumed = function token id),keyword-or-constant,Cyrillic,,,,,
+130,193,base table (index presumed = function token id),keyword-or-constant,CentralEurope,,,,,
+130,194,base table (index presumed = function token id),keyword-or-constant,ShiftJIS,,,,,
+130,195,base table (index presumed = function token id),keyword-or-constant,TraditionalChinese,,,,,
+130,196,base table (index presumed = function token id),keyword-or-constant,SimplifiedChinese,,,,,
+130,197,base table (index presumed = function token id),keyword-or-constant,OEM,,,,,
+130,198,base table (index presumed = function token id),keyword-or-constant,Symbol,,,,,
+130,199,base table (index presumed = function token id),keyword-or-constant,Other,,,,,
+130,200,base table (index presumed = function token id),keyword-or-constant,HighlightYellow,,,,,
+130,201,base table (index presumed = function token id),placeholder,#NotUsed#,,,,,
+130,202,base table (index presumed = function token id),placeholder,#NotUsed#,,,,,
+130,203,base table (index presumed = function token id),placeholder,#NotUsed#,,,,,
+130,204,base table (index presumed = function token id),placeholder,#NotUsed#,,,,,
+130,205,base table (index presumed = function token id),placeholder,#NotUsed#,,,,,
+130,206,base table (index presumed = function token id),placeholder,#NotUsed#,,,,,
+130,207,base table (index presumed = function token id),placeholder,#NotUsed#,,,,,
+130,208,base table (index presumed = function token id),placeholder,#NotUsed#,,,,,
+130,209,base table (index presumed = function token id),placeholder,#NotUsed#,,,,,
+130,210,base table (index presumed = function token id),placeholder,#NotUsed#,,,,,
+130,211,base table (index presumed = function token id),placeholder,#NotUsed#,,,,,
+130,212,base table (index presumed = function token id),placeholder,#NotUsed#,,,,,
+130,213,base table (index presumed = function token id),placeholder,#NotUsed#,,,,,
+130,214,base table (index presumed = function token id),placeholder,#NotUsed#,,,,,
+130,215,base table (index presumed = function token id),placeholder,#NotUsed#,,,,,
+130,216,base table (index presumed = function token id),placeholder,#NotUsed#,,,,,
+130,217,base table (index presumed = function token id),placeholder,#NotUsed#,,,,,
+130,218,base table (index presumed = function token id),placeholder,#NotUsed#,,,,,
+130,219,base table (index presumed = function token id),placeholder,#NotUsed#,,,,,
+130,220,base table (index presumed = function token id),function,Evaluate,Evaluate ( expression {; [field1 ; field2 ;...]} ),16,Logical,Evaluate,Evaluates an expression as a calculation.
+130,221,base table (index presumed = function token id),function,GetField,GetField ( fieldName ),16,Logical,Get Field,Evaluates fieldName and returns the contents of the specified field.
+130,222,base table (index presumed = function token id),function,IsValidExpression,IsValidExpression ( expression ),16,Logical,Is Valid Expression,"Returns 1 (true) if an expression syntax is correct; otherwise, returns 0 (false)."
+130,223,base table (index presumed = function token id),function,Let,Let ( {[} var1 = expression1 {; var2 = expression2...]} ; calculation ),16,Logical,Let,"Sets a variable or variables to the result of the specified expression(s) for the duration of the calculation, or until the script exits or the file is closed."
+130,224,base table (index presumed = function token id),function,Lookup,Lookup ( sourceField {; failExpression} ),16,Logical,Lookup,"Returns the value specified in sourceField, using the relationships in the relationships graph."
+130,225,base table (index presumed = function token id),function,LookupNext,LookupNext ( sourceField ; lower/higherFlag ),16,Logical,Lookup Next,Returns the next lower or higher value in sourceField when there isn't a matching related value.
+130,226,base table (index presumed = function token id),function,Quote,Quote ( text ),3,Text,Quote,Returns the text form of text enclosed in quotation marks.
+130,227,base table (index presumed = function token id),placeholder,#NotUsed#,,,,,
+130,228,base table (index presumed = function token id),placeholder,#NotUsed#,,,,,
+130,229,base table (index presumed = function token id),placeholder,#NotUsed#,,,,,
+130,230,base table (index presumed = function token id),function,DayNameJ,DayNameJ ( date ),10,Japanese,Day Name J,Returns text in Japanese that is the full name of the weekday for a date.
+130,231,base table (index presumed = function token id),function,MonthNameJ,MonthNameJ ( date ),10,Japanese,Month Name J,Returns the name of the month of a date in Japanese.
+130,232,base table (index presumed = function token id),function,YearName,YearName ( date ; format ),10,Japanese,Year Name,"Returns the Japanese year name of a date, in the specified format."
+130,233,base table (index presumed = function token id),keyword-or-constant,LunarDate,,,,,
+130,234,base table (index presumed = function token id),keyword-or-constant,SolarDate,,,,,
+130,235,base table (index presumed = function token id),function,KanjiNumeral,KanjiNumeral ( text ),10,Japanese,Kanji Numeral,Converts arabic numerals to kanji numerals.
+130,236,base table (index presumed = function token id),function,NumToJText,NumToJText ( number ; separator ; characterType ),10,Japanese,Num To J Text,Converts arabic numerals to Japanese text.
+130,237,base table (index presumed = function token id),function,Katakana,Katakana ( text ),10,Japanese,Katakana,Converts hiragana to zenkaku katakana.
+130,238,base table (index presumed = function token id),function,Hiragana,Hiragana ( text ),10,Japanese,Hiragana,Converts katakana (hankaku and zenkaku) in text to hiragana.
+130,239,base table (index presumed = function token id),function,KanaHankaku,KanaHankaku ( text ),10,Japanese,Kana Hankaku,Converts zenkaku katakana to hankaku katakana.
+130,240,base table (index presumed = function token id),function,KanaZenkaku,KanaZenkaku ( text ),10,Japanese,Kana Zenkaku,Converts hankaku katakana to zenkaku katakana.
+130,241,base table (index presumed = function token id),function,RomanHankaku,RomanHankaku ( text ),10,Japanese,Roman Hankaku,Converts zenkaku alphanumeric and symbols to hankaku alphanumeric and symbols.
+130,242,base table (index presumed = function token id),function,RomanZenkaku,RomanZenkaku ( text ),10,Japanese,Roman Zenkaku,Converts hankaku alphanumeric and symbols to zenkaku alphanumeric and symbols.
+130,243,base table (index presumed = function token id),function,TrimAll,TrimAll ( text ; trimSpaces ; trimType ),3,Text,Trim All,Returns a copy of text with specified spaces removed or inserted.
+130,244,base table (index presumed = function token id),placeholder,#Used#,,,,,
+134,0,Design functions,empty,,,,,,
+134,1,Design functions,function,DatabaseNames,DatabaseNames,20,Design,Database Names,Returns a list of the names of all files open on the computer.
+134,2,Design functions,function,FieldBounds,FieldBounds ( fileName ; layoutName ; fieldName ),20,Design,Field Bounds,"Returns the location, in points, of each field boundary and the field's rotation in degrees."
+134,3,Design functions,function,FieldIDs,FieldIDs ( fileName ; layoutName ),20,Design,Field IDs,Returns a list of all field IDs in fileName and layoutName.
+134,4,Design functions,function,FieldNames,FieldNames ( fileName ; layoutName ),20,Design,Field Names,Returns a list of the names of all fields on layoutName in fileName.
+134,5,Design functions,function,FieldRepetitions,FieldRepetitions ( fileName ; layoutName ; fieldName ),20,Design,Field Repetitions,Returns the number and orientation of repetitions of a repeating field as formatted on a layout.
+134,6,Design functions,function,FieldStyle,FieldStyle ( fileName ; layoutName ; fieldName ),20,Design,Field Style,Returns the field formatting applied to fieldName on layoutName in fileName.
+134,7,Design functions,function,FieldType,FieldType ( fileName ; fieldName ),20,Design,Field Type,Returns information about fieldName.
+134,8,Design functions,function,GetNextSerialValue,GetNextSerialValue ( fileName ; fieldName ),20,Design,Get Next Serial Value,Returns the next serial number of fieldName in fileName.
+134,9,Design functions,function,LayoutIDs,LayoutIDs ( fileName ),20,Design,Layout IDs,Returns a list of all layout IDs in fileName. 
+134,10,Design functions,function,LayoutNames,LayoutNames ( fileName ),20,Design,Layout Names,Returns a list of the names of all layouts in fileName.
+134,11,Design functions,function,TableIDs,TableIDs ( fileName ),20,Design,Table IDs,Returns a list of all table occurrence IDs in fileName.
+134,12,Design functions,function,TableNames,TableNames ( fileName ),20,Design,Table Names,Returns a list of all table occurrences in the relationships graph for fileName.
+134,13,Design functions,function,RelationInfo,RelationInfo ( fileName ; tableName ),20,Design,Relation Info,Returns a list of four values for each relationship directly related to tableName.
+134,14,Design functions,function,ScriptIDs,ScriptIDs ( fileName ),20,Design,Script IDs,Returns a list of all script IDs in fileName.
+134,15,Design functions,function,ScriptNames,ScriptNames ( fileName ),20,Design,Script Names,Returns a list of the names of all scripts in fileName.
+134,16,Design functions,function,ValueListIDs,ValueListIDs ( fileName ),20,Design,Value List IDs,Returns a list of all value list IDs in fileName.
+134,17,Design functions,function,ValueListNames,ValueListNames ( fileName ),20,Design,Value List Names,Returns a list of the names of all value lists in fileName.
+134,18,Design functions,function,ValueListItems,ValueListItems ( fileName ; valueList ),20,Design,Value List Items,Returns a list of the values in a value list.
+134,19,Design functions,function,WindowNames,WindowNames {( fileName )},20,Design,Window Names,Returns a list of the names of windows that are currently open.
+134,20,Design functions,function,FieldComment,FieldComment ( fileName ; fieldName ),20,Design,Field Comment,Returns the specified field's comment.
+134,21,Design functions,function,LayoutObjectNames,LayoutObjectNames ( fileName ; layoutName ),20,Design,Layout Object Names,Returns a list of the names of all named objects on layoutName in fileName.
+134,22,Design functions,function,BaseTableIDs,BaseTableIDs ( fileName ),20,Design,Base Table IDs,Returns a list of all base table IDs in fileName.
+134,23,Design functions,function,BaseTableNames,BaseTableNames ( fileName ),20,Design,Base Table Names,Returns a list of all base table names in fileName.
+134,24,Design functions,function,BaseTableComment,BaseTableComment ( fileName ; baseTableName ),20,Design,Base Table Comment,Returns the specified base table's comment.
+134,25,Design functions,function,FieldAnnotation,FieldAnnotation ( fileName ; fieldName ),20,Design,Field Annotation,Returns the specified field's annotation used in Data Definition Language (DDL).
+134,26,Design functions,function,FieldDisplayNames,FieldDisplayNames ( fileName ; fieldName ),20,Design,Field Display Names,Returns a field's display names as JSON data.
+137,0,"legacy byte functions (obsolete, names only)",obsolete,Leftb ( ),Left ( ),,,,
+137,1,"legacy byte functions (obsolete, names only)",obsolete,Lengthb ( ),Length ( ),,,,
+137,2,"legacy byte functions (obsolete, names only)",obsolete,Middleb ( ),Middle ( ),,,,
+137,3,"legacy byte functions (obsolete, names only)",obsolete,,,,,,
+137,4,"legacy byte functions (obsolete, names only)",obsolete,Positionb ( ),Position ( ),,,,
+137,5,"legacy byte functions (obsolete, names only)",obsolete,Replaceb ( ),Replace ( ),,,,
+137,6,"legacy byte functions (obsolete, names only)",obsolete,Rightb ( ),Right ( ),,,,
+137,7,"legacy byte functions (obsolete, names only)",obsolete,,,,,,
+137,8,"legacy byte functions (obsolete, names only)",obsolete,,,,,,
+137,9,"legacy byte functions (obsolete, names only)",obsolete,,,,,,
+137,10,"legacy byte functions (obsolete, names only)",obsolete,,,,,,
+137,11,"legacy byte functions (obsolete, names only)",obsolete,,,,,,
+137,12,"legacy byte functions (obsolete, names only)",obsolete,,,,,,
+137,13,"legacy byte functions (obsolete, names only)",obsolete,,,,,,
+137,14,"legacy byte functions (obsolete, names only)",obsolete,,,,,,
+137,15,"legacy byte functions (obsolete, names only)",obsolete,,,,,,
+137,16,"legacy byte functions (obsolete, names only)",obsolete,,,,,,
+137,17,"legacy byte functions (obsolete, names only)",obsolete,RelationNames ( ),TableNames ( ),,,,
+137,18,"legacy byte functions (obsolete, names only)",obsolete,,,,,,
+137,19,"legacy byte functions (obsolete, names only)",obsolete,,,,,,
+137,20,"legacy byte functions (obsolete, names only)",obsolete,,,,,,
+137,21,"legacy byte functions (obsolete, names only)",obsolete,,,,,,
+137,22,"legacy byte functions (obsolete, names only)",obsolete,,,,,,
+137,23,"legacy byte functions (obsolete, names only)",obsolete,,,,,,
+137,24,"legacy byte functions (obsolete, names only)",obsolete,,,,,,
+137,25,"legacy byte functions (obsolete, names only)",obsolete,,,,,,
+137,26,"legacy byte functions (obsolete, names only)",obsolete,,,,,,
+137,27,"legacy byte functions (obsolete, names only)",obsolete,RelationIDs ( ),TableIDs ( ),,,,
+137,28,"legacy byte functions (obsolete, names only)",obsolete,,,,,,
+137,29,"legacy byte functions (obsolete, names only)",obsolete,,,,,,
+137,30,"legacy byte functions (obsolete, names only)",obsolete,,,,,,
+137,31,"legacy byte functions (obsolete, names only)",obsolete,,,,,,
+138,0,"legacy Status() selectors (obsolete, names only)",obsolete,Status ( CurrentGroups ),Get ( PrivilegeSetName ),,,,
+138,1,"legacy Status() selectors (obsolete, names only)",obsolete,,,,,,
+138,2,"legacy Status() selectors (obsolete, names only)",obsolete,,,,,,
+138,3,"legacy Status() selectors (obsolete, names only)",obsolete,Status ( CurrentRecordID ),Get ( RecordID ),,,,
+138,4,"legacy Status() selectors (obsolete, names only)",obsolete,,,,,,
+138,5,"legacy Status() selectors (obsolete, names only)",obsolete,,,,,,
+138,6,"legacy Status() selectors (obsolete, names only)",obsolete,,,,,,
+138,7,"legacy Status() selectors (obsolete, names only)",obsolete,,,,,,
+138,8,"legacy Status() selectors (obsolete, names only)",obsolete,,,,,,
+138,9,"legacy Status() selectors (obsolete, names only)",obsolete,,,,,,
+138,10,"legacy Status() selectors (obsolete, names only)",obsolete,,,,,,
+138,11,"legacy Status() selectors (obsolete, names only)",obsolete,,,,,,
+138,12,"legacy Status() selectors (obsolete, names only)",obsolete,,,,,,
+138,13,"legacy Status() selectors (obsolete, names only)",obsolete,,,,,,
+138,14,"legacy Status() selectors (obsolete, names only)",obsolete,,,,,,
+139,0,While,function,While,While ( [ initialVariable ] ; condition ; [ logic ] ; result ),16,Logical,While,"Repeats logic while the condition is true, then returns the result."
+140,0,"newer functions, variable or optional parameters",placeholder,#UnUsed#,,,,,
+140,1,"newer functions, variable or optional parameters",function,GetLayoutObjectAttribute,GetLayoutObjectAttribute ( objectName ; attributeName {; repetitionNumber ; portalRowNumber} ),18,Miscellaneous,Get Layout Object Attribute,Returns the specified attributes of the layout object given by the objectName currently active in the calculation.
+140,2,"newer functions, variable or optional parameters",function,ExecuteSQL,ExecuteSQL ( sqlQuery ; fieldSeparator ; rowSeparator { ; arguments... } ),16,Logical,Execute SQL,Executes an SQL query statement for the specified table occurrence in a FileMaker Pro file.
+140,3,"newer functions, variable or optional parameters",function,Base64Decode,Base64Decode ( text {; fileNameWithExtension } ),9,Container,Base64 Decode,Returns either container or text content from text encoded in Base64 format.
+140,4,"newer functions, variable or optional parameters",function,Furigana,Furigana ( text {; option } ),10,Japanese,Furigana,"Converts Japanese text to hiragana, katakana, or roman text."
+140,5,"newer functions, variable or optional parameters",function,SortValues,SortValues ( values {; datatype ; locale } ),3,Text,Sort Values,Sorts a list of values based on the specified data type and locale.
+140,6,"newer functions, variable or optional parameters",function,UniqueValues,UniqueValues ( values {; datatype ; locale } ),3,Text,Unique Values,Returns unique values that are in a list based on the specified data type and locale.
+140,7,"newer functions, variable or optional parameters",function,JSONSetElement,JSONSetElement ( json ; keyOrIndexOrPath ; value ; type ),11,JSON,JSON Set Element,"Adds or modifies an element in JSON data specified by an object name, an array index, or a path."
+140,8,"newer functions, variable or optional parameters",function,HexDecode,HexDecode ( data {; fileNameWithExtension } ),9,Container,Hex Decode,Returns either container or text content from text encoded in hexadecimal format.
+140,9,"newer functions, variable or optional parameters",function,GetSensor,GetSensor ( sensorName {; option1 ; option2 } ),21,Mobile,Get Sensor,Returns the value of a specified sensor for an iOS or iPadOS device.
+140,10,"newer functions, variable or optional parameters",function,ComputeModel,ComputeModel ( modelName ; name1 ; value1 {name2; value2;...nameN; valueN } ),17,Artificial Intelligence,Compute Model,Returns a JSON object containing the result of a Core ML model evaluation.
+140,11,"newer functions, variable or optional parameters",function,GetEmbeddingAsFile,GetEmbeddingAsFile ( text {; fileNameWithExtension } ),17,Artificial Intelligence,Get Embedding As File,Converts an embedding vector from text format to binary container data.
+140,12,"newer functions, variable or optional parameters",function,ExecuteSQLe,ExecuteSQLe ( sqlQuery ; fieldSeparator ; rowSeparator { ; arguments... } ),16,Logical,Execute SQLe,"Executes an SQL query statement for the specified table occurrence in a FileMaker Pro file and, if an error occurs, returns ? followed by an error message."
+140,13,"newer functions, variable or optional parameters",function,JSONUniqueValues,JSONUniqueValues ( json ; keyOrIndexOrPath ),11,JSON,JSON Unique Values,Returns a JSON Array containing only the unique values from the specified JSON Array.
+140,14,"newer functions, variable or optional parameters",function,JSONRemoveValues,JSONRemoveValues ( json ; keyOrIndexOrPath ; jsonValuesArrayToRemove ),11,JSON,JSON Remove Values,"Returns a JSON Array, based on the specified JSON Array, that does not include any of the values in jsonValuesArrayToRemove."
+140,15,"newer functions, variable or optional parameters",function,NormalizeEmbedding,NormalizeEmbedding ( data { ; dimension } ),17,Artificial Intelligence,Normalize Embedding,"Normalizes an embedding vector. If specified, the dimension parameter reduces the number of vector dimensions to use before normalizing."
+140,16,"newer functions, variable or optional parameters",function,GetRecordIDsFromFoundSet,GetRecordIDsFromFoundSet ( type { ; tableOccurrenceOrPortal } ),18,Miscellaneous,Get Record IDs From Found Set,"Returns record IDs from the current found set as a list or a JSON array. To get IDs for related records, specify the name of a table occurrence or portal."
+140,17,"newer functions, variable or optional parameters",function,GetRAGSpaceInfo,GetRAGSpaceInfo ( ragAccountName {; spaceID } ),17,Artificial Intelligence,Get RAG Space Info,"Returns information about the specified RAG space or all RAG spaces, if no space ID is specified."
+141,0,newer zero-parameter functions and constants,function,Self,Self,16,Logical,Self,Returns the content of the object in which the calculation is defined.
+141,1,newer zero-parameter functions and constants,keyword-or-constant,JSONString,,,,,
+141,2,newer zero-parameter functions and constants,keyword-or-constant,JSONNumber,,,,,
+141,3,newer zero-parameter functions and constants,keyword-or-constant,JSONObject,,,,,
+141,4,newer zero-parameter functions and constants,keyword-or-constant,JSONArray,,,,,
+141,5,newer zero-parameter functions and constants,keyword-or-constant,JSONBoolean,,,,,
+141,6,newer zero-parameter functions and constants,keyword-or-constant,JSONNull,,,,,
+141,7,newer zero-parameter functions and constants,keyword-or-constant,JSONRaw,,,,,
+141,8,newer zero-parameter functions and constants,keyword-or-constant,PosixPath,,,,,
+141,9,newer zero-parameter functions and constants,keyword-or-constant,URLPath,,,,,
+141,10,newer zero-parameter functions and constants,keyword-or-constant,WinPath,,,,,
+141,11,newer zero-parameter functions and constants,function,LayoutObjectUUID,LayoutObjectUUID,18,Miscellaneous,Layout Object UUID,Returns the Universally Unique Identifier (UUID) of the layout object in which the calculation is defined.
+141,12,newer zero-parameter functions and constants,keyword-or-constant,ValueNumber,,,,,
+141,13,newer zero-parameter functions and constants,keyword-or-constant,ValueNumberRanges,,,,,
+141,14,newer zero-parameter functions and constants,keyword-or-constant,JSONStringRanges,,,,,
+141,15,newer zero-parameter functions and constants,keyword-or-constant,ROWID,,,,,
+141,16,newer zero-parameter functions and constants,keyword-or-constant,ROWMODID,,,,,
+142,0,newer one-parameter functions,function,GetAsURLEncoded,GetAsURLEncoded ( text ),3,Text,Get As URL Encoded,"Returns text as URL (Uniform Resource Locator) encoding, for use as a URL."
+142,1,newer one-parameter functions,function,GetFieldName,GetFieldName ( field ),18,Miscellaneous,Get Field Name,Returns the fully qualified name of a field reference.
+142,2,newer one-parameter functions,function,Code,Code ( text ),3,Text,Code,Returns the Unicode code points for the characters in the text.
+142,3,newer one-parameter functions,function,Char,Char ( number ),3,Text,Char,Returns the characters for the Unicode code points in the number.
+142,4,newer one-parameter functions,function,GetWidth,GetWidth ( field ),9,Container,Get Width,"Returns the width, in pixels, of the content in a container field that holds images."
+142,5,newer one-parameter functions,function,GetHeight,GetHeight ( field ),9,Container,Get Height,"Returns the height, in pixels, of the content in a container field that holds images."
+142,6,newer one-parameter functions,function,VerifyContainer,VerifyContainer ( field ),9,Container,Verify Container,"Returns 0 (false) if container data was changed or deleted outside the FileMaker Platform; otherwise, returns 1 (true)."
+142,7,newer one-parameter functions,function,Base64Encode,Base64Encode ( data ),9,Container,Base64 Encode,Returns data as text in Base64 format.
+142,8,newer one-parameter functions,function,GetAVPlayerAttribute,GetAVPlayerAttribute ( attributeName ),21,Mobile,Get AV Player Attribute,"Returns the setting of the specified attribute for the audio, video, or image file in a container field."
+142,9,newer one-parameter functions,function,JSONFormatElements,JSONFormatElements ( json ),11,JSON,JSON Format Elements,Formats elements in JSON data to make them easier to read.
+142,10,newer one-parameter functions,function,HexEncode,HexEncode ( data ),9,Container,Hex Encode,Returns data as text in hexadecimal format.
+142,11,newer one-parameter functions,function,GetModelAttributes,GetModelAttributes ( modelName ),17,Artificial Intelligence,Get Model Attributes,Returns metadata in JSON format about a named model that's currently loaded.
+142,12,newer one-parameter functions,function,GetLayoutObjectOwnerInfo,GetLayoutObjectOwnerInfo ( objectID ),18,Miscellaneous,Get Layout Object Owner Info,Returns a JSON object with ownership information about a layout object.
+142,13,newer one-parameter functions,function,GetAddonInfo,GetAddonInfo ( addonID ),18,Miscellaneous,Get Add on Info,Returns a JSON object with information about an add-on.
+142,14,newer one-parameter functions,empty,,,18,Miscellaneous,,
+142,15,newer one-parameter functions,function,ReadQRCode,ReadQRCode ( container ),9,Container,Read QR Code,Returns as text the value of a QR code in a container field.
+142,16,newer one-parameter functions,function,GetBaseTableName,GetBaseTableName ( field ),18,Miscellaneous,Get Base Table Name,Returns the base table name of a field reference.
+142,17,newer one-parameter functions,function,GetEmbeddingAsText,GetEmbeddingAsText ( data ),17,Artificial Intelligence,Get Embedding As Text,Converts an embedding vector from binary container data to text format.
+142,18,newer one-parameter functions,function,GetTokenCount,GetTokenCount ( text ),17,Artificial Intelligence,Get Token Count,Returns the token count for the specified text. Use for guidance only; actual counts used by models may vary.
+142,19,newer one-parameter functions,function,GetFieldsOnLayout,GetFieldsOnLayout ( layoutName ),17,Artificial Intelligence,Get Fields on Layout,Returns a list of the fields on a layout as JSON data.
+142,20,newer one-parameter functions,function,GetTextFromPDF,GetTextFromPDF ( container ),9,Container,Get Text From PDF,Returns the text found in a PDF file in the specified container field.
+142,21,newer one-parameter functions,function,JSONParse,JSONParse ( json ),11,JSON,JSON Parse,Parses text as JSON data and keeps the parsed JSON representation in memory for you to reuse with other JSON functions.
+142,22,newer one-parameter functions,function,JSONParsedState,JSONParsedState ( json ),11,JSON,JSON Parsed State,"Returns 0 if JSON is not parsed, -1 if parsed but invalid, or a positive number representing the JSON type if parsed and valid."
+142,23,newer one-parameter functions,function,ListPersistentDataIDs,ListPersistentDataIDs ( name ),18,Miscellaneous,List Persistent Data,Returns a list of instance IDs for the entries with the specified name in the persistent data store.
+143,0,newer two-parameter functions,function,GetContainerAttribute,GetContainerAttribute ( field ; attributeName ),9,Container,Get Container Attribute,Returns the file metadata of the specified container field.
+143,1,newer two-parameter functions,function,JSONGetElement,JSONGetElement ( json ; keyOrIndexOrPath ),11,JSON,JSON Get Element,"Queries JSON data for an element specified by an object name, an array index, or a path."
+143,2,newer two-parameter functions,function,JSONDeleteElement,JSONDeleteElement ( json ; keyOrIndexOrPath ),11,JSON,JSON Delete Element,"Deletes a JSON data element specified by an object name, an array index, or a path."
+143,3,newer two-parameter functions,function,JSONListKeys,JSONListKeys ( json ; keyOrIndexOrPath ),11,JSON,JSON List Keys,"Lists the object names (keys) or array indexes in JSON data for an element specified by an object name, an array index, or a path."
+143,4,newer two-parameter functions,function,JSONListValues,JSONListValues ( json ; keyOrIndexOrPath ),11,JSON,JSON List Values,"Lists the values in JSON data for an element specified by an object name, an array index, or a path."
+143,5,newer two-parameter functions,function,CryptDigest,CryptDigest ( data ; algorithm ),9,Container,Crypt Digest,Returns a binary hash value generated by the specified cryptographic hash algorithm.
+143,6,newer two-parameter functions,function,Base64EncodeRFC,Base64EncodeRFC ( RFCNumber ; data ),9,Container,Base64 Encode RFC,Returns data as text in the specified Base64 format.
+143,7,newer two-parameter functions,function,TextDecode,TextDecode ( container ; encoding ),9,Container,Text Decode,Returns text decoded from container data using the specified character encoding.
+143,8,newer two-parameter functions,function,CryptEncrypt,CryptEncrypt ( data ; key ),9,Container,Crypt Encrypt,Encrypts data with the specified key and returns container data.
+143,9,newer two-parameter functions,function,CryptDecrypt,CryptDecrypt ( container ; key ),9,Container,Crypt Decrypt,Decrypts container data with the specified key and returns text or container data.
+143,10,newer two-parameter functions,function,CryptEncryptBase64,CryptEncryptBase64 ( data ; key ),9,Container,Crypt Encrypt Base64,Encrypts data with the specified key and returns text in Base64 format.
+143,11,newer two-parameter functions,function,CryptDecryptBase64,CryptDecryptBase64 ( text ; key ),9,Container,Crypt Decrypt Base64,Decrypts Base64-encoded text with the specified key and returns text or container data.
+143,12,newer two-parameter functions,function,ConvertFromFileMakerPath,ConvertFromFileMakerPath ( filemakerPath ; format ),18,Miscellaneous,Convert From FileMaker Path,Converts a path in FileMaker format to a standard format.
+143,13,newer two-parameter functions,function,ConvertToFileMakerPath,ConvertToFileMakerPath ( standardPath ; format ),18,Miscellaneous,Convert To FileMaker Path,Converts a path in a standard format to FileMaker format.
+143,14,newer two-parameter functions,function,JSONGetElementType,JSONGetElementType ( json ; keyOrIndexOrPath ),11,JSON,JSON Get Element Type,"Validates and returns the JSON data type for an element specified by an object name, an array index, or a path."
+143,15,newer two-parameter functions,function,GetLiveText,GetLiveText ( container ; language ),9,Container,Get Live Text,Returns the text found in the image of the specified container field using the text-recognition algorithm.
+143,16,newer two-parameter functions,function,CosineSimilarity,CosineSimilarity ( v1 ; v2 ),17,Artificial Intelligence,Cosine Similarity,Returns the similarity between two embedding vectors as a number between -1 (opposite) and 1 (similar).
+143,17,newer two-parameter functions,function,GetLiveTextAsJSON,GetLiveTextAsJSON ( container ; language ),9,Container,Get Live Text As JSON,Returns the text and position as JSON data for each line of text found in an image in a container field by using the text-recognition algorithm.
+143,18,newer two-parameter functions,function,GetTableDDL,GetTableDDL ( tableOccurrenceNames ; ignoreError ),17,Artificial Intelligence,Get Table DDL,Returns table information in Data Definition Language (DDL) format for a list of table occurrences specified as a JSON array.
+143,19,newer two-parameter functions,function,PredictFromModel,PredictFromModel ( modelName ; v1 ),17,Artificial Intelligence,PredictFromModel,Returns the predicted value from a trained regression model for the specified text embedding vector.
+143,20,newer two-parameter functions,function,AddEmbeddings,AddEmbeddings ( v1 ; v2 ),17,Artificial Intelligence,Add Embeddings,Adds two embedding vectors and returns the result as a normalized vector.
+143,21,newer two-parameter functions,function,SubtractEmbeddings,SubtractEmbeddings ( v1 ; v2 ),17,Artificial Intelligence,Subtract Embeddings,Subtracts embedding vector v2 from v1 and returns the result as a normalized vector.
+143,22,newer two-parameter functions,function,GetPersistentData,GetPersistentData ( name ; instanceID ),18,Miscellaneous,Get Persistent Data,Returns the persistent data value specified by name and instance ID.
+144,0,newer three-parameter functions,function,GetThumbnail,GetThumbnail ( field ; width ; height ),9,Container,Get Thumbnail,"Returns a thumbnail image of the content in a container field, according to a specified height and width."
+144,1,newer three-parameter functions,function,CryptAuthCode,CryptAuthCode ( data ; algorithm ; key ),9,Container,Crypt Auth Code,Returns a binary HMAC (keyed-hash message authentication code) using the specified cryptographic hash algorithm.
+144,2,newer three-parameter functions,function,TextEncode,TextEncode ( text ; encoding ; lineEndings ),9,Container,Text Encode,Returns a text file as container data from text using the specified character encoding and line endings.
+144,3,newer three-parameter functions,function,JSONMakeArray,JSONMakeArray ( listOfValues ; separator ; type ),11,JSON,JSON Make Array,Converts a list of separated values into a JSON array of the specified type.
+144,4,newer three-parameter functions,function,GetEmbedding,GetEmbedding ( account ; model ; input ),17,Artificial Intelligence,Get Embedding,Sends input data to an embedding model and returns a vector representation as container data.
+144,5,newer three-parameter functions,function,JSONValueExists,JSONValueExists ( json ; keyOrIndexOrPath ; value ),11,JSON,JSON Value Exists,Returns if value exists in a JSON array specified by a path.
+144,6,newer three-parameter functions,function,JSONValueCount,JSONValueCount ( json ; keyOrIndexOrPath ; value ),11,JSON,JSON Value Count,Returns a count of the total number of occurences of a value in a JSON array specified by a path.
+144,7,newer three-parameter functions,function,JSONAnyValuesExist,JSONAnyValuesExist ( json ; keyOrIndexOrPath ; jsonValuesArrayToFind ),11,JSON,JSON Any Values Exist,Returns if any one of the provided values exist in a JSON array specified by a path.
+145,0,newer four-parameter functions,function,CryptGenerateSignature,CryptGenerateSignature ( data ; algorithm ; privateRSAKey ; keyPassword ),9,Container,Crypt Generate Signature,Generates the digital signature of the data.
+145,1,newer four-parameter functions,function,CryptVerifySignature,CryptVerifySignature ( data ; algorithm ; publicRSAKey ; signature ),9,Container,Crypt Verify Signature,Verifies whether a digital signature is valid for the data.
+156,0,Location functions,empty,,,,,,
+156,1,Location functions,function,Location,Location ( accuracy {; timeout} ),21,Mobile,Location,"Returns the current latitude and longitude on an iOS or iPadOS device running FileMaker Go, and their accuracy."
+156,2,Location functions,function,LocationValues,LocationValues ( accuracy {; timeout} ),21,Mobile,Location Values,"Returns the current latitude, longitude, and altitude on an iOS or iPadOS device running FileMaker Go; their accuracy; and minutes since the values were returned."
+156,3,Location functions,function,RangeBeacons,RangeBeacons ( UUID {; timeout; major; minor} ),21,Mobile,Range Beacons,Returns a list of iBeacons and their proximity to an iOS or iPadOS device.
