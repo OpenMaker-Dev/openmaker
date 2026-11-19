@@ -560,10 +560,16 @@ fn pasted_text_stores_what_filemaker_shows() {
         "Truncate Table [ With dialog: On ; Table: “Contacts” ]",
         "Import Records [ With dialog: On ; Source: “file:a.csv” ]",
         "New Window [ Style: Card ; Name: \"c\" ]",
+        "Go to List of Records [ List of record IDs: \"1¶2\" ; Using layout: “Contact Details” (Contacts) ; New window ]",
     ];
     for line in lines {
         assert_eq!(shown(&pasted(line)), line);
     }
+    // Go to List of Records: the ids in slot 7, a new window under
+    // `kTurnOn` (script-steps.md 12.2).
+    let list = pasted(lines[10]);
+    assert!(list.calculation(7).is_some() && list.calculation(0).is_none());
+    assert!(list.has_flag(flag::TURN_ON) && !list.has_flag(flag::OPTION));
     // Insert Text's text is slot 0.
     let text = pasted(lines[0]);
     assert_eq!((text.text(0).as_deref(), text.text(1)), (Some("x"), None));

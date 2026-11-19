@@ -4265,21 +4265,16 @@ impl Navigation for WorkerHost<'_> {
         self.go_to_related(request)
     }
 
-    fn go_to_list_of_records(
-        &mut self,
-        ids: &str,
-        layout: Option<&LayoutTarget>,
-        animation: Option<u32>,
-        new_window: bool,
-    ) -> HostResult {
-        if new_window {
-            let style = self.new_window_style(WindowOptions::from_word(None), Bounds::default())?;
-            self.open_window(None, style)?;
+    fn go_to_list_of_records(&mut self, request: &RecordList) -> HostResult {
+        if let Some(window) = &request.new_window {
+            let style = self.new_window_style(window.window_options(), window.bounds)?;
+            self.open_window(window.name.clone(), style)?;
         }
-        if let Some(layout) = layout {
-            self.go_to_layout(layout, animation)?;
+        if let Some(layout) = &request.layout {
+            self.go_to_layout(layout, request.animation)?;
         }
-        let ids: Vec<i64> = ids
+        let ids: Vec<i64> = request
+            .ids
             .split(['\r', '\n'])
             .filter_map(|line| line.trim().parse().ok())
             .collect();

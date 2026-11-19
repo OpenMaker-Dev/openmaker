@@ -139,6 +139,8 @@ pub struct MemoryScriptHost {
     pub pending_opens: u32,
     /// Commit Transaction returns [`HostError::Pending`] this many times.
     pub pending_commits: u32,
+    /// Go to List of Records' requests, in order; the found set stays.
+    pub record_lists: Vec<RecordList>,
 }
 
 impl MemoryScriptHost {
@@ -180,6 +182,7 @@ impl MemoryScriptHost {
             pending_new_records: 0,
             pending_opens: 0,
             pending_commits: 0,
+            record_lists: Vec::new(),
         }
     }
 
@@ -671,6 +674,13 @@ impl ScriptHost for MemoryScriptHost {
 }
 
 impl Navigation for MemoryScriptHost {
+    /// Keeps the request in [`MemoryScriptHost::record_lists`].
+    fn go_to_list_of_records(&mut self, request: &RecordList) -> HostResult {
+        self.call("go_to_list_of_records");
+        self.record_lists.push(request.clone());
+        Ok(())
+    }
+
     fn go_to_layout(&mut self, layout: &LayoutTarget, _animation: Option<u32>) -> HostResult {
         self.call(format!("go_to_layout {layout:?}"));
         let current = self.window().map(|w| w.layout);

@@ -1087,17 +1087,27 @@ impl Runtime {
                 })
             }
             228 => {
-                let ids = self.slot_text(host, step, 0).unwrap_or_default();
+                // The ids are slot 7. The flag, not slot 0, asks for a new
+                // window: Pro keeps the name there when it is turned off
+                // (script-steps.md 12.2).
+                let ids = self.slot_text(host, step, 7).unwrap_or_default();
                 let layout = step
                     .member_key()
                     .and_then(|k| k.id())
                     .map(LayoutTarget::Key);
-                host.go_to_list_of_records(
-                    &ids,
-                    layout.as_ref(),
-                    step.list_value(6),
-                    step.has_flag(flag::OPTION),
-                )
+                let new_window = step.has_flag(flag::TURN_ON).then(|| NewWindow {
+                    name: self.slot_text(host, step, 0),
+                    bounds: self.bounds(host, step),
+                    layout: None,
+                    style: 0,
+                    options: step.number(0),
+                });
+                host.go_to_list_of_records(&RecordList {
+                    ids,
+                    layout,
+                    animation: step.list_value(6),
+                    new_window,
+                })
             }
             22 | 41 | 55 => {
                 let mode = match id {

@@ -65,7 +65,7 @@ use om_scripts::runtime::Fields as FieldSteps;
 use om_scripts::runtime::{
     Accounts, CommitOptions, Dialogs, ErrorCode, ErrorLogEntry, FieldRef, FileId, Files, FindKind,
     FoundSets, HostError, HostResult, InsertTarget, LayoutTarget, Mode, Navigation, Network,
-    PauseEnd, Platform, RecordMove, Records, RelatedRecords, ScriptAccess, ScriptHost,
+    PauseEnd, Platform, RecordList, RecordMove, Records, RelatedRecords, ScriptAccess, ScriptHost,
     TransactionOptions, WindowId, Windows,
 };
 use om_scripts::specs::SortSpec;
@@ -3090,19 +3090,14 @@ impl Navigation for ServerHost {
         self.go_to_related(request)
     }
 
-    fn go_to_list_of_records(
-        &mut self,
-        ids: &str,
-        layout: Option<&LayoutTarget>,
-        _animation: Option<u32>,
-        new_window: bool,
-    ) -> HostResult {
-        if new_window {
+    fn go_to_list_of_records(&mut self, request: &RecordList) -> HostResult {
+        if request.new_window.is_some() {
             return Err(HostError::Unsupported);
         }
-        if let Some(layout) = layout {
+        if let Some(layout) = &request.layout {
             self.go_to_layout(layout, None)?;
         }
+        let ids = &request.ids;
         self.leave()?;
         let table = self.window()?.table;
         let existing: BTreeSet<u64> = self.all_records(table).into_iter().collect();
