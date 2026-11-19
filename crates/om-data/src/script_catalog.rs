@@ -445,17 +445,28 @@ pub fn plan(
             names.insert(name_key(&script.name), script.id);
         }
     }
-    let listed_names: BTreeMap<Vec<u8>, u64> = index
+    // Every key the name list holds, but the entries of members whose old
+    // name goes: an entry whose value does not read as a member's id
+    // (opaque, or not a key string) is held too, so a new name never
+    // replaces bytes OpenMaker cannot read.
+    let listed_names: BTreeSet<Vec<u8>> = index
         .child(&[NAMES])
         .map(|n| n.children.as_slice())
         .unwrap_or_default()
         .iter()
-        .filter_map(|e| Some((e.segment.clone(), key_string_id(e.value.as_deref()?)?)))
-        .filter(|(_, id)| !going.contains(id))
+        .filter(|e| {
+            let id = e
+                .value
+                .as_deref()
+                .filter(|_| e.children.is_empty())
+                .and_then(key_string_id);
+            !id.is_some_and(|id| going.contains(&id))
+        })
+        .map(|e| e.segment.clone())
         .collect();
     let mut take = |name: &str, id: u64| -> Result<Vec<u8>, DataError> {
         let (key, entry) = check_name(name)?;
-        if names.insert(key, id).is_some() || listed_names.contains_key(&entry) {
+        if names.insert(key, id).is_some() || listed_names.contains(&entry) {
             return Err(unsupported(format!(
                 "Another script or folder is named “{name}”, and OpenMaker does not save two \
                  of one name yet; nothing was saved."
@@ -1149,6 +1160,25 @@ mod tests {
         let mut accented = stored.clone();
         accented.scripts[1].name = "Créer".into();
         assert!(refused(&accented).message.contains("ASCII"));
+        // An entry whose value is no member's id still holds its key: a new
+        // name under it is refused rather than written over it.
+        let mut unread = index.clone();
+        unread.ensure(&[&[NAMES]]).set_child(OwnedNode::leaf(
+            crate::field_catalog::listed_key("Fresh").unwrap(),
+            vec![0xff],
+        ));
+        let mut fresh = stored.clone();
+        fresh.scripts[1].name = "Fresh".into();
+        let error = plan(
+            Some(&unread),
+            &stored,
+            &definitions,
+            &fresh,
+            &by(),
+            &mut || [0; 16],
+        )
+        .unwrap_err();
+        assert!(error.message.contains("two of one name"), "{error:?}");
         let mut renamed = stored.clone();
         renamed.scripts[1].name = "Other".into();
         let error = plan(None, &stored, &definitions, &renamed, &by(), &mut || {
