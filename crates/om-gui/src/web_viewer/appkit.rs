@@ -420,6 +420,18 @@ pub(crate) fn window_of_view(view: usize) -> Option<isize> {
         .map(|window| window.windowNumber())
 }
 
+/// The app's windows: number and title, in AppKit's order.
+pub(crate) fn windows() -> Vec<(isize, String)> {
+    let Some(mtm) = MainThreadMarker::new() else {
+        return Vec::new();
+    };
+    NSApplication::sharedApplication(mtm)
+        .windows()
+        .iter()
+        .map(|window| (window.windowNumber(), window.title().to_string()))
+        .collect()
+}
+
 /// Move and size the container to the visible part and the page within it
 /// to its offset, and show or hide them. Geometry comes in physical pixels
 /// from the window's top left; AppKit wants points, and a view whose
