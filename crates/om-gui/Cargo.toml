@@ -42,14 +42,20 @@ resvg = { version = "0.45.1", default-features = false, features = ["text"] }
 # The root viewport's native window, which web viewers are children of
 # (the version eframe uses; MIT OR Apache-2.0 OR Zlib).
 raw-window-handle = "0.6"
+# The app's event loop, which tells the keypad's Enter from Return
+# (src/keypad.rs), and the error eframe logs as that loop ends (the
+# versions eframe uses; winit Apache-2.0, log MIT OR Apache-2.0).
+winit = { version = "0.30", default-features = false }
+log = "0.4"
 
 [features]
 # Embedded web viewers: WebKitGTK through wry on Linux/X11 (through XWayland
 # on a Wayland session). Building it needs the WebKitGTK 4.1 and GTK 3
 # development files (Debian/Ubuntu: libwebkit2gtk-4.1-dev) and pkg-config;
 # running it, the WebKitGTK 4.1 runtime. Without it, web viewers show a note
-# and their script steps fail.
-web-viewer = ["dep:wry", "dep:gtk", "dep:gdkx11", "dep:webkit2gtk", "dep:javascriptcore-rs", "dep:winit", "dep:x11-dl", "dep:xkbcommon-dl"]
+# and their script steps fail. Its windows are on winit's X11 backend, also on
+# a Wayland session.
+web-viewer = ["dep:wry", "dep:gtk", "dep:gdkx11", "dep:webkit2gtk", "dep:javascriptcore-rs", "winit/x11", "dep:x11-dl", "dep:xkbcommon-dl"]
 
 [target.'cfg(unix)'.dependencies]
 # Nonblocking open before checking local Insert/URL files, including FIFOs.
@@ -72,9 +78,6 @@ gdkx11 = { version = "0.18", optional = true }
 # IPC drops messages from pages whose URL has no authority, as data: URLs).
 webkit2gtk = { version = "=2.0.2", features = ["v2_38"], optional = true }
 javascriptcore-rs = { version = "=1.1.2", features = ["v2_28"], optional = true }
-# Its windows on winit's X11 backend, also on a Wayland session (the version
-# eframe uses; Apache-2.0).
-winit = { version = "0.30", default-features = false, features = ["x11"], optional = true }
 # The libraries winit's X11 backend opens, looked for before choosing it (the
 # loaders and versions winit uses; MIT).
 x11-dl = { version = "2.19.1", optional = true }
