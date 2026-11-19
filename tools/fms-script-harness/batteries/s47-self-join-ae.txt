@@ -3,7 +3,7 @@
 # occurrence Mates (Contacts::Company = Mates::Company) and Contacts::SJ, an
 # auto-entered witness "Company|First Name|Count ( Mates::PrimaryKey )|
 # List ( Mates::First Name )|Mates::First Name" that appends each evaluation
-# to $$ae, added by s45_self_join_schema.py (SCHEMA=). The file starts
+# to $$ae, added by s47_self_join_schema.py (SCHEMA=). The file starts
 # with no records; each run line is a session of its own.
 
 == dump

@@ -4006,7 +4006,7 @@ impl RecordPlan {
     ///   record leaves empty, stored and as written;
     ///
     /// and nothing that reads records by their place. A new row's auto-entry
-    /// also answers the measured cases below (C126, s45). A record the write
+    /// also answers the measured cases below (C126, s47). A record the write
     /// did not name ([`Written::Unknown`]) answers no self-join.
     fn answers_own(
         &self,
@@ -4064,12 +4064,12 @@ impl RecordPlan {
         // local file) read the relationship as empty with no other match
         // (Count 0, List empty, the first related record's fields empty),
         // also with a computed key; C126's aggregate read the one older
-        // match's values only. FileMaker Server's engine (s45, records a
+        // match's values only. FileMaker Server's engine (s47, records a
         // script made) read zero to three older matches of an unsorted
         // equality join, with given keys: Count, List and the first related
         // record read them in creation order. Reads by place are not
         // measured, nor a sorted or non-equality join with matches, nor
-        // records the commit holds besides this one (s45's second new
+        // records the commit holds besides this one (s47's second new
         // record of one transaction did not read the first; OpenMaker's
         // related reads find held records).
         if let (true, Written::New(own)) = (auto_entered, session.written) {
@@ -7723,7 +7723,7 @@ mod tests {
 
     /// A self-join is answered only where whether the written record is
     /// among its own related records, and with which values, cannot change
-    /// the result, or as measured (#1035, s45). T has two stored records, 1 (job 1,
+    /// the result, or as measured (#1035, s47). T has two stored records, 1 (job 1,
     /// doc `a`, n 1, top 5) and 2 (a `x`, b `p`, n 2); S relates T on `[job,
     /// doc]`, S2 on `a = b`.
     /// - `S::n` in a new record of job 1, doc `a`: record 1 came first, 1.
@@ -7734,7 +7734,7 @@ mod tests {
     ///   after record 1, 1 in a new job.
     /// - `Count ( S::n )` in a new record: 1, record 1 alone, whether or not
     ///   its own `n` is set: a new record reads the older matches, never
-    ///   itself (s45).
+    ///   itself (s47).
     /// - `S2::n` as record 2 changes `a` to `p` and `b` to `q`: no longer
     ///   related to itself as written, but as stored (`b` = `p`) it is:
     ///   refused. Changing `a` to `z` instead, related neither way: empty.

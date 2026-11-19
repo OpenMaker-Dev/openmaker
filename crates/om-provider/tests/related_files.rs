@@ -8335,7 +8335,7 @@ fn a_related_files_list_of_a_calculation_reads_the_opened_file() {
 /// no other record matches, by the key the record was given, reads the
 /// relationship as empty, as #1035's two native cases measured: Count 0,
 /// List empty, the first related record's fields empty. Where another
-/// record matches, it reads that one, never itself (s45, FileMaker Server's
+/// record matches, it reads that one, never itself (s47, FileMaker Server's
 /// engine). Where the commit holds another record of the table, refused (3):
 /// FileMaker's transaction did not read it, OpenMaker's held reads would.
 #[test]
@@ -8426,7 +8426,7 @@ fn a_new_records_auto_entry_reads_an_unmatched_self_join_as_empty() {
 /// Computed non-empty, a later record reads the other records where its
 /// final `Lead` differs from its own final `Code2`. Equal final keys read
 /// the older matches during new-row auto-entry, never the record itself:
-/// one (C126), and two (s45, FileMaker Server's engine).
+/// one (C126), and two (s47, FileMaker Server's engine).
 #[test]
 fn a_self_join_by_an_empty_computed_key_relates_nothing() {
     const KEY: u64 = 30;
@@ -8472,7 +8472,7 @@ fn a_self_join_by_an_empty_computed_key_relates_nothing() {
     };
     let first = create("g1", "g1").unwrap();
     // Equal computed keys: Count sees the older rows, one (C126), then two
-    // (s45), and Lead the group's first record.
+    // (s47), and Lead the group's first record.
     let matching = create("g1", "x").unwrap();
     let third = create("g1", "z").unwrap();
     // Lead "x" differs from its own Code2 "h1": it cannot satisfy its own

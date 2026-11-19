@@ -1,5 +1,5 @@
 # Add a self-join and an auto-entered witness over it to contacts-en's
-# saveAsXML document, for script oracle s45-self-join-ae: what a record's
+# saveAsXML document, for script oracle s47-self-join-ae: what a record's
 # auto-entry reads through a self-join it belongs to. The occurrence Mates
 # (Contacts) is joined on Contacts::Company = Mates::Company; Contacts::SJ
 # (field 14, text) auto-enters, replacing, a witness of the record's own

@@ -1516,7 +1516,7 @@ application creation plan.
       gives, or computed fields whose evaluation has passed without being
       deferred or omitted. C126 measured a computed non-empty key with no
       other row.
-  - **Older matching rows (C126 follow-up, s45).** A new row's auto-entry
+  - **Older matching rows (C126 follow-up, s47).** A new row's auto-entry
     reads the rows committed before it with its key through an unsorted
     equality join, never itself: aggregates and the first related record
     read them in creation order. FileMaker Pro's local witness read one
@@ -1535,7 +1535,7 @@ application creation plan.
   - **Measured, not answered yet:** an edited record reads itself, with
     the values being written, where its committed key matches the key being
     written, and not otherwise; a second new row of one transaction does
-    not read the first (s45). OpenMaker refuses these with 3 as before
+    not read the first (s47). OpenMaker refuses these with 3 as before
     ([#297](https://github.com/OpenMaker-Dev/openmaker/issues/297)).
   - **What is unmeasured:** sorted or non-equality joins with matches,
     stored and validation formulas, portal rows made in one commit, and

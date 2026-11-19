@@ -444,7 +444,7 @@ The first three cases had no other related record; the fourth has exactly
 one older match.
 
 **Records a script makes or edits** [O: FileMaker Server 26.0.3's engine,
-script oracle `s45-self-join-ae`, 2026-11-19]. Contacts got an occurrence
+script oracle `s47-self-join-ae`, 2026-11-19]. Contacts got an occurrence
 Mates joined on `Contacts::Company = Mates::Company` (equality, unsorted)
 and a text field SJ auto-entering, replacing, the witness `Company | First
 Name | Count ( Mates::PrimaryKey ) | List ( Mates::First Name ) |
