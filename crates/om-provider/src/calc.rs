@@ -116,8 +116,10 @@ pub(crate) fn cell_text(cell: &Cell) -> Option<String> {
                 .find(|(path, _)| path.len() == 1 && path[0] == [0])?
                 .1
                 .as_ref()?;
-            let total = u32::from_be_bytes(header.get(..4)?.try_into().ok()?) as usize;
-            let mut out = Vec::with_capacity(total);
+            let total = u32::from_be_bytes(*header.first_chunk()?) as usize;
+            // The total is the host's to claim: nothing is reserved until
+            // the pieces present add up to it (#216).
+            let mut pieces = Vec::new();
             for n in 1u64.. {
                 let key = om_hbam::serial::encode(n);
                 let Some((_, Some(piece))) = entries
@@ -126,12 +128,12 @@ pub(crate) fn cell_text(cell: &Cell) -> Option<String> {
                 else {
                     break;
                 };
-                out.extend_from_slice(piece);
+                pieces.push(piece.as_slice());
             }
-            if out.len() != total {
+            if pieces.iter().map(|piece| piece.len()).sum::<usize>() != total {
                 return None;
             }
-            std::borrow::Cow::Owned(out)
+            std::borrow::Cow::Owned(pieces.concat())
         }
     };
     om_scsu::decode_scsu(&bytes).ok()
@@ -1704,7 +1706,11 @@ impl NativeProvider {
     /// host has none of yet: read as held (`held_new_cells`), as record
     /// pages show them, so that a script's field after New Record and the
     /// match field of a row begun in the record's portal read its values.
-    /// Only the answer has them, not the working set of the host's records.
+    /// So is the record a related set of `needs` is read from: the window
+    /// scans a held record's sets from its held values
+    /// (`CachedSource::related_over_overlays`), and a layout that shows
+    /// only its portal asks for nothing else of it. Only the answer has
+    /// them, not the working set of the host's records.
     fn overlay_held_new(
         &self,
         schema: &CalcSchema,
@@ -1713,8 +1719,14 @@ impl NativeProvider {
         today: Date,
     ) {
         for need in needs {
-            let CalcNeed::Record { table, record } = need else {
-                continue;
+            let (table, record) = match need {
+                CalcNeed::Record { table, record } => (table, record),
+                CalcNeed::Related { from, record, .. }
+                | CalcNeed::RelatedIds { from, record, .. } => match schema.table_of(*from) {
+                    Some(table) => (&table.id, record),
+                    None => continue,
+                },
+                _ => continue,
             };
             let Some(cells) = self
                 .held_new_cells(*table, *record)
@@ -1878,5 +1890,9 @@ mod tests {
             cell_text(&Cell::Value(om_scsu::encode_scsu("plain"))).as_deref(),
             Some("plain")
         );
+        // A header claiming 4 GiB with no pieces behind it reserves nothing
+        // (#216; aborts under `ulimit -v` if it does).
+        let claim = Cell::Nested(vec![(vec![vec![0]], Some(vec![0xff; 4]))]);
+        assert_eq!(cell_text(&claim), None);
     }
 }

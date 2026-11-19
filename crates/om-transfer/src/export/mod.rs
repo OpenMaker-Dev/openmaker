@@ -152,8 +152,10 @@ pub trait ExportSource {
 pub struct ExportRequest {
     pub options: ExportOptions,
     pub profile: Profile,
-    /// Save Records as Excel's "Use field names as column names" (Export
-    /// Records writes no header row).
+    /// A first row of field names: Save Records as Excel's "Use field
+    /// names as column names", or an Export Records order of FileMaker
+    /// 26.1.1 that asks for it ([`ExportOptions::has_field_names`]) for
+    /// comma-separated or Excel output (Claris). A 26.0 order writes none.
     pub field_names_row: bool,
     /// Excel worksheet name and document properties (Save Records as
     /// Excel), `Sheet1` and empty by default.
@@ -165,10 +167,15 @@ pub struct ExportRequest {
 
 impl ExportRequest {
     pub fn new(options: ExportOptions, profile: Profile) -> ExportRequest {
+        let field_names_row = options.has_field_names()
+            && matches!(
+                profile.file_type,
+                FileType::CommaSeparated | FileType::ExcelExport
+            );
         ExportRequest {
             options,
             profile,
-            field_names_row: false,
+            field_names_row,
             worksheet: "Sheet1".into(),
             title: String::new(),
             subject: String::new(),
@@ -318,7 +325,7 @@ pub fn export(source: &mut dyn ExportSource, request: &ExportRequest) -> Result<
     }
     let bytes = match request.profile.file_type {
         FileType::TabSeparated => delimited::tab(&table),
-        FileType::CommaSeparated => delimited::comma(&table),
+        FileType::CommaSeparated => delimited::comma(&table, request.field_names_row),
         FileType::Merge => delimited::merge(&table),
         FileType::HtmlTable => html::write(&table),
         FileType::XmlExport => {
