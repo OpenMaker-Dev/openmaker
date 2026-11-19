@@ -4089,6 +4089,15 @@ impl OpenMakerApp {
         }
     }
 
+    /// A License dialog answer. The dialog is the app's, not a window's: it
+    /// takes the answer whichever window asked, also after that window or
+    /// its file closed.
+    pub(super) fn license_reply(&mut self, result: Result<bool, DataError>) {
+        if let Some(dialog) = &mut self.license_dialog {
+            dialog.accept(result);
+        }
+    }
+
     fn request(&mut self, ctx: &egui::Context, request: Request) {
         // Nothing more goes to a host whose connection is gone.
         if self.w.connection_lost.is_some() && !matches!(request, Request::Close) {
@@ -5112,7 +5121,13 @@ impl OpenMakerApp {
         }
         loop {
             match self.worker.poll() {
-                Ok(response) if response.epoch == self.epoch => self.on_response(ctx, response),
+                // A License dialog answer is the app's, of any session.
+                Ok(response)
+                    if response.epoch == self.epoch
+                        || matches!(response.reply, worker::Reply::License(_)) =>
+                {
+                    self.on_response(ctx, response)
+                }
                 Ok(_) => {}
                 Err(PollError::Empty) => break,
                 Err(PollError::Stopped) => {
@@ -5295,11 +5310,7 @@ impl OpenMakerApp {
                 report,
             } => self.save_settled(ctx, settle, result, report),
             Reply::Recreated(result) => self.recreated(ctx, result),
-            Reply::License(result) => {
-                if let Some(dialog) = &mut self.license_dialog {
-                    dialog.accept(result);
-                }
-            }
+            Reply::License(result) => self.license_reply(result),
             Reply::Files(listed) => self.on_listed(listed),
             Reply::Opened(result) => {
                 let target = self.opening.take();
@@ -6438,6 +6449,27 @@ mod tests {
             })
             .unwrap();
         }
+    }
+
+    /// The License dialog is the app's: its answer finishes it also when the
+    /// window that asked has closed since (#151's review).
+    #[test]
+    fn a_license_answer_reaches_the_dialog_after_its_window_closed() {
+        let ctx = egui::Context::default();
+        let mut app = OpenMakerApp::new(Box::new(om_data::mock::MockProvider::new()));
+        app.license_dialog = Some(crate::licensing::LicenseDialog::default());
+        assert!(app.license_dialog.as_ref().unwrap().pending);
+        app.on_response(
+            &ctx,
+            worker::Response {
+                epoch: app.epoch,
+                window: 99,
+                reply: Reply::License(Ok(true)),
+            },
+        );
+        let dialog = app.license_dialog.as_ref().unwrap();
+        assert!(!dialog.pending, "Done stays enabled");
+        assert_eq!(dialog.stored, Some(true));
     }
 
     /// FileMaker Pro 26.0.3 shows a layout the window goes back to in the
