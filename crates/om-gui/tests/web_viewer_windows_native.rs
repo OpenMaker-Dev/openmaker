@@ -461,11 +461,15 @@ mod native {
 
     use super::{fail, ROWS, SIZE};
 
+    /// A window's capture: the window, when, of which pages, and their
+    /// colors.
+    type Sample = (u64, Instant, Vec<u64>, Vec<Option<[u8; 3]>>);
+
     pub struct Native {
-        /// Each window's last capture: when, of which pages, and their
-        /// colors. The screen is read at most twice a second per window,
-        /// and a window's last sample stands in meanwhile.
-        captured: Vec<(u64, Instant, Vec<u64>, Vec<Option<[u8; 3]>>)>,
+        /// Each window's last capture. The screen is read at most twice a
+        /// second per window, and a window's last sample stands in
+        /// meanwhile.
+        captured: Vec<Sample>,
     }
 
     fn windows() -> Vec<Retained<NSWindow>> {
