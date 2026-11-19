@@ -686,10 +686,34 @@ by-calculation validation, and uniqueness of text fields. Summary and
 unstored-calculation fields may be present; they are not edited or
 written. Globals and repeating fields may be present too; Browse edits
 them as described below (globals as session values, later repetitions in
-their own cells). Nothing the rules compute reads an unstored calculation
-(below), so its option bits are not checked but for a lookup's, which
-would write into it: a stray `0x80` (auto-entry.md) leaves the table
-writable. A stored calculation's unknown bits keep it read-only.
+their own cells). An unstored calculation's option bits are not checked
+but for a lookup's, which would write into it: a stray `0x80`
+(auto-entry.md) leaves the table writable. A stored calculation's unknown
+bits keep it read-only.
+
+**An auto-entered or validation formula may read an unstored
+calculation** of its own table ([#39](https://github.com/OpenMaker-Dev/openmaker/issues/39); auto-entry.md, "Formulas over
+an unstored calculation or a summary field"). The calculation is
+evaluated on the record the write leaves, with its own "Do not evaluate
+if all referenced fields are empty"; a change of one of its inputs
+evaluates a replacing auto-entered formula again, as a change of a field
+the formula reads itself does; and the formula's own "Do not evaluate if
+all referenced fields are empty" looks at the calculation's value. Only
+an unstored calculation the write can evaluate from the record alone is
+read: one that reads another occurrence, a global, summary or container
+field, a `Get` function only the write's operation answers, a custom
+function that reads fields, or another unstored calculation that does,
+keeps the table read-only, as a summary field read by such a formula
+still does; so does a chain of unstored calculations more than 32 deep,
+past which the calculation host reads them as `?`, or one whose read
+would evaluate unstored calculations more than 65,536 times (the host
+evaluates one on every read, so a chain that reads each step twice
+doubles at each). A loop or an aggregate over repetitions reads one
+again, which planning does not count: the write's evaluation of the
+formula then stops past the same 65,536 evaluations, and the write is
+refused (error 7), where FileMaker would go on. A preview treats a
+formula over a calculation that draws `Random`, the clock or a UUID, and
+a skip that calculation's value decides, as not known until the commit.
 
 **A custom message** is shown for any rule of its field that a write
 breaks, not empty included. One stored as a calculation (`0x8000` with

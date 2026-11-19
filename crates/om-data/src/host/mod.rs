@@ -130,7 +130,7 @@ pub fn read_field(
 /// Unstored calculations and summaries the host reads itself (a summary's
 /// values, [`FileCalc::read_field`]), nested deeper than this, read as `?`:
 /// FileMaker rejects circular definitions, so only a broken file gets here.
-const MAX_READ_DEPTH: u32 = 32;
+pub(crate) const MAX_READ_DEPTH: u32 = 32;
 
 thread_local! {
     static READ_DEPTH: Cell<u32> = const { Cell::new(0) };

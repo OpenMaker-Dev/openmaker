@@ -670,6 +670,7 @@ fn an_evaluation_stops_at_its_memory_limits() {
         h.limits = eval::CalcLimits {
             text: 1 << 20,
             nesting: 1_000,
+            ..eval::CalcLimits::DEFAULT
         };
         // Replace checks the result, not input plus replacement (#347).
         h.variables(VarScope::Local)

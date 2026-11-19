@@ -82,6 +82,9 @@ pub(super) struct Abort {
     /// Unknown execution must suspend callers too, even when a nested
     /// unstored calculation normally converts errors into invalid values.
     pub pending: bool,
+    /// The whole evaluation is past [`CalcLimits::calculations`]: the
+    /// unstored calculations it runs in end too.
+    pub exhausted: bool,
 }
 
 impl Abort {
@@ -89,6 +92,7 @@ impl Abort {
         Self {
             error,
             pending: false,
+            exhausted: false,
         }
     }
 
@@ -96,6 +100,16 @@ impl Abort {
         Self {
             error: CalcError::from_code(1224).expect("nonzero"),
             pending: true,
+            exhausted: false,
+        }
+    }
+
+    /// Error 7 for an evaluation past [`CalcLimits::calculations`].
+    pub fn exhausted() -> Self {
+        Self {
+            error: CalcError::OUT_OF_MEMORY,
+            pending: false,
+            exhausted: true,
         }
     }
 
@@ -103,7 +117,7 @@ impl Abort {
     /// unstored calculation otherwise turns it into its `?` value): data
     /// still being fetched, or the host's stop.
     pub fn propagates(&self) -> bool {
-        self.pending || self.error == CalcError::CANCELED
+        self.pending || self.exhausted || self.error == CalcError::CANCELED
     }
 }
 
@@ -308,6 +322,9 @@ pub(super) struct Solver<'h> {
     budget: CalcLimits,
     /// Custom function calls and `Evaluate`s running, nested.
     nesting: u32,
+    /// Unstored calculations evaluated so far, toward
+    /// [`CalcLimits::calculations`].
+    calculations: u64,
 }
 
 impl<'h> Solver<'h> {
@@ -332,6 +349,7 @@ impl<'h> Solver<'h> {
             ticks: 0,
             budget,
             nesting: 0,
+            calculations: 0,
         }
     }
 
@@ -1172,6 +1190,16 @@ impl<'h> Solver<'h> {
             return Err(Abort::pending());
         }
         self.pending_seen = now;
+        Ok(())
+    }
+
+    /// Counts one more unstored calculation, ending the evaluation with
+    /// error 7 past [`CalcLimits::calculations`].
+    pub(super) fn count_calculation(&mut self) -> Flow<()> {
+        self.calculations += 1;
+        if self.calculations > self.budget.calculations {
+            return Err(Abort::exhausted());
+        }
         Ok(())
     }
 
