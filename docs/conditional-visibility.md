@@ -70,18 +70,26 @@ so a hidden summary is not computed; a total over a large found set behind
 unmeasured ([layout-model.md](re/layout-model.md) 12); a hidden object shows
 nothing either way.
 
-The window's `Get` answers for layout calculations now include the current
-view (`Get ( LayoutViewState )`). They also report a current record with an
-unsaved draft as modified (`Get ( RecordOpenState )` 2), as a script in the
-window reads them. Active field, modified field names and sort state remain
-script-only in this client.
+Layout calculations read the window's `Get` answers as a script started in
+that window reads them ([#33](https://github.com/OpenMaker-Dev/openmaker/issues/33)): the view (`Get ( LayoutViewState )`); the
+active field, its occurrence, repetition, portal row and layout object, and
+the text typed into it so far (`Get ( ActiveFieldContents )`); the record's
+open state (1 for a new record, 2 with a draft) and `Get ( ModifiedFields )`,
+which lists a field being typed into only once it is left; the find
+requests; and `Get ( SortState )`. A related field's text reads empty until
+its editor is drawn, and the selection is taken as the insertion point after
+the text, as for a script. That FileMaker Pro re-evaluates conditional
+formatting and hide conditions on these when the focus moves is inferred
+from the selectors' Claris documentation and unmeasured: whether it does so
+on each keystroke for `Get ( ActiveFieldContents )` is unknown.
 
 Cached results are keyed by layout, object, record and portal row. They expire
 on data replies, writes, mode changes, variable changes from scripts, drafts and
 targeted refreshes, as before. A result whose calculations read the window's
 context (any `Get` selector or `GetLayoutObjectAttribute`) also expires when
 that context changes. This covers another current record within the same page,
-the window's name, view, geometry and focus, the found count, the layout and the
+the window's name, view, geometry and focus, the active field's text, the
+record's changed fields, the sort, the found count, the layout and the
 privilege sets. Results that read only data keep. Field contents keep their
 existing refresh rules; an unstored field that reads `Get` is not re-evaluated
 by a context change alone. When FileMaker re-evaluates a hide condition after
