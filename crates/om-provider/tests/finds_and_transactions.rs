@@ -3621,6 +3621,14 @@ fn typing_into_a_validated_global_checks_its_entry_rules() {
                 fixture::add_field(
                     root, TABLE, SETTING, "Setting", 1, 2, 0, 0x1_0000, validation,
                 );
+                // Validated by calculation: its formula, so the table's other
+                // fields are planned and only the global is left out.
+                if validation & 0x1 != 0 {
+                    let mut names = fixture::names();
+                    names.add_field(TABLE, SETTING, "Setting");
+                    let (table, setting) = ((TABLE, OCCURRENCE), SETTING);
+                    fixture::add_formula(root, &names, table, setting, 0x19, "Setting > 0");
+                }
             },
         );
         let (port, ca) = host(&file.0);
