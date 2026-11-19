@@ -2084,10 +2084,14 @@ OpenMaker's runtime (`om-gui` `web_viewer`, the `web-viewer` feature):
   takes and refuses; wry's IPC would drop `data:` pages' messages, and a
   message handler of OpenMaker's own needs code objc2 marks unsafe, which
   the workspace forbids. The handler hears every frame's navigations, so
-  the URL carries a random token of the view's, known only to the bridge
-  script injected into the main frame: another site's frame in the page
-  cannot post. A message longer than 16 MiB, or one that would put more
-  than 32 MiB in wait for the app, is dropped. A page whose Content
+  the URL carries a random token, known only to the bridge script injected
+  into the main frame. Each document the main frame commits gets a new one
+  from the OS's random source (without it the bridge stays off), and the
+  last document's stops working: another site's frame in the page cannot
+  post, nor can a page that learned an earlier document's token. Only
+  well-formed messages are kept; one longer than 16 MiB, or one that would
+  put more than 256 messages or 32 MiB (each counted as at least 1 KiB) in
+  wait for the app, is dropped. A page whose Content
   Security Policy forbids frames (`frame-src 'none'`) cannot post at all.
   For the same reason the history and loading state that Set Web Viewer's
   Back and Forward need are read through key-value coding. wry reports a

@@ -932,9 +932,9 @@ pub(crate) fn allowed(url: &str) -> bool {
     )
 }
 
-/// The URL a hidden frame of the page asks for to post a bridge message
-/// where the view has no `openmaker` message handler (macOS, `appkit.rs`):
-/// this, then the message. The view refuses the load.
+/// The URL a hidden frame of the page asks for to post a bridge message on
+/// macOS (`appkit.rs`): this, the page's token, then the message. The view
+/// refuses the load.
 #[cfg_attr(
     not(all(feature = "web-viewer", target_os = "macos")),
     allow(dead_code, reason = "only the AppKit backend reads it")
@@ -944,12 +944,11 @@ pub(crate) const MESSAGE_URL: &str = "openmaker-message:";
 /// The `FileMaker` object a page gets when its web viewer allows
 /// JavaScript to perform FileMaker scripts. Its functions post the script
 /// name, parameter and option (each `encodeURIComponent`d, `&`-separated)
-/// to the view's `openmaker` message handler, or where the view has none,
-/// as a hidden frame's load of [`MESSAGE_URL`]; nothing comes back to the
-/// page.
+/// to the view's `openmaker` message handler; nothing comes back to the
+/// page. macOS has a bridge of its own (`appkit.rs`).
 #[cfg_attr(
-    not(all(feature = "web-viewer", any(target_os = "linux", target_os = "macos"))),
-    allow(dead_code, reason = "only a native backend injects it")
+    not(all(feature = "web-viewer", target_os = "linux")),
+    allow(dead_code, reason = "only the WebKitGTK backend injects it")
 )]
 pub(crate) const BRIDGE: &str = r#"(function () {
   if (window.FileMaker) { return; }
@@ -960,16 +959,7 @@ pub(crate) const BRIDGE: &str = r#"(function () {
     var body = "openmaker-perform-script&s=" + encodeURIComponent(text(script, "")) +
       "&p=" + encodeURIComponent(text(parameter, "")) +
       "&o=" + encodeURIComponent(text(option, "0"));
-    var handlers = window.webkit && window.webkit.messageHandlers;
-    if (handlers && handlers.openmaker) {
-      handlers.openmaker.postMessage(body);
-      return;
-    }
-    var frame = document.createElement("iframe");
-    frame.style.display = "none";
-    frame.src = "openmaker-message:" + body;
-    (document.body || document.documentElement).appendChild(frame);
-    setTimeout(function () { frame.remove(); }, 0);
+    window.webkit.messageHandlers.openmaker.postMessage(body);
   }
   var fileMaker = Object.freeze({
     PerformScript: function (script, parameter) { post(script, parameter, "0"); },
