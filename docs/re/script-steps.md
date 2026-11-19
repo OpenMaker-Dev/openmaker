@@ -2011,7 +2011,12 @@ Formats:
   not write an `Import.log` in the Documents folder.
 - Not reproduced: "split repetitions into separate records" from a text
   source (FileMaker Server kept only each field's first repetition and left
-  the other fields empty); the XML source of a stored XML import did not
+  the other fields empty: of the mapped K, R, NR and VNE, three rows made
+  three records, R and NR kept their first repetitions, VNE was written
+  and K stayed empty; why K stayed empty is unknown, and FileMaker Pro is
+  unmeasured). OpenMaker refuses the flag with 3, as it does an import
+  into a new table (`mTargetTableName`); the XML source of a stored XML
+  import did not
   resolve on the server (717; the file name is stored in the profile,
   variables not expanded), so XML imports are checked by round trip only.
 
