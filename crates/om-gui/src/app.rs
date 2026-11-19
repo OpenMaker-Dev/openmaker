@@ -137,6 +137,19 @@ impl ViewMode {
 }
 
 /// Step ids of the commands that run as a single step.
+/// Whether a field editor applies `event` to its text or selection: typed
+/// text, a paste or cut, an input method's text, a key pressed.
+fn edits_text(event: &egui::Event) -> bool {
+    matches!(
+        event,
+        egui::Event::Text(_)
+            | egui::Event::Paste(_)
+            | egui::Event::Cut
+            | egui::Event::Ime(_)
+            | egui::Event::Key { pressed: true, .. }
+    )
+}
+
 pub(crate) mod steps {
     pub const UNSORT: u16 = 21;
     pub const SHOW_ALL: u16 = 23;
@@ -2579,7 +2592,19 @@ impl OpenMakerApp {
         // where FileMaker Pro types a line break.
         let return_goes_next =
             enter_keys && field.is_some_and(om_layout::FieldObject::next_object_on_return);
+        // A commit key that came after typing in the same frame waited for
+        // this one: the editor has applied the typing (below). Only the next
+        // frame takes it; a later one (a script ran, a dialog came up)
+        // drops it rather than commit what the window shows by then.
+        let held_id = egui::Id::unique("held_commit_keys").with(ui.ctx().viewport_id());
+        let frame = ui.ctx().cumulative_frame_nr();
+        let held: Option<(u64, Vec<egui::Event>)> =
+            ui.ctx().data_mut(|data| data.remove_temp(held_id));
+        let mut hold = None;
         ui.input_mut(|input| {
+            if let Some((_, held)) = held.filter(|(at, _)| at + 1 == frame) {
+                input.events.splice(0..0, held);
+            }
             if input.consume_shortcut(&shortcuts::QUIT) {
                 actions.push(Action::Quit);
             }
@@ -2648,6 +2673,28 @@ impl OpenMakerApp {
                 actions.push(Action::DeleteLayoutObject);
             }
             if self.w.mode == Mode::Browse {
+                // A field editor applies its keys as it draws, after this,
+                // and only while it has the focus, which a keyboard commit
+                // takes from it before it draws (below). So a commit key
+                // after typing in the same frame waits for the next frame,
+                // with the keys after it, and the editor applies the typing
+                // first.
+                let commit_key = |event: &egui::Event| {
+                    matches!(
+                        event,
+                        egui::Event::Key {
+                            key: Key::Enter,
+                            pressed: true,
+                            modifiers,
+                            ..
+                        } if modifiers.command || modifiers.mac_cmd
+                    ) || (enter_keys && !enter_goes_next && crate::keypad::is_enter_press(event))
+                };
+                if let Some(at) = input.events.iter().position(commit_key) {
+                    if typing && input.events[..at].iter().any(edits_text) {
+                        hold = Some(input.events.split_off(at));
+                    }
+                }
                 if input.consume_shortcut(&KeyboardShortcut::new(Modifiers::COMMAND, Key::N)) {
                     actions.push(Action::NewRecord);
                 }
@@ -2761,6 +2808,11 @@ impl OpenMakerApp {
                 }
             }
         });
+        if let Some(hold) = hold {
+            ui.ctx()
+                .data_mut(|data| data.insert_temp(held_id, (frame, hold)));
+            ui.ctx().request_repaint();
+        }
         // Keyboard Commit leaves the field (script-runtime.md 7.1):
         // surrender its editor before drawing so the existing focus-change
         // path holds Commit for Validate/Save/Exit, as for a background

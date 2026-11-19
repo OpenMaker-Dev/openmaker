@@ -835,10 +835,18 @@ fn return_types_a_line_break_and_the_keypad_enter_commits_or_both_go_on() {
     assert!(common::text_field(&app, "Family").is_focused());
     assert!(common::unsaved(&app), "going on keeps the draft");
 
-    keypad_enter(&mut app);
+    // Typing and the keypad's Enter in one frame (the harness's queued
+    // events take a frame each): the editor applies the typing before the
+    // commit takes its focus.
+    app.input_mut().events.extend([
+        egui::Event::Text(" Z".into()),
+        om_gui::keypad::enter_event(true, egui::Modifiers::NONE),
+        om_gui::keypad::enter_event(false, egui::Modifiers::NONE),
+    ]);
+    app.run_steps(3);
     common::wait_until(&mut app, "the commit", |app| !common::editing(app));
     assert!(!common::text_field(&app, "Family").is_focused());
-    assert_eq!(family(&app).as_deref(), Some("Keypad\rTwo"));
+    assert_eq!(family(&app).as_deref(), Some("Keypad\rTwo Z"));
     assert!(app.state().error().is_none(), "{:?}", app.state().error());
 }
 
