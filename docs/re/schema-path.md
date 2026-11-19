@@ -2400,9 +2400,10 @@ they all are; in repetition n each input counts as the formula reads it
 there, by the operation that reads it (calc-values.md 8.6): read
 plainly, or as one of several aggregate arguments, repetition n, or
 nothing above 1 for one that does not repeat; through `Extend` its first
-repetition; as `GetRepetition`'s or `f[n]`'s field, computed or not, or as
-an aggregate's only argument (`Extend` of it too), any of its
-repetitions. That reading of the option is inferred: FileMaker's check is
+repetition; as `GetRepetition`'s or `f[n]`'s field, computed or not, as
+an aggregate's only argument (`Extend` of it too), or as the field
+parameter of a function that takes one (`NPV`, `Last`), any of its
+repetitions, as the evaluator expands them. That reading of the option is inferred: FileMaker's check is
 unmeasured. Auto-enter calculations are not recomputed
 (they apply when data is entered) and nothing is validated (inf). `Get`
 answers for the account that sent op73 (also as the user name), the
