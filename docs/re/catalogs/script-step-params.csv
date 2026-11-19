@@ -163,6 +163,8 @@ step_id,step_name,order,parameter,xml_type,storage,values,default,evidence,notes
 87,Show Custom Dialog,6,Input labels,Calculation,slot:2:calc|slot:3:calc|slot:4:calc,,,xml+params,"XML positions and corpus: label calculations are slots 2, 3, 4 for inputs 1-3 (script-steps.md 11.8)"
 87,Show Custom Dialog,7,Password,Boolean,slot:0:num|slot:1:num|slot:2:num,,,xml+params,"XML and corpus: ""use password character"" is [00 n-1]/03 = 1 for input n (slots 0-2) (script-steps.md 11.8)"
 87,Show Custom Dialog,8,Window,Calculation,slot:8:calc|slot:9:calc|slot:11:calc|slot:12:calc,,,xml+params,"Height 8, Width 9, Top 11, Left 12"
+87,Show Custom Dialog,9,Close after,Boolean,slot:6:num,,Off,bin-26.1.1,"FileMaker Pro 26.1.1: XML AutoCloseTimer's Boolean (SerializeShowCustomDialog); no step written by 26.1.1 read yet, its byte width unmeasured (script-steps.md 12.4)"
+87,Show Custom Dialog,10,Close after seconds,Calculation,slot:13:calc,,,bin-26.1.1,"FileMaker Pro 26.1.1: XML AutoCloseSeconds, written when Close after is on (script-steps.md 12.4)"
 88,Open Script Workspace,0,,,,,,xml+params,no parameters: absent from both XML dispatchers and from GenerateParameters
 89,# (comment),1,Comment,Text,slot:0:text,,,xml+params,kTextData
 89,# (comment),2,Disabled/collapsed,Boolean,flag:0x800000,,,xml+params,kDisableStepCollapsed

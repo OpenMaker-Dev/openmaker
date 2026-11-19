@@ -944,16 +944,33 @@ impl Runtime {
             });
             targets.push(target);
         }
+        // "Close after (seconds)" (26.1.1): on in numeric slot 6, the
+        // seconds in calculation slot 13 (script-steps.md 12.4, from the
+        // binaries). A time that is not a positive number leaves the dialog
+        // to the user: OpenMaker's choice, FileMaker's is unmeasured.
+        let close_after = step
+            .number(6)
+            .is_some_and(|on| on != 0)
+            .then(|| self.slot_float(host, step, 13))
+            .flatten()
+            .filter(|seconds| seconds.is_finite() && *seconds > 0.0);
         let dialog = CustomDialog {
             title,
             message,
             buttons: buttons.iter().map(|(_, b)| b.clone()).collect(),
             inputs,
+            close_after,
         };
         let response = match host.show_custom_dialog(&dialog) {
             Ok(response) => response,
             Err(e) => return Exec::from_host(Err(e)),
         };
+        if response.button == 0 && close_after.is_some() {
+            // Closed by its timer: `Get ( LastMessageChoice )` is 0
+            // (Claris), and no button stored the inputs [I].
+            self.last_message_choice = Some(0);
+            return Exec::ok();
+        }
         let chosen = usize::from(response.button.max(1)) - 1;
         let Some((slot, button)) = buttons.get(chosen) else {
             return Exec::error(ErrorCode::INVALID);

@@ -371,6 +371,12 @@ impl StepReader<'_> {
         match (id, kind) {
             (87, "Button1" | "Button2" | "Button3") => return self.button(parameter, kind),
             (87, "Field1" | "Field2" | "Field3") => return self.input(parameter, kind),
+            // FileMaker Pro 26.1.1's "Close after (seconds)": its Boolean
+            // and `AutoCloseSeconds` are known from the binaries only
+            // (script-steps.md 12.4), not their XML shape.
+            (87, "AutoCloseTimer") => {
+                return Err("Show Custom Dialog's “Close after” is not read".into());
+            }
             (1 | 164 | 210, "List") => return self.script_choice(parameter),
             (16 | 99, "Records" | "Portal") => return self.go_to_choice(parameter),
             (71, "List") => return self.flush(parameter),
