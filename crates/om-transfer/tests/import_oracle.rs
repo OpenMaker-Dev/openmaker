@@ -132,6 +132,7 @@ fn request(mem: &Mem, spec: &str) -> ImportRequest {
         ("Match names", import_flag::MATCH_NAMES),
         ("Split repetitions", import_flag::SPLIT_REPETITIONS),
         ("Add remaining", import_flag::ADD_REMAINING),
+        ("Preserve target", import_flag::PRESERVE_TARGET),
     ] {
         if on(k) {
             flags |= bit;
@@ -338,14 +339,17 @@ fn server_log_in(battery: &str) -> BTreeMap<String, (i32, usize, usize)> {
         .collect()
 }
 
-/// Probes whose outcome this implementation does not reproduce, with why.
-const KNOWN: [(&str, &str); 2] = [
+/// Probes whose outcome this implementation does not reproduce, with why,
+/// and the error OpenMaker gives instead (with no record added), if
+/// checked.
+const KNOWN: [(&str, &str, Option<i32>); 2] = [
     // FileMaker Server's split-repetitions import of text keeps only the
-    // first repetition and leaves the other fields empty; not reproduced.
-    ("i_split", "split repetitions"),
+    // first repetition and leaves the other fields empty; not reproduced,
+    // so refused rather than imported differently.
+    ("i_split", "split repetitions", Some(3)),
     // The XML source path of a stored XML import (in the profile) did not
     // resolve on the server (error 717); round trips are tested instead.
-    ("i_xml", "XML source path"),
+    ("i_xml", "XML source path", None),
 ];
 
 #[test]
@@ -355,7 +359,8 @@ fn x02_imports_match_filemaker_server() {
     let mut checked = 0;
     let mut failures = Vec::new();
     for probe in probes() {
-        if KNOWN.iter().any(|(k, _)| *k == probe.name) {
+        let known = KNOWN.iter().find(|(k, ..)| *k == probe.name);
+        if matches!(known, Some((_, _, None))) {
             continue;
         }
         let mut mem = Mem::new();
@@ -397,6 +402,16 @@ fn x02_imports_match_filemaker_server() {
                 Err(e) => (e.code, mem.found.len()),
             },
         };
+        if let Some((_, _, Some(want))) = known {
+            if (error, mem.contacts.len()) != (*want, 0) {
+                failures.push(format!(
+                    "{}: error {error} with {} records, refusal {want} with none",
+                    probe.name,
+                    mem.contacts.len()
+                ));
+            }
+            continue;
+        }
         let (want_error, want_found, want_total) = log[&probe.name];
         let mut problems = Vec::new();
         if error != want_error {
@@ -467,6 +482,7 @@ fn round_trips_through_every_text_format() {
             formatting: false,
             charset: om_transfer::ExportCharset::Utf8,
             use_name_alias: Some(1),
+            field_names: None,
         };
         let profile = Profile {
             file_type: out_type,
@@ -612,4 +628,60 @@ fn x04_matching_and_other_tables_match_filemaker_server() {
         }
     }
     assert!(failures.is_empty(), "{}", failures.join("\n"));
+}
+
+/// "Preserve target field data if source field is empty" (26.1.1): an
+/// update keeps what an empty source value would have cleared, repetition
+/// by repetition, and still writes the rest; a flag OpenMaker does not know
+/// refuses the import with no record touched. A data-loss path: before,
+/// the empty values overwrote the record's.
+#[test]
+fn an_update_preserving_target_data_keeps_fields_its_source_leaves_empty() {
+    let en = om_calc::Locale::en_us();
+    let spec = "Type: TABS ; Target: Contacts ; Charset: 5 ; Action: Replace ; \
+                Preserve target: On ; Map: Contacts::K | Contacts::First Name | Contacts::R";
+    let source = "new\t\ta\u{1d}\u{1d}c\r";
+    let original = |mem: &mut Mem| {
+        mem.add(&[
+            (f::K, &["old"]),
+            (f::FIRST, &["kept"]),
+            (f::R, &["x", "y", "z"]),
+            (f::VNE, &["pre"]),
+            (f::VNO, &["pre"]),
+        ])
+    };
+
+    let mut mem = Mem::new();
+    let id = original(&mut mem);
+    let request = request(&mem, spec);
+    let summary = import(&mut mem, &request, source.as_bytes(), &en).unwrap();
+    assert_eq!((summary.updated, summary.error_code()), (1, 0));
+    let cells = &mem.record(id).cells;
+    assert_eq!(cells[&f::K], ["new"]);
+    assert_eq!(cells[&f::FIRST], ["kept"]);
+    assert_eq!(cells[&f::R], ["a", "y", "c"]);
+
+    let mut mem = Mem::new();
+    let id = original(&mut mem);
+    let mut request = request;
+    request.options.flags |= 0x80;
+    let e = import(&mut mem, &request, source.as_bytes(), &en).unwrap_err();
+    assert_eq!(e.code, 3);
+    assert_eq!(mem.record(id).cells[&f::K], ["old"]);
+    assert_eq!(mem.record(id).mod_count, 0);
+
+    // With "perform auto-enter options" too, the update refuses before any
+    // row, whatever the fields: one left unwritten would no longer be kept
+    // from auto-entry.
+    let with_auto_enter = spec.replace(
+        "Preserve target: On",
+        "Preserve target: On ; Auto-enter: On",
+    );
+    let mut mem = Mem::new();
+    let id = original(&mut mem);
+    let request = crate::request(&mem, &with_auto_enter);
+    let e = import(&mut mem, &request, source.as_bytes(), &en).unwrap_err();
+    assert_eq!(e.code, 3);
+    assert_eq!(mem.record(id).cells[&f::FIRST], ["kept"]);
+    assert_eq!(mem.record(id).mod_count, 0);
 }

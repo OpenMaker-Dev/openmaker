@@ -223,6 +223,10 @@ pub struct ExportOptions {
     /// `ExpUseNameAlias`, written by 26.x only (FileMaker's XML importer
     /// writes 1); `None` when the stream ends after the character set.
     pub use_name_alias: Option<u8>,
+    /// "Use field names as column names in first row", written after
+    /// `use_name_alias` by FileMaker Pro 26.1.1 only (script-steps.md
+    /// 12.4); `None` when the stream ends before it.
+    pub field_names: Option<u8>,
 }
 
 impl ExportOptions {
@@ -244,6 +248,7 @@ impl ExportOptions {
         let formatting = r.u8()? == 1;
         let charset = ExportCharset::from_stored(r.u8()?).ok_or(SpecError)?;
         let use_name_alias = if r.is_done() { None } else { Some(r.u8()?) };
+        let field_names = if r.is_done() { None } else { Some(r.u8()?) };
         r.done()?;
         Ok(ExportOptions {
             fields,
@@ -251,6 +256,7 @@ impl ExportOptions {
             formatting,
             charset,
             use_name_alias,
+            field_names,
         })
     }
 
@@ -268,8 +274,17 @@ impl ExportOptions {
         }
         out.push(u8::from(self.formatting));
         out.push(self.charset.stored());
-        out.extend(self.use_name_alias);
+        if self.use_name_alias.is_some() {
+            out.extend(self.use_name_alias);
+            out.extend(self.field_names);
+        }
         out
+    }
+
+    /// Whether the order asks for a first row of field names (26.1.1's
+    /// byte set to 1).
+    pub fn has_field_names(&self) -> bool {
+        self.field_names == Some(1)
     }
 }
 
@@ -314,6 +329,12 @@ pub mod import_flag {
     pub const ADD_REMAINING: u8 = 0x08;
     pub const CONTAINERS_AS_IS: u8 = 0x10;
     pub const KEEP_ORIGINAL: u8 = 0x20;
+    /// "Preserve target field data if source field is empty" (FileMaker
+    /// 26.1.1, the update actions; the clipboard's `SkipEmptySourceData`).
+    pub const PRESERVE_TARGET: u8 = 0x40;
+    /// Every flag OpenMaker knows. An import with another is refused,
+    /// rather than run without an option it may need.
+    pub const KNOWN: u8 = 0x7f;
 }
 
 /// What a source column does (`FMImportFieldMapEntry::MappingOption`).
@@ -821,7 +842,15 @@ mod tests {
         assert!(!spec.formatting);
         assert_eq!(spec.charset, ExportCharset::Utf16);
         assert_eq!(spec.use_name_alias, Some(1));
+        assert_eq!((spec.field_names, spec.has_field_names()), (None, false));
         assert_eq!(spec.encode(), bytes);
+        // FileMaker Pro 26.1.1 writes one more byte, field names (12.4;
+        // synthetic: no 26.1.1 step has been read).
+        let long = [&bytes[..], &[1]].concat();
+        let spec = ExportOptions::decode(&long).unwrap();
+        assert_eq!((spec.field_names, spec.has_field_names()), (Some(1), true));
+        assert_eq!(spec.encode(), long);
+        assert!(ExportOptions::decode(&[&long[..], &[0]].concat()).is_err());
         // Older writers end after the character set.
         let short = &bytes[..bytes.len() - 1];
         let spec = ExportOptions::decode(short).unwrap();

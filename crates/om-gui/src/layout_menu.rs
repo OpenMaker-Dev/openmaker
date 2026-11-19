@@ -1,32 +1,42 @@
 //! Menu presentation only; script navigation keeps the unfiltered layout list.
-use egui::Ui;
 use om_data::LayoutMenuEntry;
 
 use crate::{
     app::{Action, Mode},
+    menubar::MenuRows,
     session::Session,
-    widgets,
 };
 
-pub(crate) fn show(ui: &mut Ui, session: &Session, mode: Mode, actions: &mut Vec<Action>) {
+pub(crate) fn show(
+    rows: &mut dyn MenuRows,
+    session: &Session,
+    mode: Mode,
+    actions: &mut Vec<Action>,
+) {
     if mode == Mode::Layout {
         for layout in &session.layouts {
-            row(ui, layout.id, &layout.name, session.layout, actions);
+            row(rows, layout.id, &layout.name, session.layout, actions);
         }
     } else {
-        entries(ui, &session.layout_menu, session.layout, actions, 0);
+        entries(rows, &session.layout_menu, session.layout, actions, 0);
     }
 }
 
-fn row(ui: &mut Ui, id: u32, name: &str, current: Option<u32>, actions: &mut Vec<Action>) {
+fn row(
+    rows: &mut dyn MenuRows,
+    id: u32,
+    name: &str,
+    current: Option<u32>,
+    actions: &mut Vec<Action>,
+) {
     let selected = current == Some(id);
-    if widgets::menu_item(ui, name, None, selected, true).clicked() && !selected {
+    if rows.item(name, None, selected, true) && !selected {
         actions.push(Action::SelectLayout(id));
     }
 }
 
 fn entries(
-    ui: &mut Ui,
+    rows: &mut dyn MenuRows,
     items: &[LayoutMenuEntry],
     current: Option<u32>,
     actions: &mut Vec<Action>,
@@ -52,16 +62,16 @@ fn entries(
             // Folders commonly also carry 0x08; it suppresses layouts,
             // not the structural folder row. Bound malformed nesting.
             if depth < 64 {
-                widgets::submenu(ui, &entry.name, true, |ui| {
-                    entries(ui, &items[i + 1..end], current, actions, depth + 1)
+                rows.submenu(&entry.name, true, &mut |rows| {
+                    entries(rows, &items[i + 1..end], current, actions, depth + 1)
                 });
             }
             i = end;
         } else if entry.flags & (2 | 8) == 0 {
             if entry.flags & 0x10 != 0 {
-                widgets::menu_separator(ui);
+                rows.separator();
             } else {
-                row(ui, entry.id, &entry.name, current, actions);
+                row(rows, entry.id, &entry.name, current, actions);
             }
         }
         i += 1;
@@ -78,7 +88,7 @@ mod tests {
         let mut actions = Vec::new();
         let mut output = ctx.run_ui(egui::RawInput::default(), |ui| {
             entries(
-                ui,
+                &mut crate::menubar::Drawn(ui),
                 &[LayoutMenuEntry {
                     id: 99,
                     name: "-".into(),
