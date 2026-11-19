@@ -561,6 +561,20 @@ pub trait ContainerReader {
     }
 }
 
+/// The repetition a formula is evaluated in, and how a field that does not
+/// repeat reads there.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum InRepetition {
+    /// Repetition n of a field's validation or calculated message: a field
+    /// that does not repeat reads as it is, however the formula names it
+    /// (script oracle s17, s19).
+    Validation(u32),
+    /// Repetition n of a calculation: a field that does not repeat reads
+    /// empty above repetition 1 unless the formula extends it
+    /// (calc-values.md 8.6). A field's own calculation is repetition 1.
+    Calculation(u32),
+}
+
 /// Why a formula of a write has no result ([`RecordPlan::run`]).
 enum RunError {
     /// It was not evaluated: the write lacks what it reads (an answer of
@@ -3979,7 +3993,7 @@ impl RecordPlan {
             session,
             Some(self_value),
             Some(ValueType::Text),
-            repetition,
+            InRepetition::Validation(repetition),
         ) {
             Ok((_, text)) if !text.is_empty() => DataError::with_code(code, text),
             _ => DataError::with_code(
@@ -4209,8 +4223,8 @@ impl RecordPlan {
     }
 
     /// Evaluate `expression` on `row` with `Self` and result type, in
-    /// `repetition` (1 for a field calculation); a calculation the host
-    /// cannot answer refuses the write.
+    /// `repetition` (repetition 1 of a calculation for a field's own
+    /// value); a calculation the host cannot answer refuses the write.
     #[allow(clippy::too_many_arguments)]
     fn run(
         &self,
@@ -4220,7 +4234,7 @@ impl RecordPlan {
         session: &Evaluation,
         self_value: Option<Value>,
         result_type: Option<ValueType>,
-        repetition: u32,
+        repetition: InRepetition,
     ) -> Result<(Value, String), RunError> {
         // An answer the write's operation did not supply is never read as
         // empty: the write is refused.
@@ -4364,16 +4378,17 @@ impl RecordPlan {
             .as_deref()
             .map(|f| f as &dyn Fn() -> bool);
         host.limits = session.limits;
+        let (repetition, extend_fields) = match repetition {
+            InRepetition::Validation(n) => (n, n > 1),
+            InRepetition::Calculation(n) => (n, false),
+        };
         let context = Context {
             occurrence: expression.formula.occurrence(),
             record: Some(0),
             repetition,
             result_type,
             self_value,
-            // A validation in repetition n reads a field that does not
-            // repeat as it is, however its formula names it (script oracle
-            // s17, s19), where a repeating calculation would read it empty.
-            extend_fields: repetition > 1,
+            extend_fields,
             // `Get ( RecordNumber )` answers the operation's number, as a
             // portal row's does; the record's position in this one-record
             // source is no answer. Without one, a formula reading it was
@@ -4456,12 +4471,26 @@ impl RecordPlan {
         row: &BTreeMap<u64, String>,
         session: &Evaluation,
     ) -> Result<String, DataError> {
+        self.evaluate_repetition(id, 1, expression, row, session)
+    }
+
+    /// The new stored text of repetition `repetition` of calculated field
+    /// `id`, evaluated in that repetition (calc-values.md 8.6).
+    fn evaluate_repetition(
+        &self,
+        id: u64,
+        repetition: u32,
+        expression: &Expression,
+        row: &BTreeMap<u64, String>,
+        session: &Evaluation,
+    ) -> Result<String, DataError> {
         let def = self
             .schema
             .table(self.table)
             .and_then(|t| t.fields.get(&id));
         let result_type = def.map(|d| d.value_type);
-        self.run(id, expression, row, session, None, result_type, 1)
+        let repetition = InRepetition::Calculation(repetition);
+        self.run(id, expression, row, session, None, result_type, repetition)
             .map(|(_, text)| text)
             .map_err(RunError::into_error)
     }
@@ -4500,7 +4529,7 @@ impl RecordPlan {
             session,
             Some(self_value),
             None,
-            repetition,
+            InRepetition::Validation(repetition),
         ) {
             Ok((result, _)) => Ok(result.is_true(&cx)),
             Err(RunError::Failed(_)) => Ok(false),
@@ -4781,9 +4810,18 @@ impl Expression {
             evaluation_order: Vec::new(),
             schema: Arc::new(schema),
         };
-        plan.run(0, self, row, &env.session(), None, Some(ValueType::Text), 1)
-            .map(|(_, text)| text)
-            .map_err(RunError::into_error)
+        let first = InRepetition::Calculation(1);
+        plan.run(
+            0,
+            self,
+            row,
+            &env.session(),
+            None,
+            Some(ValueType::Text),
+            first,
+        )
+        .map(|(_, text)| text)
+        .map_err(RunError::into_error)
     }
 }
 
@@ -5183,44 +5221,38 @@ fn literal_text(expr: &Expr) -> Option<String> {
 /// Visit every node of `expr`.
 fn walk(expr: &Expr, f: &mut dyn FnMut(&Expr)) {
     f(expr);
-    let each = |items: &[Expr], f: &mut dyn FnMut(&Expr)| {
-        for item in items {
-            walk(item, f);
-        }
-    };
+    for child in children(expr) {
+        walk(child, f);
+    }
+}
+
+/// The direct parts of `expr`, in order.
+fn children(expr: &Expr) -> Vec<&Expr> {
     match expr {
         Expr::List(items)
         | Expr::Call { args: items, .. }
         | Expr::CustomCall { args: items, .. }
         | Expr::PluginCall { args: items, .. }
-        | Expr::Evaluate { args: items, .. } => each(items, f),
-        Expr::Case(pairs) => {
-            for (test, value) in pairs {
-                walk(test, f);
-                walk(value, f);
-            }
-        }
-        Expr::Choose { test, results } => {
-            walk(test, f);
-            each(results, f);
-        }
-        Expr::Let { bindings, body } => {
-            each(bindings, f);
-            walk(body, f);
-        }
+        | Expr::Evaluate { args: items, .. } => items.iter().collect(),
+        Expr::Case(pairs) => pairs
+            .iter()
+            .flat_map(|(test, value)| [test, value])
+            .collect(),
+        Expr::Choose { test, results } => std::iter::once(&**test).chain(results).collect(),
+        Expr::Let { bindings, body } => bindings.iter().chain([&**body]).collect(),
         Expr::While {
             initial,
             condition,
             logic,
             result,
-        } => {
-            each(initial, f);
-            walk(condition, f);
-            each(logic, f);
-            walk(result, f);
-        }
-        Expr::GetField { arg, .. } => walk(arg, f),
-        _ => {}
+        } => initial
+            .iter()
+            .chain([&**condition])
+            .chain(logic)
+            .chain([&**result])
+            .collect(),
+        Expr::GetField { arg, .. } => vec![&**arg],
+        _ => Vec::new(),
     }
 }
 

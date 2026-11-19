@@ -2375,14 +2375,24 @@ functions that read no fields. A container input is read from the
 table's library: the field's data, as FileMaker Server's engine reads it
 when a commit computes such a calculation (script oracle
 s34-containers-calc: file name, length, Base64 of the data; inf for
-op73's walk, which was not measured). A calculation it cannot evaluate (a related, global, summary or
-unstored-calculation input, a plug-in, a selector that needs a window,
-repetitions, a container result, a formula that names a deleted field) is
-skipped: its values stay as they were and the server logs the field and
-why. A calculation that fails on a
-record keeps that record's value; failures are counted and logged once per
-field. With "do not evaluate if all referenced fields are empty" the value
-is empty when they all are. Auto-enter calculations are not recomputed
+op73's walk, which was not measured). A repeating calculation (up to
+255 repetitions, the most a record's cells hold) is computed in each
+repetition, as calc-values.md 8.6 measured it: repetition n of a
+repeating input, a plain input that does not repeat read empty above
+repetition 1, `Extend` and `GetRepetition` as written,
+`Get ( CalculationRepetitionNumber )` n. A calculation it cannot evaluate
+(a related, global, summary or unstored-calculation input, a plug-in, a
+selector that needs a window, a container result, a formula that names a
+deleted field) is skipped: its values stay as they were and the server
+logs the field and why. A calculation that fails on a record keeps that
+record's value; failures are counted and logged once per field. With "do
+not evaluate if all referenced fields are empty" the value is empty when
+they all are; in repetition n each input counts as the formula reads it
+there (a plain input repetition n, or nothing above 1 for one that does
+not repeat; an `Extend` its first repetition; a `GetRepetition`, `f[n]`
+or lone aggregate argument any of its repetitions). That reading of the
+option in a repetition is inferred: FileMaker's check there is
+unmeasured. Auto-enter calculations are not recomputed
 (they apply when data is entered) and nothing is validated (inf). `Get`
 answers for the account that sent op73 (also as the user name), the
 server's clock, and a fresh UUID per record when a formula asks for one.
@@ -2438,4 +2448,4 @@ Test: `crates/om-server/tests/recalc.rs` (FileMaker Pro's save sequence of
 2.3a with a formula change, a new dependent calculation, a calculation the
 server cannot evaluate, a rename, a deleted input, and a file left with
 deferred work; a script paused across a formula change; new calculations
-over a container).
+over a container; repeating calculations).

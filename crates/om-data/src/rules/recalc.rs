@@ -5,11 +5,12 @@
 //! calc-values.md 8.8).
 //!
 //! The plan is per field, unlike [`RecordPlan`]: a calculation this
-//! evaluator cannot run (a related field, a plug-in, a container result,
-//! repetitions) is listed in [`Recalculation::skipped`] and its stored
-//! values stay as they were, while the table's other calculations are
-//! recomputed. Auto-enter calculations are not recomputed (they apply when
-//! data is entered) and nothing is validated.
+//! evaluator cannot run (a related field, a plug-in, a container result)
+//! is listed in [`Recalculation::skipped`] and its stored values stay as
+//! they were, while the table's other calculations are recomputed. A
+//! repeating calculation is computed in each of its repetitions.
+//! Auto-enter calculations are not recomputed (they apply when data is
+//! entered) and nothing is validated.
 
 use std::collections::{BTreeMap, BTreeSet};
 use std::sync::Arc;
@@ -20,9 +21,9 @@ use om_hbam::catalog::{DataType, FieldKind};
 use om_hbam::{KeyTree, Table};
 
 use super::{
-    check_custom_functions, first_field_occurrence, parse_code, schema, walk, Expression,
-    RecordEnvironment, RecordPlan, ALWAYS_EVALUATE, FIELD_FORMULA, GLOBAL, MAX_CODE, MAX_DEPTH,
-    MAX_NODES, UNSTORED,
+    cell_of, check_custom_functions, children, first_field_occurrence, parse_code, schema, walk,
+    Expression, InRepetition, RecordEnvironment, RecordPlan, ALWAYS_EVALUATE, FIELD_FORMULA,
+    GLOBAL, MAX_CODE, MAX_DEPTH, MAX_NODES, UNSTORED,
 };
 use crate::host::{CalcSchema, FieldClass};
 use crate::DataError;
@@ -41,6 +42,24 @@ struct Target {
     expression: Expression,
     /// "Do not evaluate if all referenced fields are empty" is off.
     always: bool,
+    /// The field's repetitions, each computed in its own repetition.
+    repetitions: u32,
+    /// How the formula reads each field it reads, for the check above.
+    readings: BTreeMap<u64, Readings>,
+}
+
+/// How a formula reads a field of its own context ([`readings`]).
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+struct Readings {
+    /// Plainly: in repetition n, repetition n of a repeating field, and a
+    /// field that does not repeat in repetition 1 only (calc-values.md
+    /// 8.6).
+    current: bool,
+    /// Through `Extend`: its first repetition in every repetition.
+    first: bool,
+    /// Through `GetRepetition`, `f[n]`, an aggregate of the field alone
+    /// or as a field reference: any of its repetitions.
+    any: bool,
 }
 
 /// A stored calculation of the table: its name, the fields it reads (when
@@ -218,33 +237,61 @@ impl Recalculation {
         let mut row = row.clone();
         let mut out = Recomputed::default();
         for target in &self.targets {
-            let deps = &target.expression.dependencies;
-            let skip = !target.always
-                && !deps.is_empty()
-                && deps
-                    .iter()
-                    .all(|d| row.get(d).map_or(true, String::is_empty));
-            let text = if skip {
-                String::new()
-            } else {
-                match self
-                    .plan
-                    .evaluate_field(target.id, &target.expression, &row, &session)
-                {
-                    Ok(text) => text,
-                    Err(e) => {
-                        out.failed.push((target.id, e));
-                        continue;
+            for repetition in 1..=target.repetitions {
+                let Some(cell) = cell_of(target.id, repetition) else {
+                    continue;
+                };
+                let skip = !target.always
+                    && !target.readings.is_empty()
+                    && !self.reads_a_value(target, repetition, &row);
+                let text = if skip {
+                    String::new()
+                } else {
+                    match self.plan.evaluate_repetition(
+                        target.id,
+                        repetition,
+                        &target.expression,
+                        &row,
+                        &session,
+                    ) {
+                        Ok(text) => text,
+                        Err(e) => {
+                            out.failed.push((target.id, e));
+                            continue;
+                        }
                     }
+                };
+                if row.get(&cell).map_or("", String::as_str) != text {
+                    out.values
+                        .insert(cell, (!text.is_empty()).then(|| text.clone()));
+                    row.insert(cell, text);
                 }
-            };
-            if row.get(&target.id).map_or("", String::as_str) != text {
-                out.values
-                    .insert(target.id, (!text.is_empty()).then(|| text.clone()));
-                row.insert(target.id, text);
             }
         }
         out
+    }
+
+    /// Whether repetition `repetition` of `target` reads a field that is
+    /// not empty in `row`, as "Do not evaluate if all referenced fields
+    /// are empty" asks: each field as the formula reads it there (inf:
+    /// FileMaker's check in a repetition above 1 is unmeasured).
+    fn reads_a_value(&self, target: &Target, repetition: u32, row: &BTreeMap<u64, String>) -> bool {
+        let filled = |cell: Option<u64>| {
+            cell.and_then(|cell| row.get(&cell))
+                .is_some_and(|text| !text.is_empty())
+        };
+        let table = self.plan.schema.table(self.plan.table);
+        target.readings.iter().any(|(field, how)| {
+            let repetitions = table
+                .and_then(|t| t.fields.get(field))
+                .map_or(1, |f| f.repetitions.clamp(1, 255));
+            (how.first && filled(cell_of(*field, 1)))
+                || (how.current
+                    && (repetition == 1 || repetitions > 1)
+                    && repetition <= repetitions
+                    && filled(cell_of(*field, repetition)))
+                || (how.any && (1..=repetitions).any(|n| filled(cell_of(*field, n))))
+        })
     }
 }
 
@@ -264,8 +311,10 @@ fn evaluable(
     if matches!(data_type, DataType::Container | DataType::Unknown(_)) {
         return Err("only text, number, date and time results are recomputed.".into());
     }
-    if options.max_repetitions != 1 {
-        return Err("repeating calculations are not recomputed.".into());
+    // Repetition n of field F is the cell `F * 256 + n` (calc-values.md,
+    // "Repetitions in records"), so only 255 have cells.
+    if !(1..=255).contains(&options.max_repetitions) {
+        return Err("calculations of more than 255 repetitions are not recomputed.".into());
     }
     let expression = parse_code(code, context)?;
     if let Some(occurrence) = expression.formula.occurrence() {
@@ -298,11 +347,82 @@ fn evaluable(
             return Err("it reads a global, summary or unstored calculation field.".into());
         }
     }
+    let mut found = BTreeMap::new();
+    readings(&expression.formula.polish, context, &mut found);
     Ok(Target {
         id: field,
         expression,
         always: options.options & ALWAYS_EVALUATE != 0,
+        repetitions: u32::from(options.max_repetitions),
+        readings: found,
     })
+}
+
+/// Aggregates that walk every repetition of a lone field argument
+/// (calc-values.md 8.6).
+const AGGREGATES: [&str; 11] = [
+    "list",
+    "count",
+    "sum",
+    "average",
+    "max",
+    "min",
+    "stdev",
+    "stdevp",
+    "variance",
+    "variancep",
+    "last",
+];
+
+/// How `expr` reads each field of the context `context` (its key as the
+/// formula holds it): plainly, through `Extend`, or in any repetition.
+fn readings(expr: &Expr, context: &[u8], out: &mut BTreeMap<u64, Readings>) {
+    let own = |e: &Expr| match e {
+        Expr::Field(f) | Expr::FieldRef(f) if f.occurrence.0 == context => f.field.id(),
+        _ => None,
+    };
+    match expr {
+        Expr::Field(_) | Expr::FieldRef(_) => {
+            if let Some(id) = own(expr) {
+                let entry = out.entry(id).or_default();
+                match expr {
+                    Expr::Field(_) => entry.current = true,
+                    _ => entry.any = true,
+                }
+            }
+        }
+        Expr::Call { op, args } => {
+            let name = op.name().map(str::to_ascii_lowercase);
+            let lone = match args.as_slice() {
+                [only] => own(only),
+                _ => None,
+            };
+            match (name.as_deref(), lone) {
+                (Some("extend"), Some(id)) => out.entry(id).or_default().first = true,
+                (Some(name), Some(id)) if AGGREGATES.contains(&name) => {
+                    out.entry(id).or_default().any = true;
+                }
+                (Some("getrepetition"), _) => {
+                    if let Some(id) = args.first().and_then(own) {
+                        out.entry(id).or_default().any = true;
+                    }
+                    for arg in args.iter().skip(1) {
+                        readings(arg, context, out);
+                    }
+                }
+                _ => {
+                    for arg in args {
+                        readings(arg, context, out);
+                    }
+                }
+            }
+        }
+        _ => {
+            for part in children(expr) {
+                readings(part, context, out);
+            }
+        }
+    }
 }
 
 /// The fields of the formula's own context that a stored Polish stream
@@ -491,8 +611,9 @@ impl RecordLimit {
         let session = environment.session();
         let today = crate::host::session::today(0);
         let cx = om_calc::Ctx::new(&self.plan.schema.locale, today);
+        let first = InRepetition::Calculation(1);
         self.plan
-            .run(0, &self.expression, row, &session, None, None, 1)
+            .run(0, &self.expression, row, &session, None, None, first)
             .is_ok_and(|(result, _)| result.is_true(&cx))
     }
 }
