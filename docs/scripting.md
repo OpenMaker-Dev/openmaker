@@ -470,6 +470,11 @@ Open items:
   reads the catalog back (desktop-client.md, Script Workspace).
 - Server: auto-enter calculations are not recomputed after a schema
   change (by design, as FileMaker). Schedules run (#11).
+  - The recompute after a schema change reads container inputs from the
+    table's library. It still skips repeating calculations, container
+    results, plug-in functions and `Get` selectors that need a window,
+    leaving their values as they were and logging the field
+    ([#82](https://github.com/OpenMaker-Dev/openmaker/issues/82)).
   - FileMaker Pro clients: op77 GetFileList (the Hosts dialog's file list)
     and op89 CompareModCounts (reopening a cached file) are unsupported;
     an op13 with node state `00` (FileMaker Pro deleting a script) leaves
