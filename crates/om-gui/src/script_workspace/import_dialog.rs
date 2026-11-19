@@ -868,9 +868,10 @@ mod tests {
 
     #[test]
     fn no_readable_source_says_why() {
+        let dir = tempfile::tempdir().unwrap();
         let parts = ImportParts {
             paths: vec![crate::scripting::files::file_line(
-                &std::env::temp_dir().join("om-nonexistent/om-source.tab"),
+                &dir.path().join("om-source.tab"),
             )],
             order: None,
             profile: None,

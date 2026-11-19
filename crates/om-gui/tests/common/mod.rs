@@ -88,11 +88,16 @@ pub fn text_field<'a>(app: &'a App, label: &'a str) -> egui_kittest::Node<'a> {
 
 /// A native absolute file path as a `file:` path list line of this
 /// platform, for typing where FileMaker takes a path list (script-runtime.md,
-/// "Data files and paths"). A macOS path starts with the volume's name: the
-/// startup disk's is the one under `/Volumes` that links to `/`.
+/// "Data files and paths"), as `scripting::files::filemaker_path` writes it:
+/// a macOS path starts with its volume's name (a mounted volume's, or the
+/// startup disk's, the one under `/Volumes` that links to `/`), a Windows
+/// one with its drive or, for a UNC path, `//computer/share`.
 pub fn file_line(path: &std::path::Path) -> String {
     let text = path.to_str().expect("a UTF-8 path");
     if cfg!(target_os = "macos") {
+        if let Some(mounted) = text.strip_prefix("/Volumes/") {
+            return format!("file:/{mounted}");
+        }
         let volume = std::fs::read_dir("/Volumes")
             .into_iter()
             .flatten()
@@ -104,7 +109,11 @@ pub fn file_line(path: &std::path::Path) -> String {
             );
         format!("file:/{volume}{text}")
     } else if cfg!(windows) {
-        format!("file:/{}", text.replace('\\', "/"))
+        let text = text.replace('\\', "/");
+        match text.strip_prefix("//") {
+            Some(unc) => format!("file://{unc}"),
+            None => format!("file:/{text}"),
+        }
     } else {
         format!("file:{text}")
     }
