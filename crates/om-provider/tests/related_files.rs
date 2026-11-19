@@ -1231,9 +1231,8 @@ fn related_file_layouts_browse_and_expose_only_supported_edit_capabilities() {
         provider.update_record(layout, 1, values).unwrap_err().code,
         Some(3)
     );
-    // A deletion is held in the related file's part of the transaction
-    // (#312): it locks the record and commits nothing before Commit
-    // Transaction.
+    // A deletion is held in the related file's part of the transaction:
+    // it locks the record and commits nothing before Commit Transaction.
     provider.delete_record(layout, 1).unwrap();
     provider.revert_transaction().unwrap();
     refused(provider.set_next_serial_value(REMOTE, NAME, "10"));
@@ -1560,7 +1559,7 @@ fn imported_layout_delete_uses_owner_verification_without_field_entry_rules() {
     provider.use_window(1);
     assert_eq!(ids(&mut provider, 2), [2, 1]);
 
-    // Held in the related file's part of the transaction (#312): nothing
+    // Held in the related file's part of the transaction: nothing
     // is committed, and the revert keeps the record.
     provider.begin_transaction(Default::default()).unwrap();
     let commits = host.captures.with_opcode(Opcode::HostCommit).len();

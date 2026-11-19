@@ -3424,8 +3424,9 @@ impl DataProvider for NativeProvider {
             // including verified absence before container-member release.
             self.invalidate_calc_data();
             if self.in_transaction() {
-                // Held in the owner's part of the script's transaction,
-                // as a portal row of that file is (#312): deleted when the
+                // Held in the owner's part of the script's transaction, as
+                // a portal row of that file is (record-writes.md, "A
+                // script's transaction across files"): deleted when the
                 // transaction commits, kept when it is reverted.
                 return self.delete_routed_related(table, record_id);
             }

@@ -921,7 +921,8 @@ fn imported_layout_delete_menu_and_scripts_preserve_caller_and_omitted_peers() {
         fixture::script(id, name, vec![delete, report()])
     };
     // Delete Record inside a script's transaction, then Revert or Commit
-    // Transaction: the deletion is held in the related file's part (#312).
+    // Transaction: the deletion is held in the related file's part
+    // (record-writes.md, "A script's transaction across files").
     let delete_in_transaction = |id, name, end: u16| {
         let mut delete = ScriptStep::new(9);
         delete.set_flag(flag::NO_INTERACT, true);
@@ -1096,7 +1097,7 @@ fn imported_layout_delete_menu_and_scripts_preserve_caller_and_omitted_peers() {
         .all(|(file, _)| file == "Related.fmp12"));
 
     // The last peer, deleted inside a transaction: kept when it is
-    // reverted, gone once it commits, with no error either way (#312).
+    // reverted, gone once it commits, with no error either way.
     let stored = |host: &related::Host| -> Vec<i64> {
         host.open("Related.fmp12")
             .records(1, 0, 10)
