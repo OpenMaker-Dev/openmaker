@@ -210,8 +210,8 @@ fn a_record_changed_before_editing_refuses_the_entry() {
 }
 
 /// Delete Record on a record whose editing took its lock deletes the
-/// record: the edit and the lock go first, then the record, and no other
-/// record takes its edit.
+/// record under that lock, its edit going with it, and no other record
+/// takes its edit.
 #[test]
 fn deleting_a_record_being_edited_deletes_it() {
     let hosted = host("delete-edited");

@@ -43,8 +43,14 @@ FileMaker Pro's order:
   opens the window's record session and locks the record before the change
   is taken. The lock is held until the record is saved or reverted, so
   another client's change of it is refused (301, naming the holder)
-  meanwhile. A related record, a record of another file's table, and edits
-  inside a script's own transaction are still locked only to commit them.
+  meanwhile. Delete Record of the record being edited deletes it under
+  that lock, its edits going with the session, as FileMaker Pro deletes the
+  record being edited; a refusal before anything is sent (privileges, a
+  file opened read-only) keeps the edits. A session that also holds a
+  related record's write or container data is reverted first, which lets
+  the lock go before the delete takes it again. A related record, a record
+  of another file's table, and edits inside a script's own transaction are
+  still locked only to commit them.
 - op65 ends every transaction, also after a failure, releasing what it
   holds (4.4); the server also releases a connection's locks when it
   disconnects.

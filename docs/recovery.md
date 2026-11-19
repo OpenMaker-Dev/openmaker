@@ -638,6 +638,11 @@ refused at entry when another client holds the record (301) or changed it
 since the window read it (306): the typed text stays in the field, the bar
 says **Field entry was refused**, and **Discard Input** drops it and reads
 the page again, so that the next change starts from the host's copy.
+The lock goes with a lost connection: after a reconnect, the window's
+edits of an existing record are saved by the ordinary path, which locks the
+record again and checks the version they began from, unless the reconnect
+carried the window's record session (a refused related save's drafts,
+#152).
 How FileMaker Pro refuses an entry (its dialog, whether the typed
 character is kept, whether it reads the record again first) is
 unmeasured. Related records, records of another
