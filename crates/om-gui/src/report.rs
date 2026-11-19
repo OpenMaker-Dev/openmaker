@@ -624,10 +624,11 @@ enum Overflow {
 /// fits within its bounds, as FileMaker prints it (Claris: sliding exists to
 /// print more). A text object or button label is cut at its text box too:
 /// Pro clips every label's text to it (layout-model.md 6.5). A field that
-/// slides keeps its measured height and refuses as before.
-fn overflow_of(object: &LayoutObject) -> Overflow {
+/// slides (`slides`, [`PartObjects::slides`]) keeps its measured height and
+/// refuses as before.
+fn overflow_of(object: &LayoutObject, slides: bool) -> Overflow {
     match object.kind() {
-        ObjectKind::Field if object.slide_up().is_none() => Overflow::Clip,
+        ObjectKind::Field if !slides => Overflow::Clip,
         ObjectKind::Text | ObjectKind::Button => Overflow::Clip,
         _ => Overflow::Refuse,
     }
@@ -1620,7 +1621,9 @@ fn walk_report_objects<'a>(
         // Only what prints can slide: a slider that is itself left out (or
         // inside what is) moves nothing.
         if let Some((object, _, _)) = objects.iter().find(|(o, _, _)| {
-            o.slide_up().is_some() && part_of(o).is_some_and(|part| parts.contains(&part))
+            part_of(o).is_some_and(|part| {
+                parts.contains(&part) && slide_in_part(layout, o, part).is_some()
+            })
         }) {
             refuse(ReportError::unsupported(format!(
                 "Report object {} slides up in a part with {what}; how those slide is \
@@ -1634,7 +1637,8 @@ fn walk_report_objects<'a>(
     for (i, (a, ra, pa)) in objects.iter().enumerate() {
         for (b, rb, pb) in &objects[i + 1..] {
             if pa == pb
-                && (a.slide_up().is_some() || b.slide_up().is_some())
+                && (slide_in_part(layout, a, *pa).is_some()
+                    || slide_in_part(layout, b, *pb).is_some())
                 && ra.left < rb.right - SLIDE_EPSILON
                 && rb.left < ra.right - SLIDE_EPSILON
                 && ra.top < rb.bottom - SLIDE_EPSILON
@@ -1880,7 +1884,8 @@ fn report_object<'a>(
     }
     // A portal's rows have its height; how its objects would slide in a
     // row, or a tab control, is unmeasured.
-    if object.slide_up().is_some()
+    let slides = slide_in_part(layout, object, part).is_some();
+    if slides
         && (in_portal.is_some()
             || matches!(
                 object.kind(),
@@ -1893,7 +1898,7 @@ fn report_object<'a>(
         )));
     }
     // How FileMaker slides a group, or one of its members, is unmeasured.
-    if object.slide_up().is_some() && (group.is_some() || object.kind() == ObjectKind::Group) {
+    if slides && (group.is_some() || object.kind() == ObjectKind::Group) {
         return Err(ReportError::unsupported(format!(
             "Report object {} slides up in a group; sliding groups is unsupported",
             object.id
@@ -1901,16 +1906,10 @@ fn report_object<'a>(
     }
     // Pages are planned without conditions, so one that resized a sliding
     // object's text would not be measured.
-    if object.slide_up().is_some() && !object.calcs.conditions.is_empty() {
+    if slides && !object.calcs.conditions.is_empty() {
         return Err(ReportError::unsupported(format!(
             "Report object {} slides up and has conditional formatting; \
              sliding formatted objects are unsupported",
-            object.id
-        )));
-    }
-    if object.slide_up().is_some() && !slides_in(layout.parts[part].kind()) {
-        return Err(ReportError::unsupported(format!(
-            "Report object {} slides up in a header or footer, which never shrinks",
             object.id
         )));
     }
@@ -2227,8 +2226,9 @@ fn printed_flags(kind: ObjectKind) -> u64 {
 /// Tolerance, in points, for touching edges of sliding objects.
 const SLIDE_EPSILON: f64 = 0.01;
 
-/// Parts that can shrink and whose objects can slide. Claris: headers,
-/// footers and title headers/footers never shrink or slide up.
+/// Parts that can shrink and whose objects can slide. Claris: "Headers,
+/// footers, title headers, title footers, and top navigation and bottom
+/// navigation parts never shrink or slide up."
 fn slides_in(kind: PartKind) -> bool {
     matches!(
         kind,
@@ -2238,6 +2238,19 @@ fn slides_in(kind: PartKind) -> bool {
             | PartKind::LeadingSubSummary
             | PartKind::TrailingSubSummary
     )
+}
+
+/// `object`'s slide-up option where it takes effect, in `layout`'s part
+/// `part`: none in a part that never slides ([`slides_in`]), where an
+/// object set to slide up prints where it is placed, as one that does not.
+fn slide_in_part(
+    layout: &Layout,
+    object: &LayoutObject,
+    part: usize,
+) -> Option<om_layout::SlideUp> {
+    object
+        .slide_up()
+        .filter(|_| layout.parts.get(part).is_some_and(|p| slides_in(p.kind())))
 }
 
 /// Whether a printed part's height depends on its record: an object there
@@ -2496,6 +2509,9 @@ struct PartObjects<'s, 'a> {
     resizers: Vec<usize>,
     /// For each object in a portal's rows, the portal's index.
     in_portal: Vec<Option<usize>>,
+    /// Each object's slide-up option where it takes effect: none in a part
+    /// that never slides ([`slide_in_part`]).
+    slides: Vec<Option<om_layout::SlideUp>>,
 }
 
 fn part_objects<'s, 'a>(
@@ -2504,6 +2520,9 @@ fn part_objects<'s, 'a>(
     part: &Part,
 ) -> PartObjects<'s, 'a> {
     let objects: Vec<_> = objects.iter().filter(|(_, _, p)| *p == index).collect();
+    let slides: Vec<_> = (objects.iter())
+        .map(|(object, _, _)| object.slide_up().filter(|_| slides_in(part.kind())))
+        .collect();
     let rects: Vec<Rect> = objects
         .iter()
         .map(|(_, r, _)| Rect {
@@ -2535,8 +2554,8 @@ fn part_objects<'s, 'a>(
     };
     let mut nearest = vec![Vec::new(); rects.len()];
     let mut colliders = vec![Vec::new(); rects.len()];
-    for (o, (object, _, _)) in objects.iter().enumerate() {
-        let Some(slide) = object.slide_up() else {
+    for o in 0..objects.len() {
+        let Some(slide) = slides[o] else {
             continue;
         };
         let candidates: Vec<usize> = (0..rects.len())
@@ -2552,7 +2571,7 @@ fn part_objects<'s, 'a>(
             .collect();
     }
     let resizing: Vec<usize> = (0..rects.len())
-        .filter(|&i| objects[i].0.slide_up().is_some_and(|s| s.resize_part))
+        .filter(|&i| slides[i].is_some_and(|s| s.resize_part))
         .collect();
     let resizers = resizing
         .iter()
@@ -2573,6 +2592,7 @@ fn part_objects<'s, 'a>(
         colliders,
         resizers,
         in_portal,
+        slides,
     }
 }
 
@@ -2605,7 +2625,7 @@ fn layout_part(
     let mut data = Vec::with_capacity(count);
     let mut shrink = vec![0.0; count];
     for (i, (object, _, _)) in part.objects.iter().enumerate() {
-        let shrinks = object.slide_up().is_some() && object.kind() == ObjectKind::Field;
+        let shrinks = part.slides[i].is_some() && object.kind() == ObjectKind::Field;
         let value = if matches!(
             object.kind(),
             ObjectKind::Text | ObjectKind::Field | ObjectKind::Button
@@ -2708,7 +2728,13 @@ fn layout_part(
                     _ => bounds.clone(),
                 };
                 (
-                    prepare_text_in(&value, &label, &style, overflow_of(object))?.0,
+                    prepare_text_in(
+                        &value,
+                        &label,
+                        &style,
+                        overflow_of(object, part.slides[i].is_some()),
+                    )?
+                    .0,
                     conditions,
                     icon,
                 )
@@ -2906,7 +2932,13 @@ fn portal_rows(
                         _ => bounds.clone(),
                     };
                     (
-                        prepare_text_in(&value, &label, &style, overflow_of(object))?.0,
+                        prepare_text_in(
+                            &value,
+                            &label,
+                            &style,
+                            overflow_of(object, part.slides[j].is_some()),
+                        )?
+                        .0,
                         conditions,
                         icon,
                     )

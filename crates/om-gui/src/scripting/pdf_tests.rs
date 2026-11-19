@@ -1340,10 +1340,6 @@ fn sliding_refuses_unsupported_options_overlaps_and_cut_off_objects() {
             &|l: &mut Layout| find(l, 56).flags |= om_layout::sliding::NON_PRINTING,
             "hidden when printing",
         ),
-        (
-            &|l: &mut Layout| find(l, 50).flags |= om_layout::sliding::UP,
-            "header or footer",
-        ),
         // The patch moved into Notes' frame.
         (
             &|l: &mut Layout| find(l, 57).bounds = Some(rect(300.0, 140.0, 24.0, 16.0)),
@@ -1371,6 +1367,57 @@ fn sliding_refuses_unsupported_options_overlaps_and_cut_off_objects() {
         let message = refuse(&with(change));
         assert!(message.contains(reason), "{reason}: {message}");
     }
+    // Headers, footers and title parts never shrink or slide up (Claris):
+    // an object there set to slide up and resize its part prints where it
+    // is placed, as if it did not slide, and is not checked as a slider. A
+    // field there whose text does not fit is cut at its box.
+    let render = |layout: &Layout| {
+        crate::report::render_pdf(layout, 2, paper.clone(), &[], |o, _| {
+            Ok(o.text.clone().unwrap_or_default())
+        })
+        .unwrap()
+        .bytes
+    };
+    use om_layout::sliding::{RESIZE_PART, UP};
+    let header = with(&|l| {
+        find(l, 50).flags |= UP | RESIZE_PART;
+        find(l, 59).flags |= UP;
+        // Overlapping the header's merge text, which a slider may not.
+        l.objects.objects.push(LayoutObject {
+            id: 61,
+            object_type: 5,
+            flags: 0x3000_0000 | UP,
+            bounds: Some(rect(12.0, 10.0, 20.0, 10.0)),
+            ..Default::default()
+        });
+        l.objects.root.push(61);
+    });
+    let mut fixed = ungrouped.clone();
+    fixed.objects.objects.push(LayoutObject {
+        id: 61,
+        object_type: 5,
+        flags: 0x3000_0000,
+        bounds: Some(rect(12.0, 10.0, 20.0, 10.0)),
+        ..Default::default()
+    });
+    fixed.objects.root.push(61);
+    assert_eq!(render(&header), render(&fixed));
+    let long = with(&|l| {
+        let mut name = field(62, 1, rect(330.0, 8.0, 60.0, 18.0));
+        name.flags |= 0x3000_0000 | UP;
+        l.objects.objects.push(name);
+        l.objects.root.push(62);
+    });
+    assert!(
+        crate::report::render_pdf(&long, 2, paper.clone(), &[], |o, _| {
+            Ok(if o.id == 62 {
+                "A name far too long for its header field".repeat(4)
+            } else {
+                o.text.clone().unwrap_or_default()
+            })
+        })
+        .is_ok()
+    );
 }
 
 fn pdf(path: &str, current: bool) -> ScriptStep {
