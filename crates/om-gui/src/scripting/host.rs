@@ -64,9 +64,23 @@ const CACHE_FILE_PATH: u8 = 131;
 /// "Field cannot be modified".
 const FIELD_LOCKED: i32 = 201;
 
-/// Script Workspace and Manage Database, the menu steps the app has.
+/// The "Open Menu Item" steps the desktop opens: Manage Database and the
+/// Script Workspace. The others answer error 3; the alpha scorecard counts
+/// them from this list.
+pub(crate) const OPENED_MENU_ITEMS: [u16; 2] = [OPEN_MANAGE_DATABASE, OPEN_SCRIPT_WORKSPACE];
 const OPEN_MANAGE_DATABASE: u16 = 38;
 const OPEN_SCRIPT_WORKSPACE: u16 = 88;
+
+/// The window's flag a Show/Hide step changes for `bar`. The desktop has
+/// no text ruler and no touch keyboard: `None`, error 3; the alpha
+/// scorecard counts those steps from here.
+pub(crate) fn bar_flag(state: &mut super::WindowState, bar: Bar) -> Option<&mut bool> {
+    match bar {
+        Bar::Toolbars { .. } => Some(&mut state.toolbar),
+        Bar::Menubar => Some(&mut state.menubar),
+        Bar::TextRuler | Bar::TouchKeyboard => None,
+    }
+}
 
 /// Trigger action tokens the UI hands out carry this bit; the worker's own
 /// tokens do not.
@@ -5457,12 +5471,7 @@ impl Windows for WorkerHost<'_> {
     }
 
     fn show_hide(&mut self, bar: Bar, visibility: Visibility, _lock: bool) -> HostResult {
-        let state = &mut self.s.file.window.state;
-        let flag = match bar {
-            Bar::Toolbars { .. } => &mut state.toolbar,
-            Bar::Menubar => &mut state.menubar,
-            Bar::TextRuler | Bar::TouchKeyboard => return Err(HostError::Unsupported),
-        };
+        let flag = bar_flag(&mut self.s.file.window.state, bar).ok_or(HostError::Unsupported)?;
         *flag = match visibility {
             Visibility::Show => true,
             Visibility::Hide => false,
@@ -5511,13 +5520,11 @@ impl Dialogs for WorkerHost<'_> {
     }
 
     fn open_menu_item(&mut self, step: u16) -> HostResult {
-        match step {
-            OPEN_SCRIPT_WORKSPACE | OPEN_MANAGE_DATABASE => {
-                self.send(ScriptEvent::OpenMenu(step));
-                Ok(())
-            }
-            _ => Err(HostError::Unsupported),
+        if !OPENED_MENU_ITEMS.contains(&step) {
+            return Err(HostError::Unsupported);
         }
+        self.send(ScriptEvent::OpenMenu(step));
+        Ok(())
     }
 }
 
