@@ -364,7 +364,11 @@ static picture.
   512 MiB past its input; om-gui kills it after 30 seconds, reads back at
   most the picture's pixels, runs one at a time, and takes any failure for
   an SVG that does not draw (error 3). Without the worker beside om-gui,
-  SVG pictures refuse. Before building the tree the worker refuses input
+  SVG pictures refuse. Preview waits for none of this: a picture not drawn
+  yet is drawn from a thread of its own while the page shows "Loading report
+  pictures…" and the window keeps painting and taking input; the page is
+  drawn once the picture is (and kept with Preview's other pictures). Save
+  Records as PDF and Print, which run in the script worker, draw in line. Before building the tree the worker refuses input
   past 4 MiB (expanded for SVGZ) or 50,000 XML nodes, XML entity
   declarations, `<image>` (resvg is built without raster decoding, which
   Browse's SVG loader shares) and `use`/`feImage` references outside the

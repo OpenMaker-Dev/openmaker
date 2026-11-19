@@ -8,7 +8,7 @@ use std::cell::RefCell;
 use std::collections::{BTreeMap, BTreeSet};
 use std::io::Write;
 use std::path::Path;
-use std::sync::{Arc, OnceLock};
+use std::sync::{Arc, Mutex, MutexGuard, OnceLock};
 
 use om_layout::pagination::{paginate, BreakGroups, PageSize, ReportPlan};
 use om_layout::{
@@ -1046,7 +1046,35 @@ pub(crate) struct Pictures(
     RefCell<BTreeMap<PictureKey, DecodedPicture>>,
     RefCell<BTreeMap<ContainerKey, ContainerPicture>>,
     RefCell<BTreeMap<IconKey, DecodedPicture>>,
+    /// Where SVG pictures are drawn apart ([`Pictures::drawn_apart`]).
+    Option<Arc<Drawing>>,
 );
+
+/// SVG pictures drawn on threads of their own, by key: those drawn and not
+/// taken yet, and those being drawn.
+#[derive(Default)]
+pub(crate) struct Drawing {
+    drawn: Mutex<BTreeMap<PictureKey, DecodedPicture>>,
+    busy: Mutex<BTreeSet<PictureKey>>,
+}
+
+/// `mutex`'s value, also after a thread panicked holding it: the maps it
+/// guards stay whole.
+fn lock<T>(mutex: &Mutex<T>) -> MutexGuard<'_, T> {
+    mutex
+        .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner)
+}
+
+/// The error a page gives while one of its SVG pictures is being drawn
+/// apart: pending (code -1, as for data still loading), so Preview says so
+/// and draws the page again later.
+fn drawing_pictures() -> ReportError {
+    ReportError {
+        code: -1,
+        message: "Loading report pictures…".into(),
+    }
+}
 /// A library picture's key, and for SVG the raster size in pixels it is
 /// drawn at.
 type PictureKey = (u64, Option<[u32; 2]>);
@@ -1141,10 +1169,27 @@ fn icon_square(object: &LayoutObject, bounds: &Rect, label: &str) -> Option<Rect
     })
 }
 impl Pictures {
+    /// Preview's pictures: an SVG picture not drawn yet is drawn in the SVG
+    /// worker from a thread of its own, which can take seconds
+    /// (`svg_worker`), and the page is pending ([`drawing_pictures`]) until
+    /// it is, so the window keeps painting and taking input meanwhile. PDF
+    /// and Print draw in line ([`Pictures::default`]).
+    pub fn drawn_apart() -> Pictures {
+        Pictures(
+            Default::default(),
+            Default::default(),
+            Default::default(),
+            Some(Arc::default()),
+        )
+    }
+
     pub fn clear(&mut self) {
         self.0.get_mut().clear();
         self.1.get_mut().clear();
         self.2.get_mut().clear();
+        if let Some(drawing) = &self.3 {
+            lock(&drawing.drawn).clear();
+        }
     }
 
     /// Button `object`'s icon, library image `key`, `side` pixels square:
@@ -1233,7 +1278,29 @@ impl Pictures {
                 return picture.clone();
             }
         }
-        let picture = static_picture::decode(key, image, size).map(Arc::new);
+        let picture = match (&self.3, size) {
+            (Some(drawing), Some(_)) => {
+                let drawn = lock(&drawing.drawn).remove(&cache_key);
+                match drawn {
+                    Some((source, picture)) if source == *image => picture,
+                    // Not drawn yet, or drawn from bytes the layout no longer
+                    // has: drawn (again) apart.
+                    _ => {
+                        if lock(&drawing.busy).insert(cache_key) {
+                            let (drawing, image) = (Arc::clone(drawing), image.clone());
+                            std::thread::spawn(move || {
+                                let picture =
+                                    static_picture::decode(key, &image, size).map(Arc::new);
+                                lock(&drawing.drawn).insert(cache_key, (image, picture));
+                                lock(&drawing.busy).remove(&cache_key);
+                            });
+                        }
+                        return Err(drawing_pictures());
+                    }
+                }
+            }
+            _ => static_picture::decode(key, image, size).map(Arc::new),
+        };
         let retained: usize = decoded
             .values()
             .map(|(source, p)| {
@@ -4162,6 +4229,43 @@ pub(crate) mod tests {
         rotated.extend_from_slice(&exif);
         rotated.extend_from_slice(&jpeg[2..]);
         rotated
+    }
+
+    /// Preview's pictures draw an SVG apart: reads are pending (code -1)
+    /// while the drawing thread runs, and a later one takes its result:
+    /// here the refusal of a test build, which has no SVG worker. PDF and
+    /// Print's give that result in line, as before.
+    #[test]
+    fn preview_draws_svg_pictures_apart_and_reads_them_pending_meanwhile() {
+        let mut layout = Layout::default();
+        layout.library_images.insert(
+            77,
+            LibraryImage {
+                format: LibraryImageFormat::Svg,
+                data: br#"<svg xmlns="http://www.w3.org/2000/svg" width="8" height="8"/>"#.to_vec(),
+            },
+        );
+        let object = picture(1, 77, at(0.0, 0.0, 8.0, 8.0));
+        let in_line = Pictures::default().get(&layout, &object).unwrap_err();
+        assert_ne!(in_line.code, -1);
+        let apart = Pictures::drawn_apart();
+        assert_eq!(apart.get(&layout, &object).unwrap_err().code, -1);
+        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(30);
+        let drawn = loop {
+            match apart.get(&layout, &object) {
+                Err(error) if error.code == -1 => {
+                    assert!(std::time::Instant::now() < deadline, "never drawn");
+                    std::thread::sleep(std::time::Duration::from_millis(10));
+                }
+                drawn => break drawn,
+            }
+        };
+        assert_eq!(drawn.unwrap_err().message, in_line.message);
+        // Kept like any other picture: no second drawing.
+        assert_eq!(
+            apart.get(&layout, &object).unwrap_err().message,
+            in_line.message
+        );
     }
 
     #[test]

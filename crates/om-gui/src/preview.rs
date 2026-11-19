@@ -131,11 +131,15 @@ pub(crate) fn show(
     let scene = match scene {
         Ok(scene) => scene,
         Err(error) => {
-            ui.label(if error.code == -1 {
-                error.message
+            if error.code == -1 {
+                // Pending: a picture being drawn apart, or data on its way,
+                // which a repaint will find.
+                ui.ctx()
+                    .request_repaint_after(std::time::Duration::from_millis(100));
+                ui.label(error.message);
             } else {
-                format!("Preview unavailable: {}", error.message)
-            });
+                ui.label(format!("Preview unavailable: {}", error.message));
+            }
             return;
         }
     };
