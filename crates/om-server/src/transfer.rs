@@ -154,9 +154,17 @@ impl DownloadMemory {
         // stream may be one of these.
         let mut dropped = Vec::new();
         let mut streams = self.streams();
-        let held = self.held.fetch_add(bytes, Ordering::Relaxed) + bytes;
+        self.held.fetch_add(bytes, Ordering::Relaxed);
         streams.retain(|stream| stream.strong_count() > 0);
-        if held > limit {
+        // Two passes, least recently paged first. The first spares a
+        // stream paged since the order was taken, as its owner may have
+        // just answered with a cursor into it; the second, which runs only
+        // if the first left the budget passed, drops in the order as it
+        // then is, so the budget holds however the others are paged.
+        for spare_paged in [true, false] {
+            if self.held.load(Ordering::Relaxed) <= limit {
+                break;
+            }
             let mut others: Vec<(u64, Arc<Stream>)> = (streams.iter())
                 .filter_map(Weak::upgrade)
                 .map(|other| (other.used.load(Ordering::Relaxed), other))
@@ -166,9 +174,12 @@ impl DownloadMemory {
                 if self.held.load(Ordering::Relaxed) <= limit {
                     break;
                 }
-                // One paged since the order was taken is not the least
-                // recently paged any more.
-                if other.drop_unless_paged_since(used) {
+                let gone = if spare_paged {
+                    other.drop_unless_paged_since(used)
+                } else {
+                    other.drop_data()
+                };
+                if gone {
                     info!(
                         "dropping an unfinished download of {} bytes to stay within the \
                          server's download memory",
@@ -631,11 +642,18 @@ impl Transfers {
     }
 
     /// The least recently used transfer `keep` accepts.
+    /// The least recently used transfer `keep` accepts, a download the
+    /// server's budget dropped before any that holds data: one dropped by
+    /// another connection since this one last looked holds nothing.
     fn oldest(&self, keep: impl Fn(u64, &Held) -> bool) -> Option<u64> {
+        let holds = |held: &Held| match &held.transfer {
+            Transfer::Download { stream, .. } => stream.holds(),
+            Transfer::Upload { .. } => true,
+        };
         self.by_cursor
             .iter()
             .filter(|(cursor, held)| keep(**cursor, held))
-            .min_by_key(|(_, held)| held.used)
+            .min_by_key(|(_, held)| (holds(held), held.used))
             .map(|(cursor, _)| *cursor)
     }
 
