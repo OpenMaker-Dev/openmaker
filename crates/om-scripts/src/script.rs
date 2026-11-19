@@ -153,21 +153,22 @@ impl Script {
             ScriptKind::Separator
         };
         let data = node.get(u64::from(STEP_DATA));
-        // Each data child found once, the first of a key as `Node::child`
-        // finds it, and decoded once however many steps name it: a step
-        // list can name one data node from every step, or each of tens of
-        // thousands of children (#149).
-        let mut by_key: HashMap<&[u8], (&Node<'_>, Option<StepData>)> = HashMap::new();
-        for child in data.map_or(&[][..], |d| d.children.as_slice()) {
-            by_key.entry(child.segment.0).or_insert((child, None));
-        }
         let mut steps = Vec::new();
-        if let Some(bytes) = list {
+        if let Some(bytes) = list.filter(|bytes| !bytes.is_empty()) {
             if bytes.len() % 28 != 0 {
                 return Err(ScriptError(format!(
                     "Script {name} has an unsupported step-list size ({} bytes).",
                     bytes.len()
                 )));
+            }
+            // Each data child found once, the first of a key as
+            // `Node::child` finds it, and decoded once however many steps
+            // name it: a step list can name one data node from every step,
+            // or each of tens of thousands of children (#149). The map is
+            // dropped before the copies below are made.
+            let mut by_key: HashMap<&[u8], (&Node<'_>, Option<StepData>)> = HashMap::new();
+            for child in data.map_or(&[][..], |d| d.children.as_slice()) {
+                by_key.entry(child.segment.0).or_insert((child, None));
             }
             for chunk in bytes.chunks_exact(28) {
                 let mut step = ScriptStep::from_descriptor(chunk.try_into().expect("28 bytes"));

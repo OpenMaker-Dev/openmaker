@@ -394,7 +394,9 @@ fn decode(node: &OwnedNode) -> Result<Script, String> {
 /// for each of its descriptors, and the step data each step names twice
 /// (an owned copy and what `StepData::decode` keeps of it), once however
 /// many steps name it, as `Script::decode` shares it (#149). Children are
-/// found as `Script::decode` finds them.
+/// found as `Script::decode` finds them. The map of data children it reads
+/// the steps through (a few words a child) is dropped before it copies the
+/// other children, so it fits in what those copies are charged.
 fn decoding_cost(definition: &OwnedNode) -> usize {
     let tree = memory(definition);
     let mut cost = tree.saturating_mul(2);
