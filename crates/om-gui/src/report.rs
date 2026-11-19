@@ -4214,9 +4214,9 @@ pub(crate) mod tests {
     }
 
     /// Preview's pictures draw an SVG apart: reads are pending (code -1)
-    /// while the drawing thread runs, and a later one takes its result:
-    /// here the refusal of a test build, which has no SVG worker. PDF and
-    /// Print's give that result in line, as before.
+    /// while the drawing thread runs, and a later one takes its picture,
+    /// the one PDF and Print's pictures draw in line; then it is kept like
+    /// any other.
     #[test]
     fn preview_draws_svg_pictures_apart_and_reads_them_pending_meanwhile() {
         let mut layout = Layout::default();
@@ -4224,12 +4224,11 @@ pub(crate) mod tests {
             77,
             LibraryImage {
                 format: LibraryImageFormat::Svg,
-                data: br#"<svg xmlns="http://www.w3.org/2000/svg" width="8" height="8"/>"#.to_vec(),
+                data: br#"<svg xmlns="http://www.w3.org/2000/svg" width="8" height="8"><rect width="8" height="8" fill="red"/></svg>"#.to_vec(),
             },
         );
         let object = picture(1, 77, at(0.0, 0.0, 8.0, 8.0));
-        let in_line = Pictures::default().get(&layout, &object).unwrap_err();
-        assert_ne!(in_line.code, -1);
+        let in_line = Pictures::default().get(&layout, &object).unwrap();
         let apart = Pictures::drawn_apart();
         assert_eq!(apart.get(&layout, &object).unwrap_err().code, -1);
         let deadline = std::time::Instant::now() + std::time::Duration::from_secs(30);
@@ -4239,15 +4238,14 @@ pub(crate) mod tests {
                     assert!(std::time::Instant::now() < deadline, "never drawn");
                     std::thread::sleep(std::time::Duration::from_millis(10));
                 }
-                drawn => break drawn,
+                drawn => break drawn.unwrap(),
             }
         };
-        assert_eq!(drawn.unwrap_err().message, in_line.message);
-        // Kept like any other picture: no second drawing.
         assert_eq!(
-            apart.get(&layout, &object).unwrap_err().message,
-            in_line.message
+            (drawn.width, drawn.height, &drawn.rgba),
+            (in_line.width, in_line.height, &in_line.rgba)
         );
+        assert!(Arc::ptr_eq(&apart.get(&layout, &object).unwrap(), &drawn));
     }
 
     #[test]
