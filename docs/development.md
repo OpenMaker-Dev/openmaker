@@ -121,6 +121,20 @@ OPENMAKER_CA_CERT=~/.local/state/openmaker-server/tls/cert.pem OPENMAKER_HOST=lo
 In the Hosts dialog, type the account's password in the file and choose
 Open; **List files** shows the hosted file.
 
+Files can also be put in a database folder instead of named on the
+command line. At startup the server hosts the `.fmp12` files at the
+folder's root and in its subfolders, one level deep, as FileMaker Server
+opens its database folders' (Claris: "Database folders"). The default
+folder is `Databases` in the state folder
+(`~/.local/state/openmaker-server/Databases`, or
+`$STATE_DIRECTORY/Databases` under systemd), made for the server's user
+only. `--database-folder <dir>`, given once or more, replaces it. Files
+named on the command line come first. A found file with the name of one
+already hosted is left out and logged, and the backup and log folders are
+not searched. A file copied in after startup is not hosted until the
+server starts again. With no files at all the server still starts, with
+an empty file list.
+
 Failed logins are limited. After 5 failures an address (an IPv6 address by
 its /64) may try once a minute; after 30 failures of an account of a file
 from all addresses, it may be tried once every 30 s, except from addresses

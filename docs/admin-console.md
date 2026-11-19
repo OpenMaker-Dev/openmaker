@@ -486,7 +486,10 @@ it. Both lists are live regions and keep their checked boxes.
 where FileMaker Server's behavior is not observed or does not apply.
 
 - **Folders.** OpenMaker Server hosts the files named on its command line,
-  wherever they are, so Database Folders lists the folders that hold them:
+  wherever they are, and those it finds in its database folders at
+  startup (docs/development.md, "Hosting a file and opening it"), so
+  Database Folders lists the folders that hold them; a database folder
+  without a hosted file is not listed yet:
   "Database Folder Path" for one, "Database Folder 1 Path" and on for
   several (inf), at most 100, then "Showing n of m". There is no Secure
   Database Folder Path. A path is shown as FileMaker writes a folder
