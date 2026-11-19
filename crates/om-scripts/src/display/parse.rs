@@ -75,6 +75,18 @@ pub(super) fn serial_key(id: u64) -> Option<StoredKey> {
     zero_key(&om_hbam::serial::encode(id))
 }
 
+/// Whether a script's text names one of another file, as the step text
+/// writes it: `“Name” from file: “File”` (either may be `<unknown>`). A
+/// quoted name that only holds those words, `“Import from file: CSV”`, is
+/// this file's.
+fn from_other_file(text: &str) -> bool {
+    let named = |part: &str| {
+        part == UNKNOWN || (part.len() > 1 && part.starts_with('“') && part.ends_with('”'))
+    };
+    text.rsplit_once(" from file: ")
+        .is_some_and(|(script, file)| named(script) && named(file))
+}
+
 /// A typographic-quoted name, `“Name”`, unquoted.
 fn unquote(text: &str) -> Option<&str> {
     text.trim().strip_prefix('“')?.strip_suffix('”')
@@ -374,10 +386,11 @@ impl<'a> Parser<'a> {
 
     /// A script's text `“Name”` (or `… from file: “File”`).
     fn script(&mut self, text: &str) {
-        if text == UNKNOWN || text.contains(" from file: ") {
+        let external = from_other_file(text);
+        if text == UNKNOWN || external {
             self.issue(
                 "The script is not in this file".into(),
-                Some(if text.contains(" from file: ") {
+                Some(if external {
                     Part::Key(0x20)
                 } else {
                     Part::Reserved
@@ -412,7 +425,7 @@ impl<'a> Parser<'a> {
     /// observed; upper case is written.
     fn callback_script(&mut self, text: &str) {
         let part = Some(Part::Slot(3));
-        if text == UNKNOWN || text.contains(" from file: ") {
+        if text == UNKNOWN || from_other_file(text) {
             self.issue("The callback script is not in this file".into(), part);
             return;
         }

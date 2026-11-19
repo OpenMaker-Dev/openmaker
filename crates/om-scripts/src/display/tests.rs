@@ -26,7 +26,7 @@ impl Contacts {
         Self {
             names,
             layouts: HashMap::from([(3, ("Contact Details", "Contacts"))]),
-            scripts: HashMap::from([(2, "Go to Entry Field")]),
+            scripts: HashMap::from([(2, "Go to Entry Field"), (3, "Import from file: CSV")]),
         }
     }
 }
@@ -494,6 +494,19 @@ fn psos_callback_reads_and_writes_the_slots_filemaker_stores() {
     );
     // The stale slot 3 is not shown; the text keeps it as stored.
     assert_eq!(canonical(&pasted(&text)), canonical(&step), "{text}");
+
+    // A script of this file whose name holds " from file: " is not
+    // another file's.
+    let mut local = ScriptStep::new(210);
+    local.set_script_key(StoredKey::from_serial_id(2));
+    local.set_calculation(3, Some(&calc(&names, "\"03\"")));
+    local.flags |= flag::OPTION;
+    let text = step_text(&local, &names);
+    assert!(
+        text.contains("From list ; “Import from file: CSV”"),
+        "{text}"
+    );
+    assert_eq!(canonical(&pasted(&text)), canonical(&local), "{text}");
 }
 
 #[test]
