@@ -733,9 +733,13 @@ than a second reader and writer.
       file's relationships too (one more Login, of the pair the file just
       admitted). With no one to answer (the window closing, the connection
       lost) the step fails at once with the remembered refusal, sending no
-      Login [I: OpenMaker's choice]. Other steps that first need the file
-      (Perform Script in it, Go to Related Record, Set Field through a
-      relationship) fail with the refusal without asking, as before:
+      Login [I: OpenMaker's choice]. Go to Related Record into the file
+      asks the same way, as Open File does (`tests/related_files.rs`
+      `go_to_related_record_into_a_file_that_refused_the_account_asks_for_another`).
+      Other steps that first need the file (Perform Script in it, an
+      external script trigger, Set Field through a relationship) fail with
+      the refusal (212) without asking
+      ([#60](https://github.com/OpenMaker-Dev/openmaker/issues/60)):
       FileMaker Pro's behavior there is unmeasured.
   - *Lifetime.* Each session holds the host of its file; closing a session
     (Close File, the window, the file that opened it) gives up only that

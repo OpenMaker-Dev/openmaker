@@ -19,8 +19,9 @@ has not claimed it:
    not implement the interface answers `false` by CORBA's semantics. A
    FileMaker Server 26.0.3 did (observed 2026-11-02: verified TLS,
    `Connect` without a license, `_is_a`, `Disconnect`; no file opened, no
-   account sent). The client reports such a host as unsupported, never as
-   listing nothing.
+   account sent). The client then lists that host's files with op77
+   (above); only an op77 reply it cannot read reports the host as
+   unsupported, never as listing nothing.
 3. `OpenMakerListFiles(in unsigned long connectionid, in unsigned long
    version)` (CDR, little-endian): the id `Connect` returned and the
    newest list version the client reads (1). The server answers only a

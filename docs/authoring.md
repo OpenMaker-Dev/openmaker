@@ -141,8 +141,10 @@ Access] set (docs/re/local-files.md 2.3), may read it. Any other account is
 `permission_denied` (status 9), and a session without the file open is
 status 100. Another host, FileMaker Server included, is sent nothing:
 `unsupported`. Accounts and privilege sets cannot be created, changed or
-deleted. How FileMaker writes an account is not specified ([#12](https://github.com/OpenMaker-Dev/openmaker/issues/12)), nor is a
-set's checksum (#474). The rest of a set's members are specified
+deleted here. How FileMaker writes an account is specified
+(docs/re/local-files.md 2.4; whether FileMaker accepts OpenMaker's writes
+is [#12](https://github.com/OpenMaker-Dev/openmaker/issues/12)), but a
+set's checksum is not (#474). The rest of a set's members are specified
 (docs/re/session-identity.md 2) but Describe Security does not read them
 yet: set descriptions, per-table record and field access, layout, script
 and value list access, the other privileges and menu commands.
