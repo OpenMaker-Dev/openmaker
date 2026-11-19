@@ -294,19 +294,64 @@ fn primary_field(definition: &[u8]) -> Option<(u64, u64)> {
 const SHOW_RELATED_VALUES: u16 = 0x1;
 const SORT_BY_SECONDARY_FIELD: u16 = 0x2;
 
-/// A field value list's options and second field ("also display values
-/// from second field": (occurrence, field), `None` when the definition
-/// names none, `0:0`), from the definition's `u16` options and its second
-/// field spec (occurrence key, field key, u16 repetition each).
-fn list_options(definition: &[u8]) -> Option<(u16, Option<(u64, u64)>)> {
+/// A field value list's options, its first field's repetition and its
+/// second field ("also display values from second field": occurrence,
+/// field and repetition, `None` when the definition names none, `0:0`),
+/// from the definition's `u16` options and its two field specs (occurrence
+/// key, field key, u16 repetition each; a repetition of 0 is the first).
+struct ListOptions {
+    options: u16,
+    repetition: u16,
+    second: Option<(u64, u64, u16)>,
+}
+
+fn list_options(definition: &[u8]) -> Option<ListOptions> {
+    let u16_at = |rest: &mut &[u8]| -> Option<u16> {
+        let value = u16::from_be_bytes(rest.get(..2)?.try_into().ok()?);
+        *rest = &rest[2..];
+        Some(value.max(1))
+    };
     let options = u16::from_be_bytes(definition.get(1..3)?.try_into().ok()?);
     let mut rest = definition.get(3..)?;
     key_value(&mut rest)?;
     key_value(&mut rest)?;
-    rest = rest.get(2..)?;
+    let repetition = u16_at(&mut rest)?;
     let occurrence = key_value(&mut rest)?.filter(|id| *id != 0);
     let field = key_value(&mut rest)?.filter(|id| *id != 0);
-    Some((options, occurrence.zip(field)))
+    let second_repetition = u16_at(&mut rest)?;
+    Some(ListOptions {
+        options,
+        repetition,
+        second: occurrence
+            .zip(field)
+            .map(|(occurrence, field)| (occurrence, field, second_repetition)),
+    })
+}
+
+/// Whether the provider can read `field`'s values from its stored records:
+/// a stored field or calculation, not a global, an unstored calculation, a
+/// summary, a container or an unknown type.
+fn scannable(field: &om_hbam::Field, options: &om_hbam::FieldOptions) -> Result<(), DataError> {
+    if !matches!(
+        field.kind,
+        om_hbam::FieldKind::Normal | om_hbam::FieldKind::Calculation
+    ) || options.options & 0x70000 != 0
+        || matches!(field.data_type, DataType::Container | DataType::Unknown(_))
+    {
+        return Err(unsupported(
+            "This field has no stored native values that can be listed without its index.",
+        ));
+    }
+    Ok(())
+}
+
+/// One repetition's stored text of `field` in `row` (repetition 1 the
+/// field's own cell).
+fn repetition_text(row: &om_hbam::record::Record, field: u64, repetition: u16) -> String {
+    om_data::rules::cell_of(field, u32::from(repetition))
+        .and_then(|cell| row.text(cell))
+        .and_then(Result::ok)
+        .unwrap_or_default()
 }
 
 impl NativeProvider {
@@ -642,16 +687,7 @@ impl NativeProvider {
         let options = field
             .decoded_options()
             .ok_or_else(|| unsupported("The field's index metadata could not be read."))?;
-        if !matches!(
-            field.kind,
-            om_hbam::FieldKind::Normal | om_hbam::FieldKind::Calculation
-        ) || options.options & 0x70000 != 0
-            || matches!(field.data_type, DataType::Container | DataType::Unknown(_))
-        {
-            return Err(unsupported(
-                "This field has no stored native values that can be listed without its index.",
-            ));
-        }
+        scannable(field, &options)?;
         let keying = self.keying(field, &options, true)?;
         let session = self.session_mut()?;
         let ids = record_ids(session, table)?;
@@ -677,18 +713,19 @@ impl NativeProvider {
         Ok(values.finish())
     }
 
-    /// The distinct values of `first` of base table `table` in the order of
-    /// a list sorted by its second field (file-metadata.md 6.2,
-    /// `kSortBySecondaryField`): each record's values of `first` with its
-    /// value of `second`, ordered by the second value's key and then the
-    /// first's, each first value once, where it first comes. Read from every
-    /// record, as a list without an index is
+    /// The items of a list sorted by its second field (file-metadata.md 6.2,
+    /// `kSortBySecondaryField`; 6.4, observed with `ValueListItems`): one
+    /// first-field value per distinct second-field value, the first record
+    /// in source order winning, ordered by the second value's key (empty
+    /// values first), each first value kept where it first comes for the
+    /// sort's order. Each field's value is its spec's repetition. Read from
+    /// every record, as a list without an index is
     /// (docs/value-lists-missing-index.md), within the same limits.
     fn field_values_by_second(
         &mut self,
         table: u64,
-        first: u64,
-        second: u64,
+        (first, first_repetition): (u64, u16),
+        (second, second_repetition): (u64, u16),
     ) -> Result<Vec<String>, DataError> {
         let definition = self
             .catalog
@@ -703,6 +740,7 @@ impl NativeProvider {
             let options = field
                 .decoded_options()
                 .ok_or_else(|| unsupported("The field's index metadata could not be read."))?;
+            scannable(&field, &options)?;
             Ok((field, options))
         };
         let (first, first_options) = field_of(first)?;
@@ -711,8 +749,8 @@ impl NativeProvider {
         let second_keying = self.keying(&second, &second_options, true)?;
         let session = self.session_mut()?;
         let ids = record_ids(session, table)?;
-        // (second key, first key) -> the first value's text.
-        let mut pairs: BTreeMap<(Vec<u8>, Vec<u8>), String> = BTreeMap::new();
+        // Second key -> the first value of the first record holding it.
+        let mut items: BTreeMap<Vec<u8>, (Vec<u8>, String)> = BTreeMap::new();
         let mut bytes = 0usize;
         let mut batch = Vec::with_capacity(SCAN_BATCH);
         let mut ids = ids.iter();
@@ -724,42 +762,41 @@ impl NativeProvider {
             }
             let data = download_records(session, table, &batch)?;
             let tree = download_tree(std::slice::from_ref(&data))?;
+            // Records come in id order, the source order.
             for row in om_hbam::record::records(&tree, table) {
-                let second_value = candidates(&row, &second, second_options.max_repetitions)?
-                    .into_iter()
-                    .next()
-                    .unwrap_or_default();
+                let second_value = repetition_text(&row, second.id, second_repetition);
                 let second_key = second_keying
-                    .whole_key(&second_value)?
+                    .whole_key(second_value.trim())?
                     .unwrap_or_else(|| EMPTY_TEXT_KEY.to_vec());
-                for candidate in candidates(&row, &first, first_options.max_repetitions)? {
-                    let Some(key) = first_keying.whole_key(&candidate)? else {
-                        continue;
-                    };
-                    if key == EMPTY_TEXT_KEY {
-                        continue;
-                    }
-                    let entry = (second_key.clone(), key);
-                    if pairs.contains_key(&entry) {
-                        continue;
-                    }
-                    if pairs.len() == MAX_INDEX_VALUES as usize {
-                        return Err(too_many_values());
-                    }
-                    bytes += entry.0.len() + entry.1.len() + candidate.len();
-                    if bytes > VALUE_BYTES {
-                        return Err(unsupported(
-                            "Listing the field's values exceeded the retained-value byte budget.",
-                        ));
-                    }
-                    pairs.insert(entry, candidate);
+                if items.contains_key(&second_key) {
+                    continue;
                 }
+                let first_value = repetition_text(&row, first.id, first_repetition);
+                let Some(line) = first_value
+                    .split(['\r', '\n'])
+                    .find(|l| !l.trim().is_empty())
+                else {
+                    continue;
+                };
+                let Some(key) = first_keying.whole_key(line)? else {
+                    continue;
+                };
+                if items.len() == MAX_INDEX_VALUES as usize {
+                    return Err(too_many_values());
+                }
+                bytes += second_key.len() + key.len() + line.len();
+                if bytes > VALUE_BYTES {
+                    return Err(unsupported(
+                        "Listing the field's values exceeded the retained-value byte budget.",
+                    ));
+                }
+                items.insert(second_key, (key, line.to_owned()));
             }
         }
         let mut seen = BTreeSet::new();
-        Ok(pairs
-            .into_iter()
-            .filter(|((_, first), _)| seen.insert(first.clone()))
+        Ok(items
+            .into_values()
+            .filter(|(key, _)| seen.insert(key.clone()))
             .map(|(_, value)| value)
             .collect())
     }
@@ -805,7 +842,11 @@ impl NativeProvider {
                 let definition = definition.unwrap_or_default();
                 let unreadable = || DataError::new("A value list's field could not be read.");
                 let (occurrence, field) = primary_field(&definition).ok_or_else(unreadable)?;
-                let (options, second) = list_options(&definition).ok_or_else(unreadable)?;
+                let ListOptions {
+                    options,
+                    repetition,
+                    second,
+                } = list_options(&definition).ok_or_else(unreadable)?;
                 // Related values depend on a record to start from, which a
                 // sort by the list has none of.
                 if options & SHOW_RELATED_VALUES != 0 {
@@ -815,13 +856,19 @@ impl NativeProvider {
                 }
                 let table = self.occurrence_table(occurrence)?;
                 match second {
-                    Some((second_occurrence, second)) if options & SORT_BY_SECONDARY_FIELD != 0 => {
+                    Some((second_occurrence, second, second_repetition))
+                        if options & SORT_BY_SECONDARY_FIELD != 0 =>
+                    {
                         if self.occurrence_table(second_occurrence)? != table {
                             return Err(unsupported(
                                 "A value list whose second field is in another table cannot be listed here.",
                             ));
                         }
-                        self.field_values_by_second(table, field, second)
+                        self.field_values_by_second(
+                            table,
+                            (field, repetition),
+                            (second, second_repetition),
+                        )
                     }
                     // A second field shown beside the first does not change
                     // the order of the first field's values.

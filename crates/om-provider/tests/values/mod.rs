@@ -76,6 +76,20 @@ fn lists_sorted_by_their_second_field_order_the_first_fields_values_so() {
         assert_eq!(provider.value_list(5).unwrap(), expected, "{options}");
         provider.close();
     }
+    // One item per distinct second value, the first record winning
+    // (file-metadata.md 6.4): Zebra and Bravo, Alpha left out.
+    let bravo = [("Bravo".to_string(), "2".to_string(), String::new())];
+    let file = file_with("vl-second-distinct", &bravo, |root| {
+        for (id, name, count) in [(1, "Zebra", "1"), (2, "Alpha", "1")] {
+            put(root, fixture::NAME, id, name);
+            put(root, fixture::COUNT, id, count);
+        }
+        list_with_second(root, fixture::NAME, 0x2, fixture::COUNT);
+    });
+    let (port, ca) = host_with(&file.0, None, Server::with_late_index_builds);
+    let mut provider = open(port, &ca);
+    assert_eq!(provider.value_list(5).unwrap(), ["Zebra", "Bravo"]);
+    provider.close();
     let file = file_with("vl-related-only", &[], |root| {
         put(root, fixture::NAME, 1, "Alpha");
         list_with_second(root, fixture::NAME, 0x1, fixture::COUNT);
