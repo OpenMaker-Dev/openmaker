@@ -122,6 +122,9 @@ pub struct MemoryScriptHost {
     pub other_results: HashMap<u16, Value>,
     /// Perform Script on Server runs the script on a server-type runtime.
     pub server_scripts: bool,
+    /// Perform Script on Server with Callback's calls, in order; their
+    /// callbacks are never fired.
+    pub server_callbacks: Vec<ServerCallbackCall>,
     pub timer: Option<OnTimer>,
     /// The MBS plug-in subset's state; `None` (the default) evaluates its
     /// commands as without the plug-in, as the server does.
@@ -172,6 +175,7 @@ impl MemoryScriptHost {
             other_steps: Vec::new(),
             other_results: HashMap::new(),
             server_scripts: true,
+            server_callbacks: Vec::new(),
             timer: None,
             plugin: None,
             idle: Vec::new(),
@@ -1272,6 +1276,20 @@ impl Network for MemoryScriptHost {
             result: call.wait.then(|| runtime.final_result().cloned()).flatten(),
             error: runtime.final_error(),
         })
+    }
+
+    /// Keeps the call in [`MemoryScriptHost::server_callbacks`]; the
+    /// server script does not run.
+    fn perform_script_on_server_with_callback(&mut self, call: &ServerCallbackCall) -> HostResult {
+        self.call(format!(
+            "perform_script_on_server_with_callback {}",
+            call.call.script
+        ));
+        if !self.server_scripts {
+            return Err(HostError::Unsupported);
+        }
+        self.server_callbacks.push(call.clone());
+        Ok(())
     }
 }
 

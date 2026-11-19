@@ -406,6 +406,39 @@ impl<'a> Parser<'a> {
         }
     }
 
+    /// Perform Script on Server with Callback's callback from the list: the
+    /// script's key as a quoted hex literal in slot 3, with `kOption`
+    /// (script-steps.md 12.2). FileMaker's case for the digits a-f is not
+    /// observed; upper case is written.
+    fn callback_script(&mut self, text: &str) {
+        let part = Some(Part::Slot(3));
+        if text == UNKNOWN || text.contains(" from file: ") {
+            self.issue("The callback script is not in this file".into(), part);
+            return;
+        }
+        let Some(name) = unquote(text) else {
+            self.issue(format!("“{text}” is not a script name"), part);
+            return;
+        };
+        match self
+            .names
+            .find_script(name)
+            .require(&format!("the script “{name}”"))
+        {
+            Ok(id) => {
+                let hex: String = om_hbam::serial::encode(id)
+                    .iter()
+                    .map(|b| format!("{b:02X}"))
+                    .collect();
+                let literal =
+                    compile(&format!("\"{hex}\""), self.names).expect("a text literal compiles");
+                self.step.set_calculation(3, Some(&literal));
+                self.step.flags |= flag::OPTION;
+            }
+            Err(reason) => self.issue(reason, part),
+        }
+    }
+
     /// One of `labels` as the step value (`kMenuSelection`).
     fn choice(&mut self, labels: &[(u16, &str)]) -> bool {
         let Some(peek) = self.peek() else {
@@ -1237,12 +1270,7 @@ fn by_name(p: &mut Parser<'_>) {
 
 fn server_script(p: &mut Parser<'_>) {
     match p.labeled_value("Specified").map(|s| s.to_ascii_lowercase()) {
-        Some(s) if s == "by name" && p.step.id() == 164 => by_name(p),
-        Some(s) if s == "by name" => {
-            if let Some(text) = p.take() {
-                p.calc_into(1, &text);
-            }
-        }
+        Some(s) if s == "by name" => by_name(p),
         _ => {
             if p.peek()
                 .is_some_and(|o| label_value(o, "Parameter").is_none())
@@ -1259,14 +1287,30 @@ fn server_script(p: &mut Parser<'_>) {
                 .set_flag(flag::OPTION, value.eq_ignore_ascii_case("off"));
         }
     } else {
-        if let Some(how) = p.labeled_value("Callback script specified") {
-            if how.eq_ignore_ascii_case("by name") {
-                if let Some(text) = p.take() {
-                    p.calc_into(2, &text);
-                }
+        // Slots and flags of script-steps.md 12.2: by name, `[00 6]` = 1
+        // and the name in slot 7 with `0x1000 | 0x2000`; the parameter in
+        // slot 4 with `0x200`.
+        let stop = ["Callback script parameter:", "State:"];
+        match p.labeled_value("Callback script specified") {
+            Some(how) if how.eq_ignore_ascii_case("by name") => {
+                p.step.set_list_value(6, Some(1));
+                p.step.flags |= flag::SELECT_ALL | flag::EXIT;
+                p.bare(7, &stop);
             }
+            Some(how)
+                if how.eq_ignore_ascii_case("from list")
+                    && p.peek().is_some()
+                    && !p.stops(&stop) =>
+            {
+                let text = p.take().expect("peeked");
+                p.callback_script(&text);
+            }
+            _ => {}
         }
-        p.labeled("Callback script parameter", 3);
+        p.labeled("Callback script parameter", 4);
+        if p.step.calculation(4).is_some() {
+            p.step.flags |= flag::OPTION2;
+        }
         p.choice(&[
             (1, "State: Halt"),
             (2, "State: Exit"),

@@ -555,6 +555,33 @@ impl ScriptStep {
             .ok()
     }
 
+    /// The id a calculation stores as a key "with its position"
+    /// (`SetScriptKeyWithStorePosition`, script-steps.md 12.2): the
+    /// formula is a quoted text literal of the key segment in hex, `"08"`
+    /// for script 8, `"01"` for data source 1. Either case of the digits
+    /// a-f is read. `None` when the slot holds no such literal.
+    pub fn positioned_id(&self, slot: u16) -> Option<u64> {
+        let polish = self.calculation(slot)?.polish?;
+        let om_formula::Expr::Text(text) = om_formula::polish::decode(&polish).ok()? else {
+            return None;
+        };
+        let hex = text.value.as_bytes();
+        // A key segment is at most 5 bytes (`HBKey<5>`).
+        if hex.is_empty()
+            || hex.len() % 2 != 0
+            || hex.len() > 10
+            || !hex.iter().all(u8::is_ascii_hexdigit)
+        {
+            return None;
+        }
+        let digit = |d: u8| (d as char).to_digit(16).expect("checked") as u8;
+        let segment: Vec<u8> = hex
+            .chunks(2)
+            .map(|pair| digit(pair[0]) << 4 | digit(pair[1]))
+            .collect();
+        om_hbam::serial::decode(&segment)
+    }
+
     /// A calculation parameter as the editor shows it when it is a text
     /// literal or `Get ( ScriptParameter )`; `None` for other formulas.
     pub fn argument_text(&self, slot: u16) -> Option<String> {

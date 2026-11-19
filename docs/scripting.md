@@ -123,6 +123,16 @@ Done, verified against FileMaker:
   finds for indexed `field = constant`); all 1,244 runnable sample-file
   vectors match on the hosted path.
 
+Perform Script on Server with Callback reads the slots FileMaker Pro
+writes (script-steps.md 12.2): the callback by name (`[00 6]` = 1, slot 7)
+or from the list (the key literal in slot 3), and its parameter in slot 4;
+the step text shows and writes the same. These are OpenMaker's choices,
+not compared with FileMaker: a callback script the file does not have is
+error 104 and the server is not called, and a callback in another file is
+error 3 ([#372](https://github.com/OpenMaker-Dev/openmaker/issues/372)). The step text writes the list key's hex digits
+a-f in upper case ([#371](https://github.com/OpenMaker-Dev/openmaker/issues/371)), and pasting the step as FileMaker XML
+refuses its callback ([#370](https://github.com/OpenMaker-Dev/openmaker/issues/370)).
+
 The desktop host answers the Get selectors, layout-object attributes
 and Design functions for other files as FileMaker Pro 26.0.3 does
 (calc-functions.md 6.3, measured on local files in the isolated capture
