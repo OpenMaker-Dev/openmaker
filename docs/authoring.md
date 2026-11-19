@@ -1180,7 +1180,10 @@ codec is `om_protocol::authoring`; the host side is `om-server`'s
   `commands` lists with the effect `authors`, and the desktop's placements
   through the same extension. On a host that does not claim the extension,
   FileMaker Server (Claris) included, those commands report `unsupported`
-  and nothing is sent; the others work.
+  and nothing is sent. `get_security` is refused there too, since reading
+  security needs the extension ([Reading security](#reading-security)),
+  and the choice commands need a window (Records, below); the other
+  commands work.
   `run_script` sends the request FileMaker Pro sends for Perform Script
   on Server, which FileMaker Server answers too, but it has been run
   against OpenMaker Server only (in process, on a synthetic file).

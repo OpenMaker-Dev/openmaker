@@ -70,11 +70,12 @@
       "previous_status": "Partial",
       "status": "Partial",
       "scope": "A local file opens through a private embedded host with the file's own accounts: the three built-in privilege sets, and custom sets whose every member OpenMaker enforces. Edits are saved atomically; File Options sign-in and password changes work; related and script-opened local files share the engine ([local files](re/local-files.md#4-implementation-notes-openmaker), [privilege sets](desktop-client.md#privilege-sets)).",
-      "remaining": "Refused: [Guest] and external accounts, custom sets limited by a calculation [#220](https://github.com/OpenMaker-Dev/openmaker/issues/220), encrypted files [#58](https://github.com/OpenMaker-Dev/openmaker/issues/58), sharing [#61](https://github.com/OpenMaker-Dev/openmaker/issues/61), Save a Copy [#63](https://github.com/OpenMaker-Dev/openmaker/issues/63), Recover [#64](https://github.com/OpenMaker-Dev/openmaker/issues/64) and conversion [#65](https://github.com/OpenMaker-Dev/openmaker/issues/65) ([what is refused](re/local-files.md#6-refused-or-not-supported-yet)). Files open read-only on Windows [#30](https://github.com/OpenMaker-Dev/openmaker/issues/30). Related files are found only by plain name in the same folder [#59](https://github.com/OpenMaker-Dev/openmaker/issues/59).",
+      "remaining": "Refused: [Guest] and external accounts, custom sets limited by a calculation [#220](https://github.com/OpenMaker-Dev/openmaker/issues/220), encrypted files [#58](https://github.com/OpenMaker-Dev/openmaker/issues/58), sharing [#61](https://github.com/OpenMaker-Dev/openmaker/issues/61), Save a Copy [#63](https://github.com/OpenMaker-Dev/openmaker/issues/63), Recover [#64](https://github.com/OpenMaker-Dev/openmaker/issues/64) and conversion [#65](https://github.com/OpenMaker-Dev/openmaker/issues/65) ([what is refused](re/local-files.md#6-refused-or-not-supported-yet)). Files open read-only on Windows [#30](https://github.com/OpenMaker-Dev/openmaker/issues/30). Related files are found only by plain name in the same folder [#59](https://github.com/OpenMaker-Dev/openmaker/issues/59), and one that refuses the first file's account is asked for another only from a layout, Open File or Go to Related Record; Perform Script and external triggers still fail with error 212 [#60](https://github.com/OpenMaker-Dev/openmaker/issues/60).",
       "issues": [
         30,
         58,
         59,
+        60,
         61,
         63,
         64,
