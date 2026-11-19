@@ -1103,6 +1103,11 @@ impl ServerHost {
         self.with_record(table, id, |node| node?.child(&field).cloned())
     }
 
+    /// `read` of the record as [`Self::record_node`] finds it, without a
+    /// copy. For the file's record it runs under the store's read guard,
+    /// so it must not read the store again: a second read guard on this
+    /// thread waits behind a writer queued meanwhile, which waits for the
+    /// first (#421).
     fn with_record<T>(&self, table: u64, id: u64, read: impl FnOnce(Option<&OwnedNode>) -> T) -> T {
         if let Some(open) = self
             .record
@@ -2489,10 +2494,12 @@ impl CalcSource for SessionSource<'_> {
         if let Some(values) = self.records.borrow().get(&(table, record)) {
             return Ok(values.clone());
         }
-        let values = self
-            .host
-            .with_record(table, record, |node| node.map(|n| self.values(table, n)))
-            .map(Arc::new);
+        // Decoded once the store's read guard is released: a container
+        // cell's name is read from the store again, and a second read
+        // guard on this thread waits behind any writer queued meanwhile,
+        // which waits for the first (#421).
+        let node = self.host.with_record(table, record, |node| node.cloned());
+        let values = node.map(|n| Arc::new(self.values(table, &n)));
         self.records
             .borrow_mut()
             .insert((table, record), values.clone());
