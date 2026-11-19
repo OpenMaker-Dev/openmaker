@@ -22,6 +22,7 @@ use fixture::{
 // adds.
 use om_hbam::slot::uint_segment;
 use om_hbam::{serial, OwnedNode, RidList};
+use om_layout::{encode, Rect};
 use om_scripts::specs::{self, SpecField, StoredRequest};
 use om_scripts::{flag, text_node, FieldSpec, Script, ScriptStep, StoredKey};
 use om_session::Session;
@@ -46,6 +47,18 @@ fn set_var(name: &str, text: &str) -> ScriptStep {
     step.set_text(0, Some(name));
     step.set_calculation(1, Some(&calc(text)));
     step
+}
+
+/// Perform Quick Find with the text of `text`, a calculation, then exit
+/// with the error and the found count.
+fn quick_find_then_count(text: &str) -> Vec<ScriptStep> {
+    let mut step = ScriptStep::new(150);
+    step.set_calculation(0, Some(&calc(text)));
+    vec![
+        fixture::on(86, true),
+        step,
+        exit_with("Get ( LastError ) & \":\" & Get ( FoundCount )"),
+    ]
 }
 
 fn exit_with(text: &str) -> ScriptStep {
@@ -203,6 +216,13 @@ fn scripts() -> Vec<Script> {
                 exit_with("IsEmpty ( Tasks::Label ) & \"|\" & Length ( Tasks::Label )"),
             ],
         ),
+        script(40, "Quick Find", quick_find_then_count("\"ship\"")),
+        script(41, "Quick Find no word", quick_find_then_count("\"  \"")),
+        script(
+            42,
+            "Quick Find no match",
+            quick_find_then_count("\"write qqq\""),
+        ),
     ]
 }
 
@@ -234,6 +254,26 @@ fn tree() -> OwnedNode {
     let ids: RidList = (1..=5).collect();
     root.put(&[&tasks, &[0x0d]], ids.to_node(Vec::new()));
     root.put(&[&tasks, &[0]], OwnedNode::leaf(Vec::new(), vec![1, 5]));
+    // Layout Tasks shows Name in an edit box, which Quick Find searches.
+    let key = |id: u64| serial::id_of_raw(id).unwrap();
+    let bounds = Rect {
+        top: 20.0,
+        left: 20.0,
+        bottom: 40.0,
+        right: 200.0,
+        other: Vec::new(),
+    };
+    let mut store = Vec::new();
+    encode::uint(1, 1, &mut store);
+    encode::bytes(
+        2,
+        &encode::field_object(1, &bounds, key(OCCURRENCE), key(NAME)),
+        &mut store,
+    );
+    root.put(
+        &[&[4], &[5], &uint_segment(fixture::LAYOUT), &[7]],
+        OwnedNode::leaf(Vec::new(), store),
+    );
     root
 }
 
@@ -298,4 +338,18 @@ fn find_mode_reads_and_finds_without_criteria_are_filemakers() {
     // global field reads its value and a field the request's criterion or
     // nothing, without error 1224.
     assert_eq!(run(&mut client, 14), (0, "x0/01/zeta0/0,x0,0".into()));
+}
+
+/// Perform Quick Find on the server (query-program.md 6.6) searches the
+/// layout's Name field object: a word finds the records holding it, the
+/// words narrow one another, and no match (401) or no word (400) keeps the
+/// found set. It ran into error 3 before.
+#[test]
+fn server_quick_find_searches_the_layouts_quick_find_fields() {
+    let file = TempFile::from_tree("psos-quick-find", &tree());
+    let port = server::start(&file);
+    let (mut client, _) = server::logged_in(port, "client");
+    assert_eq!(run(&mut client, 40), (0, "0:1".into()));
+    assert_eq!(run(&mut client, 41), (400, "400:5".into()));
+    assert_eq!(run(&mut client, 42), (401, "401:5".into()));
 }
