@@ -277,9 +277,16 @@ Server Find mode:
   desktop's rules ([Quick Find](desktop-client.md#quick-find)), among
   all the table's records. A word that a Quick Find field of another
   occurrence would be searched for fails with 3, as a related find
-  criterion does on the server; Find Matching Records is 3 too
+  criterion does on the server
   ([#101](https://github.com/OpenMaker-Dev/openmaker/issues/101)). What
   FileMaker Server does is not measured.
+- Find Matching Records (155), here and on the desktop, finds the records
+  whose field holds the current record's whole value: `=` for an empty
+  value, else `==` and the value, a text value's find operators taken
+  literally (`om_data::found::matching_criterion`), so `a*b` finds only
+  `a*b`. This request is OpenMaker's reading of Claris's description; the
+  one FileMaker builds is not captured. On the server a field of another
+  occurrence fails with 3, and so does the step in Find mode.
 - Globals read their value with no current record, and sessions start
   from the file's stored globals.
 - A criterion longer than 10,000 characters cannot be read (3), on the

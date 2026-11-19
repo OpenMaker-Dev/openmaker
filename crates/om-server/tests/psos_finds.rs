@@ -61,6 +61,29 @@ fn quick_find_then_count(text: &str) -> Vec<ScriptStep> {
     ]
 }
 
+/// Find Matching Records on Tasks::`field` (none: the field with the
+/// focus), `value` 1 replacing the found set, 2 constraining it, 3
+/// extending it, then exit with the error and the found count.
+fn find_matching_then_count(field: Option<u64>, value: u16) -> Vec<ScriptStep> {
+    let mut step = ScriptStep::new(155);
+    step.value = value;
+    if let Some(field) = field {
+        step.set_field_spec(
+            0,
+            Some(FieldSpec::new(
+                StoredKey::from_id(OCCURRENCE).unwrap(),
+                StoredKey::from_id(field).unwrap(),
+                0,
+            )),
+        );
+    }
+    vec![
+        fixture::on(86, true),
+        step,
+        exit_with("Get ( LastError ) & \":\" & Get ( FoundCount )"),
+    ]
+}
+
 fn exit_with(text: &str) -> ScriptStep {
     let mut step = ScriptStep::new(103);
     step.set_calculation(0, Some(&calc(text)));
@@ -228,6 +251,13 @@ fn scripts() -> Vec<Script> {
             "Quick Find merge field",
             quick_find_then_count("\"open\""),
         ),
+        script(44, "Matching Name", find_matching_then_count(Some(NAME), 1)),
+        script(
+            45,
+            "Matching Status",
+            find_matching_then_count(Some(fixture::STATUS), 1),
+        ),
+        script(46, "Matching no field", find_matching_then_count(None, 1)),
     ]
 }
 
@@ -379,4 +409,18 @@ fn server_quick_find_searches_the_layouts_quick_find_fields() {
     assert_eq!(run(&mut client, 42), (401, "401:5".into()));
     // Record 5's Status "Open", through the merge field.
     assert_eq!(run(&mut client, 43), (0, "0:1".into()));
+}
+
+/// Find Matching Records on the server: the records holding the current
+/// record's value of the field, record 1's "Write tests" in Name and its
+/// empty Status (records 1 to 4); without a field or a focus it is 102,
+/// the found set kept. It ran into error 3 before.
+#[test]
+fn server_find_matching_finds_the_current_records_value() {
+    let file = TempFile::from_tree("psos-find-matching", &tree());
+    let port = server::start(&file);
+    let (mut client, _) = server::logged_in(port, "client");
+    assert_eq!(run(&mut client, 44), (0, "0:1".into()));
+    assert_eq!(run(&mut client, 45), (0, "0:4".into()));
+    assert_eq!(run(&mut client, 46), (102, "102:5".into()));
 }

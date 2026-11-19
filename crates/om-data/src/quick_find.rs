@@ -251,7 +251,7 @@ fn criterion(term: &Term, data_type: DataType, context: &FindContext) -> Option<
                 let operator = if term.phrase {
                     matches!(c, '\\' | '"')
                 } else {
-                    is_operator(c)
+                    crate::found::is_find_operator(c)
                 };
                 if operator {
                     out.push('\\');
@@ -288,30 +288,6 @@ fn criterion(term: &Term, data_type: DataType, context: &FindContext) -> Option<
         Ok(Some(_))
     )
     .then_some(criterion)
-}
-
-/// A character Find mode reads as an operator (`om_query::criteria`).
-fn is_operator(c: char) -> bool {
-    matches!(
-        c,
-        '\\' | '"'
-            | '='
-            | '*'
-            | '@'
-            | '#'
-            | '!'
-            | '?'
-            | '~'
-            | '<'
-            | '>'
-            | '≤'
-            | '≥'
-            | '.'
-            | '…'
-            | '/'
-            | '{'
-            | '}'
-    )
 }
 
 #[cfg(test)]
