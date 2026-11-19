@@ -981,86 +981,74 @@ pub(crate) fn handle(
     store: &mut dyn LicenseStore,
     request: Request,
 ) -> Reply {
-    let calls = Calls::Contained;
-    let reply = answer(provider, store, request, calls);
-    // A panic here comes after the request was answered: the reply still
-    // goes, without the schema (#313).
-    if !calls.read(provider, |p| p.take_grown_schema()) {
-        return reply;
-    }
-    Reply::Grown {
-        grown: GrownSchema {
+    let reply = answer(provider, store, request);
+    // The request is answered: a panic after it never loses the answer
+    // (#313). One asking whether the schema grew is a schema read that
+    // failed, so the file's calculations stop rather than go on with a
+    // schema that may be stale.
+    let grew = panic::catch_unwind(AssertUnwindSafe(|| provider.take_grown_schema()));
+    let grown = match grew {
+        Ok(false) => return reply,
+        Ok(true) => GrownSchema {
             result: contain(provider, |p| p.calc_schema()),
-            warnings: calls.read(provider, |p| p.related_file_warnings()),
-            sign_ins: calls.read(provider, |p| p.related_sign_ins()),
+            warnings: panic::catch_unwind(AssertUnwindSafe(|| provider.related_file_warnings()))
+                .unwrap_or_default(),
+            sign_ins: panic::catch_unwind(AssertUnwindSafe(|| provider.related_sign_ins()))
+                .unwrap_or_default(),
         },
+        Err(payload) => GrownSchema {
+            result: Err(panicked(payload.as_ref())),
+            warnings: Vec::new(),
+            sign_ins: Vec::new(),
+        },
+    };
+    Reply::Grown {
+        grown,
         then: Box::new(reply),
     }
 }
 
 /// [`handle`] in window `window`, the window the request is about: the
-/// provider acts on it. A panic while it switches to it is the request's
-/// own failure, which the window takes as it would the provider's (#313):
-/// a window waiting for a save, say, would otherwise wait for good.
+/// provider acts on it. A panic while it switches there leaves a save
+/// (Commit Record's update, a deletion) with its own failure reply, as a
+/// failed provider call answers it, so the window does not wait for good
+/// (#313). Any other request panics on as before: its reply is not one the
+/// window can take as a plain failure (a save's settling, a page and its
+/// access mask, a cancellation), so the scripts are stopped instead.
 pub(crate) fn handle_in(
     provider: &mut dyn DataProvider,
     store: &mut dyn LicenseStore,
     window: u32,
     request: Request,
 ) -> Reply {
-    match contain(provider, |p| {
-        p.use_window(window);
-        Ok(())
-    }) {
+    match panic::catch_unwind(AssertUnwindSafe(|| provider.use_window(window))) {
         Ok(()) => handle(provider, store, request),
-        Err(error) => answer(provider, store, request, Calls::Refused(&error)),
-    }
-}
-
-/// How [`answer`] makes its provider calls: each contained ([`contain`]),
-/// or none at all, each failing with the error that stopped the request
-/// before them, so the request gets its own failure reply.
-#[derive(Clone, Copy)]
-enum Calls<'e> {
-    Contained,
-    Refused(&'e DataError),
-}
-
-impl Calls<'_> {
-    fn contain<T>(
-        self,
-        provider: &mut dyn DataProvider,
-        call: impl FnOnce(&mut dyn DataProvider) -> Result<T, DataError>,
-    ) -> Result<T, DataError> {
-        match self {
-            Calls::Contained => contain(provider, call),
-            Calls::Refused(error) => Err(error.clone()),
-        }
-    }
-
-    fn contain_apart<T>(
-        self,
-        provider: &mut dyn DataProvider,
-        call: impl FnOnce(&mut dyn DataProvider) -> Result<T, DataError>,
-    ) -> Result<T, DataError> {
-        match self {
-            Calls::Contained => contain_apart(provider, call),
-            Calls::Refused(error) => Err(error.clone()),
-        }
-    }
-
-    /// What the provider says about the call just made (its warnings, a
-    /// grown schema): the default when it panics, or when no call was made.
-    fn read<T: Default>(
-        self,
-        provider: &mut dyn DataProvider,
-        read: impl FnOnce(&mut dyn DataProvider) -> T,
-    ) -> T {
-        match self {
-            Calls::Contained => {
-                panic::catch_unwind(AssertUnwindSafe(|| read(&mut *provider))).unwrap_or_default()
+        Err(payload) => {
+            let error = || {
+                let mut error = panicked(payload.as_ref());
+                error.lost |= provider.connection_lost().is_some();
+                error
+            };
+            match request {
+                Request::UpdateRecord {
+                    layout_id,
+                    record_id,
+                    ..
+                } => Reply::Updated {
+                    layout_id,
+                    record_id,
+                    result: Err(error()),
+                },
+                Request::DeleteRecord {
+                    layout_id,
+                    record_id,
+                } => Reply::Deleted {
+                    layout_id,
+                    record_id,
+                    result: Err(error()),
+                },
+                _ => panic::resume_unwind(payload),
             }
-            Calls::Refused(_) => T::default(),
         }
     }
 }
@@ -1069,175 +1057,164 @@ fn answer(
     provider: &mut dyn DataProvider,
     store: &mut dyn LicenseStore,
     request: Request,
-    calls: Calls<'_>,
 ) -> Reply {
     match request {
         Request::ListFiles { token, host, port } => Reply::Files(Listed {
             token,
-            result: calls
-                .contain_apart(provider, |p| p.list_files(&host, port))
+            result: contain_apart(provider, |p| p.list_files(&host, port))
                 .map(HostListing::of_files)
                 .map_err(ListingError::from),
         }),
         Request::LicenseStatus => {
-            Reply::License(calls.contain(provider, |_| store.load().map(|key| key.is_some())))
+            Reply::License(contain(provider, |_| store.load().map(|key| key.is_some())))
         }
         Request::SaveLicense(key) => {
-            Reply::License(calls.contain(provider, |_| store.save(&key).map(|()| true)))
+            Reply::License(contain(provider, |_| store.save(&key).map(|()| true)))
         }
         Request::RemoveLicense => {
-            Reply::License(calls.contain(provider, |_| store.remove().map(|()| false)))
+            Reply::License(contain(provider, |_| store.remove().map(|()| false)))
         }
         Request::Open {
             connection,
             use_saved_license,
-        } => Reply::Opened(calls.contain(provider, |provider| {
+        } => Reply::Opened(contain(provider, |provider| {
             with_client_license(provider, store, use_saved_license, |provider| {
                 provider.open(&connection)
             })?;
             Ok(opened(provider))
         })),
-        Request::OpenLocalAsking(path) => Reply::OpenedLocal(calls.contain(provider, |provider| {
+        Request::OpenLocalAsking(path) => Reply::OpenedLocal(contain(provider, |provider| {
             provider
                 .open_local_asking(&path)
                 .map(|open| (open, opened(provider)))
         })),
-        Request::OpenLocal(file) => Reply::OpenedLocal(calls.contain(provider, |provider| {
+        Request::OpenLocal(file) => Reply::OpenedLocal(contain(provider, |provider| {
             provider
                 .open_local(&file)
                 .map(|open| (open, opened(provider)))
         })),
-        Request::ChangePassword(pair) => {
-            Reply::PasswordChanged(calls.contain(provider, |provider| {
-                provider.change_password(&pair.old, &pair.new)
-            }))
-        }
-        Request::ChangeDuePassword(new) => {
-            Reply::OpenedLocal(calls.contain(provider, |provider| {
-                provider
-                    .change_due_password(&new.0)
-                    .map(|open| (open, opened(provider)))
-            }))
-        }
+        Request::ChangePassword(pair) => Reply::PasswordChanged(contain(provider, |provider| {
+            provider.change_password(&pair.old, &pair.new)
+        })),
+        Request::ChangeDuePassword(new) => Reply::OpenedLocal(contain(provider, |provider| {
+            provider
+                .change_due_password(&new.0)
+                .map(|open| (open, opened(provider)))
+        })),
         Request::Layouts => {
-            Reply::Layouts(calls.contain(provider, |p| Ok((p.layouts()?, p.layout_menu()?))))
+            Reply::Layouts(contain(provider, |p| Ok((p.layouts()?, p.layout_menu()?))))
         }
         Request::Scripts { workspace } => Reply::Scripts {
             workspace,
-            result: calls.contain(provider, |p| match workspace {
+            result: contain(provider, |p| match workspace {
                 Some(_) => p.scripts_for_editing(),
                 None => p.scripts(),
             }),
         },
         Request::SaveScript { workspace, script } => Reply::ScriptSaved {
             workspace,
-            result: calls.contain(provider, |p| p.save_script(script)),
+            result: contain(provider, |p| p.save_script(script)),
         },
         Request::SaveScriptCatalog { workspace, catalog } => Reply::ScriptCatalogSaved {
             workspace,
-            result: calls.contain(provider, |p| p.save_script_catalog(catalog)),
+            result: contain(provider, |p| p.save_script_catalog(catalog)),
         },
         Request::BeginSchemaEdit => Reply::Schema {
-            result: calls.contain(provider, |p| p.begin_schema_edit()),
+            result: contain(provider, |p| p.begin_schema_edit()),
             changed: false,
         },
         Request::ChangeSchema(change) => Reply::Schema {
-            result: calls.contain(provider, |p| p.apply_schema_change(change)),
+            result: contain(provider, |p| p.apply_schema_change(change)),
             changed: false,
         },
         Request::CommitSchema => Reply::Schema {
-            result: calls.contain(provider, |p| p.commit_schema_changes()),
+            result: contain(provider, |p| p.commit_schema_changes()),
             changed: true,
         },
         Request::CancelSchema => {
-            let _ = calls.contain(provider, |p| p.cancel_schema_changes());
+            let _ = contain(provider, |p| p.cancel_schema_changes());
             Reply::Released
         }
         Request::PlaceLayoutField(place) => {
-            Reply::LayoutFieldPlaced(calls.contain(provider, |p| p.place_layout_field(place)))
+            Reply::LayoutFieldPlaced(contain(provider, |p| p.place_layout_field(place)))
         }
         Request::CreateLayout(request) => {
-            Reply::LayoutCreated(calls.contain(provider, |p| p.create_layout(request)))
+            Reply::LayoutCreated(contain(provider, |p| p.create_layout(request)))
         }
         Request::DuplicateLayout(layout) => {
-            Reply::LayoutCreated(calls.contain(provider, |p| p.duplicate_layout(layout)))
+            Reply::LayoutCreated(contain(provider, |p| p.duplicate_layout(layout)))
         }
         Request::DeleteLayout(layout) => {
-            Reply::LayoutDeleted(calls.contain(provider, |p| p.delete_layout(layout)))
+            Reply::LayoutDeleted(contain(provider, |p| p.delete_layout(layout)))
         }
         Request::LayoutSetup(change) => {
-            Reply::LayoutSetUp(calls.contain(provider, |p| p.set_layout_setup(change)))
+            Reply::LayoutSetUp(contain(provider, |p| p.set_layout_setup(change)))
         }
         Request::SetLayoutParts(change) => {
             let sent = change.clone();
-            Reply::LayoutPartsSet(
-                sent,
-                calls.contain(provider, |p| p.set_layout_parts(change)),
-            )
+            Reply::LayoutPartsSet(sent, contain(provider, |p| p.set_layout_parts(change)))
         }
         Request::CustomValueList(list) => {
-            Reply::CustomValueList(list, calls.contain(provider, |p| p.custom_value_list(list)))
+            Reply::CustomValueList(list, contain(provider, |p| p.custom_value_list(list)))
         }
         Request::SetValueListValues(change) => {
-            Reply::ValueListValuesSet(calls.contain(provider, |p| p.set_value_list_values(change)))
+            Reply::ValueListValuesSet(contain(provider, |p| p.set_value_list_values(change)))
         }
-        Request::SetPartOptions(change) => Reply::PartOptionsSet(
-            change,
-            calls.contain(provider, |p| p.set_part_options(change)),
-        ),
+        Request::SetPartOptions(change) => {
+            Reply::PartOptionsSet(change, contain(provider, |p| p.set_part_options(change)))
+        }
         Request::SetLayoutWidth(change) => {
-            Reply::LayoutWidthSet(calls.contain(provider, |p| p.set_layout_width(change)))
+            Reply::LayoutWidthSet(contain(provider, |p| p.set_layout_width(change)))
         }
         Request::SetFieldControl(change) => {
-            Reply::FieldControlSet(calls.contain(provider, |p| p.set_field_control(change)))
+            Reply::FieldControlSet(contain(provider, |p| p.set_field_control(change)))
         }
         Request::SetLayoutText(change) => {
-            Reply::LayoutTextSet(calls.contain(provider, |p| p.set_layout_text(change)))
+            Reply::LayoutTextSet(contain(provider, |p| p.set_layout_text(change)))
         }
         Request::PlaceLayoutButton(place) => {
-            Reply::LayoutButtonPlaced(calls.contain(provider, |p| p.place_layout_button(place)))
+            Reply::LayoutButtonPlaced(contain(provider, |p| p.place_layout_button(place)))
         }
         Request::PlaceLayoutPortal(place) => {
-            Reply::LayoutPortalPlaced(calls.contain(provider, |p| p.place_layout_portal(place)))
+            Reply::LayoutPortalPlaced(contain(provider, |p| p.place_layout_portal(place)))
         }
         Request::PlaceLayoutText(place) => {
-            Reply::LayoutTextPlaced(calls.contain(provider, |p| p.place_layout_text(place)))
+            Reply::LayoutTextPlaced(contain(provider, |p| p.place_layout_text(place)))
         }
         Request::SetObjectFrames(change) => {
-            Reply::ObjectsFramed(calls.contain(provider, |p| p.set_layout_object_frames(change)))
+            Reply::ObjectsFramed(contain(provider, |p| p.set_layout_object_frames(change)))
         }
         Request::DeleteObjects(change) => {
-            Reply::ObjectsDeleted(calls.contain(provider, |p| p.delete_layout_objects(change)))
+            Reply::ObjectsDeleted(contain(provider, |p| p.delete_layout_objects(change)))
         }
         Request::SecurityCatalog { token } => Reply::Security {
             token,
-            result: calls.contain(provider, |p| p.security_catalog()),
+            result: contain(provider, |p| p.security_catalog()),
         },
         Request::ValueLists { token } => Reply::ValueLists {
             token,
-            result: calls.contain(provider, |p| p.value_list_catalog()),
+            result: contain(provider, |p| p.value_list_catalog()),
         },
         Request::RenderLayout { layout_id } => Reply::RenderLayout {
             layout_id,
-            result: Box::new(calls.contain(provider, |p| p.render_layout(layout_id))),
+            result: Box::new(contain(provider, |p| p.render_layout(layout_id))),
         },
         Request::LayoutGeometry { layout_id } => Reply::LayoutGeometry {
             layout_id,
-            result: calls.contain(provider, |p| p.layout_geometry(layout_id)),
+            result: contain(provider, |p| p.layout_geometry(layout_id)),
         },
         Request::RecordCapabilities { layout_id } => Reply::RecordCapabilities {
             layout_id,
-            result: calls.contain(provider, |p| p.record_capabilities(layout_id)),
+            result: contain(provider, |p| p.record_capabilities(layout_id)),
         },
         Request::SavedPosition { layout_id } => Reply::SavedPosition {
             layout_id,
-            position: calls
-                .contain(provider, |p| Ok(p.take_saved_position(layout_id)))
+            position: contain(provider, |p| Ok(p.take_saved_position(layout_id)))
                 .ok()
                 .flatten(),
         },
         Request::Records(key) => {
-            let read = calls.contain(provider, |p| {
+            let read = contain(provider, |p| {
                 p.records_with_summary(key.layout_id, key.offset, key.limit, &[])
             });
             let (result, found) = match read {
@@ -1245,7 +1222,7 @@ fn answer(
                 Err(error) => (Err(error), None),
             };
             let no_access = match &result {
-                Ok(page) => calls.read(provider, |p| p.no_access(key.layout_id, page)),
+                Ok(page) => provider.no_access(key.layout_id, page),
                 Err(_) => om_data::NoAccess::default(),
             };
             Reply::Records {
@@ -1253,7 +1230,7 @@ fn answer(
                 result,
                 found,
                 no_access,
-                generation: calls.read(provider, |p| p.calc_generation()),
+                generation: provider.calc_generation(),
             }
         }
         Request::UpdateRecord {
@@ -1263,7 +1240,7 @@ fn answer(
         } => Reply::Updated {
             layout_id,
             record_id,
-            result: calls.contain(provider, |p| p.update_record(layout_id, record_id, values)),
+            result: contain(provider, |p| p.update_record(layout_id, record_id, values)),
         },
         Request::DeleteRecord {
             layout_id,
@@ -1271,21 +1248,21 @@ fn answer(
         } => Reply::Deleted {
             layout_id,
             record_id,
-            result: calls.contain(provider, |p| p.delete_record(layout_id, record_id)),
+            result: contain(provider, |p| p.delete_record(layout_id, record_id)),
         },
         Request::CalcSchema => Reply::CalcSchema {
-            result: calls.contain(provider, |p| p.calc_schema()),
-            warnings: calls.read(provider, |p| p.related_file_warnings()),
-            sign_ins: calls.read(provider, |p| p.related_sign_ins()),
+            result: contain(provider, |p| p.calc_schema()),
+            warnings: provider.related_file_warnings(),
+            sign_ins: provider.related_sign_ins(),
         },
         Request::SignInRelated(job) => Reply::RelatedSignIn {
             file: job.file.clone(),
-            result: calls.contain(provider, |p| {
+            result: contain(provider, |p| {
                 p.sign_in_related(&job.file, &job.account, &job.password)
             }),
         },
         Request::CalcData { needs, cancel } => {
-            let result = calls.contain(provider, |p| p.calc_data_for(&needs, &cancel));
+            let result = contain(provider, |p| p.calc_data_for(&needs, &cancel));
             Reply::CalcData {
                 needs,
                 result: Box::new(result),
@@ -1299,23 +1276,22 @@ fn answer(
         } => Reply::HostFieldValues {
             list,
             epoch,
-            result: calls.contain(provider, |p| p.host_field_values(table, field)),
+            result: contain(provider, |p| p.host_field_values(table, field)),
         },
         Request::BuildValueList { build, cancel } => {
             let (today, info) = (build.today, &build.info);
-            let built = calls
-                .contain(provider, |p| {
-                    Ok(crate::list_build::build(
-                        p,
-                        build.list,
-                        (today, info),
-                        &cancel,
-                    ))
-                })
-                .unwrap_or_else(|error| crate::list_build::Built {
-                    result: Some(Err(crate::list_build::failed(&error))),
-                    retry_after: None,
-                });
+            let built = contain(provider, |p| {
+                Ok(crate::list_build::build(
+                    p,
+                    build.list,
+                    (today, info),
+                    &cancel,
+                ))
+            })
+            .unwrap_or_else(|error| crate::list_build::Built {
+                result: Some(Err(crate::list_build::failed(&error))),
+                retry_after: None,
+            });
             Reply::ValueListBuilt {
                 list: build.list,
                 ticket: build.ticket,
@@ -1326,7 +1302,7 @@ fn answer(
         // The script session handles these itself.
         Request::Script(_) | Request::Answer { .. } => Reply::Closed,
         Request::SettleSave(settle) => {
-            let result = calls.contain(provider, |p| match settle {
+            let result = contain(provider, |p| match settle {
                 Settle::Check => p.reconcile_save().map(|_| ()),
                 Settle::Resume => p.resume_save(),
                 Settle::Discard => p.discard_save(),
@@ -1335,14 +1311,14 @@ fn answer(
             Reply::SaveSettled {
                 settle,
                 result,
-                report: calls.read(provider, |p| p.unsettled_save()),
+                report: provider.unsettled_save(),
             }
         }
         Request::Recheck { records, related } => Reply::Rechecked {
             records: records
                 .into_iter()
                 .map(|(layout, record)| {
-                    let read = calls.contain(provider, |p| p.record_by_id(layout, record));
+                    let read = contain(provider, |p| p.record_by_id(layout, record));
                     ((layout, record), read)
                 })
                 .collect(),
@@ -1354,7 +1330,7 @@ fn answer(
         Request::PrepareRecordEdit(token, request) => {
             // Retain the caller's accepted page before a delayed read/reply can
             // change the UI's page. Unavailable providers still need this pin.
-            let prepared = calls.contain(provider, |p| {
+            let prepared = contain(provider, |p| {
                 p.retain_record(
                     request.baseline.layout,
                     request.baseline.record,
@@ -1366,7 +1342,7 @@ fn answer(
         }
         Request::Retain(records) => {
             for (layout, record, version) in records {
-                let _ = calls.contain(provider, |p| {
+                let _ = contain(provider, |p| {
                     p.retain_record(layout, record, version);
                     Ok(())
                 });
@@ -1374,7 +1350,7 @@ fn answer(
             Reply::Released
         }
         Request::KeepFoundSet { layout_id, record } => {
-            let _ = calls.contain(provider, |p| {
+            let _ = contain(provider, |p| {
                 p.keep_found_set(layout_id, record);
                 Ok(())
             });
@@ -1382,7 +1358,7 @@ fn answer(
         }
         Request::ReleaseRecords(records) => {
             for (layout, record) in records {
-                let _ = calls.contain(provider, |p| {
+                let _ = contain(provider, |p| {
                     p.release_record(layout, record);
                     Ok(())
                 });
@@ -1397,11 +1373,11 @@ fn answer(
             "A script is running. Try again when it has ended.",
         ))),
         Request::Close => {
-            let _ = calls.contain(provider, |p| {
+            let _ = contain(provider, |p| {
                 p.close();
                 Ok(())
             });
-            if let Some(closes) = calls.read(provider, |p| p.close_requests()) {
+            if let Some(closes) = provider.close_requests() {
                 closes.handled();
             }
             Reply::Closed
@@ -1427,12 +1403,16 @@ fn contain_apart<T>(
     provider: &mut dyn DataProvider,
     call: impl FnOnce(&mut dyn DataProvider) -> Result<T, DataError>,
 ) -> Result<T, DataError> {
-    panic::catch_unwind(AssertUnwindSafe(|| call(&mut *provider))).unwrap_or_else(|payload| {
-        Err(DataError::new(format!(
-            "The data provider failed unexpectedly: {}",
-            panic_message(payload.as_ref())
-        )))
-    })
+    panic::catch_unwind(AssertUnwindSafe(|| call(&mut *provider)))
+        .unwrap_or_else(|payload| Err(panicked(payload.as_ref())))
+}
+
+/// The error a provider panic becomes.
+fn panicked(payload: &(dyn Any + Send)) -> DataError {
+    DataError::new(format!(
+        "The data provider failed unexpectedly: {}",
+        panic_message(payload)
+    ))
 }
 
 fn panic_message(payload: &(dyn Any + Send)) -> &str {
@@ -1452,9 +1432,10 @@ mod tests {
     use om_data::HostedFile;
     use std::time::{Duration, Instant};
 
-    /// Panics listing files and after every request; switching windows
-    /// too once `windows` is set.
+    /// Panics listing files; once `grown` is set, on the next question
+    /// whether the schema grew; switching windows while `windows` is.
     struct PanickingProvider {
+        grown: Arc<AtomicBool>,
         windows: Arc<AtomicBool>,
     }
 
@@ -1468,7 +1449,10 @@ mod tests {
             }
         }
         fn take_grown_schema(&mut self) -> bool {
-            panic!("take_grown_schema exploded")
+            if self.grown.swap(false, Ordering::SeqCst) {
+                panic!("take_grown_schema exploded")
+            }
+            false
         }
         fn open(&mut self, _: &Connection) -> Result<(), DataError> {
             Ok(())
@@ -1718,8 +1702,12 @@ mod tests {
     #[test]
     fn a_panicking_provider_becomes_an_error_and_the_worker_survives() {
         let ctx = egui::Context::default();
-        let windows = Arc::new(AtomicBool::new(false));
+        let (grown, windows) = (
+            Arc::new(AtomicBool::new(false)),
+            Arc::new(AtomicBool::new(false)),
+        );
         let worker = Worker::spawn(Box::new(PanickingProvider {
+            grown: Arc::clone(&grown),
             windows: Arc::clone(&windows),
         }));
         let request = Request::ListFiles {
@@ -1738,11 +1726,26 @@ mod tests {
             }
             other => panic!("unexpected reply {other:?}"),
         }
-        // A panic after the provider answered still sends the answer, and
-        // one switching to the request's window is the request's own
-        // failure, which ends the window's wait for its save (#313).
         worker.send(&ctx, 1, 1, Request::Layouts).unwrap();
         assert!(matches!(wait(&worker).reply, Reply::Layouts(Ok(_))));
+
+        // A panic after the provider answered still sends the answer, with
+        // the schema read failed (#313).
+        grown.store(true, Ordering::SeqCst);
+        worker.send(&ctx, 1, 1, Request::Layouts).unwrap();
+        match wait(&worker).reply {
+            Reply::Grown { grown, then } => {
+                let error = grown.result.unwrap_err();
+                assert!(
+                    error.message.contains("take_grown_schema exploded"),
+                    "{error:?}"
+                );
+                assert!(matches!(*then, Reply::Layouts(Ok(_))));
+            }
+            other => panic!("unexpected reply {other:?}"),
+        }
+        // One switching to a save's window is the save's own failure, which
+        // ends the window's wait for it.
         windows.store(true, Ordering::SeqCst);
         let update = Request::UpdateRecord {
             layout_id: 1,
