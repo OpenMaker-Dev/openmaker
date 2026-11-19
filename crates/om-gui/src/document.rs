@@ -1734,6 +1734,13 @@ impl DocumentState {
             .any(|((_, _, name), b)| name == field && b.value != b.original)
     }
 
+    /// What the editor of related field `field` holds, once it was drawn.
+    pub fn related_text(&self, field: &RelatedField) -> Option<&str> {
+        self.related
+            .get(field)
+            .map(|edit| edit.buffer.value.as_str())
+    }
+
     /// Whether the user changed the related field `focus` shows: a stored
     /// record's since it was read, a begun one's at all.
     pub fn related_field_edited(&self, focus: &RelatedFocus) -> bool {
@@ -1838,8 +1845,8 @@ impl DocumentState {
         buffer.ui_edited = true;
         Ok(())
     }
-    /// The current field value, including an unsaved draft, for UI tests.
-    #[cfg(test)]
+    /// The current record's field `name` as the window shows it: its
+    /// draft, else its stored text.
     pub fn value(&self, session: &Session, name: &str) -> Option<String> {
         let (fields, record) = session.current_record()?;
         let layout = u64::from(session.layout.unwrap_or_default());

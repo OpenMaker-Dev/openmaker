@@ -99,6 +99,8 @@ section{border-top:1px solid var(--border);padding:88px 0;position:relative}
 .section-head h2,.open-head h2{font-size:clamp(32px,4vw,48px);letter-spacing:-.03em;font-weight:600;line-height:1.05;margin-bottom:18px;text-wrap:balance}
 .section-head p{color:var(--fg-muted);font-size:18px;letter-spacing:-.005em;max-width:640px}
 .section-head p code,.muted code{font-size:.88em;color:var(--fg);background:var(--tint-2);border:1px solid var(--border);border-radius:5px;padding:1px 5px}
+.section-head p+p{margin-top:14px;font-size:15px;color:var(--fg-dim)}
+.section-head p a{color:var(--fg);text-decoration:underline;text-decoration-color:var(--border-strong);text-underline-offset:3px}
 .checklist{display:flex;flex-wrap:wrap;gap:12px 28px;list-style:none}
 .checklist li{display:flex;align-items:center;gap:9px;color:var(--fg-muted);font-size:14px}
 .checklist svg{color:var(--ok);flex:none}
@@ -200,7 +202,7 @@ section{border-top:1px solid var(--border);padding:88px 0;position:relative}
 .calc-note{margin-top:16px;font-size:13px;color:var(--fg-dim)}
 .meter{margin-top:18px}
 .meter-bar{height:8px;border-radius:999px;background:var(--meter-track);overflow:hidden}
-.meter-bar i{display:block;height:100%;width:62%;border-radius:inherit;background:linear-gradient(90deg,#b84a0b,#f0782f)}
+.meter-bar i{display:block;height:100%;width:61%;border-radius:inherit;background:linear-gradient(90deg,#b84a0b,#f0782f)}
 .meter-label{display:flex;justify-content:space-between;margin-top:8px;font-family:var(--font-mono);font-size:11px;color:var(--fg-dim)}
 .meter-label b{color:var(--fg);font-weight:600}
 .snippet{margin-top:16px;padding:12px 14px;border-radius:8px;background:var(--bg-elev);border:1px solid var(--border);font-family:var(--font-mono);font-size:12px;line-height:1.6;color:var(--fg-muted)}
@@ -265,6 +267,7 @@ section{border-top:1px solid var(--border);padding:88px 0;position:relative}
 .gate li:nth-last-child(-n+2){border-bottom:0}
 .gate li::before{content:counter(g);flex:none;display:grid;place-items:center;width:24px;height:24px;border-radius:7px;border:1px solid var(--border-strong);font-family:var(--font-mono);font-size:11px;color:var(--fg)}
 .gate li strong{color:var(--fg);font-weight:600}
+.gate li .now{display:block;margin-top:6px;font-size:13px;color:var(--fg-dim)}
 
 /* Clean room */
 .principles{display:grid;grid-template-columns:repeat(4,1fr);gap:16px}
@@ -417,7 +420,7 @@ section{border-top:1px solid var(--border);padding:88px 0;position:relative}
         <a class="btn btn-ghost btn-lg" href="#status">See what works</a>
       </div>
       <div class="cmd"><span><span class="p">$</span> cargo run -p om-gui</span><button type="button" data-copy="cargo run -p om-gui" aria-label="Copy command"><svg class="cp" width="15" height="15"><use href="#i-copy"/></svg><svg class="ok" width="15" height="15"><use href="#i-check"/></svg></button></div>
-      <span class="hero-note">No installers yet. Linux (Ubuntu) first, then macOS and Windows.</span>
+      <span class="hero-note">No published releases yet. Linux (Ubuntu) first, then macOS and Windows.</span>
     </div>
   </div>
   <div class="container">
@@ -441,7 +444,7 @@ section{border-top:1px solid var(--border);padding:88px 0;position:relative}
     <div class="compat-grid">
       <div class="compat">
         <div class="compat-mark"><svg><use href="#i-server"/></svg></div>
-        <div><div class="compat-name">FileMaker Server 26</div><div class="compat-desc">OpenMaker connects, opens and logs in to hosted files, and reconnects after a dropped connection.</div><div class="compat-tag">mutual TLS &middot; your own license key</div></div>
+        <div><div class="compat-name">FileMaker Server 26</div><div class="compat-desc">OpenMaker connects, opens and logs in to hosted files, and offers to reconnect after a dropped connection.</div><div class="compat-tag">mutual TLS &middot; your own license key</div></div>
       </div>
       <div class="compat">
         <div class="compat-mark"><svg><use href="#i-desktop"/></svg></div>
@@ -496,7 +499,7 @@ section{border-top:1px solid var(--border);padding:88px 0;position:relative}
             <li><svg width="16" height="16"><use href="#i-check"/></svg>Portals, tab and slide panels, popovers, button bars</li>
             <li><svg width="16" height="16"><use href="#i-check"/></svg>Conditional formatting, hide conditions, anchoring</li>
             <li><svg width="16" height="16"><use href="#i-check"/></svg>Create, edit, duplicate and delete, with auto-enter and validation</li>
-            <li class="gap"><svg width="16" height="16"><use href="#i-dash"/></svg>Not yet: container contents, editing in portal rows</li>
+            <li class="gap"><svg width="16" height="16"><use href="#i-dash"/></svg>Not yet: the layout's own Table view columns and parts</li>
           </ul>
         </div>
       </div>
@@ -511,7 +514,7 @@ section{border-top:1px solid var(--border);padding:88px 0;position:relative}
             <li><svg width="16" height="16"><use href="#i-check"/></svg>Find, omit, constrain, extend, Show All</li>
             <li><svg width="16" height="16"><use href="#i-check"/></svg>Sort Records, in the file's own collation</li>
             <li><svg width="16" height="16"><use href="#i-check"/></svg>Index keys found by binary search</li>
-            <li class="gap"><svg width="16" height="16"><use href="#i-dash"/></svg>Not yet: match finds, non-English index keys</li>
+            <li class="gap"><svg width="16" height="16"><use href="#i-dash"/></svg>Not yet: sorting by a related field, non-English index keys</li>
           </ul>
         </div>
       </div>
@@ -521,12 +524,12 @@ section{border-top:1px solid var(--border);padding:88px 0;position:relative}
         <div class="modes-shot"><img src="assets/shots/layout.webp" width="2120" height="1520" loading="lazy" alt="Layout mode in OpenMaker, with the layout canvas and the Inspector"></div>
         <div class="tile modes-copy">
           <h3>Layout</h3>
-          <p>The developer tools are early, but they save what they change in FileMaker's own formats.</p>
+          <p>The developer tools are incomplete, but they save what they change in FileMaker's own formats.</p>
           <ul>
             <li><svg width="16" height="16"><use href="#i-check"/></svg>Canvas, Objects and Inspector; place fields and buttons</li>
             <li><svg width="16" height="16"><use href="#i-check"/></svg>Manage Layouts, Script Workspace, Manage Database</li>
             <li><svg width="16" height="16"><use href="#i-check"/></svg>Schema edits in FileMaker Pro's schema transaction</li>
-            <li class="gap"><svg width="16" height="16"><use href="#i-dash"/></svg>Not yet: Security, Value Lists, Themes, Custom Functions</li>
+            <li class="gap"><svg width="16" height="16"><use href="#i-dash"/></svg>Not yet: editing security or value lists; Themes, Custom Functions</li>
           </ul>
         </div>
       </div>
@@ -560,7 +563,7 @@ section{border-top:1px solid var(--border);padding:88px 0;position:relative}
         <span class="eyebrow">om-scripts</span>
         <h3>Scripts and triggers</h3>
         <p>Control flow, errors, variables, transactions and triggers. A step OpenMaker can't run yet fails with error&nbsp;3, as FileMaker's unsupported steps do.</p>
-        <div class="meter"><div class="meter-bar"><i></i></div><div class="meter-label"><span><b>~130</b> of 210 desktop steps</span><span>62%</span></div></div>
+        <div class="meter"><div class="meter-bar"><i></i></div><div class="meter-label"><span><b>129</b> of 210 desktop steps</span><span>61%</span></div></div>
       </div>
       <div class="tile b-find">
         <span class="eyebrow">om-query</span>
@@ -638,48 +641,50 @@ section{border-top:1px solid var(--border);padding:88px 0;position:relative}
       <span class="eyebrow">Status</span>
       <h2>Pre-alpha, and honest about it.</h2>
       <p>The goal is 1:1 compatibility with FileMaker. Much of it is still partial or missing; this is where each area stands. Try OpenMaker on a copy of your files.</p>
+      <p>OpenMaker is measured against FileMaker&nbsp;Pro and Server 26.0.3. FileMaker&nbsp;Pro 26.1's changes are recorded but not matched yet, and an Update or Replace import does not yet keep target data the way 26.1's new option does (<a href="https://github.com/OpenMaker-Dev/openmaker/blob/main/ROADMAP.md#filemaker-261">FileMaker 26.1 in the roadmap</a>).</p>
     </div>
     <div class="status-summary">
-      <div class="legend"><span><i class="s-working"></i>Working: 2</span><span><i class="s-partial"></i>Partial: 13</span><span><i class="s-early"></i>Early: 3</span></div>
-      <a class="status-date" href="https://github.com/OpenMaker-Dev/openmaker/blob/main/ROADMAP.md">ROADMAP.md &middot; updated 2026-11-11 &#8599;</a>
+      <div class="legend"><span><i class="s-working"></i>Working: 2</span><span><i class="s-partial"></i>Partial: 15</span><span><i class="s-early"></i>Early: 2</span></div>
+      <a class="status-date" href="https://github.com/OpenMaker-Dev/openmaker/blob/main/ROADMAP.md">ROADMAP.md &middot; updated 2026-11-19 &#8599;</a>
     </div>
-    <div class="stack" aria-hidden="true"><i class="s-working" style="flex:2"></i><i class="s-partial" style="flex:13"></i><i class="s-early" style="flex:3"></i></div>
+    <div class="stack" aria-hidden="true"><i class="s-working" style="flex:2"></i><i class="s-partial" style="flex:15"></i><i class="s-early" style="flex:2"></i></div>
     <div class="status-grid">
-      <div class="area"><div class="area-top"><span class="area-name">Hosted files</span><span class="badge working">Working</span></div><p>Connect, open and log in to FileMaker Server and OpenMaker Server over mutual TLS; reconnect after a lost connection.</p></div>
-      <div class="area"><div class="area-top"><span class="area-name">Calculations</span><span class="badge working">Working</span></div><p>Decimal arithmetic and the function library, matched against FileMaker Server. <span class="gap">17 functions missing (AI, location, Furigana).</span></p></div>
-      <div class="area"><div class="area-top"><span class="area-name">Local .fmp12 files</span><span class="badge partial">Partial</span></div><p>Open, edit and save. <span class="gap">Built-in privilege sets only; no encrypted files; read-only on Windows.</span></p></div>
-      <div class="area"><div class="area-top"><span class="area-name">Layout rendering</span><span class="badge partial">Partial</span></div><p>Themes, styled text, portals, panels, popovers, conditional formatting. <span class="gap">Container contents not drawn.</span></p></div>
-      <div class="area"><div class="area-top"><span class="area-name">Records and editing</span><span class="badge partial">Partial</span></div><p>Create, edit, duplicate, delete; save-conflict recovery. <span class="gap">Some fields and lookups still read-only.</span></p></div>
-      <div class="area"><div class="area-top"><span class="area-name">Find, sort, found sets</span><span class="badge partial">Partial</span></div><p>Finds, sorts and joins through query programs. <span class="gap">No match finds; non-English index keys.</span></p></div>
-      <div class="area"><div class="area-top"><span class="area-name">Relationships and portals</span><span class="badge partial">Partial</span></div><p>Related fields and portals in sort and filter order. <span class="gap">No editing related records in portals yet.</span></p></div>
-      <div class="area"><div class="area-top"><span class="area-name">Containers</span><span class="badge partial">Partial</span></div><p>Storage, upload, server thumbnails, Insert Picture/File. <span class="gap">The desktop doesn't display them yet.</span></p></div>
-      <div class="area"><div class="area-top"><span class="area-name">Scripts and triggers</span><span class="badge partial">Partial</span></div><p>About 130 of 210 desktop steps. <span class="gap">No Send Mail, plug-ins, accounts or AI steps.</span></p></div>
-      <div class="area"><div class="area-top"><span class="area-name">Import and export</span><span class="badge partial">Partial</span></div><p>CSV and Excel, Save Records as Excel, Insert from URL. <span class="gap">No ODBC, XSLT or container export.</span></p></div>
+      <div class="area"><div class="area-top"><span class="area-name">Hosted files</span><span class="badge working">Working</span></div><p>Connect, open and log in to FileMaker Server and OpenMaker Server over mutual TLS; reconnect after a lost connection. <span class="gap">Reconnecting is manual and loses the session's locks and script state.</span></p></div>
+      <div class="area"><div class="area-top"><span class="area-name">Calculations</span><span class="badge working">Working</span></div><p>Decimal arithmetic and the function library, matched against FileMaker Server. <span class="gap">20 functions missing (AI, location, Furigana).</span></p></div>
+      <div class="area"><div class="area-top"><span class="area-name">Local .fmp12 files</span><span class="badge partial">Partial</span></div><p>Open, edit and save, with the file's own accounts and privilege sets. <span class="gap">No encrypted files, Save a Copy or Recover; read-only on Windows.</span></p></div>
+      <div class="area"><div class="area-top"><span class="area-name">Layout rendering</span><span class="badge partial">Partial</span></div><p>Themes, styled text, portals, panels, popovers, conditional formatting, container pictures. <span class="gap">Table view lacks the layout's columns, sub-summaries, header and footer.</span></p></div>
+      <div class="area"><div class="area-top"><span class="area-name">Records and editing</span><span class="badge partial">Partial</span></div><p>Create, edit, duplicate, delete, in portal rows too; save-conflict recovery. <span class="gap">Some rules and lookups still make a table read-only.</span></p></div>
+      <div class="area"><div class="area-top"><span class="area-name">Find, sort, found sets</span><span class="badge partial">Partial</span></div><p>Finds, sorts and joins through query programs; Quick Find. <span class="gap">No sorting by a related field; non-English index keys.</span></p></div>
+      <div class="area"><div class="area-top"><span class="area-name">Relationships and portals</span><span class="badge partial">Partial</span></div><p>Related fields and portals in sort and filter order; related records edited and created in portal rows. <span class="gap">Some portal row buttons take no clicks.</span></p></div>
+      <div class="area"><div class="area-top"><span class="area-name">Containers</span><span class="badge partial">Partial</span></div><p>Storage, upload, server thumbnails, Insert Picture/File; Browse draws pictures and PDFs. <span class="gap">No Insert PDF or Audio/Video, and no file references.</span></p></div>
+      <div class="area"><div class="area-top"><span class="area-name">Scripts and triggers</span><span class="badge partial">Partial</span></div><p>129 of 210 desktop steps, including every step the starter solutions use. <span class="gap">No Send Mail, plug-ins, accounts or AI steps.</span></p></div>
+      <div class="area"><div class="area-top"><span class="area-name">Import and export</span><span class="badge partial">Partial</span></div><p>CSV and Excel, Save Records as Excel, Insert from URL. <span class="gap">No ODBC, XSLT, or import from FileMaker files.</span></p></div>
       <div class="area"><div class="area-top"><span class="area-name">Preview, print, PDF</span><span class="badge partial">Partial</span></div><p>One-column reports with summaries and sliding. <span class="gap">Multi-column reports; Windows printing.</span></p></div>
-      <div class="area"><div class="area-top"><span class="area-name">Web viewers</span><span class="badge partial">Partial</span></div><p>WebKitGTK with the JavaScript script bridge. <span class="gap">Linux/X11 and Browse Form view only.</span></p></div>
-      <div class="area"><div class="area-top"><span class="area-name">Application chrome</span><span class="badge partial">Partial</span></div><p>Menus, status toolbar, layout bar, the four modes, windows, cards and dialogs.</p></div>
+      <div class="area"><div class="area-top"><span class="area-name">Web viewers</span><span class="badge partial">Partial</span></div><p>WebKitGTK with the JavaScript script bridge, in Form and List view. <span class="gap">Linux only; macOS and Windows show a note.</span></p></div>
+      <div class="area"><div class="area-top"><span class="area-name">Application chrome</span><span class="badge partial">Partial</span></div><p>Menus, status toolbar, layout bar, the four modes, windows, cards and dialogs. <span class="gap">Data-entry and Format commands disabled in Browse.</span></p></div>
+      <div class="area"><div class="area-top"><span class="area-name">Developer tools</span><span class="badge partial">Partial</span></div><p>Layout mode, Manage Layouts, Script Workspace, Manage Database. <span class="gap">Value Lists and Security read-only; no Themes or Custom Functions.</span></p></div>
+      <div class="area"><div class="area-top"><span class="area-name">Accounts and privileges</span><span class="badge partial">Partial</span></div><p>Each file's own accounts, locally and on OpenMaker Server, with privilege sets enforced. <span class="gap">OpenMaker Server refuses custom sets; accounts can't be edited.</span></p></div>
       <div class="area"><div class="area-top"><span class="area-name">OpenMaker Server</span><span class="badge partial">Partial</span></div><p>Hosts FileMaker Pro 26; schedules, backups, Admin Console and Admin API. <span class="gap">Rewrites the whole file per change.</span></p></div>
-      <div class="area"><div class="area-top"><span class="area-name">Platforms</span><span class="badge partial">Partial</span></div><p>Linux (Ubuntu) first; the crates are portable. <span class="gap">No packages yet.</span></p></div>
-      <div class="area"><div class="area-top"><span class="area-name">Developer tools</span><span class="badge early">Early</span></div><p>Layout mode, Manage Layouts, Script Workspace, Manage Database. <span class="gap">Security, Value Lists, Themes not built.</span></p></div>
-      <div class="area"><div class="area-top"><span class="area-name">Accounts and privileges</span><span class="badge early">Early</span></div><p>Local files check their own accounts and passwords. <span class="gap">Privilege sets not enforced.</span></p></div>
-      <div class="area"><div class="area-top"><span class="area-name">Agent authoring</span><span class="badge early">Early</span></div><p>Scripts, fields, layouts and objects on OpenMaker Server. <span class="gap">FileMaker Server takes no design change.</span></p></div>
+      <div class="area"><div class="area-top"><span class="area-name">Platforms</span><span class="badge partial">Partial</span></div><p>Linux (Ubuntu) first; the crates are portable. <span class="gap">Packages only for Ubuntu 24.04 on amd64; no releases yet.</span></p></div>
+      <div class="area"><div class="area-top"><span class="area-name">Native MBS capabilities</span><span class="badge early">Early</span></div><p>A clean-room subset of 49 MBS commands: idle scripts, dialogs, files and PDFs. <span class="gap">The full MBS feature set is a longer-term goal.</span></p></div>
+      <div class="area"><div class="area-top"><span class="area-name">Agent authoring</span><span class="badge early">Early</span></div><p>Inspects solutions; edits script steps, fields, layouts and objects on OpenMaker Server. <span class="gap">No edits on FileMaker Server or local files.</span></p></div>
     </div>
 
     <div class="gate">
       <div>
         <span class="eyebrow">The alpha gate</span>
         <h3>What alpha means.</h3>
-        <p>People who use FileMaker can open their local and hosted solutions on Linux and do everyday work with nothing lost. FileMaker&nbsp;Pro's starter solutions are the first test.</p>
+        <p>People who use FileMaker can open their local and hosted solutions on Linux and do everyday work with nothing lost, and developers can build most ordinary solutions. FileMaker&nbsp;Pro's starter solutions and files hosted by FileMaker&nbsp;Server are the first test.</p>
       </div>
       <ol>
-        <li><span><strong>Open</strong> hosted and local files with their own accounts and privilege sets.</span></li>
-        <li><span><strong>Browse</strong> every layout in Form, List and Table view, containers included.</span></li>
-        <li><span><strong>Find and sort:</strong> find, omit, constrain, extend, Quick Find, Show All.</span></li>
-        <li><span><strong>Edit</strong> records, related records in portals included.</span></li>
-        <li><span><strong>Script:</strong> scripts, buttons and triggers run without error&nbsp;3.</span></li>
-        <li><span><strong>Output:</strong> preview, print and PDF reports; CSV and Excel.</span></li>
-        <li><span><strong>Build</strong> tables, fields, layouts and scripts, by hand or with an agent.</span></li>
-        <li><span><strong>Trust:</strong> no crash or data loss; every file passes FileMaker's consistency check.</span></li>
+        <li><span><strong>Open</strong> hosted and local files with their own accounts, privilege sets enforced.<span class="now">Now: all six starters open locally and on OpenMaker&nbsp;Server; on FileMaker&nbsp;Server they are not measured yet, nor are hosted privilege sets.</span></span></li>
+        <li><span><strong>Browse</strong> every starter layout as FileMaker&nbsp;Pro shows it, in Form, List and Table view, containers included.<span class="now">Now: 503 of 504 layout objects are drawn; the look is compared with FileMaker&nbsp;Pro by screenshots only.</span></span></li>
+        <li><span><strong>Find and sort:</strong> find, omit, constrain, extend, Quick Find, sort, Show All.<span class="now">Now: the starters' find and sort tests pass.</span></span></li>
+        <li><span><strong>Edit:</strong> create, edit, duplicate and delete records, related records in portals included, with no layout read-only.<span class="now">Now: every starter table is writable and every changeable field object editable.</span></span></li>
+        <li><span><strong>Script:</strong> scripts, buttons and triggers run without error&nbsp;3.<span class="now">Now: every step the starters use has an implementation; the scripts are not yet run end to end.</span></span></li>
+        <li><span><strong>Output:</strong> preview, print and save reports as PDF; import and export CSV and Excel.<span class="now">Now: every starter report layout is accepted, and the CSV and Excel steps pass; output is not compared with FileMaker&nbsp;Pro's.</span></span></li>
+        <li><span><strong>Build</strong> tables, fields, layouts and scripts, by hand or with an agent, and use the result in FileMaker&nbsp;Pro.<span class="now">Now: the developer tools' build steps pass on every starter; om-author does 14 of 23, on OpenMaker&nbsp;Server only.</span></span></li>
+        <li><span><strong>Trust:</strong> no crash or data loss; every file OpenMaker writes passes FileMaker's consistency check and opens in FileMaker&nbsp;Pro.<span class="now">Now: records written in every starter table survive reopening; the written files passed the check and opened in FileMaker&nbsp;Pro at an earlier commit.</span></span></li>
       </ol>
     </div>
   </div>
@@ -701,7 +706,7 @@ section{border-top:1px solid var(--border);padding:88px 0;position:relative}
     </div>
     <div class="facts">
       <div class="fact"><b>27</b><span>specifications of FileMaker</span></div>
-      <div class="fact"><b>21</b><span>catalogs and test-vector sets</span></div>
+      <div class="fact"><b>20</b><span>catalogs and test-vector sets</span></div>
       <div class="fact"><b>23</b><span>Rust crates</span></div>
       <div class="fact"><b>0</b><span>uses of <code>unsafe</code></span></div>
     </div>

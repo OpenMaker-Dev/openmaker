@@ -391,7 +391,7 @@
       "previous_status": "Partial",
       "status": "Partial",
       "scope": "Layouts of another file's tables support Browse, edits, new, duplicate and delete records, finds and sorts, Go to Related Record into the other file, and script transactions that prepare every file before any data goes ([limits](record-writes.md#limits)).",
-      "remaining": "Imports, globals, containers and repetitions are refused on these layouts [#43](https://github.com/OpenMaker-Dev/openmaker/issues/43), and so is Delete Record inside a transaction [#312](https://github.com/OpenMaker-Dev/openmaker/issues/312). Each file commits on its own, so a commit is not all or none once the first has gone.",
+      "remaining": "Imports, global and repeating fields, the layout's related records and duplicating a record that holds a container are refused on these layouts [#43](https://github.com/OpenMaker-Dev/openmaker/issues/43), and so is Delete Record inside a transaction [#312](https://github.com/OpenMaker-Dev/openmaker/issues/312). Each file commits on its own, so a connection lost, or a host refusing a later file, after an earlier file's commit leaves that file committed.",
       "issues": [
         43,
         312
@@ -485,11 +485,11 @@
       "previous_status": "Partial",
       "status": "Partial",
       "scope": "Get functions answer the owning file's privileges, account facts and the desktop's User Name setting, which is modeled on FileMaker Pro 26's ([Settings](desktop-client.md#settings), [privilege sets](desktop-client.md#privilege-sets)).",
-      "remaining": "Hosted files answer AccountType and password days empty [#3](https://github.com/OpenMaker-Dev/openmaker/issues/3); LayoutAccess and RecordAccess ignore layout entries and per-table rules [#182](https://github.com/OpenMaker-Dev/openmaker/issues/182); ActiveFieldName, ModifiedFields and SortState answer as if nothing were active [#33](https://github.com/OpenMaker-Dev/openmaker/issues/33).",
+      "remaining": "Hosted files answer AccountType and password days empty [#364](https://github.com/OpenMaker-Dev/openmaker/issues/364); LayoutAccess and RecordAccess ignore layout entries and per-table rules [#182](https://github.com/OpenMaker-Dev/openmaker/issues/182); ActiveFieldName, ModifiedFields and SortState answer as if nothing were active [#33](https://github.com/OpenMaker-Dev/openmaker/issues/33).",
       "issues": [
-        3,
         33,
-        182
+        182,
+        364
       ],
       "docs": [
         "desktop-client.md#settings",

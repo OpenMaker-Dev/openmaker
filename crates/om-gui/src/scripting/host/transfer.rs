@@ -27,6 +27,7 @@
 //! at the end).
 
 use std::collections::{BTreeMap, HashMap};
+use std::io::Read;
 use std::path::PathBuf;
 
 use om_data::calc::eval::{CalcHost, Context, FieldId};
@@ -423,7 +424,15 @@ impl WorkerHost<'_> {
         }
         let documents = self.s.file.data_files.folders.documents.clone();
         let path = files::existing(&paths, &documents, false)?;
-        let bytes = std::fs::read(&path).map_err(|_| ErrorCode::FILE_MISSING)?;
+        // One byte past the limit, so that the import refuses a larger
+        // file without it being read whole.
+        let mut bytes = Vec::new();
+        std::fs::File::open(&path)
+            .and_then(|f| {
+                f.take(import::limit::SOURCE_BYTES as u64 + 1)
+                    .read_to_end(&mut bytes)
+            })
+            .map_err(|_| ErrorCode::FILE_MISSING)?;
         if call.with_dialog || choose_source || options.map.is_empty() {
             let probe = ImportRequest {
                 options: options.clone(),
