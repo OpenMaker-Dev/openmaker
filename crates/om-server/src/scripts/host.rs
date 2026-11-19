@@ -3044,10 +3044,12 @@ impl ScriptHost for ServerHost {
         self.refresh_schema();
     }
 
-    /// An account with [Full Access] may run every script; any other may
-    /// run only scripts set to run with full access privileges, whose
-    /// steps then have full access (script-runtime.md 2.2, 9.1). The
-    /// script privileges of other privilege sets are not decoded.
+    /// An account in a verified built-in set may run every script (its
+    /// scripts modifiable or executable only, session-identity.md 2.7);
+    /// one in a custom set ([`Privileges::Unknown`]) only scripts set to
+    /// run with full access privileges, whose steps then have full access
+    /// (script-runtime.md 2.2, 9.1): a custom set's script privileges are
+    /// not read here.
     fn script_access(&mut self, file: FileId, script: u64) -> ScriptAccess {
         ScriptAccess {
             executable: self.privileges.runs_scripts(),
