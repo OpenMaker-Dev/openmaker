@@ -593,9 +593,12 @@ impl NativeProvider {
     }
 
     /// The records the open transaction holds as new ones
-    /// ([`Self::transaction_new`]), as (base table, record id).
+    /// ([`Self::transaction_new`]), and those the related files hold new
+    /// for it on layouts of their tables (`OwnerTransaction::held_new`),
+    /// as (table, record id).
     pub(crate) fn held_new_records(&self) -> Vec<(u64, i64)> {
-        self.transaction
+        let own = self
+            .transaction
             .iter()
             .flat_map(|t| t.held.iter())
             .filter(|(_, held)| {
@@ -608,7 +611,17 @@ impl NativeProvider {
                         }
                 )
             })
-            .filter_map(|(&(table, record), _)| Some((table, i64::try_from(record).ok()?)))
+            .map(|(&key, _)| key);
+        let routed = self
+            .transaction
+            .is_some()
+            .then(|| self.owner_transaction.held_new())
+            .into_iter()
+            .flatten();
+        own.chain(routed)
+            .collect::<BTreeSet<(u64, u64)>>()
+            .into_iter()
+            .filter_map(|(table, record)| Some((table, i64::try_from(record).ok()?)))
             .collect()
     }
 
