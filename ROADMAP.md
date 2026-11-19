@@ -56,7 +56,7 @@ not released; the blocked row waits for it.
 | Steps and functions | Steps 249 Replace Field Contents by Name and 250 Set Variable by Name | Unknown step ids, refused with error 4 | [#349](https://github.com/OpenMaker-Dev/openmaker/issues/349) |
 | | GetToolDefinitions with custom function descriptions, Get ( SortOrder ), `pluginpath` in Get ( InstalledFMPluginsAsJSON ), error 120 | The compiled-in catalogs are 26.0.3's: the new names do not compile, stored calls have no name, descriptions are not read; `pluginpath` is absent | [#338](https://github.com/OpenMaker-Dev/openmaker/issues/338) [#350](https://github.com/OpenMaker-Dev/openmaker/issues/350) [#351](https://github.com/OpenMaker-Dev/openmaker/issues/351) |
 | Layouts and Browse | Calculated SVG button icons, a portal's new-record row at the top, an indicator for an edit box's clipped contents | Not drawn: no icon, the new-record row stays last, no indicator | [#342](https://github.com/OpenMaker-Dev/openmaker/issues/342) [#343](https://github.com/OpenMaker-Dev/openmaker/issues/343) [#344](https://github.com/OpenMaker-Dev/openmaker/issues/344) |
-| | A checkbox set shown as one unlabelled checkbox | Drawn as a labelled checkbox set, so clearing it stores different data than FileMaker | [#345](https://github.com/OpenMaker-Dev/openmaker/issues/345) |
+| | A checkbox set shown as one unlabelled checkbox | Drawn as a labelled checkbox set; with two or more list values, clearing the first checkbox removes its value instead of storing the second | [#345](https://github.com/OpenMaker-Dev/openmaker/issues/345) |
 | | Calculated value lists, as plain values or JSON | Not supported where a list is used | [#44](https://github.com/OpenMaker-Dev/openmaker/issues/44) |
 | | Layout Setup can turn off the "field isn't modifiable" and "no records" alerts | Always shown; where the option is stored is unknown | [#353](https://github.com/OpenMaker-Dev/openmaker/issues/353) |
 | Script and transfer options | Export Records' field-names row for CSV and Excel, a new byte in the stored order | Steps saved by 26.1 fail, their order is read only in the Script Workspace, and CSV has no header row | [#347](https://github.com/OpenMaker-Dev/openmaker/issues/347) |
@@ -66,7 +66,7 @@ not released; the blocked row waits for it.
 | Containers | AVIF images | Not inserted or drawn as pictures | [#359](https://github.com/OpenMaker-Dev/openmaker/issues/359) |
 | macOS chrome | The toolbar in the Liquid Glass style | 26.0's look | [#354](https://github.com/OpenMaker-Dev/openmaker/issues/354) |
 | Server and protocol (blocked) | Standby servers with automatic switchover, a WebDirect keyboard accessibility setting, hosts that may require client certificates | Missing; no client certificate is presented or asked for | [#360](https://github.com/OpenMaker-Dev/openmaker/issues/360) [#361](https://github.com/OpenMaker-Dev/openmaker/issues/361) [#362](https://github.com/OpenMaker-Dev/openmaker/issues/362) |
-| File format, protocol | An unannounced agent interface marks files, and hosts can refuse its connections | Unknown to OpenMaker; what FileMaker Server 26.1.1 does with it is unknown too | [#363](https://github.com/OpenMaker-Dev/openmaker/issues/363) |
+| File format, protocol | Binaries contain an unannounced agent interface, a file marker and a host refusal switch; whether the interface is enabled and when files are marked are unknown | Unknown to OpenMaker; what FileMaker Server 26.1.1 does with it is unknown too | [#363](https://github.com/OpenMaker-Dev/openmaker/issues/363) |
 
 ## Alpha gate
 
