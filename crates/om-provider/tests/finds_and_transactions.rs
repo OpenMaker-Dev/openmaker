@@ -3623,7 +3623,9 @@ fn typing_into_a_validated_global_checks_its_entry_rules() {
                 );
                 // Validated by calculation: its formula, so the table's other
                 // fields are planned and only the global is left out.
-                if validation & 0x1 != 0 {
+                if validation & 0x1 == 0 {
+                    fixture::set_field_repetitions(root, TABLE, SETTING, 2);
+                } else {
                     let mut names = fixture::names();
                     names.add_field(TABLE, SETTING, "Setting");
                     let (table, setting) = ((TABLE, OCCURRENCE), SETTING);
@@ -3674,6 +3676,17 @@ fn typing_into_a_validated_global_checks_its_entry_rules() {
                 .update_record(tasks, 1, values(&[("Setting", "7")]))
                 .is_ok());
             assert_eq!(global(&mut provider), "7");
+            // Not empty holds while another repetition has a value, as at a
+            // record's commit.
+            let second = |provider: &mut NativeProvider, text: &str| {
+                provider
+                    .set_typed_global(TABLE, SETTING, 2, text)
+                    .map_err(|error| error.code)
+            };
+            assert_eq!(second(&mut provider, ""), Ok(()));
+            assert_eq!(second(&mut provider, "3"), Ok(()));
+            assert_eq!(typed(&mut provider, ""), Ok(()));
+            assert_eq!(second(&mut provider, ""), Err(Some(509)));
         } else {
             assert_eq!(typed(&mut provider, "12"), Err(Some(201)));
             assert_eq!(global(&mut provider), "");

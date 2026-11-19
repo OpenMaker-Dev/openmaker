@@ -1872,10 +1872,43 @@ impl NativeProvider {
         let cell = om_data::rules::cell_of(field, repetition)
             .ok_or_else(|| DataError::with_code(201, "The repetition is out of range."))?;
         let text = self.check_typed_entry(table, cell, text)?;
-        if text.is_empty() && options.is_some_and(|options| options.validation_not_empty()) {
+        // Not empty holds while any repetition has a value, as a record's
+        // commit checks it (`RecordPlan`, script oracle s17): the others as
+        // this session has them now.
+        let repetitions = options
+            .as_ref()
+            .map_or(1, |options| options.max_repetitions.max(1));
+        if text.is_empty()
+            && options.is_some_and(|options| options.validation_not_empty())
+            && !self.other_repetitions_hold_values(table, field, repetition, repetitions)?
+        {
             return Err(self.entry_refusal(table, field, om_data::rules::error::REQUIRED)?);
         }
         Ok(text)
+    }
+
+    /// Whether a repetition of global `field` other than `repetition`, of
+    /// its `repetitions`, holds a value in this session.
+    fn other_repetitions_hold_values(
+        &mut self,
+        table: u64,
+        field: u64,
+        repetition: u32,
+        repetitions: u16,
+    ) -> Result<bool, DataError> {
+        if repetitions <= 1 {
+            return Ok(false);
+        }
+        let data = self.calc_data(&[om_data::host::CalcNeed::Globals { table }])?;
+        Ok(data.globals.get(&table).is_some_and(|values| {
+            (1..=u32::from(repetitions))
+                .filter(|other| *other != repetition)
+                .any(|other| {
+                    values
+                        .get(field, other)
+                        .is_some_and(|value| !value.is_empty())
+                })
+        }))
     }
 
     /// Move the values of global fields out of a user's edit of the
