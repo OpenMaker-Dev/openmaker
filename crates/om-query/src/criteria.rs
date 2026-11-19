@@ -366,7 +366,8 @@ impl Number {
                     }
                 }
                 '.' if !in_fraction => in_fraction = true,
-                '-' if !digits => negative = true,
+                // A minus sign, ASCII or U+2212, as a stored number reads it.
+                '-' | '\u{2212}' if !digits => negative = true,
                 // An exponent ends the digits FileMaker reads.
                 'e' | 'E' if digits => break,
                 _ => {}
@@ -968,10 +969,17 @@ fn phrase_view(form: TextKeys, value: &str) -> PhraseView {
         .collect();
     let mut chars = Vec::new();
     let mut inside = Vec::new();
+    // The spans are in order: one cursor walks them with the characters.
+    let mut span = 0;
     for (offset, c) in value.char_indices() {
+        while spans.get(span).is_some_and(|&(_, end)| end <= offset) {
+            span += 1;
+        }
         let first = chars.len();
         chars.extend(phrase_chars(form, std::iter::once(c)));
-        let in_word = spans.iter().any(|&(s, e)| s < offset && offset < e);
+        let in_word = spans
+            .get(span)
+            .is_some_and(|&(start, end)| start < offset && offset < end);
         // Between the characters one character lowers to, inside it.
         inside.extend((first..chars.len()).map(|i| in_word || i > first));
     }

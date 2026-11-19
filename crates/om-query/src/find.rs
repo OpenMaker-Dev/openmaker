@@ -268,6 +268,20 @@ fn literal_prefix(pattern: &[Unit]) -> Option<Vec<u8>> {
     (key.len() > 1).then_some(key)
 }
 
+/// The smallest key above every key that starts with `key`: `key` with its
+/// last byte below `ff` raised by one and what follows dropped; empty (an
+/// open end) when every byte is `ff`.
+fn successor(key: &[u8]) -> Vec<u8> {
+    let mut end = key.to_vec();
+    while end.last() == Some(&0xff) {
+        end.pop();
+    }
+    if let Some(last) = end.last_mut() {
+        *last += 1;
+    }
+    end
+}
+
 /// The finders of a criterion of `field` in `table` (6.4).
 ///
 /// An index holds the first [`om_collate::INDEX_KEY_LIMIT`] bytes of a key
@@ -314,9 +328,14 @@ fn keyed_plan(
     };
     let prefix_range = |scope, key: &[u8]| {
         let key = held(key);
-        let mut end = key.clone();
-        end.extend(PREFIX_END);
-        // `end` is past every key that starts with `key`, not a key.
+        // `end` is past every key that starts with `key`, not a key: `ff fe`
+        // after weights (no weight is that high), but a Unicode raw key may
+        // hold the code unit `ff ff`, so there the key's successor.
+        let end = if criterion.text == TextKeys::Raw {
+            successor(&key)
+        } else {
+            [key.as_slice(), &PREFIX_END].concat()
+        };
         keep(finder(
             kind::INDEX_RANGE,
             scope,
@@ -1384,6 +1403,11 @@ mod tests {
         assert!(below[0]
             .bytes
             .ends_with(&[key_operand(&[0x01]), key_operand(&seven)].concat()));
+        // U+2212 is a minus sign, as in a stored number (7.3).
+        let minus_two = om_collate::number_key("-2").unwrap();
+        assert!(number("\u{2212}2")[0]
+            .bytes
+            .ends_with(&[key_operand(&minus_two), vec![0]].concat()));
         let between = number("1...7");
         assert_eq!(between[0].bytes[2], INCLUDE_BEGIN | INCLUDE_END);
         // The finder FileMaker Server's engine built for `12:30 PM` on a
@@ -1470,6 +1494,22 @@ mod tests {
             assert!(!plan.exact, "{text}");
             assert_eq!(plan.finders.len(), finders, "{text}");
         }
+        // A Unicode raw prefix ends at its successor: a key may hold the
+        // code unit `ff ff`, which `ff fe` would leave out.
+        assert_eq!(successor(&[0x01, 0x00, 0x41]), [0x01, 0x00, 0x42]);
+        assert_eq!(successor(&[0x01, 0x00, 0xff, 0xff]), [0x01, 0x01]);
+        assert!(successor(&[0xff]).is_empty());
+        let raw_prefix =
+            Criterion::parse("A", DataType::Text, &context.with_text_keys(TextKeys::Raw))
+                .unwrap()
+                .unwrap();
+        assert!(plan(TABLE, 1, &raw_prefix).finders[0].bytes.ends_with(
+            &[
+                key_operand(&[0x01, 0x00, 0x41]),
+                key_operand(&[0x01, 0x00, 0x42])
+            ]
+            .concat()
+        ));
         // `~` on Unicode raw: no index narrows it, every record is
         // evaluated, and `ガッコウ` matches `~かつこう`.
         let raw = context.with_text_keys(TextKeys::Raw);
