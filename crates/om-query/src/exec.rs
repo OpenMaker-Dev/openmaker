@@ -467,6 +467,17 @@ mod kind {
     pub const MATCH: u8 = 8;
 }
 
+/// The memory a Match pattern takes per byte of its source: a character's
+/// collation key and its place (at most 48 bytes), rounded up. Charged to
+/// the program's work before the pattern is built, as it is held while the
+/// request runs.
+const MATCH_BYTES_PER_BYTE: usize = 64;
+
+/// The longest value a Match finder tests, in bytes of text: matching one
+/// takes about [`MATCH_BYTES_PER_BYTE`] times its length while it runs
+/// (OpenMaker's limit; FileMaker Server's is unmeasured).
+const MAX_MATCH_VALUE: usize = 1 << 20;
+
 /// Finder option bit 7, IsOptional (spec 6.2): the finder only narrows the
 /// records an exact finder after it tests, so a host may leave it out.
 const IS_OPTIONAL: u8 = 1 << 7;
@@ -602,7 +613,7 @@ impl Finder {
         let repetitions = indexes
             .field(table, &self.field)?
             .and_then(|f| f.decoded_options())
-            .map_or(1, |o| o.max_repetitions.clamp(1, 255));
+            .map_or(1, |o| o.max_repetitions.max(1));
         let cells: Vec<Vec<u8>> = std::iter::once(self.field.clone())
             .chain(be_uint(&self.field).into_iter().flat_map(|id| {
                 (2..=u64::from(repetitions))
@@ -619,10 +630,16 @@ impl Finder {
                 let Some(value) = indexes.stored_text(work, table, cell, id)? else {
                     continue;
                 };
-                // Matching costs up to the pattern's length per character.
+                // Matching takes up to the pattern's length in steps per
+                // character, charged before it starts (an empty value counts
+                // too). The characters' keys live only while one value is
+                // matched: a value past `MAX_MATCH_VALUE` is refused.
+                if value.len() > MAX_MATCH_VALUE {
+                    return Err(QueryError::Limit("match value"));
+                }
                 let steps = value.len().saturating_mul(pattern.len().max(1));
                 work.spend(Size {
-                    nodes: 0,
+                    nodes: 1,
                     bytes: steps,
                 })?;
                 matched = if self.scope == WORD_SCOPE {
@@ -779,17 +796,28 @@ fn simple_find(
         program.set_spot(&dest, Vec::new())?;
         return Err(QueryError::Missing("table"));
     }
-    let finders: Vec<Finder> = program
+    let leaves: Vec<Vec<u8>> = program
         .spot(&src)?
         .map(|spot| {
             spot.children
                 .iter()
-                .map(|f| Finder::parse(f.value.as_deref().unwrap_or_default()))
-                .collect::<Result<_, _>>()
+                .map(|f| f.value.clone().unwrap_or_default())
+                .collect()
         })
-        .transpose()?
         .unwrap_or_default();
     let work = program.work();
+    let mut finders = Vec::with_capacity(leaves.len());
+    for bytes in &leaves {
+        // A Match finder's pattern holds a collation key per operand
+        // character: its memory is charged before it is built.
+        if bytes.first() == Some(&kind::MATCH) {
+            work.spend(Size {
+                nodes: 0,
+                bytes: bytes.len().saturating_mul(MATCH_BYTES_PER_BYTE),
+            })?;
+        }
+        finders.push(Finder::parse(bytes)?);
+    }
     let all = indexes.all_records(&table)?;
     read_list(work, all)?;
     let mut found = all.clone();
@@ -804,13 +832,6 @@ fn simple_find(
     // Every finder runs, even once nothing is left: a finder may have its
     // index built on demand for later programs (spec 7.1), or be one this
     // engine refuses.
-    // A Match finder's pattern, held while the request runs, counts.
-    for pattern in finders.iter().filter_map(|f| f.pattern.as_ref()) {
-        work.spend(Size {
-            nodes: pattern.len(),
-            bytes: 0,
-        })?;
-    }
     // FileMaker Pro marks a Match finder's pre-filters IsOptional (6.4): an
     // IndexRange or IndexScan on the literal. They are left out, so the
     // exact Match finder tests every record the other finders leave, also
