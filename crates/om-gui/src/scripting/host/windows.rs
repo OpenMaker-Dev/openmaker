@@ -34,6 +34,35 @@ use super::super::window::Window;
 use super::super::{Card, ScriptEvent, WindowStyle};
 use super::WorkerHost;
 
+/// What the window steps find a window by when they take one by name
+/// (Claris, `select-window.html`: "first searches for a window with a
+/// matching name. If none are found, it then searches for a window with a
+/// matching UUID"; script-runtime.md 9.2).
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(super) enum WindowKey {
+    /// The name as given, case included: a window named exactly so wins
+    /// over one whose name differs only in case, as before case was
+    /// folded (FileMaker's precedence there is unmeasured).
+    ExactName,
+    /// The name without case.
+    Name,
+    /// `Get ( WindowUUID )`.
+    Uuid,
+}
+
+impl WindowKey {
+    /// The keys in the order a search tries them.
+    pub(super) const ORDER: [WindowKey; 3] =
+        [WindowKey::ExactName, WindowKey::Name, WindowKey::Uuid];
+}
+
+/// Whether a window's name or UUID is `wanted`: "Window name or UUID
+/// selection is not case sensitive" (Claris). Case is folded as Unicode
+/// lowercase; how FileMaker folds letters beyond ASCII is unmeasured.
+pub(super) fn same_window_key(key: &str, wanted: &str) -> bool {
+    key == wanted || key.to_lowercase() == wanted.to_lowercase()
+}
+
 impl WorkerHost<'_> {
     /// The provider uses the current window's found sets.
     pub(crate) fn use_current_window(&mut self) {
@@ -70,17 +99,31 @@ impl WorkerHost<'_> {
             .collect()
     }
 
-    /// The window named `name`, front to back: `None` the current one,
-    /// else its place among the others; 112 when none has the name.
-    fn named(&self, name: &str) -> Result<Option<usize>, HostError> {
-        if self.name_of(&self.s.file.window) == name {
-            return Ok(None);
+    /// The window `name` names, front to back: `None` the current one,
+    /// else its place among the others; 112 when none has the name. By
+    /// its name, else by its `Get ( WindowUUID )` ([`WindowKey`]).
+    pub(super) fn named(&self, name: &str) -> Result<Option<usize>, HostError> {
+        WindowKey::ORDER
+            .into_iter()
+            .find_map(|key| self.window_by(key, name))
+            .ok_or(HostError::Error(ErrorCode::WINDOW_MISSING))
+    }
+
+    /// The window of this file whose `key` is `name`, front to back, as
+    /// [`Self::named`] answers.
+    pub(super) fn window_by(&self, key: WindowKey, name: &str) -> Option<Option<usize>> {
+        let matches = |window: &Window| match key {
+            WindowKey::ExactName => self.name_of(window) == name,
+            WindowKey::Name => same_window_key(&self.name_of(window), name),
+            WindowKey::Uuid => same_window_key(&window.state.uuid, name),
+        };
+        if matches(&self.s.file.window) {
+            return Some(None);
         }
         (0..self.s.file.others.len())
             .rev()
-            .find(|&i| self.name_of(&self.s.file.others[i]) == name)
+            .find(|&i| matches(&self.s.file.others[i]))
             .map(Some)
-            .ok_or(HostError::Error(ErrorCode::WINDOW_MISSING))
     }
 
     fn target(&self, target: &WindowTarget) -> Result<Option<usize>, HostError> {
@@ -207,16 +250,13 @@ impl WorkerHost<'_> {
     }
 
     /// While a dialog is open, Select Window selects only the current
-    /// window (Claris: "Can select only the current dialog window").
-    pub(super) fn check_dialog_selection(&self, target: &WindowTarget) -> HostResult {
-        if !self.dialog_open() {
-            return Ok(());
+    /// window (Claris: "Can select only the current dialog window"):
+    /// `current` says whether the window the step found is it.
+    pub(super) fn check_dialog_selection(&self, current: bool) -> HostResult {
+        if self.dialog_open() && !current {
+            return Err(ErrorCode::UNAVAILABLE.into());
         }
-        match target {
-            WindowTarget::Current => Ok(()),
-            WindowTarget::Named(name) if *name == self.name_of(&self.s.file.window) => Ok(()),
-            WindowTarget::Named(_) => Err(ErrorCode::UNAVAILABLE.into()),
-        }
+        Ok(())
     }
 
     /// New Window: a window named `name` (else after the current one)

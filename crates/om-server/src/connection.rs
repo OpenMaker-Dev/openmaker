@@ -2750,6 +2750,39 @@ fn container_member_editable(file: &OpenFile, path: &[Vec<u8>]) -> bool {
     }
 }
 
+/// Whether `file`'s session may store container data in the library op88
+/// names (`table`): a create or an edit of that table's records, which a
+/// container cell naming the data is; for the file's own library, which
+/// any table's records may hold, one of the two in every base table of
+/// the file, each by its own rules (the set's default counts only for a
+/// table without an entry). Data already stored raises that member's count
+/// instead, which op87 allows only to such an edit
+/// ([`container_member_editable`]). FileMaker Server's answer to an upload
+/// its set denies is unmeasured; it is refused as op88's other privilege
+/// refusals are. A request that names no table library is refused by the
+/// upload itself.
+fn container_library_writable(file: &OpenFile, table: &[Vec<u8>]) -> bool {
+    let Some(access) = set_access(file) else {
+        return false;
+    };
+    let actions = [RecordAction::Create, RecordAction::Edit];
+    match table {
+        [] => {
+            let tables: Vec<Vec<u8>> = file
+                .hosted
+                .read_store()
+                .catalog()
+                .tables
+                .iter()
+                .map(|t| om_hbam::slot::uint_segment(t.id))
+                .collect();
+            access.may_any_in_tables(tables.iter().map(Vec::as_slice), &actions)
+        }
+        [table] => actions.iter().any(|a| access.may(table, *a)),
+        _ => true,
+    }
+}
+
 /// The lock user for a transaction and the name other users see for it:
 /// "session name (account)" (write-path.md 4.2).
 fn lock_user(session: &Session, file: &OpenFile, txn: u32) -> (LockUser, String) {
@@ -3231,6 +3264,12 @@ fn upload_binary(
     };
     if !views_every_record(file) {
         info!("{peer}: refusing container data from an account with a view limit");
+        return Ok(failed(ACCESS_DENIED));
+    }
+    if !container_library_writable(file, &request.table) {
+        info!(
+            "{peer}: refusing container data for a table its privilege set does not let it write"
+        );
         return Ok(failed(ACCESS_DENIED));
     }
     let hosted = file.hosted.clone();
