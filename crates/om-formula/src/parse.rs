@@ -1872,14 +1872,14 @@ mod tests {
         let text = "GetToolDefinitions ( \"openai\" ; \"f\" ; \"g\" )";
         let compiled = compile(text, &ctx).unwrap();
         let polish = polish::encode(&compiled.expr);
-        // Prefix order (calc-encoding.md 1): the opcode and argument count,
-        // then each argument in turn.
+        // An `f9` function: its opcode and argument count, then the
+        // arguments last first (calc-encoding.md 5.1).
         let arg = |text: &str| polish::encode(&compile(text, &ctx).unwrap().expr);
         let want = [
             vec![0xf9, 0x12, 0x00, 0x03],
-            arg("\"openai\""),
-            arg("\"f\""),
             arg("\"g\""),
+            arg("\"f\""),
+            arg("\"openai\""),
         ]
         .concat();
         assert_eq!(polish, want);
