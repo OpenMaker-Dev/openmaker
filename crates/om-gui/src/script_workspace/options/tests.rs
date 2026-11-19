@@ -824,6 +824,40 @@ fn related_records_layout_starts_on_and_returns_to_the_current_layout() {
     }
 }
 
+/// FileMaker Pro 26.1.1's steps by name (script-steps.md 12.4, #349):
+/// Set Variable by Name's name is the calculation in slot 3, and Replace
+/// Field Contents by Name's field the calculation in slot 1 with
+/// `kFieldSpecByCalc`, beside Replace Field Contents' choice in the same
+/// slot; both read back as written.
+#[test]
+fn steps_by_name_edit_their_name_calculations() {
+    let mut options = StepOptions::new(stored(ScriptStep::new(250), 47), None);
+    for (label, typed) in [("Name", "\"$x\""), ("Value", "1")] {
+        if let Edit::Calculation { text, .. } = edit(&mut options, label) {
+            *text = typed.into();
+        }
+    }
+    let set = ok(&options);
+    assert!(set.calculation(3).is_some() && set.calculation(1).is_some());
+    assert_eq!(ok(&StepOptions::new(set.clone(), None)), set);
+
+    let mut options = StepOptions::new(stored(ScriptStep::new(249), 48), None);
+    if let Edit::Calculation { text, .. } = edit(&mut options, "Target field by name") {
+        *text = "\"People::Name\"".into();
+    }
+    if let Edit::Choice { value, .. } = edit(&mut options, "Replace with") {
+        *value = Some(3);
+    }
+    if let Edit::Calculation { text, .. } = edit(&mut options, "Calculated result") {
+        *text = "\"x\"".into();
+    }
+    let replace = ok(&options);
+    assert!(replace.calculation(1).is_some() && replace.calculation(0).is_some());
+    assert_eq!(replace.number(1), Some(3));
+    assert!(replace.has_flag(0x0800_0000));
+    assert_eq!(ok(&StepOptions::new(replace.clone(), None)), replace);
+}
+
 /// Replace Field Contents' "Replace with" (11.8): the choice at `[00 1,
 /// 03]`, serial numbers' initial value, increment and entry-options byte,
 /// and a calculated result, which needs its calculation.

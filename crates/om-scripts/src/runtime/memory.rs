@@ -880,17 +880,62 @@ impl Fields for MemoryScriptHost {
 
     fn set_field_by_name(&mut self, name: &str, value: Value) -> HostResult {
         self.call(format!("set_field_by_name {name}"));
+        let field = self.field_by_name(name)?;
+        self.set_value(field, value)
+    }
+
+    /// Every record of the found set, each made current in turn; the
+    /// active field is not modelled, so a field is needed.
+    fn replace_field_contents(
+        &mut self,
+        field: Option<FieldRef>,
+        with: &mut Replacement<'_>,
+        _with_dialog: bool,
+    ) -> HostResult {
+        let field = field.ok_or(HostError::Unsupported)?;
+        self.call(format!(
+            "replace_field_contents {}:{}",
+            field.occurrence, field.field
+        ));
+        let (count, current) = (self.window())
+            .map(|w| (w.found.len(), w.current))
+            .ok_or(HostError::Error(ErrorCode::RECORD_MISSING))?;
+        let contents = self.field_value_of(field)?;
+        let mut result = Ok(());
+        for i in 0..count {
+            if let Some(window) = self.window_mut() {
+                window.current = i;
+            }
+            let value = match with {
+                Replacement::CurrentContents => contents.clone(),
+                Replacement::Calculation(evaluate) => evaluate(self),
+                Replacement::Serial {
+                    initial, increment, ..
+                } => {
+                    let start: i64 = initial.trim().parse().unwrap_or(1);
+                    Value::text((start + *increment * i as i64).to_string())
+                }
+            };
+            result = self.set_value(field, value);
+            if result.is_err() {
+                break;
+            }
+        }
+        if let Some(window) = self.window_mut() {
+            window.current = current;
+        }
+        result
+    }
+
+    fn field_by_name(&mut self, name: &str) -> HostResult<FieldRef> {
         let (occurrence, field) = self
             .field_named(name)
             .ok_or(HostError::Error(ErrorCode::FIELD_MISSING))?;
-        self.set_value(
-            FieldRef {
-                occurrence,
-                field,
-                repetition: 1,
-            },
-            value,
-        )
+        Ok(FieldRef {
+            occurrence,
+            field,
+            repetition: 1,
+        })
     }
 
     fn field_value_of(&mut self, field: FieldRef) -> HostResult<Value> {

@@ -83,6 +83,9 @@ pub(crate) mod id {
     pub const EXIT_SCRIPT: u16 = 103;
     pub const ELSE_IF: u16 = 125;
     pub const SET_VARIABLE: u16 = 141;
+    /// FileMaker Pro 26.1.1's (script-steps.md 12.4).
+    pub const REPLACE_FIELD_CONTENTS_BY_NAME: u16 = 249;
+    pub const SET_VARIABLE_BY_NAME: u16 = 250;
     pub const PERFORM_SCRIPT_ON_SERVER: u16 = 164;
     pub const SET_LAYOUT_OBJECT_ANIMATION: u16 = 168;
     pub const SET_ERROR_LOGGING: u16 = 200;

@@ -3443,15 +3443,17 @@ impl FieldSteps for ServerHost {
     }
 
     fn set_field_by_name(&mut self, name: &str, value: Value) -> HostResult {
+        let field = self.field_by_name(name)?;
+        self.store_value(field, value)
+    }
+
+    fn field_by_name(&mut self, name: &str) -> HostResult<FieldRef> {
         let (occurrence, field) = self.field_named(name).ok_or(ErrorCode::FIELD_MISSING)?;
-        self.store_value(
-            FieldRef {
-                occurrence,
-                field,
-                repetition: 1,
-            },
-            value,
-        )
+        Ok(FieldRef {
+            occurrence,
+            field,
+            repetition: 1,
+        })
     }
 
     fn field_value_of(&mut self, field: FieldRef) -> HostResult<Value> {

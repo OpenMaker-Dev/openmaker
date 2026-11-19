@@ -427,11 +427,16 @@ Open items:
   - The desktop reads a whole import file before the size check.
 - Steps: the step catalog is FileMaker Pro 26.1.1's (valid ids below 251).
   Its new steps 249 Replace Field Contents by Name and 250 Set Variable by
-  Name have no parameter rows yet, are not offered in the Script Workspace
-  or as a button's single step, and fail with error 3 when a script holds
-  one ([#349](https://github.com/OpenMaker-Dev/openmaker/issues/349)); the
-  unnamed id 248 fails with error 3 too, as a valid id without a handler
-  [I] (FileMaker Server 26.0.x refuses it with error 4).
+  Name ([#349](https://github.com/OpenMaker-Dev/openmaker/issues/349)) are
+  stored as its binaries write them (script-steps.md 12.4), edited in the
+  Script Workspace, and run as Replace Field Contents and Set Variable do
+  with the field found as Set Field By Name finds its target and the
+  variable named by the calculation in slot 3. Their step text, the
+  errors for a name that finds nothing (102) or is not a variable's (5),
+  and the order the calculations are evaluated in are OpenMaker's
+  inference: no step saved or run by FileMaker Pro 26.1.1 has been
+  compared. The unnamed id 248 fails with error 3: 26.1.1's step table
+  gives it no client (FileMaker Server 26.0.x refuses it with error 4).
 - Scripts: desktop steps still missing include the account steps
   ([#83](https://github.com/OpenMaker-Dev/openmaker/issues/83)) and the PDF
   steps other than Save Records as PDF

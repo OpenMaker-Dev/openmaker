@@ -891,6 +891,12 @@ pub trait Fields {
     fn set_field_by_name(&mut self, _name: &str, _value: Value) -> HostResult {
         Err(HostError::Unsupported)
     }
+    /// The field a calculated name names, as Set Field By Name (147)
+    /// finds it: `Occurrence::Field`, or a field of the current layout's
+    /// occurrence (Replace Field Contents by Name, 249).
+    fn field_by_name(&mut self, _name: &str) -> HostResult<FieldRef> {
+        Err(HostError::Unsupported)
+    }
     /// The value of a field target (Show Custom Dialog's inputs).
     fn field_value_of(&mut self, _field: FieldRef) -> HostResult<Value> {
         Err(HostError::Unsupported)

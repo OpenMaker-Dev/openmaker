@@ -4692,11 +4692,17 @@ impl Fields for WorkerHost<'_> {
     }
 
     fn set_field_by_name(&mut self, name: &str, value: Value) -> HostResult {
-        let Some(schema) = self.schema().cloned() else {
+        if self.schema().is_none() {
             let field = name.rsplit_once("::").map_or(name, |(_, f)| f).to_owned();
             let text = self.text(&value);
             return self.write_named(&field, text);
-        };
+        }
+        let field = self.field_by_name(name)?;
+        self.write_field(field, &value)
+    }
+
+    fn field_by_name(&mut self, name: &str) -> HostResult<FieldRef> {
+        let schema = self.schema().cloned().ok_or(HostError::Unsupported)?;
         // `Occurrence::Field`, or a field of the layout's occurrence.
         let (occurrence, field) = match name.rsplit_once("::") {
             Some((occurrence, field)) => (
@@ -4729,14 +4735,11 @@ impl Fields for WorkerHost<'_> {
             .and_then(|t| t.fields.values().find(|f| f.name == field))
             .map(|f| f.id)
             .ok_or(HostError::Error(ErrorCode::FIELD_MISSING))?;
-        self.write_field(
-            FieldRef {
-                occurrence,
-                field: id,
-                repetition: 1,
-            },
-            &value,
-        )
+        Ok(FieldRef {
+            occurrence,
+            field: id,
+            repetition: 1,
+        })
     }
 
     fn field_value_of(&mut self, field: FieldRef) -> HostResult<Value> {
