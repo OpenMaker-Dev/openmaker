@@ -1672,7 +1672,15 @@ templates).
   `<<$name>>` and `<<$$name>>` with an optional `[n]`; the symbols
   `{{CurrentDate}}`, `{{CurrentTime}}`, `{{UserName}}`, `{{PageNumber}}`
   and `{{RecordNumber}}` show their `Get` selectors (Claris
-  documentation).
+  documentation). A text can hold a symbol as its selector's number
+  instead, 1000 + the selector's index (13, calc-functions.md 2): one
+  hosted solution's text, `Today is: {{1002}}`, holds CurrentDate (2) so
+  [O: that file's stored text; I: that it means CurrentDate]. OpenMaker
+  reads `{{1002}}`, `{{1029}}`, `{{1031}}`, `{{1015}}` and `{{1020}}` as
+  the five symbols, and `{{1125}}` as PageCount where page symbols are
+  checked; any other number stays as typed. Which files store numbers
+  rather than names (perhaps ones converted from older formats), and what
+  FileMaker Pro shows for them, is unmeasured.
 - **Unstored calculations with every reference empty [O-run].** "Do not
   evaluate if all referenced fields are empty" (option `0x20` clear, the
   default) applies to unstored calculations too: on FileMaker Server's

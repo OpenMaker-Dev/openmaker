@@ -113,14 +113,29 @@ pub fn script_parameter(
     Some(evaluate(host, formula, context).value)
 }
 
-/// The `{{symbol}}`s of layout text and the `Get` selector each shows.
-const SYMBOLS: [(&str, &str); 5] = [
-    ("CurrentDate", "Get ( CurrentDate )"),
-    ("CurrentTime", "Get ( CurrentTime )"),
-    ("UserName", "Get ( UserName )"),
-    ("PageNumber", "Get ( PageNumber )"),
-    ("RecordNumber", "Get ( RecordNumber )"),
+/// The `{{symbol}}`s of layout text, the number of the `Get` selector each
+/// shows (1000 + its index, calc-functions.md 2), which a text may hold in
+/// the name's place (`{{1002}}`, calc-values.md "Layout calculations"),
+/// and the selector.
+const SYMBOLS: [(&str, u16, &str); 5] = [
+    ("CurrentDate", 1002, "Get ( CurrentDate )"),
+    ("CurrentTime", 1029, "Get ( CurrentTime )"),
+    ("UserName", 1031, "Get ( UserName )"),
+    ("PageNumber", 1015, "Get ( PageNumber )"),
+    ("RecordNumber", 1020, "Get ( RecordNumber )"),
 ];
+
+/// The `Get` selector of symbol `{{inner}}`: named in any case, or by its
+/// selector's number. Another number is no symbol.
+fn symbol_selector(inner: &str) -> Option<&'static str> {
+    let number = Some(inner)
+        .filter(|inner| !inner.is_empty() && inner.bytes().all(|b| b.is_ascii_digit()))
+        .and_then(|inner| inner.parse::<u16>().ok());
+    SYMBOLS
+        .iter()
+        .find(|(name, op, _)| name.eq_ignore_ascii_case(inner) || number == Some(*op))
+        .map(|(_, _, get)| *get)
+}
 
 /// Layout text with its merge variables (`<<$$name>>`, `<<$name>>`, with
 /// an optional `[repetition]`) and `{{symbols}}` replaced by their values
@@ -150,10 +165,7 @@ pub fn merge_text(host: &mut dyn CalcHost, text: &str, context: &Context) -> Str
         let formula = if open == "<<" {
             is_variable_reference(inner).then(|| inner.to_owned())
         } else {
-            SYMBOLS
-                .iter()
-                .find(|(name, _)| name.eq_ignore_ascii_case(inner))
-                .map(|(_, get)| (*get).to_owned())
+            symbol_selector(inner).map(str::to_owned)
         };
         match formula {
             Some(formula) => {

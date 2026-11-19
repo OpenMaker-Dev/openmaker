@@ -766,10 +766,14 @@ pub fn layout_object_attribute(
     Value::text(text)
 }
 
-/// Whether layout text holds `{{PageNumber}}` or `{{PageCount}}`.
+/// Whether layout text holds `{{PageNumber}}` or `{{PageCount}}`, by name
+/// or by its selector's number (`{{1015}}`, `{{1125}}`; calc-values.md
+/// "Layout calculations").
 fn has_page_symbol(text: &str) -> bool {
     let lower = text.to_ascii_lowercase();
-    lower.contains("{{pagenumber}}") || lower.contains("{{pagecount}}")
+    ["{{pagenumber}}", "{{pagecount}}", "{{1015}}", "{{1125}}"]
+        .iter()
+        .any(|symbol| lower.contains(symbol))
 }
 
 /// A portal row's height: the portal's height over its rows; 0 outside a

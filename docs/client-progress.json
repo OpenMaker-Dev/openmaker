@@ -551,7 +551,7 @@
       "previous_status": "Partial",
       "status": "Partial",
       "scope": "Themes, styles, borders, merge text, data formats and pictures render, with per-field text insets; one text placement is recorded as matching FileMaker Pro ([Browse mode](desktop-client.md#browse-mode)).",
-      "remaining": "Fields in portal rows, related fields, containers and Find requests are not drawn in their In Focus state [#231](https://github.com/OpenMaker-Dev/openmaker/issues/231); stored numeric symbols such as {{1002}} draw literally [#295](https://github.com/OpenMaker-Dev/openmaker/issues/295). Precise font metrics, borders and placement need measured comparisons at several zoom levels.",
+      "remaining": "Fields in portal rows, related fields, containers and Find requests are not drawn in their In Focus state [#231](https://github.com/OpenMaker-Dev/openmaker/issues/231). Precise font metrics, borders and placement need measured comparisons at several zoom levels.",
       "issues": [
         231,
         295
