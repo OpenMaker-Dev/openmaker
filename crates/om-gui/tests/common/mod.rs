@@ -31,10 +31,18 @@ pub fn harness(provider: Box<dyn DataProvider>) -> App {
 /// A harness of `size`: a taller one shows a long Scripts menu whole (the
 /// menu's items past the screen's bottom are not drawn, nor reachable).
 pub fn harness_sized(provider: Box<dyn DataProvider>, size: egui::Vec2) -> App {
+    use_svg_worker();
     Harness::builder()
         .with_size(size)
         .renderer(renderer())
         .build_eframe(move |_cc| OpenMakerApp::new(provider))
+}
+
+/// Draw SVG pictures and icons with this package's worker, as the app
+/// draws them beside its executable (`om_gui::svg_loader`); without it
+/// they show egui's error mark.
+pub fn use_svg_worker() {
+    om_gui::report::svg_worker::set_default(env!("CARGO_BIN_EXE_om-gui-pdf-worker").into());
 }
 
 pub fn mock() -> App {
