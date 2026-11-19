@@ -1308,6 +1308,106 @@ fn local_login_account_facts_reach_a_script_and_layout_hide_calculation() {
     });
 }
 
+/// Relookup Field Contents [No dialog; Tasks::Name] copies every found
+/// record's lookup again (#87): Tasks::Note, looked up from Notes::Body
+/// through Tasks::Name = Notes::Task, holds a stale "old" in both tasks
+/// until the step, whose match field keeps its value.
+#[test]
+fn relookup_field_contents_copies_each_found_records_lookup_again() {
+    use om_data::field_options::{Lookup, NoMatch};
+    use om_hbam::slot::uint_segment;
+    use om_hbam::{serial, OwnedNode, RidList};
+    /// Tasks::Note, the lookup field.
+    const NOTE: u64 = 9;
+    let folder = Folder::new("relookup");
+    let mut names = fixture::names();
+    names.add_field(fixture::NOTES, fixture::TASK, "Task");
+    names.add_field(fixture::TABLE, NOTE, "Note");
+    let mut ctx = om_formula::Context::new(&names);
+    ctx.occurrence = Some(fixture::OCCURRENCE);
+    let report = "GetNthRecord ( Tasks::Note ; 1 ) & \",\" & GetNthRecord ( Tasks::Note ; 2 ) \
+                  & \"/\" & Get ( LastError ) & \"/\" & Tasks::Name";
+    let compiled = om_formula::compile(report, &ctx).unwrap();
+    let mut shown = show("\"\"");
+    shown.set_calculation(
+        1,
+        Some(&om_scripts::Calculation::new(
+            Some(om_formula::formatted::encode(&compiled.tokens)),
+            om_formula::polish::encode(&compiled.expr),
+        )),
+    );
+    let mut relookup = om_scripts::ScriptStep::new(40);
+    relookup.set_flag(om_scripts::flag::NO_INTERACT, true);
+    relookup.set_field_spec(
+        0,
+        Some(om_scripts::FieldSpec::new(
+            om_scripts::StoredKey::from_id(fixture::OCCURRENCE).unwrap(),
+            om_scripts::StoredKey::from_id(fixture::NAME).unwrap(),
+            0,
+        )),
+    );
+    let scripts = [fixture::script(1, "Relookup", vec![relookup, shown])];
+    let mut root = fixture::tree(&scripts, true);
+    fixture::add_local_accounts(&mut root);
+    add_name_field(&mut root);
+    let (table, task) = (fixture::TABLE, fixture::TASK);
+    fixture::add_field(&mut root, fixture::NOTES, task, "Task", 1, 1, 0, 0, 0);
+    // Option 0x400: a looked-up value (auto-entry.md, Lookups).
+    fixture::add_field(&mut root, table, NOTE, "Note", 1, 1, 0, 0x400, 0);
+    let lookup = Lookup {
+        from: fixture::OCCURRENCE,
+        to: fixture::NOTES_OCCURRENCE,
+        copied: fixture::BODY,
+        copy_empty: false,
+        no_match: NoMatch::DoNotCopy,
+    };
+    let (tasks, notes) = (uint_segment(fixture::TABLE), uint_segment(fixture::NOTES));
+    root.put(
+        &[&tasks, &[3], &[5], &uint_segment(NOTE), &[8]],
+        OwnedNode::leaf(Vec::new(), lookup.encode().unwrap()),
+    );
+    fixture::add_relationship(
+        &mut root,
+        1,
+        (fixture::OCCURRENCE, fixture::NAME),
+        0,
+        (fixture::NOTES_OCCURRENCE, fixture::TASK),
+    );
+    // Note 1 "Hi" is Ship's (task 2), note 2 "w" is Write tests' (task 1).
+    let cells: [(&[u8], u64, u64, &str); 5] = [
+        (&notes, 1, fixture::TASK, "Ship"),
+        (&notes, 2, fixture::BODY, "w"),
+        (&notes, 2, fixture::TASK, "Write tests"),
+        (&tasks, 1, NOTE, "old"),
+        (&tasks, 2, NOTE, "old"),
+    ];
+    for (table, record, field, text) in cells {
+        root.put(
+            &[table, &[5], &serial::encode(record), &uint_segment(field)],
+            om_scripts::text_node(&[], text),
+        );
+    }
+    let ids: RidList = (1..=2).collect();
+    root.put(&[&notes, &[0x0d]], ids.to_node(Vec::new()));
+    root.put(&[&notes, &[0]], OwnedNode::leaf(Vec::new(), vec![1, 2]));
+    fixture::write_tree(&folder.file(), &root);
+
+    let mut app = app();
+    common::click(&mut app, "Browse...");
+    choose(&mut app, &folder.file());
+    sign_in(&mut app, fixture::PASSWORD);
+    wait_open(&mut app);
+    common::open_menu(&mut app, "Scripts");
+    common::click(&mut app, "Relookup");
+    // Each task's note, the step's error, and the record the window was on.
+    common::wait_for_label(&mut app, "w,Hi/0/Write tests");
+    common::click(&mut app, "OK");
+    common::wait_until(&mut app, "the script's end", |app| {
+        !app.state().script_running()
+    });
+    assert!(app.state().error().is_none(), "{:?}", app.state().error());
+}
+
 /// A folder of its own holding a copy of a given file as `Tasks.fmp12`,
 /// removed when dropped.
 struct Scratch(PathBuf);

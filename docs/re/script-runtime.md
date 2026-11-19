@@ -3724,6 +3724,18 @@ Steps
   evaluated on each record made current, serial numbers counting up the
   last run of digits of the initial value; each record is committed; no
   triggers fire.
+- Relookup Field Contents
+  ([#87](https://github.com/OpenMaker-Dev/openmaker/issues/87)): in Browse mode, every found record in
+  order is made current, its match field is set to its own value as a
+  script sets it, and the record is committed, as Replace Field Contents
+  commits each record. The record rules perform a lookup whose match field
+  a script sets, also to the value it had (auto-entry.md, Lookups, battery
+  s41), so each lookup through the field copies again. The window returns
+  to the record it was on. Unmeasured, and OpenMaker's choices: the
+  dialog's text; a field no lookup matches through, whose records are
+  still written; a calculated match field, which is 201 as Set Field into
+  it is (Claris's help names an editable input of the calculation as the
+  target); and Find mode, which is 3.
 - Windows (2026-10-29, run 13.25; `app/windows.rs`,
   `scripting/host/windows.rs`): real windows. Each window keeps its own
   layout, found set, mode, view, current record and unsaved values, Find
@@ -3912,7 +3924,7 @@ Steps
   step's occurrence's table, any table (write-path.md 3.2); the host stores
   the text, also for a field without an auto-entered serial (unconfirmed).
 - Steps the desktop client answers with 3 (and, as before, stops on with a
-  message): Relookup, Undo/Redo,
+  message): Undo/Redo,
   Export Field Contents, Set Web Viewer, Perform JavaScript in Web Viewer,
   the account steps, Open File and the other database file steps, Show/Hide
   Text Ruler, Enable Touch Keyboard, and every step of script-steps.md 7
