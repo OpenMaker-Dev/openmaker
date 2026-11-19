@@ -1299,8 +1299,8 @@ impl ServerHost {
             privilege_set: answer(om_data::host::session::selector::CURRENT_PRIVILEGE_SET_NAME)
                 .filter(|name| !name.is_empty()),
             host_timestamp: None,
-            // What a server script's record number is for auto-entry is not
-            // measured (#1038): not answered.
+            // A record a script makes is given its position by New Record
+            // (#298); other writes' record number is unmeasured.
             record_number: None,
         }
     }
@@ -3229,6 +3229,16 @@ impl Records for ServerHost {
         let window = self.window_mut()?;
         window.found.push(id);
         window.current = window.found.len() - 1;
+        // The record joins the end of the found set, and an unsorted found
+        // set's position is what its auto-entry reads as Get (
+        // RecordNumber ): n + 1 over the n records found before, wherever
+        // the current record was, also when none were and for a duplicate
+        // (s44, FileMaker Server's engine). A sorted found set's is
+        // unmeasured and stays unanswered (#298).
+        let number = (window.sort.is_none()).then_some(window.found.len() as u64);
+        if let Some(record) = &mut self.record {
+            record.context.record_number = number;
+        }
         // The first field of the tab order gets the focus (s31, s33).
         self.focus_first_field();
         Ok(())

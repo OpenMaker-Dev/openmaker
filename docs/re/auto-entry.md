@@ -503,11 +503,35 @@ layout):
 - **That a hosted file answers the same** is [I], OpenMaker's choice
   (parity-unverified).
 
+**Records a script makes** [O: FileMaker Server 26.0.3's engine, script
+oracle `s44-record-number-ae`, 2026-11-19]. Each run line is a server
+session, as Perform Script on Server or a schedule runs one. Contacts got
+two text fields auto-entering `Get ( RecordNumber )` and `Get (
+FoundCount )`. Each probe made one record in its window's found set,
+committed it and read both fields and the window's own selectors:
+
+| Probe | Found set before | Stored (both fields) |
+|---|---|---|
+| New Record after Show All Records (3 records) | 3 | 4 |
+| the same, the current record moved to the first | 4 | 5 |
+| Show All Records (5), the first two omitted | 3 | 4 |
+| a find that matched nothing (error 401) | 0 | 1 |
+| two New Records in a row (7 shown) | 7, then 8 | 8, then 9 |
+| Duplicate Record of the first (9 shown) | 9 | 10, not the copied record's 1 |
+
+**The reading.** A record a script makes joins the end of an unsorted
+found set, wherever the current record is, and its auto-entry reads that
+position: n + 1 over the n records found before, whatever the table holds
+(6 records when the omitted probe stored 4). A duplicate's auto-entry is
+evaluated again, not copied. FileMaker Pro's own New Record command runs
+the same window operation, so it is inferred to store the same [I].
+
 Unmeasured [U]:
 - portals that sort or filter their rows;
 - more than one new row in one commit;
-- other ways of creating a record: New Record in B's own window, a
-  script, Perform Script on Server.
+- a sorted found set's new record;
+- New Record from FileMaker Pro's menu or toolbar (inferred above, not
+  run).
 
 ## Serial numbers
 

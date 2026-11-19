@@ -1252,6 +1252,15 @@ impl Window {
             revert(provider, session);
             return Err(DataError::with_code(101, "There is no layout."));
         };
+        // The record joins the end of an unsorted found set: its auto-entry
+        // reads that position as Get ( RecordNumber ), n + 1 (s44,
+        // FileMaker Server's engine running a script's New Record and
+        // Duplicate Record; the window's own command is inferred to be the
+        // same). A sorted found set's is unmeasured and unanswered (#298).
+        let record_number = match self.sorted {
+            false => self.found_count(provider).ok().map(|found| found + 1),
+            true => None,
+        };
         let write = ScriptWrite {
             layout,
             table: None,
@@ -1261,7 +1270,7 @@ impl Window {
             typed: BTreeSet::new(),
             skip_validation: false,
             privilege_set,
-            record_number: None,
+            record_number,
             prepared: None,
         };
         let (record, saved) = match provider.write_record(&write) {

@@ -37,6 +37,8 @@ const PRIORITY_LIST: u64 = 1;
 const NOTE: u64 = 9;
 /// Tasks::Stamp, auto-entered `Name & Setting` where a test adds it.
 const STAMP: u64 = 40;
+/// A field auto-entering `Get ( RecordNumber )` (#298).
+const NUMBER: u64 = 41;
 
 fn names() -> NameTable {
     let mut names = fixture::names();
@@ -44,6 +46,7 @@ fn names() -> NameTable {
     names.add_field(NOTES, TASK, "Task");
     names.add_field(TABLE, NOTE, "Note");
     names.add_field(TABLE, STAMP, "Stamp");
+    names.add_field(TABLE, NUMBER, "Number");
     names
 }
 
@@ -609,6 +612,72 @@ fn server_scripts_auto_enter_over_a_global_reads_the_sessions_value() {
     let (mut client, _) = server::logged_in(port, "client");
     assert_eq!(run(&mut client, 8), (0, "0|Adas".to_string()));
     assert_eq!(run(&mut client, 9), (0, "0|Beax".to_string()));
+}
+
+/// A record a server script makes auto-enters Get ( RecordNumber ) as the
+/// position it takes at the end of the found set, n + 1, wherever the
+/// current record was: in every record, after records were omitted, and
+/// for a duplicate (s44, FileMaker Server's engine; #298).
+#[test]
+fn server_scripts_new_records_auto_enter_their_found_set_position() {
+    let made = |before: Vec<ScriptStep>| {
+        let mut steps = vec![ScriptStep::new(23)];
+        steps.extend(before);
+        steps.extend([
+            ScriptStep::new(75),
+            exit_with("Tasks::Number & \"|\" & Get ( FoundCount ) & \"|\" & Get ( LastError )"),
+        ]);
+        steps
+    };
+    let mut root = tree();
+    fixture::add_field(&mut root, TABLE, NUMBER, "Number", 1, 1, 0, 0x8, 0);
+    fixture::add_formula(
+        &mut root,
+        &names(),
+        (TABLE, OCCURRENCE),
+        NUMBER,
+        5,
+        "Get ( RecordNumber )",
+    );
+    for (id, name, steps) in [
+        (
+            8,
+            "All",
+            made(vec![fixture::go_to_record(1), ScriptStep::new(7)]),
+        ),
+        (
+            9,
+            "Omitted",
+            made(vec![
+                fixture::go_to_record(1),
+                ScriptStep::new(25),
+                ScriptStep::new(7),
+            ]),
+        ),
+        (
+            10,
+            "Duplicate",
+            made(vec![fixture::go_to_record(1), ScriptStep::new(8)]),
+        ),
+    ] {
+        root.put(
+            &[&[17], &[5], &uint_segment(id)],
+            script(id, name, steps).encode(),
+        );
+    }
+    let file = TempFile::from_tree("psos-record-number", &root);
+    let port = server::start(&file);
+    let (mut client, _) = server::logged_in(port, "client");
+    let (error, all) = run(&mut client, 8);
+    assert_eq!(error, 0);
+    let found: u64 = all.split('|').nth(1).unwrap().parse().unwrap();
+    assert_eq!(all, format!("{found}|{found}|0"));
+    // One more record; one omitted of the rest.
+    assert_eq!(run(&mut client, 9).1, format!("{found}|{found}|0"));
+    assert_eq!(
+        run(&mut client, 10).1,
+        format!("{}|{}|0", found + 2, found + 2)
+    );
 }
 
 #[test]

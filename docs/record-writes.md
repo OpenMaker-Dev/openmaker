@@ -856,13 +856,22 @@ record's place in what the rules read:
   portal that neither sorts nor filters is its place among the portal's
   related records, after the ones related before the save: 1 with none
   before, 3 with two.
+- **Measured: records a window makes.** New Record and Duplicate Record
+  in a script append the record to the window's unsorted found set, and
+  its number is the found set's count before it plus one, wherever the
+  current record was (FileMaker Server's engine, auto-entry.md;
+  [#298](https://github.com/OpenMaker-Dev/openmaker/issues/298)). The
+  desktop window gives that number to its New Record and Duplicate Record,
+  from a script or its own command (the command's is inferred), and
+  OpenMaker Server's scripts give it to theirs. A sorted found set's new
+  record is not answered.
 - **Hosted files** take the same answer, an inference (parity-unverified).
 - **Routed writes:** a portal row of another file's table carries the
   calling window's number to that file.
 - **Everything else is unanswered:** a portal with rows, sorted or
-  filtered, New Record in the table's own window, scripts and OpenMaker
-  Server's scripts. A formula that is evaluated without the number
-  refuses its write with 3.
+  filtered, a new record in a sorted found set, and edits of stored
+  records. A formula that is evaluated without the number refuses its
+  write with 3.
 - **Edits that evaluate no such formula are written.** An auto-entered
   calculation with no field inputs is evaluated only at creation.
 - **The desktop window gives it in the measured shape only**
