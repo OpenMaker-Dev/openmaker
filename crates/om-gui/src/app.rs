@@ -3400,7 +3400,9 @@ impl OpenMakerApp {
                 };
                 let (layout_id, record_id) = (session.layout.unwrap_or_default(), record.id);
                 // A new record the window's record session holds is not on
-                // the host: the window's own Delete Record releases it (#892).
+                // the host: the window's own Delete Record releases it
+                // (#892). An existing record whose editing took its lock is
+                // deleted by the same step, which lets the lock go first.
                 if self.uncommitted().is_some_and(|open| open.session) {
                     self.run_step(
                         ctx,
@@ -3910,6 +3912,14 @@ impl OpenMakerApp {
                 self.w.document.discard_failed_edits();
                 self.error = None;
                 self.w.document.release_focus();
+                // Entry is refused for a record another client changed since
+                // the window read it (306) or holds (301): the page is read
+                // again, so that a new entry starts from the host's copy.
+                // Without a connection the reconnect reads it.
+                if self.w.connection_lost.is_none() {
+                    let key = self.w.session.as_mut().and_then(Session::refresh);
+                    self.request_page(ctx, key);
+                }
             }
             Action::DismissAlert => {
                 self.error = None;
@@ -5260,6 +5270,22 @@ impl OpenMakerApp {
                     Ok(om_data::EditPreparation::Prepared) => {
                         let layout = request.baseline.layout;
                         let record = request.baseline.record;
+                        // The reply is this window's: a release since
+                        // (its input went back to its stored value) would
+                        // have forgotten the request
+                        // (`forget_edit_preparations`). For a record the
+                        // window left, the save that left it took the
+                        // session (`Window::commit`).
+                        let current = self
+                            .w
+                            .session
+                            .as_ref()
+                            .and_then(|s| Some((s.layout?, s.current_record()?.1.id)))
+                            == Some((layout, record));
+                        if !current {
+                            ctx.request_repaint();
+                            return;
+                        }
                         if !self
                             .w
                             .uncommitted
