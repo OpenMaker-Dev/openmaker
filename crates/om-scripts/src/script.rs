@@ -8,7 +8,7 @@ use crate::step::{ScriptStep, StepData};
 use crate::value::{bytes_node, node_text, text_node};
 use crate::{Result, ScriptError};
 use om_hbam::{serial, KeyTree, Node, OwnedNode};
-use std::collections::BTreeSet;
+use std::collections::{BTreeSet, HashMap};
 use std::ops::Range;
 
 /// Key of the script name (`KName`).
@@ -153,6 +153,14 @@ impl Script {
             ScriptKind::Separator
         };
         let data = node.get(u64::from(STEP_DATA));
+        // Each data child found once, the first of a key as `Node::child`
+        // finds it, and decoded once however many steps name it: a step
+        // list can name one data node from every step, or each of tens of
+        // thousands of children (#149).
+        let mut by_key: HashMap<&[u8], (&Node<'_>, Option<StepData>)> = HashMap::new();
+        for child in data.map_or(&[][..], |d| d.children.as_slice()) {
+            by_key.entry(child.segment.0).or_insert((child, None));
+        }
         let mut steps = Vec::new();
         if let Some(bytes) = list {
             if bytes.len() % 28 != 0 {
@@ -163,11 +171,13 @@ impl Script {
             }
             for chunk in bytes.chunks_exact(28) {
                 let mut step = ScriptStep::from_descriptor(chunk.try_into().expect("28 bytes"));
-                step.data = step
-                    .data_key
-                    .segment()
-                    .and_then(|segment| data?.child(segment))
-                    .map(|n| StepData::decode(&n.to_owned_node()));
+                step.data = (step.data_key.segment())
+                    .and_then(|segment| by_key.get_mut(segment))
+                    .map(|(node, decoded)| {
+                        decoded
+                            .get_or_insert_with(|| StepData::decode(&node.to_owned_node()))
+                            .clone()
+                    });
                 steps.push(step);
             }
         }
@@ -824,6 +834,40 @@ mod tests {
         assert_eq!(catalog.scripts[0].id, 141);
         assert!(catalog.script(141).is_some());
         assert!(catalog.script(0x800d).is_none());
+    }
+
+    /// Steps naming one data key share its decode rather than each holding
+    /// a copy (#149); an edit to one step's data copies it for that step,
+    /// and the definition re-encodes as stored.
+    #[test]
+    fn steps_naming_one_data_key_share_its_decode() {
+        use om_hbam::{KeyTree, SlotReader};
+        let mut step = ScriptStep::new(141);
+        step.set_text(0, Some(&"x".repeat(1000)));
+        let mut s = script(&[]);
+        s.insert_steps(0, vec![step]).unwrap();
+        let one = s.encode();
+        let descriptor = (one.child(&[STEP_LIST]))
+            .and_then(OwnedNode::assembled)
+            .unwrap()
+            .into_owned();
+        let mut many = one.clone();
+        many.set_child(bytes_node(&[STEP_LIST], &descriptor.repeat(50)));
+        let wire = OwnedNode::list(Vec::new(), vec![many.clone()])
+            .to_wire()
+            .unwrap();
+        let tree = KeyTree::from_slots(SlotReader::new(&wire)).unwrap();
+        let mut decoded = Script::decode(&tree.root.children[0]).unwrap();
+        let first = decoded.steps[0].data.clone().unwrap();
+        assert_eq!(decoded.steps.len(), 50);
+        assert!(decoded
+            .steps
+            .iter()
+            .all(|s| s.data.as_ref().is_some_and(|d| d.shares(&first))));
+        assert_eq!(decoded.encode(), many);
+        decoded.steps[1].set_text(0, Some("y"));
+        assert_eq!(decoded.steps[1].text(0).as_deref(), Some("y"));
+        assert_eq!(decoded.steps[0].text(0), Some("x".repeat(1000)));
     }
 
     #[test]

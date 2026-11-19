@@ -49,7 +49,7 @@
 //! Only accounts in the file's verified built-in [Full Access] set may
 //! author; every other account is refused.
 
-use std::collections::HashMap;
+use std::collections::HashSet;
 use std::sync::Arc;
 
 use log::{info, warn};
@@ -391,9 +391,10 @@ fn decode(node: &OwnedNode) -> Result<Script, String> {
 /// the definition itself: the view [`decode`] reads it through (less than
 /// the definition's own [`memory`]), the children `Script::decode` keeps as
 /// owned copies (at most that again), the assembled step list and a step
-/// for each of its descriptors, and each step's data twice (an owned copy
-/// and what `StepData::decode` keeps of it), once for every step that
-/// names it. Children are found as `Script::decode` finds them.
+/// for each of its descriptors, and the step data each step names twice
+/// (an owned copy and what `StepData::decode` keeps of it), once however
+/// many steps name it, as `Script::decode` shares it (#149). Children are
+/// found as `Script::decode` finds them.
 fn decoding_cost(definition: &OwnedNode) -> usize {
     let tree = memory(definition);
     let mut cost = tree.saturating_mul(2);
@@ -406,8 +407,8 @@ fn decoding_cost(definition: &OwnedNode) -> usize {
         return cost;
     };
     let data = by_id(definition, u64::from(STEP_DATA));
-    // A data node many steps name is measured once.
-    let mut measured: HashMap<&[u8], usize> = HashMap::new();
+    // A data node many steps name is decoded, and charged, once.
+    let mut measured: HashSet<&[u8]> = HashSet::new();
     cost = cost.saturating_add(list.len());
     for descriptor in list.chunks_exact(28) {
         let Ok(descriptor) = <&[u8; 28]>::try_from(descriptor) else {
@@ -422,11 +423,8 @@ fn decoding_cost(definition: &OwnedNode) -> usize {
             .data_key
             .segment()
             .and_then(|segment| data?.child(segment));
-        if let Some(node) = named {
-            let size = *measured
-                .entry(node.segment.as_slice())
-                .or_insert_with(|| memory(node));
-            cost = cost.saturating_add(size.saturating_mul(2));
+        if let Some(node) = named.filter(|node| measured.insert(node.segment.as_slice())) {
+            cost = cost.saturating_add(memory(node).saturating_mul(2));
         }
     }
     cost
@@ -2955,11 +2953,10 @@ mod tests {
         assert_eq!(other_change(&twice, &steps), None);
     }
 
-    /// Decoding a definition copies a step's data once for every step that
-    /// names it, so a step list naming one large data node many times
-    /// multiplies it; what decoding is charged counts it the same way.
+    /// A step list naming one large data node many times decodes it once
+    /// (#149), and decoding is charged for it once, beside the steps.
     #[test]
-    fn decoding_is_charged_for_each_step_naming_its_data() {
+    fn decoding_is_charged_once_for_data_many_steps_name() {
         let mut step = om_scripts::ScriptStep::new(141);
         step.set_text(0, Some(&"x".repeat(1000)));
         let mut script = Script {
@@ -2977,7 +2974,10 @@ mod tests {
         let mut many = one.clone();
         many.set_child(OwnedNode::leaf(vec![STEP_LIST], descriptor.repeat(50)));
         let data = memory(&one.child(&[STEP_DATA]).unwrap().children[0]);
-        assert!(decoding_cost(&many) >= decoding_cost(&one) + 49 * 2 * data);
+        let steps = 49 * (28 + std::mem::size_of::<om_scripts::ScriptStep>());
+        assert!(decoding_cost(&many) >= decoding_cost(&one) + steps);
+        // Charged per step, the data alone would add 49 x 2 times its size.
+        assert!(decoding_cost(&many) < decoding_cost(&one) + 49 * data);
         let decoded = decode(&many).unwrap();
         assert_eq!(
             decoded.steps.iter().filter(|s| s.data.is_some()).count(),
