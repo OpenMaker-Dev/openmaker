@@ -214,11 +214,10 @@ fn stamp_key((year, month, day): Ymd, seconds: u32) -> Option<Vec<u8>> {
     )
 }
 
-/// A bound's index key; `None` when its form is not established (numbers
-/// other than non-negative integers, 7.3).
+/// A bound's index key; `None` when its form is not established.
 fn bound_key(bound: &Bound) -> Option<Vec<u8>> {
     match bound {
-        Bound::Number(n) => om_collate::number_key(&n.integer_text()?),
+        Bound::Number(n) => n.index_key(),
         Bound::Word(key) => Some(key.clone()),
         Bound::Date(date) => date_key(*date),
         Bound::Time(seconds) => time_key(*seconds),
@@ -307,30 +306,18 @@ fn keyed_plan(
             end,
         ))
     };
-    // A non-text field without a value has no key.
-    let no_value = || Finder {
-        bytes: make(kind::INDEX_RANGE, VALUE_SCOPE, 0, &[], &[]),
-        keep: false,
-    };
-    let empty_text = || keep(make(kind::INDEX_MATCH, VALUE_SCOPE, 0, EMPTY_TEXT_KEY, &[]));
+    // An empty value of any type is indexed under `01` (7.2, 7.3).
+    let empty = || keep(make(kind::INDEX_MATCH, VALUE_SCOPE, 0, EMPTY_TEXT_KEY, &[]));
     match &criterion.kind {
-        Kind::Empty if text_field => Plan::exact(vec![empty_text()]),
-        Kind::Empty => Plan::exact(vec![no_value()]),
+        Kind::Empty => Plan::exact(vec![empty()]),
         // The value index cannot tell an empty line from nothing.
-        Kind::EntirelyEmpty if text_field => Plan::candidates(vec![empty_text()]),
-        Kind::EntirelyEmpty => Plan::exact(vec![no_value()]),
-        Kind::NotEmpty if text_field => Plan::exact(vec![keep(make(
-            kind::INDEX_RANGE,
-            VALUE_SCOPE,
-            0,
-            EMPTY_TEXT_KEY,
-            &[],
-        ))]),
+        Kind::EntirelyEmpty if text_field => Plan::candidates(vec![empty()]),
+        Kind::EntirelyEmpty => Plan::exact(vec![empty()]),
         Kind::NotEmpty => Plan::exact(vec![keep(make(
             kind::INDEX_RANGE,
             VALUE_SCOPE,
             0,
-            &[],
+            EMPTY_TEXT_KEY,
             &[],
         ))]),
         Kind::Invalid => Plan::candidates(Vec::new()),
@@ -401,7 +388,7 @@ fn keyed_plan(
         } else {
             Vec::new()
         }),
-        Kind::Number(n) => match n.integer_text().and_then(|t| om_collate::number_key(&t)) {
+        Kind::Number(n) => match n.index_key() {
             Some(key) => Plan::exact(vec![keep(make(
                 kind::INDEX_MATCH,
                 VALUE_SCOPE,
@@ -413,13 +400,26 @@ fn keyed_plan(
         },
         Kind::Range { low, high } => {
             let scope = if text_field { WORD_SCOPE } else { VALUE_SCOPE };
-            let key = |b: &Option<(Bound, bool)>| -> Option<(Vec<u8>, bool)> {
+            // An open end of a typed range stops short of the empty value
+            // (`01`) and of values FileMaker cannot read (`fe ff`), as
+            // FileMaker's own open bounds do (6.4: `(01, K)`, `[K, fe ff)`).
+            let open = |typed: &[u8]| {
+                if text_field {
+                    Vec::new()
+                } else {
+                    typed.to_vec()
+                }
+            };
+            let key = |b: &Option<(Bound, bool)>, open: Vec<u8>| -> Option<(Vec<u8>, bool)> {
                 match b {
-                    None => Some((Vec::new(), false)),
+                    None => Some((open, false)),
                     Some((bound, inclusive)) => Some((bound_key(bound)?, *inclusive)),
                 }
             };
-            match (key(low), key(high)) {
+            match (
+                key(low, open(EMPTY_TEXT_KEY)),
+                key(high, open(crate::keys::INVALID_KEY)),
+            ) {
                 (Some((begin, low_in)), Some((end, high_in))) => {
                     let options = if low_in { INCLUDE_BEGIN } else { 0 }
                         | if high_in { INCLUDE_END } else { 0 };
@@ -1331,20 +1331,23 @@ mod tests {
             &at_least[0].bytes[..3],
             [kind::INDEX_RANGE, VALUE_SCOPE, INCLUDE_BEGIN]
         );
+        // An open end stops short of the empty value and of invalid ones,
+        // as FileMaker's do (6.4).
         assert!(at_least[0]
             .bytes
-            .ends_with(&[key_operand(&seven), vec![0]].concat()));
+            .ends_with(&[key_operand(&seven), key_operand(&[0xfe, 0xff])].concat()));
         let below = number("<7");
         assert_eq!(below[0].bytes[2], 0);
         assert!(below[0]
             .bytes
-            .ends_with(&[vec![0], key_operand(&seven)].concat()));
+            .ends_with(&[key_operand(&[0x01]), key_operand(&seven)].concat()));
         let between = number("1...7");
         assert_eq!(between[0].bytes[2], INCLUDE_BEGIN | INCLUDE_END);
-        // Empty: the empty text key, or "no key" for other types.
+        // Empty: the empty value's key `01`, for every type (7.3).
         let empty = finders(TABLE, 1, DataType::Text, "=", order).unwrap();
         assert!(empty[0].bytes.ends_with(&[2, 1, 1, 0]));
-        assert!(!number("=")[0].keep);
+        let empty = number("=");
+        assert!(empty[0].keep && empty[0].bytes.ends_with(&[2, 1, 1, 0]));
         assert_eq!(number("!")[0].bytes[0], kind::FIND_DUPLICATES);
         // Unknown syntax and values a field's type cannot key.
         for criterion in ["a*", "\"x\"", "//", "=="] {
@@ -1380,6 +1383,9 @@ mod tests {
             (DataType::Text, "<M"),
             (DataType::Number, "12"),
             (DataType::Number, "1...7"),
+            // FileMaker's own finders (6.4): IndexMatch `7f ff 9f`, IndexRange.
+            (DataType::Number, "-0.5"),
+            (DataType::Number, "-1...1"),
             (DataType::Date, "//"),
             (DataType::Date, "6/2019"),
             (DataType::Date, "2019"),
@@ -1399,7 +1405,6 @@ mod tests {
             (DataType::Text, "*\"son & Phil\"*", 1),
             (DataType::Text, "==", 1),
             (DataType::Text, "?", 0),
-            (DataType::Number, ".50", 0),
             (DataType::Date, "Tuesday", 0),
             (DataType::Date, "*/{10..15}/2019", 1),
             (DataType::Time, "*:15", 1),

@@ -368,17 +368,15 @@ impl Number {
         })
     }
 
-    /// The number's text when it is a non-negative integer, the only form
-    /// whose index key is known (query-program.md 7.3).
-    pub(crate) fn integer_text(&self) -> Option<String> {
-        if self.negative || !self.fraction.is_empty() {
-            return None;
-        }
-        Some(if self.integer.is_empty() {
-            "0".into()
-        } else {
-            self.integer.iter().map(|d| char::from(b'0' + d)).collect()
-        })
+    /// The number's value-index key (query-program.md 7.3).
+    pub(crate) fn index_key(&self) -> Option<Vec<u8>> {
+        let digits = |d: &[u8]| d.iter().map(|d| char::from(b'0' + d)).collect::<String>();
+        om_collate::number_key(&format!(
+            "{}{}.{}",
+            if self.negative { "-" } else { "" },
+            digits(&self.integer),
+            digits(&self.fraction)
+        ))
     }
 
     /// The number as a binary float (for summaries that only order groups).

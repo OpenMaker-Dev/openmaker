@@ -116,7 +116,7 @@ fn typed_keys_are_the_specs() {
             DateOrder::MonthDayYear,
             TextKeys::Collated
         ),
-        [hex("80 05 88 32 80")]
+        [hex("80 00 00 80 05 88 32 80")]
     );
     for (value, order) in [
         ("10/27/2026 21:26:57", DateOrder::MonthDayYear),
@@ -370,4 +370,61 @@ fn text_keys_are_filemakers_vectors() {
     }
     assert!(mismatches.is_empty(), "{mismatches:#?}");
     assert_eq!(checked, 364);
+}
+
+/// Every number, time, timestamp and date row of the vector table: the
+/// value-index entries OpenMaker builds for the stored text are FileMaker's
+/// (7.3), empty values under `01` and values FileMaker cannot read under
+/// `fe ff`. The probe file stores dates month first.
+#[test]
+fn typed_keys_are_filemakers_vectors() {
+    // Numbers FileMaker reads from digits among other characters, which
+    // OpenMaker does not key yet
+    // ([#246](https://github.com/OpenMaker-Dev/openmaker/issues/246)).
+    const MIXED: [&str; 17] = [
+        "1e3", "1,234.5", "12abc34", "5-", "1.5.2", "1.0E+20", "(5)", "$5", "5%", "+5", "1 000",
+        "1/2", "e5", "12.5e2", "1E400", "1e-5", "1.0E+400",
+    ];
+    let mut checked = 0;
+    let mut mismatches = Vec::new();
+    for vector in vectors() {
+        let data_type = match vector.kind {
+            "number" => DataType::Number,
+            "time" => DataType::Time,
+            "timestamp" => DataType::Timestamp,
+            "date" => DataType::Date,
+            _ => continue,
+        };
+        // "the value as set (stored the text when it differs)"
+        let stored = match vector.value.split_once(" (stored ") {
+            Some((_, stored)) => stored.strip_suffix(')').unwrap().to_string(),
+            None => vector.value.clone(),
+        };
+        let ours = om_query::keys::record_value_entries(
+            data_type,
+            std::slice::from_ref(&stored),
+            DateOrder::MonthDayYear,
+            TextKeys::Collated,
+        );
+        checked += 1;
+        if MIXED.contains(&stored.as_str()) {
+            assert!(ours.is_empty(), "{stored:?} is keyed now: update #246");
+        } else if ours != vector.value_entries {
+            mismatches.push(format!("{} {stored:?}", vector.kind));
+        }
+    }
+    assert!(mismatches.is_empty(), "{mismatches:#?}");
+    assert_eq!(checked, 88);
+    // Every record without a number is indexed under `01` (7.3).
+    for data_type in [DataType::Number, DataType::Time, DataType::Date] {
+        assert_eq!(
+            record_value_keys(
+                data_type,
+                &[String::new()],
+                DateOrder::MonthDayYear,
+                TextKeys::Collated
+            ),
+            [vec![0x01]].into()
+        );
+    }
 }
