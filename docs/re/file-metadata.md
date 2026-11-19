@@ -280,6 +280,23 @@ Evidence:
   templates of the Mac and Windows installers, the MBS examples, the
   harness fixtures and earlier probe files) has `29`, `30` or `31`.
 
+**FileMaker 26.1.1** stores nothing new here; it reads more keys of the
+same JSON object (Claris release notes, FileMaker Pro 26.1.1): `fm_import`
+names the target field in the Specify Import Order dialog, `fm_sql` names
+the field in SQL results and queries (execute-sql.md 4.3), `fm_odata` in
+OData API responses and requests. A JSONNull value of `fm_export` or
+`fm_sort` hides the field from the Specify Field Order for Export or the
+Sort Records field list, and a JSONNull `fm_common` from both unless the
+feature's own key is set; Sort Records, Specify Field Order for Export and
+Modify Table View get a context menu to show display names or field
+names. [O, DBEngine 26.1.1] `DBField::GetDisplayFieldNameOnly` (0x19f7bee)
+looks up the key of its `FieldNameAliasType`, in the order `fm_export`,
+`fm_sort`, `fm_table_view`, `fm_sql`, `fm_odata`, `fm_import` (the
+`DBField::kAlias_*` constants), and falls back to `fm_common`;
+`DBField::IsFieldAliasNull` (0x1a018b0) answers whether that key, else
+`fm_common`, holds null. Claris also reserves the `fm_` prefix for its own
+keys; other keys are the developer's.
+
 ---
 
 ## 2. File locale and formats `[2, 0d]`
@@ -810,7 +827,10 @@ worked. FileMaker Pro's own files have no additional fields in the corpus
 Type 2 (`External`) and type 3 (`FromCalculation`) do not occur in the
 corpus; type 3 is enabled only behind the debugger bit `0x7f`
 (`IsCalculationBased` tests `Debug::HasBit(gDebugger, 0x7f)`) in 26.0.3
-[O code], so shipping files have types 0-2.
+[O code], so files of 26.0 have types 0-2. FileMaker Pro 26.1.1 ships it
+(6.6): its `IsCalculationBased` (DBEngine 0x1c2b9f4) is only "type is 3",
+and `Definition::Read` and `Write` (0x1c2bf9e, 0x1c2c0c0) are unchanged,
+so a calculated list is stored as 26.0.3 already defined it [O code].
 
 ### 6.3 Corpus [O]
 
@@ -914,6 +934,34 @@ showed no Edit… in it, empty or holding values (#869); its list is one of
 a field's values.
 
 ---
+
+### 6.6 Calculated value lists (FileMaker 26.1.1)
+
+Edit Value List's "Use calculated value list" (Claris release notes,
+FileMaker Pro 26.1.1) is definition type 3 (6.2) with the formula at
+`[21, 5, V, 05]` (`KItemsCalc`, read by `DBValueList::GetValuesCalculation`)
+[O code; no 26.1.1-made list read yet]. The formula's result is either:
+
+- text: each return-separated value is one item; or
+- JSON with `ValueList.values`, an array of objects in display order, each
+  with `display` and at most one second key (Claris): none (shows and
+  stores `display`), `displaySecond` (shows both, stores `display`),
+  `enterSecond` (shows `display`, stores the second value) or
+  `displayAndEnterSecond` (shows both, stores the second value). The
+  elements should use the same second key; when they differ, the last
+  element that has one decides for the whole list.
+
+[O, DBEngine 26.1.1] The key names are new strings; the JSON reader is
+`DBCalculatedValueListData::GenerateFromCalc_json` (0x1d94576, larger than
+26.0.3's), lookups go through the new `DBFromCalcValueListIter`, and
+FMEngine's `GetCalcValueListDisplayText` (0x5fbb9e) builds the text a
+field shows. A FileMaker 26.0 client takes a type 3 list as not
+calculated (its gate) [O code]; what it then shows is [U].
+
+Unknowns: the context (occurrence and record) the formula is evaluated in;
+when FileMaker re-evaluates it; what an empty, invalid or mixed result
+shows; how Save as XML writes a type 3 list (FMEngine's
+`ObjectTransferValueLists` handles types 0-2 only [O code]).
 
 ## 7. Layout and object script triggers
 
