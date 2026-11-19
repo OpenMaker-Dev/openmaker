@@ -4006,8 +4006,8 @@ impl RecordPlan {
     ///   record leaves empty, stored and as written;
     ///
     /// and nothing that reads records by their place. A new row's auto-entry
-    /// also answers the measured cases below (C126). A record the write did
-    /// not name ([`Written::Unknown`]) answers no self-join.
+    /// also answers the measured cases below (C126, s45). A record the write
+    /// did not name ([`Written::Unknown`]) answers no self-join.
     fn answers_own(
         &self,
         ((context, occurrence), auto_entered): ((u64, u64), bool),
@@ -4058,25 +4058,29 @@ impl RecordPlan {
                     .iter()
                     .all(|p| final_value(&p.left) && final_value(&p.right))
             });
-        // Measured (#1035's native cases, a local file): a new record's
-        // auto-entry reading a one-hop self-join that no other record
-        // matches, by final match fields on both sides, read the
-        // relationship as empty (Count 0, List empty, the first related
-        // record's fields empty): the record was not among its own related
-        // records. C126 also measured a nonempty computed key, first in an
-        // empty table and then with one older match. In the latter case its
-        // aggregate witness stored only the older row's values. This does
-        // not establish persistent exclusion or an evaluation timing rule.
+        // Measured: a new record's auto-entry reading a one-hop self-join
+        // by final match fields on both sides reads the other records
+        // committed with its key, never itself. #1035's native cases (a
+        // local file) read the relationship as empty with no other match
+        // (Count 0, List empty, the first related record's fields empty),
+        // also with a computed key; C126's aggregate read the one older
+        // match's values only. FileMaker Server's engine (s45, records a
+        // script made) read zero to three older matches of an unsorted
+        // equality join, with given keys: Count, List and the first related
+        // record read them in creation order. Reads by place are not
+        // measured, nor a sorted or non-equality join with matches, nor
+        // records the commit holds besides this one (s45's second new
+        // record of one transaction did not read the first; OpenMaker's
+        // related reads find held records).
         if let (true, Written::New(own)) = (auto_entered, session.written) {
             let others = session
                 .held
                 .as_ref()
                 .is_some_and(|held| held.holds_other(self.table, own));
-            let one_older_match = found.len() == 1
-                && own.is_none_or(|id| found[0].0 < id)
-                && !uses.first
-                && !uses.placed
-                && !uses.aggregated.is_empty()
+            let older_matches = !uses.placed
+                && found
+                    .iter()
+                    .all(|(record, _)| own.is_none_or(|id| *record < id))
                 && self
                     .schema
                     .path(context, occurrence)
@@ -4087,13 +4091,8 @@ impl RecordPlan {
                                 .predicates
                                 .iter()
                                 .all(|p| p.op == crate::host::JoinOp::Equal)
-                            && hop.predicates.iter().any(|p| {
-                                self.fields.get(&p.left).is_some_and(|f| {
-                                    !f.stored_calculation() && f.expression.is_some()
-                                })
-                            })
                     });
-            if !others && final_keys && (found.is_empty() || one_older_match) {
+            if !others && final_keys && (found.is_empty() || older_matches) {
                 return Ok(true);
             }
         }
@@ -7724,7 +7723,7 @@ mod tests {
 
     /// A self-join is answered only where whether the written record is
     /// among its own related records, and with which values, cannot change
-    /// the result (#1035, unmeasured). T has two stored records, 1 (job 1,
+    /// the result, or as measured (#1035, s45). T has two stored records, 1 (job 1,
     /// doc `a`, n 1, top 5) and 2 (a `x`, b `p`, n 2); S relates T on `[job,
     /// doc]`, S2 on `a = b`.
     /// - `S::n` in a new record of job 1, doc `a`: record 1 came first, 1.
@@ -7733,8 +7732,9 @@ mod tests {
     /// - `Max ( S::top ) + 1`, not replacing a value: the record's own `top`
     ///   is empty whenever it is computed, so its membership adds nothing: 6
     ///   after record 1, 1 in a new job.
-    /// - `Count ( S::n )`: refused while the record's own `n` is set, which
-    ///   would count or not; with it empty, 1.
+    /// - `Count ( S::n )` in a new record: 1, record 1 alone, whether or not
+    ///   its own `n` is set: a new record reads the older matches, never
+    ///   itself (s45).
     /// - `S2::n` as record 2 changes `a` to `p` and `b` to `q`: no longer
     ///   related to itself as written, but as stored (`b` = `p`) it is:
     ///   refused. Changing `a` to `z` instead, related neither way: empty.
@@ -7874,7 +7874,7 @@ mod tests {
         assert_eq!(write(top, new, &[], earlier), Ok(Some("6".into())));
         assert_eq!(write(top, new, &[], new_job), Ok(Some("1".into())));
         let count = (9, 0x8, "Count ( S::n )");
-        assert!(write(count, new, &[], earlier).is_err());
+        assert_eq!(write(count, new, &[], earlier), Ok(Some("1".into())));
         let empty_n = &[(1, "1"), (2, "a")][..];
         assert_eq!(write(count, new, &[], empty_n), Ok(Some("1".into())));
         let back = (9, 0x88, "S2::n");

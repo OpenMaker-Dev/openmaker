@@ -8422,8 +8422,8 @@ fn a_new_records_auto_entry_reads_an_unmatched_self_join_as_empty() {
 /// counts nothing through `Lead`, though `C`'s own key is auto-entered.
 /// Computed non-empty, a later record reads the other records where its
 /// final `Lead` differs from its own final `Code2`. Equal final keys read
-/// one older match during new-row aggregate auto-entry (C126); with two
-/// older matches the self-dependent answer remains unmeasured/refused (3).
+/// the older matches during new-row auto-entry, never the record itself:
+/// one (C126), and two (s45, FileMaker Server's engine).
 #[test]
 fn a_self_join_by_an_empty_computed_key_relates_nothing() {
     const KEY: u64 = 30;
@@ -8468,11 +8468,10 @@ fn a_self_join_by_an_empty_computed_key_relates_nothing() {
         provider.create_record(fixture::LAYOUT as u32, values.into())
     };
     let first = create("g1", "g1").unwrap();
-    // Equal computed keys, one older match: Count sees that older row
-    // (C126). More than one older match gains no new allowance.
+    // Equal computed keys: Count sees the older rows, one (C126), then two
+    // (s45), and Lead the group's first record.
     let matching = create("g1", "x").unwrap();
-    let refused = create("g1", "z").unwrap_err();
-    assert_eq!(refused.code, Some(3), "{refused:?}");
+    let third = create("g1", "z").unwrap();
     // Lead "x" differs from its own Code2 "h1": it cannot satisfy its own
     // predicate, so it reads the other records (none).
     create("h1", "x").unwrap();
@@ -8487,6 +8486,8 @@ fn a_self_join_by_an_empty_computed_key_relates_nothing() {
     assert_eq!(value(first.id, "Tally").as_deref(), Some("t=0"));
     assert_eq!(value(matching.id, "Lead").as_deref(), Some("g1"));
     assert_eq!(value(matching.id, "Tally").as_deref(), Some("t=1"));
+    assert_eq!(value(third.id, "Lead").as_deref(), Some("g1"));
+    assert_eq!(value(third.id, "Tally").as_deref(), Some("t=2"));
     assert_eq!(value(later.id, "Lead").as_deref(), Some("x"));
     assert_eq!(value(later.id, "Tally").as_deref(), Some("t=0"));
     provider.close();
