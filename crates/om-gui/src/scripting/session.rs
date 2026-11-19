@@ -966,8 +966,7 @@ impl ScriptSession {
             Request::Answer { .. } => {}
             request => {
                 self.s.observe(&request);
-                io.provider.use_window(window);
-                let reply = worker::handle(io.provider.as_mut(), io.store, request);
+                let reply = worker::handle_in(io.provider.as_mut(), io.store, window, request);
                 match &reply {
                     worker::Reply::Opened(Ok(_)) => self.s.file.endpoint = opening,
                     worker::Reply::OpenedLocal(Ok((om_data::LocalOpen::Opened { .. }, opened))) => {
@@ -1466,19 +1465,21 @@ impl ScriptSession {
                             continue;
                         }
                         self.s.observe(&request);
-                        io.provider.use_window(job.window);
-                        let reply = worker::handle(io.provider.as_mut(), io.store, request);
-                        io.files.select(file, io.provider, &mut self.s);
-                        io.provider.use_window(self.s.file.window.id());
-                        if io
+                        let reply =
+                            worker::handle_in(io.provider.as_mut(), io.store, job.window, request);
+                        // The reply goes before the switch back, whose
+                        // panic ends the paused scripts (#313).
+                        let sent = io
                             .responses
                             .send(Response {
                                 epoch: job.epoch,
                                 window: job.window,
                                 reply,
                             })
-                            .is_ok()
-                        {
+                            .is_ok();
+                        io.files.select(file, io.provider, &mut self.s);
+                        io.provider.use_window(self.s.file.window.id());
+                        if sent {
                             job.ctx.request_repaint();
                         }
                     }

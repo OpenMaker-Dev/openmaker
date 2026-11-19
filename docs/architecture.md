@@ -87,7 +87,13 @@ for byte).
 `om_data::DataProvider`, which it runs on a background worker thread.
 `om-provider`'s `NativeProvider` implements it for real files; the mock
 provider (`OPENMAKER_PROVIDER=mock`) gives labeled sample data for UI work
-without a server.
+without a server. Every request gets its own reply: a provider panic while
+the worker serves it, switching to the request's window included, is that
+request's error reply (`worker::contain`, `worker::handle_in`), and a panic
+after the provider answered drops only what the provider says about it
+afterwards (a grown schema, related-file warnings). A panic elsewhere ends
+the running scripts, not the worker
+([#313](https://github.com/OpenMaker-Dev/openmaker/issues/313)).
 
 **Local files use the hosted path.** Opening a `.fmp12` file on this
 computer starts a private, in-process OpenMaker Server

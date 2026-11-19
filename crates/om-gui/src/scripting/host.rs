@@ -464,19 +464,20 @@ impl<'a> WorkerHost<'a> {
                     self.s.observe(&request);
                     let current = self.s.file.window.id();
                     let provider = self.provider.get_mut().as_mut();
-                    provider.use_window(job.window);
-                    let reply = worker::handle(provider, self.store, request);
-                    provider.use_window(current);
-                    self.files.select(file, self.provider.get_mut(), self.s);
-                    if self
+                    let reply = worker::handle_in(provider, self.store, job.window, request);
+                    // The reply goes before the switch back, whose panic
+                    // ends the running scripts (#313).
+                    let sent = self
                         .responses
                         .send(Response {
                             epoch: job.epoch,
                             window: job.window,
                             reply,
                         })
-                        .is_err()
-                    {
+                        .is_ok();
+                    provider.use_window(current);
+                    self.files.select(file, self.provider.get_mut(), self.s);
+                    if !sent {
                         self.s.interrupted = true;
                         return None;
                     }
