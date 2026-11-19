@@ -230,7 +230,7 @@ solutions grant it to no set (session-identity.md 2.6).
 FileMaker Pro 26.0.3 made two blank files under its German UI with the
 same built-in set keys and checked access members but localized names:
 `[Voller Zugriff]`, `[Nur Dateneingabe]` and `[Nur Lesezugriff]` [O:
-session-identity.md 2.7, #876]. OpenMaker verifies sets `01`-`03` by
+session-identity.md 2.7, [#254](https://github.com/OpenMaker-Dev/openmaker/issues/254)]. OpenMaker verifies sets `01`-`03` by
 their keys and members, whatever their names, so it reads these as the
 built-in sets (#873; checked on both files, read-only, without a
 sign-in).
@@ -334,7 +334,7 @@ that allows managing accounts and an account outside [Full Access]):
 **Native local writes [O].** On 2026-11-13, FileMaker Pro 26.0.3 on macOS
 changed a disposable copy of the English Contacts starter solution. The
 file was closed and copied after each action; the byte-level account
-catalog dumps remain private under `re/work/issue-148/` (issue #148).
+catalog dumps remain private under `re/work/issue-148/` (issue [#12](https://github.com/OpenMaker-Dev/openmaker/issues/12)).
 Manage Security added a FileMaker-file account with [Data Entry Only]:
 its kind `02` was absent, and the new member had `04`, `06`, `0a`, `0b`,
 `10`, UUID and modification stamps. Its index entries appeared too.
@@ -417,7 +417,7 @@ the account and the password the Login just refused, erased when dropped),
 and the file opens with it. A refusal (206, 208, 209, 11) keeps the
 dialog up with its reason; Cancel closes the waiting file. A hosted file
 does not ask: there the new password travels in the Login
-(network-protocol.md 5.4), which OpenMaker does not send (#138).
+(network-protocol.md 5.4), which OpenMaker does not send ([#8](https://github.com/OpenMaker-Dev/openmaker/issues/8)).
 
 File > Change Password… changes the password of the account a local file
 is open with through the same host operation: the dialog asks for the old
@@ -425,7 +425,7 @@ password, the new one and its confirmation [I: OpenMaker's wording;
 FileMaker Pro's dialog is not measured], a mismatch is caught there, and
 a refusal (212 for a wrong old password, 206, 208, 209, 11) keeps it up
 with its reason. The new password is then the session's, for the files its
-scripts open later [I]. A file on a host does not offer it yet (#831).
+scripts open later [I]. A file on a host does not offer it yet ([#248](https://github.com/OpenMaker-Dev/openmaker/issues/248)).
 
 Unknowns: the account script steps above and hosted password change at
 sign-in were not run live; login type 2 was not captured; whether the
@@ -516,7 +516,7 @@ admitted, as the starter solutions open (their copies open with no
 dialog). When it is refused, or the option is off, it asks, suggesting the
 `16` account (section 6). Holding Shift or Option (Alt) when choosing the
 file asks anyway. "Guest Account" (`16` the Guest name) asks too:
-OpenMaker does not log in as [Guest] (#158).
+OpenMaker does not log in as [Guest] ([#19](https://github.com/OpenMaker-Dev/openmaker/issues/19)).
 
 ### 3.2 Files FileMaker Server does not host
 
@@ -691,7 +691,7 @@ than a second reader and writer.
     password, so after one a script's open of a new file fails with 802
     until the file is opened again. No license is read.
     - *FileMaker Pro* [O: a FileMaker Pro 26.0.3 run on a local pair, a
-      file relating to one whose accounts differ, #214's comment
+      file relating to one whose accounts differ, [#60](https://github.com/OpenMaker-Dev/openmaker/issues/60)'s comment
       https://github.com/OpenMaker-Dev/openmaker/issues/60;
       a hosted pair is unmeasured]: it does not ask at open. It asks when a layout first needs the related file (a field
       of one of its occurrences), whether the user or a script's Go to

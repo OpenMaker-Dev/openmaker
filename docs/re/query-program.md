@@ -633,7 +633,7 @@ behavior with and without `IncludeTooLong`, remain unmeasured. The
 loopback host returned normal no-match for the plain criterion and an
 unsupported-finder error for the other two; those are OpenMaker Server
 results, not FileMaker Server evidence. Evidence: private capture
-`re/work/issue-316/long-find-loopback/capture/conn-000` and [#316](https://github.com/OpenMaker-Dev/openmaker/issues/126).
+`re/work/issue-316/long-find-loopback/capture/conn-000` and [#126](https://github.com/OpenMaker-Dev/openmaker/issues/126).
 
 **Which Match finders reach the host (Med: bin).** `DBPredicateBuilder::Process`
 (Mac DBEngine 0x1a44818) builds a Match finder for the parser opcodes 1
@@ -730,13 +730,13 @@ is in at least one searched field (the words may be in different fields).
 The FileMaker Pro help for Perform Quick Find gives `Get ( LastError ) =
 401` as the test for no match.
 
-[O, #536, FileMaker Pro 26.0.3 on macOS] One word typed in the search box
+[O, [#201](https://github.com/OpenMaker-Dev/openmaker/issues/201), FileMaker Pro 26.0.3 on macOS] One word typed in the search box
 of each of the six English starter solutions found the record holding it.
 On copies of Contacts, Tasks and Inventory holding Alpha Cedar, Beta Cedar
 and Alpha Birch, in that order, with Alpha Birch current, `Alpha` found 2
 and kept Alpha Birch current, `Alpha Cedar` found 1 and showed it, and a
 word that matches nothing kept the found set and the current record
-(#536, recheck at 10:46Z). So the current record stays current when the
+([#201](https://github.com/OpenMaker-Dev/openmaker/issues/201), recheck at 10:46Z). So the current record stays current when the
 new found set holds it, and the first record is shown otherwise [I from
 those two cases].
 
@@ -1611,7 +1611,7 @@ dialog showed only the original value again.
 **OpenMaker Server.** It answers as above (#465): `14` only with `13`, no
 size cut, `00` as 1,000-byte pieces past 1,000 bytes, and `ff` minus the
 count when `14` stopped the list before another key with the prefix. It
-reads no `0a`, `0b` or `0c` (OpenMaker's gap, #774): every list comes from the
+reads no `0a`, `0b` or `0c` (OpenMaker's gap, [#238](https://github.com/OpenMaker-Dev/openmaker/issues/238)): every list comes from the
 value index, with no second field. A reply that cannot be encoded at all
 answers the error slot `02 ffff` (11.2), never the empty list `80 40`. How
 OpenMaker's client reads a list is in `docs/value-lists-missing-index.md`;

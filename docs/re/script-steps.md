@@ -363,7 +363,7 @@ calculations slots 2-4; "use password character" numeric data `[00 0..2,
 [O 28/28 leaves; the commit and password slots against XML, "Show Custom
 Dialog (87) inputs" below]. A new step from FileMaker Pro 26.0.3's Script
 Workspace stores "OK" committing (`[00 3, 03]` = 1) and "Cancel" not
-(`[00 4, 03]` = 0) [O: a Pro-made twin, #221].
+(`[00 4, 03]` = 0) [O: a Pro-made twin, [#66](https://github.com/OpenMaker-Dev/openmaker/issues/66)].
 
 **Go to Related Record (74).** Table occurrence at `[00 0, 11]`; layout key in
 `mReserved` (`kMemberKey`) or by calculation; option word `[00 0, 03]` (e.g.
@@ -1294,16 +1294,16 @@ calculation in slot 7 with `0x1000 | 0x2000`. Its parameter
 script in another file adds `0x400` and a calculation in slot 5 [bin].
 In a local Pro 26.0.3 file, choosing a callback from data source member
 `[32, 5, 1]` put the quoted text `"01"` in slot 5; its callback key in
-slot 3 and parameter in slot 4 stayed unchanged [O: #511]. A callback
+slot 3 and parameter in slot 4 stayed unchanged [O: [#188](https://github.com/OpenMaker-Dev/openmaker/issues/188)]. A callback
 selected from the same file's list as script id 2 stored the text
-calculation `"02"` in slot 3 [O: #511]. Changing the choice to By name
+calculation `"02"` in slot 3 [O: [#188](https://github.com/OpenMaker-Dev/openmaker/issues/188)]. Changing the choice to By name
 left that slot in the file, set `[00 6]` to 1 and added the callback name
-in slot 7; slot 4 kept its parameter [O: #511]. Execution of a callback
+in slot 7; slot 4 kept its parameter [O: [#188](https://github.com/OpenMaker-Dev/openmaker/issues/188)]. Execution of a callback
 in another file is unmeasured. The step always calls the server
 asynchronously (script-runtime.md 11.4), so `0x100` is not PSOS's "do not
 wait" bit here.
 OpenMaker's runtime and step text read the callback from slot 2 and
-its parameter from slot 3, which is wrong (#511).
+its parameter from slot 3, which is wrong ([#188](https://github.com/OpenMaker-Dev/openmaker/issues/188)).
 
 **Configure AI Account (212)** [O; `SetLLMAccount` 0x4a8b34/0x4a872a]:
 Verify SSL `0x10000000`; provider `mStepValue` (0 OpenAI, 1 Anthropic, 2
@@ -1415,14 +1415,14 @@ fine-tuning, `SaveAsJSONLSystemPromptField` 2, `SaveAsJSONLUserPromptField`
 **Configure Prompt Template (226)** [O; `ConfigureLLMTemplate`
 0x4b3760/0x4b328e]: `TemplateName` 1, `ModelProvider` `[00 2]` (0 OpenAI, 1
 Anthropic, 2 Cohere, 4 Google, 20 Custom). Pro 26.0.3 saves all five menu
-choices at this slot in local SQL Query steps [O: #149]; the XML writer
+choices at this slot in local SQL Query steps [O: [#13](https://github.com/OpenMaker-Dev/openmaker/issues/13)]; the XML writer
 does not name Google.
 `TemplateType` `[00 5]` (1 SQL Query: `SQLPrompt` 3 with `0x200`,
 `NaturalLanguagePrompt` 4 with `0x100`; 2 Find Request:
 `FindRequestPrompt` 6 with `0x400`; 3 RAG Prompt: `RAGPrompt` 7 with
 `0x800`). Pro saved each of the three template types in `[00 5]` and left
 `mStepValue` at 0; all five provider choices in SQL Query also left it at
-0 [O: #149, seven local files, scripts not run]. The dispatcher writes
+0 [O: [#13](https://github.com/OpenMaker-Dev/openmaker/issues/13), seven local files, scripts not run]. The dispatcher writes
 `mStepValue` as an unnamed `List`; what a nonzero value means remains
 unmeasured.
 
@@ -1437,8 +1437,8 @@ record ids are the calculation in slot 7; `LayoutReferenceContainer` is
 window as Go to Related Record's (11.8): name slot 0, height, width, top,
 left slots 1-4, style word `[00 0, 03]`. Turning New Window off in a local
 Pro 26.0.3 file cleared `0x20000` but left the old slot-0 name calculation
-in place; slot 7 still held the record ids [O: #512]. OpenMaker reads the
-ids from slot 0 and the new window from `0x100`, which is wrong (#512); its
+in place; slot 7 still held the record ids [O: [#189](https://github.com/OpenMaker-Dev/openmaker/issues/189)]. OpenMaker reads the
+ids from slot 0 and the new window from `0x100`, which is wrong ([#189](https://github.com/OpenMaker-Dev/openmaker/issues/189)); its
 layout and animation slots are right.
 
 **Configure Persistent Data (238)** [O; V1 `SetPersistentData`
@@ -1495,7 +1495,7 @@ dialog (`0x80` inverted) is written only for client mail; with SMTP or OAuth
 the writer shows `Boolean type="No dialog" value="True"`, which stores
 nothing.
 
-Step text [O, FileMaker Pro 26.0.3 Script Workspace, #221 comment
+Step text [O, FileMaker Pro 26.0.3 Script Workspace, [#66](https://github.com/OpenMaker-Dev/openmaker/issues/66) comment
 6874156929 on #837's file]: client mail with To (Collect addresses on),
 Subject, Message and the attachment `file:report.pdf` reads `Send Mail [
 Send via E-mail Client ; With dialog: Off ; To: "pat@example.com" ;
@@ -1553,7 +1553,7 @@ Batteries `x01-export`, `x02-import`, `x03-export`, `x04-import-matching`
 (the import review's P2 and P4, 2026-10-29); results in
 `crates/om-transfer/tests/data/`.
 
-Battery `x05-export-summaries` (#372) ran offline in the script harness
+Battery `x05-export-summaries` ([#139](https://github.com/OpenMaker-Dev/openmaker/issues/139)) ran offline in the script harness
 instead. With `DOCUMENTS` set, the harness runs Export Records as
 fmsased's `FMS::SASEScriptRuntime::DispatchStep` does: an
 `FMExportManager`'s `PerformExport` on the script's window
@@ -1667,33 +1667,33 @@ B, `g2` by B and K, `gu`, `gk` grouped by B but unsorted or sorted by K:
   as Excel of the unsorted records being browsed wrote 1, 2, 3 in the
   running-count column beside running totals 10, 30, 60. With B current,
   Save: Current record wrote one row, B/Price 20/running count 2/running
-  total 30 [O: [#372](https://github.com/OpenMaker-Dev/openmaker/issues/139)].
+  total 30 [O: [#139](https://github.com/OpenMaker-Dev/openmaker/issues/139)].
   On another copy, the three records were A/Price 10, A/Price 20 and
   B/Price 30. Running Count restarted for each group sorted by Name, and
   the found set was sorted by Name ascending. Browse showed 1 on the B
   record. Save Records as Excel of the records being browsed wrote running
   counts 1, 2, 1 beside running totals 10, 30, 60; Save: Current record
   with B current wrote one row with running count 1. The Running Total
-  field did not restart in that copy [O: [#372](https://github.com/OpenMaker-Dev/openmaker/issues/139),
+  field did not restart in that copy [O: [#139](https://github.com/OpenMaker-Dev/openmaker/issues/139),
   local FileMaker Pro 26.0.3.307, workbook OOXML]. Enabling restart for
   Running Total in the same sorted found set wrote 10, 30, 30 and Current
-  record B wrote 30 [O: [#372](https://github.com/OpenMaker-Dev/openmaker/issues/139)].
+  record B wrote 30 [O: [#139](https://github.com/OpenMaker-Dev/openmaker/issues/139)].
 
   On an unsorted copy with A/Price 10, B/Price 20 and C/Price 30, a List
   of Price wrote `10\n20\n30` on all three Excel rows and on Current
   record B (the separators are line feeds). After omitting B, it wrote
-  `10\n30` on both remaining rows [O: [#372](https://github.com/OpenMaker-Dev/openmaker/issues/139),
+  `10\n30` on both remaining rows [O: [#139](https://github.com/OpenMaker-Dev/openmaker/issues/139),
   local FileMaker Pro 26.0.3.307, workbook OOXML]. An Average of Price
   weighted by Price wrote `23.3333333333333333` on all three rows and
   Current record B; after omitting B it wrote 25 on both remaining rows
-  [O: [#372](https://github.com/OpenMaker-Dev/openmaker/issues/139)].
+  [O: [#139](https://github.com/OpenMaker-Dev/openmaker/issues/139)].
   On the same three Price values, Standard Deviation of Price wrote 10
   on each Excel row; with "by population" on, it wrote
   8.1649658092772603. With only the Price 10 record found, the sample
   standard-deviation cell was absent from the worksheet XML and the
   population cell was numeric 0. After Show All, Save: Current record
   with Price 10 current wrote one row with 10 and 8.1649658092772603
-  [O: [#372](https://github.com/OpenMaker-Dev/openmaker/issues/139),
+  [O: [#139](https://github.com/OpenMaker-Dev/openmaker/issues/139),
   local FileMaker Pro 26.0.3.307, workbook OOXML]. These current-record
   rows keep the found set's summary value.
 
@@ -1811,15 +1811,15 @@ FMPXMLRESULT, and `11|15|18`, `1|15|18`, `10|15|18` in tab.
 OpenMaker Server, running the same scripts over the file FileMaker
 generated for x05, differs in:
 
-- repeating summaries (#513);
+- repeating summaries ([#190](https://github.com/OpenMaker-Dev/openmaker/issues/190));
 - `GetSummary ( s ; s )` and the grand row of restarting running summaries
-  and subtotaled fractions (#514);
-- a subtotaled fraction of an empty value that starts its group (#515);
-- invalid summaries, error 15 and no file (#516);
-- group-by fields the found set is not sorted by (#517);
+  and subtotaled fractions ([#191](https://github.com/OpenMaker-Dev/openmaker/issues/191));
+- a subtotaled fraction of an empty value that starts its group ([#192](https://github.com/OpenMaker-Dev/openmaker/issues/192));
+- invalid summaries, error 15 and no file ([#193](https://github.com/OpenMaker-Dev/openmaker/issues/193));
+- group-by fields the found set is not sorted by ([#194](https://github.com/OpenMaker-Dev/openmaker/issues/194));
 - summaries by a break field without groups, sorted by other fields
-  (#518);
-- Excel and dBase with repeating fields, no file (#519).
+  ([#195](https://github.com/OpenMaker-Dev/openmaker/issues/195));
+- Excel and dBase with repeating fields, no file ([#196](https://github.com/OpenMaker-Dev/openmaker/issues/196)).
 
 Every other exported value of x05 is equal; FMPXMLRESULT's product
 version, file name and record ids differ with the host.
@@ -2562,7 +2562,7 @@ and the cached indexes:
 | Replace with (Replace Field Contents: `[00 1, 03]`, `[00 2, 03]`, `[00 3, 01]`, slot 0; 11.8) | pop-up "Replace with": Current contents (1, also when nothing is stored), Serial numbers (2), Calculated result (3); with Serial numbers "Initial value" and "Increment by", both 1 when nothing is stored as the runtime reads them, and "Update serial number in Entry Options" (`[00 4, 03]`); with Calculated result its calculation; always "Perform auto-enter options for fields", FileMaker Pro 26.0.3's label, checked unless `kRestore` is set with `[00 6, 03]` = 0 (the XML reader's "Skip auto-enter options") | the choice with `set_number(1)`, 4 bytes, as the step text's parser writes it; `set_text(3)`, `set_number(2)`, `set_calculation(0)`, each only when changed. Calculated result without a calculation is refused at OK (the runtime would end the step with error 5). The two checkboxes show what is stored and take no input: Pro greys "Update serial number in Entry Options" out for a field without an auto-entered serial number, and reads "Perform auto-enter options for fields" checked with nothing stored [O: #798's Pro check]; what its own editor writes for either is not measured. Another stored choice, or "Use Entry Options" stored (`[00 5, 03]` set, which would override the initial value and increment), keeps the parameter as stored [I: the widths of `[00 1, 03]` and `[00 2, 03]` in FileMaker Pro's own steps are not measured] |
 | Records (Save Records as PDF: the step value under its PDF options; Save Records as Excel: slot 1, two bytes; 11.7) | pop-up "Records": Records being browsed (1, also when nothing is stored), Current record (2); Save Records as Excel's only while Restore is checked, as FileMaker and the runtime apply it only then | PDF: the step value and `kMenuSelection`, as the step text's parser writes it; Excel: `set_number_u16(1)`, as FileMaker Server's XML writer reads it (11.7); each only when changed. Any other stored value keeps the parameter as stored; so do the PDF and Excel options this row does not cover. FileMaker Pro 26.0.3 read both back as Current record [O: #821's Pro check]. Print's records have a row of their own (below). |
 | Print's records (the step value, and `printStyleSetting` in the macOS `M_PM` chunk of the stored print settings `88`; 11.6) | pop-up "Records": Records being browsed (1, also when nothing is stored), Current record (2), shown only while "Specify print options" (Pro's label for Restore) is checked | Both places, as FileMaker Pro 26.0.3 writes them [O: #843's twins]: the step value without `kMenuSelection`, and the digit in place, one byte in the stored piece that holds it; only when changed. Read-only unless `M_PM` holds exactly one `printStyleSetting` of 1 or 2 and no comment or CDATA section (Pro's have none), and unless the record is within the runtime's 1 MiB bound. "Specify print options" cannot be checked on a step with no `88`: Pro asks for the options in its Print dialog. Unchecking it clears only `kRestore`, keeping the step value, `87` and `88`, as Pro does [O: #843]. A blank-record value (3-6) keeps the parameter as stored. The runtime prints a stored current record only with `kRestore`, else the records being browsed [I: from Pro's dialog preselection, #843] |
-| Send Mail (Send Mail by the email client: calculations 0-4, `[00 0..3, 03]`, `[00 0, 82]`; 12.3) | checkbox "One email per record" (`[00 3, 03]`); "To", "CC", "BCC" (calculations 0-2), each followed, while one email per record is unchecked, by "Collect … addresses across found set" (`[00 0..2, 03]`); "Subject" (3), "Message" (4); "Attachments", the path list as File paths | `set_calculation` of slots 0-4; the checkboxes with `set_number_bool` (one byte); the attachments with `set_path_list` (`[00 0, 82]` with `kFilePath`); each only when changed [I: the widths FileMaker Pro writes for `[00 0..3, 03]` are not measured]. A step sending by SMTP (`[00 4, 03]` set) or OAuth (`[00 7, 03]` set) keeps the parameter as stored, as do the SMTP and OAuth options; OpenMaker does not run Send Mail (#245) |
+| Send Mail (Send Mail by the email client: calculations 0-4, `[00 0..3, 03]`, `[00 0, 82]`; 12.3) | checkbox "One email per record" (`[00 3, 03]`); "To", "CC", "BCC" (calculations 0-2), each followed, while one email per record is unchecked, by "Collect … addresses across found set" (`[00 0..2, 03]`); "Subject" (3), "Message" (4); "Attachments", the path list as File paths | `set_calculation` of slots 0-4; the checkboxes with `set_number_bool` (one byte); the attachments with `set_path_list` (`[00 0, 82]` with `kFilePath`); each only when changed [I: the widths FileMaker Pro writes for `[00 0..3, 03]` are not measured]. A step sending by SMTP (`[00 4, 03]` set) or OAuth (`[00 7, 03]` set) keeps the parameter as stored, as do the SMTP and OAuth options; OpenMaker does not run Send Mail ([#89](https://github.com/OpenMaker-Dev/openmaker/issues/89)) |
 
 Step rules: Perform Script and Perform Script on Server show "Specified: From list / By name" (`[00 1]`
 1 by name; the by-name bits `0x800` and `0x2000000` set with it, cleared

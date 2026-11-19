@@ -16,7 +16,7 @@ Hidden follows FileMaker's truthiness of conditions (calc-values.md 2.9): a
 `?` result is true. Errors the formula itself produces (`1/0`, a missing
 field) are FileMaker results and hide the object. On one local FileMaker Pro
 26.0.3 copy, Data Viewer evaluated `1/0` as `?` and the same formula hid a
-text object in Browse [observed, #184]. Other formulas returning `?`,
+text object in Browse [observed, [#38](https://github.com/OpenMaker-Dev/openmaker/issues/38)]. Other formulas returning `?`,
 including a missing field, have not been compared in this condition.
 
 Withheld and Unresolved are OpenMaker states, not FileMaker's. FileMaker Pro
@@ -88,13 +88,13 @@ by a context change alone. When FileMaker re-evaluates a hide condition after
 such a change is only partly measured. In local FileMaker Pro 26.0.3,
 `Get ( FoundCount ) = 1` hid a text object immediately after a Find changed
 the found set from three records to one, then showed it on Show All Records
-[observed, #184]. A script that set a global used by another hide condition
+[observed, [#38](https://github.com/OpenMaker-Dev/openmaker/issues/38)]. A script that set a global used by another hide condition
 did not immediately update the visible object when launched from either
 Script Workspace or the Scripts menu. Data Viewer confirmed the new value,
 and the object was hidden after that later visit. In fresh local copies,
 layout and mode changes hid the object, while clicks on the title or
 empty layout header and changes to another tab panel left it visible
-[observed, #184]. The exact internal cache rule remains unmeasured. At
+[observed, [#38](https://github.com/OpenMaker-Dev/openmaker/issues/38)]. The exact internal cache rule remains unmeasured. At
 product code `ea6ca95d`, OpenMaker hid the object immediately after the
 same script ran from its Scripts menu
 on a byte-identical local copy. This observed case is a parity gap.
@@ -102,8 +102,8 @@ on a byte-identical local copy. This observed case is a parity gap.
 ## Limits
 
 - Native acceptance is partial. FileMaker Pro was compared on disposable
-  local copies for one constant hide condition in Browse and Find (#181),
-  and for the expression and refresh cases above (#184). Other
+  local copies for one constant hide condition in Browse and Find ([#35](https://github.com/OpenMaker-Dev/openmaker/issues/35)),
+  and for the expression and refresh cases above ([#38](https://github.com/OpenMaker-Dev/openmaker/issues/38)). Other
   expressions, object kinds and context changes remain unmeasured. The
   global-script case was compared against OpenMaker at `ea6ca95d`;
   the other cases used an earlier debug binary of unknown revision.
@@ -115,7 +115,7 @@ on a byte-identical local copy. This observed case is a parity gap.
 - Find mode does not evaluate hide conditions, so an object whose
   condition FileMaker applies in Find mode (flag `0x100`,
   [layout-model.md](re/layout-model.md) 5.5.2) shows there. The constant
-  `1` case was compared with FileMaker Pro [observed, #181]. OpenMaker
+  `1` case was compared with FileMaker Pro [observed, [#35](https://github.com/OpenMaker-Dev/openmaker/issues/35)]. OpenMaker
   also evaluates a stored formula without checking flag `0x4`, which
   FileMaker requires; none of the scanned FileMaker-written files has a
   formula without that flag.

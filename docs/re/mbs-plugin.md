@@ -19,7 +19,7 @@ FileMaker Pro; what follows from the documentation without being stated is
   [I] The plug-in's error messages begin `[MBS]`.
 - [I] Command names are not case-sensitive.
 - Without the plug-in, FileMaker Pro evaluates the call as `?` and the
-  script goes on, with `Get ( LastError )` 0 [O, #247 on OpenMaker's
+  script goes on, with `Get ( LastError )` 0 [O, [#91](https://github.com/OpenMaker-Dev/openmaker/issues/91) on OpenMaker's
   harness, which matches FileMaker Pro without the plug-in].
 
 OpenMaker implements the commands of sections 2 to 5, which occur in a

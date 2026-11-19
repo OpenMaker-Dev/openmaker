@@ -44,9 +44,12 @@ reproduce it. Labels and wording are in [AGENTS.md](AGENTS.md), section 6.
 Report security problems privately, as [SECURITY.md](SECURITY.md) says, not
 in an issue.
 
-Code and docs written before the repository moved here cite issue and pull
-request numbers (`#1006`) from the project's earlier, private tracker. Those
-numbers do not refer to this repository's issues.
+In the docs, an issue number written as a link
+(`[#186](https://github.com/OpenMaker-Dev/openmaker/issues/186)`) is an
+issue of this tracker. A bare number (`#1006`) is an issue or pull request
+of the project's earlier, private tracker that was not carried over here,
+kept as provenance; it does not refer to this repository's issues. Code
+comments written before the move cite the earlier tracker's numbers, bare.
 
 ## Pull requests
 

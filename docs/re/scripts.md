@@ -147,7 +147,7 @@ FileMaker Pro's own records were not compared key by key]:
 - Every save writes the catalog's digest `08` for the member cache as it
   leaves it ("The script catalog's digest", below): a save that kept the
   old one would make FileMaker refuse the file after a new script, a
-  duplicate, a delete or a rename (#221). A save is refused when the
+  duplicate, a delete or a rename ([#66](https://github.com/OpenMaker-Dev/openmaker/issues/66)). A save is refused when the
   stored `08` is not the digest OpenMaker computes for the stored cache
   (a file FileMaker already refuses, or flags or names OpenMaker reads
   otherwise). The digest recomputed this way equals the stored `08` of
@@ -205,7 +205,7 @@ changes the digest.
 calls `HasBeenTampered` while it sets up the file user, after the
 account has signed in. When it returns true, it stores error 808. This is
 why FileMaker Pro signs in and writes to the file before it refuses it
-(#221). DBEngine has one other open-time 808: `DBSession::
+([#66](https://github.com/OpenMaker-Dev/openmaker/issues/66)). DBEngine has one other open-time 808: `DBSession::
 InternalCreateFileUser` (`0x1baf036`) stores it when the download of the
 access catalog `[23]` (`KAccess`) fails (session-identity.md 4).
 
@@ -217,7 +217,7 @@ private flags, and every member added or removed [I: the store after
 `Update` was not traced instruction by instruction]. A change to steps
 alone leaves the names and flags, and so the digest, as they were.
 
-**Observed** on the six stages of #221 (OpenMaker saves of copies of the
+**Observed** on the six stages of [#66](https://github.com/OpenMaker-Dev/openmaker/issues/66) (OpenMaker saves of copies of the
 English Tasks starter; `08` kept at its original value in all of them):
 
 | Stage | Scripts' digest equals `08` | FileMaker Pro | `FMDeveloperTool --saveAsXML <file> Admin ""` |

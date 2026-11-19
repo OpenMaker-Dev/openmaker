@@ -217,7 +217,7 @@ exporting, printing, extended privileges, own password, all menus).
 
 FileMaker Pro 26.0.3, on disposable local copies of a Contacts file whose
 custom set has all menu commands and one of the two options off [O:
-[#651](https://github.com/OpenMaker-Dev/openmaker/issues/214), 2026-11-14
+[#214](https://github.com/OpenMaker-Dev/openmaker/issues/214), 2026-11-14
 20:18Z to 23:15Z, one reading per row]. Each script read
 `Get ( LastError )` right after the step. Errors were not captured: the
 Admin control runs showed FileMaker's prompt for a canceled step [I from
@@ -245,7 +245,7 @@ file does.
 #### Further local menu and import checks
 
 FileMaker Pro 26.0.3 on disposable Contacts copies also gave these results
-[O, #651]. Menu readings are enabled states in the stated Browse context,
+[O, [#214](https://github.com/OpenMaker-Dev/openmaker/issues/214)]. Menu readings are enabled states in the stated Browse context,
 not proof that every enabled command completes. The closed-source import
 checks distinguish matching credentials from a source requiring another
 account; they do not establish the identity of an unprompted source session.
@@ -366,7 +366,7 @@ choices, not compared with FileMaker Pro, except where marked]:
   edit's commit keeps its stored value whatever the upload holds
   (`views::keep_hidden`), as the client never had it; the desktop draws
   `<No Access>` in it (`DataProvider::no_access`), as FileMaker Pro 26.0.3
-  does for a record it may not view (#137's reading; for a field without
+  does for a record it may not view ([#7](https://github.com/OpenMaker-Dev/openmaker/issues/7)'s reading; for a field without
   access, inferred);
 - a record a table's view formula is not true on keeps its id and
   modification count, so it stays in found sets and lists, but every read
@@ -374,7 +374,7 @@ choices, not compared with FileMaker Pro, except where marked]:
   op86) has its field values withheld (`views::ViewFilter`, which always
   evaluates the formula on the stored record, never on the fields a
   request names): the desktop draws `<No Access>` in its fields, as
-  FileMaker Pro 26.0.3 does (#137's reading [O]; their values are empty),
+  FileMaker Pro 26.0.3 does ([#7](https://github.com/OpenMaker-Dev/openmaker/issues/7)'s reading [O]; their values are empty),
   and a find never matches it. A portal leaves such a record out, and one
   of a table the set may never view: FileMaker Pro 26.0.3 lists only the
   rows it may view, its creation row after them (#695's reading [O]), and
@@ -391,8 +391,8 @@ choices, not compared with FileMaker Pro, except where marked]:
   account, even if the formula has turned true since; the desktop refuses
   first on the record it just read (#670). A new record the formula is
   not true on (or one of a table the set may never view) is created all
-  the same, as FileMaker Pro 26.0.3's New Record creates one under #137's
-  `limited` set, and Delete Record removes it (#137's reading [O]). The
+  the same, as FileMaker Pro 26.0.3's New Record creates one under [#7](https://github.com/OpenMaker-Dev/openmaker/issues/7)'s
+  `limited` set, and Delete Record removes it ([#7](https://github.com/OpenMaker-Dev/openmaker/issues/7)'s reading [O]). The
   host serves it back as its id and modification count, so the desktop
   checks only those after a create, when it judges the formula false both
   on the values it wrote (as on a page's records) and on an empty record,
@@ -422,14 +422,14 @@ choices, not compared with FileMaker Pro, except where marked]:
   of a record the set may not view (`<No Access>`); typing shows "This
   action cannot be performed because this field is not modifiable." in
   the first and "Your access privileges do not allow you to perform this
-  action." in the second, with the value unchanged (#137's reading [O]).
+  action." in the second, with the value unchanged ([#7](https://github.com/OpenMaker-Dev/openmaker/issues/7)'s reading [O]).
   A record the set may view but not edit, records through a layout that
   makes them view only, and a field without access are unmeasured;
 - a layout the set gives no access is left out of the layout menu. A
   script's Go to Layout to it (a button's included) enters it as FileMaker
   Pro 26.0.3 does: a gray page showing `<No Access>`, its name blank in
   the layout menu, New, Delete, Sort and Quick Find disabled, no alert
-  (#137's reading [O]), and the desktop reads nothing through it. In a
+  ([#7](https://github.com/OpenMaker-Dev/openmaker/issues/7)'s reading [O]), and the desktop reads nothing through it. In a
   local Pro 26.0.3 copy whose opening layout was hidden from the account,
   Pro instead opened a blank gray page with no `<No Access>` text, empty
   toolbar layout name and no alert [O: #696]. This held both when File
@@ -527,8 +527,8 @@ choices, not compared with FileMaker Pro, except where marked]:
   privileges": Minimum keeps opening, closing and creating files,
   switching windows, performing scripts, Help and Settings; Editing only
   adds basic editing in Browse mode; both disable New Window), the menus
-  follow FileMaker Pro 26.0.3's readings of #137's `editonly` and of
-  #651's Minimum copy of it, in Browse mode [O]:
+  follow FileMaker Pro 26.0.3's readings of [#7](https://github.com/OpenMaker-Dev/openmaker/issues/7)'s `editonly` and of
+  [#214](https://github.com/OpenMaker-Dev/openmaker/issues/214)'s Minimum copy of it, in Browse mode [O]:
   - both levels keep View > Go to Layout, Records > Go to Record, View >
     Status Toolbar, Formatting Bar and zoom, and Window > Minimize Window.
     File > Manage, Import Records and Save/Send Records As open with every
@@ -564,7 +564,7 @@ choices, not compared with FileMaker Pro, except where marked]:
   a record and committing it by clicking on the layout. OpenMaker's field
   editors do their own cutting, copying and pasting under both; the Edit
   menu's Cut, Copy and Paste, which Pro enables under Editing only, are
-  not implemented. Shortcuts under either level are unmeasured (#651);
+  not implemented. Shortcuts under either level are unmeasured ([#214](https://github.com/OpenMaker-Dev/openmaker/issues/214));
 - it changes no design, and its other options (managing the database,
   creating layouts and so on) are never granted, whatever they say.
 
@@ -657,7 +657,7 @@ stamps aside), and no other member:
 Two blank files made with FileMaker Pro 26.0.3's German UI (Create New >
 Blank) stored these names at `10` under set keys `01`, `02` and `03`:
 `[Voller Zugriff]`, `[Nur Dateneingabe]`, `[Nur Lesezugriff]` [O: local
-#876 probe]. Their checked `02`, `09, 04`, `09, 11`, `09, 21` and `0a`
+[#254](https://github.com/OpenMaker-Dev/openmaker/issues/254) probe]. Their checked `02`, `09, 04`, `09, 11`, `09, 21` and `0a`
 values matched the English Pro-made blank and the table above. The
 set keys stayed the same while the names changed. All 66 shipped starter
 files in eleven languages stored the English names [O: #873]; a starter's
@@ -678,7 +678,7 @@ privilege sets) [I: the option names of 2.3 not marked there].
 
 [O] A Contacts starter to which FileMaker Pro 26.0.3 for macOS added five
 custom sets, each duplicated from [Data Entry Only] with one change made
-in Edit Privilege Set (#137's fixture; the dialogs were read back after
+in Edit Privilege Set ([#7](https://github.com/OpenMaker-Dev/openmaker/issues/7)'s fixture; the dialogs were read back after
 save, close and reopen), stores them as 2.1-2.3 decode them:
 
 | Set | Change in the dialog | Stored |
@@ -734,7 +734,7 @@ Privilege sets `[23, 2, 5, P]`, extended privileges `[23, 3, 5, E]` and
 file access entries `[23, 4, 5, F]` keep a 16-byte checksum at `04`
 (`KCount`), and the file access catalog keeps one for itself at
 `[23, 4, 1, 09]` (`KSummary`). Each is the MD5 (Support's `CRCContext`)
-of the bytes listed below. Accounts have their own (issue #148).
+of the bytes listed below. Accounts have their own (issue [#12](https://github.com/OpenMaker-Dev/openmaker/issues/12)).
 
 Evidence [C]: Linux `libDBEngine.so` (DWARF; nm addresses, with the
 disassembly for argument sizes): `DBPrivileges::ComputeCRC` `0x109d120`,

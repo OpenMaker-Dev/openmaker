@@ -1,7 +1,7 @@
 # Plug-ins
 
 OpenMaker loads no FileMaker plug-in: there is no plug-in API, installer or
-`Install Plug-In File` (#247). A calculation that calls a plug-in function
+`Install Plug-In File` ([#91](https://github.com/OpenMaker-Dev/openmaker/issues/91)). A calculation that calls a plug-in function
 evaluates as it does in FileMaker Pro without that plug-in, to `?`.
 
 The exception is a bounded subset of the MBS FileMaker Plugin's commands,

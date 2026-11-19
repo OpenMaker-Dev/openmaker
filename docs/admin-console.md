@@ -739,7 +739,7 @@ OpenMaker's own client (`om-session`) answers each call at once and keeps
 the administrator's messages apart from change notifications
 (`Session::take_admin_messages`). It reads the host's calls only while it
 reads for itself, and the desktop does not show them yet
-([#446](https://github.com/OpenMaker-Dev/openmaker/issues/156)).
+([#156](https://github.com/OpenMaker-Dev/openmaker/issues/156)).
 
 **Block New Users.** `ServerHandle::set_block_new_users(bool)` and
 `block_new_users()`. While it is on, an Open (op78) is refused with
@@ -752,7 +752,7 @@ current sessions are not affected, but whether one can open another file
 is not measured, re 10). FileMaker Pro opens a solution's related files in
 the session it has (re/network-protocol.md 5.5), so they still open.
 OpenMaker's desktop opens a hosted file's related files in its session too
-(#740), so by the rule above they open as well. Turning it on or off is
+([#229](https://github.com/OpenMaker-Dev/openmaker/issues/229)), so by the rule above they open as well. Turning it on or off is
 logged.
 It starts off.
 
@@ -966,7 +966,7 @@ tools carry over. Points marked (inf) are OpenMaker's decisions. Code:
   each backup's folder name, so it must be a valid folder name on Linux,
   macOS and Windows, of at most 100 characters.
 - There is no default schedule (inf,
-  [#449](https://github.com/OpenMaker-Dev/openmaker/issues/159)).
+  [#159](https://github.com/OpenMaker-Dev/openmaker/issues/159)).
   FileMaker Server ships one, "FMS", daily at midnight, keeping 7 (re 6).
   The section above recreates it with `[FMS]`.
 
@@ -985,7 +985,7 @@ tools carry over. Points marked (inf) are OpenMaker's decisions. Code:
   stored container data is copied beside its copy, where FileMaker Server
   puts it (re 2.1, read in its code). Every container file is copied on every
   run, while FileMaker links those unchanged since the last backup (re 2.3,
-  [#493](https://github.com/OpenMaker-Dev/openmaker/issues/178)).
+  [#178](https://github.com/OpenMaker-Dev/openmaker/issues/178)).
 - **Reading container data.** The run walks the folder through open folder
   handles, opening each name below the one above it without following a
   link (`O_NOFOLLOW`), so a folder swapped for a link during the copy fails
@@ -1149,17 +1149,17 @@ tools carry over. Points marked (inf) are OpenMaker's decisions. Code:
   the server's backups on yet, so the tab works only against a backend
   that has them, such as the mock. Cancel
   and Keep Cancelled Backups
-  ([#457](https://github.com/OpenMaker-Dev/openmaker/issues/167)),
+  ([#167](https://github.com/OpenMaker-Dev/openmaker/issues/167)),
   Progressive Backup
-  ([#450](https://github.com/OpenMaker-Dev/openmaker/issues/160)) and
+  ([#160](https://github.com/OpenMaker-Dev/openmaker/issues/160)) and
   Parallel Backup
-  ([#458](https://github.com/OpenMaker-Dev/openmaker/issues/168)) are not
+  ([#168](https://github.com/OpenMaker-Dev/openmaker/issues/168)) are not
   available. Only the backup status refreshes live; the lists and their
   counts change when the page is loaded again. An action returns to its
   view without the chosen schedule and filters.
 - **Logs tab.** Interactive View, Download All Logs, column filters and Reset
   All Filters are not available
-  ([#459](https://github.com/OpenMaker-Dev/openmaker/issues/169)), nor
+  ([#169](https://github.com/OpenMaker-Dev/openmaker/issues/169)), nor
   are the logging options of Log Settings. A download holds at most the
   newest 16 MiB of a log.
 - **Admin API.** Of FileMaker Server's 112 paths, the ones in
@@ -1170,7 +1170,7 @@ tools carry over. Points marked (inf) are OpenMaker's decisions. Code:
   with a message and a file's status change (`PATCH /databases`) are
   refused there too. No reply has been compared with FileMaker Server's
   own, so the inferred points there are unverified
-  ([#453](https://github.com/OpenMaker-Dev/openmaker/issues/163)).
+  ([#163](https://github.com/OpenMaker-Dev/openmaker/issues/163)).
   #494 (merged as
   re 8.1, read in the console's server code, not compared with a live
   server) gives FileMaker Server's own answers for several of them: the
@@ -1178,19 +1178,19 @@ tools carry over. Points marked (inf) are OpenMaker's decisions. Code:
   `null` fields, other methods, unsupported features, `appType` and client
   `status` values, and the fields a database status does not take,
   `CLOSED` without `messageText` included. Issues
-  [#495](https://github.com/OpenMaker-Dev/openmaker/issues/179),
-  [#496](https://github.com/OpenMaker-Dev/openmaker/issues/180) and
-  [#497](https://github.com/OpenMaker-Dev/openmaker/issues/181) track the
+  [#179](https://github.com/OpenMaker-Dev/openmaker/issues/179),
+  [#180](https://github.com/OpenMaker-Dev/openmaker/issues/180) and
+  [#181](https://github.com/OpenMaker-Dev/openmaker/issues/181) track the
   differences, which are not resolved: OpenMaker keeps its answers until
   they are. A schedule's reply lacks its script name, parameter and
   timing, and a backup schedule's what and where, which the backend's
   model does not have yet
-  ([#452](https://github.com/OpenMaker-Dev/openmaker/issues/162)). PKI
+  ([#162](https://github.com/OpenMaker-Dev/openmaker/issues/162)). PKI
   tokens are not accepted.
 - **Pause holds client requests only.** Perform Script on Server scripts
   already running and schedules go on using a paused file, so copying a
   paused file can catch a save in progress
-  ([#456](https://github.com/OpenMaker-Dev/openmaker/issues/166)).
+  ([#166](https://github.com/OpenMaker-Dev/openmaker/issues/166)).
 - **File operations not built.** Download, Remove, Verify, Flush and
   Clear Encryption Password, and the files' extended privileges.
 - **Block New Users is not kept.** It lives in memory and is off when the
@@ -1214,18 +1214,18 @@ tools carry over. Points marked (inf) are OpenMaker's decisions. Code:
 - **Backups.** These are not implemented, and the console shows them as not
   available:
   - FileMaker's Verify, Clone and Clone Only options
-    ([#448](https://github.com/OpenMaker-Dev/openmaker/issues/158)),
+    ([#158](https://github.com/OpenMaker-Dev/openmaker/issues/158)),
     progressive backups
-    ([#450](https://github.com/OpenMaker-Dev/openmaker/issues/160)),
+    ([#160](https://github.com/OpenMaker-Dev/openmaker/issues/160)),
     Parallel Backup and Keep Cancelled Backups. The schedules file refuses
     their keys.
   - The Admin API's `/schedules/backup` and backup settings.
   - Schedules are fixed at startup, so the console cannot create or edit one.
   - FileMaker's automatic preservation of the default schedule's on-demand
     backups, since there is no default schedule
-    ([#449](https://github.com/OpenMaker-Dev/openmaker/issues/159)).
+    ([#159](https://github.com/OpenMaker-Dev/openmaker/issues/159)).
   - Hard links for unchanged container files: each run copies them all
-    ([#493](https://github.com/OpenMaker-Dev/openmaker/issues/178)).
+    ([#178](https://github.com/OpenMaker-Dev/openmaker/issues/178)).
 - **Backups compared with FileMaker.** The folder layout, `backup.config` and
   hard links for database files follow what the lab server wrote. Where
   container data goes follows FileMaker Server's code (re 2.1), not a live
@@ -1240,7 +1240,7 @@ tools carry over. Points marked (inf) are OpenMaker's decisions. Code:
 - **Linux and macOS only.** Backups need calls that open a folder without
   following a link and work relative to it. On Windows every run fails with
   that reason, and no backup is listed or deleted
-  ([#527](https://github.com/OpenMaker-Dev/openmaker/issues/197)).
+  ([#197](https://github.com/OpenMaker-Dev/openmaker/issues/197)).
 - **Moves during a deletion.** A hosted file moved into a backup folder
   while that folder is being deleted can go with it. Nothing can rule that
   out.

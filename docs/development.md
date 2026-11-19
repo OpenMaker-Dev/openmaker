@@ -144,7 +144,7 @@ a FileMaker-file account (not [Guest] or an external one), with no password
 change due, in [Full Access], [Data Entry Only] or [Read-Only Access] as
 FileMaker stores them. An account in a custom privilege set is refused
 with error 9: the server does not yet hold a client that sends its own
-requests to every member of one (#734). An account in [Full Access] may
+requests to every member of one ([#227](https://github.com/OpenMaker-Dev/openmaker/issues/227)). An account in [Full Access] may
 run any Perform Script on Server script and make `om-author` edits; any
 other account runs only scripts set to run with full access privileges and
 authors nothing. The rules and their error codes are in
@@ -186,7 +186,7 @@ such a file with full access.
 A script schedule names one of the file's accounts that a client could log
 in as (a stored password included), and runs as it without the password:
 the schedules file comes from the server's administrator, who holds the
-files anyway (FileMaker Server keeps a password with each schedule, #731).
+files anyway (FileMaker Server keeps a password with each schedule, [#226](https://github.com/OpenMaker-Dev/openmaker/issues/226)).
 
 ### The Admin Console
 
@@ -352,7 +352,7 @@ of each dependency, unless there is a concrete reason not to.
   version must never be above the installed stable.
 - **Clippy.** Raising the compiler baseline enables suggestions for newer
   std APIs. Four style lints are temporarily allowed in the workspace
-  manifest while [#368](https://github.com/OpenMaker-Dev/openmaker/issues/138)
+  manifest while [#138](https://github.com/OpenMaker-Dev/openmaker/issues/138)
   coordinates that migration across active feature branches:
   `unnecessary_map_or`, `chunks_exact_to_as_chunks`,
   `manual_is_multiple_of` and `manual_repeat_n`. Remove those specific
@@ -374,7 +374,7 @@ of each dependency, unless there is a concrete reason not to.
   RustSec advisory database with `cargo audit` (install it once with
   `cargo install cargo-audit --locked`). RUSTSEC-2023-0071 (`rsa`, no
   fixed 0.9 release) is expected until
-  [#173](https://github.com/OpenMaker-Dev/openmaker/issues/29) is
+  [#29](https://github.com/OpenMaker-Dev/openmaker/issues/29) is
   resolved; any other vulnerability it lists needs an update or an issue.
 
 ## Kinds of tests
@@ -415,7 +415,7 @@ result instead of trusting a passing test:
   Otherwise
   each harness creates and destroys its own Vulkan instance, and with tests
   on parallel threads, Vulkan loaders before 1.4.345 can crash the whole
-  test binary with SIGSEGV in libvulkan before any result (#397).
+  test binary with SIGSEGV in libvulkan before any result ([#142](https://github.com/OpenMaker-Dev/openmaker/issues/142)).
 
 ### egui and kittest traps
 
@@ -577,7 +577,7 @@ Each of these cost a debugging round:
   ```
 
   Criterion 1's local half, on two Contacts copies FileMaker Pro 26 gave
-  accounts and privilege sets to (kept out of git; #156, #137): a wrong
+  accounts and privilege sets to (kept out of git; #156, [#7](https://github.com/OpenMaker-Dev/openmaker/issues/7)): a wrong
   password, `reader`, `entry`, `limited`, `nolayout`, `viewonly` and
   `editonly`, through the provider calls and the window; it writes
   `privileges.md`.

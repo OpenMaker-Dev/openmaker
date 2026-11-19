@@ -24,14 +24,14 @@ source ids and path alternatives follow `script-steps.md` 11.8 and
 - Relative sources inherit the current endpoint. An explicit `fmnet`
   source naming that endpoint is a file there: a stored one is read as FileMaker Pro 26.0.3
   stores it, the host (and port) between two U+E000 characters
-  (file-metadata.md 1.1, #759), and a calculated `fmnet:/host/Name` the
+  (file-metadata.md 1.1, [#232](https://github.com/OpenMaker-Dev/openmaker/issues/232)), and a calculated `fmnet:/host/Name` the
   same way. The host is compared as text, any case, never looked up; no
   port means 5003. One naming another host or port is that host's file
   (below). A folder on the host, absolute/local files, other path schemes
   and ODBC are refused. A
   hosted file's related files follow these paths in their order, and an
   `fmnet` path to another host or port too, once the user signs in to
-  that file there (#976; network-protocol.md 5.5).
+  that file there ([#272](https://github.com/OpenMaker-Dev/openmaker/issues/272); network-protocol.md 5.5).
 - A source on another host or port (a stored or calculated `fmnet` path)
   is named to the provider as `fmnet:/host:port/Name`. It is sent, on a
   connection to that host whose certificate is verified first:
@@ -50,7 +50,7 @@ source ids and path alternatives follow `script-steps.md` 11.8 and
   sent: the opening file reconnected without keeping its password), Open
   File, and a step that first needs such a file through its data source
   (Perform Script in it, an external trigger), asks for an account, as
-  Open File does for a file that refused (#214, #991), and that account
+  Open File does for a file that refused ([#60](https://github.com/OpenMaker-Dev/openmaker/issues/60), #991), and that account
   opens it there, on that host's port; a refusal there is remembered for
   that host. An accepted account that does not open the
   file (none of that name there, no connection) moves on to the source's
@@ -79,7 +79,7 @@ in the session the client has on the file's host when one is open there
 and not lost (#1011): the opening file's for a file on its host, on
 another host a related file's there, and a file opened through a file of
 that host its session. FileMaker Pro opened two hosted files of one host,
-in two windows, on one connection (#740). So a host gets one connection,
+in two windows, on one connection ([#229](https://github.com/OpenMaker-Dev/openmaker/issues/229)). So a host gets one connection,
 one Connect and one license from the client. A file is opened and logged
 in to once on it: a desktop file and a related file of the same file,
 or two files' common related file, with the same account and password
@@ -151,7 +151,7 @@ restriction in the [Close File reference](https://help.claris.com/en/pro-help/co
 Whether a file holds the one being closed is asked by host, port and name
 (a hosted file by `fmnet:/host:port/Name`), so a relationship to a file of
 the same name on another host does not hold it, and one through an
-`fmnet` path to another host does (#976).
+`fmnet` path to another host does ([#272](https://github.com/OpenMaker-Dev/openmaker/issues/272)).
 Related-reader connections remain independent of desktop ownership.
 Connection loss stops affected execution and keeps its UI drafts; queued
 close continuations retain the existing loss protections. A close queued
@@ -167,7 +167,7 @@ by plain names in its folder, through hosts its window's files share
 external-authentication or cross-server opening is added. A file that
 refused the session's account and password is not sent them again, until
 the first file is opened again (#738). An Open File step of such a file
-asks for another account, as FileMaker Pro's does (#214; local-files.md 4,
+asks for another account, as FileMaker Pro's does ([#60](https://github.com/OpenMaker-Dev/openmaker/issues/60); local-files.md 4,
 *Accounts*): 1 on Cancel, the refusal's code (212) on Cancel after a
 refused answer, 0 when the file's own account opens it; with no one to
 answer, it fails at once with the refusal. Go to Related Record to an
@@ -243,7 +243,7 @@ caller (#1313); while a dialog window is open, showing a hidden one fails
 with 3, OpenMaker's reading of Claris's rule that opening a document window
 then fails (New Window). The two Select Window rules are Claris's
 documented ones (script-runtime.md 9.2), not measured. Names match
-case-sensitively and not by UUID, unlike FileMaker (#1322). Named Close
+case-sensitively and not by UUID, unlike FileMaker ([#320](https://github.com/OpenMaker-Dev/openmaker/issues/320)). Named Close
 Window, Set Window Title and Move/Resize Window remain scoped to the
 selected file. Their cross-file options require a separate extension using
 the same registry, including independent native collision-precedence and

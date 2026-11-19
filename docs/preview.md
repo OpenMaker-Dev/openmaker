@@ -93,7 +93,7 @@ continue to check searchable output, refusal/cancellation and root stacking.
 
 Task List and Meeting List, one record each, were read in FileMaker Pro 26.0.3
 for macOS on US Letter with Any Printer, in Layout Setup, the Inspector,
-Preview and a saved PDF (#263, #266, 2026-11-13). OpenMaker's pages were
+Preview and a saved PDF (#263, [#107](https://github.com/OpenMaker-Dev/openmaker/issues/107), 2026-11-13). OpenMaker's pages were
 rendered from the same starter layouts through the shared report builder.
 
 Measured in FileMaker, and what OpenMaker does:
@@ -101,7 +101,7 @@ Measured in FileMaker, and what OpenMaker does:
 | FileMaker | OpenMaker |
 |---|---|
 | One 612 x 792 point portrait page at 100% | Same |
-| Row text sits lower in its field than OpenMaker drew it (walkthrough, #536) | The fields' stored text margins now apply: 14 points from the top at 16 points ([field text](portable-pdf.md#field-text)) |
+| Row text sits lower in its field than OpenMaker drew it (walkthrough, [#201](https://github.com/OpenMaker-Dev/openmaker/issues/201)) | The fields' stored text margins now apply: 14 points from the top at 16 points ([field text](portable-pdf.md#field-text)) |
 | The row fields' 1-point gray bottom border, shown in Browse, prints in neither Preview nor the PDF | Same: fields print without borders or fill on layouts that delineate fields on the current record only ([field borders and fill](portable-pdf.md#field-borders-and-fill)) |
 | A thin full-width line at each body's bottom prints | Same |
 | "Use fixed page margins" is unchecked; content starts 18 points from the left and top, and Task List's Category heading (layout x 547-772) is cut at the printable edge, 594 points | Same: a layout with fixed margins off prints within the printer's 18 / 40 / 18 / 18 points ([portable PDF](portable-pdf.md#supported-layout-and-output-contract), #609) |

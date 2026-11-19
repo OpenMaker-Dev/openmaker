@@ -86,7 +86,7 @@ opening layout:
   side, and an unread one stays unknown.
   An occurrence also waits while its table's field catalog has not been
   read, even once its file is open (`CalcSchema::set_fields_pending`, for
-  #772's lazy field catalogs). On demand, a related file reads only the
+  [#237](https://github.com/OpenMaker-Dev/openmaker/issues/237)'s lazy field catalogs). On demand, a related file reads only the
   requested tables' field catalogs at open. When a data source has
   alternative paths, its table requests follow the selected file, including
   an already-open file, so a first related find has its requested catalog.
@@ -113,7 +113,7 @@ opening layout:
   (#1139, record-writes.md); the window's record capabilities, asked
   before a layout is drawn, do not, so a file only a write reads opens
   with the first write. A related file's own write planned for the
-  opened file (#187) opens, the same way, its own related files that its
+  opened file ([#39](https://github.com/OpenMaker-Dev/openmaker/issues/39)) opens, the same way, its own related files that its
   rules read, and reads them through the opened file's sessions to them
   (#1160).
 - Each time, the schema grows from the opened file's own with no download.
@@ -130,12 +130,12 @@ opening layout:
 - Each file opens as before: on the opened file's connection with the
   account kept for its scripts' opens (#978); a file on another host with
   the account that host admitted, else the opened file's offered there
-  once, else after a sign-in (#976, desktop-files.md). That host's account
+  once, else after a sign-in ([#272](https://github.com/OpenMaker-Dev/openmaker/issues/272), desktop-files.md). That host's account
   then stays, for that host and port only, until the file closes or
   reconnects, so its other files open when first read without asking
   again. A refused file is asked about when a layout needs it. A file
   whose host could not be reached waits, with its warning, and the next
-  read that needs it tries again once 30 seconds have passed (#740); a
+  read that needs it tries again once 30 seconds have passed ([#229](https://github.com/OpenMaker-Dev/openmaker/issues/229)); a
   refused Login is not tried again.
 - After authentication, a related file selects its tables `[3]`, custom
   functions `[16]`, data sources `[32]` and value lists `[33]` in one
@@ -429,12 +429,12 @@ authoring part tabs or object kind captions.
   per frame. A sorted relationship's set is sorted again when a changed
   record is in it, or when a sort field may read other records. A hop
   whose source match values are all empty relates nothing and reads no
-  record. A new record the transaction holds (#892) has no related set
+  record. A new record the transaction holds ([#261](https://github.com/OpenMaker-Dev/openmaker/issues/261)) has no related set
   on the host yet, so its sets are scanned. Results are kept from frame
   to frame while the changes stay the same, and are all evaluated again
   when they change; those that read the window's context (`Get`
   functions) are also evaluated again when that changes (#1308). Limits: a
-  record begun in a creation row has no match values yet (#1047) and is
+  record begun in a creation row has no match values yet ([#277](https://github.com/OpenMaker-Dev/openmaker/issues/277)) and is
   in no related set until it is committed; FileMaker Pro's handling of
   uncommitted records in related sets, and when it recalculates during
   typing, are unmeasured.
@@ -641,7 +641,7 @@ other member as it was (a kept sort's `0a`, `f0` and `fd` included). A
 window changed the file when it wrote a record of it, or when one of its
 finds (Quick Find included) read an index the file lacked, which the host
 then builds and stores, as FileMaker Pro's first find on a fresh starter
-does (#536). Which changes make FileMaker
+does ([#201](https://github.com/OpenMaker-Dev/openmaker/issues/201)). Which changes make FileMaker
 Pro keep the found set is inferred (file-metadata.md 11, U9). A window
 that changed nothing leaves what was there.
 The write goes straight to the private local host
@@ -742,7 +742,7 @@ place in Current Layout's alphabetical list (sorted here by their
 `Table::Field` text), the button order, Sort disabled for an empty
 order, and a script's step succeeding after Unsort are OpenMaker's
 readings, not compared with FileMaker Pro. A field of another table can be
-chosen, but sorting by it fails (#197). A sort made from field names
+chosen, but sorting by it fails ([#47](https://github.com/OpenMaker-Dev/openmaker/issues/47)). A sort made from field names
 (Sort Records by Field) comes back without a value list or summary
 reordering, and a local file reopened sorted shows an empty order: the
 order it saved (`0a`, file-metadata.md 11) is not read into the dialog. On
@@ -937,7 +937,7 @@ in Browse"):
   Shift-Tab goes back the same way, to the last field of the row before
   and from the first row to the field before the portal (#859; Pro on
   the Tasks starter's attachment portal, which also stops on each row's
-  buttons, #856).
+  buttons, [#253](https://github.com/OpenMaker-Dev/openmaker/issues/253)).
 
 Inferred, unmeasured in Pro:
 - a row's several fields go by their places;
@@ -950,7 +950,7 @@ Inferred, unmeasured in Pro:
 
 **Limits of Tab:**
 - **Stops Pro has that OpenMaker passes over:** the front tab panel
-  itself, web viewers, buttons and container fields (#856). On Contact
+  itself, web viewers, buttons and container fields ([#253](https://github.com/OpenMaker-Dev/openmaker/issues/253)). On Contact
   Details OpenMaker's cycle is Title, First Name, Last Name, Job Title,
   Company and Website, where Pro's has 11 stops.
 - **Hidden tab panels:** fields on them are passed over, as in Pro.
@@ -959,7 +959,7 @@ Inferred, unmeasured in Pro:
   account may see but not change is a stop (whether Pro stops there is
   unmeasured); whether a custom tab order changes Pro's Table view
   order is unmeasured. With the current row scrolled out of view, only
-  its focused cell is drawn, so Tab stays there (#883).
+  its focused cell is drawn, so Tab stays there ([#255](https://github.com/OpenMaker-Dev/openmaker/issues/255)).
 - **Portal rows a scrolling portal does not draw** (scrolled out of view)
   are no stops: Tab from the last row drawn goes on past the portal. Pro
   presumably scrolls to them; that is unmeasured.
@@ -1010,14 +1010,14 @@ Record menu item, and OpenMaker adds none.
 
 **Limits of committing and reverting:**
 - **Keypad Enter** commits in Pro. egui reports it as Return, so in
-  OpenMaker it keeps the draft (#891).
+  OpenMaker it keeps the draft ([#260](https://github.com/OpenMaker-Dev/openmaker/issues/260)).
 - **A new record and reconnecting.** Records > New Record and Duplicate
   Record run the New Record/Request and Duplicate Record/Request steps:
   the record is held in the window's record session until it is
-  committed, and Revert removes it, as Pro 26.0.3 does (#892;
+  committed, and Revert removes it, as Pro 26.0.3 does ([#261](https://github.com/OpenMaker-Dev/openmaker/issues/261);
   record-writes.md, "A window's record session"). A held record still
   blocks reconnecting: recovering it, its typing included, is still to be
-  done (#152, #1006). Whether Pro holds a duplicate uncommitted is
+  done ([#16](https://github.com/OpenMaker-Dev/openmaker/issues/16), #1006). Whether Pro holds a duplicate uncommitted is
   unmeasured; OpenMaker holds it as a new record.
 - **Revert Request** clears the request's criteria. For a request that
   held criteria before it was entered (Modify Last Find), Pro may bring
@@ -1035,7 +1035,7 @@ read Layout Setup's "Save record changes automatically" (layout flag
 changes to this record?", and neither does Commit Records/Requests with
 dialog On, which in FileMaker asks only on a layout with that option
 cleared (re/script-runtime.md, Errors and dialogs;
-[#434](https://github.com/OpenMaker-Dev/openmaker/issues/153)).
+[#153](https://github.com/OpenMaker-Dev/openmaker/issues/153)).
 
 **Related records.** A field of a portal row's own occurrence, and a related
 field outside portals (it shows the first related record, in the
@@ -1070,7 +1070,7 @@ gives the row's editor the focus back, with what was typed (#1050) [I:
 FileMaker Pro keeping a portal row's field active then is unmeasured]. A
 click on the layout's background that leaves the field commits the record
 once the field's exit triggers let the click go on (#1066), as FileMaker
-Pro 26.0.3 ran a portal row's OnObjectSave and then committed (#1047's
+Pro 26.0.3 ran a portal row's OnObjectSave and then committed ([#277](https://github.com/OpenMaker-Dev/openmaker/issues/277)'s
 native cases); a trigger that refuses the exit leaves the record
 uncommitted. Keyboard Commit uses the same field-exit path (#1070).
 The held commit or click, like a button clicked out of a field, goes on
@@ -1122,7 +1122,7 @@ runs, or the field takes the keyboard, in the row of the record it was
 clicked on. When that record is no
 longer the portal's, or its row is no longer shown (a portal is not
 scrolled to it), the click goes; it never acts in another row (#781,
-#1099). A field's held click also goes when another field takes the
+[#281](https://github.com/OpenMaker-Dev/openmaker/issues/281)). A field's held click also goes when another field takes the
 keyboard meanwhile. It does not put the insertion point where the user
 clicked, and keys typed before the field has the keyboard go to no
 field (OpenMaker's choice; FileMaker Pro is not measured).
@@ -1250,10 +1250,10 @@ drop-down lists (layout-model.md 5.4) read their items through
     than answering ids and values of two moments.
   - A build that lacked data held by a related file's unreachable host
     gives no list. It is asked for again once the host may be reached
-    (#740), whatever else grows the schema meanwhile. A build that got
+    ([#229](https://github.com/OpenMaker-Dev/openmaker/issues/229)), whatever else grows the schema meanwhile. A build that got
     everything it read is shown, even while another host is unreachable.
   - A record's unsaved values are not items until it is saved, as FileMaker
-    builds such a list from the field's index [inferred, #412].
+    builds such a list from the field's index [inferred, [#148](https://github.com/OpenMaker-Dev/openmaker/issues/148)].
   - The list is built again after the data of a table it reads changes.
     One the window stopped reading before it was built (#987) is asked for
     again when a control shows it.
@@ -1443,8 +1443,8 @@ confirm a total, running total and count (including restart), List,
 weighted average, standard deviation and subtotaled fraction in Current
 record Excel exports
 ([script-steps.md](re/script-steps.md), Exports). OpenMaker's export still
-misses a restarted value at a break (#920) and a sorted subtotaled
-fraction (#921), though Browse shows those values. With dialog off,
+misses a restarted value at a break ([#264](https://github.com/OpenMaker-Dev/openmaker/issues/264)) and a sorted subtotaled
+fraction ([#265](https://github.com/OpenMaker-Dev/openmaker/issues/265)), though Browse shows those values. With dialog off,
 Current record with Restore wrote only the current record and Restore off
 wrote the whole found set whatever choice the step kept, as OpenMaker does
 ([script-steps.md](re/script-steps.md) 11.7); runs with the dialog, and
@@ -1697,7 +1697,7 @@ dialogs' look (Button Setup, Specify Step, the Action pop-up's order) is
 OpenMaker's (no capture of FileMaker's). The button is placed on the body
 only, outside the tab order, with the theme's button style, and no icon,
 tooltip, name or hand-cursor setting. Whether FileMaker Pro opens and runs
-a button placed this way has not been checked yet (#226).
+a button placed this way has not been checked yet ([#70](https://github.com/OpenMaker-Dev/openmaker/issues/70)).
 
 **A new layout.** Layouts > New Layout / Report... (Ctrl/Cmd-N in Layout
 mode), the Layout mode toolbar's New Layout / Report and Manage Layouts'
@@ -1837,7 +1837,7 @@ layout whose styles show a library image and one whose stored table view
 shows a library item. No lock protects another client's unsaved changes
 on the layout: when a layout is deleted elsewhere, a window that held
 unsaved changes on it says they could not be saved and goes to the first
-layout (#680).
+layout ([#217](https://github.com/OpenMaker-Dev/openmaker/issues/217)).
 
 **Layout width.** With the Selection tool, Layout mode's layout right edge
 drags to set the layout's width in whole points; Save Layout saves it
@@ -1912,7 +1912,7 @@ Pro keeps Part Setup's changes and a dragged boundary with the layout's
 other unsaved changes until Save Layout; OpenMaker sends them at once, so
 Part Setup is refused, and the boundaries are not offered, while the layout
 has unsaved changes. Where Pro stops a dragged boundary above an object
-(135 points for a field ending 82 points into the part, #227) is not
+(135 points for a field ending 82 points into the part, [#71](https://github.com/OpenMaker-Dev/openmaker/issues/71)) is not
 matched: OpenMaker stops at the object. The list's place and the dialogs'
 look are OpenMaker's.
 
@@ -1985,7 +1985,7 @@ step drafts, Run and Revert. Save stores the active script's steps:
   `om_data::script_catalog` on the catalog as stored (re/scripts.md, "The
   catalog index"), with the catalog's digest `08`, which FileMaker checks
   when it opens the file and refuses the file without (re/scripts.md,
-  "The script catalog's digest"; #221).
+  "The script catalog's digest"; [#66](https://github.com/OpenMaker-Dev/openmaker/issues/66)).
   - The host gives a new script (or a copy) the id after the last one its
     index issued, never a deleted script's; the workspace follows that id.
   - A catalog another user changed since the workspace read it is not
@@ -2003,7 +2003,7 @@ step drafts, Run and Revert. Save stores the active script's steps:
   how FileMaker keys an ASCII name in their language refuse new and
   renamed scripts (deletes, moves and options still save): the Japanese,
   Korean and Chinese starter files, and the Swedish Assets and the French
-  and Swedish Meetings, whose script names all have accents (#612). A
+  and Swedish Meetings, whose script names all have accents ([#209](https://github.com/OpenMaker-Dev/openmaker/issues/209)). A
   file whose script index lacks a part every file FileMaker made has is
   refused too, and so is one whose stored digest is not the one OpenMaker
   computes for its scripts.
@@ -2165,9 +2165,9 @@ Limits:
   its built-in [Full Access] set. Any other account, and any other host
   (FileMaker Server included), gets the host's refusal in the dialog.
 - **No editing.** Accounts and privilege sets cannot be created, changed or
-  deleted (#148, #137), so the dialog has no editing controls.
+  deleted ([#12](https://github.com/OpenMaker-Dev/openmaker/issues/12), [#7](https://github.com/OpenMaker-Dev/openmaker/issues/7)), so the dialog has no editing controls.
 - **Not decoded.** The File Access tab, set descriptions, and layout,
-  field, script, value-list and menu access are not shown (#137).
+  field, script, value-list and menu access are not shown ([#7](https://github.com/OpenMaker-Dev/openmaker/issues/7)).
 - **Not compared.** The layout and labels are OpenMaker's; FileMaker Pro's
   dialog was not compared.
 
@@ -2184,7 +2184,7 @@ its host apply the set's limits:
   refused change shows FileMaker Pro's "Your access privileges do not
   allow you to perform this action.", and a write to a view-only field
   its "This action cannot be performed because this field is not
-  modifiable." (#137's reading).
+  modifiable." ([#7](https://github.com/OpenMaker-Dev/openmaker/issues/7)'s reading).
 - **Typing a refused change.** Browse lets the user enter a field the set
   lets them see but not change, as FileMaker Pro does: they can move the
   cursor, select and copy, and typing, pasting, cutting or deleting shows
@@ -2192,7 +2192,7 @@ its host apply the set's limits:
   Access], on a record the set may not view or edit, or through a layout
   whose records it makes view only, that is the privileges alert; in a
   view-only field, the field's. OK dismisses it and the field stays
-  entered, with no exit or enter trigger (#690; #137's and #156's
+  entered, with no exit or enter trigger (#690; [#7](https://github.com/OpenMaker-Dev/openmaker/issues/7)'s and #156's
   readings).
 - A custom set whose every member OpenMaker enforces: each table's create,
   edit and delete yes, no or limited by a calculation (a limited action is
@@ -2236,13 +2236,13 @@ Limits:
   the desktop holds would erase them. An entered field of one still
   reads `<No Access>`; what FileMaker Pro shows there is unmeasured. A new
   record the formula rejects is created and counted, as FileMaker Pro
-  26.0.3's New Record does (#137's reading), and shows `<No Access>` [I];
+  26.0.3's New Record does ([#7](https://github.com/OpenMaker-Dev/openmaker/issues/7)'s reading), and shows `<No Access>` [I];
   only its id and modification count are read back to check the write.
   Under a formula true on an empty record, such a create is still reported
   as not verified, since an empty read-back could then be a lost write
   [I].
   An edit that makes a record one the formula rejects is reported as not
-  kept, though it is (#958). A table with a view
+  kept, though it is ([#268](https://github.com/OpenMaker-Dev/openmaker/issues/268)). A table with a view
   limit has no indexes and no container data on the desktop, so value
   lists built from its fields' indexes are empty and its containers show
   nothing; while any table has one, no container data is shown, and none
@@ -2267,7 +2267,7 @@ Limits:
   What FileMaker Pro shows in such a control and answers for its items is
   unmeasured.
 - **Printing and exporting** follow FileMaker Pro 26.0.3's readings on
-  local files (session-identity.md 2.3, #651). With errors captured, Copy
+  local files (session-identity.md 2.3, [#214](https://github.com/OpenMaker-Dev/openmaker/issues/214)). With errors captured, Copy
   All Records shows no alert, which is unmeasured [I]. Save a Copy as and
   Snapshot Link are not implemented, and Import Records reads no
   FileMaker file, so their outcomes under a denying set (800, 0, 714) are
@@ -2276,7 +2276,7 @@ Limits:
   the status toolbar and formatting bar, zoom and Minimize Window, and
   disable modes, views, the record, omit, find and sort commands,
   printing, exporting, New Window and Insert's Picture and File, as
-  FileMaker Pro 26.0.3 does (#137's and #651's readings). Editing only
+  FileMaker Pro 26.0.3 does ([#7](https://github.com/OpenMaker-Dev/openmaker/issues/7)'s and [#214](https://github.com/OpenMaker-Dev/openmaker/issues/214)'s readings). Editing only
   also keeps Show All, Show Omitted Only, Refresh and Export Field
   Contents, which Minimum leaves out. OpenMaker's own choices [I]
   (session-identity.md 2.3): Minimum leaves out Show All too; Change
@@ -2285,7 +2285,7 @@ Limits:
   Disabled commands' shortcuts do nothing. Scripts, buttons and fields
   work as before under both. The field editors' own cut, copy and paste
   work under both; shortcuts under either level are unmeasured in
-  FileMaker (#651).
+  FileMaker ([#214](https://github.com/OpenMaker-Dev/openmaker/issues/214)).
 - **Tables and fields without access.** A table whose records may never
   be viewed lists its records, as a view formula no record meets; a
   field without access is left out of Browse and keeps
@@ -2334,7 +2334,7 @@ Limits:
   saved), and `Get ( LayoutAccess )` is 0, `Get ( RecordAccess )` the
   table's answer, as Pro measured.
 - **Refused at login (9).** A custom set with a limit by calculation on
-  its default for all tables: not enforced yet (#156, #698), so the
+  its default for all tables: not enforced yet (#156, [#220](https://github.com/OpenMaker-Dev/openmaker/issues/220)), so the
   account is refused rather than given more than its set allows.
 - **Duplicate Record** of a record whose copied values include a view-only
   field is refused (201), as the copy's values are the write's own.

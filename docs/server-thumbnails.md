@@ -78,7 +78,7 @@ row.
   - TIFFs a tag of which, among those the decoder reads, points past the
     data. The tiff crate could not read them either.
   - Palette (indexed) TIFFs, which the `image` crate does not decode
-    ([#394](https://github.com/OpenMaker-Dev/openmaker/issues/141)).
+    ([#141](https://github.com/OpenMaker-Dev/openmaker/issues/141)).
   - Floating-point images, which the PNG encoder cannot write.
   - Renders planned above the budget, for example a progressive JPEG above
     about 87 megapixels.

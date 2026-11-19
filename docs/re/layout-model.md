@@ -114,7 +114,7 @@ Field names and numbers are from `FMLayout.proto`. Semantics from
 | `tableGridStyle` | table view grid lines | O | decoded: 0.25 pt top/right borders, 50% gray |
 | `baseWidth`, `maxWidth` | layout width; maxWidth semantics tied to responsive layouts | O/U | `FMLayout::SetBaseWidth`, `SetMaxWidth`; `GetConstrainedAutoresizingFlags` compares objects against baseWidth |
 | `printColumnWidth`, `printColumnCount` | multi-column printing parameters | O | `FMLayout::SetColumnWidth`, `SetColumnCount`. Every layout of the six English starter solutions (FileMaker Pro 26.0.3) stores count 2 and width 0 [O]. After Pro saved Task List's Layout Setup, the count was 2 and width 270 pt with "Print in 2 columns" either off or on [O, #925]; bit `0x400` of the effective flags enables the option (4.2). The parameter values alone do not say whether it is enabled |
-| `customMargins` | Layout Setup's fixed page margins (Rect) | O | `SetFixedMargins`; the starter layouts store 36 pt each side with "Use fixed page margins" unchecked, and FileMaker Pro 26 then prints them at the printer's margins, 18 / 40 / 18 / 18 pt (top, bottom, left, right) on US Letter with Any Printer [O, #263, #266]. The rectangle is stored even when the checkbox is off; bit `0x40` of the effective layout flags enables it [O, #609, 4.2]. All 202 layouts in 35 local starter-derived files store 36 pt each side with no other `LayoutDef` field [O] |
+| `customMargins` | Layout Setup's fixed page margins (Rect) | O | `SetFixedMargins`; the starter layouts store 36 pt each side with "Use fixed page margins" unchecked, and FileMaker Pro 26 then prints them at the printer's margins, 18 / 40 / 18 / 18 pt (top, bottom, left, right) on US Letter with Any Printer [O, #263, [#107](https://github.com/OpenMaker-Dev/openmaker/issues/107)]. The rectangle is stored even when the checkbox is off; bit `0x40` of the effective layout flags enables it [O, #609, 4.2]. All 202 layouts in 35 local starter-derived files store 36 pt each side with no other `LayoutDef` field [O] |
 | `tblCustomRowHeight`, `tblHeaderSize` | table view row height and header size | O | `SetCustomRowHeight`, `SetTableHeaderSize` |
 | `layoutType` | layout kind; legacy values 1 becomes 7, 2 or 3 become 8 on load | O/U | Deserialize remap; meaning of values [U] |
 | `orientation` | page orientation | I | `FMLayout::GetOrientation`. Every starter solution layout stores 1 [O]; read as portrait and 2 as landscape, as macOS (`kPMPortrait` 1, `kPMLandscape` 2) and Windows (`DMORIENT_*`) number them [I] |
@@ -296,7 +296,7 @@ Two of these bits are Layout Setup's field delineation options:
 | `0x1` | Delineate fields on current record only | [O] FileMaker Pro 26.0.3's Layout Setup sets it (10.11); the third-party table above agrees, and Pro reads the option on for Task List, whose flags `0x10f30a0b` have it set (#263) |
 | `0x20` | Show field frames when record is active | [O] FileMaker Pro 26.0.3's Layout Setup sets it (10.11); Task List reads it off, and the bit is clear |
 
-With `0x1` set, a field's borders and fill show on the current record only. Claris documents that they then do not show "when you print, print to PDF, or preview" [Claris: "Showing field borders and fill for the current record"]. FileMaker Pro 26.0.3 prints none of the starter lists' field underlines [O, #263, 2026-11-13]. Its Task Details PDF draws the `fill-secondary-popup` pop-ups and the `fill-container` photo field with no fill or border operations at all, only their clip paths and text [O, #536, 2026-11-13]. Fields in header, footer, summary and navigation parts never show borders and fill [Claris, same page].
+With `0x1` set, a field's borders and fill show on the current record only. Claris documents that they then do not show "when you print, print to PDF, or preview" [Claris: "Showing field borders and fill for the current record"]. FileMaker Pro 26.0.3 prints none of the starter lists' field underlines [O, #263, 2026-11-13]. Its Task Details PDF draws the `fill-secondary-popup` pop-ups and the `fill-container` photo field with no fill or border operations at all, only their clip paths and text [O, [#201](https://github.com/OpenMaker-Dev/openmaker/issues/201), 2026-11-13]. Fields in header, footer, summary and navigation parts never show borders and fill [Claris, same page].
 
 ### 4.3 Parts
 
@@ -344,14 +344,14 @@ bit means is [U]:
   discard remainder) and says the two row-state options are stored elsewhere.
 - [O] FileMaker Pro 26.0.3 for macOS shows the same Part Setup options for
   Task Details' body (`0x400`) and Task List's body (`0`): "Use alternate
-  row state" off and "Use active row state" on (#266, 2026-11-13). The two
+  row state" off and "Use active row state" on ([#107](https://github.com/OpenMaker-Dev/openmaker/issues/107), 2026-11-13). The two
   bodies differ in the bit and agree on both checkboxes, so `0x400` does not
   store either checkbox as a plain bit, set or inverted [I]. Whether it takes
   part in their storage some other way is [U]; settling it needs a toggle
   experiment. Portals keep these two options in style properties 610
   and 620 (5.3.2); whether bodies do too is [U].
 - [O] Preview of Task Details with two records shows the same body fill on
-  both pages (#266; compared by eye, not sampled). OpenMaker prints these
+  both pages ([#107](https://github.com/OpenMaker-Dev/openmaker/issues/107); compared by eye, not sampled). OpenMaker prints these
   bodies as it prints bodies without the bit.
 
 **Group headings stay with their first record.** [O] FileMaker Pro 26.0.3's PDF
@@ -366,7 +366,7 @@ consecutive leading sub-summaries together with the record they head [I].
 
 **The printed page behind the parts.** [O] FileMaker Pro 26.0.3's PDFs of
 Task Details, Content Details and Content List show the order in which a page
-is painted (#536, 2026-11-13, read from the content streams):
+is painted ([#201](https://github.com/OpenMaker-Dev/openmaker/issues/201), 2026-11-13, read from the content streams):
 1. The whole printable area is filled with the layout background's fill
    (object type 20, `layout_background`; the starters' `secondary-background`
    gray, 0.914).
@@ -384,7 +384,7 @@ the last part's, and where it stops above a footer.
 **Part borders.** [O] The starter lists' header and sub-summary parts
 store 0.25-point borders on all four sides, with a solid style (5) on the top
 and bottom and no style on the left and right. The Details body stores the
-same. Pro's PDFs (Content List, Task Details; #536) stroke only the top and
+same. Pro's PDFs (Content List, Task Details; [#201](https://github.com/OpenMaker-Dev/openmaker/issues/201)) stroke only the top and
 bottom edges: every part stroke in their content streams is horizontal. An
 unset border style on a part edge therefore draws no line. That Pro's Browse
 does the same is [I]. For layout objects an unset style is not measured.
@@ -679,7 +679,7 @@ top; the attribute record with `01`, `0d` `00 00`, `10`, `d8`, `d9` and,
 with a parameter, `11`; no `07` (outside the tab order, as 19 starter
 buttons are) and no `03`; the `0a` entry, the body part list entry and
 `05, 00` as for a field (10.5). Whether FileMaker Pro opens, shows and
-runs a button placed this way has not been checked [U] (issue #226).
+runs a button placed this way has not been checked [U] (issue [#70](https://github.com/OpenMaker-Dev/openmaker/issues/70)).
 
 **Single steps.** [O, same files] Of the 141 type 10 objects, 57 have
 step id 0 (no action), 42 Perform Script and 42 another single step: Go to
@@ -702,7 +702,7 @@ the same text button with the step's descriptor and its data in `11`,
 an empty `11` when it has none, as the 42 have. Steps whose options are
 kept in other places (step-level keys such as find requests or a sort
 order) go with their data unchanged. Whether FileMaker Pro opens and runs
-such a button has not been checked [U] (issue #226).
+such a button has not been checked [U] (issue [#70](https://github.com/OpenMaker-Dev/openmaker/issues/70)).
 
 ### 5.4 Field control styles (`FieldLayoutObject.displayType`)
 
@@ -869,7 +869,7 @@ I and U where marked]:
   - Not measured: which item wins when several begin with the typed text,
     a physical keypad's Enter, and whether a list shows for a person (the
     tooling exposed none).
-- **Observed (native, field-backed case #412).** Clicking the arrow opened
+- **Observed (native, field-backed case [#148](https://github.com/OpenMaker-Dev/openmaker/issues/148)).** Clicking the arrow opened
   the list. With two objects of the same field and automatic record saving
   off, a new record's uncommitted value appeared in both fields but not in
   the list; after saving, it appeared in the list. Pop-up, checkbox and
@@ -1096,7 +1096,7 @@ condition]: 268 objects in 41 files have `KHideCondition` (`141`), all 268
 with `0x4`; two of them (a field and a button) also have `0x100`. Four
 objects have `0x4` without the formula.
 
-[O, FileMaker Pro 26.0.3, local disposable Contacts copies, #181] On a
+[O, FileMaker Pro 26.0.3, local disposable Contacts copies, [#35](https://github.com/OpenMaker-Dev/openmaker/issues/35)] On a
 text object with `Hide object when = 1`, Pro hid the object in Browse
 with "Apply in Find Mode" checked or unchecked. In Find, it hid the
 object when the option was checked and showed it when unchecked;
@@ -1104,7 +1104,7 @@ neighboring text objects remained visible. The copies had no records;
 other formulas and object kinds were not tested [U]. This check agrees
 with the mode test above.
 
-[O, FileMaker Pro 26.0.3, local disposable Contacts copies, #184] A
+[O, FileMaker Pro 26.0.3, local disposable Contacts copies, [#38](https://github.com/OpenMaker-Dev/openmaker/issues/38)] A
 standalone text object with `Hide object when = 1/0` disappeared in
 Browse. Data Viewer evaluated `1/0` to `?`. With "Apply in Find Mode"
 off, the object was visible in Find. A separate object's condition
@@ -1121,7 +1121,7 @@ the global's value was `1`. After that visit, the object was hidden.
 On fresh copies, clicks on the window title and an empty layout header,
 and switching a separate tab panel away and back, left the standalone
 text visible. Switching to another layout and back, or Browse to Find
-and back, hid it [O, [#184](https://github.com/OpenMaker-Dev/openmaker/issues/38)].
+and back, hid it [O, [#38](https://github.com/OpenMaker-Dev/openmaker/issues/38)].
 Clicking a field with no records raised an alert; the text was hidden
 after the alert was dismissed, without isolating the click from the
 alert as the trigger [O]. Which action in the earlier Data Viewer visit
@@ -1174,13 +1174,13 @@ over every layout of the six English starter solutions [O]:
 
 Claris documents the order, not the numbers. The starters use only 0, 1 and
 4, and two of them are measured:
-- **1 is Image only [O].** FileMaker Pro 26.0.3's PDF of Task Details (#536,
+- **1 is Image only [O].** FileMaker Pro 26.0.3's PDF of Task Details ([#201](https://github.com/OpenMaker-Dev/openmaker/issues/201),
   2026-11-13) draws the "Add Assignee" button, type 1 with that label stored,
   as its 13-point "+" icon centered in the 291-point frame (icon at 523-536,
   frame 384-675). None of the page's 11 text runs is "Add Assignee". The
   stored label is kept but not shown.
 - **4 is Icon at left, text at right [O].** Pro's Preview and PDF of the Add
-  Assignee layout show the "+" left of "Add Assignee" (#536, 14:27Z).
+  Assignee layout show the "+" left of "Add Assignee" ([#201](https://github.com/OpenMaker-Dev/openmaker/issues/201), 14:27Z).
 - 0, 2, 3 and 5 follow from Claris's order [I].
 
 That Pro's Browse also hides a type 1 label is inferred from its Preview and
@@ -1381,7 +1381,7 @@ tree; ties U]: checked+focus, pressed+focus, checked+pressed, checked+hover,
 checked, then hover+focus, focus, hover, pressed, droptarget, placeholder,
 normal.
 
-[O, #753] The six English starter solutions' themes (FileMaker Pro
+[O, [#231](https://github.com/OpenMaker-Dev/openmaker/issues/231)] The six English starter solutions' themes (FileMaker Pro
 26.0.3), as OpenMaker resolves them:
 - **Field styles.** Edit boxes, pop-up menus, drop-down lists, calendars,
   containers and checkbox sets give In Focus (4) a different border color
@@ -1413,7 +1413,7 @@ field used [O for decoded ones, I otherwise].
 | ID | CSS name | Value | ID | CSS name | Value |
 |---|---|---|---|---|---|
 | 1 | background-image | image list (none, gradient, url) | 101-104 | padding-top/right/bottom/left | length |
-| 2 | background-position | position list | 105-108 | margin-top/right/bottom/left (on a field's text component, they inset its text: the starter lists' row fields set 0.875 / 0.25 / 0.625 / 0.25 em, and FileMaker prints their text lower than at the field's top [O, #536]; that the margins account for all of it is [I]) | length |
+| 2 | background-position | position list | 105-108 | margin-top/right/bottom/left (on a field's text component, they inset its text: the starter lists' row fields set 0.875 / 0.25 / 0.625 / 0.25 em, and FileMaker prints their text lower than at the field's top [O, [#201](https://github.com/OpenMaker-Dev/openmaker/issues/201)]; that the margins account for all of it is [I]) | length |
 | 3 | background-size | size list | 109, 110 | width, height | length |
 | 4 | background-repeat | repeat list | 111 | float | enum |
 | 5, 6 | background-origin, background-clip | box list | 112 | clear | enum |
@@ -1518,7 +1518,7 @@ only for button bars and buttons (types 79, 80: 1, center). FileMaker Pro
 26.0.3 draws an edit box's text at the top of its text box and a pop-up menu's
 centered: Tasks' Task Details "Task" field, however tall its anchors make it,
 its 64 pt attachment row field, and Meeting Details' Notes at the top
-(walkthrough #536, rank 2; 2x screenshots of the reopen and delete fixtures),
+(walkthrough [#201](https://github.com/OpenMaker-Dev/openmaker/issues/201), rank 2; 2x screenshots of the reopen and delete fixtures),
 and Category, Priority and Status centered. The text box is the frame inset by
 the border widths and the text component's margins (105-108; "Where a field's
 text sits", 6.5). Those three pop-ups draw their text 13 pt inside the box's
@@ -1581,7 +1581,7 @@ their handling [U].
 **Where text sits.** FileMaker Pro 26.0.3's PDFs clip each piece of text to
 its text box and draw it from the box's top left. The PDFs read are the
 walkthrough's Task Details, Assignee Details, Content Details and Content List
-(#536), and the 60-record Task List (#263), all from 2026-11-13.
+([#201](https://github.com/OpenMaker-Dev/openmaker/issues/201)), and the 60-record Task List (#263), all from 2026-11-13.
 
 - **Edit-box fields.** [O] The Task Details Task field's text is clipped to
   (55, 152)-(336, 170). The field's frame is (50, 137)-(341, 181). Its theme
@@ -2083,7 +2083,7 @@ OpenMaker's runtime (`om-gui` `web_viewer`, the `web-viewer` feature):
   layout's record. A viewer on a popover inside a portal shows nothing,
   since OpenMaker opens no popover inside a portal; FileMaker shows it,
   when the popover is open, in the portal's first record's context. Table
-  parts (#1291) remain unsupported.
+  parts ([#306](https://github.com/OpenMaker-Dev/openmaker/issues/306)) remain unsupported.
   Synthetic painter tests check each List row's own placement and address
   and the portal viewers' single placements (not under a closed popover or
   an inactive panel), and the registry test that commands reach the current
@@ -2714,7 +2714,7 @@ on Contact Details, the layout saved on leaving Layout mode:
 [O, 2026-11-14, FileMaker Pro 26.0.3 on five fresh copies of the
 Contacts starter, one General checkbox of Layout Setup changed on Contact
 Details in each, compared key by key with an untouched copy (the
-walkthrough's comment of 05:14Z on #227)] Each checkbox moved one bit of
+walkthrough's comment of 05:14Z on [#71](https://github.com/OpenMaker-Dev/openmaker/issues/71))] Each checkbox moved one bit of
 `f1`, from `0x10f3080d`, by the same bit in the member and its entry:
 
 | Checkbox | Bit | The bit set means the option is | Changed to |
@@ -2729,7 +2729,7 @@ Each save also wrote the object store `07` again, to the same bytes in
 all five copies, and moved the stamps and the file's history; nothing else
 told one checkbox from another.
 
-[O, 2026-11-15, FileMaker Pro 26.0.3, #809: two disposable copies of the
+[O, 2026-11-15, FileMaker Pro 26.0.3, [#243](https://github.com/OpenMaker-Dev/openmaker/issues/243): two disposable copies of the
 Tasks starter compared with an untouched copy, one closed directly from
 Layout mode] Layout Setup's **Show records from** pop-up listed the file's
 four table occurrences and `Manage Database...`. Changing Task Details from
@@ -2808,7 +2808,7 @@ The index count also rose for three other layout-only saves:
 
 The intended object change was decoded from each closed file, so these
 counts are measured for a move, a deletion and a new text, not inferred
-from the width case (#788).
+from the width case ([#241](https://github.com/OpenMaker-Dev/openmaker/issues/241)).
 
 ### 10.13 A field's control
 
@@ -3100,7 +3100,7 @@ numbers, is for FileMaker Pro twins].
 
 [O, 2026-11-14, FileMaker Pro 26.0.3, six twins on fresh starter copies,
 one Part Definition change each, compared key by key with the untouched
-copy (the research thread's comment on #227)] On Contact Details' body,
+copy (the research thread's comment on [#71](https://github.com/OpenMaker-Dev/openmaker/issues/71))] On Contact Details' body,
 `flags` went from `0x400` to:
 
 | Part Definition checkbox | Bit |
@@ -3165,7 +3165,7 @@ Of the starters' 132 text objects:
 [O, 2026-11-14, FileMaker Pro 26.0.3, three twins off one Contacts starter
 copy, each saved after one edit of Contact Details (layout 3) in Layout
 mode, compared key by key with the copy before (the research thread's
-comment on #227)] Retyping text object `0b` "Company" as "PROFILE" (7
+comment on [#71](https://github.com/OpenMaker-Dev/openmaker/issues/71))] Retyping text object `0b` "Company" as "PROFILE" (7
 characters to 7) and as "PROFILE INFORMATION" (7 to 19), and the header's
 label `31` "First Name" as "Given Name":
 - writes `01` again as one plain value (SCSU, XOR `5a`), the frame kept
@@ -3192,7 +3192,7 @@ text calculations and line breaks.
 ### 10.17 A new portal
 
 [O, 2026-11-14, FileMaker Pro 26.0.3, a twin pair off the English Tasks
-starter (the research thread's comment on #227, read here key by key):
+starter (the research thread's comment on [#71](https://github.com/OpenMaker-Dev/openmaker/issues/71), read here key by key):
 a blank Form layout `Portal Probe`, `[4, 5, 0d]`, saved; then one portal
 drawn in its body with the Portal tool, related `Attachments` chosen in
 Portal Setup with its other options at their defaults, only
@@ -3330,7 +3330,7 @@ name 26.0.3.307a.
     hide condition without evaluating it (5.5.2).
 12. The meaning of `LayoutDef` field 17 and of the middle `u16` in a
     layout's `0a` object index and `15` tab order when its record occurrence
-    changes (10.11, #809).
+    changes (10.11, [#243](https://github.com/OpenMaker-Dev/openmaker/issues/243)).
 13. Whether FileMaker Pro computes a field object's content when its hide
     condition holds without evaluating `Self` (a summary over a large found
     set behind `Get ( FoundCount ) > 1000`), and when it computes it after
