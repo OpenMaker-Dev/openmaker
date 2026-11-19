@@ -844,7 +844,9 @@ impl ManageDatabase {
                 )
             })
             .collect();
-        let (clicked, toggled) = column_list(
+        let ListInput {
+            clicked, toggled, ..
+        } = column_list(
             ui,
             "database_tables",
             width,
@@ -980,7 +982,11 @@ impl ManageDatabase {
                 )
             })
             .collect();
-        let (clicked, toggled) = column_list(
+        let ListInput {
+            clicked,
+            opened,
+            toggled,
+        } = column_list(
             ui,
             "database_fields",
             width,
@@ -1075,7 +1081,9 @@ impl ManageDatabase {
             let enabled = writable
                 && (options_of.is_some() || calculation_of.is_some() || summary_of.is_some());
             let options = widgets::dialog_button(ui, "Options…", false, enabled);
-            if options.clicked() {
+            // Double-clicking the selected field is Options… too.
+            let double = enabled && opened.is_some() && opened == selected;
+            if options.clicked() || double {
                 if let Some((field_id, name, data_type, options)) = options_of.clone() {
                     let names = self.option_names(table_id);
                     self.options = Some(OptionsDialog::new(
@@ -1295,9 +1303,19 @@ impl ManageDatabase {
     }
 }
 
+/// What a [`column_list`] was asked this pass.
+struct ListInput {
+    /// The row clicked.
+    clicked: Option<u64>,
+    /// The row double-clicked (its first click is `clicked` too).
+    opened: Option<u64>,
+    /// Whether the heading of the toggled column was clicked (FileMaker's
+    /// "Click to toggle").
+    toggled: bool,
+}
+
 /// A FileMaker-style list with column headings: white rows, the selected
-/// one shaded. Returns the id of a clicked row and whether the heading of
-/// column `toggle` was clicked (FileMaker's "Click to toggle").
+/// one shaded.
 #[allow(clippy::too_many_arguments)]
 fn column_list(
     ui: &mut egui::Ui,
@@ -1308,8 +1326,9 @@ fn column_list(
     toggle: Option<usize>,
     rows: &[(u64, Vec<Cell>)],
     selected: Option<u64>,
-) -> (Option<u64>, bool) {
+) -> ListInput {
     let mut clicked = None;
+    let mut opened = None;
     let mut toggled = false;
     let edges: Vec<f32> = std::iter::once(0.0)
         .chain(columns.iter().scan(0.0, |sum, (_, w)| {
@@ -1396,10 +1415,17 @@ fn column_list(
                         if response.clicked() {
                             clicked = Some(*row_id);
                         }
+                        if response.double_clicked() {
+                            opened = Some(*row_id);
+                        }
                     }
                 });
         });
-    (clicked, toggled)
+    ListInput {
+        clicked,
+        opened,
+        toggled,
+    }
 }
 
 /// The macOS segmented control at the top of Manage Database: a light
