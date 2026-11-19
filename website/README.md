@@ -1,12 +1,7 @@
 # openmaker.dev
 
 The project's website: one static page with its CSS and script inline,
-no build step and no third-party requests. Serve this folder as the site
-root.
-
-```sh
-python -m http.server 4321 --directory website   # then open http://localhost:4321/
-```
+no build step and no third-party requests.
 
 | File | Contents |
 |---|---|
@@ -14,6 +9,53 @@ python -m http.server 4321 --directory website   # then open http://localhost:43
 | `assets/shots/*.webp` | Desktop client screenshots: `hero` (Browse, List view), `browse` (Table view), `find`, `layout` (Layout mode with the Inspector) |
 | `assets/og.png` | 1200 x 630 link preview (`og:image`) |
 | `favicon.svg`, `favicon.ico` | Copies of the repository root's favicons |
+| `wrangler.jsonc`, `_headers`, `.assetsignore` | Deployment settings, not served ([Deployment](#deployment)) |
+
+## Deployment
+
+Cloudflare Workers Builds publishes this folder to https://openmaker.dev
+as Workers static assets, with no Worker script. Each merge to `main` that
+changes a file under `website/` deploys it. Other merges normally start
+no build: Workers Builds skips the watch path and builds anyway for a
+push with no file changes, 3,000 or more changed files, or 20 or more
+commits, which redeploys the same site. The connected repository and the
+build settings (root directory `website`, deploy command
+`npx wrangler@4 deploy`, build watch path `website/*`) are kept in the
+Cloudflare dashboard. These files hold the rest:
+
+- `wrangler.jsonc`: the Worker's name, `openmaker-site`, which must match
+  the Worker's name in the Cloudflare dashboard or the build fails; the
+  folder to serve; the Custom Domain `openmaker.dev`; and no
+  `*.workers.dev` address or Preview URLs. Each deploy sets the Worker's
+  Custom Domains to the list in this file, so add a hostname here, not in
+  the dashboard.
+- `_headers`: headers for every response. The Content-Security-Policy
+  allows the page's inline script and styles and images from this site,
+  and blocks every other load, framing, `<base>` and form submission. An
+  edit to `index.html` that loads something new (another origin, a
+  `data:` image, a `fetch`) must widen the policy, or browsers block it.
+  There is no `Strict-Transport-Security` header: `.dev` is on the
+  browsers' HSTS preload list.
+- `.assetsignore`: files not uploaded, in `.gitignore` syntax: this
+  README, `wrangler.jsonc`, local tool output and local `.env` and
+  `.dev.vars` files. Wrangler never uploads
+  `_headers`, `_redirects` or `.assetsignore` themselves.
+
+Every other file in this folder is public at https://openmaker.dev/. Keep
+account ids, zone ids, tokens and other private details out of
+`website/`; the configuration needs none of them.
+
+To preview the site as Cloudflare serves it, with the headers and the
+ignore list applied:
+
+```sh
+cd website && npx wrangler dev   # then open http://localhost:8787/
+```
+
+It needs no Cloudflare login, and the `.wrangler/` folder it writes is
+ignored by git and by the upload. A plain file server, such as
+`python -m http.server 4321 --directory website`, shows the page but
+applies neither `_headers` nor `.assetsignore`.
 
 ## Themes
 

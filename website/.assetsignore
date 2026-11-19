@@ -1,0 +1,9 @@
+# Files in website/ that are not uploaded or served. Wrangler never uploads
+# .assetsignore, _headers or _redirects themselves. Same syntax as .gitignore.
+README.md
+wrangler.jsonc
+.wrangler/
+node_modules/
+.dev.vars*
+.env*
+.DS_Store
