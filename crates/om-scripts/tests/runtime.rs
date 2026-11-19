@@ -879,9 +879,11 @@ fn steps_by_name_find_their_variable_and_field() {
     );
 
     // On the server 249 is unknown (FileMaker Server 26.0.3's table): its
-    // error 4 does not fail an open transaction, whose write commits.
+    // error 4 does not fail an open transaction, whose write commits. With
+    // Allow User Abort on, error 4 would halt the script instead.
     let mut h = host();
     let steps = vec![
+        on(85, false),
         on(86, true),
         ScriptStep::new(205),
         set_age(&h, "30", 1),
