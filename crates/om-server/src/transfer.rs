@@ -379,6 +379,10 @@ impl Transfers {
             return (stream, Resume::complete());
         }
         let page = stream[..end].to_vec();
+        // This connection's own evictions come first: what they give back
+        // to the server's budget is then not taken from other connections'
+        // streams by it.
+        self.make_room();
         let stream = self.downloads.hold(stream);
         let (perform, cursor) = (new_handle(), new_handle());
         (
@@ -623,6 +627,18 @@ impl Transfers {
         }
     }
 
+    /// Evict the least recently used transfers until one more, in use,
+    /// would keep the limits: every transfer held now is then idle. The
+    /// same evictions [`Self::hold`] would make once it is added.
+    fn make_room(&mut self) {
+        while self.by_cursor.len() >= MAX_TRANSFERS || self.bytes > MAX_IDLE {
+            let Some(oldest) = self.oldest(|_, _| true) else {
+                break;
+            };
+            self.evict(oldest);
+        }
+    }
+
     /// Grow `charge` by `more` bytes on the server's budget, evicting this
     /// connection's idle uploads, least recently used first, while it does
     /// not fit what the client may still hold; refused when none is left.
@@ -641,7 +657,6 @@ impl Transfers {
         Ok(())
     }
 
-    /// The least recently used transfer `keep` accepts.
     /// The least recently used transfer `keep` accepts, a download the
     /// server's budget dropped before any that holds data: one dropped by
     /// another connection since this one last looked holds nothing.
@@ -906,7 +921,8 @@ mod tests {
     /// (#145): past it the stream least recently paged, on any connection,
     /// is dropped, and continuing it is refused; the one just started is
     /// held even alone past the budget; what is held goes back as streams
-    /// finish or their connections end.
+    /// finish or their connections end; a connection's own evictions come
+    /// before the budget's.
     #[test]
     fn download_streams_share_the_servers_budget() {
         // A node of 100 leaves of 4 bytes: 402 bytes, pages of 64.
@@ -970,5 +986,16 @@ mod tests {
         ));
         assert_eq!(a.bytes, part.len());
         assert!(a.next(OWNER, &dropped, 64).is_err());
+        // A connection past its own limits evicts its own oldest transfer
+        // first, so the budget, just big enough for that, keeps another
+        // connection's older stream.
+        let budget = DownloadMemory::new((MAX_TRANSFERS + 1) * stream.len());
+        let connection = || Transfers::new(&uploads, &budget, [192, 0, 2, 1].into());
+        let (mut full, mut other) = (connection(), connection());
+        let (_, older) = other.start(OWNER, stream.clone(), 64, &mut handles);
+        for _ in 0..=MAX_TRANSFERS {
+            full.start(OWNER, stream.clone(), 64, &mut handles);
+        }
+        assert!(other.next(OWNER, &older, 64).unwrap().is_some());
     }
 }
