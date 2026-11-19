@@ -504,7 +504,7 @@ layout):
   (parity-unverified).
 
 **Records a script makes** [O: FileMaker Server 26.0.3's engine, script
-oracle `s44-record-number-ae`, 2026-11-19]. Each run line is a server
+oracle `s46-record-number-ae`, 2026-11-19]. Each run line is a server
 session, as Perform Script on Server or a schedule runs one. Contacts got
 two text fields auto-entering `Get ( RecordNumber )` and `Get (
 FoundCount )`, both replacing an existing value ("Do not replace existing

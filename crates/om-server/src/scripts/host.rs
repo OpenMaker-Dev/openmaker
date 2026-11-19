@@ -3251,7 +3251,7 @@ impl Records for ServerHost {
         // set's position is what its auto-entry reads as Get (
         // RecordNumber ): n + 1 over the n records found before, wherever
         // the current record was, also when none were and for a duplicate
-        // (s44, FileMaker Server's engine). A sorted found set's is
+        // (s46, FileMaker Server's engine). A sorted found set's is
         // unmeasured and stays unanswered (#298).
         let number = (window.sort.is_none()).then_some(window.found.len() as u64);
         if let Some(record) = &mut self.record {
@@ -3302,7 +3302,7 @@ impl Records for ServerHost {
             normal(&|f: &Field| f.decoded_options().is_some_and(|o| o.auto_entry_serial()));
         // An auto-entered calculation that replaces an existing value is
         // entered again, as FileMaker Server's engine entered the copy's
-        // own Get ( RecordNumber ) into it (s44): not copied.
+        // own Get ( RecordNumber ) into it (s46): not copied.
         let replacing = normal(&|f: &Field| {
             f.decoded_options()
                 .is_some_and(|o| o.calculation_replaces_existing())

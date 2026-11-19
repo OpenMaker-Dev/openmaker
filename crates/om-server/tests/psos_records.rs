@@ -617,7 +617,7 @@ fn server_scripts_auto_enter_over_a_global_reads_the_sessions_value() {
 /// A record a server script makes auto-enters Get ( RecordNumber ) as the
 /// position it takes at the end of the found set, n + 1, wherever the
 /// current record was: in every record, after records were omitted, and
-/// for a duplicate, whose copied number the calculation replaces (s44,
+/// for a duplicate, whose copied number the calculation replaces (s46,
 /// FileMaker Server's engine, whose fields replaced; #298). A field set
 /// before the commit keeps it, as in the oracle's probes. A record no
 /// longer at that place when its rules run (an earlier record omitted in

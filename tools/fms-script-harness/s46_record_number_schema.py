@@ -1,6 +1,6 @@
 # Add auto-entered Get ( RecordNumber ) and Get ( FoundCount ) fields to
 # contacts-en's saveAsXML document (field ids 14 and 15), for script
-# oracle s44-record-number-ae: what a record a script creates stores.
+# oracle s46-record-number-ae: what a record a script creates stores.
 import sys
 src, dst = sys.argv[1], sys.argv[2]
 s = open(src, encoding='utf-8').read()
