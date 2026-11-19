@@ -2190,9 +2190,9 @@ when it is idle, write-path.md 6.4):
 
 | release | code | path in the message | example (back channel of the other connection) |
 |---------|------|---------------------|-----------------------------------------------|
-| catalog after commit | `0x2` `kDBAttnCatalog` | the catalog, `[3, 16]` | `ff00 | 00000002 001d | 00000001 00000000 00000002 0002 001b fffffffc 0004 04 01 03 01 10 0005` (live:s2a/a16_bflush) |
+| catalog after commit | `0x2` `kDBAttnCatalog` | the catalog, `[3, 16]` | `ff00 \| 00000002 001d \| 00000001 00000000 00000002 0002 001b fffffffc 0004 04 01 03 01 10 0005` (live:s2a/a16_bflush) |
 | field catalog | `0x2` | `[80 07, 3]` | `... 00000002 001e ... 05 02 80 07 01 03 0006` (live:s2b/bF_bflush) |
-| table lock after the save | `0x201` modify + record scope | `[80 07, 5]` | `ff00 | 00000201 001e | ... 05 02 80 07 01 05 0006` (live:s2b/b_flush_end) |
+| table lock after the save | `0x201` modify + record scope | `[80 07, 5]` | `ff00 \| 00000201 001e \| ... 05 02 80 07 01 05 0006` (live:s2b/b_flush_end) |
 
 The message is the marshalled `DBMesg` of write-path.md 6.3 (send-to
 address, reply-to 0, attention, two items: the client file id from op63 and
