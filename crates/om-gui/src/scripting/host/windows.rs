@@ -34,6 +34,24 @@ use super::super::window::Window;
 use super::super::{Card, ScriptEvent, WindowStyle};
 use super::WorkerHost;
 
+/// What the window steps find a window by when they take one by name
+/// (Claris, `select-window.html`: "first searches for a window with a
+/// matching name. If none are found, it then searches for a window with a
+/// matching UUID"; script-runtime.md 9.2).
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(super) enum WindowKey {
+    Name,
+    /// `Get ( WindowUUID )`.
+    Uuid,
+}
+
+/// Whether a window's name or UUID is `wanted`: "Window name or UUID
+/// selection is not case sensitive" (Claris). Case is folded as Unicode
+/// lowercase; how FileMaker folds letters beyond ASCII is unmeasured.
+pub(super) fn same_window_key(key: &str, wanted: &str) -> bool {
+    key == wanted || key.to_lowercase() == wanted.to_lowercase()
+}
+
 impl WorkerHost<'_> {
     /// The provider uses the current window's found sets.
     pub(crate) fn use_current_window(&mut self) {
@@ -70,17 +88,30 @@ impl WorkerHost<'_> {
             .collect()
     }
 
-    /// The window named `name`, front to back: `None` the current one,
-    /// else its place among the others; 112 when none has the name.
-    fn named(&self, name: &str) -> Result<Option<usize>, HostError> {
-        if self.name_of(&self.s.file.window) == name {
-            return Ok(None);
+    /// The window `name` names, front to back: `None` the current one,
+    /// else its place among the others; 112 when none has the name. By
+    /// its name, else by its `Get ( WindowUUID )` ([`WindowKey`]).
+    pub(super) fn named(&self, name: &str) -> Result<Option<usize>, HostError> {
+        [WindowKey::Name, WindowKey::Uuid]
+            .into_iter()
+            .find_map(|key| self.window_by(key, name))
+            .ok_or(HostError::Error(ErrorCode::WINDOW_MISSING))
+    }
+
+    /// The window of this file whose `key` is `name`, front to back, as
+    /// [`Self::named`] answers.
+    pub(super) fn window_by(&self, key: WindowKey, name: &str) -> Option<Option<usize>> {
+        let matches = |window: &Window| match key {
+            WindowKey::Name => same_window_key(&self.name_of(window), name),
+            WindowKey::Uuid => same_window_key(&window.state.uuid, name),
+        };
+        if matches(&self.s.file.window) {
+            return Some(None);
         }
         (0..self.s.file.others.len())
             .rev()
-            .find(|&i| self.name_of(&self.s.file.others[i]) == name)
+            .find(|&i| matches(&self.s.file.others[i]))
             .map(Some)
-            .ok_or(HostError::Error(ErrorCode::WINDOW_MISSING))
     }
 
     fn target(&self, target: &WindowTarget) -> Result<Option<usize>, HostError> {
@@ -214,7 +245,7 @@ impl WorkerHost<'_> {
         }
         match target {
             WindowTarget::Current => Ok(()),
-            WindowTarget::Named(name) if *name == self.name_of(&self.s.file.window) => Ok(()),
+            WindowTarget::Named(name) if matches!(self.named(name), Ok(None)) => Ok(()),
             WindowTarget::Named(_) => Err(ErrorCode::UNAVAILABLE.into()),
         }
     }
