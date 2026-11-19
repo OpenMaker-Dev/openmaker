@@ -37,6 +37,14 @@ FileMaker Pro's order:
   Pro does not read as a picture from a leaf (containers.md 1.4, #911).
 - Locks are asked for without waiting (timeout 0). A refusal (8003) reports
   who holds the record from the reply's user list (4.2).
+- A record of the opened file's own tables is locked as its editing begins,
+  as FileMaker Pro locks it (write-path.md 4.1; [#40](https://github.com/OpenMaker-Dev/openmaker/issues/40)): Browse's first
+  change of it, and a script's, goes through `record.prepare_edit`, which
+  opens the window's record session and locks the record before the change
+  is taken. The lock is held until the record is saved or reverted, so
+  another client's change of it is refused (301, naming the holder)
+  meanwhile. A related record, a record of another file's table, and edits
+  inside a script's own transaction are still locked only to commit them.
 - op65 ends every transaction, also after a failure, releasing what it
   holds (4.4); the server also releases a connection's locks when it
   disconnects.
