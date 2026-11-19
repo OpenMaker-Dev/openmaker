@@ -32,10 +32,10 @@
 //! window in the app's list (`NSApplication.windows`) at the start of a
 //! viewport's code that was not there just before it was shown is that
 //! viewport's. A window that closes leaves the list and is forgotten; the
-//! one made after it takes its place. When the moment shows no one window
-//! (none, or several), the one window no viewport has, other than the root's,
-//! with the viewport's title is taken; anything else leaves the window
-//! without one.
+//! one made after it takes its place. When the moment shows several, the
+//! one of them with the viewport's title is taken, on that frame or a later
+//! one; a window that was there before is never taken, and anything else
+//! leaves the window without one.
 
 use std::collections::BTreeMap;
 
@@ -56,6 +56,10 @@ pub(crate) struct ViewportWindows {
     root: Option<isize>,
     #[cfg(all(feature = "web-viewer", target_os = "macos"))]
     before: Vec<isize>,
+    /// The windows made while a window's viewport was shown, when they
+    /// were several, until a title tells them apart.
+    #[cfg(all(feature = "web-viewer", target_os = "macos"))]
+    candidates: BTreeMap<u32, Vec<isize>>,
 }
 
 #[cfg(target_os = "linux")]
@@ -167,28 +171,32 @@ impl ViewportWindows {
                 return Ok(NativeParent::AppKit(*number));
             }
             let owned: Vec<isize> = self.numbers.values().copied().chain(self.root).collect();
-            let mine = |number: &isize| !owned.contains(number);
+            let mine = |number: &isize| open(*number) && !owned.contains(number);
             let created: Vec<isize> = now
                 .iter()
                 .map(|w| w.0)
                 .filter(|number| !self.before.contains(number))
                 .filter(mine)
                 .collect();
-            let window = match created[..] {
-                [window] => window,
-                _ => {
-                    let titled: Vec<isize> = now
-                        .iter()
-                        .filter(|w| w.1 == title)
-                        .map(|w| w.0)
-                        .filter(mine)
-                        .collect();
-                    let [window] = titled[..] else {
-                        return Err(Unavailable::Window);
-                    };
-                    window
-                }
+            // The windows made while it was shown, kept until one is taken:
+            // a later frame may tell them apart by title.
+            if !created.is_empty() {
+                self.candidates.insert(id, created);
+            }
+            let Some(candidates) = self.candidates.get(&id) else {
+                return Err(Unavailable::Window);
             };
+            let candidates: Vec<isize> = candidates.iter().copied().filter(mine).collect();
+            let titled: Vec<isize> = candidates
+                .iter()
+                .copied()
+                .filter(|number| now.iter().any(|w| w.0 == *number && w.1 == title))
+                .collect();
+            let window = match (&candidates[..], &titled[..]) {
+                ([window], _) | (_, [window]) => *window,
+                _ => return Err(Unavailable::Window),
+            };
+            self.candidates.remove(&id);
             self.numbers.insert(id, window);
             Ok(NativeParent::AppKit(window))
         }
@@ -203,7 +211,10 @@ impl ViewportWindows {
     pub fn retain(&mut self, open: impl Fn(u32) -> bool) {
         self.windows.retain(|id, _| open(*id));
         #[cfg(all(feature = "web-viewer", target_os = "macos"))]
-        self.numbers.retain(|id, _| open(*id));
+        {
+            self.numbers.retain(|id, _| open(*id));
+            self.candidates.retain(|id, _| open(*id));
+        }
     }
 
     /// Take in what the server reported (after a round trip with `sync`):

@@ -2139,8 +2139,9 @@ OpenMaker's runtime (`om-gui` `web_viewer`, the `web-viewer` feature):
   and with a note. On macOS the moment is read from AppKit instead: the
   window `NSApplication.windows` lists at the start of a viewport's code that
   it did not list just before the viewport was shown is that viewport's,
-  since winit makes it there on the main thread; failing that, the one
-  window no viewport has, other than the root's, with the viewport's title.
+  since winit makes it there on the main thread; when that moment shows
+  several, the one of them with the viewport's title, then or on a later
+  frame. A window that was there before is never taken.
   When eframe recreates a viewport's window (some builder
   changes), or a window moves to the root viewport, its views are made
   again in the new native window. A test checks this in eframe's real event

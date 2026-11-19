@@ -462,9 +462,10 @@ mod native {
     use super::{fail, ROWS, SIZE};
 
     pub struct Native {
-        /// When each window was last captured, so the screen is read at
-        /// most twice a second.
-        captured: Vec<(u64, Instant)>,
+        /// Each window's last capture: when, of which pages, and their
+        /// colors. The screen is read at most twice a second per window,
+        /// and a window's last sample stands in meanwhile.
+        captured: Vec<(u64, Instant, Vec<u64>, Vec<Option<[u8; 3]>>)>,
     }
 
     fn windows() -> Vec<Retained<NSWindow>> {
@@ -575,16 +576,21 @@ mod native {
         /// capture of the window: one of the rows' colors when it is close
         /// to it (the capture is in the display's color space).
         pub fn colors(&mut self, number: u64, pages: &[u64]) -> Vec<Option<[u8; 3]>> {
-            let none = vec![None; pages.len()];
-            if self
-                .captured
-                .iter()
-                .any(|(w, at)| *w == number && at.elapsed() < Duration::from_millis(500))
-            {
-                return none;
+            let recent = self.captured.iter().find(|(w, at, p, _)| {
+                *w == number && p == pages && at.elapsed() < Duration::from_millis(500)
+            });
+            if let Some((_, _, _, colors)) = recent {
+                return colors.clone();
             }
-            self.captured.retain(|(w, _)| *w != number);
-            self.captured.push((number, Instant::now()));
+            let colors = self.capture(number, pages);
+            self.captured.retain(|(w, ..)| *w != number);
+            self.captured
+                .push((number, Instant::now(), pages.to_vec(), colors.clone()));
+            colors
+        }
+
+        fn capture(&self, number: u64, pages: &[u64]) -> Vec<Option<[u8; 3]>> {
+            let none = vec![None; pages.len()];
             let Some(window) = window(number) else {
                 return none;
             };
