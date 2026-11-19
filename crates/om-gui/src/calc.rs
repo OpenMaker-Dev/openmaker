@@ -3221,11 +3221,16 @@ mod tests {
                 "completed frames must not refetch evicted bodies"
             );
         }
-        // A record/data change still invalidates the completed result.
+        // A record/data change still invalidates the completed result: it
+        // is read again, its last value drawn meanwhile.
         calcs.data_changed();
-        assert!(evaluator(&calcs, &schema)
-            .named_field_value("Bytes", 1)
-            .is_none());
+        {
+            let evaluation = evaluator(&calcs, &schema);
+            assert_eq!(
+                evaluation.display(&evaluation.named_field_value("Bytes", 1).unwrap()),
+                bytes.to_string()
+            );
+        }
         assert_eq!(
             calcs.take_wanted(),
             [CalcNeed::Record {
