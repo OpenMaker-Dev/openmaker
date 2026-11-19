@@ -1048,7 +1048,7 @@ impl Window {
             // provider without record sessions. A refused delete has not
             // reverted the new record. Keep its drafts and ownership
             // intact so Discard can be retried.
-            provider.delete_record(layout, id)?;
+            provider.delete_record_in_script(layout, id)?;
         }
         self.discard_previews(provider);
         self.state.uncommitted = Uncommitted::default();
@@ -1349,7 +1349,7 @@ impl Window {
         let (Some(layout), Some(id)) = (self.state.layout, self.record_id(provider)?) else {
             return Err(DataError::with_code(101, "There is no current record."));
         };
-        provider.delete_record(layout, id)?;
+        provider.delete_record_in_script(layout, id)?;
         self.discard_previews(provider);
         self.leave_record();
         self.changed_data();

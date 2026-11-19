@@ -1231,9 +1231,11 @@ fn related_file_layouts_browse_and_expose_only_supported_edit_capabilities() {
         provider.update_record(layout, 1, values).unwrap_err().code,
         Some(3)
     );
-    // A deletion is held in the related file's part of the transaction:
-    // it locks the record and commits nothing before Commit Transaction.
-    provider.delete_record(layout, 1).unwrap();
+    // The user's deletion is refused, as the user's edits are. A script's
+    // is held in the related file's part of the transaction: it locks the
+    // record and commits nothing before Commit Transaction.
+    assert_eq!(provider.delete_record(layout, 1).unwrap_err().code, Some(3));
+    provider.delete_record_in_script(layout, 1).unwrap();
     provider.revert_transaction().unwrap();
     refused(provider.set_next_serial_value(REMOTE, NAME, "10"));
     for op in [
@@ -1559,11 +1561,13 @@ fn imported_layout_delete_uses_owner_verification_without_field_entry_rules() {
     provider.use_window(1);
     assert_eq!(ids(&mut provider, 2), [2, 1]);
 
-    // Held in the related file's part of the transaction: nothing
-    // is committed, and the revert keeps the record.
+    // A script's deletion is held in the related file's part of the
+    // transaction: nothing is committed, and the revert keeps the record.
+    // The user's own is refused there.
     provider.begin_transaction(Default::default()).unwrap();
     let commits = host.captures.with_opcode(Opcode::HostCommit).len();
-    provider.delete_record(2, 1).unwrap();
+    assert_eq!(provider.delete_record(2, 1).unwrap_err().code, Some(3));
+    provider.delete_record_in_script(2, 1).unwrap();
     provider.revert_transaction().unwrap();
     assert_eq!(host.captures.with_opcode(Opcode::HostCommit).len(), commits);
     assert_eq!(ids(&mut provider, 2), [2, 1], "the reverted deletion");
@@ -1628,6 +1632,17 @@ fn imported_layout_delete_uses_owner_verification_without_field_entry_rules() {
     provider.delete_record(1, 2).unwrap();
     assert_eq!(ids(&mut host.open(ROOT), 1), [1]);
     assert_eq!(ids(&mut host.open(RELATED), 1), [2]);
+
+    // Held in a transaction and committed, the deletion needs no
+    // field-entry plan either: the table's unplannable auto-entry does not
+    // refuse Commit Transaction.
+    provider.begin_transaction(Default::default()).unwrap();
+    provider.delete_record_in_script(2, 2).unwrap();
+    // Held until the commit.
+    assert_eq!(ids(&mut host.open(RELATED), 1), [2]);
+    provider.commit_transaction(false).unwrap();
+    assert!(ids(&mut host.open(RELATED), 1).is_empty());
+    assert!(ids(&mut provider, 2).is_empty());
 }
 
 /// New Record, Duplicate Record's copied values and a script's New Record

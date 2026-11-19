@@ -998,16 +998,22 @@ is written by that file (`related_owner.rs`, #1000):
     window keeps what was typed. What FileMaker does in that case is
     unmeasured.
   - **Revert Transaction** reverts every file's part.
-  - **Delete Record** on a layout of another file's table, from a script
-    or the menu while the script is paused, is held in that file's part,
-    as a deleted portal row is: the record goes when the transaction
-    commits and stays when it is reverted
+  - **A script's Delete Record** (and Delete All Records, and Revert
+    Record of a record the transaction made) on a layout of another file's
+    table is held in that file's part, as a deleted portal row is
+    (`DataProvider::delete_record_in_script`): the record goes when the
+    transaction commits and stays when it is reverted. Commit Transaction
+    prepares such a deletion from the table's fields and the record's
+    container references alone, as the ordinary deletion does, so a table
+    whose rules OpenMaker cannot plan still deletes
     ([#312](https://github.com/OpenMaker-Dev/openmaker/issues/312)). Which
     records the window shows after such a revert is unmeasured.
   - **Still refused (3)** inside the transaction, on such a layout: the
-    edits and new records the user makes there while the script is paused
-    (the provider's create and update calls,
-    [#411](https://github.com/OpenMaker-Dev/openmaker/issues/411)).
+    edits, new records and deletions the user makes there while the script
+    is paused (the provider's create, update and delete calls,
+    [#411](https://github.com/OpenMaker-Dev/openmaker/issues/411)). No step
+    of the transaction made them, and the window's OnWindowTransaction
+    would report them before the transaction's outcome.
 - **The window's commit of a record across files** (#1006; it begins with
   `DataProvider::begin_record_commit`, a script's Open Transaction with
   `begin_transaction`). It is saved file by file, related files first and

@@ -182,8 +182,8 @@ none: Commit Transaction prepares every file before any record data goes, and
 a refusal in any file reverts every file's part; only a connection lost, or a
 host refusing a later file, after an earlier file's commit leaves that earlier
 file committed (record-writes.md, "A script's transaction across files").
-Delete Record inside one is held there too; the user's own edits on such a
-layout while the script is paused are refused
+A script's Delete Record inside one is held there too; the user's own edits
+and deletions on such a layout while the script is paused are refused
 ([#411](https://github.com/OpenMaker-Dev/openmaker/issues/411)).
 Import, writes to the layout's related records in other tables, globals and
 repetitions remain refused on these layouts

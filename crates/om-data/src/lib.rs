@@ -1211,6 +1211,17 @@ pub trait DataProvider: Send {
         ))
     }
 
+    /// Delete Record as a script step runs it. Inside a script's
+    /// transaction, a record of another file's table is held in that
+    /// file's part (record-writes.md, "A script's transaction across
+    /// files"). The user's own [`Self::delete_record`] of such a record is
+    /// refused while a script is paused inside the transaction, as the
+    /// user's edits there are: the transaction would hold a change no
+    /// step of it made.
+    fn delete_record_in_script(&mut self, layout_id: u32, record_id: i64) -> Result<(), DataError> {
+        self.delete_record(layout_id, record_id)
+    }
+
     /// Refuse a commit through layout `layout_id` whose records the
     /// account may not change (docs/re/session-identity.md 2.2), before any
     /// of its writes: a deleted portal row's record names no layout of its

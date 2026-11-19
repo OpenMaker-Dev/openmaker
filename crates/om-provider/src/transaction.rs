@@ -3840,8 +3840,13 @@ impl NativeProvider {
         // Whether a related-values list may read the records computed so far
         // (`computed`, below).
         let mut lists = false;
-        for (table, _) in &transaction.order {
-            if !reads_of.contains_key(table) {
+        for key @ (table, _) in &transaction.order {
+            // A deletion evaluates no rules: its table needs no plan.
+            let deleted = transaction
+                .held
+                .get(key)
+                .is_some_and(|held| matches!(held.change, Change::Deleted));
+            if !deleted && !reads_of.contains_key(table) {
                 let (_, plan) = self.table_plan(*table)?;
                 reads_of.insert(*table, plan.related_tables());
                 lists |= plan.checks_related_lists();
@@ -3976,6 +3981,33 @@ impl NativeProvider {
             }
             done.insert(*key);
             let record_key = serial::encode(record);
+            if matches!(held.change, Change::Deleted) {
+                // Prepared from the table's fields and the stored record's
+                // container references alone, with no field-entry plan, as
+                // the ordinary deletion is: a table whose rules OpenMaker
+                // cannot plan still deletes.
+                let table_def = self.table_fields(table)?;
+                let released = match self.read_record(table, record)? {
+                    Some(node) => super::containers::references(
+                        &table_def,
+                        &text_values(&stored_record(record, &node)),
+                        None,
+                    ),
+                    None => Vec::new(),
+                };
+                prepared.push(Prepared {
+                    table: table_def,
+                    record,
+                    node: None,
+                    entry: OwnedNode::leaf(record_key, vec![write::COMMIT_DELETED]),
+                    expected: None,
+                    cells: None,
+                    released,
+                    acquired: Vec::new(),
+                });
+                computed.delete(table, record);
+                continue;
+            }
             let (table_def, plan) = self.table_plan(table)?;
             // The session's global values its formulas read (5.17), for
             // an imported row's later edits as for any held record.
@@ -4027,28 +4059,7 @@ impl NativeProvider {
             }
             let (values, mode, mut node, base) = match &held.change {
                 Change::Imported { .. } => unreachable!("written above"),
-                Change::Deleted => {
-                    let released = match self.read_record(table, record)? {
-                        Some(node) => super::containers::references(
-                            &table_def,
-                            &text_values(&stored_record(record, &node)),
-                            None,
-                        ),
-                        None => Vec::new(),
-                    };
-                    prepared.push(Prepared {
-                        table: table_def,
-                        record,
-                        node: None,
-                        entry: OwnedNode::leaf(record_key, vec![write::COMMIT_DELETED]),
-                        expected: None,
-                        cells: None,
-                        released,
-                        acquired: Vec::new(),
-                    });
-                    computed.delete(table, record);
-                    continue;
-                }
+                Change::Deleted => unreachable!("prepared above"),
                 Change::New(values) => (
                     values,
                     WriteMode::Create,
