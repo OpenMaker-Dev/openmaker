@@ -430,7 +430,9 @@ authoring part tabs or object kind captions.
   record is in it, or when a sort field may read other records. A hop
   whose source match values are all empty relates nothing and reads no
   record. A new record the transaction holds ([#261](https://github.com/OpenMaker-Dev/openmaker/issues/261)) has no related set
-  on the host yet, so its sets are scanned. Results are kept from frame
+  on the host yet, so its sets are scanned from its held values, also
+  before anything is typed into it: right after New Record its
+  auto-entered keys relate records ([#327](https://github.com/OpenMaker-Dev/openmaker/issues/327)). Results are kept from frame
   to frame while the changes stay the same, and are all evaluated again
   when they change; those that read the window's context (`Get`
   functions) are also evaluated again when that changes (#1308). Limits: a

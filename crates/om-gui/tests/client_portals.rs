@@ -5533,6 +5533,52 @@ fn a_held_new_records_refused_save_writes_its_portal_row_once_when_retried() {
     );
 }
 
+/// A new record the window holds relates records by the key it was
+/// auto-entered with before anything is typed into it, as FileMaker's new
+/// record does (Claris, "Creating related records"): with relationship 1
+/// joining `Tasks::Creator = Notes::Task`, Creator auto-entered with the
+/// account's name and both notes the account's, New Record's portal shows
+/// them at once. The stored tasks have no creator and relate none.
+#[test]
+fn a_held_new_records_portal_follows_its_auto_entered_key_before_typing() {
+    let hosted = host_with("held-new-auto-key", |root| {
+        fixture::add_relationship(root, 1, (OCCURRENCE, CREATOR), 0, (NOTES_OCCURRENCE, TASK));
+        for note in [2u64, 3] {
+            root.put(
+                &[
+                    &uint_segment(NOTES),
+                    &[5],
+                    &serial::encode(note),
+                    &uint_segment(TASK),
+                ],
+                text_node(&[], fixture::ACCOUNT),
+            );
+        }
+    });
+    let mut app = open(&hosted);
+    common::select_layout(&mut app, "Portals");
+    let rows = |app: &common::App| -> Vec<String> {
+        app.query_all(
+            By::new()
+                .role(egui::accesskit::Role::TextInput)
+                .label("Notes::Body"),
+        )
+        .filter_map(|row| row.value())
+        .filter(|value| !value.is_empty())
+        .collect()
+    };
+    common::wait_until(&mut app, "the first task", |app| {
+        app.state().is_settled()
+            && common::text_field(app, "Name").value().as_deref() == Some("Write tests")
+    });
+    assert!(rows(&app).is_empty(), "{:?}", rows(&app));
+    common::click(&mut app, "New Record");
+    common::wait_until(&mut app, "the new record's related notes", |app| {
+        app.state().is_settled() && rows(app) == ["first", "second"]
+    });
+    assert!(app.state().error().is_none(), "{:?}", app.state().error());
+}
+
 /// Find mode draws the layout itself: its fields, the portal's first row
 /// among them, take the request's criteria; a global field takes none
 /// (Claris "Making a find request"). A criterion in the portal's field
