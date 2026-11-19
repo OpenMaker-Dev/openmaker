@@ -5136,23 +5136,19 @@ impl OpenMakerApp {
                     Ok(om_data::EditPreparation::Prepared) => {
                         let layout = request.baseline.layout;
                         let record = request.baseline.record;
-                        // A reply for a record the window left, or whose
-                        // input went back to its stored value, is not this
-                        // window's edit: its lock goes when the window
-                        // releases the record (`release_record`).
+                        // The reply is this window's: a release since
+                        // (its input went back to its stored value) would
+                        // have forgotten the request
+                        // (`forget_edit_preparations`). For a record the
+                        // window left, the save that left it took the
+                        // session (`Window::commit`).
                         let current = self
                             .w
                             .session
                             .as_ref()
                             .and_then(|s| Some((s.layout?, s.current_record()?.1.id)))
                             == Some((layout, record));
-                        if !current
-                            || !self
-                                .w
-                                .document
-                                .drafted_records()
-                                .contains(&(layout, record))
-                        {
+                        if !current {
                             ctx.request_repaint();
                             return;
                         }

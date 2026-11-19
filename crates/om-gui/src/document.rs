@@ -789,6 +789,16 @@ impl DocumentState {
         accepted
     }
 
+    /// The window released `record` of `layout` (it keeps no edit of it):
+    /// the lock a preparation took goes with it, so a reply to one still
+    /// on its way is not this window's any more, and an entry begun again
+    /// prepares again. Refused input stays to be discarded.
+    pub(crate) fn forget_edit_preparations(&mut self, layout: u32, record: i64) {
+        self.edit_preparations.retain(|(l, r, _), p| {
+            *l != u64::from(layout) || *r != record || *p == CandidatePreparation::Failed
+        });
+    }
+
     /// Retention starts with real input, even while preparation has not
     /// accepted its value. This pins the page the user actually edited.
     pub(crate) fn entry_candidate_records(&self) -> BTreeSet<(u32, i64)> {

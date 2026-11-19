@@ -838,14 +838,16 @@ impl OpenMakerApp {
             }
         }
         // The lock an existing record's editing took went with the lost
-        // connection, and a reconnect carries no such session (only new
-        // records'): its edits are saved by the ordinary path, which locks
-        // the record again and checks the version they began from.
+        // connection, unless the reconnect carried the window's record
+        // session (a refused related save's drafts, #152): its edits are
+        // saved by the ordinary path, which locks the record again and
+        // checks the version they began from.
         if let Some((_, _, open)) = &mut self.w.uncommitted {
             if open.session
                 && !open.new
                 && open.attachment_field.is_none()
                 && open.related_attachments.is_empty()
+                && !reconnected.carried.contains(&probe.window)
             {
                 open.session = false;
             }
@@ -1792,6 +1794,7 @@ impl OpenMakerApp {
         }
         for key in &keys {
             self.w.retained.remove(key);
+            self.w.document.forget_edit_preparations(key.0, key.1);
         }
         self.request(ctx, Request::ReleaseRecords(keys));
     }
@@ -1982,6 +1985,7 @@ mod tests {
                 related: Vec::new(),
                 unsent: Vec::new(),
                 recreated: Vec::new(),
+                carried: Vec::new(),
             }),
         );
         assert!(app.reconnect.is_none());
@@ -2030,6 +2034,7 @@ mod tests {
                 related: Vec::new(),
                 unsent: Vec::new(),
                 recreated: Vec::new(),
+                carried: Vec::new(),
             }),
         );
         assert!(app.w.connection_lost.is_none());
@@ -2104,6 +2109,7 @@ mod tests {
                     related: vec![((1, 7, 5), read(version))],
                     unsent: Vec::new(),
                     recreated: Vec::new(),
+                    carried: Vec::new(),
                 }),
             );
             assert_eq!(
@@ -2200,6 +2206,7 @@ mod tests {
                 related: vec![((1, 7, 5), Err(DataError::new("busy")))],
                 unsent: Vec::new(),
                 recreated: Vec::new(),
+                carried: Vec::new(),
             }),
         );
         let hold = |app: &OpenMakerApp| {
@@ -2306,6 +2313,7 @@ mod tests {
                 related: Vec::new(),
                 unsent: Vec::new(),
                 recreated: Vec::new(),
+                carried: Vec::new(),
             }),
         );
     }
@@ -2616,6 +2624,7 @@ mod tests {
                 related: Vec::new(),
                 unsent: Vec::new(),
                 recreated: Vec::new(),
+                carried: Vec::new(),
             }),
         );
         assert!(

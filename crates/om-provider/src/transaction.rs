@@ -880,28 +880,62 @@ impl NativeProvider {
         });
     }
 
-    /// The open transaction's kind.
-    /// The window's record session holds only record `record` of `table`,
-    /// locked as its editing began (`prepare_root_record_edit`) and not
-    /// changed since, and the window keeps no edit of it any more: the
-    /// session goes, which lets the lock go.
-    pub(crate) fn release_untouched_edit(&mut self, table: u64, record: u64) {
-        let untouched = self.transaction.as_ref().is_some_and(|t| {
-            t.kind == TransactionKind::Record
+    /// Whether the window's record session holds existing record `record`
+    /// of `table` as it is edited, locked as its editing began
+    /// (`prepare_root_record_edit`): `Some(true)` when it holds nothing
+    /// else, of this file or a related one, so that nothing of it is on
+    /// the host but that lock.
+    pub(crate) fn session_edit(&self, table: u64, record: u64) -> Option<bool> {
+        let t = self
+            .transaction
+            .as_ref()
+            .filter(|t| t.kind == TransactionKind::Record)?;
+        let held = t.held.get(&(table, record))?;
+        if !matches!(held.change, Change::Edit { .. }) {
+            return None;
+        }
+        Some(
+            self.owner_transaction.alone()
                 && t.mark.is_none()
                 && t.containers.is_empty()
                 && t.root_acquisitions.is_empty()
                 && t.parked.is_empty()
-                && t.held.len() == 1
-                && t.held.get(&(table, record)).is_some_and(
-                    |held| matches!(&held.change, Change::Edit { values, .. } if values.is_empty()),
-                )
-        });
+                && t.held.len() == 1,
+        )
+    }
+
+    /// The window's record session holds only record `record` of `table`,
+    /// locked as its editing began and not changed since
+    /// ([`Self::session_edit`]), and the window keeps no edit of it any
+    /// more: the session goes, which lets the lock go.
+    pub(crate) fn release_untouched_edit(&mut self, table: u64, record: u64) {
+        let untouched = self.session_edit(table, record) == Some(true)
+            && matches!(
+                self.held(table, record),
+                Some(Change::Edit { values, .. }) if values.is_empty()
+            );
         if untouched {
             let _ = om_data::DataProvider::revert_record_session(self);
         }
     }
 
+    /// Delete Record of the record the window's record session holds as it
+    /// is edited, and nothing else ([`Self::session_edit`]): deleted under
+    /// the lock its editing took, its edits going with the session, as
+    /// FileMaker Pro deletes the record being edited. A delete the host
+    /// refuses leaves no delete held for a later save: the session goes.
+    pub(crate) fn delete_edited(&mut self, table: u64, record_id: i64) -> Result<(), DataError> {
+        self.invalidate_calc_data();
+        let deleted = self
+            .hold_delete(table, record_id)
+            .and_then(|()| om_data::DataProvider::commit_record_session(self, true));
+        if deleted.is_err() && self.transaction_kind() == Some(TransactionKind::Record) {
+            let _ = om_data::DataProvider::revert_record_session(self);
+        }
+        deleted
+    }
+
+    /// The open transaction's kind.
     pub(crate) fn transaction_kind(&self) -> Option<TransactionKind> {
         self.transaction.as_ref().map(|t| t.kind)
     }
@@ -2875,10 +2909,14 @@ impl NativeProvider {
                 .transaction_kind()
                 .is_some_and(|k| k != TransactionKind::Record)
             || self.asset_settlement.is_some()
-            || !self.scalar_session_alone()
+            || self.entered_over.is_some()
         {
             return Ok(Unavailable);
         }
+        // Another window's record session, or a reconnect's carried or
+        // unsettled work, leaves an edit no recovery proof; the record is
+        // locked all the same.
+        let provable = self.scalar_session_alone();
         self.refuse_while_unsettled()?;
         let Ok((table, _)) = self.record_plan(baseline.layout) else {
             return Ok(Unavailable);
@@ -2976,7 +3014,7 @@ impl NativeProvider {
             // What a reconnect can recover of the edit, where it can be
             // proved (the account's set, the file's identity); the record
             // is locked either way, as FileMaker Pro locks it.
-            let mut start = match self.external.root_identity().cloned() {
+            let mut start = match self.external.root_identity().cloned().filter(|_| provable) {
                 Some(identity) => self.existing_edit_start_at(
                     &table,
                     scalar_recovery::ExistingAttachment {

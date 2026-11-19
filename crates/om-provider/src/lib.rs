@@ -3423,6 +3423,16 @@ impl DataProvider for NativeProvider {
         if self.external.route(table).is_none() {
             self.require_delete(table, record_id)?;
         }
+        // The record this window's editing locked (`record.prepare_edit`)
+        // is deleted under that lock; a session holding more (a related
+        // record's write, container data) goes first, which lets it go.
+        if let Ok(record) = u64::try_from(record_id) {
+            match self.session_edit(table, record) {
+                Some(true) => return self.delete_edited(table, record_id),
+                Some(false) => om_data::DataProvider::revert_record_session(self)?,
+                None => {}
+            }
+        }
         if self.external.route(table).is_some() {
             // Keep the caller's layout/scripts and client table namespace.
             // The owner supplies the complete ordinary deletion engine,
