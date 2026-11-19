@@ -1605,10 +1605,13 @@ ProcessGoogleImageEmbedding` and the task-type strings).
 above with error 4 (script-runtime.md 2.5); it has no reader for the new
 slots, flags and bytes [I: none of its serializers names them].
 
+**Clients.** 26.1.1's step compatibility table gives 249 and 250 every
+client (0x7e) and 248 none (script-runtime.md 10.1) (obs).
+
 Unknowns: a step of each kind written by FileMaker Pro 26.1.1, read back;
 whether 26.0.3 keeps the new slots and bytes when it rewrites such a step;
-Go to Related Record's layout storage with `0x400`; the runtime of 249 and
-250 on FileMaker Server and in WebDirect (no compatibility row yet).
+Go to Related Record's layout storage with `0x400`; how 249 and 250 run on
+FileMaker Server and in WebDirect (the table allows them; not run).
 
 ## Implementation notes (import/export)
 

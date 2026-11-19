@@ -290,14 +290,15 @@ mod tests {
             [Client::Mac, Client::Windows, Client::Server]
         );
         assert!(!is_supported(2, Client::Server));
-        // 84 named steps of 26.0.3's table lack the Server bit
-        // (script-steps.md 7); 26.1.1's two new steps have no row yet.
+        // 83 named steps lack the Server bit: 26.0.3's 84 (script-steps.md
+        // 7) less Save a Copy as Add-on Package (96), which 26.1.1 runs on
+        // the server; its two new steps run on every client.
         let unsupported = step_ids()
-            .filter(|id| step_name(*id).is_some() && step_compat(*id).is_some())
-            .filter(|id| !is_supported(*id, Client::Server))
+            .filter(|id| step_name(*id).is_some() && !is_supported(*id, Client::Server))
             .count();
-        assert_eq!(unsupported, 84);
-        assert!(PENDING_STEP_IDS.iter().all(|id| step_compat(*id).is_none()));
+        assert_eq!(unsupported, 83);
+        assert_eq!(supported_clients(250), Client::ALL);
+        assert!(supported_clients(248).is_empty());
         let comment = step_compat(89).unwrap();
         assert!(!comment.button_compatible());
         assert!(step_compat(1).unwrap().button_compatible());

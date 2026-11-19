@@ -53,8 +53,8 @@ The files above are FileMaker Pro 26.1.1's since
 26.0.3 they differ in the rows below. Source: the string-resource directory
 of 26.1.1's Mac x86_64 DBEngine, compared resource by resource with
 26.0.3's (2026-11-19). `make_catalogs.py` writes the first seven rows; the
-`calc-tokens.csv` and `hbkey-constants.csv` rows were added by hand from
-the evidence given.
+`script-step-compat.csv`, `calc-tokens.csv` and `hbkey-constants.csv` rows
+were added by hand from the evidence given.
 
 | File | Row | 26.1.1 |
 |---|---|---|
@@ -66,12 +66,12 @@ the evidence given.
 | `get-selectors.csv` | 142 | SortOrder |
 | `error-codes.csv` | 120 | "Custom menu is missing" |
 | `script-triggers.csv` | all | the same 29 triggers; resource 129 gained 79 strings, so their indices move from 1221-1276 to 1277-1332 |
+| `script-step-compat.csv` | 96, 248-250 | from 26.1.1's Mac `FMEngine` step table ([../script-runtime.md](../script-runtime.md) 10.1): 96 gains the Server bit, 248 has no client, 249 and 250 every client; their Claris and server-dispatch columns are unknown |
 | `enumerations.csv` | none | unchanged |
 | `calc-tokens.csv` | 1142, 1143 | `Get ( SortOrder )` is `9b 8e`, so `kEndGetFuncOp` presumably moves to 1143 [I: no 26.1.1 DWARF] |
 | `calc-tokens.csv` | 2318 | GetToolDefinitions, `f9 12`, VarArgs; two or more arguments by its signature [I] |
 | `hbkey-constants.csv` | 3 rows | `KButtonIconSvgCalc` `91`, `KCatalogSpecificFlags` `f3`, `KDBData2` `0b` (Mac DBEngine's `__GLOBAL__sub_I_DBGlobals.cpp`) |
 
 Not known yet: the new steps' parameters as `script-step-params.csv` rows
-(their storage is in script-steps.md 12.4) and the clients that run them
-(`script-step-compat.csv`); the new function's and selector's entries in
-`calc-function-spec.json`.
+(their storage is in script-steps.md 12.4), and the new function's and
+selector's entries in `calc-function-spec.json`.
