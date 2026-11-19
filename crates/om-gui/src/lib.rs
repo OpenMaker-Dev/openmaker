@@ -35,6 +35,7 @@ mod desktop;
 mod document;
 mod icons;
 mod inspector;
+pub mod keypad;
 mod layout_bar;
 mod layout_canvas;
 mod layout_objects;
@@ -138,7 +139,9 @@ pub fn run(provider: Box<dyn DataProvider>) -> eframe::Result {
             eprintln!("openmaker: {err}");
         }
     }
-    eframe::run_native(
+    // On an event loop of the app's own, which tells the keypad's Enter
+    // from Return (`keypad`).
+    keypad::run(
         APP_TITLE,
         native_options(),
         Box::new(|cc| {

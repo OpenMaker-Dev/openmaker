@@ -4443,6 +4443,7 @@ dependencies = [
  "javascriptcore-rs",
  "keyring",
  "libc",
+ "log",
  "om-crypto",
  "om-data",
  "om-formula",

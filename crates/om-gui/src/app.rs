@@ -2521,6 +2521,30 @@ impl OpenMakerApp {
             || self.value_list_edit.is_some()
     }
 
+    /// Whether the keypad's Enter goes to the next object rather than
+    /// committing the record: the active field object's "Go to next object
+    /// using" includes the Enter key (`FieldObject::next_object_on_enter`).
+    /// That FileMaker Pro then goes on rather than commits is inferred from
+    /// the option (layout-model.md 5.4.1), not measured.
+    fn enter_goes_to_next_object(&self) -> bool {
+        let (Some(_), Some(object), Some(session)) = (
+            &self.w.document.active,
+            self.w.document.active_object,
+            &self.w.session,
+        ) else {
+            return false;
+        };
+        let crate::session::RenderState::Loaded(layout) = &session.render else {
+            return false;
+        };
+        layout
+            .layout
+            .objects
+            .get(object)
+            .and_then(|object| object.field_obj.as_ref())
+            .is_some_and(om_layout::FieldObject::next_object_on_enter)
+    }
+
     fn shortcuts(&self, ui: &Ui, actions: &mut Vec<Action>) {
         let open = self.w.session.is_some();
         // Document shortcuts must not act through dialogs or while searching
@@ -2539,6 +2563,14 @@ impl OpenMakerApp {
                 .as_ref()
                 .is_some_and(|session| self.w.layout_workspace.selection_count(session) > 0);
         let mut commit = false;
+        // The keypad's Enter, unlike Return, commits the record or goes to
+        // the next object (`keypad`) from a field of the record or with no
+        // editor focused. In an open menu or list, or in a box of the
+        // toolbar (Quick Find, the record number), it acts as Return.
+        let keypad_enter = browse
+            && !egui::Popup::is_any_open(ui.ctx())
+            && (self.w.document.active.is_some() || !typing);
+        let enter_goes_next = keypad_enter && self.enter_goes_to_next_object();
         ui.input_mut(|input| {
             if input.consume_shortcut(&shortcuts::QUIT) {
                 actions.push(Action::Quit);
@@ -2620,6 +2652,27 @@ impl OpenMakerApp {
                 if input.consume_shortcut(&KeyboardShortcut::new(Modifiers::COMMAND, Key::Enter)) {
                     actions.push(Action::CommitRecord);
                     commit = true;
+                }
+                let at = input.events.iter().position(crate::keypad::is_enter_press);
+                if let Some(at) = at.filter(|_| keypad_enter) {
+                    if enter_goes_next {
+                        // As a Tab: the document moves the focus.
+                        input.events[at] = egui::Event::Key {
+                            key: Key::Tab,
+                            physical_key: None,
+                            pressed: true,
+                            repeat: false,
+                            modifiers: Modifiers::NONE,
+                        };
+                    } else {
+                        input
+                            .events
+                            .retain(|event| !crate::keypad::is_enter_press(event));
+                        if !commit {
+                            actions.push(Action::CommitRecord);
+                            commit = true;
+                        }
+                    }
                 }
             }
             if input.consume_shortcut(&shortcuts::STATUS_TOOLBAR) {

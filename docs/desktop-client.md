@@ -976,8 +976,8 @@ Inferred, unmeasured in Pro:
 **Committing and reverting.** A record being edited shows no bar, as in
 FileMaker Pro 26.0.3 (#871, observed on the Tasks starter), so the layout
 keeps its place. Switching fields keeps the record's draft. A click on
-blank layout canvas, Command-Enter (Ctrl+Enter on Linux and Windows),
-going to another record, changing mode or layout, Refresh Window, closing
+blank layout canvas, the numeric keypad's Enter, Command-Enter (Ctrl+Enter
+on Linux and Windows) with either Enter key, going to another record, changing mode or layout, Refresh Window, closing
 the window or file, quitting, and a script's Commit Records/Requests
 commit it. Keyboard Commit leaves the field through the existing
 OnObjectValidate, OnObjectSave (when changed) and OnObjectExit stages,
@@ -1010,8 +1010,21 @@ starter), except the re-read, which is OpenMaker's. Pro has no Save
 Record menu item, and OpenMaker adds none.
 
 **Limits of committing and reverting:**
-- **Keypad Enter** commits in Pro. egui reports it as Return, so in
-  OpenMaker it keeps the draft ([#260](https://github.com/OpenMaker-Dev/openmaker/issues/260)).
+- **Keypad Enter and Return.** egui reports both keys as Enter, so the
+  app's event loop marks keypad Enter's events before egui reads them
+  (`om_gui::keypad`).
+  - Keypad Enter commits from a field of the record, or with no field
+    active. In an open menu or list, and in the toolbar's boxes (Quick
+    Find, the record number), it acts as Return.
+  - From a field whose "Go to next object using" includes the Enter key
+    (field flag `0x80`, layout-model.md 5.4.1), it goes to the next object
+    as Tab does. That FileMaker Pro goes on there rather than commits is
+    inferred from the option, not measured. With Shift or Option it still
+    goes forward; what Pro does then is unmeasured.
+  - Return ends the field's editing and keeps the draft. FileMaker Pro
+    types a line break there, or goes to the next object when the option
+    includes the Return key (`0x40`)
+    ([#376](https://github.com/OpenMaker-Dev/openmaker/issues/376)).
 - **A new record and reconnecting.** Records > New Record and Duplicate
   Record run the New Record/Request and Duplicate Record/Request steps:
   the record is held in the window's record session until it is

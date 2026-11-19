@@ -30,6 +30,8 @@ struct DocumentProvider {
     styled: bool,
     conditional_color: bool,
     duplicate_field: bool,
+    /// Given's "Go to next object using" includes the Enter key.
+    given_next_on_enter: bool,
     replacement: Option<Arc<AtomicBool>>,
     list: bool,
     /// The card is [`web_viewer_card`].
@@ -53,6 +55,7 @@ impl DocumentProvider {
             styled: false,
             conditional_color: false,
             duplicate_field: false,
+            given_next_on_enter: false,
             replacement: None,
             list: false,
             web_viewer: false,
@@ -245,6 +248,15 @@ impl DataProvider for DocumentProvider {
             return Ok(None);
         }
         let mut document = document();
+        if self.given_next_on_enter {
+            let given = document
+                .layout
+                .objects
+                .objects
+                .iter_mut()
+                .find(|o| o.id == 3);
+            given.unwrap().field_obj.as_mut().unwrap().flags |= 0x80;
+        }
         if self.styled {
             document.layout.def.as_mut().unwrap().table_alias_key = 0x104082;
             for (object_id, field_id) in [(3, 1), (5, 2)] {
@@ -784,6 +796,39 @@ fn blank_canvas_commits_but_changing_fields_keeps_the_record_draft() {
             assert!(!common::unsaved(&app));
         }
     }
+}
+
+/// Return ends a field's editing and keeps the record's draft; the keypad's
+/// Enter commits it, or from a field whose "Go to next object using"
+/// includes the Enter key goes to the next field, as Tab does.
+#[test]
+fn the_keypad_enter_commits_or_goes_on_where_return_keeps_the_draft() {
+    let keypad_enter = |app: &mut common::App| {
+        for pressed in [true, false] {
+            app.event(om_gui::keypad::enter_event(pressed, egui::Modifiers::NONE));
+        }
+        app.run_steps(3);
+    };
+    let mut provider = DocumentProvider::new(false);
+    provider.writable = true;
+    provider.given_next_on_enter = true;
+    let mut app = open_provider(provider);
+    replace(&mut app, "Family", "Keypad");
+    app.key_press(egui::Key::Enter);
+    app.run_steps(3);
+    assert!(common::unsaved(&app), "Return keeps the draft");
+    assert!(!common::text_field(&app, "Family").is_focused());
+
+    replace(&mut app, "Given", "Enter");
+    keypad_enter(&mut app);
+    assert!(common::text_field(&app, "Family").is_focused());
+    assert!(common::unsaved(&app), "going on keeps the draft");
+
+    keypad_enter(&mut app);
+    common::wait_for_label(&mut app, "Contact: Enter Keypad");
+    common::wait_until(&mut app, "the commit", |app| !common::editing(app));
+    assert!(!common::text_field(&app, "Family").is_focused());
+    assert!(app.state().error().is_none(), "{:?}", app.state().error());
 }
 
 #[test]
