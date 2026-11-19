@@ -842,7 +842,7 @@ fn steps_by_name_edit_their_name_calculations() {
     assert_eq!(ok(&StepOptions::new(set.clone(), None)), set);
 
     let mut options = StepOptions::new(stored(ScriptStep::new(249), 48), None);
-    if let Edit::Calculation { text, .. } = edit(&mut options, "Target field by name") {
+    if let Edit::Calculation { text, .. } = edit(&mut options, "Target Field by Name") {
         *text = "\"People::Name\"".into();
     }
     if let Edit::Choice { value, .. } = edit(&mut options, "Replace with") {

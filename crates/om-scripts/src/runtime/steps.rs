@@ -2000,6 +2000,7 @@ fn writes_records(id: u16) -> bool {
             | 216
             | 240
             | 241
+            | 249
     )
 }
 

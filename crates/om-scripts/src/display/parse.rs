@@ -636,6 +636,7 @@ fn rule(p: &mut Parser<'_>) {
         87 => custom_dialog(p),
         103 => p.labeled("Text Result", 0),
         141 => set_variable(p),
+        250 => set_variable_by_name(p),
         148 => {
             if let Some(text) = p.take() {
                 p.script(&text);
@@ -738,9 +739,14 @@ fn rule(p: &mut Parser<'_>) {
             p.target(Some("Target"), &[]);
             p.bare(0, &[]);
         }
-        91 => {
+        91 | 249 => {
             p.dialog();
-            p.field(&["Current contents", "Serial numbers"]);
+            // 249 names its field with a calculation (script-steps.md 12.4).
+            if p.step.id() == 249 {
+                p.bare(1, &["Current contents", "Serial numbers"]);
+            } else {
+                p.field(&["Current contents", "Serial numbers"]);
+            }
             if p.next_is("Current contents") {
                 p.pos += 1;
             } else if p.next_is("Serial numbers") {
@@ -1332,6 +1338,19 @@ fn set_variable(p: &mut Parser<'_>) {
         let (name, repetition) = split_repetition(&text);
         p.step.set_text(0, Some(name));
         // FileMaker stores repetition 1 when none is given.
+        p.calc_into(2, repetition.unwrap_or("1"));
+    }
+    p.labeled("Value", 1);
+}
+
+/// Set Variable by Name's text as OpenMaker shows it: the name's
+/// calculation, its repetition in brackets, then `Value:` [I].
+fn set_variable_by_name(p: &mut Parser<'_>) {
+    if p.peek().is_some_and(|o| label_value(o, "Value").is_none()) {
+        let text = p.take().expect("peeked");
+        let (name, repetition) = split_repetition(&text);
+        p.calc_into(3, name);
+        // As Set Variable stores repetition 1 when none is given.
         p.calc_into(2, repetition.unwrap_or("1"));
     }
     p.labeled("Value", 1);

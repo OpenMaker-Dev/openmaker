@@ -560,6 +560,10 @@ fn pasted_text_stores_what_filemaker_shows() {
         "Truncate Table [ With dialog: On ; Table: “Contacts” ]",
         "Import Records [ With dialog: On ; Source: “file:a.csv” ]",
         "New Window [ Style: Card ; Name: \"c\" ]",
+        // FileMaker Pro 26.1.1's steps by name, as OpenMaker shows them [I].
+        "Set Variable by Name [ \"$x\" ; Value: 1 ]",
+        "Set Variable by Name [ \"$\" & \"x\"[2] ; Value: 1 ]",
+        "Replace Field Contents by Name [ With dialog: Off ; \"Contacts::First Name\" ; Contacts::Last Name ]",
     ];
     for line in lines {
         assert_eq!(shown(&pasted(line)), line);
