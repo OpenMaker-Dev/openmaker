@@ -1317,7 +1317,9 @@ fn change_password_sets_the_accounts_own_password() {
 /// makes the account inactive and then active again, each saved with the
 /// checksum FileMaker Pro checks. A missing account is 213 (inferred), an
 /// account whose stored checksum is not the one its members give is not
-/// rewritten (3), and a session without full access gets 9 (#83).
+/// rewritten (3), a [Full Access] account is not made inactive (3),
+/// Expire password is refused (3), and a session without full access gets
+/// 9 (#83).
 #[test]
 fn account_steps_reset_passwords_and_enable_accounts() {
     use fixture::{calc, exit_with, on, script, set_variable};
@@ -1337,6 +1339,8 @@ fn account_steps_reset_passwords_and_enable_accounts() {
         step.set_flag(0x100, !active);
         step
     };
+    let mut expired = reset("\"Clerk\"", "\"later\"");
+    expired.set_flag(0x100, true);
     let scripts = [
         script(
             6,
@@ -1350,7 +1354,16 @@ fn account_steps_reset_passwords_and_enable_accounts() {
                 reset("\"Nobody\"", "\"x\""),
                 set_variable("$missing", "Get ( LastError )"),
                 enable(&format!("{:?}", fixture::READER), false),
-                exit_with("$reset & \"|\" & $off & \"|\" & $missing & \"|\" & Get ( LastError )"),
+                set_variable("$unread", "Get ( LastError )"),
+                // [Full Access] is never made inactive, and Expire password
+                // is refused until a hosted login can set a new password.
+                enable("\"Admin\"", false),
+                set_variable("$admin", "Get ( LastError )"),
+                expired,
+                exit_with(
+                    "$reset & \"|\" & $off & \"|\" & $missing & \"|\" & $unread & \"|\" & \
+                     $admin & \"|\" & Get ( LastError )",
+                ),
             ],
         ),
         script(
@@ -1393,7 +1406,7 @@ fn account_steps_reset_passwords_and_enable_accounts() {
         reply.is_success()
     };
     let mut admin = logged_in(port, "admin");
-    assert_eq!(run(&mut admin, 6).1, "0|0|213|3");
+    assert_eq!(run(&mut admin, 6).1, "0|0|213|3|3|3");
     assert!(!login(CLERK, "new secret"), "Clerk is inactive");
     assert!(login(fixture::READER, fixture::READER_PASSWORD));
     assert_eq!(run(&mut admin, 7).1, "0");

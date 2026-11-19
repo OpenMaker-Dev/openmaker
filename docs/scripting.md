@@ -485,7 +485,12 @@ Open items:
     inferred), raises the catalog's modification count and tells the
     other clients. Reset Account Password and Enable Account change an
     account found by name, for a session with full access (else 9), in
-    the same way; a name no account has gives 213 (inferred). None of
+    the same way; a name no account has gives 213 (inferred). Reset
+    Account Password with "Expire password" gives 3 until a hosted login
+    can set a new password
+    ([#248](https://github.com/OpenMaker-Dev/openmaker/issues/248)), and
+    Enable Account gives 3 for OAuth and Claris ID accounts and rather
+    than make a [Full Access] account inactive. None of
     them rewrites an account whose stored checksum OpenMaker does not
     reproduce (3). Add Account, Delete Account and Re-Login fail with
     error 3 ([#83](https://github.com/OpenMaker-Dev/openmaker/issues/83)).

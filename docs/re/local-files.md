@@ -435,11 +435,21 @@ same lock, stamps, notification and checksum check, writing the members
 the table above lists. A session without full access gets 9. Reset
 Account Password takes only a FileMaker-file account (206) and a password
 of at most 100 characters (11); its status is stamped as Change
-Password's is, with bit 18 set as the step's option says. Enable Account
-changes only bit 19 and leaves an account already in that state
-unwritten. Both find the account by name, ignoring case; a name no
-account has gives 213 [I: FileMaker's code for a name it does not find
-is not observed], and [Guest], whose name is not text, is never found.
+Password's is. Its "Expire password" option gives 3 before anything
+changes: the account could then sign in to a hosted file only with a new
+password, which OpenMaker Server does not take at login yet
+([#248](https://github.com/OpenMaker-Dev/openmaker/issues/248)). Enable
+Account changes only bit 19; an account already in that state is not
+written and no client is told of a change. It takes the file's own
+accounts and external server groups (kinds 0 and 1) and gives 3 for an
+OAuth or Claris ID account, and it gives 3 rather than make a [Full
+Access] account inactive [I: Claris documents both refusals for Enable
+Account; their codes are not observed]. Both find the account by name,
+ignoring case; a name no account has gives 213 [I: FileMaker's code for
+a name it does not find is not observed], and [Guest], whose name is not
+text, is never found. A new status that would not read back as written
+(flags added to a fraction of a second already held, past the six digits
+the value keeps) is not written (3).
 
 When a local file's Login is refused with 211, the desktop asks for a new
 password in a Change Password dialog (New Password, Confirm New Password)

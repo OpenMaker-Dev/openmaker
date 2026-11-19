@@ -3859,14 +3859,15 @@ impl ServerHost {
     /// (local-files.md 2.4), so that a client saving accounts and a script
     /// do not change them at once: 310 while another user holds it
     /// (FileMaker's code for Reset Account Password, inferred for the
-    /// other account steps). `edit` gets the modification stamp to write; once it
-    /// has written, the other clients are told the catalog changed, as a
+    /// other account steps). `edit` gets the modification stamp to write
+    /// and says whether it wrote; once it has, the other clients are told
+    /// the catalog changed, as a
     /// client's commit tells them. A file the server hosts read-only
     /// changes nothing: 3 (OpenMaker's choice).
     fn edit_accounts(
         &self,
         step: &str,
-        edit: impl FnOnce(&crate::hosting::ModStamp<'_>) -> HostResult,
+        edit: impl FnOnce(&crate::hosting::ModStamp<'_>) -> HostResult<bool>,
     ) -> HostResult {
         if self.hosted.read_only {
             info!(
@@ -3895,7 +3896,7 @@ impl ServerHost {
         };
         let result = edit(&stamp);
         self.hosted.lock_table().release_path(&catalog, self.user);
-        if result.is_ok() {
+        if result == Ok(true) {
             writes::notify(
                 &self.hosted,
                 &self.shared.mailboxes,
@@ -3912,7 +3913,7 @@ impl ServerHost {
                 ],
             );
         }
-        result
+        result.map(|_| ())
     }
 }
 
@@ -3956,6 +3957,7 @@ impl Accounts for ServerHost {
                     Some(stamp),
                     now,
                 )
+                .map(|()| true)
                 .map_err(|e| {
                     if let crate::hosting::PasswordChangeError::Unwritten(reason) = &e {
                         warn!(
@@ -3970,13 +3972,25 @@ impl Accounts for ServerHost {
 
     /// Reset Account Password (136): only a session with full access
     /// privileges (9), as FileMaker's `DoResetAccount`;
-    /// [`crate::hosting::Hosted::reset_account_password`] writes it.
+    /// [`crate::hosting::Hosted::reset_account_password`] writes it. With
+    /// "Expire password" it is refused (3) before anything changes: the
+    /// account could then sign in to a hosted file only with a new
+    /// password, which this server does not take at login yet
+    /// ([#248](https://github.com/OpenMaker-Dev/openmaker/issues/248)).
     fn reset_account_password(&mut self, name: &str, password: &str, expire: bool) -> HostResult {
         self.require_full_access()?;
+        if expire {
+            info!(
+                "{:?}: Reset Account Password with Expire password is not supported yet",
+                self.hosted.name
+            );
+            return Err(HostError::Unsupported);
+        }
         self.edit_accounts("Reset Account Password", |stamp| {
             let now = jiff::Zoned::now().datetime();
             self.hosted
-                .reset_account_password(name, password, expire, Some(stamp), now)
+                .reset_account_password(name, password, false, Some(stamp), now)
+                .map(|()| true)
                 .map_err(|e| self.account_edit_error("Reset Account Password", &e))
         })
     }
