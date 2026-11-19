@@ -15,11 +15,13 @@ no build step and no third-party requests.
 
 Cloudflare Workers Builds publishes this folder to https://openmaker.dev
 as Workers static assets, with no Worker script. Each merge to `main` that
-changes a file under `website/` deploys it; other merges start no build.
-The connected repository and the build settings (root directory
-`website`, deploy command `npx wrangler deploy`, build watch path
-`website/*`) are kept in the Cloudflare dashboard. These files hold the
-rest:
+changes a file under `website/` deploys it. Other merges normally start
+no build: Workers Builds skips the watch path and builds anyway for a
+push with no file changes, 3,000 or more changed files, or 20 or more
+commits, which redeploys the same site. The connected repository and the
+build settings (root directory `website`, deploy command
+`npx wrangler@4 deploy`, build watch path `website/*`) are kept in the
+Cloudflare dashboard. These files hold the rest:
 
 - `wrangler.jsonc`: the Worker's name, `openmaker-site`, which must match
   the Worker's name in the Cloudflare dashboard or the build fails; the
