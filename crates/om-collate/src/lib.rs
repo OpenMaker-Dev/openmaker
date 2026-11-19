@@ -11,7 +11,9 @@
 //! `data/LICENSE-UNICODE`.
 //!
 //! The word index keys each word of a value the same way; [`words`] splits a
-//! value as FileMaker does. Numbers, dates, times and timestamps have keys of
+//! value as FileMaker does. [`name_key`] is the key a catalog's name list
+//! holds a member's name under (spec `docs/re/schema-path.md` 5.6), with
+//! the levels above the primary one. Numbers, dates, times and timestamps have keys of
 //! their own ([`number_key`], [`date_key`], [`time_key`], [`timestamp_key`]).
 //!
 //! An index holds at most the first [`INDEX_KEY_LIMIT`] bytes of a key and
@@ -22,8 +24,10 @@
 use std::collections::HashMap;
 use std::sync::OnceLock;
 
+mod names;
 mod typed;
 
+pub use names::{name_key, Levels, Unkeyed};
 pub use typed::{date_key, number_key, time_key, timestamp_key, DateOrder};
 
 /// The first byte of every text key.

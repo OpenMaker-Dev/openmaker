@@ -612,9 +612,20 @@ established:
 
 Names must be ones a calculation can use as they are, the rule `om-author`
 applies (`field_catalog::check_name`), and must differ from the other
-tables', fields' or occurrences' names by their name keys, so case and
-accents do not tell names apart. FileMaker Pro accepts some other names
-after a warning, which OpenMaker does not.
+tables', fields' or occurrences' names by their primary weights, so neither
+case nor accents tell names apart. FileMaker Pro accepts some other names
+after a warning, which OpenMaker does not. FileMaker's own keys tell
+accents apart; whether Pro takes `Grosse` beside `Größe` is not
+established, so OpenMaker refuses it. A name is listed in the name lists
+under the key FileMaker Pro lists it under, with its accent and kana levels
+(re/schema-path.md 5.6, `om_collate::name_key`), in every file language.
+OpenMaker refuses a name whose key it cannot build: one with `‚`, `‛`,
+`‟` or a CJK compatibility ideograph, one that mixes an accent or kana with
+a character FileMaker gives its own weights other than a CJK unified
+ideograph (Hangul, CJK extension A, private use), and one whose key would
+pass FileMaker's 210 bytes. A deleted or renamed member's entries go
+whatever key they were listed under, so an entry an earlier OpenMaker
+wrote under the primary weights alone does not stay behind.
 
 ## Decoding
 

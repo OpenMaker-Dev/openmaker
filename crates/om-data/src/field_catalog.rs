@@ -43,7 +43,8 @@ const OPTIONS: std::ops::Range<usize> = 8..12;
 const NOT_STORED: u32 = 0x1_0000 | 0x2_0000;
 
 /// The longest name list key FileMaker builds (`M_DBNameList::Update`'s
-/// 210-byte key, schema-path.md 5.7), its three closing zero bytes included.
+/// 210-byte key, schema-path.md 5.7). What FileMaker does with a longer
+/// one is not established, so OpenMaker refuses the name.
 pub(crate) const MAX_NAME_KEY: usize = 210;
 
 /// The longest field name and comment, in characters.
@@ -151,19 +152,54 @@ pub struct Planned {
     pub changes: Vec<(String, String)>,
 }
 
-/// The name list key of `name` (schema-path.md 5.6): its text index key
-/// without the leading `01`, DUCET primary weights, so case and accents do
-/// not change it.
+/// What OpenMaker tells two names in one catalog apart by: their primary
+/// weights (`name`'s text index key without the leading `01`), so neither
+/// case nor accents tell them apart. FileMaker's name list keys also hold
+/// the accents ([`listed_key`]); whether FileMaker Pro takes `Grosse` and
+/// `Größe` for one name is not established, so OpenMaker refuses the
+/// second (schema-path.md 5.6). This is not the key a name list stores.
 pub fn name_key(name: &str) -> Vec<u8> {
     om_collate::text_key(name)[1..].to_vec()
+}
+
+/// The key FileMaker lists `name` under in a catalog's name list
+/// `[cat, 1, 01]` (schema-path.md 5.6): the primary, secondary and
+/// tertiary levels of FileMaker's key in the catalog language, whatever
+/// the file's language. `None` when OpenMaker cannot build it
+/// ([`om_collate::Unkeyed`]).
+pub fn listed_key(name: &str) -> Option<Vec<u8>> {
+    om_collate::name_key(name, om_collate::Levels::Three).ok()
+}
+
+/// [`listed_key`], or why OpenMaker cannot build it, to follow "it cannot
+/// be a … name:".
+pub(crate) fn listed_key_or_why(name: &str) -> Result<Vec<u8>, String> {
+    om_collate::name_key(name, om_collate::Levels::Three).map_err(|unkeyed| {
+        let (om_collate::Unkeyed::Character(c) | om_collate::Unkeyed::Weight(c)) = unkeyed;
+        format!(
+            "OpenMaker cannot yet build the key FileMaker lists it under, since FileMaker's \
+             weights for “{c}” (U+{:04X}) are not established",
+            u32::from(c)
+        )
+    })
+}
+
+/// A field's key in the name list by type `[T, 3, 1, 06]`: its kind, its
+/// type shifted left by 2 with bit 0 for global storage (E38), and the
+/// primary and secondary levels of its name's key (schema-path.md 5.6).
+/// `None` when OpenMaker cannot build it.
+pub fn typed_key(kind: u8, data_type: u8, global: bool, name: &str) -> Option<Vec<u8>> {
+    let mut key = vec![kind, data_type << 2 | u8::from(global)];
+    key.extend(om_collate::name_key(name, om_collate::Levels::Two).ok()?);
+    Some(key)
 }
 
 /// Check a new field's name: at most [`MAX_NAME_CHARS`] characters, no
 /// control characters, written in a formula as itself (no `${…}`: no
 /// operators or other delimiters, no leading digit, period or `$`, no
 /// space at either end, no `and`/`or`/`xor`/`not` word, not a function
-/// without arguments), and a name key FileMaker can store. Returns the
-/// name key.
+/// without arguments), and name list keys OpenMaker can build and
+/// FileMaker can store. Returns its key in the name list ([`listed_key`]).
 pub fn check_name(name: &str) -> Result<Vec<u8>, Refusal> {
     check_name_as(name, false)
 }
@@ -192,14 +228,18 @@ pub fn check_name_as(name: &str, quoted: bool) -> Result<Vec<u8>, Refusal> {
              and, or, xor or not as a word, or names a function",
         );
     }
-    let key = name_key(name);
-    if key.is_empty() {
+    if name_key(name).is_empty() {
         return refuse("it has no character FileMaker tells names apart by");
     }
-    if key.len() + 3 > MAX_NAME_KEY {
+    let listed = match listed_key_or_why(name) {
+        Ok(key) => key,
+        Err(why) => return refuse(&why),
+    };
+    // A field's key in the list by type is at most one byte longer.
+    if listed.len() + 1 > MAX_NAME_KEY {
         return refuse("its name key is longer than FileMaker stores");
     }
-    Ok(key)
+    Ok(listed)
 }
 
 fn check_comment(comment: &str) -> Result<(), Refusal> {
@@ -321,7 +361,7 @@ fn hex(segment: &[u8]) -> String {
 /// type is kept when the index has one. A name taken by a field, in the
 /// members or in the name list, is refused.
 pub fn plan(catalog: Option<&OwnedNode>, field: &NewField) -> Result<Planned, Refusal> {
-    let key = check_name(&field.name)?;
+    let listed = check_name(&field.name)?;
     let comment = field.comment.as_deref().filter(|c| !c.is_empty());
     if let Some(comment) = comment {
         check_comment(comment)?;
@@ -343,8 +383,6 @@ pub fn plan(catalog: Option<&OwnedNode>, field: &NewField) -> Result<Planned, Re
             name: member_name(member).unwrap_or_default(),
         });
     }
-    let mut listed = key.clone();
-    listed.extend([0, 0, 0]);
     if let Some(entry) = index.child(&[NAMES]).and_then(|n| n.child(&listed)) {
         let id = entry
             .value
@@ -438,9 +476,9 @@ pub fn plan(catalog: Option<&OwnedNode>, field: &NewField) -> Result<Planned, Re
     member.set_child(om_scripts::text_node(&[NAME], &field.name));
 
     let id_value = key_string(&field_key);
-    let mut typed = vec![NORMAL, field.data_type.code() << 2];
-    typed.extend(&key);
-    typed.extend([0, 0]);
+    let typed = typed_key(NORMAL, field.data_type.code(), false, &field.name).ok_or_else(|| {
+        Refusal::Name(format!("“{}” has no key OpenMaker can build.", field.name))
+    })?;
     let mut next = catalog.clone();
     next.put(&[&[MEMBERS], &field_key], member);
     let mut changes = vec![(
