@@ -359,7 +359,7 @@ impl ServerHost {
     /// one window: "show in new window" uses it.
     pub(super) fn go_to_related(&mut self, request: &RelatedRecords<'_>) -> HostResult {
         let related = request.occurrence.ok_or(ErrorCode::INVALID)?;
-        self.require_privileges()?;
+        self.require_view()?;
         self.leave()?;
         let window = self.window()?;
         let from = window.occurrence;

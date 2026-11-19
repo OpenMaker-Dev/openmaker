@@ -706,6 +706,43 @@ did not contact 443.
   `authID` in `webServiceSettings` is for the 443 web-services/OAuth path only,
   not the 5003 RCFMP session.
 
+#### FileMaker Pro 26.1.1
+
+[O code and strings, FileMaker Pro 26.1.1 Mac DBEngine x86_64 (SHA-256
+`096a1994...`); FileMaker Server 26.1.1 is not released, so nothing here
+was seen on the wire.]
+
+- `PushMachineInfo` (0x1d56c86) builds the same request: protocol version
+  byte `0x20`, the same leading bytes, and `GetVersionString` now
+  `Pro 26.1.1`.
+- `RCFMP12` is unchanged: the servant `RPO_i` and the client stub keep the
+  six operations and their signatures, and DBEngine has no new host
+  request class. Whether existing Perform operations changed their bodies
+  was not checked [U].
+- New client-certificate code in the shared engine: `TrustStoreManager`
+  (`VerifyClientCert`, `VerifyClientCertUsingStoreCache`,
+  `GenerateNewKeyAndClientCertRequest`, `ReadUniversalClientPemFile`,
+  `GetCustomOIDsFromPemCert`, `sPersistent_ID_key`),
+  `OpenSSL::VerifyCertAgainstEmbeddedRootCA`, `DBClientCertListManager`
+  (an encrypted host-to-certificate list, `clientCertlist.txt`), the subject
+  `/CN=FileMakerClient`, and log lines that `BindRemoteConnectionBlocking`
+  found no client certificate or one whose persistent id differs from the
+  machine's, that Connect failed because a client certificate could not be
+  verified, and that one expired or was revoked. FileMaker Pro has a
+  matching settings page (`CClientCertificateListPage`: host address and
+  certificate file) and its About box shows the machine's persistent id.
+  [I] A host can now demand a client certificate tied to the Connect
+  `persistentID`; in 26.0 any self-signed certificate passes (F10, F11).
+- `RCNetworkStack::IsADTAllowed` and `SetADTConnectionsEnabled` gate
+  connections of the agent interface (client-ui.md, FileMaker Pro 26.1.1),
+  with the message "Unable to connect. This host doesn't allow ADK
+  connections." [O: strings]. How such a connection identifies itself is
+  [U].
+
+Unknowns, until FileMaker Server 26.1.1 can be captured: whether it
+requires client certificates and how they are issued; the ADK switch's
+default; whether it accepts protocol version `0x20` clients as before.
+
 ### 5.3 ConnectToServer (op 75), GetFileList (op 77)
 
 `RCConnectToServer::Call` (0x185abfa) push order (High): `ResetCallPush`, then
