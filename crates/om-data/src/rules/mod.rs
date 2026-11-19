@@ -2035,8 +2035,10 @@ impl RecordPlan {
             .map(|f| f.id)
             .collect();
         // The inputs of the unstored calculations each auto-entered
-        // (`true`) or validation (`false`) formula reads, by field.
+        // (`true`) or validation (`false`) formula reads, by field, and
+        // each calculation's own (`unstored_inputs`).
         let mut through: BTreeMap<(u64, bool), BTreeSet<u64>> = BTreeMap::new();
+        let mut known = BTreeMap::new();
         for (id, field) in &fields {
             // A stored calculation's formula, or an auto-entered or
             // validation formula, which may read a global field (5.17).
@@ -2078,6 +2080,7 @@ impl RecordPlan {
                             &schema,
                             table.id,
                             &mut Vec::new(),
+                            &mut known,
                         )
                         .map_err(|reason| {
                             DataError::new(format!(
@@ -4915,13 +4918,33 @@ impl Expression {
 /// the reason, when `id` cannot be evaluated on a write's record: it reads
 /// another occurrence, a global, summary or container field, a missing
 /// field, `Get` functions a write does not answer, a custom function that
-/// reads fields, or itself.
+/// reads fields, or itself. Each calculation's answer is kept in `known`,
+/// so that one many calculations read is followed once: a shared graph of
+/// them is planned in time linear in its edges, not in its paths.
 fn unstored_inputs(
     id: u64,
     formulas: &BTreeMap<u64, Result<Expression, String>>,
     schema: &CalcSchema,
     table: u64,
     stack: &mut Vec<u64>,
+    known: &mut BTreeMap<u64, Result<BTreeSet<u64>, String>>,
+) -> Result<BTreeSet<u64>, String> {
+    if let Some(answer) = known.get(&id) {
+        return answer.clone();
+    }
+    let answer = unstored_inputs_of(id, formulas, schema, table, stack, known);
+    known.insert(id, answer.clone());
+    answer
+}
+
+/// [`unstored_inputs`] of a calculation not followed yet.
+fn unstored_inputs_of(
+    id: u64,
+    formulas: &BTreeMap<u64, Result<Expression, String>>,
+    schema: &CalcSchema,
+    table: u64,
+    stack: &mut Vec<u64>,
+    known: &mut BTreeMap<u64, Result<BTreeSet<u64>, String>>,
 ) -> Result<BTreeSet<u64>, String> {
     let fields = schema
         .table(table)
@@ -4969,6 +4992,7 @@ fn unstored_inputs(
                 schema,
                 table,
                 stack,
+                known,
             )?);
         } else {
             inputs.insert(*dependency);
@@ -6961,6 +6985,50 @@ mod tests {
                 .contains("reads an unstored calculation a write cannot evaluate"),
             "{refused}"
         );
+    }
+
+    /// A ladder of unstored calculations that each read both of the level
+    /// below has 2^40 paths over 80 fields: planning a formula over its top
+    /// follows each calculation once (a hostile file must not hang it).
+    #[test]
+    fn a_shared_graph_of_unstored_calculations_is_followed_once() {
+        let mut table = table();
+        table.fields.retain(|f| f.id <= 2);
+        let levels = 40u64;
+        let mut formulas = Vec::new();
+        let sources: Vec<String> = (0..levels)
+            .flat_map(|level| {
+                let below = |side: u64| {
+                    if level == 0 {
+                        format!("Field{}", side + 1)
+                    } else {
+                        format!("Field{}", 100 + 2 * (level - 1) + side)
+                    }
+                };
+                [0, 1].map(|_| format!("{} & {}", below(0), below(1)))
+            })
+            .collect();
+        for (i, source) in sources.iter().enumerate() {
+            let id = 100 + i as u64;
+            table.fields.push(field(
+                id,
+                FieldKind::Calculation,
+                DataType::Text,
+                0,
+                UNSTORED,
+                0,
+            ));
+            formulas.push((id, 5, source.as_str()));
+        }
+        table
+            .fields
+            .push(field(300, FieldKind::Normal, DataType::Text, 0, 0x88, 0));
+        let top = format!("Field{}", 100 + 2 * (levels - 1));
+        formulas.push((300, 5, top.as_str()));
+        // Planning only: the top's value would double its text 40 times.
+        let started = std::time::Instant::now();
+        assert!(plan_of(&table, &formulas, &[]).is_ok());
+        assert!(started.elapsed() < std::time::Duration::from_secs(10));
     }
 
     #[test]
