@@ -356,6 +356,30 @@ fn portal_store_with(flags: u64, body_display: u64, extra: Vec<u8>, setting: Vec
     store
 }
 
+/// The Portals layout's objects with the portal alone: none of the
+/// layout's own fields.
+fn portal_only_store() -> Vec<u8> {
+    let mut store = Vec::new();
+    uint(1, PORTAL, &mut store);
+    bytes(
+        2,
+        &portal_object(PORTAL_FLAGS, rect(60.0, 10.0, 130.0, 410.0)),
+        &mut store,
+    );
+    bytes(
+        2,
+        &shown_field_object(
+            PORTAL_BODY,
+            NOTES_OCCURRENCE,
+            BODY,
+            rect(0.0, 0.0, 20.0, 300.0),
+            0,
+        ),
+        &mut store,
+    );
+    store
+}
+
 /// Notes 2 "first" and 3 "second" of "Write tests".
 fn add_notes(root: &mut OwnedNode) {
     let table = uint_segment(NOTES);
@@ -5538,10 +5562,15 @@ fn a_held_new_records_refused_save_writes_its_portal_row_once_when_retried() {
 /// record does (Claris, "Creating related records"): with relationship 1
 /// joining `Tasks::Creator = Notes::Task`, Creator auto-entered with the
 /// account's name and both notes the account's, New Record's portal shows
-/// them at once. The stored tasks have no creator and relate none.
+/// them at once. The stored tasks have no creator and relate none. The
+/// layout shows the portal alone, so nothing else reads the new record.
 #[test]
 fn a_held_new_records_portal_follows_its_auto_entered_key_before_typing() {
     let hosted = host_with("held-new-auto-key", |root| {
+        root.put(
+            &[&[4], &[5], &uint_segment(PORTALS), &[7]],
+            OwnedNode::leaf(Vec::new(), portal_only_store()),
+        );
         fixture::add_relationship(root, 1, (OCCURRENCE, CREATOR), 0, (NOTES_OCCURRENCE, TASK));
         for note in [2u64, 3] {
             root.put(
@@ -5567,10 +5596,10 @@ fn a_held_new_records_portal_follows_its_auto_entered_key_before_typing() {
         .filter(|value| !value.is_empty())
         .collect()
     };
-    common::wait_until(&mut app, "the first task", |app| {
+    common::wait_until(&mut app, "the Portals layout", |app| {
         app.state().is_settled()
-            && common::text_field(app, "Name").value().as_deref() == Some("Write tests")
     });
+    assert!(common::find_text_field(&app, "Name").is_none());
     assert!(rows(&app).is_empty(), "{:?}", rows(&app));
     common::click(&mut app, "New Record");
     common::wait_until(&mut app, "the new record's related notes", |app| {
