@@ -102,7 +102,12 @@ index keys, and no others:
 name's text key without its `01` (schema-path.md 5.6) in the collation of
 the file's language ([README.md](README.md) F57). The English, Dutch and
 Italian files list their ASCII names under DUCET 5.2.0's primary weights
-and `00 00 00`. A name with accents (in the French, German, Spanish,
+and `00 00 00`. So does every starter file of the eight European
+languages (Dutch, English, French, German, Italian, Portuguese, Spanish
+and Swedish, 5 or 6 files each): every script named in ASCII is listed
+that way [O: `om-data` corpus test `script_catalog_corpus`, 2026-11-19].
+The Japanese, Korean and Chinese starters name no script in ASCII, so
+their form for such a name is not known. A name with accents (in the French, German, Spanish,
 Portuguese and Swedish files) has a second level after its primary
 weights: `00 00`, `01`, one secondary weight per character, `00` ("Añadir
 registro relacionado": 27 primary weights, then `00 00 01 01 2f 01 ...
@@ -157,8 +162,12 @@ FileMaker Pro's own records were not compared key by key]:
   a script with full access), so the members' digest and the cache's are
   the same, as in Pro's own save (#914). OpenMaker
   writes only ASCII names, and only in a file whose name list shows the
-  DUCET form for its own ASCII names; deletes, moves and option changes
-  write no name and are saved in any file. New folders and separators
+  DUCET form for its own ASCII names, or, when no name of it shows a form
+  either way, whose language is one of those eight: a Create New file's
+  empty catalog, or a file whose names all have accents
+  ([#274](https://github.com/OpenMaker-Dev/openmaker/issues/274); [I]:
+  FileMaker Pro has not opened such a file since). Deletes, moves and
+  option changes write no name and are saved in any file. New folders and separators
   are not written: how the name list keys a second `--` or `-` is not
   established.
 

@@ -47,6 +47,7 @@
 
 use std::collections::{BTreeMap, BTreeSet};
 
+use om_calc::Language;
 use om_hbam::slot::be_uint;
 use om_hbam::{serial, OwnedNode};
 use om_scripts::StepData;
@@ -142,17 +143,24 @@ fn listed(key: &[u8]) -> Vec<u8> {
     listed
 }
 
-/// Whether the file's own name list shows the key form [`name_key`]
-/// computes for names of ASCII characters: some member named with an ASCII
-/// letter, and every member named in ASCII, is listed under its
-/// [`name_key`]. The key depends on the file's language (scripts.md, "The
-/// catalog index"): English, Dutch and Italian starter files list ASCII
-/// names under DUCET primary weights; Japanese, Korean and Chinese ones
-/// use other weights, and names with accents carry more levels.
-fn ascii_keys_shown(stored: &ScriptCatalog, index: &OwnedNode) -> bool {
+/// What the file's own name list shows of the key form [`name_key`]
+/// computes for names of ASCII characters: the members named with an
+/// ASCII letter, each named once, listed under it, or one listed
+/// otherwise. The key depends on the file's language (scripts.md, "The
+/// catalog index"). Folder ends (`--`), separators (`-`) and members
+/// sharing a name cannot each have the one entry of their key, so they
+/// say nothing.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum AsciiKeys {
+    Shown,
+    Contradicted,
+    /// No member shows it either way: a new file's empty catalog, or one
+    /// whose names all have other characters.
+    Unseen,
+}
+
+fn ascii_keys(stored: &ScriptCatalog, index: &OwnedNode) -> AsciiKeys {
     let names = index.child(&[NAMES]);
-    // Folder ends (`--`), separators (`-`) and members sharing a name
-    // cannot each have the one entry of their key.
     let mut seen = BTreeMap::new();
     for script in &stored.scripts {
         *seen.entry(name_key(&script.name)).or_insert(0) += 1;
@@ -168,18 +176,37 @@ fn ascii_keys_shown(stored: &ScriptCatalog, index: &OwnedNode) -> bool {
             .and_then(|e| e.value.as_deref())
             .and_then(key_string_id);
         if listed != Some(script.id) {
-            return false;
+            return AsciiKeys::Contradicted;
         }
         shown |= script.name.bytes().any(|b| b.is_ascii_alphabetic());
     }
-    shown
+    if shown {
+        AsciiKeys::Shown
+    } else {
+        AsciiKeys::Unseen
+    }
+}
+
+/// Whether files of `language` list names of ASCII characters under
+/// [`name_key`]: in the 66 starter files every script named in ASCII is,
+/// in each of these eight languages, 5 or 6 files each [O: the corpus test
+/// `script_catalog_corpus`]. The Japanese, Korean and Chinese starters
+/// name no script in ASCII, so their form for one is not known.
+pub fn lists_ascii_names_plainly(language: Language) -> bool {
+    use Language::*;
+    match language {
+        English | French | German | Swedish | Spanish => true,
+        // Dutch, Italian, Portuguese.
+        Other(id) => matches!(id, 20 | 30 | 34),
+        Japanese | Chinese | Korean => false,
+    }
 }
 
 /// Check a script or folder name and return its name key. FileMaker's
 /// rules for script names are not established; these are OpenMaker's: a
 /// name, at most 100 characters (FileMaker's limit for field names), no
 /// control character or line break, and a name key the name list can hold.
-/// Only ASCII names are written, whose key [`ascii_keys_shown`] checks.
+/// Only ASCII names are written, whose key [`ascii_keys`] checks.
 fn check_name(name: &str) -> Result<Vec<u8>, DataError> {
     let refuse = |why: &str| unsupported(format!("“{name}” cannot be a script name: {why}."));
     if name.is_empty() {
@@ -304,14 +331,15 @@ fn same_rest(a: &Script, b: &Script) -> bool {
 
 /// Plan saving `requested` over the host's catalog: `stored` (decoded, in
 /// display order), its members' definitions `[17, 5, S]` by id and its
-/// index `[17, 1]`, all as read now. `None` when nothing changes. Refused
-/// whole (error 3) for a change OpenMaker does not save; nothing is planned
-/// then.
+/// index `[17, 1]`, all as read now, in a file of `language` (its locale's,
+/// when known). `None` when nothing changes. Refused whole (error 3) for a
+/// change OpenMaker does not save; nothing is planned then.
 pub fn plan(
     index: Option<&OwnedNode>,
     stored: &ScriptCatalog,
     definitions: &BTreeMap<u64, OwnedNode>,
     requested: &ScriptCatalog,
+    language: Option<Language>,
     by: &Stamp,
     uuid: &mut dyn FnMut() -> [u8; 16],
 ) -> Result<Option<CatalogSave>, DataError> {
@@ -435,7 +463,14 @@ pub fn plan(
         .copied()
         .filter(|(s, old)| s.name != old.name)
         .collect();
-    if !(new.is_empty() && renamed.is_empty()) && !ascii_keys_shown(stored, &index) {
+    // The file's own names show the key form, or its language does when
+    // none shows it (a new file's empty catalog, #274).
+    let keyed = match ascii_keys(stored, &index) {
+        AsciiKeys::Shown => true,
+        AsciiKeys::Contradicted => false,
+        AsciiKeys::Unseen => language.is_some_and(lists_ascii_names_plainly),
+    };
+    if !(new.is_empty() && renamed.is_empty()) && !keyed {
         return Err(unsupported(
             "This file's script names do not show the key FileMaker lists a name under in \
              its language, so OpenMaker does not save new or renamed scripts in it yet; \
@@ -863,6 +898,7 @@ mod tests {
             &stored,
             &definitions,
             &requested,
+            None,
             &by(),
             &mut || [5; 16],
         )
@@ -939,6 +975,7 @@ mod tests {
             &stored,
             &definitions,
             &requested,
+            None,
             &by(),
             &mut || unreachable!("a rename makes no UUID"),
         )
@@ -986,6 +1023,7 @@ mod tests {
             &stored_accented,
             &definitions,
             &requested,
+            None,
             &by(),
             &mut || unreachable!(),
         )
@@ -1017,6 +1055,7 @@ mod tests {
             &stored,
             &definitions,
             &stale,
+            None,
             &by(),
             &mut || unreachable!(),
         )
@@ -1036,6 +1075,7 @@ mod tests {
             stored,
             &definitions,
             requested,
+            None,
             &by(),
             &mut || {
                 n += 1;
@@ -1168,6 +1208,7 @@ mod tests {
                 &stored,
                 &definitions,
                 requested,
+                None,
                 &by(),
                 &mut || [0; 16],
             )
@@ -1189,9 +1230,15 @@ mod tests {
         assert!(refused(&accented).message.contains("ASCII"));
         let mut renamed = stored.clone();
         renamed.scripts[1].name = "Other".into();
-        let error = plan(None, &stored, &definitions, &renamed, &by(), &mut || {
-            [0; 16]
-        })
+        let error = plan(
+            None,
+            &stored,
+            &definitions,
+            &renamed,
+            None,
+            &by(),
+            &mut || [0; 16],
+        )
         .unwrap_err();
         assert_eq!(error.code, Some(3));
         // A digest that is not the cache's: FileMaker refuses the file, and
@@ -1203,6 +1250,7 @@ mod tests {
             &stored,
             &definitions,
             &renamed,
+            None,
             &by(),
             &mut || [0; 16],
         )
@@ -1213,6 +1261,7 @@ mod tests {
             &stored,
             &definitions,
             &stored,
+            None,
             &by(),
             &mut || [0; 16]
         )

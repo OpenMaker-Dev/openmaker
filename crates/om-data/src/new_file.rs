@@ -1170,6 +1170,69 @@ mod tests {
         }
     }
 
+    /// A new file's empty script catalog takes its first script (#274):
+    /// with no stored name to show the name list's key form, the file's
+    /// language says it, as every starter of an English file lists ASCII
+    /// names. A language whose form for them is not known stays refused.
+    #[test]
+    fn a_new_file_takes_its_first_script_in_a_language_that_lists_ascii_names_plainly() {
+        use crate::script_catalog::plan;
+        use crate::{Script, ScriptCatalog};
+        use om_calc::Language;
+        use std::collections::BTreeMap;
+        let root = tree(&alpha(), &mut counter()).unwrap();
+        let index = root
+            .child(&[crate::script_catalog::SCRIPTS])
+            .and_then(|catalog| catalog.child(&[1]))
+            .expect("the script index")
+            .clone();
+        let stored = ScriptCatalog::default();
+        let requested = ScriptCatalog {
+            scripts: vec![Script {
+                id: 1,
+                name: "First".into(),
+                ..Script::default()
+            }],
+            ..ScriptCatalog::default()
+        };
+        let by = Stamp {
+            user: "Tester".into(),
+            account: ADMIN.into(),
+            time: alpha().time,
+        };
+        let save = |language| {
+            plan(
+                Some(&index),
+                &stored,
+                &BTreeMap::new(),
+                &requested,
+                language,
+                &by,
+                &mut || [9; 16],
+            )
+        };
+        let saved = save(Some(Language::English)).unwrap().unwrap();
+        let id = saved.assigned[&1];
+        assert_eq!(id, 1);
+        let mut entry = vec![1];
+        entry.extend(om_hbam::serial::encode(id));
+        assert_eq!(
+            saved
+                .index
+                .child(&[1])
+                .and_then(|names| names.child(&listed("First")))
+                .and_then(|e| e.value.clone()),
+            Some(entry)
+        );
+        assert_eq!(
+            saved.index.child(&[4]).and_then(|n| n.value.clone()),
+            Some(1u32.to_be_bytes().to_vec())
+        );
+        for language in [Some(Language::Japanese), None] {
+            assert_eq!(save(language).unwrap_err().code, Some(3), "{language:?}");
+        }
+    }
+
     /// Every stamp holds its time as a key string, also a time whose key is
     /// shorter than 8 bytes (00:00:05).
     #[test]
