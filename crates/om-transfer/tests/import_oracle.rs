@@ -339,14 +339,17 @@ fn server_log_in(battery: &str) -> BTreeMap<String, (i32, usize, usize)> {
         .collect()
 }
 
-/// Probes whose outcome this implementation does not reproduce, with why.
-const KNOWN: [(&str, &str); 2] = [
+/// Probes whose outcome this implementation does not reproduce, with why,
+/// and the error OpenMaker gives instead (with no record added), if
+/// checked.
+const KNOWN: [(&str, &str, Option<i32>); 2] = [
     // FileMaker Server's split-repetitions import of text keeps only the
-    // first repetition and leaves the other fields empty; not reproduced.
-    ("i_split", "split repetitions"),
+    // first repetition and leaves the other fields empty; not reproduced,
+    // so refused rather than imported differently.
+    ("i_split", "split repetitions", Some(3)),
     // The XML source path of a stored XML import (in the profile) did not
     // resolve on the server (error 717); round trips are tested instead.
-    ("i_xml", "XML source path"),
+    ("i_xml", "XML source path", None),
 ];
 
 #[test]
@@ -356,7 +359,8 @@ fn x02_imports_match_filemaker_server() {
     let mut checked = 0;
     let mut failures = Vec::new();
     for probe in probes() {
-        if KNOWN.iter().any(|(k, _)| *k == probe.name) {
+        let known = KNOWN.iter().find(|(k, ..)| *k == probe.name);
+        if matches!(known, Some((_, _, None))) {
             continue;
         }
         let mut mem = Mem::new();
@@ -398,6 +402,16 @@ fn x02_imports_match_filemaker_server() {
                 Err(e) => (e.code, mem.found.len()),
             },
         };
+        if let Some((_, _, Some(want))) = known {
+            if (error, mem.contacts.len()) != (*want, 0) {
+                failures.push(format!(
+                    "{}: error {error} with {} records, refusal {want} with none",
+                    probe.name,
+                    mem.contacts.len()
+                ));
+            }
+            continue;
+        }
         let (want_error, want_found, want_total) = log[&probe.name];
         let mut problems = Vec::new();
         if error != want_error {
@@ -468,6 +482,7 @@ fn round_trips_through_every_text_format() {
             formatting: false,
             charset: om_transfer::ExportCharset::Utf8,
             use_name_alias: Some(1),
+            field_names: None,
         };
         let profile = Profile {
             file_type: out_type,

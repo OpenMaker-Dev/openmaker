@@ -8,7 +8,7 @@ use std::time::{Duration, Instant};
 
 use log::{debug, error, info, warn};
 use om_crypto::account::{StoredPassword, StoredPasswordError};
-use om_data::host::security::{set_access, SetAccess};
+use om_data::host::security::{set_access, BuiltInSet, SetAccess};
 use om_hbam::HbamFile;
 
 use crate::accounts::{AccountKind, AccountStatus};
@@ -140,15 +140,17 @@ impl FileAccount {
     }
 
     /// What the account may do. A file admits only its active accounts in
-    /// a set the host enforces ([`Eligibility`]): one in the verified [Full
-    /// Access] may do everything; one in any other set is `Unknown` here,
-    /// so that it changes no design, and its record limits are checked
-    /// where records are read and written.
+    /// a set the host enforces ([`Eligibility`]): one in a verified
+    /// built-in set has that set's privileges; one in a custom set is
+    /// `Unknown` here, so that it changes no design and its server scripts
+    /// fail closed, and its record limits are checked where clients read
+    /// and write records.
     pub fn privileges(&self) -> Privileges {
-        if self.full_access() {
-            Privileges::FullAccess
-        } else {
-            Privileges::Unknown
+        match self.access {
+            Some(SetAccess::BuiltIn(BuiltInSet::FullAccess)) => Privileges::FullAccess,
+            Some(SetAccess::BuiltIn(BuiltInSet::DataEntryOnly)) => Privileges::DataEntry,
+            Some(SetAccess::BuiltIn(BuiltInSet::ReadOnlyAccess)) => Privileges::ReadOnly,
+            _ => Privileges::Unknown,
         }
     }
 }

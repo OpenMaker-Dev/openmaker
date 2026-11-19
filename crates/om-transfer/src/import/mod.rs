@@ -183,6 +183,51 @@ impl ImportSummary {
     }
 }
 
+/// Refuse, with error 3 before any row is read, the import options
+/// OpenMaker does not carry out, rather than import other records than
+/// FileMaker would: "Split repeating values into separate records"
+/// (FileMaker Server's split of a text source kept only each field's first
+/// repetition and left others empty, oracle x02 `i_split`; not reproduced)
+/// an import into a new table (`FieldFlags::new_table`; OpenMaker
+/// creates no table), "Preserve target field data" in an update that
+/// performs auto-enter options (module docs), and option flags OpenMaker
+/// does not know.
+pub fn refuse_unsupported(options: &ImportOptions, field_flags: Option<&FieldFlags>) -> Result<()> {
+    if options.has(import_flag::SPLIT_REPETITIONS) {
+        return Err(TransferError::new(
+            code::UNAVAILABLE,
+            "Splitting repetitions into separate records is not supported.",
+        ));
+    }
+    if field_flags.is_some_and(|f| !f.new_table.is_empty()) {
+        return Err(TransferError::new(
+            code::UNAVAILABLE,
+            "Importing into a new table is not supported.",
+        ));
+    }
+    // "Preserve target field data" with auto-entry in an update (module
+    // docs), and options OpenMaker does not know.
+    if options.has(import_flag::PRESERVE_TARGET)
+        && options.has(import_flag::AUTO_ENTER)
+        && options.action != ImportAction::Add
+    {
+        return Err(TransferError::new(
+            code::UNAVAILABLE,
+            "Preserving target data while performing auto-enter options is not supported.",
+        ));
+    }
+    if options.flags & !import_flag::KNOWN != 0 {
+        return Err(TransferError::new(
+            code::UNAVAILABLE,
+            format!(
+                "Import option flags {:#04x} are not supported.",
+                options.flags & !import_flag::KNOWN
+            ),
+        ));
+    }
+    Ok(())
+}
+
 /// Parse a source file in the profile's format, within [`limit`].
 pub fn parse(request: &ImportRequest, bytes: &[u8]) -> Result<Source> {
     let unreadable = match request.profile.file_type {
@@ -300,15 +345,7 @@ pub fn import_rows(
     locale: &Locale,
 ) -> Result<ImportSummary> {
     let options = &request.options;
-    if options.flags & !import_flag::KNOWN != 0 {
-        return Err(TransferError::new(
-            code::UNAVAILABLE,
-            format!(
-                "Import option flags {:#04x} are not supported.",
-                options.flags & !import_flag::KNOWN
-            ),
-        ));
-    }
+    refuse_unsupported(options, request.field_flags.as_ref())?;
     let occurrence = options.table.id().ok_or_else(|| {
         TransferError::new(code::FIELD_MISSING, "The import has no target table.")
     })?;
@@ -317,12 +354,6 @@ pub fn import_rows(
     let auto_enter = options.has(import_flag::AUTO_ENTER);
     let add_remaining = options.has(import_flag::ADD_REMAINING);
     let preserve = options.has(import_flag::PRESERVE_TARGET);
-    if preserve && auto_enter && options.action != ImportAction::Add {
-        return Err(TransferError::new(
-            code::UNAVAILABLE,
-            "Preserving target data while performing auto-enter options is not supported.",
-        ));
-    }
     let mut summary = ImportSummary {
         total: source.rows.len(),
         ..ImportSummary::default()

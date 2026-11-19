@@ -882,6 +882,12 @@ time; the console's Close dialog offers one (section 7), sent another way.
 
 ## 10. Unknowns
 
+- FileMaker Server 26.1.1 (announced in Claris's 26.1 launch webinar, not
+  released on 2026-11-19): the Admin Console's settings for automatic switchover to a standby server
+  (backups.md 7) and a WebDirect keyboard accessibility setting (WCAG 2.2
+  AA); their screens, Admin API paths and defaults are unknown until it
+  ships.
+
 - What the Dashboard's Additional chip counts; its string's key calls it
   non-FLT Pro connections. Which client types count against the license.
 - What the CPU, memory, network and disk figures measure, and how a chart

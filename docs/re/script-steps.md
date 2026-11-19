@@ -112,7 +112,7 @@ occurrence `04 03 d0 00 05` = segment `d0 00 05`; layout `02 01 0b` = layout
 | `0x80` | `kNoInteract` | "With dialog: Off" (the XML Boolean "With dialog" is its inverse) |
 | `0x100` | `kOption` | step-specific option (see each step); Perform Script on Server: set = do not wait (the editor shows "Wait for completion" inverted) |
 | `0x200` | `kOption2` | step-specific option |
-| `0x400` | `kUNUSED1` | reused by 26.x steps as a third option bit (AI steps) |
+| `0x400` | `kUNUSED1` | reused by 26.x steps as a third option bit (AI steps); 26.1.1: Go to Related Record's "Table by Calculation" (12.4) |
 | `0x800` | `kStoreReference` | "Store only a reference" |
 | `0x1000` | `kSelectAll` | "Select entire contents"; reused as an option bit by newer steps |
 | `0x2000` | `kExit` | "Exit after last" (Go to Record, Go to Portal Row) |
@@ -128,7 +128,7 @@ occurrence `04 03 d0 00 05` = segment `d0 00 05`; layout `02 01 0b` = layout
 | `0x1000000` | `kPauseScript` | "Pause" (Enter Find/Browse/Preview Mode) |
 | `0x2000000` | `kRestore` | "Restore" stored spec; for block steps (If, Else, Else If, Loop, Undo/Redo, Open Transaction) the XML label is "Collapsed" (label 303) |
 | `0x4000000` | `kGoToField` | go to target field option [I] |
-| `0x8000000` | `kFieldSpecByCalc` | Set Field By Name: target field name calculated |
+| `0x8000000` | `kFieldSpecByCalc` | Set Field By Name, and 26.1.1's Replace Field Contents by Name: target field name calculated |
 | `0x10000000` | `kVerifySSLCertificates` | "Verify SSL Certificates" |
 | `0x20000000` | `kOpenAutomatically` | "Automatically open file" |
 | `0x40000000` | `kCreateEmail` | "Create email with file as attachment" |
@@ -919,7 +919,7 @@ key   target table occurrence (mTableAliasKey)
 u8    action      TImportAction: 0 add (XML "Add"), 1 update existing (XML "Replace"), 2 update matching (XML "Update")
 u8    flags       TImportFlags: 0x01 split repetitions, 0x02 perform auto-enter, 0x04 match field names,
                   0x08 add remaining data as new records (XML addasnew), 0x10 copy containers as is,
-                  0x20 keep original data
+                  0x20 keep original data, 0x40 (26.1.1) preserve target field data if source field is empty
 u8    charset     0 Windows ANSI, 1 DOS OEM, 2 Mac Roman, 3 Unicode, 4 Unicode (big endian), 5 UTF-8,
                   6 Shift JIS, 7 Simplified Chinese (GB), 8 Traditional Chinese (Big-5), 9 Korean (EUC-KR)
 u16   n           one entry per source column, in column order
@@ -962,6 +962,7 @@ u8    ExpCharset       TExpCharacterSet = XML Options value: 0 Windows (ANSI), 1
                        3 Unicode (UTF-16), 4 Unicode (UTF-8), 6 Japanese (Shift-JIS),
                        8 Simplified Chinese (GB), 9 Traditional Chinese (Big-5), 10 Korean (EUC-KR)
 u8    ExpUseNameAlias  26.x writers only: every corpus spec ends after ExpCharset, and Read accepts that
+u8    (field names)    26.1.1 writers only: "Use field names as column names in first row" (12.4)
 ```
 
 XML: `Export/Options name value Formatting`, `Order type="Group"/Group`,
@@ -1533,6 +1534,82 @@ dialog `0x80` inverted. The reader and writer use none of the `0x100`,
 
 **Replace Field Contents (91)**: 11.8.
 
+### 12.4 FileMaker Pro 26.1.1 additions
+
+[O from bin unless marked: FileMaker Pro 26.1.1's Mac `FMEngine` x86_64
+slice (SHA-256 `e306cd52...`), addresses below; no step written by
+FileMaker Pro 26.1.1 has been read yet.] The behavior is Claris's (Claris
+release notes, FileMaker Pro 26.1.1).
+
+**Step ids.** `ScriptStep::IsStepIDValid` (0x523c34) accepts ids below 251
+(26.0.3: 248, script-runtime.md 2.5); the obsolete and gated ids are
+unchanged. String resource 132 names 249 and 250, leaves 248 empty, and
+now spells 147 "Set Field by Name".
+
+**Replace Field Contents by Name (249)** (`V2_ScriptStepXML::
+ProcessParameterValues` 0x4b3642, case 249): Replace Field Contents' (91)
+options, written by the same `SerializeReplaceFieldContents` (0x4d28cc):
+the choice `[00 1, 03]`, the calculation in slot 0 and the serial-number
+slots 2-6 (11.8). Instead of 91's field in `mReserved`, the target field's
+name is the calculation in slot 1 with `kFieldSpecByCalc` (`0x8000000`),
+as Set Field By Name (147) stores its target; slot 1's number `03` and
+calculation leaves are different keys. "With dialog" is `kNoInteract`
+clear.
+
+**Set Variable by Name (250)** (`V1_ScriptStepXML::SerializeSetVariable`
+0x50820a, shared with 141): Set Variable's value (calculation slot 1) and
+repetition (calculation slot 2); the name is the calculation in slot 3, in
+place of 141's text in slot 0.
+
+**Show Custom Dialog (87), "Close after (seconds)"**
+(`SerializeShowCustomDialog` 0x4d3bf0): a `Parameter type="AutoCloseTimer"`
+between the inputs and the window position, its Boolean from numeric slot 6
+(`[00 6, 03]`) and, when on, `AutoCloseSeconds` from calculation slot 13.
+The clipboard format writes `HasTimer` and `AutoCloseSecond`
+(`XMLScriptStep::GenerateStepCalculations` 0xd43c8;
+`XMLIScriptStep::GetStepCustomDialogAutoCloseTimer` 0xec4da reads them).
+When the time runs out the dialog closes and `Get ( LastMessageChoice )` is
+0 (Claris).
+
+**Go to Related Record (74), "Table by Calculation"**
+(`V1_ScriptStepXML::SerializeGoToRelatedRecord` 0x50b0be): with step flag
+`0x400` the occurrence reference `[00 0, 11]` is replaced by the
+occurrence's name, the calculation in slot 8. Claris then offers the
+current layout or a layout by calculation; which layout options are stored
+with the flag is [U].
+
+**Import Records (35)**: `TImportFlags` `0x40` (11.3) is "Preserve target
+field data if source field is empty", offered for the Update and Replace
+actions: an empty source value leaves the target field as it is, and the
+record's other fields are still updated (Claris). The clipboard writes it as
+`SkipEmptySourceData` (`XMLScriptStep::GenerateStepImportExportOptions`
+0xd6174) and Save as XML as `skipEmptySourceData`.
+
+**Export Records (36)**: `FMExportOptions::TExportOptions::Write`
+(0x4f6e66) writes a fourth byte after `ExpUseNameAlias`; 26.0.3's
+(0x4d931c) writes three. The clipboard writes `ExportFieldNames` from that
+byte and, for a spec without it, as before only for Excel output (the
+inverse of numeric slot 0). Claris: "Use field names as column names in
+first row" moved out of the Excel options and now applies to CSV too.
+
+**No storage change seen:** Configure Persistent Data (238) deletes the
+entry when the value calculation returns only U+2421 (Claris); Save a Copy
+as Add-on Package runs on FileMaker Server, into `CreatedAddons` in the
+host's Documents folder (Claris; the string is in FMEngine); Insert
+Embedding, Insert Embedding in Found Set and Perform Semantic Find accept
+image files for Google's `gemini-embedding-2` and a `task_type` (or
+`taskType`) parameter (Claris; DBEngine `FMLLMKit::
+ProcessGoogleImageEmbedding` and the task-type strings).
+
+**FileMaker Pro 26.0.3** names neither new step and refuses ids 248 and
+above with error 4 (script-runtime.md 2.5); it has no reader for the new
+slots, flags and bytes [I: none of its serializers names them].
+
+Unknowns: a step of each kind written by FileMaker Pro 26.1.1, read back;
+whether 26.0.3 keeps the new slots and bytes when it rewrites such a step;
+Go to Related Record's layout storage with `0x400`; the runtime of 249 and
+250 on FileMaker Server and in WebDirect (no compatibility row yet).
+
 ## Implementation notes (import/export)
 
 `om-transfer` implements Import Records (35), Export Records (36) and Save
@@ -1931,7 +2008,12 @@ Formats:
   not write an `Import.log` in the Documents folder.
 - Not reproduced: "split repetitions into separate records" from a text
   source (FileMaker Server kept only each field's first repetition and left
-  the other fields empty); the XML source of a stored XML import did not
+  the other fields empty: of the mapped K, R, NR and VNE, three rows made
+  three records, R and NR kept their first repetitions, VNE was written
+  and K stayed empty; why K stayed empty is unknown, and FileMaker Pro is
+  unmeasured). OpenMaker refuses the flag with 3, as it does an import
+  into a new table (`mTargetTableName`); the XML source of a stored XML
+  import did not
   resolve on the server (717; the file name is stored in the profile,
   variables not expanded), so XML imports are checked by round trip only.
 

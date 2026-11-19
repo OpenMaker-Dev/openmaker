@@ -391,7 +391,7 @@
       "previous_status": "Partial",
       "status": "Partial",
       "scope": "Layouts of another file's tables support Browse, edits, new, duplicate and delete records, finds and sorts, Go to Related Record into the other file, and script transactions that prepare every file before any data goes ([limits](record-writes.md#limits)).",
-      "remaining": "Imports, globals, containers and repetitions are refused on these layouts [#43](https://github.com/OpenMaker-Dev/openmaker/issues/43), and so is Delete Record inside a transaction [#312](https://github.com/OpenMaker-Dev/openmaker/issues/312). Each file commits on its own, so a commit is not all or none once the first has gone.",
+      "remaining": "Imports, global and repeating fields, the layout's related records and duplicating a record that holds a container are refused on these layouts [#43](https://github.com/OpenMaker-Dev/openmaker/issues/43), and so is Delete Record inside a transaction [#312](https://github.com/OpenMaker-Dev/openmaker/issues/312). Each file commits on its own, so a connection lost, or a host refusing a later file, after an earlier file's commit leaves that file committed.",
       "issues": [
         43,
         312
@@ -406,7 +406,7 @@
       "feature": "Script flow / variables / calls",
       "previous_status": "Implemented",
       "status": "Implemented",
-      "scope": "The runtime runs control flow, variables, parameters and results, nested and queued calls, error capture and host actions; it replays 256 of 258 probe runs of FileMaker Server's script engine ([status](scripting.md#status-2026-10-29)). 146 of FileMaker Pro's 210 desktop steps have an implementation (a static count; an option a step does not handle still answers error 3).",
+      "scope": "The runtime runs control flow, variables, parameters and results, nested and queued calls, error capture and host actions; it replays 256 of 258 probe runs of FileMaker Server's script engine ([status](scripting.md#status-2026-10-29)). 129 of the 210 steps FileMaker Pro runs on macOS or Windows have an implementation on the desktop (a static count: each step run alone through the desktop's script runtime, against what the desktop host answers; an option a step does not handle still answers error 3).",
       "remaining": "A step without an implementation stops the script with error 3 ([scripts](desktop-client.md#scripts)). Native traces of pause, abort and event order are not compared. Several desktop behaviors are inferred [#105](https://github.com/OpenMaker-Dev/openmaker/issues/105).",
       "issues": [
         105
@@ -437,7 +437,7 @@
       "previous_status": "Partial",
       "status": "Partial",
       "scope": "Layout, object and record triggers run in the owning context and can veto. Browse keystroke triggers see control keys and modifiers and keep the queued input order; related edit boxes run their object triggers; Tab follows the stored tab order ([editing records](desktop-client.md#editing-records)).",
-      "remaining": "Find and Preview mode keys, input-method commits and keypad Enter are not implemented or measured ([desktop notes](re/script-runtime.md#implementation-notes-desktop-client)); keypad Enter does not commit [#260](https://github.com/OpenMaker-Dev/openmaker/issues/260). Related fields get no keystroke trigger.",
+      "remaining": "Find and Preview mode keys and input-method commits are not implemented or measured ([desktop notes](re/script-runtime.md#implementation-notes-desktop-client)); Return ends a field's editing [#376](https://github.com/OpenMaker-Dev/openmaker/issues/376). Related fields get no keystroke trigger.",
       "issues": [
         260
       ],
@@ -485,11 +485,11 @@
       "previous_status": "Partial",
       "status": "Partial",
       "scope": "Get functions answer the owning file's privileges, account facts and the desktop's User Name setting, which is modeled on FileMaker Pro 26's ([Settings](desktop-client.md#settings), [privilege sets](desktop-client.md#privilege-sets)).",
-      "remaining": "Hosted files answer AccountType and password days empty [#3](https://github.com/OpenMaker-Dev/openmaker/issues/3); LayoutAccess and RecordAccess ignore layout entries and per-table rules [#182](https://github.com/OpenMaker-Dev/openmaker/issues/182); ActiveFieldName, ModifiedFields and SortState answer as if nothing were active [#33](https://github.com/OpenMaker-Dev/openmaker/issues/33).",
+      "remaining": "Hosted files answer AccountType and password days empty [#364](https://github.com/OpenMaker-Dev/openmaker/issues/364); LayoutAccess and RecordAccess ignore layout entries and per-table rules [#182](https://github.com/OpenMaker-Dev/openmaker/issues/182); ActiveFieldName, ModifiedFields and SortState answer as if nothing were active [#33](https://github.com/OpenMaker-Dev/openmaker/issues/33).",
       "issues": [
-        3,
         33,
-        182
+        182,
+        364
       ],
       "docs": [
         "desktop-client.md#settings",

@@ -49,6 +49,7 @@ fn clean_provider() -> NativeProvider {
 }
 
 fn app() -> App {
+    common::use_svg_worker();
     Harness::builder()
         .with_size(egui::vec2(1060.0, 760.0))
         .build_eframe(|_cc| {
@@ -354,7 +355,10 @@ fn a_starter_solution_opens_with_no_sign_in_dialog() {
         app.state().is_open() && app.state().is_settled()
     });
     app.run_steps(10);
+    // SVG icons are drawn on a background thread.
+    common::wait_until(&mut app, "the icons", |app| !app.ctx.has_pending_images());
     if let Some(shot) = std::env::var_os("OM_STARTER_SHOT") {
+        app.set_render_cursor(false);
         app.render().unwrap().save(shot).unwrap();
     }
 }

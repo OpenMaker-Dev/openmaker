@@ -192,7 +192,7 @@ Neither item has a shortcut (`AXMenuItemCmdChar` absent).
 - an untouched new record: it is removed (3 of 3 became 2 of 2), and the former last record is current;
 - a find request: the typed criterion is cleared.
 
-**Not measured:** the alert of the Revert Record/Request script step with its dialog; keypad Enter as a commit (Claris Help, as #871 cites it).
+**Not measured:** the alert of the Revert Record/Request script step with its dialog; keypad Enter as a commit beyond the one ordinary Text field of script-runtime.md 7.1 (Claris Help, as #871 cites it).
 
 ## Menus
 
@@ -680,6 +680,70 @@ screen.
     by ".
   - Then the additional field's name for an Average or a Fraction, or a
     Total or Count with restart.
+
+## FileMaker Pro 26.1.1
+
+What 26.1.1 changes in the chrome and the developer dialogs (Claris release
+notes, FileMaker Pro 26.1.1), with the binary evidence [O: FileMaker Pro
+26.1.1's Mac app: `Base.lproj` nibs read with `strings`, Mac x86_64
+symbols and strings]. Nothing here is measured on screen. Where the
+options are stored is in the specs named.
+
+- **macOS:** support for macOS 27 and its Liquid Glass look. New cell
+  classes `LGButtonCell`, `LGComboBox`, `LGPopUpButtonCell`, `LGSlider`,
+  `LGStepper`, `LGTextFieldCell`, the toolbar color
+  `ToolbarHoverBackgroundColor26` and `FMModernToolbarCustomView` sizing.
+  Claris's 26.1 launch webinar showed the toolbar in that style with the
+  window title at the left [unmeasured].
+- **Layout Setup**, General: "Show alerts when field isn't modifiable or
+  no records are present", under "Show current record indicator in List
+  View" (`IDD_LAYOUT_SETUP.nib`, SHA-256 `c3b0f9d5...`); on by default in new
+  files, off in existing ones (Claris). Storage unknown (layout-model.md 12).
+- **Portal Setup:** "Place row for new record at top"
+  (`IDD_PORTAL_SETUP.nib`, `8862dd0a...`); layout-model.md 5.3.2.
+- **Inspector**, Data: "Show indicator for clipped contents" in the Edit
+  Box options (`FieldOptionsEditView.nib`, `223f8cae...`, bound to
+  `FieldClippedIndicator`) and "Display single checkbox without value" in
+  the Checkbox Set options (`FieldOptionsCheckboxView.nib`, `6219939a...`,
+  bound to `SingleUnlabeledCheckBox`); layout-model.md 5.4.1.
+- **Button Setup, Button Bar Setup:** "Calculated icon" with a Specify
+  button (`ButtonControllerMac SpecifyCalcIcon`, `hasCalcIcon`);
+  layout-model.md 5.3.4.
+- **Show Custom Dialog options:** "Close after (seconds):" (string
+  resource 129); script-steps.md 12.4.
+- **Edit > Paste in Place** (Shift-Command-V, Windows Ctrl+Shift+Alt+V;
+  `ID_EDIT_PASTE_IN_PLACE`) pastes layout objects where they were copied
+  from and makes the layout taller when needed.
+- **Edit > Go to Line** (Command-L, Ctrl+L) in the Script Workspace and Edit
+  Script (`GoToLinePanel.nib`, `SEGoToLineViewController`).
+- **Specify Field** has four label placement buttons instead of "Create
+  label", remembered per file (`CSpecifyFieldDialog::UpdatePlacementButtons`);
+  where the choice is stored is [U].
+- **Field lists** of Sort Records, Specify Field Order for Export and Modify
+  Table View have a context menu, Show Field Display Names or Show Field
+  Names (`Localizable.strings`).
+- **Smaller changes** (Claris): Conditional Formatting's new conditions
+  start as "Formula is"; Command-K also closes Open Quickly; Control and
+  scrolling zooms the relationships graph around the pointer; the record
+  count in the Browse toolbar widens past eight digits; the Inspector and
+  Objects panes no longer animate; the privilege "Manage database, data
+  sources, containers, and custom functions" is renamed "Manage database
+  as a developer", and with it an account can use the Data Viewer without a
+  running script and authenticate in the Script Debugger and Data Viewer;
+  uploading to a host refuses a file name with a period, a slash or
+  similar ("Filename contains an invalid character, such as a period or
+  slash.", string resource 129); on macOS a web viewer asks before it
+  downloads a file and marks the file with `com.apple.quarantine`.
+- **Not announced: an agent interface.** The Mac app adds `ManageAgents.nib`
+  ("Manage Agentic Access") and `AgentPrompt.nib`, and code for a local
+  HTTP service on `127.0.0.1` with a configurable port that reports
+  `{"service":"fmpro-dev","schema":1}`, lets a local program run scripts
+  and Data API requests in open files (`performScript`, `ExecuteDataAPI`,
+  `fmfetch`) after the user allows it with a Full Access account, and lists
+  and revokes grants per program and file (`com.claris.fmp.agentgrant`).
+  Whether it is enabled in the shipping build (`isAgentAccessAvailable`) is
+  [U]; the file and host side are in session-identity.md 4.5 and
+  network-protocol.md 5.2.
 
 ## Unknowns
 
