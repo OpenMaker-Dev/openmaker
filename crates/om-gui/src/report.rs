@@ -1635,7 +1635,9 @@ fn walk_report_objects<'a>(
         (&beyond, "objects beyond the printable width"),
         (&hidden, "objects hidden when printing"),
     ] {
-        if let Some(object) = layout.objects.objects.iter().find(|o| {
+        // Only what prints can slide: a slider that is itself left out (or
+        // inside what is) moves nothing.
+        if let Some((object, _, _)) = objects.iter().find(|(o, _, _)| {
             o.slide_up().is_some() && part_of(o).is_some_and(|part| parts.contains(&part))
         }) {
             refuse(ReportError::unsupported(format!(
@@ -1820,8 +1822,9 @@ fn beyond_page(object: &LayoutObject, rect: &Rect, paper: &PageSize) -> bool {
 /// One object's place in the report: its absolute bounds and part, after
 /// the checks every report object passes. `via` is the index in `objects`
 /// of the group the object was reached through, `None` for a top-level
-/// object. `None` for an object in a navigation part or wholly beyond the
-/// printable width, which never prints (and neither do its contents).
+/// object. `None` for an object hidden when printing, in a navigation part
+/// or wholly beyond the printable width, which never prints (and neither
+/// do its contents).
 fn report_object<'a>(
     layout: &'a Layout,
     paper: &PageSize,
@@ -1829,6 +1832,26 @@ fn report_object<'a>(
     via: Option<usize>,
     objects: &[SourceObject<'a>],
 ) -> Result<Option<SourceObject<'a>>, ReportError> {
+    // Hide when printing leaves the object, and what it holds, out of
+    // every printed page (Claris, "Removing blank spaces in printouts";
+    // layout-model.md 5.8), whatever else it is set to do or wherever it
+    // is: nothing else about it is checked.
+    if object.flags & sliding::NON_PRINTING != 0 {
+        return Ok(None);
+    }
+    // Whether a tab control draws the caption of a panel hidden when
+    // printing is unmeasured.
+    if object.kind() == ObjectKind::TabControl
+        && (object.children.iter())
+            .filter_map(|id| layout.objects.get(*id))
+            .any(|panel| panel.flags & sliding::NON_PRINTING != 0)
+    {
+        return Err(ReportError::unsupported(format!(
+            "Report tab control {} has a panel hidden when printing; how its tab prints is \
+             unmeasured",
+            object.id
+        )));
+    }
     let rect = layout
         .absolute_bounds(object.id)
         .ok_or_else(|| ReportError::unsupported("A report object has no geometry"))?;
@@ -1865,12 +1888,6 @@ fn report_object<'a>(
         return Ok(None);
     }
     if beyond_page(object, &rect, paper) {
-        return Ok(None);
-    }
-    // Hide when printing leaves the object, and what it holds, out of
-    // every printed page (Claris, "Removing blank spaces in printouts";
-    // layout-model.md 5.8), whatever else it is set to do.
-    if object.flags & sliding::NON_PRINTING != 0 {
         return Ok(None);
     }
     if object.flags & sliding::LEFT != 0 {
@@ -2247,7 +2264,8 @@ fn slides_in(kind: PartKind) -> bool {
 /// of fixed height and needs no plan-time content.
 pub(crate) fn resizes_parts(layout: &Layout) -> bool {
     layout.objects.objects.iter().any(|object| {
-        object.slide_up().is_some_and(|slide| slide.resize_part)
+        !hidden_when_printing(layout, object)
+            && object.slide_up().is_some_and(|slide| slide.resize_part)
             && layout.absolute_bounds(object.id).is_some_and(|rect| {
                 layout
                     .parts
@@ -2256,6 +2274,23 @@ pub(crate) fn resizes_parts(layout: &Layout) -> bool {
                     .is_some_and(|p| slides_in(p.kind()))
             })
     })
+}
+
+/// Whether `object` or a container it is in is set to Hide when printing,
+/// so that it never prints ([`report_object`]). Containers are followed at
+/// most as many levels as the layout has objects, so a cycle ends.
+fn hidden_when_printing(layout: &Layout, object: &LayoutObject) -> bool {
+    let mut at = Some(object);
+    for _ in 0..=layout.objects.objects.len() {
+        let Some(object) = at else {
+            return false;
+        };
+        if object.flags & sliding::NON_PRINTING != 0 {
+            return true;
+        }
+        at = object.parent.and_then(|id| layout.objects.get(id));
+    }
+    false
 }
 
 /// In a sub-summary part, a summary field reads its group: the summary and
