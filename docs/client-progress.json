@@ -437,7 +437,7 @@
       "previous_status": "Partial",
       "status": "Partial",
       "scope": "Layout, object and record triggers run in the owning context and can veto. Browse keystroke triggers see control keys and modifiers and keep the queued input order; related edit boxes run their object triggers; Tab follows the stored tab order ([editing records](desktop-client.md#editing-records)).",
-      "remaining": "Find and Preview mode keys, input-method commits and keypad Enter are not implemented or measured ([desktop notes](re/script-runtime.md#implementation-notes-desktop-client)); keypad Enter does not commit [#260](https://github.com/OpenMaker-Dev/openmaker/issues/260). Related fields get no keystroke trigger.",
+      "remaining": "Find and Preview mode keys and input-method commits are not implemented or measured ([desktop notes](re/script-runtime.md#implementation-notes-desktop-client)); Return ends a field's editing [#376](https://github.com/OpenMaker-Dev/openmaker/issues/376). Related fields get no keystroke trigger.",
       "issues": [
         260
       ],
@@ -485,11 +485,11 @@
       "previous_status": "Partial",
       "status": "Partial",
       "scope": "Get functions answer the owning file's privileges, account facts and the desktop's User Name setting, which is modeled on FileMaker Pro 26's ([Settings](desktop-client.md#settings), [privilege sets](desktop-client.md#privilege-sets)).",
-      "remaining": "Hosted files answer AccountType and password days empty [#3](https://github.com/OpenMaker-Dev/openmaker/issues/3); LayoutAccess and RecordAccess ignore layout entries and per-table rules [#182](https://github.com/OpenMaker-Dev/openmaker/issues/182); ActiveFieldName, ModifiedFields and SortState answer as if nothing were active [#33](https://github.com/OpenMaker-Dev/openmaker/issues/33).",
+      "remaining": "Hosted files answer AccountType and password days empty [#364](https://github.com/OpenMaker-Dev/openmaker/issues/364); LayoutAccess and RecordAccess ignore layout entries and per-table rules [#182](https://github.com/OpenMaker-Dev/openmaker/issues/182); ActiveFieldName, ModifiedFields and SortState answer as if nothing were active [#33](https://github.com/OpenMaker-Dev/openmaker/issues/33).",
       "issues": [
-        3,
         33,
-        182
+        182,
+        364
       ],
       "docs": [
         "desktop-client.md#settings",
@@ -517,10 +517,10 @@
       "previous_status": "Implemented",
       "status": "Partial",
       "scope": "Perform Script on Server sends the script to the host and returns its result and error to the desktop; OpenMaker Server runs it with bounds on the scripts a client may run and on runaway scripts ([status](scripting.md#status-2026-10-29)).",
-      "remaining": "Perform Script on Server with Callback reads its callback script and parameter from other slots than FileMaker stores them in, so a step FileMaker Pro wrote does not call back correctly [#188](https://github.com/OpenMaker-Dev/openmaker/issues/188). Callback timing, refusal and close or loss cases are not compared with FileMaker Server; a server script cannot perform another [#103](https://github.com/OpenMaker-Dev/openmaker/issues/103).",
+      "remaining": "A callback script in another file is refused with error 3 [#372](https://github.com/OpenMaker-Dev/openmaker/issues/372). Callback timing, refusal and close or loss cases are not compared with FileMaker Server; a server script cannot perform another [#103](https://github.com/OpenMaker-Dev/openmaker/issues/103).",
       "issues": [
         103,
-        188
+        372
       ],
       "docs": [
         "scripting.md#status-2026-10-29"

@@ -42,8 +42,9 @@ PDF data in container fields (`GetThumbnail`, `GetTextFromPDF`, a PDF's
 size, Browse's first page) is read by a worker executable beside the
 program, never in it: `om-gui-pdf-worker` and `om-server-pdf-worker`
 (`om_calc::functions::pdf_worker`, #566). `om-gui-pdf-worker --svg` also
-draws report SVG pictures (`om_gui::report::svg_worker`); without it they
-refuse with error 3. `cargo build -p om-gui` and
+draws SVG pictures and icons, in reports and in Browse
+(`om_gui::report::svg_worker`, `om_gui::svg_loader`); without it report SVG
+pictures refuse with error 3 and Browse shows its error mark for them. `cargo build -p om-gui` and
 `cargo build -p om-server` build the worker with the program, and the
 packages install it; `cargo run` builds only the program it runs, so build
 the package once first. A missing worker is reported at startup, and
@@ -145,9 +146,12 @@ change due, in [Full Access], [Data Entry Only] or [Read-Only Access] as
 FileMaker stores them. An account in a custom privilege set is refused
 with error 9: the server does not yet hold a client that sends its own
 requests to every member of one ([#227](https://github.com/OpenMaker-Dev/openmaker/issues/227)). An account in [Full Access] may
-run any Perform Script on Server script and make `om-author` edits; any
-other account runs only scripts set to run with full access privileges and
-authors nothing. The rules and their error codes are in
+run any Perform Script on Server script and make `om-author` edits. One in
+[Data Entry Only] or [Read-Only Access] runs any script under its set: it
+reads every record, and under [Data Entry Only] creates, edits and deletes
+them, while [Read-Only Access]'s writes are refused with 200. An account in
+a custom set (admitted by a local file's private host) runs only scripts
+set to run with full access privileges. Only [Full Access] authors. The rules and their error codes are in
 [docs/re/local-files.md](re/local-files.md) 2. A desktop's private host
 for a local file applies the same ones, but admits the custom sets
 OpenMaker enforces, since its one client is the desktop itself. A password,
@@ -372,10 +376,8 @@ of each dependency, unless there is a concrete reason not to.
   release; after an update, read the lockfile diff and name every crate
   that moved. When a change touches `Cargo.lock`, check it against the
   RustSec advisory database with `cargo audit` (install it once with
-  `cargo install cargo-audit --locked`). RUSTSEC-2023-0071 (`rsa`, no
-  fixed 0.9 release) is expected until
-  [#29](https://github.com/OpenMaker-Dev/openmaker/issues/29) is
-  resolved; any other vulnerability it lists needs an update or an issue.
+  `cargo install cargo-audit --locked`). Any vulnerability it lists needs
+  an update or an issue.
 
 ## Kinds of tests
 

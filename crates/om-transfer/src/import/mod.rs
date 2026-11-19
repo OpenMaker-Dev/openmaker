@@ -168,6 +168,29 @@ impl ImportSummary {
     }
 }
 
+/// Refuse, with error 3 before any row is read, the import options
+/// OpenMaker does not carry out, rather than import other records than
+/// FileMaker would: "Split repeating values into separate records"
+/// (FileMaker Server's split of a text source kept only each field's first
+/// repetition and left others empty, oracle x02 `i_split`; not reproduced)
+/// and an import into a new table (`FieldFlags::new_table`; OpenMaker
+/// creates no table).
+pub fn refuse_unsupported(options: &ImportOptions, field_flags: Option<&FieldFlags>) -> Result<()> {
+    if options.has(import_flag::SPLIT_REPETITIONS) {
+        return Err(TransferError::new(
+            code::UNAVAILABLE,
+            "Splitting repetitions into separate records is not supported.",
+        ));
+    }
+    if field_flags.is_some_and(|f| !f.new_table.is_empty()) {
+        return Err(TransferError::new(
+            code::UNAVAILABLE,
+            "Importing into a new table is not supported.",
+        ));
+    }
+    Ok(())
+}
+
 /// Parse a source file in the profile's format, within [`limit`].
 pub fn parse(request: &ImportRequest, bytes: &[u8]) -> Result<Source> {
     let unreadable = match request.profile.file_type {
@@ -285,6 +308,7 @@ pub fn import_rows(
     locale: &Locale,
 ) -> Result<ImportSummary> {
     let options = &request.options;
+    refuse_unsupported(options, request.field_flags.as_ref())?;
     let occurrence = options.table.id().ok_or_else(|| {
         TransferError::new(code::FIELD_MISSING, "The import has no target table.")
     })?;

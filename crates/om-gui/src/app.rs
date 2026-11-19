@@ -137,6 +137,30 @@ impl ViewMode {
 }
 
 /// Step ids of the commands that run as a single step.
+/// Where keys a keyboard commit held for the next frame were typed
+/// (`OpenMakerApp::shortcuts`): the window's file, mode, layout and record,
+/// and the active field.
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+struct HeldKeysOwner {
+    file: u64,
+    mode: Mode,
+    record: Option<(u32, i64)>,
+    field: Option<String>,
+}
+
+/// Whether a field editor applies `event` to its text or selection: typed
+/// text, a paste or cut, an input method's text, a key pressed.
+fn edits_text(event: &egui::Event) -> bool {
+    matches!(
+        event,
+        egui::Event::Text(_)
+            | egui::Event::Paste(_)
+            | egui::Event::Cut
+            | egui::Event::Ime(_)
+            | egui::Event::Key { pressed: true, .. }
+    )
+}
+
 pub(crate) mod steps {
     pub const UNSORT: u16 = 21;
     pub const SHOW_ALL: u16 = 23;
@@ -1910,6 +1934,10 @@ impl OpenMakerApp {
                 );
             }
         }
+        // A frame that sent nothing and waits for nothing drew only fresh
+        // results: needs that failed or wait for an unreachable host are
+        // not sent, and keep no result from before the last change.
+        self.w.calcs.settle_last_results();
         // What waits for a related file's unreachable host is asked again
         // then (#740): draw again at that time.
         if let Some(at) = self.w.calcs.retry_at() {
@@ -2518,6 +2546,30 @@ impl OpenMakerApp {
             || self.value_list_edit.is_some()
     }
 
+    /// Whether the keypad's Enter goes to the next object rather than
+    /// committing the record: the active field object's "Go to next object
+    /// using" includes the Enter key (`FieldObject::next_object_on_enter`).
+    /// That FileMaker Pro then goes on rather than commits is inferred from
+    /// the option (layout-model.md 5.4.1), not measured.
+    fn enter_goes_to_next_object(&self) -> bool {
+        let (Some(_), Some(object), Some(session)) = (
+            &self.w.document.active,
+            self.w.document.active_object,
+            &self.w.session,
+        ) else {
+            return false;
+        };
+        let crate::session::RenderState::Loaded(layout) = &session.render else {
+            return false;
+        };
+        layout
+            .layout
+            .objects
+            .get(object)
+            .and_then(|object| object.field_obj.as_ref())
+            .is_some_and(om_layout::FieldObject::next_object_on_enter)
+    }
+
     fn shortcuts(&self, ui: &Ui, actions: &mut Vec<Action>) {
         let open = self.w.session.is_some();
         // Document shortcuts must not act through dialogs or while searching
@@ -2536,7 +2588,41 @@ impl OpenMakerApp {
                 .as_ref()
                 .is_some_and(|session| self.w.layout_workspace.selection_count(session) > 0);
         let mut commit = false;
+        // The keypad's Enter, unlike Return, commits the record or goes to
+        // the next object (`keypad`) from a field of the record or with no
+        // editor focused. In an open menu or list, or in a box of the
+        // toolbar (Quick Find, the record number), it acts as Return.
+        let keypad_enter = browse
+            && !egui::Popup::is_any_open(ui.ctx())
+            && (self.w.document.active.is_some() || !typing);
+        let enter_goes_next = keypad_enter && self.enter_goes_to_next_object();
+        // A commit key that came after typing in the same frame waited for
+        // this one: the editor has applied the typing (below). It goes back
+        // only in the next frame, and only to the file, mode, layout, record
+        // and field it was typed in. Otherwise (a script ran or moved, a
+        // dialog came up) it is dropped rather than commit what the window
+        // shows by then.
+        let held_id = egui::Id::unique("held_commit_keys").with(ui.ctx().viewport_id());
+        let frame = ui.ctx().cumulative_frame_nr();
+        let typed_in = HeldKeysOwner {
+            file: self.w.file_id,
+            mode: self.w.mode,
+            record: self
+                .w
+                .session
+                .as_ref()
+                .and_then(|session| Some((session.layout?, session.current_record()?.1.id))),
+            field: self.w.document.active.clone(),
+        };
+        let held: Option<(u64, HeldKeysOwner, Vec<egui::Event>)> =
+            ui.ctx().data_mut(|data| data.remove_temp(held_id));
+        let mut hold = None;
         ui.input_mut(|input| {
+            if let Some((_, _, held)) =
+                held.filter(|(at, owner, _)| at + 1 == frame && *owner == typed_in)
+            {
+                input.events.splice(0..0, held);
+            }
             if input.consume_shortcut(&shortcuts::QUIT) {
                 actions.push(Action::Quit);
             }
@@ -2605,6 +2691,28 @@ impl OpenMakerApp {
                 actions.push(Action::DeleteLayoutObject);
             }
             if self.w.mode == Mode::Browse {
+                // A field editor applies its keys as it draws, after this,
+                // and only while it has the focus, which a keyboard commit
+                // takes from it before it draws (below). So a commit key
+                // after typing in the same frame waits for the next frame,
+                // with the keys after it, and the editor applies the typing
+                // first.
+                let commit_key = |event: &egui::Event| {
+                    matches!(
+                        event,
+                        egui::Event::Key {
+                            key: Key::Enter,
+                            pressed: true,
+                            modifiers,
+                            ..
+                        } if modifiers.command || modifiers.mac_cmd
+                    ) || (keypad_enter && !enter_goes_next && crate::keypad::is_enter_press(event))
+                };
+                if let Some(at) = input.events.iter().position(commit_key) {
+                    if typing && input.events[..at].iter().any(edits_text) {
+                        hold = Some(input.events.split_off(at));
+                    }
+                }
                 if input.consume_shortcut(&KeyboardShortcut::new(Modifiers::COMMAND, Key::N)) {
                     actions.push(Action::NewRecord);
                 }
@@ -2617,6 +2725,27 @@ impl OpenMakerApp {
                 if input.consume_shortcut(&KeyboardShortcut::new(Modifiers::COMMAND, Key::Enter)) {
                     actions.push(Action::CommitRecord);
                     commit = true;
+                }
+                let at = input.events.iter().position(crate::keypad::is_enter_press);
+                if let Some(at) = at.filter(|_| keypad_enter) {
+                    if enter_goes_next {
+                        // As a Tab: the document moves the focus.
+                        input.events[at] = egui::Event::Key {
+                            key: Key::Tab,
+                            physical_key: None,
+                            pressed: true,
+                            repeat: false,
+                            modifiers: Modifiers::NONE,
+                        };
+                    } else {
+                        input
+                            .events
+                            .retain(|event| !crate::keypad::is_enter_press(event));
+                        if !commit {
+                            actions.push(Action::CommitRecord);
+                            commit = true;
+                        }
+                    }
                 }
             }
             if input.consume_shortcut(&shortcuts::STATUS_TOOLBAR) {
@@ -2691,6 +2820,11 @@ impl OpenMakerApp {
                 }
             }
         });
+        if let Some(hold) = hold {
+            ui.ctx()
+                .data_mut(|data| data.insert_temp(held_id, (frame, typed_in, hold)));
+            ui.ctx().request_repaint();
+        }
         // Keyboard Commit leaves the field (script-runtime.md 7.1):
         // surrender its editor before drawing so the existing focus-change
         // path holds Commit for Validate/Save/Exit, as for a background
