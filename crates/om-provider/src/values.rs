@@ -7,10 +7,11 @@
 //!   definition, whose first byte 1 takes the values from a field (its
 //!   occurrence and field follow as a field spec, 6.2). A field's values are
 //!   its value index's distinct values in index order, which CreateValueListEx
-//!   lists (query-program.md 8.7). "Also display values from a second
-//!   field", "sort by the second field" and "include only related values"
-//!   are not applied (the first field's values, all records, index order);
-//!   external and calculated lists are error 3.
+//!   lists (query-program.md 8.7). A list sorted by its second field
+//!   orders the first field's values by the second's, read from every
+//!   record; a second field only shown beside the first leaves the order.
+//!   Lists of related values only, whose second field is in another table,
+//!   from another file or from a calculation are error 3.
 //! - Insert from Index lists the field's value index the same way.
 //! - Set Next Serial Value is op72 with `kReplace` (write-path.md 3.2): the
 //!   host stores the text as the field's next serial value.
@@ -287,6 +288,25 @@ fn primary_field(definition: &[u8]) -> Option<(u64, u64)> {
     let occurrence = key_value(&mut rest)??;
     let field = key_value(&mut rest)??;
     Some((occurrence, field))
+}
+
+/// Value-list options (`DBValueList::Options`, file-metadata.md 6.2).
+const SHOW_RELATED_VALUES: u16 = 0x1;
+const SORT_BY_SECONDARY_FIELD: u16 = 0x2;
+
+/// A field value list's options and second field ("also display values
+/// from second field": (occurrence, field), `None` when the definition
+/// names none, `0:0`), from the definition's `u16` options and its second
+/// field spec (occurrence key, field key, u16 repetition each).
+fn list_options(definition: &[u8]) -> Option<(u16, Option<(u64, u64)>)> {
+    let options = u16::from_be_bytes(definition.get(1..3)?.try_into().ok()?);
+    let mut rest = definition.get(3..)?;
+    key_value(&mut rest)?;
+    key_value(&mut rest)?;
+    rest = rest.get(2..)?;
+    let occurrence = key_value(&mut rest)?.filter(|id| *id != 0);
+    let field = key_value(&mut rest)?.filter(|id| *id != 0);
+    Some((options, occurrence.zip(field)))
 }
 
 impl NativeProvider {
@@ -657,6 +677,93 @@ impl NativeProvider {
         Ok(values.finish())
     }
 
+    /// The distinct values of `first` of base table `table` in the order of
+    /// a list sorted by its second field (file-metadata.md 6.2,
+    /// `kSortBySecondaryField`): each record's values of `first` with its
+    /// value of `second`, ordered by the second value's key and then the
+    /// first's, each first value once, where it first comes. Read from every
+    /// record, as a list without an index is
+    /// (docs/value-lists-missing-index.md), within the same limits.
+    fn field_values_by_second(
+        &mut self,
+        table: u64,
+        first: u64,
+        second: u64,
+    ) -> Result<Vec<String>, DataError> {
+        let definition = self
+            .catalog
+            .table(table)
+            .ok_or_else(|| unsupported("The value list's table is missing."))?
+            .clone();
+        let field_of = |id: u64| -> Result<(om_hbam::Field, om_hbam::FieldOptions), DataError> {
+            let field = definition
+                .field(id)
+                .cloned()
+                .ok_or_else(|| unsupported("The value list's field is missing."))?;
+            let options = field
+                .decoded_options()
+                .ok_or_else(|| unsupported("The field's index metadata could not be read."))?;
+            Ok((field, options))
+        };
+        let (first, first_options) = field_of(first)?;
+        let (second, second_options) = field_of(second)?;
+        let first_keying = self.keying(&first, &first_options, true)?;
+        let second_keying = self.keying(&second, &second_options, true)?;
+        let session = self.session_mut()?;
+        let ids = record_ids(session, table)?;
+        // (second key, first key) -> the first value's text.
+        let mut pairs: BTreeMap<(Vec<u8>, Vec<u8>), String> = BTreeMap::new();
+        let mut bytes = 0usize;
+        let mut batch = Vec::with_capacity(SCAN_BATCH);
+        let mut ids = ids.iter();
+        loop {
+            batch.clear();
+            batch.extend(ids.by_ref().take(SCAN_BATCH));
+            if batch.is_empty() {
+                break;
+            }
+            let data = download_records(session, table, &batch)?;
+            let tree = download_tree(std::slice::from_ref(&data))?;
+            for row in om_hbam::record::records(&tree, table) {
+                let second_value = candidates(&row, &second, second_options.max_repetitions)?
+                    .into_iter()
+                    .next()
+                    .unwrap_or_default();
+                let second_key = second_keying
+                    .whole_key(&second_value)?
+                    .unwrap_or_else(|| EMPTY_TEXT_KEY.to_vec());
+                for candidate in candidates(&row, &first, first_options.max_repetitions)? {
+                    let Some(key) = first_keying.whole_key(&candidate)? else {
+                        continue;
+                    };
+                    if key == EMPTY_TEXT_KEY {
+                        continue;
+                    }
+                    let entry = (second_key.clone(), key);
+                    if pairs.contains_key(&entry) {
+                        continue;
+                    }
+                    if pairs.len() == MAX_INDEX_VALUES as usize {
+                        return Err(too_many_values());
+                    }
+                    bytes += entry.0.len() + entry.1.len() + candidate.len();
+                    if bytes > VALUE_BYTES {
+                        return Err(unsupported(
+                            "Listing the field's values exceeded the retained-value byte budget.",
+                        ));
+                    }
+                    pairs.insert(entry, candidate);
+                }
+            }
+        }
+        let mut seen = BTreeSet::new();
+        Ok(pairs
+            .into_iter()
+            .filter(|((_, first), _)| seen.insert(first.clone()))
+            .map(|(_, value)| value)
+            .collect())
+    }
+
     /// Value list `id`'s items; refused with 9 when the account's custom set
     /// gives the list no access (session-identity.md 2.2).
     pub(crate) fn read_value_list(&mut self, id: u64) -> Result<Vec<String>, DataError> {
@@ -695,12 +802,31 @@ impl NativeProvider {
                     .collect())
             }
             Some(1) => {
-                let (occurrence, field) = definition
-                    .as_deref()
-                    .and_then(primary_field)
-                    .ok_or_else(|| DataError::new("A value list's field could not be read."))?;
+                let definition = definition.unwrap_or_default();
+                let unreadable = || DataError::new("A value list's field could not be read.");
+                let (occurrence, field) = primary_field(&definition).ok_or_else(unreadable)?;
+                let (options, second) = list_options(&definition).ok_or_else(unreadable)?;
+                // Related values depend on a record to start from, which a
+                // sort by the list has none of.
+                if options & SHOW_RELATED_VALUES != 0 {
+                    return Err(unsupported(
+                        "A value list of related values only cannot be listed here.",
+                    ));
+                }
                 let table = self.occurrence_table(occurrence)?;
-                self.field_values(table, field)
+                match second {
+                    Some((second_occurrence, second)) if options & SORT_BY_SECONDARY_FIELD != 0 => {
+                        if self.occurrence_table(second_occurrence)? != table {
+                            return Err(unsupported(
+                                "A value list whose second field is in another table cannot be listed here.",
+                            ));
+                        }
+                        self.field_values_by_second(table, field, second)
+                    }
+                    // A second field shown beside the first does not change
+                    // the order of the first field's values.
+                    _ => self.field_values(table, field),
+                }
             }
             Some(kind) => Err(unsupported(format!(
                 "Value lists of type {kind} (another file's or calculated) are not supported."

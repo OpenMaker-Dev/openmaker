@@ -29,6 +29,63 @@ fn list(root: &mut OwnedNode, occurrence: u64, field: u64) {
     );
 }
 
+/// Value list 5 from Tasks' `field`, with `options` and a second field
+/// (file-metadata.md 6.2).
+fn list_with_second(root: &mut OwnedNode, field: u64, options: u16, second: u64) {
+    let key = |id| {
+        let bytes = uint_segment(id);
+        [vec![bytes.len() as u8 + 1, bytes.len() as u8], bytes].concat()
+    };
+    let mut definition = vec![1];
+    definition.extend(options.to_be_bytes());
+    definition.extend(key(OCCURRENCE));
+    definition.extend(key(field));
+    definition.extend([0, 1]);
+    definition.extend(key(OCCURRENCE));
+    definition.extend(key(second));
+    definition.extend([0, 1, 0, 0, 0]);
+    definition.extend(om_scsu::encode_counted(" "));
+    root.put(
+        &[&[0x21], &[5], &[5], &[2]],
+        OwnedNode::leaf(Vec::new(), definition),
+    );
+}
+
+/// A sort by a value list that "sorts by the second field" orders the first
+/// field's values by the second's, and one of related values only is
+/// refused: it has no record to start from (file-metadata.md 6.2).
+#[test]
+fn lists_sorted_by_their_second_field_order_the_first_fields_values_so() {
+    // Records 1 and 2 hold Alpha and Bravo; record 3, Charlie, is a row.
+    let charlie = [("Charlie".to_string(), "2".to_string(), String::new())];
+    let records = [(1, "Alpha", "3"), (2, "Bravo", "1")];
+    for (options, expected) in [
+        (0x2, ["Bravo", "Charlie", "Alpha"]),
+        // Shown beside the first field, the second does not change the order.
+        (0x0, ["Alpha", "Bravo", "Charlie"]),
+    ] {
+        let file = file_with(&format!("vl-second-{options}"), &charlie, |root| {
+            for (id, name, count) in records {
+                put(root, fixture::NAME, id, name);
+                put(root, fixture::COUNT, id, count);
+            }
+            list_with_second(root, fixture::NAME, options, fixture::COUNT);
+        });
+        let (port, ca) = host_with(&file.0, None, Server::with_late_index_builds);
+        let mut provider = open(port, &ca);
+        assert_eq!(provider.value_list(5).unwrap(), expected, "{options}");
+        provider.close();
+    }
+    let file = file_with("vl-related-only", &[], |root| {
+        put(root, fixture::NAME, 1, "Alpha");
+        list_with_second(root, fixture::NAME, 0x1, fixture::COUNT);
+    });
+    let (port, ca) = host_with(&file.0, None, Server::with_late_index_builds);
+    let mut provider = open(port, &ca);
+    assert_eq!(provider.value_list(5).unwrap_err().code, Some(3));
+    provider.close();
+}
+
 fn literal_index(root: &mut OwnedNode, field: u64, entries: &[(&[u8], &[u64])]) {
     for (key, ids) in entries {
         root.put(

@@ -451,8 +451,10 @@ Open items:
     ([#41](https://github.com/OpenMaker-Dev/openmaker/issues/41)).
   - A running summary or
   fraction on a record outside the found set reads empty (unconfirmed);
-  related-field criteria in server scripts; sorts by
-  a value list's second field or a calculated or external list; desktop
+  related-field criteria in server scripts; sorts by a value list of
+  related values only, by one whose second field is in another table, or
+  by a calculated or external list (a list sorted by its second field
+  orders by it); desktop
   transactions validate at Commit Transaction (FileMaker Pro's timing
   unknown); Insert from URL
   verifies certificates even when a script turns that off (deliberate),
