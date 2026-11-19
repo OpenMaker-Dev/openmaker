@@ -406,7 +406,7 @@
       "feature": "Script flow / variables / calls",
       "previous_status": "Implemented",
       "status": "Implemented",
-      "scope": "The runtime runs control flow, variables, parameters and results, nested and queued calls, error capture and host actions; it replays 256 of 258 probe runs of FileMaker Server's script engine ([status](scripting.md#status-2026-10-29)). 129 of the 210 steps FileMaker Pro runs on macOS or Windows have an implementation on the desktop (a static count: each step run alone through the desktop's script runtime, against what the desktop host answers; an option a step does not handle still answers error 3).",
+      "scope": "The runtime runs control flow, variables, parameters and results, nested and queued calls, error capture and host actions; it replays 256 of 258 probe runs of FileMaker Server's script engine ([status](scripting.md#status-2026-10-29)). 130 of the 210 steps FileMaker Pro runs on macOS or Windows have an implementation on the desktop (a static count: each step run alone through the desktop's script runtime, against what the desktop host answers; an option a step does not handle still answers error 3).",
       "remaining": "A step without an implementation stops the script with error 3 ([scripts](desktop-client.md#scripts)). Native traces of pause, abort and event order are not compared. Several desktop behaviors are inferred [#105](https://github.com/OpenMaker-Dev/openmaker/issues/105).",
       "issues": [
         105
