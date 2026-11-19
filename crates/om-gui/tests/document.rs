@@ -786,6 +786,41 @@ fn blank_canvas_commits_but_changing_fields_keeps_the_record_draft() {
     }
 }
 
+/// Insert > Current User Name puts the user name at the insertion point of
+/// the field being typed in, which a click on the menus leaves entered, and
+/// the insertion point goes after it.
+#[test]
+fn the_insert_menu_puts_its_text_at_the_insertion_point() {
+    let mut provider = DocumentProvider::new(false);
+    provider.writable = true;
+    let mut app = open_provider(provider);
+    let family = |app: &common::App| common::text_field(app, "Family").value();
+    common::text_field(&app, "Family").focus();
+    app.run_steps(2);
+    // After "Ma" of "Mason".
+    for key in [
+        egui::Key::Home,
+        egui::Key::ArrowRight,
+        egui::Key::ArrowRight,
+    ] {
+        app.key_press(key);
+    }
+    app.run_steps(2);
+    common::open_menu(&mut app, "Insert");
+    assert!(common::text_field(&app, "Family").is_focused());
+    common::click(&mut app, "Current User Name");
+    let name = om_data::host::machine::user_name();
+    common::wait_until(&mut app, "the user name", |app| {
+        family(app).as_deref() == Some(format!("Ma{name}son").as_str())
+    });
+    assert!(common::text_field(&app, "Family").is_focused());
+    app.event(egui::Event::Text("!".into()));
+    app.run_steps(2);
+    assert_eq!(family(&app), Some(format!("Ma{name}!son")));
+    assert!(common::unsaved(&app));
+    assert!(app.state().error().is_none(), "{:?}", app.state().error());
+}
+
 #[test]
 fn clicking_an_existing_field_edits_text_with_create_and_delete_independent() {
     let mut provider = DocumentProvider::new(false);

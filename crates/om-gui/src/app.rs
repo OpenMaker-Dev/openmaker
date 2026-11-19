@@ -156,6 +156,11 @@ pub(crate) mod steps {
     pub const EXTEND: u16 = 127;
     pub const NEW_WINDOW: u16 = 122;
     pub const INSERT_PICTURE: u16 = 56;
+    pub const INSERT_FROM_INDEX: u16 = 11;
+    pub const INSERT_FROM_LAST_VISITED: u16 = 12;
+    pub const INSERT_CURRENT_DATE: u16 = 13;
+    pub const INSERT_CURRENT_TIME: u16 = 14;
+    pub const INSERT_CURRENT_USER_NAME: u16 = 60;
     pub const INSERT_FILE: u16 = 131;
     pub const EXPORT_FIELD_CONTENTS: u16 = 132;
     pub const PERFORM_QUICK_FIND: u16 = 150;
@@ -1193,7 +1198,22 @@ impl OpenMakerApp {
     /// The window's menu bar at the top of `ui`. The Window menu lists no
     /// cards (Claris: "FileMaker Pro does not include cards in the Window
     /// menu").
-    pub(super) fn menu_bar(&self, ui: &mut Ui, input: bool, actions: &mut Vec<Action>) {
+    /// A text field of the current record is entered for typing in Browse,
+    /// where Insert's Current Date, Current Time, Current User Name, From
+    /// Index and From Last Visited Record put their text.
+    fn text_field_entered(&self) -> bool {
+        self.w.mode == Mode::Browse
+            && self.w.connection_lost.is_none()
+            && !self.w.document.pending
+            && self.w.document.active.is_some()
+            && self
+                .w
+                .session
+                .as_ref()
+                .is_none_or(|session| self.w.document.selected_container(session).is_none())
+    }
+
+    pub(super) fn menu_bar(&self, ui: &mut Ui, input: bool, actions: &mut Vec<Action>) -> bool {
         let window_title = self.window_title();
         let container = input
             && !self.script.busy()
@@ -1279,6 +1299,10 @@ impl OpenMakerApp {
                                 .selected_container(session)
                                 .is_some_and(|selection| selection.row.is_some())
                         })),
+                text_field: input
+                    && !self.script.busy()
+                    && self.script.prompt.is_none()
+                    && self.text_field_entered(),
                 client_license: self.client_license,
                 layout_edit: self.w.mode == Mode::Layout
                     && self.w.layout_workspace.has_changes()
@@ -1291,7 +1315,7 @@ impl OpenMakerApp {
                     }),
             },
             actions,
-        );
+        )
     }
 
     /// Draw the window the app works on in `ui`. `input`: the window takes
@@ -1452,9 +1476,10 @@ impl OpenMakerApp {
         }
 
         self.w.menu_drawn = menu && self.w.menubar;
+        let mut on_menus = false;
         if self.w.menu_drawn {
             let top = ui.available_rect_before_wrap().top();
-            self.menu_bar(ui, input, &mut actions);
+            on_menus = self.menu_bar(ui, input, &mut actions);
             self.w.menu_height = ui.available_rect_before_wrap().top() - top;
         }
         if front {
@@ -1635,6 +1660,16 @@ impl OpenMakerApp {
                 } else {
                     Vec::new()
                 };
+                // A click on the menu bar or its menus leaves the field
+                // entered, with its selection, as FileMaker Pro leaves it:
+                // the Insert commands act on it. egui gives a text editor's
+                // focus up on a click anywhere else, as the editor draws.
+                let surrender = ctx.options(|o| o.input_options.surrender_focus_on);
+                if on_menus {
+                    ctx.options_mut(|o| {
+                        o.input_options.surrender_focus_on = egui::SurrenderFocusOn::Never;
+                    });
+                }
                 let shown =
                     egui::CentralPanel::default()
                         .frame(frame)
@@ -1692,6 +1727,7 @@ impl OpenMakerApp {
                     // selected for binding; an explicit tool click clears it.
                     self.w.tool = LayoutTool::Selection;
                 }
+                ctx.options_mut(|o| o.input_options.surrender_focus_on = surrender);
                 content_rect = Some(shown.response.rect);
             }
             None if self.open_file.is_some()
@@ -2540,6 +2576,10 @@ impl OpenMakerApp {
                 .as_ref()
                 .is_some_and(|session| self.w.layout_workspace.selection_count(session) > 0);
         let mut commit = false;
+        // Insert's shortcuts, into the field entered (the menu's own
+        // availability: Editing only keeps them too).
+        let inserts = self.text_field_entered()
+            && self.menu_commands() != om_data::host::privilege_set::MenuCommands::Minimum;
         ui.input_mut(|input| {
             if input.consume_shortcut(&shortcuts::QUIT) {
                 actions.push(Action::Quit);
@@ -2607,6 +2647,32 @@ impl OpenMakerApp {
                     || input.consume_key(Modifiers::NONE, Key::Backspace))
             {
                 actions.push(Action::DeleteLayoutObject);
+            }
+            if inserts {
+                // Before New Record: egui's match of Command-N ignores Shift.
+                for (modifiers, key, step) in [
+                    (Modifiers::COMMAND, Key::Minus, steps::INSERT_CURRENT_DATE),
+                    (
+                        Modifiers::COMMAND,
+                        Key::Semicolon,
+                        steps::INSERT_CURRENT_TIME,
+                    ),
+                    (
+                        Modifiers::COMMAND.plus(Modifiers::SHIFT),
+                        Key::N,
+                        steps::INSERT_CURRENT_USER_NAME,
+                    ),
+                    (Modifiers::COMMAND, Key::I, steps::INSERT_FROM_INDEX),
+                    (
+                        Modifiers::COMMAND,
+                        Key::Quote,
+                        steps::INSERT_FROM_LAST_VISITED,
+                    ),
+                ] {
+                    if input.consume_shortcut(&KeyboardShortcut::new(modifiers, key)) {
+                        actions.push(Action::Step(step, 0));
+                    }
+                }
             }
             if self.w.mode == Mode::Browse {
                 if input.consume_shortcut(&KeyboardShortcut::new(Modifiers::COMMAND, Key::N)) {

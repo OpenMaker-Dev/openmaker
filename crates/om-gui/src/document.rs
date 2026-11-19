@@ -50,6 +50,13 @@ struct HeldFocus {
     editor: Option<(u64, i64, u64)>,
 }
 
+/// A field editor's selection as last drawn (`DocumentState::selection`).
+struct EditorSelection {
+    field: String,
+    editor: egui::Id,
+    range: (usize, usize),
+}
+
 /// The related records portals showed in a frame, by layout, portal and
 /// parent record (`DocumentState::portal_records`).
 type ShownPortals = BTreeMap<(u64, u64, u64), std::sync::Arc<[u64]>>;
@@ -231,6 +238,10 @@ pub(crate) struct DocumentState {
     /// painting sets it: moving between two objects of one field is a
     /// focus change of its own.
     painted_object: Option<u64>,
+    /// The editor of the field that had the focus as last drawn, and its
+    /// selection then: the characters from `range.0` to `range.1`, either
+    /// way round (`selection`, `place_cursor`).
+    editor_selection: Option<EditorSelection>,
     /// Fields (and the objects showing them) the user changed this frame.
     changed: Vec<Focused>,
     /// A checkbox or radio button set change waiting for the set to be
@@ -1783,10 +1794,66 @@ impl DocumentState {
             self.seen_active = Some(field.to_owned());
             self.seen_object = object;
             self.scroll.focused(field, response.id);
+            if let Some(range) = egui::TextEdit::load_state(&response.ctx, response.id)
+                .and_then(|state| state.cursor.char_range())
+            {
+                self.editor_selection = Some(EditorSelection {
+                    field: field.to_owned(),
+                    editor: response.id,
+                    range: (range.primary.index.0, range.secondary.index.0),
+                });
+            }
         }
         if response.changed() {
             self.changed.push((field.to_owned(), object));
         }
+    }
+
+    /// The active field `field`'s selection, 1-based start and length, as
+    /// a script reads it (`Get ( ActiveSelectionStart )`; the Insert steps
+    /// insert there).
+    pub(crate) fn selection(&self, field: &str) -> Option<(u64, u64)> {
+        let selection = self.editor_selection.as_ref()?;
+        if selection.field != field {
+            return None;
+        }
+        let (a, b) = selection.range;
+        Some((a.min(b) as u64 + 1, a.abs_diff(b) as u64))
+    }
+
+    /// A step left `field`'s selection at `selection` (1-based start and
+    /// length; `None` after its `len` characters): its editor shows it, as
+    /// after an Insert step FileMaker Pro puts the insertion point after
+    /// what it inserted.
+    pub(crate) fn place_cursor(
+        &mut self,
+        ctx: &egui::Context,
+        field: &str,
+        selection: Option<(u64, u64)>,
+        len: usize,
+    ) {
+        let Some(editor) = self
+            .editor_selection
+            .as_mut()
+            .filter(|selection| selection.field == field)
+        else {
+            return;
+        };
+        let (start, size) = selection.map_or((len, 0), |(start, size)| {
+            let start = usize::try_from(start.saturating_sub(1))
+                .unwrap_or(len)
+                .min(len);
+            (start, usize::try_from(size).unwrap_or(0).min(len - start))
+        });
+        let mut state = egui::TextEdit::load_state(ctx, editor.editor).unwrap_or_default();
+        state
+            .cursor
+            .set_char_range(Some(egui::text::CCursorRange::two(
+                egui::text::CCursor::new(start),
+                egui::text::CCursor::new(start + size),
+            )));
+        state.store(ctx, editor.editor);
+        editor.range = (start, start + size);
     }
 
     /// The scroll offset that shows the current record's row, at `top`,

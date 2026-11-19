@@ -59,6 +59,10 @@ pub(crate) struct MenuContext<'a> {
     pub container: bool,
     /// ...and the record may be changed: Insert's Picture and File.
     pub container_insert: bool,
+    /// A text field of the current record is entered for typing (Browse
+    /// mode, no script running): Insert's Current Date, Current Time,
+    /// Current User Name, From Index and From Last Visited Record.
+    pub text_field: bool,
     pub client_license: bool,
     /// Layout mode has a field placed with the Field tool and not yet
     /// saved (Save Layout, Revert Layout).
@@ -145,11 +149,15 @@ fn pending_submenu(ui: &mut Ui, label: &str) {
     submenu(ui, label, false, |_ui| {});
 }
 
-pub(crate) fn show(ui: &mut Ui, context: &MenuContext<'_>, actions: &mut Vec<Action>) {
+/// Draw the menu bar. Returns whether this frame's pointer is on the bar or
+/// on one of its open menus, where a click leaves the active field entered
+/// (`OpenMakerApp::draw_window_with`).
+pub(crate) fn show(ui: &mut Ui, context: &MenuContext<'_>, actions: &mut Vec<Action>) -> bool {
+    let mut open = false;
     let frame = egui::Frame::new()
         .fill(theme::TOOLBAR_BG)
         .inner_margin(egui::Margin::symmetric(6, 0));
-    egui::Panel::top("menubar")
+    let bar = egui::Panel::top("menubar")
         .frame(frame)
         .exact_size(theme::MENU_BAR_HEIGHT)
         .show_separator_line(false)
@@ -165,38 +173,56 @@ pub(crate) fn show(ui: &mut Ui, context: &MenuContext<'_>, actions: &mut Vec<Act
                 .style(theme::menu_bar_style)
                 .config(egui::containers::menu::MenuConfig::new().style(theme::menu_popup_style))
                 .ui(ui, |ui| {
-                    ui.menu_button(
-                        egui::RichText::new(crate::APP_TITLE)
-                            .font(egui::FontId::new(theme::BODY, theme::semibold())),
-                        |ui| app_menu(ui, context, actions),
-                    );
+                    open |= ui
+                        .menu_button(
+                            egui::RichText::new(crate::APP_TITLE)
+                                .font(egui::FontId::new(theme::BODY, theme::semibold())),
+                            |ui| app_menu(ui, context, actions),
+                        )
+                        .inner
+                        .is_some();
                     // Under Editing only or Minimum menus (session-identity.md
                     // 2.3) each menu gates its own items, so that a row's
                     // look and its click agree: a whole menu disabled at
                     // its start drew some rows as enabled.
-                    ui.menu_button("File", |ui| file_menu(ui, context, actions));
-                    ui.menu_button("Edit", |ui| edit_menu(ui, context, actions));
-                    ui.menu_button("View", |ui| view_menu(ui, context, actions));
-                    ui.menu_button("Insert", |ui| insert_menu(ui, context, actions));
-                    ui.menu_button("Format", format_menu);
+                    let mut menu = |ui: &mut Ui, title: &str, add: &mut dyn FnMut(&mut Ui)| {
+                        open |= ui.menu_button(title, |ui| add(ui)).inner.is_some();
+                    };
+                    menu(ui, "File", &mut |ui| file_menu(ui, context, actions));
+                    menu(ui, "Edit", &mut |ui| edit_menu(ui, context, actions));
+                    menu(ui, "View", &mut |ui| view_menu(ui, context, actions));
+                    menu(ui, "Insert", &mut |ui| insert_menu(ui, context, actions));
+                    menu(ui, "Format", &mut format_menu);
                     match context.mode {
                         Mode::Browse | Mode::Preview => {
-                            ui.menu_button("Records", |ui| records_menu(ui, context, actions));
+                            menu(ui, "Records", &mut |ui| records_menu(ui, context, actions));
                         }
                         Mode::Find => {
-                            ui.menu_button("Requests", |ui| requests_menu(ui, context, actions));
+                            menu(ui, "Requests", &mut |ui| {
+                                requests_menu(ui, context, actions)
+                            });
                         }
                         Mode::Layout => {
-                            ui.menu_button("Layouts", |ui| layouts_menu(ui, context, actions));
-                            ui.menu_button("Arrange", arrange_menu);
+                            menu(ui, "Layouts", &mut |ui| layouts_menu(ui, context, actions));
+                            menu(ui, "Arrange", &mut arrange_menu);
                         }
                     }
-                    ui.menu_button("Scripts", |ui| scripts_menu(ui, context, actions));
-                    ui.menu_button("Tools", tools_menu);
-                    ui.menu_button("Window", |ui| window_menu(ui, context, actions));
-                    ui.menu_button("Help", help_menu);
+                    menu(ui, "Scripts", &mut |ui| scripts_menu(ui, context, actions));
+                    menu(ui, "Tools", &mut tools_menu);
+                    menu(ui, "Window", &mut |ui| window_menu(ui, context, actions));
+                    menu(ui, "Help", &mut help_menu);
                 });
         });
+    // The bar, or an open menu's popup (menus are foreground areas over the
+    // window, their submenus too).
+    let ctx = ui.ctx();
+    ctx.pointer_interact_pos().is_some_and(|pos| {
+        bar.response.rect.contains(pos)
+            || (open
+                && ctx
+                    .layer_id_at(pos)
+                    .is_some_and(|layer| layer.order == egui::Order::Foreground))
+    })
 }
 
 fn app_menu(ui: &mut Ui, context: &MenuContext<'_>, actions: &mut Vec<Action>) {
@@ -513,12 +539,49 @@ fn insert_menu(ui: &mut Ui, context: &MenuContext<'_>, actions: &mut Vec<Action>
         actions.push(Action::Step(steps::INSERT_FILE, 0));
     }
     menu_separator(ui);
-    pending(ui, "Current Date", command(CMD, Key::Minus));
-    pending(ui, "Current Time", command(CMD, Key::Semicolon));
-    pending(ui, "Current User Name", command(SHIFT_CMD, Key::N));
+    // The field's steps (script-steps.md: 13, 14, 60, 11, 12), on the field
+    // entered: inserted at its insertion point, replacing its selection.
+    // That Editing only keeps them, as it keeps Export Field Contents, is
+    // inferred.
+    let text = context.text_field && context.editing();
+    for (label, shortcut, step) in [
+        (
+            "Current Date",
+            command(CMD, Key::Minus),
+            steps::INSERT_CURRENT_DATE,
+        ),
+        (
+            "Current Time",
+            command(CMD, Key::Semicolon),
+            steps::INSERT_CURRENT_TIME,
+        ),
+        (
+            "Current User Name",
+            command(SHIFT_CMD, Key::N),
+            steps::INSERT_CURRENT_USER_NAME,
+        ),
+    ] {
+        if item(ui, label, shortcut, false, text) {
+            actions.push(Action::Step(step, 0));
+        }
+    }
     menu_separator(ui);
-    pending(ui, "From Index...", command(CMD, Key::I));
-    pending(ui, "From Last Visited Record", command(CMD, Key::Quote));
+    for (label, shortcut, step) in [
+        (
+            "From Index...",
+            command(CMD, Key::I),
+            steps::INSERT_FROM_INDEX,
+        ),
+        (
+            "From Last Visited Record",
+            command(CMD, Key::Quote),
+            steps::INSERT_FROM_LAST_VISITED,
+        ),
+    ] {
+        if item(ui, label, shortcut, false, text) {
+            actions.push(Action::Step(step, 0));
+        }
+    }
 }
 
 fn format_menu(ui: &mut Ui) {

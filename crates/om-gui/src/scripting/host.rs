@@ -4995,17 +4995,10 @@ impl WorkerHost<'_> {
             Some(Answer::Index(Some(value))) => value,
             _ => return Err(ErrorCode::CANCELED.into()),
         };
-        let text = if target.select_all {
-            chosen
-        } else {
-            let (window, provider) = self.wp();
-            let current = window
-                .value(provider, &name)
-                .map_err(data_error)?
-                .unwrap_or_default();
-            current + &chosen
-        };
-        self.write_named(&name, text)
+        // Pasted as Insert Text pastes: at the insertion point of the field
+        // entered (its end otherwise), or over all of it with "Select
+        // entire contents".
+        self.insert(target, Value::text(chosen))
     }
 }
 

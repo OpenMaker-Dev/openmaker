@@ -973,6 +973,25 @@ Inferred, unmeasured in Pro:
 - **Not handled:** a field whose "Go to next object using" has Tab turned
   off; that is unmeasured in Pro too.
 
+**The Insert menu.** With a text field of the record entered in Browse,
+Insert > Current Date (⌘-), Current Time (⌘;), Current User Name (⇧⌘N),
+From Index... (⌘I) and From Last Visited Record (⌘') run their script
+steps (13, 14, 60, 11 and 12) on that field, at its insertion point and
+over its selection. A click on the menu bar or on an open menu leaves the
+field entered with its selection, as FileMaker Pro leaves it, and after the
+step the insertion point is after what was inserted. Scripts read the
+user's selection in the field too (`Get ( ActiveSelectionStart )`, `Get (
+ActiveSelectionSize )`, the Insert steps). Limits:
+- Find mode's criteria and Table view's cells take none of them yet; a
+  container field selected takes Picture and File only.
+- From Last Visited Record replaces the field's text, as its step does here
+  (whether FileMaker Pro pastes it at the insertion point instead is
+  unmeasured).
+- That Editing only menus keep the five is inferred; Minimum leaves them
+  out, as it leaves out Export Field Contents.
+- ⌘- inserts the date while a field is entered and zooms out otherwise;
+  FileMaker Pro's own shortcut for Zoom Out is unmeasured.
+
 **Committing and reverting.** A record being edited shows no bar, as in
 FileMaker Pro 26.0.3 (#871, observed on the Tasks starter), so the layout
 keeps its place. Switching fields keeps the record's draft. A click on
