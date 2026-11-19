@@ -1124,8 +1124,15 @@ Parse time grows about linearly with parentheses (0.45 ms a level) and
 quadratically with nested subqueries, for which full LL scans to the end
 of the text; the slowest statement within the limit, 44 nested `EXISTS`
 subqueries, takes about 0.6 s. Flat statements are not limited and can be
-slower: 52 parts of q13's shape take 2 to 4 s, and 104 parts about 30 s,
-as before the limit.
+slower: 52 parts of q13's shape take about 2.3 s and 104 parts about 16 s
+(release build, 2026-11-19), so the parser stops at its source's abort or
+time limit as the executor does (Interruption, below). Each thread keeps
+its SLL prediction cache (the DFA states, as ANTLR keeps one per
+recognizer) between statements; it only grows, so a parse starts it
+afresh once it holds 100,000 DFA states and configurations
+(`om_sql::parse`, about 25 MB). Before, 40,000 random statements grew one
+thread's cache past 1.5 GB, on each OpenMaker Server thread that ran them
+([#122](https://github.com/OpenMaker-Dev/openmaker/issues/122)).
 
 **Checks (4-7).**
 
@@ -1320,7 +1327,12 @@ planned (`om_data::rules`). What it settled:
   flag and time limit) and ends the query with engine error 1, `Operation
   aborted` (FQL's own text; FileMaker's behavior when a script is aborted
   inside a query is not observed). Before, a join over three tables of
-  300 records ran for minutes after its script was aborted.
+  300 records ran for minutes after its script was aborted. The parser
+  asks too, every 1,024 steps and every 16 tokens prediction reads, and
+  ends with the same error 1 before anything runs
+  ([#122](https://github.com/OpenMaker-Dev/openmaker/issues/122)): a
+  statement of 208 parts of q13's shape stops about 3 ms past a 200 ms
+  deadline. Before, parsing it could not be stopped.
 - Memory (2026-10-29): the `FROM` references (comma-separated, and chains
   of CROSS JOINs or joins without a condition, which are the same product)
   are the factors of one Cartesian product, made row by row in their

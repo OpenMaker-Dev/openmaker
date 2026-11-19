@@ -25,7 +25,6 @@ use om_data::calc::eval::{
 use om_data::calc::{CalcError, Ctx, Date, Locale, Value, ValueType};
 use om_data::formula::Names;
 use om_data::found::{code, FindRequest, FoundSetChange, SortField, SortOrder};
-use om_data::host::session::{auto_enters, modified_fields};
 use om_data::host::{
     stored_value, CachedSource, CalcData, CalcNeed, CalcSchema, FieldClass, FileCalc, SessionInfo,
     Vars, WindowMode, NO_RECORD,
@@ -2618,7 +2617,7 @@ impl<'a> WorkerHost<'a> {
         let (active_field_name, active_field_table_name) = match portal_field {
             Some(named) => named,
             None if state.focus.is_some() => {
-                (state.focus.clone().unwrap_or_default(), table_name.clone())
+                crate::calc::focus_names(state.focus.as_deref().unwrap_or_default(), &table_name)
             }
             None => own_repetition
                 .and_then(|field| {
@@ -2769,64 +2768,34 @@ impl<'a> WorkerHost<'a> {
         let Some(table) = schema.table_of(occurrence) else {
             return Vec::new();
         };
-        let state = &self.s.file.window.state;
-        if state.mode != Mode::Browse {
+        let table = table.id;
+        if self.s.file.window.state.mode != Mode::Browse {
             return Vec::new();
         }
-        let id = |name: &str| table.fields.values().find(|f| f.name == name).map(|f| f.id);
-        let mut changed: Vec<u64> = state
-            .drafts
-            .keys()
-            .filter(|f| state.typing.as_ref() != Some(*f))
-            .filter_map(|f| id(f))
-            .collect();
         // A script's later repetitions (cell `F * 256 + n`) change field F,
         // and so does the user's typing into them (the record's own related
         // draft, #185), but for the one being typed into.
-        let record = state.record.and_then(|id| u64::try_from(id).ok());
-        let typed: Vec<u64> = state
-            .uncommitted
-            .related
-            .iter()
-            .filter(|d| d.table == table.id && d.record == record && !d.deleted)
-            .flat_map(|d| d.cells.keys().copied())
-            .collect();
         let focused = self
             .own_repetition_focus()
             .and_then(|f| om_data::rules::cell_of(f.field, f.repetition));
-        let state = &self.s.file.window.state;
-        for cell in self
-            .s
-            .file
-            .window
-            .cells()
-            .keys()
-            .chain(typed.iter().filter(|cell| Some(**cell) != focused))
-        {
-            let field = if table.fields.contains_key(cell) {
-                *cell
-            } else {
-                cell >> 8
-            };
-            let typing = table
-                .fields
-                .get(&field)
-                .is_some_and(|f| state.typing.as_deref() == Some(f.name.as_str()));
-            if table.fields.contains_key(&field) && !typing && !changed.contains(&field) {
-                changed.push(field);
-            }
-        }
-        let entered: Vec<u64> = self
-            .s
-            .file
-            .window
-            .auto_entered()
+        let window = &self.s.file.window;
+        let state = &window.state;
+        let record = state.record.and_then(|id| u64::try_from(id).ok());
+        let typed = state
+            .uncommitted
+            .related
             .iter()
-            .filter_map(|f| table.fields.values().find(|d| d.name == *f))
-            .filter(|d| auto_enters(d))
-            .map(|d| d.id)
-            .collect();
-        modified_fields(&schema, table.id, &changed, &entered)
+            .filter(|d| d.table == table && d.record == record && !d.deleted)
+            .flat_map(|d| d.cells.keys().copied())
+            .filter(|cell| Some(*cell) != focused);
+        crate::calc::window_modified_fields(
+            &schema,
+            table,
+            state.drafts.keys().map(String::as_str),
+            state.typing.as_deref(),
+            window.cells().keys().copied().chain(typed),
+            window.auto_entered(),
+        )
     }
 
     /// The host's IPv4 address, resolved once.
@@ -4279,21 +4248,19 @@ impl Navigation for WorkerHost<'_> {
         self.go_to_related(request)
     }
 
-    fn go_to_list_of_records(
-        &mut self,
-        ids: &str,
-        layout: Option<&LayoutTarget>,
-        animation: Option<u32>,
-        new_window: bool,
-    ) -> HostResult {
-        if new_window {
-            let style = self.new_window_style(WindowOptions::from_word(None), Bounds::default())?;
-            self.open_window(None, style)?;
+    fn go_to_list_of_records(&mut self, request: &RecordList) -> HostResult {
+        if let Some(window) = &request.new_window {
+            let style = self.new_window_style(window.window_options(), window.bounds)?;
+            self.open_window(window.name.clone(), style)?;
+            // Its size and place, as New Window and Go to Related Record
+            // give theirs.
+            self.move_resize_window(&WindowTarget::Current, window.bounds, false)?;
         }
-        if let Some(layout) = layout {
-            self.go_to_layout(layout, animation)?;
+        if let Some(layout) = &request.layout {
+            self.go_to_layout(layout, request.animation)?;
         }
-        let ids: Vec<i64> = ids
+        let ids: Vec<i64> = request
+            .ids
             .split(['\r', '\n'])
             .filter_map(|line| line.trim().parse().ok())
             .collect();
@@ -5300,20 +5267,44 @@ impl Windows for WorkerHost<'_> {
     }
 
     fn select_window(&mut self, target: &WindowTarget, current_file_only: bool) -> HostResult {
-        self.check_dialog_selection(target)?;
-        if let Err(error) = self.select(target) {
-            // Another file's window, which must be shown already: one
-            // opened hidden is not found from here (script-runtime.md 9.2).
-            if !current_file_only {
-                if let WindowTarget::Named(name) = target {
-                    if let Some(window) = self.named_database_window(name) {
-                        self.select_database_window(window)?;
-                        self.send(ScriptEvent::Viewport(egui::ViewportCommand::Focus));
-                        return Ok(());
+        if let WindowTarget::Named(name) = target {
+            // Every open file's windows by name, then by UUID
+            // (script-runtime.md 9.2). Another file's window must be shown
+            // already: one opened hidden is not found from here.
+            enum Found {
+                /// This file's: `None` the current window.
+                Here(Option<usize>),
+                Elsewhere(WindowId),
+            }
+            let found = windows::WindowKey::ORDER.into_iter().find_map(|key| {
+                if let Some(index) = self.window_by(key, name) {
+                    return Some(Found::Here(index));
+                }
+                let other = (!current_file_only)
+                    .then(|| self.named_database_window(key, name))
+                    .flatten();
+                other.map(Found::Elsewhere)
+            });
+            // Over a dialog, only the dialog itself: the window this search
+            // found, never one another file's name pass found first.
+            self.check_dialog_selection(matches!(found, Some(Found::Here(None))))?;
+            match found {
+                None => return Err(ErrorCode::WINDOW_MISSING.into()),
+                Some(Found::Elsewhere(window)) => {
+                    self.select_database_window(window)?;
+                    self.send(ScriptEvent::Viewport(egui::ViewportCommand::Focus));
+                    return Ok(());
+                }
+                Some(Found::Here(index)) => {
+                    if let Some(index) = index {
+                        self.make_current(index);
                     }
+                    self.send(ScriptEvent::Viewport(egui::ViewportCommand::Focus));
                 }
             }
-            return Err(error);
+        } else {
+            self.check_dialog_selection(true)?;
+            self.select(target)?;
         }
         // A window of the script's own file is shown, hidden or not: a file
         // a script in it was opened for, hidden, shows here (#1313). Not

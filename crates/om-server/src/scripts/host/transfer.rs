@@ -75,7 +75,8 @@ impl ServerHost {
         if call.id == 143 {
             return Err(HostError::Unsupported);
         }
-        self.require_privileges()?;
+        // Every built-in set may export (session-identity.md 2.7).
+        self.require_view()?;
         self.leave()?;
         let Some(order) = call.export_order.as_deref() else {
             return Err(ErrorCode(om_transfer::code::EXPORT_ORDER_INVALID).into());
@@ -113,7 +114,7 @@ impl ServerHost {
 
     /// Import Records (module docs).
     pub(super) fn import_step(&mut self, call: &TransferCall<'_>) -> HostResult {
-        self.require_privileges()?;
+        self.require_edit()?;
         self.leave()?;
         // A folder of files, ODBC and FileMaker sources are not imported
         // here; FileMaker Server refuses folders too.
@@ -142,6 +143,8 @@ impl ServerHost {
             .field_flags
             .as_deref()
             .and_then(|b| FieldFlags::decode(b).ok());
+        import::refuse_unsupported(&options, field_flags.as_ref())
+            .map_err(|_| HostError::Unsupported)?;
         let mut paths = call.paths.clone();
         if paths.is_empty() {
             if let ProfileBody::XmlImport {
