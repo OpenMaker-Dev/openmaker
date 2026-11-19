@@ -180,6 +180,6 @@ resolve. New work is planned in issues, not here.
 | M2 Open and Login | Done | S2 Browsing (download lists, notifications, query programs) | Done |
 | M3 Schema read | Done | S3 FileMaker Pro as a client | Done |
 | M4 Records and finds | Done | S4 Writes (locks, create, commit, notifications) | Done |
-| M5 Layout rendering | Partial | S5 Accounts from each file instead of the server configuration | Done for the built-in privilege sets ([accounts](docs/development.md#accounts-and-insecure-files)); accounts in custom sets are refused [#227](https://github.com/OpenMaker-Dev/openmaker/issues/227), and server scripts of accounts outside [Full Access] run only scripts set to run with full access |
+| M5 Layout rendering | Partial | S5 Accounts from each file instead of the server configuration | Done for the built-in privilege sets ([accounts](docs/development.md#accounts-and-insecure-files)); accounts in custom sets are refused [#227](https://github.com/OpenMaker-Dev/openmaker/issues/227) |
 | M6 Hosted writes | Done | S6 Admin Console ([admin-console](docs/admin-console.md)) | Early: the server serves the Dashboard, Databases, Backups, Configuration, Administrator and Logs views and the Admin API v2, mostly read-only: its console backend does not pass on the server's actions on clients and files, its backups, alerts or logs yet; other views are not built |
 | M7 Local `.fmp12` open and edit | Partial | | |
