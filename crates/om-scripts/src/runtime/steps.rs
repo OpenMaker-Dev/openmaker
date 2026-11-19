@@ -946,13 +946,18 @@ impl Runtime {
         }
         // "Close after (seconds)" (26.1.1): on in numeric slot 6, the
         // seconds in calculation slot 13 (script-steps.md 12.4, from the
-        // binaries). A time that is not a positive number leaves the dialog
+        // binaries). The result is taken as a number as it is, not through
+        // its text. A time that is not a positive number leaves the dialog
         // to the user: OpenMaker's choice, FileMaker's is unmeasured.
         let close_after = step
             .number(6)
             .is_some_and(|on| on != 0)
-            .then(|| self.slot_float(host, step, 13))
+            .then(|| self.eval_slot(host, step, 13))
             .flatten()
+            .and_then(|seconds| {
+                let cx = Ctx::new(host.locale(), host.today());
+                seconds.value.to_number(&cx).to_f64()
+            })
             .filter(|seconds| seconds.is_finite() && *seconds > 0.0);
         let dialog = CustomDialog {
             title,
