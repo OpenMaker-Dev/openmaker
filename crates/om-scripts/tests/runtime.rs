@@ -1603,7 +1603,9 @@ fn every_step_id_dispatches_on_every_client() {
                 assert_eq!(error.as_deref(), Some("0"), "step {id}");
             } else if client == Client::Server && id == 146 {
                 assert_eq!(error.as_deref(), Some("5"));
-            } else if id >= 248 || om_scripts::OBSOLETE_STEP_IDS.contains(&id) {
+            } else if !om_scripts::is_valid_step_id(id)
+                || om_scripts::OBSOLETE_STEP_IDS.contains(&id)
+            {
                 assert_eq!(error.as_deref(), Some("4"), "{client:?} step {id}");
             } else if !om_scripts::is_supported(id, client) {
                 assert_eq!(error.as_deref(), Some("3"), "{client:?} step {id}");

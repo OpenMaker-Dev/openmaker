@@ -425,6 +425,13 @@ Open items:
     `XFD` write invalid references. FileMaker's behavior past either
     limit is unknown.
   - The desktop reads a whole import file before the size check.
+- Steps: the step catalog is FileMaker Pro 26.1.1's (valid ids below 251).
+  Its new steps 249 Replace Field Contents by Name and 250 Set Variable by
+  Name have no parameter rows yet, are not offered in the Script Workspace
+  or as a button's single step, and fail with error 3 when a script holds
+  one ([#349](https://github.com/OpenMaker-Dev/openmaker/issues/349)); the
+  unnamed id 248 fails with error 3 too, as a valid id without a handler
+  [I] (FileMaker Server 26.0.x refuses it with error 4).
 - Scripts: desktop steps still missing include the account steps
   ([#83](https://github.com/OpenMaker-Dev/openmaker/issues/83)) and the PDF
   steps other than Save Records as PDF

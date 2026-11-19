@@ -43,7 +43,15 @@ const KNOWN: &[(&str, usize, &str, &str)] = &[
         "Trigger | On First Window Open",
         FMS_SAMPLE,
     ),
+    ("s09-step-ids", 29, "srv step 248", STEP_248),
 ];
+
+/// Why step 248 differs: FileMaker Server 26.0.x, which ran s09, refuses
+/// ids from 248 with error 4; OpenMaker follows FileMaker Pro 26.1.1, whose
+/// valid ids run to 250 with 248 left unnamed, and fails a valid step
+/// without a handler with error 3 [I] (script-runtime.md 2.5, #338).
+const STEP_248: &str = "FileMaker Server 26.0.x refused it as an invalid id (error 4); under \
+    26.1.1's valid ids it is a step without a handler (error 3)";
 
 /// Why s10 is not replayed.
 const FMS_SAMPLE: &str = "runs the FileMaker Server sample's own scripts over its Tasks \

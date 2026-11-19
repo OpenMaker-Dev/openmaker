@@ -1,6 +1,6 @@
 # OpenMaker roadmap
 
-**Stage: pre-alpha** · Specs and catalogs: FileMaker Pro and Server 26.0.3; Pro 26.1.1's differences are [recorded](docs/re/README.md#filemaker-pro-2611), not matched yet ([FileMaker 26.1](#filemaker-261)) · Server target: 26.0.3 until FileMaker Server 26.1.1 ships · Last updated: 2026-11-19
+**Stage: pre-alpha** · Specs: FileMaker Pro and Server 26.0.3, with Pro 26.1.1's differences [recorded](docs/re/README.md#filemaker-pro-2611) and not yet matched ([FileMaker 26.1](#filemaker-261)) · Catalogs: Pro 26.1.1 · Server target: 26.0.3 until FileMaker Server 26.1.1 ships · Last updated: 2026-11-19
 
 Where OpenMaker stands against FileMaker, area by area, and what alpha
 means. This page changes when an area's status changes, not with every PR.
@@ -53,8 +53,8 @@ not released; the blocked row waits for it.
 |---|---|---|---|
 | Data safety | Update and Replace imports can keep a target field's value when the source field is empty | Ignores the option and writes the empty value over the target's data | [#340](https://github.com/OpenMaker-Dev/openmaker/issues/340) |
 | | A file can hold 26.1 features that an edit and save must keep | Not checked on a 26.1.1 file. By the code, layout flag bits are kept and calculated value lists cannot be edited; unknown steps, the button icon formula and the agent file marker are open questions | [#341](https://github.com/OpenMaker-Dev/openmaker/issues/341) |
-| Steps and functions | Steps 249 Replace Field Contents by Name and 250 Set Variable by Name | Unknown step ids, refused with error 4 | [#349](https://github.com/OpenMaker-Dev/openmaker/issues/349) |
-| | GetToolDefinitions with custom function descriptions, Get ( SortOrder ), `pluginpath` in Get ( InstalledFMPluginsAsJSON ), error 120 | The compiled-in catalogs are 26.0.3's: the new names do not compile, stored calls have no name, descriptions are not read; `pluginpath` is absent | [#338](https://github.com/OpenMaker-Dev/openmaker/issues/338) [#350](https://github.com/OpenMaker-Dev/openmaker/issues/350) [#351](https://github.com/OpenMaker-Dev/openmaker/issues/351) |
+| Steps and functions | Steps 249 Replace Field Contents by Name and 250 Set Variable by Name | Named, but not offered in the Script Workspace, and error 3 when run | [#349](https://github.com/OpenMaker-Dev/openmaker/issues/349) |
+| | GetToolDefinitions with custom function descriptions, Get ( SortOrder ), `pluginpath` in Get ( InstalledFMPluginsAsJSON ), error 120 | The names compile, and stored calls decode, print and re-encode; GetToolDefinitions fails with an error, Get ( SortOrder ) answers empty, descriptions are not read, `pluginpath` is absent | [#350](https://github.com/OpenMaker-Dev/openmaker/issues/350) [#351](https://github.com/OpenMaker-Dev/openmaker/issues/351) |
 | Layouts and Browse | Calculated SVG button icons, a portal's new-record row at the top, an indicator for an edit box's clipped contents | Not drawn: no icon, the new-record row stays last, no indicator | [#342](https://github.com/OpenMaker-Dev/openmaker/issues/342) [#343](https://github.com/OpenMaker-Dev/openmaker/issues/343) [#344](https://github.com/OpenMaker-Dev/openmaker/issues/344) |
 | | A checkbox set shown as one unlabelled checkbox | Drawn as a labelled checkbox set; with two or more list values, clearing the first checkbox removes its value instead of storing the second | [#345](https://github.com/OpenMaker-Dev/openmaker/issues/345) |
 | | Calculated value lists, as plain values or JSON | Not supported where a list is used | [#44](https://github.com/OpenMaker-Dev/openmaker/issues/44) |
