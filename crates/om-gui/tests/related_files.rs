@@ -4271,22 +4271,28 @@ fn refused_log_correction(reconnect: bool, changed: bool, new_root: bool) {
             .click();
         app.run_steps(2);
         if changed {
-            common::wait_until(&mut app, "Unresolved before reserving a fresh id", |a| {
-                a.query_by_label_contains("Unresolved: the related save")
-                    .is_some()
-            });
+            // The page the drafts show on is read again after the
+            // reconnect, and can land frames after the status (#285).
+            common::wait_until(
+                &mut app,
+                "Unresolved before reserving a fresh id, both drafts shown",
+                |a| {
+                    a.query_by_label_contains("Unresolved: the related save")
+                        .is_some()
+                        && a.query_all(field("Remote Tasks::Name"))
+                            .any(|n| n.value().as_deref() == Some("first edited"))
+                        && a.query_all(field("Other Tasks::Name")).any(|n| {
+                            n.value()
+                                .is_some_and(|v| v.starts_with("saved 1:first edited"))
+                        })
+                },
+            );
             assert_eq!(
                 peer.captures
                     .with_opcode(om_protocol::Opcode::HostCreateRecord)
                     .len(),
                 1
             );
-            assert!(app
-                .query_all(field("Remote Tasks::Name"))
-                .any(|n| n.value().as_deref() == Some("first edited")));
-            assert!(app.query_all(field("Other Tasks::Name")).any(|n| n
-                .value()
-                .is_some_and(|v| v.starts_with("saved 1:first edited"))));
             if new_root {
                 assert_eq!(
                     host.captures
