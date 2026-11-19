@@ -3409,7 +3409,9 @@ impl Records for ServerHost {
     }
 
     fn truncate_table(&mut self, table: Option<u64>, _with_dialog: bool) -> HostResult {
-        self.require_edit()?;
+        // The step needs the [Full Access] set, whatever the account may
+        // delete (Claris's Truncate Table help); elevation counts.
+        self.require_full_access()?;
         if table.is_some_and(|t| Some(t) != self.window.as_ref().map(|w| w.table)) {
             // Another table than the window's: not supported yet.
             return Err(HostError::Unsupported);
