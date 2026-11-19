@@ -39,7 +39,6 @@ impl ImportTarget for Target {
                 },
                 kind: FieldKind::Normal,
                 repetitions: if self.dates && id == 4 { 3 } else { 1 },
-                auto_enters: false,
             })
             .collect())
     }

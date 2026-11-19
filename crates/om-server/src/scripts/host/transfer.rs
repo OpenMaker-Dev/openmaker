@@ -609,8 +609,6 @@ impl ImportTarget for ServerImport<'_> {
                 ty: ServerHost::transfer_type(f.data_type),
                 kind: ServerHost::transfer_kind(f),
                 repetitions: ServerHost::repetitions(f),
-                auto_enters: om_hbam::FieldOptions::decode(&f.options)
-                    .is_some_and(|o| o.options & om_data::host::session::AUTO_ENTER != 0),
             })
             .collect())
     }

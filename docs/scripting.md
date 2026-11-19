@@ -411,10 +411,9 @@ Open items:
     counts as empty repetition by repetition, a missing column counts as
     empty, and a record the import adds is written in full. Neither import
     dialog offers the option (FileMaker Pro 26.1's), but both keep it.
-    With "Perform auto-enter options" on too, an update that maps a field
-    with an auto-enter option fails with error 3 and imports nothing:
-    leaving that field unwritten would no longer keep it from auto-entry,
-    and which FileMaker applies first is unmeasured. An import with a flag
+    With "Perform auto-enter options" on too, an update fails with error 3
+    and imports nothing: a field left unwritten would no longer be kept
+    from auto-entry, and which FileMaker applies first is unmeasured. An import with a flag
     past `0x40` fails with error 3 and imports nothing.
   - A stored XML import did not run on FileMaker Server (717), so XML
     imports are checked by round trip only.

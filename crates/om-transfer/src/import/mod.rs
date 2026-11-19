@@ -27,12 +27,14 @@
 //! values count is inferred, unmeasured on FileMaker: an empty text or a
 //! missing column, repetition by repetition; a record the import adds is
 //! written in full, as without the option. With "perform auto-enter
-//! options" too, an update that maps a field with an auto-enter option
-//! fails with error 3 before any row: the field's import write is what
-//! keeps auto-entry from replacing it, so leaving it unwritten could let a
-//! calculation or lookup overwrite the very value the option keeps (how
-//! FileMaker orders the two is unmeasured). An import with a flag
-//! OpenMaker does not know fails with error 3 before any row.
+//! options" too, an update fails with error 3 before any row: an imported
+//! field's write is what keeps auto-entry from replacing it, so a field
+//! left unwritten could have a calculation or lookup overwrite the very
+//! value the option keeps (how FileMaker orders the two is unmeasured).
+//! The refusal reads only the step's own options, so no schema change
+//! during the import and no column the source lacks can get past it. An
+//! import with a flag OpenMaker does not know fails with error 3 before
+//! any row.
 //!
 //! Entry options. With "perform auto-enter options" fields that are not
 //! imported get their auto-entered values; an imported field keeps the
@@ -68,10 +70,6 @@ pub struct TargetField {
     pub ty: FieldType,
     pub kind: FieldKind,
     pub repetitions: u32,
-    /// The field has an auto-enter option of its own (a creation or
-    /// modification value, a serial number, data, a calculation, the last
-    /// visited record's value or a lookup).
-    pub auto_enters: bool,
 }
 
 /// One cell an imported row writes.
@@ -319,15 +317,10 @@ pub fn import_rows(
     let auto_enter = options.has(import_flag::AUTO_ENTER);
     let add_remaining = options.has(import_flag::ADD_REMAINING);
     let preserve = options.has(import_flag::PRESERVE_TARGET);
-    if preserve
-        && auto_enter
-        && options.action != ImportAction::Add
-        && columns.iter().flatten().any(|t| t.field.auto_enters)
-    {
+    if preserve && auto_enter && options.action != ImportAction::Add {
         return Err(TransferError::new(
             code::UNAVAILABLE,
-            "Preserving target data while performing auto-enter options into a field \
-             that auto-enters is not supported.",
+            "Preserving target data while performing auto-enter options is not supported.",
         ));
     }
     let mut summary = ImportSummary {

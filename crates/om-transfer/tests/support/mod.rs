@@ -464,7 +464,6 @@ impl ImportTarget for Mem {
                 ty: f.ty,
                 kind: f.kind,
                 repetitions: f.repetitions,
-                auto_enters: f.auto.is_some(),
             })
             .collect())
     }
