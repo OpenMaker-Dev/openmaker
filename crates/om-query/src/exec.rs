@@ -4,7 +4,7 @@
 use std::collections::{BTreeMap, BTreeSet};
 use std::ops::{Bound, Range, RangeBounds};
 
-use om_hbam::{serial, DataType, OwnedNode, RidList};
+use om_hbam::{serial, slot::be_uint, DataType, OwnedNode, RidList};
 
 use crate::index::{Index, Indexes, VALUE_INDEX, WORD_INDEX};
 use crate::keys::TextKeys;
@@ -751,19 +751,20 @@ mod language {
     /// The padded form: System, Unicode standard.
     pub const SYSTEM: u8 = 1;
     pub const UNICODE: u8 = 3;
+    /// The UTF-16 code units: Unicode raw.
+    pub const UNICODE_RAW: u8 = 2;
     /// The English form: English, English international.
     pub const ENGLISH: u8 = 21;
     pub const ENGLISH_INTERNATIONAL: u8 = 77;
 }
 
 /// The keys `field` gives each record of `records`, as Projection requests
-/// them (`[u8 data type][u8 index language]`, spec 9.1). An indexed field is
-/// answered from its value index; an unindexed text field, and text in the
-/// padded form (System, Unicode standard), whose secondary weights an
-/// English index does not hold, from its stored values, each line keyed as
-/// the value index would key it. Conversion to another type, a language
-/// whose form the index does not hold, and unindexed fields of other types
-/// are not supported yet. Empty values give no key.
+/// them (`[u8 data type][u8 index language]`, spec 9.1). A field indexed in
+/// the requested form is answered from its value index; a text field indexed
+/// in another form or not at all from its stored values, every repetition's
+/// lines keyed in the requested form (English, System, Unicode standard,
+/// Unicode raw). Conversion to another type, other languages, and unindexed
+/// fields of other types are not supported yet. Empty values give no key.
 fn projected_keys(
     indexes: &mut Indexes<'_>,
     work: &Work,
@@ -788,6 +789,7 @@ fn projected_keys(
         _ if !text => TextKeys::Collated,
         language::ENGLISH | language::ENGLISH_INTERNATIONAL => TextKeys::Collated,
         language::SYSTEM | language::UNICODE => TextKeys::CollatedPadded,
+        language::UNICODE_RAW => TextKeys::Raw,
         _ => {
             return Err(QueryError::Unimplemented(
                 "projection in this index language",
@@ -795,37 +797,51 @@ fn projected_keys(
         }
     };
     let same_type = data_type_code(definition.data_type) == Some(*requested_type);
+    let options = definition.decoded_options();
+    // The form the field's value index keys text in: by its definition's
+    // index language, not by the keys (a padded key with accents ends in
+    // its secondary bytes, not `00 00`). Language 0, the file's own, is not
+    // known here; such an index is not read for text.
+    let index_form = options
+        .as_ref()
+        .and_then(|o| TextKeys::of_language(o.index_language()))
+        .filter(|form| *form != TextKeys::None);
+    let from_index =
+        indexes.is_indexed(work, table, field, VALUE_INDEX)? && (!text || index_form == Some(form));
 
-    if text && form == TextKeys::CollatedPadded
-        || !indexes.is_indexed(work, table, field, VALUE_INDEX)?
-    {
+    if !from_index {
+        // Every stored repetition's lines, each keyed once per record.
+        let repetitions = options
+            .as_ref()
+            .map_or(1, |o| o.max_repetitions.clamp(1, 255));
+        let cells: Vec<Vec<u8>> = std::iter::once(field.to_vec())
+            .chain(be_uint(field).into_iter().flat_map(|id| {
+                (2..=u64::from(repetitions))
+                    .filter_map(move |n| id.checked_mul(256)?.checked_add(n))
+                    .map(om_hbam::slot::uint_segment)
+            }))
+            .collect();
         let mut out = Vec::new();
         for id in records.iter() {
-            let value = indexes
-                .stored_text(work, table, field, id)?
-                .unwrap_or_default();
-            let mut lines: Vec<&str> = value
-                .split(['\r', '\n'])
-                .filter(|line| !line.is_empty())
-                .collect();
-            if lines.is_empty() {
-                continue;
+            let mut keys = BTreeSet::new();
+            for cell in &cells {
+                let value = indexes
+                    .stored_text(work, table, cell, id)?
+                    .unwrap_or_default();
+                let lines = value.split(['\r', '\n']).filter(|line| !line.is_empty());
+                for line in lines {
+                    if !same_type {
+                        return Err(QueryError::Unimplemented("projection to another data type"));
+                    }
+                    if definition.data_type != DataType::Text {
+                        return Err(QueryError::Unimplemented(
+                            "projection of an unindexed non-text field",
+                        ));
+                    }
+                    keys.extend(form.key(line));
+                }
             }
-            if !same_type {
-                return Err(QueryError::Unimplemented("projection to another data type"));
-            }
-            if definition.data_type != DataType::Text {
-                return Err(QueryError::Unimplemented(
-                    "projection of an unindexed non-text field",
-                ));
-            }
-            lines.sort_unstable();
-            lines.dedup();
-            out.extend(
-                lines
-                    .into_iter()
-                    .filter_map(|line| Some((id, form.key(line)?))),
-            );
+            out.extend(keys.into_iter().map(|key| (id, key)));
         }
         return Ok(out);
     }
@@ -841,16 +857,6 @@ fn projected_keys(
     }
     if !same_type {
         return Err(QueryError::Unimplemented("projection to another data type"));
-    }
-    // The index must hold the English form (no weight is `0000`).
-    if text
-        && keys
-            .iter()
-            .any(|&at| index.key(at).ends_with(&[0x00, 0x00]))
-    {
-        return Err(QueryError::Unimplemented(
-            "projection from this index language",
-        ));
     }
     let mut out = Vec::new();
     for at in keys {
@@ -1523,6 +1529,8 @@ mod tests {
     /// field 3 has none.
     struct Indexed {
         root: OwnedNode,
+        /// Field 1's definition bytes (none by default).
+        definition: Vec<u8>,
     }
 
     impl Indexed {
@@ -1539,7 +1547,21 @@ mod tests {
                 &[table, &[1], &[2], &[0]],
                 OwnedNode::list(Vec::new(), Vec::new()),
             );
-            Self { root }
+            Self {
+                root,
+                definition: Vec::new(),
+            }
+        }
+
+        /// Field 1 defined with `repetitions` and its index in `language`.
+        fn defined(mut self, language: u32, repetitions: u16) -> Self {
+            let mut definition = vec![0; 26];
+            definition[0] = 1;
+            definition[1] = 1;
+            definition[4..8].copy_from_slice(&language.to_be_bytes());
+            definition[24..26].copy_from_slice(&repetitions.to_be_bytes());
+            self.definition = definition;
+            self
         }
     }
 
@@ -1550,7 +1572,11 @@ mod tests {
                 name: format!("Field {id}"),
                 kind: om_hbam::FieldKind::Normal,
                 data_type: DataType::Text,
-                options: Vec::new(),
+                options: if id == 1 {
+                    self.definition.clone()
+                } else {
+                    Vec::new()
+                },
             };
             Ok(om_hbam::Catalog {
                 tables: vec![om_hbam::Table {
@@ -1981,19 +2007,25 @@ mod tests {
 
     /// #306: instructions find keys in an index by binary search; each
     /// answers at the edges of the index as the scans it replaced did.
-    /// Projection in the padded form (System, Unicode standard) keys the
-    /// stored value with its secondary weights, which the English index
-    /// does not hold (spec 9.1, 7.2: `équipe`'s keys in
-    /// catalogs/index-key-vectors.tsv).
+    /// Projection in a form the field's index does not hold keys the
+    /// stored values, every repetition (spec 9.1, 7.2: `équipe`'s keys in
+    /// catalogs/index-key-vectors.tsv): the padded form's secondary weights
+    /// are in no English index, and an English request on a padded index
+    /// gets English keys, not the index's.
     #[test]
-    fn a_padded_projection_keys_the_stored_value() {
-        let english = om_collate::text_key("\u{e9}quipe");
-        let mut source = Indexed::new(1, vec![entry(&english, &[1])]);
-        source.root.put(
-            &[&[0x80, 0x01], &[5], &serial::encode(1), &[1]],
-            OwnedNode::leaf(Vec::new(), om_scsu::encode_scsu("\u{e9}quipe")),
+    fn projection_keys_stored_values_in_forms_the_index_does_not_hold() {
+        let value = "\u{e9}quipe";
+        let english = om_collate::text_key(value);
+        let padded = om_collate::padded_text_key(value);
+        assert_eq!(
+            padded,
+            [
+                &[0x01, 0x12, 0x6b, 0x13, 0xc8, 0x14, 0x53, 0x12, 0xec, 0x13, 0xb3, 0x12, 0x6b][..],
+                &[0x00, 0x00, 0x01, 0x13, 0x01, 0x01, 0x01, 0x01, 0x01],
+            ]
+            .concat()
         );
-        let project = |language: u8| {
+        let project = |source: &Indexed, language: u8| {
             let leaves = vec![
                 OwnedNode::leaf(vec![leaf::SRC], vec![1, 2, 1, 1]),
                 OwnedNode::leaf(vec![leaf::PROJ_LIST], vec![1, 2, 1, 2]),
@@ -2001,23 +2033,35 @@ mod tests {
             let records = [1u64].into_iter().collect::<RidList>().entries();
             let fields = vec![OwnedNode::leaf(vec![1], vec![1, language])];
             let program = lookup(opcode::PROJECTION, leaves, [records, fields]);
-            let dest = result(&source, &program, Budget::DEFAULT).unwrap();
-            let keys = dest.at(&[&serial::encode(1), &[1]]).unwrap();
-            keys.children
-                .iter()
-                .map(|k| k.segment.clone())
-                .collect::<Vec<_>>()
+            let dest = result(source, &program, Budget::DEFAULT).unwrap();
+            dest.at(&[&serial::encode(1), &[1]])
+                .map(|keys| keys.children.iter().map(|k| k.segment.clone()).collect())
+                .unwrap_or_default()
         };
-        assert_eq!(project(21), [english]);
-        let padded: Vec<u8> = [
+        // An English index, the value in the second of two repetitions
+        // (cell 1 * 256 + 2).
+        let mut source = Indexed::new(1, vec![entry(&english, &[1])]).defined(21, 2);
+        source.root.put(
             &[
-                0x01, 0x12, 0x6b, 0x13, 0xc8, 0x14, 0x53, 0x12, 0xec, 0x13, 0xb3, 0x12, 0x6b,
-            ][..],
-            &[0x00, 0x00, 0x01, 0x13, 0x01, 0x01, 0x01, 0x01, 0x01],
-        ]
-        .concat();
-        assert_eq!(project(3), std::slice::from_ref(&padded));
-        assert_eq!(project(1), [padded]);
+                &[0x80, 0x01],
+                &[5],
+                &serial::encode(1),
+                &om_hbam::slot::uint_segment(258),
+            ],
+            OwnedNode::leaf(Vec::new(), om_scsu::encode_scsu(value)),
+        );
+        let keys: Vec<Vec<u8>> = project(&source, 21);
+        assert_eq!(keys, std::slice::from_ref(&english));
+        assert_eq!(project(&source, 3), std::slice::from_ref(&padded));
+        assert_eq!(project(&source, 1), std::slice::from_ref(&padded));
+        // A Unicode standard index: an English request keys the value.
+        let mut source = Indexed::new(1, vec![entry(&padded, &[1])]).defined(3, 1);
+        source.root.put(
+            &[&[0x80, 0x01], &[5], &serial::encode(1), &[1]],
+            OwnedNode::leaf(Vec::new(), om_scsu::encode_scsu(value)),
+        );
+        assert_eq!(project(&source, 21), [english]);
+        assert_eq!(project(&source, 3), [padded]);
     }
 
     #[test]
