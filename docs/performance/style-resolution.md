@@ -1,6 +1,7 @@
 # Style resolution benchmark
 
-Baseline: `aebaa2a80dee9fa1715d30e2c7ea49623fe06617` (`main`).
+Baseline: `aebaa2a80dee9fa1715d30e2c7ea49623fe06617`, `main` in the project's earlier, private history (not
+in this repository).
 
 The state fallback chain previously allocated a Vec for each property lookup.
 A complete style asks for 27 properties; inherited component lookups can add

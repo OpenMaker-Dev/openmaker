@@ -680,9 +680,11 @@ auto-enter and stored calculations of text, number, date, time and
 timestamp results over the record's own fields, constants, auto-entered
 dates, times, timestamps, account and user names, the clock, account, user
 and UUID `Get` selectors, not-empty, strict, maximum-length and
-by-calculation validation, and uniqueness of text fields. Global, summary,
-unstored-calculation and repeating fields may be present; they are not
-edited or written. Nothing the rules compute reads an unstored calculation
+by-calculation validation, and uniqueness of text fields. Summary and
+unstored-calculation fields may be present; they are not edited or
+written. Globals and repeating fields may be present too; Browse edits
+them as described below (globals as session values, later repetitions in
+their own cells). Nothing the rules compute reads an unstored calculation
 (below), so its option bits are not checked but for a lookup's, which
 would write into it: a stray `0x80` (auto-entry.md) leaves the table
 writable. A stored calculation's unknown bits keep it read-only.
@@ -898,13 +900,13 @@ entries, not measured (schema-path.md 5.17 [I]). A stored calculation
 over a global is not one FileMaker stores (5.16) and keeps the table
 read-only.
 
-Browse edits stored, non-global, single-repetition text, number, date,
-time and timestamp fields of the layout's own table, and of related
+Browse edits stored text, number, date, time and timestamp fields, later
+repetitions included, of the layout's own table, and of related
 records one relationship away (a portal row's, a related field's first
 record, or one the user begins in a portal's creation row), by the related
 table's own rules; a table of another file is written by that file
-(below). The window commits a record's related edits
-with it through one transaction (`begin_transaction`, as a script's Commit
+(below). Data globals are edited as session values (below). The window
+commits a record's related edits with it through one transaction (`begin_transaction`, as a script's Commit
 Records does, script-runtime.md 13.24): each related record is planned with
 a script's rules, its typed values checked by a user's entry rules
 (`ScriptWrite::typed`), and a refusal of any record writes none. The
@@ -1679,14 +1681,15 @@ reads it: FileMaker Pro and OpenMaker continue one sequence.
   validation, as any number field with it does (above).
 
 Entry from the previous record, repeating
-calculated fields, calculations that read containers, globals (but for
+calculated fields, globals (but for
 the auto-entered and validation calculations above, of the table's own
 globals of one repetition that are not containers), summaries, unstored calculations or related fields
 (but for the auto-entered and validation calculations above), plug-in
 functions, custom
-functions that read fields, `Get` selectors that need a window (but for
-the three above), and uploads
-larger than one request are not supported; such tables stay read-only. A
+functions that read fields and `Get` selectors that need a window (but for
+the three above) are not supported; such tables stay read-only. A save
+whose record upload is larger than one request is refused before any
+record data is sent (multi-part uploads are not supported). A
 calculation that fails when evaluated refuses the write. Deleting needs no
 field rules and is available on every table.
 

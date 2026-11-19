@@ -78,7 +78,7 @@ ordinary report limitations still apply ([Preview](preview.md),
 [portable PDF](portable-pdf.md)); sorted sub-summary groups share the same plan
 ([report sections](report-sections.md)), as do objects that slide up
 ([report sliding](report-sliding.md)); other advanced parts remain separate
-C41 work. Desktop Print (43) now uses the same report foundation; see [printing](printing.md) for its dispatcher and limits. Native FileMaker
+work (C41 in [client-progress.md](client-progress.md)). Desktop Print (43) now uses the same report foundation; see [printing](printing.md) for its dispatcher and limits. Native FileMaker
 acceptance, platform print-record interpretation and native per-file persistence
 are unmeasured/unimplemented; this is not a 1:1 native printing claim.
 

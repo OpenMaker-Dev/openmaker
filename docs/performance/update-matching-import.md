@@ -1,6 +1,7 @@
 # Update-matching import work
 
-Baseline: `d013c9e16fbfc10ac9095c89fae21494172815b7`, measured 2026-10-29.
+Baseline: `d013c9e16fbfc10ac9095c89fae21494172815b7`, a commit of the project's earlier, private history
+(not in this repository), measured 2026-10-29.
 An update-matching import built update writes before checking whether a
 source row matched a target. Unmatched rows discarded those writes, or
 built a second set of create writes when "add remaining" was enabled.

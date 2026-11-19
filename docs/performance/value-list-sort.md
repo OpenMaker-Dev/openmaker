@@ -1,6 +1,7 @@
 # Value-list record sorting
 
-Baseline: PR #2 at `d013c9e16fbfc10ac9095c89fae21494172815b7`.
+Baseline: PR #2 at `d013c9e16fbfc10ac9095c89fae21494172815b7`, a commit of
+the project's earlier, private history (not in this repository).
 Measured 2026-10-29, Linux x86_64, Rust 1.99.1, default release profile,
 8-vCPU shared KVM VM. Final runs were pinned to CPU 7, without exclusive
 CPU ownership.
