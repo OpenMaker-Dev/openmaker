@@ -136,9 +136,12 @@ needs no open file.
     16 pt row, or a 12 pt edit box and a 17 pt row. OpenMaker does not
     migrate them, and Pro still cuts their text.
 - **Hosting**: FileMaker Server refuses to host a file whose full access
-  account has no password. A new file's Admin has none, and OpenMaker cannot
-  set a password yet ([#12](https://github.com/OpenMaker-Dev/openmaker/issues/12), #157), so the file must get one in FileMaker Pro
-  before FileMaker Server hosts it.
+  account has no password. A new file's Admin has none. File > Change
+  Password changes the signed-in account's password in a file on this
+  computer (re/local-files.md 4), but a change from an empty password has
+  not been tested, and whether FileMaker Server then hosts the file has
+  not been tried ([#12](https://github.com/OpenMaker-Dev/openmaker/issues/12)),
+  so the file gets one in FileMaker Pro before FileMaker Server hosts it.
 - `mInternalCreation` is the seconds since 1904; Pro's count from an epoch
   about 36.5 days earlier, which is not known.
 - A name the table or layout planner refuses (one a calculation could not

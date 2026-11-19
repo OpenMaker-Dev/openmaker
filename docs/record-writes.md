@@ -63,8 +63,10 @@ FileMaker Pro's order:
   related records, or a script's Open Transaction. Both commit alike for
   now. Another file's provider may join a transaction under its id only on
   the same connection, as a handle of it; a second connection, to the
-  same host or not, is refused with 3. No commit joins one yet (one file
-  per commit, below).
+  same host or not, is refused with 3. A commit across files gives each
+  file its own part, every part prepared before any record data goes
+  (below: a script's transaction across files, and the window's commit of
+  a record across files).
 
 ### A window's record session
 
@@ -1639,9 +1641,10 @@ plans the record the same way; its occurrences of other files stay unresolved, a
 reading them keeps the table read-only. Its formulas read the opened
 file's tables through the opened file's own session and account, so that
 account's record access applies; whether FileMaker reads them through the
-related file's own connection to the opened file is not measured. A
-record the opened file holds in a transaction is not reached from the
-related file before a commit may span files (#1006).
+related file's own connection to the opened file is not measured. In a
+save across files the related file reads a record the opened file holds
+as the opened file's commit will write it (above: in a save across both
+files).
 
 Serial numbers, generated on creation or on commit, are taken from the
 host for each new record (auto-entry.md, Serial numbers): op72 advances

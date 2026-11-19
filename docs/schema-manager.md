@@ -454,8 +454,9 @@ dialog". It draws:
   percentage work (10 to 400%; the buttons step through 25, 50, 75, 100,
   150, 200, 300 and 400%, the document zoom's steps, which is OpenMaker's
   choice). The Tables / Relationships tools work where the schema can be
-  saved; Duplicate, Arrange, text notes, table display and Pages are
-  shown unavailable.
+  saved, and so do Duplicate and the Arrange tools (above); text notes,
+  table display and Pages are shown unavailable
+  ([#310](https://github.com/OpenMaker-Dev/openmaker/issues/310)).
 - Clicking a box or a relationship's operator selects it; the selection
   outlines are OpenMaker's, as FileMaker's are not captured.
 

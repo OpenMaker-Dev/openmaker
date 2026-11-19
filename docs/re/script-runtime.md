@@ -3277,12 +3277,12 @@ Triggers (7)
   Record, New/Duplicate/Delete Record, Commit/Revert, mode steps, Perform
   Find, Sort, View As, Go to Field/Next Field/Object, Go to Related Record).
   OnTimer comes from Install OnTimer Script (the window keeps the clock),
-  OnPSOSCallback from polling the host for callback results. Window and
-  file triggers (OnFirstWindowOpen, OnLastWindowClose, OnWindowOpen,
-  OnWindowClose) are not fired: where the file options store them is not
-  specified (now specified: the document preferences `[2, 18]`,
-  file-metadata.md section 3, with OnFileAVPlayerChange and
-  OnWindowTransaction).
+  OnPSOSCallback from polling the host for callback results. The file's
+  window and file triggers come from its document preferences `[2, 18]`
+  (file-metadata.md section 3; `app/scripts.rs`): OnFirstWindowOpen and
+  OnWindowOpen when the file's window has opened, before its first
+  layout's OnLayoutEnter, and OnWindowClose then OnLastWindowClose before
+  the user closes the file. OnFileAVPlayerChange is not fired.
 - Keystroke triggers (2026-11-02, `app/scripts/keystrokes.rs`; (doc)
   `onobjectkeystroke.html`, `onlayoutkeystroke.html`, `code.html`,
   `get-triggermodifierkeys.html`, `get-activemodifierkeys.html`): in
@@ -3316,8 +3316,9 @@ Triggers (7)
   evaluated in the originating window and file's global namespace before
   opening the script's file. The script then uses that file's catalog and
   window; its result allows or vetoes the originating held action. Recursion
-  suppression is scoped to the event's window. This uses the same same-host
-  hosted-file support and limits as external Perform Script. Synthetic
+  suppression is scoped to the event's window. This uses the same
+  data-source support and limits as external Perform Script
+  (desktop-files.md, Supported sources). Synthetic
   native-provider/GUI checks cover dispatch and caller continuation; native
   FileMaker focus and event ordering acceptance remains unmeasured.
 - OnWindowTransaction (2026-10-29, run 13.26; `scripting/host/transaction.rs`)
@@ -3805,7 +3806,8 @@ Steps
   of the related table stays (13.24; before, every record was shown), and
   when it lacks the record every record is shown (OpenMaker's choice).
   With external layouts (`kOption`), the GUI opens/reuses an owned peer
-  session through the declared data source's ordered same-host paths and
+  session through the declared data source's ordered paths (desktop-files.md,
+  Supported sources) and
   resolves the layout only in that session. The hydrated table maps back
   to its native table id; record ids are already file-local. A missing
   peer layout is 105 even when Root has the same layout id; another
