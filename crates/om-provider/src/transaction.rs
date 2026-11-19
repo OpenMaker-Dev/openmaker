@@ -592,6 +592,26 @@ impl NativeProvider {
         })
     }
 
+    /// The records the open transaction holds as new ones
+    /// ([`Self::transaction_new`]), as (base table, record id).
+    pub(crate) fn held_new_records(&self) -> Vec<(u64, i64)> {
+        self.transaction
+            .iter()
+            .flat_map(|t| t.held.iter())
+            .filter(|(_, held)| {
+                matches!(
+                    held.change,
+                    Change::New(_)
+                        | Change::Imported {
+                            mod_count: None,
+                            ..
+                        }
+                )
+            })
+            .filter_map(|(&(table, record), _)| Some((table, i64::try_from(record).ok()?)))
+            .collect()
+    }
+
     /// Whether the open transaction holds a record of `table`: a new one
     /// op71 reserved (not yet in the host's record list), or one it edits.
     pub(crate) fn holds_records_of(&self, table: u64) -> bool {

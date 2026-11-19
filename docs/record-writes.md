@@ -70,8 +70,12 @@ FileMaker Pro's order:
 - **The windows after Revert Transaction.** A record the transaction
   created goes from every window of the file that shows it, with what the
   window still had pending on it: one committed into the transaction, and
-  one a New Record made in it and the window had not committed yet. A
-  record a window's record session holds apart stays. The window shows the
+  one a New Record made in it, in any window, that no commit had logged
+  yet. The records are known by identity, as the provider's transaction
+  holds them new (`DataProvider::transaction_created`), not by what a
+  window remembers of its record: a record an earlier transaction saved
+  stays, with an edit pending on it, and so does a record a window's
+  record session holds apart. The window shows the
   record at the same place in the found set as the revert leaves it, or the
   last one when no record is there any more (so the record before a new one
   at the end), and `Get ( RecordID )` answers that record's id

@@ -1027,20 +1027,16 @@ impl Window {
     }
 
     /// Whether Revert Transaction removed this window's record: one the
-    /// transaction created and logged (`created`, by base table and id),
-    /// whatever the window still has pending on it, or the uncommitted one
-    /// a New Record made in it, unless a record session holds that one
-    /// apart (`session_held`) or it is on the host already (`saved`).
-    fn reverted_record(&self, created: &[(u64, i64)], session_held: bool) -> bool {
+    /// transaction created (`created`, by base table and id: logged by a
+    /// commit, or held new by the provider), whatever the window still has
+    /// pending on it. A record a window's record session holds apart, or
+    /// one an earlier transaction saved, is not among them.
+    fn reverted_record(&self, created: &[(u64, i64)]) -> bool {
         let Some(record) = self.state.record else {
             return false;
         };
-        let logged = self
-            .table
-            .is_some_and(|table| created.contains(&(table, record)));
-        let uncommitted = &self.state.uncommitted;
-        let made = uncommitted.new && !uncommitted.saved && !(uncommitted.session && session_held);
-        logged || made
+        self.table
+            .is_some_and(|table| created.contains(&(table, record)))
     }
 
     /// The window lets go of its record and what it has pending on it,
@@ -1063,8 +1059,7 @@ impl Window {
         provider: &mut dyn DataProvider,
         created: &[(u64, i64)],
     ) -> Result<(), DataError> {
-        let session_held = provider.record_session_open() || provider.record_session_held();
-        if !self.reverted_record(created, session_held) {
+        if !self.reverted_record(created) {
             return Ok(());
         }
         self.discard_previews(provider);
@@ -1078,7 +1073,7 @@ impl Window {
     /// record its own session holds stays, and its found set and place are
     /// read again when it is current.
     pub fn forget_reverted_record_waiting(&mut self, created: &[(u64, i64)]) {
-        if self.reverted_record(created, true) {
+        if self.reverted_record(created) {
             self.let_go_of_reverted_record();
         }
     }

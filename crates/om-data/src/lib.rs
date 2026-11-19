@@ -1126,6 +1126,14 @@ pub trait DataProvider: Send {
         ))
     }
 
+    /// The records the open transaction created and still holds, as (base
+    /// table, record id), whichever window made them: what
+    /// [`Self::revert_transaction`] removes. None from a provider that
+    /// does not tell.
+    fn transaction_created(&self) -> Vec<(u64, i64)> {
+        Vec::new()
+    }
+
     /// The results of scripts started with a callback, waiting up to `wait`
     /// for the first; oldest first.
     fn server_script_results(
