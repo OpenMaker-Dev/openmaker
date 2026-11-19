@@ -1057,11 +1057,14 @@ Record menu item, and OpenMaker adds none.
     Return key (`0x40`). That FileMaker Pro goes on there, rather than
     committing or typing a line break, is inferred from the option, not
     measured. With Shift or Option either key still goes forward; what Pro
-    does then is unmeasured.
+    does then is unmeasured. Return goes by the field that receives it,
+    also after a Tab typed in the same frame; the keypad's Enter typed so
+    goes by the field the Tab left.
   - From any other edit box, Return types a line break, stored as
     FileMaker stores one, a carriage return; a pasted line break is stored
-    so too, and text already stored is left as it is. While it is edited,
-    the field's text wraps and is spaced as at rest, and it scrolls to keep
+    so too, and text already stored is left as it is, also by Undo and
+    Redo. While it is edited, the field's text wraps, is aligned and is
+    spaced as at rest, and it scrolls to keep
     the insertion point in view, with a scroll bar only where the field
     has one. Up and Down move between lines. Drop-down lists, pop-up
     menus, calendars and Table view's cells keep one line, and Return ends

@@ -2551,11 +2551,10 @@ impl OpenMakerApp {
     }
 
     /// The field object of the active field, whose "Go to next object
-    /// using" says where Return and the keypad's Enter go
-    /// (`FieldObject::next_object_on_return`, `next_object_on_enter`;
-    /// layout-model.md 5.4.1). That FileMaker Pro then goes on, rather than
-    /// typing a line break or committing, is inferred from the option, not
-    /// measured.
+    /// using" says where the keypad's Enter goes
+    /// (`FieldObject::next_object_on_enter`; layout-model.md 5.4.1). That
+    /// FileMaker Pro then goes on, rather than committing, is inferred from
+    /// the option, not measured.
     fn active_field_object(&self) -> Option<&om_layout::FieldObject> {
         let (Some(_), Some(object), Some(session)) = (
             &self.w.document.active,
@@ -2601,13 +2600,10 @@ impl OpenMakerApp {
             && !egui::Popup::is_any_open(ui.ctx())
             && (self.w.document.active.is_some() || !typing);
         let field = self.active_field_object();
+        // Return goes on as the field that receives it draws
+        // (`document::return_goes_on`).
         let enter_goes_next =
             enter_keys && field.is_some_and(om_layout::FieldObject::next_object_on_enter);
-        // Return goes to the next object as Tab does from a field whose
-        // option includes it. Otherwise it still ends the field's editing,
-        // where FileMaker Pro types a line break.
-        let return_goes_next =
-            enter_keys && field.is_some_and(om_layout::FieldObject::next_object_on_return);
         // A commit key that came after typing in the same frame waited for
         // this one: the editor has applied the typing (below). It goes back
         // only in the next frame, and only to the file, mode, layout, record
@@ -2738,23 +2734,17 @@ impl OpenMakerApp {
                     actions.push(Action::CommitRecord);
                     commit = true;
                 }
-                // As a Tab: the document moves the focus.
-                let tab = egui::Event::Key {
-                    key: Key::Tab,
-                    physical_key: None,
-                    pressed: true,
-                    repeat: false,
-                    modifiers: Modifiers::NONE,
-                };
-                if return_goes_next {
-                    if let Some(at) = input.events.iter().position(crate::keypad::is_return_press) {
-                        input.events[at] = tab.clone();
-                    }
-                }
                 let at = input.events.iter().position(crate::keypad::is_enter_press);
                 if let Some(at) = at.filter(|_| enter_keys) {
                     if enter_goes_next {
-                        input.events[at] = tab;
+                        // As a Tab: the document moves the focus.
+                        input.events[at] = egui::Event::Key {
+                            key: Key::Tab,
+                            physical_key: None,
+                            pressed: true,
+                            repeat: false,
+                            modifiers: Modifiers::NONE,
+                        };
                     } else {
                         input
                             .events

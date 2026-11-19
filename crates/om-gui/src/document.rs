@@ -5447,6 +5447,7 @@ fn paint_object_repetition(
                         list_id.is_some_and(|id| drop_down::keeps_focus(ui, id, rect, with_arrow));
                     let list_open = list_id.is_some_and(|id| drop_down::is_open(ui, id));
                     let editor = ui.scope_id().with((layout.id, object.id, record.id));
+                    return_goes_on(ui, &mut state.tab_held, object, editor);
                     let cache = &state.layout_cache;
                     let interactive = !state.pending;
                     let (response, changed) =
@@ -6182,6 +6183,7 @@ fn related_field(
         version: target.version,
         buffer: FieldBuffer::new(&target.stored),
     });
+    return_goes_on(ui, &mut state.tab_held, object, id);
     let response = field_editor(
         ui,
         &state.layout_cache,
@@ -6381,6 +6383,12 @@ impl egui::TextBuffer for FieldText<'_> {
         self.0.delete_char_range(char_range);
     }
 
+    /// Undo and Redo put back the text as it was, line breaks as they were
+    /// stored: an `\n` or `\r\n` the user did not type stays.
+    fn replace_with(&mut self, text: &str) {
+        text.clone_into(self.0);
+    }
+
     fn type_id(&self) -> std::any::TypeId {
         std::any::TypeId::of::<FieldTextBuffer>()
     }
@@ -6479,9 +6487,12 @@ fn field_editor(
         let fits = galley.as_ref().is_none_or(|galley| {
             galley.rows.len() <= 1 || galley.size().y <= rect.height() - top_inset - bottom
         });
+        let halign = galley
+            .as_ref()
+            .map_or(egui::Align::Min, |galley| galley.job.halign);
         return lines_editor(
             &mut child,
-            (object, inner, fits),
+            (object, inner, fits, halign),
             id,
             buffer,
             &style,
@@ -6513,16 +6524,17 @@ fn field_editor(
 }
 
 /// [`field_editor`] with `lines`: a multi-line editor of [`FieldText`],
-/// laid out as the field at rest ([`field_galley`]). Text taller than the
-/// field (`fits` false) scrolls in it to keep the insertion point in view,
-/// with a scroll bar only where the field object has one (flag `0x100`,
+/// laid out as the field at rest ([`field_galley`]) and anchored as it
+/// (`halign`: at its left, center or right). Text taller than the field
+/// (`fits` false) scrolls in it to keep the insertion point in view, with a
+/// scroll bar only where the field object has one (flag `0x100`,
 /// layout-model.md 5.4.1). Up and Down move between lines. Tab stays the
 /// document's: the editor inserts no tab character, and egui moves no
 /// focus on it (`DocumentState::resolve_tab`).
 #[allow(clippy::too_many_arguments)]
 fn lines_editor(
     ui: &mut Ui,
-    (object, inner, fits): (&LayoutObject, Rect, bool),
+    (object, inner, fits, halign): (&LayoutObject, Rect, bool, egui::Align),
     id: egui::Id,
     buffer: &mut String,
     style: &ResolvedStyle,
@@ -6550,24 +6562,53 @@ fn lines_editor(
         .interactive(interactive)
         .desired_rows(1)
         .desired_width(inner.width())
+        .align(egui::Align2([halign, egui::Align::Min]))
         .layouter(&mut layouter)
         .hint_text(hint);
+    // Whether the last frame drew this editor in its scroll area, with the
+    // focus. A scroll area new this frame (the text has just grown taller
+    // than the field, or a Tab put the insertion point after a long text)
+    // brings the insertion point into view itself: egui asks for that only
+    // as the text or the selection changes, which happened, if at all, in
+    // a frame without the scroll area.
+    let scrolled = id.with("lines scrolled");
+    let frame_nr = ui.ctx().cumulative_frame_nr();
+    let continued = ui
+        .data(|data| data.get_temp::<u64>(scrolled))
+        .is_some_and(|at| at + 1 == frame_nr);
     let response = if fits {
         // As the one-line editor sits: the field's own rect.
         ui.add_sized(inner.size(), edit)
     } else {
         egui::ScrollArea::vertical()
             .id_salt(id.with("lines"))
+            // The field's height, not egui's least scrolled height (64
+            // points), which would grow the area past the field instead.
             .max_height(inner.height())
+            .min_scrolled_height(inner.height())
             .auto_shrink([false, true])
             .scroll_bar_visibility(if bar {
                 egui::scroll_area::ScrollBarVisibility::VisibleWhenNeeded
             } else {
                 egui::scroll_area::ScrollBarVisibility::AlwaysHidden
             })
-            .show(ui, |ui| ui.add(edit.min_size(inner.size())))
+            .show(ui, |ui| {
+                let output = edit.min_size(inner.size()).show(ui);
+                if let Some(range) = output.cursor_range.filter(|_| {
+                    !continued && output.response.has_focus()
+                }) {
+                    let caret = output.galley.pos_from_cursor(range.primary).translate(
+                        output.galley_pos.to_vec2() - egui::vec2(output.galley.rect.left(), 0.0),
+                    );
+                    ui.scroll_to_rect(caret, None);
+                }
+                output.response.response
+            })
             .inner
     };
+    if !fits && response.has_focus() {
+        ui.data_mut(|data| data.insert_temp(scrolled, frame_nr));
+    }
     // The editor locks its own keys while it has the focus; the document's
     // Tab stays locked from egui's traversal as on one line.
     if response.has_focus() {
@@ -6670,6 +6711,59 @@ fn tab_pressed(ui: &Ui) -> Option<(usize, bool)> {
 
 /// Whether `event` is a Tab (`Some(false)`) or Shift-Tab (`Some(true)`)
 /// press without Ctrl, Alt or Command.
+/// Return in the field `id`, whose object's "Go to next object using"
+/// includes the Return key (`FieldObject::next_object_on_return`), goes on
+/// as Tab does: the keys after it wait for the next frame (`tab_held`),
+/// from this field, before its editor would type the line break. It is
+/// decided as the field that receives it draws, so a Return typed after a
+/// Tab in the same frame, or replayed to the portal row's field a Tab went
+/// to, goes by that field's option. An open list keeps Return for its
+/// item.
+fn return_goes_on(
+    ui: &Ui,
+    tab_held: &mut Option<(bool, Option<egui::Id>, Vec<egui::Event>)>,
+    object: &LayoutObject,
+    id: egui::Id,
+) {
+    let goes_on = object
+        .field_obj
+        .as_ref()
+        .is_some_and(om_layout::FieldObject::next_object_on_return);
+    if !goes_on
+        || !ui.memory(|memory| memory.has_focus(id))
+        || egui::Popup::is_any_open(ui.ctx())
+    {
+        return;
+    }
+    let Some(mut rest) = ui.ctx().input_mut(|input| {
+        let at = input
+            .events
+            .iter()
+            .position(crate::keypad::is_return_press)?;
+        Some(input.events.split_off(at))
+    }) else {
+        return;
+    };
+    rest.remove(0);
+    // A Tab after it this frame took the keys that follow it.
+    if let Some((backward, _, after)) = tab_held.take() {
+        rest.push(egui::Event::Key {
+            key: egui::Key::Tab,
+            physical_key: None,
+            pressed: true,
+            repeat: false,
+            modifiers: if backward {
+                egui::Modifiers::SHIFT
+            } else {
+                egui::Modifiers::NONE
+            },
+        });
+        rest.extend(after);
+    }
+    *tab_held = Some((false, Some(id), rest));
+    ui.ctx().request_repaint();
+}
+
 fn tab_key(event: &egui::Event) -> Option<bool> {
     match event {
         egui::Event::Key {
