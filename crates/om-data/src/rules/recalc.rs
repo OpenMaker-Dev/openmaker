@@ -282,19 +282,20 @@ fn evaluable(
         false,
         &mut BTreeSet::new(),
     )?;
+    // A container input is read through the environment's container
+    // reader (the table's library on the server): the field's data, as
+    // FileMaker Server's engine reads it when a commit computes such a
+    // calculation (script oracle s34-containers-calc).
+    // Global, summary and unstored inputs make FileMaker store the
+    // calculation unstored (calc-values.md 8.8), so they come only from a
+    // file it did not write.
     let fields = calc.table(table.id).map(|t| &t.fields);
     for dependency in &expression.dependencies {
         let Some(def) = fields.and_then(|f| f.get(dependency)) else {
             return Err("it references a field that does not exist.".into());
         };
-        if def.value_type == ValueType::Container
-            || def.global
-            || def.class == FieldClass::Summary
-            || def.is_unstored_calculation()
-        {
-            return Err(
-                "it reads a container, global, summary or unstored calculation field.".into(),
-            );
+        if def.global || def.class == FieldClass::Summary || def.is_unstored_calculation() {
+            return Err("it reads a global, summary or unstored calculation field.".into());
         }
     }
     Ok(Target {
@@ -648,11 +649,12 @@ mod tests {
             name: "Example".into(),
             fields: vec![
                 field(1, FieldKind::Normal, DataType::Text, 0, 0, 0),
-                field(2, FieldKind::Normal, DataType::Container, 0, 0, 0),
+                field(2, FieldKind::Normal, DataType::Text, 0, GLOBAL, 0),
                 field(5, FieldKind::Calculation, DataType::Text, 0, 0, 0),
                 field(6, FieldKind::Calculation, DataType::Text, 0, 0, 0),
             ],
         };
+        // 5 reads the global 2, which only the session knows.
         let tree = tree(&[(5, initials(1, 2)), (6, initials(1, 1))]);
         let file = CalcSchema::new("test", Locale::en_us());
         let recalc = Recalculation::plan(&table, &tree, &file, &BTreeSet::from([5, 6]));
@@ -662,6 +664,6 @@ mod tests {
         // Unchanged calculations are left alone.
         let recalc = Recalculation::plan(&table, &tree, &file, &BTreeSet::from([2]));
         assert!(recalc.fields().is_empty());
-        assert_eq!(recalc.skipped().len(), 1, "5 reads the container");
+        assert_eq!(recalc.skipped().len(), 1, "5 reads the global");
     }
 }

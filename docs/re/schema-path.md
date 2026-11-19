@@ -2371,11 +2371,15 @@ change never makes another table's stored values stale.
 **How.** `Recalculation` plans per field with the record rules' evaluator
 (auto-entry.md, docs/record-writes.md): the formula's own table, stored data and
 stored calculation inputs, the `Get` selectors record rules allow, custom
-functions that read no fields. A calculation it cannot evaluate (a
-related, global, summary, unstored-calculation or container input, a
-plug-in, a selector that needs a window, repetitions, a container result,
-a formula that names a deleted field) is skipped: its values stay as they
-were and the server logs the field and why. A calculation that fails on a
+functions that read no fields. A container input is read from the
+table's library: the field's data, as FileMaker Server's engine reads it
+when a commit computes such a calculation (script oracle
+s34-containers-calc: file name, length, Base64 of the data; inf for
+op73's walk, which was not measured). A calculation it cannot evaluate (a related, global, summary or
+unstored-calculation input, a plug-in, a selector that needs a window,
+repetitions, a container result, a formula that names a deleted field) is
+skipped: its values stay as they were and the server logs the field and
+why. A calculation that fails on a
 record keeps that record's value; failures are counted and logged once per
 field. With "do not evaluate if all referenced fields are empty" the value
 is empty when they all are. Auto-enter calculations are not recomputed
@@ -2433,4 +2437,5 @@ indexes are never cached: unique checks, finds and joins read the store.
 Test: `crates/om-server/tests/recalc.rs` (FileMaker Pro's save sequence of
 2.3a with a formula change, a new dependent calculation, a calculation the
 server cannot evaluate, a rename, a deleted input, and a file left with
-deferred work; a script paused across a formula change).
+deferred work; a script paused across a formula change; new calculations
+over a container).
