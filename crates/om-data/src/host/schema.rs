@@ -399,6 +399,8 @@ pub struct CalcSchema {
     sql: SqlCatalog,
     /// The document preferences: default layout and file triggers.
     pub file_options: Option<FileOptions>,
+    /// The page setup the file stores, as stored ([`crate::meta::page_format`]).
+    pub page_format: Option<Vec<u8>>,
     /// Value lists in display order.
     value_lists: Vec<ValueList>,
     /// The script catalog's members in display order.
@@ -439,6 +441,7 @@ impl CalcSchema {
             names: NameTable::default(),
             sql: SqlCatalog::default(),
             file_options: None,
+            page_format: None,
             value_lists: Vec::new(),
             scripts: Vec::new(),
             table_order: None,

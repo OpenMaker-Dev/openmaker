@@ -4732,6 +4732,21 @@ fn run_without_dialog(app: &mut common::App, name: &str) {
     common::wait_until(app, "the script", |app| !app.state().script_running());
 }
 
+/// Wait until the commit gate (OnRecordCommit, script 21) that an action
+/// after the window's `started`th script start runs has run and ended. The
+/// action starts it only once the record's field exit is through, a frame
+/// or more later, so a wait for no running script alone can pass before it
+/// starts; and the window discards the user's next menu command while it
+/// runs (#544).
+fn wait_commit_gate(app: &mut common::App, started: usize, what: &str) {
+    common::wait_until(app, what, |app| {
+        app.state().scripts_started()[started..]
+            .iter()
+            .any(|start| start == "RecordCommit 21")
+            && !app.state().script_running()
+    });
+}
+
 #[test]
 fn a_trigger_released_save_finishes_before_navigation_and_rearms_the_trigger() {
     let hosted = host_with("commit-navigation", add_commit_gate);
@@ -4752,8 +4767,9 @@ fn a_trigger_released_save_finishes_before_navigation_and_rearms_the_trigger() {
     app.step();
     common::text_field(&app, "Code").type_text("vetoed");
     app.run_steps(2);
+    let started = app.state().scripts_started().len();
     common::save_record(&mut app);
-    common::wait_until(&mut app, "the veto", |app| !app.state().script_running());
+    wait_commit_gate(&mut app, started, "the veto");
     common::wait_until(&mut app, "unsaved record changes", common::unsaved);
     expect(&mut app, "Show commits", "commits 2");
     assert_eq!(stored(&hosted, TABLE, &[(CODE, 1)])[1].1, [""]);
@@ -4844,10 +4860,9 @@ fn a_commit_veto_keeps_browse_mode_and_the_pending_record() {
     leave(&mut app);
     run_without_dialog(&mut app, "Refuse commit");
     let before = left_values(&hosted);
+    let started = app.state().scripts_started().len();
     enter_find(&mut app);
-    common::wait_until(&mut app, "the commit veto", |app| {
-        !app.state().script_running()
-    });
+    wait_commit_gate(&mut app, started, "the commit veto");
     assert_eq!(app.state().mode(), om_gui::Mode::Browse);
     assert_eq!(left_values(&hosted), before);
     common::wait_until(&mut app, "unsaved record changes", common::unsaved);
