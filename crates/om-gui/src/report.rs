@@ -1769,16 +1769,24 @@ pub(crate) fn report_breaks(
 }
 
 /// A failure of `FileCalc::found_groups` as a report refusal.
-pub(crate) fn group_error(error: om_data::calc::CalcError) -> ReportError {
+pub(crate) fn group_error(error: om_data::host::GroupError) -> ReportError {
+    use om_data::host::GroupError;
     ReportError {
         code: 3,
-        message: if error == om_data::calc::CalcError::NOT_SUPPORTED {
-            "Sub-summary groups after a related-field sort key are unsupported".into()
-        } else {
-            format!(
+        message: match error {
+            GroupError::RelatedSortKey => {
+                "Sub-summary groups after a related-field sort key are unsupported".into()
+            }
+            GroupError::UnevaluableKey => {
+                "A sub-summary group's sort key could not be calculated on every record".into()
+            }
+            GroupError::VariableKey => "Sub-summary groups by a calculation that may read \
+                variables are unsupported: the records were not sorted with them"
+                .into(),
+            GroupError::Calc(error) => format!(
                 "The report groups could not be read (error {})",
                 error.code()
-            )
+            ),
         },
     }
 }

@@ -384,10 +384,10 @@ impl WorkerHost<'_> {
             )));
         }
         let fields: Vec<u64> = breaks.iter().map(|b| b.field).collect();
-        let (locals, globals) = self.calc_variables();
+        let snapshot = self.variable_snapshot();
         let found = self
             .file(|f| {
-                f.with_variables(locals, globals)
+                f.with_variables(snapshot.as_ref())
                     .found_groups(occurrence, &fields)
             })
             .ok_or_else(|| {

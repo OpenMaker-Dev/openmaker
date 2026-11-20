@@ -235,11 +235,11 @@ impl<'a> WorkerHost<'a> {
         }
     }
 
-    /// The variables this host's own calculations read (`variables`), for
-    /// what `FileCalc` evaluates itself: a summary's inputs and a sort's
-    /// keys (#615).
-    pub(super) fn calc_variables(&self) -> (&Variables, &Variables) {
-        (&self.s.file.variables, &self.s.file.variables)
+    /// A copy of the variables this host's own calculations read
+    /// (`variables`), for what `FileCalc` evaluates itself: a summary's
+    /// inputs and a sort's keys (#615). `None` without any.
+    pub(super) fn variable_snapshot(&self) -> Option<om_data::host::VariableSnapshot> {
+        om_data::host::VariableSnapshot::of(&self.s.file.variables, &self.s.file.variables)
     }
 
     /// The open file window `window` belongs to.
@@ -3408,9 +3408,12 @@ impl CalcHost for WorkerHost<'_> {
                 return Ok(Value::text(criterion));
             }
         }
-        let (locals, globals) = self.calc_variables();
+        // Only a summary reads unstored calculations itself (#615).
+        let summary = (self.schema().and_then(|s| s.field(occurrence, field)))
+            .is_some_and(|def| def.class == om_data::host::FieldClass::Summary);
+        let snapshot = summary.then(|| self.variable_snapshot()).flatten();
         self.file(|file| {
-            file.with_variables(locals, globals)
+            file.with_variables(snapshot.as_ref())
                 .field_value_in_context(context, occurrence, record, field, repetition)
         })
         .unwrap_or_else(|| self.field_value(occurrence, record, field, repetition))
@@ -3512,9 +3515,9 @@ impl CalcHost for WorkerHost<'_> {
         break_field: FieldId,
     ) -> Result<Value, CalcError> {
         let context = without_begun(context);
-        let (locals, globals) = self.calc_variables();
+        let snapshot = self.variable_snapshot();
         self.file(|f| {
-            f.with_variables(locals, globals)
+            f.with_variables(snapshot.as_ref())
                 .summary(&context, summary, break_field)
         })
         .unwrap_or(Err(CalcError::NOT_SUPPORTED))

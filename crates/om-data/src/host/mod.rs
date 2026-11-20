@@ -51,7 +51,7 @@ mod summary;
 pub mod window;
 
 use std::borrow::Cow;
-use std::cell::Cell;
+use std::cell::{Cell, RefCell};
 use std::sync::Arc;
 
 use om_calc::eval::{
@@ -76,7 +76,7 @@ pub use schema::{
 };
 pub use session::{AccountInfo, OpenFile, Privileges, SessionInfo, WindowMode};
 pub use sort::sort_records;
-pub use summary::{FoundGroups, SummaryCache};
+pub use summary::{FoundGroups, GroupError, SummaryCache};
 pub use window::{Frame, WindowInfo};
 
 /// The record a window's calculations are evaluated on when it has no
@@ -170,10 +170,40 @@ pub struct FileCalc<'a> {
     /// Optional summary reuse during one immutable calculation pass.
     summaries: Option<&'a SummaryCache>,
     reads: Option<&'a Cell<HostReads>>,
-    /// The caller's `$` and `$$` variables, which an unstored calculation
-    /// the host evaluates itself reads ([`Self::read_field`]): a summary's
-    /// inputs and a sort's keys (#615). `None` reads with none.
-    variables: Option<(&'a Variables, &'a Variables)>,
+    /// A copy of the caller's `$` and `$$` variables, which an unstored
+    /// calculation the host evaluates itself reads ([`Self::read_field`]):
+    /// a summary's inputs and a sort's keys (#615). `None` reads with none.
+    variables: Option<&'a VariableSnapshot>,
+}
+
+/// One copy of a caller's `$` and `$$` variables for what `FileCalc`
+/// evaluates itself during one read ([`FileHost::with_file_variables`]):
+/// every input of a summary, or every key of a sort, reads it in turn, so
+/// it is copied once a read rather than once a record. What one input
+/// assigns the next one sees, and it is dropped after the read [I:
+/// FileMaker's for assignments in a summary's inputs is unmeasured].
+#[derive(Debug)]
+pub struct VariableSnapshot {
+    maps: RefCell<(Variables, Variables)>,
+}
+
+impl VariableSnapshot {
+    /// A copy of `locals` and `globals`; `None` when both are empty, as a
+    /// read with no variables needs none.
+    pub fn of(locals: &Variables, globals: &Variables) -> Option<VariableSnapshot> {
+        (!locals.is_empty() || !globals.is_empty()).then(|| VariableSnapshot {
+            maps: RefCell::new((locals.clone(), globals.clone())),
+        })
+    }
+
+    /// The maps' identities now (`Variables::revision`: a clone keeps its
+    /// original's until it is assigned, and every assignment takes a new
+    /// one), for a cache to tell their contents apart; `None` while a read
+    /// holds them.
+    pub(crate) fn revisions(&self) -> Option<(u64, u64)> {
+        let maps = self.maps.try_borrow().ok()?;
+        Some((maps.0.revision(), maps.1.revision()))
+    }
 }
 
 impl<'a> FileCalc<'a> {
@@ -189,17 +219,48 @@ impl<'a> FileCalc<'a> {
         }
     }
 
-    /// The same data with the caller's `$` (`locals`) and `$$` (`globals`)
-    /// variables, which a summary's inputs and a sort's keys read as the
-    /// caller's own calculations do (#615). Each unstored calculation the
-    /// host reads ([`Self::read_field`]) gets a copy, so what it assigns is
-    /// its own [I: FileMaker's for assignments in a summary's inputs is
-    /// unmeasured]; empty maps copy nothing.
-    pub fn with_variables(self, locals: &'a Variables, globals: &'a Variables) -> FileCalc<'a> {
-        FileCalc {
-            variables: (!locals.is_empty() || !globals.is_empty()).then_some((locals, globals)),
-            ..self
+    /// The same data with a copy of the caller's variables
+    /// ([`VariableSnapshot`]), which a summary's inputs and a sort's keys
+    /// read as the caller's own calculations do (#615).
+    pub fn with_variables(self, variables: Option<&'a VariableSnapshot>) -> FileCalc<'a> {
+        FileCalc { variables, ..self }
+    }
+
+    /// Whether the calculation of `field` of `occurrence` may read a
+    /// variable when this host reads it: an unstored calculation whose
+    /// formula, or a formula of an unstored calculation it references, may
+    /// ([`om_formula::Expr::may_read_variables`]), to 32 references deep;
+    /// deeper counts as may.
+    pub(crate) fn reads_variables(&self, occurrence: u64, field: u64) -> bool {
+        let mut seen = std::collections::HashSet::new();
+        let mut stack = vec![(occurrence, field, 0)];
+        while let Some((occurrence, field, depth)) = stack.pop() {
+            if depth > 32 {
+                return true;
+            }
+            if !seen.insert((occurrence, field)) {
+                continue;
+            }
+            let Some(def) = self.schema.field(occurrence, field) else {
+                continue;
+            };
+            let Some(formula) = def
+                .formula
+                .as_ref()
+                .filter(|_| def.is_unstored_calculation())
+            else {
+                continue;
+            };
+            if formula.polish.may_read_variables() {
+                return true;
+            }
+            for reference in formula.polish.field_references() {
+                if let (Some(of), Some(id)) = (reference.occurrence.id(), reference.field.id()) {
+                    stack.push((of, id, depth + 1));
+                }
+            }
         }
+        false
     }
 
     /// The same data with `session`'s `Get` answers.
@@ -418,11 +479,28 @@ impl<'a> FileCalc<'a> {
         };
         let fallback = SessionInfo::default();
         let session = self.session.unwrap_or(&fallback);
-        let (mut locals, mut globals) = match self.variables {
-            Some((locals, globals)) => (locals.clone(), globals.clone()),
-            None => (Variables::new(), Variables::new()),
+        let mut fresh = (Variables::new(), Variables::new());
+        let mut lent = match self
+            .variables
+            .map(|snapshot| snapshot.maps.try_borrow_mut())
+        {
+            Some(Ok(maps)) => Some(maps),
+            // A read that holds the copy hands its host none, so this read
+            // is not inside one; were it, `?` rather than another's values.
+            Some(Err(_)) => return Ok(Value::invalid()),
+            None => None,
         };
-        let mut host = FileHost::new(*self, session, &mut locals, &mut globals);
+        let (locals, globals) = match lent.as_deref_mut() {
+            Some((locals, globals)) => (locals, globals),
+            None => (&mut fresh.0, &mut fresh.1),
+        };
+        // The calculation's host has these maps; what it reads itself it
+        // reads with a copy of them.
+        let file = FileCalc {
+            variables: None,
+            ..*self
+        };
+        let mut host = FileHost::new(file, session, locals, globals);
         let value = read_field(&mut host, occurrence, record, field, repetition);
         self.record_reads(host.read_provenance());
         Ok(value)
@@ -763,12 +841,14 @@ impl<'a> FileHost<'a> {
         self.reads.union(self.nested_reads.get())
     }
 
-    /// [`Self::file`] with this host's variables, for what it evaluates
-    /// itself: a summary's inputs and a sort's keys read them as this
-    /// host's own calculations do (#615).
-    pub fn file_with_variables(&self) -> FileCalc<'_> {
+    /// `read` over [`Self::file`] with a copy of this host's variables, for
+    /// what it evaluates itself: a summary's inputs and a sort's keys read
+    /// them as this host's own calculations do (#615). The copy is made once
+    /// for the read ([`VariableSnapshot`]).
+    pub fn with_file_variables<R>(&self, read: impl FnOnce(FileCalc<'_>) -> R) -> R {
         let (locals, globals) = self.vars.maps();
-        self.file.with_variables(locals, globals)
+        let snapshot = VariableSnapshot::of(locals, globals);
+        read(self.file.with_variables(snapshot.as_ref()))
     }
 
     /// The imported related file owning the formula solved in `context`;
@@ -848,9 +928,17 @@ impl CalcHost for FileHost<'_> {
         field: u64,
         repetition: u32,
     ) -> Result<Value, CalcError> {
-        self.file_with_variables()
-            .with_reads(&self.nested_reads)
-            .field_value_in_context(context, occurrence, record, field, repetition)
+        // Only a summary reads unstored calculations itself.
+        let summary = (self.file.schema.field(occurrence, field))
+            .is_some_and(|def| def.class == FieldClass::Summary);
+        if !summary {
+            return (self.file.with_reads(&self.nested_reads))
+                .field_value_in_context(context, occurrence, record, field, repetition);
+        }
+        self.with_file_variables(|file| {
+            file.with_reads(&self.nested_reads)
+                .field_value_in_context(context, occurrence, record, field, repetition)
+        })
     }
 
     fn evaluate_always(&self, occurrence: u64, field: u64) -> bool {
@@ -903,9 +991,10 @@ impl CalcHost for FileHost<'_> {
         summary: FieldId,
         break_field: FieldId,
     ) -> Result<Value, CalcError> {
-        self.file_with_variables()
-            .with_reads(&self.nested_reads)
-            .summary(context, summary, break_field)
+        self.with_file_variables(|file| {
+            file.with_reads(&self.nested_reads)
+                .summary(context, summary, break_field)
+        })
     }
 
     fn pending(&self) -> Pending {

@@ -656,6 +656,79 @@ fn summaries_of_unstored_fields_read_the_hosts_variables() {
     }
     // The input itself reads it too, on its record.
     assert_eq!(read(Some(10), "Rated"), "10");
+
+    // A pass's cache tells variables apart by their identity: a total read
+    // again after an assignment in the same evaluation is read again.
+    let cache = SummaryCache::default();
+    let (mut locals, mut globals) = (Variables::new(), Variables::new());
+    let file = FileCalc::new(&schema, &source, today(29)).with_summary_cache(&cache);
+    let mut host = FileHost::new(file, &session, &mut locals, &mut globals);
+    for text in [
+        "Let ( [ $$rate = 10 ; first = Rated total ; $$rate = 20 ] ; first & \"|\" & Rated total )",
+        "Let ( [ $$rate = 10 ; first = GetSummary ( Rated total ; Rated total ) ; $$rate = 20 ] ; first & \"|\" & GetSummary ( Rated total ; Rated total ) )",
+    ] {
+        let result = evaluate_text(text, &mut host, &Context::record(OCCURRENCE, 1));
+        assert_eq!(display(&result.value, &host), "30|60", "{text}");
+    }
+}
+
+/// A report's groups by a calculation that may read variables refuse while
+/// the reader has some, since the found set was sorted without them, and a
+/// sort key that reads as `?` refuses always (#615).
+#[test]
+fn report_groups_refuse_keys_their_sort_did_not_establish() {
+    use om_data::host::{GroupError, VariableSnapshot};
+    let mut schema = schema();
+    let mut context = om_data::formula::Context::new(schema.names());
+    context.occurrence = Some(OCCURRENCE);
+    let fields: Vec<_> = [
+        (7, "Rated", "If ( IsEmpty ( $$rate ) ; -1 ; $$rate )"),
+        (8, "Broken", "1 / 0"),
+        (9, "Doubled", "Amount * 2"),
+    ]
+    .into_iter()
+    .map(|(id, name, source)| {
+        (
+            id,
+            name,
+            om_data::formula::compile(source, &context).unwrap(),
+        )
+    })
+    .collect();
+    for (id, name, compiled) in fields {
+        schema.add_field(
+            TABLE,
+            FieldDef::calculation(
+                id,
+                name,
+                ValueType::Number,
+                om_data::formula::Formula {
+                    context: Some(om_data::formula::Key::from_id(OCCURRENCE)),
+                    formatted: None,
+                    polish: compiled.expr,
+                },
+                false,
+            ),
+        );
+    }
+    let (locals, mut globals) = (Variables::new(), Variables::new());
+    globals.set("$$rate", 1, Value::number(10));
+    let snapshot = VariableSnapshot::of(&locals, &globals);
+    let groups = |key: u64, variables: bool| {
+        let mut source = CountingSource::new();
+        source
+            .data
+            .set_found_set(OCCURRENCE, &[1, 2, 3], Some(&[key]));
+        let file = FileCalc::new(&schema, &source, today(29));
+        let file = file.with_variables(snapshot.as_ref().filter(|_| variables));
+        file.found_groups(OCCURRENCE, &[key])
+            .map(|g| g.breaks.len())
+    };
+    assert_eq!(groups(7, true), Err(GroupError::VariableKey));
+    assert_eq!(groups(7, false), Ok(1));
+    // A calculation that reads no variable groups as before.
+    assert_eq!(groups(9, true), Ok(1));
+    assert_eq!(groups(8, false), Err(GroupError::UnevaluableKey));
 }
 
 #[test]

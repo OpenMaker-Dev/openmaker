@@ -130,6 +130,34 @@ impl Expr {
         deepest
     }
 
+    /// Whether evaluating this may read a `$` or `$$` variable, in any
+    /// branch: it names one (an assignment included), or reaches code not in
+    /// this tree that might (a custom function's body, `Evaluate`'s text,
+    /// `GetField`'s field, a plug-in, `ExecuteSQL`'s query). The fields it
+    /// references are the caller's to check. Checked without recursion.
+    pub fn may_read_variables(&self) -> bool {
+        let mut stack = vec![self];
+        while let Some(expr) = stack.pop() {
+            match expr {
+                Expr::Variable(_)
+                | Expr::CustomCall { .. }
+                | Expr::Evaluate { .. }
+                | Expr::GetField { .. }
+                | Expr::PluginCall { .. } => return true,
+                Expr::Call { op, .. }
+                    if op.name().is_some_and(|name| {
+                        name.eq_ignore_ascii_case("ExecuteSQL")
+                            || name.eq_ignore_ascii_case("ExecuteSQLe")
+                    }) =>
+                {
+                    return true
+                }
+                _ => expr.for_each_child(|c| stack.push(c)),
+            }
+        }
+        false
+    }
+
     /// Whether evaluating this may read `Self`, in any branch: it calls the
     /// `Self` function, or reaches code not in this tree (a custom
     /// function's body, `Evaluate`'s text). Checked without recursion.
