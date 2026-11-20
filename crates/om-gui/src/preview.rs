@@ -495,26 +495,29 @@ pub(crate) fn paint(
                         };
                         let font =
                             egui::FontId::new(line.size as f32, theme::report_family(line.face));
-                        let mut x = line.x as f32 + 16.0;
                         // Use shared measured advances and baselines; egui only
-                        // rasterizes the bundled font glyphs at those positions.
-                        for (_, advance, ch) in &line.glyphs {
-                            let galley = painter.layout_no_wrap(
-                                ch.to_string(),
-                                font.clone(),
-                                color(line.color),
-                            );
-                            let baseline = galley
-                                .rows
-                                .first()
-                                .and_then(|r| r.glyphs.first().map(|g| r.pos.y + g.pos.y))
-                                .unwrap_or(0.0);
-                            painter.galley(
-                                pos2(x, line.baseline as f32 + 16.0 - baseline),
-                                galley,
-                                color(line.color),
-                            );
-                            x += *advance as f32;
+                        // rasterizes the bundled font glyphs at those positions,
+                        // each part of the line in its color.
+                        for (glyphs, part_color, start) in line.parts() {
+                            let mut x = start as f32 + 16.0;
+                            for (_, advance, ch) in glyphs {
+                                let galley = painter.layout_no_wrap(
+                                    ch.to_string(),
+                                    font.clone(),
+                                    color(part_color),
+                                );
+                                let baseline = galley
+                                    .rows
+                                    .first()
+                                    .and_then(|r| r.glyphs.first().map(|g| r.pos.y + g.pos.y))
+                                    .unwrap_or(0.0);
+                                painter.galley(
+                                    pos2(x, line.baseline as f32 + 16.0 - baseline),
+                                    galley,
+                                    color(part_color),
+                                );
+                                x += *advance as f32;
+                            }
                         }
                         // One accessible label per physical line, without any
                         // field editor or interaction in the read-only scene.
