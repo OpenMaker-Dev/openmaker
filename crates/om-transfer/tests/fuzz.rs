@@ -204,13 +204,14 @@ fn request(file_type: FileType, charset: ImportCharset) -> ImportRequest {
     }
 }
 
-const TYPES: [FileType; 6] = [
+const TYPES: [FileType; 7] = [
     FileType::TabSeparated,
     FileType::CommaSeparated,
     FileType::Merge,
     FileType::XmlImport,
     FileType::DBase,
     FileType::Excel2007,
+    FileType::Excel2003,
 ];
 
 const CHARSETS: [ImportCharset; 3] = [
@@ -235,7 +236,7 @@ fn read_all(name: &str, bytes: &[u8]) -> Vec<String> {
     };
     for file_type in TYPES {
         let charsets: &[ImportCharset] = match file_type {
-            FileType::DBase | FileType::Excel2007 => &CHARSETS[..1],
+            FileType::DBase | FileType::Excel2007 | FileType::Excel2003 => &CHARSETS[..1],
             _ => &CHARSETS,
         };
         for &charset in charsets {
@@ -253,6 +254,7 @@ fn read_all(name: &str, bytes: &[u8]) -> Vec<String> {
         "xml" => FileType::XmlImport,
         "dbf" => FileType::DBase,
         "xlsx" => FileType::Excel2007,
+        "xls" => FileType::Excel2003,
         _ => FileType::TabSeparated,
     };
     run(format!("import {file_type:?}"), &|| {

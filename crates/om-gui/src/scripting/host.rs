@@ -3720,6 +3720,14 @@ impl CalcHost for WorkerHost<'_> {
                     om_data::host::layout_objects::owner_info_not_found(),
                 ));
             }
+            // The window's found set, in its order (calc-functions.md
+            // 5.8.1).
+            if name.eq_ignore_ascii_case("GetRecordIDsFromFoundSet") {
+                let limit = self.limits().text;
+                return self
+                    .file(|f| f.record_ids_from_found_set(args, context, limit))
+                    .unwrap_or(Err(CalcError::TABLE_MISSING));
+            }
         }
         default_call(function)
     }
@@ -4701,24 +4709,30 @@ impl Fields for WorkerHost<'_> {
     }
 
     fn set_field_by_name(&mut self, name: &str, value: Value) -> HostResult {
-        let Some(schema) = self.schema().cloned() else {
+        if self.schema().is_none() {
             let field = name.rsplit_once("::").map_or(name, |(_, f)| f).to_owned();
             let text = self.text(&value);
             return self.write_named(&field, text);
-        };
+        }
+        let field = self.field_by_name(name)?;
+        self.write_field(field, &value)
+    }
+
+    fn field_by_name(&mut self, name: &str) -> HostResult<FieldRef> {
+        let schema = self.schema().cloned().ok_or(HostError::Unsupported)?;
         // `Occurrence::Field`, or a field of the layout's occurrence.
         let (occurrence, field) = match name.rsplit_once("::") {
             Some((occurrence, field)) => (
                 schema
                     .occurrences()
-                    .find(|o| o.name == occurrence)
+                    .find(|o| same_name(&o.name, occurrence))
                     .map(|o| o.id)
                     // One of a related file not open yet, opened below
                     // (#1149).
                     .or_else(|| {
                         schema
                             .external_occurrences()
-                            .find(|o| o.name == occurrence)
+                            .find(|o| same_name(&o.name, occurrence))
                             .map(|o| o.id)
                     })
                     .ok_or(HostError::Error(ErrorCode::FIELD_MISSING))?,
@@ -4735,17 +4749,14 @@ impl Fields for WorkerHost<'_> {
         let schema = self.open_pending(&schema, occurrence)?;
         let id = schema
             .table_of(occurrence)
-            .and_then(|t| t.fields.values().find(|f| f.name == field))
+            .and_then(|t| t.fields.values().find(|f| same_name(&f.name, field)))
             .map(|f| f.id)
             .ok_or(HostError::Error(ErrorCode::FIELD_MISSING))?;
-        self.write_field(
-            FieldRef {
-                occurrence,
-                field: id,
-                repetition: 1,
-            },
-            &value,
-        )
+        Ok(FieldRef {
+            occurrence,
+            field: id,
+            repetition: 1,
+        })
     }
 
     fn field_value_of(&mut self, field: FieldRef) -> HostResult<Value> {
@@ -4927,6 +4938,12 @@ impl Fields for WorkerHost<'_> {
         with: &mut Replacement<'_>,
         with_dialog: bool,
     ) -> HostResult {
+        // A field reached through a relationship, a self-join's too, is
+        // the related records' (as Set Field writes it): not replaced in
+        // the found set's own records.
+        if field.is_some_and(|f| self.is_related(f.occurrence)) {
+            return Err(HostError::Unsupported);
+        }
         let name = self.target_name(field)?;
         // Every target would need an owned typed value and its own +1.
         // Refuse before committing or changing any record in the set.
@@ -4955,13 +4972,23 @@ impl Fields for WorkerHost<'_> {
                 .map_err(data_error)?
                 .unwrap_or_default()
         };
+        // Serial numbers that cannot all be counted write none of them.
+        if let Replacement::Serial {
+            initial, increment, ..
+        } = with
+        {
+            if serial_text(initial, *increment, found.saturating_sub(1)).is_none() {
+                return Err(HostError::Error(ErrorCode::UNAVAILABLE));
+            }
+        }
         for index in 0..found {
             self.s.file.window.go_to(index);
             let text = match with {
                 Replacement::CurrentContents => current_value.clone(),
                 Replacement::Serial {
                     initial, increment, ..
-                } => serial_text(initial, *increment, index),
+                } => serial_text(initial, *increment, index)
+                    .ok_or(HostError::Error(ErrorCode::UNAVAILABLE))?,
                 Replacement::Calculation(evaluate) => {
                     let value = evaluate(self);
                     self.text(&value)
@@ -5018,32 +5045,10 @@ impl WorkerHost<'_> {
     }
 }
 
-/// The `index`th serial number from `initial`: its last run of digits
-/// counts up, the rest stays ("INV0009" + 1 = "INV0010").
-fn serial_text(initial: &str, increment: i64, index: u64) -> String {
-    let end = initial
-        .char_indices()
-        .rev()
-        .find(|(_, c)| c.is_ascii_digit())
-        .map(|(i, c)| i + c.len_utf8());
-    let Some(end) = end else {
-        return initial.to_owned();
-    };
-    let start = initial[..end]
-        .char_indices()
-        .rev()
-        .take_while(|(_, c)| c.is_ascii_digit())
-        .last()
-        .map_or(end, |(i, _)| i);
-    let digits = &initial[start..end];
-    let number: i128 = digits.parse().unwrap_or(0) + i128::from(increment) * index as i128;
-    format!(
-        "{}{:0width$}{}",
-        &initial[..start],
-        number,
-        &initial[end..],
-        width = digits.len()
-    )
+/// Whether two names are the same name: without regard to case, as
+/// calculations' names match (`om_formula::NameTable`).
+fn same_name(a: &str, b: &str) -> bool {
+    a.to_lowercase() == b.to_lowercase()
 }
 
 impl FoundSets for WorkerHost<'_> {
@@ -5782,19 +5787,5 @@ pub(crate) fn parameter(stored: &om_layout::triggers::StoredFormula) -> Calculat
         context: stored.context.clone(),
         formatted: None,
         polish: Some(stored.polish.clone()),
-    }
-}
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    #[test]
-    fn serial_numbers_count_up_the_last_digits() {
-        assert_eq!(serial_text("1", 1, 0), "1");
-        assert_eq!(serial_text("1", 1, 4), "5");
-        assert_eq!(serial_text("INV0009", 1, 1), "INV0010");
-        assert_eq!(serial_text("A-10-x", 5, 2), "A-20-x");
-        assert_eq!(serial_text("none", 1, 3), "none");
     }
 }
