@@ -468,14 +468,20 @@ mod delayed_page_tests {
         // A refused save first holds the edits while the record is read
         // back (Check Again, Discard My Changes), which the window then
         // compares with what the edits began from (`recheck_refused_save`):
-        // the outcome is the hold that comparison gives, or no bar at all,
-        // not that interim one (#541).
+        // the outcome is the hold that comparison gives, a read-back that
+        // failed, or no bar at all, not that interim one (#541).
+        let unread = |app: &common::App| {
+            app.query(egui_kittest::kittest::By::new().label_contains("could not be read back"))
+                .is_some()
+        };
         common::wait_until(&mut app, "save outcome", |app| {
             app.state().is_settled()
                 && !common::saving(app)
                 && (app.query_by_label("Keep My Changes").is_some()
+                    || unread(app)
                     || !common::editing(app) && app.query_by_label("Discard My Changes").is_none())
         });
+        assert!(!unread(&app), "the refused record could not be read back");
         let persisted = stored(&hosted);
         eprintln!("trace: {:?}", gate.trace.lock().unwrap());
         eprintln!(
