@@ -228,35 +228,66 @@ impl<'a> FileCalc<'a> {
 
     /// Whether the calculation of `field` of `occurrence` may read a
     /// variable when this host reads it: an unstored calculation whose
-    /// formula, or a formula of an unstored calculation it references, may
-    /// ([`om_formula::Expr::may_read_variables`]), to 32 references deep;
-    /// deeper counts as may.
+    /// formula, a custom function it calls, or a formula of an unstored
+    /// calculation either references, may (`Expr::variable_reads`), to 32
+    /// steps deep. Deeper, or a custom function that cannot be resolved,
+    /// counts as may.
     pub(crate) fn reads_variables(&self, occurrence: u64, field: u64) -> bool {
-        let mut seen = std::collections::HashSet::new();
-        let mut stack = vec![(occurrence, field, 0)];
-        while let Some((occurrence, field, depth)) = stack.pop() {
+        use std::collections::HashSet;
+        // What is left to check: a field's calculation or a custom
+        // function's body, and how many steps from the key it is.
+        enum Next {
+            Field(u64, u64),
+            Function(u64),
+        }
+        let (mut fields, mut functions) = (HashSet::new(), HashSet::new());
+        let mut stack = vec![(Next::Field(occurrence, field), 0)];
+        while let Some((next, depth)) = stack.pop() {
             if depth > 32 {
                 return true;
             }
-            if !seen.insert((occurrence, field)) {
-                continue;
-            }
-            let Some(def) = self.schema.field(occurrence, field) else {
-                continue;
+            let function;
+            let expr = match next {
+                Next::Field(occurrence, field) => {
+                    if !fields.insert((occurrence, field)) {
+                        continue;
+                    }
+                    let Some(def) = self.schema.field(occurrence, field) else {
+                        continue;
+                    };
+                    match def
+                        .formula
+                        .as_ref()
+                        .filter(|_| def.is_unstored_calculation())
+                    {
+                        Some(formula) => &formula.polish,
+                        None => continue,
+                    }
+                }
+                Next::Function(id) => {
+                    if !functions.insert(id) {
+                        continue;
+                    }
+                    let Some(resolved) = self.custom_function(id) else {
+                        return true;
+                    };
+                    function = resolved;
+                    &function.body
+                }
             };
-            let Some(formula) = def
-                .formula
-                .as_ref()
-                .filter(|_| def.is_unstored_calculation())
-            else {
-                continue;
-            };
-            if formula.polish.may_read_variables() {
+            let (itself, called) = expr.variable_reads();
+            if itself {
                 return true;
             }
-            for reference in formula.polish.field_references() {
+            for key in called {
+                match key.id() {
+                    Some(id) => stack.push((Next::Function(id), depth + 1)),
+                    None => return true,
+                }
+            }
+            for reference in expr.field_references() {
                 if let (Some(of), Some(id)) = (reference.occurrence.id(), reference.field.id()) {
-                    stack.push((of, id, depth + 1));
+                    stack.push((Next::Field(of, id), depth + 1));
                 }
             }
         }

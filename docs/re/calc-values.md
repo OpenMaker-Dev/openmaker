@@ -1730,8 +1730,9 @@ templates).
   copy of the variables of the host that asked, made once for that read and
   shared by its records (`FileHost::with_file_variables`, `VariableSnapshot`;
   [#615](https://github.com/OpenMaker-Dev/openmaker/issues/615)), so what one
-  input assigns the next sees and it is dropped after [I: FileMaker's for
-  assignments in a summary's inputs is unmeasured]. The summary cache keys
+  input assigns the next sees and it is dropped after [I: that a summary's
+  inputs see the caller's variables at all, and what becomes of their
+  assignments, are unmeasured in FileMaker]. The summary cache keys
   each result by the copy's `Variables::revision` pair (every assignment
   takes a new one), so a total read again after an assignment in the same
   evaluation is read again. A `FileCalc` used without a host reads with no

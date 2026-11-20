@@ -711,9 +711,51 @@ fn report_groups_refuse_keys_their_sort_did_not_establish() {
             ),
         );
     }
+    // Keys through custom functions: one returning its argument, one that
+    // reads `$$rate`, and one the file does not define.
+    use om_data::calc::eval::CustomFunction;
+    use om_data::formula::{Expr, Field, Formula, Key};
+    schema.add_custom_function(
+        1,
+        CustomFunction {
+            name: "Same".into(),
+            parameters: vec!["x".into()],
+            body: Expr::Local(0),
+        },
+    );
+    schema.add_custom_function(
+        2,
+        CustomFunction {
+            name: "Rate".into(),
+            parameters: vec!["x".into()],
+            body: Expr::Variable("$$rate".into()),
+        },
+    );
+    for (id, function) in [(10, 1), (11, 2), (12, 99)] {
+        let call = Expr::CustomCall {
+            tail: false,
+            function: Key::from_id(function),
+            args: vec![Expr::Field(Field::new(OCCURRENCE, 1, true))],
+        };
+        schema.add_field(
+            TABLE,
+            FieldDef::calculation(
+                id,
+                format!("Through {function}"),
+                ValueType::Number,
+                Formula {
+                    context: Some(Key::from_id(OCCURRENCE)),
+                    formatted: None,
+                    polish: call,
+                },
+                false,
+            ),
+        );
+    }
     let (locals, mut globals) = (Variables::new(), Variables::new());
     globals.set("$$rate", 1, Value::number(10));
     let snapshot = VariableSnapshot::of(&locals, &globals);
+    // Each record's group by `key`, sorted by it, with or without variables.
     let groups = |key: u64, variables: bool| {
         let mut source = CountingSource::new();
         source
@@ -721,13 +763,19 @@ fn report_groups_refuse_keys_their_sort_did_not_establish() {
             .set_found_set(OCCURRENCE, &[1, 2, 3], Some(&[key]));
         let file = FileCalc::new(&schema, &source, today(29));
         let file = file.with_variables(snapshot.as_ref().filter(|_| variables));
-        file.found_groups(OCCURRENCE, &[key])
-            .map(|g| g.breaks.len())
+        let found = file.found_groups(OCCURRENCE, &[key])?;
+        Ok::<_, GroupError>(found.breaks[0].clone().map(|(_, ids)| ids))
     };
     assert_eq!(groups(7, true), Err(GroupError::VariableKey));
-    assert_eq!(groups(7, false), Ok(1));
-    // A calculation that reads no variable groups as before.
-    assert_eq!(groups(9, true), Ok(1));
+    // Without variables `$$rate` is empty: -1 on every record, one group.
+    assert_eq!(groups(7, false), Ok(Some(vec![0, 0, 0])));
+    // Calculations that read no variable group as before: 20, 40 and 120.
+    assert_eq!(groups(9, true), Ok(Some(vec![0, 1, 2])));
+    assert_eq!(groups(10, true), Ok(Some(vec![0, 1, 2])));
+    // A custom function that reads one, or one that cannot be resolved,
+    // may read them.
+    assert_eq!(groups(11, true), Err(GroupError::VariableKey));
+    assert_eq!(groups(12, true), Err(GroupError::VariableKey));
     assert_eq!(groups(8, false), Err(GroupError::UnevaluableKey));
 }
 
