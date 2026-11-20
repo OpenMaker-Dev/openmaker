@@ -4427,7 +4427,7 @@ impl Records for WorkerHost<'_> {
                 .zip(u64::try_from(id).ok())
                 .map(|(table, record)| self.transaction_content(table, record))
                 .unwrap_or_default();
-            if let Err(e) = self.p().delete_record(layout, id) {
+            if let Err(e) = self.p().delete_record_in_script(layout, id) {
                 self.committed_records(deleted);
                 self.s.file.window.changed_data();
                 return Err(data_error(e));
