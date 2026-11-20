@@ -1107,6 +1107,28 @@ impl OpenMakerApp {
     /// A single step through the script engine (menu commands, the
     /// Find mode buttons).
     pub(super) fn run_step(&mut self, ctx: &egui::Context, id: u16, flags: u32) {
+        use super::steps::{INSERT_AUDIO_VIDEO, INSERT_FILE, INSERT_PDF, INSERT_PICTURE};
+        // The Insert menu fills the selected container only while its
+        // object still takes entry (and PDF and Audio/Video only an
+        // interactive one), as when the menu offered it.
+        if matches!(
+            id,
+            INSERT_PICTURE | INSERT_FILE | INSERT_PDF | INSERT_AUDIO_VIDEO
+        ) {
+            let fillable = self.w.session.as_ref().is_some_and(|session| {
+                self.w
+                    .document
+                    .selected_container(session)
+                    .is_some_and(|selection| {
+                        selection.allows_entry(session)
+                            && (matches!(id, INSERT_PICTURE | INSERT_FILE)
+                                || selection.is_interactive(session))
+                    })
+            });
+            if !fillable {
+                return;
+            }
+        }
         let step = ScriptStep {
             opcode: id as i16,
             flags,
