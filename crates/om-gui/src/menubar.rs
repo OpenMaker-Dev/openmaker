@@ -84,6 +84,9 @@ pub(crate) struct MenuContext<'a> {
     /// Layout mode has an object selected that can be deleted (Edit >
     /// Clear).
     pub layout_delete: bool,
+    /// How many of Layout mode's selected objects Arrange's Align,
+    /// Distribute and Resize To apply to.
+    pub layout_arrange: usize,
 }
 
 impl MenuContext<'_> {
@@ -271,7 +274,9 @@ pub(crate) fn show(ui: &mut Ui, context: &MenuContext<'_>, actions: &mut Vec<Act
                             menu(ui, "Layouts", &mut |rows| {
                                 layouts_menu(rows, context, actions)
                             });
-                            menu(ui, "Arrange", &mut |rows| arrange_menu(rows));
+                            menu(ui, "Arrange", &mut |rows| {
+                                arrange_menu(rows, context, actions)
+                            });
                         }
                     }
                     menu(ui, "Scripts", &mut |rows| {
@@ -923,7 +928,7 @@ fn layouts_menu(rows: &mut dyn MenuRows, context: &MenuContext<'_>, actions: &mu
     }
 }
 
-fn arrange_menu(rows: &mut dyn MenuRows) {
+fn arrange_menu(rows: &mut dyn MenuRows, context: &MenuContext<'_>, actions: &mut Vec<Action>) {
     pending(rows, "Group", command(CMD, Key::R));
     pending(rows, "Ungroup", command(SHIFT_CMD, Key::R));
     pending(rows, "Lock", command(CMD, Key::L));
@@ -934,9 +939,23 @@ fn arrange_menu(rows: &mut dyn MenuRows) {
     pending(rows, "Send to Back", None);
     pending(rows, "Send Backward", None);
     rows.separator();
-    pending_submenu(rows, "Align");
-    pending_submenu(rows, "Distribute");
-    pending_submenu(rows, "Resize To");
+    // Align, Distribute and Resize To: `om_data::layout_arrange`, the
+    // operation `om-author`'s arrange_objects runs.
+    use om_data::layout_arrange::Arrangement;
+    for submenu in ["Align", "Distribute", "Resize To"] {
+        let items: Vec<Arrangement> = Arrangement::ALL
+            .into_iter()
+            .filter(|a| a.menu().0 == submenu)
+            .collect();
+        let enabled = |a: &Arrangement| context.layout_arrange >= a.minimum();
+        rows.submenu(submenu, items.iter().any(enabled), &mut |rows| {
+            for arrangement in &items {
+                if rows.item(arrangement.menu().1, None, false, enabled(arrangement)) {
+                    actions.push(Action::Arrange(*arrangement));
+                }
+            }
+        });
+    }
 }
 
 /// Script Workspace and the scripts supplied by this file's catalog.

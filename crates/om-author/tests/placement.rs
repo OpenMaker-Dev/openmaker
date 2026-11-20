@@ -9,9 +9,9 @@ mod common;
 
 use common::*;
 use om_author::api::{
-    ChangePartsParams, CreateFieldParams, CreateLayoutParams, DeleteLayoutParams,
-    DeleteObjectsParams, DuplicateLayoutParams, FieldControlParams, FieldType, FrameParams,
-    InspectParams, LabelParams, LayoutParams, LayoutSetupParams, LayoutWidthParams,
+    ArrangeObjectsParams, ChangePartsParams, CreateFieldParams, CreateLayoutParams,
+    DeleteLayoutParams, DeleteObjectsParams, DuplicateLayoutParams, FieldControlParams, FieldType,
+    FrameParams, InspectParams, LabelParams, LayoutParams, LayoutSetupParams, LayoutWidthParams,
     ObjectFrameParams, ObjectFramesParams, Part, PartOptionsParams, PlaceFieldParams,
     PlacePortalParams, PlaceTextParams, PlacementParams, TextParams,
 };
@@ -130,6 +130,56 @@ fn an_object_is_moved_and_resized_and_lasts_a_restart() {
     let current = text(&after["revision"]).to_owned();
     let outside = error(service.handle(&set(frame(130.0, 230.0, 220.0, 24.0), &current)));
     assert_eq!(outside["kind"], "invalid_request", "{outside:#}");
+
+    // arrange_objects aligns the label and the moved field's left edges to
+    // the leftmost through the same write; arranged already, it changes
+    // nothing.
+    let label = format!("layout_object:1.{NAME_LABEL}@Tasks.fmp12");
+    let arrange = |arrangement: &str, objects: &[&str], expected: &str| {
+        Command::ArrangeObjects(ArrangeObjectsParams {
+            layout: Some(TASKS_LAYOUT.into()),
+            layout_name: None,
+            objects: objects.iter().map(|o| o.to_string()).collect(),
+            arrangement: arrangement.into(),
+            expected_revision: expected.into(),
+        })
+    };
+    let left = |layout: &Value, key: u64| object(layout, key)["frame"]["left"].as_f64().unwrap();
+    let leftmost = left(&after, NAME_LABEL).min(130.0);
+    let aligned = ok(service.handle(&arrange("align_left_edges", &[&label, &field], &current)));
+    assert_eq!(aligned["status"], "moved", "{aligned:#}");
+    assert_eq!(aligned["arrangement"], "align_left_edges");
+    let lined = get_layout(&mut service);
+    assert_eq!(
+        (left(&lined, NAME_LABEL), left(&lined, NAME_FIELD)),
+        (leftmost, leftmost)
+    );
+    assert_eq!(
+        object(&lined, FOOT_RECTANGLE)["frame"],
+        object(&after, FOOT_RECTANGLE)["frame"]
+    );
+    let lined_revision = text(&lined["revision"]).to_owned();
+    let unchanged = ok(service.handle(&arrange(
+        "align_left_edges",
+        &[&label, &field],
+        &lined_revision,
+    )));
+    assert_eq!(unchanged["status"], "unchanged", "{unchanged:#}");
+    // At the revision it was asked on (a retry after a lost answer) the
+    // objects are as asked; a revision that is none is refused.
+    let retried = ok(service.handle(&arrange("align_left_edges", &[&label, &field], &current)));
+    assert_eq!(retried["status"], "already_applied", "{retried:#}");
+    let malformed = error(service.handle(&arrange("align_left_edges", &[&label, &field], "r")));
+    assert_eq!(malformed["kind"], "invalid_request", "{malformed:#}");
+    let unknown = error(service.handle(&arrange(
+        "align_middles",
+        &[&label, &field],
+        &lined_revision,
+    )));
+    assert_eq!(unknown["kind"], "invalid_request", "{unknown:#}");
+    let alone = error(service.handle(&arrange("align_left_edges", &[&label], &lined_revision)));
+    assert_eq!(alone["kind"], "invalid_request", "{alone:#}");
+    let shown = object(&lined, NAME_FIELD).clone();
     host.stop();
 
     let reopened = common::host(&file, "OpenMaker Server test restart");

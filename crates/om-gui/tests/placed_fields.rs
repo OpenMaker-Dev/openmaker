@@ -1170,6 +1170,105 @@ fn a_stored_field_is_moved_and_resized_and_kept() {
     shot(&mut again, "32-reopened", "Count where it was put");
 }
 
+/// Arrange > Align > Right Edges on two stored objects: the canvas shows
+/// them aligned at once, as a change that is not saved yet; Save Layout
+/// stores the new frame, read back over a new connection. The frames come
+/// from `om_data::layout_arrange`, the operation `om-author`'s
+/// arrange_objects runs.
+#[test]
+fn arrange_aligns_the_selected_objects_and_save_layout_stores_them() {
+    use egui::accesskit::Role;
+    use egui_kittest::kittest::By;
+
+    let file = form_file();
+    let hosted = hosted::host_file(
+        "arranged-in-layout-mode",
+        Path::new(&file.0),
+        fixture::FILE,
+        (ACCOUNT, PASSWORD),
+    );
+    let mut app = open_window(&hosted);
+    common::click(&mut app, "Edit Layout");
+    common::wait_for_label(&mut app, "Field: Count (object 1)");
+    // A second stored object: Name, placed and saved below Count, whose
+    // frame is 110, 20 to 230, 42.
+    draw_name_field(&mut app, egui::vec2(150.0, 80.0), egui::vec2(250.0, 102.0));
+    save_layout(&mut app);
+    common::wait_until(&mut app, "Name saved", |app| {
+        assert!(app.state().error().is_none(), "{:?}", app.state().error());
+        app.state().is_settled() && app.query_by_label("Field: Name (object 2)").is_some()
+    });
+    let origin = app.get_by_label("Layout canvas").rect().min + egui::vec2(22.0, 0.0);
+    let click_at = |app: &mut common::App, point: egui::Vec2, modifiers: egui::Modifiers| {
+        let pos = origin + point;
+        app.event(egui::Event::ModifiersChanged(modifiers));
+        app.event(egui::Event::PointerMoved(pos));
+        for pressed in [true, false] {
+            app.event(egui::Event::PointerButton {
+                pos,
+                button: egui::PointerButton::Primary,
+                pressed,
+                modifiers,
+            });
+            app.step();
+        }
+        app.event(egui::Event::ModifiersChanged(egui::Modifiers::NONE));
+        app.run_steps(3);
+    };
+    click_at(&mut app, egui::vec2(170.0, 31.0), egui::Modifiers::NONE);
+    click_at(&mut app, egui::vec2(200.0, 91.0), egui::Modifiers::SHIFT);
+    app.get_by_label("2 objects selected");
+
+    common::open_menu(&mut app, "Arrange");
+    let align = app
+        .query_all(By::new().role(Role::Button).label("Align"))
+        .next()
+        .expect("the Align submenu")
+        .rect();
+    app.event(egui::Event::PointerMoved(align.center()));
+    app.run_steps(6);
+    shot(
+        &mut app,
+        "41-arrange-align",
+        "Arrange > Align with two objects",
+    );
+    common::click(&mut app, "Right Edges");
+    // Count's right edge moves to Name's, the rightmost; Name stays.
+    assert_eq!(
+        canvas_frame(&app, "Field: Count (object 1)"),
+        [130.0, 20.0, 250.0, 42.0]
+    );
+    assert_eq!(
+        canvas_frame(&app, "Field: Name (object 2)"),
+        [150.0, 80.0, 250.0, 102.0]
+    );
+    shot(
+        &mut app,
+        "42-aligned",
+        "Count's right edge at Name's, not saved",
+    );
+    let stored = |hosted: &hosted::Hosted| {
+        let mut reader = hosted.opened();
+        let geometry = reader
+            .layout_geometry(fixture::LAYOUT.try_into().unwrap())
+            .unwrap()
+            .unwrap();
+        reader.close();
+        geometry
+            .objects
+            .iter()
+            .find(|o| o.field_name.as_deref() == Some("Count"))
+            .map(|o| (o.rect.left, o.rect.right))
+    };
+    assert_eq!(stored(&hosted), Some((110.0, 230.0)), "not saved yet");
+    save_layout(&mut app);
+    common::wait_until(&mut app, "the arrangement saved", |app| {
+        assert!(app.state().error().is_none(), "{:?}", app.state().error());
+        app.state().is_settled() && app.query_by_label("2 objects selected").is_none()
+    });
+    assert_eq!(stored(&hosted), Some((130.0, 250.0)));
+}
+
 /// Shift-click selects saved objects and field drafts together. Moving and
 /// deleting the selection must never mutate only an arbitrary single member.
 #[test]

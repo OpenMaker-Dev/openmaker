@@ -27,6 +27,7 @@ pub mod file_refs;
 pub mod formula_editor;
 pub mod found;
 pub mod host;
+pub mod layout_arrange;
 pub mod layout_catalog;
 pub mod layout_objects;
 pub mod layout_placement;
