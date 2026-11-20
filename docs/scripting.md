@@ -658,6 +658,15 @@ Open items:
   8.4), where FileMaker would have written. Names given to Set Field By
   Name and Replace Field Contents by Name match without regard to case,
   as on the server.
+- In server scripts Print Setup with neither Restore nor its dialog sets
+  nothing and gives 0, as on the desktop. A restored setup gives 3, since
+  it would configure PDF output OpenMaker Server cannot make yet: Save
+  Records as PDF and Print are 3 there, as the report builder is part of
+  the desktop client
+  ([#104](https://github.com/OpenMaker-Dev/openmaker/issues/104)). With
+  its dialog on, Print Setup gives 3 as well, since a server shows no
+  dialog. FileMaker Server's answer is unmeasured in every one of these
+  cases, the 0 included, and so is how long a restored setup lasts there.
 - Scripts: desktop steps still missing include the account steps
   ([#83](https://github.com/OpenMaker-Dev/openmaker/issues/83)) and the PDF
   steps other than Save Records as PDF
