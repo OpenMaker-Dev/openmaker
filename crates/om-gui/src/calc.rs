@@ -116,11 +116,11 @@ pub(crate) struct ListBuild {
 }
 
 /// The tables a value list that does not depend on the record reads: none
-/// for custom values (and for another file's or a calculated list, which
-/// are refused), its fields' table for all of a field's values; `None`
-/// for a list of related values, which depends on the record, and for one
-/// of an unstored calculation's values, whose calculation may read other
-/// tables and the session (#1058): both are built per object and record.
+/// for custom values (and for another file's list, which is refused), its
+/// fields' table for all of a field's values, and every table for all of
+/// an unstored calculation's values, whose calculation may read any of
+/// them (#1058). `None` for a list of related values, which depends on the
+/// record: it is built per object and record.
 fn shared_list_tables(
     schema: &CalcSchema,
     list: &om_data::meta::ValueList,
@@ -128,7 +128,11 @@ fn shared_list_tables(
     use om_data::meta::ValueSource;
     match &list.source {
         ValueSource::Field { start: Some(_), .. } => None,
-        ValueSource::Field { .. } if calculated_list(schema, list) => None,
+        // Each record's value is computed in the record's own context: none
+        // of the window's records decides it (#290).
+        ValueSource::Field { .. } if calculated_list(schema, list) => {
+            Some(schema.tables().map(|table| table.id).collect())
+        }
         ValueSource::Field {
             primary, secondary, ..
         } => Some(
@@ -705,7 +709,24 @@ impl Calculations {
             dropped |= groups.len() != before;
         }
         // A list an unstored calculation computed may have read the
-        // session as well (#1058).
+        // session as well (#1058), built here or on the worker (#290).
+        if let Some(schema) = &self.schema {
+            let calculated = |id: &u64| {
+                schema
+                    .value_lists()
+                    .iter()
+                    .find(|list| list.id == *id)
+                    .is_some_and(|list| calculated_list(schema, list))
+            };
+            self.built.borrow_mut().retain(|id, _| !calculated(id));
+            let mut building = self.building.borrow_mut();
+            building.retain(|id, _| !calculated(id));
+            self.build_wants.borrow_mut().retain(|want| {
+                building
+                    .get(&want.list)
+                    .is_some_and(|(ticket, _)| *ticket == want.ticket)
+            });
+        }
         let mut options = self.options.borrow_mut();
         let lists = options.len();
         options.retain(|_, (_, calculated)| !*calculated);

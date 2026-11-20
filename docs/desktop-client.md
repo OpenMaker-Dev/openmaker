@@ -1289,8 +1289,9 @@ drop-down lists (layout-model.md 5.4) read their items through
   nothing and asks the host for no records. A click on a list whose items
   are still being read opens it once they are.
 - **One build per list, never in paint.** A list that does not depend on
-  the record (custom values, or all of a field's values) is built once for
-  every object, record and portal row, from committed values.
+  the record (custom values, or all of a field's values, an unstored
+  calculation's among them) is built once for every object, record and
+  portal row, from committed values.
   - A field's list is built on the provider's thread (`list_build`, #745),
     which reads its table's records in two requests: their ids, then their
     values. Meanwhile the control waits as for any data being read, and the
@@ -1309,9 +1310,19 @@ drop-down lists (layout-model.md 5.4) read their items through
   - The list is built again after the data of a table it reads changes.
     One the window stopped reading before it was built (#987) is asked for
     again when a control shows it.
-  - A list of related values, or of an unstored calculation's values, is
-    built per record, with the record's unsaved values, in the window's
-    paint, as before.
+  - An unstored calculation's values are computed on each record of its
+    table, in that record's context, so no record of the window decides
+    them ([#290](https://github.com/OpenMaker-Dev/openmaker/issues/290)). The calculation may read any table and the session: the
+    list is built again after the data of any table changes, and when the
+    window's calculation session changes (its layout, record, mode or
+    account). A record's unsaved values are not read, as for a field's
+    list [inferred: how FileMaker lists an unstored calculation's values
+    is unmeasured]. On a debug build, with 30,000 records, the closed
+    pop-up menu that shows a label from such a list no longer blocks a
+    frame for 1.1 s; its longest frame while the worker builds the list is
+    44 ms.
+  - A list of related values is built per record, with the record's
+    unsaved values, in the window's paint, as before.
 - **A hosted file's field lists.** A list of all of a stored text field's
   values, with no second field and not only related values, comes from
   the host. One CreateValueListEx is sent when a control first needs the
