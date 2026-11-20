@@ -835,10 +835,12 @@ fn read_schema_details(tree: &om_hbam::KeyTree<'_>, schema: &mut DatabaseSchema)
         for field in &mut table.fields {
             field.comment = text(&[table.id, 3, 5, field.id, 3]);
             field.annotation = text(&[table.id, 3, 5, field.id, 0x30]);
+            // The advanced flags are a big-endian u32 (file-metadata.md
+            // 1.2); a value of any other width is not read as set.
             field.display_names_enabled = tree
                 .at(&[table.id, 3, 5, field.id, 0x29])
-                .and_then(|node| node.uint_value())
-                .is_some_and(|flags| flags & 0x2 != 0);
+                .and_then(|node| <[u8; 4]>::try_from(node.value?).ok())
+                .is_some_and(|flags| u32::from_be_bytes(flags) & 0x2 != 0);
             // The next serial value `0c` and the auto-entered data `0d`.
             match field.options.as_mut().map(|o| &mut o.auto_enter.value) {
                 Some(AutoEnterValue::Serial(serial)) => {

@@ -267,6 +267,17 @@ fn manager_saves_tables_and_fields_on_an_openmaker_server() {
         &[&table_key, &[3], &[5], &name_key, &[0x30]],
         om_scripts::text_node(&[], "Task title"),
     );
+    // Advanced flags of another width than a u32 are not read as set.
+    root.put(
+        &[
+            &table_key,
+            &[3],
+            &[5],
+            &om_hbam::slot::uint_segment(fixture::SETTING),
+            &[0x29],
+        ],
+        om_hbam::OwnedNode::leaf(Vec::new(), vec![2]),
+    );
     let file = fixture::TempFile::from_tree("gui-database-save", &root);
     let hosted = hosted::host_file(
         "database-save",
@@ -352,6 +363,11 @@ fn manager_saves_tables_and_fields_on_an_openmaker_server() {
     assert_eq!(
         schema.field_column_text(tasks, name, om_data::FieldColumn::Advanced),
         "Display Names, Task title"
+    );
+    let setting = tasks.fields.iter().find(|f| f.id == fixture::SETTING);
+    assert_eq!(
+        schema.field_column_text(tasks, setting.unwrap(), om_data::FieldColumn::Advanced),
+        ""
     );
     let finished = tasks
         .fields
