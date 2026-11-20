@@ -3664,6 +3664,110 @@ fn typing_into_a_global_field_sets_the_sessions_value() {
     }
 }
 
+/// A number global validated "Not empty" and "Strict data type: Numeric
+/// only" takes typing, checked by those rules as it is applied: what they
+/// refuse keeps the session's value. One validated by calculation is not
+/// offered (its check is not implemented for globals).
+#[test]
+fn typing_into_a_validated_global_checks_its_entry_rules() {
+    use fixture::SETTING;
+    use om_data::host::CalcNeed;
+    for (validation, offered) in [(0x8 | 0x1000, true), (0x1, false)] {
+        let file = file_with(
+            &format!("provider-validated-global-{validation}"),
+            &[],
+            |root| {
+                fixture::add_field(
+                    root, TABLE, SETTING, "Setting", 1, 2, 0, 0x1_0000, validation,
+                );
+                // Validated by calculation: its formula, so the table's other
+                // fields are planned and only the global is left out.
+                if validation & 0x1 == 0 {
+                    fixture::set_field_repetitions(root, TABLE, SETTING, 2);
+                } else {
+                    let mut names = fixture::names();
+                    names.add_field(TABLE, SETTING, "Setting");
+                    let (table, setting) = ((TABLE, OCCURRENCE), SETTING);
+                    fixture::add_formula(root, &names, table, setting, 0x19, "Setting > 0");
+                }
+            },
+        );
+        let (port, ca) = host(&file.0);
+        let mut provider = open(port, &ca);
+        let tasks = layout(&mut provider, "Tasks");
+        let capabilities = provider.record_capabilities(tasks).unwrap();
+        assert_eq!(
+            capabilities.editable_fields.unwrap().contains("Setting"),
+            offered
+        );
+        let global = |provider: &mut NativeProvider, repetition| {
+            let data = provider
+                .calc_data(&[CalcNeed::Globals { table: TABLE }])
+                .unwrap();
+            let locale = om_data::calc::Locale::en_us();
+            let cx = om_data::calc::Ctx::new(
+                &locale,
+                om_data::calc::Date::from_ymd(2026, 10, 29).unwrap(),
+            );
+            data.globals[&TABLE]
+                .get(SETTING, repetition)
+                .map(|v| v.to_text(&cx).into_string())
+                .unwrap_or_default()
+        };
+        let typed = |provider: &mut NativeProvider, text: &str| {
+            provider
+                .set_typed_global(TABLE, SETTING, 1, text)
+                .map_err(|error| error.code)
+        };
+        if offered {
+            assert_eq!(typed(&mut provider, "12"), Ok(()));
+            assert_eq!(global(&mut provider, 1), "12");
+            assert_eq!(typed(&mut provider, "12abc"), Err(Some(502)));
+            assert_eq!(typed(&mut provider, ""), Err(Some(509)));
+            assert_eq!(global(&mut provider, 1), "12");
+            // Browse's ordinary save of the record checks it too.
+            for (text, code) in [("12abc", 502), ("", 509)] {
+                let saved = provider.update_record(tasks, 1, values(&[("Setting", text)]));
+                assert_eq!(saved.map(|_| ()).map_err(|e| e.code), Err(Some(code)));
+            }
+            assert_eq!(global(&mut provider, 1), "12");
+            assert!(provider
+                .update_record(tasks, 1, values(&[("Setting", "7")]))
+                .is_ok());
+            assert_eq!(global(&mut provider, 1), "7");
+            // Not empty holds while another repetition has a value, as at a
+            // record's commit.
+            let second = |provider: &mut NativeProvider, text: &str| {
+                provider
+                    .set_typed_global(TABLE, SETTING, 2, text)
+                    .map_err(|error| error.code)
+            };
+            assert_eq!(second(&mut provider, ""), Ok(()));
+            let batch = |provider: &mut NativeProvider, first: &str, second: &str| {
+                provider
+                    .set_typed_globals(
+                        TABLE,
+                        &[((SETTING, 1), first.into()), ((SETTING, 2), second.into())].into(),
+                    )
+                    .map_err(|error| error.code)
+            };
+            assert_eq!(batch(&mut provider, "", "3"), Ok(()));
+            assert_eq!(global(&mut provider, 1), "");
+            assert_eq!(global(&mut provider, 2), "3");
+            assert_eq!(typed(&mut provider, "7"), Ok(()));
+            assert_eq!(batch(&mut provider, "", ""), Err(Some(509)));
+            assert_eq!(global(&mut provider, 1), "7");
+            assert_eq!(global(&mut provider, 2), "3");
+            assert_eq!(typed(&mut provider, ""), Ok(()));
+            assert_eq!(second(&mut provider, ""), Err(Some(509)));
+        } else {
+            assert_eq!(typed(&mut provider, "12"), Err(Some(201)));
+            assert_eq!(global(&mut provider, 1), "");
+        }
+        provider.close();
+    }
+}
+
 #[test]
 fn repetition_256_matches_literal_native_index() {
     let mut answers = Vec::new();

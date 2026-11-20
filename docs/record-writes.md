@@ -1278,9 +1278,28 @@ set to always use the system's formats, Pro's observed de-DE/en-US
 case interprets the typed date using the system setting; OpenMaker uses
 the file's own locale (file-metadata.md 2.2).
 
-Browse edits plain Number, Date, Time and Timestamp data globals through
+Browse edits Text, Number, Date, Time and Timestamp data globals through
 session-value operations. A global edit changes no stored record and reaches
-no other client. Temporal entry uses the shared typed-global operation and
+no other client. Its editor opens with the session's value, as the field
+shows it, not the value the record's page was read with; while that value
+is read again (a script set it), the editor takes no typing, so that no
+edit begins from the value before. A global's validation is checked as the typing is
+applied (`DataProvider::set_typed_global`), in the record's ordinary save
+as in a commit after scripts: its entry rules (maximum characters 511,
+strict data type 500-502, range 503, a custom value list or a field of
+this file 506) and Not empty (509), which holds while any of its
+repetitions has a value, as at a record's commit. The check uses the
+complete set of proposed repetitions before publishing any of the edits.
+The refusal carries the field's
+custom message when it is text, or a calculated one that is text alone;
+otherwise, and for a date or time it cannot read, OpenMaker's own
+wording. What they refuse keeps the draft and the session's value, as an
+invalid date does, and a save with several globals sets none of them. A
+global validated by calculation, unique or existing value, a
+related-values list or another file's field, whose checks are not
+implemented for globals, stays display-only. Supported global fields
+stay editable while a related file needed by another field's write rules
+is still closed. Temporal entry uses the shared typed-global operation and
 the file's entry parser: invalid Date/Timestamp (500) or Time (501) text
 keeps its draft and leaves the session value unchanged. Complete accepted
 Date text survives calculation readback. Time/Timestamp readback uses the
@@ -1299,9 +1318,13 @@ once together; related-record cells use their existing versioned write.
 Global repetitions remain session values and run no record transaction.
 Account rights, validation and prohibited modification still apply.
 
-Limits: non-text globals requiring field-exit validation and container
-globals are not typing targets; calculation fields are not, as in
-FileMaker. A field object showing several repetitions divides its stored
+Limits: globals validated by calculation, unique or existing value, a
+related-values list or another file's field, and container globals, are
+not typing targets; calculation fields are not, as
+in FileMaker. Typed globals are applied, and so checked, when the record
+is committed; FileMaker validates a global as its field is left (Claris
+"Field validation"), and its alert there is unmeasured
+([#424](https://github.com/OpenMaker-Dev/openmaker/issues/424)). A field object showing several repetitions divides its stored
 bounds evenly among them, across or down as it is stored [I: FileMaker
 Pro's repetition geometry is unmeasured]. Repetitions above 255 are
 outside the write planner's cell representation. Native repetition entry

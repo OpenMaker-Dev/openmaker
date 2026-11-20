@@ -3019,6 +3019,52 @@ impl RecordPlan {
             .any(|field| matches!(field.list, Some(ListRule::Related(_))))
     }
 
+    /// Whether a user's typing into `cell`, a repetition of global field
+    /// `field`, can be checked as it is entered, with no record's commit
+    /// after it: the cell is a repetition the field defines, and a value
+    /// list the field is validated by is a custom list or a field's values,
+    /// not a related-values list ([`ListRule::Related`], checked at a
+    /// record's commit) or one the rules cannot check
+    /// ([`ListRule::Unchecked`]).
+    pub fn checks_global_entry(&self, field: u64, cell: u64) -> bool {
+        self.cell_field(cell).is_some_and(|(at, _)| at == field)
+            && self.fields.get(&field).is_some_and(|planned| {
+                !matches!(
+                    planned.list,
+                    Some(ListRule::Related(_) | ListRule::Unchecked(_))
+                )
+            })
+    }
+
+    /// Whether this global's own entry rules are supported when another
+    /// field's rules have deferred the table plan. This only classifies
+    /// the editor. A save still builds the full plan before validation.
+    pub fn offers_global_while_plan_deferred(
+        table: u64,
+        field: u64,
+        options: &FieldOptions,
+        tree: &KeyTree<'_>,
+        file: &CalcSchema,
+    ) -> bool {
+        if options.validation_options & !SUPPORTED_VALIDATION != 0 {
+            return false;
+        }
+        if options.validation_options & VALIDATE_VALUE_LIST == 0 {
+            return true;
+        }
+        let node = tree.at(&[table, 3, 5, field]);
+        match list_rule(tree, node, file.value_lists()) {
+            Ok(ListRule::Custom(_)) => true,
+            Ok(ListRule::Field { occurrence, .. }) => {
+                file.data_source(occurrence).is_none()
+                    && file
+                        .table_of(occurrence)
+                        .is_some_and(|table| file.table_context(table.id).is_none())
+            }
+            _ => false,
+        }
+    }
+
     /// The related-values list a write by `entry` checks a changed value of
     /// `cell` against ([`ListRule::Related`]): the host computes it for the
     /// record as the write leaves it and checks the value at the commit
@@ -3041,6 +3087,7 @@ impl RecordPlan {
             error::NOT_UNIQUE => "a unique value",
             error::NOT_EXISTING => "an existing value",
             error::NOT_IN_LIST => "a value of its value list",
+            error::REQUIRED => "a value",
             _ => "a valid value",
         };
         match self.fields.get(&field) {
@@ -7299,6 +7346,17 @@ mod tests {
         assert!(plan.related_value_list(47, Entry::default()).is_some());
         assert!(plan.related_value_list(47, script).is_none());
         assert_eq!(plan.value_list_field(47, Entry::default()), None);
+        // Typing into a global is checked as it is entered, with no commit
+        // after it: against a custom list or a field's values, in a
+        // repetition the field has, not against a related-values list or
+        // one the rules cannot check.
+        assert!(plan.checks_global_entry(36, 36));
+        assert!(plan.checks_global_entry(36, rep(36, 3)));
+        assert!(!plan.checks_global_entry(36, rep(36, 4)));
+        assert!(plan.checks_global_entry(38, 38));
+        assert!(!plan.checks_global_entry(38, 36));
+        assert!(!plan.checks_global_entry(46, 46));
+        assert!(!plan.checks_global_entry(47, 47));
         assert_eq!(plan.existing_fields_for(script), vec![40, 41]);
         assert_eq!(
             plan.existing_fields_for(Entry::script(true, false)),

@@ -3233,6 +3233,15 @@ impl<'a> Evaluator<'a> {
 
     /// The type of the field a field object shows, which selects the
     /// object's data format (data-format.md).
+    /// Whether `spec` names a global field: its value is the session's,
+    /// which the record's page does not hold.
+    pub fn is_global(&self, spec: &FieldSpec) -> bool {
+        om_layout::occurrence_id(spec.table_key)
+            .zip(spec.field_id())
+            .and_then(|(occurrence, field)| self.schema.field(occurrence, field))
+            .is_some_and(|field| field.global)
+    }
+
     pub fn field_type(&self, spec: &FieldSpec) -> Option<ValueType> {
         let occurrence = om_layout::occurrence_id(spec.table_key)?;
         Some(self.schema.field(occurrence, spec.field_id()?)?.value_type)
@@ -3452,6 +3461,25 @@ impl<'a> Evaluator<'a> {
     #[cfg(test)]
     pub fn field_value(&self, object: u64, spec: &FieldSpec, record: u64) -> Option<Value> {
         self.field_value_in_portal(object, spec, record, None)
+    }
+
+    /// Whether field object `object` on `record` shows a value kept from
+    /// before while the data it reads is read again
+    /// ([`Self::field_value_in_portal`] found none from the data as it is
+    /// now, and data is awaited). Data that cannot be supplied is not
+    /// awaited ([`Calculations::awaiting_data`]).
+    pub fn value_pending(
+        &self,
+        object: u64,
+        spec: &FieldSpec,
+        record: u64,
+        portal: Option<PortalRow>,
+    ) -> bool {
+        let key = (
+            (self.layout, object, record, portal),
+            spec.repetition.max(1),
+        );
+        !self.calcs.values.borrow().contains_key(&key) && self.calcs.awaiting_data()
     }
 
     pub fn field_value_in_portal(
