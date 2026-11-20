@@ -28,8 +28,10 @@
 //! the main frame commits (from the OS's random source; without one the
 //! bridge stays off), and the last document's no longer works: another
 //! site's frame cannot post, nor can a page that learned an earlier
-//! document's token. Messages are bounded in size, in number and in the
-//! bytes waiting for the app, and only well-formed ones are kept.
+//! document's token: it stops working when the next document commits, and
+//! a message it posted that has not reached the app is dropped. Messages
+//! are bounded in size, in number and in the bytes waiting for the app
+//! (reserved before a message is read), and only well-formed ones are kept.
 //!
 //! wry reports a load when it commits and when it finishes, not when it
 //! starts or fails. So each frame also looks at the page's `loading`
@@ -66,10 +68,12 @@ use super::{js_string, parse_message, MAX_MESSAGE, MESSAGE_URL};
 const APPKIT_BRIDGE: &str = r#"(function () {
   if (window.FileMaker) { return; }
   var route = null, waiting = [];
-  // A document back from the back-forward cache waits for its new token.
+  // A document back from the back-forward cache waits for its new token;
+  // this capturing listener, added at document start, runs before the
+  // page's own.
   window.addEventListener("pageshow", function (event) {
     if (event.persisted) { route = null; }
-  });
+  }, true);
   function text(value, fallback) {
     return value === undefined || value === null ? fallback : String(value);
   }
@@ -176,6 +180,10 @@ pub(crate) struct AppKitBackend {
     views: HashMap<u64, Hosted>,
     events: Events,
     received: Receiver<Event>,
+    /// Bridge messages: view, the document (its commit count) that posted
+    /// it, and the message.
+    bridge: Sender<(u64, u64, String)>,
+    bridged: Receiver<(u64, u64, String)>,
     /// Bridge message bytes (each at least [`MESSAGE_COST`]) and messages
     /// sent and not yet polled.
     waiting: Arc<AtomicUsize>,
@@ -224,6 +232,7 @@ impl AppKitBackend {
     pub fn start(ctx: &egui::Context) -> Result<Self, Unavailable> {
         let mtm = MainThreadMarker::new().ok_or(Unavailable::Platform)?;
         let (sender, received) = channel();
+        let (bridge, bridged) = channel();
         Ok(AppKitBackend {
             mtm,
             queued: Vec::new(),
@@ -233,6 +242,8 @@ impl AppKitBackend {
                 ctx: ctx.clone(),
             },
             received,
+            bridge,
+            bridged,
             waiting: Arc::default(),
             entries: Arc::default(),
         })
@@ -370,16 +381,17 @@ impl AppKitBackend {
         let active_generation = Rc::new(Cell::new(0));
         let active = Rc::clone(&active_generation);
         let loads = self.events.clone();
-        let messages = self.events.clone();
+        let messages = self.bridge.clone();
+        let wake = self.events.ctx.clone();
         let (waiting, entries) = (Arc::clone(&self.waiting), Arc::clone(&self.entries));
         let commits = Rc::new(Cell::new(0));
-        let committed = Rc::clone(&commits);
+        let (committed, document) = (Rc::clone(&commits), Rc::clone(&commits));
         // The current document's message prefix, which only its bridge
         // knows (`watch_loads` gives one to each committed document).
         let route = spec
             .scripts
             .then(|| Rc::new(std::cell::RefCell::new(None::<String>)));
-        let current = route.clone();
+        let (current, revoked) = (route.clone(), route.clone());
         let mut builder = WebViewBuilder::new()
             .with_url(readable(spec.url))
             .with_incognito(true)
@@ -393,24 +405,32 @@ impl AppKitBackend {
                     return allowed(&url);
                 }
                 // Never a page of its own; a message only with the current
-                // document's prefix, well formed and within the bounds.
-                let Some(prefix) = current.as_ref().and_then(|r| r.borrow().clone()) else {
+                // document's prefix, within the bounds (reserved before the
+                // message is read) and well formed.
+                let Some(route) = current.as_ref() else {
                     return false;
                 };
-                let Some(body) = url.strip_prefix(&prefix) else {
+                let route = route.borrow();
+                let Some(body) = route.as_deref().and_then(|prefix| url.strip_prefix(prefix))
+                else {
                     return false;
                 };
-                if body.len() > MAX_MESSAGE || parse_message(body).is_none() {
+                if body.len() > MAX_MESSAGE {
                     return false;
                 }
                 let cost = body.len().max(MESSAGE_COST);
                 let bytes = waiting.fetch_add(cost, Ordering::SeqCst) + cost;
                 let count = entries.fetch_add(1, Ordering::SeqCst) + 1;
-                if bytes <= MESSAGE_BUDGET && count <= MESSAGE_ENTRIES {
-                    messages.send(Event::Message {
-                        view,
-                        body: body.to_owned(),
-                    });
+                if bytes <= MESSAGE_BUDGET
+                    && count <= MESSAGE_ENTRIES
+                    && parse_message(body).is_some()
+                {
+                    if messages
+                        .send((view, document.get(), body.to_owned()))
+                        .is_ok()
+                    {
+                        wake.request_repaint();
+                    }
                 } else {
                     waiting.fetch_sub(cost, Ordering::SeqCst);
                     entries.fetch_sub(1, Ordering::SeqCst);
@@ -421,8 +441,13 @@ impl AppKitBackend {
             .with_download_started_handler(|_, _| false)
             .with_on_page_load_handler(move |event, _| match event {
                 PageLoadEvent::Started => {
-                    // The main frame committed a document: it gets a token.
+                    // The main frame committed a document: the last one's
+                    // token stops working now, and the new document gets one
+                    // of its own at the end of the frame (`watch_loads`).
                     committed.set(committed.get() + 1);
+                    if let Some(route) = &revoked {
+                        *route.borrow_mut() = None;
+                    }
                     active.set(requested.get());
                     loads.send(Event::LoadStarted {
                         view,
@@ -534,12 +559,18 @@ impl Backend for AppKitBackend {
     }
 
     fn poll(&mut self) -> Vec<Event> {
-        let events: Vec<Event> = self.received.try_iter().collect();
-        for event in &events {
-            if let Event::Message { body, .. } = event {
-                self.waiting
-                    .fetch_sub(body.len().max(MESSAGE_COST), Ordering::SeqCst);
-                self.entries.fetch_sub(1, Ordering::SeqCst);
+        let mut events: Vec<Event> = self.received.try_iter().collect();
+        for (view, document, body) in self.bridged.try_iter() {
+            self.waiting
+                .fetch_sub(body.len().max(MESSAGE_COST), Ordering::SeqCst);
+            self.entries.fetch_sub(1, Ordering::SeqCst);
+            // A document the main frame has left posts nothing more.
+            let current = self
+                .views
+                .get(&view)
+                .is_some_and(|hosted| hosted.commits.get() == document);
+            if current {
+                events.push(Event::Message { view, body });
             }
         }
         events
