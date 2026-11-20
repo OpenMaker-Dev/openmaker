@@ -19,6 +19,8 @@ pub(crate) struct MenuContext<'a> {
     pub mode: Mode,
     pub view: ViewMode,
     pub zoom: u16,
+    /// View's zoom commands can change it (`OpenMakerApp::zooms`).
+    pub zooms: bool,
     pub session: Option<&'a Session>,
     pub find: &'a FindState,
     pub toolbar: bool,
@@ -576,11 +578,7 @@ fn view_menu(rows: &mut dyn MenuRows, context: &MenuContext<'_>, actions: &mut V
     }
     pending(rows, "Ruler", None);
     rows.separator();
-    let zoom_enabled = context
-        .session
-        .is_some_and(|session| matches!(session.render, crate::session::RenderState::Loaded(_)))
-        && ((context.mode == Mode::Browse && context.view == ViewMode::Form)
-            || context.mode == Mode::Preview);
+    let zoom_enabled = context.zooms;
     if rows.item(
         "Actual Size",
         None,
