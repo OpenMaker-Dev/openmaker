@@ -1267,6 +1267,21 @@ key text in the form of the field's index language (query-program.md 7.2,
 - Unicode raw: its code units;
 - language 0: the file's own language.
 
+Number, date, time and timestamp fields are keyed in the forms of 7.3: an
+empty value under `01`, a value with no digit (`N/A`, a date stored as `?`)
+under `fe ff`, and a timestamp stored as a date alone under its date and
+`fe ff`. A number with other characters among its digits (`1,234`, `abc12`)
+gets no key yet ([#246](https://github.com/OpenMaker-Dev/openmaker/issues/246)).
+A typed index that an earlier OpenMaker build wrote lists no empty value
+under `01`, so a find for `=` on it misses those records.
+
+Word-index keys break words as FileMaker's English and Unicode standard
+indexes do (query-program.md 7.1): within a script, across `.` and
+apostrophes between letters and `-`, `.`, `,`, `:`, `/` between digits.
+Unicode raw's own word breaks are not built
+([#395](https://github.com/OpenMaker-Dev/openmaker/issues/395)), nor the
+word breaks of the other index languages, whose text is refused anyway.
+
 For a text field indexed in any other language they write no key, rather
 than English ones a find in that language would miss (#159):
 - A commit that would change the field's text where the field has an index
