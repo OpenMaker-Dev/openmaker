@@ -20,7 +20,7 @@
 use om_hbam::slot::{be_uint, uint_segment};
 use om_hbam::{serial, OwnedNode};
 
-use crate::field_catalog::name_key;
+use crate::field_catalog::{listed_key_or_why, name_key};
 
 /// Keys of the layout catalog `[4]`: its index and members, and in the
 /// index the last issued id, the name list, the display order, the member
@@ -167,8 +167,10 @@ pub struct Planned {
 }
 
 /// Check a new layout's name: at most [`MAX_NAME_CHARS`] characters, not
-/// empty, no control characters, and a name key FileMaker can store.
-/// Layouts may share a name (layout-model.md 10.6). Returns the name key.
+/// empty, no control characters, and a name list key OpenMaker can build
+/// and FileMaker can store. Layouts may share a name (layout-model.md
+/// 10.6). Returns its key in the name list
+/// ([`crate::field_catalog::listed_key`]).
 pub fn check_name(name: &str) -> Result<Vec<u8>, Refusal> {
     let refuse = |why: &str| {
         Err(Refusal::Name(format!(
@@ -184,16 +186,18 @@ pub fn check_name(name: &str) -> Result<Vec<u8>, Refusal> {
     if name.chars().any(char::is_control) {
         return refuse("it holds a control character or line break");
     }
-    let key = name_key(name);
-    if key.is_empty() {
+    if name_key(name).is_empty() {
         return refuse("it has no character FileMaker tells names apart by");
     }
-    // The key, its three closing zero bytes and, for a name already
-    // listed, the id after them.
-    if key.len() + 3 + 8 > MAX_NAME_KEY {
+    let listed = match listed_key_or_why(name) {
+        Ok(key) => key,
+        Err(why) => return refuse(&why),
+    };
+    // The key and, for a name already listed, the id after it.
+    if listed.len() + 8 > MAX_NAME_KEY {
         return refuse("its name key is longer than FileMaker stores");
     }
-    Ok(key)
+    Ok(listed)
 }
 
 /// A member's name, decoded.
@@ -532,7 +536,7 @@ struct Slot {
     count: u32,
 }
 
-/// The slot of a new member whose name has the name key `name_key` in
+/// The slot of a new member whose name is listed under `listed` in
 /// `catalog`. The id is the serial key after the larger of the index's last
 /// issued id and every member's, so an id is never issued twice; the member
 /// goes after every listed one in the display order. The index must hold a
@@ -540,7 +544,7 @@ struct Slot {
 /// always has them). A name another layout has is kept: the name list
 /// entry then ends with the new layout's id, as FileMaker lists a second
 /// layout of the same name (layout-model.md 10.6).
-fn slot(catalog: &OwnedNode, name_key: Vec<u8>) -> Result<Slot, Refusal> {
+fn slot(catalog: &OwnedNode, mut listed: Vec<u8>) -> Result<Slot, Refusal> {
     let index = catalog.child(&[INDEX]).ok_or_else(|| {
         Refusal::Unsupported(
             "The file's layout catalog has no index [4, 1] (every file FileMaker made has \
@@ -619,8 +623,6 @@ fn slot(catalog: &OwnedNode, name_key: Vec<u8>) -> Result<Slot, Refusal> {
 
     // The name list key: the name's, or for a name already listed, its
     // followed by the new id.
-    let mut listed = name_key;
-    listed.extend([0, 0, 0]);
     let names = index.child(&[NAMES]).expect("checked above");
     if names.child(&listed).is_some() {
         listed.extend(&key);
@@ -1180,7 +1182,7 @@ pub fn plan_setup(
         ));
     }
     if member_name(member).as_deref() != Some(name) {
-        let name_key = check_name(name)?;
+        let mut listed = check_name(name)?;
         next.set_child(om_scripts::text_node(&[NAME], name));
         next_entry.set_child(om_scripts::text_node(&[NAME], name));
         // The name list: its entry under the new name's key, or the key
@@ -1193,8 +1195,6 @@ pub fn plan_setup(
         names
             .children
             .retain(|n| n.value.as_deref() != Some(id_value.as_slice()));
-        let mut listed = name_key;
-        listed.extend([0, 0, 0]);
         if names.child(&listed).is_some() {
             listed.extend(&key);
             // Its own entries are gone: one left there is another

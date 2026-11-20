@@ -8,7 +8,7 @@ use std::time::{Duration, Instant};
 
 use log::{debug, error, info, warn};
 use om_crypto::account::{StoredPassword, StoredPasswordError};
-use om_data::host::security::{set_access, SetAccess};
+use om_data::host::security::{set_access, BuiltInSet, SetAccess};
 use om_hbam::HbamFile;
 
 use crate::accounts::{AccountKind, AccountStatus};
@@ -140,15 +140,17 @@ impl FileAccount {
     }
 
     /// What the account may do. A file admits only its active accounts in
-    /// a set the host enforces ([`Eligibility`]): one in the verified [Full
-    /// Access] may do everything; one in any other set is `Unknown` here,
-    /// so that it changes no design, and its record limits are checked
-    /// where records are read and written.
+    /// a set the host enforces ([`Eligibility`]): one in a verified
+    /// built-in set has that set's privileges; one in a custom set is
+    /// `Unknown` here, so that it changes no design and its server scripts
+    /// fail closed, and its record limits are checked where clients read
+    /// and write records.
     pub fn privileges(&self) -> Privileges {
-        if self.full_access() {
-            Privileges::FullAccess
-        } else {
-            Privileges::Unknown
+        match self.access {
+            Some(SetAccess::BuiltIn(BuiltInSet::FullAccess)) => Privileges::FullAccess,
+            Some(SetAccess::BuiltIn(BuiltInSet::DataEntryOnly)) => Privileges::DataEntry,
+            Some(SetAccess::BuiltIn(BuiltInSet::ReadOnlyAccess)) => Privileges::ReadOnly,
+            _ => Privileges::Unknown,
         }
     }
 }
@@ -1250,9 +1252,9 @@ impl Hosting {
             insecure_files,
         };
         let mut first_error = None;
+        let mut names = std::collections::HashSet::new();
         for (index, hosted) in files.iter().enumerate() {
-            let name = hosted.name.to_lowercase();
-            if files[..index].iter().any(|f| f.name.to_lowercase() == name) {
+            if !names.insert(hosted.name.to_lowercase()) {
                 return Err(HostingError::DuplicateName {
                     name: hosted.name.clone(),
                 });
@@ -1392,10 +1394,13 @@ fn load_hosted(
     insecure_files: bool,
     events: &EventLog,
 ) -> Result<Arc<Hosted>, HostingError> {
-    let file = HbamFile::open(&hosted.path).map_err(|error| HostingError::Open {
-        name: hosted.name.clone(),
-        error,
-    })?;
+    let file = read_regular_file(&hosted.path)
+        .map_err(om_hbam::Error::from)
+        .and_then(HbamFile::from_bytes)
+        .map_err(|error| HostingError::Open {
+            name: hosted.name.clone(),
+            error,
+        })?;
     let loaded = Arc::new(Hosted::load(
         id,
         hosted,
@@ -1407,6 +1412,32 @@ fn load_hosted(
     drop(file);
     loaded.commit_recovery();
     Ok(loaded)
+}
+
+/// The bytes of the regular file at `path`, read through the one handle
+/// whose type was checked: opened without blocking (a FIFO named as a
+/// database would otherwise hold startup before the server listens), and
+/// refused unless it is a regular file, so that one swapped in after a
+/// check cannot be read instead.
+fn read_regular_file(path: &std::path::Path) -> std::io::Result<Vec<u8>> {
+    use std::io::Read as _;
+    let mut options = std::fs::OpenOptions::new();
+    options.read(true);
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::OpenOptionsExt;
+        options.custom_flags(rustix::fs::OFlags::NONBLOCK.bits() as i32);
+    }
+    let mut file = options.open(path)?;
+    if !file.metadata()?.is_file() {
+        return Err(std::io::Error::new(
+            std::io::ErrorKind::InvalidInput,
+            "not a regular file",
+        ));
+    }
+    let mut data = Vec::new();
+    file.read_to_end(&mut data)?;
+    Ok(data)
 }
 
 /// Why [`Hosting::reopen`] did not open a file.
@@ -1423,6 +1454,36 @@ pub(crate) enum ReopenError {
 mod tests {
     use super::*;
     use crate::scripts::fixture;
+
+    /// A FIFO named as a database is refused without waiting for a writer,
+    /// and the other files are hosted: a blocking open would hold startup
+    /// before the server listens (#430's review).
+    #[cfg(unix)]
+    #[test]
+    fn a_fifo_among_the_files_does_not_hold_startup() {
+        let file = fixture::TempFile::new("hosting-fifo", &[], true);
+        let fifo = file.0.with_extension("pipe.fmp12");
+        let status = std::process::Command::new("mkfifo").arg(&fifo).status();
+        assert!(status.is_ok_and(|s| s.success()), "mkfifo");
+        let files = [
+            HostedFile {
+                name: "Pipe.fmp12".into(),
+                path: fifo.clone(),
+            },
+            HostedFile {
+                name: fixture::FILE.into(),
+                path: file.0.clone(),
+            },
+        ];
+        let (done, wait) = std::sync::mpsc::channel();
+        std::thread::spawn(move || {
+            let hosting = Hosting::load(&files, false, &EventLog::default());
+            let _ = done.send(hosting.map(|h| h.by_name(fixture::FILE).is_some()));
+        });
+        let loaded = wait.recv_timeout(std::time::Duration::from_secs(30));
+        let _ = std::fs::remove_file(&fifo);
+        assert!(matches!(loaded, Ok(Ok(true))), "the good file is hosted");
+    }
 
     /// A password changed over the wire (#732's review: FileMaker Pro's
     /// Manage Security uploads the account's record with op13,

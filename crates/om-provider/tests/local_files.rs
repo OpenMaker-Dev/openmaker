@@ -1645,11 +1645,17 @@ fn a_text_field_with_values_changes_to_number_and_back_as_filemaker_does() {
     assert_eq!(number.cells, text.cells, "every stored value byte for byte");
     assert_eq!(number.by_type, [0x08]);
     assert_ne!(number.keys, text.keys, "the value index is keyed anew");
-    // Each number's key; "N/A" has none in OpenMaker (#828), unlike Pro.
+    // Each number's key, and "N/A" under the invalid value's `fe ff`, where
+    // FileMaker Pro 26.0.3 listed it in the same change (query-program.md
+    // 7.3).
     for value in &values[..4] {
-        let key = om_query::keys::number_key(value).unwrap();
+        let key = om_collate::number_key(value).unwrap();
         assert!(number.keys.contains(&key), "{value}");
     }
+    assert!(
+        number.keys.iter().any(|k| k == om_query::keys::INVALID_KEY),
+        "N/A"
+    );
     assert_eq!(
         sorted(),
         [ids[2], ids[1], ids[3], ids[0], ids[4]],
@@ -1716,7 +1722,7 @@ fn an_index_built_for_a_find_is_keyed_anew_when_the_type_changes() {
     provider.close();
     let after = name_on_disk(&path).keys;
     assert!(
-        after.contains(&om_query::keys::number_key("10").unwrap()),
+        after.contains(&om_collate::number_key("10").unwrap()),
         "{after:?}"
     );
 
