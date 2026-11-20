@@ -220,13 +220,20 @@ impl Backend for ServerBackend {
     }
 
     /// The database folders the server looked in at startup, empty or
-    /// not, and the folders of files named on its command line elsewhere.
+    /// not, and the folders of files named on its command line outside
+    /// them; a file found in a database folder's subfolder belongs to
+    /// that database folder. Resolved, so that a folder reached through a
+    /// link is listed once.
     fn folders(&self) -> Result<Folders, BackendError> {
+        let searched = self.handle.database_folders();
+        let resolved = |folder: PathBuf| std::fs::canonicalize(&folder).unwrap_or(folder);
         let databases: BTreeSet<PathBuf> = self
             .handle
-            .database_folders()
+            .files()
             .into_iter()
-            .chain(self.handle.files().into_iter().map(|file| file.folder))
+            .map(|file| resolved(file.folder))
+            .filter(|folder| !searched.iter().any(|s| folder.starts_with(s)))
+            .chain(searched.iter().cloned())
             .collect();
         Ok(Folders {
             databases: databases.into_iter().collect(),

@@ -829,11 +829,17 @@ fn hosted_paths(args: &Args) -> (Vec<PathBuf>, Vec<PathBuf>) {
         }
         paths.push(found);
     }
-    // The folders as they were searched: resolved, as discovery resolves
-    // them, for the Admin Console's list.
+    // The folders searched, for the Admin Console's list: resolved, as
+    // discovery resolves them, and only those that exist and are not a
+    // backup or log folder, which discovery passes over.
+    let excluded: Vec<PathBuf> = exclude
+        .iter()
+        .map(|p| std::fs::canonicalize(p).unwrap_or_else(|_| p.clone()))
+        .collect();
     let searched = folders
         .iter()
-        .map(|f| std::fs::canonicalize(f).unwrap_or_else(|_| f.clone()))
+        .filter_map(|f| std::fs::canonicalize(f).ok())
+        .filter(|f| f.is_dir() && !excluded.iter().any(|e| f.starts_with(e)))
         .collect();
     (paths, searched)
 }
