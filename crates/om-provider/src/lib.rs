@@ -2772,6 +2772,30 @@ impl DataProvider for NativeProvider {
         Ok(())
     }
 
+    fn save_a_copy(
+        &mut self,
+        path: &std::path::Path,
+        kind: om_data::CopyKind,
+    ) -> Result<(), DataError> {
+        self.require_open()?;
+        let Some(host) = self.local.as_ref() else {
+            // FileMaker Pro: "not supported when the current file is
+            // hosted" (Claris Help, Save a Copy as); its error there is
+            // unmeasured.
+            return Err(DataError::with_code(
+                3,
+                "A copy can be saved only of a file on this computer.",
+            ));
+        };
+        host.save_copy(path, kind).map_err(|e| {
+            if e.kind() == std::io::ErrorKind::Unsupported {
+                DataError::with_code(3, e.to_string())
+            } else {
+                DataError::with_code(800, format!("{}: {e}", path.display()))
+            }
+        })
+    }
+
     fn supports_client_license(&self) -> bool {
         true
     }

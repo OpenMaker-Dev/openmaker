@@ -525,6 +525,74 @@ impl LocalHost {
         }
     }
 
+    /// Save a Copy as (local-files.md 4, "Save a Copy as"): write the file
+    /// as `kind` to `to`, a new file. A copy of the current file is the
+    /// file's bytes as its last save left them, opened while the store is
+    /// held ([`crate::store::Store::open_saved`]); a compacted copy is the
+    /// tree rewritten packed ([`crate::store::Store::compacted`]), and so
+    /// is a copy while changes a failed save left wait in memory. Clones
+    /// and self-contained copies are refused with
+    /// [`io::ErrorKind::Unsupported`].
+    ///
+    /// The copy is only ever a new file: any entry at `to` (a file, this
+    /// file under another name, a link) refuses it, untouched
+    /// ([`io::ErrorKind::AlreadyExists`]), and so does the name this file's
+    /// saves make their new copy under. The copy holds the whole database,
+    /// password verifiers included: on Unix it is made with this file's
+    /// permissions for the group and others at most, read and write for
+    /// its owner, less the umask. A copy that fails is removed while it is
+    /// still the one this call made.
+    pub fn save_copy(&self, to: &Path, kind: om_data::CopyKind) -> io::Result<()> {
+        use om_data::CopyKind;
+        let compacted = match kind {
+            CopyKind::Copy => false,
+            CopyKind::Compacted => true,
+            CopyKind::Clone | CopyKind::SelfContained => {
+                return Err(io::Error::new(
+                    io::ErrorKind::Unsupported,
+                    "OpenMaker does not save clones or self-contained copies yet",
+                ));
+            }
+        };
+        let Some(file) = self
+            .handle
+            .as_ref()
+            .and_then(|handle| handle.shared.hosting.files().into_iter().next())
+        else {
+            return Err(io::Error::other("the file is closed"));
+        };
+        let resolved = to
+            .parent()
+            .filter(|dir| !dir.as_os_str().is_empty())
+            .and_then(|dir| dir.canonicalize().ok())
+            .zip(to.file_name())
+            .map(|(dir, name)| dir.join(name));
+        if resolved.is_some_and(|to| to == save_copy_path(&file.path)) {
+            return Err(io::Error::new(
+                io::ErrorKind::AlreadyExists,
+                "that name is where this file's saves make their new copy",
+            ));
+        }
+        let (contents, source) = {
+            let store = file.read_store();
+            let source = std::fs::metadata(&file.path)?;
+            let contents = if compacted || store.has_unsaved_changes() {
+                Contents::Bytes(store.compacted()?)
+            } else {
+                Contents::File(store.open_saved(&file.path)?)
+            };
+            (contents, source)
+        };
+        write_copy(to, contents, &source)?;
+        info!(
+            "{}: saved a {} to {}",
+            self.name,
+            if compacted { "compacted copy" } else { "copy" },
+            to.display()
+        );
+        Ok(())
+    }
+
     /// Stop serving the file and wait until nothing holds it: its lock and
     /// port are released when this returns `true`, and `false` says that
     /// something (a script that did not stop in time) still does. The
@@ -579,6 +647,52 @@ impl Drop for LocalHost {
     fn drop(&mut self) {
         self.shut_down();
     }
+}
+
+/// What a saved copy holds: a version of the file, or new bytes.
+enum Contents {
+    File(File),
+    Bytes(Vec<u8>),
+}
+
+/// Write `contents` to `to`, a new file, with the permissions of `source`'s
+/// metadata as [`LocalHost::save_copy`] gives them, flushed to disk.
+fn write_copy(to: &Path, contents: Contents, source: &std::fs::Metadata) -> io::Result<()> {
+    use std::io::Write;
+    let mut options = File::options();
+    options.write(true).create_new(true);
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::{OpenOptionsExt, PermissionsExt};
+        options.mode(0o666 & (source.permissions().mode() | 0o600));
+    }
+    #[cfg(not(unix))]
+    let _ = source;
+    let mut out = options.open(to)?;
+    let written = (|| {
+        match contents {
+            Contents::File(mut file) => {
+                io::copy(&mut file, &mut out)?;
+            }
+            Contents::Bytes(bytes) => out.write_all(&bytes)?,
+        }
+        out.sync_all()
+    })();
+    if let Err(e) = written {
+        if crate::store::owned_copy(&out, to) {
+            let _ = std::fs::remove_file(to);
+        }
+        return Err(e);
+    }
+    if let Some(dir) = to.parent().filter(|d| !d.as_os_str().is_empty()) {
+        if let Err(e) = File::open(dir).and_then(|d| d.sync_all()) {
+            warn!(
+                "saved a copy to {}, but flushing its folder failed: {e}",
+                to.display()
+            );
+        }
+    }
+    Ok(())
 }
 
 /// Open and lock the file at `path` as it is now, and say whether (and why)

@@ -513,6 +513,35 @@ impl fmt::Debug for LocalFile {
     }
 }
 
+/// What Save a Copy as writes (script-steps.md: step 37's value; Claris
+/// Help, "Saving and copying files").
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum CopyKind {
+    /// 1, "copy of current file": the file as it is.
+    Copy,
+    /// 2, "compacted copy (smaller)": the file rewritten without its free
+    /// space.
+    Compacted,
+    /// 3, "clone (no records)": the schema, layouts and scripts, no data.
+    Clone,
+    /// 4, "self-contained copy (single file)": container data stored
+    /// outside the file or by reference embedded in it.
+    SelfContained,
+}
+
+impl CopyKind {
+    /// The kind a Save a Copy as step's value names.
+    pub fn of_step(value: u16) -> Option<CopyKind> {
+        match value {
+            1 => Some(CopyKind::Copy),
+            2 => Some(CopyKind::Compacted),
+            3 => Some(CopyKind::Clone),
+            4 => Some(CopyKind::SelfContained),
+            _ => None,
+        }
+    }
+}
+
 /// What [`DataProvider::open_local`] did.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum LocalOpen {
@@ -2274,6 +2303,19 @@ pub trait DataProvider: Send {
         Err(DataError::with_code(
             3,
             "This provider cannot change a password.",
+        ))
+    }
+
+    /// Save a Copy as (37): write a copy of the open file, as `kind`, to
+    /// `path`, a new file. A local file's own host writes it
+    /// (local-files.md 4, "Save a Copy as"). Refused with 3 for a kind or a file this
+    /// provider cannot copy (FileMaker Pro does not save copies of hosted
+    /// files), and with 800 when the copy could not be created, an
+    /// existing file at `path` included.
+    fn save_a_copy(&mut self, _path: &std::path::Path, _kind: CopyKind) -> Result<(), DataError> {
+        Err(DataError::with_code(
+            3,
+            "This provider cannot save a copy of the file.",
         ))
     }
 

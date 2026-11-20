@@ -270,7 +270,7 @@ pub(crate) fn save_copy_path(path: &Path) -> PathBuf {
 }
 
 /// Whether `file`, the copy a save created, is still the entry at `path`.
-fn owned_copy(file: &std::fs::File, path: &Path) -> bool {
+pub(crate) fn owned_copy(file: &std::fs::File, path: &Path) -> bool {
     match crate::filelock::same_file(file, path) {
         Ok(same) => same,
         // No inode identity (Windows): a regular file where the save made it.
@@ -590,6 +590,38 @@ impl Store {
             }
         }
         Ok(true)
+    }
+
+    /// The file at `path` as the store last loaded or saved it, opened for
+    /// reading while the store is held, so that no save is half done: the
+    /// descriptor names that version whatever later saves rename over it
+    /// (`crate::backups` copies files so). Refused when the store holds a
+    /// lock on another file (the file at `path` was replaced by another
+    /// program) or has changes the file lacks (a failed save's): the
+    /// file's bytes would not be the store's.
+    pub fn open_saved(&self, path: &Path) -> std::io::Result<std::fs::File> {
+        use std::io::Error;
+        if self.dirty {
+            return Err(Error::other(
+                "the file has changes that could not be saved yet",
+            ));
+        }
+        let file = std::fs::File::open(path)?;
+        if let Some(lock) = &self.lock {
+            if !crate::filelock::same_file(lock.file(), path)? {
+                return Err(Error::other("the file was replaced by another program"));
+            }
+        }
+        Ok(file)
+    }
+
+    /// The tree as a complete new file, packed (`om_hbam::writer::rebuild`,
+    /// hbam-writer.md 7.2): the shape of FileMaker's compacted copies
+    /// (hbam-writer.md 9.3). A tree holding content the writer cannot write
+    /// is refused, as its saves are.
+    pub fn compacted(&self) -> std::io::Result<Vec<u8>> {
+        om_hbam::writer::rebuild(&self.root, &self.superblock)
+            .map_err(|e| std::io::Error::new(std::io::ErrorKind::InvalidData, e.to_string()))
     }
 
     /// Start a commit whose save must succeed for it to count
