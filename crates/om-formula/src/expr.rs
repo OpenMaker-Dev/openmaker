@@ -145,7 +145,9 @@ impl Expr {
     /// plug-in or `ExecuteSQL`), and the custom functions it calls, each
     /// once, whose bodies a caller that can resolve them checks the same way.
     pub fn variable_reads(&self) -> (bool, Vec<Key>) {
+        // Each call once, by a set: a formula of many calls stays linear.
         let mut functions = Vec::new();
+        let mut seen = std::collections::HashSet::new();
         let mut stack = vec![self];
         while let Some(expr) = stack.pop() {
             match expr {
@@ -162,7 +164,7 @@ impl Expr {
                     return (true, functions)
                 }
                 Expr::CustomCall { function, .. } => {
-                    if !functions.contains(function) {
+                    if seen.insert(function) {
                         functions.push(function.clone());
                     }
                     expr.for_each_child(|c| stack.push(c));
