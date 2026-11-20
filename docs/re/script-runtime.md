@@ -3768,10 +3768,16 @@ Steps
   (its held value would be replaced by the stored one). The window keeps
   its record and found set. A record refused partway ends the step, the
   records before it written; a record deleted after the check is 101.
-  OpenMaker Server's host does the same in its own session (each record
-  of the found set, by id, opened with the match field marked set and its
-  stored value unchanged, then committed), with the same checks; a record
-  refused there is left as it was.
+  OpenMaker Server's host does the same in its own session, with the same
+  checks and a match value whose text does not decode refused too (3).
+  Each record of the found set is opened once, by id, with the match
+  field marked set and its stored value unchanged, and the rules run on
+  it. A record whose cells they leave as they were is not written. Outside
+  a transaction the record is written as they left it. Inside one, the
+  cells they changed are staged as a step's edits, so Commit Transaction
+  validates them with the transaction's options and does not look up
+  again with what later steps change; under "Skip auto-enter options"
+  nothing is copied. A record refused is left as it was.
   Unmeasured, and OpenMaker's choices:
   - the dialog's text;
   - the codes: 102 for no such field, 201 for one a script cannot set (a

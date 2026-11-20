@@ -859,7 +859,8 @@ fn set_match_fields_perform_lookups() {
 
 /// Relookup Field Contents [Tasks::Name] copies each found task's lookup
 /// again, Name itself unchanged (#87). Inside a transaction that skips
-/// auto-entry it copies and writes nothing. Task 1's Note, typed over, comes
+/// auto-entry it copies and writes nothing; inside an ordinary one the copy
+/// waits for Commit Transaction. Task 1's Note, typed over, comes
 /// back as its note "w", and task 3, whose Name `東京` is stored in chunks,
 /// takes its note "jp". Run again with nothing new to copy, it writes no
 /// record: task 1's modification count stays. Through Count, which no
@@ -895,21 +896,37 @@ fn relookup_field_contents_copies_the_lookups_again() {
     let ids: RidList = (1..=5).collect();
     tree.put(&[&notes, &[0x0d]], ids.to_node(Vec::new()));
     tree.put(&[&notes, &[0]], OwnedNode::leaf(Vec::new(), vec![1, 5]));
-    // In place of scripts 6 to 9, so the catalog's index lists them.
+    let open_transaction = |skip_auto_enter: bool| {
+        let mut open = ScriptStep::new(205);
+        open.set_flag(om_scripts::flag::SELECT_ALL, skip_auto_enter);
+        open
+    };
+    // In place of scripts 5 to 9, so the catalog's index lists them.
     for (id, name, steps) in [
         (
-            6u64,
+            5u64,
+            "Relookup in a transaction",
+            vec![
+                fixture::go_to_record(1),
+                set_field(NOTE, 1, "\"typed\""),
+                ScriptStep::new(75),
+                open_transaction(false),
+                relookup(fixture::NAME, 0),
+                set_var("$relookup", "Get ( LastError )"),
+                ScriptStep::new(206),
+                exit_with("Tasks::Note & \"/\" & $relookup & \"/\" & Get ( LastError )"),
+            ],
+        ),
+        (
+            6,
             "Relookup skipped",
             vec![
                 fixture::go_to_record(1),
-                {
-                    let mut open = ScriptStep::new(205);
-                    open.set_flag(om_scripts::flag::SELECT_ALL, true);
-                    open
-                },
+                open_transaction(true),
                 relookup(fixture::NAME, 0),
+                set_var("$relookup", "Get ( LastError )"),
                 ScriptStep::new(206),
-                exit_with("Tasks::Note & \"/\" & Get ( LastError )"),
+                exit_with("Tasks::Note & \"/\" & $relookup & \"/\" & Get ( LastError )"),
             ],
         ),
         (
@@ -956,8 +973,11 @@ fn relookup_field_contents_copies_the_lookups_again() {
     // A transaction that skips auto-entry copies nothing and writes
     // nothing.
     let before = count(&mut client);
-    assert_eq!(run(&mut client, 6), (0, "/0".to_string()));
+    assert_eq!(run(&mut client, 6), (0, "/0/0".to_string()));
     assert_eq!(count(&mut client), before);
+    // Inside an ordinary transaction the copied value is staged, and
+    // Commit Transaction writes it.
+    assert_eq!(run(&mut client, 5), (0, "w/0/0".to_string()));
     assert_eq!(run(&mut client, 8), (0, "w/0/Write tests".to_string()));
     let records = server::records_of(&mut client, TABLE);
     assert_eq!(server::cell(&records, 3, NOTE), Some("jp"));

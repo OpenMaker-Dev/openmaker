@@ -1285,30 +1285,69 @@ impl ServerHost {
     /// runs), nothing is written or staged and the record is let go of, so
     /// its modification count stays. Otherwise it is written, or staged in
     /// the transaction, as `commit_open` does.
-    fn commit_open_relooked(&mut self, entry: Entry) -> HostResult {
+    fn commit_open_relooked(&mut self, cell: u64) -> HostResult {
         let Some(record) = self.record.take() else {
             return Ok(());
         };
-        let skipped = self
-            .transaction
-            .as_ref()
-            .is_some_and(|t| t.options.skip_auto_enter);
+        let options = self.transaction.as_ref().map(|t| t.options);
+        if options.is_some_and(|o| o.skip_auto_enter) {
+            self.unlock_record(record.table, record.id);
+            return Ok(());
+        }
+        // Inside a transaction its commit validates, as for every other
+        // staged edit.
+        let entry = Entry::script(options.is_some(), false);
         let mut ready = record.clone();
-        let unchanged = skipped
-            || match self.apply_rules(&mut ready, entry) {
-                Ok(_) => ready.node == record.node,
-                Err(error) => {
-                    self.record = Some(record);
-                    return Err(error);
-                }
-            };
-        if unchanged {
+        if let Err(error) = self.apply_rules(&mut ready, entry) {
+            self.record = Some(record);
+            return Err(error);
+        }
+        // The cells the lookups changed (no others: only the match field
+        // was marked changed, and it keeps its value).
+        let changed: Vec<(u64, Option<OwnedNode>)> = ready
+            .node
+            .children
+            .iter()
+            .filter(|c| c.segment != [modcount::MOD_COUNT])
+            .filter(|c| record.node.child(&c.segment) != Some(*c))
+            .map(|c| (c.segment.clone(), Some(c.clone())))
+            .chain(
+                record
+                    .node
+                    .children
+                    .iter()
+                    .filter(|c| c.segment != [modcount::MOD_COUNT])
+                    .filter(|c| ready.node.child(&c.segment).is_none())
+                    .map(|c| (c.segment.clone(), None)),
+            )
+            .filter_map(|(segment, node)| Some((om_hbam::slot::be_uint(&segment)?, node)))
+            .collect();
+        if changed.is_empty() {
             self.unlock_record(record.table, record.id);
             return Ok(());
         }
         let key = (record.table, record.id);
         if let Some(transaction) = self.transaction.as_mut() {
-            transaction.insert(key, Change::Write(record));
+            // The values copied now, as the step copies them: staged as a
+            // step's edits of those cells, the match field not among
+            // them, so the commit validates and auto-enters them with the
+            // transaction's options and does not look up again with what
+            // later steps change.
+            let mut staged = record;
+            staged.changed.remove(&cell);
+            if let Some(ruled) = &mut staged.ruled {
+                ruled.since.remove(&cell);
+            }
+            for (field, node) in changed {
+                match node {
+                    Some(node) => staged.node.set_child(node),
+                    None => {
+                        staged.node.remove(&[&uint_segment(field)]);
+                    }
+                }
+                staged.changed_cell(field);
+            }
+            transaction.insert(key, Change::Write(staged));
             return Ok(());
         }
         let committed = self.write(vec![(key, Change::Write(ready))]);
@@ -3651,23 +3690,27 @@ impl FieldSteps for ServerHost {
             .relookup_target(&def.name)
             .map_err(|e| rule_error(&e))?;
         self.leave()?;
-        let (ids, original) = {
+        let (mut ids, original) = {
             let window = self.window()?;
             (window.found.clone(), window.record())
         };
+        // Each record once: a list Go to List of Records made can name one
+        // twice, and a second pass would reopen the first's staged write.
+        let mut seen = BTreeSet::new();
+        ids.retain(|id| seen.insert(*id));
         let key = uint_segment(cell);
         for &id in &ids {
             if self.pending(table, id).is_some() {
                 return Err(ErrorCode::UNAVAILABLE.into());
             }
-            // A value with character styles reads as nested; a plain one
+            // A value with character styles reads as nested, and one whose
+            // text does not decode would match as empty; a plain one
             // stored in chunks assembles into a value and is relooked up.
-            let styled = self.committed_node(table, id).is_some_and(|node| {
-                node.child(&key).is_some_and(|c| {
-                    matches!(om_hbam::Cell::from_owned(c), om_hbam::Cell::Nested(_))
-                })
+            let unreadable = self.committed_node(table, id).is_some_and(|node| {
+                node.child(&key)
+                    .is_some_and(|c| !matches!(om_hbam::Cell::from_owned(c).text(), Some(Ok(_))))
             });
-            if styled {
+            if unreadable {
                 return Err(ErrorCode::UNAVAILABLE.into());
             }
         }
@@ -3689,7 +3732,7 @@ impl FieldSteps for ServerHost {
                     break;
                 }
             }
-            if let Err(error) = self.commit_open_relooked(Entry::script(false, false)) {
+            if let Err(error) = self.commit_open_relooked(cell) {
                 // The refused record goes back to what it was: no write of
                 // it stays pending for a later commit.
                 self.drop_open();
