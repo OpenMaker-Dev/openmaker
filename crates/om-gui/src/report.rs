@@ -1,5 +1,6 @@
 //! Portable vector reports. Pagination is shared with future Preview/printing;
-//! this backend embeds the existing OFL Inter fonts, independently of OS fonts.
+//! this backend embeds the bundled OFL Inter and Liberation Sans fonts,
+//! independently of OS fonts.
 //! Static layout pictures are decoded once per owner and embedded as image
 //! XObjects; nothing else is rasterized.
 //! Unsupported content and text overflow fail before any destination is opened.
@@ -25,6 +26,11 @@ const BOLD: &[u8] = include_bytes!("../assets/fonts/Inter-SemiBold.ttf");
 /// cut where FileMaker's do.
 pub(crate) const SANS: &[u8] = include_bytes!("../assets/fonts/LiberationSans-Regular.ttf");
 pub(crate) const SANS_BOLD: &[u8] = include_bytes!("../assets/fonts/LiberationSans-Bold.ttf");
+/// Liberation Sans Italic and Bold Italic 2.1.5, metric-compatible with
+/// Arial Italic and Arial Bold Italic.
+pub(crate) const SANS_ITALIC: &[u8] = include_bytes!("../assets/fonts/LiberationSans-Italic.ttf");
+pub(crate) const SANS_BOLD_ITALIC: &[u8] =
+    include_bytes!("../assets/fonts/LiberationSans-BoldItalic.ttf");
 
 /// The faces report text is set in.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Hash)]
@@ -34,21 +40,28 @@ pub(crate) enum ReportFace {
     /// Liberation Sans, for Arial and Helvetica.
     Sans,
     SansBold,
+    SansItalic,
+    SansBoldItalic,
 }
 
 impl ReportFace {
-    pub(crate) const ALL: [ReportFace; 4] = [
+    pub(crate) const ALL: [ReportFace; 6] = [
         ReportFace::Inter,
         ReportFace::InterBold,
         ReportFace::Sans,
         ReportFace::SansBold,
+        ReportFace::SansItalic,
+        ReportFace::SansBoldItalic,
     ];
 
     /// The face for text in `style`: Liberation Sans when the style's first
     /// font family is Arial or Helvetica, else Inter; bold from weight 2 or
-    /// 600 and up.
-    fn of(style: &ResolvedStyle) -> Self {
+    /// 600 and up; italic from font-style italic or oblique (2, 3). No
+    /// italic Inter is bundled, so italic text in another family refuses
+    /// rather than print upright.
+    fn of(style: &ResolvedStyle) -> Result<Self, ReportError> {
         let bold = style.font_weight.is_some_and(|w| w == 2 || w >= 600);
+        let italic = matches!(style.font_style, Some(2 | 3));
         let family = style
             .font_family
             .as_deref()
@@ -60,12 +73,19 @@ impl ReportFace {
                     .to_ascii_lowercase()
             });
         let sans = matches!(family.as_deref(), Some("arial" | "helvetica"));
-        match (sans, bold) {
-            (false, false) => ReportFace::Inter,
-            (false, true) => ReportFace::InterBold,
-            (true, false) => ReportFace::Sans,
-            (true, true) => ReportFace::SansBold,
-        }
+        Ok(match (sans, bold, italic) {
+            (false, false, false) => ReportFace::Inter,
+            (false, true, false) => ReportFace::InterBold,
+            (false, _, true) => {
+                return Err(ReportError::unsupported(
+                    "Italic report text is supported only in Arial and Helvetica",
+                ))
+            }
+            (true, false, false) => ReportFace::Sans,
+            (true, true, false) => ReportFace::SansBold,
+            (true, false, true) => ReportFace::SansItalic,
+            (true, true, true) => ReportFace::SansBoldItalic,
+        })
     }
 
     fn index(self) -> usize {
@@ -78,6 +98,8 @@ impl ReportFace {
             ReportFace::InterBold => BOLD,
             ReportFace::Sans => SANS,
             ReportFace::SansBold => SANS_BOLD,
+            ReportFace::SansItalic => SANS_ITALIC,
+            ReportFace::SansBoldItalic => SANS_BOLD_ITALIC,
         }
     }
 
@@ -92,49 +114,22 @@ impl ReportFace {
             ReportFace::InterBold => (b"F2", b"Inter-SemiBold"),
             ReportFace::Sans => (b"F3", b"LiberationSans"),
             ReportFace::SansBold => (b"F4", b"LiberationSans-Bold"),
+            ReportFace::SansItalic => (b"F5", b"LiberationSans-Italic"),
+            ReportFace::SansBoldItalic => (b"F6", b"LiberationSans-BoldItalic"),
         }
     }
 
     pub(crate) fn is_sans(self) -> bool {
-        matches!(self, ReportFace::Sans | ReportFace::SansBold)
+        !matches!(self, ReportFace::Inter | ReportFace::InterBold)
     }
 }
 
-#[derive(Clone, Debug)]
-pub struct ReportError {
-    pub code: i32,
-    pub message: String,
-}
-impl ReportError {
-    pub fn unsupported(message: impl Into<String>) -> Self {
-        Self {
-            code: 3,
-            message: message.into(),
-        }
-    }
-}
-
-/// What a viewer shows beside the page when it opens the PDF: Save Records
-/// as PDF's restored Initial View option (script-steps.md 11.7, its values
-/// as Create PDF's `View` names them in 12.5), written as the catalog's
-/// `/PageMode`.
-#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
-pub enum PdfView {
-    /// 0 Page Only: no `/PageMode`, the PDF default (`/UseNone`).
-    #[default]
-    PageOnly,
-    /// 1 Bookmarks Panel and Page: `/UseOutlines`.
-    Bookmarks,
-    /// 2 Pages Panel and Page: `/UseThumbs`.
-    Pages,
-}
-
-/// The planned document and its complete, validated PDF. No file I/O is done.
-#[derive(Debug)]
-pub struct PdfReport {
-    pub plan: ReportPlan,
-    pub bytes: Vec<u8>,
-}
+// The interface between a host's data and this renderer lives in
+// om-report, so that OpenMaker Server can give its own report content
+// (#104).
+pub use om_report::{
+    in_row, ContentContext, PdfReport, PdfView, PortalRowContext, ReportContent, ReportError,
+};
 
 /// A color as the PDF paints it: RGB, and its opacity in 255ths when it is
 /// translucent (8 bits, as Browse's `Color32` keeps it).
@@ -451,25 +446,35 @@ fn text_style(
     let mut style = crate::document::text_style(layout, object, conditions, 1);
     if let Some(rich) = &object.rich_text {
         if let Some(first) = rich.character_runs.first() {
-            if rich.character_runs.iter().any(|r| r.style != first.style) {
+            // A text object's or button's runs in several colors print each
+            // in its own (`run_colors`); runs in several fonts, sizes or
+            // faces, and a field's in several anything, are refused.
+            let colors = matches!(object.kind(), ObjectKind::Text | ObjectKind::Button);
+            if (rich.character_runs.iter()).any(|r| {
+                r.style != first.style && !(colors && same_but_color(&r.style, &first.style))
+            }) {
                 return Err(ReportError::unsupported(
                     "Mixed character styles are unsupported",
                 ));
             }
             let ch = &first.style;
+            // The run's own font, as Browse sets it (`rich_text::text_format`):
+            // its face, italic included, is chosen by it.
+            style.font_family = ch.font_family.clone().or(style.font_family);
             style.font_size = ch.font_size.or(style.font_size);
             style.color = ch.color.or(style.color);
             if let Some(faces) = ch.faces {
-                if faces & !256 != 0 {
+                if faces & !(256 | 512) != 0 {
                     return Err(ReportError::unsupported(
-                        "Only regular and bold report text is supported",
+                        "Only regular, bold and italic report text is supported",
                     ));
                 }
                 if ch.face_mask.unwrap_or(u16::MAX) & 256 != 0 {
                     style.font_weight = Some(if faces & 256 != 0 { 700 } else { 400 });
                 }
+                // Italic as font-style italic (2), upright as normal (1).
                 if ch.face_mask.unwrap_or(u16::MAX) & 512 != 0 {
-                    style.font_style = Some(1);
+                    style.font_style = Some(if faces & 512 != 0 { 2 } else { 1 });
                 }
             }
         }
@@ -510,12 +515,137 @@ fn text_style(
         style.font_weight = condition.font_weight.or(style.font_weight);
         style.font_style = condition.font_style.or(style.font_style);
     }
-    if matches!(style.font_style, Some(2 | 3)) {
+    Ok(style)
+}
+
+/// Whether character styles `a` and `b` differ in nothing but their color:
+/// the same font, size and faces as decoded, and for stored styles
+/// (layout-model.md 8.1) every byte but the color's:
+/// the mask without its color bit, the font, face and size slots (masked
+/// or not, so an explicit size 0 is not an unset size), and the extension
+/// byte. A style built in code (no stored bytes) compares as decoded. A
+/// stored style of another length, or one stored beside one built in code,
+/// differs.
+fn same_but_color(a: &om_layout::CharacterStyle, b: &om_layout::CharacterStyle) -> bool {
+    // What Browse and the report draw with, besides the color.
+    let decoded = |s: &om_layout::CharacterStyle| {
+        let size = s.font_size.map(f64::to_bits);
+        (s.font_id, s.font_family.clone(), size, s.faces, s.face_mask)
+    };
+    if decoded(a) != decoded(b) {
+        return false;
+    }
+    fn without_color(raw: &[u8]) -> Option<(u16, &[u8], &[u8])> {
+        match raw {
+            [m0, m1, slots @ .., _, _, _, _] if slots.len() == 6 => {
+                Some((u16::from_be_bytes([*m0, *m1]) & !0x4, slots, &[]))
+            }
+            [m0, m1, rest @ ..] if rest.len() == 11 => Some((
+                u16::from_be_bytes([*m0, *m1]) & !0x4,
+                &rest[..6],
+                &rest[10..],
+            )),
+            _ => None,
+        }
+    }
+    match (a.raw.is_empty(), b.raw.is_empty()) {
+        (true, true) => true,
+        (false, false) => {
+            without_color(&a.raw).is_some() && without_color(&a.raw) == without_color(&b.raw)
+        }
+        _ => false,
+    }
+}
+
+/// The color of each character [`prepare_text_in`] lays out of `value` (CR
+/// and LF, which break paragraphs, have none), when `object`'s character
+/// runs give its text more than one, as Browse colors them (a run's color,
+/// else the object's text color, else black; `rich_text::text_format`).
+/// `None` for one color, for no text, and when a conditional format's color
+/// replaces every run's.
+///
+/// Refused with 3 rather than coloring the wrong characters:
+/// - runs that are not the stored text's complete partition, in order, on
+///   character boundaries, as the layout decoder gives them;
+/// - a field's layout runs: its record value carries its own styles;
+/// - a value that differs from the text the runs are stored for (merged
+///   fields or symbols, a label calculation) or a case transform.
+fn run_colors(
+    layout: &Layout,
+    object: &LayoutObject,
+    value: &str,
+    style: &ResolvedStyle,
+    conditions: &[usize],
+) -> Result<Option<Vec<Color>>, ReportError> {
+    let Some(rich) = &object.rich_text else {
+        return Ok(None);
+    };
+    let runs = &rich.character_runs;
+    let Some(first) = runs.first() else {
+        return Ok(None);
+    };
+    if value.is_empty() || runs.iter().all(|r| r.style.color == first.style.color) {
+        return Ok(None);
+    }
+    let text = rich.text.as_str();
+    let partition = runs.first().is_some_and(|r| r.range.start == 0)
+        && runs.last().is_some_and(|r| r.range.end == text.len())
+        && runs.windows(2).all(|w| w[0].range.end == w[1].range.start)
+        && runs.iter().all(|r| {
+            r.range.start < r.range.end
+                && text.is_char_boundary(r.range.start)
+                && text.is_char_boundary(r.range.end)
+        });
+    if !partition {
+        return Err(ReportError::unsupported(format!(
+            "Report object {}'s character runs do not cover its text in order",
+            object.id
+        )));
+    }
+    if !matches!(object.kind(), ObjectKind::Text | ObjectKind::Button) {
         return Err(ReportError::unsupported(
-            "Italic report text is unsupported",
+            "Mixed character styles are unsupported",
         ));
     }
-    Ok(style)
+    if !conditions.is_empty()
+        && (crate::document::conditional_text_style(layout, object, conditions, 1).color).is_some()
+    {
+        return Ok(None);
+    }
+    if value != text || matches!(style.text_transform, Some(3 | 4)) {
+        return Err(ReportError::unsupported(format!(
+            "Report object {}'s text is in several colors and is merged, calculated or \
+             transformed; only its text as written can print in them",
+            object.id
+        )));
+    }
+    let black = Color {
+        alpha: 1.0,
+        ..Default::default()
+    };
+    let base = (crate::document::text_style(layout, object, conditions, 1).color).unwrap_or(black);
+    let mut colors = Vec::with_capacity(value.len());
+    for run in runs {
+        let color = run.style.color.unwrap_or(base);
+        let chars = text[run.range.clone()].chars();
+        colors.extend(chars.filter(|ch| !matches!(ch, '\r' | '\n')).map(|_| color));
+    }
+    Ok(Some(colors))
+}
+
+/// [`prepare_text_in`] for `object`'s text `value`, in the colors of its
+/// character runs ([`run_colors`]).
+fn prepare_object_text(
+    layout: &Layout,
+    object: &LayoutObject,
+    value: &str,
+    r: &Rect,
+    style: &ResolvedStyle,
+    overflow: Overflow,
+    conditions: &[usize],
+) -> Result<(Vec<TextLine>, f64, bool), ReportError> {
+    let colors = run_colors(layout, object, value, style, conditions)?;
+    prepare_colored_text_in(value, r, style, overflow, colors.as_deref())
 }
 
 /// The style text is laid out in: [`text_style`], with the text
@@ -642,6 +772,20 @@ fn prepare_text_in(
     style: &ResolvedStyle,
     overflow: Overflow,
 ) -> Result<(Vec<TextLine>, f64, bool), ReportError> {
+    prepare_colored_text_in(value, r, style, overflow, None)
+}
+
+/// [`prepare_text_in`], with each character in its own color when
+/// `colors` gives them (one each, CR and LF excepted, [`run_colors`]): a
+/// line prints as one [`TextLine`] for each run of one color, from where
+/// that run starts.
+fn prepare_colored_text_in(
+    value: &str,
+    r: &Rect,
+    style: &ResolvedStyle,
+    overflow: Overflow,
+    colors: Option<&[Color]>,
+) -> Result<(Vec<TextLine>, f64, bool), ReportError> {
     if value.is_empty() {
         return Ok((Vec::new(), 0.0, false));
     }
@@ -649,7 +793,7 @@ fn prepare_text_in(
     if !size.is_finite() || !(1.0..=512.0).contains(&size) {
         return Err(ReportError::unsupported("Invalid report font size"));
     }
-    let report_face = ReportFace::of(style);
+    let report_face = ReportFace::of(style)?;
     let face = report_face.face();
     let unit = size / f64::from(face.units_per_em());
     let ascent = f64::from(face.ascender()) * unit;
@@ -777,10 +921,12 @@ fn prepare_text_in(
         alpha: 1.0,
         ..Default::default()
     });
-    if paint(color)?.is_none() {
+    if colors.is_none() && paint(color)?.is_none() {
         return Ok((Vec::new(), needed, overflowed));
     }
     let mut output = Vec::new();
+    // The colors of the characters laid out so far, line by line.
+    let mut colored = 0;
     for (i, (glyphs, used)) in lines.into_iter().enumerate() {
         // A line that starts below the box shows nothing of itself.
         let top = r.top + pad[0] + i as f64 * pitch;
@@ -797,7 +943,20 @@ fn prepare_text_in(
                 ))
             }
         };
-        output.push(TextLine {
+        // A glyph whose outline reaches past the text box's sides (an
+        // italic overhang, say), though its advance fits, is cut there, as
+        // Pro clips text to its box.
+        let (left, right) = (r.left + pad[3], (r.right - pad[1]).max(r.left + pad[3]));
+        let mut pen = left + dx;
+        let mut spills = false;
+        for (glyph, advance, _) in &glyphs {
+            if let Some(ink) = face.glyph_bounding_box(ttf_parser::GlyphId(*glyph)) {
+                spills |= pen + f64::from(ink.x_min) * unit < left - 0.01
+                    || pen + f64::from(ink.x_max) * unit > right + 0.01;
+            }
+            pen += advance;
+        }
+        let line = TextLine {
             glyphs,
             x: r.left + pad[3] + dx,
             baseline: r.top + pad[0] + dy + first_baseline + i as f64 * pitch,
@@ -807,12 +966,38 @@ fn prepare_text_in(
             // Cut at the text box: the field's frame less the padding and
             // text margins above and below. FileMaker Pro 26 keeps a wrapped
             // second line in its PDF's text but shows none of it (#536).
-            clip: cut.then(|| Rect {
-                top: r.top + pad[0],
-                bottom: (r.bottom - pad[2]).max(r.top + pad[0]),
+            // Ink that spills past the box's sides is cut at its sides
+            // (a label's frame less its 1-point inset, layout-model.md 6.5),
+            // and only there: a line that fits keeps the frame's height, so
+            // an accent above the box is not cut for a bearing at its side.
+            spans: Vec::new(),
+            clip: (cut || spills).then(|| Rect {
+                top: if cut { r.top + pad[0] } else { r.top },
+                bottom: if cut {
+                    (r.bottom - pad[2]).max(r.top + pad[0])
+                } else {
+                    r.bottom
+                },
+                left: if spills { left } else { r.left },
+                right: if spills { right } else { r.right },
                 ..r.clone()
             }),
-        });
+        };
+        let mut line = line;
+        if let Some(colors) = colors {
+            let count = line.glyphs.len();
+            let line_colors = colors.get(colored..colored + count).ok_or_else(|| {
+                ReportError::unsupported("Report text colors do not match its characters")
+            })?;
+            colored += count;
+            for (k, color) in line_colors.iter().enumerate() {
+                paint(*color)?;
+                if line.spans.last().is_none_or(|(_, last)| last != color) {
+                    line.spans.push((k, *color));
+                }
+            }
+        }
+        output.push(line);
     }
     Ok((output, needed, overflowed))
 }
@@ -847,16 +1032,20 @@ pub(crate) fn embed(pdf: &mut Pdf, face_id: ReportFace, base: i32, map: &BTreeMa
     );
     cid.finish();
     let bbox = face.global_bounding_box();
+    let mut flags = FontFlags::NON_SYMBOLIC;
+    if face.is_italic() {
+        flags |= FontFlags::ITALIC;
+    }
     pdf.font_descriptor(id(2))
         .name(name)
-        .flags(FontFlags::NON_SYMBOLIC)
+        .flags(flags)
         .bbox(pdf_writer::Rect::new(
             f32::from(bbox.x_min) * scale,
             f32::from(bbox.y_min) * scale,
             f32::from(bbox.x_max) * scale,
             f32::from(bbox.y_max) * scale,
         ))
-        .italic_angle(0.0)
+        .italic_angle(face.italic_angle())
         .ascent(f32::from(face.ascender()) * scale)
         .descent(f32::from(face.descender()) * scale)
         .cap_height(f32::from(face.capital_height().unwrap_or(face.ascender())) * scale)
@@ -880,11 +1069,36 @@ pub(crate) struct TextLine {
     pub size: f64,
     pub face: ReportFace,
     pub color: Color,
+    /// Where the line's color changes, by glyph, when its characters are in
+    /// more than one ([`run_colors`]): from each glyph on, that color.
+    /// Empty for a line in `color`.
+    pub spans: Vec<(usize, Color)>,
     /// The box overflowing text is cut at ([`Overflow::Clip`]): its field's
     /// text box, between the padding and margins above and below, across
     /// the field's width; `None` when the text fits.
     pub clip: Option<Rect>,
 }
+impl TextLine {
+    /// The line's parts of one color: its glyphs, their color, and where the
+    /// first starts.
+    pub(crate) fn parts(&self) -> impl Iterator<Item = (&[(u16, f64, char)], Color, f64)> + '_ {
+        // Without spans, the whole line in `color`.
+        let span = |i: usize| self.spans.get(i).copied().unwrap_or((0, self.color));
+        let mut x = self.x;
+        (0..self.spans.len().max(1)).map(move |i| {
+            let (start, color) = span(i);
+            let end = self
+                .spans
+                .get(i + 1)
+                .map_or(self.glyphs.len(), |next| next.0);
+            let glyphs = self.glyphs.get(start..end).unwrap_or(&[]);
+            let at = x;
+            x += glyphs.iter().map(|g| g.1).sum::<f64>();
+            (glyphs, color, at)
+        })
+    }
+}
+
 #[derive(Clone, Debug)]
 pub(crate) struct ReportObject {
     pub kind: ObjectKind,
@@ -1576,111 +1790,6 @@ pub(crate) struct ReportPage {
 
 type SourceObject<'a> = (&'a LayoutObject, Rect, usize);
 
-/// Independent coordinates for content evaluation. A once-only part or footer
-/// may reuse a record on a different physical page.
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub struct ContentContext {
-    /// Index in the selected records, in found-set order. A sub-summary
-    /// part's is its group's first (leading) or last (trailing) record.
-    pub record: usize,
-    /// Zero-based physical page, independent of the record's first placement.
-    pub page: usize,
-    /// A sub-summary part's break field: its summary fields read the
-    /// record's group (`GetSummary`) rather than the whole found set.
-    pub group: Option<BreakField>,
-    /// The portal row an object prints in: its fields read the row's
-    /// related record.
-    pub portal: Option<PortalRowContext>,
-}
-
-/// `context` in portal row `row`, as Browse evaluates a portal row's
-/// objects: the row's record of the portal's occurrence, and its number.
-pub(crate) fn in_row(
-    context: om_data::calc::eval::Context,
-    row: Option<PortalRowContext>,
-) -> om_data::calc::eval::Context {
-    match row {
-        Some(row) => context
-            .with_portal(row.occurrence, row.record)
-            .with_portal_row_number(row.number as u64),
-        None => context,
-    }
-}
-
-/// A portal row's related record: what Browse's portal rows evaluate in
-/// (`Context::with_portal`, row number from 1).
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub struct PortalRowContext {
-    pub occurrence: u64,
-    pub record: u64,
-    pub number: usize,
-}
-
-/// What a report shows of its objects for a record: the text of a text,
-/// button or field object, the data of a container field, and the
-/// conditional formats that hold for it. A closure gives text only: its
-/// container fields print as their text, and an object with conditional
-/// formatting is refused rather than printed unformatted.
-pub trait ReportContent {
-    fn text(
-        &mut self,
-        object: &LayoutObject,
-        context: ContentContext,
-    ) -> Result<String, ReportError>;
-
-    /// The data a field object shows when it is a container field holding
-    /// data, its streams loaded; `None` for other objects and empty fields.
-    /// A missing or pending value is an error, as for text.
-    fn container(
-        &mut self,
-        _object: &LayoutObject,
-        _context: ContentContext,
-    ) -> Result<Option<Arc<om_data::calc::eval::StoredContainer>>, ReportError> {
-        Ok(None)
-    }
-
-    /// The conditional formats of `object` whose condition holds for the
-    /// record and page, as indexes into `calcs.conditions` in stored order;
-    /// `None` when this source does not evaluate them.
-    fn conditions(
-        &mut self,
-        _object: &LayoutObject,
-        _context: ContentContext,
-    ) -> Result<Option<Vec<usize>>, ReportError> {
-        Ok(None)
-    }
-
-    /// The related records `portal` shows for the record in `context`, in
-    /// the relationship's order; `None` when this source does not read
-    /// them. A pending read is an error, as for text.
-    fn portal_records(
-        &mut self,
-        _portal: &LayoutObject,
-        _context: ContentContext,
-    ) -> Result<Option<Vec<u64>>, ReportError> {
-        Ok(None)
-    }
-
-    /// The panel tab control `control` shows in the window the report is
-    /// for; `None` to print the one it first shows.
-    fn front_panel(&mut self, _control: &LayoutObject) -> Option<u64> {
-        None
-    }
-}
-
-impl<F> ReportContent for F
-where
-    F: FnMut(&LayoutObject, ContentContext) -> Result<String, ReportError>,
-{
-    fn text(
-        &mut self,
-        object: &LayoutObject,
-        context: ContentContext,
-    ) -> Result<String, ReportError> {
-        self(object, context)
-    }
-}
-
 /// A found set's record ids and the sorted groups read for them.
 pub(crate) type FoundSetGroups = (std::sync::Arc<[u64]>, Vec<BreakGroups>);
 
@@ -2039,11 +2148,6 @@ fn tab_headers(
         text.color = text.color.or(control_text.color);
         text.text_align = Some(2);
         text.vertical_align = Some(1);
-        if matches!(text.font_style, Some(2 | 3)) {
-            return Err(ReportError::unsupported(
-                "Italic report text is unsupported",
-            ));
-        }
         let label = panel.text.as_deref().unwrap_or("");
         // Rounded as the panel's style rounds it, as Browse draws a tab.
         let radius = corner_radius(
@@ -3185,11 +3289,14 @@ fn layout_part(
                     _ => bounds.clone(),
                 };
                 (
-                    prepare_text_in(
+                    prepare_object_text(
+                        layout,
+                        object,
                         &value,
                         &label,
                         &style,
                         overflow_of(object, part.slides[i].is_some()),
+                        &conditions,
                     )?
                     .0,
                     conditions,
@@ -3390,11 +3497,14 @@ fn portal_rows(
                         _ => bounds.clone(),
                     };
                     (
-                        prepare_text_in(
+                        prepare_object_text(
+                            layout,
+                            object,
                             &value,
                             &label,
                             &style,
                             overflow_of(object, part.slides[j].is_some()),
+                            &conditions,
                         )?
                         .0,
                         conditions,
@@ -3501,12 +3611,6 @@ pub(crate) fn plan_report_with(
         )?
         .height)
     })
-}
-
-impl From<String> for ReportError {
-    fn from(message: String) -> Self {
-        Self::unsupported(message)
-    }
 }
 
 /// Prepare only the selected physical page. The callback receives both the
@@ -3908,7 +4012,7 @@ fn image_name(index: usize) -> String {
 fn encode_page(
     scene: &ReportPage,
     h: f64,
-    maps: &mut [BTreeMap<u16, char>; 4],
+    maps: &mut [BTreeMap<u16, char>; ReportFace::ALL.len()],
     images: &mut Vec<Arc<Picture>>,
     alphas: &mut BTreeSet<u8>,
 ) -> Result<Vec<u8>, ReportError> {
@@ -4061,25 +4165,29 @@ fn encode_page(
                             pdf_rect(&mut c, clip, h);
                             c.clip_nonzero().end_path();
                         }
-                        let Some(opened) = fill(&mut c, Some(line.color), alphas)? else {
-                            if line.clip.is_some() {
-                                c.restore_state();
-                            }
-                            continue;
-                        };
-                        c.begin_text()
-                            .set_font(Name(line.face.names().0), line.size as f32)
-                            .set_text_matrix([
-                                1.0,
-                                0.0,
-                                0.0,
-                                1.0,
-                                line.x as f32,
-                                (h - line.baseline) as f32,
-                            ])
-                            .show(Str(&bytes))
-                            .end_text();
-                        close(&mut c, opened);
+                        // Each part of one color from where it starts; a
+                        // transparent one draws nothing.
+                        let mut first = 0;
+                        for (glyphs, color, x) in line.parts() {
+                            let bytes = &bytes[first * 2..(first + glyphs.len()) * 2];
+                            first += glyphs.len();
+                            let Some(opened) = fill(&mut c, Some(color), alphas)? else {
+                                continue;
+                            };
+                            c.begin_text()
+                                .set_font(Name(line.face.names().0), line.size as f32)
+                                .set_text_matrix([
+                                    1.0,
+                                    0.0,
+                                    0.0,
+                                    1.0,
+                                    x as f32,
+                                    (h - line.baseline) as f32,
+                                ])
+                                .show(Str(bytes))
+                                .end_text();
+                            close(&mut c, opened);
+                        }
                         if line.clip.is_some() {
                             c.restore_state();
                         }
@@ -4142,7 +4250,7 @@ pub fn render_pdf_viewed(
         }
     }
     catalog.finish();
-    let mut maps: [BTreeMap<u16, char>; 4] = Default::default();
+    let mut maps: [BTreeMap<u16, char>; ReportFace::ALL.len()] = Default::default();
     // Every page decodes and embeds a library picture once, by document.
     let pictures = Pictures::default();
     let mut images = Vec::new();
@@ -4188,6 +4296,8 @@ pub fn render_pdf_viewed(
         ReportFace::InterBold => 9,
         ReportFace::Sans => after_alphas,
         ReportFace::SansBold => after_alphas + 6,
+        ReportFace::SansItalic => after_alphas + 12,
+        ReportFace::SansBoldItalic => after_alphas + 18,
     };
     let fonts_used: Vec<ReportFace> = ReportFace::ALL
         .into_iter()

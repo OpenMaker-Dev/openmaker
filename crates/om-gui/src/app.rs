@@ -1130,6 +1130,9 @@ impl OpenMakerApp {
             ctx.options_mut(|options| options.zoom_with_keyboard = false);
             // Keys go to the keystroke triggers before egui sees them.
             ctx.add_plugin(scripts::KeyGate::default());
+            // A dialog reopened by a quick click comes in front of the one
+            // it was opened from.
+            ctx.add_plugin(crate::widgets::RaiseOpened::default());
             self.styled = true;
         }
         if std::mem::take(&mut self.open_on_launch) {
@@ -1284,6 +1287,27 @@ impl OpenMakerApp {
     /// A text field of the current record is entered for typing in Browse,
     /// where Insert's Current Date, Current Time, Current User Name, From
     /// Index and From Last Visited Record put their text.
+    /// Records > Relookup Field Contents can run
+    /// (`om_data::scripts::relookup::available`): asked when the menu is
+    /// drawn and again when its step is dispatched, since typing in the
+    /// same frame, or an edit preparation the step waited for, can change
+    /// the record in between. Not under a paused script either: the step
+    /// would run in a frame above it, and its error, a Cancel's 1
+    /// included, would fail the script's open transaction. Nor while a
+    /// hosted edit is being prepared.
+    pub(super) fn relookup_available(&self) -> bool {
+        !self.script.running
+            && self.script.prompt.is_none()
+            && !self.recovery_holds()
+            && !self.w.document.preparing_edit()
+            && !self.w.document.failed_edit()
+            && om_data::scripts::relookup::available(
+                self.w.mode.runtime(),
+                self.text_field_entered() && self.w.document.active_related.is_none(),
+                self.record_modified(),
+            )
+    }
+
     fn text_field_entered(&self) -> bool {
         self.w.mode == Mode::Browse
             && self.w.connection_lost.is_none()
@@ -1390,6 +1414,7 @@ impl OpenMakerApp {
                     && !self.script.busy()
                     && self.script.prompt.is_none()
                     && self.text_field_entered(),
+                relookup: input && self.relookup_available(),
                 own_field: self.w.document.active_related.is_none(),
                 field_undo: self
                     .current_layout_record()
@@ -3210,13 +3235,14 @@ impl OpenMakerApp {
 
     /// Whether View's Zoom In, Zoom Out and Actual Size change the window's
     /// zoom: a layout drawn in Browse's Form or List view, in Find mode
-    /// (which draws its requests as Form view does), or Preview. Table view,
-    /// Layout mode and the generic views are not zoomed yet (#36).
+    /// (which draws its requests as Form view does), or Preview, unless Set
+    /// Zoom Level locked the window's zoom. Table view, Layout mode and the
+    /// generic views are not zoomed yet (#36).
     fn zooms(&self) -> bool {
-        self.w
-            .session
-            .as_ref()
-            .is_some_and(|session| matches!(session.render, crate::session::RenderState::Loaded(_)))
+        !self.w.zoom_locked
+            && self.w.session.as_ref().is_some_and(|session| {
+                matches!(session.render, crate::session::RenderState::Loaded(_))
+            })
             && match self.w.mode {
                 Mode::Browse => matches!(self.w.view, ViewMode::Form | ViewMode::List),
                 Mode::Find => self.w.view != ViewMode::Table,
@@ -6187,12 +6213,32 @@ impl OpenMakerApp {
             Reply::ValueListBuilt {
                 list,
                 ticket,
+                related,
                 result,
                 retry_after,
+                generation,
             } => {
-                self.w
-                    .calcs
-                    .accept_built_list(list, ticket, result, retry_after);
+                let calcs = &mut self.w.calcs;
+                // Read under data older than the window has seen (asked
+                // before a change): its request goes, its answer is not
+                // taken. Its reads took a change the window had not seen:
+                // the window's data and lists go, as on a calculation reply
+                // of that generation, and the request this answers with
+                // them.
+                let (result, retry_after) = match calcs.build_is_current(generation) {
+                    true => (result, retry_after),
+                    false => (None, None),
+                };
+                if calcs.observe_build_generation(generation) {
+                    if let Some(session) = &self.w.session {
+                        session.report_data_changed();
+                    }
+                }
+                if related {
+                    calcs.accept_related_list(ticket, result, retry_after);
+                } else {
+                    calcs.accept_built_list(list, ticket, result, retry_after);
+                }
                 ctx.request_repaint();
             }
             Reply::CalcData { needs, result } => {
@@ -6460,6 +6506,13 @@ mod tests {
         assert_eq!(app.w.document.zoom.percent(), 150);
         assert_eq!(context.zoom_factor(), 1.0);
 
+        app.w.zoom_locked = true;
+        for action in [Action::ZoomIn, Action::ZoomOut, Action::ActualSize] {
+            app.apply(&context, action);
+            assert_eq!(app.w.document.zoom.percent(), 150);
+        }
+        app.w.zoom_locked = false;
+
         // List view zooms too, and Find mode's layout; Table view not yet.
         app.w.view = ViewMode::List;
         app.apply(&context, Action::ZoomIn);
@@ -6503,6 +6556,7 @@ mod tests {
         let mut window = app.window_state();
         assert_eq!(window.zoom, 150);
         window.zoom = 200;
+        window.zoom_locked = true;
         app.on_script_event(
             &context,
             crate::scripting::ScriptEvent::Window(Box::new(crate::scripting::WindowUpdate {
@@ -6520,8 +6574,10 @@ mod tests {
         );
         assert_eq!(app.w.document.zoom.percent(), 200);
         assert_eq!(app.window_state().zoom, 200);
+        assert!(app.window_state().zoom_locked);
         app.apply(&context, Action::CloseFile);
         assert_eq!(app.w.document.zoom.percent(), 100);
+        assert!(!app.window_state().zoom_locked);
     }
 
     /// Layout 1: object 1, a rectangle of `fill`, and object 2, a graphic

@@ -676,8 +676,11 @@ impl NativeProvider {
             // Only language 0 reads the file's locale: the other forms
             // need none, so an unreadable locale does not refuse them.
             let file = if language == 0 {
-                match self.file_locale_language() {
-                    Ok(file) => Some(file),
+                match self.file_language() {
+                    Ok(None) if strict => {
+                        return Err(unsupported("The file's language could not be read."));
+                    }
+                    Ok(file) => file,
                     Err(error) if strict => return Err(error),
                     Err(_) => None,
                 }
@@ -710,25 +713,6 @@ impl NativeProvider {
             text,
             order,
         })
-    }
-
-    /// The file's own language from its stored locale (`[02, 0d]`,
-    /// file-metadata.md 2), which index language 0 keys text in. Error 3
-    /// when the file holds a locale that cannot be read, rather than
-    /// English, which would key a German file's `a` and `ä` alike. A file
-    /// with no locale record at all (none FileMaker writes) reads as the
-    /// schema's default.
-    fn file_locale_language(&mut self) -> Result<u32, DataError> {
-        let Some(data) = download_node(self.session_mut()?, vec![vec![2]])? else {
-            return self.file_language();
-        };
-        let tree = download_tree(std::slice::from_ref(&data))?;
-        if tree.at(&[2, 13]).is_none() {
-            return self.file_language();
-        }
-        let locale = om_data::meta::locale(&tree)
-            .ok_or_else(|| unsupported("The file's language could not be read."))?;
-        Ok(u32::from(locale.language.id()))
     }
 
     /// The file's date order, read explicitly from its locale `[02, 0d]`:

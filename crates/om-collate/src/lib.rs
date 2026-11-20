@@ -31,9 +31,11 @@
 use std::collections::HashMap;
 use std::sync::OnceLock;
 
+mod japanese;
 mod names;
 mod typed;
 
+pub use japanese::japanese_key;
 pub use names::{name_key, Levels, Unkeyed};
 pub use typed::{date_key, number_key, time_key, timestamp_key, DateOrder};
 

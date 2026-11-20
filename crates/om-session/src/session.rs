@@ -1708,7 +1708,8 @@ impl Session {
     }
 
     /// The host's clock (op82, schema-path.md 3.1): its local date and
-    /// time as the 8-byte date-time key modification stamps hold.
+    /// time as the date-time key modification stamps hold (8 bytes from
+    /// 02:46:40, shorter before).
     pub fn host_timestamp(&mut self) -> Result<Vec<u8>, SessionError> {
         let result = self.perform_on_file(om_protocol::schema::build_host_timestamp)?;
         om_protocol::schema::parse_host_timestamp_reply(&result)
