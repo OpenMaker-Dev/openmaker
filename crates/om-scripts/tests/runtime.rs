@@ -935,12 +935,19 @@ fn custom_dialogs_store_inputs_and_the_choice() {
     dialog.set_number(4, Some(0));
     dialog.set_variable_target(0, "$$answer");
     dialog.set_calculation(2, Some(&calc(&h, "\"Your name\"")));
+    // FileMaker Pro 26.1's "Close after (seconds)": on in numeric slot 6,
+    // the seconds in calculation slot 13 (script-steps.md 12.4).
+    let mut timed = dialog.clone();
+    timed.set_number_bool(6, Some(true));
+    timed.set_calculation(13, Some(&calc(&h, "1 + 1")));
     let steps = vec![
         set_var(&h, "$$answer", "\"old\""),
         dialog.clone(),
         set_var(&h, "$$choice", "Get ( LastMessageChoice )"),
         dialog,
         set_var(&h, "$$choice2", "Get ( LastMessageChoice )"),
+        timed,
+        set_var(&h, "$$choice3", "Get ( LastMessageChoice )"),
     ];
     h.add_script(0, script(1, "Ask", steps));
     h.dialog_answers.push_back(DialogResponse {
@@ -951,8 +958,18 @@ fn custom_dialogs_store_inputs_and_the_choice() {
         button: 2,
         inputs: vec![Value::text("ignored")],
     });
+    // Closed by its timer: no button, so no input is stored.
+    h.dialog_answers.push_back(DialogResponse {
+        button: 0,
+        inputs: vec![Value::text("timed out")],
+    });
     let mut rt = Runtime::default();
     run(&mut h, &mut rt, 1);
+    assert_eq!(
+        h.dialogs.iter().map(|d| d.close_after).collect::<Vec<_>>(),
+        [None, None, Some(2.0)]
+    );
+    assert_eq!(g(&mut rt, "$$choice3"), "0");
     assert_eq!(h.dialogs[0].title, "Title");
     assert_eq!(h.dialogs[0].inputs[0].label, "Your name");
     assert_eq!(h.dialogs[1].inputs[0].value.value_type(), ValueType::Text);
