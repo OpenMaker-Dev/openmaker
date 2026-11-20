@@ -19,7 +19,7 @@ decoded from FileMaker Pro 26.0.3 ([layout model 5.8](re/layout-model.md#58-prin
 | Sliding up based on: All objects above | `0x8000` clear | supported |
 | Also resize enclosing part | `0x40` | supported |
 | Sliding left | `0x20` | refused |
-| Hide when printing | `0x200` | refused |
+| Hide when printing | `0x200` | supported: the object and what it holds are left out |
 
 `0x8000` and `0x40` mean nothing without `0x10`. FMEngine's slide record reads
 them only when `0x10` is set, so OpenMaker ignores them on objects that do not
@@ -74,7 +74,10 @@ drawn overlapping.
 Each refusal returns error 3 with a reason. PDF and Print refuse before any
 file is staged or job spooled. Preview shows the reason instead of a page.
 
-- Sliding left, and Hide when printing.
+- Sliding left.
+- An object that slides up in a part that holds an object hidden when
+  printing or one beyond the printable width: whether FileMaker lets it
+  slide into the space of what is left out is unmeasured.
 - An object that slides up in a header, footer, title header or title footer.
 - An object that slides up and overlaps another object in its part. Whether
   it would natively move over, under or out of the other object is
@@ -151,8 +154,8 @@ Its tests are:
   without writes.
 - `sliding_refuses_unsupported_options_overlaps_and_cut_off_objects`:
   - the overlap clamp (a 60-point body);
-  - refusals of slide left, hide when printing, header sliding, overlap,
-    cut-off and rotation.
+  - refusals of slide left, sliding beside a hidden object, header
+    sliding, overlap, cut-off and rotation.
 - `measured_parts_flow_by_printed_height_and_remeasure_on_their_new_page`
   (om-layout): measured pagination, re-measurement on the next page, and
   refusal of out-of-bounds heights.

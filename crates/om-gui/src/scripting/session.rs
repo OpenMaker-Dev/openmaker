@@ -1136,21 +1136,21 @@ impl ScriptSession {
         // own Reconnect; none is tried again.
         let own = self.s.file.id;
         let mut recovered = vec![(own, io.provider.account_privileges())];
+        let mut carried = carried;
         let peers: Vec<u64> = io.files.peers.keys().copied().collect();
         for id in peers {
             let Some(peer) = io.files.peers.get_mut(&id) else {
                 continue;
             };
+            let peer_carried = peer.state.carried_windows(peer.provider.as_ref());
             if peer.provider.connection_lost().is_none()
-                || peer
-                    .state
-                    .unrecoverable(&peer.state.carried_windows(peer.provider.as_ref()))
-                    .is_some()
+                || peer.state.unrecoverable(&peer_carried).is_some()
                 || keep_lost.contains(&id)
             {
                 continue;
             }
             if let Ok(true) = worker::contain(peer.provider.as_mut(), |p| p.reopen_on_successor()) {
+                carried.extend(peer_carried);
                 if peer.state.unsent_save {
                     unsent.push(id);
                 }
@@ -1267,6 +1267,7 @@ impl ScriptSession {
                     Some((record.window, record.table, old, new))
                 })
                 .collect(),
+            carried,
         })))
     }
 
