@@ -210,7 +210,7 @@ pub fn font_families(tree: &KeyTree<'_>) -> std::collections::BTreeMap<u64, Stri
 /// The file's schema for calculations from its downloaded catalogs: `tree`
 /// holds `[3]`, every `[T, 3]` and, when the file has any, `[16]`; with
 /// `[2, 0d]` the file's locale (else en-US), with `[2, 18]` its options and
-/// file triggers, with `[21]` its value lists (also ExecuteSQL's), with
+/// file triggers, with `[2, 87]` its page setup, with `[21]` its value lists (also ExecuteSQL's), with
 /// `[17]` its scripts, `[25, 5]` its fonts, and with `[4, 1]` the layouts'
 /// display order.
 pub fn calc_schema(tree: &KeyTree<'_>, catalog: &Catalog, file_name: &str) -> CalcSchema {
@@ -218,6 +218,7 @@ pub fn calc_schema(tree: &KeyTree<'_>, catalog: &Catalog, file_name: &str) -> Ca
     let mut schema = CalcSchema::new(file_name, locale);
     schema.font_families = font_families(tree);
     schema.file_options = meta::file_options(tree);
+    schema.page_format = meta::page_format(tree);
     schema.set_display_order(
         meta::display_order(tree, &BASE_TABLES),
         meta::display_order(tree, &OCCURRENCES),
