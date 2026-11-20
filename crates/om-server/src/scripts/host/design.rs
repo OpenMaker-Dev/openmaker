@@ -341,6 +341,7 @@ enum ServerFunction {
 ///   empty for empty text: the engine's answer without its reading
 ///   dictionary (a `kakasi` program it calls). A server with the
 ///   dictionary answers readings [unmeasured].
+///
 /// Other arguments are answered the same [I].
 fn server_function_answer(
     function: ServerFunction,
