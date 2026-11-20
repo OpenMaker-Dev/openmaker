@@ -405,7 +405,51 @@ its old password is tested, as FileMaker's check gives it; an account that may n
 gets `SetPassword`'s checks (206, 208, 209); more than 100 characters is
 11. A new password outside ASCII is hashed after `HashDecompose` (2.1), as
 FileMaker Pro's own accounts are. It does not create the empty `5d`
-subtree.
+subtree. Before it rewrites an account, it recomputes the stored `04`
+from the account's current members; when the two differ nothing is
+written (3 for a script step; OpenMaker's choice): FileMaker Pro would
+refuse a file whose checksum OpenMaker got wrong (808), so an account it
+does not read as FileMaker does is left alone. An account with no `04`
+is given one.
+
+OpenMaker Server's scripts run Change Password through the same
+operation, as `DoChangePassword` does. The target is the account the
+session logged in with, found by its record key so that a rename since
+cannot redirect it. Both passwords are cut to 100 UTF-16 code units, and
+[Guest] or an account of another kind gives 3. A step running with full
+access counts as a caller that may manage the account, so it skips
+`SetPassword`'s set checks [I: Claris documents that a script granted
+full access may change a password the set does not let the account
+change]. The step's dialog is not shown on a server, so with it the step
+gives 3 [I: FileMaker Server's handling is not measured]. While it
+writes, the script's session holds a write lock on `[23, 1]`, as Manage
+Security does, and another user's lock gives 310 [I: Reset Account
+Password's observed code]. The commit stamps the account and the
+catalog's index `[23, 1, 1]` (schema-path.md 8.1), so a client's cached
+copy of the catalog shows as stale, and other clients are told the
+catalog changed.
+
+Reset Account Password and Enable Account run through
+`Hosted::reset_account_password` and `Hosted::enable_account`, under the
+same lock, stamps, notification and checksum check, writing the members
+the table above lists. A session without full access gets 9. Reset
+Account Password takes only a FileMaker-file account (206) and a password
+of at most 100 characters (11); its status is stamped as Change
+Password's is. Its "Expire password" option gives 3 before anything
+changes: the account could then sign in to a hosted file only with a new
+password, which OpenMaker Server does not take at login yet
+([#248](https://github.com/OpenMaker-Dev/openmaker/issues/248)). Enable
+Account changes only bit 19; an account already in that state is not
+written and no client is told of a change. It takes the file's own
+accounts and external server groups (kinds 0 and 1) and gives 3 for an
+OAuth or Claris ID account, and it gives 3 rather than make a [Full
+Access] account inactive [I: Claris documents both refusals for Enable
+Account; their codes are not observed]. Both find the account by name,
+ignoring case; a name no account has gives 213 [I: FileMaker's code for
+a name it does not find is not observed], and [Guest], whose name is not
+text, is never found. A new status that would not read back as written
+(flags added to a fraction of a second already held, past the six digits
+the value keeps) is not written (3).
 
 When a local file's Login is refused with 211, the desktop asks for a new
 password in a Change Password dialog (New Password, Confirm New Password)
@@ -428,7 +472,9 @@ with its reason. The new password is then the session's, for the files its
 scripts open later [I]. A file on a host does not offer it yet ([#248](https://github.com/OpenMaker-Dev/openmaker/issues/248)).
 
 Unknowns: the account script steps above and hosted password change at
-sign-in were not run live; login type 2 was not captured; whether the
+sign-in were not run live, so their errors for a missing account, for an
+account catalog another user has locked (other than Reset Account
+Password's 310) and for [Guest] are not observed; login type 2 was not captured; whether the
 password stamp's time is local or UTC is not measured; the empty `5d`
 subtree noted above is not explained. The checksums for privilege sets,
 extended privileges and file access entries are specified separately in

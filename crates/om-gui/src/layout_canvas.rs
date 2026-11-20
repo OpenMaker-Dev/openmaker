@@ -1486,9 +1486,14 @@ fn draw(
                                 .or_else(|| (texts.stored)(object.key))
                         })
                         .flatten();
+                    // A field of another occurrence reads `::Field`, as in
+                    // FileMaker Pro's Layout mode.
                     let caption = words
                         .as_deref()
-                        .or(object.field_name.as_deref())
+                        .or(object
+                            .field_name
+                            .as_deref()
+                            .map(|name| name.find("::").map_or(name, |at| &name[at..])))
                         .unwrap_or(&object.kind_name);
                     painter
                         .with_clip_rect(rect.shrink(3.0).intersect(ui.clip_rect()))
