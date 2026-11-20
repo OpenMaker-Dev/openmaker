@@ -317,13 +317,14 @@ pub fn merge_text(host: &mut dyn CalcHost, text: &str, context: &Context) -> Str
 }
 
 /// [`merge_text`] for output that must not show a failed value, such as a
-/// report: the first evaluation that failed, waits for data
-/// (`pending_execution`) or is `?`, instead of the text.
+/// report: the error code of the first evaluation that failed, waits for
+/// data (`pending_execution`) or is `?`, instead of the text; 0 when it
+/// has none.
 pub fn merge_text_checked(
     host: &mut dyn CalcHost,
     text: &str,
     context: &Context,
-) -> Result<String, Evaluation> {
+) -> Result<String, i32> {
     merge(host, text, context, true)
 }
 
@@ -332,7 +333,7 @@ fn merge(
     text: &str,
     context: &Context,
     checked: bool,
-) -> Result<String, Evaluation> {
+) -> Result<String, i32> {
     let mut out = String::with_capacity(text.len());
     for piece in pieces(text) {
         let (formula, raw) = match piece {
@@ -353,7 +354,7 @@ fn merge(
                         || evaluation.error.is_some()
                         || evaluation.value.is_invalid())
                 {
-                    return Err(evaluation);
+                    return Err(evaluation.code());
                 }
                 out.push_str(&display(&evaluation.value, host));
             }

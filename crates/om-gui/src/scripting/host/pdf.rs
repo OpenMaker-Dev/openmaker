@@ -557,8 +557,8 @@ impl WorkerHost<'_> {
                     report::script_printed(text)?;
                     let context = report::in_row(Context::record(origin, record), row);
                     return om_data::host::layout::merge_text_checked(self, text, &context)
-                        .map_err(|failed| ReportError {
-                            code: if failed.code() == 0 { 3 } else { failed.code() },
+                        .map_err(|code| ReportError {
+                            code: if code == 0 { 3 } else { code },
                             message: "A report symbol could not be calculated completely".into(),
                         });
                 }

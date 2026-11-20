@@ -2361,8 +2361,8 @@ impl<'a> Evaluator<'a> {
                     return report_eval
                         .with_host(|host| layout::merge_text_checked(host, text, &context))
                         .ok_or_else(loading)?
-                        .map_err(|failed| ReportError {
-                            code: failed.code(),
+                        .map_err(|code| ReportError {
+                            code,
                             message: "A report symbol could not be calculated completely".into(),
                         });
                 }
