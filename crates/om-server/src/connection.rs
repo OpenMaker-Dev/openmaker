@@ -2503,8 +2503,14 @@ fn query(
                         .map(|account| account.key.as_slice()),
                     late: shared.late_index_builds.load(Ordering::Relaxed),
                     view: view_filter(file, &store),
+                    built: Default::default(),
                 };
                 let outcome = om_query::execute_parsed(&source, program, &context);
+                // A query refused for an index this server cannot key
+                // (#572) keeps none of the indexes it built of other fields.
+                if matches!(outcome.error, Some(om_query::QueryError::UnkeyedIndex)) {
+                    store.forget_indexes_on_demand(&source.built.borrow());
+                }
                 if let Some(view) = &source.view {
                     note_withheld(file, view);
                 }
@@ -2516,14 +2522,10 @@ fn query(
             // Manage Database's instructions change the file,
             // GenerateMemberKey's issued ids go into their catalogs
             // (schema-path.md 3.4), and indexes the query built on demand are
-            // stored (query-program.md 7.1). A query refused for an index
-            // this server cannot key (#572) stores none of its builds: they
-            // stay due for a later query, so the client that asks next which
-            // indexes are missing sees the file as the refused query found it.
-            let refused = matches!(outcome.error, Some(om_query::QueryError::UnkeyedIndex));
+            // stored (query-program.md 7.1).
             let pending = {
                 let store = file.hosted.read_store();
-                store.has_issued_member_keys() || (!refused && store.has_indexes_on_demand())
+                store.has_issued_member_keys() || store.has_indexes_on_demand()
             };
             if pending || !outcome.writes.is_empty() {
                 for write in &outcome.writes {
@@ -2536,9 +2538,7 @@ fn query(
                 let released = {
                     let mut store = file.hosted.write_store();
                     store.write_issued_member_keys();
-                    if !refused {
-                        store.store_indexes_on_demand();
-                    }
+                    store.store_indexes_on_demand();
                     store.apply(outcome.writes)
                 };
                 // A deleted table's library is gone: so are its thumbnails.
@@ -2596,6 +2596,9 @@ struct QuerySource<'s> {
     /// The account's view limits: records it may not view are read without
     /// their values, and a view-limited table has no index.
     view: Option<crate::views::ViewFilter>,
+    /// The indexes this query had built on demand, which a refused query
+    /// takes back ([`crate::store::Store::forget_indexes_on_demand`]).
+    built: std::cell::RefCell<Vec<(Vec<u8>, Vec<u8>, u8)>>,
 }
 
 impl om_query::Source for QuerySource<'_> {
@@ -2638,7 +2641,13 @@ impl om_query::Source for QuerySource<'_> {
         if self.view.as_ref().is_some_and(|view| view.limits(table)) {
             return Ok(None);
         }
-        om_query::Source::index_on_demand(self.store, table, field, kind)
+        let index = om_query::Source::index_on_demand(self.store, table, field, kind)?;
+        if index.is_some() {
+            self.built
+                .borrow_mut()
+                .push((table.to_vec(), field.to_vec(), kind));
+        }
+        Ok(index)
     }
 
     fn finders_read_missing_indexes(&self) -> bool {

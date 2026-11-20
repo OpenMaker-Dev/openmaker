@@ -1320,10 +1320,11 @@ than English ones a find in that language would miss (#159):
   holds text in the field (a find, a join, a value list), is refused
   rather than answered from English keys, which would give another found
   set ([#572](https://github.com/OpenMaker-Dev/openmaker/issues/572)). It
-  builds nothing, and the indexes it built of other fields are not stored
-  with it: they wait for a later query. A client gets the query's error,
-  3 (`om_query::QueryError::UnkeyedIndex`; FileMaker Server builds every
-  language's index, so its answer is unmeasured). Only after that error
+  builds nothing, and keeps none of the indexes it built of other fields
+  before the refusal: a later query builds them again. A client gets the
+  query's error, 3 (`om_query::QueryError::UnkeyedIndex`; FileMaker
+  Server builds every language's index, so its answer is unmeasured).
+  Only after that error
   does OpenMaker's desktop client ask which of the indexes it read are
   missing. If one is, it takes its own path for a missing index, as after
   FileMaker Server's empty answer (query-program.md 7.1). For these

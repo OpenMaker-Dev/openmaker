@@ -102,28 +102,32 @@ impl SessionSource<'_> {
         }
         let all: RidList = self.records(to.id)?.iter().copied().collect();
         let mut matched = RidList::new();
-        for &record in sources {
-            let mut these = all.clone();
+        'records: for &record in sources {
+            // Each predicate's match values first: a predicate with none
+            // relates nothing, whatever any index holds, so no index is
+            // read (an empty match value never matches, file-metadata.md
+            // 4.3).
+            let mut lookups = Vec::new();
             for predicate in &hop.predicates {
                 if predicate.op == JoinOp::Cartesian {
                     continue;
                 }
                 let Some(right) = to.fields.get(&predicate.right) else {
-                    these = RidList::new();
-                    break;
+                    continue 'records;
                 };
-                // An empty match value never matches (file-metadata.md 4.3).
                 let texts: Vec<String> = self
                     .match_values(from, hop.from, record, predicate.left)?
                     .iter()
                     .map(|v| v.to_text(cx).into_string())
                     .collect();
-                // No match value relates nothing, whatever the index.
                 if texts.is_empty() {
-                    these = RidList::new();
-                    break;
+                    continue 'records;
                 }
-                let found = host.index_lookup(to.id, predicate.right, right.value_type, &texts)?;
+                lookups.push((predicate.right, right.value_type, texts));
+            }
+            let mut these = all.clone();
+            for (field, value_type, texts) in &lookups {
+                let found = host.index_lookup(to.id, *field, *value_type, texts)?;
                 these = these.and(&found);
             }
             matched = matched.or(&these);

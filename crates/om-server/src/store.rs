@@ -2335,6 +2335,19 @@ impl Store {
             .then_some(field.data_type)
     }
 
+    /// Take `built` back from the indexes due to be stored
+    /// ([`Store::store_indexes_on_demand`]). A query refused for an index
+    /// this server cannot key keeps none of the others it built (#572), so
+    /// the client that asks next which indexes are missing sees the file as
+    /// the query found it, whichever query stores the due indexes first. A
+    /// later query builds them again.
+    pub fn forget_indexes_on_demand(&self, built: &[(Vec<u8>, Vec<u8>, u8)]) {
+        let mut due = self.on_demand.lock().expect("index lock");
+        for id in built {
+            due.remove(id);
+        }
+    }
+
     /// Whether a query read indexes that were built on demand and are not
     /// yet stored.
     pub fn has_indexes_on_demand(&self) -> bool {
