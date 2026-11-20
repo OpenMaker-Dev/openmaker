@@ -573,10 +573,12 @@ Open items:
     can set a new password
     ([#248](https://github.com/OpenMaker-Dev/openmaker/issues/248)), and
     Enable Account gives 3 for OAuth and Claris ID accounts and rather
-    than make a [Full Access] account inactive. None of
-    them rewrites an account whose stored checksum OpenMaker does not
-    reproduce (3). Add Account, Delete Account and Re-Login fail with
-    error 3 ([#83](https://github.com/OpenMaker-Dev/openmaker/issues/83)).
+    than make a [Full Access] account inactive. Delete Account removes an
+    account and its entries in the account catalog's index; it gives 3
+    for [Guest] and for [Full Access], OAuth and Claris ID accounts. The
+    steps that rewrite an account (all but Delete Account) leave alone one
+    whose stored checksum OpenMaker does not reproduce (3). Add Account and Re-Login fail with error 3
+    ([#83](https://github.com/OpenMaker-Dev/openmaker/issues/83)).
   - The recompute after a schema change reads container inputs from the
     table's library, computes repeating calculations in each repetition,
     and answers Design functions as FileMaker Server's file context does
