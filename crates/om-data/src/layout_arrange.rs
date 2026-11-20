@@ -12,6 +12,7 @@
 use om_layout::Rect;
 
 use crate::layout_objects::ObjectFrame;
+use crate::layout_placement::Refusal;
 
 /// One of the Arrange menu's Align, Distribute and Resize To commands.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
@@ -19,22 +20,24 @@ pub enum Arrangement {
     /// Left edges to the leftmost left edge.
     AlignLeftEdges,
     /// Centers on one vertical line, at the middle of the objects' extent
-    /// (inferred).
+    /// (inferred). With left edges on whole points, applying it again can
+    /// move an object by one more point.
     AlignVerticalCenters,
     /// Right edges to the rightmost right edge.
     AlignRightEdges,
     /// Top edges to the topmost top edge.
     AlignTopEdges,
     /// Centers on one horizontal line, at the middle of the objects'
-    /// extent (inferred).
+    /// extent (inferred), as [`Arrangement::AlignVerticalCenters`].
     AlignHorizontalCenters,
     /// Bottom edges to the bottommost bottom edge.
     AlignBottomEdges,
     /// The leftmost and the rightmost objects stay; the others move so the
-    /// gaps between neighbours are equal (inferred).
+    /// gaps between neighbours are equal (inferred). Objects wider together
+    /// than the space between the outermost edges get evenly spaced left
+    /// edges instead, so their order stays (OpenMaker's choice).
     DistributeHorizontally,
-    /// The topmost and the bottommost objects stay; the others move so the
-    /// gaps between neighbours are equal (inferred).
+    /// As [`Arrangement::DistributeHorizontally`], along top edges.
     DistributeVertically,
     SmallestWidth,
     SmallestHeight,
@@ -118,19 +121,36 @@ impl Arrangement {
     }
 }
 
+/// Whether `frame` is one an arrangement takes: finite edges, no negative
+/// size, and a size in at least one direction (a line has none in the
+/// other), as the frames `layout_objects::plan` writes.
+pub fn arrangeable(frame: &Rect) -> bool {
+    let finite = [frame.left, frame.top, frame.right, frame.bottom]
+        .iter()
+        .all(|v| v.is_finite());
+    finite
+        && width(frame) >= 0.0
+        && height(frame) >= 0.0
+        && (width(frame) > 0.0 || height(frame) > 0.0)
+}
+
 /// The frames `arrangement` gives `objects`: only those it changes, in the
-/// objects' order. Fewer objects than [`Arrangement::minimum`], or a frame
-/// that is not finite, change nothing. Left and top edges land on whole
-/// points (and never below 0); widths and heights change only with Resize
-/// To.
-pub fn arrange(objects: &[ObjectFrame], arrangement: Arrangement) -> Vec<ObjectFrame> {
-    let finite = objects.iter().all(|o| {
-        [o.frame.left, o.frame.top, o.frame.right, o.frame.bottom]
-            .iter()
-            .all(|v| v.is_finite())
-    });
-    if objects.len() < arrangement.minimum() || !finite {
-        return Vec::new();
+/// objects' order. Fewer objects than [`Arrangement::minimum`] change
+/// nothing; a frame that is not [`arrangeable`] is refused. Left and top
+/// edges land on whole points (and never below 0); widths and heights
+/// change only with Resize To.
+pub fn arrange(
+    objects: &[ObjectFrame],
+    arrangement: Arrangement,
+) -> Result<Vec<ObjectFrame>, Refusal> {
+    if let Some(bad) = objects.iter().find(|o| !arrangeable(&o.frame)) {
+        return Err(Refusal::Invalid(format!(
+            "Object {}'s frame has no size or is not a frame; it cannot be arranged.",
+            bad.object
+        )));
+    }
+    if objects.len() < arrangement.minimum() {
+        return Ok(Vec::new());
     }
     let frames: Vec<&Rect> = objects.iter().map(|o| &o.frame).collect();
     let least =
@@ -222,7 +242,7 @@ pub fn arrange(objects: &[ObjectFrame], arrangement: Arrangement) -> Vec<ObjectF
                 .collect()
         }
     };
-    objects
+    Ok(objects
         .iter()
         .zip(new)
         .filter(|(old, new)| old.frame != *new)
@@ -230,7 +250,7 @@ pub fn arrange(objects: &[ObjectFrame], arrangement: Arrangement) -> Vec<ObjectF
             object: old.object,
             frame,
         })
-        .collect()
+        .collect())
 }
 
 fn width(r: &Rect) -> f64 {
@@ -256,29 +276,39 @@ fn at(r: &Rect, left: f64, top: f64) -> Rect {
 
 /// Equal gaps between neighbours along one axis: the objects in order of
 /// their leading edge (top or left, then their place in `frames`), the
-/// first and the last staying where they are.
+/// first and the last staying exactly where they are. When the objects do
+/// not fit between the outermost edges, equal gaps would be negative and
+/// could reverse their order; their leading edges are spaced evenly
+/// instead.
 fn distribute(frames: &[&Rect], horizontal: bool) -> Vec<Rect> {
     let lead = |r: &Rect| if horizontal { r.left } else { r.top };
     let size = |r: &Rect| if horizontal { width(r) } else { height(r) };
     let mut order: Vec<usize> = (0..frames.len()).collect();
     order.sort_by(|&a, &b| lead(frames[a]).total_cmp(&lead(frames[b])).then(a.cmp(&b)));
-    let (first, last) = (frames[order[0]], frames[order[order.len() - 1]]);
-    let span = lead(last) + size(last) - lead(first);
+    let (first, last) = (order[0], order[order.len() - 1]);
+    let (start, end) = (lead(frames[first]), lead(frames[last]));
+    let span = end + size(frames[last]) - start;
     let total: f64 = frames.iter().map(|r| size(r)).sum();
-    let gap = (span - total) / (frames.len() - 1) as f64;
+    let steps = (frames.len() - 1) as f64;
+    let gap = (span - total) / steps;
     let mut leads = vec![0.0; frames.len()];
-    let mut next = lead(first);
-    for &i in &order {
-        leads[i] = next;
+    let mut next = start;
+    for (n, &i) in order.iter().enumerate() {
+        leads[i] = if gap >= 0.0 {
+            next
+        } else {
+            start + (end - start) * n as f64 / steps
+        };
         next += size(frames[i]) + gap;
     }
-    // The last object stays exactly where it is.
-    leads[order[order.len() - 1]] = lead(last);
     frames
         .iter()
         .zip(leads)
-        .map(|(r, to)| {
-            if horizontal {
+        .enumerate()
+        .map(|(i, (r, to))| {
+            if i == first || i == last {
+                (*r).clone()
+            } else if horizontal {
                 at(r, to, r.top)
             } else {
                 at(r, r.left, to)
@@ -436,7 +466,7 @@ mod tests {
             ),
         ];
         for (arrangement, wanted) in rows {
-            let changed = arrange(&objects, arrangement);
+            let changed = arrange(&objects, arrangement).unwrap();
             for (object, (left, top, width, height)) in objects.iter().zip(wanted) {
                 let expected = frame(object.object, left, top, width, height);
                 let got = changed.iter().find(|f| f.object == object.object);
@@ -453,9 +483,54 @@ mod tests {
             frame(1, 0.0, 0.0, 15.0, 5.0),
             frame(2, 20.0, 0.0, 10.0, 5.0),
         ];
-        let centered = arrange(&odd, Arrangement::AlignVerticalCenters);
+        let centered = arrange(&odd, Arrangement::AlignVerticalCenters).unwrap();
         assert_eq!(centered[0].frame.left, 8.0);
-        assert!(arrange(&odd, Arrangement::DistributeHorizontally).is_empty());
-        assert!(arrange(&odd[..1], Arrangement::AlignLeftEdges).is_empty());
+        assert!(arrange(&odd, Arrangement::DistributeHorizontally)
+            .unwrap()
+            .is_empty());
+        assert!(arrange(&odd[..1], Arrangement::AlignLeftEdges)
+            .unwrap()
+            .is_empty());
+        // The outermost objects keep their frames exactly, fractions
+        // included.
+        let fractional = [
+            frame(1, 0.0, 0.0, 10.0, 5.0),
+            frame(2, 15.0, 0.0, 10.0, 5.0),
+            frame(3, 40.5, 0.0, 10.0, 5.0),
+        ];
+        let spaced = arrange(&fractional, Arrangement::DistributeHorizontally).unwrap();
+        assert!(spaced.iter().all(|f| f.object == 2), "{spaced:?}");
+        // Too wide to fit: leading edges evenly spaced, order kept, and the
+        // same again when repeated.
+        let wide = [
+            frame(1, 100.0, 0.0, 10.0, 5.0),
+            frame(2, 110.0, 20.0, 70.0, 5.0),
+            frame(3, 130.0, 40.0, 10.0, 5.0),
+        ];
+        let once = arrange(&wide, Arrangement::DistributeHorizontally).unwrap();
+        assert_eq!(once, [frame(2, 115.0, 20.0, 70.0, 5.0)]);
+        let again = [wide[0].clone(), once[0].clone(), wide[2].clone()];
+        assert!(arrange(&again, Arrangement::DistributeHorizontally)
+            .unwrap()
+            .is_empty());
+        // A frame that is not a frame is refused, not taken as unchanged or
+        // as an anchor.
+        let mut bad = odd.clone();
+        bad[0].frame.left = f64::NAN;
+        assert!(arrange(&bad, Arrangement::AlignLeftEdges).is_err());
+        bad[0].frame = Rect {
+            left: 10.0,
+            right: 5.0,
+            ..odd[0].frame.clone()
+        };
+        assert!(arrange(&bad, Arrangement::AlignLeftEdges).is_err());
+        let line = [
+            frame(1, 0.0, 0.0, 0.0, 30.0),
+            frame(2, 20.0, 0.0, 10.0, 5.0),
+        ];
+        assert_eq!(
+            arrange(&line, Arrangement::AlignLeftEdges).unwrap().len(),
+            1
+        );
     }
 }

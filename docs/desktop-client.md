@@ -1973,7 +1973,12 @@ runs too ([authoring](authoring.md), "Arranging objects").
   outermost objects and spaces the others evenly; both are OpenMaker's
   reading of the help (re/client-ui.md, "Layout mode: Align, Distribute
   and Resize To").
-- Left and top edges land on whole points.
+- Left and top edges land on whole points. Objects too wide (tall)
+  together to distribute with equal gaps get evenly spaced leading edges
+  instead, so their order stays.
+- A pending move keeps the revision it was made on through Arrange, so
+  frames derived from it conflict at Save Layout if the layout changed
+  since.
 - The submenus' item names follow the help's wording; FileMaker Pro's are
   unmeasured.
 - Arrange does nothing for a selection holding a new field or an object

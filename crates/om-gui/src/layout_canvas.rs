@@ -789,7 +789,11 @@ impl CanvasState {
                     .get(&object.key)
                     .copied()
                     .unwrap_or(object.rect);
-                Some((object.key, shown, object.rect))
+                om_data::layout_arrange::arrangeable(&layout_rect(shown)).then_some((
+                    object.key,
+                    shown,
+                    object.rect,
+                ))
             })
             .collect()
     }
@@ -811,21 +815,24 @@ impl CanvasState {
         let Some(objects) = self.arrangeable(session) else {
             return false;
         };
-        let revision = self.geometry.as_ref().and_then(|g| g.revision);
+        // One change of the draft: a pending move keeps the revision it was
+        // made on, so frames derived from it conflict at Save Layout if the
+        // layout changed since, whatever order the objects are applied in.
+        let revision = if self.moved.frames.is_empty() {
+            self.geometry.as_ref().and_then(|g| g.revision)
+        } else {
+            self.moved.revision
+        };
         let frames: Vec<_> = objects
             .iter()
             .map(|&(object, shown, _)| om_data::layout_objects::ObjectFrame {
                 object,
-                frame: om_layout::Rect {
-                    top: shown.top,
-                    left: shown.left,
-                    bottom: shown.bottom,
-                    right: shown.right,
-                    ..om_layout::Rect::default()
-                },
+                frame: layout_rect(shown),
             })
             .collect();
-        let changed = om_data::layout_arrange::arrange(&frames, arrangement);
+        let Ok(changed) = om_data::layout_arrange::arrange(&frames, arrangement) else {
+            return false;
+        };
         for new in &changed {
             let Some(&(_, _, stored)) = objects.iter().find(|o| o.0 == new.object) else {
                 continue;
@@ -837,6 +844,9 @@ impl CanvasState {
                 right: new.frame.right,
             };
             self.set_frame(new.object, frame, stored, revision);
+            if !self.moved.frames.is_empty() {
+                self.moved.revision = revision;
+            }
         }
         !changed.is_empty()
     }
@@ -1776,6 +1786,17 @@ fn draw(
     dropped
 }
 
+/// A frame in layout points as `om_layout` holds one.
+fn layout_rect(frame: GeomRect) -> om_layout::Rect {
+    om_layout::Rect {
+        top: frame.top,
+        left: frame.left,
+        bottom: frame.bottom,
+        right: frame.right,
+        ..om_layout::Rect::default()
+    }
+}
+
 fn begin_selection_drag(
     selected: &Selection,
     geometry: &LayoutGeometry,
@@ -2495,6 +2516,53 @@ mod tests {
             field_name: None,
             ..Default::default()
         }
+    }
+
+    /// Arrange is one change of the draft: a frame derived from a pending
+    /// move made on an older revision keeps that revision, so Save Layout
+    /// conflicts if the layout changed since, even when the pending move
+    /// itself is undone first (it is first in canvas order).
+    #[test]
+    fn arrange_keeps_the_revision_of_a_pending_move() {
+        let (older, shown) = ([0; 32], [1; 32]);
+        let at = |left: f64| GeomRect {
+            left,
+            top: 0.0,
+            right: left + 10.0,
+            bottom: 10.0,
+        };
+        let movable = |key, left| ObjectGeom {
+            key,
+            movable: true,
+            ..object([left, 0.0, left + 10.0, 10.0])
+        };
+        let mut session = Session::new(
+            crate::session::Target {
+                host: "test".into(),
+                file: "test.fmp12".into(),
+                local: None,
+            },
+            25,
+        );
+        session.layout = Some(1);
+        session.geometry = Geometry::Loaded(LayoutGeometry {
+            objects: vec![movable(1, 100.0), movable(2, 120.0)],
+            revision: Some(shown),
+            ..LayoutGeometry::default()
+        });
+        let mut state = CanvasState::default();
+        state.select_object(&session, 0, false);
+        state.select_object(&session, 1, true);
+        // A's move to 80, made before the layout was read again with A at
+        // 100.
+        state.set_frame(1, at(80.0), at(100.0), Some(older));
+        // Centers of 80..90 and 120..130 meet at 105: A goes back to its
+        // stored 100, and B to 100, a frame that comes from A's draft.
+        use om_data::layout_arrange::Arrangement;
+        assert!(state.arrange(&session, Arrangement::AlignVerticalCenters));
+        assert_eq!(state.moved().frames.get(&1), None);
+        assert_eq!(state.moved().frames.get(&2), Some(&at(100.0)));
+        assert_eq!(state.moved().revision, Some(older));
     }
 
     /// Save Layout's next step goes on the revision the host reported only

@@ -2095,12 +2095,21 @@ impl Service {
                 ),
             ));
         }
+        let expected = parse_revision(&params.expected_revision)?;
         let file = self.file();
         let layout = self.load_layout(&LayoutParams {
             layout: params.layout.clone(),
             layout_name: params.layout_name.clone(),
         })?;
         let layout_ref = self.layout_ref(layout.id);
+        let refused = |refusal: layout_placement::Refusal| {
+            let kind = match refusal {
+                layout_placement::Refusal::Invalid(_) => ErrorKind::InvalidRequest,
+                layout_placement::Refusal::Unsupported(_) => ErrorKind::Unsupported,
+            };
+            AuthorError::new(kind, refusal.to_string())
+        };
+        let (_, store) = layout_placement::stored_objects(&layout.member).map_err(refused)?;
         let decoded = layout_placement::decode(&layout.member).ok_or_else(|| {
             AuthorError::new(
                 ErrorKind::Unsupported,
@@ -2123,15 +2132,21 @@ impl Service {
                     format!("{object} is named twice."),
                 ));
             }
+            // Every object, the ones that stay included: one that cannot be
+            // moved must not anchor the others.
+            layout_objects::movable(&store, key).map_err(refused)?;
             frames.push(ObjectFrame {
                 object: key,
                 frame: bounds,
             });
         }
-        let changed = arrange(&frames, arrangement);
+        let changed = arrange(&frames, arrangement).map_err(refused)?;
         if changed.is_empty() {
+            // Arranged so already: at the expected revision nothing is to
+            // change; at another, as after a request whose answer was lost,
+            // the objects are as asked (set_object_frames' already_applied).
             return Ok(json!({
-                "status": "unchanged",
+                "status": if expected == layout.revision { "unchanged" } else { "already_applied" },
                 "layout": layout_ref,
                 "arrangement": arrangement.id(),
                 "revision": revision_text(&layout.revision),

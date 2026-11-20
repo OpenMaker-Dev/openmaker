@@ -165,6 +165,12 @@ fn an_object_is_moved_and_resized_and_lasts_a_restart() {
         &lined_revision,
     )));
     assert_eq!(unchanged["status"], "unchanged", "{unchanged:#}");
+    // At the revision it was asked on (a retry after a lost answer) the
+    // objects are as asked; a revision that is none is refused.
+    let retried = ok(service.handle(&arrange("align_left_edges", &[&label, &field], &current)));
+    assert_eq!(retried["status"], "already_applied", "{retried:#}");
+    let malformed = error(service.handle(&arrange("align_left_edges", &[&label, &field], "r")));
+    assert_eq!(malformed["kind"], "invalid_request", "{malformed:#}");
     let unknown = error(service.handle(&arrange(
         "align_middles",
         &[&label, &field],
