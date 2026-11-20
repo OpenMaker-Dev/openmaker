@@ -3,6 +3,7 @@
 # scan location-args: open 0 load 0 scan 0 commit 0; index:id=value (0-based): 0:103=0
 # scan beacons: open 0 load 0 scan 0 commit 0; index:id=value (0-based): 0:103=0
 # scan control: open 0 load 0 scan 0 commit 0; index:id=value (0-based): 0:103=0
+# scan dead: open 0 load 0 scan 0 commit 0; index:id=value (0-based): 0:103=0
 # scan addon: open 0 load 0 scan 0 commit 0; index:id=value (0-based): 0:103=0
 # scan furigana: open 0 load 0 scan 0 commit 0; index:id=value (0-based): 0:103=0
 # scan sensor: open 0 load 0 scan 0 commit 0; index:id=value (0-based): 0:103=0
@@ -21,6 +22,8 @@ beacons		0	beacons ?/1208/1208:?	0
 >	1	beacons	1	103	0	0	1	0
 control		0	control 1208/1208:?	0
 >	1	control	1	103	0	0	1	0
+dead		0	dead 1208:?/1208/1208/1208/0:1	0
+>	1	dead	1	103	0	0	1	0
 addon		0	addon {\r\t"APIVers" : 2\r}/0/0:{\r\t"APIVers" : 2\r}	0
 >	1	addon	1	103	0	0	1	0
 furigana		0	furigana abc/0/abc/0//0	0

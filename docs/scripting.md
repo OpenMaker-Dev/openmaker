@@ -468,13 +468,23 @@ Open items:
     engine lists, whatever its case and options, and error 1208 for any
     other name; empty for any player attribute; Furigana's text unchanged
     whatever its option, the engine's answer without its reading
-    dictionary; error 1208 for the three location functions. Arguments
-    not run get the same answers [I].
+    dictionary; error 1208 for the three location functions, which
+    `Evaluate` text fails to compile, also where the call is in a branch
+    never taken (its names are withheld from the server's compile,
+    `NameTable::withhold_builtin`). Arguments not run get the same
+    answers [I].
   - The desktop answers `Location` and `LocationValues` empty, as Claris
     documents FileMaker Pro, and `GetSensor` as the server's engine does
     [I] (`om_data::host::device`). `GetAddonInfo`, `GetAVPlayerAttribute`,
     `Furigana` and `RangeBeacons` still answer error 1225 there: FileMaker
     Pro's answers are unmeasured ([#79](https://github.com/OpenMaker-Dev/openmaker/issues/79)).
+  - On OpenMaker Server an unstored calculation read outside a step's own
+    evaluation (a sort's, say) answers these functions as the step does.
+  - Record rules (auto-entry, validation, stored recalculation and record
+    privilege formulas) still refuse a formula that calls `Location`,
+    `LocationValues` or `RangeBeacons` while they are planned, on either
+    side, as they refuse plug-in functions; a write that needs one is
+    refused. `GetSensor` answers there as above.
   - Also open: AI (`GetEmbedding`, `GetTokenCount`) and the TextEncode
     transliteration table.
 - Import and export:

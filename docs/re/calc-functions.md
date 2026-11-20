@@ -774,8 +774,15 @@ a step, so the battery compiles them in the engine with `Evaluate`:
   one-argument `Location ( 10 )`, `LocationValues ( 10 ; 60 )` and
   `( -1 ; -1 )`, `RangeBeacons` of a UUID and 1, and of empty text. An
   unknown function, `Evaluate ( "Nothing ( 1 )" )`, is 1208 too: the
-  server's engine has no location functions [I: compiled into a file by
-  FileMaker Pro and run on the server, the call was not run].
+  server's engine has no location functions. Their names fail while the
+  text compiles, as an unknown function's do: `Location ( 10 )`, one
+  argument short, is 1208 rather than a "too few parameters" error. In a
+  branch `Evaluate` never takes, `If ( 0 ; Location ( 10 ; 60 ) ; 1 )`,
+  and the same with `LocationValues ( 10 ; 60 )`, `RangeBeacons ( "" )`
+  and `Nothing ( 1 )`, is still `?` with 1208, where
+  `If ( 0 ; GetSensor ( "battery" ) ; 1 )` is 1, error 0 (the `dead` run).
+  A call compiled into a file by FileMaker Pro and run on the server was
+  not run [I: the same 1208 when it is evaluated].
 - `GetSensor` of each of the 20 sensor names the engine lists (resource
   162, `catalogs/enumerations.csv`) is empty with error 0, also in another
   case (`"Location"`, `"BATTERYLEVEL"`) and with options

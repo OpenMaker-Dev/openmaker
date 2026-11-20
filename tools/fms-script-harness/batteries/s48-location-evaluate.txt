@@ -3,7 +3,8 @@
 # step naming them (they are external functions, calc-functions.md 10), so
 # here Evaluate compiles them in the engine. Also arguments of the add-on,
 # Furigana, sensor and player functions s45 did not run, and GetSensor of
-# each sensor name the engine lists (resource 162). Run on contacts-en.
+# each sensor name the engine lists (resource 162), and the location
+# functions in a branch Evaluate never takes. Run on contacts-en.
 
 == location
 Exit Script [ "location " & Evaluate ( "Location ( 10 ; 60 )" ) & "/" & EvaluationError ( Evaluate ( "Location ( 10 ; 60 )" ) ) & "/" & Length ( Evaluate ( "Location ( 10 ; 60 )" ) ) ]
@@ -19,6 +20,9 @@ Exit Script [ "beacons " & Evaluate ( "RangeBeacons ( " & Quote ( "00000000-0000
 
 == control
 Exit Script [ "control " & EvaluationError ( Evaluate ( "Nothing ( 1 )" ) ) & "/" & EvaluationError ( Evaluate ( "GetSensor ( " & Quote ( "battery" ) & " )" ) ) & ":" & Evaluate ( "GetSensor ( " & Quote ( "battery" ) & " )" ) ]
+
+== dead
+Exit Script [ "dead " & EvaluationError ( Evaluate ( "If ( 0 ; Location ( 10 ; 60 ) ; 1 )" ) ) & ":" & Evaluate ( "If ( 0 ; Location ( 10 ; 60 ) ; 1 )" ) & "/" & EvaluationError ( Evaluate ( "If ( 0 ; LocationValues ( 10 ; 60 ) ; 1 )" ) ) & "/" & EvaluationError ( Evaluate ( "If ( 0 ; RangeBeacons ( " & Quote ( "" ) & " ) ; 1 )" ) ) & "/" & EvaluationError ( Evaluate ( "If ( 0 ; Nothing ( 1 ) ; 1 )" ) ) & "/" & EvaluationError ( Evaluate ( "If ( 0 ; GetSensor ( " & Quote ( "battery" ) & " ) ; 1 )" ) ) & ":" & Evaluate ( "If ( 0 ; GetSensor ( " & Quote ( "battery" ) & " ) ; 1 )" ) ]
 
 == addon
 Exit Script [ "addon " & GetAddonInfo ( "com.example.Other" ) & "/" & EvaluationError ( GetAddonInfo ( "com.example.Other" ) ) & "/" & EvaluationError ( GetAddonInfo ( "?" ) ) & ":" & GetAddonInfo ( "?" ) ]

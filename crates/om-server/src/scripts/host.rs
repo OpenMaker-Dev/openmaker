@@ -243,6 +243,14 @@ impl Schema {
             Some((wire, Arc::new(calc)))
         });
         let mut names = NameTable::default();
+        // FileMaker Server's engine compiles no location function (s48):
+        // `Evaluate` text naming one fails with 1208, also in a branch it
+        // never takes.
+        for name in om_data::host::device::SERVER_LACKS {
+            if let Some(builtin) = om_formula::catalog::find_builtin(name) {
+                names.withhold_builtin(builtin.id);
+            }
+        }
         let mut occurrences = HashMap::new();
         for occurrence in &catalog.table_occurrences {
             if let Some(table) = occurrence.base_table() {

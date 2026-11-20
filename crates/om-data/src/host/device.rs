@@ -41,6 +41,13 @@ pub const SENSORS: [&str; 20] = [
     "airPressure",
 ];
 
+/// The location functions FileMaker Server's script engine has none of: a
+/// formula naming one fails to compile there with error 1208, also where
+/// its call is in a branch never taken (s48), as an unknown function's
+/// name does. A stored formula that calls one gets the same error when the
+/// call is evaluated ([`answer`]).
+pub const SERVER_LACKS: [&str; 3] = ["Location", "LocationValues", "RangeBeacons"];
+
 /// FileMaker's "operator missing, function not found or ( not expected":
 /// FileMaker Server's answer for a sensor it does not list and for the
 /// location functions (s48).
@@ -76,7 +83,7 @@ pub fn answer(
         HostFunction::Builtin(builtin) => {
             let named = |name: &str| builtin.name.eq_ignore_ascii_case(name);
             let location = named("Location") || named("LocationValues");
-            if server && (location || named("RangeBeacons")) {
+            if server && SERVER_LACKS.iter().any(|name| named(name)) {
                 Some(not_found())
             } else if location {
                 Some(Ok(Value::empty_text()))

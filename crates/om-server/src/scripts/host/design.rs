@@ -100,6 +100,25 @@ impl ServerHost {
         args: &[Value],
         context: &Context,
     ) -> Result<Value, CalcError> {
+        match function {
+            HostFunction::Named(name) if name.eq_ignore_ascii_case("GetLayoutObjectAttribute") => {
+                Ok(self.layout_object_attribute(args))
+            }
+            _ => self.shared_call(function, args, context),
+        }
+    }
+
+    /// [`Self::host_call`]'s answers that read the session without
+    /// changing it: all but `GetLayoutObjectAttribute`, which evaluates the
+    /// window's objects. An unstored calculation read outside a step's
+    /// evaluation (a sort's, `calculated::Reader`) answers through this,
+    /// so that the same field reads the same there.
+    pub(super) fn shared_call(
+        &self,
+        function: HostFunction<'_>,
+        args: &[Value],
+        context: &Context,
+    ) -> Result<Value, CalcError> {
         // GetSensor and the location functions as FileMaker Server's script
         // engine answers them (script oracle s48, `om_data::host::device`).
         if let Some(answer) = om_data::host::device::answer(function, args, &self.cx(), true) {
@@ -110,9 +129,6 @@ impl ServerHost {
                 if let Some(answer) = self.design_call(builtin.name, args, context) {
                     return answer;
                 }
-            }
-            HostFunction::Named(name) if name.eq_ignore_ascii_case("GetLayoutObjectAttribute") => {
-                return Ok(self.layout_object_attribute(args));
             }
             HostFunction::Named(name) if name.eq_ignore_ascii_case("LayoutObjectUUID") => {
                 return Err(CalcError::from_code(DATA_MISSING).expect("nonzero"));

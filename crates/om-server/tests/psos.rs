@@ -213,7 +213,9 @@ fn performs_scripts_on_the_server() {
                      GetSensor ( \"stepCount\" ; 3600 ) & \"|\" & \
                      EvaluationError ( Location ( 10 ; 60 ) ) & \"|\" & \
                      EvaluationError ( LocationValues ( 10 ; 60 ) ) & \"|\" & \
-                     EvaluationError ( RangeBeacons ( \"x\" ; 1 ) )",
+                     EvaluationError ( RangeBeacons ( \"x\" ; 1 ) ) & \"|\" & \
+                     EvaluationError ( Evaluate ( \"If ( 0 ; Location ( 10 ; 60 ) ; 1 )\" ) ) & \
+                     \"|\" & Evaluate ( \"If ( 0 ; GetSensor ( \" & Quote ( \"battery\" ) & \" ) ; 1 )\" )",
                 )],
             ),
             fixture::script(
@@ -235,7 +237,10 @@ fn performs_scripts_on_the_server() {
     let device = client.perform_script_on_server(4, "", true).unwrap();
     assert_eq!(
         (device.error, device.result.as_str()),
-        (0, "{\r\t\"APIVers\" : 2\r}|3|1208||0|abc|0:|1208|1208|1208")
+        (
+            0,
+            "{\r\t\"APIVers\" : 2\r}|3|1208||0|abc|0:|1208|1208|1208|1208|1"
+        )
     );
     // The two errors' results are `?`, not empty, as s45 shows them.
     for script in [5, 6] {
