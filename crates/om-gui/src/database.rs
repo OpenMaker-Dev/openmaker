@@ -1081,8 +1081,11 @@ impl ManageDatabase {
             let enabled = writable
                 && (options_of.is_some() || calculation_of.is_some() || summary_of.is_some());
             let options = widgets::dialog_button(ui, "Options…", false, enabled);
-            // Double-clicking the selected field is Options… too.
-            let double = enabled && opened.is_some() && opened == selected;
+            // Double-clicking the selected field is Options… too: the field
+            // the options above were taken from, also when both clicks
+            // came in one frame onto another row.
+            let double =
+                enabled && opened.is_some() && opened == selected_field.map(|field| field.id);
             if options.clicked() || double {
                 if let Some((field_id, name, data_type, options)) = options_of.clone() {
                     let names = self.option_names(table_id);

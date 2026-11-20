@@ -13,7 +13,7 @@ use egui::{
 use crate::icons::{self, Icon};
 use crate::theme;
 
-/// Raises each dialog and pop-up once more in the pass after it opened.
+/// Raises each dialog and pop-up again in the passes after it opened.
 ///
 /// egui raises an area in the pass it becomes visible, but the end of the
 /// pass keeps the areas raised in one pass in their old order, and a press
@@ -22,12 +22,18 @@ use crate::theme;
 /// kept its old place behind that dialog, out of sight: Manage Database's
 /// Options… opened Options for Field or Options for Summary Field only the
 /// first time. In the next pass nothing else asks to be raised, so raising
-/// the dialog again brings it to the front. A layer counts as open in a
-/// pass when it drew something in it.
+/// the dialog again brings it to the front; it is raised for [`RAISES`]
+/// passes, in case another press comes in the next. A layer counts as open
+/// in a pass when it drew something in it.
 #[derive(Default)]
 pub(crate) struct RaiseOpened {
-    opened: std::collections::HashMap<egui::ViewportId, Vec<egui::LayerId>>,
+    /// Per viewport, the layers opened lately and the passes left to raise
+    /// them.
+    opened: std::collections::HashMap<egui::ViewportId, Vec<(egui::LayerId, u8)>>,
 }
+
+/// The passes after it opened in which a layer is raised again.
+const RAISES: u8 = 3;
 
 impl egui::plugin::Plugin for RaiseOpened {
     fn debug_name(&self) -> &'static str {
@@ -40,9 +46,13 @@ impl egui::plugin::Plugin for RaiseOpened {
         let drawn = |layer: egui::LayerId| {
             ctx.graphics(|g| g.get(layer).is_some_and(|list| !list.is_empty()))
         };
-        for layer in self.opened.remove(&viewport).unwrap_or_default() {
+        let mut pending: Vec<(egui::LayerId, u8)> = Vec::new();
+        for (layer, left) in self.opened.remove(&viewport).unwrap_or_default() {
             if drawn(layer) {
                 ctx.move_to_top(layer);
+                if left > 1 {
+                    pending.push((layer, left - 1));
+                }
             }
         }
         let fresh: Vec<egui::LayerId> = ctx.memory(|m| {
@@ -52,9 +62,14 @@ impl egui::plugin::Plugin for RaiseOpened {
                 })
                 .collect()
         });
-        let opened: Vec<egui::LayerId> = fresh.into_iter().filter(|l| drawn(*l)).collect();
-        if !opened.is_empty() {
-            self.opened.insert(viewport, opened);
+        pending.extend(
+            fresh
+                .into_iter()
+                .filter(|layer| drawn(*layer))
+                .map(|layer| (layer, RAISES)),
+        );
+        if !pending.is_empty() {
+            self.opened.insert(viewport, pending);
             ctx.request_repaint();
         }
     }
