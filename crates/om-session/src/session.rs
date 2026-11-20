@@ -740,7 +740,7 @@ impl Session {
         // the session's back-channel).
         let contexts = [bidir_service_context(&[(callback_host, 5003)])];
         let is_a = wire.exchange(
-            |id| build_is_a(id, &contexts),
+            |id| Ok(build_is_a(id, &contexts)),
             Wait::Read,
             Carries::NoRecords,
         )?;
@@ -750,7 +750,10 @@ impl Session {
         }
 
         let connect_msg = wire.exchange(
-            |id| build_connect(id, callback_host, 0x138b, info),
+            |id| {
+                build_connect(id, callback_host, 0x138b, info)
+                    .map_err(|e| SessionError::Protocol(e.to_string()))
+            },
             Wait::Read,
             Carries::NoRecords,
         )?;
@@ -2280,7 +2283,7 @@ impl Wire {
         wait: Wait,
         carries: Carries,
     ) -> Result<Vec<u8>, SessionError> {
-        let exchanged = self.exchange(build, wait, carries);
+        let exchanged = self.exchange(|id| Ok(build(id)), wait, carries);
         exchanged.map_err(|e| self.check(e))
     }
 
@@ -2288,7 +2291,7 @@ impl Wire {
     /// has no session to lose yet.
     fn exchange(
         &mut self,
-        build: impl FnOnce(u32) -> Vec<u8>,
+        build: impl FnOnce(u32) -> Result<Vec<u8>, SessionError>,
         wait: Wait,
         carries: Carries,
     ) -> Result<Vec<u8>, SessionError> {
@@ -2297,12 +2300,13 @@ impl Wire {
             add_record_requests_sent(1);
         }
         let id = self.take_request_id();
+        let request = build(id)?;
         let Wire {
             transport, inbox, ..
         } = self;
         let transport = transport.as_mut().expect("checked above");
         let exchanged = transport
-            .send(&build(id))
+            .send(&request)
             .map_err(SessionError::from)
             .and_then(|()| recv_reply_message(transport, id, inbox, wait));
         self.last_request = Instant::now();
