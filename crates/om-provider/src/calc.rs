@@ -381,6 +381,8 @@ pub(crate) struct NativeSource<'a> {
     sorts: RefCell<HashMap<u64, Arc<[u64]>>>,
     globals: RefCell<HashMap<u64, Arc<RecordValues>>>,
     related: RefCell<RelatedCache>,
+    /// The record ids `related` holds from this source's own reads.
+    related_held: std::cell::Cell<usize>,
     lookups: RefCell<HashMap<LookupKey, Option<Arc<[u64]>>>>,
     /// The session's own global values, over the stored ones.
     session_globals: SessionGlobals,
@@ -442,6 +444,7 @@ impl<'a> NativeSource<'a> {
             sorts: RefCell::default(),
             globals: RefCell::default(),
             related: RefCell::default(),
+            related_held: std::cell::Cell::new(0),
             lookups: RefCell::default(),
             session_globals: SessionGlobals::new(),
             library: None,
@@ -461,6 +464,13 @@ impl<'a> NativeSource<'a> {
 
     /// What the calculations asked for that the schema did not hold
     /// (`layouts`, `occurrences`), taken.
+    /// The related record ids this source holds from its own reads, every
+    /// relationship a calculation followed included: what a long reader
+    /// (a related sort) bounds.
+    pub(crate) fn related_held(&self) -> usize {
+        self.related_held.get()
+    }
+
     pub(crate) fn take_needs(&self) -> SchemaNeeds {
         SchemaNeeds {
             layouts: std::mem::take(&mut self.layouts.borrow_mut()),
@@ -932,6 +942,8 @@ impl CalcSource for NativeSource<'_> {
             om_data::host::related_by_scan(self, schema, from, record, to, cx)?
         };
         if self.reusable_related(from, to) {
+            self.related_held
+                .set(self.related_held.get().saturating_add(ids.len()));
             self.related.borrow_mut().insert(key, Arc::clone(&ids));
         }
         Ok(ids)

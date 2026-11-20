@@ -1447,62 +1447,40 @@ impl NativeProvider {
         let cx = Ctx::new(&schema.locale, today);
         // 1224: the schema is still reading an occurrence on the way.
         const PENDING: i32 = 1224;
-        // The related records read, which the source keeps per record: past
-        // this the sort fails rather than hold them all (OpenMaker's limit).
-        let mut budget = RELATED_SORT_IDS;
         let mut values = Vec::with_capacity(records.len());
         let mut pending = false;
+        // A value that could not be computed, and its sort field's name.
+        let mut failed = None;
         'records: for &record in records {
             let mut row = Vec::with_capacity(related.len());
             for sort in related {
-                let read = if sort.occurrence == from {
-                    Ok(0)
-                } else {
-                    file.related_records(from, record, sort.occurrence)
-                        .map(|ids| ids.len())
-                };
-                // `None`: past the budget.
-                let value = read.and_then(|count| {
-                    let Some(left) = budget.checked_sub(count) else {
-                        return Ok(None);
-                    };
-                    budget = left;
-                    file.read_related_computed(from, record, sort.occurrence, sort.field)
-                        .map(Some)
-                });
-                match value {
-                    Ok(Some(value)) => {
+                match file.read_related_computed(from, record, sort.occurrence, sort.field) {
+                    Ok(value) => {
                         let text = sort_text(&value, &cx);
                         row.push((!text.is_empty()).then_some(text));
-                    }
-                    Ok(None) => {
-                        return Err(DataError::with_code(
-                            code::UNSUPPORTED,
-                            format!(
-                                "Sorting by {:?} reads more than {RELATED_SORT_IDS} related \
-                                 records, OpenMaker's limit for one sort. The records were not \
-                                 sorted.",
-                                sort.name
-                            ),
-                        ));
                     }
                     Err(error) if error.code() == PENDING => {
                         pending = true;
                         break 'records;
                     }
-                    // A read that failed, or a calculation that is `?`:
-                    // its records cannot be placed.
                     Err(error) => {
-                        return Err(DataError::with_code(
-                            code::UNSUPPORTED,
-                            format!(
-                                "A value of {:?} could not be computed (error {}). The records \
-                                 were not sorted.",
-                                sort.name,
-                                error.code()
-                            ),
-                        ));
+                        failed = Some((&sort.name, error));
+                        break 'records;
                     }
+                }
+                // The related records the source holds, every relationship
+                // a calculation followed included: past OpenMaker's limit
+                // the sort fails rather than hold them all.
+                if source.related_held() > RELATED_SORT_IDS {
+                    return Err(DataError::with_code(
+                        code::UNSUPPORTED,
+                        format!(
+                            "Sorting by {:?} reads more than {RELATED_SORT_IDS} related \
+                             records, OpenMaker's limit for one sort. The records were not \
+                             sorted.",
+                            sort.name
+                        ),
+                    ));
                 }
             }
             values.push(row);
@@ -1512,7 +1490,25 @@ impl NativeProvider {
         if let Some(error) = source.take_failure() {
             return Err(error);
         }
-        Ok(((!pending).then_some(values), source.take_needs()))
+        let needs = source.take_needs();
+        let asked = !needs.layouts.is_empty() || !needs.occurrences.is_empty();
+        match failed {
+            // A read that failed while the schema still reads an
+            // occurrence or layout it asked for (a related file not opened
+            // yet): read them, then the values again.
+            Some(_) if asked => Ok((None, needs)),
+            // A failed read, or a calculation that is `?`: its records
+            // cannot be placed.
+            Some((name, error)) => Err(DataError::with_code(
+                code::UNSUPPORTED,
+                format!(
+                    "A value of {name:?} could not be computed (error {}). The records were \
+                     not sorted.",
+                    error.code()
+                ),
+            )),
+            None => Ok(((!pending).then_some(values), needs)),
+        }
     }
 }
 
@@ -1525,28 +1521,41 @@ struct RelatedSort {
     kind: om_data::FieldKind,
 }
 
-/// The related records a related sort may read, summed over the sorted
-/// records (8 bytes each, 64 MiB): OpenMaker's limit, as a client find's
-/// duplicates have one ([`CLIENT_FIND_BUDGET`]).
+/// The related record ids a related sort's source may hold, from every
+/// relationship its reads follow, calculations' included (8 bytes each, 64
+/// MiB): OpenMaker's limit, as a client find's duplicates have one
+/// ([`CLIENT_FIND_BUDGET`]).
 const RELATED_SORT_IDS: usize = 8 << 20;
 
 /// `value` as text the desktop's sort reads back as the same value
 /// (`found::sort_rows_with_date_order`), whatever the file's formats: a
 /// number written out in full with `.` (its reader stops at an exponent
 /// and takes only `.`), a time, and a timestamp's time, with `:` and its
-/// fraction, a date in the file's format, which the date reader takes
-/// with any of `/ . -`.
+/// fraction, and a date, and a timestamp's date, with `/` in the file's
+/// date order.
 fn sort_text(value: &om_data::calc::Value, cx: &Ctx) -> String {
     use om_data::calc::Value;
     match value {
         Value::Number(n) | Value::NumberText(n, _) => plain_number(&n.to_text_with('.')),
         Value::Time(t) => clock(t.micros()),
+        Value::Date(d) => date_text(*d, cx.locale.date_order),
         Value::Timestamp(t) => format!(
             "{} {}",
-            t.date().format(cx.locale),
+            date_text(t.date(), cx.locale.date_order),
             clock(t.time_of_day().micros())
         ),
         other => other.to_text(cx).into_string(),
+    }
+}
+
+/// A date in the file's date order, with `/` and a four-digit year, as the
+/// sort's date reader takes it whatever separator the file's locale uses.
+fn date_text(date: om_data::calc::Date, order: DateOrder) -> String {
+    let (year, month, day) = date.ymd();
+    match order {
+        DateOrder::MonthDayYear => format!("{month}/{day}/{year:04}"),
+        DateOrder::DayMonthYear => format!("{day}/{month}/{year:04}"),
+        DateOrder::YearMonthDay => format!("{year:04}/{month}/{day}"),
     }
 }
 
@@ -1908,6 +1917,10 @@ mod tests {
         );
         assert_eq!(clock(-3600 * 1_000_000), "-1:00:00");
         assert_eq!(clock(26 * 3600 * 1_000_000), "26:00:00");
+        // Dates with `/` in the file's order, whatever its separator.
+        let date = om_data::calc::Date::from_ymd(2025, 12, 1).unwrap();
+        assert_eq!(date_text(date, DateOrder::DayMonthYear), "1/12/2025");
+        assert_eq!(date_text(date, DateOrder::YearMonthDay), "2025/12/1");
     }
 
     /// Repetition n of field F is the cell `F * 256 + n`, F from the file

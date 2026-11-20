@@ -5272,8 +5272,12 @@ impl FoundSets for WorkerHost<'_> {
                     let mut spec = last.spec;
                     if let (Some(own), Some(accepted)) = (own, last.occurrence) {
                         for entry in &mut spec.fields {
-                            if entry.field.occurrence == Some(accepted) {
-                                entry.field.occurrence = Some(own);
+                            let fields =
+                                std::iter::once(&mut entry.field).chain(entry.summary.as_mut());
+                            for field in fields {
+                                if field.occurrence == Some(accepted) {
+                                    field.occurrence = Some(own);
+                                }
                             }
                         }
                     }
