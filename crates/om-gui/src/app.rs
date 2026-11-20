@@ -3209,17 +3209,20 @@ impl OpenMakerApp {
     }
 
     /// Whether View's Zoom In, Zoom Out and Actual Size change the window's
-    /// zoom: a layout drawn in Browse's Form or List view, or Preview. Table
-    /// view, Find and Layout mode and the generic views are not zoomed yet
-    /// (#36).
+    /// zoom: a layout drawn in Browse's Form or List view, in Find mode
+    /// (which draws its requests as Form view does), or Preview. Table view,
+    /// Layout mode and the generic views are not zoomed yet (#36).
     fn zooms(&self) -> bool {
         self.w
             .session
             .as_ref()
             .is_some_and(|session| matches!(session.render, crate::session::RenderState::Loaded(_)))
-            && ((self.w.mode == Mode::Browse
-                && matches!(self.w.view, ViewMode::Form | ViewMode::List))
-                || self.w.mode == Mode::Preview)
+            && match self.w.mode {
+                Mode::Browse => matches!(self.w.view, ViewMode::Form | ViewMode::List),
+                Mode::Find => self.w.view != ViewMode::Table,
+                Mode::Preview => true,
+                Mode::Layout => false,
+            }
     }
 
     fn can_export_records(&self) -> bool {
@@ -6457,11 +6460,17 @@ mod tests {
         assert_eq!(app.w.document.zoom.percent(), 150);
         assert_eq!(context.zoom_factor(), 1.0);
 
-        // List view zooms too; Table view not yet.
+        // List view zooms too, and Find mode's layout; Table view not yet.
         app.w.view = ViewMode::List;
         app.apply(&context, Action::ZoomIn);
         assert_eq!(app.w.document.zoom.percent(), 200);
         app.apply(&context, Action::ZoomOut);
+        app.w.view = ViewMode::Form;
+        app.w.mode = Mode::Find;
+        app.apply(&context, Action::ZoomIn);
+        assert_eq!(app.w.document.zoom.percent(), 200);
+        app.apply(&context, Action::ZoomOut);
+        app.w.mode = Mode::Browse;
         app.w.view = ViewMode::Table;
         app.apply(&context, Action::ZoomIn);
         assert_eq!(app.w.document.zoom.percent(), 150);
