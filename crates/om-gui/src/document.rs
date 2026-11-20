@@ -7098,6 +7098,10 @@ fn lines_editor(
     } else {
         egui::ScrollArea::vertical()
             .id_salt(id.with("lines"))
+            // Scrolls at once, the editor's own to its insertion point too:
+            // an animation under way at a change of zoom would carry the
+            // field past the insertion point at the new one.
+            .animated(false)
             // The field's height, not egui's least scrolled height (64
             // points), which would grow the area past the field instead.
             .max_height(inner.height())
