@@ -814,6 +814,9 @@ pub struct OpenMakerApp {
     /// found for the other windows' viewports.
     web: crate::web_viewer::WebViewers,
     native_parent: Result<crate::web_viewer::NativeParent, crate::web_viewer::Unavailable>,
+    /// The app runs in a native window of the platform's (not a test
+    /// harness's): the Insert commands use the platform's file panel.
+    native_window: bool,
     viewport_windows: crate::web_viewer::ViewportWindows,
     /// Open the form's file when the app first draws (`open_on_launch`).
     open_on_launch: bool,
@@ -917,6 +920,7 @@ impl OpenMakerApp {
             settings_path: crate::settings::default_path(),
             web: Default::default(),
             native_parent: Err(crate::web_viewer::Unavailable::Window),
+            native_window: false,
             viewport_windows: Default::default(),
             open_on_launch: false,
             reconnect: None,
@@ -1322,6 +1326,7 @@ impl OpenMakerApp {
                 mode: self.w.mode,
                 view: self.w.view,
                 zoom: self.w.document.zoom.percent(),
+                zooms: self.zooms(),
                 session: self.w.session.as_ref(),
                 find: &self.w.find,
                 toolbar: self.w.show_toolbar,
@@ -2989,7 +2994,7 @@ impl OpenMakerApp {
             if input.consume_shortcut(&shortcuts::STATUS_TOOLBAR) {
                 actions.push(Action::ToggleToolbar);
             }
-            if (browse && self.w.view == ViewMode::Form) || self.w.mode == Mode::Preview {
+            if self.zooms() {
                 if input.consume_shortcut(&shortcuts::ZOOM_IN)
                     || input.consume_shortcut(&shortcuts::ZOOM_IN_ALTERNATE)
                 {
@@ -3201,6 +3206,23 @@ impl OpenMakerApp {
                     }
                 });
             });
+    }
+
+    /// Whether View's Zoom In, Zoom Out and Actual Size change the window's
+    /// zoom: a layout drawn in Browse's Form or List view, in Find mode
+    /// (which draws its requests as Form view does), or Preview. Table view,
+    /// Layout mode and the generic views are not zoomed yet (#36).
+    fn zooms(&self) -> bool {
+        self.w
+            .session
+            .as_ref()
+            .is_some_and(|session| matches!(session.render, crate::session::RenderState::Loaded(_)))
+            && match self.w.mode {
+                Mode::Browse => matches!(self.w.view, ViewMode::Form | ViewMode::List),
+                Mode::Find => self.w.view != ViewMode::Table,
+                Mode::Preview => true,
+                Mode::Layout => false,
+            }
     }
 
     fn can_export_records(&self) -> bool {
@@ -3926,11 +3948,7 @@ impl OpenMakerApp {
                 }
             }
             Action::ZoomIn | Action::ZoomOut | Action::ActualSize => {
-                if self.w.session.as_ref().is_some_and(|session| {
-                    matches!(session.render, crate::session::RenderState::Loaded(_))
-                }) && ((self.w.mode == Mode::Browse && self.w.view == ViewMode::Form)
-                    || self.w.mode == Mode::Preview)
-                {
+                if self.zooms() {
                     match action {
                         Action::ZoomIn => self.w.document.zoom.zoom_in(),
                         Action::ZoomOut => self.w.document.zoom.zoom_out(),
@@ -6333,6 +6351,13 @@ impl OpenMakerApp {
 impl eframe::App for OpenMakerApp {
     fn ui(&mut self, ui: &mut Ui, frame: &mut eframe::Frame) {
         self.native_parent = crate::web_viewer::NativeParent::of(frame);
+        self.native_window = {
+            use raw_window_handle::{HasWindowHandle, RawWindowHandle};
+            matches!(
+                frame.window_handle().map(|h| h.as_raw()),
+                Ok(RawWindowHandle::AppKit(_))
+            )
+        };
         self.show(ui);
         self.web.flush(frame);
     }
@@ -6435,6 +6460,17 @@ mod tests {
         assert_eq!(app.w.document.zoom.percent(), 150);
         assert_eq!(context.zoom_factor(), 1.0);
 
+        // List view zooms too, and Find mode's layout; Table view not yet.
+        app.w.view = ViewMode::List;
+        app.apply(&context, Action::ZoomIn);
+        assert_eq!(app.w.document.zoom.percent(), 200);
+        app.apply(&context, Action::ZoomOut);
+        app.w.view = ViewMode::Form;
+        app.w.mode = Mode::Find;
+        app.apply(&context, Action::ZoomIn);
+        assert_eq!(app.w.document.zoom.percent(), 200);
+        app.apply(&context, Action::ZoomOut);
+        app.w.mode = Mode::Browse;
         app.w.view = ViewMode::Table;
         app.apply(&context, Action::ZoomIn);
         assert_eq!(app.w.document.zoom.percent(), 150);

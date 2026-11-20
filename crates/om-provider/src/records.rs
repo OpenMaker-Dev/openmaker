@@ -240,7 +240,7 @@ fn exists_in_index_program(
 pub(super) fn checked_keys(
     table: &Table,
     field: u64,
-    file_language: u32,
+    file_language: Option<u32>,
 ) -> Result<TextKeys, DataError> {
     table
         .field(field)
@@ -258,15 +258,16 @@ pub(super) fn checked_keys(
 /// keys a value looked up in it: its value form
 /// ([`om_data::rules::value_text_keys`], language 0 the file's own). A
 /// text field in a language OpenMaker does not key (the tailored ones,
-/// #299) refuses the check (3), as a unique or existing-value check does,
-/// rather than keying the value in English, which can both miss the host's
-/// key and match another value (#571). Other types are keyed as text, as
+/// #299, or language 0 in a file whose locale record cannot be read)
+/// refuses the check (3), as a unique or existing-value check does, rather
+/// than keying the value in English, which can both miss the host's key
+/// and match another value (#571). Other types are keyed as text, as
 /// before: their typed keys do not depend on the language.
 fn list_keys(
     catalog: &Catalog,
     table: u64,
     field: u64,
-    file_language: u32,
+    file_language: Option<u32>,
 ) -> Result<TextKeys, DataError> {
     let field_def = catalog.table(table).and_then(|t| t.field(field));
     let keys = field_def

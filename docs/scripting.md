@@ -630,12 +630,12 @@ Open items:
   - External container storage is not read (containers.md 8).
   - Unique and existing-value rules need a text field with a value index
     in English, System, Unicode standard, Unicode raw, the file's own
-    language (0) when it is one of those, or a language FileMaker leaves
-    untailored (record-writes.md); value-list rules a source field
-    keyed in one of those forms, one in a tailored language refusing
-    the check with 3 ([#571](https://github.com/OpenMaker-Dev/openmaker/issues/571)).
-    Lists from another file, a calculation, related values or a second
-    field still make the table read-only.
+    language (0) when it is one of those and its locale record can be
+    read, or a language FileMaker leaves untailored (record-writes.md).
+    Field-backed value-list rules check their source in the same forms;
+    a text source in a tailored language refuses the check with 3
+    ([#571](https://github.com/OpenMaker-Dev/openmaker/issues/571)). Lists from another file, a calculation, related
+    values or a second field still make the table read-only.
   - OpenMaker's own choices, not settled by the oracle: numeric forms
     beyond those tested, value-list dividers, ranges on text and date
     fields, and the year position for non-US date orders.

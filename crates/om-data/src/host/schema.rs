@@ -352,6 +352,11 @@ impl LayoutField {
 pub struct CalcSchema {
     pub file_name: String,
     pub locale: Locale,
+    /// Whether the file holds a locale record `[2, 0d]` that does not
+    /// decode, so that [`Self::locale`] is only the en-US default: the
+    /// file's own language, which index language 0 keys text in, is then
+    /// unknown ([`Self::file_language`]).
+    pub locale_unreadable: bool,
     /// This file's authenticated account metadata, retained when its schema
     /// is imported. `None` stays unavailable; script elevation is session-local.
     pub authenticated_privileges: Option<Privileges>,
@@ -408,6 +413,7 @@ impl CalcSchema {
         CalcSchema {
             file_name: file_name.into(),
             locale,
+            locale_unreadable: false,
             authenticated_privileges: None,
             authenticated_account: super::AccountInfo::default(),
             font_families: BTreeMap::new(),
@@ -434,6 +440,15 @@ impl CalcSchema {
             data_sources: HashMap::new(),
             runtime_floor: u64::MAX,
         }
+    }
+
+    /// The file's own language (`Locale::Type`), which an index in
+    /// language 0 keys text in (query-program.md 7.2). `None` when its
+    /// locale record does not decode ([`Self::locale_unreadable`]): the
+    /// en-US default would key a German file's `ä` as `a`. A file with no
+    /// locale record reads as en-US's English.
+    pub fn file_language(&self) -> Option<u32> {
+        (!self.locale_unreadable).then(|| u32::from(self.locale.language.id()))
     }
 
     pub fn add_table(&mut self, id: u64, name: impl Into<String>) {

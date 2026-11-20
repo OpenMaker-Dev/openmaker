@@ -155,8 +155,9 @@ const CONTEXT_SELECTORS: [u8; 4] = [
 /// English's for every value. These are Dutch 20, French 24, Greek 27,
 /// Italian 30, Portuguese 34, Russian 36, Hebrew 47, Serbian 53,
 /// Bulgarian 55 and the Indic languages 59 to 67 (Hindi, 48, is tailored).
-/// Their word breaks follow each locale's punctuation and differ from
-/// English's ([#300](https://github.com/OpenMaker-Dev/openmaker/issues/300)),
+/// Their word breaks are not established: French's differ from English's
+/// (an apostrophe separates, query-program.md 7.1), the others' were not
+/// measured ([#300](https://github.com/OpenMaker-Dev/openmaker/issues/300)),
 /// so only their value keys are known. That the bin's list is complete is
 /// not confirmed: Norwegian and Finnish are tailored though absent from
 /// it, so this set is inferred.
@@ -172,19 +173,24 @@ pub fn untailored(language: u32) -> bool {
 /// or existing value checked in it, a find or a join on it without the
 /// host's index. The form a host writes ([`written_text_keys`]), and
 /// English for the untailored languages ([`untailored`]), whose value
-/// keys are English's. `None` for the tailored languages, whose keys
+/// keys are English's. `None` for language 0 when the file's language is
+/// unknown (`None`, its locale record unreadable,
+/// [`crate::host::CalcSchema::file_language`]), and for the tailored
+/// languages, whose keys
 /// OpenMaker does not build (#159,
 /// [#299](https://github.com/OpenMaker-Dev/openmaker/issues/299)): a field
 /// validated in them keeps its table read-only.
-pub fn value_text_keys(language: u32, file_language: u32) -> Option<om_query::keys::TextKeys> {
-    written_text_keys(language, file_language).or_else(|| {
-        let language = if language == 0 {
-            file_language
-        } else {
-            language
-        };
-        untailored(language).then_some(om_query::keys::TextKeys::Collated)
-    })
+pub fn value_text_keys(
+    language: u32,
+    file_language: Option<u32>,
+) -> Option<om_query::keys::TextKeys> {
+    let language = if language == 0 {
+        file_language?
+    } else {
+        language
+    };
+    language_text_keys(language)
+        .or_else(|| untailored(language).then_some(om_query::keys::TextKeys::Collated))
 }
 
 /// How a host writes the keys of a text field indexed in `language`, in a
@@ -196,11 +202,16 @@ pub fn value_text_keys(language: u32, file_language: u32) -> Option<om_query::ke
 /// #1280): a write that would change such an index is refused rather than
 /// keyed in English (#159).
 pub fn written_text_keys(language: u32, file_language: u32) -> Option<om_query::keys::TextKeys> {
-    let language = if language == 0 {
+    language_text_keys(if language == 0 {
         file_language
     } else {
         language
-    };
+    })
+}
+
+/// The form a host writes text in for `language`, language 0 already
+/// resolved to the file's own ([`written_text_keys`]).
+fn language_text_keys(language: u32) -> Option<om_query::keys::TextKeys> {
     om_query::keys::TextKeys::of_language(language)
         .filter(|form| *form != om_query::keys::TextKeys::None)
 }
@@ -1649,6 +1660,9 @@ impl RecordPlan {
         schema.add_table(table.id, table.name.clone());
         schema.clear_fields(table.id);
         let file_language = u32::from(schema.locale.language.id());
+        // Unknown when the file's locale record does not decode: a unique
+        // check in language 0 is then refused, not keyed in English.
+        let own_language = schema.file_language();
         let mut fields = BTreeMap::new();
         let mut contexts = BTreeSet::new();
         for field in &table.fields {
@@ -1852,7 +1866,7 @@ impl RecordPlan {
                 // field's value index (query-program.md 8.4), keyed in its
                 // index language.
                 if !options.value_indexed()
-                    || value_text_keys(options.index_language(), file_language).is_none()
+                    || value_text_keys(options.index_language(), own_language).is_none()
                 {
                     return Err(error(
                         "unique and existing values require a value index in English, System, Unicode standard, Unicode raw or a language FileMaker leaves untailored.",
@@ -6270,6 +6284,17 @@ mod tests {
         // FileMaker Pro 26's own blank file indexes PrimaryKey so (#725).
         table.fields[primary_key].options[4..8].copy_from_slice(&2u32.to_be_bytes());
         assert!(plan(&table, &initials(1, 2)).is_ok());
+        // Language 0 needs the file's language, which a locale record that
+        // does not decode leaves unknown: refused, not keyed in English.
+        let mut file = CalcSchema::new("", Locale::en_us());
+        assert_eq!(file.file_language(), Some(21));
+        file.locale_unreadable = true;
+        assert_eq!(file.file_language(), None);
+        assert_eq!(value_text_keys(0, file.file_language()), None);
+        assert_eq!(
+            value_text_keys(24, None),
+            Some(om_query::keys::TextKeys::Collated)
+        );
     }
 
     #[test]

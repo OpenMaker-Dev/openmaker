@@ -630,12 +630,15 @@ impl NativeProvider {
             // Text compares as the list's field keys it (#571): in its index
             // language, 0 being the language of the file that owns its table
             // (a related file's own, `table_context`), not this one's.
+            // (A related file's context does not say whether its locale
+            // record decoded, as this file's does: its locale is taken.)
             let keys = schema.table_of(primary).and_then(|source| {
                 let def = source.fields.get(&listed)?;
-                let locale = schema
-                    .table_context(source.id)
-                    .map_or(&schema.locale, |file| &file.locale);
-                om_data::rules::value_text_keys(def.language, u32::from(locale.language.id()))
+                let file_language = match schema.table_context(source.id) {
+                    Some(file) => Some(u32::from(file.locale.language.id())),
+                    None => schema.file_language(),
+                };
+                om_data::rules::value_text_keys(def.language, file_language)
             });
             let mut found = false;
             for item in &items {
