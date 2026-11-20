@@ -58,6 +58,12 @@ const MAX_PARENTS: usize = 64;
 /// The page attributes a page inherits from its ancestors.
 const INHERITED: [&[u8]; 4] = [b"Resources", b"MediaBox", b"CropBox", b"Rotate"];
 
+/// The four bytes of the binary-marker comment (PDF 1.7, 7.5.2) after the
+/// header of every PDF OpenMaker writes: its reports and the documents this
+/// assembler makes. Appending copies only a document that carries it
+/// ([`document_kept`]): one OpenMaker wrote, whose every part it knows.
+pub const MARKER: &[u8; 4] = b"\xcf\xcd\xcb\xb4";
+
 /// How many of a PDF's pages [`info`] describes.
 pub const INFO_PAGES: usize = 10_000;
 
@@ -290,10 +296,22 @@ pub(super) fn optional_content_kept(pdf: &Pdf) -> bool {
 ///   `/Parent` links, within the [`MAX_PARENTS`] ancestors the copy reads
 ///   inherited attributes from ([`tree_kept`]).
 ///
-/// A document OpenMaker's reports or this assembler wrote, without a form,
-/// keeps all; appending to a PDF refuses one that does not rather than drop
-/// what it holds.
+/// - and first of all, it is a PDF 1.7 OpenMaker wrote ([`MARKER`]): a
+///   PDF another program wrote, or rewrote, can hold what reading it and
+///   writing it again would change (how a reader repairs it, comments
+///   inside its references, how its strings are spelled), which no check
+///   here can rule out.
+///
+/// A document OpenMaker's reports or this assembler wrote, without
+/// annotations, keeps all; appending to a PDF refuses one that does not
+/// rather than drop what it holds.
 pub(super) fn document_kept(pdf: &Pdf) -> bool {
+    let mut header = b"%PDF-1.7\n%".to_vec();
+    header.extend(MARKER);
+    header.push(b'\n');
+    if !pdf.data().as_ref().starts_with(&header) {
+        return false;
+    }
     let Some(catalog) = pdf.xref().get::<Dict<'_>>(pdf.xref().root_id()) else {
         return false;
     };
@@ -577,9 +595,12 @@ fn tree_kept(pdf: &Pdf) -> bool {
 /// - an inheritable attribute, on a node or a page, is of its type (a
 ///   dictionary of resources, a rectangle, an integer) or `null`: readers
 ///   pass over one that is not, which the copy would write on the page;
-/// - a node holds nothing but its tree and what its pages inherit: the new
-///   document has a page tree of its own, so anything else a node held
-///   (an application's private data, say) would be left behind.
+/// - a node holds nothing but its tree (not even what its pages inherit,
+///   which the copy writes on each page and so would drop where every page
+///   has its own): the new document has a page tree of its own, so
+///   anything else a node held would be left behind;
+/// - a page has no annotations, whose strings a copy may not spell as
+///   they were.
 ///
 /// `None` otherwise.
 fn page_tree(pdf: &Pdf) -> Option<std::collections::HashSet<ObjectIdentifier>> {
@@ -619,10 +640,9 @@ fn page_tree(pdf: &Pdf) -> Option<std::collections::HashSet<ObjectIdentifier>> {
         }
         match node.get::<Name<'_>>(b"Type").as_deref() {
             Some(b"Pages") => {
-                let understood = node.keys().all(|key| {
-                    matches!(key.as_ref(), b"Type" | b"Kids" | b"Count" | b"Parent")
-                        || INHERITED.contains(&key.as_ref())
-                });
+                let understood = node
+                    .keys()
+                    .all(|key| matches!(key.as_ref(), b"Type" | b"Kids" | b"Count" | b"Parent"));
                 if !understood {
                     return None;
                 }
@@ -635,7 +655,7 @@ fn page_tree(pdf: &Pdf) -> Option<std::collections::HashSet<ObjectIdentifier>> {
                 }
                 nodes.insert(id);
             }
-            Some(b"Page") => pages += 1,
+            Some(b"Page") if !node.contains_key(b"Annots") => pages += 1,
             _ => return None,
         }
     }
@@ -936,7 +956,9 @@ impl<'p> Copier<'p> {
         }
         let mut out = Vec::new();
         // A comment of bytes above 127 marks the file as binary.
-        out.extend(b"%PDF-1.7\n%\xe2\xe3\xcf\xd3\n");
+        out.extend(b"%PDF-1.7\n%");
+        out.extend(MARKER);
+        out.push(b'\n');
         Some(Copier {
             pdfs,
             ids: HashMap::new(),

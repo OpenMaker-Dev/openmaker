@@ -131,10 +131,12 @@ fn selected_and_whole_imports_keep_pages_resources_and_streams() {
     assert_eq!(pdf_worker::find(&a, 3, "A1"), Ok(None));
     assert_eq!(pdf_worker::find(&a, 0, ""), Ok(None));
     let b = source_b();
+    // Not one OpenMaker wrote (no `MARKER`): its pages are imported, but it
+    // is not kept whole for an append.
     let info = pdf_worker::info_whole(&a).unwrap().unwrap();
     assert_eq!(
         (info.pages, info.optional_content_kept, info.document_kept),
-        (3, true, Some(true))
+        (3, true, Some(false))
     );
     // Not asked, the reply is the one a host that does not ask reads.
     assert_eq!(pdf_worker::info(&a).unwrap().unwrap().document_kept, None);
@@ -146,11 +148,23 @@ fn selected_and_whole_imports_keep_pages_resources_and_streams() {
         pdf_worker::text(&out).unwrap().as_deref(),
         Some("A3\rA1\rB1")
     );
-    // What the assembler writes keeps all it holds when copied again
-    // (Save Records as PDF appends to it).
+    // What the assembler writes carries OpenMaker's mark and, without
+    // annotations, keeps all it holds when copied again (Save Records as
+    // PDF appends to it); with B's link it does not.
+    assert!(out.starts_with(&[b"%PDF-1.7\n%".as_slice(), pdf_worker::MARKER].concat()));
+    let pages_of_a = pdf_worker::assemble(&[&a], &[(0, 0), (0, 1)])
+        .unwrap()
+        .expect("a document");
+    assert_eq!(
+        pdf_worker::info_whole(&pages_of_a)
+            .unwrap()
+            .unwrap()
+            .document_kept,
+        Some(true)
+    );
     assert_eq!(
         pdf_worker::info_whole(&out).unwrap().unwrap().document_kept,
-        Some(true)
+        Some(false)
     );
     let parsed = Parsed::new(out.clone()).unwrap();
     let pages = parsed.pages();
@@ -312,6 +326,7 @@ fn what_a_page_copy_leaves_behind_is_not_kept_whole() {
     };
     let plain = |change: &dyn Fn(&mut Pdf)| {
         let mut pdf = Pdf::new();
+        pdf.set_binary_marker(pdf_worker::MARKER);
         pdf.catalog(Ref::new(1)).pages(Ref::new(2));
         pdf.pages(Ref::new(2)).kids([Ref::new(3)]).count(1);
         pdf.page(Ref::new(3))
@@ -323,6 +338,28 @@ fn what_a_page_copy_leaves_behind_is_not_kept_whole() {
         pdf.finish()
     };
     assert_eq!(whole(&plain(&|_| {})), Some(true));
+    // The same PDF without OpenMaker's mark: another program's, whose
+    // every part no check here can vouch for.
+    let foreign = plain(&|pdf| pdf.set_binary_marker(b"\xe2\xe3\xcf\xd3"));
+    assert_eq!(whole(&foreign), Some(false));
+    // A page with annotations, whose strings a copy may not spell as they
+    // were.
+    let annotated = {
+        let mut pdf = Pdf::new();
+        pdf.set_binary_marker(pdf_worker::MARKER);
+        pdf.catalog(Ref::new(1)).pages(Ref::new(2));
+        pdf.pages(Ref::new(2)).kids([Ref::new(3)]).count(1);
+        pdf.page(Ref::new(3))
+            .parent(Ref::new(2))
+            .media_box(R::new(0.0, 0.0, 200.0, 200.0))
+            .annotations([Ref::new(4)]);
+        pdf.indirect(Ref::new(4))
+            .dict()
+            .pair(N(b"Type"), N(b"Annot"))
+            .pair(N(b"Subtype"), N(b"Text"));
+        pdf.finish()
+    };
+    assert_eq!(whole(&annotated), Some(false));
     let custom = plain(&|pdf| {
         pdf.document_info(Ref::new(9))
             .pair(N(b"ProjectCode"), pdf_writer::TextStr("Q42"));
@@ -360,6 +397,7 @@ fn what_a_page_copy_leaves_behind_is_not_kept_whole() {
     // A page whose `/Parent` does not resolve, though the tree above it
     // gives it its box: the copy, reading up its parents, would lose it.
     let mut orphan = Pdf::new();
+    orphan.set_binary_marker(pdf_worker::MARKER);
     orphan.catalog(Ref::new(1)).pages(Ref::new(2));
     orphan
         .pages(Ref::new(2))
@@ -372,6 +410,7 @@ fn what_a_page_copy_leaves_behind_is_not_kept_whole() {
     // rather than write `null` there, where a page import does.
     let private = {
         let mut pdf = Pdf::new();
+        pdf.set_binary_marker(pdf_worker::MARKER);
         pdf.catalog(Ref::new(1)).pages(Ref::new(2));
         pdf.pages(Ref::new(2)).kids([Ref::new(3)]).count(1);
         let mut page = pdf.page(Ref::new(3));
@@ -398,6 +437,7 @@ fn what_a_page_copy_leaves_behind_is_not_kept_whole() {
     // An inheritable attribute of the wrong type on a node, which readers
     // pass over (inheriting the root's box) and the copy would write.
     let mut typed = Pdf::new();
+    typed.set_binary_marker(pdf_worker::MARKER);
     typed.catalog(Ref::new(1)).pages(Ref::new(2));
     typed
         .pages(Ref::new(2))
@@ -416,6 +456,7 @@ fn what_a_page_copy_leaves_behind_is_not_kept_whole() {
     // A page-tree node with data of its own, which the new tree would not
     // carry.
     let mut noted = Pdf::new();
+    noted.set_binary_marker(pdf_worker::MARKER);
     noted.catalog(Ref::new(1)).pages(Ref::new(2));
     noted
         .pages(Ref::new(2))

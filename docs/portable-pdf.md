@@ -120,9 +120,18 @@ neutral numeric defaults. The other options:
   existing file's pages followed by the report's, which the PDF worker
   assembles as it does DynaPDF's documents ([plugins](plugins.md)), each
   page with what it refers to. With no file at the path it writes the
-  report alone [I: FileMaker's answer there is unmeasured]. It refuses with
-  3, and leaves the file as it was, rather than drop part of it:
-  - a file the worker does not read as a PDF;
+  report alone [I: FileMaker's answer there is unmeasured]. It appends only
+  to a PDF OpenMaker wrote: its reports and the documents the assembler
+  makes start `%PDF-1.7` and carry OpenMaker's four binary-marker bytes
+  (`pdf_worker::MARKER`). Reading another program's PDF and writing it
+  again can change it in ways no check here rules out: how hayro repairs a
+  damaged cross-reference table, a comment inside a reference, how a string
+  is spelled. Those appends are refused (3), unlike FileMaker, which appends
+  to any PDF. The mark is a hint, not proof, so every check below still
+  applies to a marked file. It refuses with 3, and leaves the file as it
+  was, rather than drop part of it:
+  - a file the worker does not read as a PDF, or one without OpenMaker's
+    mark;
   - one whose catalog holds more than its page tree (bookmarks, an
     interactive form, a structure tree, names, page labels, an XMP metadata
     stream, an open action, a page mode, viewer preferences);
@@ -137,8 +146,12 @@ neutral numeric defaults. The other options:
     `/Kids` than up its pages' `/Parent` links (where the copy finds what a
     page inherits), is deeper than the 64 levels the copy reads, has an
     inheritable attribute of the wrong type (which readers pass over and
-    the copy would write), or has a node holding anything but its tree and
-    what its pages inherit;
+    the copy would write), or has a node holding anything but its tree
+    (`/Type`, `/Kids`, `/Count`, `/Parent`): the copy writes inherited
+    attributes on each page, so a node's own would be dropped where every
+    page overrides it;
+  - one with a page that has annotations, whose strings a copy may not
+    spell as they were;
   - one with a page that refers to the old catalog, a page-tree node or
     anything else the copy leaves behind: the worker's whole copy fails
     rather than write `null` there;
@@ -150,8 +163,8 @@ neutral numeric defaults. The other options:
   - more pages in the two documents than one assembly takes (100,000).
 
   OpenMaker's own reports have none of these, so saving and then appending
-  in a script builds one document, but a PDF from FileMaker or another
-  producer is usually refused. With a file to append to, it refuses without
+  in a script builds one document, again and again. A PDF from FileMaker
+  or another producer is refused. With a file to append to, it refuses without
   the PDF worker too. The existing file is read up to 512 MiB. The new file
   is saved only over a file that still holds exactly the bytes that were
   read, or, with none, only where there still is none; a file that changed

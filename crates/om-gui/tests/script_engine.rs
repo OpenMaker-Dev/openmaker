@@ -2600,10 +2600,10 @@ fn a_script_stopped_by_a_provider_panic_frees_its_window() {
 
 /// Save Records as PDF [Append to existing PDF] (#109) adds the report's
 /// pages after the file's, through the PDF worker: to the PDF the step
-/// saved just before, to another of OpenMaker's own, and, with no file
-/// yet, writes a new one. A file that is not a PDF, and one with document
-/// information the page copy would not keep, refuse with 3 and stay as
-/// they were.
+/// saved just before, and again to the document that append made; with no
+/// file yet, it writes a new one. A PDF another program wrote (without
+/// OpenMaker's mark, even with only pages), a file that is not a PDF, and
+/// one with document information refuse with 3 and stay as they were.
 #[test]
 fn save_records_as_pdf_appends_and_refuses_what_it_would_not_keep() {
     om_data::calc::functions::pdf_worker::set_default(
@@ -2612,7 +2612,8 @@ fn save_records_as_pdf_appends_and_refuses_what_it_would_not_keep() {
     use om_data::calc::functions::pdf_worker;
     let dir = tempfile::tempdir().unwrap();
     let path = |name: &str| dir.path().join(name);
-    std::fs::write(path("plain.pdf"), marked_pdf(&["P1"])).unwrap();
+    let plain = marked_pdf(&["P1"]);
+    std::fs::write(path("plain.pdf"), &plain).unwrap();
     std::fs::write(path("bad.pdf"), b"not a PDF").unwrap();
     let titled = titled_pdf(&["T1"], Some("Kept"));
     std::fs::write(path("titled.pdf"), &titled).unwrap();
@@ -2640,6 +2641,8 @@ fn save_records_as_pdf_appends_and_refuses_what_it_would_not_keep() {
         errors("$a"),
         save("records.pdf", true),
         errors("$b"),
+        save("records.pdf", true),
+        errors("$g"),
         save("plain.pdf", true),
         errors("$c"),
         save("new.pdf", true),
@@ -2650,7 +2653,7 @@ fn save_records_as_pdf_appends_and_refuses_what_it_would_not_keep() {
         errors("$f"),
         set_field(
             "Note",
-            "$a & \"|\" & $b & \"|\" & $c & \"|\" & $d & \"|\" & $e & \"|\" & $f",
+            "$a & \"|\" & $b & \"|\" & $g & \"|\" & $c & \"|\" & $d & \"|\" & $e & \"|\" & $f",
         ),
         // Commit Records: the script's end does not save the field.
         step(75),
@@ -2666,7 +2669,7 @@ fn save_records_as_pdf_appends_and_refuses_what_it_would_not_keep() {
     });
     run(&mut app, "Append");
     wait_idle(&mut app);
-    assert_eq!(notes(&state)[0].as_deref(), Some("0|0|0|0|3|3"));
+    assert_eq!(notes(&state)[0].as_deref(), Some("0|0|0|3|0|3|3"));
     let pages = |name: &str| {
         pdf_worker::info(&std::fs::read(path(name)).unwrap())
             .unwrap()
@@ -2675,12 +2678,8 @@ fn save_records_as_pdf_appends_and_refuses_what_it_would_not_keep() {
     };
     let once = pages("new.pdf");
     assert!(once > 0);
-    assert_eq!(pages("records.pdf"), 2 * once);
-    assert_eq!(pages("plain.pdf"), 1 + once);
-    let plain = pdf_worker::text(&std::fs::read(path("plain.pdf")).unwrap())
-        .unwrap()
-        .unwrap();
-    assert!(plain.starts_with("P1"), "{plain:?}");
+    assert_eq!(pages("records.pdf"), 3 * once);
+    assert_eq!(std::fs::read(path("plain.pdf")).unwrap(), plain);
     assert_eq!(std::fs::read(path("bad.pdf")).unwrap(), b"not a PDF");
     assert_eq!(std::fs::read(path("titled.pdf")).unwrap(), titled);
 }

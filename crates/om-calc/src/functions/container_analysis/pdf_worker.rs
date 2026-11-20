@@ -520,7 +520,9 @@ pub fn annotation_free(data: &[u8], pages: &[u32]) -> Result<Option<bool>, Unava
     )
 }
 
-pub use super::pdf_assemble::{BoxKind, PageGeometry, Planned, INFO_PAGES, MAX_PAGES, MAX_SOURCES};
+pub use super::pdf_assemble::{
+    BoxKind, PageGeometry, Planned, INFO_PAGES, MARKER, MAX_PAGES, MAX_SOURCES,
+};
 pub use super::pdf_form::{
     check_fits, export_ok, group_refusal, name_ok, rect_ok, uri_ok, Field, FieldKind, Highlight,
     Link, MAX_ACTIONS, MAX_CAPTION, MAX_COORD, MAX_FIELDS, MAX_HIGHLIGHTS, MAX_LINKS, MAX_SCRIPT,

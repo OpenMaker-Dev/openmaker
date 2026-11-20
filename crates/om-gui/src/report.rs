@@ -3638,6 +3638,8 @@ pub fn render_pdf_viewed(
 ) -> Result<PdfReport, ReportError> {
     let plan = plan_report_with(layout, records, paper, breaks, content)?;
     let mut pdf = Pdf::new();
+    // OpenMaker's mark, which appending to a PDF looks for (`pdf_worker::MARKER`).
+    pdf.set_binary_marker(om_data::calc::functions::pdf_worker::MARKER);
     let root = Ref::new(1);
     let pages = Ref::new(2);
     let mut catalog = pdf.catalog(root);
