@@ -1036,6 +1036,58 @@ impl Window {
         self.touch();
     }
 
+    /// Whether Revert Transaction removed this window's record: one the
+    /// transaction created (`created`, by base table and id: logged by a
+    /// commit, or held new by the provider), whatever the window still has
+    /// pending on it. A record a window's record session holds apart, or
+    /// one an earlier transaction saved, is not among them.
+    fn reverted_record(&self, created: &[(u64, i64)]) -> bool {
+        let Some(record) = self.state.record else {
+            return false;
+        };
+        self.table
+            .is_some_and(|table| created.contains(&(table, record)))
+    }
+
+    /// The window lets go of its record and what it has pending on it,
+    /// with no call to delete it: the transaction that held it is reverted.
+    fn let_go_of_reverted_record(&mut self) {
+        self.state.uncommitted = Uncommitted::default();
+        self.state.drafts.clear();
+        self.state.portal = None;
+        self.state.record = None;
+        self.changed_data();
+        self.found = None;
+    }
+
+    /// Revert Transaction removed the current window's record
+    /// ([`Self::reverted_record`], #307): it shows the record at its place
+    /// in the found set as the revert leaves it, the last one when nothing
+    /// is there any more, as Revert Record of a new record does.
+    pub fn forget_reverted_record(
+        &mut self,
+        provider: &mut dyn DataProvider,
+        created: &[(u64, i64)],
+    ) -> Result<(), DataError> {
+        if !self.reverted_record(created) {
+            return Ok(());
+        }
+        self.discard_previews(provider);
+        self.let_go_of_reverted_record();
+        let found = self.found_count(provider)?;
+        self.state.index = self.state.index.min(found.saturating_sub(1));
+        Ok(())
+    }
+
+    /// [`Self::forget_reverted_record`] for a window that is not current: a
+    /// record its own session holds stays, and its found set and place are
+    /// read again when it is current.
+    pub fn forget_reverted_record_waiting(&mut self, created: &[(u64, i64)]) {
+        if self.reverted_record(created) {
+            self.let_go_of_reverted_record();
+        }
+    }
+
     /// Revert Record: drop the drafts, the related records' too; a new
     /// record is deleted.
     pub fn revert(&mut self, provider: &mut dyn DataProvider) -> Result<(), DataError> {
@@ -1058,7 +1110,7 @@ impl Window {
             // provider without record sessions. A refused delete has not
             // reverted the new record. Keep its drafts and ownership
             // intact so Discard can be retried.
-            provider.delete_record(layout, id)?;
+            provider.delete_record_in_script(layout, id)?;
         }
         self.discard_previews(provider);
         self.state.uncommitted = Uncommitted::default();
@@ -1371,7 +1423,7 @@ impl Window {
         // provider deletes the record under it, its edits going with the
         // session. A refusal keeps the edits; a session it ended is no
         // longer the window's.
-        let deleted = provider.delete_record(layout, id);
+        let deleted = provider.delete_record_in_script(layout, id);
         let session = self.state.uncommitted.session;
         if session && !provider.record_session_open() && !provider.record_session_held() {
             self.state.uncommitted.session = false;

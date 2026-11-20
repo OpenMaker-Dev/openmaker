@@ -81,7 +81,7 @@ impl ServerHost {
     }
 
     /// The window's layout in the Design view.
-    fn window_layout(&self, schema: &CalcSchema) -> Option<LayoutEntry> {
+    pub(super) fn window_layout(&self, schema: &CalcSchema) -> Option<LayoutEntry> {
         let window = self.window.as_ref()?;
         let id = self.schema.layouts.get(window.layout)?.id;
         schema

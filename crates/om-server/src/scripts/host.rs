@@ -2347,6 +2347,18 @@ impl ServerHost {
         find::found(&outcome.slots).ok_or(FindError::Query(0xffff))
     }
 
+    /// The window's layout's Quick Find fields (`om_data::quick_find`); none
+    /// when the layout cannot be read or has Quick Find turned off.
+    fn quick_find_fields(&self) -> Vec<om_data::quick_find::QuickFindField> {
+        let Some(schema) = self.design() else {
+            return Vec::new();
+        };
+        self.window_layout(&schema)
+            .and_then(|entry| entry.layout)
+            .and_then(|layout| om_data::quick_find::fields(&layout, &schema))
+            .unwrap_or_default()
+    }
+
     /// A field by `Table::Field` name, or a field of the window's table.
     fn field_named(&self, name: &str) -> Option<(u64, u64)> {
         let (occurrence, field) = match name.split_once("::") {
@@ -3731,6 +3743,88 @@ impl FoundSets for ServerHost {
         Ok(())
     }
 
+    /// Perform Quick Find (query-program.md 6.6), by the desktop's rules
+    /// (`om_data::quick_find`): the window's layout's Quick Find fields;
+    /// each word or quoted phrase finds the records one of them matches,
+    /// among all the table's records, and the words narrow one another.
+    /// The current record stays current when it is found, the first found
+    /// record is current otherwise, and the found set is unsorted. A text
+    /// with no word is 400; no match is 401 and keeps the found set, its
+    /// sort and the current record (6.6, reported). A layout with Quick
+    /// Find turned off searches no field (401). A word a field of another
+    /// occurrence would be searched for is a related criterion, which
+    /// server finds do not support (3, script-steps.md 11.2.5); a related
+    /// field whose type cannot read the word is not searched for it, as on
+    /// the desktop, and needs no join.
+    fn perform_quick_find(&mut self, text: &str) -> HostResult {
+        // A find reads field values.
+        self.require_view()?;
+        let fields = self.quick_find_fields();
+        let (year, month, day) = self.today.ymd();
+        let today = (year as i32, month, day);
+        let change = om_data::quick_find::change_in(text, &fields, today, self.locale.date_order)
+            .map_err(|e| ErrorCode(e.code.unwrap_or(3)))?;
+        let om_data::found::FoundSetChange::QuickFind(terms) = change else {
+            return Err(HostError::Unsupported);
+        };
+        let own = self.window()?.occurrence;
+        let mut words = Vec::with_capacity(terms.len());
+        for term in terms {
+            let mut requests = Vec::with_capacity(term.len());
+            for found in term {
+                let mut request = Request::default();
+                for (name, criterion) in found.criteria {
+                    let (occurrence, field) =
+                        self.field_named(&name).ok_or(ErrorCode::FIELD_MISSING)?;
+                    if occurrence != own {
+                        return Err(ErrorCode(3).into());
+                    }
+                    request.set(field, criterion);
+                }
+                requests.push(request);
+            }
+            words.push(requests);
+        }
+        self.leave()?;
+        let window = self.window()?;
+        let all: RidList = self.all_records(window.table).into_iter().collect();
+        let mut found = all.clone();
+        for requests in &words {
+            // A word no field can read finds nothing.
+            if requests.is_empty() {
+                found = RidList::new();
+                break;
+            }
+            let matched = self
+                .find_within(requests, &all)
+                .map_err(|e| ErrorCode(e.code()))?;
+            found = found.and(&matched);
+        }
+        if found.is_empty() {
+            return Err(NO_RECORDS_MATCH.into());
+        }
+        // Leaving Find mode, `Get ( RequestCount )` keeps its requests'
+        // count, as Enter Browse Mode does (s31, s33).
+        if self.window()?.mode == Mode::Find {
+            self.request_count = self.requests.len();
+        }
+        self.requests.clear();
+        let window = self.window_mut()?;
+        let at = if window.mode == Mode::Find {
+            window.browse_current
+        } else {
+            window.current
+        };
+        let current = window.found.get(at).copied();
+        window.found = found.iter().collect();
+        window.current = current
+            .and_then(|record| window.found.iter().position(|&id| id == record))
+            .unwrap_or(0);
+        window.mode = Mode::Browse;
+        window.sort = None;
+        Ok(())
+    }
+
     /// Perform Find, Constrain and Extend Found Set, with the stored
     /// requests or the window's (script-steps.md 11.2.4): Constrain finds
     /// within the found set, Perform Find and Extend within all records,
@@ -4068,6 +4162,19 @@ impl Accounts for ServerHost {
                 .reset_account_password(name, password, false, Some(stamp), now)
                 .map(|()| true)
                 .map_err(|e| self.account_edit_error("Reset Account Password", &e))
+        })
+    }
+
+    /// Delete Account (135): only a session with full access privileges
+    /// (9), as FileMaker's `DoDeleteAccount`;
+    /// [`crate::hosting::Hosted::delete_account`] removes it.
+    fn delete_account(&mut self, name: &str) -> HostResult {
+        self.require_full_access()?;
+        self.edit_accounts("Delete Account", |stamp| {
+            self.hosted
+                .delete_account(name, Some(stamp))
+                .map(|()| true)
+                .map_err(|e| self.account_edit_error("Delete Account", &e))
         })
     }
 
