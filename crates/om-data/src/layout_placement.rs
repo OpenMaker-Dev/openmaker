@@ -1348,8 +1348,10 @@ fn next_object_key(key: u64) -> Result<u64, Refusal> {
 /// The key after every object key `member` uses: in its object store
 /// (objects, the root stack, containers' children), its attribute records,
 /// its field reference index, and the entries of its object index `0a`
-/// and tab order `15`. An entry left naming an object that is gone keeps
-/// its key from a new object, which the entry would then name too.
+/// and tab order `15`, nested ones included (a portal's object index
+/// entry holds its contents'). An entry left naming an object that is
+/// gone keeps its key from a new object, which the entry would then name
+/// too.
 fn next_key(member: &OwnedNode, store: &ObjectStore) -> Result<u64, Refusal> {
     let stored = store
         .objects
@@ -1368,11 +1370,22 @@ fn next_key(member: &OwnedNode, store: &ObjectStore) -> Result<u64, Refusal> {
         .flat_map(|occurrence| occurrence.children.iter())
         .flat_map(|field| field.children.iter())
         .filter_map(|object| serial::decode(&object.segment));
-    let referenced = [OBJECT_INDEX, TAB_ORDER]
+    let mut referenced = Vec::new();
+    let mut pending: Vec<&OwnedNode> = [OBJECT_INDEX, TAB_ORDER]
         .into_iter()
         .filter_map(|key| member.child(&[key]))
-        .flat_map(|list| list.children.iter())
-        .filter_map(|entry| crate::layout_objects::indexed_object(entry.value.as_deref()?));
+        .collect();
+    while let Some(node) = pending.pop() {
+        for entry in &node.children {
+            referenced.extend(
+                entry
+                    .value
+                    .as_deref()
+                    .and_then(crate::layout_objects::indexed_object),
+            );
+            pending.push(entry);
+        }
+    }
     next_object_key(
         stored
             .chain(attributes)
@@ -3067,6 +3080,14 @@ mod tests {
             OwnedNode::leaf(Vec::new(), vec![0, 2, 1, 4, 0, 0, 0, 0, 1]),
         );
         assert_eq!(plan(&stale, &wanted).unwrap().field_object, 5);
+        // The same in an object index entry nested in a container's entry,
+        // as a portal's holds its fields'.
+        let mut nested = before.clone();
+        nested.put(
+            &[&[OBJECT_INDEX], &[0, 1, 0, 1, 0, 0], &[0, 2, 0, 2, 0, 1]],
+            OwnedNode::leaf(Vec::new(), vec![0, 2, 1, 4, 0, 0, 0, 0, 1]),
+        );
+        assert_eq!(plan(&nested, &wanted).unwrap().field_object, 5);
 
         // Placed: the same request finds its objects; another does not.
         assert_eq!(already_placed(&planned.member, &wanted), Some((4, Some(5))));
