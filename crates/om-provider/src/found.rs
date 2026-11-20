@@ -1108,15 +1108,23 @@ impl NativeProvider {
             let reply = session
                 .query(&program)
                 .map_err(|e| failure("join related records", e))?;
-            if let Some(code) = query_error(&reply.slots) {
-                return Err(DataError::with_code(
-                    i32::from(code),
-                    format!("The host could not join related records (error {code})."),
-                ));
-            }
             let unreadable = || DataError::new("The host's join reply could not be read.");
-            let existed =
-                finders::indexes_existed(&reply.slots, reads.len()).ok_or_else(unreadable)?;
+            let existed = match query_error(&reply.slots) {
+                None => {
+                    finders::indexes_existed(&reply.slots, reads.len()).ok_or_else(unreadable)?
+                }
+                // A join refused on a missing index runs on the client,
+                // as after FileMaker Server's empty answer.
+                Some(code) => match missing_after_refusal(session, code, near, &reads)? {
+                    Some(existed) => existed,
+                    None => {
+                        return Err(DataError::with_code(
+                            i32::from(code),
+                            format!("The host could not join related records (error {code})."),
+                        ))
+                    }
+                },
+            };
             current = if existed.into_iter().all(|existed| existed) {
                 finders::found(&reply.slots).ok_or_else(unreadable)?
             } else {
@@ -1373,15 +1381,24 @@ pub(crate) fn checked_find(
     let reply = session
         .query(&program)
         .map_err(|e| failure("find records", e))?;
-    if let Some(code) = query_error(&reply.slots) {
-        return Err(DataError::with_code(
-            i32::from(code),
-            format!("The host could not run the find (error {code})."),
-        ));
-    }
     let unreadable = || DataError::new("The host's find reply could not be read.");
-    let existed = finders::indexes_existed(&reply.slots, reads.len()).ok_or_else(unreadable)?;
-    let found = finders::found(&reply.slots).ok_or_else(unreadable)?;
+    let (existed, found) = match query_error(&reply.slots) {
+        None => (
+            finders::indexes_existed(&reply.slots, reads.len()).ok_or_else(unreadable)?,
+            finders::found(&reply.slots).ok_or_else(unreadable)?,
+        ),
+        // A refused find on a missing index is answered as FileMaker
+        // Server's empty one: the caller finds on the client.
+        Some(code) => match missing_after_refusal(session, code, table, &reads)? {
+            Some(existed) => (existed, RidList::new()),
+            None => {
+                return Err(DataError::with_code(
+                    i32::from(code),
+                    format!("The host could not run the find (error {code})."),
+                ))
+            }
+        },
+    };
     let missing = reads
         .into_iter()
         .zip(existed)
@@ -1389,6 +1406,42 @@ pub(crate) fn checked_find(
         .map(|(index, _)| index)
         .collect();
     Ok((found, missing))
+}
+
+/// After the host refused a checked program with `code`, whether each of
+/// `reads` (indexes of `table`) exists, asked again with their GetKeys
+/// alone (`om_query::find::index_check_program`). `None`, so that the
+/// refusal stands, unless `code` is OpenMaker Server's refusal of a query
+/// on an index it cannot build in its field's language
+/// (`om_query::QueryError::UnkeyedIndex`, record-writes.md) and one of
+/// `reads` is missing. FileMaker Server answers a finder on a missing
+/// index with no records instead (query-program.md 7.1). Either way the
+/// client takes its own path for a missing index. A refused query stores
+/// none of the indexes it built, so the checks see the file as it was.
+pub(crate) fn missing_after_refusal(
+    session: &mut om_session::Session,
+    code: u16,
+    table: u64,
+    reads: &[FieldIndex],
+) -> Result<Option<Vec<bool>>, DataError> {
+    if code != om_query::QueryError::UnkeyedIndex.code() {
+        return Ok(None);
+    }
+    let file_id = session
+        .opened_file()
+        .ok_or_else(|| DataError::new("No hosted file is open."))?
+        .reply
+        .file_id;
+    let program = finders::index_check_program(file_id, table, reads);
+    let reply = session
+        .query(&program)
+        .map_err(|e| failure("check the host's indexes", e))?;
+    if query_error(&reply.slots).is_some() {
+        return Ok(None);
+    }
+    let existed = finders::indexes_existed(&reply.slots, reads.len())
+        .ok_or_else(|| DataError::new("The host's index check could not be read."))?;
+    Ok(existed.contains(&false).then_some(existed))
 }
 
 /// [`checked_find`] of `finders` on `field`'s value index, answered only

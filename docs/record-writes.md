@@ -1314,10 +1314,25 @@ than English ones a find in that language would miss (#159):
 - A commit that would change the field's text where the field has an index
   in the file is refused and changes nothing. That includes a new or
   deleted record with text there.
-- An index that op73 asks for, or that a find builds on demand, is not
-  stored while a record holds text in the field. op73 then leaves the field
-  without the index it had. A find reads the field's text in English for
-  itself, so the next find builds it again.
+- op73 builds no such index while a record holds text in the field, and
+  so leaves the field without the index it had.
+- A query that needs such an index the file does not hold, while a record
+  holds text in the field (a find, a join, a value list), is refused
+  rather than answered from English keys, which would give another found
+  set ([#572](https://github.com/OpenMaker-Dev/openmaker/issues/572)). It
+  builds nothing, and keeps none of the indexes it built of other fields
+  before the refusal: a later query builds them again. A client gets the
+  query's error, 3 (`om_query::QueryError::UnkeyedIndex`; FileMaker
+  Server builds every language's index, so its answer is unmeasured).
+  Only after that error
+  does OpenMaker's desktop client ask which of the indexes it read are
+  missing. If one is, it takes its own path for a missing index, as after
+  FileMaker Server's empty answer (query-program.md 7.1). For these
+  languages that path fails the find with 3
+  ([#46](https://github.com/OpenMaker-Dev/openmaker/issues/46)). A server
+  script's find, or a join of its Go to Related Record, gives 3. A blank
+  match value relates nothing without reading the index. A field that
+  holds no text has no keys to differ, and is answered.
 
 OpenMaker's record rules refuse such a write first (error 3, naming the
 field and the language). They do so for a stored text field defined with
