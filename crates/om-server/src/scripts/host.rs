@@ -412,6 +412,10 @@ struct OpenRecord {
     /// later edit clears it): Commit Transaction writes it only when its
     /// rules change a cell.
     relooked: bool,
+    /// Relookup Field Contents marked its match field set and no rule pass
+    /// with auto-entry has performed the lookup yet: an import without
+    /// auto-entry leaves it for Commit Transaction's rules.
+    relookup: bool,
 }
 
 /// The record rules' state of an [`OpenRecord`] they already ran on.
@@ -1277,6 +1281,7 @@ impl ServerHost {
             serials: BTreeMap::new(),
             context,
             relooked: false,
+            relookup: false,
         }))
     }
 
@@ -1310,6 +1315,7 @@ impl ServerHost {
                 return Ok(());
             }
             record.relooked = true;
+            record.relookup = true;
             transaction.insert(key, Change::Write(record));
             return Ok(());
         }
@@ -3443,6 +3449,7 @@ impl Records for ServerHost {
             serials,
             context: Box::new(self.step_context()),
             relooked: false,
+            relookup: false,
         });
         let window = self.window_mut()?;
         window.found.push(id);

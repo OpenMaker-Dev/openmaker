@@ -532,11 +532,6 @@ impl ServerImport<'_> {
         auto_enter: bool,
         locked_here: bool,
     ) -> om_transfer::Result<()> {
-        // What Relookup Field Contents staged on the record alone, its
-        // match field marked set: the lookup is the script's request, not
-        // a value of the import's, so with the import's auto-entry off it
-        // still waits for Commit Transaction's rules.
-        let relooked = (record.relooked && !auto_enter).then(|| record.changed.clone());
         self.put(&mut record, writes);
         // A record the script changed earlier in its transaction gets the
         // import's rules for those changes too (OpenMaker's choice).
@@ -559,8 +554,17 @@ impl ServerImport<'_> {
                 ..Ruled::default()
             }));
         }
-        if let (Some(cells), Some(ruled)) = (relooked, record.ruled.as_mut()) {
-            ruled.since.extend(cells);
+        // A Relookup the record carries is the script's request, not a
+        // value of the import's: performed by the import's rules with
+        // auto-entry, and otherwise left for Commit Transaction's, every
+        // cell a step or an import set kept as an edit there, so the lookup
+        // does not write over a value the import mapped.
+        if record.relookup {
+            if auto_enter {
+                record.relookup = false;
+            } else if let Some(ruled) = record.ruled.as_mut() {
+                ruled.since.extend(record.changed.iter().copied());
+            }
         }
         let key = (record.table, record.id);
         let Some(transaction) = self.host.transaction.as_mut() else {
@@ -674,6 +678,7 @@ impl ImportTarget for ServerImport<'_> {
             serials: BTreeMap::new(),
             context: Box::new(self.host.step_context()),
             relooked: false,
+            relookup: false,
         };
         self.locked.push((table, id));
         self.stage(record, writes, auto_enter, true)?;
@@ -715,6 +720,7 @@ impl ImportTarget for ServerImport<'_> {
                         serials: BTreeMap::new(),
                         context: Box::new(self.host.step_context()),
                         relooked: false,
+                        relookup: false,
                     },
                     true,
                 )

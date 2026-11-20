@@ -3780,8 +3780,10 @@ Steps
   cell (a later edit of the record makes it an ordinary staged write).
   An Import Records into the record before the commit applies its rules
   to the staged relookup as to any earlier edit (with auto-entry, the
-  lookup and validation then), except that with the import's auto-entry
-  off the relookup still waits for the commit. Under "Skip auto-enter
+  lookup and validation then). With the import's auto-entry off the
+  relookup still waits for the commit, through any number of such
+  imports, and the cells the steps and imports set are edits there, so
+  the lookup does not write over a value an import mapped. Under "Skip auto-enter
   options" nothing is copied and nothing staged. A record refused is left
   as it was.
   Unmeasured, and OpenMaker's choices:

@@ -1000,12 +1000,13 @@ fn relookup_field_contents_copies_the_lookups_again() {
     assert_eq!(run(&mut client, 9), (3, "3/3/w".to_string()));
 }
 
-/// An import with auto-enter off into a record Relookup staged in the
-/// same transaction updates its own field and leaves the relookup the
-/// script asked for to Commit Transaction, which copies it.
+/// Imports with auto-enter off into a record Relookup staged in the same
+/// transaction set their own fields and leave the relookup the script asked
+/// for to Commit Transaction, which copies it: after two imports of Count
+/// too, and not over a Note an import maps itself.
 #[test]
 fn an_import_without_auto_entry_keeps_a_staged_relookup() {
-    let relookup = {
+    let relookup = || {
         let mut step = ScriptStep::new(40);
         step.set_flag(flag::NO_INTERACT, true);
         step.set_field_spec(
@@ -1024,43 +1025,68 @@ fn an_import_without_auto_entry_keeps_a_staged_relookup() {
         std::thread::current().id()
     ));
     let _ = std::fs::remove_dir_all(&dir);
-    std::fs::create_dir_all(dir.join("Documents")).unwrap();
-    std::fs::write(dir.join("Documents").join("count.tab"), "9\r").unwrap();
+    let documents = dir.join("Documents");
+    std::fs::create_dir_all(&documents).unwrap();
+    for (name, text) in [
+        ("9.tab", "9\r"),
+        ("10.tab", "10\r"),
+        ("mapped.tab", "mapped\t5\r"),
+    ] {
+        std::fs::write(documents.join(name), text).unwrap();
+    }
+    let import = |file: &str, fields: &[u64]| {
+        vec![
+            set_var("$p", &format!("Get ( DocumentsPath ) & \"{file}\"")),
+            transfer::import_as(
+                &["$p"],
+                fields,
+                false,
+                om_transfer::spec::ImportAction::UpdateFoundSet,
+            ),
+            set_var("$import", "$import & Get ( LastError )"),
+        ]
+    };
+    let relooked_then = |imports: Vec<Vec<ScriptStep>>| {
+        let mut steps = vec![
+            fixture::go_to_record(1),
+            set_field(NOTE, 1, "\"typed\""),
+            ScriptStep::new(75),
+            ScriptStep::new(205),
+            relookup(),
+        ];
+        steps.extend(imports.into_iter().flatten());
+        steps.push(ScriptStep::new(206));
+        steps.push(exit_with(
+            "Tasks::Note & \"/\" & Tasks::Count & \"/\" & $import & \"/\" & Get ( LastError )",
+        ));
+        steps
+    };
     let mut tree = lookup_tree();
-    tree.put(
-        &[&[17], &[5], &uint_segment(8)],
-        script(
-            8,
-            "Relookup, then import",
-            vec![
-                fixture::go_to_record(1),
-                set_field(NOTE, 1, "\"typed\""),
-                ScriptStep::new(75),
-                ScriptStep::new(205),
-                relookup,
-                set_var("$p", "Get ( DocumentsPath ) & \"count.tab\""),
-                transfer::import_as(
-                    &["$p"],
-                    &[COUNT],
-                    false,
-                    om_transfer::spec::ImportAction::UpdateFoundSet,
-                ),
-                set_var("$import", "Get ( LastError )"),
-                ScriptStep::new(206),
-                exit_with(
-                    "Tasks::Note & \"/\" & Tasks::Count & \"/\" & $import & \"/\" & Get ( LastError )",
-                ),
-            ],
-        )
-        .encode(),
-    );
+    for (id, name, steps) in [
+        (
+            8u64,
+            "Relookup, then two imports",
+            relooked_then(vec![import("9.tab", &[COUNT]), import("10.tab", &[COUNT])]),
+        ),
+        (
+            7,
+            "Relookup, then an import of Note",
+            relooked_then(vec![import("mapped.tab", &[NOTE, COUNT])]),
+        ),
+    ] {
+        tree.put(
+            &[&[17], &[5], &uint_segment(id)],
+            script(id, name, steps).encode(),
+        );
+    }
     let file = TempFile(dir.join(fixture::FILE));
     fixture::write_tree(&file.0, &tree);
     let port = server::start(&file);
     let (mut client, _) = server::logged_in(port, "client");
-    let result = run(&mut client, 8);
+    let results = (run(&mut client, 8), run(&mut client, 7));
     let _ = std::fs::remove_dir_all(&dir);
-    assert_eq!(result, (0, "w/9/0/0".to_string()));
+    assert_eq!(results.0, (0, "w/10/00/0".to_string()));
+    assert_eq!(results.1, (0, "mapped/5/0/0".to_string()));
 }
 
 /// Open Transaction's "Skip auto-enter options" performs no lookup: a
