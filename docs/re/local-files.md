@@ -739,11 +739,12 @@ than a second reader and writer.
     owner-only (0600 on Unix), whatever the file's own permissions or the
     folder's group [I: OpenMaker's choice; FileMaker's is unmeasured]. ACLs
     the folder passes on to new files still apply.
-  - *The desktop's step.* It refuses with error 3, before committing or
-    creating anything: clones and self-contained copies, a step without an
-    output file (the Save dialog of File > Save a Copy As is not built),
-    "Automatically open file", "Create email", an open transaction and a
-    hosted file [I]
+  - *The desktop's step.* Before committing or creating anything, it
+    fails as a step OpenMaker does not support (error 3; the desktop stops
+    the script with its "not supported here yet" alert) for clones and
+    self-contained copies, a step without an output file (the Save dialog
+    of File > Save a Copy As is not built), "Automatically open file",
+    "Create email", an open transaction and a hosted file [I]
     ([#63](https://github.com/OpenMaker-Dev/openmaker/issues/63)). Otherwise
     it returns 800 when the account's set denies exporting, commits the
     window's record, as Export Records does [I], and returns 800 when the

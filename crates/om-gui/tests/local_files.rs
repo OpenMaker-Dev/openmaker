@@ -569,13 +569,16 @@ fn save_a_copy(variable: &str, kind: u16) -> om_scripts::ScriptStep {
 
 /// Save a Copy as from a local file's script: a copy and a compacted copy
 /// of the file, each a file that opens, while a copy over an existing file
-/// fails with 800 and a clone with 3, creating nothing.
+/// fails with 800. A clone, which OpenMaker cannot make yet, stops the
+/// script as an unsupported step, before Create folders makes its folder.
 #[test]
 fn a_local_files_script_saves_copies_of_it() {
     let folder = Folder::new("save-copy");
     let stem = format!("om-gui-copy-{}", std::process::id());
     let in_temp =
         |name: &str| format!("\"file:\" & Get ( TemporaryPath ) & \"{stem} {name}.fmp12\"");
+    let mut clone = save_a_copy("$clone", 3);
+    clone.flags |= om_scripts::flag::OPTION2; // Create folders
     let scripts = [fixture::script(
         1,
         "Copy",
@@ -583,15 +586,14 @@ fn a_local_files_script_saves_copies_of_it() {
             fixture::on(86, true), // Set Error Capture [ On ]
             fixture::set_variable("$copy", &in_temp("Copy")),
             fixture::set_variable("$compacted", &in_temp("Compacted")),
-            fixture::set_variable("$clone", &in_temp("Clone")),
+            fixture::set_variable("$clone", &in_temp("Clone/Clone")),
             save_a_copy("$copy", 1),
             fixture::set_variable("$e", "Get ( LastError )"),
             save_a_copy("$compacted", 2),
             fixture::set_variable("$e", "$e & \",\" & Get ( LastError )"),
             save_a_copy("$copy", 2),
-            fixture::set_variable("$e", "$e & \",\" & Get ( LastError )"),
-            save_a_copy("$clone", 3),
             show("$e & \",\" & Get ( LastError )"),
+            clone,
         ],
     )];
     let mut root = fixture::tree(&scripts, true);
@@ -620,16 +622,21 @@ fn a_local_files_script_saves_copies_of_it() {
     let _ = std::fs::remove_file(made("Copy"));
     let _ = std::fs::remove_file(made("Compacted"));
     assert!(
-        found.iter().any(|label| label == "0,0,800,3"),
+        found.iter().any(|label| label == "0,0,800"),
         "error {:?}; labels {found:?}",
         app.state().error()
     );
     assert!(copies.iter().all(Result::is_ok), "{copies:?}");
-    assert!(!made("Clone").exists());
     common::click(&mut app, "OK");
-    common::wait_until(&mut app, "the script to end", |a| {
+    common::wait_until(&mut app, "the script to stop", |a| {
         !a.state().script_running()
     });
+    let stopped = app.state().error().unwrap_or_default();
+    assert!(
+        stopped.contains("Save a Copy as") && stopped.contains("not supported"),
+        "{stopped}"
+    );
+    assert!(!temp.join(format!("{stem} Clone")).exists());
 }
 
 /// A local file opens on the found set and record FileMaker Pro saved for
