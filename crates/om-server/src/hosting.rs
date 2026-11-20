@@ -653,6 +653,88 @@ impl Hosted {
             .map_err(PasswordChangeError::Unwritten)
     }
 
+    /// Reset Account Password (136) for the account named `name`, as
+    /// FileMaker's `DoResetAccount` writes it (local-files.md 2.4): the
+    /// stored password `06` with a new random salt, the status `0a`
+    /// stamped `now` to the second with its other flags kept and a change
+    /// due at the next login when `expire`, and the checksum `04`
+    /// ([`Self::rewrite_account`], with `stamp`). Only a FileMaker-file
+    /// account has a password to reset (206, as `SetPassword` refuses
+    /// another kind); more than 100 characters is 11. The caller has
+    /// checked that the session may manage accounts.
+    pub fn reset_account_password(
+        &self,
+        name: &str,
+        new: &str,
+        expire: bool,
+        stamp: Option<&ModStamp<'_>>,
+        now: jiff::civil::DateTime,
+    ) -> Result<(), AccountEditError> {
+        if new.chars().count() > 100 {
+            return Err(AccountEditError::TooLong);
+        }
+        let mut store = self.write_store();
+        let record =
+            find_account(&store, AccountRef::Name(name)).ok_or(AccountEditError::Missing)?;
+        let view = crate::store::view(&record);
+        if AccountKind::decode(member(&view, ACCOUNT_KIND)) != Some(AccountKind::FileMakerFile) {
+            return Err(AccountEditError::NotFileAccount);
+        }
+        let current = AccountStatus::decode(member(&view, ACCOUNT_STATUS))
+            .ok_or_else(|| AccountEditError::Unwritten("its status does not decode".into()))?;
+        let status = encoded(current.password_reset(now.date(), seconds(now), expire))
+            .map_err(AccountEditError::Unwritten)?;
+        let salt = random_salt().map_err(AccountEditError::Unwritten)?;
+        let password = StoredPassword::encode(new, salt);
+        self.rewrite_account(&mut store, &record, Some(password), status, stamp)
+            .map_err(AccountEditError::Unwritten)
+    }
+
+    /// Enable Account (137): the account named `name` made active or
+    /// inactive, as FileMaker's `SetEnabled` sets it (local-files.md 2.4):
+    /// only the status's inactive bit changes (an account without a status
+    /// gets 1/1/1024's), and the checksum `04` with it
+    /// ([`Self::rewrite_account`], with `stamp`). Whether it changed: an
+    /// account already in that state is left as it is. Refused (3) for an
+    /// account an OAuth identity provider or Claris ID signs in, and for
+    /// making a [Full Access] account inactive, which Claris documents the
+    /// step does not do. The caller has checked that the session may
+    /// manage accounts.
+    pub fn enable_account(
+        &self,
+        name: &str,
+        active: bool,
+        stamp: Option<&ModStamp<'_>>,
+    ) -> Result<bool, AccountEditError> {
+        let mut store = self.write_store();
+        let record =
+            find_account(&store, AccountRef::Name(name)).ok_or(AccountEditError::Missing)?;
+        let view = crate::store::view(&record);
+        // The file's own accounts and external server groups (kind 1);
+        // OAuth identities are `provider << 3 | 2` (local-files.md 2.2).
+        match AccountKind::decode(member(&view, ACCOUNT_KIND)) {
+            Some(AccountKind::FileMakerFile | AccountKind::External(1)) => {}
+            _ => return Err(AccountEditError::Unsupported),
+        }
+        let set = member(&view, ACCOUNT_PRIVILEGES)
+            .and_then(|r| r.split_first())
+            .filter(|(length, key)| usize::from(**length) == key.len())
+            .map(|(_, key)| key);
+        if !active && set == Some(FULL_ACCESS_SET) {
+            return Err(AccountEditError::FullAccess);
+        }
+        let current = AccountStatus::decode(member(&view, ACCOUNT_STATUS))
+            .ok_or_else(|| AccountEditError::Unwritten("its status does not decode".into()))?;
+        let wanted = current.enabled(active);
+        if wanted == current {
+            return Ok(false);
+        }
+        let status = encoded(wanted).map_err(AccountEditError::Unwritten)?;
+        self.rewrite_account(&mut store, &record, None, status, stamp)
+            .map(|()| true)
+            .map_err(AccountEditError::Unwritten)
+    }
+
     /// Write account `record` again with `password` (its own when `None`)
     /// and `status`, and the checksum `04` they give, in one commit saved
     /// before this returns; its other members are kept. With `stamp`, the
@@ -888,6 +970,41 @@ pub enum PasswordChangeError {
     Unwritten(String),
 }
 
+/// Why Reset Account Password or Enable Account changed nothing.
+#[derive(Debug)]
+pub enum AccountEditError {
+    /// No account has that name (213, inferred: FileMaker's code for an
+    /// account it does not find there is not observed).
+    Missing,
+    /// Not a FileMaker-file account, which alone has a password here (206).
+    NotFileAccount,
+    /// More than 100 characters (11).
+    TooLong,
+    /// An account the step does not change: one an OAuth identity
+    /// provider or Claris ID signs in (3, inferred).
+    Unsupported,
+    /// Making a [Full Access] account inactive (3, inferred: Claris
+    /// documents that the step does not; its code is not observed).
+    FullAccess,
+    /// The account could not be rewritten, or the file could not be
+    /// written, and nothing changed.
+    Unwritten(String),
+}
+
+impl AccountEditError {
+    /// FileMaker's error code; `None` for an account or file that could not
+    /// be written.
+    pub fn code(&self) -> Option<i32> {
+        match self {
+            Self::Missing => Some(213),
+            Self::NotFileAccount => Some(206),
+            Self::TooLong => Some(11),
+            Self::Unsupported | Self::FullAccess => Some(3),
+            Self::Unwritten(_) => None,
+        }
+    }
+}
+
 impl PasswordChangeError {
     /// FileMaker's error code; `None` for a file that could not be written.
     pub fn code(&self) -> Option<i32> {
@@ -938,6 +1055,19 @@ fn find_account(store: &Store, account: AccountRef<'_>) -> Option<om_hbam::Owned
         }
     }
     .cloned()
+}
+
+/// `status` as FileMaker stores it, refused when the value would not read
+/// back as `status`: flags added to a fraction of a second the file
+/// already held can pass the six digits the value keeps, and a status cut
+/// back would lose them.
+fn encoded(status: AccountStatus) -> Result<Vec<u8>, String> {
+    let value = status.encode();
+    if AccountStatus::decode(Some(&value)) == Some(status) {
+        Ok(value)
+    } else {
+        Err("its status cannot hold the flags".into())
+    }
 }
 
 /// The seconds since midnight of `now`, to the second.
@@ -1552,6 +1682,19 @@ pub(crate) enum ReopenError {
 mod tests {
     use super::*;
     use crate::scripts::fixture;
+
+    /// A status whose fraction of a second leaves no room for a flag is not
+    /// written cut back to six digits, which would lose its flags (#83).
+    #[test]
+    fn a_status_that_cannot_hold_its_flags_is_not_written() {
+        let status = AccountStatus {
+            date: jiff::civil::date(2026, 11, 19),
+            seconds: 1,
+            microseconds: 500_000,
+        };
+        assert!(encoded(status).is_ok());
+        assert!(encoded(status.enabled(false)).is_err());
+    }
 
     /// A FIFO named as a database is refused without waiting for a writer,
     /// and the other files are hosted: a blocking open would hold startup
