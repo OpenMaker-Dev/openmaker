@@ -600,7 +600,8 @@ fn replacing(
 /// A duplicate enters a replacing `Get ( RecordNumber )` as its own place,
 /// after the records of the unsorted found set, as FileMaker Server's
 /// engine does (script oracle s46-record-number-ae: the copy of the first
-/// of nine stores 10), not record 2's copied number.
+/// of nine stores 10), not record 2's copied number. An edit of the copy
+/// before its save keeps it.
 #[test]
 fn a_duplicate_enters_its_own_record_number() {
     let hosted = host_with("duplicate-number", |root| {
@@ -613,21 +614,47 @@ fn a_duplicate_enters_its_own_record_number() {
     common::wait_until(&mut app, "the duplicate", |app| {
         app.state().is_settled() && common::record_number(app) == (before.len() + 1).to_string()
     });
+    // The list's last row: the copy.
+    app.query_all_by_role_and_label(Role::TextInput, "Name")
+        .last()
+        .unwrap()
+        .focus();
+    app.step();
+    app.key_press_modifiers(egui::Modifiers::COMMAND, egui::Key::A);
+    app.query_all_by_role_and_label(Role::TextInput, "Name")
+        .last()
+        .unwrap()
+        .type_text("Copy");
+    app.run_steps(2);
     common::save_record(&mut app);
     saved(&mut app);
     assert!(app.state().error().is_none(), "{:?}", app.state().error());
     let numbers = stored_values(&hosted, "Number");
     assert_eq!(numbers[1..], ["2", "3"], "{numbers:?}");
+    assert_eq!(stored_names(&hosted)[2].as_deref(), Some("Copy"));
 }
 
 /// In a transaction that skips auto-entry, a duplicate takes the record's
 /// values: it enters none of its own, and its Token is record 2's, not
-/// empty [I: FileMaker's duplicate there is unmeasured; OpenMaker keeps
-/// what it did before #473].
+/// empty; a serial number is not copied, and the copy has none [I:
+/// FileMaker's duplicate there is unmeasured; OpenMaker keeps what it did
+/// before #473].
 #[test]
 fn a_duplicate_in_a_transaction_skipping_auto_entry_keeps_the_values() {
     let hosted = host_with("duplicate-skip-entry", |root| {
         replacing(root, (20, "Token"), "Get ( UUID )", "record 2's");
+        // An editable serial number, generated on creation.
+        fixture::add_field(root, fixture::TABLE, 22, "Order", 1, 1, 0, 0x2, 0);
+        fixture::set_field_serial_increment(root, fixture::TABLE, 22, 1);
+        root.put(
+            &[
+                &om_hbam::slot::uint_segment(fixture::TABLE),
+                &[5],
+                &[2],
+                &om_hbam::slot::uint_segment(22),
+            ],
+            om_scripts::text_node(&[], "ORD0042"),
+        );
         let mut open = ScriptStep::new(205);
         open.set_flag(om_scripts::flag::SELECT_ALL, true);
         let script = fixture::script(
@@ -656,4 +683,6 @@ fn a_duplicate_in_a_transaction_skipping_auto_entry_keeps_the_values() {
     assert!(app.state().error().is_none(), "{:?}", app.state().error());
     let tokens = stored_values(&hosted, "Token");
     assert_eq!(tokens[1..], ["record 2's", "record 2's"], "{tokens:?}");
+    let orders = stored_values(&hosted, "Order");
+    assert_eq!(orders[1..], ["ORD0042", ""], "{orders:?}");
 }

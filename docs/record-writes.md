@@ -113,11 +113,13 @@ OpenMaker does the same with the window's record session
   calculation,
   [#473](https://github.com/OpenMaker-Dev/openmaker/issues/473)). A
   replacing `Get ( RecordNumber )` is the copy's place after the records
-  of an unsorted found set, as s46 measured; in a sorted found set the
-  copy has none and its save is refused (3). A lookup's value and a
-  calculation that does not replace one are copied. In a transaction that
-  skips auto-entry the copy takes every stored value of the record and
-  enters none [I]. A table with a field that enters the last visited
+  of an unsorted found set, as s46 measured, as the host's found set is
+  when the copy is made; the copy keeps it through its edits before its
+  save, as an auto-entered value is entered when the record is made. In a
+  sorted found set the copy has none and its save is refused (3). A
+  lookup's value and a calculation that does not replace one are copied.
+  In a transaction that skips auto-entry the copy takes every stored value
+  of the record but a serial number, and enters none [I]. A table with a field that enters the last visited
   record's value (`0x10`) is refused for these writes, as an unsupported
   field option. The variable and constant cases follow Claris's
   documentation and are unmeasured.

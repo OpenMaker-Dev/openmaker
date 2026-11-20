@@ -1885,7 +1885,12 @@ impl<'a> WorkerHost<'a> {
                     .values()
                     .filter(|f| {
                         if skips_entry {
-                            f.class == FieldClass::Data && f.stored && !f.global
+                            // A serial number is not copied: the copy takes
+                            // none there, as before #473.
+                            f.class == FieldClass::Data
+                                && f.stored
+                                && !f.global
+                                && !f.auto_enters_serial()
                         } else {
                             f.duplicate_copies()
                         }
@@ -1963,13 +1968,14 @@ impl<'a> WorkerHost<'a> {
             // The copy's place in the found set, which a calculation it
             // enters reads as Get ( RecordNumber ): after the records of an
             // unsorted found set (script oracle s46-record-number-ae: a
-            // duplicate of the first of nine stores 10). A sorted found
-            // set's is unmeasured: the copy has none, and such a
-            // calculation refuses the save (3).
-            let record_number = if window.sorted {
-                None
-            } else {
-                window.found_count(provider).ok().map(|found| found + 1)
+            // duplicate of the first of nine stores 10), from the
+            // provider's found set as it is now, not the window's last
+            // read of it. A sorted found set's is unmeasured: the copy has
+            // none, and such a calculation refuses the save (3).
+            let layout = window.state.layout.unwrap_or_default();
+            let record_number = match provider.records_with_summary(layout, 0, 0, &[]) {
+                Ok((_, Some(found))) if !found.sorted => Some(found.found + 1),
+                _ => None,
             };
             window.make_new_record(
                 provider,
