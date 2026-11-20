@@ -375,6 +375,102 @@ tar -xzf openmaker-<version>-ubuntu24.04-amd64.tar.gz -C ~/.local --strip-compon
 xargs -a ~/.local/share/doc/openmaker/apt-packages sudo apt install
 ```
 
+### OpenMaker Server as a macOS service
+
+On macOS, run these scripts from a source checkout. They build the server
+and its PDF worker with Cargo, then use `sudo`. They need only what macOS
+ships (bash 3.2, `dscl`, `launchctl`, `plutil`, `openssl`, `lsof`); the
+source build also needs stable Rust and the Xcode command line tools.
+
+```sh
+tools/server/macos/install.sh
+tools/server/macos/update.sh      # after checking out the version to install,
+                                  # or after changing server.env
+tools/server/macos/uninstall.sh
+```
+
+Install and update also take a folder holding matching macOS `om-server` and
+`om-server-pdf-worker` executables, to skip the build. The binaries need
+database folders and the Admin Console (the default features).
+
+The installer makes the service account `omserver` and the operator group
+`omadmin`, unless they exist. The account is a hidden, non-login local user
+(shell `/usr/bin/false`, no password, home `/var/empty`) whose group is
+`omadmin`, with a free id below 500. FileMaker Server uses `fmserver` and
+`fmsadmin` the same way. Existing records are used as they are, after a
+check that the account is not root, cannot log in and has `omadmin` as its
+group. The group's members are never changed. The installer then installs
+and starts the launchd daemon `dev.openmaker.server`, which runs the server
+as `omserver:omadmin` with umask 027 and restarts it if it stops on an
+error.
+
+| Path | Owner, mode | Contents |
+| --- | --- | --- |
+| `/Library/OpenMaker Server/releases/release.*/` | root, 0755 | The server and PDF worker the job runs |
+| `/Library/OpenMaker Server/Config/server.env` | root, 0644 | Server name, bind addresses, console user |
+| `/Library/OpenMaker Server/Config/admin-password` | `omserver`, 0400 | Generated Admin Console password |
+| `/Library/OpenMaker Server/Data/Databases/` | `omserver:omadmin`, 0770 | Hosted databases, staged by operators |
+| `/Library/OpenMaker Server/Data/Backups/` | `omserver:omadmin`, 0750 | Backups |
+| `/Library/OpenMaker Server/Data/State/` | `omserver`, 0700 | The server's certificate (`tls/`) |
+| `/Library/OpenMaker Server/Logs/` | `omserver:omadmin`, 0750 | FileMaker-format logs and `launchd.log` |
+| `/Library/LaunchDaemons/dev.openmaker.server.plist` | root, 0644 | The launchd job |
+
+The folders above the service's own are root's, 0755. launchd has no
+credentials store, so the password file belongs to the service account,
+which alone may read it, in a folder only root may change. The default
+listeners are `127.0.0.1:5003` and `127.0.0.1:16000`. Sign in as `admin` at
+`https://localhost:16000/admin-console`, with the password from
+`sudo cat '/Library/OpenMaker Server/Config/admin-password'`. The server
+makes its own certificate in `Data/State/tls/`, as [above](#the-servers-certificate).
+Give clients `Data/State/tls/cert.pem` in `OPENMAKER_CA_CERT`. For remote
+access, change the bind addresses in `server.env` and run `update.sh`,
+which writes the job again from it.
+
+Operators in `omadmin` stage databases, with group read and write so the
+server can save them. The server's own saves leave a file `0640`, which
+operators may still read. To make someone an operator, or to stop:
+
+```sh
+install -g omadmin -m 0660 Tasks.fmp12 '/Library/OpenMaker Server/Data/Databases/'
+sudo launchctl kickstart -k system/dev.openmaker.server   # host it now
+sudo dseditgroup -o edit -a <user> -t user omadmin        # add an operator
+sudo dseditgroup -o edit -d <user> -t user omadmin        # remove one
+```
+
+Update keeps the data, settings, password, account and the group's members.
+It stops the job, puts the new release and job in place, starts the job
+again if it was running, and restores the previous release and job if the
+server does not come back with both listeners. Uninstall removes the job
+and the binaries and keeps everything else for a later install. The
+account and group are left for an administrator to remove
+(`sudo dscl . -delete /Users/omserver`, then `/Groups/omadmin`).
+
+`tools/server/macos/check.sh` checks the scripts on disposable installs as
+the current user, with no administrator and no change to the Mac. Each
+scenario installs beneath a temporary folder standing for `/`
+(`OPENMAKER_PREFIX`), where ownership, the account and group, and launchd
+are recorded instead of applied. The scenarios:
+
+- a fresh install;
+- an update that must keep a staged database, the password, the account
+  and an operator's membership;
+- an uninstall;
+- existing accounts with members;
+- a login account, which is refused.
+
+It then runs the job's own command line, as the current user, on a staged
+blank database: the server must open it for writing and write its state
+and logs.
+
+What `check.sh` cannot show needs a real install by an administrator:
+
+- that launchd starts the server as `omserver:omadmin`
+  (`ps -o user=,group= -p <pid>`, the pid from `sudo launchctl print
+  system/dev.openmaker.server`);
+- that a database an operator stages opens (`Opened database` in
+  `Logs/Event.log`);
+- that the group's members may read the logs and backups and stage files.
+
 ## Checks
 
 The gate before a pull request (what merged PRs report):

@@ -1,0 +1,413 @@
+# Shared by the macOS launchd scripts for OpenMaker Server (install.sh,
+# update.sh, uninstall.sh). macOS ships bash 3.2 and BSD tools: no
+# associative arrays, `stat -f`, no `mv -T`.
+#
+# With OPENMAKER_PREFIX set to a folder, the scripts install beneath it as
+# the current user, standing for `/`: ownership changes, the service
+# account and group, and launchd are recorded there instead of applied
+# (check.sh's disposable installs). Without it they change this Mac and
+# need an administrator.
+set -euo pipefail
+
+script_dir=$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd)
+prefix=${OPENMAKER_PREFIX:-}
+server_root="$prefix/Library/OpenMaker Server"
+config="$server_root/Config"
+data="$server_root/Data"
+logs="$server_root/Logs"
+label=dev.openmaker.server
+plist_path="$prefix/Library/LaunchDaemons/$label.plist"
+service_user=omserver
+service_group=omadmin
+# The uid that owns what only the administrator may change: root's, or in a
+# disposable install the current user's.
+if [[ -n $prefix ]]; then
+    root_uid=$(id -u)
+else
+    root_uid=0
+fi
+
+fail() {
+    printf 'OpenMaker Server: %s\n' "$*" >&2
+    exit 1
+}
+
+require_macos() {
+    [[ $(uname -s) == Darwin ]] || fail 'These scripts are for macOS; see tools/server for Linux.'
+}
+
+# Build as the caller, or take the binaries from a folder. Elevation starts
+# only after the binaries exist.
+prepare_binaries() {
+    require_macos
+    if (($# == 0)); then
+        local repo
+        repo=$(cd -- "$script_dir/../../.." && pwd)
+        (
+            cd -- "$repo"
+            CARGO_TARGET_DIR="$repo/target" cargo build --release --locked -p om-server
+        )
+        binary_dir="$repo/target/release"
+    else
+        binary_dir=$(cd -- "$1" && pwd)
+    fi
+    local binary
+    for binary in om-server om-server-pdf-worker; do
+        [[ -f "$binary_dir/$binary" && -x "$binary_dir/$binary" ]] ||
+            fail "Expected an executable $binary in $binary_dir"
+    done
+}
+
+# Run the calling script again as root, unless installing beneath a prefix.
+elevate() {
+    if [[ -z $prefix ]] && ((EUID != 0)); then
+        exec sudo -- "$@"
+    fi
+}
+
+lock_path="$prefix/var/run/openmaker-server-install.lock"
+
+# One script at a time: a lock folder, removed when the script ends.
+lock_installation() {
+    umask 022
+    mkdir -p -- "$(dirname -- "$lock_path")"
+    mkdir -- "$lock_path" 2>/dev/null ||
+        fail "Another install, update or uninstall is running (or remove $lock_path)."
+    locked=true
+    # Scripts that set their own exit trap unlock in it.
+    trap unlock_installation EXIT
+}
+
+unlock_installation() {
+    if [[ ${locked:-false} == true ]]; then
+        rmdir -- "$lock_path" 2>/dev/null || true
+        locked=false
+    fi
+}
+
+uid_of() { stat -f %u -- "$1"; }
+mode_of() { stat -f %Lp -- "$1"; }
+
+# Give `path` to `owner:group`; recorded in a disposable install.
+set_owner() {
+    local owner=$1 path=$2
+    if [[ -n $prefix ]]; then
+        printf '%s\t%s\n' "$owner" "${path#"$prefix"}" >>"$prefix/.owners"
+    else
+        chown -- "$owner" "$path"
+    fi
+}
+
+# A folder only the administrator may change: made root-owned 0755 when
+# missing, refused when it is a link, another user's or writable by others.
+root_directory() {
+    local directory=$1
+    [[ ! -L "$directory" ]] || fail "Refusing symlink: $directory"
+    if [[ ! -e "$directory" ]]; then
+        mkdir -m 0755 -- "$directory"
+        set_owner root:wheel "$directory"
+    fi
+    [[ -d "$directory" && $(uid_of "$directory") == "$root_uid" ]] ||
+        fail "Expected a root-owned folder: $directory"
+    (((8#$(mode_of "$directory") & 022) == 0)) ||
+        fail "Folder is writable by other users: $directory"
+}
+
+# A file only the administrator may change, when it exists.
+check_root_file() {
+    local path=$1
+    [[ ! -L "$path" ]] || fail "Refusing symlink: $path"
+    if [[ -e "$path" ]]; then
+        [[ -f "$path" && $(uid_of "$path") == "$root_uid" ]] ||
+            fail "Expected a root-owned file: $path"
+        (((8#$(mode_of "$path") & 022) == 0)) || fail "File is writable by other users: $path"
+    fi
+}
+
+# --- The directory service: dscl, or a record of it beneath the prefix.
+
+ds_root="$prefix/.ds"
+
+# `kind` (Users or Groups) `name`'s attribute `key`, empty when absent.
+ds_read() {
+    local kind=$1 name=$2 key=$3
+    if [[ -n $prefix ]]; then
+        local file="$ds_root/$kind/$name/$key"
+        [[ -f "$file" ]] && cat -- "$file"
+        return 0
+    fi
+    dscl . -read "/$kind/$name" "$key" 2>/dev/null | sed -n "s/^$key: //p" | head -n 1
+}
+
+ds_exists() {
+    local kind=$1 name=$2
+    if [[ -n $prefix ]]; then
+        [[ -d "$ds_root/$kind/$name" ]]
+    else
+        dscl . -read "/$kind/$name" RecordName >/dev/null 2>&1
+    fi
+}
+
+# Every value of `key` over `kind`'s records, one per line.
+ds_values() {
+    local kind=$1 key=$2
+    if [[ -n $prefix ]]; then
+        cat -- "$ds_root/$kind"/*/"$key" 2>/dev/null || true
+        return 0
+    fi
+    dscl . -list "/$kind" "$key" | awk '{ print $2 }'
+}
+
+ds_create() {
+    local kind=$1 name=$2 key=${3:-} value=${4:-}
+    if [[ -n $prefix ]]; then
+        mkdir -p -- "$ds_root/$kind/$name"
+        if [[ -n $key ]]; then
+            printf '%s\n' "$value" >"$ds_root/$kind/$name/$key"
+        fi
+        printf 'create %s %s %s %s\n' "$kind" "$name" "$key" "$value" >>"$ds_root/log"
+        return 0
+    fi
+    if [[ -n $key ]]; then
+        dscl . -create "/$kind/$name" "$key" "$value"
+    else
+        dscl . -create "/$kind/$name"
+    fi
+}
+
+# A free id for both a user and a group, below 500 (macOS's hidden range
+# for service accounts).
+free_id() {
+    local id taken
+    taken=$( (ds_values Users UniqueID; ds_values Groups PrimaryGroupID) | sort -n | uniq)
+    for ((id = 300; id < 500; id++)); do
+        if ! grep -qx -- "$id" <<<"$taken"; then
+            echo "$id"
+            return 0
+        fi
+    done
+    fail 'No free id below 500 for the service account.'
+}
+
+# Make the group and the user when they are missing, and check them when
+# they exist. Existing records, and the group's members (the operators
+# an administrator added), are never changed.
+ensure_accounts() {
+    local gid uid shell
+    if ds_exists Groups "$service_group"; then
+        gid=$(ds_read Groups "$service_group" PrimaryGroupID)
+        [[ $gid =~ ^[0-9]+$ ]] || fail "The existing $service_group group has no group id."
+    else
+        gid=$(free_id)
+        ds_create Groups "$service_group"
+        ds_create Groups "$service_group" PrimaryGroupID "$gid"
+        ds_create Groups "$service_group" RealName 'OpenMaker Server operators'
+        ds_create Groups "$service_group" Password '*'
+    fi
+    if ! ds_exists Users "$service_user"; then
+        uid=$gid
+        if grep -qx -- "$uid" <<<"$(ds_values Users UniqueID)"; then
+            uid=$(free_id)
+        fi
+        ds_create Users "$service_user"
+        ds_create Users "$service_user" UniqueID "$uid"
+        ds_create Users "$service_user" PrimaryGroupID "$gid"
+        ds_create Users "$service_user" UserShell /usr/bin/false
+        ds_create Users "$service_user" NFSHomeDirectory /var/empty
+        ds_create Users "$service_user" RealName 'OpenMaker Server'
+        ds_create Users "$service_user" Password '*'
+        ds_create Users "$service_user" IsHidden 1
+    fi
+    uid=$(ds_read Users "$service_user" UniqueID)
+    shell=$(ds_read Users "$service_user" UserShell)
+    [[ $uid =~ ^[0-9]+$ && $uid != 0 &&
+        $(ds_read Users "$service_user" PrimaryGroupID) == "$gid" &&
+        ($shell == /usr/bin/false || $shell == /usr/sbin/nologin) ]] ||
+        fail "The existing $service_user account must be a non-root, non-login user whose group is $service_group."
+}
+
+# --- The service's folders.
+
+# Databases: operators stage files (group write). Backups, logs and state:
+# the service's alone, operators may read backups and logs.
+service_directories() {
+    local path mode
+    for path in "$data/Databases" "$data/Backups" "$data/State" "$logs"; do
+        [[ ! -L "$path" ]] || fail "Refusing symlink: $path"
+        case $path in
+        "$data/Databases") mode=0770 ;;
+        "$data/State") mode=0700 ;;
+        *) mode=0750 ;;
+        esac
+        if [[ ! -e "$path" ]]; then
+            mkdir -m "$mode" -- "$path"
+            set_owner "$service_user:$service_group" "$path"
+        fi
+        [[ -d "$path" ]] || fail "Expected a folder: $path"
+    done
+}
+
+# The Admin Console password: made once, readable by the service alone.
+admin_password() {
+    local path="$config/admin-password"
+    [[ ! -L "$path" ]] || fail "Refusing symlink: $path"
+    if [[ ! -e "$path" ]]; then
+        (
+            umask 077
+            openssl rand -hex 24 >"$path"
+        )
+        chmod 0400 "$path"
+        set_owner "$service_user:$service_group" "$path"
+    fi
+    [[ -f "$path" && -s "$path" ]] || fail "Expected the Admin Console password in $path."
+}
+
+# --- Settings and the launchd job.
+
+# Read server.env's settings (KEY=value lines; # comments).
+read_settings() {
+    local line key value
+    OPENMAKER_NAME=openmaker
+    OPENMAKER_BIND=127.0.0.1:5003
+    OPENMAKER_ADMIN_BIND=127.0.0.1:16000
+    OPENMAKER_ADMIN_USER=admin
+    while IFS= read -r line || [[ -n $line ]]; do
+        [[ -z $line || $line == \#* ]] && continue
+        key=${line%%=*}
+        value=${line#*=}
+        case $key in
+        OPENMAKER_NAME | OPENMAKER_BIND | OPENMAKER_ADMIN_BIND | OPENMAKER_ADMIN_USER)
+            [[ -n $value ]] || fail "server.env: $key is empty."
+            printf -v "$key" '%s' "$value"
+            ;;
+        *) fail "server.env: unknown setting $key." ;;
+        esac
+    done <"$config/server.env"
+}
+
+# Write the launchd job for release folder `release` to `out`: the server
+# as the service account and group, its settings from server.env.
+write_plist() {
+    local release=$1 out=$2 arg
+    read_settings
+    rm -f -- "$out"
+    plutil -create xml1 "$out"
+    plutil -insert Label -string "$label" "$out"
+    plutil -insert ProgramArguments -array "$out"
+    for arg in "$server_root/$release/om-server" \
+        --name "$OPENMAKER_NAME" --bind "$OPENMAKER_BIND" \
+        --admin-bind "$OPENMAKER_ADMIN_BIND" --admin-user "$OPENMAKER_ADMIN_USER" \
+        --admin-password-file "$config/admin-password" \
+        --state-dir "$data/State" \
+        --database-folder "$data/Databases" \
+        --backup-folder "$data/Backups" \
+        --log-folder "$logs" --list-all; do
+        plutil -insert ProgramArguments -string "$arg" -append "$out"
+    done
+    plutil -insert UserName -string "$service_user" "$out"
+    plutil -insert GroupName -string "$service_group" "$out"
+    plutil -insert InitGroups -bool true "$out"
+    # 027: what the server makes is not other users'.
+    plutil -insert Umask -integer 23 "$out"
+    plutil -insert WorkingDirectory -string "$data" "$out"
+    plutil -insert RunAtLoad -bool true "$out"
+    plutil -insert KeepAlive -dictionary "$out"
+    plutil -insert KeepAlive.SuccessfulExit -bool false "$out"
+    plutil -insert ThrottleInterval -integer 10 "$out"
+    plutil -insert StandardOutPath -string "$logs/launchd.log" "$out"
+    plutil -insert StandardErrorPath -string "$logs/launchd.log" "$out"
+    plutil -lint -s "$out" || fail "The launchd job written is not valid: $out"
+    chmod 0644 "$out"
+}
+
+# Put the job `staged` (a file beside the job's path) in place.
+install_plist() {
+    mv -f -- "$1" "$plist_path"
+    set_owner root:wheel "$plist_path"
+}
+
+launchd() {
+    if [[ -n $prefix ]]; then
+        printf 'launchctl %s\n' "$*" >>"$prefix/.launchctl"
+        return 0
+    fi
+    launchctl "$@"
+}
+
+job_loaded() {
+    if [[ -n $prefix ]]; then
+        [[ -f "$prefix/.loaded" ]]
+    else
+        launchctl print "system/$label" >/dev/null 2>&1
+    fi
+}
+
+start_job() {
+    launchd bootstrap system "$plist_path" || return 1
+    [[ -z $prefix ]] || : >"$prefix/.loaded"
+}
+
+stop_job() {
+    if job_loaded; then
+        launchd bootout "system/$label" || return 1
+        [[ -z $prefix ]] || rm -f -- "$prefix/.loaded"
+    fi
+    return 0
+}
+
+# Wait until the job's process listens on its two ports (clients' and the
+# Admin Console's).
+wait_listening() {
+    [[ -z $prefix ]] || return 0
+    local attempt pid listeners
+    for ((attempt = 0; attempt < 60; attempt++)); do
+        pid=$(launchctl print "system/$label" 2>/dev/null | awk '/^\tpid = / { print $3; exit }')
+        if [[ $pid =~ ^[1-9][0-9]*$ ]]; then
+            listeners=$(lsof -nP -a -p "$pid" -iTCP -sTCP:LISTEN 2>/dev/null | tail -n +2 | wc -l)
+            ((listeners >= 2)) && return 0
+        fi
+        sleep 1
+    done
+    return 1
+}
+
+startup_error() {
+    tail -n 20 -- "$logs/launchd.log" >&2 2>/dev/null || true
+    fail "The server did not start both listeners. See $logs."
+}
+
+# A release folder of the server's binaries, root-owned.
+stage_release() {
+    local directory
+    directory=$(mktemp -d -- "$server_root/releases/release.XXXXXXXX")
+    chmod 0755 "$directory"
+    staged_release="releases/${directory##*/}"
+    install -m 0755 -- "$binary_dir/om-server" "$binary_dir/om-server-pdf-worker" "$directory"
+    set_owner root:wheel "$directory"
+    local help
+    # --help answers 0 or 64 (EX_USAGE), as the build has it.
+    help=$("$directory/om-server" --help 2>&1) || true
+    [[ $help == *--database-folder* && $help == *--admin-password-file* ]] ||
+        fail 'Use an om-server build with database folders and the Admin Console.'
+}
+
+remove_release() {
+    local directory="$server_root/$1"
+    rm -f -- "$directory/om-server" "$directory/om-server-pdf-worker"
+    rmdir -- "$directory"
+}
+
+# The release the installed job runs, from its program path.
+installed_release() {
+    local program release
+    [[ -f "$plist_path" && ! -L "$plist_path" && $(uid_of "$plist_path") == "$root_uid" ]] ||
+        fail 'Expected a job installed by these scripts.'
+    program=$(plutil -extract ProgramArguments.0 raw -o - "$plist_path") ||
+        fail 'The installed job names no program.'
+    release=${program#"$server_root/"}
+    release=${release%/om-server}
+    [[ $release =~ ^releases/release\.[[:alnum:]]{8}$ && -d "$server_root/$release" &&
+        ! -L "$server_root/$release" ]] ||
+        fail 'The installed job runs a program outside the release folders.'
+    echo "$release"
+}
