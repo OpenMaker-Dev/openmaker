@@ -716,11 +716,7 @@ impl Hosted {
             Some(AccountKind::FileMakerFile | AccountKind::External(1)) => {}
             _ => return Err(AccountEditError::Unsupported),
         }
-        let set = member(&view, ACCOUNT_PRIVILEGES)
-            .and_then(|r| r.split_first())
-            .filter(|(length, key)| usize::from(**length) == key.len())
-            .map(|(_, key)| key);
-        if !active && set == Some(FULL_ACCESS_SET) {
+        if !active && account_set(&view) == Some(FULL_ACCESS_SET) {
             return Err(AccountEditError::FullAccess);
         }
         let current = AccountStatus::decode(member(&view, ACCOUNT_STATUS))
@@ -733,6 +729,69 @@ impl Hosted {
         self.rewrite_account(&mut store, &record, None, status, stamp)
             .map(|()| true)
             .map_err(AccountEditError::Unwritten)
+    }
+
+    /// Delete Account (135): the account named `name` removed, as
+    /// FileMaker's `DoDeleteAccount` removes it (local-files.md 2.4 and 3):
+    /// its member, and from the catalog's index its name list entry, its
+    /// place in the display order (written again from 1) and its `07`
+    /// entry, and one from the count; the last key issued stays. One
+    /// commit, saved before this returns, with the index stamped when
+    /// `stamp` is given. As Claris documents, a [Full Access] account is
+    /// not deleted, nor an OAuth or Claris ID one; [Guest] is not either
+    /// (all 3, inferred). An index that does not hold the accounts as
+    /// [`index_without`] reads it is not rewritten. The caller has checked
+    /// that the session may manage accounts.
+    pub fn delete_account(
+        &self,
+        name: &str,
+        stamp: Option<&ModStamp<'_>>,
+    ) -> Result<(), AccountEditError> {
+        let mut store = self.write_store();
+        let record =
+            find_account(&store, AccountRef::Name(name)).ok_or(AccountEditError::Missing)?;
+        let view = crate::store::view(&record);
+        // [Guest] (key 1) is the file's own; OAuth and Claris ID
+        // identities are not the step's (Claris, "Delete Account").
+        let deletable = matches!(
+            AccountKind::decode(member(&view, ACCOUNT_KIND)),
+            Some(AccountKind::FileMakerFile | AccountKind::External(1))
+        );
+        if record.segment == [1] || !deletable {
+            return Err(AccountEditError::Unsupported);
+        }
+        if account_set(&view) == Some(FULL_ACCESS_SET) {
+            return Err(AccountEditError::FullAccess);
+        }
+        let mut accounts = store
+            .node(&ACCOUNTS_PATH)
+            .cloned()
+            .ok_or_else(|| AccountEditError::Unwritten("no account catalog".into()))?;
+        let index = store.node(&ACCOUNT_INDEX_PATH).cloned().ok_or_else(|| {
+            AccountEditError::Unwritten("the account catalog has no index".into())
+        })?;
+        let members: Vec<Vec<u8>> = accounts
+            .children
+            .iter()
+            .map(|a| a.segment.clone())
+            .collect();
+        let mut index =
+            index_without(index, &record.segment, &members).map_err(AccountEditError::Unwritten)?;
+        if let Some(stamp) = stamp {
+            index = crate::authoring::stamped(index, stamp.user, stamp.account, stamp.time);
+        }
+        accounts.children.retain(|a| a.segment != record.segment);
+        let path = |segments: &[&[u8]]| segments.iter().map(|s| s.to_vec()).collect();
+        let mut journal = store.begin_commit();
+        store.replace_members_in(
+            &mut journal,
+            vec![
+                (path(&ACCOUNTS_PATH), accounts),
+                (path(&ACCOUNT_INDEX_PATH), index),
+            ],
+        );
+        self.save_commit(&mut store, journal)
+            .map_err(|e| AccountEditError::Unwritten(e.to_string()))
     }
 
     /// Write account `record` again with `password` (its own when `None`)
@@ -981,10 +1040,12 @@ pub enum AccountEditError {
     /// More than 100 characters (11).
     TooLong,
     /// An account the step does not change: one an OAuth identity
-    /// provider or Claris ID signs in (3, inferred).
+    /// provider or Claris ID signs in, or [Guest] for Delete Account (3,
+    /// inferred).
     Unsupported,
     /// Making a [Full Access] account inactive (3, inferred: Claris
-    /// documents that the step does not; its code is not observed).
+    /// documents that Enable Account does not; its code is not observed),
+    /// or deleting one (3, OpenMaker's choice).
     FullAccess,
     /// The account could not be rewritten, or the file could not be
     /// written, and nothing changed.
@@ -1055,6 +1116,93 @@ fn find_account(store: &Store, account: AccountRef<'_>) -> Option<om_hbam::Owned
         }
     }
     .cloned()
+}
+
+/// The key of the privilege set account `view` is in (`0b`, a key string).
+fn account_set<'a>(view: &om_hbam::Node<'a>) -> Option<&'a [u8]> {
+    member(view, ACCOUNT_PRIVILEGES)
+        .and_then(|r| r.split_first())
+        .filter(|(length, key)| usize::from(**length) == key.len())
+        .map(|(_, key)| key)
+}
+
+/// The account catalog's index `index` without account `key`
+/// (local-files.md 3): its name list entry and its place in the display
+/// order removed, the order numbered again from 1, its `07` entry removed
+/// and the count one less. Why not, when the index is not one this
+/// server reads as FileMaker keeps it for `members` (the accounts before
+/// the deletion): its name list and its display order (positions 1 to n
+/// as four bytes) must each name every member once, as a key string; the
+/// count must be the number of members; and the account's `07` entry, if
+/// it has one, must be an empty leaf, so nothing unread is dropped.
+fn index_without(
+    mut index: om_hbam::OwnedNode,
+    key: &[u8],
+    members: &[Vec<u8>],
+) -> Result<om_hbam::OwnedNode, String> {
+    let key_string = |key: &[u8]| {
+        let mut named = vec![key.len() as u8];
+        named.extend_from_slice(key);
+        named
+    };
+    let mut wanted: Vec<Vec<u8>> = members.iter().map(|m| key_string(m)).collect();
+    wanted.sort();
+    let names_each_member = |node: &om_hbam::OwnedNode| {
+        let mut named: Vec<Vec<u8>> = node
+            .children
+            .iter()
+            .map(|n| n.value.clone().unwrap_or_default())
+            .collect();
+        named.sort();
+        named == wanted && node.children.iter().all(|n| n.children.is_empty())
+    };
+    let named = key_string(key);
+    let names = |n: &om_hbam::OwnedNode| n.value.as_deref() == Some(&named[..]);
+    let list = index.child_mut(&[1]).ok_or("the index has no name list")?;
+    if !names_each_member(list) {
+        return Err("its name list does not name each account once".into());
+    }
+    list.children.retain(|n| !names(n));
+    let order = index
+        .child_mut(&[3])
+        .ok_or("the index has no display order")?;
+    let contiguous = order
+        .children
+        .iter()
+        .enumerate()
+        .all(|(i, n)| u32::try_from(i + 1).is_ok_and(|p| n.segment == p.to_be_bytes()));
+    if !contiguous || !names_each_member(order) {
+        return Err("its display order does not place each account once, from 1".into());
+    }
+    order.children.retain(|n| !names(n));
+    for (position, place) in order.children.iter_mut().enumerate() {
+        place.segment = u32::try_from(position + 1)
+            .map_err(|_| "too many places")?
+            .to_be_bytes()
+            .to_vec();
+    }
+    if let Some(cache) = index.child_mut(&[7]) {
+        if let Some(entry) = cache.child(key) {
+            if !entry.children.is_empty() || entry.value.as_deref().is_some_and(|v| !v.is_empty()) {
+                return Err("its 07 entry holds data this server does not read".into());
+            }
+        }
+        cache.children.retain(|n| n.segment != key);
+    }
+    let count = index
+        .child(&[4])
+        .and_then(|n| n.value.as_deref())
+        .and_then(|v| <[u8; 4]>::try_from(v).ok())
+        .map(u32::from_be_bytes)
+        .ok_or("the index has no count")?;
+    if usize::try_from(count).ok() != Some(members.len()) || count == 0 {
+        return Err("its count is not the number of accounts".into());
+    }
+    index.set_child(om_hbam::OwnedNode::leaf(
+        vec![4],
+        (count - 1).to_be_bytes().to_vec(),
+    ));
+    Ok(index)
 }
 
 /// `status` as FileMaker stores it, refused when the value would not read
