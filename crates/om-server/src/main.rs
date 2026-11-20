@@ -37,6 +37,7 @@ const USAGE: &str = "usage: om-server [--bind <addr:port>] [--name <server name>
                  [--upload-memory-mib <n>] [--download-memory-mib <n>]
                  [--idle-seconds <n>|off]
                  [--schedules <file>] [--backup-folder <dir>]
+                 [--database-folder <dir>]...
                  [--list <file name>]... [--list-all]
                  [<file.fmp12>...]
 
@@ -145,6 +146,24 @@ const USAGE: &str = "usage: om-server [--bind <addr:port>] [--name <server name>
                     unchanged since the schedule's last backup are hard
                     links to its copies. It holds whole databases: the
                     server makes it owner-only when it makes it
+  --database-folder folder whose files the server hosts at startup: the
+                    .fmp12 files at its root and in its subfolders, one
+                    level deep, as FileMaker Server opens its database
+                    folders'. The folder named is resolved, links and all;
+                    in it only regular files and folders are used, never a
+                    link. Default: Databases in the state folder (see
+                    --state-dir), made for the server's user only and not
+                    used when it is a link, another user's or writable by
+                    others; it is searched also when files are named. Give
+                    the flag again for more folders. Files named on the
+                    command line are hosted first; a found file with the
+                    name of one already hosted is left out, logged. The
+                    backup and log folders in use (--backup-folder,
+                    --log-folder or their defaults) are not searched. At
+                    most 200000 entries are read and 10000 files found.
+                    Every hosted file must be a regular file. When there
+                    are files to host and none opens, the server does not
+                    start
   --list            name a hosted file (as clients open it, e.g. Tasks.fmp12)
                     in the file list OpenMaker clients' Hosts dialog shows.
                     Files are unlisted by default: a file's own \"Don't
@@ -176,6 +195,7 @@ struct Args {
     calc_limits: CalcLimits,
     schedules: Option<PathBuf>,
     backup_folder: Option<PathBuf>,
+    database_folders: Vec<PathBuf>,
     listed: Vec<String>,
     list_all: bool,
     files: Vec<PathBuf>,
@@ -229,6 +249,7 @@ fn parse_args() -> Result<Args, String> {
         calc_limits: SCRIPT_CALC_LIMITS,
         schedules: None,
         backup_folder: None,
+        database_folders: Vec::new(),
         listed: Vec::new(),
         list_all: false,
         files: Vec::new(),
@@ -252,6 +273,7 @@ fn parse_args() -> Result<Args, String> {
             "--record" => args.record = Some(value()?.into()),
             "--schedules" => args.schedules = Some(value()?.into()),
             "--backup-folder" => args.backup_folder = Some(value()?.into()),
+            "--database-folder" => args.database_folders.push(value()?.into()),
             "--list" => args.listed.push(value()?),
             "--list-all" => args.list_all = true,
             "--scripts" => args.limits.concurrent = number(&arg, value()?)?,
@@ -300,15 +322,6 @@ fn parse_args() -> Result<Args, String> {
     if args.admin_user.is_some() && !cfg!(feature = "admin-console") {
         return Err("--admin-user: this om-server was built without the Admin Console".into());
     }
-    for name in &args.listed {
-        let hosted = args
-            .files
-            .iter()
-            .any(|path| file_name(path).to_lowercase() == name.to_lowercase());
-        if !hosted {
-            return Err(format!("--list {name:?}: no hosted file has that name"));
-        }
-    }
     Ok(args)
 }
 
@@ -349,14 +362,22 @@ fn run(args: Args) -> Result<(), Box<dyn std::error::Error>> {
     let identity = tls_identity(&args)?;
     #[cfg(feature = "admin-console")]
     let console_identity = admin.as_ref().map(|_| identity.clone());
+    let paths = hosted_paths(&args);
     // No files is a server with nothing hosted yet, as FileMaker Server
     // starts before any database is opened: its Admin Console and listener
     // still serve, with an empty file list (#419).
-    if args.files.is_empty() {
+    if paths.is_empty() {
         log::info!("hosting no files");
     }
-    let files = args
-        .files
+    for name in &args.listed {
+        let hosted = paths
+            .iter()
+            .any(|path| file_name(path).to_lowercase() == name.to_lowercase());
+        if !hosted {
+            return Err(format!("--list {name:?}: no hosted file has that name").into());
+        }
+    }
+    let files = paths
         .iter()
         .map(|path| HostedFile {
             name: file_name(path),
@@ -740,6 +761,110 @@ fn certificate_names(args: &Args) -> Vec<String> {
         }
     }
     names
+}
+
+/// The files to host: those named on the command line, then those found in
+/// the database folders (`--database-folder`, else Databases in the state
+/// folder, made 0700 when missing), as FileMaker Server opens its database
+/// folders' at startup (#430). A found file named on the command line too,
+/// or with the name of one already hosted, is left out (names must be
+/// unique, `HostingError::DuplicateName`), logged.
+fn hosted_paths(args: &Args) -> Vec<PathBuf> {
+    let state = args
+        .state_dir
+        .clone()
+        .or_else(default_identity::state_folder);
+    let folders = if args.database_folders.is_empty() {
+        state
+            .as_ref()
+            .map(|state| state.join("Databases"))
+            .into_iter()
+            .filter(|folder| match make_private_folder(folder) {
+                Ok(()) => true,
+                Err(e) => {
+                    log::warn!("database folder {}: {e}", folder.display());
+                    false
+                }
+            })
+            .collect()
+    } else {
+        args.database_folders.clone()
+    };
+    let exclude: Vec<PathBuf> = [
+        args.backup_folder
+            .clone()
+            .or_else(|| state.as_ref().map(|s| s.join("Backups"))),
+        args.log_folder
+            .clone()
+            .or_else(|| state.as_ref().map(|s| s.join("Logs"))),
+    ]
+    .into_iter()
+    .flatten()
+    .collect();
+    let canonical = |path: &Path| std::fs::canonicalize(path).unwrap_or_else(|_| path.to_owned());
+    // Names as hosting keys them (`Hosting::load`: lower case, Unicode).
+    let mut identities: std::collections::HashSet<PathBuf> =
+        args.files.iter().map(|p| canonical(p)).collect();
+    let mut names: std::collections::HashSet<String> = args
+        .files
+        .iter()
+        .map(|p| file_name(p).to_lowercase())
+        .collect();
+    let mut paths = args.files.clone();
+    for folder in &folders {
+        log::info!("database folder {}", folder.display());
+    }
+    for found in om_server::database_folders::discover(&folders, &exclude) {
+        if !identities.insert(canonical(&found)) {
+            continue;
+        }
+        let name = file_name(&found);
+        if !names.insert(name.to_lowercase()) {
+            log::warn!(
+                "{}: not hosted: a file named {name:?} is already hosted",
+                found.display()
+            );
+            continue;
+        }
+        paths.push(found);
+    }
+    paths
+}
+
+/// Make `folder` (with any missing parent) when it is missing, for the
+/// server's user only on Unix. On Unix it is refused when it is a link,
+/// not the server's user's, or one others may write in: the server did
+/// not choose its files then, and another user could change which are
+/// hosted.
+fn make_private_folder(folder: &Path) -> std::io::Result<()> {
+    let mut builder = std::fs::DirBuilder::new();
+    builder.recursive(true);
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::DirBuilderExt;
+        builder.mode(0o700);
+    }
+    builder.create(folder)?;
+    #[cfg(unix)]
+    {
+        use rustix::fs::{Mode, OFlags};
+        let refused = |why: &str| std::io::Error::new(std::io::ErrorKind::PermissionDenied, why);
+        let flags = OFlags::RDONLY | OFlags::DIRECTORY | OFlags::NOFOLLOW | OFlags::CLOEXEC;
+        let dir = match rustix::fs::open(folder, flags, Mode::empty()) {
+            Err(rustix::io::Errno::LOOP | rustix::io::Errno::NOTDIR) => {
+                return Err(refused("not a folder (a link or a file)"))
+            }
+            result => result?,
+        };
+        let stat = rustix::fs::fstat(&dir)?;
+        if stat.st_uid != rustix::process::geteuid().as_raw() {
+            return Err(refused("not the server's user's folder"));
+        }
+        if Mode::from_raw_mode(stat.st_mode).intersects(Mode::WGRP | Mode::WOTH) {
+            return Err(refused("other users may write in it"));
+        }
+    }
+    Ok(())
 }
 
 /// The name a file is opened by: its file name, with `.fmp12` added if the
