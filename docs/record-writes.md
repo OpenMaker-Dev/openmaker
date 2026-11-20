@@ -1356,7 +1356,8 @@ read-only, as before. Unique and existing values are checked in the field's
 value index, so such a field must be defined for a value index in English (21,
 77), System (1), Unicode standard (3) or Unicode raw (2) (auto-entry.md,
 Index bits), the forms whose keys OpenMaker builds, or in language 0 when
-the file's own language is one of them. A language FileMaker leaves
+the file's own language is one of them and its locale record can be read
+(a file without one counts as English). A language FileMaker leaves
 untailored counts too (Dutch, French, Greek, Italian, Portuguese, Russian,
 Hebrew, Serbian, Bulgarian and the Indic languages 59 to 67): its value keys
 are English's (query-program.md 7.2; the set is inferred from bin's list of
@@ -1401,9 +1402,13 @@ unreadable confirmation fails the check while the unique lock stays held.
 A confirmation must finish exactly its requested subtree; trailing data
 cannot establish an empty source value.
 Missing-index fallback is
-limited to stored text keyed in the checked value's form: 21 or 77, or 2
-for a unique or existing value (a field-backed value list compares English
-keys). Typed, other-language, global, summary or
+limited to stored text keyed in its value form
+(`om_data::rules::value_text_keys`): English (21, 77), System (1), Unicode
+standard (3), Unicode raw (2), a language FileMaker leaves untailored, or
+language 0 resolved as above. A field-backed value list is checked in its
+source's value form too; with the host's index, a source in a tailored
+language is still looked up in English ([#571](https://github.com/OpenMaker-Dev/openmaker/issues/571)). Typed,
+tailored-language, global, summary or
 unstored sources are explicitly unsupported without an index; file date
 formats are consequently not interpreted by this fallback. A stored
 text source that prohibits index creation can be scanned on each

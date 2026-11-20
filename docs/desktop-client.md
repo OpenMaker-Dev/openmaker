@@ -275,6 +275,12 @@ forgets the list (stopping a listing under way), and a reply to a listing no
 longer waited for is dropped unseen. The wording is OpenMaker's; FileMaker
 Pro's is not captured.
 
+Opening a file the host refuses because it blocks new users (Open status
+1638) shows FileMaker Pro's alert, "The host is not allowing new
+connections. Try again later.", with OK, its error 1638
+(network-protocol.md 5.6.4; `om_provider::HOST_BLOCKS_NEW_USERS`). Other
+refused opens keep OpenMaker's wording.
+
 ### Client license
 
 **FileMaker License...** is available in Hosts and the OpenMaker menu. It is
@@ -537,9 +543,13 @@ authoring part tabs or object kind captions.
   #1338). A window without a player shows the filename and a note.
 - The Insert menu offers PDF and Audio/Video for a selected, writable
   interactive container outside portal rows whose field object allows
-  entry in Browse mode. The typed-path dialogs reject a file of a
-  different type (a PDF without its header, a file the player would not
-  play) before they prepare an edit or upload data. [Container menus and file dialogs](re/containers.md#desktop-menus-and-file-dialogs-2026-11-02)
+  entry in Browse mode. On macOS the Insert commands ask for the file in
+  the system's open panel, which shows every file (whether FileMaker Pro's
+  panel filters by type is unmeasured); elsewhere, an in-app dialog takes
+  a typed path. Either way, a file of a different type (a picture Insert
+  Picture cannot show, a PDF without its header, a file the player would
+  not play) is refused with 734 or 700 before an edit is prepared or data
+  uploaded. [Container menus and file dialogs](re/containers.md#desktop-menus-and-file-dialogs-2026-11-02)
 - Button icons come from the file's library root `31` as the original SVG,
   colored through the icon component's style; no application icon is
   substituted for a file's library image.
@@ -669,7 +679,7 @@ picture is drawn one pixel to a point whatever resolution (`DPI_`) it
 has; the file icon is OpenMaker's own, not the system's icon for the
 file's type; and only the starters' two graphic formats (5 and 7, centered)
 were compared with FileMaker Pro, the others are inferred from Claris's
-flag names. Zoom applies to loaded Form layouts only (below).
+flag names. Zoom applies to loaded Form and List layouts and Find mode only (below).
 
 **Checks.** Regular tests use synthetic layouts and records. The ignored
 `live` tests (`cargo test -p om-gui --test live -- --ignored`) host a
@@ -827,8 +837,8 @@ is not shown; neither is compared with FileMaker Pro.
 
 ### Zoom
 
-Loaded Browse Form layouts have document-local Actual Size, Zoom In and Zoom
-Out commands, in steps of 25, 50, 75, 100, 150, 200, 300 and 400 percent.
+Loaded Browse Form and List layouts, and Find mode's layout, have
+document-local Actual Size, Zoom In and Zoom Out commands, in steps of 25, 50, 75, 100, 150, 200, 300 and 400 percent.
 The menu and keyboard controls scale the document's allocation, clipping,
 pointer input and accessibility bounds together; menus and toolbars keep the
 application scale. While the layout paints, egui treats the zoomed layer as
@@ -852,9 +862,15 @@ replacement invalidates the identity. Text whose row and source mapping
 cannot be verified, justified text and elided text keep the ordinary
 renderer.
 
-Limits: List, Table, Layout mode, generic Form fallbacks and focused field
-editors are not zoomed (Preview scales its paper: [preview.md](preview.md)),
-and Set Zoom Level's lock option is not enforced.
+List view draws its header, records and footer in the same zoomed layer,
+in the layout's coordinates, so its rows scroll and take clicks as at 100%.
+Find mode draws its request as Form view draws a record, so it was already
+drawn at the window's zoom; its commands now change it there too.
+
+Limits: Table view, Layout mode, generic Form fallbacks and
+focused field editors are not zoomed (Preview scales its paper:
+[preview.md](preview.md)), and Set Zoom Level's lock option is not enforced
+([#36](https://github.com/OpenMaker-Dev/openmaker/issues/36)).
 
 ### Layout menus
 
@@ -951,13 +967,19 @@ own language. A field in another language is keyed in English, which keys
 most text as those languages do.
 
 Without the host's index, the client keys each record itself. That works
-in the forms above and, for value-index finds (whole values, ranges,
-`==`), in the languages FileMaker leaves untailored, whose value keys are
-English's (`om_data::rules::value_text_keys`; the set is inferred,
-[#46](https://github.com/OpenMaker-Dev/openmaker/issues/46)). A word find
-in those languages, whose word breaks follow their locale
-([#300](https://github.com/OpenMaker-Dev/openmaker/issues/300)), and any
-find in a tailored language fail with 3 until the host has the index.
+in the forms above and, for finds that read the value index (`==`, `=`,
+`*` and `!`), in the languages FileMaker leaves untailored, whose value
+keys are English's (`om_data::rules::value_text_keys`; the set is
+inferred, [#46](https://github.com/OpenMaker-Dev/openmaker/issues/46)).
+Finds that read the word index there (words, ranges of text) fail with 3
+until the host has the index: those languages' word breaks are not
+established, and French's differ from English's
+([#300](https://github.com/OpenMaker-Dev/openmaker/issues/300)). So does a
+find that reads an index in a tailored language, or in language 0 when
+the file's locale record cannot be read. A criterion that gives no
+finder (a leading wildcard, as in `==*pfel*`) is still tested against the
+stored values in English in those languages
+([#588](https://github.com/OpenMaker-Dev/openmaker/issues/588)).
 
 A find on a related field walks each relationship back from the related
 records (query-program.md 6.5): their match values, every stored
@@ -968,8 +990,9 @@ field indexed in Unicode or System relates as it holds
 field compared with near fields of different types or forms is sent once
 for each, under a source slot of its own (9.2). Japanese text without kana
 or kanji keys as in English (7.2). A related value that needs a key
-OpenMaker does not build (another tailored language, or Japanese text with
-kana or kanji) fails the find with 3, with the host's index or without; a
+OpenMaker does not build (another tailored language, Japanese text with
+kana or kanji, or language 0 when the file's locale record cannot be read)
+fails the find with 3, with the host's index or without; a
 request that finds no related record relates nothing, with nothing to
 key.
 

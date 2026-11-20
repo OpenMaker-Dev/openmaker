@@ -4371,7 +4371,7 @@ fn note_unique(
     table: &Table,
     fields: Vec<u64>,
     values: &EncodedChanges,
-    (record, file_language): (u64, u32),
+    (record, file_language): (u64, Option<u32>),
 ) -> Result<(), DataError> {
     for field in fields {
         if let Some(Some(value)) = values.get(&field) {
