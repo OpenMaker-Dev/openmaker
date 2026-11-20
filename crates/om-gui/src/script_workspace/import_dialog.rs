@@ -264,12 +264,27 @@ impl ImportMapping {
                 e.code
             )
         })?;
-        self.named = source.names.is_some();
-        self.columns = match source.names {
+        // The source's own names (merge, XML) or, with a names row, that
+        // row's values: Import Records matches field names by these
+        // (`om_transfer::import`, `MATCH_NAMES`), so an order arranged by
+        // them is shown by them. Otherwise the first record's values label
+        // the columns. Every column a row has is offered, as Import Records
+        // reads every one, though the labelling row is shorter.
+        let names_row = self.names_row.then(|| {
+            (self.profile_ex.as_ref())
+                .and_then(|ex| usize::try_from(ex.field_names_row).ok())
+                .unwrap_or(0)
+        });
+        self.named = source.names.is_some() || names_row.is_some();
+        let width = (source.rows.iter().map(Vec::len))
+            .chain(source.names.as_ref().map(Vec::len))
+            .max()
+            .unwrap_or(0);
+        let mut columns: Vec<String> = match source.names {
             Some(names) => names,
             None => source
                 .rows
-                .first()
+                .get(names_row.unwrap_or(0))
                 .map(|r| {
                     r.iter()
                         .map(|v| v.first().cloned().unwrap_or_default())
@@ -277,6 +292,8 @@ impl ImportMapping {
                 })
                 .unwrap_or_default(),
         };
+        columns.resize(width, String::new());
+        self.columns = columns;
         self.map.resize(self.columns.len(), None);
         self.keys.resize(self.columns.len(), false);
         self.touched.resize(self.columns.len(), false);
@@ -895,6 +912,60 @@ mod tests {
         assert!(!order.has(import_flag::MATCH_NAMES));
         assert_eq!(order.map[0].mapping, Mapping::DontImport);
         assert_eq!(order.map[1], entry(1));
+        std::fs::remove_dir_all(&dir).unwrap();
+    }
+
+    /// A text or spreadsheet source with a names row is named by that row,
+    /// as Import Records matches field names by it, so an order matched by
+    /// names shows by name there too; and every column a row has is
+    /// offered, though the first row is shorter.
+    #[test]
+    fn a_names_row_names_the_columns_and_every_column_is_offered() {
+        use om_data::calc::{Locale, ValueType};
+        use om_data::host::FieldDef;
+        let mut schema = CalcSchema::new("Import fixture", Locale::en_us());
+        schema.add_table(1, "People");
+        schema.add_occurrence(0xd00002, "People", 1);
+        schema.add_field(1, FieldDef::data(1, "First", ValueType::Text));
+        schema.add_field(1, FieldDef::data(2, "Last", ValueType::Text));
+        let schema = Arc::new(schema);
+        let dir = std::env::temp_dir().join(format!("om-import-row-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let entry = |id| MapEntry {
+            field: Key::from_id(id),
+            mapping: Mapping::Import,
+        };
+        let named = dir.join("named.tab");
+        std::fs::write(&named, "Last\tFirst\rLovelace\tAda\r").unwrap();
+        let mut profile = Profile::new(FileType::TabSeparated);
+        profile.field_names = 1;
+        let parts = ImportParts {
+            paths: vec![crate::scripting::files::file_line(&named)],
+            order: Some(ImportOptions {
+                flags: import_flag::AUTO_ENTER | import_flag::MATCH_NAMES,
+                map: vec![entry(1), entry(2)],
+                ..new_order(0xd00002)
+            }),
+            profile: Some(profile),
+            profile_ex: None,
+            field_flags: None,
+        };
+        let dialog = ImportMapping::open(parts, Some(schema)).unwrap();
+        assert_eq!(dialog.columns, ["Last", "First"]);
+        assert_eq!(dialog.map, [Some(2), Some(1)]);
+        // A title in the first row only: the columns of the rows below are
+        // offered too.
+        let titled = dir.join("titled.tab");
+        std::fs::write(&titled, "Title\ra\tb\tc\r").unwrap();
+        let parts = ImportParts {
+            paths: vec![crate::scripting::files::file_line(&titled)],
+            order: None,
+            profile: Some(Profile::new(FileType::TabSeparated)),
+            profile_ex: None,
+            field_flags: None,
+        };
+        let dialog = ImportMapping::open(parts, None).unwrap();
+        assert_eq!(dialog.columns, ["Title", "", ""]);
         std::fs::remove_dir_all(&dir).unwrap();
     }
 
