@@ -413,10 +413,13 @@ struct OpenRecord {
     /// before the commit, and again at the commit, which so stores what
     /// was read. `None` for an existing record or an imported row.
     created: Option<Box<CreatedClock>>,
-    /// The cells of a new record its rules' preview wrote ([`ServerHost::
-    /// preview_new_record`]): replaced by the next preview, and computed
-    /// again by the commit.
-    previewed: BTreeSet<u64>,
+    /// A new record's values as its rules would compute them now
+    /// ([`ServerHost::preview_new_record`]), by cell: what a script reads of
+    /// the open record over `node`, and only that. They are not the
+    /// record's: its commit computes them again, and nothing else reads
+    /// them (a duplicate, a transaction's other records, its unique
+    /// values), so `node` holds only what the steps set.
+    preview: BTreeMap<u64, String>,
 }
 
 /// A row's write mode, the values it holds, the changes made to it and how
@@ -1004,6 +1007,7 @@ impl ServerHost {
         if let Some(mut record) = self.record.take() {
             self.rebase(&mut record);
             self.record = Some(record);
+            self.preview_new_record();
         }
         if let Some(mut transaction) = self.transaction.take() {
             transaction.rebase_each(|record| self.rebase(record));
@@ -1214,7 +1218,14 @@ impl ServerHost {
             .as_ref()
             .filter(|r| r.table == table && r.id == id)
         {
-            return read(Some(&open.node), None);
+            if open.preview.is_empty() {
+                return read(Some(&open.node), None);
+            }
+            let mut view = open.node.clone();
+            for (cell, text) in &open.preview {
+                view.set_child(values::cell(&uint_segment(*cell), text));
+            }
+            return read(Some(&view), None);
         }
         match self.pending(table, id) {
             Some(Change::Write(record)) => return read(Some(&record.node), None),
@@ -1278,7 +1289,13 @@ impl ServerHost {
         match self.pending(table, id) {
             Some(Change::Write(record)) => {
                 let record = record.clone();
-                return Ok(self.record.insert(record));
+                let new = record.new;
+                self.record = Some(record);
+                // Its preview is computed again, with what it reads now.
+                if new {
+                    self.preview_new_record();
+                }
+                return Ok(self.record.as_mut().expect("reopened"));
             }
             Some(Change::Delete) => return Err(ErrorCode::RECORD_MISSING.into()),
             None => {}
@@ -1299,7 +1316,7 @@ impl ServerHost {
             serials: BTreeMap::new(),
             context,
             created: None,
-            previewed: BTreeSet::new(),
+            preview: BTreeMap::new(),
         }))
     }
 
@@ -1484,15 +1501,16 @@ impl ServerHost {
         }
     }
 
-    /// A new record's values as its commit will compute them (#474): its
-    /// auto-entered values, the serial numbers it took and its stored
-    /// calculations, over the cells the steps set, written into it so that
-    /// a script reads them before the commit, as FileMaker Server's engine
+    /// A new record's values as its rules compute them now (#474): its
+    /// auto-entered values and stored calculations over the cells the steps
+    /// set, kept as the open record's [`OpenRecord::preview`] so that a
+    /// script reads them before the commit, as FileMaker Server's engine
     /// gives an auto-entered value right after New Record (script oracle
     /// s46). With the record's creation clock, which its commit keeps.
     /// Validation is left to the commit, and a value the preview cannot know
     /// (a serial number not taken yet, a formula it cannot answer) is left
-    /// out. Run after New Record and each change of the record's cells.
+    /// out. Run after New Record, after a change of a cell the rules compute
+    /// from, and when the record is opened again.
     fn preview_new_record(&mut self) {
         let Some(table) = self
             .record
@@ -1542,11 +1560,7 @@ impl ServerHost {
         );
         let fields = self.schema.catalog.table(table).cloned();
         let record = self.record.as_mut().expect("the new record");
-        for cell in std::mem::take(&mut record.previewed) {
-            if !record.changed.contains(&cell) {
-                record.node.remove(&[&uint_segment(cell)]);
-            }
-        }
+        record.preview.clear();
         let Ok((row, unknown)) = preview else {
             return;
         };
@@ -1561,10 +1575,7 @@ impl ServerHost {
             {
                 continue;
             }
-            record
-                .node
-                .set_child(values::cell(&uint_segment(cell), &text));
-            record.previewed.insert(cell);
+            record.preview.insert(cell, text);
         }
     }
 
@@ -1615,13 +1626,6 @@ impl ServerHost {
         environment
             .serials
             .extend(self.reserve_serials(record.table, missing)?);
-        // A new record's preview goes: the commit computes its cells again,
-        // with the same clock.
-        for cell in std::mem::take(&mut record.previewed) {
-            if !record.changed.contains(&cell) {
-                record.node.remove(&[&uint_segment(cell)]);
-            }
-        }
         let computed = self
             .with_lookups(
                 &plan,
@@ -2109,8 +2113,13 @@ impl ServerHost {
         if changed {
             record.changed_cell(cell);
         }
-        // A new record's values that read the cell are computed again.
-        if changed && record.new {
+        // A new record's values computed from the cell are computed again.
+        if changed
+            && record.new
+            && self
+                .plan(table)
+                .map_or(true, |plan| plan.computes_from(cell))
+        {
             self.preview_new_record();
         }
         Ok(())
@@ -3523,7 +3532,7 @@ impl Records for ServerHost {
                 timestamp: clock.timestamp,
                 uuid: clock.uuid,
             })),
-            previewed: BTreeSet::new(),
+            preview: BTreeMap::new(),
         });
         let window = self.window_mut()?;
         window.found.push(id);
@@ -3551,9 +3560,19 @@ impl Records for ServerHost {
             window.table,
             window.record().ok_or(ErrorCode::RECORD_MISSING)?,
         );
-        let source = self
-            .record_node(table, id)
-            .ok_or(ErrorCode::RECORD_MISSING)?;
+        // An open new record's preview is not its own (it is computed again
+        // at its commit), so not the copy's either: the copy's own preview
+        // and commit compute those values for it.
+        let source = match self
+            .record
+            .as_ref()
+            .filter(|r| r.table == table && r.id == id)
+        {
+            Some(open) => open.node.clone(),
+            None => self
+                .record_node(table, id)
+                .ok_or(ErrorCode::RECORD_MISSING)?,
+        };
         self.new_record()?;
         // The copied values of normal fields are the new record's entries;
         // the rules compute its calculations and creation values again

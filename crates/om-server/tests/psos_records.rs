@@ -611,6 +611,39 @@ fn server_scripts_auto_enter_over_a_global_reads_the_sessions_value() {
     assert_eq!(run(&mut client, 9), (0, "0|Beax".to_string()));
 }
 
+/// A new record's auto-entered value read before its commit (#474) is not
+/// one the script entered: Set Field of Stamp to the value it previews
+/// (`A`, from Name) enters it, and Stamp, which does not replace an
+/// existing value, keeps it when Name changes after.
+#[test]
+fn a_value_entered_over_a_new_records_preview_stays_entered() {
+    let mut root = tree();
+    fixture::add_field(&mut root, TABLE, STAMP, "Stamp", 1, 1, 0, 0x8, 0);
+    fixture::add_formula(&mut root, &names(), (TABLE, OCCURRENCE), STAMP, 5, "Name");
+    root.put(
+        &[&[17], &[5], &uint_segment(8)],
+        script(
+            8,
+            "Entered",
+            vec![
+                ScriptStep::new(7),
+                fixture::set_field(NAME, "\"A\""),
+                set_var("$previewed", "Tasks::Stamp"),
+                fixture::set_field(STAMP, "\"A\""),
+                fixture::set_field(NAME, "\"B\""),
+                set_var("$before", "Tasks::Stamp"),
+                ScriptStep::new(75),
+                exit_with("$previewed & \"|\" & $before & \"|\" & Get ( LastError ) & \"|\" & Tasks::Stamp"),
+            ],
+        )
+        .encode(),
+    );
+    let file = TempFile::from_tree("psos-entered-over-preview", &root);
+    let port = server::start(&file);
+    let (mut client, _) = server::logged_in(port, "client");
+    assert_eq!(run(&mut client, 8), (0, "A|A|0|A".to_string()));
+}
+
 #[test]
 fn server_scripts_validate_every_repetition() {
     // Code (validated Always by `Length ( Self ) <= 3`) gets three
