@@ -407,7 +407,13 @@ choices, not compared with FileMaker Pro, except where marked]:
   container library and thumbnails are withheld too, and container uploads
   (op88) and reference count changes (op87) are refused, as their answers
   (an existing member found by deduplication, a count) come from libraries
-  the account may not read;
+  the account may not read. An upload is also refused with 200 unless the
+  set lets the account create or edit the records of the table whose
+  library it names (of every table for the file's own library), as op87
+  refuses a count the set does not let it edit: deduplication would raise
+  an existing member's count. What FileMaker Server answers such an
+  upload is unmeasured [I: OpenMaker's choice,
+  [#227](https://github.com/OpenMaker-Dev/openmaker/issues/227)];
 - the desktop evaluates the same formula first (an edit on the stored
   values, a new record on the values the write sets, a deletion on the
   stored record) and refuses with 200; values a new record's rules enter

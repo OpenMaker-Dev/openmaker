@@ -58,6 +58,9 @@ pub mod a {
 pub enum Summary {
     Total(u64),
     Count(u64),
+    /// A summary its values cannot give, `?` (a standard deviation of one
+    /// value).
+    Invalid,
 }
 
 #[derive(Clone, Debug)]
@@ -432,6 +435,7 @@ impl ExportSource for Mem {
                     .count();
                 ExportValue::Stored(n.to_string())
             }
+            Summary::Invalid => ExportValue::Computed(om_calc::Value::invalid()),
         })
     }
 

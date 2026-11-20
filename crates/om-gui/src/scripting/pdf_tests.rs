@@ -436,7 +436,7 @@ fn static_pictures_embed_once_in_pdf_and_fake_print_and_bad_images_refuse_atomic
     print.value = 1;
     print.flags = flag::NO_INTERACT;
     let mut c = client(vec![
-        pdf(&format!("file:{}", path.display()), false),
+        pdf(&crate::scripting::files::file_line(&path), false),
         var("$pdfError", "Get ( LastError )"),
         print,
         exit("$pdfError & \"|\" & Get ( LastError ) & \"|\" & Get ( RecordID )"),
@@ -744,7 +744,7 @@ fn title_grand_pdf_and_fake_print_share_complete_report_and_physical_page_contex
     print.value = 1;
     print.flags = flag::NO_INTERACT;
     let mut c = client(vec![
-        pdf(&format!("file:{}", path.display()), false),
+        pdf(&crate::scripting::files::file_line(&path), false),
         var("$pdfError", "Get ( LastError )"),
         print,
         exit("$pdfError & \"|\" & Get ( LastError ) & \"|\" & Get ( RecordID ) & \"|\" & Get ( RecordNumber ) & \"|\" & Get ( PageNumber )"),
@@ -825,7 +825,7 @@ fn grouped_pdf_print_and_preview_pages_share_sorted_sub_summaries() {
     let mut last_page = ScriptStep::new(16);
     last_page.value = 2;
     let mut c = client(vec![
-        pdf(&format!("file:{}", path.display()), false),
+        pdf(&crate::scripting::files::file_line(&path), false),
         var("$pdfError", "Get ( LastError )"),
         print,
         var("$printError", "Get ( LastError )"),
@@ -1116,7 +1116,7 @@ fn sliding_address_blocks_close_up_and_resize_parts_in_pdf_print_and_preview_pag
     let mut last_page = ScriptStep::new(16);
     last_page.value = 2;
     let mut c = client(vec![
-        pdf(&format!("file:{}", path.display()), false),
+        pdf(&crate::scripting::files::file_line(&path), false),
         var("$pdfError", "Get ( LastError )"),
         print,
         var("$printError", "Get ( LastError )"),
@@ -1395,7 +1395,7 @@ fn desktop_pdf_outputs_found_set_and_current_record_and_preserves_existing_on_re
     std::fs::create_dir_all(&output).unwrap();
     let all = output.join("found-set.pdf");
     let current = output.join("current-record.pdf");
-    let path = |p: &std::path::Path| format!("file:{}", p.display());
+    let path = |p: &std::path::Path| crate::scripting::files::file_line(p);
     let mut c = client(vec![
         var("$pdfPath", &format!("{:?}", path(&all))),
         pdf("$pdfPath", false),
@@ -1489,7 +1489,7 @@ fn a_restored_pdf_opens_on_its_pages_panel_with_an_unused_page_from() {
     use hayro::hayro_interpret::hayro_syntax::Pdf;
     let temporary = tempfile::tempdir().unwrap();
     let output = temporary.path().join("restored.pdf");
-    let path = format!("file:{}", output.display());
+    let path = crate::scripting::files::file_line(&output);
     let restored = |change: &dyn Fn(&mut ScriptStep)| {
         let mut step = pdf(&path, false);
         step.flags |= flag::RESTORE;
@@ -1645,7 +1645,7 @@ fn conditional_formatting_prints_on_the_records_where_it_holds() {
     std::fs::create_dir_all(&output).unwrap();
     let path = output.join("conditional.pdf");
     let mut c = client(vec![
-        pdf(&format!("file:{}", path.display()), false),
+        pdf(&crate::scripting::files::file_line(&path), false),
         exit("Get ( LastError )"),
     ]);
     c.server.lock().unwrap().refresh_render = Some(conditional_document());
@@ -2212,7 +2212,7 @@ fn tab_controls_print_their_front_panel_and_tabs() {
     shown.objects.objects.truncate(5);
     shown.objects.objects[1].children = vec![53];
     let mut c = client(vec![
-        self::pdf(&format!("file:{}", path.display()), false),
+        self::pdf(&crate::scripting::files::file_line(&path), false),
         exit("Get ( LastError )"),
     ]);
     c.server.lock().unwrap().refresh_render = Some(RenderLayout {
@@ -3472,6 +3472,17 @@ fn wide_layouts_print_what_fits_the_page() {
         "{x},{y} -> {fx},{fy}"
     );
 
+    // Hide when printing (0x200) leaves an object out with its
+    // contents, unchecked, as beyond the page: the label does not print,
+    // nor does the portal (which reports refuse) moved onto the page.
+    let mut hidden = layout.clone();
+    hidden.objects.objects[1].flags |= om_layout::sliding::NON_PRINTING;
+    hidden.objects.objects[3].bounds = Some(rect(300.0, 10.0, 200.0, 60.0));
+    hidden.objects.objects[3].flags |= om_layout::sliding::NON_PRINTING;
+    let pdf = String::from_utf8_lossy(&render(&hidden).unwrap().bytes).into_owned();
+    assert!(text_origins(&pdf, 1, "Printed").is_empty());
+    assert!(text_origins(&pdf, 1, "Off page").is_empty());
+
     let refused = |change: &dyn Fn(&mut Layout)| {
         let mut layout = layout.clone();
         change(&mut layout);
@@ -3659,7 +3670,7 @@ fn assert_summary_page_context(merge_field: &str) {
     std::fs::create_dir_all(&output).unwrap();
     let path = output.join(format!("summary-page-context-{merge_field}.pdf"));
     let mut c = client(vec![
-        pdf(&format!("file:{}", path.display()), false),
+        pdf(&crate::scripting::files::file_line(&path), false),
         exit("Get ( LastError ) & \"|\" & Get ( PageNumber ) & \"|\" & Get ( WindowMode )"),
     ]);
     let mut schema = c.provider.calc_schema().unwrap().unwrap().as_ref().clone();

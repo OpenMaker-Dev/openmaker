@@ -95,7 +95,7 @@ impl ServerHost {
     /// Sort Records [Restore] with the stored order `spec` (11.1): the
     /// window's found set in that order, the first record current.
     pub(super) fn sort_window(&mut self, spec: &SortSpec) -> HostResult {
-        self.require_privileges()?;
+        self.require_view()?;
         self.leave()?;
         if spec.fields.is_empty() {
             return Ok(());

@@ -156,7 +156,13 @@ pub fn recompute_records(
             shared = environment();
         }
         let result = recalc.recompute(&texts(record), &shared);
+        // A calculation failing in several repetitions of the record is
+        // one record it failed on.
+        let mut seen = BTreeSet::new();
         for (field, error) in result.failed {
+            if !seen.insert(field) {
+                continue;
+            }
             let entry = outcome
                 .failed
                 .entry(field)

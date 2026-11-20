@@ -236,16 +236,17 @@ already shows, the step leaves the caller's script and window where they
 are. That window shows the related records on its layout, as FileMaker Pro
 26.0.3 does (script-runtime.md); other forms still go to the destination.
 Local startup triggers in newly opened files are supported. Select Window
-searches owned visible peers when Current file only is off, with
-current-file matches first: from another file it does not find a file
+searches owned visible peers when Current file only is off: every file's
+names first, current-file matches first, then every file's
+`Get ( WindowUUID )`s. From another file it does not find a file
 opened hidden. Run by a script of the file whose window it selects (Current
 Window, or a name in that file), it shows that window, hidden or not, so a
 script performed in a file opened hidden can bring it forward for its
 caller (#1313); while a dialog window is open, showing a hidden one fails
 with 3, OpenMaker's reading of Claris's rule that opening a document window
 then fails (New Window). The two Select Window rules are Claris's
-documented ones (script-runtime.md 9.2), not measured. Names match
-case-sensitively and not by UUID, unlike FileMaker ([#320](https://github.com/OpenMaker-Dev/openmaker/issues/320)). Named Close
+documented ones (script-runtime.md 9.2), not measured, as is matching a
+name without case ([#320](https://github.com/OpenMaker-Dev/openmaker/issues/320)). Named Close
 Window, Set Window Title and Move/Resize Window remain scoped to the
 selected file. Their cross-file options require a separate extension using
 the same registry, including independent native collision-precedence and
