@@ -527,21 +527,20 @@ impl LocalHost {
 
     /// Save a Copy as (local-files.md 4, "Save a Copy as"): write the file
     /// as `kind` to `to`, a new file. A copy of the current file is the
-    /// file's bytes as its last save left them, opened while the store is
-    /// held ([`crate::store::Store::open_saved`]); a compacted copy is the
-    /// tree rewritten packed ([`crate::store::Store::compacted`]), and so
-    /// is a copy while changes a failed save left wait in memory. Clones
-    /// and self-contained copies are refused with
+    /// file's bytes as its last save left them, read through the
+    /// descriptor the host holds locked ([`crate::store::Store::saved_file`]);
+    /// a compacted copy is the tree rewritten packed
+    /// ([`crate::store::Store::compacted`]), and so is a copy while changes
+    /// a failed save left wait in memory or when the file is not locked.
+    /// Clones and self-contained copies are refused with
     /// [`io::ErrorKind::Unsupported`].
     ///
-    /// The copy is only ever a new file: any entry at `to` (a file, this
-    /// file under another name, a link) refuses it, untouched
-    /// ([`io::ErrorKind::AlreadyExists`]), and so does the name this file's
-    /// saves make their new copy under. The copy holds the whole database,
-    /// password verifiers included: on Unix it is made with this file's
-    /// permissions for the group and others at most, read and write for
-    /// its owner, less the umask. A copy that fails is removed while it is
-    /// still the one this call made.
+    /// The copy is only ever a new file ([`write_copy`]): any entry at `to`
+    /// (a file, this file under another name, a link) refuses it, untouched
+    /// ([`io::ErrorKind::AlreadyExists`]). A name ending in `.omsave`, in
+    /// any case, is refused too: OpenMaker's saves make their new copy
+    /// under it. The copy holds the whole database, password verifiers
+    /// included, so it is its owner's alone (0600 on Unix).
     pub fn save_copy(&self, to: &Path, kind: om_data::CopyKind) -> io::Result<()> {
         use om_data::CopyKind;
         let compacted = match kind {
@@ -554,6 +553,18 @@ impl LocalHost {
                 ));
             }
         };
+        let Some(name) = to.file_name() else {
+            return Err(io::Error::new(
+                io::ErrorKind::InvalidInput,
+                "the copy needs a file name",
+            ));
+        };
+        if name.to_string_lossy().to_lowercase().ends_with(".omsave") {
+            return Err(io::Error::new(
+                io::ErrorKind::InvalidInput,
+                "names ending in .omsave are where OpenMaker's saves make their new copy",
+            ));
+        }
         let Some(file) = self
             .handle
             .as_ref()
@@ -561,29 +572,18 @@ impl LocalHost {
         else {
             return Err(io::Error::other("the file is closed"));
         };
-        let resolved = to
-            .parent()
-            .filter(|dir| !dir.as_os_str().is_empty())
-            .and_then(|dir| dir.canonicalize().ok())
-            .zip(to.file_name())
-            .map(|(dir, name)| dir.join(name));
-        if resolved.is_some_and(|to| to == save_copy_path(&file.path)) {
-            return Err(io::Error::new(
-                io::ErrorKind::AlreadyExists,
-                "that name is where this file's saves make their new copy",
-            ));
-        }
-        let (contents, source) = {
+        let contents = {
             let store = file.read_store();
-            let source = std::fs::metadata(&file.path)?;
-            let contents = if compacted || store.has_unsaved_changes() {
-                Contents::Bytes(store.compacted()?)
-            } else {
-                Contents::File(store.open_saved(&file.path)?)
-            };
-            (contents, source)
+            let saved = if compacted { None } else { store.saved_file() };
+            match saved {
+                #[cfg(unix)]
+                Some(saved) => Contents::File(saved?),
+                #[cfg(not(unix))]
+                Some(_) => Contents::Bytes(store.compacted()?),
+                None => Contents::Bytes(store.compacted()?),
+            }
         };
-        write_copy(to, contents, &source)?;
+        write_copy(to, contents)?;
         info!(
             "{}: saved a {} to {}",
             self.name,
@@ -651,46 +651,126 @@ impl Drop for LocalHost {
 
 /// What a saved copy holds: a version of the file, or new bytes.
 enum Contents {
+    #[cfg(unix)]
     File(File),
     Bytes(Vec<u8>),
 }
 
-/// Write `contents` to `to`, a new file, with the permissions of `source`'s
-/// metadata as [`LocalHost::save_copy`] gives them, flushed to disk.
-fn write_copy(to: &Path, contents: Contents, source: &std::fs::Metadata) -> io::Result<()> {
+/// `file` read from its start by position (`pread`), leaving alone the
+/// offset it shares with the descriptor it was cloned from.
+#[cfg(unix)]
+struct FromStart<'a> {
+    file: &'a File,
+    at: u64,
+}
+
+#[cfg(unix)]
+impl Read for FromStart<'_> {
+    fn read(&mut self, buf: &mut [u8]) -> io::Result<usize> {
+        use std::os::unix::fs::FileExt;
+        let n = self.file.read_at(buf, self.at)?;
+        self.at += n as u64;
+        Ok(n)
+    }
+}
+
+/// Names of copies being written, unique within this process.
+static STAGED: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
+
+/// Write `contents` as the new file `to`. The copy is written and flushed
+/// under a hidden name of its own in `to`'s folder (owner-only, 0600 on
+/// Unix), then given the name `to` only where nothing is
+/// ([`publish`]): a failure removes only that staged file, and a crash
+/// leaves at most a `.omcopy-*` file beside, never a partial copy at `to`.
+fn write_copy(to: &Path, contents: Contents) -> io::Result<()> {
     use std::io::Write;
+    let folder = match to.parent() {
+        Some(dir) if !dir.as_os_str().is_empty() => dir,
+        _ => Path::new("."),
+    };
     let mut options = File::options();
     options.write(true).create_new(true);
     #[cfg(unix)]
     {
-        use std::os::unix::fs::{OpenOptionsExt, PermissionsExt};
-        options.mode(0o666 & (source.permissions().mode() | 0o600));
+        use std::os::unix::fs::OpenOptionsExt;
+        options.mode(0o600);
     }
-    #[cfg(not(unix))]
-    let _ = source;
-    let mut out = options.open(to)?;
+    let (staged, mut out) = {
+        let mut tries = 0;
+        loop {
+            let n = STAGED.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+            let staged = folder.join(format!(".omcopy-{}-{n}", std::process::id()));
+            match options.open(&staged) {
+                Ok(out) => break (staged, out),
+                Err(e) if e.kind() == io::ErrorKind::AlreadyExists && tries < 8 => tries += 1,
+                Err(e) => return Err(e),
+            }
+        }
+    };
     let written = (|| {
         match contents {
-            Contents::File(mut file) => {
-                io::copy(&mut file, &mut out)?;
+            #[cfg(unix)]
+            Contents::File(file) => {
+                io::copy(&mut FromStart { file: &file, at: 0 }, &mut out)?;
             }
             Contents::Bytes(bytes) => out.write_all(&bytes)?,
         }
-        out.sync_all()
+        out.sync_all()?;
+        publish(&staged, to)
     })();
     if let Err(e) = written {
-        if crate::store::owned_copy(&out, to) {
-            let _ = std::fs::remove_file(to);
+        if crate::store::owned_copy(&out, &staged) {
+            let _ = std::fs::remove_file(&staged);
         }
         return Err(e);
     }
-    if let Some(dir) = to.parent().filter(|d| !d.as_os_str().is_empty()) {
-        if let Err(e) = File::open(dir).and_then(|d| d.sync_all()) {
-            warn!(
-                "saved a copy to {}, but flushing its folder failed: {e}",
-                to.display()
-            );
+    if let Err(e) = File::open(folder).and_then(|d| d.sync_all()) {
+        warn!(
+            "saved a copy to {}, but flushing its folder failed: {e}",
+            to.display()
+        );
+    }
+    Ok(())
+}
+
+/// Give the staged copy the name `to`, only where nothing is: a rename that
+/// refuses to replace (`renameat2`'s `RENAME_NOREPLACE`, `renamex_np`'s
+/// `RENAME_EXCL`), or on file systems without it a hard link, which
+/// refuses an existing name too, and the staged name removed. Any entry at
+/// `to` gives [`io::ErrorKind::AlreadyExists`] and is left as it was.
+fn publish(staged: &Path, to: &Path) -> io::Result<()> {
+    #[cfg(unix)]
+    {
+        use rustix::fs::{renameat_with, RenameFlags, CWD};
+        match renameat_with(CWD, staged, CWD, to, RenameFlags::NOREPLACE) {
+            Ok(()) => return Ok(()),
+            Err(e) if e == rustix::io::Errno::EXIST => {
+                return Err(io::Error::from(io::ErrorKind::AlreadyExists));
+            }
+            // Not on this file system: a hard link instead.
+            Err(e)
+                if e == rustix::io::Errno::INVAL
+                    || e == rustix::io::Errno::NOTSUP
+                    || e == rustix::io::Errno::OPNOTSUPP
+                    || e == rustix::io::Errno::NOSYS => {}
+            Err(e) => return Err(e.into()),
         }
+    }
+    std::fs::hard_link(staged, to).map_err(|e| {
+        if e.kind() == io::ErrorKind::AlreadyExists {
+            e
+        } else {
+            io::Error::other(format!(
+                "this folder cannot take a new file without risking another (no exclusive rename or hard link): {e}"
+            ))
+        }
+    })?;
+    if let Err(e) = std::fs::remove_file(staged) {
+        warn!(
+            "saved a copy to {}, but its staged name {} stays: {e}",
+            to.display(),
+            staged.display()
+        );
     }
     Ok(())
 }

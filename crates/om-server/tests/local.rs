@@ -645,17 +645,16 @@ fn saved_copies_are_new_files_that_open_and_replace_nothing() {
     assert_eq!(tree(&compacted), tree(&path));
     #[cfg(unix)]
     {
-        // Never more open than the file, read and write for its owner.
+        // Its owner's alone, whatever the file's group may read.
         use std::os::unix::fs::PermissionsExt;
         for made in [&copy, &compacted] {
             let mode = std::fs::metadata(made).unwrap().permissions().mode() & 0o777;
-            assert_eq!(mode & 0o600, 0o600, "{mode:o}");
-            assert_eq!(mode & !0o640, 0, "{mode:o}");
+            assert_eq!(mode, 0o600, "{mode:o}");
         }
     }
 
-    // What is there stays: another file, the open file itself, and the
-    // name its saves make their new copy under.
+    // What is there stays: another file, the open file itself, and names
+    // of the kind its saves make their new copy under.
     let taken = folder.0.join("Taken.fmp12");
     std::fs::write(&taken, b"someone else's").unwrap();
     let refused = host.save_copy(&taken, CopyKind::Copy).unwrap_err();
@@ -671,13 +670,16 @@ fn saved_copies_are_new_files_that_open_and_replace_nothing() {
         std::io::ErrorKind::AlreadyExists,
         "{refused}"
     );
-    let in_the_way = folder.0.join(format!("{FILE}.omsave"));
-    let refused = host.save_copy(&in_the_way, CopyKind::Copy).unwrap_err();
-    assert_eq!(
-        refused.kind(),
-        std::io::ErrorKind::AlreadyExists,
-        "{refused}"
-    );
+    for reserved in [format!("{FILE}.omsave"), "tasks.fmp12.OMSave".into()] {
+        let refused = host
+            .save_copy(&folder.0.join(reserved), CopyKind::Copy)
+            .unwrap_err();
+        assert_eq!(
+            refused.kind(),
+            std::io::ErrorKind::InvalidInput,
+            "{refused}"
+        );
+    }
     let clone = folder.0.join("Clone.fmp12");
     let refused = host.save_copy(&clone, CopyKind::Clone).unwrap_err();
     assert_eq!(refused.kind(), std::io::ErrorKind::Unsupported, "{refused}");

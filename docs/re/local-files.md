@@ -717,25 +717,37 @@ than a second reader and writer.
   rename. The rename gives the file a new inode; ownership, ACLs and other
   metadata beyond the permission bits are not carried over.
 - **Save a Copy as.** The host writes a copy of the current file or a
-  compacted copy (3.3) to a new file only: an entry at the output path (a
-  file, the open file, a link, the name the file's saves use for their new
-  copy) refuses it, untouched. A copy of the current file is the file's
-  bytes as the last save left them, opened while the store is held, as a
-  backup's copies are; a compacted copy is the key tree written as a new
-  packed file (hbam-writer.md 7.2), and so is a copy while changes a failed
-  save left wait in memory. On Unix the copy is created with the file's
-  permissions for the group and others at most, read and write for its
-  owner, less the umask [I: OpenMaker's choice; the copy holds the password
-  verifiers]. A copy that fails is removed while it is still the one this
-  save made; a crash while writing can leave a partial copy at the output
-  path. The desktop's step commits the window's record first, as Export
-  Records does [I], and returns 800 when the copy cannot be created (an
-  existing file included [I]) or the account's set denies exporting. Clones,
-  self-contained copies, the Save dialog (File > Save a Copy As and a step
-  without an output file), "Automatically open file", "Create email" and a
-  step inside an open transaction fail with error 3
-  ([#63](https://github.com/OpenMaker-Dev/openmaker/issues/63)); so does a
-  hosted file's step [I].
+  compacted copy (3.3) to a new file only.
+  - *Contents.* A copy of the current file is the file's bytes as the last
+    save left them, read by position through a second descriptor of the
+    one the host holds locked, so the version copied is the one the host
+    has, whatever is renamed over the path meanwhile. A compacted copy is
+    the key tree written as a new packed file (hbam-writer.md 7.2). So is a
+    copy while changes a failed save left wait in memory, or of a file the
+    host could not lock.
+  - *Writing.* The copy is written and flushed under a hidden name of its
+    own (`.omcopy-<process>-<n>`) in the output folder. It is then renamed
+    to the output name with a rename that refuses to replace
+    (`RENAME_NOREPLACE` on Linux, `RENAME_EXCL` on macOS), or, on file
+    systems without one, hard-linked there and the staged name removed.
+    An entry at the output path (a file, the open file, a link) refuses
+    the copy and is left untouched. So does a name ending in `.omsave` in
+    any case, the name the file's saves use for their new copy. A failure
+    removes only the staged file; a crash can leave one beside, never a
+    partial copy at the output name.
+  - *Permissions.* The copy holds the password verifiers, so it is created
+    owner-only (0600 on Unix), whatever the file's own permissions or the
+    folder's group [I: OpenMaker's choice; FileMaker's is unmeasured]. ACLs
+    the folder passes on to new files still apply.
+  - *The desktop's step.* It refuses with error 3, before committing or
+    creating anything: clones and self-contained copies, a step without an
+    output file (the Save dialog of File > Save a Copy As is not built),
+    "Automatically open file", "Create email", an open transaction and a
+    hosted file [I]
+    ([#63](https://github.com/OpenMaker-Dev/openmaker/issues/63)). Otherwise
+    it returns 800 when the account's set denies exporting, commits the
+    window's record, as Export Records does [I], and returns 800 when the
+    copy cannot be created, an existing file included [I].
 - **Recovery.** Deferred field work an earlier stop left in the file
   (schema-path.md) is finished in memory when the file opens and saved only
   once an admitted account logs in to a writable file: a wrong password,

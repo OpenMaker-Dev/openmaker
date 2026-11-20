@@ -592,27 +592,19 @@ impl Store {
         Ok(true)
     }
 
-    /// The file at `path` as the store last loaded or saved it, opened for
-    /// reading while the store is held, so that no save is half done: the
-    /// descriptor names that version whatever later saves rename over it
-    /// (`crate::backups` copies files so). Refused when the store holds a
-    /// lock on another file (the file at `path` was replaced by another
-    /// program) or has changes the file lacks (a failed save's): the
-    /// file's bytes would not be the store's.
-    pub fn open_saved(&self, path: &Path) -> std::io::Result<std::fs::File> {
-        use std::io::Error;
+    /// The file as the store last loaded or saved it, for a copy of it: a
+    /// new descriptor of the one the store holds locked, which names that
+    /// version whatever later saves rename over its path, read from its
+    /// start by position so as not to move the offset the two share. `None`
+    /// while the tree has changes the file lacks (a failed save's) or when
+    /// the store holds no lock, where the file at the path could be another
+    /// program's: such a copy is built from the tree
+    /// ([`Store::compacted`]).
+    pub fn saved_file(&self) -> Option<std::io::Result<std::fs::File>> {
         if self.dirty {
-            return Err(Error::other(
-                "the file has changes that could not be saved yet",
-            ));
+            return None;
         }
-        let file = std::fs::File::open(path)?;
-        if let Some(lock) = &self.lock {
-            if !crate::filelock::same_file(lock.file(), path)? {
-                return Err(Error::other("the file was replaced by another program"));
-            }
-        }
-        Ok(file)
+        self.lock.as_ref().map(|lock| lock.file().try_clone())
     }
 
     /// The tree as a complete new file, packed (`om_hbam::writer::rebuild`,
