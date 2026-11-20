@@ -1309,8 +1309,43 @@ fn account_step_options_are_the_step_value() {
         panic!("{pasted:?}");
     };
     assert_eq!(step.value, 1);
+    assert_eq!(step.flags, 16384, "<Options> is the stored flags word");
     assert_eq!(
         shown(step),
         "Enable Account [ Account Name: \"u\" ; Deactivate ]"
+    );
+    // Activate with `kMenuSelection` in `<Options>`: value 0 is the choice
+    // given, not a missing one.
+    let xml = xml
+        .replace("<Options>16384</Options>", "<Options>16386</Options>")
+        .replace("value=\"False\"", "value=\"True\"");
+    let pasted = parse_steps(&xml, &Contacts::new(), Origin::Unknown).unwrap();
+    let [Pasted::Step(step)] = &pasted[..] else {
+        panic!("{pasted:?}");
+    };
+    assert_eq!((step.value, step.flags), (0, 16386));
+    assert_eq!(
+        shown(step),
+        "Enable Account [ Account Name: \"u\" ; Activate ]"
+    );
+}
+
+/// Add Account's privilege set is a flagless key in `mReserved` (#525):
+/// its text with the stored bytes keeps it within this file, and from
+/// elsewhere the step is refused rather than added without its set.
+#[test]
+fn add_accounts_stored_privilege_set_is_kept_or_refused() {
+    let mut step = pasted("Add Account [ Account Name: \"u\" ; Password: \"p\" ]");
+    step.reserved[..3].copy_from_slice(&[2, 1, 2]);
+    let text = step_text(&step, &Contacts::new());
+    let here = parse_steps(&text, &Contacts::new(), Origin::ThisFile).unwrap();
+    assert!(
+        matches!(&here[..], [Pasted::Step(back)] if back.reserved == step.reserved),
+        "{text}: {here:?}"
+    );
+    let elsewhere = parse_steps(&text, &Contacts::new(), Origin::Unknown).unwrap();
+    assert!(
+        matches!(&elsewhere[..], [Pasted::Failed { reason, .. }] if reason.contains("privilege set")),
+        "{elsewhere:?}"
     );
 }

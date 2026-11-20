@@ -1023,6 +1023,9 @@ impl StepReader<'_> {
             self.step.value = 1;
             self.step.flags |= flag::MENU_SELECTION;
         }
+        // The XML gave the step's choice, off (0) as much as on: a
+        // `kMenuSelection` in `<Options>` with value 0 is not a missing one.
+        self.chosen = true;
         Ok(())
     }
 

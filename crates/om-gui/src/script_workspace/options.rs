@@ -2235,6 +2235,11 @@ fn rows(step: &ScriptStep, names: &Option<Arc<CalcSchema>>) -> Vec<Row> {
                         // step text read it; shown so, not written.
                         let value = match value {
                             Some(0) if id == 62 && step.calculation(0).is_some() => Some(1),
+                            // The account steps' options are on for any
+                            // nonzero value (local-files.md 2.4): a stored
+                            // 2 or 4 shows as the "on" choice, and an
+                            // unchanged save keeps it.
+                            Some(v) if matches!(id, 134 | 136 | 137) && v != 0 => Some(1),
                             other => other,
                         };
                         rows.push(row(
