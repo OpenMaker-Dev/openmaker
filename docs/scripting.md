@@ -549,6 +549,14 @@ Open items:
   8.4), where FileMaker would have written. Names given to Set Field By
   Name and Replace Field Contents by Name match without regard to case,
   as on the server.
+- In server scripts Print Setup runs as with its dialog off: a restored
+  page format is read as on the desktop (3 when it does not read) and not
+  kept, since nothing prints there yet. Save Records as PDF and Print are
+  3 on OpenMaker Server
+  ([#104](https://github.com/OpenMaker-Dev/openmaker/issues/104)): the
+  report builder is part of the desktop client. That FileMaker Server
+  answers Print Setup with 0 is inferred from its step handler
+  (script-runtime.md 10.2), not measured.
 - Scripts: desktop steps still missing include the account steps
   ([#83](https://github.com/OpenMaker-Dev/openmaker/issues/83)) and the PDF
   steps other than Save Records as PDF

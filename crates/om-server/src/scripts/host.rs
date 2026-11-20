@@ -68,7 +68,7 @@ use om_scripts::runtime::{
     Accounts, CommitOptions, Dialogs, ErrorCode, ErrorLogEntry, FieldRef, FileId, Files, FindKind,
     FoundSets, HostError, HostResult, InsertTarget, LayoutTarget, Mode, Navigation, Network,
     PauseEnd, Platform, RecordList, RecordMove, Records, RelatedRecords, ScriptAccess, ScriptHost,
-    TransactionOptions, WindowId, Windows,
+    StepCall, TransactionOptions, WindowId, Windows,
 };
 use om_scripts::specs::SortSpec;
 use om_scripts::{Script, ScriptCatalog, ScriptKind};
@@ -3161,6 +3161,56 @@ impl ScriptHost for ServerHost {
     fn set_full_access(&mut self, _file: FileId, on: bool) {
         self.elevated = on;
     }
+
+    /// Print Setup (42), which FileMaker Server runs in its own step
+    /// handler (script-runtime.md 10.2); every other step without a method
+    /// is 3.
+    fn other_step(&mut self, call: &StepCall<'_>) -> HostResult<Option<Value>> {
+        match call.id {
+            42 => print_setup(call).map(|()| None),
+            _ => Err(HostError::Unsupported),
+        }
+    }
+}
+
+/// Print Setup (42) in a server script. A server shows no dialog, so the
+/// step is run as with its dialog off. Its restored page format (`87`,
+/// script-steps.md 11.6) is read as the desktop reads it
+/// (`PaperSettings::from_page_format`): one that does not read gives 3, as
+/// there. OpenMaker Server prints nothing yet, so the paper is not kept:
+/// Save Records as PDF is 3 here (#104). That FileMaker Server answers 0 is
+/// inferred from its handler; the step's effect there is unmeasured.
+fn print_setup(call: &StepCall<'_>) -> HostResult {
+    if !call.step.has_flag(om_data::flag::RESTORE) {
+        return Ok(());
+    }
+    let unreadable = || HostError::Error(ErrorCode(3));
+    let node = call.step.data_leaf(0x87).ok_or_else(unreadable)?;
+    // The declared and stored sizes are checked before the value is put
+    // together, so that a hostile step cannot make it allocate.
+    let declared = node
+        .children
+        .first()
+        .and_then(|n| n.value.as_deref())
+        .and_then(|v| v.get(..4))
+        .map(|v| u32::from_be_bytes([v[0], v[1], v[2], v[3]]) as usize);
+    let stored = node.value.as_ref().map_or_else(
+        || {
+            node.children
+                .iter()
+                .skip(1)
+                .filter_map(|n| n.value.as_ref())
+                .map(Vec::len)
+                .sum()
+        },
+        Vec::len,
+    );
+    if stored > 1024 * 1024 || declared.is_some_and(|n| n > 1024 * 1024) {
+        return Err(unreadable());
+    }
+    let bytes = om_data::scripts::node_bytes(node).ok_or_else(unreadable)?;
+    om_layout::paper::PaperSettings::from_page_format(&bytes).map_err(|_| unreadable())?;
+    Ok(())
 }
 
 impl Navigation for ServerHost {

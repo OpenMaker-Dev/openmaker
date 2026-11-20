@@ -61,6 +61,77 @@ impl PaperSettings {
         Ok(())
     }
 
+    /// The paper of a stored page format (`87`: a Print Setup step's, or a
+    /// file's `[2, 87]`; script-steps.md 11.6): its platform-neutral `Comm`
+    /// chunk. Platform chunks are skipped. A format without one, with two,
+    /// or with a scale other than 100% is refused.
+    pub fn from_page_format(bytes: &[u8]) -> Result<Self, String> {
+        if bytes.len() > 1024 * 1024 {
+            return Err("Page format exceeds 1 MiB".into());
+        }
+        let mut rest = bytes;
+        let mut paper = None;
+        while !rest.is_empty() {
+            let header = rest.get(..8).ok_or("Truncated page format chunk header")?;
+            // stored_specs.rs::print_record and its re-encoder use BE lengths.
+            let len = u32::from_be_bytes(header[4..8].try_into().unwrap()) as usize;
+            let payload = rest
+                .get(8..)
+                .and_then(|r| r.get(..len))
+                .ok_or("Truncated page format chunk")?;
+            rest = &rest[8 + len..];
+            if &header[..4] != b"Comm" {
+                continue;
+            }
+            if paper.is_some() || payload.len() != 29 {
+                return Err("Invalid or duplicate common page format".into());
+            }
+            // Swap stream scalar order, inferred for f32 from the BE stream
+            // convention (script-steps.md 11.0) and rich_text.rs paragraph f32s.
+            // Native common-format acceptance remains unmeasured.
+            let values: Vec<f64> = payload[1..]
+                .as_chunks::<4>()
+                .0
+                .iter()
+                .map(|n| f64::from(f32::from_be_bytes(*n)))
+                .collect();
+            if values.iter().any(|v| !v.is_finite()) {
+                return Err("Non-finite page format number".into());
+            }
+            if values[0] != 1.0 {
+                return Err("Page Setup scale other than 100% is unsupported".into());
+            }
+            let orientation = match payload[0] {
+                0 => Orientation::Portrait,
+                2 => Orientation::Landscape,
+                _ => return Err("Unsupported page orientation".into()),
+            };
+            let (left, top, right, bottom, printable_w, printable_h) = (
+                values[1], values[2], values[3], values[4], values[5], values[6],
+            );
+            let (width, height) = (right - left, bottom - top);
+            // The printable origin must lie inside the sheet. Printer insets
+            // are validated but not substituted for fixed layout margins.
+            if left > 0.0
+                || top > 0.0
+                || printable_w <= 0.0
+                || printable_h <= 0.0
+                || printable_w > right + 0.1
+                || printable_h > bottom + 0.1
+            {
+                return Err("Invalid paper rectangle or printable dimensions".into());
+            }
+            let candidate = PaperSettings {
+                width,
+                height,
+                orientation,
+            };
+            candidate.validate()?;
+            paper = Some(candidate);
+        }
+        paper.ok_or_else(|| "Page format has no supported Comm chunk".into())
+    }
+
     /// Before a file has explicit settings, seed its dialog from the existing
     /// layout orientation. Once accepted, one preference applies to all layouts.
     pub fn initial(layout: &Layout) -> Result<Self, String> {
