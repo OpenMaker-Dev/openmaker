@@ -867,10 +867,15 @@ in the layout's coordinates, so its rows scroll and take clicks as at 100%.
 Find mode draws its request as Form view draws a record, so it was already
 drawn at the window's zoom; its commands now change it there too.
 
+Set Zoom Level with Lock on disables View > Actual Size, Zoom In and
+Zoom Out and their shortcuts for that window. A script can still set the
+level, and Lock off restores those controls. A new window (New Window,
+the step or Window > New Window) takes the lock with the zoom of the window
+it opens from [I: inheritance has not been compared with FileMaker Pro].
+
 Limits: Table view, Layout mode, generic Form fallbacks and
 focused field editors are not zoomed (Preview scales its paper:
-[preview.md](preview.md)), and Set Zoom Level's lock option is not enforced
-([#36](https://github.com/OpenMaker-Dev/openmaker/issues/36)).
+[preview.md](preview.md); [#36](https://github.com/OpenMaker-Dev/openmaker/issues/36)).
 
 ### Layout menus
 
@@ -965,6 +970,21 @@ international by primary weights, System and Unicode standard padded,
 Unicode raw by its code units with case kept, and language 0 in the file's
 own language. A field in another language is keyed in English, which keys
 most text as those languages do.
+
+Without the host's index, the client keys each record itself. That works
+in the forms above and, for finds that read the value index (`==`, `=`,
+`*` and `!`), in the languages FileMaker leaves untailored, whose value
+keys are English's (`om_data::rules::value_text_keys`; the set is
+inferred, [#46](https://github.com/OpenMaker-Dev/openmaker/issues/46)).
+Finds that read the word index there (words, ranges of text) fail with 3
+until the host has the index: those languages' word breaks are not
+established, and French's differ from English's
+([#300](https://github.com/OpenMaker-Dev/openmaker/issues/300)). So does a
+find that reads an index in a tailored language, or in language 0 when
+the file's locale record cannot be read. A criterion that gives no
+finder (a leading wildcard, as in `==*pfel*`) is still tested against the
+stored values in English in those languages
+([#588](https://github.com/OpenMaker-Dev/openmaker/issues/588)).
 
 **Limits.** List view shows only the current request, as one body row.
 In the padded form a word's start is matched by its primary weights alone
@@ -1147,6 +1167,26 @@ record is current; on a request it clears the
 criteria. That is as Pro 26.0.3 does it (#871, observed on the Contacts
 starter), except the re-read, which is OpenMaker's. Pro has no Save
 Record menu item, and OpenMaker adds none.
+
+Records > Relookup Field Contents is the `om_scripts::relookup` command.
+It runs Relookup Field Contents (40) with its dialog on the field
+entered, as a script does (re/script-runtime.md, Relookup Field
+Contents), and the field stays entered while the step starts, as for
+Insert's commands. The item is enabled in Browse mode when a field of the
+record's own table is entered and the record has nothing to commit, and
+only under All menu commands. Typing, or changes a script left, leave it
+disabled: FileMaker's command keeps such a record uncommitted, while the
+step commits it first, which would save it past the field's validation
+and save triggers
+([#624](https://github.com/OpenMaker-Dev/openmaker/issues/624)). So do a
+running or paused script (the step's error, a Cancel included, would
+fail a paused script's open transaction) and a hosted edit still being
+prepared. A related field leaves it disabled, because the step cannot
+relook up through a related field. The dialog is titled Relookup
+Field Contents and asks "Look up the values again in all N records of
+the current found set, through the field “Name”?". It has Cancel and OK,
+and OK is the default. That text is OpenMaker's; FileMaker Pro's wording
+is unmeasured (re/auto-entry.md, Lookups). Cancel relooks up no record.
 
 **Limits of committing and reverting:**
 - **Keypad Enter and Return.** egui reports both keys as Enter, so the
@@ -1415,8 +1455,8 @@ drop-down lists (layout-model.md 5.4) read their items through
     or the date changes. A build asked before such a change is let finish
     and its answer dropped, then one build for the new context follows,
     so a resize keeps one build at a time on the worker. A list of an
-    unstored calculation's related values is built per object and record
-    in paint, as a list of related values is.
+    unstored calculation's related values is built on the worker per
+    record, as a list of related values is (below).
   - Validation against a related-values list of such a field computes it
     on each related record, and refuses with 3 only a record whose value
     cannot be computed (`om-provider`'s `related_lists.rs`;
@@ -1461,8 +1501,36 @@ drop-down lists (layout-model.md 5.4) read their items through
     pop-up menu that shows a label from such a list no longer blocks a
     frame for 1.1 s; its longest frame while the worker builds the list is
     44 ms.
-  - A list of related values is built per record, with the record's
-    unsaved values, in the window's paint, as before.
+  - A list of related values is built on the worker too, once per record
+    and portal row it is shown on, over the window's unsaved changes as
+    the window's paint read them, starting from that record
+    ([#290](https://github.com/OpenMaker-Dev/openmaker/issues/290)). Its relationships can lead through any table, so it is
+    built again after any data change (a page read under the same data
+    generation is none), and after the window's unsaved changes, or the
+    records they are laid over, change; one whose list a calculation
+    computes also after the window's calculation session or the date
+    changes. A build asked before such a change is let finish and its
+    answer dropped, so typing, scrolling or a resize keeps one build per
+    list and record on the worker. While the stored values of a record
+    with unsaved changes are not in the window (a refresh dropped them),
+    the list waits for them rather than be built over the stored values
+    (one the provider cannot read, or the host has no record of, makes the
+    list unknown, error 3). The
+    build reads the record it starts from (and the portal row) first, so a
+    new record a transaction holds relates records by its own values, as
+    paint did. A build whose reads took a change the window had not seen (a
+    newer data generation) has the window read its data and lists again;
+    one read under a generation older than the window has seen is not
+    taken. A reconnected file counts generations again, so the window
+    forgets the newest it saw then. A page of the generation the window has
+    seen keeps the built lists and their waits. A related host it could not reach holds that record's list only,
+    until the data, the unsaved changes or a refresh change its inputs.
+    Built lists are kept within 64 MiB and 4,096 lists beyond those the last
+    frame showed, those shown longest ago going first. Like a list of all of a field's values it sees no global
+    variables. On a debug build, with 30,000 related records,
+    the closed pop-up menu that shows a label from such a list no longer
+    blocks a frame for 1.05 s; its longest frame while the worker builds
+    the list is 43 ms.
 - **A hosted file's field lists.** A list of all of a stored text field's
   values, with no second field and not only related values, comes from
   the host. One CreateValueListEx is sent when a control first needs the
@@ -1712,7 +1780,8 @@ behavior was not observed (re/client-ui.md, Unknowns).
 **Placing a field.** The Field tool places an edit box with the operation
 `om-author`'s `place_field` uses (`DataProvider::place_layout_field`,
 `om_data::layout_placement`; [authoring](authoring.md), "Fields on
-layouts").
+layouts"). Saving a placed edit box adds it at the end of the layout's
+stored tab order.
 - **Fields sidebar.** Open Objects, then Fields to list the selected
   layout's own table's placeable fields. Search filters definitions, not
   already-placed objects. Drag a field onto the design surface to add a
@@ -2220,12 +2289,12 @@ script's steps:
     id, which no script takes again.
 - **Refused with an alert (error 3), nothing saved:** new folders and
   separators (and duplicated folders), a name another script or folder
-  has, names with characters outside ASCII, and deleting or renaming one
-  of two members of one name. Files whose own script names do not show
-  how FileMaker keys an ASCII name in their language refuse new and
-  renamed scripts (deletes, moves and options still save): the Japanese,
-  Korean and Chinese starter files, and the Swedish Assets and the French
-  and Swedish Meetings, whose script names all have accents ([#209](https://github.com/OpenMaker-Dev/openmaker/issues/209)). A
+  has, names with characters outside ASCII
+  ([#209](https://github.com/OpenMaker-Dev/openmaker/issues/209)), and
+  deleting or renaming one of two members of one name. New and renamed scripts are listed under
+  FileMaker's name list key, which is the same in every file, so a Create
+  New file and the Japanese, Korean and Chinese starters take them too
+  ([#274](https://github.com/OpenMaker-Dev/openmaker/issues/274)). A
   file whose script index lacks a part every file FileMaker made has is
   refused too, and so is one whose stored digest is not the one OpenMaker
   computes for its scripts.

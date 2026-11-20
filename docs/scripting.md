@@ -143,6 +143,22 @@ screen points at every zoom and toolbar state. Battery `s33` settled the
 server's focus, `ModifiedFields`, `RequestCount` and extended privilege
 answers.
 
+Go to Related Record's "Table by Calculation" (FileMaker Pro 26.1: step
+flag `0x400` with the occurrence's name in calculation slot 8,
+script-steps.md 12.4) goes to the occurrence that name gives, found as
+calculations find one, then as the step does with a stored occurrence; a
+name no occurrence of the file has is 106. The step text shows the
+calculation in place of a quoted occurrence name. The 106, the text and the
+layout choices kept as they are stored for other steps are OpenMaker's,
+since no step FileMaker Pro 26.1.1 wrote has been read
+([#352](https://github.com/OpenMaker-Dev/openmaker/issues/352)). The Script
+Workspace's options do not offer the choice yet, and keep a stored one as it
+is, with no table picker. As for every Go to Related Record step, OpenMaker
+Server shows the records on the stored layout or the related table's first
+([#481](https://github.com/OpenMaker-Dev/openmaker/issues/481)), and the step
+text does not show a layout chosen by calculation
+([#482](https://github.com/OpenMaker-Dev/openmaker/issues/482)).
+
 Desktop scripts have portal rows, a script's own write rules, real windows
 and OnWindowTransaction, as FileMaker Server's engine answered them
 (script-runtime.md 13.24-13.27, batteries `s35-*`):
@@ -296,9 +312,30 @@ Server Find mode:
   all the table's records, reading dates in the file's date order as
   the server's other finds do. A word that a Quick Find field of another
   occurrence would be searched for fails with 3, as a related find
-  criterion does on the server; Find Matching Records is 3 too
+  criterion does on the server
   ([#101](https://github.com/OpenMaker-Dev/openmaker/issues/101)). What
   FileMaker Server does is not measured.
+- Find Matching Records (155), here and on the desktop, finds the records
+  whose field holds the current record's whole value: `=` for an empty
+  value, else `==` and the value, a text value's find operators taken
+  literally (`om_data::found::matching_criterion`), so `a*b` finds only
+  `a*b`. This request is OpenMaker's reading of Claris's description; the
+  one FileMaker builds is not captured. On the server a number is written
+  out in full with `.` (`1000000000`, not `1.0E+9`) and a time or
+  timestamp with its seconds, so the criterion is that second, not the
+  whole minute. The server's criteria compare whole seconds: a record
+  holding a fraction of a second within it is found too (`9:05:00` finds
+  `9:05:00.250`), and a value with a fraction of a second fails with 3,
+  as no criterion holds it. A number is matched by its index key, which
+  keeps 200 digits as FileMaker's does (query-program.md 7.3), so numbers
+  whose keys are equal (the same sign, count of integer digits and first
+  200 digits) match each other; whether FileMaker then compares the
+  stored values is not measured. From Find mode the
+  server switches to Browse first, as
+  Claris documents, and reads the record current when Find mode was
+  entered (inferred: FileMaker's record after Find mode is not measured).
+  A field of another occurrence, a global and a summary field fail with 3
+  on the server.
 - Globals read their value with no current record, and sessions start
   from the file's stored globals.
 - A criterion longer than 10,000 characters cannot be read (3), on the
@@ -549,6 +586,35 @@ Open items:
   8.4), where FileMaker would have written. Names given to Set Field By
   Name and Replace Field Contents by Name match without regard to case,
   as on the server.
+- In server scripts Print Setup with neither Restore nor its dialog sets
+  nothing and gives 0, as on the desktop. A restored setup gives 3, since
+  it would configure PDF output OpenMaker Server cannot make yet: Save
+  Records as PDF and Print are 3 there, as the report builder is part of
+  the desktop client
+  ([#104](https://github.com/OpenMaker-Dev/openmaker/issues/104)). With
+  its dialog on, Print Setup gives 3 as well, since a server shows no
+  dialog. FileMaker Server's answer is unmeasured in every one of these
+  cases, the 0 included, and so is how long a restored setup lasts there.
+- Sort Records and Sort Records by Field in server scripts refuse with 3
+  a sort by a self join's field: another occurrence of the layout's table
+  that a relationship leads to. FileMaker sorts it by its first related
+  record's value (inferred from Claris and calc-values.md 12.1), and the
+  summaries a sorted found set feeds would have to follow
+  ([#610](https://github.com/OpenMaker-Dev/openmaker/issues/610)). Before,
+  it sorted by the record's own value. Sort Records [Restore] run again
+  on another layout is checked against that layout's occurrence, so a
+  stored sort can be refused there. A found set's sort carried to another
+  layout is not run again: its order stays, and summaries read its fields
+  from the record itself, as do relationship sorts, on both hosts (#610).
+  A sort entry the layout cannot reach fails the whole sort with 103 once
+  a record's key is read; on an empty found set no key is read and the
+  order is kept, as before
+  ([#628](https://github.com/OpenMaker-Dev/openmaker/issues/628)). Sorts
+  nested more than 16 deep inside one another, through related sort
+  fields whose relationships sort by related fields, a finite chain as
+  well as a loop, stop with 3. That ends a looping relationship sort,
+  which overflowed the server's stack before. The bound is OpenMaker's;
+  FileMaker's handling of a loop is unmeasured.
 - Scripts: desktop steps still missing include the account steps
   ([#83](https://github.com/OpenMaker-Dev/openmaker/issues/83)) and the PDF
   steps other than Save Records as PDF
@@ -623,9 +689,13 @@ Open items:
     an empty node (scripts.md, "Saving scripts to a host").
   - External container storage is not read (containers.md 8).
   - Unique and existing-value rules need a text field with a value index
-    in English, System, Unicode standard or Unicode raw, value-list rules
-    one in English. Lists from another file, a calculation, related values or
-    a second field still make the table read-only.
+    in English, System, Unicode standard, Unicode raw, the file's own
+    language (0) when it is one of those and its locale record can be
+    read, or a language FileMaker leaves untailored (record-writes.md).
+    Field-backed value-list rules check their source in the same forms;
+    a source in a tailored language is looked up in English
+    ([#571](https://github.com/OpenMaker-Dev/openmaker/issues/571)). Lists from another file, a calculation, related
+    values or a second field still make the table read-only.
   - OpenMaker's own choices, not settled by the oracle: numeric forms
     beyond those tested, value-list dividers, ranges on text and date
     fields, and the year position for non-US date orders.

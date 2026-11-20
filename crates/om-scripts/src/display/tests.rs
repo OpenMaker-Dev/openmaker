@@ -606,6 +606,7 @@ fn pasted_text_stores_what_filemaker_shows() {
         "Truncate Table [ With dialog: On ; Table: “Contacts” ]",
         "Import Records [ With dialog: On ; Source: “file:a.csv” ]",
         "New Window [ Style: Card ; Name: \"c\" ]",
+        "Go to Related Record [ From table: \"Con\" & \"tacts\" ; Using layout: <Current Layout> ]",
         "Go to List of Records [ List of record IDs: \"1¶2\" ; Using layout: “Contact Details” (Contacts) ; New window ]",
         // FileMaker Pro 26.1.1's steps by name, as OpenMaker shows them [I].
         "Set Variable by Name [ \"$x\" ; Value: 1 ]",
@@ -616,6 +617,17 @@ fn pasted_text_stores_what_filemaker_shows() {
     for line in lines {
         assert_eq!(shown(&pasted(line)), line);
     }
+    // Table by Calculation: the name's calculation in slot 8, `0x400`
+    // (script-steps.md 12.4), and no stored occurrence.
+    let related = pasted(lines[10]);
+    assert!(related.has_flag(flag::OPTION3) && related.calculation(8).is_some());
+    assert!(related.data.as_ref().and_then(|d| d.slot(0)).is_none());
+    // No table at all is no calculation: refused, as before.
+    let empty = "Go to Related Record [ From table:  ; Using layout: <Current Layout> ]";
+    assert!(matches!(
+        &parse_steps(empty, &Contacts::new(), Origin::Unknown).unwrap()[..],
+        [Pasted::Failed { .. }]
+    ));
     // A target named by a calculation sets kFieldSpecByCalc, as FileMaker
     // stores it (script-steps.md 4).
     for line in [
@@ -626,7 +638,7 @@ fn pasted_text_stores_what_filemaker_shows() {
     }
     // Go to List of Records: the ids in slot 7, a new window under
     // `kTurnOn` (script-steps.md 12.2).
-    let list = pasted(lines[10]);
+    let list = pasted(lines[11]);
     assert!(list.calculation(7).is_some() && list.calculation(0).is_none());
     assert!(list.has_flag(flag::TURN_ON) && !list.has_flag(flag::OPTION));
     // Insert Text's text is slot 0.

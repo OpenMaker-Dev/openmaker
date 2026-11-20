@@ -3696,8 +3696,11 @@ Globals (2026-10-29; Claris "Global fields")
 - Claris documents that a global's validation runs on field exit, rather
   than record commit
   ([field validation](https://help.claris.com/en/pro-help/content/field-validation.html)).
-  Non-text globals requiring those checks stay display-only. Intrinsic
-  temporal parsing here runs on save; global field-exit timing is unmeasured.
+  OpenMaker checks a typed global's entry rules and Not empty as the
+  typing is applied, at the commit; a global validated by calculation,
+  unique or existing value stays display-only (record-writes.md, Limits;
+  [#424](https://github.com/OpenMaker-Dev/openmaker/issues/424)). Global
+  field-exit timing is unmeasured.
 - Tests: `om-gui/tests/client_globals.rs` (a script's globals through the
   window against an in-process server: the stored value first, Set Field
   in Browse and Find mode, the value across scripts, another client and
@@ -3749,6 +3752,37 @@ Steps
   evaluated on each record made current, serial numbers counting up the
   last run of digits of the initial value; each record is committed; no
   triggers fire.
+- Relookup Field Contents
+  ([#87](https://github.com/OpenMaker-Dev/openmaker/issues/87)): in Browse
+  mode, the provider's operation (`DataProvider::relookup`) writes each
+  record of the found set, by id as the step began, with its own value of
+  the match field, with a script's rules and the step's privilege set; a
+  transaction holds the writes. The record rules perform a lookup whose
+  match field a script sets, also to the value it had (auto-entry.md,
+  Lookups, battery s41), so each lookup through the field copies again; a
+  plain value written back changes nothing of the field. Before any record
+  is written, and before the window's record is committed, it checks the
+  target: a field of the layout's table a script sets, that a lookup
+  matches through (an editable input of a calculated match field
+  included, as Claris's help names the target for one), and that enters
+  no value of its own, which a write of it could replace. Then it checks
+  that no record stores the field with character styles, which a plain
+  write would drop, and that the open transaction holds none of them
+  (its held value would be replaced by the stored one). The window keeps
+  its record and found set. A record refused partway ends the step, the
+  records before it written; a record deleted after the check is 101.
+  Records > Relookup Field Contents runs the step with its dialog on the
+  field entered. Unmeasured, and OpenMaker's choices:
+  - the dialog's text;
+  - committing the window's record before the writes, which Claris's help
+    says neither the command nor the step does
+    ([#624](https://github.com/OpenMaker-Dev/openmaker/issues/624));
+  - the codes: 102 for no such field, 201 for one a script cannot set (a
+    calculation or a global), 3 for one no lookup matches through, for one
+    with auto-entry, for a styled value, for a record the transaction
+    holds, for a field reached through a relationship (a self-join's too,
+    as for Replace Field Contents), for a layout of another file's table,
+    and for Find mode.
 - Windows (2026-10-29, run 13.25; `app/windows.rs`,
   `scripting/host/windows.rs`): real windows. Each window keeps its own
   layout, found set, mode, view, current record and unsaved values, Find
@@ -3808,8 +3842,11 @@ Steps
   and calculations again. A trigger names the window its event happened
   in. Adjust Window becomes a viewport command. Resize to Fit sizes the
   window to its layout at its zoom (script-steps.md, Adjust Window; on a
-  card it does nothing, OpenMaker's gap). Set Zoom Level zooms the window's
-  layout, Scroll Window scrolls it, and Arrange All Windows does nothing.
+  card it does nothing, OpenMaker's gap). Set Zoom Level sets the window's
+  zoom. With Lock on, users cannot change it. Running Set Zoom Level with
+  Lock off allows user changes again
+  ([Claris Set Zoom Level](https://help.claris.com/en/pro-help/content/set-zoom-level.html)).
+  Scroll Window scrolls the layout, and Arrange All Windows does nothing.
 - Window styles (2026-11-02; `scripting/host/windows.rs`,
   `app/window_styles.rs`; Claris "About window styles" and "New Window",
   not measured against FileMaker Pro). New Window and Go to Related
@@ -3944,7 +3981,7 @@ Steps
   step's occurrence's table, any table (write-path.md 3.2); the host stores
   the text, also for a field without an auto-entered serial (unconfirmed).
 - Steps the desktop client answers with 3 (and, as before, stops on with a
-  message): Relookup, Undo/Redo,
+  message): Undo/Redo,
   Export Field Contents, Set Web Viewer, Perform JavaScript in Web Viewer,
   the account steps, Open File and the other database file steps, Show/Hide
   Text Ruler, Enable Touch Keyboard, and every step of script-steps.md 7

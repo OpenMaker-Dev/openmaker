@@ -1287,9 +1287,8 @@ impl Uses {
 /// The script host capabilities the desktop host (`WorkerHost`) leaves to
 /// the runtime's default, error 3 "Command is unavailable". [`Desktop::read`]
 /// checks this list against the sources it was built from.
-const PROBED: [&str; 17] = [
+const PROBED: [&str; 16] = [
     "undo_redo",
-    "relookup",
     "save_a_copy_as",
     "set_multi_user",
     "set_use_system_formats",
@@ -1564,9 +1563,6 @@ impl Records for Probe {}
 impl Fields for Probe {
     fn undo_redo(&mut self, _choice: u16) -> HostResult {
         self.reach("undo_redo")
-    }
-    fn relookup(&mut self, _field: Option<FieldRef>, _with_dialog: bool) -> HostResult {
-        self.reach("relookup")
     }
 }
 impl FoundSets for Probe {}
