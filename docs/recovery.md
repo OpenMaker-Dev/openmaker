@@ -629,9 +629,27 @@ protocol's `Reconnect`
 
 FileMaker Pro locks a record on the host when a user begins editing it,
 and a second editor gets 301 ([write-path.md](re/write-path.md) 4.1).
-OpenMaker locks the record only to commit a save (write-path.md 4.2), so a
-conflict shows when the host refuses the save, and the window settles it
-with the reconnect's workflow above.
+OpenMaker does the same for a record of the opened file's own tables
+([#40](https://github.com/OpenMaker-Dev/openmaker/issues/40)): the window's first change of it waits for `record.prepare_edit`,
+which locks the record and checks its version before the change is taken
+(above). Another client's change of the record is then refused with 301
+until the window saves or reverts it. The window's own first change is
+refused at entry when another client holds the record (301) or changed it
+since the window read it (306): the typed text stays in the field, the bar
+says **Field entry was refused**, and **Discard Input** drops it and reads
+the page again, so that the next change starts from the host's copy.
+The lock goes with a lost connection: after a reconnect, the window's
+edits of an existing record are saved by the ordinary path, which locks the
+record again and checks the version they began from, unless the reconnect
+carried the window's record session (a refused related save's drafts,
+#152).
+How FileMaker Pro refuses an entry (its dialog, whether the typed
+character is kept, whether it reads the record again first) is
+unmeasured. Related records, records of another
+file's table and edits inside a script's own transaction are still locked
+only to commit them, and their conflicts show when the host refuses the
+save; the window settles those with the reconnect's workflow above and
+the flows below.
 
 **What an edit answers to.** When a window begins unsaved edits of a record
 (typing, emptying a field, or a draft a script left), it keeps the record's
@@ -684,9 +702,9 @@ acting on the next record is OpenMaker's choice.
 
 A refusal while a script runs (its own writes, a transaction it opened, a
 save of changes scripts left uncommitted) keeps its alert and holds
-nothing. Not covered: locking the record when an edit begins, as FileMaker
-Pro does (another client can still change the record until the save), and
-merging changes to different fields without asking.
+nothing. Not covered: locking a related record, a record of another file's
+table or a record a script's own transaction edits when its edit begins,
+and merging changes to different fields without asking.
 
 ### Edits from scripts and the user together
 

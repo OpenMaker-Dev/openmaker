@@ -30,8 +30,9 @@ struct DocumentProvider {
     styled: bool,
     conditional_color: bool,
     duplicate_field: bool,
-    /// Given's "Go to next object using" includes the Enter key.
-    given_next_on_enter: bool,
+    /// Given's "Go to next object using" includes Return and the Enter
+    /// key, as 123 of the starter solutions' 179 field objects do.
+    given_next_keys: bool,
     replacement: Option<Arc<AtomicBool>>,
     list: bool,
     /// The card is [`web_viewer_card`].
@@ -55,7 +56,7 @@ impl DocumentProvider {
             styled: false,
             conditional_color: false,
             duplicate_field: false,
-            given_next_on_enter: false,
+            given_next_keys: false,
             replacement: None,
             list: false,
             web_viewer: false,
@@ -248,14 +249,14 @@ impl DataProvider for DocumentProvider {
             return Ok(None);
         }
         let mut document = document();
-        if self.given_next_on_enter {
+        if self.given_next_keys {
             let given = document
                 .layout
                 .objects
                 .objects
                 .iter_mut()
                 .find(|o| o.id == 3);
-            given.unwrap().field_obj.as_mut().unwrap().flags |= 0x80;
+            given.unwrap().field_obj.as_mut().unwrap().flags |= 0xc0;
         }
         if self.styled {
             document.layout.def.as_mut().unwrap().table_alias_key = 0x104082;
@@ -862,31 +863,62 @@ fn the_edit_menu_selects_clears_and_undoes_in_the_field() {
     assert!(app.state().error().is_none(), "{:?}", app.state().error());
 }
 
-/// Return ends a field's editing and keeps the record's draft; the keypad's
-/// Enter commits it, or from a field whose "Go to next object using"
-/// includes the Enter key goes to the next field, as Tab does.
+/// Return types a line break into an edit box, stored as FileMaker stores
+/// it, a carriage return; the keypad's Enter commits the record. From a
+/// field whose "Go to next object using" includes them, both go to the next
+/// field, as Tab does.
 #[test]
-fn the_keypad_enter_commits_or_goes_on_where_return_keeps_the_draft() {
+fn return_types_a_line_break_and_the_keypad_enter_commits_or_both_go_on() {
     let keypad_enter = |app: &mut common::App| {
         for pressed in [true, false] {
             app.event(om_gui::keypad::enter_event(pressed, egui::Modifiers::NONE));
         }
         app.run_steps(3);
     };
+    let family = |app: &common::App| common::text_field(app, "Family").value();
     let mut provider = DocumentProvider::new(false);
     provider.writable = true;
-    provider.given_next_on_enter = true;
+    provider.given_next_keys = true;
     let mut app = open_provider(provider);
     replace(&mut app, "Family", "Keypad");
     app.key_press(egui::Key::Enter);
+    app.event(egui::Event::Text("Two".into()));
     app.run_steps(3);
-    assert!(common::unsaved(&app), "Return keeps the draft");
-    assert!(!common::text_field(&app, "Family").is_focused());
+    assert!(common::text_field(&app, "Family").is_focused());
+    assert_eq!(family(&app).as_deref(), Some("Keypad\rTwo"));
+    assert!(common::unsaved(&app), "a line break keeps the draft");
+
+    replace(&mut app, "Given", "Return");
+    app.key_press(egui::Key::Enter);
+    app.run_steps(3);
+    assert!(common::text_field(&app, "Family").is_focused());
+    assert!(common::unsaved(&app), "going on keeps the draft");
 
     replace(&mut app, "Given", "Enter");
     keypad_enter(&mut app);
     assert!(common::text_field(&app, "Family").is_focused());
     assert!(common::unsaved(&app), "going on keeps the draft");
+
+    // A Return after a Tab in the same frame goes by the field the Tab
+    // went to: from Given, which goes on with Return, to Family, which
+    // takes the line break after its text.
+    common::text_field(&app, "Given").focus();
+    app.step();
+    let key = |key| egui::Event::Key {
+        key,
+        physical_key: None,
+        pressed: true,
+        repeat: false,
+        modifiers: egui::Modifiers::NONE,
+    };
+    app.input_mut().events.extend([
+        key(egui::Key::Tab),
+        key(egui::Key::Enter),
+        egui::Event::Text("Q".into()),
+    ]);
+    app.run_steps(3);
+    assert!(common::text_field(&app, "Family").is_focused());
+    assert_eq!(family(&app).as_deref(), Some("Keypad\rTwo\rQ"));
 
     // Typing and the keypad's Enter in one frame (the harness's queued
     // events take a frame each): the editor applies the typing before the
@@ -897,9 +929,61 @@ fn the_keypad_enter_commits_or_goes_on_where_return_keeps_the_draft() {
         om_gui::keypad::enter_event(false, egui::Modifiers::NONE),
     ]);
     app.run_steps(3);
-    common::wait_for_label(&mut app, "Contact: Enter Keypad Z");
     common::wait_until(&mut app, "the commit", |app| !common::editing(app));
     assert!(!common::text_field(&app, "Family").is_focused());
+    assert_eq!(family(&app).as_deref(), Some("Keypad\rTwo\rQ Z"));
+    assert!(app.state().error().is_none(), "{:?}", app.state().error());
+
+    // Return, then Tab and typing, in one frame: Return goes on from Given
+    // to Family, the Tab from Family on to Given, which takes the typing.
+    common::text_field(&app, "Given").focus();
+    app.step();
+    app.input_mut().events.extend([
+        key(egui::Key::Enter),
+        key(egui::Key::Tab),
+        egui::Event::Text("X".into()),
+    ]);
+    app.run_steps(4);
+    assert!(common::text_field(&app, "Given").is_focused());
+    assert_eq!(
+        common::text_field(&app, "Given").value().as_deref(),
+        Some("EnterX")
+    );
+    assert_eq!(family(&app).as_deref(), Some("Keypad\rTwo\rQ Z"));
+}
+
+/// Undo and Redo put the text back with its line breaks as the field
+/// stored them: an `\n` or `\r\n` the user did not type is saved as it
+/// was, not as the carriage return Return types.
+#[test]
+fn undo_and_redo_keep_the_line_breaks_the_field_stored() {
+    let stored = "Ma\nson\r\nX";
+    let family = |app: &common::App| common::text_field(app, "Family").value();
+    let mut provider = DocumentProvider::new(false);
+    provider.writable = true;
+    provider.rows[0].values[1] = Some(stored.into());
+    let mut app = open_provider(provider);
+    common::text_field(&app, "Family").focus();
+    app.run_steps(2);
+    app.event(egui::Event::Text("Y".into()));
+    app.run_steps(2);
+    let typed = family(&app).expect("Family's value");
+    assert_eq!(typed.replace('Y', ""), stored, "{typed:?}");
+    app.key_press_modifiers(egui::Modifiers::COMMAND, egui::Key::Z);
+    app.run_steps(2);
+    assert_eq!(family(&app).as_deref(), Some(stored));
+    app.key_press_modifiers(
+        egui::Modifiers::COMMAND.plus(egui::Modifiers::SHIFT),
+        egui::Key::Z,
+    );
+    app.run_steps(2);
+    assert_eq!(family(&app), Some(typed.clone()));
+    for pressed in [true, false] {
+        app.event(om_gui::keypad::enter_event(pressed, egui::Modifiers::NONE));
+    }
+    app.run_steps(3);
+    common::wait_until(&mut app, "the commit", |app| !common::editing(app));
+    assert_eq!(family(&app), Some(typed));
     assert!(app.state().error().is_none(), "{:?}", app.state().error());
 }
 

@@ -2593,17 +2593,27 @@ Server engine (11.3, 11.5)
   [#7](https://github.com/OpenMaker-Dev/openmaker/issues/7)). Truncate
   Table needs [Full Access] whatever the account may delete (Claris's
   Truncate Table help), and Set Next Serial Value, which changes a
-  field's definition, does too (inferred); both are 9 otherwise. An account in a custom set fails closed
-  (`Privileges::Unknown`): the set's script, layout and record limits are
-  not applied to server scripts yet. Its scripts are not executable
-  (op30 answers 9 and nothing runs) unless set to run with full access
-  privileges: then the script runs and each of its steps has full access
-  (2.2, 9.1). A sub-script it calls may execute
-  (`mParentRunWithFullAccess`) but runs with the account's own privileges
-  unless it is also set to: there, and wherever the account is not
-  elevated, creating, changing, deleting, truncating, setting a global
-  field or a next serial value and finding fail with 9, and reading a
-  field is calculation error 9 (`?`, not FileMaker's `<No Access>` text).
+  field's definition, does too (inferred); both are 9 otherwise. An
+  account in a custom set runs the scripts its set makes executable
+  (session-identity.md 2.2); one its set gives no access is refused with
+  9 and nothing runs, also when it is set to run with full access
+  privileges, as `CallScript` checks the account's access before that
+  flag counts (3.7, 9.1). Before, the flag let it run, and its steps
+  wrote with full access
+  ([#227](https://github.com/OpenMaker-Dev/openmaker/issues/227)). The
+  set's layout, field and record limits are not applied to server scripts
+  yet, so its steps fail closed (`Privileges::Unknown`) unless the script
+  is set to run with full access privileges: then each of its steps has
+  full access (2.2, 9.1). A sub-script it calls may execute even without
+  access (`mParentRunWithFullAccess`) but runs with the account's own
+  privileges: OpenMaker gives the full-access flag only to a script the
+  account may run, so such a child is not elevated even when it is itself
+  set to run with full access, where FileMaker would elevate it (inf, 9.1)
+  ([#227](https://github.com/OpenMaker-Dev/openmaker/issues/227)): there,
+  and wherever the account is not elevated, creating, changing, deleting,
+  truncating, setting a global field or a next serial value and finding
+  fail with 9, and reading a field is calculation error 9 (`?`, not
+  FileMaker's `<No Access>` text).
   Each edit is checked against the
   privileges of the step making it: a record an elevated caller opened
   (changed and not yet committed) is still refused to its sub-script
