@@ -328,6 +328,20 @@ pub(crate) struct ContainerSelection {
     pub row: Option<ContainerRow>,
 }
 
+impl ContainerSelection {
+    pub(crate) fn is_interactive(&self, session: &Session) -> bool {
+        let crate::session::RenderState::Loaded(render) = &session.render else {
+            return false;
+        };
+        self.row.is_none()
+            && render
+                .layout
+                .objects
+                .get(self.object)
+                .is_some_and(container::is_interactive)
+    }
+}
+
 /// The portal row of a selected related container: of portal `portal`
 /// (of `occurrence`), row `number`, showing `record`, or no record
 /// (`NO_RECORD`) for the row `unsaved` names.

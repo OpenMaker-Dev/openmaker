@@ -60,6 +60,8 @@ pub(crate) struct MenuContext<'a> {
     pub container: bool,
     /// ...and the record may be changed: Insert's Picture and File.
     pub container_insert: bool,
+    /// The selection is optimized for interactive content outside portal rows.
+    pub container_interactive: bool,
     pub client_license: bool,
     /// Layout mode has a field placed with the Field tool and not yet
     /// saved (Save Layout, Revert Layout).
@@ -538,13 +540,18 @@ fn insert_menu(rows: &mut dyn MenuRows, context: &MenuContext<'_>, actions: &mut
     // Editing only and Minimum leave both out (FileMaker Pro 26.0.3,
     // #651's reading).
     let insert = context.container_insert && context.full_menus();
-    for (label, step) in [
-        ("Picture...", steps::INSERT_PICTURE),
-        ("Audio/Video...", steps::INSERT_AUDIO_VIDEO),
-        ("PDF...", steps::INSERT_PDF),
-        ("File...", steps::INSERT_FILE),
+    let insert_interactive = insert && context.container_interactive;
+    for (label, step, enabled) in [
+        ("Picture...", steps::INSERT_PICTURE, insert),
+        (
+            "Audio/Video...",
+            steps::INSERT_AUDIO_VIDEO,
+            insert_interactive,
+        ),
+        ("PDF...", steps::INSERT_PDF, insert_interactive),
+        ("File...", steps::INSERT_FILE, insert),
     ] {
-        if rows.item(label, None, false, insert) {
+        if rows.item(label, None, false, enabled) {
             actions.push(Action::Step(step, 0));
         }
     }

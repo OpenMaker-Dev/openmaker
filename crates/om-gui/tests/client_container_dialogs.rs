@@ -19,7 +19,7 @@ use std::path::{Path, PathBuf};
 
 use egui::accesskit::Toggled;
 use egui::Role;
-use egui_kittest::kittest::{NodeT as _, Queryable};
+use egui_kittest::kittest::{By, NodeT as _, Queryable};
 use egui_kittest::Harness;
 use fixture::{OCCURRENCE, PHOTO, TABLE};
 use om_data::{DataError, DataProvider};
@@ -331,21 +331,11 @@ fn the_menus_insert_and_export_the_selected_container_field() {
     hosted::replace(&mut app, "Name", "Shipped");
     select_photo(&mut app);
     assert_eq!(name(&app).as_deref(), Some("Shipped"));
-    for item in ["Picture...", "Audio/Video...", "PDF...", "File..."] {
+    for item in ["Picture...", "File..."] {
         assert!(menu_enabled(&mut app, "Insert", item), "{item}");
     }
-    // Insert > PDF... and Audio/Video... ask as their steps do.
-    for (item, title) in [
-        ("PDF...", "Insert PDF"),
-        ("Audio/Video...", "Insert Audio/Video"),
-    ] {
-        choose(&mut app, "Insert", item);
-        common::wait_for_label(&mut app, title);
-        app.key_press(egui::Key::Escape);
-        settle(&mut app);
-        assert!(app.query_by_label(title).is_none());
-        assert_eq!(count(&hosted, 2), None);
-        select_photo(&mut app);
+    for item in ["Audio/Video...", "PDF..."] {
+        assert!(!menu_enabled(&mut app, "Insert", item), "{item}");
     }
 
     // Cancel: nothing uploaded, nothing stored, the typing kept.
@@ -424,6 +414,59 @@ fn the_menus_insert_and_export_the_selected_container_field() {
     settle(&mut app);
     assert_eq!(std::fs::read(&again).unwrap(), blob());
     assert_eq!(count(&hosted, 1), Some(1));
+}
+
+/// The Insert commands for interactive containers reject the wrong file
+/// type before starting an edit, while Cancel leaves the attachment intact.
+#[test]
+fn interactive_container_menus_preserve_the_attachment_on_rejection() {
+    let temporary = tempfile::tempdir().unwrap();
+    let source = temporary.path().join("note.txt");
+    std::fs::write(&source, b"not a PDF or media file").unwrap();
+    let hosted = host(
+        "interactive-container-menus",
+        &tree(&[], |root| {
+            let layout = uint_segment(fixture::LAYOUT);
+            let object = serial::encode(PHOTO_OBJECT);
+            let mut format = vec![0; 213];
+            format[210..212].copy_from_slice(
+                &(om_layout::GraphicFormat::DEFAULT.0 | om_layout::GraphicFormat::INTERACTIVE)
+                    .to_be_bytes(),
+            );
+            root.put(
+                &[&[4], &[5], &layout, &[5], &object, &[13]],
+                OwnedNode::leaf(Vec::new(), format),
+            );
+        }),
+    );
+    let mut app = open(&hosted);
+    for (item, title) in [
+        ("PDF...", "Insert PDF"),
+        ("Audio/Video...", "Insert Audio/Video"),
+    ] {
+        for cancel in [true, false] {
+            select_photo(&mut app);
+            assert!(menu_enabled(&mut app, "Insert", item), "{item}");
+            choose(&mut app, "Insert", item);
+            common::wait_for_label(&mut app, title);
+            if cancel {
+                app.key_press(egui::Key::Escape);
+            } else {
+                common::fill(&mut app, "File:", source.to_str().unwrap());
+                press(&mut app, "Insert");
+                common::wait_until(&mut app, "the wrong-file-type alert", |app| {
+                    app.query(By::new().label_contains("(error 700)")).is_some()
+                });
+                app.key_press(egui::Key::Enter);
+            }
+            settle(&mut app);
+            assert!(app.query_by_label(title).is_none());
+            assert_eq!(photo_shows(&app), "photo2.png");
+            assert!(!common::editing(&app));
+            assert_eq!(stored(&hosted)[0].1, reference(1));
+            assert_eq!((count(&hosted, 1), count(&hosted, 2)), (Some(1), None));
+        }
+    }
 }
 
 /// Insert File, Insert Picture and Export Field Contents without a path

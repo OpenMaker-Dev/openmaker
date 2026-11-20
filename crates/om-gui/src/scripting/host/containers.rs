@@ -17,7 +17,8 @@
 //! steps do not run on FileMaker Server, so its engine cannot settle them):
 //! 100 no path names a file, 826 an invalid path, 102 no active field, 413
 //! a field that is not a container, 734 a file Insert Picture cannot show
-//! as a picture, 2 a file over [`MAX_INSERT`].
+//! as a picture, 700 a file of the wrong type for Insert PDF or Insert
+//! Audio/Video, 2 a file over [`MAX_INSERT`].
 //!
 //! A step without a path asks for the file in an in-app dialog
 //! ([`Prompt::ContainerFile`]; a path, not the system's file panel), once
@@ -59,6 +60,8 @@ pub(super) const MAX_INSERT: u64 = 1 << 30;
 const NOT_A_CONTAINER: i32 = 413;
 /// "This file type cannot be displayed as a picture".
 const NOT_A_PICTURE: i32 = 734;
+/// "File is of the wrong file type for import".
+const WRONG_FILE_TYPE: i32 = 700;
 /// Out of memory.
 const TOO_LARGE: i32 = 2;
 
@@ -301,6 +304,7 @@ impl WorkerHost<'_> {
             let documents = self.s.file.data_files.folders.documents.clone();
             files::existing(&lines, &documents, false)?
         };
+        let container = read_inserted(&path, request.kind)?;
         let target = self.related_target(field.occurrence)?;
         let mixed = self.s.file.window.state.uncommitted.session
             && (self.s.file.window.state.uncommitted.new
@@ -388,7 +392,6 @@ impl WorkerHost<'_> {
                 }
             }
         }
-        let container = read_inserted(&path, request.kind)?;
         let reference = self
             .p()
             .related_container_reference(table, def.id, &container)
@@ -795,8 +798,21 @@ fn read_inserted(path: &Path, kind: InsertKind) -> Result<Container, ErrorCode> 
         .map(|n| n.to_string_lossy().into_owned())
         .unwrap_or_default();
     let value = om_data::calc::functions::typed_file(&name, &name, bytes, None);
-    if kind == InsertKind::Picture && value.path_type != Some("image") {
-        return Err(ErrorCode(NOT_A_PICTURE));
+    match kind {
+        InsertKind::Picture if value.path_type != Some("image") => {
+            return Err(ErrorCode(NOT_A_PICTURE));
+        }
+        InsertKind::Pdf
+            if !value
+                .main_stream()
+                .is_some_and(|(kind, _)| kind.0 == *b"PDF ") =>
+        {
+            return Err(ErrorCode(WRONG_FILE_TYPE));
+        }
+        InsertKind::AudioVideo if value.path_type != Some("movie") => {
+            return Err(ErrorCode(WRONG_FILE_TYPE));
+        }
+        _ => {}
     }
     Ok(value)
 }

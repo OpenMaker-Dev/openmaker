@@ -1221,17 +1221,22 @@ impl OpenMakerApp {
     /// menu").
     pub(super) fn menu_bar(&self, ui: &mut Ui, input: bool, actions: &mut Vec<Action>) {
         let window_title = self.window_title();
-        let container = input
-            && !self.script.busy()
-            && self.script.prompt.is_none()
-            && self.w.mode == Mode::Browse
-            && self.w.connection_lost.is_none()
-            && !self.w.document.pending
-            && self
-                .w
-                .session
-                .as_ref()
-                .is_some_and(|session| self.w.document.selected_container(session).is_some());
+        let selection = self.w.session.as_ref().and_then(|session| {
+            if input
+                && !self.script.busy()
+                && self.script.prompt.is_none()
+                && self.w.mode == Mode::Browse
+                && self.w.connection_lost.is_none()
+                && !self.w.document.pending
+            {
+                self.w
+                    .document
+                    .selected_container(session)
+                    .map(|selection| (selection, session))
+            } else {
+                None
+            }
+        });
         let windows: Vec<_> = self
             .window_list
             .iter()
@@ -1295,16 +1300,13 @@ impl OpenMakerApp {
                     && !self.script.busy()
                     && self.script.prompt.is_none()
                     && self.can_import_records(),
-                container,
+                container: selection.is_some(),
                 // A related container's row was checked as it was selected.
-                container_insert: container
-                    && (self.w.record_capabilities.update
-                        || self.w.session.as_ref().is_some_and(|session| {
-                            self.w
-                                .document
-                                .selected_container(session)
-                                .is_some_and(|selection| selection.row.is_some())
-                        })),
+                container_insert: selection.is_some_and(|(selection, _)| {
+                    self.w.record_capabilities.update || selection.row.is_some()
+                }),
+                container_interactive: selection
+                    .is_some_and(|(selection, session)| selection.is_interactive(session)),
                 client_license: self.client_license,
                 layout_edit: self.w.mode == Mode::Layout
                     && self.w.layout_workspace.has_changes()

@@ -527,21 +527,18 @@ authoring part tabs or object kind captions.
   look is OpenMaker's own [I: FileMaker Pro's interactive container is
   unmeasured]. A container optimized for images shows a PDF's first page
   as above.
-- Such a container's audio and video (Insert Audio/Video's `movie` path,
-  or a file named as audio or video) play in the web viewer engine
-  (`container::paint_media`, #200): WebKitGTK with the `web-viewer`
-  feature, which plays through GStreamer and shows its own controls. The
-  data is copied to a folder only its user may read, removed with the
-  window, and the engine is placed over the field as a web viewer is, for
-  the current record only. It opens a page beside the copy whose media
-  element starts by itself only when the container's "Start playback
-  automatically" (`0x0200`, `GraphicFormat::autoplay`) is set (#1338);
-  otherwise it waits for the engine's play control. Without the engine (a
-  build without the feature, a window other than the file's first, a
-  display without X11) the file shows with a one-line note saying why it
-  does not play. The
-  engine is OpenMaker's choice [I: FileMaker Pro plays through the
-  system's media view, unmeasured].
+- An interactive container's audio and video play on the current record
+  in Form or List view outside portal rows. Playback uses the native web
+  viewer in builds with `web-viewer` (WebKitGTK on Linux/X11, including
+  XWayland, or WKWebView on macOS). The audio or video is copied to a
+  folder only its user may read and removed with the window. The player
+  starts automatically when the container's "Start playback
+  automatically" bit is set (`0x0200`, `GraphicFormat::autoplay`,
+  #1338). A window without a player shows the filename and a note.
+- The Insert menu offers PDF and Audio/Video for a selected, writable
+  interactive container outside portal rows. The typed-path dialogs
+  reject a file whose name indicates a different type before they
+  prepare an edit or upload data. [Container menus and file dialogs](re/containers.md#desktop-menus-and-file-dialogs-2026-11-02)
 - Button icons come from the file's library root `31` as the original SVG,
   colored through the icon component's style; no application icon is
   substituted for a file's library image.
