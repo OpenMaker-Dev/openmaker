@@ -364,11 +364,17 @@ static picture.
   most the picture's pixels, runs one at a time, and takes any failure for
   an SVG that does not draw (error 3). Without the worker beside om-gui,
   SVG pictures refuse. Preview waits for none of this: a picture or button
-  icon not drawn yet is drawn from a thread of its own while the page shows
-  "Loading report pictures…" and the window keeps painting and taking input;
-  the page is drawn once it is (and kept with Preview's other pictures).
-  Save Records as PDF and Print, which run in the script worker, draw in
-  line. Before building the tree the worker refuses input
+  icon not drawn yet is drawn on the Preview session's drawing thread while
+  the page shows "Loading report pictures…" and the window keeps painting
+  and taking input; the finished drawing asks for a repaint, and the page is
+  drawn then (the picture kept with Preview's other pictures). The thread
+  draws one picture at a time and runs only while some wait. At most four
+  wait, a newer request dropping the oldest (asked for again if its page is
+  shown again), and at most eight finished pictures wait to be taken.
+  Clearing Preview's pictures (another snapshot of the layout) or closing
+  the session throws away what waits and what the drawing under way makes.
+  A drawing that fails, panics included, is the picture's error. Save
+  Records as PDF and Print, which run in the script worker, draw in line. Before building the tree the worker refuses input
   past 4 MiB (expanded for SVGZ) or 50,000 XML nodes, XML entity
   declarations, `<image>` (resvg is built without raster decoding) and
   `use`/`feImage` references outside the picture; for Browse and button

@@ -1058,54 +1058,167 @@ pub(crate) struct Pictures(
     Option<Drawing>,
 );
 
-/// The SVG pictures and icons being drawn apart.
+/// What is drawn apart: a static picture or a button icon, by its cache
+/// key.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord)]
+enum ApartKey {
+    Picture(PictureKey),
+    Icon(IconKey),
+}
+
+/// A drawing waiting for the drawing thread.
+type ApartJob = Box<dyn FnOnce(&LibraryImage) -> Result<Arc<Picture>, ReportError> + Send>;
+
+/// How many drawings wait at most: a request past them drops the oldest,
+/// most likely for a page or layout no longer shown (it is asked for again
+/// if it is).
+const APART_QUEUED: usize = 4;
+/// How many drawn pictures wait at most to be taken; the oldest goes first.
+const APART_DRAWN: usize = 8;
+
+/// The SVG pictures and icons of one Preview session drawn apart, one at a
+/// time, on a thread that runs while there is something to draw. Every
+/// change is made under one lock, so a picture is drawn once however many
+/// frames ask for it, and taken once it is.
 #[derive(Default)]
-pub(crate) struct Drawing {
-    pictures: Arc<Apart<PictureKey>>,
-    icons: Arc<Apart<IconKey>>,
+pub(crate) struct Drawing(Arc<Apart>);
+
+#[derive(Default)]
+struct Apart {
+    state: Mutex<ApartState>,
 }
 
-/// Pictures drawn on threads of their own, by key: those drawn and not
-/// taken yet, and those being drawn.
-pub(crate) struct Apart<K> {
-    drawn: Mutex<BTreeMap<K, DecodedPicture>>,
-    busy: Mutex<BTreeSet<K>>,
+#[derive(Default)]
+struct ApartState {
+    /// Drawn and not taken yet, oldest first, at most [`APART_DRAWN`].
+    drawn: std::collections::VecDeque<(ApartKey, DecodedPicture)>,
+    /// Waiting, oldest first, at most [`APART_QUEUED`].
+    queued: std::collections::VecDeque<(ApartKey, LibraryImage, ApartJob)>,
+    /// Being drawn now.
+    drawing: Option<ApartKey>,
+    /// Whether the drawing thread runs.
+    running: bool,
+    /// Bumped when the pictures are cleared: a drawing started before is
+    /// thrown away.
+    generation: u64,
+    /// The session is gone: nothing more is drawn or kept.
+    closed: bool,
+    /// Called after each drawing is kept, for Preview to draw its page.
+    notify: Option<Arc<dyn Fn() + Send + Sync>>,
 }
 
-impl<K> Default for Apart<K> {
-    fn default() -> Self {
-        Apart {
-            drawn: Mutex::default(),
-            busy: Mutex::default(),
-        }
-    }
-}
-
-impl<K: Ord + Copy + Send + 'static> Apart<K> {
-    /// The picture `draw` made of `image` for `key`, once drawn (taken out
-    /// of here for the caller's cache); pending until then, the drawing
-    /// started once. A drawing of bytes the layout no longer has is drawn
-    /// again.
+impl Drawing {
+    /// The picture `draw` makes of `image` for `key`, once drawn (taken out
+    /// of here for the caller's cache); pending until then. A drawing of
+    /// bytes the layout no longer has is drawn again.
     fn take_or_start(
-        apart: &Arc<Apart<K>>,
-        key: K,
+        &self,
+        key: ApartKey,
         image: &LibraryImage,
         draw: impl FnOnce(&LibraryImage) -> Result<Arc<Picture>, ReportError> + Send + 'static,
     ) -> Result<Arc<Picture>, ReportError> {
-        if let Some((source, picture)) = lock(&apart.drawn).remove(&key) {
-            if source == *image {
-                return picture;
+        let mut state = lock(&self.0.state);
+        if let Some(at) = state.drawn.iter().position(|(k, _)| *k == key) {
+            if let Some((_, (source, picture))) = state.drawn.remove(at) {
+                if source == *image {
+                    return picture;
+                }
             }
         }
-        if lock(&apart.busy).insert(key) {
-            let (apart, image) = (Arc::clone(apart), image.clone());
-            std::thread::spawn(move || {
-                let picture = draw(&image);
-                lock(&apart.drawn).insert(key, (image, picture));
-                lock(&apart.busy).remove(&key);
-            });
+        if state.drawing == Some(key) || state.queued.iter().any(|(k, _, _)| *k == key) {
+            return Err(drawing_pictures());
+        }
+        if state.queued.len() >= APART_QUEUED {
+            state.queued.pop_front();
+        }
+        state.queued.push_back((key, image.clone(), Box::new(draw)));
+        if !state.running {
+            let apart = Arc::clone(&self.0);
+            match std::thread::Builder::new()
+                .name("om-preview-pictures".into())
+                .spawn(move || apart.run())
+            {
+                Ok(_) => state.running = true,
+                Err(error) => {
+                    state.queued.clear();
+                    return Err(ReportError::unsupported(format!(
+                        "Preview could not start drawing its pictures: {error}"
+                    )));
+                }
+            }
         }
         Err(drawing_pictures())
+    }
+
+    /// Calls `notify` after each drawing is kept, once one is set.
+    fn on_drawn(&self, notify: impl FnOnce() -> Arc<dyn Fn() + Send + Sync>) {
+        let mut state = lock(&self.0.state);
+        if state.notify.is_none() {
+            state.notify = Some(notify());
+        }
+    }
+
+    /// Throws away what is drawn and waiting, and the drawing under way
+    /// when it ends.
+    fn clear(&self) {
+        let mut state = lock(&self.0.state);
+        state.generation = state.generation.wrapping_add(1);
+        state.drawn.clear();
+        state.queued.clear();
+    }
+}
+
+impl Drop for Drawing {
+    fn drop(&mut self) {
+        let mut state = lock(&self.0.state);
+        state.closed = true;
+        state.drawn.clear();
+        state.queued.clear();
+        state.notify = None;
+    }
+}
+
+impl Apart {
+    /// The drawing thread: draws what waits, oldest first, and ends when
+    /// nothing does. A drawing that panics is an error, so its picture
+    /// never stays pending.
+    fn run(&self) {
+        loop {
+            let (key, image, job, generation) = {
+                let mut state = lock(&self.state);
+                match state.queued.pop_front() {
+                    Some((key, image, job)) if !state.closed => {
+                        state.drawing = Some(key);
+                        (key, image, job, state.generation)
+                    }
+                    _ => {
+                        state.running = false;
+                        return;
+                    }
+                }
+            };
+            let picture = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| job(&image)))
+                .unwrap_or_else(|_| {
+                    Err(ReportError::unsupported(
+                        "A report picture could not be drawn",
+                    ))
+                });
+            let notify = {
+                let mut state = lock(&self.state);
+                state.drawing = None;
+                if state.closed || state.generation != generation {
+                    continue;
+                }
+                if state.drawn.len() >= APART_DRAWN {
+                    state.drawn.pop_front();
+                }
+                state.drawn.push_back((key, (image, picture)));
+                state.notify.clone()
+            };
+            if let Some(notify) = notify {
+                notify();
+            }
+        }
     }
 }
 
@@ -1195,11 +1308,12 @@ fn icon_square(object: &LayoutObject, bounds: &Rect, label: &str) -> Option<Rect
     })
 }
 impl Pictures {
-    /// Preview's pictures: an SVG picture not drawn yet is drawn in the SVG
-    /// worker from a thread of its own, which can take seconds
-    /// (`svg_worker`), and the page is pending ([`drawing_pictures`]) until
-    /// it is, so the window keeps painting and taking input meanwhile. PDF
-    /// and Print draw in line ([`Pictures::default`]).
+    /// Preview's pictures: an SVG picture or icon not drawn yet is drawn in
+    /// the SVG worker from the session's drawing thread ([`Drawing`]), which
+    /// can take seconds (`svg_worker`), and the page is pending
+    /// ([`drawing_pictures`]) until it is, so the window keeps painting and
+    /// taking input meanwhile. PDF and Print draw in line
+    /// ([`Pictures::default`]).
     pub fn drawn_apart() -> Pictures {
         Pictures(
             Default::default(),
@@ -1214,8 +1328,15 @@ impl Pictures {
         self.1.get_mut().clear();
         self.2.get_mut().clear();
         if let Some(drawing) = &self.3 {
-            lock(&drawing.pictures.drawn).clear();
-            lock(&drawing.icons.drawn).clear();
+            drawing.clear();
+        }
+    }
+
+    /// Has `notify` made (once) and called after each picture drawn apart
+    /// is ready: Preview asks for a repaint then, rather than polling.
+    pub fn on_drawn(&self, notify: impl FnOnce() -> Arc<dyn Fn() + Send + Sync>) {
+        if let Some(drawing) = &self.3 {
+            drawing.on_drawn(notify);
         }
     }
 
@@ -1246,7 +1367,7 @@ impl Pictures {
         }
         let picture = match (image.format, &self.3) {
             (LibraryImageFormat::Svg, Some(drawing)) => {
-                match Apart::take_or_start(&drawing.icons, cache_key, image, move |image| {
+                match drawing.take_or_start(ApartKey::Icon(cache_key), image, move |image| {
                     rasterize_icon(key, image, tint, side).map(Arc::new)
                 }) {
                     Err(error) if error.code == -1 => return Err(error),
@@ -1314,7 +1435,7 @@ impl Pictures {
         }
         let picture = match (&self.3, size) {
             (Some(drawing), Some(_)) => {
-                match Apart::take_or_start(&drawing.pictures, cache_key, image, move |image| {
+                match drawing.take_or_start(ApartKey::Picture(cache_key), image, move |image| {
                     static_picture::decode(key, image, size).map(Arc::new)
                 }) {
                     Err(error) if error.code == -1 => return Err(error),
@@ -4254,9 +4375,9 @@ pub(crate) mod tests {
     }
 
     /// Preview's pictures draw an SVG apart: reads are pending (code -1)
-    /// while the drawing thread runs, and a later one takes its picture,
-    /// the one PDF and Print's pictures draw in line; then it is kept like
-    /// any other.
+    /// while the drawing thread runs, the finished drawing calls for a
+    /// repaint, and the next read takes its picture, the one PDF and
+    /// Print's pictures draw in line; then it is kept like any other.
     #[test]
     fn preview_draws_svg_pictures_apart_and_reads_them_pending_meanwhile() {
         let mut layout = Layout::default();
@@ -4270,22 +4391,73 @@ pub(crate) mod tests {
         let object = picture(1, 77, at(0.0, 0.0, 8.0, 8.0));
         let in_line = Pictures::default().get(&layout, &object).unwrap();
         let apart = Pictures::drawn_apart();
+        let (sender, repaint) = std::sync::mpsc::channel();
+        apart.on_drawn(|| {
+            Arc::new(move || {
+                let _ = sender.send(());
+            })
+        });
         assert_eq!(apart.get(&layout, &object).unwrap_err().code, -1);
-        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(30);
-        let drawn = loop {
-            match apart.get(&layout, &object) {
-                Err(error) if error.code == -1 => {
-                    assert!(std::time::Instant::now() < deadline, "never drawn");
-                    std::thread::sleep(std::time::Duration::from_millis(10));
-                }
-                drawn => break drawn.unwrap(),
-            }
-        };
+        // Asked again while it is drawn, it is not drawn twice.
+        assert_eq!(apart.get(&layout, &object).unwrap_err().code, -1);
+        repaint
+            .recv_timeout(std::time::Duration::from_secs(30))
+            .expect("drawn");
+        let drawn = apart.get(&layout, &object).unwrap();
         assert_eq!(
             (drawn.width, drawn.height, &drawn.rgba),
             (in_line.width, in_line.height, &in_line.rgba)
         );
         assert!(Arc::ptr_eq(&apart.get(&layout, &object).unwrap(), &drawn));
+        assert!(repaint.try_recv().is_err());
+    }
+
+    /// A drawing that panics is its picture's error rather than pending
+    /// for ever, and one under way when the pictures are cleared is thrown
+    /// away: nothing is kept or announced, and the picture is drawn again
+    /// when asked for.
+    #[test]
+    fn drawings_apart_end_in_an_error_or_are_thrown_away_when_cleared() {
+        let drawing = Drawing::default();
+        let (sender, repaint) = std::sync::mpsc::channel();
+        drawing.on_drawn(|| {
+            Arc::new(move || {
+                let _ = sender.send(());
+            })
+        });
+        let image = LibraryImage {
+            format: LibraryImageFormat::Svg,
+            data: b"<svg/>".to_vec(),
+        };
+        let wait = std::time::Duration::from_secs(30);
+        let panicking = ApartKey::Picture((1, None));
+        let pending = drawing.take_or_start(panicking, &image, |_| panic!("drawing"));
+        assert_eq!(pending.unwrap_err().code, -1);
+        repaint.recv_timeout(wait).expect("drawn");
+        let failed = drawing.take_or_start(panicking, &image, |_| unreachable!());
+        assert_eq!(failed.unwrap_err().code, 3);
+        let cleared = ApartKey::Picture((2, None));
+        let (release, gate) = std::sync::mpsc::channel::<()>();
+        let pending = drawing.take_or_start(cleared, &image, move |_| {
+            let _ = gate.recv();
+            Err(ReportError::unsupported("never kept"))
+        });
+        assert_eq!(pending.unwrap_err().code, -1);
+        let until = |done: &dyn Fn(&ApartState) -> bool| {
+            let deadline = std::time::Instant::now() + wait;
+            while !done(&lock(&drawing.0.state)) {
+                assert!(std::time::Instant::now() < deadline);
+                std::thread::yield_now();
+            }
+        };
+        until(&|state| state.drawing == Some(cleared));
+        drawing.clear();
+        release.send(()).unwrap();
+        until(&|state| !state.running);
+        assert!(lock(&drawing.0.state).drawn.is_empty());
+        assert!(repaint.try_recv().is_err());
+        let again = drawing.take_or_start(cleared, &image, |_| Err(ReportError::unsupported("x")));
+        assert_eq!(again.unwrap_err().code, -1);
     }
 
     #[test]

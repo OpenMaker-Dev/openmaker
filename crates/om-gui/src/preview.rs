@@ -114,6 +114,11 @@ pub(crate) fn show(
         return;
     }
     let pictures = session.report_pictures();
+    // A picture drawn apart asks for the repaint that draws its page.
+    pictures.on_drawn(|| {
+        let ctx = ui.ctx().clone();
+        std::sync::Arc::new(move || ctx.request_repaint())
+    });
     let scene = report::prepare_page(
         &document.layout,
         &plan,
@@ -131,15 +136,13 @@ pub(crate) fn show(
     let scene = match scene {
         Ok(scene) => scene,
         Err(error) => {
-            if error.code == -1 {
-                // Pending: a picture being drawn apart, or data on its way,
-                // which a repaint will find.
-                ui.ctx()
-                    .request_repaint_after(std::time::Duration::from_millis(100));
-                ui.label(error.message);
+            // Pending: a picture being drawn apart, whose drawing asks for
+            // the repaint (`on_drawn`), or data on its way.
+            ui.label(if error.code == -1 {
+                error.message
             } else {
-                ui.label(format!("Preview unavailable: {}", error.message));
-            }
+                format!("Preview unavailable: {}", error.message)
+            });
             return;
         }
     };
