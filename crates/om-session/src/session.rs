@@ -380,6 +380,16 @@ const RELEASE_WAIT: Duration = Duration::from_secs(2);
 /// How many times that release is sent before it is left to the host.
 const RELEASE_ATTEMPTS: u8 = 3;
 
+/// How the host took a release ([`Wire::send_release`]).
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum Release {
+    Answered,
+    /// Sent whole, and not answered within [`RELEASE_WAIT`].
+    Unanswered,
+    /// Not all sent, or the connection is gone: it is lost.
+    Lost,
+}
+
 /// Who a Login admitted a file for: an opaque digest of the account and
 /// password, which the caller computes, never the credentials. A handle
 /// holds a file another handle opened only for the same admission
@@ -1212,12 +1222,12 @@ impl Session {
                 return Err(SessionError::FileHeld);
             }
             // A release still queued for an earlier open of the file, which
-            // the host disconnected, is that open's, and is not sent: the
-            // host reopened the file only once no client held it, and it
-            // reuses the file's id, so it would take the release for this
-            // open. Dropped here, before the Open goes out, under the lock
-            // every release is sent under.
-            wire.pending_release.retain(|(_, held, _)| *held != name);
+            // the host disconnected, goes out now, under the lock the Open
+            // goes out under, so that the host takes it before the Open:
+            // later it would take it for this open, as it reuses the file's
+            // id. Not answered in time, it still came first; not all sent,
+            // it lost the connection, and the Open fails with it.
+            wire.release_pending_now(&name);
             if wire.held(key, &name).is_none() {
                 wire.files.push(HeldFile {
                     name,
@@ -2497,53 +2507,79 @@ impl Wire {
     /// drops a connection still holding the file after its own wait.
     fn release_pending(&mut self) {
         for (file_id, name, attempts) in std::mem::take(&mut self.pending_release) {
-            if self.transport().is_err() {
-                return;
-            }
-            let connection_id = self.connection_id;
-            let request = write::Unlock::close_file(file_id as i32);
-            let transaction = write::build_unlock(self.take_file_transaction(), file_id, &request);
-            let id = self.take_request_id();
-            let deadline = Instant::now() + RELEASE_WAIT;
-            let Wire {
-                transport, inbox, ..
-            } = self;
-            let Some(transport) = transport.as_mut() else {
-                return;
-            };
-            let _ = transport.set_write_deadline(Some(deadline));
-            let sent = transport.send(&build_perform(id, connection_id, b"", &transaction));
-            let _ = transport.set_write_deadline(None);
-            // A release not all sent may leave part of it in the stream:
-            // nothing more can follow it on the connection.
-            if let Err(error) = sent {
-                self.lose(format!(
-                    "the host stopped taking the client's release ({error})"
-                ));
-                return;
-            }
-            let reply = recv_reply_message(transport, id, inbox, Wait::Until(deadline));
-            self.last_request = Instant::now();
-            match reply {
-                Ok(msg) => {
-                    if let Ok(perform) = om_protocol::parse_perform_reply(&msg) {
-                        if let Some(notifications) =
-                            write::parse_notification_backchannel(&perform.backchannel)
-                        {
-                            self.inbox.receive(notifications);
-                        }
-                    }
-                }
-                // Sent whole, not answered in time: tried again later.
-                Err(SessionError::Transport(error)) if error.is_timeout() => {
+            match self.send_release(file_id) {
+                Release::Answered => {}
+                Release::Unanswered => {
                     if attempts + 1 < RELEASE_ATTEMPTS {
                         self.pending_release.push((file_id, name, attempts + 1));
                     }
                 }
-                Err(error) => {
-                    let _ = self.check(error);
-                    return;
+                Release::Lost => return,
+            }
+        }
+    }
+
+    /// The queued releases of the file held as `name`, sent now, ahead of
+    /// an Open of it ([`Session::open_file`]), and taken off the queue
+    /// however the host answers: they reach it first.
+    fn release_pending_now(&mut self, name: &str) {
+        let (now, later): (Vec<_>, Vec<_>) = std::mem::take(&mut self.pending_release)
+            .into_iter()
+            .partition(|(_, held, _)| held == name);
+        self.pending_release = later;
+        for (file_id, ..) in now {
+            if self.send_release(file_id) == Release::Lost {
+                return;
+            }
+        }
+    }
+
+    /// Send one release of host file `file_id` ([`Self::release_pending`]):
+    /// written and answered within [`RELEASE_WAIT`].
+    fn send_release(&mut self, file_id: u32) -> Release {
+        if self.transport().is_err() {
+            return Release::Lost;
+        }
+        let connection_id = self.connection_id;
+        let request = write::Unlock::close_file(file_id as i32);
+        let transaction = write::build_unlock(self.take_file_transaction(), file_id, &request);
+        let id = self.take_request_id();
+        let deadline = Instant::now() + RELEASE_WAIT;
+        let Wire {
+            transport, inbox, ..
+        } = self;
+        let Some(transport) = transport.as_mut() else {
+            return Release::Lost;
+        };
+        let _ = transport.set_write_deadline(Some(deadline));
+        let sent = transport.send(&build_perform(id, connection_id, b"", &transaction));
+        let _ = transport.set_write_deadline(None);
+        // A release not all sent may leave part of it in the stream:
+        // nothing more can follow it on the connection.
+        if let Err(error) = sent {
+            self.lose(format!(
+                "the host stopped taking the client's release ({error})"
+            ));
+            return Release::Lost;
+        }
+        let reply = recv_reply_message(transport, id, inbox, Wait::Until(deadline));
+        self.last_request = Instant::now();
+        match reply {
+            Ok(msg) => {
+                if let Ok(perform) = om_protocol::parse_perform_reply(&msg) {
+                    if let Some(notifications) =
+                        write::parse_notification_backchannel(&perform.backchannel)
+                    {
+                        self.inbox.receive(notifications);
+                    }
                 }
+                Release::Answered
+            }
+            // Sent whole, not answered in time.
+            Err(SessionError::Transport(error)) if error.is_timeout() => Release::Unanswered,
+            Err(error) => {
+                let _ = self.check(error);
+                Release::Lost
             }
         }
     }
