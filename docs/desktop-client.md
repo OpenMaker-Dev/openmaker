@@ -1017,6 +1017,55 @@ Inferred, unmeasured in Pro:
 - **Not handled:** a field whose "Go to next object using" has Tab turned
   off; that is unmeasured in Pro too.
 
+**The Insert menu.** With a text field of the record entered in Browse,
+Insert > Current Date (⌘-), Current Time (⌘;), Current User Name (⇧⌘N),
+From Index... (⌘I) and From Last Visited Record (⌘') run their script
+steps (13, 14, 60, 11 and 12) on that field, at its insertion point and
+over its selection. A click on the menu bar or on an open menu leaves the
+field entered with its selection, as FileMaker Pro leaves it, and after the
+step the insertion point is after what was inserted. Any other menu
+command (View > Find Mode, Records > New Record, ...) ends the field's
+editing first: its OnObjectValidate, OnObjectSave and OnObjectExit run,
+and the command runs once they let it go, as a click on a button does;
+one refusing keeps the field entered and the command undone. Scripts read
+the user's selection in the field too (`Get ( ActiveSelectionStart )`,
+`Get ( ActiveSelectionSize )`, the Insert steps); Select All, Set
+Selection and the Insert steps leave theirs in the editor, and Set
+Selection into another field shows when its editor takes the focus.
+Limits:
+- Find mode's criteria and Table view's cells take none of them yet; a
+  container field selected takes Picture and File only.
+- From Last Visited Record replaces the field's text, as its step does here
+  (whether FileMaker Pro pastes it at the insertion point instead is
+  unmeasured).
+- That Editing only menus keep the five is inferred, and they run there,
+  as Copy's record copy does; Minimum leaves them out, as it leaves out
+  Export Field Contents.
+- While edit preparation holds a menu command's field exit, later menu
+  choices are ignored. File > Close can still cancel the pending edit.
+- An Insert shortcut typed in the same frame as other keys runs its step
+  after the editor took those keys.
+- ⌘- inserts the date while a field is entered and zooms out otherwise;
+  FileMaker Pro's own shortcut for Zoom Out is unmeasured.
+
+**The Edit menu.** In the field the user is typing in, Edit > Undo and
+Redo (labelled Can't Undo and Can't Redo when there is nothing to do), Cut,
+Copy, Paste, Paste Text Only, Clear and Select All do what the field
+editor's own keys do: Undo and Redo through its typing history, Cut, Copy
+and Paste through the platform's clipboard, Clear deleting the selection
+without the clipboard. Paste Text Only pastes as Paste does, since the
+editors paste text only. With no field entered, Copy copies the current
+record (the Copy Record/Request step, 101), from the menu or ⌘C. In a
+field the account may not change, Select All and Copy work and Clear,
+Undo and Redo are refused with the alert typing gets. In Layout mode,
+Clear deletes the selected object, as before. Limits:
+- Clear, Undo and Redo from the menu change the field's text without its
+  object triggers (OnObjectModify), which typing runs.
+- Find mode's criteria, Table view's cells and portal rows' fields take
+  none of them from the menu but Cut, Copy and Paste; their editors' keys
+  still work.
+- Find/Replace and Spelling stay disabled.
+
 **Committing and reverting.** A record being edited shows no bar, as in
 FileMaker Pro 26.0.3 (#871, observed on the Tasks starter), so the layout
 keeps its place. Switching fields keeps the record's draft. A click on
@@ -1040,6 +1089,8 @@ enabled in Browse while the record has changes no commit has kept (typed
 or left by scripts, its portal rows and related fields included, or a
 new record not yet committed, untouched too) and no save of it is in
 flight, and disabled while edits wait for Keep or Discard My Changes.
+With a field active, Revert runs OnObjectExit and OnRecordRevert as
+applicable, skipping the field's save and validation triggers.
 Revert Request... is enabled while the current request has a criterion
 typed. Neither has a shortcut. The alert has no title and reads "Revert
 all changes to this record since it was last entered?" ("... to this

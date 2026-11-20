@@ -15,7 +15,7 @@ use om_data::{EditRefusal, Field, FieldKind, RecordCapabilities, RenderLayout};
 use om_layout::{Color, Layout, LayoutObject, ObjectKind, ResolvedStyle, TextRun};
 
 use crate::{
-    app::{Action, PortalClick, ViewMode},
+    app::{steps, Action, PortalClick, ViewMode},
     calc::{Evaluator, ObjectCalcState, PortalRow, SegmentName, Visibility},
     icons::{self, Icon},
     session::{PageKey, Session},
@@ -49,6 +49,31 @@ struct HeldFocus {
     object: Option<u64>,
     editor: Option<(u64, i64, u64)>,
 }
+
+/// An Edit menu command on the field the user is typing in
+/// (`DocumentState::edit_field`). Cut, Copy and Paste go to the field's
+/// editor through the platform's clipboard instead
+/// (`egui::ViewportCommand::RequestCopy`).
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) enum FieldEdit {
+    Undo,
+    Redo,
+    /// Delete the selection, as Delete does, without the clipboard.
+    Clear,
+    SelectAll,
+}
+
+/// A field editor's selection as last drawn (`DocumentState::selection`).
+struct EditorSelection {
+    field: String,
+    editor: egui::Id,
+    range: (usize, usize),
+}
+
+/// A step's selection waiting for its field's editor
+/// (`DocumentState::pending_selection`): the layout, record and field, and
+/// the selection (1-based start and length; `None` after its text).
+type PendingSelection = (u64, i64, String, Option<(u64, u64)>);
 
 /// The related records portals showed in a frame, by layout, portal and
 /// parent record (`DocumentState::portal_records`).
@@ -231,6 +256,19 @@ pub(crate) struct DocumentState {
     /// painting sets it: moving between two objects of one field is a
     /// focus change of its own.
     painted_object: Option<u64>,
+    /// The editor of the field that had the focus as last drawn, and its
+    /// selection then: the characters from `range.0` to `range.1`, either
+    /// way round (`selection`, `place_cursor`).
+    editor_selection: Option<EditorSelection>,
+    /// Why the field with the focus as last drawn refuses typing, by its
+    /// editor (`guarded_editor`): Edit's Clear, Undo and Redo are refused
+    /// there as its keys are (`edit_field`).
+    entered_refusal: Option<(egui::Id, EditRefusal)>,
+    /// A step's selection for a field whose editor does not have the focus
+    /// yet (Set Selection into another field): its 1-based start and
+    /// length, or `None` for after its text. The editor takes it as it
+    /// gets the focus (`saw`).
+    pending_selection: Option<PendingSelection>,
     /// Fields (and the objects showing them) the user changed this frame.
     changed: Vec<Focused>,
     /// A checkbox or radio button set change waiting for the set to be
@@ -847,6 +885,54 @@ impl DocumentState {
             }
     }
 
+    /// Keep field-editing commands in the field. Revert also takes the
+    /// active field so its script step can run the discard triggers.
+    /// Other menu commands surrender focus and wait for the exit triggers.
+    pub(crate) fn menu_leaves_field(&mut self, ui: &Ui, chosen: &mut Vec<Action>) {
+        if chosen.is_empty() {
+            return;
+        }
+        let preparing = self.preparing_edit() || self.failed_edit();
+        if self
+            .held_edit_actions
+            .iter()
+            .any(|action| matches!(action, Action::MenuFieldExit(_)))
+        {
+            // The first command owns the pending exit. Close remains
+            // available to cancel the pending edit and close the file.
+            chosen.retain(|action| preparing && *action == Action::CloseFile);
+            return;
+        }
+        let Some(action) = chosen.iter_mut().find(|action| {
+            let cancels_preparation = preparing && **action == Action::CloseFile;
+            !(cancels_preparation
+                || matches!(
+                    action,
+                    Action::EditField(_)
+                        | Action::Step(
+                            steps::INSERT_CURRENT_DATE
+                                | steps::INSERT_CURRENT_TIME
+                                | steps::INSERT_CURRENT_USER_NAME
+                                | steps::INSERT_FROM_INDEX
+                                | steps::INSERT_FROM_LAST_VISITED
+                                | om_data::scripts::revert_record::STEP_ID,
+                            _
+                        )
+                ))
+        }) else {
+            return;
+        };
+        if self.active.is_none() {
+            return;
+        }
+        ui.memory_mut(|memory| {
+            if let Some(editor) = memory.focused() {
+                memory.surrender_focus(editor);
+            }
+        });
+        *action = Action::MenuFieldExit(Box::new(action.clone()));
+    }
+
     pub(crate) fn hold_candidate_actions(
         &mut self,
         left: &mut Option<Focused>,
@@ -1286,6 +1372,7 @@ impl DocumentState {
     pub fn cancel_pending_focus(&mut self) {
         // A Tab's field waiting to draw: its keys go where the focus is.
         self.tab_goal = None;
+        self.pending_selection = None;
         self.portal_click = None;
         self.field_click = None;
         self.option_wait = None;
@@ -1696,6 +1783,14 @@ impl DocumentState {
     /// A script left the focus in `field` (or none): a selected container
     /// stays selected only if it is that field.
     pub fn script_focus(&mut self, field: Option<&str>) {
+        // A selection waiting for a field the focus no longer goes to.
+        if self
+            .pending_selection
+            .as_ref()
+            .is_some_and(|(_, _, pending, _)| Some(pending.as_str()) != field)
+        {
+            self.pending_selection = None;
+        }
         if self
             .container
             .as_ref()
@@ -1793,10 +1888,194 @@ impl DocumentState {
             self.seen_active = Some(field.to_owned());
             self.seen_object = object;
             self.scroll.focused(field, response.id);
+            let state = egui::TextEdit::load_state(&response.ctx, response.id);
+            // A control that is not a text editor (a set's button, a pop-up
+            // menu) has no selection: none is read from an editor left.
+            self.editor_selection = state.as_ref().map(|state| {
+                let range = state.cursor.char_range();
+                EditorSelection {
+                    field: field.to_owned(),
+                    editor: response.id,
+                    range: range.map_or((0, 0), |range| {
+                        (range.primary.index.0, range.secondary.index.0)
+                    }),
+                }
+            });
+            if let Some((layout, record, _, selection)) = self
+                .pending_selection
+                .take_if(|(_, _, pending, _)| pending == field && state.is_some())
+            {
+                self.place_cursor(&response.ctx, (layout, record), field, selection, None);
+            }
         }
         if response.changed() {
             self.changed.push((field.to_owned(), object));
         }
+    }
+
+    /// The active field `field`'s selection, 1-based start and length, as
+    /// a script reads it (`Get ( ActiveSelectionStart )`; the Insert steps
+    /// insert there).
+    pub(crate) fn selection(&self, field: &str) -> Option<(u64, u64)> {
+        let selection = self.editor_selection.as_ref()?;
+        if selection.field != field {
+            return None;
+        }
+        let (a, b) = selection.range;
+        Some((a.min(b) as u64 + 1, a.abs_diff(b) as u64))
+    }
+
+    /// The editor and buffer of the field the user is typing in on record
+    /// `record` of layout `layout` (one of the record's own fields).
+    fn entered_buffer(&self, layout: u64, record: i64) -> Option<(egui::Id, &FieldBuffer)> {
+        let selection = self.editor_selection.as_ref()?;
+        if self.active.as_deref() != Some(selection.field.as_str()) || self.active_related.is_some()
+        {
+            return None;
+        }
+        let buffer = self
+            .buffers
+            .get(&(layout, record, selection.field.clone()))?;
+        Some((selection.editor, buffer))
+    }
+
+    /// Whether Edit > Undo and Redo have a step to take back or again in
+    /// the field the user is typing in (its editor's own history).
+    pub(crate) fn field_undo(&self, ctx: &egui::Context, layout: u64, record: i64) -> (bool, bool) {
+        let Some((editor, buffer)) = self.entered_buffer(layout, record) else {
+            return (false, false);
+        };
+        let Some(state) = egui::TextEdit::load_state(ctx, editor) else {
+            return (false, false);
+        };
+        let Some(range) = state.cursor.char_range() else {
+            return (false, false);
+        };
+        let current = (range, buffer.value.clone());
+        let undoer = state.undoer();
+        (undoer.has_undo(&current), undoer.has_redo(&current))
+    }
+
+    /// Edit > `edit` in the field the user is typing in, as its editor's
+    /// own keys do (Undo and Redo through its history). The record's draft
+    /// takes the change; the field stays entered. A field that refuses
+    /// typing (`entered_refusal`) still selects, and refuses a change, as
+    /// its keys are refused: the refusal is returned and nothing changes.
+    pub(crate) fn edit_field(
+        &mut self,
+        ctx: &egui::Context,
+        layout: u64,
+        record: i64,
+        edit: FieldEdit,
+    ) -> Option<EditRefusal> {
+        let (editor, _) = self.entered_buffer(layout, record)?;
+        if edit != FieldEdit::SelectAll {
+            if let Some((_, refusal)) = self.entered_refusal.filter(|(id, _)| *id == editor) {
+                return Some(refusal);
+            }
+        }
+        let field = self.active.clone()?;
+        let buffer = self.buffers.get_mut(&(layout, record, field))?;
+        let mut state = egui::TextEdit::load_state(ctx, editor).unwrap_or_default();
+        let len = buffer.value.chars().count();
+        let range = state
+            .cursor
+            .char_range()
+            .unwrap_or_else(|| egui::text::CCursorRange::one(egui::text::CCursor::new(len)));
+        match edit {
+            FieldEdit::SelectAll => {
+                state
+                    .cursor
+                    .set_char_range(Some(egui::text::CCursorRange::two(
+                        egui::text::CCursor::new(0),
+                        egui::text::CCursor::new(len),
+                    )))
+            }
+            FieldEdit::Clear => {
+                let [start, end] = range.sorted_cursors();
+                let (start, end) = (start.index.0.min(len), end.index.0.min(len));
+                if start < end {
+                    let mut undoer = state.undoer();
+                    undoer.add_undo(&(range, buffer.value.clone()));
+                    state.set_undoer(undoer);
+                    buffer.value = buffer
+                        .value
+                        .chars()
+                        .take(start)
+                        .chain(buffer.value.chars().skip(end))
+                        .collect();
+                    buffer.ui_edited = true;
+                    state
+                        .cursor
+                        .set_char_range(Some(egui::text::CCursorRange::one(
+                            egui::text::CCursor::new(start),
+                        )));
+                }
+            }
+            FieldEdit::Undo | FieldEdit::Redo => {
+                let current = (range, buffer.value.clone());
+                let mut undoer = state.undoer();
+                let restored = if edit == FieldEdit::Undo {
+                    undoer.undo(&current).cloned()
+                } else {
+                    undoer.redo(&current).cloned()
+                };
+                if let Some((range, text)) = restored {
+                    buffer.value = text;
+                    buffer.ui_edited = true;
+                    state.cursor.set_char_range(Some(range));
+                }
+                state.set_undoer(undoer);
+            }
+        }
+        state.store(ctx, editor);
+        None
+    }
+
+    /// A step left `field`'s selection at `selection` (1-based start and
+    /// length; `None` after its `len` characters): its editor shows it, as
+    /// after an Insert step FileMaker Pro puts the insertion point after
+    /// what it inserted.
+    pub(crate) fn place_cursor(
+        &mut self,
+        ctx: &egui::Context,
+        (layout, record): (u64, i64),
+        field: &str,
+        selection: Option<(u64, u64)>,
+        len: Option<usize>,
+    ) {
+        let Some(editor) = self
+            .editor_selection
+            .as_mut()
+            .filter(|selection| selection.field == field)
+        else {
+            // Its editor takes it as it gets the focus.
+            self.pending_selection = Some((layout, record, field.to_owned(), selection));
+            return;
+        };
+        // The text as the step left it, else as the editor holds it.
+        let len = len
+            .or_else(|| {
+                self.buffers
+                    .get(&(layout, record, field.to_owned()))
+                    .map(|buffer| buffer.value.chars().count())
+            })
+            .unwrap_or(0);
+        let (start, size) = selection.map_or((len, 0), |(start, size)| {
+            let start = usize::try_from(start.saturating_sub(1))
+                .unwrap_or(len)
+                .min(len);
+            (start, usize::try_from(size).unwrap_or(0).min(len - start))
+        });
+        let mut state = egui::TextEdit::load_state(ctx, editor.editor).unwrap_or_default();
+        state
+            .cursor
+            .set_char_range(Some(egui::text::CCursorRange::two(
+                egui::text::CCursor::new(start),
+                egui::text::CCursor::new(start + size),
+            )));
+        state.store(ctx, editor.editor);
+        editor.range = (start, start + size);
     }
 
     /// The scroll offset that shows the current record's row, at `top`,
@@ -5481,6 +5760,9 @@ fn paint_object_repetition(
                                 types_line_breaks(object),
                             )
                         });
+                    if response.has_focus() {
+                        state.entered_refusal = refusal.map(|refusal| (editor, refusal));
+                    }
                     response.widget_info(|| {
                         let mut info = egui::WidgetInfo::text_edit(
                             !state.pending,
@@ -8573,6 +8855,36 @@ mod tests {
         let (token, request) = state.prepare_candidates(true).pop().unwrap();
         assert_eq!(request.baseline.version, Some(7));
         assert!(state.drafts().is_empty());
+        let mut left = Some(("Name".into(), Some(5)));
+        let mut entered = None;
+        let mut modified = Vec::new();
+        let find = Action::SetMode(crate::Mode::Find);
+        let command = Action::MenuFieldExit(Box::new(find.clone()));
+        let mut actions = vec![find];
+        state.active = Some("Name".into());
+        let ctx = egui::Context::default();
+        ctx.run_ui(egui::RawInput::default(), |ui| {
+            let mut close = vec![Action::CloseFile];
+            state.menu_leaves_field(ui, &mut close);
+            assert_eq!(close, [Action::CloseFile]);
+            state.hold_candidate_actions(&mut None, &mut None, &mut Vec::new(), &mut close);
+            assert_eq!(close, [Action::CloseFile]);
+
+            state.menu_leaves_field(ui, &mut actions);
+            assert_eq!(actions.as_slice(), std::slice::from_ref(&command));
+            state.hold_candidate_actions(&mut left, &mut entered, &mut modified, &mut actions);
+            assert!(actions.is_empty());
+            assert!(left.is_none());
+
+            state.active = None;
+            let mut second = vec![Action::Quit];
+            state.menu_leaves_field(ui, &mut second);
+            assert!(second.is_empty(), "Quit cannot bypass the pending exit");
+            let mut close = vec![Action::CloseFile];
+            state.menu_leaves_field(ui, &mut close);
+            assert_eq!(close, [Action::CloseFile]);
+        })
+        .drop_without_applying_deltas();
         state
             .buffers
             .get_mut(&key)
@@ -8581,6 +8893,9 @@ mod tests {
             .push_str(" paste IME");
         assert!(state.accept_edit_preparation(token, &request, true));
         assert_eq!(state.drafts()[&(3, 1)][0].value, "typed paste IME");
+        state.hold_candidate_actions(&mut left, &mut entered, &mut modified, &mut actions);
+        assert_eq!(left, Some(("Name".into(), Some(5))));
+        assert_eq!(actions, [command]);
         state.clear_record(3, 1);
         let mut next = FieldBuffer::new("stored");
         next.value = "next".into();
