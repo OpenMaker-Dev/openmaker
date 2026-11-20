@@ -323,6 +323,7 @@ struct Vector {
     language: &'static str,
     value: String,
     value_entries: BTreeSet<Vec<u8>>,
+    word_entries: BTreeSet<Vec<u8>>,
 }
 
 fn vectors() -> Vec<Vector> {
@@ -336,6 +337,7 @@ fn vectors() -> Vec<Vector> {
                 language: columns[1],
                 value: vector_value(columns[2]),
                 value_entries: columns[3].split_whitespace().map(vector_key).collect(),
+                word_entries: columns[4].split_whitespace().map(vector_key).collect(),
             }
         })
         .collect()
@@ -428,6 +430,39 @@ fn text_keys_are_filemakers_vectors() {
     }
     assert!(mismatches.is_empty(), "{mismatches:#?}");
     assert_eq!(checked, 364);
+}
+
+/// The word-index keys of every English and Unicode standard text row of
+/// the vector table (7.1, word breaking): OpenMaker breaks words where
+/// FileMaker does. `ff 80` is left out as in the value index
+/// ([#177](https://github.com/OpenMaker-Dev/openmaker/issues/177)); Unicode
+/// raw breaks words by rules of its own, not built
+/// ([#395](https://github.com/OpenMaker-Dev/openmaker/issues/395)).
+#[test]
+fn word_keys_are_filemakers_vectors() {
+    let too_long = om_collate::TOO_LONG_KEY.to_vec();
+    let mut checked = 0;
+    let mut mismatches = Vec::new();
+    for vector in vectors().iter().filter(|v| v.kind == "text") {
+        let language: u32 = vector.language.parse().unwrap();
+        let Some(form @ (TextKeys::Collated | TextKeys::CollatedPadded)) =
+            TextKeys::of_language(language)
+        else {
+            continue;
+        };
+        let without_flag = |keys: BTreeSet<Vec<u8>>| {
+            keys.into_iter()
+                .filter(|key| *key != too_long)
+                .collect::<BTreeSet<_>>()
+        };
+        let ours = om_query::keys::word_entries(std::slice::from_ref(&vector.value), form);
+        checked += 1;
+        if without_flag(ours) != without_flag(vector.word_entries.clone()) {
+            mismatches.push(format!("{language} {:?}", vector.value));
+        }
+    }
+    assert!(mismatches.is_empty(), "{mismatches:#?}");
+    assert_eq!(checked, 242);
 }
 
 /// Every number, time, timestamp and date row of the vector table: the
