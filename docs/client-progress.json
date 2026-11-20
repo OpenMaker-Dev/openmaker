@@ -193,7 +193,7 @@
       "previous_status": "Implemented",
       "status": "Implemented",
       "scope": "Auto-enter, validation with calculated custom messages, and serial numbers reserved on the host (op72). Exact-match lookups copy text, numbers and dates through one relationship, also one sorted by the related table's own fields and one with calculated match keys ([limits](record-writes.md#limits), [lookups](re/auto-entry.md#lookups)).",
-      "remaining": "Other lookup forms (next lower or higher value, constants, several relationships, other sorts, times and timestamps) and entry from the last visited record make a table read-only [#39](https://github.com/OpenMaker-Dev/openmaker/issues/39); Relookup Field Contents runs only in desktop scripts, not on OpenMaker Server or from the Records menu [#87](https://github.com/OpenMaker-Dev/openmaker/issues/87). A looked-up value appears when the record is written, not on Tab, and lookups fired by scripts and imports are unmeasured.",
+      "remaining": "Other lookup forms (next lower or higher value, constants, several relationships, other sorts, times and timestamps) and entry from the last visited record make a table read-only [#39](https://github.com/OpenMaker-Dev/openmaker/issues/39); Relookup Field Contents runs in scripts, not from the Records menu [#87](https://github.com/OpenMaker-Dev/openmaker/issues/87). A looked-up value appears when the record is written, not on Tab, and lookups fired by scripts and imports are unmeasured.",
       "issues": [
         39,
         87

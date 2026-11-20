@@ -857,6 +857,62 @@ fn set_match_fields_perform_lookups() {
     }
 }
 
+/// Relookup Field Contents [Tasks::Name] copies each found task's lookup
+/// again, Name itself unchanged (#87): task 1's Note, typed over, comes
+/// back as its note "w". Through Count, which no lookup matches through,
+/// the step is 3 and changes nothing.
+#[test]
+fn relookup_field_contents_copies_the_lookups_again() {
+    let relookup = |field: u64| {
+        let mut step = ScriptStep::new(40);
+        step.set_flag(flag::NO_INTERACT, true);
+        step.set_field_spec(
+            0,
+            Some(FieldSpec::new(
+                StoredKey::from_id(OCCURRENCE).unwrap(),
+                StoredKey::from_id(field).unwrap(),
+                0,
+            )),
+        );
+        step
+    };
+    let mut tree = lookup_tree();
+    // In place of scripts 8 and 9, so the catalog's index lists them.
+    for (id, name, steps) in [
+        (
+            8u64,
+            "Relookup through Name",
+            vec![
+                fixture::go_to_record(1),
+                set_field(NOTE, 1, "\"typed\""),
+                ScriptStep::new(75),
+                relookup(fixture::NAME),
+                exit_with("Tasks::Note & \"/\" & Get ( LastError ) & \"/\" & Tasks::Name"),
+            ],
+        ),
+        (
+            9,
+            "Relookup through Count",
+            vec![
+                fixture::on(86, true),
+                fixture::go_to_record(1),
+                relookup(fixture::COUNT),
+                exit_with("Get ( LastError ) & \"/\" & Tasks::Note"),
+            ],
+        ),
+    ] {
+        tree.put(
+            &[&[17], &[5], &uint_segment(id)],
+            script(id, name, steps).encode(),
+        );
+    }
+    let file = TempFile::from_tree("psos-relookup-step", &tree);
+    let port = server::start(&file);
+    let (mut client, _) = server::logged_in(port, "client");
+    assert_eq!(run(&mut client, 8), (0, "w/0/Write tests".to_string()));
+    assert_eq!(run(&mut client, 9), (0, "3/w".to_string()));
+}
+
 /// Open Transaction's "Skip auto-enter options" performs no lookup: a
 /// Set Field of Name to its own value then changes nothing, and the
 /// commit leaves the record's modification count as it was.
