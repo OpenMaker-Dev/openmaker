@@ -2841,6 +2841,39 @@ fn a_value_list_of_a_field_in_an_unkeyed_language_is_not_checked_in_english() {
     }
 }
 
+/// A value list of a number field's values (Tasks::Count; record 2 holds
+/// 5) checks a value as a number, in the index's number keys
+/// (query-program.md 7.3), with the host's index and without (#591):
+/// `5.0` is listed, `4` is not (506), and `abc`, no number OpenMaker keys,
+/// is refused (3) rather than taken as absent.
+#[test]
+fn a_value_list_of_a_number_field_checks_values_as_numbers() {
+    for late in [false, true] {
+        let mut root = fixture::tree(&[], true);
+        fixture::set_field_options(&mut root, TABLE, COUNT, 0x8000_0000);
+        fixture::code_in_list_of(&mut root, COUNT);
+        let file = TempFile::from_tree("list-of-numbers", &root);
+        let (port, ca_pem) = host_with(&file.0, None, |server| {
+            if late {
+                server.with_late_index_builds()
+            } else {
+                server
+            }
+        });
+        let mut a = open(port, &ca_pem);
+        let tasks = layout(&mut a, "Tasks");
+        let code = |a: &mut NativeProvider, text: &str| {
+            a.update_record(tasks, 1, values(&[("Code", text)]))
+                .map(|_| ())
+                .map_err(|e| e.code)
+        };
+        assert_eq!(code(&mut a, "5.0"), Ok(()), "late={late}");
+        assert_eq!(code(&mut a, "4"), Err(Some(506)), "late={late}");
+        assert_eq!(code(&mut a, "abc"), Err(Some(3)), "late={late}");
+        a.close();
+    }
+}
+
 /// A field-backed list on Code, with no related-value filter or second
 /// display field. This exercises ExistsInIndex, not CreateValueListEx.
 fn validation_list(root: &mut OwnedNode, occurrence: u64, field: u64) {

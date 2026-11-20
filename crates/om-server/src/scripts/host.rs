@@ -1659,19 +1659,32 @@ impl ServerHost {
     /// a text field's index language has no key form OpenMaker builds (the
     /// tailored ones, #299): the check is then refused (3) rather than
     /// keyed in English, which can both miss the index's key and match
-    /// another value (#571). Other types are keyed as text, as before:
-    /// their typed keys do not depend on the language.
+    /// another value (#571). A number, date, time or timestamp field keys
+    /// `text` as its type, whatever its language (query-program.md 7.3,
+    /// dates in the file's order), and its stored values the same (#591);
+    /// `None` when `text` is not one of the type's values OpenMaker keys.
     fn field_holds(&self, occurrence: u64, field: u64, text: &str) -> Option<bool> {
         let Some((table, def)) = self.schema.field(occurrence, field) else {
             return Some(false);
         };
-        let keys = FieldOptions::decode(&def.options)
-            .and_then(|o| rules::value_text_keys(o.index_language(), self.file_language()));
-        let keys = match def.data_type {
-            DataType::Text => keys?,
-            _ => keys.unwrap_or(TextKeys::Collated),
+        let order = self.locale.date_order;
+        let typed = matches!(
+            def.data_type,
+            DataType::Number | DataType::Date | DataType::Time | DataType::Timestamp
+        );
+        let typed_keys = |value: &str| {
+            om_query::keys::value_keys(def.data_type, value, order, TextKeys::Collated)
         };
-        let key = keys.key(text).unwrap_or_default();
+        let (key, text_keys) = if typed {
+            let key = typed_keys(text).into_iter().find(|key| {
+                key != om_query::keys::EMPTY_TEXT_KEY && key != om_query::keys::INVALID_KEY
+            })?;
+            (key, None)
+        } else {
+            let keys = FieldOptions::decode(&def.options)
+                .and_then(|o| rules::value_text_keys(o.index_language(), self.file_language()))?;
+            (keys.key(text).unwrap_or_default(), Some(keys))
+        };
         let store = self.hosted.read_store();
         let (t, f) = (uint_segment(table), uint_segment(field));
         if let Some(index) = store.node(&[&t, &[INDEXES], &f, &[VALUE_INDEX]]) {
@@ -1680,13 +1693,17 @@ impl ServerHost {
         let cells: Vec<u64> = (1..=Self::repetitions(def))
             .filter_map(|rep| cell_id(field, rep))
             .collect();
+        let holds = |value: &str| match text_keys {
+            Some(keys) => keys.key(value).as_ref() == Some(&key),
+            None => typed_keys(value).contains(&key),
+        };
         Some(store.node(&[&t, &[RECORDS]]).is_some_and(|records| {
             records.children.iter().any(|record| {
                 cells.iter().any(|cell| {
                     record
                         .child(&uint_segment(*cell))
                         .and_then(values::cell_text)
-                        .is_some_and(|v| keys.key(&v).as_ref() == Some(&key))
+                        .is_some_and(|v| holds(&v))
                 })
             })
         }))
@@ -2451,7 +2468,9 @@ fn related_list_refused() -> HostError {
 }
 
 /// A value list of a field's values whose field is indexed in a language
-/// OpenMaker does not key (#571): the value is not looked up. Set Field
+/// OpenMaker does not key (#571), or whose number, date, time or timestamp
+/// field the value is not one of the type's values OpenMaker keys (#591):
+/// the value is not looked up. Set Field
 /// reports it as error 3; an import ends at its row rather than skipping
 /// it (`transfer_error`), unlike a row's ordinary error 3.
 fn unkeyed_list_refused() -> HostError {

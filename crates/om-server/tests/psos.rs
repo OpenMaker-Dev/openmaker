@@ -703,6 +703,41 @@ fn a_value_list_of_a_field_in_an_unkeyed_language_refuses_the_check() {
     }
 }
 
+/// A server script's Set Field into a field that must be a member of a
+/// value list of a number field's values (Tasks::Count; record 2 holds 5):
+/// the value is checked as a number, as the index keys numbers
+/// (query-program.md 7.3; #591): `5.0` is listed, `4` is not (506), and
+/// `abc`, no number OpenMaker keys, is refused (3).
+#[test]
+fn a_value_list_of_a_number_field_checks_values_as_numbers() {
+    use fixture::{exit_with, go_to_record, on, script, set_field};
+    let attempt = |n: u64, text: &str| {
+        script(
+            n,
+            "Code from counts",
+            vec![
+                on(86, true),
+                go_to_record(1),
+                set_field(CODE, &format!("\"{text}\"")),
+                exit_with("Get ( LastError )"),
+            ],
+        )
+    };
+    let mut tree = fixture::tree(
+        &[attempt(4, "5.0"), attempt(5, "4"), attempt(6, "abc")],
+        true,
+    );
+    fixture::code_in_list_of(&mut tree, COUNT);
+    let file = TempFile::from_tree("list-of-numbers", &tree);
+    let port = start(&file, None);
+    let mut client = logged_in(port, "list-of-numbers");
+    // The exit result is the Set Field's error.
+    assert_eq!(run(&mut client, 4).1, "0");
+    assert_eq!(run(&mut client, 5).1, "506");
+    assert_eq!(run(&mut client, 6).1, "3");
+    client.disconnect().unwrap();
+}
+
 #[test]
 fn scripts_run_with_the_requesting_accounts_privileges() {
     use fixture::{exit_with, full_access, go_to_record, on, perform_script, script, set_field};
