@@ -3768,6 +3768,24 @@ Steps
   (its held value would be replaced by the stored one). The window keeps
   its record and found set. A record refused partway ends the step, the
   records before it written; a record deleted after the check is 101.
+  OpenMaker Server's host does the same in its own session, with the same
+  checks and a match value whose text does not decode refused too (3).
+  Each record of the found set is opened once, by id, with the match
+  field marked set and its stored value unchanged, and the rules run on
+  it. Outside a transaction the record is written as they left it, or not
+  at all when they change no cell. Inside one it is staged as a Set Field
+  of the match field to its own value is: Commit Transaction runs its
+  rules, validation with the transaction's options and the lookups with
+  what the transaction holds then, and writes it only when they change a
+  cell (a later edit of the record makes it an ordinary staged write).
+  An Import Records that would update a record whose relookup the
+  transaction holds is refused (3), so the transaction fails and reverts:
+  the import's options and values and the pending relookup cannot both be
+  kept, and OpenMaker writes neither half (its limit,
+  [#647](https://github.com/OpenMaker-Dev/openmaker/issues/647); FileMaker
+  copies the lookup at the step). Under "Skip auto-enter
+  options" nothing is copied and nothing staged. A record refused is left
+  as it was.
   Unmeasured, and OpenMaker's choices:
   - the dialog's text;
   - the codes: 102 for no such field, 201 for one a script cannot set (a
