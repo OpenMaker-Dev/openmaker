@@ -136,7 +136,6 @@ impl ViewMode {
     }
 }
 
-/// Step ids of the commands that run as a single step.
 /// Where keys a keyboard commit held for the next frame were typed
 /// (`OpenMakerApp::shortcuts`): the window's file, mode, layout and record,
 /// and the active field.
@@ -161,6 +160,7 @@ fn edits_text(event: &egui::Event) -> bool {
     )
 }
 
+/// Step ids of the commands that run as a single step.
 pub(crate) mod steps {
     pub const UNSORT: u16 = 21;
     pub const SHOW_ALL: u16 = 23;
@@ -2614,28 +2614,27 @@ impl OpenMakerApp {
             || self.value_list_edit.is_some()
     }
 
-    /// Whether the keypad's Enter goes to the next object rather than
-    /// committing the record: the active field object's "Go to next object
-    /// using" includes the Enter key (`FieldObject::next_object_on_enter`).
-    /// That FileMaker Pro then goes on rather than commits is inferred from
-    /// the option (layout-model.md 5.4.1), not measured.
-    fn enter_goes_to_next_object(&self) -> bool {
+    /// The field object of the active field, whose "Go to next object
+    /// using" says where the keypad's Enter goes
+    /// (`FieldObject::next_object_on_enter`; layout-model.md 5.4.1). That
+    /// FileMaker Pro then goes on, rather than committing, is inferred from
+    /// the option, not measured.
+    fn active_field_object(&self) -> Option<&om_layout::FieldObject> {
         let (Some(_), Some(object), Some(session)) = (
             &self.w.document.active,
             self.w.document.active_object,
             &self.w.session,
         ) else {
-            return false;
+            return None;
         };
         let crate::session::RenderState::Loaded(layout) = &session.render else {
-            return false;
+            return None;
         };
         layout
             .layout
             .objects
             .get(object)
             .and_then(|object| object.field_obj.as_ref())
-            .is_some_and(om_layout::FieldObject::next_object_on_enter)
     }
 
     fn shortcuts(&self, ui: &Ui, actions: &mut Vec<Action>) {
@@ -2659,11 +2658,16 @@ impl OpenMakerApp {
         // The keypad's Enter, unlike Return, commits the record or goes to
         // the next object (`keypad`) from a field of the record or with no
         // editor focused. In an open menu or list, or in a box of the
-        // toolbar (Quick Find, the record number), it acts as Return.
-        let keypad_enter = browse
+        // toolbar (Quick Find, the record number), it acts as Return, and
+        // Return keeps its own use there too.
+        let enter_keys = browse
             && !egui::Popup::is_any_open(ui.ctx())
             && (self.w.document.active.is_some() || !typing);
-        let enter_goes_next = keypad_enter && self.enter_goes_to_next_object();
+        let field = self.active_field_object();
+        // Return goes on as the field that receives it draws
+        // (`document::return_goes_on`).
+        let enter_goes_next =
+            enter_keys && field.is_some_and(om_layout::FieldObject::next_object_on_enter);
         // A commit key that came after typing in the same frame waited for
         // this one: the editor has applied the typing (below). It goes back
         // only in the next frame, and only to the file, mode, layout, record
@@ -2774,7 +2778,7 @@ impl OpenMakerApp {
                             modifiers,
                             ..
                         } if modifiers.command || modifiers.mac_cmd
-                    ) || (keypad_enter && !enter_goes_next && crate::keypad::is_enter_press(event))
+                    ) || (enter_keys && !enter_goes_next && crate::keypad::is_enter_press(event))
                 };
                 if let Some(at) = input.events.iter().position(commit_key) {
                     if typing && input.events[..at].iter().any(edits_text) {
@@ -2795,7 +2799,7 @@ impl OpenMakerApp {
                     commit = true;
                 }
                 let at = input.events.iter().position(crate::keypad::is_enter_press);
-                if let Some(at) = at.filter(|_| keypad_enter) {
+                if let Some(at) = at.filter(|_| enter_keys) {
                     if enter_goes_next {
                         // As a Tab: the document moves the focus.
                         input.events[at] = egui::Event::Key {
@@ -3469,7 +3473,9 @@ impl OpenMakerApp {
                     return;
                 }
                 // A new record the window's record session holds is not on
-                // the host: the window's own Delete Record releases it (#892).
+                // the host: the window's own Delete Record releases it
+                // (#892). An existing record whose editing took its lock is
+                // deleted by the same step, which lets the lock go first.
                 if self.uncommitted().is_some_and(|open| open.session) {
                     self.run_step(
                         ctx,
@@ -3979,6 +3985,14 @@ impl OpenMakerApp {
                 self.w.document.discard_failed_edits();
                 self.error = None;
                 self.w.document.release_focus();
+                // Entry is refused for a record another client changed since
+                // the window read it (306) or holds (301): the page is read
+                // again, so that a new entry starts from the host's copy.
+                // Without a connection the reconnect reads it.
+                if self.w.connection_lost.is_none() {
+                    let key = self.w.session.as_mut().and_then(Session::refresh);
+                    self.request_page(ctx, key);
+                }
             }
             Action::DismissAlert => {
                 self.error = None;
@@ -5329,6 +5343,22 @@ impl OpenMakerApp {
                     Ok(om_data::EditPreparation::Prepared) => {
                         let layout = request.baseline.layout;
                         let record = request.baseline.record;
+                        // The reply is this window's: a release since
+                        // (its input went back to its stored value) would
+                        // have forgotten the request
+                        // (`forget_edit_preparations`). For a record the
+                        // window left, the save that left it took the
+                        // session (`Window::commit`).
+                        let current = self
+                            .w
+                            .session
+                            .as_ref()
+                            .and_then(|s| Some((s.layout?, s.current_record()?.1.id)))
+                            == Some((layout, record));
+                        if !current {
+                            ctx.request_repaint();
+                            return;
+                        }
                         if !self
                             .w
                             .uncommitted
@@ -5911,6 +5941,17 @@ impl OpenMakerApp {
                         self.related_login = None;
                         self.related_asked.remove(&(self.w.file_id, file));
                         self.request(ctx, Request::CalcSchema);
+                        // Layout mode names the related file's fields from
+                        // the schema built again: the shown layout's
+                        // geometry is read again after it.
+                        let shown = self.w.session.as_ref().and_then(|s| {
+                            matches!(s.geometry, crate::session::Geometry::Loaded(_))
+                                .then_some(s.layout)
+                                .flatten()
+                        });
+                        if let Some(layout_id) = shown {
+                            self.request(ctx, Request::LayoutGeometry { layout_id });
+                        }
                     }
                     // A refusal (one Login, noted for the session): the
                     // dialog stays, for another account or Cancel.
@@ -6111,6 +6152,7 @@ impl eframe::App for OpenMakerApp {
             }
         }
         self.show(ui);
+        self.web.flush(frame);
     }
 }
 

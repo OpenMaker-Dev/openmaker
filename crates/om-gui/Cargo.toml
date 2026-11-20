@@ -51,12 +51,12 @@ log = "0.4"
 
 [features]
 # Embedded web viewers: WebKitGTK through wry on Linux/X11 (through XWayland
-# on a Wayland session). Building it needs the WebKitGTK 4.1 and GTK 3
-# development files (Debian/Ubuntu: libwebkit2gtk-4.1-dev) and pkg-config;
-# running it, the WebKitGTK 4.1 runtime. Without it, web viewers show a note
-# and their script steps fail. Its windows are on winit's X11 backend, also on
-# a Wayland session.
-web-viewer = ["dep:wry", "dep:gtk", "dep:gdkx11", "dep:webkit2gtk", "dep:javascriptcore-rs", "winit/x11", "dep:x11-dl", "dep:xkbcommon-dl"]
+# on a Wayland session), WKWebView through wry on macOS. Building it on Linux
+# needs the WebKitGTK 4.1 and GTK 3 development files (Debian/Ubuntu:
+# libwebkit2gtk-4.1-dev) and pkg-config; running it, the WebKitGTK 4.1
+# runtime. Without it, web viewers show a note and their script steps fail.
+# On Linux its windows are on winit's X11 backend, also on a Wayland session.
+web-viewer = ["dep:wry", "dep:gtk", "dep:gdkx11", "dep:webkit2gtk", "dep:javascriptcore-rs", "winit/x11", "dep:x11-dl", "dep:xkbcommon-dl", "dep:objc2", "dep:objc2-app-kit", "dep:objc2-core-foundation", "dep:objc2-foundation", "dep:getrandom"]
 
 [target.'cfg(unix)'.dependencies]
 # Nonblocking open before checking local Insert/URL files, including FIFOs.
@@ -66,6 +66,15 @@ libc = "0.2"
 keyring = { version = "3.6.3", features = ["apple-native"] }
 # The system menu bar (Apache-2.0 OR MIT).
 muda = { version = "0.21", default-features = false }
+# The `web-viewer` feature's backend (wry: MIT OR Apache-2.0), and the
+# AppKit views it places pages in (the versions wry uses; MIT).
+wry = { version = "0.57", default-features = false, features = ["os-webview"], optional = true }
+objc2 = { version = "0.6", optional = true }
+objc2-app-kit = { version = "0.3", default-features = false, features = ["std", "objc2-core-foundation", "NSApplication", "NSResponder", "NSView", "NSWindow"], optional = true }
+objc2-core-foundation = { version = "0.3", default-features = false, features = ["std", "CFCGTypes"], optional = true }
+objc2-foundation = { version = "0.3", default-features = false, features = ["std", "NSKeyValueCoding", "NSObject", "NSString", "NSURL", "NSValue"], optional = true }
+# The web viewer bridge's tokens (the version om-data uses; MIT OR Apache-2.0).
+getrandom = { version = "0.2.17", optional = true }
 
 [target.'cfg(target_os = "windows")'.dependencies]
 keyring = { version = "3.6.3", features = ["windows-native"] }
@@ -109,10 +118,11 @@ serde = { version = "1", features = ["derive"] }
 serde_json = "1"
 
 [target.'cfg(target_os = "macos")'.dev-dependencies]
-# The menu bar test's reading of the system menu bar (the versions muda
-# uses; MIT).
+# The web viewer test's window, views and posted clicks, and the menu bar
+# test's reading of the system menu bar (the versions wry and muda use; MIT).
 objc2 = "0.6"
-objc2-app-kit = { version = "0.3", default-features = false, features = ["std", "NSApplication", "NSMenu", "NSMenuItem", "NSResponder", "NSWindow"] }
+objc2-app-kit = { version = "0.3", default-features = false, features = ["std", "objc2-core-foundation", "NSApplication", "NSEvent", "NSGraphicsContext", "NSMenu", "NSMenuItem", "NSResponder", "NSView", "NSWindow"] }
+objc2-core-foundation = { version = "0.3", default-features = false, features = ["std", "CFCGTypes"] }
 
 [target.'cfg(target_os = "linux")'.dev-dependencies]
 # Real pointer input for the web viewer test (XTest).

@@ -729,10 +729,23 @@ impl OpenMakerApp {
                 self.with_window(window, |app| app.on_script_event(ctx, event));
             }
             Reply::Script(event @ ScriptEvent::Prompt { .. }) => {
-                // A modal belongs to its requesting window. A prior visible
-                // Open File must not leave the blocked caller behind its peer.
+                // A modal belongs to its requesting window, which comes to
+                // the front so it can be answered: in front of the Script
+                // Workspace a Run started from, of a peer a visible
+                // Open File presented, and of a window the user brought
+                // forward while the script ran. Not over another file's
+                // window with that file's Script Workspace or Manage
+                // dialogs open: bringing the window forward would close
+                // them unsaved, so it waits there, as it did before, unless
+                // the script itself presented a window.
                 self.with_window(window, |app| app.on_script_event(ctx, event));
-                if matches!(self.presentation, Some(Presentation::Window { .. })) {
+                let presented = matches!(self.presentation, Some(Presentation::Window { .. }));
+                if presented || !self.presenting_closes_dialogs(window) {
+                    // X11 does not focus a minimized window.
+                    let viewport = self.viewport_of(window);
+                    if ctx.input_for(viewport, |i| i.viewport().minimized == Some(true)) {
+                        ctx.send_viewport_cmd_to(viewport, egui::ViewportCommand::Minimized(false));
+                    }
                     self.present_owner(window);
                 }
             }
@@ -859,6 +872,24 @@ impl OpenMakerApp {
     /// the window comes forward once so the user answers it there. Nothing
     /// is left after: the script's windows then come forward as it works in
     /// them, as without a request.
+    /// Whether bringing window `id` forward would close dialogs of the
+    /// front window's file (`bring_to_front` closes them when another
+    /// file's window comes forward): its Script Workspace, Manage Database,
+    /// Manage Security, Manage Value Lists or Manage Layouts.
+    fn presenting_closes_dialogs(&self, id: u32) -> bool {
+        let base = self.base_window(id);
+        let file = std::iter::once(&self.w)
+            .chain(&self.windows)
+            .find(|d| d.id == base)
+            .map(|d| d.file_id);
+        file.is_some_and(|file| file != self.w.file_id)
+            && (self.workspace.is_some()
+                || self.database.is_some()
+                || self.security.is_some()
+                || self.value_lists.is_some()
+                || self.manage_layouts.is_some())
+    }
+
     fn present_owner(&mut self, window: u32) {
         self.presentation = Some(Presentation::Window {
             id: window,

@@ -928,7 +928,18 @@ Browse's does. Their items are read with no record, so a list of
 related values offers none. A set's items are read to draw it; a pop-up
 menu's or drop-down list's when it opens, and shown from the next frame.
 
+A text criterion is keyed in the form of its field's index language
+(query-program.md 7.2, `FindContext::with_text_keys`): English and English
+international by primary weights, System and Unicode standard padded,
+Unicode raw by its code units with case kept, and language 0 in the file's
+own language. A field in another language is keyed in English, which keys
+most text as those languages do.
+
 **Limits.** List view shows only the current request, as one body row.
+In the padded form a word's start is matched by its primary weights alone
+(`equ` finds `équipe`), and a Unicode raw find keeps case: FileMaker's keys
+for those criteria are unmeasured. The mock provider's in-memory finds key
+text in English.
 The badge's place, the portal's single row, empty merge fields, Return
 performing the find and how the value-list controls build criteria are
 OpenMaker's reading, not compared with FileMaker Pro (client-ui.md, "Find
@@ -1032,8 +1043,8 @@ editor and keeps the record uncommitted. A successful commit leaves no
 field editor focused. Save/Exit/Commit and focus departure were observed
 for one ordinary local Text field in FileMaker Pro 26.0.3 with macOS keypad
 Enter (re/script-runtime.md 7.1). Hosted/portal behavior and the shortcut
-mapping were not compared by that case. Return in a field ends its editing
-and keeps the draft.
+mapping were not compared by that case. Return in an edit box types a line
+break (below, Keypad Enter and Return).
 
 Records > Revert Record... and, in Find mode, Requests > Revert
 Request... are the `om_scripts::revert_record` command: each runs Revert
@@ -1066,13 +1077,23 @@ Record menu item, and OpenMaker adds none.
     Find, the record number), it acts as Return.
   - From a field whose "Go to next object using" includes the Enter key
     (field flag `0x80`, layout-model.md 5.4.1), it goes to the next object
-    as Tab does. That FileMaker Pro goes on there rather than commits is
-    inferred from the option, not measured. With Shift or Option it still
-    goes forward; what Pro does then is unmeasured.
-  - Return ends the field's editing and keeps the draft. FileMaker Pro
-    types a line break there, or goes to the next object when the option
-    includes the Return key (`0x40`)
-    ([#376](https://github.com/OpenMaker-Dev/openmaker/issues/376)).
+    as Tab does, and so does Return from one whose option includes the
+    Return key (`0x40`). That FileMaker Pro goes on there, rather than
+    committing or typing a line break, is inferred from the option, not
+    measured. With Shift or Option either key still goes forward; what Pro
+    does then is unmeasured. Return goes by the field that receives it,
+    also after a Tab typed in the same frame; the keypad's Enter typed so
+    goes by the field the Tab left.
+  - From any other edit box, Return types a line break, stored as
+    FileMaker stores one, a carriage return; a pasted line break is stored
+    so too, and text already stored is left as it is, also by Undo and
+    Redo. While it is edited, the field's text wraps, is aligned and is
+    spaced as at rest, and it scrolls to keep
+    the insertion point in view, with a scroll bar only where the field
+    has one. Up and Down move between lines. Drop-down lists, pop-up
+    menus, calendars and Table view's cells keep one line, and Return ends
+    their editing: what FileMaker Pro's Return does in them is unmeasured.
+    In Find mode, Return still performs the find.
 - **A new record and reconnecting.** Records > New Record and Duplicate
   Record run the New Record/Request and Duplicate Record/Request steps:
   the record is held in the window's record session until it is
@@ -1562,7 +1583,12 @@ The Objects pane is 220 pt wide, lists the layout's objects front to back,
 filters by kind or known field name, and selects and reveals the matching
 canvas object. Inspector tabs are interactive; Position shows real bounds
 with pt, in and cm conversion, and Data shows a known field binding and
-type and the field's control style and value list. Selection resets when the layout geometry or the file changes. These
+type and the field's control style and value list. A field object shows
+its field's name on the canvas, and a field another occurrence shows (a
+portal's, say) `::Field`, FileMaker Pro's Layout mode default with View >
+Show > Sample Data off (not compared with a capture). The Objects pane
+and the Inspector name that field `Occurrence::Field`. A field of a
+related file that is not open shows its object kind. Selection resets when the layout geometry or the file changes. These
 dimensions and interactions are OpenMaker's choices: FileMaker's runtime
 behavior was not observed (re/client-ui.md, Unknowns).
 
@@ -2017,7 +2043,15 @@ does not open it.
 ### Script Workspace
 
 Script Workspace loads the file's scripts, with searchable script selection,
-step drafts, Run and Revert. Save stores the active script's steps:
+step drafts, Run and Revert. Run runs the selected script in its file's
+window; a dialog the script shows (Show Custom Dialog, a "With dialog"
+confirmation, "Save changes to this record?", an error alert) brings that
+window in front of the workspace so it can be answered, as it does in front
+of any other window, and restores it when it is minimized. It does not over
+another file's window whose Script Workspace or Manage dialogs are open,
+since that would close them unsaved: the dialog then waits in its own
+window, unless the script itself brought a window forward. Where FileMaker
+Pro shows it is unmeasured. Save stores the active script's steps:
 - **On a host that offers OpenMaker's authoring extension to the account**
   (OpenMaker Server, and the private host of a file opened from this
   computer), the native provider saves through the step save
