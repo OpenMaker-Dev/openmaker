@@ -22,6 +22,7 @@ in [architecture.md](architecture.md).
     XWayland and the X11 libraries winit opens (Debian/Ubuntu:
     `libxkbcommon-x11-0`, `libx11-xcb1`, `libxcursor1`, `libxi6`).
     Without them the windows stay on Wayland and web viewers show a note.
+    On macOS they use the system's WKWebView, with nothing to install.
   - Saving a FileMaker client license: an unlocked desktop Secret Service
     on Linux (Keychain on macOS, Credential Manager on Windows).
   - Print: CUPS (`lp`).
@@ -31,7 +32,7 @@ in [architecture.md](architecture.md).
 ```sh
 cargo run -p om-gui                                  # desktop client
 OPENMAKER_PROVIDER=mock cargo run -p om-gui          # labeled sample data, no server
-cargo run -p om-gui --features web-viewer            # with embedded web viewers (Linux: X11, or XWayland on Wayland)
+cargo run -p om-gui --features web-viewer            # with embedded web viewers (Linux: X11, or XWayland on Wayland; macOS)
 cargo run -p om-server -- --list-all <file.fmp12>... # OpenMaker Server (see Hosting a file below)
 OM_ADMIN_PASSWORD=<password> cargo run -p om-admin --example mock_console  # Admin Console on sample data, https://localhost:16000
 cargo run -p om-client                               # protocol probe: prints isa/connect/open/login/files usage
@@ -42,8 +43,9 @@ PDF data in container fields (`GetThumbnail`, `GetTextFromPDF`, a PDF's
 size, Browse's first page) is read by a worker executable beside the
 program, never in it: `om-gui-pdf-worker` and `om-server-pdf-worker`
 (`om_calc::functions::pdf_worker`, #566). `om-gui-pdf-worker --svg` also
-draws report SVG pictures (`om_gui::report::svg_worker`); without it they
-refuse with error 3. `cargo build -p om-gui` and
+draws SVG pictures and icons, in reports and in Browse
+(`om_gui::report::svg_worker`, `om_gui::svg_loader`); without it report SVG
+pictures refuse with error 3 and Browse shows its error mark for them. `cargo build -p om-gui` and
 `cargo build -p om-server` build the worker with the program, and the
 packages install it; `cargo run` builds only the program it runs, so build
 the package once first. A missing worker is reported at startup, and
@@ -120,6 +122,42 @@ OPENMAKER_CA_CERT=~/.local/state/openmaker-server/tls/cert.pem OPENMAKER_HOST=lo
 In the Hosts dialog, type the account's password in the file and choose
 Open; **List files** shows the hosted file.
 
+Files can also be put in a database folder instead of named on the
+command line. At startup the server hosts the `.fmp12` files at the
+folder's root and in its subfolders, one level deep, as FileMaker Server
+opens its database folders' (Claris: "Database folders"). The default
+folder is `Databases` in the state folder
+(`~/.local/state/openmaker-server/Databases`, or
+`$STATE_DIRECTORY/Databases` under systemd). The server makes it for its
+own user only, and does not use it when it is a link, belongs to another
+user, or others may write in it. It is searched also when files are named
+on the command line. `--database-folder <dir>`, given once or more,
+replaces it; a folder named this way is resolved once, links and all,
+since the administrator chose it. Inside a database folder only regular
+files and folders are used, never a link, so a database elsewhere is
+hosted by naming its folder or the file itself. A file named on the
+command line may be a link to a regular file; every hosted file must be a
+regular file, and one that is not (a FIFO, a device) is refused without
+being waited on.
+
+Files named on the command line come first. A found file with the name of
+one already hosted is left out and logged. The backup and log folders in
+use (`--backup-folder` and `--log-folder`, or their defaults) and
+everything inside them are not searched; a schedule's own backup target is
+not excluded. At most 200,000 entries are read across all the folders and
+10,000 files found. The entry limit applies as entries are read, before
+they are sorted, so past it which files are found depends on the order the
+system lists them. A file copied in after startup is not hosted until the
+server starts again. With no files at all the server still starts, with an
+empty file list; when files are found or named and none of them opens, it
+does not start.
+
+Discovery checks each entry when it reads the folder. The server opens and
+saves a hosted file by its path later on, so whoever may write in a
+database folder can still change what that path leads to after startup;
+keep database folders writable by the server's user only
+([#468](https://github.com/OpenMaker-Dev/openmaker/issues/468)).
+
 Failed logins are limited. After 5 failures an address (an IPv6 address by
 its /64) may try once a minute; after 30 failures of an account of a file
 from all addresses, it may be tried once every 30 s, except from addresses
@@ -145,9 +183,18 @@ change due, in [Full Access], [Data Entry Only] or [Read-Only Access] as
 FileMaker stores them. An account in a custom privilege set is refused
 with error 9: the server does not yet hold a client that sends its own
 requests to every member of one ([#227](https://github.com/OpenMaker-Dev/openmaker/issues/227)). An account in [Full Access] may
-run any Perform Script on Server script and make `om-author` edits; any
-other account runs only scripts set to run with full access privileges and
-authors nothing. The rules and their error codes are in
+run any Perform Script on Server script and make `om-author` edits. One in
+[Data Entry Only] or [Read-Only Access] runs any script under its set: it
+reads every record, and under [Data Entry Only] creates, edits and deletes
+them, while [Read-Only Access]'s writes are refused with 200. In a server
+script session (Perform Script on Server or a schedule), an account in a
+custom set (admitted by a local file's private host) runs the scripts its
+set makes executable. One its set gives no access runs only when a script
+running with full access performs it, and then with the account's own
+privileges. Its steps read and write no record or field unless the script
+is set to run with full access privileges, since the set's data limits
+are not applied to server scripts yet. Desktop scripts apply the set's
+data limits themselves. Only [Full Access] authors. The rules and their error codes are in
 [docs/re/local-files.md](re/local-files.md) 2. A desktop's private host
 for a local file applies the same ones, but admits the custom sets
 OpenMaker enforces, since its one client is the desktop itself. A password,
@@ -372,10 +419,8 @@ of each dependency, unless there is a concrete reason not to.
   release; after an update, read the lockfile diff and name every crate
   that moved. When a change touches `Cargo.lock`, check it against the
   RustSec advisory database with `cargo audit` (install it once with
-  `cargo install cargo-audit --locked`). RUSTSEC-2023-0071 (`rsa`, no
-  fixed 0.9 release) is expected until
-  [#29](https://github.com/OpenMaker-Dev/openmaker/issues/29) is
-  resolved; any other vulnerability it lists needs an update or an issue.
+  `cargo install cargo-audit --locked`). Any vulnerability it lists needs
+  an update or an issue.
 
 ## Kinds of tests
 

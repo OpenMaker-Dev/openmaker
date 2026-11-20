@@ -87,6 +87,7 @@ fn an_interrupted_export_writes_nothing() {
         formatting: false,
         charset: ExportCharset::Utf8,
         use_name_alias: Some(1),
+        field_names: None,
     };
     for group_by in [false, true] {
         let mut mem = Mem::new();

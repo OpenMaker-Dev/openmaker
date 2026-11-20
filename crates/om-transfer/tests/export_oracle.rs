@@ -45,6 +45,7 @@ fn order(
         formatting,
         charset: ExportCharset::from_stored(charset).unwrap(),
         use_name_alias: Some(1),
+        field_names: None,
     }
 }
 
@@ -188,8 +189,61 @@ fn x01_formats_and_character_sets() {
     if !check("x01/omprobe_x_fmt.tab", &got) {
         failures.push("x_fmt".into());
     }
+    // A FileMaker 26.1.1 order with "Use field names as column names in
+    // first row": comma-separated rows after the merge file's names,
+    // quoted (inferred, unmeasured on FileMaker).
+    let mut options = order(&all_fields(), &[], false, 4);
+    options.field_names = Some(1);
+    let got = run(&mut support::x01(), options, FileType::CommaSeparated);
+    let merge = std::fs::read_to_string(data("x01/omprobe_x_mrge_c4.mer")).unwrap();
+    let names = merge.split('\r').next().unwrap().split(',');
+    let mut want: Vec<u8> = names
+        .map(|n| format!("\"{n}\""))
+        .collect::<Vec<_>>()
+        .join(",")
+        .into_bytes();
+    want.push(b'\r');
+    want.extend(std::fs::read(data("x01/omprobe_x_coms_c4.csv")).unwrap());
+    if got != want {
+        eprintln!("coms_names: {}", hex_diff(&want, &got));
+        failures.push("coms_names".into());
+    }
     eprintln!("known character set differences: {known:?}");
     assert!(failures.is_empty(), "differ from FileMaker: {failures:?}");
+}
+
+/// A summary that is `?` (oracle x05: a standard deviation by a break
+/// field whose group has one value) in each format, as FileMaker Server
+/// wrote it: nothing in tab-separated text, an unquoted empty field in
+/// comma-separated text, a `COL` without `DATA`, `?` in HTML and a text
+/// cell `?` in Excel. Before, it was the text `?` everywhere but HTML.
+#[test]
+fn an_invalid_summary_in_every_format() {
+    let fields = [c(f::K), c(f::S)];
+    let export = |t| {
+        let mut mem = support::x01();
+        let s = mem.fields.iter_mut().find(|f| f.id == f::S).unwrap();
+        s.summary = Some(support::Summary::Invalid);
+        run(&mut mem, order(&fields, &[], false, 4), t)
+    };
+    let text = |t| String::from_utf8(export(t)).unwrap();
+    let tab = text(FileType::TabSeparated);
+    assert!(tab.starts_with("1\t\r"), "{tab:?}");
+    let comma = text(FileType::CommaSeparated);
+    assert!(comma.starts_with("\"1\",\r"), "{comma:?}");
+    let xml = text(FileType::XmlExport);
+    assert!(
+        xml.contains("<COL><DATA>1</DATA></COL><COL></COL></ROW>"),
+        "{xml}"
+    );
+    let html = text(FileType::HtmlTable);
+    assert!(html.contains("<TD>?</TD>"), "{html}");
+    let workbook = export(FileType::ExcelExport);
+    let parts = parts(&workbook);
+    let sheet = &parts["xl/worksheets/sheet1.xml"];
+    let strings = &parts["xl/sharedStrings.xml"];
+    assert!(sheet.contains("<c r=\"B1\" t=\"s\""), "{sheet}");
+    assert!(strings.contains("<t>?</t>"), "{strings}");
 }
 
 #[test]
