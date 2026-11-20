@@ -167,9 +167,6 @@ pub(crate) struct Doc {
     pub style: WindowStyle,
     /// Keys on their way through the keystroke triggers.
     pub(super) keys: super::scripts::Keys,
-    /// Its file's Script Workspace while another file's window is in front
-    /// (`OpenMakerApp::bring_to_front`).
-    pub(super) parked_workspace: Option<Box<crate::script_workspace::ScriptWorkspace>>,
 }
 
 impl Doc {
@@ -277,7 +274,6 @@ impl Doc {
             placement: None,
             style: WindowStyle::Document,
             keys: Default::default(),
-            parked_workspace: None,
         }
     }
 
@@ -336,16 +332,27 @@ impl OpenMakerApp {
         if id == self.w.id {
             return Some(f(self));
         }
-        let front = self.w.id;
+        let previous = self.w.id;
         let index = self.windows.iter().position(|d| d.id == id)?;
+        let outer_front = self.front_before_swap;
+        self.front_before_swap = Some(outer_front.unwrap_or(previous));
         std::mem::swap(&mut self.w, &mut self.windows[index]);
         let result = f(self);
-        if self.w.id == id {
-            if let Some(index) = self.windows.iter().position(|d| d.id == front) {
+        // An explicit switch consumes the saved front. If the previous
+        // window closed, the window chosen by the close takes its place.
+        if self.front_before_swap.is_some() {
+            self.front_before_swap = outer_front;
+            if let Some(index) = self.windows.iter().position(|d| d.id == previous) {
                 std::mem::swap(&mut self.w, &mut self.windows[index]);
             }
         }
         Some(result)
+    }
+
+    pub(super) fn front_doc(&self) -> &Doc {
+        self.front_before_swap
+            .and_then(|id| self.docs().find(|doc| doc.id == id))
+            .unwrap_or(&self.w)
     }
 
     /// Bring window `id` to the front: the app works on it from now on.
@@ -353,21 +360,33 @@ impl OpenMakerApp {
     ///
     /// The app shows the dialogs of the front window's file. When another
     /// file's window comes forward, the front file's Script Workspace waits
-    /// with its window, drafts and all, and comes back when a window of its
+    /// with its file, drafts and all, and comes back when a window of its
     /// file does; Manage Layouts, which holds nothing unsaved, closes.
     pub(super) fn bring_to_front(&mut self, id: u32) -> bool {
-        if id == self.w.id {
+        let front = self.front_doc().id;
+        if id == front {
             return true;
         }
         if self.switch_blocked(id) {
             return false;
         }
-        let Some(index) = self.windows.iter().position(|d| d.id == id) else {
+        if !self.has_window(id) {
             return false;
-        };
+        }
+        self.front_before_swap = None;
+        if let Some(index) = self.windows.iter().position(|d| d.id == front) {
+            std::mem::swap(&mut self.w, &mut self.windows[index]);
+        }
+        let index = self
+            .windows
+            .iter()
+            .position(|d| d.id == id)
+            .expect("target window");
         let other_file = self.windows[index].file_id != self.w.file_id;
         if other_file {
-            self.w.parked_workspace = self.workspace.take().map(Box::new);
+            if let Some(workspace) = self.workspace.take() {
+                self.parked_workspaces.insert(self.w.file_id, workspace);
+            }
             self.workspace_followups.clear();
             self.manage_layouts = None;
         }
@@ -380,17 +399,9 @@ impl OpenMakerApp {
         true
     }
 
-    /// The front file's Script Workspace back from the window of its file
-    /// that keeps it, when another file's window was in front.
-    fn unpark_workspace(&mut self) {
-        let file = self.w.file_id;
-        if let Some(workspace) = std::iter::once(&mut self.w)
-            .chain(self.windows.iter_mut())
-            .filter(|d| d.file_id == file)
-            .find_map(|d| d.parked_workspace.take())
-        {
-            self.workspace = Some(*workspace);
-        }
+    /// Restore the Script Workspace when its file comes back to the front.
+    pub(super) fn unpark_workspace(&mut self) {
+        self.workspace = self.parked_workspaces.remove(&self.w.file_id);
     }
 
     /// Whether window `id`, of another file, cannot come forward now: the
@@ -406,7 +417,7 @@ impl OpenMakerApp {
             .chain(&self.windows)
             .find(|d| d.id == base)
             .map(|d| d.file_id);
-        file.is_some_and(|file| file != self.w.file_id)
+        file.is_some_and(|file| file != self.front_doc().file_id)
             && (self.database.is_some()
                 || self.security.is_some()
                 || self.value_lists.is_some()
@@ -477,8 +488,10 @@ impl OpenMakerApp {
         self.closed_windows.insert(id);
         if id == self.w.id {
             let parent = self.w.style.parent();
-            let next = parent
-                .and_then(|p| self.windows.iter().position(|d| d.id == p))
+            let next = self
+                .front_before_swap
+                .and_then(|id| self.windows.iter().position(|d| d.id == id))
+                .or_else(|| parent.and_then(|p| self.windows.iter().position(|d| d.id == p)))
                 .or_else(|| {
                     self.windows
                         .iter()
@@ -646,6 +659,7 @@ impl OpenMakerApp {
             Reply::Reconnected(result) => self.reconnected(ctx, *result),
             Reply::Script(ScriptEvent::FileOpened(opened)) => self.opened_peer(ctx, *opened),
             Reply::Script(ScriptEvent::FileClosed(file)) => {
+                self.parked_workspaces.remove(&file);
                 let ids: Vec<_> = std::iter::once(&self.w)
                     .chain(&self.windows)
                     .filter(|d| d.file_id == file)

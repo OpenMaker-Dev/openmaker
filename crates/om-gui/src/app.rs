@@ -731,6 +731,8 @@ pub struct OpenMakerApp {
     /// other windows wait in `windows` (windows.rs), the most recently in
     /// front last.
     w: windows::Doc,
+    /// The logical front while `with_window` temporarily installs another window.
+    front_before_swap: Option<u32>,
     windows: Vec<windows::Doc>,
     presentation: Option<windows::Presentation>,
     closed_windows: std::collections::HashSet<u32>,
@@ -766,6 +768,8 @@ pub struct OpenMakerApp {
     /// Scripts the worker runs, as the window sees them.
     script: scripts::ScriptUi,
     workspace: Option<crate::script_workspace::ScriptWorkspace>,
+    /// Workspaces of open files whose windows are all behind the front file.
+    parked_workspaces: std::collections::HashMap<u64, crate::script_workspace::ScriptWorkspace>,
     /// The last request made for a Script Workspace: each reply names its
     /// own, so only the workspace that asked takes it.
     workspace_requests: u64,
@@ -851,6 +855,7 @@ impl OpenMakerApp {
             listing: connect::Listing::None,
             listings: 0,
             w: windows::Doc::new(windows::FIRST),
+            front_before_swap: None,
             windows: Vec::new(),
             presentation: None,
             closed_windows: Default::default(),
@@ -876,6 +881,7 @@ impl OpenMakerApp {
             value_list_requests: 0,
             script: scripts::ScriptUi::default(),
             workspace: None,
+            parked_workspaces: Default::default(),
             workspace_requests: 0,
             workspace_followups: Vec::new(),
             client_license,
@@ -1119,7 +1125,6 @@ impl OpenMakerApp {
         // viewports (a backend without native windows) share the root's
         // input, which goes to the front window only.
         let embedded = ctx.embed_viewports();
-        let front = self.w.id;
         self.window_list = self
             .window_ids()
             .into_iter()
@@ -1152,7 +1157,7 @@ impl OpenMakerApp {
         let parent = self.native_parent;
         self.viewport_windows
             .begin(parent, !embedded && self.web.hosts_pages());
-        self.draw_viewport(ui, root, embedded, front, parent);
+        self.draw_viewport(ui, root, embedded, parent);
         self.note_idle_activity(ui.ctx());
         self.with_window(root, |app| app.sync_title(&ctx));
         for id in self.window_ids() {
@@ -1182,7 +1187,7 @@ impl OpenMakerApp {
                 } else {
                     self.viewport_windows.parent(id, &title)
                 };
-                self.draw_viewport(ui, id, embedded, front, parent);
+                self.draw_viewport(ui, id, embedded, parent);
                 self.note_idle_activity(ui.ctx());
             });
             if close {
@@ -3946,7 +3951,7 @@ impl OpenMakerApp {
                 let id = if self.bring_to_front(id) {
                     id
                 } else {
-                    self.w.id
+                    self.front_doc().id
                 };
                 ctx.send_viewport_cmd_to(self.viewport_of(id), ViewportCommand::Focus);
             }
@@ -3987,6 +3992,8 @@ impl OpenMakerApp {
     fn close_file(&mut self, ctx: &egui::Context) {
         let was_busy = self.w.session.is_some() || self.status == ConnectStatus::Connecting;
         let file = self.w.file_id;
+        let closes_front = self.front_doc().file_id == file;
+        self.parked_workspaces.remove(&file);
         // Each of the file's windows keeps its found set in a local file,
         // the front one last (file-metadata.md 11), before it closes.
         let others: Vec<&windows::Doc> =
@@ -4018,7 +4025,10 @@ impl OpenMakerApp {
                 .map(|d| d.id),
         );
         self.windows.retain(|d| d.file_id != file);
-        let remaining = self.windows.iter().rposition(|d| !d.hidden);
+        let remaining = self
+            .front_before_swap
+            .and_then(|id| self.windows.iter().position(|d| d.id == id))
+            .or_else(|| self.windows.iter().rposition(|d| !d.hidden));
         self.w = remaining
             .map(|i| self.windows.remove(i))
             .unwrap_or_else(|| windows::Doc::new(windows::FIRST));
@@ -4027,16 +4037,19 @@ impl OpenMakerApp {
         if self.w.session.is_none() {
             self.local_read_only = None;
         }
-        self.manage_layouts = None;
-        self.new_layout = None;
-        self.layout_setup = None;
-        self.value_list_edit = None;
-        self.part_setup = None;
-        self.database = None;
-        self.security = None;
-        self.value_lists = None;
-        self.workspace = None;
-        self.workspace_followups.clear();
+        if closes_front {
+            self.manage_layouts = None;
+            self.new_layout = None;
+            self.layout_setup = None;
+            self.value_list_edit = None;
+            self.part_setup = None;
+            self.database = None;
+            self.security = None;
+            self.value_lists = None;
+            self.workspace = None;
+            self.workspace_followups.clear();
+            self.unpark_workspace();
+        }
         if !preserve_script {
             self.script = scripts::ScriptUi::default();
         }
@@ -6582,26 +6595,57 @@ mod tests {
     }
 
     #[test]
-    fn a_window_brought_to_the_front_from_another_window_stays_in_front() {
+    fn a_background_window_menu_respects_the_front_files_dialogs() {
         let mut app = three_windows();
+        let ctx = egui::Context::default();
         app.w.file_id = 1;
         app.windows[0].file_id = 2;
-        app.windows[1].file_id = 1;
-        app.security = Some(crate::security::ManageSecurity::new(1, "First".into()));
-        app.value_lists = Some(crate::value_lists::ManageValueLists::new(1, "First".into()));
-        // While the front file's Manage dialogs are open, which FileMaker
-        // Pro's are modal, another file's window stays behind and the
-        // dialogs stay with their edits.
-        assert_eq!(app.with_window(3, |app| app.bring_to_front(2)), Some(false));
-        assert!(app.security.is_some());
-        assert!(app.value_lists.is_some());
+        app.windows[1].file_id = 2;
+        app.database = Some(crate::database::ManageDatabase::new("First".into()));
+        app.with_window(3, |app| app.apply(&ctx, Action::SelectWindow(2)));
         assert_eq!(app.w.id, 1);
-        app.security = None;
-        app.value_lists = None;
-        // Window 3's Window menu picks a different file's window 2.
-        assert_eq!(app.with_window(3, |app| app.bring_to_front(2)), Some(true));
-        assert_eq!(app.w.id, 2);
+        assert!(app.database.is_some());
+        app.database = None;
+        app.workspace = Some(crate::script_workspace::tests::drafted(1));
+        app.with_window(3, |app| app.apply(&ctx, Action::SelectWindow(1)));
+        assert_eq!(app.w.id, 1);
+        let workspace = app.workspace.as_ref().unwrap();
+        assert!(workspace.owns(1));
+        assert_eq!(
+            crate::script_workspace::tests::state(workspace),
+            (false, true, None)
+        );
+        // Selecting the menu's own window can bring it forward too.
+        app.with_window(3, |app| app.apply(&ctx, Action::SelectWindow(3)));
+        assert_eq!(app.w.id, 3);
+        assert!(app.workspace.is_none());
         assert_eq!(app.window_ids().len(), 3);
+    }
+
+    #[test]
+    fn closing_windows_restores_the_other_files_parked_draft() {
+        let ctx = egui::Context::default();
+        let mut app = two_record_windows();
+        app.w.file_id = 1;
+        app.add_window(3);
+        app.windows[0].file_id = 2;
+        app.workspace = Some(crate::script_workspace::tests::drafted(1));
+        assert!(app.bring_to_front(2));
+        // Closing the window that was in front in file 1 keeps its draft
+        // with the file's surviving window.
+        app.with_window(1, |app| app.apply(&ctx, Action::CloseWindow));
+        assert_eq!(app.w.id, 2);
+        assert!(!app.window_ids().contains(&1));
+        assert!(app.workspace.is_none());
+        // Close file 2's only window. File 1 comes back with its draft.
+        app.apply(&ctx, Action::CloseWindow);
+        assert_eq!(app.w.id, 3);
+        let workspace = app.workspace.as_ref().unwrap();
+        assert!(workspace.owns(1));
+        assert_eq!(
+            crate::script_workspace::tests::state(workspace),
+            (false, true, None)
+        );
     }
 
     #[test]
