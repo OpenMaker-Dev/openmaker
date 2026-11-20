@@ -849,27 +849,29 @@ fn blank_canvas_commits_but_changing_fields_keeps_the_record_draft() {
     let before = family(&app);
     let header = app.get_by_role_and_label(Role::Label, "Family").rect();
     // The divider, half the column spacing (8 points) left of the cell.
+    // Movement comes in the press's frame and in the release's, as from a
+    // quick hand: it counts too.
     let mut pos = egui::pos2(before - 6.0, header.center().y);
     app.event(egui::Event::PointerMoved(pos));
     app.run_steps(2);
-    app.event(egui::Event::PointerButton {
+    let button = |pos, pressed| egui::Event::PointerButton {
         pos,
         button: egui::PointerButton::Primary,
-        pressed: true,
+        pressed,
         modifiers: egui::Modifiers::NONE,
-    });
-    app.run_steps(2);
-    for _ in 0..10 {
+    };
+    app.event(button(pos, true));
+    pos.x += 9.0;
+    app.event(egui::Event::PointerMoved(pos));
+    app.run_steps(1);
+    for _ in 0..6 {
         pos.x += 3.0;
         app.event(egui::Event::PointerMoved(pos));
         app.run_steps(1);
     }
-    app.event(egui::Event::PointerButton {
-        pos,
-        button: egui::PointerButton::Primary,
-        pressed: false,
-        modifiers: egui::Modifiers::NONE,
-    });
+    pos.x += 3.0;
+    app.event(egui::Event::PointerMoved(pos));
+    app.event(button(pos, false));
     app.run_steps(2);
     let moved = family(&app) - before;
     assert!((moved - 30.0).abs() < 2.0, "Family's header moved {moved}");
