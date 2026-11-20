@@ -1521,12 +1521,31 @@ impl OpenMakerApp {
             .filter(|d| d.deleted)
             .filter_map(|d| Some((d.table, d.record?)))
             .collect();
-        self.w.document.related_drafts = open
+        let mut related_drafts: crate::document::RelatedDrafts = open
             .related
             .iter()
             .filter(|d| !d.deleted)
             .filter_map(|d| Some((d.table, d.record?, d.cells.clone())))
             .collect();
+        // What scripts left in the current record's later repetitions shows
+        // in their boxes before the commit, as the user's own typing there
+        // does: the window's uncommitted cells, under that typing.
+        let scripted = self.scripted_repetitions(&open);
+        if let Some((table, record, cells)) = scripted.clone() {
+            match related_drafts
+                .iter_mut()
+                .find(|(t, r, _)| *t == table && *r == record)
+            {
+                Some((_, _, typed)) => {
+                    for (cell, value) in cells {
+                        typed.entry(cell).or_insert(value);
+                    }
+                }
+                None => related_drafts.push((table, record, cells)),
+            }
+        }
+        self.w.document.related_drafts = related_drafts;
+        self.w.document.scripted = scripted;
         let mut begun: std::collections::BTreeMap<u64, Vec<_>> = Default::default();
         // A begun row shows what was typed over what its rules entered,
         // once an ordinary commit's OnObjectSave previewed them (#1047).
@@ -2676,6 +2695,30 @@ impl OpenMakerApp {
             || self.script.prompt.is_some()
             || self.w.document.other_dialog_open()
             || self.value_list_edit.is_some()
+    }
+
+    /// The cells of the current record's later repetitions (2 and up,
+    /// `F * 256 + n`) that scripts set and no commit has kept, with the
+    /// record's base table and id: the record's own related draft shows
+    /// them (`DocumentState::related_drafts`). First repetitions are drafts
+    /// by name, which the record's fields show already.
+    fn scripted_repetitions(
+        &self,
+        open: &crate::scripting::window::Uncommitted,
+    ) -> Option<(u64, u64, crate::scripting::Cells)> {
+        let session = self.w.session.as_ref()?;
+        let schema = self.w.calcs.schema()?;
+        let table = crate::calc::layout_occurrence(session).and_then(|o| schema.table_of(o))?;
+        let record = u64::try_from(session.current_record()?.1.id).ok()?;
+        let cells: crate::scripting::Cells = open
+            .cells
+            .iter()
+            .filter(|(cell, _)| {
+                !table.fields.contains_key(cell) && table.fields.contains_key(&(**cell >> 8))
+            })
+            .map(|(cell, value)| (*cell, value.clone()))
+            .collect();
+        (!cells.is_empty()).then_some((table.id, record, cells))
     }
 
     /// The field object of the active field, whose "Go to next object
