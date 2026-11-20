@@ -11,8 +11,8 @@ use std::collections::BTreeSet;
 use om_collate::DateOrder;
 use om_hbam::slot::uint_segment;
 use om_hbam::{Catalog, DataType, Field, FieldKind, OwnedNode, RidList, Table};
-use om_query::find::{self, ClientFind, IndexKind};
-use om_query::keys::{record_value_keys, value_keys, TextKeys};
+use om_query::find::{self, ClientFind, Criterion, FindContext, IndexKind};
+use om_query::keys::{record_value_keys, value_keys, word_keys, TextKeys};
 use om_query::{Context, Source};
 
 const TABLE: u64 = 0x8001;
@@ -116,7 +116,7 @@ fn typed_keys_are_the_specs() {
             DateOrder::MonthDayYear,
             TextKeys::Collated
         ),
-        [hex("80 05 88 32 80")]
+        [hex("80 00 00 80 05 88 32 80")]
     );
     for (value, order) in [
         ("10/27/2026 21:26:57", DateOrder::MonthDayYear),
@@ -165,9 +165,11 @@ impl Source for Host {
     }
 }
 
-/// What `criterion` finds over records holding `texts`: by the host's
-/// SimpleFind over a value index holding the spec's literal keys `index`
-/// (key, records), and by a client find keyed in `language`'s form.
+/// What `criterion` finds over records holding `texts` (one word each): by
+/// the host's SimpleFind over value and word indexes holding the spec's
+/// literal keys `index` (key, records), and by a client find keyed in
+/// `language`'s form. The criterion is keyed as a find on a field indexed
+/// in `language` keys it, English where OpenMaker builds no form.
 fn host_and_client(
     texts: &[&str],
     index: &[(&str, &[u64])],
@@ -175,28 +177,27 @@ fn host_and_client(
     language: u32,
 ) -> (Vec<u64>, Option<Vec<u64>>) {
     let records: RidList = (1..=texts.len() as u64).collect();
-    let finders: Vec<Vec<u8>> = find::finders(
-        TABLE,
-        FIELD,
-        DataType::Text,
-        criterion,
-        DateOrder::MonthDayYear,
-    )
-    .unwrap()
-    .into_iter()
-    .map(|f| f.bytes)
-    .collect();
+    let form = TextKeys::of_language(language).unwrap_or(TextKeys::Collated);
+    let context = FindContext::new(DateOrder::MonthDayYear, None).with_text_keys(form);
+    let criterion = Criterion::parse(criterion, DataType::Text, &context)
+        .unwrap()
+        .unwrap();
+    let plan = find::plan(TABLE, FIELD, &criterion);
+    assert!(plan.exact);
+    let finders: Vec<Vec<u8>> = plan.finders.into_iter().map(|f| f.bytes).collect();
     let mut root = OwnedNode::default();
     let table = uint_segment(TABLE);
     root.put(&[&table, &[13]], records.to_node(Vec::new()));
-    let entries = index
+    let entries: Vec<OwnedNode> = index
         .iter()
         .map(|(key, ids)| ids.iter().copied().collect::<RidList>().to_node(hex(key)))
         .collect();
-    root.put(
-        &[&table, &[1], &uint_segment(FIELD), &[0]],
-        OwnedNode::list(Vec::new(), entries),
-    );
+    for kind in [0, 1] {
+        root.put(
+            &[&table, &[1], &uint_segment(FIELD), &[kind]],
+            OwnedNode::list(Vec::new(), entries.clone()),
+        );
+    }
     let program = find::program(1, TABLE, &finders, None);
     let context = Context {
         file_id: 1,
@@ -210,15 +211,22 @@ fn host_and_client(
         return (host, None);
     };
     let mut client = ClientFind::new(&[finders], usize::MAX).unwrap();
-    assert_eq!(client.reads(), [(FIELD, IndexKind::Value)]);
+    let reads = client.reads().to_vec();
     for (i, text) in texts.iter().enumerate() {
-        let keys: BTreeSet<Vec<u8>> = record_value_keys(
-            DataType::Text,
-            &[text.to_string()],
-            DateOrder::MonthDayYear,
-            form,
-        );
-        client.add(i as u64 + 1, &[keys]).unwrap();
+        let texts = [text.to_string()];
+        let keys: Vec<BTreeSet<Vec<u8>>> = reads
+            .iter()
+            .map(|(field, index)| {
+                assert_eq!(*field, FIELD);
+                match index {
+                    IndexKind::Value => {
+                        record_value_keys(DataType::Text, &texts, DateOrder::MonthDayYear, form)
+                    }
+                    IndexKind::Word => word_keys(&texts, form),
+                }
+            })
+            .collect();
+        client.add(i as u64 + 1, &keys).unwrap();
     }
     let client = client.finish().remove(0).iter().collect();
     (host, Some(client))
@@ -243,6 +251,56 @@ fn client_finds_agree_with_finds_on_the_specs_keys() {
     assert_eq!(answers, (vec![], Some(vec![])), "Unicode raw !");
     let answers = host_and_client(&["A", "a"], &raw, "*", 2);
     assert_eq!(answers, (vec![1, 2], Some(vec![1, 2])), "Unicode raw *");
+    // A criterion on a Unicode raw field is keyed in its code units, as
+    // FileMaker Pro 26's blank file keys its PrimaryKey (7.2); case is
+    // kept (whether FileMaker's raw finds keep it is unmeasured).
+    let uuids = [
+        "0E9E1BC2-B39D-4563-9841-4A4BFA860376",
+        "0e9e1bc2-b39d-4563-9841-4a4bfa860376",
+    ];
+    let raw_key = |text: &str| {
+        std::iter::once("01".to_string())
+            .chain(text.encode_utf16().map(|u| format!("{u:04x}")))
+            .collect::<String>()
+    };
+    let (upper, lower) = (raw_key(uuids[0]), raw_key(uuids[1]));
+    let raw = [(upper.as_str(), &[1][..]), (lower.as_str(), &[2])];
+    for (criterion, found) in [
+        (format!("=={}", uuids[0]), vec![1]),
+        (format!("=={}", uuids[1]), vec![2]),
+        ("0E9E".to_string(), vec![1]),
+    ] {
+        let answers = host_and_client(&uuids, &raw, &criterion, 2);
+        assert_eq!(
+            answers,
+            (found.clone(), Some(found)),
+            "Unicode raw {criterion}"
+        );
+    }
+    // Unicode standard keeps accents (catalogs/index-key-vectors.tsv):
+    // `==` finds only the accented word, a prefix both, since its key is
+    // the primary weights, which come before `00 00` and the accents in
+    // every word that starts so (OpenMaker's reading; unmeasured).
+    let padded = [
+        ("01 126b 13c8 1453 12ec 13b3 126b 0000", &[2][..]),
+        (
+            "01 126b 13c8 1453 12ec 13b3 126b 0000 01 13 01 01 01 01 01",
+            &[1],
+        ),
+    ];
+    let texts = ["\u{e9}quipe", "equipe"];
+    for (criterion, found) in [
+        ("==\u{e9}quipe", vec![1]),
+        ("==equipe", vec![2]),
+        ("equ", vec![1, 2]),
+    ] {
+        let answers = host_and_client(&texts, &padded, criterion, 3);
+        assert_eq!(
+            answers,
+            (found.clone(), Some(found)),
+            "Unicode standard {criterion}"
+        );
+    }
     // System: the English form plus 00 00.
     let system = [("01 1433 126b 1410 1433 0000", &[1, 2][..])];
     let answers = host_and_client(&["Test", "TEST"], &system, "!", 1);
@@ -265,6 +323,7 @@ struct Vector {
     language: &'static str,
     value: String,
     value_entries: BTreeSet<Vec<u8>>,
+    word_entries: BTreeSet<Vec<u8>>,
 }
 
 fn vectors() -> Vec<Vector> {
@@ -278,6 +337,7 @@ fn vectors() -> Vec<Vector> {
                 language: columns[1],
                 value: vector_value(columns[2]),
                 value_entries: columns[3].split_whitespace().map(vector_key).collect(),
+                word_entries: columns[4].split_whitespace().map(vector_key).collect(),
             }
         })
         .collect()
@@ -370,4 +430,94 @@ fn text_keys_are_filemakers_vectors() {
     }
     assert!(mismatches.is_empty(), "{mismatches:#?}");
     assert_eq!(checked, 364);
+}
+
+/// The word-index keys of every English and Unicode standard text row of
+/// the vector table (7.1, word breaking): OpenMaker breaks words where
+/// FileMaker does. `ff 80` is left out as in the value index
+/// ([#177](https://github.com/OpenMaker-Dev/openmaker/issues/177)); Unicode
+/// raw breaks words by rules of its own, not built
+/// ([#395](https://github.com/OpenMaker-Dev/openmaker/issues/395)).
+#[test]
+fn word_keys_are_filemakers_vectors() {
+    let too_long = om_collate::TOO_LONG_KEY.to_vec();
+    let mut checked = 0;
+    let mut mismatches = Vec::new();
+    for vector in vectors().iter().filter(|v| v.kind == "text") {
+        let language: u32 = vector.language.parse().unwrap();
+        let Some(form @ (TextKeys::Collated | TextKeys::CollatedPadded)) =
+            TextKeys::of_language(language)
+        else {
+            continue;
+        };
+        let without_flag = |keys: BTreeSet<Vec<u8>>| {
+            keys.into_iter()
+                .filter(|key| *key != too_long)
+                .collect::<BTreeSet<_>>()
+        };
+        let ours = om_query::keys::word_entries(std::slice::from_ref(&vector.value), form);
+        checked += 1;
+        if without_flag(ours) != without_flag(vector.word_entries.clone()) {
+            mismatches.push(format!("{language} {:?}", vector.value));
+        }
+    }
+    assert!(mismatches.is_empty(), "{mismatches:#?}");
+    assert_eq!(checked, 242);
+}
+
+/// Every number, time, timestamp and date row of the vector table: the
+/// value-index entries OpenMaker builds for the stored text are FileMaker's
+/// (7.3), empty values under `01` and values FileMaker cannot read under
+/// `fe ff`. The probe file stores dates month first.
+#[test]
+fn typed_keys_are_filemakers_vectors() {
+    // Numbers FileMaker reads from digits among other characters, which
+    // OpenMaker does not key yet
+    // ([#246](https://github.com/OpenMaker-Dev/openmaker/issues/246)).
+    const MIXED: [&str; 17] = [
+        "1e3", "1,234.5", "12abc34", "5-", "1.5.2", "1.0E+20", "(5)", "$5", "5%", "+5", "1 000",
+        "1/2", "e5", "12.5e2", "1E400", "1e-5", "1.0E+400",
+    ];
+    let mut checked = 0;
+    let mut mismatches = Vec::new();
+    for vector in vectors() {
+        let data_type = match vector.kind {
+            "number" => DataType::Number,
+            "time" => DataType::Time,
+            "timestamp" => DataType::Timestamp,
+            "date" => DataType::Date,
+            _ => continue,
+        };
+        // "the value as set (stored the text when it differs)"
+        let stored = match vector.value.split_once(" (stored ") {
+            Some((_, stored)) => stored.strip_suffix(')').unwrap().to_string(),
+            None => vector.value.clone(),
+        };
+        let ours = om_query::keys::record_value_entries(
+            data_type,
+            std::slice::from_ref(&stored),
+            DateOrder::MonthDayYear,
+            TextKeys::Collated,
+        );
+        checked += 1;
+        if MIXED.contains(&stored.as_str()) {
+            assert!(ours.is_empty(), "{stored:?} is keyed now: update #246");
+        } else if ours != vector.value_entries {
+            mismatches.push(format!("{} {stored:?}", vector.kind));
+        }
+    }
+    assert!(mismatches.is_empty(), "{mismatches:#?}");
+    assert_eq!(checked, 88);
+    // Every record without a number is indexed under `01` (7.3).
+    for data_type in [DataType::Number, DataType::Time, DataType::Date] {
+        assert_eq!(
+            record_value_keys(
+                data_type,
+                &[String::new()],
+                DateOrder::MonthDayYear,
+                TextKeys::Collated
+            ),
+            [vec![0x01]].into()
+        );
+    }
 }

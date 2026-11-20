@@ -18,9 +18,18 @@ struct Recorded {
 
 struct Recording(Rc<RefCell<Recorded>>);
 
+/// The parent window's id or number, as the recording shows it.
+fn number(parent: NativeParent) -> u64 {
+    match parent {
+        NativeParent::X11(window) => window,
+        #[cfg(all(feature = "web-viewer", target_os = "macos"))]
+        NativeParent::AppKit(number) => number.unsigned_abs() as u64,
+    }
+}
+
 impl Backend for Recording {
     fn create(&mut self, view: u64, parent: NativeParent, spec: ViewSpec) {
-        let NativeParent::X11(parent) = parent;
+        let parent = number(parent);
         self.0.borrow_mut().commands.push(format!(
             "create {view} in {parent} {} {:?} {:?} visible={} interactive={} scripts={}",
             spec.url,
@@ -53,7 +62,7 @@ impl Backend for Recording {
         self.0.borrow_mut().commands.push(format!("destroy {view}"));
     }
     fn release_focus(&mut self, parent: NativeParent) {
-        let NativeParent::X11(parent) = parent;
+        let parent = number(parent);
         self.0
             .borrow_mut()
             .commands
@@ -582,7 +591,7 @@ fn without_a_backend_web_viewers_say_why_and_commands_fail() {
         }]
     );
     let native = WebViewers::default();
-    let expected = (!cfg!(all(feature = "web-viewer", target_os = "linux")))
+    let expected = (!super::NATIVE)
         .then_some(Unavailable::Build)
         .or(Some(Unavailable::Window));
     assert_eq!(native.unavailable(Err(Unavailable::Window)), expected);
