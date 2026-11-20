@@ -3131,9 +3131,15 @@ impl DataProvider for NativeProvider {
                         && table
                             .field(f.id)
                             .and_then(|field| field.decoded_options())
-                            .zip(planned.as_ref().ok())
-                            .is_some_and(|(options, plan)| {
-                                checks_typed_global(&file, plan, &options, f.id, 1)
+                            .is_some_and(|options| match &planned {
+                                Ok(plan) => checks_typed_global(&file, plan, &options, f.id, 1),
+                                Err(_) if deferred => {
+                                    typed_global_options(&options)
+                                        && om_data::rules::RecordPlan::offers_global_while_plan_deferred(
+                                            table.id, f.id, &options, &tree, &file,
+                                        )
+                                }
+                                Err(_) => false,
                             })
                 })
                 .map(|f| f.name.clone())

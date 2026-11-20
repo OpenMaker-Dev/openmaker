@@ -2942,6 +2942,35 @@ impl RecordPlan {
             })
     }
 
+    /// Whether this global's own entry rules are supported when another
+    /// field's rules have deferred the table plan. This only classifies
+    /// the editor. A save still builds the full plan before validation.
+    pub fn offers_global_while_plan_deferred(
+        table: u64,
+        field: u64,
+        options: &FieldOptions,
+        tree: &KeyTree<'_>,
+        file: &CalcSchema,
+    ) -> bool {
+        if options.validation_options & !SUPPORTED_VALIDATION != 0 {
+            return false;
+        }
+        if options.validation_options & VALIDATE_VALUE_LIST == 0 {
+            return true;
+        }
+        let node = tree.at(&[table, 3, 5, field]);
+        match list_rule(tree, node, file.value_lists()) {
+            Ok(ListRule::Custom(_)) => true,
+            Ok(ListRule::Field { occurrence, .. }) => {
+                file.data_source(occurrence).is_none()
+                    && file
+                        .table_of(occurrence)
+                        .is_some_and(|table| file.table_context(table.id).is_none())
+            }
+            _ => false,
+        }
+    }
+
     /// The related-values list a write by `entry` checks a changed value of
     /// `cell` against ([`ListRule::Related`]): the host computes it for the
     /// record as the write leaves it and checks the value at the commit

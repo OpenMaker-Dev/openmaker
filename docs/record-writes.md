@@ -1244,7 +1244,9 @@ wording. What they refuse keeps the draft and the session's value, as an
 invalid date does, and a save with several globals sets none of them. A
 global validated by calculation, unique or existing value, a
 related-values list or another file's field, whose checks are not
-implemented for globals, stays display-only. Temporal entry uses the shared typed-global operation and
+implemented for globals, stays display-only. Supported global fields
+stay editable while a related file needed by another field's write rules
+is still closed. Temporal entry uses the shared typed-global operation and
 the file's entry parser: invalid Date/Timestamp (500) or Time (501) text
 keeps its draft and leaves the session value unchanged. Complete accepted
 Date text survives calculation readback. Time/Timestamp readback uses the
