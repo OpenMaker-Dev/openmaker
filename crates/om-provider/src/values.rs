@@ -670,9 +670,10 @@ impl NativeProvider {
         let language = options.index_language();
         // Language 0 is the file's own, as the host writes it
         // (`om_data::rules::written_text_keys`, query-program.md 7.2); a
-        // language whose form OpenMaker does not build has none.
+        // language whose form OpenMaker does not build has none, and so has
+        // language 0 when the file's locale cannot be read.
         let text = if field.data_type == DataType::Text {
-            match self.file_language() {
+            match self.file_locale_language() {
                 Ok(file) => om_data::rules::written_text_keys(language, file),
                 Err(error) if strict => return Err(error),
                 Err(_) => None,
@@ -707,6 +708,25 @@ impl NativeProvider {
     /// The file's date order, read explicitly from its locale `[02, 0d]`:
     /// a failed or absent locale must not become the calculation schema's
     /// default MDY order for date keys.
+    /// The file's own language from its stored locale (`[02, 0d]`,
+    /// file-metadata.md 2), which index language 0 keys text in. Error 3
+    /// when the file holds a locale that cannot be read, rather than
+    /// English, which would key a German file's `a` and `ä` alike. A file
+    /// with no locale record at all (none FileMaker writes) reads as the
+    /// schema's default.
+    fn file_locale_language(&mut self) -> Result<u32, DataError> {
+        let Some(data) = download_node(self.session_mut()?, vec![vec![2]])? else {
+            return self.file_language();
+        };
+        let tree = download_tree(std::slice::from_ref(&data))?;
+        if tree.at(&[2, 13]).is_none() {
+            return self.file_language();
+        }
+        let locale = om_data::meta::locale(&tree)
+            .ok_or_else(|| unsupported("The file's language could not be read."))?;
+        Ok(u32::from(locale.language.id()))
+    }
+
     fn file_date_order(&mut self) -> Result<DateOrder, DataError> {
         let data = download_node(self.session_mut()?, vec![vec![2]])?
             .ok_or_else(|| unsupported("The file's date order could not be read."))?;

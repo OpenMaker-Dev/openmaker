@@ -271,7 +271,8 @@ fn repetitions_include_256_and_multiline_values_but_exclude_empty_keys() {
 #[test]
 fn text_forms_use_declared_language_and_unestablished_languages_fail() {
     for (language, expected) in [
-        (0, vec![]),
+        // Language 0 is the file's own, English here (7.2).
+        (0, vec!["a", "Test"]),
         // System and Unicode standard keep accents (query-program.md 7.2).
         (1, vec!["a", "Test", "tést"]),
         (2, vec!["Test", "a", "tést"]),
