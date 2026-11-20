@@ -744,11 +744,19 @@ fn table_grid(
     let widths_id = ui
         .scope_id()
         .with(("table column widths", page.key.layout_id));
+    // By field, so that a column keeps its width wherever its field goes.
+    let mut stored: Vec<(String, f32)> =
+        ui.data(|data| data.get_temp(widths_id)).unwrap_or_default();
     let resizable = fields.len().saturating_sub(1);
-    let mut widths: Vec<f32> = ui
-        .data(|data| data.get_temp::<Vec<f32>>(widths_id))
-        .filter(|widths| widths.len() == resizable)
-        .unwrap_or_else(|| vec![TABLE_COLUMN_WIDTH; resizable]);
+    let mut widths: Vec<f32> = fields[..resizable]
+        .iter()
+        .map(|field| {
+            stored
+                .iter()
+                .find(|(name, _)| *name == field.name)
+                .map_or(TABLE_COLUMN_WIDTH, |(_, width)| *width)
+        })
+        .collect();
     let drag_scroll = table_drag_scroll(ui);
     let mut table = TableBuilder::new(ui)
         .id_salt(("records", page.key.layout_id))
@@ -921,7 +929,13 @@ fn table_grid(
     for (column, (cell, width)) in header_cells.iter().zip(&mut widths).enumerate() {
         column_divider(ui, widths_id.with(column), *cell, width);
     }
-    ui.data_mut(|data| data.insert_temp(widths_id, widths));
+    for (field, width) in fields.iter().zip(&widths) {
+        match stored.iter_mut().find(|(name, _)| *name == field.name) {
+            Some(entry) => entry.1 = *width,
+            None => stored.push((field.name.clone(), *width)),
+        }
+    }
+    ui.data_mut(|data| data.insert_temp(widths_id, stored));
     ui.data_mut(|data| {
         if let Some(id) = waiting {
             data.insert_temp(waiting_id, id);
@@ -972,15 +986,36 @@ const TABLE_COLUMN_WIDTH: f32 = 170.0;
 
 /// Dragging a Table view column's width wider or narrower, at the divider
 /// after its header `cell`. The drag is in the table's points, the zoom
-/// layer's when zoomed.
+/// layer's when zoomed: egui gives the pointer in window points.
 fn column_divider(ui: &mut Ui, id: egui::Id, cell: Rect, width: &mut f32) {
     let x = cell.right() + ui.spacing().item_spacing.x / 2.0;
     let grab = ui.style().interaction.resize_grab_radius_side;
     let header = cell.expand2(vec2(0.0, 2.0)).y_range();
     let handle = Rect::from_x_y_ranges(x - grab..=x + grab, header);
     let response = ui.interact(handle, id, Sense::drag());
-    if response.dragged() {
-        *width = (*width + response.drag_delta().x).clamp(40.0, 4000.0);
+    // The width follows the pointer from where it was pressed, so that
+    // movement that came with the press or with the release counts.
+    let from_global = ui
+        .ctx()
+        .layer_transform_from_global(ui.layer_id())
+        .unwrap_or(egui::emath::TSTransform::IDENTITY);
+    let start = id.with("drag start");
+    if response.drag_started() {
+        if let Some(origin) = ui.input(|input| input.pointer.press_origin()) {
+            let origin = (from_global * origin).x;
+            ui.data_mut(|data| data.insert_temp(start, (origin, *width)));
+        }
+    }
+    if response.dragged() || response.drag_stopped() {
+        let pointer = ui.input(|input| input.pointer.latest_pos());
+        if let (Some((origin, from)), Some(pointer)) =
+            (ui.data(|data| data.get_temp::<(f32, f32)>(start)), pointer)
+        {
+            *width = (from + (from_global * pointer).x - origin).clamp(40.0, 4000.0);
+        }
+    }
+    if response.drag_stopped() {
+        ui.data_mut(|data| data.remove::<(f32, f32)>(start));
     }
     if response.hovered() || response.dragged() {
         ui.ctx().set_cursor_icon(egui::CursorIcon::ResizeColumn);

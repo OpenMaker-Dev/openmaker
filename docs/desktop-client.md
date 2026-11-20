@@ -874,10 +874,10 @@ editors lay their text out at the zoom (`document::layer_galley`) to keep it
 sharp; a value cut off at its column's edge keeps egui's renderer, as
 elided text does above. The table's last column fills the width the previous
 frame left, so a new zoom lays the table out once more before it shows. The
-table keeps its columns' widths itself and draws their dividers in the
-header: a divider dragged at any zoom follows the pointer, in the table's
-points (egui_extras' own resizing reads the pointer in window points, so a
-zoomed drag jumped). While zoomed, Table view's scroll areas do not follow a
+table keeps its columns' widths itself, by field, and draws their dividers in
+the header: a divider dragged at any zoom follows the pointer from where it
+was pressed, in the table's points (egui_extras' own resizing reads the
+pointer in window points, so a zoomed drag jumped). While zoomed, Table view's scroll areas do not follow a
 touch drag, which egui would move by the zoom's multiple of the finger's
 way; the wheel and the scroll bars still scroll them.
 
