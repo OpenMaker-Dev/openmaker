@@ -1283,7 +1283,7 @@ fn sliding_address_blocks_close_up_and_resize_parts_in_pdf_print_and_preview_pag
         .s
         .failure
         .as_deref()
-        .is_some_and(|f| f.contains("sliding left is unsupported")));
+        .is_some_and(|f| f.contains("slide left and up in one part")));
     assert_eq!(std::fs::read(&path).unwrap(), saved);
     assert_eq!(fake.jobs.lock().unwrap().len(), 1);
     assert!(!c
@@ -1293,6 +1293,105 @@ fn sliding_address_blocks_close_up_and_resize_parts_in_pdf_print_and_preview_pag
         .events
         .iter()
         .any(|e| e.ends_with(":write") || e.contains(":found:")));
+}
+
+/// Sliding left closes up a line, as Claris describes it: a field set to
+/// slide left narrows to the width its text needs, and an object set to
+/// slide left moves by the least its nearest objects on its left moved and
+/// narrowed, keeping the gaps between them; an object that does not slide
+/// holds. What is unmeasured refuses: sliding left in a header, a part
+/// where objects slide both left and up, and a field of several lines.
+#[test]
+fn sliding_left_closes_up_a_line_of_fields() {
+    use om_layout::sliding::{LEFT, UP};
+    let paper = om_layout::pagination::PageSize::default();
+    let slide = |mut object: LayoutObject, flags| {
+        object.flags |= 0x3000_0000 | flags;
+        object
+    };
+    let layout = |objects: Vec<LayoutObject>, part_type| Layout {
+        def: Some(LayoutDef {
+            base_width: 540.0,
+            ..Default::default()
+        }),
+        parts: vec![Part {
+            part_type,
+            height: 60.0,
+            ..Default::default()
+        }],
+        objects: ObjectStore {
+            root: objects.iter().map(|o| o.id).collect(),
+            objects,
+            ..Default::default()
+        },
+        ..Default::default()
+    };
+    let line = |first_flags| {
+        vec![
+            slide(field(1, 1, rect(10.0, 10.0, 100.0, 18.0)), first_flags),
+            slide(field(2, 11, rect(115.0, 10.0, 100.0, 18.0)), LEFT),
+            slide(
+                label(3, "!", rect(220.0, 10.0, 20.0, 18.0), 12.0, false),
+                LEFT,
+            ),
+        ]
+    };
+    let render = |layout: &Layout, first: &str| {
+        let first = first.to_owned();
+        crate::report::render_pdf(layout, 1, paper.clone(), &[], move |o, _| {
+            Ok(match o.id {
+                1 => first.clone(),
+                2 => "Lovelace".into(),
+                _ => o.text.clone().unwrap_or_default(),
+            })
+        })
+        .map(|report| String::from_utf8_lossy(&report.bytes).into_owned())
+        .map_err(|e| e.message)
+    };
+    let font =
+        ttf_parser::Face::parse(include_bytes!("../../assets/fonts/Inter-Regular.ttf"), 0).unwrap();
+    let width = |text: &str| {
+        text.chars()
+            .map(|ch| {
+                let glyph = font.glyph_index(ch).unwrap();
+                f64::from(font.glyph_hor_advance(glyph).unwrap()) * 12.0
+                    / f64::from(font.units_per_em())
+            })
+            .sum::<f64>()
+    };
+    let pdf = render(&layout(line(LEFT), 4), "Ada").unwrap();
+    let x = |text: &str| text_origins(&pdf, 1, text)[0].1;
+    // First narrows to "Ada"; Last keeps its 5-point gap after it and
+    // narrows to "Lovelace"; the label keeps its 5-point gap after Last
+    // (its text 1 point into its frame).
+    assert!((x("Lovelace") - x("Ada") - (width("Ada") + 5.0)).abs() < 0.05);
+    assert!(
+        (x("!") - x("Lovelace") - (width("Lovelace") + 5.0 + 1.0)).abs() < 0.05,
+        "{} {}",
+        x("!"),
+        x("Lovelace")
+    );
+    // A first field that does not slide holds the line where it is placed.
+    let held = render(&layout(line(0), 4), "Ada").unwrap();
+    let held_x = |text: &str| text_origins(&held, 1, text)[0].1;
+    assert!((held_x("Lovelace") - held_x("Ada") - 105.0).abs() < 0.05);
+    // Refused: a header (Claris says only that it never slides up), a part
+    // that slides both ways, and a field of more than one line.
+    let mut headed = layout(line(LEFT), 1);
+    headed.parts.push(Part {
+        part_type: 4,
+        top: 60.0,
+        height: 20.0,
+        ..Default::default()
+    });
+    let header = render(&headed, "Ada").unwrap_err();
+    assert!(header.contains("header, footer or title part"), "{header}");
+    assert!(render(&layout(line(LEFT | UP), 4), "Ada")
+        .unwrap_err()
+        .contains("slide left and up in one part"));
+    assert!(render(&layout(line(LEFT), 4), "Ada\rKing")
+        .unwrap_err()
+        .contains("more than one line"));
 }
 
 #[test]
@@ -1334,7 +1433,7 @@ fn sliding_refuses_unsupported_options_overlaps_and_cut_off_objects() {
         (
             &(|l: &mut Layout| find(l, 53).flags |= om_layout::sliding::LEFT)
                 as &dyn Fn(&mut Layout),
-            "sliding left is unsupported",
+            "slide left and up in one part",
         ),
         (
             &|l: &mut Layout| find(l, 56).flags |= om_layout::sliding::NON_PRINTING,

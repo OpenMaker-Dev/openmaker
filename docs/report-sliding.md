@@ -2,7 +2,7 @@
 
 Preview, Save Records as PDF and desktop Print close up blank space the way
 FileMaker's "Sliding & Visibility" options describe, for objects that slide
-**up**. All three outputs use one plan and one page scene
+**up** or **left**. All three outputs use one plan and one page scene
 (`report::plan_report`, `report::prepare_page`), so their page breaks, part
 heights and object positions are the same. Browse is unchanged: sliding
 applies to printed pages only.
@@ -18,7 +18,7 @@ decoded from FileMaker Pro 26.0.3 ([layout model 5.8](re/layout-model.md#58-prin
 | Sliding up based on: Only objects directly above | `0x8000` set | supported |
 | Sliding up based on: All objects above | `0x8000` clear | supported |
 | Also resize enclosing part | `0x40` | supported |
-| Sliding left | `0x20` | refused |
+| Sliding left | `0x20` | supported in body and summary parts, alone in its part |
 | Hide when printing | `0x200` | supported: the object and what it holds are left out |
 
 `0x8000` and `0x40` mean nothing without `0x10`. FMEngine's slide record reads
@@ -57,6 +57,24 @@ summary) is laid out on its own:
 - **Parts shrink.** A body, sub-summary or grand-summary part shrinks by the
   least that its lowest *resize enclosing part* objects rose. The gap below
   them stays.
+- **Sliding left** closes up a line the same way across, from Claris's
+  description ("Reduce the width of the selected fields to the minimum
+  needed for their data", the selected objects shifting left by "the amount
+  of space that the fields to the left of" them shrink). Everything below is
+  inferred from it; no FileMaker output with a sliding-left object was
+  compared:
+  - a field set to slide left narrows to the width its text needs on one
+    line, its padding included (an empty one to nothing, painting nothing);
+    a container's frame keeps its width, and other objects move but never
+    narrow;
+  - an object set to slide left moves left by the least that its nearest
+    objects on its left on the same line (overlapping it vertically) moved
+    and narrowed, so the gaps between them stay; an object that does not
+    slide holds what is on its right, and with nothing on its left on its
+    line an object does not move;
+  - an object never moves over an object on its left on its line;
+  - parts keep their height (sliding left resizes nothing), so pagination is
+    unchanged.
 - **Fixed parts.** Claris: "Headers, footers, title headers, title footers,
   and top navigation and bottom navigation parts never shrink or slide up."
   An object in a header, footer, title header or title footer set to slide
@@ -83,13 +101,18 @@ drawn overlapping.
 Each refusal returns error 3 with a reason. PDF and Print refuse before any
 file is staged or job spooled. Preview shows the reason instead of a page.
 
-- Sliding left.
-- An object that slides up in a part that holds an object hidden when
-  printing or one beyond the printable width: whether FileMaker lets it
+- An object that slides left in a header, footer, title header or title
+  footer: Claris says only that those never slide up.
+- A part where objects slide both left and up (or one object does both):
+  which FileMaker applies first is unmeasured.
+- A field that slides left whose text takes more than one line: how a field
+  of several lines narrows is unmeasured.
+- An object that slides (up or left) in a part that holds an object hidden
+  when printing or one beyond the printable width: whether FileMaker lets it
   slide into the space of what is left out is unmeasured.
-- An object that slides up and overlaps another object in its part. Whether
-  it would natively move over, under or out of the other object is
-  unmeasured.
+- An object that slides (up or left) and overlaps another object in its
+  part. Whether it would natively move over, under or out of the other
+  object is unmeasured.
 - An object that would be cut off by its resized part. For example, a fixed
   object near the bottom of a part whose higher objects resize it. Set it to
   slide up and resize the part too.
@@ -97,8 +120,8 @@ file is staged or job spooled. Preview shows the reason instead of a page.
   ([portable PDF](portable-pdf.md)): rotation, hide and label
   calculations, repeating fields, text overflow other than a field's text
   that does not slide (it prints cut), and so on; and groups, portals and
-  conditionally formatted objects that are set to slide up, which print
-  only when they do not slide. Sliding never relaxes these.
+  conditionally formatted objects that are set to slide up or left, which
+  print only when they do not slide. Sliding never relaxes these.
 
 ## Costs and limits
 
@@ -162,11 +185,16 @@ Its tests are:
   without writes.
 - `sliding_refuses_unsupported_options_overlaps_and_cut_off_objects`:
   - the overlap clamp (a 60-point body);
-  - refusals of slide left, sliding beside a hidden object, overlap,
-    cut-off and rotation;
+  - refusals of sliding left and up in one part, sliding beside a hidden
+    object, overlap, cut-off and rotation;
   - header and footer objects set to slide up, one of them overlapping
     another, print byte for byte as the same objects without the option,
     and a sliding header field whose text does not fit prints cut.
+- `sliding_left_closes_up_a_line_of_fields`: two fields and a label set to
+  slide left close up behind a narrowed first field, keeping their 5-point
+  gaps; a first field that does not slide holds the line; and sliding left
+  in a header, in a part that also slides up, and in a field of two lines
+  each refuse.
 - `measured_parts_flow_by_printed_height_and_remeasure_on_their_new_page`
   (om-layout): measured pagination, re-measurement on the next page, and
   refusal of out-of-bounds heights.

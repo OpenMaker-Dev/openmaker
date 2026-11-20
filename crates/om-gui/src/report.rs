@@ -1944,15 +1944,33 @@ fn walk_report_objects<'a>(
     ] {
         // Only what prints can slide: a slider that is itself left out (or
         // inside what is) moves nothing.
-        if let Some((object, _, _)) = objects.iter().find(|(o, _, _)| {
-            part_of(o).is_some_and(|part| {
-                parts.contains(&part) && slide_in_part(layout, o, part).is_some()
-            })
+        if let Some((object, way)) = objects.iter().find_map(|(o, _, _)| {
+            let part = part_of(o).filter(|part| parts.contains(part))?;
+            Some((o, sliding_way(layout, o, part)?))
         }) {
             refuse(ReportError::unsupported(format!(
-                "Report object {} slides up in a part with {what}; how those slide is \
+                "Report object {} slides {way} in a part with {what}; how those slide is \
                  unmeasured",
                 object.id
+            )))?;
+        }
+    }
+    // Which FileMaker applies first, sliding left or sliding up, is
+    // unmeasured; a part where objects do both is refused.
+    for (a, _, pa) in &objects {
+        let left = a.flags & sliding::LEFT != 0
+            && layout.parts.get(*pa).is_some_and(|p| slides_in(p.kind()));
+        if !left {
+            continue;
+        }
+        if let Some((b, _, _)) = objects
+            .iter()
+            .find(|(b, _, pb)| pb == pa && slide_in_part(layout, b, *pb).is_some())
+        {
+            refuse(ReportError::unsupported(format!(
+                "Report objects {} and {} slide left and up in one part; which FileMaker \
+                 applies first is unmeasured",
+                a.id, b.id
             )))?;
         }
     }
@@ -1960,18 +1978,20 @@ fn walk_report_objects<'a>(
     // out of it natively is unmeasured; such layouts are refused.
     for (i, (a, ra, pa)) in objects.iter().enumerate() {
         for (b, rb, pb) in &objects[i + 1..] {
+            let way = sliding_way(layout, a, *pa).or(sliding_way(layout, b, *pb));
             if pa == pb
-                && (slide_in_part(layout, a, *pa).is_some()
-                    || slide_in_part(layout, b, *pb).is_some())
+                && way.is_some()
                 && ra.left < rb.right - SLIDE_EPSILON
                 && rb.left < ra.right - SLIDE_EPSILON
                 && ra.top < rb.bottom - SLIDE_EPSILON
                 && rb.top < ra.bottom - SLIDE_EPSILON
             {
                 refuse(ReportError::unsupported(format!(
-                    "Report objects {} and {} overlap and one slides up; \
+                    "Report objects {} and {} overlap and one slides {}; \
                      overlapping sliding objects are unsupported",
-                    a.id, b.id
+                    a.id,
+                    b.id,
+                    way.unwrap_or("up")
                 )))?;
             }
         }
@@ -2200,42 +2220,47 @@ fn report_object<'a>(
     if beyond_page(object, &rect, paper) {
         return Ok(None);
     }
-    if object.flags & sliding::LEFT != 0 {
+    // Claris names the parts that never slide up; how an object set to
+    // slide left moves in one of them is unmeasured.
+    if object.flags & sliding::LEFT != 0
+        && !layout.parts.get(part).is_some_and(|p| slides_in(p.kind()))
+    {
         return Err(ReportError::unsupported(format!(
-            "Report object {} slides left; sliding left is unsupported",
+            "Report object {} slides left in a header, footer or title part; \
+             how it slides there is unmeasured",
             object.id
         )));
     }
-    // A portal's rows have its height; how its objects would slide in a
-    // row, or a tab control, is unmeasured.
-    let slides = slide_in_part(layout, object, part).is_some();
-    if slides
-        && (in_portal.is_some()
+    if let Some(way) = sliding_way(layout, object, part) {
+        // A portal's rows have its height; how its objects would slide in
+        // a row, or a tab control, is unmeasured.
+        if in_portal.is_some()
             || matches!(
                 object.kind(),
                 ObjectKind::Portal | ObjectKind::TabControl | ObjectKind::TabPanel
-            ))
-    {
-        return Err(ReportError::unsupported(format!(
-            "Report object {} slides up in a portal; sliding portals is unsupported",
-            object.id
-        )));
-    }
-    // How FileMaker slides a group, or one of its members, is unmeasured.
-    if slides && (group.is_some() || object.kind() == ObjectKind::Group) {
-        return Err(ReportError::unsupported(format!(
-            "Report object {} slides up in a group; sliding groups is unsupported",
-            object.id
-        )));
-    }
-    // Pages are planned without conditions, so one that resized a sliding
-    // object's text would not be measured.
-    if slides && !object.calcs.conditions.is_empty() {
-        return Err(ReportError::unsupported(format!(
-            "Report object {} slides up and has conditional formatting; \
-             sliding formatted objects are unsupported",
-            object.id
-        )));
+            )
+        {
+            return Err(ReportError::unsupported(format!(
+                "Report object {} slides {way} in a portal; sliding portals is unsupported",
+                object.id
+            )));
+        }
+        // How FileMaker slides a group, or one of its members, is unmeasured.
+        if group.is_some() || object.kind() == ObjectKind::Group {
+            return Err(ReportError::unsupported(format!(
+                "Report object {} slides {way} in a group; sliding groups is unsupported",
+                object.id
+            )));
+        }
+        // Pages are planned without conditions, so one that resized a
+        // sliding object's text would not be measured.
+        if !object.calcs.conditions.is_empty() {
+            return Err(ReportError::unsupported(format!(
+                "Report object {} slides {way} and has conditional formatting; \
+                 sliding formatted objects are unsupported",
+                object.id
+            )));
+        }
     }
     if !(matches!(
         object.kind(),
@@ -2545,7 +2570,7 @@ fn printed_flags(kind: ObjectKind) -> u64 {
     } else {
         0
     };
-    0xf000_0000 | 0x0002_4001 | TAB_ORDER_OMIT | SLIDE_UP_FLAGS | line
+    0xf000_0000 | 0x0002_4001 | TAB_ORDER_OMIT | SLIDE_UP_FLAGS | sliding::LEFT | line
 }
 /// Tolerance, in points, for touching edges of sliding objects.
 const SLIDE_EPSILON: f64 = 0.01;
@@ -2575,6 +2600,21 @@ fn slide_in_part(
     object
         .slide_up()
         .filter(|_| layout.parts.get(part).is_some_and(|p| slides_in(p.kind())))
+}
+
+/// The way `object` slides in `layout`'s part `part`, where it takes
+/// effect: "up" ([`slide_in_part`]), "left" (sliding left, `0x20`, in a
+/// part that slides, [`slides_in`]), or `None`.
+fn sliding_way(layout: &Layout, object: &LayoutObject, part: usize) -> Option<&'static str> {
+    if slide_in_part(layout, object, part).is_some() {
+        Some("up")
+    } else if object.flags & sliding::LEFT != 0
+        && layout.parts.get(part).is_some_and(|p| slides_in(p.kind()))
+    {
+        Some("left")
+    } else {
+        None
+    }
 }
 
 /// Whether a printed part's height depends on its record: an object there
@@ -2836,6 +2876,18 @@ struct PartObjects<'s, 'a> {
     /// Each object's slide-up option where it takes effect: none in a part
     /// that never slides ([`slide_in_part`]).
     slides: Vec<Option<om_layout::SlideUp>>,
+    /// Whether each object slides left ([`sliding_way`]).
+    left: Vec<bool>,
+    /// Left to right; ties keep stacking order.
+    left_order: Vec<usize>,
+    /// For each object sliding left, the nearest objects on its left on
+    /// the same line (vertically overlapping it), without any that another
+    /// of them separates from it: it moves by the least they moved and
+    /// narrowed.
+    left_nearest: Vec<Vec<usize>>,
+    /// For each object sliding left, every object on its left on the same
+    /// line: it never moves over one of them.
+    left_colliders: Vec<Vec<usize>>,
 }
 
 fn part_objects<'s, 'a>(
@@ -2908,6 +2960,45 @@ fn part_objects<'s, 'a>(
             (objects.iter()).position(|(o, _, _)| o.id == parent && o.kind() == ObjectKind::Portal)
         })
         .collect();
+    // Sliding left, as sliding up across: an object moves against the
+    // objects on its left on the same line.
+    let left: Vec<bool> = (objects.iter())
+        .map(|(object, _, _)| object.flags & sliding::LEFT != 0 && slides_in(part.kind()))
+        .collect();
+    let mut left_order: Vec<usize> = (0..rects.len()).collect();
+    left_order.sort_by(|&a, &b| {
+        let (ra, rb) = (&rects[a], &rects[b]);
+        ra.left
+            .total_cmp(&rb.left)
+            .then(ra.right.total_cmp(&rb.right))
+            .then(a.cmp(&b))
+    });
+    let mut left_rank = vec![0; rects.len()];
+    for (position, &i) in left_order.iter().enumerate() {
+        left_rank[i] = position;
+    }
+    // `a` is wholly on `b`'s left, earlier in the order, on its line.
+    let beside = |a: usize, b: usize| {
+        left_rank[a] < left_rank[b]
+            && rects[a].right <= rects[b].left + SLIDE_EPSILON
+            && rects[a].top < rects[b].bottom - SLIDE_EPSILON
+            && rects[b].top < rects[a].bottom - SLIDE_EPSILON
+    };
+    let mut left_nearest = vec![Vec::new(); rects.len()];
+    let mut left_colliders = vec![Vec::new(); rects.len()];
+    for o in (0..rects.len()).filter(|&o| left[o]) {
+        let candidates: Vec<usize> = (0..rects.len()).filter(|&c| beside(c, o)).collect();
+        left_nearest[o] = candidates
+            .iter()
+            .copied()
+            .filter(|&c| {
+                !candidates
+                    .iter()
+                    .any(|&b| b != c && rects[c].right <= rects[b].left + SLIDE_EPSILON)
+            })
+            .collect();
+        left_colliders[o] = candidates;
+    }
     PartObjects {
         objects,
         rects,
@@ -2917,6 +3008,10 @@ fn part_objects<'s, 'a>(
         resizers,
         in_portal,
         slides,
+        left,
+        left_order,
+        left_nearest,
+        left_colliders,
     }
 }
 
@@ -3051,6 +3146,33 @@ fn on_page(object: &LayoutObject, page: usize) -> std::borrow::Cow<'_, LayoutObj
     std::borrow::Cow::Owned(object)
 }
 
+/// The width `value` needs in a box styled `style` on one line: its glyphs'
+/// advances and the box's side padding, with a hair to spare so that it is
+/// not cut; nothing for an empty value. A value of more than one line
+/// refuses: how FileMaker narrows a field of several lines is unmeasured.
+fn one_line_width(id: u64, value: &str, style: &ResolvedStyle) -> Result<f64, ReportError> {
+    if value.is_empty() {
+        return Ok(0.0);
+    }
+    let wide = Rect {
+        right: 1.0e9,
+        bottom: 1.0e9,
+        ..Default::default()
+    };
+    let (lines, _, _) = prepare_text_in(value, &wide, style, Overflow::Clip)?;
+    if lines.len() > 1 {
+        return Err(ReportError::unsupported(format!(
+            "Report field {id} slides left with more than one line of text; \
+             how a field of several lines narrows is unmeasured"
+        )));
+    }
+    let used: f64 = (lines.iter().flat_map(|line| &line.glyphs))
+        .map(|glyph| glyph.1)
+        .sum();
+    let pad = style.padding.map(|p| p.unwrap_or(0.0));
+    Ok(used + pad[1] + pad[3] + 0.01)
+}
+
 /// Lay out one part for one record and page, sliding objects up as
 /// FileMaker describes (Claris, "Removing blank spaces in printouts"):
 ///
@@ -3079,6 +3201,7 @@ fn layout_part(
     let mut values = Vec::with_capacity(count);
     let mut data = Vec::with_capacity(count);
     let mut shrink = vec![0.0; count];
+    let mut narrow = vec![0.0; count];
     for (i, (object, _, _)) in part.objects.iter().enumerate() {
         let paged = on_page(object, context.page);
         let object = paged.as_ref();
@@ -3119,6 +3242,16 @@ fn layout_part(
             let rect = &part.rects[i];
             shrink[i] = (rect.height() - prepare_text(value, rect, style)?.1).max(0.0);
         }
+        // A field set to slide left narrows to the width its text needs on
+        // one line, its padding included; an empty one to nothing (Claris:
+        // "the minimum needed for their data"). A container's frame keeps
+        // its width.
+        if let (Some((value, style, _)), true, ObjectKind::Field, None) =
+            (&value, part.left[i], object.kind(), &container)
+        {
+            let rect = &part.rects[i];
+            narrow[i] = rect.width() - one_line_width(object.id, value, style)?.min(rect.width());
+        }
         values.push(value);
         data.push(container);
     }
@@ -3134,6 +3267,26 @@ fn layout_part(
         rise[o] = part.colliders[o]
             .iter()
             .map(|&c| part.rects[o].top - (part.rects[c].bottom - rise[c] - shrink[c]))
+            .fold(least, f64::min)
+            .max(0.0);
+    }
+    // Sliding left: an object moves by the least that its nearest objects on
+    // its left on the same line moved and narrowed, never over one of them.
+    let mut shift = vec![0.0; count];
+    for &o in &part.left_order {
+        if !part.left[o] {
+            continue;
+        }
+        let Some(least) = part.left_nearest[o]
+            .iter()
+            .map(|&a| shift[a] + narrow[a])
+            .reduce(f64::min)
+        else {
+            continue;
+        };
+        shift[o] = part.left_colliders[o]
+            .iter()
+            .map(|&c| part.rects[o].left - (part.rects[c].right - shift[c] - narrow[c]))
             .fold(least, f64::min)
             .max(0.0);
     }
@@ -3160,15 +3313,17 @@ fn layout_part(
                 part.objects[i].0.id
             )));
         }
-        // An empty shrinking field collapses: no frame, fill or borders.
-        if shrink[i] > 0.0 && bottom <= top {
+        let (left, right) = (rect.left - shift[i], rect.right - shift[i] - narrow[i]);
+        // An empty shrinking or narrowing field collapses: no frame, fill
+        // or borders.
+        if (shrink[i] > 0.0 && bottom <= top) || (narrow[i] > 0.0 && right <= left) {
             continue;
         }
         let bounds = Rect {
             top: top + origin.1,
             bottom: bottom + origin.1,
-            left: rect.left + origin.0,
-            right: rect.right + origin.0,
+            left: left + origin.0,
+            right: right + origin.0,
             ..Default::default()
         };
         let (lines, conditions, icon) = match value {
