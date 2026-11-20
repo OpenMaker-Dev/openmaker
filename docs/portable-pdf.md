@@ -15,7 +15,14 @@ and of PDF encoding. Each placement identifies its source part, selected-record
 index and physical top edge. The PDF backend consumes those placements, not a
 screen image. [Preview](preview.md) consumes the same selected-page scene, including object
 stacking, field bindings and measured text lines. Calculated Get(PageNumber) uses
-the physical page context; advanced layout merge symbols remain refused.
+the physical page context, and a text object's or button's `{{PageNumber}}`
+(in its label, or in each of a merge text's literal runs, any case) prints
+page *n*'s number on page *n*, as FileMaker Pro 26.0.3's Save Records as PDF
+wrote it ([calc functions](re/calc-functions.md), O4). A symbol is read within
+one literal run, never across a merged field, and a `{{` with no closing
+`}}` prints as it is, as Browse reads them. Other layout symbols remain
+refused; `{{PageCount}}` among them, as FileMaker Pro left `Get ( PageCount )`
+empty in every mode it was measured in.
 
 ## Supported layout and output contract
 
@@ -98,8 +105,8 @@ the portals [Portals](#portals) lists, dynamic pictures, the button icons
 [Buttons and groups](#buttons-and-groups) lists, option controls and repeating fields, rotated objects, the rounded frames
 [Rounded frames](#rounded-frames) lists,
 hide/label calculations, the conditional formatting
-[Conditional formatting](#conditional-formatting) lists, layout merge symbols (including page
-numbers), mixed rich text, italic/decorated text,
+[Conditional formatting](#conditional-formatting) lists, layout merge symbols other than
+`{{PageNumber}}`, mixed rich text, italic/decorated text,
 colors outside 0-1, unsupported glyphs/shaping, text overflow in anything but a
 field that does not slide ([field text](#field-text)), and object/page overflow. Ordinary
 flat character and paragraph styles, including uniform paragraph leading, can

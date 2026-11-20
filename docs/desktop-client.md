@@ -275,6 +275,12 @@ forgets the list (stopping a listing under way), and a reply to a listing no
 longer waited for is dropped unseen. The wording is OpenMaker's; FileMaker
 Pro's is not captured.
 
+Opening a file the host refuses because it blocks new users (Open status
+1638) shows FileMaker Pro's alert, "The host is not allowing new
+connections. Try again later.", with OK, its error 1638
+(network-protocol.md 5.6.4; `om_provider::HOST_BLOCKS_NEW_USERS`). Other
+refused opens keep OpenMaker's wording.
+
 ### Messages from the host
 
 A hosted file's administrator can send its sessions a message (FileMaker
@@ -561,9 +567,13 @@ authoring part tabs or object kind captions.
   #1338). A window without a player shows the filename and a note.
 - The Insert menu offers PDF and Audio/Video for a selected, writable
   interactive container outside portal rows whose field object allows
-  entry in Browse mode. The typed-path dialogs reject a file of a
-  different type (a PDF without its header, a file the player would not
-  play) before they prepare an edit or upload data. [Container menus and file dialogs](re/containers.md#desktop-menus-and-file-dialogs-2026-11-02)
+  entry in Browse mode. On macOS the Insert commands ask for the file in
+  the system's open panel, which shows every file (whether FileMaker Pro's
+  panel filters by type is unmeasured); elsewhere, an in-app dialog takes
+  a typed path. Either way, a file of a different type (a picture Insert
+  Picture cannot show, a PDF without its header, a file the player would
+  not play) is refused with 734 or 700 before an edit is prepared or data
+  uploaded. [Container menus and file dialogs](re/containers.md#desktop-menus-and-file-dialogs-2026-11-02)
 - Button icons come from the file's library root `31` as the original SVG,
   colored through the icon component's style; no application icon is
   substituted for a file's library image.

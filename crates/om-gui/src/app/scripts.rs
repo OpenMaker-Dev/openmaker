@@ -153,6 +153,10 @@ pub(super) struct PromptView {
     login: Option<crate::open_file::LoginDialog>,
     /// [`Prompt::Sort`]'s dialog: FileMaker's Sort Records.
     sort: Option<Box<crate::script_workspace::SortOrder>>,
+    /// The platform's file panel answering an Insert command's
+    /// [`Prompt::ContainerFile`] (`file_panel`), in place of the in-app
+    /// dialog.
+    panel: Option<crate::file_panel::OpenPanel>,
     /// When the prompt was shown: a custom dialog's "Close after" counts
     /// from it.
     opened: std::time::Instant,
@@ -1855,6 +1859,18 @@ impl OpenMakerApp {
                     }
                     _ => None,
                 };
+                // An Insert command's file comes from the platform's panel
+                // where the app has a native window to show one beside.
+                let panel = match &prompt {
+                    Prompt::ContainerFile(dialog) if !dialog.export && self.native_window => {
+                        let ctx = ctx.clone();
+                        let message = format!("Into field {}", dialog.field);
+                        crate::file_panel::OpenPanel::open(&dialog.title, &message, move || {
+                            ctx.request_repaint()
+                        })
+                    }
+                    _ => None,
+                };
                 self.script.prompt = Some(PromptView {
                     id,
                     prompt,
@@ -1864,6 +1880,7 @@ impl OpenMakerApp {
                     text,
                     login,
                     sort,
+                    panel,
                     opened: std::time::Instant::now(),
                 });
             }
@@ -2560,13 +2577,22 @@ impl OpenMakerApp {
         if let Some(dialog) = view.sort.as_mut() {
             answer = dialog.show_browse(ctx).map(Answer::Sort);
         }
+        if let (Some(panel), Prompt::ContainerFile(dialog)) = (&view.panel, &view.prompt) {
+            answer = panel.answer().map(|chosen| {
+                Answer::ContainerFile(chosen.map(|path| crate::scripting::ContainerFileDialog {
+                    path: path.display().to_string(),
+                    chosen: Some(path),
+                    ..dialog.clone()
+                }))
+            });
+        }
         if let Some(answer) = answer {
             let id = view.id;
             self.script.prompt = None;
             self.answer(ctx, id, answer);
             return;
         }
-        if view.login.is_some() || view.sort.is_some() {
+        if view.login.is_some() || view.sort.is_some() || view.panel.is_some() {
             return;
         }
         egui::Modal::new(Id::unique(("script_prompt", view.id)))

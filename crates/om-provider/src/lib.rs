@@ -452,6 +452,12 @@ struct PeerAuth {
 
 pub(crate) use om_data::{FIELD_NOT_MODIFIABLE, PRIVILEGE_DENIED};
 
+/// What FileMaker Pro says when the host refuses to open a file because it
+/// blocks new users (error 1638, catalogs/error-codes.csv; network-protocol.md
+/// 5.6.4).
+pub const HOST_BLOCKS_NEW_USERS: &str =
+    "The host is not allowing new connections. Try again later.";
+
 impl NativeProvider {
     pub fn new(config: NativeConfig) -> Self {
         Self {
@@ -2085,6 +2091,11 @@ impl NativeProvider {
                     session
                 .open_file(&connection.host, &connection.file)
                 .map_err(|e| {
+                    // Block New Users: FileMaker Pro's alert, with its error
+                    // (network-protocol.md 5.6.4, admin-console.md 9).
+                    if session.refused_open() == Some(1638) {
+                        return DataError::with_code(1638, HOST_BLOCKS_NEW_USERS);
+                    }
                     // A client license matters only to a server that asks
                     // for one, never to a file opened from this computer.
                     let hint = if !local && endpoint.machine.install_code.is_empty() {
