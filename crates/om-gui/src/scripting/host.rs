@@ -463,19 +463,34 @@ impl<'a> WorkerHost<'a> {
                     self.s.observe(&request);
                     let current = self.s.file.window.id();
                     let provider = self.provider.get_mut().as_mut();
-                    provider.use_window(job.window);
-                    let reply = worker::handle(provider, self.store, request);
-                    provider.use_window(current);
-                    self.files.select(file, self.provider.get_mut(), self.s);
-                    if self
+                    let reply = worker::handle_in(provider, self.store, job.window, request);
+                    // Asked of the provider that answered, before the switch
+                    // back may make another file's current.
+                    let held = worker::holds_in_transaction(provider);
+                    // The switch back, whose panic ends the running
+                    // scripts, comes before the reply, which says whether
+                    // a save outlives it (#313).
+                    let back = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+                        self.provider.get_mut().use_window(current);
+                        self.files.select(file, self.provider.get_mut(), self.s);
+                    }))
+                    .err();
+                    let reply = match back {
+                        Some(_) => worker::unkept_save(held, reply),
+                        None => reply,
+                    };
+                    let sent = self
                         .responses
                         .send(Response {
                             epoch: job.epoch,
                             window: job.window,
                             reply,
                         })
-                        .is_err()
-                    {
+                        .is_ok();
+                    if let Some(payload) = back {
+                        std::panic::resume_unwind(payload);
+                    }
+                    if !sent {
                         self.s.interrupted = true;
                         return None;
                     }
@@ -4427,7 +4442,7 @@ impl Records for WorkerHost<'_> {
                 .zip(u64::try_from(id).ok())
                 .map(|(table, record)| self.transaction_content(table, record))
                 .unwrap_or_default();
-            if let Err(e) = self.p().delete_record(layout, id) {
+            if let Err(e) = self.p().delete_record_in_script(layout, id) {
                 self.committed_records(deleted);
                 self.s.file.window.changed_data();
                 return Err(data_error(e));

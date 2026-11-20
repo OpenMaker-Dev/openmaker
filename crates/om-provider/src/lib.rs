@@ -2681,6 +2681,57 @@ impl NativeProvider {
     }
 }
 
+impl NativeProvider {
+    /// Delete Record through layout `layout_id`, by the user or (`script`)
+    /// by a script step ([`DataProvider::delete_record_in_script`]).
+    fn delete_layout_record(
+        &mut self,
+        layout_id: u32,
+        record_id: i64,
+        script: bool,
+    ) -> Result<(), DataError> {
+        self.refuse_beside_record_session()?;
+        self.refuse_while_unsettled()?;
+        self.require_writable()?;
+        self.require_layout_records(layout_id)?;
+        let layout = self.decoded_layout(layout_id)?;
+        let table = self.read_table_for_layout(&layout)?.id;
+        if self.external.route(table).is_none() {
+            self.require_delete(table, record_id)?;
+        }
+        // The record this window's editing locked (`record.prepare_edit`)
+        // is deleted under that lock; a session holding more (a related
+        // record's write, container data) goes first, which lets it go.
+        if let Ok(record) = u64::try_from(record_id) {
+            match self.session_edit(table, record) {
+                Some(true) => return self.delete_edited(table, record_id),
+                Some(false) => om_data::DataProvider::revert_record_session(self)?,
+                None => {}
+            }
+        }
+        if self.external.route(table).is_some() {
+            // Keep the caller's layout/scripts and client table namespace.
+            // The owner supplies the complete ordinary deletion engine,
+            // including verified absence before container-member release.
+            self.invalidate_calc_data();
+            if script && self.in_transaction() {
+                // Held in the owner's part of the script's transaction, as
+                // a portal row of that file is (record-writes.md, "A
+                // script's transaction across files"): deleted when the
+                // transaction commits, kept when it is reverted.
+                return self.delete_routed_related(table, record_id);
+            }
+            // The user's own deletion while a script's transaction is open
+            // is refused here (3), as the user's edits are: no step of the
+            // transaction made it.
+            return self.with_existing_record_owner(table, record_id, |owner, wire| {
+                owner.delete_related_record(wire, record_id)
+            });
+        }
+        self.delete_related_record(table, record_id)
+    }
+}
+
 impl DataProvider for NativeProvider {
     fn supports_local_files(&self) -> bool {
         true
@@ -3439,35 +3490,11 @@ impl DataProvider for NativeProvider {
     }
 
     fn delete_record(&mut self, layout_id: u32, record_id: i64) -> Result<(), DataError> {
-        self.refuse_beside_record_session()?;
-        self.refuse_while_unsettled()?;
-        self.require_writable()?;
-        self.require_layout_records(layout_id)?;
-        let layout = self.decoded_layout(layout_id)?;
-        let table = self.read_table_for_layout(&layout)?.id;
-        if self.external.route(table).is_none() {
-            self.require_delete(table, record_id)?;
-        }
-        // The record this window's editing locked (`record.prepare_edit`)
-        // is deleted under that lock; a session holding more (a related
-        // record's write, container data) goes first, which lets it go.
-        if let Ok(record) = u64::try_from(record_id) {
-            match self.session_edit(table, record) {
-                Some(true) => return self.delete_edited(table, record_id),
-                Some(false) => om_data::DataProvider::revert_record_session(self)?,
-                None => {}
-            }
-        }
-        if self.external.route(table).is_some() {
-            // Keep the caller's layout/scripts and client table namespace.
-            // The owner supplies the complete ordinary deletion engine,
-            // including verified absence before container-member release.
-            self.invalidate_calc_data();
-            return self.with_existing_record_owner(table, record_id, |owner, wire| {
-                owner.delete_related_record(wire, record_id)
-            });
-        }
-        self.delete_related_record(table, record_id)
+        self.delete_layout_record(layout_id, record_id, false)
+    }
+
+    fn delete_record_in_script(&mut self, layout_id: u32, record_id: i64) -> Result<(), DataError> {
+        self.delete_layout_record(layout_id, record_id, true)
     }
 
     fn require_records_through(&self, layout_id: u32) -> Result<(), DataError> {
