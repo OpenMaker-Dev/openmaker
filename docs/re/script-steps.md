@@ -228,7 +228,7 @@ the corpus [Low].
 | `kFieldSpec` 0x1 | `DBFieldSpec` (14 bytes) | `mTableKey` `HBKey<5>` (table occurrence, e.g. `04 03 d0 00 05`), `mFieldKey` `HBKey<5>` (`02 01 05`), `mRepetition` i16 BE [O] |
 | `kMemberKey` 0x8 | `HBKey<5>` of a layout or menu set | Go to Layout, GTRR, New Window, Install Menu Set (`KStandardMenuSet` = standard menus) [O] |
 | `kScriptKey` 0x40 | `HBKey<5>` of a script | Perform Script, PSOS, Install OnTimer Script [O] |
-| (privilege) | `HBSerialKey<7>` of a privilege set | Add Account (`SetPrivilegeKey`) [I] |
+| (privilege) | `HBSerialKey<7>` of a privilege set, no flag | Add Account (`SetPrivilegeKey`) [O: the serial key `02 01 02` in the first bytes gave [Data Entry Only] on FileMaker Server's engine, local-files.md 2.4] |
 
 When the flag is clear the bytes keep stale content (Go to Field without a
 target keeps an old field spec) [O]; readers must test the flag first.
@@ -3012,10 +3012,12 @@ Open (FileMaker Pro is not available on this machine):
    the `fmxmlsnippet` wrapper itself, `Options`-less steps (flags from the
    Booleans), and whether Pro's paste stores the importer's forms above or
    the original's.
-2. The stored values behind the account steps' Booleans ("Expire
-   password", Activate/Deactivate) and `External="True"` in Go to Related
-   Record. (Replace Field Contents' options are now specified in 11.8; the
-   reader still refuses the step.)
+2. `External="True"` in Go to Related Record. (The account steps'
+   Booleans, "Expire password" and Activate/Deactivate, are a nonzero step
+   value, Deactivate's too, local-files.md 2.4; which nonzero value
+   FileMaker Pro's editor and the XML importer store is not observed.
+   Replace Field Contents' options are now specified in 11.8; the reader
+   still refuses the step.)
 3. Data sources (`DataSourceReference`, file references `20`) and menu
    sets are not looked up by name (`StepNames` has no lookup for them), so
    steps naming them fail.
