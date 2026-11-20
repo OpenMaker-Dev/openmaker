@@ -543,40 +543,57 @@ fn text_style(
     Ok(style)
 }
 
-/// Whether character styles `a` and `b` differ in nothing but their color:
-/// the same font, size and faces as decoded, and the same of what the
-/// decoder leaves undecoded (mask bits besides font, size, color and faces,
-/// and the extension byte, layout-model.md 8.1). A style
-/// stored in another length is not compared: it differs.
+/// Whether character styles `a` and `b` differ in nothing but their color.
+/// Stored styles (layout-model.md 8.1) compare every byte but the color's:
+/// the mask without its color bit, the font, face and size slots (masked
+/// or not, so an explicit size 0 is not an unset size), and the extension
+/// byte. A style built in code (no stored bytes) compares as decoded. A
+/// stored style of another length, or one stored beside one built in code,
+/// differs.
 fn same_but_color(a: &om_layout::CharacterStyle, b: &om_layout::CharacterStyle) -> bool {
-    // Font 1, size 2, color 4, and the face bits 0x10-0x2000 the decoder reads.
-    const DECODED: u16 =
-        0x1 | 0x2 | 0x4 | 0x10 | 0x20 | 0x80 | 0x100 | 0x200 | 0x400 | 0x800 | 0x1000 | 0x2000;
-    let decoded = |s: &om_layout::CharacterStyle| {
-        let size = s.font_size.map(f64::to_bits);
-        (s.font_id, s.font_family.clone(), size, s.faces, s.face_mask)
-    };
-    // A style built in code (no stored bytes) has nothing undecoded.
-    fn undecoded(s: &om_layout::CharacterStyle) -> Option<(u16, &[u8])> {
-        match s.raw.as_slice() {
-            [] => Some((0, &[])),
-            [m0, m1, _, _, _, _, _, _, _, _, _, _, rest @ ..] if rest.len() <= 1 => {
-                Some((u16::from_be_bytes([*m0, *m1]) & !DECODED, rest))
+    fn without_color(raw: &[u8]) -> Option<(u16, &[u8], &[u8])> {
+        match raw {
+            [m0, m1, slots @ .., _, _, _, _] if slots.len() == 6 => {
+                Some((u16::from_be_bytes([*m0, *m1]) & !0x4, slots, &[]))
             }
+            [m0, m1, rest @ ..] if rest.len() == 11 => Some((
+                u16::from_be_bytes([*m0, *m1]) & !0x4,
+                &rest[..6],
+                &rest[10..],
+            )),
             _ => None,
         }
     }
-    decoded(a) == decoded(b) && undecoded(a).is_some() && undecoded(a) == undecoded(b)
+    match (a.raw.is_empty(), b.raw.is_empty()) {
+        (true, true) => {
+            let decoded = |s: &om_layout::CharacterStyle| {
+                let size = s.font_size.map(f64::to_bits);
+                (s.font_id, s.font_family.clone(), size, s.faces, s.face_mask)
+            };
+            decoded(a) == decoded(b)
+        }
+        (false, false) => {
+            without_color(&a.raw).is_some()
+                && without_color(&a.raw) == without_color(&b.raw)
+                && a.font_family == b.font_family
+        }
+        _ => false,
+    }
 }
 
 /// The color of each character [`prepare_text_in`] lays out of `value` (CR
 /// and LF, which break paragraphs, have none), when `object`'s character
 /// runs give its text more than one, as Browse colors them (a run's color,
 /// else the object's text color, else black; `rich_text::text_format`).
-/// `None` for one color, and when a conditional format's color replaces
-/// every run's. The runs are stored for the text as written, so a value
-/// that differs from it (merged fields or symbols, a label calculation) or
-/// a case transform refuses rather than coloring the wrong characters.
+/// `None` for one color, for no text, and when a conditional format's color
+/// replaces every run's.
+///
+/// Refused with 3 rather than coloring the wrong characters:
+/// - runs that are not the stored text's complete partition, in order, on
+///   character boundaries, as the layout decoder gives them;
+/// - a field's layout runs: its record value carries its own styles;
+/// - a value that differs from the text the runs are stored for (merged
+///   fields or symbols, a label calculation) or a case transform.
 fn run_colors(
     layout: &Layout,
     object: &LayoutObject,
@@ -587,20 +604,39 @@ fn run_colors(
     let Some(rich) = &object.rich_text else {
         return Ok(None);
     };
-    let Some(first) = rich.character_runs.first() else {
+    let runs = &rich.character_runs;
+    let Some(first) = runs.first() else {
         return Ok(None);
     };
-    if rich
-        .character_runs
-        .iter()
-        .all(|r| r.style.color == first.style.color)
-        || (!conditions.is_empty()
-            && (crate::document::conditional_text_style(layout, object, conditions, 1).color)
-                .is_some())
+    if value.is_empty() || runs.iter().all(|r| r.style.color == first.style.color) {
+        return Ok(None);
+    }
+    let text = rich.text.as_str();
+    let partition = runs.first().is_some_and(|r| r.range.start == 0)
+        && runs.last().is_some_and(|r| r.range.end == text.len())
+        && runs.windows(2).all(|w| w[0].range.end == w[1].range.start)
+        && runs.iter().all(|r| {
+            r.range.start < r.range.end
+                && text.is_char_boundary(r.range.start)
+                && text.is_char_boundary(r.range.end)
+        });
+    if !partition {
+        return Err(ReportError::unsupported(format!(
+            "Report object {}'s character runs do not cover its text in order",
+            object.id
+        )));
+    }
+    if !matches!(object.kind(), ObjectKind::Text | ObjectKind::Button) {
+        return Err(ReportError::unsupported(
+            "Mixed character styles are unsupported",
+        ));
+    }
+    if !conditions.is_empty()
+        && (crate::document::conditional_text_style(layout, object, conditions, 1).color).is_some()
     {
         return Ok(None);
     }
-    if value != rich.text || matches!(style.text_transform, Some(3 | 4)) {
+    if value != text || matches!(style.text_transform, Some(3 | 4)) {
         return Err(ReportError::unsupported(format!(
             "Report object {}'s text is in several colors and is merged, calculated or \
              transformed; only its text as written can print in them",
@@ -612,21 +648,12 @@ fn run_colors(
         ..Default::default()
     };
     let base = (crate::document::text_style(layout, object, conditions, 1).color).unwrap_or(black);
-    // The run that starts last at or before each character, by start.
-    let mut runs: Vec<_> = rich.character_runs.iter().collect();
-    runs.sort_by_key(|r| r.range.start);
-    let colors = value
-        .char_indices()
-        .filter(|(_, ch)| !matches!(ch, '\r' | '\n'))
-        .map(|(at, _)| {
-            let next = runs.partition_point(|r| r.range.start <= at);
-            next.checked_sub(1)
-                .map(|i| runs[i])
-                .filter(|run| run.range.contains(&at))
-                .and_then(|run| run.style.color)
-                .unwrap_or(base)
-        })
-        .collect();
+    let mut colors = Vec::with_capacity(value.len());
+    for run in runs {
+        let color = run.style.color.unwrap_or(base);
+        let chars = text[run.range.clone()].chars();
+        colors.extend(chars.filter(|ch| !matches!(ch, '\r' | '\n')).map(|_| color));
+    }
     Ok(Some(colors))
 }
 
@@ -967,6 +994,7 @@ fn prepare_colored_text_in(
             // (a label's frame less its 1-point inset, layout-model.md 6.5),
             // and only there: a line that fits keeps the frame's height, so
             // an accent above the box is not cut for a bearing at its side.
+            spans: Vec::new(),
             clip: (cut || spills).then(|| Rect {
                 top: if cut { r.top + pad[0] } else { r.top },
                 bottom: if cut {
@@ -979,34 +1007,21 @@ fn prepare_colored_text_in(
                 ..r.clone()
             }),
         };
-        let Some(colors) = colors else {
-            output.push(line);
-            continue;
-        };
-        let count = line.glyphs.len();
-        let line_colors = colors.get(colored..colored + count).ok_or_else(|| {
-            ReportError::unsupported("Report text colors do not match its characters")
-        })?;
-        colored += count;
-        // One line for each run of one color, from where it starts.
-        let (mut start, mut x) = (0, line.x);
-        while start < count {
-            let color = line_colors[start];
-            let end = (start..count)
-                .find(|&k| line_colors[k] != color)
-                .unwrap_or(count);
-            let glyphs = line.glyphs[start..end].to_vec();
-            let width: f64 = glyphs.iter().map(|g| g.1).sum();
-            if paint(color)?.is_some() {
-                output.push(TextLine {
-                    glyphs,
-                    x,
-                    color,
-                    ..line.clone()
-                });
+        let mut line = line;
+        if let Some(colors) = colors {
+            let count = line.glyphs.len();
+            let line_colors = colors.get(colored..colored + count).ok_or_else(|| {
+                ReportError::unsupported("Report text colors do not match its characters")
+            })?;
+            colored += count;
+            for (k, color) in line_colors.iter().enumerate() {
+                paint(*color)?;
+                if line.spans.last().is_none_or(|(_, last)| last != color) {
+                    line.spans.push((k, *color));
+                }
             }
-            (start, x) = (end, x + width);
         }
+        output.push(line);
     }
     Ok((output, needed, overflowed))
 }
@@ -1078,11 +1093,36 @@ pub(crate) struct TextLine {
     pub size: f64,
     pub face: ReportFace,
     pub color: Color,
+    /// Where the line's color changes, by glyph, when its characters are in
+    /// more than one ([`run_colors`]): from each glyph on, that color.
+    /// Empty for a line in `color`.
+    pub spans: Vec<(usize, Color)>,
     /// The box overflowing text is cut at ([`Overflow::Clip`]): its field's
     /// text box, between the padding and margins above and below, across
     /// the field's width; `None` when the text fits.
     pub clip: Option<Rect>,
 }
+impl TextLine {
+    /// The line's parts of one color: its glyphs, their color, and where the
+    /// first starts.
+    pub(crate) fn parts(&self) -> impl Iterator<Item = (&[(u16, f64, char)], Color, f64)> + '_ {
+        // Without spans, the whole line in `color`.
+        let span = |i: usize| self.spans.get(i).copied().unwrap_or((0, self.color));
+        let mut x = self.x;
+        (0..self.spans.len().max(1)).map(move |i| {
+            let (start, color) = span(i);
+            let end = self
+                .spans
+                .get(i + 1)
+                .map_or(self.glyphs.len(), |next| next.0);
+            let glyphs = self.glyphs.get(start..end).unwrap_or(&[]);
+            let at = x;
+            x += glyphs.iter().map(|g| g.1).sum::<f64>();
+            (glyphs, color, at)
+        })
+    }
+}
+
 #[derive(Clone, Debug)]
 pub(crate) struct ReportObject {
     pub kind: ObjectKind,
@@ -4260,25 +4300,29 @@ fn encode_page(
                             pdf_rect(&mut c, clip, h);
                             c.clip_nonzero().end_path();
                         }
-                        let Some(opened) = fill(&mut c, Some(line.color), alphas)? else {
-                            if line.clip.is_some() {
-                                c.restore_state();
-                            }
-                            continue;
-                        };
-                        c.begin_text()
-                            .set_font(Name(line.face.names().0), line.size as f32)
-                            .set_text_matrix([
-                                1.0,
-                                0.0,
-                                0.0,
-                                1.0,
-                                line.x as f32,
-                                (h - line.baseline) as f32,
-                            ])
-                            .show(Str(&bytes))
-                            .end_text();
-                        close(&mut c, opened);
+                        // Each part of one color from where it starts; a
+                        // transparent one draws nothing.
+                        let mut first = 0;
+                        for (glyphs, color, x) in line.parts() {
+                            let bytes = &bytes[first * 2..(first + glyphs.len()) * 2];
+                            first += glyphs.len();
+                            let Some(opened) = fill(&mut c, Some(color), alphas)? else {
+                                continue;
+                            };
+                            c.begin_text()
+                                .set_font(Name(line.face.names().0), line.size as f32)
+                                .set_text_matrix([
+                                    1.0,
+                                    0.0,
+                                    0.0,
+                                    1.0,
+                                    x as f32,
+                                    (h - line.baseline) as f32,
+                                ])
+                                .show(Str(bytes))
+                                .end_text();
+                            close(&mut c, opened);
+                        }
                         if line.clip.is_some() {
                             c.restore_state();
                         }
