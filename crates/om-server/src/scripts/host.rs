@@ -1512,15 +1512,20 @@ impl ServerHost {
     /// out. Run after New Record, after a change of a cell the rules compute
     /// from, and when the record is opened again.
     fn preview_new_record(&mut self) {
-        let Some(table) = self
-            .record
-            .as_ref()
-            .filter(|r| r.new && r.ruled.is_none())
-            .map(|r| r.table)
-        else {
+        let Some(record) = self.record.as_mut() else {
             return;
         };
+        // An existing record, or one an import's rules already ran on (its
+        // node holds their values), has no preview.
+        if !record.new || record.ruled.is_some() {
+            record.preview.clear();
+            return;
+        }
+        let table = record.table;
         let Ok(plan) = self.plan(table) else {
+            if let Some(record) = self.record.as_mut() {
+                record.preview.clear();
+            }
             return;
         };
         let record = self.record.as_ref().expect("the new record");
@@ -1569,11 +1574,21 @@ impl ServerHost {
             None => cell >> 8,
         };
         for (cell, text) in row {
-            if record.changed.contains(&cell)
-                || record.serials.contains_key(&cell)
-                || unknown.contains(&field_of(cell))
-            {
+            if record.serials.contains_key(&cell) || unknown.contains(&field_of(cell)) {
                 continue;
+            }
+            // An entered value reads as entered, unless the field's own rules
+            // give it another (an auto-entered calculation that replaces it,
+            // such as the UUID Duplicate Record copied): then as the commit
+            // will store it.
+            if record.changed.contains(&cell) {
+                let entered = record
+                    .node
+                    .child(&uint_segment(cell))
+                    .and_then(values::cell_text);
+                if !plan.has_rules(cell) || entered.as_deref() == Some(text.as_str()) {
+                    continue;
+                }
             }
             record.preview.insert(cell, text);
         }
@@ -2102,6 +2117,7 @@ impl ServerHost {
         let key = uint_segment(cell);
         let before = record.node.child(&key).cloned();
         record.before_change();
+        let context_changed = *record.context != context;
         *record.context = context;
         match stored {
             Some(text) => record.node.set_child(values::cell(&key, &text)),
@@ -2109,17 +2125,22 @@ impl ServerHost {
                 record.node.remove(&[&key]);
             }
         }
-        let changed = record.node.child(&key) != before.as_ref() || lookup_match;
+        // A value written over the preview is entered, also one the preview
+        // shows (#474): clearing a previewed lookup clears it.
+        let changed = record.node.child(&key) != before.as_ref()
+            || lookup_match
+            || record.preview.contains_key(&cell);
         if changed {
             record.changed_cell(cell);
         }
-        // A new record's values computed from the cell are computed again.
-        if changed
-            && record.new
-            && self
-                .plan(table)
-                .map_or(true, |plan| plan.computes_from(cell))
-        {
+        // A new record's values computed from the cell, or from the step's
+        // layout or privilege set, are computed again.
+        let new = record.new;
+        let again = self.plan(table).map_or(true, |plan| {
+            changed && plan.computes_from(cell)
+                || context_changed && !plan.context_reads().is_empty()
+        });
+        if new && again {
             self.preview_new_record();
         }
         Ok(())

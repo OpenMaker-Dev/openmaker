@@ -2652,7 +2652,7 @@ impl RecordPlan {
         let Some((field, _)) = self.cell_field(cell) else {
             return true;
         };
-        if !self.fields[&field].given() {
+        if self.has_rules(cell) {
             return true;
         }
         self.fields.values().any(|f| {
@@ -2670,6 +2670,13 @@ impl RecordPlan {
                         })
                 })
         })
+    }
+
+    /// Whether `cell`'s field has rules of its own that give its value: an
+    /// auto-entered value, a lookup or a calculation.
+    pub fn has_rules(&self, cell: u64) -> bool {
+        self.cell_field(cell)
+            .is_some_and(|(field, _)| !self.fields[&field].given())
     }
 
     /// Whether `field` is a match field of a lookup the rules perform: a

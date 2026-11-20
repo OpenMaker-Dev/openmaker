@@ -554,6 +554,9 @@ impl ServerImport<'_> {
                 ..Ruled::default()
             }));
         }
+        // Its node now holds the import's computed values: a preview from
+        // before is not read again.
+        record.preview.clear();
         let key = (record.table, record.id);
         let Some(transaction) = self.host.transaction.as_mut() else {
             return Err(TransferError::new(3, "The import has no transaction."));

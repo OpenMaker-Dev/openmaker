@@ -890,6 +890,37 @@ fn set_match_fields_perform_lookups() {
     }
 }
 
+/// A new record's looked-up value read before its commit (#474) is not
+/// entered: a Set Field that clears it clears it, and the commit, which
+/// keeps a value a script set over a lookup, stores it empty.
+#[test]
+fn clearing_a_new_records_previewed_lookup_clears_it() {
+    let mut tree = lookup_tree();
+    tree.put(
+        &[&[17], &[5], &uint_segment(40)],
+        script(
+            40,
+            "Cleared",
+            vec![
+                ScriptStep::new(7),
+                set_field(NAME, 1, "\"Write tests\""),
+                set_var("$previewed", "Tasks::Note"),
+                set_field(NOTE, 1, "\"\""),
+                set_var("$cleared", "Tasks::Note"),
+                ScriptStep::new(75),
+                exit_with(
+                    "$previewed & \"|\" & $cleared & \"|\" & Get ( LastError ) & \"|\" & Tasks::Note",
+                ),
+            ],
+        )
+        .encode(),
+    );
+    let file = TempFile::from_tree("psos-cleared-lookup", &tree);
+    let port = server::start(&file);
+    let (mut client, _) = server::logged_in(port, "client");
+    assert_eq!(run(&mut client, 40), (0, "w||0|".to_string()));
+}
+
 /// Open Transaction's "Skip auto-enter options" performs no lookup: a
 /// Set Field of Name to its own value then changes nothing, and the
 /// commit leaves the record's modification count as it was.
