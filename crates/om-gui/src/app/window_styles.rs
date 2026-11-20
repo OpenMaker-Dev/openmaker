@@ -414,6 +414,9 @@ impl OpenMakerApp {
                     },
                 );
             });
+            // Keep the close box above this card's layout and below any
+            // card covering it. Both are sublayers of the same card.
+            ctx.set_sublayer(layer, top);
             ctx.move_to_top(top);
             let ui = &mut ui.new_child(egui::UiBuilder::new().layer_id(top).max_rect(rect));
             ui.set_clip_rect(rect);
