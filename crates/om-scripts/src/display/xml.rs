@@ -101,7 +101,6 @@ fn read_step(element: &Element, names: &dyn StepNames) -> Read<ScriptStep> {
         // Its data source and query are not in FileMaker's XML.
         return Err("Execute SQL's query is not in FileMaker's XML".into());
     }
-    super::text::refuse_pending(id)?;
     let mut reader = StepReader {
         names,
         step: ScriptStep::new(id),
@@ -387,7 +386,7 @@ impl StepReader<'_> {
             (74, "Related") => return self.related(parameter),
             // Its "Skip auto-enter options" reads back differently in
             // FileMaker's writer and importer (script-steps.md 11.8).
-            (91, "replace") => {
+            (91 | 249, "replace") => {
                 return Err("Replace Field Contents' options are not read".into());
             }
             (175, "Parameter") => return self.javascript_parameters(parameter),

@@ -119,6 +119,11 @@ fn label_value<'o>(option: &'o str, label: &str) -> Option<&'o str> {
     }
     let rest = &option[label.len()..];
     let rest = rest.trim_start_matches(' ').strip_prefix(':')?;
+    // `Repetition::Names` is a field of the occurrence Repetition, not the
+    // label Repetition.
+    if rest.starts_with(':') {
+        return None;
+    }
     // One space follows the colon; a calculation keeps the rest as is.
     let rest = rest.strip_prefix(' ').unwrap_or(rest);
     Some(if rest.trim().is_empty() { "" } else { rest })
@@ -239,6 +244,14 @@ impl<'a> Parser<'a> {
             Ok(calc) => self.step.set_calculation(slot, Some(&calc)),
             Err(message) => self.issue(message, Some(Part::Slot(slot))),
         }
+    }
+
+    /// `kFieldSpecByCalc` with a target field named by slot 1's calculation
+    /// (Set Field By Name, Replace Field Contents by Name), as FileMaker
+    /// stores it (script-steps.md 4).
+    fn field_by_calculation(&mut self) {
+        let named = self.step.calculation(1).is_some();
+        self.step.set_flag(flag::FIELD_SPEC_BY_CALC, named);
     }
 
     /// A calculation alone, unless the next option is one of `stop`.
@@ -682,6 +695,7 @@ fn rule(p: &mut Parser<'_>) {
         87 => custom_dialog(p),
         103 => p.labeled("Text Result", 0),
         141 => set_variable(p),
+        250 => set_variable_by_name(p),
         148 => {
             if let Some(text) = p.take() {
                 p.script(&text);
@@ -784,9 +798,15 @@ fn rule(p: &mut Parser<'_>) {
             p.target(Some("Target"), &[]);
             p.bare(0, &[]);
         }
-        91 => {
+        91 | 249 => {
             p.dialog();
-            p.field(&["Current contents", "Serial numbers"]);
+            // 249 names its field with a calculation (script-steps.md 12.4).
+            if p.step.id() == 249 {
+                p.bare(1, &["Current contents", "Serial numbers"]);
+                p.field_by_calculation();
+            } else {
+                p.field(&["Current contents", "Serial numbers"]);
+            }
             if p.next_is("Current contents") {
                 p.pos += 1;
             } else if p.next_is("Serial numbers") {
@@ -799,6 +819,7 @@ fn rule(p: &mut Parser<'_>) {
         }
         147 => {
             p.bare(1, &[]);
+            p.field_by_calculation();
             p.bare(0, &[]);
         }
         131 => {
@@ -1394,6 +1415,25 @@ fn set_variable(p: &mut Parser<'_>) {
     p.labeled("Value", 1);
 }
 
+/// Set Variable by Name's text as OpenMaker shows it: the name's
+/// calculation whole, then `Repetition:` when it is not 1, then `Value:`
+/// [I]. The repetition has its own label: a name calculation can end in a
+/// repetition of its own (`Table::Names[2]`).
+fn set_variable_by_name(p: &mut Parser<'_>) {
+    if p.peek().is_some_and(|o| {
+        label_value(o, "Value").is_none() && label_value(o, "Repetition").is_none()
+    }) {
+        let text = p.take().expect("peeked");
+        p.calc_into(3, &text);
+    }
+    match p.labeled_value("Repetition") {
+        Some(text) => p.calc_into(2, &text),
+        // As Set Variable stores repetition 1 when none is given.
+        None => p.calc_into(2, "1"),
+    }
+    p.labeled("Value", 1);
+}
+
 fn go_to_layout(p: &mut Parser<'_>) {
     if p.next_is("original layout") {
         p.pos += 1;
@@ -1697,4 +1737,16 @@ pub(super) fn split_top(text: &str, sep: char) -> Vec<String> {
         out.push(current.trim().to_owned());
     }
     out
+}
+
+#[cfg(test)]
+mod tests {
+    use super::label_value;
+
+    #[test]
+    fn a_label_is_not_an_occurrence_of_its_name() {
+        assert_eq!(label_value("Repetition: 2", "Repetition"), Some("2"));
+        assert_eq!(label_value("Repetition::Names[2]", "Repetition"), None);
+        assert_eq!(label_value("Value::x", "Value"), None);
+    }
 }
