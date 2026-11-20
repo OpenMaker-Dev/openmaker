@@ -425,6 +425,12 @@ const WINDOW_STYLES: [(u32, &str); 3] = [
     (WindowOptions::CARD_WORD, "Card"),
 ];
 
+/// Replace Field Contents (91) and Replace Field Contents by Name (249),
+/// which store its options alike (script-steps.md 12.4).
+fn replaces(id: u16) -> bool {
+    matches!(id, 91 | 249)
+}
+
 /// The label of the step's Restore option where Claris names it.
 fn restore_label(id: u16) -> &'static str {
     match id {
@@ -535,7 +541,7 @@ impl StepOptions {
         // A calculated result needs its calculation: without one the
         // runtime refuses the step (error 5). Whether FileMaker's dialog
         // lets it be left empty is not measured.
-        if step.id() == 91 && step.number(1) == Some(3) && step.calculation(0).is_none() {
+        if replaces(step.id()) && step.number(1) == Some(3) && step.calculation(0).is_none() {
             return Err("Calculated result needs its calculation.".into());
         }
         // A Show Custom Dialog button labelled here gets its "Commit data"
@@ -1559,14 +1565,14 @@ fn requests_editable(node: &OwnedNode) -> Option<Vec<StoredRequest>> {
     (cells == criteria).then_some(requests)
 }
 
-/// A row before its condition is known.
 /// Options that show what is stored and take no input:
 ///
-/// - Replace Field Contents' "Update serial number in Entry Options"
-///   (`[00 4, 03]`) and "Perform auto-enter options for fields" (`[00 6,
-///   03]` with `kRestore`): FileMaker Pro 26.0.3 greys the first out for a
-///   field without an auto-entered serial number, and what its own editor
-///   writes for either is not measured (#798's Pro check).
+/// - Replace Field Contents' (and by Name's, [`replaces`]) "Update serial
+///   number in Entry Options" (`[00 4, 03]`) and "Perform auto-enter
+///   options for fields" (`[00 6, 03]` with `kRestore`): FileMaker Pro
+///   26.0.3 greys the first out for a field without an auto-entered serial
+///   number, and what its own editor writes for either is not measured
+///   (#798's Pro check).
 /// - Show Custom Dialog's "Close after" (`[00 6, 03]`) and its seconds
 ///   (slot 13), FileMaker Pro 26.1's: known from the binaries only
 ///   (script-steps.md 12.4), the Boolean's byte width unmeasured, so
@@ -1585,12 +1591,13 @@ fn read_only_option(step: u16, edit: &Edit) -> bool {
         )
     };
     match step {
-        91 => number(&[4, 6]),
+        id if replaces(id) => number(&[4, 6]),
         87 => number(&[6]) || matches!(edit, Edit::Calculation { slot: 13, .. }),
         _ => false,
     }
 }
 
+/// A row before its condition is known.
 fn row(label: impl Into<String>, edit: Edit) -> Row {
     Row {
         label: label.into(),
@@ -1840,7 +1847,8 @@ fn rows(step: &ScriptStep, names: &Option<Arc<CalcSchema>>) -> Vec<Row> {
             // choice, or "Use Entry Options" (`[00 5, 03]` set: the field's
             // own serial settings, which these rows do not offer and which
             // would override them), keeps the parameter as stored.
-            ParamKind::Compound if id == 91 && p.name == "Replace with" => match step.number(1) {
+            ParamKind::Compound if replaces(id) && p.name == "Replace with" => match step.number(1)
+            {
                 Some(n) if !(0..=3).contains(&n) => rows.extend(kept),
                 _ if step.number(5).is_some_and(|n| n != 0) => rows.extend(kept),
                 stored => {
