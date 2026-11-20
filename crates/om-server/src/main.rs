@@ -38,7 +38,7 @@ const USAGE: &str = "usage: om-server [--bind <addr:port>] [--name <server name>
                  [--idle-seconds <n>|off]
                  [--schedules <file>] [--backup-folder <dir>]
                  [--list <file name>]... [--list-all]
-                 <file.fmp12>...
+                 [<file.fmp12>...]
 
   --bind            listen address (default 0.0.0.0:5003, FileMaker's port)
   --name            server name clients see (default \"openmaker\")
@@ -284,9 +284,6 @@ fn parse_args() -> Result<Args, String> {
             file => args.files.push(file.into()),
         }
     }
-    if args.files.is_empty() {
-        return Err("no files to host".into());
-    }
     if args.admin_user.is_none() {
         for (given, flag) in [
             (args.admin_password_file.is_some(), "--admin-password-file"),
@@ -352,6 +349,12 @@ fn run(args: Args) -> Result<(), Box<dyn std::error::Error>> {
     let identity = tls_identity(&args)?;
     #[cfg(feature = "admin-console")]
     let console_identity = admin.as_ref().map(|_| identity.clone());
+    // No files is a server with nothing hosted yet, as FileMaker Server
+    // starts before any database is opened: its Admin Console and listener
+    // still serve, with an empty file list (#419).
+    if args.files.is_empty() {
+        log::info!("hosting no files");
+    }
     let files = args
         .files
         .iter()
