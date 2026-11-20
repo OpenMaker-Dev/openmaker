@@ -136,6 +136,10 @@ pub struct SchemaField {
     pub data_type: FieldKind,
     /// The field's comment (`[T, 3, 5, F, 03]`), empty for none.
     pub comment: String,
+    /// The stored DDL annotation (`[T, 3, 5, F, 30]`).
+    pub annotation: String,
+    /// Whether Customize field display names is enabled (member `29`, bit 1).
+    pub display_names_enabled: bool,
     /// Unique-value validation or an auto-entered serial number
     /// (schema-path.md 5.5): the relationships graph draws its end of an
     /// `=` relationship as the "one" side.
@@ -641,8 +645,7 @@ impl FieldColumn {
 impl DatabaseSchema {
     /// The text the Fields tab's third column shows for `field` of `table`
     /// in mode `column` (client-ui.md, "Manage Database: the Fields tab's
-    /// third column"). Advanced is empty: OpenMaker does not read a field's
-    /// advanced members yet.
+    /// third column").
     pub fn field_column_text(
         &self,
         table: &SchemaTable,
@@ -652,7 +655,14 @@ impl DatabaseSchema {
         match column {
             FieldColumn::Options => self.field_options_text(table, field),
             FieldColumn::Comments => field.comment.clone(),
-            FieldColumn::Advanced => String::new(),
+            FieldColumn::Advanced if field.display_names_enabled => {
+                if field.annotation.is_empty() {
+                    "Display Names".into()
+                } else {
+                    format!("Display Names, {}", field.annotation)
+                }
+            }
+            FieldColumn::Advanced => field.annotation.clone(),
         }
     }
 
@@ -976,6 +986,8 @@ impl DatabaseSchema {
                     kind: SchemaFieldKind::Normal,
                     data_type,
                     comment,
+                    annotation: String::new(),
+                    display_names_enabled: false,
                     unique: false,
                     unstored: false,
                     options: Some(FieldOptions::default()),
@@ -1007,6 +1019,8 @@ impl DatabaseSchema {
                     kind: SchemaFieldKind::Calculation,
                     data_type: calculation.result,
                     comment,
+                    annotation: String::new(),
+                    display_names_enabled: false,
                     unique: false,
                     unstored: !calculation.stored(),
                     options: None,
@@ -1039,6 +1053,8 @@ impl DatabaseSchema {
                     kind: SchemaFieldKind::Summary,
                     data_type,
                     comment,
+                    annotation: String::new(),
+                    display_names_enabled: false,
                     unique: false,
                     unstored: false,
                     options: None,
@@ -1464,6 +1480,8 @@ pub(crate) fn mock_schema(
                         FieldKind::Text
                     },
                     comment: String::new(),
+                    annotation: String::new(),
+                    display_names_enabled: false,
                     unique: false,
                     unstored: false,
                     options: Some(FieldOptions::default()),
@@ -1636,6 +1654,8 @@ mod tests {
             kind,
             data_type: FieldKind::Number,
             comment: String::new(),
+            annotation: String::new(),
+            display_names_enabled: false,
             unique: false,
             unstored: false,
             options: None,

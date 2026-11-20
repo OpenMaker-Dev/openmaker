@@ -812,7 +812,7 @@ pub fn schema_from_tree_with(
     let catalog =
         Catalog::from_tree(tree).map_err(|error| failure("decode database schema", error))?;
     let mut schema = database_schema_from_catalog(&catalog);
-    read_comments(tree, &mut schema);
+    read_schema_details(tree, &mut schema);
     read_calculations(tree, &mut schema, formulas);
     let (relationships, decoded) = read_relationships(tree, &schema);
     schema.relationships = relationships;
@@ -820,9 +820,9 @@ pub fn schema_from_tree_with(
     Ok(schema)
 }
 
-/// Each table's comment `[3, 16, 5, T, 03]` and field's `[T, 3, 5, F, 03]`
-/// (file-metadata.md 1.1, schema-path.md 5.5).
-fn read_comments(tree: &om_hbam::KeyTree<'_>, schema: &mut DatabaseSchema) {
+/// Read comments, advanced field metadata and auto-enter text from their
+/// stored members (file-metadata.md 1.1-1.2, schema-path.md 5.5).
+fn read_schema_details(tree: &om_hbam::KeyTree<'_>, schema: &mut DatabaseSchema) {
     let text = |path: &[u64]| {
         tree.at(path)
             .and_then(|n| n.text())
@@ -834,6 +834,11 @@ fn read_comments(tree: &om_hbam::KeyTree<'_>, schema: &mut DatabaseSchema) {
         table.comment = text(&[3, 0x10, 5, table.id, 3]);
         for field in &mut table.fields {
             field.comment = text(&[table.id, 3, 5, field.id, 3]);
+            field.annotation = text(&[table.id, 3, 5, field.id, 0x30]);
+            field.display_names_enabled = tree
+                .at(&[table.id, 3, 5, field.id, 0x29])
+                .and_then(|node| node.uint_value())
+                .is_some_and(|flags| flags & 0x2 != 0);
             // The next serial value `0c` and the auto-entered data `0d`.
             match field.options.as_mut().map(|o| &mut o.auto_enter.value) {
                 Some(AutoEnterValue::Serial(serial)) => {
@@ -1005,6 +1010,8 @@ fn schema_field(field: &om_hbam::Field) -> SchemaField {
         kind,
         data_type,
         comment: String::new(),
+        annotation: String::new(),
+        display_names_enabled: false,
         unique: options
             .as_ref()
             .is_some_and(|o| o.validation_unique() || o.auto_entry_serial()),
@@ -1208,6 +1215,8 @@ mod tests {
             kind: SchemaFieldKind::Normal,
             data_type: FieldKind::Text,
             comment: String::new(),
+            annotation: String::new(),
+            display_names_enabled: false,
             unique: false,
             unstored: false,
             options: None,

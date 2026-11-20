@@ -19,7 +19,10 @@ starter solution):
   name, field type), and a list of Field Name, Type and "Options / Comments
   / Advanced   (Click to toggle)". A click on that title steps the column
   from each field's options to its comment, to its advanced options and
-  back; the options read as FileMaker Pro lists them ("Indexed,
+  back. Advanced shows Display Names when enabled, followed by the
+  field annotation. Using the annotation for the trailing text is
+  inferred from the stored advanced text member. The options read as
+  FileMaker Pro lists them ("Indexed,
   Auto-enter Calculation replaces existing value, Can't Modify Auto,
   Required Value, Unique", "= Count * 2", "= Total of Price";
   `DatabaseSchema::field_column_text`, client-ui.md). Field Name, the Type menu
@@ -731,8 +734,9 @@ wrote under the primary weights alone does not stay behind.
 - **Missing list features.** Custom order, Copy, Paste, Import and Print
   are not built, and the record counts of "Details" are not read
   ([#152](https://github.com/OpenMaker-Dev/openmaker/issues/152)).
-- **The Fields tab's third column.** Advanced shows nothing: OpenMaker
-  does not read a field's advanced members (`29`-`31`). The options text
+- **The Fields tab's third column.** Advanced options are read-only.
+  The column shows the enabled flag and annotation, without evaluating
+  the display-names formula. The options text
   says "Use Furigana" without the furigana field, and a summary's break or
   weight field by its name alone. Only the field name is exposed to
   accessibility, as for every list in the dialog. The text follows
