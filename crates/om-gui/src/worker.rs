@@ -1358,6 +1358,7 @@ fn answer(
                     p,
                     build.list,
                     (today, info),
+                    build.related.as_ref(),
                     &cancel,
                 ))
             })

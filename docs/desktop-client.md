@@ -1399,8 +1399,8 @@ drop-down lists (layout-model.md 5.4) read their items through
     or the date changes. A build asked before such a change is let finish
     and its answer dropped, then one build for the new context follows,
     so a resize keeps one build at a time on the worker. A list of an
-    unstored calculation's related values is built per object and record
-    in paint, as a list of related values is.
+    unstored calculation's related values is built on the worker per
+    record, as a list of related values is (below).
   - Validation against a related-values list of such a field computes it
     on each related record, and refuses with 3 only a record whose value
     cannot be computed (`om-provider`'s `related_lists.rs`;
@@ -1445,8 +1445,20 @@ drop-down lists (layout-model.md 5.4) read their items through
     pop-up menu that shows a label from such a list no longer blocks a
     frame for 1.1 s; its longest frame while the worker builds the list is
     44 ms.
-  - A list of related values is built per record, with the record's
-    unsaved values, in the window's paint, as before.
+  - A list of related values is built on the worker too, once per record
+    and portal row it is shown on, over the window's unsaved changes as
+    the window's paint read them, starting from that record
+    ([#290](https://github.com/OpenMaker-Dev/openmaker/issues/290)). Its relationships can lead through any table, so it is
+    built again after any data change, and after the window's unsaved
+    changes change; one whose list a calculation computes also after the
+    window's calculation session or the date changes. A build asked
+    before the unsaved changes or the session changed is let finish and
+    its answer dropped, so typing or a resize keeps one build per list and
+    record on the worker. Like a list of all of a field's values it sees
+    no global variables. On a debug build, with 30,000 related records,
+    the closed pop-up menu that shows a label from such a list no longer
+    blocks a frame for 1.05 s; its longest frame while the worker builds
+    the list is 43 ms.
 - **A hosted file's field lists.** A list of all of a stored text field's
   values, with no second field and not only related values, comes from
   the host. One CreateValueListEx is sent when a control first needs the

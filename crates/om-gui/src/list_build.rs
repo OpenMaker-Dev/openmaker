@@ -15,8 +15,11 @@
 //! A list a hosted file's host can give whole is still asked of the host
 //! (`DataProvider::host_field_values`, #464); this builds the rest, an
 //! unstored calculation's values among them, each computed in its own
-//! record's context (#290). Lists of related values, which depend on the
-//! record, are still built per object and record in paint.
+//! record's context (#290). A list of related values, which depends on the
+//! record, is built here too, for each record and portal row it is shown
+//! on, over the window's unsaved changes as paint reads them
+//! (`calc::RelatedBuild`), without its variables, as for a list of all of
+//! a field's values.
 
 use std::cell::{Cell, RefCell};
 use std::sync::Arc;
@@ -46,8 +49,9 @@ pub(crate) struct Built {
 }
 
 /// Value list `list` of the provider's file, built from committed data on
-/// this thread as a window's paint would build it for no record, with the
-/// window's calculation session `info` and date `today`.
+/// this thread as a window's paint would build it for no record, or for
+/// `related`'s record with its unsaved changes, with the window's
+/// calculation session `info` and date `today`.
 ///
 /// A list read across a change of the provider's data (its generation
 /// moved between two of its reads, so its record ids and their values may
@@ -57,6 +61,7 @@ pub(crate) fn build(
     provider: &mut dyn DataProvider,
     list: u64,
     (today, info): (Date, &SessionInfo),
+    related: Option<&crate::calc::RelatedBuild>,
     cancel: &CalcCancel,
 ) -> Built {
     let answer = |result| Built {
@@ -97,14 +102,29 @@ pub(crate) fn build(
                 None
             }
         };
-        let source = CachedSource::new(&cache)
+        let mut source = CachedSource::new(&cache)
             .with_fetch(&fetch)
             .with_calculation_session(info);
+        let context = match related {
+            Some(related) => {
+                for (table, record, values) in &related.overlays {
+                    source = source.with_overlay(*table, *record, Arc::clone(values));
+                }
+                choice::context(
+                    &schema,
+                    def,
+                    related.occurrence,
+                    related.parent,
+                    related.portal,
+                )
+            }
+            None => Context::new(),
+        };
         let summaries = SummaryCache::default();
         let file = FileCalc::new(&schema, &source, today)
             .with_session(info)
             .with_summary_cache(&summaries);
-        let built = choice::choices(&file, def, &Context::new());
+        let built = choice::choices(&file, def, &context);
         if cancel.cancelled() {
             return Built {
                 result: None,
@@ -245,6 +265,7 @@ mod tests {
             provider,
             LIST,
             (today, &SessionInfo::default()),
+            None,
             &CalcCancel::default(),
         )
     }

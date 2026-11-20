@@ -105,14 +105,45 @@ fn host_list_source(schema: &CalcSchema, list: &om_data::meta::ValueList) -> Opt
 type SharedList = (BTreeSet<u64>, Result<Arc<Choices>, ChoiceError>);
 
 /// A value list to build on the worker (`list_build`, #745), as the
-/// window's paint would: its ticket, and the window's date and calculation
-/// session.
+/// window's paint would: its ticket, the window's date and calculation
+/// session, and for a list of related values the record it starts from.
 #[derive(Clone, Debug)]
 pub(crate) struct ListBuild {
     pub list: u64,
     pub ticket: u64,
     pub today: Date,
     pub info: SessionInfo,
+    pub related: Option<RelatedBuild>,
+}
+
+/// What a list of related values is built for (#290): the record in the
+/// layout's occurrence, the portal row it shows in, and the window's
+/// uncommitted values as paint reads them (`Evaluator`'s overlays).
+#[derive(Clone, Debug)]
+pub(crate) struct RelatedBuild {
+    pub occurrence: u64,
+    pub parent: u64,
+    pub portal: Option<(u64, u64)>,
+    pub overlays: Vec<(u64, u64, Arc<RecordValues>)>,
+}
+
+/// A list of related values for one record: (list, layout occurrence,
+/// record, portal row's occurrence and record).
+type RelatedKey = (u64, u64, u64, Option<(u64, u64)>);
+
+/// A list of related values the worker built: whether a calculation
+/// computed it ([`calculated_list`]), and its items or why there are none.
+type RelatedList = (bool, Result<Arc<Choices>, ChoiceError>);
+
+/// A list of related values asked of the worker: its key, whether a
+/// calculation computes it ([`calculated_list`]), and whether the window's
+/// unsaved changes, context or date changed since it was asked, so that its
+/// answer is not taken.
+#[derive(Clone, Copy, Debug)]
+struct RelatedAsk {
+    key: RelatedKey,
+    calculated: bool,
+    stale: bool,
 }
 
 /// The tables a value list that does not depend on the record reads: none
@@ -363,11 +394,18 @@ pub(crate) struct Calculations {
     /// The layout calculations' last `Get ( ModifiedFields )`, with the
     /// schema and inputs it was computed from ([`Self::modified_fields`]).
     modified: RefCell<Option<ModifiedAnswer>>,
-    /// The value-list items of controls whose list depends on the record
-    /// (its related values, or an unstored calculation's), by object,
-    /// record and portal row, with whether they were computed by a
-    /// calculation, which may read the session ([`calculated_list`]).
-    options: RefCell<HashMap<ObjectKey, (Arc<Choices>, bool)>>,
+    /// Lists of related values (#290), as the worker built them for a
+    /// record and portal row with the window's unsaved changes, with
+    /// whether a calculation computed them ([`calculated_list`]): never
+    /// built in paint. A relationship can lead through any table, so they
+    /// go whenever data may have changed; they also go when the window's
+    /// unsaved changes do, and a calculated one when the window's context
+    /// or the date does.
+    related_built: RefCell<HashMap<RelatedKey, RelatedList>>,
+    /// The lists of related values asked of the worker and not answered
+    /// yet, by ticket: an answer whose ticket is no longer here, or which
+    /// is stale, is not taken.
+    related_building: RefCell<HashMap<u64, RelatedAsk>>,
     /// The items, or why there are none, of value lists that do not depend
     /// on the record (custom values, or all of a field's values), by list,
     /// with the tables they read: built once from committed data for
@@ -452,11 +490,19 @@ impl Calculations {
         self.built.get_mut().retain(|_, (read, _)| !stale(read));
         let building = self.building.get_mut();
         building.retain(|_, (_, read)| !stale(read));
-        self.build_wants.get_mut().retain(|want| {
-            building
-                .get(&want.list)
-                .is_some_and(|(t, _)| *t == want.ticket)
-        });
+        // A list of related values may read any table along its
+        // relationships: any change of data takes it.
+        self.related_built.get_mut().clear();
+        let related = self.related_building.get_mut();
+        related.clear();
+        self.build_wants
+            .get_mut()
+            .retain(|want| match want.related {
+                Some(_) => related.contains_key(&want.ticket),
+                None => building
+                    .get(&want.list)
+                    .is_some_and(|(t, _)| *t == want.ticket),
+            });
         self.stale_builds
             .get_mut()
             .retain(|list| building.contains_key(list));
@@ -467,9 +513,13 @@ impl Calculations {
     /// changed: a built one goes, with a wait for an unreachable host its
     /// build asked for (the new context may read other data); one being
     /// built keeps its request, its answer not taken ([`Self::stale_builds`]).
-    fn drop_calculated_lists(&self) {
+    fn drop_calculated_lists(&self) -> bool {
+        // Lists of related values a calculation computes: built ones go, one
+        // being built is not taken (`RelatedAsk::stale`), as for all of a
+        // field's values.
+        let dropped = self.drop_related_lists(|ask| ask.calculated);
         let Some(schema) = &self.schema else {
-            return;
+            return dropped;
         };
         let calculated = |id: &u64| {
             schema
@@ -485,6 +535,29 @@ impl Calculations {
         self.stale_builds
             .borrow_mut()
             .extend(self.building.borrow().keys().filter(|id| calculated(id)));
+        dropped
+    }
+
+    /// Lists of related values `which` says went out of date: the built
+    /// ones go, and one being built stays asked, its answer not taken, so
+    /// that a change frame by frame (typing, a resize) keeps one build per
+    /// list and record on the worker. Whether a built one went.
+    fn drop_related_lists(&self, which: impl Fn(&RelatedAsk) -> bool) -> bool {
+        let mut built = self.related_built.borrow_mut();
+        let before = built.len();
+        built.retain(|key, (calculated, _)| {
+            !which(&RelatedAsk {
+                key: *key,
+                calculated: *calculated,
+                stale: false,
+            })
+        });
+        for ask in self.related_building.borrow_mut().values_mut() {
+            if which(ask) {
+                ask.stale = true;
+            }
+        }
+        built.len() != before
     }
 
     /// The data may have changed: the host's lists are asked for again.
@@ -694,9 +767,11 @@ impl Calculations {
                 true
             }
         });
-        self.options
-            .get_mut()
-            .retain(|(l, o, _, _), _| !values.contains(&(*l, *o)));
+        // Its list of related values, if any, is built again: every one,
+        // as the objects' lists are not known here.
+        if !values.is_empty() {
+            self.drop_related_lists(|_| true);
+        }
         self.values
             .get_mut()
             .retain(|((l, o, _, _), _), _| !values.contains(&(*l, *o)));
@@ -773,12 +848,9 @@ impl Calculations {
             dropped |= groups.len() != before;
         }
         // A list an unstored calculation computed may have read the
-        // session as well (#1058), built here or on the worker (#290).
-        self.drop_calculated_lists();
-        let mut options = self.options.borrow_mut();
-        let lists = options.len();
-        options.retain(|_, (_, calculated)| !*calculated);
-        if dropped || states.len() != count || options.len() != lists {
+        // session as well (#1058), built on the worker (#290).
+        dropped |= self.drop_calculated_lists();
+        if dropped || states.len() != count {
             self.advance_content();
         }
     }
@@ -793,6 +865,8 @@ impl Calculations {
         let mut previous = self.draft_context.borrow_mut();
         if *previous != draft {
             *previous = draft;
+            // A list of related values was built over the unsaved changes.
+            self.drop_related_lists(|_| true);
             self.forget_results();
         }
     }
@@ -804,7 +878,6 @@ impl Calculations {
         self.named_values.borrow_mut().clear();
         self.merge_values.borrow_mut().clear();
         self.portal_sets.borrow_mut().clear();
-        self.options.borrow_mut().clear();
         self.group_values.borrow_mut().clear();
     }
 
@@ -959,8 +1032,12 @@ impl Calculations {
     /// connection to the host is gone): asked for again when a control
     /// next shows the list, and not waited for meanwhile.
     pub fn unsent_builds(&mut self, builds: &[ListBuild]) {
+        let related = self.related_building.get_mut();
+        for want in builds.iter().filter(|want| want.related.is_some()) {
+            related.remove(&want.ticket);
+        }
         let building = self.building.get_mut();
-        for want in builds {
+        for want in builds.iter().filter(|want| want.related.is_none()) {
             if building
                 .get(&want.list)
                 .is_some_and(|(asked, _)| *asked == want.ticket)
@@ -984,6 +1061,25 @@ impl Calculations {
         result: Option<Result<Arc<Choices>, ChoiceError>>,
         retry_after: Option<std::time::Duration>,
     ) {
+        // A list of related values for a record (#290): taken under its
+        // key unless the data, the unsaved changes or (calculated) the
+        // context changed since it was asked; a related host's wait as a
+        // list of all of a field's values.
+        if let Some(ask) = self.related_building.get_mut().remove(&ticket) {
+            if ask.stale {
+                return;
+            }
+            if let Some(after) = retry_after {
+                let at = std::time::Instant::now() + after;
+                self.build_retry.get_mut().insert(list, (at, false));
+            }
+            if let Some(items) = result {
+                self.related_built
+                    .get_mut()
+                    .insert(ask.key, (ask.calculated, items));
+            }
+            return;
+        }
         // A list of an unstored calculation's values asked for a context or
         // date since gone (#290): its wait is not the new context's, which
         // may read other data.
@@ -1116,6 +1212,7 @@ impl Calculations {
         !self.requested.is_empty()
             || !self.wanted.borrow().is_empty()
             || !self.building.borrow().is_empty()
+            || !self.related_building.borrow().is_empty()
     }
 
     /// Needs [`Calculations::take_wanted`] gave that were not sent (the
@@ -1957,26 +2054,11 @@ impl<'a> Evaluator<'a> {
                 .insert(list.id, (tables, items.clone()));
             return items;
         }
-        let key = (self.layout, object.id, parent, portal);
-        if let Some((items, _)) = self.calcs.options.borrow().get(&key) {
-            return Ok(Arc::clone(items));
-        }
-        let context = choice::context(
-            self.schema,
-            list,
-            self.occurrence,
-            parent,
-            portal.map(|row| (row.occurrence, row.record)),
-        );
-        let items: Arc<Choices> = self
-            .with_host(|host| choice::choices(&host.file, list, &context))
-            .ok_or(ChoiceError::Pending)??
-            .into();
-        self.calcs.options.borrow_mut().insert(
-            key,
-            (Arc::clone(&items), calculated_list(self.schema, list)),
-        );
-        Ok(items)
+        // A list of related values depends on the record (and portal row)
+        // it starts from: the worker builds it for each, never paint, whose
+        // frame it would hold for as long as the related set takes (#290).
+        let portal = portal.map(|row| (row.occurrence, row.record));
+        self.related_list(list, (list.id, self.occurrence, parent, portal))
     }
 
     /// Shared list `list` (reading `tables`) as the worker built it, or
@@ -2008,8 +2090,66 @@ impl<'a> Evaluator<'a> {
                 ticket,
                 today: self.today,
                 info: self.info.clone(),
+                related: None,
             });
         }
+        Err(ChoiceError::Pending)
+    }
+
+    /// List `list` of related values for `key`'s record and portal row as
+    /// the worker built it with the window's unsaved changes, or
+    /// [`ChoiceError::Pending`] while it is being built: asked of the worker
+    /// once per record (`list_build`, #290), never built in paint.
+    fn related_list(
+        &self,
+        list: &om_data::meta::ValueList,
+        key: RelatedKey,
+    ) -> Result<Arc<Choices>, ChoiceError> {
+        if let Some((_, items)) = self.calcs.related_built.borrow().get(&key) {
+            return items.clone();
+        }
+        if self
+            .calcs
+            .related_building
+            .borrow()
+            .values()
+            .any(|ask| ask.key == key)
+        {
+            return Err(ChoiceError::Pending);
+        }
+        // Waiting for a related host that could not be reached (#740).
+        {
+            let mut waits = self.calcs.build_retry.borrow_mut();
+            if let Some((at, _)) = waits.get(&list.id) {
+                if std::time::Instant::now() < *at {
+                    return Err(ChoiceError::Pending);
+                }
+                waits.remove(&list.id);
+            }
+        }
+        let ticket = self.calcs.build_tickets.get().wrapping_add(1);
+        self.calcs.build_tickets.set(ticket);
+        self.calcs.related_building.borrow_mut().insert(
+            ticket,
+            RelatedAsk {
+                key,
+                calculated: calculated_list(self.schema, list),
+                stale: false,
+            },
+        );
+        let (_, occurrence, parent, portal) = key;
+        self.calcs.build_wants.borrow_mut().push(ListBuild {
+            list: list.id,
+            ticket,
+            today: self.today,
+            info: self.info.clone(),
+            related: Some(RelatedBuild {
+                occurrence,
+                parent,
+                portal,
+                overlays: self.overlays.clone(),
+            }),
+        });
         Err(ChoiceError::Pending)
     }
 
@@ -5187,16 +5327,64 @@ mod tests {
         ));
         let mut calcs = Calculations::default();
         portal_data(&mut calcs);
-        let evaluator = evaluator(&calcs, &schema);
+        // Built on the worker for each record and portal row (#290): paint
+        // asks once per row and waits.
+        {
+            let evaluator = evaluator(&calcs, &schema);
+            for portal in [None, row(10)] {
+                for _ in 0..2 {
+                    assert_eq!(
+                        evaluator.option_values(&option_object(15, 6), 1, portal),
+                        Err(ChoiceError::Pending),
+                        "{portal:?}"
+                    );
+                }
+            }
+        }
+        let builds = calcs.take_list_builds();
+        assert_eq!(builds.len(), 2, "{builds:?}");
         // A portal row is an Items record: the list still starts from the
-        // parent, the current Jobs record.
-        for portal in [None, row(10)] {
+        // parent, the current Jobs record, as the worker builds it
+        // (`list_build`) over the same data.
+        let source = CachedSource::new(&calcs.cache);
+        let file = FileCalc::new(&schema, &source, Date::from_ymd(2026, 10, 29).unwrap());
+        let list = schema.value_lists().iter().find(|l| l.id == 6).unwrap();
+        for build in &builds {
+            let related = build.related.as_ref().expect("a record's list");
+            assert_eq!((related.occurrence, related.parent), (OCCURRENCE, 1));
+            let context = choice::context(
+                &schema,
+                list,
+                related.occurrence,
+                related.parent,
+                related.portal,
+            );
             assert_eq!(
-                values(evaluator.option_values(&option_object(15, 6), 1, portal)),
+                values(choice::choices(&file, list, &context).map(Arc::new)),
                 ["Alder", "Birch", "Cedar"],
-                "{portal:?}"
+                "{:?}",
+                related.portal
             );
         }
+        // Its answer is the row's list until the data changes.
+        let ticket = builds[0].ticket;
+        let built = Arc::new(Choices {
+            items: vec![om_data::host::ValueListEntry {
+                label: "Alder".into(),
+                value: "Alder".into(),
+            }],
+            custom: false,
+        });
+        calcs.accept_built_list(6, ticket, Some(Ok(Arc::clone(&built))), None);
+        assert_eq!(
+            values(evaluator(&calcs, &schema).option_values(&option_object(15, 6), 1, None)),
+            ["Alder"]
+        );
+        calcs.data_changed();
+        assert_eq!(
+            evaluator(&calcs, &schema).option_values(&option_object(15, 6), 1, None),
+            Err(ChoiceError::Pending)
+        );
     }
 
     fn pending_container_fixture() -> (CalcSchema, Calculations) {
