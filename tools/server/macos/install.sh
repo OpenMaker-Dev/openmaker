@@ -18,8 +18,6 @@ lock_installation
 [[ ! -e "$plist_path" && ! -L "$plist_path" ]] && ! job_loaded ||
     fail 'A job is already installed. Use update.sh for an installation these scripts made.'
 
-[[ -z $prefix ]] || mkdir -p -- "$prefix/Library/LaunchDaemons"
-root_directory "$server_root"
 root_directory "$server_root/releases"
 root_directory "$config"
 root_directory "$data"

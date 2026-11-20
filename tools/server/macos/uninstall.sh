@@ -13,12 +13,11 @@ fi
 (($# == 0)) || fail 'Usage: tools/server/macos/uninstall.sh'
 require_macos
 elevate "$script_dir/uninstall.sh"
-lock_installation
-
 if [[ ! -e "$plist_path" && ! -L "$plist_path" ]] && ! job_loaded; then
     echo 'OpenMaker Server job is already absent.'
     exit 0
 fi
+lock_installation
 root_directory "$server_root"
 root_directory "$server_root/releases"
 release=$(installed_release)

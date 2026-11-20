@@ -29,6 +29,7 @@ fi
 
 fail() {
     printf 'OpenMaker Server: %s\n' "$*" >&2
+    unlock_installation
     exit 1
 }
 
@@ -65,12 +66,16 @@ elevate() {
     fi
 }
 
-lock_path="$prefix/var/run/openmaker-server-install.lock"
+lock_path="$server_root/.install.lock"
 
-# One script at a time: a lock folder, removed when the script ends.
+# One script at a time: a lock folder in the server's root-owned folder
+# (made first, as root's), removed when the script ends.
 lock_installation() {
     umask 022
-    mkdir -p -- "$(dirname -- "$lock_path")"
+    [[ -z $prefix ]] || mkdir -p -- "$prefix/Library/LaunchDaemons"
+    trusted_parents "$server_root"
+    trusted_parents "$plist_path"
+    root_directory "$server_root"
     mkdir -- "$lock_path" 2>/dev/null ||
         fail "Another install, update or uninstall is running (or remove $lock_path)."
     locked=true
@@ -98,8 +103,42 @@ set_owner() {
     fi
 }
 
+# Whether `path` has an access control entry that lets someone change it
+# or what it holds (`ls -le` lists entries after the first line).
+write_acl() {
+    grep -Eq "$write_rights" <<<"$(acl_entries "$1")"
+}
+
+# `path`'s access control entries, one per line (`ls -le` lists them after
+# the first line). Read whole, so that no pipe ends early under pipefail.
+acl_entries() {
+    local listing
+    listing=$(ls -led -- "$1")
+    tail -n +2 <<<"$listing"
+}
+
+write_rights=' allow .*(write|append|add_file|add_subdirectory|delete|delete_child|writeattr|writeextattr|writesecurity|chown)'
+
+
+# The folders above `path` up to `/` (or the prefix): root's, not writable
+# by others and with no entry granting writes, so nothing in them can be
+# swapped under the scripts.
+trusted_parents() {
+    local directory
+    directory=$(dirname -- "$1")
+    while [[ $directory != / && $directory != "$prefix" && $directory != . ]]; do
+        [[ ! -L "$directory" && -d "$directory" && $(uid_of "$directory") == "$root_uid" ]] ||
+            fail "Expected a root-owned folder: $directory"
+        (((8#$(mode_of "$directory") & 022) == 0)) ||
+            fail "Folder is writable by other users: $directory"
+        ! write_acl "$directory" || fail "An access control entry lets others change $directory"
+        directory=$(dirname -- "$directory")
+    done
+}
+
 # A folder only the administrator may change: made root-owned 0755 when
-# missing, refused when it is a link, another user's or writable by others.
+# missing, refused when it is a link, another user's, writable by others or
+# open to writes by an access control entry.
 root_directory() {
     local directory=$1
     [[ ! -L "$directory" ]] || fail "Refusing symlink: $directory"
@@ -111,6 +150,7 @@ root_directory() {
         fail "Expected a root-owned folder: $directory"
     (((8#$(mode_of "$directory") & 022) == 0)) ||
         fail "Folder is writable by other users: $directory"
+    ! write_acl "$directory" || fail "An access control entry lets others change $directory"
 }
 
 # A file only the administrator may change, when it exists.
@@ -121,6 +161,7 @@ check_root_file() {
         [[ -f "$path" && $(uid_of "$path") == "$root_uid" ]] ||
             fail "Expected a root-owned file: $path"
         (((8#$(mode_of "$path") & 022) == 0)) || fail "File is writable by other users: $path"
+        ! write_acl "$path" || fail "An access control entry lets others change $path"
     fi
 }
 
@@ -137,6 +178,16 @@ ds_read() {
         return 0
     fi
     dscl . -read "/$kind/$name" "$key" 2>/dev/null | sed -n "s/^$key: //p" | head -n 1
+}
+
+# Whether `kind` `name` has attribute `key` at all (a value may span lines).
+ds_has() {
+    local kind=$1 name=$2 key=$3
+    if [[ -n $prefix ]]; then
+        [[ -f "$ds_root/$kind/$name/$key" ]]
+    else
+        dscl . -read "/$kind/$name" "$key" >/dev/null 2>&1
+    fi
 }
 
 ds_exists() {
@@ -224,6 +275,33 @@ ensure_accounts() {
         $(ds_read Users "$service_user" PrimaryGroupID) == "$gid" &&
         ($shell == /usr/bin/false || $shell == /usr/sbin/nologin) ]] ||
         fail "The existing $service_user account must be a non-root, non-login user whose group is $service_group."
+    # Its ids its own: another record with them would share its files.
+    [[ $(grep -cx -- "$uid" <<<"$(ds_values Users UniqueID)") == 1 &&
+        $(grep -cx -- "$gid" <<<"$(ds_values Groups PrimaryGroupID)") == 1 ]] ||
+        fail "Another user or group has $service_user's or $service_group's id."
+    # No way to sign in: no password and no other authentication.
+    [[ $(ds_read Users "$service_user" Password) == '*' ]] &&
+        ! ds_has Users "$service_user" AuthenticationAuthority ||
+        fail "The existing $service_user account has a password or another way to sign in."
+    local privileged
+    privileged=$(service_groups | grep -Ex 'admin|wheel|staff|operator|_developer|_lpadmin|com\.apple\.access_(ssh|screensharing|remote_ae)' || true)
+    [[ -z $privileged ]] ||
+        fail "The existing $service_user account is in privileged groups: $(tr '\n' ' ' <<<"$privileged")"
+}
+
+# The groups the service account is in, by name, one per line.
+service_groups() {
+    if [[ -n $prefix ]]; then
+        local file
+        for file in "$ds_root"/Groups/*/GroupMembership; do
+            [[ -f $file ]] || continue
+            if grep -qx -- "$service_user" "$file"; then
+                basename -- "$(dirname -- "$file")"
+            fi
+        done
+        return 0
+    fi
+    id -Gn "$service_user" | tr ' ' '\n'
 }
 
 # --- The service's folders.
@@ -244,7 +322,21 @@ service_directories() {
             set_owner "$service_user:$service_group" "$path"
         fi
         [[ -d "$path" ]] || fail "Expected a folder: $path"
+        # A kept folder is used as it is, its contents untouched, but no
+        # more open than the installer makes it.
+        (((8#$(mode_of "$path") & ~8#$mode & 8#777) == 0)) ||
+            fail "$path is more open than $mode; restore its mode."
+        (((8#$(mode_of "$path") & 002) == 0)) && ! write_acl_others "$path" ||
+            fail "$path is open to other users' writes; restore its permissions."
     done
+}
+
+# An access control entry granting writes to anyone but the service
+# account and group.
+write_acl_others() {
+    local granted
+    granted=$(grep -E "$write_rights" <<<"$(acl_entries "$1")" || true)
+    [[ -n $granted ]] && grep -Evq "(user:$service_user|group:$service_group) allow" <<<"$granted"
 }
 
 # The Admin Console password: made once, readable by the service alone.
@@ -260,6 +352,8 @@ admin_password() {
         set_owner "$service_user:$service_group" "$path"
     fi
     [[ -f "$path" && -s "$path" ]] || fail "Expected the Admin Console password in $path."
+    (((8#$(mode_of "$path") & 077) == 0)) && ! write_acl "$path" ||
+        fail "$path is open to other users; make it 0400 and the service's."
 }
 
 # --- Settings and the launchd job.
@@ -320,10 +414,11 @@ write_plist() {
     chmod 0644 "$out"
 }
 
-# Put the job `staged` (a file beside the job's path) in place.
+# Put the job `staged` (a file beside the job's path) in place: root's
+# before it takes the job's name.
 install_plist() {
+    set_owner root:wheel "$1" || return 1
     mv -f -- "$1" "$plist_path"
-    set_owner root:wheel "$plist_path"
 }
 
 launchd() {
@@ -371,9 +466,9 @@ wait_listening() {
     return 1
 }
 
+# The log is the service account's: the scripts, as root, do not read it.
 startup_error() {
-    tail -n 20 -- "$logs/launchd.log" >&2 2>/dev/null || true
-    fail "The server did not start both listeners. See $logs."
+    fail "The server did not start both listeners. See $logs/launchd.log and Event.log."
 }
 
 # A release folder of the server's binaries, root-owned.
@@ -385,8 +480,13 @@ stage_release() {
     install -m 0755 -- "$binary_dir/om-server" "$binary_dir/om-server-pdf-worker" "$directory"
     set_owner root:wheel "$directory"
     local help
-    # --help answers 0 or 64 (EX_USAGE), as the build has it.
-    help=$("$directory/om-server" --help 2>&1) || true
+    # --help answers 0 or 64 (EX_USAGE), as the build has it. Run as the
+    # service account, never as root.
+    if [[ -n $prefix ]]; then
+        help=$("$directory/om-server" --help 2>&1) || true
+    else
+        help=$(sudo -u "$service_user" -- "$directory/om-server" --help 2>&1) || true
+    fi
     [[ $help == *--database-folder* && $help == *--admin-password-file* ]] ||
         fail 'Use an om-server build with database folders and the Admin Console.'
 }

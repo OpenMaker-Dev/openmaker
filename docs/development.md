@@ -398,8 +398,16 @@ The installer makes the service account `omserver` and the operator group
 (shell `/usr/bin/false`, no password, home `/var/empty`) whose group is
 `omadmin`, with a free id below 500. FileMaker Server uses `fmserver` and
 `fmsadmin` the same way. Existing records are used as they are, after a
-check that the account is not root, cannot log in and has `omadmin` as its
-group. The group's members are never changed. The installer then installs
+check of what the server would run with. The install stops, with nothing
+installed, when the account:
+
+- is root, can log in or has another group than `omadmin`;
+- has a password or another way to sign in (`AuthenticationAuthority`);
+- shares its id, or the group's, with another record;
+- is in a privileged group (`admin`, `wheel`, `staff`, `operator`,
+  `_developer`, `_lpadmin`, or the remote-access groups).
+
+The group's members are never changed. The installer then installs
 and starts the launchd daemon `dev.openmaker.server`, which runs the server
 as `omserver:omadmin` with umask 027 and restarts it if it stops on an
 error.
@@ -415,7 +423,16 @@ error.
 | `/Library/OpenMaker Server/Logs/` | `omserver:omadmin`, 0750 | FileMaker-format logs and `launchd.log` |
 | `/Library/LaunchDaemons/dev.openmaker.server.plist` | root, 0644 | The launchd job |
 
-The folders above the service's own are root's, 0755. launchd has no
+The folders above the service's own are root's, 0755. The scripts run as
+root, so they refuse to work in a folder another user could change:
+`/Library`, `/Library/LaunchDaemons` and the server's root folders must be
+root's, not writable by others, and without an access control entry
+granting writes. Kept service folders and the password file must be no
+more open than the installer makes them; their contents are never
+changed. The scripts lock against each other with
+`/Library/OpenMaker Server/.install.lock`. They never read the service's
+logs or run its binaries as root: the release's `--help` check runs as
+`omserver`. launchd has no
 credentials store, so the password file belongs to the service account,
 which alone may read it, in a folder only root may change. The default
 listeners are `127.0.0.1:5003` and `127.0.0.1:16000`. Sign in as `admin` at
@@ -438,9 +455,10 @@ sudo dseditgroup -o edit -d <user> -t user omadmin        # remove one
 ```
 
 Update keeps the data, settings, password, account and the group's members.
-It stops the job, puts the new release and job in place, starts the job
-again if it was running, and restores the previous release and job if the
-server does not come back with both listeners. Uninstall removes the job
+It stops the job, puts the new release and job in place, loads the job
+again if it was loaded (launchd then starts the server, as at boot), and
+restores the previous release and job if the server does not come back with
+both listeners. Uninstall removes the job
 and the binaries and keeps everything else for a later install. The
 account and group are left for an administrator to remove
 (`sudo dscl . -delete /Users/omserver`, then `/Groups/omadmin`).
@@ -456,7 +474,12 @@ are recorded instead of applied. The scenarios:
   and an operator's membership;
 - an uninstall;
 - existing accounts with members;
-- a login account, which is refused.
+- accounts that are refused: one that can log in, one with a password,
+  one whose id another record shares, and one in `admin`;
+- a parent folder whose access control entry grants writes, which is
+  refused;
+- an update refusing a password file others may read and a backup folder
+  others may write, then going ahead once they are restored.
 
 It then runs the job's own command line, as the current user, on a staged
 blank database: the server must open it for writing and write its state

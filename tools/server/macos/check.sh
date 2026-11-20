@@ -83,7 +83,7 @@ expect_mode "$plist" 644
 for owned in "omserver:omadmin	/Library/OpenMaker Server/Data/Databases" \
     "omserver:omadmin	/Library/OpenMaker Server/Config/admin-password" \
     "root:wheel	/Library/OpenMaker Server/Config" \
-    "root:wheel	/Library/LaunchDaemons/dev.openmaker.server.plist"; do
+    "root:wheel	/Library/LaunchDaemons/dev.openmaker.server.plist.new"; do
     grep -qxF -- "$owned" "$fresh/.owners" || failed "not given: $owned"
 done
 plutil -lint -s "$plist" || failed 'the job is not a valid property list'
@@ -133,33 +133,77 @@ run "$fresh" uninstall.sh >/dev/null
 grep -q 'already absent' <<<"$(run "$fresh" uninstall.sh)" || failed 'a second uninstall did not stop'
 echo 'uninstall: job and binaries removed; data, settings and accounts kept'
 
+# A directory service holding omadmin (members alice and bob) and omserver
+# beneath `root`, with `shell`.
+accounts() {
+    local root=$1 shell=$2
+    mkdir -p -- "$root/.ds/Groups/omadmin" "$root/.ds/Users/omserver"
+    echo 451 >"$root/.ds/Groups/omadmin/PrimaryGroupID"
+    printf 'alice\nbob\n' >"$root/.ds/Groups/omadmin/GroupMembership"
+    echo 452 >"$root/.ds/Users/omserver/UniqueID"
+    echo 451 >"$root/.ds/Users/omserver/PrimaryGroupID"
+    echo "$shell" >"$root/.ds/Users/omserver/UserShell"
+    echo '*' >"$root/.ds/Users/omserver/Password"
+}
+
 # --- Existing accounts are used, and their members kept.
 existing=$work/existing
-mkdir -p -- "$existing/.ds/Groups/omadmin" "$existing/.ds/Users/omserver"
-echo 451 >"$existing/.ds/Groups/omadmin/PrimaryGroupID"
-printf 'alice\nbob\n' >"$existing/.ds/Groups/omadmin/GroupMembership"
-echo 452 >"$existing/.ds/Users/omserver/UniqueID"
-echo 451 >"$existing/.ds/Users/omserver/PrimaryGroupID"
-echo /usr/bin/false >"$existing/.ds/Users/omserver/UserShell"
+accounts "$existing" /usr/bin/false
 run "$existing" install.sh "$bin" >/dev/null
 [[ ! -e "$existing/.ds/log" ]] || failed 'install changed existing accounts'
 [[ $(cat "$existing/.ds/Groups/omadmin/GroupMembership") == $'alice\nbob' ]] ||
     failed "install changed omadmin's members"
 echo 'existing account and group: used as they are, members kept'
 
-# --- An unsuitable existing account stops the install before anything runs.
-unsafe=$work/unsafe
-mkdir -p -- "$unsafe/.ds/Groups/omadmin" "$unsafe/.ds/Users/omserver"
-echo 461 >"$unsafe/.ds/Groups/omadmin/PrimaryGroupID"
-echo 462 >"$unsafe/.ds/Users/omserver/UniqueID"
-echo 461 >"$unsafe/.ds/Users/omserver/PrimaryGroupID"
-echo /bin/zsh >"$unsafe/.ds/Users/omserver/UserShell"
-if run "$unsafe" install.sh "$bin" >/dev/null 2>&1; then
-    failed 'install accepted a login account'
+# --- Unsuitable existing accounts, or folders others may change, stop the
+# install before anything is installed.
+refused() {
+    local name=$1 why=$2
+    if run "$work/$name" install.sh "$bin" >"$work/$name.out" 2>&1; then
+        failed "install accepted $why"
+    fi
+    [[ ! -e "$work/$name/Library/LaunchDaemons/dev.openmaker.server.plist" &&
+        ! -e "$work/$name/.launchctl" ]] || failed "a refused install ($why) left a job"
+    echo "refused, nothing installed: $why ($(sed 's/^OpenMaker Server: //' "$work/$name.out" | tail -n 1))"
+}
+accounts "$work/login" /bin/zsh
+refused login 'an omserver account that can log in'
+accounts "$work/password" /usr/bin/false
+echo 'a stored verifier' >"$work/password/.ds/Users/omserver/AuthenticationAuthority"
+refused password 'an omserver account with a password'
+accounts "$work/shared" /usr/bin/false
+mkdir -p -- "$work/shared/.ds/Users/other"
+echo 452 >"$work/shared/.ds/Users/other/UniqueID"
+refused shared "another user with omserver's id"
+accounts "$work/admin" /usr/bin/false
+mkdir -p -- "$work/admin/.ds/Groups/admin"
+echo 80 >"$work/admin/.ds/Groups/admin/PrimaryGroupID"
+echo omserver >"$work/admin/.ds/Groups/admin/GroupMembership"
+refused admin 'an omserver account in the admin group'
+mkdir -p -- "$work/acl/Library"
+chmod +a 'everyone allow add_file,add_subdirectory,delete_child' "$work/acl/Library"
+refused acl 'a parent folder an access control entry opens to writes'
+
+# --- An update refuses kept files and folders more open than it makes them.
+kept=$work/kept
+mkdir -p -- "$kept"
+run "$kept" install.sh "$bin" >/dev/null
+kept_server="$kept/Library/OpenMaker Server"
+chmod 0444 "$kept_server/Config/admin-password"
+if run "$kept" update.sh "$bin" >"$work/kept.out" 2>&1; then
+    failed 'update accepted a password file others may read'
 fi
-[[ ! -e "$unsafe/Library/LaunchDaemons/dev.openmaker.server.plist" &&
-    ! -e "$unsafe/.launchctl" ]] || failed 'a refused install left a job'
-echo 'a login omserver account: refused, nothing installed'
+grep -q 'admin-password is open to other users' "$work/kept.out" || failed "update refused it for another reason: $(cat "$work/kept.out")"
+chmod 0400 "$kept_server/Config/admin-password"
+chmod 0777 "$kept_server/Data/Backups"
+if run "$kept" update.sh "$bin" >"$work/kept.out" 2>&1; then
+    failed 'update accepted a backup folder others may write'
+fi
+grep -q 'Backups is more open than' "$work/kept.out" || failed "update refused it for another reason: $(cat "$work/kept.out")"
+chmod 0750 "$kept_server/Data/Backups"
+[[ ! -e "$kept_server/.install.lock" ]] || failed 'a refused update left its lock'
+run "$kept" update.sh "$bin" >/dev/null
+echo 'update: a password others may read, or a folder others may write, refused; restored, it updates'
 
 # --- The job's command line serves a staged database copy and writes its
 # state and logs, as the current user standing for omserver. A disposable

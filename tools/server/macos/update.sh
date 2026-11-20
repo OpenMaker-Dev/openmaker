@@ -1,8 +1,10 @@
 #!/usr/bin/env bash
 # Update an installation install.sh made: new binaries, and the job written
 # again from server.env. Data, settings, the password, the account and the
-# operator group's members are kept; a server that does not come back up
-# is rolled back to the previous release and job.
+# operator group's members are kept. A job that was loaded is loaded again,
+# which starts the server (RunAtLoad), also if its process had been stopped;
+# a server that does not come back up is rolled back to the previous
+# release and job.
 # shellcheck source=tools/server/macos/common.sh
 source "$(dirname -- "${BASH_SOURCE[0]}")/common.sh"
 
