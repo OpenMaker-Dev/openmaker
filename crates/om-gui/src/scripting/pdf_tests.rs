@@ -4069,6 +4069,187 @@ fn container_fields_print_pictures_by_graphic_format_and_files_by_name() {
     assert_eq!(at(image.left + 5.0, clip.top + 2.0), [255, 255, 255, 255]);
 }
 
+/// Character runs that differ only in color print each in its own, as
+/// Browse colors them: a line keeps its baseline and wrapping and changes
+/// color where its runs do, each part from where the previous one ends
+/// (#106). Stored styles compare every byte but the color's, so an explicit
+/// size 0 differs from an unset size. Runs that are not their text's
+/// partition, runs in several sizes, and a value other than the text the
+/// runs are stored for refuse with 3.
+#[test]
+fn character_runs_print_in_their_own_colors() {
+    use om_layout::{CharacterStyle, StyledRun};
+    let font =
+        ttf_parser::Face::parse(include_bytes!("../../assets/fonts/Inter-Regular.ttf"), 0).unwrap();
+    let advance = |text: &str| {
+        text.chars()
+            .map(|ch| {
+                f64::from(
+                    font.glyph_hor_advance(font.glyph_index(ch).unwrap())
+                        .unwrap(),
+                )
+            })
+            .sum::<f64>()
+            * 12.0
+            / f64::from(font.units_per_em())
+    };
+    // A stored color-only style (mask 0x0004, layout-model.md 8.1), and the
+    // same with an explicit size of 0 (mask 0x0006).
+    let stored = |mask: u16, rgb: [u8; 3]| {
+        let mut raw = mask.to_be_bytes().to_vec();
+        raw.extend([0; 6]);
+        raw.extend([rgb[0], rgb[1], rgb[2], 255]);
+        CharacterStyle {
+            color: Some(Color {
+                red: f32::from(rgb[0]) / 255.0,
+                green: f32::from(rgb[1]) / 255.0,
+                blue: f32::from(rgb[2]) / 255.0,
+                alpha: 1.0,
+            }),
+            raw,
+            ..Default::default()
+        }
+    };
+    // "Grüße", a CRLF, then a line that wraps after "overdue ": black up to
+    // "overdue", red from there on, across the wrap.
+    let text = "Grüße\r\nTotal overdue item";
+    let red_from = text.find("overdue").unwrap();
+    let width = advance("Total overdue ") + 3.0;
+    let mut colored = label(1, text, rect(12.0, 10.0, width, 60.0), 12.0, false);
+    colored.rich_text.as_mut().unwrap().character_runs = vec![
+        StyledRun {
+            range: 0..red_from,
+            style: stored(4, [0, 0, 0]),
+        },
+        StyledRun {
+            range: red_from..text.len(),
+            style: stored(4, [255, 0, 0]),
+        },
+    ];
+    let layout = Layout {
+        def: Some(LayoutDef {
+            base_width: 540.0,
+            ..Default::default()
+        }),
+        parts: vec![Part {
+            part_type: 4,
+            height: 100.0,
+            ..Default::default()
+        }],
+        objects: ObjectStore {
+            root: vec![1],
+            objects: vec![colored],
+            ..Default::default()
+        },
+        ..Default::default()
+    };
+    let render = |layout: &Layout, value: &'static str| {
+        let paper = om_layout::pagination::PageSize::for_layout(layout).unwrap();
+        crate::report::render_pdf(layout, 1, paper, &[], move |_, _| Ok(value.to_owned()))
+            .map(|report| String::from_utf8_lossy(&report.bytes).into_owned())
+            .map_err(|e| (e.code, e.message))
+    };
+    let pdf = render(&layout, text).unwrap();
+    let origin = |word: &str| {
+        let found = text_origins(&pdf, 1, word);
+        assert_eq!(found.len(), 1, "{word}: {found:?}");
+        found[0]
+    };
+    let (first, total, overdue, item) = (
+        origin("Grüße"),
+        origin("Total "),
+        origin("overdue "),
+        origin("item"),
+    );
+    // "overdue " continues "Total "'s line, at its advance, on its baseline;
+    // "item" wraps to the next line, at the line's start.
+    assert!(
+        (overdue.1 - total.1 - advance("Total ")).abs() < 0.01,
+        "{total:?} {overdue:?}"
+    );
+    assert_eq!(overdue.2, total.2);
+    assert_eq!(item.1, total.1);
+    assert!(
+        first.2 > total.2 && total.2 > item.2,
+        "{first:?} {total:?} {item:?}"
+    );
+    // Each part is filled in its color, set just before it.
+    let fill_before = |word: &str| {
+        let glyphs: String = word
+            .chars()
+            .map(|ch| format!("{:04X}", font.glyph_index(ch).unwrap().0))
+            .collect();
+        let at = pdf.find(&format!("<{glyphs}> Tj")).unwrap();
+        let fill = pdf[..at]
+            .lines()
+            .rev()
+            .find(|l| l.ends_with(" rg"))
+            .unwrap();
+        fill.to_owned()
+    };
+    for (word, fill) in [
+        ("Grüße", "0 0 0 rg"),
+        ("Total ", "0 0 0 rg"),
+        ("overdue ", "1 0 0 rg"),
+        ("item", "1 0 0 rg"),
+    ] {
+        assert_eq!(fill_before(word), fill, "{word}");
+    }
+
+    fn runs(layout: &mut Layout) -> &mut Vec<om_layout::StyledRun<CharacterStyle>> {
+        &mut layout.objects.objects[0]
+            .rich_text
+            .as_mut()
+            .unwrap()
+            .character_runs
+    }
+    // Merged or calculated text is not the text the runs are stored for.
+    let several = "Report object 1's text is in several colors and is merged, calculated or \
+                   transformed; only its text as written can print in them";
+    assert_eq!(
+        render(&layout, "Grüße\r\nTotal 3 overdue").unwrap_err(),
+        (3, several.to_owned())
+    );
+    // An explicit size of 0 is not an unset size, nor are two sizes one.
+    let mixed = (3, "Mixed character styles are unsupported".to_owned());
+    let mut sized = layout.clone();
+    runs(&mut sized)[1].style = stored(6, [255, 0, 0]);
+    assert_eq!(render(&sized, text).unwrap_err(), mixed);
+    let mut sized = layout.clone();
+    runs(&mut sized)[1].style.raw[7] = 18;
+    runs(&mut sized)[1].style.font_size = Some(18.0);
+    assert_eq!(render(&sized, text).unwrap_err(), mixed);
+    // A size given only decoded, with the stored bytes unchanged, too.
+    let mut sized = layout.clone();
+    runs(&mut sized)[1].style.font_size = Some(18.0);
+    assert_eq!(render(&sized, text).unwrap_err(), mixed);
+    // One style stored in a length the decoder does not read still prints,
+    // as before, in one color, and two copies of it as one.
+    let mut odd = layout.clone();
+    let style = CharacterStyle {
+        raw: vec![0; 14],
+        ..Default::default()
+    };
+    for run in runs(&mut odd) {
+        run.style = style.clone();
+    }
+    assert!(render(&odd, text).is_ok());
+    // A field's layout runs in two colors refuse, its filename included.
+    let mut field = layout.clone();
+    field.objects.objects[0].object_type = 1;
+    assert_eq!(render(&field, "notes.txt").unwrap_err(), mixed);
+    // Runs that leave a gap, or overlap, are not the text's partition.
+    let mut gap = layout.clone();
+    runs(&mut gap)[1].range.start += 1;
+    assert_eq!(
+        render(&gap, text).unwrap_err(),
+        (
+            3,
+            "Report object 1's character runs do not cover its text in order".to_owned()
+        )
+    );
+}
+
 /// `{{PageNumber}}` prints each page's number, in a static label and in a
 /// merge text's literal (any case), as FileMaker Pro 26.0.3's Save Records
 /// as PDF wrote it on page *n* (calc-functions.md, O4), without touching

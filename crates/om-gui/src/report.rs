@@ -475,7 +475,13 @@ fn text_style(
     let mut style = crate::document::text_style(layout, object, conditions, 1);
     if let Some(rich) = &object.rich_text {
         if let Some(first) = rich.character_runs.first() {
-            if rich.character_runs.iter().any(|r| r.style != first.style) {
+            // A text object's or button's runs in several colors print each
+            // in its own (`run_colors`); runs in several fonts, sizes or
+            // faces, and a field's in several anything, are refused.
+            let colors = matches!(object.kind(), ObjectKind::Text | ObjectKind::Button);
+            if (rich.character_runs.iter()).any(|r| {
+                r.style != first.style && !(colors && same_but_color(&r.style, &first.style))
+            }) {
                 return Err(ReportError::unsupported(
                     "Mixed character styles are unsupported",
                 ));
@@ -539,6 +545,136 @@ fn text_style(
         style.font_style = condition.font_style.or(style.font_style);
     }
     Ok(style)
+}
+
+/// Whether character styles `a` and `b` differ in nothing but their color:
+/// the same font, size and faces as decoded, and for stored styles
+/// (layout-model.md 8.1) every byte but the color's:
+/// the mask without its color bit, the font, face and size slots (masked
+/// or not, so an explicit size 0 is not an unset size), and the extension
+/// byte. A style built in code (no stored bytes) compares as decoded. A
+/// stored style of another length, or one stored beside one built in code,
+/// differs.
+fn same_but_color(a: &om_layout::CharacterStyle, b: &om_layout::CharacterStyle) -> bool {
+    // What Browse and the report draw with, besides the color.
+    let decoded = |s: &om_layout::CharacterStyle| {
+        let size = s.font_size.map(f64::to_bits);
+        (s.font_id, s.font_family.clone(), size, s.faces, s.face_mask)
+    };
+    if decoded(a) != decoded(b) {
+        return false;
+    }
+    fn without_color(raw: &[u8]) -> Option<(u16, &[u8], &[u8])> {
+        match raw {
+            [m0, m1, slots @ .., _, _, _, _] if slots.len() == 6 => {
+                Some((u16::from_be_bytes([*m0, *m1]) & !0x4, slots, &[]))
+            }
+            [m0, m1, rest @ ..] if rest.len() == 11 => Some((
+                u16::from_be_bytes([*m0, *m1]) & !0x4,
+                &rest[..6],
+                &rest[10..],
+            )),
+            _ => None,
+        }
+    }
+    match (a.raw.is_empty(), b.raw.is_empty()) {
+        (true, true) => true,
+        (false, false) => {
+            without_color(&a.raw).is_some() && without_color(&a.raw) == without_color(&b.raw)
+        }
+        _ => false,
+    }
+}
+
+/// The color of each character [`prepare_text_in`] lays out of `value` (CR
+/// and LF, which break paragraphs, have none), when `object`'s character
+/// runs give its text more than one, as Browse colors them (a run's color,
+/// else the object's text color, else black; `rich_text::text_format`).
+/// `None` for one color, for no text, and when a conditional format's color
+/// replaces every run's.
+///
+/// Refused with 3 rather than coloring the wrong characters:
+/// - runs that are not the stored text's complete partition, in order, on
+///   character boundaries, as the layout decoder gives them;
+/// - a field's layout runs: its record value carries its own styles;
+/// - a value that differs from the text the runs are stored for (merged
+///   fields or symbols, a label calculation) or a case transform.
+fn run_colors(
+    layout: &Layout,
+    object: &LayoutObject,
+    value: &str,
+    style: &ResolvedStyle,
+    conditions: &[usize],
+) -> Result<Option<Vec<Color>>, ReportError> {
+    let Some(rich) = &object.rich_text else {
+        return Ok(None);
+    };
+    let runs = &rich.character_runs;
+    let Some(first) = runs.first() else {
+        return Ok(None);
+    };
+    if value.is_empty() || runs.iter().all(|r| r.style.color == first.style.color) {
+        return Ok(None);
+    }
+    let text = rich.text.as_str();
+    let partition = runs.first().is_some_and(|r| r.range.start == 0)
+        && runs.last().is_some_and(|r| r.range.end == text.len())
+        && runs.windows(2).all(|w| w[0].range.end == w[1].range.start)
+        && runs.iter().all(|r| {
+            r.range.start < r.range.end
+                && text.is_char_boundary(r.range.start)
+                && text.is_char_boundary(r.range.end)
+        });
+    if !partition {
+        return Err(ReportError::unsupported(format!(
+            "Report object {}'s character runs do not cover its text in order",
+            object.id
+        )));
+    }
+    if !matches!(object.kind(), ObjectKind::Text | ObjectKind::Button) {
+        return Err(ReportError::unsupported(
+            "Mixed character styles are unsupported",
+        ));
+    }
+    if !conditions.is_empty()
+        && (crate::document::conditional_text_style(layout, object, conditions, 1).color).is_some()
+    {
+        return Ok(None);
+    }
+    if value != text || matches!(style.text_transform, Some(3 | 4)) {
+        return Err(ReportError::unsupported(format!(
+            "Report object {}'s text is in several colors and is merged, calculated or \
+             transformed; only its text as written can print in them",
+            object.id
+        )));
+    }
+    let black = Color {
+        alpha: 1.0,
+        ..Default::default()
+    };
+    let base = (crate::document::text_style(layout, object, conditions, 1).color).unwrap_or(black);
+    let mut colors = Vec::with_capacity(value.len());
+    for run in runs {
+        let color = run.style.color.unwrap_or(base);
+        let chars = text[run.range.clone()].chars();
+        colors.extend(chars.filter(|ch| !matches!(ch, '\r' | '\n')).map(|_| color));
+    }
+    Ok(Some(colors))
+}
+
+/// [`prepare_text_in`] for `object`'s text `value`, in the colors of its
+/// character runs ([`run_colors`]).
+fn prepare_object_text(
+    layout: &Layout,
+    object: &LayoutObject,
+    value: &str,
+    r: &Rect,
+    style: &ResolvedStyle,
+    overflow: Overflow,
+    conditions: &[usize],
+) -> Result<(Vec<TextLine>, f64, bool), ReportError> {
+    let colors = run_colors(layout, object, value, style, conditions)?;
+    prepare_colored_text_in(value, r, style, overflow, colors.as_deref())
 }
 
 /// The style text is laid out in: [`text_style`], with the text
@@ -664,6 +800,20 @@ fn prepare_text_in(
     r: &Rect,
     style: &ResolvedStyle,
     overflow: Overflow,
+) -> Result<(Vec<TextLine>, f64, bool), ReportError> {
+    prepare_colored_text_in(value, r, style, overflow, None)
+}
+
+/// [`prepare_text_in`], with each character in its own color when
+/// `colors` gives them (one each, CR and LF excepted, [`run_colors`]): a
+/// line prints as one [`TextLine`] for each run of one color, from where
+/// that run starts.
+fn prepare_colored_text_in(
+    value: &str,
+    r: &Rect,
+    style: &ResolvedStyle,
+    overflow: Overflow,
+    colors: Option<&[Color]>,
 ) -> Result<(Vec<TextLine>, f64, bool), ReportError> {
     if value.is_empty() {
         return Ok((Vec::new(), 0.0, false));
@@ -800,10 +950,12 @@ fn prepare_text_in(
         alpha: 1.0,
         ..Default::default()
     });
-    if paint(color)?.is_none() {
+    if colors.is_none() && paint(color)?.is_none() {
         return Ok((Vec::new(), needed, overflowed));
     }
     let mut output = Vec::new();
+    // The colors of the characters laid out so far, line by line.
+    let mut colored = 0;
     for (i, (glyphs, used)) in lines.into_iter().enumerate() {
         // A line that starts below the box shows nothing of itself.
         let top = r.top + pad[0] + i as f64 * pitch;
@@ -833,7 +985,7 @@ fn prepare_text_in(
             }
             pen += advance;
         }
-        output.push(TextLine {
+        let line = TextLine {
             glyphs,
             x: r.left + pad[3] + dx,
             baseline: r.top + pad[0] + dy + first_baseline + i as f64 * pitch,
@@ -847,6 +999,7 @@ fn prepare_text_in(
             // (a label's frame less its 1-point inset, layout-model.md 6.5),
             // and only there: a line that fits keeps the frame's height, so
             // an accent above the box is not cut for a bearing at its side.
+            spans: Vec::new(),
             clip: (cut || spills).then(|| Rect {
                 top: if cut { r.top + pad[0] } else { r.top },
                 bottom: if cut {
@@ -858,7 +1011,22 @@ fn prepare_text_in(
                 right: if spills { right } else { r.right },
                 ..r.clone()
             }),
-        });
+        };
+        let mut line = line;
+        if let Some(colors) = colors {
+            let count = line.glyphs.len();
+            let line_colors = colors.get(colored..colored + count).ok_or_else(|| {
+                ReportError::unsupported("Report text colors do not match its characters")
+            })?;
+            colored += count;
+            for (k, color) in line_colors.iter().enumerate() {
+                paint(*color)?;
+                if line.spans.last().is_none_or(|(_, last)| last != color) {
+                    line.spans.push((k, *color));
+                }
+            }
+        }
+        output.push(line);
     }
     Ok((output, needed, overflowed))
 }
@@ -930,11 +1098,36 @@ pub(crate) struct TextLine {
     pub size: f64,
     pub face: ReportFace,
     pub color: Color,
+    /// Where the line's color changes, by glyph, when its characters are in
+    /// more than one ([`run_colors`]): from each glyph on, that color.
+    /// Empty for a line in `color`.
+    pub spans: Vec<(usize, Color)>,
     /// The box overflowing text is cut at ([`Overflow::Clip`]): its field's
     /// text box, between the padding and margins above and below, across
     /// the field's width; `None` when the text fits.
     pub clip: Option<Rect>,
 }
+impl TextLine {
+    /// The line's parts of one color: its glyphs, their color, and where the
+    /// first starts.
+    pub(crate) fn parts(&self) -> impl Iterator<Item = (&[(u16, f64, char)], Color, f64)> + '_ {
+        // Without spans, the whole line in `color`.
+        let span = |i: usize| self.spans.get(i).copied().unwrap_or((0, self.color));
+        let mut x = self.x;
+        (0..self.spans.len().max(1)).map(move |i| {
+            let (start, color) = span(i);
+            let end = self
+                .spans
+                .get(i + 1)
+                .map_or(self.glyphs.len(), |next| next.0);
+            let glyphs = self.glyphs.get(start..end).unwrap_or(&[]);
+            let at = x;
+            x += glyphs.iter().map(|g| g.1).sum::<f64>();
+            (glyphs, color, at)
+        })
+    }
+}
+
 #[derive(Clone, Debug)]
 pub(crate) struct ReportObject {
     pub kind: ObjectKind,
@@ -3238,11 +3431,14 @@ fn layout_part(
                     _ => bounds.clone(),
                 };
                 (
-                    prepare_text_in(
+                    prepare_object_text(
+                        layout,
+                        object,
                         &value,
                         &label,
                         &style,
                         overflow_of(object, part.slides[i].is_some()),
+                        &conditions,
                     )?
                     .0,
                     conditions,
@@ -3443,11 +3639,14 @@ fn portal_rows(
                         _ => bounds.clone(),
                     };
                     (
-                        prepare_text_in(
+                        prepare_object_text(
+                            layout,
+                            object,
                             &value,
                             &label,
                             &style,
                             overflow_of(object, part.slides[j].is_some()),
+                            &conditions,
                         )?
                         .0,
                         conditions,
@@ -4114,25 +4313,29 @@ fn encode_page(
                             pdf_rect(&mut c, clip, h);
                             c.clip_nonzero().end_path();
                         }
-                        let Some(opened) = fill(&mut c, Some(line.color), alphas)? else {
-                            if line.clip.is_some() {
-                                c.restore_state();
-                            }
-                            continue;
-                        };
-                        c.begin_text()
-                            .set_font(Name(line.face.names().0), line.size as f32)
-                            .set_text_matrix([
-                                1.0,
-                                0.0,
-                                0.0,
-                                1.0,
-                                line.x as f32,
-                                (h - line.baseline) as f32,
-                            ])
-                            .show(Str(&bytes))
-                            .end_text();
-                        close(&mut c, opened);
+                        // Each part of one color from where it starts; a
+                        // transparent one draws nothing.
+                        let mut first = 0;
+                        for (glyphs, color, x) in line.parts() {
+                            let bytes = &bytes[first * 2..(first + glyphs.len()) * 2];
+                            first += glyphs.len();
+                            let Some(opened) = fill(&mut c, Some(color), alphas)? else {
+                                continue;
+                            };
+                            c.begin_text()
+                                .set_font(Name(line.face.names().0), line.size as f32)
+                                .set_text_matrix([
+                                    1.0,
+                                    0.0,
+                                    0.0,
+                                    1.0,
+                                    x as f32,
+                                    (h - line.baseline) as f32,
+                                ])
+                                .show(Str(bytes))
+                                .end_text();
+                            close(&mut c, opened);
+                        }
                         if line.clip.is_some() {
                             c.restore_state();
                         }
