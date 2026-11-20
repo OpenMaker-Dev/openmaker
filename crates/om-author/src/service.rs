@@ -355,6 +355,7 @@ fn choice_error(error: ChoiceError) -> AuthorError {
         | ChoiceError::ListUnsupported(_)
         | ChoiceError::Pending
         | ChoiceError::TooLarge
+        | ChoiceError::OtherValues
         | ChoiceError::NoCommand(_)
         | ChoiceError::Refused(_) => ErrorKind::Unsupported,
     };

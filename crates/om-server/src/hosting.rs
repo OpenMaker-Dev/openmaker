@@ -1852,8 +1852,12 @@ mod tests {
     fn a_fifo_among_the_files_does_not_hold_startup() {
         let file = fixture::TempFile::new("hosting-fifo", &[], true);
         let fifo = file.0.with_extension("pipe.fmp12");
-        let status = std::process::Command::new("mkfifo").arg(&fifo).status();
-        assert!(status.is_ok_and(|s| s.success()), "mkfifo");
+        // Keep the fixture in-process so it cannot inherit another test's lock.
+        nix::unistd::mkfifo(
+            &fifo,
+            nix::sys::stat::Mode::S_IRUSR | nix::sys::stat::Mode::S_IWUSR,
+        )
+        .unwrap();
         let files = [
             HostedFile {
                 name: "Pipe.fmp12".into(),
