@@ -71,6 +71,16 @@ empty in every mode it was measured in.
   4.3), so alternate row fills do not print. The two starter bodies read in
   FileMaker, Task Details and Task List, have the option off. Fonts are
   covered in [report fonts](#report-fonts).
+- Calculations the report evaluates when a script prints it, with Save Records
+  as PDF or Print (unstored calculation fields and
+  conditional formats), read the running script's `$` variables and its
+  file's `$$` variables as the script set them before the step
+  ([#596](https://github.com/OpenMaker-Dev/openmaker/issues/596)). The script
+  runtime lends them to the desktop's script worker for the step
+  (`ScriptHost::other_step_with`) and takes them back after it, with any the
+  report's calculations set. Claris says a variable on a layout shows its value
+  "when you print the layout"; which `$` variables FileMaker Pro's report sees
+  is unmeasured [I: the running script's, as its own steps see them].
 - Output paths use the transfer steps' platform path lists, variable expansion,
   relative Documents paths and Create folders convention. With dialog On (or no
   output path), a desktop modal offers the file as a save panel does (Save As

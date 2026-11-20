@@ -51,8 +51,8 @@ pub use host::{
     InsertFile, InsertKind, InsertTarget, LayoutTarget, Mode, Navigation, Network, NewWindow,
     OnTimer, PauseEnd, Platform, RecordList, RecordMove, Records, RelatedRecords, Replacement,
     ScriptAccess, ScriptHost, ServerCallbackCall, ServerScriptCall, ServerScriptResult, StepArg,
-    StepCall, TransactionOptions, TransferCall, UrlRequest, UrlResponse, Visibility, WindowId,
-    WindowOptions, WindowStyle, WindowTarget, Windows,
+    StepCall, StepVariables, TransactionOptions, TransferCall, UrlRequest, UrlResponse, Visibility,
+    WindowId, WindowOptions, WindowStyle, WindowTarget, Windows,
 };
 pub use memory::{MemoryLayout, MemoryScriptHost, MemoryWindow, SessionFunction};
 pub use om_hbam::OwnedNode;

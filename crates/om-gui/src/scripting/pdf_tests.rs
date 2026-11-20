@@ -4069,6 +4069,43 @@ fn container_fields_print_pictures_by_graphic_format_and_files_by_name() {
     assert_eq!(at(image.left + 5.0, clip.top + 2.0), [255, 255, 255, 255]);
 }
 
+/// A report's calculations read the running script's variables (#596): a
+/// `$$` variable of its file and a `$` variable of the script, as the
+/// script set them before Save Records as PDF, on every record; the
+/// script's variables are its own again after the step.
+#[test]
+fn report_calculations_read_the_running_scripts_variables() {
+    let temporary = tempfile::tempdir().unwrap();
+    let path = temporary.path().join("signed.pdf");
+    let mut c = client(vec![
+        var("$$signer", "\"Ada\""),
+        var("$who", "\"Lovelace\""),
+        pdf(&crate::scripting::files::file_line(&path), false),
+        exit("Get ( LastError ) & \"|\" & $$signer & \"|\" & $who"),
+    ]);
+    let mut document = document();
+    let objects = &mut document.layout.objects;
+    objects
+        .objects
+        .push(field(11, 7, rect(360.0, 86.0, 170.0, 24.0)));
+    objects.root.push(11);
+    {
+        let mut server = c.server.lock().unwrap();
+        server.report_variables = true;
+        server.refresh_render = Some(document);
+    }
+    c.run_in(WindowState {
+        layout: Some(1),
+        record: Some(9),
+        index: 2,
+        ..Default::default()
+    });
+    assert_eq!(c.result(), "0|Ada|Lovelace", "{:?}", c.session.s.failure);
+    let pdf = String::from_utf8_lossy(&std::fs::read(&path).unwrap()).into_owned();
+    // One each record, over the three pages.
+    assert_eq!(text_origins(&pdf, 3, "Ada / Lovelace").len(), 9);
+}
+
 /// `{{PageNumber}}` prints each page's number, in a static label and in a
 /// merge text's literal (any case), as FileMaker Pro 26.0.3's Save Records
 /// as PDF wrote it on page *n* (calc-functions.md, O4), without touching

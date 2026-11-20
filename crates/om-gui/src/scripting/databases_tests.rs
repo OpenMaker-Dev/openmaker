@@ -29,6 +29,8 @@ struct Server {
     /// Street (11), Suite (12, empty for even ids) and Notes (13, `id % 4`
     /// lines) of each report row, for sliding address blocks.
     report_slides: bool,
+    /// Signed (7), an unstored calculation of a `$$` and a `$` variable.
+    report_variables: bool,
     scripts: BTreeMap<String, Vec<Script>>,
     rows: BTreeMap<String, String>,
     events: Vec<String>,
@@ -167,6 +169,20 @@ impl Provider {
         }
         if self.server.lock().unwrap().report_grands {
             pdf_tests::add_grand_fields(&mut schema);
+        }
+        if self.server.lock().unwrap().report_variables {
+            let mut cx = om_data::formula::Context::new(schema.names());
+            cx.occurrence = Some(5);
+            let compiled = om_data::formula::compile("$$signer & \" / \" & $who", &cx).unwrap();
+            let formula = om_data::formula::Formula {
+                context: None,
+                formatted: Some(compiled.tokens),
+                polish: compiled.expr,
+            };
+            schema.add_field(
+                5,
+                FieldDef::calculation(7, "Signed", ValueType::Text, formula, false),
+            );
         }
         if self.server.lock().unwrap().report_groups {
             schema.add_field(5, FieldDef::data(10, "Region", ValueType::Text));

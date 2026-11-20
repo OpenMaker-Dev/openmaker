@@ -209,6 +209,10 @@ pub(crate) struct WorkerHost<'a> {
     /// The UUID of the layout object whose calculation a report evaluates
     /// (`LayoutObjectUUID`, calc-functions.md 6.3 O5).
     pub(super) report_object: Option<String>,
+    /// The running script's `$` and `$$` variables while this host performs
+    /// a step itself ([`ScriptHost::other_step_with`]): the calculations of
+    /// the report it prints read them (#596).
+    lent: Option<(Variables, Variables)>,
 }
 
 impl<'a> WorkerHost<'a> {
@@ -232,6 +236,7 @@ impl<'a> WorkerHost<'a> {
             report_record: None,
             report_session: None,
             report_object: None,
+            lent: None,
         }
     }
 
@@ -3685,8 +3690,12 @@ impl CalcHost for WorkerHost<'_> {
         })
     }
 
-    fn variables(&mut self, _scope: VarScope) -> &mut Variables {
-        &mut self.s.file.variables
+    fn variables(&mut self, scope: VarScope) -> &mut Variables {
+        match (&mut self.lent, scope) {
+            (Some((locals, _)), VarScope::Local) => locals,
+            (Some((_, globals)), VarScope::Global) => globals,
+            (None, _) => &mut self.s.file.variables,
+        }
     }
 
     fn call(
@@ -3799,6 +3808,24 @@ impl ScriptHost for WorkerHost<'_> {
             }
             _ => Err(HostError::Unsupported),
         }
+    }
+
+    /// The step's calculations read and set the script's variables, as a
+    /// step's own do: they are moved here for the step and back after it.
+    fn other_step_with(
+        &mut self,
+        call: &StepCall<'_>,
+        variables: om_data::runtime::StepVariables<'_>,
+    ) -> HostResult<Option<Value>> {
+        let lent = (
+            std::mem::take(variables.locals),
+            std::mem::take(variables.globals),
+        );
+        let outer = self.lent.replace(lent);
+        let result = self.other_step(call);
+        let (locals, globals) = std::mem::replace(&mut self.lent, outer).unwrap_or_default();
+        (*variables.locals, *variables.globals) = (locals, globals);
+        result
     }
     fn active_script_files(&mut self, files: &[FileId]) {
         self.s.active_files.clear();
