@@ -641,6 +641,44 @@ fn server_scripts_apply_the_files_record_rules() {
     client.disconnect().unwrap();
 }
 
+/// A server script's Set Field into a field that must be a member of a
+/// value list of a field's values, that field indexed in a language
+/// OpenMaker does not key (German, 25, #299): refused with 3, with the
+/// index or without, rather than keyed in English, which would accept
+/// "Ship" here (#571).
+#[test]
+fn a_value_list_of_a_field_in_an_unkeyed_language_refuses_the_check() {
+    use fixture::{exit_with, go_to_record, on, script, set_field, set_variable};
+    for indexed in [false, true] {
+        let mut tree = fixture::tree(
+            &[script(
+                4,
+                "Code from names",
+                vec![
+                    on(86, true),
+                    go_to_record(1),
+                    set_field(CODE, "\"Ship\""),
+                    set_variable("$error", "Get ( LastError )"),
+                    ScriptStep::new(75),
+                    exit_with("$error"),
+                ],
+            )],
+            true,
+        );
+        if indexed {
+            fixture::set_field_options(&mut tree, TABLE, NAME, 0x8000_0000);
+        }
+        fixture::set_field_language(&mut tree, TABLE, NAME, 25);
+        fixture::code_in_names_list(&mut tree);
+        let file = TempFile::from_tree("list-language", &tree);
+        let port = start(&file, None);
+        let mut client = logged_in(port, "list-language");
+        assert_eq!(run(&mut client, 4), (0, "3".into()), "indexed={indexed}");
+        assert_eq!(cell(&records(&mut client), 1, CODE), None);
+        client.disconnect().unwrap();
+    }
+}
+
 #[test]
 fn scripts_run_with_the_requesting_accounts_privileges() {
     use fixture::{exit_with, full_access, go_to_record, on, perform_script, script, set_field};

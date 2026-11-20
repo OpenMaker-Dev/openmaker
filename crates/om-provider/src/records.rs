@@ -255,16 +255,32 @@ pub(super) fn checked_keys(
 }
 
 /// How the value index of `table`'s `field`, the source of a value list,
-/// keys a value looked up in it: its value form where OpenMaker builds it
-/// ([`om_data::rules::value_text_keys`], language 0 the file's own), else
-/// English, as before (#159).
-fn list_keys(catalog: &Catalog, table: u64, field: u64, file_language: u32) -> TextKeys {
+/// keys a value looked up in it: its value form
+/// ([`om_data::rules::value_text_keys`], language 0 the file's own). A
+/// language OpenMaker does not key (the tailored ones, #299) refuses the
+/// check (3), as a unique or existing-value check does, rather than keying
+/// the value in English, which can both miss the host's key and match
+/// another value (#571).
+fn list_keys(
+    catalog: &Catalog,
+    table: u64,
+    field: u64,
+    file_language: u32,
+) -> Result<TextKeys, DataError> {
     catalog
         .table(table)
         .and_then(|t| t.field(field))
         .and_then(|f| f.decoded_options())
         .and_then(|o| om_data::rules::value_text_keys(o.index_language(), file_language))
-        .unwrap_or(TextKeys::Collated)
+        .ok_or_else(|| {
+            DataError::with_code(
+                om_data::found::code::UNSUPPORTED,
+                format!(
+                    "Field {field}, the source of a value list, has no index OpenMaker can check \
+                     a value in."
+                ),
+            )
+        })
 }
 
 /// ExistsInIndex's answer, `[3, 3, 00]` = `01 01` (another record holds the
@@ -974,7 +990,7 @@ impl NativeProvider {
                     .map(|t| t.id)
                     .ok_or_else(|| DataError::new("A value list names a missing table."))?;
                 let file_language = self.file_language()?;
-                let keys = list_keys(&self.catalog, source_table, source, file_language);
+                let keys = list_keys(&self.catalog, source_table, source, file_language)?;
                 if !self.in_index(source_table, source, &text, 0, keys)? {
                     return Err(plan.refusal(field, error::NOT_IN_LIST));
                 }
@@ -1726,7 +1742,7 @@ impl NativeProvider {
                 .map(|t| t.id)
                 .ok_or_else(|| DataError::new("A value list names a missing table."))?;
             let file_language = self.file_language()?;
-            let keys = list_keys(&self.catalog, source_table, source, file_language);
+            let keys = list_keys(&self.catalog, source_table, source, file_language)?;
             if !self.in_index(source_table, source, text, 0, keys)? {
                 let field = if self
                     .catalog

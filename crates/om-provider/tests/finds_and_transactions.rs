@@ -2676,23 +2676,7 @@ fn existing_values_and_value_lists_of_a_field_are_checked_on_the_host() {
     let mut root = fixture::tree(&[], true);
     fixture::set_field_options(&mut root, TABLE, NAME, 0x8000_0000);
     fixture::set_field_validation(&mut root, TABLE, NAME, 0x420);
-    fixture::set_field_validation(&mut root, TABLE, CODE, 0x500);
-    let (t, code) = (uint_segment(TABLE), uint_segment(CODE));
-    let reference = vec![2, 1, 5, 0x90, 0, 0, 2, 1, 0, 0, 0, 0, 0xff];
-    root.put(
-        &[&t, &[3], &[5], &code, &[0x07]],
-        OwnedNode::leaf(Vec::new(), reference),
-    );
-    root.put(&[&[0x21], &[5], &[5], &[0x10]], text_node(&[], "Names"));
-    // Kind 1: Tasks::Name (occurrence d0 00 01, field 1), no second field.
-    let mut list = vec![
-        1, 0, 0, 4, 3, 0xd0, 0, 1, 2, 1, 1, 0, 1, 0, 0, 0, 0, 0, 0, 0,
-    ];
-    list.extend(om_scsu::encode_counted(" "));
-    root.put(
-        &[&[0x21], &[5], &[5], &[2]],
-        OwnedNode::leaf(Vec::new(), list),
-    );
+    fixture::code_in_names_list(&mut root);
     let file = TempFile::from_tree("lookups", &root);
     let (port, ca_pem) = host(&file.0);
     let mut a = open(port, &ca_pem);
@@ -2720,6 +2704,46 @@ fn existing_values_and_value_lists_of_a_field_are_checked_on_the_host() {
     assert_eq!(text(&page, 1, "Name"), Some("ship"));
     assert_eq!(text(&page, 2, "Code"), Some("SHIP"));
     a.close();
+}
+
+/// A value list of a field's values whose field is indexed in a language
+/// OpenMaker does not key (German, 25, #299) refuses the check (3) before
+/// looking the value up, rather than keying it in English, which can both
+/// miss the index's key and match another value (#571).
+#[test]
+fn a_value_list_of_a_field_in_an_unkeyed_language_is_not_checked_in_english() {
+    for late in [false, true] {
+        let mut root = fixture::tree(&[], true);
+        fixture::set_field_options(&mut root, TABLE, NAME, 0x8000_0000);
+        fixture::set_field_language(&mut root, TABLE, NAME, 25);
+        fixture::code_in_names_list(&mut root);
+        let file = TempFile::from_tree("list-language", &root);
+        let (port, ca_pem) = host_with(&file.0, None, |server| {
+            if late {
+                server.with_late_index_builds()
+            } else {
+                server
+            }
+        });
+        let mut a = open(port, &ca_pem);
+        let tasks = layout(&mut a, "Tasks");
+        let before = all_records(&mut a, tasks);
+        // Record 2's Name is "Ship": English keys would accept it.
+        let refused = a
+            .update_record(tasks, 1, values(&[("Code", "Ship")]))
+            .unwrap_err();
+        assert_eq!(refused.code, Some(3), "late={late}: {refused:?}");
+        // Refused by the value list's source language before any lookup:
+        // against OpenMaker Server, which builds no German index, the
+        // lookup itself would also fail (its scan), but a host with the
+        // index answers English keys wrongly.
+        assert!(
+            refused.message.contains("source of a value list"),
+            "late={late}: {refused:?}"
+        );
+        assert_eq!(all_records(&mut a, tasks), before);
+        a.close();
+    }
 }
 
 /// A field-backed list on Code, with no related-value filter or second

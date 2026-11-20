@@ -608,6 +608,29 @@ pub fn set_field_validation(root: &mut OwnedNode, table: u64, field: u64, valida
     change_definition(root, table, field, 12, validation);
 }
 
+/// Tasks::Code must be a member of value list 5, "Names", the values of
+/// Tasks::Name with no second field, validated always (script-runtime.md
+/// 13.21), in a tree [`tree`] built.
+pub fn code_in_names_list(root: &mut OwnedNode) {
+    set_field_validation(root, TABLE, CODE, 0x500);
+    let (t, code) = (uint_segment(TABLE), uint_segment(CODE));
+    let reference = vec![2, 1, 5, 0x90, 0, 0, 2, 1, 0, 0, 0, 0, 0xff];
+    root.put(
+        &[&t, &[3], &[5], &code, &[0x07]],
+        OwnedNode::leaf(Vec::new(), reference),
+    );
+    root.put(&[&[0x21], &[5], &[5], &[0x10]], text_node(&[], "Names"));
+    // Kind 1: Tasks::Name (occurrence d0 00 01, field 1), no second field.
+    let mut list = vec![
+        1, 0, 0, 4, 3, 0xd0, 0, 1, 2, 1, 1, 0, 1, 0, 0, 0, 0, 0, 0, 0,
+    ];
+    list.extend(om_scsu::encode_counted(" "));
+    root.put(
+        &[&[0x21], &[5], &[5], &[2]],
+        OwnedNode::leaf(Vec::new(), list),
+    );
+}
+
 /// Change a field's serial number increment (`mSerialIncrement`) in a
 /// tree [`tree`] built.
 pub fn set_field_serial_increment(root: &mut OwnedNode, table: u64, field: u64, by: u32) {

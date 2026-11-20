@@ -625,7 +625,9 @@ Open items:
   - Unique and existing-value rules need a text field with a value index
     in English, System, Unicode standard, Unicode raw, the file's own
     language (0) when it is one of those, or a language FileMaker leaves
-    untailored (record-writes.md); value-list rules one in English.
+    untailored (record-writes.md); value-list rules a source field
+    keyed in one of those forms, one in a tailored language refusing
+    the check with 3 ([#571](https://github.com/OpenMaker-Dev/openmaker/issues/571)).
     Lists from another file, a calculation, related values or a second
     field still make the table read-only.
   - OpenMaker's own choices, not settled by the oracle: numeric forms

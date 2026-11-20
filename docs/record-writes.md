@@ -1372,6 +1372,11 @@ bytes as the index holds it (7.1), so a long value is checked against the
 values that share its first 109 weights, or code units in Unicode raw ([#177](https://github.com/OpenMaker-Dev/openmaker/issues/177)).
 Raw keys keep case, so `A` and `a` are two values there; FileMaker documents
 its Unicode index as case-sensitive, which was not measured.
+A value list of a field's values is checked in its source field's value
+index the same way: a source field in a tailored language refuses the
+check with 3, on the client and on OpenMaker Server, rather than keying
+the value in English, which could both miss the host's key and match
+another value ([#571](https://github.com/OpenMaker-Dev/openmaker/issues/571)).
 A definition marked indexed does not prove that the host has built the
 index (schema-path.md 6). Unique, Existing and
 field-backed value-list validation therefore read the value-index counts
