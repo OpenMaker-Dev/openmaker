@@ -3732,10 +3732,13 @@ Steps
   evaluated on each record made current, serial numbers counting up the
   last run of digits of the initial value
   (`om_scripts::runtime::Replacement::serial_text`); each record is
-  committed; no triggers fire. OpenMaker Server runs it the same way. The
-  runtime refuses (3) Entry Options' serials, updating the next serial
-  value and Skip auto-enter options before any record changes, as no host
-  carries them out.
+  committed; no triggers fire. The desktop commits a record with
+  uncommitted changes first; OpenMaker Server refuses the step (3) then,
+  keeping them, since FileMaker does not commit the active record (Claris,
+  "Committing data in records"). Otherwise the server runs it the same
+  way. The runtime refuses (3) Entry Options' serials, updating the next
+  serial value and Skip auto-enter options before any record changes, as
+  no host carries them out.
 - Windows (2026-10-29, run 13.25; `app/windows.rs`,
   `scripting/host/windows.rs`): real windows. Each window keeps its own
   layout, found set, mode, view, current record and unsaved values, Find

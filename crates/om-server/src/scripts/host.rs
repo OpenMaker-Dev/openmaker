@@ -3616,11 +3616,14 @@ impl FieldSteps for ServerHost {
     /// Refused before any record changes: no field and no focus (102); a
     /// container, global or related field, Find mode, or a serial run past
     /// what its digits hold (3); a calculation or summary field (201).
-    /// As Claris documents ("Replace Field Contents ... do not commit the
-    /// active record"), a record open when the step starts keeps its draft
-    /// and takes its replacement there, uncommitted; Revert Record still
-    /// undoes it. The dialog option is not shown on the server (Claris: as
-    /// if With dialog were off).
+    /// FileMaker does not commit the active record ("Replace Field Contents
+    /// ... do not commit the active record"), which the server, holding one
+    /// open record, cannot do while it commits the others: a record with
+    /// uncommitted changes when the step starts is refused (3), its draft
+    /// kept for Commit or Revert Record
+    /// ([#513](https://github.com/OpenMaker-Dev/openmaker/issues/513)). The
+    /// dialog option is not shown on the server (Claris: as if With dialog
+    /// were off).
     fn replace_field_contents(
         &mut self,
         field: Option<FieldRef>,
@@ -3654,32 +3657,31 @@ impl FieldSteps for ServerHost {
                 return Err(HostError::Unsupported);
             }
         }
+        if self
+            .record
+            .as_ref()
+            .is_some_and(|r| r.new || !r.changed.is_empty())
+        {
+            return Err(HostError::Unsupported);
+        }
         self.require_edit()?;
+        self.leave()?;
         let current = match with {
             Replacement::CurrentContents => Some(self.value_of(field)?),
             _ => None,
         };
-        // The step does not commit the active record (Claris, "Committing
-        // data in records"): a record open when it starts is set aside with
-        // its draft and lock, takes its replacement in that draft when its
-        // turn comes, and is open again, uncommitted, afterwards.
-        let mut active = self.record.take();
         let original = self.window()?.current;
         let mut result = Ok(());
         for index in 0..count {
-            result = self.replace_one(field, with, current.as_ref(), index, &mut active);
+            result = self.replace_one(field, with, current.as_ref(), index);
             if result.is_err() {
                 // The failed record's draft and lock go; a record the
-                // transaction changed before is again what it holds. The
-                // active record keeps its draft.
+                // transaction changed before is again what it holds.
                 if self.record.is_some() {
                     let _ = self.revert_record(false);
                 }
                 break;
             }
-        }
-        if active.is_some() {
-            self.record = active;
         }
         if let Some(window) = self.window.as_mut() {
             window.current = original.min(window.found.len().saturating_sub(1));
@@ -3691,34 +3693,18 @@ impl FieldSteps for ServerHost {
 impl ServerHost {
     /// Replace Field Contents on the `index`th record of the found set:
     /// open it, compute its value, set and commit it, stopping at an abort.
-    /// The `active` record (open when the step began) takes its value in its
-    /// draft and is set aside again, uncommitted, whether it succeeds or not.
     fn replace_one(
         &mut self,
         field: FieldRef,
         with: &mut Replacement<'_>,
         current: Option<&Value>,
         index: usize,
-        active: &mut Option<OpenRecord>,
     ) -> HostResult {
         if self.aborted() {
             return Err(ErrorCode::CANCELED.into());
         }
-        let window = self.window_mut()?;
-        window.current = index;
-        let (table, id) = (window.table, window.record());
-        let is_active = active
-            .as_ref()
-            .is_some_and(|r| r.table == table && Some(r.id) == id);
-        if is_active {
-            self.record = active.take();
-        }
-        let result = self.replace_open(field, with, current, index);
-        if is_active {
-            *active = self.record.take();
-            return result;
-        }
-        result?;
+        self.window_mut()?.current = index;
+        self.replace_open(field, with, current, index)?;
         self.leave()
     }
 
