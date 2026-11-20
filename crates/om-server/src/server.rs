@@ -115,6 +115,9 @@ pub struct Server {
     admissions: Arc<Admissions>,
     /// The stack size of connection threads, if not the default.
     stack_size: Option<usize>,
+    /// The database folders the server found its files in at startup
+    /// ([`Server::with_database_folders`]).
+    database_folders: Arc<Vec<PathBuf>>,
 }
 
 impl Server {
@@ -208,6 +211,7 @@ impl Server {
             limits: ConnectionLimits::DEFAULT,
             admissions: Default::default(),
             stack_size: None,
+            database_folders: Arc::default(),
         })
     }
 
@@ -565,6 +569,15 @@ impl Server {
         Ok(self)
     }
 
+    /// The database folders the server's files were looked for in at
+    /// startup (`om_server::database_folders::discover`), which the Admin
+    /// Console lists whether or not a hosted file lies in them, as
+    /// FileMaker Server lists its default and additional database folders.
+    pub fn with_database_folders(mut self, folders: Vec<PathBuf>) -> Self {
+        self.database_folders = Arc::new(folders);
+        self
+    }
+
     /// A handle for administering the running server: its clients, its
     /// scripts, its schedules and its shutdown.
     pub fn handle(&self) -> io::Result<ServerHandle> {
@@ -572,6 +585,7 @@ impl Server {
             shared: self.shared.clone(),
             schedules: self.schedules.clone(),
             addr: self.local_addr()?,
+            database_folders: self.database_folders.clone(),
         })
     }
 
@@ -794,6 +808,7 @@ pub struct ServerHandle {
     pub(crate) shared: Arc<Shared>,
     schedules: Arc<Scheduler>,
     pub(crate) addr: SocketAddr,
+    database_folders: Arc<Vec<PathBuf>>,
 }
 
 impl ServerHandle {
@@ -855,6 +870,12 @@ impl ServerHandle {
     /// run due at its time has started. Returns whether that happened.
     pub fn wait_for_schedules(&self, timeout: Duration) -> bool {
         self.schedules.wait_idle(timeout)
+    }
+
+    /// The database folders the server looked for files in at startup
+    /// ([`Server::with_database_folders`]).
+    pub fn database_folders(&self) -> Vec<PathBuf> {
+        self.database_folders.to_vec()
     }
 
     /// The default backup folder ([`Server::with_backup_folder`]).
