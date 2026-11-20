@@ -298,17 +298,6 @@ impl IndexKeys {
     }
 }
 
-/// The name of `keys`' type, as a refusal names it.
-fn type_name(keys: IndexKeys) -> &'static str {
-    match keys {
-        IndexKeys::Typed(om_hbam::DataType::Number, _) => "number",
-        IndexKeys::Typed(om_hbam::DataType::Date, _) => "date",
-        IndexKeys::Typed(om_hbam::DataType::Time, _) => "time",
-        IndexKeys::Typed(om_hbam::DataType::Timestamp, _) => "timestamp",
-        _ => "text",
-    }
-}
-
 /// How the value index of `table`'s `field`, the source of a value list,
 /// keys a value looked up in it. A text source keys it in its value form
 /// ([`om_data::rules::value_text_keys`], language 0 the file's own); one in
@@ -317,12 +306,15 @@ fn type_name(keys: IndexKeys) -> &'static str {
 /// as a unique or existing-value check does, rather than keying the value
 /// in English, which can both miss the host's key and match another value
 /// (#571). A number, date, time or timestamp source keys it as its type,
-/// whatever its language, dates in `order`, the file's (#591).
+/// whatever its language, dates in `order`, the file's (#591); a date or
+/// timestamp source refuses the check (3) when that order is not known
+/// (`None`: the file's locale record does not decode), rather than read
+/// day and month the wrong way round.
 fn list_keys(
     catalog: &Catalog,
     table: u64,
     field: u64,
-    (file_language, order): (Option<u32>, om_collate::DateOrder),
+    (file_language, order): (Option<u32>, Option<om_collate::DateOrder>),
 ) -> Result<IndexKeys, DataError> {
     use om_hbam::DataType;
     let field_def = catalog.table(table).and_then(|t| t.field(field));
@@ -332,7 +324,16 @@ fn list_keys(
             DataType::Number | DataType::Date | DataType::Time | DataType::Timestamp
         )
     }) {
-        return Ok(IndexKeys::Typed(def.data_type, order));
+        let dated = matches!(def.data_type, DataType::Date | DataType::Timestamp);
+        return match (order, dated) {
+            (Some(order), _) => Ok(IndexKeys::Typed(def.data_type, order)),
+            // Numbers and times read no date order.
+            (None, false) => Ok(IndexKeys::Typed(def.data_type, Default::default())),
+            (None, true) => Err(DataError::unsupported(format!(
+                "Field {field}, the source of a value list, holds dates in an order OpenMaker \
+                 does not know: the file's locale record cannot be read."
+            ))),
+        };
     }
     let keys = field_def
         .and_then(|f| f.decoded_options())
@@ -1052,7 +1053,7 @@ impl NativeProvider {
                     .map(|t| t.id)
                     .ok_or_else(|| DataError::new("A value list names a missing table."))?;
                 let file_language = self.file_language()?;
-                let order = schema.locale.date_order;
+                let order = (!schema.locale_unreadable).then_some(schema.locale.date_order);
                 let keys = list_keys(&self.catalog, source_table, source, (file_language, order))?;
                 if !self.in_index(source_table, source, &text, 0, keys)? {
                     return Err(plan.refusal(field, error::NOT_IN_LIST));
@@ -1108,17 +1109,25 @@ impl NativeProvider {
         ignore: u64,
         keys: IndexKeys,
     ) -> Result<bool, DataError> {
-        // The key as the index holds it (query-program.md 7.1-7.3).
-        let key = keys.key(text).ok_or_else(|| match keys {
-            IndexKeys::Text(_) => DataError::new("A validated field's index holds no keys."),
-            // A value the type does not read is not one OpenMaker can look
-            // up: refused (3) rather than taken as absent (#591).
-            IndexKeys::Typed(..) => DataError::unsupported(format!(
-                "Field {field} holds {} values, and \"{text}\" is not one OpenMaker can look up \
-                 in its index.",
-                type_name(keys)
-            )),
-        })?;
+        // The key as the index holds it (query-program.md 7.1-7.3). A value
+        // a typed source's type does not read as one OpenMaker keys (a
+        // decimal comma, digits among other characters, until #415) is
+        // looked up as text, as before #591.
+        let key = match (keys, keys.key(text)) {
+            (_, Some(key)) => key,
+            (IndexKeys::Typed(..), None) => {
+                return self.in_index(
+                    table,
+                    field,
+                    text,
+                    ignore,
+                    IndexKeys::Text(TextKeys::Collated),
+                )
+            }
+            (IndexKeys::Text(_), None) => {
+                return Err(DataError::new("A validated field's index holds no keys."))
+            }
+        };
         let session = self.session_mut()?;
         let file_id = session
             .opened_file()
@@ -1197,6 +1206,11 @@ impl NativeProvider {
             return Err(unsupported(
                 "only stored values keyed as the checked value is are supported.",
             ));
+        }
+        // Repetition n is the cell `F * 256 + n` only up to 255; a later one
+        // would be another field's cell (execute-sql.md).
+        if options.max_repetitions > 255 {
+            return Err(unsupported("repetitions past 255 are not read."));
         }
         let repetitions = usize::from(options.max_repetitions.max(1));
         let session = self.session_mut()?;
@@ -1813,7 +1827,7 @@ impl NativeProvider {
                 .map(|t| t.id)
                 .ok_or_else(|| DataError::new("A value list names a missing table."))?;
             let file_language = self.file_language()?;
-            let order = file.locale.date_order;
+            let order = (!file.locale_unreadable).then_some(file.locale.date_order);
             let keys = list_keys(&self.catalog, source_table, source, (file_language, order))?;
             if !self.in_index(source_table, source, text, 0, keys)? {
                 let field = if self

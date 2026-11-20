@@ -1392,10 +1392,12 @@ keying the value in English, which could both miss the host's key and
 match another value ([#571](https://github.com/OpenMaker-Dev/openmaker/issues/571)). A number, date, time or timestamp
 source keys the value as its type, whatever its language, as its index
 keys its values (query-program.md 7.3; dates in the file's order), so
-`5.0` is a list's `5`; a value that is not one of the type's values
-OpenMaker keys (`abc`, digits among other characters) refuses the check
-with 3, on both sides
-([#591](https://github.com/OpenMaker-Dev/openmaker/issues/591)). A new record's
+`5.0` is a list's `5`
+([#591](https://github.com/OpenMaker-Dev/openmaker/issues/591)). A value its type does not read as one OpenMaker keys
+(`abc`, a decimal comma, digits among other characters, until #415) is
+looked up as text, as before. A date or timestamp source in a file whose
+locale record cannot be read refuses the check with 3 on the desktop: its
+date order is not known. A new record's
 refusal before its commit (unique, existing value, value list) is the
 write's, with its code: the record id it reserved stays unused, as
 FileMaker's reserved ids can (write-path.md 2).
@@ -1435,7 +1437,8 @@ language 0 resolved as above. A field-backed value list is checked in its
 source's value form too; a text source in a tailored language refuses the
 check with 3, with the host's index or without (above, [#571](https://github.com/OpenMaker-Dev/openmaker/issues/571)). A stored
 number, date, time or timestamp source is scanned in its type's keys, dates
-in the file's order ([#591](https://github.com/OpenMaker-Dev/openmaker/issues/591)). Tailored-language, global,
+in the file's order ([#591](https://github.com/OpenMaker-Dev/openmaker/issues/591)); a field with more than 255 repetitions is not
+scanned, as a later repetition's cell would be another field's. Tailored-language, global,
 summary or unstored sources are explicitly unsupported without an index. A stored
 text source that prohibits index creation can be scanned on each
 check. Field-backed lists still require a local source without a related

@@ -679,13 +679,26 @@ impl NativeProvider {
                 // Swedish file's English keys), the value it left out for an
                 // equal one may be this one. A number list's `1e3` is not
                 // `1é3` (13), as the list compares them (#591).
+                // Both read in the locale of the file that owns the listed
+                // field, as its list was formed: a related German `1,500`
+                // is 1.5 there, not 1500.
                 let listed_type = schema
                     .field(primary, listed)
                     .map_or(ValueType::Text, |def| def.value_type);
-                let as_listed = |value: &str| om_data::host::stored_value(value, listed_type, &cx);
+                let listed_locale = schema
+                    .table_of(primary)
+                    .and_then(|source| schema.table_context(source.id))
+                    .map_or(&schema.locale, |file| &file.locale);
+                let listed_cx = Ctx::new(listed_locale, today);
+                let as_listed =
+                    |value: &str| om_data::host::stored_value(value, listed_type, &listed_cx);
                 let equal = |listed: &str| {
                     matches!(
-                        om_data::calc::ops::compare(&as_listed(listed), &as_listed(&text), &cx),
+                        om_data::calc::ops::compare(
+                            &as_listed(listed),
+                            &as_listed(&text),
+                            &listed_cx
+                        ),
                         om_data::calc::ops::Comparison::Ordered(std::cmp::Ordering::Equal)
                     )
                 };

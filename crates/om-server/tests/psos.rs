@@ -706,8 +706,10 @@ fn a_value_list_of_a_field_in_an_unkeyed_language_refuses_the_check() {
 /// A server script's Set Field into a field that must be a member of a
 /// value list of a number field's values (Tasks::Count; record 2 holds 5):
 /// the value is checked as a number, as the index keys numbers
-/// (query-program.md 7.3; #591): `5.0` is listed, `4` is not (506), and
-/// `abc`, no number OpenMaker keys, is refused (3).
+/// (query-program.md 7.3; #591): `5.0` is listed, `4` is not (506). A value
+/// no number OpenMaker keys is looked up as text, as before: `abc` is not
+/// listed (506), and in a German file a stored `379,5`, a decimal comma
+/// OpenMaker does not read as a number yet (#415), is listed as itself.
 #[test]
 fn a_value_list_of_a_number_field_checks_values_as_numbers() {
     use fixture::{exit_with, go_to_record, on, script, set_field};
@@ -724,7 +726,12 @@ fn a_value_list_of_a_number_field_checks_values_as_numbers() {
         )
     };
     let mut tree = fixture::tree(
-        &[attempt(4, "5.0"), attempt(5, "4"), attempt(6, "abc")],
+        &[
+            attempt(4, "5.0"),
+            attempt(5, "4"),
+            attempt(6, "abc"),
+            attempt(7, "379,5"),
+        ],
         true,
     );
     fixture::code_in_list_of(&mut tree, COUNT);
@@ -734,7 +741,32 @@ fn a_value_list_of_a_number_field_checks_values_as_numbers() {
     // The exit result is the Set Field's error.
     assert_eq!(run(&mut client, 4).1, "0");
     assert_eq!(run(&mut client, 5).1, "506");
-    assert_eq!(run(&mut client, 6).1, "3");
+    assert_eq!(run(&mut client, 6).1, "506");
+    client.disconnect().unwrap();
+    // A German file whose record 2 holds Count `379,5`.
+    let german = om_calc::Locale {
+        language: om_calc::Language::from_id(25),
+        decimal_separator: ',',
+        thousands_separator: '.',
+        ..om_calc::Locale::en_us()
+    };
+    tree.put(
+        &[&[2], &[0x0d]],
+        om_hbam::OwnedNode::leaf(Vec::new(), german.to_record()),
+    );
+    tree.put(
+        &[
+            &uint_segment(TABLE),
+            &[5],
+            &serial::encode(2),
+            &uint_segment(COUNT),
+        ],
+        om_scripts::text_node(&[], "379,5"),
+    );
+    let file = TempFile::from_tree("list-of-german-numbers", &tree);
+    let port = start(&file, None);
+    let mut client = logged_in(port, "list-of-german-numbers");
+    assert_eq!(run(&mut client, 7).1, "0");
     client.disconnect().unwrap();
 }
 

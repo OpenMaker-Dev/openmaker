@@ -2844,8 +2844,9 @@ fn a_value_list_of_a_field_in_an_unkeyed_language_is_not_checked_in_english() {
 /// A value list of a number field's values (Tasks::Count; record 2 holds
 /// 5) checks a value as a number, in the index's number keys
 /// (query-program.md 7.3), with the host's index and without (#591):
-/// `5.0` is listed, `4` is not (506), and `abc`, no number OpenMaker keys,
-/// is refused (3) rather than taken as absent.
+/// `5.0` is listed, `4` is not (506). `abc`, no number OpenMaker keys, is
+/// looked up as text, as before: not in the number index (506; by then
+/// the host built it, also when it builds indexes late).
 #[test]
 fn a_value_list_of_a_number_field_checks_values_as_numbers() {
     for late in [false, true] {
@@ -2869,7 +2870,7 @@ fn a_value_list_of_a_number_field_checks_values_as_numbers() {
         };
         assert_eq!(code(&mut a, "5.0"), Ok(()), "late={late}");
         assert_eq!(code(&mut a, "4"), Err(Some(506)), "late={late}");
-        assert_eq!(code(&mut a, "abc"), Err(Some(3)), "late={late}");
+        assert_eq!(code(&mut a, "abc"), Err(Some(506)), "late={late}");
         a.close();
     }
 }
@@ -3193,15 +3194,12 @@ fn missing_index_never_indexed_text_is_scanned_but_unknown_formats_are_explicit(
                 "type={data_type}, language={language}, {candidate:?}: {error}"
             );
             if code == 3 {
-                // Refused by the scan, before any lookup by a source
-                // language OpenMaker does not key (#571), or as a value of
-                // its type OpenMaker cannot key (#591: `a` is no number,
-                // date or time).
+                // Refused by the scan, or before any lookup by a source
+                // language OpenMaker does not key (#571).
                 let message = error.to_string();
                 assert!(
                     message.contains("without the host's value index")
-                        || message.contains("the source of a value list")
-                        || message.contains("is not one OpenMaker can look up"),
+                        || message.contains("the source of a value list"),
                     "{error}"
                 );
             }

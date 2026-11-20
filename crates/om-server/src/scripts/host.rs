@@ -1662,7 +1662,9 @@ impl ServerHost {
     /// another value (#571). A number, date, time or timestamp field keys
     /// `text` as its type, whatever its language (query-program.md 7.3,
     /// dates in the file's order), and its stored values the same (#591);
-    /// `None` when `text` is not one of the type's values OpenMaker keys.
+    /// a value its type does not read as one OpenMaker keys (a decimal
+    /// comma, digits among other characters, until #415) is looked up as
+    /// text, as before.
     fn field_holds(&self, occurrence: u64, field: u64, text: &str) -> Option<bool> {
         let Some((table, def)) = self.schema.field(occurrence, field) else {
             return Some(false);
@@ -1675,15 +1677,24 @@ impl ServerHost {
         let typed_keys = |value: &str| {
             om_query::keys::value_keys(def.data_type, value, order, TextKeys::Collated)
         };
-        let (key, text_keys) = if typed {
-            let key = typed_keys(text).into_iter().find(|key| {
-                key != om_query::keys::EMPTY_TEXT_KEY && key != om_query::keys::INVALID_KEY
-            })?;
-            (key, None)
-        } else {
-            let keys = FieldOptions::decode(&def.options)
-                .and_then(|o| rules::value_text_keys(o.index_language(), self.file_language()))?;
-            (keys.key(text).unwrap_or_default(), Some(keys))
+        let typed_key = typed
+            .then(|| {
+                typed_keys(text).into_iter().find(|key| {
+                    key != om_query::keys::EMPTY_TEXT_KEY && key != om_query::keys::INVALID_KEY
+                })
+            })
+            .flatten();
+        let text_form = FieldOptions::decode(&def.options)
+            .and_then(|o| rules::value_text_keys(o.index_language(), self.file_language()));
+        let (key, text_keys) = match typed_key {
+            Some(key) => (key, None),
+            None => {
+                let keys = match typed {
+                    true => text_form.unwrap_or(TextKeys::Collated),
+                    false => text_form?,
+                };
+                (keys.key(text).unwrap_or_default(), Some(keys))
+            }
         };
         let store = self.hosted.read_store();
         let (t, f) = (uint_segment(table), uint_segment(field));
@@ -2468,9 +2479,7 @@ fn related_list_refused() -> HostError {
 }
 
 /// A value list of a field's values whose field is indexed in a language
-/// OpenMaker does not key (#571), or whose number, date, time or timestamp
-/// field the value is not one of the type's values OpenMaker keys (#591):
-/// the value is not looked up. Set Field
+/// OpenMaker does not key (#571): the value is not looked up. Set Field
 /// reports it as error 3; an import ends at its row rather than skipping
 /// it (`transfer_error`), unlike a row's ordinary error 3.
 fn unkeyed_list_refused() -> HostError {
