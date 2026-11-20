@@ -132,6 +132,7 @@ fn request(mem: &Mem, spec: &str) -> ImportRequest {
         ("Match names", import_flag::MATCH_NAMES),
         ("Split repetitions", import_flag::SPLIT_REPETITIONS),
         ("Add remaining", import_flag::ADD_REMAINING),
+        ("Preserve target", import_flag::PRESERVE_TARGET),
     ] {
         if on(k) {
             flags |= bit;
@@ -627,4 +628,60 @@ fn x04_matching_and_other_tables_match_filemaker_server() {
         }
     }
     assert!(failures.is_empty(), "{}", failures.join("\n"));
+}
+
+/// "Preserve target field data if source field is empty" (26.1.1): an
+/// update keeps what an empty source value would have cleared, repetition
+/// by repetition, and still writes the rest; a flag OpenMaker does not know
+/// refuses the import with no record touched. A data-loss path: before,
+/// the empty values overwrote the record's.
+#[test]
+fn an_update_preserving_target_data_keeps_fields_its_source_leaves_empty() {
+    let en = om_calc::Locale::en_us();
+    let spec = "Type: TABS ; Target: Contacts ; Charset: 5 ; Action: Replace ; \
+                Preserve target: On ; Map: Contacts::K | Contacts::First Name | Contacts::R";
+    let source = "new\t\ta\u{1d}\u{1d}c\r";
+    let original = |mem: &mut Mem| {
+        mem.add(&[
+            (f::K, &["old"]),
+            (f::FIRST, &["kept"]),
+            (f::R, &["x", "y", "z"]),
+            (f::VNE, &["pre"]),
+            (f::VNO, &["pre"]),
+        ])
+    };
+
+    let mut mem = Mem::new();
+    let id = original(&mut mem);
+    let request = request(&mem, spec);
+    let summary = import(&mut mem, &request, source.as_bytes(), &en).unwrap();
+    assert_eq!((summary.updated, summary.error_code()), (1, 0));
+    let cells = &mem.record(id).cells;
+    assert_eq!(cells[&f::K], ["new"]);
+    assert_eq!(cells[&f::FIRST], ["kept"]);
+    assert_eq!(cells[&f::R], ["a", "y", "c"]);
+
+    let mut mem = Mem::new();
+    let id = original(&mut mem);
+    let mut request = request;
+    request.options.flags |= 0x80;
+    let e = import(&mut mem, &request, source.as_bytes(), &en).unwrap_err();
+    assert_eq!(e.code, 3);
+    assert_eq!(mem.record(id).cells[&f::K], ["old"]);
+    assert_eq!(mem.record(id).mod_count, 0);
+
+    // With "perform auto-enter options" too, the update refuses before any
+    // row, whatever the fields: one left unwritten would no longer be kept
+    // from auto-entry.
+    let with_auto_enter = spec.replace(
+        "Preserve target: On",
+        "Preserve target: On ; Auto-enter: On",
+    );
+    let mut mem = Mem::new();
+    let id = original(&mut mem);
+    let request = crate::request(&mem, &with_auto_enter);
+    let e = import(&mut mem, &request, source.as_bytes(), &en).unwrap_err();
+    assert_eq!(e.code, 3);
+    assert_eq!(mem.record(id).cells[&f::FIRST], ["kept"]);
+    assert_eq!(mem.record(id).mod_count, 0);
 }

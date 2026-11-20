@@ -66,6 +66,9 @@ pub enum QueryError {
     /// The program goes past one of OpenMaker's limits on what a program
     /// may hold or do ([`program::limits`]).
     Limit(&'static str),
+    /// No record answers an instruction that needs one (LookupValue, spec
+    /// 8.6): FileMaker's 401, "no records match".
+    NoRecords,
     /// Reading the file failed.
     File(om_hbam::Error),
 }
@@ -78,6 +81,7 @@ impl QueryError {
             QueryError::InvalidCommand => 5,
             QueryError::Missing(_) => 102,
             QueryError::NoTable => 106,
+            QueryError::NoRecords => 401,
             QueryError::Malformed(_)
             | QueryError::BadAccessKey
             | QueryError::Unsupported(..)
@@ -106,6 +110,7 @@ impl std::fmt::Display for QueryError {
             QueryError::NoTable => f.write_str("instruction names no table"),
             QueryError::Unimplemented(what) => write!(f, "unsupported: {what}"),
             QueryError::Limit(what) => write!(f, "program goes past OpenMaker's limit on {what}"),
+            QueryError::NoRecords => f.write_str("no records match"),
             QueryError::File(e) => write!(f, "reading the file: {e}"),
         }
     }

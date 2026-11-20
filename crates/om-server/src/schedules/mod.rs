@@ -959,6 +959,7 @@ fn run(shared: &Arc<Shared>, name: &str, schedule: &ScriptTask, slot: Slot) -> E
         &schedule.account,
         &account.key,
         account.privileges(),
+        account.access.clone(),
         ScriptRef::Name(&schedule.script),
         &schedule.parameter,
         &slot,

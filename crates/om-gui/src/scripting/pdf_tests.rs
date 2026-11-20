@@ -3470,6 +3470,17 @@ fn wide_layouts_print_what_fits_the_page() {
         "{x},{y} -> {fx},{fy}"
     );
 
+    // Hide when printing (0x200) leaves an object out with its
+    // contents, unchecked, as beyond the page: the label does not print,
+    // nor does the portal (which reports refuse) moved onto the page.
+    let mut hidden = layout.clone();
+    hidden.objects.objects[1].flags |= om_layout::sliding::NON_PRINTING;
+    hidden.objects.objects[3].bounds = Some(rect(300.0, 10.0, 200.0, 60.0));
+    hidden.objects.objects[3].flags |= om_layout::sliding::NON_PRINTING;
+    let pdf = String::from_utf8_lossy(&render(&hidden).unwrap().bytes).into_owned();
+    assert!(text_origins(&pdf, 1, "Printed").is_empty());
+    assert!(text_origins(&pdf, 1, "Off page").is_empty());
+
     let refused = |change: &dyn Fn(&mut Layout)| {
         let mut layout = layout.clone();
         change(&mut layout);

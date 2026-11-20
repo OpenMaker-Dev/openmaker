@@ -37,6 +37,20 @@ FileMaker Pro's order:
   Pro does not read as a picture from a leaf (containers.md 1.4, #911).
 - Locks are asked for without waiting (timeout 0). A refusal (8003) reports
   who holds the record from the reply's user list (4.2).
+- A record of the opened file's own tables is locked as its editing begins,
+  as FileMaker Pro locks it (write-path.md 4.1; [#40](https://github.com/OpenMaker-Dev/openmaker/issues/40)): Browse's first
+  change of it, and a script's, goes through `record.prepare_edit`, which
+  opens the window's record session and locks the record before the change
+  is taken. The lock is held until the record is saved or reverted, so
+  another client's change of it is refused (301, naming the holder)
+  meanwhile. Delete Record of the record being edited deletes it under
+  that lock, its edits going with the session, as FileMaker Pro deletes the
+  record being edited; a refusal before anything is sent (privileges, a
+  file opened read-only) keeps the edits. A session that also holds a
+  related record's write or container data is reverted first, which lets
+  the lock go before the delete takes it again. A related record, a record
+  of another file's table, and edits inside a script's own transaction are
+  still locked only to commit them.
 - op65 ends every transaction, also after a failure, releasing what it
   holds (4.4); the server also releases a connection's locks when it
   disconnects.
@@ -642,8 +656,22 @@ anyway is refused again.
   ends, so a client that left a large upload unfinished on one file has
   less room on its others until then. The per-connection rules stay as
   they were: one upload of at most 1 GiB, at most 8 transfers and 64 MiB in
-  those not in use. Paged downloads are kept per connection and are not in
-  the budget.
+  those not in use. Paged downloads are not in this budget but in one of
+  their own (below).
+- **Paged downloads.** A reply larger than one page (op90, op15, op92,
+  op86) is kept, whole, until its client has read its last page. These
+  streams are charged to a server-wide budget of their own,
+  `--download-memory-mib` (default 2048, `ConnectionLimits::download_memory`).
+  Past it, the streams least recently paged, on any connection, are
+  dropped, never the one just started, which is held even when it alone
+  passes the budget; a client that continues a dropped stream is refused
+  with `IMP_LIMIT`. A client reads each download to its end at once, so the
+  streams dropped are those clients left unfinished longest. It is not
+  split by client address, since many connections behind one NAT address
+  each page downloads in ordinary use, and a stream is dropped rather than
+  a new download refused, since a refused read shows where a dropped
+  abandoned one does not
+  ([#145](https://github.com/OpenMaker-Dev/openmaker/issues/145)).
 - **Records (op14), commit lists (op70) and subtrees written straight into
   the file (op13)** are read within the reservation. A connection whose
   address's staged records did fill its quarter could not commit them
@@ -1239,6 +1267,14 @@ key text in the form of the field's index language (query-program.md 7.2,
 - Unicode raw: its code units;
 - language 0: the file's own language.
 
+Number, date, time and timestamp fields are keyed in the forms of 7.3: an
+empty value under `01`, a value with no digit (`N/A`, a date stored as `?`)
+under `fe ff`, and a timestamp stored as a date alone under its date and
+`fe ff`. A number with other characters among its digits (`1,234`, `abc12`)
+gets no key yet ([#246](https://github.com/OpenMaker-Dev/openmaker/issues/246)).
+A typed index that an earlier OpenMaker build wrote lists no empty value
+under `01`, so a find for `=` on it misses those records.
+
 For a text field indexed in any other language they write no key, rather
 than English ones a find in that language would miss (#159):
 - A commit that would change the field's text where the field has an index
@@ -1259,8 +1295,16 @@ Not covered:
 - The languages FileMaker does not tailor, such as French and Dutch, are
   refused too, though their keys look like the English ones ([#300](https://github.com/OpenMaker-Dev/openmaker/issues/300)).
 - The tailored languages wait for their keys ([#299](https://github.com/OpenMaker-Dev/openmaker/issues/299)).
-- Within the forms OpenMaker builds, some scripts and the padded form's
-  accents still differ from FileMaker's keys ([#175](https://github.com/OpenMaker-Dev/openmaker/issues/175)).
+- Within the forms OpenMaker builds, the keys equal FileMaker's for every
+  English, Unicode standard and Unicode raw value of the probe
+  (`catalogs/index-key-vectors.tsv`). Two choices are OpenMaker's, since
+  FileMaker's are unmeasured (query-program.md 13, item 1). In the padded
+  form, the first weight of an unlisted code point carries secondary
+  weight 0x20 and a second weight carries none, as in UCA. A character that
+  DUCET lists with UCA's implicit weights for an ideograph keys as that
+  ideograph does in FileMaker: `⼀` U+2F00 as `一` (`4e00`), U+FA0E as
+  `ffe0 fa0e`. Whether a record is also listed under `ff 80` follows
+  FileMaker only in part ([#177](https://github.com/OpenMaker-Dev/openmaker/issues/177)).
 
 **Furigana.** A normal field with "Use Furigana Field" (option `0x40`)
 leaves its table writable. OpenMaker's record rules refuse a write that
@@ -1276,9 +1320,9 @@ change by a script, an import or auto-entry is unmeasured.
 A number field with unique or existing-value validation keeps its table
 read-only, as before. Unique and existing values are checked in the field's
 value index, so such a field must be defined for a value index in English (21,
-77) or Unicode raw (2) (auto-entry.md, Index bits), the forms whose keys
-OpenMaker builds exactly; a field in another language keeps its table
-read-only ([#299](https://github.com/OpenMaker-Dev/openmaker/issues/299), [#175](https://github.com/OpenMaker-Dev/openmaker/issues/175)). The client and the host build the key in the field's
+77), System (1), Unicode standard (3) or Unicode raw (2) (auto-entry.md,
+Index bits), the forms whose keys OpenMaker builds; a field in another
+language keeps its table read-only ([#299](https://github.com/OpenMaker-Dev/openmaker/issues/299)). The client and the host build the key in the field's
 form (`om_data::rules::checked_text_keys`, query-program.md 7.2), cut to 219
 bytes as the index holds it (7.1), so a long value is checked against the
 values that share its first 109 weights, or code units in Unicode raw ([#177](https://github.com/OpenMaker-Dev/openmaker/issues/177)).
