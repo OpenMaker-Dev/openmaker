@@ -698,6 +698,16 @@ impl Window {
             privilege_set,
             record_numbers,
         };
+        // The record session the window's entry opened for its record
+        // (`record.prepare_edit`) is the window's before the reply that
+        // says so reaches it: the commit writes through it and commits it,
+        // rather than leave its writes held there.
+        if !self.state.uncommitted.session
+            && self.state.record.is_some()
+            && provider.record_session_open()
+        {
+            self.state.uncommitted.session = true;
+        }
         // A session set aside for a script's transaction in another window
         // holds a record outside that transaction (script-runtime.md 8.5):
         // committed apart from it, in its own session.
@@ -1026,6 +1036,58 @@ impl Window {
         self.touch();
     }
 
+    /// Whether Revert Transaction removed this window's record: one the
+    /// transaction created (`created`, by base table and id: logged by a
+    /// commit, or held new by the provider), whatever the window still has
+    /// pending on it. A record a window's record session holds apart, or
+    /// one an earlier transaction saved, is not among them.
+    fn reverted_record(&self, created: &[(u64, i64)]) -> bool {
+        let Some(record) = self.state.record else {
+            return false;
+        };
+        self.table
+            .is_some_and(|table| created.contains(&(table, record)))
+    }
+
+    /// The window lets go of its record and what it has pending on it,
+    /// with no call to delete it: the transaction that held it is reverted.
+    fn let_go_of_reverted_record(&mut self) {
+        self.state.uncommitted = Uncommitted::default();
+        self.state.drafts.clear();
+        self.state.portal = None;
+        self.state.record = None;
+        self.changed_data();
+        self.found = None;
+    }
+
+    /// Revert Transaction removed the current window's record
+    /// ([`Self::reverted_record`], #307): it shows the record at its place
+    /// in the found set as the revert leaves it, the last one when nothing
+    /// is there any more, as Revert Record of a new record does.
+    pub fn forget_reverted_record(
+        &mut self,
+        provider: &mut dyn DataProvider,
+        created: &[(u64, i64)],
+    ) -> Result<(), DataError> {
+        if !self.reverted_record(created) {
+            return Ok(());
+        }
+        self.discard_previews(provider);
+        self.let_go_of_reverted_record();
+        let found = self.found_count(provider)?;
+        self.state.index = self.state.index.min(found.saturating_sub(1));
+        Ok(())
+    }
+
+    /// [`Self::forget_reverted_record`] for a window that is not current: a
+    /// record its own session holds stays, and its found set and place are
+    /// read again when it is current.
+    pub fn forget_reverted_record_waiting(&mut self, created: &[(u64, i64)]) {
+        if self.reverted_record(created) {
+            self.let_go_of_reverted_record();
+        }
+    }
+
     /// Revert Record: drop the drafts, the related records' too; a new
     /// record is deleted.
     pub fn revert(&mut self, provider: &mut dyn DataProvider) -> Result<(), DataError> {
@@ -1048,7 +1110,7 @@ impl Window {
             // provider without record sessions. A refused delete has not
             // reverted the new record. Keep its drafts and ownership
             // intact so Discard can be retried.
-            provider.delete_record(layout, id)?;
+            provider.delete_record_in_script(layout, id)?;
         }
         self.discard_previews(provider);
         self.state.uncommitted = Uncommitted::default();
@@ -1342,15 +1404,40 @@ impl Window {
     /// Delete Record: the record goes; the next one takes its place.
     pub fn delete(&mut self, provider: &mut dyn DataProvider) -> Result<(), DataError> {
         // A new record the window's session holds is not on the host:
-        // deleting it is releasing it.
-        if self.state.uncommitted.session && self.state.record.is_some() {
-            return self.revert(provider);
+        // deleting it is releasing it. An existing record's session set
+        // aside for a script's transaction goes first: the delete joins
+        // that transaction.
+        if self.state.uncommitted.session
+            && self.state.record.is_some()
+            && (self.state.uncommitted.new || !provider.record_session_open())
+        {
+            if self.state.uncommitted.new {
+                return self.revert(provider);
+            }
+            self.revert(provider)?;
         }
         let (Some(layout), Some(id)) = (self.state.layout, self.record_id(provider)?) else {
             return Err(DataError::with_code(101, "There is no current record."));
         };
-        provider.delete_record(layout, id)?;
+        // An existing record's session holds the lock its editing took: the
+        // provider deletes the record under it, its edits going with the
+        // session. A refusal keeps the edits; a session it ended is no
+        // longer the window's.
+        let deleted = provider.delete_record_in_script(layout, id);
+        let session = self.state.uncommitted.session;
+        if session && !provider.record_session_open() && !provider.record_session_held() {
+            self.state.uncommitted.session = false;
+        }
+        deleted?;
+        // The previews of rows begun in its portals go with the record:
+        // read from the drafts, before they are cleared.
         self.discard_previews(provider);
+        if session {
+            self.state.uncommitted = Uncommitted::default();
+            self.state.drafts.clear();
+            self.state.portal = None;
+            self.touch();
+        }
         self.leave_record();
         self.changed_data();
         self.found = None;

@@ -1340,10 +1340,6 @@ fn sliding_refuses_unsupported_options_overlaps_and_cut_off_objects() {
             &|l: &mut Layout| find(l, 56).flags |= om_layout::sliding::NON_PRINTING,
             "hidden when printing",
         ),
-        (
-            &|l: &mut Layout| find(l, 50).flags |= om_layout::sliding::UP,
-            "header or footer",
-        ),
         // The patch moved into Notes' frame.
         (
             &|l: &mut Layout| find(l, 57).bounds = Some(rect(300.0, 140.0, 24.0, 16.0)),
@@ -1371,6 +1367,48 @@ fn sliding_refuses_unsupported_options_overlaps_and_cut_off_objects() {
         let message = refuse(&with(change));
         assert!(message.contains(reason), "{reason}: {message}");
     }
+    // Headers, footers and title parts never shrink or slide up (Claris):
+    // objects there set to slide up (and resize their part) print exactly
+    // as the same objects without the options. Among them: a rectangle over
+    // the header's merge text (an overlap a slider may not have), an empty
+    // field that would shrink and a label below it that would rise if they
+    // slid, and a field whose text does not fit, cut at its box.
+    use om_layout::sliding::{RESIZE_PART, UP};
+    let header = |slides: u64| {
+        with(&|l| {
+            find(l, 50).flags |= slides;
+            find(l, 59).flags |= slides & UP;
+            let mut extra = vec![
+                LayoutObject {
+                    id: 61,
+                    object_type: 5,
+                    bounds: Some(rect(12.0, 10.0, 20.0, 10.0)),
+                    ..Default::default()
+                },
+                field(62, 1, rect(330.0, 8.0, 60.0, 18.0)),
+                field(63, 11, rect(400.0, 8.0, 60.0, 14.0)),
+                label(64, "Below", rect(400.0, 24.0, 60.0, 12.0), 12.0, false),
+            ];
+            for object in &mut extra {
+                object.flags |= 0x3000_0000 | slides;
+                l.objects.root.push(object.id);
+            }
+            l.objects.objects.extend(extra);
+        })
+    };
+    let render = |layout: &Layout| {
+        crate::report::render_pdf(layout, 2, paper.clone(), &[], |o, _| {
+            Ok(match o.id {
+                62 => "A name far too long for its header field".repeat(4),
+                63 => String::new(),
+                _ => o.text.clone().unwrap_or_default(),
+            })
+        })
+        .unwrap()
+        .bytes
+    };
+    let placed = render(&header(0));
+    assert_eq!(render(&header(UP | RESIZE_PART)), placed);
 }
 
 fn pdf(path: &str, current: bool) -> ScriptStep {
@@ -3469,6 +3507,17 @@ fn wide_layouts_print_what_fits_the_page() {
         (fx - x - 18.0).abs() < 0.01 && (y - fy - 18.0).abs() < 0.01,
         "{x},{y} -> {fx},{fy}"
     );
+
+    // Hide when printing (0x200) leaves an object out with its
+    // contents, unchecked, as beyond the page: the label does not print,
+    // nor does the portal (which reports refuse) moved onto the page.
+    let mut hidden = layout.clone();
+    hidden.objects.objects[1].flags |= om_layout::sliding::NON_PRINTING;
+    hidden.objects.objects[3].bounds = Some(rect(300.0, 10.0, 200.0, 60.0));
+    hidden.objects.objects[3].flags |= om_layout::sliding::NON_PRINTING;
+    let pdf = String::from_utf8_lossy(&render(&hidden).unwrap().bytes).into_owned();
+    assert!(text_origins(&pdf, 1, "Printed").is_empty());
+    assert!(text_origins(&pdf, 1, "Off page").is_empty());
 
     let refused = |change: &dyn Fn(&mut Layout)| {
         let mut layout = layout.clone();

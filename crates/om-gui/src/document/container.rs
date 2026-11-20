@@ -801,7 +801,7 @@ fn shown_stream(container: &Container) -> Option<(&[u8], bool)> {
 /// Audio or video, which an interactive container plays: what Insert
 /// Audio/Video stores (a `movie` path), or a file named as such
 /// (OpenMaker's reading; FileMaker plays what its system plays).
-fn is_media(path_type: Option<&str>, name: &str) -> bool {
+pub(crate) fn is_media(path_type: Option<&str>, name: &str) -> bool {
     const KINDS: [&str; 18] = [
         "mp3", "m4a", "aac", "wav", "aif", "aiff", "flac", "oga", "ogg", "opus", "mp4", "m4v",
         "mov", "webm", "ogv", "mpg", "mpeg", "avi",

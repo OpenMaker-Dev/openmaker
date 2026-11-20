@@ -36,10 +36,13 @@ pub struct HostedFile {
 /// An account of a file in one of its verified built-in sets
 /// (`hosting::FileAccount::privileges`, session-identity.md 2.7) has that
 /// set's privileges. Every other account is [`Privileges::Unknown`] and
-/// fails closed in the server's own sessions: its scripts run only when
-/// they are set to run with full access privileges, and steps that create,
-/// change, delete, find or read records without that elevation fail with
-/// FileMaker's error 9 (insufficient privileges).
+/// fails closed in the server's own sessions: performed at the top or by
+/// an unelevated script, it runs the scripts its custom set makes
+/// executable (the session's set decides, `ServerHost::set_access`; a
+/// script running with full access may perform one without access too),
+/// and steps that create, change, delete, find or read records without
+/// the elevation of a script set to run with full access privileges fail
+/// with FileMaker's error 9 (insufficient privileges).
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 pub enum Privileges {
     /// The [Full Access] privilege set.
@@ -50,8 +53,10 @@ pub enum Privileges {
     /// [Read-Only Access]: every record viewed only, every script
     /// executable, no design.
     ReadOnly,
-    /// Any other privilege set: its limits are not applied to scripts, so
-    /// nothing is assumed.
+    /// Any other privilege set, a custom set's: its data limits (records,
+    /// fields, layouts) are not applied to server scripts, so a step reads
+    /// and writes nothing unless elevated; its script entries are, through
+    /// the session's set (`ServerHost::set_access`).
     #[default]
     Unknown,
 }
@@ -149,6 +154,13 @@ pub struct ConnectionLimits {
     /// before anything is staged, stored or run, and an upload refused part
     /// way is dropped whole.
     pub upload_memory: usize,
+    /// Bytes of memory held for the download streams connections keep
+    /// paged (a reply larger than one page is kept until its last page is
+    /// sent), on the whole server. Past it the streams least recently
+    /// paged, on any connection, are dropped (never the one just started),
+    /// and a client that continues one is refused with the CORBA system
+    /// exception `IMP_LIMIT`.
+    pub download_memory: usize,
     /// How long a client disconnected with notice has, once its grace time
     /// ends, to log out and disconnect before the server ends its session
     /// (`ServerHandle::disconnect_client_with_notice`).
@@ -184,6 +196,10 @@ impl ConnectionLimits {
     /// not safe on a machine with much less than 8 GB of memory: set it
     /// lower there. Clients behind one NAT address share its quarter.
     ///
+    /// 2 GiB of paged downloads. A client pages each download to its end at
+    /// once, so what is held is the downloads in progress; the streams
+    /// dropped past it are those clients left unfinished longest.
+    ///
     /// 30 s to log out after a grace time: FileMaker Server called
     /// `Disconnect` on a client that had closed its files 90 s after a
     /// disconnect with a 60-second grace time (network-protocol.md 6.5;
@@ -196,6 +212,7 @@ impl ConnectionLimits {
         idle_without_session: Duration::from_secs(145),
         write_stall: Duration::from_secs(120),
         upload_memory: 4 << 30,
+        download_memory: 2 << 30,
         logout_wait: Duration::from_secs(30),
     };
 }

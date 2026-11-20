@@ -186,14 +186,21 @@ Record (Records menu, toolbar and script steps) create the record with the
 same owning engine: the owner issues the record id, enters its auto-entry
 values and stores the ordinary scalar values; the new record joins the
 caller window's found set and becomes current, as a local creation does.
-Duplicate Record of a record holding a container reference is refused before
-any effect. A script's transaction includes these layouts and commits all or
+Duplicate Record copies a container reference too: the copy's reference is
+counted in the owning file's library, as a local duplicate counts it in its
+own. A copy that fails gives its references back; one whose answer is lost
+counts as given back, so that no later transaction's revert gives it back
+again. When the owner did not apply it, or the connection was lost in
+between, the member keeps one reference too many: its data is kept longer,
+never lost. Its auto-entered values are copied as the window's duplicate copies them
+([#473](https://github.com/OpenMaker-Dev/openmaker/issues/473)). A script's transaction includes these layouts and commits all or
 none: Commit Transaction prepares every file before any record data goes, and
 a refusal in any file reverts every file's part; only a connection lost, or a
 host refusing a later file, after an earlier file's commit leaves that earlier
 file committed (record-writes.md, "A script's transaction across files").
-Delete Record inside one is refused
-([#312](https://github.com/OpenMaker-Dev/openmaker/issues/312)).
+A script's Delete Record inside one is held there too; the user's own edits
+and deletions on such a layout while the script is paused are refused
+([#411](https://github.com/OpenMaker-Dev/openmaker/issues/411)).
 Import, writes to the layout's related records in other tables, globals and
 repetitions remain refused on these layouts
 ([#43](https://github.com/OpenMaker-Dev/openmaker/issues/43)). The owning file
@@ -331,7 +338,7 @@ hostile text cannot overflow a script thread's stack (execute-sql.md,
 Import Records, Export Records and Save Records as Excel (`om-transfer`)
 run in server scripts and the desktop client. Formats: tab- and
 comma-separated, merge, HTML table, FMPXMLRESULT, Excel `.xlsx` and
-dBase.
+dBase, and for imports Excel 97-2004 `.xls` too.
 - Exports cover related fields, repetitions, group-by summaries, every
   export character set and FileMaker's line endings and quoting.
 - Without group-by fields each row holds its record's summaries, read in
@@ -346,6 +353,17 @@ dBase.
   the desktop: a running total's found-set total and a fraction's 1, as
   FileMaker Pro 26.0.3 wrote them without restart or subtotal. Restart,
   subtotal and FileMaker Server's own values are unmeasured.
+- A group's summary its values cannot give (the sample standard
+  deviation of a group with one value) is `?` in that group only, written
+  as FileMaker Server writes it: nothing in tab, an unquoted empty field
+  in comma-separated text, a `COL` without `DATA` in FMPXMLRESULT, `?` in
+  HTML and a text cell `?` in Excel (script-steps.md, Exports). Without
+  groups the same summary is empty on every row, as FileMaker Pro 26.0.3
+  wrote it in Excel. Unmeasured and OpenMaker's inference: merge files
+  (as comma), dBase (empty), the grand summary of a grouped export (`?`),
+  a calculation field whose value is `?` (as a summary), and a `?` among a
+  field's repetitions or related values in FMPXMLRESULT (an empty `DATA`,
+  so the values after it keep their places).
 - Imports cover every action, mapping by position or name, field names
   rows, and auto-enter and validation through `om_data::rules`.
 - Stored specs decode and re-encode byte for byte.
@@ -456,13 +474,21 @@ Open items:
     entries and per-table rules (re/session-identity.md 2) are not applied
     to LayoutAccess and RecordAccess, and FileMaker Server's answers under
     them are unmeasured.
-  - The recompute after a schema change answers Design functions from the
-    schema, where FileMaker gives empty.
   - `FieldAnnotation` and `FieldDisplayNames` answer empty text, as for a
     field without them: no file read so far stores either, so their
     storage is unknown.
-  - Also open: AI (`GetEmbedding`, `GetTokenCount`) and mobile functions
-    through each host, and the TextEncode transliteration table.
+  - OpenMaker Server answers `GetAddonInfo`, `GetSensor`,
+    `GetAVPlayerAttribute` and `Furigana` as FileMaker Server's script
+    engine answered one call of each (calc-functions.md, s45): the add-on
+    interface's version for `"x"` (error 3 for empty text), error 1208 for
+    `"battery"`, empty for `"playbackState"`, and `"abc"` unchanged, the
+    engine's answer without its reading dictionary. Other arguments get
+    the same answers, OpenMaker's fallback [I]; Furigana's option is
+    ignored. The desktop still answers them with error 1225: FileMaker
+    Pro's answers are unmeasured ([#79](https://github.com/OpenMaker-Dev/openmaker/issues/79)).
+  - Also open: AI (`GetEmbedding`, `GetTokenCount`), the mobile functions
+    (`Location`, `LocationValues`, `RangeBeacons`) through each host, and
+    the TextEncode transliteration table.
 - Import and export:
   - Shift-JIS, Big-5 and EUC-KR differ for some letters, and `.xlsx`
     times match to about 15 digits.
@@ -493,6 +519,14 @@ Open items:
     no 26.1.1 order has been read or run in FileMaker. Neither export
     dialog shows the option, and the orders OpenMaker makes are 26.0's.
   - The desktop writes a modification count of 0 in XML.
+  - `.xls` imports (`om_transfer::import`, the `xls` reader) read BIFF8
+    workbooks only, as an `.xlsx` sheet is read: numbers as the shortest
+    decimal of their value, formulas as their cached results, dates as
+    their serial numbers. How FileMaker spells an `.xls` number, and
+    whether FileMaker Server imports `.xls` at all, are unmeasured.
+    Excel 5.0/95 and encrypted workbooks fail with 730. File > Import
+    Records does not offer `.xls` (its type menu is FileMaker Pro's);
+    stored steps do.
   - An import reads its whole source and stages every row in one
     transaction; only the import limits bound its memory.
   - No `Import.log` (FileMaker Server writes none; FileMaker Pro's format
@@ -504,23 +538,42 @@ Open items:
     limit is unknown.
 - Steps: the step catalog is FileMaker Pro 26.1.1's (valid ids below 251).
   Its new steps 249 Replace Field Contents by Name and 250 Set Variable by
-  Name have no parameter rows yet, are not offered in the Script Workspace
-  or as a button's single step, are refused when pasted or authored as
-  text or XML, and fail with error 3 when a desktop script holds one
-  ([#349](https://github.com/OpenMaker-Dev/openmaker/issues/349)); the
-  unnamed id 248 fails with error 3 too, as a valid id without a handler
-  [I]. OpenMaker Server's scripts keep FileMaker Server 26.0.3's table
-  until FileMaker Server 26.1.1 ships: ids from 248 fail with error 4, and
-  Save a Copy as Add-on Package (96) with error 3 without evaluating its
-  options.
+  Name ([#349](https://github.com/OpenMaker-Dev/openmaker/issues/349)) are
+  stored as its binaries write them (script-steps.md 12.4), edited in the
+  Script Workspace, and run as Replace Field Contents and Set Variable do
+  with the field found as Set Field By Name finds its target and the
+  variable named by the calculation in slot 3. Their step text, the
+  errors for a name that finds nothing (102) or is not a variable's (5),
+  and the order the calculations are evaluated in are OpenMaker's
+  inference: no step saved or run by FileMaker Pro 26.1.1 has been
+  compared. On the desktop the unnamed id 248 fails with error 3: 26.1.1's
+  step table gives it no client. OpenMaker Server's scripts keep FileMaker
+  Server 26.0.3's table until FileMaker Server 26.1.1 ships: ids from 248,
+  these two steps among them, fail with error 4, and Save a Copy as Add-on
+  Package (96) with error 3 without evaluating its options.
+- Replace Field Contents and Replace Field Contents by Name: serial numbers
+  with "Use Entry Options" (`[00 5, 03]`, the field's own serial settings)
+  fail with error 3 before any record is written; the field's settings are
+  not read there. Other serial numbers count up the initial value's last
+  run of digits, keeping its width, on every host; one past an `i128`
+  fails with error 3.
+- On the desktop Replace Field Contents and Replace Field Contents by Name
+  refuse with error 3 a field reached through a relationship from the
+  layout's occurrence, a self-join's too, whose related records Set Field
+  would write; they replaced the found set's own field instead. Inside a
+  transaction this refusal and Use Entry Options' are the transaction's
+  error, as other writes OpenMaker cannot make are (script-runtime.md
+  8.4), where FileMaker would have written. Names given to Set Field By
+  Name and Replace Field Contents by Name match without regard to case,
+  as on the server.
 - Scripts: desktop steps still missing include the account steps
   ([#83](https://github.com/OpenMaker-Dev/openmaker/issues/83)) and the PDF
   steps other than Save Records as PDF
   ([#96](https://github.com/OpenMaker-Dev/openmaker/issues/96)). Set
   Web Viewer and Perform JavaScript in Web Viewer need a native web viewer
   (the `web-viewer` feature on Linux, under X11 or, on a Wayland session,
-  XWayland; Browse in Form or List view;
-  layout-model.md 9.6); elsewhere
+  XWayland, and on macOS; Browse in Form or List view; layout-model.md
+  9.6); elsewhere
   they fail with 116 (no live web
   viewer) rather than succeed. The error codes for a page still loading (5),
   a missing or throwing function (5) and a viewer that is not shown (116)
@@ -548,11 +601,39 @@ Open items:
   reads the catalog back (desktop-client.md, Script Workspace).
 - Server: auto-enter calculations are not recomputed after a schema
   change (by design, as FileMaker). Schedules run (#11).
+  - Account steps: Change Password sets the password of the account the
+    session logged in with (found by its record key, so a rename does not
+    redirect it), as FileMaker's `DoChangePassword` and `SetPassword` do
+    (re/local-files.md 2.4), with their errors. A step with full access
+    skips the set's checks. With its dialog, for [Guest] or for an
+    account of another kind it fails with 3. It holds the account
+    catalog's lock while it writes (310 when another user holds it,
+    inferred), raises the catalog's modification count and tells the
+    other clients. Reset Account Password and Enable Account change an
+    account found by name, for a session with full access (else 9), in
+    the same way; a name no account has gives 213 (inferred). Reset
+    Account Password with "Expire password" gives 3 until a hosted login
+    can set a new password
+    ([#248](https://github.com/OpenMaker-Dev/openmaker/issues/248)), and
+    Enable Account gives 3 for OAuth and Claris ID accounts and rather
+    than make a [Full Access] account inactive. Delete Account removes an
+    account and its entries in the account catalog's index; it gives 3
+    for [Guest] and for [Full Access], OAuth and Claris ID accounts. The
+    steps that rewrite an account (all but Delete Account) leave alone one
+    whose stored checksum OpenMaker does not reproduce (3). Add Account and Re-Login fail with error 3
+    ([#83](https://github.com/OpenMaker-Dev/openmaker/issues/83)).
   - The recompute after a schema change reads container inputs from the
-    table's library. It still skips repeating calculations, container
-    results, plug-in functions and `Get` selectors that need a window,
-    leaving their values as they were and logging the field
-    ([#82](https://github.com/OpenMaker-Dev/openmaker/issues/82)).
+    table's library, computes repeating calculations in each repetition,
+    and answers Design functions as FileMaker Server's file context does
+    (empty, but `DatabaseNames`). With "do not evaluate if all referenced
+    fields are empty", which inputs count in a repetition above 1 is
+    OpenMaker's reading. It still skips these, leaving their values as
+    they were and logging the field: calculations of more than 255
+    repetitions; container results
+    ([#384](https://github.com/OpenMaker-Dev/openmaker/issues/384));
+    plug-in functions and `Get` selectors that need a window, whose
+    FileMaker Server answers there are unmeasured
+    ([#385](https://github.com/OpenMaker-Dev/openmaker/issues/385)).
   - FileMaker Pro clients: op77 GetFileList (the Hosts dialog's file list)
     and op89 CompareModCounts (reopening a cached file) are unsupported;
     an op13 with node state `00` (FileMaker Pro deleting a script) leaves

@@ -2593,17 +2593,27 @@ Server engine (11.3, 11.5)
   [#7](https://github.com/OpenMaker-Dev/openmaker/issues/7)). Truncate
   Table needs [Full Access] whatever the account may delete (Claris's
   Truncate Table help), and Set Next Serial Value, which changes a
-  field's definition, does too (inferred); both are 9 otherwise. An account in a custom set fails closed
-  (`Privileges::Unknown`): the set's script, layout and record limits are
-  not applied to server scripts yet. Its scripts are not executable
-  (op30 answers 9 and nothing runs) unless set to run with full access
-  privileges: then the script runs and each of its steps has full access
-  (2.2, 9.1). A sub-script it calls may execute
-  (`mParentRunWithFullAccess`) but runs with the account's own privileges
-  unless it is also set to: there, and wherever the account is not
-  elevated, creating, changing, deleting, truncating, setting a global
-  field or a next serial value and finding fail with 9, and reading a
-  field is calculation error 9 (`?`, not FileMaker's `<No Access>` text).
+  field's definition, does too (inferred); both are 9 otherwise. An
+  account in a custom set runs the scripts its set makes executable
+  (session-identity.md 2.2); one its set gives no access is refused with
+  9 and nothing runs, also when it is set to run with full access
+  privileges, as `CallScript` checks the account's access before that
+  flag counts (3.7, 9.1). Before, the flag let it run, and its steps
+  wrote with full access
+  ([#227](https://github.com/OpenMaker-Dev/openmaker/issues/227)). The
+  set's layout, field and record limits are not applied to server scripts
+  yet, so its steps fail closed (`Privileges::Unknown`) unless the script
+  is set to run with full access privileges: then each of its steps has
+  full access (2.2, 9.1). A sub-script it calls may execute even without
+  access (`mParentRunWithFullAccess`) but runs with the account's own
+  privileges: OpenMaker gives the full-access flag only to a script the
+  account may run, so such a child is not elevated even when it is itself
+  set to run with full access, where FileMaker would elevate it (inf, 9.1)
+  ([#227](https://github.com/OpenMaker-Dev/openmaker/issues/227)): there,
+  and wherever the account is not elevated, creating, changing, deleting,
+  truncating, setting a global field or a next serial value and finding
+  fail with 9, and reading a field is calculation error 9 (`?`, not
+  FileMaker's `<No Access>` text).
   Each edit is checked against the
   privileges of the step making it: a record an elevated caller opened
   (changed and not yet committed) is still refused to its sub-script
@@ -3674,8 +3684,15 @@ Globals (2026-10-29; Claris "Global fields")
   offers separate field objects for repetitions 2 through 255 under the
   same type, account and modification guards as the first repetition.
   Global repetitions remain session values; ordinary repetitions join the
-  record's other changes in one write. Native Browse repetition and global
-  entry parity remains unmeasured.
+  record's other changes in one write. A script's Set Field into a later
+  repetition of the current record shows in its field object at once,
+  before the commit, as a first repetition's does (the window's
+  uncommitted cells under the user's own typing there); one replacing the
+  user's typing (an OnObjectSave setting the field again) shows the
+  script's value. Entered again, the field object opens with the script's
+  value, and the user's edit replaces it, also one erased back to the
+  stored value. Native Browse repetition and global entry parity remains
+  unmeasured.
 - Claris documents that a global's validation runs on field exit, rather
   than record commit
   ([field validation](https://help.claris.com/en/pro-help/content/field-validation.html)).
@@ -3926,9 +3943,10 @@ Steps
   re-reads the window's records afterwards.
 - Insert from Index shows the View Index dialog with the field's
   value-index values (CreateValueListEx, in index order; "Show individual
-  words" is not offered); Paste inserts the value at the end of the field
-  (the insertion point) or replaces the contents with "Select entire
-  contents"; Cancel is 1.
+  words" is not offered); Paste inserts the value at the insertion point
+  of the field entered (replacing its selection; at the end of a field not
+  entered) or replaces the contents with "Select entire contents"; Cancel
+  is 1.
 - Set Next Serial Value sends op72 with `kReplace` for the field of the
   step's occurrence's table, any table (write-path.md 3.2); the host stores
   the text, also for a field without an auto-entered serial (unconfirmed).

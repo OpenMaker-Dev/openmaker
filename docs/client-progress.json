@@ -210,10 +210,10 @@
       "previous_status": "Implemented",
       "status": "Implemented",
       "scope": "Open, Commit and Revert Transaction hold changes and commit them together; a script's transaction across files is prepared in every file before any data goes ([transactions](record-writes.md#transactions)). The runtime's transaction traces are compared with FileMaker Server's script engine.",
-      "remaining": "Once one file's commit has gone, a later loss leaves that file committed. Delete Record on another file's layout is refused inside a transaction [#312](https://github.com/OpenMaker-Dev/openmaker/issues/312), and a transaction refuses a record whose calculation reads a related record changed after it [#276](https://github.com/OpenMaker-Dev/openmaker/issues/276).",
+      "remaining": "Once one file's commit has gone, a later loss leaves that file committed. The user's own edits and deletions on another file's layout while a script is paused inside a transaction are refused [#411](https://github.com/OpenMaker-Dev/openmaker/issues/411), and a transaction refuses a record whose calculation reads a related record changed after it [#276](https://github.com/OpenMaker-Dev/openmaker/issues/276).",
       "issues": [
         276,
-        312
+        411
       ],
       "docs": [
         "record-writes.md#transactions"
@@ -243,7 +243,7 @@
       "previous_status": "Partial",
       "status": "Partial",
       "scope": "Stored containers are read, replaced from the Insert menu and scripts, also in portal rows, and exported byte for byte. Browse draws pictures and a PDF's first page, an interactive container shows every page of a PDF, and Preview and PDF print pictures ([Browse mode](desktop-client.md#browse-mode), [container fields in reports](portable-pdf.md#container-fields)).",
-      "remaining": "Insert > PDF and Audio/Video and \"Store only a reference\" are not available [#50](https://github.com/OpenMaker-Dev/openmaker/issues/50); externally stored data is not read [#9](https://github.com/OpenMaker-Dev/openmaker/issues/9); Table view draws no pictures; audio and video play only in a `web-viewer` build.",
+      "remaining": "Insert asks for a typed path instead of a file dialog, and \"Store only a reference\" is not available [#50](https://github.com/OpenMaker-Dev/openmaker/issues/50); externally stored data is not read [#9](https://github.com/OpenMaker-Dev/openmaker/issues/9); Table view draws no pictures; audio and video play only in a `web-viewer` build.",
       "issues": [
         9,
         50
@@ -391,10 +391,10 @@
       "previous_status": "Partial",
       "status": "Partial",
       "scope": "Layouts of another file's tables support Browse, edits, new, duplicate and delete records, finds and sorts, Go to Related Record into the other file, and script transactions that prepare every file before any data goes ([limits](record-writes.md#limits)).",
-      "remaining": "Imports, global and repeating fields, the layout's related records and duplicating a record that holds a container are refused on these layouts [#43](https://github.com/OpenMaker-Dev/openmaker/issues/43), and so is Delete Record inside a transaction [#312](https://github.com/OpenMaker-Dev/openmaker/issues/312). Each file commits on its own, so a connection lost, or a host refusing a later file, after an earlier file's commit leaves that file committed.",
+      "remaining": "Imports, global and repeating fields, the layout's related records and duplicating a record that holds a container are refused on these layouts [#43](https://github.com/OpenMaker-Dev/openmaker/issues/43), and so are the user's own edits and deletions there while a script is paused inside a transaction [#411](https://github.com/OpenMaker-Dev/openmaker/issues/411). Each file commits on its own, so a connection lost, or a host refusing a later file, after an earlier file's commit leaves that file committed.",
       "issues": [
         43,
-        312
+        411
       ],
       "docs": [
         "record-writes.md#limits"
@@ -437,7 +437,7 @@
       "previous_status": "Partial",
       "status": "Partial",
       "scope": "Layout, object and record triggers run in the owning context and can veto. Browse keystroke triggers see control keys and modifiers and keep the queued input order; related edit boxes run their object triggers; Tab follows the stored tab order ([editing records](desktop-client.md#editing-records)).",
-      "remaining": "Find and Preview mode keys and input-method commits are not implemented or measured ([desktop notes](re/script-runtime.md#implementation-notes-desktop-client)); Return ends a field's editing [#376](https://github.com/OpenMaker-Dev/openmaker/issues/376). Related fields get no keystroke trigger.",
+      "remaining": "Find and Preview mode keys and input-method commits are not implemented or measured ([desktop notes](re/script-runtime.md#implementation-notes-desktop-client)). Related fields get no keystroke trigger.",
       "issues": [
         260
       ],
@@ -938,10 +938,9 @@
       "feature": "Web viewer and JavaScript bridge",
       "previous_status": "Partial",
       "status": "Partial",
-      "scope": "With the `web-viewer` build on Linux, WebKitGTK views show in Form and List view in every window (one per List row in sight, one over a portal), run the JavaScript bridge both ways, and print as a frame and caption; on a Wayland session the app runs through XWayland ([web viewers](re/layout-model.md#96-web-viewer)).",
-      "remaining": "Not on macOS [#304](https://github.com/OpenMaker-Dev/openmaker/issues/304) or Windows [#305](https://github.com/OpenMaker-Dev/openmaker/issues/305), nor in native Wayland windows [#323](https://github.com/OpenMaker-Dev/openmaker/issues/323) or embedded viewports [#319](https://github.com/OpenMaker-Dev/openmaker/issues/319); not in Find mode or Table parts; objects stacked above a viewer are covered by it.",
+      "scope": "With the `web-viewer` build, WebKitGTK views on Linux and WKWebView views on macOS show in Form and List view in every window (one per List row in sight, one over a portal), run the JavaScript bridge both ways, and print as a frame and caption; on a Wayland session the app runs through XWayland ([web viewers](re/layout-model.md#96-web-viewer)).",
+      "remaining": "Not on Windows [#305](https://github.com/OpenMaker-Dev/openmaker/issues/305), nor in native Wayland windows [#323](https://github.com/OpenMaker-Dev/openmaker/issues/323) or embedded viewports [#319](https://github.com/OpenMaker-Dev/openmaker/issues/319); not in Find mode or Table parts; objects stacked above a viewer are covered by it.",
       "issues": [
-        304,
         305,
         319,
         323

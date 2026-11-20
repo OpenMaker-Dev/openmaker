@@ -27,6 +27,12 @@ the physical page context; advanced layout merge symbols remain refused.
   Bodies and summary parts remain whole and move to the next page when needed.
   Objects that slide up and parts they resize print at their measured heights
   ([report sliding](report-sliding.md)).
+- Objects set to Hide when printing (bit `0x200` of their flags,
+  [report sliding](report-sliding.md)) do not print, nor does anything they
+  hold; like an object beyond the printable width they are not read or
+  checked, and they make no part resize. A sliding object that prints, in
+  the same part, refuses the report, and so does a tab control with a panel
+  hidden when printing (whether its tab still prints is unmeasured).
 - Navigation parts do not print. A layout with Layout Setup's "Use fixed page
   margins" checked (bit `0x40` of its flags, [layout model](re/layout-model.md#42-views-form-list-table))
   prints within its stored margins (`customMargins`); fixed margins that
@@ -363,7 +369,24 @@ static picture.
   512 MiB past its input; om-gui kills it after 30 seconds, reads back at
   most the picture's pixels, runs one at a time, and takes any failure for
   an SVG that does not draw (error 3). Without the worker beside om-gui,
-  SVG pictures refuse. Before building the tree the worker refuses input
+  SVG pictures refuse. Preview waits for none of this: a picture or button
+  icon not drawn yet is drawn on OpenMaker's one Preview drawing thread
+  while the page shows "Loading report pictures…" and the window keeps
+  painting and taking input; each drawing that ends asks its window for a
+  repaint, and the page is drawn then (the picture kept with Preview's other
+  pictures). The thread draws one picture at a time, oldest request first,
+  and runs only while some wait. At most eight wait, all windows together,
+  a newer request dropping the oldest (whose window is told, and asks again
+  if it still shows it), and each window keeps at most eight finished
+  pictures waiting to be taken. A drawing is not started for a window that
+  is closed or whose pictures were cleared (another snapshot of the layout)
+  since it asked, and one under way then is not kept; the same picture
+  asked for after a clear is drawn anew. A drawing that fails, panics
+  included, is the picture's error. An SVG past the picture limit is
+  refused in line, without copying it, and a drawn picture past the
+  static-picture budget is kept to be refused again rather than drawn again.
+  Save Records as PDF and Print, which run in the script worker, draw in
+  line. Before building the tree the worker refuses input
   past 4 MiB (expanded for SVGZ) or 50,000 XML nodes, XML entity
   declarations, `<image>` (resvg is built without raster decoding) and
   `use`/`feImage` references outside the picture; for Browse and button

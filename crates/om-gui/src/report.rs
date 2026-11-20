@@ -8,7 +8,7 @@ use std::cell::RefCell;
 use std::collections::{BTreeMap, BTreeSet};
 use std::io::Write;
 use std::path::Path;
-use std::sync::{Arc, OnceLock};
+use std::sync::{Arc, Mutex, MutexGuard, OnceLock};
 
 use om_layout::pagination::{paginate, BreakGroups, PageSize, ReportPlan};
 use om_layout::{
@@ -624,10 +624,11 @@ enum Overflow {
 /// fits within its bounds, as FileMaker prints it (Claris: sliding exists to
 /// print more). A text object or button label is cut at its text box too:
 /// Pro clips every label's text to it (layout-model.md 6.5). A field that
-/// slides keeps its measured height and refuses as before.
-fn overflow_of(object: &LayoutObject) -> Overflow {
+/// slides (`slides`, [`PartObjects::slides`]) keeps its measured height and
+/// refuses as before.
+fn overflow_of(object: &LayoutObject, slides: bool) -> Overflow {
     match object.kind() {
-        ObjectKind::Field if object.slide_up().is_none() => Overflow::Clip,
+        ObjectKind::Field if !slides => Overflow::Clip,
         ObjectKind::Text | ObjectKind::Button => Overflow::Clip,
         _ => Overflow::Refuse,
     }
@@ -1053,7 +1054,266 @@ pub(crate) struct Pictures(
     RefCell<BTreeMap<PictureKey, DecodedPicture>>,
     RefCell<BTreeMap<ContainerKey, ContainerPicture>>,
     RefCell<BTreeMap<IconKey, DecodedPicture>>,
+    /// Where SVG pictures and icons are drawn apart
+    /// ([`Pictures::drawn_apart`]).
+    Option<Drawing>,
 );
+
+/// What is drawn apart: a static picture or a button icon, by its cache
+/// key.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord)]
+enum ApartKey {
+    Picture(PictureKey),
+    Icon(IconKey),
+}
+
+/// A drawing waiting for the drawing thread.
+type ApartJob = Box<dyn FnOnce(&LibraryImage) -> Result<Arc<Picture>, ReportError> + Send>;
+
+/// How many drawings wait at most, all Preview windows together: a request
+/// past them drops the oldest, whose window is told so that it asks again
+/// if it still shows it.
+const APART_QUEUED: usize = 8;
+/// How many drawn pictures one session keeps waiting to be taken; the
+/// oldest goes first.
+const APART_DRAWN: usize = 8;
+
+/// One Preview session's SVG pictures and icons drawn apart, on the
+/// process's one drawing thread ([`DRAWER`]): it draws one picture at a
+/// time, oldest request first, runs only while some wait, and draws
+/// nothing for a session that is gone or was cleared since it asked.
+#[derive(Default)]
+pub(crate) struct Drawing(Arc<Mutex<Owner>>);
+
+#[derive(Default)]
+struct Owner {
+    /// Drawn and not taken yet, oldest first, at most [`APART_DRAWN`].
+    drawn: std::collections::VecDeque<(ApartKey, DecodedPicture)>,
+    /// Asked for in this generation and not drawn yet (waiting or being
+    /// drawn): asked again, they are not drawn twice.
+    pending: BTreeSet<ApartKey>,
+    /// Bumped when the pictures are cleared: what was asked before is not
+    /// kept.
+    generation: u64,
+    /// Called after each drawing of this session ends, kept or not, for
+    /// Preview to draw its page again.
+    notify: Option<Arc<dyn Fn() + Send + Sync>>,
+}
+
+/// Which session (while it lasts), picture and generation a drawing is
+/// for.
+struct Ticket {
+    owner: std::sync::Weak<Mutex<Owner>>,
+    key: ApartKey,
+    generation: u64,
+}
+
+/// A drawing asked for.
+struct DrawJob {
+    ticket: Ticket,
+    image: LibraryImage,
+    draw: ApartJob,
+}
+
+/// The drawings waiting for the drawing thread, and whether it runs.
+struct Drawer {
+    queue: std::collections::VecDeque<DrawJob>,
+    running: bool,
+}
+
+static DRAWER: Mutex<Drawer> = Mutex::new(Drawer {
+    queue: std::collections::VecDeque::new(),
+    running: false,
+});
+
+impl Ticket {
+    /// Ends the drawing: keeps what it drew, if anything, for a session
+    /// that still waits for it, and with `tell` tells the session, which
+    /// asks again on its next repaint for what it still needs.
+    fn end(self, drawn: Option<DecodedPicture>, tell: bool) {
+        let Some(owner) = self.owner.upgrade() else {
+            return;
+        };
+        let notify = {
+            let mut owner = lock(&owner);
+            if owner.generation == self.generation {
+                owner.pending.remove(&self.key);
+                if let Some(drawn) = drawn {
+                    if owner.drawn.len() >= APART_DRAWN {
+                        owner.drawn.pop_front();
+                    }
+                    owner.drawn.push_back((self.key, drawn));
+                }
+            }
+            owner.notify.clone().filter(|_| tell)
+        };
+        if let Some(notify) = notify {
+            notify();
+        }
+    }
+
+    /// Whether its session is still there and asks in the same
+    /// generation.
+    fn live(&self) -> bool {
+        self.owner
+            .upgrade()
+            .is_some_and(|owner| lock(&owner).generation == self.generation)
+    }
+}
+
+/// The drawing thread: draws what waits, oldest first, skipping what no
+/// session waits for any more, and ends when nothing waits. A drawing that
+/// panics is an error, so its picture never stays pending.
+fn run_drawer() {
+    loop {
+        let DrawJob {
+            ticket,
+            image,
+            draw,
+        } = {
+            let mut drawer = lock(&DRAWER);
+            match drawer.queue.pop_front() {
+                Some(job) => job,
+                None => {
+                    drawer.running = false;
+                    return;
+                }
+            }
+        };
+        if !ticket.live() {
+            ticket.end(None, true);
+            continue;
+        }
+        let picture = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| draw(&image)))
+            .unwrap_or_else(|_| {
+                Err(ReportError::unsupported(
+                    "A report picture could not be drawn",
+                ))
+            });
+        ticket.end(Some((image, picture)), true);
+    }
+}
+
+impl Drawing {
+    /// The picture `draw` makes of `image` for `key`, once drawn (taken out
+    /// of here for the caller's cache); pending until then. A drawing of
+    /// bytes the layout no longer has is drawn again.
+    fn take_or_start(
+        &self,
+        key: ApartKey,
+        image: &LibraryImage,
+        draw: impl FnOnce(&LibraryImage) -> Result<Arc<Picture>, ReportError> + Send + 'static,
+    ) -> Result<Arc<Picture>, ReportError> {
+        let generation = {
+            let mut owner = lock(&self.0);
+            if let Some(at) = owner.drawn.iter().position(|(k, _)| *k == key) {
+                if let Some((_, (source, picture))) = owner.drawn.remove(at) {
+                    if source == *image {
+                        return picture;
+                    }
+                }
+            }
+            if !owner.pending.insert(key) {
+                return Err(drawing_pictures());
+            }
+            owner.generation
+        };
+        let job = DrawJob {
+            ticket: Ticket {
+                owner: Arc::downgrade(&self.0),
+                key,
+                generation,
+            },
+            image: image.clone(),
+            draw: Box::new(draw),
+        };
+        let (dropped, start) = {
+            let mut drawer = lock(&DRAWER);
+            let dropped = (drawer.queue.len() >= APART_QUEUED)
+                .then(|| drawer.queue.pop_front())
+                .flatten();
+            drawer.queue.push_back(job);
+            let start = !drawer.running;
+            drawer.running = true;
+            (dropped, start)
+        };
+        if let Some(dropped) = dropped {
+            dropped.ticket.end(None, true);
+        }
+        if start {
+            if let Err(error) = std::thread::Builder::new()
+                .name("om-preview-pictures".into())
+                .spawn(run_drawer)
+            {
+                let waiting: Vec<DrawJob> = {
+                    let mut drawer = lock(&DRAWER);
+                    drawer.running = false;
+                    drawer.queue.drain(..).collect()
+                };
+                // Untold: a repaint would only ask again and fail again.
+                for job in waiting {
+                    job.ticket.end(None, false);
+                }
+                return Err(ReportError::unsupported(format!(
+                    "Preview could not start drawing its pictures: {error}"
+                )));
+            }
+        }
+        Err(drawing_pictures())
+    }
+
+    /// Keeps `picture`, drawn here and taken, to be taken again: one its
+    /// caller could not keep (past the static-picture budget) is not drawn
+    /// again on every repaint.
+    fn keep(
+        &self,
+        key: ApartKey,
+        image: &LibraryImage,
+        picture: Result<Arc<Picture>, ReportError>,
+    ) {
+        let mut owner = lock(&self.0);
+        if owner.drawn.len() >= APART_DRAWN {
+            owner.drawn.pop_front();
+        }
+        owner.drawn.push_back((key, (image.clone(), picture)));
+    }
+
+    /// Calls `notify` after each drawing ends, once one is set.
+    fn on_drawn(&self, notify: impl FnOnce() -> Arc<dyn Fn() + Send + Sync>) {
+        let mut owner = lock(&self.0);
+        if owner.notify.is_none() {
+            owner.notify = Some(notify());
+        }
+    }
+
+    /// Throws away what is drawn and what was asked for: a drawing asked
+    /// before is not kept, and the same picture asked for again is drawn
+    /// anew rather than waiting for it.
+    fn clear(&self) {
+        let mut owner = lock(&self.0);
+        owner.generation = owner.generation.wrapping_add(1);
+        owner.drawn.clear();
+        owner.pending.clear();
+    }
+}
+
+/// `mutex`'s value, also after a thread panicked holding it: the maps it
+/// guards stay whole.
+fn lock<T>(mutex: &Mutex<T>) -> MutexGuard<'_, T> {
+    mutex
+        .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner)
+}
+
+/// The error a page gives while one of its SVG pictures is being drawn
+/// apart: pending (code -1, as for data still loading), so Preview says so
+/// and draws the page again later.
+fn drawing_pictures() -> ReportError {
+    ReportError {
+        code: -1,
+        message: "Loading report pictures…".into(),
+    }
+}
 /// A library picture's key, and for SVG the raster size in pixels it is
 /// drawn at.
 type PictureKey = (u64, Option<[u32; 2]>);
@@ -1090,8 +1350,15 @@ fn rasterize_icon(
     tint: Option<egui::Color32>,
     side: u32,
 ) -> Result<Picture, ReportError> {
-    let data = crate::document::tinted_image(image, tint);
-    static_picture::svg(&data, Some([side, side]), svg_worker::Unsupported::Skip).map_err(|error| {
+    let data = if image.data.len() as u64 > static_picture::MAX_BYTES {
+        Err("SVG input exceeds the picture limit".to_owned())
+    } else {
+        Ok(crate::document::tinted_image(image, tint))
+    };
+    data.and_then(|data| {
+        static_picture::svg(&data, Some([side, side]), svg_worker::Unsupported::Skip)
+    })
+    .map_err(|error| {
         ReportError::unsupported(format!(
             "Library image {key} could not be drawn for the report: {error}"
         ))
@@ -1123,10 +1390,36 @@ fn icon_square(object: &LayoutObject, bounds: &Rect, label: &str) -> Option<Rect
     })
 }
 impl Pictures {
+    /// Preview's pictures: an SVG picture or icon not drawn yet is drawn in
+    /// the SVG worker from the session's drawing thread ([`Drawing`]), which
+    /// can take seconds (`svg_worker`), and the page is pending
+    /// ([`drawing_pictures`]) until it is, so the window keeps painting and
+    /// taking input meanwhile. PDF and Print draw in line
+    /// ([`Pictures::default`]).
+    pub fn drawn_apart() -> Pictures {
+        Pictures(
+            Default::default(),
+            Default::default(),
+            Default::default(),
+            Some(Drawing::default()),
+        )
+    }
+
     pub fn clear(&mut self) {
         self.0.get_mut().clear();
         self.1.get_mut().clear();
         self.2.get_mut().clear();
+        if let Some(drawing) = &self.3 {
+            drawing.clear();
+        }
+    }
+
+    /// Has `notify` made (once) and called after each picture drawn apart
+    /// is ready: Preview asks for a repaint then, rather than polling.
+    pub fn on_drawn(&self, notify: impl FnOnce() -> Arc<dyn Fn() + Send + Sync>) {
+        if let Some(drawing) = &self.3 {
+            drawing.on_drawn(notify);
+        }
     }
 
     /// Button `object`'s icon, library image `key`, `side` pixels square:
@@ -1154,11 +1447,23 @@ impl Pictures {
                 return picture.clone();
             }
         }
-        let picture = match image.format {
-            LibraryImageFormat::Svg => rasterize_icon(key, image, tint, side),
-            _ => decode_picture(key, image),
-        }
-        .map(Arc::new);
+        // An icon past the SVG limit is refused in line, never copied.
+        let apart = self
+            .3
+            .as_ref()
+            .filter(|_| image.data.len() as u64 <= static_picture::MAX_BYTES);
+        let picture = match (image.format, apart) {
+            (LibraryImageFormat::Svg, Some(drawing)) => {
+                match drawing.take_or_start(ApartKey::Icon(cache_key), image, move |image| {
+                    rasterize_icon(key, image, tint, side).map(Arc::new)
+                }) {
+                    Err(error) if error.code == -1 => return Err(error),
+                    drawn => drawn,
+                }
+            }
+            (LibraryImageFormat::Svg, None) => rasterize_icon(key, image, tint, side).map(Arc::new),
+            _ => decode_picture(key, image).map(Arc::new),
+        };
         decoded.insert(cache_key, (image.clone(), picture.clone()));
         picture
     }
@@ -1215,7 +1520,22 @@ impl Pictures {
                 return picture.clone();
             }
         }
-        let picture = static_picture::decode(key, image, size).map(Arc::new);
+        // A picture past the SVG limit is refused in line, never copied.
+        let apart = self
+            .3
+            .as_ref()
+            .filter(|_| image.data.len() as u64 <= static_picture::MAX_SVG_BYTES);
+        let picture = match (apart, size) {
+            (Some(drawing), Some(_)) => {
+                match drawing.take_or_start(ApartKey::Picture(cache_key), image, move |image| {
+                    static_picture::decode(key, image, size).map(Arc::new)
+                }) {
+                    Err(error) if error.code == -1 => return Err(error),
+                    drawn => drawn,
+                }
+            }
+            _ => static_picture::decode(key, image, size).map(Arc::new),
+        };
         let retained: usize = decoded
             .values()
             .map(|(source, p)| {
@@ -1230,6 +1550,11 @@ impl Pictures {
             .saturating_add(image.data.len())
             > 512 << 20
         {
+            // Drawn apart, it is kept there to be refused again, not drawn
+            // again on every repaint.
+            if let (Some(drawing), Some(_)) = (apart, size) {
+                drawing.keep(ApartKey::Picture(cache_key), image, picture);
+            }
             return Err(ReportError::unsupported(
                 "Report static pictures exceed the 512 MiB static-picture cache budget",
             ));
@@ -1607,23 +1932,37 @@ fn walk_report_objects<'a>(
         })
         .filter_map(part_of)
         .collect();
-    if let Some(object) =
-        layout.objects.objects.iter().find(|o| {
-            o.slide_up().is_some() && part_of(o).is_some_and(|part| beyond.contains(&part))
-        })
-    {
-        refuse(ReportError::unsupported(format!(
-            "Report object {} slides up in a part with objects beyond the printable width; \
-             how those slide is unmeasured",
-            object.id
-        )))?;
+    // Likewise whether an object hidden when printing still holds back
+    // what slides up below it.
+    let hidden: BTreeSet<usize> = (layout.objects.objects.iter())
+        .filter(|o| o.flags & sliding::NON_PRINTING != 0)
+        .filter_map(part_of)
+        .collect();
+    for (parts, what) in [
+        (&beyond, "objects beyond the printable width"),
+        (&hidden, "objects hidden when printing"),
+    ] {
+        // Only what prints can slide: a slider that is itself left out (or
+        // inside what is) moves nothing.
+        if let Some((object, _, _)) = objects.iter().find(|(o, _, _)| {
+            part_of(o).is_some_and(|part| {
+                parts.contains(&part) && slide_in_part(layout, o, part).is_some()
+            })
+        }) {
+            refuse(ReportError::unsupported(format!(
+                "Report object {} slides up in a part with {what}; how those slide is \
+                 unmeasured",
+                object.id
+            )))?;
+        }
     }
     // Whether a sliding object overlapping another would move over, under or
     // out of it natively is unmeasured; such layouts are refused.
     for (i, (a, ra, pa)) in objects.iter().enumerate() {
         for (b, rb, pb) in &objects[i + 1..] {
             if pa == pb
-                && (a.slide_up().is_some() || b.slide_up().is_some())
+                && (slide_in_part(layout, a, *pa).is_some()
+                    || slide_in_part(layout, b, *pb).is_some())
                 && ra.left < rb.right - SLIDE_EPSILON
                 && rb.left < ra.right - SLIDE_EPSILON
                 && ra.top < rb.bottom - SLIDE_EPSILON
@@ -1793,8 +2132,9 @@ fn beyond_page(object: &LayoutObject, rect: &Rect, paper: &PageSize) -> bool {
 /// One object's place in the report: its absolute bounds and part, after
 /// the checks every report object passes. `via` is the index in `objects`
 /// of the group the object was reached through, `None` for a top-level
-/// object. `None` for an object in a navigation part or wholly beyond the
-/// printable width, which never prints (and neither do its contents).
+/// object. `None` for an object hidden when printing, in a navigation part
+/// or wholly beyond the printable width, which never prints (and neither
+/// do its contents).
 fn report_object<'a>(
     layout: &'a Layout,
     paper: &PageSize,
@@ -1802,6 +2142,26 @@ fn report_object<'a>(
     via: Option<usize>,
     objects: &[SourceObject<'a>],
 ) -> Result<Option<SourceObject<'a>>, ReportError> {
+    // Hide when printing leaves the object, and what it holds, out of
+    // every printed page (Claris, "Removing blank spaces in printouts";
+    // layout-model.md 5.8), whatever else it is set to do or wherever it
+    // is: nothing else about it is checked.
+    if object.flags & sliding::NON_PRINTING != 0 {
+        return Ok(None);
+    }
+    // Whether a tab control draws the caption of a panel hidden when
+    // printing is unmeasured.
+    if object.kind() == ObjectKind::TabControl
+        && (object.children.iter())
+            .filter_map(|id| layout.objects.get(*id))
+            .any(|panel| panel.flags & sliding::NON_PRINTING != 0)
+    {
+        return Err(ReportError::unsupported(format!(
+            "Report tab control {} has a panel hidden when printing; how its tab prints is \
+             unmeasured",
+            object.id
+        )));
+    }
     let rect = layout
         .absolute_bounds(object.id)
         .ok_or_else(|| ReportError::unsupported("A report object has no geometry"))?;
@@ -1846,15 +2206,10 @@ fn report_object<'a>(
             object.id
         )));
     }
-    if object.flags & sliding::NON_PRINTING != 0 {
-        return Err(ReportError::unsupported(format!(
-            "Report object {} is hidden when printing; non-printing objects are unsupported",
-            object.id
-        )));
-    }
     // A portal's rows have its height; how its objects would slide in a
     // row, or a tab control, is unmeasured.
-    if object.slide_up().is_some()
+    let slides = slide_in_part(layout, object, part).is_some();
+    if slides
         && (in_portal.is_some()
             || matches!(
                 object.kind(),
@@ -1867,7 +2222,7 @@ fn report_object<'a>(
         )));
     }
     // How FileMaker slides a group, or one of its members, is unmeasured.
-    if object.slide_up().is_some() && (group.is_some() || object.kind() == ObjectKind::Group) {
+    if slides && (group.is_some() || object.kind() == ObjectKind::Group) {
         return Err(ReportError::unsupported(format!(
             "Report object {} slides up in a group; sliding groups is unsupported",
             object.id
@@ -1875,16 +2230,10 @@ fn report_object<'a>(
     }
     // Pages are planned without conditions, so one that resized a sliding
     // object's text would not be measured.
-    if object.slide_up().is_some() && !object.calcs.conditions.is_empty() {
+    if slides && !object.calcs.conditions.is_empty() {
         return Err(ReportError::unsupported(format!(
             "Report object {} slides up and has conditional formatting; \
              sliding formatted objects are unsupported",
-            object.id
-        )));
-    }
-    if object.slide_up().is_some() && !slides_in(layout.parts[part].kind()) {
-        return Err(ReportError::unsupported(format!(
-            "Report object {} slides up in a header or footer, which never shrinks",
             object.id
         )));
     }
@@ -1933,7 +2282,7 @@ fn report_object<'a>(
         )
     {
         Some("conditional formatting".to_owned())
-    } else if !object.calcs.undecodable.is_empty() {
+    } else if object.has_undecodable_calcs() {
         Some("calculations OpenMaker cannot read".to_owned())
     } else {
         None
@@ -2201,8 +2550,9 @@ fn printed_flags(kind: ObjectKind) -> u64 {
 /// Tolerance, in points, for touching edges of sliding objects.
 const SLIDE_EPSILON: f64 = 0.01;
 
-/// Parts that can shrink and whose objects can slide. Claris: headers,
-/// footers and title headers/footers never shrink or slide up.
+/// Parts that can shrink and whose objects can slide. Claris: "Headers,
+/// footers, title headers, title footers, and top navigation and bottom
+/// navigation parts never shrink or slide up."
 fn slides_in(kind: PartKind) -> bool {
     matches!(
         kind,
@@ -2214,13 +2564,27 @@ fn slides_in(kind: PartKind) -> bool {
     )
 }
 
+/// `object`'s slide-up option where it takes effect, in `layout`'s part
+/// `part`: none in a part that never slides ([`slides_in`]), where an
+/// object set to slide up prints where it is placed, as one that does not.
+fn slide_in_part(
+    layout: &Layout,
+    object: &LayoutObject,
+    part: usize,
+) -> Option<om_layout::SlideUp> {
+    object
+        .slide_up()
+        .filter(|_| layout.parts.get(part).is_some_and(|p| slides_in(p.kind())))
+}
+
 /// Whether a printed part's height depends on its record: an object there
 /// slides up and also resizes its part. Such a report is measured record by
 /// record before it is paginated; sliding alone moves objects within parts
 /// of fixed height and needs no plan-time content.
 pub(crate) fn resizes_parts(layout: &Layout) -> bool {
     layout.objects.objects.iter().any(|object| {
-        object.slide_up().is_some_and(|slide| slide.resize_part)
+        !hidden_when_printing(layout, object)
+            && object.slide_up().is_some_and(|slide| slide.resize_part)
             && layout.absolute_bounds(object.id).is_some_and(|rect| {
                 layout
                     .parts
@@ -2229,6 +2593,23 @@ pub(crate) fn resizes_parts(layout: &Layout) -> bool {
                     .is_some_and(|p| slides_in(p.kind()))
             })
     })
+}
+
+/// Whether `object` or a container it is in is set to Hide when printing,
+/// so that it never prints ([`report_object`]). Containers are followed at
+/// most as many levels as the layout has objects, so a cycle ends.
+fn hidden_when_printing(layout: &Layout, object: &LayoutObject) -> bool {
+    let mut at = Some(object);
+    for _ in 0..=layout.objects.objects.len() {
+        let Some(object) = at else {
+            return false;
+        };
+        if object.flags & sliding::NON_PRINTING != 0 {
+            return true;
+        }
+        at = object.parent.and_then(|id| layout.objects.get(id));
+    }
+    false
 }
 
 /// In a sub-summary part, a summary field reads its group: the summary and
@@ -2391,7 +2772,7 @@ pub(crate) fn band_refusal(
                 || calcs.placeholder.is_some()
                 || calcs.active_segment.is_some()
                 || !calcs.conditions.is_empty()
-                || !calcs.undecodable.is_empty()
+                || object.has_undecodable_calcs()
             {
                 return Some(
                     "Summary fields with layout calculations in sub-summary parts are unsupported"
@@ -2452,6 +2833,9 @@ struct PartObjects<'s, 'a> {
     resizers: Vec<usize>,
     /// For each object in a portal's rows, the portal's index.
     in_portal: Vec<Option<usize>>,
+    /// Each object's slide-up option where it takes effect: none in a part
+    /// that never slides ([`slide_in_part`]).
+    slides: Vec<Option<om_layout::SlideUp>>,
 }
 
 fn part_objects<'s, 'a>(
@@ -2460,6 +2844,9 @@ fn part_objects<'s, 'a>(
     part: &Part,
 ) -> PartObjects<'s, 'a> {
     let objects: Vec<_> = objects.iter().filter(|(_, _, p)| *p == index).collect();
+    let slides: Vec<_> = (objects.iter())
+        .map(|(object, _, _)| object.slide_up().filter(|_| slides_in(part.kind())))
+        .collect();
     let rects: Vec<Rect> = objects
         .iter()
         .map(|(_, r, _)| Rect {
@@ -2491,8 +2878,8 @@ fn part_objects<'s, 'a>(
     };
     let mut nearest = vec![Vec::new(); rects.len()];
     let mut colliders = vec![Vec::new(); rects.len()];
-    for (o, (object, _, _)) in objects.iter().enumerate() {
-        let Some(slide) = object.slide_up() else {
+    for o in 0..objects.len() {
+        let Some(slide) = slides[o] else {
             continue;
         };
         let candidates: Vec<usize> = (0..rects.len())
@@ -2508,7 +2895,7 @@ fn part_objects<'s, 'a>(
             .collect();
     }
     let resizing: Vec<usize> = (0..rects.len())
-        .filter(|&i| objects[i].0.slide_up().is_some_and(|s| s.resize_part))
+        .filter(|&i| slides[i].is_some_and(|s| s.resize_part))
         .collect();
     let resizers = resizing
         .iter()
@@ -2529,6 +2916,7 @@ fn part_objects<'s, 'a>(
         colliders,
         resizers,
         in_portal,
+        slides,
     }
 }
 
@@ -2561,7 +2949,7 @@ fn layout_part(
     let mut data = Vec::with_capacity(count);
     let mut shrink = vec![0.0; count];
     for (i, (object, _, _)) in part.objects.iter().enumerate() {
-        let shrinks = object.slide_up().is_some() && object.kind() == ObjectKind::Field;
+        let shrinks = part.slides[i].is_some() && object.kind() == ObjectKind::Field;
         let value = if matches!(
             object.kind(),
             ObjectKind::Text | ObjectKind::Field | ObjectKind::Button
@@ -2664,7 +3052,13 @@ fn layout_part(
                     _ => bounds.clone(),
                 };
                 (
-                    prepare_text_in(&value, &label, &style, overflow_of(object))?.0,
+                    prepare_text_in(
+                        &value,
+                        &label,
+                        &style,
+                        overflow_of(object, part.slides[i].is_some()),
+                    )?
+                    .0,
                     conditions,
                     icon,
                 )
@@ -2862,7 +3256,13 @@ fn portal_rows(
                         _ => bounds.clone(),
                     };
                     (
-                        prepare_text_in(&value, &label, &style, overflow_of(object))?.0,
+                        prepare_text_in(
+                            &value,
+                            &label,
+                            &style,
+                            overflow_of(object, part.slides[j].is_some()),
+                        )?
+                        .0,
                         conditions,
                         icon,
                     )
@@ -4144,6 +4544,89 @@ pub(crate) mod tests {
         rotated.extend_from_slice(&exif);
         rotated.extend_from_slice(&jpeg[2..]);
         rotated
+    }
+
+    /// Preview's pictures draw an SVG apart: reads are pending (code -1)
+    /// while the drawing thread runs, the finished drawing calls for a
+    /// repaint, and the next read takes its picture, the one PDF and
+    /// Print's pictures draw in line; then it is kept like any other.
+    #[test]
+    fn preview_draws_svg_pictures_apart_and_reads_them_pending_meanwhile() {
+        let mut layout = Layout::default();
+        layout.library_images.insert(
+            77,
+            LibraryImage {
+                format: LibraryImageFormat::Svg,
+                data: br#"<svg xmlns="http://www.w3.org/2000/svg" width="8" height="8"><rect width="8" height="8" fill="red"/></svg>"#.to_vec(),
+            },
+        );
+        let object = picture(1, 77, at(0.0, 0.0, 8.0, 8.0));
+        let in_line = Pictures::default().get(&layout, &object).unwrap();
+        let apart = Pictures::drawn_apart();
+        let (sender, repaint) = std::sync::mpsc::channel();
+        apart.on_drawn(|| {
+            Arc::new(move || {
+                let _ = sender.send(());
+            })
+        });
+        assert_eq!(apart.get(&layout, &object).unwrap_err().code, -1);
+        repaint
+            .recv_timeout(std::time::Duration::from_secs(30))
+            .expect("drawn");
+        let drawn = apart.get(&layout, &object).unwrap();
+        assert_eq!(
+            (drawn.width, drawn.height, &drawn.rgba),
+            (in_line.width, in_line.height, &in_line.rgba)
+        );
+        assert!(Arc::ptr_eq(&apart.get(&layout, &object).unwrap(), &drawn));
+        assert!(repaint.try_recv().is_err());
+    }
+
+    /// A drawing that panics is its picture's error rather than pending
+    /// for ever. A drawing under way when the pictures are cleared is not
+    /// kept, and the same picture asked for after the clear is drawn anew
+    /// rather than waiting for it; the session is told when each ends.
+    #[test]
+    fn drawings_apart_end_in_an_error_or_are_drawn_anew_after_a_clear() {
+        let drawing = Drawing::default();
+        let (sender, repaint) = std::sync::mpsc::channel();
+        drawing.on_drawn(|| {
+            Arc::new(move || {
+                let _ = sender.send(());
+            })
+        });
+        let image = LibraryImage {
+            format: LibraryImageFormat::Svg,
+            data: b"<svg/>".to_vec(),
+        };
+        let wait = std::time::Duration::from_secs(30);
+        let panicking = ApartKey::Picture((1, None));
+        let pending = drawing.take_or_start(panicking, &image, |_| panic!("drawing"));
+        assert_eq!(pending.unwrap_err().code, -1);
+        repaint.recv_timeout(wait).expect("drawn");
+        let failed = drawing.take_or_start(panicking, &image, |_| unreachable!());
+        assert_eq!(failed.unwrap_err().code, 3);
+        let cleared = ApartKey::Picture((2, None));
+        let (started, under_way) = std::sync::mpsc::channel();
+        let (release, gate) = std::sync::mpsc::channel::<()>();
+        let pending = drawing.take_or_start(cleared, &image, move |_| {
+            let _ = started.send(());
+            let _ = gate.recv();
+            Err(ReportError::unsupported("before the clear"))
+        });
+        assert_eq!(pending.unwrap_err().code, -1);
+        under_way.recv_timeout(wait).expect("under way");
+        drawing.clear();
+        let anew = drawing.take_or_start(cleared, &image, |_| {
+            Err(ReportError::unsupported("after the clear"))
+        });
+        assert_eq!(anew.unwrap_err().code, -1);
+        release.send(()).unwrap();
+        // The cleared drawing ends untaken, then the new one is kept.
+        repaint.recv_timeout(wait).expect("cleared drawing ended");
+        repaint.recv_timeout(wait).expect("new drawing ended");
+        let drawn = drawing.take_or_start(cleared, &image, |_| unreachable!());
+        assert_eq!(drawn.unwrap_err().message, "after the clear");
     }
 
     #[test]

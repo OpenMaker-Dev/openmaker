@@ -423,7 +423,9 @@ pub struct ObjectGeom {
     /// Bounds in layout coordinates (points). Absolute: a contained object's
     /// bounds are already offset by its containers'.
     pub rect: GeomRect,
-    /// For a field object, the name of the field it shows, when known.
+    /// For a field object, the name of the field it shows, when known: the
+    /// bare name for a field of the layout's own occurrence, and
+    /// `Occurrence::Field` for one another occurrence shows.
     pub field_name: Option<String>,
     /// The object's key in the layout's object store (0 when it is not a
     /// stored object).
@@ -1126,6 +1128,14 @@ pub trait DataProvider: Send {
         ))
     }
 
+    /// The records the open transaction created and still holds, as (base
+    /// table, record id), whichever window made them: what
+    /// [`Self::revert_transaction`] removes. None from a provider that
+    /// does not tell.
+    fn transaction_created(&self) -> Vec<(u64, i64)> {
+        Vec::new()
+    }
+
     /// The results of scripts started with a callback, waiting up to `wait`
     /// for the first; oldest first.
     fn server_script_results(
@@ -1209,6 +1219,17 @@ pub trait DataProvider: Send {
         Err(DataError::new(
             "This provider does not support deleting records.",
         ))
+    }
+
+    /// Delete Record as a script step runs it. Inside a script's
+    /// transaction, a record of another file's table is held in that
+    /// file's part (record-writes.md, "A script's transaction across
+    /// files"). The user's own [`Self::delete_record`] of such a record is
+    /// refused while a script is paused inside the transaction, as the
+    /// user's edits there are: the transaction would hold a change no
+    /// step of it made.
+    fn delete_record_in_script(&mut self, layout_id: u32, record_id: i64) -> Result<(), DataError> {
+        self.delete_record(layout_id, record_id)
     }
 
     /// Refuse a commit through layout `layout_id` whose records the

@@ -22,6 +22,7 @@ in [architecture.md](architecture.md).
     XWayland and the X11 libraries winit opens (Debian/Ubuntu:
     `libxkbcommon-x11-0`, `libx11-xcb1`, `libxcursor1`, `libxi6`).
     Without them the windows stay on Wayland and web viewers show a note.
+    On macOS they use the system's WKWebView, with nothing to install.
   - Saving a FileMaker client license: an unlocked desktop Secret Service
     on Linux (Keychain on macOS, Credential Manager on Windows).
   - Print: CUPS (`lp`).
@@ -31,7 +32,7 @@ in [architecture.md](architecture.md).
 ```sh
 cargo run -p om-gui                                  # desktop client
 OPENMAKER_PROVIDER=mock cargo run -p om-gui          # labeled sample data, no server
-cargo run -p om-gui --features web-viewer            # with embedded web viewers (Linux: X11, or XWayland on Wayland)
+cargo run -p om-gui --features web-viewer            # with embedded web viewers (Linux: X11, or XWayland on Wayland; macOS)
 cargo run -p om-server -- --list-all <file.fmp12>... # OpenMaker Server (see Hosting a file below)
 OM_ADMIN_PASSWORD=<password> cargo run -p om-admin --example mock_console  # Admin Console on sample data, https://localhost:16000
 cargo run -p om-client                               # protocol probe: prints isa/connect/open/login/files usage
@@ -121,6 +122,47 @@ OPENMAKER_CA_CERT=~/.local/state/openmaker-server/tls/cert.pem OPENMAKER_HOST=lo
 In the Hosts dialog, type the account's password in the file and choose
 Open; **List files** shows the hosted file.
 
+Files can also be put in a database folder instead of named on the
+command line. At startup the server hosts the `.fmp12` files at the
+folder's root and in its subfolders, one level deep, as FileMaker Server
+opens its database folders' (Claris: "Database folders"). The default
+folder is `Databases` in the state folder
+(`~/.local/state/openmaker-server/Databases`, or
+`$STATE_DIRECTORY/Databases` under systemd). The server makes it for its
+own user only, and does not use it when it is a link, belongs to another
+user, or others may write in it. It is searched also when files are named
+on the command line. `--database-folder <dir>`, given once or more,
+replaces it; a folder named this way is resolved once, links and all,
+since the administrator chose it. Inside a database folder only regular
+files and folders are used, never a link, so a database elsewhere is
+hosted by naming its folder or the file itself. A file named on the
+command line may be a link to a regular file; every hosted file must be a
+regular file, and one that is not (a FIFO, a device) is refused without
+being waited on.
+
+Files named on the command line come first. A found file with the name of
+one already hosted is left out and logged. The backup and log folders in
+use (`--backup-folder` and `--log-folder`, or their defaults) and
+everything inside them are not searched; a schedule's own backup target is
+not excluded. At most 200,000 entries are read across all the folders and
+10,000 files found. The entry limit applies as entries are read, before
+they are sorted, so past it which files are found depends on the order the
+system lists them. A file copied in after startup is not hosted until the
+server starts again. With no files at all the server still starts, with an
+empty file list; when files are found or named and none of them opens, it
+does not start.
+
+Discovery checks each entry when it reads the folder. The server opens,
+recovers and saves a hosted file by its path afterwards, during startup
+(between discovery and the file's load, and a recovery's save while it
+loads) as well as later on. So whoever may write in a database folder,
+in one of its subfolders, or in a folder above them can still change what
+that path leads to. Keep database folders, their subfolders and the
+folders above them writable by the server's user only
+([#468](https://github.com/OpenMaker-Dev/openmaker/issues/468)). Once the
+entry limit is reached, the log says how many folders were left unread
+and names the first.
+
 Failed logins are limited. After 5 failures an address (an IPv6 address by
 its /64) may try once a minute; after 30 failures of an account of a file
 from all addresses, it may be tried once every 30 s, except from addresses
@@ -149,9 +191,15 @@ requests to every member of one ([#227](https://github.com/OpenMaker-Dev/openmak
 run any Perform Script on Server script and make `om-author` edits. One in
 [Data Entry Only] or [Read-Only Access] runs any script under its set: it
 reads every record, and under [Data Entry Only] creates, edits and deletes
-them, while [Read-Only Access]'s writes are refused with 200. An account in
-a custom set (admitted by a local file's private host) runs only scripts
-set to run with full access privileges. Only [Full Access] authors. The rules and their error codes are in
+them, while [Read-Only Access]'s writes are refused with 200. In a server
+script session (Perform Script on Server or a schedule), an account in a
+custom set (admitted by a local file's private host) runs the scripts its
+set makes executable. One its set gives no access runs only when a script
+running with full access performs it, and then with the account's own
+privileges. Its steps read and write no record or field unless the script
+is set to run with full access privileges, since the set's data limits
+are not applied to server scripts yet. Desktop scripts apply the set's
+data limits themselves. Only [Full Access] authors. The rules and their error codes are in
 [docs/re/local-files.md](re/local-files.md) 2. A desktop's private host
 for a local file applies the same ones, but admits the custom sets
 OpenMaker enforces, since its one client is the desktop itself. A password,
