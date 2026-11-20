@@ -1087,6 +1087,8 @@ enabled in Browse while the record has changes no commit has kept (typed
 or left by scripts, its portal rows and related fields included, or a
 new record not yet committed, untouched too) and no save of it is in
 flight, and disabled while edits wait for Keep or Discard My Changes.
+With a field active, Revert runs OnObjectExit and OnRecordRevert as
+applicable, skipping the field's save and validation triggers.
 Revert Request... is enabled while the current request has a criterion
 typed. Neither has a shortcut. The alert has no title and reads "Revert
 all changes to this record since it was last entered?" ("... to this

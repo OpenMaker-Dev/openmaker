@@ -496,6 +496,9 @@ pub(crate) enum Action {
     CancelDeleteRecord,
     CommitRecord,
     RevertRecord,
+    /// A menu action waiting for the field exit it caused, including any
+    /// record edit preparation before the exit triggers can run.
+    MenuFieldExit(Box<Action>),
     RunButton {
         object_id: u64,
         record_index: u64,
@@ -1267,16 +1270,12 @@ impl OpenMakerApp {
         Some((u64::from(session.layout?), session.current_record()?.1.id))
     }
 
-    /// The menu commands chosen this frame (`chosen`) while a field is
-    /// entered: one other than the field's own (Edit's, and Insert's into
-    /// the field) ends the field's editing first, its validation, save and
-    /// exit triggers running, and runs once they let it go
-    /// (`WindowState::menu_exit`), as a keyboard commit does. A click on the
-    /// menus leaves the field entered (`draw_window_with`), so the field's
-    /// own commands act on it.
-    fn menu_leaves_field(&mut self, ui: &Ui, chosen: &[Action]) {
-        let own = |action: &Action| {
-            matches!(
+    /// Keep field-editing commands in the field. Revert also takes the
+    /// active field so its script step can run the discard triggers.
+    /// Other menu commands surrender focus and wait for the exit triggers.
+    fn menu_leaves_field(&mut self, ui: &Ui, chosen: &mut [Action]) {
+        let Some(action) = chosen.iter_mut().find(|action| {
+            !matches!(
                 action,
                 Action::EditField(_)
                     | Action::Step(
@@ -1284,12 +1283,12 @@ impl OpenMakerApp {
                             | steps::INSERT_CURRENT_TIME
                             | steps::INSERT_CURRENT_USER_NAME
                             | steps::INSERT_FROM_INDEX
-                            | steps::INSERT_FROM_LAST_VISITED,
+                            | steps::INSERT_FROM_LAST_VISITED
+                            | om_data::scripts::revert_record::STEP_ID,
                         _
                     )
             )
-        };
-        let Some(action) = chosen.iter().find(|action| !own(action)) else {
+        }) else {
             return;
         };
         if self.w.document.active.is_none() {
@@ -1300,7 +1299,7 @@ impl OpenMakerApp {
                 memory.surrender_focus(editor);
             }
         });
-        self.w.menu_exit = Some(action.clone());
+        *action = Action::MenuFieldExit(Box::new(action.clone()));
     }
 
     /// A text field of the current record is entered for typing in Browse,
@@ -1601,7 +1600,7 @@ impl OpenMakerApp {
             let top = ui.available_rect_before_wrap().top();
             let before = actions.len();
             on_menus = self.menu_bar(ui, input, &mut actions);
-            self.menu_leaves_field(ui, &actions[before..]);
+            self.menu_leaves_field(ui, &mut actions[before..]);
             self.w.menu_height = ui.available_rect_before_wrap().top() - top;
         }
         if front {
@@ -1968,8 +1967,6 @@ impl OpenMakerApp {
         // A first edit and focus change can share a frame. Retain before
         // validation, save, exit or enter triggers can send the draft.
         self.retain_drafts(&ctx);
-        // A menu command waits for the field it left only in this frame.
-        let menu_exit = self.w.menu_exit.take();
         if left.is_some() || entered.is_some() {
             let was_modified = left.as_ref().is_some_and(|(f, _)| {
                 modified.iter().any(|(m, _)| m == f)
@@ -1985,7 +1982,14 @@ impl OpenMakerApp {
             // The click that left the field: a menu command's, a button's,
             // else the layout background's, which commits the record
             // (#1066).
+            let menu_exit = actions
+                .iter()
+                .find(|a| matches!(a, Action::MenuFieldExit(_)));
             let button = menu_exit
+                .and_then(|action| match action {
+                    Action::MenuFieldExit(action) => Some(action.as_ref().clone()),
+                    _ => None,
+                })
                 .or_else(|| {
                     actions
                         .iter()
@@ -1998,7 +2002,7 @@ impl OpenMakerApp {
                         .find(|action| matches!(action, Action::CommitRecord))
                         .cloned()
                 });
-            let held = button.as_ref().map(std::mem::discriminant);
+            let held = menu_exit.or(button.as_ref()).map(std::mem::discriminant);
             if self.focus_changed(&ctx, left, entered, was_modified, button) {
                 // This click began the exit chain; its held continuation
                 // runs only after all exit triggers approve. Later input
@@ -2018,18 +2022,27 @@ impl OpenMakerApp {
             self.w.document.drop_portal_click();
         }
 
-        if self.script.busy() || self.script.prompt.is_some() {
-            // A running script owns the window; only quitting and the
-            // window's own controls go on.
-            actions.retain(|a| matches!(a, Action::DismissAlert | Action::Quit | Action::Minimize));
-        }
-        if self.w.style.card().is_some() {
-            // A card has no status toolbar or formatting bar to show.
-            actions.retain(|a| !matches!(a, Action::ToggleToolbar | Action::ToggleFormattingBar));
-        }
+        let action_for_dispatch = |action| match action {
+            Action::MenuFieldExit(action) => *action,
+            action => action,
+        };
+        let busy = self.script.busy() || self.script.prompt.is_some();
+        let card = self.w.style.card().is_some();
         // What this frame painted asked for the context it painted (#987).
         let painted = (self.w.id, self.w.calcs.reads_for(self.w.read_context()));
-        for action in actions {
+        for action in actions.into_iter().map(action_for_dispatch) {
+            // A running script owns the window. A card has no toolbars.
+            if busy
+                && !matches!(
+                    action,
+                    Action::DismissAlert | Action::Quit | Action::Minimize
+                )
+            {
+                continue;
+            }
+            if card && matches!(action, Action::ToggleToolbar | Action::ToggleFormattingBar) {
+                continue;
+            }
             self.apply(&ctx, action);
         }
         // Edits begun this frame answer to the record as the window showed
@@ -3487,6 +3500,7 @@ impl OpenMakerApp {
             return;
         }
         match action {
+            Action::MenuFieldExit(_) => unreachable!("resolved before dispatch"),
             Action::ShowSettings => {
                 if self.settings.is_none() {
                     self.settings = Some(crate::settings::SettingsDialog::new());

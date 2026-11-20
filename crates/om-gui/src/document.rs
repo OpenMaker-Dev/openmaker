@@ -8742,6 +8742,14 @@ mod tests {
         let (token, request) = state.prepare_candidates(true).pop().unwrap();
         assert_eq!(request.baseline.version, Some(7));
         assert!(state.drafts().is_empty());
+        let mut left = Some(("Name".into(), Some(5)));
+        let mut entered = None;
+        let mut modified = Vec::new();
+        let command = Action::MenuFieldExit(Box::new(Action::Quit));
+        let mut actions = vec![command.clone()];
+        state.hold_candidate_actions(&mut left, &mut entered, &mut modified, &mut actions);
+        assert!(actions.is_empty());
+        assert!(left.is_none());
         state
             .buffers
             .get_mut(&key)
@@ -8750,6 +8758,9 @@ mod tests {
             .push_str(" paste IME");
         assert!(state.accept_edit_preparation(token, &request, true));
         assert_eq!(state.drafts()[&(3, 1)][0].value, "typed paste IME");
+        state.hold_candidate_actions(&mut left, &mut entered, &mut modified, &mut actions);
+        assert_eq!(left, Some(("Name".into(), Some(5))));
+        assert_eq!(actions, [command]);
         state.clear_record(3, 1);
         let mut next = FieldBuffer::new("stored");
         next.value = "next".into();

@@ -2120,6 +2120,14 @@ fn a_menu_command_waits_for_the_fields_validation_trigger() {
     assert!(common::text_field(&app, "Name").is_focused());
     assert!(common::unsaved(&app));
     assert_eq!(stored(&hosted, TABLE, &[(NAME, 1)]), before);
+    // Revert keeps the field active for the discard triggers and can
+    // remove the draft that validation would reject on a saving exit.
+    common::revert_record(&mut app);
+    common::wait_until(&mut app, "the draft reverted", |app| {
+        idle(app) && !common::unsaved(app)
+    });
+    assert!(!common::text_field(&app, "Name").is_focused());
+    assert_eq!(stored(&hosted, TABLE, &[(NAME, 1)]), before);
 }
 
 /// The user's focus and typing in a portal row's field run the field
