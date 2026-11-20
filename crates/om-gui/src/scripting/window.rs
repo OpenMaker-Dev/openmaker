@@ -1110,7 +1110,7 @@ impl Window {
             // provider without record sessions. A refused delete has not
             // reverted the new record. Keep its drafts and ownership
             // intact so Discard can be retried.
-            provider.delete_record(layout, id)?;
+            provider.delete_record_in_script(layout, id)?;
         }
         self.discard_previews(provider);
         self.state.uncommitted = Uncommitted::default();
@@ -1423,7 +1423,7 @@ impl Window {
         // provider deletes the record under it, its edits going with the
         // session. A refusal keeps the edits; a session it ended is no
         // longer the window's.
-        let deleted = provider.delete_record(layout, id);
+        let deleted = provider.delete_record_in_script(layout, id);
         let session = self.state.uncommitted.session;
         if session && !provider.record_session_open() && !provider.record_session_held() {
             self.state.uncommitted.session = false;
