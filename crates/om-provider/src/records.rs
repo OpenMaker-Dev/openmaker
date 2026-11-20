@@ -261,17 +261,35 @@ pub(super) fn checked_keys(
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub(super) enum IndexKeys {
     Text(TextKeys),
-    Typed(om_hbam::DataType, om_collate::DateOrder),
+    /// The type, the file's date order and its decimal separator.
+    Typed(om_hbam::DataType, om_collate::DateOrder, char),
 }
 
 impl IndexKeys {
+    /// Whether OpenMaker reads `text` as the index does. In a file whose
+    /// decimal separator is not a point a number with a point or a comma
+    /// (`1.000` is 1000 in German) is not read yet (#415): it is compared
+    /// as text, as before #591, rather than keyed as en-US.
+    fn reads(self, text: &str) -> bool {
+        match self {
+            IndexKeys::Typed(om_hbam::DataType::Number, _, decimal) => {
+                decimal == '.' || !text.contains(['.', ','])
+            }
+            _ => true,
+        }
+    }
+
     /// The key `text` is looked up under, as the index holds it; for a
     /// typed source `None` when it is not one of the type's values
-    /// OpenMaker keys (empty, no digit, digits among other characters).
+    /// OpenMaker keys (empty, no digit, digits among other characters, a
+    /// number it does not read in the file's locale).
     fn key(self, text: &str) -> Option<Vec<u8>> {
+        if !self.reads(text) {
+            return None;
+        }
         match self {
             IndexKeys::Text(keys) => keys.key(text),
-            IndexKeys::Typed(data_type, order) => {
+            IndexKeys::Typed(data_type, order, _) => {
                 om_query::keys::value_keys(data_type, text, order, TextKeys::Collated)
                     .into_iter()
                     .find(|key| {
@@ -291,7 +309,7 @@ impl IndexKeys {
                 om_collate::DateOrder::MonthDayYear,
                 keys,
             ),
-            IndexKeys::Typed(data_type, order) => {
+            IndexKeys::Typed(data_type, order, _) => {
                 record_value_keys(data_type, texts, order, TextKeys::Collated)
             }
         }
@@ -314,7 +332,7 @@ fn list_keys(
     catalog: &Catalog,
     table: u64,
     field: u64,
-    (file_language, order): (Option<u32>, Option<om_collate::DateOrder>),
+    (file_language, order, decimal): (Option<u32>, Option<om_collate::DateOrder>, char),
 ) -> Result<IndexKeys, DataError> {
     use om_hbam::DataType;
     let field_def = catalog.table(table).and_then(|t| t.field(field));
@@ -326,9 +344,9 @@ fn list_keys(
     }) {
         let dated = matches!(def.data_type, DataType::Date | DataType::Timestamp);
         return match (order, dated) {
-            (Some(order), _) => Ok(IndexKeys::Typed(def.data_type, order)),
+            (Some(order), _) => Ok(IndexKeys::Typed(def.data_type, order, decimal)),
             // Numbers and times read no date order.
-            (None, false) => Ok(IndexKeys::Typed(def.data_type, Default::default())),
+            (None, false) => Ok(IndexKeys::Typed(def.data_type, Default::default(), decimal)),
             (None, true) => Err(DataError::unsupported(format!(
                 "Field {field}, the source of a value list, holds dates in an order OpenMaker \
                  does not know: the file's locale record cannot be read."
@@ -1054,7 +1072,13 @@ impl NativeProvider {
                     .ok_or_else(|| DataError::new("A value list names a missing table."))?;
                 let file_language = self.file_language()?;
                 let order = (!schema.locale_unreadable).then_some(schema.locale.date_order);
-                let keys = list_keys(&self.catalog, source_table, source, (file_language, order))?;
+                let decimal = schema.locale.decimal_separator;
+                let keys = list_keys(
+                    &self.catalog,
+                    source_table,
+                    source,
+                    (file_language, order, decimal),
+                )?;
                 if !self.in_index(source_table, source, &text, 0, keys)? {
                     return Err(plan.refusal(field, error::NOT_IN_LIST));
                 }
@@ -1148,7 +1172,7 @@ impl NativeProvider {
             .map_err(|e| failure("check a validated value", e))?;
         match exists_in_index_result(&reply.slots)? {
             Some(answer) => Ok(answer),
-            None => self.scan_index_key(table, field, &key, ignore, keys),
+            None => self.scan_index_key(table, field, (text, &key), ignore, keys),
         }
     }
 
@@ -1160,11 +1184,18 @@ impl NativeProvider {
         &mut self,
         table: u64,
         field: u64,
-        key: &[u8],
+        (text, key): (&str, &[u8]),
         ignore: u64,
         keys: IndexKeys,
     ) -> Result<bool, DataError> {
         use om_hbam::{DataType, FieldKind};
+        // A stored value a typed source's type gives no key OpenMaker
+        // builds compares as text with the checked value, as before #591:
+        // a stored `5` and a zero-width space holds `5`.
+        let as_text = match keys {
+            IndexKeys::Typed(..) => TextKeys::Collated.key(text),
+            IndexKeys::Text(_) => None,
+        };
         let file_language = self.file_language()?;
         let unsupported = |reason: &str| {
             DataError::with_code(
@@ -1191,13 +1222,20 @@ impl NativeProvider {
         // The caller keyed the value as `keys`: stored values are keyed
         // the same, a text source only in that form, a typed one as its
         // own type (#591).
-        let same_form = match keys {
-            IndexKeys::Text(form) => {
-                field.data_type == DataType::Text
-                    && om_data::rules::value_text_keys(options.index_language(), file_language)
-                        == Some(form)
+        let same_form = match (keys, field.data_type) {
+            (IndexKeys::Text(form), DataType::Text) => {
+                om_data::rules::value_text_keys(options.index_language(), file_language)
+                    == Some(form)
             }
-            IndexKeys::Typed(data_type, _) => field.data_type == data_type,
+            // A typed source's value looked up as text (one its type does
+            // not read as one OpenMaker keys): its stored values compare as
+            // text too, as OpenMaker Server's scan compares them.
+            (
+                IndexKeys::Text(form),
+                DataType::Number | DataType::Date | DataType::Time | DataType::Timestamp,
+            ) => form == TextKeys::Collated,
+            (IndexKeys::Text(_), _) => false,
+            (IndexKeys::Typed(data_type, ..), _) => field.data_type == data_type,
         };
         if !same_form
             || !matches!(field.kind, FieldKind::Normal | FieldKind::Calculation)
@@ -1297,7 +1335,17 @@ impl NativeProvider {
                         }
                     })
                     .collect::<Result<Vec<_>, DataError>>()?;
-                if keys.stored(&texts).contains(key) {
+                let (texts, unkeyed): (Vec<String>, Vec<String>) = match keys {
+                    IndexKeys::Typed(..) => texts
+                        .into_iter()
+                        .partition(|text| text.is_empty() || keys.key(text).is_some()),
+                    IndexKeys::Text(_) => (texts, Vec::new()),
+                };
+                if keys.stored(&texts).contains(key)
+                    || unkeyed
+                        .iter()
+                        .any(|text| as_text.is_some() && TextKeys::Collated.key(text) == as_text)
+                {
                     return Ok(true);
                 }
             }
@@ -1828,7 +1876,13 @@ impl NativeProvider {
                 .ok_or_else(|| DataError::new("A value list names a missing table."))?;
             let file_language = self.file_language()?;
             let order = (!file.locale_unreadable).then_some(file.locale.date_order);
-            let keys = list_keys(&self.catalog, source_table, source, (file_language, order))?;
+            let decimal = file.locale.decimal_separator;
+            let keys = list_keys(
+                &self.catalog,
+                source_table,
+                source,
+                (file_language, order, decimal),
+            )?;
             if !self.in_index(source_table, source, text, 0, keys)? {
                 let field = if self
                     .catalog

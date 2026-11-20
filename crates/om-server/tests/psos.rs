@@ -731,10 +731,26 @@ fn a_value_list_of_a_number_field_checks_values_as_numbers() {
             attempt(5, "4"),
             attempt(6, "abc"),
             attempt(7, "379,5"),
+            attempt(8, "3"),
+            attempt(9, "3.000"),
         ],
         true,
     );
     fixture::code_in_list_of(&mut tree, COUNT);
+    let count_of = |tree: &mut om_hbam::OwnedNode, record: u64, text: &str| {
+        tree.put(
+            &[
+                &uint_segment(TABLE),
+                &[5],
+                &serial::encode(record),
+                &uint_segment(COUNT),
+            ],
+            om_scripts::text_node(&[], text),
+        )
+    };
+    // Record 1's Count `3` is followed by a zero-width space, which gives
+    // it no number key: it still compares as text with `3`.
+    count_of(&mut tree, 1, "3\u{200b}");
     let file = TempFile::from_tree("list-of-numbers", &tree);
     let port = start(&file, None);
     let mut client = logged_in(port, "list-of-numbers");
@@ -742,8 +758,11 @@ fn a_value_list_of_a_number_field_checks_values_as_numbers() {
     assert_eq!(run(&mut client, 4).1, "0");
     assert_eq!(run(&mut client, 5).1, "506");
     assert_eq!(run(&mut client, 6).1, "506");
+    assert_eq!(run(&mut client, 8).1, "0");
     client.disconnect().unwrap();
-    // A German file whose record 2 holds Count `379,5`.
+    // A German file whose records hold Count `3` and `379,5`. `3.000` is
+    // 3000 there; OpenMaker does not read it as one yet and compares it as
+    // text (#415), never as 3.
     let german = om_calc::Locale {
         language: om_calc::Language::from_id(25),
         decimal_separator: ',',
@@ -754,19 +773,13 @@ fn a_value_list_of_a_number_field_checks_values_as_numbers() {
         &[&[2], &[0x0d]],
         om_hbam::OwnedNode::leaf(Vec::new(), german.to_record()),
     );
-    tree.put(
-        &[
-            &uint_segment(TABLE),
-            &[5],
-            &serial::encode(2),
-            &uint_segment(COUNT),
-        ],
-        om_scripts::text_node(&[], "379,5"),
-    );
+    count_of(&mut tree, 1, "3");
+    count_of(&mut tree, 2, "379,5");
     let file = TempFile::from_tree("list-of-german-numbers", &tree);
     let port = start(&file, None);
     let mut client = logged_in(port, "list-of-german-numbers");
     assert_eq!(run(&mut client, 7).1, "0");
+    assert_eq!(run(&mut client, 9).1, "506");
     client.disconnect().unwrap();
 }
 

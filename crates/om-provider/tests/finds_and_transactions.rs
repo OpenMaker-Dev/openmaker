@@ -2849,10 +2849,29 @@ fn a_value_list_of_a_field_in_an_unkeyed_language_is_not_checked_in_english() {
 /// the host built it, also when it builds indexes late).
 #[test]
 fn a_value_list_of_a_number_field_checks_values_as_numbers() {
-    for late in [false, true] {
+    // A German file: `3.000` is 3000 there. OpenMaker does not read it as
+    // one yet and looks it up as text (#415), never as 3.
+    let german = om_calc::Locale {
+        language: om_calc::Language::from_id(25),
+        decimal_separator: ',',
+        thousands_separator: '.',
+        ..om_calc::Locale::en_us()
+    };
+    for (late, german) in [
+        (false, None),
+        (true, None),
+        (false, Some(&german)),
+        (true, Some(&german)),
+    ] {
         let mut root = fixture::tree(&[], true);
         fixture::set_field_options(&mut root, TABLE, COUNT, 0x8000_0000);
         fixture::code_in_list_of(&mut root, COUNT);
+        if let Some(locale) = german {
+            root.put(
+                &[&[2], &[0x0d]],
+                OwnedNode::leaf(Vec::new(), locale.to_record()),
+            );
+        }
         let file = TempFile::from_tree("list-of-numbers", &root);
         let (port, ca_pem) = host_with(&file.0, None, |server| {
             if late {
@@ -2868,9 +2887,16 @@ fn a_value_list_of_a_number_field_checks_values_as_numbers() {
                 .map(|_| ())
                 .map_err(|e| e.code)
         };
-        assert_eq!(code(&mut a, "5.0"), Ok(()), "late={late}");
-        assert_eq!(code(&mut a, "4"), Err(Some(506)), "late={late}");
-        assert_eq!(code(&mut a, "abc"), Err(Some(506)), "late={late}");
+        if german.is_some() {
+            assert_eq!(code(&mut a, "3.000"), Err(Some(506)), "late={late}");
+            assert_eq!(code(&mut a, "5"), Ok(()), "late={late}");
+        } else {
+            // First, while a late index is not built yet: a value no
+            // number reads is looked up as text among the stored values.
+            assert_eq!(code(&mut a, "abc"), Err(Some(506)), "late={late}");
+            assert_eq!(code(&mut a, "5.0"), Ok(()), "late={late}");
+            assert_eq!(code(&mut a, "4"), Err(Some(506)), "late={late}");
+        }
         a.close();
     }
 }
@@ -3149,10 +3175,13 @@ fn missing_index_never_indexed_text_is_scanned_but_unknown_formats_are_explicit(
         // Language 0 is the file's own, English here: the fixture has no
         // locale record.
         (1, 0, 0, ACCEPTED),
-        (2, 21, 0, UNSUPPORTED),
-        (3, 21, 0, UNSUPPORTED),
-        (4, 21, 0, UNSUPPORTED),
-        (5, 21, 0, UNSUPPORTED),
+        // A number, date, time or timestamp source's `A`, which its type
+        // gives no key, compares as text with a value that has none either,
+        // as on OpenMaker Server (#591).
+        (2, 21, 0, ACCEPTED),
+        (3, 21, 0, ACCEPTED),
+        (4, 21, 0, ACCEPTED),
+        (5, 21, 0, ACCEPTED),
         (6, 21, 0, UNSUPPORTED),
         (1, 21, 0x10000, UNSUPPORTED), // Globals are not record index values.
     ] {

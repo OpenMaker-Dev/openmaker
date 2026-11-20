@@ -1677,16 +1677,24 @@ impl ServerHost {
         let typed_keys = |value: &str| {
             om_query::keys::value_keys(def.data_type, value, order, TextKeys::Collated)
         };
-        let typed_key = typed
-            .then(|| {
-                typed_keys(text).into_iter().find(|key| {
-                    key != om_query::keys::EMPTY_TEXT_KEY && key != om_query::keys::INVALID_KEY
-                })
+        // A number with a point or a comma in a file whose decimal
+        // separator is not a point (`1.000` is 1000 in German) is not read
+        // yet (#415): it gets no key and compares as text, as before #591,
+        // rather than keyed as en-US.
+        let typed_key = |value: &str| {
+            let reads = def.data_type != DataType::Number
+                || self.locale.decimal_separator == '.'
+                || !value.contains(['.', ',']);
+            if !(typed && reads) {
+                return None;
+            }
+            typed_keys(value).into_iter().find(|key| {
+                key != om_query::keys::EMPTY_TEXT_KEY && key != om_query::keys::INVALID_KEY
             })
-            .flatten();
+        };
         let text_form = FieldOptions::decode(&def.options)
             .and_then(|o| rules::value_text_keys(o.index_language(), self.file_language()));
-        let (key, text_keys) = match typed_key {
+        let (key, text_keys) = match typed_key(text) {
             Some(key) => (key, None),
             None => {
                 let keys = match typed {
@@ -1704,9 +1712,16 @@ impl ServerHost {
         let cells: Vec<u64> = (1..=Self::repetitions(def))
             .filter_map(|rep| cell_id(field, rep))
             .collect();
+        // A stored value its type gives no key OpenMaker builds compares as
+        // text with the checked value, as before #591: a stored `5` and a
+        // zero-width space holds `5`.
+        let as_text = TextKeys::Collated.key(text);
         let holds = |value: &str| match text_keys {
             Some(keys) => keys.key(value).as_ref() == Some(&key),
-            None => typed_keys(value).contains(&key),
+            None => match typed_key(value) {
+                Some(_) => typed_keys(value).contains(&key),
+                None => as_text.is_some() && TextKeys::Collated.key(value) == as_text,
+            },
         };
         Some(store.node(&[&t, &[RECORDS]]).is_some_and(|records| {
             records.children.iter().any(|record| {
