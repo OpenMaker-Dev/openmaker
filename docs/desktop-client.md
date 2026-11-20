@@ -2107,9 +2107,9 @@ never left out; a provider without a catalog (the sample provider) shows
 its error instead of a list.
 
 The dialog belongs to the file that opened it and to its own catalog
-request. Bringing another file's window to the front, or closing the
-last window of its file, closes it; a reply for another file or for a
-dialog since closed is discarded before it is handled.
+request. Another file's window stays behind while the dialog is open.
+Closing the last window of its file closes it. Replies for another file
+or a closed dialog are discarded.
 
 Limits: this dialog changes no value list; a custom list's values change
 through a pop-up menu's Edit… ([Editing records](#editing-records)). No
@@ -2132,11 +2132,15 @@ step drafts, Run and Revert. Run runs the selected script in its file's
 window; a dialog the script shows (Show Custom Dialog, a "With dialog"
 confirmation, "Save changes to this record?", an error alert) brings that
 window in front of the workspace so it can be answered, as it does in front
-of any other window, and restores it when it is minimized. It does not over
-another file's window whose Script Workspace or Manage dialogs are open,
-since that would close them unsaved: the dialog then waits in its own
-window, unless the script itself brought a window forward. Where FileMaker
-Pro shows it is unmeasured. Save stores the active script's steps:
+of any other window, and restores it when it is minimized. Where FileMaker
+Pro shows it is unmeasured. Another file's window stays behind, by a
+script or Window > Select Window, while the front file's
+workspace waits for a save or a read, or while its Manage Database, Manage
+Security or Manage Value Lists is open (FileMaker Pro's are modal); the
+front window keeps the focus, and another file's script's dialog waits in
+its own window ([#497](https://github.com/OpenMaker-Dev/openmaker/issues/497)).
+Manage Layouts, which holds nothing unsaved, closes. Save stores the active
+script's steps:
 - **On a host that offers OpenMaker's authoring extension to the account**
   (OpenMaker Server, and the private host of a file opened from this
   computer), the native provider saves through the step save
@@ -2197,8 +2201,12 @@ Pro shows it is unmeasured. Save stores the active script's steps:
   Server, a host without the extension, an account that may not author,
   a file opened read-only. Nothing is written there.
 - The sample provider saves both. A failed save keeps the draft.
-- **The workspace belongs to its file.** Only that file's windows show it,
-  and bringing another file's window to the front closes it.
+- **The workspace belongs to its file.** While another file's window is
+  in front, the workspace and its drafts wait with their file. They return
+  when any window of that file comes forward, including after another
+  file closes. Closing an individual background window keeps the draft
+  while its file stays open. Closing the last window of a background
+  file discards its parked draft.
   - It takes only the answers to its own requests (its catalog, a script
     save, a catalog save), each named by a token of its own.
   - An answer for a workspace that was closed, reopened or replaced since
