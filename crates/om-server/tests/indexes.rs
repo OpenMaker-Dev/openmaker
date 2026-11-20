@@ -15,6 +15,7 @@ mod server;
 use om_collate::DateOrder;
 use om_hbam::DataType;
 use om_query::find::{self, IndexKind};
+use om_query::keys::TextKeys;
 use om_server::Server;
 
 /// Two finds of Tasks::Name `==Ship` in a row, each checking that the
@@ -618,12 +619,12 @@ fn a_deleted_record_leaves_entries_another_rule_wrote() {
 /// One commit of several records (Commit Transaction) keeps an index the
 /// first record emptied, though it has no counts leaf yet: the second
 /// record is indexed in it (#448). Name's word index (which has no key for
-/// an empty value) lists only record 1, under a stale key; record 1's Name
-/// is cleared and record 2's set to "Beta".
+/// an empty value) holds only record 1's words; record 1's Name is cleared,
+/// which empties it, and record 2's set to "Beta".
 #[test]
 fn a_batch_keeps_an_index_its_first_record_emptied() {
     use om_hbam::slot::uint_segment;
-    use om_hbam::{serial, OwnedNode, RidList};
+    use om_hbam::{serial, OwnedNode};
     let batch = fixture::script(
         1,
         "Batch",
@@ -641,13 +642,9 @@ fn a_batch_keeps_an_index_its_first_record_emptied() {
     let table = uint_segment(fixture::TABLE);
     let name = uint_segment(fixture::NAME);
     root.remove(&[&table, &[5], &serial::encode(2), &name]);
-    let stale = [1u64]
-        .into_iter()
-        .collect::<RidList>()
-        .to_node(vec![0x01, 0x10, 0x20]);
     root.put(
         &[&table, &[1], &name, &[1]],
-        OwnedNode::list(vec![1], vec![stale]),
+        OwnedNode::list(vec![1], words_of(&[(1, "Write tests")], TextKeys::Collated)),
     );
     let file = fixture::TempFile::from_tree("batch-index", &root);
     let port = server::start(&file);
@@ -660,5 +657,123 @@ fn a_batch_keeps_an_index_its_first_record_emptied() {
         .map(|(path, _)| path)
         .collect();
     assert_eq!(words, [vec![vec![1], om_collate::text_key("Beta")]]);
+    session.disconnect().unwrap();
+}
+
+/// Word-index entries (`[key] = records`) for `records`' texts in `form`,
+/// in key order.
+fn words_of(records: &[(u64, &str)], form: TextKeys) -> Vec<om_hbam::OwnedNode> {
+    let mut index: std::collections::BTreeMap<Vec<u8>, om_hbam::RidList> = Default::default();
+    for (id, text) in records {
+        for key in om_query::keys::word_entries(&[text.to_string()], form) {
+            index.entry(key).or_default().insert(*id);
+        }
+    }
+    index
+        .into_iter()
+        .map(|(key, ids)| ids.to_node(key))
+        .collect()
+}
+
+/// The entries of Tasks::`field`'s index `kind` in the saved file, each
+/// key with its records.
+fn index_on_disk(file: &fixture::TempFile, field: u64, kind: u8) -> Vec<(Vec<u8>, Vec<u64>)> {
+    use om_hbam::slot::uint_segment;
+    let hbam = om_hbam::HbamFile::open(&file.0).unwrap();
+    let path: [&[u8]; 4] = [
+        &uint_segment(fixture::TABLE),
+        &[1],
+        &uint_segment(field),
+        &[kind],
+    ];
+    hbam.subtree(&path)
+        .unwrap()
+        .map(|index| {
+            index
+                .children
+                .iter()
+                .map(|e| {
+                    let ids = om_hbam::RidList::from_node(e).unwrap().iter().collect();
+                    (e.segment.0.to_vec(), ids)
+                })
+                .collect()
+        })
+        .unwrap_or_default()
+}
+
+/// A failed save of a commit that empties a word index with no counts
+/// leaf puts the field's whole index subtree back as it was (#448): the
+/// emptied node is kept, so the record has its index to go back into.
+#[test]
+fn a_failed_save_puts_an_emptied_index_back() {
+    use om_hbam::slot::uint_segment;
+    use om_hbam::{serial, OwnedNode};
+    let mut root = fixture::tree(&[], true);
+    let table = uint_segment(fixture::TABLE);
+    let name = uint_segment(fixture::NAME);
+    root.remove(&[&table, &[5], &serial::encode(2), &name]);
+    root.put(
+        &[&table, &[1], &name, &[1]],
+        OwnedNode::list(vec![1], words_of(&[(1, "Write tests")], TextKeys::Collated)),
+    );
+    let file = fixture::TempFile::from_tree("emptied-index", &root);
+    let as_stored = field_index_on_disk(&file, fixture::NAME);
+    let (port, handle) = server::start_with_handle(&file, om_server::ScriptLimits::DEFAULT);
+    let path = std::path::absolute(&file.0).unwrap();
+    let id = handle
+        .files()
+        .into_iter()
+        .find(|f| f.path == path)
+        .unwrap()
+        .id;
+    let (mut session, _) = server::logged_in(port, "emptied index");
+    assert!(handle.failing_commit_saves(id, true));
+    assert!(commit_cells(&mut session, 1, &[(fixture::NAME, "")]).is_err());
+    assert!(handle.failing_commit_saves(id, false));
+    commit_cells(&mut session, 2, &[(fixture::COUNT, "9")]).unwrap();
+    assert_eq!(field_index_on_disk(&file, fixture::NAME), as_stored);
+    assert_eq!(name_on_disk(&file, 1).as_deref(), Some("Write tests"));
+    session.disconnect().unwrap();
+}
+
+/// In a Unicode raw word index whose words FileMaker broke otherwise
+/// (`a_b` one word, query-program.md 7.1), a record edited to a value whose
+/// computed words did not change is still put under them: the sweep adds
+/// what the move did not (#448).
+#[test]
+fn a_record_whose_keys_did_not_move_gets_them_in_a_disagreeing_index() {
+    use om_hbam::slot::uint_segment;
+    use om_hbam::{serial, OwnedNode, RidList};
+    let mut root = fixture::tree(&[], true);
+    fixture::set_field_language(&mut root, fixture::TABLE, fixture::NAME, 2);
+    let table = uint_segment(fixture::TABLE);
+    let name = uint_segment(fixture::NAME);
+    root.put(
+        &[&table, &[5], &serial::encode(1), &name],
+        om_scripts::text_node(&[], "a_b"),
+    );
+    // FileMaker's one word for record 1, "Ship"'s for record 2.
+    let raw = |word: &str| TextKeys::Raw.key(word).unwrap();
+    let mut entries = vec![
+        [1u64].into_iter().collect::<RidList>().to_node(raw("a_b")),
+        [2u64].into_iter().collect::<RidList>().to_node(raw("Ship")),
+    ];
+    entries.sort_by(|a, b| a.segment.cmp(&b.segment));
+    root.put(
+        &[&table, &[1], &name, &[1]],
+        OwnedNode::list(vec![1], entries),
+    );
+    let file = fixture::TempFile::from_tree("raw-words", &root);
+    let port = server::start(&file);
+    let (mut session, _) = server::logged_in(port, "raw words");
+    commit_name(&mut session, 1, "a b");
+    let mut expected: Vec<(Vec<u8>, Vec<u64>)> =
+        om_query::keys::word_entries(&["a b".to_string()], TextKeys::Raw)
+            .into_iter()
+            .map(|key| (key, vec![1]))
+            .collect();
+    expected.push((raw("Ship"), vec![2]));
+    expected.sort();
+    assert_eq!(index_on_disk(&file, fixture::NAME, 1), expected);
     session.disconnect().unwrap();
 }

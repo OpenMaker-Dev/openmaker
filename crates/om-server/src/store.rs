@@ -2633,20 +2633,21 @@ impl Store {
         self.dirty = true;
         let mut sweeps = Vec::new();
         for (field, index, before, after) in plan {
-            if let Some(journal) = journal.as_deref_mut() {
+            if let Some(journal) = journal.as_deref_mut().filter(|_| before != after) {
                 let path: Vec<Vec<u8>> = vec![
                     table.to_vec(),
                     vec![keys::INDEXES],
                     field.clone(),
                     vec![index],
                 ];
-                // A move that may empty the index removes its node: the node
-                // is kept, so a failed save finds the index to move the
-                // record back into (an index without counts).
+                // A move that may empty the index removes its node, and one
+                // into an index without keys creates it: the node is kept as
+                // it was (or its absence), so a failed save leaves no list
+                // behind and finds the index to move the record back into.
                 let segments: Vec<&[u8]> = path.iter().map(Vec::as_slice).collect();
                 if self
                     .node(&segments)
-                    .is_some_and(|node| node.children.len() <= before.len())
+                    .is_none_or(|node| node.children.len() <= before.len())
                 {
                     journal.save_node(&self.root, path.clone());
                 }
@@ -2905,55 +2906,109 @@ impl Store {
         }
     }
 
-    /// Take `records` (each with the keys its value gives) out of every
-    /// other entry of `index` (table, field, kind), one that disagrees with
-    /// the current rules: an entry another rule wrote for the record's old
-    /// value (`1.5` read by an earlier build, a FileMaker word break, a
-    /// number among letters) is not among the keys its move took it from.
-    /// Each entry changed goes into `journal` first; the index's counts go
-    /// into `recount`. An entry that is not a plain record list
-    /// ([`plain_entry`]) is left as it is.
+    /// Make `records` (each with the keys its value gives) hold exactly those
+    /// keys in `index` (table, field, kind), one that disagrees with the
+    /// current rules: each leaves every other entry, as an entry another
+    /// rule wrote for its old value (`1.5` read by an earlier build, a
+    /// FileMaker word break, a number among letters) is not among the keys
+    /// its move took it from; and each is put under every key of its value
+    /// it is missing from, as its move added none when the computed keys
+    /// did not change (`a_b` to `a b` in Unicode raw). Other records'
+    /// memberships are not touched. Each entry changed goes into `journal`
+    /// first; the index's counts go into `recount`. An entry that is not a
+    /// plain record list ([`plain_entry`]) is left as it is. The index's
+    /// entries are rewritten in one pass.
     fn sweep_index(
         &mut self,
-        mut journal: Option<&mut Journal>,
+        journal: Option<&mut Journal>,
         recount: &mut BTreeSet<Recount>,
         (table, field, kind): (&[u8], &[u8], u8),
         records: &BTreeMap<u64, BTreeSet<Vec<u8>>>,
     ) {
         let path: [&[u8]; 4] = [table, &[keys::INDEXES], field, &[kind]];
         let swept: RidList = records.keys().copied().collect();
-        let mut changed = Vec::new();
+        // Per key, the records its entry must hold.
+        let mut wanted: BTreeMap<&[u8], RidList> = BTreeMap::new();
+        for (id, keys) in records {
+            for key in keys {
+                wanted.entry(key).or_default().insert(*id);
+            }
+        }
+        // The entries to write (`None`: removed), by key.
+        let mut changed: BTreeMap<Vec<u8>, Option<RidList>> = BTreeMap::new();
+        let mut opaque = BTreeSet::new();
         for entry in self.node(&path).map_or(&[][..], |n| &n.children) {
             let Some(list) = plain_entry(entry) else {
+                opaque.insert(entry.segment.clone());
                 continue;
             };
-            let leaving: RidList = list
-                .and(&swept)
-                .iter()
-                .filter(|id| !records[id].contains(&entry.segment))
-                .collect();
-            if !leaving.is_empty() {
-                changed.push((entry.segment.clone(), list.and_not(&leaving)));
+            let want = wanted.get(entry.segment.as_slice());
+            let leaving = list.and(&swept).and_not(want.unwrap_or(&RidList::new()));
+            let joining = want.map_or_else(RidList::new, |w| w.and_not(&list));
+            if leaving.is_empty() && joining.is_empty() {
+                continue;
+            }
+            let kept = list.and_not(&leaving).or(&joining);
+            changed.insert(entry.segment.clone(), (!kept.is_empty()).then_some(kept));
+        }
+        let present: BTreeSet<&[u8]> = self
+            .node(&path)
+            .map_or(&[][..], |n| &n.children)
+            .iter()
+            .map(|e| e.segment.as_slice())
+            .collect();
+        for (key, ids) in &wanted {
+            if !present.contains(key) {
+                changed.insert(key.to_vec(), Some(ids.clone()));
+            }
+        }
+        for key in &opaque {
+            if wanted.contains_key(key.as_slice()) {
+                warn!(
+                    "{}: entry {key:02x?} of index {kind} of field {field:02x?} in table \
+                     {table:02x?} has an unknown shape; its records were not changed there",
+                    self.name
+                );
             }
         }
         if changed.is_empty() {
             return;
         }
-        for (key, kept) in changed {
-            if let Some(journal) = journal.as_deref_mut() {
-                let mut entry: Vec<Vec<u8>> = path.iter().map(|s| s.to_vec()).collect();
+        if let Some(journal) = journal {
+            let base: Vec<Vec<u8>> = path.iter().map(|s| s.to_vec()).collect();
+            if self.node(&path).is_none() {
+                journal.save_node(&self.root, base.clone());
+            }
+            for key in changed.keys() {
+                let mut entry = base.clone();
                 entry.push(key.clone());
                 journal.save_node(&self.root, entry);
             }
-            let node = self.root.ensure(&path);
-            if kept.is_empty() {
-                node.remove(&[&key]);
-            } else if let Some(entry) = node.child_mut(&key) {
-                entry.children = kept.entries();
+        }
+        // One pass over the sorted entries, the new keys merged in order.
+        let old = self
+            .root
+            .at(&path)
+            .map(|n| n.children.clone())
+            .unwrap_or_default();
+        let mut entries = Vec::with_capacity(old.len() + changed.len());
+        let mut changes = changed.into_iter().peekable();
+        for entry in old {
+            while let Some((key, ids)) = changes.next_if(|(key, _)| *key < entry.segment) {
+                entries.extend(ids.map(|ids| ids.to_node(key)));
+            }
+            match changes.next_if(|(key, _)| *key == entry.segment) {
+                Some((key, ids)) => entries.extend(ids.map(|ids| ids.to_node(key))),
+                None => entries.push(entry),
             }
         }
-        if self.node(&path).is_some_and(|n| n.children.is_empty()) {
+        for (key, ids) in changes {
+            entries.extend(ids.map(|ids| ids.to_node(key)));
+        }
+        if entries.is_empty() {
             self.root.remove(&path);
+        } else {
+            self.root.put(&path, OwnedNode::list(vec![kind], entries));
         }
         recount.insert((table.to_vec(), field.to_vec(), kind, counts_key(kind)));
     }
