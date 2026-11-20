@@ -3955,6 +3955,18 @@ fn page_number_symbols_print_each_pages_number() {
         MergeField("Name".into()),
         Literal(" / Page {{PageNumber}}".into()),
     ];
+    // A merged field whose name holds the symbol keeps its name.
+    let mut named = label(
+        6,
+        "<<Name {{PageNumber}}>> / Page {{PageNumber}}",
+        rect(12.0, 85.0, 400.0, 20.0),
+        12.0,
+        false,
+    );
+    named.text_runs = vec![
+        MergeField("Name {{PageNumber}}".into()),
+        Literal(" / Page {{PageNumber}}".into()),
+    ];
     let layout = Layout {
         def: Some(LayoutDef {
             base_width: 540.0,
@@ -3974,7 +3986,7 @@ fn page_number_symbols_print_each_pages_number() {
             },
         ],
         objects: ObjectStore {
-            root: vec![1, 2, 3, 4, 5],
+            root: vec![1, 2, 3, 4, 5, 6],
             objects: vec![
                 label(1, "Body", rect(12.0, 10.0, 200.0, 20.0), 12.0, false),
                 label(
@@ -3987,6 +3999,7 @@ fn page_number_symbols_print_each_pages_number() {
                 merged,
                 label(4, "Draft {{", rect(12.0, 35.0, 200.0, 20.0), 12.0, false),
                 noted,
+                named,
             ],
             ..Default::default()
         },
@@ -4041,13 +4054,17 @@ fn page_number_symbols_print_each_pages_number() {
     .unwrap();
     let labels = String::from_utf8_lossy(&labels.bytes).into_owned();
     for (page, number) in [(0, "1"), (1, "2")] {
-        let note = format!("Note {{{{ <<Name>> / Page {number}");
-        let notes = text_origins(&labels, 2, &note);
-        assert_eq!(
-            notes.iter().map(|o| o.0).collect::<Vec<_>>(),
-            [page],
-            "{note}"
-        );
+        for label in [
+            format!("Note {{{{ <<Name>> / Page {number}"),
+            format!("<<Name {{{{PageNumber}}}}>> / Page {number}"),
+        ] {
+            let found = text_origins(&labels, 2, &label);
+            assert_eq!(
+                found.iter().map(|o| o.0).collect::<Vec<_>>(),
+                [page],
+                "{label}"
+            );
+        }
     }
     let mut dated = layout.clone();
     dated.objects.objects[1].text = Some("{{CurrentDate}}".into());

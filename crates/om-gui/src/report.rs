@@ -2621,14 +2621,26 @@ fn symbol_texts(object: &LayoutObject) -> Box<dyn Iterator<Item = &String> + '_>
 /// `page`'s number (from 0): a merge text's label beside the runs its
 /// symbols are read from ([`symbol_texts`]), for content that reads the
 /// label. Its merged fields are written in it, so only whole symbols are
-/// numbered, never one paired across a field.
+/// numbered, never one paired across a field, and a field's placeholder
+/// (`<<Name>>`) is kept as written, whatever its name holds.
 fn numbered_label(label: &str, page: usize) -> String {
     const SYMBOL: &str = "{{PageNumber}}";
     let mut out = String::with_capacity(label.len());
     let mut rest = label;
-    while let Some(start) = rest.find("{{") {
+    loop {
+        let field = rest.find("<<");
+        let Some(start) = [field, rest.find("{{")].into_iter().flatten().min() else {
+            break;
+        };
         out.push_str(&rest[..start]);
         let tail = &rest[start..];
+        // A merged field's placeholder is its name, kept as written.
+        if field == Some(start) {
+            let end = tail[2..].find(">>").map_or(2, |end| end + 4);
+            out.push_str(&tail[..end]);
+            rest = &tail[end..];
+            continue;
+        }
         match tail.get(..SYMBOL.len()) {
             Some(symbol) if symbol.eq_ignore_ascii_case(SYMBOL) => {
                 out.push_str(&(page + 1).to_string());
