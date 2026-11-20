@@ -258,16 +258,17 @@ fn established_typed_keys_and_file_date_orders_preserve_index_order() {
 
 #[test]
 fn fallback_rejects_unread_values_instead_of_skipping() {
-    // Digits among other characters
-    // (https://github.com/OpenMaker-Dev/openmaker/issues/246) and text
-    // that is no value.
-    for (kind, value) in [
-        (2, "1,5"),
+    // Text that is no value.
+    for (i, (kind, value)) in [
+        (2, "N/A"),
         (3, "not a date"),
         (5, "not a timestamp"),
         (6, "data"),
-    ] {
-        let file = file_with(&format!("vl-unsupported-{kind}-{value}"), &[], |root| {
+    ]
+    .into_iter()
+    .enumerate()
+    {
+        let file = file_with(&format!("vl-unsupported-{i}"), &[], |root| {
             fixture::add_field(root, TABLE, 90, "Unknown", 1, kind, 0, 0, 0);
             put(root, 90, 1, value);
         });
@@ -280,11 +281,20 @@ fn fallback_rejects_unread_values_instead_of_skipping() {
         );
         provider.close();
     }
-    // Negative and fractional numbers and fractions of a second have
-    // FileMaker's keys (query-program.md 7.3).
-    for (kind, value) in [(2, "-2"), (2, "2.5"), (4, "12:00:00.5")] {
-        let file = file_with(&format!("vl-keyed-{kind}-{value}"), &[], |root| {
+    // Negative and fractional numbers, numbers among other characters and
+    // fractions of a second have FileMaker's keys (query-program.md 7.3).
+    // A number is read with the file's separators, so the file records
+    // its locale.
+    for (i, (kind, value)) in [(2, "-2"), (2, "2.5"), (2, "1,5"), (4, "12:00:00.5")]
+        .into_iter()
+        .enumerate()
+    {
+        let file = file_with(&format!("vl-keyed-{i}"), &[], |root| {
             fixture::add_field(root, TABLE, 90, "Keyed", 1, kind, 0, 0, 0);
+            root.put(
+                &[&[2], &[13]],
+                OwnedNode::leaf(Vec::new(), om_calc::Locale::en_us().to_record()),
+            );
             put(root, 90, 1, value);
         });
         let (port, ca) = host_with(&file.0, None, Server::with_late_index_builds);

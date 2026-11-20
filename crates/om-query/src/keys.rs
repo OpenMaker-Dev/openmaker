@@ -12,7 +12,7 @@
 
 use std::collections::BTreeSet;
 
-use om_collate::DateOrder;
+use om_collate::{DateOrder, NumberFormat};
 use om_hbam::DataType;
 
 /// The value-index key of an empty value, text or typed (7.2, 7.3:
@@ -24,6 +24,25 @@ pub const EMPTY_TEXT_KEY: &[u8] = &[0x01];
 /// `abc` in a number field or a date stored as `?`. No other key starts with
 /// `fe`.
 pub const INVALID_KEY: &[u8] = &[0xfe, 0xff];
+
+/// How a file writes numbers, dates and timestamps, which reading their
+/// stored text depends on: its date order and its number format (decimal
+/// and thousands separators). A [`DateOrder`] alone reads numbers as en-US
+/// does.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub struct Reading {
+    pub order: DateOrder,
+    pub numbers: NumberFormat,
+}
+
+impl From<DateOrder> for Reading {
+    fn from(order: DateOrder) -> Reading {
+        Reading {
+            order,
+            numbers: NumberFormat::default(),
+        }
+    }
+}
 
 // An index key must fit a key segment of the file (hbam-writer.md 2.2).
 const _: () = assert!(om_collate::INDEX_KEY_LIMIT <= om_hbam::writer::MAX_SEGMENT);
@@ -121,10 +140,10 @@ impl TextKeys {
 pub fn value_keys(
     data_type: DataType,
     value: &str,
-    order: DateOrder,
+    reading: impl Into<Reading>,
     text: TextKeys,
 ) -> Vec<Vec<u8>> {
-    whole_value_keys(data_type, value, order, text)
+    whole_value_keys(data_type, value, reading.into(), text)
         .into_iter()
         .map(|key| held(key).0)
         .collect()
@@ -134,7 +153,7 @@ pub fn value_keys(
 fn whole_value_keys(
     data_type: DataType,
     value: &str,
-    order: DateOrder,
+    reading: Reading,
     text: TextKeys,
 ) -> Vec<Vec<u8>> {
     match data_type {
@@ -150,31 +169,43 @@ fn whole_value_keys(
             keys
         }
         DataType::Number | DataType::Date | DataType::Time | DataType::Timestamp => {
-            typed_value_keys(data_type, value, order)
+            typed_value_keys(data_type, value, reading)
         }
         DataType::Container | DataType::Unknown(_) => Vec::new(),
     }
 }
 
 /// The value-index keys of a number, date, time or timestamp value
-/// (query-program.md 7.3):
+/// (query-program.md 7.3), its text read as the file writes such values
+/// (`reading`):
 ///
 /// - an empty value: [`EMPTY_TEXT_KEY`];
-/// - a value read as one: its key ([`om_collate::number_key`] and the
-///   others);
+/// - a value read as one: its key ([`om_collate::number_key_in`], read as
+///   FileMaker reads a number: `12abc34` is 1234, and the others);
 /// - a timestamp stored as a date alone, as FileMaker stores one whose time
 ///   was invalid: the date's midnight key and [`INVALID_KEY`];
-/// - a value with no digit at all (`abc`, `N/A`, a date FileMaker stored as
-///   `?`): [`INVALID_KEY`];
-/// - other text, digits among other characters (`abc12`, `1,234`), which
-///   FileMaker reads by rules not built here: no key.
-pub fn typed_value_keys(data_type: DataType, value: &str, order: DateOrder) -> Vec<Vec<u8>> {
+/// - a number holding no number (no digit, `N/A`, `?`), and a date, time or
+///   timestamp with no digit (stored as `?`): [`INVALID_KEY`];
+/// - other text in a date, time or timestamp field, which OpenMaker does not
+///   read: no key.
+pub fn typed_value_keys(
+    data_type: DataType,
+    value: &str,
+    reading: impl Into<Reading>,
+) -> Vec<Vec<u8>> {
+    let Reading { order, numbers } = reading.into();
     let trimmed = value.trim();
     if trimmed.is_empty() {
         return vec![EMPTY_TEXT_KEY.to_vec()];
     }
     let key = match data_type {
-        DataType::Number => om_collate::number_key(trimmed),
+        // The text as stored: the reading treats spaces itself (`1e3 ` is
+        // 13 where the thousands separator is a space, calc-values.md 13).
+        DataType::Number => {
+            return vec![
+                om_collate::number_key_in(value, numbers).unwrap_or_else(|| INVALID_KEY.to_vec())
+            ]
+        }
         DataType::Date => om_collate::date_key(trimmed, order),
         DataType::Time => om_collate::time_key(trimmed),
         DataType::Timestamp => match om_collate::timestamp_key(trimmed, order) {
@@ -201,10 +232,10 @@ pub fn typed_value_keys(data_type: DataType, value: &str, order: DateOrder) -> V
 pub fn record_value_keys(
     data_type: DataType,
     texts: &[String],
-    order: DateOrder,
+    reading: impl Into<Reading>,
     text: TextKeys,
 ) -> BTreeSet<Vec<u8>> {
-    held_value_keys(data_type, texts, order, text).keys
+    held_value_keys(data_type, texts, reading.into(), text).keys
 }
 
 /// A record's entries in a field's value index, as a host stores them:
@@ -213,16 +244,16 @@ pub fn record_value_keys(
 pub fn record_value_entries(
     data_type: DataType,
     texts: &[String],
-    order: DateOrder,
+    reading: impl Into<Reading>,
     text: TextKeys,
 ) -> BTreeSet<Vec<u8>> {
-    held_value_keys(data_type, texts, order, text).entries(text)
+    held_value_keys(data_type, texts, reading.into(), text).entries(text)
 }
 
 fn held_value_keys(
     data_type: DataType,
     texts: &[String],
-    order: DateOrder,
+    reading: Reading,
     text: TextKeys,
 ) -> Held {
     let filled: Vec<&String> = texts.iter().filter(|t| !t.is_empty()).collect();
@@ -234,7 +265,7 @@ fn held_value_keys(
     };
     let mut held = Held::default();
     for value in values {
-        for key in whole_value_keys(data_type, value, order, text) {
+        for key in whole_value_keys(data_type, value, reading, text) {
             held.add(key);
         }
     }
@@ -339,7 +370,7 @@ mod tests {
         for (pair, numbers) in keys.windows(2).zip(ordered.windows(2)) {
             assert!(pair[0] < pair[1], "{:?} < {:?}", numbers[0], numbers[1]);
         }
-        // Digits among other text are read by rules not built here.
-        assert!(number("abc12").is_empty());
+        // Digits among other text are read as FileMaker reads them.
+        assert_eq!(number("abc12"), number("12"));
     }
 }

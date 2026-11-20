@@ -87,10 +87,10 @@ Refused with error 3:
   list);
 - a value that has to be keyed and cannot be keyed exactly. Such values are:
   - text in any other index language (the tailored ones, 7.2);
-  - numbers with other characters among their digits (`1,234`, `abc12`,
-    [#246](https://github.com/OpenMaker-Dev/openmaker/issues/246)) and text
-    with no digit in a typed field, which FileMaker keys as invalid
+  - text with no number in a typed field, which FileMaker keys as invalid
     (`fe ff`, 7.3);
+  - numbers in a file whose locale (`[02, 0d]`) cannot be read: their text
+    is read with the file's decimal and thousands separators;
   - dates outside the file's MDY, DMY or YMD order, or with no readable
     file locale (`[02, 0d]`, `re/file-metadata.md` 2).
 

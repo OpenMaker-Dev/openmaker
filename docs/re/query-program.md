@@ -1217,7 +1217,8 @@ the head then counts only the digits kept, so 210 nines key as 200 nines
 never listed under `ff 80`.
 
 The key is built from the stored text, read the way FileMaker reads a
-number (observed): every digit in order, other characters dropped
+number (observed; the `FixPt::Set` reading of calc-values.md 2.8, pure and
+impure, which `GetAsNumber` shares): every digit in order, other characters dropped
 (`12abc34` = 1234, `1/2` = 12, `$5`, `5%` and `+5` = 5; live:proj_pk keys
 "392E36CA-E9D8-45A3-83DD-66A6EFF95ADE" as its 17 digits); the file's
 decimal separator, its first occurrence only (`1.5.2` = 1.52), thousands
