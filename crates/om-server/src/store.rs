@@ -226,6 +226,9 @@ pub struct Journal {
     ids: BTreeMap<Vec<u8>, (Vec<u64>, Vec<u64>)>,
     /// The indexes whose counts the commit's records changed.
     recount: BTreeSet<Recount>,
+    /// Per table, the records the commit deleted, which leave every entry
+    /// of the table's indexes when it finishes ([`Store::purge_records`]).
+    deleted: BTreeMap<Vec<u8>, RidList>,
     /// Whether the commit changed the schema the store reads
     /// ([`Store::replace_schema_in`]): a roll-back reads it again.
     schema: bool,
@@ -606,6 +609,7 @@ impl Store {
             saved: BTreeSet::new(),
             ids: BTreeMap::new(),
             recount: BTreeSet::new(),
+            deleted: BTreeMap::new(),
             schema: false,
             refused: None,
         }
@@ -637,7 +641,14 @@ impl Store {
         let ids = journal.ids.entry(table.to_vec()).or_default();
         match (existed, exists) {
             (false, true) => ids.0.push(id),
-            (true, false) => ids.1.push(id),
+            (true, false) => {
+                ids.1.push(id);
+                journal
+                    .deleted
+                    .entry(table.to_vec())
+                    .or_default()
+                    .insert(id);
+            }
             _ => {}
         }
     }
@@ -655,6 +666,11 @@ impl Store {
                     *ids = ids.and_not(&removed.into_iter().collect());
                 }
             });
+        }
+        for (table, ids) in std::mem::take(&mut journal.deleted) {
+            let mut recount = std::mem::take(&mut journal.recount);
+            self.purge_records(Some(journal), &mut recount, &table, &ids);
+            journal.recount = recount;
         }
         for (table, field, index, counts) in std::mem::take(&mut journal.recount) {
             journal.save_node(
@@ -2300,9 +2316,36 @@ impl Store {
         kind: u8,
         form: TextKeys,
     ) -> BTreeMap<Vec<u8>, RidList> {
+        self.index_entries(table, field, data_type, kind, form, false)
+            .unwrap_or_default()
+    }
+
+    /// [`Store::index_keys`], or `None` when a record holds a value in the
+    /// field that the current rules give no value-index key, which another
+    /// rule (FileMaker's) may have given one.
+    fn accounted_index(
+        &self,
+        table: &[u8],
+        field: &[u8],
+        data_type: DataType,
+        kind: u8,
+        form: TextKeys,
+    ) -> Option<BTreeMap<Vec<u8>, RidList>> {
+        self.index_entries(table, field, data_type, kind, form, true)
+    }
+
+    fn index_entries(
+        &self,
+        table: &[u8],
+        field: &[u8],
+        data_type: DataType,
+        kind: u8,
+        form: TextKeys,
+        accounted: bool,
+    ) -> Option<BTreeMap<Vec<u8>, RidList>> {
         let mut index: BTreeMap<Vec<u8>, RidList> = BTreeMap::new();
         let Some(records) = self.node(&[table, &[keys::RECORDS]]) else {
-            return index;
+            return Some(index);
         };
         let repetitions = self.repetitions(table, field);
         for record in &records.children {
@@ -2315,11 +2358,18 @@ impl Store {
             } else {
                 word_entries(&texts, form)
             };
+            if accounted
+                && kind == keys::VALUE_INDEX
+                && keys.is_empty()
+                && texts.iter().any(|t| !t.trim().is_empty())
+            {
+                return None;
+            }
             for key in keys {
                 index.entry(key).or_default().insert(id);
             }
         }
-        index
+        Some(index)
     }
 
     /// The field `field` of `table` when its index `kind` can be built on
@@ -2527,6 +2577,10 @@ impl Store {
             );
             return;
         }
+        if existed && !exists {
+            let ids = [id].into_iter().collect();
+            self.purge_records(None, &mut recount, table, &ids);
+        }
         for (table, field, index, counts) in recount {
             self.recount_index(&table, &field, index, counts);
         }
@@ -2559,7 +2613,7 @@ impl Store {
     ) -> Result<(), String> {
         let segment = serial::encode(id);
         let path: [&[u8]; 3] = [table, &[keys::RECORDS], &segment];
-        let plan = self.reindex_plan(table, id, old, record.as_ref())?;
+        let plan = self.reindex_plan(table, id, old, record.as_ref(), recount)?;
         if let Some(reason) = self.record_refusal(table, &segment, record.as_ref(), &plan) {
             return Err(reason);
         }
@@ -2567,6 +2621,18 @@ impl Store {
         for (field, index, before, after) in plan {
             if self.current_index(journal.as_deref_mut(), table, &field, index) {
                 recount.insert((table.to_vec(), field.clone(), index, counts_key(index)));
+            }
+            // A move that may empty the index removes its node: the node is
+            // kept for a failed save, whose inverse move would find no index
+            // to put the record back into (an index without counts).
+            if let Some(journal) = journal.as_deref_mut() {
+                let path: [&[u8]; 4] = [table, &[keys::INDEXES], &field, &[index]];
+                if self
+                    .node(&path)
+                    .is_some_and(|node| node.children.len() <= before.len())
+                {
+                    journal.save_node(&self.root, path.iter().map(|s| s.to_vec()).collect());
+                }
             }
             if self.move_record(table, &field, index, id, &before, &after) {
                 recount.insert((table.to_vec(), field, index, counts_key(index)));
@@ -2648,9 +2714,13 @@ impl Store {
     }
 
     /// The index changes a write of record `id` of `table` from `old` to
-    /// `new` makes: for every indexed field of `table` whose entries differ
-    /// (write-path.md 5.5), the field, the index, and the record's entries
-    /// before and after. Refused, saying why, when it would change the text
+    /// `new` makes: for every indexed field of `table` whose entries or
+    /// stored value differ, or every one when the record is created or
+    /// deleted (write-path.md 5.5), the field, the index, and the record's
+    /// entries before and after. An index the commit already changed
+    /// (`pending`) counts as present though its last key went. Each planned
+    /// index is made current first ([`Store::current_index`]), also when its
+    /// keys do not move. Refused, saying why, when it would change the text
     /// of a field indexed in a language whose keys this server does not
     /// build ([`Self::text_keys`]): a new or deleted record with text there,
     /// or another text. English keys there would not be FileMaker's, and
@@ -2661,25 +2731,37 @@ impl Store {
         id: u64,
         old: Option<&OwnedNode>,
         new: Option<&OwnedNode>,
+        pending: &BTreeSet<Recount>,
     ) -> Result<Vec<Reindex>, String> {
         let mut plan = Vec::new();
         let Some(definition) = be_uint(table).and_then(|t| self.catalog.table(t)) else {
             return Ok(plan);
         };
-        let Some(indexes) = self.node(&[table, &[keys::INDEXES]]) else {
-            return Ok(plan);
-        };
+        // Per field: whether it has a value index and a word index.
+        let mut present: BTreeMap<Vec<u8>, (bool, bool)> = BTreeMap::new();
+        for index in self
+            .node(&[table, &[keys::INDEXES]])
+            .map_or(&[][..], |n| &n.children)
+        {
+            let has = |a: u8, b: u8| index.child(&[a]).is_some() || index.child(&[b]).is_some();
+            let kinds = present.entry(index.segment.clone()).or_default();
+            kinds.0 |= has(keys::VALUE_INDEX, keys::VALUE_COUNTS);
+            kinds.1 |= has(keys::WORD_INDEX, keys::WORD_COUNTS);
+        }
+        for (_, field, index, _) in pending.iter().filter(|(t, ..)| t.as_slice() == table) {
+            let kinds = present.entry(field.clone()).or_default();
+            kinds.0 |= *index == keys::VALUE_INDEX;
+            kinds.1 |= *index == keys::WORD_INDEX;
+        }
         let mut work = Vec::new();
-        for index in &indexes.children {
-            let Some(field) = be_uint(&index.segment).and_then(|f| definition.field(f)) else {
+        for (segment, (value, word)) in present {
+            let Some(field) = be_uint(&segment).and_then(|f| definition.field(f)) else {
                 continue;
             };
-            let has = |a: u8, b: u8| index.child(&[a]).is_some() || index.child(&[b]).is_some();
-            let value = has(keys::VALUE_INDEX, keys::VALUE_COUNTS);
-            let word =
-                has(keys::WORD_INDEX, keys::WORD_COUNTS) && field.data_type == DataType::Text;
-            work.push((index.segment.clone(), field.data_type, value, word));
+            let word = word && field.data_type == DataType::Text;
+            work.push((segment, field.data_type, value, word));
         }
+        let changes = old.is_some() != new.is_some();
         for (field, data_type, value, word) in work {
             let repetitions = self.repetitions(table, &field);
             let texts = |record: Option<&OwnedNode>| {
@@ -2713,7 +2795,7 @@ impl Store {
                 if new.is_some() && after.is_empty() && new_texts.iter().any(|t| !t.is_empty()) {
                     warn!("no index key for {data_type:?} value {new_texts:?}; record {id} is left out of the index");
                 }
-                if before != after {
+                if before != after || old_texts != new_texts || changes {
                     plan.push((field.clone(), keys::VALUE_INDEX, before, after));
                 }
             }
@@ -2722,7 +2804,7 @@ impl Store {
                     word_entries(&old_texts, form),
                     word_entries(&new_texts, form),
                 );
-                if before != after {
+                if before != after || old_texts != new_texts || changes {
                     plan.push((field.clone(), keys::WORD_INDEX, before, after));
                 }
             }
@@ -2734,15 +2816,21 @@ impl Store {
     /// every stored record of `table` before a write moves a record in it
     /// (#448): an index an earlier build or FileMaker wrote under other
     /// rules keeps entries that a record's old keys, computed now, do not
-    /// name, and the record would stay under them after it changed. The
-    /// index is built from the records as [`Store::index_keys`] builds a
-    /// missing one; when it differs from the stored one, the stored node
-    /// goes into `journal` (a failed save puts it back) and the built one
-    /// replaces it. Each index is checked once per schema generation.
-    /// Returns whether it was rebuilt (its counts are then due). A text
-    /// field indexed in a language whose keys this server does not build
-    /// is left as it is ([`Store::reindex_plan`] refuses text changes
-    /// there).
+    /// name, and the record would stay under them after it changed. Each
+    /// index is checked once per schema generation; returns whether it was
+    /// rebuilt (its counts are then due).
+    ///
+    /// Only an index this server can build in full is rebuilt, so nothing
+    /// FileMaker wrote is lost: every entry is a record list written as
+    /// [`RidList::entries`] writes it ([`plain_entry`]), and the current
+    /// rules key every stored value ([`Store::accounted_index`]). Left as
+    /// it is: a text field in a language whose keys this server does not
+    /// build, a Unicode raw word index (its word breaks are not built,
+    /// #395), a repeating field (its rule for empty repetitions is
+    /// inferred), a value the rules give no key (FileMaker's may), and an
+    /// entry of another shape. When the built index differs, the stored
+    /// node goes into `journal` (a failed save puts it back) and the built
+    /// one replaces it, compared entry by entry on the compact lists.
     fn current_index(
         &mut self,
         journal: Option<&mut Journal>,
@@ -2764,32 +2852,37 @@ impl Store {
         else {
             return false;
         };
+        if self.repetitions(table, field) > 1 {
+            return false;
+        }
         let form = match self.text_keys(table, field) {
             Some(form) => form,
             None if data_type != DataType::Text => ENGLISH,
             None => return false,
         };
-        let built = self.index_keys(table, field, data_type, kind, form);
+        if kind == keys::WORD_INDEX && form == TextKeys::Raw {
+            return false;
+        }
         let path: [&[u8]; 4] = [table, &[keys::INDEXES], field, &[kind]];
-        let stored: Option<BTreeMap<Vec<u8>, Vec<u64>>> = match self.node(&path) {
-            None => Some(BTreeMap::new()),
-            Some(node) => node
-                .children
-                .iter()
-                .map(|entry| {
-                    let ids = RidList::from_owned(entry).ok()?;
-                    Some((entry.segment.clone(), ids.iter().collect()))
-                })
-                .collect(),
+        let stored = self.node(&path);
+        if stored.is_some_and(|node| {
+            node.value.is_some() || !node.children.iter().all(|e| plain_entry(e).is_some())
+        }) {
+            return false;
+        }
+        let Some(built) = self.accounted_index(table, field, data_type, kind, form) else {
+            return false;
         };
-        let agrees = stored.is_some_and(|stored| {
-            stored.len() == built.len()
-                && built.iter().all(|(key, ids)| {
-                    stored
-                        .get(key)
-                        .is_some_and(|s| ids.iter().eq(s.iter().copied()))
-                })
-        });
+        let agrees = match stored {
+            None => built.is_empty(),
+            Some(node) => {
+                node.children.len() == built.len()
+                    && node
+                        .children
+                        .iter()
+                        .all(|entry| plain_entry(entry).as_ref() == built.get(&entry.segment))
+            }
+        };
         if agrees {
             return false;
         }
@@ -2812,6 +2905,65 @@ impl Store {
             self.root.put(&path, OwnedNode::list(vec![kind], entries));
         }
         true
+    }
+
+    /// Take the records `ids`, which a commit deleted, out of every entry of
+    /// `table`'s indexes, once, when the commit finishes: an entry another
+    /// rule wrote (a value the current rules give no key, a FileMaker word
+    /// break) is not among the keys the deletion computed, and would keep a
+    /// record that no longer exists. Each index changed goes into `journal`
+    /// and `recount`. An index with an entry of another shape
+    /// ([`plain_entry`]) is left as it is.
+    fn purge_records(
+        &mut self,
+        mut journal: Option<&mut Journal>,
+        recount: &mut BTreeSet<Recount>,
+        table: &[u8],
+        ids: &RidList,
+    ) {
+        let mut work = Vec::new();
+        for field in self
+            .node(&[table, &[keys::INDEXES]])
+            .map_or(&[][..], |n| &n.children)
+        {
+            for kind in [keys::VALUE_INDEX, keys::WORD_INDEX] {
+                let Some(index) = field.child(&[kind]).filter(|n| n.value.is_none()) else {
+                    continue;
+                };
+                let mut changed = Vec::new();
+                let plain = index.children.iter().all(|entry| match plain_entry(entry) {
+                    Some(list) => {
+                        let kept = list.and_not(ids);
+                        if kept != list {
+                            changed.push((entry.segment.clone(), kept));
+                        }
+                        true
+                    }
+                    None => false,
+                });
+                if plain && !changed.is_empty() {
+                    work.push((field.segment.clone(), kind, changed));
+                }
+            }
+        }
+        for (field, kind, changed) in work {
+            let path: [&[u8]; 4] = [table, &[keys::INDEXES], &field, &[kind]];
+            if let Some(journal) = journal.as_deref_mut() {
+                journal.save_node(&self.root, path.iter().map(|s| s.to_vec()).collect());
+            }
+            let node = self.root.ensure(&path);
+            for (key, kept) in changed {
+                if kept.is_empty() {
+                    node.remove(&[&key]);
+                } else if let Some(entry) = node.child_mut(&key) {
+                    entry.children = kept.entries();
+                }
+            }
+            if node.children.is_empty() {
+                self.root.remove(&path);
+            }
+            recount.insert((table.to_vec(), field, kind, counts_key(kind)));
+        }
     }
 
     /// Remove `id` from the index keys only in `before` and add it to those
@@ -3000,6 +3152,25 @@ impl om_data::rules::ContainerReader for LibraryContainers {
     fn data(&self, table: u64, member: &[u8]) -> Option<om_calc::eval::StoredContainer> {
         containers::read(self.member(table, member)?)
     }
+}
+
+/// The record list an index entry holds, when the entry is nothing but a
+/// list of record-id runs written as [`RidList::entries`] writes them
+/// (FileMaker Server's form, write-path.md 5.3): no value of its own, each
+/// run a leaf. `None` for any other shape, which a rebuild would lose.
+fn plain_entry(entry: &OwnedNode) -> Option<RidList> {
+    if entry.value.is_some() {
+        return None;
+    }
+    let list = RidList::from_owned(entry).ok()?;
+    let runs = list.entries();
+    let same = runs.len() == entry.children.len()
+        && runs.iter().zip(&entry.children).all(|(ours, stored)| {
+            ours.segment == stored.segment
+                && ours.value == stored.value
+                && stored.children.is_empty()
+        });
+    same.then_some(list)
 }
 
 /// The library member a container field's value names (containers.md

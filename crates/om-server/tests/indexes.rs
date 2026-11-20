@@ -481,6 +481,7 @@ fn a_stale_index_is_rebuilt_before_a_write_changes_it() {
         OwnedNode::list(vec![0], vec![entry(&stale, 2), entry(&written, 1)]),
     );
     let file = fixture::TempFile::from_tree("stale-index", &root);
+    let as_stored = field_index_on_disk(&file, fixture::NAME);
     let (port, handle) = server::start_with_handle(&file, om_server::ScriptLimits::DEFAULT);
     let path = std::path::absolute(&file.0).unwrap();
     let id = handle
@@ -490,20 +491,21 @@ fn a_stale_index_is_rebuilt_before_a_write_changes_it() {
         .unwrap()
         .id;
     let (mut session, _) = server::logged_in(port, "stale index");
-    let as_stored = vec![(stale.clone(), vec![2]), (written.clone(), vec![1])];
 
-    // A failed save: the rebuilt index goes back with the record.
+    // A failed save: the rebuilt index goes back with the record. A
+    // commit that leaves Name as it was then saves Name's whole index
+    // subtree, its keys and counts, as it was stored.
     assert!(handle.failing_commit_saves(id, true));
     assert!(commit_cells(&mut session, 2, &[(fixture::NAME, "Shipped")]).is_err());
     assert!(handle.failing_commit_saves(id, false));
-    // A commit that leaves Name as it was saves the index as it is.
     commit_cells(
         &mut session,
         1,
         &[(fixture::NAME, "Write tests"), (fixture::COUNT, "9")],
     )
     .unwrap();
-    assert_eq!(name_index_on_disk(&file), as_stored);
+    assert_eq!(field_index_on_disk(&file, fixture::NAME), as_stored);
+    // The same commit, saved, is accepted: the failure was the save's.
 
     // The write that changes Name rebuilds it first: record 2 is under
     // "Shipped" only.
@@ -515,5 +517,123 @@ fn a_stale_index_is_rebuilt_before_a_write_changes_it() {
             (written, vec![1]),
         ]
     );
+    session.disconnect().unwrap();
+}
+
+/// A node of a subtree: its path below the subtree's root, and its value.
+type Flat = (Vec<Vec<u8>>, Option<Vec<u8>>);
+
+/// Every node under `field`'s index subtree `[Tasks, 01, field]` in the
+/// saved file, keys, counts and record lists, as (path, value) pairs.
+fn field_index_on_disk(file: &fixture::TempFile, field: u64) -> Vec<Flat> {
+    use om_hbam::slot::uint_segment;
+    fn flatten(node: &om_hbam::Node<'_>, path: &mut Vec<Vec<u8>>, out: &mut Vec<Flat>) {
+        for child in &node.children {
+            path.push(child.segment.0.to_vec());
+            out.push((path.clone(), child.value.map(<[u8]>::to_vec)));
+            flatten(child, path, out);
+            path.pop();
+        }
+    }
+    let hbam = om_hbam::HbamFile::open(&file.0).unwrap();
+    let path: [&[u8]; 3] = [&uint_segment(fixture::TABLE), &[1], &uint_segment(field)];
+    let mut out = Vec::new();
+    if let Some(index) = hbam.subtree(&path).unwrap() {
+        flatten(&index, &mut Vec::new(), &mut out);
+    }
+    out
+}
+
+/// A record deleted with a value the current rules give no key (a number
+/// among letters, #246) leaves the entry FileMaker wrote for it (#448):
+/// the deletion's computed keys name nothing, and the record would stay
+/// listed under 1234 after it no longer exists.
+#[test]
+fn a_deleted_record_leaves_entries_another_rule_wrote() {
+    use om_hbam::slot::uint_segment;
+    use om_hbam::{serial, OwnedNode, RidList};
+    let delete = fixture::script(
+        1,
+        "Delete the last record",
+        vec![
+            fixture::go_to_record(2),
+            om_scripts::ScriptStep::new(9),
+            fixture::exit_with("Get ( LastError )"),
+        ],
+    );
+    let mut root = fixture::tree(&[delete], true);
+    let table = uint_segment(fixture::TABLE);
+    let count = uint_segment(fixture::COUNT);
+    root.put(
+        &[&table, &[5], &serial::encode(2), &count],
+        om_scripts::text_node(&[], "12abc34"),
+    );
+    let entry = |value: &str, id: u64| {
+        let key = om_collate::number_key(value).unwrap();
+        [id].into_iter().collect::<RidList>().to_node(key)
+    };
+    root.put(
+        &[&table, &[1], &count, &[0]],
+        OwnedNode::list(vec![0], vec![entry("3", 1), entry("1234", 2)]),
+    );
+    let file = fixture::TempFile::from_tree("purged-index", &root);
+    let port = server::start(&file);
+    let (mut session, _) = server::logged_in(port, "purged index");
+    let reply = session.perform_script_on_server(1, "", true).unwrap();
+    assert_eq!((reply.error, reply.result.as_str()), (0, "0"));
+    let keys: Vec<(Vec<u8>, Option<Vec<u8>>)> = field_index_on_disk(&file, fixture::COUNT)
+        .into_iter()
+        .filter(|(path, _)| path.len() == 2 && path[0] == [0])
+        .map(|(path, value)| (path[1].clone(), value))
+        .collect();
+    assert_eq!(keys, [(om_collate::number_key("3").unwrap(), None)]);
+    session.disconnect().unwrap();
+}
+
+/// One commit of several records (Commit Transaction) keeps an index the
+/// first record emptied, though it has no counts leaf yet: the second
+/// record is indexed in it (#448). Name's word index (which has no key for
+/// an empty value) lists only record 1, under a stale key; record 1's Name
+/// is cleared and record 2's set to "Beta".
+#[test]
+fn a_batch_keeps_an_index_its_first_record_emptied() {
+    use om_hbam::slot::uint_segment;
+    use om_hbam::{serial, OwnedNode, RidList};
+    let batch = fixture::script(
+        1,
+        "Batch",
+        vec![
+            om_scripts::ScriptStep::new(205),
+            fixture::go_to_record(1),
+            fixture::set_field(fixture::NAME, "\"\""),
+            fixture::go_to_record(2),
+            fixture::set_field(fixture::NAME, "\"Beta\""),
+            om_scripts::ScriptStep::new(206),
+            fixture::exit_with("Get ( LastError )"),
+        ],
+    );
+    let mut root = fixture::tree(&[batch], true);
+    let table = uint_segment(fixture::TABLE);
+    let name = uint_segment(fixture::NAME);
+    root.remove(&[&table, &[5], &serial::encode(2), &name]);
+    let stale = [1u64]
+        .into_iter()
+        .collect::<RidList>()
+        .to_node(vec![0x01, 0x10, 0x20]);
+    root.put(
+        &[&table, &[1], &name, &[1]],
+        OwnedNode::list(vec![1], vec![stale]),
+    );
+    let file = fixture::TempFile::from_tree("batch-index", &root);
+    let port = server::start(&file);
+    let (mut session, _) = server::logged_in(port, "batch index");
+    let reply = session.perform_script_on_server(1, "", true).unwrap();
+    assert_eq!((reply.error, reply.result.as_str()), (0, "0"));
+    let words: Vec<Vec<Vec<u8>>> = field_index_on_disk(&file, fixture::NAME)
+        .into_iter()
+        .filter(|(path, _)| path.len() == 2 && path[0] == [1])
+        .map(|(path, _)| path)
+        .collect();
+    assert_eq!(words, [vec![vec![1], om_collate::text_key("Beta")]]);
     session.disconnect().unwrap();
 }

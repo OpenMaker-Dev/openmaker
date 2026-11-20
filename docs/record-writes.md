@@ -1288,18 +1288,30 @@ under `fe ff`, and a timestamp stored as a date alone under its date and
 gets no key yet ([#246](https://github.com/OpenMaker-Dev/openmaker/issues/246)).
 An index whose keys another rule wrote (an earlier OpenMaker build's, or
 FileMaker's where OpenMaker's rules still differ) is rebuilt on OpenMaker
-Server before a write moves a record in it
+Server before a write changes a record's value in it
 ([#448](https://github.com/OpenMaker-Dev/openmaker/issues/448),
-`Store::current_index`). The first write that changes a field's index,
-after the server starts or the schema changes, compares the index with
-one built from every stored record. When they differ, the built one
-replaces it in the same commit, and a failed save puts the old one back.
-So a changed record never stays under a key its old value no longer
-gives. Until a write touches it, an index is read as stored: a find
-for `=` on a typed index an earlier build wrote still misses the empty
-values it lists under no key. Rebuilding a FileMaker-written index where
-the rules differ replaces FileMaker's keys for those values with
-OpenMaker's.
+`Store::current_index`). That is the first such write after the server
+starts or the schema changes, and it happens also when the record's keys
+do not move, as from `1.5` to `15` under a new number reading. The index is
+compared, entry by entry, with one built from every stored record; when they
+differ the built one replaces it in the same commit, and a failed save puts
+the old one back.
+
+Only an index this server can build in full is rebuilt, so nothing
+FileMaker wrote is lost. Left as it is, and moved record by record as
+before:
+- an entry that is not a plain record list, or a value the current rules
+  give no key (a number among letters,
+  [#246](https://github.com/OpenMaker-Dev/openmaker/issues/246));
+- a Unicode raw word index
+  ([#395](https://github.com/OpenMaker-Dev/openmaker/issues/395));
+- a repeating field (its rule for empty repetitions is inferred);
+- a text field in a language whose keys are not built.
+
+A record a commit deletes leaves every entry of its table's indexes when
+the commit finishes, a FileMaker key it no longer has included. An index
+that a commit empties stays in the commit's plan, so its later records are
+still indexed. Until a write touches an index, it is read as stored.
 
 Word-index keys break words as FileMaker's English and Unicode standard
 indexes do (query-program.md 7.1): within a script, across `.` and
