@@ -340,6 +340,15 @@ Limits ([#156](https://github.com/OpenMaker-Dev/openmaker/issues/156)):
   and then ends the connection if a file is still open. Only that file is
   alerted about and closed; the connection's other files show the lost
   connection instead ([#638](https://github.com/OpenMaker-Dev/openmaker/issues/638)).
+- Ordering and edge cases left open
+  ([#640](https://github.com/OpenMaker-Dev/openmaker/issues/640)):
+  - A loss the worker reports before the notice clears the app's close and
+    script state the generic way.
+  - A dialog wait of another file's script ends when the alert's OK closes
+    the disconnected file.
+  - The alert is missed when the window the notice went to closed first.
+  - A commit refused before it was sent counts as ambiguous.
+  - The release's callback replies keep the normal write timeout.
 - The dialog's look is OpenMaker's; FileMaker Pro's was read from its
   text only (capture s07).
 - An open Script Workspace holds the message too, although it is a

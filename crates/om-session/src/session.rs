@@ -1257,6 +1257,10 @@ impl Session {
                     file.opened = self.opened.clone();
                     self.revoked = Some(Arc::clone(&file.revoked));
                 }
+                // A release still queued for an earlier open of the file the
+                // host disconnected is that open's: the host, which reuses
+                // the id, would take it for this one.
+                wire.pending_release.retain(|(id, _)| *id != reply.file_id);
             }
             self.keep_alive();
         }
@@ -2481,8 +2485,9 @@ impl Wire {
     /// ([`Self::revoke`]): one op62 close of each file's root, as a user's
     /// close sends it (FileMaker Pro signs out with op81 Logout, which
     /// OpenMaker does not build). Only idle callers send them, so that no
-    /// release is numbered ahead of a request built already. Each waits at
-    /// most [`RELEASE_WAIT`], not to hold its caller behind a slow host; one
+    /// release is numbered ahead of a request built already. Each writes and
+    /// waits within [`RELEASE_WAIT`], not to hold its caller behind a slow
+    /// host; one
     /// the host does not answer is tried again by the next idle caller, up
     /// to [`RELEASE_ATTEMPTS`] times in all, then left to the host, which
     /// drops a connection still holding the file after its own wait.
@@ -2494,11 +2499,19 @@ impl Wire {
             let connection_id = self.connection_id;
             let request = write::Unlock::close_file(file_id as i32);
             let transaction = write::build_unlock(self.take_file_transaction(), file_id, &request);
+            // One deadline for the release's writes and its reply.
+            let deadline = Instant::now() + RELEASE_WAIT;
+            if let Some(transport) = self.transport.as_mut() {
+                let _ = transport.set_write_deadline(Some(deadline));
+            }
             let reply = self.call(
                 |id| build_perform(id, connection_id, b"", &transaction),
-                Wait::Until(Instant::now() + RELEASE_WAIT),
+                Wait::Until(deadline),
                 carries(&transaction),
             );
+            if let Some(transport) = self.transport.as_mut() {
+                let _ = transport.set_write_deadline(None);
+            }
             let answered = reply
                 .ok()
                 .and_then(|msg| om_protocol::parse_perform_reply(&msg).ok())
