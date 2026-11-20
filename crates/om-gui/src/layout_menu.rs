@@ -30,7 +30,7 @@ fn row(
     actions: &mut Vec<Action>,
 ) {
     let selected = current == Some(id);
-    if rows.item(name, None, selected, true) && !selected {
+    if rows.keyed_item(&format!("layout {id}"), name, None, selected, true) && !selected {
         actions.push(Action::SelectLayout(id));
     }
 }

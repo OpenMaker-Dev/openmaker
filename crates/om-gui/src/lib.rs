@@ -61,6 +61,8 @@ mod security;
 mod session;
 pub mod settings;
 pub mod svg_loader;
+#[cfg(target_os = "macos")]
+mod system_menu;
 #[cfg(test)]
 mod test_renderer;
 mod theme;

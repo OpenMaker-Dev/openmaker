@@ -17,8 +17,21 @@ FileMaker Pro's measured chrome is specified in
   from the file (layout-model.md). A layout without decodable geometry gets
   a generic Form, List or Table view built from its fields and records;
   nothing is ever specific to one file.
-- The menu bar is drawn inside the window on every platform, macOS
-  included. The window title is the platform's own.
+- On macOS the menus are in the system menu bar, as FileMaker Pro's are:
+  the menus of the window AppKit has in front, built each frame through the
+  same code as the window's bar (`menubar::MenuRows`, `system_menu.rs`),
+  with each row's shortcut as its key equivalent. A choice reaches only the
+  window whose menus showed it, in the order made, also once another window
+  is in front; while a modal dialog is up in the window, its rows are
+  disabled, as the window's own bar is. The app menu adds macOS's Services, Hide,
+  Hide Others and Show All, and the Help menu the system's search field;
+  that FileMaker Pro's app menu has the same is inferred. The windows draw
+  no menu bar of their own. The Scripts menu reads the file's scripts once
+  its window is in front, since the system menu says nothing before it
+  opens; after a read that failed it asks again when the window next comes
+  to the front. Elsewhere, and in the GUI tests, which run without a native
+  window, the menu bar is drawn inside each window. The window title is the
+  platform's own.
 - The app menu is named OpenMaker. Mode and other shortcuts use the
   platform's command key: ⌘ on macOS, Ctrl on Linux and Windows.
 - The UI font is the bundled Inter (OFL), a cross-platform stand-in for the
