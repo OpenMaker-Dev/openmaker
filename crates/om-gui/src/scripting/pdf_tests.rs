@@ -4021,6 +4021,23 @@ fn page_number_symbols_print_each_pages_number() {
     }
     let drafts = text_origins(&pdf, 2, "Draft {{");
     assert_eq!(drafts.iter().map(|o| o.0).collect::<Vec<_>>(), [0, 1]);
+    // Content that reads a merge text's label gets it numbered too, only
+    // where a whole symbol is.
+    let paper = om_layout::pagination::PageSize::for_layout(&layout).unwrap();
+    let labels = crate::report::render_pdf(&layout, 2, paper, &[], |o, _| {
+        Ok(o.text.clone().unwrap_or_default())
+    })
+    .unwrap();
+    let labels = String::from_utf8_lossy(&labels.bytes).into_owned();
+    for (page, number) in [(0, "1"), (1, "2")] {
+        let note = format!("Note {{{{ <<Name>> / Page {number}");
+        let notes = text_origins(&labels, 2, &note);
+        assert_eq!(
+            notes.iter().map(|o| o.0).collect::<Vec<_>>(),
+            [page],
+            "{note}"
+        );
+    }
     let mut dated = layout.clone();
     dated.objects.objects[1].text = Some("{{CurrentDate}}".into());
     assert_eq!(

@@ -2591,10 +2591,38 @@ fn symbol_texts(object: &LayoutObject) -> Box<dyn Iterator<Item = &String> + '_>
     }
 }
 
+/// `label` with each whole `{{PageNumber}}` (any case) replaced by page
+/// `page`'s number (from 0): a merge text's label beside the runs its
+/// symbols are read from ([`symbol_texts`]), for content that reads the
+/// label. Its merged fields are written in it, so only whole symbols are
+/// numbered, never one paired across a field.
+fn numbered_label(label: &str, page: usize) -> String {
+    const SYMBOL: &str = "{{PageNumber}}";
+    let mut out = String::with_capacity(label.len());
+    let mut rest = label;
+    while let Some(start) = rest.find("{{") {
+        out.push_str(&rest[..start]);
+        let tail = &rest[start..];
+        match tail.get(..SYMBOL.len()) {
+            Some(symbol) if symbol.eq_ignore_ascii_case(SYMBOL) => {
+                out.push_str(&(page + 1).to_string());
+                rest = &tail[SYMBOL.len()..];
+            }
+            _ => {
+                out.push_str("{{");
+                rest = &tail[2..];
+            }
+        }
+    }
+    out.push_str(rest);
+    out
+}
+
 /// `object` as page `page` (from 0) prints it: a text object's or a
 /// button's `{{PageNumber}}` numbered where its symbols are read
-/// ([`symbol_texts`], [`numbered`]), so every source reads it as plain text
-/// and no field's value is touched; borrowed when it has none.
+/// ([`symbol_texts`], [`numbered`]), and a merge text's label too
+/// ([`numbered_label`]), so every source reads it as plain text and no
+/// field's value is touched; borrowed when it has none.
 fn on_page(object: &LayoutObject, page: usize) -> std::borrow::Cow<'_, LayoutObject> {
     use om_layout::TextRun;
     if !matches!(object.kind(), ObjectKind::Text | ObjectKind::Button)
@@ -2612,6 +2640,8 @@ fn on_page(object: &LayoutObject, page: usize) -> std::borrow::Cow<'_, LayoutObj
         if let Some(text) = object.text.as_mut() {
             number(text);
         }
+    } else if let Some(text) = object.text.as_mut() {
+        *text = numbered_label(text, page);
     }
     for run in &mut object.text_runs {
         if let TextRun::Literal(literal) = run {
