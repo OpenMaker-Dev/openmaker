@@ -422,14 +422,12 @@ impl ImportMapping {
                     mapping: Mapping::DontImport,
                 });
             }
-            // An order matched by names written by position from here: its
-            // entries past the columns shown matched names, not positions,
-            // so none of them imports by position now.
-            let was_named = self
-                .stored
-                .as_ref()
-                .is_some_and(|o| o.has(import_flag::MATCH_NAMES));
-            if all && was_named {
+            // An order that ran matched by names (a merge or XML source's),
+            // written by position from here: its entries past the columns
+            // shown matched names, not positions, so none of them imports
+            // by position now. One whose names flag was dormant (no names
+            // to match) ran by position, and its entries keep doing so.
+            if all && self.by_names() {
                 for entry in map.iter_mut().skip(self.columns.len()) {
                     entry.mapping = Mapping::DontImport;
                 }
@@ -1011,6 +1009,26 @@ mod tests {
         let (order, _, _) = dialog.answer();
         assert!(!order.has(import_flag::MATCH_NAMES));
         assert_eq!(order.map[..2], [entry(1), entry(2)]);
+        // A dormant names flag ran by position: an entry past the columns
+        // shown (the first row is shorter) keeps importing by position.
+        let short = dir.join("short.tab");
+        std::fs::write(&short, "First\rAda\tLondon\r").unwrap();
+        let parts = ImportParts {
+            paths: vec![crate::scripting::files::file_line(&short)],
+            order: Some(ImportOptions {
+                flags: import_flag::AUTO_ENTER | import_flag::MATCH_NAMES,
+                map: vec![entry(1), entry(4)],
+                ..new_order(0xd00002)
+            }),
+            profile: Some(Profile::new(FileType::TabSeparated)),
+            profile_ex: None,
+            field_flags: None,
+        };
+        let mut dialog = ImportMapping::open(parts, None).unwrap();
+        assert_eq!(dialog.columns, ["First"]);
+        dialog.names_row = true;
+        let (order, _, _) = dialog.answer();
+        assert_eq!(order.map[1], entry(4));
         std::fs::remove_dir_all(&dir).unwrap();
     }
 
