@@ -1800,6 +1800,42 @@ impl NativeProvider {
         self.pinned.remove(&own);
     }
 
+    /// Check the target and privilege before changing a session global.
+    fn global_write_schema(
+        &mut self,
+        table: u64,
+        field: u64,
+        repetition: u32,
+    ) -> Result<std::sync::Arc<om_data::host::CalcSchema>, DataError> {
+        self.refuse_while_unsettled()?;
+        self.require_open()?;
+        self.refuse_imported_table(table)?;
+        let schema = self.calc_schema_cached()?;
+        let def = schema
+            .table(table)
+            .and_then(|t| t.fields.get(&field))
+            .ok_or_else(|| DataError::with_code(102, "The field is missing."))?;
+        if !def.global || repetition == 0 || repetition > def.repetitions.max(1) {
+            return Err(DataError::with_code(
+                201,
+                format!("Field {} is not a global field's repetition.", def.name),
+            ));
+        }
+        // A global the account's custom set gives view-only access keeps its
+        // value: Set Field and Browse's typing both come here, not through
+        // `prepare_record`.
+        let modifies = self.account_info.set_access.as_ref().is_none_or(|access| {
+            access.modifies(
+                &om_hbam::slot::uint_segment(table),
+                &om_hbam::slot::uint_segment(field),
+            )
+        });
+        if !modifies {
+            return Err(DataError::with_code(201, FIELD_NOT_MODIFIABLE));
+        }
+        Ok(schema)
+    }
+
     /// The text a user's typing `text` into repetition `repetition` of
     /// global `field` of `table` stores, checked as FileMaker checks it
     /// (`DataProvider::set_typed_global`), or its refusal. Nothing is set.
@@ -1809,7 +1845,7 @@ impl NativeProvider {
         field: u64,
         repetition: u32,
         text: &str,
-    ) -> Result<String, DataError> {
+    ) -> Result<(String, Option<u16>), DataError> {
         self.refuse_while_unsettled()?;
         self.require_open()?;
         self.refuse_imported_table(table)?;
@@ -1850,12 +1886,13 @@ impl NativeProvider {
             def.data_type,
             om_hbam::DataType::Date | om_hbam::DataType::Time | om_hbam::DataType::Timestamp
         );
+        self.global_write_schema(table, field, repetition)?;
         if !temporal
             && options
                 .as_ref()
                 .is_some_and(|options| options.validation_options == 0)
         {
-            return Ok(text.to_owned());
+            return Ok((text.to_owned(), None));
         }
         let plan = self.entry_plan(table)?;
         let file = self.calc_schema_cached()?;
@@ -1872,43 +1909,41 @@ impl NativeProvider {
         let cell = om_data::rules::cell_of(field, repetition)
             .ok_or_else(|| DataError::with_code(201, "The repetition is out of range."))?;
         let text = self.check_typed_entry(table, cell, text)?;
-        // Not empty holds while any repetition has a value, as a record's
-        // commit checks it (`RecordPlan`, script oracle s17): the others as
-        // this session has them now.
-        let repetitions = options
-            .as_ref()
-            .map_or(1, |options| options.max_repetitions.max(1));
-        if text.is_empty()
-            && options.is_some_and(|options| options.validation_not_empty())
-            && !self.other_repetitions_hold_values(table, field, repetition, repetitions)?
-        {
-            return Err(self.entry_refusal(table, field, om_data::rules::error::REQUIRED)?);
-        }
-        Ok(text)
+        let required = options
+            .filter(|options| options.validation_not_empty())
+            .map(|options| options.max_repetitions.max(1));
+        Ok((text, required))
     }
 
-    /// Whether a repetition of global `field` other than `repetition`, of
-    /// its `repetitions`, holds a value in this session.
-    fn other_repetitions_hold_values(
+    /// Check Not empty against the complete proposed global values. Use
+    /// the session value for repetitions untouched by this save.
+    fn check_required_globals(
         &mut self,
         table: u64,
-        field: u64,
-        repetition: u32,
-        repetitions: u16,
-    ) -> Result<bool, DataError> {
-        if repetitions <= 1 {
-            return Ok(false);
+        changes: &om_data::GlobalChanges,
+        required: BTreeMap<u64, u16>,
+    ) -> Result<(), DataError> {
+        if required.is_empty() {
+            return Ok(());
         }
         let data = self.calc_data(&[om_data::host::CalcNeed::Globals { table }])?;
-        Ok(data.globals.get(&table).is_some_and(|values| {
-            (1..=u32::from(repetitions))
-                .filter(|other| *other != repetition)
-                .any(|other| {
-                    values
-                        .get(field, other)
-                        .is_some_and(|value| !value.is_empty())
-                })
-        }))
+        let stored = data.globals.get(&table);
+        for (field, repetitions) in required {
+            let has_value = (1..=u32::from(repetitions)).any(|repetition| {
+                changes.get(&(field, repetition)).map_or_else(
+                    || {
+                        stored
+                            .and_then(|values| values.get(field, repetition))
+                            .is_some_and(|value| !value.is_empty())
+                    },
+                    |text| !text.is_empty(),
+                )
+            });
+            if !has_value {
+                return Err(self.entry_refusal(table, field, om_data::rules::error::REQUIRED)?);
+            }
+        }
+        Ok(())
     }
 
     /// Move the values of global fields out of a user's edit of the
@@ -1939,16 +1974,17 @@ impl NativeProvider {
                 field.global.then(|| (name.clone(), field.id))
             })
             .collect();
-        // The user's typing, checked by each field's rules as it is entered
-        // (`typed_global`): all of them first, so a refusal changes no
-        // global and saves nothing.
-        let mut checked = Vec::with_capacity(globals.len());
-        for (name, field) in &globals {
-            let text = values.get(name).cloned().flatten().unwrap_or_default();
-            checked.push((name, *field, self.typed_global(table, *field, 1, &text)?));
-        }
-        for (name, field, text) in checked {
-            self.set_global(table, field, 1, &text)?;
+        let changes = globals
+            .iter()
+            .map(|(name, field)| {
+                (
+                    (*field, 1),
+                    values.get(name).cloned().flatten().unwrap_or_default(),
+                )
+            })
+            .collect();
+        self.set_typed_globals(table, &changes)?;
+        for (name, _) in &globals {
             values.remove(name);
         }
         Ok(!globals.is_empty())
@@ -3788,8 +3824,39 @@ impl DataProvider for NativeProvider {
         repetition: u32,
         text: &str,
     ) -> Result<(), DataError> {
-        let text = self.typed_global(table, field, repetition, text)?;
-        self.set_global(table, field, repetition, &text)
+        self.set_typed_globals(table, &[((field, repetition), text.to_owned())].into())
+    }
+
+    fn set_typed_globals(
+        &mut self,
+        table: u64,
+        changes: &om_data::GlobalChanges,
+    ) -> Result<(), DataError> {
+        let mut checked = om_data::GlobalChanges::new();
+        let mut required = BTreeMap::new();
+        for (&(field, repetition), text) in changes {
+            let (text, repetitions) = self.typed_global(table, field, repetition, text)?;
+            if let Some(repetitions) = repetitions.filter(|_| text.is_empty()) {
+                required.insert(field, repetitions);
+            }
+            checked.insert((field, repetition), text);
+        }
+        self.check_required_globals(table, &checked, required)?;
+        if !checked.is_empty() {
+            let schema = self.calc_schema_cached()?;
+            self.invalidate_calc_data();
+            self.set_desktop_globals(
+                &schema,
+                table,
+                checked.iter().map(|(&cell, text)| (cell, text.as_str())),
+            );
+            self.calc.globals.extend(
+                checked
+                    .into_iter()
+                    .map(|((field, repetition), text)| ((table, field, repetition), text)),
+            );
+        }
+        Ok(())
     }
 
     fn enters_typed_globals(&self) -> bool {
@@ -3805,34 +3872,9 @@ impl DataProvider for NativeProvider {
         repetition: u32,
         text: &str,
     ) -> Result<(), DataError> {
-        self.refuse_while_unsettled()?;
-        self.require_open()?;
-        self.refuse_imported_table(table)?;
-        let schema = self.calc_schema_cached()?;
-        let def = schema
-            .table(table)
-            .and_then(|t| t.fields.get(&field))
-            .ok_or_else(|| DataError::with_code(102, "The field is missing."))?;
-        if !def.global || repetition == 0 || repetition > def.repetitions.max(1) {
-            return Err(DataError::with_code(
-                201,
-                format!("Field {} is not a global field's repetition.", def.name),
-            ));
-        }
-        // A global the account's custom set gives view-only access keeps its
-        // value: Set Field and Browse's typing both come here, not through
-        // `prepare_record`.
-        let modifies = self.account_info.set_access.as_ref().is_none_or(|access| {
-            access.modifies(
-                &om_hbam::slot::uint_segment(table),
-                &om_hbam::slot::uint_segment(field),
-            )
-        });
-        if !modifies {
-            return Err(DataError::with_code(201, FIELD_NOT_MODIFIABLE));
-        }
+        let schema = self.global_write_schema(table, field, repetition)?;
         self.invalidate_calc_data();
-        self.set_desktop_global(&schema, table, field, repetition, text);
+        self.set_desktop_globals(&schema, table, [((field, repetition), text)]);
         self.calc
             .globals
             .insert((table, field, repetition), text.to_string());

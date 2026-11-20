@@ -3642,7 +3642,7 @@ fn typing_into_a_validated_global_checks_its_entry_rules() {
             capabilities.editable_fields.unwrap().contains("Setting"),
             offered
         );
-        let global = |provider: &mut NativeProvider| {
+        let global = |provider: &mut NativeProvider, repetition| {
             let data = provider
                 .calc_data(&[CalcNeed::Globals { table: TABLE }])
                 .unwrap();
@@ -3652,7 +3652,7 @@ fn typing_into_a_validated_global_checks_its_entry_rules() {
                 om_data::calc::Date::from_ymd(2026, 10, 29).unwrap(),
             );
             data.globals[&TABLE]
-                .get(SETTING, 1)
+                .get(SETTING, repetition)
                 .map(|v| v.to_text(&cx).into_string())
                 .unwrap_or_default()
         };
@@ -3663,20 +3663,20 @@ fn typing_into_a_validated_global_checks_its_entry_rules() {
         };
         if offered {
             assert_eq!(typed(&mut provider, "12"), Ok(()));
-            assert_eq!(global(&mut provider), "12");
+            assert_eq!(global(&mut provider, 1), "12");
             assert_eq!(typed(&mut provider, "12abc"), Err(Some(502)));
             assert_eq!(typed(&mut provider, ""), Err(Some(509)));
-            assert_eq!(global(&mut provider), "12");
+            assert_eq!(global(&mut provider, 1), "12");
             // Browse's ordinary save of the record checks it too.
             for (text, code) in [("12abc", 502), ("", 509)] {
                 let saved = provider.update_record(tasks, 1, values(&[("Setting", text)]));
                 assert_eq!(saved.map(|_| ()).map_err(|e| e.code), Err(Some(code)));
             }
-            assert_eq!(global(&mut provider), "12");
+            assert_eq!(global(&mut provider, 1), "12");
             assert!(provider
                 .update_record(tasks, 1, values(&[("Setting", "7")]))
                 .is_ok());
-            assert_eq!(global(&mut provider), "7");
+            assert_eq!(global(&mut provider, 1), "7");
             // Not empty holds while another repetition has a value, as at a
             // record's commit.
             let second = |provider: &mut NativeProvider, text: &str| {
@@ -3685,12 +3685,26 @@ fn typing_into_a_validated_global_checks_its_entry_rules() {
                     .map_err(|error| error.code)
             };
             assert_eq!(second(&mut provider, ""), Ok(()));
-            assert_eq!(second(&mut provider, "3"), Ok(()));
+            let batch = |provider: &mut NativeProvider, first: &str, second: &str| {
+                provider
+                    .set_typed_globals(
+                        TABLE,
+                        &[((SETTING, 1), first.into()), ((SETTING, 2), second.into())].into(),
+                    )
+                    .map_err(|error| error.code)
+            };
+            assert_eq!(batch(&mut provider, "", "3"), Ok(()));
+            assert_eq!(global(&mut provider, 1), "");
+            assert_eq!(global(&mut provider, 2), "3");
+            assert_eq!(typed(&mut provider, "7"), Ok(()));
+            assert_eq!(batch(&mut provider, "", ""), Err(Some(509)));
+            assert_eq!(global(&mut provider, 1), "7");
+            assert_eq!(global(&mut provider, 2), "3");
             assert_eq!(typed(&mut provider, ""), Ok(()));
             assert_eq!(second(&mut provider, ""), Err(Some(509)));
         } else {
             assert_eq!(typed(&mut provider, "12"), Err(Some(201)));
-            assert_eq!(global(&mut provider), "");
+            assert_eq!(global(&mut provider, 1), "");
         }
         provider.close();
     }

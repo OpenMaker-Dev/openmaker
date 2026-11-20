@@ -1624,19 +1624,20 @@ impl<'a> WorkerHost<'a> {
         let Some(table) = self.s.file.occurrence.and_then(|o| schema.table_of(o)) else {
             return Ok(());
         };
-        let globals: Vec<(String, u64, bool)> = self
+        let first: Vec<_> = self
             .s
             .file
             .window
             .state
             .drafts
-            .keys()
-            .filter_map(|name| {
+            .iter()
+            .filter_map(|(name, text)| {
                 let field = table.fields.values().find(|f| f.name == *name)?;
                 field.global.then(|| {
                     (
                         name.clone(),
                         field.id,
+                        text.clone().unwrap_or_default(),
                         matches!(
                             field.value_type,
                             om_data::calc::ValueType::Date
@@ -1647,23 +1648,6 @@ impl<'a> WorkerHost<'a> {
                 })
             })
             .collect();
-        for (name, field, temporal) in globals {
-            let text = self
-                .s
-                .file
-                .window
-                .state
-                .drafts
-                .get(&name)
-                .cloned()
-                .flatten()
-                .unwrap_or_default();
-            self.enter_global(table.id, field, 1, temporal, &text)
-                .map_err(|e| self.failed(e))?;
-            self.s.file.window.state.drafts.remove(&name);
-            *self.s.file.cache.borrow_mut() = CalcData::default();
-            self.s.file.window.changed_data();
-        }
         // Later repetitions keep their cell keys in the same draft store as
         // related editors. Globals still change only this session's values.
         let mut globals = Vec::new();
@@ -1707,14 +1691,38 @@ impl<'a> WorkerHost<'a> {
                 }
             }
         }
-        for (index, cell, field, repetition, temporal, text) in globals {
-            self.enter_global(table.id, field, repetition, temporal, &text)
-                .map_err(|error| self.failed(error))?;
+        if self.p().enters_typed_globals() {
+            let changes = first
+                .iter()
+                .map(|(_, field, text, _)| ((*field, 1), text.clone()))
+                .chain(globals.iter().map(|(_, _, field, repetition, _, text)| {
+                    ((*field, *repetition), text.clone())
+                }))
+                .collect();
+            self.p()
+                .set_typed_globals(table.id, &changes)
+                .map_err(|e| self.failed(e))?;
+        } else {
+            for (_, field, text, temporal) in &first {
+                self.enter_global(table.id, *field, 1, *temporal, text)
+                    .map_err(|e| self.failed(e))?;
+            }
+            for (_, _, field, repetition, temporal, text) in &globals {
+                self.enter_global(table.id, *field, *repetition, *temporal, text)
+                    .map_err(|e| self.failed(e))?;
+            }
+        }
+        if !first.is_empty() || !globals.is_empty() {
+            *self.s.file.cache.borrow_mut() = CalcData::default();
+            self.s.file.window.changed_data();
+        }
+        for (name, ..) in first {
+            self.s.file.window.state.drafts.remove(&name);
+        }
+        for (index, cell, ..) in globals {
             let draft = &mut self.s.file.window.state.uncommitted.related[index];
             draft.cells.remove(&cell);
             draft.typed.remove(&cell);
-            *self.s.file.cache.borrow_mut() = CalcData::default();
-            self.s.file.window.changed_data();
         }
         self.s
             .file

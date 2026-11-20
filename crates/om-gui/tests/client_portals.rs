@@ -4314,6 +4314,59 @@ fn an_object_exit_trigger_keeps_the_portal_row() {
     expect(&mut app, "Veto", "veto 1, allowed 2");
 }
 
+/// A single save can clear the first repetition and fill another.
+#[test]
+fn a_browse_save_validates_the_proposed_repetitions_of_a_required_global() {
+    let hosted = host_with("required-global-repetitions", |root| {
+        fixture::add_field(root, TABLE, SETTING, "Setting", 1, 2, 0, 0x1_0000, 0x8);
+        fixture::set_field_repetitions(root, TABLE, SETTING, 2);
+        let second = repetition_object(
+            602,
+            OCCURRENCE,
+            SETTING,
+            (2, 1),
+            rect(164.0, 120.0, 184.0, 320.0),
+        );
+        let store =
+            om_layout::encode::append_to_store(&portal_store(PORTAL_FLAGS), &[602], &[second]);
+        root.put(
+            &[&[4], &[5], &uint_segment(PORTALS), &[7]],
+            OwnedNode::leaf(Vec::new(), store),
+        );
+        add_script(
+            root,
+            &fixture::script(
+                12,
+                "Read setting",
+                vec![show(
+                    r#""setting " & Tasks::Setting & ":" & Tasks::Setting[2]"#,
+                )],
+            ),
+        );
+    });
+    let mut app = open(&hosted);
+    expect(&mut app, "Show portals", "on Portals");
+    common::text_field(&app, "Setting").focus();
+    app.step();
+    app.event(egui::Event::Text("7".into()));
+    app.run_steps(2);
+    common::save_record(&mut app);
+    wait_saved(&mut app);
+
+    common::text_field(&app, "Setting").focus();
+    app.step();
+    app.key_press_modifiers(egui::Modifiers::COMMAND, egui::Key::A);
+    app.key_press(egui::Key::Backspace);
+    app.run_steps(2);
+    common::text_field(&app, "Tasks::Setting").focus();
+    app.step();
+    app.event(egui::Event::Text("3".into()));
+    app.run_steps(2);
+    common::save_record(&mut app);
+    wait_saved(&mut app);
+    expect(&mut app, "Read setting", "setting :3");
+}
+
 /// Typing only into a text, number or date global and saving writes no record
 /// (the value is the session's): OnWindowTransaction does not run for it.
 #[test]

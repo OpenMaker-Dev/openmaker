@@ -104,6 +104,9 @@ pub struct Record {
 /// reject unknown fields rather than silently changing another column.
 pub type FieldChanges = std::collections::BTreeMap<String, Option<String>>;
 
+/// Typed edits to a session's global values, keyed by field and repetition.
+pub type GlobalChanges = std::collections::BTreeMap<(u64, u32), String>;
+
 /// A script's write of one record (Set Field and the other field steps,
 /// committed by Commit Records or by leaving the record): the rules a
 /// script's writes follow apply, not a user's (`rules::Entry::script`;
@@ -914,6 +917,22 @@ pub trait DataProvider: Send {
             found::code::UNSUPPORTED,
             "This connection cannot enter typed global values.",
         ))
+    }
+
+    /// Validate the complete proposed values before publishing any changes.
+    /// A provider that supports only a single typed entry refuses a batch.
+    fn set_typed_globals(&mut self, table: u64, changes: &GlobalChanges) -> Result<(), DataError> {
+        let mut values = changes.iter();
+        match (values.next(), values.next()) {
+            (None, _) => Ok(()),
+            (Some((&(field, repetition), text)), None) => {
+                self.set_typed_global(table, field, repetition, text)
+            }
+            _ => Err(DataError::with_code(
+                found::code::UNSUPPORTED,
+                "This connection cannot enter multiple typed global values together.",
+            )),
+        }
     }
 
     /// Whether [`Self::set_typed_global`] checks a user's typing (the

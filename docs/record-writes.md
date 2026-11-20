@@ -1237,7 +1237,9 @@ applied (`DataProvider::set_typed_global`), in the record's ordinary save
 as in a commit after scripts: its entry rules (maximum characters 511,
 strict data type 500-502, range 503, a custom value list or a field of
 this file 506) and Not empty (509), which holds while any of its
-repetitions has a value, as at a record's commit. The refusal carries the field's
+repetitions has a value, as at a record's commit. The check uses the
+complete set of proposed repetitions before publishing any of the edits.
+The refusal carries the field's
 custom message when it is text, or a calculated one that is text alone;
 otherwise, and for a date or time it cannot read, OpenMaker's own
 wording. What they refuse keeps the draft and the session's value, as an
