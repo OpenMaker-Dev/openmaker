@@ -1221,6 +1221,34 @@ pub trait DataProvider: Send {
         ))
     }
 
+    /// Relookup Field Contents (40) over records `ids` of layout
+    /// `layout_id`'s table: the lookups that match through `field` (by
+    /// name) copy their values again, as a script's write of each record's
+    /// own value of the field fires them (auto-entry.md, Lookups, battery
+    /// s41), with a script's rules and the step's privilege set; inside a
+    /// script's transaction each write is held there. The field itself
+    /// keeps its value. Checked before any record is written: the field is
+    /// one a script sets and a lookup matches through
+    /// (`RecordPlan::relookup_target`), and no record stores it with
+    /// character styles, which a plain write would drop, and none is held
+    /// in the open transaction, whose held value the stored one would
+    /// replace. A record refused ends the step there, the records before it
+    /// written. Records already gone when it reads them are skipped; one
+    /// deleted after that ends the step (101). With no `ids` it checks the
+    /// target alone.
+    fn relookup(
+        &mut self,
+        _layout_id: u32,
+        _field: &str,
+        _ids: &[i64],
+        _privilege_set: Option<String>,
+    ) -> Result<(), DataError> {
+        Err(DataError::with_code(
+            found::code::UNSUPPORTED,
+            "This provider does not relook up field contents.",
+        ))
+    }
+
     /// Delete Record as a script step runs it. Inside a script's
     /// transaction, a record of another file's table is held in that
     /// file's part (record-writes.md, "A script's transaction across

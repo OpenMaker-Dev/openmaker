@@ -3500,6 +3500,99 @@ impl DataProvider for NativeProvider {
         self.adjust_table_container(table, reference, delta)
     }
 
+    fn relookup(
+        &mut self,
+        layout_id: u32,
+        field: &str,
+        ids: &[i64],
+        privilege_set: Option<String>,
+    ) -> Result<(), DataError> {
+        self.refuse_while_unsettled()?;
+        self.require_writable()?;
+        self.require_script_layout_records(layout_id)?;
+        self.invalidate_calc_data();
+        let layout = self.decoded_layout(layout_id)?;
+        let table = self.read_table_for_layout(&layout)?.id;
+        if self.external.route(table).is_some() {
+            return Err(DataError::with_code(
+                3,
+                "Relookup Field Contents on a layout of another file's table is not supported.",
+            ));
+        }
+        let (_, plan) = self.table_plan(table)?;
+        let cell = plan.relookup_target(field)?;
+        // Every record's own value first, so that a refusal writes none:
+        // a plain value written back is no change to the record (the rules
+        // fire the lookups through it, `RecordPlan::is_lookup_match`), but
+        // one stored with character styles would be replaced by its text.
+        let mut own = Vec::with_capacity(ids.len());
+        for &id in ids {
+            let Ok(record) = u64::try_from(id) else {
+                continue;
+            };
+            // A record the open transaction holds (a new one, or one with a
+            // held edit of the field) has a value the host does not: the
+            // stored one written back would replace what it holds.
+            if self.transaction_new(table, record).is_some() {
+                return Err(DataError::with_code(
+                    3,
+                    format!(
+                        "Record {id} holds a change in the open transaction: no record was \
+                         relooked up."
+                    ),
+                ));
+            }
+            let Some(node) = self.read_record(table, record)? else {
+                continue;
+            };
+            let stored = records::stored_record(record, &node);
+            let text = match stored.cells.get(&cell) {
+                None => None,
+                Some(om_hbam::Cell::Nested(_)) => {
+                    return Err(DataError::with_code(
+                        3,
+                        format!(
+                            "Record {id} stores “{field}” with character styles, which \
+                             writing it again would lose: no record was relooked up."
+                        ),
+                    ))
+                }
+                Some(value) => {
+                    let text = value.text().and_then(Result::ok).ok_or_else(|| {
+                        DataError::with_code(
+                            3,
+                            format!(
+                                "Record {id}'s “{field}” cannot be read as text: no record \
+                                 was relooked up."
+                            ),
+                        )
+                    })?;
+                    Some(text).filter(|t| !t.is_empty())
+                }
+            };
+            own.push((id, text));
+        }
+        for (id, text) in own {
+            let cells = BTreeMap::from([(cell, text)]);
+            self.script_native_record(
+                table,
+                Some(id),
+                (&cells, &BTreeSet::new()),
+                false,
+                records::Origin {
+                    layout: Some(layout_id),
+                    set: records::CurrentSet::Step(privilege_set.clone()),
+                    record_number: None,
+                    prepared: None,
+                },
+            )?;
+            if let Ok(record) = u64::try_from(id) {
+                self.calc.page.invalidate_record(table, record);
+            }
+        }
+        Ok(())
+    }
+
     fn delete_record(&mut self, layout_id: u32, record_id: i64) -> Result<(), DataError> {
         self.delete_layout_record(layout_id, record_id, false)
     }

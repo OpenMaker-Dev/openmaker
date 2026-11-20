@@ -2684,6 +2684,59 @@ impl RecordPlan {
         !entry.skip_auto_enter && !changes.contains_key(&id) && !lookup.matches.iter().any(replaced)
     }
 
+    /// Relookup Field Contents' target, field `name` of the table: one a
+    /// script may set (a normal field, not global), that a lookup the rules
+    /// perform matches through, an editable input of a calculated match
+    /// field included ([`Self::is_lookup_match`]), and that enters no value
+    /// of its own: writing it back would let an auto-entry (a variable such
+    /// as the modifying account, a serial, a constant, a lookup, a
+    /// calculation) replace it. Its id, or why not: 102 for no such field,
+    /// 201 for one a script cannot set (a calculation, a summary, a
+    /// global), 3 for one no lookup matches through or one with
+    /// auto-entry (OpenMaker's codes; FileMaker's are unmeasured).
+    pub fn relookup_target(&self, name: &str) -> Result<u64, DataError> {
+        let (&id, field) = self
+            .fields
+            .iter()
+            .find(|(_, f)| f.name == name)
+            .ok_or_else(|| {
+                DataError::with_code(
+                    error::FIELD_MISSING,
+                    format!("The table has no field named “{name}”."),
+                )
+            })?;
+        if !field.settable_by_script() {
+            return Err(DataError::with_code(
+                error::FIELD_LOCKED,
+                format!(
+                    "“{name}” is not a field a script sets: relook up through an editable \
+                     field the match uses."
+                ),
+            ));
+        }
+        if !self.is_lookup_match(id) {
+            return Err(DataError::with_code(
+                error::UNAVAILABLE,
+                format!("No lookup of this table matches through “{name}”."),
+            ));
+        }
+        let enters = field.options.auto_entry_variable().is_some()
+            || field.options.auto_entry_serial()
+            || field.constant.is_some()
+            || field.lookup.is_some()
+            || field.expression.is_some();
+        if enters {
+            return Err(DataError::with_code(
+                error::UNAVAILABLE,
+                format!(
+                    "“{name}” enters a value of its own, which writing it again could \
+                     replace: OpenMaker does not relook up through it."
+                ),
+            ));
+        }
+        Ok(id)
+    }
+
     /// Whether `field` is a match field of a lookup the rules perform: a
     /// script that sets it, also to the value it has, fires the lookup
     /// (auto-entry.md, Lookups, battery s41).
@@ -7691,6 +7744,20 @@ mod tests {
         // modification, indexed.
         let plan = plan_for(0x8000_0188, 0, &[0x9b, 0x65]).unwrap();
         assert!(plan.editable_fields().contains("Field2"));
+        // Relookup Field Contents' target: not this key, whose auto-entry
+        // a write of it could replace (3); not the looked-up field, which
+        // no lookup matches through (3); not a field the table lacks (102).
+        let refused = |name: &str| plan.relookup_target(name).unwrap_err();
+        let key = refused("Field1");
+        assert_eq!(key.code, Some(error::UNAVAILABLE));
+        assert!(key.message.contains("enters a value"), "{}", key.message);
+        let looked_up = refused("Field2");
+        assert!(
+            looked_up.message.contains("No lookup"),
+            "{}",
+            looked_up.message
+        );
+        assert_eq!(refused("Missing").code, Some(error::FIELD_MISSING));
         // Another auto-entry on the key (the creator's account name) keeps
         // the table read-only.
         let other = plan_for(0x8000_0101, 4, &[0x9b, 0x65]);

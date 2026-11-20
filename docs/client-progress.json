@@ -193,7 +193,7 @@
       "previous_status": "Implemented",
       "status": "Implemented",
       "scope": "Auto-enter, validation with calculated custom messages, and serial numbers reserved on the host (op72). Exact-match lookups copy text, numbers and dates through one relationship, also one sorted by the related table's own fields and one with calculated match keys ([limits](record-writes.md#limits), [lookups](re/auto-entry.md#lookups)).",
-      "remaining": "Other lookup forms (next lower or higher value, constants, several relationships, other sorts, times and timestamps) and entry from the last visited record make a table read-only [#39](https://github.com/OpenMaker-Dev/openmaker/issues/39); Relookup Field Contents fails [#87](https://github.com/OpenMaker-Dev/openmaker/issues/87). A looked-up value appears when the record is written, not on Tab, and lookups fired by scripts and imports are unmeasured.",
+      "remaining": "Other lookup forms (next lower or higher value, constants, several relationships, other sorts, times and timestamps) and entry from the last visited record make a table read-only [#39](https://github.com/OpenMaker-Dev/openmaker/issues/39); Relookup Field Contents runs only in desktop scripts, not on OpenMaker Server or from the Records menu [#87](https://github.com/OpenMaker-Dev/openmaker/issues/87). A looked-up value appears when the record is written, not on Tab, and lookups fired by scripts and imports are unmeasured.",
       "issues": [
         39,
         87
@@ -406,7 +406,7 @@
       "feature": "Script flow / variables / calls",
       "previous_status": "Implemented",
       "status": "Implemented",
-      "scope": "The runtime runs control flow, variables, parameters and results, nested and queued calls, error capture and host actions; it replays 256 of 258 probe runs of FileMaker Server's script engine ([status](scripting.md#status-2026-10-29)). 129 of the 210 steps FileMaker Pro runs on macOS or Windows have an implementation on the desktop (a static count: each step run alone through the desktop's script runtime, against what the desktop host answers; an option a step does not handle still answers error 3).",
+      "scope": "The runtime runs control flow, variables, parameters and results, nested and queued calls, error capture and host actions; it replays 256 of 258 probe runs of FileMaker Server's script engine ([status](scripting.md#status-2026-10-29)). 130 of the 210 steps FileMaker Pro runs on macOS or Windows have an implementation on the desktop (a static count: each step run alone through the desktop's script runtime, against what the desktop host answers; an option a step does not handle still answers error 3).",
       "remaining": "A step without an implementation stops the script with error 3 ([scripts](desktop-client.md#scripts)). Native traces of pause, abort and event order are not compared. Several desktop behaviors are inferred [#105](https://github.com/OpenMaker-Dev/openmaker/issues/105).",
       "issues": [
         105

@@ -3749,6 +3749,33 @@ Steps
   evaluated on each record made current, serial numbers counting up the
   last run of digits of the initial value; each record is committed; no
   triggers fire.
+- Relookup Field Contents
+  ([#87](https://github.com/OpenMaker-Dev/openmaker/issues/87)): in Browse
+  mode, the provider's operation (`DataProvider::relookup`) writes each
+  record of the found set, by id as the step began, with its own value of
+  the match field, with a script's rules and the step's privilege set; a
+  transaction holds the writes. The record rules perform a lookup whose
+  match field a script sets, also to the value it had (auto-entry.md,
+  Lookups, battery s41), so each lookup through the field copies again; a
+  plain value written back changes nothing of the field. Before any record
+  is written, and before the window's record is committed, it checks the
+  target: a field of the layout's table a script sets, that a lookup
+  matches through (an editable input of a calculated match field
+  included, as Claris's help names the target for one), and that enters
+  no value of its own, which a write of it could replace. Then it checks
+  that no record stores the field with character styles, which a plain
+  write would drop, and that the open transaction holds none of them
+  (its held value would be replaced by the stored one). The window keeps
+  its record and found set. A record refused partway ends the step, the
+  records before it written; a record deleted after the check is 101.
+  Unmeasured, and OpenMaker's choices:
+  - the dialog's text;
+  - the codes: 102 for no such field, 201 for one a script cannot set (a
+    calculation or a global), 3 for one no lookup matches through, for one
+    with auto-entry, for a styled value, for a record the transaction
+    holds, for a field reached through a relationship (a self-join's too,
+    as for Replace Field Contents), for a layout of another file's table,
+    and for Find mode.
 - Windows (2026-10-29, run 13.25; `app/windows.rs`,
   `scripting/host/windows.rs`): real windows. Each window keeps its own
   layout, found set, mode, view, current record and unsaved values, Find
@@ -3947,7 +3974,7 @@ Steps
   step's occurrence's table, any table (write-path.md 3.2); the host stores
   the text, also for a field without an auto-entered serial (unconfirmed).
 - Steps the desktop client answers with 3 (and, as before, stops on with a
-  message): Relookup, Undo/Redo,
+  message): Undo/Redo,
   Export Field Contents, Set Web Viewer, Perform JavaScript in Web Viewer,
   the account steps, Open File and the other database file steps, Show/Hide
   Text Ruler, Enable Touch Keyboard, and every step of script-steps.md 7

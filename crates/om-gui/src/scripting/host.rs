@@ -5002,6 +5002,63 @@ impl Fields for WorkerHost<'_> {
         Ok(())
     }
 
+    /// Relookup Field Contents (40): the lookups that match through
+    /// `field` copy their values again in every record of the found set,
+    /// through the provider's operation (`DataProvider::relookup`), which
+    /// checks the target and every record before writing any and writes
+    /// each by id. The window keeps its current record and found set. A
+    /// field reached through a relationship, a self-join's too, is the
+    /// related records', as for Replace Field Contents: 3. The dialog's
+    /// words and Find mode's 3 are OpenMaker's, unmeasured
+    /// (script-runtime.md, the desktop notes).
+    fn relookup(&mut self, field: Option<FieldRef>, with_dialog: bool) -> HostResult {
+        if field.is_some_and(|f| self.is_related(f.occurrence)) {
+            return Err(HostError::Unsupported);
+        }
+        let name = self.target_name(field)?;
+        if self.s.file.window.state.mode != Mode::Browse {
+            return Err(ErrorCode::UNAVAILABLE.into());
+        }
+        let layout = self
+            .s
+            .file
+            .window
+            .state
+            .layout
+            .ok_or(HostError::Error(ErrorCode::RECORD_MISSING))?;
+        // The target first, before the window's record is committed for a
+        // step that would refuse it.
+        let set = self.privilege_set_name();
+        self.p()
+            .relookup(layout, &name, &[], set.clone())
+            .map_err(|e| self.failed(e))?;
+        self.commit_window()?;
+        let ids = {
+            let (window, provider) = self.wp();
+            window.found_ids(provider).map_err(data_error)?
+        };
+        if with_dialog {
+            self.confirm(
+                "Relookup Field Contents",
+                format!(
+                    "Look up the values again in all {} records of the current found set, \
+                     through the field \u{201c}{name}\u{201d}?",
+                    ids.len()
+                ),
+                "OK",
+            )?;
+        }
+        let result = self
+            .p()
+            .relookup(layout, &name, &ids, set)
+            .map_err(|e| self.failed(e));
+        // The written records, the lookups' values among them, are read
+        // again; the window stays on its record.
+        self.s.file.window.changed_data();
+        *self.s.file.cache.borrow_mut() = CalcData::default();
+        result
+    }
+
     fn replace_field_contents(
         &mut self,
         field: Option<FieldRef>,
