@@ -305,7 +305,11 @@ fn what_does_not_read_or_names_a_missing_page_makes_nothing() {
 #[test]
 fn what_a_page_copy_leaves_behind_is_not_kept_whole() {
     worker();
-    let whole = |pdf: &[u8]| pdf_worker::info_whole(pdf).unwrap().unwrap().document_kept;
+    let whole = |pdf: &[u8]| {
+        pdf_worker::info_whole(pdf)
+            .unwrap()
+            .and_then(|info| info.document_kept)
+    };
     let plain = |change: &dyn Fn(&mut Pdf)| {
         let mut pdf = Pdf::new();
         pdf.catalog(Ref::new(1)).pages(Ref::new(2));
@@ -340,6 +344,52 @@ fn what_a_page_copy_leaves_behind_is_not_kept_whole() {
         extra.extend(&bytes[at..]);
         assert_eq!(whole(&extra), Some(false), "{key}");
     }
+    // A comment that spells a trailer of its own before the real one, which
+    // has file identifiers.
+    let identified = plain(&|pdf| {
+        pdf.set_file_id((b"first".to_vec(), b"second".to_vec()));
+    });
+    let at = identified
+        .windows(b"trailer".len())
+        .rposition(|w| w == b"trailer")
+        .unwrap();
+    let mut masked = identified[..at].to_vec();
+    masked.extend(b"% trailer << /Size 5 /Root 1 0 R >>\n");
+    masked.extend(&identified[at..]);
+    assert_ne!(whole(&masked), Some(true));
+    // A page whose `/Parent` does not resolve, though the tree above it
+    // gives it its box: the copy, reading up its parents, would lose it.
+    let mut orphan = Pdf::new();
+    orphan.catalog(Ref::new(1)).pages(Ref::new(2));
+    orphan
+        .pages(Ref::new(2))
+        .kids([Ref::new(3)])
+        .count(1)
+        .media_box(R::new(0.0, 0.0, 200.0, 250.0));
+    orphan.page(Ref::new(3)).parent(Ref::new(9));
+    assert_eq!(whole(&orphan.finish()), Some(false));
+    // A page whose own data refers to the page tree: the whole copy fails
+    // rather than write `null` there, where a page import does.
+    let private = {
+        let mut pdf = Pdf::new();
+        pdf.catalog(Ref::new(1)).pages(Ref::new(2));
+        pdf.pages(Ref::new(2)).kids([Ref::new(3)]).count(1);
+        let mut page = pdf.page(Ref::new(3));
+        page.parent(Ref::new(2))
+            .media_box(R::new(0.0, 0.0, 200.0, 200.0));
+        page.pair(N(b"PieceInfo"), Ref::new(5));
+        page.finish();
+        pdf.indirect(Ref::new(5))
+            .dict()
+            .insert(N(b"App"))
+            .dict()
+            .pair(N(b"Tree"), Ref::new(2));
+        pdf.finish()
+    };
+    assert!(pdf_worker::assemble(&[&private], &[(0, 0)])
+        .unwrap()
+        .is_some());
+    assert_eq!(pdf_worker::assemble_whole(&[&private], &[(0, 0)]), Ok(None));
 }
 
 /// Five pages whose `/Parent` is not their page tree but objects 10, 12,

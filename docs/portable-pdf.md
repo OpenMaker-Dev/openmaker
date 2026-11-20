@@ -112,21 +112,26 @@ explicitly refused. With Restore On, slots 0-7 accept only their decoded
 neutral numeric defaults. The other options:
 - **Append to existing PDF** (`kOption`) writes one new document of the
   existing file's pages followed by the report's, which the PDF worker
-  assembles as it does DynaPDF's documents ([plugins](plugins.md)). Each page
-  is copied with what it refers to, except that a reference to the old
-  catalog or page tree becomes `null`. With no file at the path it writes the
+  assembles as it does DynaPDF's documents ([plugins](plugins.md)), each
+  page with what it refers to. With no file at the path it writes the
   report alone [I: FileMaker's answer there is unmeasured]. It refuses with
   3, and leaves the file as it was, rather than drop part of it:
   - a file the worker does not read as a PDF;
   - one whose catalog holds more than its page tree (bookmarks, an
     interactive form, a structure tree, names, page labels, an XMP metadata
     stream, an open action, a page mode, viewer preferences);
-  - one whose last trailer holds more than `/Size` and `/Root`, read as
-    written: document information of any kind, file identifiers (`/ID`),
+  - one whose last trailer, read from the cross-reference table `startxref`
+    names entry by entry, holds more than `/Size` and `/Root`, its keys read
+    as written: document information of any kind, file identifiers (`/ID`),
     encryption, an earlier revision (`/Prev`), or any other key, however its
-    name is spelled; and one whose cross-references are a stream;
-  - one with optional content, or a page whose `/Parent` chain is deeper than
-    the 64 ancestors the copy reads inherited attributes from;
+    name is spelled; and one whose cross-references are a stream or do not
+    read that way;
+  - one with optional content, or whose page tree reads differently down its
+    `/Kids` than up its pages' `/Parent` links (where the copy finds what a
+    page inherits), or is deeper than the 64 levels the copy reads;
+  - one with a page that refers to the old catalog, a page-tree node or
+    anything else the copy leaves behind: the worker's whole copy fails
+    rather than write `null` there;
   - an initial view other than Page Only, since the new document sets none;
   - more pages in the two documents than one assembly takes (100,000).
 
@@ -134,13 +139,14 @@ neutral numeric defaults. The other options:
   in a script builds one document, but a PDF from FileMaker or another
   producer is usually refused. With a file to append to, it refuses without
   the PDF worker too. The existing file is read up to 512 MiB. The new file
-  is saved only over the file that was read, by its size and modification
-  time, or, with none, only where there still is none; a file that changed
+  is saved only over a file that still holds exactly the bytes that were
+  read, or, with none, only where there still is none; a file that changed
   or appeared meanwhile is kept and the step fails with 800. Appends in one
   OpenMaker run one at a time, so two scripts appending to one file keep
-  both reports. Another program that changes the file in the moment between
-  that check and the save can still lose its change. FileMaker's own append
-  was not compared.
+  both reports. No rename compares and replaces at once, so another program
+  (or another OpenMaker) that writes the file in the instant between that
+  check and the save can still lose its change. FileMaker's own append was
+  not compared.
 - **Initial view (slot 8)** is honored in the PDF's catalog (script-steps.md
   11.7, 12.5):
   - 0 Page Only writes no `/PageMode`, the PDF default;

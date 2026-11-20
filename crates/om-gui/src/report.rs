@@ -3782,31 +3782,42 @@ pub fn save_pdf(path: &Path, bytes: &[u8]) -> std::io::Result<()> {
 
 /// What [`save_pdf_if`] expects at its path when it puts the new file
 /// there.
-#[derive(Clone, Debug, PartialEq, Eq)]
-pub(crate) enum Expected {
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) enum Expected<'a> {
     /// No file: one that appeared meanwhile is kept, and the save fails.
     Absent,
-    /// The file as it was read, by its size and modification time: one
-    /// that differs is kept, and the save fails.
-    Read(u64, Option<std::time::SystemTime>),
+    /// The file as it was read, these bytes: one that holds anything else
+    /// is kept, and the save fails.
+    Read(&'a [u8]),
 }
 
-impl Expected {
-    /// The file at `path` as it is now.
-    pub(crate) fn read(path: &Path) -> std::io::Result<Self> {
-        let metadata = std::fs::metadata(path)?;
-        Ok(Expected::Read(metadata.len(), metadata.modified().ok()))
+/// Whether the file at `path` holds exactly `bytes`, read in pieces and
+/// stopped at the first difference.
+fn holds(path: &Path, bytes: &[u8]) -> std::io::Result<bool> {
+    use std::io::Read as _;
+    let mut file = std::fs::File::open(path)?;
+    let mut piece = vec![0; 1 << 16];
+    let mut at = 0;
+    loop {
+        let read = file.read(&mut piece)?;
+        if read == 0 {
+            return Ok(at == bytes.len());
+        }
+        if bytes.get(at..at + read) != Some(&piece[..read]) {
+            return Ok(false);
+        }
+        at += read;
     }
 }
 
 /// [`save_pdf`], only over what `expected` names (any file without it).
-/// The check is made just before the staged file is put in place, so a
-/// writer outside OpenMaker that changes the file in between can still be
-/// overwritten.
+/// The check is made just before the staged file is put in place; no
+/// rename compares and replaces at once, so another program that writes
+/// the file in that instant can still lose its change.
 pub(crate) fn save_pdf_if(
     path: &Path,
     bytes: &[u8],
-    expected: Option<&Expected>,
+    expected: Option<&Expected<'_>>,
 ) -> std::io::Result<()> {
     replace_file_if(path, bytes, expected)
 }
@@ -3822,7 +3833,11 @@ pub(crate) fn replace_file(path: &Path, bytes: &[u8]) -> std::io::Result<()> {
 }
 
 /// [`replace_file`], put in place only as [`save_pdf_if`] says.
-fn replace_file_if(path: &Path, bytes: &[u8], expected: Option<&Expected>) -> std::io::Result<()> {
+fn replace_file_if(
+    path: &Path,
+    bytes: &[u8],
+    expected: Option<&Expected<'_>>,
+) -> std::io::Result<()> {
     let existing = std::fs::metadata(path)
         .ok()
         .filter(std::fs::Metadata::is_file)
@@ -3848,8 +3863,8 @@ fn replace_file_if(path: &Path, bytes: &[u8], expected: Option<&Expected>) -> st
         None => temp.persist(path).map(drop).map_err(|e| e.error),
         // Linked or renamed in only where nothing is.
         Some(Expected::Absent) => temp.persist_noclobber(path).map(drop).map_err(|e| e.error),
-        Some(read) => {
-            if Expected::read(path).ok().as_ref() != Some(read) {
+        Some(Expected::Read(bytes)) => {
+            if !holds(path, bytes)? {
                 return Err(std::io::Error::other(
                     "the file changed while it was being appended to; it was left as it is",
                 ));
@@ -3966,12 +3981,11 @@ pub(crate) mod tests {
         save_pdf_if(&path, b"one", Some(&Expected::Absent)).unwrap();
         assert!(save_pdf_if(&path, b"two", Some(&Expected::Absent)).is_err());
         assert_eq!(std::fs::read(&path).unwrap(), b"one");
-        let read = Expected::read(&path).unwrap();
-        std::fs::write(&path, b"changed").unwrap();
-        assert!(save_pdf_if(&path, b"three", Some(&read)).is_err());
-        assert_eq!(std::fs::read(&path).unwrap(), b"changed");
-        let read = Expected::read(&path).unwrap();
-        save_pdf_if(&path, b"four", Some(&read)).unwrap();
+        // Replaced by other bytes of the same size: still a change.
+        std::fs::write(&path, b"won").unwrap();
+        assert!(save_pdf_if(&path, b"three", Some(&Expected::Read(b"one"))).is_err());
+        assert_eq!(std::fs::read(&path).unwrap(), b"won");
+        save_pdf_if(&path, b"four", Some(&Expected::Read(b"won"))).unwrap();
         assert_eq!(std::fs::read(&path).unwrap(), b"four");
         assert_eq!(std::fs::read_dir(dir.path()).unwrap().count(), 1);
     }

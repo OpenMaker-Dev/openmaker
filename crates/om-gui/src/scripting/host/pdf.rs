@@ -118,7 +118,8 @@ const MAX_APPENDED: u64 = 512 << 20;
 /// worker reads, or one with bookmarks, a form, a structure tree, names,
 /// page labels, document information, file identifiers, encryption,
 /// optional content or pages it cannot copy whole (`pdf_worker::Info`,
-/// asked with `info_whole`). OpenMaker's own reports have none of these,
+/// asked with `info_whole`), and one whose pages refer to what the copy
+/// leaves behind (`assemble_whole`). OpenMaker's own reports have none of these,
 /// so a script that saves and then appends builds one document
 /// [I: FileMaker's handling of such files is unmeasured].
 fn appended(existing: &[u8], report: &[u8], report_pages: usize) -> Result<Vec<u8>, ReportError> {
@@ -147,7 +148,7 @@ fn appended(existing: &[u8], report: &[u8], report_pages: usize) -> Result<Vec<u
         .map(|page| (0, page))
         .chain((0..report_pages).map(|page| (1, page)))
         .collect();
-    pdf_worker::assemble(&[existing, report], &plan)
+    pdf_worker::assemble_whole(&[existing, report], &plan)
         .map_err(|_| unavailable())?
         .ok_or_else(|| ReportError::unsupported("The PDF could not be appended to"))
 }
@@ -244,19 +245,18 @@ impl WorkerHost<'_> {
         // step fails.
         let append = call.step.has_flag(flag::OPTION);
         let _turn = append.then(|| APPENDING.lock().unwrap_or_else(|e| e.into_inner()));
-        let (bytes, expected) = if append && path.is_file() {
-            let read = report::Expected::read(&path).map_err(|e| {
-                self.report_error(ReportError {
-                    code: 800,
-                    message: format!("The PDF to append to could not be read: {e}"),
-                })
-            })?;
-            let existing = read_existing(&path).map_err(|e| self.report_error(e))?;
-            let bytes = appended(&existing, &report.bytes, report.plan.pages.len())
-                .map_err(|e| self.report_error(e))?;
-            (bytes, Some(read))
+        let existing = if append && path.is_file() {
+            Some(read_existing(&path).map_err(|e| self.report_error(e))?)
         } else {
-            (report.bytes, append.then_some(report::Expected::Absent))
+            None
+        };
+        let (bytes, expected) = match &existing {
+            Some(existing) => {
+                let bytes = appended(existing, &report.bytes, report.plan.pages.len())
+                    .map_err(|e| self.report_error(e))?;
+                (bytes, Some(report::Expected::Read(existing)))
+            }
+            None => (report.bytes, append.then_some(report::Expected::Absent)),
         };
         report::save_pdf_if(&path, &bytes, expected.as_ref()).map_err(|e| {
             self.report_error(ReportError {

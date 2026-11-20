@@ -536,6 +536,20 @@ pub fn assemble(sources: &[&[u8]], plan: &[(u32, u32)]) -> Result<Option<Vec<u8>
     assemble_planned(sources, &plan, &[], &[], &[])
 }
 
+/// [`assemble`], keeping everything the copied pages refer to or failing:
+/// `Ok(None)` rather than a document in which a reference to an object
+/// left behind (the catalog, a page-tree node, a page not copied) became
+/// `null`, as appending to a PDF asks. The request's width 1 asks for it;
+/// only a worker that also answers [`info_whole`] knows it, and a host
+/// asks this only of a PDF that worker said it keeps whole.
+pub fn assemble_whole(
+    sources: &[&[u8]],
+    plan: &[(u32, u32)],
+) -> Result<Option<Vec<u8>>, Unavailable> {
+    let plan: Vec<Planned> = plan.iter().copied().map(Planned::from).collect();
+    assemble_request(sources, &plan, &[], &[], &[], &[], true)
+}
+
 /// [`assemble`], each page with its boxes set and an overlay drawn over it
 /// ([`Planned`]), and `fields` written on their pages, in an interactive
 /// form ([`Field`]).
@@ -559,28 +573,34 @@ pub fn assemble_highlighted(
     links: &[Link],
     highlights: &[Highlight],
 ) -> Result<Option<Vec<u8>>, Unavailable> {
-    // The sources and the plan's fixed part, counted before the request
-    // copies them: no bundle past the worker's input limit is built.
-    let least = (sources.iter())
-        .map(|source| source.len() as u64 + 8)
-        .sum::<u64>()
-        .saturating_add(plan.len() as u64 * 17 + 8);
+    assemble_request(sources, plan, fields, actions, links, highlights, false)
+}
+
+fn assemble_request(
+    sources: &[&[u8]],
+    plan: &[Planned],
+    fields: &[Field],
+    actions: &[String],
+    links: &[Link],
+    highlights: &[Highlight],
+    whole: bool,
+) -> Result<Option<Vec<u8>>, Unavailable> {
     if sources.len() > pdf_assemble::MAX_SOURCES
         || plan.len() > pdf_assemble::MAX_PAGES
         || fields.len() > MAX_FIELDS
         || actions.len() > MAX_ACTIONS
         || links.len() > MAX_LINKS
         || highlights.len() > MAX_HIGHLIGHTS
-        || least > MAX_INPUT
     {
         return Ok(None);
     }
-    ask(
-        Op::Assemble,
-        0,
-        0,
-        &pdf_assemble::bundle(sources, plan, fields, actions, links, highlights),
-    )
+    // No request past the worker's input limit is built (`bundle`).
+    let Some(request) =
+        pdf_assemble::bundle(sources, plan, fields, actions, links, highlights, MAX_INPUT)
+    else {
+        return Ok(None);
+    };
+    ask(Op::Assemble, u32::from(whole), 0, &request)
 }
 
 /// A worker executable's `main`: read one request from stdin, answer it on
@@ -620,7 +640,7 @@ pub fn serve(limit: impl FnOnce(usize) -> bool) -> ExitCode {
             pdf_assemble::annotation_free(data, width).map(|free| vec![u8::from(free)])
         }
         Op::AnnotationFree => None,
-        Op::Assemble => pdf_assemble::assemble(data),
+        Op::Assemble => pdf_assemble::assemble(data, width == 1),
         Op::Find => find_request(&data, width),
         Op::Positions => positions_request(&data, width, height),
     };
