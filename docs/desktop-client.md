@@ -869,8 +869,9 @@ drawn at the window's zoom; its commands now change it there too.
 
 Set Zoom Level with Lock on disables View > Actual Size, Zoom In and
 Zoom Out and their shortcuts for that window. A script can still set the
-level, and Lock off restores those controls. Lock inheritance across
-new windows has not been compared with FileMaker Pro.
+level, and Lock off restores those controls. A new window (New Window,
+the step or Window > New Window) takes the lock with the zoom of the window
+it opens from [I: inheritance has not been compared with FileMaker Pro].
 
 Limits: Table view, Layout mode, generic Form fallbacks and
 focused field editors are not zoomed (Preview scales its paper:
