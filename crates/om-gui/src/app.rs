@@ -1130,6 +1130,9 @@ impl OpenMakerApp {
             ctx.options_mut(|options| options.zoom_with_keyboard = false);
             // Keys go to the keystroke triggers before egui sees them.
             ctx.add_plugin(scripts::KeyGate::default());
+            // A dialog reopened by a quick click comes in front of the one
+            // it was opened from.
+            ctx.add_plugin(crate::widgets::RaiseOpened::default());
             self.styled = true;
         }
         if std::mem::take(&mut self.open_on_launch) {

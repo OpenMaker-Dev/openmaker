@@ -30,7 +30,10 @@ starter solution):
   Required Value, Unique", "= Count * 2", "= Total of Price";
   `DatabaseSchema::field_column_text`, client-ui.md). Field Name, the Type menu
   (Text, Number, Date, Time, Timestamp, Container, Calculation, Summary)
-  and Comment; Create, Change, Delete; Options… for the selected field.
+  and Comment; Create, Change, Delete; Options… for the selected field,
+  which a double-click on the field opens too. A dialog Manage Database
+  opens comes in front of it each time, also when a quick click (press and
+  release in one frame) reopens it (`widgets::RaiseOpened`).
 - **Specify Calculation** (`script_workspace::calculation` in field mode):
   Create with the type Calculation, or Options… on a calculation field,
   opens it on the field's formula: the context occurrence (the field's

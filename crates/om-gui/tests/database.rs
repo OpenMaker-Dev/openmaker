@@ -622,6 +622,39 @@ fn a_summary_field_is_made_on_an_openmaker_server() {
     });
     shot(&mut app, "manage-database-summary-field");
     assert!(app.state().error().is_none(), "{:?}", app.state().error());
+
+    // Options… and a double-click on the field open the dialog again, in
+    // front of Manage Database. A click's press and release in one pass
+    // left a reopened dialog behind it.
+    let title = "Options for Summary Field “Running Count”";
+    let in_front = |app: &common::App| {
+        let layer = |name| egui::LayerId::new(egui::Order::Foreground, egui::Id::unique(name));
+        let at = |order: &[egui::LayerId], name| order.iter().position(|l| *l == layer(name));
+        app.ctx.memory(|m| {
+            let order: Vec<egui::LayerId> = m.layer_ids().collect();
+            at(&order, "database_summary_options") > at(&order, "manage_database")
+        })
+    };
+    for double in [false, true, false] {
+        if double {
+            row(&mut app, "Name");
+            let at = app
+                .get_by_role_and_label(Role::Button, "Running Count")
+                .rect()
+                .center();
+            common::workspace::double_click_at(&mut app, at);
+        } else {
+            row(&mut app, "Running Count");
+            press(&mut app, "Options…");
+        }
+        wait_until(&mut app, "the dialog in front", |app| {
+            app.query_by_label(title).is_some() && in_front(app)
+        });
+        confirm(&mut app, "Cancel");
+        wait_until(&mut app, "the dialog closed", |app| {
+            app.query_by_label(title).is_none()
+        });
+    }
     press(&mut app, "OK");
     wait_until(&mut app, "the save", |app| {
         assert!(app.state().error().is_none(), "{:?}", app.state().error());
