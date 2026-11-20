@@ -20,6 +20,9 @@ pub(crate) type Cells = BTreeMap<u64, Option<String>>;
 /// committed, as FileMaker commits a record with its related records.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub(crate) struct RelatedDraft {
+    /// The draft's identity while it lives (`PortalIdentity::New`): its
+    /// place in `Uncommitted::related` changes as other drafts go.
+    pub key: DraftKey,
     /// The occurrence the record was reached through, and its base table.
     pub occurrence: u64,
     pub table: u64,
@@ -85,6 +88,19 @@ pub(crate) struct PreparedDraft {
     pub context: Option<Vec<om_data::PendingRecord>>,
 }
 
+/// A related draft's identity ([`RelatedDraft::key`]), unique in the
+/// process and kept by its copies.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
+pub(crate) struct DraftKey(u64);
+
+impl DraftKey {
+    /// A key no other draft has.
+    pub fn fresh() -> Self {
+        static NEXT: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(1);
+        Self(NEXT.fetch_add(1, std::sync::atomic::Ordering::Relaxed))
+    }
+}
+
 impl RelatedDraft {
     /// The record's cells as its commit would begin them: its own over
     /// what the preview of its rules entered (#1047).
@@ -133,6 +149,12 @@ pub(crate) struct Uncommitted {
 }
 
 impl Uncommitted {
+    /// The place in [`Self::related`] of the draft `key` names, while it
+    /// is there.
+    pub fn draft_index(&self, key: DraftKey) -> Option<usize> {
+        self.related.iter().position(|draft| draft.key == key)
+    }
+
     pub fn is_empty(&self) -> bool {
         // A prepared scalar-only entry already owns a record session. A
         // dialog/trigger snapshot must not orphan it before cells are staged.

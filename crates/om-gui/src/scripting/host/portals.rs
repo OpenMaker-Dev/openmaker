@@ -245,19 +245,27 @@ impl WorkerHost<'_> {
     /// without a record first when it places the new record's row at the
     /// top. A portal of the layout's own occurrence shows the found set.
     pub(super) fn portal_rows(&mut self, portal: &Portal) -> Result<Vec<Row>, HostError> {
+        Ok(self.numbered_rows(portal)?.0)
+    }
+
+    /// [`Self::portal_rows`], and how many of them come before the
+    /// portal's initial row: numbered, as Browse numbers the rows it draws
+    /// after them, but not drawn, so that no step reaches them.
+    fn numbered_rows(&mut self, portal: &Portal) -> Result<(Vec<Row>, usize), HostError> {
         let occurrence = portal.occurrence;
         let current = self.s.file.occurrence;
         if Some(occurrence) == current {
             let (window, provider) = self.wp();
             let ids = window.found_ids(provider).map_err(data_error)?;
-            return Ok(ids
+            let rows = ids
                 .into_iter()
                 .filter_map(|id| u64::try_from(id).ok())
                 .map(Row::Record)
-                .collect());
+                .collect();
+            return Ok((rows, 0));
         }
         let Some(related) = self.related_rows(occurrence)? else {
-            return Ok(Vec::new());
+            return Ok((Vec::new(), 0));
         };
         let related = self.order_rows(portal, related)?;
         let records: Vec<Row> = related.into_iter().map(Row::Record).collect();
@@ -269,9 +277,8 @@ impl WorkerHost<'_> {
             .uncommitted
             .related
             .iter()
-            .enumerate()
-            .filter(|(_, d)| d.occurrence == occurrence && d.record.is_none())
-            .map(|(i, _)| Row::New(i))
+            .filter(|d| d.occurrence == occurrence && d.record.is_none())
+            .map(|d| Row::New(d.key))
             .collect();
         let visible = usize::try_from(portal.visible).unwrap_or(usize::MAX);
         if portal.scrolls {
@@ -280,12 +287,13 @@ impl WorkerHost<'_> {
             if self.creation_allowed(occurrence) {
                 rows.push(Row::Creation);
             }
-            return Ok(rows);
+            return Ok((rows, 0));
         }
         // The records before the initial row keep their numbers, which
         // Browse's drawn rows are numbered after; the drawn rows follow
-        // (`document::portals::paint_rows`) [I: whether FileMaker lets a
-        // step reach a row before the initial row is unmeasured].
+        // (`document::portals::paint_rows`). Steps reach only the drawn
+        // rows [I: whether FileMaker lets a step reach a row before the
+        // initial row is unmeasured].
         let first = portal.first.min(records.len());
         let mut rows = records[..first].to_vec();
         if portal.new_row_top {
@@ -302,7 +310,7 @@ impl WorkerHost<'_> {
             rows.extend(begun);
         }
         rows.truncate(first.saturating_add(visible));
-        Ok(rows)
+        Ok((rows, first))
     }
 
     /// `records`, the related records `portal` shows in the relationship's
@@ -494,7 +502,7 @@ impl WorkerHost<'_> {
             // (in the portal's own order and filter) does not change.
             let row = match clicked.identity {
                 Some(row @ (Row::New(_) | Row::Creation))
-                    if self.portal_rows(&portal).map_err(refused)?.contains(&row) =>
+                    if self.number_of(&portal, row).map_err(refused)?.is_some() =>
                 {
                     row
                 }
@@ -526,11 +534,13 @@ impl WorkerHost<'_> {
             }
             clicked.row
         } else {
-            let rows = self.portal_rows(&portal).map_err(refused)?;
-            let Some(index) = rows.iter().position(|r| *r == Row::Record(record)) else {
+            let Some(number) = self
+                .number_of(&portal, Row::Record(record))
+                .map_err(refused)?
+            else {
                 return Err(ROW_GONE.into());
             };
-            index as u64 + 1
+            number
         };
         let state = &mut self.s.file.window.state;
         state.focus = None;
@@ -596,12 +606,13 @@ impl WorkerHost<'_> {
     }
 
     /// The number (from 1) of the row of `portal` showing `identity`, if it
-    /// still shows it.
+    /// still shows it where a step reaches it (not before its initial row).
     pub(super) fn number_of(&mut self, portal: &Portal, identity: Row) -> HostResult<Option<u64>> {
-        let rows = self.portal_rows(portal)?;
+        let (rows, hidden) = self.numbered_rows(portal)?;
         Ok(rows
             .iter()
             .position(|row| *row == identity)
+            .filter(|i| *i >= hidden)
             .map(|i| i as u64 + 1))
     }
 
@@ -702,20 +713,25 @@ impl WorkerHost<'_> {
         if Some(portal.occurrence) == self.s.file.occurrence {
             return om_data::runtime::Navigation::go_to_record(self, movement, false);
         }
-        let rows = self.portal_rows(&portal)?.len() as u64;
+        // The rows before the initial row are not drawn: the first row a
+        // step reaches is the initial row.
+        let (rows, hidden) = self.numbered_rows(&portal)?;
+        let (rows, first) = (rows.len() as u64, hidden as u64 + 1);
         let current = active
             .filter(|r| r.object == portal.object)
             .map_or(0, |r| r.row);
         let missing = || Err(HostError::Error(ErrorCode::RECORD_MISSING));
         let row = match movement {
-            _ if rows == 0 => return missing(),
-            RecordMove::First => 1,
+            _ if rows < first => return missing(),
+            RecordMove::First => first,
             RecordMove::Last => rows,
-            RecordMove::Previous if current <= 1 => return Ok(false),
+            RecordMove::Previous if current <= first => return Ok(false),
             RecordMove::Previous => current - 1,
             RecordMove::Next if current >= rows => return Ok(false),
-            RecordMove::Next => current + 1,
-            RecordMove::Number(n) if n < 1 || n as u64 > rows => return missing(),
+            RecordMove::Next => (current + 1).max(first),
+            RecordMove::Number(n) if n < 1 || (n as u64) < first || n as u64 > rows => {
+                return missing()
+            }
             RecordMove::Number(n) => n as u64,
         };
         // The step keeps the same field (and repetition) when it changes
@@ -912,6 +928,9 @@ impl WorkerHost<'_> {
         object: u64,
         (repetition, select): (u32, bool),
     ) -> HostResult {
+        // Its first drawn row: the initial row.
+        let (rows, hidden) = self.numbered_rows(&portal)?;
+        let (rows, first) = (rows.len() as u64, hidden as u64 + 1);
         let row = self
             .s
             .file
@@ -919,25 +938,25 @@ impl WorkerHost<'_> {
             .state
             .portal
             .filter(|r| r.object == portal.object && r.row > 0)
-            .map_or(1, |r| r.row);
-        let rows = self.portal_rows(&portal)?.len() as u64;
+            .map_or(first, |r| r.row);
+        let some = rows >= first;
         self.run_act(
             Act::Portal {
                 row: Some(PortalRow {
                     object: portal.object,
                     occurrence: portal.occurrence,
-                    row: if rows == 0 { 0 } else { row.min(rows) },
+                    row: if some { row.clamp(first, rows) } else { 0 },
                     identity: None,
                     clicked: false,
-                    field: (rows > 0).then_some(object),
-                    repetition: if rows == 0 { 1 } else { repetition },
+                    field: some.then_some(object),
+                    repetition: if some { repetition } else { 1 },
                 }),
                 // Go to Field [Select/perform] selects the field's text.
-                select: select && rows > 0,
+                select: select && some,
             },
             0,
         )?;
-        if rows == 0 {
+        if !some {
             return Err(ErrorCode::RECORD_MISSING.into());
         }
         Ok(())
@@ -983,8 +1002,9 @@ impl WorkerHost<'_> {
         let record = match row_kind {
             Row::Record(record) => record,
             // A record begun in the creation row: what it holds so far.
-            Row::New(index) => {
-                let draft = self.s.file.window.state.uncommitted.related.get(index)?;
+            Row::New(key) => {
+                let uncommitted = &self.s.file.window.state.uncommitted;
+                let draft = &uncommitted.related[uncommitted.draft_index(key)?];
                 let cell = cell_of(field, row.repetition.max(1));
                 return Some(
                     draft
@@ -1103,11 +1123,14 @@ impl WorkerHost<'_> {
         };
         match row {
             None | Some(Row::Creation) => {}
-            Some(Row::New(draft)) => {
-                let removed = self.s.file.window.state.uncommitted.related.remove(draft);
-                // Its record is not to be created: its preview goes (#1047).
-                if let Some(prepared) = removed.prepared {
-                    self.p().discard_prepared(prepared.id);
+            Some(Row::New(key)) => {
+                let uncommitted = &mut self.s.file.window.state.uncommitted;
+                if let Some(draft) = uncommitted.draft_index(key) {
+                    let removed = uncommitted.related.remove(draft);
+                    // Its record is not to be created: its preview goes (#1047).
+                    if let Some(prepared) = removed.prepared {
+                        self.p().discard_prepared(prepared.id);
+                    }
                 }
             }
             Some(Row::Record(record)) => {
@@ -1120,6 +1143,7 @@ impl WorkerHost<'_> {
                 let related = &mut self.s.file.window.state.uncommitted.related;
                 related.retain(|d| !(d.table == table && d.record == Some(record)));
                 related.push(RelatedDraft {
+                    key: crate::scripting::DraftKey::fresh(),
                     reserved: None,
                     matched_cells: Default::default(),
                     occurrence: active.occurrence,
@@ -1177,7 +1201,7 @@ impl WorkerHost<'_> {
             None => self.row_of(&portal, row).ok()??,
         };
         match row {
-            Row::New(index) => Some(index),
+            Row::New(key) => self.s.file.window.state.uncommitted.draft_index(key),
             Row::Record(_) | Row::Creation => None,
         }
     }
@@ -1260,6 +1284,7 @@ impl WorkerHost<'_> {
                         draft.typed.remove(&cell);
                     }
                     None => related.push(RelatedDraft {
+                        key: crate::scripting::DraftKey::fresh(),
                         reserved: None,
                         matched_cells: Default::default(),
                         occurrence,
@@ -1288,6 +1313,7 @@ impl WorkerHost<'_> {
                     .uncommitted
                     .related
                     .push(RelatedDraft {
+                        key: crate::scripting::DraftKey::fresh(),
                         reserved: None,
                         matched_cells: Default::default(),
                         occurrence,
@@ -1305,13 +1331,13 @@ impl WorkerHost<'_> {
                 // A clicked creation row, active by its identity, is the new
                 // record's row now: later steps reach that record.
                 let state = &mut self.s.file.window.state;
-                let created = state.uncommitted.related.len() - 1;
+                let created = state.uncommitted.related.last().map(|d| d.key);
                 if let Some(active) = state.portal.as_mut().filter(|row| {
                     row.occurrence == occurrence
                         && row.clicked
                         && row.identity == Some(Row::Creation)
                 }) {
-                    active.identity = Some(Row::New(created));
+                    active.identity = created.map(Row::New);
                 }
             }
         }
@@ -1364,6 +1390,19 @@ impl WorkerHost<'_> {
         out
     }
 
+    /// The draft `key` names, as a write's target: missing (101) once it
+    /// is gone.
+    fn draft_target(&self, key: crate::scripting::DraftKey) -> Result<Target, HostError> {
+        self.s
+            .file
+            .window
+            .state
+            .uncommitted
+            .draft_index(key)
+            .map(Target::Draft)
+            .ok_or(HostError::Error(ErrorCode::RECORD_MISSING))
+    }
+
     pub(super) fn related_target(&mut self, occurrence: u64) -> Result<Target, HostError> {
         let current = self
             .s
@@ -1377,14 +1416,14 @@ impl WorkerHost<'_> {
                         return Ok(Target::Record(record));
                     }
                     match self.clicked_unsaved(&portal) {
-                        Some(Row::New(i)) => return Ok(Target::Draft(i)),
+                        Some(Row::New(key)) => return self.draft_target(key),
                         Some(Row::Creation) => return Ok(Target::Create),
                         _ => {}
                     }
                     self.check_order(&portal)?;
                     match self.row_of(&portal, active.row)? {
                         Some(Row::Record(id)) => return Ok(Target::Record(id)),
-                        Some(Row::New(i)) => return Ok(Target::Draft(i)),
+                        Some(Row::New(key)) => return self.draft_target(key),
                         Some(Row::Creation) => return Ok(Target::Create),
                         None => {}
                     }
