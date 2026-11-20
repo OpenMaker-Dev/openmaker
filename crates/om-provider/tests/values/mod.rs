@@ -281,6 +281,11 @@ fn text_forms_use_declared_language_and_unestablished_languages_fail() {
         (77, vec!["a", "Test"]),
     ] {
         let file = file_with(&format!("vl-language-{language}"), &[], |root| {
+            // A stored locale, so that language 0 is read from it.
+            root.put(
+                &[&[2], &[13]],
+                OwnedNode::leaf(Vec::new(), om_calc::Locale::en_us().to_record()),
+            );
             fixture::set_field_language(root, TABLE, NAME, language);
             put(root, NAME, 1, "Test\ra");
             put(root, NAME, 2, "tést");
@@ -305,6 +310,34 @@ fn text_forms_use_declared_language_and_unestablished_languages_fail() {
     assert_eq!(error.code, Some(3));
     assert!(error.message.contains("index language (25)"));
     provider.close();
+    // Language 0 in a German file is German, which OpenMaker does not key;
+    // a locale record that does not decode refuses language 0, but not
+    // Unicode raw, whose keys need no locale.
+    let unreadable = vec![0, 0, 0, 21];
+    for (case, (language, locale, expected)) in [
+        (0, om_calc::Locale::de_de().to_record(), None),
+        (0, unreadable.clone(), None),
+        (2, unreadable, Some(vec!["Test", "a", "tést"])),
+    ]
+    .into_iter()
+    .enumerate()
+    {
+        let file = file_with(&format!("vl-locale-{case}"), &[], |root| {
+            root.put(&[&[2], &[13]], OwnedNode::leaf(Vec::new(), locale));
+            fixture::set_field_language(root, TABLE, NAME, language);
+            put(root, NAME, 1, "Test\ra");
+            put(root, NAME, 2, "tést");
+        });
+        let (port, ca) = host_with(&file.0, None, Server::with_late_index_builds);
+        let mut provider = open(port, &ca);
+        let tasks = layout(&mut provider, "Tasks");
+        let values = provider.index_values(tasks, "Name");
+        match expected {
+            Some(expected) => assert_eq!(values.unwrap(), expected, "case {case}"),
+            None => assert_eq!(values.unwrap_err().code, Some(3), "case {case}"),
+        }
+        provider.close();
+    }
 }
 
 #[test]

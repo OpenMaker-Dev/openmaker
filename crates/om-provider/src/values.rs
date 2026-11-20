@@ -673,11 +673,18 @@ impl NativeProvider {
         // language whose form OpenMaker does not build has none, and so has
         // language 0 when the file's locale cannot be read.
         let text = if field.data_type == DataType::Text {
-            match self.file_locale_language() {
-                Ok(file) => om_data::rules::written_text_keys(language, file),
-                Err(error) if strict => return Err(error),
-                Err(_) => None,
-            }
+            // Only language 0 reads the file's locale: the other forms
+            // need none, so an unreadable locale does not refuse them.
+            let file = if language == 0 {
+                match self.file_locale_language() {
+                    Ok(file) => Some(file),
+                    Err(error) if strict => return Err(error),
+                    Err(_) => None,
+                }
+            } else {
+                Some(language)
+            };
+            file.and_then(|file| om_data::rules::written_text_keys(language, file))
         } else {
             TextKeys::of_language(language)
         };
@@ -705,9 +712,6 @@ impl NativeProvider {
         })
     }
 
-    /// The file's date order, read explicitly from its locale `[02, 0d]`:
-    /// a failed or absent locale must not become the calculation schema's
-    /// default MDY order for date keys.
     /// The file's own language from its stored locale (`[02, 0d]`,
     /// file-metadata.md 2), which index language 0 keys text in. Error 3
     /// when the file holds a locale that cannot be read, rather than
@@ -727,6 +731,9 @@ impl NativeProvider {
         Ok(u32::from(locale.language.id()))
     }
 
+    /// The file's date order, read explicitly from its locale `[02, 0d]`:
+    /// a failed or absent locale must not become the calculation schema's
+    /// default MDY order for date keys.
     fn file_date_order(&mut self) -> Result<DateOrder, DataError> {
         let data = download_node(self.session_mut()?, vec![vec![2]])?
             .ok_or_else(|| unsupported("The file's date order could not be read."))?;
