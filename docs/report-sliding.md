@@ -59,10 +59,12 @@ summary) is laid out on its own:
   them stays.
 - **Fixed parts.** Claris: "Headers, footers, title headers, title footers,
   and top navigation and bottom navigation parts never shrink or slide up."
-  An object there set to slide up, or to resize its part, prints where it is
-  placed, as one that does not slide: none of the sliding refusals below
-  apply to it, and a field there whose text does not fit is cut at its box
-  like any field that does not slide. That FileMaker ignores the options
+  An object in a header, footer, title header or title footer set to slide
+  up, or to resize its part, prints where it is placed, as one that does not
+  slide: none of the sliding refusals below apply to it, and a field there
+  whose text does not fit is cut at its box like any field that does not
+  slide. (Navigation parts do not print at all, so their objects are left
+  out whatever they are set to.) That FileMaker ignores the options
   there, rather than refusing them in some other way, is read from that
   sentence; no FileMaker output with a sliding header object was compared.
 
