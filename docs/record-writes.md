@@ -1355,9 +1355,19 @@ A number field with unique or existing-value validation keeps its table
 read-only, as before. Unique and existing values are checked in the field's
 value index, so such a field must be defined for a value index in English (21,
 77), System (1), Unicode standard (3) or Unicode raw (2) (auto-entry.md,
-Index bits), the forms whose keys OpenMaker builds; a field in another
-language keeps its table read-only ([#299](https://github.com/OpenMaker-Dev/openmaker/issues/299)). The client and the host build the key in the field's
-form (`om_data::rules::checked_text_keys`, query-program.md 7.2), cut to 219
+Index bits), the forms whose keys OpenMaker builds, or in language 0 when
+the file's own language is one of them. A language FileMaker leaves
+untailored counts too (Dutch, French, Greek, Italian, Portuguese, Russian,
+Hebrew, Serbian, Bulgarian and the Indic languages 59 to 67): its value keys
+are English's (query-program.md 7.2; the set is inferred from bin's list of
+tailored languages and a probe,
+[#46](https://github.com/OpenMaker-Dev/openmaker/issues/46)). A change of
+such a field's text is still refused, as its word keys are not built
+([#300](https://github.com/OpenMaker-Dev/openmaker/issues/300)). A field in
+a tailored language keeps its table read-only
+([#299](https://github.com/OpenMaker-Dev/openmaker/issues/299)). The client
+and the host build the key in the field's value form
+(`om_data::rules::value_text_keys`, query-program.md 7.2), cut to 219
 bytes as the index holds it (7.1), so a long value is checked against the
 values that share its first 109 weights, or code units in Unicode raw ([#177](https://github.com/OpenMaker-Dev/openmaker/issues/177)).
 Raw keys keep case, so `A` and `a` are two values there; FileMaker documents

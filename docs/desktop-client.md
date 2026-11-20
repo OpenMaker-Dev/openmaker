@@ -950,6 +950,15 @@ Unicode raw by its code units with case kept, and language 0 in the file's
 own language. A field in another language is keyed in English, which keys
 most text as those languages do.
 
+Without the host's index, the client keys each record itself. That works
+in the forms above and, for value-index finds (whole values, ranges,
+`==`), in the languages FileMaker leaves untailored, whose value keys are
+English's (`om_data::rules::value_text_keys`; the set is inferred,
+[#46](https://github.com/OpenMaker-Dev/openmaker/issues/46)). A word find
+in those languages, whose word breaks follow their locale
+([#300](https://github.com/OpenMaker-Dev/openmaker/issues/300)), and any
+find in a tailored language fail with 3 until the host has the index.
+
 **Limits.** List view shows only the current request, as one body row.
 In the padded form a word's start is matched by its primary weights alone
 (`equ` finds `équipe`), and a Unicode raw find keeps case: FileMaker's keys

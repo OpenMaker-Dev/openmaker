@@ -726,7 +726,7 @@ impl NativeProvider {
 
     /// The file's own language (`Locale::Type`), which an index in
     /// language 0 keys text in (query-program.md 7.2).
-    fn file_language(&mut self) -> Result<u32, DataError> {
+    pub(crate) fn file_language(&mut self) -> Result<u32, DataError> {
         Ok(u32::from(self.calc_schema_cached()?.locale.language.id()))
     }
 
@@ -873,7 +873,7 @@ impl NativeProvider {
                 let field = table.field(id).cloned().ok_or_else(|| {
                     DataError::with_code(code::FIELD_MISSING, "A find names a missing field.")
                 })?;
-                let text = text_keys(&field, file_language)?;
+                let text = text_keys(&field, file_language, index)?;
                 Ok((field, index, text))
             })
             .collect::<Result<_, DataError>>()?;
@@ -1129,7 +1129,7 @@ impl NativeProvider {
                 let text: Vec<(u64, TextKeys)> = fields
                     .iter()
                     .filter_map(|id| near_table.field(*id))
-                    .map(|field| Ok((field.id, text_keys(field, file_language)?)))
+                    .map(|field| Ok((field.id, text_keys(field, file_language, IndexKind::Value)?)))
                     .collect::<Result<_, DataError>>()?;
                 let mut related = RidList::new();
                 for batch in all.chunks(SORT_BATCH) {
@@ -1423,7 +1423,11 @@ fn read_text_keys(field: &om_hbam::Field, file_language: u32) -> TextKeys {
 /// (query-program.md 7.2), language 0 the file's own (`file_language`). A
 /// text field in a language whose keys are not established cannot be found
 /// without the host's index.
-fn text_keys(field: &om_hbam::Field, file_language: u32) -> Result<TextKeys, DataError> {
+fn text_keys(
+    field: &om_hbam::Field,
+    file_language: u32,
+    index: IndexKind,
+) -> Result<TextKeys, DataError> {
     if field.data_type != om_hbam::DataType::Text {
         return Ok(TextKeys::Collated);
     }
@@ -1439,7 +1443,15 @@ fn text_keys(field: &om_hbam::Field, file_language: u32) -> Result<TextKeys, Dat
             )
         })?
         .index_language();
-    om_data::rules::written_text_keys(language, file_language).ok_or_else(|| {
+    // A value index in a language FileMaker leaves untailored keys as
+    // English (`value_text_keys`); its word breaks are its locale's, which
+    // OpenMaker does not build
+    // ([#300](https://github.com/OpenMaker-Dev/openmaker/issues/300)).
+    let form = match index {
+        IndexKind::Value => om_data::rules::value_text_keys(language, file_language),
+        IndexKind::Word => om_data::rules::written_text_keys(language, file_language),
+    };
+    form.ok_or_else(|| {
         DataError::with_code(
             code::UNSUPPORTED,
             format!(

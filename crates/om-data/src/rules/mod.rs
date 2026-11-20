@@ -148,19 +148,43 @@ const CONTEXT_SELECTORS: [u8; 4] = [
     selector::CURRENT_HOST_TIMESTAMP,
 ];
 
-/// How a value index in `language` keys text when a unique or existing
-/// value is checked in it (query-program.md 7.2): English and English
-/// international as primary weights, System and Unicode standard padded,
-/// Unicode raw as its UTF-16 code units. `None` for the other languages,
-/// whose keys OpenMaker does not build (the tailorings, #159), so a field
+/// Whether FileMaker leaves index language `language` untailored, so that
+/// its value-index keys are English's primary weights (query-program.md
+/// 7.2): the languages outside the list of those whose `TailorWeights`
+/// Support overrides (from bin) whose keys the probe found equal to
+/// English's for every value. These are Dutch 20, French 24, Greek 27,
+/// Italian 30, Portuguese 34, Russian 36, Hebrew 47, Serbian 53,
+/// Bulgarian 55 and the Indic languages 59 to 67 (Hindi, 48, is tailored).
+/// Their word breaks follow each locale's punctuation and differ from
+/// English's ([#300](https://github.com/OpenMaker-Dev/openmaker/issues/300)),
+/// so only their value keys are known. That the bin's list is complete is
+/// not confirmed: Norwegian and Finnish are tailored though absent from
+/// it, so this set is inferred.
+pub fn untailored(language: u32) -> bool {
+    matches!(
+        language,
+        20 | 24 | 27 | 30 | 34 | 36 | 47 | 53 | 55 | 59..=67
+    )
+}
+
+/// How a value index in `language`, in a file whose own language is
+/// `file_language`, keys text when it is read without the host: a unique
+/// or existing value checked in it, a find or a join on it without the
+/// host's index. The form a host writes ([`written_text_keys`]), and
+/// English for the untailored languages ([`untailored`]), whose value
+/// keys are English's. `None` for the tailored languages, whose keys
+/// OpenMaker does not build (#159,
+/// [#299](https://github.com/OpenMaker-Dev/openmaker/issues/299)): a field
 /// validated in them keeps its table read-only.
-pub fn checked_text_keys(language: u32) -> Option<om_query::keys::TextKeys> {
-    match language {
-        21 | 77 => Some(om_query::keys::TextKeys::Collated),
-        1 | 3 => Some(om_query::keys::TextKeys::CollatedPadded),
-        2 => Some(om_query::keys::TextKeys::Raw),
-        _ => None,
-    }
+pub fn value_text_keys(language: u32, file_language: u32) -> Option<om_query::keys::TextKeys> {
+    written_text_keys(language, file_language).or_else(|| {
+        let language = if language == 0 {
+            file_language
+        } else {
+            language
+        };
+        untailored(language).then_some(om_query::keys::TextKeys::Collated)
+    })
 }
 
 /// How a host writes the keys of a text field indexed in `language`, in a
@@ -1827,10 +1851,11 @@ impl RecordPlan {
                 // The server checks a unique or existing value in the
                 // field's value index (query-program.md 8.4), keyed in its
                 // index language.
-                if !options.value_indexed() || checked_text_keys(options.index_language()).is_none()
+                if !options.value_indexed()
+                    || value_text_keys(options.index_language(), file_language).is_none()
                 {
                     return Err(error(
-                        "unique and existing values require a value index in English, System, Unicode standard or Unicode raw.",
+                        "unique and existing values require a value index in English, System, Unicode standard, Unicode raw or a language FileMaker leaves untailored.",
                     ));
                 }
             }
@@ -6208,10 +6233,16 @@ mod tests {
             .to_string()
             .contains("require a value index"));
         table.fields[primary_key].options[8..12].copy_from_slice(&0x8000_0188u32.to_be_bytes());
-        // German (25) is a tailoring OpenMaker does not key.
-        table.fields[primary_key].options[4..8].copy_from_slice(&25u32.to_be_bytes());
-        assert!(plan(&table, &initials(1, 2)).is_err());
-        for language in [77u32, 1, 3] {
+        // German (25) and Swedish (41) are tailorings OpenMaker does not key.
+        for language in [25u32, 41] {
+            table.fields[primary_key].options[4..8].copy_from_slice(&language.to_be_bytes());
+            assert!(plan(&table, &initials(1, 2)).is_err(), "{language}");
+        }
+        // English international, System and Unicode standard; French,
+        // Russian and an Indic language, which FileMaker leaves untailored
+        // (their value keys are English's); and language 0, the file's own
+        // (English here).
+        for language in [77u32, 1, 3, 24, 36, 59, 0] {
             table.fields[primary_key].options[4..8].copy_from_slice(&language.to_be_bytes());
             assert!(plan(&table, &initials(1, 2)).is_ok(), "{language}");
         }
