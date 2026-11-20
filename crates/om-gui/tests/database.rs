@@ -257,6 +257,39 @@ fn manager_saves_tables_and_fields_on_an_openmaker_server() {
     use om_data::{DataProvider, FieldKind, SchemaFieldKind};
     let mut root = indexed_tasks();
     index_schema_catalogs(&mut root);
+    let table_key = om_hbam::slot::uint_segment(fixture::TABLE);
+    let name_key = om_hbam::slot::uint_segment(fixture::NAME);
+    root.put(
+        &[&table_key, &[3], &[5], &name_key, &[0x29]],
+        om_hbam::OwnedNode::leaf(Vec::new(), 2u32.to_be_bytes().to_vec()),
+    );
+    root.put(
+        &[&table_key, &[3], &[5], &name_key, &[0x30]],
+        om_scripts::text_node(&[], "Task title"),
+    );
+    // An annotation alone on Count, which the save renames: the rename
+    // keeps it.
+    root.put(
+        &[
+            &table_key,
+            &[3],
+            &[5],
+            &om_hbam::slot::uint_segment(fixture::COUNT),
+            &[0x30],
+        ],
+        om_scripts::text_node(&[], "How many"),
+    );
+    // Advanced flags of another width than a u32 are not read as set.
+    root.put(
+        &[
+            &table_key,
+            &[3],
+            &[5],
+            &om_hbam::slot::uint_segment(fixture::SETTING),
+            &[0x29],
+        ],
+        om_hbam::OwnedNode::leaf(Vec::new(), vec![2]),
+    );
     let file = fixture::TempFile::from_tree("gui-database-save", &root);
     let hosted = hosted::host_file(
         "database-save",
@@ -287,6 +320,7 @@ fn manager_saves_tables_and_fields_on_an_openmaker_server() {
     press(&mut app, om_data::FieldColumn::TITLE);
     shot(&mut app, "manage-database-fields-comments");
     press(&mut app, om_data::FieldColumn::TITLE);
+    shot(&mut app, "manage-database-fields-advanced");
     press(&mut app, om_data::FieldColumn::TITLE);
     // Tasks: a new timestamp field with a comment, Count renamed, Due
     // deleted.
@@ -337,6 +371,16 @@ fn manager_saves_tables_and_fields_on_an_openmaker_server() {
     let mut fresh = hosted.opened();
     let schema = fresh.database_schema().unwrap();
     let tasks = schema.table(fixture::TABLE).unwrap();
+    let name = tasks.fields.iter().find(|f| f.id == fixture::NAME).unwrap();
+    assert_eq!(
+        schema.field_column_text(tasks, name, om_data::FieldColumn::Advanced),
+        "Display Names, Task title"
+    );
+    let setting = tasks.fields.iter().find(|f| f.id == fixture::SETTING);
+    assert_eq!(
+        schema.field_column_text(tasks, setting.unwrap(), om_data::FieldColumn::Advanced),
+        ""
+    );
     let finished = tasks
         .fields
         .iter()
@@ -352,6 +396,10 @@ fn manager_saves_tables_and_fields_on_an_openmaker_server() {
     );
     let quantity = tasks.fields.iter().find(|f| f.name == "Quantity").unwrap();
     assert_eq!(quantity.id, fixture::COUNT);
+    assert_eq!(
+        schema.field_column_text(tasks, quantity, om_data::FieldColumn::Advanced),
+        "How many"
+    );
     assert!(!tasks.fields.iter().any(|f| f.id == fixture::DUE));
     let projects = schema
         .tables
