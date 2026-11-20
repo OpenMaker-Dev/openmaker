@@ -199,6 +199,19 @@ impl<'a> Parser<'a> {
         }
     }
 
+    /// `word` as a step value of 1, with `kMenuSelection` as the catalog's
+    /// `value` storage writes it: the account steps' options, on when the
+    /// value is nonzero (local-files.md 2.4).
+    fn value_word(&mut self, word: &str) -> bool {
+        if !self.next_is(word) {
+            return false;
+        }
+        self.step.value = 1;
+        self.step.flags |= flag::MENU_SELECTION;
+        self.pos += 1;
+        true
+    }
+
     /// `label: On|Off` for `bits` (set when On).
     fn on_off(&mut self, label: &str, bits: u32) {
         if let Some(value) = self.labeled_value(label) {
@@ -1106,17 +1119,17 @@ fn rule(p: &mut Parser<'_>) {
         134 => {
             p.labeled("Account Name", 0);
             p.labeled("Password", 1);
-            p.word("Expire password", flag::OPTION);
+            p.value_word("Expire password");
         }
         135 => p.labeled("Account Name", 0),
         136 => {
             p.labeled("Account Name", 0);
             p.labeled("New Password", 1);
-            p.word("Expire password", flag::OPTION);
+            p.value_word("Expire password");
         }
         137 => {
             p.labeled("Account Name", 0);
-            if !p.word("Deactivate", flag::OPTION) && p.next_is("Activate") {
+            if !p.value_word("Deactivate") && p.next_is("Activate") {
                 p.pos += 1;
             }
         }
