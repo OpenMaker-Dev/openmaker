@@ -728,8 +728,8 @@ impl Navigation for MemoryScriptHost {
     }
 
     /// No relationships are followed: no related records.
-    fn go_to_related_record(&mut self, _request: &RelatedRecords<'_>) -> HostResult {
-        self.call("go_to_related_record");
+    fn go_to_related_record(&mut self, request: &RelatedRecords<'_>) -> HostResult {
+        self.call(format!("go_to_related_record {:?}", request.occurrence));
         Err(ErrorCode::RECORD_MISSING.into())
     }
 
