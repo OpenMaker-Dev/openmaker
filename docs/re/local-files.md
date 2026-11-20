@@ -368,7 +368,7 @@ below):
 | Delete Account (`DoDeleteAccount`, `0x6815c6`) | removes the member [O] | needs full access (9) |
 | Reset Account Password (`DoResetAccount`, `0x6818b0`) | `06`, `0a` (password stamp, then bit 18 as the step's option says), `04` [O] | needs full access (9) |
 | Enable Account (`DoEnableAccount`, `0x681cde`) | bit 19 of `0a`, `04`; the password stamp stays [O] | needs full access (9) |
-| Change Password (`DoChangePassword`, `0x6b21be`) | `06`, `0a` (bit 18 cleared), `04` | the signed-in account only; 3 for [Guest] or another kind; both passwords cut to 100 code units; the old one must test 0 or 211; 3 in a server script [O] |
+| Change Password (`DoChangePassword`, `0x6b21be`) | `06`, `0a` (bit 18 cleared), `04` | the signed-in account only; 3 for [Guest] or another kind; both passwords cut to 100 code units; the old one must test 0 or 211; 3 in one server script run [O, below] |
 
 **The steps run [O: FileMaker Server 26.0.3's engine, 2026-11-20].**
 Scripts holding the account steps, written with OpenMaker's step writer
@@ -393,7 +393,12 @@ Admin); the account catalog was compared after each run:
 - **The password stamp is local time.** With the engine's time zone set
   to UTC-6, Reset Account Password stamped 18:40:30 on the date before, the
   local time of a run made at 00:40 UTC.
-- Delete Account removed the member. Change Password failed with 3.
+- Delete Account removed the member. Change Password, with its dialog off,
+  for the signed-in Admin whose password is empty, failed with 3 and
+  changed nothing. Whether the empty old password or the harness's
+  session refused it is not known; a non-empty password and a session
+  logged in from a client were not tried (Claris lists the step as
+  Partial on FileMaker Server).
 - Every account's `04` matched the checksum rule above at every stage.
 
 **Native hosted writes [O].** The `s148-hosted-account-writes-20261113`
