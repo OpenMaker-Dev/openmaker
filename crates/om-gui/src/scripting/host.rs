@@ -464,6 +464,9 @@ impl<'a> WorkerHost<'a> {
                     let current = self.s.file.window.id();
                     let provider = self.provider.get_mut().as_mut();
                     let reply = worker::handle_in(provider, self.store, job.window, request);
+                    // Asked of the provider that answered, before the switch
+                    // back may make another file's current.
+                    let held = worker::holds_in_transaction(provider);
                     // The switch back, whose panic ends the running
                     // scripts, comes before the reply, which says whether
                     // a save outlives it (#313).
@@ -473,7 +476,7 @@ impl<'a> WorkerHost<'a> {
                     }))
                     .err();
                     let reply = match back {
-                        Some(_) => worker::unkept_save(self.provider.get_mut().as_mut(), reply),
+                        Some(_) => worker::unkept_save(held, reply),
                         None => reply,
                     };
                     let sent = self

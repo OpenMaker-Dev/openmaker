@@ -1470,6 +1470,9 @@ impl ScriptSession {
                         self.s.observe(&request);
                         let reply =
                             worker::handle_in(io.provider.as_mut(), io.store, job.window, request);
+                        // Asked of the provider that answered, before the
+                        // switch back may make another file's current.
+                        let held = worker::holds_in_transaction(io.provider.as_ref());
                         // The switch back, whose panic ends the paused
                         // scripts, comes before the reply, which says
                         // whether a save outlives it (#313).
@@ -1479,7 +1482,7 @@ impl ScriptSession {
                         }))
                         .err();
                         let reply = match back {
-                            Some(_) => worker::unkept_save(io.provider.as_mut(), reply),
+                            Some(_) => worker::unkept_save(held, reply),
                             None => reply,
                         };
                         let sent = io

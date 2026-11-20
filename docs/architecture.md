@@ -97,7 +97,10 @@ save (an update or a deletion) is that save's failure reply
 While scripts run or are paused, the worker switches back to their window
 before it replies: a panic there ends the scripts, whose cleanup reverts a
 script transaction still open, so a save that transaction held is answered
-as not saved and the window keeps its draft (`worker::unkept_save`).
+as not saved and the window keeps its draft (`worker::unkept_save`, also
+inside a grown schema's reply). Whether the save was held is asked of the
+provider that answered it, before the switch back can make another file's
+provider current (`worker::holds_in_transaction`).
 A panic elsewhere ends the running scripts, not the worker, and the request
 gets no reply: other replies, such as a save's settling or a page and its
 access mask, cannot be made into a plain failure without saying something

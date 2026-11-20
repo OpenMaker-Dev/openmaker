@@ -1071,17 +1071,25 @@ pub(crate) fn handle_in(
     }
 }
 
-/// `reply`, once switching the provider back to the scripts' window after
-/// it panicked: the scripts stop, and their cleanup reverts a script
-/// transaction still open (`ScriptSession::revert_abandoned`). A save that
-/// transaction held (the provider has it open, not apart in a record
-/// session) is then answered as failed, so the window keeps its draft,
-/// rather than as kept (#313).
-pub(crate) fn unkept_save(provider: &mut dyn DataProvider, reply: Reply) -> Reply {
-    let held = panic::catch_unwind(AssertUnwindSafe(|| {
+/// Whether `provider`, the one that just answered a request, holds its
+/// changes in a script transaction (open, not apart in a record session):
+/// asked before switching back to the scripts' window, which may be
+/// another file's provider. A panic asking counts as held.
+pub(crate) fn holds_in_transaction(provider: &dyn DataProvider) -> bool {
+    panic::catch_unwind(AssertUnwindSafe(|| {
         provider.transaction_open() && !provider.record_session_open()
     }))
-    .unwrap_or(true);
+    .unwrap_or(true)
+}
+
+/// `reply`, once switching the provider back to the scripts' window after
+/// it panicked: the scripts stop, and their cleanup reverts a script
+/// transaction still open (`ScriptSession::revert_abandoned`). A save the
+/// answering provider `held` in such a transaction
+/// ([`holds_in_transaction`]) is then answered as failed, also inside a
+/// [`Reply::Grown`], so the window keeps its draft, rather than as kept
+/// (#313).
+pub(crate) fn unkept_save(held: bool, reply: Reply) -> Reply {
     if !held {
         return reply;
     }
@@ -1092,6 +1100,10 @@ pub(crate) fn unkept_save(provider: &mut dyn DataProvider, reply: Reply) -> Repl
         )
     };
     match reply {
+        Reply::Grown { grown, then } => Reply::Grown {
+            grown,
+            then: Box::new(unkept_save(held, *then)),
+        },
         Reply::Updated {
             layout_id,
             record_id,
@@ -1853,7 +1865,7 @@ mod tests {
     #[test]
     fn a_save_a_reverted_transaction_held_is_not_answered_as_kept() {
         let held = Arc::new(AtomicBool::new(true));
-        let mut provider = PanickingProvider {
+        let provider = PanickingProvider {
             held: Arc::clone(&held),
             ..PanickingProvider::default()
         };
@@ -1862,7 +1874,8 @@ mod tests {
             record_id: 2,
             result: Ok(()),
         };
-        match unkept_save(&mut provider, deleted()) {
+        assert!(holds_in_transaction(&provider));
+        match unkept_save(true, deleted()) {
             Reply::Deleted {
                 result: Err(err), ..
             } => {
@@ -1870,9 +1883,24 @@ mod tests {
             }
             other => panic!("unexpected reply {other:?}"),
         }
-        held.store(false, Ordering::SeqCst);
+        // Inside the schema the worker grew answering it, too.
+        let grown = Reply::Grown {
+            grown: GrownSchema {
+                result: Err(DataError::new("schema")),
+                warnings: Vec::new(),
+                sign_ins: Vec::new(),
+            },
+            then: Box::new(deleted()),
+        };
         assert!(matches!(
-            unkept_save(&mut provider, deleted()),
+            unkept_save(true, grown).answered(),
+            Reply::Deleted { result: Err(_), .. }
+        ));
+        // A provider with no script transaction kept the save.
+        held.store(false, Ordering::SeqCst);
+        assert!(!holds_in_transaction(&provider));
+        assert!(matches!(
+            unkept_save(false, deleted()),
             Reply::Deleted { result: Ok(()), .. }
         ));
     }
