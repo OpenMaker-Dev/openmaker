@@ -1123,6 +1123,21 @@ fn imported_layout_new_and_duplicate_menus_and_scripts_create_on_the_peer() {
                     report("$e"),
                 ],
             ),
+            fixture::script(
+                4,
+                "Duplicate in transaction",
+                vec![
+                    fixture::on(86, true),
+                    fixture::on(223, false),
+                    fixture::go_to_record(1),
+                    ScriptStep::new(205),
+                    ScriptStep::new(8),
+                    fixture::set_variable("$e", "Get ( LastError )"),
+                    ScriptStep::new(207),
+                    ScriptStep::new(206),
+                    report("$e"),
+                ],
+            ),
         ],
         true,
     );
@@ -1377,6 +1392,32 @@ fn imported_layout_new_and_duplicate_menus_and_scripts_create_on_the_peer() {
     assert_eq!(stored("Related.fmp12"), peer);
     assert_eq!(count(om_protocol::Opcode::HostCommit), commits);
     assert_eq!(count(om_protocol::Opcode::HostCreateRecord), reserved + 1);
+
+    // Inside a script's transaction a copy of the record holding the
+    // container is refused (3) before its reference is counted: the
+    // owner's part of the transaction would hold it, and its cleanup after
+    // a refused copy is not settled.
+    let adjusted = count(om_protocol::Opcode::AdjustReferenceCount);
+    common::open_menu(&mut app, "Scripts");
+    common::click(&mut app, "Duplicate in transaction");
+    let by = egui_kittest::kittest::By::new().label_contains("|Root|Notes|");
+    common::wait_until(&mut app, "the duplicate's report", |a| {
+        a.query_all(by.clone()).next().is_some()
+    });
+    let shown = app
+        .query_all(by)
+        .next()
+        .unwrap()
+        .accesskit_node()
+        .value()
+        .unwrap_or_default();
+    assert!(shown.starts_with("3|Root|Notes|"), "{shown}");
+    common::click(&mut app, "OK");
+    common::wait_until(&mut app, "script ended", |a| {
+        !a.state().script_running() && a.state().is_settled()
+    });
+    assert_eq!(count(om_protocol::Opcode::AdjustReferenceCount), adjusted);
+    assert_eq!(stored("Related.fmp12"), peer);
 }
 
 #[test]
