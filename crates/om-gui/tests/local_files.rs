@@ -1031,7 +1031,7 @@ fn consecutive_fields_are_drafts_until_save_and_survive_reopen() {
                 field.rect.width(),
                 field.rect.height()
             ),
-            (115.0, top, width, 22.0)
+            (115.0, top, width, 44.0)
         );
     }
     let schema = reader.database_schema().unwrap();
