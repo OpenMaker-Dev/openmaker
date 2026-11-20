@@ -12,6 +12,7 @@
 //! | `10` | `KSortOrder`: a portal's stored `DBSortSpec` |
 //! | `17/0/5` | the parameter of a button's Perform Script action |
 //! | `37` | `KFilter`: a portal's row filter |
+//! | `91` | `KButtonIconSvgCalc`: a button's calculated SVG icon (FileMaker Pro 26.1, used with `buttonObj.flags` `0x4`) |
 //! | `138/<n>` | `KCFConditions`: `5` the formula, `13` a `CFCondition`, `1` its predefined kind |
 //! | `141` | `KHideCondition` |
 //! | `142` | `KActiveObjectCalc`: the active button bar segment |
@@ -44,6 +45,10 @@ const WEB_ADDRESS_FORMULA: u64 = 5;
 /// formula does not decode ([`ObjectCalcs::undecodable`]).
 pub const PORTAL_FILTER: u64 = 37;
 const PORTAL_SORT: u64 = 10;
+/// `KButtonIconSvgCalc`, a button's calculated icon (layout-model.md
+/// 5.3.4): its attribute key, also when its formula does not decode
+/// ([`ObjectCalcs::undecodable`]).
+pub const BUTTON_ICON: u64 = 91;
 /// Within a conditional formatting entry.
 const CONDITION_KIND: u64 = 1;
 const CONDITION_FORMULA: u64 = 5;
@@ -80,6 +85,10 @@ pub struct ObjectCalcs {
     /// it; keeping its bytes here avoids coupling layout decoding to the
     /// script metadata crate, which already depends on layouts.
     pub portal_sort: Option<Vec<u8>>,
+    /// `KButtonIconSvgCalc`: the SVG text of a button's "Calculated icon"
+    /// (FileMaker Pro 26.1), shown when the button's flag `0x4` is set
+    /// ([`crate::ButtonObject::calculated_icon`]).
+    pub button_icon: Option<Formula>,
     pub undecodable: Vec<u64>,
 }
 
@@ -172,6 +181,7 @@ pub(crate) fn decode(attr: &om_hbam::Node<'_>, flags: u64, has_text: bool) -> Ob
         0,
     );
     calcs.portal_filter = take(attr.get(PORTAL_FILTER), PORTAL_FILTER);
+    calcs.button_icon = take(attr.get(BUTTON_ICON), BUTTON_ICON);
     calcs.portal_sort = attr
         .get(PORTAL_SORT)
         .and_then(|node| node.assembled())
@@ -249,6 +259,8 @@ mod tests {
             (vec![37, 6], compile("Score > 0")),
             (vec![10], vec![0, 0, 0, 0]),
             (vec![6, 6], vec![0xff]),
+            // A 26.1 calculated button icon (`KButtonIconSvgCalc`).
+            (vec![91, 6], compile("\"<svg/>\" & Score")),
         ];
         // The tree takes keys in order.
         let mut entries: Vec<(Vec<u8>, Vec<u8>)> = entries
@@ -279,6 +291,10 @@ mod tests {
         assert_eq!(
             polish::encode(&calcs.portal_filter.as_ref().unwrap().polish),
             compile("Score > 0")
+        );
+        assert_eq!(
+            polish::encode(&calcs.button_icon.as_ref().unwrap().polish),
+            compile("\"<svg/>\" & Score")
         );
         // The undecodable placeholder is reported, not dropped silently.
         assert_eq!(calcs.placeholder, None);

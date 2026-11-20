@@ -4614,6 +4614,7 @@ dependencies = [
  "om-transfer",
  "om-url",
  "pdf-writer",
+ "quick-xml",
  "raw-window-handle",
  "rcgen 0.13.2",
  "resvg",
