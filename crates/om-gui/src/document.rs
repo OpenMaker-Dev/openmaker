@@ -789,6 +789,16 @@ impl DocumentState {
         accepted
     }
 
+    /// The window released `record` of `layout` (it keeps no edit of it):
+    /// the lock a preparation took goes with it, so a reply to one still
+    /// on its way is not this window's any more, and an entry begun again
+    /// prepares again. Refused input stays to be discarded.
+    pub(crate) fn forget_edit_preparations(&mut self, layout: u32, record: i64) {
+        self.edit_preparations.retain(|(l, r, _), p| {
+            *l != u64::from(layout) || *r != record || *p == CandidatePreparation::Failed
+        });
+    }
+
     /// Retention starts with real input, even while preparation has not
     /// accepted its value. This pins the page the user actually edited.
     pub(crate) fn entry_candidate_records(&self) -> BTreeSet<(u32, i64)> {
@@ -2591,6 +2601,7 @@ fn find_field(
     // or a radio button sets it, a checkbox adds or removes its line.
     if let Some(choices) = choices.as_ref() {
         let radio = display == 4;
+        let single = field.is_some_and(om_layout::FieldObject::single_unlabeled_checkbox);
         let shown = if display == choice::POP_UP_MENU {
             let empty = criterion.is_empty().then_some(placeholder).flatten();
             let text = field_text_box(
@@ -2621,23 +2632,29 @@ fn find_field(
             )
         } else {
             let styles = options::styles(&state.layout_cache, layout, object, &[], false);
+            let single_items = single.then(|| options::single_item(choices));
             options::show(
                 ui,
                 id,
                 rect,
                 &criterion,
-                &choices.items,
+                single_items.as_deref().unwrap_or(&choices.items),
                 radio,
                 &styles,
                 enterable,
                 true,
                 &name,
+                single,
             )
         };
         let picked = match shown.input {
             Some(options::Input::Open) => {
                 egui::Popup::open_id(ui.ctx(), popup::menu_id(id));
                 None
+            }
+            // A single checkbox's criterion is its first value or none.
+            Some(options::Input::Click { .. } | options::Input::Space(_)) if single => {
+                choice::single_checkbox_criterion(choices, &criterion)
             }
             Some(options::Input::Click { index, shift }) => {
                 choices.items.get(index).and_then(|item| {
@@ -2726,6 +2743,7 @@ fn find_field(
         placeholder,
         drop_down::browse_keys(open),
         enterable,
+        false,
     );
     if response.changed() && completes {
         if let Some(list) = &list {
@@ -5446,6 +5464,7 @@ fn paint_object_repetition(
                         list_id.is_some_and(|id| drop_down::keeps_focus(ui, id, rect, with_arrow));
                     let list_open = list_id.is_some_and(|id| drop_down::is_open(ui, id));
                     let editor = ui.scope_id().with((layout.id, object.id, record.id));
+                    return_goes_on(ui, &mut state.tab_held, object, editor);
                     let cache = &state.layout_cache;
                     let interactive = !state.pending;
                     let (response, changed) =
@@ -5459,6 +5478,7 @@ fn paint_object_repetition(
                                 placeholder_text.as_deref(),
                                 drop_down::browse_keys(list_open),
                                 interactive,
+                                types_line_breaks(object),
                             )
                         });
                     response.widget_info(|| {
@@ -5856,6 +5876,10 @@ fn paint_related_option_set(
         false => Default::default(),
     };
     let items = &choices.items;
+    let single = object
+        .field_obj
+        .as_ref()
+        .is_some_and(om_layout::FieldObject::single_unlabeled_checkbox);
     // Not in a row shown while its portal's records are read again.
     let enabled = !state.pending && !state.clicks_held && !state.painting_stale;
     let label = target.name.as_str();
@@ -5902,8 +5926,19 @@ fn paint_related_option_set(
     } else {
         // A related field's set keeps its normal state (#753's first slice).
         let styles = options::styles(&state.layout_cache, layout, object, set.conditions, false);
+        let single_items = single.then(|| options::single_item(&choices));
         options::show(
-            ui, id, set.rect, &value, items, radio, &styles, editable, enabled, label,
+            ui,
+            id,
+            set.rect,
+            &value,
+            single_items.as_deref().unwrap_or(items),
+            radio,
+            &styles,
+            editable,
+            enabled,
+            label,
+            single,
         )
     };
     if let Some(refusal) = &refusal {
@@ -5950,6 +5985,15 @@ fn paint_related_option_set(
             response.request_focus();
             egui::Popup::open_id(ui.ctx(), popup::menu_id(id));
             None
+        }
+        options::Input::Click { .. } | options::Input::Space(_) if single => {
+            match choice::single_checkbox(&choices, &value) {
+                Ok(value) => value,
+                Err(error) => {
+                    state.choice_refusal = Some(error);
+                    None
+                }
+            }
         }
         options::Input::Click { index, shift } => items.get(index).and_then(|item| {
             if pop_up {
@@ -6180,6 +6224,7 @@ fn related_field(
         version: target.version,
         buffer: FieldBuffer::new(&target.stored),
     });
+    return_goes_on(ui, &mut state.tab_held, object, id);
     let response = field_editor(
         ui,
         &state.layout_cache,
@@ -6189,6 +6234,7 @@ fn related_field(
         placeholder,
         related_keys(current, open),
         !state.pending,
+        types_line_breaks(object),
     );
     if keep {
         response.request_focus();
@@ -6337,10 +6383,81 @@ fn related_field(
     None
 }
 
+/// Whether Return types a line break in the field object's Browse editor:
+/// an edit box's (display type 0). Drop-down lists, pop-up menus and
+/// calendars keep one line, Find mode's criteria too (Return performs the
+/// find), and a field whose "Go to next object using" includes Return
+/// never sees it (`OpenMakerApp::shortcuts` makes it a Tab).
+fn types_line_breaks(object: &LayoutObject) -> bool {
+    object
+        .field_obj
+        .as_ref()
+        .is_some_and(|field| field.display_type == 0)
+}
+
+/// A field's text as its editor changes it. FileMaker stores a line break
+/// as a carriage return, so the `\n` that Return and a paste insert is
+/// stored as `\r` (and a pasted `\r\n` as one `\r`). Text already stored,
+/// an `\n` too, is left as it is: the editor lays both out as line breaks
+/// (`field_galley`), one character each, so cursor positions stay the
+/// buffer's.
+struct FieldText<'a>(&'a mut String);
+
+/// [`FieldText`]'s `TextBuffer::type_id`, which needs a `'static` type.
+struct FieldTextBuffer;
+
+impl egui::TextBuffer for FieldText<'_> {
+    fn is_mutable(&self) -> bool {
+        true
+    }
+
+    fn as_str(&self) -> &str {
+        self.0
+    }
+
+    fn insert_text(&mut self, text: &str, char_index: egui::text::CharIndex) -> usize {
+        let text = text.replace("\r\n", "\r").replace('\n', "\r");
+        self.0.insert_text(&text, char_index)
+    }
+
+    fn delete_char_range(&mut self, char_range: std::ops::Range<egui::text::CharIndex>) {
+        self.0.delete_char_range(char_range);
+    }
+
+    /// Undo and Redo put back the text as it was, line breaks as they were
+    /// stored: an `\n` or `\r\n` the user did not type stays.
+    fn replace_with(&mut self, text: &str) {
+        text.clone_into(self.0);
+    }
+
+    fn type_id(&self) -> std::any::TypeId {
+        std::any::TypeId::of::<FieldTextBuffer>()
+    }
+}
+
+/// The galley of a field's text in its editor: as `paint_rich_text` lays
+/// the field out at rest (its font, color, alignment, line spacing and
+/// wrapping, a carriage return breaking the line), without an uppercase
+/// transform, which could change the number of characters.
+fn field_galley(
+    ui: &Ui,
+    text: &str,
+    style: &ResolvedStyle,
+    wrap_width: f32,
+) -> std::sync::Arc<egui::Galley> {
+    let mut style = style.clone();
+    style.text_transform = None;
+    ui.fonts_mut(|fonts| {
+        let job = rich_text::layout_job(fonts, text, &style, None, wrap_width);
+        rich_text::layout_galley(fonts, job)
+    })
+}
+
 /// A field object's editor in Browse over `rect`: the field's font,
 /// color and insets, and its placeholder as the read-only field shows it,
 /// beside the drop-down arrow the field has. Conditional formatting is
-/// ignored while a field is in focus.
+/// ignored while a field is in focus. With `lines`, Return types a line
+/// break, the text wraps as at rest and scrolls in the field.
 #[allow(clippy::too_many_arguments)]
 fn field_editor(
     ui: &mut Ui,
@@ -6351,6 +6468,7 @@ fn field_editor(
     placeholder_text: Option<&str>,
     keys: egui::EventFilter,
     interactive: bool,
+    lines: bool,
 ) -> egui::Response {
     let style = field_text_box(object, layout, cache.text_style(layout, object, &[], 1));
     let size = style.font_size.unwrap_or(14.0) as f32;
@@ -6358,18 +6476,26 @@ fn field_editor(
     // the content box, and the line sits at its top, middle or bottom.
     let inset = |side: usize| style.padding[side].unwrap_or(0.0).clamp(0.0, 127.0) as f32;
     let (top_inset, right, bottom, left) = (inset(0), inset(1), inset(2), inset(3));
-    let free = (rect.height() - top_inset - bottom - size - 4.0).max(0.0);
+    let mut inner = rect;
+    if has_drop_down_arrow(object) {
+        inner.max.x -= 20.0;
+        paint_field_icon(ui, object, rect, style.color.map(color));
+    }
+    // Several lines sit as a block, as `paint_rich_text` places them.
+    let galley = lines.then(|| {
+        let wrap = (inner.width() - left - right).max(0.0);
+        field_galley(ui, buffer, &style, wrap)
+    });
+    let text_height = galley
+        .as_ref()
+        .map_or(size + 4.0, |galley| galley.size().y.max(size + 4.0));
+    let free = (rect.height() - top_inset - bottom - text_height).max(0.0);
     let top = top_inset
         + match style.vertical_align {
             Some(1) => free / 2.0,
             Some(2) => free,
             _ => 0.0,
         };
-    let mut inner = rect;
-    if has_drop_down_arrow(object) {
-        inner.max.x -= 20.0;
-        paint_field_icon(ui, object, rect, style.color.map(color));
-    }
     // The placeholder looks as it does in a read-only field: the field's
     // font in its placeholder style (state 18).
     let placeholder = cache.text_style(layout, object, &[], 18);
@@ -6387,19 +6513,41 @@ fn field_editor(
         .color(placeholder.color.map(color).unwrap_or(theme::CAPTION));
     let mut child = ui.new_child(UiBuilder::new().max_rect(inner));
     child.set_clip_rect(ui.clip_rect().intersect(rect));
+    // A custom frame replaces the editor's own margin, so the text's
+    // insets are the frame's.
+    let frame = egui::Frame::new().inner_margin(egui::Margin {
+        left: left.round() as i8,
+        right: right.round() as i8,
+        top: top.min(127.0).round() as i8,
+        bottom: bottom.round() as i8,
+    });
+    if lines {
+        // Text taller than the field scrolls in it; text that fits keeps
+        // the field's own place (a scroll area aligns its content to whole
+        // points).
+        let fits = galley.as_ref().is_none_or(|galley| {
+            galley.rows.len() <= 1 || galley.size().y <= rect.height() - top_inset - bottom
+        });
+        let halign = galley
+            .as_ref()
+            .map_or(egui::Align::Min, |galley| galley.job.halign);
+        return lines_editor(
+            &mut child,
+            (object, inner, fits, halign),
+            id,
+            buffer,
+            &style,
+            (keys, interactive),
+            frame,
+            hint,
+        );
+    }
     child.add_sized(
         inner.size(),
         egui::TextEdit::singleline(buffer)
             .id(id)
             .event_filter(keys)
-            // A custom frame replaces the editor's own margin, so the text's
-            // insets are the frame's.
-            .frame(egui::Frame::new().inner_margin(egui::Margin {
-                left: left.round() as i8,
-                right: right.round() as i8,
-                top: top.min(127.0).round() as i8,
-                bottom: bottom.round() as i8,
-            }))
+            .frame(frame)
             .interactive(interactive)
             .font(FontId::new(
                 size,
@@ -6414,6 +6562,109 @@ fn field_editor(
             .text_color(style.color.map(color).unwrap_or(theme::TEXT))
             .hint_text(hint),
     )
+}
+
+/// [`field_editor`] with `lines`: a multi-line editor of [`FieldText`],
+/// laid out as the field at rest ([`field_galley`]) and anchored as it
+/// (`halign`: at its left, center or right). Text taller than the field
+/// (`fits` false) scrolls in it to keep the insertion point in view, with a
+/// scroll bar only where the field object has one (flag `0x100`,
+/// layout-model.md 5.4.1). Up and Down move between lines. Tab stays the
+/// document's: the editor inserts no tab character, and egui moves no
+/// focus on it (`DocumentState::resolve_tab`).
+#[allow(clippy::too_many_arguments)]
+fn lines_editor(
+    ui: &mut Ui,
+    (object, inner, fits, halign): (&LayoutObject, Rect, bool, egui::Align),
+    id: egui::Id,
+    buffer: &mut String,
+    style: &ResolvedStyle,
+    (keys, interactive): (egui::EventFilter, bool),
+    frame: egui::Frame,
+    hint: RichText,
+) -> egui::Response {
+    let editor_keys = egui::EventFilter {
+        tab: false,
+        vertical_arrows: true,
+        ..keys
+    };
+    let bar = object
+        .field_obj
+        .as_ref()
+        .is_some_and(|field| field.flags & 0x100 != 0);
+    let mut layouter = |ui: &Ui, text: &dyn egui::TextBuffer, wrap_width: f32| {
+        field_galley(ui, text.as_str(), style, wrap_width)
+    };
+    let mut text = FieldText(buffer);
+    let edit = egui::TextEdit::multiline(&mut text)
+        .id(id)
+        .event_filter(editor_keys)
+        .frame(frame)
+        .interactive(interactive)
+        .desired_rows(1)
+        .desired_width(inner.width())
+        .align(egui::Align2([halign, egui::Align::Min]))
+        .layouter(&mut layouter)
+        .hint_text(hint);
+    // Whether the last frame drew this editor in its scroll area, with the
+    // focus. A scroll area new this frame (the text has just grown taller
+    // than the field, or a Tab put the insertion point after a long text)
+    // brings the insertion point into view itself: egui asks for that only
+    // as the text or the selection changes, which happened, if at all, in
+    // a frame without the scroll area.
+    let scrolled = id.with("lines scrolled");
+    let frame_nr = ui.ctx().cumulative_frame_nr();
+    let continued = ui
+        .data(|data| data.get_temp::<u64>(scrolled))
+        .is_some_and(|at| at + 1 == frame_nr);
+    let response = if fits {
+        // As the one-line editor sits: the field's own rect.
+        ui.add_sized(inner.size(), edit)
+    } else {
+        egui::ScrollArea::vertical()
+            .id_salt(id.with("lines"))
+            // The field's height, not egui's least scrolled height (64
+            // points), which would grow the area past the field instead.
+            .max_height(inner.height())
+            .min_scrolled_height(inner.height())
+            .auto_shrink([false, true])
+            .scroll_bar_visibility(if bar {
+                egui::scroll_area::ScrollBarVisibility::VisibleWhenNeeded
+            } else {
+                egui::scroll_area::ScrollBarVisibility::AlwaysHidden
+            })
+            .show(ui, |ui| {
+                let output = edit.min_size(inner.size()).show(ui);
+                if let Some(range) = output
+                    .cursor_range
+                    .filter(|_| !continued && output.response.has_focus())
+                {
+                    let caret = output.galley.pos_from_cursor(range.primary).translate(
+                        output.galley_pos.to_vec2() - egui::vec2(output.galley.rect.left(), 0.0),
+                    );
+                    ui.scroll_to_rect(caret, None);
+                }
+                output.response.response
+            })
+            .inner
+    };
+    if !fits && response.has_focus() {
+        ui.data_mut(|data| data.insert_temp(scrolled, frame_nr));
+    }
+    // The editor locks its own keys while it has the focus; the document's
+    // Tab stays locked from egui's traversal as on one line.
+    if response.has_focus() {
+        ui.memory_mut(|memory| {
+            memory.set_focus_lock_filter(
+                id,
+                egui::EventFilter {
+                    vertical_arrows: true,
+                    ..keys
+                },
+            );
+        });
+    }
+    response
 }
 
 /// How many frames the keys typed after a Tab wait for the portal row's
@@ -6502,6 +6753,60 @@ fn tab_pressed(ui: &Ui) -> Option<(usize, bool)> {
 
 /// Whether `event` is a Tab (`Some(false)`) or Shift-Tab (`Some(true)`)
 /// press without Ctrl, Alt or Command.
+/// Return in the field `id`, whose object's "Go to next object using"
+/// includes the Return key (`FieldObject::next_object_on_return`), goes on
+/// as Tab does: the keys after it wait for the next frame (`tab_held`),
+/// from this field, before its editor would type the line break. It is
+/// decided as the field that receives it draws, so a Return typed after a
+/// Tab in the same frame, or replayed to the portal row's field a Tab went
+/// to, goes by that field's option. An open list keeps Return for its
+/// item.
+fn return_goes_on(
+    ui: &Ui,
+    tab_held: &mut Option<(bool, Option<egui::Id>, Vec<egui::Event>)>,
+    object: &LayoutObject,
+    id: egui::Id,
+) {
+    let goes_on = object
+        .field_obj
+        .as_ref()
+        .is_some_and(om_layout::FieldObject::next_object_on_return);
+    if !goes_on || !ui.memory(|memory| memory.has_focus(id)) || egui::Popup::is_any_open(ui.ctx()) {
+        return;
+    }
+    let Some(mut rest) = ui.ctx().input_mut(|input| {
+        let at = input
+            .events
+            .iter()
+            .position(crate::keypad::is_return_press)?;
+        Some(input.events.split_off(at))
+    }) else {
+        return;
+    };
+    rest.remove(0);
+    // A Tab after it this frame took the keys that follow it. That Tab is
+    // still among the keys after the Return when `resolve_tab` held them;
+    // a portal row's field a Tab reached took it out (`reach_tab_goal`).
+    if let Some((backward, _, after)) = tab_held.take() {
+        if !rest.iter().any(|event| tab_key(event).is_some()) {
+            rest.push(egui::Event::Key {
+                key: egui::Key::Tab,
+                physical_key: None,
+                pressed: true,
+                repeat: false,
+                modifiers: if backward {
+                    egui::Modifiers::SHIFT
+                } else {
+                    egui::Modifiers::NONE
+                },
+            });
+        }
+        rest.extend(after);
+    }
+    *tab_held = Some((false, Some(id), rest));
+    ui.ctx().request_repaint();
+}
+
 fn tab_key(event: &egui::Event) -> Option<bool> {
     match event {
         egui::Event::Key {
@@ -6867,6 +7172,10 @@ fn paint_option_set(
         false => Default::default(),
     };
     let items = &choices.items;
+    let single = object
+        .field_obj
+        .as_ref()
+        .is_some_and(om_layout::FieldObject::single_unlabeled_checkbox);
     let enabled = !state.pending && !state.clicks_held;
     let label = name.map_or("", String::as_str);
     let shown = if pop_up {
@@ -6903,8 +7212,19 @@ fn paint_option_set(
             label,
         )
     } else {
+        let single_items = single.then(|| options::single_item(&choices));
         options::show(
-            ui, id, set.rect, set.value, items, radio, &styles, editable, enabled, label,
+            ui,
+            id,
+            set.rect,
+            set.value,
+            single_items.as_deref().unwrap_or(items),
+            radio,
+            &styles,
+            editable,
+            enabled,
+            label,
+            single,
         )
     };
     if let (Some(refusal), Some(_)) = (&refusal, name) {
@@ -7097,6 +7417,10 @@ fn apply_option_wait(
     let choices = set.items.shown();
     let choices = &*choices;
     let items = &choices.items;
+    let single = object
+        .field_obj
+        .as_ref()
+        .is_some_and(om_layout::FieldObject::single_unlabeled_checkbox);
     let display = object.field_obj.as_ref().map(|field| field.display_type);
     let is_drop_down = display == Some(choice::DROP_DOWN_LIST);
     let is_calendar = display == Some(calendar::DROP_DOWN_CALENDAR);
@@ -7138,6 +7462,21 @@ fn apply_option_wait(
                 .ok()
                 .map(|edit| edit.value)
         }
+        // A single checkbox toggles between the list's first and second
+        // values (`choice::single_checkbox`), by a click or Space; a letter
+        // a keystroke trigger let through picks nothing in it.
+        OptionChange::Pick { .. } if single => choice::single_checkbox(choices, &buffer.value)
+            .unwrap_or_else(|error| {
+                state.choice_refusal = Some(error);
+                None
+            }),
+        OptionChange::Key(key) if single => match key.as_str() {
+            " " => choice::single_checkbox(choices, &buffer.value).unwrap_or_else(|error| {
+                state.choice_refusal = Some(error);
+                None
+            }),
+            _ => None,
+        },
         OptionChange::Pick { value, shift } => items
             .iter()
             .position(|item| item.value == value)

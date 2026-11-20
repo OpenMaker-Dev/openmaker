@@ -574,6 +574,68 @@ fn stage_until_refused(session: &mut Session, next: &mut u64) -> usize {
     panic!("100 uploads staged without a refusal");
 }
 
+/// The downloads connections keep paged share one budget on the server
+/// (#145). With a budget smaller than any stream, each paged download
+/// started drops the one left unfinished longest, on another client's
+/// connection too: continuing that one fails, where the newest reads to
+/// its end as the whole stream reads at once.
+#[test]
+fn paged_downloads_share_the_servers_budget() {
+    use om_hbam::OwnedNode;
+    use om_protocol::{
+        build_download_from_host, parse_download_from_host_reply, DownloadRequest, Resume,
+        DOWNLOAD_MAX_RETURN,
+    };
+    use om_server::config::ConnectionLimits;
+    // A subtree of 1.5 MB: two pages.
+    let mut root = fixture::tree(&[], true);
+    root.set_child(OwnedNode::list(
+        [0x7e],
+        (0..3000u32)
+            .map(|n| OwnedNode::leaf(n.to_be_bytes(), vec![7; 500]))
+            .collect(),
+    ));
+    let file = fixture::TempFile::from_tree("download-memory", &root);
+    let port = server::start_configured(&file, |server| {
+        server.with_connection_limits(ConnectionLimits {
+            download_memory: 1,
+            ..ConnectionLimits::DEFAULT
+        })
+    });
+    let page = |session: &mut Session, file_id, resume: Resume| {
+        let txn = build_download_from_host(&DownloadRequest {
+            transaction_id: 1,
+            file_id,
+            key_path: &[&[0x7e]],
+            resume,
+        });
+        let result = session.perform_with_max(&txn, DOWNLOAD_MAX_RETURN)?;
+        Ok::<_, om_session::SessionError>(parse_download_from_host_reply(&result).unwrap())
+    };
+    let read_all = |session: &mut Session, file_id| {
+        let mut reply = page(session, file_id, Resume::start()).unwrap();
+        let mut slots = reply.slots.clone();
+        while reply.resume.has_more() {
+            reply = page(session, file_id, reply.resume.clone()).unwrap();
+            slots.extend(&reply.slots);
+        }
+        slots
+    };
+    let (mut first, first_file) = server::logged_in(port, "download-memory-1");
+    let (mut second, second_file) = server::logged_in(port, "download-memory-2");
+    let whole = read_all(&mut first, first_file);
+    assert!(whole.len() > 1_500_000, "{}", whole.len());
+    // The stream is held past the budget, alone.
+    let started = page(&mut first, first_file, Resume::start()).unwrap();
+    assert!(started.resume.has_more());
+    // Another client's download drops it.
+    assert_eq!(read_all(&mut second, second_file), whole);
+    let refused = page(&mut first, first_file, started.resume).unwrap_err();
+    assert!(refused.to_string().contains("SystemException"), "{refused}");
+    // The connection goes on.
+    assert_eq!(read_all(&mut first, first_file), whole);
+}
+
 /// A server whose clients' upload trees may take 32 MiB in all, so 8 MiB
 /// for one address (#387).
 fn start_with_little_upload_memory(file: &fixture::TempFile) -> u16 {
