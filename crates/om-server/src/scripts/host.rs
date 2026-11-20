@@ -240,6 +240,9 @@ impl Schema {
             let stem = file.rsplit_once('.').map_or(file, |(stem, _)| stem);
             let mut calc = rules::schema::calc_schema(&tree, &catalog, stem);
             calc.locale = store.locale();
+            // The record rules refuse a unique check in language 0 when
+            // the file's language is unknown.
+            calc.locale_unreadable = store.file_language().is_none();
             Some((wire, Arc::new(calc)))
         });
         let mut names = NameTable::default();
@@ -677,6 +680,9 @@ pub(crate) struct ServerHost {
     /// name is by then. A session without one changes none.
     account_key: Option<Vec<u8>>,
     locale: Locale,
+    /// The file's own language, `None` when its locale record does not
+    /// decode ([`Store::file_language`]).
+    file_language: Option<u32>,
     today: Date,
     schema: Schema,
     window: Option<Window>,
@@ -739,9 +745,13 @@ impl ServerHost {
     ) -> Self {
         // The file's formats (file-metadata.md 2): FileMaker Server
         // evaluates with the file's locale record.
-        let (schema, locale) = {
+        let (schema, locale, file_language) = {
             let store = hosted.read_store();
-            (Schema::load(&store, &hosted.name), store.locale())
+            (
+                Schema::load(&store, &hosted.name),
+                store.locale(),
+                store.file_language(),
+            )
         };
         let mut host = ServerHost {
             holder: format!("{} (script engine, {account})", shared.identity.name),
@@ -754,6 +764,7 @@ impl ServerHost {
             account: account.to_string(),
             account_key: None,
             locale,
+            file_language,
             today: today(),
             schema,
             window: None,
@@ -954,12 +965,16 @@ impl ServerHost {
     /// changed over what the file now stores: op73 may have recomputed
     /// their stored calculations or dropped a deleted field's values.
     pub fn refresh_schema(&mut self) {
-        let (schema, locale) = {
+        let (schema, locale, file_language) = {
             let store = self.hosted.read_store();
             if store.schema_generation() == self.schema.generation {
                 return;
             }
-            (Schema::load(&store, &self.hosted.name), store.locale())
+            (
+                Schema::load(&store, &self.hosted.name),
+                store.locale(),
+                store.file_language(),
+            )
         };
         info!(
             "{:?}: script session reads the file's changed schema",
@@ -972,6 +987,7 @@ impl ServerHost {
             .map(|l| l.id);
         self.schema = schema;
         self.locale = locale;
+        self.file_language = file_language;
         self.plans.clear();
         self.place_window(layout);
         if let Some(mut record) = self.record.take() {
@@ -1625,6 +1641,13 @@ impl ServerHost {
         Ok(reserved)
     }
 
+    /// The file's own language (`Locale::Type`), which an index in language
+    /// 0 keys text in (query-program.md 7.2): `None` when the file's locale
+    /// record does not decode, so that a check in language 0 is refused.
+    fn file_language(&self) -> Option<u32> {
+        self.file_language
+    }
+
     /// Whether field `field` of `occurrence`'s table holds `text` in some
     /// record and repetition (a value list of the field's values): its
     /// value index when it has one, else its stored values, as committed.
@@ -1636,7 +1659,7 @@ impl ServerHost {
             return false;
         };
         let keys = FieldOptions::decode(&def.options)
-            .and_then(|o| rules::checked_text_keys(o.index_language()))
+            .and_then(|o| rules::value_text_keys(o.index_language(), self.file_language()))
             .unwrap_or(TextKeys::Collated);
         let key = keys.key(text).unwrap_or_default();
         let store = self.hosted.read_store();
@@ -1672,15 +1695,15 @@ impl ServerHost {
         text: &str,
     ) -> bool {
         let table = record.table;
-        // The record rules plan such a field only in a language whose keys
-        // `checked_text_keys` builds.
+        // The record rules plan such a field only in a language whose value
+        // keys `value_text_keys` builds.
         let keys = self
             .schema
             .catalog
             .table(table)
             .and_then(|t| t.field(field))
             .and_then(|f| f.decoded_options())
-            .and_then(|o| rules::checked_text_keys(o.index_language()))
+            .and_then(|o| rules::value_text_keys(o.index_language(), self.file_language()))
             .unwrap_or(TextKeys::Collated);
         let key = keys.key(text).unwrap_or_default();
         let holds = |node: &OwnedNode| {

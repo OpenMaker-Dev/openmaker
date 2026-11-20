@@ -1720,6 +1720,26 @@ fn a_field_in_an_unknown_index_language_is_neither_found_nor_changed_by_guessing
     provider.close();
 }
 
+/// In a language FileMaker leaves untailored (French, 24), whose value keys
+/// are English's (query-program.md 7.2), a whole-value find runs without
+/// the host's index, the first time and again; a word find, whose word
+/// breaks are French's, still fails rather than guessing
+/// ([#46](https://github.com/OpenMaker-Dev/openmaker/issues/46),
+/// [#300](https://github.com/OpenMaker-Dev/openmaker/issues/300)).
+#[test]
+fn an_untailored_language_finds_whole_values_without_the_hosts_index() {
+    let french = |root: &mut OwnedNode| fixture::set_field_language(root, TABLE, NAME, 24);
+    let values = cold_and_warm_in("cold-french", &[], french, vec![request("Name", "==Ship")]);
+    assert_eq!(values, (Ok(vec![2]), Ok(vec![2])));
+    let words = cold_and_warm_in(
+        "cold-french-words",
+        &[],
+        french,
+        vec![request("Name", "ship")],
+    );
+    assert_eq!(words, (Err(Some(3)), Err(Some(3))));
+}
+
 /// The missing target index of a related find must obey its own language
 /// too, rather than using English because the source field is English.
 #[test]
@@ -3002,8 +3022,13 @@ fn missing_index_never_indexed_text_is_scanned_but_unknown_formats_are_explicit(
         (1, 77, 0, ACCEPTED),
         // Unicode raw keys keep case (query-program.md 7.2).
         (1, 2, 0, [Some(506), None]),
+        // French is untailored: its value keys are English's.
+        (1, 24, 0, ACCEPTED),
+        // Finnish is a tailoring OpenMaker does not key.
         (1, 22, 0, UNSUPPORTED),
-        (1, 0, 0, UNSUPPORTED),
+        // Language 0 is the file's own, English here: the fixture has no
+        // locale record.
+        (1, 0, 0, ACCEPTED),
         (2, 21, 0, UNSUPPORTED),
         (3, 21, 0, UNSUPPORTED),
         (4, 21, 0, UNSUPPORTED),

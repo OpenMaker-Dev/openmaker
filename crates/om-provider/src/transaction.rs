@@ -2015,12 +2015,13 @@ impl NativeProvider {
             }
         };
         apply_values(&mut node, cells.clone());
+        let file_language = self.file_language()?;
         note_unique(
             unique,
             table,
             plan.unique_fields_for(Entry::import(true)),
             cells,
-            record,
+            (record, file_language),
         )?;
         let mut written = cells.clone();
         if !later.is_empty() {
@@ -2035,7 +2036,13 @@ impl NativeProvider {
             )?;
             self.refuse_related_lists(table, plan, entry, entered(&ready.values))?;
             let fields = plan.unique_fields_for(entry);
-            note_unique(unique, table, fields.clone(), &ready.values, record)?;
+            note_unique(
+                unique,
+                table,
+                fields.clone(),
+                &ready.values,
+                (record, file_language),
+            )?;
             self.check_unique(table, fields, &ready.values, record, txn)?;
             self.check_lookups(table, plan, entry, &ready.values, record)?;
             // Over what the import left, not the stored row: not named, so a
@@ -4207,12 +4214,13 @@ impl NativeProvider {
             )?;
             self.refuse_related_lists(&table_def, &plan, entry, entered(&ready.values))?;
             let unique_fields = plan.unique_fields_for(entry);
+            let file_language = self.file_language()?;
             note_unique(
                 &mut unique,
                 &table_def,
                 unique_fields.clone(),
                 &ready.values,
-                record,
+                (record, file_language),
             )?;
             self.check_unique(&table_def, unique_fields, &ready.values, record, txn)?;
             self.check_lookups(&table_def, &plan, entry, &ready.values, record)?;
@@ -4375,13 +4383,13 @@ fn note_unique(
     table: &Table,
     fields: Vec<u64>,
     values: &EncodedChanges,
-    record: u64,
+    (record, file_language): (u64, Option<u32>),
 ) -> Result<(), DataError> {
     for field in fields {
         if let Some(Some(value)) = values.get(&field) {
             let text = om_scsu::decode_scsu(value)
                 .map_err(|e| failure("decode a unique value", format!("{e:?}")))?;
-            let key = super::records::checked_keys(table, field)?
+            let key = super::records::checked_keys(table, field, file_language)?
                 .key(&text)
                 .unwrap_or_default();
             let seen = unique.entry((table.id, field)).or_default();
