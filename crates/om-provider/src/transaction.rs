@@ -1970,13 +1970,10 @@ impl NativeProvider {
             }
         };
         apply_values(&mut node, cells.clone());
-        note_unique(
-            unique,
-            table,
-            plan.unique_fields_for(Entry::import(true)),
-            cells,
-            record,
-        )?;
+        let imported_unique = plan.unique_fields_for(Entry::import(true));
+        if later.is_empty() {
+            note_unique(unique, table, imported_unique.clone(), cells, record)?;
+        }
         let mut written = cells.clone();
         if !later.is_empty() {
             let existing = text_values(&stored_record(record, &node));
@@ -1989,6 +1986,15 @@ impl NativeProvider {
                 environment,
             )?;
             self.refuse_related_lists(table, plan, entry, entered(&ready.values))?;
+            // The record's unique values are noted once, as the later edits
+            // left them: an imported value they replaced is no longer the
+            // record's.
+            let kept: EncodedChanges = cells
+                .iter()
+                .filter(|(cell, _)| !ready.values.contains_key(cell))
+                .map(|(cell, value)| (*cell, value.clone()))
+                .collect();
+            note_unique(unique, table, imported_unique, &kept, record)?;
             let fields = plan.unique_fields_for(entry);
             note_unique(unique, table, fields.clone(), &ready.values, record)?;
             self.check_unique(table, fields, &ready.values, record, txn)?;

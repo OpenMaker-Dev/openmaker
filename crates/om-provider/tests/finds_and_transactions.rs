@@ -2778,27 +2778,47 @@ fn missing_index_unique_cold_and_warm_preserve_duplicates_exclusion_and_new_valu
 /// refuses it (script-runtime.md, the unique oracle); "Mine" is not.
 #[test]
 fn a_unique_value_in_a_later_repetition_is_checked() {
-    for (candidate, duplicate) in [("SHIP", true), ("Mine", false)] {
-        let mut root = fixture::tree(&[], true);
-        fixture::set_field_options(&mut root, TABLE, NAME, 0x8000_0000);
-        fixture::set_field_validation(&mut root, TABLE, NAME, 0x410);
-        fixture::set_field_repetitions(&mut root, TABLE, NAME, 2);
-        let file = TempFile::from_tree("repeated-unique", &root);
-        let (port, ca) = host_with(&file.0, None, |server| server);
-        let mut provider = open(port, &ca);
-        let tasks = layout(&mut provider, "Tasks");
-        let result = provider.write_record(&om_data::ScriptWrite {
-            layout: tasks,
-            record: Some(1),
-            cells: [(NAME * 256 + 2, Some(candidate.into()))].into(),
-            ..Default::default()
-        });
-        assert_eq!(
-            result.as_ref().err().and_then(|e| e.code),
-            duplicate.then_some(504),
-            "{candidate:?}: {result:?}"
-        );
-        provider.close();
+    // Repetition 2 alone, then both repetitions in one write, which checks
+    // the field's values together; without the host's index counts too
+    // (the stored records scanned once for both values).
+    let writes: [(&[(u64, &str)], bool); 4] = [
+        (&[(NAME * 256 + 2, "SHIP")], true),
+        (&[(NAME * 256 + 2, "Mine")], false),
+        (&[(NAME, "Mine"), (NAME * 256 + 2, "SHIP")], true),
+        (&[(NAME, "Mine"), (NAME * 256 + 2, "Yours")], false),
+    ];
+    for late in [false, true] {
+        for (cells, duplicate) in writes {
+            let mut root = fixture::tree(&[], true);
+            fixture::set_field_options(&mut root, TABLE, NAME, 0x8000_0000);
+            fixture::set_field_validation(&mut root, TABLE, NAME, 0x410);
+            fixture::set_field_repetitions(&mut root, TABLE, NAME, 2);
+            let file = TempFile::from_tree("repeated-unique", &root);
+            let (port, ca) = host_with(&file.0, None, |server| {
+                if late {
+                    server.with_late_index_builds()
+                } else {
+                    server
+                }
+            });
+            let mut provider = open(port, &ca);
+            let tasks = layout(&mut provider, "Tasks");
+            let result = provider.write_record(&om_data::ScriptWrite {
+                layout: tasks,
+                record: Some(1),
+                cells: cells
+                    .iter()
+                    .map(|(cell, text)| (*cell, Some((*text).into())))
+                    .collect(),
+                ..Default::default()
+            });
+            assert_eq!(
+                result.as_ref().err().and_then(|e| e.code),
+                duplicate.then_some(504),
+                "late={late}, {cells:?}: {result:?}"
+            );
+            provider.close();
+        }
     }
 }
 

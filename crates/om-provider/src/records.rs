@@ -911,6 +911,9 @@ impl NativeProvider {
     /// (write-path.md 1.3): write-lock the field's index `[T, 01, F]` for
     /// `txn`, then ask the server whether a record other than `record`
     /// already holds the value. The lock is kept until the transaction ends.
+    /// A field's changed repetitions are checked together: its index locked
+    /// once, each distinct value asked once, and any scan of the stored
+    /// records made once for all of them.
     pub(super) fn check_unique(
         &mut self,
         table: &Table,
@@ -919,10 +922,14 @@ impl NativeProvider {
         record: u64,
         txn: u32,
     ) -> Result<(), DataError> {
+        let mut changed: BTreeMap<u64, BTreeSet<String>> = BTreeMap::new();
         for (field, value) in field_cells(table, &fields, values) {
-            let name = table.field(field).map_or("", |f| f.name.as_str());
             let text = om_scsu::decode_scsu(value)
                 .map_err(|e| failure("decode a unique value", format!("{e:?}")))?;
+            changed.entry(field).or_default().insert(text);
+        }
+        for (field, texts) in changed {
+            let name = table.field(field).map_or("", |f| f.name.as_str());
             let field_key = key_bytes(field);
             let path: [&[u8]; 3] = [&key_bytes(table.id), &[INDEXES], &field_key];
             let session = self.session_mut()?;
@@ -933,9 +940,10 @@ impl NativeProvider {
                 LockReply::Granted { .. } => {}
                 refused => return Err(lock_refused(&format!("Field {name}"), refused)),
             }
-            // Keep the index lock across both the query and any scan,
+            // Keep the index lock across both the queries and any scan,
             // including checks of pending transaction records.
-            if self.in_index(table.id, field, &text, record, checked_keys(table, field)?)? {
+            let keys = checked_keys(table, field)?;
+            if self.any_in_index(table.id, field, &texts, record, keys)? {
                 return Err(DataError::with_code(
                     om_data::rules::error::NOT_UNIQUE,
                     format!("Field {name} requires a unique value."),
@@ -1043,6 +1051,46 @@ impl NativeProvider {
         ignore: u64,
         keys: TextKeys,
     ) -> Result<bool, DataError> {
+        match self.index_answer(table, field, text, ignore, keys)? {
+            (Some(answer), _) => Ok(answer),
+            (None, key) => self.scan_index_keys(table, field, &[key], ignore, keys),
+        }
+    }
+
+    /// [`Self::in_index`] for any of `texts`, the stored records scanned
+    /// once for every text the host's index could not answer.
+    fn any_in_index(
+        &mut self,
+        table: u64,
+        field: u64,
+        texts: &BTreeSet<String>,
+        ignore: u64,
+        keys: TextKeys,
+    ) -> Result<bool, DataError> {
+        let mut unanswered = Vec::new();
+        for text in texts {
+            match self.index_answer(table, field, text, ignore, keys)? {
+                (Some(true), _) => return Ok(true),
+                (Some(false), _) => {}
+                (None, key) => unanswered.push(key),
+            }
+        }
+        if unanswered.is_empty() {
+            return Ok(false);
+        }
+        self.scan_index_keys(table, field, &unanswered, ignore, keys)
+    }
+
+    /// The host's op86 ExistsInIndex answer for `text` in `field`'s value
+    /// index, `None` when its counts were missing, with the key asked.
+    fn index_answer(
+        &mut self,
+        table: u64,
+        field: u64,
+        text: &str,
+        ignore: u64,
+        keys: TextKeys,
+    ) -> Result<(Option<bool>, Vec<u8>), DataError> {
         let session = self.session_mut()?;
         let file_id = session
             .opened_file()
@@ -1065,21 +1113,19 @@ impl NativeProvider {
         let reply = session
             .query(&program)
             .map_err(|e| failure("check a validated value", e))?;
-        match exists_in_index_result(&reply.slots)? {
-            Some(answer) => Ok(answer),
-            None => self.scan_index_key(table, field, &key, ignore, keys),
-        }
+        Ok((exists_in_index_result(&reply.slots)?, key))
     }
 
     /// The same key membership question over stored records when the
-    /// host's counts were missing. The caller's unique-index lock, if
-    /// any, stays held. This sees committed records, like op18; pending
-    /// transaction duplicates remain checked by transaction::note_unique.
-    fn scan_index_key(
+    /// host's counts were missing: whether a record other than `ignore`
+    /// holds any of `wanted`. The caller's unique-index lock, if any, stays
+    /// held. This sees committed records, like op18; pending transaction
+    /// duplicates remain checked by transaction::note_unique.
+    fn scan_index_keys(
         &mut self,
         table: u64,
         field: u64,
-        key: &[u8],
+        wanted: &[Vec<u8>],
         ignore: u64,
         keys: TextKeys,
     ) -> Result<bool, DataError> {
@@ -1204,14 +1250,13 @@ impl NativeProvider {
                     })
                     .collect::<Result<Vec<_>, DataError>>()?;
                 // Text keys do not depend on the file's date order.
-                if record_value_keys(
+                let held = record_value_keys(
                     DataType::Text,
                     &texts,
                     om_collate::DateOrder::MonthDayYear,
                     keys,
-                )
-                .contains(key)
-                {
+                );
+                if wanted.iter().any(|key| held.contains(key)) {
                     return Ok(true);
                 }
             }
