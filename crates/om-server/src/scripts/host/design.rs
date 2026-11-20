@@ -55,6 +55,7 @@ pub(super) fn design_schema(store: &Store, file: &str) -> Option<Arc<CalcSchema>
     let stem = file.rsplit_once('.').map_or(file, |(stem, _)| stem);
     let mut schema = om_data::rules::schema::calc_schema(&tree, store.catalog(), stem);
     schema.locale = store.locale();
+    om_data::host::device::withhold_server_lacks(schema.names_mut());
     Some(Arc::new(schema))
 }
 
@@ -101,13 +102,34 @@ impl ServerHost {
         context: &Context,
     ) -> Result<Value, CalcError> {
         match function {
+            HostFunction::Named(name) if name.eq_ignore_ascii_case("GetLayoutObjectAttribute") => {
+                Ok(self.layout_object_attribute(args))
+            }
+            _ => self.shared_call(function, args, context),
+        }
+    }
+
+    /// [`Self::host_call`]'s answers that read the session without
+    /// changing it: all but `GetLayoutObjectAttribute`, which evaluates the
+    /// window's objects. An unstored calculation read outside a step's
+    /// evaluation (a sort's, `calculated::Reader`) answers through this,
+    /// so that the same field reads the same there.
+    pub(super) fn shared_call(
+        &self,
+        function: HostFunction<'_>,
+        args: &[Value],
+        context: &Context,
+    ) -> Result<Value, CalcError> {
+        // GetSensor and the location functions as FileMaker Server's script
+        // engine answers them (script oracle s48, `om_data::host::device`).
+        if let Some(answer) = om_data::host::device::answer(function, args, &self.cx(), true) {
+            return answer;
+        }
+        match function {
             HostFunction::Builtin(builtin) => {
                 if let Some(answer) = self.design_call(builtin.name, args, context) {
                     return answer;
                 }
-            }
-            HostFunction::Named(name) if name.eq_ignore_ascii_case("GetLayoutObjectAttribute") => {
-                return Ok(self.layout_object_attribute(args));
             }
             HostFunction::Named(name) if name.eq_ignore_ascii_case("LayoutObjectUUID") => {
                 return Err(CalcError::from_code(DATA_MISSING).expect("nonzero"));
@@ -124,9 +146,6 @@ impl ServerHost {
             // FileMaker Server").
             HostFunction::Named(name) if name.eq_ignore_ascii_case("GetAddonInfo") => {
                 return server_function_answer(ServerFunction::AddonInfo, args, &self.cx());
-            }
-            HostFunction::Named(name) if name.eq_ignore_ascii_case("GetSensor") => {
-                return server_function_answer(ServerFunction::Sensor, args, &self.cx());
             }
             HostFunction::Named(name) if name.eq_ignore_ascii_case("GetAVPlayerAttribute") => {
                 return server_function_answer(ServerFunction::PlayerAttribute, args, &self.cx());
@@ -321,26 +340,26 @@ impl ObjectState for WindowState<'_> {
 }
 
 /// A function FileMaker Server's script engine answers without the
-/// device, add-on or dictionary it reads on a client (script oracle s45).
+/// add-on, player or dictionary it reads on a client (script oracles s45,
+/// s48). `GetSensor` is `om_data::host::device`'s.
 #[derive(Clone, Copy)]
 enum ServerFunction {
     AddonInfo,
-    Sensor,
     PlayerAttribute,
     Furigana,
 }
 
-/// What FileMaker Server's script engine answered (s45), for every
-/// argument [I: s45 ran one of each, given below; the others are answered
-/// the same, OpenMaker's fallback]:
-/// - `GetAddonInfo`: `{` CR TAB `"APIVers" : 2` CR `}` for `"x"`, error 3
-///   for empty text;
-/// - `GetSensor`: error 1208 for `"battery"`;
-/// - `GetAVPlayerAttribute`: empty, no error, for `"playbackState"`;
-/// - `Furigana`: its text unchanged for `"abc"`, the engine's answer
-///   without its reading dictionary (a `kakasi` program it calls); its
-///   option is ignored. A server with the dictionary answers readings
-///   [unmeasured].
+/// What FileMaker Server's script engine answered (s45, s48):
+/// - `GetAddonInfo`: `{` CR TAB `"APIVers" : 2` CR `}` for any name run
+///   (`"x"`, `"com.example.Other"`, `"?"`), error 3 for empty text;
+/// - `GetAVPlayerAttribute`: empty, no error, for every attribute run
+///   (`"playbackState"`, `"position"`, empty text, an unknown name);
+/// - `Furigana`: its text unchanged, whatever its option (none, 2, 99),
+///   empty for empty text: the engine's answer without its reading
+///   dictionary (a `kakasi` program it calls). A server with the
+///   dictionary answers readings [unmeasured].
+///
+/// Other arguments are answered the same [I].
 fn server_function_answer(
     function: ServerFunction,
     args: &[Value],
@@ -352,7 +371,6 @@ fn server_function_answer(
             Err(CalcError::from_code(3).expect("nonzero"))
         }
         ServerFunction::AddonInfo => Ok(Value::text("{\r\t\"APIVers\" : 2\r}")),
-        ServerFunction::Sensor => Err(CalcError::from_code(1208).expect("nonzero")),
         ServerFunction::PlayerAttribute => Ok(Value::empty_text()),
         ServerFunction::Furigana => Ok(Value::text(text().unwrap_or_default())),
     }

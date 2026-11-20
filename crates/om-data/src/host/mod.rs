@@ -36,6 +36,7 @@
 
 mod data;
 mod design;
+pub mod device;
 pub mod layout;
 pub mod layout_objects;
 pub mod machine;
@@ -957,6 +958,10 @@ impl CalcHost for FileHost<'_> {
         args: &[Value],
         context: &Context,
     ) -> Result<Value, CalcError> {
+        let server = device::is_server(&self.session.application_version);
+        if let Some(answer) = device::answer(function, args, &self.file.cx(), server) {
+            return answer;
+        }
         match function {
             HostFunction::Builtin(builtin) => {
                 if let Some(result) = self.file.design(builtin.name, args, context) {

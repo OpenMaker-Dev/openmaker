@@ -196,6 +196,10 @@ pub struct Store {
     /// The file may not be written: saves fail, their changes stay in
     /// memory ([`Store::set_read_only`]).
     read_only: bool,
+    /// Served privately to a desktop client ([`crate::LocalHost`]): its
+    /// calculations are FileMaker Pro's, which has the location functions
+    /// FileMaker Server's engine lacks (`om_data::host::device`).
+    desktop: bool,
 }
 
 /// An index: its table, field and kind (value 0, word 1).
@@ -310,6 +314,12 @@ fn describe_value(path: &[Vec<u8>]) -> String {
 }
 
 impl Store {
+    /// The file is served privately to a desktop client
+    /// ([`crate::LocalHost`]): its calculations compile as FileMaker Pro's.
+    pub(crate) fn serve_desktop(&mut self) {
+        self.desktop = true;
+    }
+
     /// Load every key of `file` into memory.
     pub fn load(file: &HbamFile, name: &str) -> om_hbam::Result<Self> {
         let root = file.key_tree()?.root.to_owned_node();
@@ -331,6 +341,7 @@ impl Store {
             on_demand: Mutex::new(BTreeSet::new()),
             lock: None,
             read_only: false,
+            desktop: false,
         };
         store.locale = store
             .node(&LOCALE)
@@ -1911,6 +1922,9 @@ impl Store {
             .map_or(self.name.as_str(), |(stem, _)| stem);
         let mut calc = om_data::rules::schema::calc_schema(&tree, &self.catalog, stem);
         calc.locale = self.locale();
+        if !self.desktop {
+            om_data::host::device::withhold_server_lacks(calc.names_mut());
+        }
         Some(f(&tree, &calc))
     }
 
@@ -2464,6 +2478,7 @@ impl Store {
             on_demand: Mutex::new(BTreeSet::new()),
             lock: None,
             read_only: false,
+            desktop: self.desktop,
         }
     }
 
@@ -3021,6 +3036,27 @@ mod tests {
         );
     }
 
+    /// The calculations of a store FileMaker Server's engine serves compile
+    /// text without the location functions (script oracle s48), as its
+    /// view and write limits and stored recalculation read them; one served
+    /// privately to a desktop client keeps them, as FileMaker Pro has them
+    /// (#79).
+    #[test]
+    fn only_a_desktop_clients_store_compiles_the_location_functions() {
+        use om_formula::Names;
+        let location = om_formula::catalog::find_builtin("Location").unwrap().id;
+        for (desktop, known) in [(false, false), (true, true)] {
+            let mut store = store_of(OwnedNode::default());
+            if desktop {
+                store.serve_desktop();
+            }
+            let compiles = store.with_calc_inputs(&uint_segment(0x8001), |_, calc| {
+                calc.names().builtin_known(location)
+            });
+            assert_eq!(compiles, Some(known), "desktop={desktop}");
+        }
+    }
+
     /// A store holding `root`, with nothing unsaved and no lock.
     fn store_of(root: OwnedNode) -> Store {
         Store {
@@ -3040,6 +3076,7 @@ mod tests {
             on_demand: Mutex::new(BTreeSet::new()),
             lock: None,
             read_only: false,
+            desktop: false,
         }
     }
 
