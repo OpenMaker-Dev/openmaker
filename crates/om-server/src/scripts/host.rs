@@ -2497,6 +2497,24 @@ impl ServerHost {
     }
 }
 
+impl ServerHost {
+    /// `GetRecordIDsFromFoundSet` over the session's window's found set, as
+    /// FileMaker Server's script engine answers it (calc-functions.md,
+    /// "GetRecordIDsFromFoundSet on FileMaker Server").
+    pub(super) fn record_ids_from_found_set(
+        &self,
+        args: &[Value],
+        context: &Context,
+    ) -> Result<Value, CalcError> {
+        let Some((_, schema)) = self.schema.rules.clone() else {
+            return Err(CalcError::from_code(3).expect("nonzero"));
+        };
+        let source = SessionSource::new(self, &schema);
+        let limit = om_calc::eval::CalcHost::limits(self).text;
+        FileCalc::new(&schema, &source, self.today).record_ids_from_found_set(args, context, limit)
+    }
+}
+
 /// The records a server session's query reads: the open record, then an
 /// open transaction's version, then the file's ([`ServerHost::with_record`]),
 /// decoded by field type once per query; the session's global values;

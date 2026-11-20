@@ -3467,7 +3467,10 @@ fn delete_record_deletes_the_selected_portal_rows_record() {
         .filter_map(|n| n.accesskit_node().value())
         .collect()
     };
-    assert_eq!(bodies(&app), ["first", "second", ""]);
+    // The rows paint once their related records are read.
+    common::wait_until(&mut app, "the portal rows", |app| {
+        bodies(app) == ["first", "second", ""]
+    });
     // The row's own click (its center is on the Body field, which a
     // pointer click enters).
     app.get_by_label("Portal Row 2").click_accesskit();
