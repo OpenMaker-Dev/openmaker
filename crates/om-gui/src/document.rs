@@ -15,7 +15,7 @@ use om_data::{EditRefusal, Field, FieldKind, RecordCapabilities, RenderLayout};
 use om_layout::{Color, Layout, LayoutObject, ObjectKind, ResolvedStyle, TextRun};
 
 use crate::{
-    app::{Action, PortalClick, ViewMode},
+    app::{steps, Action, PortalClick, ViewMode},
     calc::{Evaluator, ObjectCalcState, PortalRow, SegmentName, Visibility},
     icons::{self, Icon},
     session::{PageKey, Session},
@@ -24,6 +24,7 @@ use crate::{
 
 mod calendar;
 mod container;
+pub(crate) use container::is_media;
 pub use container::PdfViewer;
 pub(crate) mod data_format;
 mod drop_down;
@@ -49,6 +50,31 @@ struct HeldFocus {
     object: Option<u64>,
     editor: Option<(u64, i64, u64)>,
 }
+
+/// An Edit menu command on the field the user is typing in
+/// (`DocumentState::edit_field`). Cut, Copy and Paste go to the field's
+/// editor through the platform's clipboard instead
+/// (`egui::ViewportCommand::RequestCopy`).
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) enum FieldEdit {
+    Undo,
+    Redo,
+    /// Delete the selection, as Delete does, without the clipboard.
+    Clear,
+    SelectAll,
+}
+
+/// A field editor's selection as last drawn (`DocumentState::selection`).
+struct EditorSelection {
+    field: String,
+    editor: egui::Id,
+    range: (usize, usize),
+}
+
+/// A step's selection waiting for its field's editor
+/// (`DocumentState::pending_selection`): the layout, record and field, and
+/// the selection (1-based start and length; `None` after its text).
+type PendingSelection = (u64, i64, String, Option<(u64, u64)>);
 
 /// The related records portals showed in a frame, by layout, portal and
 /// parent record (`DocumentState::portal_records`).
@@ -199,6 +225,10 @@ pub(crate) struct DocumentState {
     /// occurrence, `(id, table, cells)`. Calculations see them, and begun
     /// records show as rows.
     pub related_drafts: RelatedDrafts,
+    /// The current record's later repetitions a script set and no commit
+    /// has kept: its base table, id and those cells (`related_drafts` shows
+    /// them too, under the user's typing). Their editors open with them.
+    pub scripted: Option<(u64, u64, crate::scripting::Cells)>,
     pub begun_rows: BegunRows,
     /// The field of the current record that has the focus, as of the last
     /// frame, and what this frame saw (object triggers).
@@ -231,6 +261,19 @@ pub(crate) struct DocumentState {
     /// painting sets it: moving between two objects of one field is a
     /// focus change of its own.
     painted_object: Option<u64>,
+    /// The editor of the field that had the focus as last drawn, and its
+    /// selection then: the characters from `range.0` to `range.1`, either
+    /// way round (`selection`, `place_cursor`).
+    editor_selection: Option<EditorSelection>,
+    /// Why the field with the focus as last drawn refuses typing, by its
+    /// editor (`guarded_editor`): Edit's Clear, Undo and Redo are refused
+    /// there as its keys are (`edit_field`).
+    entered_refusal: Option<(egui::Id, EditRefusal)>,
+    /// A step's selection for a field whose editor does not have the focus
+    /// yet (Set Selection into another field): its 1-based start and
+    /// length, or `None` for after its text. The editor takes it as it
+    /// gets the focus (`saw`).
+    pending_selection: Option<PendingSelection>,
     /// Fields (and the objects showing them) the user changed this frame.
     changed: Vec<Focused>,
     /// A checkbox or radio button set change waiting for the set to be
@@ -326,6 +369,36 @@ pub(crate) struct ContainerSelection {
     /// A related container's portal row (`field` is then
     /// `Occurrence::Field`): the Insert menu fills that row's record.
     pub row: Option<ContainerRow>,
+}
+
+impl ContainerSelection {
+    /// Whether its field object lets the user change the field in Browse
+    /// mode: "Field entry behavior" Edit. View Only and Select Only
+    /// prevent edits through the object (Claris Help, "Allowing or
+    /// preventing entry into fields"), so the Insert menu does not fill it.
+    pub(crate) fn allows_entry(&self, session: &Session) -> bool {
+        let crate::session::RenderState::Loaded(render) = &session.render else {
+            return false;
+        };
+        render
+            .layout
+            .objects
+            .get(self.object)
+            .and_then(|object| object.field_obj.as_ref())
+            .is_some_and(|field| field.field_entry(false) == om_layout::FieldEntry::Edit)
+    }
+
+    pub(crate) fn is_interactive(&self, session: &Session) -> bool {
+        let crate::session::RenderState::Loaded(render) = &session.render else {
+            return false;
+        };
+        self.row.is_none()
+            && render
+                .layout
+                .objects
+                .get(self.object)
+                .is_some_and(container::is_interactive)
+    }
 }
 
 /// The portal row of a selected related container: of portal `portal`
@@ -571,14 +644,54 @@ struct RelatedBuffer {
     occurrence: u64,
     version: Option<u64>,
     buffer: FieldBuffer,
+    /// What a script left in the cell, uncommitted, as the edit began or
+    /// last took it (`DocumentState::scripted_value`). The editor opens
+    /// with it, and the user's edit is a change against it, not against
+    /// the stored value: clearing the box back to the stored value
+    /// replaces the script's too.
+    scripted: Option<String>,
 }
 
 impl RelatedBuffer {
-    /// The record was read again: an unchanged edit takes its value and
-    /// version; a changed one keeps the version it began from.
-    fn refresh(&mut self, target: &crate::calc::RelatedRecord) {
-        self.buffer.refresh(&target.stored);
-        if self.buffer.value == self.buffer.original {
+    fn new(occurrence: u64, version: Option<u64>, stored: &str, scripted: Option<String>) -> Self {
+        let mut buffer = FieldBuffer::new(stored);
+        if let Some(value) = &scripted {
+            buffer.value.clone_from(value);
+        }
+        Self {
+            occurrence,
+            version,
+            buffer,
+            scripted,
+        }
+    }
+
+    /// Whether the user changed a stored record's value: from the script's,
+    /// if one is left, else from the stored one.
+    fn changed(&self) -> bool {
+        self.buffer.value != *self.scripted.as_ref().unwrap_or(&self.buffer.original)
+    }
+
+    /// The record was read again: an unchanged edit takes its value (the
+    /// script's, if one is left) and version; a changed one keeps the
+    /// version it began from.
+    fn refresh(&mut self, target: &crate::calc::RelatedRecord, scripted: Option<String>) {
+        if self.changed() {
+            // An override of a scripted draft can equal the stored text.
+            // Keep its edit and the original text/version together.
+            if self.scripted.is_none() {
+                self.buffer.refresh(&target.stored);
+                if self.buffer.value == self.buffer.original {
+                    self.version = target.version;
+                }
+            }
+        } else {
+            self.buffer.value.clone_from(&self.buffer.original);
+            self.buffer.refresh(&target.stored);
+            if let Some(value) = &scripted {
+                self.buffer.value.clone_from(value);
+            }
+            self.scripted = scripted;
             self.version = target.version;
         }
     }
@@ -845,6 +958,54 @@ impl DocumentState {
                 Some(CandidatePreparation::Pending(_) | CandidatePreparation::Failed) => false,
                 None => !self.capabilities.prepare_edit,
             }
+    }
+
+    /// Keep field-editing commands in the field. Revert also takes the
+    /// active field so its script step can run the discard triggers.
+    /// Other menu commands surrender focus and wait for the exit triggers.
+    pub(crate) fn menu_leaves_field(&mut self, ui: &Ui, chosen: &mut Vec<Action>) {
+        if chosen.is_empty() {
+            return;
+        }
+        let preparing = self.preparing_edit() || self.failed_edit();
+        if self
+            .held_edit_actions
+            .iter()
+            .any(|action| matches!(action, Action::MenuFieldExit(_)))
+        {
+            // The first command owns the pending exit. Close remains
+            // available to cancel the pending edit and close the file.
+            chosen.retain(|action| preparing && *action == Action::CloseFile);
+            return;
+        }
+        let Some(action) = chosen.iter_mut().find(|action| {
+            let cancels_preparation = preparing && **action == Action::CloseFile;
+            !(cancels_preparation
+                || matches!(
+                    action,
+                    Action::EditField(_)
+                        | Action::Step(
+                            steps::INSERT_CURRENT_DATE
+                                | steps::INSERT_CURRENT_TIME
+                                | steps::INSERT_CURRENT_USER_NAME
+                                | steps::INSERT_FROM_INDEX
+                                | steps::INSERT_FROM_LAST_VISITED
+                                | om_data::scripts::revert_record::STEP_ID,
+                            _
+                        )
+                ))
+        }) else {
+            return;
+        };
+        if self.active.is_none() {
+            return;
+        }
+        ui.memory_mut(|memory| {
+            if let Some(editor) = memory.focused() {
+                memory.surrender_focus(editor);
+            }
+        });
+        *action = Action::MenuFieldExit(Box::new(action.clone()));
     }
 
     pub(crate) fn hold_candidate_actions(
@@ -1286,6 +1447,7 @@ impl DocumentState {
     pub fn cancel_pending_focus(&mut self) {
         // A Tab's field waiting to draw: its keys go where the focus is.
         self.tab_goal = None;
+        self.pending_selection = None;
         self.portal_click = None;
         self.field_click = None;
         self.option_wait = None;
@@ -1696,6 +1858,14 @@ impl DocumentState {
     /// A script left the focus in `field` (or none): a selected container
     /// stays selected only if it is that field.
     pub fn script_focus(&mut self, field: Option<&str>) {
+        // A selection waiting for a field the focus no longer goes to.
+        if self
+            .pending_selection
+            .as_ref()
+            .is_some_and(|(_, _, pending, _)| Some(pending.as_str()) != field)
+        {
+            self.pending_selection = None;
+        }
         if self
             .container
             .as_ref()
@@ -1737,6 +1907,18 @@ impl DocumentState {
         }
     }
 
+    /// What a script left uncommitted in `field`, a later repetition of
+    /// the current record (`scripted`): "" for one it cleared.
+    fn scripted_value(&self, field: &RelatedField) -> Option<String> {
+        let (table, record, cells) = self.scripted.as_ref()?;
+        if field.table != *table || field.row != RelatedRow::Record(*record) {
+            return None;
+        }
+        cells
+            .get(&field.field)
+            .map(|value| value.clone().unwrap_or_default())
+    }
+
     /// Whether `field` of any record has an unsaved draft.
     pub fn edited(&self, field: &str) -> bool {
         self.buffers
@@ -1757,7 +1939,7 @@ impl DocumentState {
         self.related
             .get(&focus.field)
             .is_some_and(|edit| match focus.field.row {
-                RelatedRow::Record(_) => edit.buffer.value != edit.buffer.original,
+                RelatedRow::Record(_) => edit.changed(),
                 RelatedRow::New { .. } => edit.buffer.ui_edited,
             })
     }
@@ -1793,10 +1975,194 @@ impl DocumentState {
             self.seen_active = Some(field.to_owned());
             self.seen_object = object;
             self.scroll.focused(field, response.id);
+            let state = egui::TextEdit::load_state(&response.ctx, response.id);
+            // A control that is not a text editor (a set's button, a pop-up
+            // menu) has no selection: none is read from an editor left.
+            self.editor_selection = state.as_ref().map(|state| {
+                let range = state.cursor.char_range();
+                EditorSelection {
+                    field: field.to_owned(),
+                    editor: response.id,
+                    range: range.map_or((0, 0), |range| {
+                        (range.primary.index.0, range.secondary.index.0)
+                    }),
+                }
+            });
+            if let Some((layout, record, _, selection)) = self
+                .pending_selection
+                .take_if(|(_, _, pending, _)| pending == field && state.is_some())
+            {
+                self.place_cursor(&response.ctx, (layout, record), field, selection, None);
+            }
         }
         if response.changed() {
             self.changed.push((field.to_owned(), object));
         }
+    }
+
+    /// The active field `field`'s selection, 1-based start and length, as
+    /// a script reads it (`Get ( ActiveSelectionStart )`; the Insert steps
+    /// insert there).
+    pub(crate) fn selection(&self, field: &str) -> Option<(u64, u64)> {
+        let selection = self.editor_selection.as_ref()?;
+        if selection.field != field {
+            return None;
+        }
+        let (a, b) = selection.range;
+        Some((a.min(b) as u64 + 1, a.abs_diff(b) as u64))
+    }
+
+    /// The editor and buffer of the field the user is typing in on record
+    /// `record` of layout `layout` (one of the record's own fields).
+    fn entered_buffer(&self, layout: u64, record: i64) -> Option<(egui::Id, &FieldBuffer)> {
+        let selection = self.editor_selection.as_ref()?;
+        if self.active.as_deref() != Some(selection.field.as_str()) || self.active_related.is_some()
+        {
+            return None;
+        }
+        let buffer = self
+            .buffers
+            .get(&(layout, record, selection.field.clone()))?;
+        Some((selection.editor, buffer))
+    }
+
+    /// Whether Edit > Undo and Redo have a step to take back or again in
+    /// the field the user is typing in (its editor's own history).
+    pub(crate) fn field_undo(&self, ctx: &egui::Context, layout: u64, record: i64) -> (bool, bool) {
+        let Some((editor, buffer)) = self.entered_buffer(layout, record) else {
+            return (false, false);
+        };
+        let Some(state) = egui::TextEdit::load_state(ctx, editor) else {
+            return (false, false);
+        };
+        let Some(range) = state.cursor.char_range() else {
+            return (false, false);
+        };
+        let current = (range, buffer.value.clone());
+        let undoer = state.undoer();
+        (undoer.has_undo(&current), undoer.has_redo(&current))
+    }
+
+    /// Edit > `edit` in the field the user is typing in, as its editor's
+    /// own keys do (Undo and Redo through its history). The record's draft
+    /// takes the change; the field stays entered. A field that refuses
+    /// typing (`entered_refusal`) still selects, and refuses a change, as
+    /// its keys are refused: the refusal is returned and nothing changes.
+    pub(crate) fn edit_field(
+        &mut self,
+        ctx: &egui::Context,
+        layout: u64,
+        record: i64,
+        edit: FieldEdit,
+    ) -> Option<EditRefusal> {
+        let (editor, _) = self.entered_buffer(layout, record)?;
+        if edit != FieldEdit::SelectAll {
+            if let Some((_, refusal)) = self.entered_refusal.filter(|(id, _)| *id == editor) {
+                return Some(refusal);
+            }
+        }
+        let field = self.active.clone()?;
+        let buffer = self.buffers.get_mut(&(layout, record, field))?;
+        let mut state = egui::TextEdit::load_state(ctx, editor).unwrap_or_default();
+        let len = buffer.value.chars().count();
+        let range = state
+            .cursor
+            .char_range()
+            .unwrap_or_else(|| egui::text::CCursorRange::one(egui::text::CCursor::new(len)));
+        match edit {
+            FieldEdit::SelectAll => {
+                state
+                    .cursor
+                    .set_char_range(Some(egui::text::CCursorRange::two(
+                        egui::text::CCursor::new(0),
+                        egui::text::CCursor::new(len),
+                    )))
+            }
+            FieldEdit::Clear => {
+                let [start, end] = range.sorted_cursors();
+                let (start, end) = (start.index.0.min(len), end.index.0.min(len));
+                if start < end {
+                    let mut undoer = state.undoer();
+                    undoer.add_undo(&(range, buffer.value.clone()));
+                    state.set_undoer(undoer);
+                    buffer.value = buffer
+                        .value
+                        .chars()
+                        .take(start)
+                        .chain(buffer.value.chars().skip(end))
+                        .collect();
+                    buffer.ui_edited = true;
+                    state
+                        .cursor
+                        .set_char_range(Some(egui::text::CCursorRange::one(
+                            egui::text::CCursor::new(start),
+                        )));
+                }
+            }
+            FieldEdit::Undo | FieldEdit::Redo => {
+                let current = (range, buffer.value.clone());
+                let mut undoer = state.undoer();
+                let restored = if edit == FieldEdit::Undo {
+                    undoer.undo(&current).cloned()
+                } else {
+                    undoer.redo(&current).cloned()
+                };
+                if let Some((range, text)) = restored {
+                    buffer.value = text;
+                    buffer.ui_edited = true;
+                    state.cursor.set_char_range(Some(range));
+                }
+                state.set_undoer(undoer);
+            }
+        }
+        state.store(ctx, editor);
+        None
+    }
+
+    /// A step left `field`'s selection at `selection` (1-based start and
+    /// length; `None` after its `len` characters): its editor shows it, as
+    /// after an Insert step FileMaker Pro puts the insertion point after
+    /// what it inserted.
+    pub(crate) fn place_cursor(
+        &mut self,
+        ctx: &egui::Context,
+        (layout, record): (u64, i64),
+        field: &str,
+        selection: Option<(u64, u64)>,
+        len: Option<usize>,
+    ) {
+        let Some(editor) = self
+            .editor_selection
+            .as_mut()
+            .filter(|selection| selection.field == field)
+        else {
+            // Its editor takes it as it gets the focus.
+            self.pending_selection = Some((layout, record, field.to_owned(), selection));
+            return;
+        };
+        // The text as the step left it, else as the editor holds it.
+        let len = len
+            .or_else(|| {
+                self.buffers
+                    .get(&(layout, record, field.to_owned()))
+                    .map(|buffer| buffer.value.chars().count())
+            })
+            .unwrap_or(0);
+        let (start, size) = selection.map_or((len, 0), |(start, size)| {
+            let start = usize::try_from(start.saturating_sub(1))
+                .unwrap_or(len)
+                .min(len);
+            (start, usize::try_from(size).unwrap_or(0).min(len - start))
+        });
+        let mut state = egui::TextEdit::load_state(ctx, editor.editor).unwrap_or_default();
+        state
+            .cursor
+            .set_char_range(Some(egui::text::CCursorRange::two(
+                egui::text::CCursor::new(start),
+                egui::text::CCursor::new(start + size),
+            )));
+        state.store(ctx, editor.editor);
+        editor.range = (start, start + size);
     }
 
     /// The scroll offset that shows the current record's row, at `top`,
@@ -2047,7 +2413,7 @@ impl DocumentState {
                 key.layout == layout
                     && key.parent == parent
                     && match key.row {
-                        RelatedRow::Record(_) => edit.buffer.value != edit.buffer.original,
+                        RelatedRow::Record(_) => edit.changed(),
                         RelatedRow::New { .. } => edit.buffer.ui_edited,
                     }
             })
@@ -2066,10 +2432,7 @@ impl DocumentState {
     pub fn all_related_edits(&self) -> Vec<RelatedEdit> {
         self.related
             .iter()
-            .filter(|(key, edit)| {
-                matches!(key.row, RelatedRow::Record(_))
-                    && edit.buffer.value != edit.buffer.original
-            })
+            .filter(|(key, edit)| matches!(key.row, RelatedRow::Record(_)) && edit.changed())
             .map(|(key, edit)| RelatedEdit {
                 field: *key,
                 occurrence: edit.occurrence,
@@ -2091,11 +2454,10 @@ impl DocumentState {
         original: &str,
         value: &str,
     ) {
-        let edit = self.related.entry(field).or_insert_with(|| RelatedBuffer {
-            occurrence,
-            version,
-            buffer: FieldBuffer::new(original),
-        });
+        let edit = self
+            .related
+            .entry(field)
+            .or_insert_with(|| RelatedBuffer::new(occurrence, version, original, None));
         edit.buffer.value = value.into();
         edit.buffer.ui_edited = true;
     }
@@ -2107,7 +2469,7 @@ impl DocumentState {
         self.related.iter().any(|(key, edit)| {
             key.layout == layout
                 && match key.row {
-                    RelatedRow::Record(_) => edit.buffer.value != edit.buffer.original,
+                    RelatedRow::Record(_) => edit.changed(),
                     RelatedRow::New { .. } => edit.buffer.ui_edited,
                 }
         })
@@ -2601,6 +2963,7 @@ fn find_field(
     // or a radio button sets it, a checkbox adds or removes its line.
     if let Some(choices) = choices.as_ref() {
         let radio = display == 4;
+        let single = field.is_some_and(om_layout::FieldObject::single_unlabeled_checkbox);
         let shown = if display == choice::POP_UP_MENU {
             let empty = criterion.is_empty().then_some(placeholder).flatten();
             let text = field_text_box(
@@ -2631,23 +2994,29 @@ fn find_field(
             )
         } else {
             let styles = options::styles(&state.layout_cache, layout, object, &[], false);
+            let single_items = single.then(|| options::single_item(choices));
             options::show(
                 ui,
                 id,
                 rect,
                 &criterion,
-                &choices.items,
+                single_items.as_deref().unwrap_or(&choices.items),
                 radio,
                 &styles,
                 enterable,
                 true,
                 &name,
+                single,
             )
         };
         let picked = match shown.input {
             Some(options::Input::Open) => {
                 egui::Popup::open_id(ui.ctx(), popup::menu_id(id));
                 None
+            }
+            // A single checkbox's criterion is its first value or none.
+            Some(options::Input::Click { .. } | options::Input::Space(_)) if single => {
+                choice::single_checkbox_criterion(choices, &criterion)
             }
             Some(options::Input::Click { index, shift }) => {
                 choices.items.get(index).and_then(|item| {
@@ -4829,7 +5198,17 @@ fn paint_object_repetition(
                 (None, Some(button)) => Some((button.library_key, button.icon_size)),
                 (None, None) => None,
             };
-            if let Some((library_key, icon_size)) = icon.filter(|(key, _)| *key != 0) {
+            // A calculated icon (FileMaker Pro 26.1) is the SVG its formula
+            // gives on the record, in the library icon's place.
+            // Not evaluated (Find mode, or until its data is read): the
+            // library icon, if any [I: what Find mode shows is unmeasured].
+            let svg = object
+                .active_icon_formula()
+                .and_then(|_| calc_state.icon_svg.clone());
+            // A library icon shows only with its key; a calculated one
+            // always, its size the button's icon size.
+            let shown = icon.filter(|(key, _)| svg.is_some() || *key != 0);
+            if let Some((library_key, icon_size)) = shown {
                 let size = (icon_size.max(1) as f32)
                     .min(rect.width())
                     .min(rect.height());
@@ -4846,14 +5225,13 @@ fn paint_object_repetition(
                     .or(icon.color)
                     .or(style.border_color[0])
                     .map(color);
-                paint_library_image(
-                    ui,
-                    &state.layout_cache,
-                    layout,
-                    library_key,
-                    Rect::from_center_size(center, vec2(size, size)),
-                    tint,
-                );
+                let at = Rect::from_center_size(center, vec2(size, size));
+                match &svg {
+                    Some(svg) => paint_calculated_icon(ui, svg, at, tint),
+                    None => {
+                        paint_library_image(ui, &state.layout_cache, layout, library_key, at, tint)
+                    }
+                }
                 if !text.is_empty() {
                     text_rect.min.x += size + 10.0;
                 }
@@ -5474,6 +5852,9 @@ fn paint_object_repetition(
                                 types_line_breaks(object),
                             )
                         });
+                    if response.has_focus() {
+                        state.entered_refusal = refusal.map(|refusal| (editor, refusal));
+                    }
                     response.widget_info(|| {
                         let mut info = egui::WidgetInfo::text_edit(
                             !state.pending,
@@ -5857,8 +6238,9 @@ fn paint_related_option_set(
     let read = !pop_up || set.labels || egui::Popup::is_id_open(ui.ctx(), popup::menu_id(id));
     let refusal = related_refusal(state, &set, target, read);
     let editable = refusal.is_none();
+    let scripted = state.scripted_value(&field);
     if let (Some(edit), RelatedRow::Record(_)) = (state.related.get_mut(&field), field.row) {
-        edit.refresh(target);
+        edit.refresh(target, scripted);
     }
     let value = state
         .related
@@ -5869,6 +6251,10 @@ fn paint_related_option_set(
         false => Default::default(),
     };
     let items = &choices.items;
+    let single = object
+        .field_obj
+        .as_ref()
+        .is_some_and(om_layout::FieldObject::single_unlabeled_checkbox);
     // Not in a row shown while its portal's records are read again.
     let enabled = !state.pending && !state.clicks_held && !state.painting_stale;
     let label = target.name.as_str();
@@ -5915,8 +6301,19 @@ fn paint_related_option_set(
     } else {
         // A related field's set keeps its normal state (#753's first slice).
         let styles = options::styles(&state.layout_cache, layout, object, set.conditions, false);
+        let single_items = single.then(|| options::single_item(&choices));
         options::show(
-            ui, id, set.rect, &value, items, radio, &styles, editable, enabled, label,
+            ui,
+            id,
+            set.rect,
+            &value,
+            single_items.as_deref().unwrap_or(items),
+            radio,
+            &styles,
+            editable,
+            enabled,
+            label,
+            single,
         )
     };
     if let Some(refusal) = &refusal {
@@ -5945,6 +6342,30 @@ fn paint_related_option_set(
     if enabled && response.clicked() && response.interact_pointer_pos().is_some() {
         response.request_focus();
     }
+    // A stale row's pop-up click waits for the same related record,
+    // as a click on a related edit box does (#1099).
+    if pop_up {
+        if state.painting_stale && response.clicked() {
+            state.field_click = Some(FieldClickWait {
+                field,
+                object: object.id,
+                seen: true,
+            });
+        }
+        if let Some(wait) = state
+            .field_click
+            .as_mut()
+            .filter(|wait| wait.object == object.id && wait.field == field)
+        {
+            wait.seen = true;
+            if enabled {
+                state.field_click = None;
+                response.request_focus();
+                egui::Popup::open_id(ui.ctx(), popup::menu_id(id));
+                ui.ctx().request_repaint();
+            }
+        }
+    }
     // It keeps Tab from egui, as the record's own sets do (#859).
     if current && editable && response.has_focus() {
         let keys = egui::EventFilter {
@@ -5958,11 +6379,22 @@ fn paint_related_option_set(
     let Some(input) = shown.input.filter(|_| enabled) else {
         return;
     };
+    // Any newer interaction with a ready control supersedes the waiting click.
+    state.field_click = None;
     let chosen = match input {
         options::Input::Open => {
             response.request_focus();
             egui::Popup::open_id(ui.ctx(), popup::menu_id(id));
             None
+        }
+        options::Input::Click { .. } | options::Input::Space(_) if single => {
+            match choice::single_checkbox(&choices, &value) {
+                Ok(value) => value,
+                Err(error) => {
+                    state.choice_refusal = Some(error);
+                    None
+                }
+            }
         }
         options::Input::Click { index, shift } => items.get(index).and_then(|item| {
             if pop_up {
@@ -6001,10 +6433,9 @@ fn paint_related_option_set(
         }
     };
     if let Some(chosen) = chosen {
-        let edit = state.related.entry(field).or_insert_with(|| RelatedBuffer {
-            occurrence: target.occurrence,
-            version: target.version,
-            buffer: FieldBuffer::new(&target.stored),
+        let scripted = state.scripted_value(&field);
+        let edit = state.related.entry(field).or_insert_with(|| {
+            RelatedBuffer::new(target.occurrence, target.version, &target.stored, scripted)
         });
         edit.buffer.value = chosen;
         edit.buffer.ui_edited = true;
@@ -6072,8 +6503,9 @@ fn related_field(
         state.related_click = None;
     }
     // A record begun in a creation row has no stored values to refresh from.
+    let scripted = state.scripted_value(&field);
     if let (Some(edit), RelatedRow::Record(_)) = (state.related.get_mut(&field), field.row) {
-        edit.refresh(target);
+        edit.refresh(target, scripted);
     }
     // A field of the current record is a Tab stop (#859); one a Tab goes
     // to takes the focus now, its insertion point after its text.
@@ -6148,51 +6580,48 @@ fn related_field(
         }
         return Some(response);
     }
+    let enabled = !state.pending && !state.clicks_held;
+    let keep = list.is_some_and(|list| drop_down::keeps_focus(ui, id, rect, list.with_arrow));
+    let open = list.is_some() && drop_down::is_open(ui, id);
+    // Entered: the list's items are read now.
+    let refusal = list.and_then(|list| related_refusal(state, list.set, target, true));
+    // A later repetition a script set opens with the script's value.
+    let scripted = state.scripted_value(&field);
+    let edit = state.related.entry(field).or_insert_with(|| {
+        RelatedBuffer::new(target.occurrence, target.version, &target.stored, scripted)
+    });
     if state.related_select == Some(id) {
         state.related_select = None;
-        let mut edit = egui::TextEdit::load_state(ui.ctx(), id).unwrap_or_default();
-        let text = state
-            .related
-            .get(&field)
-            .map_or(target.stored.as_str(), |edit| edit.buffer.value.as_str());
-        edit.cursor
-            .set_char_range(Some(egui::text::CCursorRange::select_all_str(text)));
-        edit.store(ui.ctx(), id);
+        let mut editor = egui::TextEdit::load_state(ui.ctx(), id).unwrap_or_default();
+        editor
+            .cursor
+            .set_char_range(Some(egui::text::CCursorRange::select_all_str(
+                &edit.buffer.value,
+            )));
+        editor.store(ui.ctx(), id);
     }
     // Entered by Tab: the insertion point after the text (#859), or a
     // calendar's text selected (#964).
     if state.related_entry == Some(id) {
         state.related_entry = None;
-        let text = state
-            .related
-            .get(&field)
-            .map_or(target.stored.as_str(), |edit| edit.buffer.value.as_str());
-        let mut edit = egui::TextEdit::load_state(ui.ctx(), id).unwrap_or_default();
-        edit.cursor
-            .set_char_range(Some(tab_entry_range(object, text)));
-        edit.store(ui.ctx(), id);
+        let mut editor = egui::TextEdit::load_state(ui.ctx(), id).unwrap_or_default();
+        editor
+            .cursor
+            .set_char_range(Some(tab_entry_range(object, &edit.buffer.value)));
+        editor.store(ui.ctx(), id);
         // A row the portal shows only in part comes into view.
         ui.scroll_to_rect(rect, None);
     }
     if state.related_click == Some(id) {
         state.related_click = None;
         if let Some(cursor) = state.pending_cursor.take() {
-            let mut edit = egui::TextEdit::load_state(ui.ctx(), id).unwrap_or_default();
-            edit.cursor
+            let mut editor = egui::TextEdit::load_state(ui.ctx(), id).unwrap_or_default();
+            editor
+                .cursor
                 .set_char_range(Some(egui::text::CCursorRange::one(cursor)));
-            edit.store(ui.ctx(), id);
+            editor.store(ui.ctx(), id);
         }
     }
-    let enabled = !state.pending && !state.clicks_held;
-    let keep = list.is_some_and(|list| drop_down::keeps_focus(ui, id, rect, list.with_arrow));
-    let open = list.is_some() && drop_down::is_open(ui, id);
-    // Entered: the list's items are read now.
-    let refusal = list.and_then(|list| related_refusal(state, list.set, target, true));
-    let edit = state.related.entry(field).or_insert_with(|| RelatedBuffer {
-        occurrence: target.occurrence,
-        version: target.version,
-        buffer: FieldBuffer::new(&target.stored),
-    });
     return_goes_on(ui, &mut state.tab_held, object, id);
     let response = field_editor(
         ui,
@@ -7053,11 +7482,11 @@ fn show_other_dialog(ui: &Ui, session: &Session, state: &mut DocumentState) {
                 record: u64::try_from(field.parent).unwrap_or(u64::MAX),
             };
             if let Ok(edit) = choice::other_value(&dialog.object, at, at, &text) {
-                let related = state.related.entry(field).or_insert_with(|| RelatedBuffer {
-                    occurrence,
-                    version,
-                    buffer: FieldBuffer::new(&stored),
-                });
+                let scripted = state.scripted_value(&field);
+                let related = state
+                    .related
+                    .entry(field)
+                    .or_insert_with(|| RelatedBuffer::new(occurrence, version, &stored, scripted));
                 related.buffer.value = edit.value;
                 related.buffer.ui_edited = true;
             }
@@ -7141,6 +7570,10 @@ fn paint_option_set(
         false => Default::default(),
     };
     let items = &choices.items;
+    let single = object
+        .field_obj
+        .as_ref()
+        .is_some_and(om_layout::FieldObject::single_unlabeled_checkbox);
     let enabled = !state.pending && !state.clicks_held;
     let label = name.map_or("", String::as_str);
     let shown = if pop_up {
@@ -7177,8 +7610,19 @@ fn paint_option_set(
             label,
         )
     } else {
+        let single_items = single.then(|| options::single_item(&choices));
         options::show(
-            ui, id, set.rect, set.value, items, radio, &styles, editable, enabled, label,
+            ui,
+            id,
+            set.rect,
+            set.value,
+            single_items.as_deref().unwrap_or(items),
+            radio,
+            &styles,
+            editable,
+            enabled,
+            label,
+            single,
         )
     };
     if let (Some(refusal), Some(_)) = (&refusal, name) {
@@ -7371,6 +7815,10 @@ fn apply_option_wait(
     let choices = set.items.shown();
     let choices = &*choices;
     let items = &choices.items;
+    let single = object
+        .field_obj
+        .as_ref()
+        .is_some_and(om_layout::FieldObject::single_unlabeled_checkbox);
     let display = object.field_obj.as_ref().map(|field| field.display_type);
     let is_drop_down = display == Some(choice::DROP_DOWN_LIST);
     let is_calendar = display == Some(calendar::DROP_DOWN_CALENDAR);
@@ -7412,6 +7860,21 @@ fn apply_option_wait(
                 .ok()
                 .map(|edit| edit.value)
         }
+        // A single checkbox toggles between the list's first and second
+        // values (`choice::single_checkbox`), by a click or Space; a letter
+        // a keystroke trigger let through picks nothing in it.
+        OptionChange::Pick { .. } if single => choice::single_checkbox(choices, &buffer.value)
+            .unwrap_or_else(|error| {
+                state.choice_refusal = Some(error);
+                None
+            }),
+        OptionChange::Key(key) if single => match key.as_str() {
+            " " => choice::single_checkbox(choices, &buffer.value).unwrap_or_else(|error| {
+                state.choice_refusal = Some(error);
+                None
+            }),
+            _ => None,
+        },
         OptionChange::Pick { value, shift } => items
             .iter()
             .position(|item| item.value == value)
@@ -7561,6 +8024,123 @@ fn paint_library_image(
     }
 }
 
+/// Calculated SVGs by URI, ordered by when they were last drawn. Each
+/// forgotten URI releases its bytes and rasters from egui's loaders.
+#[derive(Clone, Default)]
+struct CalculatedIcons(
+    std::collections::VecDeque<(String, std::sync::Arc<[u8]>, std::time::Instant)>,
+);
+
+/// Retain at most this many icons after they leave the screen.
+const CALCULATED_ICONS: usize = 64;
+/// Absolute ceiling across the application's viewports. If all slots are
+/// in use, warn on additional icons and retry when a slot is available.
+const MAX_CALCULATED_ICONS: usize = 256;
+const ICON_SHOWN: std::time::Duration = std::time::Duration::from_secs(1);
+
+/// A button's calculated icon, the SVG text `svg` its formula gave
+/// (`ObjectState::icon_svg`), over `rect`, tinted as the button's library
+/// icon is (OpenMaker's choice). Text that is empty (none, or longer than
+/// `om_data::host::layout::MAX_ICON_SVG`) or that the SVG worker cannot
+/// draw shows a warning sign instead, as FileMaker Pro shows a warning
+/// icon for SVG it does not support (Claris); the sign's look, and which
+/// SVG FileMaker Pro refuses, are unmeasured.
+fn paint_calculated_icon(ui: &Ui, svg: &str, rect: Rect, tint: Option<Color32>) {
+    use std::hash::{Hash, Hasher};
+    // Form view can paint objects outside the current scroll clip.
+    // Only visible icons can admit or renew a cache entry.
+    if !ui.is_rect_visible(rect) || !rect.intersect(ui.clip_rect()).is_positive() {
+        return;
+    }
+    let warning = || {
+        ui.painter().text(
+            rect.center(),
+            egui::Align2::CENTER_CENTER,
+            "\u{26a0}",
+            FontId::proportional(rect.height().max(1.0)),
+            tint.unwrap_or(theme::TEXT),
+        );
+    };
+    if svg.trim().is_empty() {
+        warning();
+        return;
+    }
+    let mut hash = std::collections::hash_map::DefaultHasher::new();
+    svg.hash(&mut hash);
+    tint.hash(&mut hash);
+    let uri = format!(
+        "{}{:016x}.svg",
+        crate::svg_loader::CALCULATED_ICON_URI,
+        hash.finish()
+    );
+    let id = egui::Id::unique("openmaker calculated icons");
+    let now = std::time::Instant::now();
+    let (bytes, forgotten) = ui.data_mut(|data| {
+        let icons = data.get_temp_mut_or_default::<CalculatedIcons>(id);
+        let known = icons
+            .0
+            .iter()
+            .position(|(known, ..)| *known == uri)
+            .and_then(|at| icons.0.remove(at));
+        let mut forgotten = Vec::new();
+        while icons.0.len() >= CALCULATED_ICONS
+            && icons
+                .0
+                .front()
+                .is_some_and(|(.., drawn)| now.duration_since(*drawn) >= ICON_SHOWN)
+        {
+            forgotten.extend(icons.0.pop_front().map(|(old, ..)| old));
+        }
+        if known.is_none() && icons.0.len() >= MAX_CALCULATED_ICONS {
+            return (None, forgotten);
+        }
+        // Copied and tinted once, as it first shows.
+        let bytes = known.map_or_else(
+            || {
+                let image = om_layout::LibraryImage {
+                    format: om_layout::LibraryImageFormat::Svg,
+                    data: svg.as_bytes().to_vec(),
+                };
+                std::sync::Arc::<[u8]>::from(tinted_image(&image, tint))
+            },
+            |(_, bytes, _)| bytes,
+        );
+        icons.0.push_back((uri.clone(), bytes.clone(), now));
+        (Some(bytes), forgotten)
+    });
+    for old in forgotten {
+        ui.ctx().forget_image(&old);
+    }
+    let Some(bytes) = bytes else {
+        warning();
+        ui.ctx().request_repaint_after(ICON_SHOWN);
+        return;
+    };
+    let source = egui::ImageSource::Bytes {
+        uri: uri.into(),
+        bytes: bytes.into(),
+    };
+    // As `Image::paint_at` asks for it: the SVG worker draws exact sizes.
+    let ppp = ui.pixels_per_point();
+    let pixels = (ppp * egui::emath::GuiRounding::round_to_pixels(rect, ppp).size()).round();
+    let hint = egui::SizeHint::Size {
+        width: pixels.x as u32,
+        height: pixels.y as u32,
+        maintain_aspect_ratio: false,
+    };
+    if source
+        .clone()
+        .load(ui.ctx(), egui::TextureOptions::default(), hint)
+        .is_err()
+    {
+        warning();
+        return;
+    }
+    egui::Image::new(source)
+        .show_loading_spinner(false)
+        .paint_at(ui, rect);
+}
+
 /// A library image's encoded bytes, an SVG's tinted, under a URI naming
 /// those bytes: egui's loaders keep the first bytes they get for a URI.
 fn library_image(
@@ -7590,13 +8170,10 @@ pub(crate) fn tinted_image(image: &om_layout::LibraryImage, tint: Option<Color32
     let mut data = image.data.clone();
     if image.format == om_layout::LibraryImageFormat::Svg {
         if let (Some(tint), Ok(svg)) = (tint, std::str::from_utf8(&data)) {
-            if let Some(start) = svg
-                .find("<svg")
-                .and_then(|start| svg[start..].find('>').map(|end| start + end + 1))
-            {
+            if let Some(start) = svg_root_content_offset(svg) {
                 let opacity = f32::from(tint.a()) / 255.0;
                 let css = format!(
-                    "<style>.fm_fill{{fill:#{:02x}{:02x}{:02x}!important;\
+                    "<style xmlns=\"http://www.w3.org/2000/svg\">.fm_fill{{fill:#{:02x}{:02x}{:02x}!important;\
                      fill-opacity:{opacity}!important}}</style>",
                     tint.r(),
                     tint.g(),
@@ -7607,6 +8184,26 @@ pub(crate) fn tinted_image(image: &om_layout::LibraryImage, tint: Option<Color32
         }
     }
     data
+}
+
+/// Find the root's opening tag without expanding entities or parsing the
+/// SVG body. The rendering worker still decides whether the SVG is valid.
+fn svg_root_content_offset(svg: &str) -> Option<usize> {
+    use quick_xml::events::Event;
+
+    let xml = svg.strip_prefix('\u{feff}').unwrap_or(svg);
+    let prefix_len = svg.len() - xml.len();
+    let mut reader = quick_xml::Reader::from_str(xml);
+    loop {
+        match reader.read_event().ok()? {
+            Event::Start(root) if root.local_name().as_ref() == b"svg" => {
+                return Some(prefix_len + usize::try_from(reader.buffer_position()).ok()?);
+            }
+            Event::Comment(_) | Event::Decl(_) | Event::PI(_) | Event::DocType(_) => {}
+            Event::Text(text) if text.iter().all(u8::is_ascii_whitespace) => {}
+            _ => return None,
+        }
+    }
 }
 
 fn default_panel(object: &LayoutObject, panels: &[&LayoutObject]) -> u64 {
@@ -8423,6 +9020,66 @@ mod visibility_tests;
 mod tests {
     use super::*;
 
+    #[test]
+    fn a_refresh_preserves_an_override_cleared_to_the_stored_value() {
+        let mut edit = RelatedBuffer::new(1, Some(7), "AB", Some("ABC".into()));
+        edit.buffer.value = "AB".into();
+        let newer = crate::calc::RelatedRecord {
+            occurrence: 1,
+            table: 2,
+            record: 3,
+            field: 4,
+            cell: 4,
+            name: "Name".into(),
+            stored: "XY".into(),
+            version: Some(8),
+        };
+        edit.refresh(&newer, Some("ABC".into()));
+        assert!(edit.changed());
+        assert_eq!(edit.buffer.value, "AB");
+        assert_eq!(edit.buffer.original, "AB");
+        assert_eq!(edit.version, Some(7));
+    }
+
+    #[test]
+    fn clipped_calculated_icons_do_not_claim_visible_cache_slots() {
+        let ctx = egui::Context::default();
+        ctx.run_ui(egui::RawInput::default(), |ui| {
+            let clip = Rect::from_min_size(pos2(0.0, 0.0), vec2(40.0, 40.0));
+            ui.set_clip_rect(clip);
+            let outside = clip.translate(vec2(0.0, 40.0));
+            for icon in 0..MAX_CALCULATED_ICONS {
+                paint_calculated_icon(ui, &format!("<svg>{icon}</svg>"), outside, None);
+            }
+            let id = egui::Id::unique("openmaker calculated icons");
+            assert!(ui.data(|data| data.get_temp::<CalculatedIcons>(id).is_none()));
+            paint_calculated_icon(ui, "<svg/>", clip.shrink(10.0), None);
+            assert_eq!(
+                ui.data(|data| data.get_temp::<CalculatedIcons>(id).unwrap().0.len()),
+                1
+            );
+        })
+        .drop_without_applying_deltas();
+    }
+
+    #[test]
+    fn svg_tint_starts_inside_the_root_after_an_xml_prolog() {
+        let data = br#"<?xml version="1.0"?>
+<!-- Example <svg -->
+<?example svg?>
+<svg xmlns="http://www.w3.org/2000/svg" width="8" height="8" data-example=">"><rect class="fm_fill" width="8" height="8"/></svg>"#;
+        for data in [data.to_vec(), [b"\xef\xbb\xbf".as_slice(), data].concat()] {
+            let image = om_layout::LibraryImage {
+                format: om_layout::LibraryImageFormat::Svg,
+                data,
+            };
+            let tinted = tinted_image(&image, Some(Color32::RED));
+            let picture = crate::report::browse_svg(&tinted, [8, 8]).unwrap();
+            assert_eq!(&picture.rgba[..4], &[255, 0, 0, 255]);
+        }
+        assert!(crate::report::browse_svg(b"<svg>", [8, 8]).is_err());
+    }
+
     /// A field click waiting for its row (#1099) keeps waiting through a
     /// frame that cannot tell yet whether its row shows, and goes once
     /// another field takes the keyboard: it never takes the focus from
@@ -8508,6 +9165,36 @@ mod tests {
         let (token, request) = state.prepare_candidates(true).pop().unwrap();
         assert_eq!(request.baseline.version, Some(7));
         assert!(state.drafts().is_empty());
+        let mut left = Some(("Name".into(), Some(5)));
+        let mut entered = None;
+        let mut modified = Vec::new();
+        let find = Action::SetMode(crate::Mode::Find);
+        let command = Action::MenuFieldExit(Box::new(find.clone()));
+        let mut actions = vec![find];
+        state.active = Some("Name".into());
+        let ctx = egui::Context::default();
+        ctx.run_ui(egui::RawInput::default(), |ui| {
+            let mut close = vec![Action::CloseFile];
+            state.menu_leaves_field(ui, &mut close);
+            assert_eq!(close, [Action::CloseFile]);
+            state.hold_candidate_actions(&mut None, &mut None, &mut Vec::new(), &mut close);
+            assert_eq!(close, [Action::CloseFile]);
+
+            state.menu_leaves_field(ui, &mut actions);
+            assert_eq!(actions.as_slice(), std::slice::from_ref(&command));
+            state.hold_candidate_actions(&mut left, &mut entered, &mut modified, &mut actions);
+            assert!(actions.is_empty());
+            assert!(left.is_none());
+
+            state.active = None;
+            let mut second = vec![Action::Quit];
+            state.menu_leaves_field(ui, &mut second);
+            assert!(second.is_empty(), "Quit cannot bypass the pending exit");
+            let mut close = vec![Action::CloseFile];
+            state.menu_leaves_field(ui, &mut close);
+            assert_eq!(close, [Action::CloseFile]);
+        })
+        .drop_without_applying_deltas();
         state
             .buffers
             .get_mut(&key)
@@ -8516,6 +9203,9 @@ mod tests {
             .push_str(" paste IME");
         assert!(state.accept_edit_preparation(token, &request, true));
         assert_eq!(state.drafts()[&(3, 1)][0].value, "typed paste IME");
+        state.hold_candidate_actions(&mut left, &mut entered, &mut modified, &mut actions);
+        assert_eq!(left, Some(("Name".into(), Some(5))));
+        assert_eq!(actions, [command]);
         state.clear_record(3, 1);
         let mut next = FieldBuffer::new("stored");
         next.value = "next".into();

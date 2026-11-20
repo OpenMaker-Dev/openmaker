@@ -412,6 +412,34 @@ fn layout_calculations_hide_format_and_label_objects() {
     assert_eq!(state.tooltip.as_deref(), Some("Total: 12"));
     assert_eq!(state.placeholder.as_deref(), Some("Type a name"));
     assert!(object_state(&mut host, &object, &on(2), Value::number(20)).hidden);
+    // A 26.1 calculated button icon: its SVG text, only with the button's
+    // flag `0x4`.
+    let mut button = LayoutObject {
+        button: Some(om_layout::ButtonObject {
+            flags: 0x4,
+            ..Default::default()
+        }),
+        calcs: ObjectCalcs {
+            button_icon: field("\"<svg>\" & $$who"),
+            ..ObjectCalcs::default()
+        },
+        ..LayoutObject::default()
+    };
+    let icon = |host: &mut FileHost<'_>, button: &LayoutObject| {
+        object_state(host, button, &on(1), Value::number(0)).icon_svg
+    };
+    assert_eq!(icon(&mut host, &button).as_deref(), Some("<svg>Ada"));
+    button.button.as_mut().unwrap().flags = 0;
+    assert_eq!(icon(&mut host, &button), None);
+    // Text past `MAX_ICON_SVG` (128 KiB here) is not kept: empty, the
+    // warning.
+    button.button.as_mut().unwrap().flags = 0x4;
+    button.calcs.button_icon = field(
+        "Let ( [ a = \"<svg>xxxxxxxxxxx\" ; b = a & a ; c = b & b ; d = c & c ; e = d & d ; \
+         f = e & e ; g = f & f ; h = g & g ; i = h & h ; j = i & i ; k = j & j ; l = k & k ; \
+         m = l & l ; n = m & m ] ; n )",
+    );
+    assert_eq!(icon(&mut host, &button).as_deref(), Some(""));
     assert_eq!(
         merge_text(
             &mut host,

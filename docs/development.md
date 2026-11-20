@@ -22,6 +22,7 @@ in [architecture.md](architecture.md).
     XWayland and the X11 libraries winit opens (Debian/Ubuntu:
     `libxkbcommon-x11-0`, `libx11-xcb1`, `libxcursor1`, `libxi6`).
     Without them the windows stay on Wayland and web viewers show a note.
+    On macOS they use the system's WKWebView, with nothing to install.
   - Saving a FileMaker client license: an unlocked desktop Secret Service
     on Linux (Keychain on macOS, Credential Manager on Windows).
   - Print: CUPS (`lp`).
@@ -31,7 +32,7 @@ in [architecture.md](architecture.md).
 ```sh
 cargo run -p om-gui                                  # desktop client
 OPENMAKER_PROVIDER=mock cargo run -p om-gui          # labeled sample data, no server
-cargo run -p om-gui --features web-viewer            # with embedded web viewers (Linux: X11, or XWayland on Wayland)
+cargo run -p om-gui --features web-viewer            # with embedded web viewers (Linux: X11, or XWayland on Wayland; macOS)
 cargo run -p om-server -- --list-all <file.fmp12>... # OpenMaker Server (see Hosting a file below)
 OM_ADMIN_PASSWORD=<password> cargo run -p om-admin --example mock_console  # Admin Console on sample data, https://localhost:16000
 cargo run -p om-client                               # protocol probe: prints isa/connect/open/login/files usage
@@ -151,11 +152,16 @@ server starts again. With no files at all the server still starts, with an
 empty file list; when files are found or named and none of them opens, it
 does not start.
 
-Discovery checks each entry when it reads the folder. The server opens and
-saves a hosted file by its path later on, so whoever may write in a
-database folder can still change what that path leads to after startup;
-keep database folders writable by the server's user only
-([#468](https://github.com/OpenMaker-Dev/openmaker/issues/468)).
+Discovery checks each entry when it reads the folder. The server opens,
+recovers and saves a hosted file by its path afterwards, during startup
+(between discovery and the file's load, and a recovery's save while it
+loads) as well as later on. So whoever may write in a database folder,
+in one of its subfolders, or in a folder above them can still change what
+that path leads to. Keep database folders, their subfolders and the
+folders above them writable by the server's user only
+([#468](https://github.com/OpenMaker-Dev/openmaker/issues/468)). Once the
+entry limit is reached, the log says how many folders were left unread
+and names the first.
 
 Failed logins are limited. After 5 failures an address (an IPv6 address by
 its /64) may try once a minute; after 30 failures of an account of a file
