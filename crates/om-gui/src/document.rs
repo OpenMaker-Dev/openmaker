@@ -1030,6 +1030,7 @@ impl DocumentState {
                         | Action::CloseFile
                         | Action::DismissAlert
                         | Action::DismissHostMessage
+                        | Action::CloseDisconnectedFile(_)
                         | Action::DiscardEntryCandidates
                 ) {
                     cancellation.push(action);

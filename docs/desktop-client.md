@@ -302,27 +302,37 @@ however slowly it arrives, and writes its answers within 2 seconds or
 loses the connection; the rest waits for the next second.
 
 When the host disconnects a file (`0x0870`: an administrator's close or
-disconnect whose time ran out), its windows lose the connection at once, so
-nothing more is saved or asked of the host, and an alert says, as FileMaker
-Pro's does: "File has been forcefully disconnected by the host. All affected
-windows will be closed.", then "[From Administrator: “<text>”]" when the
-administrator gave a text, and OK. OK closes the file's windows, as File >
-Close does for a file whose connection is lost (unsaved changes are lost
-with the connection). The notice names the file by the host's file id;
-the session finds it among the files its connection holds
-(`om_session::AdminNotice`), and the window of that file on that host closes.
+disconnect whose time ran out), the connection lets go of it at once, once
+for every handle holding it, related readers included: one op62 release, the
+next time anything uses the connection (the idle read, a request, a Tickle).
+The host drops a connection that still holds such a file after its wait for
+the client to sign out, and with it the connection's other files, which stay
+usable. What is asked of the released file fails as lost.
+
+The notice goes to the handles holding the file the host names, by its host
+file id (one naming a file the connection no longer holds is dropped), so the
+window it reaches shows that file. Its windows lose the connection at once:
+nothing more is saved. An alert says, as FileMaker Pro's does, "File has been
+forcefully disconnected by the host. All affected windows will be closed.",
+then "[From Administrator: “<text>”]" when the administrator gave a text,
+and OK. It waits for an alert or script dialog that is up, and holds the
+others while it shows. Its OK closes every window of that file at once,
+whichever window is in front; unsaved changes are lost with the file. A
+related file the host disconnects fails only what reads it.
 
 Limits ([#156](https://github.com/OpenMaker-Dev/openmaker/issues/156)):
 - The host's requests to close the files (Close, Disconnect) are taken and
   not acted on yet: FileMaker Pro shows a Close File dialog with a
   countdown, and closes the files when it ends.
 - On a forced disconnect FileMaker Pro signs out of the file (op81 Logout)
-  and disconnects before its alert. OpenMaker sends no Logout, which it
-  does not build yet: the file's close sends its usual release, or the
-  connection's `Disconnect` when no other file holds it. A file no window
-  shows (a related file) gets no alert. The alert's brackets are as the
-  capture's reading recorded them [I: whether FileMaker Pro shows them is
-  unmeasured].
+  and disconnects before its alert. OpenMaker sends the op62 release a
+  user's close sends, as no Logout is built yet, and keeps the connection
+  for its other files. The alert's brackets are as the capture's reading
+  recorded them [I: whether FileMaker Pro shows them is unmeasured].
+- The notice is read between requests, by a request, or by a Tickle: a
+  script that runs without asking anything of the host, or waits in a pause
+  or a dialog, reads it at the next Tickle at the latest, and its alert
+  shows once the script's job ends.
 - The dialog's look is OpenMaker's; FileMaker Pro's was read from its
   text only (capture s07).
 - An open Script Workspace holds the message too, although it is a

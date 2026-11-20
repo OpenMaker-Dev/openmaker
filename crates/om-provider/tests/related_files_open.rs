@@ -151,6 +151,54 @@ fn shared_files_and_cycles_open_once_with_stable_ids_and_failures_once() {
     }
 }
 
+/// The host disconnects a related file the opened file's connection holds
+/// (`0x0870`, #156): the connection lets go of it at once, though only a
+/// related reader holds it, so the host keeps the connection and the
+/// opened file, which goes on reading.
+#[test]
+fn a_related_file_the_host_disconnects_is_let_go_of_and_the_opened_file_stays() {
+    let host = Host::new("forced", graph());
+    let mut provider = host.provider();
+    provider.open(&host.connection("Root.fmp12")).unwrap();
+    // The schema's read opens the related files.
+    assert!(provider.calc_schema().unwrap().is_some());
+    let holds = |name: &str| {
+        host.handle
+            .clients()
+            .iter()
+            .flat_map(|client| &client.files)
+            .any(|file| file.name == name)
+    };
+    assert!(holds("Alpha.fmp12") && holds("Root.fmp12"));
+    let alpha = host
+        .handle
+        .files()
+        .into_iter()
+        .find(|file| file.name == "Alpha.fmp12")
+        .expect("Alpha")
+        .id;
+    host.handle
+        .close_file(
+            alpha,
+            &om_server::Notice {
+                message: String::new(),
+                grace: std::time::Duration::ZERO,
+            },
+        )
+        .unwrap();
+    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(5);
+    while holds("Alpha.fmp12") && std::time::Instant::now() < deadline {
+        // The forced notice names Alpha, which the opened file's handle
+        // does not hold: it takes nothing.
+        assert!(provider.take_host_messages().is_empty());
+        std::thread::sleep(std::time::Duration::from_millis(20));
+    }
+    assert!(!holds("Alpha.fmp12"), "the connection let go of Alpha");
+    assert!(holds("Root.fmp12"));
+    assert!(provider.connection_lost().is_none());
+    assert!(provider.calc_schema().unwrap().is_some());
+}
+
 /// A data source's relative paths are tried in their order, as FileMaker
 /// Pro searches them (#739): a path the host does not have is passed over,
 /// and the first file it has is the data source's file. A file that would

@@ -148,7 +148,12 @@ fn a_host_message_shows_over_the_idle_window_until_closed() {
     assert!(app.query_by_label("Back in five minutes.").is_none());
     assert!(app.state().error().is_none(), "{:?}", app.state().error());
     // A close with no time to leave forces the disconnect at once: the
-    // alert says so with the administrator's text, and OK closes the file.
+    // alert says so with the administrator's text, and OK closes the file,
+    // both its windows.
+    common::open_menu(&mut app, "Window");
+    common::click(&mut app, "New Window");
+    common::wait_until(&mut app, "two windows", |app| !app.state().script_running());
+    assert_eq!(app.state_mut().window_titles().len(), 2);
     let file = server
         .files()
         .into_iter()
@@ -165,16 +170,15 @@ fn a_host_message_shows_over_the_idle_window_until_closed() {
         )
         .unwrap();
     common::wait_until(&mut app, "the forced disconnect", |app| {
-        app.state().error().is_some_and(|alert| {
-            alert.starts_with("File has been forcefully disconnected by the host.")
-        })
+        app.query_by_label_contains("File has been forcefully disconnected by the host.")
+            .is_some()
     });
     assert!(app
-        .state()
-        .error()
-        .is_some_and(|alert| alert.ends_with("[From Administrator: “Closing for the night.”]")));
+        .query_by_label_contains("[From Administrator: “Closing for the night.”]")
+        .is_some());
     common::click(&mut app, "OK");
     common::wait_until(&mut app, "the file to close", |app| !app.state().is_open());
+    assert_eq!(app.state_mut().window_titles().len(), 1);
 }
 
 /// A window that goes to another table's layout and back returns to the
