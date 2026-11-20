@@ -3051,6 +3051,10 @@ pub(super) fn conditional_fixture() -> (Box<dyn DataProvider>, impl Fn() -> Vec<
     report_fixture(false, Some(pdf_tests::conditional_document()))
 }
 
+pub(super) fn symbols_fixture() -> (Box<dyn DataProvider>, impl Fn() -> Vec<String>) {
+    report_fixture(false, Some(pdf_tests::symbols_document()))
+}
+
 /// The rows sorted by Region (East, North, West) with sub-summary parts.
 pub(super) fn grouped_fixture() -> (Box<dyn DataProvider>, impl Fn() -> Vec<String>) {
     let (provider, events, server) = report_server(true, Some(pdf_tests::grouped_document()));

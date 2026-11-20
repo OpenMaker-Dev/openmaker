@@ -36,6 +36,8 @@ impl ErrorCode {
     pub const FIELD_MISSING: ErrorCode = ErrorCode(102);
     pub const SCRIPT_MISSING: ErrorCode = ErrorCode(104);
     pub const LAYOUT_MISSING: ErrorCode = ErrorCode(105);
+    /// "Table is missing".
+    pub const TABLE_MISSING: ErrorCode = ErrorCode(106);
     pub const WINDOW_MISSING: ErrorCode = ErrorCode(112);
     /// PSOS parameter longer than 1,000,000 characters.
     pub const PARAMETER_TOO_LONG: ErrorCode = ErrorCode(513);

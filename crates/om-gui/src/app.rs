@@ -1130,6 +1130,9 @@ impl OpenMakerApp {
             ctx.options_mut(|options| options.zoom_with_keyboard = false);
             // Keys go to the keystroke triggers before egui sees them.
             ctx.add_plugin(scripts::KeyGate::default());
+            // A dialog reopened by a quick click comes in front of the one
+            // it was opened from.
+            ctx.add_plugin(crate::widgets::RaiseOpened::default());
             self.styled = true;
         }
         if std::mem::take(&mut self.open_on_launch) {
@@ -1284,6 +1287,27 @@ impl OpenMakerApp {
     /// A text field of the current record is entered for typing in Browse,
     /// where Insert's Current Date, Current Time, Current User Name, From
     /// Index and From Last Visited Record put their text.
+    /// Records > Relookup Field Contents can run
+    /// (`om_data::scripts::relookup::available`): asked when the menu is
+    /// drawn and again when its step is dispatched, since typing in the
+    /// same frame, or an edit preparation the step waited for, can change
+    /// the record in between. Not under a paused script either: the step
+    /// would run in a frame above it, and its error, a Cancel's 1
+    /// included, would fail the script's open transaction. Nor while a
+    /// hosted edit is being prepared.
+    pub(super) fn relookup_available(&self) -> bool {
+        !self.script.running
+            && self.script.prompt.is_none()
+            && !self.recovery_holds()
+            && !self.w.document.preparing_edit()
+            && !self.w.document.failed_edit()
+            && om_data::scripts::relookup::available(
+                self.w.mode.runtime(),
+                self.text_field_entered() && self.w.document.active_related.is_none(),
+                self.record_modified(),
+            )
+    }
+
     fn text_field_entered(&self) -> bool {
         self.w.mode == Mode::Browse
             && self.w.connection_lost.is_none()
@@ -1390,6 +1414,7 @@ impl OpenMakerApp {
                     && !self.script.busy()
                     && self.script.prompt.is_none()
                     && self.text_field_entered(),
+                relookup: input && self.relookup_available(),
                 own_field: self.w.document.active_related.is_none(),
                 field_undo: self
                     .current_layout_record()
@@ -6188,12 +6213,32 @@ impl OpenMakerApp {
             Reply::ValueListBuilt {
                 list,
                 ticket,
+                related,
                 result,
                 retry_after,
+                generation,
             } => {
-                self.w
-                    .calcs
-                    .accept_built_list(list, ticket, result, retry_after);
+                let calcs = &mut self.w.calcs;
+                // Read under data older than the window has seen (asked
+                // before a change): its request goes, its answer is not
+                // taken. Its reads took a change the window had not seen:
+                // the window's data and lists go, as on a calculation reply
+                // of that generation, and the request this answers with
+                // them.
+                let (result, retry_after) = match calcs.build_is_current(generation) {
+                    true => (result, retry_after),
+                    false => (None, None),
+                };
+                if calcs.observe_build_generation(generation) {
+                    if let Some(session) = &self.w.session {
+                        session.report_data_changed();
+                    }
+                }
+                if related {
+                    calcs.accept_related_list(ticket, result, retry_after);
+                } else {
+                    calcs.accept_built_list(list, ticket, result, retry_after);
+                }
                 ctx.request_repaint();
             }
             Reply::CalcData { needs, result } => {
