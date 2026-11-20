@@ -679,7 +679,7 @@ picture is drawn one pixel to a point whatever resolution (`DPI_`) it
 has; the file icon is OpenMaker's own, not the system's icon for the
 file's type; and only the starters' two graphic formats (5 and 7, centered)
 were compared with FileMaker Pro, the others are inferred from Claris's
-flag names. Zoom applies to loaded Form layouts only (below).
+flag names. Zoom applies to loaded Form and List layouts and Find mode only (below).
 
 **Checks.** Regular tests use synthetic layouts and records. The ignored
 `live` tests (`cargo test -p om-gui --test live -- --ignored`) host a
@@ -837,8 +837,8 @@ is not shown; neither is compared with FileMaker Pro.
 
 ### Zoom
 
-Loaded Browse Form layouts have document-local Actual Size, Zoom In and Zoom
-Out commands, in steps of 25, 50, 75, 100, 150, 200, 300 and 400 percent.
+Loaded Browse Form and List layouts, and Find mode's layout, have
+document-local Actual Size, Zoom In and Zoom Out commands, in steps of 25, 50, 75, 100, 150, 200, 300 and 400 percent.
 The menu and keyboard controls scale the document's allocation, clipping,
 pointer input and accessibility bounds together; menus and toolbars keep the
 application scale. While the layout paints, egui treats the zoomed layer as
@@ -862,9 +862,15 @@ replacement invalidates the identity. Text whose row and source mapping
 cannot be verified, justified text and elided text keep the ordinary
 renderer.
 
-Limits: List, Table, Layout mode, generic Form fallbacks and focused field
-editors are not zoomed (Preview scales its paper: [preview.md](preview.md)),
-and Set Zoom Level's lock option is not enforced.
+List view draws its header, records and footer in the same zoomed layer,
+in the layout's coordinates, so its rows scroll and take clicks as at 100%.
+Find mode draws its request as Form view draws a record, so it was already
+drawn at the window's zoom; its commands now change it there too.
+
+Limits: Table view, Layout mode, generic Form fallbacks and
+focused field editors are not zoomed (Preview scales its paper:
+[preview.md](preview.md)), and Set Zoom Level's lock option is not enforced
+([#36](https://github.com/OpenMaker-Dev/openmaker/issues/36)).
 
 ### Layout menus
 
