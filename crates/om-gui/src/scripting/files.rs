@@ -149,13 +149,22 @@ pub(crate) fn filemaker_path(path: &Path, folder: bool) -> String {
     text
 }
 
+/// A native file path as a `file:` path list line; a relative one is taken
+/// from the current directory. A native path is not one as it is: on macOS
+/// FileMaker's absolute paths start with the volume's name (`/tmp/a` is
+/// volume `tmp`, error 826), on Windows with the drive.
+pub(crate) fn file_line(path: &Path) -> String {
+    let path = std::path::absolute(path).unwrap_or_else(|_| path.to_owned());
+    format!("file:{}", filemaker_path(&path, false))
+}
+
 /// What the user typed into an in-app file dialog, as a path list line: a
 /// native absolute path in FileMaker's form, anything else as typed (a
 /// path relative to the Documents folder, or a FileMaker path).
 pub(crate) fn chosen_path(text: &str) -> String {
     let path = text.trim();
     if Path::new(path).is_absolute() {
-        format!("file:{}", filemaker_path(Path::new(path), false))
+        file_line(Path::new(path))
     } else {
         path.to_owned()
     }
@@ -276,6 +285,20 @@ fn split_prefix(line: &str) -> (Option<String>, &str) {
             (Some(prefix.to_ascii_lowercase()), rest)
         }
         _ => (None, line),
+    }
+}
+
+/// Whether a path list line is one this machine reads: a `file` path (or
+/// one without a prefix), or one of this platform's (`filemac`, `filewin`,
+/// `filelinux`), not another platform's or another kind's.
+pub(crate) fn of_this_platform(line: &str) -> bool {
+    let prefix = split_prefix(line.trim()).0;
+    match prefix.as_deref().unwrap_or("file") {
+        "file" => true,
+        "filemac" => THIS == Platform::Mac,
+        "filewin" => THIS == Platform::Windows,
+        "filelinux" => THIS == Platform::Linux,
+        _ => false,
     }
 }
 

@@ -150,13 +150,14 @@ const CONTEXT_SELECTORS: [u8; 4] = [
 
 /// How a value index in `language` keys text when a unique or existing
 /// value is checked in it (query-program.md 7.2): English and English
-/// international as primary weights, Unicode raw as its UTF-16 code units.
-/// `None` for the other languages, whose keys OpenMaker does not build
-/// exactly yet (the padded form's accents, the tailorings: #159, #485), so
-/// a field validated in them keeps its table read-only.
+/// international as primary weights, System and Unicode standard padded,
+/// Unicode raw as its UTF-16 code units. `None` for the other languages,
+/// whose keys OpenMaker does not build (the tailorings, #159), so a field
+/// validated in them keeps its table read-only.
 pub fn checked_text_keys(language: u32) -> Option<om_query::keys::TextKeys> {
     match language {
         21 | 77 => Some(om_query::keys::TextKeys::Collated),
+        1 | 3 => Some(om_query::keys::TextKeys::CollatedPadded),
         2 => Some(om_query::keys::TextKeys::Raw),
         _ => None,
     }
@@ -169,8 +170,7 @@ pub fn checked_text_keys(language: u32) -> Option<om_query::keys::TextKeys> {
 /// code units. `None` for the other languages, whose forms OpenMaker does
 /// not build (the tailorings, #1279; those FileMaker leaves untailored,
 /// #1280): a write that would change such an index is refused rather than
-/// keyed in English (#159). Within these forms, some scripts and the padded
-/// form's accents still differ from FileMaker's keys (#485).
+/// keyed in English (#159).
 pub fn written_text_keys(language: u32, file_language: u32) -> Option<om_query::keys::TextKeys> {
     let language = if language == 0 {
         file_language
@@ -179,6 +179,16 @@ pub fn written_text_keys(language: u32, file_language: u32) -> Option<om_query::
     };
     om_query::keys::TextKeys::of_language(language)
         .filter(|form| *form != om_query::keys::TextKeys::None)
+}
+
+/// How a find or a lookup reads the index of a text field indexed in
+/// `language`, in a file whose own language is `file_language`: the form a
+/// host writes ([`written_text_keys`]), so that a find on a field indexed
+/// in Unicode raw or Unicode standard meets the keys FileMaker wrote.
+/// A language whose form OpenMaker does not build is read in English,
+/// which keys most text as those languages do; nothing read so is written.
+pub fn read_text_keys(language: u32, file_language: u32) -> om_query::keys::TextKeys {
+    written_text_keys(language, file_language).unwrap_or(om_query::keys::TextKeys::Collated)
 }
 
 /// Nesting, size and stored length of the calculations record writes
@@ -561,6 +571,20 @@ pub trait ContainerReader {
     }
 }
 
+/// The repetition a formula is evaluated in, and how a field that does not
+/// repeat reads there.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum InRepetition {
+    /// Repetition n of a field's validation or calculated message: a field
+    /// that does not repeat reads as it is, however the formula names it
+    /// (script oracle s17, s19).
+    Validation(u32),
+    /// Repetition n of a calculation: a field that does not repeat reads
+    /// empty above repetition 1 unless the formula extends it
+    /// (calc-values.md 8.6). A field's own calculation is repetition 1.
+    Calculation(u32),
+}
+
 /// Why a formula of a write has no result ([`RecordPlan::run`]).
 enum RunError {
     /// It was not evaluated: the write lacks what it reads (an answer of
@@ -606,6 +630,9 @@ pub(crate) struct Evaluation {
     settled: BTreeSet<u64>,
     /// The [`CONTEXT_SELECTORS`] the operation could not answer.
     unanswered: BTreeSet<u8>,
+    /// A host's recomputation of stored values with no session
+    /// ([`super::host::FileHost::file_context`]), not a write.
+    file_context: bool,
 }
 
 impl RecordEnvironment {
@@ -657,6 +684,7 @@ impl RecordEnvironment {
             held: self.held.clone(),
             settled: BTreeSet::new(),
             unanswered,
+            file_context: false,
         }
     }
 }
@@ -1802,7 +1830,7 @@ impl RecordPlan {
                 if !options.value_indexed() || checked_text_keys(options.index_language()).is_none()
                 {
                     return Err(error(
-                        "unique and existing values require a value index in English or Unicode raw.",
+                        "unique and existing values require a value index in English, System, Unicode standard or Unicode raw.",
                     ));
                 }
             }
@@ -1864,6 +1892,7 @@ impl RecordPlan {
                             &schema,
                             &e.formula.polish,
                             true,
+                            false,
                             &mut BTreeSet::new(),
                         )
                         .is_ok()
@@ -2020,6 +2049,7 @@ impl RecordPlan {
                     &schema,
                     &expression.formula.polish,
                     !calculation,
+                    false,
                     &mut BTreeSet::new(),
                 )
                 .map_err(|reason| DataError::new(format!("Field {}: {reason}", field.name)))?;
@@ -3979,7 +4009,7 @@ impl RecordPlan {
             session,
             Some(self_value),
             Some(ValueType::Text),
-            repetition,
+            InRepetition::Validation(repetition),
         ) {
             Ok((_, text)) if !text.is_empty() => DataError::with_code(code, text),
             _ => DataError::with_code(
@@ -4209,8 +4239,8 @@ impl RecordPlan {
     }
 
     /// Evaluate `expression` on `row` with `Self` and result type, in
-    /// `repetition` (1 for a field calculation); a calculation the host
-    /// cannot answer refuses the write.
+    /// `repetition` (repetition 1 of a calculation for a field's own
+    /// value); a calculation the host cannot answer refuses the write.
     #[allow(clippy::too_many_arguments)]
     fn run(
         &self,
@@ -4220,7 +4250,7 @@ impl RecordPlan {
         session: &Evaluation,
         self_value: Option<Value>,
         result_type: Option<ValueType>,
-        repetition: u32,
+        repetition: InRepetition,
     ) -> Result<(Value, String), RunError> {
         // An answer the write's operation did not supply is never read as
         // empty: the write is refused.
@@ -4364,16 +4394,18 @@ impl RecordPlan {
             .as_deref()
             .map(|f| f as &dyn Fn() -> bool);
         host.limits = session.limits;
+        host.file_context = session.file_context;
+        let (repetition, extend_fields) = match repetition {
+            InRepetition::Validation(n) => (n, n > 1),
+            InRepetition::Calculation(n) => (n, false),
+        };
         let context = Context {
             occurrence: expression.formula.occurrence(),
             record: Some(0),
             repetition,
             result_type,
             self_value,
-            // A validation in repetition n reads a field that does not
-            // repeat as it is, however its formula names it (script oracle
-            // s17, s19), where a repeating calculation would read it empty.
-            extend_fields: repetition > 1,
+            extend_fields,
             // `Get ( RecordNumber )` answers the operation's number, as a
             // portal row's does; the record's position in this one-record
             // source is no answer. Without one, a formula reading it was
@@ -4456,12 +4488,26 @@ impl RecordPlan {
         row: &BTreeMap<u64, String>,
         session: &Evaluation,
     ) -> Result<String, DataError> {
+        self.evaluate_repetition(id, 1, expression, row, session)
+    }
+
+    /// The new stored text of repetition `repetition` of calculated field
+    /// `id`, evaluated in that repetition (calc-values.md 8.6).
+    fn evaluate_repetition(
+        &self,
+        id: u64,
+        repetition: u32,
+        expression: &Expression,
+        row: &BTreeMap<u64, String>,
+        session: &Evaluation,
+    ) -> Result<String, DataError> {
         let def = self
             .schema
             .table(self.table)
             .and_then(|t| t.fields.get(&id));
         let result_type = def.map(|d| d.value_type);
-        self.run(id, expression, row, session, None, result_type, 1)
+        let repetition = InRepetition::Calculation(repetition);
+        self.run(id, expression, row, session, None, result_type, repetition)
             .map(|(_, text)| text)
             .map_err(RunError::into_error)
     }
@@ -4500,7 +4546,7 @@ impl RecordPlan {
             session,
             Some(self_value),
             None,
-            repetition,
+            InRepetition::Validation(repetition),
         ) {
             Ok((result, _)) => Ok(result.is_true(&cx)),
             Err(RunError::Failed(_)) => Ok(false),
@@ -4781,9 +4827,18 @@ impl Expression {
             evaluation_order: Vec::new(),
             schema: Arc::new(schema),
         };
-        plan.run(0, self, row, &env.session(), None, Some(ValueType::Text), 1)
-            .map(|(_, text)| text)
-            .map_err(RunError::into_error)
+        let first = InRepetition::Calculation(1);
+        plan.run(
+            0,
+            self,
+            row,
+            &env.session(),
+            None,
+            Some(ValueType::Text),
+            first,
+        )
+        .map(|(_, text)| text)
+        .map_err(RunError::into_error)
     }
 }
 
@@ -4794,6 +4849,7 @@ fn check_custom_functions(
     schema: &CalcSchema,
     expr: &Expr,
     option: bool,
+    design: bool,
     seen: &mut BTreeSet<u64>,
 ) -> Result<(), String> {
     let mut result = Ok(());
@@ -4822,7 +4878,7 @@ fn check_custom_functions(
                     || resolves_names_at_run_time(inner)
                 {
                     problem = Some("calls a custom function that reads fields.".to_owned());
-                } else if let Some(reason) = unsupported_rule_operation(inner, option) {
+                } else if let Some(reason) = unsupported_rule_operation(inner, option, design) {
                     problem = Some(format!("calls a custom function: {reason}"));
                 }
             });
@@ -4830,7 +4886,7 @@ fn check_custom_functions(
                 result = Err(problem);
                 return;
             }
-            if let Err(e) = check_custom_functions(schema, &body.body, option, seen) {
+            if let Err(e) = check_custom_functions(schema, &body.body, option, design, seen) {
                 result = Err(e);
             }
         }
@@ -5118,9 +5174,12 @@ const DYNAMIC_REFERENCES: &str =
 /// Expression operations the record-only host cannot evaluate faithfully.
 /// Apply this to both the formula and every reachable custom-function body.
 /// `option`: an auto-entered or validation formula, which may also read the
-/// [`CONTEXT_SELECTORS`].
-fn unsupported_rule_operation(expr: &Expr, option: bool) -> Option<&'static str> {
+/// [`CONTEXT_SELECTORS`]. `design`: a host's recomputation of stored values,
+/// which answers the Design functions as the file's own calculation does
+/// ([`crate::host::FileHost::file_context`]).
+fn unsupported_rule_operation(expr: &Expr, option: bool, design: bool) -> Option<&'static str> {
     match expr {
+        Expr::PluginCall { function, .. } if design && is_design_function(*function) => None,
         Expr::PluginCall { .. } => Some("plug-in functions are unsupported in record rules."),
         expr if resolves_names_at_run_time(expr) => Some(DYNAMIC_REFERENCES),
         Expr::Get(selector)
@@ -5131,6 +5190,13 @@ fn unsupported_rule_operation(expr: &Expr, option: bool) -> Option<&'static str>
         }
         _ => None,
     }
+}
+
+/// Whether `function` is one of FileMaker's Design functions, which the
+/// Polish stream stores as calls of the built-in plug-in `FMDR`
+/// (calc-encoding.md 7).
+fn is_design_function(function: om_formula::PluginFunctionId) -> bool {
+    function.plugin == *b"FMDR" && om_formula::catalog::builtin(function).is_some()
 }
 
 /// Forms whose field reads are only known when they run (`Evaluate`,
@@ -5183,44 +5249,38 @@ fn literal_text(expr: &Expr) -> Option<String> {
 /// Visit every node of `expr`.
 fn walk(expr: &Expr, f: &mut dyn FnMut(&Expr)) {
     f(expr);
-    let each = |items: &[Expr], f: &mut dyn FnMut(&Expr)| {
-        for item in items {
-            walk(item, f);
-        }
-    };
+    for child in children(expr) {
+        walk(child, f);
+    }
+}
+
+/// The direct parts of `expr`, in order.
+fn children(expr: &Expr) -> Vec<&Expr> {
     match expr {
         Expr::List(items)
         | Expr::Call { args: items, .. }
         | Expr::CustomCall { args: items, .. }
         | Expr::PluginCall { args: items, .. }
-        | Expr::Evaluate { args: items, .. } => each(items, f),
-        Expr::Case(pairs) => {
-            for (test, value) in pairs {
-                walk(test, f);
-                walk(value, f);
-            }
-        }
-        Expr::Choose { test, results } => {
-            walk(test, f);
-            each(results, f);
-        }
-        Expr::Let { bindings, body } => {
-            each(bindings, f);
-            walk(body, f);
-        }
+        | Expr::Evaluate { args: items, .. } => items.iter().collect(),
+        Expr::Case(pairs) => pairs
+            .iter()
+            .flat_map(|(test, value)| [test, value])
+            .collect(),
+        Expr::Choose { test, results } => std::iter::once(&**test).chain(results).collect(),
+        Expr::Let { bindings, body } => bindings.iter().chain([&**body]).collect(),
         Expr::While {
             initial,
             condition,
             logic,
             result,
-        } => {
-            each(initial, f);
-            walk(condition, f);
-            each(logic, f);
-            walk(result, f);
-        }
-        Expr::GetField { arg, .. } => walk(arg, f),
-        _ => {}
+        } => initial
+            .iter()
+            .chain([&**condition])
+            .chain(logic)
+            .chain([&**result])
+            .collect(),
+        Expr::GetField { arg, .. } => vec![&**arg],
+        _ => Vec::new(),
     }
 }
 
@@ -5281,6 +5341,22 @@ fn parse_code(code: &[u8], context: &[u8]) -> Result<Expression, String> {
 /// than refused (aggregates of them are), and the [`CONTEXT_SELECTORS`] are
 /// read.
 fn parse_code_with(code: &[u8], context: &[u8], related_reads: bool) -> Result<Expression, String> {
+    parse_formula(code, context, related_reads, false)
+}
+
+/// [`parse_code`] for a host's recomputation of a stored calculation, which
+/// also answers the Design functions ([`unsupported_rule_operation`]).
+fn parse_recomputed(code: &[u8], context: &[u8]) -> Result<Expression, String> {
+    parse_formula(code, context, false, true)
+}
+
+/// [`parse_code_with`], with the Design functions allowed when `design`.
+fn parse_formula(
+    code: &[u8],
+    context: &[u8],
+    related_reads: bool,
+    design: bool,
+) -> Result<Expression, String> {
     if code.len() > MAX_CODE {
         return Err("calculation is too large.".into());
     }
@@ -5373,7 +5449,7 @@ fn parse_code_with(code: &[u8], context: &[u8], related_reads: bool) -> Result<E
                 problem = Some("LookupNext over related fields is unsupported.".into());
             }
             _ => {
-                if let Some(reason) = unsupported_rule_operation(e, related_reads) {
+                if let Some(reason) = unsupported_rule_operation(e, related_reads, design) {
                     problem = Some(reason.into());
                 }
             }
@@ -6121,7 +6197,7 @@ mod tests {
     }
 
     #[test]
-    fn unique_fields_need_a_value_index_keyed_in_english_or_unicode_raw() {
+    fn unique_fields_need_a_value_index_keyed_in_a_form_openmaker_builds() {
         let mut table = table();
         let primary_key = 4;
         assert_eq!(table.fields[primary_key].id, 9);
@@ -6130,12 +6206,15 @@ mod tests {
             .err()
             .unwrap()
             .to_string()
-            .contains("value index in English or Unicode raw"));
+            .contains("require a value index"));
         table.fields[primary_key].options[8..12].copy_from_slice(&0x8000_0188u32.to_be_bytes());
-        table.fields[primary_key].options[4..8].copy_from_slice(&3u32.to_be_bytes());
+        // German (25) is a tailoring OpenMaker does not key.
+        table.fields[primary_key].options[4..8].copy_from_slice(&25u32.to_be_bytes());
         assert!(plan(&table, &initials(1, 2)).is_err());
-        table.fields[primary_key].options[4..8].copy_from_slice(&77u32.to_be_bytes());
-        assert!(plan(&table, &initials(1, 2)).is_ok());
+        for language in [77u32, 1, 3] {
+            table.fields[primary_key].options[4..8].copy_from_slice(&language.to_be_bytes());
+            assert!(plan(&table, &initials(1, 2)).is_ok(), "{language}");
+        }
         // FileMaker Pro 26's own blank file indexes PrimaryKey so (#725).
         table.fields[primary_key].options[4..8].copy_from_slice(&2u32.to_be_bytes());
         assert!(plan(&table, &initials(1, 2)).is_ok());
