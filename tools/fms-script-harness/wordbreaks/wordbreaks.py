@@ -4,14 +4,14 @@
 # enters each probe value as a record of its own (140 records, 139 distinct
 # values: 12.30 comes twice); then the catalog rows of
 # docs/re/catalogs/word-break-vectors.tsv from the run copy's indexes.
-# With CONTACTS the Contacts template's saveAsXML ($WORK/contacts-en.xml
-# after any runbat.sh run on it) and WORK and the harness's other variables
-# set as for runbat.sh:
-#   python3 -I wordbreaks.py schema "$CONTACTS" wordbreaks.xml docs/re/catalogs/locale-types.csv
-#   python3 -I wordbreaks.py battery wordbreaks.txt
-#   SCHEMA=wordbreaks.xml runbat.sh wordbreaks.txt contacts-en.fmp12 results
+# From the repository root, with CONTACTS the Contacts template's saveAsXML
+# ($WORK/contacts-en.xml after any runbat.sh run on it) and WORK and the
+# harness's other variables set as for runbat.sh:
+#   python3 -I tools/fms-script-harness/wordbreaks/wordbreaks.py schema "$CONTACTS" wordbreaks.xml docs/re/catalogs/locale-types.csv
+#   python3 -I tools/fms-script-harness/wordbreaks/wordbreaks.py battery wordbreaks.txt
+#   SCHEMA=wordbreaks.xml tools/fms-script-harness/runbat.sh wordbreaks.txt contacts-en.fmp12 results
 #   cargo run -p om-hbam --example index_entries -- "$WORK/wordbreaks.contacts-en.gen.run.fmp12" Contacts V > entries.tsv
-#   python3 -I wordbreaks.py rows entries.tsv > rows.tsv
+#   python3 -I tools/fms-script-harness/wordbreaks/wordbreaks.py rows entries.tsv > rows.tsv
 import csv
 import sys
 

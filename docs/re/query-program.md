@@ -831,8 +831,9 @@ first) is open (13).
 **Word breaking (High for the cases below).** The word index keys each
 word of a value: maximal runs of letters and digits, in which some
 characters between two letters or two digits join. In each index language
-FileMaker Server's engine was probed in (1-4, 16-65, 67 and 76; it stores 0
-and 77 as 21) but Unicode raw (2), whose rules follow below:
+FileMaker Server's engine was probed in (1-4, 16-65, 67 and 76; 0 and 77
+were not probed here, and FMUpgradeTool stored them as 21 in the earlier
+probe file, below) but Unicode raw (2), whose rules follow below:
 
 - between digits: `-` and `,` in every language; `.` except in French
   (24), Polish (33), Swedish (41, 42) and Arabic (49); `:` except in
@@ -851,17 +852,21 @@ and 77 as 21) but Unicode raw (2), whose rules follow below:
   gives `l`, `équipe`.
 
 In those languages none of these characters joins a digit and a letter
-(`1.b`, `a-1`), or stays in a word at its start or end (`.1`, `a-` give
-`1`, `a`), and `_` and `;` always separate. In Thai (57) `.` and `-` have
-no weight, so its keys cannot show whether its words keep them at either
-end. The no-break space U+00A0 separates in none of them: it is part of
+(`1.b`, `a-1`), `_` and `;` always separate, and, Thai aside, none stays in
+a word at its start or end (`.1`, `a-` give `1`, `a`). In Thai (57) `.` and
+`-` have no weight, so its keys cannot show whether its words keep them at
+either end. The no-break space U+00A0 separates in none of them: it is part of
 the word, at either end too (`1`, U+00A0, `234` is one word). The languages
 that join with `/` and with `.` resemble those whose locales write dates
 with `/` and decimals with `.`, but whether FileMaker takes these
 characters from the locale or from a table of its own is not known [I]; the
-probe gives them for these characters only. In every language the primary
-weights of each word's key are the part of the value key's primary weights
-that spells the word (all 11,487 word keys of the probe). In System and
+probe gives them for these characters only. In the probe, whose keys are
+all whole, the primary weights of each word's key are those of the value
+key for the word's characters (all 11,487 word keys). A long value's key
+and each of its word keys are cut to 7.1's limit on their own, so a cut
+value key need not hold a later word's weights: `x`×100 `中`×10 keeps nine
+`中` in its value key and all ten in its word key
+([catalogs/index-key-vectors.tsv](catalogs/index-key-vectors.tsv)). In System and
 Unicode standard a word's key is in their padded form, with its own `00 00`
 and the word's higher levels after it (`ab’cd` keeps the secondary weight
 of `’`). Evidence:
