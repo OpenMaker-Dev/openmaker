@@ -1268,6 +1268,23 @@ are inferred; the private owner comparison shows a mismatch, and this
 bounded correction has only a neutral Linux fixture comparison, without a
 new macOS/FileMaker measurement.
 
+**A single checkbox without value.** A checkbox set with FileMaker Pro
+26.1's "Display single checkbox without value" (field flag `0x400000`,
+layout-model.md 5.4.1) draws one box without a label, checked when the
+field holds the list's first value. A click or Space checks it, storing
+that value, or clears it, storing the list's second value, or emptying
+the field when the list has one value (`om_data::choice::single_checkbox`,
+from Claris's release notes). A field holding anything else, another
+value or other lines with the first, is not written over: the click is
+refused with an alert (error 3), the data kept, until what FileMaker Pro
+does then is measured. A letter a keystroke trigger lets through changes
+nothing. In Find mode it gives the first value as the criterion, or none
+(`single_checkbox_criterion`) [I]. Inferred, not measured: the box's place
+in the field (where the set's first item would be), its look, and that a
+value holding the first value among other lines checks it. The flag's storage
+was read from FileMaker Pro 26.1.1's binaries; no file made by 26.1.1 has
+been read.
+
 Checkbox and radio button sets, pop-up menus and
 drop-down lists (layout-model.md 5.4) read their items through
 `om_data::choice`, the operation `om-author`'s `list_choices` also runs.
@@ -1570,7 +1587,12 @@ The Objects pane is 220 pt wide, lists the layout's objects front to back,
 filters by kind or known field name, and selects and reveals the matching
 canvas object. Inspector tabs are interactive; Position shows real bounds
 with pt, in and cm conversion, and Data shows a known field binding and
-type and the field's control style and value list. Selection resets when the layout geometry or the file changes. These
+type and the field's control style and value list. A field object shows
+its field's name on the canvas, and a field another occurrence shows (a
+portal's, say) `::Field`, FileMaker Pro's Layout mode default with View >
+Show > Sample Data off (not compared with a capture). The Objects pane
+and the Inspector name that field `Occurrence::Field`. A field of a
+related file that is not open shows its object kind. Selection resets when the layout geometry or the file changes. These
 dimensions and interactions are OpenMaker's choices: FileMaker's runtime
 behavior was not observed (re/client-ui.md, Unknowns).
 

@@ -236,7 +236,9 @@ fn marker_style(styles: &Styles, checked: bool) -> (ResolvedStyle, Stroke, Color
 /// Whether `item` is checked: one of the lines of the field's `value`.
 /// Lines that are not items are not drawn.
 fn checked(value: &str, item: &str) -> bool {
-    value.split(['\r', '\n']).any(|line| line == item)
+    // An item of several lines (a list with a second field) checks by
+    // itself.
+    value == item || value.split(['\r', '\n']).any(|line| line == item)
 }
 
 /// The value after the user picks the item storing `item` in a set
@@ -270,6 +272,26 @@ pub(super) fn picked(value: &str, item: &str, radio: bool, shift: bool) -> Optio
         value
     };
     (changed != value).then_some(changed)
+}
+
+/// The one item a checkbox set shown as a single checkbox without value
+/// draws (`FieldObject::single_unlabeled_checkbox`): the list's first value,
+/// with no label, at the place the set's first item takes [I: the box's
+/// place in the field is unmeasured]. A click on it toggles the field
+/// between the list's first and second values (`choice::single_checkbox`).
+pub(super) fn single_item(choices: &om_data::choice::Choices) -> Vec<ValueListEntry> {
+    choices
+        .items
+        .iter()
+        .find(|item| !choices.is_divider(item) && !item.value.is_empty())
+        // A space keeps a label's line height, so the box sits in the row
+        // the first item's would.
+        .map(|item| ValueListEntry {
+            value: item.value.clone(),
+            label: " ".into(),
+        })
+        .into_iter()
+        .collect()
 }
 
 /// What the user did to an editable set this frame.
@@ -374,7 +396,8 @@ fn keyboard(ui: &Ui, id: egui::Id, value: &str, items: &[ValueListEntry]) -> Opt
 /// stop whose items take clicks (the caller has checked that the user may
 /// change the field here); otherwise it only shows the value. `enabled`:
 /// an editable set takes input now (not while its record saves). `label`
-/// names the set for accessibility.
+/// names the set for accessibility, and with `single` (a single checkbox
+/// without value) its one item too.
 #[allow(clippy::too_many_arguments)]
 pub(super) fn show(
     ui: &mut Ui,
@@ -387,6 +410,7 @@ pub(super) fn show(
     editable: bool,
     enabled: bool,
     label: &str,
+    single: bool,
 ) -> Shown {
     let mut shown = Shown {
         set: None,
@@ -515,7 +539,9 @@ pub(super) fn show(
             } else {
                 egui::Role::CheckBox
             };
-            egui::WidgetInfo::selected(role, editable && enabled, selected, &item.label)
+            // A single checkbox's item has no label: it is the set's.
+            let name = if single { label } else { &item.label };
+            egui::WidgetInfo::selected(role, editable && enabled, selected, name)
         });
         if editable && enabled && response.clicked() {
             let shift = child.input(|input| input.modifiers.shift);
