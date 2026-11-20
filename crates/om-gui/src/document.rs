@@ -5945,6 +5945,30 @@ fn paint_related_option_set(
     if enabled && response.clicked() && response.interact_pointer_pos().is_some() {
         response.request_focus();
     }
+    // A stale row's pop-up click waits for the same related record,
+    // as a click on a related edit box does (#1099).
+    if pop_up {
+        if state.painting_stale && response.clicked() {
+            state.field_click = Some(FieldClickWait {
+                field,
+                object: object.id,
+                seen: true,
+            });
+        }
+        if let Some(wait) = state
+            .field_click
+            .as_mut()
+            .filter(|wait| wait.object == object.id && wait.field == field)
+        {
+            wait.seen = true;
+            if enabled {
+                state.field_click = None;
+                response.request_focus();
+                egui::Popup::open_id(ui.ctx(), popup::menu_id(id));
+                ui.ctx().request_repaint();
+            }
+        }
+    }
     // It keeps Tab from egui, as the record's own sets do (#859).
     if current && editable && response.has_focus() {
         let keys = egui::EventFilter {

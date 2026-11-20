@@ -830,6 +830,62 @@ fn a_field_click_while_its_portal_is_read_again_focuses_that_records_field() {
     assert!(app.state().error().is_none(), "{:?}", app.state().error());
 }
 
+/// A click on a portal row's pop-up menu while the portal's records are
+/// read again is not dropped, as a click on a row's edit box is not
+/// (#1099): once the records are in, that record's pop-up opens its list,
+/// with no second click (#288).
+#[test]
+fn a_pop_up_click_while_its_portal_is_read_again_opens_its_list_once_read() {
+    let hold = Gate::default();
+    hold.open();
+    let _release = Release(hold.clone());
+    let held = Arc::new(AtomicUsize::new(0));
+    let (mut app, _) = open_holding(
+        Calcs {
+            control: 2,
+            sort: false,
+            row_script: true,
+            ..SORTED_AND_FILTERED
+        },
+        None,
+        Some((hold.clone(), held.clone())),
+    );
+    common::wait_for_label(&mut app, "Line Aster / Clara");
+    let menus = || {
+        egui_kittest::kittest::By::new()
+            .role(Role::ComboBox)
+            .label("Lines::Given")
+    };
+    let value = |node: &egui_kittest::Node<'_>| node.accesskit_node().value().unwrap_or_default();
+    // The portal is read again for the parent's draft of its match field,
+    // and shows the rows it showed last until the provider answers.
+    hold.close();
+    common::text_field(&app, "Given").focus();
+    app.step();
+    app.key_press_modifiers(egui::Modifiers::COMMAND, egui::Key::A);
+    app.event(egui::Event::Text("clara".into()));
+    common::wait_until(&mut app, "the portal read again", |_| {
+        held.load(Ordering::SeqCst) > 0
+    });
+    app.run_steps(3);
+    app.query_all(menus())
+        .find(|node| value(node) == "Aster")
+        .unwrap()
+        .click();
+    app.run_steps(10);
+    assert!(
+        app.query_by_role_and_label(Role::Button, "Cora").is_none(),
+        "the list opened before the portal's records were in"
+    );
+    hold.open();
+    common::wait_for_label(&mut app, "Cora");
+    app.get_by_role_and_label(Role::Button, "Cora").click();
+    common::wait_until(&mut app, "the chosen item", |app| {
+        app.query_all(menus()).any(|node| value(&node) == "Cora")
+    });
+    assert!(app.state().error().is_none(), "{:?}", app.state().error());
+}
+
 /// A pop-up menu in a portal row (#537) offers its list in that row, and
 /// the item chosen is the row's related record's edit, kept with the
 /// record the layout shows: the row shows it and the record has unsaved
