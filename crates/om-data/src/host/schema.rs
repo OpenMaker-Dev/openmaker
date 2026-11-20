@@ -150,7 +150,7 @@ impl FieldDef {
     /// stored data field's, unless the field auto-enters a value, which
     /// the copy gets anew. A lookup and a calculation that does not
     /// replace an existing value are copied (auto-entry.md, "Serial
-    /// numbers"; script oracle s44-record-number-ae for a replacing
+    /// numbers"; script oracle s46-record-number-ae for a replacing
     /// calculation). The auto-entry bits (schema-path.md 5.5): a selected
     /// variable `0x1`, a serial `0x2` or `0x200`, a constant `0x4`, the
     /// last visited record's value `0x10`, a calculation `0x8` replacing

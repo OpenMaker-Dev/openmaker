@@ -1220,7 +1220,8 @@ impl Window {
         privilege_set: Option<String>,
     ) -> Result<(), DataError> {
         let session = self.open_new_record(provider);
-        let made = self.make_new_record(provider, session, (values, cells), privilege_set)?;
+        let made =
+            self.make_new_record(provider, session, (values, cells), (privilege_set, None))?;
         self.adopt_new_record(provider, made)
     }
 
@@ -1245,13 +1246,14 @@ impl Window {
     /// in the session (#892). A refusal is the error: it is never made at
     /// once instead. A record a provider without transactions makes at once
     /// is saved: Revert keeps it. A failure reverts the session: nothing
-    /// was made.
+    /// was made. `record_number`: the record's place in the found set,
+    /// when it is known (`ScriptWrite::record_number`).
     pub fn make_new_record(
         &mut self,
         provider: &mut dyn DataProvider,
         session: bool,
         (values, cells): (FieldChanges, Cells),
-        privilege_set: Option<String>,
+        (privilege_set, record_number): (Option<String>, Option<u64>),
     ) -> Result<NewRecord, DataError> {
         let revert = |provider: &mut dyn DataProvider, session: bool| {
             if session {
@@ -1271,7 +1273,7 @@ impl Window {
             typed: BTreeSet::new(),
             skip_validation: false,
             privilege_set,
-            record_number: None,
+            record_number,
             prepared: None,
         };
         let (record, saved) = match provider.write_record(&write) {

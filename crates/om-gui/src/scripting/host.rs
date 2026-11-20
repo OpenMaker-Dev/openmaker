@@ -1872,14 +1872,24 @@ impl<'a> WorkerHost<'a> {
         // An auto-entered value is not copied: the copy's own is entered
         // as it is created, a serial number the next one, a replacing
         // calculation evaluated on the copy (`FieldDef::duplicate_copies`,
-        // #473).
+        // #473). In a transaction that skips auto-entry the copy enters
+        // none, and takes the record's values, as before [I: FileMaker's
+        // duplicate there is unmeasured].
+        let skips_entry =
+            self.s.file.transaction.is_some() && self.s.file.transaction_skips_auto_entry;
         let stored_fields: Option<BTreeSet<String>> = self.schema().and_then(|schema| {
             Some(
                 schema
                     .table_of(self.s.file.occurrence?)?
                     .fields
                     .values()
-                    .filter(|f| f.duplicate_copies())
+                    .filter(|f| {
+                        if skips_entry {
+                            f.class == FieldClass::Data && f.stored && !f.global
+                        } else {
+                            f.duplicate_copies()
+                        }
+                    })
                     .map(|f| f.name.clone())
                     .collect(),
             )
@@ -1950,7 +1960,23 @@ impl<'a> WorkerHost<'a> {
         let privilege_set = self.current_set_name();
         let made = {
             let (window, provider) = self.wp();
-            window.make_new_record(provider, session, (values, cells), privilege_set)
+            // The copy's place in the found set, which a calculation it
+            // enters reads as Get ( RecordNumber ): after the records of an
+            // unsorted found set (script oracle s46-record-number-ae: a
+            // duplicate of the first of nine stores 10). A sorted found
+            // set's is unmeasured: the copy has none, and such a
+            // calculation refuses the save (3).
+            let record_number = if window.sorted {
+                None
+            } else {
+                window.found_count(provider).ok().map(|found| found + 1)
+            };
+            window.make_new_record(
+                provider,
+                session,
+                (values, cells),
+                (privilege_set, record_number),
+            )
         };
         let made = match made {
             Ok(made) => made,
@@ -4559,6 +4585,7 @@ impl Records for WorkerHost<'_> {
             .begin_transaction(options)
             .map_err(|e| self.failed(e))?;
         self.s.file.transaction = Some(Vec::new());
+        self.s.file.transaction_skips_auto_entry = options.skip_auto_enter;
         Ok(())
     }
 

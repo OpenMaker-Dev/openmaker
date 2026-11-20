@@ -516,26 +516,11 @@ mod delayed_page_tests {
 /// auto-enters `Get ( UUID )`, replacing the value, and the copy of record
 /// 2 enters a new one rather than copy record 2's, as FileMaker Server's
 /// engine enters a replacing calculation on a duplicate again (script
-/// oracle s44-record-number-ae, #473).
+/// oracle s46-record-number-ae, #473).
 #[test]
 fn the_menus_new_record_is_held_until_saved_and_its_revert_deletes_nothing() {
-    use fixture::{OCCURRENCE, TABLE};
-    use om_hbam::slot::uint_segment;
-    const TOKEN: u64 = 20;
     let hosted = host_with("menu-new", |root| {
-        fixture::add_field(root, TABLE, TOKEN, "Token", 1, 1, 0, 0x88, 0);
-        fixture::add_formula(
-            root,
-            &fixture::names(),
-            (TABLE, OCCURRENCE),
-            TOKEN,
-            5,
-            "Get ( UUID )",
-        );
-        root.put(
-            &[&uint_segment(TABLE), &[5], &[2], &uint_segment(TOKEN)],
-            om_scripts::text_node(&[], "record 2's"),
-        );
+        replacing(root, (20, "Token"), "Get ( UUID )", "record 2's");
     });
     let mut app = open(&hosted);
     let before = stored_names(&hosted);
@@ -570,16 +555,105 @@ fn the_menus_new_record_is_held_until_saved_and_its_revert_deletes_nothing() {
     let after = stored_names(&hosted);
     assert_eq!(after[..before.len()], before[..]);
     assert_eq!(after[before.len()..], [shown]);
-    let tokens = {
-        let mut reader = hosted.opened();
-        let page = reader.records(LAYOUT, 0, 10).unwrap();
-        reader.close();
-        let index = page.fields.iter().position(|f| f.name == "Token").unwrap();
-        page.records
-            .into_iter()
-            .map(|record| record.values[index].clone().unwrap_or_default())
-            .collect::<Vec<_>>()
-    };
+    let tokens = stored_values(&hosted, "Token");
     assert_eq!(tokens[1], "record 2's", "{tokens:?}");
     assert_eq!(tokens[2].len(), 36, "a new UUID: {tokens:?}");
+}
+
+/// The values of `field` in every stored record, in order.
+fn stored_values(hosted: &hosted::Hosted, field: &str) -> Vec<String> {
+    let mut reader = hosted.opened();
+    let page = reader.records(LAYOUT, 0, 10).unwrap();
+    reader.close();
+    let index = page.fields.iter().position(|f| f.name == field).unwrap();
+    page.records
+        .into_iter()
+        .map(|record| record.values[index].clone().unwrap_or_default())
+        .collect()
+}
+
+/// `field` auto-enters `formula`, replacing an existing value, and record
+/// 2 holds `value` in it.
+fn replacing(
+    root: &mut om_hbam::OwnedNode,
+    (field, name): (u64, &str),
+    formula: &str,
+    value: &str,
+) {
+    use fixture::{OCCURRENCE, TABLE};
+    use om_hbam::slot::uint_segment;
+    fixture::add_field(root, TABLE, field, name, 1, 1, 0, 0x88, 0);
+    fixture::add_formula(
+        root,
+        &fixture::names(),
+        (TABLE, OCCURRENCE),
+        field,
+        5,
+        formula,
+    );
+    root.put(
+        &[&uint_segment(TABLE), &[5], &[2], &uint_segment(field)],
+        om_scripts::text_node(&[], value),
+    );
+}
+
+/// A duplicate enters a replacing `Get ( RecordNumber )` as its own place,
+/// after the records of the unsorted found set, as FileMaker Server's
+/// engine does (script oracle s46-record-number-ae: the copy of the first
+/// of nine stores 10), not record 2's copied number.
+#[test]
+fn a_duplicate_enters_its_own_record_number() {
+    let hosted = host_with("duplicate-number", |root| {
+        replacing(root, (21, "Number"), "Get ( RecordNumber )", "2");
+    });
+    let mut app = open(&hosted);
+    let before = stored_names(&hosted);
+    common::open_menu(&mut app, "Records");
+    common::click(&mut app, "Duplicate Record");
+    common::wait_until(&mut app, "the duplicate", |app| {
+        app.state().is_settled() && common::record_number(app) == (before.len() + 1).to_string()
+    });
+    common::save_record(&mut app);
+    saved(&mut app);
+    assert!(app.state().error().is_none(), "{:?}", app.state().error());
+    let numbers = stored_values(&hosted, "Number");
+    assert_eq!(numbers[1..], ["2", "3"], "{numbers:?}");
+}
+
+/// In a transaction that skips auto-entry, a duplicate takes the record's
+/// values: it enters none of its own, and its Token is record 2's, not
+/// empty [I: FileMaker's duplicate there is unmeasured; OpenMaker keeps
+/// what it did before #473].
+#[test]
+fn a_duplicate_in_a_transaction_skipping_auto_entry_keeps_the_values() {
+    let hosted = host_with("duplicate-skip-entry", |root| {
+        replacing(root, (20, "Token"), "Get ( UUID )", "record 2's");
+        let mut open = ScriptStep::new(205);
+        open.set_flag(om_scripts::flag::SELECT_ALL, true);
+        let script = fixture::script(
+            2,
+            "Duplicate skipping entry",
+            vec![
+                fixture::go_to_record(2),
+                open,
+                ScriptStep::new(8),
+                ScriptStep::new(206),
+            ],
+        );
+        let node = script.encode();
+        let id = node.segment.clone();
+        root.put(&[&[17], &[5], &id], node);
+    });
+    let mut app = open(&hosted);
+    let before = stored_names(&hosted);
+    common::open_menu(&mut app, "Scripts");
+    common::click(&mut app, "Duplicate skipping entry");
+    common::wait_until(&mut app, "the committed duplicate", |app| {
+        app.state().is_settled()
+            && !app.state().script_running()
+            && stored_names(&hosted).len() == before.len() + 1
+    });
+    assert!(app.state().error().is_none(), "{:?}", app.state().error());
+    let tokens = stored_values(&hosted, "Token");
+    assert_eq!(tokens[1..], ["record 2's", "record 2's"], "{tokens:?}");
 }

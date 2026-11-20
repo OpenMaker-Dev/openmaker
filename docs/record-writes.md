@@ -107,13 +107,19 @@ OpenMaker does the same with the window's record session
   the container references the copy takes are the session's: kept by its
   commit, released by its revert. It copies no auto-entered value: a
   field that auto-enters a variable (a creation timestamp, an account
-  name), a serial number, a constant, the last visited record's value or
-  a calculation that replaces an existing value gets the copy's own, as
-  FileMaker's does (auto-entry.md, "Serial numbers"; script oracle
-  s44-record-number-ae for a replacing calculation,
+  name), a serial number, a constant or a calculation that replaces an
+  existing value gets the copy's own, as FileMaker's does (auto-entry.md,
+  "Serial numbers"; script oracle s46-record-number-ae for a replacing
+  calculation,
   [#473](https://github.com/OpenMaker-Dev/openmaker/issues/473)). A
-  lookup's value and a calculation that does not replace one are copied.
-  The variable, constant and last-visited cases follow Claris's
+  replacing `Get ( RecordNumber )` is the copy's place after the records
+  of an unsorted found set, as s46 measured; in a sorted found set the
+  copy has none and its save is refused (3). A lookup's value and a
+  calculation that does not replace one are copied. In a transaction that
+  skips auto-entry the copy takes every stored value of the record and
+  enters none [I]. A table with a field that enters the last visited
+  record's value (`0x10`) is refused for these writes, as an unsupported
+  field option. The variable and constant cases follow Claris's
   documentation and are unmeasured.
 - **On a layout of a related file's table** the related file holds the
   record as one of the session's parts, as it holds a portal row of its
