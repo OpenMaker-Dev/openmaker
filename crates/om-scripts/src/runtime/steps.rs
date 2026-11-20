@@ -1759,7 +1759,8 @@ impl Runtime {
             .params
             .iter()
             .any(|p| p.kind == crate::ParamKind::Target);
-        match host.other_step(&call) {
+        let file = self.script_file(host);
+        match host.other_step_with(&call, self.step_variables(file)) {
             Ok(Some(value)) if has_target => {
                 let select_all = step.has_flag(flag::SELECT_ALL);
                 self.write_target(host, step, value, Write::Result { select_all })

@@ -203,12 +203,16 @@ pub(crate) struct WorkerHost<'a> {
     /// The file whose script step runs with full access, while `elevated`.
     elevated_file: Option<FileId>,
     /// Evaluation of a report row does not navigate the user's window.
-    report_record: Option<(u64, usize, usize)>,
+    pub(super) report_record: Option<(u64, usize, usize)>,
     /// One report session snapshot reaches nested field/summary hosts.
     report_session: Option<SessionInfo>,
     /// The UUID of the layout object whose calculation a report evaluates
     /// (`LayoutObjectUUID`, calc-functions.md 6.3 O5).
     pub(super) report_object: Option<String>,
+    /// Copies of the running script's `$` and `$$` variables while this
+    /// host performs a step itself ([`Self::lend`]): the rows of the report
+    /// it prints read them (#596).
+    lent: Option<(Variables, Variables)>,
 }
 
 impl<'a> WorkerHost<'a> {
@@ -232,7 +236,27 @@ impl<'a> WorkerHost<'a> {
             report_record: None,
             report_session: None,
             report_object: None,
+            lent: None,
         }
+    }
+
+    /// Run `step` with copies of the running script's variables, which the
+    /// rows of a report it prints read and set (`CalcHost::variables`),
+    /// and give the script what they hold after it. The script's own are
+    /// left as they were until then, so a step that unwinds (a panic the
+    /// worker recovers from) loses no variable.
+    pub(super) fn lend<R>(
+        &mut self,
+        variables: om_data::runtime::StepVariables<'_>,
+        step: impl FnOnce(&mut Self) -> R,
+    ) -> R {
+        let copies = (variables.locals.clone(), variables.globals.clone());
+        let outer = self.lent.replace(copies);
+        let result = step(self);
+        if let Some((locals, globals)) = std::mem::replace(&mut self.lent, outer) {
+            (*variables.locals, *variables.globals) = (locals, globals);
+        }
+        result
     }
 
     /// The open file window `window` belongs to.
@@ -3685,8 +3709,17 @@ impl CalcHost for WorkerHost<'_> {
         })
     }
 
-    fn variables(&mut self, _scope: VarScope) -> &mut Variables {
-        &mut self.s.file.variables
+    /// The script's variables ([`Self::lend`]) while a report row is
+    /// evaluated (`report_record`). Everything else the step evaluates, a
+    /// Browse portal filter in Print's checks before the report say, keeps
+    /// the host's own scratch store, as before.
+    fn variables(&mut self, scope: VarScope) -> &mut Variables {
+        let reporting = self.report_record.is_some();
+        match (&mut self.lent, scope) {
+            (Some((locals, _)), VarScope::Local) if reporting => locals,
+            (Some((_, globals)), VarScope::Global) if reporting => globals,
+            _ => &mut self.s.file.variables,
+        }
     }
 
     fn call(
@@ -3765,14 +3798,13 @@ impl CalcHost for WorkerHost<'_> {
             } else {
                 file
             };
-            return om_data::host::sql::execute(
-                file,
-                &info,
-                Vars::Shared(&mut self.s.file.variables),
-                0,
-                variant,
-                args,
-            );
+            // A report row's query reads the script's variables, as the
+            // row's other calculations do (`variables`).
+            let vars = match (&mut self.lent, self.report_record.is_some()) {
+                (Some((locals, globals)), true) => Vars::Scoped { locals, globals },
+                _ => Vars::Shared(&mut self.s.file.variables),
+            };
+            return om_data::host::sql::execute(file, &info, vars, 0, variant, args);
         }
         match self.call(function, args, context) {
             Ok(v) => (v, None),
@@ -3799,6 +3831,24 @@ impl ScriptHost for WorkerHost<'_> {
             }
             _ => Err(HostError::Unsupported),
         }
+    }
+
+    fn other_step_with(
+        &mut self,
+        call: &StepCall<'_>,
+        variables: om_data::runtime::StepVariables<'_>,
+    ) -> HostResult<Option<Value>> {
+        self.lend(variables, |host| host.other_step(call))
+    }
+
+    /// Print held for a trigger prints here, with the script's variables
+    /// as they are when the trigger lets it.
+    fn trigger_action_with(
+        &mut self,
+        action: &TriggerAction,
+        variables: om_data::runtime::StepVariables<'_>,
+    ) -> HostResult {
+        self.lend(variables, |host| host.trigger_action(action))
     }
     fn active_script_files(&mut self, files: &[FileId]) {
         self.s.active_files.clear();

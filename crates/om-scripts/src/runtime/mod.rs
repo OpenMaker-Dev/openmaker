@@ -51,8 +51,8 @@ pub use host::{
     InsertFile, InsertKind, InsertTarget, LayoutTarget, Mode, Navigation, Network, NewWindow,
     OnTimer, PauseEnd, Platform, RecordList, RecordMove, Records, RelatedRecords, Replacement,
     ScriptAccess, ScriptHost, ServerCallbackCall, ServerScriptCall, ServerScriptResult, StepArg,
-    StepCall, TransactionOptions, TransferCall, UrlRequest, UrlResponse, Visibility, WindowId,
-    WindowOptions, WindowStyle, WindowTarget, Windows,
+    StepCall, StepVariables, TransactionOptions, TransferCall, UrlRequest, UrlResponse, Visibility,
+    WindowId, WindowOptions, WindowStyle, WindowTarget, Windows,
 };
 pub use memory::{MemoryLayout, MemoryScriptHost, MemoryWindow, SessionFunction};
 pub use om_hbam::OwnedNode;
@@ -897,14 +897,40 @@ impl Runtime {
         host: &mut dyn ScriptHost,
         trigger: &Trigger,
     ) -> HostResult {
+        let file = self.script_file(host);
         match trigger.action {
-            Some(action) => host.trigger_action(&TriggerAction {
-                event: trigger.event,
-                action,
-                proceed: true,
-            }),
+            Some(action) => host.trigger_action_with(
+                &TriggerAction {
+                    event: trigger.event,
+                    action,
+                    proceed: true,
+                },
+                self.step_variables(file),
+            ),
             None => Ok(()),
         }
+    }
+
+    /// The file of the running script, whose `$$` variables its steps use.
+    fn script_file(&self, host: &mut dyn ScriptHost) -> FileId {
+        self.stack
+            .last()
+            .map_or_else(|| host.current_file(), |f| f.file)
+    }
+
+    /// The running script's variables, as its steps' calculations read
+    /// them ([`Self::calc`]): its `$` variables (level 0's without a
+    /// script) and the `$$` variables of `file`, its file
+    /// ([`Self::script_file`]), for the host to lend to what
+    /// it evaluates in a step it performs ([`ScriptHost::other_step_with`],
+    /// [`ScriptHost::trigger_action_with`]).
+    pub(crate) fn step_variables(&mut self, file: FileId) -> StepVariables<'_> {
+        let locals = match self.script_frame_index().map(|i| &mut self.stack[i].kind) {
+            Some(FrameKind::Script { vars, .. }) => vars,
+            _ => &mut self.level0,
+        };
+        let globals = self.globals.entry(file).or_default();
+        StepVariables { locals, globals }
     }
 
     /// Finish a step that returned [`HostError::Pending`] with its outcome
@@ -1056,7 +1082,8 @@ impl Runtime {
     /// 1.7, 13.17).
     fn do_trigger_actions(&mut self, host: &mut dyn ScriptHost) {
         for pending in std::mem::take(&mut self.trigger_actions) {
-            let outcome = host.trigger_action(&pending.action);
+            let file = self.script_file(host);
+            let outcome = host.trigger_action_with(&pending.action, self.step_variables(file));
             let Some(step) = pending.retry.filter(|_| pending.action.proceed) else {
                 continue;
             };
