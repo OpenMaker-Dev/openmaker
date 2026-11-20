@@ -33,6 +33,16 @@ impl ExportValue {
         }
     }
 
+    /// A computed `?`, such as a summary a group's values cannot give (a
+    /// standard deviation of one value). FileMaker Server writes it as
+    /// nothing in tab-separated text, an unquoted empty field in
+    /// comma-separated text, a `COL` without `DATA` in FMPXMLRESULT, `?` in
+    /// HTML and a text cell `?` in Excel (oracle x05, summary fields;
+    /// inferred for calculations and the other formats).
+    pub fn is_invalid(&self) -> bool {
+        matches!(self, ExportValue::Computed(v) if v.is_invalid())
+    }
+
     /// The text tab-separated, merge, HTML and XML files carry.
     pub fn text(&self) -> String {
         match self {
@@ -192,6 +202,9 @@ impl ExportValue {
     pub fn typed(&self, ty: FieldType, locale: &Locale) -> Option<Typed> {
         if self.is_empty() {
             return None;
+        }
+        if self.is_invalid() {
+            return Some(Typed::Text("?".into()));
         }
         let text = self.text();
         Some(match ty {

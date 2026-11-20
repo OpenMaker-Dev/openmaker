@@ -1901,7 +1901,9 @@ generated for x05, differs in:
 - `GetSummary ( s ; s )` and the grand row of restarting running summaries
   and subtotaled fractions ([#191](https://github.com/OpenMaker-Dev/openmaker/issues/191));
 - a subtotaled fraction of an empty value that starts its group ([#192](https://github.com/OpenMaker-Dev/openmaker/issues/192));
-- invalid summaries, error 15 and no file ([#193](https://github.com/OpenMaker-Dev/openmaker/issues/193));
+- invalid summaries, error 15 and no file ([#193](https://github.com/OpenMaker-Dev/openmaker/issues/193);
+  OpenMaker now writes them in the forms above, checked by unit tests,
+  without a rerun of x05);
 - group-by fields the found set is not sorted by ([#194](https://github.com/OpenMaker-Dev/openmaker/issues/194));
 - summaries by a break field without groups, sorted by other fields
   ([#195](https://github.com/OpenMaker-Dev/openmaker/issues/195));

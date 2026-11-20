@@ -3710,6 +3710,14 @@ impl CalcHost for WorkerHost<'_> {
                     om_data::host::layout_objects::owner_info_not_found(),
                 ));
             }
+            // The window's found set, in its order (calc-functions.md
+            // 5.8.1).
+            if name.eq_ignore_ascii_case("GetRecordIDsFromFoundSet") {
+                let limit = self.limits().text;
+                return self
+                    .file(|f| f.record_ids_from_found_set(args, context, limit))
+                    .unwrap_or(Err(CalcError::TABLE_MISSING));
+            }
         }
         default_call(function)
     }

@@ -163,6 +163,7 @@ fn run(
         opcode::SIMPLE_FIND => simple_find(program, indexes, instruction),
         opcode::PROJECTION => projection(program, indexes, instruction),
         opcode::JOIN_PROJECTION => join_projection(program, indexes, instruction),
+        opcode::LOOKUP => lookup_value(program, indexes, instruction),
         opcode::SORT_LIST => crate::sort::sort_list(program, indexes, instruction),
         opcode::CREATE_VALUE_LIST_EX => create_value_list(program, indexes, instruction),
         opcode::EXISTS_IN_INDEX => exists_in_index(program, indexes, instruction),
@@ -1099,7 +1100,12 @@ impl Predicate {
         if index.is_empty() {
             return Ok(Vec::new());
         }
-        let all = 0..index.len();
+        // An empty value relates to nothing, an inequality and `≠` included
+        // (file-metadata.md 4): the empty value's entry `01`, the lowest key
+        // an index can hold, is left out of every range.
+        let first = usize::from(index.key(0) == EMPTY_TEXT_KEY);
+        let all = first..index.len();
+        let above_empty = Bound::Excluded(EMPTY_TEXT_KEY);
         let unbounded = Bound::Unbounded;
         Ok(match self.kind {
             pred::EQ => {
@@ -1114,16 +1120,127 @@ impl Predicate {
             // Every key differs from one of two different source keys.
             pred::NE if least != greatest => vec![all],
             pred::NE => match index.find(least, work)? {
-                Some(at) => vec![0..at, at + 1..index.len()],
+                Some(at) => vec![first..at, at + 1..index.len()],
                 None => vec![all],
             },
-            pred::LT => vec![index.range((unbounded, Bound::Excluded(greatest)), work)?],
-            pred::LE => vec![index.range((unbounded, Bound::Included(greatest)), work)?],
+            pred::LT => vec![index.range((above_empty, Bound::Excluded(greatest)), work)?],
+            pred::LE => vec![index.range((above_empty, Bound::Included(greatest)), work)?],
             pred::GT => vec![index.range((Bound::Excluded(least), unbounded), work)?],
             pred::GE => vec![index.range((Bound::Included(least), unbounded), work)?],
             other => return Err(QueryError::Unsupported("join predicate", other)),
         })
     }
+}
+
+/// LookupValue (op 17, spec 8.6): the record a lookup copies from when no
+/// related record matches exactly, its "next lower" or "next higher" value.
+/// The predicates are taken in order, each as JoinProjection takes it, the
+/// records of each ANDed with those of the earlier ones. While some records
+/// satisfy every predicate so far, the next one is taken; if records satisfy
+/// them all, an exact match names no record (`[dest, 00] = 01 00`). At the
+/// first predicate that leaves none, the source row's key for that
+/// predicate (its last) is looked for in the value index of its target
+/// field: from the largest key below it (lower) or the smallest above it
+/// (higher), the first entry holding a record that satisfied every earlier
+/// predicate gives its lowest record. None, or a row without a key there,
+/// is error 401.
+fn lookup_value(
+    program: &mut Program,
+    indexes: &mut Indexes<'_>,
+    instruction: &Instruction,
+) -> Result<(), QueryError> {
+    let table = instruction.table()?;
+    let src = instruction.required_spot(leaf::SRC)?;
+    let dest = instruction.required_spot(leaf::DEST)?;
+    let preds = instruction.required_spot(leaf::DEL_LIST)?;
+    let higher = instruction.leaf(leaf::LOOKUP_HIGHER) == Some(&[0x01, 0x01][..]);
+    // The inputs are read before the destination is cleared: a program may
+    // name one spot for both.
+    let predicates: Vec<Vec<u8>> = program
+        .spot(&preds)?
+        .map(|spot| {
+            spot.children
+                .iter()
+                .map(|p| p.value.clone().unwrap_or_default())
+                .collect()
+        })
+        .unwrap_or_default();
+    // FileMaker Pro sends the current record's one row.
+    let row = program
+        .spot(&src)?
+        .and_then(|spot| spot.children.first().cloned())
+        .unwrap_or_default();
+    program.set_spot(&dest, Vec::new())?;
+    if !indexes.table_exists(&table)? {
+        return Err(QueryError::Missing("table"));
+    }
+    let work = program.work();
+    let mut so_far: Option<RidList> = None;
+    // Each predicate is read when it is reached: once the walk begins the
+    // later ones are not consulted (8.6).
+    for bytes in &predicates {
+        let predicate = &Predicate::parse(bytes)?;
+        let keys = source_keys(&row, &predicate.b);
+        // The row's keys are read again for each predicate.
+        work.spend(Size {
+            nodes: keys.len(),
+            bytes: keys.iter().map(|k| k.len()).sum(),
+        })?;
+        let matches = if predicate.kind == pred::CARTESIAN {
+            let all = indexes.all_records(&table)?;
+            read_list(work, all)?;
+            all.clone()
+        } else {
+            let index = indexes.index(work, &table, &predicate.a, VALUE_INDEX)?;
+            let ranges = predicate.related(index, &keys, work)?;
+            records_at(index, ranges, work)?
+        };
+        let both = match &so_far {
+            Some(earlier) => earlier.and(&matches),
+            None => matches,
+        };
+        if !both.is_empty() {
+            so_far = Some(both);
+            continue;
+        }
+        let Some(&key) = keys.last() else {
+            return Err(QueryError::NoRecords);
+        };
+        if predicate.kind == pred::CARTESIAN {
+            return Err(QueryError::NoRecords);
+        }
+        let index = indexes.index(work, &table, &predicate.a, VALUE_INDEX)?;
+        let positions: Box<dyn Iterator<Item = usize>> = if higher {
+            let above = index.range((Bound::Excluded(key), Bound::Unbounded), work)?;
+            Box::new(above)
+        } else {
+            let below = index.range((Bound::Unbounded, Bound::Excluded(key)), work)?;
+            Box::new(below.rev())
+        };
+        for at in positions {
+            let records = index.records(at, work)?;
+            let candidates = match &so_far {
+                Some(earlier) => records.and(earlier),
+                None => records,
+            };
+            let lowest = candidates.iter().next();
+            if let Some(id) = lowest {
+                return program.set_spot(&dest, vec![lookup_reply(id)]);
+            }
+        }
+        return Err(QueryError::NoRecords);
+    }
+    // Every predicate is satisfied: an exact match, which names no record.
+    program.set_spot(&dest, vec![lookup_reply(0)])
+}
+
+/// LookupValue's reply leaf `00`: the record id as a one-segment key,
+/// `[u8 len][serial key]` (`01 02` for record 2).
+fn lookup_reply(id: u64) -> OwnedNode {
+    let serial = serial::encode(id);
+    let mut value = vec![serial.len() as u8];
+    value.extend(serial);
+    OwnedNode::leaf(vec![0x00], value)
 }
 
 /// The keys a source row gives for its field `field`.
@@ -1837,14 +1954,15 @@ mod tests {
                 &[(pred::EQ, 1)],
                 &[1, 4],
             ),
-            (&[&[shared][..]], &[(pred::LT, 1)], &[1, 6]),
-            (&[&[shared][..]], &[(pred::LE, 1)], &[1, 2, 3, 6]),
+            // Record 6 holds the empty value `01`: only `=` relates it.
+            (&[&[shared][..]], &[(pred::LT, 1)], &[1]),
+            (&[&[shared][..]], &[(pred::LE, 1)], &[1, 2, 3]),
             (&[&[shared][..]], &[(pred::GT, 1)], &[4, 5]),
             (&[&[shared][..]], &[(pred::GE, 1)], &[2, 3, 4, 5]),
             (
                 &[&[&[0x01, 0x10][..], &[0x01, 0x10, 0x30]][..]],
                 &[(pred::LT, 1)],
-                &[1, 2, 3, 6],
+                &[1, 2, 3],
             ),
             (
                 &[&[&[0x01, 0x10][..], &[0x01, 0x10, 0x30]][..]],
@@ -1854,20 +1972,16 @@ mod tests {
             (&[&[&[0x00][..]][..]], &[(pred::LT, 1)], &[]),
             (&[&[&[0x00][..]][..]], &[(pred::GT, 1)], &[1, 2, 3, 4, 5, 6]),
             (&[&[&[0x02][..]][..]], &[(pred::GE, 1)], &[]),
-            (
-                &[&[&[0x01, 0x10][..]][..]],
-                &[(pred::NE, 1)],
-                &[2, 3, 4, 5, 6],
-            ),
+            (&[&[&[0x01, 0x10][..]][..]], &[(pred::NE, 1)], &[2, 3, 4, 5]),
             (
                 &[&[&[0x01, 0x10][..], &[0x01, 0x20]][..]],
                 &[(pred::NE, 1)],
-                &[1, 2, 3, 4, 5, 6],
+                &[1, 2, 3, 4, 5],
             ),
             (
                 &[&[&[0x01, 0x05][..]][..]],
                 &[(pred::NE, 1)],
-                &[1, 2, 3, 4, 5, 6],
+                &[1, 2, 3, 4, 5],
             ),
             (&[&[shared][..]], &[(pred::EQ, 1), (pred::GE, 1)], &[2, 3]),
             (&[&[shared][..]], &[(pred::EQ, 1), (pred::GT, 1)], &[]),
@@ -2011,6 +2125,124 @@ mod tests {
 
     /// #306: instructions find keys in an index by binary search; each
     /// answers at the edges of the index as the scans it replaced did.
+    /// LookupValue against live1's tables (spec 8.6): PK (field 1 here)
+    /// keyed 10 < 3 < 1 < 2 < 12 < 13, all below "A"; Company (field 2)
+    /// empty but in record 1, whose key is above "A".
+    #[test]
+    fn lookups_find_the_next_lower_or_higher_record_as_filemaker_server_does() {
+        let pk = |n: u8| vec![0x01, 0x12, 0x05 + n];
+        let order = [10u64, 3, 1, 2, 12, 13];
+        let entries = order
+            .iter()
+            .enumerate()
+            .map(|(i, &id)| entry(&pk(i as u8), &[id]))
+            .collect();
+        let mut source = Indexed::new(13, entries);
+        let company_one = om_collate::text_key("Test Co");
+        source.root.put(
+            &[&[0x80, 0x01], &[1], &[2], &[0]],
+            OwnedNode::list(
+                Vec::new(),
+                vec![
+                    entry(&[0x01], &[2, 3, 10, 12, 13]),
+                    entry(&company_one, &[1]),
+                ],
+            ),
+        );
+        let a = om_collate::text_key("A");
+        let record_one = pk(2);
+        // Source rows: field 9 the PK key, field 5 the Company key.
+        let lookup_of = |pk_key: Option<&[u8]>, company: Option<&[u8]>, higher: bool| {
+            let mut fields = Vec::new();
+            let mut predicates = vec![vec![pred::EQ, 2, 1, 1, 2, 1, 9]];
+            for (field, key) in [(9u8, pk_key), (5, company)] {
+                if let Some(key) = key {
+                    fields.push(OwnedNode::list(vec![field], uploaded(&[key])));
+                }
+            }
+            if company.is_some() {
+                predicates.push(vec![pred::EQ, 2, 1, 2, 2, 1, 5]);
+            }
+            if pk_key.is_none() && company.is_some() {
+                predicates.remove(0);
+            }
+            fields.sort_by(|x, y| x.segment.cmp(&y.segment));
+            let rows = vec![OwnedNode::list(serial::encode(1), fields)];
+            let mut leaves = vec![
+                OwnedNode::leaf(vec![leaf::SRC], vec![1, 2, 1, 1]),
+                OwnedNode::leaf(vec![leaf::DEL_LIST], vec![1, 2, 1, 2]),
+            ];
+            if higher {
+                leaves.push(OwnedNode::leaf(vec![leaf::LOOKUP_HIGHER], vec![0x01, 0x01]));
+            }
+            let program = lookup(opcode::LOOKUP, leaves, [rows, numbered(predicates)]);
+            result(&source, &program, Budget::DEFAULT).map(|dest| {
+                dest.child(&[0x00])
+                    .and_then(|leaf| leaf.value.clone())
+                    .unwrap_or_default()
+            })
+        };
+        let record = |id: u8| Some(vec![0x01, id]);
+        // lk_pk_lower_A, lk_pk_higher_A, lk_pk_higher_low, lk_pk_lower_low,
+        // lk_pk_exact_higher.
+        assert_eq!(lookup_of(Some(&a), None, false).ok(), record(13));
+        assert!(matches!(
+            lookup_of(Some(&a), None, true),
+            Err(QueryError::NoRecords)
+        ));
+        assert_eq!(lookup_of(Some(&[0x01, 0x11]), None, true).ok(), record(10));
+        assert!(matches!(
+            lookup_of(Some(&[0x01, 0x11]), None, false),
+            Err(QueryError::NoRecords)
+        ));
+        assert_eq!(lookup_of(Some(&record_one), None, true).ok(), record(0));
+        // lk_company_lower_A: the empty key's lowest record.
+        assert_eq!(lookup_of(None, Some(&a), false).ok(), record(2));
+        // lk_two_lower, lk_two_higher: PK = record 1's key and Company = "A".
+        assert!(matches!(
+            lookup_of(Some(&record_one), Some(&a), false),
+            Err(QueryError::NoRecords)
+        ));
+        assert_eq!(lookup_of(Some(&record_one), Some(&a), true).ok(), record(1));
+        // lk_nokey: a source row without a key.
+        let nokey = {
+            let rows = vec![OwnedNode::list(serial::encode(1), Vec::new())];
+            let leaves = vec![
+                OwnedNode::leaf(vec![leaf::SRC], vec![1, 2, 1, 1]),
+                OwnedNode::leaf(vec![leaf::DEL_LIST], vec![1, 2, 1, 2]),
+                OwnedNode::leaf(vec![leaf::LOOKUP_HIGHER], vec![0x01, 0x01]),
+            ];
+            let predicates = numbered(vec![vec![pred::EQ, 2, 1, 1, 2, 1, 9]]);
+            result(
+                &source,
+                &lookup(opcode::LOOKUP, leaves, [rows, predicates]),
+                Budget::DEFAULT,
+            )
+        };
+        assert!(matches!(nokey, Err(QueryError::NoRecords)));
+        // The walk starts at the first predicate that leaves no record; a
+        // later one is not read, even malformed.
+        let later_malformed = {
+            let fields = vec![OwnedNode::list(vec![9], uploaded(&[&a]))];
+            let rows = vec![OwnedNode::list(serial::encode(1), fields)];
+            let leaves = vec![
+                OwnedNode::leaf(vec![leaf::SRC], vec![1, 2, 1, 1]),
+                OwnedNode::leaf(vec![leaf::DEL_LIST], vec![1, 2, 1, 2]),
+            ];
+            let predicates = numbered(vec![vec![pred::EQ, 2, 1, 1, 2, 1, 9], vec![pred::EQ, 9]]);
+            result(
+                &source,
+                &lookup(opcode::LOOKUP, leaves, [rows, predicates]),
+                Budget::DEFAULT,
+            )
+            .map(|dest| dest.child(&[0x00]).and_then(|l| l.value.clone()))
+            .ok()
+            .flatten()
+        };
+        assert_eq!(later_malformed, record(13));
+        assert_eq!(QueryError::NoRecords.code(), 401);
+    }
+
     /// Projection in a form the field's index does not hold keys the
     /// stored values, every repetition (spec 9.1, 7.2: `équipe`'s keys in
     /// catalogs/index-key-vectors.tsv): the padded form's secondary weights

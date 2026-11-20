@@ -7,8 +7,8 @@
 //! - a return in a value is written as a vertical tab (0x0B);
 //! - tab: a tab in a value is a space; values are not quoted;
 //! - comma: every value is quoted, quotes doubled, tabs kept; a number
-//!   field writes its number; a related field without a related record is
-//!   empty without quotes;
+//!   field writes its number; a related field without a related record and
+//!   a `?` value ([`ExportValue::is_invalid`]) are empty without quotes;
 //! - merge: comma-separated values with number fields as stored, after a
 //!   header row of the field names (no occurrence; `S by Company` for a
 //!   summary grouped by a break field), comma-separated and unquoted;
@@ -24,6 +24,9 @@ const GS: char = '\u{1d}';
 const VT: char = '\u{0b}';
 
 fn tab_text(v: &ExportValue) -> String {
+    if v.is_invalid() {
+        return String::new();
+    }
     v.text()
         .chars()
         .map(|c| match c {
@@ -75,12 +78,18 @@ fn quoted_rows(table: &Table, numbers: bool, text: &mut String) {
             }
             match cell {
                 Some(Cell::Absent) => {}
+                // A `?` alone is an unquoted empty field (oracle x05).
+                Some(Cell::Values(values))
+                    if !values.is_empty() && values.iter().all(ExportValue::is_invalid) => {}
                 None => text.push_str("\"\""),
                 Some(Cell::Values(values)) => {
                     text.push('"');
                     for (r, v) in values.iter().enumerate() {
                         if r > 0 {
                             text.push(GS);
+                        }
+                        if v.is_invalid() {
+                            continue;
                         }
                         if numbers && column.info.ty == FieldType::Number {
                             quoted_text(&v.number_text(), text);
