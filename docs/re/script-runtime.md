@@ -3684,8 +3684,15 @@ Globals (2026-10-29; Claris "Global fields")
   offers separate field objects for repetitions 2 through 255 under the
   same type, account and modification guards as the first repetition.
   Global repetitions remain session values; ordinary repetitions join the
-  record's other changes in one write. Native Browse repetition and global
-  entry parity remains unmeasured.
+  record's other changes in one write. A script's Set Field into a later
+  repetition of the current record shows in its field object at once,
+  before the commit, as a first repetition's does (the window's
+  uncommitted cells under the user's own typing there); one replacing the
+  user's typing (an OnObjectSave setting the field again) shows the
+  script's value. Entered again, the field object opens with the script's
+  value, and the user's edit replaces it, also one erased back to the
+  stored value. Native Browse repetition and global entry parity remains
+  unmeasured.
 - Claris documents that a global's validation runs on field exit, rather
   than record commit
   ([field validation](https://help.claris.com/en/pro-help/content/field-validation.html)).
@@ -3929,9 +3936,10 @@ Steps
   re-reads the window's records afterwards.
 - Insert from Index shows the View Index dialog with the field's
   value-index values (CreateValueListEx, in index order; "Show individual
-  words" is not offered); Paste inserts the value at the end of the field
-  (the insertion point) or replaces the contents with "Select entire
-  contents"; Cancel is 1.
+  words" is not offered); Paste inserts the value at the insertion point
+  of the field entered (replacing its selection; at the end of a field not
+  entered) or replaces the contents with "Select entire contents"; Cancel
+  is 1.
 - Set Next Serial Value sends op72 with `kReplace` for the field of the
   step's occurrence's table, any table (write-path.md 3.2); the host stores
   the text, also for a field without an auto-entered serial (unconfirmed).
