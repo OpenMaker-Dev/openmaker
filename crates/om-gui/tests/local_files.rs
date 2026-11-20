@@ -1499,19 +1499,23 @@ fn relookup_file(folder: &Folder, scripts: &[om_scripts::Script], styled: bool) 
         );
     }
     if styled {
-        let name = [
-            tasks.clone(),
-            vec![5],
-            serial::encode(2),
-            uint_segment(fixture::NAME),
-        ];
-        let at = |key: u8| -> Vec<&[u8]> {
-            let mut path: Vec<&[u8]> = name.iter().map(Vec::as_slice).collect();
-            path.push(if key == 1 { &[1] } else { &[0xff] });
-            path
-        };
-        root.put(&at(1), om_scripts::text_node(&[], "Ship"));
-        root.put(&at(0xff), OwnedNode::list(Vec::new(), Vec::new()));
+        // A chunked value beside a style subtree `ff`, in place of the
+        // plain value (calc-values.md, implementation notes).
+        root.put(
+            &[
+                &tasks,
+                &[5],
+                &serial::encode(2),
+                &uint_segment(fixture::NAME),
+            ],
+            OwnedNode::list(
+                Vec::new(),
+                vec![
+                    om_scripts::text_node(&[1], "Ship"),
+                    OwnedNode::list(vec![0xff], Vec::new()),
+                ],
+            ),
+        );
     }
     let ids: RidList = (1..=2).collect();
     root.put(&[&notes, &[0x0d]], ids.to_node(Vec::new()));
