@@ -35,6 +35,7 @@ mod exec;
 pub mod find;
 mod index;
 pub mod keys;
+mod matching;
 pub mod program;
 mod sort;
 mod source;

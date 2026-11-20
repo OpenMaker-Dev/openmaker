@@ -423,7 +423,9 @@ pub struct ObjectGeom {
     /// Bounds in layout coordinates (points). Absolute: a contained object's
     /// bounds are already offset by its containers'.
     pub rect: GeomRect,
-    /// For a field object, the name of the field it shows, when known.
+    /// For a field object, the name of the field it shows, when known: the
+    /// bare name for a field of the layout's own occurrence, and
+    /// `Occurrence::Field` for one another occurrence shows.
     pub field_name: Option<String>,
     /// The object's key in the layout's object store (0 when it is not a
     /// stored object).
