@@ -1306,6 +1306,34 @@ pub fn part_lists_extended(base: &OwnedNode, member: &OwnedNode, objects: &[u64]
     appended == expected && objects.iter().all(|key| after.contains(key))
 }
 
+/// Whether `member` holds the tab order [`plan`] writes when it places
+/// `placement`'s field on `base` as object `field_object`: `base`'s order
+/// `[4, 5, L, 15]` with every stored entry and gap as it was, the edit
+/// box's object reference after the greatest stored position, and that
+/// position in the edit box's attribute `07` (layout-model.md 10.5,
+/// [#316](https://github.com/OpenMaker-Dev/openmaker/issues/316)).
+pub fn tab_order_as_planned(
+    base: &OwnedNode,
+    member: &OwnedNode,
+    placement: &Placement,
+    field_object: u64,
+) -> bool {
+    let position = |m: &OwnedNode| {
+        m.at(&[
+            &[ATTRIBUTES],
+            &serial::encode(field_object),
+            &[TAB_POSITION],
+        ])
+        .cloned()
+    };
+    plan(base, placement).is_ok_and(|planned| {
+        planned.field_object == field_object
+            && planned.member.child(&[TAB_ORDER]) == member.child(&[TAB_ORDER])
+            && position(&planned.member).is_some()
+            && position(&planned.member) == position(member)
+    })
+}
+
 fn next_object_key(key: u64) -> Result<u64, Refusal> {
     key.checked_add(1).ok_or_else(|| {
         Refusal::Unsupported(
@@ -2961,6 +2989,15 @@ mod tests {
             Some(&existing_entry)
         );
         assert_eq!(tab.child(&[0, 4]).unwrap().value, entry.unwrap().value);
+        // What `place_field` checks on the read-back: a member that lost a
+        // stored entry or the edit box's position is not the plan's.
+        assert!(tab_order_as_planned(&before, &planned.member, &wanted, 4));
+        let mut dropped = planned.member.clone();
+        dropped.remove(&[&[TAB_ORDER], &[0, 3]]);
+        assert!(!tab_order_as_planned(&before, &dropped, &wanted, 4));
+        let mut unpositioned = planned.member.clone();
+        unpositioned.remove(&[&[ATTRIBUTES], &[4], &[TAB_POSITION]]);
+        assert!(!tab_order_as_planned(&before, &unpositioned, &wanted, 4));
         assert!(indexes(&planned.member, 4) && !indexes(&planned.member, 5));
         let last = planned.member.at(&[&[ATTRIBUTES], &[LAST_KEY]]);
         assert_eq!(last.and_then(|n| n.value.clone()), Some(vec![1, 5]));
