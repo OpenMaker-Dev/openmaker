@@ -1441,7 +1441,8 @@ impl NativeProvider {
             .with_fonts(&self.calc.fonts)
             .with_calculation_session(session_info.clone())
             .with_session_globals(globals)
-            .with_external(&self.external);
+            .with_external(&self.external)
+            .with_related_limit(RELATED_SORT_IDS);
         source.prefetch_records(table, records);
         let file = FileCalc::new(&schema, &source, today).with_session(&session_info);
         let cx = Ctx::new(&schema.locale, today);
@@ -1468,20 +1469,9 @@ impl NativeProvider {
                         break 'records;
                     }
                 }
-                // The related records the source holds, every relationship
-                // a calculation followed included: past OpenMaker's limit
-                // the sort fails rather than hold them all.
-                if source.related_held() > RELATED_SORT_IDS {
-                    return Err(DataError::with_code(
-                        code::UNSUPPORTED,
-                        format!(
-                            "Sorting by {:?} reads more than {RELATED_SORT_IDS} related \
-                             records, OpenMaker's limit for one sort. The records were not \
-                             sorted.",
-                            sort.name
-                        ),
-                    ));
-                }
+                // Past OpenMaker's limit on the related records the source
+                // holds (`with_related_limit`), the read fails as it asks
+                // for the set that would pass it, and so does the sort.
             }
             values.push(row);
         }
@@ -1523,8 +1513,8 @@ struct RelatedSort {
 
 /// The related record ids a related sort's source may hold, from every
 /// relationship its reads follow, calculations' included (8 bytes each, 64
-/// MiB): OpenMaker's limit, as a client find's duplicates have one
-/// ([`CLIENT_FIND_BUDGET`]).
+/// MiB; [`NativeSource::with_related_limit`]): OpenMaker's limit, as a
+/// client find's duplicates have one ([`CLIENT_FIND_BUDGET`]).
 const RELATED_SORT_IDS: usize = 8 << 20;
 
 /// `value` as text the desktop's sort reads back as the same value
@@ -1538,7 +1528,7 @@ fn sort_text(value: &om_data::calc::Value, cx: &Ctx) -> String {
     match value {
         Value::Number(n) | Value::NumberText(n, _) => plain_number(&n.to_text_with('.')),
         Value::Time(t) => clock(t.micros()),
-        Value::Date(d) => date_text(*d, cx.locale.date_order),
+        Value::Date(d) | Value::DateText(d, _) => date_text(*d, cx.locale.date_order),
         Value::Timestamp(t) => format!(
             "{} {}",
             date_text(t.date(), cx.locale.date_order),

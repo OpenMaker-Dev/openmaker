@@ -383,6 +383,8 @@ pub(crate) struct NativeSource<'a> {
     related: RefCell<RelatedCache>,
     /// The record ids `related` holds from this source's own reads.
     related_held: std::cell::Cell<usize>,
+    /// The most `related` may hold ([`Self::with_related_limit`]).
+    related_limit: usize,
     lookups: RefCell<HashMap<LookupKey, Option<Arc<[u64]>>>>,
     /// The session's own global values, over the stored ones.
     session_globals: SessionGlobals,
@@ -445,6 +447,7 @@ impl<'a> NativeSource<'a> {
             globals: RefCell::default(),
             related: RefCell::default(),
             related_held: std::cell::Cell::new(0),
+            related_limit: usize::MAX,
             lookups: RefCell::default(),
             session_globals: SessionGlobals::new(),
             library: None,
@@ -464,13 +467,6 @@ impl<'a> NativeSource<'a> {
 
     /// What the calculations asked for that the schema did not hold
     /// (`layouts`, `occurrences`), taken.
-    /// The related record ids this source holds from its own reads, every
-    /// relationship a calculation followed included: what a long reader
-    /// (a related sort) bounds.
-    pub(crate) fn related_held(&self) -> usize {
-        self.related_held.get()
-    }
-
     pub(crate) fn take_needs(&self) -> SchemaNeeds {
         SchemaNeeds {
             layouts: std::mem::take(&mut self.layouts.borrow_mut()),
@@ -551,6 +547,16 @@ impl<'a> NativeSource<'a> {
     }
 
     /// Read imported tables on their related files' connections.
+    /// Hold at most `limit` related record ids (`related`): a related set
+    /// that would pass it fails the read that asked for it, with error 3
+    /// as this source's failure, instead of being kept. For a long reader
+    /// over many records, whose reads would otherwise keep every related
+    /// set they followed (a related sort).
+    pub(crate) fn with_related_limit(mut self, limit: usize) -> Self {
+        self.related_limit = limit;
+        self
+    }
+
     pub fn with_external(mut self, external: &'a crate::external::ExternalFiles) -> Self {
         self.external = Some(external);
         self
@@ -942,8 +948,18 @@ impl CalcSource for NativeSource<'_> {
             om_data::host::related_by_scan(self, schema, from, record, to, cx)?
         };
         if self.reusable_related(from, to) {
-            self.related_held
-                .set(self.related_held.get().saturating_add(ids.len()));
+            let held = self.related_held.get().saturating_add(ids.len());
+            if held > self.related_limit {
+                return Err(self.fail(DataError::with_code(
+                    om_data::rules::error::UNAVAILABLE,
+                    format!(
+                        "The related records read are more than {}, OpenMaker's limit for this \
+                         operation.",
+                        self.related_limit
+                    ),
+                )));
+            }
+            self.related_held.set(held);
             self.related.borrow_mut().insert(key, Arc::clone(&ids));
         }
         Ok(ids)
