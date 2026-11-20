@@ -892,9 +892,14 @@ fn serve(
     // before it (each file's read waits for up to its first message).
     let mut host_messages_read = std::time::Instant::now();
     loop {
-        let wait = scripts
+        let mut wait = scripts
             .next_wake(&files)
             .map_or(CONNECTION_POLL, |wait| wait.min(CONNECTION_POLL));
+        // The next read of the hosts' calls is due a second after the last,
+        // not a second after the last request.
+        if ctx.is_some() {
+            wait = wait.min(CONNECTION_POLL.saturating_sub(host_messages_read.elapsed()));
+        }
         let job = match jobs.recv_timeout(wait) {
             Ok(job) => Some(job),
             Err(RecvTimeoutError::Timeout) => None,
