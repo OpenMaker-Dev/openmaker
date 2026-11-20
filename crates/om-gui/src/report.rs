@@ -2679,7 +2679,25 @@ fn on_page(object: &LayoutObject, page: usize) -> std::borrow::Cow<'_, LayoutObj
             number(text);
         }
     } else if let Some(text) = object.text.as_mut() {
-        *text = numbered_label(text, page);
+        // The label the runs spell (each merged field as `<<name>>`) is
+        // numbered as they are, run by run; one they do not spell is
+        // numbered by whole symbols outside placeholders.
+        let spelled = |numbered_runs: bool| {
+            (object.text_runs.iter())
+                .map(|run| match run {
+                    TextRun::Literal(literal) if numbered_runs => {
+                        numbered(literal, page).unwrap_or_else(|| literal.clone())
+                    }
+                    TextRun::Literal(literal) => literal.clone(),
+                    TextRun::MergeField(name) => format!("<<{name}>>"),
+                })
+                .collect::<String>()
+        };
+        *text = if spelled(false) == *text {
+            spelled(true)
+        } else {
+            numbered_label(text, page)
+        };
     }
     for run in &mut object.text_runs {
         if let TextRun::Literal(literal) = run {

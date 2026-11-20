@@ -3967,6 +3967,18 @@ fn page_number_symbols_print_each_pages_number() {
         MergeField("Name {{PageNumber}}".into()),
         Literal(" / Page {{PageNumber}}".into()),
     ];
+    // Literal text that looks like a placeholder is numbered as text.
+    let mut angled = label(
+        7,
+        "<<Page {{PageNumber}}>> / <<Name>>",
+        rect(12.0, 110.0, 400.0, 20.0),
+        12.0,
+        false,
+    );
+    angled.text_runs = vec![
+        Literal("<<Page {{PageNumber}}>> / ".into()),
+        MergeField("Name".into()),
+    ];
     let layout = Layout {
         def: Some(LayoutDef {
             base_width: 540.0,
@@ -3986,7 +3998,7 @@ fn page_number_symbols_print_each_pages_number() {
             },
         ],
         objects: ObjectStore {
-            root: vec![1, 2, 3, 4, 5, 6],
+            root: vec![1, 2, 3, 4, 5, 6, 7],
             objects: vec![
                 label(1, "Body", rect(12.0, 10.0, 200.0, 20.0), 12.0, false),
                 label(
@@ -4000,6 +4012,7 @@ fn page_number_symbols_print_each_pages_number() {
                 label(4, "Draft {{", rect(12.0, 35.0, 200.0, 20.0), 12.0, false),
                 noted,
                 named,
+                angled,
             ],
             ..Default::default()
         },
@@ -4057,6 +4070,7 @@ fn page_number_symbols_print_each_pages_number() {
         for label in [
             format!("Note {{{{ <<Name>> / Page {number}"),
             format!("<<Name {{{{PageNumber}}}}>> / Page {number}"),
+            format!("<<Page {number}>> / <<Name>>"),
         ] {
             let found = text_origins(&labels, 2, &label);
             assert_eq!(
