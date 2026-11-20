@@ -440,13 +440,14 @@ fn text_keys_are_filemakers_vectors() {
 }
 
 /// The word-index keys of every value of `word-break-vectors.tsv` (query-
-/// program.md 7.2, "Word breaking"; #300), in each probed language whose
-/// key form OpenMaker builds: System (1) and Unicode standard (3), padded;
-/// English (21); and the languages FileMaker leaves untailored, whose value
-/// keys are English's. Each language's words follow its own joiners
-/// (`om_collate::WordBreaks::of_language`). A language's row is listed only
-/// where its keys differ from English's (System's, from Unicode
-/// standard's).
+/// program.md 7.2, "Word breaking"; #300), each language's words following
+/// the joiners it was probed to use (`om_collate::WordBreaks::of_language`,
+/// the no-break space part of a word): System (1) and Unicode standard (3),
+/// padded; English (21); the languages FileMaker leaves untailored, whose
+/// value keys are English's; and Catalan, Polish, Swedish and Arabic, the
+/// other exceptions to the table, whose keys of these ASCII values are
+/// English's too. A language's row is listed only where its keys differ
+/// from English's (System's, from Unicode standard's).
 #[test]
 fn word_breaks_are_filemakers_in_each_language() {
     let rows = vector_rows(include_str!(
@@ -461,9 +462,14 @@ fn word_breaks_are_filemakers_in_each_language() {
     let untailored = [
         20, 24, 26, 27, 30, 34, 36, 47, 53, 55, 59, 60, 61, 62, 63, 64, 65, 67,
     ];
+    let exceptions = [16, 33, 41, 42, 49];
     let mut mismatches = Vec::new();
     let mut checked = 0;
-    for language in [1u32, 3, 21].into_iter().chain(untailored) {
+    for language in [1u32, 3, 21]
+        .into_iter()
+        .chain(untailored)
+        .chain(exceptions)
+    {
         let breaks = om_collate::WordBreaks::of_language(language).unwrap();
         let form = match language {
             1 | 3 => TextKeys::CollatedPadded,
@@ -485,7 +491,7 @@ fn word_breaks_are_filemakers_in_each_language() {
         }
     }
     assert!(mismatches.is_empty(), "{mismatches:#?}");
-    assert_eq!(checked, 139 * 21);
+    assert_eq!(checked, 139 * 26);
 }
 
 /// The word-index keys of every English and Unicode standard text row of

@@ -1305,13 +1305,19 @@ under `01`, so a find for `=` on it misses those records.
 Word-index keys break words as FileMaker's English, System and Unicode
 standard indexes do (query-program.md 7.2, "Word breaking"): within a
 script, across `.` and apostrophes between letters and `-`, `.`, `,`, `:`,
-`/` between digits, with the no-break space part of a word.
-`om_collate::WordBreaks` also holds the joiners of every other language
-FileMaker Server's engine was probed in, which differ in `.`, `:` and `/`
-between digits and in the apostrophe and `·` between letters. They are
+`/` between digits. FileMaker keeps a no-break space in its word. OpenMaker
+still separates there (`WordBreaks::ENGLISH`), because an index an
+earlier OpenMaker build wrote holds such words apart, and a changed
+record's old entries are found by the rules in force
+([#448](https://github.com/OpenMaker-Dev/openmaker/issues/448)).
+`om_collate::WordBreaks::of_language` holds the joiners each language was
+probed to use, the no-break space included. They differ in `.`, `:` and
+`/` between digits and in the apostrophe and `·` between letters. They are
 tested against the probe's word keys, but no key is written with them yet,
 since those languages' text is refused
-([#300](https://github.com/OpenMaker-Dev/openmaker/issues/300)). Unicode raw's own word breaks are not built
+([#300](https://github.com/OpenMaker-Dev/openmaker/issues/300)). Where the probe did not reach, such as a no-break space
+beside kanji or alone, the rules are OpenMaker's reading. Unicode raw's
+own word breaks are not built
 ([#395](https://github.com/OpenMaker-Dev/openmaker/issues/395)).
 
 For a text field indexed in any other language they write no key, rather
