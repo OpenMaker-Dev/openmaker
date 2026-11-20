@@ -1035,6 +1035,10 @@ impl DocumentState {
                         | Action::DiscardEntryCandidates
                 ) {
                     cancellation.push(action);
+                } else if matches!(action, Action::Step(om_data::scripts::relookup::STEP_ID, _)) {
+                    // Relookup acts on the field entered when it was
+                    // chosen, and the record had something to commit: not
+                    // held for later, when the focus may have moved.
                 } else {
                     retained.push(action);
                 }
