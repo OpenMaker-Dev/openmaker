@@ -106,7 +106,7 @@ fn opening_a_file_reports_the_hosts_block_new_users_refusal() {
     host.handle.set_block_new_users(true);
     let mut client = provider(&host.ca_pem);
     let result = client.open(&connection(host.port, "Alpha.fmp12", PASSWORD));
-    let error = result.err().expect("the host refused the file");
+    let error = result.expect_err("the host refused the file");
     assert_eq!(error.code, Some(1638));
     assert_eq!(
         error.message,
