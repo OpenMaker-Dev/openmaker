@@ -44,11 +44,12 @@ cleanup() {
                 unlock_installation
                 exit "$status"
             }
-            rm -f -- "$plist_path"
+            rm -f -- "$plist_path" || true
         fi
-        rm -f -- "$plist_path.new"
+        rm -f -- "$plist_path.new" || true
         if [[ -n $staged_release ]]; then
-            remove_release "$staged_release"
+            remove_release "$staged_release" ||
+                echo "OpenMaker Server: could not remove $staged_release." >&2
         fi
     fi
     unlock_installation

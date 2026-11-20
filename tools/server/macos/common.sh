@@ -233,37 +233,53 @@ ds_create() {
 
 # A free id for both a user and a group, below 500 (macOS's hidden range
 # for service accounts).
+# Set `free` to an id below 500 (macOS's hidden range for service
+# accounts) that no user and no group has, in any directory searched.
+# Called in the script's own shell, so that a failed search stops it.
 free_id() {
-    local id taken
+    local id taken user_holders
     taken=$( (ds_values Users UniqueID; ds_values Groups PrimaryGroupID) | sort -n | uniq)
     for ((id = 300; id < 500; id++)); do
-        if ! grep -qx -- "$id" <<<"$taken" && [[ -z $(id_holders Users UniqueID "$id") &&
-            -z $(id_holders Groups PrimaryGroupID "$id") ]]; then
-            echo "$id"
+        grep -qx -- "$id" <<<"$taken" && continue
+        id_holders Users UniqueID "$id"
+        user_holders=$holders
+        id_holders Groups PrimaryGroupID "$id"
+        if [[ -z $user_holders && -z $holders ]]; then
+            free=$id
             return 0
         fi
     done
     fail 'No free id below 500 for the service account.'
 }
 
-# The names of `kind` records with `key` `id` in every directory this Mac
-# searches (local and network: LDAP, Active Directory), one per line.
+# Set `holders` to the names of the `kind` records with `key` `id` in every
+# directory this Mac searches (local and network: LDAP, Active Directory),
+# one line per record, records of the same name kept apart. Called in the
+# script's own shell: a failed search stops the script.
 id_holders() {
-    local kind=$1 key=$2 id=$3 file
+    local kind=$1 key=$2 id=$3 file found
+    holders=
     if [[ -n $prefix ]]; then
         for file in "$ds_root/$kind"/*/"$key"; do
             [[ -f $file ]] || continue
             if [[ $(cat -- "$file") == "$id" ]]; then
-                basename -- "$(dirname -- "$file")"
+                holders+="$(basename -- "$(dirname -- "$file")")"$'\n'
             fi
         done
+        holders=${holders%$'\n'}
         return 0
     fi
-    local found
     found=$(dscl /Search -search "/$kind" "$key" "$id") ||
         fail "Cannot search the directory for $kind with $key $id."
-    # Each match starts a line `name<tab><tab>key = (`, its values below.
-    awk -v key="$key" '$2 == key && $3 == "=" { print $1 }' <<<"$found" | sort -u
+    holders=$(search_headers "$key" <<<"$found") ||
+        fail "Cannot read the directory's answer for $kind with $key $id."
+}
+
+# The record names in `dscl /Search -search` output on stdin for `key`: each
+# match starts a line `<name><tab><tab><key> = (`, its values on the lines
+# below. A name may hold spaces; records of the same name stay apart.
+search_headers() {
+    awk -F '\t\t' -v header="$1 = (" 'NF == 2 && $2 == header { print $1 }'
 }
 
 # Make the group and the user when they are missing, and check them when
@@ -275,7 +291,8 @@ ensure_accounts() {
         gid=$(ds_read Groups "$service_group" PrimaryGroupID)
         [[ $gid =~ ^[0-9]+$ ]] || fail "The existing $service_group group has no group id."
     else
-        gid=$(free_id)
+        free_id
+        gid=$free
         ds_create Groups "$service_group"
         ds_create Groups "$service_group" PrimaryGroupID "$gid"
         ds_create Groups "$service_group" RealName 'OpenMaker Server operators'
@@ -283,8 +300,10 @@ ensure_accounts() {
     fi
     if ! ds_exists Users "$service_user"; then
         uid=$gid
-        if grep -qx -- "$uid" <<<"$(ds_values Users UniqueID)"; then
-            uid=$(free_id)
+        id_holders Users UniqueID "$uid"
+        if grep -qx -- "$uid" <<<"$(ds_values Users UniqueID)" || [[ -n $holders ]]; then
+            free_id
+            uid=$free
         fi
         ds_create Users "$service_user"
         ds_create Users "$service_user" UniqueID "$uid"
@@ -303,35 +322,43 @@ ensure_accounts() {
         fail "The existing $service_user account must be a non-root, non-login user whose group is $service_group."
     # Its ids its own, in every directory searched: another record with
     # them would share its files.
-    [[ $(id_holders Users UniqueID "$uid") == "$service_user" &&
-        $(id_holders Groups PrimaryGroupID "$gid") == "$service_group" ]] ||
+    local users groups
+    id_holders Users UniqueID "$uid"
+    users=$holders
+    id_holders Groups PrimaryGroupID "$gid"
+    groups=$holders
+    [[ $users == "$service_user" && $groups == "$service_group" ]] ||
         fail "Another user or group has $service_user's or $service_group's id."
     # No way to sign in: no password and no other authentication.
     [[ $(ds_read Users "$service_user" Password) == '*' ]] &&
         ! ds_has Users "$service_user" AuthenticationAuthority ||
         fail "The existing $service_user account has a password or another way to sign in."
     local privileged
-    privileged=$(service_groups | grep -Ex 'admin|wheel|staff|operator|_developer|_lpadmin|com\.apple\.access_(ssh|screensharing|remote_ae)' || true)
+    service_groups
+    privileged=$(grep -Ex 'admin|wheel|staff|operator|_developer|_lpadmin|com\.apple\.access_(ssh|screensharing|remote_ae)' <<<"$member_of" || true)
     [[ -z $privileged ]] ||
         fail "The existing $service_user account is in privileged groups: $(tr '\n' ' ' <<<"$privileged")"
 }
 
-# The groups the service account is in, by name, one per line.
+# Set `member_of` to the groups the service account is in, by name, one
+# per line. Called in the script's own shell: a failed lookup stops it.
 service_groups() {
+    member_of=
     if [[ -n $prefix ]]; then
         local file
         for file in "$ds_root"/Groups/*/GroupMembership; do
             [[ -f $file ]] || continue
             if grep -qx -- "$service_user" "$file"; then
-                basename -- "$(dirname -- "$file")"
+                member_of+="$(basename -- "$(dirname -- "$file")")"$'\n'
             fi
         done
+        member_of=${member_of%$'\n'}
         return 0
     fi
     local names
     names=$(id -Gn "$service_user") || fail "Cannot read $service_user's groups."
     [[ -n $names ]] || fail "Cannot read $service_user's groups."
-    tr ' ' '\n' <<<"$names"
+    member_of=$(tr ' ' '\n' <<<"$names")
 }
 
 # --- The service's folders.

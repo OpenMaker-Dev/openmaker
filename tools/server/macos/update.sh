@@ -44,20 +44,24 @@ cleanup() {
                 fail "Could not roll back. The previous job is saved in $scratch/$label.plist."
             fi
             if "$was_loaded" && ! { start_job && wait_listening; }; then
-                rm -f -- "$plist_path.new"
-                [[ -z $staged_release ]] || remove_release "$staged_release"
-                rm -rf -- "$scratch"
+                rm -f -- "$plist_path.new" || true
+                if [[ -n $staged_release ]]; then
+                    remove_release "$staged_release" ||
+                        echo "OpenMaker Server: could not remove $staged_release." >&2
+                fi
+                rm -rf -- "$scratch" || true
                 unlock_installation
                 startup_error
             fi
             echo 'Restored the previous OpenMaker Server release.' >&2
         fi
-        rm -f -- "$plist_path.new"
+        rm -f -- "$plist_path.new" || true
         if [[ -n $staged_release ]]; then
-            remove_release "$staged_release"
+            remove_release "$staged_release" ||
+                echo "OpenMaker Server: could not remove $staged_release." >&2
         fi
     fi
-    rm -rf -- "$scratch"
+    rm -rf -- "$scratch" || true
     unlock_installation
     exit "$status"
 }
