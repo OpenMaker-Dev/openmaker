@@ -2,79 +2,101 @@
 //!
 //! A hosted file is found by its path. Each read, save, backup copy and
 //! reopen opens the file's folder by that path again and does its work
-//! through that one handle, by the file's name (`openat`, `renameat` and
-//! their kin), after a check of what the path leads to now:
-//! - a save or a backup copy checks that the name still leads to the file
-//!   the server last read or wrote there (its device and inode; the store
-//!   keeps them, `Store::save`);
+//! through that one handle, by the file's name, never following a link at
+//! the name (`openat` with `O_NOFOLLOW`, `renameat` and their kin), after a
+//! check of what the path leads to now:
+//! - a save or a backup copy checks that the name is the file the server
+//!   read or last saved there (its device and inode; the store keeps them,
+//!   `Store::save`), and takes the file's permissions from that same look;
 //! - a reopen, which may find a file the administrator replaced, checks
 //!   that the folder is the one the file was first hosted from.
 //!
 //! Someone who may write in a folder above the file, and swaps a folder of
-//! the path for a link to other content or to an empty folder, cannot send
-//! the file's saves, backups or reopens there
+//! the path for a link to other content, to an empty folder, or to a folder
+//! whose entry links back to the file, cannot send the file's saves,
+//! backups or reopens there
 //! ([#468](https://github.com/OpenMaker-Dev/openmaker/issues/468)): they
 //! fail, and a save's changes wait in memory. A folder the administrator
-//! moved, with the path made to lead to it again, still holds the same file:
-//! saves and backups follow it, a reopen does not. Nothing is held open
-//! between uses, and nothing about the file's own name changes: a link
-//! there is followed to read the file and replaced by a save, as before.
+//! moved, with the path made to lead to it again, still holds the same
+//! file: saves and backups follow it, a reopen does not. Nothing is held
+//! open between uses.
+//!
+//! A path whose last part is a link (a file named on the command line may
+//! be one) is resolved once, when the file is hosted: the file is then
+//! worked on where the link led, and the link is left as it is.
 //!
 //! On Linux the folder is opened for searching only (`O_PATH`), so a
-//! folder the server may search but not list still works. Elsewhere it is
-//! opened for reading; where that is not allowed, and on Windows, which has
-//! no folder handles here, the work goes by path again after the check.
+//! folder the server may search but not list works. Elsewhere on Unix it
+//! is opened for reading, and a folder the server may not read cannot hold
+//! a hosted file. Windows, which has no folder handles or inode identities
+//! here, goes by the path.
 
 use std::ffi::OsStr;
 use std::fs::File;
 use std::io;
 use std::path::{Path, PathBuf};
 
-/// A hosted file: the path it was given and, on Unix, the identity of the
-/// folder that path ended in when the file was hosted.
+/// A file's device and inode.
+pub type FileId = (u64, u64);
+
+/// A hosted file: the path it was given, the path it is worked on by (the
+/// same, unless its last part was a link when it was hosted), and on Unix
+/// the identity of the folder that path ended in then.
 #[derive(Clone, Debug)]
 pub struct FileAt {
     path: PathBuf,
+    place: PathBuf,
     #[cfg(unix)]
     folder: FileId,
 }
 
 impl FileAt {
-    /// Note the folder `path` ends in, as the path resolves now.
+    /// Note where `path` leads now: a link as its last part is resolved
+    /// once, here, and the folder the file is in is noted.
     pub fn open(path: &Path) -> io::Result<FileAt> {
-        if path.file_name().is_none() {
-            return Err(io::Error::new(
-                io::ErrorKind::InvalidInput,
-                format!("{} names no file", path.display()),
-            ));
-        }
+        let named = |p: &Path| {
+            p.file_name().is_some().then_some(()).ok_or_else(|| {
+                io::Error::new(
+                    io::ErrorKind::InvalidInput,
+                    format!("{} names no file", path.display()),
+                )
+            })
+        };
+        named(path)?;
+        let place = match std::fs::symlink_metadata(path) {
+            Ok(m) if m.file_type().is_symlink() => std::fs::canonicalize(path)?,
+            _ => path.to_path_buf(),
+        };
+        named(&place)?;
         #[cfg(unix)]
         {
             use std::os::unix::fs::MetadataExt;
-            let folder = std::fs::metadata(folder_of(path))?;
+            let folder = std::fs::metadata(folder_of(&place))?;
             Ok(FileAt {
                 path: path.to_path_buf(),
+                place,
                 folder: (folder.dev(), folder.ino()),
             })
         }
         #[cfg(not(unix))]
         Ok(FileAt {
             path: path.to_path_buf(),
+            place,
         })
     }
 
-    /// The path the file was given by.
+    /// The path the file was given by, for messages.
     pub fn path(&self) -> &Path {
         &self.path
     }
 
     /// The file's name in its folder.
     pub fn name(&self) -> &OsStr {
-        self.path.file_name().expect("checked by FileAt::open")
+        self.place.file_name().expect("checked by FileAt::open")
     }
 
     /// The file's folder, opened by the path again, for a save or a backup
-    /// copy: the caller checks the file in it ([`Folder::identity`]).
+    /// copy: the caller checks the file in it ([`Folder::entry`]).
     pub fn folder_now(&self) -> io::Result<Folder> {
         self.open_folder(false)
     }
@@ -86,7 +108,7 @@ impl FileAt {
     }
 
     fn open_folder(&self, checked: bool) -> io::Result<Folder> {
-        let dir = folder_of(&self.path).to_path_buf();
+        let dir = folder_of(&self.place).to_path_buf();
         #[cfg(unix)]
         {
             use rustix::fs::{Mode, OFlags};
@@ -94,29 +116,16 @@ impl FileAt {
             let flags = OFlags::PATH | OFlags::DIRECTORY | OFlags::CLOEXEC;
             #[cfg(not(target_os = "linux"))]
             let flags = OFlags::RDONLY | OFlags::DIRECTORY | OFlags::CLOEXEC;
-            let (fd, found) = match rustix::fs::open(&dir, flags, Mode::empty()) {
-                Ok(fd) => {
-                    let stat = rustix::fs::fstat(&fd)?;
-                    (Some(fd), identity(&stat))
-                }
-                // Not to be listed (outside Linux): checked by path, used
-                // by path.
-                Err(rustix::io::Errno::ACCESS) => {
-                    use std::os::unix::fs::MetadataExt;
-                    let folder = std::fs::metadata(&dir)?;
-                    (None, (folder.dev(), folder.ino()))
-                }
-                Err(e) => return Err(e.into()),
-            };
-            if checked && found != self.folder {
+            let fd = rustix::fs::open(&dir, flags, Mode::empty())?;
+            if checked && identity(&rustix::fs::fstat(&fd)?) != self.folder {
                 return Err(io::Error::other(format!(
                     "{} is no longer the folder {} was hosted from (it was replaced or \
-                     moved); the file is not read or written there",
+                     moved); the file is not read there",
                     dir.display(),
                     self.name().to_string_lossy()
                 )));
             }
-            Ok(Folder { dir, fd })
+            Ok(Folder { fd })
         }
         #[cfg(not(unix))]
         {
@@ -126,41 +135,42 @@ impl FileAt {
     }
 }
 
-/// A hosted file's folder, opened and checked by [`FileAt::folder`].
+/// What a folder's entry is, from one look that does not follow a link.
+pub struct Entry {
+    /// Its device and inode (`None` on Windows).
+    pub id: Option<FileId>,
+    /// Whether it is a regular file (not a link, folder or other).
+    pub regular: bool,
+    pub permissions: std::fs::Permissions,
+}
+
+/// A hosted file's folder, opened by [`FileAt::folder`] or
+/// [`FileAt::folder_now`].
 pub struct Folder {
+    #[cfg(not(unix))]
     dir: PathBuf,
     #[cfg(unix)]
-    fd: Option<rustix::fd::OwnedFd>,
+    fd: rustix::fd::OwnedFd,
 }
 
 impl Folder {
-    /// Open entry `name` for reading (a link at the name followed), refused
-    /// unless it is a regular file, and without blocking (a FIFO named as a
+    /// Open entry `name` for reading, never through a link, refused unless
+    /// it is a regular file, and without blocking (a FIFO named as a
     /// database would hold the caller): so that a file swapped in after a
     /// check cannot be read instead.
     pub fn open_regular(&self, name: &OsStr) -> io::Result<File> {
-        let file = match self.handle() {
-            #[cfg(unix)]
-            Some(fd) => {
-                use rustix::fs::{Mode, OFlags};
-                File::from(rustix::fs::openat(
-                    fd,
-                    name,
-                    OFlags::RDONLY | OFlags::NONBLOCK | OFlags::CLOEXEC,
-                    Mode::empty(),
-                )?)
-            }
-            _ => {
-                let mut options = std::fs::OpenOptions::new();
-                options.read(true);
-                #[cfg(unix)]
-                {
-                    use std::os::unix::fs::OpenOptionsExt;
-                    options.custom_flags(rustix::fs::OFlags::NONBLOCK.bits() as i32);
-                }
-                options.open(self.dir.join(name))?
-            }
+        #[cfg(unix)]
+        let file = {
+            use rustix::fs::{Mode, OFlags};
+            File::from(rustix::fs::openat(
+                &self.fd,
+                name,
+                OFlags::RDONLY | OFlags::NONBLOCK | OFlags::NOFOLLOW | OFlags::CLOEXEC,
+                Mode::empty(),
+            )?)
         };
+        #[cfg(not(unix))]
+        let file = File::open(self.dir.join(name))?;
         if !file.metadata()?.is_file() {
             return Err(io::Error::new(
                 io::ErrorKind::InvalidInput,
@@ -175,63 +185,58 @@ impl Folder {
     /// the umask on Unix.
     pub fn create_new(&self, name: &OsStr, owner_only: bool) -> io::Result<File> {
         #[cfg(unix)]
-        let mode = {
-            use rustix::fs::Mode;
+        {
+            use rustix::fs::{Mode, OFlags};
             let owner = Mode::RUSR | Mode::WUSR;
-            if owner_only {
+            let mode = if owner_only {
                 owner
             } else {
                 owner | Mode::RGRP | Mode::WGRP | Mode::ROTH | Mode::WOTH
-            }
-        };
-        match self.handle() {
-            #[cfg(unix)]
-            Some(fd) => {
-                use rustix::fs::OFlags;
-                Ok(File::from(rustix::fs::openat(
-                    fd,
-                    name,
-                    OFlags::WRONLY
-                        | OFlags::CREATE
-                        | OFlags::EXCL
-                        | OFlags::NOFOLLOW
-                        | OFlags::CLOEXEC,
-                    mode,
-                )?))
-            }
-            _ => {
-                let mut options = std::fs::OpenOptions::new();
-                options.write(true).create_new(true);
-                #[cfg(unix)]
-                {
-                    use std::os::unix::fs::OpenOptionsExt;
-                    options.mode(mode_bits(mode));
-                }
-                #[cfg(not(unix))]
-                let _ = owner_only;
-                options.open(self.dir.join(name))
-            }
+            };
+            Ok(File::from(rustix::fs::openat(
+                &self.fd,
+                name,
+                OFlags::WRONLY | OFlags::CREATE | OFlags::EXCL | OFlags::NOFOLLOW | OFlags::CLOEXEC,
+                mode,
+            )?))
+        }
+        #[cfg(not(unix))]
+        {
+            let _ = owner_only;
+            std::fs::OpenOptions::new()
+                .write(true)
+                .create_new(true)
+                .open(self.dir.join(name))
         }
     }
 
-    /// The permissions of the file at entry `name` (a link there followed);
-    /// `None` when there is no such file.
-    pub fn permissions(&self, name: &OsStr) -> io::Result<Option<std::fs::Permissions>> {
-        let found = match self.handle() {
-            #[cfg(unix)]
-            Some(fd) => {
-                use std::os::unix::fs::PermissionsExt;
-                rustix::fs::statat(fd, name, rustix::fs::AtFlags::empty())
-                    .map(|stat| {
-                        let mode = rustix::fs::Mode::from_raw_mode(stat.st_mode);
-                        std::fs::Permissions::from_mode(mode_bits(mode))
-                    })
-                    .map_err(io::Error::from)
+    /// Entry `name` as one look sees it, a link not followed; `None` when
+    /// there is no such entry.
+    pub fn entry(&self, name: &OsStr) -> io::Result<Option<Entry>> {
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
+            match rustix::fs::statat(&self.fd, name, rustix::fs::AtFlags::SYMLINK_NOFOLLOW) {
+                Ok(stat) => {
+                    let mode = rustix::fs::Mode::from_raw_mode(stat.st_mode);
+                    Ok(Some(Entry {
+                        id: Some(identity(&stat)),
+                        regular: rustix::fs::FileType::from_raw_mode(stat.st_mode)
+                            == rustix::fs::FileType::RegularFile,
+                        permissions: std::fs::Permissions::from_mode(mode_bits(mode)),
+                    }))
+                }
+                Err(rustix::io::Errno::NOENT) => Ok(None),
+                Err(e) => Err(e.into()),
             }
-            _ => std::fs::metadata(self.dir.join(name)).map(|m| m.permissions()),
-        };
-        match found {
-            Ok(permissions) => Ok(Some(permissions)),
+        }
+        #[cfg(not(unix))]
+        match std::fs::symlink_metadata(self.dir.join(name)) {
+            Ok(m) => Ok(Some(Entry {
+                id: None,
+                regular: m.is_file(),
+                permissions: m.permissions(),
+            })),
             Err(e) if e.kind() == io::ErrorKind::NotFound => Ok(None),
             Err(e) => Err(e),
         }
@@ -240,138 +245,78 @@ impl Folder {
     /// Whether the open `file` is entry `name`, the entry not followed when
     /// it is a link. Unsupported without inode identities (Windows).
     pub fn is_entry(&self, file: &File, name: &OsStr) -> io::Result<bool> {
-        #[cfg(unix)]
-        {
-            use std::os::unix::fs::MetadataExt;
-            let open = file.metadata()?;
-            let named = match self.handle() {
-                Some(fd) => identity(&rustix::fs::statat(
-                    fd,
-                    name,
-                    rustix::fs::AtFlags::SYMLINK_NOFOLLOW,
-                )?),
-                None => {
-                    let named = std::fs::symlink_metadata(self.dir.join(name))?;
-                    (named.dev(), named.ino())
-                }
-            };
-            Ok((open.dev(), open.ino()) == named)
-        }
-        #[cfg(not(unix))]
-        {
-            let _ = (file, name);
-            Err(io::ErrorKind::Unsupported.into())
-        }
-    }
-
-    /// The device and inode of the file entry `name` leads to (a link at
-    /// the name followed). Unsupported without inode identities (Windows).
-    pub fn identity(&self, name: &OsStr) -> io::Result<FileId> {
-        #[cfg(unix)]
-        {
-            use std::os::unix::fs::MetadataExt;
-            match self.handle() {
-                Some(fd) => Ok(identity(&rustix::fs::statat(
-                    fd,
-                    name,
-                    rustix::fs::AtFlags::empty(),
-                )?)),
-                None => {
-                    let found = std::fs::metadata(self.dir.join(name))?;
-                    Ok((found.dev(), found.ino()))
-                }
-            }
-        }
-        #[cfg(not(unix))]
-        {
-            let _ = name;
-            Err(io::ErrorKind::Unsupported.into())
+        match (file_identity(file)?, self.entry(name)?) {
+            (Some(open), Some(entry)) => Ok(entry.id == Some(open)),
+            (Some(_), None) => Ok(false),
+            (None, _) => Err(io::ErrorKind::Unsupported.into()),
         }
     }
 
     /// Whether entry `name` is a regular file, not followed when it is a
     /// link.
     pub fn is_regular(&self, name: &OsStr) -> bool {
-        match self.handle() {
-            #[cfg(unix)]
-            Some(fd) => rustix::fs::statat(fd, name, rustix::fs::AtFlags::SYMLINK_NOFOLLOW)
-                .is_ok_and(|stat| {
-                    rustix::fs::FileType::from_raw_mode(stat.st_mode)
-                        == rustix::fs::FileType::RegularFile
-                }),
-            _ => std::fs::symlink_metadata(self.dir.join(name)).is_ok_and(|m| m.is_file()),
-        }
+        self.entry(name).is_ok_and(|e| e.is_some_and(|e| e.regular))
     }
 
     /// Rename entry `from` over entry `to`.
     pub fn rename(&self, from: &OsStr, to: &OsStr) -> io::Result<()> {
-        match self.handle() {
-            #[cfg(unix)]
-            Some(fd) => Ok(rustix::fs::renameat(fd, from, fd, to)?),
-            _ => std::fs::rename(self.dir.join(from), self.dir.join(to)),
+        #[cfg(unix)]
+        {
+            Ok(rustix::fs::renameat(&self.fd, from, &self.fd, to)?)
         }
+        #[cfg(not(unix))]
+        std::fs::rename(self.dir.join(from), self.dir.join(to))
     }
 
     /// Remove entry `name`.
     pub fn remove(&self, name: &OsStr) -> io::Result<()> {
-        match self.handle() {
-            #[cfg(unix)]
-            Some(fd) => Ok(rustix::fs::unlinkat(
-                fd,
+        #[cfg(unix)]
+        {
+            Ok(rustix::fs::unlinkat(
+                &self.fd,
                 name,
                 rustix::fs::AtFlags::empty(),
-            )?),
-            _ => std::fs::remove_file(self.dir.join(name)),
+            )?)
         }
+        #[cfg(not(unix))]
+        std::fs::remove_file(self.dir.join(name))
     }
 
     /// Flush the folder, so that a rename in it is on disk. A folder the
     /// server may not read cannot be flushed.
     pub fn sync(&self) -> io::Result<()> {
-        match self.handle() {
-            #[cfg(unix)]
-            Some(fd) => {
-                use rustix::fs::{Mode, OFlags};
-                // A search-only handle cannot be flushed: the folder itself,
-                // opened for reading through it.
-                let dir = rustix::fs::openat(
-                    fd,
-                    ".",
-                    OFlags::RDONLY | OFlags::DIRECTORY | OFlags::CLOEXEC,
-                    Mode::empty(),
-                )?;
-                Ok(rustix::fs::fsync(&dir)?)
-            }
-            _ => File::open(&self.dir).and_then(|d| d.sync_all()),
+        #[cfg(unix)]
+        {
+            use rustix::fs::{Mode, OFlags};
+            // A search-only handle cannot be flushed: the folder itself,
+            // opened for reading through it.
+            let dir = rustix::fs::openat(
+                &self.fd,
+                ".",
+                OFlags::RDONLY | OFlags::DIRECTORY | OFlags::CLOEXEC,
+                Mode::empty(),
+            )?;
+            Ok(rustix::fs::fsync(&dir)?)
         }
-    }
-
-    #[cfg(unix)]
-    fn handle(&self) -> Option<&rustix::fd::OwnedFd> {
-        self.fd.as_ref()
-    }
-
-    #[cfg(not(unix))]
-    fn handle(&self) -> Option<&()> {
-        None
+        #[cfg(not(unix))]
+        File::open(&self.dir).and_then(|d| d.sync_all())
     }
 }
 
-/// A file's device and inode.
-pub type FileId = (u64, u64);
-
-/// The device and inode of the open `file`; `None` without inode
-/// identities (Windows).
-pub fn file_identity(file: &File) -> Option<FileId> {
+/// The device and inode of the open `file`: `None` without inode
+/// identities (Windows), an error when they cannot be read (checks fail
+/// closed).
+pub fn file_identity(file: &File) -> io::Result<Option<FileId>> {
     #[cfg(unix)]
     {
         use std::os::unix::fs::MetadataExt;
-        file.metadata().ok().map(|m| (m.dev(), m.ino()))
+        let m = file.metadata()?;
+        Ok(Some((m.dev(), m.ino())))
     }
     #[cfg(not(unix))]
     {
         let _ = file;
-        None
+        Ok(None)
     }
 }
 

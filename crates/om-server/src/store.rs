@@ -527,23 +527,32 @@ impl Store {
                 }
                 Some(lock.file().metadata()?.permissions())
             }
-            None => {
-                // The path must still lead to the file this store was read
-                // from or last saved as: a folder of the path swapped for a
-                // link to other content, or to an empty folder, is not
-                // saved into (#468).
-                if let Some(file) = self.file {
-                    if !folder.identity(name).is_ok_and(|found| found == file) {
-                        return Err(Error::other(format!(
-                            "{} no longer leads to the file this server read or last saved \
-                             there (a folder of the path, or the file, was replaced); it was \
-                             not saved",
-                            at.path().display()
-                        )));
-                    }
+            // One look at the entry, never through a link: whether it is
+            // the file this store was read from or last saved as, and its
+            // permissions. A folder of the path swapped for a link to other
+            // content, to an empty folder, or to a folder whose entry links
+            // back to the file, is not saved into (#468).
+            None => match (self.file, folder.entry(name)?) {
+                (Some(file), Some(entry)) if entry.regular && entry.id == Some(file) => {
+                    Some(entry.permissions)
                 }
-                folder.permissions(name)?
-            }
+                (Some(_), _) => {
+                    return Err(Error::other(format!(
+                        "{} no longer leads to the file this server read or last saved \
+                         there (a folder of the path, or the file, was replaced); it was \
+                         not saved",
+                        at.path().display()
+                    )))
+                }
+                (None, Some(entry)) if entry.regular => Some(entry.permissions),
+                (None, Some(_)) => {
+                    return Err(Error::other(format!(
+                        "{} is not a regular file; it was not saved over",
+                        at.path().display()
+                    )))
+                }
+                (None, None) => None,
+            },
         };
         let bytes = om_hbam::writer::rebuild(&self.root, &self.superblock)
             .map_err(|e| Error::new(ErrorKind::InvalidData, e.to_string()))?;
@@ -604,7 +613,17 @@ impl Store {
         };
         let lock = saved?;
         if self.file.is_some() {
-            self.file = crate::anchored::file_identity(&owner);
+            // Where the new file's identity cannot be read, the old one is
+            // kept: the next save then fails closed.
+            match crate::anchored::file_identity(&owner) {
+                Ok(Some(file)) => self.file = Some(file),
+                Ok(None) => {}
+                Err(e) => warn!(
+                    "{}: saved, but reading the new file's identity failed ({e}); the next \
+                     save will be refused",
+                    self.name
+                ),
+            }
         }
         if lock.is_some() {
             // The old file is gone from the path: its lock guards nothing.
@@ -3131,7 +3150,8 @@ mod tests {
     /// A hosted file is saved only where its path still leads to the file
     /// the store was read from (#468). With its folder moved away and a link
     /// to another folder in its place, the save fails, writes nowhere, and
-    /// the changes stay unsaved. With the link leading to the moved folder,
+    /// the changes stay unsaved; so it does when that folder's entry is a
+    /// link back to the file. With the link leading to the moved folder,
     /// which holds the same file, the save goes there.
     #[cfg(unix)]
     #[test]
@@ -3162,6 +3182,13 @@ mod tests {
         let unsaved = store.dirty;
         let kept = std::fs::read(moved.join("Tasks.fmp12")).ok();
         let followed = std::fs::read_dir(&elsewhere).map(|d| d.count()).ok();
+        // The other folder's entry, a link back to the file.
+        std::os::unix::fs::symlink(moved.join("Tasks.fmp12"), elsewhere.join("Tasks.fmp12"))
+            .unwrap();
+        let through_link = store.save(&at);
+        let link_kept = std::fs::symlink_metadata(elsewhere.join("Tasks.fmp12"))
+            .is_ok_and(|m| m.file_type().is_symlink());
+        let still_old = std::fs::read(moved.join("Tasks.fmp12")).ok();
         // The administrator's move: the path leads to the same file again.
         std::fs::remove_file(&databases).unwrap();
         std::os::unix::fs::symlink(&moved, &databases).unwrap();
@@ -3174,6 +3201,9 @@ mod tests {
         assert!(unsaved, "the changes wait in memory");
         assert_eq!(kept.as_deref(), Some(&b"old"[..]));
         assert_eq!(followed, Some(0), "nothing written through the link");
+        assert!(through_link.is_err(), "{through_link:?}");
+        assert!(link_kept, "the link back is not saved over");
+        assert_eq!(still_old.as_deref(), Some(&b"old"[..]));
         assert_eq!(saved.ok(), Some(true));
         assert!(written.is_some_and(|n| n > 3), "{written:?}");
     }

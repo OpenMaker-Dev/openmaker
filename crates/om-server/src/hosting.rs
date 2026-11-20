@@ -1431,6 +1431,13 @@ pub enum HostingError {
     DuplicateName {
         name: String,
     },
+    /// The file another name already hosts (a link to it, or another hard
+    /// link): two stores of one file would each save over the other's
+    /// changes.
+    SameFile {
+        name: String,
+        hosted_as: String,
+    },
     /// A file FileMaker Server would not host, and the server does not host
     /// insecure files ([`crate::ServerConfig::insecure_files`]).
     Insecure {
@@ -1447,6 +1454,9 @@ impl std::fmt::Display for HostingError {
                 write!(f, "{name}: no mInternalCreation at [2, 254]")
             }
             HostingError::DuplicateName { name } => write!(f, "{name} is hosted twice"),
+            HostingError::SameFile { name, hosted_as } => {
+                write!(f, "{name} is the file already hosted as {hosted_as}")
+            }
             HostingError::Insecure { name, why } => write!(
                 f,
                 "{name} is not password protected: {why} (hosting it needs --allow-insecure-files)"
@@ -1652,7 +1662,10 @@ impl Hosting {
                     name: hosted.name.clone(),
                     error: om_hbam::Error::from(e),
                 })
-                .and_then(|at| load_hosted(id, hosted, &at, insecure_files, events));
+                .and_then(|at| {
+                    let taken = |file: FileId| hosted_as(&hosting.slots, file, id);
+                    load_hosted(id, hosted, &at, insecure_files, events, &taken)
+                });
             match loaded {
                 Ok(loaded) => {
                     events.record(Event::file_opened(&loaded.name, loaded.read_only));
@@ -1692,6 +1705,7 @@ impl Hosting {
             &slot.at,
             self.insecure_files,
             events,
+            &|file| hosted_as(&self.slots, file, id),
         );
         let mut state = slot.state();
         match loaded {
@@ -1795,11 +1809,19 @@ fn load_hosted(
     at: &FileAt,
     insecure_files: bool,
     events: &EventLog,
+    taken: &dyn Fn(FileId) -> Option<String>,
 ) -> Result<Arc<Hosted>, HostingError> {
     let (bytes, on_disk) = read_regular_file(at).map_err(|e| HostingError::Open {
         name: hosted.name.clone(),
         error: om_hbam::Error::from(e),
     })?;
+    // Before anything is saved, recovery included.
+    if let Some(hosted_as) = on_disk.and_then(taken) {
+        return Err(HostingError::SameFile {
+            name: hosted.name.clone(),
+            hosted_as,
+        });
+    }
     let file = HbamFile::from_bytes(bytes).map_err(|error| HostingError::Open {
         name: hosted.name.clone(),
         error,
@@ -1830,10 +1852,23 @@ fn load_hosted(
 fn read_regular_file(at: &FileAt) -> std::io::Result<(Vec<u8>, Option<FileId>)> {
     use std::io::Read as _;
     let mut file = at.folder()?.open_regular(at.name())?;
-    let on_disk = crate::anchored::file_identity(&file);
+    let on_disk = crate::anchored::file_identity(&file)?;
     let mut data = Vec::new();
     file.read_to_end(&mut data)?;
     Ok((data, on_disk))
+}
+
+/// The name of the slot other than `id` among `slots` that serves the file
+/// with device and inode `file`.
+fn hosted_as(slots: &[Slot], file: FileId, id: u32) -> Option<String> {
+    slots
+        .iter()
+        .filter(|slot| slot.id != id)
+        .find(|slot| {
+            slot.served()
+                .is_some_and(|served| served.read_store().file() == Some(file))
+        })
+        .map(|slot| slot.name.clone())
 }
 
 /// Why [`Hosting::reopen`] did not open a file.
