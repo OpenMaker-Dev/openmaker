@@ -90,6 +90,49 @@ fn lists_sorted_by_their_second_field_order_the_first_fields_values_so() {
     let mut provider = open(port, &ca);
     assert_eq!(provider.value_list(5).unwrap(), ["Zebra", "Bravo"]);
     provider.close();
+    // Each distinct second value keeps its item, a first value repeating;
+    // a number of spaces alone ranks as the empty value, first; and a text
+    // second field indexed in language 0 is keyed in the file's language
+    // (query-program.md 7.2), not left without keys.
+    let cases = [
+        (
+            "vl-second-repeat",
+            [(1, "Alpha", "1"), (2, "Bravo", "2")],
+            "3",
+            fixture::COUNT,
+            ["Alpha", "Bravo", "Alpha"],
+        ),
+        (
+            "vl-second-spaces",
+            [(1, "Alpha", "2"), (2, "Bravo", " ")],
+            "3",
+            fixture::COUNT,
+            ["Bravo", "Alpha", "Alpha"],
+        ),
+        (
+            "vl-second-language-0",
+            [(1, "Zebra", "B"), (2, "Alpha", "A")],
+            "C",
+            fixture::CODE,
+            ["Alpha", "Zebra", "Alpha"],
+        ),
+    ];
+    for (tag, records, third, second, expected) in cases {
+        let row = [("Alpha".to_string(), "3".to_string(), String::new())];
+        let file = file_with(tag, &row, |root| {
+            for (id, name, value) in records {
+                put(root, fixture::NAME, id, name);
+                put(root, second, id, value);
+            }
+            put(root, second, 3, third);
+            fixture::set_field_language(root, TABLE, fixture::CODE, 0);
+            list_with_second(root, fixture::NAME, 0x2, second);
+        });
+        let (port, ca) = host_with(&file.0, None, Server::with_late_index_builds);
+        let mut provider = open(port, &ca);
+        assert_eq!(provider.value_list(5).unwrap(), expected, "{tag}");
+        provider.close();
+    }
     let file = file_with("vl-related-only", &[], |root| {
         put(root, fixture::NAME, 1, "Alpha");
         list_with_second(root, fixture::NAME, 0x1, fixture::COUNT);

@@ -728,7 +728,7 @@ impl NativeProvider {
 
     /// The file's own language (`Locale::Type`), which an index in
     /// language 0 keys text in (query-program.md 7.2).
-    fn file_language(&mut self) -> Result<u32, DataError> {
+    pub(crate) fn file_language(&mut self) -> Result<u32, DataError> {
         Ok(u32::from(self.calc_schema_cached()?.locale.language.id()))
     }
 

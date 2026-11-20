@@ -164,6 +164,33 @@ struct Keying {
 }
 
 impl Keying {
+    /// The key `value` ranks by as a list's second field (file-metadata.md
+    /// 6.4), as the field's value index holds it: text in the field's form,
+    /// a typed value as `typed_value_keys` keys it (empty `01`, no digit
+    /// `fe ff`, a timestamp stored as a date alone by its date's midnight).
+    /// Error 3 when the index holds the value under no key.
+    fn rank_key(&self, value: &str) -> Result<Vec<u8>, DataError> {
+        if self.data_type == DataType::Text {
+            return Ok(self
+                .whole_key(value)?
+                .unwrap_or_else(|| EMPTY_TEXT_KEY.to_vec()));
+        }
+        let order = match self.data_type {
+            DataType::Date | DataType::Timestamp => self
+                .order
+                .ok_or_else(|| unsupported("The file's date order could not be read."))?,
+            _ => DateOrder::MonthDayYear,
+        };
+        om_query::keys::typed_value_keys(self.data_type, value, order)
+            .into_iter()
+            .next()
+            .ok_or_else(|| {
+                unsupported(
+                    "A stored value has no established native index key; the field's values cannot be listed from it.",
+                )
+            })
+    }
+
     /// [`native_key`] of `value`, or error 3 when the field's form cannot be
     /// keyed exactly.
     fn whole_key(&self, value: &str) -> Result<Option<Vec<u8>>, DataError> {
@@ -641,7 +668,18 @@ impl NativeProvider {
         strict: bool,
     ) -> Result<Keying, DataError> {
         let language = options.index_language();
-        let text = TextKeys::of_language(language);
+        // Language 0 is the file's own, as the host writes it
+        // (`om_data::rules::written_text_keys`, query-program.md 7.2); a
+        // language whose form OpenMaker does not build has none.
+        let text = if field.data_type == DataType::Text {
+            match self.file_language() {
+                Ok(file) => om_data::rules::written_text_keys(language, file),
+                Err(error) if strict => return Err(error),
+                Err(_) => None,
+            }
+        } else {
+            TextKeys::of_language(language)
+        };
         if strict && field.data_type == DataType::Text && text.is_none() {
             return Err(unsupported(format!(
                 "Field {:?} has no index, and its index language ({language}) has no established native keys.",
@@ -777,9 +815,7 @@ impl NativeProvider {
                 // Keyed as stored: trimming would make values a raw index
                 // keeps apart (`A`, `A `) one.
                 let second_value = repetition_text(&row, second.id, second_repetition)?;
-                let second_key = second_keying
-                    .whole_key(&second_value)?
-                    .unwrap_or_else(|| EMPTY_TEXT_KEY.to_vec());
+                let second_key = second_keying.rank_key(&second_value)?;
                 if items.contains_key(&second_key) {
                     continue;
                 }
@@ -805,12 +841,9 @@ impl NativeProvider {
                 items.insert(second_key, (key, line.to_owned()));
             }
         }
-        let mut seen = BTreeSet::new();
-        Ok(items
-            .into_values()
-            .filter(|(key, _)| seen.insert(key.clone()))
-            .map(|(_, value)| value)
-            .collect())
+        // One item per distinct second value, a first value repeating when
+        // two second values' first records share it (6.4).
+        Ok(items.into_values().map(|(_, value)| value).collect())
     }
 
     /// Value list `id`'s items; refused with 9 when the account's custom set
