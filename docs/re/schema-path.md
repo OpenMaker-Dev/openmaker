@@ -2399,12 +2399,20 @@ or counts one more reference to a member with the same MD5, text is the
 cell's text, and a member a cell no longer names is released (deleted at
 0); a record whose library writes would be refused keeps its container
 values, logged. Text in the form of a library reference is refused as a
-container result (the record keeps its value), and a calculation whose
+container result (the record keeps its value). A calculation whose
 result type changes to container has its old cells, derived values of
-the old type that name no member they counted, dropped with the change,
-so no cell counts a reference it did not take. The new container data
-held for the library during one walk is limited to 256 MiB, charged as
-each result is queued; past it a result fails on its record. A
+the old type, dropped with the change; a normal field made a container
+calculation keeps its entered values until the recompute writes its
+results, so a calculation the recompute cannot evaluate loses nothing.
+A cell can still name a member without having counted a reference (text
+kept across such a change, or across a restart, whose recovery does not
+know the old types): every release is held so that a member's count
+stays at least the number of the table's cells that still name it, and
+a held release is logged, so no cell takes away another's reference
+(inf). The new container data held for the library during one walk is
+limited to 256 MiB, charged as each result is queued (its data, text and
+slot) and per queued record (its map and entry); past it a result fails
+on its record. A
 calculation that reads a container result recomputed in the same change
 is skipped, since it would read the old value, and so is one reading a
 calculation skipped so. How FileMaker Server stores a recomputed

@@ -995,3 +995,42 @@ fn a_result_changed_to_container_releases_no_reference_its_text_did_not_own() {
     assert_eq!(member.value, 1u32.to_be_bytes().to_vec());
     assert_eq!(cell(&after, 1, fixture::PHOTO), Some(reference.as_str()));
 }
+
+/// Startup recovery without the schema it changed from (#427's review: a
+/// stop after the schema saved and before its recompute): a container
+/// calculation still holds text shaped like Photo's reference, which it
+/// never counted. Recomputing it to empty releases nothing, so Photo's
+/// member keeps its one reference, and the cell is emptied.
+#[test]
+fn recovery_releases_no_reference_a_cell_did_not_count() {
+    const SHAPED: u64 = 46;
+    let mut root = fixture::tree(&[], true);
+    fixture::add_photo(&mut root);
+    let t = uint_segment(TABLE);
+    let names = fixture::photo_names();
+    fixture::add_field(&mut root, TABLE, SHAPED, "Shaped", 2, 6, 0, 0x20, 0);
+    fixture::add_formula(&mut root, &names, (TABLE, OCCURRENCE), SHAPED, 5, "\"\"");
+    let reference = om_data::containers::reference_text(&om_hbam::serial::encode(1));
+    root.put(
+        &[&t, &[5], &[1], &uint_segment(SHAPED)],
+        om_scripts::text_node(&[], &reference),
+    );
+    let mut catalog = field_catalog(&root);
+    defer(&mut catalog, SHAPED, FORMULA_CHANGED);
+    root.put(&[&t, &[3]], catalog);
+    let file = TempFile::from_tree("recalc-recover-shaped", &root);
+    let port = server::start(&file);
+    let (mut client, _) = server::logged_in(port, "client");
+    let after = records_of(&mut client, TABLE);
+    assert_eq!(cell(&after, 1, SHAPED), None);
+    assert_eq!(cell(&after, 1, fixture::PHOTO), Some(reference.as_str()));
+    let m = om_hbam::serial::encode(fixture::PHOTO_MEMBER);
+    let path: [&[u8]; 5] = [&t, &[0x1f], &[5], &m, &[0x12]];
+    let member = client.download(&path).unwrap();
+    assert_eq!(
+        member.node_state,
+        om_protocol::NodeState::Terminal,
+        "Photo's data is kept"
+    );
+    assert_eq!(member.value, 1u32.to_be_bytes().to_vec());
+}

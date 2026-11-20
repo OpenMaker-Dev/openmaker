@@ -550,10 +550,10 @@ fn container_result(value: om_calc::Value, text: String) -> Result<ContainerResu
 }
 
 /// What `result` holds in memory until the host stores it: its data, its
-/// text or file name, and a fixed share for the entry itself.
+/// text or file name, and its slot in the record's map. The map itself is
+/// the host's to charge.
 fn held_cost(result: &ContainerResult) -> usize {
-    const ENTRY: usize = 64;
-    ENTRY
+    std::mem::size_of::<(u64, ContainerResult)>()
         + match result {
             ContainerResult::Empty => 0,
             ContainerResult::Text(text) => text.len(),

@@ -116,14 +116,19 @@ pub fn changed_fields(
     changed
 }
 
-/// The calculations of `new` with a container result that was not one in
-/// `old`: their cells hold derived values of the old type (a calculation
-/// keeps its old text until it is recomputed), which name no member they
-/// counted, so the type change drops them before the recompute
-/// ([`crate::store::Store`]'s `update_table`). A normal field changed to
-/// container keeps its values: what FileMaker shows of them is unmeasured
-/// (#293). Without an `old` basis the old types are not known, and every
-/// cell counts as the field's own (#427's review).
+/// The calculations of `new` with a container result that were
+/// calculations of another result type in `old`: their cells hold derived
+/// values of the old type (a calculation keeps its old text until it is
+/// recomputed), which name no member they counted, so the type change
+/// drops them before the recompute ([`crate::store::Store`]'s
+/// `update_table`). A field that held entered values (a normal field
+/// made a container calculation) keeps them until the recompute writes
+/// its results, so that a calculation the recompute cannot evaluate loses
+/// nothing (#427's review); what FileMaker shows of them is unmeasured
+/// (#293). Without an `old` basis the old types are not known and nothing
+/// is dropped. Cells that name a member without a counted reference never
+/// release it: the recompute holds every release to the cells that still
+/// name the member ([`crate::store::Store`]'s `naming_cells`).
 pub fn retyped_to_container(old: Option<&TableBasis>, new: &TableBasis) -> BTreeSet<u64> {
     const CONTAINER: u8 = 6;
     const CALCULATION: u8 = 2;
@@ -132,7 +137,10 @@ pub fn retyped_to_container(old: Option<&TableBasis>, new: &TableBasis) -> BTree
     };
     new.iter()
         .filter(|(_, basis)| basis.kind == CALCULATION && basis.data_type == CONTAINER)
-        .filter(|(id, _)| old.get(*id).is_some_and(|was| was.data_type != CONTAINER))
+        .filter(|(id, _)| {
+            old.get(*id)
+                .is_some_and(|was| was.kind == CALCULATION && was.data_type != CONTAINER)
+        })
         .map(|(id, _)| *id)
         .collect()
 }
@@ -162,6 +170,11 @@ pub struct Outcome {
 /// formula making large data on every row cannot hold rows times its size
 /// in memory (#427's review).
 pub const CONTAINER_BUDGET: usize = 256 << 20;
+
+/// What a queued record holds beyond its results' slots ([`CONTAINER_BUDGET`]).
+const QUEUED_RECORD: usize = 11 * std::mem::size_of::<(u64, ContainerResult)>()
+    + std::mem::size_of::<(Vec<u8>, BTreeMap<u64, ContainerResult>)>()
+    + 64;
 
 /// Recompute `recalc`'s calculations on every record under `records`
 /// (`[T, 05]`), in place, one record at a time: a record whose values
@@ -213,6 +226,10 @@ pub fn recompute_records(
             continue;
         }
         if !result.containers.is_empty() {
+            // The record's own map and queue entry, beyond the slots its
+            // results were charged: a B-tree leaf of eleven slots however
+            // few it holds, the entry and the record's key (#427's review).
+            budget = budget.saturating_sub(QUEUED_RECORD + record.segment.len());
             outcome
                 .containers
                 .push((record.segment.clone(), result.containers));
