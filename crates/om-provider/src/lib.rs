@@ -2085,6 +2085,12 @@ impl NativeProvider {
                     session
                 .open_file(&connection.host, &connection.file)
                 .map_err(|e| {
+                    if session.refused_open() == Some(1638) {
+                        return DataError::with_code(
+                            1638,
+                            "The host is not allowing new connections. Try again later.",
+                        );
+                    }
                     // A client license matters only to a server that asks
                     // for one, never to a file opened from this computer.
                     let hint = if !local && endpoint.machine.install_code.is_empty() {

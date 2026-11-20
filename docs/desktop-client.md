@@ -235,6 +235,11 @@ reads everything again, as for any reconnect.
 
 ### Hosts dialog file list
 
+When opening a hosted file is refused because Block New Users is on
+(error 1638), the desktop shows “The host is not allowing new
+connections. Try again later.” with OK
+([admin-console.md, What connected clients see](re/admin-console.md#9-what-connected-clients-see)).
+
 **List files** lists the host and port typed in the Hosts dialog. A host
 with OpenMaker's own file list extension, which OpenMaker Server has
 ([hosted-file-list.md](hosted-file-list.md)), lists through it. Any other

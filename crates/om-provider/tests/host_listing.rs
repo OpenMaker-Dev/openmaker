@@ -98,6 +98,22 @@ fn connection(port: u16, file: &str, password: &str) -> Connection {
     }
 }
 
+/// Open receives the host's refusal before authentication, even when
+/// the file was entered directly instead of selected from a list.
+#[test]
+fn opening_a_file_reports_the_hosts_block_new_users_refusal() {
+    let host = host("block-open", |server| server);
+    host.handle.set_block_new_users(true);
+    let mut client = provider(&host.ca_pem);
+    let result = client.open(&connection(host.port, "Alpha.fmp12", PASSWORD));
+    let error = result.err().expect("the host refused the file");
+    assert_eq!(error.code, Some(1638));
+    assert_eq!(
+        error.message,
+        "The host is not allowing new connections. Try again later."
+    );
+}
+
 /// The server's connected clients settle to `count` (a closed
 /// connection's session ends once the server reads its Disconnect).
 fn settles_to(handle: &ServerHandle, count: usize) {
