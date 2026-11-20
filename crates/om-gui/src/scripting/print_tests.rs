@@ -323,12 +323,23 @@ fn desktop_print_takes_a_stored_current_record_only_with_its_options() {
 fn desktop_print_commit_veto_and_external_trigger_resume_owning_window() {
     for (proceed, expected, jobs) in [(false, "20", 0), (true, "0", 1)] {
         let (mut c, fake) = client(
-            vec![print(true, false, false), exit("Get ( LastError )")],
+            vec![
+                var("$$signer", "\"Ada\""),
+                var("$who", "\"Lovelace\""),
+                print(true, false, false),
+                exit("Get ( LastError )"),
+            ],
             vec![exit(if proceed { "1" } else { "0" })],
         );
-        let mut document = pdf_tests::document();
+        // Print, held for the trigger, prints with the script's variables
+        // when the trigger lets it (#596).
+        let mut document = pdf_tests::signed_document();
         document.layout.triggers = vec![external_trigger(TriggerEvent::RecordCommit)];
-        c.server.lock().unwrap().refresh_render = Some(document);
+        {
+            let mut server = c.server.lock().unwrap();
+            server.report_variables = true;
+            server.refresh_render = Some(document);
+        }
         c.run_in(dirty());
         assert_eq!(c.result(), expected);
         assert_eq!(fake.jobs.lock().unwrap().len(), jobs);
@@ -345,7 +356,10 @@ fn desktop_print_commit_veto_and_external_trigger_resume_owning_window() {
                 .iter()
                 .any(|e| e.ends_with(":write")));
         } else {
-            assert!(fake.jobs.lock().unwrap()[0].title.ends_with("Root.fmp12"));
+            let job = &fake.jobs.lock().unwrap()[0];
+            assert!(job.title.ends_with("Root.fmp12"));
+            let pdf = String::from_utf8_lossy(&job.bytes);
+            assert!(!pdf_tests::text_origins(&pdf, 3, "Ada / Lovelace").is_empty());
         }
     }
 }

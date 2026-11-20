@@ -1079,7 +1079,7 @@ pub(super) fn sliding_lift(id: i64) -> f64 {
 
 /// Where each line showing `expected` starts, (x, y) in PDF user space, by
 /// page: every page's content stream precedes the fonts and images.
-fn text_origins(pdf: &str, pages: usize, expected: &str) -> Vec<(usize, f64, f64)> {
+pub(super) fn text_origins(pdf: &str, pages: usize, expected: &str) -> Vec<(usize, f64, f64)> {
     let font =
         ttf_parser::Face::parse(include_bytes!("../../assets/fonts/Inter-Regular.ttf"), 0).unwrap();
     let glyphs: String = expected
@@ -4069,10 +4069,25 @@ fn container_fields_print_pictures_by_graphic_format_and_files_by_name() {
     assert_eq!(at(image.left + 5.0, clip.top + 2.0), [255, 255, 255, 255]);
 }
 
+/// [`document`] with Signed (7, `$$signer & " / " & $who`) and Queried
+/// (8, Signed read through ExecuteSQL) in the body, for a server with
+/// `report_variables`.
+pub(super) fn signed_document() -> RenderLayout {
+    let mut document = document();
+    let objects = &mut document.layout.objects;
+    objects.objects.extend([
+        field(11, 7, rect(360.0, 86.0, 170.0, 24.0)),
+        field(12, 8, rect(360.0, 172.0, 170.0, 24.0)),
+    ]);
+    objects.root.extend([11, 12]);
+    document
+}
+
 /// A report's calculations read the running script's variables (#596): a
 /// `$$` variable of its file and a `$` variable of the script, as the
-/// script set them before Save Records as PDF, on every record; the
-/// script's variables are its own again after the step.
+/// script set them before Save Records as PDF, on every record, directly
+/// and through ExecuteSQL; the script's variables are its own again after
+/// the step. A step that unwinds leaves them as they were.
 #[test]
 fn report_calculations_read_the_running_scripts_variables() {
     let temporary = tempfile::tempdir().unwrap();
@@ -4083,16 +4098,10 @@ fn report_calculations_read_the_running_scripts_variables() {
         pdf(&crate::scripting::files::file_line(&path), false),
         exit("Get ( LastError ) & \"|\" & $$signer & \"|\" & $who"),
     ]);
-    let mut document = document();
-    let objects = &mut document.layout.objects;
-    objects
-        .objects
-        .push(field(11, 7, rect(360.0, 86.0, 170.0, 24.0)));
-    objects.root.push(11);
     {
         let mut server = c.server.lock().unwrap();
         server.report_variables = true;
-        server.refresh_render = Some(document);
+        server.refresh_render = Some(signed_document());
     }
     c.run_in(WindowState {
         layout: Some(1),
@@ -4102,8 +4111,40 @@ fn report_calculations_read_the_running_scripts_variables() {
     });
     assert_eq!(c.result(), "0|Ada|Lovelace", "{:?}", c.session.s.failure);
     let pdf = String::from_utf8_lossy(&std::fs::read(&path).unwrap()).into_owned();
-    // One each record, over the three pages.
-    assert_eq!(text_origins(&pdf, 3, "Ada / Lovelace").len(), 9);
+    // Twice each record, over the three pages: Signed and Queried.
+    assert_eq!(text_origins(&pdf, 3, "Ada / Lovelace").len(), 18);
+
+    // The worker lends copies: one it unwinds with is dropped, and the
+    // script keeps its own.
+    let mut store = Store;
+    let mut io = Io {
+        provider: &mut c.provider,
+        files: &mut c.files,
+        store: &mut store,
+        jobs: &c.jobs,
+        responses: &c.responses,
+    };
+    let mut host = WorkerHost::new(&mut io, &mut c.session.s);
+    let (mut locals, mut globals) = (Variables::new(), Variables::new());
+    globals.set("$$keep", 1, Value::text("kept"));
+    let unwound = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+        let variables = om_data::runtime::StepVariables {
+            locals: &mut locals,
+            globals: &mut globals,
+        };
+        host.lend(variables, |host| {
+            host.report_record = Some((9, 0, 0));
+            use om_data::calc::eval::{CalcHost, VarScope};
+            let lent = CalcHost::variables(host, VarScope::Global);
+            lent.set("$$keep", 1, Value::text("changed"));
+            panic!("a report read unwinds");
+        })
+    }));
+    assert!(unwound.is_err());
+    assert_eq!(
+        format!("{:?}", globals.get("$$keep", 1)),
+        format!("{:?}", Some(&Value::text("kept")))
+    );
 }
 
 /// `{{PageNumber}}` prints each page's number, in a static label and in a

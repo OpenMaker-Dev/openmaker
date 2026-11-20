@@ -1759,18 +1759,8 @@ impl Runtime {
             .params
             .iter()
             .any(|p| p.kind == crate::ParamKind::Target);
-        // The script's own variables, as the step's calculations read them
-        // (`calc`): the running script's `$` and its file's `$$`.
-        let file = self
-            .stack
-            .last()
-            .map_or_else(|| host.current_file(), |f| f.file);
-        let locals = match self.script_frame_index().map(|i| &mut self.stack[i].kind) {
-            Some(FrameKind::Script { vars, .. }) => vars,
-            _ => &mut self.level0,
-        };
-        let globals = self.globals.entry(file).or_default();
-        match host.other_step_with(&call, StepVariables { locals, globals }) {
+        let file = self.script_file(host);
+        match host.other_step_with(&call, self.step_variables(file)) {
             Ok(Some(value)) if has_target => {
                 let select_all = step.has_flag(flag::SELECT_ALL);
                 self.write_target(host, step, value, Write::Result { select_all })

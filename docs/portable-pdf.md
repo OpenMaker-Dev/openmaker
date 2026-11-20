@@ -72,15 +72,21 @@ empty in every mode it was measured in.
   FileMaker, Task Details and Task List, have the option off. Fonts are
   covered in [report fonts](#report-fonts).
 - Calculations the report evaluates when a script prints it, with Save Records
-  as PDF or Print (unstored calculation fields and
-  conditional formats), read the running script's `$` variables and its
-  file's `$$` variables as the script set them before the step
-  ([#596](https://github.com/OpenMaker-Dev/openmaker/issues/596)). The script
-  runtime lends them to the desktop's script worker for the step
-  (`ScriptHost::other_step_with`) and takes them back after it, with any the
-  report's calculations set. Claris says a variable on a layout shows its value
-  "when you print the layout"; which `$` variables FileMaker Pro's report sees
-  is unmeasured [I: the running script's, as its own steps see them].
+  as PDF or Print (unstored calculation fields, conditional formats, and
+  ExecuteSQL's own reads in them), read the running script's `$` variables and
+  its file's `$$` variables as the script set them before the step
+  ([#596](https://github.com/OpenMaker-Dev/openmaker/issues/596)). A Print a
+  trigger held reads them as they are when the trigger lets it print. The
+  script runtime lends copies to the desktop's script worker for the step
+  (`ScriptHost::other_step_with`, `trigger_action_with`) and takes back what
+  they hold after it, so a step that unwinds loses no variable. Only the
+  report's rows read them: what the step evaluates before (a Browse portal
+  filter in Print's checks) keeps the worker's own scratch store. A related
+  file's formula does not yet read that file's `$$` variables
+  ([#613](https://github.com/OpenMaker-Dev/openmaker/issues/613)). Claris says
+  a variable on a layout shows its value "when you print the layout"; which `$`
+  variables FileMaker Pro's report sees is unmeasured [I: the running
+  script's, as its own steps see them].
 - Output paths use the transfer steps' platform path lists, variable expansion,
   relative Documents paths and Create folders convention. With dialog On (or no
   output path), a desktop modal offers the file as a save panel does (Save As

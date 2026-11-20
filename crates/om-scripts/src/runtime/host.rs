@@ -753,6 +753,19 @@ pub trait ScriptHost:
         Ok(())
     }
 
+    /// [`Self::trigger_action`] with the running script's variables, which
+    /// the runtime calls instead, as it calls [`Self::other_step_with`]: a
+    /// step a trigger held (Print, for an OnRecordCommit trigger) runs its
+    /// action here when the trigger lets the event happen. The default
+    /// does not use them.
+    fn trigger_action_with(
+        &mut self,
+        action: &TriggerAction,
+        _variables: StepVariables<'_>,
+    ) -> HostResult {
+        self.trigger_action(action)
+    }
+
     /// Show the error alert of a client with error capture off. The
     /// default, a host without a user interface, continues.
     fn error_alert(&mut self, _alert: &ErrorAlert) -> AlertChoice {
