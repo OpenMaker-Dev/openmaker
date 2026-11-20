@@ -955,6 +955,14 @@ impl Calculations {
         result: Option<Result<Arc<Choices>, ChoiceError>>,
         retry_after: Option<std::time::Duration>,
     ) {
+        // A list of an unstored calculation's values asked for a context or
+        // date since gone (#290): its wait is not the new context's, which
+        // may read other data.
+        let stale = self.stale_builds.get_mut().contains(&list);
+        if let Some(after) = retry_after.filter(|_| !stale) {
+            let at = std::time::Instant::now() + after;
+            self.build_retry.get_mut().insert(list, (at, false));
+        }
         let building = self.building.get_mut();
         if building
             .get(&list)
@@ -965,14 +973,11 @@ impl Calculations {
         let Some((_, tables)) = building.remove(&list) else {
             return;
         };
-        // Built for a context or date since gone: the next frame asks for
-        // the list again.
-        if self.stale_builds.get_mut().remove(&list) {
+        // Its answer is not taken either: the next frame asks for the list
+        // again.
+        if stale {
+            self.stale_builds.get_mut().remove(&list);
             return;
-        }
-        if let Some(after) = retry_after {
-            let at = std::time::Instant::now() + after;
-            self.build_retry.get_mut().insert(list, (at, false));
         }
         if let Some(items) = result {
             self.built.get_mut().insert(list, (tables, items));
