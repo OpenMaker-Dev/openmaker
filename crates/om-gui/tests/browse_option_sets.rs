@@ -83,7 +83,7 @@ struct State {
     rows: Vec<Record>,
     exit: Exit,
     /// Size and Shade have an OnObjectKeystroke that lets only Space
-    /// through.
+    /// through; a single checkbox Colors one that lets every key through.
     keys: bool,
     /// Shade's drop-down list is without its arrow ("Include arrow" off).
     shade_without_arrow: bool,
@@ -398,6 +398,7 @@ fn scripts() -> ScriptCatalog {
                 "Only Space",
                 vec![exit_script("Get ( TriggerKeystroke ) = \" \"")],
             ),
+            script(46, "Every key", vec![exit_script("1")]),
         ],
         writable: false,
         unavailable_reason: None,
@@ -528,6 +529,10 @@ fn document(
     colors
         .triggers
         .push(trigger(3, if exit == Exit::CommitModify { 47 } else { 41 }));
+    // The single checkbox's OnObjectKeystroke lets every key through.
+    if keys && single {
+        colors.triggers.push(trigger(5, 46));
+    }
     let mut note = field(5, 4, 0, 0, 0, (20.0, 220.0));
     match exit {
         Exit::None | Exit::DuplicateVeto | Exit::CommitModify => {}
@@ -831,14 +836,38 @@ fn other_enters_a_value_and_edit_saves_the_list_values() {
 /// stores the list's second value, checking it the first.
 #[test]
 fn a_single_checkbox_toggles_between_the_lists_first_and_second_values() {
-    let state = state(Exit::None);
-    state.lock().unwrap().single = true;
-    let mut app = open(&state);
-    // Colors holds Red, the first of Red, Green and Blue.
+    // Colors holds Red, Blue and Mauve: Red, the first of Red, Green and
+    // Blue, checks the box, and a click is refused rather than write over
+    // the other values.
+    let mixed = state(Exit::None);
+    mixed.lock().unwrap().single = true;
+    let mut app = open(&mixed);
     assert!(checked(&app, Role::CheckBox, "Colors"));
     for item in ["Red", "Green", "Blue"] {
         assert!(app.query_by_label(item).is_none(), "{item}");
     }
+    pick(&mut app, Role::CheckBox, "Colors");
+    common::wait_until(&mut app, "the refusal", |app| app.state().error().is_some());
+    assert!(
+        app.state()
+            .error()
+            .is_some_and(|error| error.contains("other than its checkbox's two")),
+        "{:?}",
+        app.state().error()
+    );
+    assert!(checked(&app, Role::CheckBox, "Colors"));
+    assert!(mixed.lock().unwrap().updates.is_empty());
+
+    // Colors holds Red alone: a click stores Green, the next Red.
+    let state = state(Exit::None);
+    {
+        let mut state = state.lock().unwrap();
+        state.single = true;
+        state.keys = true;
+        state.rows[0].values[0] = Some("Red".into());
+    }
+    let mut app = open(&state);
+    assert!(checked(&app, Role::CheckBox, "Colors"));
     pick(&mut app, Role::CheckBox, "Colors");
     common::wait_until(&mut app, "the box cleared", |app| {
         !checked(app, Role::CheckBox, "Colors")
@@ -853,6 +882,26 @@ fn a_single_checkbox_toggles_between_the_lists_first_and_second_values() {
     pick(&mut app, Role::CheckBox, "Colors");
     common::wait_until(&mut app, "the box checked", |app| {
         checked(app, Role::CheckBox, "Colors")
+    });
+    idle(&mut app);
+    // A letter its keystroke trigger lets through changes nothing; Space
+    // toggles.
+    // The first of the two sets of Colors: the single checkbox.
+    app.query_all_by_role_and_label(Role::Group, "Colors")
+        .next()
+        .unwrap()
+        .focus();
+    app.run_steps(3);
+    idle(&mut app);
+    app.event(egui::Event::Text("a".into()));
+    app.run_steps(2);
+    idle(&mut app);
+    app.run_steps(5);
+    assert!(checked(&app, Role::CheckBox, "Colors"));
+    app.key_press(Key::Space);
+    app.run_steps(2);
+    common::wait_until(&mut app, "Space through the trigger", |app| {
+        !app.state().script_running() && !checked(app, Role::CheckBox, "Colors")
     });
     assert!(app.state().error().is_none(), "{:?}", app.state().error());
 }

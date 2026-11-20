@@ -2634,6 +2634,7 @@ fn find_field(
                 enterable,
                 true,
                 &name,
+                single,
             )
         };
         let picked = match shown.input {
@@ -2641,17 +2642,9 @@ fn find_field(
                 egui::Popup::open_id(ui.ctx(), popup::menu_id(id));
                 None
             }
-            // A single checkbox's criterion is its first value or none
-            // [I: Find mode's use of it is unmeasured].
+            // A single checkbox's criterion is its first value or none.
             Some(options::Input::Click { .. } | options::Input::Space(_)) if single => {
-                Some(match choice::single_checked(choices, &criterion) {
-                    true => String::new(),
-                    false => options::single_item(choices)
-                        .first()
-                        .map(|item| item.value.clone())
-                        .unwrap_or_default(),
-                })
-                .filter(|value| *value != criterion)
+                choice::single_checkbox_criterion(choices, &criterion)
             }
             Some(options::Input::Click { index, shift }) => {
                 choices.items.get(index).and_then(|item| {
@@ -5932,6 +5925,7 @@ fn paint_related_option_set(
             editable,
             enabled,
             label,
+            single,
         )
     };
     if let Some(refusal) = &refusal {
@@ -5980,7 +5974,13 @@ fn paint_related_option_set(
             None
         }
         options::Input::Click { .. } | options::Input::Space(_) if single => {
-            choice::single_checkbox(&choices, &value)
+            match choice::single_checkbox(&choices, &value) {
+                Ok(value) => value,
+                Err(error) => {
+                    state.choice_refusal = Some(error);
+                    None
+                }
+            }
         }
         options::Input::Click { index, shift } => items.get(index).and_then(|item| {
             if pop_up {
@@ -6950,6 +6950,7 @@ fn paint_option_set(
             editable,
             enabled,
             label,
+            single,
         )
     };
     if let (Some(refusal), Some(_)) = (&refusal, name) {
@@ -7188,10 +7189,20 @@ fn apply_option_wait(
                 .map(|edit| edit.value)
         }
         // A single checkbox toggles between the list's first and second
-        // values (`choice::single_checkbox`).
-        OptionChange::Pick { .. } | OptionChange::Key(_) if single => {
-            choice::single_checkbox(choices, &buffer.value)
-        }
+        // values (`choice::single_checkbox`), by a click or Space; a letter
+        // a keystroke trigger let through picks nothing in it.
+        OptionChange::Pick { .. } if single => choice::single_checkbox(choices, &buffer.value)
+            .unwrap_or_else(|error| {
+                state.choice_refusal = Some(error);
+                None
+            }),
+        OptionChange::Key(key) if single => match key.as_str() {
+            " " => choice::single_checkbox(choices, &buffer.value).unwrap_or_else(|error| {
+                state.choice_refusal = Some(error);
+                None
+            }),
+            _ => None,
+        },
         OptionChange::Pick { value, shift } => items
             .iter()
             .position(|item| item.value == value)

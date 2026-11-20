@@ -149,6 +149,10 @@ pub enum ChoiceError {
     NoCommand(MenuCommand),
     /// Reading the items failed with this FileMaker error.
     Failed(i32),
+    /// A single checkbox's field holds a value other than its list's first
+    /// and second values ([`single_checkbox`]): it is not replaced
+    /// (error 3).
+    OtherValues,
 }
 
 impl ChoiceError {
@@ -162,7 +166,8 @@ impl ChoiceError {
             | ChoiceError::NotAMenuOrList
             | ChoiceError::ListUnsupported(_)
             | ChoiceError::TooLarge
-            | ChoiceError::NoCommand(_) => code::UNAVAILABLE,
+            | ChoiceError::NoCommand(_)
+            | ChoiceError::OtherValues => code::UNAVAILABLE,
             ChoiceError::Refused(_) => code::FIELD_LOCKED,
             ChoiceError::TargetGone => code::RECORD_MISSING,
             ChoiceError::NotAnItem => code::NOT_IN_LIST,
@@ -193,6 +198,11 @@ impl ChoiceError {
             ChoiceError::Refused(refusal) => refusal.message().into(),
             ChoiceError::TargetGone => "The record or the control is no longer there.".into(),
             ChoiceError::NotAnItem => "The value is not an item of the value list.".into(),
+            ChoiceError::OtherValues => {
+                "The field holds a value other than its checkbox's two. OpenMaker does not \
+                 replace it."
+                    .into()
+            }
             ChoiceError::NoCommand(command) => {
                 format!("This field control offers no “{}” item.", command.label())
             }
@@ -434,39 +444,61 @@ pub fn choose(
 
 /// The value a click gives a checkbox set shown as one checkbox without a
 /// label ("Display single checkbox without value", FileMaker Pro 26.1;
-/// layout-model.md 5.4.1), holding `value`. The box is checked when the
-/// value holds the list's first value. Checking it stores that value;
-/// clearing it stores the second, or empties the field when the list has
-/// one value (Claris, FileMaker Pro 26.1.1 release notes). `None`: the list
-/// has no item, or the value stays as it is. That the box is checked by
-/// the first value among the value's lines, as a set's item is, is
-/// inferred.
-pub fn single_checkbox(choices: &Choices, value: &str) -> Option<String> {
+/// layout-model.md 5.4.1), holding `value`. Checking it stores the list's
+/// first value; clearing it stores the second, or empties the field when
+/// the list has one value (Claris, FileMaker Pro 26.1.1 release notes).
+/// So it toggles a field holding exactly the first value, the second, or
+/// nothing. A field holding anything else (another value, or other lines
+/// with the first) is refused, [`ChoiceError::OtherValues`], its data
+/// kept: what FileMaker Pro writes over such a value is not documented or
+/// measured. `Ok(None)`: the list has no item, or the value stays.
+pub fn single_checkbox(choices: &Choices, value: &str) -> Result<Option<String>, ChoiceError> {
     let mut items = choices
         .items
         .iter()
         .filter(|item| !choices.is_divider(item) && !item.value.is_empty());
-    let first = &items.next()?.value;
-    let checked = value.split(['\r', '\n']).any(|line| line == first);
-    let changed = if checked {
-        items
-            .next()
-            .map(|item| item.value.clone())
-            .unwrap_or_default()
-    } else {
-        first.clone()
+    let Some(first) = items.next() else {
+        return Ok(None);
     };
-    (changed != value).then_some(changed)
+    let second = items.next().map_or("", |item| item.value.as_str());
+    let changed = if value == first.value {
+        second
+    } else if value.is_empty() || value == second {
+        first.value.as_str()
+    } else {
+        return Err(ChoiceError::OtherValues);
+    };
+    Ok((changed != value).then(|| changed.to_owned()))
 }
 
 /// Whether `value` checks the single checkbox of `choices`
-/// ([`single_checkbox`]).
+/// ([`single_checkbox`]): it is the list's first value, or holds it among
+/// its lines, as a set's item is checked. That the lines count is
+/// inferred.
 pub fn single_checked(choices: &Choices, value: &str) -> bool {
     choices
         .items
         .iter()
         .find(|item| !choices.is_divider(item) && !item.value.is_empty())
-        .is_some_and(|first| value.split(['\r', '\n']).any(|line| line == first.value))
+        .is_some_and(|first| {
+            value == first.value || value.split(['\r', '\n']).any(|line| line == first.value)
+        })
+}
+
+/// Find mode's criterion after a click on a single checkbox holding
+/// `criterion`: the list's first value, or no criterion when the box is
+/// checked [I: Find mode's use of the checkbox is unmeasured]. `None`: the
+/// list has no item, or the criterion stays.
+pub fn single_checkbox_criterion(choices: &Choices, criterion: &str) -> Option<String> {
+    let first = choices
+        .items
+        .iter()
+        .find(|item| !choices.is_divider(item) && !item.value.is_empty())?;
+    let changed = match single_checked(choices, criterion) {
+        true => String::new(),
+        false => first.value.clone(),
+    };
+    (changed != criterion).then_some(changed)
 }
 
 /// An item a menu offers after its value list's items: a command, never a
@@ -597,28 +629,46 @@ mod tests {
             items: ["Yes", "No"].map(item).to_vec(),
             custom: true,
         };
-        assert_eq!(single_checkbox(&two, ""), Some("Yes".into()));
-        assert_eq!(single_checkbox(&two, "No"), Some("Yes".into()));
-        assert_eq!(single_checkbox(&two, "Yes"), Some("No".into()));
+        assert_eq!(single_checkbox(&two, ""), Ok(Some("Yes".into())));
+        assert_eq!(single_checkbox(&two, "No"), Ok(Some("Yes".into())));
+        assert_eq!(single_checkbox(&two, "Yes"), Ok(Some("No".into())));
         assert!(single_checked(&two, "Yes") && !single_checked(&two, "No"));
+        // Other data is kept, not replaced: other lines with the first
+        // value (drawn checked), or a value that is neither.
+        for other in ["Yes\rNotes", "Notes"] {
+            assert_eq!(single_checkbox(&two, other), Err(ChoiceError::OtherValues));
+        }
+        assert!(single_checked(&two, "Yes\rNotes") && !single_checked(&two, "Notes"));
         // One value: clearing empties the field.
         let one = Choices {
             items: vec![item("Done")],
             custom: true,
         };
-        assert_eq!(single_checkbox(&one, "Done"), Some(String::new()));
-        assert_eq!(single_checkbox(&one, ""), Some("Done".into()));
+        assert_eq!(single_checkbox(&one, "Done"), Ok(Some(String::new())));
+        assert_eq!(single_checkbox(&one, ""), Ok(Some("Done".into())));
+        // A first item of several lines (a second field's list) is checked
+        // by itself, and cleared.
+        let lines = Choices {
+            items: ["A\rB", "C"].map(item).to_vec(),
+            custom: false,
+        };
+        assert!(single_checked(&lines, "A\rB"));
+        assert_eq!(single_checkbox(&lines, "A\rB"), Ok(Some("C".into())));
         // A divider is no value; no item, no change.
         let divided = Choices {
             items: ["-", "On", "-", "Off"].map(item).to_vec(),
             custom: true,
         };
-        assert_eq!(single_checkbox(&divided, "On"), Some("Off".into()));
+        assert_eq!(single_checkbox(&divided, "On"), Ok(Some("Off".into())));
         let none = Choices {
             items: Vec::new(),
             custom: true,
         };
-        assert_eq!(single_checkbox(&none, "x"), None);
+        assert_eq!(single_checkbox(&none, "x"), Ok(None));
+        // Find mode: the first value, or no criterion.
+        assert_eq!(single_checkbox_criterion(&two, ""), Some("Yes".into()));
+        assert_eq!(single_checkbox_criterion(&two, "Yes"), Some(String::new()));
+        assert_eq!(single_checkbox_criterion(&none, ""), None);
     }
 
     #[test]
