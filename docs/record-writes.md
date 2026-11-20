@@ -1291,6 +1291,13 @@ gets no key yet ([#246](https://github.com/OpenMaker-Dev/openmaker/issues/246)).
 A typed index that an earlier OpenMaker build wrote lists no empty value
 under `01`, so a find for `=` on it misses those records.
 
+Word-index keys break words as FileMaker's English and Unicode standard
+indexes do (query-program.md 7.1): within a script, across `.` and
+apostrophes between letters and `-`, `.`, `,`, `:`, `/` between digits.
+Unicode raw's own word breaks are not built
+([#395](https://github.com/OpenMaker-Dev/openmaker/issues/395)), nor the
+word breaks of the other index languages, whose text is refused anyway.
+
 For a text field indexed in any other language they write no key, rather
 than English ones a find in that language would miss (#159):
 - A commit that would change the field's text where the field has an index
