@@ -2516,10 +2516,14 @@ fn query(
             // Manage Database's instructions change the file,
             // GenerateMemberKey's issued ids go into their catalogs
             // (schema-path.md 3.4), and indexes the query built on demand are
-            // stored (query-program.md 7.1).
+            // stored (query-program.md 7.1). A query refused for an index
+            // this server cannot key (#572) stores none of its builds: they
+            // stay due for a later query, so the client that asks next which
+            // indexes are missing sees the file as the refused query found it.
+            let refused = matches!(outcome.error, Some(om_query::QueryError::UnkeyedIndex));
             let pending = {
                 let store = file.hosted.read_store();
-                store.has_issued_member_keys() || store.has_indexes_on_demand()
+                store.has_issued_member_keys() || (!refused && store.has_indexes_on_demand())
             };
             if pending || !outcome.writes.is_empty() {
                 for write in &outcome.writes {
@@ -2532,7 +2536,9 @@ fn query(
                 let released = {
                     let mut store = file.hosted.write_store();
                     store.write_issued_member_keys();
-                    store.store_indexes_on_demand();
+                    if !refused {
+                        store.store_indexes_on_demand();
+                    }
                     store.apply(outcome.writes)
                 };
                 // A deleted table's library is gone: so are its thumbnails.

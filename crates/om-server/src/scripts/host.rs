@@ -667,9 +667,9 @@ fn cell_id(field: u64, repetition: u32) -> Option<u64> {
 /// it cannot use; another failure is the query's own code.
 fn find_failure(error: om_query::QueryError) -> FindError {
     match error {
-        om_query::QueryError::Unimplemented(_) | om_query::QueryError::Unsupported(..) => {
-            FindError::Unsupported
-        }
+        om_query::QueryError::Unimplemented(_)
+        | om_query::QueryError::Unsupported(..)
+        | om_query::QueryError::UnkeyedIndex => FindError::Unsupported,
         error => FindError::Query(error.code()),
     }
 }

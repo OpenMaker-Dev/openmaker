@@ -118,6 +118,11 @@ impl SessionSource<'_> {
                     .iter()
                     .map(|v| v.to_text(cx).into_string())
                     .collect();
+                // No match value relates nothing, whatever the index.
+                if texts.is_empty() {
+                    these = RidList::new();
+                    break;
+                }
                 let found = host.index_lookup(to.id, predicate.right, right.value_type, &texts)?;
                 these = these.and(&found);
             }

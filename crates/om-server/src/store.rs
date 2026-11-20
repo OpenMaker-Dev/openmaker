@@ -2816,9 +2816,7 @@ impl om_query::Source for Store {
                  refused",
                 self.name
             );
-            return Err(om_query::QueryError::Unimplemented(
-                "an index in this field's language",
-            ));
+            return Err(om_query::QueryError::UnkeyedIndex);
         };
         let index = self.index_keys(table, field, data_type, kind, form);
         self.on_demand

@@ -18,9 +18,10 @@ pub trait Source {
     /// (query-program.md 7.1: a host builds the index a finder reads on
     /// demand): a node of index keys, each holding its RID list. `None`
     /// when the source does not build indexes or the field cannot be
-    /// indexed. An error when the source cannot build the keys the file's
-    /// index would hold (a text field in an index language whose keys it
-    /// does not build): the program fails rather than read other keys.
+    /// indexed. [`crate::QueryError::UnkeyedIndex`] when the source cannot
+    /// build the keys the file's index would hold (a text field in an index
+    /// language whose keys it does not build): the program fails rather
+    /// than read other keys.
     fn index_on_demand(
         &self,
         table: &[u8],

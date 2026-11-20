@@ -79,10 +79,11 @@ fn a_find_on_a_missing_index_builds_it_first_unless_builds_are_late() {
     .collect();
     let program = find::program(file_id, fixture::TABLE, &finders, None);
     let reply = session.query(&program).unwrap();
-    // The query's error slot, 0xffff: refused, not an empty found set.
+    // The query's error slot, 3 (`QueryError::UnkeyedIndex`): refused, not
+    // an empty found set.
     assert_eq!(
         reply.slots,
-        [0x80, 0x06, 0x00, 0x03, 0x02, 0xff, 0xff, 0x40],
+        [0x80, 0x06, 0x00, 0x03, 0x02, 0x00, 0x03, 0x40],
         "the find is refused"
     );
     session.disconnect().unwrap();

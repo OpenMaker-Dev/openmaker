@@ -382,7 +382,7 @@ impl NativeProvider {
             // A list refused on a missing index is read from the records,
             // as after FileMaker Server's list without one.
             let index = [(field, om_query::find::IndexKind::Value)];
-            if found::missing_after_refusal(session, table, &index)?.is_some() {
+            if found::missing_after_refusal(session, code, table, &index)?.is_some() {
                 return Ok(Listed::NoIndex);
             }
             return Err(DataError::with_code(

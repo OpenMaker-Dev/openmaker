@@ -1317,17 +1317,21 @@ than English ones a find in that language would miss (#159):
 - op73 builds no such index while a record holds text in the field, and
   so leaves the field without the index it had.
 - A query that needs such an index the file does not hold, while a record
-  holds text in the field (a find, a join, a value list), builds nothing
-  and is refused rather than answered from English keys, which would give
-  another found set
-  ([#572](https://github.com/OpenMaker-Dev/openmaker/issues/572)). A
-  client gets the query's error (`0xffff`). OpenMaker's desktop client
-  then asks which of the indexes it read are missing and takes its own
-  path for a missing index, as after FileMaker Server's empty answer
-  (query-program.md 7.1): for these languages that path fails the find
-  with 3 ([#46](https://github.com/OpenMaker-Dev/openmaker/issues/46)). A
-  server script's find, or a join of its Go to Related Record, gives 3. A
-  field that holds no text has no keys to differ, and is answered.
+  holds text in the field (a find, a join, a value list), is refused
+  rather than answered from English keys, which would give another found
+  set ([#572](https://github.com/OpenMaker-Dev/openmaker/issues/572)). It
+  builds nothing, and the indexes it built of other fields are not stored
+  with it: they wait for a later query. A client gets the query's error,
+  3 (`om_query::QueryError::UnkeyedIndex`; FileMaker Server builds every
+  language's index, so its answer is unmeasured). Only after that error
+  does OpenMaker's desktop client ask which of the indexes it read are
+  missing. If one is, it takes its own path for a missing index, as after
+  FileMaker Server's empty answer (query-program.md 7.1). For these
+  languages that path fails the find with 3
+  ([#46](https://github.com/OpenMaker-Dev/openmaker/issues/46)). A server
+  script's find, or a join of its Go to Related Record, gives 3. A blank
+  match value relates nothing without reading the index. A field that
+  holds no text has no keys to differ, and is answered.
 
 OpenMaker's record rules refuse such a write first (error 3, naming the
 field and the language). They do so for a stored text field defined with

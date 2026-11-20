@@ -1115,7 +1115,7 @@ impl NativeProvider {
                 }
                 // A join refused on a missing index runs on the client,
                 // as after FileMaker Server's empty answer.
-                Some(code) => match missing_after_refusal(session, near, &reads)? {
+                Some(code) => match missing_after_refusal(session, code, near, &reads)? {
                     Some(existed) => existed,
                     None => {
                         return Err(DataError::with_code(
@@ -1389,7 +1389,7 @@ pub(crate) fn checked_find(
         ),
         // A refused find on a missing index is answered as FileMaker
         // Server's empty one: the caller finds on the client.
-        Some(code) => match missing_after_refusal(session, table, &reads)? {
+        Some(code) => match missing_after_refusal(session, code, table, &reads)? {
             Some(existed) => (existed, RidList::new()),
             None => {
                 return Err(DataError::with_code(
@@ -1408,19 +1408,25 @@ pub(crate) fn checked_find(
     Ok((found, missing))
 }
 
-/// After the host refused a checked program, whether each of `reads`
-/// (indexes of `table`) exists, asked again with their GetKeys alone
-/// (`om_query::find::index_check_program`): `None` when every one exists,
-/// or the checks fail too, so the refusal stands. OpenMaker Server refuses
-/// a query on an index it cannot build in its field's language
-/// (record-writes.md), where FileMaker Server answers a finder on a
-/// missing index with no records (query-program.md 7.1). Either way the
-/// client takes its own path for a missing index.
+/// After the host refused a checked program with `code`, whether each of
+/// `reads` (indexes of `table`) exists, asked again with their GetKeys
+/// alone (`om_query::find::index_check_program`). `None`, so that the
+/// refusal stands, unless `code` is OpenMaker Server's refusal of a query
+/// on an index it cannot build in its field's language
+/// (`om_query::QueryError::UnkeyedIndex`, record-writes.md) and one of
+/// `reads` is missing. FileMaker Server answers a finder on a missing
+/// index with no records instead (query-program.md 7.1). Either way the
+/// client takes its own path for a missing index. A refused query stores
+/// none of the indexes it built, so the checks see the file as it was.
 pub(crate) fn missing_after_refusal(
     session: &mut om_session::Session,
+    code: u16,
     table: u64,
     reads: &[FieldIndex],
 ) -> Result<Option<Vec<bool>>, DataError> {
+    if code != om_query::QueryError::UnkeyedIndex.code() {
+        return Ok(None);
+    }
     let file_id = session
         .opened_file()
         .ok_or_else(|| DataError::new("No hosted file is open."))?
