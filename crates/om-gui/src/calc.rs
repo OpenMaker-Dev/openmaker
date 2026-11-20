@@ -152,16 +152,26 @@ struct RelatedList {
 /// list, which is the size of its related set (#290 review).
 const RELATED_LIST_BUDGET: usize = 64 << 20;
 
+/// How many built lists of related values a window keeps beyond those its
+/// last frame showed, whatever their size: an empty or failed list holds
+/// little, but each is one more to look through every frame.
+const RELATED_LIST_COUNT: usize = 4096;
+
+/// What one kept list of related values costs besides its items: its key,
+/// its entry and its bookkeeping.
+const RELATED_LIST_OVERHEAD: usize = 256;
+
 /// About how many bytes `items` hold: each entry's two strings and their
 /// text.
 fn list_bytes(items: &Result<Arc<Choices>, ChoiceError>) -> usize {
-    items.as_ref().map_or(0, |choices| {
-        choices
-            .items
-            .iter()
-            .map(|item| 2 * std::mem::size_of::<String>() + item.label.len() + item.value.len())
-            .sum()
-    })
+    RELATED_LIST_OVERHEAD
+        + items.as_ref().map_or(0, |choices| {
+            choices
+                .items
+                .iter()
+                .map(|item| 2 * std::mem::size_of::<String>() + item.label.len() + item.value.len())
+                .sum()
+        })
 }
 
 /// A list of related values asked of the worker: its key, as
@@ -679,9 +689,23 @@ impl Calculations {
     pub fn data_changed(&mut self) {
         // A related list's wait was for the data its build read.
         self.related_retry.get_mut().clear();
+        self.drop_built_lists(None);
+        self.forget_data();
+    }
+
+    /// The file reconnected: its provider's data generations start again
+    /// (a new session), so the newest one the window saw is no baseline
+    /// any more, and all its data is read again.
+    pub fn reconnected(&mut self) {
+        self.seen_generation = None;
+        self.data_changed();
+    }
+
+    /// The calculations' data and what was built from it go, but for the
+    /// worker's lists, which [`Self::drop_built_lists`] drops.
+    fn forget_data(&mut self) {
         *self.cache.get_mut() = CalcData::default();
         self.lists.get_mut().clear();
-        self.drop_built_lists(None);
         self.drop_host_lists();
         self.library_pins.get_mut().clear();
         self.failed.clear();
@@ -700,11 +724,26 @@ impl Calculations {
     /// on a data change. Results are evaluated again either way: they are
     /// for records, a page and a found set that may have changed.
     pub fn page_read(&mut self, generation: Option<u64>, table: Option<u64>, records: &[u64]) {
+        // Of the generation the window has seen already, from another page
+        // or a list build: no data changed, so the lists of related values
+        // the worker built from it and their waits stay, even when the
+        // calculations' own data was read under no known generation.
+        let seen = generation.is_some() && generation == self.seen_generation;
         self.see_generation(generation);
         let cache = self.cache.get_mut();
         let Some(table) = table.filter(|_| generation.is_some() && cache.generation == generation)
         else {
-            self.data_changed();
+            if seen {
+                let tables: BTreeSet<u64> = self
+                    .schema
+                    .iter()
+                    .flat_map(|schema| schema.tables().map(|t| t.id))
+                    .collect();
+                self.drop_built_lists(Some(&tables));
+                self.forget_data();
+            } else {
+                self.data_changed();
+            }
             return;
         };
         cache
@@ -1290,12 +1329,13 @@ impl Calculations {
         let frame = self.list_frame.get();
         let budget = self.related_budget.unwrap_or(RELATED_LIST_BUDGET);
         let built = self.related_built.get_mut();
-        let mut held: usize = built
+        let (mut held, mut count) = built
             .values()
             .filter(|list| list.shown.get() < frame)
-            .map(|list| list.bytes)
-            .sum();
-        if held > budget {
+            .fold((0usize, 0usize), |(bytes, n), list| {
+                (bytes + list.bytes, n + 1)
+            });
+        if held > budget || count > RELATED_LIST_COUNT {
             let mut older: Vec<(u64, RelatedKey)> = built
                 .iter()
                 .filter(|(_, list)| list.shown.get() < frame)
@@ -1303,11 +1343,12 @@ impl Calculations {
                 .collect();
             older.sort_unstable();
             for (_, key) in older {
-                if held <= budget {
+                if held <= budget && count <= RELATED_LIST_COUNT {
                     break;
                 }
                 if let Some(list) = built.remove(&key) {
                     held -= list.bytes;
+                    count -= 1;
                 }
             }
         }
@@ -1725,7 +1766,9 @@ fn unformed_overlays(
         crate::document::RelatedRow::Record(record) => Some((edit.field.table, record)),
         crate::document::RelatedRow::New { .. } => None,
     }));
-    lacking.retain(|key| !cache.records.contains_key(key));
+    // Read and absent (the host has no such record) counts too: there are
+    // no stored values to lay the edits over.
+    lacking.retain(|key| !matches!(cache.records.get(key), Some(Some(_))));
     lacking.sort_unstable();
     lacking.dedup();
     lacking
@@ -2329,9 +2372,17 @@ impl<'a> Evaluator<'a> {
         // rather than built over the stored values; one waiting for its
         // host stays wanted, and is asked again when the wait ends.
         if !self.unformed.is_empty() {
-            let lacking: Vec<CalcNeed> = self
+            // Read and absent (the host has no such record): nothing to ask.
+            let absent = |&(table, record): &(u64, u64)| {
+                matches!(
+                    self.calcs.cache.borrow().records.get(&(table, record)),
+                    Some(None)
+                )
+            };
+            let unread: Vec<CalcNeed> = self
                 .unformed
                 .iter()
+                .filter(|key| !absent(key))
                 .map(|&(table, record)| CalcNeed::Record { table, record })
                 .collect();
             if let Some(built) = self
@@ -2342,13 +2393,15 @@ impl<'a> Evaluator<'a> {
                 .filter(|built| self.unformed.iter().all(|r| built.overlaid.contains(r)))
             {
                 built.shown.set(self.calcs.list_frame.get());
-                self.calcs.wanted.borrow_mut().extend(lacking);
+                self.calcs.wanted.borrow_mut().extend(unread);
                 return built.items.clone();
             }
-            if lacking.iter().any(|need| self.calcs.failed.contains(need)) {
+            if self.unformed.iter().any(absent)
+                || unread.iter().any(|need| self.calcs.failed.contains(need))
+            {
                 return Err(ChoiceError::Failed(om_data::rules::error::UNAVAILABLE));
             }
-            self.calcs.wanted.borrow_mut().extend(lacking);
+            self.calcs.wanted.borrow_mut().extend(unread);
             return Err(ChoiceError::Pending);
         }
         let overlaid = self.overlaid();
@@ -5683,6 +5736,15 @@ mod tests {
         );
         assert!(calcs.take_list_builds().is_empty());
         calcs.failed.remove(&base);
+        // One the host has no record of: the same, and it is not asked for
+        // again.
+        calcs.cache.get_mut().records.insert((TABLE, 1), None);
+        assert_eq!(
+            lacking(&calcs).0,
+            Err(ChoiceError::Failed(om_data::rules::error::UNAVAILABLE))
+        );
+        assert!(!calcs.take_wanted().contains(&base));
+        calcs.cache.get_mut().records.remove(&(TABLE, 1));
         // Built over other unsaved records than the frame's: built again.
         calcs.related_building.get_mut().insert(
             ticket,
@@ -5776,6 +5838,17 @@ mod tests {
         calcs.end_list_frame();
         let kept: Vec<_> = calcs.related_built.get_mut().keys().copied().collect();
         assert_eq!(kept, [shown]);
+        // At most RELATED_LIST_COUNT unshown lists stay, empty ones too.
+        calcs.related_budget = None;
+        for record in 0..RELATED_LIST_COUNT as u64 + 10 {
+            calcs
+                .related_built
+                .get_mut()
+                .insert((7, OCCURRENCE, record, None), list(0));
+        }
+        calcs.end_list_frame();
+        assert_eq!(calcs.related_built.get_mut().len(), RELATED_LIST_COUNT);
+        calcs.related_built.get_mut().clear();
         // A page at 4, a build of 5: a change of data; later, a build of 4
         // is behind what the window saw.
         calcs.page_read(Some(4), None, &[]);
@@ -5784,6 +5857,17 @@ mod tests {
         assert!(!calcs.build_is_current(Some(4)));
         assert!(!calcs.observe_build_generation(Some(4)));
         assert!(calcs.build_is_current(Some(5)));
+        // A page of the generation seen keeps a built list of related
+        // values, though the calculations' data was read under none.
+        calcs.related_built.get_mut().insert(shown, list(1));
+        assert_eq!(calcs.cache.get_mut().generation, None);
+        calcs.page_read(Some(5), Some(TABLE), &[1]);
+        assert!(calcs.related_built.get_mut().contains_key(&shown));
+        // A reconnected file's provider counts generations again: a build
+        // of 1 is current then.
+        calcs.reconnected();
+        assert!(calcs.related_built.get_mut().is_empty());
+        assert!(calcs.build_is_current(Some(1)));
     }
 
     fn pending_container_fixture() -> (CalcSchema, Calculations) {
