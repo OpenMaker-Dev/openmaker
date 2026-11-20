@@ -361,6 +361,10 @@ impl ServerHost {
     pub(super) fn go_to_related(&mut self, request: &RelatedRecords<'_>) -> HostResult {
         let related = request.occurrence.ok_or(ErrorCode::INVALID)?;
         self.require_view()?;
+        // Before the open record is left: a refusal changes nothing.
+        if request.new_window {
+            self.windows_may_change()?;
+        }
         self.leave()?;
         let window = self.window()?;
         let from = window.occurrence;
@@ -403,7 +407,6 @@ impl ServerHost {
             next.current = next.found.iter().position(|id| *id == ids[0]).unwrap_or(0);
         }
         if request.new_window {
-            self.windows_may_change()?;
             let cx = Ctx::new(&self.locale, self.today);
             let name = request.window[0]
                 .as_ref()
@@ -418,6 +421,9 @@ impl ServerHost {
         }
         self.requests.clear();
         self.window = Some(next);
+        if request.new_window {
+            self.keep_windows_within_budget()?;
+        }
         Ok(())
     }
 }

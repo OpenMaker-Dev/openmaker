@@ -2965,11 +2965,16 @@ Server engine (11.3, 11.5)
   record another window commits is not part of the transaction (8.5),
   and the session keeps one transaction for all its windows.
 - A window that becomes current again drops from its found set the
-  records deleted meanwhile, and a schema change moves every window back
-  onto its own layout, as it moves the current one.
+  records deleted meanwhile (in Find mode its active request stays as it
+  was), and a schema change moves every window back onto its own layout,
+  as it moves the current one.
 - A session keeps at most 256 windows, holding at most 16,777,216
   record ids in their found sets together; past either, New Window is 2
-  (OpenMaker's limits; FileMaker Server's are not measured).
+  (OpenMaker's limits; FileMaker Server's are not measured). The record
+  ids are counted again once a new window is on its layout, or filled by
+  Go to Related Record or Go to List of Records: a window that would pass
+  the limit closes again, the one it was opened from current, and the
+  step is 2.
 - No bounds or styles are kept: every window is 640 x 480 at 0, 0,
   whatever New Window asks. The new window's layout does not run
   OnLayoutEnter, as the server's Go to Layout does not. View As and

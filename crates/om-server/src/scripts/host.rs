@@ -3248,6 +3248,9 @@ impl Navigation for ServerHost {
         window.found = found;
         window.current = 0;
         window.sort = None;
+        if request.new_window.is_some() {
+            self.keep_windows_within_budget()?;
+        }
         Ok(())
     }
 
@@ -3878,6 +3881,37 @@ impl ServerHost {
         Ok(())
     }
 
+    /// Whether the session's windows hold more record ids than
+    /// [`MAX_WINDOW_RECORDS`] in their found sets together.
+    fn windows_over_budget(&self) -> bool {
+        let parked: usize = self
+            .others
+            .iter()
+            .filter_map(|w| w.window.as_ref())
+            .map(|w| w.found.len())
+            .sum();
+        let current = self.window.as_ref().map_or(0, |w| w.found.len());
+        parked.saturating_add(current) > MAX_WINDOW_RECORDS
+    }
+
+    /// After a step filled the window it just opened (its layout's
+    /// records, or the records it went to): when the session's windows
+    /// now hold too much, that window closes again, the one it was opened
+    /// from current, and the step is 2.
+    pub(super) fn keep_windows_within_budget(&mut self) -> HostResult {
+        if !self.windows_over_budget() {
+            return Ok(());
+        }
+        warn!(
+            "{:?}: a new window closed again: the session's windows would hold too much",
+            self.hosted.name
+        );
+        if let Some(opener) = self.others.pop() {
+            self.unpark(opener);
+        }
+        Err(ErrorCode(2).into())
+    }
+
     /// The current window's found set without the records that are gone
     /// (deleted while another window was current), its record kept when
     /// it still exists.
@@ -3892,11 +3926,23 @@ impl ServerHost {
         if window.found.iter().all(|id| existing.contains(id)) {
             return;
         }
-        let record = window.record();
+        // In Find mode `current` is the active request; the record to come
+        // back to is `browse_current`.
+        let place = if window.mode == Mode::Find {
+            window.browse_current
+        } else {
+            window.current
+        };
+        let record = window.found.get(place).copied();
         window.found.retain(|id| existing.contains(id));
-        window.current = record
+        let place = record
             .and_then(|id| window.found.iter().position(|f| *f == id))
-            .unwrap_or_else(|| window.current.min(window.found.len().saturating_sub(1)));
+            .unwrap_or_else(|| place.min(window.found.len().saturating_sub(1)));
+        if window.mode == Mode::Find {
+            window.browse_current = place;
+        } else {
+            window.current = place;
+        }
     }
 
     /// The index of the layout `layout` names, `None` for the original
@@ -4012,6 +4058,7 @@ impl Windows for ServerHost {
         self.unpark(copy);
         if let Some(layout) = window.layout {
             self.go_to_layout(&LayoutTarget::Key(layout), None)?;
+            self.keep_windows_within_budget()?;
         }
         Ok(())
     }
