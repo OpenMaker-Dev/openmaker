@@ -161,10 +161,45 @@ fn a_host_message_is_taken_while_the_provider_is_idle() {
             kind: om_data::HostMessageKind::Message,
             text: "Back in five minutes.".into(),
             server_name: "openmaker-test".into(),
+            file: None,
         }]
     );
     assert!(provider.take_host_messages().is_empty());
     assert!(provider.connection_lost().is_none());
+    // A close with no time to leave is the forced notice at once, naming
+    // the file by the host's id: the provider names it as it was opened.
+    let id = handle
+        .files()
+        .into_iter()
+        .find(|info| info.name == FILE)
+        .expect("the hosted file")
+        .id;
+    handle
+        .close_file(
+            id,
+            &om_server::Notice {
+                message: "Closing for the night.".into(),
+                grace: std::time::Duration::ZERO,
+            },
+        )
+        .unwrap();
+    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(5);
+    let messages = loop {
+        let messages = provider.take_host_messages();
+        if !messages.is_empty() || std::time::Instant::now() > deadline {
+            break messages;
+        }
+        std::thread::sleep(std::time::Duration::from_millis(20));
+    };
+    assert_eq!(
+        messages,
+        [om_data::HostMessage {
+            kind: om_data::HostMessageKind::Disconnected,
+            text: "Closing for the night.".into(),
+            server_name: "openmaker-test".into(),
+            file: Some(FILE.into()),
+        }]
+    );
 }
 
 /// A session of its own, for what the provider does not expose.

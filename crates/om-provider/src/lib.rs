@@ -5134,7 +5134,8 @@ impl DataProvider for NativeProvider {
             .try_take_admin_messages()
             .unwrap_or_default()
             .into_iter()
-            .filter_map(|message| {
+            .filter_map(|notice| {
+                let message = notice.message;
                 let kind = match message.code & !attention::HOST_SERIAL {
                     attention::MESSAGE => HostMessageKind::Message,
                     attention::CLOSE_FILE | attention::CLOSE_ALL => HostMessageKind::CloseFiles,
@@ -5145,6 +5146,7 @@ impl DataProvider for NativeProvider {
                     kind,
                     text: message.text,
                     server_name: message.server_name,
+                    file: notice.file.filter(|_| kind != HostMessageKind::Message),
                 })
             })
             .collect()

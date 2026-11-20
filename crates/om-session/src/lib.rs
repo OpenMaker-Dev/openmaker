@@ -5,7 +5,7 @@ pub mod session;
 pub mod tls;
 
 pub use session::{
-    add_record_requests_sent, record_requests_sent, Admission, Claim, ConnectionRef, OpenedFile,
-    Session, SessionError, KEEPALIVE_INTERVAL, TICKLE_TIMEOUT,
+    add_record_requests_sent, record_requests_sent, AdminNotice, Admission, Claim, ConnectionRef,
+    OpenedFile, Session, SessionError, KEEPALIVE_INTERVAL, TICKLE_TIMEOUT,
 };
 pub use tls::{Transport, TransportError, MAX_MESSAGE_LEN, READ_TIMEOUT};

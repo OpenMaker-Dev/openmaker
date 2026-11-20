@@ -125,6 +125,10 @@ pub struct HostMessage {
     pub text: String,
     /// The host's name, as it names itself (`remoteName`).
     pub server_name: String,
+    /// The hosted file it names, when the session's connection holds it:
+    /// the file to close or that was disconnected. `None` for a file the
+    /// connection no longer holds, and for Send Message, which names none.
+    pub file: Option<String>,
 }
 
 /// A script's write of one record (Set Field and the other field steps,

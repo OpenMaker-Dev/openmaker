@@ -147,6 +147,34 @@ fn a_host_message_shows_over_the_idle_window_until_closed() {
     app.run_steps(2);
     assert!(app.query_by_label("Back in five minutes.").is_none());
     assert!(app.state().error().is_none(), "{:?}", app.state().error());
+    // A close with no time to leave forces the disconnect at once: the
+    // alert says so with the administrator's text, and OK closes the file.
+    let file = server
+        .files()
+        .into_iter()
+        .find(|info| info.clients > 0)
+        .expect("the window's file")
+        .id;
+    server
+        .close_file(
+            file,
+            &om_server::Notice {
+                message: "Closing for the night.".into(),
+                grace: std::time::Duration::ZERO,
+            },
+        )
+        .unwrap();
+    common::wait_until(&mut app, "the forced disconnect", |app| {
+        app.state().error().is_some_and(|alert| {
+            alert.starts_with("File has been forcefully disconnected by the host.")
+        })
+    });
+    assert!(app
+        .state()
+        .error()
+        .is_some_and(|alert| alert.ends_with("[From Administrator: “Closing for the night.”]")));
+    common::click(&mut app, "OK");
+    common::wait_until(&mut app, "the file to close", |app| !app.state().is_open());
 }
 
 /// A window that goes to another table's layout and back returns to the

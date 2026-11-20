@@ -412,6 +412,40 @@ struct HeldFile {
     closing: bool,
 }
 
+/// An administrator's message with the file it names, as the connection
+/// holds that file ([`Session::try_take_admin_messages`]).
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct AdminNotice {
+    pub message: AdminMessage,
+    /// The hosted name of the file item 1 names, as it was opened: by the
+    /// host's file id with [`notify::attention::HOST_SERIAL`] in the code,
+    /// by the client file id its op63 registered without it
+    /// (network-protocol.md 6.5). `None` when no file the connection holds
+    /// has that id (one closed since).
+    pub file: Option<String>,
+}
+
+/// The file `message` names among `files` ([`AdminNotice::file`]).
+fn named_file(files: &[HeldFile], message: &AdminMessage) -> Option<String> {
+    let by_host = message.code & notify::attention::HOST_SERIAL != 0;
+    files
+        .iter()
+        .find(|held| {
+            if by_host {
+                held.opened.as_ref().is_some_and(|opened| {
+                    i64::from(opened.reply.file_id) == i64::from(message.file)
+                })
+            } else {
+                held.client_file == Some(message.file)
+            }
+        })
+        .map(|held| {
+            held.opened
+                .as_ref()
+                .map_or_else(|| held.name.clone(), |opened| opened.filename.clone())
+        })
+}
+
 /// A hosted file's name as FileMaker compares names: without case, with
 /// its `.fmp12`.
 fn held_name(filename: &str) -> String {
@@ -2164,12 +2198,21 @@ impl Session {
     /// for its reply): then `None`, at once. For callers that poll while
     /// idle and must not wait behind a slow host. A read that fails marks
     /// the connection lost ([`Self::connection_lost`]).
-    pub fn try_take_admin_messages(&mut self) -> Option<Vec<AdminMessage>> {
+    pub fn try_take_admin_messages(&mut self) -> Option<Vec<AdminNotice>> {
         let mut wire = self.link.try_lock()?;
         if let Err(error) = wire.poll_idle() {
             let _ = wire.check(error);
         }
-        Some(wire.inbox.admin_messages.drain(..).collect())
+        let messages: Vec<AdminMessage> = wire.inbox.admin_messages.drain(..).collect();
+        Some(
+            messages
+                .into_iter()
+                .map(|message| AdminNotice {
+                    file: named_file(&wire.files, &message),
+                    message,
+                })
+                .collect(),
+        )
     }
 
     /// Issue a raw `Perform` with a prebuilt transaction and return the result stack.
