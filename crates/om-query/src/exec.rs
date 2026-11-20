@@ -465,7 +465,26 @@ mod kind {
     pub const NOT_ROW_ID_MATCH: u8 = 5;
     pub const ROW_ID_RANGE: u8 = 6;
     pub const FIND_DUPLICATES: u8 = 7;
+    pub const MATCH: u8 = 8;
 }
+
+/// The memory a Match pattern takes per byte of its source: a character's
+/// collation key and its place (at most 48 bytes), rounded up. Charged to
+/// the program's work before the pattern is built, as it is held while the
+/// request runs.
+const MATCH_BYTES_PER_BYTE: usize = 64;
+
+/// The longest value a Match finder tests, in bytes of text: matching one
+/// takes about [`MATCH_BYTES_PER_BYTE`] times its length while it runs
+/// (OpenMaker's limit; FileMaker Server's is unmeasured).
+const MAX_MATCH_VALUE: usize = 1 << 20;
+
+/// Finder option bit 7, IsOptional (spec 6.2): the finder only narrows the
+/// records an exact finder after it tests, so a host may leave it out.
+const IS_OPTIONAL: u8 = 1 << 7;
+
+/// Finder scopes (spec 6.2): words, the whole value, each repetition.
+const WORD_SCOPE: u8 = 0;
 
 /// Finder option bits (spec 6.2).
 const INCLUDE_BEGIN: u8 = 1 << 0;
@@ -483,6 +502,8 @@ pub(crate) struct Finder {
     field: Vec<u8>,
     begin: Vec<u8>,
     end: Vec<u8>,
+    /// A Match finder's pattern (kind 8).
+    pattern: Option<crate::matching::Pattern>,
 }
 
 impl Finder {
@@ -495,6 +516,18 @@ impl Finder {
         let (field, rest) = take_key_string(rest)?;
         let field = single_segment(field)?;
         let rest = rest.get(2..).ok_or(truncated)?; // u16 repetition
+        if *kind == kind::MATCH {
+            let (pattern, _) = crate::matching::Pattern::parse(rest)?;
+            return Ok(Self {
+                kind: *kind,
+                scope: *scope,
+                options: *options,
+                field,
+                begin: Vec::new(),
+                end: Vec::new(),
+                pattern: Some(pattern),
+            });
+        }
         if !matches!(kind, 0..=7 | 10..=12) {
             return Err(QueryError::Unsupported("finder kind", *kind));
         }
@@ -507,6 +540,7 @@ impl Finder {
             field,
             begin: begin.concat(),
             end: end.concat(),
+            pattern: None,
         })
     }
 
@@ -563,6 +597,99 @@ impl Finder {
             }
             other => return Err(QueryError::Unsupported("finder kind", other)),
         })
+    }
+
+    /// The records of `candidates` whose text in the field matches a Match
+    /// finder's pattern (spec 6.3): each repetition's whole value (value and
+    /// repetition scope) or each of its words (word scope), read from the
+    /// stored record whether the field is indexed or not.
+    fn matching(
+        &self,
+        pattern: &crate::matching::Pattern,
+        indexes: &mut Indexes<'_>,
+        work: &Work,
+        table: &[u8],
+        candidates: &RidList,
+    ) -> Result<RidList, QueryError> {
+        let options = indexes
+            .field(table, &self.field)?
+            .and_then(|f| f.decoded_options());
+        let repetitions = options.as_ref().map_or(1, |o| o.max_repetitions.max(1));
+        // Text compares as the field's index language does: Unicode raw by
+        // the characters as written, English, System, Unicode standard and
+        // the file's own language by collation key; a tailored language
+        // OpenMaker does not key is refused rather than compared in English.
+        let raw = match options.as_ref().map_or(0, |o| o.index_language()) {
+            2 => true,
+            0 | 1 | 3 | 21 | 77 => false,
+            _ => return Err(QueryError::Unimplemented("match in this index language")),
+        };
+        if candidates.is_empty() {
+            return Ok(RidList::new());
+        }
+        // Prepared once for every value, its cost charged once.
+        work.spend(Size {
+            nodes: 1,
+            bytes: pattern.len(),
+        })?;
+        let prepared = pattern.prepare(raw);
+        // Repetition `n`'s cell (`field * 256 + n` past the first), built
+        // only when it is looked at.
+        let id = be_uint(&self.field);
+        let cell = |n: u64| -> Option<Vec<u8>> {
+            if n == 1 {
+                return Some(self.field.clone());
+            }
+            let cell = id?.checked_mul(256)?.checked_add(n)?;
+            Some(om_hbam::slot::uint_segment(cell))
+        };
+        let mut found = RidList::new();
+        for id in candidates.iter() {
+            let mut matched = false;
+            for n in 1..=u64::from(repetitions) {
+                // Each look counts, a repetition the record lacks included.
+                work.spend(Size { nodes: 1, bytes: 0 })?;
+                let Some(cell) = cell(n) else {
+                    continue;
+                };
+                let Some(value) = indexes.stored_text(work, table, &cell, id)? else {
+                    continue;
+                };
+                // Matching takes up to the prepared pattern's length in
+                // steps per character and once more at the end, charged
+                // before it starts (an empty value pays the pattern); word
+                // scope matches each word, at most twice the value's steps.
+                // The characters' keys live only while one value is matched:
+                // a value past `MAX_MATCH_VALUE` is refused.
+                if value.len() > MAX_MATCH_VALUE {
+                    return Err(QueryError::Limit("match value"));
+                }
+                let passes = if self.scope == WORD_SCOPE { 2 } else { 1 };
+                let steps = value
+                    .len()
+                    .saturating_mul(passes)
+                    .saturating_add(1)
+                    .saturating_mul(prepared.len().max(1));
+                work.spend(Size {
+                    nodes: 1,
+                    bytes: steps,
+                })?;
+                matched = if self.scope == WORD_SCOPE {
+                    om_collate::words(&value)
+                        .into_iter()
+                        .any(|word| prepared.matches(word))
+                } else {
+                    prepared.matches(&value)
+                };
+                if matched {
+                    break;
+                }
+            }
+            if matched {
+                found.insert(id);
+            }
+        }
+        Ok(found)
     }
 
     /// The records of `table` this finder selects. An index finder finds
@@ -701,17 +828,28 @@ fn simple_find(
         program.set_spot(&dest, Vec::new())?;
         return Err(QueryError::Missing("table"));
     }
-    let finders: Vec<Finder> = program
+    let leaves: Vec<Vec<u8>> = program
         .spot(&src)?
         .map(|spot| {
             spot.children
                 .iter()
-                .map(|f| Finder::parse(f.value.as_deref().unwrap_or_default()))
-                .collect::<Result<_, _>>()
+                .map(|f| f.value.clone().unwrap_or_default())
+                .collect()
         })
-        .transpose()?
         .unwrap_or_default();
     let work = program.work();
+    let mut finders = Vec::with_capacity(leaves.len());
+    for bytes in &leaves {
+        // A Match finder's pattern holds a collation key per operand
+        // character: its memory is charged before it is built.
+        if bytes.first() == Some(&kind::MATCH) {
+            work.spend(Size {
+                nodes: 0,
+                bytes: bytes.len().saturating_mul(MATCH_BYTES_PER_BYTE),
+            })?;
+        }
+        finders.push(Finder::parse(bytes)?);
+    }
     let all = indexes.all_records(&table)?;
     read_list(work, all)?;
     let mut found = all.clone();
@@ -726,8 +864,20 @@ fn simple_find(
     // Every finder runs, even once nothing is left: a finder may have its
     // index built on demand for later programs (spec 7.1), or be one this
     // engine refuses.
+    // FileMaker Pro marks a Match finder's pre-filters IsOptional (6.4): an
+    // IndexRange or IndexScan on the literal. They are left out, so the
+    // exact Match finder tests every record the other finders leave, also
+    // where the pre-filter's index is missing or IndexScan is not built.
+    let has_match = finders.iter().any(|f| f.pattern.is_some());
     for finder in &finders {
-        found = found.and(&finder.evaluate(indexes, work, &table)?);
+        if has_match && finder.options & IS_OPTIONAL != 0 {
+            continue;
+        }
+        found = match &finder.pattern {
+            // A Match finder tests the records the others leave.
+            Some(pattern) => finder.matching(pattern, indexes, work, &table, &found)?,
+            None => found.and(&finder.evaluate(indexes, work, &table)?),
+        };
     }
     program.set_spot(&dest, found.entries())
 }
@@ -2241,6 +2391,67 @@ mod tests {
         };
         assert_eq!(later_malformed, record(13));
         assert_eq!(QueryError::NoRecords.code(), 401);
+    }
+
+    /// SimpleFind with Match finders (spec 6.3): each record's stored text
+    /// against the pattern, the whole value or each word (live1's
+    /// m_text_test, m_text_test_w), after the other finders' records.
+    #[test]
+    fn match_finders_test_stored_values() {
+        let values = ["Test", "Hello", "Ima", "A long text, Test", "One Test here"];
+        let mut source = Indexed::new(5, Vec::new());
+        for (i, value) in values.iter().enumerate() {
+            source.root.put(
+                &[&[0x80, 0x01], &[5], &serial::encode(i as u64 + 1), &[1]],
+                OwnedNode::leaf(Vec::new(), om_scsu::encode_scsu(value)),
+            );
+        }
+        let test_operand = [0x00, 0x04, 0x0e, 0x3f, 0x29, 0x2e, 0x00];
+        let matcher = |scope: u8| {
+            let mut bytes = vec![8, scope, 0, 3, 2, 0x80, 0x01, 2, 1, 1, 0, 1];
+            bytes.extend([0, 1, 0]);
+            bytes.extend(test_operand);
+            bytes
+        };
+        let find = |finders: &[Vec<u8>]| {
+            ids(&result(&source, &find_program(finders), Budget::DEFAULT).unwrap())
+        };
+        assert_eq!(find(&[matcher(1)]), [1]);
+        assert_eq!(find(&[matcher(0)]), [1, 4, 5]);
+        // After a row-id range of records 2 to 5, only 4 and 5 are tested.
+        let rows = finder(
+            6,
+            INCLUDE_BEGIN | INCLUDE_END,
+            1,
+            &serial::encode(2),
+            &serial::encode(5),
+        );
+        assert_eq!(find(&[rows, matcher(0)]), [4, 5]);
+        // An optional IndexScan before a Match finder is left out (`*x*`,
+        // 6.4); one without a Match finder, or a required one, is refused.
+        let scan = |options: u8| {
+            let mut bytes = vec![3, 0, options, 3, 2, 0x80, 0x01, 2, 1, 1, 0, 1];
+            bytes.extend([5, 4, 0x14, 0x33, 0x12, 0x6b, 2, 1, 0xff]);
+            bytes
+        };
+        assert_eq!(find(&[scan(0x88), matcher(0)]), [1, 4, 5]);
+        assert!(result(&source, &find_program(&[scan(0x08)]), Budget::DEFAULT).is_err());
+        assert!(result(&source, &find_program(&[scan(0x88)]), Budget::DEFAULT).is_err());
+        // An optional IndexRange whose index holds nothing (field 1's word
+        // index here) does not empty the Match finder's candidates.
+        let mut range = finder(
+            2,
+            0x83,
+            1,
+            &[0x01, 0x14, 0x33],
+            &[0x01, 0x14, 0x33, 0xff, 0xfe],
+        );
+        range[1] = 0;
+        assert_eq!(find(&[range, matcher(1)]), [1]);
+        // DateTimeMatch (9) is not built: refused, as before.
+        let mut date_time = matcher(1);
+        date_time[0] = 9;
+        assert!(result(&source, &find_program(&[date_time]), Budget::DEFAULT).is_err());
     }
 
     /// Projection in a form the field's index does not hold keys the

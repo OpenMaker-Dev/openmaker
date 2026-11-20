@@ -3929,9 +3929,10 @@ Steps
   re-reads the window's records afterwards.
 - Insert from Index shows the View Index dialog with the field's
   value-index values (CreateValueListEx, in index order; "Show individual
-  words" is not offered); Paste inserts the value at the end of the field
-  (the insertion point) or replaces the contents with "Select entire
-  contents"; Cancel is 1.
+  words" is not offered); Paste inserts the value at the insertion point
+  of the field entered (replacing its selection; at the end of a field not
+  entered) or replaces the contents with "Select entire contents"; Cancel
+  is 1.
 - Set Next Serial Value sends op72 with `kReplace` for the field of the
   step's occurrence's table, any table (write-path.md 3.2); the host stores
   the text, also for a field without an auto-entered serial (unconfirmed).

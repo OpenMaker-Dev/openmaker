@@ -65,8 +65,9 @@ om-session = { path = "../om-session" }
 socket2 = "0.6"
 
 [target.'cfg(unix)'.dev-dependencies]
+# The unit tests create FIFO fixtures without spawning a subprocess.
 # psos_sql_memory reads the process's peak memory with getrusage.
-nix = { version = "0.29", default-features = false, features = ["resource"] }
+nix = { version = "0.29", default-features = false, features = ["fs", "resource"] }
 
 [lints]
 workspace = true
