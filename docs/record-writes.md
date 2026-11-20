@@ -863,9 +863,11 @@ record's place in what the rules read:
   [#298](https://github.com/OpenMaker-Dev/openmaker/issues/298)).
   OpenMaker Server's scripts give that number to their New Record and
   Duplicate Record, keep it through the record's Set Field steps, and
-  check at the commit that the record is still at that place in an
-  unsorted found set; a duplicate's replacing auto-entered calculations
-  are entered again, not copied. A sorted found set's new record, one no
+  check at the commit that the record is still at that place in its
+  table's unsorted found set and that the commit holds no other new record
+  of the table; a duplicate's replacing auto-entered calculations are
+  entered again, not copied, unless the transaction skips auto-entry, when
+  the copied value stays. A sorted found set's new record, one no
   longer at its place, and the desktop's New Record and Duplicate Record
   are not answered: the desktop's Duplicate Record copies auto-entered
   values, and its window keeps a found count and sort state that can be

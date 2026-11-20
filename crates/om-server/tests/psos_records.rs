@@ -621,7 +621,9 @@ fn server_scripts_auto_enter_over_a_global_reads_the_sessions_value() {
 /// FileMaker Server's engine, whose fields replaced; #298). A field set
 /// before the commit keeps it, as in the oracle's probes. A record no
 /// longer at that place when its rules run (an earlier record omitted in
-/// a transaction) is not answered: its write is refused.
+/// a transaction), or one of two new records in one transaction, is not
+/// answered: the write is refused. A duplicate in a transaction that
+/// skips auto-entry keeps the copied number.
 #[test]
 fn server_scripts_new_records_auto_enter_their_found_set_position() {
     let made = |before: Vec<ScriptStep>| {
@@ -683,6 +685,36 @@ fn server_scripts_new_records_auto_enter_their_found_set_position() {
                 exit_with("Get ( LastError )"),
             ],
         ),
+        (
+            12,
+            "Two",
+            vec![
+                fixture::on(86, true),
+                ScriptStep::new(23),
+                ScriptStep::new(205),
+                ScriptStep::new(7),
+                ScriptStep::new(7),
+                ScriptStep::new(206),
+                exit_with("Get ( LastError )"),
+            ],
+        ),
+        (
+            13,
+            "Kept",
+            vec![
+                ScriptStep::new(23),
+                fixture::go_to_record(1),
+                {
+                    // Open Transaction [Skip auto-enter options].
+                    let mut open = ScriptStep::new(205);
+                    open.set_flag(om_scripts::flag::SELECT_ALL, true);
+                    open
+                },
+                ScriptStep::new(8),
+                ScriptStep::new(206),
+                exit_with("Tasks::Number & \"|\" & Get ( LastError )"),
+            ],
+        ),
     ] {
         root.put(
             &[&[17], &[5], &uint_segment(id)],
@@ -703,6 +735,8 @@ fn server_scripts_new_records_auto_enter_their_found_set_position() {
         format!("{}|{}|0", found + 2, found + 2)
     );
     assert_eq!(run(&mut client, 11).1, "3");
+    assert_eq!(run(&mut client, 12).1, "3");
+    assert_eq!(run(&mut client, 13).1, "1|0");
 }
 
 #[test]

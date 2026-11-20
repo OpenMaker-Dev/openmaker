@@ -1314,16 +1314,23 @@ impl ServerHost {
     /// gave it. Returns the cells the rules wrote.
     fn apply_rules(&mut self, record: &mut OpenRecord, entry: Entry) -> HostResult<BTreeSet<u64>> {
         // The place New Record gave a new record is its number only while
-        // it is still there, in the window's unsorted found set: its
-        // creation and its commit then read the same place. Otherwise
-        // (records before it omitted, the found set sorted or found again,
-        // another table's) what FileMaker stores is unmeasured (#298).
+        // it is still there, in the window's unsorted found set of its own
+        // table: its creation and its commit then read the same place.
+        // Otherwise (records before it omitted, the found set sorted or
+        // found again, another table's), and when the commit holds another
+        // new record of the table, what FileMaker stores is unmeasured
+        // (#298).
         if let Some(number) = record.context.record_number {
             let at = usize::try_from(number).ok().and_then(|n| n.checked_sub(1));
             let there = self.window().is_ok_and(|w| {
-                w.sort.is_none() && at.and_then(|at| w.found.get(at)) == Some(&record.id)
+                w.table == record.table
+                    && w.sort.is_none()
+                    && at.and_then(|at| w.found.get(at)) == Some(&record.id)
             });
-            if !there {
+            let other_new = self.pending_in(record.table).any(|((_, id), change)| {
+                *id != record.id && matches!(change, Change::Write(other) if other.new)
+            });
+            if !there || other_new {
                 record.context.record_number = None;
             }
         }
@@ -3302,10 +3309,15 @@ impl Records for ServerHost {
             normal(&|f: &Field| f.decoded_options().is_some_and(|o| o.auto_entry_serial()));
         // An auto-entered calculation that replaces an existing value is
         // entered again, as FileMaker Server's engine entered the copy's
-        // own Get ( RecordNumber ) into it (s46): not copied.
+        // own Get ( RecordNumber ) into it (s46): not copied. Where the
+        // transaction skips auto-entry, nothing would enter it again: the
+        // copied value stays.
+        let skip_auto_enter =
+            (self.transaction.as_ref()).is_some_and(|t| t.options.skip_auto_enter);
         let replacing = normal(&|f: &Field| {
-            f.decoded_options()
-                .is_some_and(|o| o.calculation_replaces_existing())
+            !skip_auto_enter
+                && f.decoded_options()
+                    .is_some_and(|o| o.calculation_replaces_existing())
         });
         let record = self.record.as_mut().expect("the new record");
         for cell in source.children {
