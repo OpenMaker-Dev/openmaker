@@ -3254,7 +3254,12 @@ fn show_document(
     }
     show_other_dialog(ui, session, state);
     if view == ViewMode::List {
-        show_list(ui, session, document, state, calc, actions);
+        // Zoomed as Form view is: its parts and records in the document's
+        // zoom layer, in the layout's own coordinates.
+        let factor = state.zoom.factor();
+        zoom::show(ui, ui.available_size() / factor, factor, |ui| {
+            show_list(ui, session, document, state, calc, actions)
+        });
         return;
     }
     let layout = &document.layout;
