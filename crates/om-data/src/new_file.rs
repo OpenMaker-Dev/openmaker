@@ -1164,6 +1164,60 @@ mod tests {
         }
     }
 
+    /// A new file's empty script catalog takes its first script (#274): the
+    /// name list key is FileMaker's in every file, so no stored name needs
+    /// to show it.
+    #[test]
+    fn a_new_file_takes_its_first_script() {
+        use crate::field_catalog::listed_key;
+        use crate::script_catalog::plan;
+        use crate::{Script, ScriptCatalog};
+        use std::collections::BTreeMap;
+        let root = tree(&alpha(), &mut counter()).unwrap();
+        let index = root
+            .child(&[crate::script_catalog::SCRIPTS])
+            .and_then(|catalog| catalog.child(&[1]))
+            .expect("the script index")
+            .clone();
+        let requested = ScriptCatalog {
+            scripts: vec![Script {
+                id: 1,
+                name: "First".into(),
+                ..Script::default()
+            }],
+            ..ScriptCatalog::default()
+        };
+        let by = Stamp {
+            user: "Tester".into(),
+            account: ADMIN.into(),
+            time: alpha().time,
+        };
+        let saved = plan(
+            Some(&index),
+            &ScriptCatalog::default(),
+            &BTreeMap::new(),
+            &requested,
+            &by,
+            &mut || [9; 16],
+        )
+        .unwrap()
+        .unwrap();
+        assert_eq!(saved.assigned[&1], 1);
+        let entry = listed_key("First").unwrap();
+        assert_eq!(
+            saved
+                .index
+                .child(&[1])
+                .and_then(|names| names.child(&entry))
+                .and_then(|e| e.value.clone()),
+            Some(vec![1, 1])
+        );
+        assert_eq!(
+            saved.index.child(&[4]).and_then(|n| n.value.clone()),
+            Some(1u32.to_be_bytes().to_vec())
+        );
+    }
+
     /// Every stamp holds its time as a key string, also a time whose key is
     /// shorter than 8 bytes (00:00:05).
     #[test]

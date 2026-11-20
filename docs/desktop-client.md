@@ -2253,12 +2253,12 @@ script's steps:
     id, which no script takes again.
 - **Refused with an alert (error 3), nothing saved:** new folders and
   separators (and duplicated folders), a name another script or folder
-  has, names with characters outside ASCII, and deleting or renaming one
-  of two members of one name. Files whose own script names do not show
-  how FileMaker keys an ASCII name in their language refuse new and
-  renamed scripts (deletes, moves and options still save): the Japanese,
-  Korean and Chinese starter files, and the Swedish Assets and the French
-  and Swedish Meetings, whose script names all have accents ([#209](https://github.com/OpenMaker-Dev/openmaker/issues/209)). A
+  has, names with characters outside ASCII
+  ([#209](https://github.com/OpenMaker-Dev/openmaker/issues/209)), and
+  deleting or renaming one of two members of one name. New and renamed scripts are listed under
+  FileMaker's name list key, which is the same in every file, so a Create
+  New file and the Japanese, Korean and Chinese starters take them too
+  ([#274](https://github.com/OpenMaker-Dev/openmaker/issues/274)). A
   file whose script index lacks a part every file FileMaker made has is
   refused too, and so is one whose stored digest is not the one OpenMaker
   computes for its scripts.
