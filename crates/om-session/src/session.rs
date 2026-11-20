@@ -60,7 +60,7 @@ use om_protocol::{
 };
 use om_rctransaction::ResultBuilder;
 
-use crate::tls::{Transport, TransportError, READ_TIMEOUT, WRITE_TIMEOUT};
+use crate::tls::{Transport, TransportError, READ_TIMEOUT};
 
 /// Key of a table's records node, `[T, 05]` (write-path.md 5.2).
 const RECORDS: u8 = 0x05;
@@ -589,10 +589,15 @@ pub const TICKLE_TIMEOUT: Duration = Duration::from_secs(30);
 /// not hold the caller.
 const IDLE_MESSAGES: usize = 32;
 
-/// How long an idle poll's answer to one of the host's calls may wait for
-/// the host to take it: the answers are small, so a write waits only once
-/// the host has stopped reading.
+/// How long an idle poll's answers to the host's calls may wait, together,
+/// for the host to take them: the answers are small, so a write waits only
+/// once the host has stopped reading.
 const IDLE_WRITE_TIMEOUT: Duration = Duration::from_secs(2);
+
+/// How long an idle poll reads one message, from the start of its read: a
+/// message already there is read at once; one arriving slowly is left for
+/// the next read.
+const IDLE_READ: Duration = Duration::from_millis(5);
 
 /// The most slot bytes [`Session::get_file_list`] reads across a list's
 /// pages: as much as one transport message may carry, so that a host
@@ -2368,21 +2373,24 @@ impl Wire {
     }
 
     /// [`Self::poll`] for a caller that polls while idle and must not be
-    /// held: at most [`IDLE_MESSAGES`] messages that have arrived, waiting
-    /// for none, and an answer to a call the host does not take within
-    /// [`IDLE_WRITE_TIMEOUT`] fails the write, which loses the connection.
-    /// Messages left are read by the next poll or exchange.
+    /// held: at most [`IDLE_MESSAGES`] messages, each read by
+    /// [`IDLE_READ`] from its start however slowly it arrives (what is
+    /// read of it is kept for the next read), and the answers to the host's
+    /// calls written within [`IDLE_WRITE_TIMEOUT`] of the poll's start, all
+    /// of them: an answer not taken by then fails the write, which loses the
+    /// connection. Messages left are read by the next poll or exchange.
     fn poll_idle(&mut self) -> Result<(), SessionError> {
         self.transport()?;
         let Wire {
             transport, inbox, ..
         } = self;
         let transport = transport.as_mut().expect("checked above");
-        transport.set_write_timeout(Some(IDLE_WRITE_TIMEOUT))?;
+        transport.set_write_deadline(Some(Instant::now() + IDLE_WRITE_TIMEOUT))?;
         let polled = (|| {
             for _ in 0..IDLE_MESSAGES {
-                transport.set_read_timeout(Some(Duration::from_millis(1)))?;
-                let msg = match transport.recv_logical() {
+                let msg = match transport
+                    .recv_logical_by(Instant::now() + IDLE_READ, Some(READ_TIMEOUT))
+                {
                     Ok(msg) => msg,
                     Err(e) if e.is_timeout() => break,
                     Err(e) => return Err(e.into()),
@@ -2400,8 +2408,7 @@ impl Wire {
             }
             Ok(())
         })();
-        transport.set_read_timeout(Some(READ_TIMEOUT))?;
-        transport.set_write_timeout(Some(WRITE_TIMEOUT))?;
+        transport.set_write_deadline(None)?;
         polled
     }
 

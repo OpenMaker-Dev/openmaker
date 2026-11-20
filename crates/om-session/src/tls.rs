@@ -155,6 +155,24 @@ pub struct Transport {
 struct Socket {
     tcp: TcpStream,
     deadline: Option<Instant>,
+    /// While set, each write of the socket waits only for the time left
+    /// ([`Transport::set_write_deadline`]).
+    write_deadline: Option<Instant>,
+}
+
+impl Socket {
+    /// The time left before the write deadline, as the socket's write
+    /// timeout; none left is a timeout.
+    fn bound_write(&mut self) -> std::io::Result<()> {
+        if let Some(deadline) = self.write_deadline {
+            let left = deadline.saturating_duration_since(Instant::now());
+            if left.is_zero() {
+                return Err(std::io::ErrorKind::TimedOut.into());
+            }
+            self.tcp.set_write_timeout(Some(left))?;
+        }
+        Ok(())
+    }
 }
 
 impl Read for Socket {
@@ -172,10 +190,12 @@ impl Read for Socket {
 
 impl Write for Socket {
     fn write(&mut self, buf: &[u8]) -> std::io::Result<usize> {
+        self.bound_write()?;
         self.tcp.write(buf)
     }
 
     fn flush(&mut self) -> std::io::Result<()> {
+        self.bound_write()?;
         self.tcp.flush()
     }
 }
@@ -262,6 +282,7 @@ impl Transport {
         let socket = Socket {
             tcp,
             deadline: None,
+            write_deadline: None,
         };
         let mut stream = StreamOwned::new(conn, socket);
         // Force the handshake now so cert problems surface here.
@@ -294,8 +315,18 @@ impl Transport {
         Ok(())
     }
 
-    pub fn set_write_timeout(&mut self, timeout: Option<Duration>) -> Result<(), TransportError> {
-        self.stream.sock.tcp.set_write_timeout(timeout)?;
+    /// Until it is cleared, every write of the socket, however TLS splits
+    /// a message, ends by `deadline`; cleared, writes wait
+    /// [`WRITE_TIMEOUT`] again. A write that times out leaves the stream
+    /// unusable: its caller drops the connection.
+    pub fn set_write_deadline(&mut self, deadline: Option<Instant>) -> Result<(), TransportError> {
+        self.stream.sock.write_deadline = deadline;
+        if deadline.is_none() {
+            self.stream
+                .sock
+                .tcp
+                .set_write_timeout(Some(WRITE_TIMEOUT))?;
+        }
         Ok(())
     }
 

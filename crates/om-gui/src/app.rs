@@ -2140,14 +2140,6 @@ impl OpenMakerApp {
     /// The app's dialogs, over the front window.
     fn dialogs(&mut self, ctx: &egui::Context, actions: &mut Vec<Action>) {
         let ctx = ctx.clone();
-        // The host's message, drawn last (on top), takes Return and Escape
-        // before a dialog under it (Settings, a license) sees them.
-        let host_keys = self.host_message_shown()
-            && ctx.input_mut(|input| {
-                let enter = input.consume_key(Modifiers::NONE, Key::Enter);
-                let escape = input.consume_key(Modifiers::NONE, Key::Escape);
-                enter || escape
-            });
         if let (Some(dialog), Some(session)) = (&mut self.manage_layouts, &self.w.session) {
             // Associated Table: each layout's table occurrence, by name.
             let tables: std::collections::BTreeMap<u32, String> =
@@ -2413,7 +2405,7 @@ impl OpenMakerApp {
         self.own_password_dialog(&ctx);
         self.related_sign_in(&ctx);
         self.alert(&ctx, actions);
-        self.host_message(&ctx, actions, host_keys);
+        self.host_message(&ctx, actions);
         self.prompt(&ctx);
     }
 
@@ -2709,6 +2701,12 @@ impl OpenMakerApp {
 
     /// A dialog or alert over the document has the keyboard.
     fn dialog_over_document(&self) -> bool {
+        self.dialog_open() || self.host_message_shown()
+    }
+
+    /// A dialog, alert or confirmation of the app's is open: the host's
+    /// message waits for it ([`Self::host_message_shown`]).
+    fn dialog_open(&self) -> bool {
         self.manage_layouts.is_some()
             || self.layout_setup.is_some()
             || self.part_setup.is_some()
@@ -2730,7 +2728,6 @@ impl OpenMakerApp {
             || self.w.delete_portal_row.is_some()
             || self.error.is_some()
             || self.script.prompt.is_some()
-            || self.host_message_shown()
             || self.w.document.other_dialog_open()
             || self.value_list_edit.is_some()
     }
@@ -3237,10 +3234,11 @@ impl OpenMakerApp {
     }
 
     /// Whether the host administrator's message shows now: one waits, and
-    /// no error alert or script dialog is up, whose keys it would share
-    /// (Return, Escape). It waits for them, its countdown not started.
+    /// no other dialog, alert or confirmation is open, whose keys it would
+    /// share (Return, Escape). It waits for them, its countdown not started
+    /// [I: FileMaker Pro shows it over them; OpenMaker's choice].
     pub(super) fn host_message_shown(&self) -> bool {
-        !self.host_messages.is_empty() && self.error.is_none() && self.script.prompt.is_none()
+        !self.host_messages.is_empty() && !self.dialog_open()
     }
 
     /// The host administrator's message (Send Message), as FileMaker Pro
@@ -3249,7 +3247,7 @@ impl OpenMakerApp {
     /// after [`HOST_MESSAGE_SECONDS`] (network-protocol.md 6.5,
     /// admin-console.md 9). Messages that came meanwhile follow, one at a
     /// time.
-    fn host_message(&mut self, ctx: &egui::Context, actions: &mut Vec<Action>, keys: bool) {
+    fn host_message(&mut self, ctx: &egui::Context, actions: &mut Vec<Action>) {
         if !self.host_message_shown() {
             return;
         }
@@ -3294,8 +3292,22 @@ impl OpenMakerApp {
                 ui.add_space(12.0);
                 ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
                     let close = widgets::dialog_button(ui, "Close", true, true);
-                    // Return and Escape, taken for it before the dialogs
-                    // under it drew (`dialogs`).
+                    // No other dialog is open (`host_message_shown`):
+                    // Return and Escape, with any modifier, are its own.
+                    let keys = ui.input_mut(|input| {
+                        let before = input.events.len();
+                        input.events.retain(|event| {
+                            !matches!(
+                                event,
+                                egui::Event::Key {
+                                    key: Key::Enter | Key::Escape,
+                                    pressed: true,
+                                    ..
+                                }
+                            )
+                        });
+                        input.events.len() != before
+                    });
                     if close.clicked() || keys {
                         actions.push(Action::DismissHostMessage);
                     }

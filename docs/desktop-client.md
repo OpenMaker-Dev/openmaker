@@ -289,16 +289,16 @@ network-protocol.md 6.5). The window shows it as FileMaker Pro does: a
 dialog "Message from “<server name>”" with the text, Close and "(This
 dialog will be dismissed in N seconds.)", which closes itself after 30
 seconds. Messages that come meanwhile follow, one at a time. A message
-waits behind an error alert or a script's dialog, and while it shows, its
-Close, Return and Escape are its own (not a paused script's Escape). The
-providers of every open file read their hosts' calls each second while
-idle (`DataProvider::take_host_messages`), so a message shows within about
-a second, not at the session's next exchange. A read never waits behind
-another exchange on the connection (a Tickle waiting for a slow host),
-reads at most 32 of the host's messages, and gives an answer the host
-does not take within 2 seconds up, losing the connection; the rest waits
-for the next second. While the message shows, its Return and Escape are
-taken before another dialog under it (Settings) sees them.
+waits while another dialog, alert or confirmation is open (Settings, a
+script's dialog, Delete Layout's question), its countdown not started, so
+its Close, Return and Escape are its own [I: FileMaker Pro shows it over
+them]. The providers of every open file read their hosts' calls each
+second while idle (`DataProvider::take_host_messages`), so a message shows
+within about a second, not at the session's next exchange. That read never
+waits behind another exchange on the connection (a Tickle waiting for a
+slow host), reads at most 32 messages, each for at most 5 milliseconds
+however slowly it arrives, and writes its answers within 2 seconds or
+loses the connection; the rest waits for the next second.
 
 Limits ([#156](https://github.com/OpenMaker-Dev/openmaker/issues/156)):
 - The host's requests to close the files (Close, Disconnect) and its
