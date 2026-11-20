@@ -3800,12 +3800,20 @@ impl ScriptHost for WorkerHost<'_> {
         self.s.active_files.extend(files.iter().copied());
     }
 
+    /// A script the account's set gives no access is not executable, and
+    /// being set to run with full access privileges does not make it so:
+    /// only a caller running with full access lets it run, and then with
+    /// the account's own privileges (script-runtime.md 3.7, 9.1). The
+    /// runtime admits a script with either flag, so the flag is given only
+    /// for a script the account may run (#408).
     fn script_access(&mut self, file: FileId, script: u64) -> ScriptAccess {
+        let executable = self.script_executable(file, script);
         ScriptAccess {
-            executable: self.script_executable(file, script),
-            full_access: self
-                .script(file, script)
-                .is_some_and(|s| s.runs_with_full_access()),
+            executable,
+            full_access: executable
+                && self
+                    .script(file, script)
+                    .is_some_and(|s| s.runs_with_full_access()),
         }
     }
 
@@ -4907,6 +4915,9 @@ impl Fields for WorkerHost<'_> {
     }
 
     fn select_all(&mut self) -> HostResult {
+        // All of the field's text, over a selection read from its editor
+        // or a step's (`insert` takes `select` without one).
+        self.s.file.window.state.selection = None;
         self.s.file.window.state.select = true;
         self.s.file.window.touch();
         Ok(())
@@ -5029,17 +5040,14 @@ impl WorkerHost<'_> {
             Some(Answer::Index(Some(value))) => value,
             _ => return Err(ErrorCode::CANCELED.into()),
         };
-        let text = if target.select_all {
-            chosen
-        } else {
-            let (window, provider) = self.wp();
-            let current = window
-                .value(provider, &name)
-                .map_err(data_error)?
-                .unwrap_or_default();
-            current + &chosen
-        };
-        self.write_named(&name, text)
+        // "Select entire contents" replaces the field's text, a Find
+        // request's criterion too, without reading it first. Otherwise
+        // pasted as Insert Text pastes: at the insertion point of the field
+        // entered, its end otherwise.
+        if target.select_all {
+            return self.write_named(&name, chosen);
+        }
+        self.insert(target, Value::text(chosen))
     }
 }
 
