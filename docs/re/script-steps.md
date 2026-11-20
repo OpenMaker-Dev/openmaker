@@ -2750,13 +2750,18 @@ with the step's profile as Import Records parses it when it runs. At most
 16 MB is read there (only the source's fields are needed; OpenMaker's
 choice), and a source of more than 65,535 fields does not fit the order's
 count. Without a readable source, with a type OpenMaker does not read
-(FileMaker files, folders, ODBC, Excel 97-2004), or with a stored `86`,
+(FileMaker files, folders, ODBC), with an order matched by the names in a
+text or spreadsheet source's names row (Import Records matches it by them,
+and this dialog shows such a source's columns by position), or with a
+stored `86`,
 `87` or `f0` that does not decode (a default would write over it),
 Specify… says why in an alert. A source with
 no stored profile takes one from its extension (`.tab`, `.txt`, `.csv`,
 `.mer`, `.dbf`; written to `86` with the order); an Excel profile names a
 sheet and a file, how FileMaker fills them for a new step is not
-established, so `.xlsx` without a stored profile is refused. Import Field
+established, so `.xlsx` and `.xls` without a stored profile are refused;
+with one, an Excel 97-2004 source is read as an `.xlsx` sheet is (the BIFF8
+reader Import Records runs). Import Field
 Mapping (Claris's name; the run-time dialog of Import Records with dialog
 has the same controls) lists the source's fields (their names, or the first
 record's values) with a target field pop-up each (the target table's data

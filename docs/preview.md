@@ -46,8 +46,12 @@ the previous page's scene on screen. Get(PageNumber) in calculated report fields
 uses the physical page context in both Preview and PDF, including nested
 summary calculations. Exporting does not change the user's window mode or
 leave the report page in subsequent script calculations. `{{PageNumber}}` in a
-text object or button prints the page's number; other layout symbols, such as
-`{{PageCount}}` and `{{CurrentDate}}`, remain explicitly refused.
+text object or button prints the page's number, and the other symbols Browse
+shows and merge variables print on each record as Browse shows them (Save
+Records as PDF and Print refuse merge variables,
+[#596](https://github.com/OpenMaker-Dev/openmaker/issues/596));
+`{{PageCount}}` and other symbols remain explicitly refused
+([layout symbols](portable-pdf.md)).
 
 The portable PDF refusal contract also applies to Preview: bodyless reports,
 unsupported sub-summary sorts/breaks, advanced part options, sliding left, split parts,

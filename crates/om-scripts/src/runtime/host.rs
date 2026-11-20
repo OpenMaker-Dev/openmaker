@@ -785,6 +785,15 @@ pub trait ScriptHost:
         ScriptAccess::default()
     }
 
+    /// Whether the Script Debugger may stop in a script and show its steps:
+    /// FileMaker runs a script the account may only execute ("Executable
+    /// Only") whole and hides its steps, unless the user authenticated with
+    /// full access (script-runtime.md 6.4). No script by default, so a host
+    /// shows none it has not checked.
+    fn script_debuggable(&mut self, _file: FileId, _script: u64) -> bool {
+        false
+    }
+
     /// Raise the file user to full access for one step, or restore it.
     fn set_full_access(&mut self, _file: FileId, _on: bool) {}
 
