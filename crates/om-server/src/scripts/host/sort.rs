@@ -8,9 +8,11 @@
 //! language override, else of the field's index language; numbers, dates
 //! and times by value; a custom value list's order with values not in the
 //! list after its values (dividers ignored); ties to the next field, and
-//! finally to the record id. A sort field of another occurrence of a
-//! different table sorts by its first related record's value (Claris); an
-//! unstored calculation by its value on each record. Value lists from
+//! finally to the record id. A sort field of another occurrence, a self
+//! join's included, sorts by its first related record's value (Claris;
+//! the self join inferred from calc-values.md 12.1); an unstored
+//! calculation by its value on each record. Related sorts nested inside
+//! one another stop with 3 past a bound (`om_data::host::SortNesting`). Value lists from
 //! fields and the summary reorder are not supported (3).
 
 use std::cmp::Ordering;
@@ -141,6 +143,8 @@ impl ServerHost {
         records: Vec<u64>,
         spec: &SortSpec,
     ) -> Result<Vec<u64>, ErrorCode> {
+        // A related sort field's related set may be sorted too.
+        let _nesting = om_data::host::SortNesting::enter().ok_or(UNSUPPORTED)?;
         let levels = spec
             .fields
             .iter()
@@ -211,12 +215,13 @@ impl ServerHost {
             return Err(UNSUPPORTED);
         }
         let field_occurrence = entry.field.occurrence.unwrap_or(occurrence);
-        let (table, field) = self
+        let (_, field) = self
             .schema
             .field(field_occurrence, entry.field.field)
             .ok_or(ErrorCode::FIELD_MISSING)?;
-        let related =
-            field_occurrence != occurrence && self.schema.table_of(occurrence) != Some(table);
+        // Another occurrence is a related one, a self join's too: its
+        // first related record (calc-values.md 12.1), not the record.
+        let related = field_occurrence != occurrence;
         let file = Collation::of(self.locale.language);
         let own = field
             .options

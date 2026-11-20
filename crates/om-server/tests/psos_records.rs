@@ -499,6 +499,32 @@ fn server_scripts_sort_with_stored_orders() {
             "3,5,7,1|0",
         ]
     );
+
+    // By a self join's field: each task by its first related task's Name,
+    // not its own (#610). Through `Tasks::Count ≠ Mates::Count` every other
+    // task is related, in creation order: Write tests' first is Ship, every
+    // other task's is Write tests. Descending, those come first (ties by
+    // record), then Write tests; by their own names it would be 3,5,7,1.
+    const MATES: u64 = 0xd0_0030;
+    let mut joined = tree();
+    fixture::add_occurrence(&mut joined, MATES, "Mates", TABLE);
+    fixture::add_relationship(&mut joined, 30, (OCCURRENCE, COUNT), 1, (MATES, COUNT));
+    joined.put(
+        &[&[17], &[5], &uint_segment(12)],
+        script(
+            12,
+            "Mates",
+            vec![
+                sort(&spec(false, vec![entry(MATES, NAME, true, None)])),
+                exit_with(&format!("Get ( LastError ) & \"|\" & {COUNTS}")),
+            ],
+        )
+        .encode(),
+    );
+    let file = TempFile::from_tree("psos-sort-self-join", &joined);
+    let port = server::start(&file);
+    let (mut client, _) = server::logged_in(port, "client");
+    assert_eq!(run(&mut client, 12), (0, "0|5,7,1,3".to_string()));
 }
 
 #[test]
@@ -910,4 +936,60 @@ fn lookup_tree() -> OwnedNode {
         OwnedNode::leaf(Vec::new(), unsorted),
     );
     root
+}
+
+/// A related sort can loop: a sort field of another occurrence is read
+/// from its first related record, whose relationship may be sorted by a
+/// field leading back. Here both of `Tasks::Count ≠ Mates::Count`'s sort
+/// orders name a field of the other side, so sorting tasks by a mate's Name
+/// needs the mates sorted by a task's Name, and so on. The sorts nested
+/// inside one another stop with 3 (`om_data::host::SortNesting`) instead
+/// of overflowing the server's stack.
+#[test]
+fn a_related_sort_that_loops_stops_with_3() {
+    const MATES: u64 = 0xd0_0030;
+    let mut looping = tree();
+    fixture::add_occurrence(&mut looping, MATES, "Mates", TABLE);
+    fixture::add_relationship(&mut looping, 30, (OCCURRENCE, COUNT), 1, (MATES, COUNT));
+    // Each order names both sides, so it loops whichever direction it
+    // applies to.
+    let both = spec(
+        false,
+        vec![
+            entry(MATES, NAME, false, None),
+            entry(OCCURRENCE, NAME, false, None),
+        ],
+    );
+    let key = |id: u64| {
+        let segment = uint_segment(id);
+        [vec![segment.len() as u8 + 1, segment.len() as u8], segment].concat()
+    };
+    let mut definition = key(OCCURRENCE);
+    definition.extend(key(MATES));
+    definition.extend(both.encode());
+    definition.extend(both.encode());
+    // Sorted in both directions (`SORT_LEFT_TO_RIGHT` 0x40,
+    // `SORT_RIGHT_TO_LEFT` 0x80).
+    definition.extend(0xc0u32.to_be_bytes());
+    looping.put(
+        &[&[3], &[0xfb], &[5], &[30], &[2]],
+        OwnedNode::leaf(Vec::new(), definition),
+    );
+    looping.put(
+        &[&[17], &[5], &uint_segment(12)],
+        script(
+            12,
+            "Loop",
+            vec![
+                fixture::on(86, true),
+                sort(&spec(false, vec![entry(MATES, NAME, false, None)])),
+                exit_with("Get ( LastError )"),
+            ],
+        )
+        .encode(),
+    );
+    let file = TempFile::from_tree("psos-sort-loop", &looping);
+    let port = server::start(&file);
+    let (mut client, _) = server::logged_in(port, "client");
+    assert_eq!(run(&mut client, 12), (3, "3".to_string()));
 }

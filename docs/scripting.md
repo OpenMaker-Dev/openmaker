@@ -549,6 +549,15 @@ Open items:
   8.4), where FileMaker would have written. Names given to Set Field By
   Name and Replace Field Contents by Name match without regard to case,
   as on the server.
+- Sort Records in server scripts, and a sorted relationship's related
+  records on both hosts, sort by a field of another occurrence, a self
+  join's included, by its first related record's value
+  ([#610](https://github.com/OpenMaker-Dev/openmaker/issues/610); the
+  self join is inferred from calc-values.md 12.1, the sort unmeasured).
+  Sorts nested inside one another, through related sort fields whose
+  relationships sort by a field leading back, stop with 3 past 16. The
+  bound is OpenMaker's; FileMaker's handling of such a loop is
+  unmeasured.
 - Scripts: desktop steps still missing include the account steps
   ([#83](https://github.com/OpenMaker-Dev/openmaker/issues/83)) and the PDF
   steps other than Save Records as PDF
