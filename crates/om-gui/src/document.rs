@@ -15,7 +15,7 @@ use om_data::{EditRefusal, Field, FieldKind, RecordCapabilities, RenderLayout};
 use om_layout::{Color, Layout, LayoutObject, ObjectKind, ResolvedStyle, TextRun};
 
 use crate::{
-    app::{Action, PortalClick, ViewMode},
+    app::{steps, Action, PortalClick, ViewMode},
     calc::{Evaluator, ObjectCalcState, PortalRow, SegmentName, Visibility},
     icons::{self, Icon},
     session::{PageKey, Session},
@@ -883,6 +883,54 @@ impl DocumentState {
                 Some(CandidatePreparation::Pending(_) | CandidatePreparation::Failed) => false,
                 None => !self.capabilities.prepare_edit,
             }
+    }
+
+    /// Keep field-editing commands in the field. Revert also takes the
+    /// active field so its script step can run the discard triggers.
+    /// Other menu commands surrender focus and wait for the exit triggers.
+    pub(crate) fn menu_leaves_field(&mut self, ui: &Ui, chosen: &mut Vec<Action>) {
+        if chosen.is_empty() {
+            return;
+        }
+        let preparing = self.preparing_edit() || self.failed_edit();
+        if self
+            .held_edit_actions
+            .iter()
+            .any(|action| matches!(action, Action::MenuFieldExit(_)))
+        {
+            // The first command owns the pending exit. Close remains
+            // available to cancel the pending edit and close the file.
+            chosen.retain(|action| preparing && *action == Action::CloseFile);
+            return;
+        }
+        let Some(action) = chosen.iter_mut().find(|action| {
+            let cancels_preparation = preparing && **action == Action::CloseFile;
+            !(cancels_preparation
+                || matches!(
+                    action,
+                    Action::EditField(_)
+                        | Action::Step(
+                            steps::INSERT_CURRENT_DATE
+                                | steps::INSERT_CURRENT_TIME
+                                | steps::INSERT_CURRENT_USER_NAME
+                                | steps::INSERT_FROM_INDEX
+                                | steps::INSERT_FROM_LAST_VISITED
+                                | om_data::scripts::revert_record::STEP_ID,
+                            _
+                        )
+                ))
+        }) else {
+            return;
+        };
+        if self.active.is_none() {
+            return;
+        }
+        ui.memory_mut(|memory| {
+            if let Some(editor) = memory.focused() {
+                memory.surrender_focus(editor);
+            }
+        });
+        *action = Action::MenuFieldExit(Box::new(action.clone()));
     }
 
     pub(crate) fn hold_candidate_actions(
@@ -8745,11 +8793,33 @@ mod tests {
         let mut left = Some(("Name".into(), Some(5)));
         let mut entered = None;
         let mut modified = Vec::new();
-        let command = Action::MenuFieldExit(Box::new(Action::Quit));
-        let mut actions = vec![command.clone()];
-        state.hold_candidate_actions(&mut left, &mut entered, &mut modified, &mut actions);
-        assert!(actions.is_empty());
-        assert!(left.is_none());
+        let find = Action::SetMode(crate::Mode::Find);
+        let command = Action::MenuFieldExit(Box::new(find.clone()));
+        let mut actions = vec![find];
+        state.active = Some("Name".into());
+        let ctx = egui::Context::default();
+        ctx.run_ui(egui::RawInput::default(), |ui| {
+            let mut close = vec![Action::CloseFile];
+            state.menu_leaves_field(ui, &mut close);
+            assert_eq!(close, [Action::CloseFile]);
+            state.hold_candidate_actions(&mut None, &mut None, &mut Vec::new(), &mut close);
+            assert_eq!(close, [Action::CloseFile]);
+
+            state.menu_leaves_field(ui, &mut actions);
+            assert_eq!(actions, [command.clone()]);
+            state.hold_candidate_actions(&mut left, &mut entered, &mut modified, &mut actions);
+            assert!(actions.is_empty());
+            assert!(left.is_none());
+
+            state.active = None;
+            let mut second = vec![Action::Quit];
+            state.menu_leaves_field(ui, &mut second);
+            assert!(second.is_empty(), "Quit cannot bypass the pending exit");
+            let mut close = vec![Action::CloseFile];
+            state.menu_leaves_field(ui, &mut close);
+            assert_eq!(close, [Action::CloseFile]);
+        })
+        .drop_without_applying_deltas();
         state
             .buffers
             .get_mut(&key)

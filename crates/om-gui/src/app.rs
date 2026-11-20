@@ -1270,38 +1270,6 @@ impl OpenMakerApp {
         Some((u64::from(session.layout?), session.current_record()?.1.id))
     }
 
-    /// Keep field-editing commands in the field. Revert also takes the
-    /// active field so its script step can run the discard triggers.
-    /// Other menu commands surrender focus and wait for the exit triggers.
-    fn menu_leaves_field(&mut self, ui: &Ui, chosen: &mut [Action]) {
-        let Some(action) = chosen.iter_mut().find(|action| {
-            !matches!(
-                action,
-                Action::EditField(_)
-                    | Action::Step(
-                        steps::INSERT_CURRENT_DATE
-                            | steps::INSERT_CURRENT_TIME
-                            | steps::INSERT_CURRENT_USER_NAME
-                            | steps::INSERT_FROM_INDEX
-                            | steps::INSERT_FROM_LAST_VISITED
-                            | om_data::scripts::revert_record::STEP_ID,
-                        _
-                    )
-            )
-        }) else {
-            return;
-        };
-        if self.w.document.active.is_none() {
-            return;
-        }
-        ui.memory_mut(|memory| {
-            if let Some(editor) = memory.focused() {
-                memory.surrender_focus(editor);
-            }
-        });
-        *action = Action::MenuFieldExit(Box::new(action.clone()));
-    }
-
     /// A text field of the current record is entered for typing in Browse,
     /// where Insert's Current Date, Current Time, Current User Name, From
     /// Index and From Last Visited Record put their text.
@@ -1598,9 +1566,10 @@ impl OpenMakerApp {
         let mut on_menus = false;
         if self.w.menu_drawn {
             let top = ui.available_rect_before_wrap().top();
-            let before = actions.len();
-            on_menus = self.menu_bar(ui, input, &mut actions);
-            self.menu_leaves_field(ui, &mut actions[before..]);
+            let mut chosen = Vec::new();
+            on_menus = self.menu_bar(ui, input, &mut chosen);
+            self.w.document.menu_leaves_field(ui, &mut chosen);
+            actions.extend(chosen);
             self.w.menu_height = ui.available_rect_before_wrap().top() - top;
         }
         if front {

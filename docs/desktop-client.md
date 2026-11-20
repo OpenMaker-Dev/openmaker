@@ -1041,6 +1041,8 @@ Limits:
 - That Editing only menus keep the five is inferred, and they run there,
   as Copy's record copy does; Minimum leaves them out, as it leaves out
   Export Field Contents.
+- While edit preparation holds a menu command's field exit, later menu
+  choices are ignored. File > Close can still cancel the pending edit.
 - An Insert shortcut typed in the same frame as other keys runs its step
   after the editor took those keys.
 - ⌘- inserts the date while a field is entered and zooms out otherwise;
