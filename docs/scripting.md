@@ -188,7 +188,11 @@ values and stores the ordinary scalar values; the new record joins the
 caller window's found set and becomes current, as a local creation does.
 Duplicate Record copies a container reference too: the copy's reference is
 counted in the owning file's library, as a local duplicate counts it in its
-own. Its auto-entered values are copied as the window's duplicate copies them
+own. A copy that fails gives its references back; one whose answer is lost
+counts as given back, so that no later transaction's revert gives it back
+again. When the owner did not apply it, or the connection was lost in
+between, the member keeps one reference too many: its data is kept longer,
+never lost. Its auto-entered values are copied as the window's duplicate copies them
 ([#473](https://github.com/OpenMaker-Dev/openmaker/issues/473)). A script's transaction includes these layouts and commits all or
 none: Commit Transaction prepares every file before any record data goes, and
 a refusal in any file reverts every file's part; only a connection lost, or a
