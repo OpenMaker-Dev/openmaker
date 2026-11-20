@@ -1259,7 +1259,8 @@ the file's own locale (file-metadata.md 2.2).
 
 Browse edits Text, Number, Date, Time and Timestamp data globals through
 session-value operations. A global edit changes no stored record and reaches
-no other client. A global's validation is checked as the typing is
+no other client. Its editor opens with the session's value, as the field
+shows it, not the value the record's page was read with. A global's validation is checked as the typing is
 applied (`DataProvider::set_typed_global`), in the record's ordinary save
 as in a commit after scripts: its entry rules (maximum characters 511,
 strict data type 500-502, range 503, a custom value list or a field of

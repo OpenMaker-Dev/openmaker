@@ -2774,6 +2774,15 @@ impl<'a> Evaluator<'a> {
 
     /// The type of the field a field object shows, which selects the
     /// object's data format (data-format.md).
+    /// Whether `spec` names a global field: its value is the session's,
+    /// which the record's page does not hold.
+    pub fn is_global(&self, spec: &FieldSpec) -> bool {
+        om_layout::occurrence_id(spec.table_key)
+            .zip(spec.field_id())
+            .and_then(|(occurrence, field)| self.schema.field(occurrence, field))
+            .is_some_and(|field| field.global)
+    }
+
     pub fn field_type(&self, spec: &FieldSpec) -> Option<ValueType> {
         let occurrence = om_layout::occurrence_id(spec.table_key)?;
         Some(self.schema.field(occurrence, spec.field_id()?)?.value_type)

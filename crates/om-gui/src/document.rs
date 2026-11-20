@@ -5277,8 +5277,14 @@ fn paint_object_repetition(
         ObjectKind::Field => {
             let (mut value, mut rich_value, data) =
                 field_content(session, document, calc, object, record_index, portal);
-            let targeted_value =
-                portal.is_none() && calc.is_some_and(|calc| calc.refreshed_value(object.id));
+            // The value the editor begins from: a Refresh Object's, or a
+            // global's, the session's value, as calculations read it, not
+            // the one the record's page holds.
+            let targeted_value = portal.is_none()
+                && calc.is_some_and(|calc| {
+                    calc.refreshed_value(object.id)
+                        || object.field_spec().is_some_and(|spec| calc.is_global(spec))
+                });
             // A container's draft is a library reference, never shown: the
             // calculations read its file name through the drafts.
             let container =
