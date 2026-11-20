@@ -4972,53 +4972,56 @@ impl Fields for WorkerHost<'_> {
         Ok(())
     }
 
-    /// Relookup Field Contents (40): in each record of the found set, the
-    /// lookups that match through `field` copy their values again. Each
-    /// record's own value is set again as a script sets it, which performs
-    /// those lookups also when the value stays (auto-entry.md, Lookups,
-    /// battery s41), and committed, as Replace Field Contents commits each
-    /// record. The dialog's words, Find mode's 3 and the writes of a field
-    /// no lookup matches through are OpenMaker's, unmeasured
+    /// Relookup Field Contents (40): the lookups that match through
+    /// `field` copy their values again in every record of the found set,
+    /// through the provider's operation (`DataProvider::relookup`), which
+    /// checks the target and every record before writing any and writes
+    /// each by id. The window keeps its current record and found set. A
+    /// field reached through a relationship, a self-join's too, is the
+    /// related records', as for Replace Field Contents: 3. The dialog's
+    /// words and Find mode's 3 are OpenMaker's, unmeasured
     /// (script-runtime.md, the desktop notes).
     fn relookup(&mut self, field: Option<FieldRef>, with_dialog: bool) -> HostResult {
+        if field.is_some_and(|f| self.is_related(f.occurrence)) {
+            return Err(HostError::Unsupported);
+        }
         let name = self.target_name(field)?;
         if self.s.file.window.state.mode != Mode::Browse {
             return Err(ErrorCode::UNAVAILABLE.into());
         }
         self.commit_window()?;
-        let found = {
+        let layout = self
+            .s
+            .file
+            .window
+            .state
+            .layout
+            .ok_or(HostError::Error(ErrorCode::RECORD_MISSING))?;
+        let ids = {
             let (window, provider) = self.wp();
-            window.found_count(provider).map_err(data_error)?
+            window.found_ids(provider).map_err(data_error)?
         };
         if with_dialog {
             self.confirm(
                 "Relookup Field Contents",
                 format!(
-                    "Look up the values again in all {found} records of the current found set, \
-                     through the field \u{201c}{name}\u{201d}?"
+                    "Look up the values again in all {} records of the current found set, \
+                     through the field \u{201c}{name}\u{201d}?",
+                    ids.len()
                 ),
                 "OK",
             )?;
         }
-        let original = self.s.file.window.state.index;
-        for index in 0..found {
-            self.s.file.window.go_to(index);
-            let own = {
-                let (window, provider) = self.wp();
-                window
-                    .value(provider, &name)
-                    .map_err(data_error)?
-                    .unwrap_or_default()
-            };
-            self.write_named(&name, own)?;
-            self.commit_window()?;
-        }
-        self.s
-            .file
-            .window
-            .go_to(original.min(found.saturating_sub(1)));
+        let set = self.privilege_set_name();
+        let result = self
+            .p()
+            .relookup(layout, &name, &ids, set)
+            .map_err(|e| self.failed(e));
+        // The written records, the lookups' values among them, are read
+        // again; the window stays on its record.
         self.s.file.window.changed_data();
-        Ok(())
+        *self.s.file.cache.borrow_mut() = CalcData::default();
+        result
     }
 
     fn replace_field_contents(

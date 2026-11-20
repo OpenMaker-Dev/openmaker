@@ -1448,52 +1448,24 @@ fn local_login_account_facts_reach_a_script_and_layout_hide_calculation() {
     });
 }
 
-/// Relookup Field Contents [No dialog; Tasks::Name] copies every found
-/// record's lookup again (#87): Tasks::Note, looked up from Notes::Body
-/// through Tasks::Name = Notes::Task, holds a stale "old" in both tasks
-/// until the step, whose match field keeps its value.
-#[test]
-fn relookup_field_contents_copies_each_found_records_lookup_again() {
+/// Tasks::Note, looked up from Notes::Body through Tasks::Name =
+/// Notes::Task (relationship 1), in the local Tasks file: note 1 "Hi" is
+/// Ship's (task 2), note 2 "w" is Write tests' (task 1), and both tasks'
+/// Note holds a stale "old". With `styled`, task 2's Name is stored with a
+/// style subtree, as a value with character styles is.
+const RELOOKUP_NOTE: u64 = 9;
+
+fn relookup_file(folder: &Folder, scripts: &[om_scripts::Script], styled: bool) {
     use om_data::field_options::{Lookup, NoMatch};
     use om_hbam::slot::uint_segment;
     use om_hbam::{serial, OwnedNode, RidList};
-    /// Tasks::Note, the lookup field.
-    const NOTE: u64 = 9;
-    let folder = Folder::new("relookup");
-    let mut names = fixture::names();
-    names.add_field(fixture::NOTES, fixture::TASK, "Task");
-    names.add_field(fixture::TABLE, NOTE, "Note");
-    let mut ctx = om_formula::Context::new(&names);
-    ctx.occurrence = Some(fixture::OCCURRENCE);
-    let report = "GetNthRecord ( Tasks::Note ; 1 ) & \",\" & GetNthRecord ( Tasks::Note ; 2 ) \
-                  & \"/\" & Get ( LastError ) & \"/\" & Tasks::Name";
-    let compiled = om_formula::compile(report, &ctx).unwrap();
-    let mut shown = show("\"\"");
-    shown.set_calculation(
-        1,
-        Some(&om_scripts::Calculation::new(
-            Some(om_formula::formatted::encode(&compiled.tokens)),
-            om_formula::polish::encode(&compiled.expr),
-        )),
-    );
-    let mut relookup = om_scripts::ScriptStep::new(40);
-    relookup.set_flag(om_scripts::flag::NO_INTERACT, true);
-    relookup.set_field_spec(
-        0,
-        Some(om_scripts::FieldSpec::new(
-            om_scripts::StoredKey::from_id(fixture::OCCURRENCE).unwrap(),
-            om_scripts::StoredKey::from_id(fixture::NAME).unwrap(),
-            0,
-        )),
-    );
-    let scripts = [fixture::script(1, "Relookup", vec![relookup, shown])];
-    let mut root = fixture::tree(&scripts, true);
+    let mut root = fixture::tree(scripts, true);
     fixture::add_local_accounts(&mut root);
     add_name_field(&mut root);
     let (table, task) = (fixture::TABLE, fixture::TASK);
     fixture::add_field(&mut root, fixture::NOTES, task, "Task", 1, 1, 0, 0, 0);
     // Option 0x400: a looked-up value (auto-entry.md, Lookups).
-    fixture::add_field(&mut root, table, NOTE, "Note", 1, 1, 0, 0x400, 0);
+    fixture::add_field(&mut root, table, RELOOKUP_NOTE, "Note", 1, 1, 0, 0x400, 0);
     let lookup = Lookup {
         from: fixture::OCCURRENCE,
         to: fixture::NOTES_OCCURRENCE,
@@ -1503,7 +1475,7 @@ fn relookup_field_contents_copies_each_found_records_lookup_again() {
     };
     let (tasks, notes) = (uint_segment(fixture::TABLE), uint_segment(fixture::NOTES));
     root.put(
-        &[&tasks, &[3], &[5], &uint_segment(NOTE), &[8]],
+        &[&tasks, &[3], &[5], &uint_segment(RELOOKUP_NOTE), &[8]],
         OwnedNode::leaf(Vec::new(), lookup.encode().unwrap()),
     );
     fixture::add_relationship(
@@ -1513,13 +1485,12 @@ fn relookup_field_contents_copies_each_found_records_lookup_again() {
         0,
         (fixture::NOTES_OCCURRENCE, fixture::TASK),
     );
-    // Note 1 "Hi" is Ship's (task 2), note 2 "w" is Write tests' (task 1).
     let cells: [(&[u8], u64, u64, &str); 5] = [
         (&notes, 1, fixture::TASK, "Ship"),
         (&notes, 2, fixture::BODY, "w"),
         (&notes, 2, fixture::TASK, "Write tests"),
-        (&tasks, 1, NOTE, "old"),
-        (&tasks, 2, NOTE, "old"),
+        (&tasks, 1, RELOOKUP_NOTE, "old"),
+        (&tasks, 2, RELOOKUP_NOTE, "old"),
     ];
     for (table, record, field, text) in cells {
         root.put(
@@ -1527,25 +1498,121 @@ fn relookup_field_contents_copies_each_found_records_lookup_again() {
             om_scripts::text_node(&[], text),
         );
     }
+    if styled {
+        let name = [
+            tasks.clone(),
+            vec![5],
+            serial::encode(2),
+            uint_segment(fixture::NAME),
+        ];
+        let at = |key: u8| -> Vec<&[u8]> {
+            let mut path: Vec<&[u8]> = name.iter().map(Vec::as_slice).collect();
+            path.push(if key == 1 { &[1] } else { &[0xff] });
+            path
+        };
+        root.put(&at(1), om_scripts::text_node(&[], "Ship"));
+        root.put(&at(0xff), OwnedNode::list(Vec::new(), Vec::new()));
+    }
     let ids: RidList = (1..=2).collect();
     root.put(&[&notes, &[0x0d]], ids.to_node(Vec::new()));
     root.put(&[&notes, &[0]], OwnedNode::leaf(Vec::new(), vec![1, 2]));
     fixture::write_tree(&folder.file(), &root);
+}
 
+/// `text` compiled in the Tasks context with Tasks::Note and Notes::Task
+/// named.
+fn relookup_calc(text: &str) -> om_scripts::Calculation {
+    let mut names = fixture::names();
+    names.add_field(fixture::NOTES, fixture::TASK, "Task");
+    names.add_field(fixture::TABLE, RELOOKUP_NOTE, "Note");
+    let mut ctx = om_formula::Context::new(&names);
+    ctx.occurrence = Some(fixture::OCCURRENCE);
+    let compiled = om_formula::compile(text, &ctx).unwrap();
+    om_scripts::Calculation::new(
+        Some(om_formula::formatted::encode(&compiled.tokens)),
+        om_formula::polish::encode(&compiled.expr),
+    )
+}
+
+/// Relookup Field Contents [No dialog; Tasks::`field`].
+fn relookup_step(field: u64) -> om_scripts::ScriptStep {
+    let mut relookup = om_scripts::ScriptStep::new(40);
+    relookup.set_flag(om_scripts::flag::NO_INTERACT, true);
+    relookup.set_field_spec(
+        0,
+        Some(om_scripts::FieldSpec::new(
+            om_scripts::StoredKey::from_id(fixture::OCCURRENCE).unwrap(),
+            om_scripts::StoredKey::from_id(field).unwrap(),
+            0,
+        )),
+    );
+    relookup
+}
+
+/// Run script `name` of the open file and read its dialog `expected`.
+fn run_and_read(app: &mut App, name: &str, expected: &str) {
+    common::open_menu(app, "Scripts");
+    common::click(app, name);
+    common::wait_for_label(app, expected);
+    common::click(app, "OK");
+    common::wait_until(app, "the script's end", |app| !app.state().script_running());
+    assert!(app.state().error().is_none(), "{:?}", app.state().error());
+}
+
+/// Relookup Field Contents [No dialog; Tasks::Name] copies every found
+/// record's lookup again (#87), the match field keeping its value and the
+/// window its record.
+#[test]
+fn relookup_field_contents_copies_each_found_records_lookup_again() {
+    let folder = Folder::new("relookup");
+    let report = "GetNthRecord ( Tasks::Note ; 1 ) & \",\" & GetNthRecord ( Tasks::Note ; 2 ) \
+                  & \"/\" & Get ( LastError ) & \"/\" & Tasks::Name";
+    let mut shown = show("\"\"");
+    shown.set_calculation(1, Some(&relookup_calc(report)));
+    let scripts = [fixture::script(
+        1,
+        "Relookup",
+        vec![relookup_step(fixture::NAME), shown],
+    )];
+    relookup_file(&folder, &scripts, false);
     let mut app = app();
     common::click(&mut app, "Browse...");
     choose(&mut app, &folder.file());
     sign_in(&mut app, fixture::PASSWORD);
     wait_open(&mut app);
-    common::open_menu(&mut app, "Scripts");
-    common::click(&mut app, "Relookup");
     // Each task's note, the step's error, and the record the window was on.
-    common::wait_for_label(&mut app, "w,Hi/0/Write tests");
-    common::click(&mut app, "OK");
-    common::wait_until(&mut app, "the script's end", |app| {
-        !app.state().script_running()
-    });
-    assert!(app.state().error().is_none(), "{:?}", app.state().error());
+    run_and_read(&mut app, "Relookup", "w,Hi/0/Write tests");
+}
+
+/// What Relookup Field Contents refuses writes no record: a field no
+/// lookup matches through, and a match field one record stores with
+/// character styles, which writing its text back would drop. Both are 3,
+/// both notes stay "old", and the window holds nothing uncommitted.
+#[test]
+fn relookup_field_contents_writes_nothing_it_refuses() {
+    let folder = Folder::new("relookup-refused");
+    let report = "$count & \"/\" & Get ( LastError ) & \"/\" & GetNthRecord ( Tasks::Note ; 1 ) \
+                  & \",\" & GetNthRecord ( Tasks::Note ; 2 ) & \"/\" & Get ( RecordOpenState )";
+    let mut shown = show("\"\"");
+    shown.set_calculation(1, Some(&relookup_calc(report)));
+    let scripts = [fixture::script(
+        1,
+        "Refused",
+        vec![
+            fixture::on(86, true),
+            relookup_step(fixture::COUNT),
+            fixture::set_variable("$count", "Get ( LastError )"),
+            relookup_step(fixture::NAME),
+            shown,
+        ],
+    )];
+    relookup_file(&folder, &scripts, true);
+    let mut app = app();
+    common::click(&mut app, "Browse...");
+    choose(&mut app, &folder.file());
+    sign_in(&mut app, fixture::PASSWORD);
+    wait_open(&mut app);
+    run_and_read(&mut app, "Refused", "3/3/old,old/0");
 }
 
 /// A folder of its own holding a copy of a given file as `Tasks.fmp12`,

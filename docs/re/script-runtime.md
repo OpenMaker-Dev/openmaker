@@ -3750,17 +3750,27 @@ Steps
   last run of digits of the initial value; each record is committed; no
   triggers fire.
 - Relookup Field Contents
-  ([#87](https://github.com/OpenMaker-Dev/openmaker/issues/87)): in Browse mode, every found record in
-  order is made current, its match field is set to its own value as a
-  script sets it, and the record is committed, as Replace Field Contents
-  commits each record. The record rules perform a lookup whose match field
-  a script sets, also to the value it had (auto-entry.md, Lookups, battery
-  s41), so each lookup through the field copies again. The window returns
-  to the record it was on. Unmeasured, and OpenMaker's choices: the
-  dialog's text; a field no lookup matches through, whose records are
-  still written; a calculated match field, which is 201 as Set Field into
-  it is (Claris's help names an editable input of the calculation as the
-  target); and Find mode, which is 3.
+  ([#87](https://github.com/OpenMaker-Dev/openmaker/issues/87)): in Browse
+  mode, the provider's operation (`DataProvider::relookup`) writes each
+  record of the found set, by id as the step began, with its own value of
+  the match field, with a script's rules and the step's privilege set; a
+  transaction holds the writes. The record rules perform a lookup whose
+  match field a script sets, also to the value it had (auto-entry.md,
+  Lookups, battery s41), so each lookup through the field copies again; a
+  plain value written back changes nothing of the field. Before any record
+  is written it checks the target: a field of the layout's table a script
+  sets, that a lookup matches through (an editable input of a calculated
+  match field included, as Claris's help names the target for one). Then
+  it checks that no record stores the field with character styles, which
+  a plain write would drop. The window keeps its record and found set. A
+  record refused partway ends the step, the records before it written.
+  Unmeasured, and OpenMaker's choices:
+  - the dialog's text;
+  - the codes: 102 for no such field, 201 for one a script cannot set (a
+    calculation or a global), 3 for one no lookup matches through, for a
+    styled value, for a field reached through a relationship (a
+    self-join's too, as for Replace Field Contents), for a layout of
+    another file's table, and for Find mode.
 - Windows (2026-10-29, run 13.25; `app/windows.rs`,
   `scripting/host/windows.rs`): real windows. Each window keeps its own
   layout, found set, mode, view, current record and unsaved values, Find
