@@ -869,6 +869,11 @@ fn return_types_a_line_break_and_the_keypad_enter_commits_or_both_go_on() {
     assert!(!common::text_field(&app, "Family").is_focused());
     assert_eq!(family(&app).as_deref(), Some("Keypad\rTwo\rQ Z"));
     assert!(app.state().error().is_none(), "{:?}", app.state().error());
+    // The saved record read back, so that it does not land between the
+    // keys below and the field they go to.
+    common::wait_until(&mut app, "the saved record", |app| {
+        app.state().is_settled() && !common::saving(app)
+    });
 
     // Return, then Tab and typing, in one frame: Return goes on from Given
     // to Family, the Tab from Family on to Given, which takes the typing.
