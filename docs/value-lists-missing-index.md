@@ -77,9 +77,9 @@ Complete, on every path:
 - the key forms of `re/query-program.md` 7.2-7.3: English and English
   international DUCET 5.2 primary weights, System and Unicode standard
   (the same, `00 00` and the secondary weights), Unicode raw (UTF-16BE),
-  and nonnegative integer,
-  date, whole-second time and timestamp keys. Language 0 has no keys and
-  lists nothing.
+  and the number, date, time and timestamp keys of 7.3 (negative numbers,
+  fractions and fractions of a second included). Language 0 has no keys
+  and lists nothing.
 
 Refused with error 3:
 
@@ -87,8 +87,10 @@ Refused with error 3:
   list);
 - a value that has to be keyed and cannot be keyed exactly. Such values are:
   - text in any other index language (the tailored ones, 7.2);
-  - negative, fractional or localized numbers;
-  - fractional times;
+  - numbers with other characters among their digits (`1,234`, `abc12`,
+    [#246](https://github.com/OpenMaker-Dev/openmaker/issues/246)) and text
+    with no digit in a typed field, which FileMaker keys as invalid
+    (`fe ff`, 7.3);
   - dates outside the file's MDY, DMY or YMD order, or with no readable
     file locale (`[02, 0d]`, `re/file-metadata.md` 2).
 

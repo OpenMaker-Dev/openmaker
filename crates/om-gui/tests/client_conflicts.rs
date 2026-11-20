@@ -23,7 +23,6 @@ use om_data::{DataProvider, FieldChanges};
 use om_scripts::ScriptStep;
 
 const LAYOUT: u32 = fixture::LAYOUT as u32;
-const ON_HOLD: &str = "Your unsaved changes are on hold.";
 
 fn host(tag: &str) -> hosted::Hosted {
     // Delete Record/Request [With dialog: Off].
@@ -60,13 +59,6 @@ fn cell(app: &common::App) -> Option<String> {
     app.query_all_by_role_and_label(Role::TextInput, "Name")
         .next()
         .and_then(|cell| cell.value())
-}
-
-/// The first row's Name cell is on screen and empty.
-fn emptied(app: &common::App) -> bool {
-    app.query_all_by_role_and_label(Role::TextInput, "Name")
-        .next()
-        .is_some_and(|cell| cell.value().unwrap_or_default().is_empty())
 }
 
 /// Type `text` over the first row's Name (empty text empties it).
@@ -119,16 +111,6 @@ fn hold(other: &mut om_provider::NativeProvider, text: &str) {
     other.update_record(LAYOUT, 1, name(text)).unwrap();
 }
 
-/// The window's save is held for the user's choice, the bar saying why.
-fn held(app: &mut common::App) {
-    common::wait_until(app, "the edit held", |app| {
-        app.query_by_label("Keep My Changes").is_some() && app.state().is_settled()
-    });
-    app.get_by_label(ON_HOLD);
-    app.get_by_label_contains("was changed on the host");
-    assert!(app.state().error().is_none(), "{:?}", app.state().error());
-}
-
 /// The window's save went through.
 fn saved(app: &mut common::App) {
     common::wait_until(app, "the save", |app| {
@@ -137,97 +119,117 @@ fn saved(app: &mut common::App) {
     });
 }
 
-/// An emptied Name is refused over the other client's change, held, and
-/// kept by the user; a change the other client makes before that save is
-/// refused too; a later edit held the same way goes when discarded.
+/// The window's first change of a record locks it on the host, as FileMaker
+/// Pro locks a record as editing begins (write-path.md 4.1): another
+/// client's change of it is refused with 301, naming the holder, until the
+/// window saves, and goes through after.
 #[test]
-fn a_save_over_another_clients_change_waits_for_the_users_choice() {
-    let hosted = host("changed");
+fn another_clients_change_waits_while_the_window_edits_the_record() {
+    let hosted = host("editing");
     let mut app = open(&hosted);
     let mut other = hosted.opened();
-    type_name(&mut app, "");
-    change(&mut other, "Theirs");
-
-    common::save_record(&mut app);
-    held(&mut app);
-    assert!(emptied(&app), "the emptied draft stays: {:?}", cell(&app));
-    assert_eq!(stored(&hosted).as_deref(), Some("Theirs"));
-
-    // Kept, then changed again on the host before the save: held again.
-    common::click(&mut app, "Keep My Changes");
-    change(&mut other, "Theirs again");
-    common::save_record(&mut app);
-    held(&mut app);
-    assert!(emptied(&app), "{:?}", cell(&app));
-    assert_eq!(stored(&hosted).as_deref(), Some("Theirs again"));
-    common::click(&mut app, "Keep My Changes");
+    type_name(&mut app, "Mine");
+    common::wait_until(&mut app, "the edit taken", common::unsaved);
+    other.records(LAYOUT, 0, 10).unwrap();
+    let refused = other.update_record(LAYOUT, 1, name("Theirs")).unwrap_err();
+    assert_eq!(refused.code, Some(301), "{refused}");
+    assert!(refused.message.contains("being modified by"), "{refused}");
+    assert_eq!(stored(&hosted).as_deref(), Some("Write tests"));
     common::save_record(&mut app);
     saved(&mut app);
-    assert_eq!(stored(&hosted), None, "the user's choice, saved once");
-
-    type_name(&mut app, "Mine");
-    change(&mut other, "Theirs last");
-    common::save_record(&mut app);
-    held(&mut app);
-    common::click(&mut app, "Discard My Changes");
-    common::wait_until(&mut app, "the host's value", |app| {
-        cell(app).as_deref() == Some("Theirs last") && app.state().is_settled()
-    });
-    assert!(!common::editing(&app), "nothing unsaved");
-    assert_eq!(stored(&hosted).as_deref(), Some("Theirs last"));
+    assert_eq!(stored(&hosted).as_deref(), Some("Mine"));
+    change(&mut other, "Theirs");
+    assert_eq!(stored(&hosted).as_deref(), Some("Theirs"));
     other.close();
 }
 
-/// The other client holds the record: the window's save is refused and its
-/// edit stays, saved only when the user tries again, after the other
-/// client let go. When the other client changed the record before letting
-/// go, the retry is held instead.
+/// Another client holds the record: the window's first change of it is
+/// refused at entry with the host's reason, and nothing is sent; once the
+/// other client let go and the refused input is discarded, a new change
+/// is taken and saved.
 #[test]
-fn a_record_another_client_holds_is_saved_when_the_user_tries_again() {
+fn a_record_another_client_holds_refuses_the_windows_entry() {
     let hosted = host("locked");
     let mut app = open(&hosted);
     let mut other = hosted.opened();
-    type_name(&mut app, "Mine");
     hold(&mut other, "Abandoned");
-    common::save_record(&mut app);
+    type_name(&mut app, "Mine");
     common::wait_until(&mut app, "the refusal", |app| {
-        app.query_by_label_contains("Save Record tries again")
-            .is_some()
+        app.query_by_label("Discard Input").is_some() && app.state().error().is_some()
     });
-    assert!(
-        app.state().error().is_none(),
-        "the bar says so, not an alert"
-    );
-    assert_eq!(cell(&app).as_deref(), Some("Mine"));
+    let error = app.state().error().unwrap_or_default().to_owned();
+    assert!(error.contains("being modified by"), "{error}");
+    common::click(&mut app, "OK");
     other.revert_transaction().unwrap();
     app.run_steps(20);
     assert_eq!(
         stored(&hosted).as_deref(),
         Some("Write tests"),
-        "nothing sent again by itself"
+        "nothing sent"
     );
+    common::click(&mut app, "Discard Input");
+    common::wait_until(&mut app, "the input discarded", |app| {
+        app.query_by_label("Discard Input").is_none() && cell(app).as_deref() == Some("Write tests")
+    });
+    type_name(&mut app, "Mine");
+    common::wait_until(&mut app, "the edit taken", common::unsaved);
     common::save_record(&mut app);
     saved(&mut app);
     assert_eq!(stored(&hosted).as_deref(), Some("Mine"));
-
-    type_name(&mut app, "Mine again");
-    hold(&mut other, "Theirs");
-    common::save_record(&mut app);
-    common::wait_until(&mut app, "the refusal", |app| {
-        app.query_by_label_contains("Save Record tries again")
-            .is_some()
-    });
-    other.commit_transaction(false).unwrap();
-    common::save_record(&mut app);
-    held(&mut app);
-    assert_eq!(cell(&app).as_deref(), Some("Mine again"));
-    assert_eq!(stored(&hosted).as_deref(), Some("Theirs"));
-    common::click(&mut app, "Discard My Changes");
-    common::wait_until(&mut app, "the host's value", |app| {
-        cell(app).as_deref() == Some("Theirs") && app.state().is_settled()
-    });
     other.close();
 }
+
+/// A record another client changed after the window read it: the
+/// window's first change is refused at entry (306), nothing sent. Once the
+/// refused input is discarded, the window shows the host's value and takes
+/// a new change, saved over that value.
+#[test]
+fn a_record_changed_before_editing_refuses_the_entry() {
+    let hosted = host("changed");
+    let mut app = open(&hosted);
+    let mut other = hosted.opened();
+    change(&mut other, "Theirs");
+    type_name(&mut app, "Mine");
+    common::wait_until(&mut app, "the refusal", |app| {
+        app.query_by_label("Discard Input").is_some() && app.state().error().is_some()
+    });
+    common::click(&mut app, "OK");
+    assert_eq!(stored(&hosted).as_deref(), Some("Theirs"));
+    common::click(&mut app, "Discard Input");
+    common::wait_until(&mut app, "the host's value", |app| {
+        app.query_by_label("Discard Input").is_none()
+            && cell(app).as_deref() == Some("Theirs")
+            && app.state().is_settled()
+    });
+    type_name(&mut app, "Mine");
+    common::wait_until(&mut app, "the edit taken", common::unsaved);
+    common::save_record(&mut app);
+    saved(&mut app);
+    assert_eq!(stored(&hosted).as_deref(), Some("Mine"));
+    other.close();
+}
+
+/// Delete Record on a record whose editing took its lock deletes the
+/// record under that lock, its edit going with it, and no other record
+/// takes its edit.
+#[test]
+fn deleting_a_record_being_edited_deletes_it() {
+    let hosted = host("delete-edited");
+    let mut app = open(&hosted);
+    type_name(&mut app, "Mine");
+    common::wait_until(&mut app, "the edit taken", common::unsaved);
+    common::click(&mut app, "Delete Record");
+    common::wait_for_label(&mut app, DELETE_CONFIRMATION);
+    common::click(&mut app, "Delete");
+    common::wait_until(&mut app, "the record deleted", |app| {
+        app.state().is_settled() && !app.state().script_running() && !common::editing(app)
+    });
+    assert!(app.state().error().is_none(), "{:?}", app.state().error());
+    assert_eq!(stored_names(&hosted), [Some("Ship".to_owned())]);
+}
+
+/// Delete Record's confirmation (client-ui.md, "Delete confirmations").
+const DELETE_CONFIRMATION: &str = "Permanently delete this ENTIRE record?";
 
 /// The Names of the tasks the host has, read by a client of its own.
 fn stored_names(hosted: &hosted::Hosted) -> Vec<Option<String>> {
