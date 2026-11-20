@@ -6295,10 +6295,10 @@ fn paint_related_option_set(
     let Some(input) = shown.input.filter(|_| enabled) else {
         return;
     };
+    // Any newer interaction with a ready control supersedes the waiting click.
+    state.field_click = None;
     let chosen = match input {
         options::Input::Open => {
-            // A newer interaction owns the popup while another row refreshes.
-            state.field_click = None;
             response.request_focus();
             egui::Popup::open_id(ui.ctx(), popup::menu_id(id));
             None

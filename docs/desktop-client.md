@@ -1245,7 +1245,8 @@ with its match fields from the record as it is then
 records are read again as the record begins; meanwhile it shows the rows
 it showed last, so the row's editor keeps the keyboard, the caret and
 every key typed in between. Clicking a pop-up menu in a stale row opens
-the list once the same related record is ready
+the list once the same related record is ready. Using another ready
+related control cancels the waiting click
 ([#288](https://github.com/OpenMaker-Dev/openmaker/issues/288)). Until the save,
 the begun record's row shows only what was typed: calculations and other
 objects of the row see no record, as a script's record to create is not
