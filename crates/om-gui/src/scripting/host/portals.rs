@@ -237,21 +237,26 @@ impl WorkerHost<'_> {
         self.portals().into_iter().find(|p| p.object == object)
     }
 
-    /// The rows of `portal` for the current record: the related records in
-    /// the relationship's order (without those a script deleted), the
-    /// records a script is creating through it, and the creation row when
-    /// the relationship allows creating records and the portal scrolls; a
-    /// portal that does not scroll has its visible rows at most, those
-    /// without a record first when it places the new record's row at the
-    /// top. A portal of the layout's own occurrence shows the found set.
+    /// The rows of `portal` for the current record, as Browse draws them
+    /// (`document::portals::paint_rows`): the related records from the
+    /// portal's initial row on, in the relationship's order (without those
+    /// a script deleted), the records a script is creating through it, and
+    /// the creation row when the relationship allows creating records and
+    /// the portal scrolls; a portal that does not scroll has its visible
+    /// rows at most, those without a record first when it places the new
+    /// record's row at the top. A portal of the layout's own occurrence
+    /// shows the found set.
     pub(super) fn portal_rows(&mut self, portal: &Portal) -> Result<Vec<Row>, HostError> {
-        Ok(self.numbered_rows(portal)?.0)
+        Ok(self.numbered_rows(portal)?.1)
     }
 
-    /// [`Self::portal_rows`], and how many of them come before the
-    /// portal's initial row: numbered, as Browse numbers the rows it draws
-    /// after them, but not drawn, so that no step reaches them.
-    fn numbered_rows(&mut self, portal: &Portal) -> Result<(Vec<Row>, usize), HostError> {
+    /// [`Self::portal_rows`], numbered after the positions before the
+    /// portal's initial row, whether or not records fill them, as Browse
+    /// numbers them: the first number less one, and the rows. No step
+    /// reaches a number before the initial row [I: whether FileMaker lets
+    /// a step reach a record before the initial row, and how it numbers a
+    /// row drawn at the top, are unmeasured].
+    fn numbered_rows(&mut self, portal: &Portal) -> Result<(u64, Vec<Row>), HostError> {
         let occurrence = portal.occurrence;
         let current = self.s.file.occurrence;
         if Some(occurrence) == current {
@@ -262,13 +267,18 @@ impl WorkerHost<'_> {
                 .filter_map(|id| u64::try_from(id).ok())
                 .map(Row::Record)
                 .collect();
-            return Ok((rows, 0));
+            return Ok((0, rows));
         }
+        let offset = u64::try_from(portal.first).unwrap_or(u64::MAX);
         let Some(related) = self.related_rows(occurrence)? else {
-            return Ok((Vec::new(), 0));
+            return Ok((offset, Vec::new()));
         };
         let related = self.order_rows(portal, related)?;
-        let records: Vec<Row> = related.into_iter().map(Row::Record).collect();
+        let records: Vec<Row> = related
+            .into_iter()
+            .skip(portal.first)
+            .map(Row::Record)
+            .collect();
         let begun: Vec<Row> = self
             .s
             .file
@@ -280,37 +290,29 @@ impl WorkerHost<'_> {
             .filter(|d| d.occurrence == occurrence && d.record.is_none())
             .map(|d| Row::New(d.key))
             .collect();
-        let visible = usize::try_from(portal.visible).unwrap_or(usize::MAX);
         if portal.scrolls {
             let mut rows = records;
             rows.extend(begun);
             if self.creation_allowed(occurrence) {
                 rows.push(Row::Creation);
             }
-            return Ok((rows, 0));
+            return Ok((offset, rows));
         }
-        // The records before the initial row keep their numbers, which
-        // Browse's drawn rows are numbered after; the drawn rows follow
-        // (`document::portals::paint_rows`). Steps reach only the drawn
-        // rows [I: whether FileMaker lets a step reach a row before the
-        // initial row is unmeasured].
-        let first = portal.first.min(records.len());
-        let mut rows = records[..first].to_vec();
+        let mut rows = Vec::new();
         if portal.new_row_top {
             // The rows without a record first, the creation row among
-            // them, where Browse draws and numbers them [I: FileMaker's
-            // numbering of the top row is unmeasured].
+            // them, where Browse draws and numbers them.
             rows.extend(begun);
             if self.creation_allowed(occurrence) {
                 rows.push(Row::Creation);
             }
-            rows.extend_from_slice(&records[first..]);
+            rows.extend(records);
         } else {
-            rows.extend_from_slice(&records[first..]);
+            rows.extend(records);
             rows.extend(begun);
         }
-        rows.truncate(first.saturating_add(visible));
-        Ok((rows, first))
+        rows.truncate(usize::try_from(portal.visible).unwrap_or(usize::MAX));
+        Ok((offset, rows))
     }
 
     /// `records`, the related records `portal` shows in the relationship's
@@ -608,19 +610,18 @@ impl WorkerHost<'_> {
     /// The number (from 1) of the row of `portal` showing `identity`, if it
     /// still shows it where a step reaches it (not before its initial row).
     pub(super) fn number_of(&mut self, portal: &Portal, identity: Row) -> HostResult<Option<u64>> {
-        let (rows, hidden) = self.numbered_rows(portal)?;
+        let (offset, rows) = self.numbered_rows(portal)?;
         Ok(rows
             .iter()
             .position(|row| *row == identity)
-            .filter(|i| *i >= hidden)
-            .map(|i| i as u64 + 1))
+            .map(|i| offset.saturating_add(i as u64 + 1)))
     }
 
     /// The row `row` (from 1) of `portal`.
     pub(super) fn row_of(&mut self, portal: &Portal, row: u64) -> Result<Option<Row>, HostError> {
-        let rows = self.portal_rows(portal)?;
+        let (offset, rows) = self.numbered_rows(portal)?;
         Ok(row
-            .checked_sub(1)
+            .checked_sub(offset.saturating_add(1))
             .and_then(|i| usize::try_from(i).ok())
             .and_then(|i| rows.get(i).copied()))
     }
@@ -713,10 +714,13 @@ impl WorkerHost<'_> {
         if Some(portal.occurrence) == self.s.file.occurrence {
             return om_data::runtime::Navigation::go_to_record(self, movement, false);
         }
-        // The rows before the initial row are not drawn: the first row a
-        // step reaches is the initial row.
-        let (rows, hidden) = self.numbered_rows(&portal)?;
-        let (rows, first) = (rows.len() as u64, hidden as u64 + 1);
+        // The rows are numbered from the initial row, the first a step
+        // reaches; `rows` is the last one's number.
+        let (offset, rows) = self.numbered_rows(&portal)?;
+        let (rows, first) = (
+            offset.saturating_add(rows.len() as u64),
+            offset.saturating_add(1),
+        );
         let current = active
             .filter(|r| r.object == portal.object)
             .map_or(0, |r| r.row);
@@ -929,8 +933,11 @@ impl WorkerHost<'_> {
         (repetition, select): (u32, bool),
     ) -> HostResult {
         // Its first drawn row: the initial row.
-        let (rows, hidden) = self.numbered_rows(&portal)?;
-        let (rows, first) = (rows.len() as u64, hidden as u64 + 1);
+        let (offset, rows) = self.numbered_rows(&portal)?;
+        let (rows, first) = (
+            offset.saturating_add(rows.len() as u64),
+            offset.saturating_add(1),
+        );
         let row = self
             .s
             .file

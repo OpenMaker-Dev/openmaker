@@ -4317,9 +4317,14 @@ fn a_deleted_portal_row_is_its_tables_record_only() {
 /// The Portals layout with a portal that does not scroll and places the
 /// new record's row at the top (`0x400`), `rows` rows from row `initial`.
 fn new_row_top_portal(root: &mut OwnedNode, rows: u32, initial: u64) {
-    const FLAGS: u64 = 0x500;
-    let store = om_layout::encode::without_objects(&portal_store(FLAGS), &[PORTAL]).unwrap();
-    let portal = portal_object_rows(FLAGS, (rows, initial), rect(60.0, 10.0, 130.0, 410.0));
+    shaped_portal(root, 0x500, rows, initial);
+}
+
+/// The Portals layout with its portal's option word `flags`, and `rows`
+/// rows from row `initial`.
+fn shaped_portal(root: &mut OwnedNode, flags: u64, rows: u32, initial: u64) {
+    let store = om_layout::encode::without_objects(&portal_store(flags), &[PORTAL]).unwrap();
+    let portal = portal_object_rows(flags, (rows, initial), rect(60.0, 10.0, 130.0, 410.0));
     root.put(
         &[&[4], &[5], &uint_segment(PORTALS), &[7]],
         OwnedNode::leaf(
@@ -4329,37 +4334,67 @@ fn new_row_top_portal(root: &mut OwnedNode, rows: u32, initial: u64) {
     );
 }
 
-/// Steps reach a portal's rows from its initial row, where Browse draws
-/// them: with Initial Row 2 and one row, "first" is numbered 1 but not
-/// drawn, and the creation row drawn at the top is row 2.
+/// Steps reach a portal's rows from its initial row, numbered where Browse
+/// draws them from that row on, whether or not records fill the rows
+/// before it:
+/// - a portal that does not scroll, the creation row at the top, Initial
+///   Row 2 and one row: "first" is not drawn, the creation row is row 2;
+/// - a portal that scrolls, Initial Row 2: "first" is not drawn, "second"
+///   is row 2, for Go to Field as for Go to Portal Row;
+/// - Initial Row 3 on Ship, which has no notes: the creation row at the
+///   top is row 3.
 #[test]
 fn steps_reach_a_portals_rows_from_its_initial_row() {
-    let hosted = host_with("initial-row", |root| {
-        new_row_top_portal(root, 1, 2);
-        add_script(
-            root,
-            &fixture::script(
-                90,
-                "Initial row",
-                vec![
-                    fixture::on(86, true),
-                    fixture::go_to_layout(PORTALS),
-                    fixture::go_to_record(1),
-                    go_to_portal_row(1),
-                    note("$first", ERROR_ROW),
-                    go_to_portal_row_number("1"),
-                    note("$one", ERROR_ROW),
-                    show("\"initial \" & $first & \", one \" & $one"),
-                ],
-            ),
-        );
-    });
-    let mut app = open(&hosted);
-    expect(&mut app, "Initial row", "initial 0:2, one 101:2");
+    for (tag, (flags, rows, initial), record, expected) in [
+        (
+            "initial-row",
+            (0x500, 1, 2),
+            1,
+            "field 0:2:, first 0:2:, one 101:2:",
+        ),
+        (
+            "initial-row-scrolling",
+            (PORTAL_FLAGS, 3, 2),
+            1,
+            "field 0:2:second, first 0:2:second, one 101:2:second",
+        ),
+        (
+            "initial-row-sparse",
+            (0x500, 1, 3),
+            2,
+            "field 0:3:, first 0:3:, one 101:3:",
+        ),
+    ] {
+        let hosted = host_with(tag, |root| {
+            shaped_portal(root, flags, rows, initial);
+            add_script(
+                root,
+                &fixture::script(
+                    90,
+                    "Initial row",
+                    vec![
+                        fixture::on(86, true),
+                        fixture::go_to_layout(PORTALS),
+                        fixture::go_to_record(record),
+                        go_to_field(NOTES_OCCURRENCE, BODY),
+                        note("$field", ERROR_ROW),
+                        go_to_portal_row(1),
+                        note("$first", ERROR_ROW),
+                        go_to_portal_row_number(&format!("{}", initial - 1)),
+                        note("$one", ERROR_ROW),
+                        show("\"field \" & $field & \", first \" & $first & \", one \" & $one"),
+                    ],
+                ),
+            );
+        });
+        let mut app = open(&hosted);
+        expect(&mut app, "Initial row", expected);
+    }
 }
 
-/// `error:row` after the last step.
-const ERROR_ROW: &str = "Get ( LastError ) & \":\" & Get ( ActivePortalRowNumber )";
+/// `error:row:contents` after the last step.
+const ERROR_ROW: &str = "Get ( LastError ) & \":\" & Get ( ActivePortalRowNumber ) & \":\" & \
+                         Get ( ActiveFieldContents )";
 
 /// A move's destination row, a record being created, stays that record
 /// when the field's OnObjectExit deletes a row before it goes: here the

@@ -1269,10 +1269,12 @@ for scripts alike: the creation row is row 1, the records follow, and
 scripts reach the creation row there (Go to Portal Row, a button in the
 row) as Browse shows it [I: how FileMaker numbers a row drawn at the top,
 and whether a script reaches it, are unmeasured]. A portal whose initial
-row is past 1 numbers its drawn rows from that row, also for scripts, and
-the records before it keep their numbers, but no step reaches them: Go to
-Portal Row [First] goes to the initial row, Previous stops there, and a
-number before it is 101 [I: unmeasured]. A Go to Portal Row whose
+row is past 1, scrolling or not, draws the records from that row on and
+numbers its rows from there, whether or not records fill the rows before
+it, also for scripts. No step reaches a record before the initial row:
+Go to Portal Row [First] and Go to Field go to the initial row, Previous
+stops there, a number before it is 101, and Go to Related Record from a
+filtering portal's row finds the records it draws [I: unmeasured]. A Go to Portal Row whose
 OnObjectExit begins or deletes a row moves to the row it chose, found
 again by what it shows (a record being created by its draft, whatever
 other drafts go), or fails with 101 when that row left the portal. The option's storage is
