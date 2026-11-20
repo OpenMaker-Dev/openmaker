@@ -642,9 +642,19 @@ fn rows_follow_the_schema_and_keep_what_they_do_not_edit() {
             ("Input 3", false),
             ("Input 3 label", false),
             ("Input 3 uses password character", false),
+            // FileMaker Pro 26.1's "Close after (seconds)" (script-steps.md
+            // 12.4).
+            ("Close after", false),
+            ("Close After Seconds", false),
             ("Button Label Calculations", true)
         ]
     );
+    // Both show what is stored and take no input: the Boolean's byte
+    // width is not measured, so OpenMaker writes neither.
+    for label in ["Close after", "Close After Seconds"] {
+        let row = options.rows.iter().position(|r| r.label == label).unwrap();
+        assert!(!options.enabled(row), "{label}");
+    }
     // Go to Record: Exit after last only with Previous and Next.
     let mut record = ScriptStep::new(16);
     record

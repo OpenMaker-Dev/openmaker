@@ -624,10 +624,11 @@ enum Overflow {
 /// fits within its bounds, as FileMaker prints it (Claris: sliding exists to
 /// print more). A text object or button label is cut at its text box too:
 /// Pro clips every label's text to it (layout-model.md 6.5). A field that
-/// slides keeps its measured height and refuses as before.
-fn overflow_of(object: &LayoutObject) -> Overflow {
+/// slides (`slides`, [`PartObjects::slides`]) keeps its measured height and
+/// refuses as before.
+fn overflow_of(object: &LayoutObject, slides: bool) -> Overflow {
     match object.kind() {
-        ObjectKind::Field if object.slide_up().is_none() => Overflow::Clip,
+        ObjectKind::Field if !slides => Overflow::Clip,
         ObjectKind::Text | ObjectKind::Button => Overflow::Clip,
         _ => Overflow::Refuse,
     }
@@ -1944,7 +1945,9 @@ fn walk_report_objects<'a>(
         // Only what prints can slide: a slider that is itself left out (or
         // inside what is) moves nothing.
         if let Some((object, _, _)) = objects.iter().find(|(o, _, _)| {
-            o.slide_up().is_some() && part_of(o).is_some_and(|part| parts.contains(&part))
+            part_of(o).is_some_and(|part| {
+                parts.contains(&part) && slide_in_part(layout, o, part).is_some()
+            })
         }) {
             refuse(ReportError::unsupported(format!(
                 "Report object {} slides up in a part with {what}; how those slide is \
@@ -1958,7 +1961,8 @@ fn walk_report_objects<'a>(
     for (i, (a, ra, pa)) in objects.iter().enumerate() {
         for (b, rb, pb) in &objects[i + 1..] {
             if pa == pb
-                && (a.slide_up().is_some() || b.slide_up().is_some())
+                && (slide_in_part(layout, a, *pa).is_some()
+                    || slide_in_part(layout, b, *pb).is_some())
                 && ra.left < rb.right - SLIDE_EPSILON
                 && rb.left < ra.right - SLIDE_EPSILON
                 && ra.top < rb.bottom - SLIDE_EPSILON
@@ -2204,7 +2208,8 @@ fn report_object<'a>(
     }
     // A portal's rows have its height; how its objects would slide in a
     // row, or a tab control, is unmeasured.
-    if object.slide_up().is_some()
+    let slides = slide_in_part(layout, object, part).is_some();
+    if slides
         && (in_portal.is_some()
             || matches!(
                 object.kind(),
@@ -2217,7 +2222,7 @@ fn report_object<'a>(
         )));
     }
     // How FileMaker slides a group, or one of its members, is unmeasured.
-    if object.slide_up().is_some() && (group.is_some() || object.kind() == ObjectKind::Group) {
+    if slides && (group.is_some() || object.kind() == ObjectKind::Group) {
         return Err(ReportError::unsupported(format!(
             "Report object {} slides up in a group; sliding groups is unsupported",
             object.id
@@ -2225,16 +2230,10 @@ fn report_object<'a>(
     }
     // Pages are planned without conditions, so one that resized a sliding
     // object's text would not be measured.
-    if object.slide_up().is_some() && !object.calcs.conditions.is_empty() {
+    if slides && !object.calcs.conditions.is_empty() {
         return Err(ReportError::unsupported(format!(
             "Report object {} slides up and has conditional formatting; \
              sliding formatted objects are unsupported",
-            object.id
-        )));
-    }
-    if object.slide_up().is_some() && !slides_in(layout.parts[part].kind()) {
-        return Err(ReportError::unsupported(format!(
-            "Report object {} slides up in a header or footer, which never shrinks",
             object.id
         )));
     }
@@ -2415,10 +2414,10 @@ fn report_object<'a>(
         )));
     }
     if matches!(object.kind(), ObjectKind::Text | ObjectKind::Button)
-        && object.text.as_deref().is_some_and(|s| s.contains("{{"))
+        && symbol_texts(object).any(|text| numbered(text, 0).is_none())
     {
         return Err(ReportError::unsupported(
-            "Layout merge symbols (including page numbers) are unsupported",
+            "Layout merge symbols other than {{PageNumber}} are unsupported",
         ));
     }
     if [rect.top, rect.left, rect.bottom, rect.right]
@@ -2551,8 +2550,9 @@ fn printed_flags(kind: ObjectKind) -> u64 {
 /// Tolerance, in points, for touching edges of sliding objects.
 const SLIDE_EPSILON: f64 = 0.01;
 
-/// Parts that can shrink and whose objects can slide. Claris: headers,
-/// footers and title headers/footers never shrink or slide up.
+/// Parts that can shrink and whose objects can slide. Claris: "Headers,
+/// footers, title headers, title footers, and top navigation and bottom
+/// navigation parts never shrink or slide up."
 fn slides_in(kind: PartKind) -> bool {
     matches!(
         kind,
@@ -2562,6 +2562,19 @@ fn slides_in(kind: PartKind) -> bool {
             | PartKind::LeadingSubSummary
             | PartKind::TrailingSubSummary
     )
+}
+
+/// `object`'s slide-up option where it takes effect, in `layout`'s part
+/// `part`: none in a part that never slides ([`slides_in`]), where an
+/// object set to slide up prints where it is placed, as one that does not.
+fn slide_in_part(
+    layout: &Layout,
+    object: &LayoutObject,
+    part: usize,
+) -> Option<om_layout::SlideUp> {
+    object
+        .slide_up()
+        .filter(|_| layout.parts.get(part).is_some_and(|p| slides_in(p.kind())))
 }
 
 /// Whether a printed part's height depends on its record: an object there
@@ -2820,6 +2833,9 @@ struct PartObjects<'s, 'a> {
     resizers: Vec<usize>,
     /// For each object in a portal's rows, the portal's index.
     in_portal: Vec<Option<usize>>,
+    /// Each object's slide-up option where it takes effect: none in a part
+    /// that never slides ([`slide_in_part`]).
+    slides: Vec<Option<om_layout::SlideUp>>,
 }
 
 fn part_objects<'s, 'a>(
@@ -2828,6 +2844,9 @@ fn part_objects<'s, 'a>(
     part: &Part,
 ) -> PartObjects<'s, 'a> {
     let objects: Vec<_> = objects.iter().filter(|(_, _, p)| *p == index).collect();
+    let slides: Vec<_> = (objects.iter())
+        .map(|(object, _, _)| object.slide_up().filter(|_| slides_in(part.kind())))
+        .collect();
     let rects: Vec<Rect> = objects
         .iter()
         .map(|(_, r, _)| Rect {
@@ -2859,8 +2878,8 @@ fn part_objects<'s, 'a>(
     };
     let mut nearest = vec![Vec::new(); rects.len()];
     let mut colliders = vec![Vec::new(); rects.len()];
-    for (o, (object, _, _)) in objects.iter().enumerate() {
-        let Some(slide) = object.slide_up() else {
+    for o in 0..objects.len() {
+        let Some(slide) = slides[o] else {
             continue;
         };
         let candidates: Vec<usize> = (0..rects.len())
@@ -2876,7 +2895,7 @@ fn part_objects<'s, 'a>(
             .collect();
     }
     let resizing: Vec<usize> = (0..rects.len())
-        .filter(|&i| objects[i].0.slide_up().is_some_and(|s| s.resize_part))
+        .filter(|&i| slides[i].is_some_and(|s| s.resize_part))
         .collect();
     let resizers = resizing
         .iter()
@@ -2897,7 +2916,139 @@ fn part_objects<'s, 'a>(
         colliders,
         resizers,
         in_portal,
+        slides,
     }
+}
+
+/// `text` with each `{{PageNumber}}` (in any case, as Browse reads layout
+/// symbols, `om_data::host::layout::merge_text`) replaced by page `page`'s
+/// number (from 0): what FileMaker Pro 26.0.3 wrote on page *n* of Save
+/// Records as PDF (calc-functions.md, O4). `None` when the text holds
+/// another symbol, which reports refuse; an unclosed `{{` is text, as
+/// Browse keeps it.
+fn numbered(text: &str, page: usize) -> Option<String> {
+    let mut out = String::with_capacity(text.len());
+    let mut rest = text;
+    while let Some(start) = rest.find("{{") {
+        out.push_str(&rest[..start]);
+        let tail = &rest[start..];
+        let Some(end) = tail[2..].find("}}").map(|i| i + 2) else {
+            out.push_str(tail);
+            return Some(out);
+        };
+        if !tail[2..end].eq_ignore_ascii_case("PageNumber") {
+            return None;
+        }
+        out.push_str(&(page + 1).to_string());
+        rest = &tail[end + 2..];
+    }
+    out.push_str(rest);
+    Some(out)
+}
+
+/// The texts a text object's or button's layout symbols are read from, as
+/// Browse and the report's content read them: a merge text's literal runs,
+/// each on its own (a symbol never spans a merged field), or else its label.
+fn symbol_texts(object: &LayoutObject) -> Box<dyn Iterator<Item = &String> + '_> {
+    use om_layout::TextRun;
+    if object.text_runs.is_empty() {
+        Box::new(object.text.iter())
+    } else {
+        Box::new(object.text_runs.iter().filter_map(|run| match run {
+            TextRun::Literal(literal) => Some(literal),
+            _ => None,
+        }))
+    }
+}
+
+/// `label` with each whole `{{PageNumber}}` (any case) replaced by page
+/// `page`'s number (from 0): a merge text's label beside the runs its
+/// symbols are read from ([`symbol_texts`]), for content that reads the
+/// label. Its merged fields are written in it, so only whole symbols are
+/// numbered, never one paired across a field, and a field's placeholder
+/// (`<<Name>>`) is kept as written, whatever its name holds.
+fn numbered_label(label: &str, page: usize) -> String {
+    const SYMBOL: &str = "{{PageNumber}}";
+    let mut out = String::with_capacity(label.len());
+    let mut rest = label;
+    loop {
+        let field = rest.find("<<");
+        let Some(start) = [field, rest.find("{{")].into_iter().flatten().min() else {
+            break;
+        };
+        out.push_str(&rest[..start]);
+        let tail = &rest[start..];
+        // A merged field's placeholder is its name, kept as written.
+        if field == Some(start) {
+            let end = tail[2..].find(">>").map_or(2, |end| end + 4);
+            out.push_str(&tail[..end]);
+            rest = &tail[end..];
+            continue;
+        }
+        match tail.get(..SYMBOL.len()) {
+            Some(symbol) if symbol.eq_ignore_ascii_case(SYMBOL) => {
+                out.push_str(&(page + 1).to_string());
+                rest = &tail[SYMBOL.len()..];
+            }
+            _ => {
+                out.push_str("{{");
+                rest = &tail[2..];
+            }
+        }
+    }
+    out.push_str(rest);
+    out
+}
+
+/// `object` as page `page` (from 0) prints it: a text object's or a
+/// button's `{{PageNumber}}` numbered where its symbols are read
+/// ([`symbol_texts`], [`numbered`]), and a merge text's label too
+/// ([`numbered_label`]), so every source reads it as plain text and no
+/// field's value is touched; borrowed when it has none.
+fn on_page(object: &LayoutObject, page: usize) -> std::borrow::Cow<'_, LayoutObject> {
+    use om_layout::TextRun;
+    if !matches!(object.kind(), ObjectKind::Text | ObjectKind::Button)
+        || !symbol_texts(object).any(|text| text.contains("{{"))
+    {
+        return std::borrow::Cow::Borrowed(object);
+    }
+    let mut object = object.clone();
+    let number = |text: &mut String| {
+        if let Some(n) = numbered(text, page) {
+            *text = n;
+        }
+    };
+    if object.text_runs.is_empty() {
+        if let Some(text) = object.text.as_mut() {
+            number(text);
+        }
+    } else if let Some(text) = object.text.as_mut() {
+        // The label the runs spell (each merged field as `<<name>>`) is
+        // numbered as they are, run by run; one they do not spell is
+        // numbered by whole symbols outside placeholders.
+        let spelled = |numbered_runs: bool| {
+            (object.text_runs.iter())
+                .map(|run| match run {
+                    TextRun::Literal(literal) if numbered_runs => {
+                        numbered(literal, page).unwrap_or_else(|| literal.clone())
+                    }
+                    TextRun::Literal(literal) => literal.clone(),
+                    TextRun::MergeField(name) => format!("<<{name}>>"),
+                })
+                .collect::<String>()
+        };
+        *text = if spelled(false) == *text {
+            spelled(true)
+        } else {
+            numbered_label(text, page)
+        };
+    }
+    for run in &mut object.text_runs {
+        if let TextRun::Literal(literal) = run {
+            number(literal);
+        }
+    }
+    std::borrow::Cow::Owned(object)
 }
 
 /// Lay out one part for one record and page, sliding objects up as
@@ -2929,7 +3080,9 @@ fn layout_part(
     let mut data = Vec::with_capacity(count);
     let mut shrink = vec![0.0; count];
     for (i, (object, _, _)) in part.objects.iter().enumerate() {
-        let shrinks = object.slide_up().is_some() && object.kind() == ObjectKind::Field;
+        let paged = on_page(object, context.page);
+        let object = paged.as_ref();
+        let shrinks = part.slides[i].is_some() && object.kind() == ObjectKind::Field;
         let value = if matches!(
             object.kind(),
             ObjectKind::Text | ObjectKind::Field | ObjectKind::Button
@@ -3032,7 +3185,13 @@ fn layout_part(
                     _ => bounds.clone(),
                 };
                 (
-                    prepare_text_in(&value, &label, &style, overflow_of(object))?.0,
+                    prepare_text_in(
+                        &value,
+                        &label,
+                        &style,
+                        overflow_of(object, part.slides[i].is_some()),
+                    )?
+                    .0,
                     conditions,
                     icon,
                 )
@@ -3190,7 +3349,8 @@ fn portal_rows(
             rect.top - part.rects[index].top + geometry.offset.1 + row as f64 * geometry.row_height,
         );
         for &j in &members {
-            let object = part.objects[j].0;
+            let paged = on_page(part.objects[j].0, context.page);
+            let object = paged.as_ref();
             let r = &part.rects[j];
             let bounds = Rect {
                 left: r.left + dx,
@@ -3230,7 +3390,13 @@ fn portal_rows(
                         _ => bounds.clone(),
                     };
                     (
-                        prepare_text_in(&value, &label, &style, overflow_of(object))?.0,
+                        prepare_text_in(
+                            &value,
+                            &label,
+                            &style,
+                            overflow_of(object, part.slides[j].is_some()),
+                        )?
+                        .0,
                         conditions,
                         icon,
                     )

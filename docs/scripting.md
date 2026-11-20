@@ -172,6 +172,17 @@ and OnWindowTransaction, as FileMaker Server's engine answered them
 - OnWindowTransaction runs after the script that committed, with
   FileMaker's JSON.
 
+Show Custom Dialog's "Close after (seconds)" (FileMaker Pro 26.1, numeric
+slot 6 and calculation slot 13, script-steps.md 12.4) closes the desktop's
+dialog by itself once the time is up, as no button: `Get ( LastMessageChoice )`
+is 0, as Claris documents, and no input is stored. A time that is not a
+positive number leaves the dialog to the user (OpenMaker's choice). No step
+FileMaker Pro 26.1.1 wrote has been read
+([#348](https://github.com/OpenMaker-Dev/openmaker/issues/348)), so the
+Boolean's byte width is unknown: the Script Workspace's options show the
+option and its seconds as stored and take no input, and pasting the step as
+FileMaker XML refuses the option, whose XML shape is not recorded.
+
 Root-file layouts backed by a readable related hosted table can edit existing
 records. Browse and Set Field write their ordinary stored text, number, date,
 time, timestamp and container fields, a container's data going to the owning
@@ -198,8 +209,9 @@ none: Commit Transaction prepares every file before any record data goes, and
 a refusal in any file reverts every file's part; only a connection lost, or a
 host refusing a later file, after an earlier file's commit leaves that earlier
 file committed (record-writes.md, "A script's transaction across files").
-Delete Record inside one is refused
-([#312](https://github.com/OpenMaker-Dev/openmaker/issues/312)).
+A script's Delete Record inside one is held there too; the user's own edits
+and deletions on such a layout while the script is paused are refused
+([#411](https://github.com/OpenMaker-Dev/openmaker/issues/411)).
 Import, writes to the layout's related records in other tables, globals and
 repetitions remain refused on these layouts
 ([#43](https://github.com/OpenMaker-Dev/openmaker/issues/43)). The owning file
@@ -279,6 +291,14 @@ Server Find mode:
 - An unstored calculation with all-empty references reads empty, on the
   desktop too.
 - A find without criteria (400) returns to Browse.
+- Perform Quick Find (150) searches the window's layout by the
+  desktop's rules ([Quick Find](desktop-client.md#quick-find)), among
+  all the table's records, reading dates in the file's date order as
+  the server's other finds do. A word that a Quick Find field of another
+  occurrence would be searched for fails with 3, as a related find
+  criterion does on the server; Find Matching Records is 3 too
+  ([#101](https://github.com/OpenMaker-Dev/openmaker/issues/101)). What
+  FileMaker Server does is not measured.
 - Globals read their value with no current record, and sessions start
   from the file's stored globals.
 - A criterion longer than 10,000 characters cannot be read (3), on the
