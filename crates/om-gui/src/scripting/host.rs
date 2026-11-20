@@ -5282,21 +5282,24 @@ impl FoundSets for WorkerHost<'_> {
 
     fn find_matching(&mut self, field: Option<FieldRef>, kind: FindKind) -> HostResult {
         let name = self.target_name(field)?;
-        let value = {
+        let (value, field_kind) = {
             let (window, provider) = self.wp();
-            window
+            let field_kind = window
+                .current(provider)
+                .map_err(data_error)?
+                .and_then(|(fields, _)| fields.iter().find(|f| f.name == name).map(|f| f.kind));
+            let value = window
                 .value(provider, &name)
                 .map_err(data_error)?
-                .unwrap_or_default()
+                .unwrap_or_default();
+            (value, field_kind)
         };
         let mut request = FindRequest::default();
         request.set(
             &name,
-            if value.is_empty() {
-                "=".into()
-            } else {
-                format!("=={value}")
-            },
+            // A field the record page does not list (a related one) is
+            // matched by its value as typed, as before: its kind is unknown.
+            om_data::found::matching_criterion(&value, field_kind),
         );
         self.commit_window()?;
         self.change(FoundSetChange::Find {

@@ -2437,6 +2437,39 @@ fn related_list_refused() -> HostError {
     HostError::Error(ErrorCode(rules::error::UNAVAILABLE))
 }
 
+/// `value` as Find Matching Records writes it for the server's finds, as
+/// exactly as they read: a number written out in full with `.` as its
+/// decimal separator, as the server's criteria read numbers (not
+/// `1.0E+9`); a time or timestamp with its seconds even when they are
+/// zero, since the display form drops them and would read as the whole
+/// minute. `None` for a time with a fraction of a second: the server's
+/// criteria compare whole seconds, so no criterion holds it (and a whole
+/// second's criterion also finds the fractions within it). A time past 24
+/// hours is no time of day and fails as a criterion (3).
+fn matching_text(value: &Value, cx: &Ctx) -> Option<String> {
+    let clock = |micros: i128| {
+        let seconds = micros.div_euclid(1_000_000);
+        format!(
+            "{}:{:02}:{:02}",
+            seconds / 3600,
+            seconds / 60 % 60,
+            seconds % 60
+        )
+    };
+    let whole = |micros: i128| micros.rem_euclid(1_000_000) == 0;
+    Some(match value {
+        Value::Number(n) | Value::NumberText(n, _) => n.to_plain_text_with('.'),
+        Value::Time(t) if whole(t.micros()) => clock(t.micros()),
+        Value::Timestamp(t) if whole(t.time_of_day().micros()) => format!(
+            "{} {}",
+            t.date().format(cx.locale),
+            clock(t.time_of_day().micros())
+        ),
+        Value::Time(_) | Value::Timestamp(_) => return None,
+        other => other.to_text(cx).into_string(),
+    })
+}
+
 /// Today in the server's time zone.
 fn today() -> Date {
     let now = jiff::Zoned::now();
@@ -3713,6 +3746,66 @@ impl FieldSteps for ServerHost {
     }
 }
 
+impl ServerHost {
+    /// Run `requests` as Perform Find, Constrain or Extend Found Set
+    /// (`kind`), from Find mode when `in_find_mode`: see
+    /// [`FoundSets::perform_find`].
+    fn find_with(
+        &mut self,
+        kind: FindKind,
+        requests: Vec<Request>,
+        in_find_mode: bool,
+    ) -> HostResult {
+        self.request_count = requests.len();
+        let window = self.window()?;
+        let current: RidList = window.found.iter().copied().collect();
+        let all: RidList = self.all_records(window.table).into_iter().collect();
+        let master = if kind == FindKind::Constrain {
+            &current
+        } else {
+            &all
+        };
+        let matched = match self.find_within(&requests, master) {
+            Ok(found) => found,
+            Err(e) if e.code() == NO_CRITERIA.0 => {
+                // Without criteria FileMaker's engine is back in Browse
+                // mode, the found set and current record as they were
+                // (script-runtime.md 13.19, 13.21).
+                self.requests.clear();
+                let window = self.window_mut()?;
+                if window.mode == Mode::Find {
+                    window.current = window
+                        .browse_current
+                        .min(window.found.len().saturating_sub(1));
+                }
+                window.mode = Mode::Browse;
+                return Err(NO_CRITERIA.into());
+            }
+            Err(e) => {
+                if in_find_mode && self.requests.is_empty() {
+                    self.requests = requests;
+                }
+                return Err(ErrorCode(e.code()).into());
+            }
+        };
+        self.last_find = requests;
+        self.requests.clear();
+        let window = self.window_mut()?;
+        let found = match kind {
+            FindKind::Replace | FindKind::Constrain => matched,
+            FindKind::Extend => current.or(&matched),
+        };
+        window.found = found.iter().collect();
+        window.current = 0;
+        window.mode = Mode::Browse;
+        window.sort = None;
+        if window.found.is_empty() {
+            return Err(NO_RECORDS_MATCH.into());
+        }
+        Ok(())
+    }
+}
+
 impl FoundSets for ServerHost {
     fn show_all_records(&mut self) -> HostResult {
         self.leave()?;
@@ -3890,53 +3983,61 @@ impl FoundSets for ServerHost {
             None if in_find_mode => std::mem::take(&mut self.requests),
             None => self.last_find.clone(),
         };
-        self.request_count = requests.len();
+        self.find_with(kind, requests, in_find_mode)
+    }
+
+    /// Find Matching Records (155): the records whose `field`, or the
+    /// field with the focus, holds the current record's value, by the
+    /// desktop's request (`om_data::found::matching_criterion`, the value
+    /// written by [`matching_text`]), found, constrained or extended as
+    /// Perform Find does with that one request. Without a field it is 102,
+    /// as on the desktop. The step runs in Browse mode: from Find mode it
+    /// switches first, as Enter Browse Mode does (Claris, "Find Matching
+    /// Records"), and takes the value of the record current when Find mode
+    /// was entered. That is inferred: this server's Enter Browse Mode
+    /// returns to the first record, and FileMaker's record after Find mode
+    /// is not measured. A field of another occurrence is a related criterion,
+    /// which server finds do not support (3); a global or summary field is
+    /// no criterion at all (3; FileMaker's answer is not measured).
+    fn find_matching(&mut self, field: Option<FieldRef>, kind: FindKind) -> HostResult {
+        // A find reads field values.
+        self.require_view()?;
+        let focused = self.focus.as_ref().map(|f| FieldRef {
+            occurrence: f.occurrence,
+            field: f.field,
+            repetition: 1,
+        });
+        let field = field.or(focused).ok_or(ErrorCode::FIELD_MISSING)?;
+        let (_, def) = self.target(field)?;
         let window = self.window()?;
-        let current: RidList = window.found.iter().copied().collect();
-        let all: RidList = self.all_records(window.table).into_iter().collect();
-        let master = if kind == FindKind::Constrain {
-            &current
-        } else {
-            &all
-        };
-        let matched = match self.find_within(&requests, master) {
-            Ok(found) => found,
-            Err(e) if e.code() == NO_CRITERIA.0 => {
-                // Without criteria FileMaker's engine is back in Browse
-                // mode, the found set and current record as they were
-                // (script-runtime.md 13.19, 13.21).
-                self.requests.clear();
-                let window = self.window_mut()?;
-                if window.mode == Mode::Find {
-                    window.current = window
-                        .browse_current
-                        .min(window.found.len().saturating_sub(1));
-                }
-                window.mode = Mode::Browse;
-                return Err(NO_CRITERIA.into());
-            }
-            Err(e) => {
-                if in_find_mode && self.requests.is_empty() {
-                    self.requests = requests;
-                }
-                return Err(ErrorCode(e.code()).into());
-            }
-        };
-        self.last_find = requests;
-        self.requests.clear();
-        let window = self.window_mut()?;
-        let found = match kind {
-            FindKind::Replace | FindKind::Constrain => matched,
-            FindKind::Extend => current.or(&matched),
-        };
-        window.found = found.iter().collect();
-        window.current = 0;
-        window.mode = Mode::Browse;
-        window.sort = None;
-        if window.found.is_empty() {
-            return Err(NO_RECORDS_MATCH.into());
+        if field.occurrence != window.occurrence
+            || om_data::found::findable(&def) == Findable::Ignored
+        {
+            return Err(HostError::Unsupported);
         }
-        Ok(())
+        if window.mode == Mode::Find {
+            let before = window.browse_current;
+            self.enter_mode(Mode::Browse, false, None)?;
+            let window = self.window_mut()?;
+            window.current = before.min(window.found.len().saturating_sub(1));
+        }
+        let value = self.value_of(field)?;
+        let field_kind = match value.value_type() {
+            ValueType::Text => om_data::FieldKind::Text,
+            ValueType::Number => om_data::FieldKind::Number,
+            ValueType::Date => om_data::FieldKind::Date,
+            ValueType::Time => om_data::FieldKind::Time,
+            ValueType::Timestamp => om_data::FieldKind::Timestamp,
+            ValueType::Container => om_data::FieldKind::Container,
+        };
+        let text = matching_text(&value, &self.cx()).ok_or(HostError::Unsupported)?;
+        let mut request = Request::default();
+        request.set(
+            field.field,
+            om_data::found::matching_criterion(&text, Some(field_kind)),
+        );
+        self.leave()?;
+        self.find_with(kind, vec![request], false)
     }
 
     /// Sort Records with its stored order (script-steps.md 11.1); without

@@ -312,9 +312,30 @@ Server Find mode:
   all the table's records, reading dates in the file's date order as
   the server's other finds do. A word that a Quick Find field of another
   occurrence would be searched for fails with 3, as a related find
-  criterion does on the server; Find Matching Records is 3 too
+  criterion does on the server
   ([#101](https://github.com/OpenMaker-Dev/openmaker/issues/101)). What
   FileMaker Server does is not measured.
+- Find Matching Records (155), here and on the desktop, finds the records
+  whose field holds the current record's whole value: `=` for an empty
+  value, else `==` and the value, a text value's find operators taken
+  literally (`om_data::found::matching_criterion`), so `a*b` finds only
+  `a*b`. This request is OpenMaker's reading of Claris's description; the
+  one FileMaker builds is not captured. On the server a number is written
+  out in full with `.` (`1000000000`, not `1.0E+9`) and a time or
+  timestamp with its seconds, so the criterion is that second, not the
+  whole minute. The server's criteria compare whole seconds: a record
+  holding a fraction of a second within it is found too (`9:05:00` finds
+  `9:05:00.250`), and a value with a fraction of a second fails with 3,
+  as no criterion holds it. A number is matched by its index key, which
+  keeps 200 digits as FileMaker's does (query-program.md 7.3), so numbers
+  whose keys are equal (the same sign, count of integer digits and first
+  200 digits) match each other; whether FileMaker then compares the
+  stored values is not measured. From Find mode the
+  server switches to Browse first, as
+  Claris documents, and reads the record current when Find mode was
+  entered (inferred: FileMaker's record after Find mode is not measured).
+  A field of another occurrence, a global and a summary field fail with 3
+  on the server.
 - Globals read their value with no current record, and sessions start
   from the file's stored globals.
 - A criterion longer than 10,000 characters cannot be read (3), on the
