@@ -25,6 +25,11 @@ pub struct ObjectState {
     pub placeholder: Option<String>,
     /// A calculated label (buttons, popover buttons, panels).
     pub label: Option<String>,
+    /// A button's calculated icon, the SVG text its "Calculated icon"
+    /// formula gives (`LayoutObject::active_icon_formula`), shared by the
+    /// states that keep it. Text longer than [`MAX_ICON_SVG`] is kept as
+    /// none: empty, which draws the warning.
+    pub icon_svg: Option<std::sync::Arc<str>>,
 }
 
 /// Evaluate a layout formula in `context`. A formula whose stored context
@@ -84,8 +89,21 @@ pub fn display_state(
     state.tooltip = calcs.tooltip.as_ref().map(|f| text(host, f, context));
     state.placeholder = calcs.placeholder.as_ref().map(|f| text(host, f, context));
     state.label = calcs.label.as_ref().map(|f| text(host, f, context));
+    state.icon_svg = object.active_icon_formula().map(|formula| {
+        let svg = text(host, formula, context);
+        match svg.len() > MAX_ICON_SVG {
+            true => std::sync::Arc::from(""),
+            false => std::sync::Arc::from(svg),
+        }
+    });
     state
 }
+
+/// The longest calculated icon kept and drawn, in bytes of SVG text: a
+/// longer one is dropped as soon as it is computed, and draws the warning
+/// an invalid icon does. OpenMaker's bound [I]: FileMaker Pro's is
+/// unmeasured; icons are a few kilobytes.
+pub const MAX_ICON_SVG: usize = 64 << 10;
 
 /// The conditional formats of `object` whose condition holds on the record
 /// of `context`, whose `Self` the caller has set: indexes into
