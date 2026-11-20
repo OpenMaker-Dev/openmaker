@@ -2822,6 +2822,45 @@ fn a_unique_value_in_a_later_repetition_is_checked() {
     }
 }
 
+/// Two records a transaction holds take the same unique index key when
+/// one's value has it as a line: `green` in one and `green` CR `purple` in
+/// the other are 504 at the commit, in either order, as they are once
+/// either is stored (the value index keys each line).
+#[test]
+fn held_records_sharing_a_unique_line_are_refused() {
+    use om_data::runtime::TransactionOptions;
+    for (first, second) in [("green\rpurple", "green"), ("green", "green\rpurple")] {
+        let mut root = fixture::tree(&[], true);
+        fixture::set_field_options(&mut root, TABLE, NAME, 0x8000_0000);
+        fixture::set_field_validation(&mut root, TABLE, NAME, 0x410);
+        fixture::set_field_repetitions(&mut root, TABLE, NAME, 2);
+        let file = TempFile::from_tree("held-unique-lines", &root);
+        let (port, ca) = host_with(&file.0, None, |server| server);
+        let mut provider = open(port, &ca);
+        let tasks = layout(&mut provider, "Tasks");
+        provider
+            .begin_transaction(TransactionOptions::default())
+            .unwrap();
+        for (record, text) in [(1, first), (2, second)] {
+            provider
+                .write_record(&om_data::ScriptWrite {
+                    layout: tasks,
+                    record: Some(record),
+                    cells: [(NAME * 256 + 2, Some(text.into()))].into(),
+                    ..Default::default()
+                })
+                .unwrap();
+        }
+        let result = provider.commit_transaction(false);
+        assert_eq!(
+            result.as_ref().err().and_then(|e| e.code),
+            Some(504),
+            "{first:?} then {second:?}: {result:?}"
+        );
+        provider.close();
+    }
+}
+
 #[test]
 fn missing_index_existing_cold_and_warm_require_another_record() {
     for warm in [false, true] {

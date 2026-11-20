@@ -24,6 +24,10 @@ const EXISTS_IN_INDEX: u8 = 18;
 const EXISTS_RESULT: u8 = 0x03;
 /// GetKey's independent result spot, `[3, 4]`.
 const INDEX_COUNTS_RESULT: u8 = 0x04;
+/// The most index keys one op86 ExistsInIndex asks (a unique field's
+/// changed repetitions are asked together): enough for every repetition of
+/// a field, small enough for one request.
+const EXISTS_KEYS: usize = 64;
 /// Finite work limits for a validation without the host's value index.
 const VALIDATION_SCAN_RECORDS: usize = 100_000;
 const VALIDATION_SCAN_BYTES: usize = 64 << 20;
@@ -175,7 +179,7 @@ fn exists_in_index_program(
     connection_key: &[u8; 16],
     table: u64,
     field: u64,
-    key: &[u8],
+    keys: &[Vec<u8>],
     ignore: u64,
 ) -> Option<Vec<u8>> {
     let leaf = |key: u8, value: Vec<u8>| OwnedNode::leaf(vec![key], value);
@@ -215,11 +219,17 @@ fn exists_in_index_program(
             leaf(0x10, vec![1, 2, 1, 2]),
         ],
     );
-    // The record to ignore as a one-record RID list (5.1).
+    // The keys as value-less leaves of one spot, any of which answers true
+    // (query-program.md 8.4, live:exists2_two); the record to ignore as a
+    // one-record RID list (5.1).
+    let asked = keys
+        .iter()
+        .map(|key| OwnedNode::leaf(key.clone(), Vec::new()))
+        .collect();
     let upload = OwnedNode::list(
         vec![2],
         vec![
-            OwnedNode::list(vec![1], vec![OwnedNode::leaf(key.to_vec(), Vec::new())]),
+            OwnedNode::list(vec![1], asked),
             OwnedNode::list(
                 vec![2],
                 vec![OwnedNode::leaf(serial::encode(ignore), Vec::new())],
@@ -943,6 +953,7 @@ impl NativeProvider {
             // Keep the index lock across both the queries and any scan,
             // including checks of pending transaction records.
             let keys = checked_keys(table, field)?;
+            let texts: Vec<String> = texts.into_iter().collect();
             if self.any_in_index(table.id, field, &texts, record, keys)? {
                 return Err(DataError::with_code(
                     om_data::rules::error::NOT_UNIQUE,
@@ -1051,28 +1062,35 @@ impl NativeProvider {
         ignore: u64,
         keys: TextKeys,
     ) -> Result<bool, DataError> {
-        match self.index_answer(table, field, text, ignore, keys)? {
-            (Some(answer), _) => Ok(answer),
-            (None, key) => self.scan_index_keys(table, field, &[key], ignore, keys),
-        }
+        self.any_in_index(table, field, std::slice::from_ref(&text), ignore, keys)
     }
 
-    /// [`Self::in_index`] for any of `texts`, the stored records scanned
-    /// once for every text the host's index could not answer.
-    fn any_in_index(
+    /// [`Self::in_index`] for any of `texts`: their distinct index keys
+    /// asked together (at most [`EXISTS_KEYS`] in one op86), and the stored
+    /// records scanned once for every key the host's index could not
+    /// answer.
+    fn any_in_index<T: AsRef<str>>(
         &mut self,
         table: u64,
         field: u64,
-        texts: &BTreeSet<String>,
+        texts: &[T],
         ignore: u64,
         keys: TextKeys,
     ) -> Result<bool, DataError> {
+        // The keys as the index holds them (query-program.md 7.1, 7.2):
+        // texts that differ only in case, or share a cut key, ask once.
+        let asked = texts
+            .iter()
+            .map(|text| keys.key(text.as_ref()))
+            .collect::<Option<BTreeSet<Vec<u8>>>>()
+            .ok_or_else(|| DataError::new("A validated field's index holds no keys."))?;
+        let asked: Vec<Vec<u8>> = asked.into_iter().collect();
         let mut unanswered = Vec::new();
-        for text in texts {
-            match self.index_answer(table, field, text, ignore, keys)? {
-                (Some(true), _) => return Ok(true),
-                (Some(false), _) => {}
-                (None, key) => unanswered.push(key),
+        for chunk in asked.chunks(EXISTS_KEYS) {
+            match self.index_answer(table, field, chunk, ignore)? {
+                Some(true) => return Ok(true),
+                Some(false) => {}
+                None => unanswered.extend_from_slice(chunk),
             }
         }
         if unanswered.is_empty() {
@@ -1081,39 +1099,35 @@ impl NativeProvider {
         self.scan_index_keys(table, field, &unanswered, ignore, keys)
     }
 
-    /// The host's op86 ExistsInIndex answer for `text` in `field`'s value
-    /// index, `None` when its counts were missing, with the key asked.
+    /// The host's op86 ExistsInIndex answer for `asked` in `field`'s value
+    /// index: whether a record other than `ignore` holds any of them;
+    /// `None` when the index's counts were missing.
     fn index_answer(
         &mut self,
         table: u64,
         field: u64,
-        text: &str,
+        asked: &[Vec<u8>],
         ignore: u64,
-        keys: TextKeys,
-    ) -> Result<(Option<bool>, Vec<u8>), DataError> {
+    ) -> Result<Option<bool>, DataError> {
         let session = self.session_mut()?;
         let file_id = session
             .opened_file()
             .ok_or_else(|| DataError::new("No hosted file is open."))?
             .reply
             .file_id;
-        // The key as the index holds it (query-program.md 7.1, 7.2).
-        let key = keys
-            .key(text)
-            .ok_or_else(|| DataError::new("A validated field's index holds no keys."))?;
         let program = exists_in_index_program(
             file_id,
             session.connection_key(),
             table,
             field,
-            &key,
+            asked,
             ignore,
         )
         .ok_or_else(|| DataError::new("A validated value is too long to check."))?;
         let reply = session
             .query(&program)
             .map_err(|e| failure("check a validated value", e))?;
-        Ok((exists_in_index_result(&reply.slots)?, key))
+        exists_in_index_result(&reply.slots)
     }
 
     /// The same key membership question over stored records when the
@@ -2125,7 +2139,8 @@ mod tests {
         // FileMaker Pro's ExistsInIndex for table 80 04, field 06 (write-path.md
         // 1.3), up to its access key: the same leaves in the same slot codes.
         let program =
-            exists_in_index_program(1, &[7; 16], 0x8004, 6, &om_collate::text_key("a"), 2).unwrap();
+            exists_in_index_program(1, &[7; 16], 0x8004, 6, &[om_collate::text_key("a")], 2)
+                .unwrap();
         let tree = KeyTree::from_slots(SlotReader::new(&program)).unwrap();
         let check = tree.node(&[&[1], &[1]]).unwrap();
         assert_eq!(check.child(&[0]).unwrap().value, Some(&[42][..]));
