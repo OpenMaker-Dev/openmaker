@@ -3934,15 +3934,16 @@ impl ServerHost {
     /// Manage Security takes on the account catalog `[23, 1]`
     /// (local-files.md 2.4), so that a client saving accounts and a script
     /// do not change them at once: 310 while another user holds it
-    /// (FileMaker's code for Reset Account Password, inferred for Change
-    /// Password). `edit` gets the modification stamp to write; once it
-    /// has written, the other clients are told the catalog changed, as a
+    /// (FileMaker's code for Reset Account Password, inferred for the
+    /// other account steps). `edit` gets the modification stamp to write
+    /// and says whether it wrote; once it has, the other clients are told
+    /// the catalog changed, as a
     /// client's commit tells them. A file the server hosts read-only
     /// changes nothing: 3 (OpenMaker's choice).
     fn edit_accounts(
         &self,
         step: &str,
-        edit: impl FnOnce(&crate::hosting::ModStamp<'_>) -> HostResult,
+        edit: impl FnOnce(&crate::hosting::ModStamp<'_>) -> HostResult<bool>,
     ) -> HostResult {
         if self.hosted.read_only {
             info!(
@@ -3971,7 +3972,7 @@ impl ServerHost {
         };
         let result = edit(&stamp);
         self.hosted.lock_table().release_path(&catalog, self.user);
-        if result.is_ok() {
+        if result == Ok(true) {
             writes::notify(
                 &self.hosted,
                 &self.shared.mailboxes,
@@ -3988,7 +3989,7 @@ impl ServerHost {
                 ],
             );
         }
-        result
+        result.map(|_| ())
     }
 }
 
@@ -4032,6 +4033,7 @@ impl Accounts for ServerHost {
                     Some(stamp),
                     now,
                 )
+                .map(|()| true)
                 .map_err(|e| {
                     if let crate::hosting::PasswordChangeError::Unwritten(reason) = &e {
                         warn!(
@@ -4042,6 +4044,55 @@ impl Accounts for ServerHost {
                     ErrorCode(e.code().unwrap_or(ErrorCode::UNAVAILABLE.0)).into()
                 })
         })
+    }
+
+    /// Reset Account Password (136): only a session with full access
+    /// privileges (9), as FileMaker's `DoResetAccount`;
+    /// [`crate::hosting::Hosted::reset_account_password`] writes it. With
+    /// "Expire password" it is refused (3) before anything changes: the
+    /// account could then sign in to a hosted file only with a new
+    /// password, which this server does not take at login yet
+    /// ([#248](https://github.com/OpenMaker-Dev/openmaker/issues/248)).
+    fn reset_account_password(&mut self, name: &str, password: &str, expire: bool) -> HostResult {
+        self.require_full_access()?;
+        if expire {
+            info!(
+                "{:?}: Reset Account Password with Expire password is not supported yet",
+                self.hosted.name
+            );
+            return Err(HostError::Unsupported);
+        }
+        self.edit_accounts("Reset Account Password", |stamp| {
+            let now = jiff::Zoned::now().datetime();
+            self.hosted
+                .reset_account_password(name, password, false, Some(stamp), now)
+                .map(|()| true)
+                .map_err(|e| self.account_edit_error("Reset Account Password", &e))
+        })
+    }
+
+    /// Enable Account (137): only a session with full access privileges
+    /// (9), as FileMaker's `DoEnableAccount`;
+    /// [`crate::hosting::Hosted::enable_account`] writes it.
+    fn enable_account(&mut self, name: &str, active: bool) -> HostResult {
+        self.require_full_access()?;
+        self.edit_accounts("Enable Account", |stamp| {
+            self.hosted
+                .enable_account(name, active, Some(stamp))
+                .map_err(|e| self.account_edit_error("Enable Account", &e))
+        })
+    }
+}
+
+impl ServerHost {
+    /// The step error for Reset Account Password's or Enable Account's
+    /// `e`: its FileMaker code, or 3 for an account or file that could not
+    /// be written, logged.
+    fn account_edit_error(&self, step: &str, e: &crate::hosting::AccountEditError) -> HostError {
+        if let crate::hosting::AccountEditError::Unwritten(reason) = e {
+            warn!("{:?}: {step} changed nothing: {reason}", self.hosted.name);
+        }
+        ErrorCode(e.code().unwrap_or(ErrorCode::UNAVAILABLE.0)).into()
     }
 }
 impl Platform for ServerHost {}

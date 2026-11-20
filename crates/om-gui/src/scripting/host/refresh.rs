@@ -90,7 +90,7 @@ impl WorkerHost<'_> {
             .iter()
             .filter_map(|id| render.layout.objects.get(*id))
             .any(|object| {
-                !object.calcs.undecodable.is_empty()
+                object.has_undecodable_calcs()
                     || matches!(object.kind(), ObjectKind::External | ObjectKind::Unknown(_))
                     || object
                         .field_obj
