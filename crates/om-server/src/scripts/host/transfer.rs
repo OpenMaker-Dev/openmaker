@@ -554,6 +554,9 @@ impl ServerImport<'_> {
                 ..Ruled::default()
             }));
         }
+        // Its node now holds the import's computed values: a preview from
+        // before is not read again.
+        record.preview.clear();
         let key = (record.table, record.id);
         let Some(transaction) = self.host.transaction.as_mut() else {
             return Err(TransferError::new(3, "The import has no transaction."));
@@ -665,6 +668,8 @@ impl ImportTarget for ServerImport<'_> {
             ruled: None,
             serials: BTreeMap::new(),
             context: Box::new(self.host.step_context()),
+            created: None,
+            preview: BTreeMap::new(),
         };
         self.locked.push((table, id));
         self.stage(record, writes, auto_enter, true)?;
@@ -705,6 +710,8 @@ impl ImportTarget for ServerImport<'_> {
                         ruled: None,
                         serials: BTreeMap::new(),
                         context: Box::new(self.host.step_context()),
+                        created: None,
+                        preview: BTreeMap::new(),
                     },
                     true,
                 )

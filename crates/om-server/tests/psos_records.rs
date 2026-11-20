@@ -611,6 +611,39 @@ fn server_scripts_auto_enter_over_a_global_reads_the_sessions_value() {
     assert_eq!(run(&mut client, 9), (0, "0|Beax".to_string()));
 }
 
+/// A new record's auto-entered value read before its commit (#474) is not
+/// one the script entered: Set Field of Stamp to the value it previews
+/// (`A`, from Name) enters it, and Stamp, which does not replace an
+/// existing value, keeps it when Name changes after.
+#[test]
+fn a_value_entered_over_a_new_records_preview_stays_entered() {
+    let mut root = tree();
+    fixture::add_field(&mut root, TABLE, STAMP, "Stamp", 1, 1, 0, 0x8, 0);
+    fixture::add_formula(&mut root, &names(), (TABLE, OCCURRENCE), STAMP, 5, "Name");
+    root.put(
+        &[&[17], &[5], &uint_segment(8)],
+        script(
+            8,
+            "Entered",
+            vec![
+                ScriptStep::new(7),
+                fixture::set_field(NAME, "\"A\""),
+                set_var("$previewed", "Tasks::Stamp"),
+                fixture::set_field(STAMP, "\"A\""),
+                fixture::set_field(NAME, "\"B\""),
+                set_var("$before", "Tasks::Stamp"),
+                ScriptStep::new(75),
+                exit_with("$previewed & \"|\" & $before & \"|\" & Get ( LastError ) & \"|\" & Tasks::Stamp"),
+            ],
+        )
+        .encode(),
+    );
+    let file = TempFile::from_tree("psos-entered-over-preview", &root);
+    let port = server::start(&file);
+    let (mut client, _) = server::logged_in(port, "client");
+    assert_eq!(run(&mut client, 8), (0, "A|A|0|A".to_string()));
+}
+
 #[test]
 fn server_scripts_validate_every_repetition() {
     // Code (validated Always by `Length ( Self ) <= 3`) gets three
@@ -855,6 +888,76 @@ fn set_match_fields_perform_lookups() {
             "calculated={calculated}"
         );
     }
+}
+
+/// A new record's entered value that its replacing auto-entered calculation
+/// computes as empty reads as the commit stores it (#474): the commit writes
+/// only a nonempty computed value over a new record, so it keeps `manual`,
+/// and the script reads `manual` before the commit too.
+#[test]
+fn an_entered_value_a_replacing_calculation_empties_reads_as_stored() {
+    let mut root = tree();
+    // Auto-entered calculation (0x8) that replaces an existing value (0x80).
+    fixture::add_field(&mut root, TABLE, STAMP, "Stamp", 1, 1, 0, 0x88, 0);
+    fixture::add_formula(
+        &mut root,
+        &names(),
+        (TABLE, OCCURRENCE),
+        STAMP,
+        5,
+        "If ( Name = \"clear\" ; \"\" ; \"default\" )",
+    );
+    root.put(
+        &[&[17], &[5], &uint_segment(8)],
+        script(
+            8,
+            "Replaced",
+            vec![
+                ScriptStep::new(7),
+                fixture::set_field(NAME, "\"clear\""),
+                fixture::set_field(STAMP, "\"manual\""),
+                set_var("$before", "Tasks::Stamp"),
+                ScriptStep::new(75),
+                exit_with("$before & \"|\" & Get ( LastError ) & \"|\" & Tasks::Stamp"),
+            ],
+        )
+        .encode(),
+    );
+    let file = TempFile::from_tree("psos-replaced-empty", &root);
+    let port = server::start(&file);
+    let (mut client, _) = server::logged_in(port, "client");
+    assert_eq!(run(&mut client, 8), (0, "manual|0|manual".to_string()));
+}
+
+/// A new record's looked-up value read before its commit (#474) is not
+/// entered: a Set Field that clears it clears it, and the commit, which
+/// keeps a value a script set over a lookup, stores it empty.
+#[test]
+fn clearing_a_new_records_previewed_lookup_clears_it() {
+    let mut tree = lookup_tree();
+    tree.put(
+        &[&[17], &[5], &uint_segment(40)],
+        script(
+            40,
+            "Cleared",
+            vec![
+                ScriptStep::new(7),
+                set_field(NAME, 1, "\"Write tests\""),
+                set_var("$previewed", "Tasks::Note"),
+                set_field(NOTE, 1, "\"\""),
+                set_var("$cleared", "Tasks::Note"),
+                ScriptStep::new(75),
+                exit_with(
+                    "$previewed & \"|\" & $cleared & \"|\" & Get ( LastError ) & \"|\" & Tasks::Note",
+                ),
+            ],
+        )
+        .encode(),
+    );
+    let file = TempFile::from_tree("psos-cleared-lookup", &tree);
+    let port = server::start(&file);
+    let (mut client, _) = server::logged_in(port, "client");
+    assert_eq!(run(&mut client, 40), (0, "w||0|".to_string()));
 }
 
 /// Open Transaction's "Skip auto-enter options" performs no lookup: a

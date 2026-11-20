@@ -2643,6 +2643,42 @@ impl RecordPlan {
         !entry.skip_auto_enter && !changes.contains_key(&id) && !lookup.matches.iter().any(replaced)
     }
 
+    /// Whether a change of `cell` can change what the rules compute for a
+    /// record: its field has rules of its own (an auto-entered value, a
+    /// lookup, a calculation), a formula or a lookup reads it, or it decides
+    /// a relationship a formula reads through. A cell of no known field
+    /// answers yes.
+    pub fn computes_from(&self, cell: u64) -> bool {
+        let Some((field, _)) = self.cell_field(cell) else {
+            return true;
+        };
+        if self.has_rules(cell) {
+            return true;
+        }
+        self.fields.values().any(|f| {
+            f.dependencies().any(|d| *d == field)
+                || f.expression.as_ref().is_some_and(|e| {
+                    let Some(context) = e.formula.occurrence() else {
+                        return false;
+                    };
+                    e.related
+                        .iter()
+                        .map(|(occurrence, _)| *occurrence)
+                        .chain(e.whole.iter().copied())
+                        .any(|occurrence| {
+                            self.deciding_fields(context, occurrence).contains(&field)
+                        })
+                })
+        })
+    }
+
+    /// Whether `cell`'s field has rules of its own that give its value: an
+    /// auto-entered value, a lookup or a calculation.
+    pub fn has_rules(&self, cell: u64) -> bool {
+        self.cell_field(cell)
+            .is_some_and(|(field, _)| !self.fields[&field].given())
+    }
+
     /// Whether `field` is a match field of a lookup the rules perform: a
     /// script that sets it, also to the value it has, fires the lookup
     /// (auto-entry.md, Lookups, battery s41).
