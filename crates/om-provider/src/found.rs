@@ -725,9 +725,11 @@ impl NativeProvider {
     }
 
     /// The file's own language (`Locale::Type`), which an index in
-    /// language 0 keys text in (query-program.md 7.2).
-    pub(crate) fn file_language(&mut self) -> Result<u32, DataError> {
-        Ok(u32::from(self.calc_schema_cached()?.locale.language.id()))
+    /// language 0 keys text in (query-program.md 7.2): `None` when the
+    /// file's locale record does not decode
+    /// ([`om_data::host::CalcSchema::file_language`]).
+    pub(crate) fn file_language(&mut self) -> Result<Option<u32>, DataError> {
+        Ok(self.calc_schema_cached()?.file_language())
     }
 
     /// The records of `table` (out of `all`) that match `criteria`, ANDed:
@@ -1409,23 +1411,30 @@ const CLIENT_FIND_BUDGET: usize = 64 << 20;
 
 /// How a find reads `field`'s index when the host has one: its index
 /// language's form, language 0 the file's own (`file_language`), English
-/// where OpenMaker builds no form ([`om_data::rules::read_text_keys`]).
-fn read_text_keys(field: &om_hbam::Field, file_language: u32) -> TextKeys {
+/// where OpenMaker builds no form ([`om_data::rules::read_text_keys`]),
+/// language 0 too when the file's language is unknown.
+fn read_text_keys(field: &om_hbam::Field, file_language: Option<u32>) -> TextKeys {
     match field.decoded_options() {
         Some(options) if field.data_type == om_hbam::DataType::Text => {
-            om_data::rules::read_text_keys(options.index_language(), file_language)
+            match (options.index_language(), file_language) {
+                (0, None) => TextKeys::Collated,
+                (language, file) => {
+                    om_data::rules::read_text_keys(language, file.unwrap_or(language))
+                }
+            }
         }
         _ => TextKeys::Collated,
     }
 }
 
 /// How `field`'s indexes key text: the form of its index language
-/// (query-program.md 7.2), language 0 the file's own (`file_language`). A
-/// text field in a language whose keys are not established cannot be found
-/// without the host's index.
+/// (query-program.md 7.2), language 0 the file's own (`file_language`,
+/// `None` when unknown). A text field in a language whose keys are not
+/// established, or in language 0 when the file's is unknown, cannot be
+/// found without the host's index.
 fn text_keys(
     field: &om_hbam::Field,
-    file_language: u32,
+    file_language: Option<u32>,
     index: IndexKind,
 ) -> Result<TextKeys, DataError> {
     if field.data_type != om_hbam::DataType::Text {
@@ -1444,12 +1453,16 @@ fn text_keys(
         })?
         .index_language();
     // A value index in a language FileMaker leaves untailored keys as
-    // English (`value_text_keys`); its word breaks are its locale's, which
-    // OpenMaker does not build
+    // English (`value_text_keys`); its word breaks are not established
+    // (French's differ from English's), so word reads keep the written
+    // forms
     // ([#300](https://github.com/OpenMaker-Dev/openmaker/issues/300)).
-    let form = match index {
-        IndexKind::Value => om_data::rules::value_text_keys(language, file_language),
-        IndexKind::Word => om_data::rules::written_text_keys(language, file_language),
+    let form = match (index, file_language) {
+        (IndexKind::Value, _) => om_data::rules::value_text_keys(language, file_language),
+        (IndexKind::Word, None) if language == 0 => None,
+        (IndexKind::Word, file) => {
+            om_data::rules::written_text_keys(language, file.unwrap_or(language))
+        }
     };
     form.ok_or_else(|| {
         DataError::with_code(

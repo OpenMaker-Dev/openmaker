@@ -240,7 +240,7 @@ fn exists_in_index_program(
 pub(super) fn checked_keys(
     table: &Table,
     field: u64,
-    file_language: u32,
+    file_language: Option<u32>,
 ) -> Result<TextKeys, DataError> {
     table
         .field(field)
@@ -257,8 +257,9 @@ pub(super) fn checked_keys(
 /// How the value index of `table`'s `field`, the source of a value list,
 /// keys a value looked up in it: its value form where OpenMaker builds it
 /// ([`om_data::rules::value_text_keys`], language 0 the file's own), else
-/// English, as before (#159).
-fn list_keys(catalog: &Catalog, table: u64, field: u64, file_language: u32) -> TextKeys {
+/// English, as before (#159;
+/// [#571](https://github.com/OpenMaker-Dev/openmaker/issues/571)).
+fn list_keys(catalog: &Catalog, table: u64, field: u64, file_language: Option<u32>) -> TextKeys {
     catalog
         .table(table)
         .and_then(|t| t.field(field))
