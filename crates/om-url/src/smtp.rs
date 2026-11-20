@@ -528,7 +528,7 @@ fn check_address(address: &str) -> Result<(), SmtpError> {
             match bytes.get(i) {
                 Some(b'"') => break i + 1,
                 Some(b'\\') if bytes.get(i + 1).is_some_and(|c| (32..=126).contains(c)) => i += 2,
-                Some(c) if matches!(c, 32 | 33 | 35..=91 | 93..=126) => i += 1,
+                Some(32 | 33 | 35..=91 | 93..=126) => i += 1,
                 _ => return Err(refuse()),
             }
         }
