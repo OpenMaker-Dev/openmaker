@@ -624,30 +624,52 @@ impl Finder {
             0 | 1 | 3 | 21 | 77 => false,
             _ => return Err(QueryError::Unimplemented("match in this index language")),
         };
-        let cells: Vec<Vec<u8>> = std::iter::once(self.field.clone())
-            .chain(be_uint(&self.field).into_iter().flat_map(|id| {
-                (2..=u64::from(repetitions))
-                    .filter_map(move |n| id.checked_mul(256)?.checked_add(n))
-                    .map(om_hbam::slot::uint_segment)
-            }))
-            .collect();
+        if candidates.is_empty() {
+            return Ok(RidList::new());
+        }
+        // Prepared once for every value, its cost charged once.
+        work.spend(Size {
+            nodes: 1,
+            bytes: pattern.len(),
+        })?;
+        let prepared = pattern.prepare(raw);
+        // Repetition `n`'s cell (`field * 256 + n` past the first), built
+        // only when it is looked at.
+        let id = be_uint(&self.field);
+        let cell = |n: u64| -> Option<Vec<u8>> {
+            if n == 1 {
+                return Some(self.field.clone());
+            }
+            let cell = id?.checked_mul(256)?.checked_add(n)?;
+            Some(om_hbam::slot::uint_segment(cell))
+        };
         let mut found = RidList::new();
         for id in candidates.iter() {
             let mut matched = false;
-            for cell in &cells {
+            for n in 1..=u64::from(repetitions) {
                 // Each look counts, a repetition the record lacks included.
                 work.spend(Size { nodes: 1, bytes: 0 })?;
-                let Some(value) = indexes.stored_text(work, table, cell, id)? else {
+                let Some(cell) = cell(n) else {
                     continue;
                 };
-                // Matching takes up to the pattern's length in steps per
-                // character, charged before it starts (an empty value counts
-                // too). The characters' keys live only while one value is
-                // matched: a value past `MAX_MATCH_VALUE` is refused.
+                let Some(value) = indexes.stored_text(work, table, &cell, id)? else {
+                    continue;
+                };
+                // Matching takes up to the prepared pattern's length in
+                // steps per character and once more at the end, charged
+                // before it starts (an empty value pays the pattern); word
+                // scope matches each word, at most twice the value's steps.
+                // The characters' keys live only while one value is matched:
+                // a value past `MAX_MATCH_VALUE` is refused.
                 if value.len() > MAX_MATCH_VALUE {
                     return Err(QueryError::Limit("match value"));
                 }
-                let steps = value.len().saturating_mul(pattern.len().max(1));
+                let passes = if self.scope == WORD_SCOPE { 2 } else { 1 };
+                let steps = value
+                    .len()
+                    .saturating_mul(passes)
+                    .saturating_add(1)
+                    .saturating_mul(prepared.len().max(1));
                 work.spend(Size {
                     nodes: 1,
                     bytes: steps,
@@ -655,9 +677,9 @@ impl Finder {
                 matched = if self.scope == WORD_SCOPE {
                     om_collate::words(&value)
                         .into_iter()
-                        .any(|word| pattern.matches(word, raw))
+                        .any(|word| prepared.matches(word))
                 } else {
-                    pattern.matches(&value, raw)
+                    prepared.matches(&value)
                 };
                 if matched {
                     break;

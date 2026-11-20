@@ -60,6 +60,8 @@ impl Pattern {
         let mut units = Vec::with_capacity(count);
         for &kind in types {
             match kind {
+                // Every unit counts against the cap before the pattern grows.
+                _ if units.len() >= MAX_UNITS => return Err(QueryError::Limit("match pattern")),
                 0 => {
                     let (_quoted, after) = rest.split_first().ok_or_else(truncated)?;
                     let (text, used) = om_scsu::decode_counted(after)
@@ -97,30 +99,61 @@ impl Pattern {
         self.units.len()
     }
 
-    /// Whether `text` matches the whole pattern (6.3: from its start, ending
-    /// where the pattern ends). By collation key, characters with no weight
-    /// (accents alone, controls) are passed over in both, as the index
-    /// ignores them; `raw` (a Unicode raw field) compares every character
-    /// as written.
+    /// The pattern ready for one field's values, prepared once: by
+    /// collation key, characters with no weight (accents alone, controls)
+    /// are passed over, as the index ignores them; `raw` (a Unicode raw
+    /// field) keeps every character as written.
+    pub(crate) fn prepare(&self, raw: bool) -> Prepared<'_> {
+        Prepared {
+            units: self
+                .units
+                .iter()
+                .filter(|u| raw || !matches!(u, Unit::Char(_, key) if key.is_empty()))
+                .collect(),
+            breaks: self.units.contains(&Unit::Break),
+            raw,
+        }
+    }
+
+    /// Whether `text` matches the whole pattern ([`Prepared::matches`]).
+    #[cfg(test)]
     pub(crate) fn matches(&self, text: &str, raw: bool) -> bool {
-        let kept = |key: &[u8]| raw || !key.is_empty();
+        self.prepare(raw).matches(text)
+    }
+}
+
+/// A [`Pattern`] prepared for a field's values ([`Pattern::prepare`]).
+pub(crate) struct Prepared<'p> {
+    units: Vec<&'p Unit>,
+    /// Whether a unit is a word break, so values need their word edges.
+    breaks: bool,
+    raw: bool,
+}
+
+impl Prepared<'_> {
+    /// The units a value is matched against, for the work a test costs.
+    pub(crate) fn len(&self) -> usize {
+        self.units.len()
+    }
+
+    /// Whether `text` matches the whole pattern (6.3: from its start,
+    /// ending where the pattern ends), characters with no weight passed
+    /// over unless the field is raw. Linear in the text to prepare, then at
+    /// most the units times the text's steps.
+    pub(crate) fn matches(&self, text: &str) -> bool {
+        let raw = self.raw;
         let chars: Vec<(usize, char, Vec<u8>)> = text
             .char_indices()
             .map(|(offset, c)| (offset, c, char_key(c)))
-            .filter(|(_, _, key)| kept(key))
-            .collect();
-        let units: Vec<&Unit> = self
-            .units
-            .iter()
-            .filter(|u| !matches!(u, Unit::Char(_, key) if !kept(key)))
+            .filter(|(_, _, key)| raw || !key.is_empty())
             .collect();
         // Word edges only for a pattern that asks for them.
-        let breaks = if self.units.contains(&Unit::Break) {
+        let breaks = if self.breaks {
             word_breaks(text, &chars)
         } else {
             vec![false; chars.len() + 1]
         };
-        matches_at(&units, &chars, &breaks, raw)
+        matches_at(&self.units, &chars, &breaks, raw)
     }
 }
 
@@ -134,13 +167,18 @@ fn char_key(c: char) -> Vec<u8> {
 /// For each place between the kept characters (one more than there are),
 /// whether a word of the word index starts or ends there. An edge between
 /// characters that were passed over (after `e` and U+0301) marks the place
-/// before the next kept one.
+/// before the next kept one. The words come in order, so one cursor walks
+/// the characters once.
 fn word_breaks(text: &str, chars: &[(usize, char, Vec<u8>)]) -> Vec<bool> {
     let mut breaks = vec![false; chars.len() + 1];
+    let mut at = 0;
     for word in om_collate::words(text) {
         let start = word.as_ptr() as usize - text.as_ptr() as usize;
         for edge in [start, start + word.len()] {
-            breaks[chars.partition_point(|(offset, _, _)| *offset < edge)] = true;
+            while chars.get(at).is_some_and(|(offset, _, _)| *offset < edge) {
+                at += 1;
+            }
+            breaks[at] = true;
         }
     }
     breaks[chars.len()] = true;
@@ -254,5 +292,12 @@ mod tests {
             Err(QueryError::Unsupported(_, 4))
         ));
         assert!(Pattern::parse(&test[..6]).is_err());
+        // The unit cap counts operators too: a literal at the cap, then `*`.
+        let full = "a".repeat(MAX_UNITS);
+        assert!(Pattern::parse(&pattern(&[Ok(&full)])).is_ok());
+        assert!(matches!(
+            Pattern::parse(&pattern(&[Ok(&full), Err(3)])),
+            Err(QueryError::Limit(_))
+        ));
     }
 }
