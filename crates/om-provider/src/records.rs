@@ -276,13 +276,10 @@ fn list_keys(
         return Ok(keys.unwrap_or(TextKeys::Collated));
     }
     keys.ok_or_else(|| {
-        DataError::with_code(
-            om_data::found::code::UNSUPPORTED,
-            format!(
-                "Field {field}, the source of a value list, has no index OpenMaker can check \
-                     a value in."
-            ),
-        )
+        DataError::unsupported(format!(
+            "Field {field}, the source of a value list, has no index OpenMaker can check a \
+             value in."
+        ))
     })
 }
 

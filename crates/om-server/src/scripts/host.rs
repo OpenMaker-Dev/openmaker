@@ -2434,9 +2434,11 @@ fn related_list_refused() -> HostError {
 }
 
 /// A value list of a field's values whose field is indexed in a language
-/// OpenMaker does not key (#571): the value is not looked up (3).
+/// OpenMaker does not key (#571): the value is not looked up. Set Field
+/// reports it as error 3; an import ends at its row rather than skipping
+/// it (`transfer_error`), unlike a row's ordinary error 3.
 fn unkeyed_list_refused() -> HostError {
-    HostError::Error(ErrorCode(rules::error::UNAVAILABLE))
+    HostError::Unsupported
 }
 
 /// Today in the server's time zone.

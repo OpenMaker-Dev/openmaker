@@ -58,10 +58,16 @@ fn host_error(e: TransferError) -> HostError {
     HostError::Error(ErrorCode(e.code))
 }
 
+/// A row's write error as the import takes it: a rule OpenMaker does not
+/// support checking ([`HostError::Unsupported`], a value list it cannot
+/// key, #571) ends the import; any other refuses the row.
 fn transfer_error(e: HostError) -> TransferError {
     match e {
         HostError::Error(code) => TransferError::new(code.0, "the record could not be written"),
-        _ => TransferError::new(3, "the record could not be written"),
+        HostError::Unsupported => {
+            TransferError::unsupported("a rule of the record cannot be checked")
+        }
+        HostError::Pending => TransferError::new(3, "the record could not be written"),
     }
 }
 

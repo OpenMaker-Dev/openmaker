@@ -380,7 +380,6 @@ impl NativeProvider {
         let schema = plan.schema();
         let today = om_data::host::session::today(0);
         let cx = Ctx::new(&schema.locale, today);
-        let file_language = u32::from(schema.locale.language.id());
         let types = schema.table(table.id);
         let mut draft = RecordValues::default();
         for (cell, text) in &row {
@@ -628,12 +627,16 @@ impl NativeProvider {
             let data_type = table
                 .field(field)
                 .map_or(om_hbam::catalog::DataType::Text, |f| f.data_type);
-            // Text compares as the list's field keys it (#571); that field
-            // is this file's (another file's occurrence has no definition
-            // here and was refused above).
-            let keys = schema
-                .field(primary, listed)
-                .and_then(|def| om_data::rules::value_text_keys(def.language, file_language));
+            // Text compares as the list's field keys it (#571): in its index
+            // language, 0 being the language of the file that owns its table
+            // (a related file's own, `table_context`), not this one's.
+            let keys = schema.table_of(primary).and_then(|source| {
+                let def = source.fields.get(&listed)?;
+                let locale = schema
+                    .table_context(source.id)
+                    .map_or(&schema.locale, |file| &file.locale);
+                om_data::rules::value_text_keys(def.language, u32::from(locale.language.id()))
+            });
             let mut found = false;
             for item in &items {
                 match om_data::rules::same_list_value(data_type, &item.value, &text, &cx, keys) {
@@ -652,6 +655,23 @@ impl NativeProvider {
                 }
             }
             if !found {
+                // The list keeps one of the values a calculation compares
+                // equal (`FileCalc::list_entries`): in an index whose keys
+                // tell case apart (Unicode raw), the value it left out for
+                // one that differs in case alone may be this one.
+                let raw = keys == Some(om_query::keys::TextKeys::Raw);
+                let folded = Some(om_query::keys::TextKeys::Collated);
+                if raw
+                    && items.iter().any(|item| {
+                        om_data::rules::same_list_value(data_type, &item.value, &text, &cx, folded)
+                            == Some(true)
+                    })
+                {
+                    return Err(not_checked(
+                        &name,
+                        "its list's field keys case apart, which its list as computed does not",
+                    ));
+                }
                 return Err(plan.refusal(field, error::NOT_IN_LIST));
             }
         }

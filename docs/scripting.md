@@ -349,10 +349,12 @@ dBase, and for imports Excel 97-2004 `.xls` too.
   so the values after it keep their places).
 - Imports cover every action, mapping by position or name, field names
   rows, and auto-enter and validation through `om_data::rules`. A row
-  refused with 3, a rule OpenMaker cannot check, ends the import with 3
-  rather than being skipped (729): OpenMaker Server then imports none of
-  its rows; the desktop keeps the rows it committed before it (outside a
-  transaction, where each row is committed as it is imported).
+  whose rule OpenMaker does not support checking (a value list it cannot
+  key, #571) ends the import with 3 rather than being skipped (729):
+  OpenMaker Server then imports none of its rows; the desktop keeps the
+  rows it committed before it (outside a transaction, where each row is
+  committed as it is imported). A row's other errors, 3 among them (a
+  record changed meanwhile, a lookup it cannot read), skip that row.
 - Stored specs decode and re-encode byte for byte.
 - On FileMaker Server: export probes match byte for byte, except
   Shift-JIS, Big-5 and EUC-KR and `.xlsx` time cells; 49 of 51 import

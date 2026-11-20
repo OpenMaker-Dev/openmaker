@@ -8055,6 +8055,77 @@ fn a_previewed_portal_row_stores_the_values_its_preview_showed() {
     provider.close();
 }
 
+/// The opened file (English) validates Code against a related-values list
+/// of Remote Tasks::Name, a field of the related file (German) indexed in
+/// language 0, that file's own (#571): its keys are German's, which
+/// OpenMaker does not build, so the check is refused (3), not made in the
+/// opened file's English, where `Apfel` is the related `Äpfel`.
+#[test]
+fn a_related_files_list_is_compared_in_its_own_files_language() {
+    use fixture::CODE;
+    const JOB_KEY: u64 = 30;
+    let mut root = fixture::tree(&[], true);
+    let mut child = fixture::tree(&[], true);
+    reference(&mut root, (REMOTE, "Remote Tasks"), 1, "Related");
+    for tree in [&mut root, &mut child] {
+        fixture::add_field(tree, TABLE, JOB_KEY, "JobKey", 1, 2, 0, 0, 0);
+    }
+    let german = om_calc::Locale {
+        language: om_calc::Language::from_id(25),
+        ..om_calc::Locale::en_us()
+    };
+    child.put(
+        &[&[2], &[0x0d]],
+        OwnedNode::leaf(Vec::new(), german.to_record()),
+    );
+    // Its Name is indexed in language 0, the file's own (the fixture's is
+    // English, 21).
+    fixture::set_field_language(&mut child, TABLE, NAME, 0);
+    fixture::add_relationship(&mut root, 9, (OCCURRENCE, JOB_KEY), 0, (REMOTE, JOB_KEY));
+    // Value list 7, "Include only related values starting from" Tasks
+    // (0x0001): Remote Tasks::Name, no second field. Code is a member of
+    // it, validated always.
+    root.put(
+        &[&[0x21], &[5], &[7], &[0x10]],
+        om_scripts::text_node(&[], "Remote names"),
+    );
+    let mut list = vec![
+        1, 0, 1, 4, 3, 0xd0, 0, 0x40, 2, 1, NAME as u8, 0, 1, 0, 0, 0, 0,
+    ];
+    list.extend([4, 3, 0xd0, 0, 1, 0, 0]);
+    list.extend(om_scsu::encode_counted(" "));
+    root.put(
+        &[&[0x21], &[5], &[7], &[2]],
+        OwnedNode::leaf(Vec::new(), list),
+    );
+    fixture::set_field_validation(&mut root, TABLE, CODE, 0x500);
+    root.put(
+        &[&uint_segment(TABLE), &[3], &[5], &uint_segment(CODE), &[7]],
+        OwnedNode::leaf(
+            Vec::new(),
+            vec![2, 1, 7, 0x90, 0, 0, 2, 1, 0, 0, 0, 0, 0xff],
+        ),
+    );
+    put(&mut root, 1, JOB_KEY, "7");
+    put(&mut child, 1, JOB_KEY, "7");
+    put(&mut child, 1, NAME, "Äpfel");
+    let host = Host::new(
+        "related-list-language",
+        vec![(ROOT, root), (RELATED, child)],
+    );
+    let mut provider = host.open(ROOT);
+    provider.calc_schema().unwrap();
+    let layout = u32::try_from(fixture::LAYOUT).unwrap();
+    let code =
+        |text: &str| om_data::FieldChanges::from([("Code".to_owned(), Some(text.to_owned()))]);
+    let refused = provider
+        .update_record(layout, 1, code("Apfel"))
+        .unwrap_err();
+    assert_eq!(refused.code, Some(3), "{refused}");
+    assert!(refused.message.contains("language"), "{refused}");
+    provider.close();
+}
+
 /// A related-values list of an unstored calculation reading the opened
 /// file, checked by the related file that writes the record (#1058, #1000):
 /// Related's `Mark` must be one of `S::Shout`, related through `S`, a

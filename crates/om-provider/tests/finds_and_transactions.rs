@@ -2523,6 +2523,8 @@ fn a_related_value_list_is_computed_for_the_written_record() {
     const OWNER: u64 = 37;
     const GERMAN: u64 = 38;
     const WORD: u64 = 39;
+    const RAW: u64 = 40;
+    const LETTER: u64 = 41;
     let mut root = fixture::tree(&[], true);
     let mut names = fixture::names();
     names.add_field(TABLE, SHOUT, "Shout");
@@ -2538,6 +2540,9 @@ fn a_related_value_list_is_computed_for_the_written_record() {
     fixture::add_field(&mut root, TABLE, GERMAN, "German", 1, 1, 0, 0, 0);
     fixture::set_field_language(&mut root, TABLE, GERMAN, 25);
     fixture::add_field(&mut root, TABLE, WORD, "Word", 1, 1, 0, 0, 0x100);
+    fixture::add_field(&mut root, TABLE, RAW, "Raw", 1, 1, 0, 0, 0);
+    fixture::set_field_language(&mut root, TABLE, RAW, 2);
+    fixture::add_field(&mut root, TABLE, LETTER, "Letter", 1, 1, 0, 0, 0x100);
     fixture::add_occurrence(&mut root, SELF_JOIN, "S", TABLE);
     fixture::add_relationship(&mut root, 12, (OCCURRENCE, COUNT), 0, (SELF_JOIN, COUNT));
     fixture::set_field_validation(&mut root, TABLE, CODE, 0x100);
@@ -2562,6 +2567,7 @@ fn a_related_value_list_is_computed_for_the_written_record() {
         (8, "Counts", COUNT, NUM),
         (9, "Accounts", WHO, OWNER),
         (10, "Germans", GERMAN, WORD),
+        (11, "Raws", RAW, LETTER),
     ] {
         root.put(&[&[0x21], &[5], &[list], &[0x10]], text_node(&[], name));
         root.put(&[&[0x21], &[5], &[list], &[2]], related(listed as u8));
@@ -2592,6 +2598,16 @@ fn a_related_value_list_is_computed_for_the_written_record() {
         .unwrap_err();
     assert_eq!(refused.code, Some(3), "{refused:?}");
     assert!(refused.message.contains("language"), "{refused:?}");
+    // S::Raw, Unicode raw (2), holds "A" and "a" on record 2's two lines:
+    // the list keeps one of them, so an exact "a" or "A" may be the one it
+    // left out (3), "A" exact is there, and "b" is in neither (506).
+    for (letter, expected) in [("A", None), ("a", Some(3)), ("b", Some(506))] {
+        let result = a.update_record(tasks, 2, values(&[("Raw", "A\ra"), ("Letter", letter)]));
+        match expected {
+            None => assert!(result.is_ok(), "{letter}: {result:?}"),
+            Some(code) => assert_eq!(result.unwrap_err().code, Some(code), "{letter}"),
+        }
+    }
     // With Count 3 as written, record 1 ("Write tests", Count 3) is related.
     assert_eq!(
         code(a.update_record(tasks, 2, values(&[("Count", "3"), ("Code", "Write tests")]))),
@@ -2754,6 +2770,14 @@ fn a_value_list_of_a_field_in_an_unkeyed_language_is_not_checked_in_english() {
             refused.message.contains("source of a value list"),
             "late={late}: {refused:?}"
         );
+        // An import's row, new or into a record, is refused as one whose
+        // rule OpenMaker does not support checking, which ends the import
+        // (`DataError::unsupported`), not as a row FileMaker refused.
+        let cells = [(CODE, Some("Ship".to_owned()))].into();
+        for record in [None, Some(1)] {
+            let refused = a.import_record(tasks, record, &cells, true).unwrap_err();
+            assert!(refused.unsupported, "late={late} {record:?}: {refused:?}");
+        }
         assert_eq!(all_records(&mut a, tasks), before);
         a.close();
     }

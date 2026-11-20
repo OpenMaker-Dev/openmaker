@@ -766,9 +766,14 @@ checked by the desktop at the commit (`om-provider` `related_lists.rs`).
   (`FileCalc::value_list_entries`, with the session's global values) for
   the record as the write leaves it. A changed value not among its values
   is refused with 506. Text compares as the list's field keys it in its
-  value index, its index language's form; a field indexed in a tailored
-  language refuses the check with 3 rather than compare in English, where
-  `Apfel` would be `Äpfel` ([#571](https://github.com/OpenMaker-Dev/openmaker/issues/571)). Other types compare by value.
+  value index, its index language's form, language 0 being that of the
+  file that owns the field's table (a related file's own). A field
+  indexed in a tailored language refuses the check with 3 rather than
+  compare in English, where `Apfel` would be `Äpfel` ([#571](https://github.com/OpenMaker-Dev/openmaker/issues/571)). The computed
+  list keeps one of the values a calculation compares equal, so in a
+  Unicode raw field, whose keys tell case apart, a value not among them
+  that equals one of them but for case or accents is refused with 3 (the
+  one left out may be it). Other types compare by value.
 - **An existing record** is among its own related records with its
   unsaved values, as F91 saw for a related list FileMaker Pro shows. That
   validation reads the same list is inferred.
