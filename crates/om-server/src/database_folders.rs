@@ -87,6 +87,12 @@ fn entries(folder: &Path, budget: &mut usize) -> std::io::Result<(Vec<PathBuf>, 
     let mut files: Vec<(OsString, PathBuf)> = Vec::new();
     let mut subfolders: Vec<(OsString, PathBuf)> = Vec::new();
     if *budget == 0 {
+        // The limit was reached in an earlier folder, perhaps right at its
+        // end: this one is passed over, and says so.
+        log::warn!(
+            "database folders: more than {MAX_ENTRIES} entries; {} is not read",
+            folder.display()
+        );
         return Ok((Vec::new(), Vec::new()));
     }
     for entry in std::fs::read_dir(folder)? {

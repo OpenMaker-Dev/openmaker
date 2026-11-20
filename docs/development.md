@@ -151,11 +151,15 @@ server starts again. With no files at all the server still starts, with an
 empty file list; when files are found or named and none of them opens, it
 does not start.
 
-Discovery checks each entry when it reads the folder. The server opens and
-saves a hosted file by its path later on, so whoever may write in a
-database folder can still change what that path leads to after startup;
-keep database folders writable by the server's user only
-([#468](https://github.com/OpenMaker-Dev/openmaker/issues/468)).
+Discovery checks each entry when it reads the folder. The server opens,
+recovers and saves a hosted file by its path afterwards, during startup
+(between discovery and the file's load, and a recovery's save while it
+loads) as well as later on. So whoever may write in a database folder,
+in one of its subfolders, or in a folder above them can still change what
+that path leads to. Keep database folders, their subfolders and the
+folders above them writable by the server's user only
+([#468](https://github.com/OpenMaker-Dev/openmaker/issues/468)). Once the
+entry limit is reached, every folder not yet read is logged as not read.
 
 Failed logins are limited. After 5 failures an address (an IPv6 address by
 its /64) may try once a minute; after 30 failures of an account of a file
