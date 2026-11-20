@@ -55,6 +55,7 @@ and every response is one JSON object:
 | `place_field` | as `plan_field_placement`, `expected_revision` required | `status` (`placed`, `already_applied`), the `objects` and their refs, `previous_revision`, `revision`, and `verified` from a new connection |
 | `place_text` | `layout`/`layout_name`, `text` (one line), `frame` (`left`, `top`, `width`, `height` in points), `expected_revision` (get_layout's, required) | `status` (`placed`, `already_applied`), the `layout`, the text's `object` reference, `previous_revision`, `revision`, and `verified` from a new connection. [Texts on layouts](#texts-on-layouts) |
 | `set_object_frames` | `layout`/`layout_name`, `objects` (each a `layout_object` reference and its new `frame`: `left`, `top`, `width`, `height` in points), `expected_revision` (get_layout's, required) | `status` (`moved`, `already_applied`), the `layout`, the `objects`, `previous_revision`, `revision`, and `verified` from a new connection. [Moving objects](#moving-objects) |
+| `arrange_objects` | `layout`/`layout_name`, `objects` (`layout_object` references: two or more, three to distribute), `arrangement` (`align_left_edges`, `align_vertical_centers`, `align_right_edges`, `align_top_edges`, `align_horizontal_centers`, `align_bottom_edges`, `distribute_horizontally`, `distribute_vertically`, `resize_to_smallest_width`, `resize_to_smallest_height`, `resize_to_smallest_width_and_height`, `resize_to_largest_width`, `resize_to_largest_height`, `resize_to_largest_width_and_height`), `expected_revision` (get_layout's, required) | `status` (`moved`, `already_applied`, `unchanged`), the `arrangement`, and otherwise `set_object_frames`'s result. [Arranging objects](#arranging-objects) |
 | `delete_objects` | `layout`/`layout_name`, `objects` (`layout_object` references), `expected_revision` (get_layout's, required) | `status` (`deleted`, `already_applied`), the `layout`, the `objects`, `previous_revision`, `revision`, and `verified` from a new connection. [Deleting objects](#deleting-objects) |
 | `create_layout` | `name`, `occurrence` or `occurrence_name` (the table occurrence it shows records of), optional `layout`/`layout_name` (whose theme and width it takes), `expected_revision` (inspect's `layouts_revision`, required) | `status` (`created`, `already_applied`), the `layout` (`ref`, `id`, `name`), the `occurrence`, `previous_revision`, `revision`, and `verified` from a new connection. [New layouts](#new-layouts) |
 | `duplicate_layout` | `layout`/`layout_name`, `expected_revision` (inspect's `layouts_revision`, required) | `status` (`created`, `already_applied`), the copy's `layout` (`ref`, `id`, `name`), the `source`, `previous_revision`, `revision`, and `verified` from a new connection. [Duplicating layouts](#duplicating-layouts) |
@@ -423,6 +424,24 @@ The desktop's Layout mode moves and resizes objects the same way
 (`DataProvider::set_layout_object_frames`, the same request) at Save
 Layout ([desktop client](desktop-client.md), "Layout mode and Manage
 Layouts").
+
+### Arranging objects
+
+`arrange_objects` is Layout mode's Arrange > Align, Distribute and Resize
+To:
+- It reads the objects' stored frames.
+- It gives them new frames with `om_data::layout_arrange`, as the
+  desktop's Arrange menu does (re/client-ui.md, "Layout mode: Align,
+  Distribute and Resize To").
+- It writes them with `set_object_frames`, so the objects it accepts, the
+  refusals, the `conflict` at an old revision, `already_applied` and the
+  read-back are the same.
+
+An arrangement that changes no frame (the objects are arranged so already)
+reports `unchanged` and writes nothing. An arrangement it does not know, or
+too few objects, is an `invalid_request`. The CLI's flags take one
+`--object`, so the command has no flag form: send it as a JSON request
+(`om-author request`) or as the MCP tool.
 
 ### Deleting objects
 

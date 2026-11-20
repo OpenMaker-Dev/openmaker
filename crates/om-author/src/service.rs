@@ -54,13 +54,13 @@ use om_scripts::display::{Lookup, StepNames, MAX_PASTE_BYTES, MAX_PASTE_STEPS};
 use serde_json::{json, Value};
 
 use crate::api::{
-    self, ApplyParams, AuthorError, ChangePartsParams, ChoiceParams, ChooseParams, Command,
-    CompletionParams, CreateFieldParams, CreateFileParams, CreateLayoutParams, DeleteLayoutParams,
-    DeleteObjectsParams, DuplicateLayoutParams, EditParams, ErrorKind, FieldControlParams,
-    FieldParams, FieldType, FrameParams, InspectParams, LayoutParams, LayoutSetupParams,
-    LayoutWidthParams, ObjectFramesParams, OtherParams, Part, PartOptionsParams, PlaceFieldParams,
-    PlacePortalParams, PlaceTextParams, PlacementParams, RunScriptParams, ScriptParams, TextParams,
-    ValueListParams, ValueListValuesParams, API_VERSION,
+    self, ApplyParams, ArrangeObjectsParams, AuthorError, ChangePartsParams, ChoiceParams,
+    ChooseParams, Command, CompletionParams, CreateFieldParams, CreateFileParams,
+    CreateLayoutParams, DeleteLayoutParams, DeleteObjectsParams, DuplicateLayoutParams, EditParams,
+    ErrorKind, FieldControlParams, FieldParams, FieldType, FrameParams, InspectParams,
+    LayoutParams, LayoutSetupParams, LayoutWidthParams, ObjectFramesParams, OtherParams, Part,
+    PartOptionsParams, PlaceFieldParams, PlacePortalParams, PlaceTextParams, PlacementParams,
+    RunScriptParams, ScriptParams, TextParams, ValueListParams, ValueListValuesParams, API_VERSION,
 };
 use crate::catalog::{self, CommandSpec, Grant, Needs};
 use crate::refs::{self, reference};
@@ -693,6 +693,7 @@ impl Service {
             Command::PlaceField(params) => self.place_field(params),
             Command::CreateLayout(params) => self.create_layout(params),
             Command::SetObjectFrames(params) => self.set_object_frames(params),
+            Command::ArrangeObjects(params) => self.arrange_objects(params),
             Command::DeleteObjects(params) => self.delete_objects(params),
             Command::PlaceText(params) => self.place_text(params),
             Command::PlacePortal(params) => self.place_portal(params),
@@ -2068,6 +2069,97 @@ impl Service {
     /// Move or resize objects of a layout (`om_data::layout_objects`)
     /// through the host's authoring extension, then read the layout back
     /// over a new connection.
+    /// Arrange's Align, Distribute or Resize To on objects of a layout: the
+    /// frames `om_data::layout_arrange` gives them from their stored
+    /// frames, written as `set_object_frames` writes frames.
+    fn arrange_objects(&mut self, params: &ArrangeObjectsParams) -> Result<Value, AuthorError> {
+        use om_data::layout_arrange::{arrange, Arrangement};
+        let arrangement = Arrangement::from_id(&params.arrangement).ok_or_else(|| {
+            let ids: Vec<&str> = Arrangement::ALL.iter().map(|a| a.id()).collect();
+            AuthorError::new(
+                ErrorKind::InvalidRequest,
+                format!(
+                    "“{}” is no arrangement; the arrangements are {}.",
+                    params.arrangement,
+                    ids.join(", ")
+                ),
+            )
+        })?;
+        if params.objects.len() < arrangement.minimum() {
+            return Err(AuthorError::new(
+                ErrorKind::InvalidRequest,
+                format!(
+                    "{} needs at least {} objects.",
+                    arrangement.id(),
+                    arrangement.minimum()
+                ),
+            ));
+        }
+        let file = self.file();
+        let layout = self.load_layout(&LayoutParams {
+            layout: params.layout.clone(),
+            layout_name: params.layout_name.clone(),
+        })?;
+        let layout_ref = self.layout_ref(layout.id);
+        let decoded = layout_placement::decode(&layout.member).ok_or_else(|| {
+            AuthorError::new(
+                ErrorKind::Unsupported,
+                format!("OpenMaker cannot read {layout_ref}'s objects."),
+            )
+        })?;
+        let mut frames = Vec::with_capacity(params.objects.len());
+        for object in &params.objects {
+            let (on, key) = refs::layout_object_id(object, &file)?;
+            let stored = decoded.objects.get(key).filter(|_| on == layout.id);
+            let Some(bounds) = stored.and_then(|o| o.bounds.clone()) else {
+                return Err(AuthorError::new(
+                    ErrorKind::InvalidRequest,
+                    format!("{object} is not an object of {layout_ref} with a frame."),
+                ));
+            };
+            if frames.iter().any(|f: &ObjectFrame| f.object == key) {
+                return Err(AuthorError::new(
+                    ErrorKind::InvalidRequest,
+                    format!("{object} is named twice."),
+                ));
+            }
+            frames.push(ObjectFrame {
+                object: key,
+                frame: bounds,
+            });
+        }
+        let changed = arrange(&frames, arrangement);
+        if changed.is_empty() {
+            return Ok(json!({
+                "status": "unchanged",
+                "layout": layout_ref,
+                "arrangement": arrangement.id(),
+                "revision": revision_text(&layout.revision),
+            }));
+        }
+        let mut result = self.set_object_frames(&ObjectFramesParams {
+            layout: Some(layout_ref.clone()),
+            layout_name: None,
+            objects: changed
+                .iter()
+                .map(|f| crate::api::ObjectFrameParams {
+                    object: self.object_ref(layout.id, f.object),
+                    frame: FrameParams {
+                        left: f.frame.left,
+                        top: f.frame.top,
+                        width: f.frame.right - f.frame.left,
+                        height: f.frame.bottom - f.frame.top,
+                    },
+                })
+                .collect(),
+            expected_revision: params.expected_revision.clone(),
+        })?;
+        if let Some(fields) = result.as_object_mut() {
+            fields.insert("arrangement".into(), json!(arrangement.id()));
+        }
+        Ok(result)
+    }
+
     fn set_object_frames(&mut self, params: &ObjectFramesParams) -> Result<Value, AuthorError> {
         let expected = parse_revision(&params.expected_revision)?;
         let file = self.file();

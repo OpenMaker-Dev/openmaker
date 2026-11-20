@@ -586,6 +586,9 @@ pub(crate) enum Action {
     /// Delete or Edit > Clear in Layout mode: delete the selected object,
     /// as a change Save Layout stores.
     DeleteLayoutObject,
+    /// Arrange > Align, Distribute or Resize To in Layout mode: move or
+    /// resize the selected objects, as changes Save Layout stores.
+    Arrange(om_data::layout_arrange::Arrangement),
     ToggleToolbar,
     ToggleFormattingBar,
     /// The user typed into a field the account's privilege set lets them
@@ -1415,6 +1418,16 @@ impl OpenMakerApp {
                         !self.w.layout_workspace.saving
                             && self.w.layout_workspace.selection_count(session) > 0
                     }),
+                layout_arrange: match self.w.session.as_ref() {
+                    Some(session)
+                        if self.w.mode == Mode::Layout
+                            && self.design_allowed()
+                            && !self.w.layout_workspace.saving =>
+                    {
+                        self.w.layout_workspace.arrangeable_count(session)
+                    }
+                    _ => 0,
+                },
             },
             actions,
         )
@@ -4112,6 +4125,16 @@ impl OpenMakerApp {
                 }
             }
             Action::DeleteLayoutObject => {}
+            Action::Arrange(arrangement) => {
+                if self.w.mode == Mode::Layout
+                    && self.design_allowed()
+                    && !self.w.layout_workspace.saving
+                {
+                    if let Some(session) = self.w.session.as_ref() {
+                        self.w.layout_workspace.arrange(session, arrangement);
+                    }
+                }
+            }
             Action::ChangePassword => {
                 let local = self
                     .w

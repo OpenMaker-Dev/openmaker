@@ -764,6 +764,83 @@ impl CanvasState {
         self.selected.0.len()
     }
 
+    /// The selected objects Arrange's Align, Distribute and Resize To
+    /// apply to: each a stored object that can be moved, with its frame as
+    /// shown (moved or stored) and as stored. `None` when anything else is
+    /// selected, such as a new field or an object in a group or panel:
+    /// what FileMaker Pro does with those is unmeasured (client-ui.md).
+    fn arrangeable(&self, session: &Session) -> Option<Vec<(u64, GeomRect, GeomRect)>> {
+        if self.selection_count(session) == 0 {
+            return None;
+        }
+        let geometry = self.geometry.as_ref()?;
+        geometry.revision?;
+        self.selected
+            .0
+            .iter()
+            .map(|index| {
+                let object = geometry.objects.get(*index)?;
+                if !object.movable || object.key == 0 || self.deleted.keys.contains(&object.key) {
+                    return None;
+                }
+                let shown = self
+                    .moved
+                    .frames
+                    .get(&object.key)
+                    .copied()
+                    .unwrap_or(object.rect);
+                Some((object.key, shown, object.rect))
+            })
+            .collect()
+    }
+
+    /// How many selected objects Arrange applies to: 0 when it applies to
+    /// none of the selection.
+    pub(crate) fn arrangeable_count(&self, session: &Session) -> usize {
+        self.arrangeable(session).map_or(0, |objects| objects.len())
+    }
+
+    /// Arrange > Align, Distribute or Resize To on the selection: the new
+    /// frames are changes Save Layout stores, as a drag's are. Returns
+    /// whether a frame changed.
+    pub(crate) fn arrange(
+        &mut self,
+        session: &Session,
+        arrangement: om_data::layout_arrange::Arrangement,
+    ) -> bool {
+        let Some(objects) = self.arrangeable(session) else {
+            return false;
+        };
+        let revision = self.geometry.as_ref().and_then(|g| g.revision);
+        let frames: Vec<_> = objects
+            .iter()
+            .map(|&(object, shown, _)| om_data::layout_objects::ObjectFrame {
+                object,
+                frame: om_layout::Rect {
+                    top: shown.top,
+                    left: shown.left,
+                    bottom: shown.bottom,
+                    right: shown.right,
+                    ..om_layout::Rect::default()
+                },
+            })
+            .collect();
+        let changed = om_data::layout_arrange::arrange(&frames, arrangement);
+        for new in &changed {
+            let Some(&(_, _, stored)) = objects.iter().find(|o| o.0 == new.object) else {
+                continue;
+            };
+            let frame = GeomRect {
+                top: new.frame.top,
+                left: new.frame.left,
+                bottom: new.frame.bottom,
+                right: new.frame.right,
+            };
+            self.set_frame(new.object, frame, stored, revision);
+        }
+        !changed.is_empty()
+    }
+
     pub(crate) fn can_delete_selection(&self, session: &Session) -> bool {
         self.selection_count(session) > 0
             && self.selected.0.iter().all(|index| {
