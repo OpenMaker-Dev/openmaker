@@ -1224,9 +1224,16 @@ fn sorting_preview_printing_and_layout_object_functions() {
                 "Get ( PageCount )",
                 "Get ( PrinterName )",
                 "Get ( QuickFindText )",
+                "GetRecordIDsFromFoundSet ( JSONStringRanges )",
+                "GetRecordIDsFromFoundSet ( 2 )",
             ]),
             sort_by_name(),
-            probe(&["Get ( SortState )"]),
+            probe(&[
+                "Get ( SortState )",
+                "GetRecordIDsFromFoundSet ( JSONStringRanges )",
+                "GetRecordIDsFromFoundSet ( 2 )",
+                "EvaluationError ( GetRecordIDsFromFoundSet ( 5 ) )",
+            ]),
             // Still sorted with a new record open (O3).
             step(7),
             probe(&["Get ( SortState )", "Get ( RecordOpenState )"]),
@@ -1249,8 +1256,11 @@ fn sorting_preview_printing_and_layout_object_functions() {
     )];
     let (mut app, state) = open(scripts);
     let all = answers(&mut app, &state, "Sort and preview");
-    assert_eq!(all[0], ["0", "0", "", " ", ""]);
-    assert_eq!(all[1], ["1"]);
+    // The found set's ids in its order, each run of ascending ids a range
+    // (calc-functions.md, "GetRecordIDsFromFoundSet on FileMaker
+    // Server"): Ada 1, Grace 2, Alan 3, then by name.
+    assert_eq!(all[0], ["0", "0", "", " ", "", r#"["1-3"]"#, "[1,2,3]"]);
+    assert_eq!(all[1], ["1", r#"["1","3","2"]"#, "[1,3,2]", "1708"]);
     assert_eq!(all[2], ["1", "1"]);
     // Preview has pages but no page count, and no object bounds.
     assert_eq!(all[3], ["2", "1", "", ""]);
@@ -1372,6 +1382,13 @@ fn limited_built_in_sets_keep_layout_mode_closed() {
 fn window_names_and_uuids_follow_new_window() {
     let mut new_window = step(122);
     new_window.set_calculation(0, Some(&calc("\"Second\"")));
+    // Select Window by name finds a name without case, else a window's
+    // UUID (Claris, select-window.html; #320).
+    let select = |name: &str| {
+        let mut select = with_value(step(123), 1);
+        select.set_calculation(0, Some(&calc(name)));
+        select
+    };
     let scripts = vec![script(
         205,
         "Windows probe",
@@ -1386,6 +1403,20 @@ fn window_names_and_uuids_follow_new_window() {
                 "Get ( WindowUUID ) <> $$u",
                 "Length ( Get ( WindowUUID ) )",
             ]),
+            select("$$u"),
+            probe(&["Get ( LastError )", "Get ( WindowName )"]),
+            select("\"sECOND\""),
+            probe(&["Get ( LastError )", "Get ( WindowName )"]),
+            // A name as given wins over one that differs only in case.
+            {
+                let mut upper = step(122);
+                upper.set_calculation(0, Some(&calc("\"SECOND\"")));
+                upper
+            },
+            select("\"Second\""),
+            probe(&["Get ( LastError )", "Get ( WindowName )"]),
+            // Close Second, then SECOND, the window current before it.
+            step(121),
             step(121),
             probe(&["WindowNames", "Get ( WindowUUID ) = $$u"]),
         ]),
@@ -1394,5 +1425,8 @@ fn window_names_and_uuids_follow_new_window() {
     let all = answers(&mut app, &state, "Windows probe");
     assert_eq!(all[0], ["Contacts", "Contacts"]);
     assert_eq!(all[1], ["Second\rContacts", "Second", "1", "32"]);
-    assert_eq!(all[2], ["Contacts", "1"]);
+    assert_eq!(all[2], ["0", "Contacts"]);
+    assert_eq!(all[3], ["0", "Second"]);
+    assert_eq!(all[4], ["0", "Second"]);
+    assert_eq!(all[5], ["Contacts", "1"]);
 }

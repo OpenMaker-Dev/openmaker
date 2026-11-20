@@ -1096,6 +1096,14 @@ Animation, Open/Commit/Revert Transaction, Set Revert Transaction on Error).
 (no caller in the server build; inf: the Script Workspace uses it to grey
 out steps).
 
+FileMaker Pro's Mac `FMEngine` holds the same table: 26.0.3's x86_64 slice
+at file offset `0x8a7dd0`, with the 248 values of libFMEngine's, and
+26.1.1's (SHA-256 `e306cd52...`) at `0x8d7d80` with 251 (obs, 2026-11-19:
+found by those values). In 26.1.1, 248 is 0 (no client), 249 Replace Field
+Contents by Name and 250 Set Variable by Name are 0x7e (every client), and
+96 Save a Copy as Add-on Package gains the Server bit (0x0e; Claris: it
+runs on FileMaker Server in 26.1.1); the other 247 are unchanged.
+
 The `IsServerCompatible`, `IsWebDirectCompatible`, `IsCustomWebCompatible`
 and `IsWebCompatible` functions (0xe86920 etc.) do not test a step: they
 test the global `ScriptStep::m_Compatibility` (0x12d9634), the platform the
@@ -2571,19 +2579,42 @@ Server engine (11.3, 11.5)
   transaction, 1) and the sender of its notifications, so every registered
   client is told of its commits, the requester included. Other users see
   its locks as held by `<server name> (script engine, <account>)`.
-- Privileges (9, 11.3): the session runs with the requesting account's.
-  An account in the file's verified built-in [Full Access] set
-  (local-files.md 2.3) has full access; every other account fails closed
-  (`Privileges::Unknown`): a custom set's script, layout and record
-  limits are not applied to server scripts yet. Its scripts are not executable (op30 answers 9
-  and nothing runs) unless set to run with full access privileges: then
-  the script runs and each of its steps has full access (2.2, 9.1). A
-  sub-script it calls may execute (`mParentRunWithFullAccess`) but runs
-  with the account's own privileges unless it is also set to: there, and
-  wherever the account is not elevated, creating, changing, deleting,
+- Privileges (9, 11.3): the session runs with the requesting account's,
+  as FileMaker Server's engine opens the file "as the same account"
+  (11.3). An account in one of the file's verified built-in sets
+  (local-files.md 2.3, session-identity.md 2.7) has that set's
+  privileges: [Full Access] everything; [Data Entry Only] every script
+  executable, every record read, created, edited and deleted;
+  [Read-Only Access] every script executable and every record read, with
+  creating, changing, deleting, setting a global field and importing
+  refused with 200, the code a client's own write under the set gets
+  (inferred: FileMaker Server's codes for a server script under these
+  sets are unmeasured, with
+  [#7](https://github.com/OpenMaker-Dev/openmaker/issues/7)). Truncate
+  Table needs [Full Access] whatever the account may delete (Claris's
+  Truncate Table help), and Set Next Serial Value, which changes a
+  field's definition, does too (inferred); both are 9 otherwise. An
+  account in a custom set runs the scripts its set makes executable
+  (session-identity.md 2.2); one its set gives no access is refused with
+  9 and nothing runs, also when it is set to run with full access
+  privileges, as `CallScript` checks the account's access before that
+  flag counts (3.7, 9.1). Before, the flag let it run, and its steps
+  wrote with full access
+  ([#227](https://github.com/OpenMaker-Dev/openmaker/issues/227)). The
+  set's layout, field and record limits are not applied to server scripts
+  yet, so its steps fail closed (`Privileges::Unknown`) unless the script
+  is set to run with full access privileges: then each of its steps has
+  full access (2.2, 9.1). A sub-script it calls may execute even without
+  access (`mParentRunWithFullAccess`) but runs with the account's own
+  privileges: OpenMaker gives the full-access flag only to a script the
+  account may run, so such a child is not elevated even when it is itself
+  set to run with full access, where FileMaker would elevate it (inf, 9.1)
+  ([#227](https://github.com/OpenMaker-Dev/openmaker/issues/227)): there,
+  and wherever the account is not elevated, creating, changing, deleting,
   truncating, setting a global field or a next serial value and finding
   fail with 9, and reading a field is calculation error 9 (`?`, not
-  FileMaker's `<No Access>` text). Each edit is checked against the
+  FileMaker's `<No Access>` text).
+  Each edit is checked against the
   privileges of the step making it: a record an elevated caller opened
   (changed and not yet committed) is still refused to its sub-script
   (before, the open record let the sub-script write; review fix).
@@ -3725,7 +3756,13 @@ Steps
   given or after the current window plus " - 2" (" - 3" when taken;
   OpenMaker's choice beyond the engine's one answer), with a layout going
   there with OnLayoutEnter; Select Window makes a named window current
-  (names matched front to back, duplicates allowed); Close Window commits
+  (names matched front to back, as given and then without case,
+  duplicates allowed, then `Get ( WindowUUID )`s, each in every open file
+  before the next, as 9.2 documents; over a dialog only the dialog itself
+  may be the window found; Close Window, Set Window Title and Move/Resize Window match
+  this file's windows the same way, which Claris does not state for them
+  ([#320](https://github.com/OpenMaker-Dev/openmaker/issues/320)), and
+  letters beyond ASCII fold as Unicode lowercase [I]); Close Window commits
   the window's record, closes it and makes the window current before it
   current again (closing another window keeps the current one); 112 for a
   name no window has. Closing the file's last window closes the file

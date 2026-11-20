@@ -146,7 +146,7 @@ id,name,category,description
 144,Save Records as PDF,PDF Files,Saves records to a specified PDF file.
 145,Go to Object,Navigation,Moves to the specified object on the current layout.
 146,Set Web Viewer,Miscellaneous,Controls the specified web viewer.
-147,Set Field By Name,Fields,Replaces the entire contents of a calculated target field in the current record with the calculated value.
+147,Set Field by Name,Fields,Replaces the entire contents of a calculated target field in the current record with the calculated value.
 148,Install OnTimer Script,Control,Runs a specified script at the specified interval.
 149,Open Edit Saved Finds,Open Menu Item,Opens the Edit Saved Finds dialog box.
 150,Perform Quick Find,Found Sets,Performs a quick find based on specified text or on text returned by a calculation.
@@ -247,3 +247,6 @@ id,name,category,description
 245,Close PDF,PDF Files,"Closes and saves the open PDF file to a file path, variable, or container field."
 246,Open PDF,PDF Files,"Opens a PDF file. Add pages using script steps such as Append PDF, then close and save the file using the Close PDF script step."
 247,Cancel PDF,PDF Files,Closes the open PDF in memory without saving it.
+248,,,
+249,Replace Field Contents by Name,Fields,Replaces the value in a calculated target field in every record in the found set with a different value.
+250,Set Variable by Name,Control,Sets a local or global variable with a calculated name to a specified value.

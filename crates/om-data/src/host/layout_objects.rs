@@ -724,7 +724,9 @@ pub fn layout_object_attribute(
             ObjectKind::Field => state.content(object, repetition.max(1), row.max(1)),
             // A page number or count is only known while printing: `?`,
             // with no error (O3, O4).
-            ObjectKind::Text if has_page_symbol(object.text.as_deref().unwrap_or_default()) => {
+            ObjectKind::Text
+                if super::layout::has_page_symbol(object.text.as_deref().unwrap_or_default()) =>
+            {
                 "?".into()
             }
             ObjectKind::Button | ObjectKind::PopoverButton | ObjectKind::Text => {
@@ -764,12 +766,6 @@ pub fn layout_object_attribute(
         _ => String::new(),
     };
     Value::text(text)
-}
-
-/// Whether layout text holds `{{PageNumber}}` or `{{PageCount}}`.
-fn has_page_symbol(text: &str) -> bool {
-    let lower = text.to_ascii_lowercase();
-    lower.contains("{{pagenumber}}") || lower.contains("{{pagecount}}")
 }
 
 /// A portal row's height: the portal's height over its rows; 0 outside a
