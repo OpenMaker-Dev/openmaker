@@ -582,6 +582,7 @@ fn first_record(
         // A file being made has no window or session to answer them.
         context: Default::default(),
         held: None,
+        others_held: Default::default(),
         related_needs: None,
     };
     let values = plan.compute(

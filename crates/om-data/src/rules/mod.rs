@@ -424,6 +424,12 @@ pub struct RecordEnvironment {
     /// its cells, is found, not read as missing. `None` outside a
     /// transaction.
     pub held: Option<Arc<HeldRecords>>,
+    /// Tables of which the write's commit holds records besides the written
+    /// one, for a host whose own reads already see them and that gives no
+    /// [`Self::held`] (OpenMaker Server's transaction): a self-join's
+    /// answer that depends on which records are committed is then refused,
+    /// as with held records of that table.
+    pub others_held: BTreeSet<u64>,
     /// Where a formula records a related read it needs again with a match
     /// key the write itself computes ([`RelatedNeeds`]); `None`: such a
     /// read refuses the write.
@@ -661,6 +667,8 @@ pub(crate) struct Evaluation {
     stored: BTreeMap<u64, String>,
     /// The records the commit holds ([`RecordEnvironment::held`]).
     held: Option<Arc<HeldRecords>>,
+    /// [`RecordEnvironment::others_held`].
+    others_held: BTreeSet<u64>,
     /// The computed fields whose values are final in the row being
     /// computed: those evaluated, or passed over, before the formula now
     /// evaluated, and not left out ([`RecordPlan::compute_inner`]).
@@ -719,6 +727,7 @@ impl RecordEnvironment {
             written: self.lookups.written,
             stored: BTreeMap::new(),
             held: self.held.clone(),
+            others_held: self.others_held.clone(),
             settled: BTreeSet::new(),
             unanswered,
             file_context: false,
@@ -4077,11 +4086,11 @@ impl RecordPlan {
     ///   record leaves empty, stored and as written;
     ///
     /// and nothing that reads records by their place. A new row's auto-entry
-    /// also answers the measured cases below (C126). A record the write did
-    /// not name ([`Written::Unknown`]) answers no self-join.
+    /// also answers the measured cases below (C126, s47). A record the write
+    /// did not name ([`Written::Unknown`]) answers no self-join.
     fn answers_own(
         &self,
-        ((context, occurrence), auto_entered): ((u64, u64), bool),
+        ((context, occurrence), auto_entry): ((u64, u64), Option<bool>),
         row: &BTreeMap<u64, String>,
         found: &[(u64, BTreeMap<u64, String>)],
         uses: &Uses,
@@ -4129,42 +4138,66 @@ impl RecordPlan {
                     .iter()
                     .all(|p| final_value(&p.left) && final_value(&p.right))
             });
-        // Measured (#1035's native cases, a local file): a new record's
-        // auto-entry reading a one-hop self-join that no other record
-        // matches, by final match fields on both sides, read the
-        // relationship as empty (Count 0, List empty, the first related
-        // record's fields empty): the record was not among its own related
-        // records. C126 also measured a nonempty computed key, first in an
-        // empty table and then with one older match. In the latter case its
-        // aggregate witness stored only the older row's values. This does
-        // not establish persistent exclusion or an evaluation timing rule.
-        if let (true, Written::New(own)) = (auto_entered, session.written) {
-            let others = session
-                .held
-                .as_ref()
-                .is_some_and(|held| held.holds_other(self.table, own));
+        // Measured: a new record's auto-entry reading a one-hop self-join
+        // by final match fields on both sides reads the other records
+        // committed with its key, never itself. #1035's native cases (a
+        // local file) read the relationship as empty with no other match
+        // (Count 0, List empty, the first related record's fields empty),
+        // also with a computed key; C126's aggregate read the one older
+        // match's values only, with a computed key. FileMaker Server's
+        // engine (s47, records a script made) read zero to three older
+        // matches of an unsorted equality join, with given keys, in an
+        // auto-entry that replaces an existing value: Count, List and the
+        // first related record read them in creation order. Not measured:
+        // reads by place, a sorted or non-equality join with matches, an
+        // auto-entry that keeps an existing value (entered when the record
+        // was made, before its keys), and records the commit holds besides
+        // this one (s47's second new record of one transaction did not read
+        // the first; OpenMaker's related reads find held records).
+        // A new record while the commit holds other records of its table:
+        // FileMaker's second new record of one transaction did not read the
+        // first (s47), and every path below reads `found`, which held
+        // records can be among. Refused.
+        if let Written::New(own) = session.written {
+            let others = session.others_held.contains(&self.table)
+                || session
+                    .held
+                    .as_ref()
+                    .is_some_and(|held| held.holds_other(self.table, own));
+            if others {
+                return Ok(false);
+            }
+        }
+        if let (Some(replaces), Written::New(own)) = (auto_entry, session.written) {
+            let hop = self
+                .schema
+                .path(context, occurrence)
+                .and_then(|path| path.first().cloned());
+            let unsorted_equal = hop.as_ref().is_some_and(|hop| {
+                !hop.sorted()
+                    && hop
+                        .predicates
+                        .iter()
+                        .all(|p| p.op == crate::host::JoinOp::Equal)
+            });
+            let older = found
+                .iter()
+                .all(|(record, _)| own.is_none_or(|id| *record < id));
             let one_older_match = found.len() == 1
-                && own.is_none_or(|id| found[0].0 < id)
+                && older
                 && !uses.first
                 && !uses.placed
                 && !uses.aggregated.is_empty()
-                && self
-                    .schema
-                    .path(context, occurrence)
-                    .and_then(|path| path.first().cloned())
-                    .is_some_and(|hop| {
-                        !hop.sorted()
-                            && hop
-                                .predicates
-                                .iter()
-                                .all(|p| p.op == crate::host::JoinOp::Equal)
-                            && hop.predicates.iter().any(|p| {
-                                self.fields.get(&p.left).is_some_and(|f| {
-                                    !f.stored_calculation() && f.expression.is_some()
-                                })
-                            })
-                    });
-            if !others && final_keys && (found.is_empty() || one_older_match) {
+                && unsorted_equal
+                && hop.as_ref().is_some_and(|hop| {
+                    hop.predicates.iter().any(|p| {
+                        self.fields
+                            .get(&p.left)
+                            .is_some_and(|f| !f.stored_calculation() && f.expression.is_some())
+                    })
+                });
+            let older_matches = replaces && older && !uses.placed && unsorted_equal;
+            if final_keys && (found.is_empty() || one_older_match || older_matches) {
                 return Ok(true);
             }
         }
@@ -4378,13 +4411,14 @@ impl RecordPlan {
                     .get(&occurrence)
                     .cloned()
                     .unwrap_or_default();
-                let auto_entered = self.fields.get(&field).is_some_and(|f| {
+                let auto_entered = self.fields.get(&field).filter(|f| {
                     !f.stored_calculation()
                         && f.expression
                             .as_ref()
                             .is_some_and(|e| std::ptr::eq(e, expression))
                 });
-                let read = ((context, occurrence), auto_entered);
+                let entry = auto_entered.map(|f| f.options.calculation_replaces_existing());
+                let read = ((context, occurrence), entry);
                 if !self.answers_own(read, row, found, &uses, session)? {
                     blocked.insert(occurrence);
                     continue;
@@ -5760,6 +5794,7 @@ mod tests {
             globals: None,
             context: WriteContext::default(),
             held: None,
+            others_held: BTreeSet::new(),
             related_needs: None,
         }
     }
@@ -7861,7 +7896,7 @@ mod tests {
 
     /// A self-join is answered only where whether the written record is
     /// among its own related records, and with which values, cannot change
-    /// the result (#1035, unmeasured). T has two stored records, 1 (job 1,
+    /// the result, or as measured (#1035, s47). T has two stored records, 1 (job 1,
     /// doc `a`, n 1, top 5) and 2 (a `x`, b `p`, n 2); S relates T on `[job,
     /// doc]`, S2 on `a = b`.
     /// - `S::n` in a new record of job 1, doc `a`: record 1 came first, 1.
@@ -7870,8 +7905,10 @@ mod tests {
     /// - `Max ( S::top ) + 1`, not replacing a value: the record's own `top`
     ///   is empty whenever it is computed, so its membership adds nothing: 6
     ///   after record 1, 1 in a new job.
-    /// - `Count ( S::n )`: refused while the record's own `n` is set, which
-    ///   would count or not; with it empty, 1.
+    /// - `Count ( S::n )` in a new record, replacing an existing value: 1,
+    ///   record 1 alone, whether or not its own `n` is set: a new record
+    ///   reads the older matches, never itself (s47). Keeping an existing
+    ///   value, refused while its own `n` is set.
     /// - `S2::n` as record 2 changes `a` to `p` and `b` to `q`: no longer
     ///   related to itself as written, but as stored (`b` = `p`) it is:
     ///   refused. Changing `a` to `z` instead, related neither way: empty.
@@ -8010,8 +8047,12 @@ mod tests {
         let top = (9, 0x8, "Max ( S::top ) + 1");
         assert_eq!(write(top, new, &[], earlier), Ok(Some("6".into())));
         assert_eq!(write(top, new, &[], new_job), Ok(Some("1".into())));
-        let count = (9, 0x8, "Count ( S::n )");
-        assert!(write(count, new, &[], earlier).is_err());
+        let count = (9, 0x88, "Count ( S::n )");
+        assert_eq!(write(count, new, &[], earlier), Ok(Some("1".into())));
+        // Keeping an existing value, it was entered before the keys: not
+        // answered with the older matches (s47 measured a replacing one).
+        let kept = (9, 0x8, "Count ( S::n )");
+        assert!(write(kept, new, &[], earlier).is_err());
         let empty_n = &[(1, "1"), (2, "a")][..];
         assert_eq!(write(count, new, &[], empty_n), Ok(Some("1".into())));
         let back = (9, 0x88, "S2::n");

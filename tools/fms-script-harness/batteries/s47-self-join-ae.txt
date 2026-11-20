@@ -1,0 +1,89 @@
+# What a record's auto-entry reads through a self-join it belongs to, on
+# FileMaker Server's script engine (#297). Base file: contacts-en with the
+# occurrence Mates (Contacts::Company = Mates::Company) and Contacts::SJ, an
+# auto-entered witness "Company|First Name|Count ( Mates::PrimaryKey )|
+# List ( Mates::First Name )|Mates::First Name" that appends each evaluation
+# to $$ae, added by s47_self_join_schema.py (SCHEMA=). The file starts
+# with no records; each run line is a session of its own.
+
+== dump
+Show All Records
+Go to Record/Request/Page [ First ]
+Set Variable [ $r ; "" ]
+Loop
+Set Variable [ $r ; $r & Contacts::First Name & "=" & Contacts::SJ & " " ]
+Go to Record/Request/Page [ Next ; Exit after last: On ]
+End Loop
+Exit Script [ $r ]
+
+== make
+Go to Layout [ "Contact Details" ]
+New Record/Request
+Set Field [ Contacts::Company ; "G2" ]
+Set Field [ Contacts::First Name ; "a1" ]
+Commit Records/Requests [ With dialog: Off ]
+New Record/Request
+Set Field [ Contacts::Company ; "G2" ]
+Set Field [ Contacts::First Name ; "a2" ]
+Commit Records/Requests [ With dialog: Off ]
+New Record/Request
+Set Field [ Contacts::Company ; "G0" ]
+Set Field [ Contacts::First Name ; "c" ]
+Commit Records/Requests [ With dialog: Off ]
+Exit Script [ Get ( TotalRecordCount ) & " " & $$ae ]
+
+== two older
+Go to Layout [ "Contact Details" ]
+New Record/Request
+Set Field [ Contacts::Company ; "G2" ]
+Set Field [ Contacts::First Name ; "n3" ]
+Commit Records/Requests [ With dialog: Off ]
+Exit Script [ Contacts::SJ & " " & $$ae ]
+
+== key only
+Go to Layout [ "Contact Details" ]
+New Record/Request
+Set Field [ Contacts::First Name ; "k4" ]
+Set Field [ Contacts::Company ; "G2" ]
+Commit Records/Requests [ With dialog: Off ]
+Exit Script [ Contacts::SJ & " " & $$ae ]
+
+== edit into
+Go to Layout [ "Contact Details" ]
+Enter Find Mode [ Pause: Off ]
+Set Field [ Contacts::First Name ; "==c" ]
+Perform Find
+Set Field [ Contacts::Company ; "G2" ]
+Commit Records/Requests [ With dialog: Off ]
+Exit Script [ Get ( FoundCount ) & " " & Contacts::SJ & " " & $$ae ]
+
+== edit other field
+Go to Layout [ "Contact Details" ]
+Enter Find Mode [ Pause: Off ]
+Set Field [ Contacts::First Name ; "==a1" ]
+Perform Find
+Set Field [ Contacts::First Name ; "a1x" ]
+Commit Records/Requests [ With dialog: Off ]
+Exit Script [ Get ( FoundCount ) & " " & Contacts::SJ & " " & $$ae ]
+
+== held pair
+Go to Layout [ "Contact Details" ]
+Open Transaction
+New Record/Request
+Set Field [ Contacts::Company ; "G5" ]
+Set Field [ Contacts::First Name ; "h1" ]
+New Record/Request
+Set Field [ Contacts::Company ; "G5" ]
+Set Field [ Contacts::First Name ; "h2" ]
+Commit Transaction
+Exit Script [ Get ( LastError ) & " " & Contacts::SJ & " " & $$ae ]
+
+--- run
+make
+dump
+two older
+key only
+edit into
+edit other field
+held pair
+dump

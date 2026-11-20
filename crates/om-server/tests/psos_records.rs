@@ -37,6 +37,10 @@ const PRIORITY_LIST: u64 = 1;
 const NOTE: u64 = 9;
 /// Tasks::Stamp, auto-entered `Name & Setting` where a test adds it.
 const STAMP: u64 = 40;
+/// Tasks::Group and Seen, a self-join's key and an auto-entry reading it,
+/// where a test adds them.
+const GROUP_KEY: u64 = 42;
+const SEEN: u64 = 43;
 
 fn names() -> NameTable {
     let mut names = fixture::names();
@@ -44,6 +48,8 @@ fn names() -> NameTable {
     names.add_field(NOTES, TASK, "Task");
     names.add_field(TABLE, NOTE, "Note");
     names.add_field(TABLE, STAMP, "Stamp");
+    names.add_field(TABLE, GROUP_KEY, "Group");
+    names.add_field(TABLE, SEEN, "Seen");
     names
 }
 
@@ -910,4 +916,66 @@ fn lookup_tree() -> OwnedNode {
         OwnedNode::leaf(Vec::new(), unsorted),
     );
     root
+}
+
+/// A new record's auto-entry through a self-join reads the group's records
+/// committed before it, never itself (s47, FileMaker Server's engine;
+/// #297): 0, then 1. Of two new records of the group in one transaction,
+/// the second, which reads the self-join, is refused (3): FileMaker's did
+/// not read the first, and the session's reads would. The first takes a
+/// branch that reads no related record, so only the second can refuse.
+#[test]
+fn server_scripts_self_join_auto_entry_reads_committed_matches_only() {
+    const GROUP: u64 = 0xd0_0019;
+    let mut root = tree();
+    let mut names = names();
+    names.add_occurrence(GROUP, "G", TABLE);
+    fixture::add_field(&mut root, TABLE, GROUP_KEY, "Group", 1, 1, 0, 0, 0);
+    fixture::add_occurrence(&mut root, GROUP, "G", TABLE);
+    fixture::add_relationship(
+        &mut root,
+        20,
+        (OCCURRENCE, GROUP_KEY),
+        0,
+        (GROUP, GROUP_KEY),
+    );
+    // Replacing an existing value, as the oracle's witness did.
+    fixture::add_field(&mut root, TABLE, SEEN, "Seen", 1, 1, 0, 0x88, 0);
+    fixture::add_formula(
+        &mut root,
+        &names,
+        (TABLE, OCCURRENCE),
+        SEEN,
+        5,
+        "If ( Name = \"first\" ; -1 ; Count ( G::Group ) )",
+    );
+    let make = vec![
+        ScriptStep::new(7),
+        fixture::set_field(GROUP_KEY, "\"k\""),
+        ScriptStep::new(75),
+        exit_with("Get ( LastError ) & \"|\" & Tasks::Seen"),
+    ];
+    let two = vec![
+        fixture::on(86, true),
+        ScriptStep::new(205),
+        ScriptStep::new(7),
+        fixture::set_field(NAME, "\"first\""),
+        fixture::set_field(GROUP_KEY, "\"t\""),
+        ScriptStep::new(7),
+        fixture::set_field(GROUP_KEY, "\"t\""),
+        ScriptStep::new(206),
+        exit_with("Get ( LastError )"),
+    ];
+    for (id, name, steps) in [(10, "Make", make), (11, "Two", two)] {
+        root.put(
+            &[&[17], &[5], &uint_segment(id)],
+            script(id, name, steps).encode(),
+        );
+    }
+    let file = TempFile::from_tree("psos-self-join", &root);
+    let port = server::start(&file);
+    let (mut client, _) = server::logged_in(port, "client");
+    assert_eq!(run(&mut client, 10).1, "0|0");
+    assert_eq!(run(&mut client, 10).1, "0|1");
+    assert_eq!(run(&mut client, 11).1, "3");
 }

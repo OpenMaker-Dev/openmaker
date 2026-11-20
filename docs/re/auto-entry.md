@@ -441,13 +441,50 @@ globals are absent. Base-catalog/table-version counters change: neither
 the whole file nor every metadata byte is unchanged.
 
 The first three cases had no other related record; the fourth has exactly
-one older match. Still unmeasured:
-- more than one matching row, sorted or non-equality joins, another held
-  row, stored/validation formulas, an edited record, or a hosted file;
-- persistence across later reevaluations, and the original solution's
-  context. Applying this result to analogous final auto-entered keys and
-  aggregate fields is inference. It does not establish evaluation order,
-  index visibility, or transaction visibility as the cause.
+one older match.
+
+**Records a script makes or edits** [O: FileMaker Server 26.0.3's engine,
+script oracle `s47-self-join-ae`, 2026-11-19]. Contacts got an occurrence
+Mates joined on `Contacts::Company = Mates::Company` (equality, unsorted)
+and a text field SJ auto-entering, replacing, the witness `Company | First
+Name | Count ( Mates::PrimaryKey ) | List ( Mates::First Name ) |
+Mates::First Name` (List's returns as commas), each evaluation also
+appended to a variable. Each run line is a server session; each record
+was made or edited by Set Field and committed. Stored witnesses:
+
+| Probe | Records of the group before | Stored SJ |
+|---|---|---|
+| New a1, Company G2 then First Name | none | `G2\|a1\|0\|\|` |
+| New a2, the same | a1 | `G2\|a2\|1\|a1\|a1` |
+| New n3, the same | a1, a2 | `G2\|n3\|2\|a1,a2\|a1` |
+| New k4, First Name then Company | a1, a2, n3 | `G2\|k4\|3\|a1,a2,n3\|a1` |
+| Stored c moved from G0 into G2 | a1, a2, n3, k4 | `G2\|c\|4\|a1,a2,n3,k4\|a1` |
+| Stored a1 (in G2) renamed a1x | a1, a2, n3, k4, c | `G2\|a1x\|5\|a1x,a2,c,n3,k4\|a1x` |
+| New h1 and h2 (G5) in one Open Transaction ... Commit Transaction | none | h1 `G5\|h1\|0\|\|`, h2 `G5\|h2\|0\|\|` |
+
+Each Set Field of a field the witness reads evaluated it again, and the
+stored value is the last evaluation's (a2: `G2||1|a1|a1` after Company,
+then `G2|a2|1|a1|a1`; k4: `|k4|0||` with Company still empty). A later
+change to the group did not change the stored witnesses (the final dump
+read a2's as stored).
+
+**The reading.** The self-join finds the records whose committed key
+matches the record's key as it is being written: the others committed
+before it, in creation order. A record not yet committed is not among
+them, whether it is the record being written (new, or moved into the
+group by this edit: its committed key is G0's) or another record held in
+the same transaction (h2 does not see h1). A stored record whose
+committed key already matches is among them, in its creation place, read
+with the values being written (a1x, not a1). Aggregates and the first
+related record read that set.
+
+Still unmeasured:
+- sorted or non-equality joins, a join on more than one predicate,
+  stored calculations and validation, and portal rows created in one
+  commit (the transaction case is a script's);
+- whether FileMaker Pro reads the same in a local file for these cases (the
+  one-older-match case above agrees). Applying the reading to keys the
+  record auto-enters itself is inference.
 
 ## Auto-entered value checked against a value list
 
