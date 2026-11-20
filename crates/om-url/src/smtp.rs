@@ -1198,6 +1198,9 @@ fn deliver<'a>(
     if !control.commit() {
         return Err(SmtpError::Cancelled);
     }
+    // From here the server's answer is the result: the script's deadline
+    // no longer cuts it short, only the operations' own budgets.
+    session.deadline = None;
     session.send(&dot_stuffed(&mail.data)).map_err(broken)?;
     let reply = session.reply().map_err(broken)?;
     if reply.code != 250 {
