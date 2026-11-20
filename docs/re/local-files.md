@@ -673,6 +673,42 @@ another kind (2.2) has no password to try. It never writes 1038. A
 desktop's private host for a local file does not check: FileMaker Pro
 opens such a file itself.
 
+### 3.3 Save a Copy as
+
+File > Save a Copy As and the Save a Copy as step (37) write a copy of
+the open file. Claris documents four kinds, the step's value
+(script-steps.md, step values): "copy of current file" (1), "compacted
+copy (smaller)" (2, "removing blank space"), "clone (no records)" (3: the
+tables, layouts, scripts, page setup and field definitions, no data) and
+"self-contained copy (single file)" (4: container data stored as a
+reference or externally, open or secure, embedded in the copy). A copy or
+compacted copy does not include externally stored container data. The
+command and the step are not supported in files hosted by FileMaker Server
+or FileMaker Cloud. A step with no output file shows the Save dialog; its
+other options are Create folders, "Automatically open file" and "Create
+email with file as attachment" (`kOpenAutomatically`, `kCreateEmail`,
+script-steps.md)
+([Saving and copying files](https://help.claris.com/en/pro-help/content/saving-copying-files.html),
+[Save a Copy as](https://help.claris.com/en/pro-help/content/save-a-copy-as.html)).
+Claris also says an open transaction is committed first (script-runtime.md
+8.5).
+
+Observed:
+
+- Under a custom set with exporting off, FileMaker Pro 26.0.3 opens the
+  step's chooser, and Save fails with the alert that the file could not be
+  created on this disk; the step returns 800 (session-identity.md 2.3) [O].
+- FileMaker's compacted copies (`FMDeveloperTool --copyCompress`) keep
+  every key and value and are packed bulk rebuilds (hbam-writer.md 9.3)
+  [O].
+
+Unknown: whether a copy of the current file is byte for byte the file
+(its page 0 SCN, hbam-writer.md 5.1); the default name the Save dialog
+proposes; what happens when the output file exists or is open (replaced,
+refused, which error); the error a hosted file's step returns; whether the
+window's uncommitted record is committed first; the copy's permissions;
+what a clone resets (serial numbers, record ids, the saved found sets).
+
 ## 4. Implementation notes (OpenMaker)
 
 OpenMaker Client opens a local file through a private host embedded in the
@@ -729,6 +765,55 @@ than a second reader and writer.
   or linked is not saved over. The lock moves to the new copy before the
   rename. The rename gives the file a new inode; ownership, ACLs and other
   metadata beyond the permission bits are not carried over.
+- **Save a Copy as.** The host writes a copy of the current file or a
+  compacted copy (3.3) to a new file only.
+  - *Contents.* A copy of the current file is the file's bytes as the last
+    save left them, read by position through a second descriptor of the
+    one the host holds locked, so the version copied is the one the host
+    has, whatever is renamed over the path meanwhile. A compacted copy is
+    the key tree written as a new packed file (hbam-writer.md 7.2). So is a
+    copy while changes a failed save left wait in memory, or of a file the
+    host could not lock.
+  - *Writing.* The copy is written and flushed in a folder of its own
+    made beside the output (`.omcopy-<process>-<n>-<time>`, 0700, checked
+    once opened to be this user's alone). It is then moved to the output
+    name with a rename that refuses to replace (`RENAME_NOREPLACE` on
+    Linux, `RENAME_EXCL` on macOS), or, on file systems without one,
+    hard-linked there. Every step after the folder is made goes through
+    the folder's and the output folder's descriptors and compares file
+    identities (device and inode), not names. The staged file must be the
+    one written before it is published, and the entry at the output name
+    must be it afterwards. A file another account put in its place (an ACL
+    the folder passes on can let it) is never reported as the copy: the
+    copy fails, and that file is left as it is. An entry at the output path
+    (a file, the open file, a link) refuses the copy and is left untouched.
+    So does a name ending in `.omsave` in any case, with the characters
+    HFS+ ignores in names left out. A copy that still turns out to be the
+    file's own save name (`<file>.omsave` under a spelling the file system
+    folds to it, such as `ſ` for `s` on case-insensitive APFS) is taken
+    back and refused, so the next save keeps its name. Cleanup removes
+    only what the copy made: the staged file while it is still the copy,
+    and the folder while its name still holds the folder that was opened.
+    A crash can leave that folder beside the output, never a partial copy
+    at the output name.
+  - *Permissions.* The copy holds the password verifiers, so it is created
+    owner-only (0600), whatever the file's own permissions or the
+    folder's group [I: OpenMaker's choice; FileMaker's is unmeasured].
+    Read access an ACL of the folder passes on to new files still applies,
+    to the staged copy as to the published one and to every file created
+    there: OpenMaker cannot clear it without platform ACL calls. Off Linux
+    and macOS a copy is refused, as local files are read-only there
+    ([#30](https://github.com/OpenMaker-Dev/openmaker/issues/30)).
+  - *The desktop's step.* Before committing or creating anything, it
+    fails as a step OpenMaker does not support (error 3; the desktop stops
+    the script with its "not supported here yet" alert) for clones and
+    self-contained copies, a step without an output file (the Save dialog
+    of File > Save a Copy As is not built), "Automatically open file",
+    "Create email", an open transaction and a hosted file [I]
+    ([#63](https://github.com/OpenMaker-Dev/openmaker/issues/63)). Otherwise
+    it returns 800 when the account's set denies exporting, commits the
+    window's record, as Export Records does [I], and returns 800 when the
+    copy cannot be created, an existing file included [I].
 - **Recovery.** Deferred field work an earlier stop left in the file
   (schema-path.md) is finished in memory when the file opens and saved only
   once an admitted account logs in to a writable file: a wrong password,
@@ -888,7 +973,8 @@ its own requirements.
   name collision, is not compared.
 - Writing files that are hard-linked, on Windows, or on file systems without
   `flock`; encrypted (EAR) files; conversion of older formats, Recover, Save
-  a Copy and sharing a local file with other clients.
+  a Copy As's dialog, clones and self-contained copies (4, "Save a Copy
+  as") and sharing a local file with other clients.
 - Native comparison: nothing here was compared with FileMaker Pro opening
   the same file. Copies of all 330 starter solutions of 2.2 open through
   `om_server::LocalHost` as Admin with the empty password, a wrong password

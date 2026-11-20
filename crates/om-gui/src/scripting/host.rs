@@ -5624,6 +5624,38 @@ impl Files for WorkerHost<'_> {
         self.export_step(call)
     }
 
+    fn save_a_copy_as(&mut self, paths: &[String], kind: u16, create_folders: bool) -> HostResult {
+        use om_data::CopyKind;
+        // What OpenMaker cannot do fails before anything is committed or
+        // created. Without an output file FileMaker Pro asks for one in its
+        // Save dialog, which is not built yet.
+        let kind = CopyKind::of_step(kind)
+            .filter(|kind| matches!(kind, CopyKind::Copy | CopyKind::Compacted))
+            .ok_or(HostError::Unsupported)?;
+        if paths.is_empty() || self.p().local_path().is_none() {
+            // A hosted file: Claris Help says the step is not supported.
+            return Err(HostError::Unsupported);
+        }
+        // FileMaker commits an open transaction first (script-runtime.md
+        // 8.5), which OpenMaker does not do yet.
+        if self.s.file.transaction.is_some() {
+            return Err(HostError::Unsupported);
+        }
+        // FileMaker Pro 26.0.3 under a set denying exporting creates no
+        // copy and returns 800 (session-identity.md 2.3).
+        if !self.options_allowed(false, true) {
+            return Err(ErrorCode(800).into());
+        }
+        // The window's record is committed first, as for Export Records
+        // [I: unmeasured].
+        self.commit_window()?;
+        if self.p().transaction_open() {
+            return Err(HostError::Unsupported);
+        }
+        let path = self.export_path(paths, create_folders)?;
+        self.p().save_a_copy(&path, kind).map_err(data_error)
+    }
+
     fn file_exists(&mut self, paths: &[String]) -> HostResult<bool> {
         Ok(self.s.file.data_files.exists(paths)?)
     }

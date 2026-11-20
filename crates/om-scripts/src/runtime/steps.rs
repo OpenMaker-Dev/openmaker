@@ -1494,6 +1494,11 @@ impl Runtime {
                     host.close_file_from(self.current_file(), source)
                 }
             }
+            // Opening the copy and an email with it attached are not built:
+            // refused rather than skipped.
+            37 if step.has_flag(flag::OPEN_AUTOMATICALLY) || step.has_flag(flag::CREATE_EMAIL) => {
+                Err(HostError::Unsupported)
+            }
             37 => {
                 let paths = self.paths(host, step);
                 host.save_a_copy_as(&paths, step.value, step.has_flag(flag::OPTION2))

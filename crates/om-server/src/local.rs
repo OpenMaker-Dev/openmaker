@@ -525,6 +525,84 @@ impl LocalHost {
         }
     }
 
+    /// Save a Copy as (local-files.md 4, "Save a Copy as"): write the file
+    /// as `kind` to `to`, a new file. A copy of the current file is the
+    /// file's bytes as its last save left them, read through the
+    /// descriptor the host holds locked ([`crate::store::Store::saved_file`]);
+    /// a compacted copy is the tree rewritten packed
+    /// ([`crate::store::Store::compacted`]), and so is a copy while changes
+    /// a failed save left wait in memory or when the file is not locked.
+    /// Clones and self-contained copies are refused with
+    /// [`io::ErrorKind::Unsupported`].
+    ///
+    /// The copy is only ever a new file ([`write_copy`]): any entry at `to`
+    /// (a file, this file under another name, a link) refuses it, untouched
+    /// ([`io::ErrorKind::AlreadyExists`]). A name ending in `.omsave`, in
+    /// any case and with any characters a file system ignores in names
+    /// ([`reserved`]), is refused too: OpenMaker's saves make their new
+    /// copy under it. The copy holds the whole database, password
+    /// verifiers included, so it is its owner's alone (0600). Off Unix it
+    /// is refused ([`io::ErrorKind::Unsupported`]).
+    pub fn save_copy(&self, to: &Path, kind: om_data::CopyKind) -> io::Result<()> {
+        use om_data::CopyKind;
+        let compacted = match kind {
+            CopyKind::Copy => false,
+            CopyKind::Compacted => true,
+            CopyKind::Clone | CopyKind::SelfContained => {
+                return Err(io::Error::new(
+                    io::ErrorKind::Unsupported,
+                    "OpenMaker does not save clones or self-contained copies yet",
+                ));
+            }
+        };
+        if !cfg!(unix) {
+            // Local files are read-only there (#30), and the copy could not
+            // be kept from other users or published without replacing.
+            return Err(io::Error::new(
+                io::ErrorKind::Unsupported,
+                "OpenMaker saves copies of local files only on Linux and macOS yet",
+            ));
+        }
+        let Some(name) = to.file_name() else {
+            return Err(io::Error::new(
+                io::ErrorKind::InvalidInput,
+                "the copy needs a file name",
+            ));
+        };
+        if reserved(name) {
+            return Err(io::Error::new(
+                io::ErrorKind::InvalidInput,
+                "names ending in .omsave are where OpenMaker's saves make their new copy",
+            ));
+        }
+        let Some(file) = self
+            .handle
+            .as_ref()
+            .and_then(|handle| handle.shared.hosting.files().into_iter().next())
+        else {
+            return Err(io::Error::other("the file is closed"));
+        };
+        let contents = {
+            let store = file.read_store();
+            let saved = if compacted { None } else { store.saved_file() };
+            match saved {
+                #[cfg(unix)]
+                Some(saved) => Contents::File(saved?),
+                #[cfg(not(unix))]
+                Some(_) => Contents::Bytes(store.compacted()?),
+                None => Contents::Bytes(store.compacted()?),
+            }
+        };
+        write_copy(to, contents, &save_copy_path(&file.path))?;
+        info!(
+            "{}: saved a {} to {}",
+            self.name,
+            if compacted { "compacted copy" } else { "copy" },
+            to.display()
+        );
+        Ok(())
+    }
+
     /// Stop serving the file and wait until nothing holds it: its lock and
     /// port are released when this returns `true`, and `false` says that
     /// something (a script that did not stop in time) still does. The
@@ -578,6 +656,264 @@ impl LocalHost {
 impl Drop for LocalHost {
     fn drop(&mut self) {
         self.shut_down();
+    }
+}
+
+/// What a saved copy holds: a version of the file, or new bytes.
+enum Contents {
+    #[cfg(unix)]
+    File(File),
+    Bytes(Vec<u8>),
+}
+
+/// `file` read from its start by position (`pread`), leaving alone the
+/// offset it shares with the descriptor it was cloned from.
+#[cfg(unix)]
+struct FromStart<'a> {
+    file: &'a File,
+    at: u64,
+}
+
+#[cfg(unix)]
+impl Read for FromStart<'_> {
+    fn read(&mut self, buf: &mut [u8]) -> io::Result<usize> {
+        use std::os::unix::fs::FileExt;
+        let n = self.file.read_at(buf, self.at)?;
+        self.at += n as u64;
+        Ok(n)
+    }
+}
+
+/// Whether `name` would be taken, by a file system that compares names
+/// without case and ignores some characters (HFS+ ignores the Unicode
+/// format characters of TN1150), for a name ending in `.omsave`: where
+/// OpenMaker's saves make their new copy (`crate::store::save_copy_path`).
+fn reserved(name: &std::ffi::OsStr) -> bool {
+    let ignored = |c: &char| {
+        matches!(
+            *c,
+            '\u{200B}'..='\u{200F}' | '\u{202A}'..='\u{202E}' | '\u{206A}'..='\u{206F}' | '\u{FEFF}'
+        )
+    };
+    let name: String = name
+        .to_string_lossy()
+        .chars()
+        .filter(|c| !ignored(c))
+        .collect();
+    name.to_lowercase().ends_with(".omsave")
+}
+
+/// Folders made for copies being written, unique within this process.
+static STAGED: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
+
+/// Write `contents` as the new file `to`.
+///
+/// The copy is written and flushed in a folder of its own made beside `to`
+/// (`.omcopy-*`, 0700, checked once opened to be this user's alone), then
+/// moved to the name `to` only where nothing is ([`publish`]). Every step
+/// after the folder is made works through its descriptor and the output
+/// folder's, and checks identities (device and inode), not names: the
+/// staged file must be the one written before it is published, and the
+/// entry at `to` must be it afterwards, so a file another account put in
+/// its place is never reported as the copy. A copy that turns out to be
+/// `reserved` (the file's own save name under another spelling, on a file
+/// system that folds names) is taken back and refused. Cleanup removes
+/// only what this call made: the staged file while it is still the copy,
+/// and the folder while its name still holds the folder this call opened.
+/// A crash leaves at most that folder beside `to`, never a partial copy at
+/// `to`.
+#[cfg(unix)]
+fn write_copy(to: &Path, contents: Contents, reserved: &Path) -> io::Result<()> {
+    use rustix::fs::{self as fs, AtFlags, Mode, OFlags};
+    let name = to
+        .file_name()
+        .ok_or_else(|| io::Error::from(io::ErrorKind::InvalidInput))?;
+    let folder = match to.parent() {
+        Some(dir) if !dir.as_os_str().is_empty() => dir,
+        _ => Path::new("."),
+    };
+    let parent = fs::open(
+        folder,
+        OFlags::RDONLY | OFlags::DIRECTORY | OFlags::CLOEXEC,
+        Mode::empty(),
+    )?;
+    let private = {
+        let mut tries = 0;
+        loop {
+            let n = STAGED.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+            let nanos = std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .map_or(0, |d| d.subsec_nanos());
+            let private = format!(".omcopy-{}-{n}-{nanos:x}", std::process::id());
+            match fs::mkdirat(&parent, private.as_str(), Mode::RWXU) {
+                Ok(()) => break private,
+                Err(e) if e == rustix::io::Errno::EXIST && tries < 8 => tries += 1,
+                Err(e) => return Err(e.into()),
+            }
+        }
+    };
+    // A folder this call cannot open, or that is not this user's alone, is
+    // left where it is: it may not be the one made.
+    let dir = fs::openat(
+        &parent,
+        private.as_str(),
+        OFlags::RDONLY | OFlags::DIRECTORY | OFlags::NOFOLLOW | OFlags::CLOEXEC,
+        Mode::empty(),
+    )?;
+    let stat = fs::fstat(&dir)?;
+    if stat.st_uid != rustix::process::geteuid().as_raw() || stat.st_mode & 0o077 != 0 {
+        return Err(io::Error::other(
+            "the copy's private folder was replaced while it was made",
+        ));
+    }
+    let opened = identity(&stat);
+    let written = stage_and_publish(&dir, &parent, name, contents, reserved);
+    if is(&parent, private.as_str(), opened) {
+        if let Err(e) = fs::unlinkat(&parent, private.as_str(), AtFlags::REMOVEDIR) {
+            warn!(
+                "the private folder {private} beside {} stays: {e}",
+                to.display()
+            );
+        }
+    } else {
+        warn!(
+            "the private folder {private} beside {} was replaced; it is left as it is",
+            to.display()
+        );
+    }
+    written?;
+    if let Err(e) = fs::fsync(&parent) {
+        warn!(
+            "saved a copy to {}, but flushing its folder failed: {e}",
+            to.display()
+        );
+    }
+    Ok(())
+}
+
+/// The staged copy's name in its private folder.
+#[cfg(unix)]
+const STAGED_NAME: &str = "copy";
+
+/// [`write_copy`] within the private folder `dir`: write, check, publish
+/// as `name` in `parent`, check again.
+#[cfg(unix)]
+fn stage_and_publish(
+    dir: &std::os::fd::OwnedFd,
+    parent: &std::os::fd::OwnedFd,
+    name: &std::ffi::OsStr,
+    contents: Contents,
+    reserved: &Path,
+) -> io::Result<()> {
+    use rustix::fs::{self as fs, AtFlags, Mode, OFlags};
+    use std::io::Write;
+    use std::os::unix::fs::MetadataExt;
+    // Nothing is made, and so nothing removed, unless this open makes it.
+    let file = fs::openat(
+        dir,
+        STAGED_NAME,
+        OFlags::WRONLY | OFlags::CREATE | OFlags::EXCL | OFlags::NOFOLLOW | OFlags::CLOEXEC,
+        Mode::RUSR | Mode::WUSR,
+    )?;
+    let mut out = File::from(file);
+    let copy = identity(&fs::fstat(&out)?);
+    let replaced = || io::Error::other("the copy was replaced while it was saved");
+    let written = (|| {
+        match contents {
+            Contents::File(file) => {
+                io::copy(&mut FromStart { file: &file, at: 0 }, &mut out)?;
+            }
+            Contents::Bytes(bytes) => out.write_all(&bytes)?,
+        }
+        out.sync_all()?;
+        if !is(dir, STAGED_NAME, copy) {
+            return Err(replaced());
+        }
+        publish(dir, STAGED_NAME, parent, name)?;
+        // What another account put at the name in the meantime is not the
+        // copy, and stays as it is.
+        if !is(parent, name, copy) {
+            return Err(replaced());
+        }
+        let collides =
+            std::fs::symlink_metadata(reserved).is_ok_and(|meta| (meta.dev(), meta.ino()) == copy);
+        if collides {
+            if is(parent, name, copy) {
+                let _ = fs::unlinkat(parent, name, AtFlags::empty());
+            }
+            return Err(io::Error::new(
+                io::ErrorKind::InvalidInput,
+                "that name is where OpenMaker's saves make their new copy",
+            ));
+        }
+        Ok(())
+    })();
+    // Renamed, the staged name is gone; linked, it is a second name of the
+    // copy; failed, it is the copy. Only the copy is removed.
+    if is(dir, STAGED_NAME, copy) {
+        if let Err(e) = fs::unlinkat(dir, STAGED_NAME, AtFlags::empty()) {
+            warn!("a staged copy stays in its private folder: {e}");
+        }
+    }
+    written
+}
+
+/// A file's device and inode.
+#[cfg(unix)]
+#[allow(
+    clippy::unnecessary_cast,
+    reason = "dev_t is i32 on macOS and u64 on Linux; std's MetadataExt::dev casts it as here"
+)]
+fn identity(stat: &rustix::fs::Stat) -> (u64, u64) {
+    (stat.st_dev as u64, stat.st_ino as u64)
+}
+
+/// Whether `name` in `dir`, not followed if a link, is the file `id`.
+#[cfg(unix)]
+fn is<P: rustix::path::Arg>(dir: &std::os::fd::OwnedFd, name: P, id: (u64, u64)) -> bool {
+    rustix::fs::statat(dir, name, rustix::fs::AtFlags::SYMLINK_NOFOLLOW)
+        .is_ok_and(|stat| identity(&stat) == id)
+}
+
+#[cfg(not(unix))]
+fn write_copy(_to: &Path, _contents: Contents, _reserved: &Path) -> io::Result<()> {
+    Err(io::ErrorKind::Unsupported.into())
+}
+
+/// Move the staged copy `staged` of the private folder `dir` to `name` in
+/// `parent`, only where nothing is: a rename that refuses to replace
+/// (`renameat2`'s `RENAME_NOREPLACE`, `renamex_np`'s `RENAME_EXCL`), or on
+/// file systems without one a hard link, which refuses an existing name
+/// too. Any entry at `name` gives [`io::ErrorKind::AlreadyExists`] and is
+/// left as it was.
+#[cfg(unix)]
+fn publish(
+    dir: &std::os::fd::OwnedFd,
+    staged: &str,
+    parent: &std::os::fd::OwnedFd,
+    name: &std::ffi::OsStr,
+) -> io::Result<()> {
+    use rustix::fs::{linkat, renameat_with, AtFlags, RenameFlags};
+    use rustix::io::Errno;
+    let exists = || io::Error::from(io::ErrorKind::AlreadyExists);
+    match renameat_with(dir, staged, parent, name, RenameFlags::NOREPLACE) {
+        Ok(()) => return Ok(()),
+        Err(e) if e == Errno::EXIST => return Err(exists()),
+        // Not on this file system: a hard link instead.
+        Err(e)
+            if e == Errno::INVAL
+                || e == Errno::NOTSUP
+                || e == Errno::OPNOTSUPP
+                || e == Errno::NOSYS => {}
+        Err(e) => return Err(e.into()),
+    }
+    match linkat(dir, staged, parent, name, AtFlags::empty()) {
+        Ok(()) => Ok(()),
+        Err(e) if e == Errno::EXIST => Err(exists()),
+        Err(e) => Err(io::Error::other(format!(
+            "this folder cannot take a new file without risking another \
+             (no exclusive rename or hard link): {e}"
+        ))),
     }
 }
 

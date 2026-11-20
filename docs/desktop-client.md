@@ -2479,10 +2479,10 @@ Limits:
   unmeasured.
 - **Printing and exporting** follow FileMaker Pro 26.0.3's readings on
   local files (session-identity.md 2.3, [#214](https://github.com/OpenMaker-Dev/openmaker/issues/214)). With errors captured, Copy
-  All Records shows no alert, which is unmeasured [I]. Save a Copy as and
-  Snapshot Link are not implemented, and Import Records reads no
-  FileMaker file, so their outcomes under a denying set (800, 0, 714) are
-  not reproduced.
+  All Records shows no alert, which is unmeasured [I]. Save a Copy as
+  returns 800 under a denying set, with no chooser (it has none yet).
+  Snapshot Link is not implemented, and Import Records reads no FileMaker
+  file, so their outcomes under a denying set (0, 714) are not reproduced.
 - **Editing only and Minimum menus** keep layout and record navigation,
   the status toolbar and formatting bar, zoom and Minimize Window, and
   disable modes, views, the record, omit, find and sort commands,
