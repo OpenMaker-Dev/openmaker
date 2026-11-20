@@ -2722,7 +2722,12 @@ impl OpenMakerApp {
             || self.open_file.is_some()
             || self.create_new.is_some()
             || self.local_login.is_some()
+            || self.change_password.is_some()
             || self.own_password.is_some()
+            || self
+                .related_login
+                .as_ref()
+                .is_some_and(|login| login.window == self.w.id)
             || self.w.delete_record
             || self.w.delete_layout.is_some()
             || self.w.delete_portal_row.is_some()
