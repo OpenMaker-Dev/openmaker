@@ -47,6 +47,7 @@ use om_calc::eval::{
 };
 use om_calc::{CalcError, Ctx, Date, Locale, Time, TimeStyle, Timestamp, Value, ValueType};
 use om_data::found::Findable;
+use om_data::host::security::SetAccess;
 use om_data::host::sql::FileSql;
 use om_data::host::{CalcSchema, CalcSource, FileCalc, RecordValues, SessionInfo, Vars};
 use om_data::rules::{self, Entry, RecordEnvironment, RecordPlan, WriteMode};
@@ -671,6 +672,10 @@ pub(crate) struct ServerHost {
     /// What other users see as the holder of the session's locks.
     holder: String,
     account: String,
+    /// The record key of the account the session logged in with, when it
+    /// did: Change Password changes that account's password, whatever its
+    /// name is by then. A session without one changes none.
+    account_key: Option<Vec<u8>>,
     locale: Locale,
     today: Date,
     schema: Schema,
@@ -699,6 +704,10 @@ pub(crate) struct ServerHost {
     pub log: ErrorLog,
     /// What the account may do.
     privileges: Privileges,
+    /// The account's privilege set as its login verified it, for the
+    /// scripts it may run (session-identity.md 2.2); `None`: as
+    /// [`Self::privileges`] says.
+    access: Option<SetAccess>,
     /// A step of a script set to run with full access privileges is
     /// executing (script-runtime.md 9.1).
     elevated: bool,
@@ -743,6 +752,7 @@ impl ServerHost {
                 txn: 1,
             },
             account: account.to_string(),
+            account_key: None,
             locale,
             today: today(),
             schema,
@@ -759,6 +769,7 @@ impl ServerHost {
             request_open: false,
             log: ErrorLog::default(),
             privileges,
+            access: None,
             elevated: false,
             control: Control::unlimited(),
             calc_limits: SCRIPT_CALC_LIMITS,
@@ -803,6 +814,11 @@ impl ServerHost {
         self.window.is_some()
     }
 
+    /// The record key of the account the session logged in with.
+    pub fn set_account_key(&mut self, key: &[u8]) {
+        self.account_key = Some(key.to_vec());
+    }
+
     /// The script's abort flag and time limit.
     pub fn set_control(&mut self, control: Control) {
         self.control = control;
@@ -811,6 +827,11 @@ impl ServerHost {
     /// What one calculation of the script may build.
     pub fn set_calc_limits(&mut self, limits: CalcLimits) {
         self.calc_limits = limits;
+    }
+
+    /// The account's privilege set, which decides the scripts it may run.
+    pub fn set_access(&mut self, access: Option<SetAccess>) {
+        self.access = access;
     }
 
     /// End the session: revert an unfinished transaction, commit the open
@@ -1142,21 +1163,40 @@ impl ServerHost {
         self.with_record(table, id, |node| node?.child(&field).cloned())
     }
 
+    /// `read` of the record as [`Self::record_node`] finds it, without a
+    /// copy. For the file's record it runs under the store's read guard,
+    /// so it must not read the store again: a second read guard on this
+    /// thread waits behind a writer queued meanwhile, which waits for the
+    /// first (#421).
     fn with_record<T>(&self, table: u64, id: u64, read: impl FnOnce(Option<&OwnedNode>) -> T) -> T {
+        self.with_record_view(table, id, |node, _| read(node))
+    }
+
+    /// [`Self::with_record`], also given the store the file's record was
+    /// read from, its guard held (`None` for a record the session holds):
+    /// what `read` needs of the store it reads from that, never by a guard
+    /// of its own (#421).
+    fn with_record_view<T>(
+        &self,
+        table: u64,
+        id: u64,
+        read: impl FnOnce(Option<&OwnedNode>, Option<&Store>) -> T,
+    ) -> T {
         if let Some(open) = self
             .record
             .as_ref()
             .filter(|r| r.table == table && r.id == id)
         {
-            return read(Some(&open.node));
+            return read(Some(&open.node), None);
         }
         match self.pending(table, id) {
-            Some(Change::Write(record)) => return read(Some(&record.node)),
-            Some(Change::Delete) => return read(None),
+            Some(Change::Write(record)) => return read(Some(&record.node), None),
+            Some(Change::Delete) => return read(None, None),
             None => {}
         }
         let path = record_path(table, id);
-        read(self.hosted.read_store().node(&segments(&path)))
+        let store = self.hosted.read_store();
+        read(store.node(&segments(&path)), Some(&store))
     }
 
     /// The record as the file holds it.
@@ -2041,8 +2081,17 @@ impl ServerHost {
                 .schema
                 .field(occurrence, *field)
                 .ok_or(FindError::Unsupported)?;
-            let criterion = find::Criterion::parse(text, def.data_type, &context)
-                .map_err(|_| FindError::Unsupported)?;
+            // Text keyed as the field's index keys it (query-program.md 7.2).
+            let form = match def.decoded_options() {
+                Some(options) if def.data_type == DataType::Text => rules::read_text_keys(
+                    options.index_language(),
+                    u32::from(self.locale.language.id()),
+                ),
+                _ => TextKeys::Collated,
+            };
+            let criterion =
+                find::Criterion::parse(text, def.data_type, &context.with_text_keys(form))
+                    .map_err(|_| FindError::Unsupported)?;
             let Some(criterion) = criterion else {
                 continue;
             };
@@ -2460,6 +2509,24 @@ impl ServerHost {
     }
 }
 
+impl ServerHost {
+    /// `GetRecordIDsFromFoundSet` over the session's window's found set, as
+    /// FileMaker Server's script engine answers it (calc-functions.md,
+    /// "GetRecordIDsFromFoundSet on FileMaker Server").
+    pub(super) fn record_ids_from_found_set(
+        &self,
+        args: &[Value],
+        context: &Context,
+    ) -> Result<Value, CalcError> {
+        let Some((_, schema)) = self.schema.rules.clone() else {
+            return Err(CalcError::from_code(3).expect("nonzero"));
+        };
+        let source = SessionSource::new(self, &schema);
+        let limit = om_calc::eval::CalcHost::limits(self).text;
+        FileCalc::new(&schema, &source, self.today).record_ids_from_found_set(args, context, limit)
+    }
+}
+
 /// The records a server session's query reads: the open record, then an
 /// open transaction's version, then the file's ([`ServerHost::with_record`]),
 /// decoded by field type once per query; the session's global values;
@@ -2485,7 +2552,7 @@ impl<'h> SessionSource<'h> {
         }
     }
 
-    fn values(&self, table: u64, node: &OwnedNode) -> RecordValues {
+    fn values(&self, table: u64, node: &OwnedNode, store: Option<&Store>) -> RecordValues {
         let cx = self.host.cx();
         let mut values = RecordValues {
             mod_count: Some(modcount::serial_value(node.child(&[modcount::MOD_COUNT]))),
@@ -2507,7 +2574,7 @@ impl<'h> SessionSource<'h> {
                     continue;
                 };
                 if let Some(cell) = node.child(&uint_segment(key)) {
-                    values.set(f.id, rep, self.decode(table, f, cell, &cx));
+                    values.set(f.id, rep, self.decode(table, f, cell, &cx, store));
                 }
             }
         }
@@ -2518,21 +2585,35 @@ impl<'h> SessionSource<'h> {
 impl SessionSource<'_> {
     /// A stored cell of field `f` of `table` as a query reads it: a
     /// container field as its file name alone (execute-sql.md 8.1, what
-    /// the column shows), without loading its data for every row.
-    fn decode(&self, table: u64, f: &om_data::host::FieldDef, cell: &OwnedNode, cx: &Ctx) -> Value {
+    /// the column shows), without loading its data for every row. The name
+    /// comes from `store`, the store the row was read from, under the
+    /// guard already held (a second guard on this thread would wait behind
+    /// a writer queued meanwhile, which waits for the first: #421), so
+    /// that the row and its library agree; a row the session holds reads
+    /// the store itself.
+    fn decode(
+        &self,
+        table: u64,
+        f: &om_data::host::FieldDef,
+        cell: &OwnedNode,
+        cx: &Ctx,
+        store: Option<&Store>,
+    ) -> Value {
         if f.value_type != ValueType::Container {
             return values::decode(f.value_type, Some(cell), cx);
         }
         match values::cell_text(cell).filter(|t| !t.is_empty()) {
-            Some(text) => Value::Container(om_calc::Container {
-                text: om_calc::Text::plain(
-                    self.host
-                        .hosted
-                        .read_store()
-                        .container_name(&uint_segment(table), &text),
-                ),
-                ..Default::default()
-            }),
+            Some(text) => {
+                let name = |store: &Store| store.container_name(&uint_segment(table), &text);
+                let name = match store {
+                    Some(store) => name(store),
+                    None => name(&self.host.hosted.read_store()),
+                };
+                Value::Container(om_calc::Container {
+                    text: om_calc::Text::plain(name),
+                    ..Default::default()
+                })
+            }
             None => Value::empty(ValueType::Container),
         }
     }
@@ -2545,7 +2626,9 @@ impl CalcSource for SessionSource<'_> {
         }
         let values = self
             .host
-            .with_record(table, record, |node| node.map(|n| self.values(table, n)))
+            .with_record_view(table, record, |node, store| {
+                node.map(|n| self.values(table, n, store))
+            })
             .map(Arc::new);
         self.records
             .borrow_mut()
@@ -3056,16 +3139,22 @@ impl ScriptHost for ServerHost {
         self.refresh_schema();
     }
 
-    /// An account in a verified built-in set may run every script (its
-    /// scripts modifiable or executable only, session-identity.md 2.7);
-    /// one in a custom set ([`Privileges::Unknown`]) only scripts set to
-    /// run with full access privileges, whose steps then have full access
-    /// (script-runtime.md 2.2, 9.1): a custom set's script privileges are
-    /// not read here.
+    /// The scripts the account's set lets it run (session-identity.md
+    /// 2.2): every script under a verified built-in set, and under a custom
+    /// set those it makes executable. A script the set gives no access is
+    /// not executable, and being set to run with full access privileges
+    /// does not make it so: only a caller running with full access lets it
+    /// run, and then with the account's own privileges (script-runtime.md
+    /// 3.7, 9.1). The runtime admits a script with either flag, so the flag
+    /// is given only for a script the account may run.
     fn script_access(&mut self, file: FileId, script: u64) -> ScriptAccess {
+        let executable = match &self.access {
+            Some(access) => access.runs_script(script),
+            None => self.privileges.runs_scripts(),
+        };
         ScriptAccess {
-            executable: self.privileges.runs_scripts(),
-            full_access: file == FILE && self.schema.full_access.contains(&script),
+            executable,
+            full_access: executable && file == FILE && self.schema.full_access.contains(&script),
         }
     }
 
@@ -3497,15 +3586,17 @@ impl FieldSteps for ServerHost {
     }
 
     fn set_field_by_name(&mut self, name: &str, value: Value) -> HostResult {
+        let field = self.field_by_name(name)?;
+        self.store_value(field, value)
+    }
+
+    fn field_by_name(&mut self, name: &str) -> HostResult<FieldRef> {
         let (occurrence, field) = self.field_named(name).ok_or(ErrorCode::FIELD_MISSING)?;
-        self.store_value(
-            FieldRef {
-                occurrence,
-                field,
-                repetition: 1,
-            },
-            value,
-        )
+        Ok(FieldRef {
+            occurrence,
+            field,
+            repetition: 1,
+        })
     }
 
     fn field_value_of(&mut self, field: FieldRef) -> HostResult<Value> {
@@ -3909,5 +4000,142 @@ impl Network for ServerHost {
         self.fetch_url_step(request)
     }
 }
-impl Accounts for ServerHost {}
+/// FileMaker's error 310, "Cannot modify items because another user is
+/// modifying them": Reset Account Password's code when the account catalog
+/// is locked (script-runtime.md 2.3, its 8003).
+const ACCOUNTS_IN_USE: i32 = 310;
+
+/// The attention code of a catalog change (`kDBAttnCatalog`,
+/// schema-path.md 9).
+const ATTENTION_CATALOG: u32 = 2;
+
+/// `text` cut to at most `units` UTF-16 code units, as Change Password cuts
+/// its passwords (local-files.md 2.4); a character that would be split
+/// goes whole.
+fn utf16_prefix(text: &str, units: usize) -> &str {
+    let mut counted = 0;
+    for (at, c) in text.char_indices() {
+        counted += c.len_utf16();
+        if counted > units {
+            return &text[..at];
+        }
+    }
+    text
+}
+
+impl ServerHost {
+    /// Run `edit` while the session holds the write lock FileMaker Pro's
+    /// Manage Security takes on the account catalog `[23, 1]`
+    /// (local-files.md 2.4), so that a client saving accounts and a script
+    /// do not change them at once: 310 while another user holds it
+    /// (FileMaker's code for Reset Account Password, inferred for Change
+    /// Password). `edit` gets the modification stamp to write; once it
+    /// has written, the other clients are told the catalog changed, as a
+    /// client's commit tells them. A file the server hosts read-only
+    /// changes nothing: 3 (OpenMaker's choice).
+    fn edit_accounts(
+        &self,
+        step: &str,
+        edit: impl FnOnce(&crate::hosting::ModStamp<'_>) -> HostResult,
+    ) -> HostResult {
+        if self.hosted.read_only {
+            info!(
+                "{:?}: {step} changed nothing: the file is hosted read-only",
+                self.hosted.name
+            );
+            return Err(ErrorCode::UNAVAILABLE.into());
+        }
+        let catalog = vec![vec![23], vec![1]];
+        self.hosted
+            .lock_table()
+            .lock(&catalog, self.user, LOCK_WRITE, &self.holder)
+            .map_err(|conflict| {
+                info!(
+                    "{:?}: {step} refused: the accounts are in use by {}",
+                    self.hosted.name, conflict.users
+                );
+                HostError::Error(ErrorCode(ACCOUNTS_IN_USE))
+            })?;
+        let time = crate::connection::host_time_key();
+        // `Get ( UserName )` of a server script is its account's name.
+        let stamp = crate::hosting::ModStamp {
+            user: &self.account,
+            account: &self.account,
+            time: &time,
+        };
+        let result = edit(&stamp);
+        self.hosted.lock_table().release_path(&catalog, self.user);
+        if result.is_ok() {
+            writes::notify(
+                &self.hosted,
+                &self.shared.mailboxes,
+                self.user.connection,
+                &[
+                    writes::Change {
+                        path: catalog.clone(),
+                        code: ATTENTION_CATALOG,
+                    },
+                    writes::Change {
+                        path: vec![vec![23], vec![1], vec![1]],
+                        code: ATTENTION_CATALOG,
+                    },
+                ],
+            );
+        }
+        result
+    }
+}
+
+impl Accounts for ServerHost {
+    /// Change Password (83), as FileMaker's `DoChangePassword` runs it
+    /// (local-files.md 2.4): the password of the account the session
+    /// logged in with, found by its record key so that a rename since
+    /// cannot redirect it, both passwords cut to 100 UTF-16 code units,
+    /// and 3 for [Guest] or an account of another kind. Then
+    /// [`crate::hosting::Hosted::change_password`] sets it with
+    /// `SetPassword`'s errors (212 a wrong old password, 206 a set that
+    /// does not allow it, 208 shorter than the set's minimum, 209 the same
+    /// password, 210 an inactive account), skipping the set's checks for a
+    /// step with full access, and saves it before the step ends. With its
+    /// dialog the step is refused with 3: FileMaker Server's handling of
+    /// that dialog is not measured.
+    fn change_password(&mut self, old: &str, new: &str, with_dialog: bool) -> HostResult {
+        if with_dialog {
+            return Err(HostError::Unsupported);
+        }
+        let Some(key) = self.account_key.clone() else {
+            return Err(HostError::Unsupported);
+        };
+        let is_file_account =
+            self.hosted.accounts().iter().any(|a| {
+                a.key == key && a.kind == Some(crate::accounts::AccountKind::FileMakerFile)
+            });
+        if key == [1] || !is_file_account {
+            return Err(HostError::Unsupported);
+        }
+        let (old, new) = (utf16_prefix(old, 100), utf16_prefix(new, 100));
+        let manager = self.privileged();
+        self.edit_accounts("Change Password", |stamp| {
+            let now = jiff::Zoned::now().datetime();
+            self.hosted
+                .change_password(
+                    crate::hosting::AccountRef::Key(&key),
+                    old,
+                    new,
+                    manager,
+                    Some(stamp),
+                    now,
+                )
+                .map_err(|e| {
+                    if let crate::hosting::PasswordChangeError::Unwritten(reason) = &e {
+                        warn!(
+                            "{:?}: Change Password changed nothing: {reason}",
+                            self.hosted.name
+                        );
+                    }
+                    ErrorCode(e.code().unwrap_or(ErrorCode::UNAVAILABLE.0)).into()
+                })
+        })
+    }
+}
 impl Platform for ServerHost {}

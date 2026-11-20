@@ -526,6 +526,37 @@ pub enum Replacement<'a> {
     Calculation(&'a mut dyn FnMut(&mut dyn ScriptHost) -> Value),
 }
 
+/// The `index`th of [`Replacement::Serial`]'s numbers from `initial`: its
+/// last run of digits counts up by `increment`, keeping its width, and the
+/// rest stays ("INV0009" + 1 = "INV0010"); text without a digit stays as
+/// it is. `None` when the digits or the result do not fit an `i128`.
+pub fn serial_text(initial: &str, increment: i64, index: u64) -> Option<String> {
+    let end = initial
+        .char_indices()
+        .rev()
+        .find(|(_, c)| c.is_ascii_digit())
+        .map(|(i, c)| i + c.len_utf8());
+    let Some(end) = end else {
+        return Some(initial.to_owned());
+    };
+    let start = initial[..end]
+        .char_indices()
+        .rev()
+        .take_while(|(_, c)| c.is_ascii_digit())
+        .last()
+        .map_or(end, |(i, _)| i);
+    let digits = &initial[start..end];
+    let step = i128::from(increment).checked_mul(i128::from(index))?;
+    let number = digits.parse::<i128>().ok()?.checked_add(step)?;
+    Some(format!(
+        "{}{:0width$}{}",
+        &initial[..start],
+        number,
+        &initial[end..],
+        width = digits.len()
+    ))
+}
+
 /// Data file encodings (Write to / Read from Data File).
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Encoding {
@@ -897,6 +928,12 @@ pub trait Fields {
     }
     /// Set Field By Name (147): `Table::Field`, as calculated.
     fn set_field_by_name(&mut self, _name: &str, _value: Value) -> HostResult {
+        Err(HostError::Unsupported)
+    }
+    /// The field a calculated name names, as Set Field By Name (147)
+    /// finds it: `Occurrence::Field`, or a field of the current layout's
+    /// occurrence (Replace Field Contents by Name, 249).
+    fn field_by_name(&mut self, _name: &str) -> HostResult<FieldRef> {
         Err(HostError::Unsupported)
     }
     /// The value of a field target (Show Custom Dialog's inputs).
@@ -1495,5 +1532,23 @@ mod window_style_tests {
         assert_eq!(of(0x0037_0608).style, WindowStyle::Unknown(0x08));
         // No word is FileMaker's default, a document window.
         assert_eq!(WindowOptions::from_word(None).style, WindowStyle::Document);
+    }
+}
+
+#[cfg(test)]
+mod serial_tests {
+    use super::serial_text;
+
+    #[test]
+    fn serial_numbers_count_up_the_last_digits() {
+        assert_eq!(serial_text("1", 1, 0).as_deref(), Some("1"));
+        assert_eq!(serial_text("1", 1, 4).as_deref(), Some("5"));
+        assert_eq!(serial_text("INV0009", 1, 1).as_deref(), Some("INV0010"));
+        assert_eq!(serial_text("A-10-x", 5, 2).as_deref(), Some("A-20-x"));
+        assert_eq!(serial_text("none", 1, 3).as_deref(), Some("none"));
+        // Past an i128, refused rather than wrapped.
+        let max = i128::MAX.to_string();
+        assert_eq!(serial_text(&max, 1, 1), None);
+        assert_eq!(serial_text(&format!("{max}0"), 1, 0), None);
     }
 }

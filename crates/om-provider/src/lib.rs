@@ -3054,8 +3054,13 @@ impl DataProvider for NativeProvider {
             );
         }
         Ok(om_data::RecordCapabilities {
+            // The record is locked on the host as its editing begins, as
+            // FileMaker Pro locks it (write-path.md 4.1): Browse waits for
+            // `record.prepare_edit` before it takes the first change.
             prepare_edit: table.fields.iter().any(|f| {
-                f.kind == om_hbam::FieldKind::Normal && f.data_type == om_hbam::DataType::Container
+                f.kind == om_hbam::FieldKind::Normal
+                    && f.decoded_options()
+                        .is_some_and(|o| o.options & 0x1_0000 == 0)
             }),
             create: plan.is_some() && may(RecordAction::Create),
             update,
@@ -3417,6 +3422,16 @@ impl DataProvider for NativeProvider {
         let table = self.read_table_for_layout(&layout)?.id;
         if self.external.route(table).is_none() {
             self.require_delete(table, record_id)?;
+        }
+        // The record this window's editing locked (`record.prepare_edit`)
+        // is deleted under that lock; a session holding more (a related
+        // record's write, container data) goes first, which lets it go.
+        if let Ok(record) = u64::try_from(record_id) {
+            match self.session_edit(table, record) {
+                Some(true) => return self.delete_edited(table, record_id),
+                Some(false) => om_data::DataProvider::revert_record_session(self)?,
+                None => {}
+            }
         }
         if self.external.route(table).is_some() {
             // Keep the caller's layout/scripts and client table namespace.
@@ -4792,13 +4807,10 @@ impl DataProvider for NativeProvider {
             // Carry the accepted UI page's version through the worker queue.
             // A later backend read cannot authorize this draft. An explicit
             // recovery readback may already have retained a checked baseline.
+            // Every table with a field to edit prepares its edits
+            // (`record.prepare_edit`), so a retained record is no unprepared
+            // edit of its own: an `Unavailable` preparation marks those.
             let own = (self.window, table.id, id);
-            if !table.fields.iter().any(|f| {
-                f.kind == om_hbam::FieldKind::Normal && f.data_type == om_hbam::DataType::Container
-            }) {
-                self.unprepared_root_edits
-                    .insert((self.window, table.id, record_id));
-            }
             self.pinned.entry(own).or_insert(version);
         }
     }
@@ -4811,6 +4823,7 @@ impl DataProvider for NativeProvider {
             self.unprepared_root_edits
                 .remove(&(self.window, table.id, record_id));
             self.pinned.remove(&(self.window, table.id, id));
+            self.release_untouched_edit(table.id, id);
         }
     }
 
@@ -4974,6 +4987,9 @@ impl DataProvider for NativeProvider {
     fn layout_geometry(&mut self, layout_id: u32) -> Result<Option<LayoutGeometry>, DataError> {
         let layout = self.decoded_layout(layout_id)?;
         let bindings = self.bindings(&layout)?;
+        // The schema as read, opening no related file to name its fields.
+        let schema = self.calc_schema_cached().ok();
+        let bindings = field_names(&layout, bindings, schema.as_deref());
         let mut objects = Vec::new();
         let mut seen = BTreeSet::new();
         for id in &layout.objects.root {
@@ -5606,6 +5622,47 @@ fn record_page(
         records,
         total,
     })
+}
+
+/// The field each field object of `layout` shows, by object id, as Layout
+/// mode names it: `bindings` (the fields of the layout's own occurrence),
+/// then a field another occurrence shows, from `schema`, as
+/// `Occurrence::Field`, and a later repetition of the layout's own field
+/// by the field's name. An object whose field `schema` does not know (a
+/// related file that is not open) keeps no name.
+fn field_names(
+    layout: &om_layout::Layout,
+    mut bindings: BTreeMap<u64, String>,
+    schema: Option<&om_data::host::CalcSchema>,
+) -> BTreeMap<u64, String> {
+    let Some(schema) = schema else {
+        return bindings;
+    };
+    let own = layout_occurrence(layout).ok();
+    for object in &layout.objects.objects {
+        if bindings.contains_key(&object.id) {
+            continue;
+        }
+        let Some(spec) = object.field_spec() else {
+            continue;
+        };
+        let (Some(occurrence), Some(field)) = (occurrence_id(spec.table_key), spec.field_id())
+        else {
+            continue;
+        };
+        let Some(def) = schema.field(occurrence, field) else {
+            continue;
+        };
+        let name = if Some(occurrence) == own {
+            def.name.clone()
+        } else if let Some(shown) = schema.occurrence(occurrence) {
+            format!("{}::{}", shown.name, def.name)
+        } else {
+            continue;
+        };
+        bindings.insert(object.id, name);
+    }
+    bindings
 }
 
 fn flatten_object(

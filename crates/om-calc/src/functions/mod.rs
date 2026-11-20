@@ -29,6 +29,7 @@ mod formatting;
 mod japanese;
 mod json;
 mod number;
+pub mod record_ids;
 mod text;
 mod trig;
 
@@ -97,6 +98,7 @@ const FUNCTIONS: &[&[Function]] = &[
 
 const KEYWORDS: &[&[Keyword]] = &[
     aggregate::KEYWORDS,
+    record_ids::KEYWORDS,
     container::KEYWORDS,
     container_analysis::KEYWORDS,
     datetime::KEYWORDS,
