@@ -4219,6 +4219,25 @@ fn character_runs_print_in_their_own_colors() {
     runs(&mut sized)[1].style.raw[7] = 18;
     runs(&mut sized)[1].style.font_size = Some(18.0);
     assert_eq!(render(&sized, text).unwrap_err(), mixed);
+    // A size given only decoded, with the stored bytes unchanged, too.
+    let mut sized = layout.clone();
+    runs(&mut sized)[1].style.font_size = Some(18.0);
+    assert_eq!(render(&sized, text).unwrap_err(), mixed);
+    // One style stored in a length the decoder does not read still prints,
+    // as before, in one color, and two copies of it as one.
+    let mut odd = layout.clone();
+    let style = CharacterStyle {
+        raw: vec![0; 14],
+        ..Default::default()
+    };
+    for run in runs(&mut odd) {
+        run.style = style.clone();
+    }
+    assert!(render(&odd, text).is_ok());
+    // A field's layout runs in two colors refuse, its filename included.
+    let mut field = layout.clone();
+    field.objects.objects[0].object_type = 1;
+    assert_eq!(render(&field, "notes.txt").unwrap_err(), mixed);
     // Runs that leave a gap, or overlap, are not the text's partition.
     let mut gap = layout.clone();
     runs(&mut gap)[1].range.start += 1;

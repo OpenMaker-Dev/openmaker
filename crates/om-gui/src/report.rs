@@ -475,9 +475,13 @@ fn text_style(
     let mut style = crate::document::text_style(layout, object, conditions, 1);
     if let Some(rich) = &object.rich_text {
         if let Some(first) = rich.character_runs.first() {
-            // Runs in several colors print each in its own (`run_colors`);
-            // runs in several fonts, sizes or faces are refused.
-            if (rich.character_runs.iter()).any(|r| !same_but_color(&r.style, &first.style)) {
+            // A text object's or button's runs in several colors print each
+            // in its own (`run_colors`); runs in several fonts, sizes or
+            // faces, and a field's in several anything, are refused.
+            let colors = matches!(object.kind(), ObjectKind::Text | ObjectKind::Button);
+            if (rich.character_runs.iter()).any(|r| {
+                r.style != first.style && !(colors && same_but_color(&r.style, &first.style))
+            }) {
                 return Err(ReportError::unsupported(
                     "Mixed character styles are unsupported",
                 ));
@@ -543,14 +547,23 @@ fn text_style(
     Ok(style)
 }
 
-/// Whether character styles `a` and `b` differ in nothing but their color.
-/// Stored styles (layout-model.md 8.1) compare every byte but the color's:
+/// Whether character styles `a` and `b` differ in nothing but their color:
+/// the same font, size and faces as decoded, and for stored styles
+/// (layout-model.md 8.1) every byte but the color's:
 /// the mask without its color bit, the font, face and size slots (masked
 /// or not, so an explicit size 0 is not an unset size), and the extension
 /// byte. A style built in code (no stored bytes) compares as decoded. A
 /// stored style of another length, or one stored beside one built in code,
 /// differs.
 fn same_but_color(a: &om_layout::CharacterStyle, b: &om_layout::CharacterStyle) -> bool {
+    // What Browse and the report draw with, besides the color.
+    let decoded = |s: &om_layout::CharacterStyle| {
+        let size = s.font_size.map(f64::to_bits);
+        (s.font_id, s.font_family.clone(), size, s.faces, s.face_mask)
+    };
+    if decoded(a) != decoded(b) {
+        return false;
+    }
     fn without_color(raw: &[u8]) -> Option<(u16, &[u8], &[u8])> {
         match raw {
             [m0, m1, slots @ .., _, _, _, _] if slots.len() == 6 => {
@@ -565,17 +578,9 @@ fn same_but_color(a: &om_layout::CharacterStyle, b: &om_layout::CharacterStyle) 
         }
     }
     match (a.raw.is_empty(), b.raw.is_empty()) {
-        (true, true) => {
-            let decoded = |s: &om_layout::CharacterStyle| {
-                let size = s.font_size.map(f64::to_bits);
-                (s.font_id, s.font_family.clone(), size, s.faces, s.face_mask)
-            };
-            decoded(a) == decoded(b)
-        }
+        (true, true) => true,
         (false, false) => {
-            without_color(&a.raw).is_some()
-                && without_color(&a.raw) == without_color(&b.raw)
-                && a.font_family == b.font_family
+            without_color(&a.raw).is_some() && without_color(&a.raw) == without_color(&b.raw)
         }
         _ => false,
     }
