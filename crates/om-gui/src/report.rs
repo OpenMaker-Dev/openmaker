@@ -2414,10 +2414,10 @@ fn report_object<'a>(
         )));
     }
     if matches!(object.kind(), ObjectKind::Text | ObjectKind::Button)
-        && object.text.as_deref().is_some_and(|s| s.contains("{{"))
+        && symbol_texts(object).any(|text| numbered(text, 0).is_none())
     {
         return Err(ReportError::unsupported(
-            "Layout merge symbols (including page numbers) are unsupported",
+            "Layout merge symbols other than {{PageNumber}} are unsupported",
         ));
     }
     if [rect.top, rect.left, rect.bottom, rect.right]
@@ -2920,6 +2920,137 @@ fn part_objects<'s, 'a>(
     }
 }
 
+/// `text` with each `{{PageNumber}}` (in any case, as Browse reads layout
+/// symbols, `om_data::host::layout::merge_text`) replaced by page `page`'s
+/// number (from 0): what FileMaker Pro 26.0.3 wrote on page *n* of Save
+/// Records as PDF (calc-functions.md, O4). `None` when the text holds
+/// another symbol, which reports refuse; an unclosed `{{` is text, as
+/// Browse keeps it.
+fn numbered(text: &str, page: usize) -> Option<String> {
+    let mut out = String::with_capacity(text.len());
+    let mut rest = text;
+    while let Some(start) = rest.find("{{") {
+        out.push_str(&rest[..start]);
+        let tail = &rest[start..];
+        let Some(end) = tail[2..].find("}}").map(|i| i + 2) else {
+            out.push_str(tail);
+            return Some(out);
+        };
+        if !tail[2..end].eq_ignore_ascii_case("PageNumber") {
+            return None;
+        }
+        out.push_str(&(page + 1).to_string());
+        rest = &tail[end + 2..];
+    }
+    out.push_str(rest);
+    Some(out)
+}
+
+/// The texts a text object's or button's layout symbols are read from, as
+/// Browse and the report's content read them: a merge text's literal runs,
+/// each on its own (a symbol never spans a merged field), or else its label.
+fn symbol_texts(object: &LayoutObject) -> Box<dyn Iterator<Item = &String> + '_> {
+    use om_layout::TextRun;
+    if object.text_runs.is_empty() {
+        Box::new(object.text.iter())
+    } else {
+        Box::new(object.text_runs.iter().filter_map(|run| match run {
+            TextRun::Literal(literal) => Some(literal),
+            _ => None,
+        }))
+    }
+}
+
+/// `label` with each whole `{{PageNumber}}` (any case) replaced by page
+/// `page`'s number (from 0): a merge text's label beside the runs its
+/// symbols are read from ([`symbol_texts`]), for content that reads the
+/// label. Its merged fields are written in it, so only whole symbols are
+/// numbered, never one paired across a field, and a field's placeholder
+/// (`<<Name>>`) is kept as written, whatever its name holds.
+fn numbered_label(label: &str, page: usize) -> String {
+    const SYMBOL: &str = "{{PageNumber}}";
+    let mut out = String::with_capacity(label.len());
+    let mut rest = label;
+    loop {
+        let field = rest.find("<<");
+        let Some(start) = [field, rest.find("{{")].into_iter().flatten().min() else {
+            break;
+        };
+        out.push_str(&rest[..start]);
+        let tail = &rest[start..];
+        // A merged field's placeholder is its name, kept as written.
+        if field == Some(start) {
+            let end = tail[2..].find(">>").map_or(2, |end| end + 4);
+            out.push_str(&tail[..end]);
+            rest = &tail[end..];
+            continue;
+        }
+        match tail.get(..SYMBOL.len()) {
+            Some(symbol) if symbol.eq_ignore_ascii_case(SYMBOL) => {
+                out.push_str(&(page + 1).to_string());
+                rest = &tail[SYMBOL.len()..];
+            }
+            _ => {
+                out.push_str("{{");
+                rest = &tail[2..];
+            }
+        }
+    }
+    out.push_str(rest);
+    out
+}
+
+/// `object` as page `page` (from 0) prints it: a text object's or a
+/// button's `{{PageNumber}}` numbered where its symbols are read
+/// ([`symbol_texts`], [`numbered`]), and a merge text's label too
+/// ([`numbered_label`]), so every source reads it as plain text and no
+/// field's value is touched; borrowed when it has none.
+fn on_page(object: &LayoutObject, page: usize) -> std::borrow::Cow<'_, LayoutObject> {
+    use om_layout::TextRun;
+    if !matches!(object.kind(), ObjectKind::Text | ObjectKind::Button)
+        || !symbol_texts(object).any(|text| text.contains("{{"))
+    {
+        return std::borrow::Cow::Borrowed(object);
+    }
+    let mut object = object.clone();
+    let number = |text: &mut String| {
+        if let Some(n) = numbered(text, page) {
+            *text = n;
+        }
+    };
+    if object.text_runs.is_empty() {
+        if let Some(text) = object.text.as_mut() {
+            number(text);
+        }
+    } else if let Some(text) = object.text.as_mut() {
+        // The label the runs spell (each merged field as `<<name>>`) is
+        // numbered as they are, run by run; one they do not spell is
+        // numbered by whole symbols outside placeholders.
+        let spelled = |numbered_runs: bool| {
+            (object.text_runs.iter())
+                .map(|run| match run {
+                    TextRun::Literal(literal) if numbered_runs => {
+                        numbered(literal, page).unwrap_or_else(|| literal.clone())
+                    }
+                    TextRun::Literal(literal) => literal.clone(),
+                    TextRun::MergeField(name) => format!("<<{name}>>"),
+                })
+                .collect::<String>()
+        };
+        *text = if spelled(false) == *text {
+            spelled(true)
+        } else {
+            numbered_label(text, page)
+        };
+    }
+    for run in &mut object.text_runs {
+        if let TextRun::Literal(literal) = run {
+            number(literal);
+        }
+    }
+    std::borrow::Cow::Owned(object)
+}
+
 /// Lay out one part for one record and page, sliding objects up as
 /// FileMaker describes (Claris, "Removing blank spaces in printouts"):
 ///
@@ -2949,6 +3080,8 @@ fn layout_part(
     let mut data = Vec::with_capacity(count);
     let mut shrink = vec![0.0; count];
     for (i, (object, _, _)) in part.objects.iter().enumerate() {
+        let paged = on_page(object, context.page);
+        let object = paged.as_ref();
         let shrinks = part.slides[i].is_some() && object.kind() == ObjectKind::Field;
         let value = if matches!(
             object.kind(),
@@ -3216,7 +3349,8 @@ fn portal_rows(
             rect.top - part.rects[index].top + geometry.offset.1 + row as f64 * geometry.row_height,
         );
         for &j in &members {
-            let object = part.objects[j].0;
+            let paged = on_page(part.objects[j].0, context.page);
+            let object = paged.as_ref();
             let r = &part.rects[j];
             let bounds = Rect {
                 left: r.left + dx,
