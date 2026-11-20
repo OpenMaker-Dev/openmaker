@@ -570,7 +570,10 @@ Open items:
   viewer) rather than succeed. The error codes for a page still loading (5),
   a missing or throwing function (5) and a viewer that is not shown (116)
   are inferred, not measured on FileMaker Pro. On the desktop:
-  - Set Field does not create records through more than one relationship
+  - Set Field two or more relationships away creates the far record only
+    under a related record that exists on the way. FileMaker also creates a
+    missing record on the way when its relationship allows creation (s49);
+    there the script stops instead, before it changes anything
     ([#41](https://github.com/OpenMaker-Dev/openmaker/issues/41)).
   - A running summary or
   fraction on a record outside the found set reads empty (unconfirmed);

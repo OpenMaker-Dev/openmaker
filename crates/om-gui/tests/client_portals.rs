@@ -62,6 +62,10 @@ const PORTAL_EXTRA: u64 = 6;
 const EXTRA: u64 = 200;
 /// A Tasks occurrence related to Tasks by `Name ≠ Name` (relationship 4).
 const OTHER_TASKS: u64 = 0xd0_0005;
+/// Occurrences of Tasks two relationships away, through Notes
+/// ([`add_note_tasks`]).
+const NOTE_TASKS: u64 = 0xd0_0006;
+const BARE_NOTE_TASKS: u64 = 0xd0_0007;
 /// The script OnObjectExit of the portal's Body field runs.
 const KEEP: u64 = 18;
 /// A button in the portal's rows, labeled [`ROW_ACTION`]: Perform Script
@@ -407,7 +411,12 @@ fn add_notes(root: &mut OwnedNode) {
 /// Relationship 1 allows creating Notes from Tasks (option `0x10`,
 /// file-metadata.md 4.1).
 fn allow_creation(root: &mut OwnedNode) {
-    let path: [&[u8]; 5] = [&[3], &[0xfb], &[5], &[1], &[2]];
+    allow_creation_through(root, 1);
+}
+
+/// Relationship `id` allows creating its right occurrence's records.
+fn allow_creation_through(root: &mut OwnedNode, id: u8) {
+    let path: [&[u8]; 5] = [&[3], &[0xfb], &[5], &[id], &[2]];
     let mut definition = root.at(&path).and_then(|n| n.value.clone()).unwrap();
     let at = definition.len() - 4;
     definition[at..].copy_from_slice(&0x10u32.to_be_bytes());
@@ -424,6 +433,76 @@ fn extra_raw() -> u64 {
 fn add_extra(root: &mut OwnedNode) {
     fixture::add_field(root, NOTES, extra_raw(), "Extra", 1, 1, 0, 0, 0);
     fixture::set_field_repetitions(root, NOTES, extra_raw(), 2);
+}
+
+/// Occurrences "Note tasks" and "Bare note tasks" of Tasks, related from
+/// Notes by `Notes::Body = Name` (relationships 5 and 6), the first allowing
+/// creation: fields two relationships away from Tasks.
+fn add_note_tasks(root: &mut OwnedNode) {
+    fixture::add_occurrence(root, NOTE_TASKS, "Note tasks", TABLE);
+    fixture::add_relationship(root, 5, (NOTES_OCCURRENCE, BODY), 0, (NOTE_TASKS, NAME));
+    allow_creation_through(root, 5);
+    fixture::add_occurrence(root, BARE_NOTE_TASKS, "Bare note tasks", TABLE);
+    fixture::add_relationship(
+        root,
+        6,
+        (NOTES_OCCURRENCE, BODY),
+        0,
+        (BARE_NOTE_TASKS, NAME),
+    );
+}
+
+/// A file whose scripts set fields two relationships away
+/// ([`add_note_tasks`]): "Two hops" from task 1, whose notes are "first"
+/// and "second", "Missing middle" from task 2, which has none.
+/// Relationship 1 (Tasks to Notes) allows creation when `middle` is.
+fn two_hops_host(middle: bool) -> hosted::Hosted {
+    let two_hops = fixture::script(
+        1,
+        "Two hops",
+        vec![
+            fixture::on(86, true),
+            fixture::go_to_record(1),
+            set_field(NOTE_TASKS, CODE, 0, "\"zz\""),
+            note("$made", "Get ( LastError )"),
+            set_field(BARE_NOTE_TASKS, CODE, 0, "\"yy\""),
+            note("$bare", "Get ( LastError )"),
+            without_dialog(75),
+            note("$commit", "Get ( LastError )"),
+            show("\"hops \" & $made & \" \" & $bare & \" \" & $commit"),
+        ],
+    );
+    let missing = fixture::script(
+        2,
+        "Missing middle",
+        vec![
+            fixture::on(86, true),
+            fixture::go_to_record(2),
+            set_field(NOTE_TASKS, CODE, 0, "\"xx\""),
+            show("\"missing \" & Get ( LastError )"),
+        ],
+    );
+    let mut root = fixture::tree(&[two_hops, missing], true);
+    // Notes::Task and relationship 1, Tasks to Notes.
+    fixture::add_calculated(&mut root);
+    add_notes(&mut root);
+    add_note_tasks(&mut root);
+    if middle {
+        allow_creation(&mut root);
+    }
+    let tag = if middle {
+        "two-hops"
+    } else {
+        "two-hops-closed"
+    };
+    let file = fixture::TempFile::from_tree(&format!("gui-portals-{tag}"), &root);
+    hosted::host_file_with(
+        &format!("portals-{tag}"),
+        Path::new(&file.0),
+        fixture::FILE,
+        (ACCOUNT, PASSWORD),
+        |server| server,
+    )
 }
 
 /// Occurrence "Other tasks" of Tasks, related by `Tasks::Name ≠ Other
@@ -1799,6 +1878,60 @@ fn set_field_creates_a_related_record_through_the_relationship() {
         notes.last().map(|(_, v)| v.clone()),
         Some(vec!["new note".to_owned(), "Ship".to_owned()])
     );
+}
+
+/// Set Field of a field two relationships away (s49): from a task with
+/// notes the record is made from the first related note, its match field
+/// set from the note's Body, and committed with the task; without creation
+/// through the far relationship 101. From a task without notes, without
+/// creation through Tasks to Notes, 415. FileMaker makes the note too when
+/// that relationship allows creation; OpenMaker stops the script there
+/// instead, before it changes anything (#41).
+#[test]
+fn set_field_creates_a_record_two_relationships_away() {
+    for middle in [true, false] {
+        let hosted = two_hops_host(middle);
+        let mut app = open(&hosted);
+        expect(&mut app, "Two hops", "hops 0 101 0");
+        if middle {
+            app.query_all(
+                By::new()
+                    .role(egui::accesskit::Role::Button)
+                    .label("Scripts"),
+            )
+            .next()
+            .unwrap()
+            .click();
+            app.run_steps(2);
+            common::click(&mut app, "Missing middle");
+            common::wait_until(&mut app, "the script to stop", |app| {
+                !app.state().script_running()
+                    && app
+                        .state()
+                        .error()
+                        .is_some_and(|e| e.contains("not supported here yet"))
+            });
+        } else {
+            expect(&mut app, "Missing middle", "missing 415");
+        }
+        let tasks = stored(&hosted, TABLE, &[(NAME, 1), (CODE, 1)]);
+        let made: Vec<&Vec<String>> = tasks
+            .iter()
+            .map(|(_, values)| values)
+            .filter(|values| values[1] == "zz")
+            .collect();
+        assert_eq!(
+            made,
+            [&vec!["first".to_owned(), "zz".to_owned()]],
+            "middle={middle}"
+        );
+        assert!(
+            tasks
+                .iter()
+                .all(|(_, values)| values[1] != "yy" && values[1] != "xx"),
+            "middle={middle}: {tasks:?}"
+        );
+    }
 }
 
 #[test]

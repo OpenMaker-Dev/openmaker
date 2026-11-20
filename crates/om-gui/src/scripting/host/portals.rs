@@ -48,7 +48,7 @@ use std::collections::{BTreeMap, BTreeSet};
 
 use om_data::calc::eval::{CalcHost, Context};
 use om_data::calc::Value;
-use om_data::host::{CalcNeed, FieldClass};
+use om_data::host::{CalcNeed, CalcSchema, FieldClass, Hop};
 use om_data::meta::{relation_option, JoinOp};
 use om_data::runtime::{ErrorCode, FieldRef, HostError, HostResult, RecordMove};
 use om_data::specs::SortSpec;
@@ -95,6 +95,10 @@ pub(super) enum Target {
 const NO_RELATED_RECORD: ErrorCode = ErrorCode::RECORD_MISSING;
 /// "Relationship is missing" (no path from the window's occurrence).
 const RELATIONSHIP_MISSING: ErrorCode = ErrorCode(103);
+/// "One or more required related records are not available": Set Field
+/// two relationships away with no record between and no creation through
+/// the relationship to it (s49).
+const BETWEEN_MISSING: ErrorCode = ErrorCode(415);
 /// "Layout object is missing" (Go to Object by a name no object has).
 const OBJECT_MISSING: ErrorCode = ErrorCode(116);
 /// The portal scrolls (`PortalLayoutObject.flags`, s35 `-word0`/`-word1`).
@@ -1795,13 +1799,18 @@ impl WorkerHost<'_> {
         Some(pending)
     }
 
-    /// The match fields of a record created through the relationship from
+    /// The match fields of a record created through the relationships from
     /// the window's occurrence to `occurrence`: each `=` predicate's
-    /// related field takes the current record's value (Claris "Creating
-    /// and changing relationships": the related record is created "based
-    /// on the match field in the current table"). Only a direct
-    /// relationship whose "Allow creation of records in this table via
-    /// this relationship" is on for that side creates.
+    /// related field takes the value of the record it is made from (Claris
+    /// "Creating and changing relationships": the related record is created
+    /// "based on the match field in the current table"). The relationship to
+    /// `occurrence` must allow creating its records ("Allow creation of
+    /// records in this table via this relationship" on that side), else
+    /// 101, whatever the others allow (s49). Through more than one
+    /// relationship the record is made from the first related record of the
+    /// occurrence before it, along the path. A record missing on the way is
+    /// made too in FileMaker when its relationship allows creation (s49); not
+    /// yet here: the step is unsupported (#41). Without creation there, 415.
     fn match_cells(&mut self, occurrence: u64) -> Result<Cells, HostError> {
         let schema = self.schema().cloned().ok_or(HostError::Unsupported)?;
         let current = self
@@ -1812,10 +1821,10 @@ impl WorkerHost<'_> {
         let path = schema
             .path(current, occurrence)
             .ok_or(HostError::Error(RELATIONSHIP_MISSING))?;
-        let [hop] = path.as_slice() else {
+        let Some((hop, before)) = path.split_last() else {
             return Err(NO_RELATED_RECORD.into());
         };
-        if !self.creation_allowed(occurrence) {
+        if !creates_through(&schema, hop) {
             return Err(NO_RELATED_RECORD.into());
         }
         let record = {
@@ -1824,10 +1833,25 @@ impl WorkerHost<'_> {
         }
         .and_then(|r| u64::try_from(r).ok())
         .ok_or(HostError::Error(ErrorCode::RECORD_MISSING))?;
+        // The record the new one is made from: the window's, else the first
+        // related record of each occurrence on the way.
+        let (mut from, mut parent) = (current, record);
+        for between in before {
+            let first = self
+                .related_records(from, parent, between.to)
+                .map_err(|_| HostError::Error(RELATIONSHIP_MISSING))?
+                .first()
+                .copied();
+            match first {
+                Some(next) => (from, parent) = (between.to, next),
+                None if creates_through(&schema, between) => return Err(HostError::Unsupported),
+                None => return Err(BETWEEN_MISSING.into()),
+            }
+        }
         let mut cells = Cells::new();
         for predicate in hop.predicates.iter().filter(|p| p.op == JoinOp::Equal) {
             let value = self
-                .file(|f| f.field_value(current, record, predicate.left, 1))
+                .file(|f| f.field_value(from, parent, predicate.left, 1))
                 .unwrap_or(Ok(Value::empty_text()))
                 .unwrap_or_else(|_| Value::empty_text());
             let text = self.text(&value);
@@ -1853,15 +1877,21 @@ impl WorkerHost<'_> {
         let [hop] = path.as_slice() else {
             return false;
         };
-        schema.relationships().iter().any(|r| {
-            (r.left == hop.from
-                && r.right == hop.to
-                && r.options & relation_option::CREATE_LEFT_TO_RIGHT != 0)
-                || (r.right == hop.from
-                    && r.left == hop.to
-                    && r.options & relation_option::CREATE_RIGHT_TO_LEFT != 0)
-        })
+        creates_through(schema, hop)
     }
+}
+
+/// Whether `hop`'s relationship allows creating records of its far
+/// occurrence (file-metadata.md 4.1).
+fn creates_through(schema: &CalcSchema, hop: &Hop) -> bool {
+    schema.relationships().iter().any(|r| {
+        (r.left == hop.from
+            && r.right == hop.to
+            && r.options & relation_option::CREATE_LEFT_TO_RIGHT != 0)
+            || (r.right == hop.from
+                && r.left == hop.to
+                && r.options & relation_option::CREATE_RIGHT_TO_LEFT != 0)
+    })
 }
 
 #[cfg(test)]
