@@ -2090,6 +2090,46 @@ fn a_save_keeps_the_portal_rows_while_they_are_read_again() {
     assert!(app.state().error().is_none(), "{:?}", app.state().error());
 }
 
+/// A menu command other than the field's own (View > Find Mode) ends the
+/// field's editing first: its OnObjectValidate refusing keeps the field
+/// entered, the window in Browse and the record unsaved, as a click on a
+/// button does. The menus' own commands act on the field without leaving it.
+#[test]
+fn a_menu_command_waits_for_the_fields_validation_trigger() {
+    let hosted = host_with("menu-validate", |root| {
+        add_object_triggers(
+            root,
+            TASK_NAME,
+            &[(TriggerEvent::ObjectValidate, COMMIT_VETO)],
+        );
+    });
+    let before = stored(&hosted, TABLE, &[(NAME, 1)]);
+    let mut app = open(&hosted);
+    expect(&mut app, "Show portals", "on Portals");
+    common::text_field(&app, "Name").focus();
+    app.step();
+    app.key_press(egui::Key::End);
+    common::text_field(&app, "Name").type_text(" changed");
+    app.run_steps(2);
+    common::open_menu(&mut app, "View");
+    common::click(&mut app, "Find Mode");
+    let idle = |app: &common::App| !app.state().script_running() && app.state().is_settled();
+    common::wait_until(&mut app, "the validation trigger", idle);
+    app.run_steps(4);
+    assert_eq!(app.state().mode(), om_gui::Mode::Browse);
+    assert!(common::text_field(&app, "Name").is_focused());
+    assert!(common::unsaved(&app));
+    assert_eq!(stored(&hosted, TABLE, &[(NAME, 1)]), before);
+    // Revert keeps the field active for the discard triggers and can
+    // remove the draft that validation would reject on a saving exit.
+    common::revert_record(&mut app);
+    common::wait_until(&mut app, "the draft reverted", |app| {
+        idle(app) && !common::unsaved(app)
+    });
+    assert!(!common::text_field(&app, "Name").is_focused());
+    assert_eq!(stored(&hosted, TABLE, &[(NAME, 1)]), before);
+}
+
 /// The user's focus and typing in a portal row's field run the field
 /// object's triggers (#1005), with its row and field active: OnObjectEnter
 /// as the field is entered, OnObjectModify as it is typed into, and
@@ -4559,6 +4599,18 @@ fn browse_repetitions_keep_their_cell_and_share_one_record_commit() {
     app.step();
     app.query_all(later()).next().unwrap().type_text("ab");
     app.run_steps(2);
+    // Leaving the box runs its OnObjectSave: the script's value shows at
+    // once, before the record is committed.
+    app.key_press(egui::Key::Tab);
+    let shown = |app: &common::App| {
+        app.query_all(later())
+            .next()
+            .and_then(|n| n.accesskit_node().value())
+    };
+    common::wait_until(&mut app, "the script's value", |app| {
+        app.state().is_settled() && shown(app).as_deref() == Some("AB")
+    });
+    assert_eq!(stored(&hosted, TABLE, &[(STATUS, 2)])[0].1, [""]);
     common::save_record(&mut app);
     wait_saved(&mut app);
     assert_eq!(
@@ -4571,6 +4623,33 @@ fn browse_repetitions_keep_their_cell_and_share_one_record_commit() {
             .and_then(|n| n.accesskit_node().value()),
         Some("AB".into())
     );
+    // Typing after it and leaving: the script sets "ABC", uncommitted.
+    // Entered again, the box opens with the script's value, not the stored
+    // one, and typing goes on from it.
+    app.query_all(later()).next().unwrap().focus();
+    app.step();
+    app.key_press(egui::Key::End);
+    app.query_all(later()).next().unwrap().type_text("c");
+    app.run_steps(2);
+    assert_eq!(shown(&app).as_deref(), Some("ABc"));
+    app.key_press(egui::Key::Tab);
+    common::wait_until(&mut app, "the script's ABC", |app| {
+        app.state().is_settled() && shown(app).as_deref() == Some("ABC")
+    });
+    app.key_press_modifiers(egui::Modifiers::SHIFT, egui::Key::Tab);
+    app.event(egui::Event::Text("d".into()));
+    app.run_steps(2);
+    assert_eq!(shown(&app).as_deref(), Some("ABCd"));
+    // Erased back to the stored value, the box still replaces the
+    // script's value.
+    app.key_press(egui::Key::Backspace);
+    app.key_press(egui::Key::Backspace);
+    app.run_steps(2);
+    assert_eq!(shown(&app).as_deref(), Some("AB"));
+    common::save_record(&mut app);
+    wait_saved(&mut app);
+    assert_eq!(stored(&hosted, TABLE, &[(STATUS, 2)])[0].1, ["AB"]);
+    assert_eq!(shown(&app).as_deref(), Some("AB"));
 
     // Its OnObjectSave setting a global of another table whose field has
     // Status's id: the typing in Status[2] stays and is saved.
