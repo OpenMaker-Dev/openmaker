@@ -320,6 +320,20 @@ impl RelatedRecords<'_> {
     }
 }
 
+/// Go to List of Records (228, script-steps.md 12.2).
+#[derive(Clone, Debug, PartialEq)]
+pub struct RecordList {
+    /// The record ids as a return-separated list (calculation slot 7).
+    pub ids: String,
+    pub layout: Option<LayoutTarget>,
+    pub animation: Option<u32>,
+    /// "Show in new window" (`kTurnOn`): the window as Go to Related Record
+    /// stores it, its name in slot 0, its bounds in slots 1-4 and its style
+    /// word at `[00 0, 03]`. Its `layout` is `None` and `style` 0: the step
+    /// goes to its own layout.
+    pub new_window: Option<NewWindow>,
+}
+
 /// Commit Records/Requests and Open Transaction options.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 pub struct CommitOptions {
@@ -510,6 +524,37 @@ pub enum Replacement<'a> {
     /// The calculation, evaluated on each record after the host made it
     /// current.
     Calculation(&'a mut dyn FnMut(&mut dyn ScriptHost) -> Value),
+}
+
+/// The `index`th of [`Replacement::Serial`]'s numbers from `initial`: its
+/// last run of digits counts up by `increment`, keeping its width, and the
+/// rest stays ("INV0009" + 1 = "INV0010"); text without a digit stays as
+/// it is. `None` when the digits or the result do not fit an `i128`.
+pub fn serial_text(initial: &str, increment: i64, index: u64) -> Option<String> {
+    let end = initial
+        .char_indices()
+        .rev()
+        .find(|(_, c)| c.is_ascii_digit())
+        .map(|(i, c)| i + c.len_utf8());
+    let Some(end) = end else {
+        return Some(initial.to_owned());
+    };
+    let start = initial[..end]
+        .char_indices()
+        .rev()
+        .take_while(|(_, c)| c.is_ascii_digit())
+        .last()
+        .map_or(end, |(i, _)| i);
+    let digits = &initial[start..end];
+    let step = i128::from(increment).checked_mul(i128::from(index))?;
+    let number = digits.parse::<i128>().ok()?.checked_add(step)?;
+    Some(format!(
+        "{}{:0width$}{}",
+        &initial[..start],
+        number,
+        &initial[end..],
+        width = digits.len()
+    ))
 }
 
 /// Data file encodings (Write to / Read from Data File).
@@ -792,14 +837,8 @@ pub trait Navigation {
         Err(HostError::Unsupported)
     }
 
-    /// Go to List of Records (228): record ids as a return-separated list.
-    fn go_to_list_of_records(
-        &mut self,
-        _ids: &str,
-        _layout: Option<&LayoutTarget>,
-        _animation: Option<u32>,
-        _new_window: bool,
-    ) -> HostResult {
+    /// Go to List of Records (228).
+    fn go_to_list_of_records(&mut self, _request: &RecordList) -> HostResult {
         Err(HostError::Unsupported)
     }
 
@@ -889,6 +928,12 @@ pub trait Fields {
     }
     /// Set Field By Name (147): `Table::Field`, as calculated.
     fn set_field_by_name(&mut self, _name: &str, _value: Value) -> HostResult {
+        Err(HostError::Unsupported)
+    }
+    /// The field a calculated name names, as Set Field By Name (147)
+    /// finds it: `Occurrence::Field`, or a field of the current layout's
+    /// occurrence (Replace Field Contents by Name, 249).
+    fn field_by_name(&mut self, _name: &str) -> HostResult<FieldRef> {
         Err(HostError::Unsupported)
     }
     /// The value of a field target (Show Custom Dialog's inputs).
@@ -1487,5 +1532,23 @@ mod window_style_tests {
         assert_eq!(of(0x0037_0608).style, WindowStyle::Unknown(0x08));
         // No word is FileMaker's default, a document window.
         assert_eq!(WindowOptions::from_word(None).style, WindowStyle::Document);
+    }
+}
+
+#[cfg(test)]
+mod serial_tests {
+    use super::serial_text;
+
+    #[test]
+    fn serial_numbers_count_up_the_last_digits() {
+        assert_eq!(serial_text("1", 1, 0).as_deref(), Some("1"));
+        assert_eq!(serial_text("1", 1, 4).as_deref(), Some("5"));
+        assert_eq!(serial_text("INV0009", 1, 1).as_deref(), Some("INV0010"));
+        assert_eq!(serial_text("A-10-x", 5, 2).as_deref(), Some("A-20-x"));
+        assert_eq!(serial_text("none", 1, 3).as_deref(), Some("none"));
+        // Past an i128, refused rather than wrapped.
+        let max = i128::MAX.to_string();
+        assert_eq!(serial_text(&max, 1, 1), None);
+        assert_eq!(serial_text(&format!("{max}0"), 1, 0), None);
     }
 }

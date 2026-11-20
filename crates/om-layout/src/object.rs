@@ -205,9 +205,14 @@ impl FieldObject {
         self.flags & 0x800 != 0
     }
 
+    /// The Inspector's "Go to next object using" Return key: flag `0x40`
+    /// (layout-model.md 5.4.1).
+    pub fn next_object_on_return(&self) -> bool {
+        self.flags & 0x40 != 0
+    }
+
     /// The Inspector's "Go to next object using" Enter key: flag `0x80`
-    /// (layout-model.md 5.4.1; its Tab and Return keys are `0x20` and
-    /// `0x40`).
+    /// (layout-model.md 5.4.1; its Tab key is `0x20`).
     pub fn next_object_on_enter(&self) -> bool {
         self.flags & 0x80 != 0
     }

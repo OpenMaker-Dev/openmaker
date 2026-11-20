@@ -15,8 +15,15 @@ use std::collections::BTreeSet;
 use om_collate::DateOrder;
 use om_hbam::DataType;
 
-/// The value-index key of an empty text value (7.2).
+/// The value-index key of an empty value, text or typed (7.2, 7.3:
+/// `DBMetaTree::KNullEntry`).
 pub const EMPTY_TEXT_KEY: &[u8] = &[0x01];
+
+/// The value-index key under which a number, date, time or timestamp index
+/// lists a value FileMaker cannot read as one (7.3: `KInvalidEntry`), such as
+/// `abc` in a number field or a date stored as `?`. No other key starts with
+/// `fe`.
+pub const INVALID_KEY: &[u8] = &[0xfe, 0xff];
 
 // An index key must fit a key segment of the file (hbam-writer.md 2.2).
 const _: () = assert!(om_collate::INDEX_KEY_LIMIT <= om_hbam::writer::MAX_SEGMENT);
@@ -54,15 +61,17 @@ impl Held {
 /// How a text field's indexes key text: the form its index language
 /// (`Locale::Type`, field definition bytes 4..7) gives (query-program.md
 /// 7.2).
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 pub enum TextKeys {
     /// Language 0: no key at all.
     None,
     /// English (21) and English international (77): `01`, then the
-    /// DUCET 5.2.0 primary weight of each collation element.
+    /// DUCET 5.2.0 primary weight of each collation element
+    /// ([`om_collate::text_key`]).
+    #[default]
     Collated,
-    /// System (1) and Unicode standard (3): the collated form plus
-    /// `00 00`.
+    /// System (1) and Unicode standard (3): the collated form, `00 00` and
+    /// the secondary weights ([`om_collate::padded_text_key`]).
     CollatedPadded,
     /// Unicode raw (2): `01`, then the UTF-16BE code units.
     Raw,
@@ -94,7 +103,7 @@ impl TextKeys {
         match self {
             TextKeys::None => None,
             TextKeys::Collated => Some(om_collate::text_key(text)),
-            TextKeys::CollatedPadded => Some([om_collate::text_key(text), vec![0, 0]].concat()),
+            TextKeys::CollatedPadded => Some(om_collate::padded_text_key(text)),
             TextKeys::Raw => Some(
                 std::iter::once(0x01)
                     .chain(text.encode_utf16().flat_map(u16::to_be_bytes))
@@ -106,9 +115,9 @@ impl TextKeys {
 
 /// The value-index keys of a stored value (query-program.md 7.2, 7.3): one
 /// per non-empty line of a text value in the `text` form (the empty text's
-/// key for empty text), the typed key of a number, date, time or timestamp
-/// (none when empty or not understood). Each is cut as the index holds it
-/// (7.1).
+/// key for empty text); for a number, date, time or timestamp its typed key,
+/// [`EMPTY_TEXT_KEY`] when empty and [`INVALID_KEY`] when it is not one
+/// ([`typed_value_keys`]). Each is cut as the index holds it (7.1).
 pub fn value_keys(
     data_type: DataType,
     value: &str,
@@ -140,66 +149,49 @@ fn whole_value_keys(
             }
             keys
         }
-        _ if value.trim().is_empty() => Vec::new(),
-        DataType::Number => number_key(value).into_iter().collect(),
-        DataType::Date => om_collate::date_key(value, order).into_iter().collect(),
-        DataType::Time => om_collate::time_key(value).into_iter().collect(),
-        DataType::Timestamp => om_collate::timestamp_key(value, order)
-            .into_iter()
-            .collect(),
+        DataType::Number | DataType::Date | DataType::Time | DataType::Timestamp => {
+            typed_value_keys(data_type, value, order)
+        }
         DataType::Container | DataType::Unknown(_) => Vec::new(),
     }
 }
 
-/// A number's value-index key: FileMaker's form for whole numbers from 0
-/// (query-program.md 7.3), and OpenMaker's own order-keeping forms for the
-/// values whose form is still open there, so that finds and ranges see
-/// them: a fraction appends its digits to the integer digits
-/// (the count stays the integer digits', `2.5` = `80 01 36`, `0.5` =
-/// `80 00 60`); a negative number is `7f`, the count and the digit nibbles
-/// complemented, then `ff` (`-2` = `7f fe cf ff`), below every
-/// non-negative key and in reverse order of magnitude. Other text has no
-/// key.
-pub fn number_key(value: &str) -> Option<Vec<u8>> {
-    let text = value.trim();
-    if let Some(key) = om_collate::number_key(text) {
-        return Some(key);
+/// The value-index keys of a number, date, time or timestamp value
+/// (query-program.md 7.3):
+///
+/// - an empty value: [`EMPTY_TEXT_KEY`];
+/// - a value read as one: its key ([`om_collate::number_key`] and the
+///   others);
+/// - a timestamp stored as a date alone, as FileMaker stores one whose time
+///   was invalid: the date's midnight key and [`INVALID_KEY`];
+/// - a value with no digit at all (`abc`, `N/A`, a date FileMaker stored as
+///   `?`): [`INVALID_KEY`];
+/// - other text, digits among other characters (`abc12`, `1,234`), which
+///   FileMaker reads by rules not built here: no key.
+pub fn typed_value_keys(data_type: DataType, value: &str, order: DateOrder) -> Vec<Vec<u8>> {
+    let trimmed = value.trim();
+    if trimmed.is_empty() {
+        return vec![EMPTY_TEXT_KEY.to_vec()];
     }
-    let (negative, magnitude) = match text.strip_prefix('-') {
-        Some(rest) => (true, rest),
-        None => (false, text),
+    let key = match data_type {
+        DataType::Number => om_collate::number_key(trimmed),
+        DataType::Date => om_collate::date_key(trimmed, order),
+        DataType::Time => om_collate::time_key(trimmed),
+        DataType::Timestamp => match om_collate::timestamp_key(trimmed, order) {
+            Some(key) => Some(key),
+            None => match om_collate::date_key(trimmed, order) {
+                // The date's key is also the timestamp key of its midnight.
+                Some(date) => return vec![date, INVALID_KEY.to_vec()],
+                None => None,
+            },
+        },
+        _ => None,
     };
-    let (integer, fraction) = magnitude.split_once('.').unwrap_or((magnitude, ""));
-    if integer.is_empty() && fraction.is_empty()
-        || !integer
-            .bytes()
-            .chain(fraction.bytes())
-            .all(|b| b.is_ascii_digit())
-    {
-        return None;
+    match key {
+        Some(key) => vec![key],
+        None if !trimmed.bytes().any(|b| b.is_ascii_digit()) => vec![INVALID_KEY.to_vec()],
+        None => Vec::new(),
     }
-    let integer = integer.trim_start_matches('0');
-    let fraction = fraction.trim_end_matches('0');
-    let count = u8::try_from(integer.len()).ok().filter(|c| *c < 0x7f)?;
-    let nibbles: Vec<u8> = integer
-        .bytes()
-        .chain(fraction.bytes())
-        .map(|d| d - b'0' + 1)
-        .collect();
-    if !negative || nibbles.is_empty() {
-        let mut key = vec![0x80, count];
-        for pair in nibbles.chunks(2) {
-            key.push(pair[0] << 4 | pair.get(1).copied().unwrap_or(0));
-        }
-        return Some(key);
-    }
-    let mut key = vec![0x7f, 0xff - count];
-    for pair in nibbles.chunks(2) {
-        let low = pair.get(1).map_or(0xf, |n| 0xf - n);
-        key.push((0xf - pair[0]) << 4 | low);
-    }
-    key.push(0xff);
-    Some(key)
 }
 
 /// A record's value-index keys for one field: those of each repetition's
@@ -292,7 +284,10 @@ mod tests {
             value_keys(DataType::Text, "a\rb", order, TextKeys::Collated).len(),
             2
         );
-        assert!(value_keys(DataType::Number, "", order, TextKeys::Collated).is_empty());
+        assert_eq!(
+            value_keys(DataType::Number, "", order, TextKeys::Collated),
+            [EMPTY_TEXT_KEY]
+        );
         // query-program.md 7.1: a key's first 219 bytes, and `ff 80`.
         let english = TextKeys::Collated;
         let texts = |value: &str| [value.to_string()];
@@ -323,30 +318,28 @@ mod tests {
         assert_eq!(word_entries(&texts(&long), TextKeys::Raw), [raw].into());
         let padded = TextKeys::CollatedPadded.key(&long).unwrap();
         assert_eq!(padded.len(), om_collate::INDEX_KEY_LIMIT);
+        // A number key keeps 200 digits (7.3).
         let fraction = format!("0.{}", "1".repeat(500));
         assert_eq!(
             value_keys(DataType::Number, &fraction, order, english)[0].len(),
-            om_collate::INDEX_KEY_LIMIT
+            2 + 100
         );
     }
 
     #[test]
-    fn number_keys_keep_the_order_of_fractions_and_negative_numbers() {
-        assert_eq!(number_key("12"), om_collate::number_key("12"));
-        assert_eq!(number_key("2.5").unwrap(), [0x80, 0x01, 0x36]);
-        assert_eq!(number_key("2.50"), number_key("2.5"));
-        assert_eq!(number_key("2.0"), number_key("2"));
-        assert_eq!(number_key("-0"), number_key("0"));
-        assert_eq!(number_key("-2").unwrap(), [0x7f, 0xfe, 0xcf, 0xff]);
-        assert_eq!(number_key("abc"), None);
-        assert_eq!(number_key("1-2"), None);
+    fn typed_keys_keep_the_order_of_their_values() {
+        // Byte order is value order (7.3), empty values first and values
+        // FileMaker cannot read last.
+        let number = |n: &str| typed_value_keys(DataType::Number, n, DateOrder::MonthDayYear);
         let ordered = [
-            "-100", "-25", "-2.51", "-2.5", "-2", "-0.5", "-0.05", "0", "0.05", "0.5", "1", "2",
-            "2.5", "2.51", "3", "10", "10.5", "25", "100",
+            "", "-100", "-25", "-2.51", "-2.5", "-2", "-1.25", "-1.2", "-0.5", "-0.05", "0",
+            "0.05", "0.5", "1", "2", "2.5", "2.51", "3", "10", "10.5", "25", "100", "N/A",
         ];
-        let keys: Vec<Vec<u8>> = ordered.iter().map(|n| number_key(n).unwrap()).collect();
+        let keys: Vec<Vec<u8>> = ordered.iter().map(|n| number(n).remove(0)).collect();
         for (pair, numbers) in keys.windows(2).zip(ordered.windows(2)) {
-            assert!(pair[0] < pair[1], "{} < {}", numbers[0], numbers[1]);
+            assert!(pair[0] < pair[1], "{:?} < {:?}", numbers[0], numbers[1]);
         }
+        // Digits among other text are read by rules not built here.
+        assert!(number("abc12").is_empty());
     }
 }
