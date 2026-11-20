@@ -271,6 +271,15 @@ impl Link {
         // exchange either completed or marked the connection lost.
         self.wire.lock().unwrap_or_else(PoisonError::into_inner)
     }
+
+    /// [`Self::lock`], unless an exchange holds the wire now.
+    fn try_lock(&self) -> Option<MutexGuard<'_, Wire>> {
+        match self.wire.try_lock() {
+            Ok(wire) => Some(wire),
+            Err(std::sync::TryLockError::Poisoned(poisoned)) => Some(poisoned.into_inner()),
+            Err(std::sync::TryLockError::WouldBlock) => None,
+        }
+    }
 }
 
 /// The connection's state. Whoever holds it owns the socket for one whole
@@ -2132,6 +2141,20 @@ impl Session {
     /// keeps them (the latest 64).
     pub fn take_admin_messages(&mut self) -> Vec<AdminMessage> {
         self.link.lock().inbox.admin_messages.drain(..).collect()
+    }
+
+    /// The host's calls that have arrived read without waiting
+    /// ([`Self::poll`] with no timeout), then [`Self::take_admin_messages`],
+    /// unless another exchange holds the connection now (a Tickle waiting
+    /// for its reply): then `None`, at once. For callers that poll while
+    /// idle and must not wait behind a slow host. A read that fails marks
+    /// the connection lost ([`Self::connection_lost`]).
+    pub fn try_take_admin_messages(&mut self) -> Option<Vec<AdminMessage>> {
+        let mut wire = self.link.try_lock()?;
+        if let Err(error) = wire.poll(Instant::now(), self.key) {
+            let _ = wire.check(error);
+        }
+        Some(wire.inbox.admin_messages.drain(..).collect())
     }
 
     /// Issue a raw `Perform` with a prebuilt transaction and return the result stack.

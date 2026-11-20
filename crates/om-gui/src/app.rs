@@ -2718,6 +2718,7 @@ impl OpenMakerApp {
             || self.w.delete_portal_row.is_some()
             || self.error.is_some()
             || self.script.prompt.is_some()
+            || self.host_message_shown()
             || self.w.document.other_dialog_open()
             || self.value_list_edit.is_some()
     }
@@ -3223,6 +3224,13 @@ impl OpenMakerApp {
             });
     }
 
+    /// Whether the host administrator's message shows now: one waits, and
+    /// no error alert or script dialog is up, whose keys it would share
+    /// (Return, Escape). It waits for them, its countdown not started.
+    pub(super) fn host_message_shown(&self) -> bool {
+        !self.host_messages.is_empty() && self.error.is_none() && self.script.prompt.is_none()
+    }
+
     /// The host administrator's message (Send Message), as FileMaker Pro
     /// shows it: "Message from “<server name>”", the text, and Close, with
     /// "(This dialog will be dismissed in N seconds.)"; it closes itself
@@ -3230,6 +3238,9 @@ impl OpenMakerApp {
     /// admin-console.md 9). Messages that came meanwhile follow, one at a
     /// time.
     fn host_message(&mut self, ctx: &egui::Context, actions: &mut Vec<Action>) {
+        if !self.host_message_shown() {
+            return;
+        }
         let Some(message) = self.host_messages.front().cloned() else {
             return;
         };

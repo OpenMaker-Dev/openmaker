@@ -935,7 +935,7 @@ fn serve(
         }
         if let Some(ctx) = &ctx {
             scripts.notice_loss(provider.as_ref(), responses, epoch, ctx, &mut files);
-            scripts.tell_host_messages(provider.as_mut(), responses, epoch, ctx);
+            scripts.tell_host_messages(provider.as_mut(), responses, epoch, ctx, &mut files);
         }
     }
     files.close_all();

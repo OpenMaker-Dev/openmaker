@@ -5115,11 +5115,13 @@ impl DataProvider for NativeProvider {
             return Vec::new();
         };
         // The host's calls that have arrived, read now rather than at the
-        // session's next exchange (a Tickle, up to a minute later). A
-        // failure here shows as the connection's loss (`connection_lost`).
-        let _ = session.poll(std::time::Duration::ZERO);
+        // session's next exchange (a Tickle, up to a minute later), unless
+        // that exchange holds the connection now: nothing waits for it, and
+        // the next poll reads them. A failure here shows as the
+        // connection's loss (`connection_lost`).
         session
-            .take_admin_messages()
+            .try_take_admin_messages()
+            .unwrap_or_default()
             .into_iter()
             .filter_map(|message| {
                 let kind = match message.code & !attention::HOST_SERIAL {

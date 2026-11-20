@@ -2482,7 +2482,8 @@ impl OpenMakerApp {
 
     /// Esc / Cmd-period while a script runs; Esc in a pause cancels it.
     pub(super) fn abort_keys(&mut self, ctx: &egui::Context) {
-        if !self.script.running || self.script.prompt.is_some() {
+        // The host's message over the window takes Escape for itself.
+        if !self.script.running || self.script.prompt.is_some() || self.host_message_shown() {
             return;
         }
         let abort = ctx.input_mut(|input| {
