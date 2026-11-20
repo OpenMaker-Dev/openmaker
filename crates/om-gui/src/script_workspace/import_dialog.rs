@@ -108,6 +108,9 @@ pub(crate) struct ImportMapping {
     names_row: bool,
     /// The names row as the dialog opened.
     names_row_was: bool,
+    /// Whether another target table was chosen here, even if the stored
+    /// one was chosen again: every target was cleared then (`set_table`).
+    table_changed: bool,
     /// Whether the source names its fields (merge, XML), so that an order
     /// arranged by matching names (`MATCH_NAMES`) maps by those names.
     named: bool,
@@ -198,6 +201,7 @@ impl ImportMapping {
             touched: Vec::new(),
             names_row,
             names_row_was: names_row,
+            table_changed: false,
             named: false,
             error: None,
             order,
@@ -272,7 +276,7 @@ impl ImportMapping {
         // name the old table's fields: a column shown then has no target
         // and counts as set here, as the others do (`set_table`).
         let shown = self.columns.len();
-        let same_table = (self.stored.as_ref()).is_none_or(|o| o.table == self.order.table);
+        let same_table = !self.table_changed;
         while self.map.len() < shown {
             let i = self.map.len();
             let entry = self.order.map.get(i).filter(|_| same_table);
@@ -335,6 +339,7 @@ impl ImportMapping {
             return;
         }
         self.order.table = Key::from_id(table);
+        self.table_changed = true;
         self.map.iter_mut().for_each(|t| *t = None);
         self.keys.iter_mut().for_each(|k| *k = false);
         self.touched.iter_mut().for_each(|t| *t = true);
@@ -389,8 +394,9 @@ impl ImportMapping {
     fn answer(&self) -> Mapped {
         let mut order = self.order.clone();
         let new = self.stored.is_none();
-        let stored_table = self.stored.as_ref().map(|o| o.table.clone());
-        let retargeted = stored_table.is_some_and(|t| t != order.table);
+        // Another table chosen here clears every target, the stored order's
+        // hidden entries too, even if the stored table was chosen again.
+        let retargeted = self.stored.is_some() && self.table_changed;
         // Turning the names row on or off changes the names an order
         // matched by names maps by (Import Records reads them from that
         // row), so the order is written as shown instead.
@@ -1167,8 +1173,17 @@ mod tests {
         assert_eq!(dialog.map[..3], [Some(1), Some(2), Some(3)]);
         // After another table is chosen, a column shown then takes nothing
         // of the old table's entries.
+        let mut dialog = ImportMapping::open(parts.clone(), None).unwrap();
+        dialog.set_table(0xd00003);
+        dialog.order.charset = ImportCharset::Utf8;
+        dialog.reread().unwrap();
+        assert_eq!(dialog.map[..3], [None, None, None]);
+        let (order, _, _) = dialog.answer();
+        assert!(order.map.iter().all(|e| e.mapping == Mapping::DontImport));
+        // So does choosing the stored table again: its targets were cleared.
         let mut dialog = ImportMapping::open(parts, None).unwrap();
         dialog.set_table(0xd00003);
+        dialog.set_table(0xd00002);
         dialog.order.charset = ImportCharset::Utf8;
         dialog.reread().unwrap();
         assert_eq!(dialog.map[..3], [None, None, None]);
