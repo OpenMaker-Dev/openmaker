@@ -142,8 +142,12 @@ send. The URL goes to the application the system registers for
 `x-scheme-handler/mailto` (`xdg-mime`), launched from its desktop entry's
 command (not through `xdg-open`, which exits 0 when the handler fails and
 falls back to a browser when none is registered); on macOS `open`. The
-step waits up to 10 seconds: a non-zero exit is a refusal, and a handler
-still running then is the mail client, open with the message. On Windows
+step waits up to 10 seconds for the client's exit: zero is the message
+taken, non-zero a refusal, and a client that has not exited by then is
+unconfirmed, also 3. That client is left running, so its compose window
+may still appear after the step returned 3: a client launched fresh keeps
+running while the message is written, and only one already running
+answers within the wait. On Windows
 the step is 3 for now
 ([#609](https://github.com/OpenMaker-Dev/openmaker/issues/609)): its
 `url.dll` launcher reports no failure.

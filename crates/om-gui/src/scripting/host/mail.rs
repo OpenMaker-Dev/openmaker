@@ -12,16 +12,18 @@
 //! - Windows: refused (3) for now: `url.dll`'s protocol handler reports no
 //!   launch failure, and a reporting launcher is not built yet.
 //!
-//! The launched handler is waited for: a non-zero exit is its refusal, a
-//! zero exit (a client already running took the message) or one still
-//! running after the wait (the client itself, open with the draft) is
-//! taken.
+//! The launched handler is waited for, up to [`HANDOFF`]: a zero exit (a
+//! client already running took the message) is taken; a non-zero exit is
+//! its refusal; one still running then has not confirmed the handoff, and
+//! the step answers 3 (the owner's decision on #593), leaving the client
+//! running: its compose window may still appear after the step returns.
 
 use std::path::{Path, PathBuf};
 use std::process::{Command, Stdio};
 use std::time::{Duration, Instant};
 
-/// How long a handler may take to say whether it took the message.
+/// How long a handler may take to say whether it took the message; one
+/// that has not exited by then is unconfirmed.
 const HANDOFF: Duration = Duration::from_secs(10);
 
 /// Hand `url`, a `mailto:` URL, to the system's `mailto:` handler: Ok once
@@ -240,9 +242,10 @@ fn exec_argv(exec: &str, url: &str) -> Option<Vec<String>> {
     (!argv.is_empty() && !argv[0].is_empty()).then_some(argv)
 }
 
-/// Run `program` with `args` and wait up to `wait` for its exit: a
-/// non-zero exit is the handler's refusal; one still running then is the
-/// client itself with the message, left to run.
+/// Run `program` with `args` and wait up to `wait` for its exit: zero is
+/// taken, non-zero is the handler's refusal, and one still running then is
+/// unconfirmed, an error, though the process is left to run (and reaped
+/// when it ends).
 fn hand_off(program: &str, args: &[&str], wait: Duration) -> Result<(), String> {
     let mut child = Command::new(program)
         .args(args)
@@ -262,11 +265,16 @@ fn hand_off(program: &str, args: &[&str], wait: Duration) -> Result<(), String> 
             }
             Ok(None) if Instant::now() < deadline => std::thread::sleep(Duration::from_millis(20)),
             Ok(None) => {
-                // Reaped when it ends, not left behind as a zombie.
+                // Left to run (it may still open the draft), and reaped when
+                // it ends, not left behind as a zombie.
                 std::thread::spawn(move || {
                     let _ = child.wait();
                 });
-                return Ok(());
+                return Err(format!(
+                    "The mail client ({program}) did not confirm the message within {} \
+                     seconds; its window may still open.",
+                    wait.as_secs()
+                ));
             }
             Err(e) => {
                 return Err(format!(
@@ -296,9 +304,18 @@ mod tests {
         assert!(refused.contains("did not take"), "{refused}");
         let missing = hand_off("om-no-such-mail-client", &[url], HANDOFF).unwrap_err();
         assert!(missing.contains("could not be started"), "{missing}");
-        // One still running at the deadline is the client, open.
+        // An acknowledgment within the wait is taken; a failure after it,
+        // or no answer by then, is not confirmed: the step's error.
+        let quick = hand_off("sh", &["-c", "sleep 0.05; exit 0"], Duration::from_secs(5));
+        assert!(quick.is_ok(), "{quick:?}");
+        let late = hand_off(
+            "sh",
+            &["-c", "sleep 1; exit 42"],
+            Duration::from_millis(100),
+        );
+        assert!(late.unwrap_err().contains("did not confirm"));
         let open = hand_off("sh", &["-c", "sleep 5"], Duration::from_millis(50));
-        assert!(open.is_ok(), "{open:?}");
+        assert!(open.unwrap_err().contains("did not confirm"));
         let _ = std::fs::remove_dir_all(&dir);
     }
 
