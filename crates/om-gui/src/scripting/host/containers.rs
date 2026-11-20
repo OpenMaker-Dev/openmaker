@@ -20,8 +20,9 @@
 //! as a picture, 700 a file of the wrong type for Insert PDF or Insert
 //! Audio/Video, 2 a file over [`MAX_INSERT`].
 //!
-//! A step without a path asks for the file in an in-app dialog
-//! ([`Prompt::ContainerFile`]; a path, not the system's file panel), once
+//! A step without a path asks for the file ([`Prompt::ContainerFile`]): in
+//! the system's open panel on macOS (`crate::file_panel`), elsewhere and in
+//! the GUI tests in an in-app dialog that takes a path, once
 //! the field can take it: a stored container field of the window's own
 //! table in Browse mode, on a connection that may change the record. The
 //! dialog's answer applies only to what it was opened for
