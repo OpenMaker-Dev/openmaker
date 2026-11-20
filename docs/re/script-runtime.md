@@ -3778,12 +3778,12 @@ Steps
   rules, validation with the transaction's options and the lookups with
   what the transaction holds then, and writes it only when they change a
   cell (a later edit of the record makes it an ordinary staged write).
-  An Import Records into the record before the commit applies its rules
-  to the staged relookup as to any earlier edit (with auto-entry, the
-  lookup and validation then). With the import's auto-entry off the
-  relookup still waits for the commit, through any number of such
-  imports, and the cells the steps and imports set are edits there, so
-  the lookup does not write over a value an import mapped. Under "Skip auto-enter
+  An Import Records that would update a record whose relookup the
+  transaction holds is refused (3), so the transaction fails and reverts:
+  the import's options and values and the pending relookup cannot both be
+  kept, and OpenMaker writes neither half (its limit,
+  [#647](https://github.com/OpenMaker-Dev/openmaker/issues/647); FileMaker
+  copies the lookup at the step). Under "Skip auto-enter
   options" nothing is copied and nothing staged. A record refused is left
   as it was.
   Unmeasured, and OpenMaker's choices:

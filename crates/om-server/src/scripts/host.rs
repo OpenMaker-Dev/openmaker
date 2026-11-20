@@ -412,9 +412,9 @@ struct OpenRecord {
     /// later edit clears it): Commit Transaction writes it only when its
     /// rules change a cell.
     relooked: bool,
-    /// Relookup Field Contents marked its match field set and no rule pass
-    /// with auto-entry has performed the lookup yet: an import without
-    /// auto-entry leaves it for Commit Transaction's rules.
+    /// Relookup Field Contents staged the record in the transaction, its
+    /// lookup left for Commit Transaction's rules: an import does not
+    /// update it.
     relookup: bool,
 }
 
