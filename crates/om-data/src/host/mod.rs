@@ -453,6 +453,53 @@ impl<'a> FileCalc<'a> {
         Ok(value)
     }
 
+    /// `field` of `occurrence` as a calculation on `record` of `from` reads
+    /// `Occurrence::Field`: the first related record's value in the
+    /// relationship's order, read with `from`'s record as its parent (a
+    /// summary an unstored calculation reads summarizes the related set),
+    /// empty without a related record; `from == occurrence` reads the
+    /// record's own. For a host reader ordering records by it (a related
+    /// sort key), it fails rather than take a value OpenMaker could not
+    /// compute, as [`Self::read_field_computed`] does: 1224 while a read
+    /// waits, a failed read's error, and an unknown error (-1) for `?`.
+    pub fn read_related_computed(
+        &self,
+        from: u64,
+        record: u64,
+        occurrence: u64,
+        field: u64,
+    ) -> Result<Value, CalcError> {
+        let reads = data::Recorder::new(self.source);
+        let file = FileCalc {
+            source: &reads,
+            ..*self
+        };
+        let before = self.source.pending();
+        let value = {
+            let Some(_depth) = ReadDepth::enter() else {
+                return Err(CalcError::UNKNOWN);
+            };
+            let fallback = SessionInfo::default();
+            let session = file.session.unwrap_or(&fallback);
+            let (mut locals, mut globals) = (Variables::new(), Variables::new());
+            let mut host = FileHost::new(file, session, &mut locals, &mut globals);
+            let reference = Expr::Field(om_formula::Field::new(occurrence, field, true));
+            let value = evaluate(&reference, &mut host, &Context::record(from, record)).value;
+            file.record_reads(host.read_provenance());
+            value
+        };
+        if self.source.pending().reads > before.reads {
+            return Err(CalcError::from_code(1224).expect("nonzero"));
+        }
+        if let Some(error) = reads.failure() {
+            return Err(error);
+        }
+        if value.is_invalid() {
+            return Err(CalcError::UNKNOWN);
+        }
+        Ok(value)
+    }
+
     /// The records of `related` related to `record` of `occurrence`.
     pub fn related_records(
         &self,

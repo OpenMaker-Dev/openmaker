@@ -2892,12 +2892,6 @@ impl<'a> WorkerHost<'a> {
         }
     }
 
-    /// A spec's field as a field of the window's table.
-    fn spec_field(&mut self, field: om_data::specs::SpecField) -> Result<String, HostError> {
-        let field = self.spec_field_ref(field);
-        self.field_name(field)
-    }
-
     /// The window's layout name and the fields it shows with their names,
     /// alphabetically, for the Sort Records dialog's "Current Layout".
     fn sort_dialog_layout(&mut self) -> (String, Vec<(om_data::specs::SpecField, String)>) {
@@ -2958,13 +2952,25 @@ impl<'a> WorkerHost<'a> {
         let fields = sort
             .iter()
             .filter_map(|s| {
-                let field = match table {
-                    Some(table) => om_data::specs::SpecField {
+                // `Occurrence::Field`: a related sort field (sort_field_name).
+                let related = s.field.split_once("::").and_then(|(o, name)| {
+                    let schema = schema.as_deref()?;
+                    let o = schema.occurrence_named(o)?;
+                    let table = schema.table_of(o.id)?;
+                    Some(om_data::specs::SpecField {
+                        occurrence: Some(o.id),
+                        field: table.fields.values().find(|f| f.name == name)?.id,
+                        repetition: 1,
+                    })
+                });
+                let field = match (related, table) {
+                    (Some(field), _) => field,
+                    (None, Some(table)) => om_data::specs::SpecField {
                         occurrence,
                         field: table.fields.values().find(|f| f.name == s.field)?.id,
                         repetition: 1,
                     },
-                    None => layout.iter().find(|(_, name)| *name == s.field)?.0,
+                    (None, None) => layout.iter().find(|(_, name)| *name == s.field)?.0,
                 };
                 Some(om_data::specs::SortEntry {
                     field,
@@ -2987,9 +2993,9 @@ impl<'a> WorkerHost<'a> {
     /// left out), the language override, and a summary field's reordering
     /// (its kind and summarized field from the calculation schema).
     fn sort_fields(&mut self, spec: om_data::specs::SortSpec) -> Result<Vec<SortField>, HostError> {
-        // Check actual occurrences before spec_field can collapse another
-        // occurrence of the same table to a bare base-field name, and before
-        // resolving any value-list/summary options.
+        // Check actual occurrences before any value-list or summary option
+        // is resolved; sort_field_name keeps another occurrence of the same
+        // table qualified rather than as the record's own field.
         for entry in &spec.fields {
             self.check_sort_field(entry.field.occurrence, entry.field.repetition.into())?;
         }
@@ -3011,7 +3017,7 @@ impl<'a> WorkerHost<'a> {
                 None => None,
             };
             sort.push(SortField {
-                field: self.spec_field(entry.field)?,
+                field: self.sort_field_name(entry.field)?,
                 order: if entry.descending {
                     SortOrder::Descending
                 } else {
@@ -3026,28 +3032,58 @@ impl<'a> WorkerHost<'a> {
         Ok(sort)
     }
 
-    /// Sorts are bounded to the layout's own occurrence. A stored base-table
-    /// key (or none) still means that occurrence, as in spec_field. An
-    /// actual occurrence keeps its identity, a self join's included: a field
-    /// of another occurrence would be sorted by its first related record's
-    /// value (query-program.md 10, #47), which is not built, so the sort is
-    /// refused with 3 rather than sorted by the record's own field. Imported
-    /// tables also refuse repetitions past the first.
+    /// A stored base-table key (or none) means the layout's occurrence, as
+    /// in spec_field_ref. An actual occurrence keeps its identity, a self
+    /// join's included: a field of another occurrence of this file's tables
+    /// sorts by each record's first related record's value (Claris, "the
+    /// value in the first matching record"; client-ui.md, Sort Records;
+    /// #47), which the provider reads as `Rel::field` does. Refused with 3:
+    /// an occurrence the schema does not have, imported tables (on the
+    /// layout or related), and repetitions past the first of an imported
+    /// or related field.
     fn check_sort_field(&mut self, occurrence: Option<u64>, repetition: u32) -> HostResult {
         let base = self.occurrence();
         if let (Some(schema), Some(base)) = (self.schema(), base) {
-            let imported = schema
-                .table_of(base)
-                .is_some_and(|table| schema.table_context(table.id).is_some());
-            let other = occurrence.is_some_and(|occurrence| {
-                occurrence != base
-                    && (schema.occurrence(occurrence).is_some() || occurrence >= 0xd0_0000)
+            let imported = |occurrence: u64| {
+                schema
+                    .table_of(occurrence)
+                    .is_some_and(|table| schema.table_context(table.id).is_some())
+            };
+            let other = occurrence.filter(|occurrence| {
+                *occurrence != base
+                    && (schema.occurrence(*occurrence).is_some() || *occurrence >= 0xd0_0000)
             });
-            if other || imported && repetition > 1 {
+            let refused = match other {
+                Some(other) => {
+                    schema.occurrence(other).is_none()
+                        || imported(base)
+                        || imported(other)
+                        || repetition > 1
+                }
+                None => imported(base) && repetition > 1,
+            };
+            if refused {
                 return Err(ErrorCode(code::UNSUPPORTED).into());
             }
         }
         Ok(())
+    }
+
+    /// A sort entry's field: the window's table's field by name, or
+    /// `Occurrence::Field` for another occurrence ([`Self::check_sort_field`]),
+    /// which the provider sorts by each record's first related record's
+    /// value.
+    fn sort_field_name(&mut self, field: om_data::specs::SpecField) -> Result<String, HostError> {
+        let field = self.spec_field_ref(field);
+        let other = self.occurrence() != Some(field.occurrence)
+            && self
+                .schema()
+                .is_some_and(|schema| schema.occurrence(field.occurrence).is_some());
+        if other {
+            self.qualified_name(field)
+        } else {
+            self.field_name(field)
+        }
     }
 
     /// "Reorder based on summary field": the summary's function and the
@@ -3064,6 +3100,12 @@ impl<'a> WorkerHost<'a> {
             .filter(|o| schema.occurrence(*o).is_some())
             .or(self.s.file.occurrence)
             .ok_or(HostError::Error(ErrorCode::FIELD_MISSING))?;
+        // A summary of another occurrence, related or a self join's, would
+        // reorder by the related records' totals, which are not built: its
+        // field's name alone would name the layout table's field instead.
+        if Some(occurrence) != self.occurrence() {
+            return Err(HostError::Unsupported);
+        }
         let def = schema
             .field(occurrence, summary.field)
             .and_then(|f| f.summary)
@@ -5216,30 +5258,31 @@ impl FoundSets for WorkerHost<'_> {
             None => {
                 // Another table's stored order is not this table's.
                 let window = &self.s.file.window;
-                let spec = window
+                let last = window
                     .last_sort_spec
                     .clone()
-                    .filter(|(table, _)| *table == window.table)
-                    .map(|(_, spec)| spec);
+                    .filter(|last| last.table == window.table);
                 let sort = window.last_sort.clone();
-                // The order was accepted on a layout of this table, so a key
-                // of another occurrence of it named that layout's own field:
-                // it is this layout's own field now.
+                // The order was accepted on a layout of this table: a key of
+                // the occurrence it was accepted on named that layout's own
+                // field, so it is this layout's own field now. A key of
+                // another occurrence, a self join's included, stays related.
                 let own = self.occurrence();
-                let spec = match (spec, own, self.schema()) {
-                    (Some(mut spec), Some(own), Some(schema)) => {
-                        let table_of = |o: u64| schema.table_of(o).map(|t| t.id);
+                let spec = last.map(|last| {
+                    let mut spec = last.spec;
+                    if let (Some(own), Some(accepted)) = (own, last.occurrence) {
                         for entry in &mut spec.fields {
-                            if entry.field.occurrence.is_some_and(|o| {
-                                o != own && table_of(o).is_some() && table_of(o) == table_of(own)
-                            }) {
-                                entry.field.occurrence = Some(own);
+                            let fields =
+                                std::iter::once(&mut entry.field).chain(entry.summary.as_mut());
+                            for field in fields {
+                                if field.occurrence == Some(accepted) {
+                                    field.occurrence = Some(own);
+                                }
                             }
                         }
-                        Some(spec)
                     }
-                    (spec, _, _) => spec,
-                };
+                    spec
+                });
                 (sort, spec)
             }
         };
@@ -5272,7 +5315,12 @@ impl FoundSets for WorkerHost<'_> {
         self.commit_window()?;
         self.change(FoundSetChange::Sort(sort))?;
         let table = self.s.file.window.table;
-        self.s.file.window.last_sort_spec = spec.map(|spec| (table, spec));
+        let occurrence = self.occurrence();
+        self.s.file.window.last_sort_spec = spec.map(|spec| super::window::LastSortSpec {
+            table,
+            occurrence,
+            spec,
+        });
         self.after(TriggerEvent::RecordLoad, None);
         Ok(())
     }

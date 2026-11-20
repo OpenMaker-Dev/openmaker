@@ -146,7 +146,12 @@ impl NativeProvider {
             .filter(|_| saved.sorted)
             .and_then(|spec| self.saved_sort(occurrence, table, spec));
         // A sort the provider cannot apply leaves the records unsorted.
-        let sorted = sort.and_then(|sort| Some((self.sorted(table, &ids, &sort).ok()?, sort)));
+        let sorted = sort.and_then(|sort| {
+            Some((
+                self.sorted(Some(occurrence), table, &ids, &sort).ok()?,
+                sort,
+            ))
+        });
         let state = match sorted {
             Some((ids, sort)) => TableFound {
                 ids: Some(ids),
@@ -433,10 +438,10 @@ impl NativeProvider {
                     })?;
                     self.external.with_owner(route, |owner, wire| {
                         let native = owner.table_def(wire)?;
-                        owner.sorted(&native, &current, &translated)
+                        owner.sorted(None, &native, &current, &translated)
                     })?
                 } else {
-                    self.sorted(&table, &current, &sort)?
+                    self.sorted(Some(occurrence), &table, &current, &sort)?
                 };
                 state = TableFound {
                     ids: Some(ids),
@@ -1223,22 +1228,49 @@ impl NativeProvider {
     }
 
     /// `ids` of `table` in the order of `sort` (query-program.md 10.3):
-    /// each record's stored values, compared as FileMaker's sort keys.
+    /// each record's stored values, compared as FileMaker's sort keys. A
+    /// sort field named `Occurrence::Field` sorts the records of
+    /// `occurrence` (the layout's) by each one's first related record's
+    /// value ([`Self::related_sort_field`]).
     fn sorted(
         &mut self,
+        occurrence: Option<u64>,
         table: &Table,
         ids: &[u64],
         sort: &[SortField],
     ) -> Result<Vec<u64>, DataError> {
+        let missing = |name: &str| {
+            DataError::with_code(
+                code::FIELD_MISSING,
+                format!("The table has no field named {name:?}."),
+            )
+        };
+        let mut related = Vec::new();
         for field in sort {
-            let names =
-                std::iter::once(&field.field).chain(field.summary.as_ref().map(|s| &s.field));
-            for name in names {
-                if table.field_by_name(name).is_none() {
-                    return Err(DataError::with_code(
-                        code::FIELD_MISSING,
-                        format!("The table has no field named {name:?}."),
-                    ));
+            let own = table.field_by_name(&field.field).is_some();
+            if !own {
+                match occurrence {
+                    // A summary's reordering by a related field is not
+                    // built (#47).
+                    Some(_) if field.field.contains("::") && field.summary.is_some() => {
+                        return Err(DataError::with_code(
+                            code::UNSUPPORTED,
+                            format!(
+                                "Reordering by a summary is not supported for the related \
+                                 sort field {:?}.",
+                                field.field
+                            ),
+                        ));
+                    }
+                    Some(from) if field.field.contains("::") => {
+                        related.push(self.related_sort_field(from, &field.field)?);
+                    }
+                    _ => return Err(missing(&field.field)),
+                }
+            }
+            if let Some(summary) = &field.summary {
+                if table.field_by_name(&summary.field).is_none() {
+                    return Err(missing(&summary.field));
                 }
             }
         }
@@ -1253,13 +1285,347 @@ impl NativeProvider {
             let tree = download_tree(std::slice::from_ref(&data))?;
             rows.extend(om_hbam::record::records(&tree, table.id));
         }
-        let page = crate::record_page(rows, table, ids.len() as u64)?;
+        let mut page = crate::record_page(rows, table, ids.len() as u64)?;
+        if let (Some(from), false) = (occurrence, related.is_empty()) {
+            let records: Vec<u64> = page.records.iter().map(|r| r.id as u64).collect();
+            let values = self.related_sort_values(from, table.id, &records, &related)?;
+            for (record, values) in page.records.iter_mut().zip(values) {
+                record.values.extend(values);
+            }
+            page.fields
+                .extend(related.into_iter().map(|r| om_data::Field {
+                    name: r.name,
+                    kind: r.kind,
+                }));
+        }
         // Keep the found set's order for equal keys.
         let position = |id: i64| ids.iter().position(|i| *i as i64 == id);
         let mut records: Vec<&Record> = page.records.iter().collect();
         records.sort_by_key(|r| position(r.id));
         found::sort_rows_with_date_order(&page.fields, &mut records, sort, date_order);
         Ok(records.iter().map(|r| r.id as u64).collect())
+    }
+
+    /// `name` (`Occurrence::Field`) as a sort field of `from`'s records: a
+    /// field of an occurrence of this file's tables that a relationship
+    /// path reaches from `from`, a self join's included, sorted by each
+    /// record's first related record's value (Claris documents "the value in
+    /// the first matching record"; client-ui.md, Sort Records). A related
+    /// file's table, an unrelated occurrence, a summary or a container
+    /// field is refused (3).
+    fn related_sort_field(&mut self, from: u64, name: &str) -> Result<RelatedSort, DataError> {
+        let missing = || {
+            DataError::with_code(
+                code::FIELD_MISSING,
+                format!("The file has no field named {name:?}."),
+            )
+        };
+        let unsupported = |reason: &str| {
+            DataError::with_code(
+                code::UNSUPPORTED,
+                format!("Sorting by {name:?} is not supported: {reason}"),
+            )
+        };
+        let (occurrence_name, field_name) = name.split_once("::").ok_or_else(missing)?;
+        let occurrence = self
+            .catalog
+            .table_occurrences
+            .iter()
+            .find(|o| o.name == occurrence_name)
+            .ok_or_else(missing)?;
+        let table = match occurrence.reference() {
+            Some((0, table)) => table,
+            Some(_) => return Err(unsupported("its table is in a related file.")),
+            None => return Err(missing()),
+        };
+        let occurrence = occurrence.id;
+        let field = self
+            .catalog
+            .table(table)
+            .and_then(|t| t.field_by_name(field_name))
+            .ok_or_else(missing)?;
+        if !matches!(
+            field.kind,
+            om_hbam::FieldKind::Normal | om_hbam::FieldKind::Calculation
+        ) || field.data_type == om_hbam::DataType::Container
+        {
+            return Err(unsupported(
+                "only a related text, number, date or time field sorts.",
+            ));
+        }
+        let (id, kind) = (field.id, sort_kind(field.data_type));
+        if occurrence != from {
+            let schema = self.calc_schema_cached()?;
+            let path = schema
+                .path(from, occurrence)
+                .ok_or_else(|| unsupported("its occurrence is not related to the layout's."))?;
+            // The relationships' own sort reads unstored calculations and
+            // summaries as empty (`om_data::host::sort_records`): a first
+            // related record ordered by one would be guessed.
+            let computed = |hop: &Hop| {
+                hop.sort.as_ref().is_some_and(|spec| {
+                    spec.fields.iter().any(|entry| {
+                        let occurrence = entry.field.occurrence.unwrap_or(hop.to);
+                        entry.summary.is_some()
+                            || schema
+                                .field(occurrence, entry.field.field)
+                                .is_none_or(|def| {
+                                    def.is_unstored_calculation()
+                                        || def.class == om_data::host::FieldClass::Summary
+                                })
+                    })
+                })
+            };
+            if path.iter().any(computed) {
+                return Err(unsupported(
+                    "a relationship on the way sorts its records by a calculation or summary \
+                     OpenMaker does not compute there.",
+                ));
+            }
+        }
+        Ok(RelatedSort {
+            name: name.to_owned(),
+            occurrence,
+            field: id,
+            kind,
+        })
+    }
+
+    /// Each of `records`' value of each `related` sort field, as `Rel::field`
+    /// reads it: its first related record's, in the relationship's order
+    /// (file-metadata.md 4.3; without a relationship sort the first in
+    /// creation order, calc-values.md 12.1), empty without one.
+    fn related_sort_values(
+        &mut self,
+        from: u64,
+        table: u64,
+        records: &[u64],
+        related: &[RelatedSort],
+    ) -> Result<Vec<Vec<Option<String>>>, DataError> {
+        // An occurrence or layout the schema had not read yet: read, then
+        // the values again (as `filter_evaluated`).
+        let mut asked = BTreeSet::new();
+        loop {
+            let (values, needs) = self.related_sort_values_once(from, table, records, related)?;
+            if self.grow_for(needs, &mut asked)? {
+                continue;
+            }
+            return values.ok_or_else(|| {
+                DataError::with_code(
+                    om_data::rules::error::UNAVAILABLE,
+                    "A related sort field's table could not be read. The records were not sorted.",
+                )
+            });
+        }
+    }
+
+    /// [`Self::related_sort_values`] once, with what its reads asked for;
+    /// no values while a read waits for the schema (1224).
+    #[allow(clippy::type_complexity)]
+    fn related_sort_values_once(
+        &mut self,
+        from: u64,
+        table: u64,
+        records: &[u64],
+        related: &[RelatedSort],
+    ) -> Result<(Option<Vec<Vec<Option<String>>>>, crate::calc::SchemaNeeds), DataError> {
+        let schema = self.calc_schema_cached()?;
+        let session_info = self.session_info();
+        let today = om_data::host::session::today(session_info.utc_offset);
+        let globals = self.desktop_globals(&schema);
+        let session = self
+            .session
+            .as_mut()
+            .ok_or_else(|| DataError::new("No hosted file is open."))?;
+        let source = NativeSource::new(session, &schema, today)
+            .with_fonts(&self.calc.fonts)
+            .with_calculation_session(session_info.clone())
+            .with_session_globals(globals)
+            .with_external(&self.external)
+            .with_related_limit(RELATED_SORT_IDS);
+        source.prefetch_records(table, records);
+        let file = FileCalc::new(&schema, &source, today).with_session(&session_info);
+        let cx = Ctx::new(&schema.locale, today);
+        // 1224: the schema is still reading an occurrence on the way.
+        const PENDING: i32 = 1224;
+        let mut values = Vec::with_capacity(records.len());
+        let mut pending = false;
+        // A value that could not be computed, and its sort field's name.
+        let mut failed = None;
+        'records: for &record in records {
+            let mut row = Vec::with_capacity(related.len());
+            for sort in related {
+                match file.read_related_computed(from, record, sort.occurrence, sort.field) {
+                    Ok(value) => {
+                        let text = sort_text(&value, &cx);
+                        row.push((!text.is_empty()).then_some(text));
+                    }
+                    Err(error) if error.code() == PENDING => {
+                        pending = true;
+                        break 'records;
+                    }
+                    Err(error) => {
+                        failed = Some((&sort.name, error));
+                        break 'records;
+                    }
+                }
+                // Past OpenMaker's limit on the related records the source
+                // holds (`with_related_limit`), the read fails as it asks
+                // for the set that would pass it, and so does the sort.
+            }
+            values.push(row);
+        }
+        // A record or table that could not be read fails the sort rather
+        // than sorting it as empty.
+        if let Some(error) = source.take_failure() {
+            return Err(error);
+        }
+        let needs = source.take_needs();
+        let asked = !needs.layouts.is_empty() || !needs.occurrences.is_empty();
+        match failed {
+            // A read that failed while the schema still reads an
+            // occurrence or layout it asked for (a related file not opened
+            // yet): read them, then the values again.
+            Some(_) if asked => Ok((None, needs)),
+            // A failed read, or a calculation that is `?`: its records
+            // cannot be placed.
+            Some((name, error)) => Err(DataError::with_code(
+                code::UNSUPPORTED,
+                format!(
+                    "A value of {name:?} could not be computed (error {}). The records were \
+                     not sorted.",
+                    error.code()
+                ),
+            )),
+            None => Ok(((!pending).then_some(values), needs)),
+        }
+    }
+}
+
+/// A sort field of a related occurrence ([`NativeProvider::related_sort_field`]).
+struct RelatedSort {
+    /// `Occurrence::Field`, the sort field's name.
+    name: String,
+    occurrence: u64,
+    field: u64,
+    kind: om_data::FieldKind,
+}
+
+/// The related record ids a related sort's source may hold, from every
+/// relationship its reads follow, calculations' included (8 bytes each, 64
+/// MiB; [`NativeSource::with_related_limit`]): OpenMaker's limit, as a
+/// client find's duplicates have one ([`CLIENT_FIND_BUDGET`]).
+const RELATED_SORT_IDS: usize = 8 << 20;
+
+/// `value` as text the desktop's sort reads back as the same value
+/// (`found::sort_rows_with_date_order`), whatever the file's formats: a
+/// number written out in full with `.` (its reader stops at an exponent
+/// and takes only `.`), a time, and a timestamp's time, with `:` and its
+/// fraction, and a date, and a timestamp's date, with `/` in the file's
+/// date order.
+fn sort_text(value: &om_data::calc::Value, cx: &Ctx) -> String {
+    use om_data::calc::Value;
+    match value {
+        Value::Number(n) | Value::NumberText(n, _) => plain_number(&n.to_text_with('.')),
+        Value::Time(t) => clock(t.micros()),
+        Value::Date(d) | Value::DateText(d, _) => date_text(*d, cx.locale.date_order),
+        Value::Timestamp(t) => format!(
+            "{} {}",
+            date_text(t.date(), cx.locale.date_order),
+            clock(t.time_of_day().micros())
+        ),
+        other => other.to_text(cx).into_string(),
+    }
+}
+
+/// A date in the file's date order, with `/` and a four-digit year, as the
+/// sort's date reader takes it whatever separator the file's locale uses.
+fn date_text(date: om_data::calc::Date, order: DateOrder) -> String {
+    let (year, month, day) = date.ymd();
+    match order {
+        DateOrder::MonthDayYear => format!("{month}/{day}/{year:04}"),
+        DateOrder::DayMonthYear => format!("{day}/{month}/{year:04}"),
+        DateOrder::YearMonthDay => format!("{year:04}/{month}/{day}"),
+    }
+}
+
+/// A time of `micros`: `h:mm:ss`, then its fraction of a second.
+fn clock(micros: i128) -> String {
+    let sign = if micros < 0 { "-" } else { "" };
+    let micros = micros.unsigned_abs();
+    let seconds = micros / 1_000_000;
+    let mut text = format!(
+        "{sign}{}:{:02}:{:02}",
+        seconds / 3600,
+        seconds / 60 % 60,
+        seconds % 60
+    );
+    let fraction = micros % 1_000_000;
+    if fraction != 0 {
+        text.push_str(format!(".{fraction:06}").trim_end_matches('0'));
+    }
+    text
+}
+
+/// FileMaker's number text written out in full: `1.0E+9` is `1000000000`,
+/// `1.5E-10` is `.00000000015`. Text without an exponent, or with one past
+/// any number's, is returned as it is.
+fn plain_number(text: &str) -> String {
+    let Some((mantissa, exponent)) = text.split_once('E') else {
+        return text.to_owned();
+    };
+    let Ok(exponent) = exponent.parse::<i64>() else {
+        return text.to_owned();
+    };
+    if exponent.unsigned_abs() > 10_000 {
+        return text.to_owned();
+    }
+    let (sign, mantissa) = match mantissa.strip_prefix('-') {
+        Some(mantissa) => ("-", mantissa),
+        None => ("", mantissa),
+    };
+    let (integer, fraction) = mantissa.split_once('.').unwrap_or((mantissa, ""));
+    let digits = format!("{integer}{fraction}");
+    // Where the point falls in `digits`.
+    let point = integer.len() as i64 + exponent;
+    let (integer, fraction) = if point <= 0 {
+        (
+            String::new(),
+            "0".repeat(point.unsigned_abs() as usize) + &digits,
+        )
+    } else if point as usize >= digits.len() {
+        (
+            digits.clone() + &"0".repeat(point as usize - digits.len()),
+            String::new(),
+        )
+    } else {
+        (
+            digits[..point as usize].to_owned(),
+            digits[point as usize..].to_owned(),
+        )
+    };
+    let (integer, fraction) = (
+        integer.trim_start_matches('0'),
+        fraction.trim_end_matches('0'),
+    );
+    match (integer.is_empty(), fraction.is_empty()) {
+        (true, true) => "0".to_owned(),
+        (_, true) => format!("{sign}{integer}"),
+        (true, false) => format!("{sign}.{fraction}"),
+        (false, false) => format!("{sign}{integer}.{fraction}"),
+    }
+}
+
+/// The kind a field of `data_type` sorts as.
+fn sort_kind(data_type: om_hbam::DataType) -> om_data::FieldKind {
+    use om_data::FieldKind;
+    match data_type {
+        om_hbam::DataType::Number => FieldKind::Number,
+        om_hbam::DataType::Date => FieldKind::Date,
+        om_hbam::DataType::Time => FieldKind::Time,
+        om_hbam::DataType::Timestamp => FieldKind::Timestamp,
+        om_hbam::DataType::Container => FieldKind::Container,
+        _ => FieldKind::Text,
     }
 }
 
@@ -1518,6 +1884,34 @@ pub(crate) fn query_error(slots: &[u8]) -> Option<u16> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// A related number or time sorts by its value whatever the file's
+    /// formats: FileMaker's scientific text written out in full (the sort's
+    /// number reader stops at an exponent), times with `:` and their
+    /// fraction (#47).
+    #[test]
+    fn related_sort_values_read_back_as_their_values() {
+        for (text, plain) in [
+            ("1.0E+9", "1000000000"),
+            ("-1.25E+10", "-12500000000"),
+            ("1.0E-10", ".0000000001"),
+            ("-9.9E-10", "-.00000000099"),
+            ("1.5", "1.5"),
+            ("1.234567890000000000005E+20", "123456789000000000000.5"),
+        ] {
+            assert_eq!(plain_number(text), plain, "{text}");
+        }
+        assert_eq!(
+            clock(9 * 3600 * 1_000_000 + 5 * 60 * 1_000_000 + 250_000),
+            "9:05:00.25"
+        );
+        assert_eq!(clock(-3600 * 1_000_000), "-1:00:00");
+        assert_eq!(clock(26 * 3600 * 1_000_000), "26:00:00");
+        // Dates with `/` in the file's order, whatever its separator.
+        let date = om_data::calc::Date::from_ymd(2025, 12, 1).unwrap();
+        assert_eq!(date_text(date, DateOrder::DayMonthYear), "1/12/2025");
+        assert_eq!(date_text(date, DateOrder::YearMonthDay), "2025/12/1");
+    }
 
     /// Repetition n of field F is the cell `F * 256 + n`, F from the file
     /// (#388): the largest field id whose repetitions have keys reads its
