@@ -1586,7 +1586,12 @@ The Objects pane is 220 pt wide, lists the layout's objects front to back,
 filters by kind or known field name, and selects and reveals the matching
 canvas object. Inspector tabs are interactive; Position shows real bounds
 with pt, in and cm conversion, and Data shows a known field binding and
-type and the field's control style and value list. Selection resets when the layout geometry or the file changes. These
+type and the field's control style and value list. A field object shows
+its field's name on the canvas, and a field another occurrence shows (a
+portal's, say) `::Field`, FileMaker Pro's Layout mode default with View >
+Show > Sample Data off (not compared with a capture). The Objects pane
+and the Inspector name that field `Occurrence::Field`. A field of a
+related file that is not open shows its object kind. Selection resets when the layout geometry or the file changes. These
 dimensions and interactions are OpenMaker's choices: FileMaker's runtime
 behavior was not observed (re/client-ui.md, Unknowns).
 
