@@ -485,23 +485,42 @@ Open items:
     limit is unknown.
 - Steps: the step catalog is FileMaker Pro 26.1.1's (valid ids below 251).
   Its new steps 249 Replace Field Contents by Name and 250 Set Variable by
-  Name have no parameter rows yet, are not offered in the Script Workspace
-  or as a button's single step, are refused when pasted or authored as
-  text or XML, and fail with error 3 when a desktop script holds one
-  ([#349](https://github.com/OpenMaker-Dev/openmaker/issues/349)); the
-  unnamed id 248 fails with error 3 too, as a valid id without a handler
-  [I]. OpenMaker Server's scripts keep FileMaker Server 26.0.3's table
-  until FileMaker Server 26.1.1 ships: ids from 248 fail with error 4, and
-  Save a Copy as Add-on Package (96) with error 3 without evaluating its
-  options.
+  Name ([#349](https://github.com/OpenMaker-Dev/openmaker/issues/349)) are
+  stored as its binaries write them (script-steps.md 12.4), edited in the
+  Script Workspace, and run as Replace Field Contents and Set Variable do
+  with the field found as Set Field By Name finds its target and the
+  variable named by the calculation in slot 3. Their step text, the
+  errors for a name that finds nothing (102) or is not a variable's (5),
+  and the order the calculations are evaluated in are OpenMaker's
+  inference: no step saved or run by FileMaker Pro 26.1.1 has been
+  compared. On the desktop the unnamed id 248 fails with error 3: 26.1.1's
+  step table gives it no client. OpenMaker Server's scripts keep FileMaker
+  Server 26.0.3's table until FileMaker Server 26.1.1 ships: ids from 248,
+  these two steps among them, fail with error 4, and Save a Copy as Add-on
+  Package (96) with error 3 without evaluating its options.
+- Replace Field Contents and Replace Field Contents by Name: serial numbers
+  with "Use Entry Options" (`[00 5, 03]`, the field's own serial settings)
+  fail with error 3 before any record is written; the field's settings are
+  not read there. Other serial numbers count up the initial value's last
+  run of digits, keeping its width, on every host; one past an `i128`
+  fails with error 3.
+- On the desktop Replace Field Contents and Replace Field Contents by Name
+  refuse with error 3 a field reached through a relationship from the
+  layout's occurrence, a self-join's too, whose related records Set Field
+  would write; they replaced the found set's own field instead. Inside a
+  transaction this refusal and Use Entry Options' are the transaction's
+  error, as other writes OpenMaker cannot make are (script-runtime.md
+  8.4), where FileMaker would have written. Names given to Set Field By
+  Name and Replace Field Contents by Name match without regard to case,
+  as on the server.
 - Scripts: desktop steps still missing include the account steps
   ([#83](https://github.com/OpenMaker-Dev/openmaker/issues/83)) and the PDF
   steps other than Save Records as PDF
   ([#96](https://github.com/OpenMaker-Dev/openmaker/issues/96)). Set
   Web Viewer and Perform JavaScript in Web Viewer need a native web viewer
   (the `web-viewer` feature on Linux, under X11 or, on a Wayland session,
-  XWayland; Browse in Form or List view;
-  layout-model.md 9.6); elsewhere
+  XWayland, and on macOS; Browse in Form or List view; layout-model.md
+  9.6); elsewhere
   they fail with 116 (no live web
   viewer) rather than succeed. The error codes for a page still loading (5),
   a missing or throwing function (5) and a viewer that is not shown (116)
@@ -529,6 +548,18 @@ Open items:
   reads the catalog back (desktop-client.md, Script Workspace).
 - Server: auto-enter calculations are not recomputed after a schema
   change (by design, as FileMaker). Schedules run (#11).
+  - Account steps: Change Password sets the password of the account the
+    session logged in with (found by its record key, so a rename does not
+    redirect it), as FileMaker's `DoChangePassword` and `SetPassword` do
+    (re/local-files.md 2.4), with their errors. A step with full access
+    skips the set's checks. With its dialog, for [Guest] or for an
+    account of another kind it fails with 3. It holds the account
+    catalog's lock while it writes (310 when another user holds it,
+    inferred), raises the catalog's modification count and tells the
+    other clients. It does not rewrite an account whose stored checksum
+    OpenMaker does not reproduce (3). Add Account, Delete Account, Reset
+    Account Password, Enable Account and Re-Login fail with error 3
+    ([#83](https://github.com/OpenMaker-Dev/openmaker/issues/83)).
   - The recompute after a schema change reads container inputs from the
     table's library, computes repeating calculations in each repetition,
     and answers Design functions as FileMaker Server's file context does

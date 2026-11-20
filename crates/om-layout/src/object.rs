@@ -205,6 +205,13 @@ impl FieldObject {
         self.flags & 0x800 != 0
     }
 
+    /// A checkbox set's "Display single checkbox without value" (FileMaker
+    /// Pro 26.1): flag `0x400000` on display type 3 (layout-model.md 5.4.1,
+    /// read from 26.1.1's binaries).
+    pub fn single_unlabeled_checkbox(&self) -> bool {
+        self.display_type == 3 && self.flags & 0x40_0000 != 0
+    }
+
     /// The Inspector's "Go to next object using" Return key: flag `0x40`
     /// (layout-model.md 5.4.1).
     pub fn next_object_on_return(&self) -> bool {

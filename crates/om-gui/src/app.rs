@@ -5866,6 +5866,17 @@ impl OpenMakerApp {
                         self.related_login = None;
                         self.related_asked.remove(&(self.w.file_id, file));
                         self.request(ctx, Request::CalcSchema);
+                        // Layout mode names the related file's fields from
+                        // the schema built again: the shown layout's
+                        // geometry is read again after it.
+                        let shown = self.w.session.as_ref().and_then(|s| {
+                            matches!(s.geometry, crate::session::Geometry::Loaded(_))
+                                .then_some(s.layout)
+                                .flatten()
+                        });
+                        if let Some(layout_id) = shown {
+                            self.request(ctx, Request::LayoutGeometry { layout_id });
+                        }
                     }
                     // A refusal (one Login, noted for the session): the
                     // dialog stays, for another account or Cancel.
@@ -6057,6 +6068,7 @@ impl eframe::App for OpenMakerApp {
     fn ui(&mut self, ui: &mut Ui, frame: &mut eframe::Frame) {
         self.native_parent = crate::web_viewer::NativeParent::of(frame);
         self.show(ui);
+        self.web.flush(frame);
     }
 }
 
