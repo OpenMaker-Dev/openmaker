@@ -457,12 +457,19 @@ removes the account's member and, from the catalog's index (3), its name
 list entry, its place in the display order (the order numbered again
 from 1) and its `07` entry, and takes one from the count; `00` keeps the
 last key issued, and the index is stamped. A name no account has gives
-213 (inferred). It does not delete a [Full Access] account (3, OpenMaker's
-choice: FileMaker's rule for the step is not observed, and a file must
-keep an account that can manage it). An index that does not hold the
-account as 3 describes (one name list entry and one place naming it, a
-four-byte count equal to the number of accounts) is not rewritten (3).
-The header's account name `10` is left as it is.
+213 (inferred). As Claris documents for the step, it does not delete a
+[Full Access] account, nor an OAuth or Claris ID one; [Guest] (key `01`)
+is not deleted either. Each of these gives 3 [I: the codes are not
+observed]. The index must be one OpenMaker reads as 3 describes: its
+name list and its display order (positions 1 to n) each name every
+account once, the count is the number of accounts, and the account's
+`07` entry, if any, is an empty leaf. Otherwise nothing is written (3),
+so no data it does not read is dropped. The account's own checksum is not
+checked, since nothing of it is written. The header's `10` is left as it
+is. It is the account File Options' "Log in using" names, signed in with
+the password the header keeps in `06` (3.1), so when it names the deleted
+account, the file's automatic sign-in is left naming an account that no
+longer exists [I: what FileMaker Pro does with it then is not observed].
 
 Add Account is not run: the step's privilege set is an inline key in
 `mReserved` whose layout is only inferred (script-steps.md 4.1), and

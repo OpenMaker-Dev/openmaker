@@ -492,9 +492,9 @@ Open items:
     Enable Account gives 3 for OAuth and Claris ID accounts and rather
     than make a [Full Access] account inactive. Delete Account removes an
     account and its entries in the account catalog's index; it gives 3
-    for a [Full Access] account. None of
-    them rewrites an account whose stored checksum OpenMaker does not
-    reproduce (3). Add Account and Re-Login fail with error 3
+    for [Guest] and for [Full Access], OAuth and Claris ID accounts. The
+    steps that rewrite an account (all but Delete Account) leave alone one
+    whose stored checksum OpenMaker does not reproduce (3). Add Account and Re-Login fail with error 3
     ([#83](https://github.com/OpenMaker-Dev/openmaker/issues/83)).
   - The recompute after a schema change reads container inputs from the
     table's library. It still skips repeating calculations, container

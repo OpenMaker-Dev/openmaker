@@ -1440,6 +1440,7 @@ fn account_steps_reset_passwords_and_enable_accounts() {
 /// place in the display order (numbered again from 1), its `07` entry and
 /// one from the count, while the last key issued stays. A [Full Access]
 /// account is not deleted (3) and a missing one is 213 (inferred) (#83).
+/// Admin, second in the display order, becomes first.
 #[test]
 fn delete_account_removes_the_account_and_its_index_entries() {
     use fixture::{calc, exit_with, on, script, set_variable};
@@ -1462,7 +1463,8 @@ fn delete_account_removes_the_account_and_its_index_entries() {
         ],
     )];
     // The account catalog's index as FileMaker keeps it (local-files.md
-    // 3), for Admin (key 2) and Clerk (key 3).
+    // 3), for Admin (key 2) and Clerk (key 3), Clerk first in the display
+    // order so that Admin moves up to its place.
     let mut root = fixture::tree(&scripts, true);
     let leaf = |value: Vec<u8>| om_hbam::OwnedNode::leaf(Vec::new(), value);
     let index: [&[u8]; 3] = [&[23], &[1], &[1]];
@@ -1472,7 +1474,7 @@ fn delete_account_removes_the_account_and_its_index_entries() {
         path
     }
     root.put(&at(&[&[0]]), leaf(vec![1, 3]));
-    for (position, key, name) in [(1u32, 2u8, ACCOUNT), (2, 3, CLERK)] {
+    for (position, key, name) in [(2u32, 2u8, ACCOUNT), (1, 3, CLERK)] {
         let listed = om_data::field_catalog::listed_key(name).unwrap();
         root.put(&at(&[&[1], &listed]), leaf(vec![1, key]));
         root.put(&at(&[&[3], &position.to_be_bytes()]), leaf(vec![1, key]));

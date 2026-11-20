@@ -737,10 +737,11 @@ impl Hosted {
     /// place in the display order (written again from 1) and its `07`
     /// entry, and one from the count; the last key issued stays. One
     /// commit, saved before this returns, with the index stamped when
-    /// `stamp` is given. A [Full Access] account is not deleted (3,
-    /// OpenMaker's choice, so that no file loses its last one). An index
-    /// that does not hold the account as described is not rewritten. The
-    /// caller has checked that the session may manage accounts.
+    /// `stamp` is given. As Claris documents, a [Full Access] account is
+    /// not deleted, nor an OAuth or Claris ID one; [Guest] is not either
+    /// (all 3, inferred). An index that does not hold the accounts as
+    /// [`index_without`] reads it is not rewritten. The caller has checked
+    /// that the session may manage accounts.
     pub fn delete_account(
         &self,
         name: &str,
@@ -749,7 +750,17 @@ impl Hosted {
         let mut store = self.write_store();
         let record =
             find_account(&store, AccountRef::Name(name)).ok_or(AccountEditError::Missing)?;
-        if account_set(&crate::store::view(&record)) == Some(FULL_ACCESS_SET) {
+        let view = crate::store::view(&record);
+        // [Guest] (key 1) is the file's own; OAuth and Claris ID
+        // identities are not the step's (Claris, "Delete Account").
+        let deletable = matches!(
+            AccountKind::decode(member(&view, ACCOUNT_KIND)),
+            Some(AccountKind::FileMakerFile | AccountKind::External(1))
+        );
+        if record.segment == [1] || !deletable {
+            return Err(AccountEditError::Unsupported);
+        }
+        if account_set(&view) == Some(FULL_ACCESS_SET) {
             return Err(AccountEditError::FullAccess);
         }
         let mut accounts = store
@@ -759,8 +770,13 @@ impl Hosted {
         let index = store.node(&ACCOUNT_INDEX_PATH).cloned().ok_or_else(|| {
             AccountEditError::Unwritten("the account catalog has no index".into())
         })?;
-        let mut index = index_without(index, &record.segment, accounts.children.len())
-            .map_err(AccountEditError::Unwritten)?;
+        let members: Vec<Vec<u8>> = accounts
+            .children
+            .iter()
+            .map(|a| a.segment.clone())
+            .collect();
+        let mut index =
+            index_without(index, &record.segment, &members).map_err(AccountEditError::Unwritten)?;
         if let Some(stamp) = stamp {
             index = crate::authoring::stamped(index, stamp.user, stamp.account, stamp.time);
         }
@@ -1024,7 +1040,8 @@ pub enum AccountEditError {
     /// More than 100 characters (11).
     TooLong,
     /// An account the step does not change: one an OAuth identity
-    /// provider or Claris ID signs in (3, inferred).
+    /// provider or Claris ID signs in, or [Guest] for Delete Account (3,
+    /// inferred).
     Unsupported,
     /// Making a [Full Access] account inactive (3, inferred: Claris
     /// documents that Enable Account does not; its code is not observed),
@@ -1112,33 +1129,51 @@ fn account_set<'a>(view: &om_hbam::Node<'a>) -> Option<&'a [u8]> {
 /// The account catalog's index `index` without account `key`
 /// (local-files.md 3): its name list entry and its place in the display
 /// order removed, the order numbered again from 1, its `07` entry removed
-/// and the count, which must be `accounts` (the members before the
-/// deletion), one less. Why not, when the index does not hold the account
-/// that way: one name list entry and one place naming it, positions and
-/// a count of four bytes.
+/// and the count one less. Why not, when the index is not one this
+/// server reads as FileMaker keeps it for `members` (the accounts before
+/// the deletion): its name list and its display order (positions 1 to n
+/// as four bytes) must each name every member once, as a key string; the
+/// count must be the number of members; and the account's `07` entry, if
+/// it has one, must be an empty leaf, so nothing unread is dropped.
 fn index_without(
     mut index: om_hbam::OwnedNode,
     key: &[u8],
-    accounts: usize,
+    members: &[Vec<u8>],
 ) -> Result<om_hbam::OwnedNode, String> {
-    let mut named = vec![key.len() as u8];
-    named.extend_from_slice(key);
+    let key_string = |key: &[u8]| {
+        let mut named = vec![key.len() as u8];
+        named.extend_from_slice(key);
+        named
+    };
+    let mut wanted: Vec<Vec<u8>> = members.iter().map(|m| key_string(m)).collect();
+    wanted.sort();
+    let names_each_member = |node: &om_hbam::OwnedNode| {
+        let mut named: Vec<Vec<u8>> = node
+            .children
+            .iter()
+            .map(|n| n.value.clone().unwrap_or_default())
+            .collect();
+        named.sort();
+        named == wanted && node.children.iter().all(|n| n.children.is_empty())
+    };
+    let named = key_string(key);
     let names = |n: &om_hbam::OwnedNode| n.value.as_deref() == Some(&named[..]);
     let list = index.child_mut(&[1]).ok_or("the index has no name list")?;
-    if list.children.iter().filter(|n| names(n)).count() != 1 {
-        return Err("its name list does not name the account once".into());
+    if !names_each_member(list) {
+        return Err("its name list does not name each account once".into());
     }
     list.children.retain(|n| !names(n));
     let order = index
         .child_mut(&[3])
         .ok_or("the index has no display order")?;
-    if order.children.iter().any(|n| n.segment.len() != 4)
-        || order.children.iter().filter(|n| names(n)).count() != 1
-    {
-        return Err("its display order does not hold the account once".into());
+    let contiguous = order
+        .children
+        .iter()
+        .enumerate()
+        .all(|(i, n)| u32::try_from(i + 1).is_ok_and(|p| n.segment == p.to_be_bytes()));
+    if !contiguous || !names_each_member(order) {
+        return Err("its display order does not place each account once, from 1".into());
     }
-    // In position order: the children are kept sorted by segment, and a
-    // big-endian u32 sorts as its number.
     order.children.retain(|n| !names(n));
     for (position, place) in order.children.iter_mut().enumerate() {
         place.segment = u32::try_from(position + 1)
@@ -1147,6 +1182,11 @@ fn index_without(
             .to_vec();
     }
     if let Some(cache) = index.child_mut(&[7]) {
+        if let Some(entry) = cache.child(key) {
+            if !entry.children.is_empty() || entry.value.as_deref().is_some_and(|v| !v.is_empty()) {
+                return Err("its 07 entry holds data this server does not read".into());
+            }
+        }
         cache.children.retain(|n| n.segment != key);
     }
     let count = index
@@ -1155,7 +1195,7 @@ fn index_without(
         .and_then(|v| <[u8; 4]>::try_from(v).ok())
         .map(u32::from_be_bytes)
         .ok_or("the index has no count")?;
-    if usize::try_from(count).ok() != Some(accounts) || count == 0 {
+    if usize::try_from(count).ok() != Some(members.len()) || count == 0 {
         return Err("its count is not the number of accounts".into());
     }
     index.set_child(om_hbam::OwnedNode::leaf(
