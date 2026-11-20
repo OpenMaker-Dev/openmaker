@@ -881,10 +881,15 @@ pointer in window points, so a zoomed drag jumped). While zoomed, Table view's s
 touch drag, which egui would move by the zoom's multiple of the finger's
 way; the wheel and the scroll bars still scroll them.
 
+Set Zoom Level with Lock on disables View > Actual Size, Zoom In and
+Zoom Out and their shortcuts for that window. A script can still set the
+level, and Lock off restores those controls. A new window (New Window,
+the step or Window > New Window) takes the lock with the zoom of the window
+it opens from [I: inheritance has not been compared with FileMaker Pro].
+
 Limits: Layout mode, generic Form fallbacks and focused field editors in
 Form and List view are not zoomed (Preview scales its paper:
-[preview.md](preview.md)), and Set Zoom Level's lock option is not enforced
-([#36](https://github.com/OpenMaker-Dev/openmaker/issues/36)). Scroll bars
+[preview.md](preview.md); [#36](https://github.com/OpenMaker-Dev/openmaker/issues/36)). Scroll bars
 inside the zoomed layer (List and Table view's) scale with it; FileMaker Pro's
 keep their size [I: unmeasured]. How FileMaker Pro scales Table view's
 header and row heights is unmeasured. A Table view column is resized from
