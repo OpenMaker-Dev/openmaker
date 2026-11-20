@@ -25,10 +25,16 @@ use om_scripts::ScriptStep;
 const LAYOUT: u32 = fixture::LAYOUT as u32;
 
 fn host(tag: &str) -> hosted::Hosted {
+    host_with(tag, |_| {})
+}
+
+/// [`host`]'s file, changed by `change` first.
+fn host_with(tag: &str, change: impl FnOnce(&mut om_hbam::OwnedNode)) -> hosted::Hosted {
     // Delete Record/Request [With dialog: Off].
     let mut delete = ScriptStep::new(9);
     delete.set_flag(om_scripts::flag::NO_INTERACT, true);
-    let root = fixture::tree(&[fixture::script(1, "Delete", vec![delete])], true);
+    let mut root = fixture::tree(&[fixture::script(1, "Delete", vec![delete])], true);
+    change(&mut root);
     let file = fixture::TempFile::from_tree(&format!("gui-conflicts-{tag}"), &root);
     hosted::host_file(
         &format!("conflicts-{tag}"),
@@ -506,10 +512,31 @@ mod delayed_page_tests {
 /// nothing is stored, and another client cannot write its id. Revert
 /// Record is offered on the untouched new record and releases it, deleting
 /// nothing, as Pro 26.0.3 removes an untouched new record. A duplicate is
-/// stored when it is saved.
+/// stored when it is saved, with its own auto-entered values: Token
+/// auto-enters `Get ( UUID )`, replacing the value, and the copy of record
+/// 2 enters a new one rather than copy record 2's, as FileMaker Server's
+/// engine enters a replacing calculation on a duplicate again (script
+/// oracle s44-record-number-ae, #473).
 #[test]
 fn the_menus_new_record_is_held_until_saved_and_its_revert_deletes_nothing() {
-    let hosted = host("menu-new");
+    use fixture::{OCCURRENCE, TABLE};
+    use om_hbam::slot::uint_segment;
+    const TOKEN: u64 = 20;
+    let hosted = host_with("menu-new", |root| {
+        fixture::add_field(root, TABLE, TOKEN, "Token", 1, 1, 0, 0x88, 0);
+        fixture::add_formula(
+            root,
+            &fixture::names(),
+            (TABLE, OCCURRENCE),
+            TOKEN,
+            5,
+            "Get ( UUID )",
+        );
+        root.put(
+            &[&uint_segment(TABLE), &[5], &[2], &uint_segment(TOKEN)],
+            om_scripts::text_node(&[], "record 2's"),
+        );
+    });
     let mut app = open(&hosted);
     let before = stored_names(&hosted);
     let held = i64::try_from(before.len()).unwrap() + 1;
@@ -543,4 +570,16 @@ fn the_menus_new_record_is_held_until_saved_and_its_revert_deletes_nothing() {
     let after = stored_names(&hosted);
     assert_eq!(after[..before.len()], before[..]);
     assert_eq!(after[before.len()..], [shown]);
+    let tokens = {
+        let mut reader = hosted.opened();
+        let page = reader.records(LAYOUT, 0, 10).unwrap();
+        reader.close();
+        let index = page.fields.iter().position(|f| f.name == "Token").unwrap();
+        page.records
+            .into_iter()
+            .map(|record| record.values[index].clone().unwrap_or_default())
+            .collect::<Vec<_>>()
+    };
+    assert_eq!(tokens[1], "record 2's", "{tokens:?}");
+    assert_eq!(tokens[2].len(), 36, "a new UUID: {tokens:?}");
 }

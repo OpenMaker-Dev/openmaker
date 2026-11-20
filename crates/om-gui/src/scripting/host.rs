@@ -1869,20 +1869,17 @@ impl<'a> WorkerHost<'a> {
                     .collect(),
             )
         });
-        // A serial number is not copied: the copy takes the next one
-        // (`duplicate-record-request.html`).
+        // An auto-entered value is not copied: the copy's own is entered
+        // as it is created, a serial number the next one, a replacing
+        // calculation evaluated on the copy (`FieldDef::duplicate_copies`,
+        // #473).
         let stored_fields: Option<BTreeSet<String>> = self.schema().and_then(|schema| {
             Some(
                 schema
                     .table_of(self.s.file.occurrence?)?
                     .fields
                     .values()
-                    .filter(|f| {
-                        f.class == FieldClass::Data
-                            && f.stored
-                            && !f.global
-                            && !f.auto_enters_serial()
-                    })
+                    .filter(|f| f.duplicate_copies())
                     .map(|f| f.name.clone())
                     .collect(),
             )

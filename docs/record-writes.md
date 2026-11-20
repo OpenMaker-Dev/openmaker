@@ -105,7 +105,16 @@ OpenMaker does the same with the window's record session
   too.
 - **Duplicate Record** opens the session before it copies the record, so
   the container references the copy takes are the session's: kept by its
-  commit, released by its revert.
+  commit, released by its revert. It copies no auto-entered value: a
+  field that auto-enters a variable (a creation timestamp, an account
+  name), a serial number, a constant, the last visited record's value or
+  a calculation that replaces an existing value gets the copy's own, as
+  FileMaker's does (auto-entry.md, "Serial numbers"; script oracle
+  s44-record-number-ae for a replacing calculation,
+  [#473](https://github.com/OpenMaker-Dev/openmaker/issues/473)). A
+  lookup's value and a calculation that does not replace one are copied.
+  The variable, constant and last-visited cases follow Claris's
+  documentation and are unmeasured.
 - **On a layout of a related file's table** the related file holds the
   record as one of the session's parts, as it holds a portal row of its
   table (`write_routed_related`): op71 under the session's shared
