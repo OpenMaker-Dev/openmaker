@@ -189,6 +189,10 @@ pub struct Store {
     /// tree was shared for reading, until [`Store::store_indexes_on_demand`]
     /// stores them.
     on_demand: Mutex<BTreeSet<IndexId>>,
+    /// The indexes a write found to hold the keys the current rules give
+    /// (`Store::current_index`), at schema generation `verified.0`: a
+    /// rollback or a schema change, which raise the generation, empties it.
+    verified: (u64, BTreeSet<IndexId>),
     /// The lock this process holds on the file ([`crate::filelock`]), for
     /// a file hosted privately for a local client; each save moves it to
     /// the file it writes.
@@ -329,6 +333,7 @@ impl Store {
             generation: 0,
             issued: Mutex::new(HashMap::new()),
             on_demand: Mutex::new(BTreeSet::new()),
+            verified: (0, BTreeSet::new()),
             lock: None,
             read_only: false,
         };
@@ -621,8 +626,10 @@ impl Store {
             .cloned();
         journal.save_node(&self.root, vec![table.to_vec(), vec![keys::RECORD_IDS]]);
         let (existed, exists) = (old.is_some(), record.is_some());
-        if let Err(reason) = self.put_record(table, id, old.as_ref(), record, &mut journal.recount)
-        {
+        let mut recount = std::mem::take(&mut journal.recount);
+        let put = self.put_record(table, id, old.as_ref(), record, Some(journal), &mut recount);
+        journal.recount = recount;
+        if let Err(reason) = put {
             journal.refused.get_or_insert(reason);
             return;
         }
@@ -971,9 +978,14 @@ impl Store {
                         .node(&[&table, &[keys::RECORDS], &serial::encode(id)])
                         .cloned();
                     // The write went through these nodes, so its reverse can.
-                    if let Err(reason) =
-                        self.put_record(&table, id, current.as_ref(), old, &mut BTreeSet::new())
-                    {
+                    if let Err(reason) = self.put_record(
+                        &table,
+                        id,
+                        current.as_ref(),
+                        old,
+                        None,
+                        &mut BTreeSet::new(),
+                    ) {
                         error!(
                             "{}: record {id} of table {table:02x?} could not be put back: {reason}",
                             self.name
@@ -2462,6 +2474,7 @@ impl Store {
             generation: 0,
             issued: Mutex::new(HashMap::new()),
             on_demand: Mutex::new(BTreeSet::new()),
+            verified: (0, BTreeSet::new()),
             lock: None,
             read_only: false,
         }
@@ -2507,7 +2520,7 @@ impl Store {
         let old = self.node(&[table, &[keys::RECORDS], &segment]).cloned();
         let (existed, exists) = (old.is_some(), record.is_some());
         let mut recount = BTreeSet::new();
-        if let Err(reason) = self.put_record(table, id, old.as_ref(), record, &mut recount) {
+        if let Err(reason) = self.put_record(table, id, old.as_ref(), record, None, &mut recount) {
             error!(
                 "{}: record {id} of table {table:02x?} not written: {reason}",
                 self.name
@@ -2530,8 +2543,10 @@ impl Store {
 
     /// Store `record` (or remove it) as record `id` of `table`, `old` as it
     /// was, moving it between the keys of the table's indexes; the indexes
-    /// whose counts are then due go into `recount`. The record list is the
-    /// caller's. A write the tree cannot take as it is
+    /// whose counts are then due go into `recount`. An index the move would
+    /// change is first made to hold the current rules' keys
+    /// ([`Store::current_index`]), its old node kept in `journal`. The
+    /// record list is the caller's. A write the tree cannot take as it is
     /// ([`Store::record_refusal`]) changes nothing and returns why.
     fn put_record(
         &mut self,
@@ -2539,6 +2554,7 @@ impl Store {
         id: u64,
         old: Option<&OwnedNode>,
         record: Option<OwnedNode>,
+        mut journal: Option<&mut Journal>,
         recount: &mut BTreeSet<Recount>,
     ) -> Result<(), String> {
         let segment = serial::encode(id);
@@ -2549,6 +2565,9 @@ impl Store {
         }
         self.dirty = true;
         for (field, index, before, after) in plan {
+            if self.current_index(journal.as_deref_mut(), table, &field, index) {
+                recount.insert((table.to_vec(), field.clone(), index, counts_key(index)));
+            }
             if self.move_record(table, &field, index, id, &before, &after) {
                 recount.insert((table.to_vec(), field, index, counts_key(index)));
             }
@@ -2709,6 +2728,90 @@ impl Store {
             }
         }
         Ok(plan)
+    }
+
+    /// Make index `kind` of `field` hold the keys the current rules give
+    /// every stored record of `table` before a write moves a record in it
+    /// (#448): an index an earlier build or FileMaker wrote under other
+    /// rules keeps entries that a record's old keys, computed now, do not
+    /// name, and the record would stay under them after it changed. The
+    /// index is built from the records as [`Store::index_keys`] builds a
+    /// missing one; when it differs from the stored one, the stored node
+    /// goes into `journal` (a failed save puts it back) and the built one
+    /// replaces it. Each index is checked once per schema generation.
+    /// Returns whether it was rebuilt (its counts are then due). A text
+    /// field indexed in a language whose keys this server does not build
+    /// is left as it is ([`Store::reindex_plan`] refuses text changes
+    /// there).
+    fn current_index(
+        &mut self,
+        journal: Option<&mut Journal>,
+        table: &[u8],
+        field: &[u8],
+        kind: u8,
+    ) -> bool {
+        if self.verified.0 != self.generation {
+            self.verified = (self.generation, BTreeSet::new());
+        }
+        let id: IndexId = (table.to_vec(), field.to_vec(), kind);
+        if !self.verified.1.insert(id) {
+            return false;
+        }
+        let Some(data_type) = be_uint(table)
+            .and_then(|t| self.catalog.table(t))
+            .and_then(|t| be_uint(field).and_then(|f| t.field(f)))
+            .map(|f| f.data_type)
+        else {
+            return false;
+        };
+        let form = match self.text_keys(table, field) {
+            Some(form) => form,
+            None if data_type != DataType::Text => ENGLISH,
+            None => return false,
+        };
+        let built = self.index_keys(table, field, data_type, kind, form);
+        let path: [&[u8]; 4] = [table, &[keys::INDEXES], field, &[kind]];
+        let stored: Option<BTreeMap<Vec<u8>, Vec<u64>>> = match self.node(&path) {
+            None => Some(BTreeMap::new()),
+            Some(node) => node
+                .children
+                .iter()
+                .map(|entry| {
+                    let ids = RidList::from_owned(entry).ok()?;
+                    Some((entry.segment.clone(), ids.iter().collect()))
+                })
+                .collect(),
+        };
+        let agrees = stored.is_some_and(|stored| {
+            stored.len() == built.len()
+                && built.iter().all(|(key, ids)| {
+                    stored
+                        .get(key)
+                        .is_some_and(|s| ids.iter().eq(s.iter().copied()))
+                })
+        });
+        if agrees {
+            return false;
+        }
+        warn!(
+            "{}: index {kind} of field {field:02x?} in table {table:02x?} did not hold the \
+             keys the current rules give; rebuilt from the records ({} keys)",
+            self.name,
+            built.len()
+        );
+        if let Some(journal) = journal {
+            journal.save_node(&self.root, path.iter().map(|s| s.to_vec()).collect());
+        }
+        if built.is_empty() {
+            self.root.remove(&path);
+        } else {
+            let entries = built
+                .into_iter()
+                .map(|(key, ids)| ids.to_node(key))
+                .collect();
+            self.root.put(&path, OwnedNode::list(vec![kind], entries));
+        }
+        true
     }
 
     /// Remove `id` from the index keys only in `before` and add it to those
@@ -3038,6 +3141,7 @@ mod tests {
             generation: 0,
             issued: Mutex::new(HashMap::new()),
             on_demand: Mutex::new(BTreeSet::new()),
+            verified: (0, BTreeSet::new()),
             lock: None,
             read_only: false,
         }

@@ -1272,8 +1272,20 @@ empty value under `01`, a value with no digit (`N/A`, a date stored as `?`)
 under `fe ff`, and a timestamp stored as a date alone under its date and
 `fe ff`. A number with other characters among its digits (`1,234`, `abc12`)
 gets no key yet ([#246](https://github.com/OpenMaker-Dev/openmaker/issues/246)).
-A typed index that an earlier OpenMaker build wrote lists no empty value
-under `01`, so a find for `=` on it misses those records.
+An index whose keys another rule wrote (an earlier OpenMaker build's, or
+FileMaker's where OpenMaker's rules still differ) is rebuilt on OpenMaker
+Server before a write moves a record in it
+([#448](https://github.com/OpenMaker-Dev/openmaker/issues/448),
+`Store::current_index`). The first write that changes a field's index,
+after the server starts or the schema changes, compares the index with
+one built from every stored record. When they differ, the built one
+replaces it in the same commit, and a failed save puts the old one back.
+So a changed record never stays under a key its old value no longer
+gives. Until a write touches it, an index is read as stored: a find
+for `=` on a typed index an earlier build wrote still misses the empty
+values it lists under no key. Rebuilding a FileMaker-written index where
+the rules differ replaces FileMaker's keys for those values with
+OpenMaker's.
 
 Word-index keys break words as FileMaker's English and Unicode standard
 indexes do (query-program.md 7.1): within a script, across `.` and

@@ -454,3 +454,66 @@ fn long_values_and_finds_leave_the_file_saveable() {
     assert!(index.contains(&(om_collate::text_key("Short"), vec![1])));
     session.disconnect().unwrap();
 }
+
+/// An index written under other key rules (an earlier OpenMaker build's,
+/// or FileMaker's where OpenMaker's still differ) is rebuilt from the
+/// records before a write moves a record in it (#448). Here Name's value
+/// index lists record 2, "Ship", under a key the current rules do not
+/// give, and not under "Ship"'s. Changing it to "Shipped" would otherwise
+/// leave it under the old key, where a find would still return it. A
+/// commit whose save fails puts the stored index back exactly.
+#[test]
+fn a_stale_index_is_rebuilt_before_a_write_changes_it() {
+    use om_hbam::slot::uint_segment;
+    use om_hbam::{OwnedNode, RidList};
+    let stale = vec![0x01, 0x10, 0x20];
+    let written = om_collate::text_key("Write tests");
+    let mut root = fixture::tree(&[], true);
+    let entry = |key: &[u8], id: u64| [id].into_iter().collect::<RidList>().to_node(key.to_vec());
+    root.put(
+        &[
+            &uint_segment(fixture::TABLE),
+            &[1],
+            &uint_segment(fixture::NAME),
+            &[0],
+        ],
+        // In key order, as a file stores them.
+        OwnedNode::list(vec![0], vec![entry(&stale, 2), entry(&written, 1)]),
+    );
+    let file = fixture::TempFile::from_tree("stale-index", &root);
+    let (port, handle) = server::start_with_handle(&file, om_server::ScriptLimits::DEFAULT);
+    let path = std::path::absolute(&file.0).unwrap();
+    let id = handle
+        .files()
+        .into_iter()
+        .find(|f| f.path == path)
+        .unwrap()
+        .id;
+    let (mut session, _) = server::logged_in(port, "stale index");
+    let as_stored = vec![(stale.clone(), vec![2]), (written.clone(), vec![1])];
+
+    // A failed save: the rebuilt index goes back with the record.
+    assert!(handle.failing_commit_saves(id, true));
+    assert!(commit_cells(&mut session, 2, &[(fixture::NAME, "Shipped")]).is_err());
+    assert!(handle.failing_commit_saves(id, false));
+    // A commit that leaves Name as it was saves the index as it is.
+    commit_cells(
+        &mut session,
+        1,
+        &[(fixture::NAME, "Write tests"), (fixture::COUNT, "9")],
+    )
+    .unwrap();
+    assert_eq!(name_index_on_disk(&file), as_stored);
+
+    // The write that changes Name rebuilds it first: record 2 is under
+    // "Shipped" only.
+    commit_name(&mut session, 2, "Shipped");
+    assert_eq!(
+        name_index_on_disk(&file),
+        [
+            (om_collate::text_key("Shipped"), vec![2]),
+            (written, vec![1]),
+        ]
+    );
+    session.disconnect().unwrap();
+}
