@@ -830,8 +830,9 @@ first) is open (13).
 
 **Word breaking (High for the cases below).** The word index keys each
 word of a value: maximal runs of letters and digits, in which some
-characters between two letters or two digits join. In every language but
-Unicode raw (2), whose rules follow below:
+characters between two letters or two digits join. In each index language
+FileMaker Server's engine was probed in (1-4, 16-65, 67 and 76; it stores 0
+and 77 as 21) but Unicode raw (2), whose rules follow below:
 
 - between digits: `-` and `,` in every language; `.` except in French
   (24), Polish (33), Swedish (41, 42) and Arabic (49); `:` except in
@@ -849,22 +850,25 @@ Unicode raw (2), whose rules follow below:
   word in English and `U.S.A.` gives `U.S.A`, while French `l'équipe`
   gives `l`, `équipe`.
 
-None of these joins a digit and a letter (`1.b`, `a-1`), or stays in a
-word at its start or end (`.1`, `a-` give `1`, `a`), except in Thai (57),
-whose words keep a `.` or `-` at either end. `_` and `;` separate in every
-language. The no-break space U+00A0 separates in none: it is part of the
-word, at either end too (`1`, U+00A0, `234` is one word). The languages
+In those languages none of these characters joins a digit and a letter
+(`1.b`, `a-1`), or stays in a word at its start or end (`.1`, `a-` give
+`1`, `a`), and `_` and `;` always separate. In Thai (57) `.` and `-` have
+no weight, so its keys cannot show whether its words keep them at either
+end. The no-break space U+00A0 separates in none of them: it is part of
+the word, at either end too (`1`, U+00A0, `234` is one word). The languages
 that join with `/` and with `.` resemble those whose locales write dates
 with `/` and decimals with `.`, but whether FileMaker takes these
 characters from the locale or from a table of its own is not known [I]; the
-probe gives them for these characters only. In every language each word's
-key is the part of the value's key that spells the word, followed in System
-and Unicode standard by their `00 00` (all 11,487 word keys of the probe).
-Evidence:
+probe gives them for these characters only. In every language the primary
+weights of each word's key are the part of the value key's primary weights
+that spells the word (all 11,487 word keys of the probe). In System and
+Unicode standard a word's key is in their padded form, with its own `00 00`
+and the word's higher levels after it (`ab’cd` keeps the secondary weight
+of `’`). Evidence:
 [catalogs/word-break-vectors.tsv](catalogs/word-break-vectors.tsv), a
-probe of 140 values in 56 index languages (each of `. , : / - ' ’ · _ ;`
+probe of 139 values in 56 index languages (each of `. , : / - ' ’ · _ ;`
 and U+00A0 between two digits, two letters, a digit and a letter and at
-either end).
+either end, and 8 dates, times and numbers as locales write them).
 
 Every other character separates (`e-mail`, `x-1`, `a_b`, `foo@bar.com`
 gives `foo`, `bar.com`; `#tag`, `C++`, `AT&T`, `$5`, `5%`, a tab, a soft

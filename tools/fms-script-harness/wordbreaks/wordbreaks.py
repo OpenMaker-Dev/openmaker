@@ -1,12 +1,16 @@
 # The word-break probe of query-program.md 7.2 (#300): contacts-en's
 # saveAsXML with Contacts::V (text, not indexed) and one stored, fully
 # indexed calculation K<id> = V per index language, and a battery that
-# enters each probe value as a record of its own; then the catalog rows of
+# enters each probe value as a record of its own (140 records, 139 distinct
+# values: 12.30 comes twice); then the catalog rows of
 # docs/re/catalogs/word-break-vectors.tsv from the run copy's indexes.
-#   python3 -I wordbreaks.py schema <contacts-en.xml> <out.xml> docs/re/catalogs/locale-types.csv
-#   python3 -I wordbreaks.py battery <out.txt>
-#   SCHEMA=<out.xml> runbat.sh <out.txt> contacts-en.fmp12 <results>
-#   cargo run -p om-hbam --example index_entries -- <$WORK/out.contacts-en.gen.run.fmp12> Contacts V > entries.tsv
+# With CONTACTS the Contacts template's saveAsXML ($WORK/contacts-en.xml
+# after any runbat.sh run on it) and WORK and the harness's other variables
+# set as for runbat.sh:
+#   python3 -I wordbreaks.py schema "$CONTACTS" wordbreaks.xml docs/re/catalogs/locale-types.csv
+#   python3 -I wordbreaks.py battery wordbreaks.txt
+#   SCHEMA=wordbreaks.xml runbat.sh wordbreaks.txt contacts-en.fmp12 results
+#   cargo run -p om-hbam --example index_entries -- "$WORK/wordbreaks.contacts-en.gen.run.fmp12" Contacts V > entries.tsv
 #   python3 -I wordbreaks.py rows entries.tsv > rows.tsv
 import csv
 import sys
@@ -80,12 +84,23 @@ def rows(entries):
     """The catalog's rows: every value in English (21); another language
     only where its keys differ from English's, System (1) only where they
     differ from Unicode standard's (3); in probe order."""
-    keys = {}
+    records = {}
     for line in open(entries, encoding='utf-8'):
-        name, lang, _record, value, value_keys, word_keys = line.rstrip('\n').split('\t')
+        name, lang, record, value, value_keys, word_keys = line.rstrip('\n').split('\t')
         if name.startswith('K') and name[1:] == lang:
-            keys[(int(lang), value)] = (value_keys, word_keys)
-    order = [escape_row(v) for v in values()]
+            records.setdefault(int(lang), []).append((int(record), value, (value_keys, word_keys)))
+    probe = [escape_row(v) for v in values()]
+    keys = {}
+    for lang, rows_of in records.items():
+        rows_of.sort()
+        # One record per probe value, in the battery's order.
+        if [value for _, value, _ in rows_of] != probe:
+            sys.exit(f'language {lang}: the records are not the probe values in order')
+        for _, value, k in rows_of:
+            # A value entered twice must be keyed the same both times.
+            if keys.setdefault((lang, value), k) != k:
+                sys.exit(f'language {lang}: {value!r} keyed two ways')
+    order = list(dict.fromkeys(probe))
     out = []
     for lang in [21] + [l for l in LANGUAGES if l != 21]:
         base = 3 if lang == 1 else 21
