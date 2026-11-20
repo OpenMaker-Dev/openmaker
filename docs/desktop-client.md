@@ -873,7 +873,13 @@ and clicks are in unzoomed points at every zoom. Its labels and its cells'
 editors lay their text out at the zoom (`document::layer_galley`) to keep it
 sharp; a value cut off at its column's edge keeps egui's renderer, as
 elided text does above. The table's last column fills the width the previous
-frame left, so a new zoom lays the table out once more before it shows.
+frame left, so a new zoom lays the table out once more before it shows. The
+table keeps its columns' widths itself and draws their dividers in the
+header: a divider dragged at any zoom follows the pointer, in the table's
+points (egui_extras' own resizing reads the pointer in window points, so a
+zoomed drag jumped). While zoomed, Table view's scroll areas do not follow a
+touch drag, which egui would move by the zoom's multiple of the finger's
+way; the wheel and the scroll bars still scroll them.
 
 A field being typed in lays its text out at the zoom as well, in Form, List
 and Find (`field_galley`, and the single-line editor's layouter), so its text
@@ -885,7 +891,9 @@ Limits: Layout mode and generic Form fallbacks are not zoomed (Preview scales it
 ([#36](https://github.com/OpenMaker-Dev/openmaker/issues/36)). Scroll bars
 inside the zoomed layer (List and Table view's) scale with it; FileMaker Pro's
 keep their size [I: unmeasured]. How FileMaker Pro scales Table view's
-header and row heights is unmeasured.
+header and row heights is unmeasured. A Table view column is resized from
+its divider in the header only, and a double click does not fit it to its
+contents; FileMaker Pro's divider behavior is unmeasured.
 
 ### Layout menus
 
