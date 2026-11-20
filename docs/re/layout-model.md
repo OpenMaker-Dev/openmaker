@@ -2404,8 +2404,9 @@ pre-order index, since it is the last root; its key string, 0 and
 repetition 1); the same reference appended to `15` with the new position
 in the edit box's attribute `07`; `05, 00` raised to the last new key;
 and the layout's stamp. Appending after the greatest stored position
-preserves the existing order and gaps. Object keys are the next after every key the layout uses, every key its
-part lists name, and `05, 00`. A body part without a list, or with one
+preserves the existing order and gaps. Object keys are the next after
+every key the layout uses, every key its part lists, object index and
+tab order name, and `05, 00`. A body part without a list, or with one
 whose count does not match its entries, is refused: every part FileMaker
 saved has a readable one. The label stays outside both `0a` and `15`.
 New objects are unnamed, so placement leaves `08` alone.

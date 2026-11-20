@@ -1306,13 +1306,14 @@ pub fn part_lists_extended(base: &OwnedNode, member: &OwnedNode, objects: &[u64]
     appended == expected && objects.iter().all(|key| after.contains(key))
 }
 
-/// Whether `member` holds the tab order [`plan`] writes when it places
-/// `placement`'s field on `base` as object `field_object`: `base`'s order
-/// `[4, 5, L, 15]` with every stored entry and gap as it was, the edit
-/// box's object reference after the greatest stored position, and that
+/// Whether `member` holds the object index and tab order [`plan`] writes
+/// when it places `placement`'s field on `base` as object `field_object`:
+/// `base`'s object index `[4, 5, L, 0a]` with the edit box's entry added,
+/// `base`'s tab order `[4, 5, L, 15]` with every stored entry and gap as it
+/// was and the same reference after the greatest stored position, and that
 /// position in the edit box's attribute `07` (layout-model.md 10.5,
 /// [#316](https://github.com/OpenMaker-Dev/openmaker/issues/316)).
-pub fn tab_order_as_planned(
+pub fn object_index_and_tab_order_as_planned(
     base: &OwnedNode,
     member: &OwnedNode,
     placement: &Placement,
@@ -1328,6 +1329,7 @@ pub fn tab_order_as_planned(
     };
     plan(base, placement).is_ok_and(|planned| {
         planned.field_object == field_object
+            && planned.member.child(&[OBJECT_INDEX]) == member.child(&[OBJECT_INDEX])
             && planned.member.child(&[TAB_ORDER]) == member.child(&[TAB_ORDER])
             && position(&planned.member).is_some()
             && position(&planned.member) == position(member)
@@ -1344,8 +1346,10 @@ fn next_object_key(key: u64) -> Result<u64, Refusal> {
 }
 
 /// The key after every object key `member` uses: in its object store
-/// (objects, the root stack, containers' children), its attribute records
-/// and its field reference index.
+/// (objects, the root stack, containers' children), its attribute records,
+/// its field reference index, and the entries of its object index `0a`
+/// and tab order `15`. An entry left naming an object that is gone keeps
+/// its key from a new object, which the entry would then name too.
 fn next_key(member: &OwnedNode, store: &ObjectStore) -> Result<u64, Refusal> {
     let stored = store
         .objects
@@ -1364,7 +1368,19 @@ fn next_key(member: &OwnedNode, store: &ObjectStore) -> Result<u64, Refusal> {
         .flat_map(|occurrence| occurrence.children.iter())
         .flat_map(|field| field.children.iter())
         .filter_map(|object| serial::decode(&object.segment));
-    next_object_key(stored.chain(attributes).chain(indexed).max().unwrap_or(0))
+    let referenced = [OBJECT_INDEX, TAB_ORDER]
+        .into_iter()
+        .filter_map(|key| member.child(&[key]))
+        .flat_map(|list| list.children.iter())
+        .filter_map(|entry| crate::layout_objects::indexed_object(entry.value.as_deref()?));
+    next_object_key(
+        stored
+            .chain(attributes)
+            .chain(indexed)
+            .chain(referenced)
+            .max()
+            .unwrap_or(0),
+    )
 }
 
 /// The attribute record of a new object: its empty name, and its text.
@@ -2990,14 +3006,23 @@ mod tests {
         );
         assert_eq!(tab.child(&[0, 4]).unwrap().value, entry.unwrap().value);
         // What `place_field` checks on the read-back: a member that lost a
-        // stored entry or the edit box's position is not the plan's.
-        assert!(tab_order_as_planned(&before, &planned.member, &wanted, 4));
+        // stored entry or the edit box's position, or whose object index
+        // entry shows another repetition, is not the plan's.
+        let as_planned =
+            |member: &OwnedNode| object_index_and_tab_order_as_planned(&before, member, &wanted, 4);
+        assert!(as_planned(&planned.member));
         let mut dropped = planned.member.clone();
         dropped.remove(&[&[TAB_ORDER], &[0, 3]]);
-        assert!(!tab_order_as_planned(&before, &dropped, &wanted, 4));
+        assert!(!as_planned(&dropped));
         let mut unpositioned = planned.member.clone();
         unpositioned.remove(&[&[ATTRIBUTES], &[4], &[TAB_POSITION]]);
-        assert!(!tab_order_as_planned(&before, &unpositioned, &wanted, 4));
+        assert!(!as_planned(&unpositioned));
+        let mut repetition = planned.member.clone();
+        repetition.put(
+            &[&[OBJECT_INDEX], &[0, 80, 0, 110, 0, 3]],
+            OwnedNode::leaf(Vec::new(), vec![0, 2, 1, 4, 0, 0, 0, 0, 2]),
+        );
+        assert!(!as_planned(&repetition));
         assert!(indexes(&planned.member, 4) && !indexes(&planned.member, 5));
         let last = planned.member.at(&[&[ATTRIBUTES], &[LAST_KEY]]);
         assert_eq!(last.and_then(|n| n.value.clone()), Some(vec![1, 5]));
@@ -3034,6 +3059,14 @@ mod tests {
             OwnedNode::leaf(Vec::new(), vec![1, 9]),
         );
         assert_eq!(plan(&issued, &wanted).unwrap().field_object, 10);
+        // A tab order entry left naming object 4, which is gone: the new
+        // edit box does not take its key, so the order names it once.
+        let mut stale = before.clone();
+        stale.put(
+            &[&[TAB_ORDER], &[0, 9]],
+            OwnedNode::leaf(Vec::new(), vec![0, 2, 1, 4, 0, 0, 0, 0, 1]),
+        );
+        assert_eq!(plan(&stale, &wanted).unwrap().field_object, 5);
 
         // Placed: the same request finds its objects; another does not.
         assert_eq!(already_placed(&planned.member, &wanted), Some((4, Some(5))));

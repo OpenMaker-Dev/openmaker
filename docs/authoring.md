@@ -276,8 +276,10 @@ writes into the layout member `[4, 5, L]` only:
   them;
 - an attribute record `[4, 5, L, 05, O]` for each object: an empty name
   `10`, fresh UUIDs `d8` and `d9`, for the edit box its tab order
-  position `07`, and for the label its text `01` (a plain SCSU value, as
-  the templates store a plain label) and a text height of 0 `0d`;
+  position `07` (and, where the layout stores a Table View layout, the
+  columns' data format record `0d`, below), and for the label its text
+  `01` (a plain SCSU value, as the templates store a plain label) and a
+  text height of 0 `0d`;
 - the field reference index entry `[4, 5, L, 01, <occurrence>, <field>,
   <object>]` (an empty value, as every field object in the templates has);
 - both objects at the end of the body part's list of its objects `[4, 5,
@@ -314,21 +316,23 @@ writes into the layout member `[4, 5, L]` only:
 - the layout's stamp (`fc` counted up, `fc 01` to `fc 03`).
 
 Object keys are the next after every key the layout uses (its objects,
-root stack, containers' children, attribute records, index and part
-lists) and after the last key it issued. A layout whose object tree does
+root stack, containers' children, attribute records, field reference
+index and part lists), every key its object index and tab order entries
+name, and the last key it issued. A layout whose object tree does
 not reach each of its objects once, whose object index already holds the
 new edit box's position in that tree, or whose body part has no list of
-its objects that OpenMaker reads, is refused (status 3). Nothing else is written: no
-object name, data formatting, script trigger, conditional formatting or
-hide condition, and no other layout index (re/layout-model.md 10.5).
+its objects that OpenMaker reads, is refused (status 3). Nothing else is
+written: no object name, other data formatting, script trigger,
+conditional formatting or hide condition, and no other layout index
+(re/layout-model.md 10.5).
 Every other key of the layout, known or not, every stored object's
 attribute record and every index entry are kept;
 `place_field` checks them again on the read-back, decodes the layout as
 the desktop client does (`om_layout::Layout::decode_from_tree`), and
 checks that the client lists the new object among the layout's fields,
-that the object index lists the edit box, that the parts are as they
-were but for the new objects at the end of the body's list, and that the
-tab order and the edit box's position in it are the plan's.
+that the parts are as they were but for the new objects at the end of
+the body's list, and that the object index, the tab order and the edit
+box's position in it are the plan's.
 
 A request repeated after a lost answer finds its objects on top of the
 stack (the same field at the same frame, and the same label) and reports

@@ -638,10 +638,10 @@ fn only_gained(old: &OwnedNode, new: &OwnedNode) -> bool {
 /// The layout member's keys an edit keeps as stored: all but the field
 /// reference index `01`, the parts `03` (whose lists of objects gain the
 /// new ones; checked by `layout_placement::part_lists_extended`), the
-/// object attributes `05`, the object store `07`, the object index `0a`,
-/// the table view `0d`, the tab order `15` (which gains the edit box;
-/// checked by `layout_placement::tab_order_as_planned`) and the
-/// modification stamp.
+/// object attributes `05`, the object store `07`, the object index `0a`
+/// and the tab order `15` (which gain the edit box; checked by
+/// `layout_placement::object_index_and_tab_order_as_planned`), the table
+/// view `0d` and the modification stamp.
 fn kept_layout_keys(member: &OwnedNode) -> Vec<&OwnedNode> {
     member
         .children
@@ -4294,14 +4294,22 @@ impl Service {
         } else {
             base.child(&[0x0d]) == member.child(&[0x0d])
         };
-        // The tab order as the plan writes it: the stored entries as they
-        // were and the edit box after them, its position in its attribute
-        // record. A repeated request wrote nothing, as above.
+        // The object index and tab order as the plan writes them: the
+        // stored entries as they were, the edit box's entry in each, and its
+        // tab position in its attribute record. A repeated request wrote
+        // nothing, as above.
         // ([#316](https://github.com/OpenMaker-Dev/openmaker/issues/316))
-        let tab_order_as_planned = if placed.changed {
-            layout_placement::tab_order_as_planned(base, &member, placement, placed.field_object)
+        let indexes_as_planned = if placed.changed {
+            layout_placement::object_index_and_tab_order_as_planned(
+                base,
+                &member,
+                placement,
+                placed.field_object,
+            )
         } else {
-            base.child(&[0x15]) == member.child(&[0x15])
+            [0x0a, 0x15]
+                .iter()
+                .all(|&key| base.child(&[key]) == member.child(&[key]))
         };
         let table_matches = names
             .as_ref()
@@ -4324,7 +4332,7 @@ impl Service {
             && index_kept
             && parts_kept
             && table_view_as_planned
-            && tab_order_as_planned;
+            && indexes_as_planned;
         if found != placed.revision
             || !indexed
             || field_object.is_none()
@@ -4357,7 +4365,7 @@ impl Service {
                 "object_indexed": indexed,
                 "part_lists_extended_as_planned": parts_kept,
                 "table_view_as_planned": table_view_as_planned,
-                "tab_order_as_planned": tab_order_as_planned,
+                "object_index_and_tab_order_as_planned": indexes_as_planned,
                 "last_issued_key_past_new_objects": issued_past,
             })));
         }
