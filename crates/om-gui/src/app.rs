@@ -2140,6 +2140,14 @@ impl OpenMakerApp {
     /// The app's dialogs, over the front window.
     fn dialogs(&mut self, ctx: &egui::Context, actions: &mut Vec<Action>) {
         let ctx = ctx.clone();
+        // The host's message, drawn last (on top), takes Return and Escape
+        // before a dialog under it (Settings, a license) sees them.
+        let host_keys = self.host_message_shown()
+            && ctx.input_mut(|input| {
+                let enter = input.consume_key(Modifiers::NONE, Key::Enter);
+                let escape = input.consume_key(Modifiers::NONE, Key::Escape);
+                enter || escape
+            });
         if let (Some(dialog), Some(session)) = (&mut self.manage_layouts, &self.w.session) {
             // Associated Table: each layout's table occurrence, by name.
             let tables: std::collections::BTreeMap<u32, String> =
@@ -2405,7 +2413,7 @@ impl OpenMakerApp {
         self.own_password_dialog(&ctx);
         self.related_sign_in(&ctx);
         self.alert(&ctx, actions);
-        self.host_message(&ctx, actions);
+        self.host_message(&ctx, actions, host_keys);
         self.prompt(&ctx);
     }
 
@@ -3241,7 +3249,7 @@ impl OpenMakerApp {
     /// after [`HOST_MESSAGE_SECONDS`] (network-protocol.md 6.5,
     /// admin-console.md 9). Messages that came meanwhile follow, one at a
     /// time.
-    fn host_message(&mut self, ctx: &egui::Context, actions: &mut Vec<Action>) {
+    fn host_message(&mut self, ctx: &egui::Context, actions: &mut Vec<Action>, keys: bool) {
         if !self.host_message_shown() {
             return;
         }
@@ -3286,10 +3294,9 @@ impl OpenMakerApp {
                 ui.add_space(12.0);
                 ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
                     let close = widgets::dialog_button(ui, "Close", true, true);
-                    let key = ui.input(|input| {
-                        input.key_pressed(Key::Enter) || input.key_pressed(Key::Escape)
-                    });
-                    if close.clicked() || key {
+                    // Return and Escape, taken for it before the dialogs
+                    // under it drew (`dialogs`).
+                    if close.clicked() || keys {
                         actions.push(Action::DismissHostMessage);
                     }
                 });

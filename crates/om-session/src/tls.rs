@@ -28,6 +28,8 @@ pub const MAX_MESSAGE_LEN: usize = 64 * 1024 * 1024;
 
 /// How long a read waits for the server by default.
 pub const READ_TIMEOUT: Duration = Duration::from_secs(30);
+/// How long writing a message may wait for the host to take it.
+pub const WRITE_TIMEOUT: Duration = Duration::from_secs(30);
 
 /// A server-certificate verifier that accepts any chain (lab use) while still
 /// delegating signature checks to the crypto provider.
@@ -256,7 +258,7 @@ impl Transport {
 
         let tcp = TcpStream::connect((host, port))?;
         tcp.set_read_timeout(Some(READ_TIMEOUT))?;
-        tcp.set_write_timeout(Some(Duration::from_secs(30)))?;
+        tcp.set_write_timeout(Some(WRITE_TIMEOUT))?;
         let socket = Socket {
             tcp,
             deadline: None,
@@ -289,6 +291,11 @@ impl Transport {
     /// seconds are set when connecting).
     pub fn set_read_timeout(&mut self, timeout: Option<Duration>) -> Result<(), TransportError> {
         self.stream.sock.tcp.set_read_timeout(timeout)?;
+        Ok(())
+    }
+
+    pub fn set_write_timeout(&mut self, timeout: Option<Duration>) -> Result<(), TransportError> {
+        self.stream.sock.tcp.set_write_timeout(timeout)?;
         Ok(())
     }
 

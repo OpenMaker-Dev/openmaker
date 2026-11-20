@@ -60,7 +60,7 @@ use om_protocol::{
 };
 use om_rctransaction::ResultBuilder;
 
-use crate::tls::{Transport, TransportError, READ_TIMEOUT};
+use crate::tls::{Transport, TransportError, READ_TIMEOUT, WRITE_TIMEOUT};
 
 /// Key of a table's records node, `[T, 05]` (write-path.md 5.2).
 const RECORDS: u8 = 0x05;
@@ -583,6 +583,16 @@ const UNAVAILABLE: u16 = 3;
 /// gone: FileMaker Pro's 30-second call timeout around `Tickle`
 /// (network-protocol.md 6.1).
 pub const TICKLE_TIMEOUT: Duration = Duration::from_secs(30);
+
+/// How many of the host's messages one idle poll reads at most
+/// ([`Session::try_take_admin_messages`]): a host that keeps sending does
+/// not hold the caller.
+const IDLE_MESSAGES: usize = 32;
+
+/// How long an idle poll's answer to one of the host's calls may wait for
+/// the host to take it: the answers are small, so a write waits only once
+/// the host has stopped reading.
+const IDLE_WRITE_TIMEOUT: Duration = Duration::from_secs(2);
 
 /// The most slot bytes [`Session::get_file_list`] reads across a list's
 /// pages: as much as one transport message may carry, so that a host
@@ -2151,7 +2161,7 @@ impl Session {
     /// the connection lost ([`Self::connection_lost`]).
     pub fn try_take_admin_messages(&mut self) -> Option<Vec<AdminMessage>> {
         let mut wire = self.link.try_lock()?;
-        if let Err(error) = wire.poll(Instant::now(), self.key) {
+        if let Err(error) = wire.poll_idle() {
             let _ = wire.check(error);
         }
         Some(wire.inbox.admin_messages.drain(..).collect())
@@ -2354,6 +2364,44 @@ impl Wire {
             Ok(inbox.results_for(handle))
         })();
         transport.set_read_timeout(Some(READ_TIMEOUT))?;
+        polled
+    }
+
+    /// [`Self::poll`] for a caller that polls while idle and must not be
+    /// held: at most [`IDLE_MESSAGES`] messages that have arrived, waiting
+    /// for none, and an answer to a call the host does not take within
+    /// [`IDLE_WRITE_TIMEOUT`] fails the write, which loses the connection.
+    /// Messages left are read by the next poll or exchange.
+    fn poll_idle(&mut self) -> Result<(), SessionError> {
+        self.transport()?;
+        let Wire {
+            transport, inbox, ..
+        } = self;
+        let transport = transport.as_mut().expect("checked above");
+        transport.set_write_timeout(Some(IDLE_WRITE_TIMEOUT))?;
+        let polled = (|| {
+            for _ in 0..IDLE_MESSAGES {
+                transport.set_read_timeout(Some(Duration::from_millis(1)))?;
+                let msg = match transport.recv_logical() {
+                    Ok(msg) => msg,
+                    Err(e) if e.is_timeout() => break,
+                    Err(e) => return Err(e.into()),
+                };
+                match handle_unsolicited(transport, &msg, inbox) {
+                    Ok(()) => {}
+                    // An answer half written: the stream cannot go on.
+                    Err(SessionError::Transport(e)) if e.is_timeout() => {
+                        return Err(SessionError::ConnectionLost(
+                            "the host stopped taking the client's answers".into(),
+                        ))
+                    }
+                    Err(e) => return Err(e),
+                }
+            }
+            Ok(())
+        })();
+        transport.set_read_timeout(Some(READ_TIMEOUT))?;
+        transport.set_write_timeout(Some(WRITE_TIMEOUT))?;
         polled
     }
 
