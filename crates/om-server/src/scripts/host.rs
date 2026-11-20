@@ -3518,15 +3518,20 @@ impl Records for ServerHost {
             return Ok(());
         }
         let id = window.record().ok_or(ErrorCode::RECORD_MISSING)?;
-        // The portal's rows were the deleted record's.
+        // The portal's rows, and the field entered, were the deleted
+        // record's (as on the desktop).
+        self.delete(&[id], false)?;
+        self.focus = None;
         self.clear_portal();
-        self.delete(&[id], false)
+        Ok(())
     }
 
     fn delete_all_records(&mut self, _with_dialog: bool) -> HostResult {
         let found = self.window()?.found.clone();
+        self.delete(&found, true)?;
+        self.focus = None;
         self.clear_portal();
-        self.delete(&found, true)
+        Ok(())
     }
 
     /// Revert Record: the open record's changes are dropped. Inside a
@@ -3690,7 +3695,7 @@ impl FieldSteps for ServerHost {
         let focused = self.focus.as_ref().map(|f| FieldRef {
             occurrence: f.occurrence,
             field: f.field,
-            repetition: 1,
+            repetition: f.repetition.max(1),
         });
         let field = target.field.or(focused).ok_or(HostError::Unsupported)?;
         // Into the focused field this is typing (s33).

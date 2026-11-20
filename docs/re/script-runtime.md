@@ -3005,17 +3005,23 @@ Server engine (11.3, 11.5)
   portal's field in the active row (row 1 without one; 101, the portal
   active, when it has no rows) in the repetition given, or another field;
   no such object is 116, an empty name 5, a repetition the field lacks
-  102. Go to Field into a portal's field enters it the same way; into
-  another field, or with none, it leaves the portal. Go to Next and
-  Previous Field are 0. Which portal an object is in follows its parents,
-  read once per step, not where it is drawn. A step's direct reference to
+  102. Go to Field resolves the first object in stacking order that
+  shows the field: in a portal it is entered the same way (a repetition
+  the field lacks is 102, nothing active), outside every portal the
+  portal is left; with no target the field is left, which commits the
+  record (s33). Go to Next and Previous Field are 0. Moving between the
+  fields and portal rows of one record commits nothing; the record is
+  committed when the window leaves it. Which portal an object is in
+  follows its parents, and every lookup is through one index of the
+  layout's objects, built once per step. A step's direct reference to
   the portal's related fields, and `Get ( ActiveFieldContents )`, read the
   active row's record (the creation row reads empty); `GetNthRecord`,
   aggregates and field calculations read the related set from the parent
   as before. Go to Record keeps the row number and the field entered (101,
   no row active, when the next record lacks the row), the current layout
   again keeps them, and another layout, Commit Records, a mode change or
-  a deleted record clears the row. Set Field into a related field and
+  a deleted record clears the row (a deleted record its field too).
+  Insert steps without a target write the repetition entered. Set Field into a related field and
   Delete Portal Row are still 3, and a portal that sorts its rows, or
   filters them with "Filter portal records" on (`0x80`), is refused (3)
   rather than numbered in an order that may not be FileMaker's. Not yet:

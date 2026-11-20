@@ -584,7 +584,10 @@ Open items:
   reads the catalog back (desktop-client.md, Script Workspace).
 - Server: Go to Portal Row, Go to Object and Go to Next/Previous Field
   run as FileMaker Server's engine answered them (re/script-runtime.md
-  13.24), and a step's calculation reads the active portal row's record.
+  13.24), and a step's direct reference to a portal's related field reads
+  the active row's record (`GetNthRecord`, aggregates and field
+  calculations read the related set from the parent; Go to Object on a
+  button or text makes no object active; see that section's limits).
   Set Field into a related field, Delete Portal Row and portals that sort
   or filter their rows are still 3
   ([#100](https://github.com/OpenMaker-Dev/openmaker/issues/100)).

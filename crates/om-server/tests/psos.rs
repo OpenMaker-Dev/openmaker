@@ -1686,12 +1686,21 @@ fn server_scripts_move_through_portal_rows() {
     steps.extend([
         go_to_layout(fixture::LAYOUT),
         go_to_record(1),
+        // An edit of the parent stays open through the portal's rows.
+        fixture::set_field(fixture::COUNT, "99"),
         {
             let mut step = ScriptStep::new(99);
             step.value = 1;
             step
         },
         set_variable("$first", row),
+        ScriptStep::new(51),
+        set_variable("$reverted", "Tasks::Count"),
+        {
+            let mut step = ScriptStep::new(99);
+            step.value = 1;
+            step
+        },
         {
             let mut step = ScriptStep::new(99);
             step.value = 4;
@@ -1721,7 +1730,11 @@ fn server_scripts_move_through_portal_rows() {
         set_variable("$missing", "Get ( LastError )"),
         with_calc(145, "\"\""),
         set_variable("$empty", "Get ( LastError )"),
-        with_calc(145, "\"Notes portal\""),
+        {
+            let mut step = ScriptStep::new(99);
+            step.value = 1;
+            step
+        },
         {
             // Go to Field outside the portal leaves it.
             let mut step = ScriptStep::new(17);
@@ -1739,7 +1752,7 @@ fn server_scripts_move_through_portal_rows() {
         with_calc(145, "\"Notes portal\""),
         ScriptStep::new(75),
         exit_with(
-            "$first & \"|\" & $second & \"|\" & $nth & \"|\" & $kept & \"|\" & $past & \"|\" \
+            "$first & \"|\" & $reverted & \"|\" & $second & \"|\" & $nth & \"|\" & $kept & \"|\" & $past & \"|\" \
              & $portal & \"|\" & $missing & \"|\" & $empty & \"|\" & $left & \"|\" & \
              Get ( ActivePortalRowNumber )",
         ),
@@ -1783,7 +1796,7 @@ fn server_scripts_move_through_portal_rows() {
     let mut client = logged_in(port, "portals");
     assert_eq!(
         run(&mut client, 6).1,
-        "1/first/Note body/first|2/second/Note body/second|first/second|\
+        "1/first/Note body/first|3|2/second/Note body/second|first/second|\
          2/second/Note body/second|101/2|2/second/Notes portal/|116|5|0|0"
     );
     client.disconnect().unwrap();

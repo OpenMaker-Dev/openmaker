@@ -95,58 +95,100 @@ fn shown_field(object: &LayoutObject) -> Option<(u64, u64)> {
     ))
 }
 
-/// A layout's objects by id, with the portal each lies in, read once: by
-/// following its parents (a chain that loops lies in none), not by where
-/// it is drawn.
+/// A layout's objects, read once per step through an index by id: their
+/// stacking order, the portal each lies in (by following its parents; a
+/// chain that loops lies in none, and where it is drawn never matters) and
+/// each one's origin in layout coordinates. Every lookup is by id, so a
+/// step's work grows with the layout's size, not its square.
 struct ObjectIndex<'l> {
-    layout: &'l Layout,
     by_id: HashMap<u64, &'l LayoutObject>,
+    /// Back-most first, as `layout_objects::objects_in_order` walks them.
+    in_order: Vec<&'l LayoutObject>,
     portal_of: HashMap<u64, u64>,
+    /// Each object's top and left in layout coordinates; none without
+    /// geometry along its parents, or in a loop.
+    origin: HashMap<u64, Option<(f64, f64)>>,
 }
 
 impl<'l> ObjectIndex<'l> {
     fn new(layout: &'l Layout) -> Self {
         let by_id: HashMap<u64, &LayoutObject> =
             layout.objects.objects.iter().map(|o| (o.id, o)).collect();
-        // The nearest portal above each object, `None` for none; each
-        // chain is walked once, the objects on it answered together.
-        let mut known: HashMap<u64, Option<u64>> = HashMap::new();
+        // Stacking order: the roots, each followed by its children.
+        let mut in_order = Vec::with_capacity(by_id.len());
+        let mut stack: Vec<u64> = layout.objects.root.iter().rev().copied().collect();
+        let mut seen = HashSet::new();
+        while let Some(id) = stack.pop() {
+            let Some(object) = by_id.get(&id) else {
+                continue;
+            };
+            if !seen.insert(id) {
+                continue;
+            }
+            in_order.push(*object);
+            stack.extend(object.children.iter().rev());
+        }
+        // The nearest portal above each object and each object's origin,
+        // each parent chain walked once, every object on it answered.
+        let mut portal_of: HashMap<u64, Option<u64>> = HashMap::new();
+        let mut origin: HashMap<u64, Option<(f64, f64)>> = HashMap::new();
         for object in &layout.objects.objects {
-            let mut chain = Vec::new();
+            // The chain from the object up to the first object already
+            // answered (or the root, or a loop).
+            let mut chain = vec![object.id];
+            let mut seen = HashSet::from([object.id]);
             let mut at = object.parent;
-            let mut seen = HashSet::new();
-            let found = loop {
-                let Some(id) = at else { break None };
-                let Some(parent) = by_id.get(&id) else {
-                    break None;
-                };
-                // A parent that is a portal answers before what is known
-                // above it.
-                if parent.kind() == ObjectKind::Portal {
-                    break Some(id);
-                }
-                if let Some(known) = known.get(&id) {
-                    break *known;
+            let mut looped = false;
+            while let Some(id) = at {
+                if portal_of.contains_key(&id) || !by_id.contains_key(&id) {
+                    break;
                 }
                 if !seen.insert(id) {
-                    break None;
+                    looped = true;
+                    break;
                 }
                 chain.push(id);
-                at = parent.parent;
-            };
-            for id in chain {
-                known.insert(id, found);
+                at = by_id[&id].parent;
             }
-            known.entry(object.id).or_insert(found);
+            // Answer the chain from the top down.
+            let mut above_portal = if looped {
+                None
+            } else {
+                at.and_then(|id| match by_id.get(&id) {
+                    Some(o) if o.kind() == ObjectKind::Portal => Some(id),
+                    Some(_) => portal_of.get(&id).copied().flatten(),
+                    None => None,
+                })
+            };
+            let mut above_origin = if looped {
+                None
+            } else {
+                match at {
+                    None => Some((0.0, 0.0)),
+                    Some(id) => origin.get(&id).copied().flatten(),
+                }
+            };
+            for id in chain.into_iter().rev() {
+                let object = by_id[&id];
+                portal_of.insert(id, above_portal);
+                let own = above_origin
+                    .zip(object.bounds.as_ref())
+                    .map(|((top, left), b)| (top + b.top, left + b.left));
+                origin.insert(id, own);
+                if object.kind() == ObjectKind::Portal {
+                    above_portal = Some(id);
+                }
+                above_origin = own;
+            }
         }
-        let portal_of = known
-            .into_iter()
-            .filter_map(|(id, portal)| Some((id, portal?)))
-            .collect();
         ObjectIndex {
-            layout,
             by_id,
-            portal_of,
+            in_order,
+            portal_of: portal_of
+                .into_iter()
+                .filter_map(|(id, portal)| Some((id, portal?)))
+                .collect(),
+            origin,
         }
     }
 
@@ -157,18 +199,16 @@ impl<'l> ObjectIndex<'l> {
 
     /// The objects of portal `portal` that show a field, in the order
     /// FileMaker enters them: top to bottom, then left to right (those
-    /// without bounds last, in the store's order).
+    /// without geometry last, in stacking order).
     fn portal_fields(&self, portal: u64) -> Vec<&'l LayoutObject> {
         let mut fields: Vec<(f64, f64, usize, &LayoutObject)> = self
-            .layout
-            .objects
-            .objects
+            .in_order
             .iter()
             .enumerate()
             .filter(|(_, o)| o.field_spec().is_some() && self.portal_of(o.id) == Some(portal))
-            .map(|(at, o)| match self.layout.absolute_bounds(o.id) {
-                Some(bounds) => (bounds.top, bounds.left, at, o),
-                None => (f64::INFINITY, f64::INFINITY, at, o),
+            .map(|(at, o)| match self.origin.get(&o.id).copied().flatten() {
+                Some((top, left)) => (top, left, at, *o),
+                None => (f64::INFINITY, f64::INFINITY, at, *o),
             })
             .collect();
         fields.sort_by(|a, b| {
@@ -177,6 +217,15 @@ impl<'l> ObjectIndex<'l> {
                 .then(a.2.cmp(&b.2))
         });
         fields.into_iter().map(|(.., o)| o).collect()
+    }
+
+    /// The portals, back-most first.
+    fn portals(&self) -> Vec<Portal> {
+        self.in_order
+            .iter()
+            .filter(|o| o.kind() == ObjectKind::Portal)
+            .filter_map(|o| portal(o))
+            .collect()
     }
 
     fn get(&self, id: u64) -> Option<&'l LayoutObject> {
@@ -196,17 +245,6 @@ impl ServerHost {
             .find(|l| u64::from(l.id) == id)?
             .layout
             .clone()
-    }
-
-    /// The portals of `layout` in stacking order, back-most first (the
-    /// "first portal in the layout stacking order" Go to Portal Row uses
-    /// when none is active).
-    fn portals_of(layout: &Layout) -> Vec<Portal> {
-        om_data::host::layout_objects::objects_in_order(layout)
-            .into_iter()
-            .filter(|o| o.kind() == ObjectKind::Portal)
-            .filter_map(portal)
-            .collect()
     }
 
     /// Whether the relationship from the window's occurrence to
@@ -325,7 +363,7 @@ impl ServerHost {
     ) -> HostResult<bool> {
         let layout = self.decoded_layout().ok_or(HostError::Unsupported)?;
         let index = ObjectIndex::new(&layout);
-        let portals = Self::portals_of(&layout);
+        let portals = index.portals();
         let active = self.window.as_ref().and_then(|w| w.portal.clone());
         let portal = active
             .as_ref()
@@ -356,14 +394,14 @@ impl ServerHost {
             RecordMove::Number(n) if n < 1 || n as u64 > rows => return missing(),
             RecordMove::Number(n) => n as u64,
         };
-        // Leaving the open record clears the focus: keep its object and
+        // Leaving the field clears the focus: keep its object and
         // repetition when it is a field of this portal.
         let kept = active
             .filter(|active| active.object == portal.object)
             .and(self.focus.as_ref())
             .and_then(|focus| Some((focus.object_id?, focus.repetition)))
             .filter(|(id, _)| index.portal_of(*id) == Some(portal.object));
-        self.leave()?;
+        self.leave_field();
         let (field, repetition) = if select {
             (None, 1)
         } else {
@@ -390,11 +428,12 @@ impl ServerHost {
         let Some(layout) = self.decoded_layout() else {
             return Err(OBJECT_MISSING.into());
         };
-        let Some(object) = layout
-            .objects
-            .objects
+        let index = ObjectIndex::new(&layout);
+        let Some(object) = index
+            .in_order
             .iter()
             .find(|o| o.name.as_deref() == Some(name))
+            .copied()
         else {
             self.leave_objects()?;
             return Err(OBJECT_MISSING.into());
@@ -410,8 +449,7 @@ impl ServerHost {
                 return Err(ErrorCode::FIELD_MISSING.into());
             }
         }
-        let index = ObjectIndex::new(&layout);
-        let portals = Self::portals_of(&layout);
+        let portals = index.portals();
         if object.kind() == ObjectKind::Portal {
             let portal = portals
                 .iter()
@@ -419,7 +457,7 @@ impl ServerHost {
                 .cloned()
                 .ok_or(HostError::Error(OBJECT_MISSING))?;
             let row = self.active_row_of(portal.object).unwrap_or(0);
-            self.leave()?;
+            self.leave_field();
             self.enter_row(&portal, row, None, 1);
             return Ok(());
         }
@@ -455,7 +493,7 @@ impl ServerHost {
             .active_row_of(portal.object)
             .filter(|row| *row > 0)
             .unwrap_or(1);
-        self.leave()?;
+        self.leave_field();
         if rows == 0 {
             self.enter_row(portal, 0, None, 1);
             return Err(ErrorCode::RECORD_MISSING.into());
@@ -464,31 +502,48 @@ impl ServerHost {
         Ok(())
     }
 
-    /// Go to Field into `field`: in a portal on the layout, its first
-    /// object is entered in the active row, else row 1, as Go to Object
-    /// enters it (`Ok(true)`); `Ok(false)` for a field in no portal, whose
-    /// entry is the caller's, the portal left.
+    /// Go to Field into `field`, as FileMaker resolves it: the first
+    /// object of the layout in stacking order that shows it. In a portal,
+    /// it is entered in the active row, else row 1, as Go to Object enters
+    /// it; a repetition the field lacks is 102, nothing active. Outside
+    /// every portal, it is entered and the portal left. `Ok(true)` when the
+    /// field is on the layout and entered; `Ok(false)` when no object shows
+    /// it, the portal left and the entry the caller's.
     pub(super) fn go_to_portal_field(&mut self, field: FieldRef) -> HostResult<bool> {
         let Some(layout) = self.decoded_layout() else {
             self.clear_portal();
             return Ok(false);
         };
         let index = ObjectIndex::new(&layout);
-        let portals = Self::portals_of(&layout);
-        let found = layout.objects.objects.iter().find_map(|o| {
-            let shown = shown_field(o)?;
-            let portal = portals
-                .iter()
-                .find(|p| Some(p.object) == index.portal_of(o.id))?;
-            (shown == (field.occurrence, field.field)).then(|| (portal.clone(), o))
-        });
-        let Some((portal, object)) = found else {
+        let Some(object) = index
+            .in_order
+            .iter()
+            .find(|o| shown_field(o) == Some((field.occurrence, field.field)))
+            .copied()
+        else {
             self.clear_portal();
             return Ok(false);
         };
         let repetition = field.repetition.max(1);
-        self.enter_portal_field(&portal, object, repetition)
-            .map(|()| true)
+        let repetitions = self
+            .schema
+            .field(field.occurrence, field.field)
+            .map_or(1, |(_, def)| Self::repetitions(def));
+        if repetition > repetitions {
+            self.leave_objects()?;
+            return Err(ErrorCode::FIELD_MISSING.into());
+        }
+        let holder = index
+            .portal_of(object.id)
+            .and_then(|id| index.portals().into_iter().find(|p| p.object == id));
+        match holder {
+            Some(portal) => self.enter_portal_field(&portal, object, repetition)?,
+            None => {
+                self.leave_objects()?;
+                self.focus = focus_on(object, repetition);
+            }
+        }
+        Ok(true)
     }
 
     /// The active row of portal `object`, when it is the active portal.
@@ -507,11 +562,19 @@ impl ServerHost {
         }
     }
 
-    /// Leave every field and portal row.
+    /// Leave every field and portal row, the record still open.
     fn leave_objects(&mut self) -> HostResult {
-        self.leave()?;
+        self.leave_field();
         self.clear_portal();
         Ok(())
+    }
+
+    /// Leave the field entered without leaving the record: moving between
+    /// the fields and portal rows of one record commits nothing, as in
+    /// FileMaker; the record is committed when the window leaves it (Go to
+    /// Record, Go to Layout, Commit Records).
+    fn leave_field(&mut self) {
+        self.focus = None;
     }
 
     /// Go to Record keeps the active row's number on the record it went
@@ -526,7 +589,7 @@ impl ServerHost {
         }
         let portal = self
             .decoded_layout()
-            .map(|layout| Self::portals_of(&layout))
+            .map(|layout| ObjectIndex::new(&layout).portals())
             .and_then(|portals| portals.into_iter().find(|p| p.object == active.object));
         let rows = match &portal {
             Some(portal) => self.portal_rows(portal).map_or(0, |(_, rows)| rows),
