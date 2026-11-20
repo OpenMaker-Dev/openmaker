@@ -2414,14 +2414,15 @@ fn related_list_refused() -> HostError {
     HostError::Error(ErrorCode(rules::error::UNAVAILABLE))
 }
 
-/// `value` as Find Matching Records writes it for the server's finds to read
-/// exactly: a number written out in full with `.` as its decimal separator,
-/// as the server's criteria read numbers (not `1.0E+9`); a time or
-/// timestamp with its seconds even when they are zero, since the display
-/// form drops them and would read as the whole minute. `None` for a time
-/// with a fraction of a second: the server's criteria compare whole
-/// seconds, so it would find its neighbours too. A time past 24 hours is
-/// no time of day and fails as a criterion (3).
+/// `value` as Find Matching Records writes it for the server's finds, as
+/// exactly as they read: a number written out in full with `.` as its
+/// decimal separator, as the server's criteria read numbers (not
+/// `1.0E+9`); a time or timestamp with its seconds even when they are
+/// zero, since the display form drops them and would read as the whole
+/// minute. `None` for a time with a fraction of a second: the server's
+/// criteria compare whole seconds, so no criterion holds it (and a whole
+/// second's criterion also finds the fractions within it). A time past 24
+/// hours is no time of day and fails as a criterion (3).
 fn matching_text(value: &Value, cx: &Ctx) -> Option<String> {
     let clock = |micros: i128| {
         let seconds = micros.div_euclid(1_000_000);

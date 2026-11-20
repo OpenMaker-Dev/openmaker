@@ -306,10 +306,15 @@ Server Find mode:
   `a*b`. This request is OpenMaker's reading of Claris's description; the
   one FileMaker builds is not captured. On the server a number is written
   out in full with `.` (`1000000000`, not `1.0E+9`) and a time or
-  timestamp with its seconds, so the criterion is that value and not the
-  whole minute. Its criteria compare whole seconds, so a time or timestamp
-  with a fraction of a second fails with 3 rather than finding its
-  neighbours. From Find mode the server switches to Browse first, as
+  timestamp with its seconds, so the criterion is that second, not the
+  whole minute. The server's criteria compare whole seconds: a record
+  holding a fraction of a second within it is found too (`9:05:00` finds
+  `9:05:00.250`), and a value with a fraction of a second fails with 3,
+  as no criterion holds it. A number is matched by its index key, which
+  keeps 200 digits as FileMaker's does (query-program.md 7.3), so numbers
+  that share their first 200 digits match each other; whether FileMaker
+  then compares the stored values is not measured. From Find mode the
+  server switches to Browse first, as
   Claris documents, and reads the record current when Find mode was
   entered (inferred: FileMaker's record after Find mode is not measured).
   A field of another occurrence, a global and a summary field fail with 3
