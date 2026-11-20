@@ -24,6 +24,7 @@ use crate::{
 
 mod calendar;
 mod container;
+pub(crate) use container::is_media;
 pub use container::PdfViewer;
 pub(crate) mod data_format;
 mod drop_down;
@@ -368,6 +369,36 @@ pub(crate) struct ContainerSelection {
     /// A related container's portal row (`field` is then
     /// `Occurrence::Field`): the Insert menu fills that row's record.
     pub row: Option<ContainerRow>,
+}
+
+impl ContainerSelection {
+    /// Whether its field object lets the user change the field in Browse
+    /// mode: "Field entry behavior" Edit. View Only and Select Only
+    /// prevent edits through the object (Claris Help, "Allowing or
+    /// preventing entry into fields"), so the Insert menu does not fill it.
+    pub(crate) fn allows_entry(&self, session: &Session) -> bool {
+        let crate::session::RenderState::Loaded(render) = &session.render else {
+            return false;
+        };
+        render
+            .layout
+            .objects
+            .get(self.object)
+            .and_then(|object| object.field_obj.as_ref())
+            .is_some_and(|field| field.field_entry(false) == om_layout::FieldEntry::Edit)
+    }
+
+    pub(crate) fn is_interactive(&self, session: &Session) -> bool {
+        let crate::session::RenderState::Loaded(render) = &session.render else {
+            return false;
+        };
+        self.row.is_none()
+            && render
+                .layout
+                .objects
+                .get(self.object)
+                .is_some_and(container::is_interactive)
+    }
 }
 
 /// The portal row of a selected related container: of portal `portal`
