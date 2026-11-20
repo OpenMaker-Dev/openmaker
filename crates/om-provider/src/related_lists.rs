@@ -673,17 +673,36 @@ impl NativeProvider {
             }
             if !found {
                 // The list keeps one of the values a calculation compares
-                // equal (`FileCalc::list_entries`): where its field's keys
-                // tell those apart (case or accents in Unicode raw or
-                // standard, `v` and `w` in a Swedish file's English keys),
-                // the value it left out for an equal one may be this one.
+                // equal (`FileCalc::list_entries`), as values of its field's
+                // type: where its field's keys tell those apart (case or
+                // accents in Unicode raw or standard, `v` and `w` in a
+                // Swedish file's English keys), the value it left out for an
+                // equal one may be this one. A number list's `1e3` is not
+                // `1é3` (13), as the list compares them (#591).
+                // The list's values are written in the locale of the file
+                // that owns the list (`list_entries`), and read back so; the
+                // value checked is read in the locale of the file that owns
+                // the listed field, as its own values are: a related German
+                // `1,500` is 1.5 there, not 1500. They compare as the list
+                // compares its values, in the list's locale: a US list over
+                // a Swedish field takes `v` and `w` apart.
+                let listed_type = schema
+                    .field(primary, listed)
+                    .map_or(ValueType::Text, |def| def.value_type);
+                let listed_locale = schema
+                    .table_of(primary)
+                    .and_then(|source| schema.table_context(source.id))
+                    .map_or(&schema.locale, |file| &file.locale);
+                let listed_cx = Ctx::new(listed_locale, today);
+                let list_locale = schema
+                    .value_list_context(list.id)
+                    .map_or(&schema.locale, |file| &file.locale);
+                let list_cx = Ctx::new(list_locale, today);
+                let checked = om_data::host::stored_value(&text, listed_type, &listed_cx);
                 let equal = |listed: &str| {
+                    let listed = om_data::host::stored_value(listed, listed_type, &list_cx);
                     matches!(
-                        om_data::calc::ops::compare(
-                            &om_data::calc::Value::text(listed),
-                            &om_data::calc::Value::text(&text),
-                            &cx
-                        ),
+                        om_data::calc::ops::compare(&listed, &checked, &list_cx),
                         om_data::calc::ops::Comparison::Ordered(std::cmp::Ordering::Equal)
                     )
                 };
