@@ -17,7 +17,7 @@
 
 use std::collections::{BTreeMap, BTreeSet};
 
-use om_data::rules::recalc::Recalculation;
+use om_data::rules::recalc::{ContainerResult, Recalculation};
 use om_data::rules::{self, RecordEnvironment};
 use om_hbam::slot::{be_uint, uint_segment};
 use om_hbam::{Cell, OwnedNode, Table};
@@ -116,6 +116,35 @@ pub fn changed_fields(
     changed
 }
 
+/// The calculations of `new` with a container result that were
+/// calculations of another result type in `old`: their cells hold derived
+/// values of the old type (a calculation keeps its old text until it is
+/// recomputed), which name no member they counted, so the type change
+/// drops them before the recompute ([`crate::store::Store`]'s
+/// `update_table`). A field that held entered values (a normal field
+/// made a container calculation) keeps them until the recompute writes
+/// its results, so that a calculation the recompute cannot evaluate loses
+/// nothing (#427's review); what FileMaker shows of them is unmeasured
+/// (#293). Without an `old` basis the old types are not known and nothing
+/// is dropped. Cells that name a member without a counted reference never
+/// release it: the recompute holds every release to the cells that still
+/// name the member ([`crate::store::Store`]'s `naming_cells`).
+pub fn retyped_to_container(old: Option<&TableBasis>, new: &TableBasis) -> BTreeSet<u64> {
+    const CONTAINER: u8 = 6;
+    const CALCULATION: u8 = 2;
+    let Some(old) = old else {
+        return BTreeSet::new();
+    };
+    new.iter()
+        .filter(|(_, basis)| basis.kind == CALCULATION && basis.data_type == CONTAINER)
+        .filter(|(id, _)| {
+            old.get(*id)
+                .is_some_and(|was| was.kind == CALCULATION && was.data_type != CONTAINER)
+        })
+        .map(|(id, _)| *id)
+        .collect()
+}
+
 /// What a recomputation did.
 #[derive(Debug, Default)]
 pub struct Outcome {
@@ -128,7 +157,24 @@ pub struct Outcome {
     /// Records with a value that changed, left as they were because their
     /// modification count is the largest a serial key holds.
     pub exhausted: usize,
+    /// Per record (its key under `[T, 05]`), the container results that
+    /// changed, by cell: stored in the table's library after the walk,
+    /// which reads the library while it runs ([`crate::store::Store`]'s
+    /// `recalculate`).
+    pub containers: Vec<(Vec<u8>, BTreeMap<u64, ContainerResult>)>,
 }
+
+/// How much new container data one recompute holds for the library
+/// before it is stored, charged as each result is queued: past it, a
+/// result fails on its record, which keeps its value (logged), so that a
+/// formula making large data on every row cannot hold rows times its size
+/// in memory (#427's review).
+pub const CONTAINER_BUDGET: usize = 256 << 20;
+
+/// What a queued record holds beyond its results' slots ([`CONTAINER_BUDGET`]).
+const QUEUED_RECORD: usize = 11 * std::mem::size_of::<(u64, ContainerResult)>()
+    + std::mem::size_of::<(Vec<u8>, BTreeMap<u64, ContainerResult>)>()
+    + 64;
 
 /// Recompute `recalc`'s calculations on every record under `records`
 /// (`[T, 05]`), in place, one record at a time: a record whose values
@@ -147,6 +193,7 @@ pub fn recompute_records(
     let per_record = recalc.uses_uuid();
     let mut shared = environment();
     let mut outcome = Outcome::default();
+    let mut budget = CONTAINER_BUDGET;
     for record in &mut records.children {
         if om_hbam::writer::holds_value(record) {
             continue;
@@ -155,7 +202,7 @@ pub fn recompute_records(
         if per_record {
             shared = environment();
         }
-        let result = recalc.recompute(&texts(record), &shared);
+        let result = recalc.recompute(&texts(record), &shared, &mut budget);
         // A calculation failing in several repetitions of the record is
         // one record it failed on.
         let mut seen = BTreeSet::new();
@@ -169,7 +216,7 @@ pub fn recompute_records(
                 .or_insert_with(|| (0, error.to_string()));
             entry.0 += 1;
         }
-        if result.values.is_empty() {
+        if result.values.is_empty() && result.containers.is_empty() {
             continue;
         }
         // Changed without a new count, a client's copy would not show as
@@ -177,6 +224,15 @@ pub fn recompute_records(
         if modcount::bump(record, 1).is_none() {
             outcome.exhausted += 1;
             continue;
+        }
+        if !result.containers.is_empty() {
+            // The record's own map and queue entry, beyond the slots its
+            // results were charged: a B-tree leaf of eleven slots however
+            // few it holds, the entry and the record's key (#427's review).
+            budget = budget.saturating_sub(QUEUED_RECORD + record.segment.len());
+            outcome
+                .containers
+                .push((record.segment.clone(), result.containers));
         }
         for (field, text) in &result.values {
             let key = uint_segment(*field);

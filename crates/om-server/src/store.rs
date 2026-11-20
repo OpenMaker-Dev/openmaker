@@ -29,7 +29,7 @@ use std::sync::{Mutex, MutexGuard, PoisonError};
 use log::{error, info, warn};
 use om_calc::Locale;
 use om_collate::DateOrder;
-use om_data::rules::recalc::Recalculation;
+use om_data::rules::recalc::{ContainerResult, Recalculation};
 use om_data::rules::RecordEnvironment;
 use om_hbam::catalog::keys as catalog_keys;
 use om_hbam::slot::{be_uint, uint_segment};
@@ -724,6 +724,92 @@ impl Store {
             if let Some(library) = self.root.at_mut(&library) {
                 library::adjust(library, &member, delta);
                 self.dirty = true;
+            }
+        }
+    }
+
+    /// For each member of `table`'s library, how many container cells of
+    /// the table's records name it.
+    fn naming_cells(&self, table: &[u8]) -> BTreeMap<Vec<u8>, usize> {
+        let mut naming = BTreeMap::new();
+        let Some(records) = self.node(&[table, &[keys::RECORDS]]) else {
+            return naming;
+        };
+        for record in &records.children {
+            for cell in &record.children {
+                if self.container_cell(table, &cell.segment) {
+                    if let Some(member) = member_key(cell) {
+                        *naming.entry(member).or_insert(0) += 1;
+                    }
+                }
+            }
+        }
+        naming
+    }
+
+    /// [`Self::count_containers_in`] for a recomputed record `old` → `new`,
+    /// with each member's net release held so that its count stays at
+    /// least the cells of the table that still name it, as `naming` counts
+    /// them before the change (then updated). Without `naming`, as
+    /// [`Self::count_containers_in`].
+    fn count_recomputed_containers(
+        &mut self,
+        journal: &mut Journal,
+        table: &[u8],
+        old: &OwnedNode,
+        new: &OwnedNode,
+        counted: &[Vec<u8>],
+        naming: Option<&mut BTreeMap<Vec<u8>, usize>>,
+    ) {
+        let Some(naming) = naming else {
+            self.count_containers_in(journal, table, Some(old), Some(new), counted);
+            return;
+        };
+        // Cells naming each member, net, in this record's change.
+        let mut net: BTreeMap<Vec<u8>, i64> = BTreeMap::new();
+        for (record, sign) in [(old, -1), (new, 1)] {
+            for cell in &record.children {
+                if self.container_cell(table, &cell.segment) {
+                    if let Some(member) = member_key(cell) {
+                        *net.entry(member).or_default() += sign;
+                    }
+                }
+            }
+        }
+        let library: [&[u8]; 2] = [table, &[LIBRARY]];
+        // The references this change may release: as counted, less those
+        // that would leave a member counted below the cells naming it.
+        let mut held = Vec::new();
+        for (member, change) in &net {
+            if *change >= 0 {
+                continue;
+            }
+            let stored = self
+                .node(&library)
+                .and_then(|l| library::member(l, member))
+                .map_or(0, |m| i64::from(library::reference_count(m)));
+            let named = naming.get(member).copied().unwrap_or(0) as i64;
+            let releases = -change;
+            let allowed = (stored - named + releases).clamp(0, releases);
+            for _ in allowed..releases {
+                held.push(member.clone());
+            }
+        }
+        if !held.is_empty() {
+            warn!(
+                "{}: {} reference(s) a recomputed container cell named were not counted; \
+                 their members keep their counts",
+                self.name,
+                held.len()
+            );
+        }
+        // A held release is one more reference counted for the change.
+        let counted: Vec<Vec<u8>> = counted.iter().cloned().chain(held).collect();
+        self.count_containers_in(journal, table, Some(old), Some(new), &counted);
+        if journal.refused.is_none() {
+            for (member, change) in net {
+                let entry = naming.entry(member).or_insert(0);
+                *entry = (*entry as i64 + change).max(0) as usize;
             }
         }
     }
@@ -1813,7 +1899,11 @@ impl Store {
         }
         let basis = recalc::table_basis(&self.root, &definition);
         let stale = recalc::changed_fields(self.basis.get(table), &basis, &work);
+        let retyped = recalc::retyped_to_container(self.basis.get(table), &basis);
         self.basis.insert(table.to_vec(), basis);
+        for field in &retyped {
+            changed |= self.drop_retyped_cells(table, *field);
+        }
         let recomputed = if stale.is_empty() {
             Vec::new()
         } else {
@@ -1999,6 +2089,19 @@ impl Store {
             self.root.put(&[table, &[LIBRARY]], node);
         }
         let outcome = outcome.unwrap_or_else(|panic| std::panic::resume_unwind(panic));
+        // The library is back: container results go into it, each release
+        // held to the references the table's cells make
+        // ([`Self::naming_cells`]).
+        let mut naming = (!outcome.containers.is_empty()).then(|| self.naming_cells(table));
+        for (record, cells) in &outcome.containers {
+            self.store_recomputed_containers(
+                table,
+                record,
+                cells,
+                &definition.name,
+                naming.as_mut(),
+            );
+        }
         for (field, (records, first)) in &outcome.failed {
             let name = definition.field(*field).map_or("", |f| f.name.as_str());
             warn!(
@@ -2024,6 +2127,162 @@ impl Store {
         );
         self.dirty |= outcome.changed > 0;
         fields
+    }
+
+    /// Drop, in every record of `table`, the cells of `field`, whose type
+    /// changed to container in this change: they hold values of the old
+    /// type, which name no member they counted, so they are not counted
+    /// as references either (`recalc::retyped_to_container`). A record that
+    /// lost one counts one more modification; one whose count cannot
+    /// advance loses it too (it is not a container value), logged.
+    /// Returns whether a record changed.
+    fn drop_retyped_cells(&mut self, table: &[u8], field: u64) -> bool {
+        let key = uint_segment(field);
+        let mut cells = self.repetition_cells(table, &key, &BTreeSet::new());
+        cells.insert(key);
+        let Some(records) = self.root.at_mut(&[table, &[keys::RECORDS]]) else {
+            return false;
+        };
+        let mut changed = false;
+        let mut exhausted = 0usize;
+        for record in &mut records.children {
+            let before = record.children.len();
+            record
+                .children
+                .retain(|cell| !cells.contains(&cell.segment));
+            if record.children.len() != before {
+                changed = true;
+                if modcount::bump(record, 1).is_none() {
+                    exhausted += 1;
+                }
+            }
+        }
+        if exhausted > 0 {
+            warn!(
+                "{}: table {table:02x?} field {field}: {exhausted} record(s) lost the old \
+                 values of a field changed to container without counting the change: their \
+                 modification count is the largest a serial key holds",
+                self.name
+            );
+        }
+        self.dirty |= changed;
+        changed
+    }
+
+    /// Store the container results `cells` the recompute computed for
+    /// record `record` of `table` (its key under `[T, 05]`), as a server
+    /// script's commit stores container data (containers.md,
+    /// "Implementation notes (OpenMaker Server scripts)"): a member of the
+    /// table's library the value names takes one more reference, data
+    /// (another table's member's, or data a calculation made) is stored as
+    /// a member, or counts one more reference to a member with the same
+    /// data, and text is the cell's text; a member a cell no longer names
+    /// is released (deleted at 0). When the library would refuse a write,
+    /// the record keeps its container values, logged.
+    ///
+    /// A release is held to `naming` (cells of the table naming each
+    /// member, [`Self::naming_cells`]): a member keeps a count no lower
+    /// than the cells that still name it, so a cell that named a member
+    /// without a counted reference (text of a field that was not a
+    /// container, kept across a type change or a restart) never takes away
+    /// another cell's reference (#427's review). `naming` follows the
+    /// record's change.
+    fn store_recomputed_containers(
+        &mut self,
+        table: &[u8],
+        record: &[u8],
+        cells: &BTreeMap<u64, ContainerResult>,
+        name: &str,
+        naming: Option<&mut BTreeMap<Vec<u8>, usize>>,
+    ) {
+        let path: [&[u8]; 3] = [table, &[keys::RECORDS], record];
+        let Some(old) = self.node(&path).cloned() else {
+            return;
+        };
+        let mut new = old.clone();
+        let mut journal = self.begin_commit();
+        // The members `store_container_in` counted a reference to.
+        let mut counted = Vec::new();
+        for (cell, result) in cells {
+            let key = uint_segment(*cell);
+            let text = match result {
+                ContainerResult::Empty => None,
+                ContainerResult::Text(text) => Some(text.clone()),
+                ContainerResult::Data(value) => {
+                    let Some((member, stored)) = self.recomputed_member(&mut journal, table, value)
+                    else {
+                        journal.refused.get_or_insert_with(|| {
+                            "the container value has no data to store".to_string()
+                        });
+                        break;
+                    };
+                    if stored {
+                        counted.push(member.clone());
+                    }
+                    Some(containers::reference_text(&member))
+                }
+            };
+            match text {
+                Some(text) => new.set_child(om_scripts::text_node(&key, &text)),
+                None => {
+                    new.remove(&[&key]);
+                }
+            }
+        }
+        if journal.refused.is_none() {
+            self.count_recomputed_containers(&mut journal, table, &old, &new, &counted, naming);
+        }
+        if let Some(reason) = journal.refused.take() {
+            warn!(
+                "{}: table {name:?}: record {record:02x?} keeps its container calculation                  values: {reason}",
+                self.name
+            );
+            self.roll_back(journal);
+            return;
+        }
+        if let Some(node) = self.root.at_mut(&path) {
+            *node = new;
+            self.dirty = true;
+        }
+    }
+
+    /// The member of `table`'s library a recomputed container value names
+    /// when it is one of that library's, with `false`; else the member
+    /// [`Self::store_container_in`] stores its data in, counted, with
+    /// `true`: another table's member's tree as stored there, or the tree
+    /// the field stores for data a calculation made
+    /// (`om_data::containers::tree`). `None` without data to store, or
+    /// when the library refused it (in `journal`).
+    fn recomputed_member(
+        &mut self,
+        journal: &mut Journal,
+        table: &[u8],
+        value: &om_calc::Container,
+    ) -> Option<(Vec<u8>, bool)> {
+        let mut data = None;
+        if let Some(r) = &value.library {
+            let library = [uint_segment(r.table), vec![LIBRARY]];
+            let segments: Vec<&[u8]> = library.iter().map(Vec::as_slice).collect();
+            let member = self
+                .library_member(&segments, &r.member)
+                .filter(|m| MemberInfo::read(m).is_some_and(|i| i.md5 == r.md5));
+            if let Some(member) = member {
+                if library[0] == table {
+                    return Some((r.member.clone(), false));
+                }
+                data = library::member_tree(member);
+            }
+        }
+        let data = match data {
+            Some(data) => data,
+            None if value.streams.is_empty() => return None,
+            None => {
+                let (keys, md5) = containers::tree(value)?;
+                BinaryData::from_tree(keys, md5)
+            }
+        };
+        let member = self.store_container_in(journal, table, data);
+        (!member.is_empty()).then_some((member, true))
     }
 
     /// The cells holding repetitions 2 to 255 of `field`, in a record of

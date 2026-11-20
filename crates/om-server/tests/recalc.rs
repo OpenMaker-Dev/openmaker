@@ -857,3 +857,180 @@ fn design_functions_answer_as_the_file_context_does() {
     assert_eq!(cell(&after, 1, TABLES), Some("|"));
     assert_eq!(cell(&after, 1, FILES), Some("Tasks"));
 }
+
+/// Stored calculations with a container result are recomputed and stored
+/// as a server script's commit stores container data (containers.md,
+/// "Implementation notes (OpenMaker Server scripts)"; #384). PhotoCopy
+/// (`Photo`) names Photo's own member, one more reference to it; record 2,
+/// with no photo, stays empty. Decoded (`Base64Decode`, the same data on
+/// both records) is stored once as a new member with two references. When
+/// PhotoCopy's formula then answers nothing, its reference is released.
+/// Before, the recompute skipped container results and left them as they
+/// were.
+#[test]
+fn stored_container_calculations_store_their_data() {
+    const COPY: u64 = 44;
+    const DECODED: u64 = 45;
+    let mut root = fixture::tree(&[], true);
+    fixture::add_photo(&mut root);
+    let file = TempFile::from_tree("recalc-container-results", &root);
+    let port = server::start(&file);
+    let (mut designer, id) = server::logged_in(port, "designer");
+    let t = uint_segment(TABLE);
+    let references = |session: &mut Session, text: &str| {
+        let member = om_data::containers::reference(text).unwrap();
+        let path: [&[u8]; 5] = [&t, &[0x1f], &[5], &member, &[0x12]];
+        let value = session.download(&path).unwrap().value;
+        u32::from_be_bytes(value.try_into().unwrap())
+    };
+
+    let mut names = fixture::photo_names();
+    names.add_field(TABLE, COPY, "PhotoCopy");
+    names.add_field(TABLE, DECODED, "Decoded");
+    let mut designed = root.clone();
+    for (field, name, text) in [
+        (COPY, "PhotoCopy", "Photo"),
+        (
+            DECODED,
+            "Decoded",
+            "Base64Decode ( \"aGVsbG8=\" ; \"a.txt\" )",
+        ),
+    ] {
+        // A stored calculation (2) with a container result (6).
+        fixture::add_field(&mut designed, TABLE, field, name, 2, 6, 0, 0, 0);
+        fixture::add_formula(&mut designed, &names, (TABLE, OCCURRENCE), field, 5, text);
+    }
+    let mut catalog = field_catalog(&designed);
+    save_field_catalog(&mut designer, id, &catalog);
+
+    let after = records_of(&mut designer, TABLE);
+    let photo = cell(&after, 1, fixture::PHOTO).unwrap().to_owned();
+    assert_eq!(cell(&after, 1, COPY), Some(photo.as_str()));
+    assert_eq!(cell(&after, 2, COPY), None);
+    assert_eq!(references(&mut designer, &photo), 2);
+    let decoded = cell(&after, 1, DECODED).unwrap().to_owned();
+    assert_ne!(decoded, photo);
+    assert_eq!(cell(&after, 2, DECODED), Some(decoded.as_str()));
+    assert_eq!(references(&mut designer, &decoded), 2);
+
+    set_formula(&mut catalog, COPY, "\"\"");
+    defer(&mut catalog, COPY, FORMULA_CHANGED);
+    save_field_catalog(&mut designer, id, &catalog);
+    let after = records_of(&mut designer, TABLE);
+    assert_eq!(cell(&after, 1, COPY), None);
+    assert_eq!(references(&mut designer, &photo), 1);
+    assert_eq!(
+        cell(&after, 1, DECODED),
+        Some(decoded.as_str()),
+        "not stale"
+    );
+    assert_eq!(references(&mut designer, &decoded), 2);
+}
+
+/// A calculation whose result type changes from text to container keeps
+/// its old text until it is recomputed; text shaped like a library
+/// reference there owns no reference. Emptying it must not release the
+/// member Photo names (#427's review: Photo's member was deleted while
+/// Photo still named it). A container result whose text has that shape is
+/// refused: the record keeps its value.
+#[test]
+fn a_result_changed_to_container_releases_no_reference_its_text_did_not_own() {
+    const SHAPED: u64 = 46;
+    const FAKE: u64 = 47;
+    let mut root = fixture::tree(&[], true);
+    fixture::add_photo(&mut root);
+    let file = TempFile::from_tree("recalc-result-type", &root);
+    let port = server::start(&file);
+    let (mut designer, id) = server::logged_in(port, "designer");
+    let t = uint_segment(TABLE);
+    let photo_member = |session: &mut Session| {
+        let m = om_hbam::serial::encode(fixture::PHOTO_MEMBER);
+        let path: [&[u8]; 5] = [&t, &[0x1f], &[5], &m, &[0x12]];
+        session.download(&path).unwrap()
+    };
+    // Photo's member is `01`; its reference text is "01" then U+E000.
+    let reference = om_data::containers::reference_text(&om_hbam::serial::encode(1));
+    let shaped = "\"01\" & Char ( 57344 )";
+    let names = fixture::photo_names();
+    let mut designed = root.clone();
+    // Shaped: a stored text calculation (1); Fake: a container one (6).
+    for (field, name, data_type) in [(SHAPED, "Shaped", 1u8), (FAKE, "Fake", 6)] {
+        fixture::add_field(&mut designed, TABLE, field, name, 2, data_type, 0, 0x20, 0);
+        fixture::add_formula(&mut designed, &names, (TABLE, OCCURRENCE), field, 5, shaped);
+    }
+    let mut catalog = field_catalog(&designed);
+    save_field_catalog(&mut designer, id, &catalog);
+    let after = records_of(&mut designer, TABLE);
+    assert_eq!(cell(&after, 1, SHAPED), Some(reference.as_str()));
+    assert_eq!(
+        cell(&after, 1, FAKE),
+        None,
+        "reference-shaped text is refused"
+    );
+
+    // Shaped becomes a container calculation, its formula kept: the
+    // shaped text it answers is refused, and its old text, a value of the
+    // old type, is dropped with the type change rather than kept uncounted.
+    let path: [&[u8]; 3] = [&[5], &uint_segment(SHAPED), &[2]];
+    let mut definition = catalog.at(&path).unwrap().value.clone().unwrap();
+    definition[1] = 6;
+    catalog.put(&path, OwnedNode::leaf(Vec::new(), definition));
+    defer(&mut catalog, SHAPED, 0x40);
+    save_field_catalog(&mut designer, id, &catalog);
+    let after = records_of(&mut designer, TABLE);
+    assert_eq!(cell(&after, 1, SHAPED), None);
+    // A later save empties it: nothing it never counted is released.
+    catalog.remove(&[&[1], &[0xfd]]);
+    set_formula(&mut catalog, SHAPED, "\"\"");
+    defer(&mut catalog, SHAPED, FORMULA_CHANGED);
+    save_field_catalog(&mut designer, id, &catalog);
+    let after = records_of(&mut designer, TABLE);
+    assert_eq!(cell(&after, 1, SHAPED), None);
+    let member = photo_member(&mut designer);
+    assert_eq!(
+        member.node_state,
+        om_protocol::NodeState::Terminal,
+        "Photo's data is kept"
+    );
+    assert_eq!(member.value, 1u32.to_be_bytes().to_vec());
+    assert_eq!(cell(&after, 1, fixture::PHOTO), Some(reference.as_str()));
+}
+
+/// Startup recovery without the schema it changed from (#427's review: a
+/// stop after the schema saved and before its recompute): a container
+/// calculation still holds text shaped like Photo's reference, which it
+/// never counted. Recomputing it to empty releases nothing, so Photo's
+/// member keeps its one reference, and the cell is emptied.
+#[test]
+fn recovery_releases_no_reference_a_cell_did_not_count() {
+    const SHAPED: u64 = 46;
+    let mut root = fixture::tree(&[], true);
+    fixture::add_photo(&mut root);
+    let t = uint_segment(TABLE);
+    let names = fixture::photo_names();
+    fixture::add_field(&mut root, TABLE, SHAPED, "Shaped", 2, 6, 0, 0x20, 0);
+    fixture::add_formula(&mut root, &names, (TABLE, OCCURRENCE), SHAPED, 5, "\"\"");
+    let reference = om_data::containers::reference_text(&om_hbam::serial::encode(1));
+    root.put(
+        &[&t, &[5], &[1], &uint_segment(SHAPED)],
+        om_scripts::text_node(&[], &reference),
+    );
+    let mut catalog = field_catalog(&root);
+    defer(&mut catalog, SHAPED, FORMULA_CHANGED);
+    root.put(&[&t, &[3]], catalog);
+    let file = TempFile::from_tree("recalc-recover-shaped", &root);
+    let port = server::start(&file);
+    let (mut client, _) = server::logged_in(port, "client");
+    let after = records_of(&mut client, TABLE);
+    assert_eq!(cell(&after, 1, SHAPED), None);
+    assert_eq!(cell(&after, 1, fixture::PHOTO), Some(reference.as_str()));
+    let m = om_hbam::serial::encode(fixture::PHOTO_MEMBER);
+    let path: [&[u8]; 5] = [&t, &[0x1f], &[5], &m, &[0x12]];
+    let member = client.download(&path).unwrap();
+    assert_eq!(
+        member.node_state,
+        om_protocol::NodeState::Terminal,
+        "Photo's data is kept"
+    );
+    assert_eq!(member.value, 1u32.to_be_bytes().to_vec());
+}

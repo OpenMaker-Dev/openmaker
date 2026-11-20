@@ -4491,6 +4491,26 @@ impl RecordPlan {
         self.evaluate_repetition(id, 1, expression, row, session)
     }
 
+    /// The value of repetition `repetition` of calculated field `id`,
+    /// evaluated in that repetition, and its stored text.
+    fn evaluate_repetition_value(
+        &self,
+        id: u64,
+        repetition: u32,
+        expression: &Expression,
+        row: &BTreeMap<u64, String>,
+        session: &Evaluation,
+    ) -> Result<(Value, String), DataError> {
+        let def = self
+            .schema
+            .table(self.table)
+            .and_then(|t| t.fields.get(&id));
+        let result_type = def.map(|d| d.value_type);
+        let repetition = InRepetition::Calculation(repetition);
+        self.run(id, expression, row, session, None, result_type, repetition)
+            .map_err(RunError::into_error)
+    }
+
     /// The new stored text of repetition `repetition` of calculated field
     /// `id`, evaluated in that repetition (calc-values.md 8.6).
     fn evaluate_repetition(

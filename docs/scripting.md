@@ -616,15 +616,16 @@ Open items:
     ([#83](https://github.com/OpenMaker-Dev/openmaker/issues/83)).
   - The recompute after a schema change reads container inputs from the
     table's library, computes repeating calculations in each repetition,
-    and answers Design functions as FileMaker Server's file context does
-    (empty, but `DatabaseNames`). With "do not evaluate if all referenced
-    fields are empty", which inputs count in a repetition above 1 is
-    OpenMaker's reading. It still skips these, leaving their values as
-    they were and logging the field: calculations of more than 255
-    repetitions; container results
-    ([#384](https://github.com/OpenMaker-Dev/openmaker/issues/384));
-    plug-in functions and `Get` selectors that need a window, whose
-    FileMaker Server answers there are unmeasured
+    stores container results in the library as a server script's commit
+    does, and answers Design functions as FileMaker Server's file context
+    does (empty, but `DatabaseNames`). With "do not evaluate if all
+    referenced fields are empty", which inputs count in a repetition above
+    1 is OpenMaker's reading, and how FileMaker Server stores a recomputed
+    container result is unmeasured. It still skips these, leaving their
+    values as they were and logging the field: calculations of more than
+    255 repetitions; a calculation reading a container result recomputed
+    in the same change; plug-in functions and `Get` selectors that need a
+    window, whose FileMaker Server answers there are unmeasured
     ([#385](https://github.com/OpenMaker-Dev/openmaker/issues/385)).
   - FileMaker Pro clients: op77 GetFileList (the Hosts dialog's file list)
     and op89 CompareModCounts (reopening a cached file) are unsupported;
