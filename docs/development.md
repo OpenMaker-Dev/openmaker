@@ -403,7 +403,8 @@ installed, when the account:
 
 - is root, can log in or has another group than `omadmin`;
 - has a password or another way to sign in (`AuthenticationAuthority`);
-- shares its id, or the group's, with another record;
+- shares its id, or the group's, with another record in any directory this
+  Mac searches (local or network);
 - is in a privileged group (`admin`, `wheel`, `staff`, `operator`,
   `_developer`, `_lpadmin`, or the remote-access groups).
 
@@ -425,11 +426,12 @@ error.
 
 The folders above the service's own are root's, 0755. The scripts run as
 root, so they refuse to work in a folder another user could change:
-`/Library`, `/Library/LaunchDaemons` and the server's root folders must be
-root's, not writable by others, and without an access control entry
-granting writes. Kept service folders and the password file must be no
-more open than the installer makes them; their contents are never
-changed. The scripts lock against each other with
+`/Library`, `/Library/LaunchDaemons`, the server's root folders and the
+installed job must be root's, not writable by others, and without an
+access control entry granting writes. Kept service folders and the
+password file must be the service account's and no more open than the
+installer makes them, through modes or access control entries (only
+`Databases` lets `omadmin` write); their contents are never changed. The scripts lock against each other with
 `/Library/OpenMaker Server/.install.lock`. They never read the service's
 logs or run its binaries as root: the release's `--help` check runs as
 `omserver`. launchd has no
@@ -479,7 +481,8 @@ are recorded instead of applied. The scenarios:
 - a parent folder whose access control entry grants writes, which is
   refused;
 - an update refusing a password file others may read and a backup folder
-  others may write, then going ahead once they are restored.
+  others may write, by mode and by access control entry, and a job others
+  may change, then going ahead once they are restored.
 
 It then runs the job's own command line, as the current user, on a staged
 blank database: the server must open it for writing and write its state

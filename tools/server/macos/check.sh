@@ -201,9 +201,26 @@ if run "$kept" update.sh "$bin" >"$work/kept.out" 2>&1; then
 fi
 grep -q 'Backups is more open than' "$work/kept.out" || failed "update refused it for another reason: $(cat "$work/kept.out")"
 chmod 0750 "$kept_server/Data/Backups"
+# The same through access control entries, and a job others may change.
+kept_job="$kept/Library/LaunchDaemons/dev.openmaker.server.plist"
+for opened in "$kept_server/Config/admin-password|everyone allow read|admin-password is open" \
+    "$kept_server/Data/Backups|everyone allow add_file|Backups is open to other users' writes" \
+    "$kept_job|everyone allow write|may be changed by other users"; do
+    path=${opened%%|*}
+    rest=${opened#*|}
+    entry=${rest%%|*}
+    reason=${rest#*|}
+    chmod +a "$entry" "$path"
+    if run "$kept" update.sh "$bin" >"$work/kept.out" 2>&1; then
+        failed "update accepted $path with \"$entry\""
+    fi
+    grep -qF -- "$reason" "$work/kept.out" ||
+        failed "update refused $path for another reason: $(cat "$work/kept.out")"
+    chmod -a "$entry" "$path"
+done
 [[ ! -e "$kept_server/.install.lock" ]] || failed 'a refused update left its lock'
 run "$kept" update.sh "$bin" >/dev/null
-echo 'update: a password others may read, or a folder others may write, refused; restored, it updates'
+echo 'update: a password, folder or job others may read or change (modes or ACLs) refused; restored, it updates'
 
 # --- The job's command line serves a staged database copy and writes its
 # state and logs, as the current user standing for omserver. A disposable

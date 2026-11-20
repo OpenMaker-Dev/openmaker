@@ -27,9 +27,10 @@ else
     root_uid=0
 fi
 
+# Stop with `message`. The lock is released by the script's exit trap, after
+# its cleanup has put things back; a cleanup that stops unlocks first.
 fail() {
     printf 'OpenMaker Server: %s\n' "$*" >&2
-    unlock_installation
     exit 1
 }
 
@@ -186,7 +187,11 @@ ds_has() {
     if [[ -n $prefix ]]; then
         [[ -f "$ds_root/$kind/$name/$key" ]]
     else
-        dscl . -read "/$kind/$name" "$key" >/dev/null 2>&1
+        # dscl answers 0 for a missing key too, with only a message on
+        # stderr: the key's own line says it is there.
+        local out
+        out=$(dscl . -read "/$kind/$name" "$key" 2>/dev/null) || return 1
+        [[ $out == "$key:"* ]]
     fi
 }
 
@@ -232,12 +237,33 @@ free_id() {
     local id taken
     taken=$( (ds_values Users UniqueID; ds_values Groups PrimaryGroupID) | sort -n | uniq)
     for ((id = 300; id < 500; id++)); do
-        if ! grep -qx -- "$id" <<<"$taken"; then
+        if ! grep -qx -- "$id" <<<"$taken" && [[ -z $(id_holders Users UniqueID "$id") &&
+            -z $(id_holders Groups PrimaryGroupID "$id") ]]; then
             echo "$id"
             return 0
         fi
     done
     fail 'No free id below 500 for the service account.'
+}
+
+# The names of `kind` records with `key` `id` in every directory this Mac
+# searches (local and network: LDAP, Active Directory), one per line.
+id_holders() {
+    local kind=$1 key=$2 id=$3 file
+    if [[ -n $prefix ]]; then
+        for file in "$ds_root/$kind"/*/"$key"; do
+            [[ -f $file ]] || continue
+            if [[ $(cat -- "$file") == "$id" ]]; then
+                basename -- "$(dirname -- "$file")"
+            fi
+        done
+        return 0
+    fi
+    local found
+    found=$(dscl /Search -search "/$kind" "$key" "$id") ||
+        fail "Cannot search the directory for $kind with $key $id."
+    # Each match starts a line `name<tab><tab>key = (`, its values below.
+    awk -v key="$key" '$2 == key && $3 == "=" { print $1 }' <<<"$found" | sort -u
 }
 
 # Make the group and the user when they are missing, and check them when
@@ -275,9 +301,10 @@ ensure_accounts() {
         $(ds_read Users "$service_user" PrimaryGroupID) == "$gid" &&
         ($shell == /usr/bin/false || $shell == /usr/sbin/nologin) ]] ||
         fail "The existing $service_user account must be a non-root, non-login user whose group is $service_group."
-    # Its ids its own: another record with them would share its files.
-    [[ $(grep -cx -- "$uid" <<<"$(ds_values Users UniqueID)") == 1 &&
-        $(grep -cx -- "$gid" <<<"$(ds_values Groups PrimaryGroupID)") == 1 ]] ||
+    # Its ids its own, in every directory searched: another record with
+    # them would share its files.
+    [[ $(id_holders Users UniqueID "$uid") == "$service_user" &&
+        $(id_holders Groups PrimaryGroupID "$gid") == "$service_group" ]] ||
         fail "Another user or group has $service_user's or $service_group's id."
     # No way to sign in: no password and no other authentication.
     [[ $(ds_read Users "$service_user" Password) == '*' ]] &&
@@ -301,7 +328,10 @@ service_groups() {
         done
         return 0
     fi
-    id -Gn "$service_user" | tr ' ' '\n'
+    local names
+    names=$(id -Gn "$service_user") || fail "Cannot read $service_user's groups."
+    [[ -n $names ]] || fail "Cannot read $service_user's groups."
+    tr ' ' '\n' <<<"$names"
 }
 
 # --- The service's folders.
@@ -322,21 +352,35 @@ service_directories() {
             set_owner "$service_user:$service_group" "$path"
         fi
         [[ -d "$path" ]] || fail "Expected a folder: $path"
-        # A kept folder is used as it is, its contents untouched, but no
-        # more open than the installer makes it.
+        # A kept folder is used as it is, its contents untouched, but it is
+        # the service's and no more open than the installer makes it.
+        [[ $(uid_of "$path") == "$(service_uid)" ]] ||
+            fail "$path is not $service_user's; restore its owner."
         (((8#$(mode_of "$path") & ~8#$mode & 8#777) == 0)) ||
             fail "$path is more open than $mode; restore its mode."
-        (((8#$(mode_of "$path") & 002) == 0)) && ! write_acl_others "$path" ||
+        local writers="user:$service_user"
+        [[ $path != "$data/Databases" ]] || writers="$writers|group:$service_group"
+        ! acl_grants_others "$path" "$write_rights" "$writers" ||
             fail "$path is open to other users' writes; restore its permissions."
     done
 }
 
-# An access control entry granting writes to anyone but the service
-# account and group.
-write_acl_others() {
+# Whether an access control entry on `path` grants `rights` to anyone but
+# `allowed` (a `user:name|group:name` alternation).
+acl_grants_others() {
     local granted
-    granted=$(grep -E "$write_rights" <<<"$(acl_entries "$1")" || true)
-    [[ -n $granted ]] && grep -Evq "(user:$service_user|group:$service_group) allow" <<<"$granted"
+    granted=$(grep -E "$2" <<<"$(acl_entries "$1")" || true)
+    [[ -n $granted ]] && grep -Evq "($3) allow" <<<"$granted"
+}
+
+# The service account's uid: in a disposable install, the current user's,
+# who stands for it.
+service_uid() {
+    if [[ -n $prefix ]]; then
+        id -u
+    else
+        ds_read Users "$service_user" UniqueID
+    fi
 }
 
 # The Admin Console password: made once, readable by the service alone.
@@ -352,8 +396,10 @@ admin_password() {
         set_owner "$service_user:$service_group" "$path"
     fi
     [[ -f "$path" && -s "$path" ]] || fail "Expected the Admin Console password in $path."
-    (((8#$(mode_of "$path") & 077) == 0)) && ! write_acl "$path" ||
-        fail "$path is open to other users; make it 0400 and the service's."
+    [[ $(uid_of "$path") == "$(service_uid)" ]] &&
+        (((8#$(mode_of "$path") & 077) == 0)) &&
+        ! acl_grants_others "$path" ' allow ' "user:$service_user" ||
+        fail "$path is open to other users or not $service_user's; make it 0400 and the service's."
 }
 
 # --- Settings and the launchd job.
@@ -502,6 +548,8 @@ installed_release() {
     local program release
     [[ -f "$plist_path" && ! -L "$plist_path" && $(uid_of "$plist_path") == "$root_uid" ]] ||
         fail 'Expected a job installed by these scripts.'
+    (((8#$(mode_of "$plist_path") & 022) == 0)) && ! write_acl "$plist_path" ||
+        fail "The installed job may be changed by other users: $plist_path"
     program=$(plutil -extract ProgramArguments.0 raw -o - "$plist_path") ||
         fail 'The installed job names no program.'
     release=${program#"$server_root/"}
