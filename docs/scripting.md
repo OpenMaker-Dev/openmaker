@@ -202,14 +202,21 @@ Record (Records menu, toolbar and script steps) create the record with the
 same owning engine: the owner issues the record id, enters its auto-entry
 values and stores the ordinary scalar values; the new record joins the
 caller window's found set and becomes current, as a local creation does.
-Duplicate Record of a record holding a container reference is refused before
-any effect. A script's transaction includes these layouts and commits all or
+Duplicate Record copies a container reference too: the copy's reference is
+counted in the owning file's library, as a local duplicate counts it in its
+own. A copy that fails gives its references back; one whose answer is lost
+counts as given back, so that no later transaction's revert gives it back
+again. When the owner did not apply it, or the connection was lost in
+between, the member keeps one reference too many: its data is kept longer,
+never lost. Its auto-entered values are copied as the window's duplicate copies them
+([#473](https://github.com/OpenMaker-Dev/openmaker/issues/473)). A script's transaction includes these layouts and commits all or
 none: Commit Transaction prepares every file before any record data goes, and
 a refusal in any file reverts every file's part; only a connection lost, or a
 host refusing a later file, after an earlier file's commit leaves that earlier
 file committed (record-writes.md, "A script's transaction across files").
-Delete Record inside one is refused
-([#312](https://github.com/OpenMaker-Dev/openmaker/issues/312)).
+A script's Delete Record inside one is held there too; the user's own edits
+and deletions on such a layout while the script is paused are refused
+([#411](https://github.com/OpenMaker-Dev/openmaker/issues/411)).
 Import, writes to the layout's related records in other tables, globals and
 repetitions remain refused on these layouts
 ([#43](https://github.com/OpenMaker-Dev/openmaker/issues/43)). The owning file
@@ -289,6 +296,14 @@ Server Find mode:
 - An unstored calculation with all-empty references reads empty, on the
   desktop too.
 - A find without criteria (400) returns to Browse.
+- Perform Quick Find (150) searches the window's layout by the
+  desktop's rules ([Quick Find](desktop-client.md#quick-find)), among
+  all the table's records, reading dates in the file's date order as
+  the server's other finds do. A word that a Quick Find field of another
+  occurrence would be searched for fails with 3, as a related find
+  criterion does on the server; Find Matching Records is 3 too
+  ([#101](https://github.com/OpenMaker-Dev/openmaker/issues/101)). What
+  FileMaker Server does is not measured.
 - Globals read their value with no current record, and sessions start
   from the file's stored globals.
 - A criterion longer than 10,000 characters cannot be read (3), on the
@@ -450,8 +465,18 @@ Open items:
   - `FieldAnnotation` and `FieldDisplayNames` answer empty text, as for a
     field without them: no file read so far stores either, so their
     storage is unknown.
-  - Also open: AI (`GetEmbedding`, `GetTokenCount`) and mobile functions
-    through each host, and the TextEncode transliteration table.
+  - OpenMaker Server answers `GetAddonInfo`, `GetSensor`,
+    `GetAVPlayerAttribute` and `Furigana` as FileMaker Server's script
+    engine answered one call of each (calc-functions.md, s45): the add-on
+    interface's version for `"x"` (error 3 for empty text), error 1208 for
+    `"battery"`, empty for `"playbackState"`, and `"abc"` unchanged, the
+    engine's answer without its reading dictionary. Other arguments get
+    the same answers, OpenMaker's fallback [I]; Furigana's option is
+    ignored. The desktop still answers them with error 1225: FileMaker
+    Pro's answers are unmeasured ([#79](https://github.com/OpenMaker-Dev/openmaker/issues/79)).
+  - Also open: AI (`GetEmbedding`, `GetTokenCount`), the mobile functions
+    (`Location`, `LocationValues`, `RangeBeacons`) through each host, and
+    the TextEncode transliteration table.
 - Import and export:
   - Shift-JIS, Big-5 and EUC-KR differ for some letters, and `.xlsx`
     times match to about 15 digits.
@@ -564,6 +589,27 @@ Open items:
   reads the catalog back (desktop-client.md, Script Workspace).
 - Server: auto-enter calculations are not recomputed after a schema
   change (by design, as FileMaker). Schedules run (#11).
+  - Account steps: Change Password sets the password of the account the
+    session logged in with (found by its record key, so a rename does not
+    redirect it), as FileMaker's `DoChangePassword` and `SetPassword` do
+    (re/local-files.md 2.4), with their errors. A step with full access
+    skips the set's checks. With its dialog, for [Guest] or for an
+    account of another kind it fails with 3. It holds the account
+    catalog's lock while it writes (310 when another user holds it,
+    inferred), raises the catalog's modification count and tells the
+    other clients. Reset Account Password and Enable Account change an
+    account found by name, for a session with full access (else 9), in
+    the same way; a name no account has gives 213 (inferred). Reset
+    Account Password with "Expire password" gives 3 until a hosted login
+    can set a new password
+    ([#248](https://github.com/OpenMaker-Dev/openmaker/issues/248)), and
+    Enable Account gives 3 for OAuth and Claris ID accounts and rather
+    than make a [Full Access] account inactive. Delete Account removes an
+    account and its entries in the account catalog's index; it gives 3
+    for [Guest] and for [Full Access], OAuth and Claris ID accounts. The
+    steps that rewrite an account (all but Delete Account) leave alone one
+    whose stored checksum OpenMaker does not reproduce (3). Add Account and Re-Login fail with error 3
+    ([#83](https://github.com/OpenMaker-Dev/openmaker/issues/83)).
   - The recompute after a schema change reads container inputs from the
     table's library, computes repeating calculations in each repetition,
     and answers Design functions as FileMaker Server's file context does
