@@ -107,12 +107,6 @@ pub fn is_server_step_id(id: u16) -> bool {
     id < 248
 }
 
-/// Steps FileMaker Pro 26.1.1 added that OpenMaker cannot yet edit or run
-/// (Replace Field Contents by Name and Set Variable by Name,
-/// script-steps.md 12.4, #349): not offered in the Script Workspace, and
-/// failing with error 3 when a script holds one.
-pub const PENDING_STEP_IDS: [u16; 2] = [249, 250];
-
 /// A client that runs scripts, by its `StateFlags` bit (script-runtime.md 10.1).
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, PartialOrd, Ord)]
 pub enum Client {
