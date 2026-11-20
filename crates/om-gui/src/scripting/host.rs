@@ -2987,10 +2987,10 @@ impl<'a> WorkerHost<'a> {
     /// (its kind and summarized field from the calculation schema).
     fn sort_fields(&mut self, spec: om_data::specs::SortSpec) -> Result<Vec<SortField>, HostError> {
         // Check actual occurrences before spec_field can collapse another
-        // occurrence of the same imported table to a bare base-field name,
-        // and before resolving any value-list/summary options.
+        // occurrence of the same table to a bare base-field name, and before
+        // resolving any value-list/summary options.
         for entry in &spec.fields {
-            self.check_imported_sort_field(entry.field.occurrence, entry.field.repetition.into())?;
+            self.check_sort_field(entry.field.occurrence, entry.field.repetition.into())?;
         }
         let mut sort = Vec::new();
         for entry in spec.fields {
@@ -3025,26 +3025,24 @@ impl<'a> WorkerHost<'a> {
         Ok(sort)
     }
 
-    /// Imported sorts are bounded to the layout's base occurrence. A stored
-    /// base-table key (or none) still means that occurrence, as in spec_field.
-    /// An actual occurrence must retain its identity even for a self join.
-    fn check_imported_sort_field(
-        &mut self,
-        occurrence: Option<u64>,
-        repetition: u32,
-    ) -> HostResult {
+    /// Sorts are bounded to the layout's own occurrence. A stored base-table
+    /// key (or none) still means that occurrence, as in spec_field. An
+    /// actual occurrence keeps its identity, a self join's included: a field
+    /// of another occurrence would be sorted by its first related record's
+    /// value (query-program.md 10, #47), which is not built, so the sort is
+    /// refused with 3 rather than sorted by the record's own field. Imported
+    /// tables also refuse repetitions past the first.
+    fn check_sort_field(&mut self, occurrence: Option<u64>, repetition: u32) -> HostResult {
         let base = self.occurrence();
         if let (Some(schema), Some(base)) = (self.schema(), base) {
             let imported = schema
                 .table_of(base)
                 .is_some_and(|table| schema.table_context(table.id).is_some());
-            if imported
-                && (repetition > 1
-                    || occurrence.is_some_and(|occurrence| {
-                        occurrence != base
-                            && (schema.occurrence(occurrence).is_some() || occurrence >= 0xd0_0000)
-                    }))
-            {
+            let other = occurrence.is_some_and(|occurrence| {
+                occurrence != base
+                    && (schema.occurrence(occurrence).is_some() || occurrence >= 0xd0_0000)
+            });
+            if other || imported && repetition > 1 {
                 return Err(ErrorCode(code::UNSUPPORTED).into());
             }
         }
@@ -5204,7 +5202,14 @@ impl FoundSets for WorkerHost<'_> {
             Some(node) => {
                 let spec = om_data::specs::SortSpec::from_node(node)
                     .ok_or(HostError::Error(ErrorCode::INVALID))?;
-                (self.sort_fields(spec.clone())?, Some(spec))
+                // With the dialog, the order the user chooses is checked,
+                // so a stored key this host cannot sort by can be replaced.
+                let sort = if with_dialog {
+                    Vec::new()
+                } else {
+                    self.sort_fields(spec.clone())?
+                };
+                (sort, Some(spec))
             }
             None => {
                 // Another table's stored order is not this table's.
@@ -5214,7 +5219,26 @@ impl FoundSets for WorkerHost<'_> {
                     .clone()
                     .filter(|(table, _)| *table == window.table)
                     .map(|(_, spec)| spec);
-                (window.last_sort.clone(), spec)
+                let sort = window.last_sort.clone();
+                // The order was accepted on a layout of this table, so a key
+                // of another occurrence of it named that layout's own field:
+                // it is this layout's own field now.
+                let own = self.occurrence();
+                let spec = match (spec, own, self.schema()) {
+                    (Some(mut spec), Some(own), Some(schema)) => {
+                        let table_of = |o: u64| schema.table_of(o).map(|t| t.id);
+                        for entry in &mut spec.fields {
+                            if entry.field.occurrence.is_some_and(|o| {
+                                o != own && table_of(o).is_some() && table_of(o) == table_of(own)
+                            }) {
+                                entry.field.occurrence = Some(own);
+                            }
+                        }
+                        Some(spec)
+                    }
+                    (spec, _, _) => spec,
+                };
+                (sort, spec)
             }
         };
         if with_dialog {
@@ -5253,7 +5277,7 @@ impl FoundSets for WorkerHost<'_> {
 
     fn sort_by_field(&mut self, field: Option<FieldRef>, direction: u16) -> HostResult {
         if let Some(field) = field {
-            self.check_imported_sort_field(Some(field.occurrence), field.repetition)?;
+            self.check_sort_field(Some(field.occurrence), field.repetition)?;
         }
         let name = self.target_name(field)?;
         self.commit_window()?;
