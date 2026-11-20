@@ -442,10 +442,12 @@ fn word_char(c: char) -> WordChar {
     }
 }
 
-/// A letter of the Latin blocks (Basic Latin to Latin Extended-B, and
-/// Latin Extended Additional), which hold no combining marks.
+/// A letter of the Latin script in the Latin blocks (Basic Latin to Latin
+/// Extended-B, and Latin Extended Additional), which hold no combining
+/// marks: all their letters but the micro sign U+00B5, whose script is
+/// Common.
 fn latin_letter(c: char) -> bool {
-    c.is_alphabetic() && matches!(u32::from(c), 0x41..=0x24f | 0x1e00..=0x1eff)
+    c.is_alphabetic() && c != 'µ' && matches!(u32::from(c), 0x41..=0x24f | 0x1e00..=0x1eff)
 }
 
 /// A character the table gives no primary weight but a secondary one: an
@@ -681,6 +683,7 @@ mod tests {
         assert_eq!(words_in("l·l", catalan), ["l·l"]);
         assert_eq!(words_in("1\u{345}·a", catalan), ["1\u{345}", "a"]);
         assert_eq!(words_in("a·\u{93f}", catalan), ["a", "\u{93f}"]);
+        assert_eq!(words_in("N·µm", catalan), ["N", "µm"]);
         // The dot does not stay with `a`; the accent after it is a word of
         // its own, as an alphabetic accent after a separator is today.
         assert_eq!(words_in("a·\u{345}", catalan), ["a", "\u{345}"]);
