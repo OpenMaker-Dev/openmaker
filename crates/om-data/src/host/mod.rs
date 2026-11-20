@@ -470,6 +470,71 @@ impl<'a> FileCalc<'a> {
             .to_vec())
     }
 
+    /// `GetRecordIDsFromFoundSet ( type {; tableOccurrenceOrPortal} )`
+    /// in `context` (calc-functions.md, "GetRecordIDsFromFoundSet on
+    /// FileMaker Server"): the ids of the found set of the context's
+    /// occurrence, in its order, or, with an occurrence
+    /// named, of that occurrence's found set when it is the context's and
+    /// otherwise of its records related to the context's record, written
+    /// as `type` asks (`om_calc::functions::record_ids`), within `limit`
+    /// bytes. A name that is no occurrence, empty or a portal object's, is
+    /// error 10 (s45; portals are not looked up); one of a related file not
+    /// opened yet waits for it.
+    pub fn record_ids_from_found_set(
+        &self,
+        args: &[Value],
+        context: &Context,
+        limit: usize,
+    ) -> Result<Value, CalcError> {
+        use om_calc::functions::record_ids;
+        let cx = self.cx();
+        let kind = record_ids::kind(args.first().unwrap_or(&Value::empty_text()), &cx)?;
+        let missing = || CalcError::from_code(10).expect("nonzero");
+        let own = context.occurrence.ok_or_else(missing)?;
+        let occurrence = match args.get(1) {
+            None => own,
+            Some(name) => {
+                let name = name.to_text(&cx).into_string();
+                match self.schema.names().find_occurrence(&name) {
+                    Some(occurrence) => occurrence,
+                    None => {
+                        // An occurrence of a related file not opened yet:
+                        // the read waits for the file, as a field's does.
+                        // Its name matches in any case, as the file's
+                        // names do once it is open (`NameTable`).
+                        let folded = name.to_lowercase();
+                        let pending = self
+                            .schema
+                            .external_occurrences()
+                            .find(|o| o.name.to_lowercase() == folded)
+                            .is_some_and(|o| self.waits(o.id));
+                        return Err(if pending {
+                            CalcError::from_code(1224).expect("nonzero")
+                        } else {
+                            missing()
+                        });
+                    }
+                }
+            }
+        };
+        let ids = if occurrence == own {
+            let table = self.schema.table_of(own).ok_or(CalcError::TABLE_MISSING)?;
+            self.source.found_set(own, table.id)?
+        } else {
+            match context.record.filter(|r| *r != NO_RECORD) {
+                Some(record) => self.source.related_ids(
+                    self.schema,
+                    own,
+                    record,
+                    occurrence,
+                    &self.cx_for(own),
+                )?,
+                None => Arc::from([]),
+            }
+        };
+        Ok(Value::text(record_ids::write(&ids, kind, limit)?))
+    }
+
     /// One related record, in the related set's order (the first is what
     /// `Rel::field` shows).
     pub fn related_record(
@@ -918,6 +983,10 @@ impl CalcHost for FileHost<'_> {
             }
             HostFunction::Named(name) if name.eq_ignore_ascii_case("GetLayoutObjectOwnerInfo") => {
                 return Ok(Value::text(layout_objects::owner_info_not_found()));
+            }
+            HostFunction::Named(name) if name.eq_ignore_ascii_case("GetRecordIDsFromFoundSet") => {
+                let limit = self.limits.text;
+                return self.file.record_ids_from_found_set(args, context, limit);
             }
             _ => {}
         }

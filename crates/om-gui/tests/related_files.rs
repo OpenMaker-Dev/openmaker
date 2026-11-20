@@ -4336,6 +4336,14 @@ fn refused_log_correction(reconnect: bool, changed: bool, new_root: bool) {
                     .len(),
                 1
             );
+            // On a loaded machine both drafts' editors were once not found
+            // with their values on the status's frame (#285): wait for the
+            // editors to be drawn, whatever they show, then check what they
+            // show, so a failure tells a late editor from a wrong value.
+            common::wait_until(&mut app, "both drafts' editors", |a| {
+                a.query_all(field("Remote Tasks::Name")).next().is_some()
+                    && a.query_all(field("Other Tasks::Name")).next().is_some()
+            });
             assert!(app
                 .query_all(field("Remote Tasks::Name"))
                 .any(|n| n.value().as_deref() == Some("first edited")));

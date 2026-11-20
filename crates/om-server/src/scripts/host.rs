@@ -47,6 +47,7 @@ use om_calc::eval::{
 };
 use om_calc::{CalcError, Ctx, Date, Locale, Time, TimeStyle, Timestamp, Value, ValueType};
 use om_data::found::Findable;
+use om_data::host::security::SetAccess;
 use om_data::host::sql::FileSql;
 use om_data::host::{CalcSchema, CalcSource, FileCalc, RecordValues, SessionInfo, Vars};
 use om_data::rules::{self, Entry, RecordEnvironment, RecordPlan, WriteMode};
@@ -671,6 +672,10 @@ pub(crate) struct ServerHost {
     /// What other users see as the holder of the session's locks.
     holder: String,
     account: String,
+    /// The record key of the account the session logged in with, when it
+    /// did: Change Password changes that account's password, whatever its
+    /// name is by then. A session without one changes none.
+    account_key: Option<Vec<u8>>,
     locale: Locale,
     today: Date,
     schema: Schema,
@@ -699,6 +704,10 @@ pub(crate) struct ServerHost {
     pub log: ErrorLog,
     /// What the account may do.
     privileges: Privileges,
+    /// The account's privilege set as its login verified it, for the
+    /// scripts it may run (session-identity.md 2.2); `None`: as
+    /// [`Self::privileges`] says.
+    access: Option<SetAccess>,
     /// A step of a script set to run with full access privileges is
     /// executing (script-runtime.md 9.1).
     elevated: bool,
@@ -743,6 +752,7 @@ impl ServerHost {
                 txn: 1,
             },
             account: account.to_string(),
+            account_key: None,
             locale,
             today: today(),
             schema,
@@ -759,6 +769,7 @@ impl ServerHost {
             request_open: false,
             log: ErrorLog::default(),
             privileges,
+            access: None,
             elevated: false,
             control: Control::unlimited(),
             calc_limits: SCRIPT_CALC_LIMITS,
@@ -803,6 +814,11 @@ impl ServerHost {
         self.window.is_some()
     }
 
+    /// The record key of the account the session logged in with.
+    pub fn set_account_key(&mut self, key: &[u8]) {
+        self.account_key = Some(key.to_vec());
+    }
+
     /// The script's abort flag and time limit.
     pub fn set_control(&mut self, control: Control) {
         self.control = control;
@@ -811,6 +827,11 @@ impl ServerHost {
     /// What one calculation of the script may build.
     pub fn set_calc_limits(&mut self, limits: CalcLimits) {
         self.calc_limits = limits;
+    }
+
+    /// The account's privilege set, which decides the scripts it may run.
+    pub fn set_access(&mut self, access: Option<SetAccess>) {
+        self.access = access;
     }
 
     /// End the session: revert an unfinished transaction, commit the open
@@ -2060,8 +2081,17 @@ impl ServerHost {
                 .schema
                 .field(occurrence, *field)
                 .ok_or(FindError::Unsupported)?;
-            let criterion = find::Criterion::parse(text, def.data_type, &context)
-                .map_err(|_| FindError::Unsupported)?;
+            // Text keyed as the field's index keys it (query-program.md 7.2).
+            let form = match def.decoded_options() {
+                Some(options) if def.data_type == DataType::Text => rules::read_text_keys(
+                    options.index_language(),
+                    u32::from(self.locale.language.id()),
+                ),
+                _ => TextKeys::Collated,
+            };
+            let criterion =
+                find::Criterion::parse(text, def.data_type, &context.with_text_keys(form))
+                    .map_err(|_| FindError::Unsupported)?;
             let Some(criterion) = criterion else {
                 continue;
             };
@@ -2464,6 +2494,24 @@ impl ServerHost {
         let file = FileCalc::new(&schema, &source, self.today);
         let mut sql = FileSql::new(file, &session, vars);
         om_data::sql::calc::execute_sql(&mut sql, variant, args)
+    }
+}
+
+impl ServerHost {
+    /// `GetRecordIDsFromFoundSet` over the session's window's found set, as
+    /// FileMaker Server's script engine answers it (calc-functions.md,
+    /// "GetRecordIDsFromFoundSet on FileMaker Server").
+    pub(super) fn record_ids_from_found_set(
+        &self,
+        args: &[Value],
+        context: &Context,
+    ) -> Result<Value, CalcError> {
+        let Some((_, schema)) = self.schema.rules.clone() else {
+            return Err(CalcError::from_code(3).expect("nonzero"));
+        };
+        let source = SessionSource::new(self, &schema);
+        let limit = om_calc::eval::CalcHost::limits(self).text;
+        FileCalc::new(&schema, &source, self.today).record_ids_from_found_set(args, context, limit)
     }
 }
 
@@ -3079,16 +3127,22 @@ impl ScriptHost for ServerHost {
         self.refresh_schema();
     }
 
-    /// An account in a verified built-in set may run every script (its
-    /// scripts modifiable or executable only, session-identity.md 2.7);
-    /// one in a custom set ([`Privileges::Unknown`]) only scripts set to
-    /// run with full access privileges, whose steps then have full access
-    /// (script-runtime.md 2.2, 9.1): a custom set's script privileges are
-    /// not read here.
+    /// The scripts the account's set lets it run (session-identity.md
+    /// 2.2): every script under a verified built-in set, and under a custom
+    /// set those it makes executable. A script the set gives no access is
+    /// not executable, and being set to run with full access privileges
+    /// does not make it so: only a caller running with full access lets it
+    /// run, and then with the account's own privileges (script-runtime.md
+    /// 3.7, 9.1). The runtime admits a script with either flag, so the flag
+    /// is given only for a script the account may run.
     fn script_access(&mut self, file: FileId, script: u64) -> ScriptAccess {
+        let executable = match &self.access {
+            Some(access) => access.runs_script(script),
+            None => self.privileges.runs_scripts(),
+        };
         ScriptAccess {
-            executable: self.privileges.runs_scripts(),
-            full_access: file == FILE && self.schema.full_access.contains(&script),
+            executable,
+            full_access: executable && file == FILE && self.schema.full_access.contains(&script),
         }
     }
 
@@ -3520,15 +3574,17 @@ impl FieldSteps for ServerHost {
     }
 
     fn set_field_by_name(&mut self, name: &str, value: Value) -> HostResult {
+        let field = self.field_by_name(name)?;
+        self.store_value(field, value)
+    }
+
+    fn field_by_name(&mut self, name: &str) -> HostResult<FieldRef> {
         let (occurrence, field) = self.field_named(name).ok_or(ErrorCode::FIELD_MISSING)?;
-        self.store_value(
-            FieldRef {
-                occurrence,
-                field,
-                repetition: 1,
-            },
-            value,
-        )
+        Ok(FieldRef {
+            occurrence,
+            field,
+            repetition: 1,
+        })
     }
 
     fn field_value_of(&mut self, field: FieldRef) -> HostResult<Value> {
@@ -3850,5 +3906,142 @@ impl Network for ServerHost {
         self.fetch_url_step(request)
     }
 }
-impl Accounts for ServerHost {}
+/// FileMaker's error 310, "Cannot modify items because another user is
+/// modifying them": Reset Account Password's code when the account catalog
+/// is locked (script-runtime.md 2.3, its 8003).
+const ACCOUNTS_IN_USE: i32 = 310;
+
+/// The attention code of a catalog change (`kDBAttnCatalog`,
+/// schema-path.md 9).
+const ATTENTION_CATALOG: u32 = 2;
+
+/// `text` cut to at most `units` UTF-16 code units, as Change Password cuts
+/// its passwords (local-files.md 2.4); a character that would be split
+/// goes whole.
+fn utf16_prefix(text: &str, units: usize) -> &str {
+    let mut counted = 0;
+    for (at, c) in text.char_indices() {
+        counted += c.len_utf16();
+        if counted > units {
+            return &text[..at];
+        }
+    }
+    text
+}
+
+impl ServerHost {
+    /// Run `edit` while the session holds the write lock FileMaker Pro's
+    /// Manage Security takes on the account catalog `[23, 1]`
+    /// (local-files.md 2.4), so that a client saving accounts and a script
+    /// do not change them at once: 310 while another user holds it
+    /// (FileMaker's code for Reset Account Password, inferred for Change
+    /// Password). `edit` gets the modification stamp to write; once it
+    /// has written, the other clients are told the catalog changed, as a
+    /// client's commit tells them. A file the server hosts read-only
+    /// changes nothing: 3 (OpenMaker's choice).
+    fn edit_accounts(
+        &self,
+        step: &str,
+        edit: impl FnOnce(&crate::hosting::ModStamp<'_>) -> HostResult,
+    ) -> HostResult {
+        if self.hosted.read_only {
+            info!(
+                "{:?}: {step} changed nothing: the file is hosted read-only",
+                self.hosted.name
+            );
+            return Err(ErrorCode::UNAVAILABLE.into());
+        }
+        let catalog = vec![vec![23], vec![1]];
+        self.hosted
+            .lock_table()
+            .lock(&catalog, self.user, LOCK_WRITE, &self.holder)
+            .map_err(|conflict| {
+                info!(
+                    "{:?}: {step} refused: the accounts are in use by {}",
+                    self.hosted.name, conflict.users
+                );
+                HostError::Error(ErrorCode(ACCOUNTS_IN_USE))
+            })?;
+        let time = crate::connection::host_time_key();
+        // `Get ( UserName )` of a server script is its account's name.
+        let stamp = crate::hosting::ModStamp {
+            user: &self.account,
+            account: &self.account,
+            time: &time,
+        };
+        let result = edit(&stamp);
+        self.hosted.lock_table().release_path(&catalog, self.user);
+        if result.is_ok() {
+            writes::notify(
+                &self.hosted,
+                &self.shared.mailboxes,
+                self.user.connection,
+                &[
+                    writes::Change {
+                        path: catalog.clone(),
+                        code: ATTENTION_CATALOG,
+                    },
+                    writes::Change {
+                        path: vec![vec![23], vec![1], vec![1]],
+                        code: ATTENTION_CATALOG,
+                    },
+                ],
+            );
+        }
+        result
+    }
+}
+
+impl Accounts for ServerHost {
+    /// Change Password (83), as FileMaker's `DoChangePassword` runs it
+    /// (local-files.md 2.4): the password of the account the session
+    /// logged in with, found by its record key so that a rename since
+    /// cannot redirect it, both passwords cut to 100 UTF-16 code units,
+    /// and 3 for [Guest] or an account of another kind. Then
+    /// [`crate::hosting::Hosted::change_password`] sets it with
+    /// `SetPassword`'s errors (212 a wrong old password, 206 a set that
+    /// does not allow it, 208 shorter than the set's minimum, 209 the same
+    /// password, 210 an inactive account), skipping the set's checks for a
+    /// step with full access, and saves it before the step ends. With its
+    /// dialog the step is refused with 3: FileMaker Server's handling of
+    /// that dialog is not measured.
+    fn change_password(&mut self, old: &str, new: &str, with_dialog: bool) -> HostResult {
+        if with_dialog {
+            return Err(HostError::Unsupported);
+        }
+        let Some(key) = self.account_key.clone() else {
+            return Err(HostError::Unsupported);
+        };
+        let is_file_account =
+            self.hosted.accounts().iter().any(|a| {
+                a.key == key && a.kind == Some(crate::accounts::AccountKind::FileMakerFile)
+            });
+        if key == [1] || !is_file_account {
+            return Err(HostError::Unsupported);
+        }
+        let (old, new) = (utf16_prefix(old, 100), utf16_prefix(new, 100));
+        let manager = self.privileged();
+        self.edit_accounts("Change Password", |stamp| {
+            let now = jiff::Zoned::now().datetime();
+            self.hosted
+                .change_password(
+                    crate::hosting::AccountRef::Key(&key),
+                    old,
+                    new,
+                    manager,
+                    Some(stamp),
+                    now,
+                )
+                .map_err(|e| {
+                    if let crate::hosting::PasswordChangeError::Unwritten(reason) = &e {
+                        warn!(
+                            "{:?}: Change Password changed nothing: {reason}",
+                            self.hosted.name
+                        );
+                    }
+                    ErrorCode(e.code().unwrap_or(ErrorCode::UNAVAILABLE.0)).into()
+                })
+        })
+    }
+}
 impl Platform for ServerHost {}

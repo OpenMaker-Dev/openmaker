@@ -72,6 +72,8 @@ were added by hand from the evidence given.
 | `calc-tokens.csv` | 2318 | GetToolDefinitions, `f9 12`, VarArgs; two or more arguments by its signature [I] |
 | `hbkey-constants.csv` | 3 rows | `KButtonIconSvgCalc` `91`, `KCatalogSpecificFlags` `f3`, `KDBData2` `0b` (Mac DBEngine's `__GLOBAL__sub_I_DBGlobals.cpp`) |
 
-Not known yet: the new steps' parameters as `script-step-params.csv` rows
-(their storage is in script-steps.md 12.4), and the new function's and
-selector's entries in `calc-function-spec.json`.
+`script-step-params.csv` has rows for 249 and 250 (evidence `bin`): their
+storage is script-steps.md 12.4's, from the 26.1.1 binaries; the
+parameter names and order follow the steps they extend (91, 141, 147)
+[I]. Not known yet: the new function's and selector's entries in
+`calc-function-spec.json`.

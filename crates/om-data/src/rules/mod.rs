@@ -181,6 +181,16 @@ pub fn written_text_keys(language: u32, file_language: u32) -> Option<om_query::
         .filter(|form| *form != om_query::keys::TextKeys::None)
 }
 
+/// How a find or a lookup reads the index of a text field indexed in
+/// `language`, in a file whose own language is `file_language`: the form a
+/// host writes ([`written_text_keys`]), so that a find on a field indexed
+/// in Unicode raw or Unicode standard meets the keys FileMaker wrote.
+/// A language whose form OpenMaker does not build is read in English,
+/// which keys most text as those languages do; nothing read so is written.
+pub fn read_text_keys(language: u32, file_language: u32) -> om_query::keys::TextKeys {
+    written_text_keys(language, file_language).unwrap_or(om_query::keys::TextKeys::Collated)
+}
+
 /// Nesting, size and stored length of the calculations record writes
 /// evaluate.
 const MAX_DEPTH: usize = 256;
