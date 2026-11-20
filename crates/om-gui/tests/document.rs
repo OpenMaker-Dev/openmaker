@@ -816,6 +816,29 @@ fn blank_canvas_commits_but_changing_fields_keeps_the_record_draft() {
     common::wait_until(&mut app, "the List view commit", |app| {
         !common::unsaved(app) && !common::saving(app)
     });
+    // And in Table view, zoomed: a cell takes the click meant for it, and
+    // the canvas below the rows commits.
+    let mut provider = DocumentProvider::new(false);
+    provider.writable = true;
+    let mut app = open_provider(provider);
+    common::click(&mut app, "Table View");
+    common::open_menu(&mut app, "View");
+    common::click(&mut app, "Zoom In");
+    app.run_steps(2);
+    app.get_all_by_role_and_label(Role::TextInput, "Given")
+        .nth(1)
+        .expect("second record's Given editor")
+        .click();
+    app.run_steps(2);
+    assert_eq!(common::record_number(&app), "2");
+    app.key_press_modifiers(egui::Modifiers::COMMAND, egui::Key::A);
+    app.event(egui::Event::Text("Table edit".into()));
+    app.run_steps(2);
+    assert!(common::unsaved(&app), "unsaved record changes");
+    click_blank_canvas(&mut app);
+    common::wait_until(&mut app, "the Table view commit", |app| {
+        !common::unsaved(app) && !common::saving(app)
+    });
 }
 
 /// Insert > Current User Name puts the user name at the insertion point of

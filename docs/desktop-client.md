@@ -837,8 +837,8 @@ is not shown; neither is compared with FileMaker Pro.
 
 ### Zoom
 
-Loaded Browse Form and List layouts, and Find mode's layout, have
-document-local Actual Size, Zoom In and Zoom Out commands, in steps of 25, 50, 75, 100, 150, 200, 300 and 400 percent.
+Loaded Browse Form and List layouts, Browse Table view and Find mode's
+layout have document-local Actual Size, Zoom In and Zoom Out commands, in steps of 25, 50, 75, 100, 150, 200, 300 and 400 percent.
 The menu and keyboard controls scale the document's allocation, clipping,
 pointer input and accessibility bounds together; menus and toolbars keep the
 application scale. While the layout paints, egui treats the zoomed layer as
@@ -867,10 +867,21 @@ in the layout's coordinates, so its rows scroll and take clicks as at 100%.
 Find mode draws its request as Form view draws a record, so it was already
 drawn at the window's zoom; its commands now change it there too.
 
-Limits: Table view, Layout mode, generic Form fallbacks and
-focused field editors are not zoomed (Preview scales its paper:
+Table view draws its grid, header and scroll areas in the zoomed layer too,
+whatever the layout (the grid is the found set's), so column widths, rows
+and clicks are in unzoomed points at every zoom. Its labels and its cells'
+editors lay their text out at the zoom (`document::layer_galley`) to keep it
+sharp; a value cut off at its column's edge keeps egui's renderer, as
+elided text does above. The table's last column fills the width the previous
+frame left, so a new zoom lays the table out once more before it shows.
+
+Limits: Layout mode, generic Form fallbacks and focused field editors in
+Form and List view are not zoomed (Preview scales its paper:
 [preview.md](preview.md)), and Set Zoom Level's lock option is not enforced
-([#36](https://github.com/OpenMaker-Dev/openmaker/issues/36)).
+([#36](https://github.com/OpenMaker-Dev/openmaker/issues/36)). Scroll bars
+inside the zoomed layer (List and Table view's) scale with it; FileMaker Pro's
+keep their size [I: unmeasured]. How FileMaker Pro scales Table view's
+header and row heights is unmeasured.
 
 ### Layout menus
 

@@ -84,7 +84,31 @@ pub(crate) fn browse(
             Geometry::Unavailable => form_view(ui, session, document, calc, actions),
         },
         ViewMode::List => list_view(ui, session, page, document, calc, actions),
-        ViewMode::Table => table_view(ui, session, page, document, calc, actions),
+        ViewMode::Table => {
+            // Zoomed as Form and List view are: the grid, its header and its
+            // scroll areas in the document's zoom layer.
+            let factor = document.zoom.factor();
+            // The last column fills the width the table's previous frame
+            // left: at a new zoom the table is laid out once more before it
+            // shows, or it keeps the old zoom's width until the next input.
+            let shown = ui.scope_id().with("table zoom");
+            if ui.data(|data| data.get_temp::<f32>(shown)) != Some(factor) {
+                ui.data_mut(|data| data.insert_temp(shown, factor));
+                ui.ctx().request_discard("Table view zoom changed");
+            }
+            crate::document::zoom::show(ui, ui.available_size() / factor, factor, |ui| {
+                // The canvas below the rows, in their layer (the window's
+                // canvas is under it): a click there that no cell takes
+                // commits the record.
+                let canvas = ui.interact(
+                    ui.max_rect(),
+                    ui.scope_id().with("table_canvas"),
+                    Sense::click(),
+                );
+                table_view(ui, session, page, document, calc, actions);
+                commit_canvas_click(&canvas, session, document, actions);
+            });
+        }
     }
     commit_canvas_click(&background, session, document, actions);
 }
@@ -767,13 +791,12 @@ fn table_grid(
                         table_cell_rule(ui);
                         ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
                             ui.add_space(6.0);
-                            ui.add(
-                                egui::Label::new(
-                                    RichText::new(format!("{}", absolute + 1))
-                                        .font(theme::small())
-                                        .color(theme::WEAK_TEXT),
-                                )
-                                .selectable(false),
+                            table_label(
+                                ui,
+                                RichText::new(format!("{}", absolute + 1))
+                                    .font(theme::small())
+                                    .color(theme::WEAK_TEXT),
+                                false,
                             );
                         });
                     });
@@ -825,16 +848,13 @@ fn table_grid(
                             }
                             let value = column_value(record, column, field, calc)
                                 .hidden(session.no_access(absolute, &field.name));
-                            let label =
-                                egui::Label::new(RichText::new(value.as_ref()).color(theme::TEXT))
-                                    .truncate()
-                                    .selectable(false);
+                            let text = RichText::new(value.as_ref()).color(theme::TEXT);
                             if is_numeric(field.kind) {
                                 ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
-                                    ui.add(label);
+                                    table_label(ui, text, true);
                                 });
                             } else {
-                                ui.add(label);
+                                table_label(ui, text, true);
                             }
                         });
                     }
@@ -913,11 +933,34 @@ fn table_header_cell(ui: &mut Ui, text: &str) {
         rect.y_range(),
         Stroke::new(1.0, Color32::from_gray(0xD6)),
     );
-    ui.add(
-        egui::Label::new(RichText::new(text).font(theme::small()).color(theme::TEXT))
-            .selectable(false)
-            .truncate(),
+    table_label(
+        ui,
+        RichText::new(text).font(theme::small()).color(theme::TEXT),
+        true,
     );
+}
+
+/// A Table view label, cut off at the cell's edge with `truncate`. Zoomed,
+/// its glyphs are rasterized at the zoom (`document::layer_galley`), as the
+/// layout's own text is; text cut off keeps egui's renderer, which
+/// `scaled_text` does not rebuild.
+fn table_label(ui: &mut Ui, text: RichText, truncate: bool) -> egui::Response {
+    if crate::document::layer_scale(ui) == 1.0 {
+        let label = egui::Label::new(text).selectable(false);
+        return ui.add(if truncate { label.truncate() } else { label });
+    }
+    let mut job = std::sync::Arc::unwrap_or_clone(egui::WidgetText::from(text).into_layout_job(
+        ui.style(),
+        egui::FontSelection::Default,
+        Align::Center,
+    ));
+    job.wrap = if truncate {
+        egui::text::TextWrapping::truncate_at_width(ui.available_width())
+    } else {
+        egui::text::TextWrapping::no_max_width()
+    };
+    let galley = crate::document::layer_galley(ui, job);
+    ui.add(egui::Label::new(galley).selectable(false))
 }
 
 fn table_cell_rule(ui: &Ui) {
