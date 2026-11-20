@@ -557,7 +557,7 @@ impl Store {
         let bytes = om_hbam::writer::rebuild(&self.root, &self.superblock)
             .map_err(|e| Error::new(ErrorKind::InvalidData, e.to_string()))?;
         let temporary = save_copy_name(name);
-        let shown = save_copy_path(at.path());
+        let shown = save_copy_path(at.place());
         // Owner-only until it takes the old file's permissions; a new
         // file's (0666 less the umask) when there is none to take.
         let file = folder
@@ -615,7 +615,12 @@ impl Store {
         if self.file.is_some() {
             // Where the new file's identity cannot be read, the old one is
             // kept: the next save then fails closed.
-            match crate::anchored::file_identity(&owner) {
+            let found = crate::anchored::file_identity(&owner).or_else(|_| {
+                folder
+                    .entry(name)
+                    .map(|entry| entry.filter(|e| e.regular).and_then(|e| e.id))
+            });
+            match found {
                 Ok(Some(file)) => self.file = Some(file),
                 Ok(None) => {}
                 Err(e) => warn!(

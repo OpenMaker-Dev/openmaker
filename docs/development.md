@@ -171,16 +171,20 @@ is deleted. An administrator who moves a hosted file's folder and makes
 the path lead to it again keeps saves and backups going; a reopen then
 refuses until the server restarts.
 
-A path whose last part is a link (allowed on the command line) is
-resolved once, when the file is hosted: the file is read and saved where
-the link led, and the link is left as it is. A file already hosted under
-another name, through a link or a second hard link, is not hosted again.
+On Linux and macOS a path whose last part is a link (allowed on the
+command line) is resolved once, when the file is hosted: the file is read
+and saved where the link led, and the link is left as it is, and backups
+keep to both places. A file already hosted under another name, through a
+link or a second hard link, is not hosted again. A file the desktop
+opens, and every file on Windows, keeps its path as named.
 Outside Linux, a folder the server may search but not read cannot hold a
 hosted file. Some things still go by the path alone:
 - the time between discovery and the file's load;
 - server scripts' external container reads and Documents folder
   ([#594](https://github.com/OpenMaker-Dev/openmaker/issues/594));
-- on Windows, which has no inode identities here, everything.
+- on Windows, which has no inode identities here, everything;
+- the moment between retention's check and its removal of an old backup
+  ([#602](https://github.com/OpenMaker-Dev/openmaker/issues/602)).
 
 Keep database folders, their subfolders and the folders above them
 writable by the server's user only all the same. Once the entry limit is reached, the

@@ -22,8 +22,9 @@
 //! open between uses.
 //!
 //! A path whose last part is a link (a file named on the command line may
-//! be one) is resolved once, when the file is hosted: the file is then
-//! worked on where the link led, and the link is left as it is.
+//! be one) is resolved once, when the file is hosted on Unix: the file is
+//! then worked on where the link led, and the link is left as it is. A
+//! file the desktop opened, and Windows, keep the path as it is named.
 //!
 //! On Linux the folder is opened for searching only (`O_PATH`), so a
 //! folder the server may search but not list works. Elsewhere on Unix it
@@ -51,9 +52,22 @@ pub struct FileAt {
 }
 
 impl FileAt {
-    /// Note where `path` leads now: a link as its last part is resolved
-    /// once, here, and the folder the file is in is noted.
+    /// Note where `path` leads now: on Unix a link as its last part is
+    /// resolved once, here, and the folder the file is in is noted. Without
+    /// inode identities (Windows) a link is not resolved, as two names of
+    /// one file could not be told apart there.
     pub fn open(path: &Path) -> io::Result<FileAt> {
+        FileAt::new(path, cfg!(unix))
+    }
+
+    /// [`FileAt::open`] without resolving a link as `path`'s last part: for
+    /// a file the desktop opened and locked by that path, whose lock check
+    /// keeps to the file it opened.
+    pub fn open_as_named(path: &Path) -> io::Result<FileAt> {
+        FileAt::new(path, false)
+    }
+
+    fn new(path: &Path, resolve: bool) -> io::Result<FileAt> {
         let named = |p: &Path| {
             p.file_name().is_some().then_some(()).ok_or_else(|| {
                 io::Error::new(
@@ -64,7 +78,7 @@ impl FileAt {
         };
         named(path)?;
         let place = match std::fs::symlink_metadata(path) {
-            Ok(m) if m.file_type().is_symlink() => std::fs::canonicalize(path)?,
+            Ok(m) if resolve && m.file_type().is_symlink() => std::fs::canonicalize(path)?,
             _ => path.to_path_buf(),
         };
         named(&place)?;
@@ -88,6 +102,12 @@ impl FileAt {
     /// The path the file was given by, for messages.
     pub fn path(&self) -> &Path {
         &self.path
+    }
+
+    /// The path the file is read and saved by: [`FileAt::path`], or where
+    /// a link as its last part led when the file was hosted.
+    pub fn place(&self) -> &Path {
+        &self.place
     }
 
     /// The file's name in its folder.

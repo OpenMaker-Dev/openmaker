@@ -873,14 +873,22 @@ fn protected(shared: &Shared) -> io::Result<Protected> {
             Err(e) if slot.is_none() && absent(&e) => protected.add_unresolved(&configured.path),
             Err(e) => return Err(e),
         }
-        // A served file whose path no longer leads to the file its store
-        // last saved: that file may lie anywhere, an old backup included,
-        // so where its data lies is unknown (#468).
-        if slot
-            .and_then(|slot| slot.served())
-            .is_some_and(|served| !leads_to_saved(&served))
-        {
-            protected.add_unresolved(&configured.path);
+        if let Some(served) = slot.and_then(|slot| slot.served()) {
+            // Where its saves go, when the path's last part was a link that
+            // has been pointed elsewhere since (#468).
+            if served.at.place() != configured.path.as_path() {
+                match protect(&mut protected, served.at.place()) {
+                    Ok(()) => {}
+                    Err(e) if absent(&e) => protected.add_unresolved(served.at.place()),
+                    Err(e) => return Err(e),
+                }
+            }
+            // A served file whose path no longer leads to the file its
+            // store last saved: that file may lie anywhere, an old backup
+            // included, so where its data lies is unknown (#468).
+            if !leads_to_saved(&served) {
+                protected.add_unresolved(&configured.path);
+            }
         }
     }
     Ok(protected)

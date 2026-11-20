@@ -1627,6 +1627,10 @@ pub struct Hosting {
     /// ([`crate::ServerConfig::insecure_files`]), also when one is opened
     /// again.
     insecure_files: bool,
+    /// Held while a file is opened again, so that two reopens cannot both
+    /// find their file unhosted and serve one file twice
+    /// ([`HostingError::SameFile`]).
+    reopening: Mutex<()>,
 }
 
 impl Hosting {
@@ -1646,6 +1650,7 @@ impl Hosting {
             slots: Vec::new(),
             configured: files.to_vec(),
             insecure_files,
+            reopening: Mutex::new(()),
         };
         let mut first_error = None;
         let mut names = std::collections::HashSet::new();
@@ -1693,6 +1698,12 @@ impl Hosting {
         let slot = self.slot(id).ok_or(ReopenError::UnknownFile)?;
         slot.change(FileStatus::Closed, FileStatus::Opening)
             .map_err(ReopenError::NotAllowed)?;
+        // One reopen at a time, until the file is served: another one
+        // looking for a file hosted twice sees this one (#468).
+        let _reopening = self
+            .reopening
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
         // Only from the folder it was first hosted from: a folder of the
         // path swapped for a link, or moved, since then fails the reopen
         // (#468).
@@ -1736,7 +1747,8 @@ impl Hosting {
         read_only: bool,
     ) -> Result<Self, HostingError> {
         let configured = vec![hosted.clone()];
-        let at = FileAt::open(&hosted.path).map_err(|e| HostingError::Open {
+        // The path the desktop opened and locked, as it named it.
+        let at = FileAt::open_as_named(&hosted.path).map_err(|e| HostingError::Open {
             name: hosted.name.clone(),
             error: om_hbam::Error::from(e),
         })?;
@@ -1753,6 +1765,7 @@ impl Hosting {
             slots: vec![Slot::serving(Arc::new(hosted))],
             configured,
             insecure_files: false,
+            reopening: Mutex::new(()),
         })
     }
 
