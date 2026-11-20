@@ -23,7 +23,8 @@ fn loaded() -> ScriptWorkspace {
     workspace
 }
 
-fn edit(workspace: &mut ScriptWorkspace) {
+/// For the app's tests: a step added to the active script, unsaved.
+pub(crate) fn edit(workspace: &mut ScriptWorkspace) {
     workspace.editor_mut().unwrap().insert_new(75);
 }
 
