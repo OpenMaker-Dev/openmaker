@@ -194,7 +194,11 @@ impl OpenMakerApp {
             });
             if user_input {
                 self.presentation = Some(super::windows::Presentation::User);
-                self.bring_to_front(top);
+                if !self.bring_to_front(top) {
+                    let viewport = self.viewport_of(self.w.id);
+                    ui.ctx()
+                        .send_viewport_cmd_to(viewport, egui::ViewportCommand::Focus);
+                }
             }
         }
         if let Some(dialog) = dialog {

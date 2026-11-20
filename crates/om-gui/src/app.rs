@@ -3940,9 +3940,15 @@ impl OpenMakerApp {
                     self.presentation = Some(windows::Presentation::User);
                 }
                 let id = *self.card_chain(id).last().expect("one window");
-                let viewport = self.viewport_of(id);
-                self.bring_to_front(id);
-                ctx.send_viewport_cmd_to(viewport, ViewportCommand::Focus);
+                // Another file's window waits while the front file's modal
+                // Manage dialog is open (`switch_blocked`): the front
+                // window, which shows it, keeps the focus.
+                let id = if self.bring_to_front(id) {
+                    id
+                } else {
+                    self.w.id
+                };
+                ctx.send_viewport_cmd_to(self.viewport_of(id), ViewportCommand::Focus);
             }
             Action::Minimize => ctx.send_viewport_cmd(ViewportCommand::Minimized(true)),
             Action::Quit if self.w.session.is_some() => {
@@ -6582,10 +6588,17 @@ mod tests {
         app.windows[1].file_id = 1;
         app.security = Some(crate::security::ManageSecurity::new(1, "First".into()));
         app.value_lists = Some(crate::value_lists::ManageValueLists::new(1, "First".into()));
+        // While the front file's Manage dialogs are open, which FileMaker
+        // Pro's are modal, another file's window stays behind and the
+        // dialogs stay with their edits.
+        assert_eq!(app.with_window(3, |app| app.bring_to_front(2)), Some(false));
+        assert!(app.security.is_some());
+        assert!(app.value_lists.is_some());
+        assert_eq!(app.w.id, 1);
+        app.security = None;
+        app.value_lists = None;
         // Window 3's Window menu picks a different file's window 2.
-        app.with_window(3, |app| app.bring_to_front(2));
-        assert!(app.security.is_none());
-        assert!(app.value_lists.is_none());
+        assert_eq!(app.with_window(3, |app| app.bring_to_front(2)), Some(true));
         assert_eq!(app.w.id, 2);
         assert_eq!(app.window_ids().len(), 3);
     }
@@ -6994,9 +7007,11 @@ mod tests {
         assert!(!app.script.running, "not started outside a frame");
         assert_eq!(app.workspace_followups, [Action::RunScript(5)]);
 
-        // A save's answer is the workspace's that asked. File 1's save is
-        // delayed while file 2's window comes to the front and file 2's
-        // workspace, with a script of the same id, waits for its own.
+        // A save's answer is the workspace's that asked. File 1's workspace
+        // waits for its save: file 2's window stays behind until it comes
+        // (#497), then file 1's workspace waits with its window, its draft
+        // kept, while file 2's, with a script of the same id, waits for
+        // its own.
         use crate::script_workspace::tests::{drafted, save_draft, state};
         let (worker, requests) = worker::Worker::capture_jobs();
         app.worker = worker;
@@ -7007,19 +7022,6 @@ mod tests {
             Request::SaveScript { workspace, .. } => workspace,
             other => panic!("expected a script save, not {other:?}"),
         };
-        let mut first = drafted(1);
-        let asked = save_draft(&mut first);
-        app.workspace = Some(first);
-        app.workspace_actions(&ctx, asked, &mut Vec::new());
-        let old = saves();
-        app.bring_to_front(2);
-        assert!(app.workspace.is_none(), "another file's window drops it");
-        let mut second = drafted(2);
-        let asked = save_draft(&mut second);
-        app.workspace = Some(second);
-        app.workspace_actions(&ctx, asked, &mut Vec::new());
-        let new = saves();
-        assert_ne!(old, new);
         let saved = |workspace| Reply::ScriptSaved {
             workspace,
             result: Ok(om_data::Script {
@@ -7028,13 +7030,28 @@ mod tests {
                 ..Default::default()
             }),
         };
-        // File 1's answer, in its own window: its scripts take the saved
-        // one; file 2's draft, wait and follow-ups stay, also on a failure.
-        app.with_window(1, |app| app.on_reply(&ctx, saved(old)));
-        assert_eq!(state(app.workspace.as_ref().unwrap()), (true, true, None));
-        assert!(app.workspace_followups.is_empty());
-        let first_window = app.windows.iter().find(|d| d.id == 1).unwrap();
-        assert!(first_window.scripts.script(2).is_some());
+        let mut first = drafted(1);
+        let asked = save_draft(&mut first);
+        app.workspace = Some(first);
+        app.workspace_actions(&ctx, asked, &mut Vec::new());
+        let old = saves();
+        assert!(!app.bring_to_front(2), "it waits for the save");
+        assert_eq!(app.w.id, 1);
+        app.on_reply(&ctx, saved(old));
+        assert_eq!(state(app.workspace.as_ref().unwrap()), (false, false, None));
+        assert!(app.w.scripts.script(2).is_some());
+        // A draft made after the save goes with the workspace.
+        crate::script_workspace::tests::edit(app.workspace.as_mut().unwrap());
+        assert!(app.bring_to_front(2));
+        assert!(app.workspace.is_none(), "file 1's waits with its window");
+        let mut second = drafted(2);
+        let asked = save_draft(&mut second);
+        app.workspace = Some(second);
+        app.workspace_actions(&ctx, asked, &mut Vec::new());
+        let new = saves();
+        assert_ne!(old, new);
+        // A late answer to file 1's save, in its own window, does not
+        // reach file 2's workspace, which keeps its draft and wait.
         app.with_window(1, |app| {
             app.on_reply(
                 &ctx,
@@ -7045,6 +7062,7 @@ mod tests {
             )
         });
         assert_eq!(state(app.workspace.as_ref().unwrap()), (true, true, None));
+        assert!(app.workspace_followups.is_empty());
         // File 2's workspace closed and opened again does not take the
         // answer its predecessor waited for.
         app.workspace = Some(drafted(2));
@@ -7056,6 +7074,11 @@ mod tests {
         let current = saves();
         app.on_reply(&ctx, saved(current));
         assert_eq!(state(app.workspace.as_ref().unwrap()), (false, false, None));
+        // Back in file 1's window, its workspace comes back with its draft.
+        assert!(app.bring_to_front(1));
+        let back = app.workspace.as_ref().unwrap();
+        assert!(back.owns(1));
+        assert_eq!(state(back), (false, true, None));
     }
 
     #[test]

@@ -167,6 +167,9 @@ pub(crate) struct Doc {
     pub style: WindowStyle,
     /// Keys on their way through the keystroke triggers.
     pub(super) keys: super::scripts::Keys,
+    /// Its file's Script Workspace while another file's window is in front
+    /// (`OpenMakerApp::bring_to_front`).
+    pub(super) parked_workspace: Option<Box<crate::script_workspace::ScriptWorkspace>>,
 }
 
 impl Doc {
@@ -274,6 +277,7 @@ impl Doc {
             placement: None,
             style: WindowStyle::Document,
             keys: Default::default(),
+            parked_workspace: None,
         }
     }
 
@@ -345,24 +349,68 @@ impl OpenMakerApp {
     }
 
     /// Bring window `id` to the front: the app works on it from now on.
-    pub(super) fn bring_to_front(&mut self, id: u32) {
+    /// False when it stays behind ([`Self::switch_blocked`]).
+    ///
+    /// The app shows the dialogs of the front window's file. When another
+    /// file's window comes forward, the front file's Script Workspace waits
+    /// with its window, drafts and all, and comes back when a window of its
+    /// file does; Manage Layouts, which holds nothing unsaved, closes.
+    pub(super) fn bring_to_front(&mut self, id: u32) -> bool {
         if id == self.w.id {
-            return;
+            return true;
+        }
+        if self.switch_blocked(id) {
+            return false;
         }
         let Some(index) = self.windows.iter().position(|d| d.id == id) else {
-            return;
+            return false;
         };
-        if self.windows[index].file_id != self.w.file_id {
-            self.workspace = None;
-            self.database = None;
-            self.security = None;
-            self.value_lists = None;
-            self.manage_layouts = None;
+        let other_file = self.windows[index].file_id != self.w.file_id;
+        if other_file {
+            self.w.parked_workspace = self.workspace.take().map(Box::new);
             self.workspace_followups.clear();
+            self.manage_layouts = None;
         }
         let front = self.windows.remove(index);
         let previous = std::mem::replace(&mut self.w, front);
         self.windows.push(previous);
+        if other_file {
+            self.unpark_workspace();
+        }
+        true
+    }
+
+    /// The front file's Script Workspace back from the window of its file
+    /// that keeps it, when another file's window was in front.
+    fn unpark_workspace(&mut self) {
+        let file = self.w.file_id;
+        if let Some(workspace) = std::iter::once(&mut self.w)
+            .chain(self.windows.iter_mut())
+            .filter(|d| d.file_id == file)
+            .find_map(|d| d.parked_workspace.take())
+        {
+            self.workspace = Some(*workspace);
+        }
+    }
+
+    /// Whether window `id`, of another file, cannot come forward now: the
+    /// front file's Manage Database, Manage Security or Manage Value Lists
+    /// is open (FileMaker Pro's are modal: no other window comes forward
+    /// while one is), or its Script Workspace waits for an answer, which
+    /// would come back to a workspace no longer shown. Closing those
+    /// dialogs here instead dropped unsaved script edits and staged schema
+    /// changes ([#497](https://github.com/OpenMaker-Dev/openmaker/issues/497)).
+    pub(super) fn switch_blocked(&self, id: u32) -> bool {
+        let base = self.base_window(id);
+        let file = std::iter::once(&self.w)
+            .chain(&self.windows)
+            .find(|d| d.id == base)
+            .map(|d| d.file_id);
+        file.is_some_and(|file| file != self.w.file_id)
+            && (self.database.is_some()
+                || self.security.is_some()
+                || self.value_lists.is_some()
+                || self.workspace.as_ref().is_some_and(|w| w.waiting()))
     }
 
     /// A script opened window `id` (New Window): it starts as a window of
@@ -468,6 +516,9 @@ impl OpenMakerApp {
             {
                 self.workspace = None;
                 self.workspace_followups.clear();
+            }
+            if self.workspace.is_none() {
+                self.unpark_workspace();
             }
         } else {
             self.windows.retain(|d| d.id != id);
@@ -640,17 +691,18 @@ impl OpenMakerApp {
                 }
                 // Once the connection is lost the windows stay as they are
                 // (`apply_window`), in front or behind.
+                // The script works in this window: it comes to the front,
+                // unless another file's window cannot (`switch_blocked`).
                 if update.background
                     || self.presentation.is_some()
                     || self.window_hidden(id)
                     || self.w.connection_lost.is_some()
+                    || !self.bring_to_front(id)
                 {
                     self.with_window(id, |app| {
                         app.on_script_event(ctx, ScriptEvent::Window(update))
                     });
                 } else {
-                    // The script works in this window: it is in front.
-                    self.bring_to_front(id);
                     self.on_script_event(ctx, ScriptEvent::Window(update));
                 }
             }
@@ -731,14 +783,11 @@ impl OpenMakerApp {
                 // the front so it can be answered: in front of the Script
                 // Workspace a Run started from, of a peer a visible
                 // Open File presented, and of a window the user brought
-                // forward while the script ran. Not over another file's
-                // window with that file's Script Workspace or Manage
-                // dialogs open: bringing the window forward would close
-                // them unsaved, so it waits there, as it did before, unless
-                // the script itself presented a window.
+                // forward while the script ran. While another file's
+                // window cannot come forward (`switch_blocked`), it waits
+                // in its window.
                 self.with_window(window, |app| app.on_script_event(ctx, event));
-                let presented = matches!(self.presentation, Some(Presentation::Window { .. }));
-                if presented || !self.presenting_closes_dialogs(window) {
+                if !self.switch_blocked(window) {
                     // X11 does not focus a minimized window.
                     let viewport = self.viewport_of(window);
                     if ctx.input_for(viewport, |i| i.viewport().minimized == Some(true)) {
@@ -870,24 +919,6 @@ impl OpenMakerApp {
     /// the window comes forward once so the user answers it there. Nothing
     /// is left after: the script's windows then come forward as it works in
     /// them, as without a request.
-    /// Whether bringing window `id` forward would close dialogs of the
-    /// front window's file (`bring_to_front` closes them when another
-    /// file's window comes forward): its Script Workspace, Manage Database,
-    /// Manage Security, Manage Value Lists or Manage Layouts.
-    fn presenting_closes_dialogs(&self, id: u32) -> bool {
-        let base = self.base_window(id);
-        let file = std::iter::once(&self.w)
-            .chain(&self.windows)
-            .find(|d| d.id == base)
-            .map(|d| d.file_id);
-        file.is_some_and(|file| file != self.w.file_id)
-            && (self.workspace.is_some()
-                || self.database.is_some()
-                || self.security.is_some()
-                || self.value_lists.is_some()
-                || self.manage_layouts.is_some())
-    }
-
     fn present_owner(&mut self, window: u32) {
         self.presentation = Some(Presentation::Window {
             id: window,
@@ -922,7 +953,10 @@ impl OpenMakerApp {
         }
         let id = self.blocking_dialog(id).unwrap_or(id);
         let id = *self.card_chain(id).last().expect("one window");
-        self.bring_to_front(id);
+        if !self.bring_to_front(id) {
+            self.presentation = None;
+            return;
+        }
         ctx.send_viewport_cmd_to(self.viewport_of(id), egui::ViewportCommand::Focus);
         self.presentation = (self.script.running && !last).then_some(Presentation::Window {
             id,

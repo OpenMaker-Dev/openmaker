@@ -2029,11 +2029,17 @@ step drafts, Run and Revert. Run runs the selected script in its file's
 window; a dialog the script shows (Show Custom Dialog, a "With dialog"
 confirmation, "Save changes to this record?", an error alert) brings that
 window in front of the workspace so it can be answered, as it does in front
-of any other window, and restores it when it is minimized. It does not over
-another file's window whose Script Workspace or Manage dialogs are open,
-since that would close them unsaved: the dialog then waits in its own
-window, unless the script itself brought a window forward. Where FileMaker
-Pro shows it is unmeasured. Save stores the active script's steps:
+of any other window, and restores it when it is minimized. Where FileMaker
+Pro shows it is unmeasured. The workspace is its file's: while another
+file's window is in front it waits with its own file's windows, its drafts
+kept, and comes back when one of them does. Another file's window does not
+come forward, by a script or Window > Select Window, while the front file's
+workspace waits for a save or a read, or while its Manage Database, Manage
+Security or Manage Value Lists is open (FileMaker Pro's are modal); the
+front window keeps the focus, and another file's script's dialog waits in
+its own window ([#497](https://github.com/OpenMaker-Dev/openmaker/issues/497)).
+Manage Layouts, which holds nothing unsaved, closes. Save stores the active
+script's steps:
 - **On a host that offers OpenMaker's authoring extension to the account**
   (OpenMaker Server, and the private host of a file opened from this
   computer), the native provider saves through the step save

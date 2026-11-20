@@ -3350,7 +3350,9 @@ mod queued_window_tests {
                     );
                     assert!(app.w.session.as_ref().unwrap().is_loading_records());
                 }
-                "window" => app.bring_to_front(2),
+                "window" => {
+                    app.bring_to_front(2);
+                }
                 "layout" => app.w.session.as_mut().unwrap().layout = Some(2),
                 "record" => app.w.session.as_mut().unwrap().current = 1,
                 "closed" => app.w.session = None,
