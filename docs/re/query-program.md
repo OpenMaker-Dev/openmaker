@@ -630,9 +630,11 @@ finders carry the full criterion text; their operand text is 300 bytes in
 this capture. The native client requests establish the wire shapes for
 these three criteria. FileMaker Server's replies to them, including its
 behavior with and without `IncludeTooLong`, remain unmeasured. The
-loopback host returned normal no-match for the plain criterion and an
-unsupported-finder error for the other two; those are OpenMaker Server
-results, not FileMaker Server evidence. Evidence: private capture
+loopback host, an OpenMaker Server that did not yet answer Match finders,
+returned normal no-match for the plain criterion and an unsupported-finder
+error for the other two; those are OpenMaker Server results, not FileMaker
+Server evidence. om-query now tests Match finders and leaves an optional
+IndexScan out ([#48](https://github.com/OpenMaker-Dev/openmaker/issues/48)). Evidence: private capture
 `re/work/issue-316/long-find-loopback/capture/conn-000` and [#126](https://github.com/OpenMaker-Dev/openmaker/issues/126).
 
 **Which Match finders reach the host (Med: bin).** `DBPredicateBuilder::Process`
