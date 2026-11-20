@@ -1247,16 +1247,13 @@ codec is `om_protocol::authoring`; the host side is `om-server`'s
   fields their formulas compiled against the file's names.
 - **New fields are not placed on layouts by `create_field`**, as FileMaker
   Pro's "Add newly defined fields to current layout" option would; place
-  one with `place_field`. A placed field is not in the layout's tab order,
-  so Tab does not reach it (a click does), and New Record does not put the
-  focus in it; a portal's fields are, as FileMaker Pro puts them there.
-- **Layout indexes.** Besides the field reference and object indexes,
-  FileMaker keeps an object name index `[4, 5, L, 08]` and the tab order
-  `[4, 5, L, 15]` (re/layout-model.md 10.5); a placed object is unnamed
-  and outside the tab order, so they are left as they are. FileMaker Pro's
-  own save of a layout holding a placed edit box also added it to the tab
-  order, set an undecoded flag bit on it and wrote a table view `0d` for
-  the layout (issue #166); a placement does none of these. The layout
+  one with `place_field`. New edit boxes go at the end of the layout's
+  tab order. Placement keeps the order of all existing entries. Where
+  FileMaker Pro inserts a new field in an existing order is unmeasured.
+- **Layout indexes.** The edit box's tab order entry at `[4, 5, L, 15]`
+  refers to the same field object as its object index entry, and its
+  attribute `07` records the new position (re/layout-model.md 10.5).
+  Labels stay outside the order. Placed objects are unnamed. The layout
   catalog's index `[4, 1]` and its stamp are not changed. FileMaker Pro
   counted up its `fc` during a session that saved a field and a layout;
   which saves do so is not isolated.

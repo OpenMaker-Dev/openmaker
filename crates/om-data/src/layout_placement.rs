@@ -36,9 +36,9 @@
 //! - the last object key issued, `[4, 5, L, 05, 00]`, raised to the new
 //!   objects' keys.
 //!
-//! New objects are not added to the tab order (`[4, 5, L, 15]` and an
-//! object's `07`), are not named, and get no data formatting, script
-//! triggers, conditional formatting or hide condition.
+//! The edit box is appended to the tab order (`[4, 5, L, 15]` and its
+//! attribute `07`). New objects are unnamed and get no script triggers,
+//! conditional formatting or hide condition.
 
 use std::collections::BTreeSet;
 
@@ -81,9 +81,10 @@ pub(crate) const PART_OBJECTS: u8 = 0x07;
 /// The key under the attribute records holding the last object key issued
 /// (layout-model.md 10.5).
 const LAST_KEY: u8 = 0x00;
-/// Keys of an object's attribute record: its text, its data format
-/// (`KFormat`) and its name.
+/// Keys of an object's attribute record: its text, its tab position, its
+/// data format (`KFormat`) and its name.
 const TEXT: u8 = 0x01;
+const TAB_POSITION: u8 = 0x07;
 const FORMAT: u8 = 0x0d;
 const NAME: u8 = 0x10;
 /// A button's step data in its attribute record (its options, a script
@@ -1751,7 +1752,24 @@ fn plan_objects(
             }
             let (index_key, index_value) =
                 object_index_entry(placement.frame.top, placement.frame.left, sequence, key)?;
-            Some((index_key, index_value, sequence))
+            let tab_order = member.child(&[TAB_ORDER]);
+            let bad_order =
+                || unsupported("The layout's tab order is not one OpenMaker reads.".into());
+            if tab_order.is_some_and(|order| order.value.is_some()) {
+                return Err(bad_order());
+            }
+            let last = tab_order
+                .into_iter()
+                .flat_map(|order| &order.children)
+                .map(|entry| <[u8; 2]>::try_from(entry.segment.as_slice()).map(u16::from_be_bytes))
+                .try_fold(0u16, |last, position| {
+                    position.map(|position| last.max(position))
+                })
+                .map_err(|_| bad_order())?;
+            let position = last
+                .checked_add(1)
+                .ok_or_else(|| unsupported("The layout's tab order is full.".into()))?;
+            Some((index_key, index_value, sequence, position.to_be_bytes()))
         }
         _ => None,
     };
@@ -1791,11 +1809,12 @@ fn plan_objects(
             stored.len()
         ),
     ));
-    if let Some(key) = field_object {
-        let record = attributes(key, None);
+    if let (Some(key), Some((_, _, _, position))) = (field_object, &index_entry) {
+        let mut record = attributes(key, None);
+        record.set_child(OwnedNode::leaf(vec![TAB_POSITION], position.to_vec()));
         changes.push((
             format!("[4, 5, L, 05, {}]", hex(&record.segment)),
-            format!("object {key}'s attributes: no name, and the UUIDs d8 and d9 the host makes"),
+            format!("object {key}'s attributes: tab position {}, no name, and the UUIDs d8 and d9 the host makes", u16::from_be_bytes(*position)),
         ));
         next.put(&[&[ATTRIBUTES], &record.segment.clone()], record);
     }
@@ -1836,7 +1855,7 @@ fn plan_objects(
             OwnedNode::leaf(Vec::new(), Vec::new()),
         );
     }
-    if let (Some(placement), Some(key), Some((index_key, index_value, sequence))) =
+    if let (Some(placement), Some(key), Some((index_key, index_value, sequence, position))) =
         (field, field_object, index_entry)
     {
         changes.push((
@@ -1849,8 +1868,16 @@ fn plan_objects(
         ));
         next.put(
             &[&[OBJECT_INDEX], &index_key],
+            OwnedNode::leaf(Vec::new(), index_value.clone()),
+        );
+        next.put(
+            &[&[TAB_ORDER], &position],
             OwnedNode::leaf(Vec::new(), index_value),
         );
+        changes.push((
+            format!("[4, 5, L, 15, {}]", hex(&position)),
+            format!("the tab order: field object {key} after the existing entries"),
+        ));
     }
     let last = label_object
         .or(field_object)
@@ -2870,7 +2897,16 @@ mod tests {
 
     #[test]
     fn a_field_and_its_label_go_on_top_and_keep_everything_stored() {
-        let before = layout();
+        let mut before = layout();
+        let existing_entry = vec![0, 2, 1, 2, 0, 0, 0, 0, 1];
+        before.put(
+            &[&[ATTRIBUTES], &[2], &[TAB_POSITION]],
+            OwnedNode::leaf(Vec::new(), vec![0, 3]),
+        );
+        before.put(
+            &[&[TAB_ORDER], &[0, 3]],
+            OwnedNode::leaf(Vec::new(), existing_entry.clone()),
+        );
         let wanted = placement(rect(110.0, 80.0, 200.0, 20.0));
         let planned = plan(&before, &wanted).unwrap();
         assert_eq!(planned.field_object, 4);
@@ -2887,8 +2923,11 @@ mod tests {
         assert_eq!((spec.table_key, spec.field_key), (1_065_089, 128));
         assert_eq!(field.bounds.as_ref().unwrap().right, 310.0);
         assert!(is_placed_field(field, &wanted));
+        assert_eq!(field.tab_order, 4);
+        assert_eq!(layout.objects.get(2).unwrap().tab_order, 3);
         let label = layout.objects.get(5).unwrap();
         assert_eq!(label.text.as_deref(), Some("Follow up"));
+        assert_eq!(label.tab_order, 0);
         assert!(is_placed_label(label, wanted.label.as_ref().unwrap()));
         assert_eq!(layout.objects.other.len(), 1);
 
@@ -2916,6 +2955,12 @@ mod tests {
             entry.and_then(|e| e.value.clone()),
             Some(vec![0, 2, 1, 4, 0, 0, 0, 0, 1])
         );
+        let tab = planned.member.child(&[TAB_ORDER]).unwrap();
+        assert_eq!(
+            tab.child(&[0, 3]).unwrap().value.as_ref(),
+            Some(&existing_entry)
+        );
+        assert_eq!(tab.child(&[0, 4]).unwrap().value, entry.unwrap().value);
         assert!(indexes(&planned.member, 4) && !indexes(&planned.member, 5));
         let last = planned.member.at(&[&[ATTRIBUTES], &[LAST_KEY]]);
         assert_eq!(last.and_then(|n| n.value.clone()), Some(vec![1, 5]));
@@ -2944,7 +2989,7 @@ mod tests {
             &planned.member,
             &[4, 5]
         ));
-        assert_eq!(planned.changes.len(), 7);
+        assert_eq!(planned.changes.len(), 8);
         // A layout that issued a larger key: the new keys come after it.
         let mut issued = before.clone();
         issued.put(
@@ -3570,6 +3615,10 @@ mod tests {
         // issued again.
         let planned = plan(&blank, &wanted).unwrap();
         assert_eq!((planned.field_object, planned.stacking), (3, 0));
+        assert_eq!(
+            decoded(&planned.member).objects.get(3).unwrap().tab_order,
+            1
+        );
     }
 
     #[test]
