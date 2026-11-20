@@ -50,6 +50,7 @@
 
 pub mod limit;
 pub mod read;
+mod xls;
 
 use std::collections::{HashMap, HashSet};
 
@@ -232,7 +233,7 @@ pub fn refuse_unsupported(options: &ImportOptions, field_flags: Option<&FieldFla
 pub fn parse(request: &ImportRequest, bytes: &[u8]) -> Result<Source> {
     let unreadable = match request.profile.file_type {
         FileType::XmlImport => code::XML_PARSE,
-        FileType::Excel2007 | FileType::ExcelExport => 730,
+        FileType::Excel2007 | FileType::ExcelExport | FileType::Excel2003 => 730,
         _ => 708,
     };
     if bytes.len() > limit::SOURCE_BYTES {
@@ -276,6 +277,18 @@ pub fn parse(request: &ImportRequest, bytes: &[u8]) -> Result<Source> {
             Source {
                 names: None,
                 rows: read::workbook(bytes, sheet, worksheet)?,
+            }
+        }
+        FileType::Excel2003 => {
+            let (sheet, worksheet) = match &request.profile.body {
+                ProfileBody::Excel {
+                    sheet, worksheet, ..
+                } => (*sheet as usize, worksheet.as_str()),
+                _ => (0, ""),
+            };
+            Source {
+                names: None,
+                rows: xls::workbook(bytes, sheet, worksheet, &mut limit::Budget::new(unreadable))?,
             }
         }
         FileType::DBase => read::dbase(bytes, charset)?,

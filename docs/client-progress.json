@@ -437,7 +437,7 @@
       "previous_status": "Partial",
       "status": "Partial",
       "scope": "Layout, object and record triggers run in the owning context and can veto. Browse keystroke triggers see control keys and modifiers and keep the queued input order; related edit boxes run their object triggers; Tab follows the stored tab order ([editing records](desktop-client.md#editing-records)).",
-      "remaining": "Find and Preview mode keys and input-method commits are not implemented or measured ([desktop notes](re/script-runtime.md#implementation-notes-desktop-client)); Return ends a field's editing [#376](https://github.com/OpenMaker-Dev/openmaker/issues/376). Related fields get no keystroke trigger.",
+      "remaining": "Find and Preview mode keys and input-method commits are not implemented or measured ([desktop notes](re/script-runtime.md#implementation-notes-desktop-client)). Related fields get no keystroke trigger.",
       "issues": [
         260
       ],

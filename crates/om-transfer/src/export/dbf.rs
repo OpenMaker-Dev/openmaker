@@ -64,7 +64,8 @@ fn name(n: &str) -> [u8; 11] {
 /// significant (rounded), as FileMaker writes them; a summary's text cut at
 /// 19 characters.
 fn number(v: &ExportValue, summary: bool) -> String {
-    let Some(n) = v.number() else {
+    // A `?` is empty (inferred, as tab-separated text writes it).
+    let Some(n) = v.number().filter(|_| !v.is_invalid()) else {
         return String::new();
     };
     if summary {
