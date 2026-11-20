@@ -408,9 +408,36 @@ pub(crate) struct Shared {
     pub clipboard: Option<String>,
     /// The MBS plug-in subset's state: the alert `Dialog.*` builds.
     pub plugin: om_data::runtime::plugins::PluginState,
+    /// When a script's wait last read the hosts' calls
+    /// ([`Shared::host_messages_while_waiting`]).
+    pub host_messages_read: Option<Instant>,
 }
 
 impl Shared {
+    /// While a script waits (a pause, a dialog's answer): tell the UI what
+    /// the hosts' administrators sent the window's file and the other
+    /// files open, at most once a [`worker::CONNECTION_POLL`], as of the
+    /// running script's request. A file the host disconnected is let go of
+    /// on the host by that read ([`DataProvider::take_host_messages`]), so
+    /// a script waiting longer than the host's wait for the client to sign
+    /// out does not cost the connection's other files their connection.
+    pub(crate) fn host_messages_while_waiting(
+        &mut self,
+        provider: &mut dyn DataProvider,
+        files: &mut super::databases::OpenFiles,
+        responses: &Sender<Response>,
+    ) {
+        if self
+            .host_messages_read
+            .is_some_and(|read| read.elapsed() < worker::CONNECTION_POLL)
+        {
+            return;
+        }
+        self.host_messages_read = Some(Instant::now());
+        let window = self.file.window.id();
+        tell_host_messages(window, provider, files, responses, self.epoch, &self.ctx);
+    }
+
     pub(crate) fn new(abort: Arc<AtomicBool>) -> Self {
         Shared {
             print_dispatcher: crate::printing::default_dispatcher(),
@@ -464,6 +491,7 @@ impl Shared {
             options_refused: false,
             clipboard: None,
             plugin: Default::default(),
+            host_messages_read: None,
             abort,
         }
     }
@@ -634,6 +662,37 @@ fn take_window(known: &mut Vec<Window>, state: super::WindowState) -> Window {
     window
 }
 
+/// Tell the UI what the hosts' administrators sent the window `window`'s
+/// file (`provider`) and the other files open (`files`), each to its own
+/// window, as of the request of `epoch`, waking `ctx`
+/// ([`DataProvider::take_host_messages`]; #156).
+fn tell_host_messages(
+    window: u32,
+    provider: &mut dyn DataProvider,
+    files: &mut super::databases::OpenFiles,
+    responses: &Sender<Response>,
+    epoch: u64,
+    ctx: &egui::Context,
+) {
+    let tell = |window, messages: Vec<om_data::HostMessage>| {
+        if messages.is_empty() {
+            return;
+        }
+        let response = Response {
+            epoch,
+            window,
+            reply: worker::Reply::HostMessages(messages),
+        };
+        if responses.send(response).is_ok() {
+            ctx.request_repaint();
+        }
+    };
+    tell(window, provider.take_host_messages());
+    for file in files.peers.values_mut() {
+        tell(file.state.window.id(), file.provider.take_host_messages());
+    }
+}
+
 pub(crate) struct ScriptSession {
     runtime: Runtime,
     s: Shared,
@@ -670,23 +729,8 @@ impl ScriptSession {
         ctx: &egui::Context,
         files: &mut super::databases::OpenFiles,
     ) {
-        let tell = |window, messages: Vec<om_data::HostMessage>| {
-            if messages.is_empty() {
-                return;
-            }
-            let response = Response {
-                epoch,
-                window,
-                reply: worker::Reply::HostMessages(messages),
-            };
-            if responses.send(response).is_ok() {
-                ctx.request_repaint();
-            }
-        };
-        tell(self.s.file.window.id(), provider.take_host_messages());
-        for file in files.peers.values_mut() {
-            tell(file.state.window.id(), file.provider.take_host_messages());
-        }
+        let window = self.s.file.window.id();
+        tell_host_messages(window, provider, files, responses, epoch, ctx);
     }
 
     /// Between requests: tell the UI if the connection was lost (see
@@ -1423,6 +1467,8 @@ impl ScriptSession {
             host.send(ScriptEvent::Paused { seconds, message });
         }
         loop {
+            self.s
+                .host_messages_while_waiting(io.provider.as_mut(), io.files, io.responses);
             if self.s.connection_lost(io.provider.as_ref(), io.responses) {
                 // The run loop finds the session interrupted and ends it.
                 return None;

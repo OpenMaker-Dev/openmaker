@@ -5365,6 +5365,13 @@ impl DataProvider for NativeProvider {
                 "The connection to the host was lost ({reason})."
             )));
         }
+        // The host disconnected the file itself; a related file it
+        // disconnected only fails what reads it.
+        if session.file_disconnected() {
+            return Some(DataError::connection_lost(
+                om_session::HOST_DISCONNECTED_FILE,
+            ));
+        }
         let (file, reason) = self.external.connection_lost()?;
         Some(DataError::connection_lost(format!(
             "The connection to the host was lost for related file “{file}” ({reason})."

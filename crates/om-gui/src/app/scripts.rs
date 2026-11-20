@@ -2508,8 +2508,13 @@ impl OpenMakerApp {
 
     /// Esc / Cmd-period while a script runs; Esc in a pause cancels it.
     pub(super) fn abort_keys(&mut self, ctx: &egui::Context) {
-        // The host's message over the window takes Escape for itself.
-        if !self.script.running || self.script.prompt.is_some() || self.host_message_shown() {
+        // The host's message over the window, or its alert that a file was
+        // disconnected, takes Escape for itself.
+        if !self.script.running
+            || self.script.prompt.is_some()
+            || self.host_message_shown()
+            || self.forced_alert_shown()
+        {
             return;
         }
         let abort = ctx.input_mut(|input| {
@@ -2561,6 +2566,11 @@ impl OpenMakerApp {
 
     /// The prompt on screen, as a modal.
     pub(super) fn prompt(&mut self, ctx: &egui::Context) {
+        // A script's dialog that came while the host's alert that a file was
+        // disconnected shows waits for its OK: one dialog takes the keys.
+        if self.forced_alert_shown() {
+            return;
+        }
         let Some(view) = self.script.prompt.as_mut() else {
             return;
         };

@@ -601,6 +601,9 @@ pub(crate) enum Action {
     DismissAlert,
     /// Close the host administrator's message shown (`host_message`).
     DismissHostMessage,
+    /// The OK of the alert that the host disconnected file `0` (a file id):
+    /// its windows close ([`OpenMakerApp::disconnected_by_host`]).
+    CloseDisconnectedFile(u64),
     /// Discard input refused by before-mutation preparation, keeping accepted drafts.
     DiscardEntryCandidates,
     Minimize,
@@ -688,6 +691,7 @@ impl Action {
                 | Action::Minimize
                 | Action::DismissAlert
                 | Action::DismissHostMessage
+                | Action::CloseDisconnectedFile(_)
                 | Action::DiscardEntryCandidates
                 | Action::ZoomIn
                 | Action::ZoomOut
@@ -719,6 +723,7 @@ impl Action {
                 | Action::Minimize
                 | Action::DismissAlert
                 | Action::DismissHostMessage
+                | Action::CloseDisconnectedFile(_)
                 | Action::ZoomIn
                 | Action::ZoomOut
                 | Action::ActualSize
@@ -748,6 +753,11 @@ impl Action {
 /// FileMaker Pro's closed itself about 30 s after it came
 /// (network-protocol.md 6.5, Medium: polled every 20 s).
 const HOST_MESSAGE_SECONDS: f64 = 30.0;
+
+/// FileMaker Pro's alert when the host disconnects a file
+/// (network-protocol.md 6.5); the administrator's text follows it.
+const HOST_DISCONNECTED: &str =
+    "File has been forcefully disconnected by the host. All affected windows will be closed.";
 
 pub struct OpenMakerApp {
     worker: Worker,
@@ -787,6 +797,11 @@ pub struct OpenMakerApp {
     /// now ([`Self::host_message`]; #156), and when it was first shown
     /// (`InputState::time`).
     host_messages: std::collections::VecDeque<om_data::HostMessage>,
+    /// Files the host disconnected (`0x0870`), by file id, each with the
+    /// alert that says so ([`Self::disconnected_by_host`]).
+    forced_disconnects: std::collections::VecDeque<(u64, String)>,
+    /// The one of them alerted now: the alert's OK closes that file.
+    forced_alert: Option<(u64, String)>,
     host_message_since: Option<f64>,
     worker_stopped: bool,
     /// Closing the file (and then quitting, when `true`): each window
@@ -912,6 +927,8 @@ impl OpenMakerApp {
             part_setup: None,
             error: None,
             host_messages: Default::default(),
+            forced_disconnects: Default::default(),
+            forced_alert: None,
             host_message_since: None,
             worker_stopped: false,
             closing: None,
@@ -2081,6 +2098,7 @@ impl OpenMakerApp {
                     action,
                     Action::DismissAlert
                         | Action::DismissHostMessage
+                        | Action::CloseDisconnectedFile(_)
                         | Action::Quit
                         | Action::Minimize
                 )
@@ -2430,6 +2448,16 @@ impl OpenMakerApp {
         self.change_password_dialog(&ctx);
         self.own_password_dialog(&ctx);
         self.related_sign_in(&ctx);
+        // The next file the host disconnected is alerted about once no other
+        // alert or script dialog is up; a file closed meanwhile is passed.
+        while self.forced_alert.is_none() && self.error.is_none() && self.script.prompt.is_none() {
+            let Some((file, text)) = self.forced_disconnects.pop_front() else {
+                break;
+            };
+            if self.docs().any(|doc| doc.file_id == file) {
+                self.forced_alert = Some((file, text));
+            }
+        }
         self.alert(&ctx, actions);
         self.host_message(&ctx, actions);
         self.prompt(&ctx);
@@ -2758,6 +2786,7 @@ impl OpenMakerApp {
             || self.w.delete_layout.is_some()
             || self.w.delete_portal_row.is_some()
             || self.error.is_some()
+            || self.forced_alert.is_some()
             || self.script.prompt.is_some()
             || self.w.document.other_dialog_open()
             || self.value_list_edit.is_some()
@@ -3201,8 +3230,12 @@ impl OpenMakerApp {
     /// A FileMaker-style alert for errors: the app glyph, a bold message
     /// and a blue OK button.
     fn alert(&self, ctx: &egui::Context, actions: &mut Vec<Action>) {
-        let Some(message) = self.error.clone() else {
-            return;
+        // One alert at a time: the host's disconnect of a file, with its own
+        // OK, before any other, which waits for it.
+        let (message, dismiss) = match (&self.forced_alert, &self.error) {
+            (Some((file, text)), _) => (text.clone(), Action::CloseDisconnectedFile(*file)),
+            (None, Some(error)) => (error.clone(), Action::DismissAlert),
+            (None, None) => return,
         };
         let frame = egui::Frame::new()
             .fill(theme::DIALOG_BG)
@@ -3258,10 +3291,57 @@ impl OpenMakerApp {
                         input.key_pressed(Key::Enter) || input.key_pressed(Key::Escape)
                     });
                     if ok.clicked() || key {
-                        actions.push(Action::DismissAlert);
+                        actions.push(dismiss.clone());
                     }
                 });
             });
+    }
+
+    /// The host disconnected window `window`'s file (`0x0870`: an
+    /// administrator's close or disconnect ran out of time;
+    /// network-protocol.md 6.5). The session routes the notice to the
+    /// handles holding the file, and its connection let go of the file at
+    /// once (`om_session`), so the window's provider took it for its own
+    /// file. FileMaker Pro signs out of the file and disconnects, then
+    /// alerts "File has been forcefully disconnected by the host. All
+    /// affected windows will be closed.", with the administrator's text, and
+    /// OK. Here the file's windows lose the connection at once, so nothing
+    /// more is saved or asked of the host, and the alert's OK closes them
+    /// ([`Action::CloseDisconnectedFile`]).
+    pub(super) fn disconnected_by_host(&mut self, window: u32, message: &om_data::HostMessage) {
+        let Some(file) = self.with_window(window, |app| app.w.file_id) else {
+            return;
+        };
+        let queued = self
+            .forced_disconnects
+            .iter()
+            .map(|(queued, _)| *queued)
+            .chain(self.forced_alert.as_ref().map(|(alerted, _)| *alerted))
+            .any(|queued| queued == file);
+        if queued {
+            return;
+        }
+        // Only the file's own windows and what is the file's: the other
+        // files' windows, a close of them under way and their script go on.
+        let lost = om_data::DataError::connection_lost(HOST_DISCONNECTED);
+        if self.with_window(window, |app| app.mark_file_lost(&lost)) == Some(true) {
+            if self.front_doc().file_id == file {
+                self.closing = None;
+            }
+            if self.script.owner_file == Some(file) {
+                self.stop_scripts();
+            }
+        }
+        let mut alert = String::from(HOST_DISCONNECTED);
+        if !message.text.is_empty() {
+            alert.push_str(&format!("\n\n[From Administrator: “{}”]", message.text));
+        }
+        self.forced_disconnects.push_back((file, alert));
+    }
+
+    /// The host's alert that a file was disconnected shows now.
+    pub(super) fn forced_alert_shown(&self) -> bool {
+        self.forced_alert.is_some()
     }
 
     /// Whether the host administrator's message shows now: one waits, and
@@ -4328,6 +4408,25 @@ impl OpenMakerApp {
             Action::DismissAlert => {
                 self.error = None;
                 self.w.document.release_focus();
+            }
+            Action::CloseDisconnectedFile(file) => {
+                self.forced_alert = None;
+                // Every window of the file at once, wherever it is: the
+                // other files' windows, the front one included, stay.
+                let window = self
+                    .docs()
+                    .find(|doc| doc.file_id == file)
+                    .map(|doc| doc.id);
+                if let Some(window) = window {
+                    // `close_file` resets what the front file's close or
+                    // open had under way: another file's stays.
+                    let front = self.front_doc().file_id;
+                    let kept = (self.closing, self.opening.clone(), self.status);
+                    self.with_window(window, |app| app.close_file(ctx));
+                    if front != file {
+                        (self.closing, self.opening, self.status) = kept;
+                    }
+                }
             }
             Action::DismissHostMessage => {
                 self.host_messages.pop_front();
@@ -5561,8 +5660,18 @@ impl OpenMakerApp {
     /// replies, and keeps its unsaved edits on screen; closing the file
     /// stops waiting for the saves it needed.
     fn lose_connection(&mut self, err: &DataError) {
+        if self.mark_file_lost(err) {
+            self.closing = None;
+            self.stop_scripts();
+        }
+    }
+
+    /// [`Self::lose_connection`] for the window's file's own windows: each
+    /// is lost, with what waited in it; `false` when it was lost already.
+    /// The app's close continuation and scripts are left to the caller.
+    fn mark_file_lost(&mut self, err: &DataError) -> bool {
         if self.w.connection_lost.is_some() || self.w.session.is_none() {
-            return;
+            return false;
         }
         self.w.connection_lost = Some(err.message.clone());
         let file = self.w.file_id;
@@ -5603,8 +5712,7 @@ impl OpenMakerApp {
                 doc.delete_portal_row = None;
             });
         }
-        self.closing = None;
-        self.stop_scripts();
+        true
     }
 
     /// The window's notice of a lost connection, in place of the unsaved

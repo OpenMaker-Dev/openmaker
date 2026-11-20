@@ -301,11 +301,54 @@ slow host), reads at most 32 messages, each for at most 5 milliseconds
 however slowly it arrives, and writes its answers within 2 seconds or
 loses the connection; the rest waits for the next second.
 
+When the host disconnects a file (`0x0870`: an administrator's close or
+disconnect whose time ran out), that open of the file is lost at once to
+every handle holding it, related readers included, when the connection
+reads the notice: the idle read, any request, a Tickle. A request for it
+does not go out, whenever it was built. One op62 release follows from the
+next idle caller (the worker between requests, or while a script waits in
+a pause or a dialog), waiting at most 2 seconds for the host's answer and
+sent again up to three times. The host drops a connection that still holds
+such a file after its wait for the client to sign out, and with it the
+connection's other files, which this keeps usable. A later open of the file
+on the same connection is a new one, not lost.
+
+The notice goes to the handles holding the file the host names, by its host
+file id (one naming a file the connection no longer holds is dropped), so the
+window it reaches shows that file. Its windows lose the connection at once:
+nothing more is saved. An alert says, as FileMaker Pro's does, "File has been
+forcefully disconnected by the host. All affected windows will be closed.",
+then "[From Administrator: “<text>”]" when the administrator gave a text,
+and OK. It waits for an alert or script dialog that is up, and holds the
+others while it shows. Its OK closes every window of that file at once,
+whichever window is in front; unsaved changes are lost with the file. A
+related file the host disconnects fails only what reads it.
+
 Limits ([#156](https://github.com/OpenMaker-Dev/openmaker/issues/156)):
-- The host's requests to close the files (Close, Disconnect) and its
-  notice of a forced disconnect are taken and not acted on yet: FileMaker
-  Pro shows a Close File dialog with a countdown, or closes the windows
-  with an alert.
+- The host's requests to close the files (Close, Disconnect) are taken and
+  not acted on yet: FileMaker Pro shows a Close File dialog with a
+  countdown, and closes the files when it ends.
+- On a forced disconnect FileMaker Pro signs out of the file (op81 Logout)
+  and disconnects before its alert. OpenMaker sends the op62 release a
+  user's close sends, as no Logout is built yet, and keeps the connection
+  for its other files. The alert's brackets are as the capture's reading
+  recorded them [I: whether FileMaker Pro shows them is unmeasured].
+- A script that runs without asking anything of the host reads the notice
+  at the next Tickle at the latest. The alert shows when the worker next
+  reads the hosts' calls: between requests, or while a script waits.
+- Disconnect Client: OpenMaker Server names one file in its forced notice
+  and then ends the connection if a file is still open. Only that file is
+  alerted about and closed; the connection's other files show the lost
+  connection instead ([#638](https://github.com/OpenMaker-Dev/openmaker/issues/638)).
+- Ordering and edge cases left open
+  ([#640](https://github.com/OpenMaker-Dev/openmaker/issues/640)):
+  - A loss the worker reports before the notice clears the app's close and
+    script state the generic way.
+  - A dialog wait of another file's script ends when the alert's OK closes
+    the disconnected file.
+  - The alert is missed when the window the notice went to closed first.
+  - A commit refused before it was sent counts as ambiguous.
+  - The release's callback replies keep the normal write timeout.
 - The dialog's look is OpenMaker's; FileMaker Pro's was read from its
   text only (capture s07).
 - An open Script Workspace holds the message too, although it is a
