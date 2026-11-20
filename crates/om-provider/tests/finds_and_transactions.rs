@@ -2772,6 +2772,99 @@ fn missing_index_unique_cold_and_warm_preserve_duplicates_exclusion_and_new_valu
     }
 }
 
+/// A unique value is checked in every repetition a write changes, not only
+/// the first: Name repeats twice, and "SHIP" in record 1's second
+/// repetition is another record's value (504), as FileMaker's engine
+/// refuses it (script-runtime.md, the unique oracle); "Mine" is not.
+#[test]
+fn a_unique_value_in_a_later_repetition_is_checked() {
+    // Repetition 2 alone, then both repetitions in one write, which checks
+    // the field's values together; without the host's index counts too
+    // (the stored records scanned once for both values).
+    let writes: [(&[(u64, &str)], bool); 4] = [
+        (&[(NAME * 256 + 2, "SHIP")], true),
+        (&[(NAME * 256 + 2, "Mine")], false),
+        (&[(NAME, "Mine"), (NAME * 256 + 2, "SHIP")], true),
+        (&[(NAME, "Mine"), (NAME * 256 + 2, "Yours")], false),
+    ];
+    for late in [false, true] {
+        for (cells, duplicate) in writes {
+            let mut root = fixture::tree(&[], true);
+            fixture::set_field_options(&mut root, TABLE, NAME, 0x8000_0000);
+            fixture::set_field_validation(&mut root, TABLE, NAME, 0x410);
+            fixture::set_field_repetitions(&mut root, TABLE, NAME, 2);
+            let file = TempFile::from_tree("repeated-unique", &root);
+            let (port, ca) = host_with(&file.0, None, |server| {
+                if late {
+                    server.with_late_index_builds()
+                } else {
+                    server
+                }
+            });
+            let mut provider = open(port, &ca);
+            let tasks = layout(&mut provider, "Tasks");
+            let result = provider.write_record(&om_data::ScriptWrite {
+                layout: tasks,
+                record: Some(1),
+                cells: cells
+                    .iter()
+                    .map(|(cell, text)| (*cell, Some((*text).into())))
+                    .collect(),
+                ..Default::default()
+            });
+            assert_eq!(
+                result.as_ref().err().and_then(|e| e.code),
+                duplicate.then_some(504),
+                "late={late}, {cells:?}: {result:?}"
+            );
+            provider.close();
+        }
+    }
+}
+
+/// Two records a transaction holds take the same unique index key when
+/// one's value has it as a line: `green` in one and `green` CR `purple` in
+/// the other are 504 at the commit, in either order (the value index keys
+/// each line), and so is the same multiline value in both.
+#[test]
+fn held_records_sharing_a_unique_line_are_refused() {
+    use om_data::runtime::TransactionOptions;
+    for (first, second) in [
+        ("green\rpurple", "green"),
+        ("green", "green\rpurple"),
+        ("green\rpurple", "green\rpurple"),
+    ] {
+        let mut root = fixture::tree(&[], true);
+        fixture::set_field_options(&mut root, TABLE, NAME, 0x8000_0000);
+        fixture::set_field_validation(&mut root, TABLE, NAME, 0x410);
+        fixture::set_field_repetitions(&mut root, TABLE, NAME, 2);
+        let file = TempFile::from_tree("held-unique-lines", &root);
+        let (port, ca) = host_with(&file.0, None, |server| server);
+        let mut provider = open(port, &ca);
+        let tasks = layout(&mut provider, "Tasks");
+        provider
+            .begin_transaction(TransactionOptions::default())
+            .unwrap();
+        for (record, text) in [(1, first), (2, second)] {
+            provider
+                .write_record(&om_data::ScriptWrite {
+                    layout: tasks,
+                    record: Some(record),
+                    cells: [(NAME * 256 + 2, Some(text.into()))].into(),
+                    ..Default::default()
+                })
+                .unwrap();
+        }
+        let result = provider.commit_transaction(false);
+        assert_eq!(
+            result.as_ref().err().and_then(|e| e.code),
+            Some(504),
+            "{first:?} then {second:?}: {result:?}"
+        );
+        provider.close();
+    }
+}
+
 #[test]
 fn missing_index_existing_cold_and_warm_require_another_record() {
     for warm in [false, true] {

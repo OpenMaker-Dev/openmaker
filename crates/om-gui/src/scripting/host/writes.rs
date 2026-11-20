@@ -86,6 +86,19 @@ impl WorkerHost<'_> {
         if repetition > def.repetitions.max(1) {
             return Err(ErrorCode(REPETITION_INVALID).into());
         }
+        // Repetition n of 2 to 255 is cell `field * 256 + n` (`cell_of`):
+        // one past 255, or whose cell is another field's id in a malformed
+        // file, names no cell of its own and would be written into another
+        // field's, so it is not written (3).
+        if repetition > 1
+            && (repetition > 255
+                || def.id.checked_mul(256).is_none()
+                || schema
+                    .table(table)
+                    .is_some_and(|t| t.fields.contains_key(&cell_of(def.id, repetition))))
+        {
+            return Err(HostError::Unsupported);
+        }
         let text = self.text(value);
         if def.global {
             // A global field holds this session's value, in Browse and

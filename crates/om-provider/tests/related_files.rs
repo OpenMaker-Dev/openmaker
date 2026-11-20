@@ -1395,6 +1395,8 @@ fn imported_layout_edits_commit_on_the_owner_and_return_fresh_calculations() {
             &format!("Name & \"|{marker}|\" & Marker() & \"|\" & Get ( FileName )"),
         );
     }
+    // The peer's Count repeats twice (#43).
+    fixture::set_field_repetitions(&mut files[1].1, TABLE, COUNT, 2);
     let host = Host::new("layout-edits", files);
     let mut provider = host.open(ROOT);
     let schema = provider.calc_schema().unwrap().unwrap();
@@ -1503,6 +1505,28 @@ fn imported_layout_edits_commit_on_the_owner_and_return_fresh_calculations() {
         host.captures.with_opcode(om_protocol::Opcode::Lock).len(),
         before
     );
+    // A repetition the field has is written through the owner, as a local
+    // table's is (#43); Name's second above, which it does not have, is not.
+    provider
+        .write_record(&om_data::ScriptWrite {
+            cells: [(COUNT * 256 + 2, Some("7".into()))].into(),
+            ..write.clone()
+        })
+        .unwrap();
+    let read = provider
+        .calc_data(&[CalcNeed::Record {
+            table: imported,
+            record: 1,
+        }])
+        .unwrap();
+    let row = read.records[&(imported, 1)].clone().unwrap();
+    let cx = om_data::calc::Ctx::new(&schema.locale, Date::from_ymd(2026, 1, 1).unwrap());
+    let count = |repetition| {
+        row.get(COUNT, repetition)
+            .map(|v| v.to_text(&cx).into_string())
+            .unwrap_or_default()
+    };
+    assert_eq!((count(1), count(2)), ("41".to_owned(), "7".to_owned()));
 }
 
 /// Deletion needs no field-entry plan. The complete owner engine must retain

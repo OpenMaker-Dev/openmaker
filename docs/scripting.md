@@ -175,7 +175,9 @@ and OnWindowTransaction, as FileMaker Server's engine answered them
 Root-file layouts backed by a readable related hosted table can edit existing
 records. Browse and Set Field write their ordinary stored text, number, date,
 time, timestamp and container fields, a container's data going to the owning
-file's library (record-writes.md, Limits). The
+file's library (record-writes.md, Limits). Set Field also writes each
+repetition of such a field that repeats, as on a local table; Browse does
+not offer a repeating field there yet. The
 owning provider supplies field rules, auto-entry, custom functions, stored
 calculations, version checks, locks, commit and verified readback. The root
 layout and script remain the caller's context, and returned calculations and
@@ -201,7 +203,7 @@ file committed (record-writes.md, "A script's transaction across files").
 Delete Record inside one is refused
 ([#312](https://github.com/OpenMaker-Dev/openmaker/issues/312)).
 Import, writes to the layout's related records in other tables, globals and
-repetitions remain refused on these layouts
+Browse entry of repeating fields remain refused on these layouts
 ([#43](https://github.com/OpenMaker-Dev/openmaker/issues/43)). The owning file
 is reached through its data source's paths, on its own host
 (desktop-files.md); native FileMaker acceptance is unmeasured.
