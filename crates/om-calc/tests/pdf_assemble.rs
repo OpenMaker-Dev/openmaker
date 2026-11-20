@@ -390,6 +390,58 @@ fn what_a_page_copy_leaves_behind_is_not_kept_whole() {
         .unwrap()
         .is_some());
     assert_eq!(pdf_worker::assemble_whole(&[&private], &[(0, 0)]), Ok(None));
+    // A comment naming another revision's table: which revision a reader
+    // takes is no longer this table's alone.
+    let mut revised = plain(&|_| {});
+    revised.extend(b"% startxref 9\n");
+    assert_ne!(whole(&revised), Some(true));
+    // An inheritable attribute of the wrong type on a node, which readers
+    // pass over (inheriting the root's box) and the copy would write.
+    let mut typed = Pdf::new();
+    typed.catalog(Ref::new(1)).pages(Ref::new(2));
+    typed
+        .pages(Ref::new(2))
+        .kids([Ref::new(3)])
+        .count(1)
+        .media_box(R::new(0.0, 0.0, 200.0, 250.0));
+    let mut node = typed.indirect(Ref::new(3)).dict();
+    node.pair(N(b"Type"), N(b"Pages"));
+    node.pair(N(b"Parent"), Ref::new(2));
+    node.pair(N(b"Count"), 1);
+    node.insert(N(b"Kids")).array().item(Ref::new(4));
+    node.pair(N(b"MediaBox"), 5);
+    node.finish();
+    typed.page(Ref::new(4)).parent(Ref::new(3));
+    assert_eq!(whole(&typed.finish()), Some(false));
+    // A page-tree node with data of its own, which the new tree would not
+    // carry.
+    let mut noted = Pdf::new();
+    noted.catalog(Ref::new(1)).pages(Ref::new(2));
+    noted
+        .pages(Ref::new(2))
+        .kids([Ref::new(3)])
+        .count(1)
+        .pair(N(b"PieceInfo"), Ref::new(5));
+    noted
+        .page(Ref::new(3))
+        .parent(Ref::new(2))
+        .media_box(R::new(0.0, 0.0, 200.0, 200.0));
+    noted.indirect(Ref::new(5)).dict().pair(N(b"Private"), true);
+    assert_eq!(whole(&noted.finish()), Some(false));
+    // Whatever else the file holds, though nothing above names it (an
+    // object no page refers to), the whole copy finds object by object
+    // and refuses; a file with nothing else is copied whole.
+    let orphaned = plain(&|pdf| {
+        pdf.indirect(Ref::new(20)).dict().pair(N(b"Lost"), true);
+    });
+    assert_eq!(whole(&orphaned), Some(true));
+    assert_eq!(
+        pdf_worker::assemble_whole(&[&orphaned], &[(0, 0)]),
+        Ok(None)
+    );
+    assert!(pdf_worker::assemble_whole(&[&plain(&|_| {})], &[(0, 0)])
+        .unwrap()
+        .is_some());
 }
 
 /// Five pages whose `/Parent` is not their page tree but objects 10, 12,

@@ -130,14 +130,22 @@ neutral numeric defaults. The other options:
     names entry by entry, holds more than `/Size` and `/Root`, its keys read
     as written: document information of any kind, file identifiers (`/ID`),
     encryption, an earlier revision (`/Prev`), or any other key, however its
-    name is spelled; and one whose cross-references are a stream or do not
-    read that way;
+    name is spelled; one whose cross-references are a stream or do not
+    read that way; and one that spells `startxref` or `trailer` more than
+    once (another revision, or a comment naming an older table);
   - one with optional content, or whose page tree reads differently down its
     `/Kids` than up its pages' `/Parent` links (where the copy finds what a
-    page inherits), or is deeper than the 64 levels the copy reads;
+    page inherits), is deeper than the 64 levels the copy reads, has an
+    inheritable attribute of the wrong type (which readers pass over and
+    the copy would write), or has a node holding anything but its tree and
+    what its pages inherit;
   - one with a page that refers to the old catalog, a page-tree node or
     anything else the copy leaves behind: the worker's whole copy fails
     rather than write `null` there;
+  - one with any object the whole copy would not keep: after copying, every
+    object the cross-reference table lists in use must have been copied, or
+    be a copied page, a page-tree node or the catalog, whatever refers to
+    it;
   - an initial view other than Page Only, since the new document sets none;
   - more pages in the two documents than one assembly takes (100,000).
 

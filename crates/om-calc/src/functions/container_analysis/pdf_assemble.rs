@@ -39,7 +39,7 @@ use std::ops::Range;
 use std::sync::Arc;
 
 use hayro::hayro_interpret::hayro_syntax::object::{
-    Array, Dict, MaybeRef, Name, Number, Object, ObjectIdentifier,
+    Array, Dict, MaybeRef, Name, Number, Object, ObjectIdentifier, Rect,
 };
 use hayro::hayro_interpret::hayro_syntax::page::Rotation;
 use hayro::hayro_interpret::hayro_syntax::Pdf;
@@ -317,11 +317,27 @@ pub(super) fn document_kept(pdf: &Pdf) -> bool {
 /// cross-reference stream (`/XRefStm`), and a file whose cross-references
 /// are a stream, or whose table or trailer does not read.
 fn trailer_kept(data: &[u8]) -> bool {
-    trailer_read(data) == Some(true)
+    table(data).is_some_and(|table| table.kept)
 }
 
-fn trailer_read(data: &[u8]) -> Option<bool> {
+/// A file's one cross-reference table, as [`trailer_kept`] reads it.
+struct Table {
+    /// Whether its trailer holds only `/Size` and `/Root`, and the file
+    /// has only this one revision.
+    kept: bool,
+    /// The objects it lists in use (`n`), at most [`MAX_OBJECTS`].
+    in_use: Vec<ObjectIdentifier>,
+}
+
+/// The file's cross-reference table and trailer, read entry by entry from
+/// where `startxref` names; `None` when they do not read. The file must
+/// spell `startxref` and `trailer` once each: a file with more (another
+/// revision, or a comment naming an older table) is not kept, as which
+/// revision a reader takes is then not this table's alone.
+fn table(data: &[u8]) -> Option<Table> {
     const STARTXREF: &[u8] = b"startxref";
+    let count = |word: &[u8]| data.windows(word.len()).filter(|w| *w == word).count();
+    let single = count(STARTXREF) == 1 && count(b"trailer") == 1;
     let end = data
         .windows(STARTXREF.len())
         .rposition(|w| w == STARTXREF)?;
@@ -331,22 +347,39 @@ fn trailer_read(data: &[u8]) -> Option<bool> {
     let data = data.get(..end)?;
     let mut at = usize::try_from(offset).ok()?;
     if token(data, &mut at)? != b"xref" {
-        return Some(false);
+        return Some(Table {
+            kept: false,
+            in_use: Vec::new(),
+        });
     }
+    let mut in_use = Vec::new();
     loop {
         let word = token(data, &mut at)?;
         if word == b"trailer" {
             break;
         }
-        integer(word)?;
+        let first = integer(word)?;
         let count = integer(token(data, &mut at)?)?;
         // Each entry is an offset, a generation and `n` or `f`; the data
         // ends the loop whatever the count says.
-        for _ in 0..count {
+        for number in first.. {
+            if number >= first.saturating_add(count) {
+                break;
+            }
             integer(token(data, &mut at)?)?;
-            integer(token(data, &mut at)?)?;
-            if !matches!(token(data, &mut at)?, b"n" | b"f") {
-                return None;
+            let generation = integer(token(data, &mut at)?)?;
+            match token(data, &mut at)? {
+                b"n" => {
+                    if in_use.len() >= MAX_OBJECTS as usize {
+                        return None;
+                    }
+                    in_use.push(ObjectIdentifier::new(
+                        i32::try_from(number).ok()?,
+                        i32::try_from(generation).ok()?,
+                    ));
+                }
+                b"f" => {}
+                _ => return None,
             }
         }
     }
@@ -355,7 +388,10 @@ fn trailer_read(data: &[u8]) -> Option<bool> {
         root |= key == b"Root";
         matches!(key, b"Size" | b"Root")
     })?;
-    Some(kept && root)
+    Some(Table {
+        kept: kept && root && single,
+        in_use,
+    })
 }
 
 /// The non-negative integer `word` spells.
@@ -523,31 +559,44 @@ fn skip_value(data: &[u8], at: &mut usize, depth: usize) -> Option<()> {
 }
 
 /// Whether the page tree read down its `/Kids` is the one read up its
-/// `/Parent` links, within reach of the copy: from the catalog's `/Pages`,
-/// each node and page is reached once, by reference, names as its
-/// `/Parent` the node whose `/Kids` lists it (the root none), is a `Pages`
-/// node or a `Page`, and is at most [`MAX_PARENTS`] levels down; and these
-/// are all the pages the document reads as. Readers find a page's
-/// inherited attributes down the tree, the copy up its parents
-/// (`Copier::inherited`): only where both agree does it keep them.
+/// `/Parent` links, within reach of the copy ([`page_tree`]).
 fn tree_kept(pdf: &Pdf) -> bool {
+    page_tree(pdf).is_some()
+}
+
+/// The page tree's nodes (not its pages), when the tree read down its
+/// `/Kids` is the one read up its `/Parent` links, within reach of the copy
+/// and wholly understood by it:
+/// - from the catalog's `/Pages`, each node and page is reached once, by
+///   reference, names as its `/Parent` the node whose `/Kids` lists it (the
+///   root none), is a `Pages` node or a `Page`, and is at most
+///   [`MAX_PARENTS`] levels down; and these are all the pages the document
+///   reads as. Readers find a page's inherited attributes down the tree,
+///   the copy up its parents (`Copier::inherited`): only where both agree
+///   does it keep them;
+/// - an inheritable attribute, on a node or a page, is of its type (a
+///   dictionary of resources, a rectangle, an integer) or `null`: readers
+///   pass over one that is not, which the copy would write on the page;
+/// - a node holds nothing but its tree and what its pages inherit: the new
+///   document has a page tree of its own, so anything else a node held
+///   (an application's private data, say) would be left behind.
+///
+/// `None` otherwise.
+fn page_tree(pdf: &Pdf) -> Option<std::collections::HashSet<ObjectIdentifier>> {
     let xref = pdf.xref();
-    let Some(catalog) = xref.get::<Dict<'_>>(xref.root_id()) else {
-        return false;
-    };
+    let catalog = xref.get::<Dict<'_>>(xref.root_id())?;
     let Some(MaybeRef::Ref(root)) = catalog.get_raw::<Object<'_>>(b"Pages") else {
-        return false;
+        return None;
     };
     let mut seen = std::collections::HashSet::new();
+    let mut nodes = std::collections::HashSet::new();
     let mut pages = 0usize;
     let mut stack = vec![(ObjectIdentifier::from(root), None, 0usize)];
     while let Some((id, parent, depth)) = stack.pop() {
         if depth > MAX_PARENTS || !seen.insert(id) {
-            return false;
+            return None;
         }
-        let Some(node) = xref.get::<Dict<'_>>(id) else {
-            return false;
-        };
+        let node = xref.get::<Dict<'_>>(id)?;
         let linked = match (parent, node.get_raw::<Object<'_>>(b"Parent")) {
             (None, None) => true,
             (Some(parent), Some(MaybeRef::Ref(reference))) => {
@@ -555,26 +604,42 @@ fn tree_kept(pdf: &Pdf) -> bool {
             }
             _ => false,
         };
-        if !linked {
-            return false;
+        let typed = INHERITED
+            .iter()
+            .all(|key| match node.get::<Object<'_>>(key) {
+                None | Some(Object::Null(_)) => true,
+                Some(_) => match *key {
+                    b"Resources" => node.get::<Dict<'_>>(key).is_some(),
+                    b"Rotate" => node.get::<i32>(key).is_some(),
+                    _ => node.get::<Rect>(key).is_some(),
+                },
+            });
+        if !linked || !typed {
+            return None;
         }
         match node.get::<Name<'_>>(b"Type").as_deref() {
             Some(b"Pages") => {
-                let Some(kids) = node.get::<Array<'_>>(b"Kids") else {
-                    return false;
-                };
+                let understood = node.keys().all(|key| {
+                    matches!(key.as_ref(), b"Type" | b"Kids" | b"Count" | b"Parent")
+                        || INHERITED.contains(&key.as_ref())
+                });
+                if !understood {
+                    return None;
+                }
+                let kids = node.get::<Array<'_>>(b"Kids")?;
                 for kid in kids.raw_iter() {
                     let MaybeRef::Ref(kid) = kid else {
-                        return false;
+                        return None;
                     };
                     stack.push((ObjectIdentifier::from(kid), Some(id), depth + 1));
                 }
+                nodes.insert(id);
             }
             Some(b"Page") => pages += 1,
-            _ => return false,
+            _ => return None,
         }
     }
-    pages == pdf.pages().len()
+    (pages == pdf.pages().len()).then_some(nodes)
 }
 
 /// A page box a page may set.
@@ -776,6 +841,12 @@ pub(super) fn assemble(data: Vec<u8>, whole: bool) -> Option<Vec<u8>> {
         .into_iter()
         .map(|part| Pdf::new(Arc::new(part)).ok())
         .collect::<Option<Vec<_>>>()?;
+    // A whole copy is of documents whose every part it keeps: checked here
+    // as `info` checks it, and again, object by object, once the pages are
+    // copied (`Copier::accounted`).
+    if whole && !pdfs.iter().all(document_kept) {
+        return None;
+    }
     for planned in &plan {
         let pdf = pdfs.get(planned.source as usize)?;
         let page = pdf.pages().get(planned.page as usize)?;
@@ -1044,6 +1115,9 @@ impl<'p> Copier<'p> {
                 None => self.object(number, b"null", None),
             }
         }
+        if self.whole && !self.accounted() {
+            return None;
+        }
         let kids = (0..plan.len())
             .map(|index| format!("{} 0 R", FIRST_PAGE + index as u32))
             .collect::<Vec<_>>()
@@ -1066,6 +1140,28 @@ impl<'p> Copier<'p> {
             "trailer\n<< /Size {size} /Root {CATALOG} 0 R >>\nstartxref\n{xref}\n%%EOF\n"
         );
         Some(self.out)
+    }
+
+    /// Whether every object each source's cross-reference table lists in
+    /// use is kept: copied, a copied page, a node of its page tree (whose
+    /// every entry the new tree and pages carry, [`page_tree`]) or its
+    /// catalog (whose every entry the new catalog carries,
+    /// [`document_kept`]). What a whole copy would otherwise leave behind,
+    /// however the document refers to it, if at all, is found here.
+    fn accounted(&self) -> bool {
+        self.pdfs.iter().enumerate().all(|(source, pdf)| {
+            let (Some(table), Some(nodes)) = (table(pdf.data().as_ref()), page_tree(pdf)) else {
+                return false;
+            };
+            let root = pdf.xref().root_id();
+            table.in_use.iter().all(|&id| {
+                let key = (source, id);
+                id == root
+                    || nodes.contains(&id)
+                    || self.pages.contains_key(&key)
+                    || self.ids.get(&key).is_some_and(Option::is_some)
+            })
+        })
     }
 
     /// The value `key` page `page` of `source` inherits from the nearest of
