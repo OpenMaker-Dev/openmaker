@@ -955,8 +955,8 @@
       "feature": "Send Mail and platform automation",
       "previous_status": "Unavailable",
       "status": "Partial",
-      "scope": "Send Mail through the email client with dialog opens a new message in the system's mail client on the desktop (a `mailto:` URL), for the user to send ([scripting](scripting.md)); no AppleScript, Send Event or Speak host exists.",
-      "remaining": "Send Mail by SMTP or OAuth, without a dialog, with attachments, one email per record, or with addresses collected across several records, and on the server [#89](https://github.com/OpenMaker-Dev/openmaker/issues/89); macOS and Windows integration steps [#92](https://github.com/OpenMaker-Dev/openmaker/issues/92).",
+      "scope": "Send Mail through the email client with dialog opens a new message in the system's mail client on the desktop (a `mailto:` URL), for the user to send, and by SMTP sends it through the step's server on the desktop and on OpenMaker Server ([scripting](scripting.md)); no AppleScript, Send Event or Speak host exists.",
+      "remaining": "Send Mail by OAuth, through the email client without a dialog, with attachments, one email per record, or with addresses collected across several records [#89](https://github.com/OpenMaker-Dev/openmaker/issues/89); macOS and Windows integration steps [#92](https://github.com/OpenMaker-Dev/openmaker/issues/92).",
       "issues": [
         89,
         92

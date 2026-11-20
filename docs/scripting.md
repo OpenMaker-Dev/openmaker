@@ -154,15 +154,93 @@ the step is 3 for now
 Address lists split at returns, semicolons and commas outside a quoted
 local part (`"Sales, West"@example.org` stays one address). FileMaker Pro
 hands the message to the email client too; a URL is OpenMaker's means,
-which cannot carry the rest, so these fail with 3: SMTP and OAuth, no
-dialog (sending unseen), attachments, one email per record, and addresses
-collected across a found set of more than one record. So do (OpenMaker's
-choices) a stored option or attachment list OpenMaker cannot read, an
-address whose quote does not end, a URL longer than 32,000 characters, no
-registered mail client, and a client that refuses the message or cannot be
-started
-([#89](https://github.com/OpenMaker-Dev/openmaker/issues/89)). On
-OpenMaker Server the step is 3.
+which cannot carry the rest, so through the email client these fail with
+3: no dialog (sending unseen), and a URL longer than 32,000 characters
+(OpenMaker's limit), no registered mail client, and a client that refuses
+the message or cannot be started.
+
+Send Mail by SMTP sends the message itself, on the desktop and on
+OpenMaker Server (`om_url::send_smtp`), with the step's SMTP options
+(script-steps.md 12.3): the sender's name and address, Reply-To, the
+server and port, Encryption (none; SSL, TLS from the start; TLS,
+STARTTLS) and Authentication (none; plain password, AUTH PLAIN or else
+LOGIN; CRAM-MD5), the calculations evaluated in the current record. An
+empty port is 25: Claris documents 25 as the
+[SMTP Options](https://help.claris.com/en/pro-help/content/smtp-options.html)
+dialog's default, and that an empty calculated port means it is
+OpenMaker's reading. A stored option calculation that does not decode is
+3. TLS checks the server's certificate against the webpki roots, as
+Insert from URL does. For a certificate it cannot verify, Claris
+documents ([Send Mail](https://help.claris.com/en/pro-help/content/send-mail.html))
+that FileMaker Pro offers to connect anyway or cancel, that with error
+capture on the step behaves as if the server were unavailable, and that
+a server-side script behaves as if the user cancelled. OpenMaker offers
+no choice: the desktop answers as with error capture on, 1502 (which
+code FileMaker gives is unmeasured), and OpenMaker Server 1. With
+Encryption none a plain password goes in clear, as the step says.
+
+Esc, Cmd-. and a closing window end the session on the desktop (1), and
+the script's time limit and abort on the server. Either shuts the
+connection where it is, during the message's body too, unless the
+message's final `.` is already sent. From then on the server's answer to
+it is the step's result, and the step waits up to ten minutes for it, RFC
+5321's timeout for that reply, as a shorter wait could report a message
+the server took as unsent and a retry send it twice. No answer by then,
+or a closed connection, is 1506 with the message possibly sent. A
+deadline already passed when the `.` would be committed withholds it; one
+passing after the commit, even before the `.` is written, does not. On
+OpenMaker Server a script that ends past its time limit reports 1 unless
+an earlier error stands, as any script that runs past it does, also when
+its last step was a Send Mail the server took. The result is given before
+QUIT's reply. Connecting, each other reply, each
+write and the TLS handshake have a minute each, every socket read and
+write within it. The system resolver has no limit of its own here, so a
+lookup that does not answer holds its session until the resolver gives
+up.
+
+The message is plain text in UTF-8. A non-ASCII name or subject becomes
+RFC 2047 encoded words of at most 76 characters a line, and the body is
+base64 unless it is ASCII without NUL in short lines. BCC addresses go in
+the envelope only. One recipient the server refuses stops the message
+for all before DATA (FileMaker's behavior is unmeasured). Addresses must
+be RFC 5321 mailboxes in ASCII (an address literal an IPv4 or IPv6
+address). The client names itself to the server by its address
+(`EHLO [address]`), not by the computer's name. The server's replies are
+parsed strictly (one code per reply, CRLF lines without CR or NUL inside),
+and a reply already received before the command it would answer is
+refused, the message's final `.` withheld for it; one still in transit
+then cannot be told from the answer. Its reply to a login is reported by
+its code only, since a server may echo what it was sent.
+
+The codes are FileMaker's SMTP codes matched by their names, OpenMaker's
+reading ([#89](https://github.com/OpenMaker-Dev/openmaker/issues/89)):
+- 1501: the server refused the user name or password (535).
+- 1502: no connection, the greeting refused one, or (desktop) a
+  certificate TLS cannot verify.
+- 1503: TLS failed, or the server offers no STARTTLS for TLS.
+- 1504: the server asks for encryption first: 538, or a 530 that names
+  TLS or encryption. A plain connection whose server lists STARTTLS and
+  no usable AUTH is read as one too [I].
+- 1505: none of the mechanisms the step's authentication can use is
+  offered, or the server finds it too weak (534).
+- 1507: another login failure, or a login the server wants (530) and the
+  step does not make.
+- 1506: the server refused the sender, a recipient or the message, did
+  not answer in time, or ended the session; also a message whose end was
+  sent and never confirmed, which may have been sent.
+How FileMaker composes its message, and which code it gives for which
+reply, were not compared.
+
+Either way these fail with 3
+([#89](https://github.com/OpenMaker-Dev/openmaker/issues/89)):
+- OAuth;
+- attachments;
+- one email per record;
+- addresses collected across a found set of more than one record;
+- an address with characters beyond ASCII (no SMTPUTF8);
+- a stored option or attachment list OpenMaker cannot read;
+- an address whose quote does not end.
+On OpenMaker Server the email client is 3, as a server has none.
 
 The desktop host answers the Get selectors, layout-object attributes
 and Design functions for other files as FileMaker Pro 26.0.3 does

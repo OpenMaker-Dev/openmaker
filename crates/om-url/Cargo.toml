@@ -11,6 +11,14 @@ om-calc = { path = "../om-calc" }
 om-scripts = { path = "../om-scripts" }
 # HTTP and HTTPS, rustls with the webpki roots.
 ureq = { version = "2.12", default-features = false, features = ["tls", "gzip"] }
+# SMTP: the same rustls and roots as ureq's, and CRAM-MD5's HMAC-MD5.
+rustls = { version = "0.23", default-features = false, features = ["std", "ring", "tls12"] }
+webpki-roots = "0.26"
+hmac = "0.12"
+md-5 = "0.10"
+
+[dev-dependencies]
+rcgen = "0.14"
 
 [lints]
 workspace = true

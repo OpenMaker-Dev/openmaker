@@ -1448,6 +1448,45 @@ fn local_login_account_facts_reach_a_script_and_layout_hide_calculation() {
     });
 }
 
+/// Send Mail by SMTP from a desktop script (#89): the message reaches the
+/// server the step names, and a refused password is 1501.
+#[test]
+fn send_mail_sends_through_the_steps_smtp_server() {
+    let (smtp, sessions) = fixture::smtp_server(fixture::smtp_sent_then_refused());
+    let folder = Folder::new("smtp");
+    let scripts = [fixture::script(
+        1,
+        "Mail",
+        vec![
+            fixture::on(86, true),
+            fixture::smtp_mail(smtp, false),
+            fixture::set_variable("$sent", "Get ( LastError )"),
+            fixture::smtp_mail(smtp, true),
+            show("$sent & \"/\" & Get ( LastError )"),
+        ],
+    )];
+    let mut root = fixture::tree(&scripts, true);
+    fixture::add_local_accounts(&mut root);
+    add_name_field(&mut root);
+    fixture::write_tree(&folder.file(), &root);
+    let mut app = app();
+    common::click(&mut app, "Browse...");
+    choose(&mut app, &folder.file());
+    sign_in(&mut app, fixture::PASSWORD);
+    wait_open(&mut app);
+    common::open_menu(&mut app, "Scripts");
+    common::click(&mut app, "Mail");
+    common::wait_for_label(&mut app, "0/1501");
+    common::click(&mut app, "OK");
+    common::wait_until(&mut app, "the script's end", |app| {
+        !app.state().script_running()
+    });
+    let sessions = sessions.join().unwrap();
+    let sent = sessions[0].concat();
+    assert!(sent.contains("RCPT TO:<kim@example.org>\r\n"), "{sent}");
+    assert!(sent.contains("\r\nSubject: Weekly report\r\n"), "{sent}");
+}
+
 /// Tasks::Note, looked up from Notes::Body through Tasks::Name =
 /// Notes::Task (relationship 1), in the local Tasks file: note 1 "Hi" is
 /// Ship's (task 2), note 2 "w" is Write tests' (task 1), and both tasks'

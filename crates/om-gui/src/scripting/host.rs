@@ -5890,9 +5890,11 @@ impl Network for WorkerHost<'_> {
     /// are an address whose quote does not end, a message too long for the
     /// URL, and a handler that does not take it (OpenMaker's choices).
     fn send_mail(&mut self, mail: &om_data::runtime::Mail) -> HostResult {
-        let client = mail.via == om_data::runtime::MailVia::Client;
-        if !client
-            || !mail.with_dialog
+        use om_data::runtime::MailVia;
+        // The email client takes a message the user sees; SMTP sends it
+        // unseen.
+        let shown = mail.via == MailVia::Client && mail.with_dialog;
+        if !(shown || mail.via == MailVia::Smtp)
             || mail.one_per_record
             || !mail.attachments.trim().is_empty()
         {
@@ -5904,13 +5906,28 @@ impl Network for WorkerHost<'_> {
                 return Err(HostError::Unsupported);
             }
         }
-        let unavailable = |host: &mut Self, message: String| {
+        let failed = |host: &mut Self, code: ErrorCode, message: String| {
             host.s.failure = Some(message);
-            HostError::Error(ErrorCode::UNAVAILABLE)
+            HostError::Error(code)
         };
+        if mail.via == MailVia::Smtp {
+            let (account, message) =
+                om_url::smtp_parts(mail).map_err(|e| failed(self, e.code(), e.to_string()))?;
+            // Esc, Cmd-. and a closing window end the step at any point of
+            // the session, as for Insert from URL.
+            let mut cancelled = || {
+                self.pump(None);
+                self.connection_lost()
+                    || self.s.abort.load(Ordering::SeqCst)
+                    || self.s.interrupted
+                    || self.s.halt
+            };
+            let sent = om_url::send_smtp(&account, &message, None, &mut cancelled);
+            return sent.map_err(|e| failed(self, e.code(), e.to_string()));
+        }
         let url = om_url::mailto(&mail.to, &mail.cc, &mail.bcc, &mail.subject, &mail.message)
-            .map_err(|e| unavailable(self, e.to_string()))?;
-        mail::open_mailto(&url).map_err(|message| unavailable(self, message))
+            .map_err(|e| failed(self, ErrorCode::UNAVAILABLE, e.to_string()))?;
+        mail::open_mailto(&url).map_err(|message| failed(self, ErrorCode::UNAVAILABLE, message))
     }
 
     /// Insert from URL (`om_url`): into a container field as container
