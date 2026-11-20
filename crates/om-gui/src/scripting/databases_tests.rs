@@ -3303,3 +3303,69 @@ fn full_access_raises_only_the_scripts_own_files_set() {
     host.set_full_access(here + 1, false);
     assert_eq!(host.current_set_name(), account);
 }
+
+/// A script the account's custom set gives no access is refused with 9
+/// when another script performs it, also when it is set to run with full
+/// access privileges: the flag elevates the steps of a script that runs,
+/// and only a caller running with full access lets a script without access
+/// run (script-runtime.md 3.7, 9.1; #408). Before, the flag let it run
+/// with full access.
+#[test]
+fn a_script_its_set_gives_no_access_is_refused_however_it_runs() {
+    use om_data::host::privilege_set::{
+        AccessLevel, Actions, Allow, CustomRules, ItemAccess, MenuCommands, Quad, TableRules,
+    };
+    let mut perform = ScriptStep::new(1);
+    perform.set_script_key(StoredKey::from_id(2));
+    // The fixture's scripts capture errors.
+    let mut c = Client::new(
+        vec![
+            perform,
+            exit("Get ( LastError ) & \"|\" & Get ( ScriptResult )"),
+        ],
+        vec![],
+    );
+    let all = ItemAccess {
+        default: Some(Quad(0xff)),
+        items: BTreeMap::new(),
+    };
+    // Scripts executable only (`d6`), script 2 no access (`d5`).
+    let scripts = ItemAccess {
+        default: Some(Quad(0xd6)),
+        items: BTreeMap::from([(vec![2], Quad(0xd5))]),
+    };
+    {
+        let mut server = c.server.lock().unwrap();
+        server.set_access = Some(om_data::host::security::SetAccess::Custom(Box::new(
+            CustomRules {
+                default: TableRules {
+                    actions: Actions {
+                        create: Allow::Yes,
+                        view: Allow::Yes,
+                        edit: Allow::Yes,
+                        delete: Allow::Yes,
+                    },
+                    fields: AccessLevel::Modifiable,
+                    field_levels: BTreeMap::new(),
+                },
+                tables: BTreeMap::new(),
+                layouts: all.clone(),
+                scripts,
+                value_lists: all,
+                prints: true,
+                exports: true,
+                menus: MenuCommands::All,
+            },
+        )));
+        let mut locked = Script {
+            id: 2,
+            name: "Locked".into(),
+            steps: vec![exit("\"ran\"")],
+            ..Default::default()
+        };
+        locked.set_runs_with_full_access(true);
+        server.scripts.get_mut("Root.fmp12").unwrap().push(locked);
+    }
+    c.run();
+    assert_eq!(c.result(), "9|");
+}
