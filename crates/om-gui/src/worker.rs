@@ -344,6 +344,10 @@ pub(crate) struct Reconnected {
     /// (`DataProvider::take_recreated_records`, #152), by window and the
     /// lost connection's id: its id now, or why it could not be.
     pub recreated: Vec<(u32, u64, i64, Result<i64, String>)>,
+    /// The windows whose record sessions the reconnect carried to the new
+    /// connection (`DataProvider::carried_record_sessions`): any other
+    /// window's record session went with the lost one.
+    pub carried: Vec<u32>,
 }
 
 /// A related record read back after a reconnect: by window, base table and

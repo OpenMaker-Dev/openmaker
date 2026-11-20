@@ -35,6 +35,26 @@ use om_calc::{CalcError, Ctx, Value, ValueType};
 
 use crate::meta::{summary_flag, SummaryDef};
 
+/// Whether a summary failed because its values cannot give it (error 14
+/// or 15: the sample standard deviation of one value) rather than for want
+/// of a host or a record.
+fn unsummarizable(e: CalcError) -> bool {
+    e == CalcError::DIVIDE_BY_ZERO || e == CalcError::OUT_OF_RANGE
+}
+
+/// A group's summary over values its operation cannot summarize as `?`,
+/// the value `GetSummary` gives, so that one group's failure is that
+/// group's cell rather than the whole export's error (oracle x05: FileMaker
+/// Server exports such a group with error 0). It applies to every kind of
+/// group value: a total or deviation, a running value and a fraction
+/// (the last two inferred from the first). Other errors stay errors.
+pub fn or_invalid(value: Result<Value, CalcError>) -> Result<Value, CalcError> {
+    match value {
+        Err(e) if unsummarizable(e) => Ok(Value::invalid()),
+        other => other,
+    }
+}
+
 /// What a summary computes (`SummaryDef::SummaryType`, file-metadata.md
 /// 5.1): [`crate::meta::SummaryKind`].
 pub use crate::meta::SummaryKind as Operation;
@@ -237,7 +257,15 @@ impl Summary {
             let each: Vec<usize> = (0..count).collect();
             return self.group_values(found, &each, cx);
         }
-        Ok(vec![self.aggregate(found, 0..count, cx)?; count])
+        // Without groups such a summary is empty on every row: FileMaker
+        // Pro 26.0.3 wrote no Excel cell for the sample deviation of a
+        // one-record found set (script-steps.md, Implementation notes
+        // (import/export), Exports).
+        let value = match self.aggregate(found, 0..count, cx) {
+            Err(e) if unsummarizable(e) => self.empty(),
+            other => other?,
+        };
+        Ok(vec![value; count])
     }
 
     /// [`Summary::group_value`] with `Break::Groups(groups)` for every
@@ -268,12 +296,14 @@ impl Summary {
                     Some(starts) => starts.get(end - 1).copied().unwrap_or(end - 1),
                     None => 0,
                 };
+                // A group whose running value cannot be given is `?`, and
+                // so is every later one that adds to it.
                 let value = match &running {
                     Some((s, e, so_far)) if *s == from && *e <= end => {
-                        let part = self.aggregate(found, *e..end, cx)?;
-                        accumulate(so_far, &part, cx)?
+                        let part = or_invalid(self.aggregate(found, *e..end, cx))?;
+                        or_invalid(accumulate(so_far, &part, cx))?
                     }
-                    _ => self.aggregate(found, from..end, cx)?,
+                    _ => or_invalid(self.aggregate(found, from..end, cx))?,
                 };
                 running = Some((from, end, value.clone()));
                 value
@@ -302,16 +332,16 @@ impl Summary {
                                     }
                                     _ => 0..all,
                                 };
-                                let total = aggregate("Sum", &found.values[range], cx)?;
+                                let total = or_invalid(aggregate("Sum", &found.values[range], cx))?;
                                 totals.insert(first, total.clone());
                                 total
                             }
                         };
-                        self.fraction_of(found, start..end, &total, cx)?
+                        or_invalid(self.fraction_of(found, start..end, &total, cx))?
                     }
                 }
             } else {
-                self.aggregate(found, start..end, cx)?
+                or_invalid(self.aggregate(found, start..end, cx))?
             };
             out.extend(std::iter::repeat(value).take(end - start));
             start = end;
@@ -778,12 +808,16 @@ mod tests {
                 };
                 for groups in breaks {
                     // A group whose value fails (a deviation of one value)
-                    // fails them all.
+                    // is `?` in its own records only (or_invalid).
                     let each: Result<Vec<String>, CalcError> = (0..values.len())
                         .map(|p| {
-                            summary
-                                .group_value(&found, Some(p), Break::Groups(groups), &cx)
-                                .map(|v| text(v, &cx))
+                            or_invalid(summary.group_value(
+                                &found,
+                                Some(p),
+                                Break::Groups(groups),
+                                &cx,
+                            ))
+                            .map(|v| text(v, &cx))
                         })
                         .collect();
                     let once: Result<Vec<String>, CalcError> = summary
@@ -793,6 +827,28 @@ mod tests {
                 }
             }
         }
+        // Oracle x05: the standard deviation by a break field whose group
+        // has one value is `?` there and the others' deviation elsewhere;
+        // before, the whole export failed with 15.
+        let stdev = Summary::decode(&definition(6, 0, 1, Some((0xd0_0001, 2))));
+        let found = Found {
+            values: &values,
+            weights: &weights,
+            additional_groups: None,
+            sorted: true,
+        };
+        let by = [0, 0, 0, 0, 0, 0, 0, 0, 1];
+        let got: Vec<String> = stdev
+            .group_values(&found, &by, &cx)
+            .unwrap()
+            .into_iter()
+            .map(|v| text(v, &cx))
+            .collect();
+        assert!(
+            got[..8].iter().all(|v| v == "1.5811388300841897"),
+            "{got:?}"
+        );
+        assert_eq!(got[8], "?");
     }
 
     #[test]

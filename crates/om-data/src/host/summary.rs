@@ -28,7 +28,7 @@ use om_calc::{CalcError, Ctx, Value, ValueType};
 
 use super::schema::FieldDef;
 use super::{record_missing, FileCalc, HostReads, ReadDepth, UNRESOLVED_SORT_FIELD};
-use crate::summary::{Break, Found, Operation, Summary};
+use crate::summary::{or_invalid, Break, Found, Operation, Summary};
 
 /// Summary reuse during one immutable calculation pass. A fresh cache (or
 /// [`SummaryCache::clear`]) is required after data, found-set order, sorts,
@@ -330,7 +330,7 @@ impl<'a> FileCalc<'a> {
         let found = run.found();
         let count = run.records.len();
         let values = if same_table && break_field.field == summary.field {
-            vec![run.summary.group_value(&found, None, Break::All, &cx)?; count]
+            vec![or_invalid(run.summary.group_value(&found, None, Break::All, &cx))?; count]
         } else {
             let groups = match same_table {
                 true => {
