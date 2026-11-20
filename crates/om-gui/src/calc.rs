@@ -254,6 +254,12 @@ impl LastResults {
 /// pages of a large layout's objects.
 const MAX_KEPT_RESULTS: usize = 65_536;
 
+/// The most calculated icon text the results keep, in bytes. Past it, the
+/// results holding an icon are dropped, and computed again as they are
+/// drawn: a List view scrolled over many records with icons of their own
+/// keeps no more than this (OpenMaker's bound).
+const ICON_BUDGET: usize = 16 << 20;
+
 /// A portal's displayed related records, keyed by (layout, portal object,
 /// parent record), with whether they read the session (its filter's or
 /// sort's `Get` functions, [`Calculations::observe_context`]).
@@ -323,6 +329,10 @@ pub(crate) struct Calculations {
     /// Results by (layout, object, record) since the data, the variables or
     /// the record being edited last changed.
     states: RefCell<HashMap<ObjectKey, CachedObjectState>>,
+    /// The calculated icons' text the results above and the kept ones
+    /// ([`LastResults`]) took, in bytes, as counted when each was stored
+    /// ([`ICON_BUDGET`]).
+    icon_bytes: std::cell::Cell<usize>,
     /// Field values, with whether they read the session.
     values: RefCell<HashMap<(ObjectKey, i32), SessionResult<Value>>>,
     /// Table and fallback views have field columns rather than object ids.
@@ -543,6 +553,25 @@ impl Calculations {
     /// change that has them evaluated again keeps them: a data change, a
     /// data reply, a draft (a save first drops the record's draft, then
     /// its data), variables and the mode.
+    /// Count `bytes` of calculated icon text a result keeps: past
+    /// [`ICON_BUDGET`], the results holding an icon go first.
+    fn keep_icon(&self, bytes: usize) {
+        let held = self.icon_bytes.get().saturating_add(bytes);
+        if held <= ICON_BUDGET {
+            self.icon_bytes.set(held);
+            return;
+        }
+        let iconless = |cached: &CachedObjectState| cached.calc.state.icon_svg.is_none();
+        self.states
+            .borrow_mut()
+            .retain(|_, cached| iconless(cached));
+        self.last
+            .borrow_mut()
+            .states
+            .retain(|_, cached| iconless(cached));
+        self.icon_bytes.set(bytes);
+    }
+
     fn keep_last_results(&self) {
         let mut last = self.last.borrow_mut();
         // Bounded however long a read stays outstanding: past the bound
@@ -2745,6 +2774,7 @@ impl<'a> Evaluator<'a> {
             && calcs.placeholder.is_none()
             && calcs.label.is_none()
             && calcs.active_segment.is_none()
+            && object.active_icon_formula().is_none()
         {
             return Some(ObjectCalcState::default());
         }
@@ -2772,6 +2802,7 @@ impl<'a> Evaluator<'a> {
         .into_iter()
         .flatten()
         .chain(calcs.conditions.iter().filter_map(|c| c.formula.as_ref()))
+        .chain(object.active_icon_formula())
         .any(|formula| formula.polish.may_read_self());
         let context = self.portal_context(record, portal);
         let (context, self_reads) = match object.field_spec() {
@@ -2857,6 +2888,9 @@ impl<'a> Evaluator<'a> {
             active_segment,
             kept: false,
         };
+        if let Some(icon) = &calc.state.icon_svg {
+            self.calcs.keep_icon(icon.len());
+        }
         self.calcs.states.borrow_mut().insert(
             key,
             CachedObjectState {
