@@ -6175,9 +6175,16 @@ impl OpenMakerApp {
                 generation,
             } => {
                 let calcs = &mut self.w.calcs;
-                // Its reads took a change the window had not seen: the
-                // window's data and lists go, as on a calculation reply of
-                // that generation, and the request this answers with them.
+                // Read under data older than the window has seen (asked
+                // before a change): its request goes, its answer is not
+                // taken. Its reads took a change the window had not seen:
+                // the window's data and lists go, as on a calculation reply
+                // of that generation, and the request this answers with
+                // them.
+                let (result, retry_after) = match calcs.build_is_current(generation) {
+                    true => (result, retry_after),
+                    false => (None, None),
+                };
                 if calcs.observe_build_generation(generation) {
                     if let Some(session) = &self.w.session {
                         session.report_data_changed();

@@ -1457,13 +1457,17 @@ drop-down lists (layout-model.md 5.4) read their items through
     answer dropped, so typing, scrolling or a resize keeps one build per
     list and record on the worker. While the stored values of a record
     with unsaved changes are not in the window (a refresh dropped them),
-    the list waits for them rather than be built over the stored values.
-    The build reads the record it starts from (and the portal row) first,
-    so a new record a transaction holds relates records by its own values,
-    as paint did. A build whose reads took a change the window had not
-    seen (a newer data generation) has the window read its data and lists
-    again. A related host it could not reach holds that record's list
-    only. Like a list of all of a field's values it sees no global
+    the list waits for them rather than be built over the stored values
+    (one the provider cannot read makes the list unknown, error 3). The
+    build reads the record it starts from (and the portal row) first, so a
+    new record a transaction holds relates records by its own values, as
+    paint did. A build whose reads took a change the window had not seen (a
+    newer data generation) has the window read its data and lists again;
+    one read under a generation older than the window has seen is not
+    taken. A related host it could not reach holds that record's list only,
+    until the data, the unsaved changes or a refresh change its inputs.
+    Built lists are kept within 64 MiB beyond those the last frame showed,
+    those shown longest ago going first. Like a list of all of a field's values it sees no global
     variables. On a debug build, with 30,000 related records,
     the closed pop-up menu that shows a label from such a list no longer
     blocks a frame for 1.05 s; its longest frame while the worker builds

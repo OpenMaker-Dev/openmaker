@@ -141,6 +141,27 @@ struct RelatedList {
     calculated: bool,
     overlaid: Vec<(u64, u64)>,
     items: Result<Arc<Choices>, ChoiceError>,
+    /// About how many bytes its items hold ([`list_bytes`]).
+    bytes: usize,
+    /// The list frame it was last shown in ([`Calculations::end_list_frame`]).
+    shown: Cell<u64>,
+}
+
+/// How many bytes of built lists of related values a window keeps beyond
+/// those its last frame showed: scrolling through records keeps each one's
+/// list, which is the size of its related set (#290 review).
+const RELATED_LIST_BUDGET: usize = 64 << 20;
+
+/// About how many bytes `items` hold: each entry's two strings and their
+/// text.
+fn list_bytes(items: &Result<Arc<Choices>, ChoiceError>) -> usize {
+    items.as_ref().map_or(0, |choices| {
+        choices
+            .items
+            .iter()
+            .map(|item| 2 * std::mem::size_of::<String>() + item.label.len() + item.value.len())
+            .sum()
+    })
 }
 
 /// A list of related values asked of the worker: its key, as
@@ -458,8 +479,20 @@ pub(crate) struct Calculations {
     build_retry: RefCell<HashMap<u64, (std::time::Instant, bool)>>,
     /// The same for lists of related values, by the record (and portal
     /// row) whose build lacked the data: another record's list may not
-    /// read that host at all.
+    /// read that host at all. It goes when that list's inputs change (the
+    /// data, the window's unsaved changes, a refresh), not when the schema
+    /// grows.
     related_retry: RefCell<HashMap<RelatedKey, (std::time::Instant, bool)>>,
+    /// The newest data generation the window has seen, from its data, its
+    /// pages and its list builds, kept through every invalidation: a build
+    /// read under an older one is not taken, and one read under a newer one
+    /// is a change of data ([`Self::observe_build_generation`]).
+    seen_generation: Option<u64>,
+    /// The frames drawn ([`Self::end_list_frame`]), by which a built list
+    /// of related values knows when it was last shown.
+    list_frame: Cell<u64>,
+    /// A budget other than [`RELATED_LIST_BUDGET`] (tests).
+    related_budget: Option<usize>,
     /// The last build ticket given, kept through [`Self::reset`] so that an
     /// answer for the file before is never taken for the next.
     build_tickets: Cell<u64>,
@@ -644,6 +677,8 @@ impl Calculations {
 
     /// Records were read or written: what was cached may be stale.
     pub fn data_changed(&mut self) {
+        // A related list's wait was for the data its build read.
+        self.related_retry.get_mut().clear();
         *self.cache.get_mut() = CalcData::default();
         self.lists.get_mut().clear();
         self.drop_built_lists(None);
@@ -665,6 +700,7 @@ impl Calculations {
     /// on a data change. Results are evaluated again either way: they are
     /// for records, a page and a found set that may have changed.
     pub fn page_read(&mut self, generation: Option<u64>, table: Option<u64>, records: &[u64]) {
+        self.see_generation(generation);
         let cache = self.cache.get_mut();
         let Some(table) = table.filter(|_| generation.is_some() && cache.generation == generation)
         else {
@@ -796,9 +832,11 @@ impl Calculations {
             }
         });
         // Its list of related values, if any, is built again: every one,
-        // as the objects' lists are not known here.
+        // as the objects' lists are not known here, and without the wait
+        // its last build earned.
         if !values.is_empty() {
             self.drop_related_lists(|_, _| true);
+            self.related_retry.get_mut().clear();
         }
         self.values
             .get_mut()
@@ -893,8 +931,10 @@ impl Calculations {
         let mut previous = self.draft_context.borrow_mut();
         if *previous != draft {
             *previous = draft;
-            // A list of related values was built over the unsaved changes.
+            // A list of related values was built over the unsaved changes,
+            // and its wait was for those.
             self.drop_related_lists(|_, _| true);
+            self.related_retry.borrow_mut().clear();
             self.forget_results();
         }
     }
@@ -938,6 +978,7 @@ impl Calculations {
                 {
                     return None;
                 }
+                self.see_generation(data.generation);
                 let failures = std::mem::take(&mut data.failures);
                 let retry = data.retry_after.take();
                 let cache = self.cache.get_mut();
@@ -976,6 +1017,7 @@ impl Calculations {
         if refreshed {
             self.lists.get_mut().clear();
             self.drop_built_lists(None);
+            self.related_retry.get_mut().clear();
             self.drop_host_lists();
         } else {
             // A list keeps through replies about tables it does not read.
@@ -1140,12 +1182,15 @@ impl Calculations {
             self.related_retry.get_mut().insert(ask.key, (at, false));
         }
         if let Some(items) = result {
+            let bytes = list_bytes(&items);
             self.related_built.get_mut().insert(
                 ask.key,
                 RelatedList {
                     calculated: ask.calculated,
                     overlaid: ask.overlaid,
                     items,
+                    bytes,
+                    shown: Cell::new(self.list_frame.get()),
                 },
             );
         }
@@ -1158,14 +1203,37 @@ impl Calculations {
     /// generation, rather than the window keep lists of the data before.
     /// Whether they were.
     pub fn observe_build_generation(&mut self, generation: Option<u64>) -> bool {
-        let newer = matches!(
-            (self.cache.get_mut().generation, generation),
-            (Some(current), Some(read)) if read > current
-        );
+        let newer = generation.is_some_and(|read| {
+            self.seen_generation.is_some_and(|seen| read > seen)
+                || self
+                    .cache
+                    .get_mut()
+                    .generation
+                    .is_some_and(|current| read > current)
+        });
+        self.see_generation(generation);
         if newer {
             self.data_changed();
         }
         newer
+    }
+
+    /// Whether a list build read under `generation` is of the data the
+    /// window has seen, or newer: one read under an older generation (it
+    /// was queued before a change) is not taken.
+    pub fn build_is_current(&self, generation: Option<u64>) -> bool {
+        match (generation, self.seen_generation) {
+            (Some(read), Some(seen)) => read >= seen,
+            _ => true,
+        }
+    }
+
+    /// The window has seen data of `generation`.
+    fn see_generation(&mut self, generation: Option<u64>) {
+        if let Some(generation) = generation {
+            let seen = self.seen_generation.get_or_insert(generation);
+            *seen = (*seen).max(generation);
+        }
     }
 
     /// The lists to ask the host for now (`DataProvider::host_field_values`),
@@ -1216,6 +1284,34 @@ impl Calculations {
         self.host_lists
             .get_mut()
             .retain(|_, (state, shown)| matches!(state, HostList::Asked) || std::mem::take(shown));
+        // Built lists of related values beyond the budget go, those shown
+        // longest ago first; the ones this frame showed stay, as do those
+        // being built (their asks are apart).
+        let frame = self.list_frame.get();
+        let budget = self.related_budget.unwrap_or(RELATED_LIST_BUDGET);
+        let built = self.related_built.get_mut();
+        let mut held: usize = built
+            .values()
+            .filter(|list| list.shown.get() < frame)
+            .map(|list| list.bytes)
+            .sum();
+        if held > budget {
+            let mut older: Vec<(u64, RelatedKey)> = built
+                .iter()
+                .filter(|(_, list)| list.shown.get() < frame)
+                .map(|(key, list)| (list.shown.get(), *key))
+                .collect();
+            older.sort_unstable();
+            for (_, key) in older {
+                if held <= budget {
+                    break;
+                }
+                if let Some(list) = built.remove(&key) {
+                    held -= list.bytes;
+                }
+            }
+        }
+        self.list_frame.set(frame + 1);
     }
 
     /// The token for reads asked in `context` (the window's layout, view
@@ -2229,26 +2325,40 @@ impl<'a> Evaluator<'a> {
         // list built over those records' unsaved values stands, and none is
         // built over their stored values instead; a record the provider
         // could not give does not hold it.
-        let lacking: Vec<CalcNeed> = self
-            .unformed
-            .iter()
-            .map(|&(table, record)| CalcNeed::Record { table, record })
-            .filter(|need| !self.calcs.failed.contains(need) && !self.calcs.waiting.contains(need))
-            .collect();
-        if !lacking.is_empty() {
+        // One the provider could not read makes the list unknown (3),
+        // rather than built over the stored values; one waiting for its
+        // host stays wanted, and is asked again when the wait ends.
+        if !self.unformed.is_empty() {
+            let lacking: Vec<CalcNeed> = self
+                .unformed
+                .iter()
+                .map(|&(table, record)| CalcNeed::Record { table, record })
+                .collect();
+            if let Some(built) = self
+                .calcs
+                .related_built
+                .borrow()
+                .get(&key)
+                .filter(|built| self.unformed.iter().all(|r| built.overlaid.contains(r)))
+            {
+                built.shown.set(self.calcs.list_frame.get());
+                self.calcs.wanted.borrow_mut().extend(lacking);
+                return built.items.clone();
+            }
+            if lacking.iter().any(|need| self.calcs.failed.contains(need)) {
+                return Err(ChoiceError::Failed(om_data::rules::error::UNAVAILABLE));
+            }
             self.calcs.wanted.borrow_mut().extend(lacking);
-            return match self.calcs.related_built.borrow().get(&key) {
-                Some(built) if self.unformed.iter().all(|r| built.overlaid.contains(r)) => {
-                    built.items.clone()
-                }
-                _ => Err(ChoiceError::Pending),
-            };
+            return Err(ChoiceError::Pending);
         }
         let overlaid = self.overlaid();
         {
             let mut built = self.calcs.related_built.borrow_mut();
             match built.get(&key) {
-                Some(built) if built.overlaid == overlaid => return built.items.clone(),
+                Some(built) if built.overlaid == overlaid => {
+                    built.shown.set(self.calcs.list_frame.get());
+                    return built.items.clone();
+                }
                 // Built over other unsaved records than this frame's.
                 Some(_) => {
                     built.remove(&key);
@@ -5557,6 +5667,22 @@ mod tests {
             table: TABLE,
             record: 1
         }));
+        // One the provider could not read: the list is unknown (3), not
+        // built over the stored values.
+        let base = CalcNeed::Record {
+            table: TABLE,
+            record: 1,
+        };
+        calcs.failed.insert(base.clone());
+        assert_eq!(
+            lacking(&calcs),
+            (
+                Err(ChoiceError::Failed(om_data::rules::error::UNAVAILABLE)),
+                Vec::new()
+            )
+        );
+        assert!(calcs.take_list_builds().is_empty());
+        calcs.failed.remove(&base);
         // Built over other unsaved records than the frame's: built again.
         calcs.related_building.get_mut().insert(
             ticket,
@@ -5611,6 +5737,53 @@ mod tests {
         assert!(calcs.take_list_builds().is_empty());
         calcs.accept_related_list(sent[0].ticket, Some(Ok(Arc::clone(&built))), None);
         assert!(calcs.related_built.get_mut().is_empty());
+    }
+
+    /// Built lists of related values are kept within a budget, those shown
+    /// longest ago going first and those the last frame showed staying; the
+    /// newest data generation the window saw survives a change of data, so
+    /// a build read under an older one is not taken (#290 review).
+    #[test]
+    fn related_lists_are_bounded_and_older_builds_are_not_taken() {
+        let mut calcs = Calculations {
+            related_budget: Some(0),
+            ..Calculations::default()
+        };
+        let list = |n: usize| {
+            let items = Ok(Arc::new(Choices {
+                items: (0..n)
+                    .map(|i| om_data::host::ValueListEntry {
+                        label: i.to_string(),
+                        value: i.to_string(),
+                    })
+                    .collect(),
+                custom: false,
+            }));
+            RelatedList {
+                calculated: false,
+                overlaid: Vec::new(),
+                bytes: list_bytes(&items),
+                items,
+                shown: Cell::new(0),
+            }
+        };
+        let (old, shown) = ((6, OCCURRENCE, 1, None), (6, OCCURRENCE, 2, None));
+        calcs.end_list_frame();
+        calcs.related_built.get_mut().insert(old, list(3));
+        let now = list(3);
+        now.shown.set(calcs.list_frame.get());
+        calcs.related_built.get_mut().insert(shown, now);
+        calcs.end_list_frame();
+        let kept: Vec<_> = calcs.related_built.get_mut().keys().copied().collect();
+        assert_eq!(kept, [shown]);
+        // A page at 4, a build of 5: a change of data; later, a build of 4
+        // is behind what the window saw.
+        calcs.page_read(Some(4), None, &[]);
+        assert!(calcs.build_is_current(Some(4)));
+        assert!(calcs.observe_build_generation(Some(5)));
+        assert!(!calcs.build_is_current(Some(4)));
+        assert!(!calcs.observe_build_generation(Some(4)));
+        assert!(calcs.build_is_current(Some(5)));
     }
 
     fn pending_container_fixture() -> (CalcSchema, Calculations) {

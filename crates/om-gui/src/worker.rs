@@ -1027,9 +1027,9 @@ pub(crate) fn handle(
 
 /// [`handle`] in window `window`, the window the request is about: the
 /// provider acts on it. A panic while it switches there leaves a save
-/// (Commit Record's update, a deletion) with its own failure reply, as a
-/// failed provider call answers it, so the window does not wait for good
-/// (#313). Any other request panics on as before: its reply is not one the
+/// (Commit Record's update, a deletion) or a list's build with its own
+/// failure reply, as a failed provider call answers it, so the window does
+/// not wait for good (#313). Any other request panics on as before: its reply is not one the
 /// window can take as a plain failure (a save's settling, a page and its
 /// access mask, a cancellation), so the scripts are stopped instead.
 pub(crate) fn handle_in(
@@ -1068,6 +1068,16 @@ pub(crate) fn handle_in(
                     layout_id,
                     record_id,
                     result: Err(error()),
+                },
+                // A list's build fails: the window's request is answered,
+                // rather than waited for while it stays asked.
+                Request::BuildValueList { build, .. } => Reply::ValueListBuilt {
+                    list: build.list,
+                    ticket: build.ticket,
+                    related: build.related.is_some(),
+                    result: Some(Err(crate::list_build::failed(&error()))),
+                    retry_after: None,
+                    generation: None,
                 },
                 _ => panic::resume_unwind(payload),
             }
