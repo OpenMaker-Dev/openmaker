@@ -683,18 +683,35 @@ fn saved_copies_are_new_files_that_open_and_replace_nothing() {
     let clone = folder.0.join("Clone.fmp12");
     let refused = host.save_copy(&clone, CopyKind::Clone).unwrap_err();
     assert_eq!(refused.kind(), std::io::ErrorKind::Unsupported, "{refused}");
-    assert_eq!(
-        folder.files(),
-        ["Compacted.fmp12", "Copy.fmp12", "Taken.fmp12", FILE]
-    );
-    assert!(host.close());
     assert_eq!(std::fs::read(&path).unwrap(), original);
 
+    // After a save (the password changed), a copy is the file as saved.
+    const CHANGED: &str = "another horse";
+    host.change_password(ACCOUNT, PASSWORD, CHANGED).unwrap();
+    let saved = folder.0.join("Saved.fmp12");
+    host.save_copy(&saved, CopyKind::Copy).unwrap();
+    assert_eq!(
+        std::fs::read(&saved).unwrap(),
+        std::fs::read(&path).unwrap()
+    );
+    // Nothing else is left beside them: no staged copy or its folder.
+    assert_eq!(
+        folder.files(),
+        [
+            "Compacted.fmp12",
+            "Copy.fmp12",
+            "Saved.fmp12",
+            "Taken.fmp12",
+            FILE
+        ]
+    );
+    assert!(host.close());
+
     // Each copy is a file of its own, with the file's accounts.
-    for made in [&copy, &compacted] {
+    for (made, password) in [(&copy, PASSWORD), (&compacted, PASSWORD), (&saved, CHANGED)] {
         let opened = LocalHost::open(made, &client.cert).unwrap();
         assert_eq!(opened.read_only(), None);
-        assert_eq!(login(&opened, &client, ACCOUNT, PASSWORD), 0);
+        assert_eq!(login(&opened, &client, ACCOUNT, password), 0);
         assert!(opened.close());
     }
 }

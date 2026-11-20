@@ -270,7 +270,7 @@ pub(crate) fn save_copy_path(path: &Path) -> PathBuf {
 }
 
 /// Whether `file`, the copy a save created, is still the entry at `path`.
-pub(crate) fn owned_copy(file: &std::fs::File, path: &Path) -> bool {
+fn owned_copy(file: &std::fs::File, path: &Path) -> bool {
     match crate::filelock::same_file(file, path) {
         Ok(same) => same,
         // No inode identity (Windows): a regular file where the save made it.
@@ -515,7 +515,9 @@ impl Store {
             .map_err(|e| Error::new(ErrorKind::InvalidData, e.to_string()))?;
         let temporary = save_copy_path(path);
         let mut options = std::fs::OpenOptions::new();
-        options.write(true).create_new(true);
+        // Readable too: the lock moves to it, and a copy of the file is
+        // read through the lock's descriptor ([`Store::saved_file`]).
+        options.read(true).write(true).create_new(true);
         #[cfg(unix)]
         {
             use std::os::unix::fs::OpenOptionsExt;

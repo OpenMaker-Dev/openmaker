@@ -725,20 +725,28 @@ than a second reader and writer.
     the key tree written as a new packed file (hbam-writer.md 7.2). So is a
     copy while changes a failed save left wait in memory, or of a file the
     host could not lock.
-  - *Writing.* The copy is written and flushed under a hidden name of its
-    own (`.omcopy-<process>-<n>`) in the output folder. It is then renamed
-    to the output name with a rename that refuses to replace
-    (`RENAME_NOREPLACE` on Linux, `RENAME_EXCL` on macOS), or, on file
-    systems without one, hard-linked there and the staged name removed.
-    An entry at the output path (a file, the open file, a link) refuses
-    the copy and is left untouched. So does a name ending in `.omsave` in
-    any case, the name the file's saves use for their new copy. A failure
-    removes only the staged file; a crash can leave one beside, never a
-    partial copy at the output name.
+  - *Writing.* The copy is written and flushed in a folder of its own
+    made beside the output (`.omcopy-<process>-<n>-<time>`, 0700, checked
+    once opened to be this user's alone). It is then moved to the output
+    name with a rename that refuses to replace (`RENAME_NOREPLACE` on
+    Linux, `RENAME_EXCL` on macOS), or, on file systems without one,
+    hard-linked there. Every step after the folder is made goes through
+    the folder's and the output folder's descriptors, so another user
+    cannot put a file in its place: the file published, and the one
+    removed on a failure, is the copy. An entry at the output path (a
+    file, the open file, a link) refuses the copy and is left untouched.
+    So does a name ending in `.omsave` in any case, with the characters
+    HFS+ ignores in names left out: the file's saves use that name for
+    their new copy. The private folder is removed at the end; a crash can
+    leave it beside the output, never a partial copy at the output name.
   - *Permissions.* The copy holds the password verifiers, so it is created
-    owner-only (0600 on Unix), whatever the file's own permissions or the
-    folder's group [I: OpenMaker's choice; FileMaker's is unmeasured]. ACLs
-    the folder passes on to new files still apply.
+    owner-only (0600), whatever the file's own permissions or the
+    folder's group [I: OpenMaker's choice; FileMaker's is unmeasured].
+    ACL entries the folder passes on to new files still apply, as they do
+    to every file created there: OpenMaker cannot clear them without
+    platform ACL calls. Off Linux and macOS a copy is refused, as local
+    files are read-only there
+    ([#30](https://github.com/OpenMaker-Dev/openmaker/issues/30)).
   - *The desktop's step.* Before committing or creating anything, it
     fails as a step OpenMaker does not support (error 3; the desktop stops
     the script with its "not supported here yet" alert) for clones and
