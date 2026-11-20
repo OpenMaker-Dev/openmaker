@@ -210,6 +210,7 @@ fn save_records_as_excel_after_a_sort_keeps_the_sorts_groups() {
         formatting: false,
         charset: ExportCharset::Utf8,
         use_name_alias: Some(1),
+        field_names: None,
     };
     let mut excel = ScriptStep::new(143);
     excel.set_data_leaf(0x85, Some(OwnedNode::leaf([0x85], options.encode())));
