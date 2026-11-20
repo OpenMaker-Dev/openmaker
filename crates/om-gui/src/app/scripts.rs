@@ -157,6 +157,9 @@ pub(super) struct PromptView {
     /// [`Prompt::ContainerFile`] (`file_panel`), in place of the in-app
     /// dialog.
     panel: Option<crate::file_panel::OpenPanel>,
+    /// When the prompt was shown: a custom dialog's "Close after" counts
+    /// from it.
+    opened: std::time::Instant,
 }
 
 /// The window's script state.
@@ -1878,6 +1881,7 @@ impl OpenMakerApp {
                     login,
                     sort,
                     panel,
+                    opened: std::time::Instant::now(),
                 });
             }
             ScriptEvent::Paused { seconds, message } => {
@@ -2693,6 +2697,26 @@ fn show_prompt(ui: &mut egui::Ui, view: &mut PromptView) -> Option<Answer> {
             crate::plugin_ui::alert(ui, dialog, *deadline, enter).map(Answer::PluginDialog)
         }
         Prompt::Dialog(dialog) => {
+            // "Close after (seconds)": once the time is up the dialog
+            // closes as no button, `Get ( LastMessageChoice )` 0 (Claris).
+            let closes = dialog
+                .close_after
+                .and_then(|seconds| std::time::Duration::try_from_secs_f64(seconds).ok())
+                .and_then(|after| view.opened.checked_add(after));
+            if let Some(closes) = closes {
+                let now = std::time::Instant::now();
+                if now >= closes {
+                    return Some(Answer::Dialog(DialogResponse {
+                        button: 0,
+                        inputs: view
+                            .inputs
+                            .iter()
+                            .map(|t| om_data::calc::Value::text(t.clone()))
+                            .collect(),
+                    }));
+                }
+                ui.ctx().request_repaint_after(closes - now);
+            }
             if !dialog.title.is_empty() {
                 heading(ui, &dialog.title);
             }
