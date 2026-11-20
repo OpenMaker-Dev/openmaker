@@ -116,6 +116,8 @@ pub(crate) struct Doc {
     /// Zoom Level sets the window's document zoom.
     pub title: Option<String>,
     pub menubar: bool,
+    /// Set Zoom Level can disable the user's zoom commands for this window.
+    pub zoom_locked: bool,
     /// The view the window last showed each layout in, the current one's
     /// included (FileMaker Pro 26 keeps a view per layout in each window,
     /// #805): going back to a layout shows it in its entry; a layout not
@@ -255,6 +257,7 @@ impl Doc {
             document: crate::document::DocumentState::for_window(id),
             title: None,
             menubar: true,
+            zoom_locked: false,
             views: Default::default(),
             pending_enter: None,
             new_layout: None,

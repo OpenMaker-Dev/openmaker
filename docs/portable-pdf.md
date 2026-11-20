@@ -107,12 +107,24 @@ the portals [Portals](#portals) lists, dynamic pictures, the button icons
 [Rounded frames](#rounded-frames) lists,
 hide/label calculations, the conditional formatting
 [Conditional formatting](#conditional-formatting) lists, layout merge symbols other than
-`{{PageNumber}}`, mixed rich text, decorated text, italic text in a family
-other than Arial or Helvetica,
+`{{PageNumber}}`, mixed rich text other than runs that differ only in color,
+decorated text, italic text in a family other than Arial or Helvetica,
 colors outside 0-1, unsupported glyphs/shaping, text overflow in anything but a
 field that does not slide ([field text](#field-text)), and object/page overflow. Ordinary
 flat character and paragraph styles, including uniform paragraph leading, can
-be used. Common object flags other than the anchor, plain-text/tooltip,
+be used. A text object's or button's character runs that differ in nothing but
+their color print each in its own: a run's color, else the object's text color,
+else black, as Browse colors them. Stored runs compare every byte but the color's
+(layout-model.md 8.1), so an explicit size 0 differs from an unset size. A line
+keeps its wrapping, positions and baseline, and changes color where its runs do.
+A conditional format's color replaces every run's, as in Browse. Refused with 3,
+rather than colored at the wrong characters
+([#106](https://github.com/OpenMaker-Dev/openmaker/issues/106)):
+runs that are not their text's partition in order on character boundaries (the
+layout decoder always gives one), a field's layout runs (its record value
+carries its own styles), and a merged or calculated value, a `{{PageNumber}}` or
+a case transform in several colors. Runs in several fonts, sizes or faces, and
+several paragraph styles, are refused. Common object flags other than the anchor, plain-text/tooltip,
 tab-order (`kTabOrderOmit`, which nothing printed shows) and slide-up bits,
 and on a line its start corner, refuse output. A line runs
 between the corners its start bits name, as Browse draws it (layout-model.md

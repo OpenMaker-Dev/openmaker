@@ -546,12 +546,16 @@ pub(crate) enum Reply {
     },
     /// [`Request::BuildValueList`]'s list (`crate::list_build::Built`):
     /// `None` when there is nothing to show yet, with when to ask again
-    /// when a related host could not be reached.
+    /// when a related host could not be reached, and the data generation
+    /// its reads were of; `related`: a list of related values for one
+    /// record (`crate::calc::RelatedBuild`).
     ValueListBuilt {
         list: u64,
         ticket: u64,
+        related: bool,
         result: Option<Result<Arc<om_data::choice::Choices>, om_data::choice::ChoiceError>>,
         retry_after: Option<std::time::Duration>,
+        generation: Option<u64>,
     },
     /// What a running script tells the window.
     Script(crate::scripting::ScriptEvent),
@@ -1040,9 +1044,9 @@ pub(crate) fn handle(
 
 /// [`handle`] in window `window`, the window the request is about: the
 /// provider acts on it. A panic while it switches there leaves a save
-/// (Commit Record's update, a deletion) with its own failure reply, as a
-/// failed provider call answers it, so the window does not wait for good
-/// (#313). Any other request panics on as before: its reply is not one the
+/// (Commit Record's update, a deletion) or a list's build with its own
+/// failure reply, as a failed provider call answers it, so the window does
+/// not wait for good (#313). Any other request panics on as before: its reply is not one the
 /// window can take as a plain failure (a save's settling, a page and its
 /// access mask, a cancellation), so the scripts are stopped instead.
 pub(crate) fn handle_in(
@@ -1081,6 +1085,16 @@ pub(crate) fn handle_in(
                     layout_id,
                     record_id,
                     result: Err(error()),
+                },
+                // A list's build fails: the window's request is answered,
+                // rather than waited for while it stays asked.
+                Request::BuildValueList { build, .. } => Reply::ValueListBuilt {
+                    list: build.list,
+                    ticket: build.ticket,
+                    related: build.related.is_some(),
+                    result: Some(Err(crate::list_build::failed(&error()))),
+                    retry_after: None,
+                    generation: None,
                 },
                 _ => panic::resume_unwind(payload),
             }
@@ -1375,18 +1389,22 @@ fn answer(
                     p,
                     build.list,
                     (today, info),
+                    build.related.as_ref(),
                     &cancel,
                 ))
             })
             .unwrap_or_else(|error| crate::list_build::Built {
                 result: Some(Err(crate::list_build::failed(&error))),
                 retry_after: None,
+                generation: None,
             });
             Reply::ValueListBuilt {
                 list: build.list,
                 ticket: build.ticket,
+                related: build.related.is_some(),
                 result: built.result,
                 retry_after: built.retry_after,
+                generation: built.generation,
             }
         }
         // The script session handles these itself.

@@ -791,7 +791,7 @@ impl OpenMakerApp {
         self.w.connection_lost = None;
         self.w.calcs.host_version = reconnected.host_version.clone().unwrap_or_default();
         self.w.calcs.privileges = privileges;
-        self.w.calcs.data_changed();
+        self.w.calcs.reconnected();
         self.w.document.clear_layout_cache();
         self.w.reconnected = true;
         let mut recovery = Recovery {

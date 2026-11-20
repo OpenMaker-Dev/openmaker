@@ -2378,6 +2378,17 @@ layout 3 has no `0d`. The third file shows that the two entries together
 are enough for this case; whether the part list entry alone is, is not
 isolated.
 
+[O, 2026-11-18, FileMaker Pro 26.0.3] On a Contacts starter copy with
+a new layout, New Record left no field active while the new layout's
+only field was absent from `15`. Insert > Field added Pro's new field to
+`15`; saving also added the previously placed field. On a duplicate of
+Contact Details, the stored order kept its 24 entries and the two portal
+fields appended by OpenMaker. Tab reached the portal fields and skipped
+the placed Website field, which was absent from the stored order even
+though Set Tab Order proposed a number for it. [U] Where Pro inserts a
+new field into a populated custom order and what it does inside a tab or
+slide panel. See [#316](https://github.com/OpenMaker-Dev/openmaker/issues/316).
+
 What OpenMaker's placement writes (`om_data::layout_placement`,
 `docs/authoring.md`, "Fields on layouts") follows these: an edit box and a
 label encoded as above with flags `0x30000000` and field flags `0xe0`,
@@ -2390,13 +2401,16 @@ raised, every stored entry and byte kept); the edit box's `0a` entry (its
 frame's top and left, which must be whole points, as no fractional
 position was seen there; the number of objects in the tree as its
 pre-order index, since it is the last root; its key string, 0 and
-repetition 1); `05, 00` raised to the last new key; and the layout's stamp.
-Object keys are the next after every key the layout uses, every key its
-part lists name, and `05, 00`. A body part without a list, or with one
+repetition 1); the same reference appended to `15` with the new position
+in the edit box's attribute `07`; `05, 00` raised to the last new key;
+and the layout's stamp. Appending after the greatest stored position
+preserves the existing order and gaps. Object keys are the next after
+every key the layout uses, every key its part lists, object index and
+tab order name, and `05, 00`. A body part without a list, or with one
 whose count does not match its entries, is refused: every part FileMaker
-saved has a readable one. The label gets no `0a` entry (no text object has
-one), and `08` and `15` are left alone (the objects are unnamed and
-outside the tab order). A text placed on its own (the desktop's Text
+saved has a readable one. The label stays outside both `0a` and `15`.
+New objects are unnamed, so placement leaves `08` alone.
+A text placed on its own (the desktop's Text
 tool, `place_text`) is the same text object and attribute record at the
 end of the body's list, with `05, 00` raised to its key and nothing else
 written. The field's `labelKey` (5.2), which 23 fields of the starters

@@ -137,6 +137,9 @@ pub(crate) struct FileState {
     /// An open transaction's committed records, for OnWindowTransaction
     /// at Commit Transaction.
     pub transaction: Option<Vec<host::transaction::Entry>>,
+    /// The last Open Transaction skipped auto-entry ("Skip auto-enter
+    /// options"): what the open `transaction` does.
+    pub transaction_skips_auto_entry: bool,
     /// The connection was lost with a transaction open, or while one was
     /// committed or reverted: what became of its writes is unknown, after
     /// `transaction` is gone too. A reconnect is refused.
@@ -437,6 +440,7 @@ impl Shared {
                 next_callback: 0,
                 data_files: super::files::DataFiles::default(),
                 transaction: None,
+                transaction_skips_auto_entry: false,
                 lost_transaction: false,
                 lost_commit: false,
                 unsent_save: false,
@@ -1386,6 +1390,10 @@ impl ScriptSession {
                     return;
                 }
                 RunState::Yielded | RunState::Waiting => {}
+                // The desktop does not open the Script Debugger yet
+                // ([#74](https://github.com/OpenMaker-Dev/openmaker/issues/74));
+                // a runtime that had it open runs on without it.
+                RunState::Debugger(_) => runtime.stop_debugging(),
                 RunState::Paused { seconds } => {
                     drop(host);
                     on_top = self.pause(io, seconds, on_top.take());

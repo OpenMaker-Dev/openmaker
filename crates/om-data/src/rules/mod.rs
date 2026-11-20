@@ -148,19 +148,51 @@ const CONTEXT_SELECTORS: [u8; 4] = [
     selector::CURRENT_HOST_TIMESTAMP,
 ];
 
-/// How a value index in `language` keys text when a unique or existing
-/// value is checked in it (query-program.md 7.2): English and English
-/// international as primary weights, System and Unicode standard padded,
-/// Unicode raw as its UTF-16 code units. `None` for the other languages,
-/// whose keys OpenMaker does not build (the tailorings, #159), so a field
+/// Whether FileMaker leaves index language `language` untailored, so that
+/// its value-index keys are English's primary weights (query-program.md
+/// 7.2): the languages outside the list of those whose `TailorWeights`
+/// Support overrides (from bin) whose keys the probe found equal to
+/// English's for every value. These are Dutch 20, French 24, German
+/// dictionary 26 (`ä` keys as `a`; German, 25, is tailored), Greek 27,
+/// Italian 30, Portuguese 34, Russian 36, Hebrew 47, Serbian 53,
+/// Bulgarian 55 and the Indic languages 59 to 67 (Hindi, 48, is tailored).
+/// Several of them break words differently from English for some of the
+/// probe's values (French at an apostrophe, query-program.md 7.1; the word
+/// columns of catalogs/index-key-vectors.tsv), and their full rules are not
+/// established ([#300](https://github.com/OpenMaker-Dev/openmaker/issues/300)),
+/// so only their value keys are known. That the bin's list is complete is
+/// not confirmed: Norwegian and Finnish are tailored though absent from
+/// it, so this set is inferred.
+pub fn untailored(language: u32) -> bool {
+    matches!(
+        language,
+        20 | 24 | 26 | 27 | 30 | 34 | 36 | 47 | 53 | 55 | 59..=67
+    )
+}
+
+/// How a value index in `language`, in a file whose own language is
+/// `file_language`, keys text when it is read without the host: a unique
+/// or existing value checked in it, a find or a join on it without the
+/// host's index. The form a host writes ([`written_text_keys`]), and
+/// English for the untailored languages ([`untailored`]), whose value
+/// keys are English's. `None` for language 0 when the file's language is
+/// unknown (`None`, its locale record unreadable,
+/// [`crate::host::CalcSchema::file_language`]), and for the tailored
+/// languages, whose keys
+/// OpenMaker does not build (#159,
+/// [#299](https://github.com/OpenMaker-Dev/openmaker/issues/299)): a field
 /// validated in them keeps its table read-only.
-pub fn checked_text_keys(language: u32) -> Option<om_query::keys::TextKeys> {
-    match language {
-        21 | 77 => Some(om_query::keys::TextKeys::Collated),
-        1 | 3 => Some(om_query::keys::TextKeys::CollatedPadded),
-        2 => Some(om_query::keys::TextKeys::Raw),
-        _ => None,
-    }
+pub fn value_text_keys(
+    language: u32,
+    file_language: Option<u32>,
+) -> Option<om_query::keys::TextKeys> {
+    let language = if language == 0 {
+        file_language?
+    } else {
+        language
+    };
+    language_text_keys(language)
+        .or_else(|| untailored(language).then_some(om_query::keys::TextKeys::Collated))
 }
 
 /// How a host writes the keys of a text field indexed in `language`, in a
@@ -172,11 +204,16 @@ pub fn checked_text_keys(language: u32) -> Option<om_query::keys::TextKeys> {
 /// #1280): a write that would change such an index is refused rather than
 /// keyed in English (#159).
 pub fn written_text_keys(language: u32, file_language: u32) -> Option<om_query::keys::TextKeys> {
-    let language = if language == 0 {
+    language_text_keys(if language == 0 {
         file_language
     } else {
         language
-    };
+    })
+}
+
+/// The form a host writes text in for `language`, language 0 already
+/// resolved to the file's own ([`written_text_keys`]).
+fn language_text_keys(language: u32) -> Option<om_query::keys::TextKeys> {
     om_query::keys::TextKeys::of_language(language)
         .filter(|form| *form != om_query::keys::TextKeys::None)
 }
@@ -1625,6 +1662,9 @@ impl RecordPlan {
         schema.add_table(table.id, table.name.clone());
         schema.clear_fields(table.id);
         let file_language = u32::from(schema.locale.language.id());
+        // Unknown when the file's locale record does not decode: a unique
+        // check in language 0 is then refused, not keyed in English.
+        let own_language = schema.file_language();
         let mut fields = BTreeMap::new();
         let mut contexts = BTreeSet::new();
         for field in &table.fields {
@@ -1827,10 +1867,11 @@ impl RecordPlan {
                 // The server checks a unique or existing value in the
                 // field's value index (query-program.md 8.4), keyed in its
                 // index language.
-                if !options.value_indexed() || checked_text_keys(options.index_language()).is_none()
+                if !options.value_indexed()
+                    || value_text_keys(options.index_language(), own_language).is_none()
                 {
                     return Err(error(
-                        "unique and existing values require a value index in English, System, Unicode standard or Unicode raw.",
+                        "unique and existing values require a value index in English, System, Unicode standard, Unicode raw or a language FileMaker leaves untailored.",
                     ));
                 }
             }
@@ -2643,6 +2684,59 @@ impl RecordPlan {
         !entry.skip_auto_enter && !changes.contains_key(&id) && !lookup.matches.iter().any(replaced)
     }
 
+    /// Relookup Field Contents' target, field `name` of the table: one a
+    /// script may set (a normal field, not global), that a lookup the rules
+    /// perform matches through, an editable input of a calculated match
+    /// field included ([`Self::is_lookup_match`]), and that enters no value
+    /// of its own: writing it back would let an auto-entry (a variable such
+    /// as the modifying account, a serial, a constant, a lookup, a
+    /// calculation) replace it. Its id, or why not: 102 for no such field,
+    /// 201 for one a script cannot set (a calculation, a summary, a
+    /// global), 3 for one no lookup matches through or one with
+    /// auto-entry (OpenMaker's codes; FileMaker's are unmeasured).
+    pub fn relookup_target(&self, name: &str) -> Result<u64, DataError> {
+        let (&id, field) = self
+            .fields
+            .iter()
+            .find(|(_, f)| f.name == name)
+            .ok_or_else(|| {
+                DataError::with_code(
+                    error::FIELD_MISSING,
+                    format!("The table has no field named “{name}”."),
+                )
+            })?;
+        if !field.settable_by_script() {
+            return Err(DataError::with_code(
+                error::FIELD_LOCKED,
+                format!(
+                    "“{name}” is not a field a script sets: relook up through an editable \
+                     field the match uses."
+                ),
+            ));
+        }
+        if !self.is_lookup_match(id) {
+            return Err(DataError::with_code(
+                error::UNAVAILABLE,
+                format!("No lookup of this table matches through “{name}”."),
+            ));
+        }
+        let enters = field.options.auto_entry_variable().is_some()
+            || field.options.auto_entry_serial()
+            || field.constant.is_some()
+            || field.lookup.is_some()
+            || field.expression.is_some();
+        if enters {
+            return Err(DataError::with_code(
+                error::UNAVAILABLE,
+                format!(
+                    "“{name}” enters a value of its own, which writing it again could \
+                     replace: OpenMaker does not relook up through it."
+                ),
+            ));
+        }
+        Ok(id)
+    }
+
     /// Whether `field` is a match field of a lookup the rules perform: a
     /// script that sets it, also to the value it has, fires the lookup
     /// (auto-entry.md, Lookups, battery s41).
@@ -2925,6 +3019,52 @@ impl RecordPlan {
             .any(|field| matches!(field.list, Some(ListRule::Related(_))))
     }
 
+    /// Whether a user's typing into `cell`, a repetition of global field
+    /// `field`, can be checked as it is entered, with no record's commit
+    /// after it: the cell is a repetition the field defines, and a value
+    /// list the field is validated by is a custom list or a field's values,
+    /// not a related-values list ([`ListRule::Related`], checked at a
+    /// record's commit) or one the rules cannot check
+    /// ([`ListRule::Unchecked`]).
+    pub fn checks_global_entry(&self, field: u64, cell: u64) -> bool {
+        self.cell_field(cell).is_some_and(|(at, _)| at == field)
+            && self.fields.get(&field).is_some_and(|planned| {
+                !matches!(
+                    planned.list,
+                    Some(ListRule::Related(_) | ListRule::Unchecked(_))
+                )
+            })
+    }
+
+    /// Whether this global's own entry rules are supported when another
+    /// field's rules have deferred the table plan. This only classifies
+    /// the editor. A save still builds the full plan before validation.
+    pub fn offers_global_while_plan_deferred(
+        table: u64,
+        field: u64,
+        options: &FieldOptions,
+        tree: &KeyTree<'_>,
+        file: &CalcSchema,
+    ) -> bool {
+        if options.validation_options & !SUPPORTED_VALIDATION != 0 {
+            return false;
+        }
+        if options.validation_options & VALIDATE_VALUE_LIST == 0 {
+            return true;
+        }
+        let node = tree.at(&[table, 3, 5, field]);
+        match list_rule(tree, node, file.value_lists()) {
+            Ok(ListRule::Custom(_)) => true,
+            Ok(ListRule::Field { occurrence, .. }) => {
+                file.data_source(occurrence).is_none()
+                    && file
+                        .table_of(occurrence)
+                        .is_some_and(|table| file.table_context(table.id).is_none())
+            }
+            _ => false,
+        }
+    }
+
     /// The related-values list a write by `entry` checks a changed value of
     /// `cell` against ([`ListRule::Related`]): the host computes it for the
     /// record as the write leaves it and checks the value at the commit
@@ -2947,6 +3087,7 @@ impl RecordPlan {
             error::NOT_UNIQUE => "a unique value",
             error::NOT_EXISTING => "an existing value",
             error::NOT_IN_LIST => "a value of its value list",
+            error::REQUIRED => "a value",
             _ => "a valid value",
         };
         match self.fields.get(&field) {
@@ -6208,16 +6349,33 @@ mod tests {
             .to_string()
             .contains("require a value index"));
         table.fields[primary_key].options[8..12].copy_from_slice(&0x8000_0188u32.to_be_bytes());
-        // German (25) is a tailoring OpenMaker does not key.
-        table.fields[primary_key].options[4..8].copy_from_slice(&25u32.to_be_bytes());
-        assert!(plan(&table, &initials(1, 2)).is_err());
-        for language in [77u32, 1, 3] {
+        // German (25) and Swedish (41) are tailorings OpenMaker does not key.
+        for language in [25u32, 41] {
+            table.fields[primary_key].options[4..8].copy_from_slice(&language.to_be_bytes());
+            assert!(plan(&table, &initials(1, 2)).is_err(), "{language}");
+        }
+        // English international, System and Unicode standard; French,
+        // German dictionary, Russian and an Indic language, which FileMaker
+        // leaves untailored (their value keys are English's); and language
+        // 0, the file's own (English here).
+        for language in [77u32, 1, 3, 24, 26, 36, 59, 0] {
             table.fields[primary_key].options[4..8].copy_from_slice(&language.to_be_bytes());
             assert!(plan(&table, &initials(1, 2)).is_ok(), "{language}");
         }
         // FileMaker Pro 26's own blank file indexes PrimaryKey so (#725).
         table.fields[primary_key].options[4..8].copy_from_slice(&2u32.to_be_bytes());
         assert!(plan(&table, &initials(1, 2)).is_ok());
+        // Language 0 needs the file's language, which a locale record that
+        // does not decode leaves unknown: refused, not keyed in English.
+        let mut file = CalcSchema::new("", Locale::en_us());
+        assert_eq!(file.file_language(), Some(21));
+        file.locale_unreadable = true;
+        assert_eq!(file.file_language(), None);
+        assert_eq!(value_text_keys(0, file.file_language()), None);
+        assert_eq!(
+            value_text_keys(24, None),
+            Some(om_query::keys::TextKeys::Collated)
+        );
     }
 
     #[test]
@@ -7188,6 +7346,17 @@ mod tests {
         assert!(plan.related_value_list(47, Entry::default()).is_some());
         assert!(plan.related_value_list(47, script).is_none());
         assert_eq!(plan.value_list_field(47, Entry::default()), None);
+        // Typing into a global is checked as it is entered, with no commit
+        // after it: against a custom list or a field's values, in a
+        // repetition the field has, not against a related-values list or
+        // one the rules cannot check.
+        assert!(plan.checks_global_entry(36, 36));
+        assert!(plan.checks_global_entry(36, rep(36, 3)));
+        assert!(!plan.checks_global_entry(36, rep(36, 4)));
+        assert!(plan.checks_global_entry(38, 38));
+        assert!(!plan.checks_global_entry(38, 36));
+        assert!(!plan.checks_global_entry(46, 46));
+        assert!(!plan.checks_global_entry(47, 47));
         assert_eq!(plan.existing_fields_for(script), vec![40, 41]);
         assert_eq!(
             plan.existing_fields_for(Entry::script(true, false)),
@@ -7633,6 +7802,20 @@ mod tests {
         // modification, indexed.
         let plan = plan_for(0x8000_0188, 0, &[0x9b, 0x65]).unwrap();
         assert!(plan.editable_fields().contains("Field2"));
+        // Relookup Field Contents' target: not this key, whose auto-entry
+        // a write of it could replace (3); not the looked-up field, which
+        // no lookup matches through (3); not a field the table lacks (102).
+        let refused = |name: &str| plan.relookup_target(name).unwrap_err();
+        let key = refused("Field1");
+        assert_eq!(key.code, Some(error::UNAVAILABLE));
+        assert!(key.message.contains("enters a value"), "{}", key.message);
+        let looked_up = refused("Field2");
+        assert!(
+            looked_up.message.contains("No lookup"),
+            "{}",
+            looked_up.message
+        );
+        assert_eq!(refused("Missing").code, Some(error::FIELD_MISSING));
         // Another auto-entry on the key (the creator's account name) keeps
         // the table read-only.
         let other = plan_for(0x8000_0101, 4, &[0x9b, 0x65]);

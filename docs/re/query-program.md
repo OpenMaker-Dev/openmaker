@@ -830,14 +830,50 @@ first) is open (13).
 
 **Word breaking (High for the cases below).** The word index keys each
 word of a value: maximal runs of letters and digits, in which some
-characters between two letters or two digits join:
+characters between two letters or two digits join. In each index language
+FileMaker Server's engine was probed in (1-4, 16-65, 67 and 76; 0 and 77
+were not probed here, and FMUpgradeTool stored them as 21 in the earlier
+probe file, below) but Unicode raw (2), whose rules follow below:
 
-- between digits: `-`, `.`, `,`, `:` and `/` (`392E36CA-E9D8-45A3-83DD-66A6EFF95ADE`
-  gives `392E36CA`, `E9D8-45A3-83DD`, `66A6EFF95ADE`; `3.14`, `3,000`,
-  `12:30` and `50/50` are one word each);
-- between letters, in English: an apostrophe (`'` or U+2019) and `.`
-  (`don't`, `l'équipe`, `x.y`, `U.S.A.` gives `U.S.A`). In French an
-  apostrophe separates (`l'équipe` gives `l`, `équipe`).
+- between digits: `-` and `,` in every language; `.` except in French
+  (24), Polish (33), Swedish (41, 42) and Arabic (49); `:` except in
+  Italian (30); and `/` only in System (1), Unicode standard (3), Catalog
+  (4), Catalan (16), English (21), French (24), Greek (27), Italian (30),
+  Japanese (31), Spanish (39, 40), Chinese (45, 46), Hebrew (47), Hindi
+  (48), Arabic (49), Estonian (50), Lithuanian (51), Latvian (52), Persian
+  (54), Vietnamese (56), Thai (57) and Greek mixed (58). In English
+  `392E36CA-E9D8-45A3-83DD-66A6EFF95ADE` gives `392E36CA`,
+  `E9D8-45A3-83DD`, `66A6EFF95ADE`, and `3.14`, `3,000`, `12:30` and
+  `50/50` are one word each;
+- between letters: `.` in every language, an apostrophe (`'` or U+2019)
+  except in Catalan, French and Italian (16, 24, 30), and the middle dot
+  U+00B7 in Catalan alone (`l·l`). So `don't`, `l'équipe`, `x.y` are one
+  word in English and `U.S.A.` gives `U.S.A`, while French `l'équipe`
+  gives `l`, `équipe`.
+
+In those languages none of these characters joins a digit and a letter
+(`1.b`, `a-1`), `_` and `;` always separate, and, Thai aside, none stays in
+a word at its start or end (`.1`, `a-` give `1`, `a`). In Thai (57) `.` and
+`-` have no weight, so its keys cannot show whether its words keep them at
+either end. The no-break space U+00A0 separates in none of them: it is part of
+the word, at either end too (`1`, U+00A0, `234` is one word). The languages
+that join with `/` and with `.` resemble those whose locales write dates
+with `/` and decimals with `.`, but whether FileMaker takes these
+characters from the locale or from a table of its own is not known [I]; the
+probe gives them for these characters only. In the probe, whose keys are
+all whole, the primary weights of each word's key are those of the value
+key for the word's characters (all 11,487 word keys). A long value's key
+and each of its word keys are cut to 7.1's limit on their own, so a cut
+value key need not hold a later word's weights: in English `x`×100
+`中`×10 keeps nine `中` in its value key and all ten in its word key
+([catalogs/index-key-vectors.tsv](catalogs/index-key-vectors.tsv)). In System and
+Unicode standard a word's key is in their padded form, with its own `00 00`
+and the word's higher levels after it (`ab’cd` keeps the secondary weight
+of `’`). Evidence:
+[catalogs/word-break-vectors.tsv](catalogs/word-break-vectors.tsv), a
+probe of 139 values in 56 index languages (each of `. , : / - ' ’ · _ ;`
+and U+00A0 between two digits, two letters, a digit and a letter and at
+either end, and 8 dates, times and numbers as locales write them).
 
 Every other character separates (`e-mail`, `x-1`, `a_b`, `foo@bar.com`
 gives `foo`, `bar.com`; `#tag`, `C++`, `AT&T`, `$5`, `5%`, a tab, a soft
@@ -1154,8 +1190,15 @@ kanji weights of its own; every other character keys from the table
   (`kana` rows).
 - A voiced kana keys as its plain kana then `01f4`, a semi-voiced one then
   `01f8` (`ば` = `4031 01f4`, `パ` = `4438 01f8`); U+3099/U+309B key `01f4`
-  and U+309A/U+309C `01f8`. Halfwidth katakana take the fullwidth weights
-  (`ﾊﾝｶｸ` = `01 4438 446a 440c 4411`).
+  and U+309C `01f8`. This section read U+309A as `01f8` too, but in the
+  probe's `゛゜゙゚ー々〆〇〻` (U+309B U+309C U+3099 U+309A …) it adds nothing
+  after U+3099 (`01 01f4 01f8 01f4 11dd …`), so how it keys, after a kana or
+  another mark, is open. Halfwidth katakana take the fullwidth weights
+  (`ﾊﾝｶｸ` = `01 4438 446a 440c 4411`); the halfwidth sound marks U+FF9E and
+  U+FF9F were not probed.
+- `〆` (U+3006) is tailored too: it keys `446b`, after `ン` (`446a`), where
+  English gives it two table weights (the same probe value's word `々〆` is
+  `01 11d7 446b`). `々`, `〇`, `〻` and `ー` key from the table.
 - A kanji of JIS X 0208 level 1 (rows 16 to 47) is 0x967E + (row - 1) × 94
   + (cell - 1): `一` (row 16, cell 76) = `9c4b`, `中` = `a33f` (42 of 42
   level-1 kanji in the probe and the Japanese sample). Other kanji have
