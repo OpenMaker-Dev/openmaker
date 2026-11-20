@@ -469,26 +469,28 @@ impl NativeProvider {
         Ok(record)
     }
 
-    /// Only ordinary stored scalar and container cells are enabled on imported layouts.
-    /// Check before rules/locks/uploads, including Set Field's repetitions.
+    /// The cells a write through another file's owner takes: each
+    /// repetition of an ordinary stored text, number, date, time, timestamp
+    /// or container field, cell `field * 256 + n` for repetition n of 2 and
+    /// up as the owner's own writes name it (`om_data::rules::cell_of`); no
+    /// global or calculation. Checked before rules, locks and uploads,
+    /// including Set Field's repetitions.
     pub(super) fn check_scalar_cells(
         table: &Table,
         cells: &BTreeMap<u64, Option<String>>,
     ) -> Result<(), DataError> {
         for cell in cells.keys() {
-            if !table.field(*cell).is_some_and(|field| {
-                field.kind == om_hbam::FieldKind::Normal
-                    && matches!(
-                        field.data_type,
-                        om_hbam::DataType::Text
-                            | om_hbam::DataType::Number
-                            | om_hbam::DataType::Date
-                            | om_hbam::DataType::Time
-                            | om_hbam::DataType::Timestamp
-                            | om_hbam::DataType::Container
-                    )
+            let (field, repetition) = match table.field(*cell) {
+                Some(field) => (Some(field), 1),
+                None => (
+                    table.field(*cell >> 8),
+                    u16::try_from(*cell & 0xff).unwrap_or(0),
+                ),
+            };
+            if !field.is_some_and(|field| {
+                Self::ordinary_stored(field)
                     && field.decoded_options().is_some_and(|options| {
-                        options.max_repetitions == 1 && options.options & 0x1_0000 == 0
+                        (1..=options.max_repetitions.max(1)).contains(&repetition)
                     })
             }) {
                 return Err(DataError::with_code(
@@ -498,6 +500,36 @@ impl NativeProvider {
             }
         }
         Ok(())
+    }
+
+    /// Whether `field` is an ordinary stored text, number, date, time,
+    /// timestamp or container field, not a global.
+    fn ordinary_stored(field: &om_hbam::Field) -> bool {
+        field.kind == om_hbam::FieldKind::Normal
+            && matches!(
+                field.data_type,
+                om_hbam::DataType::Text
+                    | om_hbam::DataType::Number
+                    | om_hbam::DataType::Date
+                    | om_hbam::DataType::Time
+                    | om_hbam::DataType::Timestamp
+                    | om_hbam::DataType::Container
+            )
+            && field
+                .decoded_options()
+                .is_some_and(|options| options.options & 0x1_0000 == 0)
+    }
+
+    /// Whether Browse edits `field` of another file's table on a layout:
+    /// one a routed write takes ([`Self::check_scalar_cells`]) that does
+    /// not repeat. Browse edits a later repetition of the layout's own
+    /// record through its related path, which a routed table does not
+    /// take yet.
+    pub(super) fn routed_browse_field(field: &om_hbam::Field) -> bool {
+        Self::ordinary_stored(field)
+            && field
+                .decoded_options()
+                .is_some_and(|options| options.max_repetitions <= 1)
     }
 
     /// A new transaction id for one record write (write-path.md 1.2): the

@@ -241,8 +241,8 @@ impl NativeProvider {
     /// The fields of imported table `table` Browse may edit through a
     /// relationship from a layout of this file's table: those its owner's
     /// rules let a user edit (`RecordPlan::editable_fields`), of the
-    /// ordinary stored scalar fields a routed write takes
-    /// (`check_scalar_cells`), limited by its own account's record and field
+    /// ordinary stored scalar fields Browse writes through the owner
+    /// (`routed_browse_field`), limited by its own account's record and field
     /// access. None when the owner is read-only, its file is unavailable
     /// or its rules cannot be planned.
     pub(crate) fn routed_related_fields(
@@ -268,7 +268,7 @@ impl NativeProvider {
                         // stored-cell checks still decide availability.
                         (names.contains(&field.name)
                             || field.data_type == om_hbam::DataType::Container)
-                            && Self::check_scalar_cells(&table, &[(field.id, None)].into()).is_ok()
+                            && Self::routed_browse_field(field)
                             && owner.account_info.set_access.as_ref().is_none_or(|access| {
                                 access.modifies(
                                     &om_hbam::slot::uint_segment(wire),
