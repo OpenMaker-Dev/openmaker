@@ -23,7 +23,11 @@ pub(crate) struct Scroll {
     focused: Option<(String, Id)>,
     page: Option<crate::session::PageKey>,
     loading: bool,
-    origin: Option<Pos2>,
+    /// The scrolled content's origin in window points, and the scale of
+    /// the layer it was set in: a field's offset in the content is in that
+    /// layer's points (List view's rows scroll inside the zoom layer, Form
+    /// view's document outside it).
+    origin: Option<(Pos2, f32)>,
 }
 
 struct Queued {
@@ -262,11 +266,11 @@ impl Scroll {
 
     /// The root content origin, before a virtualized row's skipped space.
     pub fn origin(&mut self, ui: &Ui, origin: Pos2) {
-        self.origin = Some(
-            ui.ctx()
-                .layer_transform_to_global(ui.layer_id())
-                .map_or(origin, |transform| transform * origin),
-        );
+        let transform = ui.ctx().layer_transform_to_global(ui.layer_id());
+        self.origin = Some((
+            transform.map_or(origin, |transform| transform * origin),
+            transform.map_or(1.0, |transform| transform.scaling),
+        ));
     }
 
     pub fn field(&mut self, ui: &Ui, name: &str, rect: egui::Rect) {
@@ -283,8 +287,11 @@ impl Scroll {
             .ctx()
             .layer_transform_to_global(ui.layer_id())
             .map_or(rect, |transform| transform * rect);
-        let target = self.origin.map_or(FieldTarget::Fixed, |origin| {
-            FieldTarget::Content((rect.top() - origin.y)..=(rect.bottom() - origin.y))
+        let target = self.origin.map_or(FieldTarget::Fixed, |(origin, scale)| {
+            let scale = if scale > 0.0 { scale } else { 1.0 };
+            FieldTarget::Content(
+                (rect.top() - origin.y) / scale..=(rect.bottom() - origin.y) / scale,
+            )
         });
         let fields = self.painting_fields.entry(name.to_owned()).or_default();
         if let Some(field) = fields.iter_mut().find(|field| field.id == id) {
