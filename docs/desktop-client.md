@@ -1785,8 +1785,10 @@ stored tab order.
 - **Fields sidebar.** Open Objects, then Fields to list the selected
   layout's own table's placeable fields. Search filters definitions, not
   already-placed objects. Drag a field onto the design surface to add a
-  bound draft (120 by 22 pt, top-left at the rounded drop point, with Create
-  label on; these dimensions are OpenMaker's choices). Additional drops
+  bound draft (120 by 44 pt, top-left at the rounded drop point, with Create
+  label on). OpenMaker uses 44 pt on every theme so the default Universal
+  Touch edit box can show its text in FileMaker Pro. Pro's own sidebar
+  drop dimensions are unmeasured. Additional drops
   keep earlier drafts. Select one on the canvas or Objects to edit its
   binding and frame in Inspector. Save and Revert have the same deferred
   semantics as fields drawn with the Field tool.
