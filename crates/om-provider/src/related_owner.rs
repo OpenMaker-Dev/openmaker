@@ -117,6 +117,21 @@ impl OwnerTransaction {
         &self.owners
     }
 
+    /// The records the related files made for this transaction and still
+    /// hold (none deleted since), each as (imported table, record): what
+    /// reverting it removes.
+    pub(crate) fn held_new(&self) -> impl Iterator<Item = (u64, u64)> + '_ {
+        let gone = |table: u64, record: u64| {
+            self.held
+                .iter()
+                .any(|h| h.table == table && h.record == record && h.deleted)
+        };
+        self.held
+            .iter()
+            .filter(move |h| h.new && !gone(h.table, h.record))
+            .map(|h| (h.table, h.record))
+    }
+
     /// The records of imported table `table` the related files hold for
     /// this transaction, in the order written: each as (record, the
     /// owner's table id, made by the write, deleted by it). Reads of the

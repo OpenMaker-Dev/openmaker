@@ -188,8 +188,14 @@ Record (Records menu, toolbar and script steps) create the record with the
 same owning engine: the owner issues the record id, enters its auto-entry
 values and stores the ordinary scalar values; the new record joins the
 caller window's found set and becomes current, as a local creation does.
-Duplicate Record of a record holding a container reference is refused before
-any effect. A script's transaction includes these layouts and commits all or
+Duplicate Record copies a container reference too: the copy's reference is
+counted in the owning file's library, as a local duplicate counts it in its
+own. A copy that fails gives its references back; one whose answer is lost
+counts as given back, so that no later transaction's revert gives it back
+again. When the owner did not apply it, or the connection was lost in
+between, the member keeps one reference too many: its data is kept longer,
+never lost. Its auto-entered values are copied as the window's duplicate copies them
+([#473](https://github.com/OpenMaker-Dev/openmaker/issues/473)). A script's transaction includes these layouts and commits all or
 none: Commit Transaction prepares every file before any record data goes, and
 a refusal in any file reverts every file's part; only a connection lost, or a
 host refusing a later file, after an earlier file's commit leaves that earlier
@@ -575,10 +581,12 @@ Open items:
     can set a new password
     ([#248](https://github.com/OpenMaker-Dev/openmaker/issues/248)), and
     Enable Account gives 3 for OAuth and Claris ID accounts and rather
-    than make a [Full Access] account inactive. None of
-    them rewrites an account whose stored checksum OpenMaker does not
-    reproduce (3). Add Account, Delete Account and Re-Login fail with
-    error 3 ([#83](https://github.com/OpenMaker-Dev/openmaker/issues/83)).
+    than make a [Full Access] account inactive. Delete Account removes an
+    account and its entries in the account catalog's index; it gives 3
+    for [Guest] and for [Full Access], OAuth and Claris ID accounts. The
+    steps that rewrite an account (all but Delete Account) leave alone one
+    whose stored checksum OpenMaker does not reproduce (3). Add Account and Re-Login fail with error 3
+    ([#83](https://github.com/OpenMaker-Dev/openmaker/issues/83)).
   - The recompute after a schema change reads container inputs from the
     table's library, computes repeating calculations in each repetition,
     and answers Design functions as FileMaker Server's file context does

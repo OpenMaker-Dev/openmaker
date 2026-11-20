@@ -527,21 +527,19 @@ authoring part tabs or object kind captions.
   look is OpenMaker's own [I: FileMaker Pro's interactive container is
   unmeasured]. A container optimized for images shows a PDF's first page
   as above.
-- Such a container's audio and video (Insert Audio/Video's `movie` path,
-  or a file named as audio or video) play in the web viewer engine
-  (`container::paint_media`, #200): WebKitGTK with the `web-viewer`
-  feature, which plays through GStreamer and shows its own controls. The
-  data is copied to a folder only its user may read, removed with the
-  window, and the engine is placed over the field as a web viewer is, for
-  the current record only. It opens a page beside the copy whose media
-  element starts by itself only when the container's "Start playback
-  automatically" (`0x0200`, `GraphicFormat::autoplay`) is set (#1338);
-  otherwise it waits for the engine's play control. Without the engine (a
-  build without the feature, a window other than the file's first, a
-  display without X11) the file shows with a one-line note saying why it
-  does not play. The
-  engine is OpenMaker's choice [I: FileMaker Pro plays through the
-  system's media view, unmeasured].
+- An interactive container's audio and video play on the current record
+  in Form or List view outside portal rows. Playback uses the native web
+  viewer in builds with `web-viewer` (WebKitGTK on Linux/X11, including
+  XWayland, or WKWebView on macOS). The audio or video is copied to a
+  folder only its user may read and removed with the window. The player
+  starts automatically when the container's "Start playback
+  automatically" bit is set (`0x0200`, `GraphicFormat::autoplay`,
+  #1338). A window without a player shows the filename and a note.
+- The Insert menu offers PDF and Audio/Video for a selected, writable
+  interactive container outside portal rows whose field object allows
+  entry in Browse mode. The typed-path dialogs reject a file of a
+  different type (a PDF without its header, a file the player would not
+  play) before they prepare an edit or upload data. [Container menus and file dialogs](re/containers.md#desktop-menus-and-file-dialogs-2026-11-02)
 - Button icons come from the file's library root `31` as the original SVG,
   colored through the icon component's style; no application icon is
   substituted for a file's library image.
@@ -1244,8 +1242,10 @@ with its match fields from the record as it is then
 13.24); a value the user typed into a match field stays. The portal's
 records are read again as the record begins; meanwhile it shows the rows
 it showed last, so the row's editor keeps the keyboard, the caret and
-every key typed in between (a click waiting for its row waits for the
-rows as read). Until the save,
+every key typed in between. Clicking a pop-up menu in a stale row opens
+the list once the same related record is ready. Using another ready
+related control cancels the waiting click
+([#288](https://github.com/OpenMaker-Dev/openmaker/issues/288)). Until the save,
 the begun record's row shows only what was typed: calculations and other
 objects of the row see no record, as a script's record to create is not
 seen. A value-list control there offers its list as in a saved row, except
@@ -1391,11 +1391,16 @@ drop-down lists (layout-model.md 5.4) read their items through
     shorter for it.
   - The calculation sees no global variables, as when OpenMaker computes
     a summary or sort key itself.
-  - Such a list is built per object and record, as a list of related
-    values is, not once for every record: its calculation may read other
-    tables and the session, which a shared list's rebuilds do not
-    follow. It is built again when the window's context changes (its
-    size, for example), as results that read the session are.
+  - Such a list of all of a field's values is built once on the worker
+    for every object and record, from committed values ([#290](https://github.com/OpenMaker-Dev/openmaker/issues/290); "One
+    build per list, never in paint", below). Its calculation may read
+    other tables and the session: it is built again after any table's
+    data changes, and when the window's context (its size, for example)
+    or the date changes. A build asked before such a change is let finish
+    and its answer dropped, then one build for the new context follows,
+    so a resize keeps one build at a time on the worker. A list of an
+    unstored calculation's related values is built per object and record
+    in paint, as a list of related values is.
   - Validation against a related-values list of such a field computes it
     on each related record, and refuses with 3 only a record whose value
     cannot be computed (`om-provider`'s `related_lists.rs`;
@@ -1408,8 +1413,9 @@ drop-down lists (layout-model.md 5.4) read their items through
   nothing and asks the host for no records. A click on a list whose items
   are still being read opens it once they are.
 - **One build per list, never in paint.** A list that does not depend on
-  the record (custom values, or all of a field's values) is built once for
-  every object, record and portal row, from committed values.
+  the record (custom values, or all of a field's values, an unstored
+  calculation's among them) is built once for every object, record and
+  portal row, from committed values.
   - A field's list is built on the provider's thread (`list_build`, #745),
     which reads its table's records in two requests: their ids, then their
     values. Meanwhile the control waits as for any data being read, and the
@@ -1428,9 +1434,19 @@ drop-down lists (layout-model.md 5.4) read their items through
   - The list is built again after the data of a table it reads changes.
     One the window stopped reading before it was built (#987) is asked for
     again when a control shows it.
-  - A list of related values, or of an unstored calculation's values, is
-    built per record, with the record's unsaved values, in the window's
-    paint, as before.
+  - An unstored calculation's values are computed on each record of its
+    table, in that record's context, so no record of the window decides
+    them ([#290](https://github.com/OpenMaker-Dev/openmaker/issues/290)). The calculation may read any table and the session: the
+    list is built again after the data of any table changes, and when the
+    window's calculation session changes (its layout, record, mode or
+    account). A record's unsaved values are not read, as for a field's
+    list [inferred: how FileMaker lists an unstored calculation's values
+    is unmeasured]. On a debug build, with 30,000 records, the closed
+    pop-up menu that shows a label from such a list no longer blocks a
+    frame for 1.1 s; its longest frame while the worker builds the list is
+    44 ms.
+  - A list of related values is built per record, with the record's
+    unsaved values, in the window's paint, as before.
 - **A hosted file's field lists.** A list of all of a stored text field's
   values, with no second field and not only related values, comes from
   the host. One CreateValueListEx is sent when a control first needs the

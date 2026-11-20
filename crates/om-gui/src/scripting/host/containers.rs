@@ -1,8 +1,8 @@
 //! The desktop's container steps (containers.md, "Implementation notes
 //! (desktop client)"): Insert File (131), Insert Picture (56), Insert PDF
 //! (158), Insert Audio/Video (159) and Export Field Contents (132), also
-//! as the Insert menu's Picture and File and the Edit menu's Export Field
-//! Contents run them.
+//! as the Insert menu's Picture, Audio/Video, PDF and File and the Edit
+//! menu's Export Field Contents run them.
 //!
 //! An inserted file is read from the first path of its path list that names
 //! an existing file, with the path rules of the data file steps
@@ -17,7 +17,8 @@
 //! steps do not run on FileMaker Server, so its engine cannot settle them):
 //! 100 no path names a file, 826 an invalid path, 102 no active field, 413
 //! a field that is not a container, 734 a file Insert Picture cannot show
-//! as a picture, 2 a file over [`MAX_INSERT`].
+//! as a picture, 700 a file of the wrong type for Insert PDF or Insert
+//! Audio/Video, 2 a file over [`MAX_INSERT`].
 //!
 //! A step without a path asks for the file in an in-app dialog
 //! ([`Prompt::ContainerFile`]; a path, not the system's file panel), once
@@ -59,6 +60,8 @@ pub(super) const MAX_INSERT: u64 = 1 << 30;
 const NOT_A_CONTAINER: i32 = 413;
 /// "This file type cannot be displayed as a picture".
 const NOT_A_PICTURE: i32 = 734;
+/// "File is of the wrong file type for import".
+const WRONG_FILE_TYPE: i32 = 700;
 /// Out of memory.
 const TOO_LARGE: i32 = 2;
 
@@ -301,6 +304,7 @@ impl WorkerHost<'_> {
             let documents = self.s.file.data_files.folders.documents.clone();
             files::existing(&lines, &documents, false)?
         };
+        let container = read_inserted(&path, request.kind)?;
         let target = self.related_target(field.occurrence)?;
         let mixed = self.s.file.window.state.uncommitted.session
             && (self.s.file.window.state.uncommitted.new
@@ -388,7 +392,6 @@ impl WorkerHost<'_> {
                 }
             }
         }
-        let container = read_inserted(&path, request.kind)?;
         let reference = self
             .p()
             .related_container_reference(table, def.id, &container)
@@ -794,9 +797,30 @@ fn read_inserted(path: &Path, kind: InsertKind) -> Result<Container, ErrorCode> 
         .file_name()
         .map(|n| n.to_string_lossy().into_owned())
         .unwrap_or_default();
+    // A PDF's header, `%PDF-`, is within its first 1024 bytes (readers
+    // accept it there): a file only named `.pdf` is not one.
+    let pdf_header = bytes[..bytes.len().min(1024)]
+        .windows(5)
+        .any(|w| w == b"%PDF-");
     let value = om_data::calc::functions::typed_file(&name, &name, bytes, None);
-    if kind == InsertKind::Picture && value.path_type != Some("image") {
-        return Err(ErrorCode(NOT_A_PICTURE));
+    match kind {
+        InsertKind::Picture if value.path_type != Some("image") => {
+            return Err(ErrorCode(NOT_A_PICTURE));
+        }
+        InsertKind::Pdf
+            if !pdf_header
+                || !value
+                    .main_stream()
+                    .is_some_and(|(kind, _)| kind.0 == *b"PDF ") =>
+        {
+            return Err(ErrorCode(WRONG_FILE_TYPE));
+        }
+        // What the Browse player plays: a `movie` path, or a file named as
+        // audio or video (an `.aac` is stored as a file).
+        InsertKind::AudioVideo if !crate::document::is_media(value.path_type, &name) => {
+            return Err(ErrorCode(WRONG_FILE_TYPE));
+        }
+        _ => {}
     }
     Ok(value)
 }
@@ -876,6 +900,24 @@ mod tests {
         assert_eq!(
             read_inserted(&dir.join("missing"), InsertKind::File).unwrap_err(),
             ErrorCode::FILE_MISSING
+        );
+        // A PDF is one by its header, not its name alone; audio and video
+        // are what the Browse player plays, an `.aac` stored as a file.
+        let pdf = dir.join("report.pdf");
+        std::fs::write(&pdf, b"%PDF-1.7\n%%EOF\n").unwrap();
+        assert!(read_inserted(&pdf, InsertKind::Pdf).is_ok());
+        let named = dir.join("named.pdf");
+        std::fs::write(&named, b"only text").unwrap();
+        assert_eq!(
+            read_inserted(&named, InsertKind::Pdf).unwrap_err(),
+            ErrorCode(WRONG_FILE_TYPE)
+        );
+        let aac = dir.join("clip.aac");
+        std::fs::write(&aac, b"\xff\xf1 not decoded").unwrap();
+        assert!(read_inserted(&aac, InsertKind::AudioVideo).is_ok());
+        assert_eq!(
+            read_inserted(&text, InsertKind::AudioVideo).unwrap_err(),
+            ErrorCode(WRONG_FILE_TYPE)
         );
         let _ = std::fs::remove_dir_all(&dir);
         assert_eq!(utf16("hé"), [0xff, 0xfe, b'h', 0, 0xe9, 0]);

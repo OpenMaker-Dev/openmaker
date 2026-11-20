@@ -60,6 +60,8 @@ pub(crate) struct MenuContext<'a> {
     pub container: bool,
     /// ...and the record may be changed: Insert's Picture and File.
     pub container_insert: bool,
+    /// The selection is optimized for interactive content outside portal rows.
+    pub container_interactive: bool,
     /// A text field is entered for typing (Browse mode, no script
     /// running): Edit's Cut, Copy and Paste, and Insert's Current Date,
     /// Current Time, Current User Name, From Index and From Last Visited
@@ -605,21 +607,29 @@ fn view_menu(rows: &mut dyn MenuRows, context: &MenuContext<'_>, actions: &mut V
     }
 }
 
-/// Picture and File insert into the selected container field (the
-/// script steps without a path, which ask for the file). Audio/Video and
-/// PDF stay disabled: OpenMaker plays no media and shows no PDF, and how
-/// FileMaker Pro stores what those commands insert is not measured.
+/// Picture, Audio/Video, PDF and File insert into the selected container
+/// field: the script steps without a path, which ask for the file and store
+/// it as the steps with a path do, typed by its name (what FileMaker Pro
+/// stores for each is not measured, containers.md "Desktop menus and file
+/// dialogs").
 fn insert_menu(rows: &mut dyn MenuRows, context: &MenuContext<'_>, actions: &mut Vec<Action>) {
     // Editing only and Minimum leave both out (FileMaker Pro 26.0.3,
     // #651's reading).
     let insert = context.container_insert && context.full_menus();
-    if rows.item("Picture...", None, false, insert) {
-        actions.push(Action::Step(steps::INSERT_PICTURE, 0));
-    }
-    pending(rows, "Audio/Video...", None);
-    pending(rows, "PDF...", None);
-    if rows.item("File...", None, false, insert) {
-        actions.push(Action::Step(steps::INSERT_FILE, 0));
+    let insert_interactive = insert && context.container_interactive;
+    for (label, step, enabled) in [
+        ("Picture...", steps::INSERT_PICTURE, insert),
+        (
+            "Audio/Video...",
+            steps::INSERT_AUDIO_VIDEO,
+            insert_interactive,
+        ),
+        ("PDF...", steps::INSERT_PDF, insert_interactive),
+        ("File...", steps::INSERT_FILE, insert),
+    ] {
+        if rows.item(label, None, false, enabled) {
+            actions.push(Action::Step(step, 0));
+        }
     }
     rows.separator();
     // The field's steps (script-steps.md: 13, 14, 60, 11, 12), on the field
