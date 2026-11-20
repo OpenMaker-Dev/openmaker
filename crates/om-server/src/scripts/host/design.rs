@@ -330,14 +330,17 @@ enum ServerFunction {
     Furigana,
 }
 
-/// What FileMaker Server's script engine answered (s45):
-/// - `GetAddonInfo`: the add-on interface's version for any name, `{` CR
-///   TAB `"APIVers" : 2` CR `}`; empty text is error 3;
-/// - `GetSensor`: error 1208, as on a device without the sensor;
-/// - `GetAVPlayerAttribute`: empty, no error, nothing playing;
-/// - `Furigana`: its text unchanged, as the engine answers without its
-///   reading dictionary (a `kakasi` program it calls) [O: on a server
-///   without it; one with it answers readings, unmeasured].
+/// What FileMaker Server's script engine answered (s45), for every
+/// argument [I: s45 ran one of each, given below; the others are answered
+/// the same, OpenMaker's fallback]:
+/// - `GetAddonInfo`: `{` CR TAB `"APIVers" : 2` CR `}` for `"x"`, error 3
+///   for empty text;
+/// - `GetSensor`: error 1208 for `"battery"`;
+/// - `GetAVPlayerAttribute`: empty, no error, for `"playbackState"`;
+/// - `Furigana`: its text unchanged for `"abc"`, the engine's answer
+///   without its reading dictionary (a `kakasi` program it calls); its
+///   option is ignored. A server with the dictionary answers readings
+///   [unmeasured].
 fn server_function_answer(
     function: ServerFunction,
     args: &[Value],

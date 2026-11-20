@@ -210,6 +210,16 @@ fn performs_scripts_on_the_server() {
                      Furigana ( \"abc\" )",
                 )],
             ),
+            fixture::script(
+                5,
+                "No add-on name",
+                vec![fixture::exit_with("GetAddonInfo ( \"\" )")],
+            ),
+            fixture::script(
+                6,
+                "Battery",
+                vec![fixture::exit_with("GetSensor ( \"battery\" )")],
+            ),
         ],
         true,
     );
@@ -221,6 +231,11 @@ fn performs_scripts_on_the_server() {
         (device.error, device.result.as_str()),
         (0, "{\r\t\"APIVers\" : 2\r}|3|1208||0|abc")
     );
+    // The two errors' results are `?`, not empty, as s45 shows them.
+    for script in [5, 6] {
+        let bare = client.perform_script_on_server(script, "", true).unwrap();
+        assert_eq!(bare.result, "?", "script {script}: {bare:?}");
+    }
 
     // Wait for completion: the reply carries the Exit Script result and the
     // script's final Get ( LastError ).
