@@ -22,6 +22,7 @@ use fixture::{
 // adds.
 use om_hbam::slot::uint_segment;
 use om_hbam::{serial, OwnedNode, RidList};
+use om_layout::{encode, Rect};
 use om_scripts::specs::{self, SpecField, StoredRequest};
 use om_scripts::{flag, text_node, FieldSpec, Script, ScriptStep, StoredKey};
 use om_session::Session;
@@ -46,6 +47,23 @@ fn set_var(name: &str, text: &str) -> ScriptStep {
     step.set_text(0, Some(name));
     step.set_calculation(1, Some(&calc(text)));
     step
+}
+
+/// After `before`, Perform Quick Find with each of `texts` (calculations)
+/// in turn, then exit with the last one's error, the found count and the
+/// current record's Name.
+fn quick_finds(before: Vec<ScriptStep>, texts: &[&str]) -> Vec<ScriptStep> {
+    let mut steps = vec![fixture::on(86, true)];
+    steps.extend(before);
+    for text in texts {
+        let mut step = ScriptStep::new(150);
+        step.set_calculation(0, Some(&calc(text)));
+        steps.push(step);
+    }
+    steps.push(exit_with(
+        "Get ( LastError ) & \":\" & Get ( FoundCount ) & \":\" & Tasks::Name",
+    ));
+    steps
 }
 
 fn exit_with(text: &str) -> ScriptStep {
@@ -203,6 +221,27 @@ fn scripts() -> Vec<Script> {
                 exit_with("IsEmpty ( Tasks::Label ) & \"|\" & Length ( Tasks::Label )"),
             ],
         ),
+        script(40, "Quick Find", quick_finds(vec![], &["\"ship\""])),
+        script(
+            41,
+            "Quick Find no word",
+            quick_finds(vec![], &["\"ship\"", "\"  \""]),
+        ),
+        script(
+            42,
+            "Quick Find no match",
+            quick_finds(vec![fixture::go_to_record(4)], &["\"write qqq\""]),
+        ),
+        script(
+            43,
+            "Quick Find merge field",
+            quick_finds(vec![], &["\"open\""]),
+        ),
+        script(
+            47,
+            "Quick Find every word",
+            quick_finds(vec![], &["\"alpha ship\""]),
+        ),
     ]
 }
 
@@ -236,6 +275,46 @@ fn tree() -> OwnedNode {
     let ids: RidList = (1..=5).collect();
     root.put(&[&tasks, &[0x0d]], ids.to_node(Vec::new()));
     root.put(&[&tasks, &[0]], OwnedNode::leaf(Vec::new(), vec![1, 5]));
+    // Layout Tasks shows Name in an edit box and Status as a merge field
+    // stored by its catalog keys (layout-model.md 4.1), both of which Quick
+    // Find searches.
+    let key = |id: u64| serial::id_of_raw(id).unwrap();
+    let bounds = Rect {
+        top: 20.0,
+        left: 20.0,
+        bottom: 40.0,
+        right: 200.0,
+        other: Vec::new(),
+    };
+    let mut store = Vec::new();
+    encode::uint(1, 1, &mut store);
+    encode::uint(1, 2, &mut store);
+    encode::bytes(
+        2,
+        &encode::field_object(1, &bounds, key(OCCURRENCE), key(NAME)),
+        &mut store,
+    );
+    encode::bytes(2, &encode::text_object(2, &bounds), &mut store);
+    let layout = uint_segment(fixture::LAYOUT);
+    root.put(
+        &[&[4], &[5], &layout, &[7]],
+        OwnedNode::leaf(Vec::new(), store),
+    );
+    // The merge token: kind 2, then the occurrence and field keys with
+    // their lengths, as hex (`om_layout`'s `merge_field_spec`).
+    let token = format!("0003{OCCURRENCE:06X}01{:02X}", fixture::STATUS);
+    let text = format!(
+        "Status: <<\u{1}\u{2}{}{token}>>",
+        char::from(token.len() as u8)
+    );
+    let scsu = om_scsu::encode_scsu(&text);
+    let mut literal = vec![0x13, scsu.len() as u8];
+    literal.extend(scsu);
+    literal.push(0);
+    root.put(
+        &[&[4], &[5], &layout, &[5], &serial::encode(2), &[2], &[6]],
+        OwnedNode::leaf(Vec::new(), literal),
+    );
     root
 }
 
@@ -300,4 +379,23 @@ fn find_mode_reads_and_finds_without_criteria_are_filemakers() {
     // global field reads its value and a field the request's criterion or
     // nothing, without error 1224.
     assert_eq!(run(&mut client, 14), (0, "x0/01/zeta0/0,x0,0".into()));
+}
+
+/// Perform Quick Find on the server (query-program.md 6.6) searches the
+/// layout's Name field object and its Status merge field: a word finds the
+/// records holding it, and a record must hold every word. No word (400) or
+/// no match (401) keeps the found set and the current record (after Go to
+/// Record [Next], "Ship"). It ran into error 3 before.
+#[test]
+fn server_quick_find_searches_the_layouts_quick_find_fields() {
+    let file = TempFile::from_tree("psos-quick-find", &tree());
+    let port = server::start(&file);
+    let (mut client, _) = server::logged_in(port, "client");
+    assert_eq!(run(&mut client, 40), (0, "0:1:Ship".into()));
+    assert_eq!(run(&mut client, 41), (400, "400:1:Ship".into()));
+    assert_eq!(run(&mut client, 42), (401, "401:5:Ship".into()));
+    // Record 5's Status "Open", through the merge field.
+    assert_eq!(run(&mut client, 43), (0, "0:1:".into()));
+    // "alpha" and "ship" are in different records.
+    assert_eq!(run(&mut client, 47), (401, "401:5:Write tests".into()));
 }

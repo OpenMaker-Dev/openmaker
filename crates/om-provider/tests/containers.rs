@@ -441,6 +441,42 @@ fn a_lost_commit_reply_keeps_references_that_the_server_already_stored() {
     }
 }
 
+/// A release the host applied whose reply is lost (unreadable, on a
+/// connection that stays usable) leaves nothing for a later transaction to
+/// revert: the window took one more reference to record 1's member, gave it
+/// back, and the revert of a transaction opened after must not give it back
+/// again, which would delete the member record 1 still uses.
+#[test]
+fn a_release_whose_reply_is_lost_is_not_released_again_by_a_later_revert() {
+    use om_data::runtime::TransactionOptions;
+    let file = file("container-lost-release");
+    let (port, _) = host(&file.0);
+    let relay = relay::Relay::start(port, std::time::Duration::ZERO);
+    let mut provider = open(relay.port, &relay.ca_pem);
+    let mut counts = raw_session(port);
+    let tasks = tasks_layout(&mut provider);
+    let reference = "01\u{e000}";
+    provider.adjust_container(tasks, reference, 1).unwrap();
+    assert_eq!(count(&mut counts, PHOTO_MEMBER), Some(2));
+    relay.corrupt_reply_after(om_protocol::Opcode::AdjustReferenceCount);
+    assert!(provider.adjust_container(tasks, reference, -1).is_err());
+    assert!(
+        provider.connection_lost().is_none(),
+        "the protocol error leaves a usable transport"
+    );
+    assert_eq!(count(&mut counts, PHOTO_MEMBER), Some(1));
+    provider
+        .begin_transaction(TransactionOptions::default())
+        .unwrap();
+    provider.revert_transaction().unwrap();
+    assert_eq!(
+        count(&mut counts, PHOTO_MEMBER),
+        Some(1),
+        "record 1 still holds member 1"
+    );
+    provider.close();
+}
+
 /// Data larger than one request goes up in parts (containers.md 3.3) and
 /// reads back whole.
 #[test]
