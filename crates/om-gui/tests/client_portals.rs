@@ -4599,6 +4599,18 @@ fn browse_repetitions_keep_their_cell_and_share_one_record_commit() {
     app.step();
     app.query_all(later()).next().unwrap().type_text("ab");
     app.run_steps(2);
+    // Leaving the box runs its OnObjectSave: the script's value shows at
+    // once, before the record is committed.
+    app.key_press(egui::Key::Tab);
+    let shown = |app: &common::App| {
+        app.query_all(later())
+            .next()
+            .and_then(|n| n.accesskit_node().value())
+    };
+    common::wait_until(&mut app, "the script's value", |app| {
+        app.state().is_settled() && shown(app).as_deref() == Some("AB")
+    });
+    assert_eq!(stored(&hosted, TABLE, &[(STATUS, 2)])[0].1, [""]);
     common::save_record(&mut app);
     wait_saved(&mut app);
     assert_eq!(
@@ -4611,6 +4623,33 @@ fn browse_repetitions_keep_their_cell_and_share_one_record_commit() {
             .and_then(|n| n.accesskit_node().value()),
         Some("AB".into())
     );
+    // Typing after it and leaving: the script sets "ABC", uncommitted.
+    // Entered again, the box opens with the script's value, not the stored
+    // one, and typing goes on from it.
+    app.query_all(later()).next().unwrap().focus();
+    app.step();
+    app.key_press(egui::Key::End);
+    app.query_all(later()).next().unwrap().type_text("c");
+    app.run_steps(2);
+    assert_eq!(shown(&app).as_deref(), Some("ABc"));
+    app.key_press(egui::Key::Tab);
+    common::wait_until(&mut app, "the script's ABC", |app| {
+        app.state().is_settled() && shown(app).as_deref() == Some("ABC")
+    });
+    app.key_press_modifiers(egui::Modifiers::SHIFT, egui::Key::Tab);
+    app.event(egui::Event::Text("d".into()));
+    app.run_steps(2);
+    assert_eq!(shown(&app).as_deref(), Some("ABCd"));
+    // Erased back to the stored value, the box still replaces the
+    // script's value.
+    app.key_press(egui::Key::Backspace);
+    app.key_press(egui::Key::Backspace);
+    app.run_steps(2);
+    assert_eq!(shown(&app).as_deref(), Some("AB"));
+    common::save_record(&mut app);
+    wait_saved(&mut app);
+    assert_eq!(stored(&hosted, TABLE, &[(STATUS, 2)])[0].1, ["AB"]);
+    assert_eq!(shown(&app).as_deref(), Some("AB"));
 
     // Its OnObjectSave setting a global of another table whose field has
     // Status's id: the typing in Status[2] stays and is saved.
