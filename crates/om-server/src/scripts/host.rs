@@ -3606,8 +3606,8 @@ impl FieldSteps for ServerHost {
         }
         let (table, def) = self.target(field)?;
         let cell = self
-            .plan(table)
-            .and_then(|plan| plan.relookup_target(&def.name))
+            .plan(table)?
+            .relookup_target(&def.name)
             .map_err(|e| rule_error(&e))?;
         self.leave()?;
         let (ids, original) = {

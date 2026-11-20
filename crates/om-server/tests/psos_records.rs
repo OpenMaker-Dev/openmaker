@@ -910,7 +910,8 @@ fn relookup_field_contents_copies_the_lookups_again() {
     let port = server::start(&file);
     let (mut client, _) = server::logged_in(port, "client");
     assert_eq!(run(&mut client, 8), (0, "w/0/Write tests".to_string()));
-    assert_eq!(run(&mut client, 9), (0, "3/w".to_string()));
+    // The script's last error is the reply's too.
+    assert_eq!(run(&mut client, 9), (3, "3/w".to_string()));
 }
 
 /// Open Transaction's "Skip auto-enter options" performs no lookup: a
