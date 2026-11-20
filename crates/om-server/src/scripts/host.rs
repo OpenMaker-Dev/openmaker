@@ -1580,13 +1580,18 @@ impl ServerHost {
             // An entered value reads as entered, unless the field's own rules
             // give it another (an auto-entered calculation that replaces it,
             // such as the UUID Duplicate Record copied): then as the commit
-            // will store it.
+            // will store it. The commit writes only a nonempty one over a new
+            // record (`changed_values` compares with its empty base), so an
+            // empty one leaves the entered value, and so reads.
             if record.changed.contains(&cell) {
                 let entered = record
                     .node
                     .child(&uint_segment(cell))
                     .and_then(values::cell_text);
-                if !plan.has_rules(cell) || entered.as_deref() == Some(text.as_str()) {
+                if !plan.has_rules(cell)
+                    || text.is_empty()
+                    || entered.as_deref() == Some(text.as_str())
+                {
                     continue;
                 }
             }

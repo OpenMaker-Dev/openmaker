@@ -890,6 +890,45 @@ fn set_match_fields_perform_lookups() {
     }
 }
 
+/// A new record's entered value that its replacing auto-entered calculation
+/// computes as empty reads as the commit stores it (#474): the commit writes
+/// only a nonempty computed value over a new record, so it keeps `manual`,
+/// and the script reads `manual` before the commit too.
+#[test]
+fn an_entered_value_a_replacing_calculation_empties_reads_as_stored() {
+    let mut root = tree();
+    // Auto-entered calculation (0x8) that replaces an existing value (0x80).
+    fixture::add_field(&mut root, TABLE, STAMP, "Stamp", 1, 1, 0, 0x88, 0);
+    fixture::add_formula(
+        &mut root,
+        &names(),
+        (TABLE, OCCURRENCE),
+        STAMP,
+        5,
+        "If ( Name = \"clear\" ; \"\" ; \"default\" )",
+    );
+    root.put(
+        &[&[17], &[5], &uint_segment(8)],
+        script(
+            8,
+            "Replaced",
+            vec![
+                ScriptStep::new(7),
+                fixture::set_field(NAME, "\"clear\""),
+                fixture::set_field(STAMP, "\"manual\""),
+                set_var("$before", "Tasks::Stamp"),
+                ScriptStep::new(75),
+                exit_with("$before & \"|\" & Get ( LastError ) & \"|\" & Tasks::Stamp"),
+            ],
+        )
+        .encode(),
+    );
+    let file = TempFile::from_tree("psos-replaced-empty", &root);
+    let port = server::start(&file);
+    let (mut client, _) = server::logged_in(port, "client");
+    assert_eq!(run(&mut client, 8), (0, "manual|0|manual".to_string()));
+}
+
 /// A new record's looked-up value read before its commit (#474) is not
 /// entered: a Set Field that clears it clears it, and the commit, which
 /// keeps a value a script set over a lookup, stores it empty.
