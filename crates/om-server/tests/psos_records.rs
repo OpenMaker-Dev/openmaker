@@ -858,12 +858,16 @@ fn set_match_fields_perform_lookups() {
 }
 
 /// Relookup Field Contents [Tasks::Name] copies each found task's lookup
-/// again, Name itself unchanged (#87): task 1's Note, typed over, comes
-/// back as its note "w". Through Count, which no lookup matches through,
-/// the step is 3 and changes nothing.
+/// again, Name itself unchanged (#87). Inside a transaction that skips
+/// auto-entry it copies and writes nothing. Task 1's Note, typed over, comes
+/// back as its note "w", and task 3, whose Name `東京` is stored in chunks,
+/// takes its note "jp". Run again with nothing new to copy, it writes no
+/// record: task 1's modification count stays. Through Count, which no
+/// lookup matches through, or through a later repetition of Name, the
+/// step is 3 and changes nothing.
 #[test]
 fn relookup_field_contents_copies_the_lookups_again() {
-    let relookup = |field: u64| {
+    let relookup = |field: u64, repetition: i16| {
         let mut step = ScriptStep::new(40);
         step.set_flag(flag::NO_INTERACT, true);
         step.set_field_spec(
@@ -871,33 +875,69 @@ fn relookup_field_contents_copies_the_lookups_again() {
             Some(FieldSpec::new(
                 StoredKey::from_id(OCCURRENCE).unwrap(),
                 StoredKey::from_id(field).unwrap(),
-                0,
+                repetition,
             )),
         );
         step
     };
     let mut tree = lookup_tree();
-    // In place of scripts 8 and 9, so the catalog's index lists them.
+    let (tasks, notes) = (uint_segment(TABLE), uint_segment(NOTES));
+    tree.put(
+        &[&tasks, &[5], &serial::encode(3), &uint_segment(NAME)],
+        text_node(&[], "東京"),
+    );
+    for (field, text) in [(BODY, "jp"), (TASK, "東京")] {
+        tree.put(
+            &[&notes, &[5], &serial::encode(5), &uint_segment(field)],
+            text_node(&[], text),
+        );
+    }
+    let ids: RidList = (1..=5).collect();
+    tree.put(&[&notes, &[0x0d]], ids.to_node(Vec::new()));
+    tree.put(&[&notes, &[0]], OwnedNode::leaf(Vec::new(), vec![1, 5]));
+    // In place of scripts 6 to 9, so the catalog's index lists them.
     for (id, name, steps) in [
         (
-            8u64,
+            6u64,
+            "Relookup skipped",
+            vec![
+                fixture::go_to_record(1),
+                {
+                    let mut open = ScriptStep::new(205);
+                    open.set_flag(om_scripts::flag::SELECT_ALL, true);
+                    open
+                },
+                relookup(fixture::NAME, 0),
+                ScriptStep::new(206),
+                exit_with("Tasks::Note & \"/\" & Get ( LastError )"),
+            ],
+        ),
+        (
+            8,
             "Relookup through Name",
             vec![
                 fixture::go_to_record(1),
                 set_field(NOTE, 1, "\"typed\""),
                 ScriptStep::new(75),
-                relookup(fixture::NAME),
+                relookup(fixture::NAME, 0),
                 exit_with("Tasks::Note & \"/\" & Get ( LastError ) & \"/\" & Tasks::Name"),
             ],
         ),
         (
+            7,
+            "Relookup again",
+            vec![fixture::go_to_record(1), relookup(fixture::NAME, 0)],
+        ),
+        (
             9,
-            "Relookup through Count",
+            "Relookup refused",
             vec![
                 fixture::on(86, true),
                 fixture::go_to_record(1),
-                relookup(fixture::COUNT),
-                exit_with("Get ( LastError ) & \"/\" & Tasks::Note"),
+                relookup(fixture::COUNT, 0),
+                set_var("$count", "Get ( LastError )"),
+                relookup(fixture::NAME, 2),
+                exit_with("$count & \"/\" & Get ( LastError ) & \"/\" & Tasks::Note"),
             ],
         ),
     ] {
@@ -909,9 +949,25 @@ fn relookup_field_contents_copies_the_lookups_again() {
     let file = TempFile::from_tree("psos-relookup-step", &tree);
     let port = server::start(&file);
     let (mut client, _) = server::logged_in(port, "client");
+    let count = |client: &mut Session| {
+        let records = server::records_of(client, TABLE);
+        server::cell(&records, 1, 0xfc).map(str::to_owned)
+    };
+    // A transaction that skips auto-entry copies nothing and writes
+    // nothing.
+    let before = count(&mut client);
+    assert_eq!(run(&mut client, 6), (0, "/0".to_string()));
+    assert_eq!(count(&mut client), before);
     assert_eq!(run(&mut client, 8), (0, "w/0/Write tests".to_string()));
+    let records = server::records_of(&mut client, TABLE);
+    assert_eq!(server::cell(&records, 3, NOTE), Some("jp"));
+    assert_eq!(server::cell(&records, 3, NAME), Some("東京"));
+    // Nothing new to copy: the record is not written again.
+    let before = count(&mut client);
+    assert_eq!(run(&mut client, 7).0, 0);
+    assert_eq!(count(&mut client), before);
     // The script's last error is the reply's too.
-    assert_eq!(run(&mut client, 9), (3, "3/w".to_string()));
+    assert_eq!(run(&mut client, 9), (3, "3/3/w".to_string()));
 }
 
 /// Open Transaction's "Skip auto-enter options" performs no lookup: a

@@ -1278,6 +1278,46 @@ impl ServerHost {
     /// Records) with its table's rules; inside a transaction it joins the
     /// transaction, whose commit applies them. A record the rules refuse
     /// stays open and the step fails with their error.
+    /// [`Self::commit_open`] for a record whose only change is Relookup's
+    /// trigger: its match field marked set, its value unchanged. The rules
+    /// run on a copy first; when they leave every cell as stored (no lookup
+    /// copied anything new), or a transaction skips auto-entry (no lookup
+    /// runs), nothing is written or staged and the record is let go of, so
+    /// its modification count stays. Otherwise it is written, or staged in
+    /// the transaction, as `commit_open` does.
+    fn commit_open_relooked(&mut self, entry: Entry) -> HostResult {
+        let Some(record) = self.record.take() else {
+            return Ok(());
+        };
+        let skipped = self
+            .transaction
+            .as_ref()
+            .is_some_and(|t| t.options.skip_auto_enter);
+        let mut ready = record.clone();
+        let unchanged = skipped
+            || match self.apply_rules(&mut ready, entry) {
+                Ok(_) => ready.node == record.node,
+                Err(error) => {
+                    self.record = Some(record);
+                    return Err(error);
+                }
+            };
+        if unchanged {
+            self.unlock_record(record.table, record.id);
+            return Ok(());
+        }
+        let key = (record.table, record.id);
+        if let Some(transaction) = self.transaction.as_mut() {
+            transaction.insert(key, Change::Write(record));
+            return Ok(());
+        }
+        let committed = self.write(vec![(key, Change::Write(ready))]);
+        if committed.is_err() {
+            self.record = Some(record);
+        }
+        committed
+    }
+
     fn commit_open(&mut self, entry: Entry) -> HostResult {
         let Some(record) = self.record.take() else {
             return Ok(());
@@ -3600,8 +3640,9 @@ impl FieldSteps for ServerHost {
         if window.mode == Mode::Find {
             return Err(ErrorCode::UNAVAILABLE.into());
         }
-        if window.occurrence != field.occurrence {
-            // A related record's field: relationships are not followed.
+        if window.occurrence != field.occurrence || field.repetition > 1 {
+            // A related record's field (relationships are not followed), or
+            // a later repetition, which the target check does not name.
             return Err(HostError::Unsupported);
         }
         let (table, def) = self.target(field)?;
@@ -3619,9 +3660,13 @@ impl FieldSteps for ServerHost {
             if self.pending(table, id).is_some() {
                 return Err(ErrorCode::UNAVAILABLE.into());
             }
-            let styled = self
-                .committed_node(table, id)
-                .is_some_and(|node| node.child(&key).is_some_and(|c| !c.children.is_empty()));
+            // A value with character styles reads as nested; a plain one
+            // stored in chunks assembles into a value and is relooked up.
+            let styled = self.committed_node(table, id).is_some_and(|node| {
+                node.child(&key).is_some_and(|c| {
+                    matches!(om_hbam::Cell::from_owned(c), om_hbam::Cell::Nested(_))
+                })
+            });
             if styled {
                 return Err(ErrorCode::UNAVAILABLE.into());
             }
@@ -3644,7 +3689,7 @@ impl FieldSteps for ServerHost {
                     break;
                 }
             }
-            if let Err(error) = self.commit_open(Entry::script(false, false)) {
+            if let Err(error) = self.commit_open_relooked(Entry::script(false, false)) {
                 // The refused record goes back to what it was: no write of
                 // it stays pending for a later commit.
                 self.drop_open();
