@@ -186,8 +186,10 @@ Record (Records menu, toolbar and script steps) create the record with the
 same owning engine: the owner issues the record id, enters its auto-entry
 values and stores the ordinary scalar values; the new record joins the
 caller window's found set and becomes current, as a local creation does.
-Duplicate Record of a record holding a container reference is refused before
-any effect. A script's transaction includes these layouts and commits all or
+Duplicate Record copies a container reference too: the copy's reference is
+counted in the owning file's library, as a local duplicate counts it in its
+own. Its auto-entered values are copied as the window's duplicate copies them
+([#473](https://github.com/OpenMaker-Dev/openmaker/issues/473)). A script's transaction includes these layouts and commits all or
 none: Commit Transaction prepares every file before any record data goes, and
 a refusal in any file reverts every file's part; only a connection lost, or a
 host refusing a later file, after an earlier file's commit leaves that earlier

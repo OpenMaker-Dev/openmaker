@@ -1193,37 +1193,34 @@ fn imported_layout_new_and_duplicate_menus_and_scripts_create_on_the_peer() {
         });
         assert!(app.state().error().is_none(), "{:?}", app.state().error());
     };
-    let effects = || {
-        [
-            om_protocol::Opcode::HostCreateRecord,
-            om_protocol::Opcode::HostCommit,
-            om_protocol::Opcode::AdjustReferenceCount,
-        ]
-        .map(|op| host.captures.with_opcode(op).len())
-    };
-    // A container's library reference is not copied as a root string,
-    // before any owner effect.
-    run(&mut app, "Duplicate peer", "3|Root|Notes|1|1|2");
-    assert_eq!(effects(), [0, 0, 0]);
+    // A record holding a container is duplicated on the owner: the copy's
+    // reference is counted in the owning file's library, not the root's
+    // (#43).
+    run(&mut app, "Duplicate peer", "0|Root|Notes|3|3|3");
+    let adjusted = host
+        .captures
+        .with_opcode(om_protocol::Opcode::AdjustReferenceCount);
+    assert_eq!(adjusted.len(), 1, "{adjusted:?}");
+    assert!(adjusted.iter().all(|(file, _)| file == "Related.fmp12"));
 
-    // New Record: the peer's id after its two records (Root's next id too),
-    // its auto-entry and file name, shown as the window's last record.
+    // New Record: the peer's id after its three records, its auto-entry
+    // and file name, shown as the window's last record.
     common::click(&mut app, "New Record");
     common::wait_until(&mut app, "new peer record", |a| {
-        a.state().is_settled() && common::record_number(a) == "3"
+        a.state().is_settled() && common::record_number(a) == "4"
     });
     common::wait_until(&mut app, "owning auto-entry", |a| {
         cells(a, "Entered").iter().any(|v| v == "|Related")
     });
-    run(&mut app, "New peer", "0|Root|Notes|4|4|4");
+    run(&mut app, "New peer", "0|Root|Notes|5|5|5");
     // Duplicate Record copies the current record's scalar values; the
     // owner recomputes its auto-entry.
     common::open_menu(&mut app, "Records");
     common::click(&mut app, "Duplicate Record");
     common::wait_until(&mut app, "duplicated peer record", |a| {
-        a.state().is_settled() && common::record_number(a) == "5"
+        a.state().is_settled() && common::record_number(a) == "6"
     });
-    run(&mut app, "Duplicate peer", "0|Root|Notes|6|6|6");
+    run(&mut app, "Duplicate peer", "0|Root|Notes|7|7|7");
     assert!(app.state().error().is_none(), "{:?}", app.state().error());
 
     // Root's own layout still creates with its own rules and ids, held
@@ -1268,12 +1265,25 @@ fn imported_layout_new_and_duplicate_menus_and_scripts_create_on_the_peer() {
         [
             text(1, "PEER ROW", ""),
             text(2, "Ship", ""),
-            text(3, "", "|Related"),
-            text(4, "Scripted", "Scripted|Related"),
+            // Its auto-entered Entered copied, not entered again (#473).
+            text(3, "PEER ROW", ""),
+            text(4, "", "|Related"),
             text(5, "Scripted", "Scripted|Related"),
             text(6, "Scripted", "Scripted|Related"),
+            text(7, "Scripted", "Scripted|Related"),
         ]
     );
+    // The copy of record 1 holds its container, the same library member.
+    let photos = {
+        let page = host.open("Related.fmp12").records(1, 0, 10).unwrap();
+        let photo = page.fields.iter().position(|f| f.name == "Photo").unwrap();
+        page.records
+            .iter()
+            .map(|r| (r.id, r.values[photo].clone().unwrap_or_default()))
+            .collect::<Vec<_>>()
+    };
+    assert!(!photos[0].1.is_empty(), "{photos:?}");
+    assert_eq!((photos[2].0, &photos[2].1), (3, &photos[0].1), "{photos:?}");
     assert_eq!(
         stored("Root.fmp12"),
         [
@@ -1289,7 +1299,7 @@ fn imported_layout_new_and_duplicate_menus_and_scripts_create_on_the_peer() {
         .map(|(file, _)| file)
         .collect();
     // On the one connection Root and its related file share (#740), in the
-    // order they were sent: the peer's four, then Root's New Record.
+    // order they were sent: the peer's five, then Root's New Record.
     assert_eq!(
         created,
         [
@@ -1297,13 +1307,17 @@ fn imported_layout_new_and_duplicate_menus_and_scripts_create_on_the_peer() {
             "Related.fmp12",
             "Related.fmp12",
             "Related.fmp12",
+            "Related.fmp12",
             "Root.fmp12"
         ]
     );
-    assert!(host
-        .captures
-        .with_opcode(om_protocol::Opcode::AdjustReferenceCount)
-        .is_empty());
+    // Only the duplicate's copy of the container counted (above).
+    assert_eq!(
+        host.captures
+            .with_opcode(om_protocol::Opcode::AdjustReferenceCount)
+            .len(),
+        1
+    );
 
     // Back on the peer's layout, the menu's New Record is held by the
     // related file in the window's record session (#892): nothing is stored
@@ -1319,13 +1333,13 @@ fn imported_layout_new_and_duplicate_menus_and_scripts_create_on_the_peer() {
         .len();
     common::click(&mut app, "New Record");
     common::wait_until(&mut app, "held peer record", |a| {
-        a.state().is_settled() && common::record_number(a) == "7"
+        a.state().is_settled() && common::record_number(a) == "8"
     });
     assert!(app.state().error().is_none(), "{:?}", app.state().error());
     assert_eq!(stored("Related.fmp12"), peer);
     common::revert_record(&mut app);
     common::wait_until(&mut app, "the held record released", |a| {
-        a.state().is_settled() && common::record_number(a) == "6"
+        a.state().is_settled() && common::record_number(a) == "7"
     });
     assert!(app.state().error().is_none(), "{:?}", app.state().error());
     assert_eq!(stored("Related.fmp12"), peer);
@@ -1352,7 +1366,7 @@ fn imported_layout_new_and_duplicate_menus_and_scripts_create_on_the_peer() {
     // No error; the found set as before. (Get ( RecordID ) after a reverted
     // new record is #1292's.)
     assert!(
-        shown.starts_with("0|Root|Notes|") && shown.ends_with("|6|6"),
+        shown.starts_with("0|Root|Notes|") && shown.ends_with("|7|7"),
         "{shown}"
     );
     common::click(&mut app, "OK");

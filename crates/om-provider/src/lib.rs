@@ -3312,6 +3312,13 @@ impl DataProvider for NativeProvider {
             self.refuse_while_unsettled()?;
         }
         self.require_writable()?;
+        // A layout of another file's table: the reference is to the owning
+        // file's library, which counts it (Duplicate Record, #43).
+        let layout = self.decoded_layout(layout_id)?;
+        let table = self.read_table_for_layout(&layout)?.id;
+        if self.external.route(table).is_some() {
+            return om_data::DataProvider::adjust_related_container(self, table, reference, delta);
+        }
         self.adjust_container_reference(layout_id, reference, delta)
     }
 
