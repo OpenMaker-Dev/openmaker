@@ -6063,6 +6063,7 @@ impl eframe::App for OpenMakerApp {
     fn ui(&mut self, ui: &mut Ui, frame: &mut eframe::Frame) {
         self.native_parent = crate::web_viewer::NativeParent::of(frame);
         self.show(ui);
+        self.web.flush(frame);
     }
 }
 
