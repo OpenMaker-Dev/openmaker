@@ -275,6 +275,12 @@ forgets the list (stopping a listing under way), and a reply to a listing no
 longer waited for is dropped unseen. The wording is OpenMaker's; FileMaker
 Pro's is not captured.
 
+Opening a file the host refuses because it blocks new users (Open status
+1638) shows FileMaker Pro's alert, "The host is not allowing new
+connections. Try again later.", with OK, its error 1638
+(network-protocol.md 5.6.4; `om_provider::HOST_BLOCKS_NEW_USERS`). Other
+refused opens keep OpenMaker's wording.
+
 ### Client license
 
 **FileMaker License...** is available in Hosts and the OpenMaker menu. It is
