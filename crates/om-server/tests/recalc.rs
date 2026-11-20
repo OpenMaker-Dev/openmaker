@@ -738,3 +738,122 @@ fn stored_calculations_over_a_container_read_its_data() {
     assert_eq!(member_count(&mut designer), count_before);
     assert!(cell(&after, 1, fixture::PHOTO).is_some(), "Photo is kept");
 }
+
+/// A repeating stored calculation is computed in each of its repetitions
+/// (calc-values.md 8.6): Name repeats three times; Shout, of three
+/// repetitions, reads Name's repetition n in repetition n and leaves a
+/// repetition whose Name is empty empty ("do not evaluate if all
+/// referenced fields are empty"); Counts, of two, reads Count, which does
+/// not repeat, plainly (empty in repetition 2) and through `Extend` (its
+/// value in each). A formula change rewrites every repetition and drops one
+/// that became empty. Before, the recompute skipped repeating
+/// calculations and left their values as they were (#82).
+#[test]
+fn repeating_stored_calculations_are_computed_in_each_repetition() {
+    const SHOUT: u64 = 40;
+    const COUNTS: u64 = 41;
+    let mut root = fixture::tree(&[], true);
+    fixture::set_field_repetitions(&mut root, TABLE, NAME, 3);
+    let t = uint_segment(TABLE);
+    let repetition = |field: u64, n: u64| field * 256 + n;
+    root.put(
+        &[
+            &t,
+            &[5],
+            &om_hbam::serial::encode(1),
+            &uint_segment(repetition(NAME, 2)),
+        ],
+        om_scripts::text_node(&[], "docs"),
+    );
+    let file = TempFile::from_tree("recalc-repetitions", &root);
+    let port = server::start(&file);
+    let (mut designer, id) = server::logged_in(port, "designer");
+
+    let names = fixture::names();
+    let mut designed = root.clone();
+    for (field, name, repetitions, text) in [
+        (
+            SHOUT,
+            "Shout",
+            3,
+            "Upper ( Name ) & Get ( CalculationRepetitionNumber )",
+        ),
+        (COUNTS, "Counts", 2, "Count & \"/\" & Extend ( Count )"),
+    ] {
+        fixture::add_field(&mut designed, TABLE, field, name, 2, 1, 0, 0, 0);
+        fixture::add_formula(&mut designed, &names, (TABLE, OCCURRENCE), field, 5, text);
+        fixture::set_field_repetitions(&mut designed, TABLE, field, repetitions);
+    }
+    let mut catalog = field_catalog(&designed);
+    save_field_catalog(&mut designer, id, &catalog);
+
+    let after = records_of(&mut designer, TABLE);
+    assert_eq!(cell(&after, 1, SHOUT), Some("WRITE TESTS1"));
+    assert_eq!(cell(&after, 1, repetition(SHOUT, 2)), Some("DOCS2"));
+    assert_eq!(cell(&after, 1, repetition(SHOUT, 3)), None);
+    assert_eq!(cell(&after, 2, SHOUT), Some("SHIP1"));
+    assert_eq!(cell(&after, 2, repetition(SHOUT, 2)), None);
+    assert_eq!(cell(&after, 1, COUNTS), Some("3/3"));
+    assert_eq!(cell(&after, 1, repetition(COUNTS, 2)), Some("/3"));
+    assert_eq!(cell(&after, 2, COUNTS), Some("5/5"));
+    assert_eq!(cell(&after, 2, repetition(COUNTS, 2)), Some("/5"));
+
+    // Shout answers in repetition 1 only now: its second repetition
+    // empties; `Name[1]` reads the first repetition in each.
+    set_formula(
+        &mut catalog,
+        SHOUT,
+        "If ( Get ( CalculationRepetitionNumber ) = 1 ; Lower ( Name ) ; Name[1] & \"?\" )",
+    );
+    defer(&mut catalog, SHOUT, FORMULA_CHANGED);
+    save_field_catalog(&mut designer, id, &catalog);
+    let after = records_of(&mut designer, TABLE);
+    assert_eq!(cell(&after, 1, SHOUT), Some("write tests"));
+    assert_eq!(cell(&after, 1, repetition(SHOUT, 2)), Some("Write tests?"));
+    assert_eq!(cell(&after, 1, repetition(SHOUT, 3)), Some("Write tests?"));
+    assert_eq!(cell(&after, 2, repetition(SHOUT, 2)), Some("Ship?"));
+    assert_eq!(cell(&after, 1, COUNTS), Some("3/3"), "Counts is not stale");
+
+    // Then only the plain reading is left: a repetition whose Name is
+    // empty is not evaluated, and one that held a value is emptied.
+    set_formula(
+        &mut catalog,
+        SHOUT,
+        "If ( Get ( CalculationRepetitionNumber ) = 1 ; Lower ( Name ) )",
+    );
+    defer(&mut catalog, SHOUT, FORMULA_CHANGED);
+    save_field_catalog(&mut designer, id, &catalog);
+    let after = records_of(&mut designer, TABLE);
+    assert_eq!(cell(&after, 1, SHOUT), Some("write tests"));
+    assert_eq!(cell(&after, 1, repetition(SHOUT, 2)), None);
+    assert_eq!(cell(&after, 1, repetition(SHOUT, 3)), None);
+    assert_eq!(cell(&after, 2, repetition(SHOUT, 2)), None);
+}
+
+/// The recompute evaluates a stored calculation as the file's own, with no
+/// session: Design functions answer empty but `DatabaseNames`, as
+/// FileMaker Server's engine answers them there (calc-functions.md,
+/// "Design functions on FileMaker Server", battery `fn-design`). Before,
+/// they answered from the file's schema (#82).
+#[test]
+fn design_functions_answer_as_the_file_context_does() {
+    const TABLES: u64 = 42;
+    const FILES: u64 = 43;
+    let root = fixture::tree(&[], true);
+    let file = TempFile::from_tree("recalc-design", &root);
+    let port = server::start(&file);
+    let (mut designer, id) = server::logged_in(port, "designer");
+    let names = fixture::names();
+    let mut designed = root.clone();
+    for (field, name, text) in [
+        (TABLES, "Tables", "TableNames ( \"\" ) & \"|\""),
+        (FILES, "Files", "DatabaseNames"),
+    ] {
+        fixture::add_field(&mut designed, TABLE, field, name, 2, 1, 0, 0, 0);
+        fixture::add_formula(&mut designed, &names, (TABLE, OCCURRENCE), field, 5, text);
+    }
+    save_field_catalog(&mut designer, id, &field_catalog(&designed));
+    let after = records_of(&mut designer, TABLE);
+    assert_eq!(cell(&after, 1, TABLES), Some("|"));
+    assert_eq!(cell(&after, 1, FILES), Some("Tasks"));
+}

@@ -4,9 +4,10 @@
 use std::collections::{BTreeMap, BTreeSet};
 use std::ops::{Bound, Range, RangeBounds};
 
-use om_hbam::{serial, DataType, OwnedNode, RidList};
+use om_hbam::{serial, slot::be_uint, DataType, OwnedNode, RidList};
 
 use crate::index::{Index, Indexes, VALUE_INDEX, WORD_INDEX};
+use crate::keys::TextKeys;
 use crate::program::{
     decode_path, leaf, opcode, take_key_string, Budget, Instruction, Program, Size, Work,
 };
@@ -162,6 +163,7 @@ fn run(
         opcode::SIMPLE_FIND => simple_find(program, indexes, instruction),
         opcode::PROJECTION => projection(program, indexes, instruction),
         opcode::JOIN_PROJECTION => join_projection(program, indexes, instruction),
+        opcode::LOOKUP => lookup_value(program, indexes, instruction),
         opcode::SORT_LIST => crate::sort::sort_list(program, indexes, instruction),
         opcode::CREATE_VALUE_LIST_EX => create_value_list(program, indexes, instruction),
         opcode::EXISTS_IN_INDEX => exists_in_index(program, indexes, instruction),
@@ -747,21 +749,23 @@ fn data_type_code(data_type: DataType) -> Option<u8> {
 mod language {
     /// No key at all.
     pub const NONE: u8 = 0;
-    /// The English form plus `00 00`: System, Unicode standard.
+    /// The padded form: System, Unicode standard.
     pub const SYSTEM: u8 = 1;
     pub const UNICODE: u8 = 3;
+    /// The UTF-16 code units: Unicode raw.
+    pub const UNICODE_RAW: u8 = 2;
     /// The English form: English, English international.
     pub const ENGLISH: u8 = 21;
     pub const ENGLISH_INTERNATIONAL: u8 = 77;
 }
 
 /// The keys `field` gives each record of `records`, as Projection requests
-/// them (`[u8 data type][u8 index language]`, spec 9.1). An indexed field is
-/// answered from its value index; an unindexed text field from its stored
-/// values, each line keyed as the value index would key it. Conversion to
-/// another type, a language whose form the index does not hold, and
-/// unindexed fields of other types are not supported yet. Empty values give
-/// no key.
+/// them (`[u8 data type][u8 index language]`, spec 9.1). A field indexed in
+/// the requested form is answered from its value index; a text field indexed
+/// in another form or not at all from its stored values, every repetition's
+/// lines keyed in the requested form (English, System, Unicode standard,
+/// Unicode raw). Conversion to another type, other languages, and unindexed
+/// fields of other types are not supported yet. Empty values give no key.
 fn projected_keys(
     indexes: &mut Indexes<'_>,
     work: &Work,
@@ -782,10 +786,11 @@ fn projected_keys(
     if *requested_type == 0 || text && *requested_language == language::NONE {
         return Ok(Vec::new());
     }
-    let suffix: &[u8] = match *requested_language {
-        _ if !text => &[],
-        language::ENGLISH | language::ENGLISH_INTERNATIONAL => &[],
-        language::SYSTEM | language::UNICODE => &[0x00, 0x00],
+    let form = match *requested_language {
+        _ if !text => TextKeys::Collated,
+        language::ENGLISH | language::ENGLISH_INTERNATIONAL => TextKeys::Collated,
+        language::SYSTEM | language::UNICODE => TextKeys::CollatedPadded,
+        language::UNICODE_RAW => TextKeys::Raw,
         _ => {
             return Err(QueryError::Unimplemented(
                 "projection in this index language",
@@ -793,35 +798,55 @@ fn projected_keys(
         }
     };
     let same_type = data_type_code(definition.data_type) == Some(*requested_type);
+    let options = definition.decoded_options();
+    // The form the field's value index keys text in: by its definition's
+    // index language, not by the keys (a padded key with accents ends in
+    // its secondary bytes, not `00 00`). Language 0, the file's own, is not
+    // known here; such an index is not read for text.
+    let index_form = options
+        .as_ref()
+        .and_then(|o| TextKeys::of_language(o.index_language()))
+        .filter(|form| *form != TextKeys::None);
+    // An index in another form is not even loaded: reading it all would
+    // cost what keying a few stored values does not.
+    let from_index = (!text || index_form == Some(form))
+        && indexes.is_indexed(work, table, field, VALUE_INDEX)?;
 
-    if !indexes.is_indexed(work, table, field, VALUE_INDEX)? {
+    if !from_index {
+        // Every stored repetition's lines, each keyed once per record.
+        let repetitions = options
+            .as_ref()
+            .map_or(1, |o| o.max_repetitions.clamp(1, 255));
+        let cells: Vec<Vec<u8>> = std::iter::once(field.to_vec())
+            .chain(be_uint(field).into_iter().flat_map(|id| {
+                (2..=u64::from(repetitions))
+                    .filter_map(move |n| id.checked_mul(256)?.checked_add(n))
+                    .map(om_hbam::slot::uint_segment)
+            }))
+            .collect();
         let mut out = Vec::new();
         for id in records.iter() {
-            let value = indexes
-                .stored_text(work, table, field, id)?
-                .unwrap_or_default();
-            let mut lines: Vec<&str> = value
-                .split(['\r', '\n'])
-                .filter(|line| !line.is_empty())
-                .collect();
-            if lines.is_empty() {
-                continue;
+            let mut keys = BTreeSet::new();
+            for cell in &cells {
+                // Each look counts, a repetition the record lacks included.
+                work.spend(Size { nodes: 1, bytes: 0 })?;
+                let value = indexes
+                    .stored_text(work, table, cell, id)?
+                    .unwrap_or_default();
+                let lines = value.split(['\r', '\n']).filter(|line| !line.is_empty());
+                for line in lines {
+                    if !same_type {
+                        return Err(QueryError::Unimplemented("projection to another data type"));
+                    }
+                    if definition.data_type != DataType::Text {
+                        return Err(QueryError::Unimplemented(
+                            "projection of an unindexed non-text field",
+                        ));
+                    }
+                    keys.extend(form.key(line));
+                }
             }
-            if !same_type {
-                return Err(QueryError::Unimplemented("projection to another data type"));
-            }
-            if definition.data_type != DataType::Text {
-                return Err(QueryError::Unimplemented(
-                    "projection of an unindexed non-text field",
-                ));
-            }
-            lines.sort_unstable();
-            lines.dedup();
-            out.extend(
-                lines
-                    .into_iter()
-                    .map(|line| (id, projected_key(&om_collate::text_key(line), suffix))),
-            );
+            out.extend(keys.into_iter().map(|key| (id, key)));
         }
         return Ok(out);
     }
@@ -838,32 +863,13 @@ fn projected_keys(
     if !same_type {
         return Err(QueryError::Unimplemented("projection to another data type"));
     }
-    // The index must hold the English form (no weight is `0000`).
-    if text
-        && keys
-            .iter()
-            .any(|&at| index.key(at).ends_with(&[0x00, 0x00]))
-    {
-        return Err(QueryError::Unimplemented(
-            "projection from this index language",
-        ));
-    }
     let mut out = Vec::new();
     for at in keys {
-        let key = projected_key(index.key(at), suffix);
+        let key = index.key(at).to_vec();
         let holders = index.records(at, work)?;
         out.extend(holders.and(records).iter().map(|id| (id, key.clone())));
     }
     Ok(out)
-}
-
-/// A projected key: an English-form key with the requested language's
-/// suffix, cut as an index cuts keys (query-program.md 7.1), so that it
-/// meets the keys of the index a join reads.
-fn projected_key(key: &[u8], suffix: &[u8]) -> Vec<u8> {
-    let mut key = [key, suffix].concat();
-    om_collate::cut_index_key(&mut key);
-    key
 }
 
 /// Projection (op 11, spec 9.1): each record of the `KSrc` RID list keyed by
@@ -1094,7 +1100,12 @@ impl Predicate {
         if index.is_empty() {
             return Ok(Vec::new());
         }
-        let all = 0..index.len();
+        // An empty value relates to nothing, an inequality and `≠` included
+        // (file-metadata.md 4): the empty value's entry `01`, the lowest key
+        // an index can hold, is left out of every range.
+        let first = usize::from(index.key(0) == EMPTY_TEXT_KEY);
+        let all = first..index.len();
+        let above_empty = Bound::Excluded(EMPTY_TEXT_KEY);
         let unbounded = Bound::Unbounded;
         Ok(match self.kind {
             pred::EQ => {
@@ -1109,16 +1120,127 @@ impl Predicate {
             // Every key differs from one of two different source keys.
             pred::NE if least != greatest => vec![all],
             pred::NE => match index.find(least, work)? {
-                Some(at) => vec![0..at, at + 1..index.len()],
+                Some(at) => vec![first..at, at + 1..index.len()],
                 None => vec![all],
             },
-            pred::LT => vec![index.range((unbounded, Bound::Excluded(greatest)), work)?],
-            pred::LE => vec![index.range((unbounded, Bound::Included(greatest)), work)?],
+            pred::LT => vec![index.range((above_empty, Bound::Excluded(greatest)), work)?],
+            pred::LE => vec![index.range((above_empty, Bound::Included(greatest)), work)?],
             pred::GT => vec![index.range((Bound::Excluded(least), unbounded), work)?],
             pred::GE => vec![index.range((Bound::Included(least), unbounded), work)?],
             other => return Err(QueryError::Unsupported("join predicate", other)),
         })
     }
+}
+
+/// LookupValue (op 17, spec 8.6): the record a lookup copies from when no
+/// related record matches exactly, its "next lower" or "next higher" value.
+/// The predicates are taken in order, each as JoinProjection takes it, the
+/// records of each ANDed with those of the earlier ones. While some records
+/// satisfy every predicate so far, the next one is taken; if records satisfy
+/// them all, an exact match names no record (`[dest, 00] = 01 00`). At the
+/// first predicate that leaves none, the source row's key for that
+/// predicate (its last) is looked for in the value index of its target
+/// field: from the largest key below it (lower) or the smallest above it
+/// (higher), the first entry holding a record that satisfied every earlier
+/// predicate gives its lowest record. None, or a row without a key there,
+/// is error 401.
+fn lookup_value(
+    program: &mut Program,
+    indexes: &mut Indexes<'_>,
+    instruction: &Instruction,
+) -> Result<(), QueryError> {
+    let table = instruction.table()?;
+    let src = instruction.required_spot(leaf::SRC)?;
+    let dest = instruction.required_spot(leaf::DEST)?;
+    let preds = instruction.required_spot(leaf::DEL_LIST)?;
+    let higher = instruction.leaf(leaf::LOOKUP_HIGHER) == Some(&[0x01, 0x01][..]);
+    // The inputs are read before the destination is cleared: a program may
+    // name one spot for both.
+    let predicates: Vec<Vec<u8>> = program
+        .spot(&preds)?
+        .map(|spot| {
+            spot.children
+                .iter()
+                .map(|p| p.value.clone().unwrap_or_default())
+                .collect()
+        })
+        .unwrap_or_default();
+    // FileMaker Pro sends the current record's one row.
+    let row = program
+        .spot(&src)?
+        .and_then(|spot| spot.children.first().cloned())
+        .unwrap_or_default();
+    program.set_spot(&dest, Vec::new())?;
+    if !indexes.table_exists(&table)? {
+        return Err(QueryError::Missing("table"));
+    }
+    let work = program.work();
+    let mut so_far: Option<RidList> = None;
+    // Each predicate is read when it is reached: once the walk begins the
+    // later ones are not consulted (8.6).
+    for bytes in &predicates {
+        let predicate = &Predicate::parse(bytes)?;
+        let keys = source_keys(&row, &predicate.b);
+        // The row's keys are read again for each predicate.
+        work.spend(Size {
+            nodes: keys.len(),
+            bytes: keys.iter().map(|k| k.len()).sum(),
+        })?;
+        let matches = if predicate.kind == pred::CARTESIAN {
+            let all = indexes.all_records(&table)?;
+            read_list(work, all)?;
+            all.clone()
+        } else {
+            let index = indexes.index(work, &table, &predicate.a, VALUE_INDEX)?;
+            let ranges = predicate.related(index, &keys, work)?;
+            records_at(index, ranges, work)?
+        };
+        let both = match &so_far {
+            Some(earlier) => earlier.and(&matches),
+            None => matches,
+        };
+        if !both.is_empty() {
+            so_far = Some(both);
+            continue;
+        }
+        let Some(&key) = keys.last() else {
+            return Err(QueryError::NoRecords);
+        };
+        if predicate.kind == pred::CARTESIAN {
+            return Err(QueryError::NoRecords);
+        }
+        let index = indexes.index(work, &table, &predicate.a, VALUE_INDEX)?;
+        let positions: Box<dyn Iterator<Item = usize>> = if higher {
+            let above = index.range((Bound::Excluded(key), Bound::Unbounded), work)?;
+            Box::new(above)
+        } else {
+            let below = index.range((Bound::Unbounded, Bound::Excluded(key)), work)?;
+            Box::new(below.rev())
+        };
+        for at in positions {
+            let records = index.records(at, work)?;
+            let candidates = match &so_far {
+                Some(earlier) => records.and(earlier),
+                None => records,
+            };
+            let lowest = candidates.iter().next();
+            if let Some(id) = lowest {
+                return program.set_spot(&dest, vec![lookup_reply(id)]);
+            }
+        }
+        return Err(QueryError::NoRecords);
+    }
+    // Every predicate is satisfied: an exact match, which names no record.
+    program.set_spot(&dest, vec![lookup_reply(0)])
+}
+
+/// LookupValue's reply leaf `00`: the record id as a one-segment key,
+/// `[u8 len][serial key]` (`01 02` for record 2).
+fn lookup_reply(id: u64) -> OwnedNode {
+    let serial = serial::encode(id);
+    let mut value = vec![serial.len() as u8];
+    value.extend(serial);
+    OwnedNode::leaf(vec![0x00], value)
 }
 
 /// The keys a source row gives for its field `field`.
@@ -1528,6 +1650,8 @@ mod tests {
     /// field 3 has none.
     struct Indexed {
         root: OwnedNode,
+        /// Field 1's definition bytes (none by default).
+        definition: Vec<u8>,
     }
 
     impl Indexed {
@@ -1544,7 +1668,21 @@ mod tests {
                 &[table, &[1], &[2], &[0]],
                 OwnedNode::list(Vec::new(), Vec::new()),
             );
-            Self { root }
+            Self {
+                root,
+                definition: Vec::new(),
+            }
+        }
+
+        /// Field 1 defined with `repetitions` and its index in `language`.
+        fn defined(mut self, language: u32, repetitions: u16) -> Self {
+            let mut definition = vec![0; 26];
+            definition[0] = 1;
+            definition[1] = 1;
+            definition[4..8].copy_from_slice(&language.to_be_bytes());
+            definition[24..26].copy_from_slice(&repetitions.to_be_bytes());
+            self.definition = definition;
+            self
         }
     }
 
@@ -1555,7 +1693,11 @@ mod tests {
                 name: format!("Field {id}"),
                 kind: om_hbam::FieldKind::Normal,
                 data_type: DataType::Text,
-                options: Vec::new(),
+                options: if id == 1 {
+                    self.definition.clone()
+                } else {
+                    Vec::new()
+                },
             };
             Ok(om_hbam::Catalog {
                 tables: vec![om_hbam::Table {
@@ -1812,14 +1954,15 @@ mod tests {
                 &[(pred::EQ, 1)],
                 &[1, 4],
             ),
-            (&[&[shared][..]], &[(pred::LT, 1)], &[1, 6]),
-            (&[&[shared][..]], &[(pred::LE, 1)], &[1, 2, 3, 6]),
+            // Record 6 holds the empty value `01`: only `=` relates it.
+            (&[&[shared][..]], &[(pred::LT, 1)], &[1]),
+            (&[&[shared][..]], &[(pred::LE, 1)], &[1, 2, 3]),
             (&[&[shared][..]], &[(pred::GT, 1)], &[4, 5]),
             (&[&[shared][..]], &[(pred::GE, 1)], &[2, 3, 4, 5]),
             (
                 &[&[&[0x01, 0x10][..], &[0x01, 0x10, 0x30]][..]],
                 &[(pred::LT, 1)],
-                &[1, 2, 3, 6],
+                &[1, 2, 3],
             ),
             (
                 &[&[&[0x01, 0x10][..], &[0x01, 0x10, 0x30]][..]],
@@ -1829,20 +1972,16 @@ mod tests {
             (&[&[&[0x00][..]][..]], &[(pred::LT, 1)], &[]),
             (&[&[&[0x00][..]][..]], &[(pred::GT, 1)], &[1, 2, 3, 4, 5, 6]),
             (&[&[&[0x02][..]][..]], &[(pred::GE, 1)], &[]),
-            (
-                &[&[&[0x01, 0x10][..]][..]],
-                &[(pred::NE, 1)],
-                &[2, 3, 4, 5, 6],
-            ),
+            (&[&[&[0x01, 0x10][..]][..]], &[(pred::NE, 1)], &[2, 3, 4, 5]),
             (
                 &[&[&[0x01, 0x10][..], &[0x01, 0x20]][..]],
                 &[(pred::NE, 1)],
-                &[1, 2, 3, 4, 5, 6],
+                &[1, 2, 3, 4, 5],
             ),
             (
                 &[&[&[0x01, 0x05][..]][..]],
                 &[(pred::NE, 1)],
-                &[1, 2, 3, 4, 5, 6],
+                &[1, 2, 3, 4, 5],
             ),
             (&[&[shared][..]], &[(pred::EQ, 1), (pred::GE, 1)], &[2, 3]),
             (&[&[shared][..]], &[(pred::EQ, 1), (pred::GT, 1)], &[]),
@@ -1986,6 +2125,181 @@ mod tests {
 
     /// #306: instructions find keys in an index by binary search; each
     /// answers at the edges of the index as the scans it replaced did.
+    /// LookupValue against live1's tables (spec 8.6): PK (field 1 here)
+    /// keyed 10 < 3 < 1 < 2 < 12 < 13, all below "A"; Company (field 2)
+    /// empty but in record 1, whose key is above "A".
+    #[test]
+    fn lookups_find_the_next_lower_or_higher_record_as_filemaker_server_does() {
+        let pk = |n: u8| vec![0x01, 0x12, 0x05 + n];
+        let order = [10u64, 3, 1, 2, 12, 13];
+        let entries = order
+            .iter()
+            .enumerate()
+            .map(|(i, &id)| entry(&pk(i as u8), &[id]))
+            .collect();
+        let mut source = Indexed::new(13, entries);
+        let company_one = om_collate::text_key("Test Co");
+        source.root.put(
+            &[&[0x80, 0x01], &[1], &[2], &[0]],
+            OwnedNode::list(
+                Vec::new(),
+                vec![
+                    entry(&[0x01], &[2, 3, 10, 12, 13]),
+                    entry(&company_one, &[1]),
+                ],
+            ),
+        );
+        let a = om_collate::text_key("A");
+        let record_one = pk(2);
+        // Source rows: field 9 the PK key, field 5 the Company key.
+        let lookup_of = |pk_key: Option<&[u8]>, company: Option<&[u8]>, higher: bool| {
+            let mut fields = Vec::new();
+            let mut predicates = vec![vec![pred::EQ, 2, 1, 1, 2, 1, 9]];
+            for (field, key) in [(9u8, pk_key), (5, company)] {
+                if let Some(key) = key {
+                    fields.push(OwnedNode::list(vec![field], uploaded(&[key])));
+                }
+            }
+            if company.is_some() {
+                predicates.push(vec![pred::EQ, 2, 1, 2, 2, 1, 5]);
+            }
+            if pk_key.is_none() && company.is_some() {
+                predicates.remove(0);
+            }
+            fields.sort_by(|x, y| x.segment.cmp(&y.segment));
+            let rows = vec![OwnedNode::list(serial::encode(1), fields)];
+            let mut leaves = vec![
+                OwnedNode::leaf(vec![leaf::SRC], vec![1, 2, 1, 1]),
+                OwnedNode::leaf(vec![leaf::DEL_LIST], vec![1, 2, 1, 2]),
+            ];
+            if higher {
+                leaves.push(OwnedNode::leaf(vec![leaf::LOOKUP_HIGHER], vec![0x01, 0x01]));
+            }
+            let program = lookup(opcode::LOOKUP, leaves, [rows, numbered(predicates)]);
+            result(&source, &program, Budget::DEFAULT).map(|dest| {
+                dest.child(&[0x00])
+                    .and_then(|leaf| leaf.value.clone())
+                    .unwrap_or_default()
+            })
+        };
+        let record = |id: u8| Some(vec![0x01, id]);
+        // lk_pk_lower_A, lk_pk_higher_A, lk_pk_higher_low, lk_pk_lower_low,
+        // lk_pk_exact_higher.
+        assert_eq!(lookup_of(Some(&a), None, false).ok(), record(13));
+        assert!(matches!(
+            lookup_of(Some(&a), None, true),
+            Err(QueryError::NoRecords)
+        ));
+        assert_eq!(lookup_of(Some(&[0x01, 0x11]), None, true).ok(), record(10));
+        assert!(matches!(
+            lookup_of(Some(&[0x01, 0x11]), None, false),
+            Err(QueryError::NoRecords)
+        ));
+        assert_eq!(lookup_of(Some(&record_one), None, true).ok(), record(0));
+        // lk_company_lower_A: the empty key's lowest record.
+        assert_eq!(lookup_of(None, Some(&a), false).ok(), record(2));
+        // lk_two_lower, lk_two_higher: PK = record 1's key and Company = "A".
+        assert!(matches!(
+            lookup_of(Some(&record_one), Some(&a), false),
+            Err(QueryError::NoRecords)
+        ));
+        assert_eq!(lookup_of(Some(&record_one), Some(&a), true).ok(), record(1));
+        // lk_nokey: a source row without a key.
+        let nokey = {
+            let rows = vec![OwnedNode::list(serial::encode(1), Vec::new())];
+            let leaves = vec![
+                OwnedNode::leaf(vec![leaf::SRC], vec![1, 2, 1, 1]),
+                OwnedNode::leaf(vec![leaf::DEL_LIST], vec![1, 2, 1, 2]),
+                OwnedNode::leaf(vec![leaf::LOOKUP_HIGHER], vec![0x01, 0x01]),
+            ];
+            let predicates = numbered(vec![vec![pred::EQ, 2, 1, 1, 2, 1, 9]]);
+            result(
+                &source,
+                &lookup(opcode::LOOKUP, leaves, [rows, predicates]),
+                Budget::DEFAULT,
+            )
+        };
+        assert!(matches!(nokey, Err(QueryError::NoRecords)));
+        // The walk starts at the first predicate that leaves no record; a
+        // later one is not read, even malformed.
+        let later_malformed = {
+            let fields = vec![OwnedNode::list(vec![9], uploaded(&[&a]))];
+            let rows = vec![OwnedNode::list(serial::encode(1), fields)];
+            let leaves = vec![
+                OwnedNode::leaf(vec![leaf::SRC], vec![1, 2, 1, 1]),
+                OwnedNode::leaf(vec![leaf::DEL_LIST], vec![1, 2, 1, 2]),
+            ];
+            let predicates = numbered(vec![vec![pred::EQ, 2, 1, 1, 2, 1, 9], vec![pred::EQ, 9]]);
+            result(
+                &source,
+                &lookup(opcode::LOOKUP, leaves, [rows, predicates]),
+                Budget::DEFAULT,
+            )
+            .map(|dest| dest.child(&[0x00]).and_then(|l| l.value.clone()))
+            .ok()
+            .flatten()
+        };
+        assert_eq!(later_malformed, record(13));
+        assert_eq!(QueryError::NoRecords.code(), 401);
+    }
+
+    /// Projection in a form the field's index does not hold keys the
+    /// stored values, every repetition (spec 9.1, 7.2: `équipe`'s keys in
+    /// catalogs/index-key-vectors.tsv): the padded form's secondary weights
+    /// are in no English index, and an English request on a padded index
+    /// gets English keys, not the index's.
+    #[test]
+    fn projection_keys_stored_values_in_forms_the_index_does_not_hold() {
+        let value = "\u{e9}quipe";
+        let english = om_collate::text_key(value);
+        let padded = om_collate::padded_text_key(value);
+        assert_eq!(
+            padded,
+            [
+                &[0x01, 0x12, 0x6b, 0x13, 0xc8, 0x14, 0x53, 0x12, 0xec, 0x13, 0xb3, 0x12, 0x6b][..],
+                &[0x00, 0x00, 0x01, 0x13, 0x01, 0x01, 0x01, 0x01, 0x01],
+            ]
+            .concat()
+        );
+        let project = |source: &Indexed, language: u8| {
+            let leaves = vec![
+                OwnedNode::leaf(vec![leaf::SRC], vec![1, 2, 1, 1]),
+                OwnedNode::leaf(vec![leaf::PROJ_LIST], vec![1, 2, 1, 2]),
+            ];
+            let records = [1u64].into_iter().collect::<RidList>().entries();
+            let fields = vec![OwnedNode::leaf(vec![1], vec![1, language])];
+            let program = lookup(opcode::PROJECTION, leaves, [records, fields]);
+            let dest = result(source, &program, Budget::DEFAULT).unwrap();
+            dest.at(&[&serial::encode(1), &[1]])
+                .map(|keys| keys.children.iter().map(|k| k.segment.clone()).collect())
+                .unwrap_or_default()
+        };
+        // An English index, the value in the second of two repetitions
+        // (cell 1 * 256 + 2).
+        let mut source = Indexed::new(1, vec![entry(&english, &[1])]).defined(21, 2);
+        source.root.put(
+            &[
+                &[0x80, 0x01],
+                &[5],
+                &serial::encode(1),
+                &om_hbam::slot::uint_segment(258),
+            ],
+            OwnedNode::leaf(Vec::new(), om_scsu::encode_scsu(value)),
+        );
+        let keys: Vec<Vec<u8>> = project(&source, 21);
+        assert_eq!(keys, std::slice::from_ref(&english));
+        assert_eq!(project(&source, 3), std::slice::from_ref(&padded));
+        assert_eq!(project(&source, 1), std::slice::from_ref(&padded));
+        // A Unicode standard index: an English request keys the value.
+        let mut source = Indexed::new(1, vec![entry(&padded, &[1])]).defined(3, 1);
+        source.root.put(
+            &[&[0x80, 0x01], &[5], &serial::encode(1), &[1]],
+            OwnedNode::leaf(Vec::new(), om_scsu::encode_scsu(value)),
+        );
+        assert_eq!(project(&source, 21), [english]);
+        assert_eq!(project(&source, 3), [padded]);
+    }
+
     #[test]
     fn index_lookups_answer_at_the_edges() {
         check_lookups(&Indexed::new(6, lookup_index()));
