@@ -104,6 +104,9 @@ pub struct Record {
 /// reject unknown fields rather than silently changing another column.
 pub type FieldChanges = std::collections::BTreeMap<String, Option<String>>;
 
+/// Typed edits to a session's global values, keyed by field and repetition.
+pub type GlobalChanges = std::collections::BTreeMap<(u64, u32), String>;
+
 /// A script's write of one record (Set Field and the other field steps,
 /// committed by Commit Records or by leaving the record): the rules a
 /// script's writes follow apply, not a user's (`rules::Entry::script`;
@@ -893,10 +896,16 @@ pub trait DataProvider: Send {
     }
 
     /// Enter a user's `text` into a global field, applying the supported
-    /// type's entry parsing before changing this session's value. Unlike
-    /// [`Self::set_global`], this is not a script's permissive assignment.
-    /// The native provider supports the defined repetitions of plain Date,
-    /// Time and Timestamp data globals; unsupported targets/providers refuse with error 3.
+    /// type's entry parsing and the field's entry validation (maximum
+    /// characters, strict data type, range, value list, not empty) before
+    /// changing this session's value. Unlike [`Self::set_global`], this is
+    /// not a script's permissive assignment. The native provider supports
+    /// the defined repetitions of Text, Number, Date, Time and Timestamp
+    /// data globals, their first 255 repetitions; a field whose rules it
+    /// cannot check (validation by calculation, unique, existing value, a
+    /// related-values list or another file's field's values) or that
+    /// prohibits modification is 201, other targets and providers without
+    /// typed entry refuse with error 3 ([`Self::enters_typed_globals`]).
     fn set_typed_global(
         &mut self,
         _table: u64,
@@ -908,6 +917,31 @@ pub trait DataProvider: Send {
             found::code::UNSUPPORTED,
             "This connection cannot enter typed global values.",
         ))
+    }
+
+    /// Validate the complete proposed values before publishing any changes.
+    /// A provider that supports only a single typed entry refuses a batch.
+    fn set_typed_globals(&mut self, table: u64, changes: &GlobalChanges) -> Result<(), DataError> {
+        let mut values = changes.iter();
+        match (values.next(), values.next()) {
+            (None, _) => Ok(()),
+            (Some((&(field, repetition), text)), None) => {
+                self.set_typed_global(table, field, repetition, text)
+            }
+            _ => Err(DataError::with_code(
+                found::code::UNSUPPORTED,
+                "This connection cannot enter multiple typed global values together.",
+            )),
+        }
+    }
+
+    /// Whether [`Self::set_typed_global`] checks a user's typing (the
+    /// native provider's does): Browse then enters every global it offers
+    /// through it, and its refusals stand. Without it, Browse sets a text
+    /// or number global's text as typed ([`Self::set_global`]), and a date,
+    /// time or timestamp global's is error 3.
+    fn enters_typed_globals(&self) -> bool {
+        false
     }
 
     fn value_list(&mut self, _id: u64) -> Result<Vec<String>, DataError> {
@@ -1218,6 +1252,34 @@ pub trait DataProvider: Send {
     fn delete_record(&mut self, _layout_id: u32, _record_id: i64) -> Result<(), DataError> {
         Err(DataError::new(
             "This provider does not support deleting records.",
+        ))
+    }
+
+    /// Relookup Field Contents (40) over records `ids` of layout
+    /// `layout_id`'s table: the lookups that match through `field` (by
+    /// name) copy their values again, as a script's write of each record's
+    /// own value of the field fires them (auto-entry.md, Lookups, battery
+    /// s41), with a script's rules and the step's privilege set; inside a
+    /// script's transaction each write is held there. The field itself
+    /// keeps its value. Checked before any record is written: the field is
+    /// one a script sets and a lookup matches through
+    /// (`RecordPlan::relookup_target`), and no record stores it with
+    /// character styles, which a plain write would drop, and none is held
+    /// in the open transaction, whose held value the stored one would
+    /// replace. A record refused ends the step there, the records before it
+    /// written. Records already gone when it reads them are skipped; one
+    /// deleted after that ends the step (101). With no `ids` it checks the
+    /// target alone.
+    fn relookup(
+        &mut self,
+        _layout_id: u32,
+        _field: &str,
+        _ids: &[i64],
+        _privilege_set: Option<String>,
+    ) -> Result<(), DataError> {
+        Err(DataError::with_code(
+            found::code::UNSUPPORTED,
+            "This provider does not relook up field contents.",
         ))
     }
 

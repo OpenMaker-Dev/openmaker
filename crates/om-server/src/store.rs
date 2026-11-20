@@ -404,6 +404,18 @@ impl Store {
         changed
     }
 
+    /// The file's own language (`Locale::Type`), which an index in
+    /// language 0 keys text in (query-program.md 7.2): its locale record's,
+    /// en-US's English when it has none, and `None` when the record does
+    /// not decode, rather than English, which would key a German file's `ä`
+    /// as `a`.
+    pub fn file_language(&self) -> Option<u32> {
+        if self.locale.is_none() && self.node(&LOCALE).is_some() {
+            return None;
+        }
+        Some(u32::from(self.locale().language.id()))
+    }
+
     /// The file's locale and formats: its record when it decodes, else
     /// en-US with the date order its stored dates use.
     pub fn locale(&self) -> Locale {

@@ -439,6 +439,75 @@ fn text_keys_are_filemakers_vectors() {
     assert_eq!(checked, 364);
 }
 
+/// The Japanese (31) rows of the vector table (query-program.md 7.2,
+/// "Japanese"; #299): each kana row's weights, and the value- and word-index
+/// keys of every text row. A value holding a kanji outside JIS X 0208
+/// level 1 has no key, its order not being derived: `豈` (U+F900), and the
+/// row with `丂` (JIS X 0212) and `㐀` (an extension). Nor does the row of
+/// sound and iteration marks, whose U+309A keys in a way not established.
+/// `ff 80` is left out
+/// as for the other forms
+/// ([#177](https://github.com/OpenMaker-Dev/openmaker/issues/177)).
+#[test]
+fn japanese_keys_are_filemakers_vectors() {
+    let japanese = TextKeys::Japanese;
+    let mut kana = 0;
+    for vector in vectors().iter().filter(|v| v.kind == "kana") {
+        let weights = om_collate::japanese_key(&vector.value).unwrap()[1..].to_vec();
+        assert_eq!(
+            BTreeSet::from([weights]),
+            vector.value_entries,
+            "{:?}",
+            vector.value
+        );
+        kana += 1;
+    }
+    assert_eq!(kana, 236);
+    let too_long = om_collate::TOO_LONG_KEY.to_vec();
+    let without_flag = |keys: &BTreeSet<Vec<u8>>| {
+        keys.iter()
+            .filter(|key| **key != too_long)
+            .cloned()
+            .collect::<BTreeSet<_>>()
+    };
+    let (mut keyed, mut keyless, mut mismatches) = (0, Vec::new(), Vec::new());
+    for vector in vectors()
+        .iter()
+        .filter(|v| v.kind == "text" && v.language == "31")
+    {
+        let lines = vector.value.split(['\r', '\n']).filter(|l| !l.is_empty());
+        if lines.clone().any(|line| japanese.key(line).is_none()) {
+            keyless.push(vector.value.clone());
+            continue;
+        }
+        let value = std::slice::from_ref(&vector.value);
+        let ours = om_query::keys::record_value_entries(
+            DataType::Text,
+            value,
+            DateOrder::MonthDayYear,
+            japanese,
+        );
+        let words = om_query::keys::word_entries(value, japanese);
+        if without_flag(&ours) != without_flag(&vector.value_entries)
+            || without_flag(&words) != without_flag(&vector.word_entries)
+        {
+            mismatches.push(vector.value.clone());
+        }
+        keyed += 1;
+    }
+    assert!(mismatches.is_empty(), "{mismatches:#?}");
+    assert_eq!(
+        keyless,
+        [
+            // The compatibility ideograph U+F900, as the probe holds it.
+            "\u{f900}",
+            "゛゜\u{3099}\u{309a}ー々〆〇〻",
+            "丂㐀一二三十百千万円年月日本語"
+        ]
+    );
+    assert_eq!(keyed, 22);
+}
+
 /// The word-index keys of every value of `word-break-vectors.tsv` (query-
 /// program.md 7.2, "Word breaking"; #300), each language's words following
 /// the joiners it was probed to use (`om_collate::WordBreaks::of_language`,
