@@ -394,6 +394,32 @@ struct Parked {
     request_open: bool,
 }
 
+/// Heap allocations retained by a window's found set, sort, and Find state.
+fn window_data_bytes(window: Option<&Window>, requests: [&Vec<Request>; 2]) -> usize {
+    let records_and_sort = window.map_or(0, |window| {
+        let sort = window.sort.as_ref().map_or(0, |sort| {
+            sort.fields.capacity() * size_of::<om_scripts::specs::SortEntry>()
+        });
+        (window.found.capacity() * size_of::<u64>()).saturating_add(sort)
+    });
+    requests
+        .into_iter()
+        .fold(records_and_sort, |total, requests| {
+            let bytes = requests.iter().fold(
+                requests.capacity() * size_of::<Request>(),
+                |total, request| {
+                    request.criteria.iter().fold(
+                        total.saturating_add(
+                            request.criteria.capacity() * size_of::<(u64, String)>(),
+                        ),
+                        |total, (_, text)| total.saturating_add(text.capacity()),
+                    )
+                },
+            );
+            total.saturating_add(bytes)
+        })
+}
+
 /// A record being edited: locked for the session, its contents changed
 /// here until it is committed (FileMaker's open record).
 #[derive(Clone, Debug)]
@@ -3925,17 +3951,22 @@ impl ServerHost {
         Ok(())
     }
 
-    /// Whether the session's windows hold more record ids than
-    /// [`MAX_WINDOW_RECORDS`] in their found sets together.
-    fn windows_over_budget(&self) -> bool {
-        let parked: usize = self
-            .others
+    fn current_window_data_bytes(&self) -> usize {
+        window_data_bytes(self.window.as_ref(), [&self.requests, &self.last_find])
+    }
+
+    /// Data already parked, excluding the window becoming current.
+    fn parked_window_data_bytes(&self, selected: Option<usize>) -> usize {
+        self.others
             .iter()
-            .filter_map(|w| w.window.as_ref())
-            .map(|w| w.found.len())
-            .sum();
-        let current = self.window.as_ref().map_or(0, |w| w.found.len());
-        parked.saturating_add(current) > MAX_WINDOW_RECORDS
+            .enumerate()
+            .filter(|(index, _)| Some(*index) != selected)
+            .fold(0usize, |total, (_, window)| {
+                total.saturating_add(window_data_bytes(
+                    window.window.as_ref(),
+                    [&window.requests, &window.last_find],
+                ))
+            })
     }
 
     /// After a step filled the window it just opened (its layout's
@@ -3943,7 +3974,10 @@ impl ServerHost {
     /// now hold too much, that window closes again, the one it was opened
     /// from current, and the step is 2.
     pub(super) fn keep_windows_within_budget(&mut self) -> HostResult {
-        if !self.windows_over_budget() {
+        let bytes = self
+            .parked_window_data_bytes(None)
+            .saturating_add(self.current_window_data_bytes());
+        if bytes <= MAX_WINDOW_DATA_BYTES {
             return Ok(());
         }
         warn!(
@@ -4036,13 +4070,11 @@ impl ServerHost {
     }
 }
 
-/// At most this many windows a session keeps open, and this many record
-/// ids in all their found sets together: each window keeps a found set of
-/// its own, so a script opening windows over a large one would otherwise
-/// hold memory without bound (OpenMaker's limits; FileMaker Server's are
-/// not measured). Past them New Window is 2, "memory error".
+/// A session's window count and memory budget for copies of found sets,
+/// sort orders and Find state. The active window may grow as in a session
+/// with one window; it must fit the budget before it is parked or copied.
 const MAX_WINDOWS: usize = 256;
-const MAX_WINDOW_RECORDS: usize = 16 << 20;
+const MAX_WINDOW_DATA_BYTES: usize = 128 << 20;
 
 /// The server's windows (script-runtime.md 13.25, s35-windows): each has
 /// its own layout, found set, record and mode, and Find mode's requests;
@@ -4059,14 +4091,10 @@ impl Windows for ServerHost {
     /// current, and goes to the layout given.
     fn new_window(&mut self, window: &NewWindow) -> HostResult {
         self.windows_may_change()?;
-        let held: usize = self
-            .others
-            .iter()
-            .filter_map(|w| w.window.as_ref())
-            .map(|w| w.found.len())
-            .sum();
-        let current = self.window.as_ref().map_or(0, |w| w.found.len());
-        if self.others.len() + 2 > MAX_WINDOWS || held + 2 * current > MAX_WINDOW_RECORDS {
+        let bytes = self
+            .parked_window_data_bytes(None)
+            .saturating_add(self.current_window_data_bytes().saturating_mul(2));
+        if self.others.len() + 2 > MAX_WINDOWS || bytes > MAX_WINDOW_DATA_BYTES {
             warn!(
                 "{:?}: New Window refused: the session's windows would hold too much",
                 self.hosted.name
@@ -4114,6 +4142,12 @@ impl Windows for ServerHost {
             return Ok(());
         };
         self.windows_may_change()?;
+        let bytes = self
+            .parked_window_data_bytes(Some(index))
+            .saturating_add(self.current_window_data_bytes());
+        if bytes > MAX_WINDOW_DATA_BYTES {
+            return Err(ErrorCode(2).into());
+        }
         self.leave()?;
         let selected = self.others.remove(index);
         let previous = self.park();

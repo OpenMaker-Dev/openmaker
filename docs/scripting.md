@@ -208,6 +208,12 @@ does, and only once the layout and the records are found, so a failure
 leaves the current window as it was. Neither is compared with FileMaker,
 which has not been measured running the step.
 
+OpenMaker Server allows up to 256 windows per script session. It checks
+a 128 MiB budget for found sets, sort orders, and Find state when a
+script copies or parks a window. An active window can grow during
+ordinary script operations. FileMaker Server's window limits are
+unmeasured.
+
 Fixes from a review of import data safety:
 - Each imported row is checked once with the import's own auto-enter and
   validation options, and neither the import's commit nor Commit

@@ -2978,13 +2978,15 @@ Server engine (11.3, 11.5)
   records deleted meanwhile (in Find mode its active request stays as it
   was), and a schema change moves every window back onto its own layout,
   as it moves the current one.
-- A session keeps at most 256 windows, holding at most 16,777,216
-  record ids in their found sets together; past either, New Window is 2
-  (OpenMaker's limits; FileMaker Server's are not measured). The record
-  ids are counted again once a new window is on its layout, or filled by
-  Go to Related Record or Go to List of Records: a window that would pass
-  the limit closes again, the one it was opened from current, and the
-  step is 2.
+- OpenMaker keeps at most 256 windows per session and budgets 128 MiB
+  for their found sets, sort orders and Find requests, including the
+  last find. New Window checks the budget before copying the current
+  state and again after setting the new window's layout or found set.
+  If the second check fails, it closes the new window and restores the
+  opener. An active window can grow during ordinary script operations,
+  as it can in a single-window session. Select Window checks whether it
+  can park the active state before committing its open record. A refusal
+  returns error 2. FileMaker Server's limits are unmeasured.
 - No bounds or styles are kept: every window is 640 x 480 at 0, 0,
   whatever New Window asks. The new window's layout does not run
   OnLayoutEnter, as the server's Go to Layout does not. View As and
