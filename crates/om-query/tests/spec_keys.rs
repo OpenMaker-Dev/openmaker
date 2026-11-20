@@ -327,7 +327,14 @@ struct Vector {
 }
 
 fn vectors() -> Vec<Vector> {
-    include_str!("../../../docs/re/catalogs/index-key-vectors.tsv")
+    vector_rows(include_str!(
+        "../../../docs/re/catalogs/index-key-vectors.tsv"
+    ))
+}
+
+/// The rows of a vector table in `index-key-vectors.tsv`'s shape.
+fn vector_rows(table: &'static str) -> Vec<Vector> {
+    table
         .lines()
         .filter(|line| !line.starts_with('#'))
         .map(|line| {
@@ -499,6 +506,59 @@ fn japanese_keys_are_filemakers_vectors() {
         ]
     );
     assert_eq!(keyed, 22);
+}
+
+/// The word-index keys of every value of `word-break-vectors.tsv` (query-
+/// program.md 7.2, "Word breaking"; #300), each language's words following
+/// the joiners it was probed to use (`om_collate::WordBreaks::of_language`,
+/// the no-break space part of a word), in 52 of the 56 languages probed:
+/// System (1) and Unicode standard (3) padded, and every other one but
+/// Unicode raw, whose rules are its own (#395), and Vietnamese, Thai and
+/// Greek mixed (56-58), whose tailorings key these values in weights not
+/// built. The others key the probe's ASCII values as English does. A
+/// language's row is listed only where its keys differ from English's
+/// (System's, from Unicode standard's).
+#[test]
+fn word_breaks_are_filemakers_in_each_language() {
+    let rows = vector_rows(include_str!(
+        "../../../docs/re/catalogs/word-break-vectors.tsv"
+    ));
+    let row = |language: &str, value: &str| {
+        rows.iter()
+            .find(|r| r.kind == "text" && r.language == language && r.value == value)
+    };
+    let english: Vec<&Vector> = rows.iter().filter(|r| r.language == "21").collect();
+    assert_eq!(english.len(), 139);
+    let probed = [1u32, 3, 4]
+        .into_iter()
+        .chain(16..=55)
+        .chain(59..=65)
+        .chain([67, 76]);
+    let mut mismatches = Vec::new();
+    let mut checked = 0;
+    for language in probed {
+        let breaks = om_collate::WordBreaks::of_language(language).unwrap();
+        let form = match language {
+            1 | 3 => TextKeys::CollatedPadded,
+            _ => TextKeys::Collated,
+        };
+        let fallback = if language == 1 { "3" } else { "21" };
+        for value in english.iter().map(|r| &r.value) {
+            let expected = row(&language.to_string(), value)
+                .or_else(|| row(fallback, value))
+                .unwrap();
+            let ours: BTreeSet<Vec<u8>> = om_collate::words_in(value, breaks)
+                .into_iter()
+                .filter_map(|word| form.key(word))
+                .collect();
+            checked += 1;
+            if ours != expected.word_entries {
+                mismatches.push(format!("{language} {value:?}"));
+            }
+        }
+    }
+    assert!(mismatches.is_empty(), "{mismatches:#?}");
+    assert_eq!(checked, 139 * 52);
 }
 
 /// The word-index keys of every English and Unicode standard text row of
