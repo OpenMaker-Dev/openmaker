@@ -434,7 +434,14 @@ impl LocalHost {
             ));
         }
         let now = jiff::Zoned::now().datetime();
-        file.change_password(name, old, new, now)
+        file.change_password(
+            crate::hosting::AccountRef::Name(name),
+            old,
+            new,
+            false,
+            None,
+            now,
+        )
     }
 
     /// Keep, at table occurrence `occurrence`'s `[TO, 07]`, the found set

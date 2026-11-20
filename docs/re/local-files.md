@@ -405,7 +405,75 @@ its old password is tested, as FileMaker's check gives it; an account that may n
 gets `SetPassword`'s checks (206, 208, 209); more than 100 characters is
 11. A new password outside ASCII is hashed after `HashDecompose` (2.1), as
 FileMaker Pro's own accounts are. It does not create the empty `5d`
-subtree.
+subtree. Before it rewrites an account, it recomputes the stored `04`
+from the account's current members; when the two differ nothing is
+written (3 for a script step; OpenMaker's choice): FileMaker Pro would
+refuse a file whose checksum OpenMaker got wrong (808), so an account it
+does not read as FileMaker does is left alone. An account with no `04`
+is given one.
+
+OpenMaker Server's scripts run Change Password through the same
+operation, as `DoChangePassword` does. The target is the account the
+session logged in with, found by its record key so that a rename since
+cannot redirect it. Both passwords are cut to 100 UTF-16 code units, and
+[Guest] or an account of another kind gives 3. A step running with full
+access counts as a caller that may manage the account, so it skips
+`SetPassword`'s set checks [I: Claris documents that a script granted
+full access may change a password the set does not let the account
+change]. The step's dialog is not shown on a server, so with it the step
+gives 3 [I: FileMaker Server's handling is not measured]. While it
+writes, the script's session holds a write lock on `[23, 1]`, as Manage
+Security does, and another user's lock gives 310 [I: Reset Account
+Password's observed code]. The commit stamps the account and the
+catalog's index `[23, 1, 1]` (schema-path.md 8.1), so a client's cached
+copy of the catalog shows as stale, and other clients are told the
+catalog changed.
+
+Reset Account Password and Enable Account run through
+`Hosted::reset_account_password` and `Hosted::enable_account`, under the
+same lock, stamps, notification and checksum check, writing the members
+the table above lists. A session without full access gets 9. Reset
+Account Password takes only a FileMaker-file account (206) and a password
+of at most 100 characters (11); its status is stamped as Change
+Password's is. Its "Expire password" option gives 3 before anything
+changes: the account could then sign in to a hosted file only with a new
+password, which OpenMaker Server does not take at login yet
+([#248](https://github.com/OpenMaker-Dev/openmaker/issues/248)). Enable
+Account changes only bit 19; an account already in that state is not
+written and no client is told of a change. It takes the file's own
+accounts and external server groups (kinds 0 and 1) and gives 3 for an
+OAuth or Claris ID account, and it gives 3 rather than make a [Full
+Access] account inactive [I: Claris documents both refusals for Enable
+Account; their codes are not observed]. Both find the account by name,
+ignoring case; a name no account has gives 213 [I: FileMaker's code for
+a name it does not find is not observed], and [Guest], whose name is not
+text, is never found. A new status that would not read back as written
+(flags added to a fraction of a second already held, past the six digits
+the value keeps) is not written (3).
+
+Delete Account runs through `Hosted::delete_account`, under the same
+lock and notification, for a session with full access (else 9). It
+removes the account's member and, from the catalog's index (3), its name
+list entry, its place in the display order (the order numbered again
+from 1) and its `07` entry, and takes one from the count; `00` keeps the
+last key issued, and the index is stamped. A name no account has gives
+213 (inferred). As Claris documents for the step, it does not delete a
+[Full Access] account, nor an OAuth or Claris ID one; [Guest] (key `01`)
+is not deleted either. Each of these gives 3 [I: the codes are not
+observed]. The index must be one OpenMaker reads as 3 describes: its
+name list and its display order (positions 1 to n) each name every
+account once, the count is the number of accounts, and the account's
+`07` entry, if any, is an empty leaf. Otherwise nothing is written (3),
+so no data it does not read is dropped. The account's own checksum is not
+checked, since nothing of it is written. The header's `10` is left as it
+is. It is the account File Options' "Log in using" names, signed in with
+the password the header keeps in `06` (3.1), so when it names the deleted
+account, the file's automatic sign-in is left naming an account that no
+longer exists [I: what FileMaker Pro does with it then is not observed].
+
+Add Account is not run: the step's privilege set is an inline key in
+`mReserved` whose layout is only inferred (script-steps.md 4.1), and
+reading it wrongly would put the new account in another set.
 
 When a local file's Login is refused with 211, the desktop asks for a new
 password in a Change Password dialog (New Password, Confirm New Password)
@@ -428,7 +496,9 @@ with its reason. The new password is then the session's, for the files its
 scripts open later [I]. A file on a host does not offer it yet ([#248](https://github.com/OpenMaker-Dev/openmaker/issues/248)).
 
 Unknowns: the account script steps above and hosted password change at
-sign-in were not run live; login type 2 was not captured; whether the
+sign-in were not run live, so their errors for a missing account, for an
+account catalog another user has locked (other than Reset Account
+Password's 310) and for [Guest] are not observed; login type 2 was not captured; whether the
 password stamp's time is local or UTC is not measured; the empty `5d`
 subtree noted above is not explained. The checksums for privilege sets,
 extended privileges and file access entries are specified separately in
@@ -441,6 +511,31 @@ It is the member data of the account catalog itself
 (`DBUserAccountCatalog`, the file user's `mUserAccountCatalog`). In every
 starter solution [O]: `00` = `01 02` (account 2's key), `04` = 2, `06`
 empty, `16` = "Admin", `24` = "0" (text), `252` = `01 02`.
+
+It is the catalog's index `[cat, 1]` (schema-path.md 1), laid out as the
+other catalogs' indexes are [O: the English Contacts and Tasks and the
+German Inventory starter solutions of FileMaker Pro 26, read with
+`om-hbam`'s `dump_keys` example; all three alike]:
+
+| Key | Content | Starter value |
+|---|---|---|
+| `00` | the last account key issued, as a key string | `01 02` |
+| `01, <name key>` | the name list: one leaf per account, keyed by its name's key (schema-path.md 5.6), holding the account's key as a key string | `0301ffe0e0020302000000` → `01 01` ([Guest]); `120f1250135f12ec136d000000` → `01 02` ("Admin") |
+| `03, <position>` | the display order: big-endian u32 positions from 1, each holding an account's key as a key string | `00000001` → `01 01`, `00000002` → `01 02` |
+| `04` | the number of accounts, big-endian u32 | `00000002` |
+| `06` | empty | |
+| `07, <key>` | one empty leaf per account | `07/01`, `07/02` |
+| `10` | "Admin": the header's account name above | |
+| `18` | "0" | |
+| `d8`, `fc`, `fc01`-`fc03` | the index's UUID and modification stamps (schema-path.md 8.1) | |
+
+So a new account takes the key after `00`, a name list entry, the next
+display position, one more in `04` and a `07` entry, as a new script does
+in the script catalog's index (scripts.md); a deleted one gives up its
+name list entry, display position and `07` entry and one of `04`, while
+`00` keeps the last key issued [I: from the other catalogs' indexes; an
+account added or deleted by FileMaker Pro was observed to change its index
+entries (2.4), but those entries were not compared one by one].
 
 ### 3.1 File Options > Open: "Log in using" and sign-in options
 
