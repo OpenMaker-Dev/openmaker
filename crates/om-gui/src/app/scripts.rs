@@ -153,6 +153,9 @@ pub(super) struct PromptView {
     login: Option<crate::open_file::LoginDialog>,
     /// [`Prompt::Sort`]'s dialog: FileMaker's Sort Records.
     sort: Option<Box<crate::script_workspace::SortOrder>>,
+    /// When the prompt was shown: a custom dialog's "Close after" counts
+    /// from it.
+    opened: std::time::Instant,
 }
 
 /// The window's script state.
@@ -1107,6 +1110,28 @@ impl OpenMakerApp {
     /// A single step through the script engine (menu commands, the
     /// Find mode buttons).
     pub(super) fn run_step(&mut self, ctx: &egui::Context, id: u16, flags: u32) {
+        use super::steps::{INSERT_AUDIO_VIDEO, INSERT_FILE, INSERT_PDF, INSERT_PICTURE};
+        // The Insert menu fills the selected container only while its
+        // object still takes entry (and PDF and Audio/Video only an
+        // interactive one), as when the menu offered it.
+        if matches!(
+            id,
+            INSERT_PICTURE | INSERT_FILE | INSERT_PDF | INSERT_AUDIO_VIDEO
+        ) {
+            let fillable = self.w.session.as_ref().is_some_and(|session| {
+                self.w
+                    .document
+                    .selected_container(session)
+                    .is_some_and(|selection| {
+                        selection.allows_entry(session)
+                            && (matches!(id, INSERT_PICTURE | INSERT_FILE)
+                                || selection.is_interactive(session))
+                    })
+            });
+            if !fillable {
+                return;
+            }
+        }
         let step = ScriptStep {
             opcode: id as i16,
             flags,
@@ -1839,6 +1864,7 @@ impl OpenMakerApp {
                     text,
                     login,
                     sort,
+                    opened: std::time::Instant::now(),
                 });
             }
             ScriptEvent::Paused { seconds, message } => {
@@ -2646,6 +2672,26 @@ fn show_prompt(ui: &mut egui::Ui, view: &mut PromptView) -> Option<Answer> {
             crate::plugin_ui::alert(ui, dialog, *deadline, enter).map(Answer::PluginDialog)
         }
         Prompt::Dialog(dialog) => {
+            // "Close after (seconds)": once the time is up the dialog
+            // closes as no button, `Get ( LastMessageChoice )` 0 (Claris).
+            let closes = dialog
+                .close_after
+                .and_then(|seconds| std::time::Duration::try_from_secs_f64(seconds).ok())
+                .and_then(|after| view.opened.checked_add(after));
+            if let Some(closes) = closes {
+                let now = std::time::Instant::now();
+                if now >= closes {
+                    return Some(Answer::Dialog(DialogResponse {
+                        button: 0,
+                        inputs: view
+                            .inputs
+                            .iter()
+                            .map(|t| om_data::calc::Value::text(t.clone()))
+                            .collect(),
+                    }));
+                }
+                ui.ctx().request_repaint_after(closes - now);
+            }
             if !dialog.title.is_empty() {
                 heading(ui, &dialog.title);
             }

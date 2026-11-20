@@ -15,7 +15,14 @@ and of PDF encoding. Each placement identifies its source part, selected-record
 index and physical top edge. The PDF backend consumes those placements, not a
 screen image. [Preview](preview.md) consumes the same selected-page scene, including object
 stacking, field bindings and measured text lines. Calculated Get(PageNumber) uses
-the physical page context; advanced layout merge symbols remain refused.
+the physical page context, and a text object's or button's `{{PageNumber}}`
+(in its label, or in each of a merge text's literal runs, any case) prints
+page *n*'s number on page *n*, as FileMaker Pro 26.0.3's Save Records as PDF
+wrote it ([calc functions](re/calc-functions.md), O4). A symbol is read within
+one literal run, never across a merged field, and a `{{` with no closing
+`}}` prints as it is, as Browse reads them. Other layout symbols remain
+refused; `{{PageCount}}` among them, as FileMaker Pro left `Get ( PageCount )`
+empty in every mode it was measured in.
 
 ## Supported layout and output contract
 
@@ -99,9 +106,9 @@ the portals [Portals](#portals) lists, dynamic pictures, the button icons
 [Buttons and groups](#buttons-and-groups) lists, option controls and repeating fields, rotated objects, the rounded frames
 [Rounded frames](#rounded-frames) lists,
 hide/label calculations, the conditional formatting
-[Conditional formatting](#conditional-formatting) lists, layout merge symbols (including page
-numbers), mixed rich text, decorated text, italic text in a family other
-than Arial or Helvetica,
+[Conditional formatting](#conditional-formatting) lists, layout merge symbols other than
+`{{PageNumber}}`, mixed rich text, decorated text, italic text in a family
+other than Arial or Helvetica,
 colors outside 0-1, unsupported glyphs/shaping, text overflow in anything but a
 field that does not slide ([field text](#field-text)), and object/page overflow. Ordinary
 flat character and paragraph styles, including uniform paragraph leading, can
@@ -385,7 +392,24 @@ static picture.
   512 MiB past its input; om-gui kills it after 30 seconds, reads back at
   most the picture's pixels, runs one at a time, and takes any failure for
   an SVG that does not draw (error 3). Without the worker beside om-gui,
-  SVG pictures refuse. Before building the tree the worker refuses input
+  SVG pictures refuse. Preview waits for none of this: a picture or button
+  icon not drawn yet is drawn on OpenMaker's one Preview drawing thread
+  while the page shows "Loading report pictures…" and the window keeps
+  painting and taking input; each drawing that ends asks its window for a
+  repaint, and the page is drawn then (the picture kept with Preview's other
+  pictures). The thread draws one picture at a time, oldest request first,
+  and runs only while some wait. At most eight wait, all windows together,
+  a newer request dropping the oldest (whose window is told, and asks again
+  if it still shows it), and each window keeps at most eight finished
+  pictures waiting to be taken. A drawing is not started for a window that
+  is closed or whose pictures were cleared (another snapshot of the layout)
+  since it asked, and one under way then is not kept; the same picture
+  asked for after a clear is drawn anew. A drawing that fails, panics
+  included, is the picture's error. An SVG past the picture limit is
+  refused in line, without copying it, and a drawn picture past the
+  static-picture budget is kept to be refused again rather than drawn again.
+  Save Records as PDF and Print, which run in the script worker, draw in
+  line. Before building the tree the worker refuses input
   past 4 MiB (expanded for SVGZ) or 50,000 XML nodes, XML entity
   declarations, `<image>` (resvg is built without raster decoding) and
   `use`/`feImage` references outside the picture; for Browse and button

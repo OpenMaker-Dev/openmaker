@@ -116,11 +116,11 @@ pub(crate) struct ListBuild {
 }
 
 /// The tables a value list that does not depend on the record reads: none
-/// for custom values (and for another file's or a calculated list, which
-/// are refused), its fields' table for all of a field's values; `None`
-/// for a list of related values, which depends on the record, and for one
-/// of an unstored calculation's values, whose calculation may read other
-/// tables and the session (#1058): both are built per object and record.
+/// for custom values (and for another file's list, which is refused), its
+/// fields' table for all of a field's values, and every table for all of
+/// an unstored calculation's values, whose calculation may read any of
+/// them (#1058). `None` for a list of related values, which depends on the
+/// record: it is built per object and record.
 fn shared_list_tables(
     schema: &CalcSchema,
     list: &om_data::meta::ValueList,
@@ -128,7 +128,11 @@ fn shared_list_tables(
     use om_data::meta::ValueSource;
     match &list.source {
         ValueSource::Field { start: Some(_), .. } => None,
-        ValueSource::Field { .. } if calculated_list(schema, list) => None,
+        // Each record's value is computed in the record's own context: none
+        // of the window's records decides it (#290).
+        ValueSource::Field { .. } if calculated_list(schema, list) => {
+            Some(schema.tables().map(|table| table.id).collect())
+        }
         ValueSource::Field {
             primary, secondary, ..
         } => Some(
@@ -394,6 +398,12 @@ pub(crate) struct Calculations {
     building: RefCell<HashMap<u64, (u64, BTreeSet<u64>)>>,
     /// The builds to ask the worker for this frame.
     build_wants: RefCell<Vec<ListBuild>>,
+    /// Lists of an unstored calculation's values whose build was asked
+    /// before the window's context or date changed (#290): its answer is
+    /// not taken, and one build for the new context follows it, so that a
+    /// context changing frame by frame (a resize) keeps one build at a
+    /// time on the worker.
+    stale_builds: RefCell<BTreeSet<u64>>,
     /// Lists whose build lacked data a related file's unreachable host
     /// holds (#740): not asked for again before then, whatever grows the
     /// schema meanwhile (another list's build, say), with whether the
@@ -447,6 +457,34 @@ impl Calculations {
                 .get(&want.list)
                 .is_some_and(|(t, _)| *t == want.ticket)
         });
+        self.stale_builds
+            .get_mut()
+            .retain(|list| building.contains_key(list));
+    }
+
+    /// Lists of an unstored calculation's values (#290), whose calculation
+    /// may read the window's context and the date, after one of them
+    /// changed: a built one goes, with a wait for an unreachable host its
+    /// build asked for (the new context may read other data); one being
+    /// built keeps its request, its answer not taken ([`Self::stale_builds`]).
+    fn drop_calculated_lists(&self) {
+        let Some(schema) = &self.schema else {
+            return;
+        };
+        let calculated = |id: &u64| {
+            schema
+                .value_lists()
+                .iter()
+                .find(|list| list.id == *id)
+                .is_some_and(|list| calculated_list(schema, list))
+        };
+        self.built.borrow_mut().retain(|id, _| !calculated(id));
+        self.build_retry
+            .borrow_mut()
+            .retain(|id, _| !calculated(id));
+        self.stale_builds
+            .borrow_mut()
+            .extend(self.building.borrow().keys().filter(|id| calculated(id)));
     }
 
     /// The data may have changed: the host's lists are asked for again.
@@ -698,6 +736,7 @@ impl Calculations {
             // Date-dependent fields, labels and hide conditions all need
             // fresh results; the account deadline itself need not change.
             self.forget_results();
+            self.drop_calculated_lists();
         }
         let mut previous = self.context.borrow_mut();
         if previous
@@ -734,7 +773,8 @@ impl Calculations {
             dropped |= groups.len() != before;
         }
         // A list an unstored calculation computed may have read the
-        // session as well (#1058).
+        // session as well (#1058), built here or on the worker (#290).
+        self.drop_calculated_lists();
         let mut options = self.options.borrow_mut();
         let lists = options.len();
         options.retain(|_, (_, calculated)| !*calculated);
@@ -944,7 +984,11 @@ impl Calculations {
         result: Option<Result<Arc<Choices>, ChoiceError>>,
         retry_after: Option<std::time::Duration>,
     ) {
-        if let Some(after) = retry_after {
+        // A list of an unstored calculation's values asked for a context or
+        // date since gone (#290): its wait is not the new context's, which
+        // may read other data.
+        let stale = self.stale_builds.get_mut().contains(&list);
+        if let Some(after) = retry_after.filter(|_| !stale) {
             let at = std::time::Instant::now() + after;
             self.build_retry.get_mut().insert(list, (at, false));
         }
@@ -958,6 +1002,12 @@ impl Calculations {
         let Some((_, tables)) = building.remove(&list) else {
             return;
         };
+        // Its answer is not taken either: the next frame asks for the list
+        // again.
+        if stale {
+            self.stale_builds.get_mut().remove(&list);
+            return;
+        }
         if let Some(items) = result {
             self.built.get_mut().insert(list, (tables, items));
         }
@@ -4920,6 +4970,68 @@ mod tests {
             field: 1,
             repetition: 1,
         }
+    }
+
+    /// A list of an unstored calculation's values (Items::Description)
+    /// is built on the worker, never in paint, from committed values
+    /// (#290). While it is built, changes of the window's context ask for
+    /// no other build: the answer for the old context is not taken, and
+    /// one build for the new one follows.
+    #[test]
+    fn a_calculated_list_is_built_on_the_worker_one_build_at_a_time() {
+        let mut schema = portal_schema();
+        schema.add_value_list(option_list(
+            5,
+            ValueSource::Field {
+                primary: om_data::specs::SpecField {
+                    occurrence: Some(ROW_OCCURRENCE),
+                    field: 3,
+                    repetition: 1,
+                },
+                secondary: None,
+                start: None,
+            },
+        ));
+        let mut calcs = Calculations {
+            schema: Some(Arc::new(schema.clone())),
+            ..Calculations::default()
+        };
+        portal_data(&mut calcs);
+        let pending = |calcs: &Calculations| {
+            evaluator(calcs, &schema).option_values(&option_object(13, 5), 1, None)
+        };
+        assert_eq!(pending(&calcs), Err(ChoiceError::Pending));
+        let asked = calcs.take_list_builds();
+        assert_eq!(asked.len(), 1, "{asked:?}");
+        let first = asked[0].ticket;
+        // The window resized twice meanwhile.
+        for name in ["Wide", "Wider"] {
+            calcs.observe_context(&SessionInfo {
+                window_name: name.into(),
+                ..SessionInfo::default()
+            });
+            assert_eq!(pending(&calcs), Err(ChoiceError::Pending));
+        }
+        assert!(calcs.take_list_builds().is_empty(), "one build at a time");
+        let built = |names: &[&str]| {
+            Some(Ok(Arc::new(Choices {
+                items: names
+                    .iter()
+                    .map(|name| om_data::host::ValueListEntry {
+                        label: (*name).into(),
+                        value: (*name).into(),
+                    })
+                    .collect(),
+                custom: false,
+            })))
+        };
+        calcs.accept_built_list(5, first, built(&["old"]), None);
+        assert_eq!(pending(&calcs), Err(ChoiceError::Pending));
+        let again = calcs.take_list_builds();
+        assert_eq!(again.len(), 1, "{again:?}");
+        assert_ne!(again[0].ticket, first);
+        calcs.accept_built_list(5, again[0].ticket, built(&["new"]), None);
+        assert_eq!(values(pending(&calcs)), ["new"]);
     }
 
     #[test]

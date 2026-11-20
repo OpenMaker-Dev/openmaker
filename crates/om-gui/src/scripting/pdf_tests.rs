@@ -1340,10 +1340,6 @@ fn sliding_refuses_unsupported_options_overlaps_and_cut_off_objects() {
             &|l: &mut Layout| find(l, 56).flags |= om_layout::sliding::NON_PRINTING,
             "hidden when printing",
         ),
-        (
-            &|l: &mut Layout| find(l, 50).flags |= om_layout::sliding::UP,
-            "header or footer",
-        ),
         // The patch moved into Notes' frame.
         (
             &|l: &mut Layout| find(l, 57).bounds = Some(rect(300.0, 140.0, 24.0, 16.0)),
@@ -1371,6 +1367,48 @@ fn sliding_refuses_unsupported_options_overlaps_and_cut_off_objects() {
         let message = refuse(&with(change));
         assert!(message.contains(reason), "{reason}: {message}");
     }
+    // Headers, footers and title parts never shrink or slide up (Claris):
+    // objects there set to slide up (and resize their part) print exactly
+    // as the same objects without the options. Among them: a rectangle over
+    // the header's merge text (an overlap a slider may not have), an empty
+    // field that would shrink and a label below it that would rise if they
+    // slid, and a field whose text does not fit, cut at its box.
+    use om_layout::sliding::{RESIZE_PART, UP};
+    let header = |slides: u64| {
+        with(&|l| {
+            find(l, 50).flags |= slides;
+            find(l, 59).flags |= slides & UP;
+            let mut extra = vec![
+                LayoutObject {
+                    id: 61,
+                    object_type: 5,
+                    bounds: Some(rect(12.0, 10.0, 20.0, 10.0)),
+                    ..Default::default()
+                },
+                field(62, 1, rect(330.0, 8.0, 60.0, 18.0)),
+                field(63, 11, rect(400.0, 8.0, 60.0, 14.0)),
+                label(64, "Below", rect(400.0, 24.0, 60.0, 12.0), 12.0, false),
+            ];
+            for object in &mut extra {
+                object.flags |= 0x3000_0000 | slides;
+                l.objects.root.push(object.id);
+            }
+            l.objects.objects.extend(extra);
+        })
+    };
+    let render = |layout: &Layout| {
+        crate::report::render_pdf(layout, 2, paper.clone(), &[], |o, _| {
+            Ok(match o.id {
+                62 => "A name far too long for its header field".repeat(4),
+                63 => String::new(),
+                _ => o.text.clone().unwrap_or_default(),
+            })
+        })
+        .unwrap()
+        .bytes
+    };
+    let placed = render(&header(0));
+    assert_eq!(render(&header(UP | RESIZE_PART)), placed);
 }
 
 fn pdf(path: &str, current: bool) -> ScriptStep {
@@ -4029,4 +4067,163 @@ fn container_fields_print_pictures_by_graphic_format_and_files_by_name() {
     );
     // The rest of the frame stays the field's own.
     assert_eq!(at(image.left + 5.0, clip.top + 2.0), [255, 255, 255, 255]);
+}
+
+/// `{{PageNumber}}` prints each page's number, in a static label and in a
+/// merge text's literal (any case), as FileMaker Pro 26.0.3's Save Records
+/// as PDF wrote it on page *n* (calc-functions.md, O4), without touching
+/// the merged field's value. An unclosed `{{` prints as it is, and a
+/// symbol is read within one literal run, never across a merged field.
+/// Other layout symbols still refuse.
+#[test]
+fn page_number_symbols_print_each_pages_number() {
+    use om_layout::TextRun::{Literal, MergeField};
+    let mut merged = label(3, "No.", rect(320.0, 610.0, 200.0, 24.0), 11.0, false);
+    merged.text_runs = vec![
+        Literal("No. {{pagenumber}} ".into()),
+        MergeField("Name".into()),
+    ];
+    let mut noted = label(
+        5,
+        "Note {{ <<Name>> / Page {{PageNumber}}",
+        rect(12.0, 60.0, 400.0, 20.0),
+        12.0,
+        false,
+    );
+    noted.text_runs = vec![
+        Literal("Note {{ ".into()),
+        MergeField("Name".into()),
+        Literal(" / Page {{PageNumber}}".into()),
+    ];
+    // A merged field whose name holds the symbol keeps its name.
+    let mut named = label(
+        6,
+        "<<Name {{PageNumber}}>> / Page {{PageNumber}}",
+        rect(12.0, 85.0, 400.0, 20.0),
+        12.0,
+        false,
+    );
+    named.text_runs = vec![
+        MergeField("Name {{PageNumber}}".into()),
+        Literal(" / Page {{PageNumber}}".into()),
+    ];
+    // Literal text that looks like a placeholder is numbered as text.
+    let mut angled = label(
+        7,
+        "<<Page {{PageNumber}}>> / <<Name>>",
+        rect(12.0, 110.0, 400.0, 20.0),
+        12.0,
+        false,
+    );
+    angled.text_runs = vec![
+        Literal("<<Page {{PageNumber}}>> / ".into()),
+        MergeField("Name".into()),
+    ];
+    let layout = Layout {
+        def: Some(LayoutDef {
+            base_width: 540.0,
+            ..Default::default()
+        }),
+        parts: vec![
+            Part {
+                part_type: 4,
+                height: 600.0,
+                ..Default::default()
+            },
+            Part {
+                part_type: 7,
+                top: 600.0,
+                height: 40.0,
+                ..Default::default()
+            },
+        ],
+        objects: ObjectStore {
+            root: vec![1, 2, 3, 4, 5, 6, 7],
+            objects: vec![
+                label(1, "Body", rect(12.0, 10.0, 200.0, 20.0), 12.0, false),
+                label(
+                    2,
+                    "Page {{PageNumber}}",
+                    rect(12.0, 610.0, 200.0, 24.0),
+                    11.0,
+                    false,
+                ),
+                merged,
+                label(4, "Draft {{", rect(12.0, 35.0, 200.0, 20.0), 12.0, false),
+                noted,
+                named,
+                angled,
+            ],
+            ..Default::default()
+        },
+        ..Default::default()
+    };
+    let render = |layout: &Layout| {
+        let paper = om_layout::pagination::PageSize::for_layout(layout).unwrap();
+        crate::report::render_pdf(layout, 2, paper, &[], |o, _| {
+            Ok(match o.text_runs.as_slice() {
+                [] => o.text.clone().unwrap_or_default(),
+                runs => runs
+                    .iter()
+                    .map(|run| match run {
+                        Literal(text) => text.clone(),
+                        // A value that holds the symbol stays as it is.
+                        _ => "{{PageNumber}}".to_owned(),
+                    })
+                    .collect(),
+            })
+        })
+        .map_err(|e| e.message)
+    };
+    let report = render(&layout).unwrap();
+    assert_eq!(report.plan.pages.len(), 2);
+    let pdf = String::from_utf8_lossy(&report.bytes).into_owned();
+    for (page, number) in [(0, "1"), (1, "2")] {
+        let labels = text_origins(&pdf, 2, &format!("Page {number}"));
+        assert_eq!(labels.iter().map(|o| o.0).collect::<Vec<_>>(), [page]);
+        let merge = format!("No. {number} {{{{PageNumber}}}}");
+        let merged = text_origins(&pdf, 2, &merge);
+        assert_eq!(
+            merged.iter().map(|o| o.0).collect::<Vec<_>>(),
+            [page],
+            "{merge}"
+        );
+        let note = format!("Note {{{{ {{{{PageNumber}}}} / Page {number}");
+        let notes = text_origins(&pdf, 2, &note);
+        assert_eq!(
+            notes.iter().map(|o| o.0).collect::<Vec<_>>(),
+            [page],
+            "{note}"
+        );
+    }
+    let drafts = text_origins(&pdf, 2, "Draft {{");
+    assert_eq!(drafts.iter().map(|o| o.0).collect::<Vec<_>>(), [0, 1]);
+    // Content that reads a merge text's label gets it numbered too, only
+    // where a whole symbol is.
+    let paper = om_layout::pagination::PageSize::for_layout(&layout).unwrap();
+    let labels = crate::report::render_pdf(&layout, 2, paper, &[], |o, _| {
+        Ok(o.text.clone().unwrap_or_default())
+    })
+    .unwrap();
+    let labels = String::from_utf8_lossy(&labels.bytes).into_owned();
+    for (page, number) in [(0, "1"), (1, "2")] {
+        for label in [
+            format!("Note {{{{ <<Name>> / Page {number}"),
+            format!("<<Name {{{{PageNumber}}}}>> / Page {number}"),
+            format!("<<Page {number}>> / <<Name>>"),
+        ] {
+            let found = text_origins(&labels, 2, &label);
+            assert_eq!(
+                found.iter().map(|o| o.0).collect::<Vec<_>>(),
+                [page],
+                "{label}"
+            );
+        }
+    }
+    let mut dated = layout.clone();
+    dated.objects.objects[1].text = Some("{{CurrentDate}}".into());
+    assert_eq!(
+        render(&dated).unwrap_err(),
+        "Layout merge symbols other than {{PageNumber}} are unsupported"
+    );
 }
