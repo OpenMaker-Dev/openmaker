@@ -243,7 +243,7 @@
       "previous_status": "Partial",
       "status": "Partial",
       "scope": "Stored containers are read, replaced from the Insert menu and scripts, also in portal rows, and exported byte for byte. Browse draws pictures and a PDF's first page, an interactive container shows every page of a PDF, and Preview and PDF print pictures ([Browse mode](desktop-client.md#browse-mode), [container fields in reports](portable-pdf.md#container-fields)).",
-      "remaining": "Insert asks for a typed path instead of a file dialog, and \"Store only a reference\" is not available [#50](https://github.com/OpenMaker-Dev/openmaker/issues/50); externally stored data is not read [#9](https://github.com/OpenMaker-Dev/openmaker/issues/9); Table view draws no pictures; audio and video play only in a `web-viewer` build.",
+      "remaining": "Insert asks for a typed path instead of a file dialog on Linux and Windows (the system's open panel on macOS), and \"Store only a reference\" is not available [#50](https://github.com/OpenMaker-Dev/openmaker/issues/50); externally stored data is not read [#9](https://github.com/OpenMaker-Dev/openmaker/issues/9); Table view draws no pictures; audio and video play only in a `web-viewer` build.",
       "issues": [
         9,
         50
