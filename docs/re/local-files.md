@@ -731,21 +731,29 @@ than a second reader and writer.
     name with a rename that refuses to replace (`RENAME_NOREPLACE` on
     Linux, `RENAME_EXCL` on macOS), or, on file systems without one,
     hard-linked there. Every step after the folder is made goes through
-    the folder's and the output folder's descriptors, so another user
-    cannot put a file in its place: the file published, and the one
-    removed on a failure, is the copy. An entry at the output path (a
-    file, the open file, a link) refuses the copy and is left untouched.
+    the folder's and the output folder's descriptors and compares file
+    identities (device and inode), not names. The staged file must be the
+    one written before it is published, and the entry at the output name
+    must be it afterwards. A file another account put in its place (an ACL
+    the folder passes on can let it) is never reported as the copy: the
+    copy fails, and that file is left as it is. An entry at the output path
+    (a file, the open file, a link) refuses the copy and is left untouched.
     So does a name ending in `.omsave` in any case, with the characters
-    HFS+ ignores in names left out: the file's saves use that name for
-    their new copy. The private folder is removed at the end; a crash can
-    leave it beside the output, never a partial copy at the output name.
+    HFS+ ignores in names left out. A copy that still turns out to be the
+    file's own save name (`<file>.omsave` under a spelling the file system
+    folds to it, such as `ſ` for `s` on case-insensitive APFS) is taken
+    back and refused, so the next save keeps its name. Cleanup removes
+    only what the copy made: the staged file while it is still the copy,
+    and the folder while its name still holds the folder that was opened.
+    A crash can leave that folder beside the output, never a partial copy
+    at the output name.
   - *Permissions.* The copy holds the password verifiers, so it is created
     owner-only (0600), whatever the file's own permissions or the
     folder's group [I: OpenMaker's choice; FileMaker's is unmeasured].
-    ACL entries the folder passes on to new files still apply, as they do
-    to every file created there: OpenMaker cannot clear them without
-    platform ACL calls. Off Linux and macOS a copy is refused, as local
-    files are read-only there
+    Read access an ACL of the folder passes on to new files still applies,
+    to the staged copy as to the published one and to every file created
+    there: OpenMaker cannot clear it without platform ACL calls. Off Linux
+    and macOS a copy is refused, as local files are read-only there
     ([#30](https://github.com/OpenMaker-Dev/openmaker/issues/30)).
   - *The desktop's step.* Before committing or creating anything, it
     fails as a step OpenMaker does not support (error 3; the desktop stops

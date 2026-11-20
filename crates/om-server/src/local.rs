@@ -593,7 +593,7 @@ impl LocalHost {
                 None => Contents::Bytes(store.compacted()?),
             }
         };
-        write_copy(to, contents)?;
+        write_copy(to, contents, &save_copy_path(&file.path))?;
         info!(
             "{}: saved a {} to {}",
             self.name,
@@ -709,18 +709,22 @@ static STAGED: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(
 /// Write `contents` as the new file `to`.
 ///
 /// The copy is written and flushed in a folder of its own made beside `to`
-/// (`.omcopy-*`, 0700, checked to be this user's alone once opened), then
+/// (`.omcopy-*`, 0700, checked once opened to be this user's alone), then
 /// moved to the name `to` only where nothing is ([`publish`]). Every step
 /// after the folder is made works through its descriptor and the output
-/// folder's, never through a path another user could change: no one else
-/// can put an entry in the private folder, so the file published, and the
-/// one removed on a failure, is this copy. The folder is removed at the
-/// end, and a crash leaves at most it beside `to`, never a partial copy at
+/// folder's, and checks identities (device and inode), not names: the
+/// staged file must be the one written before it is published, and the
+/// entry at `to` must be it afterwards, so a file another account put in
+/// its place is never reported as the copy. A copy that turns out to be
+/// `reserved` (the file's own save name under another spelling, on a file
+/// system that folds names) is taken back and refused. Cleanup removes
+/// only what this call made: the staged file while it is still the copy,
+/// and the folder while its name still holds the folder this call opened.
+/// A crash leaves at most that folder beside `to`, never a partial copy at
 /// `to`.
 #[cfg(unix)]
-fn write_copy(to: &Path, contents: Contents) -> io::Result<()> {
+fn write_copy(to: &Path, contents: Contents, reserved: &Path) -> io::Result<()> {
     use rustix::fs::{self as fs, AtFlags, Mode, OFlags};
-    use std::io::Write;
     let name = to
         .file_name()
         .ok_or_else(|| io::Error::from(io::ErrorKind::InvalidInput))?;
@@ -748,49 +752,32 @@ fn write_copy(to: &Path, contents: Contents) -> io::Result<()> {
             }
         }
     };
-    let staged = "copy";
-    let written = (|| {
-        let dir = fs::openat(
-            &parent,
-            private.as_str(),
-            OFlags::RDONLY | OFlags::DIRECTORY | OFlags::NOFOLLOW | OFlags::CLOEXEC,
-            Mode::empty(),
-        )?;
-        let stat = fs::fstat(&dir)?;
-        if stat.st_uid != rustix::process::geteuid().as_raw() || stat.st_mode & 0o077 != 0 {
-            return Err(io::Error::other(
-                "the copy's private folder was replaced while it was made",
-            ));
+    // A folder this call cannot open, or that is not this user's alone, is
+    // left where it is: it may not be the one made.
+    let dir = fs::openat(
+        &parent,
+        private.as_str(),
+        OFlags::RDONLY | OFlags::DIRECTORY | OFlags::NOFOLLOW | OFlags::CLOEXEC,
+        Mode::empty(),
+    )?;
+    let stat = fs::fstat(&dir)?;
+    if stat.st_uid != rustix::process::geteuid().as_raw() || stat.st_mode & 0o077 != 0 {
+        return Err(io::Error::other(
+            "the copy's private folder was replaced while it was made",
+        ));
+    }
+    let opened = identity(&stat);
+    let written = stage_and_publish(&dir, &parent, name, contents, reserved);
+    if is(&parent, private.as_str(), opened) {
+        if let Err(e) = fs::unlinkat(&parent, private.as_str(), AtFlags::REMOVEDIR) {
+            warn!(
+                "the private folder {private} beside {} stays: {e}",
+                to.display()
+            );
         }
-        let made = (|| {
-            let file = fs::openat(
-                &dir,
-                staged,
-                OFlags::WRONLY | OFlags::CREATE | OFlags::EXCL | OFlags::NOFOLLOW | OFlags::CLOEXEC,
-                Mode::RUSR | Mode::WUSR,
-            )?;
-            let mut out = File::from(file);
-            match contents {
-                Contents::File(file) => {
-                    io::copy(&mut FromStart { file: &file, at: 0 }, &mut out)?;
-                }
-                Contents::Bytes(bytes) => out.write_all(&bytes)?,
-            }
-            out.sync_all()?;
-            publish(&dir, staged, &parent, name)
-        })();
-        // Published, the staged name is gone (or a second name of the copy,
-        // after a hard link); failed, it is this copy, which goes.
-        match fs::unlinkat(&dir, staged, AtFlags::empty()) {
-            Ok(()) => {}
-            Err(e) if e == rustix::io::Errno::NOENT => {}
-            Err(e) => warn!("a staged copy for {} stays: {e}", to.display()),
-        }
-        made
-    })();
-    if let Err(e) = fs::unlinkat(&parent, private.as_str(), AtFlags::REMOVEDIR) {
+    } else {
         warn!(
-            "the private folder {private} beside {} stays: {e}",
+            "the private folder {private} beside {} was replaced; it is left as it is",
             to.display()
         );
     }
@@ -804,8 +791,92 @@ fn write_copy(to: &Path, contents: Contents) -> io::Result<()> {
     Ok(())
 }
 
+/// The staged copy's name in its private folder.
+#[cfg(unix)]
+const STAGED_NAME: &str = "copy";
+
+/// [`write_copy`] within the private folder `dir`: write, check, publish
+/// as `name` in `parent`, check again.
+#[cfg(unix)]
+fn stage_and_publish(
+    dir: &std::os::fd::OwnedFd,
+    parent: &std::os::fd::OwnedFd,
+    name: &std::ffi::OsStr,
+    contents: Contents,
+    reserved: &Path,
+) -> io::Result<()> {
+    use rustix::fs::{self as fs, AtFlags, Mode, OFlags};
+    use std::io::Write;
+    use std::os::unix::fs::MetadataExt;
+    // Nothing is made, and so nothing removed, unless this open makes it.
+    let file = fs::openat(
+        dir,
+        STAGED_NAME,
+        OFlags::WRONLY | OFlags::CREATE | OFlags::EXCL | OFlags::NOFOLLOW | OFlags::CLOEXEC,
+        Mode::RUSR | Mode::WUSR,
+    )?;
+    let mut out = File::from(file);
+    let copy = identity(&fs::fstat(&out)?);
+    let replaced = || io::Error::other("the copy was replaced while it was saved");
+    let written = (|| {
+        match contents {
+            Contents::File(file) => {
+                io::copy(&mut FromStart { file: &file, at: 0 }, &mut out)?;
+            }
+            Contents::Bytes(bytes) => out.write_all(&bytes)?,
+        }
+        out.sync_all()?;
+        if !is(dir, STAGED_NAME, copy) {
+            return Err(replaced());
+        }
+        publish(dir, STAGED_NAME, parent, name)?;
+        // What another account put at the name in the meantime is not the
+        // copy, and stays as it is.
+        if !is(parent, name, copy) {
+            return Err(replaced());
+        }
+        let collides =
+            std::fs::symlink_metadata(reserved).is_ok_and(|meta| (meta.dev(), meta.ino()) == copy);
+        if collides {
+            if is(parent, name, copy) {
+                let _ = fs::unlinkat(parent, name, AtFlags::empty());
+            }
+            return Err(io::Error::new(
+                io::ErrorKind::InvalidInput,
+                "that name is where OpenMaker's saves make their new copy",
+            ));
+        }
+        Ok(())
+    })();
+    // Renamed, the staged name is gone; linked, it is a second name of the
+    // copy; failed, it is the copy. Only the copy is removed.
+    if is(dir, STAGED_NAME, copy) {
+        if let Err(e) = fs::unlinkat(dir, STAGED_NAME, AtFlags::empty()) {
+            warn!("a staged copy stays in its private folder: {e}");
+        }
+    }
+    written
+}
+
+/// A file's device and inode.
+#[cfg(unix)]
+#[allow(
+    clippy::unnecessary_cast,
+    reason = "dev_t is i32 on macOS and u64 on Linux; std's MetadataExt::dev casts it as here"
+)]
+fn identity(stat: &rustix::fs::Stat) -> (u64, u64) {
+    (stat.st_dev as u64, stat.st_ino as u64)
+}
+
+/// Whether `name` in `dir`, not followed if a link, is the file `id`.
+#[cfg(unix)]
+fn is<P: rustix::path::Arg>(dir: &std::os::fd::OwnedFd, name: P, id: (u64, u64)) -> bool {
+    rustix::fs::statat(dir, name, rustix::fs::AtFlags::SYMLINK_NOFOLLOW)
+        .is_ok_and(|stat| identity(&stat) == id)
+}
+
 #[cfg(not(unix))]
-fn write_copy(_to: &Path, _contents: Contents) -> io::Result<()> {
+fn write_copy(_to: &Path, _contents: Contents, _reserved: &Path) -> io::Result<()> {
     Err(io::ErrorKind::Unsupported.into())
 }
 

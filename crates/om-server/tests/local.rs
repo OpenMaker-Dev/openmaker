@@ -680,6 +680,20 @@ fn saved_copies_are_new_files_that_open_and_replace_nothing() {
             "{refused}"
         );
     }
+    // A spelling only a file system that folds names takes for the save's
+    // name (U+017F folds to "s" on case-insensitive APFS): refused there,
+    // a file of its own elsewhere. Either way the save's name stays free.
+    let folded = folder.0.join(format!("{FILE}.om\u{17f}ave"));
+    let made = host.save_copy(&folded, CopyKind::Copy);
+    assert!(std::fs::symlink_metadata(folder.0.join(format!("{FILE}.omsave"))).is_err());
+    match made {
+        Ok(()) => std::fs::remove_file(&folded).unwrap(),
+        Err(refused) => assert_eq!(
+            refused.kind(),
+            std::io::ErrorKind::InvalidInput,
+            "{refused}"
+        ),
+    }
     let clone = folder.0.join("Clone.fmp12");
     let refused = host.save_copy(&clone, CopyKind::Clone).unwrap_err();
     assert_eq!(refused.kind(), std::io::ErrorKind::Unsupported, "{refused}");
