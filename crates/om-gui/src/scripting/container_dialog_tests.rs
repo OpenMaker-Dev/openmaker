@@ -28,6 +28,16 @@ fn answer(
     path: std::path::PathBuf,
     meanwhile: fn(u32) -> Vec<(u32, Request)>,
 ) -> std::thread::JoinHandle<(ContainerFileDialog, mpsc::Receiver<Response>)> {
+    answer_as(c, path, false, meanwhile)
+}
+
+/// [`answer`], the file chosen in the platform's open panel when `panel`.
+fn answer_as(
+    c: &mut Client,
+    path: std::path::PathBuf,
+    panel: bool,
+    meanwhile: fn(u32) -> Vec<(u32, Request)>,
+) -> std::thread::JoinHandle<(ContainerFileDialog, mpsc::Receiver<Response>)> {
     let events = std::mem::replace(&mut c.events, mpsc::channel().1);
     let jobs = c._keep_jobs.clone();
     std::thread::spawn(move || {
@@ -55,6 +65,7 @@ fn answer(
                     }
                     let chosen = ContainerFileDialog {
                         path: path.display().to_string(),
+                        chosen: panel.then(|| path.clone()),
                         ..dialog.clone()
                     };
                     send(
@@ -155,4 +166,20 @@ fn a_dialog_answer_changes_nothing_once_its_field_was_read_again() {
     let events = c.server.lock().unwrap().events.clone();
     assert_eq!(c.result(), "3|Root", "{events:?}");
     assert_eq!(uploads(&c), Vec::<String>::new());
+}
+
+/// A file the platform's panel chose goes in as the panel named it: a name
+/// ending in a space is not taken for the file without it.
+#[test]
+fn a_panel_answer_inserts_the_file_it_named() {
+    let temporary = tempfile::tempdir().unwrap();
+    let typed = temporary.path().join("note.txt");
+    let mut c = client(&typed);
+    let named = temporary.path().join("note.txt ");
+    std::fs::write(&named, b"spaced!").unwrap();
+    let shown = answer_as(&mut c, named, true, |_| Vec::new());
+    c.run();
+    let _events = shown.join().unwrap();
+    assert_eq!(c.result(), "0|Root");
+    assert_eq!(uploads(&c), ["Root.fmp12:upload:Photo:note.txt :7"]);
 }

@@ -2580,6 +2580,7 @@ impl OpenMakerApp {
             answer = panel.answer().map(|chosen| {
                 Answer::ContainerFile(chosen.map(|path| crate::scripting::ContainerFileDialog {
                     path: path.display().to_string(),
+                    chosen: Some(path),
                     ..dialog.clone()
                 }))
             });
