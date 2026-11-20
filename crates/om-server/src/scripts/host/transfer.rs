@@ -532,6 +532,11 @@ impl ServerImport<'_> {
         auto_enter: bool,
         locked_here: bool,
     ) -> om_transfer::Result<()> {
+        // What Relookup Field Contents staged on the record alone, its
+        // match field marked set: the lookup is the script's request, not
+        // a value of the import's, so with the import's auto-entry off it
+        // still waits for Commit Transaction's rules.
+        let relooked = (record.relooked && !auto_enter).then(|| record.changed.clone());
         self.put(&mut record, writes);
         // A record the script changed earlier in its transaction gets the
         // import's rules for those changes too (OpenMaker's choice).
@@ -553,6 +558,9 @@ impl ServerImport<'_> {
                 written,
                 ..Ruled::default()
             }));
+        }
+        if let (Some(cells), Some(ruled)) = (relooked, record.ruled.as_mut()) {
+            ruled.since.extend(cells);
         }
         let key = (record.table, record.id);
         let Some(transaction) = self.host.transaction.as_mut() else {

@@ -14,6 +14,8 @@
 mod fixture;
 #[path = "fixtures/server.rs"]
 mod server;
+#[path = "fixtures/transfer.rs"]
+mod transfer;
 
 use fixture::{
     script, TempFile, COUNT, NAME, NOTES, NOTES_LAYOUT, NOTES_OCCURRENCE, OCCURRENCE, TABLE,
@@ -996,6 +998,69 @@ fn relookup_field_contents_copies_the_lookups_again() {
     assert_eq!(count(&mut client), before);
     // The script's last error is the reply's too.
     assert_eq!(run(&mut client, 9), (3, "3/3/w".to_string()));
+}
+
+/// An import with auto-enter off into a record Relookup staged in the
+/// same transaction updates its own field and leaves the relookup the
+/// script asked for to Commit Transaction, which copies it.
+#[test]
+fn an_import_without_auto_entry_keeps_a_staged_relookup() {
+    let relookup = {
+        let mut step = ScriptStep::new(40);
+        step.set_flag(flag::NO_INTERACT, true);
+        step.set_field_spec(
+            0,
+            Some(FieldSpec::new(
+                StoredKey::from_id(OCCURRENCE).unwrap(),
+                StoredKey::from_id(fixture::NAME).unwrap(),
+                0,
+            )),
+        );
+        step
+    };
+    let dir = std::env::temp_dir().join(format!(
+        "om-psos-relookup-import-{}-{:?}",
+        std::process::id(),
+        std::thread::current().id()
+    ));
+    let _ = std::fs::remove_dir_all(&dir);
+    std::fs::create_dir_all(dir.join("Documents")).unwrap();
+    std::fs::write(dir.join("Documents").join("count.tab"), "9\r").unwrap();
+    let mut tree = lookup_tree();
+    tree.put(
+        &[&[17], &[5], &uint_segment(8)],
+        script(
+            8,
+            "Relookup, then import",
+            vec![
+                fixture::go_to_record(1),
+                set_field(NOTE, 1, "\"typed\""),
+                ScriptStep::new(75),
+                ScriptStep::new(205),
+                relookup,
+                set_var("$p", "Get ( DocumentsPath ) & \"count.tab\""),
+                transfer::import_as(
+                    &["$p"],
+                    &[COUNT],
+                    false,
+                    om_transfer::spec::ImportAction::UpdateFoundSet,
+                ),
+                set_var("$import", "Get ( LastError )"),
+                ScriptStep::new(206),
+                exit_with(
+                    "Tasks::Note & \"/\" & Tasks::Count & \"/\" & $import & \"/\" & Get ( LastError )",
+                ),
+            ],
+        )
+        .encode(),
+    );
+    let file = TempFile(dir.join(fixture::FILE));
+    fixture::write_tree(&file.0, &tree);
+    let port = server::start(&file);
+    let (mut client, _) = server::logged_in(port, "client");
+    let result = run(&mut client, 8);
+    let _ = std::fs::remove_dir_all(&dir);
+    assert_eq!(result, (0, "w/9/0/0".to_string()));
 }
 
 /// Open Transaction's "Skip auto-enter options" performs no lookup: a
