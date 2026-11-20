@@ -679,11 +679,13 @@ impl NativeProvider {
                 // Swedish file's English keys), the value it left out for an
                 // equal one may be this one. A number list's `1e3` is not
                 // `1é3` (13), as the list compares them (#591).
-                // Both read in the locale of the file that owns the listed
-                // field, as its values are read: a related German `1,500`
-                // is 1.5 there, not 1500. They compare as the list compares
-                // its values, in the locale of the file that owns the list:
-                // a US list over a Swedish field takes `v` and `w` apart.
+                // The list's values are written in the locale of the file
+                // that owns the list (`list_entries`), and read back so; the
+                // value checked is read in the locale of the file that owns
+                // the listed field, as its own values are: a related German
+                // `1,500` is 1.5 there, not 1500. They compare as the list
+                // compares its values, in the list's locale: a US list over
+                // a Swedish field takes `v` and `w` apart.
                 let listed_type = schema
                     .field(primary, listed)
                     .map_or(ValueType::Text, |def| def.value_type);
@@ -696,15 +698,11 @@ impl NativeProvider {
                     .value_list_context(list.id)
                     .map_or(&schema.locale, |file| &file.locale);
                 let list_cx = Ctx::new(list_locale, today);
-                let as_listed =
-                    |value: &str| om_data::host::stored_value(value, listed_type, &listed_cx);
+                let checked = om_data::host::stored_value(&text, listed_type, &listed_cx);
                 let equal = |listed: &str| {
+                    let listed = om_data::host::stored_value(listed, listed_type, &list_cx);
                     matches!(
-                        om_data::calc::ops::compare(
-                            &as_listed(listed),
-                            &as_listed(&text),
-                            &list_cx
-                        ),
+                        om_data::calc::ops::compare(&listed, &checked, &list_cx),
                         om_data::calc::ops::Comparison::Ordered(std::cmp::Ordering::Equal)
                     )
                 };

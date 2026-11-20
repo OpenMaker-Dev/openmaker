@@ -2849,8 +2849,10 @@ fn a_value_list_of_a_field_in_an_unkeyed_language_is_not_checked_in_english() {
 /// the host built it, also when it builds indexes late).
 #[test]
 fn a_value_list_of_a_number_field_checks_values_as_numbers() {
-    // A German file: `3.000` is 3000 there. OpenMaker does not read it as
-    // one yet and looks it up as text (#415), never as 3.
+    // A German file: `3.000` is 3000 there, and record 2's `5.000` is 5000.
+    // OpenMaker does not read such numbers yet, here or in the index
+    // OpenMaker Server builds, and looks them up as text (#415): never as
+    // 3, and `5` is not 5000.
     let german = om_calc::Locale {
         language: om_calc::Language::from_id(25),
         decimal_separator: ',',
@@ -2866,11 +2868,26 @@ fn a_value_list_of_a_number_field_checks_values_as_numbers() {
         let mut root = fixture::tree(&[], true);
         fixture::set_field_options(&mut root, TABLE, COUNT, 0x8000_0000);
         fixture::code_in_list_of(&mut root, COUNT);
+        let count_of = |root: &mut OwnedNode, record: u64, text: &str| {
+            root.put(
+                &[
+                    &uint_segment(TABLE),
+                    &[5],
+                    &serial::encode(record),
+                    &uint_segment(COUNT),
+                ],
+                text_node(&[], text),
+            )
+        };
         if let Some(locale) = german {
             root.put(
                 &[&[2], &[0x0d]],
                 OwnedNode::leaf(Vec::new(), locale.to_record()),
             );
+            count_of(&mut root, 2, "5.000");
+        } else {
+            // One cell of two lines: a number field's value is not split.
+            count_of(&mut root, 1, "3,000\r2,000");
         }
         let file = TempFile::from_tree("list-of-numbers", &root);
         let (port, ca_pem) = host_with(&file.0, None, |server| {
@@ -2889,10 +2906,12 @@ fn a_value_list_of_a_number_field_checks_values_as_numbers() {
         };
         if german.is_some() {
             assert_eq!(code(&mut a, "3.000"), Err(Some(506)), "late={late}");
-            assert_eq!(code(&mut a, "5"), Ok(()), "late={late}");
+            assert_eq!(code(&mut a, "5"), Err(Some(506)), "late={late}");
         } else {
             // First, while a late index is not built yet: a value no
-            // number reads is looked up as text among the stored values.
+            // number reads is looked up as text among the stored values,
+            // each a whole.
+            assert_eq!(code(&mut a, "3,000"), Err(Some(506)), "late={late}");
             assert_eq!(code(&mut a, "abc"), Err(Some(506)), "late={late}");
             assert_eq!(code(&mut a, "5.0"), Ok(()), "late={late}");
             assert_eq!(code(&mut a, "4"), Err(Some(506)), "late={late}");

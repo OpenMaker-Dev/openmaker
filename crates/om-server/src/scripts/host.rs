@@ -1670,22 +1670,20 @@ impl ServerHost {
             return Some(false);
         };
         let order = self.locale.date_order;
-        let typed = matches!(
-            def.data_type,
-            DataType::Number | DataType::Date | DataType::Time | DataType::Timestamp
-        );
+        // A number in a file whose decimal separator is not a point is not
+        // keyed as the file reads it, neither here nor by the index builder
+        // (`1.000` is 1000 in German, keyed as 1), until #415: it is looked
+        // up as text, as before #591.
+        let typed = match def.data_type {
+            DataType::Number => self.locale.decimal_separator == '.',
+            DataType::Date | DataType::Time | DataType::Timestamp => true,
+            _ => false,
+        };
         let typed_keys = |value: &str| {
             om_query::keys::value_keys(def.data_type, value, order, TextKeys::Collated)
         };
-        // A number with a point or a comma in a file whose decimal
-        // separator is not a point (`1.000` is 1000 in German) is not read
-        // yet (#415): it gets no key and compares as text, as before #591,
-        // rather than keyed as en-US.
         let typed_key = |value: &str| {
-            let reads = def.data_type != DataType::Number
-                || self.locale.decimal_separator == '.'
-                || !value.contains(['.', ',']);
-            if !(typed && reads) {
+            if !typed {
                 return None;
             }
             typed_keys(value).into_iter().find(|key| {
@@ -1697,9 +1695,9 @@ impl ServerHost {
         let (key, text_keys) = match typed_key(text) {
             Some(key) => (key, None),
             None => {
-                let keys = match typed {
-                    true => text_form.unwrap_or(TextKeys::Collated),
-                    false => text_form?,
+                let keys = match def.data_type {
+                    DataType::Text => text_form?,
+                    _ => text_form.unwrap_or(TextKeys::Collated),
                 };
                 (keys.key(text).unwrap_or_default(), Some(keys))
             }

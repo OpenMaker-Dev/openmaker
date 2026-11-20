@@ -261,35 +261,18 @@ pub(super) fn checked_keys(
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub(super) enum IndexKeys {
     Text(TextKeys),
-    /// The type, the file's date order and its decimal separator.
-    Typed(om_hbam::DataType, om_collate::DateOrder, char),
+    /// The type and the file's date order.
+    Typed(om_hbam::DataType, om_collate::DateOrder),
 }
 
 impl IndexKeys {
-    /// Whether OpenMaker reads `text` as the index does. In a file whose
-    /// decimal separator is not a point a number with a point or a comma
-    /// (`1.000` is 1000 in German) is not read yet (#415): it is compared
-    /// as text, as before #591, rather than keyed as en-US.
-    fn reads(self, text: &str) -> bool {
-        match self {
-            IndexKeys::Typed(om_hbam::DataType::Number, _, decimal) => {
-                decimal == '.' || !text.contains(['.', ','])
-            }
-            _ => true,
-        }
-    }
-
     /// The key `text` is looked up under, as the index holds it; for a
     /// typed source `None` when it is not one of the type's values
-    /// OpenMaker keys (empty, no digit, digits among other characters, a
-    /// number it does not read in the file's locale).
+    /// OpenMaker keys (empty, no digit, digits among other characters).
     fn key(self, text: &str) -> Option<Vec<u8>> {
-        if !self.reads(text) {
-            return None;
-        }
         match self {
             IndexKeys::Text(keys) => keys.key(text),
-            IndexKeys::Typed(data_type, order, _) => {
+            IndexKeys::Typed(data_type, order) => {
                 om_query::keys::value_keys(data_type, text, order, TextKeys::Collated)
                     .into_iter()
                     .find(|key| {
@@ -309,7 +292,7 @@ impl IndexKeys {
                 om_collate::DateOrder::MonthDayYear,
                 keys,
             ),
-            IndexKeys::Typed(data_type, order, _) => {
+            IndexKeys::Typed(data_type, order) => {
                 record_value_keys(data_type, texts, order, TextKeys::Collated)
             }
         }
@@ -336,17 +319,21 @@ fn list_keys(
 ) -> Result<IndexKeys, DataError> {
     use om_hbam::DataType;
     let field_def = catalog.table(table).and_then(|t| t.field(field));
-    if let Some(def) = field_def.filter(|f| {
-        matches!(
-            f.data_type,
-            DataType::Number | DataType::Date | DataType::Time | DataType::Timestamp
-        )
-    }) {
+    // A number in a file whose decimal separator is not a point is not keyed
+    // as the file reads it, neither here nor by OpenMaker Server's index
+    // builder (`1.000` is 1000 in German, keyed as 1), until #415: it is
+    // looked up as text, as before #591.
+    let typed = |f: &&om_hbam::Field| match f.data_type {
+        DataType::Number => decimal == '.',
+        DataType::Date | DataType::Time | DataType::Timestamp => true,
+        _ => false,
+    };
+    if let Some(def) = field_def.filter(typed) {
         let dated = matches!(def.data_type, DataType::Date | DataType::Timestamp);
         return match (order, dated) {
-            (Some(order), _) => Ok(IndexKeys::Typed(def.data_type, order, decimal)),
+            (Some(order), _) => Ok(IndexKeys::Typed(def.data_type, order)),
             // Numbers and times read no date order.
-            (None, false) => Ok(IndexKeys::Typed(def.data_type, Default::default(), decimal)),
+            (None, false) => Ok(IndexKeys::Typed(def.data_type, Default::default())),
             (None, true) => Err(DataError::unsupported(format!(
                 "Field {field}, the source of a value list, holds dates in an order OpenMaker \
                  does not know: the file's locale record cannot be read."
@@ -356,6 +343,9 @@ fn list_keys(
     let keys = field_def
         .and_then(|f| f.decoded_options())
         .and_then(|o| om_data::rules::value_text_keys(o.index_language(), file_language));
+    if field_def.is_some_and(|f| f.data_type != DataType::Text) {
+        return Ok(IndexKeys::Text(keys.unwrap_or(TextKeys::Collated)));
+    }
     keys.map(IndexKeys::Text).ok_or_else(|| {
         DataError::unsupported(format!(
             "Field {field}, the source of a value list, has no index OpenMaker can check a \
@@ -1219,6 +1209,9 @@ impl NativeProvider {
         let options = field
             .decoded_options()
             .ok_or_else(|| unsupported("the field definition is unreadable."))?;
+        // A typed source's value looked up as text compares as a whole, not
+        // by lines, as OpenMaker Server's scan compares it.
+        let whole = matches!(keys, IndexKeys::Text(_)) && field.data_type != DataType::Text;
         // The caller keyed the value as `keys`: stored values are keyed
         // the same, a text source only in that form, a typed one as its
         // own type (#591).
@@ -1228,14 +1221,19 @@ impl NativeProvider {
                     == Some(form)
             }
             // A typed source's value looked up as text (one its type does
-            // not read as one OpenMaker keys): its stored values compare as
-            // text too, as OpenMaker Server's scan compares them.
+            // not read as one OpenMaker keys, or a number in a file whose
+            // decimal separator is not a point): its stored values compare
+            // as text too, as OpenMaker Server's scan compares them.
             (
                 IndexKeys::Text(form),
                 DataType::Number | DataType::Date | DataType::Time | DataType::Timestamp,
-            ) => form == TextKeys::Collated,
+            ) => {
+                form == TextKeys::Collated
+                    || om_data::rules::value_text_keys(options.index_language(), file_language)
+                        == Some(form)
+            }
             (IndexKeys::Text(_), _) => false,
-            (IndexKeys::Typed(data_type, ..), _) => field.data_type == data_type,
+            (IndexKeys::Typed(data_type, _), _) => field.data_type == data_type,
         };
         if !same_form
             || !matches!(field.kind, FieldKind::Normal | FieldKind::Calculation)
@@ -1335,6 +1333,15 @@ impl NativeProvider {
                         }
                     })
                     .collect::<Result<Vec<_>, DataError>>()?;
+                if whole {
+                    if texts
+                        .iter()
+                        .any(|text| keys.key(text).as_deref() == Some(key))
+                    {
+                        return Ok(true);
+                    }
+                    continue;
+                }
                 let (texts, unkeyed): (Vec<String>, Vec<String>) = match keys {
                     IndexKeys::Typed(..) => texts
                         .into_iter()
