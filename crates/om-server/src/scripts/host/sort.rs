@@ -108,9 +108,16 @@ impl ServerHost {
         // A self join's field would sort by its first related record, and
         // the summaries a sorted found set feeds would have to follow:
         // refused rather than sorted by the record's own value (#610).
+        // A field that no longer exists is left to the sort's own check
+        // (102).
         let self_joined = spec.fields.iter().any(|entry| {
+            let field_occurrence = entry.field.occurrence.unwrap_or(occurrence);
             entry.summary.is_none()
-                && self.self_join(occurrence, entry.field.occurrence.unwrap_or(occurrence))
+                && self
+                    .schema
+                    .field(field_occurrence, entry.field.field)
+                    .is_some()
+                && self.self_join(occurrence, field_occurrence)
         });
         if self_joined {
             return Err(UNSUPPORTED.into());
@@ -173,9 +180,6 @@ impl ServerHost {
             .iter()
             .map(|entry| self.level(occurrence, entry))
             .collect::<Result<Vec<_>, _>>()?;
-        if records.len() < 2 {
-            return Ok(records);
-        }
         // A related sort field's related set may be sorted too.
         let _nesting = om_data::host::SortNesting::enter().ok_or(UNSUPPORTED)?;
         let mut keyed = Vec::with_capacity(records.len());
