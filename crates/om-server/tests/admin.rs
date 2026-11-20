@@ -123,8 +123,14 @@ fn snapshots_follow_clients_through_their_sessions() {
     let started = SystemTime::now();
     let file = TempFile::new("admin", &[], true);
     let folder = file.0.with_extension("logs");
+    // A database folder the server looked in that holds no hosted file.
+    let databases = file.0.with_extension("databases");
+    std::fs::create_dir_all(&databases).unwrap();
     let (port, handle) = server::start_configured_with_handle(&file, |server| {
-        server.with_event_log(&folder).unwrap()
+        server
+            .with_event_log(&folder)
+            .unwrap()
+            .with_database_folders(vec![databases.clone()])
     });
 
     let overview = handle.overview();
@@ -228,6 +234,11 @@ fn snapshots_follow_clients_through_their_sessions() {
             Err(BackendError::NotFound)
         );
         assert_eq!(console.run_schedule(2), Err(BackendError::NotFound));
+        // Database Folders lists the empty database folder, and the one
+        // of the file named on the command line (#430).
+        let folders = console.folders().unwrap();
+        assert!(folders.databases.contains(&databases), "{folders:?}");
+        assert_eq!(folders.databases.len(), 2, "{folders:?}");
     }
 
     // A second client: both listed, oldest first, and both have the file
@@ -289,6 +300,7 @@ fn snapshots_follow_clients_through_their_sessions() {
     let written = std::fs::read_to_string(folder.join("Access.log")).unwrap();
     assert!(!written.contains("s3cret") && !written.contains(PASSWORD));
     std::fs::remove_dir_all(&folder).unwrap();
+    std::fs::remove_dir_all(&databases).unwrap();
 }
 
 /// The event log records the disconnect and the session's end, naming

@@ -219,12 +219,14 @@ impl Backend for ServerBackend {
         }
     }
 
+    /// The database folders the server looked in at startup, empty or
+    /// not, and the folders of files named on its command line elsewhere.
     fn folders(&self) -> Result<Folders, BackendError> {
         let databases: BTreeSet<PathBuf> = self
             .handle
-            .files()
+            .database_folders()
             .into_iter()
-            .map(|file| file.folder)
+            .chain(self.handle.files().into_iter().map(|file| file.folder))
             .collect();
         Ok(Folders {
             databases: databases.into_iter().collect(),

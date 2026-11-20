@@ -362,7 +362,7 @@ fn run(args: Args) -> Result<(), Box<dyn std::error::Error>> {
     let identity = tls_identity(&args)?;
     #[cfg(feature = "admin-console")]
     let console_identity = admin.as_ref().map(|_| identity.clone());
-    let paths = hosted_paths(&args);
+    let (paths, database_folders) = hosted_paths(&args);
     // No files is a server with nothing hosted yet, as FileMaker Server
     // starts before any database is opened: its Admin Console and listener
     // still serve, with an empty file list (#419).
@@ -429,7 +429,8 @@ fn run(args: Args) -> Result<(), Box<dyn std::error::Error>> {
         .with_script_limits(args.limits)
         .with_connection_limits(args.connections)
         .with_calc_limits(args.calc_limits)
-        .with_schedules(schedules)?;
+        .with_schedules(schedules)?
+        .with_database_folders(database_folders);
     match backup_folder {
         Some(folder) => {
             if backups > 0 {
@@ -769,7 +770,7 @@ fn certificate_names(args: &Args) -> Vec<String> {
 /// folders' at startup (#430). A found file named on the command line too,
 /// or with the name of one already hosted, is left out (names must be
 /// unique, `HostingError::DuplicateName`), logged.
-fn hosted_paths(args: &Args) -> Vec<PathBuf> {
+fn hosted_paths(args: &Args) -> (Vec<PathBuf>, Vec<PathBuf>) {
     let state = args
         .state_dir
         .clone()
@@ -828,7 +829,13 @@ fn hosted_paths(args: &Args) -> Vec<PathBuf> {
         }
         paths.push(found);
     }
-    paths
+    // The folders as they were searched: resolved, as discovery resolves
+    // them, for the Admin Console's list.
+    let searched = folders
+        .iter()
+        .map(|f| std::fs::canonicalize(f).unwrap_or_else(|_| f.clone()))
+        .collect();
+    (paths, searched)
 }
 
 /// Make `folder` (with any missing parent) when it is missing, for the
