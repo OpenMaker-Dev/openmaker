@@ -154,15 +154,51 @@ the step is 3 for now
 Address lists split at returns, semicolons and commas outside a quoted
 local part (`"Sales, West"@example.org` stays one address). FileMaker Pro
 hands the message to the email client too; a URL is OpenMaker's means,
-which cannot carry the rest, so these fail with 3: SMTP and OAuth, no
-dialog (sending unseen), attachments, one email per record, and addresses
-collected across a found set of more than one record. So do (OpenMaker's
-choices) a stored option or attachment list OpenMaker cannot read, an
-address whose quote does not end, a URL longer than 32,000 characters, no
-registered mail client, and a client that refuses the message or cannot be
-started
-([#89](https://github.com/OpenMaker-Dev/openmaker/issues/89)). On
-OpenMaker Server the step is 3.
+which cannot carry the rest, so through the email client these fail with
+3: no dialog (sending unseen), and a URL longer than 32,000 characters
+(OpenMaker's limit), no registered mail client, and a client that refuses
+the message or cannot be started.
+
+Send Mail by SMTP sends the message itself, on the desktop and on
+OpenMaker Server (`om_url::send_smtp`), with the step's SMTP options
+(script-steps.md 12.3): the sender's name and address, Reply-To, the
+server and port (25 when empty, the SMTP Options dialog's default [I]),
+Encryption (none; SSL, TLS from the start; TLS, STARTTLS) and
+Authentication (none; plain password, AUTH PLAIN or else LOGIN; CRAM-MD5),
+the calculations evaluated in the current record. TLS checks the server's
+certificate against the webpki roots, as Insert from URL does. Esc, Cmd-.
+and a closing window end it on the desktop (1), and the script's time
+limit and abort on the server. The message is plain text in UTF-8: a
+non-ASCII name or subject as RFC 2047 encoded words, and the body in
+base64 unless it is ASCII with short lines. BCC addresses go in the
+envelope only. The client names itself to the server by its address
+(`EHLO [address]`), not by the computer's name. The codes are FileMaker's
+SMTP codes matched by their names, OpenMaker's reading
+([#89](https://github.com/OpenMaker-Dev/openmaker/issues/89)):
+- 1501: the server refused the user name or password (535).
+- 1502: no connection, or the greeting refused one.
+- 1503: TLS failed, or the server offers no STARTTLS for TLS.
+- 1504: the server asks for encryption first (530 naming STARTTLS, 538,
+  or a login offered only after STARTTLS).
+- 1505: none of the mechanisms the step's authentication can use is
+  offered.
+- 1507: another login failure, or a login the server wants and the step
+  does not make.
+- 1506: the server refused the sender, a recipient or the message, did
+  not answer within a minute, or ended the session.
+How FileMaker composes its message, and which code it gives for which
+reply, were not compared.
+
+Either way these fail with 3
+([#89](https://github.com/OpenMaker-Dev/openmaker/issues/89)):
+- OAuth;
+- attachments;
+- one email per record;
+- addresses collected across a found set of more than one record;
+- an address with characters beyond ASCII (no SMTPUTF8);
+- a stored option or attachment list OpenMaker cannot read;
+- an address whose quote does not end.
+On OpenMaker Server the email client is 3, as a server has none.
 
 The desktop host answers the Get selectors, layout-object attributes
 and Design functions for other files as FileMaker Pro 26.0.3 does

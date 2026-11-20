@@ -23,6 +23,9 @@
 //! notes"). `file:` URLs are the host's to read ([`file_path`]): what a
 //! script may read differs between the desktop and the server.
 //!
+//! Send Mail's `mailto:` URL ([`mailto`]) and its sending through SMTP
+//! ([`send_smtp`]) live here too.
+//!
 //! Shared by the desktop client and OpenMaker Server.
 
 use std::sync::atomic::{AtomicU8, AtomicUsize, Ordering};
@@ -30,7 +33,13 @@ use std::sync::{mpsc, Arc};
 use std::time::{Duration, Instant};
 
 use om_calc::{Container, Value};
+
+mod smtp;
 use om_scripts::runtime::{ErrorCode, UrlRequest, UrlResponse};
+pub use smtp::{
+    send_smtp, smtp_parts, Account as SmtpAccount, Auth as SmtpAuth, Message as SmtpMessage,
+    Security as SmtpSecurity, SmtpError,
+};
 
 /// FileMaker's connection timeout (error 1629's text).
 const DEFAULT_TIMEOUT: Duration = Duration::from_secs(60);
@@ -789,17 +798,29 @@ pub fn mailto(
     Ok(url)
 }
 
-/// An address list as `mailto:` lists it: split at returns, semicolons
-/// and commas outside double quotes (a backslash escapes inside them),
-/// each address encoded by [`mail_address`], joined by commas.
+/// An address list as `mailto:` lists it: [`split_addresses`], each
+/// address encoded by [`mail_address`], joined by commas.
 fn addresses(list: &str) -> Result<String, MailtoError> {
+    let split = split_addresses(list).map_err(MailtoError::Address)?;
+    Ok(split
+        .iter()
+        .map(|address| mail_address(address))
+        .collect::<Vec<_>>()
+        .join(","))
+}
+
+/// The addresses of a list as Send Mail takes it: split at returns,
+/// semicolons and commas outside double quotes (a backslash escapes inside
+/// them), each trimmed, empty ones left out. Err holds the address whose
+/// quote does not end.
+fn split_addresses(list: &str) -> Result<Vec<String>, String> {
     let mut out: Vec<String> = Vec::new();
     let mut current = String::new();
     let (mut quoted, mut escaped) = (false, false);
     let push = |address: &str, out: &mut Vec<String>| {
         let address = address.trim();
         if !address.is_empty() {
-            out.push(mail_address(address));
+            out.push(address.to_owned());
         }
     };
     for c in list.chars() {
@@ -827,10 +848,10 @@ fn addresses(list: &str) -> Result<String, MailtoError> {
         }
     }
     if quoted {
-        return Err(MailtoError::Address(current.trim().to_owned()));
+        return Err(current.trim().to_owned());
     }
     push(&current, &mut out);
-    Ok(out.join(","))
+    Ok(out)
 }
 
 /// One address: its local part and domain, split at the last `@` (a

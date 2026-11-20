@@ -88,6 +88,7 @@ mod containers;
 mod design;
 mod files;
 mod get;
+mod mail;
 mod related;
 mod requests;
 mod sort;
@@ -3998,6 +3999,10 @@ impl Network for ServerHost {
         request: &om_scripts::runtime::UrlRequest,
     ) -> HostResult<om_scripts::runtime::UrlResponse> {
         self.fetch_url_step(request)
+    }
+
+    fn send_mail(&mut self, mail: &om_scripts::runtime::Mail) -> HostResult {
+        self.send_mail_step(mail)
     }
 }
 /// FileMaker's error 310, "Cannot modify items because another user is

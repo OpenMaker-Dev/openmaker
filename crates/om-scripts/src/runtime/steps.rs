@@ -1695,8 +1695,37 @@ impl Runtime {
                 } else {
                     MailVia::Client
                 };
+                // Encryption `[00 5, 03]` and Authentication `[00 6, 03]`,
+                // none when absent.
+                let mut choices = [0, 1];
+                if via == MailVia::Smtp {
+                    for (choice, slot) in choices.iter_mut().zip([5u16, 6]) {
+                        match step.number(slot) {
+                            Some(n) => *choice = n,
+                            None if stored(slot, 0x03) => {
+                                return Exec::error(ErrorCode::UNAVAILABLE)
+                            }
+                            None => {}
+                        }
+                    }
+                }
                 let mut text = |slot| self.slot_text(host, step, slot).unwrap_or_default();
                 let (to, cc, bcc, subject, message) = (text(0), text(1), text(2), text(3), text(4));
+                let smtp = (via == MailVia::Smtp).then(|| {
+                    let [encryption, authentication] = choices;
+                    let login = authentication != 1;
+                    SmtpOptions {
+                        name: text(5),
+                        email: text(6),
+                        reply_to: text(7),
+                        server: text(8),
+                        port: text(9),
+                        encryption,
+                        authentication,
+                        user: if login { text(10) } else { String::new() },
+                        password: if login { text(11) } else { String::new() },
+                    }
+                });
                 host.send_mail(&Mail {
                     via,
                     to,
@@ -1708,6 +1737,7 @@ impl Runtime {
                     one_per_record: on[3],
                     attachments,
                     with_dialog: dialog,
+                    smtp,
                 })
             }
             // Accounts

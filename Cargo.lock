@@ -4805,9 +4805,14 @@ dependencies = [
 name = "om-url"
 version = "0.0.0"
 dependencies = [
+ "hmac 0.12.1",
+ "md-5 0.10.6",
  "om-calc",
  "om-scripts",
+ "rcgen 0.14.10",
+ "rustls",
  "ureq",
+ "webpki-roots 0.26.11",
 ]
 
 [[package]]

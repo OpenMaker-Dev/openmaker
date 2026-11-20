@@ -507,6 +507,30 @@ pub struct Mail {
     pub attachments: String,
     /// "With dialog": the message is shown before it goes.
     pub with_dialog: bool,
+    /// The SMTP options, read when the step sends by SMTP.
+    pub smtp: Option<SmtpOptions>,
+}
+
+/// Send Mail's SMTP options (script-steps.md 12.3), the calculations
+/// evaluated in the current record.
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+pub struct SmtpOptions {
+    /// The sender's name (calculation 5), address (6) and Reply-To (7).
+    pub name: String,
+    pub email: String,
+    pub reply_to: String,
+    /// The server (8) and its port (9), as the calculations give them.
+    pub server: String,
+    pub port: String,
+    /// Encryption `[00 5, 03]`: 0 none, 1 SSL, 2 TLS; 0 when absent.
+    pub encryption: i64,
+    /// Authentication `[00 6, 03]`: 1 none, 2 plain password, 3 CRAM-MD5;
+    /// 1 when absent.
+    pub authentication: i64,
+    /// The user name (10) and password (11), read only with an
+    /// authentication other than none.
+    pub user: String,
+    pub password: String,
 }
 
 /// How Send Mail sends.

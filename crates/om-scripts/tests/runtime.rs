@@ -938,9 +938,24 @@ fn send_mail_reads_the_message_and_its_options_from_filemakers_slots() {
         mail.set_calculation(slot, Some(&calc(&h, text)));
     }
     mail.set_number_bool(0, Some(true));
+    // SMTP: the sender, server, port, user and password are calculations
+    // 5-11, Encryption `[00 5, 03]` a byte and Authentication `[00 6, 03]`
+    // two.
     let mut smtp = mail.clone();
     smtp.set_number_bool(4, Some(true));
     smtp.set_flag(flag::NO_INTERACT, true);
+    for (slot, text) in [
+        (5, "\"Pat\""),
+        (6, "\"pat@example.org\""),
+        (8, "\"smtp.example.org\""),
+        (9, "587"),
+        (10, "\"pat\""),
+        (11, "\"secret\""),
+    ] {
+        smtp.set_calculation(slot, Some(&calc(&h, text)));
+    }
+    smtp.set_slot_child(5, 0x03, Some(OwnedNode::leaf([0x03], [2])));
+    smtp.set_number_u16(6, Some(3));
     // What OpenMaker cannot read is 3, no message sent: an SMTP selector
     // of a width no number has, and attachments flagged (`kFilePath`)
     // with no list.
@@ -976,10 +991,22 @@ fn send_mail_reads_the_message_and_its_options_from_filemakers_slots() {
                 one_per_record: false,
                 attachments: String::new(),
                 with_dialog: true,
+                smtp: None,
             },
             Mail {
                 via: MailVia::Smtp,
                 with_dialog: false,
+                smtp: Some(SmtpOptions {
+                    name: "Pat".into(),
+                    email: "pat@example.org".into(),
+                    reply_to: String::new(),
+                    server: "smtp.example.org".into(),
+                    port: "587".into(),
+                    encryption: 2,
+                    authentication: 3,
+                    user: "pat".into(),
+                    password: "secret".into(),
+                }),
                 ..h.mails[0].clone()
             },
         ]
