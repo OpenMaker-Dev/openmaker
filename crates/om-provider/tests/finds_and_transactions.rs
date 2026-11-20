@@ -92,6 +92,39 @@ fn open(port: u16, ca_pem: &[u8]) -> NativeProvider {
     provider
 }
 
+/// An Open the host refuses because it blocks new users says what
+/// FileMaker Pro's alert says, with its error 1638 (#156), not the
+/// protocol's status.
+#[test]
+fn an_open_refused_under_block_new_users_says_what_filemaker_says() {
+    let file = file_with("provider-block-new-users", &[], |_| {});
+    let mut handle = None;
+    let (port, ca_pem) = host_with(&file.0, None, |server| {
+        handle = Some(server.handle().unwrap());
+        server
+    });
+    handle.unwrap().set_block_new_users(true);
+    let client = rcgen::generate_simple_self_signed(vec!["OpenMaker".into()]).unwrap();
+    let mut provider = NativeProvider::new(NativeConfig {
+        client_cert_pem: client.cert.pem().into_bytes(),
+        client_key_pem: client.key_pair.serialize_pem().into_bytes(),
+        additional_ca_pem: ca_pem,
+        callback_host: "127.0.0.1".into(),
+        machine: MachineInfo::default(),
+    });
+    let error = provider
+        .open(&Connection {
+            host: "127.0.0.1".into(),
+            port,
+            file: FILE.into(),
+            account: ACCOUNT.into(),
+            password: PASSWORD.into(),
+        })
+        .unwrap_err();
+    assert_eq!(error.code, Some(1638));
+    assert_eq!(error.message, om_provider::HOST_BLOCKS_NEW_USERS);
+}
+
 /// A session of its own, for what the provider does not expose.
 fn raw_session(port: u16) -> om_session::Session {
     let client = rcgen::generate_simple_self_signed(vec!["OpenMaker".into()]).unwrap();
