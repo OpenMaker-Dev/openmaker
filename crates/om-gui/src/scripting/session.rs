@@ -1358,6 +1358,10 @@ impl ScriptSession {
                     return;
                 }
                 RunState::Yielded | RunState::Waiting => {}
+                // The desktop does not open the Script Debugger yet
+                // ([#74](https://github.com/OpenMaker-Dev/openmaker/issues/74));
+                // a runtime that had it open runs on without it.
+                RunState::Debugger(_) => runtime.stop_debugging(),
                 RunState::Paused { seconds } => {
                     drop(host);
                     on_top = self.pause(io, seconds, on_top.take());

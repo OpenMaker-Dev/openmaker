@@ -712,6 +712,69 @@ Open items:
   notes). The memory budget makes a huge unfiltered product fail with
   error 2 where FileMaker would finish it.
 
+## Script Debugger
+
+`om-scripts`'s runtime has the Script Debugger's control of the run loop
+(`runtime/debug.rs`; FileMaker's behavior is in script-runtime.md 6.4).
+The desktop's Tools > Script Debugger, Debugging Controls and Data Viewer,
+and the Script Workspace's Debug button, are still disabled
+([#74](https://github.com/OpenMaker-Dev/openmaker/issues/74)). No window
+uses it yet.
+
+- `Runtime::start_debugging` opens the debugger, `stop_debugging` closes
+  it. A stopped script then runs to its end, and script triggers are
+  enabled again. A Pause/Resume Script pause stays, as without the
+  debugger.
+- While it is open, `Runtime::run` returns `RunState::Debugger` before a
+  step at which it stops:
+  - the first step of a script started while no script runs (scripts
+    queued to run after the current ones do not count as running, and a
+    trigger on top of a script waiting for its first step is no new
+    script);
+  - a step with a breakpoint (flag `0x100000`);
+  - the next step after a finished Step Over, Step Into or Step Out;
+  - with `set_pause_on_error`, the next step after a step whose error is
+    stored or reported, a failed Commit Transaction included, or the
+    script's end when that step was its last.
+- `Runtime::debug` continues with Run, Step Over, Step Into or Step Out,
+  from a stop or from a Pause/Resume Script pause in a script it shows.
+  It does not stop again at the step it continued from, so Run from a
+  breakpoint passes it.
+- A stop belongs to its script and step. A trigger that runs on top of it
+  follows the same rules, and its own stops and commands leave the lower
+  stop, which holds again when its script is back on top there. A stop
+  whose script ended (Halt, or another script started with Exit) is
+  forgotten, so no other script takes it over.
+- A failed step's error belongs to the script whose step it was, also
+  when a trigger let the step run, or the debugger opened while it was
+  waiting. It stops that script, not one that runs on top first.
+- `Runtime::set_next_step` moves the current script's pointer while
+  stopped. It is refused while a script transaction is open, since a jump
+  could pass its Commit Transaction or reach another one. `Runtime::halt`
+  is Halt Script. `Runtime::debug_stack` is the Call Stack: each running
+  script's name and step, the innermost last.
+- The debugger stops only in a script the host lets it show
+  (`ScriptHost::script_debuggable`, none by default). Another script runs
+  whole, its errors do not pause, and the Call Stack lists it by name
+  without a step. This is how FileMaker treats an Executable Only script.
+  A button's single step never stops or pauses on its error.
+
+Choices not compared with FileMaker (script-runtime.md U17):
+- the stop before a new script's first step;
+- that disabled steps and comments are never stopped at;
+- that Pause on error stops after a step's alert, with error capture on
+  or off, and at the end after a failed last step;
+- that a trigger script fired by a step counts as a sub-script for Step
+  Over and Step Out;
+- that the Call Stack lists an Executable Only script's name;
+- what Set Next Step does across a block's boundaries (If, Loop), where
+  OpenMaker follows the cached jump indexes as for any step; and that it
+  is refused in a transaction;
+- that closing the debugger leaves a Pause/Resume Script pause waiting.
+
+The desktop host and OpenMaker Server close a debugger the runtime has
+open: neither opens one yet.
+
 ## Calculation limits
 
 What one evaluation may do, and whose limit each is. Past any of them the
