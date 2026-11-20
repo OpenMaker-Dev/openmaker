@@ -186,9 +186,11 @@ message's final `.` is already sent. From then on the server's answer to
 it is the step's result, and the step waits up to ten minutes for it, RFC
 5321's timeout for that reply, as a shorter wait could report a message
 the server took as unsent and a retry send it twice. No answer by then,
-or a closed connection, is 1506 with the message possibly sent. Past the
-deadline the `.` is not sent. On OpenMaker Server a script that ends past
-its time limit reports 1, as any script that runs past it does, also when
+or a closed connection, is 1506 with the message possibly sent. A
+deadline already passed when the `.` would be committed withholds it; one
+passing after the commit, even before the `.` is written, does not. On
+OpenMaker Server a script that ends past its time limit reports 1 unless
+an earlier error stands, as any script that runs past it does, also when
 its last step was a Send Mail the server took. The result is given before
 QUIT's reply. Connecting, each other reply, each
 write and the TLS handshake have a minute each, every socket read and
