@@ -1559,15 +1559,21 @@ containers are available outside portal rows.
   that window (WebKitGTK on Linux/X11 and WKWebView on macOS).
 - Insert > Picture..., Audio/Video..., PDF... and File... run script steps
   56, 159, 158 and 131 without a source path on the selected field. Insert
-  requires full menus, a writable selection and no running script. PDF
-  and Audio/Video additionally require a field optimized for interactive
-  content outside portal rows. Edit > Export Field Contents... runs Export
-  Field Contents (132).
-- Insert PDF and Insert Audio/Video classify the source by name using the
-  same rules as FileMaker Server's Set Field (oracle s34). A name of the
-  wrong type yields error 700 before any edit preparation or upload. The
-  stored representation and error for these commands in FileMaker Pro
-  remain unmeasured [I, OpenMaker's choice].
+  requires full menus, a writable selection whose field object allows
+  entry in Browse mode (Edit, not View Only or Select Only, which Claris
+  documents as preventing changes through the object), and no running
+  script. PDF and Audio/Video additionally require a field optimized for
+  interactive content outside portal rows. The same checks are made again
+  when the command runs. Edit > Export Field Contents... runs Export Field
+  Contents (132).
+- Insert PDF and Insert Audio/Video type the source by name using the
+  same rules as FileMaker Server's Set Field (oracle s34). Insert PDF also
+  requires a PDF header (`%PDF-` within the first 1024 bytes); Insert
+  Audio/Video takes what the Browse player plays (a `movie` path, or a
+  file named as audio or video, such as an `.aac` stored as a file). A
+  file of the wrong type yields error 700 before any edit preparation or
+  upload. The stored representation and error for these commands in
+  FileMaker Pro remain unmeasured [I, OpenMaker's choice].
 - Before showing the dialog, Insert checks that the selected stored
   container field can be written in Browse on the current connection.
   Export reads the field's data first and refuses external data that

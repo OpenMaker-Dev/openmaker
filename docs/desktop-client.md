@@ -536,9 +536,10 @@ authoring part tabs or object kind captions.
   automatically" bit is set (`0x0200`, `GraphicFormat::autoplay`,
   #1338). A window without a player shows the filename and a note.
 - The Insert menu offers PDF and Audio/Video for a selected, writable
-  interactive container outside portal rows. The typed-path dialogs
-  reject a file whose name indicates a different type before they
-  prepare an edit or upload data. [Container menus and file dialogs](re/containers.md#desktop-menus-and-file-dialogs-2026-11-02)
+  interactive container outside portal rows whose field object allows
+  entry in Browse mode. The typed-path dialogs reject a file of a
+  different type (a PDF without its header, a file the player would not
+  play) before they prepare an edit or upload data. [Container menus and file dialogs](re/containers.md#desktop-menus-and-file-dialogs-2026-11-02)
 - Button icons come from the file's library root `31` as the original SVG,
   colored through the icon component's style; no application icon is
   substituted for a file's library image.

@@ -1302,8 +1302,9 @@ impl OpenMakerApp {
                     && self.can_import_records(),
                 container: selection.is_some(),
                 // A related container's row was checked as it was selected.
-                container_insert: selection.is_some_and(|(selection, _)| {
-                    self.w.record_capabilities.update || selection.row.is_some()
+                container_insert: selection.is_some_and(|(selection, session)| {
+                    selection.allows_entry(session)
+                        && (self.w.record_capabilities.update || selection.row.is_some())
                 }),
                 container_interactive: selection
                     .is_some_and(|(selection, session)| selection.is_interactive(session)),

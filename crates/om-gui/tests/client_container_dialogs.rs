@@ -423,6 +423,9 @@ fn interactive_container_menus_preserve_the_attachment_on_rejection() {
     let temporary = tempfile::tempdir().unwrap();
     let source = temporary.path().join("note.txt");
     std::fs::write(&source, b"not a PDF or media file").unwrap();
+    // Named as a PDF, but text.
+    let named = temporary.path().join("report.pdf");
+    std::fs::write(&named, b"not a PDF either").unwrap();
     let hosted = host(
         "interactive-container-menus",
         &tree(&[], |root| {
@@ -440,9 +443,9 @@ fn interactive_container_menus_preserve_the_attachment_on_rejection() {
         }),
     );
     let mut app = open(&hosted);
-    for (item, title) in [
-        ("PDF...", "Insert PDF"),
-        ("Audio/Video...", "Insert Audio/Video"),
+    for (item, title, wrong) in [
+        ("PDF...", "Insert PDF", &named),
+        ("Audio/Video...", "Insert Audio/Video", &source),
     ] {
         for cancel in [true, false] {
             select_photo(&mut app);
@@ -452,7 +455,7 @@ fn interactive_container_menus_preserve_the_attachment_on_rejection() {
             if cancel {
                 app.key_press(egui::Key::Escape);
             } else {
-                common::fill(&mut app, "File:", source.to_str().unwrap());
+                common::fill(&mut app, "File:", wrong.to_str().unwrap());
                 press(&mut app, "Insert");
                 common::wait_until(&mut app, "the wrong-file-type alert", |app| {
                     app.query(By::new().label_contains("(error 700)")).is_some()
