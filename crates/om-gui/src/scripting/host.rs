@@ -3791,12 +3791,20 @@ impl ScriptHost for WorkerHost<'_> {
         self.s.active_files.extend(files.iter().copied());
     }
 
+    /// A script the account's set gives no access is not executable, and
+    /// being set to run with full access privileges does not make it so:
+    /// only a caller running with full access lets it run, and then with
+    /// the account's own privileges (script-runtime.md 3.7, 9.1). The
+    /// runtime admits a script with either flag, so the flag is given only
+    /// for a script the account may run (#408).
     fn script_access(&mut self, file: FileId, script: u64) -> ScriptAccess {
+        let executable = self.script_executable(file, script);
         ScriptAccess {
-            executable: self.script_executable(file, script),
-            full_access: self
-                .script(file, script)
-                .is_some_and(|s| s.runs_with_full_access()),
+            executable,
+            full_access: executable
+                && self
+                    .script(file, script)
+                    .is_some_and(|s| s.runs_with_full_access()),
         }
     }
 
