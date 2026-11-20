@@ -24,8 +24,8 @@ starter solution):
   without the option, the annotation alone. Which stored text FileMaker
   Pro shows there, after "Display Names" or alone, is not traced
   (client-ui.md): that it is the annotation, and the ", " between them,
-  are inferred ([#611](https://github.com/OpenMaker-Dev/openmaker/issues/611)). The options read as
-  FileMaker Pro lists them ("Indexed,
+  are inferred ([#611](https://github.com/OpenMaker-Dev/openmaker/issues/611)).
+  The options read as FileMaker Pro lists them ("Indexed,
   Auto-enter Calculation replaces existing value, Can't Modify Auto,
   Required Value, Unique", "= Count * 2", "= Total of Price";
   `DatabaseSchema::field_column_text`, client-ui.md). Field Name, the Type menu

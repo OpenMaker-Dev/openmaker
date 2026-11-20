@@ -743,10 +743,10 @@ fn schema_from_catalogs(
 }
 
 /// After a save, the host's schema must be the draft's: the same tables,
-/// fields and occurrences with the same names, types, comments, advanced
-/// options and field options. A host that
-/// stored nothing (one that refused the uploads) or something else is
-/// reported, not taken for a save.
+/// fields and occurrences with the same names, types, comments,
+/// annotations, display-names flags and field options. A host that stored
+/// nothing (one that refused the uploads) or something else is reported,
+/// not taken for a save.
 fn verify_saved(draft: &SchemaDraft, saved: &DatabaseSchema) -> Result<(), DataError> {
     let expected = schema_from_catalogs(draft.catalogs(), draft.formulas())?;
     let tables = |s: &DatabaseSchema| {
@@ -1362,6 +1362,18 @@ mod tests {
                 .unwrap()
                 .auto_enter
                 .value = stale;
+            assert!(verify_saved(&draft, &not_saved).is_err());
+        }
+        // A host that lost or changed a field's annotation or display-names
+        // flag did not save the draft either.
+        let saved = schema_from_catalogs(draft.catalogs(), draft.formulas()).unwrap();
+        let changes: [fn(&mut om_data::SchemaField); 2] = [
+            |field| field.annotation = "Stale".into(),
+            |field| field.display_names_enabled = true,
+        ];
+        for change in changes {
+            let mut not_saved = saved.clone();
+            change(&mut not_saved.tables[0].fields[0]);
             assert!(verify_saved(&draft, &not_saved).is_err());
         }
     }
