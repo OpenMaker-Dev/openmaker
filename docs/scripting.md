@@ -186,8 +186,11 @@ message's final `.` is already sent. From then on the server's answer to
 it is the step's result, and the step waits up to ten minutes for it, RFC
 5321's timeout for that reply, as a shorter wait could report a message
 the server took as unsent and a retry send it twice. No answer by then,
-or a closed connection, is 1506 with the message possibly sent. The
-result is given before QUIT's reply. Connecting, each other reply, each
+or a closed connection, is 1506 with the message possibly sent. Past the
+deadline the `.` is not sent. On OpenMaker Server a script that ends past
+its time limit reports 1, as any script that runs past it does, also when
+its last step was a Send Mail the server took. The result is given before
+QUIT's reply. Connecting, each other reply, each
 write and the TLS handshake have a minute each, every socket read and
 write within it. The system resolver has no limit of its own here, so a
 lookup that does not answer holds its session until the resolver gives
@@ -201,9 +204,11 @@ for all before DATA (FileMaker's behavior is unmeasured). Addresses must
 be RFC 5321 mailboxes in ASCII (an address literal an IPv4 or IPv6
 address). The client names itself to the server by its address
 (`EHLO [address]`), not by the computer's name. The server's replies are
-parsed strictly (one code per reply, CRLF lines without CR or NUL inside,
-nothing sent ahead of a command's reply), and its reply to a login is
-reported by its code only, since a server may echo what it was sent.
+parsed strictly (one code per reply, CRLF lines without CR or NUL inside),
+and a reply already received before the command it would answer is
+refused, the message's final `.` withheld for it; one still in transit
+then cannot be told from the answer. Its reply to a login is reported by
+its code only, since a server may echo what it was sent.
 
 The codes are FileMaker's SMTP codes matched by their names, OpenMaker's
 reading ([#89](https://github.com/OpenMaker-Dev/openmaker/issues/89)):

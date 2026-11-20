@@ -551,9 +551,15 @@ fn check_address(address: &str) -> Result<(), SmtpError> {
     let literal = domain
         .strip_prefix('[')
         .and_then(|d| d.strip_suffix(']'))
-        .is_some_and(|inner| match inner.strip_prefix("IPv6:") {
-            Some(v6) => v6.parse::<Ipv6Addr>().is_ok(),
-            None => inner.parse::<Ipv4Addr>().is_ok(),
+        .is_some_and(|inner| {
+            match inner
+                .get(..5)
+                .filter(|tag| tag.eq_ignore_ascii_case("IPv6:"))
+            {
+                // The tag is case-insensitive (RFC 5234 2.3).
+                Some(_) => inner[5..].parse::<Ipv6Addr>().is_ok(),
+                None => inner.parse::<Ipv4Addr>().is_ok(),
+            }
         });
     let labels = domain.split('.').all(|label| {
         let label = label.as_bytes();
@@ -984,6 +990,34 @@ impl Session<'_> {
         }
     }
 
+    /// Whether the server has sent anything no command asked for: what is
+    /// buffered, or, without waiting, what the socket holds now.
+    fn unsolicited(&mut self) -> io::Result<bool> {
+        if !self.buffer.is_empty() {
+            return Ok(true);
+        }
+        let socket = match &self.stream {
+            Stream::Plain(timed) => timed.socket.try_clone()?,
+            Stream::Tls(tls) => tls.get_ref().socket.try_clone()?,
+        };
+        socket.set_nonblocking(true)?;
+        let mut chunk = [0u8; 1024];
+        let read = self.stream.read(&mut chunk);
+        socket.set_nonblocking(false)?;
+        match read {
+            Ok(0) => Err(io::Error::new(
+                io::ErrorKind::UnexpectedEof,
+                "the server closed the connection",
+            )),
+            Ok(n) => {
+                self.buffer.extend_from_slice(&chunk[..n]);
+                Ok(true)
+            }
+            Err(e) if e.kind() == io::ErrorKind::WouldBlock => Ok(false),
+            Err(e) => Err(e),
+        }
+    }
+
     fn send(&mut self, bytes: &[u8]) -> io::Result<()> {
         // No command is pipelined: what the server sent beyond the last
         // reply was asked for by no one, and would answer the next.
@@ -1294,6 +1328,17 @@ fn deliver<'a>(
     // The body may still be cancelled: without its final `.` the server
     // takes nothing.
     session.send(&dot_stuffed(&mail.data)).map_err(broken)?;
+    // The last moment the `.` can still be withheld: a reply already
+    // there would be taken as the answer to it, and past the deadline the
+    // step is over.
+    if session.unsolicited().map_err(broken)? {
+        return Err(broken(invalid(
+            "the server sent a reply no command asked for",
+        )));
+    }
+    if session.deadline.is_some_and(|d| Instant::now() >= d) {
+        return Err(SmtpError::Rejected("the script's time limit passed".into()));
+    }
     if !control.commit() {
         return Err(SmtpError::Cancelled);
     }
@@ -1465,6 +1510,7 @@ mod tests {
             "\"a b\\\"c\"@example.org",
             "a.b+c@[192.0.2.1]",
             "a@[IPv6:2001:db8::1]",
+            "a@[ipv6:2001:db8::1]",
         ] {
             assert!(check_address(good).is_ok(), "{good}");
         }
@@ -1481,8 +1527,9 @@ mod tests {
         // than written past 998 octets.
         let header = mailbox_header(
             Some("n".repeat(900)),
-            &format!("{}@example.org", "m".repeat(60)),
+            &format!("{}@{}.org", "m".repeat(64), "d".repeat(81)),
         );
+        assert!(header.starts_with("=?utf-8?b?"), "{header}");
         assert!(
             header.split("\r\n").all(|line| line.len() + 11 <= 998),
             "{header}"
@@ -1696,7 +1743,7 @@ mod tests {
             assert_eq!(&read[1..1 + expected.len()], expected.as_slice());
         }
 
-        let cases: [(&'static [&'static str], Auth, ErrorCode); 12] = [
+        let cases: [(&'static [&'static str], Auth, ErrorCode); 10] = [
             (
                 &[
                     "220 hi\r\n",
@@ -1707,25 +1754,9 @@ mod tests {
                 ErrorCode(1501),
             ),
             (&["554 No service\r\n"], Auth::None, ErrorCode(1502)),
-            // A bare LF, a NUL, a second digit past 5, and a reply whose
-            // lines' codes differ.
+            // A bare LF, a NUL, and a reply whose lines' codes differ.
             (&["220 hi\n"], Auth::None, ErrorCode(1502)),
             (&["220 h\0i\r\n"], Auth::None, ErrorCode(1502)),
-            (&["290 hi\r\n"], Auth::None, ErrorCode(1502)),
-            // A 250 sent with the 354, ahead of the message.
-            (
-                &[
-                    "220 hi\r\n",
-                    "250 hi\r\n",
-                    "250 OK\r\n",
-                    "250 OK\r\n",
-                    "250 OK\r\n",
-                    "250 OK\r\n",
-                    "354 Go\r\n250 OK\r\n",
-                ],
-                Auth::None,
-                ErrorCode(1506),
-            ),
             (
                 &[
                     "220 hi\r\n",
@@ -1796,6 +1827,51 @@ mod tests {
             assert_eq!(error.code(), code, "{error}");
             assert!(!error.to_string().contains("AGRhAHNlY3JldA"), "{error}");
             drop(server);
+        }
+
+        // A 250 sent with the 354, ahead of the message: the `.` is
+        // withheld; and a server that reads the `.` and never answers:
+        // unconfirmed, possibly sent.
+        let ahead: &'static [&'static str] = &[
+            "220 hi\r\n",
+            "250 hi\r\n",
+            "250 OK\r\n",
+            "250 OK\r\n",
+            "250 OK\r\n",
+            "250 OK\r\n",
+            "354 Go\r\n250 OK\r\n",
+        ];
+        let lost: &'static [&'static str] = &[
+            "220 hi\r\n",
+            "250 hi\r\n",
+            "250 OK\r\n",
+            "250 OK\r\n",
+            "250 OK\r\n",
+            "250 OK\r\n",
+            "354 Go\r\n",
+        ];
+        for (replies, unconfirmed, text) in [
+            (ahead, false, "no command asked for"),
+            (lost, true, "may have been sent"),
+        ] {
+            let (port, server) = scripted(replies);
+            let error = send_with(
+                &account(port, Auth::None),
+                &message(),
+                RootCertStore::empty(),
+                None,
+                &mut || false,
+            )
+            .unwrap_err();
+            assert_eq!(error.code(), ErrorCode(1506), "{error}");
+            assert_eq!(
+                matches!(error, SmtpError::Unconfirmed(_)),
+                unconfirmed,
+                "{error}"
+            );
+            assert!(error.to_string().contains(text), "{error}");
+            let read = server.join().unwrap();
+            assert_eq!(read.contains(&".\r\n".to_owned()), unconfirmed, "{read:?}");
         }
     }
 
