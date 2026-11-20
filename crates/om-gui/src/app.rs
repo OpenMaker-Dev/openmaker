@@ -200,6 +200,8 @@ pub(crate) mod steps {
     pub const INSERT_CURRENT_USER_NAME: u16 = 60;
     pub const COPY_RECORD: u16 = 101;
     pub const INSERT_FILE: u16 = 131;
+    pub const INSERT_PDF: u16 = 158;
+    pub const INSERT_AUDIO_VIDEO: u16 = 159;
     pub const EXPORT_FIELD_CONTENTS: u16 = 132;
     pub const PERFORM_QUICK_FIND: u16 = 150;
 }
@@ -812,6 +814,9 @@ pub struct OpenMakerApp {
     /// found for the other windows' viewports.
     web: crate::web_viewer::WebViewers,
     native_parent: Result<crate::web_viewer::NativeParent, crate::web_viewer::Unavailable>,
+    /// The app runs in a native window of the platform's (not a test
+    /// harness's): the Insert commands use the platform's file panel.
+    native_window: bool,
     viewport_windows: crate::web_viewer::ViewportWindows,
     /// Open the form's file when the app first draws (`open_on_launch`).
     open_on_launch: bool,
@@ -915,6 +920,7 @@ impl OpenMakerApp {
             settings_path: crate::settings::default_path(),
             web: Default::default(),
             native_parent: Err(crate::web_viewer::Unavailable::Window),
+            native_window: false,
             viewport_windows: Default::default(),
             open_on_launch: false,
             reconnect: None,
@@ -1292,17 +1298,22 @@ impl OpenMakerApp {
 
     pub(super) fn menu_bar(&self, ui: &mut Ui, input: bool, actions: &mut Vec<Action>) -> bool {
         let window_title = self.window_title();
-        let container = input
-            && !self.script.busy()
-            && self.script.prompt.is_none()
-            && self.w.mode == Mode::Browse
-            && self.w.connection_lost.is_none()
-            && !self.w.document.pending
-            && self
-                .w
-                .session
-                .as_ref()
-                .is_some_and(|session| self.w.document.selected_container(session).is_some());
+        let selection = self.w.session.as_ref().and_then(|session| {
+            if input
+                && !self.script.busy()
+                && self.script.prompt.is_none()
+                && self.w.mode == Mode::Browse
+                && self.w.connection_lost.is_none()
+                && !self.w.document.pending
+            {
+                self.w
+                    .document
+                    .selected_container(session)
+                    .map(|selection| (selection, session))
+            } else {
+                None
+            }
+        });
         let windows: Vec<_> = self
             .window_list
             .iter()
@@ -1315,7 +1326,7 @@ impl OpenMakerApp {
                 mode: self.w.mode,
                 view: self.w.view,
                 zoom: self.w.document.zoom.percent(),
-                zoom_locked: self.w.zoom_locked,
+                zooms: self.zooms(),
                 session: self.w.session.as_ref(),
                 find: &self.w.find,
                 toolbar: self.w.show_toolbar,
@@ -1367,16 +1378,14 @@ impl OpenMakerApp {
                     && !self.script.busy()
                     && self.script.prompt.is_none()
                     && self.can_import_records(),
-                container,
+                container: selection.is_some(),
                 // A related container's row was checked as it was selected.
-                container_insert: container
-                    && (self.w.record_capabilities.update
-                        || self.w.session.as_ref().is_some_and(|session| {
-                            self.w
-                                .document
-                                .selected_container(session)
-                                .is_some_and(|selection| selection.row.is_some())
-                        })),
+                container_insert: selection.is_some_and(|(selection, session)| {
+                    selection.allows_entry(session)
+                        && (self.w.record_capabilities.update || selection.row.is_some())
+                }),
+                container_interactive: selection
+                    .is_some_and(|(selection, session)| selection.is_interactive(session)),
                 text_field: input
                     && !self.script.busy()
                     && self.script.prompt.is_none()
@@ -1394,7 +1403,7 @@ impl OpenMakerApp {
                     && self.w.mode == Mode::Browse
                     && self.w.connection_lost.is_none()
                     && self.w.document.active.is_none()
-                    && !container
+                    && selection.is_none()
                     && self.current_layout_record().is_some(),
                 client_license: self.client_license,
                 layout_edit: self.w.mode == Mode::Layout
@@ -1522,12 +1531,31 @@ impl OpenMakerApp {
             .filter(|d| d.deleted)
             .filter_map(|d| Some((d.table, d.record?)))
             .collect();
-        self.w.document.related_drafts = open
+        let mut related_drafts: crate::document::RelatedDrafts = open
             .related
             .iter()
             .filter(|d| !d.deleted)
             .filter_map(|d| Some((d.table, d.record?, d.cells.clone())))
             .collect();
+        // What scripts left in the current record's later repetitions shows
+        // in their boxes before the commit, as the user's own typing there
+        // does: the window's uncommitted cells, under that typing.
+        let scripted = self.scripted_repetitions(&open);
+        if let Some((table, record, cells)) = scripted.clone() {
+            match related_drafts
+                .iter_mut()
+                .find(|(t, r, _)| *t == table && *r == record)
+            {
+                Some((_, _, typed)) => {
+                    for (cell, value) in cells {
+                        typed.entry(cell).or_insert(value);
+                    }
+                }
+                None => related_drafts.push((table, record, cells)),
+            }
+        }
+        self.w.document.related_drafts = related_drafts;
+        self.w.document.scripted = scripted;
         let mut begun: std::collections::BTreeMap<u64, Vec<_>> = Default::default();
         // A begun row shows what was typed over what its rules entered,
         // once an ordinary commit's OnObjectSave previewed them (#1047).
@@ -2679,6 +2707,30 @@ impl OpenMakerApp {
             || self.value_list_edit.is_some()
     }
 
+    /// The cells of the current record's later repetitions (2 and up,
+    /// `F * 256 + n`) that scripts set and no commit has kept, with the
+    /// record's base table and id: the record's own related draft shows
+    /// them (`DocumentState::related_drafts`). First repetitions are drafts
+    /// by name, which the record's fields show already.
+    fn scripted_repetitions(
+        &self,
+        open: &crate::scripting::window::Uncommitted,
+    ) -> Option<(u64, u64, crate::scripting::Cells)> {
+        let session = self.w.session.as_ref()?;
+        let schema = self.w.calcs.schema()?;
+        let table = crate::calc::layout_occurrence(session).and_then(|o| schema.table_of(o))?;
+        let record = u64::try_from(session.current_record()?.1.id).ok()?;
+        let cells: crate::scripting::Cells = open
+            .cells
+            .iter()
+            .filter(|(cell, _)| {
+                !table.fields.contains_key(cell) && table.fields.contains_key(&(**cell >> 8))
+            })
+            .map(|(cell, value)| (*cell, value.clone()))
+            .collect();
+        (!cells.is_empty()).then_some((table.id, record, cells))
+    }
+
     /// The field object of the active field, whose "Go to next object
     /// using" says where the keypad's Enter goes
     /// (`FieldObject::next_object_on_enter`; layout-model.md 5.4.1). That
@@ -2942,9 +2994,7 @@ impl OpenMakerApp {
             if input.consume_shortcut(&shortcuts::STATUS_TOOLBAR) {
                 actions.push(Action::ToggleToolbar);
             }
-            if !self.w.zoom_locked
-                && ((browse && self.w.view == ViewMode::Form) || self.w.mode == Mode::Preview)
-            {
+            if self.zooms() {
                 if input.consume_shortcut(&shortcuts::ZOOM_IN)
                     || input.consume_shortcut(&shortcuts::ZOOM_IN_ALTERNATE)
                 {
@@ -3156,6 +3206,24 @@ impl OpenMakerApp {
                     }
                 });
             });
+    }
+
+    /// Whether View's Zoom In, Zoom Out and Actual Size change the window's
+    /// zoom: a layout drawn in Browse's Form or List view, in Find mode
+    /// (which draws its requests as Form view does), or Preview, unless Set
+    /// Zoom Level locked the window's zoom. Table view, Layout mode and the
+    /// generic views are not zoomed yet (#36).
+    fn zooms(&self) -> bool {
+        !self.w.zoom_locked
+            && self.w.session.as_ref().is_some_and(|session| {
+                matches!(session.render, crate::session::RenderState::Loaded(_))
+            })
+            && match self.w.mode {
+                Mode::Browse => matches!(self.w.view, ViewMode::Form | ViewMode::List),
+                Mode::Find => self.w.view != ViewMode::Table,
+                Mode::Preview => true,
+                Mode::Layout => false,
+            }
     }
 
     fn can_export_records(&self) -> bool {
@@ -3881,13 +3949,7 @@ impl OpenMakerApp {
                 }
             }
             Action::ZoomIn | Action::ZoomOut | Action::ActualSize => {
-                if !self.w.zoom_locked
-                    && self.w.session.as_ref().is_some_and(|session| {
-                        matches!(session.render, crate::session::RenderState::Loaded(_))
-                    })
-                    && ((self.w.mode == Mode::Browse && self.w.view == ViewMode::Form)
-                        || self.w.mode == Mode::Preview)
-                {
+                if self.zooms() {
                     match action {
                         Action::ZoomIn => self.w.document.zoom.zoom_in(),
                         Action::ZoomOut => self.w.document.zoom.zoom_out(),
@@ -4441,6 +4503,10 @@ impl OpenMakerApp {
                     .filter(|s| !self.related_asked.contains(&(file, s.file.clone())))
                     .collect();
                 self.related_sign_ins.insert(file, pending);
+                // The page setup the file stores (`[2, 87]`), when its
+                // common format reads: the file session's paper until one
+                // is accepted in it, as the script worker reads it too.
+                let stored = crate::page_setup::Settings::stored_paper(schema.as_deref());
                 // No schema at all: this file's windows have no
                 // calculations, rather than waiting for them.
                 for doc in std::iter::once(&mut self.w)
@@ -4451,6 +4517,11 @@ impl OpenMakerApp {
                         Some(_) if grown => doc.calcs.grow_schema(schema.clone()),
                         Some(_) => doc.calcs.set_schema(schema.clone()),
                         None => doc.calcs.schema_unavailable(),
+                    }
+                    if let (Some(stored), Some(session)) = (&stored, doc.session.as_mut()) {
+                        if session.paper.is_none() {
+                            session.set_paper(stored.clone());
+                        }
                     }
                 }
                 if let Some(report) = self.w.calcs.report_related_files(warnings) {
@@ -6281,6 +6352,13 @@ impl OpenMakerApp {
 impl eframe::App for OpenMakerApp {
     fn ui(&mut self, ui: &mut Ui, frame: &mut eframe::Frame) {
         self.native_parent = crate::web_viewer::NativeParent::of(frame);
+        self.native_window = {
+            use raw_window_handle::{HasWindowHandle, RawWindowHandle};
+            matches!(
+                frame.window_handle().map(|h| h.as_raw()),
+                Ok(RawWindowHandle::AppKit(_))
+            )
+        };
         self.show(ui);
         self.web.flush(frame);
     }
@@ -6390,6 +6468,17 @@ mod tests {
         }
         app.w.zoom_locked = false;
 
+        // List view zooms too, and Find mode's layout; Table view not yet.
+        app.w.view = ViewMode::List;
+        app.apply(&context, Action::ZoomIn);
+        assert_eq!(app.w.document.zoom.percent(), 200);
+        app.apply(&context, Action::ZoomOut);
+        app.w.view = ViewMode::Form;
+        app.w.mode = Mode::Find;
+        app.apply(&context, Action::ZoomIn);
+        assert_eq!(app.w.document.zoom.percent(), 200);
+        app.apply(&context, Action::ZoomOut);
+        app.w.mode = Mode::Browse;
         app.w.view = ViewMode::Table;
         app.apply(&context, Action::ZoomIn);
         assert_eq!(app.w.document.zoom.percent(), 150);

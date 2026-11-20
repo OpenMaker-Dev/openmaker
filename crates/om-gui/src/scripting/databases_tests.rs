@@ -19,6 +19,8 @@ use std::sync::{mpsc, Mutex};
 struct Server {
     refresh_render: Option<RenderLayout>,
     pdf_rows: Vec<i64>,
+    /// The page setup the file stores (`[2, 87]`).
+    page_format: Option<Vec<u8>>,
     report_grands: bool,
     /// A Region field (10) grouping the report rows, and the found set's
     /// sort field ids (empty: unsorted).
@@ -124,6 +126,7 @@ impl Provider {
         schema.add_occurrence(5, "Rows", 5);
         schema.add_field(5, FieldDef::data(1, "Text", ValueType::Text));
         schema.authenticated_account.set_access = self.server.lock().unwrap().set_access.clone();
+        schema.page_format = self.server.lock().unwrap().page_format.clone();
         if self.server.lock().unwrap().containers {
             schema.add_field(5, FieldDef::data(20, "Photo", ValueType::Container));
         }

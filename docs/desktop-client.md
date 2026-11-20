@@ -275,6 +275,12 @@ forgets the list (stopping a listing under way), and a reply to a listing no
 longer waited for is dropped unseen. The wording is OpenMaker's; FileMaker
 Pro's is not captured.
 
+Opening a file the host refuses because it blocks new users (Open status
+1638) shows FileMaker Pro's alert, "The host is not allowing new
+connections. Try again later.", with OK, its error 1638
+(network-protocol.md 5.6.4; `om_provider::HOST_BLOCKS_NEW_USERS`). Other
+refused opens keep OpenMaker's wording.
+
 ### Client license
 
 **FileMaker License...** is available in Hosts and the OpenMaker menu. It is
@@ -527,21 +533,23 @@ authoring part tabs or object kind captions.
   look is OpenMaker's own [I: FileMaker Pro's interactive container is
   unmeasured]. A container optimized for images shows a PDF's first page
   as above.
-- Such a container's audio and video (Insert Audio/Video's `movie` path,
-  or a file named as audio or video) play in the web viewer engine
-  (`container::paint_media`, #200): WebKitGTK with the `web-viewer`
-  feature, which plays through GStreamer and shows its own controls. The
-  data is copied to a folder only its user may read, removed with the
-  window, and the engine is placed over the field as a web viewer is, for
-  the current record only. It opens a page beside the copy whose media
-  element starts by itself only when the container's "Start playback
-  automatically" (`0x0200`, `GraphicFormat::autoplay`) is set (#1338);
-  otherwise it waits for the engine's play control. Without the engine (a
-  build without the feature, a window other than the file's first, a
-  display without X11) the file shows with a one-line note saying why it
-  does not play. The
-  engine is OpenMaker's choice [I: FileMaker Pro plays through the
-  system's media view, unmeasured].
+- An interactive container's audio and video play on the current record
+  in Form or List view outside portal rows. Playback uses the native web
+  viewer in builds with `web-viewer` (WebKitGTK on Linux/X11, including
+  XWayland, or WKWebView on macOS). The audio or video is copied to a
+  folder only its user may read and removed with the window. The player
+  starts automatically when the container's "Start playback
+  automatically" bit is set (`0x0200`, `GraphicFormat::autoplay`,
+  #1338). A window without a player shows the filename and a note.
+- The Insert menu offers PDF and Audio/Video for a selected, writable
+  interactive container outside portal rows whose field object allows
+  entry in Browse mode. On macOS the Insert commands ask for the file in
+  the system's open panel, which shows every file (whether FileMaker Pro's
+  panel filters by type is unmeasured); elsewhere, an in-app dialog takes
+  a typed path. Either way, a file of a different type (a picture Insert
+  Picture cannot show, a PDF without its header, a file the player would
+  not play) is refused with 734 or 700 before an edit is prepared or data
+  uploaded. [Container menus and file dialogs](re/containers.md#desktop-menus-and-file-dialogs-2026-11-02)
 - Button icons come from the file's library root `31` as the original SVG,
   colored through the icon component's style; no application icon is
   substituted for a file's library image.
@@ -671,7 +679,7 @@ picture is drawn one pixel to a point whatever resolution (`DPI_`) it
 has; the file icon is OpenMaker's own, not the system's icon for the
 file's type; and only the starters' two graphic formats (5 and 7, centered)
 were compared with FileMaker Pro, the others are inferred from Claris's
-flag names. Zoom applies to loaded Form layouts only (below).
+flag names. Zoom applies to loaded Form and List layouts and Find mode only (below).
 
 **Checks.** Regular tests use synthetic layouts and records. The ignored
 `live` tests (`cargo test -p om-gui --test live -- --ignored`) host a
@@ -829,8 +837,8 @@ is not shown; neither is compared with FileMaker Pro.
 
 ### Zoom
 
-Loaded Browse Form layouts have document-local Actual Size, Zoom In and Zoom
-Out commands, in steps of 25, 50, 75, 100, 150, 200, 300 and 400 percent.
+Loaded Browse Form and List layouts, and Find mode's layout, have
+document-local Actual Size, Zoom In and Zoom Out commands, in steps of 25, 50, 75, 100, 150, 200, 300 and 400 percent.
 The menu and keyboard controls scale the document's allocation, clipping,
 pointer input and accessibility bounds together; menus and toolbars keep the
 application scale. While the layout paints, egui treats the zoomed layer as
@@ -854,13 +862,19 @@ replacement invalidates the identity. Text whose row and source mapping
 cannot be verified, justified text and elided text keep the ordinary
 renderer.
 
+List view draws its header, records and footer in the same zoomed layer,
+in the layout's coordinates, so its rows scroll and take clicks as at 100%.
+Find mode draws its request as Form view draws a record, so it was already
+drawn at the window's zoom; its commands now change it there too.
+
 Set Zoom Level with Lock on disables View > Actual Size, Zoom In and
 Zoom Out and their shortcuts for that window. A script can still set the
 level, and Lock off restores those controls. Lock inheritance across
 new windows has not been compared with FileMaker Pro.
 
-Limits: List, Table, Layout mode, generic Form fallbacks and focused field
-editors are not zoomed (Preview scales its paper: [preview.md](preview.md)).
+Limits: Table view, Layout mode, generic Form fallbacks and
+focused field editors are not zoomed (Preview scales its paper:
+[preview.md](preview.md); [#36](https://github.com/OpenMaker-Dev/openmaker/issues/36)).
 
 ### Layout menus
 
@@ -1248,8 +1262,10 @@ with its match fields from the record as it is then
 13.24); a value the user typed into a match field stays. The portal's
 records are read again as the record begins; meanwhile it shows the rows
 it showed last, so the row's editor keeps the keyboard, the caret and
-every key typed in between (a click waiting for its row waits for the
-rows as read). Until the save,
+every key typed in between. Clicking a pop-up menu in a stale row opens
+the list once the same related record is ready. Using another ready
+related control cancels the waiting click
+([#288](https://github.com/OpenMaker-Dev/openmaker/issues/288)). Until the save,
 the begun record's row shows only what was typed: calculations and other
 objects of the row see no record, as a script's record to create is not
 seen. A value-list control there offers its list as in a saved row, except
@@ -1395,11 +1411,16 @@ drop-down lists (layout-model.md 5.4) read their items through
     shorter for it.
   - The calculation sees no global variables, as when OpenMaker computes
     a summary or sort key itself.
-  - Such a list is built per object and record, as a list of related
-    values is, not once for every record: its calculation may read other
-    tables and the session, which a shared list's rebuilds do not
-    follow. It is built again when the window's context changes (its
-    size, for example), as results that read the session are.
+  - Such a list of all of a field's values is built once on the worker
+    for every object and record, from committed values ([#290](https://github.com/OpenMaker-Dev/openmaker/issues/290); "One
+    build per list, never in paint", below). Its calculation may read
+    other tables and the session: it is built again after any table's
+    data changes, and when the window's context (its size, for example)
+    or the date changes. A build asked before such a change is let finish
+    and its answer dropped, then one build for the new context follows,
+    so a resize keeps one build at a time on the worker. A list of an
+    unstored calculation's related values is built per object and record
+    in paint, as a list of related values is.
   - Validation against a related-values list of such a field computes it
     on each related record, and refuses with 3 only a record whose value
     cannot be computed (`om-provider`'s `related_lists.rs`;
@@ -1412,8 +1433,9 @@ drop-down lists (layout-model.md 5.4) read their items through
   nothing and asks the host for no records. A click on a list whose items
   are still being read opens it once they are.
 - **One build per list, never in paint.** A list that does not depend on
-  the record (custom values, or all of a field's values) is built once for
-  every object, record and portal row, from committed values.
+  the record (custom values, or all of a field's values, an unstored
+  calculation's among them) is built once for every object, record and
+  portal row, from committed values.
   - A field's list is built on the provider's thread (`list_build`, #745),
     which reads its table's records in two requests: their ids, then their
     values. Meanwhile the control waits as for any data being read, and the
@@ -1432,9 +1454,19 @@ drop-down lists (layout-model.md 5.4) read their items through
   - The list is built again after the data of a table it reads changes.
     One the window stopped reading before it was built (#987) is asked for
     again when a control shows it.
-  - A list of related values, or of an unstored calculation's values, is
-    built per record, with the record's unsaved values, in the window's
-    paint, as before.
+  - An unstored calculation's values are computed on each record of its
+    table, in that record's context, so no record of the window decides
+    them ([#290](https://github.com/OpenMaker-Dev/openmaker/issues/290)). The calculation may read any table and the session: the
+    list is built again after the data of any table changes, and when the
+    window's calculation session changes (its layout, record, mode or
+    account). A record's unsaved values are not read, as for a field's
+    list [inferred: how FileMaker lists an unstored calculation's values
+    is unmeasured]. On a debug build, with 30,000 records, the closed
+    pop-up menu that shows a label from such a list no longer blocks a
+    frame for 1.1 s; its longest frame while the worker builds the list is
+    44 ms.
+  - A list of related values is built per record, with the record's
+    unsaved values, in the window's paint, as before.
 - **A hosted file's field lists.** A list of all of a stored text field's
   values, with no second field and not only related values, comes from
   the host. One CreateValueListEx is sent when a control first needs the

@@ -603,6 +603,9 @@ pub(crate) struct ContainerFileDialog {
     /// Export: the file is written; otherwise it is read.
     pub export: bool,
     pub path: String,
+    /// The file the platform's open panel chose (`file_panel`), as the
+    /// panel named it: used as is, never trimmed or read as a path list.
+    pub chosen: Option<std::path::PathBuf>,
 }
 
 /// The import dialog's choices (FileMaker Pro's Specify Import Order).
