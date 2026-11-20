@@ -574,6 +574,26 @@ Open items:
   its dialog on, Print Setup gives 3 as well, since a server shows no
   dialog. FileMaker Server's answer is unmeasured in every one of these
   cases, the 0 included, and so is how long a restored setup lasts there.
+- Sort Records and Sort Records by Field in server scripts refuse with 3
+  a sort by a self join's field: another occurrence of the layout's table
+  that a relationship leads to. FileMaker sorts it by its first related
+  record's value (inferred from Claris and calc-values.md 12.1), and the
+  summaries a sorted found set feeds would have to follow
+  ([#610](https://github.com/OpenMaker-Dev/openmaker/issues/610)). Before,
+  it sorted by the record's own value. Sort Records [Restore] run again
+  on another layout is checked against that layout's occurrence, so a
+  stored sort can be refused there. A found set's sort carried to another
+  layout is not run again: its order stays, and summaries read its fields
+  from the record itself, as do relationship sorts, on both hosts (#610).
+  A sort entry the layout cannot reach fails the whole sort with 103 once
+  a record's key is read; on an empty found set no key is read and the
+  order is kept, as before
+  ([#628](https://github.com/OpenMaker-Dev/openmaker/issues/628)). Sorts
+  nested more than 16 deep inside one another, through related sort
+  fields whose relationships sort by related fields, a finite chain as
+  well as a loop, stop with 3. That ends a looping relationship sort,
+  which overflowed the server's stack before. The bound is OpenMaker's;
+  FileMaker's handling of a loop is unmeasured.
 - Scripts: desktop steps still missing include the account steps
   ([#83](https://github.com/OpenMaker-Dev/openmaker/issues/83)) and the PDF
   steps other than Save Records as PDF
