@@ -546,12 +546,16 @@ pub(crate) enum Reply {
     },
     /// [`Request::BuildValueList`]'s list (`crate::list_build::Built`):
     /// `None` when there is nothing to show yet, with when to ask again
-    /// when a related host could not be reached.
+    /// when a related host could not be reached, and the data generation
+    /// its reads were of; `related`: a list of related values for one
+    /// record (`crate::calc::RelatedBuild`).
     ValueListBuilt {
         list: u64,
         ticket: u64,
+        related: bool,
         result: Option<Result<Arc<om_data::choice::Choices>, om_data::choice::ChoiceError>>,
         retry_after: Option<std::time::Duration>,
+        generation: Option<u64>,
     },
     /// What a running script tells the window.
     Script(crate::scripting::ScriptEvent),
@@ -1365,12 +1369,15 @@ fn answer(
             .unwrap_or_else(|error| crate::list_build::Built {
                 result: Some(Err(crate::list_build::failed(&error))),
                 retry_after: None,
+                generation: None,
             });
             Reply::ValueListBuilt {
                 list: build.list,
                 ticket: build.ticket,
+                related: build.related.is_some(),
                 result: built.result,
                 retry_after: built.retry_after,
+                generation: built.generation,
             }
         }
         // The script session handles these itself.

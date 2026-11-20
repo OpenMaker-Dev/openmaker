@@ -1449,13 +1449,22 @@ drop-down lists (layout-model.md 5.4) read their items through
     and portal row it is shown on, over the window's unsaved changes as
     the window's paint read them, starting from that record
     ([#290](https://github.com/OpenMaker-Dev/openmaker/issues/290)). Its relationships can lead through any table, so it is
-    built again after any data change, and after the window's unsaved
-    changes change; one whose list a calculation computes also after the
-    window's calculation session or the date changes. A build asked
-    before the unsaved changes or the session changed is let finish and
-    its answer dropped, so typing or a resize keeps one build per list and
-    record on the worker. Like a list of all of a field's values it sees
-    no global variables. On a debug build, with 30,000 related records,
+    built again after any data change (a page read under the same data
+    generation is none), and after the window's unsaved changes, or the
+    records they are laid over, change; one whose list a calculation
+    computes also after the window's calculation session or the date
+    changes. A build asked before such a change is let finish and its
+    answer dropped, so typing, scrolling or a resize keeps one build per
+    list and record on the worker. While the stored values of a record
+    with unsaved changes are not in the window (a refresh dropped them),
+    the list waits for them rather than be built over the stored values.
+    The build reads the record it starts from (and the portal row) first,
+    so a new record a transaction holds relates records by its own values,
+    as paint did. A build whose reads took a change the window had not
+    seen (a newer data generation) has the window read its data and lists
+    again. A related host it could not reach holds that record's list
+    only. Like a list of all of a field's values it sees no global
+    variables. On a debug build, with 30,000 related records,
     the closed pop-up menu that shows a label from such a list no longer
     blocks a frame for 1.05 s; its longest frame while the worker builds
     the list is 43 ms.

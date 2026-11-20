@@ -46,6 +46,10 @@ pub(crate) struct Built {
     /// A related file's host it read could not be reached (#740): how long
     /// until it is tried again, before which the list is not asked for.
     pub retry_after: Option<Duration>,
+    /// The newest provider data generation its reads were of: the window
+    /// learns from it of a change the build's reads took first
+    /// (`Calculations::observe_build_generation`).
+    pub generation: Option<u64>,
 }
 
 /// Value list `list` of the provider's file, built from committed data on
@@ -64,11 +68,14 @@ pub(crate) fn build(
     related: Option<&crate::calc::RelatedBuild>,
     cancel: &CalcCancel,
 ) -> Built {
+    let provider = RefCell::new(provider);
+    // The newest generation any read was of.
+    let read: Cell<Option<u64>> = Cell::new(None);
     let answer = |result| Built {
         result: Some(result),
         retry_after: None,
+        generation: read.get(),
     };
-    let provider = RefCell::new(provider);
     for _ in 0..ATTEMPTS {
         let schema = match provider.borrow_mut().calc_schema() {
             Ok(Some(schema)) => schema,
@@ -87,6 +94,9 @@ pub(crate) fn build(
         let retry: Cell<Option<Duration>> = Cell::new(None);
         let fetch = |needs: &[CalcNeed]| match provider.borrow_mut().calc_data_for(needs, cancel) {
             Ok(data) => {
+                if let Some(of) = data.generation {
+                    read.set(Some(read.get().map_or(of, |newest| newest.max(of))));
+                }
                 match (generation.get(), data.generation) {
                     (None, read) => generation.set(read),
                     (Some(first), Some(read)) if first != read => mixed.set(true),
@@ -107,6 +117,23 @@ pub(crate) fn build(
             .with_calculation_session(info);
         let context = match related {
             Some(related) => {
+                // The records it starts from are read first: whether one is
+                // a new record the open transaction holds, whose values
+                // relate records the host has none of, shows only in its
+                // own values (`RecordValues::held_new`), which this build's
+                // cache would otherwise read only after taking the host's
+                // set from it.
+                let start = std::iter::once((related.occurrence, related.parent))
+                    .chain(related.portal)
+                    .filter(|(_, record)| *record < om_data::host::UNSAVED_FLOOR)
+                    .filter_map(|(occurrence, record)| {
+                        let table = schema.table_of(occurrence)?.id;
+                        Some(CalcNeed::Record { table, record })
+                    })
+                    .collect::<Vec<_>>();
+                if let Some(data) = fetch(&start) {
+                    cache.borrow_mut().merge(data);
+                }
                 for (table, record, values) in &related.overlays {
                     source = source.with_overlay(*table, *record, Arc::clone(values));
                 }
@@ -129,6 +156,7 @@ pub(crate) fn build(
             return Built {
                 result: None,
                 retry_after: None,
+                generation: read.get(),
             };
         }
         // A read that failed fails the list with its error, rather than a
@@ -144,6 +172,7 @@ pub(crate) fn build(
             return Built {
                 result: None,
                 retry_after: Some(after),
+                generation: read.get(),
             };
         }
         if !mixed.get() {
@@ -169,6 +198,9 @@ mod tests {
     const TABLE: u64 = 0x8001;
     const OCCURRENCE: u64 = 0xd0_0001;
     const LIST: u64 = 7;
+    /// Tints related by Name (`SAME`), listed starting from Tints.
+    const SAME: u64 = 0xd0_0002;
+    const RELATED: u64 = 8;
 
     fn schema() -> CalcSchema {
         let mut schema = CalcSchema::new("Tints", Locale::en_us());
@@ -191,19 +223,49 @@ mod tests {
             sort_locale: 0,
             separator: " ".into(),
         });
+        schema.add_occurrence(SAME, "Same", TABLE);
+        schema.add_relationship(om_data::host::RelationshipDef::new(
+            1,
+            OCCURRENCE,
+            SAME,
+            vec![om_data::host::JoinPredicate {
+                left: 1,
+                right: 1,
+                op: om_data::host::JoinOp::Equal,
+            }],
+        ));
+        schema.add_value_list(ValueList {
+            id: RELATED,
+            name: "Same names".into(),
+            source: ValueSource::Field {
+                primary: SpecField {
+                    occurrence: Some(SAME),
+                    field: 1,
+                    repetition: 1,
+                },
+                secondary: None,
+                start: Some(OCCURRENCE),
+            },
+            options: 0,
+            sort_locale: 0,
+            separator: " ".into(),
+        });
         schema
     }
 
     /// Tints whose names are its record ids' rows of `names`, read under
     /// the generation each call is given (`generations`, the last repeating);
     /// `retry`: every answer says a related host could not be reached;
-    /// `withhold`: no record's values are given.
+    /// `withhold`: no record's values are given; `held`: a new record the
+    /// open transaction holds, which the host has none of, given (flagged)
+    /// when asked for, as `NativeProvider` gives one.
     struct Tints {
         names: Vec<Vec<&'static str>>,
         generations: Vec<u64>,
         calls: usize,
         retry: bool,
         withhold: bool,
+        held: Option<(u64, &'static str)>,
     }
 
     impl DataProvider for Tints {
@@ -246,6 +308,18 @@ mod tests {
                     .map_err(|e| DataError::new(e.to_string()))?;
             }
             let mut data = recorder.take();
+            if let Some((id, name)) = self.held {
+                let asked = CalcNeed::Record {
+                    table: TABLE,
+                    record: id,
+                };
+                if needs.contains(&asked) {
+                    let mut values = RecordValues::default();
+                    values.set(1, 1, Value::text(name));
+                    values.held_new = true;
+                    data.records.insert((TABLE, id), Some(Arc::new(values)));
+                }
+            }
             data.generation = Some(generation);
             if self.retry {
                 data.retry_after = Some(Duration::from_secs(30));
@@ -282,6 +356,7 @@ mod tests {
             calls: 0,
             retry: false,
             withhold: false,
+            held: None,
         };
         assert_eq!(items(run(&mut provider)), ["Ash", "Slate", "Stone"]);
         assert!(provider.calls > 2, "built again: {} reads", provider.calls);
@@ -299,12 +374,49 @@ mod tests {
             calls: 0,
             retry: true,
             withhold,
+            held: None,
         };
         let built = run(&mut tints(true));
         assert!(built.result.is_none());
         assert_eq!(built.retry_after, Some(Duration::from_secs(30)));
         let built = run(&mut tints(false));
         assert!(built.retry_after.is_none());
+        assert_eq!(items(built), ["Ash"]);
+    }
+
+    /// A list of related values for a new record the open transaction
+    /// holds (record 3, Ash, an auto-entered key, say), built with nothing
+    /// typed into it: the record is read first, so its values relate the
+    /// stored Ash, as paint related them over the window's cache, rather
+    /// than the host's set from a record it has none of (empty). The
+    /// answer carries the generation it was read under.
+    #[test]
+    fn a_held_new_records_related_values_are_related_by_its_values() {
+        let mut provider = Tints {
+            names: vec![vec!["Ash", "Slate"]],
+            generations: vec![4],
+            calls: 0,
+            retry: false,
+            withhold: false,
+            held: Some((3, "Ash")),
+        };
+        let related = crate::calc::RelatedBuild {
+            occurrence: OCCURRENCE,
+            parent: 3,
+            portal: None,
+            overlays: Vec::new(),
+        };
+        let built = build(
+            &mut provider,
+            RELATED,
+            (
+                Date::from_ymd(2026, 11, 18).unwrap(),
+                &SessionInfo::default(),
+            ),
+            Some(&related),
+            &CalcCancel::default(),
+        );
+        assert_eq!(built.generation, Some(4));
         assert_eq!(items(built), ["Ash"]);
     }
 }

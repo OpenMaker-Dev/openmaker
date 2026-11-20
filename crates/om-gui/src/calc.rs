@@ -131,18 +131,27 @@ pub(crate) struct RelatedBuild {
 /// record, portal row's occurrence and record).
 type RelatedKey = (u64, u64, u64, Option<(u64, u64)>);
 
-/// A list of related values the worker built: whether a calculation
-/// computed it ([`calculated_list`]), and its items or why there are none.
-type RelatedList = (bool, Result<Arc<Choices>, ChoiceError>);
+/// A list of related values the worker built, or asked of it: whether a
+/// calculation computes it ([`calculated_list`]), and the records whose
+/// unsaved values it was laid over ([`Evaluator::overlaid`]). A frame whose
+/// overlays are of other records (one whose stored values came since, say)
+/// builds it again.
+#[derive(Debug)]
+struct RelatedList {
+    calculated: bool,
+    overlaid: Vec<(u64, u64)>,
+    items: Result<Arc<Choices>, ChoiceError>,
+}
 
-/// A list of related values asked of the worker: its key, whether a
-/// calculation computes it ([`calculated_list`]), and whether the window's
-/// unsaved changes, context or date changed since it was asked, so that its
-/// answer is not taken.
-#[derive(Clone, Copy, Debug)]
+/// A list of related values asked of the worker: its key, as
+/// [`RelatedList`], and whether the data, the window's unsaved changes,
+/// context or date changed since it was asked, so that its answer is not
+/// taken.
+#[derive(Debug)]
 struct RelatedAsk {
     key: RelatedKey,
     calculated: bool,
+    overlaid: Vec<(u64, u64)>,
     stale: bool,
 }
 
@@ -447,6 +456,10 @@ pub(crate) struct Calculations {
     /// schema meanwhile (another list's build, say), with whether the
     /// window was told it came ([`Self::retry_at`]).
     build_retry: RefCell<HashMap<u64, (std::time::Instant, bool)>>,
+    /// The same for lists of related values, by the record (and portal
+    /// row) whose build lacked the data: another record's list may not
+    /// read that host at all.
+    related_retry: RefCell<HashMap<RelatedKey, (std::time::Instant, bool)>>,
     /// The last build ticket given, kept through [`Self::reset`] so that an
     /// answer for the file before is never taken for the next.
     build_tickets: Cell<u64>,
@@ -488,17 +501,19 @@ impl Calculations {
     fn drop_built_lists(&mut self, tables: Option<&BTreeSet<u64>>) {
         let stale = |read: &BTreeSet<u64>| tables.is_none_or(|t| !read.is_disjoint(t));
         self.built.get_mut().retain(|_, (read, _)| !stale(read));
+        // A list of related values may read any table along its
+        // relationships: any change of data takes it. A page read under the
+        // data's generation is none (`Self::page_read`): it leaves them, or
+        // scrolling would build every shown record's list again.
+        if tables.is_none() {
+            self.drop_related_lists(|_, _| true);
+        }
         let building = self.building.get_mut();
         building.retain(|_, (_, read)| !stale(read));
-        // A list of related values may read any table along its
-        // relationships: any change of data takes it.
-        self.related_built.get_mut().clear();
-        let related = self.related_building.get_mut();
-        related.clear();
         self.build_wants
             .get_mut()
             .retain(|want| match want.related {
-                Some(_) => related.contains_key(&want.ticket),
+                Some(_) => true,
                 None => building
                     .get(&want.list)
                     .is_some_and(|(t, _)| *t == want.ticket),
@@ -517,7 +532,7 @@ impl Calculations {
         // Lists of related values a calculation computes: built ones go, one
         // being built is not taken (`RelatedAsk::stale`), as for all of a
         // field's values.
-        let dropped = self.drop_related_lists(|ask| ask.calculated);
+        let dropped = self.drop_related_lists(|_, calculated| calculated);
         let Some(schema) = &self.schema else {
             return dropped;
         };
@@ -532,28 +547,41 @@ impl Calculations {
         self.build_retry
             .borrow_mut()
             .retain(|id, _| !calculated(id));
+        self.related_retry
+            .borrow_mut()
+            .retain(|(id, ..), _| !calculated(id));
         self.stale_builds
             .borrow_mut()
             .extend(self.building.borrow().keys().filter(|id| calculated(id)));
         dropped
     }
 
-    /// Lists of related values `which` says went out of date: the built
-    /// ones go, and one being built stays asked, its answer not taken, so
-    /// that a change frame by frame (typing, a resize) keeps one build per
-    /// list and record on the worker. Whether a built one went.
-    fn drop_related_lists(&self, which: impl Fn(&RelatedAsk) -> bool) -> bool {
+    /// Lists of related values `which` (by key and whether a calculation
+    /// computes them) says went out of date: the built ones go; one asked
+    /// and not sent yet goes with its request; one on the worker stays
+    /// asked, its answer not taken, so that a change frame by frame
+    /// (typing, a resize, data) keeps one build per list and record on the
+    /// worker rather than queueing another behind it. Whether a built one
+    /// went.
+    fn drop_related_lists(&self, which: impl Fn(&RelatedKey, bool) -> bool) -> bool {
         let mut built = self.related_built.borrow_mut();
         let before = built.len();
-        built.retain(|key, (calculated, _)| {
-            !which(&RelatedAsk {
-                key: *key,
-                calculated: *calculated,
-                stale: false,
-            })
+        built.retain(|key, list| !which(key, list.calculated));
+        let mut asked = self.related_building.borrow_mut();
+        let mut unsent = BTreeSet::new();
+        self.build_wants.borrow_mut().retain(|want| {
+            let drop = want.related.is_some()
+                && asked
+                    .get(&want.ticket)
+                    .is_some_and(|ask| which(&ask.key, ask.calculated));
+            if drop {
+                unsent.insert(want.ticket);
+            }
+            !drop
         });
-        for ask in self.related_building.borrow_mut().values_mut() {
-            if which(ask) {
+        asked.retain(|ticket, _| !unsent.contains(ticket));
+        for ask in asked.values_mut() {
+            if which(&ask.key, ask.calculated) {
                 ask.stale = true;
             }
         }
@@ -770,7 +798,7 @@ impl Calculations {
         // Its list of related values, if any, is built again: every one,
         // as the objects' lists are not known here.
         if !values.is_empty() {
-            self.drop_related_lists(|_| true);
+            self.drop_related_lists(|_, _| true);
         }
         self.values
             .get_mut()
@@ -866,7 +894,7 @@ impl Calculations {
         if *previous != draft {
             *previous = draft;
             // A list of related values was built over the unsaved changes.
-            self.drop_related_lists(|_| true);
+            self.drop_related_lists(|_, _| true);
             self.forget_results();
         }
     }
@@ -1061,25 +1089,6 @@ impl Calculations {
         result: Option<Result<Arc<Choices>, ChoiceError>>,
         retry_after: Option<std::time::Duration>,
     ) {
-        // A list of related values for a record (#290): taken under its
-        // key unless the data, the unsaved changes or (calculated) the
-        // context changed since it was asked; a related host's wait as a
-        // list of all of a field's values.
-        if let Some(ask) = self.related_building.get_mut().remove(&ticket) {
-            if ask.stale {
-                return;
-            }
-            if let Some(after) = retry_after {
-                let at = std::time::Instant::now() + after;
-                self.build_retry.get_mut().insert(list, (at, false));
-            }
-            if let Some(items) = result {
-                self.related_built
-                    .get_mut()
-                    .insert(ask.key, (ask.calculated, items));
-            }
-            return;
-        }
         // A list of an unstored calculation's values asked for a context or
         // date since gone (#290): its wait is not the new context's, which
         // may read other data.
@@ -1107,6 +1116,56 @@ impl Calculations {
         if let Some(items) = result {
             self.built.get_mut().insert(list, (tables, items));
         }
+    }
+
+    /// The worker's answer for a list of related values (#290) asked with
+    /// `ticket`, as [`Self::accept_built_list`]'s: taken under its record's
+    /// key unless the data, the unsaved changes or (calculated) the context
+    /// changed since it was asked; `retry_after` holds that record's list
+    /// only.
+    pub fn accept_related_list(
+        &mut self,
+        ticket: u64,
+        result: Option<Result<Arc<Choices>, ChoiceError>>,
+        retry_after: Option<std::time::Duration>,
+    ) {
+        let Some(ask) = self.related_building.get_mut().remove(&ticket) else {
+            return;
+        };
+        if ask.stale {
+            return;
+        }
+        if let Some(after) = retry_after {
+            let at = std::time::Instant::now() + after;
+            self.related_retry.get_mut().insert(ask.key, (at, false));
+        }
+        if let Some(items) = result {
+            self.related_built.get_mut().insert(
+                ask.key,
+                RelatedList {
+                    calculated: ask.calculated,
+                    overlaid: ask.overlaid,
+                    items,
+                },
+            );
+        }
+    }
+
+    /// A list build read data of `generation` (`list_build::Built`): one
+    /// newer than the window's means the host told the provider of a change
+    /// the window has not seen, which the build's own reads took. The data
+    /// and every list are read again, as for a calculation reply of that
+    /// generation, rather than the window keep lists of the data before.
+    /// Whether they were.
+    pub fn observe_build_generation(&mut self, generation: Option<u64>) -> bool {
+        let newer = matches!(
+            (self.cache.get_mut().generation, generation),
+            (Some(current), Some(read)) if read > current
+        );
+        if newer {
+            self.data_changed();
+        }
+        newer
     }
 
     /// The lists to ask the host for now (`DataProvider::host_field_values`),
@@ -1184,19 +1243,13 @@ impl Calculations {
         // too. One whose time came draws the window again at once, once
         // (a control shows it then and asks for it); told, it goes.
         let now = std::time::Instant::now();
-        let mut lists = self.build_retry.borrow_mut();
-        lists.retain(|_, (at, told)| !(*told && *at <= now));
-        let mut list: Option<std::time::Instant> = None;
-        for (at, told) in lists.values_mut() {
-            let when = if *at <= now {
-                *told = true;
-                now
-            } else {
-                *at
-            };
-            list = Some(list.map_or(when, |soon| soon.min(when)));
-        }
-        drop(lists);
+        let list = match (
+            next_wait(&mut self.build_retry.borrow_mut(), now),
+            next_wait(&mut self.related_retry.borrow_mut(), now),
+        ) {
+            (Some(a), Some(b)) => Some(a.min(b)),
+            (a, b) => a.or(b),
+        };
         match (self.retry_at, list) {
             (Some(needs), Some(list)) => Some(needs.min(list)),
             (needs, list) => needs.or(list),
@@ -1490,6 +1543,27 @@ pub(crate) fn window_modified_fields<'a>(
     om_data::host::session::modified_fields(schema, table, &changed, &entered)
 }
 
+/// The soonest of `waits` (for an unreachable host, #740), each with
+/// whether the window was told its time came: one whose time came is
+/// answered `now`, once, and goes when told.
+fn next_wait<K>(
+    waits: &mut HashMap<K, (std::time::Instant, bool)>,
+    now: std::time::Instant,
+) -> Option<std::time::Instant> {
+    waits.retain(|_, (at, told)| !(*told && *at <= now));
+    let mut soonest: Option<std::time::Instant> = None;
+    for (at, told) in waits.values_mut() {
+        let when = if *at <= now {
+            *told = true;
+            now
+        } else {
+            *at
+        };
+        soonest = Some(soonest.map_or(when, |soon| soon.min(when)));
+    }
+    soonest
+}
+
 /// The layout's table occurrence.
 pub(crate) fn layout_occurrence(session: &Session) -> Option<u64> {
     match &session.render {
@@ -1526,6 +1600,39 @@ pub(crate) fn draft_overlay(
         }
     }
     Some((table.id, record, Arc::new(values)))
+}
+
+/// The stored records with unsaved edits whose overlays [`draft_overlay`],
+/// [`add_draft_overlays`] and [`add_related_overlays`] leave out because
+/// the cache lacks their stored values: the current record with changes,
+/// related records a step changed, and related records edited through the
+/// current one (one begun in a creation row has no stored values to lack).
+fn unformed_overlays(
+    schema: &CalcSchema,
+    cache: &CalcData,
+    session: &Session,
+    (changes, occurrence): (&om_data::FieldChanges, u64),
+    drafts: &crate::document::RelatedDrafts,
+    edits: &[crate::document::RelatedEdit],
+) -> Vec<(u64, u64)> {
+    let mut lacking = Vec::new();
+    let current = session
+        .current_record()
+        .and_then(|(_, record)| u64::try_from(record.id).ok());
+    if let (false, Some(record), Some(table)) =
+        (changes.is_empty(), current, schema.table_of(occurrence))
+    {
+        lacking.push((table.id, record));
+    }
+    lacking.extend(drafts.iter().map(|(table, record, _)| (*table, *record)));
+    lacking.extend(edits.iter().filter_map(|edit| match edit.field.row {
+        crate::document::RelatedRow::Record(record) => Some((edit.field.table, record)),
+        crate::document::RelatedRow::New { .. } => None,
+    }));
+    lacking.retain(|key| !cache.records.contains_key(key));
+    lacking.sort_unstable();
+    lacking.dedup();
+    lacking
 }
 
 /// Add what the current record keeps uncommitted of its related records
@@ -1658,6 +1765,9 @@ pub(crate) struct Evaluator<'a> {
     /// The records with the user's unsaved edits: the current record and
     /// the related records edited through it.
     overlays: Vec<(u64, u64, Arc<RecordValues>)>,
+    /// Records with unsaved edits left out of `overlays` because their
+    /// stored values are not cached ([`unformed_overlays`]).
+    unformed: Vec<(u64, u64)>,
     /// The related sets scanned over `overlays` this frame: a set a
     /// draft changes is scanned once, not once per field reading it
     /// (#1308).
@@ -1751,6 +1861,14 @@ impl<'a> Evaluator<'a> {
             today,
             &mut overlays,
         );
+        let unformed = unformed_overlays(
+            schema,
+            &calcs.cache.borrow(),
+            session,
+            (&changes, occurrence),
+            &document.related_drafts,
+            &related,
+        );
         let unsaved = !document.related_drafts.is_empty() || !document.begun_rows.is_empty();
         let draft = (!changes.is_empty() || !related.is_empty() || unsaved).then(|| DraftContext {
             layout: session.layout,
@@ -1773,6 +1891,7 @@ impl<'a> Evaluator<'a> {
             locals: RefCell::new(calcs.level0.clone()),
             globals: RefCell::new(globals.clone()),
             overlays,
+            unformed,
             hosted: session.target.local.is_none(),
             scans: RefCell::default(),
             summaries: SummaryCache::default(),
@@ -2105,8 +2224,37 @@ impl<'a> Evaluator<'a> {
         list: &om_data::meta::ValueList,
         key: RelatedKey,
     ) -> Result<Arc<Choices>, ChoiceError> {
-        if let Some((_, items)) = self.calcs.related_built.borrow().get(&key) {
-            return items.clone();
+        // The stored values of records with unsaved values not in the window
+        // (a refresh or a page read dropped them): read first. Meanwhile a
+        // list built over those records' unsaved values stands, and none is
+        // built over their stored values instead; a record the provider
+        // could not give does not hold it.
+        let lacking: Vec<CalcNeed> = self
+            .unformed
+            .iter()
+            .map(|&(table, record)| CalcNeed::Record { table, record })
+            .filter(|need| !self.calcs.failed.contains(need) && !self.calcs.waiting.contains(need))
+            .collect();
+        if !lacking.is_empty() {
+            self.calcs.wanted.borrow_mut().extend(lacking);
+            return match self.calcs.related_built.borrow().get(&key) {
+                Some(built) if self.unformed.iter().all(|r| built.overlaid.contains(r)) => {
+                    built.items.clone()
+                }
+                _ => Err(ChoiceError::Pending),
+            };
+        }
+        let overlaid = self.overlaid();
+        {
+            let mut built = self.calcs.related_built.borrow_mut();
+            match built.get(&key) {
+                Some(built) if built.overlaid == overlaid => return built.items.clone(),
+                // Built over other unsaved records than this frame's.
+                Some(_) => {
+                    built.remove(&key);
+                }
+                None => {}
+            }
         }
         if self
             .calcs
@@ -2119,12 +2267,12 @@ impl<'a> Evaluator<'a> {
         }
         // Waiting for a related host that could not be reached (#740).
         {
-            let mut waits = self.calcs.build_retry.borrow_mut();
-            if let Some((at, _)) = waits.get(&list.id) {
+            let mut waits = self.calcs.related_retry.borrow_mut();
+            if let Some((at, _)) = waits.get(&key) {
                 if std::time::Instant::now() < *at {
                     return Err(ChoiceError::Pending);
                 }
-                waits.remove(&list.id);
+                waits.remove(&key);
             }
         }
         let ticket = self.calcs.build_tickets.get().wrapping_add(1);
@@ -2134,6 +2282,7 @@ impl<'a> Evaluator<'a> {
             RelatedAsk {
                 key,
                 calculated: calculated_list(self.schema, list),
+                overlaid,
                 stale: false,
             },
         );
@@ -2151,6 +2300,12 @@ impl<'a> Evaluator<'a> {
             }),
         });
         Err(ChoiceError::Pending)
+    }
+
+    /// The records this frame's unsaved values are laid over, which a list
+    /// of related values is built for ([`RelatedList::overlaid`]).
+    fn overlaid(&self) -> Vec<(u64, u64)> {
+        self.overlays.iter().map(|(t, r, _)| (*t, *r)).collect()
     }
 
     /// Whether a pop-up menu of `object` shows the label of the item that
@@ -2462,6 +2617,7 @@ impl<'a> Evaluator<'a> {
         Self {
             info,
             overlays: Vec::new(),
+            unformed: Vec::new(),
             locals: RefCell::new(self.locals.borrow().clone()),
             globals: RefCell::new(self.globals.borrow().clone()),
             scans: RefCell::default(),
@@ -3492,6 +3648,7 @@ mod tests {
             locals: RefCell::new(Variables::new()),
             globals: RefCell::new(Variables::new()),
             overlays: Vec::new(),
+            unformed: Vec::new(),
             hosted: false,
             scans: RefCell::default(),
             summaries: SummaryCache::default(),
@@ -4678,6 +4835,7 @@ mod tests {
         values.set(1, 1, Value::text(title));
         let evaluator = Evaluator {
             overlays: vec![(TABLE, 1, Arc::new(values))],
+            unformed: Vec::new(),
             ..evaluator(calcs, schema)
         };
         calcs.observe_draft(Some(draft_context(title)));
@@ -4913,6 +5071,7 @@ mod tests {
             locals: RefCell::new(Variables::new()),
             globals: RefCell::new(Variables::new()),
             overlays: Vec::new(),
+            unformed: Vec::new(),
             hosted: false,
             scans: RefCell::default(),
             summaries: SummaryCache::default(),
@@ -5375,16 +5534,83 @@ mod tests {
             }],
             custom: false,
         });
-        calcs.accept_built_list(6, ticket, Some(Ok(Arc::clone(&built))), None);
+        calcs.accept_related_list(ticket, Some(Ok(Arc::clone(&built))), None);
         assert_eq!(
             values(evaluator(&calcs, &schema).option_values(&option_object(15, 6), 1, None)),
             ["Alder"]
         );
-        calcs.data_changed();
+        // The record's unsaved values whose stored values are not in yet
+        // (a refresh dropped them): not built over the stored values, which
+        // the frame with the overlay would keep, but the record is read.
+        let lacking = |calcs: &Calculations| {
+            let evaluator = Evaluator {
+                unformed: vec![(TABLE, 1)],
+                ..evaluator(calcs, &schema)
+            };
+            let options = evaluator.option_values(&option_object(15, 6), 1, None);
+            (options, evaluator.overlaid())
+        };
+        calcs.related_built.get_mut().clear();
+        assert_eq!(lacking(&calcs), (Err(ChoiceError::Pending), Vec::new()));
+        assert!(calcs.take_list_builds().is_empty());
+        assert!(calcs.take_wanted().contains(&CalcNeed::Record {
+            table: TABLE,
+            record: 1
+        }));
+        // Built over other unsaved records than the frame's: built again.
+        calcs.related_building.get_mut().insert(
+            ticket,
+            RelatedAsk {
+                key: (6, OCCURRENCE, 1, None),
+                calculated: false,
+                overlaid: Vec::new(),
+                stale: false,
+            },
+        );
+        calcs.accept_related_list(ticket, Some(Ok(Arc::clone(&built))), None);
+        let overlaid = Evaluator {
+            overlays: vec![(TABLE, 1, Arc::new(RecordValues::default()))],
+            ..evaluator(&calcs, &schema)
+        };
+        assert_eq!(
+            overlaid.option_values(&option_object(15, 6), 1, None),
+            Err(ChoiceError::Pending)
+        );
+        drop(overlaid);
+        let again = calcs.take_list_builds();
+        assert_eq!(again.len(), 1, "{again:?}");
+        assert_eq!(again[0].related.as_ref().unwrap().overlays.len(), 1);
+        // Built over record 1's unsaved values, it stands while a frame
+        // reads that record's stored values again.
+        calcs.accept_related_list(again[0].ticket, Some(Ok(Arc::clone(&built))), None);
+        assert_eq!(values(lacking(&calcs).0), ["Alder"]);
+        assert!(calcs.take_list_builds().is_empty());
+        // A page read under the data's generation keeps a built list.
+        calcs.cache.get_mut().generation = Some(4);
+        calcs.page_read(Some(4), Some(TABLE), &[1]);
+        assert!(calcs
+            .related_built
+            .get_mut()
+            .contains_key(&(6, OCCURRENCE, 1, None)));
+        // A change of data takes the list a frame without the overlay asks
+        // for again; still on the worker, it stays asked (not asked twice),
+        // its answer not taken.
         assert_eq!(
             evaluator(&calcs, &schema).option_values(&option_object(15, 6), 1, None),
             Err(ChoiceError::Pending)
         );
+        let sent = calcs.take_list_builds();
+        assert_eq!(sent.len(), 1, "{sent:?}");
+        calcs.data_changed();
+        for _ in 0..2 {
+            assert_eq!(
+                evaluator(&calcs, &schema).option_values(&option_object(15, 6), 1, None),
+                Err(ChoiceError::Pending)
+            );
+        }
+        assert!(calcs.take_list_builds().is_empty());
+        calcs.accept_related_list(sent[0].ticket, Some(Ok(Arc::clone(&built))), None);
+        assert!(calcs.related_built.get_mut().is_empty());
     }
 
     fn pending_container_fixture() -> (CalcSchema, Calculations) {
