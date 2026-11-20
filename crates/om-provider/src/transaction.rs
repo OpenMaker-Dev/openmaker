@@ -4261,22 +4261,21 @@ fn note_unique(
     values: &EncodedChanges,
     record: u64,
 ) -> Result<(), DataError> {
-    for field in fields {
-        if let Some(Some(value)) = values.get(&field) {
-            let text = om_scsu::decode_scsu(value)
-                .map_err(|e| failure("decode a unique value", format!("{e:?}")))?;
-            let key = super::records::checked_keys(table, field)?
-                .key(&text)
-                .unwrap_or_default();
-            let seen = unique.entry((table.id, field)).or_default();
-            if let Some(other) = seen.insert(key, record) {
-                if other != record {
-                    let name = table.field(field).map_or("", |f| f.name.as_str());
-                    return Err(DataError::with_code(
-                        error::NOT_UNIQUE,
-                        format!("Field {name} requires a unique value."),
-                    ));
-                }
+    // Every repetition a write changes (`field_cells`).
+    for (field, value) in super::records::field_cells(table, &fields, values) {
+        let text = om_scsu::decode_scsu(value)
+            .map_err(|e| failure("decode a unique value", format!("{e:?}")))?;
+        let key = super::records::checked_keys(table, field)?
+            .key(&text)
+            .unwrap_or_default();
+        let seen = unique.entry((table.id, field)).or_default();
+        if let Some(other) = seen.insert(key, record) {
+            if other != record {
+                let name = table.field(field).map_or("", |f| f.name.as_str());
+                return Err(DataError::with_code(
+                    error::NOT_UNIQUE,
+                    format!("Field {name} requires a unique value."),
+                ));
             }
         }
     }

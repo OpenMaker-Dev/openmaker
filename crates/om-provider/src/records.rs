@@ -237,6 +237,28 @@ fn exists_in_index_program(
 /// existing value, keys the text checked in it: its index language's form
 /// (query-program.md 7.2), which the record rules require to be one
 /// OpenMaker builds exactly.
+/// The changed values among `values` of `fields`, each repetition's: a
+/// field's own cell for its first, `field * 256 + n` for repetition n of
+/// 2 to 255 (`om_data::rules::cell_of`). A unique value is checked in each
+/// (script-runtime.md, the unique oracle's later repetitions).
+pub(super) fn field_cells<'v>(
+    table: &Table,
+    fields: &[u64],
+    values: &'v EncodedChanges,
+) -> Vec<(u64, &'v [u8])> {
+    values
+        .iter()
+        .filter_map(|(cell, value)| {
+            let field = match table.field(*cell) {
+                Some(_) => *cell,
+                None if *cell & 0xff >= 2 => *cell >> 8,
+                None => return None,
+            };
+            Some((field, value.as_deref()?)).filter(|(field, _)| fields.contains(field))
+        })
+        .collect()
+}
+
 pub(super) fn checked_keys(table: &Table, field: u64) -> Result<TextKeys, DataError> {
     table
         .field(field)
@@ -480,12 +502,15 @@ impl NativeProvider {
         cells: &BTreeMap<u64, Option<String>>,
     ) -> Result<(), DataError> {
         for cell in cells.keys() {
+            // A first repetition is the field's own cell, never `F * 256
+            // + 1`, which the owner does not take.
             let (field, repetition) = match table.field(*cell) {
                 Some(field) => (Some(field), 1),
-                None => (
+                None if *cell & 0xff >= 2 => (
                     table.field(*cell >> 8),
                     u16::try_from(*cell & 0xff).unwrap_or(0),
                 ),
+                None => (None, 0),
             };
             if !field.is_some_and(|field| {
                 Self::ordinary_stored(field)
@@ -894,10 +919,7 @@ impl NativeProvider {
         record: u64,
         txn: u32,
     ) -> Result<(), DataError> {
-        for field in fields {
-            let Some(Some(value)) = values.get(&field) else {
-                continue;
-            };
+        for (field, value) in field_cells(table, &fields, values) {
             let name = table.field(field).map_or("", |f| f.name.as_str());
             let text = om_scsu::decode_scsu(value)
                 .map_err(|e| failure("decode a unique value", format!("{e:?}")))?;

@@ -2771,6 +2771,36 @@ fn missing_index_unique_cold_and_warm_preserve_duplicates_exclusion_and_new_valu
     }
 }
 
+/// A unique value is checked in every repetition a write changes, not only
+/// the first: Name repeats twice, and "SHIP" in record 1's second
+/// repetition is another record's value (504), as FileMaker's engine
+/// refuses it (script-runtime.md, the unique oracle); "Mine" is not.
+#[test]
+fn a_unique_value_in_a_later_repetition_is_checked() {
+    for (candidate, duplicate) in [("SHIP", true), ("Mine", false)] {
+        let mut root = fixture::tree(&[], true);
+        fixture::set_field_options(&mut root, TABLE, NAME, 0x8000_0000);
+        fixture::set_field_validation(&mut root, TABLE, NAME, 0x410);
+        fixture::set_field_repetitions(&mut root, TABLE, NAME, 2);
+        let file = TempFile::from_tree("repeated-unique", &root);
+        let (port, ca) = host_with(&file.0, None, |server| server);
+        let mut provider = open(port, &ca);
+        let tasks = layout(&mut provider, "Tasks");
+        let result = provider.write_record(&om_data::ScriptWrite {
+            layout: tasks,
+            record: Some(1),
+            cells: [(NAME * 256 + 2, Some(candidate.into()))].into(),
+            ..Default::default()
+        });
+        assert_eq!(
+            result.as_ref().err().and_then(|e| e.code),
+            duplicate.then_some(504),
+            "{candidate:?}: {result:?}"
+        );
+        provider.close();
+    }
+}
+
 #[test]
 fn missing_index_existing_cold_and_warm_require_another_record() {
     for warm in [false, true] {
