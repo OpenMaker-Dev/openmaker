@@ -1501,8 +1501,9 @@ fn a_first_whole_value_find_compares_index_keys() {
 
 /// A join back on a value index the host has not built yet relates the
 /// keys that index holds (query-program.md 7.1, 9.2): empty text is the
-/// key `01`, so Tasks::Name ≠ Notes::Body relates a task without a name to
-/// note 1 "Hi", and " Hi " keys its spaces, so it is not = "Hi".
+/// key `01`, which relates to nothing through Tasks::Name ≠ Notes::Body
+/// (file-metadata.md 4), so a task without a name is not related to note 1
+/// "Hi"; " Hi " keys its spaces, so it is ≠ "Hi" and not = "Hi".
 #[test]
 fn a_first_join_back_relates_the_keys_of_the_value_index() {
     let relate = |op: u8| {
@@ -1519,7 +1520,7 @@ fn a_first_join_back_relates_the_keys_of_the_value_index() {
     let rows = [("", "1", ""), (" Hi ", "1", "")];
     let find = || vec![request("Notes::Body", "==Hi")];
     let not_equal = cold_and_warm_in("cold-join-ne", &rows, relate(1), find());
-    assert_eq!(not_equal, (Ok(vec![1, 2, 3, 4]), Ok(vec![1, 2, 3, 4])));
+    assert_eq!(not_equal, (Ok(vec![1, 2, 4]), Ok(vec![1, 2, 4])));
     let equal = cold_and_warm_in("cold-join-eq", &rows, relate(0), find());
     assert_eq!(equal, (Err(Some(401)), Err(Some(401))));
 }

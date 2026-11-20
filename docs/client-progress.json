@@ -437,7 +437,7 @@
       "previous_status": "Partial",
       "status": "Partial",
       "scope": "Layout, object and record triggers run in the owning context and can veto. Browse keystroke triggers see control keys and modifiers and keep the queued input order; related edit boxes run their object triggers; Tab follows the stored tab order ([editing records](desktop-client.md#editing-records)).",
-      "remaining": "Find and Preview mode keys and input-method commits are not implemented or measured ([desktop notes](re/script-runtime.md#implementation-notes-desktop-client)); Return ends a field's editing [#376](https://github.com/OpenMaker-Dev/openmaker/issues/376). Related fields get no keystroke trigger.",
+      "remaining": "Find and Preview mode keys and input-method commits are not implemented or measured ([desktop notes](re/script-runtime.md#implementation-notes-desktop-client)). Related fields get no keystroke trigger.",
       "issues": [
         260
       ],
@@ -938,10 +938,9 @@
       "feature": "Web viewer and JavaScript bridge",
       "previous_status": "Partial",
       "status": "Partial",
-      "scope": "With the `web-viewer` build on Linux, WebKitGTK views show in Form and List view in every window (one per List row in sight, one over a portal), run the JavaScript bridge both ways, and print as a frame and caption; on a Wayland session the app runs through XWayland ([web viewers](re/layout-model.md#96-web-viewer)).",
-      "remaining": "Not on macOS [#304](https://github.com/OpenMaker-Dev/openmaker/issues/304) or Windows [#305](https://github.com/OpenMaker-Dev/openmaker/issues/305), nor in native Wayland windows [#323](https://github.com/OpenMaker-Dev/openmaker/issues/323) or embedded viewports [#319](https://github.com/OpenMaker-Dev/openmaker/issues/319); not in Find mode or Table parts; objects stacked above a viewer are covered by it.",
+      "scope": "With the `web-viewer` build, WebKitGTK views on Linux and WKWebView views on macOS show in Form and List view in every window (one per List row in sight, one over a portal), run the JavaScript bridge both ways, and print as a frame and caption; on a Wayland session the app runs through XWayland ([web viewers](re/layout-model.md#96-web-viewer)).",
+      "remaining": "Not on Windows [#305](https://github.com/OpenMaker-Dev/openmaker/issues/305), nor in native Wayland windows [#323](https://github.com/OpenMaker-Dev/openmaker/issues/323) or embedded viewports [#319](https://github.com/OpenMaker-Dev/openmaker/issues/319); not in Find mode or Table parts; objects stacked above a viewer are covered by it.",
       "issues": [
-        304,
         305,
         319,
         323

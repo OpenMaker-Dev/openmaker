@@ -103,6 +103,7 @@ fn logged_in_as(port: u16, name: &str, account: &str) -> Session {
     let password = match account {
         CLERK => CLERK_PASSWORD,
         fixture::READER => fixture::READER_PASSWORD,
+        CUSTOM => CUSTOM_PASSWORD,
         _ => PASSWORD,
     };
     let login = session
@@ -696,6 +697,102 @@ fn scripts_run_with_the_requesting_accounts_privileges() {
     clerk.disconnect().unwrap();
 }
 
+/// An account in a custom set, which [`add_custom_set`] adds.
+const CUSTOM: &str = "Temp";
+const CUSTOM_PASSWORD: &str = "temp's secret";
+
+/// Add [`CUSTOM`] (security catalog record 7) in set 4, a custom set
+/// OpenMaker enforces: records view only, every layout and value list,
+/// every script executable only but scripts 4 and 200, which it gives no
+/// access (session-identity.md 2.2: `09, 11 04` is script `04`'s entry,
+/// `09, 11 80 48` script 200's, its key the serial encoding; `d5` no
+/// access), every other privilege, no password lifetime.
+fn add_custom_set(root: &mut om_hbam::OwnedNode) {
+    use om_hbam::OwnedNode;
+    let set: &[u8] = &[4];
+    root.put(
+        &[&[23], &[2], &[5], set, &[16]],
+        om_scripts::text_node(&[], "Clerks"),
+    );
+    for (member, value) in [(2u8, [0x10u8, 0x03]), (0x0a, [0x9f, 0xff]), (0x0c, [0, 0])] {
+        root.put(
+            &[&[23], &[2], &[5], set, &[member]],
+            OwnedNode::leaf(Vec::new(), value.to_vec()),
+        );
+    }
+    for (entry, quad) in [
+        (&[0x04u8][..], 0xdfu8),
+        (&[0x11], 0xd6),
+        (&[0x11, 0x04], 0xd5),
+        // Script 200, keyed `80 48` (two bytes, its serial encoding).
+        (&[0x11, 0x80, 0x48], 0xd5),
+        (&[0x21], 0xd6),
+    ] {
+        root.put(
+            &[&[23], &[2], &[5], set, &[9], entry],
+            OwnedNode::leaf(Vec::new(), vec![quad]),
+        );
+    }
+    root.put(
+        &[&[23], &[1], &[5], &[7], &[16]],
+        om_scripts::text_node(&[], CUSTOM),
+    );
+    fixture::put_account(root, 7, CUSTOM_PASSWORD, None, 4);
+}
+
+/// A custom set decides which scripts its account may run
+/// (session-identity.md 2.2): script 4, set to run with full access
+/// privileges, has no access in Temp's set, so op30 answers 9 and nothing
+/// changes, as `CallScript` refuses a script the account has no access to
+/// (script-runtime.md 3.7, 9.1). Before, being set to run with full access
+/// let it run, and its steps wrote with full access (#227). Script 5 is
+/// executable: it runs, and its record steps fail closed (9), since a
+/// custom set's record limits are not applied to server scripts yet.
+#[test]
+fn a_custom_set_decides_which_scripts_its_account_may_run() {
+    use fixture::{exit_with, full_access, go_to_record, on, script, set_field};
+    let scripts = [
+        full_access(
+            4,
+            "Elevated",
+            vec![
+                on(86, true),
+                go_to_record(1),
+                set_field(NAME, "\"By temp\""),
+                ScriptStep::new(75),
+                exit_with("\"ran\""),
+            ],
+        ),
+        script(
+            5,
+            "Own",
+            vec![
+                on(86, true),
+                set_field(COUNT, "1000"),
+                exit_with("Get ( LastError ) & \"|\" & Get ( AccountName )"),
+            ],
+        ),
+    ];
+    let mut scripts = scripts.to_vec();
+    scripts.push(full_access(200, "Elevated too", vec![exit_with("\"ran\"")]));
+    let mut root = fixture::tree(&scripts, true);
+    add_custom_set(&mut root);
+    let file = TempFile::from_tree("custom-scripts", &root);
+    let (port, _handle) = start_configured(&file, ScriptLimits::DEFAULT, |server| {
+        server.admitting_custom_sets()
+    });
+    let mut temp = logged_in_as(port, "temp", CUSTOM);
+    assert_eq!(run(&mut temp, 4), (9, String::new()));
+    // A two-byte key: its entry is found by the key, not the id's bytes.
+    assert_eq!(run(&mut temp, 200), (9, String::new()));
+    // The script's last error is Set Field's.
+    assert_eq!(run(&mut temp, 5), (9, "9|Temp".into()));
+    let after = records(&mut temp);
+    assert_eq!(cell(&after, 1, NAME), Some("Write tests"));
+    assert_eq!(cell(&after, 1, COUNT), Some("3"));
+    temp.disconnect().unwrap();
+}
+
 #[test]
 fn a_sub_script_cannot_change_the_record_its_elevated_caller_opened() {
     use fixture::{exit_with, full_access, go_to_record, on, perform_script, script, set_field};
@@ -1212,4 +1309,101 @@ fn administrators_abort_scripts_and_shut_down() {
     }
     assert_eq!(aborts(), expected);
     std::fs::remove_dir_all(&folder).unwrap();
+}
+
+/// Change Password (83) in a server script sets the password of the
+/// account the session logged in with, as FileMaker's `DoChangePassword`
+/// and `SetPassword` do (local-files.md 2.4): with its dialog the step is
+/// refused (3); a wrong old password is 212 and changes nothing; the right
+/// one sets the new password, cut to 100 UTF-16 code units, which the old
+/// one then no longer matches. The saved account carries the checksum its
+/// members give, and the account catalog's index a raised modification
+/// count, so clients holding a copy see it is stale (#83).
+#[test]
+fn change_password_sets_the_accounts_own_password() {
+    use fixture::{calc, exit_with, on, script, set_variable};
+    let change = |old: &str, new: &str, dialog: bool| {
+        let mut step = ScriptStep::new(83);
+        step.set_calculation(0, Some(&calc(old)));
+        step.set_calculation(1, Some(&calc(new)));
+        // "With dialog" is on unless the step stores kNoInteract (0x80).
+        step.set_flag(0x80, !dialog);
+        step
+    };
+    let old = format!("{CLERK_PASSWORD:?}");
+    let long = "x".repeat(101);
+    let scripts = [script(
+        6,
+        "Change",
+        vec![
+            on(86, true),
+            change(&old, "\"fresh secret\"", true),
+            set_variable("$dialog", "Get ( LastError )"),
+            change("\"wrong\"", "\"fresh secret\"", false),
+            set_variable("$wrong", "Get ( LastError )"),
+            change(&old, &format!("{long:?}"), false),
+            set_variable("$right", "Get ( LastError )"),
+            change(&old, "\"another\"", false),
+            exit_with("$dialog & \"|\" & $wrong & \"|\" & $right & \"|\" & Get ( LastError )"),
+        ],
+    )];
+    // The account catalog's index, which every FileMaker file has
+    // (local-files.md 3); the server refuses to change accounts without it.
+    let mut root = fixture::tree(&scripts, true);
+    root.put(
+        &[&[23], &[1], &[1], &[4]],
+        om_hbam::OwnedNode::leaf(Vec::new(), vec![2]),
+    );
+    let file = TempFile::from_tree("change-password", &root);
+    let index_count = |file: &TempFile| {
+        let saved = om_hbam::HbamFile::open(&file.0).unwrap();
+        let count = saved
+            .subtree(&[&[23], &[1], &[1], &[0xfc]])
+            .unwrap()
+            .and_then(|n| n.value)
+            .map(<[u8]>::to_vec);
+        count
+    };
+    let before = index_count(&file);
+    let port = start(&file, None);
+    let mut clerk = logged_in_as(port, "clerk", CLERK);
+    assert_eq!(run(&mut clerk, 6).1, "3|212|0|212");
+    clerk.disconnect().unwrap();
+    // A new login takes the new password, its first 100 characters, and
+    // not the old one.
+    let login = |password: &str| {
+        let mut session = connect(port, "check");
+        session.open_file("127.0.0.1", FILE).unwrap();
+        session.fetch_internal_creation().unwrap();
+        let environment = LoginEnvironment::for_remote_file("127.0.0.1", FILE);
+        let reply = session
+            .login(CLERK, password, INTERNAL_CREATION, &environment)
+            .unwrap();
+        let _ = session.disconnect();
+        reply.is_success()
+    };
+    assert!(login(&long[..100]));
+    assert!(!login(CLERK_PASSWORD));
+
+    // On disk: the checksum of the account as changed, and the catalog's
+    // count raised.
+    let saved = om_hbam::HbamFile::open(&file.0).unwrap();
+    let at = |path: &[&[u8]]| saved.subtree(path).unwrap().and_then(|n| n.value);
+    let account = saved.subtree(&[&[23], &[1], &[5], &[3]]).unwrap().unwrap();
+    let member = |key: u8| account.child(&[key]).and_then(|n| n.value);
+    let name = account.child(&[16]).and_then(|n| n.text()?.ok()).unwrap();
+    let expected = om_server::accounts::checksum(&om_server::accounts::ChecksumInput {
+        version: at(&[&[2], &[5]]).map(|v| u16::from_be_bytes(v.try_into().unwrap())),
+        access_uuid: at(&[&[23], &[4], &[1], &[0x10]]),
+        creation: at(&[&[2], &[254]]),
+        key: &[3],
+        kind: member(2).and_then(|v| v.first().copied()),
+        name: &name,
+        password: member(6).unwrap(),
+        description: None,
+        status: member(0x0a),
+        set: member(0x0b),
+    });
+    assert_eq!(member(4), Some(&expected[..]));
+    assert_ne!(index_count(&file), before);
 }
