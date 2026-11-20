@@ -3243,6 +3243,7 @@ fn perform_script(
         scripts::Request {
             hosted,
             privileges: account.privileges(),
+            access: account.access.clone(),
             account: account.name.clone(),
             requester: session.connection_id,
             script: request,

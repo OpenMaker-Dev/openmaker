@@ -116,6 +116,9 @@ impl ServerHost {
             HostFunction::Named(name) if name.eq_ignore_ascii_case("GetLayoutObjectOwnerInfo") => {
                 return Ok(Value::text(layout_objects::owner_info_not_found()));
             }
+            HostFunction::Named(name) if name.eq_ignore_ascii_case("GetRecordIDsFromFoundSet") => {
+                return self.record_ids_from_found_set(args, context);
+            }
             _ => {}
         }
         default_call(function)
