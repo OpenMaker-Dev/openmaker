@@ -408,6 +408,10 @@ struct OpenRecord {
     /// access (Commit Transaction, #187).
     /// Boxed: an open record is held in a transaction's [`Change`].
     context: Box<rules::WriteContext>,
+    /// Staged by Relookup Field Contents with no edit of its own (any
+    /// later edit clears it): Commit Transaction writes it only when its
+    /// rules change a cell.
+    relooked: bool,
 }
 
 /// The record rules' state of an [`OpenRecord`] they already ran on.
@@ -435,6 +439,7 @@ impl OpenRecord {
 
     /// A step changed `cell`.
     fn changed_cell(&mut self, cell: u64) {
+        self.relooked = false;
         self.changed.insert(cell);
         if let Some(ruled) = &mut self.ruled {
             ruled.since.insert(cell);
@@ -1271,6 +1276,7 @@ impl ServerHost {
             ruled: None,
             serials: BTreeMap::new(),
             context,
+            relooked: false,
         }))
     }
 
@@ -1285,69 +1291,35 @@ impl ServerHost {
     /// runs), nothing is written or staged and the record is let go of, so
     /// its modification count stays. Otherwise it is written, or staged in
     /// the transaction, as `commit_open` does.
-    fn commit_open_relooked(&mut self, cell: u64) -> HostResult {
-        let Some(record) = self.record.take() else {
+    /// Commit the record Relookup opened, its match field marked set.
+    /// Outside a transaction it is written when its rules change a cell,
+    /// and not otherwise. Inside one it is staged as a Set Field of the
+    /// match field to its own value is: Commit Transaction runs its rules,
+    /// validation with the transaction's options and lookups with what the
+    /// transaction holds then, and writes it only when they change a cell.
+    /// Under "Skip auto-enter options" nothing is copied and it is not
+    /// staged.
+    fn commit_open_relooked(&mut self) -> HostResult {
+        let Some(mut record) = self.record.take() else {
             return Ok(());
         };
-        let options = self.transaction.as_ref().map(|t| t.options);
-        if options.is_some_and(|o| o.skip_auto_enter) {
-            self.unlock_record(record.table, record.id);
+        let key = (record.table, record.id);
+        if let Some(transaction) = self.transaction.as_mut() {
+            if transaction.options.skip_auto_enter {
+                self.unlock_record(record.table, record.id);
+                return Ok(());
+            }
+            record.relooked = true;
+            transaction.insert(key, Change::Write(record));
             return Ok(());
         }
-        // Inside a transaction its commit validates, as for every other
-        // staged edit.
-        let entry = Entry::script(options.is_some(), false);
         let mut ready = record.clone();
-        if let Err(error) = self.apply_rules(&mut ready, entry) {
+        if let Err(error) = self.apply_rules(&mut ready, Entry::script(false, false)) {
             self.record = Some(record);
             return Err(error);
         }
-        // The cells the lookups changed (no others: only the match field
-        // was marked changed, and it keeps its value).
-        let changed: Vec<(u64, Option<OwnedNode>)> = ready
-            .node
-            .children
-            .iter()
-            .filter(|c| c.segment != [modcount::MOD_COUNT])
-            .filter(|c| record.node.child(&c.segment) != Some(*c))
-            .map(|c| (c.segment.clone(), Some(c.clone())))
-            .chain(
-                record
-                    .node
-                    .children
-                    .iter()
-                    .filter(|c| c.segment != [modcount::MOD_COUNT])
-                    .filter(|c| ready.node.child(&c.segment).is_none())
-                    .map(|c| (c.segment.clone(), None)),
-            )
-            .filter_map(|(segment, node)| Some((om_hbam::slot::be_uint(&segment)?, node)))
-            .collect();
-        if changed.is_empty() {
+        if texts(&ready.node) == texts(&record.node) {
             self.unlock_record(record.table, record.id);
-            return Ok(());
-        }
-        let key = (record.table, record.id);
-        if let Some(transaction) = self.transaction.as_mut() {
-            // The values copied now, as the step copies them: staged as a
-            // step's edits of those cells, the match field not among
-            // them, so the commit validates and auto-enters them with the
-            // transaction's options and does not look up again with what
-            // later steps change.
-            let mut staged = record;
-            staged.changed.remove(&cell);
-            if let Some(ruled) = &mut staged.ruled {
-                ruled.since.remove(&cell);
-            }
-            for (field, node) in changed {
-                match node {
-                    Some(node) => staged.node.set_child(node),
-                    None => {
-                        staged.node.remove(&[&uint_segment(field)]);
-                    }
-                }
-                staged.changed_cell(field);
-            }
-            transaction.insert(key, Change::Write(staged));
             return Ok(());
         }
         let committed = self.write(vec![(key, Change::Write(ready))]);
@@ -3470,6 +3442,7 @@ impl Records for ServerHost {
             ruled: None,
             serials,
             context: Box::new(self.step_context()),
+            relooked: false,
         });
         let window = self.window_mut()?;
         window.found.push(id);
@@ -3642,8 +3615,17 @@ impl Records for ServerHost {
                 continue;
             };
             let result = self.apply_rules(&mut record, entry);
+            // A record only Relookup staged, its rules changing no cell, is
+            // not written; its lock goes with the transaction's.
+            let unchanged = result.is_ok()
+                && record.relooked
+                && self
+                    .committed_node(record.table, record.id)
+                    .is_some_and(|stored| texts(&stored) == texts(&record.node));
             if let Some(transaction) = self.transaction.as_mut() {
-                transaction.insert(key, Change::Write(record));
+                if !unchanged {
+                    transaction.insert(key, Change::Write(record));
+                }
             }
             if let Err(e) = result {
                 self.discard_transaction();
@@ -3757,7 +3739,7 @@ impl FieldSteps for ServerHost {
                     break;
                 }
             }
-            if let Err(error) = self.commit_open_relooked(cell) {
+            if let Err(error) = self.commit_open_relooked() {
                 // The refused record goes back to what it was: no write of
                 // it stays pending for a later commit.
                 self.drop_open();

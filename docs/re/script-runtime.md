@@ -3772,12 +3772,14 @@ Steps
   checks and a match value whose text does not decode refused too (3).
   Each record of the found set is opened once, by id, with the match
   field marked set and its stored value unchanged, and the rules run on
-  it. A record whose cells they leave as they were is not written. Outside
-  a transaction the record is written as they left it. Inside one, the
-  cells they changed are staged as a step's edits, so Commit Transaction
-  validates them with the transaction's options and does not look up
-  again with what later steps change; under "Skip auto-enter options"
-  nothing is copied. A record refused is left as it was.
+  it. Outside a transaction the record is written as they left it, or not
+  at all when they change no cell. Inside one it is staged as a Set Field
+  of the match field to its own value is: Commit Transaction runs its
+  rules, validation with the transaction's options and the lookups with
+  what the transaction holds then, and writes it only when they change a
+  cell (a later edit of the record makes it an ordinary staged write).
+  Under "Skip auto-enter options" nothing is copied and nothing staged. A
+  record refused is left as it was.
   Unmeasured, and OpenMaker's choices:
   - the dialog's text;
   - the codes: 102 for no such field, 201 for one a script cannot set (a

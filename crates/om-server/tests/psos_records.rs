@@ -860,7 +860,8 @@ fn set_match_fields_perform_lookups() {
 /// Relookup Field Contents [Tasks::Name] copies each found task's lookup
 /// again, Name itself unchanged (#87). Inside a transaction that skips
 /// auto-entry it copies and writes nothing; inside an ordinary one the copy
-/// waits for Commit Transaction. Task 1's Note, typed over, comes
+/// waits for Commit Transaction, which writes it only when its rules
+/// change a cell. Task 1's Note, typed over, comes
 /// back as its note "w", and task 3, whose Name `東京` is stored in chunks,
 /// takes its note "jp". Run again with nothing new to copy, it writes no
 /// record: task 1's modification count stays. Through Count, which no
@@ -943,7 +944,13 @@ fn relookup_field_contents_copies_the_lookups_again() {
         (
             7,
             "Relookup again",
-            vec![fixture::go_to_record(1), relookup(fixture::NAME, 0)],
+            vec![
+                fixture::go_to_record(1),
+                relookup(fixture::NAME, 0),
+                open_transaction(false),
+                relookup(fixture::NAME, 0),
+                ScriptStep::new(206),
+            ],
         ),
         (
             9,
@@ -982,7 +989,8 @@ fn relookup_field_contents_copies_the_lookups_again() {
     let records = server::records_of(&mut client, TABLE);
     assert_eq!(server::cell(&records, 3, NOTE), Some("jp"));
     assert_eq!(server::cell(&records, 3, NAME), Some("東京"));
-    // Nothing new to copy: the record is not written again.
+    // Nothing new to copy, outside a transaction or inside one: the
+    // record is not written again.
     let before = count(&mut client);
     assert_eq!(run(&mut client, 7).0, 0);
     assert_eq!(count(&mut client), before);
