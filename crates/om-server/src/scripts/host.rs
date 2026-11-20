@@ -408,6 +408,33 @@ struct OpenRecord {
     /// access (Commit Transaction, #187).
     /// Boxed: an open record is held in a transaction's [`Change`].
     context: Box<rules::WriteContext>,
+    /// A new record's creation clock (#474): the date, time, timestamp and
+    /// UUID its rules read, at New Record for what a script reads of it
+    /// before the commit, and again at the commit, which so stores what
+    /// was read. `None` for an existing record or an imported row.
+    created: Option<Box<CreatedClock>>,
+    /// The cells of a new record its rules' preview wrote ([`ServerHost::
+    /// preview_new_record`]): replaced by the next preview, and computed
+    /// again by the commit.
+    previewed: BTreeSet<u64>,
+}
+
+/// A row's write mode, the values it holds, the changes made to it and how
+/// they were entered: what its lookups and rules are read from.
+type RowInputs<'a> = (
+    WriteMode,
+    &'a BTreeMap<u64, String>,
+    &'a BTreeMap<u64, Option<String>>,
+    Entry,
+);
+
+/// What a new record's rules read of the clock (#474).
+#[derive(Clone, Debug)]
+struct CreatedClock {
+    date: String,
+    time: String,
+    timestamp: String,
+    uuid: String,
 }
 
 /// The record rules' state of an [`OpenRecord`] they already ran on.
@@ -1271,6 +1298,8 @@ impl ServerHost {
             ruled: None,
             serials: BTreeMap::new(),
             context,
+            created: None,
+            previewed: BTreeSet::new(),
         }))
     }
 
@@ -1384,6 +1413,161 @@ impl ServerHost {
         }
     }
 
+    /// The rules' environment for `record`: the session's, with the context
+    /// of the step that last changed the record (not the one committing it),
+    /// the session's global values when a formula reads one (schema-path.md
+    /// 5.17), the serial numbers the record took, and for a new record the
+    /// clock it was created with (#474).
+    fn rules_environment(&self, record: &OpenRecord, plan: &RecordPlan) -> RecordEnvironment {
+        let mut environment = self.record_environment();
+        environment.context = rules::WriteContext {
+            host_timestamp: environment.context.host_timestamp.take(),
+            ..(*record.context).clone()
+        };
+        if let Some(clock) = record.created.as_deref() {
+            environment.date.clone_from(&clock.date);
+            environment.time.clone_from(&clock.time);
+            environment.timestamp.clone_from(&clock.timestamp);
+            environment.uuid.clone_from(&clock.uuid);
+            environment.context.host_timestamp = Some(clock.timestamp.clone());
+        }
+        if plan.reads_globals() {
+            environment.globals = Some(self.session_globals(record.table));
+        }
+        environment.serials = record.serials.clone();
+        environment
+    }
+
+    /// `compute` (the rules over `record`'s cells) once the write's lookups,
+    /// read from the session's records as the script's calculations read
+    /// them, are in `environment`. Calculated lookup keys are read only once
+    /// their dependencies have settled: the provider's bounded demand
+    /// protocol, where an exhausted or unsupported demand keeps the
+    /// evaluator's explicit error.
+    fn with_lookups<T>(
+        &self,
+        plan: &RecordPlan,
+        record: &OpenRecord,
+        (mode, existing, changes, entry): RowInputs<'_>,
+        environment: &mut RecordEnvironment,
+        compute: impl Fn(&RecordEnvironment) -> Result<T, DataError>,
+    ) -> Result<T, DataError> {
+        let needs = Arc::new(rules::RelatedNeeds::default());
+        environment.related_needs = Some(Arc::clone(&needs));
+        let mut keyed = BTreeMap::new();
+        let mut rounds = 4;
+        loop {
+            environment.lookups = plan.read_lookups_with(
+                mode,
+                existing,
+                changes,
+                entry,
+                &related::SessionSource { host: self },
+                // Its own row is left out of its table's self-joins (#1035).
+                // An imported row's rules see what the import left, not its
+                // stored row: it names no record, and answers no self-join.
+                (
+                    &keyed,
+                    match record.ruled {
+                        Some(_) => rules::Written::Unknown,
+                        None => rules::Written::held(mode, record.id),
+                    },
+                ),
+            )?;
+            let computed = compute(environment);
+            let more = needs.take();
+            if more.is_empty() || rounds == 0 {
+                return computed;
+            }
+            rounds -= 1;
+            keyed.extend(more);
+        }
+    }
+
+    /// A new record's values as its commit will compute them (#474): its
+    /// auto-entered values, the serial numbers it took and its stored
+    /// calculations, over the cells the steps set, written into it so that
+    /// a script reads them before the commit, as FileMaker Server's engine
+    /// gives an auto-entered value right after New Record (script oracle
+    /// s46). With the record's creation clock, which its commit keeps.
+    /// Validation is left to the commit, and a value the preview cannot know
+    /// (a serial number not taken yet, a formula it cannot answer) is left
+    /// out. Run after New Record and each change of the record's cells.
+    fn preview_new_record(&mut self) {
+        let Some(table) = self
+            .record
+            .as_ref()
+            .filter(|r| r.new && r.ruled.is_none())
+            .map(|r| r.table)
+        else {
+            return;
+        };
+        let Ok(plan) = self.plan(table) else {
+            return;
+        };
+        let record = self.record.as_ref().expect("the new record");
+        let options = self.transaction.as_ref().map(|t| t.options);
+        let entry = Entry::script(
+            options.is_some_and(|o| o.skip_validation),
+            options.is_some_and(|o| o.skip_auto_enter),
+        );
+        let existing = BTreeMap::new();
+        let changes: BTreeMap<u64, Option<String>> = record
+            .changed
+            .iter()
+            .map(|cell| {
+                let text = record
+                    .node
+                    .child(&uint_segment(*cell))
+                    .and_then(values::cell_text);
+                (*cell, text)
+            })
+            .collect();
+        let mut environment = self.rules_environment(record, &plan);
+        let unknown: rules::UnknownValue<'_> = &|_, _, _| false;
+        let preview = self.with_lookups(
+            &plan,
+            record,
+            (WriteMode::Create, &existing, &changes, entry),
+            &mut environment,
+            |environment| {
+                plan.pending_row(
+                    WriteMode::Create,
+                    &existing,
+                    &changes,
+                    environment,
+                    (entry, (true, true), unknown),
+                )
+            },
+        );
+        let fields = self.schema.catalog.table(table).cloned();
+        let record = self.record.as_mut().expect("the new record");
+        for cell in std::mem::take(&mut record.previewed) {
+            if !record.changed.contains(&cell) {
+                record.node.remove(&[&uint_segment(cell)]);
+            }
+        }
+        let Ok((row, unknown)) = preview else {
+            return;
+        };
+        let field_of = |cell: u64| match fields.as_ref().and_then(|t| t.field(cell)) {
+            Some(_) => cell,
+            None => cell >> 8,
+        };
+        for (cell, text) in row {
+            if record.changed.contains(&cell)
+                || record.serials.contains_key(&cell)
+                || unknown.contains(&field_of(cell))
+            {
+                continue;
+            }
+            record
+                .node
+                .set_child(values::cell(&uint_segment(cell), &text));
+            record.previewed.insert(cell);
+        }
+    }
+
     /// Apply the table's rules to a record about to be written: auto-enter
     /// values, stored calculations, validation and unique values
     /// (`om_data::rules`, auto-entry.md); the computed cells go into the
@@ -1420,22 +1604,9 @@ impl ServerHost {
                 (*field, text)
             })
             .collect();
-        // What the write's lookups copy, read from the session's records as
-        // the script's calculations read them.
-        let mut environment = self.record_environment();
-        // The step that last changed the record, not the one committing it.
-        environment.context = rules::WriteContext {
-            host_timestamp: environment.context.host_timestamp.take(),
-            ..(*record.context).clone()
-        };
-        // The session's global values, which an auto-entered or validation
-        // formula reads of a global field (schema-path.md 5.17).
-        if plan.reads_globals() {
-            environment.globals = Some(self.session_globals(record.table));
-        }
+        let mut environment = self.rules_environment(record, &plan);
         // Serials not taken yet: a new record's on creation were taken by
         // New Record.
-        environment.serials = record.serials.clone();
         let missing: Vec<_> = plan
             .serials_for(mode, entry)
             .into_iter()
@@ -1444,55 +1615,28 @@ impl ServerHost {
         environment
             .serials
             .extend(self.reserve_serials(record.table, missing)?);
-        // Read calculated lookup keys only once their dependencies have
-        // settled. Match the provider's bounded demand protocol; exhausted
-        // or unsupported demands preserve the evaluator's explicit error.
-        let needs = Arc::new(rules::RelatedNeeds::default());
-        environment.related_needs = Some(Arc::clone(&needs));
-        let mut keyed = BTreeMap::new();
-        let mut rounds = 4;
-        let computed = loop {
-            environment.lookups = plan
-                .read_lookups_with(
-                    mode,
-                    &existing,
-                    &changes,
-                    entry,
-                    &related::SessionSource { host: self },
-                    // Its own row is left out of its table's self-joins (#1035).
-                    // An imported row's rules see what the import left, not its
-                    // stored row: it names no record, and answers no self-join.
-                    (
-                        &keyed,
-                        match record.ruled {
-                            Some(_) => rules::Written::Unknown,
-                            None => rules::Written::held(mode, record.id),
-                        },
-                    ),
-                )
-                .map_err(|e| {
-                    info!(
-                        "{:?}: record {} of table {:#x} refused: {e}",
-                        self.hosted.name, record.id, record.table
-                    );
-                    rule_error(&e)
-                })?;
-            let computed = plan
-                .compute(mode, &existing, &changes, &environment, entry)
-                .map_err(|e| {
-                    info!(
-                        "{:?}: record {} of table {:#x} refused: {e}",
-                        self.hosted.name, record.id, record.table
-                    );
-                    rule_error(&e)
-                });
-            let more = needs.take();
-            if more.is_empty() || rounds == 0 {
-                break computed?;
+        // A new record's preview goes: the commit computes its cells again,
+        // with the same clock.
+        for cell in std::mem::take(&mut record.previewed) {
+            if !record.changed.contains(&cell) {
+                record.node.remove(&[&uint_segment(cell)]);
             }
-            rounds -= 1;
-            keyed.extend(more);
-        };
+        }
+        let computed = self
+            .with_lookups(
+                &plan,
+                record,
+                (mode, &existing, &changes, entry),
+                &mut environment,
+                |environment| plan.compute(mode, &existing, &changes, environment, entry),
+            )
+            .map_err(|e| {
+                info!(
+                    "{:?}: record {} of table {:#x} refused: {e}",
+                    self.hosted.name, record.id, record.table
+                );
+                rule_error(&e)
+            })?;
         for (field, text) in &computed {
             let key = uint_segment(*field);
             match text {
@@ -1961,8 +2105,13 @@ impl ServerHost {
                 record.node.remove(&[&key]);
             }
         }
-        if record.node.child(&key) != before.as_ref() || lookup_match {
+        let changed = record.node.child(&key) != before.as_ref() || lookup_match;
+        if changed {
             record.changed_cell(cell);
+        }
+        // A new record's values that read the cell are computed again.
+        if changed && record.new {
+            self.preview_new_record();
         }
         Ok(())
     }
@@ -3357,6 +3506,8 @@ impl Records for ServerHost {
         for (field, text) in &serials {
             node.set_child(values::cell(&uint_segment(*field), text));
         }
+        // The clock its rules read now and at its commit (#474).
+        let clock = crate::recalc::record_environment(&self.account, self.uuid());
         self.record = Some(OpenRecord {
             table,
             id,
@@ -3366,12 +3517,20 @@ impl Records for ServerHost {
             ruled: None,
             serials,
             context: Box::new(self.step_context()),
+            created: Some(Box::new(CreatedClock {
+                date: clock.date,
+                time: clock.time,
+                timestamp: clock.timestamp,
+                uuid: clock.uuid,
+            })),
+            previewed: BTreeSet::new(),
         });
         let window = self.window_mut()?;
         window.found.push(id);
         window.current = window.found.len() - 1;
         // The first field of the tab order gets the focus (s31, s33).
         self.focus_first_field();
+        self.preview_new_record();
         Ok(())
     }
 
@@ -3428,6 +3587,7 @@ impl Records for ServerHost {
             }
             record.node.set_child(cell);
         }
+        self.preview_new_record();
         Ok(())
     }
 

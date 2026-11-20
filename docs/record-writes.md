@@ -197,6 +197,7 @@ comes only at the commit, it presumably sees nothing until then
   - **Unknown fields.** A field the provider can't know yet reads its stored value, never empty. With a related record to delete in the same commit, nothing is computed.
   - **Browse** still shows a stored calculation's stored value until the commit.
   - **Measured only for a script's Set Field** on a local file's own stored calculation. The user's typing, Browse and hosted files are unmeasured [I].
+  - **On OpenMaker Server** a script's new record is computed the same way, from New Record on and again after each change of its cells: its auto-entered values, the serial numbers it took and its stored calculations, validation left to the commit (`ServerHost::preview_new_record`, [#474](https://github.com/OpenMaker-Dev/openmaker/issues/474)). FileMaker Server's engine gave an auto-entered value right after New Record (script oracle s46). The record keeps the clock and UUID it was created with, and its commit computes them again with those, so what a script read is what is stored: a creation and a modification timestamp of a new record are its creation time [I]. A value the preview cannot know yet (a formula it cannot answer, `Get ( RecordNumber )` until #456) reads empty, as before. An existing record's stored calculations still read their stored value until the commit there.
 
 ### A new record's preview
 

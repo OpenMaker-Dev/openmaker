@@ -665,6 +665,8 @@ impl ImportTarget for ServerImport<'_> {
             ruled: None,
             serials: BTreeMap::new(),
             context: Box::new(self.host.step_context()),
+            created: None,
+            previewed: BTreeSet::new(),
         };
         self.locked.push((table, id));
         self.stage(record, writes, auto_enter, true)?;
@@ -705,6 +707,8 @@ impl ImportTarget for ServerImport<'_> {
                         ruled: None,
                         serials: BTreeMap::new(),
                         context: Box::new(self.host.step_context()),
+                        created: None,
+                        previewed: BTreeSet::new(),
                     },
                     true,
                 )
