@@ -3312,6 +3312,31 @@ impl DataProvider for NativeProvider {
             self.refuse_while_unsettled()?;
         }
         self.require_writable()?;
+        // A layout of another file's table: the reference is to the owning
+        // file's library, which counts it (Duplicate Record, #43). One of
+        // this file's tables is found in its catalog first, as before, so
+        // its cleanup needs no calculation metadata.
+        let layout = self.decoded_layout(layout_id)?;
+        if self.table_for_layout(&layout).is_err() {
+            let table = self.read_table_for_layout(&layout)?.id;
+            if self.external.route(table).is_some() {
+                // Inside a script's transaction the reference would join
+                // the owner's part of it, whose cleanup after a refused
+                // copy is not settled: refused before anything is counted.
+                if delta > 0
+                    && self.transaction_kind() == Some(transaction::TransactionKind::Script)
+                {
+                    return Err(DataError::with_code(
+                        3,
+                        "Duplicating a container of another file's table inside a script's \
+                         transaction is not supported.",
+                    ));
+                }
+                return om_data::DataProvider::adjust_related_container(
+                    self, table, reference, delta,
+                );
+            }
+        }
         self.adjust_container_reference(layout_id, reference, delta)
     }
 
