@@ -7296,16 +7296,23 @@ fn paint_library_image(
     }
 }
 
-/// The calculated icons the window keeps drawn, by URI, with their
-/// tinted SVG bytes, the most recently drawn last
-/// (`paint_calculated_icon`). Past [`CALCULATED_ICONS`] the oldest is
+/// The calculated icons the window keeps loaded, by URI, with their
+/// tinted SVG bytes and when each was last drawn (`InputState::time`),
+/// the most recently drawn last (`paint_calculated_icon`). Past
+/// [`CALCULATED_ICONS`], the oldest not drawn for [`ICON_SHOWN`] is
 /// forgotten, with its bytes, textures and rasters in egui's loaders and
-/// the SVG worker's cache: each distinct result gets a URI of its own.
+/// the SVG worker: each distinct result gets a URI of its own.
 #[derive(Clone, Default)]
-struct CalculatedIcons(std::collections::VecDeque<(String, std::sync::Arc<[u8]>)>);
+struct CalculatedIcons(std::collections::VecDeque<(String, std::sync::Arc<[u8]>, f64)>);
 
-/// How many calculated icons stay loaded at once (OpenMaker's bound).
+/// How many calculated icons stay loaded at once, beyond those on screen
+/// (OpenMaker's bound). The icons drawn within [`ICON_SHOWN`] all stay,
+/// however many: the screen bounds them.
 const CALCULATED_ICONS: usize = 64;
+
+/// An icon drawn this recently, in seconds, is on screen, in some window,
+/// and is not forgotten.
+const ICON_SHOWN: f64 = 1.0;
 
 /// A button's calculated icon, the SVG text `svg` its formula gave
 /// (`ObjectState::icon_svg`), over `rect`, tinted as the button's library
@@ -7337,12 +7344,13 @@ fn paint_calculated_icon(ui: &Ui, svg: &str, rect: Rect, tint: Option<Color32>) 
         hash.finish()
     );
     let id = egui::Id::unique("openmaker calculated icons");
+    let now = ui.input(|input| input.time);
     let (bytes, forgotten) = ui.data_mut(|data| {
         let icons = data.get_temp_mut_or_default::<CalculatedIcons>(id);
         let known = icons
             .0
             .iter()
-            .position(|(known, _)| *known == uri)
+            .position(|(known, ..)| *known == uri)
             .and_then(|at| icons.0.remove(at));
         // Copied and tinted once, as it first shows.
         let bytes = known.map_or_else(
@@ -7353,15 +7361,21 @@ fn paint_calculated_icon(ui: &Ui, svg: &str, rect: Rect, tint: Option<Color32>) 
                 };
                 std::sync::Arc::<[u8]>::from(tinted_image(&image, tint))
             },
-            |(_, bytes)| bytes,
+            |(_, bytes, _)| bytes,
         );
-        icons.0.push_back((uri.clone(), bytes.clone()));
-        let forgotten = (icons.0.len() > CALCULATED_ICONS)
-            .then(|| icons.0.pop_front())
-            .flatten();
+        icons.0.push_back((uri.clone(), bytes.clone(), now));
+        let mut forgotten = Vec::new();
+        while icons.0.len() > CALCULATED_ICONS
+            && icons
+                .0
+                .front()
+                .is_some_and(|(.., drawn)| now - drawn > ICON_SHOWN)
+        {
+            forgotten.extend(icons.0.pop_front().map(|(old, ..)| old));
+        }
         (bytes, forgotten)
     });
-    if let Some((old, _)) = forgotten {
+    for old in forgotten {
         ui.ctx().forget_image(&old);
     }
     let source = egui::ImageSource::Bytes {

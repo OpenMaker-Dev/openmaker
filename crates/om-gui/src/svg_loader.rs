@@ -118,12 +118,15 @@ impl State {
     }
 }
 
+/// A raster to draw. It names its SVG and does not hold its bytes: those
+/// are read from egui's loaders as it is drawn, so that an image forgotten
+/// while its job waits (`ImageLoader::forget`, a calculated icon the window
+/// let go) frees its bytes then, and its job is dropped.
 struct Job {
     ctx: egui::Context,
     viewport: ViewportId,
     uri: String,
     hint: SizeHint,
-    bytes: egui::load::Bytes,
     size: [u32; 2],
 }
 
@@ -198,7 +201,23 @@ fn draw_queue(state: Weak<Mutex<State>>, queue: mpsc::Receiver<Job>, budget: usi
         if !lock(&state).wanted(&job.uri, job.hint) {
             continue;
         }
-        let result = draw(&job.bytes, job.size);
+        // Never with the state locked (below).
+        let bytes = match job.ctx.try_load_bytes(&job.uri) {
+            Ok(BytesPoll::Ready { bytes, .. }) => bytes,
+            // Its bytes went since it was queued: the next paint that asks
+            // for it queues it again.
+            _ => {
+                let mut state = lock(&state);
+                if let Some(bucket) = state.cache.get_mut(&job.uri) {
+                    bucket.remove(&job.hint);
+                    if bucket.is_empty() {
+                        state.cache.remove(&job.uri);
+                    }
+                }
+                continue;
+            }
+        };
+        let result = draw(&bytes, job.size);
         let stored = match lock(&state).entry(&job.uri, job.hint) {
             Some(entry) => {
                 entry.result = Some(result);
@@ -329,12 +348,13 @@ impl SvgLoader {
                 Err(error) => Err(LoadError::Loading(error)),
             };
         }
+        // Ready: the worker reads them again as it draws (`Job`).
+        drop(bytes);
         let job = Job {
             ctx: ctx.clone(),
             viewport: ctx.viewport_id(),
             uri: uri.to_owned(),
             hint,
-            bytes,
             size,
         };
         let mut state = self.state();
