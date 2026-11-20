@@ -2218,6 +2218,10 @@ and Go to Record stays.
     with error capture on;
   - whether a breakpoint set in the debugger is saved to the file at once;
   - whether the Call Stack lists an Executable Only script's name;
+  - what Set Next Step does across a block's boundaries and inside an
+    open transaction;
+  - whether the debugger's commands continue a Pause/Resume Script pause,
+    and whether closing the debugger ends it;
   - the Debugging Controls submenu's items and order;
   - the windows' layout, button order and tooltips, and the last error
     shown.

@@ -1,19 +1,26 @@
 //! The Script Debugger's control of the run loop (script-runtime.md 6.4).
 //!
 //! While the debugger is open ([`Runtime::start_debugging`]), the run loop
-//! stops before a step and returns [`RunState::Debugger`](super::RunState::Debugger). It stops before
-//! the first step of a script started while no script frame runs, at a
-//! step with a breakpoint (`kBreakpoint`, script-steps.md), when a Step
-//! Over, Step Into or Step Out has finished, and after a failed step when
-//! Pause on error is on. [`Runtime::debug`] continues with a command.
-//! [`Runtime::set_next_step`] moves the current script's pointer without
-//! running the steps between, and [`Runtime::debug_stack`] lists the Call
-//! Stack. Halt is [`Runtime::halt`].
+//! stops before a step and returns
+//! [`RunState::Debugger`](super::RunState::Debugger). It stops before the
+//! first step of a script started while no script runs, at a step with a
+//! breakpoint (`kBreakpoint`, script-steps.md), when a Step Over, Step Into
+//! or Step Out has finished, and after a failed step when Pause on error is
+//! on, at the script's end if that step was its last. [`Runtime::debug`]
+//! continues with a command, from a stop or from a Pause/Resume Script
+//! pause. [`Runtime::set_next_step`] moves the current script's pointer
+//! without running the steps between, and [`Runtime::debug_stack`] lists
+//! the Call Stack. Halt is [`Runtime::halt`].
 //!
-//! The debugger never stops in a frame whose script the host does not let
-//! it show ([`ScriptHost::script_debuggable`](super::ScriptHost::script_debuggable)): FileMaker runs an
-//! "Executable Only" script whole and hides its steps. A button's single
-//! step is not a script and never stops either.
+//! A stop belongs to its frame and step: frames that come on top of it (a
+//! trigger) run under the same rules, and the stop holds again when its
+//! frame is back on top there. A stop whose frame is gone is forgotten.
+//!
+//! The debugger never stops in, or for an error of, a frame whose script
+//! the host does not let it show
+//! ([`ScriptHost::script_debuggable`](super::ScriptHost::script_debuggable)):
+//! FileMaker runs an "Executable Only" script whole and hides its steps. A
+//! button's single step is not a script and never stops either.
 
 use super::{id, ErrorCode, FileId, FrameKind, Runtime};
 use crate::flag;
@@ -45,6 +52,8 @@ pub enum DebugStop {
     /// A Step Over, Step Into or Step Out has finished.
     Stepped,
     /// The last step failed with this error, and Pause on error is on.
+    /// When it was the script's last step, the stop is at its end: the
+    /// frame's step is one past its last.
     Error(ErrorCode),
 }
 
@@ -56,8 +65,9 @@ pub struct DebugFrame {
     pub script: u64,
     pub name: String,
     /// The step the frame is at: for the innermost script the step that
-    /// runs next, for a caller its Perform Script step. `None` for a script
-    /// whose steps the debugger does not show.
+    /// runs next (one past its last at its end), for a caller its Perform
+    /// Script step. `None` for a script whose steps the debugger does not
+    /// show.
     pub step: Option<usize>,
 }
 
@@ -65,9 +75,11 @@ pub struct DebugFrame {
 #[derive(Debug, Default)]
 pub(super) struct Debugging {
     pause_on_error: bool,
-    /// Where the scripts are stopped, if they are.
-    stop: Option<DebugStop>,
-    /// The command running, and the stack depth it was given at.
+    /// Where the scripts are stopped: why, and the frame and the step it
+    /// stopped before.
+    stop: Option<(DebugStop, u64, isize)>,
+    /// The command running, and the depth ([`Runtime::debug_depth`]) it
+    /// was given at.
     command: Option<(DebugCommand, usize)>,
     /// The error of a failed step, with Pause on error on.
     error: Option<ErrorCode>,
@@ -79,6 +91,8 @@ pub(super) struct Debugging {
     /// The frame and step the scripts continued at: nothing stops there
     /// again before a step has run.
     resumed_at: Option<(u64, isize)>,
+    /// Whether the step running belongs to a script the debugger shows.
+    step_shown: bool,
 }
 
 impl Runtime {
@@ -90,9 +104,10 @@ impl Runtime {
         }
     }
 
-    /// Close the Script Debugger. A stopped script runs on to its end at
-    /// the next [`Runtime::run`], and script triggers are enabled again
-    /// (script-runtime.md 6.4).
+    /// Close the Script Debugger. A script it stopped runs on to its end
+    /// at the next [`Runtime::run`], and script triggers are enabled again
+    /// (script-runtime.md 6.4). A Pause/Resume Script pause stays, as
+    /// without the debugger.
     pub fn stop_debugging(&mut self) {
         self.debugger = None;
         self.set_user_triggers(true);
@@ -109,25 +124,35 @@ impl Runtime {
         }
     }
 
-    /// Where the debugger stopped the scripts, if it did.
+    /// Where the debugger stopped the scripts, while the stopped script is
+    /// on top at the step it stopped before.
     pub fn debug_stop(&self) -> Option<DebugStop> {
-        self.debugger.as_ref().and_then(|d| d.stop)
+        let (stop, frame, at) = self.debugger.as_ref()?.stop?;
+        (self.debug_position() == Some((frame, at))).then_some(stop)
     }
 
-    /// Continue scripts the debugger stopped with `command`. Returns
-    /// whether they were stopped.
+    /// Continue with `command` scripts the debugger stopped, or a shown
+    /// script a Pause/Resume Script step paused. Returns whether it did.
     pub fn debug(&mut self, command: DebugCommand) -> bool {
-        let depth = self.stack.len();
-        let at = self.stack.last().and_then(|frame| match &frame.kind {
-            FrameKind::Script { index, .. } => Some((frame.id, index.saturating_add(1))),
-            FrameKind::Step { .. } => None,
-        });
+        let at = self.debug_position();
+        let depth = self.debug_depth();
+        let stopped = self.debug_stop().is_some();
+        let paused = self
+            .stack
+            .last()
+            .is_some_and(|frame| frame.paused.is_some() && frame.debuggable);
+        if self.debugger.is_none() || !(stopped || paused) {
+            return false;
+        }
+        if paused {
+            if let Some(frame) = self.stack.last_mut() {
+                frame.paused = None;
+            }
+        }
         let Some(debugging) = &mut self.debugger else {
             return false;
         };
-        if debugging.stop.take().is_none() {
-            return false;
-        }
+        debugging.stop = None;
         debugging.command = Some((command, depth));
         debugging.resumed_at = at;
         true
@@ -135,9 +160,11 @@ impl Runtime {
 
     /// Set Next Step: while the debugger has stopped the scripts, make
     /// step `step` of the current script the next to run, without running
-    /// the steps between. Returns whether the step was set.
+    /// the steps between. Refused while a script transaction is open: a
+    /// jump could pass its Commit Transaction or reach another one. Returns
+    /// whether the step was set.
     pub fn set_next_step(&mut self, step: usize) -> bool {
-        if self.debug_stop().is_none() {
+        if self.debug_stop().is_none() || self.transaction.is_some() {
             return false;
         }
         let Some(frame) = self.stack.last_mut() else {
@@ -155,12 +182,16 @@ impl Runtime {
         }
         *index = target - 1;
         if let Some(debugging) = &mut self.debugger {
+            if let Some(stop) = &mut debugging.stop {
+                stop.2 = target;
+            }
             debugging.resumed_at = Some((id, target));
         }
         true
     }
 
-    /// The Call Stack: every script frame, the innermost last.
+    /// The Call Stack: every running script frame, the innermost last;
+    /// scripts queued to run after them are not listed.
     pub fn debug_stack(&self) -> Vec<DebugFrame> {
         let last = self.stack.len().saturating_sub(1);
         self.stack
@@ -170,6 +201,9 @@ impl Runtime {
                 let FrameKind::Script { script, index, .. } = &frame.kind else {
                     return None;
                 };
+                if i != last && self.unstarted.contains(&frame.id) {
+                    return None;
+                }
                 let at = if i == last {
                     index.saturating_add(1)
                 } else {
@@ -185,23 +219,55 @@ impl Runtime {
             .collect()
     }
 
+    /// The innermost frame, if it is a script, and the step it runs next.
+    fn debug_position(&self) -> Option<(u64, isize)> {
+        let frame = self.stack.last()?;
+        match &frame.kind {
+            FrameKind::Script { index, .. } => Some((frame.id, index.saturating_add(1))),
+            FrameKind::Step { .. } => None,
+        }
+    }
+
+    /// The frames Step Over and Step Out count: the innermost and those
+    /// that started, not the frames queued below the running ones or
+    /// waiting under the innermost.
+    fn debug_depth(&self) -> usize {
+        let last = self.stack.len().saturating_sub(1);
+        self.stack
+            .iter()
+            .enumerate()
+            .filter(|(i, frame)| *i == last || !self.unstarted.contains(&frame.id))
+            .count()
+    }
+
     /// Before the run loop runs the next step: whether the debugger stops
     /// the scripts there, and why.
     pub(super) fn debug_check(&mut self) -> Option<DebugStop> {
+        let position = self.debug_position();
+        let depth = self.debug_depth();
         let debugging = self.debugger.as_ref()?;
-        if let Some(stop) = debugging.stop {
-            return Some(stop);
+        if let Some((stop, frame, at)) = debugging.stop {
+            if position == Some((frame, at)) {
+                return Some(stop);
+            }
+            if !self.stack.iter().any(|f| f.id == frame) {
+                self.debugger.as_mut()?.stop = None;
+            }
         }
-        let depth = self.stack.len();
-        let top = self.stack.last()?;
+        let last = self.stack.len().checked_sub(1)?;
+        let top = &self.stack[last];
         let FrameKind::Script { script, index, .. } = &top.kind else {
             return None;
         };
         let (frame, next) = (top.id, index.saturating_add(1));
-        let top_level = self.stack[..depth - 1].iter().all(|f| f.script().is_none());
+        let top_level = self.stack[..last]
+            .iter()
+            .all(|f| f.script().is_none() || self.unstarted.contains(&f.id));
         let fresh = top_level && self.unstarted.contains(&frame);
-        let step = usize::try_from(next)
+        let in_range = usize::try_from(next)
             .ok()
+            .filter(|&i| i < script.steps.len());
+        let step = in_range
             .and_then(|i| script.steps.get(i))
             .filter(|step| step.is_enabled() && step.id() != id::COMMENT);
         let shown = top.debuggable;
@@ -210,7 +276,10 @@ impl Runtime {
         if fresh && debugging.started != Some(frame) {
             debugging.starting = Some(frame);
         }
-        if step.is_none() || !shown || debugging.resumed_at == Some((frame, next)) {
+        // A failure of the script's last step stops at its end.
+        let failed_last = in_range.is_none() && debugging.error.is_some();
+        if (step.is_none() && !failed_last) || !shown || debugging.resumed_at == Some((frame, next))
+        {
             return None;
         }
         let stepped = match debugging.command {
@@ -219,7 +288,7 @@ impl Runtime {
             Some((DebugCommand::StepOut, at)) => depth < at,
             Some((DebugCommand::Run, _)) | None => false,
         };
-        let stop = if debugging.starting == Some(frame) {
+        let stop = if debugging.starting == Some(frame) && !failed_last {
             debugging.started = Some(frame);
             DebugStop::Started
         } else if let Some(error) = debugging.error {
@@ -231,11 +300,19 @@ impl Runtime {
         } else {
             return None;
         };
-        debugging.stop = Some(stop);
+        debugging.stop = Some((stop, frame, next));
         debugging.command = None;
         debugging.error = None;
         debugging.starting = None;
         Some(stop)
+    }
+
+    /// The run loop is about to run a step of a script the debugger shows
+    /// (`shown`) or of one it does not, or a button's single step.
+    pub(super) fn debug_running(&mut self, shown: bool) {
+        if let Some(debugging) = &mut self.debugger {
+            debugging.step_shown = shown;
+        }
     }
 
     /// After the run loop ran or skipped a step.
@@ -245,10 +322,15 @@ impl Runtime {
         }
     }
 
-    /// A step failed with `error`: with Pause on error, the debugger stops
-    /// before the next step.
+    /// A step failed with `error`, stored in `Get ( LastError )` or
+    /// reported: with Pause on error, the debugger stops before the next
+    /// step, unless the step belongs to a script it does not show.
     pub(super) fn debug_error(&mut self, error: ErrorCode) {
-        if let Some(debugging) = self.debugger.as_mut().filter(|d| d.pause_on_error) {
+        if let Some(debugging) = self
+            .debugger
+            .as_mut()
+            .filter(|d| d.pause_on_error && d.step_shown)
+        {
             debugging.error = Some(error);
         }
     }

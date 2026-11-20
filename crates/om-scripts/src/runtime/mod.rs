@@ -1152,6 +1152,7 @@ impl Runtime {
                 }
             }
         }
+        let shown = frame.debuggable && matches!(frame.kind, FrameKind::Script { .. });
         let (step, full_access) = match &mut frame.kind {
             FrameKind::Script { script, index, .. } => {
                 *index += 1;
@@ -1179,6 +1180,7 @@ impl Runtime {
                 ((**step).clone(), false)
             }
         };
+        self.debug_running(shown);
         if host.window_mode() == Mode::Layout && host.exit_layout_mode().is_err() {
             self.exit_frame(host, true);
             return false;
@@ -1251,7 +1253,12 @@ impl Runtime {
 
     fn post_step_cleanup(&mut self, host: &mut dyn ScriptHost, step: &ScriptStep, exec: Exec) {
         self.last_executed = step.id();
-        if exec.error.is_error() && !exec.control && exec.error != ErrorCode::RETRY {
+        // Pause on error: an error the step stores or reports, including a
+        // failed Commit Transaction, which stores its own (`handled`).
+        if exec.error.is_error()
+            && exec.error != ErrorCode::RETRY
+            && (exec.handled || !exec.control)
+        {
             self.debug_error(exec.error);
         }
         if exec.unsupported && self.options.stop_on_unsupported {

@@ -2222,3 +2222,108 @@ fn the_debugger_runs_an_executable_only_script_whole() {
     assert_eq!(debug(&mut h, &mut rt, DebugCommand::Run), RunState::Idle);
     assert_eq!(g(&mut rt, "$$a"), "1");
 }
+
+#[test]
+fn the_debugger_keeps_stops_and_errors_to_the_scripts_it_shows() {
+    let mut h = host();
+    h.pause_waits = true;
+    let transaction = vec![
+        ScriptStep::new(205),
+        set_var(&h, "$$t", "1"),
+        ScriptStep::new(206),
+        set_var(&h, "$$after", "1"),
+    ];
+    h.add_script(0, script(1, "Transaction", transaction));
+    h.add_script(0, script(2, "Hidden", vec![go_to_layout(99)]));
+    h.executable_only.insert((0, 2));
+    let caller = vec![perform(2), set_var(&h, "$$caller", "1")];
+    h.add_script(0, script(3, "Caller", caller));
+    h.add_script(
+        0,
+        script(4, "Last", vec![set_var(&h, "$$a", "1"), go_to_layout(99)]),
+    );
+    let mut pause = ScriptStep::new(62);
+    pause.flags &= !flag::CALCULATION;
+    let paused = vec![pause, set_var(&h, "$$b", "2"), set_var(&h, "$$c", "3")];
+    h.add_script(0, script(5, "Paused", paused));
+    let mut rt = Runtime::default();
+    rt.start_debugging();
+    rt.set_pause_on_error(true);
+    let started = RunState::Debugger(DebugStop::Started);
+
+    // Set Next Step is refused while a transaction is open, and a failed
+    // Commit Transaction, which stores its own error, stops the script.
+    rt.perform_script(&mut h, ScriptCall::new(0, 1))
+        .expect("starts");
+    assert_eq!(rt.run(&mut h), started);
+    assert_eq!(
+        debug(&mut h, &mut rt, DebugCommand::StepOver),
+        RunState::Debugger(DebugStop::Stepped)
+    );
+    assert!(rt.transaction_open());
+    assert!(!rt.set_next_step(3));
+    h.pending_commits = 1;
+    assert_eq!(debug(&mut h, &mut rt, DebugCommand::Run), RunState::Waiting);
+    rt.complete_step(ErrorCode(301));
+    assert_eq!(
+        rt.run(&mut h),
+        RunState::Debugger(DebugStop::Error(ErrorCode(301)))
+    );
+    assert_eq!(call_stack(&rt), at(&[("Transaction", Some(3))]));
+    assert_eq!(debug(&mut h, &mut rt, DebugCommand::Run), RunState::Idle);
+
+    // A hidden script's error does not stop its caller.
+    rt.perform_script(&mut h, ScriptCall::new(0, 3))
+        .expect("starts");
+    assert_eq!(rt.run(&mut h), started);
+    assert_eq!(debug(&mut h, &mut rt, DebugCommand::Run), RunState::Idle);
+    assert_eq!(g(&mut rt, "$$caller"), "1");
+
+    // A failure of the last step stops at the script's end.
+    rt.perform_script(&mut h, ScriptCall::new(0, 4))
+        .expect("starts");
+    assert_eq!(rt.run(&mut h), started);
+    let state = debug(&mut h, &mut rt, DebugCommand::Run);
+    assert_eq!(state, RunState::Debugger(DebugStop::Error(ErrorCode(105))));
+    assert_eq!(call_stack(&rt), at(&[("Last", Some(2))]));
+    assert_eq!(debug(&mut h, &mut rt, DebugCommand::Run), RunState::Idle);
+
+    // A script queued to run after the current one neither keeps that one
+    // from stopping first nor shows in the Call Stack.
+    rt.perform_script(&mut h, ScriptCall::new(0, 3))
+        .expect("starts");
+    let mut queued = ScriptCall::new(0, 4);
+    queued.queue_at_bottom = true;
+    rt.perform_script(&mut h, queued).expect("queues");
+    assert_eq!(rt.run(&mut h), started);
+    assert_eq!(call_stack(&rt), at(&[("Caller", Some(0))]));
+    // The stop belongs to its script: Exit ends it, and the hidden script
+    // started in its place runs whole.
+    let mut exit = ScriptCall::new(0, 2);
+    exit.mode = QueueMode::Exit;
+    rt.perform_script(&mut h, exit).expect("starts");
+    assert_eq!(rt.debug_stop(), None);
+    assert!(!rt.set_next_step(0));
+    // The queued script then starts and stops before its first step.
+    assert_eq!(rt.run(&mut h), started);
+    assert_eq!(call_stack(&rt), at(&[("Last", Some(0))]));
+    rt.halt(&mut h);
+    assert_eq!(rt.run(&mut h), RunState::Idle);
+
+    // A Pause/Resume Script pause is continued by the debugger's commands.
+    rt.set_pause_on_error(false);
+    rt.perform_script(&mut h, ScriptCall::new(0, 5))
+        .expect("starts");
+    assert_eq!(rt.run(&mut h), started);
+    assert!(matches!(
+        debug(&mut h, &mut rt, DebugCommand::Run),
+        RunState::Paused { .. }
+    ));
+    assert_eq!(
+        debug(&mut h, &mut rt, DebugCommand::StepOver),
+        RunState::Debugger(DebugStop::Stepped)
+    );
+    assert_eq!(call_stack(&rt), at(&[("Paused", Some(2))]));
+    assert_eq!(g(&mut rt, "$$b"), "2");
+    assert_eq!(debug(&mut h, &mut rt, DebugCommand::Run), RunState::Idle);
+}

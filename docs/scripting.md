@@ -653,31 +653,48 @@ uses it yet.
 
 - `Runtime::start_debugging` opens the debugger, `stop_debugging` closes
   it. A stopped script then runs to its end, and script triggers are
-  enabled again.
+  enabled again. A Pause/Resume Script pause stays, as without the
+  debugger.
 - While it is open, `Runtime::run` returns `RunState::Debugger` before a
   step at which it stops:
-  - the first step of a script started while no script frame runs;
+  - the first step of a script started while no script runs (scripts
+    queued to run after the current ones do not count as running);
   - a step with a breakpoint (flag `0x100000`);
   - the next step after a finished Step Over, Step Into or Step Out;
-  - the next step after a failed step, with `set_pause_on_error`.
-- `Runtime::debug` continues with Run, Step Over, Step Into or Step Out.
+  - with `set_pause_on_error`, the next step after a step whose error is
+    stored or reported, a failed Commit Transaction included, or the
+    script's end when that step was its last.
+- `Runtime::debug` continues with Run, Step Over, Step Into or Step Out,
+  from a stop or from a Pause/Resume Script pause in a script it shows.
   It does not stop again at the step it continued from, so Run from a
   breakpoint passes it.
+- A stop belongs to its script and step. A trigger that runs on top of it
+  follows the same rules, and the stop holds again when its script is back
+  on top there. A stop whose script ended (Halt, or another script started
+  with Exit) is forgotten, so no other script takes it over.
 - `Runtime::set_next_step` moves the current script's pointer while
-  stopped. `Runtime::halt` is Halt Script. `Runtime::debug_stack` is the
-  Call Stack: each script frame's name and step, the innermost last.
+  stopped. It is refused while a script transaction is open, since a jump
+  could pass its Commit Transaction or reach another one. `Runtime::halt`
+  is Halt Script. `Runtime::debug_stack` is the Call Stack: each running
+  script's name and step, the innermost last.
 - The debugger stops only in a script the host lets it show
   (`ScriptHost::script_debuggable`, none by default). Another script runs
-  whole, and the Call Stack lists it without a step. This is how FileMaker
-  treats an Executable Only script. A button's single step never stops.
+  whole, its errors do not pause, and the Call Stack lists it by name
+  without a step. This is how FileMaker treats an Executable Only script.
+  A button's single step never stops or pauses on its error.
 
 Choices not compared with FileMaker (script-runtime.md U17):
 - the stop before a new script's first step;
 - that disabled steps and comments are never stopped at;
-- that Pause on error stops after any step error, captured or not, once
-  the step's alert is done;
+- that Pause on error stops after a step's alert, with error capture on
+  or off, and at the end after a failed last step;
 - that a trigger script fired by a step counts as a sub-script for Step
-  Over and Step Out.
+  Over and Step Out;
+- that the Call Stack lists an Executable Only script's name;
+- what Set Next Step does across a block's boundaries (If, Loop), where
+  OpenMaker follows the cached jump indexes as for any step; and that it
+  is refused in a transaction;
+- that closing the debugger leaves a Pause/Resume Script pause waiting.
 
 The desktop host and OpenMaker Server close a debugger the runtime has
 open: neither opens one yet.
