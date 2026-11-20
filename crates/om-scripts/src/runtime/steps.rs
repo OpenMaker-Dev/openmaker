@@ -1565,6 +1565,19 @@ impl Runtime {
                 return self.result_to_target(host, step, Ok(response.body), select_all);
             }
             91 => {
+                // Options no host carries out are refused before any record
+                // changes (3), never run without them (script-steps.md
+                // 11.8): serial numbers from the field's Entry Options
+                // (`[00 5, 03]`), updating its next serial value (`[00 4,
+                // 03]`), and Skip auto-enter options (`kRestore` with `[00 6,
+                // 03]` = 0).
+                let serials = step.number(1) == Some(2);
+                let entry_options = serials && step.number(5).is_some_and(|n| n != 0);
+                let update_serial = serials && step.number(4).is_some_and(|n| n != 0);
+                let skip_auto_enter = step.has_flag(flag::RESTORE) && step.number(6) == Some(0);
+                if entry_options || update_serial || skip_auto_enter {
+                    return Exec::error(ErrorCode::UNAVAILABLE);
+                }
                 let mut evaluate;
                 let mut with = match step.number(1) {
                     Some(3) => {
@@ -1577,7 +1590,6 @@ impl Runtime {
                     Some(2) => Replacement::Serial {
                         initial: step.text(3).unwrap_or_else(|| "1".into()),
                         increment: step.number(2).unwrap_or(1),
-                        update_serial: step.number(4).is_some_and(|n| n != 0),
                     },
                     _ => Replacement::CurrentContents,
                 };

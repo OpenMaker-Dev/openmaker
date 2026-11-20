@@ -4927,6 +4927,16 @@ impl Fields for WorkerHost<'_> {
             let (window, provider) = self.wp();
             window.found_count(provider).map_err(data_error)?
         };
+        // A serial run past what its digits hold is refused before any
+        // record changes: its ends bound every number between them.
+        if let Replacement::Serial { initial, increment } = with {
+            let last = found.saturating_sub(1);
+            if Replacement::serial_text(initial, *increment, 0).is_none()
+                || Replacement::serial_text(initial, *increment, last).is_none()
+            {
+                return Err(ErrorCode::UNAVAILABLE.into());
+            }
+        }
         if with_dialog {
             self.confirm(
                 "Replace Field Contents",
@@ -4948,9 +4958,9 @@ impl Fields for WorkerHost<'_> {
             self.s.file.window.go_to(index);
             let text = match with {
                 Replacement::CurrentContents => current_value.clone(),
-                Replacement::Serial {
-                    initial, increment, ..
-                } => Replacement::serial_text(initial, *increment, index),
+                Replacement::Serial { initial, increment } => {
+                    Replacement::serial_text(initial, *increment, index).unwrap_or_default()
+                }
                 Replacement::Calculation(evaluate) => {
                     let value = evaluate(self);
                     self.text(&value)

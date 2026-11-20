@@ -271,12 +271,19 @@ codes and timing (script-runtime.md 13.21, 291 engine runs):
 
 Replace Field Contents (91) runs in server scripts as on the desktop
 (script-runtime.md, "Steps"): each found record in order is made current,
-takes the value through Set Field's checks, and is committed; the first
-failure stops the step, the records before it kept, and the record current
-before is current again. On the server "Update serial number in Entry
-Options" moves the field's next serial value one increment past the last,
-as Set Next Serial Value does. A container field, a related field and Find
-mode are refused (3); FileMaker's answers there are not measured.
+opened (locked before its value is computed), takes the value through Set
+Field's checks, and is committed. The first failure stops the step: the
+records before it stay replaced, the failed record's draft is reverted and
+its lock released, and the record current before is current again. An
+abort stops it before the next record is written. Refused before any
+record changes, on both clients: serial numbers from the field's Entry
+Options, "Update serial number in Entry Options" and "Skip auto-enter
+options" (3; [#500](https://github.com/OpenMaker-Dev/openmaker/issues/500)),
+and a serial run past what its digits hold (3). On the server also a
+container, global or related field and Find mode (3), and a calculation or
+summary field (201); FileMaker's answers there are not measured. Unlike
+FileMaker, which does not commit the active record, both clients commit it
+first ([#513](https://github.com/OpenMaker-Dev/openmaker/issues/513)).
 
 Server Find mode:
 - An unstored calculation with all-empty references reads empty, on the

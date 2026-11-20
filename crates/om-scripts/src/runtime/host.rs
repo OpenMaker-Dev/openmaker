@@ -514,13 +514,10 @@ pub struct UrlResponse {
 pub enum Replacement<'a> {
     /// The current record's value of the field, into every record.
     CurrentContents,
-    /// Serial numbers from `initial`, by `increment`; `update_serial`
-    /// moves the field's next serial value past the last one.
-    Serial {
-        initial: String,
-        increment: i64,
-        update_serial: bool,
-    },
+    /// Serial numbers from the custom `initial`, by `increment`. The
+    /// runtime refuses Entry Options' serials and updating the field's next
+    /// serial value (3) before calling the host.
+    Serial { initial: String, increment: i64 },
     /// The calculation, evaluated on each record after the host made it
     /// current.
     Calculation(&'a mut dyn FnMut(&mut dyn ScriptHost) -> Value),
@@ -530,15 +527,17 @@ impl Replacement<'_> {
     /// The serial number of the `index`th record (0 the first) from
     /// `initial` by `increment`: the last run of digits counts, keeping its
     /// width, and the text around it stays (`INV0009` then `INV0010`); an
-    /// initial value without digits stays as it is.
-    pub fn serial_text(initial: &str, increment: i64, index: u64) -> String {
+    /// initial value without digits stays as it is. `None` when the count
+    /// would leave the range a run of digits holds (more digits than an
+    /// `i128` reads, or below zero), which hosts refuse before writing.
+    pub fn serial_text(initial: &str, increment: i64, index: u64) -> Option<String> {
         let end = initial
             .char_indices()
             .rev()
             .find(|(_, c)| c.is_ascii_digit())
             .map(|(i, c)| i + c.len_utf8());
         let Some(end) = end else {
-            return initial.to_owned();
+            return Some(initial.to_owned());
         };
         let start = initial[..end]
             .char_indices()
@@ -547,14 +546,18 @@ impl Replacement<'_> {
             .last()
             .map_or(end, |(i, _)| i);
         let digits = &initial[start..end];
-        let number: i128 = digits.parse().unwrap_or(0) + i128::from(increment) * index as i128;
-        format!(
+        let number = digits
+            .parse::<i128>()
+            .ok()?
+            .checked_add(i128::from(increment).checked_mul(i128::from(index))?)
+            .filter(|n| *n >= 0)?;
+        Some(format!(
             "{}{:0width$}{}",
             &initial[..start],
             number,
             &initial[end..],
             width = digits.len()
-        )
+        ))
     }
 }
 
@@ -1513,12 +1516,22 @@ mod window_style_tests {
 
     #[test]
     fn serial_numbers_count_up_the_last_digits() {
-        let serial = super::Replacement::serial_text;
+        let serial = |initial, increment, index| {
+            super::Replacement::serial_text(initial, increment, index).unwrap_or_default()
+        };
         assert_eq!(serial("1", 1, 0), "1");
         assert_eq!(serial("1", 1, 4), "5");
         assert_eq!(serial("INV0009", 1, 1), "INV0010");
         assert_eq!(serial("A-10-x", 5, 2), "A-20-x");
         assert_eq!(serial("none", 1, 3), "none");
+        // Out of range: refused, never wrapped or read as zero.
+        let max = i128::MAX.to_string();
+        assert_eq!(super::Replacement::serial_text(&max, 1, 1), None);
+        assert_eq!(
+            super::Replacement::serial_text(&format!("{max}9"), 1, 0),
+            None
+        );
+        assert_eq!(super::Replacement::serial_text("3", -2, 2), None);
     }
 
     #[test]

@@ -327,21 +327,77 @@ fn scripts() -> Vec<Script> {
                 exit_with("Get ( LastError )"),
             ],
         ),
+        // From the first record, omitted: records 2 to 4 are replaced.
         script(
             10,
             "Replace by calculation",
-            replaced(1, COUNT, 3, "Count * 10"),
+            replaced(omit_first(), COUNT, 3, "Count * 10", "Get ( RecordNumber )"),
         ),
-        script(11, "Replace by serials", replaced(2, NAME, 2, "T-08")),
-        script(12, "Replace by contents", replaced(2, COUNT, 1, "")),
+        script(
+            11,
+            "Replace by serials",
+            replaced(omit_first(), NAME, 2, "T-08", "Get ( RecordNumber )"),
+        ),
+        script(
+            12,
+            "Replace by contents",
+            replaced(
+                vec![fixture::go_to_record(2)],
+                COUNT,
+                1,
+                "",
+                "Get ( RecordNumber )",
+            ),
+        ),
+        // Code takes at most three characters (validated Always).
+        script(
+            13,
+            "Replace refused",
+            replaced(
+                vec![fixture::go_to_record(1)],
+                fixture::CODE,
+                3,
+                "\"toolong\"",
+                "Get ( RecordNumber ) & \"/\" & Get ( RecordOpenState )",
+            ),
+        ),
+        script(
+            14,
+            "Replace a calculation",
+            replaced(vec![], fixture::DOUBLED, 3, "1", "Get ( RecordNumber )"),
+        ),
+        script(15, "Read", vec![exit_with(&values_of("Count"))]),
+        script(16, "Replace by Entry Options", {
+            let mut steps = replaced(vec![], NAME, 2, "1", "Get ( RecordNumber )");
+            // `[00 5, 03]`: the field's own serial settings.
+            steps[1].set_number(5, Some(1));
+            steps
+        }),
     ]
 }
 
-/// Go to Record [`go`: 1 first, 2 last], Replace Field Contents
-/// [Tasks::`field`] with `choice` 1 the current contents, 2 serial numbers
-/// from `text` by 2 or 3 the calculation `text`, then exit with the error,
-/// the current record's number and the field's values in record order.
-fn replaced(go: u16, field: u64, choice: i32, text: &str) -> Vec<ScriptStep> {
+/// Go to the first record and omit it: the found set is records 2 to 4,
+/// record 2 current.
+fn omit_first() -> Vec<ScriptStep> {
+    vec![fixture::go_to_record(1), ScriptStep::new(25)]
+}
+
+/// Every record's `column` of Tasks, in record order, through ExecuteSQL.
+fn values_of(column: &str) -> String {
+    format!("ExecuteSQL ( \"SELECT \\\"{column}\\\" FROM Tasks\" ; \"\" ; \",\" )")
+}
+
+/// After `before`, Replace Field Contents [Tasks::`field`] with `choice` 1
+/// the current contents, 2 serial numbers from `text` by 2 or 3 the
+/// calculation `text`, then exit with the error, the calculation `after`
+/// and the field's values in record order, separated by `/`.
+fn replaced(
+    before: Vec<ScriptStep>,
+    field: u64,
+    choice: i32,
+    text: &str,
+    after: &str,
+) -> Vec<ScriptStep> {
     let mut step = ScriptStep::new(91);
     step.set_field_spec(
         0,
@@ -360,20 +416,20 @@ fn replaced(go: u16, field: u64, choice: i32, text: &str) -> Vec<ScriptStep> {
         3 => step.set_calculation(0, Some(&calc(text))),
         _ => {}
     }
-    // Count is an SQL function's name: quoted.
-    let column = if field == NAME {
-        "Name"
-    } else {
-        "\\\"Count\\\""
+    let column = match field {
+        NAME => "Name",
+        COUNT => "Count",
+        fixture::CODE => "Code",
+        _ => "Doubled",
     };
-    vec![
-        fixture::go_to_record(go),
-        step,
-        exit_with(&format!(
-            "Get ( LastError ) & \"/\" & Get ( RecordNumber ) & \"/\" & \
-             ExecuteSQL ( \"SELECT {column} FROM Tasks\" ; \"\" ; \",\" )"
-        )),
-    ]
+    let mut steps = vec![fixture::on(86, true)];
+    steps.extend(before);
+    steps.push(step);
+    steps.push(exit_with(&format!(
+        "Get ( LastError ) & \"/\" & {after} & \"/\" & {}",
+        values_of(column)
+    )));
+    steps
 }
 
 /// Finds with operators the finders select candidates for (a wildcard
@@ -959,18 +1015,34 @@ fn lookup_tree() -> OwnedNode {
 }
 
 /// Replace Field Contents on the server (script-runtime.md, "Steps"): every
-/// record of the found set takes the calculation evaluated on it, a serial
-/// number counting up the initial value's last digits, or the current
-/// record's value; each is committed, and the record current before stays
-/// current. It ran into error 3 before.
+/// record of the found set, and no other, takes the calculation evaluated
+/// on it, a serial number counting up the initial value's last digits, or
+/// the current record's value; each is committed (a later session reads
+/// them), and the record current before stays current. A refused value
+/// stops the step with no record left open; a calculation field is refused
+/// before any change. It ran into error 3 before.
 #[test]
 fn server_replace_field_contents_writes_every_found_record() {
     let file = TempFile::from_tree("psos-replace", &tree());
     let port = server::start(&file);
     let (mut client, _) = server::logged_in(port, "client");
-    // From the first record, which is current again afterwards.
-    assert_eq!(run(&mut client, 10), (0, "0/1/30,50,70,10".into()));
-    assert_eq!(run(&mut client, 11), (0, "0/4/T-08,T-10,T-12,T-14".into()));
+    // Record 1, omitted, keeps its Count 3.
+    assert_eq!(run(&mut client, 10), (0, "0/1/3,50,70,10".into()));
+    assert_eq!(run(&mut client, 15), (0, "3,50,70,10".into()));
+    assert_eq!(
+        run(&mut client, 11),
+        (0, "0/1/Write tests,T-08,T-10,T-12".into())
+    );
     // The last record's Count, 10, into every record.
     assert_eq!(run(&mut client, 12), (0, "0/4/10,10,10,10".into()));
+    assert_eq!(run(&mut client, 15), (0, "10,10,10,10".into()));
+    // 507 on the first record: nothing written, no record left open.
+    assert_eq!(run(&mut client, 13), (507, "507/1/0/,,,".into()));
+    // A calculation field: 201 before any change (Doubled is Count * 2).
+    assert_eq!(run(&mut client, 14), (201, "201/1/20,20,20,20".into()));
+    // Serial numbers from the field's Entry Options: refused (3).
+    assert_eq!(
+        run(&mut client, 16),
+        (3, "3/1/Write tests,T-08,T-10,T-12".into())
+    );
 }

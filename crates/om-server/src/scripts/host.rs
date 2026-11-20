@@ -3604,17 +3604,22 @@ impl FieldSteps for ServerHost {
 
     /// Replace Field Contents (91), as the desktop runs it
     /// (script-runtime.md, "Steps"): each record of the found set in order
-    /// is made current, takes the current record's value, a serial number
-    /// or the calculation evaluated on it through Set Field's checks, and
-    /// is committed; the first that fails stops the step, the records
-    /// before it kept. The record current before is current again. With
-    /// "Update serial number in Entry Options" the field's next serial
-    /// value is one increment past the last (Set Next Serial Value's rules).
-    /// The target is the step's field or the field with the focus (102
-    /// without either). A container field is refused (3), as on the
-    /// desktop, and so are Find mode and a related field (3; FileMaker's
-    /// answers there are not measured). The dialog option is not shown on
-    /// the server.
+    /// is made current and opened (locked, so the value is computed from
+    /// what it holds now), takes the current record's value, a serial
+    /// number or the calculation evaluated on it through Set Field's checks,
+    /// and is committed. The first failure stops the step: the records
+    /// before it stay replaced, the failed one's draft is reverted (to what
+    /// an open transaction holds) and its lock released, and the record
+    /// current before is current again. An abort or the script's time limit
+    /// stops it before the next record is written.
+    ///
+    /// Refused before any record changes: no field and no focus (102); a
+    /// container, global or related field, Find mode, or a serial run past
+    /// what its digits hold (3); a calculation or summary field (201).
+    /// Unlike FileMaker ("Replace Field Contents ... do not commit the
+    /// active record"), the record open when the step starts is committed
+    /// first, as on the desktop. The dialog option is not shown on the
+    /// server (Claris: as if With dialog were off).
     fn replace_field_contents(
         &mut self,
         field: Option<FieldRef>,
@@ -3630,10 +3635,23 @@ impl FieldSteps for ServerHost {
         let (_, def) = self.target(field)?;
         let window = self.window()?;
         if def.data_type == DataType::Container
+            || Self::is_global(&def)
             || window.mode == Mode::Find
             || window.occurrence != field.occurrence
         {
             return Err(HostError::Unsupported);
+        }
+        if def.kind != FieldKind::Normal {
+            return Err(FIELD_LOCKED.into());
+        }
+        let count = window.found.len();
+        if let Replacement::Serial { initial, increment } = with {
+            let last = count.saturating_sub(1) as u64;
+            if Replacement::serial_text(initial, *increment, 0).is_none()
+                || Replacement::serial_text(initial, *increment, last).is_none()
+            {
+                return Err(HostError::Unsupported);
+            }
         }
         self.require_edit()?;
         self.leave()?;
@@ -3641,41 +3659,58 @@ impl FieldSteps for ServerHost {
             Replacement::CurrentContents => Some(self.value_of(field)?),
             _ => None,
         };
-        let window = self.window()?;
-        let (original, count) = (window.current, window.found.len());
+        let original = self.window()?.current;
         let mut result = Ok(());
         for index in 0..count {
-            self.window_mut()?.current = index;
-            let value = match with {
-                Replacement::CurrentContents => current.clone().unwrap_or_else(Value::empty_text),
-                Replacement::Serial {
-                    initial, increment, ..
-                } => Value::text(Replacement::serial_text(initial, *increment, index as u64)),
-                Replacement::Calculation(evaluate) => evaluate(self),
-            };
-            result = self.store_value(field, value).and_then(|()| self.leave());
+            result = self.replace_one(field, with, current.as_ref(), index);
             if result.is_err() {
+                // The failed record's draft and lock go; a record the
+                // transaction changed before is again what it holds.
+                if self.record.is_some() {
+                    let _ = self.revert_record(false);
+                }
                 break;
             }
         }
         if let Some(window) = self.window.as_mut() {
             window.current = original.min(window.found.len().saturating_sub(1));
         }
-        result?;
-        if let Replacement::Serial {
-            initial,
-            increment,
-            update_serial: true,
-        } = with
-        {
-            let next = Replacement::serial_text(initial, *increment, count as u64);
-            self.set_next_serial_value(field, Value::text(next))?;
-        }
-        Ok(())
+        result
     }
 }
 
 impl ServerHost {
+    /// Replace Field Contents on the `index`th record of the found set:
+    /// open it, compute its value, set and commit it, stopping at an abort.
+    fn replace_one(
+        &mut self,
+        field: FieldRef,
+        with: &mut Replacement<'_>,
+        current: Option<&Value>,
+        index: usize,
+    ) -> HostResult {
+        if self.aborted() {
+            return Err(ErrorCode::CANCELED.into());
+        }
+        self.window_mut()?.current = index;
+        self.open_current()?;
+        let value = match with {
+            Replacement::CurrentContents => current.cloned().unwrap_or_else(Value::empty_text),
+            Replacement::Serial { initial, increment } => {
+                let text = Replacement::serial_text(initial, *increment, index as u64)
+                    .ok_or(HostError::Unsupported)?;
+                Value::text(text)
+            }
+            Replacement::Calculation(evaluate) => evaluate(self),
+        };
+        // A calculation stopped by the abort gives `?`: nothing is written.
+        if self.aborted() {
+            return Err(ErrorCode::CANCELED.into());
+        }
+        self.store_value(field, value)?;
+        self.leave()
+    }
+
     /// Run `requests` as Perform Find, Constrain or Extend Found Set
     /// (`kind`), from Find mode when `in_find_mode`: see
     /// [`FoundSets::perform_find`].
