@@ -328,6 +328,56 @@ fn hosts_without_the_authoring_extension_are_read_only() {
     host.stop();
 }
 
+/// Exercise the native wire path with the extension disabled. Holding the
+/// index simulates another Script Workspace saving a different script.
+#[test]
+fn native_script_save_checks_both_locks_and_preserves_the_catalog() {
+    let mut root = fixture::tree(&scripts(), true);
+    fixture::index_scripts(&mut root);
+    let file = TempFile::from_tree("native-script-save", &root);
+    let host = host_configured(&file, "Server 26.0.3", om_server::Server::without_authoring);
+    let mut service = Service::new(target(&host, ACCOUNT, PASSWORD));
+    let got = get(&mut service, GREETING_REF);
+    assert_eq!(got["apply"]["available"], true);
+    let new_source = edited(text(&got["source"]));
+    let revision = text(&got["revision"]);
+
+    let (mut other, _) = session(&host, "Other desk", ACCOUNT, PASSWORD);
+    assert!(matches!(
+        other.lock(&[&[17], &[1]], 77, true).unwrap(),
+        om_protocol::write::LockReply::Granted { .. }
+    ));
+    let refused = error(service.handle(&apply(&new_source, revision)));
+    assert_eq!(refused["kind"], "locked", "{refused:#}");
+    assert_eq!(get(&mut service, GREETING_REF)["revision"], revision);
+    other.kill_all_locks(77).unwrap();
+
+    let applied = ok(service.handle(&apply(&new_source, revision)));
+    assert_eq!(applied["verified"]["fresh_connection"], true, "{applied:#}");
+    let mut provider = provider(&host);
+    let catalog = provider.script_definitions().unwrap();
+    let index = catalog.index.unwrap();
+    assert_eq!(
+        content_revision(&index),
+        content_revision(root.at(&[&[17], &[1]]).unwrap())
+    );
+    assert_eq!(
+        index.child(authoring::MOD_COUNT).unwrap().value.as_deref(),
+        Some(&[1, 1][..])
+    );
+    let script = catalog.catalog.script(GREETING).unwrap();
+    assert_eq!(script.steps[1], greeting().steps[0]);
+    assert_eq!(script.unreferenced_data, greeting().unreferenced_data);
+
+    let mut clerk = Service::new(target(&host, CLERK, CLERK_PASSWORD));
+    let denied = error(clerk.handle(&apply(
+        &format!("# another edit\n{new_source}"),
+        text(&applied["revision"]),
+    )));
+    assert_eq!(denied["kind"], "permission_denied", "{denied:#}");
+    host.stop();
+}
+
 /// A save the host cannot write leaves the script as it was, in the file
 /// and as served: the edit is taken back and reported, not kept in memory.
 #[cfg(unix)]

@@ -21,9 +21,8 @@
 //! since the workspace read the scripts is not saved over (306). New
 //! folders and separators are refused there.
 //!
-//! Both saves need the same host as the step save: OpenMaker Server or a
-//! file opened from this computer, with an account that may author.
-//! Nothing is written to FileMaker Server (`authoring.rs`).
+//! Agent edits can also save existing scripts on FileMaker Server by the
+//! native transaction below. Script Workspace still requires the extension.
 use std::time::Duration;
 
 use om_data::calc::{Ctx, Date, Locale, Value};
@@ -255,7 +254,7 @@ impl NativeProvider {
         if let Some(known) = &self.script_saving {
             return known.clone();
         }
-        match self.script_authoring() {
+        match self.script_extension_authoring() {
             Ok(answer) => {
                 self.script_saving = Some(answer.clone());
                 answer
@@ -265,6 +264,124 @@ impl NativeProvider {
                 error.message
             )),
         }
+    }
+
+    /// Replace only the steps of a script through FileMaker's catalog save.
+    /// Acquire both exclusive locks and serialize both nodes before either
+    /// upload so a lock refusal or an invalid payload cannot split the save.
+    pub(crate) fn save_native_script_steps(
+        &mut self,
+        edited: &Script,
+        base: &OwnedNode,
+    ) -> Result<om_protocol::authoring::Replaced, AuthoringError> {
+        let invalid = |message| native_script_refusal(status::INVALID, message);
+        if edited.kind != om_data::ScriptKind::Script {
+            return Err(invalid(
+                "Only the steps of an existing script can be saved.".into(),
+            ));
+        }
+        edited
+            .check_structure()
+            .map_err(|e| invalid(e.to_string()))?;
+        let key = serial::encode(edited.id);
+        let member_path = [
+            &[script_catalog::SCRIPTS][..],
+            &[script_catalog::MEMBERS],
+            &key,
+        ];
+        let index_path = [&[script_catalog::SCRIPTS][..], &[script_catalog::INDEX]];
+        let member_txn = self.new_transaction();
+        let index_txn = self.new_transaction();
+        let paths: [(&[&[u8]], u32); 2] = [(&member_path, member_txn), (&index_path, index_txn)];
+        let mut locks = [0; 2];
+        let mut attention = [0; 2];
+        let result = (|| {
+            let session = self.session.as_mut().expect("open session");
+            for (i, (path, txn)) in paths.iter().copied().enumerate() {
+                let reply = session.lock(path, txn, true);
+                // A malformed grant may still have acquired a lock.
+                locks[i] = LOCK_WRITE;
+                native_script_grant(reply)?;
+            }
+            let current = native_script_node(session, &member_path)?.ok_or_else(|| {
+                native_script_refusal(status::SCRIPT_MISSING, "The script was deleted.".into())
+            })?;
+            let revision = content_revision(&current);
+            if revision != content_revision(base)
+                || current.child(om_protocol::authoring::MOD_COUNT)
+                    != base.child(om_protocol::authoring::MOD_COUNT)
+            {
+                return Err(AuthoringError::Refused {
+                    status: status::CONFLICT,
+                    message: "The script changed while the edit was being prepared.".into(),
+                    current: Some(revision),
+                });
+            }
+            let mut index = native_script_node(session, &index_path)?
+                .filter(|index| index.child(&[0]).and_then(|node| node.value.as_ref()).is_some())
+                .ok_or_else(|| AuthoringError::Unavailable("The script catalog lacks the serial key FileMaker Server requires when uploading its index.".into()))?;
+            let mut member = edited.with_steps_in(&current);
+            let revision = content_revision(&member);
+            let stamp = Stamp {
+                user: om_data::host::machine::user_name(),
+                account: self.account_name.clone(),
+                time: session
+                    .host_timestamp()
+                    .map_err(|e| AuthoringError::NotSent(e.to_string()))?,
+            };
+            script_catalog::stamp(&mut member, &stamp, false);
+            script_catalog::stamp(&mut index, &stamp, false);
+            if !member
+                .to_wire()
+                .is_some_and(|wire| wire.len() <= om_protocol::authoring::MAX_DEFINITION_BYTES)
+                || index.to_wire().is_none()
+            {
+                return Err(invalid(
+                    "The script or its index is too large to upload.".into(),
+                ));
+            }
+            for (i, (path, txn)) in paths.iter().copied().enumerate() {
+                native_script_grant(session.upgrade_lock(path, txn, LOCK_WRITE, LOCK_EXCLUSIVE))?;
+                locks[i] = LOCK_EXCLUSIVE;
+            }
+            for (i, (node, (path, _))) in [&member, &index].into_iter().zip(paths).enumerate() {
+                attention[i] = ATTENTION_CATALOG;
+                session
+                    .upload_to_host(path, node)
+                    .map_err(|e| AuthoringError::OutcomeUnknown(e.to_string()))?;
+                let read = native_script_node(session, path)
+                    .map_err(|e| AuthoringError::OutcomeUnknown(e.to_string()))?;
+                if read.as_ref() != Some(node) {
+                    let what = if i == 0 { "script" } else { "script index" };
+                    return Err(AuthoringError::OutcomeUnknown(format!(
+                        "The host's read-back of the {what} differed from the upload."
+                    )));
+                }
+            }
+            Ok(om_protocol::authoring::Replaced {
+                changed: true,
+                revision,
+            })
+        })();
+        let session = self.session.as_mut().expect("open session");
+        let mut release_error = None;
+        for (i, (path, txn)) in paths.into_iter().enumerate() {
+            if locks[i] != 0 {
+                if let Err(error) = session.unlock(path, txn, locks[i], attention[i]) {
+                    release_error.get_or_insert(error);
+                }
+                if release_error.is_some() || result.is_err() {
+                    // Also release a lock whose granted type could not be read.
+                    let _ = session.kill_all_locks(txn);
+                }
+            }
+        }
+        result.and_then(|saved| match release_error {
+            Some(error) => Err(AuthoringError::OutcomeUnknown(format!(
+                "Both nodes were read back, but the host's lock release could not be confirmed ({error})."
+            ))),
+            None => Ok(saved),
+        })
     }
 
     /// Save `edited`'s steps (`DataProvider::save_script`), when the host
@@ -595,6 +712,68 @@ impl NativeProvider {
             LockReply::Granted { .. } => Ok(()),
             other => Err(refused_lock(&other)),
         }
+    }
+}
+
+fn native_script_node(
+    session: &mut om_session::Session,
+    path: &[&[u8]],
+) -> Result<Option<OwnedNode>, AuthoringError> {
+    let read_error = |e: DataError| AuthoringError::NotSent(e.message);
+    let reply = session
+        .download_from_host(path)
+        .map_err(|e| AuthoringError::NotSent(e.to_string()))?;
+    if !reply.value.is_empty() {
+        return Err(AuthoringError::NotSent(
+            "A script catalog node has an unexpected inline value.".into(),
+        ));
+    }
+    let Some(download) =
+        crate::node_from_reply(path.iter().map(|key| key.to_vec()).collect(), reply)
+            .map_err(read_error)?
+    else {
+        return Ok(None);
+    };
+    let tree = crate::download_tree(std::slice::from_ref(&download)).map_err(read_error)?;
+    tree.node(path)
+        // The response starts inside the node. The path is implicit in
+        // the slots, and its explicit node state was checked above.
+        .map(|node| {
+            Some(OwnedNode {
+                push: true,
+                ..node.to_owned_node()
+            })
+        })
+        .ok_or_else(|| {
+            AuthoringError::NotSent("The requested script catalog node was absent.".into())
+        })
+}
+
+fn native_script_refusal(status: u16, message: String) -> AuthoringError {
+    AuthoringError::Refused {
+        status,
+        message,
+        current: None,
+    }
+}
+
+fn native_script_grant(
+    reply: Result<LockReply, om_session::SessionError>,
+) -> Result<(), AuthoringError> {
+    match reply.map_err(|e| AuthoringError::NotSent(e.to_string()))? {
+        LockReply::Granted { .. } => Ok(()),
+        reply @ (LockReply::MustWait
+        | LockReply::Refused {
+            status: om_protocol::write::LOCK_CONFLICT,
+            ..
+        }) => Err(native_script_refusal(
+            status::IN_USE,
+            refused_lock(&reply).message,
+        )),
+        LockReply::Refused { status, .. } => Err(native_script_refusal(
+            status,
+            format!("The host refused the script catalog lock (status {status})."),
+        )),
     }
 }
 
