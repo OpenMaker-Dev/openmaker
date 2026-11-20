@@ -169,7 +169,9 @@ fn a_dialog_answer_changes_nothing_once_its_field_was_read_again() {
 }
 
 /// A file the platform's panel chose goes in as the panel named it: a name
-/// ending in a space is not taken for the file without it.
+/// ending in a space is not taken for the file without it. Not on Windows,
+/// whose file names drop a trailing space, so the two would be one file.
+#[cfg(not(windows))]
 #[test]
 fn a_panel_answer_inserts_the_file_it_named() {
     let temporary = tempfile::tempdir().unwrap();
