@@ -875,8 +875,12 @@ sharp; a value cut off at its column's edge keeps egui's renderer, as
 elided text does above. The table's last column fills the width the previous
 frame left, so a new zoom lays the table out once more before it shows.
 
-Limits: Layout mode, generic Form fallbacks and focused field editors in
-Form and List view are not zoomed (Preview scales its paper:
+A field being typed in lays its text out at the zoom as well, in Form, List
+and Find (`field_galley`, and the single-line editor's layouter), so its text
+stays as sharp as the field's text at rest; an empty editor's placeholder is
+egui's.
+
+Limits: Layout mode and generic Form fallbacks are not zoomed (Preview scales its paper:
 [preview.md](preview.md)), and Set Zoom Level's lock option is not enforced
 ([#36](https://github.com/OpenMaker-Dev/openmaker/issues/36)). Scroll bars
 inside the zoomed layer (List and Table view's) scale with it; FileMaker Pro's
