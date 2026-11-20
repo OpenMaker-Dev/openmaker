@@ -5494,7 +5494,7 @@ impl Windows for WorkerHost<'_> {
         self.s.file.window.scroll(choice)
     }
 
-    fn set_zoom_level(&mut self, choice: u16, _lock: bool) -> HostResult {
+    fn set_zoom_level(&mut self, choice: u16, lock: bool) -> HostResult {
         let zoom = &mut self.s.file.window.state.zoom;
         *zoom = match choice {
             1 => 25,
@@ -5517,6 +5517,7 @@ impl Windows for WorkerHost<'_> {
             }
             _ => return Err(ErrorCode::INVALID.into()),
         };
+        self.s.file.window.state.zoom_locked = lock;
         self.s.file.window.touch();
         Ok(())
     }
