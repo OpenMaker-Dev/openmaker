@@ -8806,7 +8806,7 @@ mod tests {
             assert_eq!(close, [Action::CloseFile]);
 
             state.menu_leaves_field(ui, &mut actions);
-            assert_eq!(actions, [command.clone()]);
+            assert_eq!(actions.as_slice(), std::slice::from_ref(&command));
             state.hold_candidate_actions(&mut left, &mut entered, &mut modified, &mut actions);
             assert!(actions.is_empty());
             assert!(left.is_none());
