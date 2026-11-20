@@ -172,6 +172,17 @@ and OnWindowTransaction, as FileMaker Server's engine answered them
 - OnWindowTransaction runs after the script that committed, with
   FileMaker's JSON.
 
+Show Custom Dialog's "Close after (seconds)" (FileMaker Pro 26.1, numeric
+slot 6 and calculation slot 13, script-steps.md 12.4) closes the desktop's
+dialog by itself once the time is up, as no button: `Get ( LastMessageChoice )`
+is 0, as Claris documents, and no input is stored. A time that is not a
+positive number leaves the dialog to the user (OpenMaker's choice). No step
+FileMaker Pro 26.1.1 wrote has been read
+([#348](https://github.com/OpenMaker-Dev/openmaker/issues/348)), so the
+Boolean's byte width is unknown: the Script Workspace's options show the
+option and its seconds as stored and take no input, and pasting the step as
+FileMaker XML refuses the option, whose XML shape is not recorded.
+
 Root-file layouts backed by a readable related hosted table can edit existing
 records. Browse and Set Field write their ordinary stored text, number, date,
 time, timestamp and container fields, a container's data going to the owning
