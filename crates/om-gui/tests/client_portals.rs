@@ -3467,7 +3467,10 @@ fn delete_record_deletes_the_selected_portal_rows_record() {
         .filter_map(|n| n.accesskit_node().value())
         .collect()
     };
-    assert_eq!(bodies(&app), ["first", "second", ""]);
+    // The rows paint once their related records are read.
+    common::wait_until(&mut app, "the portal rows", |app| {
+        bodies(app) == ["first", "second", ""]
+    });
     // The row's own click (its center is on the Body field, which a
     // pointer click enters).
     app.get_by_label("Portal Row 2").click_accesskit();
@@ -5406,9 +5409,11 @@ fn clicked_identity_never_redirects_after_membership_change() {
     );
 }
 
-/// A pending script repetition does not exempt later UI typing from its
-/// accepted-page baseline. The peer commit must survive until explicit Keep.
-fn mixed_ui_conflict(tag: &str, repetition_changed: bool) -> (hosted::Hosted, common::App) {
+/// The Portals record with a script's pending repetition (Status[2]
+/// "ab") and the user's typing ("b" in Code): the window holds the record
+/// on the host, as FileMaker Pro holds a record a script or the user began
+/// editing (write-path.md 4.1).
+fn mixed_edit(tag: &str) -> (hosted::Hosted, common::App) {
     let hosted = host(tag);
     let mut app = open(&hosted);
     expect(&mut app, "Repetition only", "reps 2:1:Status:ab");
@@ -5416,44 +5421,7 @@ fn mixed_ui_conflict(tag: &str, repetition_changed: bool) -> (hosted::Hosted, co
         app.state().is_settled() && common::text_field(app, "Code").value().is_some()
     });
     retype(&mut app, "Code", "b");
-    assert_eq!(
-        common::text_field(&app, "Code").value().as_deref(),
-        Some("b")
-    );
-    let mut other = hosted.opened();
-    other.records(PORTALS as u32, 0, 10).unwrap();
-    if repetition_changed {
-        other
-            .write_record(&om_data::ScriptWrite {
-                layout: PORTALS as u32,
-                record: Some(1),
-                cells: [(STATUS * 256 + 2, Some("xy".into()))].into(),
-                ..Default::default()
-            })
-            .unwrap();
-    } else {
-        other
-            .update_record(
-                PORTALS as u32,
-                1,
-                [("Code".to_owned(), Some("c".to_owned()))].into(),
-            )
-            .unwrap();
-    }
-    other.close();
-    common::save_record(&mut app);
-    common::wait_until(&mut app, "the mixed edit held for a choice", |app| {
-        !app.state().script_running() && app.query_by_label("Keep My Changes").is_some()
-    });
-    let actual = stored(&hosted, TABLE, &[(CODE, 1), (STATUS, 2)]);
-    assert_eq!(
-        actual[0].1,
-        if repetition_changed {
-            ["", "xy"]
-        } else {
-            ["c", ""]
-        }
-    );
+    common::wait_until(&mut app, "the edit taken", common::unsaved);
     assert_eq!(
         common::text_field(&app, "Code").value().as_deref(),
         Some("b")
@@ -5461,10 +5429,36 @@ fn mixed_ui_conflict(tag: &str, repetition_changed: bool) -> (hosted::Hosted, co
     (hosted, app)
 }
 
+/// Another client's change of a record the window holds with a script's
+/// and the user's edits is refused (301), whether a field, a repetition or
+/// the record's deletion; the window's save stores both edits.
 #[test]
-fn ui_typing_on_a_worker_owned_record_refuses_a_peer_change_until_keep() {
-    let (hosted, mut app) = mixed_ui_conflict("mixed-ui-keep", false);
-    common::click(&mut app, "Keep My Changes");
+fn a_record_with_script_and_user_edits_refuses_a_peers_change() {
+    let (hosted, mut app) = mixed_edit("mixed-ui-held");
+    let mut other = hosted.opened();
+    other.records(PORTALS as u32, 0, 10).unwrap();
+    let refusals = [
+        other
+            .update_record(
+                PORTALS as u32,
+                1,
+                [("Code".to_owned(), Some("c".to_owned()))].into(),
+            )
+            .map(|_| ()),
+        other
+            .write_record(&om_data::ScriptWrite {
+                layout: PORTALS as u32,
+                record: Some(1),
+                cells: [(STATUS * 256 + 2, Some("xy".into()))].into(),
+                ..Default::default()
+            })
+            .map(|_| ()),
+        other.delete_record(PORTALS as u32, 1),
+    ];
+    for refused in refusals {
+        assert_eq!(refused.unwrap_err().code, Some(301));
+    }
+    other.close();
     common::save_record(&mut app);
     wait_saved(&mut app);
     assert_eq!(
@@ -5473,72 +5467,62 @@ fn ui_typing_on_a_worker_owned_record_refuses_a_peer_change_until_keep() {
     );
 }
 
+/// Reverting the record drops the script's pending repetition with the
+/// user's typing, and lets the record go: the next edit starts from the
+/// host's values.
 #[test]
-fn discarding_a_mixed_conflict_reverts_pending_worker_repetitions() {
-    let (hosted, mut app) = mixed_ui_conflict("mixed-ui-discard", false);
-    common::click(&mut app, "Discard My Changes");
+fn reverting_mixed_edits_drops_pending_worker_repetitions() {
+    let (hosted, mut app) = mixed_edit("mixed-ui-revert");
+    common::revert_record(&mut app);
     common::wait_until(&mut app, "the mixed edits reverted", |app| {
         app.state().is_settled()
             && !app.state().script_running()
-            && app.query_by_label("Keep My Changes").is_none()
-            && common::text_field(app, "Code").value().as_deref() == Some("c")
+            && common::text_field(app, "Code").value().as_deref() == Some("")
     });
+    let mut other = hosted.opened();
+    other.records(PORTALS as u32, 0, 10).unwrap();
+    other
+        .update_record(
+            PORTALS as u32,
+            1,
+            [("Code".to_owned(), Some("c".to_owned()))].into(),
+        )
+        .unwrap();
+    other.close();
     assert_eq!(
         stored(&hosted, TABLE, &[(CODE, 1), (STATUS, 2)])[0].1,
         ["c", ""]
     );
-    retype(&mut app, "Code", "d");
-    common::save_record(&mut app);
-    wait_saved(&mut app);
-    assert_eq!(
-        stored(&hosted, TABLE, &[(CODE, 1), (STATUS, 2)])[0].1,
-        ["d", ""]
-    );
 }
 
+/// A script's pending repetition alone holds the record on the host, as
+/// the user's typing does: another client's change of that repetition is
+/// refused (301), and the window's save stores the script's value.
 #[test]
-fn a_mixed_repetition_conflict_is_held_even_when_scalar_values_match() {
-    let (hosted, mut app) = mixed_ui_conflict("mixed-repetition-keep", true);
-    common::click(&mut app, "Keep My Changes");
-    common::save_record(&mut app);
-    wait_saved(&mut app);
-    assert_eq!(
-        stored(&hosted, TABLE, &[(CODE, 1), (STATUS, 2)])[0].1,
-        ["b", "ab"]
-    );
-}
-
-#[test]
-fn a_mixed_record_deleted_by_a_peer_does_not_redirect_its_drafts() {
-    let hosted = host("mixed-ui-deleted");
+fn a_scripts_repetition_alone_holds_the_record_against_a_peer() {
+    let hosted = host("repetition-held");
     let mut app = open(&hosted);
     expect(&mut app, "Repetition only", "reps 2:1:Status:ab");
-    common::wait_until(&mut app, "the accepted editable record", |app| {
-        app.state().is_settled()
+    common::wait_until(&mut app, "the accepted record", |app| {
+        app.state().is_settled() && common::text_field(app, "Code").value().is_some()
     });
-    retype(&mut app, "Code", "b");
     let mut other = hosted.opened();
     other.records(PORTALS as u32, 0, 10).unwrap();
-    other.delete_record(PORTALS as u32, 1).unwrap();
+    let refused = other
+        .write_record(&om_data::ScriptWrite {
+            layout: PORTALS as u32,
+            record: Some(1),
+            cells: [(STATUS * 256 + 2, Some("xy".into()))].into(),
+            ..Default::default()
+        })
+        .unwrap_err();
+    assert_eq!(refused.code, Some(301), "{refused:?}");
     other.close();
     common::save_record(&mut app);
-    common::wait_until(&mut app, "the deleted mixed record held", |app| {
-        !app.state().script_running() && app.query_by_label("Discard My Changes").is_some()
-    });
-    assert!(app.query_by_label("Keep My Changes").is_none());
+    wait_saved(&mut app);
     assert_eq!(
-        stored(&hosted, TABLE, &[(CODE, 1), (STATUS, 2)]),
-        vec![(2, vec!["".to_owned(), "".to_owned()])]
-    );
-    common::click(&mut app, "Discard My Changes");
-    common::wait_until(&mut app, "the deleted record's drafts discarded", |app| {
-        app.state().is_settled()
-            && !app.state().script_running()
-            && app.query_by_label("Discard My Changes").is_none()
-    });
-    assert_eq!(
-        stored(&hosted, TABLE, &[(CODE, 1), (STATUS, 2)]),
-        vec![(2, vec!["".to_owned(), "".to_owned()])]
+        stored(&hosted, TABLE, &[(CODE, 1), (STATUS, 2)])[0].1,
+        ["", "ab"]
     );
 }
 
