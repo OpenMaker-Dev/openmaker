@@ -891,6 +891,20 @@ fn a_portal_drawn_in_layout_mode_is_set_up_and_saved() {
 
     let mut reader = hosted.opened();
     let member = reader.layout_member(fixture::LAYOUT).unwrap().unwrap();
+    // Layout mode names the portal's field by its occurrence and draws
+    // `::Body` in it.
+    let geometry = reader
+        .layout_geometry(fixture::LAYOUT.try_into().unwrap())
+        .unwrap()
+        .unwrap();
+    assert!(
+        geometry
+            .objects
+            .iter()
+            .any(|o| o.field_name.as_deref() == Some("Notes::Body")),
+        "{:?}",
+        geometry.objects
+    );
     reader.close();
     let layout = om_data::layout_placement::decode(&member).unwrap();
     let portal = layout
