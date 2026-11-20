@@ -1036,8 +1036,16 @@ struct Source {
 fn open_source(hosted: &Hosted) -> io::Result<Source> {
     let (file, saves, unsaved) = {
         let store = hosted.read_store();
-        // Through the folder held since the file was hosted (#468).
-        let file = hosted.at.open_regular(hosted.at.name())?;
+        // Only the file the server read or last saved there (#468).
+        let file = hosted.at.folder_now()?.open_regular(hosted.at.name())?;
+        if let (Some(expected), Some(found)) = (store.file(), crate::anchored::file_identity(&file))
+        {
+            if found != expected {
+                return Err(io::Error::other(
+                    "the path no longer leads to the file this server read or last saved",
+                ));
+            }
+        }
         (file, store.saves(), store.has_unsaved_changes())
     };
     let metadata = file.metadata()?;

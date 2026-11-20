@@ -152,24 +152,29 @@ server starts again. With no files at all the server still starts, with an
 empty file list; when files are found or named and none of them opens, it
 does not start.
 
-Discovery checks each entry when it reads the folder. The server resolves
-a hosted file's path once more when it loads the file, links included,
-and on Linux and macOS holds the folder the path ends in open from then
-on. It reads, recovers, saves, backs up and reopens the file through that
-folder, by its name, never following a link at the name
-([#468](https://github.com/OpenMaker-Dev/openmaker/issues/468)). A folder
-of the path swapped for a link after the load does not move any of
-these. A folder moved away keeps its files: the server goes on saving
-there. A file hosted through a link is saved where the link pointed at
-the load, and the link is left as it is. Some things still follow the
-path itself:
-- the time between discovery and the file's load;
-- a file's external container data, beside it;
-- the Documents folder of server scripts' file steps;
-- on Windows, everything.
+Discovery checks each entry when it reads the folder. Afterwards the
+server finds a hosted file by its path each time it reads, saves, backs
+up or reopens it, and works through the folder handle it opened then, by
+the file's name ([#468](https://github.com/OpenMaker-Dev/openmaker/issues/468)):
+- **A save or a backup copy** goes ahead only while the name leads to the
+  file the server read or last saved (same device and inode).
+- **A reopen**, which may find a file the administrator replaced, goes
+  ahead only while the folder is the one the file was first hosted from.
 
-So keep database folders, their subfolders and the folders above them
-writable by the server's user only. Once the entry limit is reached, the
+So a folder of the path swapped for a link to other content, or to an
+empty folder, makes those fail instead of writing or reading there, and
+a save's changes wait in memory. An administrator who moves a hosted
+file's folder and makes the path lead to it again keeps saves and backups
+going; a reopen then refuses until the server restarts. A link at the
+file's own name is followed to read it and replaced by its first save, as
+before. Some things still go by the path alone:
+- the time between discovery and the file's load;
+- server scripts' external container reads and Documents folder
+  ([#594](https://github.com/OpenMaker-Dev/openmaker/issues/594));
+- on Windows, which has no inode identities here, everything.
+
+Keep database folders, their subfolders and the folders above them
+writable by the server's user only all the same. Once the entry limit is reached, the
 log says how many folders were left unread and names the first.
 
 Failed logins are limited. After 5 failures an address (an IPv6 address by

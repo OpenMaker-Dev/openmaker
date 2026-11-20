@@ -13,7 +13,7 @@ use om_hbam::HbamFile;
 
 use crate::accounts::{AccountKind, AccountStatus};
 use crate::admin::FileStatus;
-use crate::anchored::FileAt;
+use crate::anchored::{FileAt, FileId};
 use crate::config::{HostedFile, Privileges};
 use crate::eventlog::{Event, EventLog, SaveOutcome};
 use crate::filelock::FileLock;
@@ -215,8 +215,8 @@ pub struct Hosted {
     pub name: String,
     /// Where the file lives on disk, as it was given.
     pub path: PathBuf,
-    /// The file's folder, held since the file was first hosted, through
-    /// which it is read and saved ([`FileAt`], #468).
+    /// The file's folder as it was when the file was first hosted: it is
+    /// read and saved only there ([`FileAt`], #468).
     pub(crate) at: FileAt,
     /// The file's contents: every download, query and write goes here.
     /// Taken through [`Hosted::read_store`] and [`Hosted::write_store`],
@@ -1479,8 +1479,8 @@ pub struct Slot {
     pub name: String,
     /// Where it lives on disk.
     pub path: PathBuf,
-    /// Its folder, held since it was first hosted: a reopen reads the file
-    /// there ([`FileAt`]).
+    /// Its folder as it was when it was first hosted: a reopen reads the
+    /// file only there ([`FileAt`]).
     at: FileAt,
     state: Mutex<SlotState>,
 }
@@ -1680,9 +1680,9 @@ impl Hosting {
         let slot = self.slot(id).ok_or(ReopenError::UnknownFile)?;
         slot.change(FileStatus::Closed, FileStatus::Opening)
             .map_err(ReopenError::NotAllowed)?;
-        // Read through the folder held since startup, not the path again:
-        // a folder of the path swapped for a link since then is not
-        // followed (#468).
+        // Only from the folder it was first hosted from: a folder of the
+        // path swapped for a link, or moved, since then fails the reopen
+        // (#468).
         let loaded = load_hosted(
             id,
             &HostedFile {
@@ -1796,13 +1796,14 @@ fn load_hosted(
     insecure_files: bool,
     events: &EventLog,
 ) -> Result<Arc<Hosted>, HostingError> {
-    let file = read_regular_file(at)
-        .map_err(om_hbam::Error::from)
-        .and_then(HbamFile::from_bytes)
-        .map_err(|error| HostingError::Open {
-            name: hosted.name.clone(),
-            error,
-        })?;
+    let (bytes, on_disk) = read_regular_file(at).map_err(|e| HostingError::Open {
+        name: hosted.name.clone(),
+        error: om_hbam::Error::from(e),
+    })?;
+    let file = HbamFile::from_bytes(bytes).map_err(|error| HostingError::Open {
+        name: hosted.name.clone(),
+        error,
+    })?;
     let loaded = Arc::new(Hosted::load(
         id,
         hosted,
@@ -1812,22 +1813,27 @@ fn load_hosted(
         insecure_files,
         events,
     )?);
+    // Before any save: saves write only where the path still leads to
+    // this file (#468).
+    loaded.write_store().set_file(on_disk);
     drop(file);
     loaded.commit_recovery();
     Ok(loaded)
 }
 
-/// The bytes of the regular file `at`, read through the one handle whose
-/// type was checked: opened without blocking (a FIFO named as a database
-/// would otherwise hold startup before the server listens), without
-/// following a link at its name, and refused unless it is a regular file,
-/// so that one swapped in after a check cannot be read instead.
-fn read_regular_file(at: &FileAt) -> std::io::Result<Vec<u8>> {
+/// The bytes of the regular file `at`, from the folder it was first hosted
+/// from, and its device and inode, read through the one handle whose type
+/// was checked: opened without
+/// blocking (a FIFO named as a database would otherwise hold startup before
+/// the server listens), and refused unless it is a regular file, so that
+/// one swapped in after a check cannot be read instead.
+fn read_regular_file(at: &FileAt) -> std::io::Result<(Vec<u8>, Option<FileId>)> {
     use std::io::Read as _;
-    let mut file = at.open_regular(at.name())?;
+    let mut file = at.folder()?.open_regular(at.name())?;
+    let on_disk = crate::anchored::file_identity(&file);
     let mut data = Vec::new();
     file.read_to_end(&mut data)?;
-    Ok(data)
+    Ok((data, on_disk))
 }
 
 /// Why [`Hosting::reopen`] did not open a file.

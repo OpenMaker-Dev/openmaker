@@ -44,7 +44,7 @@ use om_query::Write;
 
 use om_data::containers::{self, MemberInfo};
 
-use crate::anchored::FileAt;
+use crate::anchored::{FileAt, FileId, Folder};
 use crate::filelock::FileLock;
 use crate::library::{self, BinaryData, Stored, LIBRARY};
 use crate::modcount::{self, MOD_COUNT};
@@ -194,6 +194,10 @@ pub struct Store {
     /// a file hosted privately for a local client; each save moves it to
     /// the file it writes.
     lock: Option<FileLock>,
+    /// The device and inode of the file on disk the store was read from or
+    /// last saved as, where it has them ([`Store::set_file`]): a save
+    /// without a lock writes only where the path still leads to it (#468).
+    file: Option<FileId>,
     /// The file may not be written: saves fail, their changes stay in
     /// memory ([`Store::set_read_only`]).
     read_only: bool,
@@ -279,11 +283,11 @@ fn save_copy_name(name: &std::ffi::OsStr) -> std::ffi::OsString {
 
 /// Whether `file`, the copy a save created, is still entry `name` of the
 /// file's folder.
-fn owned_copy(at: &FileAt, file: &std::fs::File, name: &std::ffi::OsStr) -> bool {
-    match at.is_entry(file, name) {
+fn owned_copy(folder: &Folder, file: &std::fs::File, name: &std::ffi::OsStr) -> bool {
+    match folder.is_entry(file, name) {
         Ok(same) => same,
         // No inode identity (Windows): a regular file where the save made it.
-        Err(_) => at.is_regular(name),
+        Err(_) => folder.is_regular(name),
     }
 }
 
@@ -339,6 +343,7 @@ impl Store {
             issued: Mutex::new(HashMap::new()),
             on_demand: Mutex::new(BTreeSet::new()),
             lock: None,
+            file: None,
             read_only: false,
         };
         store.locale = store
@@ -473,8 +478,10 @@ impl Store {
     /// copy the store made is removed (only it) and the tree stays unsaved;
     /// once the rename succeeded the file is the new one, so a failure to
     /// flush the folder after it is only logged. Every step goes through
-    /// the folder `at` holds, so a folder of the path swapped for a link
-    /// since the file was hosted does not move the save (#468).
+    /// the file's folder, opened again and checked to be the one the file
+    /// was hosted from ([`FileAt::folder`]): a folder of the path swapped
+    /// for a link, or moved, since then fails the save rather than move it
+    /// (#468).
     ///
     /// The copy is the whole database, password verifiers included. Until
     /// it has the old file's permissions it is owner-only (0600 on Unix,
@@ -504,12 +511,13 @@ impl Store {
                 "the file is open read-only",
             ));
         }
-        // Every step goes through the file's folder as it was when the file
-        // was hosted, by name, never following a link at the name (#468).
+        // Every step goes through the file's folder, checked to be the one
+        // the file was hosted from (#468), by the file's name.
         let name = at.name();
+        let folder = at.folder_now()?;
         let permissions = match &self.lock {
             Some(lock) => {
-                let current = at.is_entry(lock.file(), name)?
+                let current = folder.is_entry(lock.file(), name)?
                     && crate::filelock::link_count(lock.file())? == 1;
                 if !current {
                     return Err(Error::other(
@@ -519,7 +527,23 @@ impl Store {
                 }
                 Some(lock.file().metadata()?.permissions())
             }
-            None => at.permissions(name)?,
+            None => {
+                // The path must still lead to the file this store was read
+                // from or last saved as: a folder of the path swapped for a
+                // link to other content, or to an empty folder, is not
+                // saved into (#468).
+                if let Some(file) = self.file {
+                    if !folder.identity(name).is_ok_and(|found| found == file) {
+                        return Err(Error::other(format!(
+                            "{} no longer leads to the file this server read or last saved \
+                             there (a folder of the path, or the file, was replaced); it was \
+                             not saved",
+                            at.path().display()
+                        )));
+                    }
+                }
+                folder.permissions(name)?
+            }
         };
         let bytes = om_hbam::writer::rebuild(&self.root, &self.superblock)
             .map_err(|e| Error::new(ErrorKind::InvalidData, e.to_string()))?;
@@ -527,28 +551,29 @@ impl Store {
         let shown = save_copy_path(at.path());
         // Owner-only until it takes the old file's permissions; a new
         // file's (0666 less the umask) when there is none to take.
-        let mode = if permissions.is_some() { 0o600 } else { 0o666 };
-        let file = at.create_new(&temporary, mode).map_err(|e| {
-            if e.kind() == ErrorKind::AlreadyExists {
-                Error::new(
-                    e.kind(),
-                    format!(
-                        "{} is in the way of the save's new copy (left by an earlier save?)",
-                        shown.display()
-                    ),
-                )
-            } else {
-                e
-            }
-        })?;
+        let file = folder
+            .create_new(&temporary, permissions.is_some())
+            .map_err(|e| {
+                if e.kind() == ErrorKind::AlreadyExists {
+                    Error::new(
+                        e.kind(),
+                        format!(
+                            "{} is in the way of the save's new copy (left by an earlier save?)",
+                            shown.display()
+                        ),
+                    )
+                } else {
+                    e
+                }
+            })?;
         created(&shown);
         // The copy is this save's from here on: on an error it removes the
         // entry only while it is still that copy.
         let owner = match file.try_clone() {
             Ok(owner) => owner,
             Err(e) => {
-                if owned_copy(at, &file, &temporary) {
-                    let _ = at.remove(&temporary);
+                if owned_copy(&folder, &file, &temporary) {
+                    let _ = folder.remove(&temporary);
                 }
                 return Err(e);
             }
@@ -567,17 +592,20 @@ impl Store {
                 }
             })();
             let renamed = written.and_then(|lock| {
-                if !owned_copy(at, &owner, &temporary) {
+                if !owned_copy(&folder, &owner, &temporary) {
                     return Err(Error::other("the save's new copy was replaced"));
                 }
-                at.rename(&temporary, name).map(|()| lock)
+                folder.rename(&temporary, name).map(|()| lock)
             });
-            if renamed.is_err() && owned_copy(at, &owner, &temporary) {
-                let _ = at.remove(&temporary);
+            if renamed.is_err() && owned_copy(&folder, &owner, &temporary) {
+                let _ = folder.remove(&temporary);
             }
             renamed
         };
         let lock = saved?;
+        if self.file.is_some() {
+            self.file = crate::anchored::file_identity(&owner);
+        }
         if lock.is_some() {
             // The old file is gone from the path: its lock guards nothing.
             self.lock = lock;
@@ -585,7 +613,7 @@ impl Store {
         self.superblock = bytes[..self.superblock.len()].to_vec();
         self.dirty = false;
         self.saves += 1;
-        if let Err(e) = at.sync_folder() {
+        if let Err(e) = folder.sync() {
             warn!(
                 "{}: saved, but flushing the folder of {} failed: {e}",
                 self.name,
@@ -2338,6 +2366,18 @@ impl Store {
             .then_some(field.data_type)
     }
 
+    /// Note the device and inode of the file on disk the store was read
+    /// from ([`anchored::file_identity`](crate::anchored::file_identity)).
+    pub fn set_file(&mut self, file: Option<FileId>) {
+        self.file = file;
+    }
+
+    /// The device and inode of the file on disk the store was read from or
+    /// last saved as, where it has them.
+    pub fn file(&self) -> Option<FileId> {
+        self.file
+    }
+
     /// Whether a query read indexes that were built on demand and are not
     /// yet stored.
     pub fn has_indexes_on_demand(&self) -> bool {
@@ -2466,6 +2506,7 @@ impl Store {
             issued: Mutex::new(HashMap::new()),
             on_demand: Mutex::new(BTreeSet::new()),
             lock: None,
+            file: None,
             read_only: false,
         }
     }
@@ -3042,6 +3083,7 @@ mod tests {
             issued: Mutex::new(HashMap::new()),
             on_demand: Mutex::new(BTreeSet::new()),
             lock: None,
+            file: None,
             read_only: false,
         }
     }
@@ -3086,12 +3128,15 @@ mod tests {
         assert_eq!(new, (Some(true), Some(0o644), Some(0o644)));
     }
 
-    /// A hosted file is saved in the folder it was hosted from, through the
-    /// handle held since (#468): a folder of its path swapped for a link to
-    /// another folder afterwards does not move the save there.
+    /// A hosted file is saved only where its path still leads to the file
+    /// the store was read from (#468). With its folder moved away and a link
+    /// to another folder in its place, the save fails, writes nowhere, and
+    /// the changes stay unsaved. With the link leading to the moved folder,
+    /// which holds the same file, the save goes there.
     #[cfg(unix)]
     #[test]
-    fn a_save_stays_in_the_hosted_files_folder_when_a_link_replaces_it() {
+    fn a_save_is_refused_where_a_link_leads_away_from_the_hosted_file() {
+        use std::os::unix::fs::MetadataExt;
         let base = std::env::temp_dir().join(format!("om-store-anchor-{}", std::process::id()));
         let _ = std::fs::remove_dir_all(&base);
         let (databases, moved, elsewhere) = (
@@ -3104,26 +3149,33 @@ mod tests {
         let path = databases.join("Tasks.fmp12");
         std::fs::write(&path, b"old").unwrap();
         let at = FileAt::open(&path).unwrap();
-        // The folder moves away and a link to another folder takes its name.
-        std::fs::rename(&databases, &moved).unwrap();
-        std::os::unix::fs::symlink(&elsewhere, &databases).unwrap();
         let mut store = store_of(OwnedNode::default());
+        let read = std::fs::metadata(&path).unwrap();
+        store.set_file(Some((read.dev(), read.ino())));
         store.superblock = vec![0; 4096];
         store.superblock[0x0f..0x14].copy_from_slice(b"HBAM7");
         store.superblock[0x14..0x18].copy_from_slice(&4096u32.to_be_bytes());
+        std::fs::rename(&databases, &moved).unwrap();
+        std::os::unix::fs::symlink(&elsewhere, &databases).unwrap();
         store.dirty = true;
+        let refused = store.save(&at);
+        let unsaved = store.dirty;
+        let kept = std::fs::read(moved.join("Tasks.fmp12")).ok();
+        let followed = std::fs::read_dir(&elsewhere).map(|d| d.count()).ok();
+        // The administrator's move: the path leads to the same file again.
+        std::fs::remove_file(&databases).unwrap();
+        std::os::unix::fs::symlink(&moved, &databases).unwrap();
         let saved = store.save(&at);
-        let kept = std::fs::read(moved.join("Tasks.fmp12"))
+        let written = std::fs::read(moved.join("Tasks.fmp12"))
             .map(|b| b.len())
             .ok();
-        let followed = std::fs::read_dir(&elsewhere).map(|d| d.count());
         let _ = std::fs::remove_dir_all(&base);
+        assert!(refused.is_err(), "{refused:?}");
+        assert!(unsaved, "the changes wait in memory");
+        assert_eq!(kept.as_deref(), Some(&b"old"[..]));
+        assert_eq!(followed, Some(0), "nothing written through the link");
         assert_eq!(saved.ok(), Some(true));
-        assert!(
-            kept.is_some_and(|n| n > 3),
-            "saved in the held folder: {kept:?}"
-        );
-        assert_eq!(followed.ok(), Some(0), "nothing written through the link");
+        assert!(written.is_some_and(|n| n > 3), "{written:?}");
     }
 
     #[test]
