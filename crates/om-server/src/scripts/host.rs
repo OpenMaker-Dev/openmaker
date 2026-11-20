@@ -68,7 +68,7 @@ use om_scripts::runtime::{
     Accounts, CommitOptions, Dialogs, ErrorCode, ErrorLogEntry, FieldRef, FileId, Files, FindKind,
     FoundSets, HostError, HostResult, InsertTarget, LayoutTarget, Mode, Navigation, Network,
     PauseEnd, Platform, RecordList, RecordMove, Records, RelatedRecords, ScriptAccess, ScriptHost,
-    TransactionOptions, WindowId, Windows,
+    StepCall, TransactionOptions, WindowId, Windows,
 };
 use om_scripts::specs::SortSpec;
 use om_scripts::{Script, ScriptCatalog, ScriptKind};
@@ -3240,6 +3240,31 @@ impl ScriptHost for ServerHost {
     fn set_full_access(&mut self, _file: FileId, on: bool) {
         self.elevated = on;
     }
+
+    /// Print Setup (42), which FileMaker Server runs in its own step
+    /// handler (script-runtime.md 10.2); every other step without a method
+    /// is 3.
+    fn other_step(&mut self, call: &StepCall<'_>) -> HostResult<Option<Value>> {
+        match call.id {
+            42 => print_setup(call).map(|()| None),
+            _ => Err(HostError::Unsupported),
+        }
+    }
+}
+
+/// Print Setup (42) in a server script. With neither Restore nor its
+/// dialog it sets nothing and gives 0, as on the desktop. A restored setup
+/// configures later PDF output (Claris, Print Setup), which OpenMaker Server
+/// cannot make yet (Save Records as PDF is 3 here, #104), so it gives 3
+/// rather than claim a setup nothing would apply. With its dialog on it
+/// gives 3 too: a server shows no dialog, and what FileMaker Server answers
+/// then is unmeasured.
+fn print_setup(call: &StepCall<'_>) -> HostResult {
+    if !call.step.has_flag(om_data::flag::RESTORE) && call.step.has_flag(om_data::flag::NO_INTERACT)
+    {
+        return Ok(());
+    }
+    Err(HostError::Unsupported)
 }
 
 impl Navigation for ServerHost {

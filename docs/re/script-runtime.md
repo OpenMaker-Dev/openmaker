@@ -3845,8 +3845,11 @@ Steps
   and calculations again. A trigger names the window its event happened
   in. Adjust Window becomes a viewport command. Resize to Fit sizes the
   window to its layout at its zoom (script-steps.md, Adjust Window; on a
-  card it does nothing, OpenMaker's gap). Set Zoom Level zooms the window's
-  layout, Scroll Window scrolls it, and Arrange All Windows does nothing.
+  card it does nothing, OpenMaker's gap). Set Zoom Level sets the window's
+  zoom. With Lock on, users cannot change it. Running Set Zoom Level with
+  Lock off allows user changes again
+  ([Claris Set Zoom Level](https://help.claris.com/en/pro-help/content/set-zoom-level.html)).
+  Scroll Window scrolls the layout, and Arrange All Windows does nothing.
 - Window styles (2026-11-02; `scripting/host/windows.rs`,
   `app/window_styles.rs`; Claris "About window styles" and "New Window",
   not measured against FileMaker Pro). New Window and Go to Related
