@@ -455,15 +455,16 @@ fn long_values_and_finds_leave_the_file_saveable() {
     session.disconnect().unwrap();
 }
 
-/// An index written under other key rules (an earlier OpenMaker build's,
-/// or FileMaker's where OpenMaker's still differ) is rebuilt from the
-/// records before a write moves a record in it (#448). Here Name's value
-/// index lists record 2, "Ship", under a key the current rules do not
-/// give, and not under "Ship"'s. Changing it to "Shipped" would otherwise
-/// leave it under the old key, where a find would still return it. A
-/// commit whose save fails puts the stored index back exactly.
+/// In an index written under other key rules (an earlier OpenMaker
+/// build's, or FileMaker's where OpenMaker's still differ), a record a
+/// write changes leaves every entry its new value does not give (#448).
+/// Here Name's value index lists record 2, "Ship", under a key the current
+/// rules do not give, and not under "Ship"'s. Changing it to "Shipped"
+/// would otherwise leave it under the old key, where a find would still
+/// return it. Other records keep their entries as stored, and a commit
+/// whose save fails puts the stored index back exactly.
 #[test]
-fn a_stale_index_is_rebuilt_before_a_write_changes_it() {
+fn a_changed_record_leaves_entries_another_rule_wrote() {
     use om_hbam::slot::uint_segment;
     use om_hbam::{OwnedNode, RidList};
     let stale = vec![0x01, 0x10, 0x20];
@@ -477,8 +478,17 @@ fn a_stale_index_is_rebuilt_before_a_write_changes_it() {
             &uint_segment(fixture::NAME),
             &[0],
         ],
-        // In key order, as a file stores them.
-        OwnedNode::list(vec![0], vec![entry(&stale, 2), entry(&written, 1)]),
+        // In key order, as a file stores them; `ff 80` holds record 1 as
+        // FileMaker lists a long key there too, which OpenMaker's rules
+        // would not give "Write tests".
+        OwnedNode::list(
+            vec![0],
+            vec![
+                entry(&stale, 2),
+                entry(&written, 1),
+                entry(&[0xff, 0x80], 1),
+            ],
+        ),
     );
     let file = fixture::TempFile::from_tree("stale-index", &root);
     let as_stored = field_index_on_disk(&file, fixture::NAME);
@@ -507,14 +517,15 @@ fn a_stale_index_is_rebuilt_before_a_write_changes_it() {
     assert_eq!(field_index_on_disk(&file, fixture::NAME), as_stored);
     // The same commit, saved, is accepted: the failure was the save's.
 
-    // The write that changes Name rebuilds it first: record 2 is under
-    // "Shipped" only.
+    // Saved, the write leaves record 2 under "Shipped" only. Record 1, which
+    // no write touched, keeps every entry as stored, `ff 80` included.
     commit_name(&mut session, 2, "Shipped");
     assert_eq!(
         name_index_on_disk(&file),
         [
             (om_collate::text_key("Shipped"), vec![2]),
             (written, vec![1]),
+            (vec![0xff, 0x80], vec![1]),
         ]
     );
     session.disconnect().unwrap();
@@ -576,7 +587,20 @@ fn a_deleted_record_leaves_entries_another_rule_wrote() {
         &[&table, &[1], &count, &[0]],
         OwnedNode::list(vec![0], vec![entry("3", 1), entry("1234", 2)]),
     );
+    // Counts of a shape this server does not write are left as they are.
+    root.put(
+        &[&table, &[1], &count, &[0x10], &[7]],
+        OwnedNode::leaf(Vec::new(), vec![1, 2, 3]),
+    );
     let file = fixture::TempFile::from_tree("purged-index", &root);
+    let counts = |file: &fixture::TempFile| -> Vec<Flat> {
+        field_index_on_disk(file, fixture::COUNT)
+            .into_iter()
+            .filter(|(path, _)| path[0] == [0x10])
+            .collect()
+    };
+    let stored_counts = counts(&file);
+    assert!(!stored_counts.is_empty());
     let port = server::start(&file);
     let (mut session, _) = server::logged_in(port, "purged index");
     let reply = session.perform_script_on_server(1, "", true).unwrap();
@@ -587,6 +611,7 @@ fn a_deleted_record_leaves_entries_another_rule_wrote() {
         .map(|(path, value)| (path[1].clone(), value))
         .collect();
     assert_eq!(keys, [(om_collate::number_key("3").unwrap(), None)]);
+    assert_eq!(counts(&file), stored_counts);
     session.disconnect().unwrap();
 }
 
