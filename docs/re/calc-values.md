@@ -1725,10 +1725,16 @@ templates).
   and a summary's values read a field through the evaluator's field read
   (`om_data::host::read_field`, a reference `Table::Field` evaluated on the
   record), so an unstored calculation gets its formula's occurrence, its
-  repetition rule, the rule above and the caller's variables; nested reads
-  the host starts itself (a summary of an unstored calculation that reads a
-  summary) stop at 32 levels with `?`, as only a circular, broken file gets
-  there.
+  repetition rule, the rule above and the caller's variables. A summary's
+  inputs and a sort's group keys, which `FileCalc` reads itself, get a copy
+  of the variables of the host that asked (`FileHost::file_with_variables`,
+  `FileCalc::with_variables`;
+  [#615](https://github.com/OpenMaker-Dev/openmaker/issues/615)). Each input
+  read gets its own copy, so what one assigns no other sees [I: FileMaker's
+  for assignments in a summary's inputs is unmeasured]. A `FileCalc` used
+  without a host reads them with none. Nested reads the host starts itself
+  (a summary of an unstored calculation that reads a summary) stop at 32
+  levels with `?`, as only a circular, broken file gets there.
 - **Summaries [O-run, I].** `om_data::summary` computes them for the
   desktop host (and OpenMaker Server's scripts) over the source's found
   set of the summary's occurrence, in its order, with the rules of

@@ -384,8 +384,12 @@ impl WorkerHost<'_> {
             )));
         }
         let fields: Vec<u64> = breaks.iter().map(|b| b.field).collect();
+        let (locals, globals) = self.calc_variables();
         let found = self
-            .file(|f| f.found_groups(occurrence, &fields))
+            .file(|f| {
+                f.with_variables(locals, globals)
+                    .found_groups(occurrence, &fields)
+            })
             .ok_or_else(|| {
                 ReportError::unsupported("This provider has no report calculation context")
             })?

@@ -604,6 +604,60 @@ fn failed_reads_are_not_cached_as_completed_summaries() {
     assert_eq!(source.reads.get(), 4);
 }
 
+/// A summary of an unstored calculation totals its inputs as the host's
+/// own calculations read them, with the host's variables (#615): read as
+/// a field and through `GetSummary`. Without variables, as before, the
+/// inputs read none.
+#[test]
+fn summaries_of_unstored_fields_read_the_hosts_variables() {
+    let mut schema = schema();
+    let mut context = om_data::formula::Context::new(schema.names());
+    context.occurrence = Some(OCCURRENCE);
+    let compiled =
+        om_data::formula::compile("If ( IsEmpty ( $$rate ) ; -1 ; $$rate )", &context).unwrap();
+    schema.add_field(
+        TABLE,
+        FieldDef::calculation(
+            7,
+            "Rated",
+            ValueType::Number,
+            om_data::formula::Formula {
+                context: Some(om_data::formula::Key::from_id(OCCURRENCE)),
+                formatted: None,
+                polish: compiled.expr,
+            },
+            false,
+        ),
+    );
+    schema.add_field(
+        TABLE,
+        FieldDef {
+            class: FieldClass::Summary,
+            summary: Some(SummaryDef::new(SummaryKind::Total, 7)),
+            ..FieldDef::data(19, "Rated total", ValueType::Number)
+        },
+    );
+    let source = CountingSource::new();
+    let session = SessionInfo::default();
+    let read = |rate: Option<i64>, text: &str| {
+        let (mut locals, mut globals) = (Variables::new(), Variables::new());
+        if let Some(rate) = rate {
+            globals.set("$$rate", 1, Value::number(rate));
+        }
+        let file = FileCalc::new(&schema, &source, today(29));
+        let mut host = FileHost::new(file, &session, &mut locals, &mut globals);
+        let result = evaluate_text(text, &mut host, &Context::record(OCCURRENCE, 1));
+        assert_eq!(result.code(), 0, "{text}");
+        display(&result.value, &host)
+    };
+    for text in ["Rated total", "GetSummary ( Rated total ; Rated total )"] {
+        assert_eq!(read(Some(10), text), "30", "{text}");
+        assert_eq!(read(None, text), "-3", "{text}");
+    }
+    // The input itself reads it too, on its record.
+    assert_eq!(read(Some(10), "Rated"), "10");
+}
+
 #[test]
 fn summaries_of_unstored_fields_do_not_mix_sessions_or_dates() {
     let mut schema = schema();

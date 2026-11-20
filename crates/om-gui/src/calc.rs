@@ -2054,11 +2054,13 @@ impl<'a> Evaluator<'a> {
             ))));
         }
         let fields: Vec<u64> = breaks.iter().map(|b| b.field).collect();
-        let found_groups =
-            match self.with_host(|host| host.file.found_groups(self.occurrence, &fields))? {
-                Ok(groups) => groups,
-                Err(error) => return Some(Err(report::group_error(error))),
-            };
+        let found_groups = match self.with_host(|host| {
+            host.file_with_variables()
+                .found_groups(self.occurrence, &fields)
+        })? {
+            Ok(groups) => groups,
+            Err(error) => return Some(Err(report::group_error(error))),
+        };
         let records = Arc::clone(&found_groups.records);
         if records.len() as u64 != found {
             return Some(Err(ReportError::unsupported(
@@ -2112,11 +2114,13 @@ impl<'a> Evaluator<'a> {
             )));
         }
         let fields: Vec<u64> = breaks.iter().map(|b| b.field).collect();
-        let found_groups =
-            match self.with_host(|host| host.file.found_groups(self.occurrence, &fields))? {
-                Ok(groups) => groups,
-                Err(error) => return Some(Err(report::group_error(error).message)),
-            };
+        let found_groups = match self.with_host(|host| {
+            host.file_with_variables()
+                .found_groups(self.occurrence, &fields)
+        })? {
+            Ok(groups) => groups,
+            Err(error) => return Some(Err(report::group_error(error).message)),
+        };
         let records = Arc::clone(&found_groups.records);
         if records.len() as u64 != found {
             return Some(Err(
@@ -2203,7 +2207,7 @@ impl<'a> Evaluator<'a> {
         }
         let context = Context::record(self.occurrence, record);
         let Some((value, reads)) =
-            self.with_host_reads(|host| host.file.summary(&context, summary, by))
+            self.with_host_reads(|host| host.file_with_variables().summary(&context, summary, by))
         else {
             let last = self.calcs.last.borrow();
             return Some(
@@ -2377,7 +2381,7 @@ impl<'a> Evaluator<'a> {
             };
             let value = match report::group_summary(def, field, self.occurrence, group)? {
                 Some((summary, by)) => report_eval
-                    .with_host(|host| host.file.summary(&context, summary, by))
+                    .with_host(|host| host.file_with_variables().summary(&context, summary, by))
                     .ok_or_else(loading)?
                     .map_err(|e| incomplete(e.code()))
                     .and_then(|v| match v.is_invalid() {

@@ -170,6 +170,10 @@ pub struct FileCalc<'a> {
     /// Optional summary reuse during one immutable calculation pass.
     summaries: Option<&'a SummaryCache>,
     reads: Option<&'a Cell<HostReads>>,
+    /// The caller's `$` and `$$` variables, which an unstored calculation
+    /// the host evaluates itself reads ([`Self::read_field`]): a summary's
+    /// inputs and a sort's keys (#615). `None` reads with none.
+    variables: Option<(&'a Variables, &'a Variables)>,
 }
 
 impl<'a> FileCalc<'a> {
@@ -181,6 +185,20 @@ impl<'a> FileCalc<'a> {
             session: None,
             summaries: None,
             reads: None,
+            variables: None,
+        }
+    }
+
+    /// The same data with the caller's `$` (`locals`) and `$$` (`globals`)
+    /// variables, which a summary's inputs and a sort's keys read as the
+    /// caller's own calculations do (#615). Each unstored calculation the
+    /// host reads ([`Self::read_field`]) gets a copy, so what it assigns is
+    /// its own [I: FileMaker's for assignments in a summary's inputs is
+    /// unmeasured]; empty maps copy nothing.
+    pub fn with_variables(self, locals: &'a Variables, globals: &'a Variables) -> FileCalc<'a> {
+        FileCalc {
+            variables: (!locals.is_empty() || !globals.is_empty()).then_some((locals, globals)),
+            ..self
         }
     }
 
@@ -400,7 +418,10 @@ impl<'a> FileCalc<'a> {
         };
         let fallback = SessionInfo::default();
         let session = self.session.unwrap_or(&fallback);
-        let (mut locals, mut globals) = (Variables::new(), Variables::new());
+        let (mut locals, mut globals) = match self.variables {
+            Some((locals, globals)) => (locals.clone(), globals.clone()),
+            None => (Variables::new(), Variables::new()),
+        };
         let mut host = FileHost::new(*self, session, &mut locals, &mut globals);
         let value = read_field(&mut host, occurrence, record, field, repetition);
         self.record_reads(host.read_provenance());
@@ -651,6 +672,14 @@ impl Vars<'_> {
             Vars::Shared(vars) => Vars::Shared(vars),
         }
     }
+
+    /// The `$` and `$$` maps, to read; one map is both.
+    pub fn maps(&self) -> (&Variables, &Variables) {
+        match self {
+            Vars::Scoped { locals, globals } => (locals, globals),
+            Vars::Shared(vars) => (vars, vars),
+        }
+    }
 }
 
 /// A whole calculation host: a file's data, a session's `Get` answers and
@@ -734,6 +763,14 @@ impl<'a> FileHost<'a> {
         self.reads.union(self.nested_reads.get())
     }
 
+    /// [`Self::file`] with this host's variables, for what it evaluates
+    /// itself: a summary's inputs and a sort's keys read them as this
+    /// host's own calculations do (#615).
+    pub fn file_with_variables(&self) -> FileCalc<'_> {
+        let (locals, globals) = self.vars.maps();
+        self.file.with_variables(locals, globals)
+    }
+
     /// The imported related file owning the formula solved in `context`;
     /// `None` for this file's own.
     fn imported_file(&self, context: &Context) -> Option<&'a FileSchemaContext> {
@@ -811,7 +848,7 @@ impl CalcHost for FileHost<'_> {
         field: u64,
         repetition: u32,
     ) -> Result<Value, CalcError> {
-        self.file
+        self.file_with_variables()
             .with_reads(&self.nested_reads)
             .field_value_in_context(context, occurrence, record, field, repetition)
     }
@@ -866,7 +903,7 @@ impl CalcHost for FileHost<'_> {
         summary: FieldId,
         break_field: FieldId,
     ) -> Result<Value, CalcError> {
-        self.file
+        self.file_with_variables()
             .with_reads(&self.nested_reads)
             .summary(context, summary, break_field)
     }
