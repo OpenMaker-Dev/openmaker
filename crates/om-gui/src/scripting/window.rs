@@ -1429,13 +1429,15 @@ impl Window {
             self.state.uncommitted.session = false;
         }
         deleted?;
+        // The previews of rows begun in its portals go with the record:
+        // read from the drafts, before they are cleared.
+        self.discard_previews(provider);
         if session {
             self.state.uncommitted = Uncommitted::default();
             self.state.drafts.clear();
             self.state.portal = None;
             self.touch();
         }
-        self.discard_previews(provider);
         self.leave_record();
         self.changed_data();
         self.found = None;

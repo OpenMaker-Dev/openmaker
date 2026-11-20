@@ -4991,6 +4991,9 @@ impl DataProvider for NativeProvider {
     fn layout_geometry(&mut self, layout_id: u32) -> Result<Option<LayoutGeometry>, DataError> {
         let layout = self.decoded_layout(layout_id)?;
         let bindings = self.bindings(&layout)?;
+        // The schema as read, opening no related file to name its fields.
+        let schema = self.calc_schema_cached().ok();
+        let bindings = field_names(&layout, bindings, schema.as_deref());
         let mut objects = Vec::new();
         let mut seen = BTreeSet::new();
         for id in &layout.objects.root {
@@ -5623,6 +5626,47 @@ fn record_page(
         records,
         total,
     })
+}
+
+/// The field each field object of `layout` shows, by object id, as Layout
+/// mode names it: `bindings` (the fields of the layout's own occurrence),
+/// then a field another occurrence shows, from `schema`, as
+/// `Occurrence::Field`, and a later repetition of the layout's own field
+/// by the field's name. An object whose field `schema` does not know (a
+/// related file that is not open) keeps no name.
+fn field_names(
+    layout: &om_layout::Layout,
+    mut bindings: BTreeMap<u64, String>,
+    schema: Option<&om_data::host::CalcSchema>,
+) -> BTreeMap<u64, String> {
+    let Some(schema) = schema else {
+        return bindings;
+    };
+    let own = layout_occurrence(layout).ok();
+    for object in &layout.objects.objects {
+        if bindings.contains_key(&object.id) {
+            continue;
+        }
+        let Some(spec) = object.field_spec() else {
+            continue;
+        };
+        let (Some(occurrence), Some(field)) = (occurrence_id(spec.table_key), spec.field_id())
+        else {
+            continue;
+        };
+        let Some(def) = schema.field(occurrence, field) else {
+            continue;
+        };
+        let name = if Some(occurrence) == own {
+            def.name.clone()
+        } else if let Some(shown) = schema.occurrence(occurrence) {
+            format!("{}::{}", shown.name, def.name)
+        } else {
+            continue;
+        };
+        bindings.insert(object.id, name);
+    }
+    bindings
 }
 
 fn flatten_object(
