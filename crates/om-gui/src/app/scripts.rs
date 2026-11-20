@@ -153,6 +153,9 @@ pub(super) struct PromptView {
     login: Option<crate::open_file::LoginDialog>,
     /// [`Prompt::Sort`]'s dialog: FileMaker's Sort Records.
     sort: Option<Box<crate::script_workspace::SortOrder>>,
+    /// When the prompt was shown: a custom dialog's "Close after" counts
+    /// from it.
+    opened: std::time::Instant,
 }
 
 /// The window's script state.
@@ -403,7 +406,12 @@ impl OpenMakerApp {
             toolbar: self.w.show_toolbar,
             menubar: self.w.menubar,
             zoom: self.w.document.zoom.percent(),
-            selection: None,
+            // The user's selection in the field being typed in.
+            selection: (self.w.mode == Mode::Browse)
+                .then_some(self.w.document.active.as_deref())
+                .flatten()
+                .filter(|_| self.w.document.active_related.is_none())
+                .and_then(|field| self.w.document.selection(field)),
             requests: self.w.requests,
             sorted: self.w.found_set.is_some_and(|f| f.sorted),
             // Where the window was last drawn (each window's own).
@@ -1102,6 +1110,28 @@ impl OpenMakerApp {
     /// A single step through the script engine (menu commands, the
     /// Find mode buttons).
     pub(super) fn run_step(&mut self, ctx: &egui::Context, id: u16, flags: u32) {
+        use super::steps::{INSERT_AUDIO_VIDEO, INSERT_FILE, INSERT_PDF, INSERT_PICTURE};
+        // The Insert menu fills the selected container only while its
+        // object still takes entry (and PDF and Audio/Video only an
+        // interactive one), as when the menu offered it.
+        if matches!(
+            id,
+            INSERT_PICTURE | INSERT_FILE | INSERT_PDF | INSERT_AUDIO_VIDEO
+        ) {
+            let fillable = self.w.session.as_ref().is_some_and(|session| {
+                self.w
+                    .document
+                    .selected_container(session)
+                    .is_some_and(|selection| {
+                        selection.allows_entry(session)
+                            && (matches!(id, INSERT_PICTURE | INSERT_FILE)
+                                || selection.is_interactive(session))
+                    })
+            });
+            if !fillable {
+                return;
+            }
+        }
         let step = ScriptStep {
             opcode: id as i16,
             flags,
@@ -1834,6 +1864,7 @@ impl OpenMakerApp {
                     text,
                     login,
                     sort,
+                    opened: std::time::Instant::now(),
                 });
             }
             ScriptEvent::Paused { seconds, message } => {
@@ -2285,6 +2316,36 @@ impl OpenMakerApp {
         }
         self.w.document.active_object = state.object;
         self.w.document.script_focus(state.focus.as_deref());
+        // A step moved the selection in the field it focuses: Set
+        // Selection, or an Insert step, which puts the insertion point after
+        // what it inserted (`None`: after the field's text). A selection
+        // only reset, with the field unchanged, leaves the editor's. Its
+        // length is the text's as the step left it, a draft's or else the
+        // editor's; a field whose editor does not have the focus yet takes
+        // it when it does.
+        if state.selection != previous.selection {
+            let at = state
+                .layout
+                .zip(state.record)
+                .map(|(layout, record)| (u64::from(layout), record));
+            if let Some((field, at)) = state
+                .focus
+                .as_deref()
+                .filter(|field| {
+                    state.selection.is_some()
+                        || state.drafts.get(*field) != previous.drafts.get(*field)
+                })
+                .zip(at)
+            {
+                let len = state
+                    .drafts
+                    .get(field)
+                    .map(|value| value.as_deref().map_or(0, |value| value.chars().count()));
+                self.w
+                    .document
+                    .place_cursor(ctx, at, field, state.selection, len);
+            }
+        }
         self.w.uncommitted = state
             .layout
             .zip(state.record)
@@ -2611,6 +2672,26 @@ fn show_prompt(ui: &mut egui::Ui, view: &mut PromptView) -> Option<Answer> {
             crate::plugin_ui::alert(ui, dialog, *deadline, enter).map(Answer::PluginDialog)
         }
         Prompt::Dialog(dialog) => {
+            // "Close after (seconds)": once the time is up the dialog
+            // closes as no button, `Get ( LastMessageChoice )` 0 (Claris).
+            let closes = dialog
+                .close_after
+                .and_then(|seconds| std::time::Duration::try_from_secs_f64(seconds).ok())
+                .and_then(|after| view.opened.checked_add(after));
+            if let Some(closes) = closes {
+                let now = std::time::Instant::now();
+                if now >= closes {
+                    return Some(Answer::Dialog(DialogResponse {
+                        button: 0,
+                        inputs: view
+                            .inputs
+                            .iter()
+                            .map(|t| om_data::calc::Value::text(t.clone()))
+                            .collect(),
+                    }));
+                }
+                ui.ctx().request_repaint_after(closes - now);
+            }
             if !dialog.title.is_empty() {
                 heading(ui, &dialog.title);
             }
@@ -3350,7 +3431,9 @@ mod queued_window_tests {
                     );
                     assert!(app.w.session.as_ref().unwrap().is_loading_records());
                 }
-                "window" => app.bring_to_front(2),
+                "window" => {
+                    app.bring_to_front(2);
+                }
                 "layout" => app.w.session.as_mut().unwrap().layout = Some(2),
                 "record" => app.w.session.as_mut().unwrap().current = 1,
                 "closed" => app.w.session = None,

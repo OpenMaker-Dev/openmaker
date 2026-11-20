@@ -28,6 +28,11 @@ use crate::DataError;
 /// measured.
 pub const MAX_REQUESTS: usize = 10_000;
 
+/// The most characters of criteria one Quick Find writes, every term's
+/// once per field: OpenMaker's bound on the requests' memory (a long term
+/// on a layout of many fields), with [`MAX_REQUESTS`].
+pub const MAX_CRITERIA_CHARS: usize = 1 << 22;
+
 /// A field a Quick Find searches.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct QuickFindField {
@@ -45,10 +50,11 @@ struct Term {
     phrase: bool,
 }
 
-/// The fields Quick Find searches on `layout` (a layout as
-/// `DataProvider::render_layout` returns it, merge fields resolved to
-/// names), in the order the layout stores their objects; `None` when the
-/// layout has Quick Find turned off.
+/// The fields Quick Find searches on `layout`, in the order the layout
+/// stores their objects; `None` when the layout has Quick Find turned off.
+/// Merge fields count whether the layout names them (as
+/// `DataProvider::render_layout` resolves them) or holds only their
+/// catalog keys (a layout as stored, which the server reads).
 pub fn fields(layout: &om_layout::Layout, schema: &CalcSchema) -> Option<Vec<QuickFindField>> {
     if !layout
         .def
@@ -103,7 +109,19 @@ pub fn fields(layout: &om_layout::Layout, schema: &CalcSchema) -> Option<Vec<Qui
                 add(occurrence, field);
             }
         }
-        for run in &object.text_runs {
+        // A merge token's catalog keys name its field; the label stored
+        // beside it may be stale (layout-model.md 4.1), so an object with
+        // tokens is read by them, and by its names only without any.
+        let specs = object.merge_field_specs();
+        for spec in &specs {
+            let occurrence = schema.occurrence(spec.table_key);
+            if let (Some(occurrence), Some(field)) =
+                (occurrence, schema.field(spec.table_key, spec.field_key))
+            {
+                add(occurrence.id, field);
+            }
+        }
+        for run in object.text_runs.iter().filter(|_| specs.is_empty()) {
             let om_layout::TextRun::MergeField(name) = run else {
                 continue;
             };
@@ -145,11 +163,23 @@ fn data_type(value_type: ValueType) -> DataType {
 /// reads them (month/day/year, `today` for a date without a year). A text
 /// without terms is FileMaker's 400 ("Find criteria are empty"); one
 /// longer than `MAX_CRITERION_CHARS`, or that would make more than
-/// [`MAX_REQUESTS`] requests, is refused (3) before any is made.
+/// [`MAX_REQUESTS`] requests or [`MAX_CRITERIA_CHARS`] characters of
+/// criteria, is refused (3) before any is made.
 pub fn change(
     text: &str,
     fields: &[QuickFindField],
     today: Ymd,
+) -> Result<FoundSetChange, DataError> {
+    change_in(text, fields, today, DateOrder::MonthDayYear)
+}
+
+/// [`change`] with dates read in `order`, as the host that runs the finds
+/// reads its criteria (OpenMaker Server: the file's date order).
+pub fn change_in(
+    text: &str,
+    fields: &[QuickFindField],
+    today: Ymd,
+    order: DateOrder,
 ) -> Result<FoundSetChange, DataError> {
     let text = text.trim();
     if text.chars().count() > MAX_CRITERION_CHARS {
@@ -162,10 +192,15 @@ pub fn change(
             "Provide at least one word to find records.",
         ));
     }
-    if terms.len().saturating_mul(fields.len()) > MAX_REQUESTS {
+    // A text criterion is at most twice its term (a `\\` before each
+    // operator), with the phrase's quotes.
+    let chars: usize = terms.iter().map(|term| 2 * term.text.len() + 2).sum();
+    if terms.len().saturating_mul(fields.len()) > MAX_REQUESTS
+        || chars.saturating_mul(fields.len()) > MAX_CRITERIA_CHARS
+    {
         return Err(too_long());
     }
-    let context = FindContext::new(DateOrder::MonthDayYear, Some(today));
+    let context = FindContext::new(order, Some(today));
     let context = &context;
     Ok(FoundSetChange::QuickFind(
         terms

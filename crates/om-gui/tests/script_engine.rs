@@ -887,6 +887,21 @@ fn catalog() -> ScriptCatalog {
                 ],
             ),
             script(
+                903,
+                "Ask briefly",
+                vec![
+                    {
+                        // "Close after" 1 second (script-steps.md 12.4).
+                        let mut dialog = custom_dialog();
+                        dialog.set_number_bool(6, Some(true));
+                        dialog.set_calculation(13, Some(&calc("1")));
+                        dialog
+                    },
+                    set_field("Note", "Get ( LastMessageChoice ) & \"/\" & $answer"),
+                    step(75),
+                ],
+            ),
+            script(
                 2,
                 "Missing layout",
                 vec![
@@ -1129,6 +1144,19 @@ fn custom_dialogs_store_inputs_and_the_chosen_button() {
     let row = state.lock().unwrap().rows[0].clone();
     assert_eq!(row.values[0].as_deref(), Some("Ada L."));
     assert_eq!(row.values[2].as_deref(), Some("2/"));
+
+    // "Close after": the dialog closes by itself as no button, 0, with no
+    // click. Its inputs are left to the runtime's test: under load the
+    // dialog may close before this one could type.
+    run(&mut app, "Ask briefly");
+    common::wait_until(&mut app, "the dialog's timeout", |_| {
+        state.lock().unwrap().rows[0].values[2].as_deref() == Some("0/")
+    });
+    wait_idle(&mut app);
+    assert!(app.query_by_label("Who are you?").is_none());
+    let row = state.lock().unwrap().rows[0].clone();
+    assert_eq!(row.values[0].as_deref(), Some("Ada L."));
+    assert_eq!(row.values[2].as_deref(), Some("0/"));
 }
 
 #[test]

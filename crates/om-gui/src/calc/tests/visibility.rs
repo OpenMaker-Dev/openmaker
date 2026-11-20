@@ -264,3 +264,37 @@ fn cached_summary_inputs_preserve_unknown_and_session_provenance() {
         assert_eq!(visibility(&eval, &active, 1), Some(expected));
     }
 }
+
+/// A button whose only calculation is its calculated icon (flag `0x4`)
+/// is evaluated on its record, `Self` included: the stored formula of a
+/// button without the flag is not.
+#[test]
+fn an_icon_only_button_evaluates_its_calculated_icon() {
+    let schema = portal_schema();
+    let mut calcs = Calculations::default();
+    portal_data(&mut calcs);
+    let button = |id: u64, flags: i32, source: &str| LayoutObject {
+        id,
+        button: Some(om_layout::ButtonObject {
+            flags,
+            ..Default::default()
+        }),
+        calcs: om_layout::ObjectCalcs {
+            button_icon: Some(formula(&schema, source)),
+            ..Default::default()
+        },
+        ..Default::default()
+    };
+    let titled = button(1, 0x4, "\"<svg>\" & Jobs::Title");
+    let itself = button(2, 0x4, "\"<svg>\" & Self");
+    let inactive = button(3, 0, "\"<svg>\"");
+    let eval = evaluator(&calcs, &schema);
+    let icon = |object: &LayoutObject| {
+        eval.object_state_in_portal(object, 1, None, || Value::text("label"))
+            .and_then(|calc| calc.state.icon_svg)
+            .map(|svg| svg.to_string())
+    };
+    assert_eq!(icon(&titled), Some("<svg>Parent".into()));
+    assert_eq!(icon(&itself), Some("<svg>label".into()));
+    assert_eq!(icon(&inactive), None);
+}

@@ -466,7 +466,7 @@ fn stamp_count(member: &OwnedNode) -> u64 {
 
 /// `member` stamped by `user` and `account` at `time`, its count raised
 /// by one: a count at the largest stays (a hostile file's; never a panic).
-fn stamped(mut member: OwnedNode, user: &str, account: &str, time: &[u8]) -> OwnedNode {
+pub(crate) fn stamped(mut member: OwnedNode, user: &str, account: &str, time: &[u8]) -> OwnedNode {
     let key = serial::encode(stamp_count(&member).saturating_add(1));
     let mut count = vec![key.len() as u8];
     count.extend(key);

@@ -591,7 +591,7 @@ impl StepOptions {
     fn apply(&self, step: &mut ScriptStep, row: &Row) -> Result<(), String> {
         match &row.edit {
             // Read-only (`enabled`): never written.
-            edit if replaces(step.id()) && read_only_replace_option(edit) => {}
+            edit if read_only_option(step.id(), edit) => {}
             Edit::Flag { location, on, was } if on != was => match *location {
                 Location::Flag { bits, inverted } => step.set_flag(bits, *on != inverted),
                 Location::Slot { slot, .. } => step.set_number_bool(slot, Some(*on)),
@@ -932,12 +932,7 @@ impl StepOptions {
     /// file's, as FileMaker Pro greys it out for this file's (#771's Pro
     /// check); a checked box, stored or just checked, stays clearable.
     fn enabled(&self, i: usize) -> bool {
-        // Replace Field Contents' "Update serial number in Entry Options"
-        // and "Perform auto-enter options for fields" show what is stored
-        // and take no input: FileMaker Pro 26.0.3 greys the first out for a
-        // field without an auto-entered serial number, and what its own
-        // editor writes for either is not measured (#798's Pro check).
-        if replaces(self.original.id()) && read_only_replace_option(&self.rows[i].edit) {
+        if read_only_option(self.original.id(), &self.rows[i].edit) {
             return false;
         }
         // Print (#843): its records take a choice only beside stored
@@ -1570,23 +1565,39 @@ fn requests_editable(node: &OwnedNode) -> Option<Vec<StoredRequest>> {
     (cells == criteria).then_some(requests)
 }
 
-/// A row before its condition is known.
-/// Replace Field Contents' checkboxes shown read-only: "Update serial
-/// number in Entry Options" (`[00 4, 03]`) and "Perform auto-enter options
-/// for fields" (`[00 6, 03]` with `kRestore`).
-fn read_only_replace_option(edit: &Edit) -> bool {
-    matches!(
-        edit,
-        Edit::Flag {
-            location: Location::Slot {
-                slot: 4 | 6,
-                kind: SlotKind::Number,
-            },
-            ..
-        }
-    )
+/// Options that show what is stored and take no input:
+///
+/// - Replace Field Contents' (and by Name's, [`replaces`]) "Update serial
+///   number in Entry Options" (`[00 4, 03]`) and "Perform auto-enter
+///   options for fields" (`[00 6, 03]` with `kRestore`): FileMaker Pro
+///   26.0.3 greys the first out for a field without an auto-entered serial
+///   number, and what its own editor writes for either is not measured
+///   (#798's Pro check).
+/// - Show Custom Dialog's "Close after" (`[00 6, 03]`) and its seconds
+///   (slot 13), FileMaker Pro 26.1's: known from the binaries only
+///   (script-steps.md 12.4), the Boolean's byte width unmeasured, so
+///   OpenMaker writes neither.
+fn read_only_option(step: u16, edit: &Edit) -> bool {
+    let number = |slots: &[u16]| {
+        matches!(
+            edit,
+            Edit::Flag {
+                location: Location::Slot {
+                    slot,
+                    kind: SlotKind::Number,
+                },
+                ..
+            } if slots.contains(slot)
+        )
+    };
+    match step {
+        id if replaces(id) => number(&[4, 6]),
+        87 => number(&[6]) || matches!(edit, Edit::Calculation { slot: 13, .. }),
+        _ => false,
+    }
 }
 
+/// A row before its condition is known.
 fn row(label: impl Into<String>, edit: Edit) -> Row {
     Row {
         label: label.into(),

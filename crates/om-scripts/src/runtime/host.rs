@@ -358,6 +358,10 @@ pub struct CustomDialog {
     /// One to three buttons, default button first.
     pub buttons: Vec<DialogButton>,
     pub inputs: Vec<DialogInput>,
+    /// "Close after (seconds)" (FileMaker Pro 26.1): the dialog closes by
+    /// itself after this many seconds, answering button 0
+    /// ([`DialogResponse::button`]). Always a positive, finite number.
+    pub close_after: Option<f64>,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -378,7 +382,8 @@ pub struct DialogInput {
 /// The user's answer to a custom dialog.
 #[derive(Clone, Debug)]
 pub struct DialogResponse {
-    /// The 1-based button chosen (`Get ( LastMessageChoice )`).
+    /// The 1-based button chosen (`Get ( LastMessageChoice )`); 0 when
+    /// the dialog closed by itself after [`CustomDialog::close_after`].
     pub button: u8,
     /// The input values, in input order.
     pub inputs: Vec<Value>,

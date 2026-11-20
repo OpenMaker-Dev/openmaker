@@ -729,6 +729,9 @@ warning icon when the text is not SVG FileMaker supports (Claris).
 FileMaker Pro caches the rendered images under keys made by
 `FMFileUser::GenerateRuntimeLibraryKey` (`runtime_calc_` names, FileMaker
 Pro strings); nothing shows that they are stored in the file [I].
+OpenMaker reads the bit (`ButtonObject::calculated_icon`, also on popover
+buttons) and the formula (`ObjectCalcs::button_icon`), keeping every other
+byte of the object and its record as it is.
 
 ### 5.4 Field control styles (`FieldLayoutObject.displayType`)
 
@@ -1000,10 +1003,11 @@ Chooser and Add Assignee layouts, which are also the only two without
 
 `0x20000` (with placeholder text, above 5.5) and `0x80000` (on every
 value-list control and calendar of the templates) are in neither source
-[U]. OpenMaker reads `0x8000` (`FieldObject::quick_find`), and `0x40` and
+[U]. OpenMaker reads `0x8000` (`FieldObject::quick_find`), `0x40` and
 `0x80` (`FieldObject::next_object_on_return`, `next_object_on_enter`,
-which Return and the keypad's Enter follow in Browse); the other bits of
-the table it reads only where this section's other paragraphs say.
+which Return and the keypad's Enter follow in Browse), and `0x400000`
+(`FieldObject::single_unlabeled_checkbox`); the other bits of the table
+it reads only where this section's other paragraphs say.
 
 [O, FileMaker Pro 26.1.1 x86_64] The Inspector writes the two 26.1.1 bits
 into this word: `PropFieldFormatter::ApplyFormatImpl` (0x101b35f90 and
