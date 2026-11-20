@@ -152,19 +152,21 @@ const CONTEXT_SELECTORS: [u8; 4] = [
 /// its value-index keys are English's primary weights (query-program.md
 /// 7.2): the languages outside the list of those whose `TailorWeights`
 /// Support overrides (from bin) whose keys the probe found equal to
-/// English's for every value. These are Dutch 20, French 24, Greek 27,
+/// English's for every value. These are Dutch 20, French 24, German
+/// dictionary 26 (`ä` keys as `a`; German, 25, is tailored), Greek 27,
 /// Italian 30, Portuguese 34, Russian 36, Hebrew 47, Serbian 53,
 /// Bulgarian 55 and the Indic languages 59 to 67 (Hindi, 48, is tailored).
-/// Their word breaks are not established: French's differ from English's
-/// (an apostrophe separates, query-program.md 7.1), the others' were not
-/// measured ([#300](https://github.com/OpenMaker-Dev/openmaker/issues/300)),
+/// Several of them break words differently from English for some of the
+/// probe's values (French at an apostrophe, query-program.md 7.1; the word
+/// columns of catalogs/index-key-vectors.tsv), and their full rules are not
+/// established ([#300](https://github.com/OpenMaker-Dev/openmaker/issues/300)),
 /// so only their value keys are known. That the bin's list is complete is
 /// not confirmed: Norwegian and Finnish are tailored though absent from
 /// it, so this set is inferred.
 pub fn untailored(language: u32) -> bool {
     matches!(
         language,
-        20 | 24 | 27 | 30 | 34 | 36 | 47 | 53 | 55 | 59..=67
+        20 | 24 | 26 | 27 | 30 | 34 | 36 | 47 | 53 | 55 | 59..=67
     )
 }
 
@@ -6274,10 +6276,10 @@ mod tests {
             assert!(plan(&table, &initials(1, 2)).is_err(), "{language}");
         }
         // English international, System and Unicode standard; French,
-        // Russian and an Indic language, which FileMaker leaves untailored
-        // (their value keys are English's); and language 0, the file's own
-        // (English here).
-        for language in [77u32, 1, 3, 24, 36, 59, 0] {
+        // German dictionary, Russian and an Indic language, which FileMaker
+        // leaves untailored (their value keys are English's); and language
+        // 0, the file's own (English here).
+        for language in [77u32, 1, 3, 24, 26, 36, 59, 0] {
             table.fields[primary_key].options[4..8].copy_from_slice(&language.to_be_bytes());
             assert!(plan(&table, &initials(1, 2)).is_ok(), "{language}");
         }
