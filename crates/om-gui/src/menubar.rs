@@ -44,6 +44,11 @@ pub(crate) struct MenuContext<'a> {
     /// Records > Revert Record... (Browse) or Requests > Revert Request...
     /// (Find) can run (`om_data::scripts::revert_record::available`).
     pub revert_record: bool,
+    /// Records > Relookup Field Contents can run: a field of the
+    /// record's own table is entered in Browse mode, no script running
+    /// (`om_data::scripts::relookup::available`). A related field leaves
+    /// it off: the step does not look up through one (3).
+    pub relookup: bool,
     /// The account may change the file's design: File > Manage's dialogs,
     /// Layout mode and Script Workspace (`App::design_allowed`).
     pub design: bool,
@@ -794,7 +799,14 @@ fn records_menu(rows: &mut dyn MenuRows, context: &MenuContext<'_>, actions: &mu
     }
     rows.separator();
     pending(rows, "Replace Field Contents...", command(CMD, Key::Equals));
-    pending(rows, "Relookup Field Contents", None);
+    // Relookup Field Contents (40) with its dialog, on the field entered,
+    // as a script runs it (`om_data::scripts::relookup`). Under Editing
+    // only and Minimum it stays off, as Sort Records and Revert Record do
+    // there [I].
+    let [_, label] = om_data::scripts::relookup::MENU_PATH;
+    if rows.item(label, None, false, context.relookup && context.full_menus()) {
+        actions.push(Action::Step(om_data::scripts::relookup::STEP_ID, 0));
+    }
     rows.separator();
     // Revert Record/Request (51) with its dialog, as a script runs it
     // (`om_data::scripts::revert_record`). Under Editing only and Minimum

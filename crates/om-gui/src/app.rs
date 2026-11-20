@@ -1390,6 +1390,14 @@ impl OpenMakerApp {
                     && !self.script.busy()
                     && self.script.prompt.is_none()
                     && self.text_field_entered(),
+                relookup: input
+                    && !self.script.busy()
+                    && self.script.prompt.is_none()
+                    && !self.recovery_holds()
+                    && om_data::scripts::relookup::available(
+                        self.w.mode.runtime(),
+                        self.text_field_entered() && self.w.document.active_related.is_none(),
+                    ),
                 own_field: self.w.document.active_related.is_none(),
                 field_undo: self
                     .current_layout_record()

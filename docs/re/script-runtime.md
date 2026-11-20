@@ -3768,8 +3768,12 @@ Steps
   (its held value would be replaced by the stored one). The window keeps
   its record and found set. A record refused partway ends the step, the
   records before it written; a record deleted after the check is 101.
-  Unmeasured, and OpenMaker's choices:
+  Records > Relookup Field Contents runs the step with its dialog on the
+  field entered. Unmeasured, and OpenMaker's choices:
   - the dialog's text;
+  - committing the window's record before the writes, which Claris's help
+    says neither the command nor the step does
+    ([#624](https://github.com/OpenMaker-Dev/openmaker/issues/624));
   - the codes: 102 for no such field, 201 for one a script cannot set (a
     calculation or a global), 3 for one no lookup matches through, for one
     with auto-entry, for a styled value, for a record the transaction
