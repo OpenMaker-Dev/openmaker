@@ -505,10 +505,26 @@ fn server_scripts_sort_with_stored_orders() {
     // task is related, in creation order: Write tests' first is Ship, every
     // other task's is Write tests. Descending, those come first (ties by
     // record), then Write tests; by their own names it would be 3,5,7,1.
+    // An occurrence of Tasks that no relationship leads to, as a sort kept
+    // from a layout of it names, sorts by the record's own Name.
     const MATES: u64 = 0xd0_0030;
+    const ALIAS: u64 = 0xd0_0031;
     let mut joined = tree();
     fixture::add_occurrence(&mut joined, MATES, "Mates", TABLE);
+    fixture::add_occurrence(&mut joined, ALIAS, "Alias", TABLE);
     fixture::add_relationship(&mut joined, 30, (OCCURRENCE, COUNT), 1, (MATES, COUNT));
+    joined.put(
+        &[&[17], &[5], &uint_segment(13)],
+        script(
+            13,
+            "Alias",
+            vec![
+                sort(&spec(false, vec![entry(ALIAS, NAME, false, None)])),
+                exit_with(&format!("Get ( LastError ) & \"|\" & {COUNTS}")),
+            ],
+        )
+        .encode(),
+    );
     joined.put(
         &[&[17], &[5], &uint_segment(12)],
         script(
@@ -525,6 +541,7 @@ fn server_scripts_sort_with_stored_orders() {
     let port = server::start(&file);
     let (mut client, _) = server::logged_in(port, "client");
     assert_eq!(run(&mut client, 12), (0, "0|5,7,1,3".to_string()));
+    assert_eq!(run(&mut client, 13), (0, "0|1,7,5,3".to_string()));
 }
 
 #[test]

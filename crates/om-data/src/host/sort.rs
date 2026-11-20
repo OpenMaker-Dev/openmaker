@@ -24,10 +24,11 @@ use super::schema::{CalcSchema, FieldClass, TableDef};
 use crate::meta::ValueSource;
 
 /// How many sorts may run inside one another on one thread. A sort field
-/// of another occurrence is read from its first related record, and that
-/// relationship may itself be sorted by a field leading back, which a self
-/// join makes easy: related sorts can loop. Past the bound a sort fails
-/// with 3, OpenMaker's choice; FileMaker's handling is unmeasured.
+/// of a related occurrence is read from its first related record, and that
+/// relationship may itself be sorted by a related field, and so on: a chain
+/// of such sorts, or a loop of them, a field leading back. Past the bound a
+/// sort fails with 3, OpenMaker's choice; FileMaker's handling is
+/// unmeasured.
 const MAX_NESTED_SORTS: u32 = 16;
 
 thread_local! {
@@ -36,8 +37,9 @@ thread_local! {
 
 /// One sort under way on this thread ([`SortNesting::enter`]), counted
 /// until it is dropped. Every host's sort enters one, so that related
-/// sorts nested inside one another, through either host, are bounded.
-pub struct SortNesting(());
+/// sorts nested inside one another, through either host, are bounded. It
+/// stays on the thread that counted it (not `Send`).
+pub struct SortNesting(std::marker::PhantomData<*const ()>);
 
 impl SortNesting {
     /// Count one more sort on this thread, or `None` past
@@ -47,7 +49,7 @@ impl SortNesting {
             let depth = nested.get();
             (depth < MAX_NESTED_SORTS).then(|| {
                 nested.set(depth + 1);
-                SortNesting(())
+                SortNesting(std::marker::PhantomData)
             })
         })
     }
@@ -60,10 +62,8 @@ impl Drop for SortNesting {
 }
 
 /// `records` of `occurrence`'s table ordered by `spec`. Sort fields are
-/// read from the stored record (or the table's globals); a field of
-/// another occurrence, a self join's included, from the first related
-/// record; calculations a record does not store and summaries sort as
-/// empty.
+/// read from the stored record (or the table's globals); calculations a
+/// record does not store and summaries sort as empty.
 pub fn sort_records<S: CalcSource + ?Sized>(
     source: &S,
     schema: &CalcSchema,
@@ -166,9 +166,7 @@ impl<'s> Level<'s> {
     ) -> Option<Level<'s>> {
         let field_occurrence = entry.field.occurrence.unwrap_or(occurrence);
         let field_table = schema.table_of(field_occurrence).unwrap_or(table);
-        // Another occurrence is a related one, a self join's too: its
-        // first related record (calc-values.md 12.1), not the record.
-        let related = field_occurrence != occurrence;
+        let related = field_table.id != table.id;
         let def = field_table.fields.get(&entry.field.field)?;
         let language = match (entry.locale, def.language) {
             (0, 0) => cx.locale.language,

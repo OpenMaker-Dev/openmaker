@@ -8,11 +8,13 @@
 //! language override, else of the field's index language; numbers, dates
 //! and times by value; a custom value list's order with values not in the
 //! list after its values (dividers ignored); ties to the next field, and
-//! finally to the record id. A sort field of another occurrence, a self
-//! join's included, sorts by its first related record's value (Claris;
-//! the self join inferred from calc-values.md 12.1); an unstored
-//! calculation by its value on each record. Related sorts nested inside
-//! one another stop with 3 past a bound (`om_data::host::SortNesting`). Value lists from
+//! finally to the record id. A sort field of another occurrence sorts by
+//! its first related record's value (Claris): one of another table, or of
+//! the same table that a relationship leads to (a self join, inferred from
+//! calc-values.md 12.1; [`ServerHost::related_occurrence`]). An unstored
+//! calculation sorts by its value on each record. Sorts nested more than
+//! 16 deep inside one another, through related sort fields, stop with 3
+//! (`om_data::host::SortNesting`). Value lists from
 //! fields and the summary reorder are not supported (3).
 
 use std::cmp::Ordering;
@@ -136,6 +138,20 @@ impl ServerHost {
         self.sort_window(&spec)
     }
 
+    /// Whether a field of `field_occurrence`, read for a record of
+    /// `occurrence`, is read from its first related record: another
+    /// occurrence of another table, or of the same table when a
+    /// relationship path leads there (a self join; calc-values.md 12.1).
+    /// Another occurrence of the same table that none leads to, as a sort
+    /// kept from a layout of it names, reads the record's own field.
+    pub(super) fn related_occurrence(&self, occurrence: u64, field_occurrence: u64) -> bool {
+        field_occurrence != occurrence
+            && (self.schema.table_of(field_occurrence) != self.schema.table_of(occurrence)
+                || self
+                    .calc_schema()
+                    .is_some_and(|schema| schema.path(occurrence, field_occurrence).is_some()))
+    }
+
     /// `records` of `occurrence`'s table in the order of `spec`.
     pub(super) fn sorted(
         &self,
@@ -143,6 +159,9 @@ impl ServerHost {
         records: Vec<u64>,
         spec: &SortSpec,
     ) -> Result<Vec<u64>, ErrorCode> {
+        if records.len() < 2 {
+            return Ok(records);
+        }
         // A related sort field's related set may be sorted too.
         let _nesting = om_data::host::SortNesting::enter().ok_or(UNSUPPORTED)?;
         let levels = spec
@@ -219,9 +238,7 @@ impl ServerHost {
             .schema
             .field(field_occurrence, entry.field.field)
             .ok_or(ErrorCode::FIELD_MISSING)?;
-        // Another occurrence is a related one, a self join's too: its
-        // first related record (calc-values.md 12.1), not the record.
-        let related = field_occurrence != occurrence;
+        let related = self.related_occurrence(occurrence, field_occurrence);
         let file = Collation::of(self.locale.language);
         let own = field
             .options

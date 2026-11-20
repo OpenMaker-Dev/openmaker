@@ -549,15 +549,20 @@ Open items:
   8.4), where FileMaker would have written. Names given to Set Field By
   Name and Replace Field Contents by Name match without regard to case,
   as on the server.
-- Sort Records in server scripts, and a sorted relationship's related
-  records on both hosts, sort by a field of another occurrence, a self
-  join's included, by its first related record's value
-  ([#610](https://github.com/OpenMaker-Dev/openmaker/issues/610); the
-  self join is inferred from calc-values.md 12.1, the sort unmeasured).
-  Sorts nested inside one another, through related sort fields whose
-  relationships sort by a field leading back, stop with 3 past 16. The
-  bound is OpenMaker's; FileMaker's handling of such a loop is
-  unmeasured.
+- Sort Records in server scripts sorts by a field of a self join's
+  occurrence (another occurrence of the layout's table that a relationship
+  leads to) by its first related record's value
+  ([#610](https://github.com/OpenMaker-Dev/openmaker/issues/610); inferred
+  from calc-values.md 12.1, the sort unmeasured). Another occurrence of the
+  same table that no relationship leads to, as a sort kept from a layout of
+  it names, still reads the record's own field. Summaries' break fields
+  follow the same rule. A sorted relationship's related records still read
+  a self join's sort field from the record itself, on both hosts (#610).
+  A sort entry the layout cannot reach fails the whole sort with 103
+  ([#628](https://github.com/OpenMaker-Dev/openmaker/issues/628)). Sorts
+  nested more than 16 deep inside one another, through related sort fields
+  whose relationships sort by related fields, stop with 3. The bound is
+  OpenMaker's; FileMaker's handling of a loop is unmeasured.
 - Scripts: desktop steps still missing include the account steps
   ([#83](https://github.com/OpenMaker-Dev/openmaker/issues/83)) and the PDF
   steps other than Save Records as PDF
