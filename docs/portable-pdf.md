@@ -320,8 +320,11 @@ with Arial Italic's widths is inferred from Arial's; no FileMaker PDF with
 italic text has been compared, and no starter text is italic. Italic text in
 any other family still refuses (error 3): no italic Inter is bundled, and
 printing it upright would misrepresent the layout. A line whose glyph
-outlines reach past the object's frame, as an italic overhang can though the
-advances fit, is cut at the frame, as Pro clips text to its box. Liberation
+outlines reach past its text box's sides, as an italic overhang can though
+the advances fit, is cut at those sides (for a label, its frame less the
+1-point inset), as Pro clips text to its box (layout-model.md 6.5); only a
+line that overflows the box is also cut at its top and bottom, so an accent
+above the box is not cut for a bearing at its side. Liberation
 Sans stands in for Helvetica as well, though Helvetica's widths differ from
 Arial's; that is inferred adequate, not measured. Browse is unchanged: it uses
 the system Arial where macOS ships it and Inter elsewhere. Preview draws the

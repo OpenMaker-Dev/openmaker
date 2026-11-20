@@ -819,15 +819,16 @@ fn prepare_text_in(
                 ))
             }
         };
-        // A glyph whose outline reaches past the frame (an italic overhang,
-        // say), though its advance fits, is cut there too, as Pro clips
-        // text to its box.
-        let mut pen = r.left + pad[3] + dx;
+        // A glyph whose outline reaches past the text box's sides (an
+        // italic overhang, say), though its advance fits, is cut there, as
+        // Pro clips text to its box.
+        let (left, right) = (r.left + pad[3], (r.right - pad[1]).max(r.left + pad[3]));
+        let mut pen = left + dx;
         let mut spills = false;
         for (glyph, advance, _) in &glyphs {
             if let Some(ink) = face.glyph_bounding_box(ttf_parser::GlyphId(*glyph)) {
-                spills |= pen + f64::from(ink.x_min) * unit < r.left - 0.01
-                    || pen + f64::from(ink.x_max) * unit > r.right + 0.01;
+                spills |= pen + f64::from(ink.x_min) * unit < left - 0.01
+                    || pen + f64::from(ink.x_max) * unit > right + 0.01;
             }
             pen += advance;
         }
@@ -841,9 +842,19 @@ fn prepare_text_in(
             // Cut at the text box: the field's frame less the padding and
             // text margins above and below. FileMaker Pro 26 keeps a wrapped
             // second line in its PDF's text but shows none of it (#536).
+            // Ink that spills past the box's sides is cut at its sides
+            // (a label's frame less its 1-point inset, layout-model.md 6.5),
+            // and only there: a line that fits keeps the frame's height, so
+            // an accent above the box is not cut for a bearing at its side.
             clip: (cut || spills).then(|| Rect {
-                top: r.top + pad[0],
-                bottom: (r.bottom - pad[2]).max(r.top + pad[0]),
+                top: if cut { r.top + pad[0] } else { r.top },
+                bottom: if cut {
+                    (r.bottom - pad[2]).max(r.top + pad[0])
+                } else {
+                    r.bottom
+                },
+                left: if spills { left } else { r.left },
+                right: if spills { right } else { r.right },
                 ..r.clone()
             }),
         });

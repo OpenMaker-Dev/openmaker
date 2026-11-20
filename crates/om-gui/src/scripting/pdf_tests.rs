@@ -2945,11 +2945,13 @@ fn arial_text_prints_in_liberation_sans_and_other_text_in_inter() {
         let error = render(italic).unwrap_err();
         assert_eq!(error.code, 3, "{}", error.message);
     }
-    // An italic glyph whose outline reaches past its frame, though its
-    // advance fits (a right-aligned 36-point `f` in a 13-point label), is
-    // cut at the frame; one well inside it is not.
-    let spilling = |align: i32, width: f64| {
-        let mut text = italic_style(label(1, "f", rect(10.0, 10.0, width, 44.0), 36.0, false));
+    // An italic glyph whose outline reaches past its text box, though its
+    // advance fits (a right-aligned 36-point `f` in a 13-point label, or an
+    // 11-point one in a 7-point label, into the 1-point inset), is cut at
+    // the box's sides and the frame's top and bottom; one well inside it is
+    // not.
+    let spilling = |align: i32, width: f64, size: f64| {
+        let mut text = italic_style(label(1, "f", rect(10.0, 10.0, width, 44.0), size, false));
         let props = &mut text
             .style
             .as_mut()
@@ -2971,12 +2973,15 @@ fn arial_text_prints_in_liberation_sans_and_other_text_in_inter() {
         });
         render(text).unwrap()
     };
-    // The label's clip: its frame's width, its text box's height (the
-    // frame less the 1-point label inset above and below). The part's own
-    // clip is on every page.
-    let label_clip = |pdf: &str, width: f64| pdf.matches(&format!(" {width} 42 re\nW\nn")).count();
-    assert_eq!(label_clip(&spilling(3, 13.0), 13.0), 1);
-    assert_eq!(label_clip(&spilling(1, 200.0), 200.0), 0);
+    // The label's clip: its text box's width (the frame less the 1-point
+    // inset at each side) and its frame's height, so nothing above or below
+    // the box is cut for a glyph's side.
+    let label_clip = |pdf: &str, width: f64, height: f64| {
+        pdf.matches(&format!(" {width} {height} re\nW\nn")).count()
+    };
+    assert_eq!(label_clip(&spilling(3, 13.0, 36.0), 11.0, 44.0), 1);
+    assert_eq!(label_clip(&spilling(3, 7.0, 11.0), 5.0, 44.0), 1);
+    assert_eq!(label_clip(&spilling(1, 200.0, 36.0), 198.0, 44.0), 0);
 }
 
 /// A field's text sits inside its text component's margins (properties
@@ -3254,7 +3259,7 @@ fn field_text_keeps_its_margins_and_is_cut_at_its_text_box() {
     // inside it, as Pro's narrower text box would, and is cut rather than
     // refused: 13-point Arial "WW" (24.54 points) in a 25 by 16 label. So
     // is a glyph wider than its label.
-    for (value, width) in [("WW", 25.0), ("W", 8.0)] {
+    for (value, width, clip_left, clip_width) in [("WW", 25.0, 10.0, 25.0), ("W", 8.0, 11.0, 6.0)] {
         let mut tight = self::label(2, value, rect(10.0, 10.0, width, 16.0), 13.0, false);
         tight
             .style
@@ -3271,12 +3276,14 @@ fn field_text_keeps_its_margins_and_is_cut_at_its_text_box() {
                 ..Default::default()
             });
         let pdf = String::from_utf8_lossy(&render(tight, value).unwrap().bytes).into_owned();
-        // Every line is cut at the frame's sides and the text box's top and
-        // bottom; "WW"'s second "W" starts inside the frame, so it stays in
-        // the PDF's text, as Pro keeps a field's.
+        // Every line is cut at the text box's top and bottom, and at the
+        // frame's sides, or the box's (the frame less its 1-point inset)
+        // where its glyph's ink reaches past them, as the wide "W" does;
+        // "WW"'s second "W" starts inside the frame, so it stays in the
+        // PDF's text, as Pro keeps a field's.
         let lines = pdf.matches("/F3 13 Tf").count();
         assert_eq!(lines, value.len(), "{value}");
-        let clip = format!("{} 731 {width} 14 re", paper.left + 10.0);
+        let clip = format!("{} 731 {clip_width} 14 re", paper.left + clip_left);
         assert_eq!(pdf.matches(&clip).count(), lines, "{value}: {clip}");
     }
     // A rounded baseline can carry a descender below a field whose exact
