@@ -1318,11 +1318,13 @@ impl<'a> CachedSource<'a> {
 
     /// The records of `to` related to `record` of `from` over the
     /// overlays: the stored set `stored` reads, unless the overlays may
-    /// relate other records ([`Self::relates_differently`]), when the set
-    /// is rebuilt from them by [`related_by_scan`], which reads every
-    /// record of each table on the path. The stored set is put in the
-    /// overlays' order when the last relationship sorts by a value they
-    /// may change ([`Self::may_reorder`]).
+    /// relate other records ([`Self::relates_differently`]) or `record` is
+    /// a new record the open transaction holds ([`Self::held_new`]), with
+    /// or without overlays, when the set is rebuilt by
+    /// [`related_by_scan`], which reads every record of each table on the
+    /// path. The stored set is put in the overlays' order when the last
+    /// relationship sorts by a value they may change
+    /// ([`Self::may_reorder`]).
     fn related_over_overlays(
         &self,
         schema: &CalcSchema,
@@ -1330,7 +1332,10 @@ impl<'a> CachedSource<'a> {
         cx: &Ctx,
         stored: impl FnOnce() -> Result<Arc<[u64]>, CalcError>,
     ) -> Result<Arc<[u64]>, CalcError> {
-        if self.overlay.is_empty() {
+        // A held new record's keys, auto-entered ones too, relate records
+        // before anything is typed into it: the host has no such record.
+        let held_new = self.held_new(schema, from, record);
+        if self.overlay.is_empty() && !held_new {
             return stored();
         }
         let Some(path) = schema.path(from, to) else {
@@ -1345,9 +1350,7 @@ impl<'a> CachedSource<'a> {
         {
             return Ok(records);
         }
-        let records = if self.held_new(schema, from, record)
-            || self.relates_differently(schema, &path, record, cx)
-        {
+        let records = if held_new || self.relates_differently(schema, &path, record, cx) {
             related_by_scan(self, schema, from, record, to, cx)?
         } else {
             let records = stored()?;

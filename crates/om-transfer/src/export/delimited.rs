@@ -7,11 +7,14 @@
 //! - a return in a value is written as a vertical tab (0x0B);
 //! - tab: a tab in a value is a space; values are not quoted;
 //! - comma: every value is quoted, quotes doubled, tabs kept; a number
-//!   field writes its number; a related field without a related record is
-//!   empty without quotes;
+//!   field writes its number; a related field without a related record and
+//!   a `?` value ([`ExportValue::is_invalid`]) are empty without quotes;
 //! - merge: comma-separated values with number fields as stored, after a
 //!   header row of the field names (no occurrence; `S by Company` for a
-//!   summary grouped by a break field), comma-separated and unquoted.
+//!   summary grouped by a break field), comma-separated and unquoted;
+//! - comma with a 26.1.1 order's "Use field names as column names in first
+//!   row": a first row of the same names, quoted as values are (inferred,
+//!   unmeasured on FileMaker).
 
 use super::{Cell, Table};
 use crate::text::ExportValue;
@@ -21,6 +24,9 @@ const GS: char = '\u{1d}';
 const VT: char = '\u{0b}';
 
 fn tab_text(v: &ExportValue) -> String {
+    if v.is_invalid() {
+        return String::new();
+    }
     v.text()
         .chars()
         .map(|c| match c {
@@ -72,12 +78,18 @@ fn quoted_rows(table: &Table, numbers: bool, text: &mut String) {
             }
             match cell {
                 Some(Cell::Absent) => {}
+                // A `?` alone is an unquoted empty field (oracle x05).
+                Some(Cell::Values(values))
+                    if !values.is_empty() && values.iter().all(ExportValue::is_invalid) => {}
                 None => text.push_str("\"\""),
                 Some(Cell::Values(values)) => {
                     text.push('"');
                     for (r, v) in values.iter().enumerate() {
                         if r > 0 {
                             text.push(GS);
+                        }
+                        if v.is_invalid() {
+                            continue;
                         }
                         if numbers && column.info.ty == FieldType::Number {
                             quoted_text(&v.number_text(), text);
@@ -93,8 +105,19 @@ fn quoted_rows(table: &Table, numbers: bool, text: &mut String) {
     }
 }
 
-pub(crate) fn comma(table: &Table) -> Vec<u8> {
+pub(crate) fn comma(table: &Table, field_names: bool) -> Vec<u8> {
     let mut text = String::new();
+    if field_names {
+        for (i, column) in table.columns.iter().enumerate() {
+            if i > 0 {
+                text.push(',');
+            }
+            text.push('"');
+            quoted_text(&column.merge_name(), &mut text);
+            text.push('"');
+        }
+        text.push('\r');
+    }
     quoted_rows(table, true, &mut text);
     encode(table, &text)
 }

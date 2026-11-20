@@ -502,6 +502,9 @@ struct TooDeep;
 pub struct Predictor<'a> {
     atn: &'a Atn,
     dfas: Vec<Dfa>,
+    /// The configurations the DFA states hold, and one for each state:
+    /// what the cache's memory grows with.
+    cached: usize,
     /// The closure's work list, kept between calls.
     stack: std::cell::RefCell<Vec<Step>>,
 }
@@ -511,8 +514,14 @@ impl<'a> Predictor<'a> {
         Predictor {
             atn,
             dfas: (0..atn.decisions.len()).map(|_| Dfa::default()).collect(),
+            cached: 0,
             stack: std::cell::RefCell::new(Vec::new()),
         }
+    }
+
+    /// How much the cache holds: its DFA states and their configurations.
+    pub fn cached(&self) -> usize {
+        self.cached
     }
 
     /// The alternative (from 1) of `decision` the input predicts; `outer`
@@ -591,6 +600,7 @@ impl<'a> Predictor<'a> {
         } else if sll_conflict_ends_prediction(self.atn, &state.configs) {
             state.requires_full = true;
         }
+        self.cached += state.configs.items.len() + 1;
         dfa.states.push(state);
         dfa.by_configs.insert(key, dfa.states.len() - 1);
         dfa.states.len() - 1

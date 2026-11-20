@@ -27,6 +27,7 @@
 //! at the end).
 
 use std::collections::{BTreeMap, HashMap};
+use std::io::Read;
 use std::path::PathBuf;
 
 use om_data::calc::eval::{CalcHost, Context, FieldId};
@@ -161,6 +162,7 @@ impl WorkerHost<'_> {
                 formatting: false,
                 charset: ExportCharset::Utf8,
                 use_name_alias: Some(1),
+                field_names: None,
             },
         };
         let mut profile = match call.profile.as_deref() {
@@ -190,11 +192,15 @@ impl WorkerHost<'_> {
                 .file
                 .trim_end_matches(".fmp12")
                 .to_owned();
+            // The first stored path this machine reads, as the resolver
+            // would take it: another platform's line first is skipped.
+            let shown = paths
+                .iter()
+                .find(|line| files::of_this_platform(line))
+                .cloned()
+                .unwrap_or_else(|| format!("file:{stem}.{}", profile.file_type.extension()));
             let dialog = ExportDialog {
-                path: paths
-                    .first()
-                    .cloned()
-                    .unwrap_or_else(|| format!("file:{stem}.{}", profile.file_type.extension())),
+                path: shown.clone(),
                 file_type: profile.file_type,
                 types: if excel {
                     vec![FileType::ExcelExport]
@@ -210,7 +216,21 @@ impl WorkerHost<'_> {
             let Some(Answer::Export(Some(d))) = self.ask(Prompt::Export(dialog)) else {
                 return Err(ErrorCode::CANCELED.into());
             };
-            paths = vec![d.path.clone()];
+            // A native path the user typed, in FileMaker's form, as the
+            // import dialog passes its own: `/private/tmp/x.csv` as it is
+            // would name the volume `private` on macOS (error 826). The
+            // path list line shown stays as it is when the user left it, or
+            // only changed the file type, which gives it that type's
+            // extension (`app::scripts::transfer`): it may be a FileMaker
+            // path without a prefix.
+            let retyped = shown
+                .rsplit_once('.')
+                .map(|(stem, _)| format!("{stem}.{}", d.file_type.extension()));
+            paths = vec![if d.path == shown || Some(&d.path) == retyped.as_ref() {
+                d.path.clone()
+            } else {
+                files::chosen_path(&d.path)
+            }];
             current = d.current_record == Some(true);
             profile = Profile::new(d.file_type);
             options.charset = d.charset;
@@ -242,7 +262,7 @@ impl WorkerHost<'_> {
         }
         let path = self.export_path(&paths, call.create_folders)?;
         let mut request = ExportRequest::new(options, profile);
-        request.field_names_row = excel;
+        request.field_names_row |= excel;
         let sort = self.sorted_fields(&schema, occurrence);
         let mut source = GuiExport {
             host: self,
@@ -356,7 +376,7 @@ impl WorkerHost<'_> {
         };
         if matches!(
             profile.file_type,
-            FileType::FileMaker | FileType::Folder | FileType::Odbc | FileType::Excel2003
+            FileType::FileMaker | FileType::Folder | FileType::Odbc
         ) {
             return Err(HostError::Unsupported);
         }
@@ -368,6 +388,8 @@ impl WorkerHost<'_> {
             .field_flags
             .as_deref()
             .and_then(|b| FieldFlags::decode(b).ok());
+        import::refuse_unsupported(&options, field_flags.as_ref())
+            .map_err(|_| HostError::Unsupported)?;
         let mut paths = call.paths.clone();
         let target = options.table.id().unwrap_or(window);
         let target_name = format!(
@@ -423,7 +445,15 @@ impl WorkerHost<'_> {
         }
         let documents = self.s.file.data_files.folders.documents.clone();
         let path = files::existing(&paths, &documents, false)?;
-        let bytes = std::fs::read(&path).map_err(|_| ErrorCode::FILE_MISSING)?;
+        // One byte past the limit, so that the import refuses a larger
+        // file without it being read whole.
+        let mut bytes = Vec::new();
+        std::fs::File::open(&path)
+            .and_then(|f| {
+                f.take(import::limit::SOURCE_BYTES as u64 + 1)
+                    .read_to_end(&mut bytes)
+            })
+            .map_err(|_| ErrorCode::FILE_MISSING)?;
         if call.with_dialog || choose_source || options.map.is_empty() {
             let probe = ImportRequest {
                 options: options.clone(),
@@ -789,21 +819,20 @@ impl ExportSource for GuiExport<'_, '_> {
                 .map_or_else(ExportValue::empty, ExportValue::Computed));
         }
         let (bo, bf) = (occurrence, field);
-        self.host
-            .summary(
-                &Context {
-                    occurrence: Some(self.occurrence),
-                    record: Some(first),
-                    ..Context::new()
-                },
-                FieldId { occurrence, field },
-                FieldId {
-                    occurrence: bo,
-                    field: bf,
-                },
-            )
-            .map(ExportValue::Computed)
-            .map_err(calc_error)
+        om_data::summary::or_invalid(self.host.summary(
+            &Context {
+                occurrence: Some(self.occurrence),
+                record: Some(first),
+                ..Context::new()
+            },
+            FieldId { occurrence, field },
+            FieldId {
+                occurrence: bo,
+                field: bf,
+            },
+        ))
+        .map(ExportValue::Computed)
+        .map_err(calc_error)
     }
 
     /// Each record's value as the window's found set shows it, the current

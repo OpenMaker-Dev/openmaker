@@ -952,6 +952,13 @@ impl std::fmt::Debug for Picture {
 mod static_picture;
 pub mod svg_worker;
 
+/// An SVG drawn at `size` pixels as Browse draws it (what the worker does
+/// not draw left out): in the SVG worker, or in this process in unit
+/// tests (`static_picture::svg`).
+pub(crate) fn browse_svg(data: &[u8], size: [u32; 2]) -> Result<Picture, String> {
+    static_picture::svg(data, Some(size), svg_worker::Unsupported::Skip)
+}
+
 /// Static layout pictures have their own bounded decoder; SVG pictures are
 /// never tinted or passed through the button-icon renderer.
 fn decode_picture(key: u64, image: &LibraryImage) -> Result<Picture, ReportError> {
@@ -1074,8 +1081,9 @@ impl std::fmt::Debug for Pictures {
 const ICON_SCALE: f64 = 4.0;
 
 /// An SVG icon tinted as Browse tints it (`document::tinted_image`) and
-/// rasterized by the renderer Browse uses (`egui_extras`, resvg) into
-/// `side` x `side` pixels, stretched as Browse stretches it into its square.
+/// drawn as Browse draws it (in the SVG worker, what it does not draw left
+/// out) into `side` x `side` pixels, stretched as Browse stretches it into
+/// its square.
 fn rasterize_icon(
     key: u64,
     image: &LibraryImage,
@@ -1083,36 +1091,10 @@ fn rasterize_icon(
     side: u32,
 ) -> Result<Picture, ReportError> {
     let data = crate::document::tinted_image(image, tint);
-    let raster = egui_extras::image::load_svg_bytes_with_size(
-        &data,
-        egui::SizeHint::Size {
-            width: side,
-            height: side,
-            maintain_aspect_ratio: false,
-        },
-        &resvg::usvg::Options::default(),
-    )
-    .map_err(|error| {
+    static_picture::svg(&data, Some([side, side]), svg_worker::Unsupported::Skip).map_err(|error| {
         ReportError::unsupported(format!(
             "Library image {key} could not be drawn for the report: {error}"
         ))
-    })?;
-    let [width, height] = raster.size.map(|n| n as u32);
-    if width == 0 || height == 0 {
-        return Err(ReportError::unsupported(format!(
-            "Library image {key} has no pixels"
-        )));
-    }
-    // egui keeps premultiplied alpha; pictures carry straight alpha.
-    let rgba: Vec<u8> = (raster.pixels.iter())
-        .flat_map(|pixel| pixel.to_srgba_unmultiplied())
-        .collect();
-    Ok(Picture {
-        width,
-        height,
-        opaque: rgba.as_chunks::<4>().0.iter().all(|p| p[3] == u8::MAX),
-        rgba,
-        texture: OnceLock::new(),
     })
 }
 
@@ -1625,16 +1607,27 @@ fn walk_report_objects<'a>(
         })
         .filter_map(part_of)
         .collect();
-    if let Some(object) =
-        layout.objects.objects.iter().find(|o| {
-            o.slide_up().is_some() && part_of(o).is_some_and(|part| beyond.contains(&part))
-        })
-    {
-        refuse(ReportError::unsupported(format!(
-            "Report object {} slides up in a part with objects beyond the printable width; \
-             how those slide is unmeasured",
-            object.id
-        )))?;
+    // Likewise whether an object hidden when printing still holds back
+    // what slides up below it.
+    let hidden: BTreeSet<usize> = (layout.objects.objects.iter())
+        .filter(|o| o.flags & sliding::NON_PRINTING != 0)
+        .filter_map(part_of)
+        .collect();
+    for (parts, what) in [
+        (&beyond, "objects beyond the printable width"),
+        (&hidden, "objects hidden when printing"),
+    ] {
+        // Only what prints can slide: a slider that is itself left out (or
+        // inside what is) moves nothing.
+        if let Some((object, _, _)) = objects.iter().find(|(o, _, _)| {
+            o.slide_up().is_some() && part_of(o).is_some_and(|part| parts.contains(&part))
+        }) {
+            refuse(ReportError::unsupported(format!(
+                "Report object {} slides up in a part with {what}; how those slide is \
+                 unmeasured",
+                object.id
+            )))?;
+        }
     }
     // Whether a sliding object overlapping another would move over, under or
     // out of it natively is unmeasured; such layouts are refused.
@@ -1811,8 +1804,9 @@ fn beyond_page(object: &LayoutObject, rect: &Rect, paper: &PageSize) -> bool {
 /// One object's place in the report: its absolute bounds and part, after
 /// the checks every report object passes. `via` is the index in `objects`
 /// of the group the object was reached through, `None` for a top-level
-/// object. `None` for an object in a navigation part or wholly beyond the
-/// printable width, which never prints (and neither do its contents).
+/// object. `None` for an object hidden when printing, in a navigation part
+/// or wholly beyond the printable width, which never prints (and neither
+/// do its contents).
 fn report_object<'a>(
     layout: &'a Layout,
     paper: &PageSize,
@@ -1820,6 +1814,26 @@ fn report_object<'a>(
     via: Option<usize>,
     objects: &[SourceObject<'a>],
 ) -> Result<Option<SourceObject<'a>>, ReportError> {
+    // Hide when printing leaves the object, and what it holds, out of
+    // every printed page (Claris, "Removing blank spaces in printouts";
+    // layout-model.md 5.8), whatever else it is set to do or wherever it
+    // is: nothing else about it is checked.
+    if object.flags & sliding::NON_PRINTING != 0 {
+        return Ok(None);
+    }
+    // Whether a tab control draws the caption of a panel hidden when
+    // printing is unmeasured.
+    if object.kind() == ObjectKind::TabControl
+        && (object.children.iter())
+            .filter_map(|id| layout.objects.get(*id))
+            .any(|panel| panel.flags & sliding::NON_PRINTING != 0)
+    {
+        return Err(ReportError::unsupported(format!(
+            "Report tab control {} has a panel hidden when printing; how its tab prints is \
+             unmeasured",
+            object.id
+        )));
+    }
     let rect = layout
         .absolute_bounds(object.id)
         .ok_or_else(|| ReportError::unsupported("A report object has no geometry"))?;
@@ -1861,12 +1875,6 @@ fn report_object<'a>(
     if object.flags & sliding::LEFT != 0 {
         return Err(ReportError::unsupported(format!(
             "Report object {} slides left; sliding left is unsupported",
-            object.id
-        )));
-    }
-    if object.flags & sliding::NON_PRINTING != 0 {
-        return Err(ReportError::unsupported(format!(
-            "Report object {} is hidden when printing; non-printing objects are unsupported",
             object.id
         )));
     }
@@ -2238,7 +2246,8 @@ fn slides_in(kind: PartKind) -> bool {
 /// of fixed height and needs no plan-time content.
 pub(crate) fn resizes_parts(layout: &Layout) -> bool {
     layout.objects.objects.iter().any(|object| {
-        object.slide_up().is_some_and(|slide| slide.resize_part)
+        !hidden_when_printing(layout, object)
+            && object.slide_up().is_some_and(|slide| slide.resize_part)
             && layout.absolute_bounds(object.id).is_some_and(|rect| {
                 layout
                     .parts
@@ -2247,6 +2256,23 @@ pub(crate) fn resizes_parts(layout: &Layout) -> bool {
                     .is_some_and(|p| slides_in(p.kind()))
             })
     })
+}
+
+/// Whether `object` or a container it is in is set to Hide when printing,
+/// so that it never prints ([`report_object`]). Containers are followed at
+/// most as many levels as the layout has objects, so a cycle ends.
+fn hidden_when_printing(layout: &Layout, object: &LayoutObject) -> bool {
+    let mut at = Some(object);
+    for _ in 0..=layout.objects.objects.len() {
+        let Some(object) = at else {
+            return false;
+        };
+        if object.flags & sliding::NON_PRINTING != 0 {
+            return true;
+        }
+        at = object.parent.and_then(|id| layout.objects.get(id));
+    }
+    false
 }
 
 /// In a sub-summary part, a summary field reads its group: the summary and
@@ -4372,7 +4398,7 @@ pub(crate) mod tests {
 
         // What reports do not draw refuses before the tree is built: images,
         // references outside the picture and entities. What only exhausts
-        // memory or time is the worker's to contain (tests/report_svg_worker.rs).
+        // memory or time is the worker's to contain (tests/svg_worker.rs).
         for (body, reason) in [
             (
                 r#"<image href="/not-a-report-resource.png" width="10" height="10"/>"#,

@@ -392,6 +392,9 @@ pub(crate) struct NativeSource<'a> {
     /// The tables whose data could not be read in this call, with the
     /// first failure of each.
     failed_tables: RefCell<BTreeMap<u64, DataError>>,
+    /// The tables whose window found set could not be read, with why
+    /// (`NativeProvider::read_calc_batch`): their found-set needs fail.
+    pub(crate) unseeded: RefCell<BTreeMap<u64, DataError>>,
     /// Relationship scans kept across calls, when given.
     scans: Option<&'a RefCell<KeptScans>>,
     /// The window's token for this read, when it may stop needing it
@@ -446,6 +449,7 @@ impl<'a> NativeSource<'a> {
             calculation_session: None,
             failure: RefCell::default(),
             failed_tables: RefCell::default(),
+            unseeded: RefCell::default(),
             scans: None,
             cancel: None,
             fonts: None,
@@ -809,6 +813,10 @@ impl CalcSource for NativeSource<'_> {
     fn found_set(&self, occurrence: u64, table: u64) -> Result<Arc<[u64]>, CalcError> {
         if let Some(found) = self.found.borrow().get(&occurrence) {
             return Ok(Arc::clone(found));
+        }
+        // The window's found set could not be read: never every record.
+        if let Some(error) = self.unseeded.borrow().get(&table).cloned() {
+            return Err(self.fail(error));
         }
         self.records(table)
     }
@@ -1581,6 +1589,26 @@ impl NativeProvider {
         self.calc.library.get_mut().refresh();
         let globals = self.desktop_globals(&schema);
         let mut page = std::mem::take(&mut self.calc.page);
+        // A found set the kept page no longer holds (its budget dropped it)
+        // is the window's, never every record of its table: read once per
+        // table, for all its occurrences. One that cannot be read fails
+        // its needs, and the batch's other needs are still answered.
+        let mut seeded = BTreeSet::new();
+        let mut unseeded = BTreeMap::new();
+        for need in needs {
+            if let CalcNeed::FoundSet { occurrence, table } = need {
+                if page.found.contains_key(occurrence) || !seeded.insert(*table) {
+                    continue;
+                }
+                // A read the window stopped answers no need (#987).
+                if cancel.is_some_and(CalcCancel::cancelled) {
+                    break;
+                }
+                if let Err(error) = self.seed_found_set(&schema, *table, &mut page) {
+                    unseeded.insert(*table, error);
+                }
+            }
+        }
         let session = self.session.as_mut().expect("open session");
         let source = NativeSource::new(session, &schema, today)
             .with_calculation_session(session_info)
@@ -1591,6 +1619,7 @@ impl NativeProvider {
             .with_scans(&self.calc.scans)
             .with_cancel(cancel);
         source.seed(&page);
+        source.unseeded.replace(unseeded);
         // Records in as few op92 requests as possible (a query's found set
         // arrives as one list of needs).
         let mut ahead: std::collections::BTreeMap<u64, Vec<u64>> = Default::default();
@@ -1669,6 +1698,29 @@ impl NativeProvider {
         }
     }
 
+    /// Put the window's found set of `table`, in its order, and its sort
+    /// under every occurrence of the table into `page`, as a record page
+    /// read puts them ([`Self::calculate_page_once`]).
+    fn seed_found_set(
+        &mut self,
+        schema: &CalcSchema,
+        table: u64,
+        page: &mut CalcData,
+    ) -> Result<(), DataError> {
+        let (found, _) = self.found_ids(table)?;
+        let sort: Arc<[u64]> = self
+            .found_sort(table)
+            .iter()
+            .map(|key| schema.sort_key_field(table, key))
+            .collect();
+        let found: Arc<[u64]> = found.into();
+        for alias in schema.occurrences().filter(|o| o.table == table) {
+            page.found.insert(alias.id, Arc::clone(&found));
+            page.sorts.insert(alias.id, Arc::clone(&sort));
+        }
+        Ok(())
+    }
+
     /// Only the answer to this window's display read receives its retained
     /// prepared cells. Keep the host cache and observed versions unchanged.
     fn overlay_unsettled_related(
@@ -1706,7 +1758,11 @@ impl NativeProvider {
     /// host has none of yet: read as held (`held_new_cells`), as record
     /// pages show them, so that a script's field after New Record and the
     /// match field of a row begun in the record's portal read its values.
-    /// Only the answer has them, not the working set of the host's records.
+    /// So is the record a related set of `needs` is read from: the window
+    /// scans a held record's sets from its held values
+    /// (`CachedSource::related_over_overlays`), and a layout that shows
+    /// only its portal asks for nothing else of it. Only the answer has
+    /// them, not the working set of the host's records.
     fn overlay_held_new(
         &self,
         schema: &CalcSchema,
@@ -1715,8 +1771,14 @@ impl NativeProvider {
         today: Date,
     ) {
         for need in needs {
-            let CalcNeed::Record { table, record } = need else {
-                continue;
+            let (table, record) = match need {
+                CalcNeed::Record { table, record } => (table, record),
+                CalcNeed::Related { from, record, .. }
+                | CalcNeed::RelatedIds { from, record, .. } => match schema.table_of(*from) {
+                    Some(table) => (&table.id, record),
+                    None => continue,
+                },
+                _ => continue,
             };
             let Some(cells) = self
                 .held_new_cells(*table, *record)

@@ -110,6 +110,18 @@ impl SetAccess {
         }
     }
 
+    /// Whether the account may do one of `actions` to the records of
+    /// every base table of `tables` (their keys), each by its own rules
+    /// (its entry, else the set's default): for a member of the file's own
+    /// container library, which any table's records may hold.
+    pub fn may_any_in_tables<'t>(
+        &self,
+        mut tables: impl Iterator<Item = &'t [u8]>,
+        actions: &[RecordAction],
+    ) -> bool {
+        tables.all(|table| actions.iter().any(|a| self.may(table, *a)))
+    }
+
     /// Whether field `field` of base table `table` (their keys) may be
     /// changed: not when the account's custom set gives it view-only access.
     pub fn modifies(&self, table: &[u8], field: &[u8]) -> bool {

@@ -356,6 +356,30 @@ fn portal_store_with(flags: u64, body_display: u64, extra: Vec<u8>, setting: Vec
     store
 }
 
+/// The Portals layout's objects with the portal alone: none of the
+/// layout's own fields.
+fn portal_only_store() -> Vec<u8> {
+    let mut store = Vec::new();
+    uint(1, PORTAL, &mut store);
+    bytes(
+        2,
+        &portal_object(PORTAL_FLAGS, rect(60.0, 10.0, 130.0, 410.0)),
+        &mut store,
+    );
+    bytes(
+        2,
+        &shown_field_object(
+            PORTAL_BODY,
+            NOTES_OCCURRENCE,
+            BODY,
+            rect(0.0, 0.0, 20.0, 300.0),
+            0,
+        ),
+        &mut store,
+    );
+    store
+}
+
 /// Notes 2 "first" and 3 "second" of "Write tests".
 fn add_notes(root: &mut OwnedNode) {
     let table = uint_segment(NOTES);
@@ -2020,6 +2044,52 @@ fn the_users_portal_row_edit_is_committed_with_the_record() {
     assert_eq!(stored(&hosted, TABLE, &[(CODE, 1)])[0].1, ["c1"]);
 }
 
+/// A save keeps the record's portal rows on screen while their data is
+/// read again: no frame between the save and the fresh rows draws them
+/// empty. Each row shows its last value, the saved text among them,
+/// read-only while its record is read again, then in its editor.
+#[test]
+fn a_save_keeps_the_portal_rows_while_they_are_read_again() {
+    let hosted = host("save-keeps-rows");
+    let mut app = open(&hosted);
+    expect(&mut app, "Show portals", "on Portals");
+    let editors = |app: &common::App| -> Vec<String> {
+        app.query_all(
+            By::new()
+                .role(egui::accesskit::Role::TextInput)
+                .label("Notes::Body"),
+        )
+        .filter_map(|row| row.value())
+        .filter(|value| !value.is_empty())
+        .collect()
+    };
+    // In an editor or as text.
+    let shown = |app: &common::App, text: &str| {
+        app.query_all(By::new())
+            .any(|node| node.value().as_deref() == Some(text))
+    };
+    retype_first_row(&mut app, "edited");
+    common::wait_until(&mut app, "unsaved record changes", common::unsaved);
+    common::save_record(&mut app);
+    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(30);
+    loop {
+        app.step();
+        assert!(
+            shown(&app, "edited") && shown(&app, "second"),
+            "a frame after the save drew the rows empty"
+        );
+        if !common::unsaved(&app) && !common::saving(&app) && app.state().is_settled() {
+            break;
+        }
+        assert!(std::time::Instant::now() < deadline, "timed out saving");
+        std::thread::sleep(std::time::Duration::from_millis(5));
+    }
+    common::wait_until(&mut app, "the rows' editors", |app| {
+        editors(app) == ["edited", "second"]
+    });
+    assert!(app.state().error().is_none(), "{:?}", app.state().error());
+}
+
 /// The user's focus and typing in a portal row's field run the field
 /// object's triggers (#1005), with its row and field active: OnObjectEnter
 /// as the field is entered, OnObjectModify as it is typed into, and
@@ -3397,7 +3467,10 @@ fn delete_record_deletes_the_selected_portal_rows_record() {
         .filter_map(|n| n.accesskit_node().value())
         .collect()
     };
-    assert_eq!(bodies(&app), ["first", "second", ""]);
+    // The rows paint once their related records are read.
+    common::wait_until(&mut app, "the portal rows", |app| {
+        bodies(app) == ["first", "second", ""]
+    });
     // The row's own click (its center is on the Body field, which a
     // pointer click enters).
     app.get_by_label("Portal Row 2").click_accesskit();
@@ -5298,9 +5371,11 @@ fn clicked_identity_never_redirects_after_membership_change() {
     );
 }
 
-/// A pending script repetition does not exempt later UI typing from its
-/// accepted-page baseline. The peer commit must survive until explicit Keep.
-fn mixed_ui_conflict(tag: &str, repetition_changed: bool) -> (hosted::Hosted, common::App) {
+/// The Portals record with a script's pending repetition (Status[2]
+/// "ab") and the user's typing ("b" in Code): the window holds the record
+/// on the host, as FileMaker Pro holds a record a script or the user began
+/// editing (write-path.md 4.1).
+fn mixed_edit(tag: &str) -> (hosted::Hosted, common::App) {
     let hosted = host(tag);
     let mut app = open(&hosted);
     expect(&mut app, "Repetition only", "reps 2:1:Status:ab");
@@ -5308,44 +5383,7 @@ fn mixed_ui_conflict(tag: &str, repetition_changed: bool) -> (hosted::Hosted, co
         app.state().is_settled() && common::text_field(app, "Code").value().is_some()
     });
     retype(&mut app, "Code", "b");
-    assert_eq!(
-        common::text_field(&app, "Code").value().as_deref(),
-        Some("b")
-    );
-    let mut other = hosted.opened();
-    other.records(PORTALS as u32, 0, 10).unwrap();
-    if repetition_changed {
-        other
-            .write_record(&om_data::ScriptWrite {
-                layout: PORTALS as u32,
-                record: Some(1),
-                cells: [(STATUS * 256 + 2, Some("xy".into()))].into(),
-                ..Default::default()
-            })
-            .unwrap();
-    } else {
-        other
-            .update_record(
-                PORTALS as u32,
-                1,
-                [("Code".to_owned(), Some("c".to_owned()))].into(),
-            )
-            .unwrap();
-    }
-    other.close();
-    common::save_record(&mut app);
-    common::wait_until(&mut app, "the mixed edit held for a choice", |app| {
-        !app.state().script_running() && app.query_by_label("Keep My Changes").is_some()
-    });
-    let actual = stored(&hosted, TABLE, &[(CODE, 1), (STATUS, 2)]);
-    assert_eq!(
-        actual[0].1,
-        if repetition_changed {
-            ["", "xy"]
-        } else {
-            ["c", ""]
-        }
-    );
+    common::wait_until(&mut app, "the edit taken", common::unsaved);
     assert_eq!(
         common::text_field(&app, "Code").value().as_deref(),
         Some("b")
@@ -5353,10 +5391,36 @@ fn mixed_ui_conflict(tag: &str, repetition_changed: bool) -> (hosted::Hosted, co
     (hosted, app)
 }
 
+/// Another client's change of a record the window holds with a script's
+/// and the user's edits is refused (301), whether a field, a repetition or
+/// the record's deletion; the window's save stores both edits.
 #[test]
-fn ui_typing_on_a_worker_owned_record_refuses_a_peer_change_until_keep() {
-    let (hosted, mut app) = mixed_ui_conflict("mixed-ui-keep", false);
-    common::click(&mut app, "Keep My Changes");
+fn a_record_with_script_and_user_edits_refuses_a_peers_change() {
+    let (hosted, mut app) = mixed_edit("mixed-ui-held");
+    let mut other = hosted.opened();
+    other.records(PORTALS as u32, 0, 10).unwrap();
+    let refusals = [
+        other
+            .update_record(
+                PORTALS as u32,
+                1,
+                [("Code".to_owned(), Some("c".to_owned()))].into(),
+            )
+            .map(|_| ()),
+        other
+            .write_record(&om_data::ScriptWrite {
+                layout: PORTALS as u32,
+                record: Some(1),
+                cells: [(STATUS * 256 + 2, Some("xy".into()))].into(),
+                ..Default::default()
+            })
+            .map(|_| ()),
+        other.delete_record(PORTALS as u32, 1),
+    ];
+    for refused in refusals {
+        assert_eq!(refused.unwrap_err().code, Some(301));
+    }
+    other.close();
     common::save_record(&mut app);
     wait_saved(&mut app);
     assert_eq!(
@@ -5365,72 +5429,62 @@ fn ui_typing_on_a_worker_owned_record_refuses_a_peer_change_until_keep() {
     );
 }
 
+/// Reverting the record drops the script's pending repetition with the
+/// user's typing, and lets the record go: the next edit starts from the
+/// host's values.
 #[test]
-fn discarding_a_mixed_conflict_reverts_pending_worker_repetitions() {
-    let (hosted, mut app) = mixed_ui_conflict("mixed-ui-discard", false);
-    common::click(&mut app, "Discard My Changes");
+fn reverting_mixed_edits_drops_pending_worker_repetitions() {
+    let (hosted, mut app) = mixed_edit("mixed-ui-revert");
+    common::revert_record(&mut app);
     common::wait_until(&mut app, "the mixed edits reverted", |app| {
         app.state().is_settled()
             && !app.state().script_running()
-            && app.query_by_label("Keep My Changes").is_none()
-            && common::text_field(app, "Code").value().as_deref() == Some("c")
+            && common::text_field(app, "Code").value().as_deref() == Some("")
     });
+    let mut other = hosted.opened();
+    other.records(PORTALS as u32, 0, 10).unwrap();
+    other
+        .update_record(
+            PORTALS as u32,
+            1,
+            [("Code".to_owned(), Some("c".to_owned()))].into(),
+        )
+        .unwrap();
+    other.close();
     assert_eq!(
         stored(&hosted, TABLE, &[(CODE, 1), (STATUS, 2)])[0].1,
         ["c", ""]
     );
-    retype(&mut app, "Code", "d");
-    common::save_record(&mut app);
-    wait_saved(&mut app);
-    assert_eq!(
-        stored(&hosted, TABLE, &[(CODE, 1), (STATUS, 2)])[0].1,
-        ["d", ""]
-    );
 }
 
+/// A script's pending repetition alone holds the record on the host, as
+/// the user's typing does: another client's change of that repetition is
+/// refused (301), and the window's save stores the script's value.
 #[test]
-fn a_mixed_repetition_conflict_is_held_even_when_scalar_values_match() {
-    let (hosted, mut app) = mixed_ui_conflict("mixed-repetition-keep", true);
-    common::click(&mut app, "Keep My Changes");
-    common::save_record(&mut app);
-    wait_saved(&mut app);
-    assert_eq!(
-        stored(&hosted, TABLE, &[(CODE, 1), (STATUS, 2)])[0].1,
-        ["b", "ab"]
-    );
-}
-
-#[test]
-fn a_mixed_record_deleted_by_a_peer_does_not_redirect_its_drafts() {
-    let hosted = host("mixed-ui-deleted");
+fn a_scripts_repetition_alone_holds_the_record_against_a_peer() {
+    let hosted = host("repetition-held");
     let mut app = open(&hosted);
     expect(&mut app, "Repetition only", "reps 2:1:Status:ab");
-    common::wait_until(&mut app, "the accepted editable record", |app| {
-        app.state().is_settled()
+    common::wait_until(&mut app, "the accepted record", |app| {
+        app.state().is_settled() && common::text_field(app, "Code").value().is_some()
     });
-    retype(&mut app, "Code", "b");
     let mut other = hosted.opened();
     other.records(PORTALS as u32, 0, 10).unwrap();
-    other.delete_record(PORTALS as u32, 1).unwrap();
+    let refused = other
+        .write_record(&om_data::ScriptWrite {
+            layout: PORTALS as u32,
+            record: Some(1),
+            cells: [(STATUS * 256 + 2, Some("xy".into()))].into(),
+            ..Default::default()
+        })
+        .unwrap_err();
+    assert_eq!(refused.code, Some(301), "{refused:?}");
     other.close();
     common::save_record(&mut app);
-    common::wait_until(&mut app, "the deleted mixed record held", |app| {
-        !app.state().script_running() && app.query_by_label("Discard My Changes").is_some()
-    });
-    assert!(app.query_by_label("Keep My Changes").is_none());
+    wait_saved(&mut app);
     assert_eq!(
-        stored(&hosted, TABLE, &[(CODE, 1), (STATUS, 2)]),
-        vec![(2, vec!["".to_owned(), "".to_owned()])]
-    );
-    common::click(&mut app, "Discard My Changes");
-    common::wait_until(&mut app, "the deleted record's drafts discarded", |app| {
-        app.state().is_settled()
-            && !app.state().script_running()
-            && app.query_by_label("Discard My Changes").is_none()
-    });
-    assert_eq!(
-        stored(&hosted, TABLE, &[(CODE, 1), (STATUS, 2)]),
-        vec![(2, vec!["".to_owned(), "".to_owned()])]
+        stored(&hosted, TABLE, &[(CODE, 1), (STATUS, 2)])[0].1,
+        ["", "ab"]
     );
 }
 
@@ -5531,6 +5585,57 @@ fn a_held_new_records_refused_save_writes_its_portal_row_once_when_retried() {
         notes.last().map(|(_, values)| values.clone()),
         Some(vec!["kept".to_owned(), "New task".to_owned()])
     );
+}
+
+/// A new record the window holds relates records by the key it was
+/// auto-entered with before anything is typed into it, as FileMaker's new
+/// record does (Claris, "Creating related records"): with relationship 1
+/// joining `Tasks::Creator = Notes::Task`, Creator auto-entered with the
+/// account's name and both notes the account's, New Record's portal shows
+/// them at once. The stored tasks have no creator and relate none. The
+/// layout shows the portal alone, so nothing else reads the new record.
+#[test]
+fn a_held_new_records_portal_follows_its_auto_entered_key_before_typing() {
+    let hosted = host_with("held-new-auto-key", |root| {
+        root.put(
+            &[&[4], &[5], &uint_segment(PORTALS), &[7]],
+            OwnedNode::leaf(Vec::new(), portal_only_store()),
+        );
+        fixture::add_relationship(root, 1, (OCCURRENCE, CREATOR), 0, (NOTES_OCCURRENCE, TASK));
+        for note in [2u64, 3] {
+            root.put(
+                &[
+                    &uint_segment(NOTES),
+                    &[5],
+                    &serial::encode(note),
+                    &uint_segment(TASK),
+                ],
+                text_node(&[], fixture::ACCOUNT),
+            );
+        }
+    });
+    let mut app = open(&hosted);
+    common::select_layout(&mut app, "Portals");
+    let rows = |app: &common::App| -> Vec<String> {
+        app.query_all(
+            By::new()
+                .role(egui::accesskit::Role::TextInput)
+                .label("Notes::Body"),
+        )
+        .filter_map(|row| row.value())
+        .filter(|value| !value.is_empty())
+        .collect()
+    };
+    common::wait_until(&mut app, "the Portals layout", |app| {
+        app.state().is_settled()
+    });
+    assert!(common::find_text_field(&app, "Name").is_none());
+    assert!(rows(&app).is_empty(), "{:?}", rows(&app));
+    common::click(&mut app, "New Record");
+    common::wait_until(&mut app, "the new record's related notes", |app| {
+        app.state().is_settled() && rows(app) == ["first", "second"]
+    });
+    assert!(app.state().error().is_none(), "{:?}", app.state().error());
 }
 
 /// Find mode draws the layout itself: its fields, the portal's first row
