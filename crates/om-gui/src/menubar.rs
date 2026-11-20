@@ -529,21 +529,24 @@ fn view_menu(rows: &mut dyn MenuRows, context: &MenuContext<'_>, actions: &mut V
     }
 }
 
-/// Picture and File insert into the selected container field (the
-/// script steps without a path, which ask for the file). Audio/Video and
-/// PDF stay disabled: OpenMaker plays no media and shows no PDF, and how
-/// FileMaker Pro stores what those commands insert is not measured.
+/// Picture, Audio/Video, PDF and File insert into the selected container
+/// field: the script steps without a path, which ask for the file and store
+/// it as the steps with a path do, typed by its name (what FileMaker Pro
+/// stores for each is not measured, containers.md "Desktop menus and file
+/// dialogs").
 fn insert_menu(rows: &mut dyn MenuRows, context: &MenuContext<'_>, actions: &mut Vec<Action>) {
     // Editing only and Minimum leave both out (FileMaker Pro 26.0.3,
     // #651's reading).
     let insert = context.container_insert && context.full_menus();
-    if rows.item("Picture...", None, false, insert) {
-        actions.push(Action::Step(steps::INSERT_PICTURE, 0));
-    }
-    pending(rows, "Audio/Video...", None);
-    pending(rows, "PDF...", None);
-    if rows.item("File...", None, false, insert) {
-        actions.push(Action::Step(steps::INSERT_FILE, 0));
+    for (label, step) in [
+        ("Picture...", steps::INSERT_PICTURE),
+        ("Audio/Video...", steps::INSERT_AUDIO_VIDEO),
+        ("PDF...", steps::INSERT_PDF),
+        ("File...", steps::INSERT_FILE),
+    ] {
+        if rows.item(label, None, false, insert) {
+            actions.push(Action::Step(step, 0));
+        }
     }
     rows.separator();
     pending(rows, "Current Date", command(CMD, Key::Minus));

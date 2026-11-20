@@ -181,6 +181,8 @@ pub(crate) mod steps {
     pub const NEW_WINDOW: u16 = 122;
     pub const INSERT_PICTURE: u16 = 56;
     pub const INSERT_FILE: u16 = 131;
+    pub const INSERT_PDF: u16 = 158;
+    pub const INSERT_AUDIO_VIDEO: u16 = 159;
     pub const EXPORT_FIELD_CONTENTS: u16 = 132;
     pub const PERFORM_QUICK_FIND: u16 = 150;
 }

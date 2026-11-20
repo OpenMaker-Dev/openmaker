@@ -1553,16 +1553,17 @@ Documents folder); the system's file panels are not used.
   the container is not selected. The field shows the picture or the
   file's icon and name (Browse, above), never its library reference; media
   is not played.
-- Insert > Picture... and Insert > File... run Insert Picture (56) and
-  Insert File (131) without a path on the selected field; they are
-  enabled only while a container is selected and the record may be
-  changed (no read-only file, no running script). Edit > Export Field
-  Contents... runs Export Field Contents (132) on it. Insert > PDF... and
-  Insert > Audio/Video... stay disabled: OpenMaker shows no PDF and plays
-  no media, and how FileMaker Pro stores what those commands insert is
-  not measured. A script's Insert PDF or Insert Audio/Video without a
-  path asks like Insert File, and stores the file as the steps with a
-  path do (typed by its name).
+- Insert > Picture..., Insert > Audio/Video..., Insert > PDF... and
+  Insert > File... run Insert Picture (56), Insert Audio/Video (159),
+  Insert PDF (158) and Insert File (131) without a path on the selected
+  field; they are enabled only while a container is selected and the
+  record may be changed (no read-only file, no running script). Edit >
+  Export Field Contents... runs Export Field Contents (132) on it. Insert
+  PDF and Insert Audio/Video store the file as the steps with a path do,
+  typed by its name, as FileMaker Server's engine types a file Set Field
+  stores (s34); an interactive container shows the PDF's pages and plays
+  the media (Browse, above). What FileMaker Pro stores for these two
+  commands is not measured [I, OpenMaker's choice].
 - Before the dialog shows, Insert checks the field: a stored container
   field of the window's own table, in Browse mode, on a connection whose
   record capabilities allow changes; otherwise 413 or 201 (OpenMaker's

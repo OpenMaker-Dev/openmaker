@@ -331,8 +331,22 @@ fn the_menus_insert_and_export_the_selected_container_field() {
     hosted::replace(&mut app, "Name", "Shipped");
     select_photo(&mut app);
     assert_eq!(name(&app).as_deref(), Some("Shipped"));
-    assert!(menu_enabled(&mut app, "Insert", "Picture..."));
-    assert!(!menu_enabled(&mut app, "Insert", "Audio/Video..."));
+    for item in ["Picture...", "Audio/Video...", "PDF...", "File..."] {
+        assert!(menu_enabled(&mut app, "Insert", item), "{item}");
+    }
+    // Insert > PDF... and Audio/Video... ask as their steps do.
+    for (item, title) in [
+        ("PDF...", "Insert PDF"),
+        ("Audio/Video...", "Insert Audio/Video"),
+    ] {
+        choose(&mut app, "Insert", item);
+        common::wait_for_label(&mut app, title);
+        app.key_press(egui::Key::Escape);
+        settle(&mut app);
+        assert!(app.query_by_label(title).is_none());
+        assert_eq!(count(&hosted, 2), None);
+        select_photo(&mut app);
+    }
 
     // Cancel: nothing uploaded, nothing stored, the typing kept.
     choose(&mut app, "Insert", "File...");

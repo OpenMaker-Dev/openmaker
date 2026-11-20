@@ -1,8 +1,8 @@
 //! The desktop's container steps (containers.md, "Implementation notes
 //! (desktop client)"): Insert File (131), Insert Picture (56), Insert PDF
 //! (158), Insert Audio/Video (159) and Export Field Contents (132), also
-//! as the Insert menu's Picture and File and the Edit menu's Export Field
-//! Contents run them.
+//! as the Insert menu's Picture, Audio/Video, PDF and File and the Edit
+//! menu's Export Field Contents run them.
 //!
 //! An inserted file is read from the first path of its path list that names
 //! an existing file, with the path rules of the data file steps
