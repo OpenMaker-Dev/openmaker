@@ -1885,8 +1885,14 @@ impl<'a> WorkerHost<'a> {
                     .collect(),
             )
         });
-        // A serial number is not copied: the copy takes the next one
-        // (`duplicate-record-request.html`).
+        // An auto-entered value is not copied: the copy's own is entered
+        // as it is created, a serial number the next one, a replacing
+        // calculation evaluated on the copy (`FieldDef::duplicate_copies`,
+        // #473). In a transaction that skips auto-entry the copy enters
+        // none, and takes the record's values, as before [I: FileMaker's
+        // duplicate there is unmeasured].
+        let skips_entry =
+            self.s.file.transaction.is_some() && self.s.file.transaction_skips_auto_entry;
         let stored_fields: Option<BTreeSet<String>> = self.schema().and_then(|schema| {
             Some(
                 schema
@@ -1894,10 +1900,16 @@ impl<'a> WorkerHost<'a> {
                     .fields
                     .values()
                     .filter(|f| {
-                        f.class == FieldClass::Data
-                            && f.stored
-                            && !f.global
-                            && !f.auto_enters_serial()
+                        if skips_entry {
+                            // A serial number is not copied: the copy takes
+                            // none there, as before #473.
+                            f.class == FieldClass::Data
+                                && f.stored
+                                && !f.global
+                                && !f.auto_enters_serial()
+                        } else {
+                            f.duplicate_copies()
+                        }
                     })
                     .map(|f| f.name.clone())
                     .collect(),
@@ -1969,7 +1981,24 @@ impl<'a> WorkerHost<'a> {
         let privilege_set = self.current_set_name();
         let made = {
             let (window, provider) = self.wp();
-            window.make_new_record(provider, session, (values, cells), privilege_set)
+            // The copy's place in the found set, which a calculation it
+            // enters reads as Get ( RecordNumber ): after the records of an
+            // unsorted found set (script oracle s46-record-number-ae: a
+            // duplicate of the first of nine stores 10), from the
+            // provider's found set as it is now, not the window's last
+            // read of it. A sorted found set's is unmeasured: the copy has
+            // none, and such a calculation refuses the save (3).
+            let layout = window.state.layout.unwrap_or_default();
+            let record_number = match provider.records_with_summary(layout, 0, 0, &[]) {
+                Ok((_, Some(found))) if !found.sorted => Some(found.found + 1),
+                _ => None,
+            };
+            window.make_new_record(
+                provider,
+                session,
+                (values, cells),
+                (privilege_set, record_number),
+            )
         };
         let made = match made {
             Ok(made) => made,
@@ -4577,6 +4606,7 @@ impl Records for WorkerHost<'_> {
             .begin_transaction(options)
             .map_err(|e| self.failed(e))?;
         self.s.file.transaction = Some(Vec::new());
+        self.s.file.transaction_skips_auto_entry = options.skip_auto_enter;
         Ok(())
     }
 

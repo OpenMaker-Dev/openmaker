@@ -119,7 +119,28 @@ OpenMaker does the same with the window's record session
   too.
 - **Duplicate Record** opens the session before it copies the record, so
   the container references the copy takes are the session's: kept by its
-  commit, released by its revert.
+  commit, released by its revert. It copies no auto-entered value: a
+  field that auto-enters a variable (a creation timestamp, an account
+  name), a serial number, a constant or a calculation that replaces an
+  existing value gets the copy's own, as FileMaker's does (auto-entry.md,
+  "Serial numbers"; script oracle s46-record-number-ae for a replacing
+  calculation,
+  [#473](https://github.com/OpenMaker-Dev/openmaker/issues/473)). A
+  replacing `Get ( RecordNumber )` is the copy's place after the records
+  of an unsorted found set, as s46 measured, as the host's found set is
+  when the copy is made; the copy keeps it through its edits before its
+  save, and in a script's transaction through Commit Records and later
+  writes until the transaction commits it (the transaction's held create
+  keeps it), as an auto-entered value is entered when the record is made.
+  Another client's change of the found set after that is not counted, as
+  a value FileMaker entered is not entered again [I]. In a
+  sorted found set the copy has none and its save is refused (3). A
+  lookup's value and a calculation that does not replace one are copied.
+  In a transaction that skips auto-entry the copy takes every stored value
+  of the record but a serial number, and enters none [I]. A table with a field that enters the last visited
+  record's value (`0x10`) is refused for these writes, as an unsupported
+  field option. The variable and constant cases follow Claris's
+  documentation and are unmeasured.
 - **On a layout of a related file's table** the related file holds the
   record as one of the session's parts, as it holds a portal row of its
   table (`write_routed_related`): op71 under the session's shared
