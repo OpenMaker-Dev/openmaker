@@ -136,6 +136,19 @@ impl ViewMode {
     }
 }
 
+/// An Edit menu command on the field the user is typing in
+/// (`OpenMakerApp::edit_field`).
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum EditCommand {
+    Undo,
+    Redo,
+    Cut,
+    Copy,
+    Paste,
+    Clear,
+    SelectAll,
+}
+
 /// Where keys a keyboard commit held for the next frame were typed
 /// (`OpenMakerApp::shortcuts`): the window's file, mode, layout and record,
 /// and the active field.
@@ -180,6 +193,12 @@ pub(crate) mod steps {
     pub const EXTEND: u16 = 127;
     pub const NEW_WINDOW: u16 = 122;
     pub const INSERT_PICTURE: u16 = 56;
+    pub const INSERT_FROM_INDEX: u16 = 11;
+    pub const INSERT_FROM_LAST_VISITED: u16 = 12;
+    pub const INSERT_CURRENT_DATE: u16 = 13;
+    pub const INSERT_CURRENT_TIME: u16 = 14;
+    pub const INSERT_CURRENT_USER_NAME: u16 = 60;
+    pub const COPY_RECORD: u16 = 101;
     pub const INSERT_FILE: u16 = 131;
     pub const EXPORT_FIELD_CONTENTS: u16 = 132;
     pub const PERFORM_QUICK_FIND: u16 = 150;
@@ -477,6 +496,9 @@ pub(crate) enum Action {
     CancelDeleteRecord,
     CommitRecord,
     RevertRecord,
+    /// A menu action waiting for the field exit it caused, including any
+    /// record edit preparation before the exit triggers can run.
+    MenuFieldExit(Box<Action>),
     RunButton {
         object_id: u64,
         record_index: u64,
@@ -495,6 +517,9 @@ pub(crate) enum Action {
     /// A command that is one script step (found-set commands, Perform
     /// Find): the step id and its flags.
     Step(u16, u32),
+    /// Edit > Undo, Redo, Cut, Copy, Paste, Clear or Select All in the
+    /// field the user is typing in.
+    EditField(EditCommand),
     /// The toolbar's Quick Find: Perform Quick Find with the search box's
     /// text.
     QuickFind(String),
@@ -1217,7 +1242,50 @@ impl OpenMakerApp {
     /// The window's menu bar at the top of `ui`. The Window menu lists no
     /// cards (Claris: "FileMaker Pro does not include cards in the Window
     /// menu").
-    pub(super) fn menu_bar(&self, ui: &mut Ui, input: bool, actions: &mut Vec<Action>) {
+    /// Edit > `command` in the field the user is typing in. Cut, Copy and
+    /// Paste go to its editor through the platform's clipboard, as its keys
+    /// do; the others change its text or selection here.
+    fn edit_field(&mut self, ctx: &egui::Context, command: EditCommand) {
+        use crate::document::FieldEdit;
+        let edit = match command {
+            EditCommand::Cut => return ctx.send_viewport_cmd(ViewportCommand::RequestCut),
+            EditCommand::Copy => return ctx.send_viewport_cmd(ViewportCommand::RequestCopy),
+            EditCommand::Paste => return ctx.send_viewport_cmd(ViewportCommand::RequestPaste),
+            EditCommand::Undo => FieldEdit::Undo,
+            EditCommand::Redo => FieldEdit::Redo,
+            EditCommand::Clear => FieldEdit::Clear,
+            EditCommand::SelectAll => FieldEdit::SelectAll,
+        };
+        let Some((layout, record)) = self.current_layout_record() else {
+            return;
+        };
+        if let Some(refusal) = self.w.document.edit_field(ctx, layout, record, edit) {
+            self.apply(ctx, Action::RefuseTyping(refusal));
+        }
+    }
+
+    /// The window's layout and current record.
+    fn current_layout_record(&self) -> Option<(u64, i64)> {
+        let session = self.w.session.as_ref()?;
+        Some((u64::from(session.layout?), session.current_record()?.1.id))
+    }
+
+    /// A text field of the current record is entered for typing in Browse,
+    /// where Insert's Current Date, Current Time, Current User Name, From
+    /// Index and From Last Visited Record put their text.
+    fn text_field_entered(&self) -> bool {
+        self.w.mode == Mode::Browse
+            && self.w.connection_lost.is_none()
+            && !self.w.document.pending
+            && self.w.document.active.is_some()
+            && self
+                .w
+                .session
+                .as_ref()
+                .is_none_or(|session| self.w.document.selected_container(session).is_none())
+    }
+
+    pub(super) fn menu_bar(&self, ui: &mut Ui, input: bool, actions: &mut Vec<Action>) -> bool {
         let window_title = self.window_title();
         let container = input
             && !self.script.busy()
@@ -1303,6 +1371,25 @@ impl OpenMakerApp {
                                 .selected_container(session)
                                 .is_some_and(|selection| selection.row.is_some())
                         })),
+                text_field: input
+                    && !self.script.busy()
+                    && self.script.prompt.is_none()
+                    && self.text_field_entered(),
+                own_field: self.w.document.active_related.is_none(),
+                field_undo: self
+                    .current_layout_record()
+                    .filter(|_| self.text_field_entered())
+                    .map_or((false, false), |(layout, record)| {
+                        self.w.document.field_undo(ui.ctx(), layout, record)
+                    }),
+                record_copy: input
+                    && !self.script.busy()
+                    && self.script.prompt.is_none()
+                    && self.w.mode == Mode::Browse
+                    && self.w.connection_lost.is_none()
+                    && self.w.document.active.is_none()
+                    && !container
+                    && self.current_layout_record().is_some(),
                 client_license: self.client_license,
                 layout_edit: self.w.mode == Mode::Layout
                     && self.w.layout_workspace.has_changes()
@@ -1315,7 +1402,7 @@ impl OpenMakerApp {
                     }),
             },
             actions,
-        );
+        )
     }
 
     /// Draw the window the app works on in `ui`. `input`: the window takes
@@ -1476,9 +1563,13 @@ impl OpenMakerApp {
         }
 
         self.w.menu_drawn = menu && self.w.menubar;
+        let mut on_menus = false;
         if self.w.menu_drawn {
             let top = ui.available_rect_before_wrap().top();
-            self.menu_bar(ui, input, &mut actions);
+            let mut chosen = Vec::new();
+            on_menus = self.menu_bar(ui, input, &mut chosen);
+            self.w.document.menu_leaves_field(ui, &mut chosen);
+            actions.extend(chosen);
             self.w.menu_height = ui.available_rect_before_wrap().top() - top;
         }
         if front {
@@ -1659,6 +1750,16 @@ impl OpenMakerApp {
                 } else {
                     Vec::new()
                 };
+                // A click on the menu bar or its menus leaves the field
+                // entered, with its selection, as FileMaker Pro leaves it:
+                // the Insert commands act on it. egui gives a text editor's
+                // focus up on a click anywhere else, as the editor draws.
+                let surrender = ctx.options(|o| o.input_options.surrender_focus_on);
+                if on_menus {
+                    ctx.options_mut(|o| {
+                        o.input_options.surrender_focus_on = egui::SurrenderFocusOn::Never;
+                    });
+                }
                 let shown =
                     egui::CentralPanel::default()
                         .frame(frame)
@@ -1716,6 +1817,7 @@ impl OpenMakerApp {
                     // selected for binding; an explicit tool click clears it.
                     self.w.tool = LayoutTool::Selection;
                 }
+                ctx.options_mut(|o| o.input_options.surrender_focus_on = surrender);
                 content_rect = Some(shown.response.rect);
             }
             None if self.open_file.is_some()
@@ -1846,18 +1948,30 @@ impl OpenMakerApp {
                         None => self.w.document.edited(f),
                     }
             });
-            // The click that left the field: a button's, else the layout
-            // background's, which commits the record (#1066).
-            let button = actions
+            // The click that left the field: a menu command's, a button's,
+            // else the layout background's, which commits the record
+            // (#1066).
+            let menu_exit = actions
                 .iter()
-                .find(|action| matches!(action, Action::RunButton { .. }))
+                .find(|a| matches!(a, Action::MenuFieldExit(_)));
+            let button = menu_exit
+                .and_then(|action| match action {
+                    Action::MenuFieldExit(action) => Some(action.as_ref().clone()),
+                    _ => None,
+                })
+                .or_else(|| {
+                    actions
+                        .iter()
+                        .find(|action| matches!(action, Action::RunButton { .. }))
+                        .cloned()
+                })
                 .or_else(|| {
                     actions
                         .iter()
                         .find(|action| matches!(action, Action::CommitRecord))
-                })
-                .cloned();
-            let held = button.as_ref().map(std::mem::discriminant);
+                        .cloned()
+                });
+            let held = menu_exit.or(button.as_ref()).map(std::mem::discriminant);
             if self.focus_changed(&ctx, left, entered, was_modified, button) {
                 // This click began the exit chain; its held continuation
                 // runs only after all exit triggers approve. Later input
@@ -1877,18 +1991,27 @@ impl OpenMakerApp {
             self.w.document.drop_portal_click();
         }
 
-        if self.script.busy() || self.script.prompt.is_some() {
-            // A running script owns the window; only quitting and the
-            // window's own controls go on.
-            actions.retain(|a| matches!(a, Action::DismissAlert | Action::Quit | Action::Minimize));
-        }
-        if self.w.style.card().is_some() {
-            // A card has no status toolbar or formatting bar to show.
-            actions.retain(|a| !matches!(a, Action::ToggleToolbar | Action::ToggleFormattingBar));
-        }
+        let action_for_dispatch = |action| match action {
+            Action::MenuFieldExit(action) => *action,
+            action => action,
+        };
+        let busy = self.script.busy() || self.script.prompt.is_some();
+        let card = self.w.style.card().is_some();
         // What this frame painted asked for the context it painted (#987).
         let painted = (self.w.id, self.w.calcs.reads_for(self.w.read_context()));
-        for action in actions {
+        for action in actions.into_iter().map(action_for_dispatch) {
+            // A running script owns the window. A card has no toolbars.
+            if busy
+                && !matches!(
+                    action,
+                    Action::DismissAlert | Action::Quit | Action::Minimize
+                )
+            {
+                continue;
+            }
+            if card && matches!(action, Action::ToggleToolbar | Action::ToggleFormattingBar) {
+                continue;
+            }
             self.apply(&ctx, action);
         }
         // Edits begun this frame answer to the record as the window showed
@@ -2591,6 +2714,23 @@ impl OpenMakerApp {
                 .as_ref()
                 .is_some_and(|session| self.w.layout_workspace.selection_count(session) > 0);
         let mut commit = false;
+        // Insert's shortcuts, into the field entered (the menu's own
+        // availability: Editing only keeps them too).
+        let inserts = self.text_field_entered()
+            && self.menu_commands() != om_data::host::privilege_set::MenuCommands::Minimum;
+        // Copy with no field entered or other widget typing: the record's
+        // (Edit > Copy's availability).
+        let record_copy = browse
+            && !typing
+            && self.w.document.active.is_none()
+            && self.w.connection_lost.is_none()
+            && self.menu_commands() != om_data::host::privilege_set::MenuCommands::Minimum
+            && self.current_layout_record().is_some()
+            && !self
+                .w
+                .session
+                .as_ref()
+                .is_some_and(|session| self.w.document.selected_container(session).is_some());
         // The keypad's Enter, unlike Return, commits the record or goes to
         // the next object (`keypad`) from a field of the record or with no
         // editor focused. In an open menu or list, or in a box of the
@@ -2697,6 +2837,43 @@ impl OpenMakerApp {
                     || input.consume_key(Modifiers::NONE, Key::Backspace))
             {
                 actions.push(Action::DeleteLayoutObject);
+            }
+            if inserts {
+                // Before New Record: egui's match of Command-N ignores Shift.
+                for (modifiers, key, step) in [
+                    (Modifiers::COMMAND, Key::Minus, steps::INSERT_CURRENT_DATE),
+                    (
+                        Modifiers::COMMAND,
+                        Key::Semicolon,
+                        steps::INSERT_CURRENT_TIME,
+                    ),
+                    (
+                        Modifiers::COMMAND.plus(Modifiers::SHIFT),
+                        Key::N,
+                        steps::INSERT_CURRENT_USER_NAME,
+                    ),
+                    (Modifiers::COMMAND, Key::I, steps::INSERT_FROM_INDEX),
+                    (
+                        Modifiers::COMMAND,
+                        Key::Quote,
+                        steps::INSERT_FROM_LAST_VISITED,
+                    ),
+                ] {
+                    if input.consume_shortcut(&KeyboardShortcut::new(modifiers, key)) {
+                        actions.push(Action::Step(step, 0));
+                    }
+                }
+            }
+            // With no field entered, Copy copies the record, as Edit > Copy
+            // does then (`menubar::edit_menu`).
+            if record_copy {
+                let copies = input.events.len();
+                input
+                    .events
+                    .retain(|event| !matches!(event, egui::Event::Copy));
+                if input.events.len() != copies {
+                    actions.push(Action::Step(steps::COPY_RECORD, 0));
+                }
             }
             if self.w.mode == Mode::Browse {
                 // A field editor applies its keys as it draws, after this,
@@ -3058,12 +3235,23 @@ impl OpenMakerApp {
         // Editing only also keeps Show All, Show Omitted Only and Refresh
         // Window (#137's reading lists what Pro disables) and Export Field
         // Contents (#651's), and going back to Browse from a mode a script
-        // entered (Cancel Find, Exit Preview), which grants nothing.
+        // entered (Cancel Find, Exit Preview), which grants nothing. Its
+        // Edit and Insert menus keep Copy (the record's, with no field
+        // entered) and the Insert commands into the field entered, as its
+        // menus offer them [I: inferred, as Edit's own commands are].
         let editing = matches!(
             action,
             Action::Refresh
                 | Action::Step(
-                    steps::SHOW_ALL | steps::SHOW_OMITTED | steps::EXPORT_FIELD_CONTENTS,
+                    steps::SHOW_ALL
+                        | steps::SHOW_OMITTED
+                        | steps::EXPORT_FIELD_CONTENTS
+                        | steps::COPY_RECORD
+                        | steps::INSERT_CURRENT_DATE
+                        | steps::INSERT_CURRENT_TIME
+                        | steps::INSERT_CURRENT_USER_NAME
+                        | steps::INSERT_FROM_INDEX
+                        | steps::INSERT_FROM_LAST_VISITED,
                     _
                 )
                 | Action::SetMode(Mode::Browse)
@@ -3281,6 +3469,7 @@ impl OpenMakerApp {
             return;
         }
         match action {
+            Action::MenuFieldExit(_) => unreachable!("resolved before dispatch"),
             Action::ShowSettings => {
                 if self.settings.is_none() {
                     self.settings = Some(crate::settings::SettingsDialog::new());
@@ -3447,6 +3636,7 @@ impl OpenMakerApp {
             }
             Action::ImportRecords => self.run_step(ctx, steps::IMPORT_RECORDS, 0),
             Action::Step(id, flags) => self.run_step(ctx, id, flags),
+            Action::EditField(command) => self.edit_field(ctx, command),
             Action::QuickFind(text) => self.quick_find(ctx, text),
             Action::ScriptWorkspace => {
                 let file = self.w.file_id;
