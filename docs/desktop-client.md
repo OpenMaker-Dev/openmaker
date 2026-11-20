@@ -867,10 +867,15 @@ in the layout's coordinates, so its rows scroll and take clicks as at 100%.
 Find mode draws its request as Form view draws a record, so it was already
 drawn at the window's zoom; its commands now change it there too.
 
+Set Zoom Level with Lock on disables View > Actual Size, Zoom In and
+Zoom Out and their shortcuts for that window. A script can still set the
+level, and Lock off restores those controls. A new window (New Window,
+the step or Window > New Window) takes the lock with the zoom of the window
+it opens from [I: inheritance has not been compared with FileMaker Pro].
+
 Limits: Table view, Layout mode, generic Form fallbacks and
 focused field editors are not zoomed (Preview scales its paper:
-[preview.md](preview.md)), and Set Zoom Level's lock option is not enforced
-([#36](https://github.com/OpenMaker-Dev/openmaker/issues/36)).
+[preview.md](preview.md); [#36](https://github.com/OpenMaker-Dev/openmaker/issues/36)).
 
 ### Layout menus
 
