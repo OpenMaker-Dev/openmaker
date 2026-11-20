@@ -877,7 +877,8 @@ pub(crate) fn whole_key(form: TextKeys, text: &str) -> Vec<u8> {
 /// follow them (query-program.md 7.2).
 pub(crate) fn prefix_key(form: TextKeys, text: &str) -> Vec<u8> {
     match form {
-        TextKeys::Raw => whole_key(form, text),
+        // Primary weights alone, so a prefix's key starts the word's.
+        TextKeys::Raw | TextKeys::Japanese => whole_key(form, text),
         _ => om_collate::text_key(text),
     }
 }
@@ -1325,6 +1326,11 @@ impl Criterion {
             return Ok(None);
         }
         if text.chars().nth(MAX_CRITERION_CHARS).is_some() {
+            return Err(Unreadable);
+        }
+        // A text criterion with a character the field's form does not key
+        // (`TextKeys::keys`) cannot be keyed, rather than keyed in English.
+        if data_type == DataType::Text && !ctx.text.keys(text) {
             return Err(Unreadable);
         }
         let kind = Self::kind(text, data_type, ctx)?;
