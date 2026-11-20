@@ -1,10 +1,11 @@
 //! Configuration > Folders (`docs/re/admin-console.md` 4.5): the folders of
 //! the hosted files and the backup folder, in FileMaker's path syntax.
 //!
-//! OpenMaker Server hosts the files named on its command line rather than
-//! every file in a database folder, so the Database Folders are the
-//! folders those files are in, and there are no additional database
-//! folders to turn on (`docs/admin-console.md`, "Views").
+//! OpenMaker Server hosts the files it finds in its database folders at
+//! startup and the files named on its command line, so the Database
+//! Folders are those folders and the folders of the files named elsewhere;
+//! there are no additional database folders to turn on here
+//! (`docs/admin-console.md`, "Views").
 
 use std::path::Path;
 
@@ -16,13 +17,13 @@ use crate::views::{not_shown, Ctx};
 /// Folders listed at most; the rest are counted.
 const MAX_FOLDERS: usize = 100;
 
-const HOSTED_HELP: &str = "The folders that hold the files OpenMaker Server hosts. It hosts \
-    the files named on its command line, wherever they are.";
+const HOSTED_HELP: &str = "The database folders OpenMaker Server looked in at startup, and \
+    the folders of the files named on its command line elsewhere.";
 
-const ADDITIONAL_TEXT: &str = "OpenMaker Server hosts the files named on its command line \
-    (om-server <file.fmp12>...) rather than every file in a database folder, so there are no \
-    additional database folders to turn on. To host another file, add it to the command line \
-    and restart the server.";
+const ADDITIONAL_TEXT: &str = "OpenMaker Server's database folders are given when it starts \
+    (om-server --database-folder <folder>, or its Databases folder), so there are no \
+    additional database folders to turn on here. To host another file, put it in a database \
+    folder or name it on the command line, and restart the server.";
 
 const PROGRESSIVE_HELP: &str = "A progressive backup copies only what changed in the hosted \
     files since the previous one, into a folder of its own.";
