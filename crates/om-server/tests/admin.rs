@@ -115,6 +115,35 @@ fn log_lines(handle: &ServerHandle, name: &str) -> Vec<String> {
         .collect()
 }
 
+#[cfg(all(unix, feature = "admin-console"))]
+#[test]
+fn the_databases_filter_uses_the_resolved_folder_of_a_file_opened_through_a_link() {
+    use om_admin::Backend;
+    use om_server::console::ServerBackend;
+
+    let fixture = TempFile::new("admin-folder-alias", &[], true);
+    let folder = fixture.0.with_extension("databases");
+    let alias = fixture.0.with_extension("alias");
+    std::fs::create_dir(&folder).unwrap();
+    std::os::unix::fs::symlink(&folder, &alias).unwrap();
+    let file = TempFile(alias.join(FILE));
+    std::fs::copy(&fixture.0, &file.0).unwrap();
+    let root = folder.canonicalize().unwrap();
+    let (_, handle) = server::start_configured_with_handle(&file, |server| {
+        server.with_database_folders(vec![root.clone()])
+    });
+
+    let backend = ServerBackend::new(handle, Vec::new());
+    let folders = backend.folders().unwrap();
+    let [database] = backend.databases().try_into().unwrap();
+    assert_eq!(folders.databases.as_slice(), std::slice::from_ref(&root));
+    assert_eq!(database.folder, root);
+
+    drop(file);
+    std::fs::remove_file(alias).unwrap();
+    std::fs::remove_dir(folder).unwrap();
+}
+
 /// Also checks that `Access.log` records each session's login, refused or
 /// accepted, the files it logs in to and out of, and its end, in FileMaker
 /// Server's form (`docs/re/server-logs.md` 3).

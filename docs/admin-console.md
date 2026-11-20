@@ -490,7 +490,9 @@ where FileMaker Server's behavior is not observed or does not apply.
   startup (docs/development.md, "Hosting a file and opening it"), so
   Database Folders lists the database folders it looked in, whether or
   not they hold a hosted file, and the folders of the files named
-  elsewhere, in path order:
+  elsewhere, in path order. The Databases filter uses the same resolved
+  folder paths, so a file opened through a directory symlink appears
+  under its reported database folder. Labels read
   "Database Folder Path" for one, "Database Folder 1 Path" and on for
   several (inf), at most 100, then "Showing n of m". There is no Secure
   Database Folder Path. A path is shown as FileMaker writes a folder

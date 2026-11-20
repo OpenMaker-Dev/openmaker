@@ -142,6 +142,13 @@ fn system_time(zoned: &jiff::Zoned) -> SystemTime {
     SystemTime::from(zoned.timestamp())
 }
 
+/// Use the same identity for configured folders and the files the
+/// Databases view filters under them. Keep the original spelling if the
+/// folder is no longer accessible.
+fn folder_identity(folder: PathBuf) -> PathBuf {
+    std::fs::canonicalize(&folder).unwrap_or(folder)
+}
+
 impl Backend for ServerBackend {
     fn alerts(&self) -> Vec<Alert> {
         Vec::new()
@@ -170,7 +177,7 @@ impl Backend for ServerBackend {
             .map(|file| Database {
                 id: file.id,
                 name: file.name,
-                folder: file.folder,
+                folder: folder_identity(file.folder),
                 size: file.size,
                 status: status(file.status),
                 clients: file.clients,
@@ -226,12 +233,11 @@ impl Backend for ServerBackend {
     /// link is listed once.
     fn folders(&self) -> Result<Folders, BackendError> {
         let searched = self.handle.database_folders();
-        let resolved = |folder: PathBuf| std::fs::canonicalize(&folder).unwrap_or(folder);
         let databases: BTreeSet<PathBuf> = self
             .handle
             .files()
             .into_iter()
-            .map(|file| resolved(file.folder))
+            .map(|file| folder_identity(file.folder))
             .filter(|folder| !searched.iter().any(|s| folder.starts_with(s)))
             .chain(searched.iter().cloned())
             .collect();
