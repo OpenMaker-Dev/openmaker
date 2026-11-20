@@ -1,0 +1,71 @@
+== make
+New Record/Request
+Set Field [ Contacts::First Name ; "a" ]
+New Record/Request
+Set Field [ Contacts::First Name ; "b" ]
+New Record/Request
+Set Field [ Contacts::First Name ; "c" ]
+Commit Records/Requests [ With dialog: Off ]
+Exit Script [ Get ( TotalRecordCount ) ]
+== probe
+Exit Script [ Contacts::First Name & "|" & Contacts::RecNum & "|" & Contacts::FoundAE & "|" & Get ( RecordNumber ) & "|" & Get ( FoundCount ) & "|" & Get ( TotalRecordCount ) ]
+== new in all
+Step 23
+New Record/Request
+Set Field [ Contacts::First Name ; "all" ]
+Commit Records/Requests [ With dialog: Off ]
+Perform Script [ "probe" ]
+Exit Script [ Get ( ScriptResult ) ]
+== new at first
+Step 23
+Go to Record/Request/Page [ First ]
+New Record/Request
+Set Field [ Contacts::First Name ; "first" ]
+Commit Records/Requests [ With dialog: Off ]
+Perform Script [ "probe" ]
+Exit Script [ Get ( ScriptResult ) ]
+== new after omit
+Step 23
+Go to Record/Request/Page [ First ]
+Step 25
+Step 25
+New Record/Request
+Set Field [ Contacts::First Name ; "omit" ]
+Commit Records/Requests [ With dialog: Off ]
+Perform Script [ "probe" ]
+Exit Script [ Get ( ScriptResult ) ]
+== new in none
+Set Error Capture [ On ]
+Enter Find Mode [ Pause: Off ]
+Set Field [ Contacts::First Name ; "=nobody" ]
+Perform Find
+Set Variable [ $found ; Get ( FoundCount ) & "/" & Get ( LastError ) ]
+New Record/Request
+Set Field [ Contacts::First Name ; "none" ]
+Commit Records/Requests [ With dialog: Off ]
+Perform Script [ "probe" ]
+Exit Script [ $found & " " & Get ( ScriptResult ) ]
+== two new
+Step 23
+New Record/Request
+Set Variable [ $a ; Contacts::RecNum ]
+New Record/Request
+Set Field [ Contacts::First Name ; "two" ]
+Commit Records/Requests [ With dialog: Off ]
+Perform Script [ "probe" ]
+Exit Script [ $a & " " & Get ( ScriptResult ) ]
+== duplicate
+Step 23
+Go to Record/Request/Page [ First ]
+Step 8
+Commit Records/Requests [ With dialog: Off ]
+Perform Script [ "probe" ]
+Exit Script [ Get ( ScriptResult ) ]
+--- run
+make
+new in all
+new at first
+new after omit
+new in none
+two new
+duplicate

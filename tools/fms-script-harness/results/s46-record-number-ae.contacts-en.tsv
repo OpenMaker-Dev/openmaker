@@ -1,0 +1,77 @@
+# scan make: open 0 load 0 scan 0 commit 0; index:id=value (0-based): 0:7=0 1:76=0 2:7=0 3:76=0 4:7=0 5:76=0 6:75=0 7:103=0
+# scan probe: open 0 load 0 scan 0 commit 0; index:id=value (0-based): 0:103=0
+# scan new in all: open 0 load 0 scan 0 commit 0; index:id=value (0-based): 0:23=0 1:7=0 2:76=0 3:75=0 4:1=0 5:103=0
+# scan new at first: open 0 load 0 scan 0 commit 0; index:id=value (0-based): 0:23=0 1:16=1 2:7=0 3:76=0 4:75=0 5:1=0 6:103=0
+# scan new after omit: open 0 load 0 scan 0 commit 0; index:id=value (0-based): 0:23=0 1:16=1 2:25=0 3:25=0 4:7=0 5:76=0 6:75=0 7:1=0 8:103=0
+# scan new in none: open 0 load 0 scan 0 commit 0; index:id=value (0-based): 0:86=0 1:22=0 2:76=0 3:28=0 4:141=0 5:7=0 6:76=0 7:75=0 8:1=0 9:103=0
+# scan two new: open 0 load 0 scan 0 commit 0; index:id=value (0-based): 0:23=0 1:7=0 2:141=0 3:7=0 4:76=0 5:75=0 6:1=0 7:103=0
+# scan duplicate: open 0 load 0 scan 0 commit 0; index:id=value (0-based): 0:23=0 1:16=1 2:8=0 3:75=0 4:1=0 5:103=0
+# scan: close 13
+make		0	3	0
+>	1	make	1	7	0	0	0	0
+>	1	make	2	76	0	0	0	0
+>	1	make	3	7	0	0	0	0
+>	1	make	4	76	0	0	0	0
+>	1	make	5	7	0	0	0	0
+>	1	make	6	76	0	0	0	0
+>	1	make	7	75	0	0	0	0
+>	1	make	8	103	0	0	1	0
+new in all		0	all|4|4|4|4|4	0
+>	1	new in all	1	23	0	0	0	0
+>	1	new in all	2	7	0	0	0	0
+>	1	new in all	3	76	0	0	0	0
+>	1	new in all	4	75	0	0	0	0
+>	1	new in all	5	1	0	0	0	0
+>	2	probe	1	103	0	0	1	0
+>	1	new in all	6	103	0	0	1	0
+new at first		0	first|5|5|5|5|5	0
+>	1	new at first	1	23	0	0	0	0
+>	1	new at first	2	16	0	0	0	0
+>	1	new at first	3	7	0	0	0	0
+>	1	new at first	4	76	0	0	0	0
+>	1	new at first	5	75	0	0	0	0
+>	1	new at first	6	1	0	0	0	0
+>	2	probe	1	103	0	0	1	0
+>	1	new at first	7	103	0	0	1	0
+new after omit		0	omit|4|4|4|4|6	0
+>	1	new after omit	1	23	0	0	0	0
+>	1	new after omit	2	16	0	0	0	0
+>	1	new after omit	3	25	0	0	0	0
+>	1	new after omit	4	25	0	0	0	0
+>	1	new after omit	5	7	0	0	0	0
+>	1	new after omit	6	76	0	0	0	0
+>	1	new after omit	7	75	0	0	0	0
+>	1	new after omit	8	1	0	0	0	0
+>	2	probe	1	103	0	0	1	0
+>	1	new after omit	9	103	0	0	1	0
+new in none		0	0/401 none|1|1|1|1|7	0
+>	1	new in none	1	86	0	0	0	0
+>	1	new in none	2	22	0	0	0	0
+>	1	new in none	3	76	0	0	0	0
+!	401	work : new in none : 4 : Perform Find
+>	1	new in none	4	28	401	0	0	401
+>	1	new in none	5	141	0	0	0	0
+>	1	new in none	6	7	0	0	0	0
+>	1	new in none	7	76	0	0	0	0
+>	1	new in none	8	75	0	0	0	0
+>	1	new in none	9	1	0	0	0	0
+>	2	probe	1	103	0	0	1	0
+>	1	new in none	10	103	0	0	1	0
+two new		0	8 two|9|9|9|9|9	0
+>	1	two new	1	23	0	0	0	0
+>	1	two new	2	7	0	0	0	0
+>	1	two new	3	141	0	0	0	0
+>	1	two new	4	7	0	0	0	0
+>	1	two new	5	76	0	0	0	0
+>	1	two new	6	75	0	0	0	0
+>	1	two new	7	1	0	0	0	0
+>	2	probe	1	103	0	0	1	0
+>	1	two new	8	103	0	0	1	0
+duplicate		0	a|10|10|10|10|10	0
+>	1	duplicate	1	23	0	0	0	0
+>	1	duplicate	2	16	0	0	0	0
+>	1	duplicate	3	8	0	0	0	0
+>	1	duplicate	4	75	0	0	0	0
+>	1	duplicate	5	1	0	0	0	0
+>	2	probe	1	103	0	0	1	0
+>	1	duplicate	6	103	0	0	1	0

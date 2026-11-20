@@ -503,11 +503,41 @@ layout):
 - **That a hosted file answers the same** is [I], OpenMaker's choice
   (parity-unverified).
 
+**Records a script makes** [O: FileMaker Server 26.0.3's engine, script
+oracle `s46-record-number-ae`, 2026-11-19]. Each run line is a server
+session, as Perform Script on Server or a schedule runs one. Contacts got
+two text fields auto-entering `Get ( RecordNumber )` and `Get (
+FoundCount )`, both replacing an existing value ("Do not replace existing
+value" off). Each probe made one record in its window's found set (most
+then set its First Name), committed it and read both fields and the
+window's own selectors:
+
+| Probe | Found set before | Stored (both fields) |
+|---|---|---|
+| New Record after Show All Records (3 records) | 3 | 4 |
+| the same, the current record moved to the first | 4 | 5 |
+| Show All Records (5), the first two omitted | 3 | 4 |
+| a find that matched nothing (error 401) | 0 | 1 |
+| two New Records in a row (7 shown); the first one's read right after its New Record, before its commit | 7, then 8 | 8, then 9 |
+| Duplicate Record of the first (9 shown) | 9 | 10, not the copied record's 1 |
+
+**The reading.** A record a script makes joins the end of an unsorted
+found set, wherever the current record is, and its auto-entry reads that
+position: n + 1 over the n records found before, whatever the table holds
+(6 records when the omitted probe stored 4). It is entered when the record
+is made: the first of two new records read 8 before its commit. A
+duplicate's replacing auto-entry is evaluated again, not copied; one that
+does not replace an existing value is not measured. FileMaker Pro's own
+New Record command runs the same window operation, so it is inferred to
+store the same [I].
+
 Unmeasured [U]:
 - portals that sort or filter their rows;
 - more than one new row in one commit;
-- other ways of creating a record: New Record in B's own window, a
-  script, Perform Script on Server.
+- a sorted found set's new record, and one whose place changes before its
+  commit (an earlier record omitted in a transaction);
+- New Record from FileMaker Pro's menu or toolbar (inferred above, not
+  run).
 
 ## Serial numbers
 
