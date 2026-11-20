@@ -3684,8 +3684,15 @@ Globals (2026-10-29; Claris "Global fields")
   offers separate field objects for repetitions 2 through 255 under the
   same type, account and modification guards as the first repetition.
   Global repetitions remain session values; ordinary repetitions join the
-  record's other changes in one write. Native Browse repetition and global
-  entry parity remains unmeasured.
+  record's other changes in one write. A script's Set Field into a later
+  repetition of the current record shows in its field object at once,
+  before the commit, as a first repetition's does (the window's
+  uncommitted cells under the user's own typing there); one replacing the
+  user's typing (an OnObjectSave setting the field again) shows the
+  script's value. Entered again, the field object opens with the script's
+  value, and the user's edit replaces it, also one erased back to the
+  stored value. Native Browse repetition and global entry parity remains
+  unmeasured.
 - Claris documents that a global's validation runs on field exit, rather
   than record commit
   ([field validation](https://help.claris.com/en/pro-help/content/field-validation.html)).

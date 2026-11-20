@@ -4680,6 +4680,18 @@ fn browse_repetitions_keep_their_cell_and_share_one_record_commit() {
     app.step();
     app.query_all(later()).next().unwrap().type_text("ab");
     app.run_steps(2);
+    // Leaving the box runs its OnObjectSave: the script's value shows at
+    // once, before the record is committed.
+    app.key_press(egui::Key::Tab);
+    let shown = |app: &common::App| {
+        app.query_all(later())
+            .next()
+            .and_then(|n| n.accesskit_node().value())
+    };
+    common::wait_until(&mut app, "the script's value", |app| {
+        app.state().is_settled() && shown(app).as_deref() == Some("AB")
+    });
+    assert_eq!(stored(&hosted, TABLE, &[(STATUS, 2)])[0].1, [""]);
     common::save_record(&mut app);
     wait_saved(&mut app);
     assert_eq!(
@@ -4692,6 +4704,33 @@ fn browse_repetitions_keep_their_cell_and_share_one_record_commit() {
             .and_then(|n| n.accesskit_node().value()),
         Some("AB".into())
     );
+    // Typing after it and leaving: the script sets "ABC", uncommitted.
+    // Entered again, the box opens with the script's value, not the stored
+    // one, and typing goes on from it.
+    app.query_all(later()).next().unwrap().focus();
+    app.step();
+    app.key_press(egui::Key::End);
+    app.query_all(later()).next().unwrap().type_text("c");
+    app.run_steps(2);
+    assert_eq!(shown(&app).as_deref(), Some("ABc"));
+    app.key_press(egui::Key::Tab);
+    common::wait_until(&mut app, "the script's ABC", |app| {
+        app.state().is_settled() && shown(app).as_deref() == Some("ABC")
+    });
+    app.key_press_modifiers(egui::Modifiers::SHIFT, egui::Key::Tab);
+    app.event(egui::Event::Text("d".into()));
+    app.run_steps(2);
+    assert_eq!(shown(&app).as_deref(), Some("ABCd"));
+    // Erased back to the stored value, the box still replaces the
+    // script's value.
+    app.key_press(egui::Key::Backspace);
+    app.key_press(egui::Key::Backspace);
+    app.run_steps(2);
+    assert_eq!(shown(&app).as_deref(), Some("AB"));
+    common::save_record(&mut app);
+    wait_saved(&mut app);
+    assert_eq!(stored(&hosted, TABLE, &[(STATUS, 2)])[0].1, ["AB"]);
+    assert_eq!(shown(&app).as_deref(), Some("AB"));
 
     // Its OnObjectSave setting a global of another table whose field has
     // Status's id: the typing in Status[2] stays and is saved.
@@ -4774,6 +4813,21 @@ fn run_without_dialog(app: &mut common::App, name: &str) {
     common::wait_until(app, "the script", |app| !app.state().script_running());
 }
 
+/// Wait until the commit gate (OnRecordCommit, script 21) that an action
+/// after the window's `started`th script start runs has run and ended. The
+/// action starts it only once the record's field exit is through, a frame
+/// or more later, so a wait for no running script alone can pass before it
+/// starts; and the window discards the user's next menu command while it
+/// runs (#544).
+fn wait_commit_gate(app: &mut common::App, started: usize, what: &str) {
+    common::wait_until(app, what, |app| {
+        app.state().scripts_started()[started..]
+            .iter()
+            .any(|start| start == "RecordCommit 21")
+            && !app.state().script_running()
+    });
+}
+
 #[test]
 fn a_trigger_released_save_finishes_before_navigation_and_rearms_the_trigger() {
     let hosted = host_with("commit-navigation", add_commit_gate);
@@ -4794,8 +4848,9 @@ fn a_trigger_released_save_finishes_before_navigation_and_rearms_the_trigger() {
     app.step();
     common::text_field(&app, "Code").type_text("vetoed");
     app.run_steps(2);
+    let started = app.state().scripts_started().len();
     common::save_record(&mut app);
-    common::wait_until(&mut app, "the veto", |app| !app.state().script_running());
+    wait_commit_gate(&mut app, started, "the veto");
     common::wait_until(&mut app, "unsaved record changes", common::unsaved);
     expect(&mut app, "Show commits", "commits 2");
     assert_eq!(stored(&hosted, TABLE, &[(CODE, 1)])[1].1, [""]);
@@ -4886,10 +4941,9 @@ fn a_commit_veto_keeps_browse_mode_and_the_pending_record() {
     leave(&mut app);
     run_without_dialog(&mut app, "Refuse commit");
     let before = left_values(&hosted);
+    let started = app.state().scripts_started().len();
     enter_find(&mut app);
-    common::wait_until(&mut app, "the commit veto", |app| {
-        !app.state().script_running()
-    });
+    wait_commit_gate(&mut app, started, "the commit veto");
     assert_eq!(app.state().mode(), om_gui::Mode::Browse);
     assert_eq!(left_values(&hosted), before);
     common::wait_until(&mut app, "unsaved record changes", common::unsaved);

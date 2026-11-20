@@ -7,6 +7,7 @@
 //! |---|---|---|
 //! | file locale | `[2, 0d]` | [`locale`] ([`Locale::from_record`]) |
 //! | file options, default layout, file triggers | `[2, 18]` | [`FileOptions`] |
+//! | page setup | `[2, 87]` | [`page_format`], as stored |
 //! | relationships | `[3, fb, 5, R]` | [`Relationship`] |
 //! | summary definitions | `[T, 3, 5, F, 09]` | [`SummaryDef`] |
 //! | value lists | `[21, 5, V]` | [`ValueList`] |
@@ -30,6 +31,10 @@ pub use om_layout::triggers::{ScriptTrigger, StoredFormula};
 pub const LOCALE: [u64; 2] = [2, 0x0d];
 /// The document preferences `[2, 18]` (file-metadata.md 3).
 pub const DOCUMENT_PREFERENCES: [u64; 2] = [2, 0x18];
+/// The page setup `[2, 87]` (file-format.md 3.4): the same tagged chunks as
+/// Print Setup's stored page format (script-steps.md 11.6), a `Comm` chunk
+/// and the platform's records.
+pub const PAGE_SETUP: [u64; 2] = [2, 0x87];
 /// Relationships `[3, fb, 5]`.
 pub const RELATIONSHIPS: [u64; 3] = [3, 0xfb, 5];
 /// Value lists `[21, 5]` (`KValueLists`).
@@ -42,6 +47,38 @@ pub const LAYOUTS: u64 = 4;
 /// The file's locale, when `tree` holds a record that decodes.
 pub fn locale(tree: &KeyTree<'_>) -> Option<Locale> {
     Locale::from_record(&tree.at(&LOCALE)?.assembled()?)
+}
+
+/// The most of a stored page setup [`page_format`] reads: Print Setup's
+/// limit for a stored page format (script-steps.md 11.6).
+pub const MAX_PAGE_FORMAT: usize = 1 << 20;
+
+/// The file's stored page setup ([`PAGE_SETUP`]), reassembled but not
+/// decoded: a host reads what it supports of it. `None` for a file that
+/// stores none (no starter solution does), and for one larger than
+/// [`MAX_PAGE_FORMAT`], which is refused by its declared and actual sizes
+/// before anything is copied.
+pub fn page_format(tree: &KeyTree<'_>) -> Option<Vec<u8>> {
+    let node = tree.at(&PAGE_SETUP)?;
+    let declared = (node.children.first())
+        .and_then(|header| header.value?.first_chunk::<4>().copied())
+        .map(|total| u32::from_be_bytes(total) as usize);
+    // The pieces after the chunk header (child 0) are the value.
+    let actual = node.value.map_or_else(
+        || {
+            node.children
+                .iter()
+                .skip(1)
+                .filter_map(|n| n.value)
+                .map(<[u8]>::len)
+                .sum()
+        },
+        <[u8]>::len,
+    );
+    if actual > MAX_PAGE_FORMAT || declared.is_some_and(|total| total > MAX_PAGE_FORMAT) {
+        return None;
+    }
+    node.assembled().map(|bytes| bytes.into_owned())
 }
 
 /// A big-endian reader over a stored stream (file-metadata.md 0).
@@ -1215,6 +1252,42 @@ mod tests {
 
     fn tree(nodes: Vec<OwnedNode>) -> Vec<u8> {
         OwnedNode::list(Vec::new(), nodes).to_wire().unwrap()
+    }
+
+    /// A stored page setup `[2, 87]` is read whole, chunked or not, and one
+    /// past 1 MiB is refused by its declared or actual size before it is
+    /// reassembled: the file's bytes size nothing a host keeps.
+    #[test]
+    fn a_stored_page_setup_past_one_mebibyte_is_not_read() {
+        let stored = |value: OwnedNode| {
+            let wire = tree(vec![OwnedNode::list([2], vec![value])]);
+            page_format(&KeyTree::from_slots(SlotReader::new(&wire)).unwrap())
+        };
+        let chunked = |total: u32, pieces: &[usize]| {
+            let mut children = vec![OwnedNode::leaf([0], total.to_be_bytes().to_vec())];
+            children.extend(
+                (pieces.iter().enumerate())
+                    .map(|(i, len)| OwnedNode::leaf([i as u8 + 1], vec![7; *len])),
+            );
+            OwnedNode::list([0x87], children)
+        };
+        assert_eq!(
+            stored(OwnedNode::leaf([0x87], b"Comm".to_vec())),
+            Some(b"Comm".to_vec())
+        );
+        assert_eq!(stored(chunked(6, &[4, 2])), Some(vec![7; 6]));
+        // Pieces of at most 64,000 bytes (a wire value's limit) adding up to
+        // more than 1 MiB, and declaring their true total.
+        let pieces = [64_000; 17];
+        assert!(pieces.iter().sum::<usize>() > MAX_PAGE_FORMAT);
+        assert_eq!(stored(chunked(64_000 * 17, &pieces)), None);
+        // Exactly 1 MiB is read: the header is not counted.
+        let mut pieces = vec![64_000; 16];
+        pieces.push(MAX_PAGE_FORMAT - 16 * 64_000);
+        let whole = stored(chunked(MAX_PAGE_FORMAT as u32, &pieces));
+        assert_eq!(whole.map(|bytes| bytes.len()), Some(MAX_PAGE_FORMAT));
+        // The declared total alone refuses, whatever pieces follow.
+        assert_eq!(stored(chunked(u32::MAX, &[4])), None);
     }
 
     /// A window's close writes the bytes FileMaker Pro 26.0.3 wrote for the

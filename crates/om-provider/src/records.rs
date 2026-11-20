@@ -325,8 +325,32 @@ impl NativeProvider {
 
     /// [`Self::record_plan`] of base table `table` (a related record's).
     pub(super) fn table_plan(&mut self, table: u64) -> Result<(Table, RecordPlan), DataError> {
+        let (mut table, data) = self.table_catalog(table)?;
+        let tree = download_tree(std::slice::from_ref(&data))?;
+        table.fields = om_hbam::catalog::fields(&tree, table.id)
+            .map_err(|e| failure("decode server fields", e))?;
+        let plan = self.plan_table(&table, Some(&tree))?;
+        Ok((table, plan))
+    }
+
+    /// Base table `table` with its fields as the host has them now, and no
+    /// rules planned: what a held deletion reads (its containers'
+    /// references). A deletion evaluates no field-entry rules, so a table
+    /// whose rules OpenMaker cannot plan still deletes, as the ordinary
+    /// deletion does.
+    pub(super) fn table_fields(&mut self, table: u64) -> Result<Table, DataError> {
+        let (mut table, data) = self.table_catalog(table)?;
+        let tree = download_tree(std::slice::from_ref(&data))?;
+        table.fields = om_hbam::catalog::fields(&tree, table.id)
+            .map_err(|e| failure("decode server fields", e))?;
+        Ok(table)
+    }
+
+    /// Base table `table` of the catalog, and its field catalog downloaded
+    /// now.
+    fn table_catalog(&mut self, table: u64) -> Result<(Table, Download), DataError> {
         self.refuse_imported_table(table)?;
-        let mut table = self
+        let table = self
             .catalog
             .table(table)
             .ok_or_else(|| {
@@ -337,11 +361,7 @@ impl NativeProvider {
             })?
             .clone();
         let data = download(self.session_mut()?, &[table.id, 3])?;
-        let tree = download_tree(std::slice::from_ref(&data))?;
-        table.fields = om_hbam::catalog::fields(&tree, table.id)
-            .map_err(|e| failure("decode server fields", e))?;
-        let plan = self.plan_table(&table, Some(&tree))?;
-        Ok((table, plan))
+        Ok((table, data))
     }
 
     /// The rules of `table` ([`RecordPlan::from_file_schema`]) over
