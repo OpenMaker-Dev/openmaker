@@ -281,9 +281,11 @@ Options, "Update serial number in Entry Options" and "Skip auto-enter
 options" (3; [#500](https://github.com/OpenMaker-Dev/openmaker/issues/500)),
 and a serial run past what its digits hold (3). On the server also a
 container, global or related field and Find mode (3), and a calculation or
-summary field (201); FileMaker's answers there are not measured. Unlike
-FileMaker, which does not commit the active record, both clients commit it
-first ([#513](https://github.com/OpenMaker-Dev/openmaker/issues/513)).
+summary field (201); FileMaker's answers there are not measured. As
+Claris documents, the server does not commit the active record: a record
+open when the step starts keeps its draft and takes its replacement there,
+so Revert Record still undoes both. The desktop commits it first
+([#513](https://github.com/OpenMaker-Dev/openmaker/issues/513)).
 
 Server Find mode:
 - An unstored calculation with all-empty references reads empty, on the

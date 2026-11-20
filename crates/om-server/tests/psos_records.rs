@@ -367,6 +367,18 @@ fn scripts() -> Vec<Script> {
             replaced(vec![], fixture::DOUBLED, 3, "1", "Get ( RecordNumber )"),
         ),
         script(15, "Read", vec![exit_with(&values_of("Count"))]),
+        // An edit open before the step: Revert Record still undoes it, and
+        // record 1's replacement with it; Commit Records keeps both.
+        script(
+            17,
+            "Replace, then revert",
+            active_replace(ScriptStep::new(51)),
+        ),
+        script(
+            18,
+            "Replace, then commit",
+            active_replace(ScriptStep::new(75)),
+        ),
         script(16, "Replace by Entry Options", {
             let mut steps = replaced(vec![], NAME, 2, "1", "Get ( RecordNumber )");
             // `[00 5, 03]`: the field's own serial settings.
@@ -380,6 +392,28 @@ fn scripts() -> Vec<Script> {
 /// record 2 current.
 fn omit_first() -> Vec<ScriptStep> {
     vec![fixture::go_to_record(1), ScriptStep::new(25)]
+}
+
+/// On record 1, Set Field [Name; "Edited"], Replace Field Contents
+/// [Count; Count + 1], then `end` (Revert Record or Commit Records), and
+/// exit with the error, the Names and the Counts.
+fn active_replace(end: ScriptStep) -> Vec<ScriptStep> {
+    let mut steps = replaced(
+        vec![fixture::go_to_record(1), set_field(NAME, 1, "\"Edited\"")],
+        COUNT,
+        3,
+        "Count + 1",
+        "Get ( RecordNumber )",
+    );
+    // In place of the exit `replaced` ends with.
+    steps.pop();
+    steps.push(end);
+    steps.push(exit_with(&format!(
+        "Get ( LastError ) & \"/\" & {} & \"/\" & {}",
+        values_of("Name"),
+        values_of("Count")
+    )));
+    steps
 }
 
 /// Every record's `column` of Tasks, in record order, through ExecuteSQL.
@@ -1040,9 +1074,19 @@ fn server_replace_field_contents_writes_every_found_record() {
     assert_eq!(run(&mut client, 13), (507, "507/1/0/,,,".into()));
     // A calculation field: 201 before any change (Doubled is Count * 2).
     assert_eq!(run(&mut client, 14), (201, "201/1/20,20,20,20".into()));
+    // Record 1's edit and replacement stay in its draft: reverted with it,
+    // while records 2 to 4 are committed.
+    assert_eq!(
+        run(&mut client, 17),
+        (0, "0/Write tests,T-08,T-10,T-12/10,11,11,11".into())
+    );
+    assert_eq!(
+        run(&mut client, 18),
+        (0, "0/Edited,T-08,T-10,T-12/11,12,12,12".into())
+    );
     // Serial numbers from the field's Entry Options: refused (3).
     assert_eq!(
         run(&mut client, 16),
-        (3, "3/1/Write tests,T-08,T-10,T-12".into())
+        (3, "3/1/Edited,T-08,T-10,T-12".into())
     );
 }
