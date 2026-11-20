@@ -15,7 +15,12 @@
 //! web-viewer --test web_viewer_windows_native` (the windows lie side by
 //! side); skipped without a display. With
 //! `OM_WEB_VIEWER_SHOTS` set to a directory, each window is saved there as
-//! PNG.
+//! PNG. Linux only: on macOS the other windows' views are not placed yet
+//! ([#304](https://github.com/OpenMaker-Dev/openmaker/issues/304)).
+#![cfg_attr(
+    not(target_os = "linux"),
+    allow(dead_code, unused_imports, reason = "the test runs on Linux only")
+)]
 
 use std::collections::BTreeMap;
 use std::sync::Arc;
@@ -27,8 +32,11 @@ use om_data::{
 };
 use om_gui::OpenMakerApp;
 use om_layout::{Layout, LayoutDef, LayoutObject, ObjectStore, Part, Rect};
+#[cfg(target_os = "linux")]
 use x11rb::connection::Connection as _;
+#[cfg(target_os = "linux")]
 use x11rb::protocol::xproto::{self, ConnectionExt as _};
+#[cfg(target_os = "linux")]
 use x11rb::rust_connection::RustConnection;
 
 const OCCURRENCE: u64 = 0xd0_0002;
@@ -260,6 +268,7 @@ fn fail(message: String) -> ! {
     std::process::exit(1);
 }
 
+#[cfg(target_os = "linux")]
 struct Driver {
     app: OpenMakerApp,
     x11: RustConnection,
@@ -267,6 +276,7 @@ struct Driver {
     deadline: Instant,
 }
 
+#[cfg(target_os = "linux")]
 impl Driver {
     /// The mapped child windows of `parent` the web viewer's size, top to
     /// bottom: one per List row. `None` when they do not share one column.
@@ -469,6 +479,7 @@ impl Driver {
     }
 }
 
+#[cfg(target_os = "linux")]
 impl eframe::App for Driver {
     fn ui(&mut self, ui: &mut egui::Ui, frame: &mut eframe::Frame) {
         eframe::App::ui(&mut self.app, ui, frame);
@@ -483,6 +494,12 @@ impl eframe::App for Driver {
     }
 }
 
+#[cfg(not(target_os = "linux"))]
+fn main() {
+    println!("skipped: Linux only");
+}
+
+#[cfg(target_os = "linux")]
 fn main() {
     if std::env::var_os("DISPLAY").is_none() {
         println!("skipped: no X display (run under xvfb-run)");

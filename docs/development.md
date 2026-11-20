@@ -22,6 +22,8 @@ in [architecture.md](architecture.md).
     XWayland and the X11 libraries winit opens (Debian/Ubuntu:
     `libxkbcommon-x11-0`, `libx11-xcb1`, `libxcursor1`, `libxi6`).
     Without them the windows stay on Wayland and web viewers show a note.
+    On macOS they use the system's WKWebView, with nothing to install; only
+    a file's first window shows pages so far.
   - Saving a FileMaker client license: an unlocked desktop Secret Service
     on Linux (Keychain on macOS, Credential Manager on Windows).
   - Print: CUPS (`lp`).
@@ -31,7 +33,7 @@ in [architecture.md](architecture.md).
 ```sh
 cargo run -p om-gui                                  # desktop client
 OPENMAKER_PROVIDER=mock cargo run -p om-gui          # labeled sample data, no server
-cargo run -p om-gui --features web-viewer            # with embedded web viewers (Linux: X11, or XWayland on Wayland)
+cargo run -p om-gui --features web-viewer            # with embedded web viewers (Linux: X11, or XWayland on Wayland; macOS)
 cargo run -p om-server -- --list-all <file.fmp12>... # OpenMaker Server (see Hosting a file below)
 OM_ADMIN_PASSWORD=<password> cargo run -p om-admin --example mock_console  # Admin Console on sample data, https://localhost:16000
 cargo run -p om-client                               # protocol probe: prints isa/connect/open/login/files usage
