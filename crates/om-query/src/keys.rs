@@ -61,13 +61,14 @@ impl Held {
 /// How a text field's indexes key text: the form its index language
 /// (`Locale::Type`, field definition bytes 4..7) gives (query-program.md
 /// 7.2).
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 pub enum TextKeys {
     /// Language 0: no key at all.
     None,
     /// English (21) and English international (77): `01`, then the
     /// DUCET 5.2.0 primary weight of each collation element
     /// ([`om_collate::text_key`]).
+    #[default]
     Collated,
     /// System (1) and Unicode standard (3): the collated form, `00 00` and
     /// the secondary weights ([`om_collate::padded_text_key`]).

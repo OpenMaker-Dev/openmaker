@@ -24,8 +24,11 @@ use om_collate::DateOrder;
 use om_hbam::slot::uint_segment;
 use om_hbam::{DataType, KeyTree, OwnedNode, RidList, SlotReader};
 
-use crate::criteria::{Bound, DatePattern, Kind, Moment, Part, Term, TimePattern, Unit, Whole};
+use crate::criteria::{
+    self, Bound, DatePattern, Kind, Moment, Part, Term, TimePattern, Unit, Whole,
+};
 pub use crate::criteria::{Criterion, FindContext, Unreadable, Ymd};
+use crate::keys::TextKeys;
 
 /// Finder kinds (`DBFinder::FindKind`, 6.2).
 mod kind {
@@ -265,6 +268,20 @@ fn literal_prefix(pattern: &[Unit]) -> Option<Vec<u8>> {
     (key.len() > 1).then_some(key)
 }
 
+/// The smallest key above every key that starts with `key`: `key` with its
+/// last byte below `ff` raised by one and what follows dropped; empty (an
+/// open end) when every byte is `ff`.
+fn successor(key: &[u8]) -> Vec<u8> {
+    let mut end = key.to_vec();
+    while end.last() == Some(&0xff) {
+        end.pop();
+    }
+    if let Some(last) = end.last_mut() {
+        *last += 1;
+    }
+    end
+}
+
 /// The finders of a criterion of `field` in `table` (6.4).
 ///
 /// An index holds the first [`om_collate::INDEX_KEY_LIMIT`] bytes of a key
@@ -311,9 +328,14 @@ fn keyed_plan(
     };
     let prefix_range = |scope, key: &[u8]| {
         let key = held(key);
-        let mut end = key.clone();
-        end.extend(PREFIX_END);
-        // `end` is past every key that starts with `key`, not a key.
+        // `end` is past every key that starts with `key`, not a key: `ff fe`
+        // after weights (no weight is that high), but a Unicode raw key may
+        // hold the code unit `ff ff`, so there the key's successor.
+        let end = if criterion.text == TextKeys::Raw {
+            successor(&key)
+        } else {
+            [key.as_slice(), &PREFIX_END].concat()
+        };
         keep(finder(
             kind::INDEX_RANGE,
             scope,
@@ -382,16 +404,17 @@ fn keyed_plan(
                         let words = om_collate::words(&phrase);
                         let last = words.len().saturating_sub(1);
                         for (i, word) in words.iter().enumerate() {
-                            let key = om_collate::text_key(word);
                             if i == 0 && *anywhere {
                                 continue;
                             }
                             // Whole words inside the phrase; its first word
                             // starts a word, its last may end inside one.
                             let whole = i < last || !open_end;
+                            let form = criterion.text;
                             finders.push(if i == 0 || (i == last && !whole) {
-                                prefix_range(WORD_SCOPE, &key)
+                                prefix_range(WORD_SCOPE, &criteria::prefix_key(form, word))
                             } else {
+                                let key = criteria::whole_key(form, word);
                                 keep(make(kind::INDEX_MATCH, WORD_SCOPE, 0, &key, &[]))
                             });
                         }
@@ -508,7 +531,14 @@ fn keyed_plan(
         // The index keys text by primary weights, which already ignore
         // kana form, voicing and size (7.2): the relaxed criterion's
         // finders select a superset.
-        Kind::Relaxed(inner) => Plan::candidates(keyed_plan(table, field, inner, held).finders),
+        // `~` reads kana forms, voicing and size as one: the English keys
+        // ignore them, so its finders narrow to a superset; Unicode raw and
+        // the padded form's secondary weights tell them apart, so every
+        // record is a candidate there.
+        Kind::Relaxed(inner) if inner.text == TextKeys::Collated => {
+            Plan::candidates(keyed_plan(table, field, inner, held).finders)
+        }
+        Kind::Relaxed(_) => Plan::candidates(Vec::new()),
     }
 }
 
@@ -1467,6 +1497,31 @@ mod tests {
             assert!(!plan.exact, "{text}");
             assert_eq!(plan.finders.len(), finders, "{text}");
         }
+        // A Unicode raw prefix ends at its successor: a key may hold the
+        // code unit `ff ff`, which `ff fe` would leave out.
+        assert_eq!(successor(&[0x01, 0x00, 0x41]), [0x01, 0x00, 0x42]);
+        assert_eq!(successor(&[0x01, 0x00, 0xff, 0xff]), [0x01, 0x01]);
+        assert!(successor(&[0xff]).is_empty());
+        let raw_prefix =
+            Criterion::parse("A", DataType::Text, &context.with_text_keys(TextKeys::Raw))
+                .unwrap()
+                .unwrap();
+        assert!(plan(TABLE, 1, &raw_prefix).finders[0].bytes.ends_with(
+            &[
+                key_operand(&[0x01, 0x00, 0x41]),
+                key_operand(&[0x01, 0x00, 0x42])
+            ]
+            .concat()
+        ));
+        // `~` on Unicode raw: no index narrows it, every record is
+        // evaluated, and `ガッコウ` matches `~かつこう`.
+        let raw = context.with_text_keys(TextKeys::Raw);
+        let relaxed = Criterion::parse("~かつこう", DataType::Text, &raw)
+            .unwrap()
+            .unwrap();
+        let plan = plan(TABLE, 1, &relaxed);
+        assert!(!plan.exact && plan.finders.is_empty());
+        assert!(relaxed.matches("ガッコウ", DateOrder::MonthDayYear, &|_| false));
         // A literal prefix narrows a pattern to the words that start with it.
         let pattern = plan_of(DataType::Text, "Jo*n");
         let jo = om_collate::text_key("jo");
