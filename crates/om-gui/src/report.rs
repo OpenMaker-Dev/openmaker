@@ -1069,42 +1069,128 @@ enum ApartKey {
 /// A drawing waiting for the drawing thread.
 type ApartJob = Box<dyn FnOnce(&LibraryImage) -> Result<Arc<Picture>, ReportError> + Send>;
 
-/// How many drawings wait at most: a request past them drops the oldest,
-/// most likely for a page or layout no longer shown (it is asked for again
-/// if it is).
-const APART_QUEUED: usize = 4;
-/// How many drawn pictures wait at most to be taken; the oldest goes first.
+/// How many drawings wait at most, all Preview windows together: a request
+/// past them drops the oldest, whose window is told so that it asks again
+/// if it still shows it.
+const APART_QUEUED: usize = 8;
+/// How many drawn pictures one session keeps waiting to be taken; the
+/// oldest goes first.
 const APART_DRAWN: usize = 8;
 
-/// The SVG pictures and icons of one Preview session drawn apart, one at a
-/// time, on a thread that runs while there is something to draw. Every
-/// change is made under one lock, so a picture is drawn once however many
-/// frames ask for it, and taken once it is.
+/// One Preview session's SVG pictures and icons drawn apart, on the
+/// process's one drawing thread ([`DRAWER`]): it draws one picture at a
+/// time, oldest request first, runs only while some wait, and draws
+/// nothing for a session that is gone or was cleared since it asked.
 #[derive(Default)]
-pub(crate) struct Drawing(Arc<Apart>);
+pub(crate) struct Drawing(Arc<Mutex<Owner>>);
 
 #[derive(Default)]
-struct Apart {
-    state: Mutex<ApartState>,
-}
-
-#[derive(Default)]
-struct ApartState {
+struct Owner {
     /// Drawn and not taken yet, oldest first, at most [`APART_DRAWN`].
     drawn: std::collections::VecDeque<(ApartKey, DecodedPicture)>,
-    /// Waiting, oldest first, at most [`APART_QUEUED`].
-    queued: std::collections::VecDeque<(ApartKey, LibraryImage, ApartJob)>,
-    /// Being drawn now.
-    drawing: Option<ApartKey>,
-    /// Whether the drawing thread runs.
-    running: bool,
-    /// Bumped when the pictures are cleared: a drawing started before is
-    /// thrown away.
+    /// Asked for in this generation and not drawn yet (waiting or being
+    /// drawn): asked again, they are not drawn twice.
+    pending: BTreeSet<ApartKey>,
+    /// Bumped when the pictures are cleared: what was asked before is not
+    /// kept.
     generation: u64,
-    /// The session is gone: nothing more is drawn or kept.
-    closed: bool,
-    /// Called after each drawing is kept, for Preview to draw its page.
+    /// Called after each drawing of this session ends, kept or not, for
+    /// Preview to draw its page again.
     notify: Option<Arc<dyn Fn() + Send + Sync>>,
+}
+
+/// Which session (while it lasts), picture and generation a drawing is
+/// for.
+struct Ticket {
+    owner: std::sync::Weak<Mutex<Owner>>,
+    key: ApartKey,
+    generation: u64,
+}
+
+/// A drawing asked for.
+struct DrawJob {
+    ticket: Ticket,
+    image: LibraryImage,
+    draw: ApartJob,
+}
+
+/// The drawings waiting for the drawing thread, and whether it runs.
+struct Drawer {
+    queue: std::collections::VecDeque<DrawJob>,
+    running: bool,
+}
+
+static DRAWER: Mutex<Drawer> = Mutex::new(Drawer {
+    queue: std::collections::VecDeque::new(),
+    running: false,
+});
+
+impl Ticket {
+    /// Ends the drawing: keeps what it drew, if anything, for a session
+    /// that still waits for it, and with `tell` tells the session, which
+    /// asks again on its next repaint for what it still needs.
+    fn end(self, drawn: Option<DecodedPicture>, tell: bool) {
+        let Some(owner) = self.owner.upgrade() else {
+            return;
+        };
+        let notify = {
+            let mut owner = lock(&owner);
+            if owner.generation == self.generation {
+                owner.pending.remove(&self.key);
+                if let Some(drawn) = drawn {
+                    if owner.drawn.len() >= APART_DRAWN {
+                        owner.drawn.pop_front();
+                    }
+                    owner.drawn.push_back((self.key, drawn));
+                }
+            }
+            owner.notify.clone().filter(|_| tell)
+        };
+        if let Some(notify) = notify {
+            notify();
+        }
+    }
+
+    /// Whether its session is still there and asks in the same
+    /// generation.
+    fn live(&self) -> bool {
+        self.owner
+            .upgrade()
+            .is_some_and(|owner| lock(&owner).generation == self.generation)
+    }
+}
+
+/// The drawing thread: draws what waits, oldest first, skipping what no
+/// session waits for any more, and ends when nothing waits. A drawing that
+/// panics is an error, so its picture never stays pending.
+fn run_drawer() {
+    loop {
+        let DrawJob {
+            ticket,
+            image,
+            draw,
+        } = {
+            let mut drawer = lock(&DRAWER);
+            match drawer.queue.pop_front() {
+                Some(job) => job,
+                None => {
+                    drawer.running = false;
+                    return;
+                }
+            }
+        };
+        if !ticket.live() {
+            ticket.end(None, true);
+            continue;
+        }
+        let picture = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| draw(&image)))
+            .unwrap_or_else(|_| {
+                Err(ReportError::unsupported(
+                    "A report picture could not be drawn",
+                ))
+            });
+        ticket.end(Some((image, picture)), true);
+    }
 }
 
 impl Drawing {
@@ -1117,108 +1203,96 @@ impl Drawing {
         image: &LibraryImage,
         draw: impl FnOnce(&LibraryImage) -> Result<Arc<Picture>, ReportError> + Send + 'static,
     ) -> Result<Arc<Picture>, ReportError> {
-        let mut state = lock(&self.0.state);
-        if let Some(at) = state.drawn.iter().position(|(k, _)| *k == key) {
-            if let Some((_, (source, picture))) = state.drawn.remove(at) {
-                if source == *image {
-                    return picture;
+        let generation = {
+            let mut owner = lock(&self.0);
+            if let Some(at) = owner.drawn.iter().position(|(k, _)| *k == key) {
+                if let Some((_, (source, picture))) = owner.drawn.remove(at) {
+                    if source == *image {
+                        return picture;
+                    }
                 }
             }
+            if !owner.pending.insert(key) {
+                return Err(drawing_pictures());
+            }
+            owner.generation
+        };
+        let job = DrawJob {
+            ticket: Ticket {
+                owner: Arc::downgrade(&self.0),
+                key,
+                generation,
+            },
+            image: image.clone(),
+            draw: Box::new(draw),
+        };
+        let (dropped, start) = {
+            let mut drawer = lock(&DRAWER);
+            let dropped = (drawer.queue.len() >= APART_QUEUED)
+                .then(|| drawer.queue.pop_front())
+                .flatten();
+            drawer.queue.push_back(job);
+            let start = !drawer.running;
+            drawer.running = true;
+            (dropped, start)
+        };
+        if let Some(dropped) = dropped {
+            dropped.ticket.end(None, true);
         }
-        if state.drawing == Some(key) || state.queued.iter().any(|(k, _, _)| *k == key) {
-            return Err(drawing_pictures());
-        }
-        if state.queued.len() >= APART_QUEUED {
-            state.queued.pop_front();
-        }
-        state.queued.push_back((key, image.clone(), Box::new(draw)));
-        if !state.running {
-            let apart = Arc::clone(&self.0);
-            match std::thread::Builder::new()
+        if start {
+            if let Err(error) = std::thread::Builder::new()
                 .name("om-preview-pictures".into())
-                .spawn(move || apart.run())
+                .spawn(run_drawer)
             {
-                Ok(_) => state.running = true,
-                Err(error) => {
-                    state.queued.clear();
-                    return Err(ReportError::unsupported(format!(
-                        "Preview could not start drawing its pictures: {error}"
-                    )));
+                let waiting: Vec<DrawJob> = {
+                    let mut drawer = lock(&DRAWER);
+                    drawer.running = false;
+                    drawer.queue.drain(..).collect()
+                };
+                // Untold: a repaint would only ask again and fail again.
+                for job in waiting {
+                    job.ticket.end(None, false);
                 }
+                return Err(ReportError::unsupported(format!(
+                    "Preview could not start drawing its pictures: {error}"
+                )));
             }
         }
         Err(drawing_pictures())
     }
 
-    /// Calls `notify` after each drawing is kept, once one is set.
+    /// Keeps `picture`, drawn here and taken, to be taken again: one its
+    /// caller could not keep (past the static-picture budget) is not drawn
+    /// again on every repaint.
+    fn keep(
+        &self,
+        key: ApartKey,
+        image: &LibraryImage,
+        picture: Result<Arc<Picture>, ReportError>,
+    ) {
+        let mut owner = lock(&self.0);
+        if owner.drawn.len() >= APART_DRAWN {
+            owner.drawn.pop_front();
+        }
+        owner.drawn.push_back((key, (image.clone(), picture)));
+    }
+
+    /// Calls `notify` after each drawing ends, once one is set.
     fn on_drawn(&self, notify: impl FnOnce() -> Arc<dyn Fn() + Send + Sync>) {
-        let mut state = lock(&self.0.state);
-        if state.notify.is_none() {
-            state.notify = Some(notify());
+        let mut owner = lock(&self.0);
+        if owner.notify.is_none() {
+            owner.notify = Some(notify());
         }
     }
 
-    /// Throws away what is drawn and waiting, and the drawing under way
-    /// when it ends.
+    /// Throws away what is drawn and what was asked for: a drawing asked
+    /// before is not kept, and the same picture asked for again is drawn
+    /// anew rather than waiting for it.
     fn clear(&self) {
-        let mut state = lock(&self.0.state);
-        state.generation = state.generation.wrapping_add(1);
-        state.drawn.clear();
-        state.queued.clear();
-    }
-}
-
-impl Drop for Drawing {
-    fn drop(&mut self) {
-        let mut state = lock(&self.0.state);
-        state.closed = true;
-        state.drawn.clear();
-        state.queued.clear();
-        state.notify = None;
-    }
-}
-
-impl Apart {
-    /// The drawing thread: draws what waits, oldest first, and ends when
-    /// nothing does. A drawing that panics is an error, so its picture
-    /// never stays pending.
-    fn run(&self) {
-        loop {
-            let (key, image, job, generation) = {
-                let mut state = lock(&self.state);
-                match state.queued.pop_front() {
-                    Some((key, image, job)) if !state.closed => {
-                        state.drawing = Some(key);
-                        (key, image, job, state.generation)
-                    }
-                    _ => {
-                        state.running = false;
-                        return;
-                    }
-                }
-            };
-            let picture = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| job(&image)))
-                .unwrap_or_else(|_| {
-                    Err(ReportError::unsupported(
-                        "A report picture could not be drawn",
-                    ))
-                });
-            let notify = {
-                let mut state = lock(&self.state);
-                state.drawing = None;
-                if state.closed || state.generation != generation {
-                    continue;
-                }
-                if state.drawn.len() >= APART_DRAWN {
-                    state.drawn.pop_front();
-                }
-                state.drawn.push_back((key, (image, picture)));
-                state.notify.clone()
-            };
-            if let Some(notify) = notify {
-                notify();
-            }
-        }
+        let mut owner = lock(&self.0);
+        owner.generation = owner.generation.wrapping_add(1);
+        owner.drawn.clear();
+        owner.pending.clear();
     }
 }
 
@@ -1275,8 +1349,15 @@ fn rasterize_icon(
     tint: Option<egui::Color32>,
     side: u32,
 ) -> Result<Picture, ReportError> {
-    let data = crate::document::tinted_image(image, tint);
-    static_picture::svg(&data, Some([side, side]), svg_worker::Unsupported::Skip).map_err(|error| {
+    let data = if image.data.len() as u64 > static_picture::MAX_BYTES {
+        Err("SVG input exceeds the picture limit".to_owned())
+    } else {
+        Ok(crate::document::tinted_image(image, tint))
+    };
+    data.and_then(|data| {
+        static_picture::svg(&data, Some([side, side]), svg_worker::Unsupported::Skip)
+    })
+    .map_err(|error| {
         ReportError::unsupported(format!(
             "Library image {key} could not be drawn for the report: {error}"
         ))
@@ -1365,7 +1446,12 @@ impl Pictures {
                 return picture.clone();
             }
         }
-        let picture = match (image.format, &self.3) {
+        // An icon past the SVG limit is refused in line, never copied.
+        let apart = self
+            .3
+            .as_ref()
+            .filter(|_| image.data.len() as u64 <= static_picture::MAX_BYTES);
+        let picture = match (image.format, apart) {
             (LibraryImageFormat::Svg, Some(drawing)) => {
                 match drawing.take_or_start(ApartKey::Icon(cache_key), image, move |image| {
                     rasterize_icon(key, image, tint, side).map(Arc::new)
@@ -1433,7 +1519,12 @@ impl Pictures {
                 return picture.clone();
             }
         }
-        let picture = match (&self.3, size) {
+        // A picture past the SVG limit is refused in line, never copied.
+        let apart = self
+            .3
+            .as_ref()
+            .filter(|_| image.data.len() as u64 <= static_picture::MAX_SVG_BYTES);
+        let picture = match (apart, size) {
             (Some(drawing), Some(_)) => {
                 match drawing.take_or_start(ApartKey::Picture(cache_key), image, move |image| {
                     static_picture::decode(key, image, size).map(Arc::new)
@@ -1458,6 +1549,11 @@ impl Pictures {
             .saturating_add(image.data.len())
             > 512 << 20
         {
+            // Drawn apart, it is kept there to be refused again, not drawn
+            // again on every repaint.
+            if let (Some(drawing), Some(_)) = (apart, size) {
+                drawing.keep(ApartKey::Picture(cache_key), image, picture);
+            }
             return Err(ReportError::unsupported(
                 "Report static pictures exceed the 512 MiB static-picture cache budget",
             ));
@@ -4398,8 +4494,6 @@ pub(crate) mod tests {
             })
         });
         assert_eq!(apart.get(&layout, &object).unwrap_err().code, -1);
-        // Asked again while it is drawn, it is not drawn twice.
-        assert_eq!(apart.get(&layout, &object).unwrap_err().code, -1);
         repaint
             .recv_timeout(std::time::Duration::from_secs(30))
             .expect("drawn");
@@ -4413,11 +4507,11 @@ pub(crate) mod tests {
     }
 
     /// A drawing that panics is its picture's error rather than pending
-    /// for ever, and one under way when the pictures are cleared is thrown
-    /// away: nothing is kept or announced, and the picture is drawn again
-    /// when asked for.
+    /// for ever. A drawing under way when the pictures are cleared is not
+    /// kept, and the same picture asked for after the clear is drawn anew
+    /// rather than waiting for it; the session is told when each ends.
     #[test]
-    fn drawings_apart_end_in_an_error_or_are_thrown_away_when_cleared() {
+    fn drawings_apart_end_in_an_error_or_are_drawn_anew_after_a_clear() {
         let drawing = Drawing::default();
         let (sender, repaint) = std::sync::mpsc::channel();
         drawing.on_drawn(|| {
@@ -4437,27 +4531,26 @@ pub(crate) mod tests {
         let failed = drawing.take_or_start(panicking, &image, |_| unreachable!());
         assert_eq!(failed.unwrap_err().code, 3);
         let cleared = ApartKey::Picture((2, None));
+        let (started, under_way) = std::sync::mpsc::channel();
         let (release, gate) = std::sync::mpsc::channel::<()>();
         let pending = drawing.take_or_start(cleared, &image, move |_| {
+            let _ = started.send(());
             let _ = gate.recv();
-            Err(ReportError::unsupported("never kept"))
+            Err(ReportError::unsupported("before the clear"))
         });
         assert_eq!(pending.unwrap_err().code, -1);
-        let until = |done: &dyn Fn(&ApartState) -> bool| {
-            let deadline = std::time::Instant::now() + wait;
-            while !done(&lock(&drawing.0.state)) {
-                assert!(std::time::Instant::now() < deadline);
-                std::thread::yield_now();
-            }
-        };
-        until(&|state| state.drawing == Some(cleared));
+        under_way.recv_timeout(wait).expect("under way");
         drawing.clear();
+        let anew = drawing.take_or_start(cleared, &image, |_| {
+            Err(ReportError::unsupported("after the clear"))
+        });
+        assert_eq!(anew.unwrap_err().code, -1);
         release.send(()).unwrap();
-        until(&|state| !state.running);
-        assert!(lock(&drawing.0.state).drawn.is_empty());
-        assert!(repaint.try_recv().is_err());
-        let again = drawing.take_or_start(cleared, &image, |_| Err(ReportError::unsupported("x")));
-        assert_eq!(again.unwrap_err().code, -1);
+        // The cleared drawing ends untaken, then the new one is kept.
+        repaint.recv_timeout(wait).expect("cleared drawing ended");
+        repaint.recv_timeout(wait).expect("new drawing ended");
+        let drawn = drawing.take_or_start(cleared, &image, |_| unreachable!());
+        assert_eq!(drawn.unwrap_err().message, "after the clear");
     }
 
     #[test]

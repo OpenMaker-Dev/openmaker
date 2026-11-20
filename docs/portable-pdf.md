@@ -364,17 +364,23 @@ static picture.
   most the picture's pixels, runs one at a time, and takes any failure for
   an SVG that does not draw (error 3). Without the worker beside om-gui,
   SVG pictures refuse. Preview waits for none of this: a picture or button
-  icon not drawn yet is drawn on the Preview session's drawing thread while
-  the page shows "Loading report pictures…" and the window keeps painting
-  and taking input; the finished drawing asks for a repaint, and the page is
-  drawn then (the picture kept with Preview's other pictures). The thread
-  draws one picture at a time and runs only while some wait. At most four
-  wait, a newer request dropping the oldest (asked for again if its page is
-  shown again), and at most eight finished pictures wait to be taken.
-  Clearing Preview's pictures (another snapshot of the layout) or closing
-  the session throws away what waits and what the drawing under way makes.
-  A drawing that fails, panics included, is the picture's error. Save
-  Records as PDF and Print, which run in the script worker, draw in line. Before building the tree the worker refuses input
+  icon not drawn yet is drawn on OpenMaker's one Preview drawing thread
+  while the page shows "Loading report pictures…" and the window keeps
+  painting and taking input; each drawing that ends asks its window for a
+  repaint, and the page is drawn then (the picture kept with Preview's other
+  pictures). The thread draws one picture at a time, oldest request first,
+  and runs only while some wait. At most eight wait, all windows together,
+  a newer request dropping the oldest (whose window is told, and asks again
+  if it still shows it), and each window keeps at most eight finished
+  pictures waiting to be taken. A drawing is not started for a window that
+  is closed or whose pictures were cleared (another snapshot of the layout)
+  since it asked, and one under way then is not kept; the same picture
+  asked for after a clear is drawn anew. A drawing that fails, panics
+  included, is the picture's error. An SVG past the picture limit is
+  refused in line, without copying it, and a drawn picture past the
+  static-picture budget is kept to be refused again rather than drawn again.
+  Save Records as PDF and Print, which run in the script worker, draw in
+  line. Before building the tree the worker refuses input
   past 4 MiB (expanded for SVGZ) or 50,000 XML nodes, XML entity
   declarations, `<image>` (resvg is built without raster decoding) and
   `use`/`feImage` references outside the picture; for Browse and button
