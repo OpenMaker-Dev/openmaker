@@ -1280,8 +1280,9 @@ fn imported_layout_new_and_duplicate_menus_and_scripts_create_on_the_peer() {
         [
             text(1, "PEER ROW", ""),
             text(2, "Ship", ""),
-            // Its auto-entered Entered copied, not entered again (#473).
-            text(3, "PEER ROW", ""),
+            // Its auto-entered Entered entered again on the copy, not
+            // copied (#473).
+            text(3, "PEER ROW", "PEER ROW|Related"),
             text(4, "", "|Related"),
             text(5, "Scripted", "Scripted|Related"),
             text(6, "Scripted", "Scripted|Related"),

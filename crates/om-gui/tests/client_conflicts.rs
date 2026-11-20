@@ -634,6 +634,56 @@ fn a_duplicate_enters_its_own_record_number() {
     assert_eq!(stored_names(&hosted)[2].as_deref(), Some("Copy"));
 }
 
+/// In a script's transaction a duplicate keeps its place as its
+/// `Get ( RecordNumber )` through Commit Records and a later Set Field of
+/// it, which give none: the transaction commits the copy with 3.
+#[test]
+fn a_duplicate_keeps_its_number_through_a_transactions_later_writes() {
+    let hosted = host_with("duplicate-number-transaction", |root| {
+        replacing(root, (21, "Number"), "Get ( RecordNumber )", "2");
+        let mut commit = ScriptStep::new(75);
+        commit.set_flag(om_scripts::flag::NO_INTERACT, true);
+        let mut name = ScriptStep::new(76);
+        name.set_calculation(0, Some(&fixture::calculated_calc("\"Copy\"")));
+        name.set_field_spec(
+            0,
+            Some(om_scripts::FieldSpec::new(
+                om_scripts::StoredKey::from_id(fixture::OCCURRENCE).unwrap(),
+                om_scripts::StoredKey::from_id(fixture::NAME).unwrap(),
+                0,
+            )),
+        );
+        let script = fixture::script(
+            3,
+            "Duplicate in transaction",
+            vec![
+                fixture::go_to_record(2),
+                ScriptStep::new(205),
+                ScriptStep::new(8),
+                commit,
+                name,
+                ScriptStep::new(206),
+            ],
+        );
+        let node = script.encode();
+        let id = node.segment.clone();
+        root.put(&[&[17], &[5], &id], node);
+    });
+    let mut app = open(&hosted);
+    let before = stored_names(&hosted);
+    common::open_menu(&mut app, "Scripts");
+    common::click(&mut app, "Duplicate in transaction");
+    common::wait_until(&mut app, "the committed transaction", |app| {
+        app.state().is_settled()
+            && !app.state().script_running()
+            && (app.state().error().is_some() || stored_names(&hosted).len() == before.len() + 1)
+    });
+    assert!(app.state().error().is_none(), "{:?}", app.state().error());
+    let numbers = stored_values(&hosted, "Number");
+    assert_eq!(numbers[1..], ["2", "3"], "{numbers:?}");
+    assert_eq!(stored_names(&hosted)[2].as_deref(), Some("Copy"));
+}
+
 /// In a transaction that skips auto-entry, a duplicate takes the record's
 /// values: it enters none of its own, and its Token is record 2's, not
 /// empty; a serial number is not copied, and the copy has none [I:

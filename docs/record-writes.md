@@ -129,7 +129,11 @@ OpenMaker does the same with the window's record session
   replacing `Get ( RecordNumber )` is the copy's place after the records
   of an unsorted found set, as s46 measured, as the host's found set is
   when the copy is made; the copy keeps it through its edits before its
-  save, as an auto-entered value is entered when the record is made. In a
+  save, and in a script's transaction through Commit Records and later
+  writes until the transaction commits it (the transaction's held create
+  keeps it), as an auto-entered value is entered when the record is made.
+  Another client's change of the found set after that is not counted, as
+  a value FileMaker entered is not entered again [I]. In a
   sorted found set the copy has none and its save is refused (3). A
   lookup's value and a calculation that does not replace one are copied.
   In a transaction that skips auto-entry the copy takes every stored value
