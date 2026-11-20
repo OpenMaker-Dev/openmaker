@@ -13,9 +13,10 @@
 //! Meanwhile the control waits (`ChoiceError::Pending`).
 //!
 //! A list a hosted file's host can give whole is still asked of the host
-//! (`DataProvider::host_field_values`, #464); this builds the rest. Lists
-//! that depend on the record (related values, an unstored calculation's
-//! values) are still built per object and record in paint.
+//! (`DataProvider::host_field_values`, #464); this builds the rest, an
+//! unstored calculation's values among them, each computed in its own
+//! record's context (#290). Lists of related values, which depend on the
+//! record, are still built per object and record in paint.
 
 use std::cell::{Cell, RefCell};
 use std::sync::Arc;

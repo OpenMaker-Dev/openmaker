@@ -434,8 +434,18 @@ Open items:
   - `FieldAnnotation` and `FieldDisplayNames` answer empty text, as for a
     field without them: no file read so far stores either, so their
     storage is unknown.
-  - Also open: AI (`GetEmbedding`, `GetTokenCount`) and mobile functions
-    through each host, and the TextEncode transliteration table.
+  - OpenMaker Server answers `GetAddonInfo`, `GetSensor`,
+    `GetAVPlayerAttribute` and `Furigana` as FileMaker Server's script
+    engine answered one call of each (calc-functions.md, s45): the add-on
+    interface's version for `"x"` (error 3 for empty text), error 1208 for
+    `"battery"`, empty for `"playbackState"`, and `"abc"` unchanged, the
+    engine's answer without its reading dictionary. Other arguments get
+    the same answers, OpenMaker's fallback [I]; Furigana's option is
+    ignored. The desktop still answers them with error 1225: FileMaker
+    Pro's answers are unmeasured ([#79](https://github.com/OpenMaker-Dev/openmaker/issues/79)).
+  - Also open: AI (`GetEmbedding`, `GetTokenCount`), the mobile functions
+    (`Location`, `LocationValues`, `RangeBeacons`) through each host, and
+    the TextEncode transliteration table.
 - Import and export:
   - Shift-JIS, Big-5 and EUC-KR differ for some letters, and `.xlsx`
     times match to about 15 digits.
@@ -563,10 +573,12 @@ Open items:
     can set a new password
     ([#248](https://github.com/OpenMaker-Dev/openmaker/issues/248)), and
     Enable Account gives 3 for OAuth and Claris ID accounts and rather
-    than make a [Full Access] account inactive. None of
-    them rewrites an account whose stored checksum OpenMaker does not
-    reproduce (3). Add Account, Delete Account and Re-Login fail with
-    error 3 ([#83](https://github.com/OpenMaker-Dev/openmaker/issues/83)).
+    than make a [Full Access] account inactive. Delete Account removes an
+    account and its entries in the account catalog's index; it gives 3
+    for [Guest] and for [Full Access], OAuth and Claris ID accounts. The
+    steps that rewrite an account (all but Delete Account) leave alone one
+    whose stored checksum OpenMaker does not reproduce (3). Add Account and Re-Login fail with error 3
+    ([#83](https://github.com/OpenMaker-Dev/openmaker/issues/83)).
   - The recompute after a schema change reads container inputs from the
     table's library, computes repeating calculations in each repetition,
     and answers Design functions as FileMaker Server's file context does

@@ -196,12 +196,46 @@ fn performs_scripts_on_the_server() {
             fixture::server_work(),
             fixture::failing(),
             fixture::slow(1.5),
+            // What FileMaker Server's script engine answers for an add-on,
+            // a sensor, the media player and Furigana without its
+            // dictionary (s45, calc-functions.md).
+            fixture::script(
+                4,
+                "Device functions",
+                vec![fixture::exit_with(
+                    "GetAddonInfo ( \"x\" ) & \"|\" & EvaluationError ( GetAddonInfo ( \"\" ) ) & \
+                     \"|\" & EvaluationError ( GetSensor ( \"battery\" ) ) & \"|\" & \
+                     GetAVPlayerAttribute ( \"playbackState\" ) & \"|\" & \
+                     EvaluationError ( GetAVPlayerAttribute ( \"playbackState\" ) ) & \"|\" & \
+                     Furigana ( \"abc\" )",
+                )],
+            ),
+            fixture::script(
+                5,
+                "No add-on name",
+                vec![fixture::exit_with("GetAddonInfo ( \"\" )")],
+            ),
+            fixture::script(
+                6,
+                "Battery",
+                vec![fixture::exit_with("GetSensor ( \"battery\" )")],
+            ),
         ],
         true,
     );
     let port = start(&file, None);
     let mut client = logged_in(port, "requester");
     let mut other = logged_in(port, "other");
+    let device = client.perform_script_on_server(4, "", true).unwrap();
+    assert_eq!(
+        (device.error, device.result.as_str()),
+        (0, "{\r\t\"APIVers\" : 2\r}|3|1208||0|abc")
+    );
+    // The two errors' results are `?`, not empty, as s45 shows them.
+    for script in [5, 6] {
+        let bare = client.perform_script_on_server(script, "", true).unwrap();
+        assert_eq!(bare.result, "?", "script {script}: {bare:?}");
+    }
 
     // Wait for completion: the reply carries the Exit Script result and the
     // script's final Get ( LastError ).
@@ -1529,4 +1563,93 @@ fn account_steps_reset_passwords_and_enable_accounts() {
         set: member(0x0b),
     });
     assert_eq!(member(4), Some(&expected[..]));
+}
+
+/// Delete Account (135) in a server script, as FileMaker's
+/// `DoDeleteAccount` removes an account (local-files.md 2.4 and 3): the
+/// member goes, and the catalog's index loses its name list entry, its
+/// place in the display order (numbered again from 1), its `07` entry and
+/// one from the count, while the last key issued stays. A [Full Access]
+/// account is not deleted (3) and a missing one is 213 (inferred) (#83).
+/// Admin, second in the display order, becomes first.
+#[test]
+fn delete_account_removes_the_account_and_its_index_entries() {
+    use fixture::{calc, exit_with, on, script, set_variable};
+    let delete = |name: &str| {
+        let mut step = ScriptStep::new(135);
+        step.set_calculation(0, Some(&calc(name)));
+        step
+    };
+    let scripts = [script(
+        6,
+        "Delete",
+        vec![
+            on(86, true),
+            delete("\"Admin\""),
+            set_variable("$admin", "Get ( LastError )"),
+            delete("\"Nobody\""),
+            set_variable("$missing", "Get ( LastError )"),
+            delete("\"clerk\""),
+            exit_with("$admin & \"|\" & $missing & \"|\" & Get ( LastError )"),
+        ],
+    )];
+    // The account catalog's index as FileMaker keeps it (local-files.md
+    // 3), for Admin (key 2) and Clerk (key 3), Clerk first in the display
+    // order so that Admin moves up to its place.
+    let mut root = fixture::tree(&scripts, true);
+    let leaf = |value: Vec<u8>| om_hbam::OwnedNode::leaf(Vec::new(), value);
+    let index: [&[u8]; 3] = [&[23], &[1], &[1]];
+    fn at<'a>(rest: &[&'a [u8]]) -> Vec<&'a [u8]> {
+        let mut path: Vec<&'a [u8]> = vec![&[23], &[1], &[1]];
+        path.extend_from_slice(rest);
+        path
+    }
+    root.put(&at(&[&[0]]), leaf(vec![1, 3]));
+    for (position, key, name) in [(2u32, 2u8, ACCOUNT), (1, 3, CLERK)] {
+        let listed = om_data::field_catalog::listed_key(name).unwrap();
+        root.put(&at(&[&[1], &listed]), leaf(vec![1, key]));
+        root.put(&at(&[&[3], &position.to_be_bytes()]), leaf(vec![1, key]));
+        root.put(&at(&[&[7], &[key]]), leaf(Vec::new()));
+    }
+    root.put(&at(&[&[4]]), leaf(2u32.to_be_bytes().to_vec()));
+    let file = TempFile::from_tree("delete-account", &root);
+    let port = start(&file, None);
+    let mut admin = logged_in(port, "admin");
+    assert_eq!(run(&mut admin, 6).1, "3|213|0");
+    let mut session = connect(port, "check");
+    session.open_file("127.0.0.1", FILE).unwrap();
+    session.fetch_internal_creation().unwrap();
+    let environment = LoginEnvironment::for_remote_file("127.0.0.1", FILE);
+    let reply = session
+        .login(CLERK, CLERK_PASSWORD, INTERNAL_CREATION, &environment)
+        .unwrap();
+    assert!(!reply.is_success(), "Clerk is gone");
+    let _ = session.disconnect();
+
+    let saved = om_hbam::HbamFile::open(&file.0).unwrap();
+    let node = |path: &[&[u8]]| saved.subtree(path).unwrap();
+    assert!(node(&[&[23], &[1], &[5], &[3]]).is_none());
+    assert!(node(&[&[23], &[1], &[5], &[2]]).is_some());
+    let index = node(&index).unwrap();
+    let entries = |key: u8| -> Vec<(Vec<u8>, Option<Vec<u8>>)> {
+        index
+            .child(&[key])
+            .map(|n| {
+                n.children
+                    .iter()
+                    .map(|c| (c.segment.0.to_vec(), c.value.map(<[u8]>::to_vec)))
+                    .collect()
+            })
+            .unwrap_or_default()
+    };
+    let admin_key = om_data::field_catalog::listed_key(ACCOUNT).unwrap();
+    assert_eq!(entries(1), [(admin_key, Some(vec![1, 2]))]);
+    assert_eq!(
+        entries(3),
+        [(1u32.to_be_bytes().to_vec(), Some(vec![1, 2]))]
+    );
+    assert_eq!(entries(7), [(vec![2], Some(Vec::new()))]);
+    let value = |key: u8| index.child(&[key]).and_then(|n| n.value);
+    assert_eq!(value(4), Some(&1u32.to_be_bytes()[..]));
+    assert_eq!(value(0), Some(&[1, 3][..]));
 }
