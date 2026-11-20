@@ -1982,7 +1982,18 @@ creating Attachments; its option word is 257.
 - Set Field into a related field writes the active row's record, else the
   first related record, else (the creation row, or no related record)
   creates one when the relationship allows it, its match field set to the
-  parent's key; without creation 101. The related records belong to the
+  parent's key; without creation 101. Through two relationships (s49: a
+  field of Phone Emails, reached from Contacts through Phone Numbers), a
+  hop with no related record gets one, made from the record before it: the
+  new phone's match field takes the contact's key, and the new email's takes
+  the new phone's auto-entered key. Set Field returns 0, and after Commit
+  Records both records exist, linked. A middle record that exists takes the
+  far one instead. When the far record's relationship does not allow
+  creation, the step fails with 101 and creates nothing, whatever the other
+  relationship allows. When it does, but the middle record is missing and its
+  relationship does not allow creation, the step fails with 415 ("One or
+  more required related records are not available"). Longer paths are
+  unmeasured. The related records belong to the
   parent's open record: Commit Records commits them together, a related
   record's validation failing the whole commit (507; Set Field 0, also for
   "only during data entry" rules), Revert Record drops them. Commit Records
@@ -4050,9 +4061,13 @@ Portals (2026-10-29; 13.24; `scripting/host/portals.rs`)
   calculations read a related field of the portal's occurrence from the
   active row's record (empty on the creation row).
 - Set Field into a related field writes the active row's record, else the
-  first related record, else creates a related record when a direct
-  relationship allows creating its records (each `=` predicate's field set
-  from the current record), else 101. Delete Portal Row deletes the active
+  first related record, else creates a related record when the relationship
+  to it allows creating its records, else 101. Each `=` predicate's field is
+  set from the record it is made from: the current record, or two or more
+  relationships away the first related record along the way (s49). A
+  record missing on the way is 415 when its relationship does not allow
+  creation. When it does, FileMaker would make it too: the step is
+  unsupported and stops the script (#41). Delete Portal Row deletes the active
   row's record (3 without a row). Both are held as the current record's
   related changes (`RelatedDraft`) and committed with it: the record first,
   then its related records, all in one provider transaction when no

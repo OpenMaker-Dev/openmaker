@@ -1,0 +1,42 @@
+# Set Field of a field two relationships away on FileMaker Server's script
+# engine (#41), creation off on both hops. Base file: contacts-en with SCHEMA= the document
+# s49_two_hop_schema.py writes: Phone Emails, an occurrence of Email
+# Addresses, related from Phone Numbers by PrimaryKey = ForeignKey, after
+# Contacts -> Phone Numbers. TwoHops sets Phone Emails::Address from a new
+# contact with no phone; FromMiddle first sets Phone Numbers::Number. Each
+# exits with Set Field's error, the commit's, the contact's phones, the
+# emails reached through them, all emails, and Phone Emails::Address.
+@relationship	Phone Numbers	Contacts	cascadeCreate=False
+@relationship	Phone Emails	Phone Numbers	cascadeCreate=False
+
+== TwoHops
+Set Error Capture [ On ]
+Go to Layout [ "Contact Details" ]
+New Record/Request
+Set Variable [ $name ; Get ( ScriptParameter ) ]
+Set Field [ Contacts::First Name ; $name ]
+Commit Records/Requests [ With dialog: Off ]
+Set Field [ Phone Emails::Address ; "x@" & $name ]
+Set Variable [ $set ; Get ( LastError ) ]
+Commit Records/Requests [ With dialog: Off ]
+Set Variable [ $commit ; Get ( LastError ) ]
+Exit Script [ $set & "|" & $commit & "|" & ExecuteSQL ( "SELECT COUNT(*) FROM \"Phone Numbers\" p JOIN \"Contacts\" c ON p.\"ForeignKey\" = c.\"PrimaryKey\" WHERE c.\"First Name\" = ?" ; "" ; "" ; $name ) & "|" & ExecuteSQL ( "SELECT COUNT(*) FROM \"Email Addresses\" e JOIN \"Phone Numbers\" p ON e.\"ForeignKey\" = p.\"PrimaryKey\" JOIN \"Contacts\" c ON p.\"ForeignKey\" = c.\"PrimaryKey\" WHERE c.\"First Name\" = ?" ; "" ; "" ; $name ) & "|" & ExecuteSQL ( "SELECT COUNT(*) FROM \"Email Addresses\"" ; "" ; "" ) & "|" & Phone Emails::Address ]
+
+== FromMiddle
+Set Error Capture [ On ]
+Go to Layout [ "Contact Details" ]
+New Record/Request
+Set Variable [ $name ; Get ( ScriptParameter ) ]
+Set Field [ Contacts::First Name ; $name ]
+Commit Records/Requests [ With dialog: Off ]
+Set Field [ Phone Numbers::Number ; "555" ]
+Commit Records/Requests [ With dialog: Off ]
+Set Field [ Phone Emails::Address ; "x@" & $name ]
+Set Variable [ $set ; Get ( LastError ) ]
+Commit Records/Requests [ With dialog: Off ]
+Set Variable [ $commit ; Get ( LastError ) ]
+Exit Script [ $set & "|" & $commit & "|" & ExecuteSQL ( "SELECT COUNT(*) FROM \"Phone Numbers\" p JOIN \"Contacts\" c ON p.\"ForeignKey\" = c.\"PrimaryKey\" WHERE c.\"First Name\" = ?" ; "" ; "" ; $name ) & "|" & ExecuteSQL ( "SELECT COUNT(*) FROM \"Email Addresses\" e JOIN \"Phone Numbers\" p ON e.\"ForeignKey\" = p.\"PrimaryKey\" JOIN \"Contacts\" c ON p.\"ForeignKey\" = c.\"PrimaryKey\" WHERE c.\"First Name\" = ?" ; "" ; "" ; $name ) & "|" & ExecuteSQL ( "SELECT COUNT(*) FROM \"Email Addresses\"" ; "" ; "" ) & "|" & Phone Emails::Address ]
+
+--- run
+TwoHops	bothoff-a
+FromMiddle	bothoff-b
