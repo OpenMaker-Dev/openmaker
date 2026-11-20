@@ -206,9 +206,11 @@ fn scripts() -> Vec<Script> {
     ]
 }
 
-/// A find's error, the found count and the first found record's id.
-const FOUND: &str =
-    "$set & \"/\" & Get ( LastError ) & \":\" & Get ( FoundCount ) & \":\" & Get ( RecordID )";
+/// A find's error, the found count, the first found record's id and every
+/// found record's (calc-functions.md, "GetRecordIDsFromFoundSet on
+/// FileMaker Server").
+const FOUND: &str = "$set & \"/\" & Get ( LastError ) & \":\" & Get ( FoundCount ) & \":\" & \
+    Get ( RecordID ) & \":\" & GetRecordIDsFromFoundSet ( JSONStringRanges )";
 
 fn tree() -> OwnedNode {
     let mut root = fixture::tree(&scripts(), true);
@@ -280,8 +282,8 @@ fn an_unstored_calculation_over_empty_fields_is_empty() {
     // Record 5 has neither Name nor Count: Label, set not to evaluate then,
     // is empty there (not " ()"), so `=` finds it and `*` does not
     // (script-runtime.md 13.19, calc-values.md 8.8).
-    assert_eq!(run(&mut client, 10), (0, "0/0:1:5".into()));
-    assert_eq!(run(&mut client, 11), (0, "0/0:4:1".into()));
+    assert_eq!(run(&mut client, 10), (0, r#"0/0:1:5:["5"]"#.into()));
+    assert_eq!(run(&mut client, 11), (0, r#"0/0:4:1:["1-4"]"#.into()));
     assert_eq!(run(&mut client, 12), (0, "1|0".into()));
 }
 
