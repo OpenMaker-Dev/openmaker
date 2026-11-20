@@ -1596,6 +1596,17 @@ the theme, is [I]. A capture of Meetings' Notes with its Inspector would tell.
 Drop-down lists and calendars at the top is inferred: no capture shows one with
 a value.
 
+[O, 2026-11-18] On copies of the Contacts starter using Universal Touch,
+FileMaker Pro 26.0.3's Insert > Field made a 44 pt edit box. Both a field
+placed in OpenMaker and a Pro-created field resized to 22 pt drew blank
+when inactive in Browse. Each showed its value during entry, and the
+saved value was visible on another layout and survived reopening. The
+OpenMaker-placed field showed the value while inactive once resized to
+44 pt. [I] The theme's combined 24 pt vertical padding leaves too little
+room for text in the shorter frame. [U] Pro's default height for a Fields
+sidebar drop and the dimensions used by other themes were not measured.
+See [#315](https://github.com/OpenMaker-Dev/openmaker/issues/315).
+
 [O] Compiled property 64 can carry `intVal`, rather than `stringVal`: it then
 indexes the file font list at `25/5/<id>/16`. Contacts index 0 is
 `arial,sans-serif`; index 2 is `Helvetica Neue`. The integer 0 is a valid font
