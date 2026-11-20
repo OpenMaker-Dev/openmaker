@@ -69,7 +69,7 @@ pub struct CardFrame {
 }
 
 impl OpenMakerApp {
-    fn docs(&self) -> impl Iterator<Item = &super::windows::Doc> {
+    pub(super) fn docs(&self) -> impl Iterator<Item = &super::windows::Doc> {
         std::iter::once(&self.w).chain(&self.windows)
     }
 
@@ -159,22 +159,17 @@ impl OpenMakerApp {
     }
 
     /// Draw window `id` and its cards in `ui`, its viewport, whose native
-    /// window is `parent`. `front`: the app's front window.
+    /// window is `parent`.
     pub(super) fn draw_viewport(
         &mut self,
         ui: &mut Ui,
         id: u32,
         embedded: bool,
-        front: u32,
         parent: NativeParent,
     ) {
         let chain = self.card_chain(id);
         let top = *chain.last().expect("one window");
         let dialog = self.blocking_dialog(id);
-        // Embedded viewports share the root's input: only the front
-        // window's takes it.
-        let input = dialog.is_none() && (!embedded || chain.contains(&front));
-        let front_here = chain.contains(&front);
         if !embedded
             && dialog.is_none()
             && matches!(
@@ -194,7 +189,11 @@ impl OpenMakerApp {
             });
             if user_input {
                 self.presentation = Some(super::windows::Presentation::User);
-                self.bring_to_front(top);
+                if !self.bring_to_front(top) {
+                    let viewport = self.viewport_of(self.w.id);
+                    ui.ctx()
+                        .send_viewport_cmd_to(viewport, egui::ViewportCommand::Focus);
+                }
             }
         }
         if let Some(dialog) = dialog {
@@ -206,6 +205,11 @@ impl OpenMakerApp {
                     .send_viewport_cmd_to(viewport, egui::ViewportCommand::Focus);
             }
         }
+        // A previous viewport, or script presentation handling above, can
+        // have changed which file's dialogs belong in this frame.
+        let front = self.front_doc().id;
+        let front_here = chain.contains(&front);
+        let input = dialog.is_none() && (!embedded || front_here);
         if chain.len() == 1 {
             let draw = |app: &mut Self, ui: &mut Ui| {
                 let sharing = Sharing {

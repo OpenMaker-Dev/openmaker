@@ -40,6 +40,8 @@ flate2 = "1.1"
 # worker (their text in the bundled fonts; resvg: MIT OR Apache-2.0).
 # Without `raster-images`: no raster image an SVG embeds is decoded.
 resvg = { version = "0.45.1", default-features = false, features = ["text"] }
+# Tokenize only the SVG prolog and root tag to place the icon tint.
+quick-xml = "0.41"
 # The root viewport's native window, which web viewers are children of
 # (the version eframe uses; MIT OR Apache-2.0 OR Zlib).
 raw-window-handle = "0.6"
