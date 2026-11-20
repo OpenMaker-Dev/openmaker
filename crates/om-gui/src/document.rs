@@ -7593,6 +7593,11 @@ const ICON_SHOWN: std::time::Duration = std::time::Duration::from_secs(1);
 /// SVG FileMaker Pro refuses, are unmeasured.
 fn paint_calculated_icon(ui: &Ui, svg: &str, rect: Rect, tint: Option<Color32>) {
     use std::hash::{Hash, Hasher};
+    // Form view can paint objects outside the current scroll clip.
+    // Only visible icons can admit or renew a cache entry.
+    if !ui.is_rect_visible(rect) || !rect.intersect(ui.clip_rect()).is_positive() {
+        return;
+    }
     let warning = || {
         ui.painter().text(
             rect.center(),
@@ -7711,13 +7716,10 @@ pub(crate) fn tinted_image(image: &om_layout::LibraryImage, tint: Option<Color32
     let mut data = image.data.clone();
     if image.format == om_layout::LibraryImageFormat::Svg {
         if let (Some(tint), Ok(svg)) = (tint, std::str::from_utf8(&data)) {
-            if let Some(start) = svg
-                .find("<svg")
-                .and_then(|start| svg[start..].find('>').map(|end| start + end + 1))
-            {
+            if let Some(start) = svg_root_content_offset(svg) {
                 let opacity = f32::from(tint.a()) / 255.0;
                 let css = format!(
-                    "<style>.fm_fill{{fill:#{:02x}{:02x}{:02x}!important;\
+                    "<style xmlns=\"http://www.w3.org/2000/svg\">.fm_fill{{fill:#{:02x}{:02x}{:02x}!important;\
                      fill-opacity:{opacity}!important}}</style>",
                     tint.r(),
                     tint.g(),
@@ -7728,6 +7730,24 @@ pub(crate) fn tinted_image(image: &om_layout::LibraryImage, tint: Option<Color32
         }
     }
     data
+}
+
+/// Find the root's opening tag without expanding entities or parsing the
+/// SVG body. The rendering worker still decides whether the SVG is valid.
+fn svg_root_content_offset(svg: &str) -> Option<usize> {
+    use quick_xml::events::Event;
+
+    let mut reader = quick_xml::Reader::from_str(svg);
+    loop {
+        match reader.read_event().ok()? {
+            Event::Start(root) if root.local_name().as_ref() == b"svg" => {
+                return usize::try_from(reader.buffer_position()).ok();
+            }
+            Event::Comment(_) | Event::Decl(_) | Event::PI(_) | Event::DocType(_) => {}
+            Event::Text(text) if text.iter().all(u8::is_ascii_whitespace) => {}
+            _ => return None,
+        }
+    }
 }
 
 fn default_panel(object: &LayoutObject, panels: &[&LayoutObject]) -> u64 {
@@ -8543,6 +8563,43 @@ mod visibility_tests;
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn clipped_calculated_icons_do_not_claim_visible_cache_slots() {
+        let ctx = egui::Context::default();
+        ctx.run_ui(egui::RawInput::default(), |ui| {
+            let clip = Rect::from_min_size(pos2(0.0, 0.0), vec2(40.0, 40.0));
+            ui.set_clip_rect(clip);
+            let outside = clip.translate(vec2(0.0, 40.0));
+            for icon in 0..MAX_CALCULATED_ICONS {
+                paint_calculated_icon(ui, &format!("<svg>{icon}</svg>"), outside, None);
+            }
+            let id = egui::Id::unique("openmaker calculated icons");
+            assert!(ui.data(|data| data.get_temp::<CalculatedIcons>(id).is_none()));
+            paint_calculated_icon(ui, "<svg/>", clip.shrink(10.0), None);
+            assert_eq!(
+                ui.data(|data| data.get_temp::<CalculatedIcons>(id).unwrap().0.len()),
+                1
+            );
+        })
+        .drop_without_applying_deltas();
+    }
+
+    #[test]
+    fn svg_tint_starts_inside_the_root_after_an_xml_prolog() {
+        let data = br#"<?xml version="1.0"?>
+<!-- Example <svg -->
+<?example svg?>
+<svg xmlns="http://www.w3.org/2000/svg" width="8" height="8" data-example=">"><rect class="fm_fill" width="8" height="8"/></svg>"#;
+        let image = om_layout::LibraryImage {
+            format: om_layout::LibraryImageFormat::Svg,
+            data: data.to_vec(),
+        };
+        let tinted = tinted_image(&image, Some(Color32::RED));
+        let picture = crate::report::browse_svg(&tinted, [8, 8]).unwrap();
+        assert_eq!(&picture.rgba[..4], &[255, 0, 0, 255]);
+        assert!(crate::report::browse_svg(b"<svg>", [8, 8]).is_err());
+    }
 
     /// A field click waiting for its row (#1099) keeps waiting through a
     /// frame that cannot tell yet whether its row shows, and goes once

@@ -556,8 +556,9 @@ authoring part tabs or object kind captions.
   reports or Refresh Object when it cannot be read.
   - OpenMaker's choices: the icon is colored as the library icon is; text
     longer than 64 KiB is dropped as it is computed and shows the warning;
-    the app keeps up to 256 distinct icons loaded across its windows and
-    warns on additional icons while all slots are in use. It keeps up to
+    the app keeps up to 256 distinct icons loaded across its windows.
+    Only icons within the document's visible clip claim or renew a slot.
+    The app warns on additional visible icons while all slots are in use. It keeps up to
     64 after they leave the screen, with a one-second grace period.
     Rasters are limited to 512 pixels per side and cached calculation
     results have a 16 MiB text budget. The SVG worker queues up to 128
