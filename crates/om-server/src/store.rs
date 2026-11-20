@@ -199,7 +199,7 @@ pub struct Store {
 }
 
 /// An index: its table, field and kind (value 0, word 1).
-type IndexId = (Vec<u8>, Vec<u8>, u8);
+pub type IndexId = (Vec<u8>, Vec<u8>, u8);
 
 /// Per catalog path: the last member id and modification count issued.
 type IssuedKeys = HashMap<Vec<Vec<u8>>, (u64, u64)>;
@@ -2341,7 +2341,7 @@ impl Store {
     /// the client that asks next which indexes are missing sees the file as
     /// the query found it, whichever query stores the due indexes first. A
     /// later query builds them again.
-    pub fn forget_indexes_on_demand(&self, built: &[(Vec<u8>, Vec<u8>, u8)]) {
+    pub fn forget_indexes_on_demand(&self, built: &[IndexId]) {
         let mut due = self.on_demand.lock().expect("index lock");
         for id in built {
             due.remove(id);

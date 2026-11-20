@@ -2598,7 +2598,7 @@ struct QuerySource<'s> {
     view: Option<crate::views::ViewFilter>,
     /// The indexes this query had built on demand, which a refused query
     /// takes back ([`crate::store::Store::forget_indexes_on_demand`]).
-    built: std::cell::RefCell<Vec<(Vec<u8>, Vec<u8>, u8)>>,
+    built: std::cell::RefCell<Vec<crate::store::IndexId>>,
 }
 
 impl om_query::Source for QuerySource<'_> {
