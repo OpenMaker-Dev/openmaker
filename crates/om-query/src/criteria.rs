@@ -877,7 +877,8 @@ pub(crate) fn whole_key(form: TextKeys, text: &str) -> Vec<u8> {
 /// follow them (query-program.md 7.2).
 pub(crate) fn prefix_key(form: TextKeys, text: &str) -> Vec<u8> {
     match form {
-        TextKeys::Raw => whole_key(form, text),
+        // Primary weights alone, so a prefix's key starts the word's.
+        TextKeys::Raw | TextKeys::Japanese => whole_key(form, text),
         _ => om_collate::text_key(text),
     }
 }

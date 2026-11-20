@@ -75,6 +75,14 @@ pub enum TextKeys {
     CollatedPadded,
     /// Unicode raw (2): `01`, then the UTF-16BE code units.
     Raw,
+    /// Japanese (31): `01`, then the Japanese tailoring's weights for kana
+    /// and the kanji of JIS X 0208 level 1, the table's for every other
+    /// character ([`om_collate::japanese_key`]). A text holding a kanji
+    /// outside level 1 has no key in it ([`Self::key`] is `None`): a writer
+    /// or a check needing that text's key must refuse it, not skip it.
+    /// Not yet the form of [`Self::of_language`] 31, so no reader or writer
+    /// uses it (#299).
+    Japanese,
 }
 
 impl TextKeys {
@@ -109,6 +117,7 @@ impl TextKeys {
                     .chain(text.encode_utf16().flat_map(u16::to_be_bytes))
                     .collect(),
             ),
+            TextKeys::Japanese => om_collate::japanese_key(text),
         }
     }
 }

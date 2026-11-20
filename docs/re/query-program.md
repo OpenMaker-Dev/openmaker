@@ -1154,8 +1154,15 @@ kanji weights of its own; every other character keys from the table
   (`kana` rows).
 - A voiced kana keys as its plain kana then `01f4`, a semi-voiced one then
   `01f8` (`ば` = `4031 01f4`, `パ` = `4438 01f8`); U+3099/U+309B key `01f4`
-  and U+309A/U+309C `01f8`. Halfwidth katakana take the fullwidth weights
-  (`ﾊﾝｶｸ` = `01 4438 446a 440c 4411`).
+  and U+309C `01f8`. This section read U+309A as `01f8` too, but in the
+  probe's `゛゜゙゚ー々〆〇〻` (U+309B U+309C U+3099 U+309A …) it adds nothing
+  after U+3099 (`01 01f4 01f8 01f4 11dd …`), so how it keys, after a kana or
+  another mark, is open. Halfwidth katakana take the fullwidth weights
+  (`ﾊﾝｶｸ` = `01 4438 446a 440c 4411`); the halfwidth sound marks U+FF9E and
+  U+FF9F were not probed.
+- `〆` (U+3006) is tailored too: it keys `446b`, after `ン` (`446a`), where
+  English gives it two table weights (the same probe value's word `々〆` is
+  `01 11d7 446b`). `々`, `〇`, `〻` and `ー` key from the table.
 - A kanji of JIS X 0208 level 1 (rows 16 to 47) is 0x967E + (row - 1) × 94
   + (cell - 1): `一` (row 16, cell 76) = `9c4b`, `中` = `a33f` (42 of 42
   level-1 kanji in the probe and the Japanese sample). Other kanji have
