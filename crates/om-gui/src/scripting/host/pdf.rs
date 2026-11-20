@@ -545,7 +545,25 @@ impl WorkerHost<'_> {
     ) -> Result<(String, Option<Value>), ReportError> {
         let mut own = None;
         let (group, row) = (context.group, context.portal);
-        let text = report::object_text(object, origin, schema, |field| {
+        let text = report::object_text(object, origin, schema, |piece| {
+            let field = match piece {
+                report::Piece::Field(field) => field,
+                report::Piece::Literal(text) if !report::merges(text) => return Ok(text.into()),
+                // Symbols on the record, as Browse shows them. The running
+                // script's variables are the runtime's, which this host
+                // does not read (#596): a merge variable would print
+                // empty.
+                report::Piece::Literal(text) => {
+                    use om_data::host::layout::{merged, Merged};
+                    if merged(text).any(|piece| matches!(piece, Merged::Variable(_))) {
+                        return Err(ReportError::unsupported(
+                            "Merge variables in reports a script prints are unsupported",
+                        ));
+                    }
+                    let context = report::in_row(Context::record(origin, record), row);
+                    return Ok(om_data::host::layout::merge_text(self, text, &context));
+                }
+            };
             let (value, text) =
                 self.pdf_field(origin, record, group, row, field, object, schema)?;
             if object.kind() == ObjectKind::Field {

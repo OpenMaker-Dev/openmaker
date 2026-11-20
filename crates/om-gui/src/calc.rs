@@ -1186,7 +1186,10 @@ impl crate::report::ReportContent for Measure<'_, '_> {
         object: &LayoutObject,
         context: crate::report::ContentContext,
     ) -> Result<String, crate::report::ReportError> {
-        if object.kind() == om_layout::ObjectKind::Text && object.text_runs.is_empty() {
+        if object.kind() == om_layout::ObjectKind::Text
+            && object.text_runs.is_empty()
+            && !crate::report::merges(object.text.as_deref().unwrap_or_default())
+        {
             return Ok(object.text.clone().unwrap_or_default());
         }
         let record = self.record(context)?;
@@ -2343,7 +2346,23 @@ impl<'a> Evaluator<'a> {
         use crate::report::{self, ReportError};
         let report_eval = self;
         let mut own = None;
-        let text = report::object_text(object, self.occurrence, self.schema, |field| {
+        let loading = || ReportError {
+            code: -1,
+            message: "Loading report values…".into(),
+        };
+        let text = report::object_text(object, self.occurrence, self.schema, |piece| {
+            let field = match piece {
+                report::Piece::Field(field) => field,
+                report::Piece::Literal(text) if !report::merges(text) => return Ok(text.into()),
+                // Merge variables and symbols on the record, as Browse
+                // shows them.
+                report::Piece::Literal(text) => {
+                    let context = report::in_row(Context::record(self.occurrence, record), row);
+                    return report_eval
+                        .with_host(|host| layout::merge_text(host, text, &context))
+                        .ok_or_else(loading);
+                }
+            };
             let def = self
                 .schema
                 .field(field.occurrence, field.field)
@@ -2367,10 +2386,6 @@ impl<'a> Evaluator<'a> {
                 Context::record(self.occurrence, record).with_repetition(field.repetition),
                 row,
             );
-            let loading = || ReportError {
-                code: -1,
-                message: "Loading report values…".into(),
-            };
             let incomplete = |code| ReportError {
                 code,
                 message: "A report field could not be calculated completely".into(),

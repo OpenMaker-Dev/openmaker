@@ -299,9 +299,11 @@ impl report::ReportContent for Content<'_, '_, '_> {
         object: &om_layout::LayoutObject,
         context: report::ContentContext,
     ) -> Result<String, report::ReportError> {
-        // A static label (a text object's or a button's) needs no record.
+        // A static label (a text object's or a button's) needs no record,
+        // unless it holds merge variables or symbols.
         if matches!(object.kind(), ObjectKind::Text | ObjectKind::Button)
             && object.text_runs.is_empty()
+            && !report::merges(object.text.as_deref().unwrap_or_default())
         {
             self.session
                 .record_at(context.record as u64)

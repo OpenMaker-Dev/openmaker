@@ -153,10 +153,18 @@ fn names_symbol(inner: &str, name: &str, op: u16) -> bool {
 /// The `Get` selector of symbol `{{inner}}`. Another name or number is no
 /// symbol.
 fn symbol_selector(inner: &str) -> Option<&'static str> {
+    symbol(inner).map(|(_, _, get)| *get)
+}
+
+/// The name of what symbol `{{inner}}` shows, as [`SYMBOLS`] spells it.
+fn symbol_name(inner: &str) -> Option<&'static str> {
+    symbol(inner).map(|(name, _, _)| *name)
+}
+
+fn symbol(inner: &str) -> Option<&'static (&'static str, u16, &'static str)> {
     SYMBOLS
         .iter()
         .find(|(name, op, _)| names_symbol(inner, name, *op))
-        .map(|(_, _, get)| *get)
 }
 
 /// A piece of layout text as [`merge_text`] reads it: text, or a merge
@@ -195,6 +203,57 @@ fn pieces(text: &str) -> Vec<Piece<'_>> {
         });
         rest = &tail[end + 2..];
     }
+}
+
+/// What [`merge_text`] fills in, or would, for one piece of layout text.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Merged<'t> {
+    /// A merge variable: `$name` or `$$name`, with an optional `[n]`.
+    Variable(&'t str),
+    /// A symbol, by the name of what it shows: `CurrentDate` for
+    /// `{{currentdate}}` or `{{1002}}`.
+    Symbol(&'static str),
+    /// A `{{symbol}}` [`merge_text`] keeps as written: another name or
+    /// number, `{{PageCount}}` among them. Its inside.
+    Kept(&'t str),
+}
+
+/// The merge variables and symbols of layout text, read as [`merge_text`]
+/// reads them: a symbol never inside a merge variable, an unclosed one
+/// text. A `<<...>>` that names no variable is text too.
+pub fn merged(text: &str) -> impl Iterator<Item = Merged<'_>> {
+    pieces(text).into_iter().filter_map(|piece| match piece {
+        Piece::Text(_) => None,
+        Piece::Merge { inner, .. } => {
+            is_variable_reference(inner).then_some(Merged::Variable(inner))
+        }
+        Piece::Symbol { inner, .. } => {
+            Some(symbol_name(inner).map_or(Merged::Kept(inner), Merged::Symbol))
+        }
+    })
+}
+
+/// `text` with each symbol that `shown` gives a text for, by the name of
+/// what it shows ([`Merged::Symbol`]), replaced by that text; everything
+/// else is kept as written. Symbols are read as [`merge_text`] reads them,
+/// so what is left fills in as it would have.
+pub fn replace_symbols(text: &str, mut shown: impl FnMut(&str) -> Option<String>) -> String {
+    let mut out = String::with_capacity(text.len());
+    for piece in pieces(text) {
+        let raw = match piece {
+            Piece::Text(text) => text,
+            Piece::Merge { raw, .. } => raw,
+            Piece::Symbol { inner, raw } => match symbol_name(inner).and_then(&mut shown) {
+                Some(text) => {
+                    out.push_str(&text);
+                    continue;
+                }
+                None => raw,
+            },
+        };
+        out.push_str(raw);
+    }
+    out
 }
 
 /// Whether layout text holds `{{PageNumber}}` or `{{PageCount}}`, by name
@@ -277,6 +336,23 @@ mod tests {
         for text in ["{{01015}}", "{{x{{1015}}", "{{1015", "Page 1015"] {
             assert!(!has_page_symbol(text), "{text}");
         }
+        // Reports read and number symbols as merge_text does: one inside a
+        // merge variable is the variable's text, and numbering cannot make
+        // a variable of it.
+        let text = "<<$x{{PageNumber}}>> {{1015}} <<$$y[2]>> {{pagecount}} {{1002}} <<Name>>";
+        assert_eq!(
+            merged(text).collect::<Vec<_>>(),
+            [
+                Merged::Symbol("PageNumber"),
+                Merged::Variable("$$y[2]"),
+                Merged::Kept("pagecount"),
+                Merged::Symbol("CurrentDate"),
+            ]
+        );
+        assert_eq!(
+            replace_symbols(text, |name| (name == "PageNumber").then(|| "2".into())),
+            "<<$x{{PageNumber}}>> 2 <<$$y[2]>> {{pagecount}} {{1002}} <<Name>>"
+        );
     }
 
     #[test]

@@ -1941,6 +1941,11 @@ pub(crate) fn conditional_fixture() -> (Box<dyn DataProvider>, impl Fn() -> Vec<
 }
 
 #[cfg(test)]
+pub(crate) fn symbols_fixture() -> (Box<dyn DataProvider>, impl Fn() -> Vec<String>) {
+    databases_tests::symbols_fixture()
+}
+
+#[cfg(test)]
 pub(crate) fn grouped_fixture() -> (Box<dyn DataProvider>, impl Fn() -> Vec<String>) {
     databases_tests::grouped_fixture()
 }

@@ -889,7 +889,11 @@ fn report_card(layout: &Layout, schema: &CalcSchema) -> ReportCard {
     }
     // What `pdf_field` checks before it reads a value; no value is read.
     let content = |object: &LayoutObject, group: Option<om_layout::BreakField>| {
-        report::object_text(object, occurrence, schema, |field| {
+        report::object_text(object, occurrence, schema, |piece| {
+            let field = match piece {
+                report::Piece::Field(field) => field,
+                report::Piece::Literal(text) => return Ok(text.to_owned()),
+            };
             let def = report::field_def(schema, field, object)?;
             report::group_summary(def, field, occurrence, group)?;
             Ok(String::new())
