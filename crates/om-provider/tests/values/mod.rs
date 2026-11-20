@@ -158,9 +158,10 @@ fn repetitions_include_256_and_multiline_values_but_exclude_empty_keys() {
 fn text_forms_use_declared_language_and_unestablished_languages_fail() {
     for (language, expected) in [
         (0, vec![]),
-        (1, vec!["a", "Test"]),
+        // System and Unicode standard keep accents (query-program.md 7.2).
+        (1, vec!["a", "Test", "tést"]),
         (2, vec!["Test", "a", "tést"]),
-        (3, vec!["a", "Test"]),
+        (3, vec!["a", "Test", "tést"]),
         (21, vec!["a", "Test"]),
         (77, vec!["a", "Test"]),
     ] {
@@ -256,13 +257,13 @@ fn established_typed_keys_and_file_date_orders_preserve_index_order() {
 }
 
 #[test]
-fn fallback_rejects_unknown_numeric_forms_and_unreadable_values_instead_of_skipping() {
+fn fallback_rejects_unread_values_instead_of_skipping() {
+    // Digits among other characters
+    // (https://github.com/OpenMaker-Dev/openmaker/issues/246) and text
+    // that is no value.
     for (kind, value) in [
-        (2, "-2"),
-        (2, "2.5"),
         (2, "1,5"),
         (3, "not a date"),
-        (4, "12:00:00.5"),
         (5, "not a timestamp"),
         (6, "data"),
     ] {
@@ -277,6 +278,19 @@ fn fallback_rejects_unknown_numeric_forms_and_unreadable_values_instead_of_skipp
             provider.index_values(tasks, "Unknown").unwrap_err().code,
             Some(3)
         );
+        provider.close();
+    }
+    // Negative and fractional numbers and fractions of a second have
+    // FileMaker's keys (query-program.md 7.3).
+    for (kind, value) in [(2, "-2"), (2, "2.5"), (4, "12:00:00.5")] {
+        let file = file_with(&format!("vl-keyed-{kind}-{value}"), &[], |root| {
+            fixture::add_field(root, TABLE, 90, "Keyed", 1, kind, 0, 0, 0);
+            put(root, 90, 1, value);
+        });
+        let (port, ca) = host_with(&file.0, None, Server::with_late_index_builds);
+        let mut provider = open(port, &ca);
+        let tasks = layout(&mut provider, "Tasks");
+        assert_eq!(provider.index_values(tasks, "Keyed").unwrap(), [value]);
         provider.close();
     }
 }
