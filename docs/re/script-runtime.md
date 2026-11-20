@@ -3758,19 +3758,24 @@ Steps
   match field a script sets, also to the value it had (auto-entry.md,
   Lookups, battery s41), so each lookup through the field copies again; a
   plain value written back changes nothing of the field. Before any record
-  is written it checks the target: a field of the layout's table a script
-  sets, that a lookup matches through (an editable input of a calculated
-  match field included, as Claris's help names the target for one). Then
-  it checks that no record stores the field with character styles, which
-  a plain write would drop. The window keeps its record and found set. A
-  record refused partway ends the step, the records before it written.
+  is written, and before the window's record is committed, it checks the
+  target: a field of the layout's table a script sets, that a lookup
+  matches through (an editable input of a calculated match field
+  included, as Claris's help names the target for one), and that enters
+  no value of its own, which a write of it could replace. Then it checks
+  that no record stores the field with character styles, which a plain
+  write would drop, and that the open transaction holds none of them
+  (its held value would be replaced by the stored one). The window keeps
+  its record and found set. A record refused partway ends the step, the
+  records before it written; a record deleted after the check is 101.
   Unmeasured, and OpenMaker's choices:
   - the dialog's text;
   - the codes: 102 for no such field, 201 for one a script cannot set (a
-    calculation or a global), 3 for one no lookup matches through, for a
-    styled value, for a field reached through a relationship (a
-    self-join's too, as for Replace Field Contents), for a layout of
-    another file's table, and for Find mode.
+    calculation or a global), 3 for one no lookup matches through, for one
+    with auto-entry, for a styled value, for a record the transaction
+    holds, for a field reached through a relationship (a self-join's too,
+    as for Replace Field Contents), for a layout of another file's table,
+    and for Find mode.
 - Windows (2026-10-29, run 13.25; `app/windows.rs`,
   `scripting/host/windows.rs`): real windows. Each window keeps its own
   layout, found set, mode, view, current record and unsaved values, Find

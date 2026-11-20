@@ -1230,9 +1230,12 @@ pub trait DataProvider: Send {
     /// keeps its value. Checked before any record is written: the field is
     /// one a script sets and a lookup matches through
     /// (`RecordPlan::relookup_target`), and no record stores it with
-    /// character styles, which a plain write would drop. A record refused
-    /// ends the step there, the records before it written. Records gone
-    /// meanwhile are skipped.
+    /// character styles, which a plain write would drop, and none is held
+    /// in the open transaction, whose held value the stored one would
+    /// replace. A record refused ends the step there, the records before it
+    /// written. Records already gone when it reads them are skipped; one
+    /// deleted after that ends the step (101). With no `ids` it checks the
+    /// target alone.
     fn relookup(
         &mut self,
         _layout_id: u32,

@@ -4989,7 +4989,6 @@ impl Fields for WorkerHost<'_> {
         if self.s.file.window.state.mode != Mode::Browse {
             return Err(ErrorCode::UNAVAILABLE.into());
         }
-        self.commit_window()?;
         let layout = self
             .s
             .file
@@ -4997,6 +4996,13 @@ impl Fields for WorkerHost<'_> {
             .state
             .layout
             .ok_or(HostError::Error(ErrorCode::RECORD_MISSING))?;
+        // The target first, before the window's record is committed for a
+        // step that would refuse it.
+        let set = self.privilege_set_name();
+        self.p()
+            .relookup(layout, &name, &[], set.clone())
+            .map_err(|e| self.failed(e))?;
+        self.commit_window()?;
         let ids = {
             let (window, provider) = self.wp();
             window.found_ids(provider).map_err(data_error)?
@@ -5012,7 +5018,6 @@ impl Fields for WorkerHost<'_> {
                 "OK",
             )?;
         }
-        let set = self.privilege_set_name();
         let result = self
             .p()
             .relookup(layout, &name, &ids, set)

@@ -3530,6 +3530,18 @@ impl DataProvider for NativeProvider {
             let Ok(record) = u64::try_from(id) else {
                 continue;
             };
+            // A record the open transaction holds (a new one, or one with a
+            // held edit of the field) has a value the host does not: the
+            // stored one written back would replace what it holds.
+            if self.transaction_new(table, record).is_some() {
+                return Err(DataError::with_code(
+                    3,
+                    format!(
+                        "Record {id} holds a change in the open transaction: no record was \
+                         relooked up."
+                    ),
+                ));
+            }
             let Some(node) = self.read_record(table, record)? else {
                 continue;
             };

@@ -1573,11 +1573,37 @@ fn relookup_field_contents_copies_each_found_records_lookup_again() {
                   & \"/\" & Get ( LastError ) & \"/\" & Tasks::Name";
     let mut shown = show("\"\"");
     shown.set_calculation(1, Some(&relookup_calc(report)));
-    let scripts = [fixture::script(
+    // A Name the open transaction holds is not written over with the
+    // stored one: Relookup refuses it (3), which fails the transaction
+    // (script-runtime.md 8.4), so the block ends reverted and Tasks::Name
+    // reads its stored value again.
+    let mut held_report = show("\"\"");
+    held_report.set_calculation(
         1,
-        "Relookup",
-        vec![relookup_step(fixture::NAME), shown],
-    )];
+        Some(&relookup_calc(
+            "\"held:\" & Get ( LastError ) & \"/\" & Tasks::Name",
+        )),
+    );
+    let transaction = |id: u16, commit_at: u16| {
+        let mut step = om_scripts::ScriptStep::new(id);
+        step.value = commit_at;
+        step
+    };
+    let scripts = [
+        fixture::script(1, "Relookup", vec![relookup_step(fixture::NAME), shown]),
+        fixture::script(
+            2,
+            "Held",
+            vec![
+                fixture::on(86, true),
+                transaction(205, 4),
+                fixture::set_field(fixture::NAME, "\"new key\""),
+                relookup_step(fixture::NAME),
+                transaction(206, 4),
+                held_report,
+            ],
+        ),
+    ];
     relookup_file(&folder, &scripts, false);
     let mut app = app();
     common::click(&mut app, "Browse...");
@@ -1586,12 +1612,15 @@ fn relookup_field_contents_copies_each_found_records_lookup_again() {
     wait_open(&mut app);
     // Each task's note, the step's error, and the record the window was on.
     run_and_read(&mut app, "Relookup", "w,Hi/0/Write tests");
+    run_and_read(&mut app, "Held", "held:3/Write tests");
 }
 
 /// What Relookup Field Contents refuses writes no record: a field no
 /// lookup matches through, and a match field one record stores with
 /// character styles, which writing its text back would drop. Both are 3,
-/// both notes stay "old", and the window holds nothing uncommitted.
+/// both notes stay "old", and the window holds nothing uncommitted. (A
+/// match field that enters its own value is refused by the rules'
+/// `relookup_target`, tested there.)
 #[test]
 fn relookup_field_contents_writes_nothing_it_refuses() {
     let folder = Folder::new("relookup-refused");
