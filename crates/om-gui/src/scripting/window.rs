@@ -698,6 +698,16 @@ impl Window {
             privilege_set,
             record_numbers,
         };
+        // The record session the window's entry opened for its record
+        // (`record.prepare_edit`) is the window's before the reply that
+        // says so reaches it: the commit writes through it and commits it,
+        // rather than leave its writes held there.
+        if !self.state.uncommitted.session
+            && self.state.record.is_some()
+            && provider.record_session_open()
+        {
+            self.state.uncommitted.session = true;
+        }
         // A session set aside for a script's transaction in another window
         // holds a record outside that transaction (script-runtime.md 8.5):
         // committed apart from it, in its own session.
@@ -1342,14 +1352,37 @@ impl Window {
     /// Delete Record: the record goes; the next one takes its place.
     pub fn delete(&mut self, provider: &mut dyn DataProvider) -> Result<(), DataError> {
         // A new record the window's session holds is not on the host:
-        // deleting it is releasing it.
-        if self.state.uncommitted.session && self.state.record.is_some() {
-            return self.revert(provider);
+        // deleting it is releasing it. An existing record's session set
+        // aside for a script's transaction goes first: the delete joins
+        // that transaction.
+        if self.state.uncommitted.session
+            && self.state.record.is_some()
+            && (self.state.uncommitted.new || !provider.record_session_open())
+        {
+            if self.state.uncommitted.new {
+                return self.revert(provider);
+            }
+            self.revert(provider)?;
         }
         let (Some(layout), Some(id)) = (self.state.layout, self.record_id(provider)?) else {
             return Err(DataError::with_code(101, "There is no current record."));
         };
-        provider.delete_record_in_script(layout, id)?;
+        // An existing record's session holds the lock its editing took: the
+        // provider deletes the record under it, its edits going with the
+        // session. A refusal keeps the edits; a session it ended is no
+        // longer the window's.
+        let deleted = provider.delete_record_in_script(layout, id);
+        let session = self.state.uncommitted.session;
+        if session && !provider.record_session_open() && !provider.record_session_held() {
+            self.state.uncommitted.session = false;
+        }
+        deleted?;
+        if session {
+            self.state.uncommitted = Uncommitted::default();
+            self.state.drafts.clear();
+            self.state.portal = None;
+            self.touch();
+        }
         self.discard_previews(provider);
         self.leave_record();
         self.changed_data();

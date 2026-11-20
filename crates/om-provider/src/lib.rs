@@ -2699,6 +2699,16 @@ impl NativeProvider {
         if self.external.route(table).is_none() {
             self.require_delete(table, record_id)?;
         }
+        // The record this window's editing locked (`record.prepare_edit`)
+        // is deleted under that lock; a session holding more (a related
+        // record's write, container data) goes first, which lets it go.
+        if let Ok(record) = u64::try_from(record_id) {
+            match self.session_edit(table, record) {
+                Some(true) => return self.delete_edited(table, record_id),
+                Some(false) => om_data::DataProvider::revert_record_session(self)?,
+                None => {}
+            }
+        }
         if self.external.route(table).is_some() {
             // Keep the caller's layout/scripts and client table namespace.
             // The owner supplies the complete ordinary deletion engine,
@@ -3095,8 +3105,13 @@ impl DataProvider for NativeProvider {
             );
         }
         Ok(om_data::RecordCapabilities {
+            // The record is locked on the host as its editing begins, as
+            // FileMaker Pro locks it (write-path.md 4.1): Browse waits for
+            // `record.prepare_edit` before it takes the first change.
             prepare_edit: table.fields.iter().any(|f| {
-                f.kind == om_hbam::FieldKind::Normal && f.data_type == om_hbam::DataType::Container
+                f.kind == om_hbam::FieldKind::Normal
+                    && f.decoded_options()
+                        .is_some_and(|o| o.options & 0x1_0000 == 0)
             }),
             create: plan.is_some() && may(RecordAction::Create),
             update,
@@ -4819,13 +4834,10 @@ impl DataProvider for NativeProvider {
             // Carry the accepted UI page's version through the worker queue.
             // A later backend read cannot authorize this draft. An explicit
             // recovery readback may already have retained a checked baseline.
+            // Every table with a field to edit prepares its edits
+            // (`record.prepare_edit`), so a retained record is no unprepared
+            // edit of its own: an `Unavailable` preparation marks those.
             let own = (self.window, table.id, id);
-            if !table.fields.iter().any(|f| {
-                f.kind == om_hbam::FieldKind::Normal && f.data_type == om_hbam::DataType::Container
-            }) {
-                self.unprepared_root_edits
-                    .insert((self.window, table.id, record_id));
-            }
             self.pinned.entry(own).or_insert(version);
         }
     }
@@ -4838,6 +4850,7 @@ impl DataProvider for NativeProvider {
             self.unprepared_root_edits
                 .remove(&(self.window, table.id, record_id));
             self.pinned.remove(&(self.window, table.id, id));
+            self.release_untouched_edit(table.id, id);
         }
     }
 

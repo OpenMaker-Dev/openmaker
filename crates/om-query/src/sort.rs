@@ -121,8 +121,12 @@ fn sort_keys(
     records: &RidList,
 ) -> Result<HashMap<u64, Vec<u8>>, QueryError> {
     let (keys, text) = if indexes.is_indexed(work, table, &sort.field, VALUE_INDEX)? {
+        // Text by the field's type: a typed index's first key may be the
+        // empty value's `01` as well (7.3).
+        let text = indexes
+            .field(table, &sort.field)?
+            .is_none_or(|field| matches!(field.data_type, DataType::Text | DataType::Unknown(_)));
         let index = indexes.index(work, table, &sort.field, VALUE_INDEX)?;
-        let text = index.is_empty() || index.key(0).first() == Some(&EMPTY_TEXT_KEY[0]);
         // The index in key order, so a record's first key is its lowest,
         // until every record has one.
         let mut keys: HashMap<u64, Vec<u8>> = HashMap::new();
