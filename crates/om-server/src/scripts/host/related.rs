@@ -403,6 +403,7 @@ impl ServerHost {
             next.current = next.found.iter().position(|id| *id == ids[0]).unwrap_or(0);
         }
         if request.new_window {
+            self.windows_may_change()?;
             let cx = Ctx::new(&self.locale, self.today);
             let name = request.window[0]
                 .as_ref()

@@ -677,6 +677,12 @@ fn execute(host: &mut ServerHost, script: ScriptRef<'_>, parameter: &str, slot: 
     // `Get ( LastError )`, or 4 when an unknown step aborted the script
     // (script-runtime.md 13.7).
     let mut error = runtime.final_error();
+    if host.closed_last_window() {
+        // The script stopped when it closed its last window, and FileMaker
+        // Server's run ends with 0 (s35-windows "close last": the step
+        // returned 13, the script's LastError and result were 0 and empty).
+        error = ErrorCode::NONE;
+    }
     if slot.control.aborted().is_some() && !error.is_error() {
         // An abort is error 1, which never hides an earlier error
         // (script-runtime.md 4.2).

@@ -2947,18 +2947,41 @@ Server engine (11.3, 11.5)
   New Window copies the current window and becomes current, named as
   given, else after the current one with " - 2" (" - 3", ... when taken),
   then goes to its layout. Select Window and Close Window match names
-  front to back; a name no window has is 112. Closing the current window
-  makes the one current before it current, closing another keeps the
-  current one, and closing the last is 13 and stops the script. Set
-  Window Title renames. `WindowNames` lists the windows front to back and
-  `Get ( WindowUUID )` differs per window. The record a step opened
-  belongs to the session, so a window that stops being current commits
-  it first: New Window and Close Window as FileMaker's do, Select Window
-  by OpenMaker's choice (FileMaker Server's runs do not show it). No
-  bounds are kept: every window is 640 x 480 at 0, 0, whatever New Window
-  asks. The new window's layout does not run OnLayoutEnter, as the
-  server's Go to Layout does not. View As and Show/Hide Toolbars do
-  nothing, as nothing is drawn.
+  front to back ignoring case, then window UUIDs, as Claris documents
+  Select Window's lookup; nothing matching is 112. Closing the current
+  window makes the one current before it current, and closing another
+  keeps the current one. Closing the last stops the script: the step
+  returns 13, and the run ends with 0 and no result, as in s35's "close
+  last". Set Window Title renames. `WindowNames` lists the windows front
+  to back, and `Get ( WindowUUID )` differs per window.
+- The record a step opened belongs to the session, so a window that
+  stops being current commits it first. New Window and Close Window
+  commit it as FileMaker's do; for Select Window this is OpenMaker's
+  choice, since FileMaker Server's runs do not show it. Committing also
+  leaves the field with the focus and closes Find mode's new request, so
+  `Get ( ActiveFieldName )` is empty and `Get ( RecordOpenState )` 0 back
+  in that window (unmeasured).
+- No window step runs while a transaction is open (3): in FileMaker a
+  record another window commits is not part of the transaction (8.5),
+  and the session keeps one transaction for all its windows.
+- A window that becomes current again drops from its found set the
+  records deleted meanwhile, and a schema change moves every window back
+  onto its own layout, as it moves the current one.
+- A session keeps at most 256 windows, holding at most 16,777,216
+  record ids in their found sets together; past either, New Window is 2
+  (OpenMaker's limits; FileMaker Server's are not measured).
+- No bounds or styles are kept: every window is 640 x 480 at 0, 0,
+  whatever New Window asks. The new window's layout does not run
+  OnLayoutEnter, as the server's Go to Layout does not. View As and
+  Show/Hide Toolbars do nothing, as nothing is drawn, so `Get (
+  LayoutViewState )` and `Get ( StatusAreaState )` keep their answers
+  (unmeasured).
+- Go to Related Record finds the related records and checks the layout
+  before it opens its new window, and Go to List of Records finds the
+  layout and its records first, so a failure of either leaves the
+  current window as it was. Go to List of Records still skips ids no
+  record has, without an error, and reads only one id per line
+  ([#511](https://github.com/OpenMaker-Dev/openmaker/issues/511)).
 - Finds: Enter Find Mode (with or without stored requests), Set Field into
   requests, New/Duplicate/Delete Record and Omit in Find mode, Perform Find,
   Constrain and Extend with their stored requests (script-steps.md 11.2,
@@ -3003,7 +3026,7 @@ Server engine (11.3, 11.5)
   1) until a step replaces it (Show All, Show Omitted Only, a find, Go to
   List of Records, Go to Related Record).
 - Steps with a host method: Go to Layout, Go to Record/Request, Go to
-  Field, Go to Related Record, Go to List of Records (same window), Enter
+  Field, Go to Related Record, Go to List of Records, the window steps, Enter
   Browse/Find Mode, New, Duplicate, Delete, Delete All, Open, Revert and
   Commit Records, Truncate Table (the window's table),
   Open/Commit/Revert Transaction, Set Field, Set Field By Name, the Insert
