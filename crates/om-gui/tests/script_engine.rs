@@ -2651,6 +2651,8 @@ fn save_records_as_pdf_appends_and_refuses_what_it_would_not_keep() {
             "Note",
             "$a & \"|\" & $b & \"|\" & $c & \"|\" & $d & \"|\" & $e & \"|\" & $f",
         ),
+        // Commit Records: the script's end does not save the field.
+        step(75),
     ];
     let (mut app, state) = open_with(State {
         calc_schema: true,

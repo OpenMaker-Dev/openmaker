@@ -3793,7 +3793,7 @@ pub(crate) enum Expected<'a> {
 
 /// Whether the file at `path` holds exactly `bytes`, read in pieces and
 /// stopped at the first difference.
-fn holds(path: &Path, bytes: &[u8]) -> std::io::Result<bool> {
+fn file_holds(path: &Path, bytes: &[u8]) -> std::io::Result<bool> {
     use std::io::Read as _;
     let mut file = std::fs::File::open(path)?;
     let mut piece = vec![0; 1 << 16];
@@ -3864,7 +3864,7 @@ fn replace_file_if(
         // Linked or renamed in only where nothing is.
         Some(Expected::Absent) => temp.persist_noclobber(path).map(drop).map_err(|e| e.error),
         Some(Expected::Read(bytes)) => {
-            if !holds(path, bytes)? {
+            if !file_holds(path, bytes)? {
                 return Err(std::io::Error::other(
                     "the file changed while it was being appended to; it was left as it is",
                 ));
