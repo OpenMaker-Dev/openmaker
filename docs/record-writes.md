@@ -1358,7 +1358,7 @@ value index, so such a field must be defined for a value index in English (21,
 Index bits), the forms whose keys OpenMaker builds, or in language 0 when
 the file's own language is one of them and its locale record can be read
 (a file without one counts as English). A language FileMaker leaves
-untailored counts too (Dutch, French, Greek, Italian, Portuguese, Russian,
+untailored counts too (Dutch, French, German dictionary, Greek, Italian, Portuguese, Russian,
 Hebrew, Serbian, Bulgarian and the Indic languages 59 to 67): its value keys
 are English's (query-program.md 7.2; the set is inferred from bin's list of
 tailored languages and a probe,

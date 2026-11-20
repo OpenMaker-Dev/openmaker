@@ -152,9 +152,11 @@ const CONTEXT_SELECTORS: [u8; 4] = [
 /// its value-index keys are English's primary weights (query-program.md
 /// 7.2): the languages outside the list of those whose `TailorWeights`
 /// Support overrides (from bin) whose keys the probe found equal to
-/// English's for every value. These are Dutch 20, French 24, Greek 27,
-/// Italian 30, Portuguese 34, Russian 36, Hebrew 47, Serbian 53,
-/// Bulgarian 55 and the Indic languages 59 to 67 (Hindi, 48, is tailored).
+/// English's for every value. These are Dutch 20, French 24, German
+/// dictionary 26 (untailored, `ä` = `a`; its vectors in
+/// catalogs/index-key-vectors.tsv equal English's), Greek 27, Italian 30,
+/// Portuguese 34, Russian 36, Hebrew 47, Serbian 53, Bulgarian 55 and the
+/// Indic languages 59 to 67 (Hindi, 48, is tailored).
 /// Their word breaks are not established: French's differ from English's
 /// (an apostrophe separates, query-program.md 7.1), the others' were not
 /// measured ([#300](https://github.com/OpenMaker-Dev/openmaker/issues/300)),
@@ -164,7 +166,7 @@ const CONTEXT_SELECTORS: [u8; 4] = [
 pub fn untailored(language: u32) -> bool {
     matches!(
         language,
-        20 | 24 | 27 | 30 | 34 | 36 | 47 | 53 | 55 | 59..=67
+        20 | 24 | 26 | 27 | 30 | 34 | 36 | 47 | 53 | 55 | 59..=67
     )
 }
 

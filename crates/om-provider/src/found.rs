@@ -1094,11 +1094,17 @@ impl NativeProvider {
             let file_language = self.file_language()?;
             // Each projection, its slot and a near field it is for.
             let mut projections: Vec<(Projection, u64, u64)> = Vec::new();
+            let far_type = |field: u64| {
+                far_table
+                    .field(field)
+                    .map_or(om_hbam::DataType::Text, |f| f.data_type)
+            };
             let mut sent = Vec::with_capacity(predicates.len());
             for &(kind, a, b) in &predicates {
                 let projection = match near_table.field(a).filter(|_| kind != CARTESIAN) {
                     Some(near_field) => Projection {
                         field: b,
+                        source: far_type(b),
                         data_type: near_field.data_type,
                         language: near_field
                             .decoded_options()
@@ -1107,9 +1113,8 @@ impl NativeProvider {
                     // A cartesian predicate relates whatever the keys.
                     None => Projection {
                         field: b,
-                        data_type: far_table
-                            .field(b)
-                            .map_or(om_hbam::DataType::Text, |f| f.data_type),
+                        source: far_type(b),
+                        data_type: far_type(b),
                         language: ENGLISH,
                     },
                 };
@@ -1598,6 +1603,8 @@ const OWN_SLOTS: u64 = 1 << 48;
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 struct Projection {
     field: u64,
+    /// The far field's own type, which its stored values are read in.
+    source: om_hbam::DataType,
     data_type: om_hbam::DataType,
     language: u32,
 }
@@ -1619,12 +1626,32 @@ fn related_keys(
     file_language: Option<u32>,
 ) -> Option<Vec<Vec<u8>>> {
     use om_hbam::DataType;
-    let filled: Vec<String> = texts.iter().filter(|t| !t.is_empty()).cloned().collect();
+    // A value converts to the near type from its own (9.1): a timestamp to
+    // a date or a time by its part, a date to a timestamp as its midnight,
+    // whose key is the date's (7.3); other values are read as stored.
+    let (data_type, part): (DataType, fn(&str) -> &str) =
+        match (projection.source, projection.data_type) {
+            (DataType::Timestamp, DataType::Date) => (DataType::Date, |t| {
+                t.trim().split_once(' ').map_or(t, |(date, _)| date)
+            }),
+            (DataType::Timestamp, DataType::Time) => (DataType::Time, |t| {
+                t.trim().split_once(' ').map_or(t, |(_, time)| time)
+            }),
+            (DataType::Date, DataType::Timestamp) => (DataType::Date, |t| t),
+            (_, to) => (to, |t| t),
+        };
+    // A value with no line but empty ones relates nothing (as an empty
+    // value, file-metadata.md 4).
+    let filled: Vec<String> = texts
+        .iter()
+        .filter(|t| t.split(['\r', '\n']).any(|line| !line.is_empty()))
+        .map(|t| part(t).to_owned())
+        .collect();
     if filled.is_empty() {
         return Some(Vec::new());
     }
     let typed = matches!(
-        projection.data_type,
+        data_type,
         DataType::Number | DataType::Date | DataType::Time | DataType::Timestamp
     );
     let form = if typed {
@@ -1644,10 +1671,12 @@ fn related_keys(
         }
         form
     };
+    let empty = form.key("");
     Some(
-        record_value_keys(projection.data_type, &filled, order, form)
+        record_value_keys(data_type, &filled, order, form)
             .into_iter()
             .filter(|key| key != EMPTY_TEXT_KEY && key != INVALID_KEY)
+            .filter(|key| Some(key) != empty.as_ref())
             .collect(),
     )
 }
@@ -1666,6 +1695,46 @@ pub(crate) fn query_error(slots: &[u8]) -> Option<u16> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// A related value converts to the near field's type from its own
+    /// (#573): a midnight timestamp keys as the date it is on, as the base
+    /// gave it by its own type; a value of empty lines keys nothing, also
+    /// in the padded form, whose empty key is not `01`.
+    #[test]
+    fn related_values_key_as_the_near_field_from_their_own_type() {
+        use om_hbam::DataType;
+        let keys = |source, data_type, language, text: &str| {
+            let projection = Projection {
+                field: 1,
+                source,
+                data_type,
+                language,
+            };
+            related_keys(
+                projection,
+                &[text.to_owned()],
+                DateOrder::MonthDayYear,
+                Some(ENGLISH),
+            )
+        };
+        let date = om_collate::date_key("10/27/2026", DateOrder::MonthDayYear).unwrap();
+        for stamp in ["10/27/2026 00:00:00", "10/27/2026 13:05:00"] {
+            assert_eq!(
+                keys(DataType::Timestamp, DataType::Date, ENGLISH, stamp),
+                Some(vec![date.clone()]),
+                "{stamp}"
+            );
+        }
+        let midnight = keys(DataType::Date, DataType::Timestamp, ENGLISH, "10/27/2026");
+        assert_eq!(midnight, Some(vec![date]));
+        for language in [ENGLISH, 1, 3] {
+            assert_eq!(
+                keys(DataType::Text, DataType::Text, language, "\r"),
+                Some(Vec::new()),
+                "{language}"
+            );
+        }
+    }
 
     /// Repetition n of field F is the cell `F * 256 + n`, F from the file
     /// (#388): the largest field id whose repetitions have keys reads its

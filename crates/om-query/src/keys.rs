@@ -96,20 +96,30 @@ impl TextKeys {
     /// ([`TextKeys::Collated`]) for Japanese (31) text without kana, their
     /// sound marks or kanji, which alone its tailoring changes; every
     /// other character keys from the shared table, Latin letters and
-    /// digits as in English (query-program.md 7.2, High). To stay within
-    /// that, text with any character of the CJK, kana or fullwidth blocks
-    /// has no known form.
+    /// digits as in English and `ー` as `11dd` in both (query-program.md
+    /// 7.2, High). Kana (with their iteration marks and the halfwidth
+    /// forms), the sound marks, kanji and the kanji-like `々 〆 〇` have no
+    /// known form here; a kanji the table lacks keys from the shared table
+    /// (`㐀`), but which ones it lacks is not derived.
     pub fn of_language_for(language: u32, text: &str) -> Option<TextKeys> {
         const JAPANESE: u32 = 31;
-        let cjk = |c: char| {
-            matches!(
-                u32::from(c),
-                0x2E80..=0x9FFF | 0xF900..=0xFAFF | 0xFE30..=0xFE4F | 0xFF00..=0xFFEF
-                    | 0x1_B000..=0x1_B16F | 0x2_0000..=0x3_FFFF
-            )
+        let tailored = |c: char| {
+            c != 'ー'
+                && matches!(
+                    u32::from(c),
+                    0x3005..=0x3007
+                        | 0x3041..=0x30FF
+                        | 0x31F0..=0x31FF
+                        | 0x3400..=0x4DBF
+                        | 0x4E00..=0x9FFF
+                        | 0xF900..=0xFAFF
+                        | 0xFF65..=0xFF9F
+                        | 0x1_B000..=0x1_B16F
+                        | 0x2_0000..=0x3_FFFF
+                )
         };
         match language {
-            JAPANESE if !text.chars().any(cjk) => Some(TextKeys::Collated),
+            JAPANESE if !text.chars().any(tailored) => Some(TextKeys::Collated),
             _ => TextKeys::of_language(language),
         }
     }

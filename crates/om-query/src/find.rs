@@ -1035,7 +1035,9 @@ pub fn checked_join_program(
         .into_iter()
         .map(|(id, fields)| {
             let mut fields: Vec<&(u64, Vec<Vec<u8>>)> = fields.iter().collect();
-            fields.sort_by_key(|(field, _)| *field);
+            // A tree's children go in key byte order (a slot label above
+            // 255 is longer than and may sort before a smaller one).
+            fields.sort_by_key(|(field, _)| uint_segment(*field));
             OwnedNode::list(
                 om_hbam::serial::encode(*id),
                 fields

@@ -1813,24 +1813,29 @@ fn a_related_find_keys_related_values_in_the_near_fields_form() {
     assert_eq!(answers, (Ok(vec![2]), Ok(vec![2])));
 }
 
-/// Tasks::Name indexed in Japanese (31), with the value index FileMaker
-/// built (`Ship`, record 2), relates to the note whose Body is `body`.
-/// Japanese keys text without kana or kanji as English does
-/// (query-program.md 7.2), so a related `Ship` is keyed there; `シップ` is
-/// not, and fails the find (3), as no key OpenMaker builds is Japanese's.
-fn japanese_join(tag: &str, body: &str, requests: Vec<FindRequest>) -> (Found, Found) {
+/// Tasks::Name indexed in `language`, record 2's Name `name` in the value
+/// index FileMaker built (its English key, which Japanese, 31, gives text
+/// without kana or kanji and German dictionary, 26, gives all text,
+/// query-program.md 7.2), relates to the note whose Body is `body`.
+fn indexed_join(
+    tag: &str,
+    (language, name): (u32, &str),
+    body: &str,
+    requests: Vec<FindRequest>,
+) -> (Found, Found) {
     use om_query::keys::{record_value_entries, TextKeys};
-    let body = body.to_owned();
+    let (name, body) = (name.to_owned(), body.to_owned());
     cold_and_warm_in(
         tag,
         &[],
         move |root| {
             fixture::set_field_options(root, TABLE, NAME, 0x8000_0000);
-            fixture::set_field_language(root, TABLE, NAME, 31);
+            fixture::set_field_language(root, TABLE, NAME, language);
             let (t, f) = (uint_segment(TABLE), uint_segment(NAME));
+            root.put(&[&t, &[5], &serial::encode(2), &f], text_node(&[], &name));
             let ship = record_value_entries(
                 om_hbam::DataType::Text,
-                &["Ship".to_owned()],
+                std::slice::from_ref(&name),
                 om_collate::DateOrder::MonthDayYear,
                 TextKeys::Collated,
             );
@@ -1874,27 +1879,98 @@ fn japanese_join(tag: &str, body: &str, requests: Vec<FindRequest>) -> (Found, F
     )
 }
 
-/// [`japanese_join`]: `Ship` relates through the host's Japanese index;
-/// `シップ` fails (3); and a request whose related find finds nothing
-/// relates nothing, leaving the other request's record 2 (Count 5) found,
-/// with no value to key.
+/// [`indexed_join`]: `Ship` and `Aー` (`ー` keys as `11dd` in both
+/// languages) relate through the host's Japanese index, and `50/50`
+/// through its German dictionary one; a related `シップ` is not keyed in
+/// Japanese and fails the find (3); and a request whose related find finds
+/// nothing relates nothing, leaving the other request's record 2 (Count 5)
+/// found, with no value to key.
 #[test]
 fn a_related_find_keys_japanese_text_without_kana_as_english() {
-    let ship = vec![request("Notes::Body", "==Ship")];
-    assert_eq!(
-        japanese_join("join-ja", "Ship", ship),
-        (Ok(vec![2]), Ok(vec![2]))
-    );
+    for (tag, language, value) in [
+        ("join-ja", 31, "Ship"),
+        ("join-ja-mark", 31, "Aー"),
+        ("join-de-dictionary", 26, "50/50"),
+    ] {
+        let found = vec![request("Notes::Body", &format!("=={value}"))];
+        assert_eq!(
+            indexed_join(tag, (language, value), value, found),
+            (Ok(vec![2]), Ok(vec![2])),
+            "{language} {value}"
+        );
+    }
     let kana = vec![request("Notes::Body", "==シップ")];
     assert_eq!(
-        japanese_join("join-ja-kana", "シップ", kana),
+        indexed_join("join-ja-kana", (31, "Ship"), "シップ", kana),
         (Err(Some(3)), Err(Some(3)))
     );
     let either = vec![request("Count", "5"), request("Notes::Body", "==Nothing")];
     assert_eq!(
-        japanese_join("join-ja-empty", "シップ", either),
+        indexed_join("join-ja-empty", (31, "Ship"), "シップ", either),
         (Ok(vec![2]), Ok(vec![2]))
     );
+}
+
+/// One far field compared with near fields of two forms: Tasks::Name
+/// (Unicode raw) ≤ Notes::Tag and Tasks::Code (English) ≥ Notes::Tag. The
+/// join sends Tag's keys once per form, under two source slots in byte
+/// order (query-program.md 9.2: Tag, field 2, is `02`, which the second
+/// slot's longer label sorts before), and the note whose Tag is `M` relates
+/// the task whose Name is `A` and Code `Z`, with the host's index and
+/// without.
+#[test]
+fn a_related_find_keys_one_far_field_in_two_forms() {
+    let answers = cold_and_warm_in(
+        "join-two-forms",
+        &[],
+        |root| {
+            const TAG: u64 = 2;
+            fixture::add_field(root, fixture::NOTES, TAG, "Tag", 1, 1, 0, 0, 0);
+            fixture::set_field_language(root, TABLE, NAME, 2);
+            let (t, record) = (uint_segment(TABLE), serial::encode(1));
+            root.put(
+                &[&t, &[5], &record, &uint_segment(NAME)],
+                text_node(&[], "A"),
+            );
+            root.put(
+                &[&t, &[5], &record, &uint_segment(CODE)],
+                text_node(&[], "Z"),
+            );
+            // Name ≤ Body (op 3), then Code ≥ Body (op 5).
+            fixture::add_relationship(
+                root,
+                40,
+                (OCCURRENCE, NAME),
+                3,
+                (fixture::NOTES_OCCURRENCE, TAG),
+            );
+            // A key string: total length, length, segment.
+            let key = |id: u64| {
+                let segment = uint_segment(id);
+                [vec![segment.len() as u8 + 1, segment.len() as u8], segment].concat()
+            };
+            let mut predicate = vec![5];
+            predicate.extend(key(CODE));
+            predicate.extend(key(TAG));
+            root.put(
+                &[&[3], &[0xfb], &[5], &[40], &[3], &[2]],
+                OwnedNode::leaf(Vec::new(), predicate),
+            );
+            let notes = uint_segment(fixture::NOTES);
+            root.put(
+                &[&notes, &[5], &serial::encode(2), &uint_segment(TAG)],
+                text_node(&[], "M"),
+            );
+            let mut list = root
+                .at(&[&notes, &[0x0d]])
+                .and_then(|n| RidList::from_owned(n).ok())
+                .unwrap_or_default();
+            list.insert(2);
+            root.put(&[&notes, &[0x0d]], list.to_node(Vec::new()));
+        },
+        vec![request("Notes::Tag", "==M")],
+    );
+    assert_eq!(answers, (Ok(vec![1]), Ok(vec![1])));
 }
 
 /// A cartesian predicate does not read its displayed fields' indexes.
