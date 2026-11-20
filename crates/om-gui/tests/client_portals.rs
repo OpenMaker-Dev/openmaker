@@ -4596,12 +4596,13 @@ fn browse_repetitions_keep_their_cell_and_share_one_record_commit() {
     common::wait_until(&mut app, "the script's ABC", |app| {
         app.state().is_settled() && shown(app).as_deref() == Some("ABC")
     });
-    app.query_all(later()).next().unwrap().focus();
+    app.key_press_modifiers(egui::Modifiers::SHIFT, egui::Key::Tab);
+    app.event(egui::Event::Text("d".into()));
     app.run_steps(2);
-    assert_eq!(shown(&app).as_deref(), Some("ABC"));
+    assert_eq!(shown(&app).as_deref(), Some("ABCd"));
     // Erased back to the stored value, the box still replaces the
     // script's value.
-    app.key_press(egui::Key::End);
+    app.key_press(egui::Key::Backspace);
     app.key_press(egui::Key::Backspace);
     app.run_steps(2);
     assert_eq!(shown(&app).as_deref(), Some("AB"));

@@ -608,7 +608,11 @@ impl RelatedBuffer {
     /// version it began from.
     fn refresh(&mut self, target: &crate::calc::RelatedRecord, scripted: Option<String>) {
         if self.changed() {
-            self.buffer.refresh(&target.stored);
+            // An override of a scripted draft can equal the stored text.
+            // Keep its edit and the original text/version together.
+            if self.scripted.is_none() {
+                self.buffer.refresh(&target.stored);
+            }
         } else {
             self.buffer.value.clone_from(&self.buffer.original);
             self.buffer.refresh(&target.stored);
@@ -6225,41 +6229,6 @@ fn related_field(
         }
         return Some(response);
     }
-    if state.related_select == Some(id) {
-        state.related_select = None;
-        let mut edit = egui::TextEdit::load_state(ui.ctx(), id).unwrap_or_default();
-        let text = state
-            .related
-            .get(&field)
-            .map_or(target.stored.as_str(), |edit| edit.buffer.value.as_str());
-        edit.cursor
-            .set_char_range(Some(egui::text::CCursorRange::select_all_str(text)));
-        edit.store(ui.ctx(), id);
-    }
-    // Entered by Tab: the insertion point after the text (#859), or a
-    // calendar's text selected (#964).
-    if state.related_entry == Some(id) {
-        state.related_entry = None;
-        let text = state
-            .related
-            .get(&field)
-            .map_or(target.stored.as_str(), |edit| edit.buffer.value.as_str());
-        let mut edit = egui::TextEdit::load_state(ui.ctx(), id).unwrap_or_default();
-        edit.cursor
-            .set_char_range(Some(tab_entry_range(object, text)));
-        edit.store(ui.ctx(), id);
-        // A row the portal shows only in part comes into view.
-        ui.scroll_to_rect(rect, None);
-    }
-    if state.related_click == Some(id) {
-        state.related_click = None;
-        if let Some(cursor) = state.pending_cursor.take() {
-            let mut edit = egui::TextEdit::load_state(ui.ctx(), id).unwrap_or_default();
-            edit.cursor
-                .set_char_range(Some(egui::text::CCursorRange::one(cursor)));
-            edit.store(ui.ctx(), id);
-        }
-    }
     let enabled = !state.pending && !state.clicks_held;
     let keep = list.is_some_and(|list| drop_down::keeps_focus(ui, id, rect, list.with_arrow));
     let open = list.is_some() && drop_down::is_open(ui, id);
@@ -6270,6 +6239,38 @@ fn related_field(
     let edit = state.related.entry(field).or_insert_with(|| {
         RelatedBuffer::new(target.occurrence, target.version, &target.stored, scripted)
     });
+    if state.related_select == Some(id) {
+        state.related_select = None;
+        let mut editor = egui::TextEdit::load_state(ui.ctx(), id).unwrap_or_default();
+        editor
+            .cursor
+            .set_char_range(Some(egui::text::CCursorRange::select_all_str(
+                &edit.buffer.value,
+            )));
+        editor.store(ui.ctx(), id);
+    }
+    // Entered by Tab: the insertion point after the text (#859), or a
+    // calendar's text selected (#964).
+    if state.related_entry == Some(id) {
+        state.related_entry = None;
+        let mut editor = egui::TextEdit::load_state(ui.ctx(), id).unwrap_or_default();
+        editor
+            .cursor
+            .set_char_range(Some(tab_entry_range(object, &edit.buffer.value)));
+        editor.store(ui.ctx(), id);
+        // A row the portal shows only in part comes into view.
+        ui.scroll_to_rect(rect, None);
+    }
+    if state.related_click == Some(id) {
+        state.related_click = None;
+        if let Some(cursor) = state.pending_cursor.take() {
+            let mut editor = egui::TextEdit::load_state(ui.ctx(), id).unwrap_or_default();
+            editor
+                .cursor
+                .set_char_range(Some(egui::text::CCursorRange::one(cursor)));
+            editor.store(ui.ctx(), id);
+        }
+    }
     return_goes_on(ui, &mut state.tab_held, object, id);
     let response = field_editor(
         ui,
@@ -8533,6 +8534,27 @@ mod visibility_tests;
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn a_refresh_preserves_an_override_cleared_to_the_stored_value() {
+        let mut edit = RelatedBuffer::new(1, Some(7), "AB", Some("ABC".into()));
+        edit.buffer.value = "AB".into();
+        let newer = crate::calc::RelatedRecord {
+            occurrence: 1,
+            table: 2,
+            record: 3,
+            field: 4,
+            cell: 4,
+            name: "Name".into(),
+            stored: "XY".into(),
+            version: Some(8),
+        };
+        edit.refresh(&newer, Some("ABC".into()));
+        assert!(edit.changed());
+        assert_eq!(edit.buffer.value, "AB");
+        assert_eq!(edit.buffer.original, "AB");
+        assert_eq!(edit.version, Some(7));
+    }
 
     /// A field click waiting for its row (#1099) keeps waiting through a
     /// frame that cannot tell yet whether its row shows, and goes once
