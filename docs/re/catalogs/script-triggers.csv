@@ -1,30 +1,30 @@
 order,name,description,res129_index
-0,Unknown,"This is an unknown trigger, possibly from a newer version; it will not work in this version.",1221
-1,OnObjectEnter,The script will be run after the selected object becomes the active object.,1223
-2,OnObjectValidate,The script will be run before internal validation when an attempt is made to exit the selected object.,1225
-3,OnObjectExit,The script will be run when an attempt is made to exit the active selected object.,1227
-4,OnObjectModify,The script will be run after the selected object is modified when active.,1229
-5,OnObjectSave,The script will be run after changes to the selected active object are validated and saved.,1231
-6,OnObjectKeystroke,The script will be run when a keystroke is received for the active selected object.,1233
-7,OnPanelSwitch,The script will be run before panel is switched.,1235
-8,OnObjectAVPlayerChange,The script will be run when the layout object AV Player changes state.,1237
-9,OnLayoutEnter,The script will be run after this layout is loaded.,1239
-10,OnLayoutExit,The script will be run before this layout is exited.,1241
-11,OnLayoutKeystroke,The script will be run when a keystroke is received on this layout or any object on this layout if it is not handled by an OnObjectKeystroke script.,1243
-12,OnRecordLoad,The script will be run after any record is made current on this layout.,1245
-13,OnRecordCommit,The script will be run when an attempt is made to commit record changes on this layout.,1247
-14,OnRecordRevert,The script will be run when an attempt is made to revert record changes on this layout.,1249
-15,OnModeEnter,The script will be run after entering a new mode on this layout.,1251
-16,OnModeExit,The script will be run when an attempt is made to exit the current mode on this layout.,1253
-17,OnViewChange,"The script will be run after switching to Form, List, or Table view in this layout.",1255
-18,OnLayoutSizeChange,The script will be run after the layout has been resized.,1257
-19,OnGestureTap,The script will be run when a tap gesture is received on this layout.,1259
-20,OnExternalCommandReceived,The script will be run when an external command is received.,1261
-21,OnFirstWindowOpen,The script will be run after the first window of a file is opened.,1263
-22,OnLastWindowClose,The script will be run before the last window of a file is closed.,1265
-23,OnTimer,,1267
-24,OnCallbackScript,,1268
-25,OnWindowOpen,The script will be run after a window is opened.,1269
-26,OnWindowClose,The script will be run before a window is closed.,1271
-27,OnFileAVPlayerChange,The script will be run when the field or URL AV Player changes state.,1273
-28,OnWindowTransaction,The script will be run after a transaction is successfully committed.,1275
+0,Unknown,"This is an unknown trigger, possibly from a newer version; it will not work in this version.",1277
+1,OnObjectEnter,The script will be run after the selected object becomes the active object.,1279
+2,OnObjectValidate,The script will be run before internal validation when an attempt is made to exit the selected object.,1281
+3,OnObjectExit,The script will be run when an attempt is made to exit the active selected object.,1283
+4,OnObjectModify,The script will be run after the selected object is modified when active.,1285
+5,OnObjectSave,The script will be run after changes to the selected active object are validated and saved.,1287
+6,OnObjectKeystroke,The script will be run when a keystroke is received for the active selected object.,1289
+7,OnPanelSwitch,The script will be run before panel is switched.,1291
+8,OnObjectAVPlayerChange,The script will be run when the layout object AV Player changes state.,1293
+9,OnLayoutEnter,The script will be run after this layout is loaded.,1295
+10,OnLayoutExit,The script will be run before this layout is exited.,1297
+11,OnLayoutKeystroke,The script will be run when a keystroke is received on this layout or any object on this layout if it is not handled by an OnObjectKeystroke script.,1299
+12,OnRecordLoad,The script will be run after any record is made current on this layout.,1301
+13,OnRecordCommit,The script will be run when an attempt is made to commit record changes on this layout.,1303
+14,OnRecordRevert,The script will be run when an attempt is made to revert record changes on this layout.,1305
+15,OnModeEnter,The script will be run after entering a new mode on this layout.,1307
+16,OnModeExit,The script will be run when an attempt is made to exit the current mode on this layout.,1309
+17,OnViewChange,"The script will be run after switching to Form, List, or Table view in this layout.",1311
+18,OnLayoutSizeChange,The script will be run after the layout has been resized.,1313
+19,OnGestureTap,The script will be run when a tap gesture is received on this layout.,1315
+20,OnExternalCommandReceived,The script will be run when an external command is received.,1317
+21,OnFirstWindowOpen,The script will be run after the first window of a file is opened.,1319
+22,OnLastWindowClose,The script will be run before the last window of a file is closed.,1321
+23,OnTimer,,1323
+24,OnCallbackScript,,1324
+25,OnWindowOpen,The script will be run after a window is opened.,1325
+26,OnWindowClose,The script will be run before a window is closed.,1327
+27,OnFileAVPlayerChange,The script will be run when the field or URL AV Player changes state.,1329
+28,OnWindowTransaction,The script will be run after a transaction is successfully committed.,1331
