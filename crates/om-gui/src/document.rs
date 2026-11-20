@@ -7570,23 +7570,19 @@ fn paint_library_image(
     }
 }
 
-/// The calculated icons the window keeps loaded, by URI, with their
-/// tinted SVG bytes and when each was last drawn (`InputState::time`),
-/// the most recently drawn last (`paint_calculated_icon`). Past
-/// [`CALCULATED_ICONS`], the oldest not drawn for [`ICON_SHOWN`] is
-/// forgotten, with its bytes, textures and rasters in egui's loaders and
-/// the SVG worker: each distinct result gets a URI of its own.
+/// Calculated SVGs by URI, ordered by when they were last drawn. Each
+/// forgotten URI releases its bytes and rasters from egui's loaders.
 #[derive(Clone, Default)]
-struct CalculatedIcons(std::collections::VecDeque<(String, std::sync::Arc<[u8]>, f64)>);
+struct CalculatedIcons(
+    std::collections::VecDeque<(String, std::sync::Arc<[u8]>, std::time::Instant)>,
+);
 
-/// How many calculated icons stay loaded at once, beyond those on screen
-/// (OpenMaker's bound). The icons drawn within [`ICON_SHOWN`] all stay,
-/// however many: the screen bounds them.
+/// Retain at most this many icons after they leave the screen.
 const CALCULATED_ICONS: usize = 64;
-
-/// An icon drawn this recently, in seconds, is on screen, in some window,
-/// and is not forgotten.
-const ICON_SHOWN: f64 = 1.0;
+/// Absolute ceiling across the application's viewports. If all slots are
+/// in use, warn on additional icons and retry when a slot is available.
+const MAX_CALCULATED_ICONS: usize = 256;
+const ICON_SHOWN: std::time::Duration = std::time::Duration::from_secs(1);
 
 /// A button's calculated icon, the SVG text `svg` its formula gave
 /// (`ObjectState::icon_svg`), over `rect`, tinted as the button's library
@@ -7614,11 +7610,12 @@ fn paint_calculated_icon(ui: &Ui, svg: &str, rect: Rect, tint: Option<Color32>) 
     svg.hash(&mut hash);
     tint.hash(&mut hash);
     let uri = format!(
-        "bytes://openmaker/calculated-icon-{:016x}.svg",
+        "{}{:016x}.svg",
+        crate::svg_loader::CALCULATED_ICON_URI,
         hash.finish()
     );
     let id = egui::Id::unique("openmaker calculated icons");
-    let now = ui.input(|input| input.time);
+    let now = std::time::Instant::now();
     let (bytes, forgotten) = ui.data_mut(|data| {
         let icons = data.get_temp_mut_or_default::<CalculatedIcons>(id);
         let known = icons
@@ -7626,6 +7623,18 @@ fn paint_calculated_icon(ui: &Ui, svg: &str, rect: Rect, tint: Option<Color32>) 
             .iter()
             .position(|(known, ..)| *known == uri)
             .and_then(|at| icons.0.remove(at));
+        let mut forgotten = Vec::new();
+        while icons.0.len() >= CALCULATED_ICONS
+            && icons
+                .0
+                .front()
+                .is_some_and(|(.., drawn)| now.duration_since(*drawn) >= ICON_SHOWN)
+        {
+            forgotten.extend(icons.0.pop_front().map(|(old, ..)| old));
+        }
+        if known.is_none() && icons.0.len() >= MAX_CALCULATED_ICONS {
+            return (None, forgotten);
+        }
         // Copied and tinted once, as it first shows.
         let bytes = known.map_or_else(
             || {
@@ -7638,20 +7647,16 @@ fn paint_calculated_icon(ui: &Ui, svg: &str, rect: Rect, tint: Option<Color32>) 
             |(_, bytes, _)| bytes,
         );
         icons.0.push_back((uri.clone(), bytes.clone(), now));
-        let mut forgotten = Vec::new();
-        while icons.0.len() > CALCULATED_ICONS
-            && icons
-                .0
-                .front()
-                .is_some_and(|(.., drawn)| now - drawn > ICON_SHOWN)
-        {
-            forgotten.extend(icons.0.pop_front().map(|(old, ..)| old));
-        }
-        (bytes, forgotten)
+        (Some(bytes), forgotten)
     });
     for old in forgotten {
         ui.ctx().forget_image(&old);
     }
+    let Some(bytes) = bytes else {
+        warning();
+        ui.ctx().request_repaint_after(ICON_SHOWN);
+        return;
+    };
     let source = egui::ImageSource::Bytes {
         uri: uri.into(),
         bytes: bytes.into(),

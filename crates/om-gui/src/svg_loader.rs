@@ -37,6 +37,12 @@ const UNUSED: Duration = Duration::from_secs(10);
 const BUDGET: usize = 128 << 20;
 /// A raster asked for this recently is on screen, and is not dropped.
 const SHOWN: Duration = Duration::from_millis(100);
+/// Waiting jobs keep their metadata only. A full queue retries on repaint.
+const QUEUE_CAPACITY: usize = 128;
+pub(crate) const CALCULATED_ICON_URI: &str = "bytes://openmaker/calculated-icon-";
+/// Calculated icons are generated per record and can fill the cache with
+/// distinct textures. Keep each raster within 1 MiB.
+const CALCULATED_ICON_SIDE: u32 = 512;
 
 /// One raster of one SVG: drawn, refused, or still being drawn (`None`).
 struct Entry {
@@ -48,7 +54,7 @@ struct Entry {
 struct State {
     cache: HashMap<String, HashMap<SizeHint, Entry>>,
     /// The drawing thread's queue, started with the first SVG.
-    queue: Option<mpsc::Sender<Job>>,
+    queue: Option<mpsc::SyncSender<Job>>,
 }
 
 impl State {
@@ -327,7 +333,13 @@ impl SvgLoader {
             BytesPoll::Pending { size } => return Ok(ImagePoll::Pending { size }),
         };
         let max_side = ctx.input(|input| input.max_texture_side);
-        let size = svg_worker::fit(size, u32::try_from(max_side).unwrap_or(u32::MAX));
+        let max_side = u32::try_from(max_side).unwrap_or(u32::MAX);
+        let max_side = if uri.starts_with(CALCULATED_ICON_URI) {
+            max_side.min(CALCULATED_ICON_SIDE)
+        } else {
+            max_side
+        };
+        let size = svg_worker::fit(size, max_side);
         if cfg!(test) {
             // Unit tests draw in this process (`report::browse_svg`), at
             // once, so that a frame paints what it shows.
@@ -358,31 +370,39 @@ impl SvgLoader {
             size,
         };
         let mut state = self.state();
-        state.cache.entry(uri.to_owned()).or_default().insert(
-            hint,
-            Entry {
-                requested: Instant::now(),
-                result: None,
-            },
-        );
         let budget = self.budget;
         let queue = state.queue.get_or_insert_with(|| {
-            let (sender, receiver) = mpsc::channel();
+            let (sender, receiver) = mpsc::sync_channel(QUEUE_CAPACITY);
             let weak = Arc::downgrade(&self.state);
-            // A thread that does not start leaves its SVGs undrawn.
             let _ = std::thread::Builder::new()
                 .name("om-gui svg".into())
                 .spawn(move || draw_queue(weak, receiver, budget));
             sender
         });
-        if queue.send(job).is_err() {
-            let error = "the SVG drawing thread has ended".to_owned();
-            if let Some(entry) = state.entry(uri, hint) {
-                entry.result = Some(Err(error.clone()));
+        let result = match queue.try_send(job) {
+            Ok(()) => None,
+            // Leave no cache entry so the next repaint tries again.
+            Err(mpsc::TrySendError::Full(_)) => return Ok(ImagePoll::Pending { size: None }),
+            Err(mpsc::TrySendError::Disconnected(_)) => {
+                Some(Err("the SVG drawing thread has ended".to_owned()))
             }
-            return Err(LoadError::Loading(error));
+        };
+        let error = result
+            .as_ref()
+            .and_then(|result| result.as_ref().err())
+            .cloned();
+        // The worker checks its entry under the same lock before drawing.
+        state.cache.entry(uri.to_owned()).or_default().insert(
+            hint,
+            Entry {
+                requested: Instant::now(),
+                result,
+            },
+        );
+        match error {
+            Some(error) => Err(LoadError::Loading(error)),
+            None => Ok(ImagePoll::Pending { size: None }),
         }
-        Ok(ImagePoll::Pending { size: None })
     }
 }
 

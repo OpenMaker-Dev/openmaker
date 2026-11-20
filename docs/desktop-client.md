@@ -556,10 +556,13 @@ authoring part tabs or object kind captions.
   reports or Refresh Object when it cannot be read.
   - OpenMaker's choices: the icon is colored as the library icon is; text
     longer than 64 KiB is dropped as it is computed and shows the warning;
-    the window keeps loaded the calculated icons drawn within the last
-    second, however many, and 64 others, and 16 MiB of their text among
-    its cached results, computing others again as they show. A drawing
-    job waiting in the SVG worker holds no bytes of its own.
+    the app keeps up to 256 distinct icons loaded across its windows and
+    warns on additional icons while all slots are in use. It keeps up to
+    64 after they leave the screen, with a one-second grace period.
+    Rasters are limited to 512 pixels per side and cached calculation
+    results have a 16 MiB text budget. The SVG worker queues up to 128
+    draws, reads their source bytes when drawing, and retries still-visible
+    icons on repaint.
   - Inferred, not measured: the sign's look, which SVG FileMaker Pro
     refuses, and whether popover buttons offer the option. The bit and the
     key were read from FileMaker Pro 26.1.1's binaries; no file made by
