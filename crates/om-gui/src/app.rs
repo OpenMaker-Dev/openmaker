@@ -2348,23 +2348,19 @@ impl OpenMakerApp {
             use crate::licensing::{LicenseAction, LicenseKey};
             if let Some(action) = dialog.show(&ctx) {
                 let request = match action {
-                    LicenseAction::Save => {
-                        dialog.pending = true;
-                        Some(Request::SaveLicense(LicenseKey::new(
-                            dialog.input.trim().to_owned(),
-                        )))
-                    }
-                    LicenseAction::Remove => {
-                        dialog.pending = true;
-                        Some(Request::RemoveLicense)
-                    }
+                    LicenseAction::Save => Some(Request::SaveLicense(LicenseKey::new(
+                        dialog.input.trim().to_owned(),
+                    ))),
+                    LicenseAction::Remove => Some(Request::RemoveLicense),
+                    LicenseAction::Check => Some(Request::LicenseStatus),
                     LicenseAction::Close => {
                         self.license_dialog = None;
                         None
                     }
                 };
                 if let Some(request) = request {
-                    self.request(&ctx, request);
+                    let writes = !matches!(request, Request::LicenseStatus);
+                    self.license_request(&ctx, request, writes);
                 }
             }
         }
@@ -3554,7 +3550,7 @@ impl OpenMakerApp {
             Action::ManageLicense => {
                 if self.client_license && self.status == ConnectStatus::Idle {
                     self.license_dialog = Some(crate::licensing::LicenseDialog::default());
-                    self.request(ctx, Request::LicenseStatus);
+                    self.license_request(ctx, Request::LicenseStatus, false);
                 }
             }
             Action::NewRecord | Action::DuplicateRecord => {
@@ -4366,6 +4362,30 @@ impl OpenMakerApp {
         let file = self.w.file_id;
         let workspace = self.workspace.as_mut()?;
         workspace.takes(file, token).then_some(workspace)
+    }
+
+    /// Send a License dialog's request. The credential store is the
+    /// worker's, not the host's, so it goes also when the window's host is
+    /// gone; the dialog waits only for a request that went. `writes`: it
+    /// saves or removes, so the masked draft goes once it succeeds.
+    fn license_request(&mut self, ctx: &egui::Context, request: Request, writes: bool) {
+        let sent = self.worker.send(ctx, self.epoch, self.w.id, request);
+        if let Some(dialog) = &mut self.license_dialog {
+            dialog.pending = sent.is_ok();
+            dialog.writing = writes && sent.is_ok();
+            if let Err(err) = &sent {
+                dialog.error = Some(err.to_string());
+            }
+        }
+    }
+
+    /// A License dialog answer. The dialog is the app's, not a window's: it
+    /// takes the answer whichever window asked, also after that window or
+    /// its file closed.
+    pub(super) fn license_reply(&mut self, result: Result<bool, DataError>) {
+        if let Some(dialog) = &mut self.license_dialog {
+            dialog.accept(result);
+        }
     }
 
     fn request(&mut self, ctx: &egui::Context, request: Request) {
@@ -5400,7 +5420,13 @@ impl OpenMakerApp {
         }
         loop {
             match self.worker.poll() {
-                Ok(response) if response.epoch == self.epoch => self.on_response(ctx, response),
+                // A License dialog answer is the app's, of any session.
+                Ok(response)
+                    if response.epoch == self.epoch
+                        || matches!(response.reply, worker::Reply::License(_)) =>
+                {
+                    self.on_response(ctx, response)
+                }
                 Ok(_) => {}
                 Err(PollError::Empty) => break,
                 Err(PollError::Stopped) => {
@@ -5599,11 +5625,7 @@ impl OpenMakerApp {
                 report,
             } => self.save_settled(ctx, settle, result, report),
             Reply::Recreated(result) => self.recreated(ctx, result),
-            Reply::License(result) => {
-                if let Some(dialog) = &mut self.license_dialog {
-                    dialog.accept(result);
-                }
-            }
+            Reply::License(result) => self.license_reply(result),
             Reply::Files(listed) => self.on_listed(listed),
             Reply::Opened(result) => {
                 let target = self.opening.take();
@@ -6802,6 +6824,27 @@ mod tests {
             })
             .unwrap();
         }
+    }
+
+    /// The License dialog is the app's: its answer finishes it also when the
+    /// window that asked has closed since (#151's review).
+    #[test]
+    fn a_license_answer_reaches_the_dialog_after_its_window_closed() {
+        let ctx = egui::Context::default();
+        let mut app = OpenMakerApp::new(Box::new(om_data::mock::MockProvider::new()));
+        app.license_dialog = Some(crate::licensing::LicenseDialog::default());
+        assert!(app.license_dialog.as_ref().unwrap().pending);
+        app.on_response(
+            &ctx,
+            worker::Response {
+                epoch: app.epoch,
+                window: 99,
+                reply: Reply::License(Ok(true)),
+            },
+        );
+        let dialog = app.license_dialog.as_ref().unwrap();
+        assert!(!dialog.pending, "Done stays enabled");
+        assert_eq!(dialog.stored, Some(true));
     }
 
     /// FileMaker Pro 26.0.3 shows a layout the window goes back to in the

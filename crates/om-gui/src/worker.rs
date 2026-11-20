@@ -739,6 +739,12 @@ impl Worker {
         let flag = Arc::clone(&abort);
         let closes = provider.close_requests();
         let browser = provider.host_browser();
+        // A read the OS holds while it asks the user must not hold opening
+        // a host (`with_client_license`).
+        let store = Box::new(crate::licensing::ThreadedStore::new(
+            store,
+            crate::licensing::LOAD_WAIT,
+        ));
         let spawned = thread::Builder::new()
             .name("om-provider".into())
             .spawn(move || serve(provider, store, &job_rx, &resp_tx, flag, dispatcher));
@@ -955,7 +961,9 @@ fn opened(provider: &dyn DataProvider) -> Opened {
 }
 
 /// Apply the same optional-license policy to opening and reconnecting hosts.
-/// A key-store failure does not block an OpenMaker Server connection.
+/// A key-store failure does not block an OpenMaker Server connection, nor
+/// does a store that keeps the read waiting (the worker's store gives up
+/// after [`crate::licensing::LOAD_WAIT`]).
 pub(crate) fn with_client_license<T>(
     provider: &mut dyn DataProvider,
     store: &mut dyn LicenseStore,
