@@ -137,9 +137,16 @@ Send Mail (63) through the email client, with dialog, opens a new message
 in the system's mail client on the desktop: a `mailto:` URL (RFC 6068,
 `om_url::mailto`) with the To, CC, BCC, subject and message the step's
 calculations give in the current record, for the user to look over and
-send. The URL goes to the handler the system registers for `mailto:`
-(`xdg-open`, macOS's `open`, Windows' `url.dll`), not to a web browser's
-launcher, and the step waits up to 10 seconds for it to take the message.
+send. The URL goes to the application the system registers for
+`mailto:`, never to a web browser: on Linux the default handler of
+`x-scheme-handler/mailto` (`xdg-mime`), launched from its desktop entry's
+command (not through `xdg-open`, which exits 0 when the handler fails and
+falls back to a browser when none is registered); on macOS `open`. The
+step waits up to 10 seconds: a non-zero exit is a refusal, and a handler
+still running then is the mail client, open with the message. On Windows
+the step is 3 for now
+([#609](https://github.com/OpenMaker-Dev/openmaker/issues/609)): its
+`url.dll` launcher reports no failure.
 Address lists split at returns, semicolons and commas outside a quoted
 local part (`"Sales, West"@example.org` stays one address). FileMaker Pro
 hands the message to the email client too; a URL is OpenMaker's means,
@@ -147,8 +154,9 @@ which cannot carry the rest, so these fail with 3: SMTP and OAuth, no
 dialog (sending unseen), attachments, one email per record, and addresses
 collected across a found set of more than one record. So do (OpenMaker's
 choices) a stored option or attachment list OpenMaker cannot read, an
-address whose quote does not end, a URL longer than 32,000 characters, and
-a handler that refuses the message or cannot be started
+address whose quote does not end, a URL longer than 32,000 characters, no
+registered mail client, and a client that refuses the message or cannot be
+started
 ([#89](https://github.com/OpenMaker-Dev/openmaker/issues/89)). On
 OpenMaker Server the step is 3.
 

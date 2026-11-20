@@ -5751,8 +5751,9 @@ impl Network for WorkerHost<'_> {
 
     /// Send Mail through the email client, with dialog: a new message in
     /// the system's mail client, handed over as a `mailto:` URL to the
-    /// handler the system registers for `mailto:` ([`mail::open_mailto`]),
-    /// for the user to look over and send. What a `mailto:` URL cannot
+    /// application the system registers for `mailto:`
+    /// ([`mail::open_mailto`]; refused on Windows for now), for the user to
+    /// look over and send. What a `mailto:` URL cannot
     /// carry is 3, as FileMaker fails a step it cannot run: SMTP and OAuth,
     /// no dialog (sending unseen), attachments, one email per record, and
     /// addresses collected across a found set of more than one record. So

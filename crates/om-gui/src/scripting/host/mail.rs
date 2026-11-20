@@ -1,49 +1,263 @@
-//! Send Mail's handoff to the system's mail client: the `mailto:` URL
-//! goes to the handler the system registers for `mailto:` (freedesktop's
-//! `x-scheme-handler/mailto` through `xdg-open`, macOS's `open`, Windows'
-//! `url.dll` protocol handler), not to a web browser's launcher, which on
-//! Linux opens the default browser whatever handles mail. The step waits
-//! for the handler to say whether it took the message.
+//! Send Mail's handoff to the system's mail client. The `mailto:` URL goes
+//! to the application the system registers for `mailto:`, never to a web
+//! browser, and the step learns whether it took the message:
+//!
+//! - Linux and other freedesktop systems: the default handler of
+//!   `x-scheme-handler/mailto` (`xdg-mime query default`), launched from
+//!   its desktop entry's `Exec` line. `xdg-open` is not used: it exits 0
+//!   when the handler fails, and with no handler it hands the whole draft
+//!   to a web browser. No registered handler is a refusal.
+//! - macOS: `open`, which exits non-zero when no application takes the
+//!   URL.
+//! - Windows: refused (3) for now: `url.dll`'s protocol handler reports no
+//!   launch failure, and a reporting launcher is not built yet.
+//!
+//! The launched handler is waited for: a non-zero exit is its refusal, a
+//! zero exit (a client already running took the message) or one still
+//! running after the wait (the client itself, open with the draft) is
+//! taken.
 
+use std::path::{Path, PathBuf};
 use std::process::{Command, Stdio};
 use std::time::{Duration, Instant};
 
-/// How long the opener may take to say whether it handed the message on.
-/// One still running then (a handler that stays in the foreground) has
-/// taken it, and is left to finish.
+/// How long a handler may take to say whether it took the message.
 const HANDOFF: Duration = Duration::from_secs(10);
 
 /// Hand `url`, a `mailto:` URL, to the system's `mailto:` handler: Ok once
 /// it took it, else why not.
 pub(super) fn open_mailto(url: &str) -> Result<(), String> {
-    let (program, before): (&str, &[&str]) = if cfg!(target_os = "macos") {
-        ("open", &[])
-    } else if cfg!(windows) {
-        ("rundll32", &["url.dll,FileProtocolHandler"])
+    if cfg!(windows) {
+        return Err(
+            "Sending mail through the email client is not supported on Windows yet.".into(),
+        );
+    }
+    let argv = if cfg!(target_os = "macos") {
+        vec!["open".to_owned(), url.to_owned()]
     } else {
-        ("xdg-open", &[])
+        freedesktop_argv(url)?
     };
-    hand_off(program, before, url, HANDOFF)
+    let (program, args) = argv
+        .split_first()
+        .ok_or_else(|| "The mail client's command line is empty.".to_owned())?;
+    let args: Vec<&str> = args.iter().map(String::as_str).collect();
+    hand_off(program, &args, HANDOFF)
 }
 
-/// Run `program` with `before` and `url` as its arguments and wait up to
-/// `wait` for its exit: a non-zero exit is the handler's refusal.
-fn hand_off(program: &str, before: &[&str], url: &str, wait: Duration) -> Result<(), String> {
+/// The command line of the default `mailto:` handler's desktop entry, with
+/// `url` in place of its URL field code.
+fn freedesktop_argv(url: &str) -> Result<Vec<String>, String> {
+    let output = Command::new("xdg-mime")
+        .args(["query", "default", "x-scheme-handler/mailto"])
+        .stdin(Stdio::null())
+        .stderr(Stdio::null())
+        .output()
+        .map_err(|e| format!("The system's mail client could not be looked up (xdg-mime): {e}."))?;
+    let id = String::from_utf8_lossy(&output.stdout).trim().to_owned();
+    if !output.status.success() || id.is_empty() {
+        return Err("No mail client is registered for mailto: links.".into());
+    }
+    let entry = desktop_file(&id, &data_dirs())
+        .ok_or_else(|| format!("The mail client's desktop entry {id} was not found."))?;
+    let text = std::fs::read_to_string(&entry)
+        .map_err(|e| format!("The mail client's desktop entry {id} could not be read: {e}."))?;
+    let exec = desktop_exec(&text)
+        .ok_or_else(|| format!("The mail client's desktop entry {id} has no command."))?;
+    exec_argv(&exec, url)
+        .ok_or_else(|| format!("The mail client's command in {id} cannot be read."))
+}
+
+/// `$XDG_DATA_HOME` (`~/.local/share`) then `$XDG_DATA_DIRS`
+/// (`/usr/local/share:/usr/share`), as the base directory spec orders them.
+fn data_dirs() -> Vec<PathBuf> {
+    let mut dirs = Vec::new();
+    match std::env::var_os("XDG_DATA_HOME").filter(|d| !d.is_empty()) {
+        Some(home) => dirs.push(PathBuf::from(home)),
+        None => {
+            if let Some(home) = std::env::var_os("HOME") {
+                dirs.push(PathBuf::from(home).join(".local/share"));
+            }
+        }
+    }
+    let system = std::env::var("XDG_DATA_DIRS")
+        .ok()
+        .filter(|d| !d.is_empty())
+        .unwrap_or_else(|| "/usr/local/share:/usr/share".to_owned());
+    dirs.extend(
+        system
+            .split(':')
+            .filter(|d| !d.is_empty())
+            .map(PathBuf::from),
+    );
+    dirs
+}
+
+/// The desktop entry of id `id` under `dirs`' `applications`: the file of
+/// that name, or (the desktop entry spec's id rule) one whose `-`s stand
+/// for subdirectories.
+fn desktop_file(id: &str, dirs: &[PathBuf]) -> Option<PathBuf> {
+    if id.contains('/') || id.contains("..") {
+        return None;
+    }
+    let candidates = || {
+        let dashes: Vec<usize> = id.match_indices('-').map(|(i, _)| i).collect();
+        let mut names = vec![PathBuf::from(id)];
+        for &i in &dashes {
+            names.push(Path::new(&id[..i]).join(&id[i + 1..]));
+        }
+        names
+    };
+    dirs.iter().find_map(|dir| {
+        candidates()
+            .into_iter()
+            .map(|name| dir.join("applications").join(name))
+            .find(|path| path.is_file())
+    })
+}
+
+/// The `Exec` key of a desktop entry's `[Desktop Entry]` group, its string
+/// escapes undone.
+fn desktop_exec(text: &str) -> Option<String> {
+    let mut in_entry = false;
+    for line in text.lines() {
+        let line = line.trim();
+        if line.starts_with('[') {
+            in_entry = line == "[Desktop Entry]";
+            continue;
+        }
+        if !in_entry {
+            continue;
+        }
+        if let Some(value) = line.strip_prefix("Exec") {
+            let value = value.trim_start();
+            if let Some(value) = value.strip_prefix('=') {
+                return Some(unescape_string(value.trim()));
+            }
+        }
+    }
+    None
+}
+
+/// A desktop entry string's escapes: `\s`, `\n`, `\t`, `\r`, `\\`.
+fn unescape_string(value: &str) -> String {
+    let mut out = String::new();
+    let mut chars = value.chars();
+    while let Some(c) = chars.next() {
+        if c != '\\' {
+            out.push(c);
+            continue;
+        }
+        match chars.next() {
+            Some('s') => out.push(' '),
+            Some('n') => out.push('\n'),
+            Some('t') => out.push('\t'),
+            Some('r') => out.push('\r'),
+            Some('\\') => out.push('\\'),
+            Some(other) => {
+                out.push('\\');
+                out.push(other);
+            }
+            None => out.push('\\'),
+        }
+    }
+    out
+}
+
+/// An `Exec` value as arguments (the desktop entry spec's quoting: double
+/// quotes, inside which `\"`, `` \` ``, `\$` and `\\` escape), with `url`
+/// for `%u` or `%U` and the other field codes dropped; `url` is appended
+/// when no field code names it. `None` for an unended quote or no program.
+fn exec_argv(exec: &str, url: &str) -> Option<Vec<String>> {
+    let mut words: Vec<String> = Vec::new();
+    let mut current = String::new();
+    let (mut quoted, mut started) = (false, false);
+    let mut chars = exec.chars();
+    while let Some(c) = chars.next() {
+        if quoted {
+            match c {
+                '"' => quoted = false,
+                '\\' => current.push(chars.next()?),
+                c => current.push(c),
+            }
+            continue;
+        }
+        match c {
+            '"' => {
+                quoted = true;
+                started = true;
+            }
+            ' ' | '\t' => {
+                if started {
+                    words.push(std::mem::take(&mut current));
+                    started = false;
+                }
+            }
+            c => {
+                current.push(c);
+                started = true;
+            }
+        }
+    }
+    if quoted {
+        return None;
+    }
+    if started {
+        words.push(current);
+    }
+    let mut argv = Vec::new();
+    let mut named = false;
+    for word in words {
+        match word.as_str() {
+            "%u" | "%U" => {
+                argv.push(url.to_owned());
+                named = true;
+            }
+            "%f" | "%F" | "%i" | "%c" | "%k" | "%d" | "%D" | "%n" | "%N" | "%v" | "%m" => {}
+            _ => {
+                let mut out = String::new();
+                let mut rest = word.chars().peekable();
+                while let Some(c) = rest.next() {
+                    if c != '%' {
+                        out.push(c);
+                        continue;
+                    }
+                    match rest.next() {
+                        Some('%') => out.push('%'),
+                        Some('u' | 'U') => {
+                            out.push_str(url);
+                            named = true;
+                        }
+                        Some(_) | None => {}
+                    }
+                }
+                argv.push(out);
+            }
+        }
+    }
+    if !named {
+        argv.push(url.to_owned());
+    }
+    (!argv.is_empty() && !argv[0].is_empty()).then_some(argv)
+}
+
+/// Run `program` with `args` and wait up to `wait` for its exit: a
+/// non-zero exit is the handler's refusal; one still running then is the
+/// client itself with the message, left to run.
+fn hand_off(program: &str, args: &[&str], wait: Duration) -> Result<(), String> {
     let mut child = Command::new(program)
-        .args(before)
-        .arg(url)
+        .args(args)
         .stdin(Stdio::null())
         .stdout(Stdio::null())
         .stderr(Stdio::null())
         .spawn()
-        .map_err(|e| format!("The system's mail handler ({program}) could not be started: {e}."))?;
+        .map_err(|e| format!("The mail client ({program}) could not be started: {e}."))?;
     let deadline = Instant::now() + wait;
     loop {
         match child.try_wait() {
             Ok(Some(status)) if status.success() => return Ok(()),
             Ok(Some(status)) => {
                 return Err(format!(
-                    "The system's mail handler ({program}) did not take the message ({status})."
+                    "The mail client ({program}) did not take the message ({status})."
                 ))
             }
             Ok(None) if Instant::now() < deadline => std::thread::sleep(Duration::from_millis(20)),
@@ -56,7 +270,7 @@ fn hand_off(program: &str, before: &[&str], url: &str, wait: Duration) -> Result
             }
             Err(e) => {
                 return Err(format!(
-                    "The system's mail handler ({program}) could not be waited for: {e}."
+                    "The mail client ({program}) could not be waited for: {e}."
                 ))
             }
         }
@@ -76,20 +290,54 @@ mod tests {
         let out = dir.join("url");
         let script = format!("printf %s \"$1\" > '{}'", out.display());
         let url = "mailto:pat@example.com?subject=a%20b&body=c%0D%0Ad";
-        hand_off("sh", &["-c", &script, "sh"], url, HANDOFF).unwrap();
+        hand_off("sh", &["-c", &script, "sh", url], HANDOFF).unwrap();
         assert_eq!(std::fs::read_to_string(&out).unwrap(), url);
-        let refused = hand_off("false", &[], url, HANDOFF).unwrap_err();
+        let refused = hand_off("false", &[url], HANDOFF).unwrap_err();
         assert!(refused.contains("did not take"), "{refused}");
-        let missing = hand_off("om-no-such-mail-handler", &[], url, HANDOFF).unwrap_err();
+        let missing = hand_off("om-no-such-mail-client", &[url], HANDOFF).unwrap_err();
         assert!(missing.contains("could not be started"), "{missing}");
-        // One still running at the deadline has taken the message.
-        let waiting = hand_off(
-            "sh",
-            &["-c", "sleep 5", "sh"],
-            url,
-            Duration::from_millis(50),
+        // One still running at the deadline is the client, open.
+        let open = hand_off("sh", &["-c", "sleep 5"], Duration::from_millis(50));
+        assert!(open.is_ok(), "{open:?}");
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// The registered handler's desktop entry gives the command line, the
+    /// URL in place of its field code, found by id also under a
+    /// subdirectory.
+    #[test]
+    fn the_mailto_handler_runs_from_its_desktop_entry() {
+        let url = "mailto:pat@example.com";
+        let entry = "[Desktop Entry]\nName=Mail\nExec=\"/opt/My Mail/mail\" -compose %u --flag\n\n\
+                     [Desktop Action New]\nExec=other %u\n";
+        let exec = desktop_exec(entry).unwrap();
+        assert_eq!(
+            exec_argv(&exec, url).unwrap(),
+            ["/opt/My Mail/mail", "-compose", url, "--flag"]
         );
-        assert!(waiting.is_ok(), "{waiting:?}");
+        assert_eq!(
+            exec_argv("mail --url=%u %F", url).unwrap(),
+            ["mail", &format!("--url={url}")]
+        );
+        assert_eq!(exec_argv("mail", url).unwrap(), ["mail", url]);
+        assert_eq!(exec_argv("mail \"open", url), None);
+        assert_eq!(desktop_exec("[Desktop Entry]\nName=Mail\n"), None);
+
+        let dir = std::env::temp_dir().join(format!("om-gui-desktop-{}", std::process::id()));
+        std::fs::create_dir_all(dir.join("applications/kde")).unwrap();
+        std::fs::write(dir.join("applications/kde/mail.desktop"), entry).unwrap();
+        assert_eq!(
+            desktop_file("kde-mail.desktop", std::slice::from_ref(&dir)),
+            Some(dir.join("applications/kde/mail.desktop"))
+        );
+        assert_eq!(
+            desktop_file("none.desktop", std::slice::from_ref(&dir)),
+            None
+        );
+        assert_eq!(
+            desktop_file("../x.desktop", std::slice::from_ref(&dir)),
+            None
+        );
         let _ = std::fs::remove_dir_all(&dir);
     }
 }
