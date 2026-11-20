@@ -650,6 +650,9 @@ impl RelatedBuffer {
             // Keep its edit and the original text/version together.
             if self.scripted.is_none() {
                 self.buffer.refresh(&target.stored);
+                if self.buffer.value == self.buffer.original {
+                    self.version = target.version;
+                }
             }
         } else {
             self.buffer.value.clone_from(&self.buffer.original);
