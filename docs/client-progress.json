@@ -634,7 +634,7 @@
       "previous_status": "Partial",
       "status": "Partial",
       "scope": "Zoom and the wheel, Freeze Window and scripted Scroll Window use queued focus and fresh geometry; Table view scrolls sideways ([Zoom](desktop-client.md#zoom)).",
-      "remaining": "Layout mode and focused Form and List editors are not zoomed [#36](https://github.com/OpenMaker-Dev/openmaker/issues/36). Native multi-window and input-method behavior is not compared.",
+      "remaining": "Layout mode is not zoomed [#36](https://github.com/OpenMaker-Dev/openmaker/issues/36). Native multi-window and input-method behavior is not compared.",
       "issues": [
         36
       ],

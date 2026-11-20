@@ -6909,7 +6909,8 @@ impl egui::TextBuffer for FieldText<'_> {
 /// The galley of a field's text in its editor: as `paint_rich_text` lays
 /// the field out at rest (its font, color, alignment, line spacing and
 /// wrapping, a carriage return breaking the line), without an uppercase
-/// transform, which could change the number of characters.
+/// transform, which could change the number of characters. Zoomed, its
+/// glyphs are rasterized at the zoom, as the field's text at rest is.
 fn field_galley(
     ui: &Ui,
     text: &str,
@@ -6918,10 +6919,19 @@ fn field_galley(
 ) -> std::sync::Arc<egui::Galley> {
     let mut style = style.clone();
     style.text_transform = None;
-    ui.fonts_mut(|fonts| {
-        let job = rich_text::layout_job(fonts, text, &style, None, wrap_width);
-        rich_text::layout_galley(fonts, job)
-    })
+    let job = ui.fonts_mut(|fonts| rich_text::layout_job(fonts, text, &style, None, wrap_width));
+    let galley = layer_galley(ui, job.clone());
+    // Rows snapped to whole pixels at a small zoom and font can land on one
+    // another, where the caret could not move between them: those lines
+    // keep their unzoomed raster.
+    if galley
+        .rows
+        .windows(2)
+        .any(|rows| rows[1].pos.y <= rows[0].pos.y)
+    {
+        return ui.fonts_mut(|fonts| rich_text::layout_galley(fonts, job));
+    }
+    galley
 }
 
 /// A field object's editor in Browse over `rect`: the field's font,
@@ -7013,26 +7023,45 @@ fn field_editor(
             hint,
         );
     }
-    child.add_sized(
-        inner.size(),
-        egui::TextEdit::singleline(buffer)
-            .id(id)
-            .event_filter(keys)
-            .frame(frame)
-            .interactive(interactive)
-            .font(FontId::new(
-                size,
-                theme::document_font(
-                    style.font_family.as_deref(),
-                    style
-                        .font_weight
-                        .is_some_and(|weight| weight == 2 || weight >= 600),
-                    matches!(style.font_style, Some(2 | 3)),
-                ),
-            ))
-            .text_color(style.color.map(color).unwrap_or(theme::TEXT))
-            .hint_text(hint),
-    )
+    let font = FontId::new(
+        size,
+        theme::document_font(
+            style.font_family.as_deref(),
+            style
+                .font_weight
+                .is_some_and(|weight| weight == 2 || weight >= 600),
+            matches!(style.font_style, Some(2 | 3)),
+        ),
+    );
+    let text_color = style.color.map(color).unwrap_or(theme::TEXT);
+    let editor = egui::TextEdit::singleline(buffer)
+        .id(id)
+        .event_filter(keys)
+        .frame(frame)
+        .interactive(interactive)
+        .font(font.clone())
+        .text_color(text_color)
+        .hint_text(hint);
+    if layer_scale(&child) == 1.0 {
+        return child.add_sized(inner.size(), editor);
+    }
+    // Zoomed, the text is rasterized at the zoom, as the field's text at
+    // rest is; otherwise egui lays it out as its own single-line editor does.
+    let line_height =
+        child.fonts_mut(|fonts| fonts.row_height(&font)) + child.spacing().extra_text_line_spacing;
+    let mut layouter = |ui: &Ui, text: &dyn egui::TextBuffer, _wrap_width: f32| {
+        let mut job = egui::text::LayoutJob::simple_singleline(
+            text.as_str().to_owned(),
+            font.clone(),
+            text_color,
+        );
+        job.keep_trailing_whitespace = true;
+        for section in &mut job.sections {
+            section.format.line_height = Some(line_height);
+        }
+        layer_galley(ui, job)
+    };
+    child.add_sized(inner.size(), editor.layouter(&mut layouter))
 }
 
 /// [`field_editor`] with `lines`: a multi-line editor of [`FieldText`],
@@ -7083,17 +7112,24 @@ fn lines_editor(
     // brings the insertion point into view itself: egui asks for that only
     // as the text or the selection changes, which happened, if at all, in
     // a frame without the scroll area.
+    // A new zoom counts as a new scroll area: the rows' heights change with
+    // their raster, the area's offset does not.
     let scrolled = id.with("lines scrolled");
     let frame_nr = ui.ctx().cumulative_frame_nr();
+    let scale = layer_scale(ui);
     let continued = ui
-        .data(|data| data.get_temp::<u64>(scrolled))
-        .is_some_and(|at| at + 1 == frame_nr);
+        .data(|data| data.get_temp::<(u64, f32)>(scrolled))
+        .is_some_and(|(at, at_scale)| at + 1 == frame_nr && at_scale == scale);
     let response = if fits {
         // As the one-line editor sits: the field's own rect.
         ui.add_sized(inner.size(), edit)
     } else {
         egui::ScrollArea::vertical()
             .id_salt(id.with("lines"))
+            // Scrolls at once, the editor's own to its insertion point too:
+            // an animation under way at a change of zoom would carry the
+            // field past the insertion point at the new one.
+            .animated(false)
             // The field's height, not egui's least scrolled height (64
             // points), which would grow the area past the field instead.
             .max_height(inner.height())
@@ -7120,7 +7156,7 @@ fn lines_editor(
             .inner
     };
     if !fits && response.has_focus() {
-        ui.data_mut(|data| data.insert_temp(scrolled, frame_nr));
+        ui.data_mut(|data| data.insert_temp(scrolled, (frame_nr, scale)));
     }
     // The editor locks its own keys while it has the focus; the document's
     // Tab stays locked from egui's traversal as on one line.

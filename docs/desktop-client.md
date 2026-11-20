@@ -955,14 +955,21 @@ pointer in window points, so a zoomed drag jumped). While zoomed, Table view's s
 touch drag, which egui would move by the zoom's multiple of the finger's
 way; the wheel and the scroll bars still scroll them.
 
+A field being typed in lays its text out at the zoom as well, in Form, List
+and Find (`field_galley`, and the single-line editor's layouter), so its text
+stays as sharp as the field's text at rest; an empty editor's placeholder is
+egui's. Text `scaled_text` cannot rebuild (justified, elided or with leading
+space) keeps the unzoomed raster in the editor too, as do lines that a small
+zoom and font would put on one pixel row. A new zoom brings a scrolling
+field's insertion point back into view.
+
 Set Zoom Level with Lock on disables View > Actual Size, Zoom In and
 Zoom Out and their shortcuts for that window. A script can still set the
 level, and Lock off restores those controls. A new window (New Window,
 the step or Window > New Window) takes the lock with the zoom of the window
 it opens from [I: inheritance has not been compared with FileMaker Pro].
 
-Limits: Layout mode, generic Form fallbacks and focused field editors in
-Form and List view are not zoomed (Preview scales its paper:
+Limits: Layout mode and generic Form fallbacks are not zoomed (Preview scales its paper:
 [preview.md](preview.md); [#36](https://github.com/OpenMaker-Dev/openmaker/issues/36)). Scroll bars
 inside the zoomed layer (List and Table view's) scale with it; FileMaker Pro's
 keep their size [I: unmeasured]. How FileMaker Pro scales Table view's
