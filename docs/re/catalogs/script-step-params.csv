@@ -250,13 +250,13 @@ step_id,step_name,order,parameter,xml_type,storage,values,default,evidence,notes
 134,Add Account,1,Account name,Calculation,slot:0:calc,,,xml+params,
 134,Add Account,2,Password,Calculation,slot:1:calc,,,xml+params,
 134,Add Account,3,Privilege set,PrivilegeSet,reserved:key,,,xml+params,privilege set key (HBSerialKey<7>)
-134,Add Account,4,Expire password,Boolean,flag:0x100,,Off,xml+params,user must change password on next login; Low
+134,Add Account,4,Expire password,Boolean,value,0 Off; 1 On,Off,xml+params+oracle,"user must change password on next login: mStepValue nonzero sets status bit 18 (1, 2 and 4 alike; flag 0x100 does nothing); local-files.md 2.4"
 135,Delete Account,1,Account name,Calculation,slot:0:calc,,,xml+params,
 136,Reset Account Password,1,Account name,Calculation,slot:0:calc,,,xml+params,
 136,Reset Account Password,2,New password,Calculation,slot:1:calc,,,xml+params,
-136,Reset Account Password,3,Expire password,Boolean,flag:0x100,,Off,xml+params,Low
+136,Reset Account Password,3,Expire password,Boolean,value,0 Off; 1 On,Off,xml+params+oracle,"mStepValue nonzero sets status bit 18; local-files.md 2.4"
 137,Enable Account,1,Account name,Calculation,slot:0:calc,,,xml+params,
-137,Enable Account,2,Activate/Deactivate,List,flag:0x100,Activate / Deactivate,,xml+params,EnableAccountBoolean; Low
+137,Enable Account,2,Activate/Deactivate,List,value,0 Activate; 1 Deactivate,,xml+params+oracle,"EnableAccountBoolean: mStepValue nonzero deactivates (status bit 19), 0 activates; local-files.md 2.4"
 138,Re-Login,1,With dialog,Boolean,flag:!0x80,,On,xml+params,On/Off; On = flag clear (kNoInteract is the stored bit)
 138,Re-Login,2,Account name,Calculation,slot:0:calc,,,xml+params,
 138,Re-Login,3,Password,Calculation,slot:1:calc,,,xml+params,

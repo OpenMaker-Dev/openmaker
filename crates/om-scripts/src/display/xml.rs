@@ -1015,13 +1015,13 @@ impl StepReader<'_> {
         b.known(&["type", "value", "name"])?;
         b.no_children()?;
         let set = truth(b)?;
-        // Enable Account shows Activate (True) for step value 0.
+        // Enable Account shows Activate (True) for step value 0. The other
+        // choice is any nonzero value (local-files.md 2.4); 1 is written,
+        // with `kMenuSelection` as the catalog's `value` storage writes it.
         let stored = if self.id() == 137 { !set } else { set };
         if stored {
-            let label = b.attr("name").or(b.attr("type")).unwrap_or_default();
-            return Err(format!(
-                "The choice “{label}” is not read: its stored value is not known"
-            ));
+            self.step.value = 1;
+            self.step.flags |= flag::MENU_SELECTION;
         }
         Ok(())
     }

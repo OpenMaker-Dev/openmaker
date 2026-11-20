@@ -840,19 +840,21 @@ fn options(l: &mut Line<'_>) -> bool {
         134 => {
             l.labeled("Account name", "Account Name", 0);
             l.labeled("Password", "Password", 1);
-            let expire = l.has(flag::OPTION);
+            // The account steps' options are the step value (local-files.md
+            // 2.4).
+            let expire = l.step.value != 0;
             l.word("Expire password", "Expire password", expire);
         }
         135 => l.labeled_always("Account name", "Account Name", 0),
         136 => {
             l.labeled_always("Account name", "Account Name", 0);
             l.labeled("New password", "New Password", 1);
-            let expire = l.has(flag::OPTION);
+            let expire = l.step.value != 0;
             l.word("Expire password", "Expire password", expire);
         }
         137 => {
             l.labeled_always("Account name", "Account Name", 0);
-            let off = l.has(flag::OPTION);
+            let off = l.step.value != 0;
             l.push(
                 "Activate/Deactivate",
                 if off { "Deactivate" } else { "Activate" },

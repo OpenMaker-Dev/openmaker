@@ -1284,3 +1284,33 @@ fn empty_elements_count_toward_the_xml_depth_bound() {
     let refused = parse_steps(&nested(MAX_XML_DEPTH), &names, Origin::Unknown).unwrap_err();
     assert!(refused.contains("more than 128 deep"), "{refused}");
 }
+
+/// The account steps' options are the step value, nonzero when on, as
+/// FileMaker Server's engine reads them (local-files.md 2.4, #525): text
+/// sets them there, not in flag 0x100, and prints them back; so does
+/// FileMaker's XML.
+#[test]
+fn account_step_options_are_the_step_value() {
+    for (line, value) in [
+        ("Add Account [ Account Name: \"u\" ; Password: \"p\" ; Expire password ]", 1),
+        ("Add Account [ Account Name: \"u\" ; Password: \"p\" ]", 0),
+        ("Reset Account Password [ Account Name: \"u\" ; New Password: \"q\" ; Expire password ]", 1),
+        ("Enable Account [ Account Name: \"u\" ; Deactivate ]", 1),
+        ("Enable Account [ Account Name: \"u\" ; Activate ]", 0),
+    ] {
+        let step = pasted(line);
+        assert_eq!(step.value, value, "{line}");
+        assert!(!step.has_flag(flag::OPTION), "{line}");
+        assert_eq!(shown(&step), line);
+    }
+    let xml = r#"<fmxmlsnippet type="FMObjectList"><Step id="137" name="Enable Account"><Options>16384</Options><ParameterValues><Parameter type="AccountName"><Calculation position="0"><Calculation><Text><![CDATA["u"]]></Text></Calculation></Calculation></Parameter><Parameter type="Boolean"><Boolean type="EnableAccountBoolean" value="False" name="Activate"></Boolean></Parameter></ParameterValues></Step></fmxmlsnippet>"#;
+    let pasted = parse_steps(xml, &Contacts::new(), Origin::Unknown).unwrap();
+    let [Pasted::Step(step)] = &pasted[..] else {
+        panic!("{pasted:?}");
+    };
+    assert_eq!(step.value, 1);
+    assert_eq!(
+        shown(step),
+        "Enable Account [ Account Name: \"u\" ; Deactivate ]"
+    );
+}
