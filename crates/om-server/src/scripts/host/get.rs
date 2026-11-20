@@ -287,34 +287,6 @@ impl ServerHost {
         self.focus = first;
     }
 
-    /// Give the focus to `field` of `occurrence`, shown by the first object
-    /// of the window's layout that shows it.
-    pub(super) fn focus_field(&mut self, occurrence: u64, field: u64) {
-        let object = self.design().and_then(|schema| {
-            let window = self.window.as_ref()?;
-            let id = self.schema.layouts.get(window.layout)?.id;
-            let entry = schema.layouts().iter().find(|l| u64::from(l.id) == id)?;
-            om_data::host::layout_objects::objects_in_order(entry.layout.as_deref()?)
-                .into_iter()
-                .find(|o| {
-                    o.field_spec().is_some_and(|s| {
-                        om_layout::occurrence_id(s.table_key) == Some(occurrence)
-                            && om_hbam::serial::raw_of_id(s.field_key) == Some(field)
-                    })
-                })
-                .map(|o| (o.name.clone().unwrap_or_default(), o.id))
-        });
-        let (object, object_id) = object.map_or((String::new(), None), |(n, id)| (n, Some(id)));
-        self.focus = Some(Focus {
-            occurrence,
-            field,
-            object,
-            object_id,
-            repetition: 1,
-            typed: false,
-        });
-    }
-
     /// The focus selectors: the field's name and occurrence, its text (in
     /// Find mode the request's criterion), the insertion point after it,
     /// the object's name; empty without a focus.

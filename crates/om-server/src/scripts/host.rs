@@ -3290,7 +3290,17 @@ impl Navigation for ServerHost {
                 if self.go_to_portal_field(field)? {
                     return Ok(());
                 }
-                self.focus_field(field.occurrence, field.field);
+                // No object of the layout shows it: entered all the same,
+                // as before (FileMaker gives 102 here, which the server
+                // does not yet).
+                self.focus = Some(get::Focus {
+                    occurrence: field.occurrence,
+                    field: field.field,
+                    object: String::new(),
+                    object_id: None,
+                    repetition: field.repetition.max(1),
+                    typed: false,
+                });
                 Ok(())
             }
             None => {
@@ -3539,6 +3549,10 @@ impl Records for ServerHost {
     /// before the record was reopened stays).
     fn revert_record(&mut self, _with_dialog: bool) -> HostResult {
         self.focus = None;
+        // A new record reverted is gone, and with it its portal rows.
+        if self.record.as_ref().is_some_and(|r| r.new) {
+            self.clear_portal();
+        }
         let Some(transaction) = &self.transaction else {
             self.drop_open();
             return Ok(());

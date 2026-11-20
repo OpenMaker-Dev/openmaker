@@ -128,11 +128,38 @@ impl<'l> ObjectIndex<'l> {
             in_order.push(*object);
             stack.extend(object.children.iter().rev());
         }
+        // The objects on a loop of parents (a malformed store's), found
+        // first so that what they answer does not depend on the order the
+        // objects are read in: they, and everything below them, lie in no
+        // portal and have no origin.
+        let mut on_loop: HashSet<u64> = HashSet::new();
+        let mut settled: HashSet<u64> = HashSet::new();
+        for object in &layout.objects.objects {
+            let mut path: Vec<u64> = Vec::new();
+            let mut at = Some(object.id);
+            while let Some(id) = at {
+                if settled.contains(&id) || !by_id.contains_key(&id) {
+                    break;
+                }
+                if let Some(start) = path.iter().position(|p| *p == id) {
+                    on_loop.extend(&path[start..]);
+                    break;
+                }
+                path.push(id);
+                at = by_id[&id].parent;
+            }
+            settled.extend(path);
+        }
         // The nearest portal above each object and each object's origin,
         // each parent chain walked once, every object on it answered.
         let mut portal_of: HashMap<u64, Option<u64>> = HashMap::new();
         let mut origin: HashMap<u64, Option<(f64, f64)>> = HashMap::new();
         for object in &layout.objects.objects {
+            if on_loop.contains(&object.id) {
+                portal_of.insert(object.id, None);
+                origin.insert(object.id, None);
+                continue;
+            }
             // The chain from the object up to the first object already
             // answered (or the root, or a loop).
             let mut chain = vec![object.id];
@@ -140,6 +167,10 @@ impl<'l> ObjectIndex<'l> {
             let mut at = object.parent;
             let mut looped = false;
             while let Some(id) = at {
+                if on_loop.contains(&id) {
+                    looped = true;
+                    break;
+                }
                 if portal_of.contains_key(&id) || !by_id.contains_key(&id) {
                     break;
                 }
