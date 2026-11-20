@@ -92,8 +92,9 @@ pub(crate) struct Recorder<'a> {
     rows: Vec<Row>,
     /// A dialog is over the window: no row runs.
     blocked: bool,
-    /// What the window's menus have asked for since it came to the front.
-    asked: &'a mut std::collections::HashSet<String>,
+    /// The window's menus may ask for what they read when shown: no read
+    /// failed since the window came to the front.
+    may_ask: bool,
     /// How many rows of each label this menu has had so far: ids stay
     /// distinct when two rows read alike (two scripts of one name).
     seen: HashMap<String, usize>,
@@ -101,17 +102,12 @@ pub(crate) struct Recorder<'a> {
 }
 
 impl<'a> Recorder<'a> {
-    fn new(
-        path: String,
-        chosen: &'a mut Option<String>,
-        asked: &'a mut std::collections::HashSet<String>,
-        blocked: bool,
-    ) -> Self {
+    fn new(path: String, chosen: &'a mut Option<String>, may_ask: bool, blocked: bool) -> Self {
         Recorder {
             path,
             rows: Vec::new(),
             blocked,
-            asked,
+            may_ask,
             seen: HashMap::new(),
             chosen,
         }
@@ -182,12 +178,7 @@ impl MenuRows for Recorder<'_> {
 
     fn submenu(&mut self, label: &str, enabled: bool, rows: &mut dyn FnMut(&mut dyn MenuRows)) {
         let id = self.id(label);
-        let mut inner = Recorder::new(
-            id.clone(),
-            &mut *self.chosen,
-            &mut *self.asked,
-            self.blocked,
-        );
+        let mut inner = Recorder::new(id.clone(), &mut *self.chosen, self.may_ask, self.blocked);
         rows(&mut inner);
         let rows = inner.rows;
         self.rows.push(Row::Submenu {
@@ -214,10 +205,10 @@ impl MenuRows for Recorder<'_> {
         true
     }
 
-    fn ask(&mut self, what: &str) -> bool {
-        // Once while the window is in front: a read that failed is asked
-        // again when the window comes to the front again, not every frame.
-        self.asked.insert(what.to_owned())
+    fn ask(&mut self, _: &str) -> bool {
+        // As long as no read failed since the window came to the front: one
+        // that failed is asked again when it next does, not every frame.
+        self.may_ask
     }
 }
 
@@ -240,8 +231,8 @@ pub(crate) struct SystemMenuBar {
     /// A choice came: the bar's check marks may differ from the rows (muda
     /// flips a check item's mark itself when it is chosen).
     reconcile: bool,
-    /// What the owner's menus asked for while it is in front.
-    asked: std::collections::HashSet<String>,
+    /// Windows whose menus' reads failed since they came to the front.
+    failed: std::collections::HashSet<Owner>,
     events: std::sync::mpsc::Receiver<String>,
 }
 
@@ -277,7 +268,7 @@ impl SystemMenuBar {
             owner: None,
             chosen: std::collections::VecDeque::new(),
             reconcile: false,
-            asked: std::collections::HashSet::new(),
+            failed: std::collections::HashSet::new(),
             events,
         })
     }
@@ -292,36 +283,61 @@ impl SystemMenuBar {
         }
     }
 
-    /// Build the front window's menus (`owner`'s): `menus` adds each menu
-    /// with its title, `blocked` when a dialog is over the window. The
-    /// oldest choice made in this window's menus is answered; choices made
-    /// in another window's menus, or that no enabled row answers (the row
-    /// went), are dropped.
+    /// Keep only the choices whose window is still open (`live`).
+    pub(crate) fn retain_choices(&mut self, live: impl Fn(Owner) -> bool) {
+        self.chosen.retain(|(made, _)| made.is_some_and(&live));
+    }
+
+    /// Whether a choice made in `owner`'s menus waits for it.
+    pub(crate) fn has_choice_for(&self, owner: Owner) -> bool {
+        self.chosen.iter().any(|(made, _)| *made == Some(owner))
+    }
+
+    /// Whether choices wait for any window.
+    pub(crate) fn has_choices(&self) -> bool {
+        !self.chosen.is_empty()
+    }
+
+    /// `owner`'s menus read something that failed (the Scripts catalog):
+    /// they ask again only when the window next comes to the front.
+    pub(crate) fn read_failed(&mut self, owner: Owner) {
+        self.failed.insert(owner);
+    }
+
+    /// `owner` is not in front: what failed may be asked again when it is.
+    pub(crate) fn behind(&mut self, owner: Owner) {
+        self.failed.remove(&owner);
+    }
+
+    /// Build `owner`'s menus: `menus` adds each menu with its title,
+    /// `blocked` when a dialog is over the window. When the window is in
+    /// front (`shown`) the bar shows them; otherwise they only answer a
+    /// choice made while they were shown. The oldest choice made in this
+    /// window's menus is answered, with the rows' state now; one that no
+    /// enabled row answers (the row went) is dropped.
     pub(crate) fn record(
         &mut self,
         owner: Owner,
+        shown: bool,
         blocked: bool,
         menus: impl FnOnce(&mut crate::menubar::MenuSink<'_>),
     ) {
-        if self.owner != Some(owner) {
-            self.owner = Some(owner);
-            self.asked.clear();
-        }
-        while self
+        let mine = self
             .chosen
-            .front()
-            .is_some_and(|(made, _)| *made != Some(owner))
-        {
-            self.chosen.pop_front();
-        }
-        let mut chosen = self.chosen.pop_front().map(|(_, id)| id);
+            .iter()
+            .position(|(made, _)| *made == Some(owner));
+        let mut chosen = mine.and_then(|at| self.chosen.remove(at)).map(|(_, id)| id);
+        let may_ask = shown && !self.failed.contains(&owner);
         let mut recorded: Menus = Vec::new();
-        let asked = &mut self.asked;
         menus(&mut |title, rows| {
-            let mut recorder = Recorder::new(title.to_owned(), &mut chosen, &mut *asked, blocked);
+            let mut recorder = Recorder::new(title.to_owned(), &mut chosen, may_ask, blocked);
             rows(&mut recorder);
             recorded.push((title.to_owned(), recorder.rows));
         });
+        if !shown {
+            return;
+        }
+        self.owner = Some(owner);
         let reconcile = std::mem::take(&mut self.reconcile);
         if recorded == self.shown && !reconcile {
             return;
@@ -503,8 +519,7 @@ mod tests {
 
     fn record(chosen: Option<&str>, f: impl FnOnce(&mut dyn MenuRows) -> bool) -> (Vec<Row>, bool) {
         let mut chosen = chosen.map(str::to_owned);
-        let mut asked = std::collections::HashSet::new();
-        let mut recorder = Recorder::new("File".into(), &mut chosen, &mut asked, false);
+        let mut recorder = Recorder::new("File".into(), &mut chosen, true, false);
         let answered = f(&mut recorder);
         (recorder.rows, answered)
     }

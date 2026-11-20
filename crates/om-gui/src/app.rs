@@ -1228,18 +1228,30 @@ impl OpenMakerApp {
         #[cfg(target_os = "macos")]
         if let Some(mut bar) = self.system_menu.take() {
             // Only the window AppKit has in front shows its menus there, and
-            // a choice made in them reaches only that window. A dialog over
-            // it (or over the document) leaves its rows disabled, as it does
-            // the window's own bar.
-            let key = ui.ctx().input(|i| i.viewport().focused == Some(true));
-            if input && key {
-                let owner = (self.epoch, self.w.id);
-                let blocked = !ui.is_enabled() || self.dialog_over_document();
+            // a choice made in them reaches only that window, also once
+            // another is in front. A modal dialog in the window's viewport
+            // (as of the last frame) leaves its rows disabled, as it does the
+            // window's own bar.
+            let owner = (self.epoch, self.w.id);
+            let key = input && ui.ctx().input(|i| i.viewport().focused == Some(true));
+            let open = self.window_ids();
+            let epoch = self.epoch;
+            bar.retain_choices(|(made, id)| made == epoch && open.contains(&id));
+            if !key {
+                bar.behind(owner);
+            }
+            if key || bar.has_choice_for(owner) {
+                let blocked =
+                    !ui.is_enabled() || ui.ctx().memory(|m| m.top_modal_layer().is_some());
                 self.with_menu_context(input, |context| {
-                    bar.record(owner, blocked, |menu| {
+                    bar.record(owner, key, blocked, |menu| {
                         menubar::menus(context, actions, menu);
                     });
                 });
+            }
+            if bar.has_choices() {
+                // Choices answered one a frame: the rest on the next.
+                ui.ctx().request_repaint();
             }
             self.system_menu = Some(bar);
             return;
@@ -1515,10 +1527,10 @@ impl OpenMakerApp {
             self.shortcuts(ui, &mut actions);
         }
 
-        // With the system menu bar the window's menu bar is drawn there, and
-        // takes none of the window's height: known, and nothing.
+        // With the system menu bar the window's menus are there, and take
+        // none of the window's height, shown or hidden: known, and nothing.
         let system = self.system_menu_bar();
-        self.w.menu_drawn = menu && self.w.menubar;
+        self.w.menu_drawn = (menu && self.w.menubar) || system;
         if self.w.menu_drawn && !system {
             let top = ui.available_rect_before_wrap().top();
             self.menu_bar(ui, input, &mut actions);
@@ -5742,9 +5754,15 @@ impl OpenMakerApp {
                             doc.scripts = catalog.clone();
                             doc.scripts_read = windows::ScriptsRead::Read;
                         }
-                        // The Scripts menu asks again when next shown.
+                        // The Scripts menu asks again when next shown; the
+                        // system menu bar's, when the window next comes to
+                        // the front.
                         Err(_) if doc.scripts_read == windows::ScriptsRead::Asked => {
                             doc.scripts_read = windows::ScriptsRead::Unread;
+                            #[cfg(target_os = "macos")]
+                            if let Some(bar) = &mut self.system_menu {
+                                bar.read_failed((self.epoch, doc.id));
+                            }
                         }
                         Err(_) => {}
                     }
