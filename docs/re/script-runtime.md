@@ -3778,8 +3778,12 @@ Steps
   rules, validation with the transaction's options and the lookups with
   what the transaction holds then, and writes it only when they change a
   cell (a later edit of the record makes it an ordinary staged write).
-  Under "Skip auto-enter options" nothing is copied and nothing staged. A
-  record refused is left as it was.
+  An Import Records into the record before the commit applies its rules
+  to the staged relookup as to any earlier edit (with auto-entry, the
+  lookup and validation then), except that with the import's auto-entry
+  off the relookup still waits for the commit. Under "Skip auto-enter
+  options" nothing is copied and nothing staged. A record refused is left
+  as it was.
   Unmeasured, and OpenMaker's choices:
   - the dialog's text;
   - the codes: 102 for no such field, 201 for one a script cannot set (a
