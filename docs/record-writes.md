@@ -1366,8 +1366,9 @@ stored line, empty keys, accents, case and significant whitespace
 It keeps a unique field's index lock throughout this check until the
 transaction ends; pending transaction duplicates are still checked among
 the held records before upload, by the same keys: a held value is checked
-by its key against the keys the other held records' values put in the
-index, one per stored line, so `green` and `green` CR `purple` in two held
+by its key against the other held values' keys and against the keys the
+other held records' values put in the index, one per stored line, so
+`green` and `green` CR `purple`, or the same multiline value, in two held
 records are 504. A write's changed repetitions of a unique field take its
 index lock once and ask their distinct keys together, up to 64 in one
 ExistsInIndex (query-program.md 8.4), and the fallback scan runs once for

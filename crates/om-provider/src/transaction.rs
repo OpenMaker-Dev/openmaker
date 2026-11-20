@@ -4365,9 +4365,9 @@ struct HeldUnique {
 
 /// Note the values `values` gives `fields` of `record` among the held
 /// records' unique values: one checked by a key another held record's
-/// values put in the index, or putting in the index a key another held
-/// record's value is checked by, is 504, as it is once that other record
-/// is stored.
+/// value is checked by too (the same value), or by a key another held
+/// record's values put in the index, or putting in the index a key another
+/// held record's value is checked by, is 504.
 fn note_unique(
     unique: &mut UniqueHeld,
     table: &Table,
@@ -4392,7 +4392,8 @@ fn note_unique(
         let another = |records: Option<&BTreeSet<u64>>| {
             records.is_some_and(|records| records.iter().any(|r| *r != record))
         };
-        if another(held.stored.get(&checked))
+        if another(held.checked.get(&checked))
+            || another(held.stored.get(&checked))
             || stored.iter().any(|key| another(held.checked.get(key)))
         {
             let name = table.field(field).map_or("", |f| f.name.as_str());
