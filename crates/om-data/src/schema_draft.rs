@@ -5448,7 +5448,7 @@ impl SchemaDraft {
     pub fn finish(&self, stamp: &Stamp, uuid: &mut dyn FnMut() -> [u8; 16]) -> CommitPlan {
         let mut current = self.current.clone();
         // A key string: the time's key is shorter than 8 bytes before
-        // 00:16:40 (schema-path.md 3.1).
+        // 02:46:40 (schema-path.md 3.1).
         let when = key_string(&stamp.time);
         let stamped = |node: &mut OwnedNode, count: bool| {
             if count {

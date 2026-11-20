@@ -971,7 +971,7 @@ fn a_new_field_is_placed_on_a_form_layout_and_used_after_a_restart() {
     assert_eq!(plan["part"]["kind"], "body");
     assert_eq!(plan["stacking"], 3);
     assert_eq!(plan["overlaps"], json!([]));
-    assert_eq!(plan["changes"].as_array().unwrap().len(), 7, "{plan:#}");
+    assert_eq!(plan["changes"].as_array().unwrap().len(), 8, "{plan:#}");
     let on_disk = std::fs::read(&file.0).unwrap();
 
     let placed = ok(service.handle(&place(&wanted, &base)));
@@ -1080,6 +1080,20 @@ fn a_new_field_is_placed_on_a_form_layout_and_used_after_a_restart() {
             .value
             .as_deref(),
         Some(&[0, 2, 1, 4, 0, 0, 0, 0, 1][..])
+    );
+    // The layout stored no tab order, so the edit box is its first stop:
+    // the object index's reference at position 1, recorded in the edit
+    // box's attribute `07`
+    // ([#316](https://github.com/OpenMaker-Dev/openmaker/issues/316)).
+    let tab = member.child(&[0x15]).unwrap();
+    assert_eq!(tab.children.len(), 1);
+    assert_eq!(
+        tab.child(&[0, 1]).unwrap().value.as_deref(),
+        Some(&[0, 2, 1, 4, 0, 0, 0, 0, 1][..])
+    );
+    assert_eq!(
+        member.at(&[&[5], &[4], &[7]]).unwrap().value.as_deref(),
+        Some(&[0, 1][..])
     );
     for uuid in [0xd8u8, 0xd9] {
         assert_eq!(

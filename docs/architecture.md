@@ -61,6 +61,7 @@ toolkit (egui/eframe).
 | Protocol | `om-protocol` | The RCFMP12 session: both the client and the server half of every exchange |
 | | `om-session` | TLS + GIOP transport and a live session, as a library |
 | Data contract | `om-data` | `DataProvider`, the GUI's only view of data; value types, record rules, the mock provider |
+| | `om-report` | The interface between a host's records and the report renderer: what a report asks of them and what rendering gives back ([#104](https://github.com/OpenMaker-Dev/openmaker/issues/104)) |
 | Host | `om-admin` | OpenMaker Server's Admin Console and Admin API: HTTPS, sign-in, sessions, pages and API tokens, over a backend trait ([admin-console.md](admin-console.md)) |
 | | `om-server` | OpenMaker Server: hosts `.fmp12` files for FileMaker-protocol clients |
 | Client | `om-provider` | `NativeProvider`: hosted files over the protocol, and local files through a private embedded host |

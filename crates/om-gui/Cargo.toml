@@ -10,6 +10,7 @@ rust-version.workspace = true
 [dependencies]
 om-data = { path = "../om-data" }
 om-layout = { path = "../om-layout" }
+om-report = { path = "../om-report" }
 om-provider = { path = "../om-provider" }
 om-url = { path = "../om-url" }
 # The PDF worker executable's limiting allocator (om-gui-pdf-worker; MIT OR Apache-2.0).
