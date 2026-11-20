@@ -302,12 +302,16 @@ however slowly it arrives, and writes its answers within 2 seconds or
 loses the connection; the rest waits for the next second.
 
 When the host disconnects a file (`0x0870`: an administrator's close or
-disconnect whose time ran out), the connection lets go of it at once, once
-for every handle holding it, related readers included: one op62 release, the
-next time anything uses the connection (the idle read, a request, a Tickle).
-The host drops a connection that still holds such a file after its wait for
-the client to sign out, and with it the connection's other files, which stay
-usable. What is asked of the released file fails as lost.
+disconnect whose time ran out), that open of the file is lost at once to
+every handle holding it, related readers included, when the connection
+reads the notice: the idle read, any request, a Tickle. A request for it
+does not go out, whenever it was built. One op62 release follows from the
+next idle caller (the worker between requests, or while a script waits in
+a pause or a dialog), waiting at most 2 seconds for the host's answer and
+sent again up to three times. The host drops a connection that still holds
+such a file after its wait for the client to sign out, and with it the
+connection's other files, which this keeps usable. A later open of the file
+on the same connection is a new one, not lost.
 
 The notice goes to the handles holding the file the host names, by its host
 file id (one naming a file the connection no longer holds is dropped), so the
@@ -329,10 +333,13 @@ Limits ([#156](https://github.com/OpenMaker-Dev/openmaker/issues/156)):
   user's close sends, as no Logout is built yet, and keeps the connection
   for its other files. The alert's brackets are as the capture's reading
   recorded them [I: whether FileMaker Pro shows them is unmeasured].
-- The notice is read between requests, by a request, or by a Tickle: a
-  script that runs without asking anything of the host, or waits in a pause
-  or a dialog, reads it at the next Tickle at the latest, and its alert
-  shows once the script's job ends.
+- A script that runs without asking anything of the host reads the notice
+  at the next Tickle at the latest. The alert shows when the worker next
+  reads the hosts' calls: between requests, or while a script waits.
+- Disconnect Client: OpenMaker Server names one file in its forced notice
+  and then ends the connection if a file is still open. Only that file is
+  alerted about and closed; the connection's other files show the lost
+  connection instead ([#638](https://github.com/OpenMaker-Dev/openmaker/issues/638)).
 - The dialog's look is OpenMaker's; FileMaker Pro's was read from its
   text only (capture s07).
 - An open Script Workspace holds the message too, although it is a

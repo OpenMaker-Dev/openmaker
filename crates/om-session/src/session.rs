@@ -37,6 +37,7 @@
 
 use std::collections::{BTreeMap, BTreeSet, VecDeque};
 use std::net::SocketAddr;
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Condvar, Mutex, MutexGuard, OnceLock, PoisonError, Weak};
 use std::thread::JoinHandle;
 use std::time::{Duration, Instant};
@@ -206,6 +207,10 @@ pub struct Session {
     key: u64,
     /// The file opened by [`Session::open_file`] on this handle, if any.
     opened: Option<OpenedFile>,
+    /// Set when the host disconnected that file (`0x0870`): the flag of
+    /// this open of it, which every handle holding it shares
+    /// ([`HeldFile::revoked`]); a later open of the file has its own.
+    revoked: Option<Arc<AtomicBool>>,
     /// The client file id this handle's op63 registered its file under
     /// ([`Session::request_notifications`]).
     client_file: Option<i32>,
@@ -316,10 +321,10 @@ struct Wire {
     /// The hosted files open (or being opened) on the connection, each
     /// with the handles holding it ([`Session::claim_file`], #1011).
     files: Vec<HeldFile>,
-    /// The host's ids of the files the host disconnected (`0x0870`), which
-    /// the connection has let go of ([`Wire::route_admin`]): what a handle
-    /// asks of one fails as lost, and closing it sends nothing.
-    revoked: BTreeSet<u32>,
+    /// The host's ids of files the host disconnected (`0x0870`) whose release
+    /// is still to be sent ([`Wire::release_pending`]), each with the
+    /// attempts made.
+    pending_release: Vec<(u32, u8)>,
     /// Why the connection was lost, once it is.
     lost: Arc<OnceLock<String>>,
     /// The session is ending: the keepalive thread stops.
@@ -367,6 +372,13 @@ const MAX_ADMIN_MESSAGES: usize = 64;
 
 /// Why a handle's file is lost when the host disconnected it (`0x0870`).
 pub const HOST_DISCONNECTED_FILE: &str = "The host disconnected the file.";
+
+/// How long the release of a file the host disconnected waits for the
+/// host's answer ([`Wire::release_pending`]; OpenMaker's choice).
+const RELEASE_WAIT: Duration = Duration::from_secs(2);
+
+/// How many times that release is sent before it is left to the host.
+const RELEASE_ATTEMPTS: u8 = 3;
 
 /// Who a Login admitted a file for: an opaque digest of the account and
 /// password, which the caller computes, never the credentials. A handle
@@ -423,6 +435,9 @@ struct HeldFile {
     /// Its last holder let go and is closing it (op62): no handle holds
     /// it again until that is done ([`Session::close_file`]).
     closing: bool,
+    /// Set when the host disconnected this open of the file (`0x0870`,
+    /// [`Wire::route_admin`]), shared with its holders' handles.
+    revoked: Arc<AtomicBool>,
 }
 
 /// A hosted file's name as FileMaker compares names: without case, with
@@ -791,7 +806,7 @@ impl Session {
             next_handle: 1,
             handles: 1,
             files: Vec::new(),
-            revoked: BTreeSet::new(),
+            pending_release: Vec::new(),
             lost: Arc::default(),
             closing: false,
         };
@@ -830,6 +845,7 @@ impl Session {
             identity,
             key: 0,
             opened: None,
+            revoked: None,
             client_file: None,
             refused_open: None,
             protocol_version: None,
@@ -864,6 +880,7 @@ impl Session {
             identity,
             key,
             opened: None,
+            revoked: None,
             client_file: None,
             refused_open: None,
             protocol_version: None,
@@ -1062,16 +1079,13 @@ impl Session {
 
     /// Whether the host disconnected this handle's file (`0x0870`) and the
     /// connection let go of it ([`HOST_DISCONNECTED_FILE`]): what is asked
-    /// of it fails, while the connection's other files go on. Not waiting
-    /// behind another exchange (a Tickle), as idle callers ask: the next
-    /// ask sees it.
+    /// of it fails, while the connection's other files go on. Read without
+    /// the connection's lock, so idle callers never wait behind another
+    /// exchange (a Tickle).
     pub fn file_disconnected(&self) -> bool {
-        let Some(file) = self.opened.as_ref().map(|opened| opened.reply.file_id) else {
-            return false;
-        };
-        self.link
-            .try_lock()
-            .is_some_and(|wire| wire.revoked.contains(&file))
+        self.revoked
+            .as_ref()
+            .is_some_and(|revoked| revoked.load(Ordering::SeqCst))
     }
 
     /// How long the connection may stay silent while a file is open before
@@ -1106,9 +1120,14 @@ impl Session {
     ) -> Result<Vec<u8>, SessionError> {
         let wait = if patient { Wait::Patient } else { Wait::Read };
         let mut wire = self.link.lock();
-        // A file the host disconnected is let go of before anything else
-        // goes out.
+        // What the host sent meanwhile is routed first; a request for a
+        // file it disconnected does not go out, whenever it was built (its
+        // release goes out from an idle caller, [`Wire::release_pending`],
+        // so that nothing is numbered ahead of a request built already).
         wire.route_admin(true);
+        if self.file_disconnected() {
+            return Err(SessionError::ConnectionLost(HOST_DISCONNECTED_FILE.into()));
+        }
         let reply = wire.call(build, wait, carries);
         wire.last_used = wire.last_request;
         reply
@@ -1201,6 +1220,7 @@ impl Session {
                     admission: None,
                     holders: vec![key],
                     closing: false,
+                    revoked: Arc::default(),
                 });
             }
         }
@@ -1235,6 +1255,7 @@ impl Session {
                 }
                 if let Some(file) = wire.held(key, &held_name(filename)) {
                     file.opened = self.opened.clone();
+                    self.revoked = Some(Arc::clone(&file.revoked));
                 }
             }
             self.keep_alive();
@@ -1275,6 +1296,7 @@ impl Session {
                 admission: None,
                 holders: vec![key],
                 closing: false,
+                revoked: Arc::default(),
             });
             return Ok(Claim::Open);
         };
@@ -1293,12 +1315,14 @@ impl Session {
             return Err(SessionError::FileHeld);
         }
         let (opened, login, client_file) = (opened.clone(), login.clone(), file.client_file);
+        let revoked = Arc::clone(&file.revoked);
         file.holders.push(key);
         if !wire.inbox.open.iter().any(|(handle, _)| *handle == key) {
             wire.inbox.open.push((key, client_file));
         }
         drop(wire);
         self.opened = Some(opened);
+        self.revoked = Some(revoked);
         self.client_file = client_file;
         self.protocol_version = login.version;
         self.keep_alive();
@@ -1514,7 +1538,7 @@ impl Session {
             .reply
             .file_id;
         // The host disconnected the file: nothing more is asked of it.
-        if self.link.lock().revoked.contains(&file_id) {
+        if self.file_disconnected() {
             return Err(SessionError::ConnectionLost(HOST_DISCONNECTED_FILE.into()));
         }
         Ok(file_id)
@@ -1882,11 +1906,7 @@ impl Session {
     pub fn close_file(&mut self) -> Result<(), SessionError> {
         // A file the host disconnected is let go of already
         // ([`Wire::route_admin`]): nothing is sent for it.
-        let revoked = self
-            .opened
-            .as_ref()
-            .is_some_and(|opened| self.link.lock().revoked.contains(&opened.reply.file_id));
-        if revoked {
+        if self.file_disconnected() {
             self.forget_file();
             return Ok(());
         }
@@ -1896,6 +1916,7 @@ impl Session {
         // handle holds the file again (#1011).
         let Some(name) = self.release_file() else {
             self.opened = None;
+            self.revoked = None;
             self.client_file = None;
             return Ok(());
         };
@@ -1908,6 +1929,7 @@ impl Session {
             .files
             .retain(|file| !(file.closing && file.name == name));
         self.opened = None;
+        self.revoked = None;
         self.client_file = None;
         closed
     }
@@ -1948,6 +1970,7 @@ impl Session {
     /// The handle's file is no longer open: what waits for it is dropped.
     fn forget_file(&mut self) {
         self.opened = None;
+        self.revoked = None;
         self.client_file = None;
         let key = self.key;
         let mut wire = self.link.lock();
@@ -2245,6 +2268,7 @@ impl Session {
             let _ = wire.check(error);
         }
         wire.route_admin(true);
+        wire.release_pending();
         Some(wire.inbox.take_admin(key))
     }
 
@@ -2379,24 +2403,23 @@ impl Wire {
     /// longer holds is dropped (network-protocol.md 6.5). Send Message and
     /// the request to close every file are the connection's.
     ///
-    /// With `release`, when the host disconnected a file (`0x0870`), the
-    /// connection lets go of it at once, once for all its holders, related
-    /// readers included ([`Self::release_forced`]): the host drops a
-    /// connection that still holds such a file after its wait for the client
-    /// to sign out, and with it the connection's other files. Without, the
-    /// caller answers the notice itself ([`Session::take_admin_messages`]).
-    fn route_admin(&mut self, release: bool) {
+    /// With `revoke`, when the host disconnected a file (`0x0870`), that
+    /// open of it is lost at once to every handle holding it, related
+    /// readers included, and its release is queued
+    /// ([`Self::release_pending`]): the host drops a connection that still
+    /// holds such a file after its wait for the client to sign out, and
+    /// with it the connection's other files. Without, the caller answers
+    /// the notice itself ([`Session::take_admin_messages`]).
+    fn route_admin(&mut self, revoke: bool) {
         while let Some(message) = self.inbox.admin_messages.pop_front() {
             let kind = message.code & !notify::attention::HOST_SERIAL;
-            let takers = if matches!(
-                kind,
-                notify::attention::CLOSE_FILE | notify::attention::DISCONNECT_ALL
-            ) {
+            let forced = kind == notify::attention::DISCONNECT_ALL;
+            let takers = if forced || kind == notify::attention::CLOSE_FILE {
                 let by_host = message.code & notify::attention::HOST_SERIAL != 0;
                 let named = self
                     .files
                     .iter()
-                    .find(|held| {
+                    .position(|held| {
                         if by_host {
                             held.opened.as_ref().is_some_and(|opened| {
                                 i64::from(opened.reply.file_id) == i64::from(message.file)
@@ -2406,24 +2429,24 @@ impl Wire {
                         }
                     })
                     .or_else(|| {
-                        // A client file id the connection never recorded (an
-                        // op63 sent as a raw Perform) names the one file it
-                        // holds, unless it is the id of a file closed since.
-                        // Host ids are recorded at the Open.
+                        // A request to close by a client file id the
+                        // connection never recorded (an op63 sent as a raw
+                        // Perform) names the one file it holds with none
+                        // recorded, unless it is the id of a file closed
+                        // since. Never a disconnect: that names the host's id.
                         (!by_host
+                            && !forced
                             && self.files.len() == 1
+                            && self.files[0].client_file.is_none()
                             && !self.inbox.retired.contains(&message.file))
-                        .then(|| &self.files[0])
+                        .then_some(0)
                     });
-                let Some(named) = named else {
+                let Some(at) = named else {
                     continue;
                 };
-                let holders = named.holders.clone();
-                let host_file = named.opened.as_ref().map(|opened| opened.reply.file_id);
-                if release && kind == notify::attention::DISCONNECT_ALL {
-                    if let Some(file_id) = host_file {
-                        self.release_forced(file_id);
-                    }
+                let holders = self.files[at].holders.clone();
+                if revoke && forced {
+                    self.revoke(at);
                 }
                 Some(holders)
             } else {
@@ -2436,36 +2459,60 @@ impl Wire {
         }
     }
 
-    /// Let go of host file `file_id`, which the host disconnected: it is
-    /// [`Self::revoked`] for every handle holding it, and one op62 closes
-    /// its root, as a user's close does (FileMaker Pro signs out with op81
-    /// Logout instead, which OpenMaker does not build). Whatever the host
-    /// answers, the file is gone here; a transport failure loses the
-    /// connection as any exchange's does.
-    fn release_forced(&mut self, file_id: u32) {
-        if !self.revoked.insert(file_id) {
-            return;
-        }
-        let client = self
-            .files
-            .iter()
-            .find(|held| held.opened.as_ref().map(|opened| opened.reply.file_id) == Some(file_id))
-            .and_then(|held| held.client_file);
-        self.files.retain(|held| {
-            held.opened.as_ref().map(|opened| opened.reply.file_id) != Some(file_id)
-        });
-        // What still names the file is dropped (`Inbox::receive`).
-        if let Some(client) = client {
+    /// The host disconnected held file `at` (`0x0870`): this open of it is
+    /// lost to its holders ([`HeldFile::revoked`]), the connection holds
+    /// it no more (a later open of it is a new one), what names its client
+    /// file id is dropped, and its release is queued.
+    fn revoke(&mut self, at: usize) {
+        let held = self.files.remove(at);
+        held.revoked.store(true, Ordering::SeqCst);
+        if let Some(client) = held.client_file {
             self.inbox.retired.insert(client);
         }
-        let connection_id = self.connection_id;
-        let request = write::Unlock::close_file(file_id as i32);
-        let transaction = write::build_unlock(self.take_file_transaction(), file_id, &request);
-        let _ = self.call(
-            |id| build_perform(id, connection_id, b"", &transaction),
-            Wait::Read,
-            carries(&transaction),
-        );
+        if let Some(opened) = held.opened {
+            let file_id = opened.reply.file_id;
+            if !self.pending_release.iter().any(|(id, _)| *id == file_id) {
+                self.pending_release.push((file_id, 0));
+            }
+        }
+    }
+
+    /// Send the releases of the files the host disconnected
+    /// ([`Self::revoke`]): one op62 close of each file's root, as a user's
+    /// close sends it (FileMaker Pro signs out with op81 Logout, which
+    /// OpenMaker does not build). Only idle callers send them, so that no
+    /// release is numbered ahead of a request built already. Each waits at
+    /// most [`RELEASE_WAIT`], not to hold its caller behind a slow host; one
+    /// the host does not answer is tried again by the next idle caller, up
+    /// to [`RELEASE_ATTEMPTS`] times in all, then left to the host, which
+    /// drops a connection still holding the file after its own wait.
+    fn release_pending(&mut self) {
+        for (file_id, attempts) in std::mem::take(&mut self.pending_release) {
+            if self.lost.get().is_some() {
+                return;
+            }
+            let connection_id = self.connection_id;
+            let request = write::Unlock::close_file(file_id as i32);
+            let transaction = write::build_unlock(self.take_file_transaction(), file_id, &request);
+            let reply = self.call(
+                |id| build_perform(id, connection_id, b"", &transaction),
+                Wait::Until(Instant::now() + RELEASE_WAIT),
+                carries(&transaction),
+            );
+            let answered = reply
+                .ok()
+                .and_then(|msg| om_protocol::parse_perform_reply(&msg).ok())
+                .map(|perform| {
+                    if let Some(notifications) =
+                        write::parse_notification_backchannel(&perform.backchannel)
+                    {
+                        self.inbox.receive(notifications);
+                    }
+                });
+            if answered.is_none() && attempts + 1 < RELEASE_ATTEMPTS {
+                self.pending_release.push((file_id, attempts + 1));
+            }
+        }
     }
 
     /// The Tickle's records (network-protocol.md 6.1): one, session 1,
@@ -2647,8 +2694,9 @@ fn keepalive(link: &Link) {
             // A refused Tickle still kept the connection busy; a lost
             // connection ends the loop above.
             let _ = wire.tickle();
-            // A file the host disconnected meanwhile is let go of now, also
-            // while the client waits in a script's pause.
+            // A file the host disconnected meanwhile is lost to its handles
+            // now, also while the client waits in a script's pause; its
+            // release goes out from the next idle caller.
             wire.route_admin(true);
             continue;
         }

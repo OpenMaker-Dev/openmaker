@@ -3296,14 +3296,27 @@ impl OpenMakerApp {
         if queued {
             return;
         }
-        self.with_window(window, |app| {
-            app.lose_connection(&om_data::DataError::connection_lost(HOST_DISCONNECTED))
-        });
+        // Only the file's own windows and what is the file's: the other
+        // files' windows, a close of them under way and their script go on.
+        let lost = om_data::DataError::connection_lost(HOST_DISCONNECTED);
+        if self.with_window(window, |app| app.mark_file_lost(&lost)) == Some(true) {
+            if self.front_doc().file_id == file {
+                self.closing = None;
+            }
+            if self.script.owner_file == Some(file) {
+                self.stop_scripts();
+            }
+        }
         let mut alert = String::from(HOST_DISCONNECTED);
         if !message.text.is_empty() {
             alert.push_str(&format!("\n\n[From Administrator: “{}”]", message.text));
         }
         self.forced_disconnects.push_back((file, alert));
+    }
+
+    /// The host's alert that a file was disconnected shows now.
+    pub(super) fn forced_alert_shown(&self) -> bool {
+        self.forced_alert.is_some()
     }
 
     /// Whether the host administrator's message shows now: one waits, and
@@ -4379,7 +4392,14 @@ impl OpenMakerApp {
                     .find(|doc| doc.file_id == file)
                     .map(|doc| doc.id);
                 if let Some(window) = window {
+                    // `close_file` resets what the front file's close or
+                    // open had under way: another file's stays.
+                    let front = self.front_doc().file_id;
+                    let kept = (self.closing, self.opening.clone(), self.status);
                     self.with_window(window, |app| app.close_file(ctx));
+                    if front != file {
+                        (self.closing, self.opening, self.status) = kept;
+                    }
                 }
             }
             Action::DismissHostMessage => {
@@ -5614,8 +5634,18 @@ impl OpenMakerApp {
     /// replies, and keeps its unsaved edits on screen; closing the file
     /// stops waiting for the saves it needed.
     fn lose_connection(&mut self, err: &DataError) {
+        if self.mark_file_lost(err) {
+            self.closing = None;
+            self.stop_scripts();
+        }
+    }
+
+    /// [`Self::lose_connection`] for the window's file's own windows: each
+    /// is lost, with what waited in it; `false` when it was lost already.
+    /// The app's close continuation and scripts are left to the caller.
+    fn mark_file_lost(&mut self, err: &DataError) -> bool {
         if self.w.connection_lost.is_some() || self.w.session.is_none() {
-            return;
+            return false;
         }
         self.w.connection_lost = Some(err.message.clone());
         let file = self.w.file_id;
@@ -5656,8 +5686,7 @@ impl OpenMakerApp {
                 doc.delete_portal_row = None;
             });
         }
-        self.closing = None;
-        self.stop_scripts();
+        true
     }
 
     /// The window's notice of a lost connection, in place of the unsaved

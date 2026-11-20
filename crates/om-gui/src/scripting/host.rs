@@ -427,6 +427,11 @@ impl<'a> WorkerHost<'a> {
                 Some(_) => match self.jobs.recv_timeout(worker::CONNECTION_POLL) {
                     Ok(job) => job,
                     Err(std::sync::mpsc::RecvTimeoutError::Timeout) => {
+                        // A host's notice is read while the dialog waits:
+                        // a file the host disconnected is let go of.
+                        let provider = &mut ***self.provider.get_mut();
+                        self.s
+                            .host_messages_while_waiting(provider, self.files, self.responses);
                         if self.connection_lost() {
                             return None;
                         }

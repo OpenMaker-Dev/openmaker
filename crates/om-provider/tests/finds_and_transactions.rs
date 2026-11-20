@@ -205,6 +205,75 @@ fn a_host_message_is_taken_while_the_provider_is_idle() {
     );
 }
 
+/// A file the host disconnected is lost to that open of it only (#156):
+/// reopened on the host and opened again on the same connection, through
+/// another handle, it is a new open, not lost, and the host's second
+/// disconnect of it is released again.
+#[test]
+fn a_file_the_host_disconnected_and_reopened_opens_again_on_the_connection() {
+    use std::time::{Duration, Instant};
+    let file = file_with("forced-reopen", &[], |_| {});
+    let mut handle = None;
+    let (port, _) = host_with(&file.0, None, |server| {
+        handle = Some(server.handle().unwrap());
+        server
+    });
+    let handle = handle.unwrap();
+    let id = handle.files()[0].id;
+    let force = || {
+        handle
+            .close_file(
+                id,
+                &om_server::Notice {
+                    message: String::new(),
+                    grace: Duration::ZERO,
+                },
+            )
+            .unwrap();
+    };
+    let disconnected = |session: &mut om_session::Session| {
+        let deadline = Instant::now() + Duration::from_secs(5);
+        loop {
+            let taken = session.try_take_admin_messages().unwrap_or_default();
+            if taken.iter().any(|message| message.code == 0x0870) {
+                return;
+            }
+            assert!(Instant::now() < deadline, "no forced notice");
+            std::thread::sleep(Duration::from_millis(20));
+        }
+    };
+    let closed = || {
+        let deadline = Instant::now() + Duration::from_secs(5);
+        while handle.files()[0].status != om_server::FileStatus::Closed {
+            assert!(Instant::now() < deadline, "the file stays open");
+            std::thread::sleep(Duration::from_millis(20));
+        }
+    };
+    let mut first = raw_session(port);
+    // Keeps the connection, with no file open.
+    let mut second = first.share();
+    force();
+    disconnected(&mut first);
+    assert!(first.file_disconnected());
+    closed();
+
+    handle.open_file(id).unwrap();
+    second.open_file("127.0.0.1", FILE).unwrap();
+    let creation = second.fetch_internal_creation().unwrap();
+    let environment = LoginEnvironment::for_remote_file("127.0.0.1", FILE);
+    assert!(second
+        .login(ACCOUNT, PASSWORD, creation, &environment)
+        .unwrap()
+        .is_success());
+    assert!(!second.file_disconnected(), "a new open of the file");
+    assert!(first.file_disconnected(), "the first open stays lost");
+
+    force();
+    disconnected(&mut second);
+    assert!(second.file_disconnected());
+    closed();
+}
+
 /// A session of its own, for what the provider does not expose.
 fn raw_session(port: u16) -> om_session::Session {
     let client = rcgen::generate_simple_self_signed(vec!["OpenMaker".into()]).unwrap();
