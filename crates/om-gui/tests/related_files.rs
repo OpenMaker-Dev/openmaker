@@ -1421,10 +1421,11 @@ fn imported_layout_new_and_duplicate_menus_and_scripts_create_on_the_peer() {
         .accesskit_node()
         .value()
         .unwrap_or_default();
-    // No error; the found set as before. (Get ( RecordID ) after a reverted
-    // new record is #1292's.)
+    // No error; the found set as before, on a record that is there: the
+    // last one takes the reverted record's place (#307).
+    let parts: Vec<&str> = shown.split('|').collect();
     assert!(
-        shown.starts_with("0|Root|Notes|") && shown.ends_with("|6|6"),
+        shown.starts_with("0|Root|Notes|") && shown.ends_with("|6|6") && parts[3] != "0",
         "{shown}"
     );
     common::click(&mut app, "OK");
