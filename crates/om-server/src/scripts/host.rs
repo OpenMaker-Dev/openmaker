@@ -1163,7 +1163,13 @@ impl ServerHost {
             layout: index,
             occurrence,
             table,
-            found: self.all_records(table),
+            found: {
+                let mut found = self.all_records(table);
+                // Held as long as the window: no spare capacity, as the
+                // windows' budget counts it.
+                found.shrink_to_fit();
+                found
+            },
             current: 0,
             mode: Mode::Browse,
             browse_current: 0,
@@ -3341,6 +3347,8 @@ impl Navigation for ServerHost {
         if found.is_empty() {
             return Err(ErrorCode::RECORD_MISSING.into());
         }
+        let mut found = found;
+        found.shrink_to_fit();
         if let Some(window) = &request.new_window {
             self.open_window(window, Some(found.len()))?;
         }
@@ -4093,6 +4101,77 @@ impl ServerHost {
             })
     }
 
+    /// What refuses a new window, checked without changing anything: a
+    /// transaction (3), its layout (105 when gone), the window count and
+    /// the windows' budget (2) for the window as it will be, holding at
+    /// most `incoming` record ids when the step fills it, else its
+    /// layout's, else a copy of the current window, with its name (a
+    /// default name at its longest).
+    pub(super) fn check_new_window(
+        &self,
+        window: &NewWindow,
+        incoming: Option<usize>,
+    ) -> HostResult {
+        self.windows_may_change()?;
+        let destination = match window.layout {
+            Some(layout) => Some(
+                self.layout_index(&LayoutTarget::Key(layout))?
+                    .ok_or(ErrorCode::LAYOUT_MISSING)?,
+            ),
+            None => None,
+        };
+        let name = match window.name.as_ref().filter(|n| !n.is_empty()) {
+            Some(name) => name.len(),
+            // "<current> - n", n at most 20 digits.
+            None => self.window_name().len() + 23,
+        };
+        // The current window's data without its name, which it keeps;
+        // the copy holds the same, or its layout's or the step's records
+        // with the same Find state.
+        let current = window_data_bytes(self.window.as_ref(), [&self.requests, &self.last_find]);
+        let find_state = window_data_bytes(None, [&self.requests, &self.last_find]);
+        let records = |count: usize| {
+            count
+                .saturating_mul(size_of::<u64>())
+                .saturating_add(find_state)
+        };
+        let filled = match (incoming, destination) {
+            (Some(count), _) => records(count),
+            (None, Some(index)) => {
+                let same_table = self
+                    .window
+                    .as_ref()
+                    .zip(self.window_on_table(index))
+                    .is_some_and(|(w, table)| w.table == table);
+                if same_table {
+                    current
+                } else {
+                    self.window_on_table(index)
+                        .map_or(0, |table| records(self.table_record_count(table)))
+                }
+            }
+            (None, None) => current,
+        };
+        let bytes = self
+            .parked_window_data_bytes(None)
+            .saturating_add(self.current_window_data_bytes())
+            .saturating_add(filled.max(current))
+            .saturating_add(name);
+        if self.others.len() + 2 > MAX_WINDOWS || bytes > MAX_WINDOW_DATA_BYTES {
+            warn!(
+                "{:?}: a new window refused: the session's windows would hold too much",
+                self.hosted.name
+            );
+            return Err(ErrorCode(2).into());
+        }
+        Ok(())
+    }
+
+    /// How many records of `table` the session sees.
+    fn table_record_count(&self, table: u64) -> usize {
+        self.all_records(table).len()
+    }
+
     /// New Window, and the new window of Go to Related Record and Go to
     /// List of Records: a window showing what the current one shows, its
     /// layout, found set, record and mode, named as given, else after the
@@ -4107,14 +4186,7 @@ impl ServerHost {
         window: &NewWindow,
         incoming: Option<usize>,
     ) -> HostResult {
-        self.windows_may_change()?;
-        let destination = match window.layout {
-            Some(layout) => Some(
-                self.layout_index(&LayoutTarget::Key(layout))?
-                    .ok_or(ErrorCode::LAYOUT_MISSING)?,
-            ),
-            None => None,
-        };
+        self.check_new_window(window, incoming)?;
         let names = self.window_names();
         let name = window
             .name
@@ -4127,40 +4199,6 @@ impl ServerHost {
                     .find(|n| !names.contains(n))
                     .expect("a free name")
             });
-        // What the new window will hold: the current window's copy, or
-        // its destination layout's records, or what the step fills it
-        // with, and its name.
-        let current = self.current_window_data_bytes();
-        let records = |count: usize| count.saturating_mul(size_of::<u64>());
-        let filled = match (incoming, destination) {
-            (Some(count), _) => records(count),
-            (None, Some(index)) => {
-                let same_table = self
-                    .window
-                    .as_ref()
-                    .zip(self.window_on_table(index))
-                    .is_some_and(|(w, table)| w.table == table);
-                if same_table {
-                    current
-                } else {
-                    self.window_on_table(index)
-                        .map_or(0, |table| records(self.all_records(table).len()))
-                }
-            }
-            (None, None) => current,
-        };
-        let bytes = self
-            .parked_window_data_bytes(None)
-            .saturating_add(current)
-            .saturating_add(filled.max(current))
-            .saturating_add(name.len());
-        if self.others.len() + 2 > MAX_WINDOWS || bytes > MAX_WINDOW_DATA_BYTES {
-            warn!(
-                "{:?}: a new window refused: the session's windows would hold too much",
-                self.hosted.name
-            );
-            return Err(ErrorCode(2).into());
-        }
         self.leave()?;
         let copy = Parked {
             name: Some(name),

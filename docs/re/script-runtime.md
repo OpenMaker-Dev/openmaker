@@ -2987,8 +2987,11 @@ Server engine (11.3, 11.5)
   Record and Go to List of Records, resolve the destination layout (105,
   no window opened, when it is gone) and check the budget for the window
   as it will be (its layout's records, or the records the step fills it
-  with) before the current window's record is committed; the check after
-  the window is filled stays as a guard, closing it again. Set Window
+  with; for Go to Related Record, which finds its records only after the
+  open record is committed, every record of the related table) before the
+  current window's record is committed. Found sets are kept without spare
+  capacity, so the check counts what is held; the check after the window
+  is filled stays as a guard, closing it again. Set Window
   Title checks the budget for the new name. An active window can grow
   during ordinary script operations, as it can in a single-window
   session. Select Window checks whether it can park the active state
