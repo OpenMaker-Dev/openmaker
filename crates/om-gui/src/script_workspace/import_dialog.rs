@@ -268,10 +268,14 @@ impl ImportMapping {
         // A column shown for the first time takes its stored entry, as the
         // columns shown when the dialog opened do (an order matched by names
         // is mapped by name afterwards, `map_by_names`).
+        // After another target table was chosen here, the stored entries
+        // name the old table's fields: a column shown then has no target
+        // and counts as set here, as the others do (`set_table`).
         let shown = self.columns.len();
+        let same_table = (self.stored.as_ref()).is_none_or(|o| o.table == self.order.table);
         while self.map.len() < shown {
             let i = self.map.len();
-            let entry = self.order.map.get(i);
+            let entry = self.order.map.get(i).filter(|_| same_table);
             self.map.push(
                 entry
                     .filter(|e| matches!(e.mapping, Mapping::Import | Mapping::Match))
@@ -279,7 +283,7 @@ impl ImportMapping {
             );
             self.keys
                 .push(entry.is_some_and(|e| e.mapping == Mapping::Match));
-            self.touched.push(false);
+            self.touched.push(!same_table);
         }
         Ok(())
     }
@@ -1137,12 +1141,21 @@ mod tests {
             profile_ex: None,
             field_flags: None,
         };
-        let mut dialog = ImportMapping::open(parts, None).unwrap();
+        let mut dialog = ImportMapping::open(parts.clone(), None).unwrap();
         assert!(dialog.columns.len() < 3, "{:?}", dialog.columns);
         dialog.order.charset = ImportCharset::Utf8;
         dialog.reread().unwrap();
         assert_eq!(dialog.columns, ["a", "b", "c"]);
         assert_eq!(dialog.map[..3], [Some(1), Some(2), Some(3)]);
+        // After another table is chosen, a column shown then takes nothing
+        // of the old table's entries.
+        let mut dialog = ImportMapping::open(parts, None).unwrap();
+        dialog.set_table(0xd00003);
+        dialog.order.charset = ImportCharset::Utf8;
+        dialog.reread().unwrap();
+        assert_eq!(dialog.map[..3], [None, None, None]);
+        let (order, _, _) = dialog.answer();
+        assert!(order.map.iter().all(|e| e.mapping == Mapping::DontImport));
         std::fs::remove_dir_all(&dir).unwrap();
     }
 
