@@ -1760,7 +1760,8 @@ behavior was not observed (re/client-ui.md, Unknowns).
 **Placing a field.** The Field tool places an edit box with the operation
 `om-author`'s `place_field` uses (`DataProvider::place_layout_field`,
 `om_data::layout_placement`; [authoring](authoring.md), "Fields on
-layouts").
+layouts"). Saving a placed edit box adds it at the end of the layout's
+stored tab order.
 - **Fields sidebar.** Open Objects, then Fields to list the selected
   layout's own table's placeable fields. Search filters definitions, not
   already-placed objects. Drag a field onto the design surface to add a
