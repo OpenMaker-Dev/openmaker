@@ -3990,6 +3990,10 @@ impl DataProvider for NativeProvider {
         committed
     }
 
+    fn transaction_created(&self) -> Vec<(u64, i64)> {
+        self.held_new_records()
+    }
+
     fn revert_transaction(&mut self) -> Result<(), DataError> {
         self.discard_scalar_assets()?;
         if self.discard_unsettled(self.window) {
