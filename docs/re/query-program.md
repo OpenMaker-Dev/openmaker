@@ -864,8 +864,8 @@ probe gives them for these characters only. In the probe, whose keys are
 all whole, the primary weights of each word's key are those of the value
 key for the word's characters (all 11,487 word keys). A long value's key
 and each of its word keys are cut to 7.1's limit on their own, so a cut
-value key need not hold a later word's weights: `x`×100 `中`×10 keeps nine
-`中` in its value key and all ten in its word key
+value key need not hold a later word's weights: in English `x`×100
+`中`×10 keeps nine `中` in its value key and all ten in its word key
 ([catalogs/index-key-vectors.tsv](catalogs/index-key-vectors.tsv)). In System and
 Unicode standard a word's key is in their padded form, with its own `00 00`
 and the word's higher levels after it (`ab’cd` keeps the secondary weight
