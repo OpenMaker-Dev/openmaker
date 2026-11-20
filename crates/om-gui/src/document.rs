@@ -7737,11 +7737,13 @@ pub(crate) fn tinted_image(image: &om_layout::LibraryImage, tint: Option<Color32
 fn svg_root_content_offset(svg: &str) -> Option<usize> {
     use quick_xml::events::Event;
 
-    let mut reader = quick_xml::Reader::from_str(svg);
+    let xml = svg.strip_prefix('\u{feff}').unwrap_or(svg);
+    let prefix_len = svg.len() - xml.len();
+    let mut reader = quick_xml::Reader::from_str(xml);
     loop {
         match reader.read_event().ok()? {
             Event::Start(root) if root.local_name().as_ref() == b"svg" => {
-                return usize::try_from(reader.buffer_position()).ok();
+                return Some(prefix_len + usize::try_from(reader.buffer_position()).ok()?);
             }
             Event::Comment(_) | Event::Decl(_) | Event::PI(_) | Event::DocType(_) => {}
             Event::Text(text) if text.iter().all(u8::is_ascii_whitespace) => {}
@@ -8591,13 +8593,15 @@ mod tests {
 <!-- Example <svg -->
 <?example svg?>
 <svg xmlns="http://www.w3.org/2000/svg" width="8" height="8" data-example=">"><rect class="fm_fill" width="8" height="8"/></svg>"#;
-        let image = om_layout::LibraryImage {
-            format: om_layout::LibraryImageFormat::Svg,
-            data: data.to_vec(),
-        };
-        let tinted = tinted_image(&image, Some(Color32::RED));
-        let picture = crate::report::browse_svg(&tinted, [8, 8]).unwrap();
-        assert_eq!(&picture.rgba[..4], &[255, 0, 0, 255]);
+        for data in [data.to_vec(), [b"\xef\xbb\xbf".as_slice(), data].concat()] {
+            let image = om_layout::LibraryImage {
+                format: om_layout::LibraryImageFormat::Svg,
+                data,
+            };
+            let tinted = tinted_image(&image, Some(Color32::RED));
+            let picture = crate::report::browse_svg(&tinted, [8, 8]).unwrap();
+            assert_eq!(&picture.rgba[..4], &[255, 0, 0, 255]);
+        }
         assert!(crate::report::browse_svg(b"<svg>", [8, 8]).is_err());
     }
 
