@@ -4021,11 +4021,23 @@ fn container_fields_print_pictures_by_graphic_format_and_files_by_name() {
     let mut photo = field(40, 40, rect(12.0, 90.0, 100.0, 100.0));
     // Reduce or enlarge, keeping proportions, centered.
     photo.graphic_format = Some(om_layout::GraphicFormat(7));
-    layout.objects.objects.extend([
-        photo,
-        field(41, 41, rect(130.0, 90.0, 120.0, 80.0)),
-        field(42, 42, rect(270.0, 90.0, 60.0, 60.0)),
-    ]);
+    // A file's name prints in its field's faces, underlined included.
+    let mut notes = field(41, 41, rect(130.0, 90.0, 120.0, 80.0));
+    notes.rich_text = Some(om_layout::StyledText {
+        character_runs: vec![om_layout::StyledRun {
+            range: 0..0,
+            style: om_layout::CharacterStyle {
+                faces: Some(1024),
+                face_mask: Some(1024),
+                ..Default::default()
+            },
+        }],
+        ..Default::default()
+    });
+    layout
+        .objects
+        .objects
+        .extend([photo, notes, field(42, 42, rect(270.0, 90.0, 60.0, 60.0))]);
     layout.objects.root = layout.objects.objects.iter().map(|o| o.id).collect();
     let paper = om_layout::pagination::PageSize::for_layout(layout).unwrap();
     let report = crate::report::render_pdf_with(layout, 1, paper, &[], &mut Containers).unwrap();
@@ -4053,6 +4065,11 @@ fn container_fields_print_pictures_by_graphic_format_and_files_by_name() {
         .flat_map(|l| l.glyphs.iter().map(|g| g.2))
         .collect();
     assert_eq!(name, "notes.txt");
+    assert!(
+        file.text.iter().all(|line| line.underline),
+        "{:?}",
+        file.text
+    );
     assert_eq!(objects.iter().filter(|o| o.picture.is_some()).count(), 1);
     let raster = raster(&report.bytes, 0);
     let at = |x: f64, y: f64| raster.get_pixel(x as u32, y as u32).0;
@@ -4248,6 +4265,148 @@ fn character_runs_print_in_their_own_colors() {
             "Report object 1's character runs do not cover its text in order".to_owned()
         )
     );
+}
+
+/// Underlined and struck-through text prints with a stroke under, or
+/// through, its glyphs, from the line's start to its last that is not a
+/// space, at the bundled face's metrics (#106). Word and double underline
+/// still refuse with 3.
+#[test]
+fn underlined_and_struck_through_text_prints_its_strokes() {
+    let font =
+        ttf_parser::Face::parse(include_bytes!("../../assets/fonts/Inter-Regular.ttf"), 0).unwrap();
+    let unit = 12.0 / f64::from(font.units_per_em());
+    let advance = |text: &str| {
+        text.chars()
+            .map(|ch| {
+                f64::from(
+                    font.glyph_hor_advance(font.glyph_index(ch).unwrap())
+                        .unwrap(),
+                )
+            })
+            .sum::<f64>()
+            * unit
+    };
+    let masked = |faces: u16, mask: Option<u16>| {
+        let mut decorated = label(1, "Due now ", rect(12.0, 10.0, 300.0, 20.0), 12.0, false);
+        let run = &mut decorated.rich_text.as_mut().unwrap().character_runs[0].style;
+        run.faces = Some(faces);
+        run.face_mask = mask;
+        Layout {
+            def: Some(LayoutDef {
+                base_width: 540.0,
+                ..Default::default()
+            }),
+            parts: vec![Part {
+                part_type: 4,
+                height: 100.0,
+                ..Default::default()
+            }],
+            objects: ObjectStore {
+                root: vec![1],
+                objects: vec![decorated],
+                ..Default::default()
+            },
+            ..Default::default()
+        }
+    };
+    let layout = |faces: u16| masked(faces, Some(faces | 256));
+    let render = |layout: &Layout| {
+        let paper = om_layout::pagination::PageSize::for_layout(layout).unwrap();
+        crate::report::render_pdf(layout, 1, paper, &[], |o, _| {
+            Ok(o.text.clone().unwrap_or_default())
+        })
+        .map(|report| String::from_utf8_lossy(&report.bytes).into_owned())
+        .map_err(|e| (e.code, e.message))
+    };
+    // The filled rectangles of a page's content: (x, y, width, height).
+    let fills = |pdf: &str| {
+        let lines: Vec<&str> = pdf.lines().collect();
+        (lines.windows(2))
+            .filter(|w| w[0].ends_with(" re") && w[1] == "f")
+            .map(|w| {
+                let n: Vec<f64> = w[0]
+                    .split_whitespace()
+                    .filter_map(|n| n.parse().ok())
+                    .collect();
+                (n[0], n[1], n[2], n[3])
+            })
+            .collect::<Vec<_>>()
+    };
+    let plain = fills(&render(&layout(0)).unwrap());
+    for (faces, metrics) in [
+        (1024, font.underline_metrics().unwrap()),
+        (1, font.strikeout_metrics().unwrap()),
+    ] {
+        let pdf = render(&layout(faces)).unwrap();
+        let origin = text_origins(&pdf, 1, "Due now ");
+        assert_eq!(origin.len(), 1, "{faces}");
+        let (_, x, baseline) = origin[0];
+        let stroke: Vec<_> = fills(&pdf)
+            .into_iter()
+            .filter(|f| !plain.contains(f))
+            .collect();
+        assert_eq!(stroke.len(), 1, "{faces}: {stroke:?}");
+        let (left, bottom, width, height) = stroke[0];
+        let thickness = f64::from(metrics.thickness) * unit;
+        // The stroke's top is the metric's position above the baseline.
+        let top = baseline + f64::from(metrics.position) * unit;
+        assert!((left - x).abs() < 0.01, "{faces}: {stroke:?}");
+        assert!(
+            (width - advance("Due now")).abs() < 0.01,
+            "{faces}: {stroke:?}"
+        );
+        assert!((height - thickness).abs() < 0.01, "{faces}: {stroke:?}");
+        assert!((bottom + height - top).abs() < 0.01, "{faces}: {stroke:?}");
+    }
+    // A face the run's mask leaves out, or turns off, draws nothing; a run
+    // built without a mask sets every face it has.
+    let strokes = |layout: &Layout| {
+        let fills = fills(&render(layout).unwrap());
+        fills.into_iter().filter(|f| !plain.contains(f)).count()
+    };
+    assert_eq!(strokes(&masked(1024, Some(256))), 0);
+    assert_eq!(strokes(&masked(0, Some(1024))), 0);
+    assert_eq!(strokes(&masked(1024, None)), 1);
+    // A run underlined beside one that is not is a mixed style.
+    let mut mixed = layout(1024);
+    let rich = mixed.objects.objects[0].rich_text.as_mut().unwrap();
+    let mut off = rich.character_runs[0].clone();
+    off.style.faces = Some(0);
+    (rich.character_runs[0].range, off.range) = (0..4, 4..8);
+    rich.character_runs.push(off);
+    assert_eq!(
+        render(&mixed).unwrap_err(),
+        (3, "Mixed character styles are unsupported".to_owned())
+    );
+    // A glyph advance wider than a narrow label's text box keeps its stroke
+    // inside the box: an 8-point label, less its 1-point insets.
+    let mut narrow = layout(1024);
+    let object = &mut narrow.objects.objects[0];
+    object.bounds = Some(rect(12.0, 10.0, 8.0, 40.0));
+    object.text = Some("I".into());
+    let run = &mut object.rich_text.as_mut().unwrap().character_runs[0];
+    run.range = 0..1;
+    run.style.font_size = Some(24.0);
+    object.rich_text.as_mut().unwrap().text = "I".into();
+    object.rich_text.as_mut().unwrap().paragraph_runs[0].range = 0..1;
+    let (_, _, width, _) = (fills(&render(&narrow).unwrap()).into_iter())
+        .find(|f| !plain.contains(f))
+        .unwrap();
+    assert!(width <= 6.0 + 0.01, "{width}");
+    // Word underline (64) and double underline (128) are refused.
+    for faces in [64, 128] {
+        assert_eq!(
+            render(&layout(faces)).unwrap_err(),
+            (
+                3,
+                "Only regular, bold, italic, underlined and struck-through report text is \
+                 supported"
+                    .to_owned()
+            ),
+            "{faces}"
+        );
+    }
 }
 
 /// `{{PageNumber}}` prints each page's number, in a static label and in a
