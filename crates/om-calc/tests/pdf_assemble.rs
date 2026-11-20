@@ -131,8 +131,15 @@ fn selected_and_whole_imports_keep_pages_resources_and_streams() {
     assert_eq!(pdf_worker::find(&a, 3, "A1"), Ok(None));
     assert_eq!(pdf_worker::find(&a, 0, ""), Ok(None));
     let b = source_b();
-    let info = pdf_worker::info(&a).unwrap().unwrap();
-    assert_eq!((info.pages, info.optional_content_kept), (3, true));
+    // Not one OpenMaker wrote (no `MARKER`): its pages are imported, but it
+    // is not kept whole for an append.
+    let info = pdf_worker::info_whole(&a).unwrap().unwrap();
+    assert_eq!(
+        (info.pages, info.optional_content_kept, info.document_kept),
+        (3, true, Some(false))
+    );
+    // Not asked, the reply is the one a host that does not ask reads.
+    assert_eq!(pdf_worker::info(&a).unwrap().unwrap().document_kept, None);
     // Page 3 and page 1 of A, then all of B.
     let out = pdf_worker::assemble(&[&a, &b], &[(0, 2), (0, 0), (1, 0)])
         .unwrap()
@@ -140,6 +147,24 @@ fn selected_and_whole_imports_keep_pages_resources_and_streams() {
     assert_eq!(
         pdf_worker::text(&out).unwrap().as_deref(),
         Some("A3\rA1\rB1")
+    );
+    // What the assembler writes carries OpenMaker's mark and, without
+    // annotations, keeps all it holds when copied again (Save Records as
+    // PDF appends to it); with B's link it does not.
+    assert!(out.starts_with(&[b"%PDF-1.7\n%".as_slice(), pdf_worker::MARKER].concat()));
+    let pages_of_a = pdf_worker::assemble(&[&a], &[(0, 0), (0, 1)])
+        .unwrap()
+        .expect("a document");
+    assert_eq!(
+        pdf_worker::info_whole(&pages_of_a)
+            .unwrap()
+            .unwrap()
+            .document_kept,
+        Some(true)
+    );
+    assert_eq!(
+        pdf_worker::info_whole(&out).unwrap().unwrap().document_kept,
+        Some(false)
     );
     let parsed = Parsed::new(out.clone()).unwrap();
     let pages = parsed.pages();
@@ -269,10 +294,10 @@ fn what_does_not_read_or_names_a_missing_page_makes_nothing() {
     // groups are on.
     for off in [true, false] {
         let layered = layered(off);
-        let info = pdf_worker::info(&layered).unwrap().unwrap();
+        let info = pdf_worker::info_whole(&layered).unwrap().unwrap();
         assert_eq!(
-            (info.pages, info.optional_content_kept),
-            (1, false),
+            (info.pages, info.optional_content_kept, info.document_kept),
+            (1, false, Some(false)),
             "{off}"
         );
         assert_eq!(
@@ -284,6 +309,180 @@ fn what_does_not_read_or_names_a_missing_page_makes_nothing() {
     assert_eq!(pdf_worker::assemble(&[b"not a PDF"], &[(0, 0)]), Ok(None));
     assert_eq!(pdf_worker::assemble(&[&a], &[(0, 3)]), Ok(None));
     assert_eq!(pdf_worker::assemble(&[&a], &[(1, 0)]), Ok(None));
+}
+
+/// What a new document of a PDF's pages would leave behind makes it not
+/// kept whole (`Info::document_kept`, which appending asks for): document
+/// information of any kind, file identifiers and any trailer entry past
+/// `/Size` and `/Root`, however its name is written. Text that only spells
+/// such a name is not one.
+#[test]
+fn what_a_page_copy_leaves_behind_is_not_kept_whole() {
+    worker();
+    let whole = |pdf: &[u8]| {
+        pdf_worker::info_whole(pdf)
+            .unwrap()
+            .and_then(|info| info.document_kept)
+    };
+    let plain = |change: &dyn Fn(&mut Pdf)| {
+        let mut pdf = Pdf::new();
+        pdf.set_binary_marker(pdf_worker::MARKER);
+        pdf.catalog(Ref::new(1)).pages(Ref::new(2));
+        pdf.pages(Ref::new(2)).kids([Ref::new(3)]).count(1);
+        pdf.page(Ref::new(3))
+            .parent(Ref::new(2))
+            .media_box(R::new(0.0, 0.0, 200.0, 200.0))
+            .contents(Ref::new(4));
+        pdf.stream(Ref::new(4), &content("/Encrypt"));
+        change(&mut pdf);
+        pdf.finish()
+    };
+    assert_eq!(whole(&plain(&|_| {})), Some(true));
+    // The same PDF without OpenMaker's mark: another program's, whose
+    // every part no check here can vouch for.
+    let foreign = plain(&|pdf| pdf.set_binary_marker(b"\xe2\xe3\xcf\xd3"));
+    assert_eq!(whole(&foreign), Some(false));
+    // A page with annotations, whose strings a copy may not spell as they
+    // were.
+    let annotated = {
+        let mut pdf = Pdf::new();
+        pdf.set_binary_marker(pdf_worker::MARKER);
+        pdf.catalog(Ref::new(1)).pages(Ref::new(2));
+        pdf.pages(Ref::new(2)).kids([Ref::new(3)]).count(1);
+        pdf.page(Ref::new(3))
+            .parent(Ref::new(2))
+            .media_box(R::new(0.0, 0.0, 200.0, 200.0))
+            .annotations([Ref::new(4)]);
+        pdf.indirect(Ref::new(4))
+            .dict()
+            .pair(N(b"Type"), N(b"Annot"))
+            .pair(N(b"Subtype"), N(b"Text"));
+        pdf.finish()
+    };
+    assert_eq!(whole(&annotated), Some(false));
+    let custom = plain(&|pdf| {
+        pdf.document_info(Ref::new(9))
+            .pair(N(b"ProjectCode"), pdf_writer::TextStr("Q42"));
+    });
+    assert_eq!(whole(&custom), Some(false));
+    let identified = plain(&|pdf| {
+        pdf.set_file_id((b"first".to_vec(), b"second".to_vec()));
+    });
+    assert_eq!(whole(&identified), Some(false));
+    // An extra trailer key, an escaped one among them.
+    let bytes = plain(&|_| {});
+    for key in ["/Foo 1", "/F#6fo 1"] {
+        let at = bytes
+            .windows(b"/Root".len())
+            .rposition(|w| w == b"/Root")
+            .unwrap();
+        let mut extra = bytes[..at].to_vec();
+        extra.extend(format!("{key} ").bytes());
+        extra.extend(&bytes[at..]);
+        assert_eq!(whole(&extra), Some(false), "{key}");
+    }
+    // A comment that spells a trailer of its own before the real one, which
+    // has file identifiers.
+    let identified = plain(&|pdf| {
+        pdf.set_file_id((b"first".to_vec(), b"second".to_vec()));
+    });
+    let at = identified
+        .windows(b"trailer".len())
+        .rposition(|w| w == b"trailer")
+        .unwrap();
+    let mut masked = identified[..at].to_vec();
+    masked.extend(b"% trailer << /Size 5 /Root 1 0 R >>\n");
+    masked.extend(&identified[at..]);
+    assert_ne!(whole(&masked), Some(true));
+    // A page whose `/Parent` does not resolve, though the tree above it
+    // gives it its box: the copy, reading up its parents, would lose it.
+    let mut orphan = Pdf::new();
+    orphan.set_binary_marker(pdf_worker::MARKER);
+    orphan.catalog(Ref::new(1)).pages(Ref::new(2));
+    orphan
+        .pages(Ref::new(2))
+        .kids([Ref::new(3)])
+        .count(1)
+        .media_box(R::new(0.0, 0.0, 200.0, 250.0));
+    orphan.page(Ref::new(3)).parent(Ref::new(9));
+    assert_eq!(whole(&orphan.finish()), Some(false));
+    // A page whose own data refers to the page tree: the whole copy fails
+    // rather than write `null` there, where a page import does.
+    let private = {
+        let mut pdf = Pdf::new();
+        pdf.set_binary_marker(pdf_worker::MARKER);
+        pdf.catalog(Ref::new(1)).pages(Ref::new(2));
+        pdf.pages(Ref::new(2)).kids([Ref::new(3)]).count(1);
+        let mut page = pdf.page(Ref::new(3));
+        page.parent(Ref::new(2))
+            .media_box(R::new(0.0, 0.0, 200.0, 200.0));
+        page.pair(N(b"PieceInfo"), Ref::new(5));
+        page.finish();
+        pdf.indirect(Ref::new(5))
+            .dict()
+            .insert(N(b"App"))
+            .dict()
+            .pair(N(b"Tree"), Ref::new(2));
+        pdf.finish()
+    };
+    assert!(pdf_worker::assemble(&[&private], &[(0, 0)])
+        .unwrap()
+        .is_some());
+    assert_eq!(pdf_worker::assemble_whole(&[&private], &[(0, 0)]), Ok(None));
+    // A comment naming another revision's table: which revision a reader
+    // takes is no longer this table's alone.
+    let mut revised = plain(&|_| {});
+    revised.extend(b"% startxref 9\n");
+    assert_ne!(whole(&revised), Some(true));
+    // An inheritable attribute of the wrong type on a node, which readers
+    // pass over (inheriting the root's box) and the copy would write.
+    let mut typed = Pdf::new();
+    typed.set_binary_marker(pdf_worker::MARKER);
+    typed.catalog(Ref::new(1)).pages(Ref::new(2));
+    typed
+        .pages(Ref::new(2))
+        .kids([Ref::new(3)])
+        .count(1)
+        .media_box(R::new(0.0, 0.0, 200.0, 250.0));
+    let mut node = typed.indirect(Ref::new(3)).dict();
+    node.pair(N(b"Type"), N(b"Pages"));
+    node.pair(N(b"Parent"), Ref::new(2));
+    node.pair(N(b"Count"), 1);
+    node.insert(N(b"Kids")).array().item(Ref::new(4));
+    node.pair(N(b"MediaBox"), 5);
+    node.finish();
+    typed.page(Ref::new(4)).parent(Ref::new(3));
+    assert_eq!(whole(&typed.finish()), Some(false));
+    // A page-tree node with data of its own, which the new tree would not
+    // carry.
+    let mut noted = Pdf::new();
+    noted.set_binary_marker(pdf_worker::MARKER);
+    noted.catalog(Ref::new(1)).pages(Ref::new(2));
+    noted
+        .pages(Ref::new(2))
+        .kids([Ref::new(3)])
+        .count(1)
+        .pair(N(b"PieceInfo"), Ref::new(5));
+    noted
+        .page(Ref::new(3))
+        .parent(Ref::new(2))
+        .media_box(R::new(0.0, 0.0, 200.0, 200.0));
+    noted.indirect(Ref::new(5)).dict().pair(N(b"Private"), true);
+    assert_eq!(whole(&noted.finish()), Some(false));
+    // Whatever else the file holds, though nothing above names it (an
+    // object no page refers to), the whole copy finds object by object
+    // and refuses; a file with nothing else is copied whole.
+    let orphaned = plain(&|pdf| {
+        pdf.indirect(Ref::new(20)).dict().pair(N(b"Lost"), true);
+    });
+    assert_eq!(whole(&orphaned), Some(true));
+    assert_eq!(
+        pdf_worker::assemble_whole(&[&orphaned], &[(0, 0)]),
+        Ok(None)
+    );
+    assert!(pdf_worker::assemble_whole(&[&plain(&|_| {})], &[(0, 0)])
+        .unwrap()
+        .is_some());
 }
 
 /// Five pages whose `/Parent` is not their page tree but objects 10, 12,
@@ -601,7 +800,16 @@ fn a_page_written_on_keeps_its_content_and_gets_its_boxes() {
             .pair(N(b"Type"), N(b"Page"))
             .pair(N(b"Parent"), Ref::new(parent));
     }
-    let deep = pdf_worker::info(&deep.finish()).unwrap().unwrap();
+    let deep = deep.finish();
+    // A page copy would lose the deep page's box: appending refuses it.
+    assert_eq!(
+        pdf_worker::info_whole(&deep)
+            .unwrap()
+            .unwrap()
+            .document_kept,
+        Some(false)
+    );
+    let deep = pdf_worker::info(&deep).unwrap().unwrap();
     assert_eq!(deep.pages, 2);
     assert_eq!(
         deep.geometry(0).unwrap().boxes[BoxKind::Media as usize],

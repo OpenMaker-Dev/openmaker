@@ -3,8 +3,10 @@
 //! docs/plugins.md). Read in the PDF worker process only (`pdf_worker`),
 //! as every PDF is.
 //!
-//! Each page of the plan is copied with everything it refers to: its
-//! content, resources, fonts, images, annotations. Streams keep their
+//! Each page of the plan is copied with what it refers to: its content,
+//! resources, fonts, images, annotations (but see below for references to
+//! the catalog, the page tree and pages not copied, which a whole copy
+//! refuses). Streams keep their
 //! encoded bytes and filters (decrypted, if the source was encrypted with
 //! an empty password); numbers, strings and names are written as read. An
 //! object two pages share is copied once. A page's inherited attributes
@@ -37,7 +39,7 @@ use std::ops::Range;
 use std::sync::Arc;
 
 use hayro::hayro_interpret::hayro_syntax::object::{
-    Array, Dict, MaybeRef, Name, Number, Object, ObjectIdentifier,
+    Array, Dict, MaybeRef, Name, Number, Object, ObjectIdentifier, Rect,
 };
 use hayro::hayro_interpret::hayro_syntax::page::Rotation;
 use hayro::hayro_interpret::hayro_syntax::Pdf;
@@ -56,6 +58,12 @@ const MAX_PARENTS: usize = 64;
 /// The page attributes a page inherits from its ancestors.
 const INHERITED: [&[u8]; 4] = [b"Resources", b"MediaBox", b"CropBox", b"Rotate"];
 
+/// The four bytes of the binary-marker comment (PDF 1.7, 7.5.2) after the
+/// header of every PDF OpenMaker writes: its reports and the documents this
+/// assembler makes. Appending copies only a document that carries it
+/// ([`document_kept`]): one OpenMaker wrote, whose every part it knows.
+pub const MARKER: &[u8; 4] = b"\xcf\xcd\xcb\xb4";
+
 /// How many of a PDF's pages [`info`] describes.
 pub const INFO_PAGES: usize = 10_000;
 
@@ -70,9 +78,13 @@ pub struct PageGeometry {
 }
 
 /// A PDF's page count, whether [`assemble`] keeps how its pages look
-/// ([`optional_content_kept`]), and the geometry of its first
-/// [`INFO_PAGES`] pages; `None` for data that does not read.
-pub(super) fn info(data: Vec<u8>) -> Option<(u32, bool, Vec<PageGeometry>)> {
+/// ([`optional_content_kept`]), with `whole` whether it keeps everything
+/// else the document holds ([`document_kept`]), and the geometry of its
+/// first [`INFO_PAGES`] pages; `None` for data that does not read.
+pub(super) fn info(
+    data: Vec<u8>,
+    whole: bool,
+) -> Option<(u32, bool, Option<bool>, Vec<PageGeometry>)> {
     let pdf = Pdf::new(data).ok()?;
     let pages = pdf.pages();
     let count = u32::try_from(pages.len()).ok()?;
@@ -95,7 +107,12 @@ pub(super) fn info(data: Vec<u8>) -> Option<(u32, bool, Vec<PageGeometry>)> {
             }
         })
         .collect();
-    Some((count, optional_content_kept(&pdf), geometry))
+    Some((
+        count,
+        optional_content_kept(&pdf),
+        whole.then(|| document_kept(&pdf)),
+        geometry,
+    ))
 }
 
 /// Check only the selected source pages. The index prefix is bounded
@@ -265,6 +282,386 @@ pub(super) fn optional_content_kept(pdf: &Pdf) -> bool {
         .is_none_or(|catalog| !catalog.contains_key(b"OCProperties"))
 }
 
+/// Whether a new document of all of a document's pages ([`assemble`]) keeps
+/// all that it holds:
+/// - its catalog names nothing past its type and page tree (no outlines,
+///   interactive form, structure tree, names, page labels, metadata
+///   stream, open action, page mode or viewer preferences, which the page
+///   copy leaves behind);
+/// - its trailer names nothing the new trailer leaves out
+///   ([`trailer_kept`]: no document information, file identifiers or
+///   encryption);
+/// - hayro reads no document information from it either;
+/// - its page tree reads the same down its `/Kids` and up each page's
+///   `/Parent` links, within the [`MAX_PARENTS`] ancestors the copy reads
+///   inherited attributes from ([`tree_kept`]).
+///
+/// - and first of all, it is a PDF 1.7 OpenMaker wrote ([`MARKER`]): a
+///   PDF another program wrote, or rewrote, can hold what reading it and
+///   writing it again would change (how a reader repairs it, comments
+///   inside its references, how its strings are spelled), which no check
+///   here can rule out.
+///
+/// A document OpenMaker's reports or this assembler wrote, without
+/// annotations, keeps all; appending to a PDF refuses one that does not
+/// rather than drop what it holds.
+pub(super) fn document_kept(pdf: &Pdf) -> bool {
+    let mut header = b"%PDF-1.7\n%".to_vec();
+    header.extend(MARKER);
+    header.push(b'\n');
+    if !pdf.data().as_ref().starts_with(&header) {
+        return false;
+    }
+    let Some(catalog) = pdf.xref().get::<Dict<'_>>(pdf.xref().root_id()) else {
+        return false;
+    };
+    catalog
+        .keys()
+        .all(|key| matches!(key.as_ref(), b"Type" | b"Pages"))
+        && trailer_kept(pdf.data().as_ref())
+        && *pdf.metadata() == hayro::hayro_interpret::hayro_syntax::metadata::Metadata::default()
+        && tree_kept(pdf)
+}
+
+/// Whether the trailer of the cross-reference table the file's last
+/// `startxref` names holds only `/Size` and `/Root`, the entries the new
+/// document's trailer has (PDF 1.7, 7.5.5; an update's trailer repeats
+/// every entry, 7.5.6). The table is read entry by entry up to its
+/// `trailer` keyword, so no comment or other text stands in for it, and
+/// the trailer's keys are read as written, so an escaped name
+/// (`/Encr#79pt`) counts as another key. Anything else refuses: document
+/// information (`/Info`), file identifiers (`/ID`), encryption
+/// (`/Encrypt`), earlier revisions (`/Prev`), a hybrid file's
+/// cross-reference stream (`/XRefStm`), and a file whose cross-references
+/// are a stream, or whose table or trailer does not read.
+fn trailer_kept(data: &[u8]) -> bool {
+    table(data).is_some_and(|table| table.kept)
+}
+
+/// A file's one cross-reference table, as [`trailer_kept`] reads it.
+struct Table {
+    /// Whether its trailer holds only `/Size` and `/Root`, and the file
+    /// has only this one revision.
+    kept: bool,
+    /// The objects it lists in use (`n`), at most [`MAX_OBJECTS`].
+    in_use: Vec<ObjectIdentifier>,
+}
+
+/// The file's cross-reference table and trailer, read entry by entry from
+/// where `startxref` names; `None` when they do not read. The file must
+/// spell `startxref` and `trailer` once each: a file with more (another
+/// revision, or a comment naming an older table) is not kept, as which
+/// revision a reader takes is then not this table's alone.
+fn table(data: &[u8]) -> Option<Table> {
+    const STARTXREF: &[u8] = b"startxref";
+    let count = |word: &[u8]| data.windows(word.len()).filter(|w| *w == word).count();
+    let single = count(STARTXREF) == 1 && count(b"trailer") == 1;
+    let end = data
+        .windows(STARTXREF.len())
+        .rposition(|w| w == STARTXREF)?;
+    let mut at = end + STARTXREF.len();
+    let offset = integer(token(data, &mut at)?)?;
+    // Only what comes before `startxref` is the table and its trailer.
+    let data = data.get(..end)?;
+    let mut at = usize::try_from(offset).ok()?;
+    if token(data, &mut at)? != b"xref" {
+        return Some(Table {
+            kept: false,
+            in_use: Vec::new(),
+        });
+    }
+    let mut in_use = Vec::new();
+    loop {
+        let word = token(data, &mut at)?;
+        if word == b"trailer" {
+            break;
+        }
+        let first = integer(word)?;
+        let count = integer(token(data, &mut at)?)?;
+        // Each entry is an offset, a generation and `n` or `f`; the data
+        // ends the loop whatever the count says.
+        for number in first.. {
+            if number >= first.saturating_add(count) {
+                break;
+            }
+            integer(token(data, &mut at)?)?;
+            let generation = integer(token(data, &mut at)?)?;
+            match token(data, &mut at)? {
+                b"n" => {
+                    if in_use.len() >= MAX_OBJECTS as usize {
+                        return None;
+                    }
+                    in_use.push(ObjectIdentifier::new(
+                        i32::try_from(number).ok()?,
+                        i32::try_from(generation).ok()?,
+                    ));
+                }
+                b"f" => {}
+                _ => return None,
+            }
+        }
+    }
+    let mut root = false;
+    let kept = dictionary(data, &mut at, 0, &mut |key| {
+        root |= key == b"Root";
+        matches!(key, b"Size" | b"Root")
+    })?;
+    Some(Table {
+        kept: kept && root && single,
+        in_use,
+    })
+}
+
+/// The non-negative integer `word` spells.
+fn integer(word: &[u8]) -> Option<u64> {
+    if word.is_empty() || !word.iter().all(u8::is_ascii_digit) {
+        return None;
+    }
+    std::str::from_utf8(word).ok()?.parse().ok()
+}
+
+/// PDF white space (PDF 1.7, 7.2.2) and comments from `at`.
+fn skip_space(data: &[u8], at: &mut usize) {
+    while let Some(&byte) = data.get(*at) {
+        match byte {
+            b'\0' | b'\t' | b'\n' | b'\x0c' | b'\r' | b' ' => *at += 1,
+            b'%' => {
+                while data.get(*at).is_some_and(|&b| b != b'\n' && b != b'\r') {
+                    *at += 1;
+                }
+            }
+            _ => return,
+        }
+    }
+}
+
+/// Whether `byte` ends a name, number or keyword (white space or a
+/// delimiter, PDF 1.7, 7.2.2).
+fn ends_token(byte: u8) -> bool {
+    matches!(
+        byte,
+        b'\0'
+            | b'\t'
+            | b'\n'
+            | b'\x0c'
+            | b'\r'
+            | b' '
+            | b'('
+            | b')'
+            | b'<'
+            | b'>'
+            | b'['
+            | b']'
+            | b'{'
+            | b'}'
+            | b'/'
+            | b'%'
+    )
+}
+
+/// The name, number or keyword at `at` (after white space), as written;
+/// `None` at the end of the data or a delimiter.
+fn token<'d>(data: &'d [u8], at: &mut usize) -> Option<&'d [u8]> {
+    skip_space(data, at);
+    let start = *at;
+    while data.get(*at).is_some_and(|&b| !ends_token(b)) {
+        *at += 1;
+    }
+    data.get(start..*at).filter(|word| !word.is_empty())
+}
+
+/// Reads the dictionary at `at` (after white space), giving `key` each of
+/// its keys as written and skipping each value ([`skip_value`]): `false`
+/// at the first key `key` refuses, `None` when it does not read or nests
+/// deeper than [`MAX_DEPTH`]. Nothing read is kept.
+fn dictionary(
+    data: &[u8],
+    at: &mut usize,
+    depth: usize,
+    key: &mut dyn FnMut(&[u8]) -> bool,
+) -> Option<bool> {
+    skip_space(data, at);
+    if depth > MAX_DEPTH || !data.get(*at..)?.starts_with(b"<<") {
+        return None;
+    }
+    *at += 2;
+    loop {
+        skip_space(data, at);
+        let rest = data.get(*at..)?;
+        if rest.starts_with(b">>") {
+            *at += 2;
+            return Some(true);
+        }
+        if !rest.starts_with(b"/") {
+            return None;
+        }
+        *at += 1;
+        // An empty name (`/` alone) is a key too.
+        let start = *at;
+        while data.get(*at).is_some_and(|&b| !ends_token(b)) {
+            *at += 1;
+        }
+        if !key(data.get(start..*at)?) {
+            return Some(false);
+        }
+        skip_value(data, at, depth + 1)?;
+    }
+}
+
+/// Moves `at` past the object written there (after white space): a
+/// dictionary, array, string, name, or a number, keyword or reference
+/// (`12 0 R`).
+fn skip_value(data: &[u8], at: &mut usize, depth: usize) -> Option<()> {
+    skip_space(data, at);
+    if depth > MAX_DEPTH {
+        return None;
+    }
+    match *data.get(*at)? {
+        b'<' if data.get(*at + 1) == Some(&b'<') => {
+            dictionary(data, at, depth, &mut |_| true).map(drop)
+        }
+        b'<' => {
+            *at += data.get(*at..)?.iter().position(|&b| b == b'>')? + 1;
+            Some(())
+        }
+        b'[' => {
+            *at += 1;
+            loop {
+                skip_space(data, at);
+                if *data.get(*at)? == b']' {
+                    *at += 1;
+                    return Some(());
+                }
+                skip_value(data, at, depth + 1)?;
+            }
+        }
+        b'(' => {
+            let mut open = 0usize;
+            loop {
+                match *data.get(*at)? {
+                    b'\\' => *at += 1,
+                    b'(' => open += 1,
+                    b')' => {
+                        open = open.checked_sub(1)?;
+                        if open == 0 {
+                            *at += 1;
+                            return Some(());
+                        }
+                    }
+                    _ => {}
+                }
+                *at += 1;
+            }
+        }
+        b'/' => {
+            *at += 1;
+            while data.get(*at).is_some_and(|&b| !ends_token(b)) {
+                *at += 1;
+            }
+            Some(())
+        }
+        _ => {
+            let first = token(data, at)?;
+            // A reference: two integers and `R`.
+            if integer(first).is_some() {
+                let mut ahead = *at;
+                if token(data, &mut ahead).is_some_and(|g| integer(g).is_some())
+                    && token(data, &mut ahead) == Some(b"R")
+                {
+                    *at = ahead;
+                }
+            }
+            Some(())
+        }
+    }
+}
+
+/// Whether the page tree read down its `/Kids` is the one read up its
+/// `/Parent` links, within reach of the copy ([`page_tree`]).
+fn tree_kept(pdf: &Pdf) -> bool {
+    page_tree(pdf).is_some()
+}
+
+/// The page tree's nodes (not its pages), when the tree read down its
+/// `/Kids` is the one read up its `/Parent` links, within reach of the copy
+/// and wholly understood by it:
+/// - from the catalog's `/Pages`, each node and page is reached once, by
+///   reference, names as its `/Parent` the node whose `/Kids` lists it (the
+///   root none), is a `Pages` node or a `Page`, and is at most
+///   [`MAX_PARENTS`] levels down; and these are all the pages the document
+///   reads as. Readers find a page's inherited attributes down the tree,
+///   the copy up its parents (`Copier::inherited`): only where both agree
+///   does it keep them;
+/// - an inheritable attribute, on a node or a page, is of its type (a
+///   dictionary of resources, a rectangle, an integer) or `null`: readers
+///   pass over one that is not, which the copy would write on the page;
+/// - a node holds nothing but its tree (not even what its pages inherit,
+///   which the copy writes on each page and so would drop where every page
+///   has its own): the new document has a page tree of its own, so
+///   anything else a node held would be left behind;
+/// - a page has no annotations, whose strings a copy may not spell as
+///   they were.
+///
+/// `None` otherwise.
+fn page_tree(pdf: &Pdf) -> Option<std::collections::HashSet<ObjectIdentifier>> {
+    let xref = pdf.xref();
+    let catalog = xref.get::<Dict<'_>>(xref.root_id())?;
+    let Some(MaybeRef::Ref(root)) = catalog.get_raw::<Object<'_>>(b"Pages") else {
+        return None;
+    };
+    let mut seen = std::collections::HashSet::new();
+    let mut nodes = std::collections::HashSet::new();
+    let mut pages = 0usize;
+    let mut stack = vec![(ObjectIdentifier::from(root), None, 0usize)];
+    while let Some((id, parent, depth)) = stack.pop() {
+        if depth > MAX_PARENTS || !seen.insert(id) {
+            return None;
+        }
+        let node = xref.get::<Dict<'_>>(id)?;
+        let linked = match (parent, node.get_raw::<Object<'_>>(b"Parent")) {
+            (None, None) => true,
+            (Some(parent), Some(MaybeRef::Ref(reference))) => {
+                ObjectIdentifier::from(reference) == parent
+            }
+            _ => false,
+        };
+        let typed = INHERITED
+            .iter()
+            .all(|key| match node.get::<Object<'_>>(key) {
+                None | Some(Object::Null(_)) => true,
+                Some(_) => match *key {
+                    b"Resources" => node.get::<Dict<'_>>(key).is_some(),
+                    b"Rotate" => node.get::<i32>(key).is_some(),
+                    _ => node.get::<Rect>(key).is_some(),
+                },
+            });
+        if !linked || !typed {
+            return None;
+        }
+        match node.get::<Name<'_>>(b"Type").as_deref() {
+            Some(b"Pages") => {
+                let understood = node
+                    .keys()
+                    .all(|key| matches!(key.as_ref(), b"Type" | b"Kids" | b"Count" | b"Parent"));
+                if !understood {
+                    return None;
+                }
+                let kids = node.get::<Array<'_>>(b"Kids")?;
+                for kid in kids.raw_iter() {
+                    let MaybeRef::Ref(kid) = kid else {
+                        return None;
+                    };
+                    stack.push((ObjectIdentifier::from(kid), Some(id), depth + 1));
+                }
+                nodes.insert(id);
+            }
+            Some(b"Page") if !node.contains_key(b"Annots") => pages += 1,
+            _ => return None,
+        }
+    }
+    (pages == pdf.pages().len()).then_some(nodes)
+}
+
 /// A page box a page may set.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum BoxKind {
@@ -329,9 +726,22 @@ pub fn bundle(
     actions: &[String],
     links: &[Link],
     highlights: &[Highlight],
-) -> Vec<u8> {
-    let size = sources.iter().map(|s| s.len() + 8).sum::<usize>() + plan.len() * 20 + 8;
-    let mut out = Vec::with_capacity(size);
+    max: u64,
+) -> Option<Vec<u8>> {
+    // The exact size, counted before the sources are copied: no request
+    // past `max` is built.
+    let mut form = Vec::new();
+    pdf_form::encode(fields, actions, links, highlights, &mut form);
+    let size = (sources.iter().map(|s| s.len() as u64 + 8))
+        .chain(
+            plan.iter()
+                .map(|page| 17 + 33 * page.boxes.len().min(BoxKind::ALL.len()) as u64),
+        )
+        .fold(8 + form.len() as u64, u64::saturating_add);
+    if size > max {
+        return None;
+    }
+    let mut out = Vec::with_capacity(usize::try_from(size).ok()?);
     out.extend((sources.len() as u32).to_be_bytes());
     for source in sources {
         out.extend((source.len() as u64).to_be_bytes());
@@ -352,8 +762,8 @@ pub fn bundle(
             }
         }
     }
-    pdf_form::encode(fields, actions, links, highlights, &mut out);
-    out
+    out.extend(form);
+    Some(out)
 }
 
 /// A part of the request's buffer, read as one source without a copy.
@@ -442,12 +852,21 @@ fn unbundle(data: Vec<u8>) -> Option<Request> {
 
 /// The new PDF a [`bundle`] asks for; `None` when a source does not read,
 /// the plan names a page no source has, or the copy passes the limits.
-pub(super) fn assemble(data: Vec<u8>) -> Option<Vec<u8>> {
+/// With `whole`, also `None` rather than write `null` for a reference to
+/// an object that exists (the catalog, a page-tree node or a page not
+/// copied): appending to a PDF keeps all of it or nothing.
+pub(super) fn assemble(data: Vec<u8>, whole: bool) -> Option<Vec<u8>> {
     let (parts, plan, fields, actions, links, highlights) = unbundle(data)?;
     let pdfs = parts
         .into_iter()
         .map(|part| Pdf::new(Arc::new(part)).ok())
         .collect::<Option<Vec<_>>>()?;
+    // A whole copy is of documents whose every part it keeps: checked here
+    // as `info` checks it, and again, object by object, once the pages are
+    // copied (`Copier::accounted`).
+    if whole && !pdfs.iter().all(document_kept) {
+        return None;
+    }
     for planned in &plan {
         let pdf = pdfs.get(planned.source as usize)?;
         let page = pdf.pages().get(planned.page as usize)?;
@@ -490,7 +909,7 @@ pub(super) fn assemble(data: Vec<u8>) -> Option<Vec<u8>> {
             return None;
         }
     }
-    Copier::new(&pdfs, &plan)?.finish(&plan, &fields, &actions, &links, &highlights)
+    Copier::new(&pdfs, &plan, whole)?.finish(&plan, &fields, &actions, &links, &highlights)
 }
 
 /// A source object: its document and its identifier there.
@@ -513,6 +932,9 @@ struct Copier<'p> {
     /// reading it again for each page would cost its long `/Kids` array
     /// each time. Only nodes that read are kept ([`Copier::parent`]).
     nodes: HashMap<Key, Dict<'p>>,
+    /// A reference to an object that exists but is not copied fails the
+    /// copy instead of becoming `null` ([`assemble`]'s `whole`).
+    whole: bool,
 }
 
 /// The new document's catalog and page tree; the pages follow.
@@ -521,7 +943,7 @@ const PAGE_TREE: u32 = 2;
 const FIRST_PAGE: u32 = 3;
 
 impl<'p> Copier<'p> {
-    fn new(pdfs: &'p [Pdf], plan: &[Planned]) -> Option<Self> {
+    fn new(pdfs: &'p [Pdf], plan: &[Planned], whole: bool) -> Option<Self> {
         let first_free = FIRST_PAGE.checked_add(u32::try_from(plan.len()).ok()?)?;
         let mut pages = HashMap::new();
         for (index, planned) in plan.iter().enumerate() {
@@ -534,7 +956,9 @@ impl<'p> Copier<'p> {
         }
         let mut out = Vec::new();
         // A comment of bytes above 127 marks the file as binary.
-        out.extend(b"%PDF-1.7\n%\xe2\xe3\xcf\xd3\n");
+        out.extend(b"%PDF-1.7\n%");
+        out.extend(MARKER);
+        out.push(b'\n');
         Some(Copier {
             pdfs,
             ids: HashMap::new(),
@@ -544,6 +968,7 @@ impl<'p> Copier<'p> {
             out,
             offsets: vec![0; first_free as usize],
             nodes: HashMap::new(),
+            whole,
         })
     }
 
@@ -712,6 +1137,9 @@ impl<'p> Copier<'p> {
                 None => self.object(number, b"null", None),
             }
         }
+        if self.whole && !self.accounted() {
+            return None;
+        }
         let kids = (0..plan.len())
             .map(|index| format!("{} 0 R", FIRST_PAGE + index as u32))
             .collect::<Vec<_>>()
@@ -734,6 +1162,28 @@ impl<'p> Copier<'p> {
             "trailer\n<< /Size {size} /Root {CATALOG} 0 R >>\nstartxref\n{xref}\n%%EOF\n"
         );
         Some(self.out)
+    }
+
+    /// Whether every object each source's cross-reference table lists in
+    /// use is kept: copied, a copied page, a node of its page tree (whose
+    /// every entry the new tree and pages carry, [`page_tree`]) or its
+    /// catalog (whose every entry the new catalog carries,
+    /// [`document_kept`]). What a whole copy would otherwise leave behind,
+    /// however the document refers to it, if at all, is found here.
+    fn accounted(&self) -> bool {
+        self.pdfs.iter().enumerate().all(|(source, pdf)| {
+            let (Some(table), Some(nodes)) = (table(pdf.data().as_ref()), page_tree(pdf)) else {
+                return false;
+            };
+            let root = pdf.xref().root_id();
+            table.in_use.iter().all(|&id| {
+                let key = (source, id);
+                id == root
+                    || nodes.contains(&id)
+                    || self.pages.contains_key(&key)
+                    || self.ids.get(&key).is_some_and(Option::is_some)
+            })
+        })
     }
 
     /// The value `key` page `page` of `source` inherits from the nearest of
@@ -1141,13 +1591,19 @@ impl<'p> Copier<'p> {
             return Some(*known);
         }
         let pdf = &self.pdfs[source];
+        let object = pdf.xref().get::<Object<'_>>(id);
         let skipped = id == pdf.xref().root_id()
-            || match pdf.xref().get::<Object<'_>>(id) {
-                Some(Object::Dict(dict)) => page_tree_node(&dict),
+            || match &object {
+                Some(Object::Dict(dict)) => page_tree_node(dict),
                 Some(Object::Stream(stream)) => page_tree_node(stream.dict()),
                 Some(_) => false,
                 None => true,
             };
+        // A reference to an object that does not exist is `null` as read
+        // (PDF 1.7, 7.3.10); one to an object left behind is a loss.
+        if skipped && self.whole && object.is_some() {
+            return None;
+        }
         let number = if skipped {
             None
         } else {
@@ -1213,5 +1669,50 @@ impl std::fmt::Write for Writer<'_> {
     fn write_str(&mut self, s: &str) -> std::fmt::Result {
         self.0.extend(s.as_bytes());
         Ok(())
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::trailer_kept;
+
+    /// A trailer is read from the cross-reference table `startxref` names,
+    /// entry by entry, and kept only with `/Size` and `/Root`: a comment
+    /// spelling another trailer stands in for nothing, any other key
+    /// (escaped or not) refuses, values of any kind are skipped, and a
+    /// footer or table that does not read refuses without a panic.
+    #[test]
+    fn trailers_are_read_from_their_table() {
+        let file = |trailer: &str| {
+            format!(
+                "%PDF-1.7\nxref\n0 2\n0000000000 65535 f \n0000000009 00000 n \n\
+                 {trailer}\nstartxref\n9\n%%EOF\n"
+            )
+            .into_bytes()
+        };
+        assert!(trailer_kept(&file("trailer\n<< /Size 2 /Root 1 0 R >>")));
+        assert!(trailer_kept(&file(
+            "trailer % a comment\n<< /Size 2 /Root << /A (x\\) y) /B [1 [2] <00>] >> >>"
+        )));
+        for trailer in [
+            "% trailer << /Size 2 /Root 1 0 R >>\ntrailer\n<< /Size 2 /Root 1 0 R /ID [<01> <02>] >>",
+            "trailer\n<< /Size 2 /Root 1 0 R /Encr#79pt 3 0 R >>",
+            "trailer\n<< /Size 2 /Root 1 0 R /Info 4 0 R >>",
+            "trailer\n<< /Size 2 >>",
+            "trailer\n<< /Size 2 /Root 1 0 R",
+        ] {
+            assert!(!trailer_kept(&file(trailer)), "{trailer}");
+        }
+        let deep = format!("trailer\n<< /Size {} >>", "[".repeat(10_000));
+        assert!(!trailer_kept(&file(&deep)));
+        for footer in [
+            &b"startxref 0"[..],
+            b"xref % startxref\nstartxref\n0",
+            b"%PDF\nxref\n0 1\nstartxref\n5",
+            b"startxref\n99999999999999999999999",
+            b"",
+        ] {
+            assert!(!trailer_kept(footer));
+        }
     }
 }

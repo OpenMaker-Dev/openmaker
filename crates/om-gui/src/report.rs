@@ -3962,6 +3962,8 @@ pub fn render_pdf_viewed(
 ) -> Result<PdfReport, ReportError> {
     let plan = plan_report_with(layout, records, paper, breaks, content)?;
     let mut pdf = Pdf::new();
+    // OpenMaker's mark, which appending to a PDF looks for (`pdf_worker::MARKER`).
+    pdf.set_binary_marker(om_data::calc::functions::pdf_worker::MARKER);
     let root = Ref::new(1);
     let pages = Ref::new(2);
     let mut catalog = pdf.catalog(root);
@@ -4130,6 +4132,48 @@ pub fn save_pdf(path: &Path, bytes: &[u8]) -> std::io::Result<()> {
     replace_file(path, bytes)
 }
 
+/// What [`save_pdf_if`] expects at its path when it puts the new file
+/// there.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) enum Expected<'a> {
+    /// No file: one that appeared meanwhile is kept, and the save fails.
+    Absent,
+    /// The file as it was read, these bytes: one that holds anything else
+    /// is kept, and the save fails.
+    Read(&'a [u8]),
+}
+
+/// Whether the file at `path` holds exactly `bytes`, read in pieces and
+/// stopped at the first difference.
+fn file_holds(path: &Path, bytes: &[u8]) -> std::io::Result<bool> {
+    use std::io::Read as _;
+    let mut file = std::fs::File::open(path)?;
+    let mut piece = vec![0; 1 << 16];
+    let mut at = 0;
+    loop {
+        let read = file.read(&mut piece)?;
+        if read == 0 {
+            return Ok(at == bytes.len());
+        }
+        if bytes.get(at..at + read) != Some(&piece[..read]) {
+            return Ok(false);
+        }
+        at += read;
+    }
+}
+
+/// [`save_pdf`], only over what `expected` names (any file without it).
+/// The check is made just before the staged file is put in place; no
+/// rename compares and replaces at once, so another program that writes
+/// the file in that instant can still lose its change.
+pub(crate) fn save_pdf_if(
+    path: &Path,
+    bytes: &[u8],
+    expected: Option<&Expected<'_>>,
+) -> std::io::Result<()> {
+    replace_file_if(path, bytes, expected)
+}
+
 /// Write `bytes` to `path` as [`save_pdf`] does: staged beside it, then
 /// renamed over it only once complete (Export Field Contents too). The
 /// file gets a new file's permissions (the user's umask applies, not a
@@ -4137,6 +4181,15 @@ pub fn save_pdf(path: &Path, bytes: &[u8]) -> std::io::Result<()> {
 /// and until the staged file has them it stays owner-only, so a private
 /// file's new contents are never readable by others on the way.
 pub(crate) fn replace_file(path: &Path, bytes: &[u8]) -> std::io::Result<()> {
+    replace_file_if(path, bytes, None)
+}
+
+/// [`replace_file`], put in place only as [`save_pdf_if`] says.
+fn replace_file_if(
+    path: &Path,
+    bytes: &[u8],
+    expected: Option<&Expected<'_>>,
+) -> std::io::Result<()> {
     let existing = std::fs::metadata(path)
         .ok()
         .filter(std::fs::Metadata::is_file)
@@ -4158,8 +4211,19 @@ pub(crate) fn replace_file(path: &Path, bytes: &[u8]) -> std::io::Result<()> {
     if let Some(permissions) = existing {
         temp.as_file().set_permissions(permissions)?;
     }
-    temp.persist(path).map_err(|e| e.error)?;
-    Ok(())
+    match expected {
+        None => temp.persist(path).map(drop).map_err(|e| e.error),
+        // Linked or renamed in only where nothing is.
+        Some(Expected::Absent) => temp.persist_noclobber(path).map(drop).map_err(|e| e.error),
+        Some(Expected::Read(bytes)) => {
+            if !file_holds(path, bytes)? {
+                return Err(std::io::Error::other(
+                    "the file changed while it was being appended to; it was left as it is",
+                ));
+            }
+            temp.persist(path).map(drop).map_err(|e| e.error)
+        }
+    }
 }
 
 /// The definition of a field a report shows, or why the report refuses it
@@ -4258,6 +4322,25 @@ pub(crate) mod tests {
     //! Anonymous synthetic pictures, generated here, and the pixels both
     //! backends must show for them.
     use super::*;
+
+    /// A conditional save (an append's) puts its file in place only over
+    /// the file it read, or where there is none, and otherwise keeps what
+    /// is there and leaves no staged file behind.
+    #[test]
+    fn a_conditional_save_keeps_a_file_that_changed_or_appeared() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("out.pdf");
+        save_pdf_if(&path, b"one", Some(&Expected::Absent)).unwrap();
+        assert!(save_pdf_if(&path, b"two", Some(&Expected::Absent)).is_err());
+        assert_eq!(std::fs::read(&path).unwrap(), b"one");
+        // Replaced by other bytes of the same size: still a change.
+        std::fs::write(&path, b"won").unwrap();
+        assert!(save_pdf_if(&path, b"three", Some(&Expected::Read(b"one"))).is_err());
+        assert_eq!(std::fs::read(&path).unwrap(), b"won");
+        save_pdf_if(&path, b"four", Some(&Expected::Read(b"won"))).unwrap();
+        assert_eq!(std::fs::read(&path).unwrap(), b"four");
+        assert_eq!(std::fs::read_dir(dir.path()).unwrap().count(), 1);
+    }
     use om_layout::pagination::Placement;
     use om_layout::{GraphicObject, ObjectStyle, Property, StyleSet};
 
