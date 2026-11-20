@@ -1669,6 +1669,59 @@ impl Runtime {
                 let value = host.execute_data_api(&request);
                 return self.result_to_target(host, step, value, select_all);
             }
+            63 => {
+                // Slots of script-steps.md 12.3: To, CC, BCC, Subject and
+                // Message calculations 0-4, Collect `[00 0..2, 03]`, one
+                // per record `[00 3, 03]`, SMTP `[00 4, 03]`, OAuth
+                // `[00 7, 03]`, attachments `[00 0, 82]`.
+                // A stored option or attachment list OpenMaker cannot read
+                // is 3: read as absent, it could turn SMTP into the client
+                // or drop an attachment, a different message than the step
+                // describes.
+                let stored = |slot: u16, key: u8| {
+                    step.data
+                        .as_ref()
+                        .and_then(|d| d.slot(slot))
+                        .and_then(|s| s.child(key))
+                        .is_some()
+                };
+                let mut on = [false; 8];
+                for slot in [0u16, 1, 2, 3, 4, 7] {
+                    match step.number(slot) {
+                        Some(n) => on[usize::from(slot)] = n != 0,
+                        None if stored(slot, 0x03) => return Exec::error(ErrorCode::UNAVAILABLE),
+                        None => {}
+                    }
+                }
+                let attached =
+                    step.has_flag(flag::FILE_PATH) || stored(0, crate::StepData::PATH_STRING);
+                let attachments = match path_list(step) {
+                    Some(list) => list,
+                    None if attached => return Exec::error(ErrorCode::UNAVAILABLE),
+                    None => String::new(),
+                };
+                let via = if on[7] {
+                    MailVia::OAuth
+                } else if on[4] {
+                    MailVia::Smtp
+                } else {
+                    MailVia::Client
+                };
+                let mut text = |slot| self.slot_text(host, step, slot).unwrap_or_default();
+                let (to, cc, bcc, subject, message) = (text(0), text(1), text(2), text(3), text(4));
+                host.send_mail(&Mail {
+                    via,
+                    to,
+                    cc,
+                    bcc,
+                    subject,
+                    message,
+                    collect: [on[0], on[1], on[2]],
+                    one_per_record: on[3],
+                    attachments,
+                    with_dialog: dialog,
+                })
+            }
             // Accounts
             134 | 135 | 136 | 137 | 83 | 138 => {
                 let first = self.slot_text(host, step, 0).unwrap_or_default();

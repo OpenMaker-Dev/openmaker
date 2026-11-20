@@ -96,6 +96,8 @@ pub struct MemoryScriptHost {
     /// Answers to custom dialogs in order; when empty the default button
     /// with the inputs unchanged.
     pub dialog_answers: VecDeque<DialogResponse>,
+    /// Send Mail's messages, in order; none is sent.
+    pub mails: Vec<Mail>,
     /// Layout triggers: (layout, event) -> (file, script).
     pub layout_triggers: HashMap<(u64, TriggerEvent), (FileId, u64)>,
     /// Calculation functions by lowercase name, answered before
@@ -166,6 +168,7 @@ impl MemoryScriptHost {
             log: Vec::new(),
             dialogs: Vec::new(),
             dialog_answers: VecDeque::new(),
+            mails: Vec::new(),
             layout_triggers: HashMap::new(),
             functions: HashMap::new(),
             queued: Vec::new(),
@@ -1316,6 +1319,13 @@ impl Files for MemoryScriptHost {
 impl Network for MemoryScriptHost {
     fn open_url(&mut self, url: &str, _with_dialog: bool, _external: bool) -> HostResult {
         self.call(format!("open_url {url}"));
+        Ok(())
+    }
+
+    /// Keeps the message in [`MemoryScriptHost::mails`].
+    fn send_mail(&mut self, mail: &Mail) -> HostResult {
+        self.call("send_mail");
+        self.mails.push(mail.clone());
         Ok(())
     }
 

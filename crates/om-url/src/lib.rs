@@ -711,6 +711,141 @@ fn percent(text: &str) -> String {
     out
 }
 
+/// The longest `mailto:` URL [`mailto`] builds: within Windows' command
+/// line (32,767 characters) and Linux's limit on one argument (128 KiB),
+/// with room for the launcher's own arguments.
+pub const MAX_MAILTO: usize = 32_000;
+
+/// Why [`mailto`] builds no URL.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum MailtoError {
+    /// An address whose quoted part does not end: where it stops cannot
+    /// be told.
+    Address(String),
+    /// The URL would be this long, more than [`MAX_MAILTO`].
+    TooLong(usize),
+}
+
+impl std::fmt::Display for MailtoError {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            MailtoError::Address(address) => {
+                write!(f, "The address “{address}” has a quote that does not end.")
+            }
+            MailtoError::TooLong(length) => write!(
+                f,
+                "The message is too long to hand to the mail client ({length} characters \
+                 as a mailto: URL, more than {MAX_MAILTO})."
+            ),
+        }
+    }
+}
+
+/// A `mailto:` URL (RFC 6068) for a new message to the addresses of `to`,
+/// with `cc`, `bcc`, `subject` and `body`. An address list is split at
+/// returns, semicolons and commas outside a quoted local part
+/// (`"Sales, West"@example.org` is one address). In each address the
+/// local part and the domain are percent-encoded apart, so that only the
+/// last `@` stays one (RFC 6068 6.2: `"not@me"@example.org` is
+/// `%22not%40me%22@example.org`). Every other part is percent-encoded but
+/// for the unreserved characters, and the body's line breaks are written
+/// as CRLF (`%0D%0A`), as RFC 6068 asks. The URL is at most
+/// [`MAX_MAILTO`] long.
+pub fn mailto(
+    to: &str,
+    cc: &str,
+    bcc: &str,
+    subject: &str,
+    body: &str,
+) -> Result<String, MailtoError> {
+    // Encoding never shortens text: input longer than the bound is
+    // refused before any copy is made of it.
+    let raw = [to, cc, bcc, subject, body].iter().map(|s| s.len()).sum();
+    if raw > MAX_MAILTO {
+        return Err(MailtoError::TooLong(raw));
+    }
+    let body = body
+        .replace("\r\n", "\n")
+        .replace('\r', "\n")
+        .replace('\n', "\r\n");
+    let fields: Vec<String> = [
+        ("cc", addresses(cc)?),
+        ("bcc", addresses(bcc)?),
+        ("subject", percent(subject)),
+        ("body", percent(&body)),
+    ]
+    .into_iter()
+    .filter(|(_, value)| !value.is_empty())
+    .map(|(name, value)| format!("{name}={value}"))
+    .collect();
+    let mut url = format!("mailto:{}", addresses(to)?);
+    if !fields.is_empty() {
+        url.push('?');
+        url.push_str(&fields.join("&"));
+    }
+    if url.len() > MAX_MAILTO {
+        return Err(MailtoError::TooLong(url.len()));
+    }
+    Ok(url)
+}
+
+/// An address list as `mailto:` lists it: split at returns, semicolons
+/// and commas outside double quotes (a backslash escapes inside them),
+/// each address encoded by [`mail_address`], joined by commas.
+fn addresses(list: &str) -> Result<String, MailtoError> {
+    let mut out: Vec<String> = Vec::new();
+    let mut current = String::new();
+    let (mut quoted, mut escaped) = (false, false);
+    let push = |address: &str, out: &mut Vec<String>| {
+        let address = address.trim();
+        if !address.is_empty() {
+            out.push(mail_address(address));
+        }
+    };
+    for c in list.chars() {
+        if quoted {
+            current.push(c);
+            if escaped {
+                escaped = false;
+            } else if c == '\\' {
+                escaped = true;
+            } else if c == '"' {
+                quoted = false;
+            }
+            continue;
+        }
+        match c {
+            '"' => {
+                quoted = true;
+                current.push(c);
+            }
+            ',' | ';' | '\r' | '\n' => {
+                push(&current, &mut out);
+                current.clear();
+            }
+            c => current.push(c),
+        }
+    }
+    if quoted {
+        return Err(MailtoError::Address(current.trim().to_owned()));
+    }
+    push(&current, &mut out);
+    Ok(out.join(","))
+}
+
+/// One address: its local part and domain, split at the last `@` (a
+/// domain holds none), percent-encoded apart.
+fn mail_address(address: &str) -> String {
+    match address.rfind('@') {
+        Some(at) => format!(
+            "{}@{}",
+            percent(&address[..at]),
+            percent(&address[at + 1..])
+        ),
+        None => percent(address),
+    }
+}
+
 /// FileMaker's automatic URL encoding: characters a URL cannot hold
 /// (spaces, quotes, non-ASCII) are percent-encoded; reserved characters and
 /// existing escapes stay. Insert from URL and web viewers use it.
@@ -752,6 +887,50 @@ fn base64(bytes: &[u8]) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn mailto_urls_encode_each_part_as_rfc_6068_asks() {
+        assert_eq!(
+            mailto(
+                "pat@example.com; lee@example.com\r",
+                "",
+                "boss@example.com",
+                "Weekly report: 5 & 6",
+                "See attached.\rThanks",
+            )
+            .unwrap(),
+            "mailto:pat@example.com,lee@example.com?bcc=boss@example.com\
+             &subject=Weekly%20report%3A%205%20%26%206&body=See%20attached.%0D%0AThanks"
+        );
+        assert_eq!(mailto("", "", "", "", "").unwrap(), "mailto:");
+        // A quoted local part keeps its comma and its `@` (RFC 6068 6.2).
+        assert_eq!(
+            mailto(
+                "\"Sales, West\"@example.org, \"not@me\"@example.org",
+                "",
+                "",
+                "",
+                ""
+            )
+            .unwrap(),
+            "mailto:%22Sales%2C%20West%22@example.org,%22not%40me%22@example.org"
+        );
+        assert_eq!(
+            mailto("\"open@example.org", "", "", "", ""),
+            Err(MailtoError::Address("\"open@example.org".into()))
+        );
+        // Too long for the system to take as one argument.
+        let long = "x".repeat(MAX_MAILTO);
+        assert!(matches!(
+            mailto("pat@example.com", "", "", "", &long),
+            Err(MailtoError::TooLong(_))
+        ));
+        let spaced = " ".repeat(MAX_MAILTO / 2);
+        assert!(matches!(
+            mailto("pat@example.com", "", "", "", &spaced),
+            Err(MailtoError::TooLong(_))
+        ));
+    }
 
     #[test]
     fn helpers_reserve_the_last_slot_before_they_can_be_abandoned() {

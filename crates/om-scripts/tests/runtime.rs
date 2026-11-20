@@ -925,6 +925,68 @@ fn insert_steps_write_variables_and_fields() {
 }
 
 #[test]
+fn send_mail_reads_the_message_and_its_options_from_filemakers_slots() {
+    // script-steps.md 12.3: To, CC, BCC, Subject and Message are
+    // calculations 0-4; Collect `[00 0..2, 03]`, SMTP `[00 4, 03]`.
+    let mut h = host();
+    let mut mail = ScriptStep::new(63);
+    for (slot, text) in [
+        (0, "\"pat@example.com\""),
+        (3, "\"Report \" & 1"),
+        (4, "\"Hi\""),
+    ] {
+        mail.set_calculation(slot, Some(&calc(&h, text)));
+    }
+    mail.set_number_bool(0, Some(true));
+    let mut smtp = mail.clone();
+    smtp.set_number_bool(4, Some(true));
+    smtp.set_flag(flag::NO_INTERACT, true);
+    // What OpenMaker cannot read is 3, no message sent: an SMTP selector
+    // of a width no number has, and attachments flagged (`kFilePath`)
+    // with no list.
+    let mut unreadable = mail.clone();
+    unreadable.set_slot_child(4, 0x03, Some(OwnedNode::leaf([0x03], [1, 0, 0])));
+    let mut attached = mail.clone();
+    attached.set_flag(flag::FILE_PATH, true);
+    let steps = vec![
+        on(86, true),
+        mail,
+        smtp,
+        unreadable,
+        set_var(&h, "$$unreadable", "Get ( LastError )"),
+        attached,
+        set_var(&h, "$$attached", "Get ( LastError )"),
+    ];
+    h.add_script(0, script(1, "Mail", steps));
+    let mut rt = Runtime::default();
+    run(&mut h, &mut rt, 1);
+    assert_eq!(g(&mut rt, "$$unreadable"), "3");
+    assert_eq!(g(&mut rt, "$$attached"), "3");
+    assert_eq!(
+        h.mails,
+        [
+            Mail {
+                via: MailVia::Client,
+                to: "pat@example.com".into(),
+                cc: String::new(),
+                bcc: String::new(),
+                subject: "Report 1".into(),
+                message: "Hi".into(),
+                collect: [true, false, false],
+                one_per_record: false,
+                attachments: String::new(),
+                with_dialog: true,
+            },
+            Mail {
+                via: MailVia::Smtp,
+                with_dialog: false,
+                ..h.mails[0].clone()
+            },
+        ]
+    );
+}
+
+#[test]
 fn custom_dialogs_store_inputs_and_the_choice() {
     let mut h = host();
     let mut dialog = with_calc(&h, 87, "\"Title\"");

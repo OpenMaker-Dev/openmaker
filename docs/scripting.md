@@ -133,6 +133,37 @@ error 3 ([#372](https://github.com/OpenMaker-Dev/openmaker/issues/372)). The ste
 a-f in upper case ([#371](https://github.com/OpenMaker-Dev/openmaker/issues/371)), and pasting the step as FileMaker XML
 refuses its callback ([#370](https://github.com/OpenMaker-Dev/openmaker/issues/370)).
 
+Send Mail (63) through the email client, with dialog, opens a new message
+in the system's mail client on the desktop: a `mailto:` URL (RFC 6068,
+`om_url::mailto`) with the To, CC, BCC, subject and message the step's
+calculations give in the current record, for the user to look over and
+send. The URL goes to the application the system registers for
+`mailto:`, never to a web browser: on Linux the default handler of
+`x-scheme-handler/mailto` (`xdg-mime`), launched from its desktop entry's
+command (not through `xdg-open`, which exits 0 when the handler fails and
+falls back to a browser when none is registered); on macOS `open`. The
+step waits up to 10 seconds for the client's exit: zero is the message
+taken, non-zero a refusal, and a client that has not exited by then is
+unconfirmed, also 3. That client is left running, so its compose window
+may still appear after the step returned 3: a client launched fresh keeps
+running while the message is written, and only one already running
+answers within the wait. On Windows
+the step is 3 for now
+([#609](https://github.com/OpenMaker-Dev/openmaker/issues/609)): its
+`url.dll` launcher reports no failure.
+Address lists split at returns, semicolons and commas outside a quoted
+local part (`"Sales, West"@example.org` stays one address). FileMaker Pro
+hands the message to the email client too; a URL is OpenMaker's means,
+which cannot carry the rest, so these fail with 3: SMTP and OAuth, no
+dialog (sending unseen), attachments, one email per record, and addresses
+collected across a found set of more than one record. So do (OpenMaker's
+choices) a stored option or attachment list OpenMaker cannot read, an
+address whose quote does not end, a URL longer than 32,000 characters, no
+registered mail client, and a client that refuses the message or cannot be
+started
+([#89](https://github.com/OpenMaker-Dev/openmaker/issues/89)). On
+OpenMaker Server the step is 3.
+
 The desktop host answers the Get selectors, layout-object attributes
 and Design functions for other files as FileMaker Pro 26.0.3 does
 (calc-functions.md 6.3, measured on local files in the isolated capture
