@@ -839,6 +839,40 @@ fn blank_canvas_commits_but_changing_fields_keeps_the_record_draft() {
     common::wait_until(&mut app, "the Table view commit", |app| {
         !common::unsaved(app) && !common::saving(app)
     });
+    // A column's divider follows the pointer at the zoom: the next
+    // column's header moves as far as the drag.
+    let family = |app: &common::App| {
+        app.get_by_role_and_label(Role::Label, "Family")
+            .rect()
+            .left()
+    };
+    let before = family(&app);
+    let header = app.get_by_role_and_label(Role::Label, "Family").rect();
+    // The divider, half the column spacing (8 points) left of the cell.
+    let mut pos = egui::pos2(before - 6.0, header.center().y);
+    app.event(egui::Event::PointerMoved(pos));
+    app.run_steps(2);
+    app.event(egui::Event::PointerButton {
+        pos,
+        button: egui::PointerButton::Primary,
+        pressed: true,
+        modifiers: egui::Modifiers::NONE,
+    });
+    app.run_steps(2);
+    for _ in 0..10 {
+        pos.x += 3.0;
+        app.event(egui::Event::PointerMoved(pos));
+        app.run_steps(1);
+    }
+    app.event(egui::Event::PointerButton {
+        pos,
+        button: egui::PointerButton::Primary,
+        pressed: false,
+        modifiers: egui::Modifiers::NONE,
+    });
+    app.run_steps(2);
+    let moved = family(&app) - before;
+    assert!((moved - 30.0).abs() < 2.0, "Family's header moved {moved}");
 }
 
 /// Insert > Current User Name puts the user name at the insertion point of

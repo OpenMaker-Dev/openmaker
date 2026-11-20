@@ -694,6 +694,10 @@ fn table_view(
     egui::ScrollArea::horizontal()
         .id_salt(("columns", page.key.layout_id))
         .auto_shrink(false)
+        .scroll_source(egui::scroll_area::ScrollSource {
+            drag: table_drag_scroll(ui),
+            ..Default::default()
+        })
         .show(ui, |ui| {
             table_grid(ui, session, page, document, calc, &completing, actions);
         });
@@ -733,18 +737,31 @@ fn table_grid(
     let frame = document
         .scroll
         .begin(ui, salt, Some(selected..=selected + row_height));
+    // The widths of the columns before the last, which takes the rest: the
+    // table's own, so that a divider dragged in the zoom layer measures
+    // in the table's points (egui_extras' resizing reads the pointer in
+    // window points).
+    let widths_id = ui
+        .scope_id()
+        .with(("table column widths", page.key.layout_id));
+    let resizable = fields.len().saturating_sub(1);
+    let mut widths: Vec<f32> = ui
+        .data(|data| data.get_temp::<Vec<f32>>(widths_id))
+        .filter(|widths| widths.len() == resizable)
+        .unwrap_or_else(|| vec![TABLE_COLUMN_WIDTH; resizable]);
+    let drag_scroll = table_drag_scroll(ui);
     let mut table = TableBuilder::new(ui)
         .id_salt(("records", page.key.layout_id))
         .striped(false)
-        .resizable(true)
+        .resizable(false)
+        .drag_to_scroll(drag_scroll)
         .sense(Sense::click())
         .cell_layout(Layout::left_to_right(Align::Center))
         .column(Column::exact(36.0))
-        .columns(
-            Column::initial(170.0).at_least(40.0).clip(true),
-            fields.len().saturating_sub(1),
-        )
         .min_scrolled_height(0.0);
+    for width in &widths {
+        table = table.column(Column::exact(*width).clip(true));
+    }
     if !fields.is_empty() {
         table = table.column(Column::remainder().at_least(80.0).clip(true));
     }
@@ -757,11 +774,16 @@ fn table_grid(
         table = table.vertical_scroll_offset(offset.y);
     }
     let table = table.stick_to_bottom(frame.at_end());
+    // Each column's header cell, where its divider is dragged.
+    let mut header_cells: Vec<Rect> = Vec::with_capacity(fields.len());
     let output = table
         .header(row_height, |mut header| {
             header.col(|ui| table_header_cell(ui, ""));
             for field in fields {
-                header.col(|ui| table_header_cell(ui, &field.name));
+                header.col(|ui| {
+                    header_cells.push(ui.max_rect());
+                    table_header_cell(ui, &field.name);
+                });
             }
         })
         .body(|mut body| {
@@ -895,6 +917,11 @@ fn table_grid(
             frame.hold(&tail);
         });
     document.scroll.finish(frame, &output);
+    // Over the header, after it: a cell clips what reaches past its edge.
+    for (column, (cell, width)) in header_cells.iter().zip(&mut widths).enumerate() {
+        column_divider(ui, widths_id.with(column), *cell, width);
+    }
+    ui.data_mut(|data| data.insert_temp(widths_id, widths));
     ui.data_mut(|data| {
         if let Some(id) = waiting {
             data.insert_temp(waiting_id, id);
@@ -938,6 +965,43 @@ fn table_header_cell(ui: &mut Ui, text: &str) {
         RichText::new(text).font(theme::small()).color(theme::TEXT),
         true,
     );
+}
+
+/// A Table view column's width before it is dragged.
+const TABLE_COLUMN_WIDTH: f32 = 170.0;
+
+/// Dragging a Table view column's width wider or narrower, at the divider
+/// after its header `cell`. The drag is in the table's points, the zoom
+/// layer's when zoomed.
+fn column_divider(ui: &mut Ui, id: egui::Id, cell: Rect, width: &mut f32) {
+    let x = cell.right() + ui.spacing().item_spacing.x / 2.0;
+    let grab = ui.style().interaction.resize_grab_radius_side;
+    let header = cell.expand2(vec2(0.0, 2.0)).y_range();
+    let handle = Rect::from_x_y_ranges(x - grab..=x + grab, header);
+    let response = ui.interact(handle, id, Sense::drag());
+    if response.dragged() {
+        *width = (*width + response.drag_delta().x).clamp(40.0, 4000.0);
+    }
+    if response.hovered() || response.dragged() {
+        ui.ctx().set_cursor_icon(egui::CursorIcon::ResizeColumn);
+        let stroke = if response.dragged() {
+            ui.visuals().widgets.active.bg_stroke
+        } else {
+            ui.visuals().widgets.hovered.bg_stroke
+        };
+        ui.painter().vline(x - 0.5, header, stroke);
+    }
+}
+
+/// Table view's scroll areas follow a touch drag at 100% only: zoomed, egui
+/// would move them by the drag in window points, the zoom's multiple of
+/// the finger's way.
+fn table_drag_scroll(ui: &Ui) -> egui::scroll_area::DragScroll {
+    if crate::document::layer_scale(ui) == 1.0 {
+        egui::scroll_area::DragScroll::OnTouch
+    } else {
+        egui::scroll_area::DragScroll::Never
+    }
 }
 
 /// A Table view label, cut off at the cell's edge with `truncate`. Zoomed,
