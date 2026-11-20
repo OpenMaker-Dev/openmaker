@@ -4609,6 +4609,7 @@ dependencies = [
  "om-layout",
  "om-protocol",
  "om-provider",
+ "om-report",
  "om-scripts",
  "om-scsu",
  "om-server",
@@ -4704,6 +4705,14 @@ name = "om-rctransaction"
 version = "0.0.0"
 dependencies = [
  "om-scsu",
+]
+
+[[package]]
+name = "om-report"
+version = "0.0.0"
+dependencies = [
+ "om-data",
+ "om-layout",
 ]
 
 [[package]]
