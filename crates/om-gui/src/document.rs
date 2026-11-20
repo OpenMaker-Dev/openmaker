@@ -2666,14 +2666,38 @@ impl DocumentState {
             state.store(ui.ctx(), id);
         }
         let pending = self.pending;
+        // Zoomed, the cell's text is rasterized at the zoom, as the layout's
+        // own text is; at 100% it is egui's single-line text as it lays it
+        // out itself.
+        let font = egui::TextStyle::Body.resolve(ui.style());
+        let line_height =
+            ui.fonts_mut(|fonts| fonts.row_height(&font)) + ui.spacing().extra_text_line_spacing;
+        let mut layouter = |ui: &Ui, text: &dyn egui::TextBuffer, _wrap_width: f32| {
+            let mut job = egui::text::LayoutJob::simple_singleline(
+                text.as_str().to_owned(),
+                font.clone(),
+                theme::TEXT,
+            );
+            job.keep_trailing_whitespace = true;
+            for section in &mut job.sections {
+                section.format.line_height = Some(line_height);
+            }
+            layer_galley(ui, job)
+        };
+        let zoomed = layer_scale(ui) != 1.0;
         let (response, changed) =
             guarded_editor(ui, id, &mut edit.value, refusal, actions, |ui, buffer| {
+                let editor = egui::TextEdit::singleline(buffer)
+                    .id(id)
+                    .interactive(!pending)
+                    .text_color(theme::TEXT);
                 ui.add_sized(
                     vec2(width, ui.spacing().interact_size.y),
-                    egui::TextEdit::singleline(buffer)
-                        .id(id)
-                        .interactive(!pending)
-                        .text_color(theme::TEXT),
+                    if zoomed {
+                        editor.font(font.clone()).layouter(&mut layouter)
+                    } else {
+                        editor
+                    },
                 )
             });
         response.widget_info(|| {
@@ -7956,6 +7980,21 @@ fn to_window(ui: &Ui, rect: Rect) -> Rect {
     ui.ctx()
         .layer_transform_to_global(ui.layer_id())
         .map_or(rect, |transform| transform * rect)
+}
+
+/// The scale of the layer `ui` paints in: the window's zoom in the
+/// document's zoom layer, 1 outside it.
+pub(crate) fn layer_scale(ui: &Ui) -> f32 {
+    ui.ctx()
+        .layer_transform_to_global(ui.layer_id())
+        .map_or(1.0, |transform| transform.scaling)
+}
+
+/// `job` laid out in `ui`'s layer, its glyphs rasterized at the layer's
+/// scale so that zoomed text stays sharp (`scaled_text`).
+pub(crate) fn layer_galley(ui: &Ui, job: egui::text::LayoutJob) -> std::sync::Arc<egui::Galley> {
+    let scale = layer_scale(ui);
+    ui.fonts_mut(|fonts| scaled_text::layout_galley(fonts, job, scale))
 }
 
 /// A short caption centered in a part that shows none of its content.

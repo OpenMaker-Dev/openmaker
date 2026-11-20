@@ -3428,20 +3428,24 @@ impl OpenMakerApp {
 
     /// Whether View's Zoom In, Zoom Out and Actual Size change the window's
     /// zoom: a layout drawn in Browse's Form or List view, in Find mode
-    /// (which draws its requests as Form view does), or Preview, unless Set
-    /// Zoom Level locked the window's zoom. Table view, Layout mode and the
+    /// (which draws its requests as Form view does), or Preview, and Browse's
+    /// Table view, which draws the found set's grid whatever the layout,
+    /// unless Set Zoom Level locked the window's zoom. Layout mode and the
     /// generic views are not zoomed yet (#36).
     fn zooms(&self) -> bool {
-        !self.w.zoom_locked
-            && self.w.session.as_ref().is_some_and(|session| {
-                matches!(session.render, crate::session::RenderState::Loaded(_))
-            })
-            && match self.w.mode {
-                Mode::Browse => matches!(self.w.view, ViewMode::Form | ViewMode::List),
-                Mode::Find => self.w.view != ViewMode::Table,
-                Mode::Preview => true,
-                Mode::Layout => false,
-            }
+        if self.w.zoom_locked {
+            return false;
+        }
+        let Some(session) = self.w.session.as_ref() else {
+            return false;
+        };
+        let drawn = matches!(session.render, crate::session::RenderState::Loaded(_));
+        match self.w.mode {
+            Mode::Browse => drawn || self.w.view == ViewMode::Table,
+            Mode::Find => drawn && self.w.view != ViewMode::Table,
+            Mode::Preview => drawn,
+            Mode::Layout => false,
+        }
     }
 
     fn can_export_records(&self) -> bool {
@@ -6741,7 +6745,7 @@ mod tests {
         }
         app.w.zoom_locked = false;
 
-        // List view zooms too, and Find mode's layout; Table view not yet.
+        // List and Table view zoom too, and Find mode's layout.
         app.w.view = ViewMode::List;
         app.apply(&context, Action::ZoomIn);
         assert_eq!(app.w.document.zoom.percent(), 200);
@@ -6753,14 +6757,14 @@ mod tests {
         app.apply(&context, Action::ZoomOut);
         app.w.mode = Mode::Browse;
         app.w.view = ViewMode::Table;
-        app.apply(&context, Action::ZoomIn);
-        assert_eq!(app.w.document.zoom.percent(), 150);
-        app.w.view = ViewMode::Form;
         app.w.session.as_mut().unwrap().render = crate::session::RenderState::Unavailable;
+        app.apply(&context, Action::ZoomIn);
+        assert_eq!(app.w.document.zoom.percent(), 200);
+        app.w.view = ViewMode::Form;
         app.apply(&context, Action::ZoomIn);
         assert_eq!(
             app.w.document.zoom.percent(),
-            150,
+            200,
             "generic fallback keeps its existing scale"
         );
     }

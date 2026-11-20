@@ -533,7 +533,7 @@
       "previous_status": "Implemented",
       "status": "Implemented",
       "scope": "Form, List and Table views of native records and layout geometry, with virtualized rows, List sub-summary groups, sideways scrolling in Table view, the view kept per layout, and container pictures in Browse ([Browse mode](desktop-client.md#browse-mode)).",
-      "remaining": "Table view shows no sub-summary rows [#147](https://github.com/OpenMaker-Dev/openmaker/issues/147), every field instead of the layout's table columns [#270](https://github.com/OpenMaker-Dev/openmaker/issues/270), and no header or footer [#306](https://github.com/OpenMaker-Dev/openmaker/issues/306); Table view is not zoomed [#36](https://github.com/OpenMaker-Dev/openmaker/issues/36).",
+      "remaining": "Table view shows no sub-summary rows [#147](https://github.com/OpenMaker-Dev/openmaker/issues/147), every field instead of the layout's table columns [#270](https://github.com/OpenMaker-Dev/openmaker/issues/270), and no header or footer [#306](https://github.com/OpenMaker-Dev/openmaker/issues/306).",
       "issues": [
         36,
         147,
@@ -634,7 +634,7 @@
       "previous_status": "Partial",
       "status": "Partial",
       "scope": "Zoom and the wheel, Freeze Window and scripted Scroll Window use queued focus and fresh geometry; Table view scrolls sideways ([Zoom](desktop-client.md#zoom)).",
-      "remaining": "Table view, Layout mode and focused editors are not zoomed [#36](https://github.com/OpenMaker-Dev/openmaker/issues/36). Native multi-window and input-method behavior is not compared.",
+      "remaining": "Layout mode and focused Form and List editors are not zoomed [#36](https://github.com/OpenMaker-Dev/openmaker/issues/36). Native multi-window and input-method behavior is not compared.",
       "issues": [
         36
       ],

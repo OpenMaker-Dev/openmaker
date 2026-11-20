@@ -911,8 +911,8 @@ is not shown; neither is compared with FileMaker Pro.
 
 ### Zoom
 
-Loaded Browse Form and List layouts, and Find mode's layout, have
-document-local Actual Size, Zoom In and Zoom Out commands, in steps of 25, 50, 75, 100, 150, 200, 300 and 400 percent.
+Loaded Browse Form and List layouts, Browse Table view and Find mode's
+layout have document-local Actual Size, Zoom In and Zoom Out commands, in steps of 25, 50, 75, 100, 150, 200, 300 and 400 percent.
 The menu and keyboard controls scale the document's allocation, clipping,
 pointer input and accessibility bounds together; menus and toolbars keep the
 application scale. While the layout paints, egui treats the zoomed layer as
@@ -941,15 +941,34 @@ in the layout's coordinates, so its rows scroll and take clicks as at 100%.
 Find mode draws its request as Form view draws a record, so it was already
 drawn at the window's zoom; its commands now change it there too.
 
+Table view draws its grid, header and scroll areas in the zoomed layer too,
+whatever the layout (the grid is the found set's), so column widths, rows
+and clicks are in unzoomed points at every zoom. Its labels and its cells'
+editors lay their text out at the zoom (`document::layer_galley`) to keep it
+sharp; a value cut off at its column's edge keeps egui's renderer, as
+elided text does above. The table's last column fills the width the previous
+frame left, so a new zoom lays the table out once more before it shows. The
+table keeps its columns' widths itself, by field, and draws their dividers in
+the header: a divider dragged at any zoom follows the pointer from where it
+was pressed, in the table's points (egui_extras' own resizing reads the
+pointer in window points, so a zoomed drag jumped). While zoomed, Table view's scroll areas do not follow a
+touch drag, which egui would move by the zoom's multiple of the finger's
+way; the wheel and the scroll bars still scroll them.
+
 Set Zoom Level with Lock on disables View > Actual Size, Zoom In and
 Zoom Out and their shortcuts for that window. A script can still set the
 level, and Lock off restores those controls. A new window (New Window,
 the step or Window > New Window) takes the lock with the zoom of the window
 it opens from [I: inheritance has not been compared with FileMaker Pro].
 
-Limits: Table view, Layout mode, generic Form fallbacks and
-focused field editors are not zoomed (Preview scales its paper:
-[preview.md](preview.md); [#36](https://github.com/OpenMaker-Dev/openmaker/issues/36)).
+Limits: Layout mode, generic Form fallbacks and focused field editors in
+Form and List view are not zoomed (Preview scales its paper:
+[preview.md](preview.md); [#36](https://github.com/OpenMaker-Dev/openmaker/issues/36)). Scroll bars
+inside the zoomed layer (List and Table view's) scale with it; FileMaker Pro's
+keep their size [I: unmeasured]. How FileMaker Pro scales Table view's
+header and row heights is unmeasured. A Table view column is resized from
+its divider in the header only, and a double click does not fit it to its
+contents; FileMaker Pro's divider behavior is unmeasured.
 
 ### Layout menus
 
