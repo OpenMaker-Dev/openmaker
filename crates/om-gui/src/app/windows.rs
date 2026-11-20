@@ -654,6 +654,13 @@ impl OpenMakerApp {
             Reply::ConnectionLost(err) => {
                 self.with_window(window, |app| app.lose_connection(&err));
             }
+            // Send Message shows over every window. The requests to close
+            // the files and the forced disconnect are not acted on yet.
+            Reply::HostMessages(messages) => self.host_messages.extend(
+                messages
+                    .into_iter()
+                    .filter(|message| message.kind == om_data::HostMessageKind::Message),
+            ),
             // The reconnect's file may have more windows than the one that
             // asked (perhaps one closed since).
             Reply::Reconnected(result) => self.reconnected(ctx, *result),

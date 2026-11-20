@@ -92,6 +92,48 @@ fn open(port: u16, ca_pem: &[u8]) -> NativeProvider {
     provider
 }
 
+/// The host administrator's Send Message reaches the open file's provider
+/// while it is idle, read as it is polled, with the host's name (#156).
+#[test]
+fn a_host_message_is_taken_while_the_provider_is_idle() {
+    let file = file_with("provider-host-message", &[], |_| {});
+    let mut handle = None;
+    let (port, ca_pem) = host_with(&file.0, None, |server| {
+        handle = Some(server.handle().unwrap());
+        server
+    });
+    let handle = handle.unwrap();
+    let mut provider = open(port, &ca_pem);
+    assert!(provider.take_host_messages().is_empty());
+    let client = handle
+        .clients()
+        .into_iter()
+        .find(|client| !client.files.is_empty())
+        .expect("the provider's session")
+        .id;
+    handle
+        .send_message(client, "Back in five minutes.")
+        .unwrap();
+    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(5);
+    let messages = loop {
+        let messages = provider.take_host_messages();
+        if !messages.is_empty() || std::time::Instant::now() > deadline {
+            break messages;
+        }
+        std::thread::sleep(std::time::Duration::from_millis(20));
+    };
+    assert_eq!(
+        messages,
+        [om_data::HostMessage {
+            kind: om_data::HostMessageKind::Message,
+            text: "Back in five minutes.".into(),
+            server_name: "openmaker-test".into(),
+        }]
+    );
+    assert!(provider.take_host_messages().is_empty());
+    assert!(provider.connection_lost().is_none());
+}
+
 /// A session of its own, for what the provider does not expose.
 fn raw_session(port: u16) -> om_session::Session {
     let client = rcgen::generate_simple_self_signed(vec!["OpenMaker".into()]).unwrap();

@@ -557,6 +557,9 @@ pub(crate) enum Reply {
     Script(crate::scripting::ScriptEvent),
     /// The open file's connection to the host was lost.
     ConnectionLost(DataError),
+    /// What the host's administrator sent the file's session, read while
+    /// idle ([`DataProvider::take_host_messages`]), oldest first.
+    HostMessages(Vec<om_data::HostMessage>),
     Reconnected(Box<Result<Reconnected, DataError>>),
     /// What [`Request::Recreate`] did: the record's old and new id, and
     /// its place in the window's found set, when it was made again; `None`
@@ -634,6 +637,7 @@ impl Reply {
             Reply::ValueListBuilt { .. } => None,
             Reply::RecordEditPrepared(_, _, result) => result.as_ref().err(),
             Reply::ConnectionLost(error) => Some(error),
+            Reply::HostMessages(_) => None,
             Reply::Reconnected(result) => result.as_ref().as_ref().err(),
             Reply::Recreated(result) => result.as_ref().err(),
             // Each record's read carries its own error.
@@ -931,6 +935,7 @@ fn serve(
         }
         if let Some(ctx) = &ctx {
             scripts.notice_loss(provider.as_ref(), responses, epoch, ctx, &mut files);
+            scripts.tell_host_messages(provider.as_mut(), responses, epoch, ctx);
         }
     }
     files.close_all();

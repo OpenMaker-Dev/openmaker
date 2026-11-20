@@ -275,6 +275,28 @@ forgets the list (stopping a listing under way), and a reply to a listing no
 longer waited for is dropped unseen. The wording is OpenMaker's; FileMaker
 Pro's is not captured.
 
+### Messages from the host
+
+A hosted file's administrator can send its sessions a message (FileMaker
+Server's Send Message, OpenMaker Server's `ServerHandle::send_message`;
+network-protocol.md 6.5). The window shows it as FileMaker Pro does: a
+dialog "Message from “<server name>”" with the text, Close and "(This
+dialog will be dismissed in N seconds.)", which closes itself after 30
+seconds. Messages that come meanwhile follow, one at a time. The provider
+reads the host's calls each second while the window is idle
+(`DataProvider::take_host_messages`), so a message shows within about a
+second, not at the session's next exchange.
+
+Limits ([#156](https://github.com/OpenMaker-Dev/openmaker/issues/156)):
+- The host's requests to close the files (Close, Disconnect) and its
+  notice of a forced disconnect are taken and not acted on yet: FileMaker
+  Pro shows a Close File dialog with a countdown, or closes the windows
+  with an alert.
+- Only the open file's own session is read, not a related file's on
+  another host.
+- The dialog's look is OpenMaker's; FileMaker Pro's was read from its
+  text only (capture s07).
+
 ### Client license
 
 **FileMaker License...** is available in Hosts and the OpenMaker menu. It is

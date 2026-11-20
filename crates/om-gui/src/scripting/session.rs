@@ -653,6 +653,30 @@ impl ScriptSession {
         }
     }
 
+    /// Between requests: tell the UI what the host's administrator sent the
+    /// file's session ([`DataProvider::take_host_messages`]; #156), as of the
+    /// request of `epoch`, waking `ctx`.
+    pub(crate) fn tell_host_messages(
+        &mut self,
+        provider: &mut dyn DataProvider,
+        responses: &Sender<Response>,
+        epoch: u64,
+        ctx: &egui::Context,
+    ) {
+        let messages = provider.take_host_messages();
+        if messages.is_empty() {
+            return;
+        }
+        let response = Response {
+            epoch,
+            window: self.s.file.window.id(),
+            reply: worker::Reply::HostMessages(messages),
+        };
+        if responses.send(response).is_ok() {
+            ctx.request_repaint();
+        }
+    }
+
     /// Between requests: tell the UI if the connection was lost (see
     /// [`Shared::connection_lost`]), as of the request of `epoch`.
     pub(crate) fn notice_loss(

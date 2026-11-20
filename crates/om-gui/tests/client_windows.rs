@@ -118,6 +118,37 @@ fn host_scripts(tag: &str, scripts: &[Script]) -> hosted::Hosted {
     )
 }
 
+/// The host administrator's Send Message shows over the window while it is
+/// idle, as FileMaker Pro shows it: "Message from “<server>”", the text,
+/// the countdown and Close, which closes it (#156).
+#[test]
+fn a_host_message_shows_over_the_idle_window_until_closed() {
+    let hosted = host("host-message");
+    let mut app = common::harness(Box::new(hosted.provider()));
+    hosted.fill_form(&mut app);
+    common::click(&mut app, "Open");
+    common::wait_until(&mut app, "the file", |app| app.state().is_settled());
+    let server = hosted.server();
+    let client = server
+        .clients()
+        .into_iter()
+        .find(|client| !client.files.is_empty())
+        .expect("the window's session")
+        .id;
+    server
+        .send_message(client, "Back in five minutes.")
+        .unwrap();
+    common::wait_for_label(&mut app, "Back in five minutes.");
+    app.get_by_label("Message from “openmaker-test”");
+    assert!(app
+        .query_by_label_contains("(This dialog will be dismissed in")
+        .is_some());
+    common::click(&mut app, "Close");
+    app.run_steps(2);
+    assert!(app.query_by_label("Back in five minutes.").is_none());
+    assert!(app.state().error().is_none(), "{:?}", app.state().error());
+}
+
 /// A window that goes to another table's layout and back returns to the
 /// record it showed on the first table (#660): FileMaker keeps a current
 /// record per table occurrence.
