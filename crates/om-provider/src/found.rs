@@ -146,7 +146,12 @@ impl NativeProvider {
             .filter(|_| saved.sorted)
             .and_then(|spec| self.saved_sort(occurrence, table, spec));
         // A sort the provider cannot apply leaves the records unsorted.
-        let sorted = sort.and_then(|sort| Some((self.sorted(table, &ids, &sort).ok()?, sort)));
+        let sorted = sort.and_then(|sort| {
+            Some((
+                self.sorted(Some(occurrence), table, &ids, &sort).ok()?,
+                sort,
+            ))
+        });
         let state = match sorted {
             Some((ids, sort)) => TableFound {
                 ids: Some(ids),
@@ -433,10 +438,10 @@ impl NativeProvider {
                     })?;
                     self.external.with_owner(route, |owner, wire| {
                         let native = owner.table_def(wire)?;
-                        owner.sorted(&native, &current, &translated)
+                        owner.sorted(None, &native, &current, &translated)
                     })?
                 } else {
-                    self.sorted(&table, &current, &sort)?
+                    self.sorted(Some(occurrence), &table, &current, &sort)?
                 };
                 state = TableFound {
                     ids: Some(ids),
@@ -1223,22 +1228,39 @@ impl NativeProvider {
     }
 
     /// `ids` of `table` in the order of `sort` (query-program.md 10.3):
-    /// each record's stored values, compared as FileMaker's sort keys.
+    /// each record's stored values, compared as FileMaker's sort keys. A
+    /// sort field named `Occurrence::Field` sorts the records of
+    /// `occurrence` (the layout's) by each one's first related record's
+    /// value ([`Self::related_sort_field`]).
     fn sorted(
         &mut self,
+        occurrence: Option<u64>,
         table: &Table,
         ids: &[u64],
         sort: &[SortField],
     ) -> Result<Vec<u64>, DataError> {
+        let missing = |name: &str| {
+            DataError::with_code(
+                code::FIELD_MISSING,
+                format!("The table has no field named {name:?}."),
+            )
+        };
+        let mut related = Vec::new();
         for field in sort {
-            let names =
-                std::iter::once(&field.field).chain(field.summary.as_ref().map(|s| &s.field));
-            for name in names {
-                if table.field_by_name(name).is_none() {
-                    return Err(DataError::with_code(
-                        code::FIELD_MISSING,
-                        format!("The table has no field named {name:?}."),
-                    ));
+            let own = table.field_by_name(&field.field).is_some();
+            if !own {
+                match occurrence {
+                    // A summary's reordering by a related field is not
+                    // built (#47).
+                    Some(from) if field.field.contains("::") && field.summary.is_none() => {
+                        related.push(self.related_sort_field(from, &field.field)?);
+                    }
+                    _ => return Err(missing(&field.field)),
+                }
+            }
+            if let Some(summary) = &field.summary {
+                if table.field_by_name(&summary.field).is_none() {
+                    return Err(missing(&summary.field));
                 }
             }
         }
@@ -1253,13 +1275,205 @@ impl NativeProvider {
             let tree = download_tree(std::slice::from_ref(&data))?;
             rows.extend(om_hbam::record::records(&tree, table.id));
         }
-        let page = crate::record_page(rows, table, ids.len() as u64)?;
+        let mut page = crate::record_page(rows, table, ids.len() as u64)?;
+        if let (Some(from), false) = (occurrence, related.is_empty()) {
+            let records: Vec<u64> = page.records.iter().map(|r| r.id as u64).collect();
+            let values = self.related_sort_values(from, table.id, &records, &related)?;
+            for (record, values) in page.records.iter_mut().zip(values) {
+                record.values.extend(values);
+            }
+            page.fields
+                .extend(related.into_iter().map(|r| om_data::Field {
+                    name: r.name,
+                    kind: r.kind,
+                }));
+        }
         // Keep the found set's order for equal keys.
         let position = |id: i64| ids.iter().position(|i| *i as i64 == id);
         let mut records: Vec<&Record> = page.records.iter().collect();
         records.sort_by_key(|r| position(r.id));
         found::sort_rows_with_date_order(&page.fields, &mut records, sort, date_order);
         Ok(records.iter().map(|r| r.id as u64).collect())
+    }
+
+    /// `name` (`Occurrence::Field`) as a sort field of `from`'s records: a
+    /// field of an occurrence of this file's tables that a relationship
+    /// path reaches from `from`, a self join's included, sorted by each
+    /// record's first related record's value (Claris documents "the value in
+    /// the first matching record"; client-ui.md, Sort Records). A related
+    /// file's table, an unrelated occurrence, a summary or a container
+    /// field is refused (3).
+    fn related_sort_field(&mut self, from: u64, name: &str) -> Result<RelatedSort, DataError> {
+        let missing = || {
+            DataError::with_code(
+                code::FIELD_MISSING,
+                format!("The file has no field named {name:?}."),
+            )
+        };
+        let unsupported = |reason: &str| {
+            DataError::with_code(
+                code::UNSUPPORTED,
+                format!("Sorting by {name:?} is not supported: {reason}"),
+            )
+        };
+        let (occurrence_name, field_name) = name.split_once("::").ok_or_else(missing)?;
+        let occurrence = self
+            .catalog
+            .table_occurrences
+            .iter()
+            .find(|o| o.name == occurrence_name)
+            .ok_or_else(missing)?;
+        let table = match occurrence.reference() {
+            Some((0, table)) => table,
+            Some(_) => return Err(unsupported("its table is in a related file.")),
+            None => return Err(missing()),
+        };
+        let occurrence = occurrence.id;
+        let field = self
+            .catalog
+            .table(table)
+            .and_then(|t| t.field_by_name(field_name))
+            .ok_or_else(missing)?;
+        if !matches!(
+            field.kind,
+            om_hbam::FieldKind::Normal | om_hbam::FieldKind::Calculation
+        ) || field.data_type == om_hbam::DataType::Container
+        {
+            return Err(unsupported(
+                "only a related text, number, date or time field sorts.",
+            ));
+        }
+        let (id, kind) = (field.id, sort_kind(field.data_type));
+        if occurrence != from && self.calc_schema_cached()?.path(from, occurrence).is_none() {
+            return Err(unsupported(
+                "its occurrence is not related to the layout's.",
+            ));
+        }
+        Ok(RelatedSort {
+            name: name.to_owned(),
+            occurrence,
+            field: id,
+            kind,
+        })
+    }
+
+    /// Each of `records`' value of each `related` sort field, as `Rel::field`
+    /// reads it: its first related record's, in the relationship's order
+    /// (file-metadata.md 4.3; without a relationship sort the first in
+    /// creation order, calc-values.md 12.1), empty without one.
+    fn related_sort_values(
+        &mut self,
+        from: u64,
+        table: u64,
+        records: &[u64],
+        related: &[RelatedSort],
+    ) -> Result<Vec<Vec<Option<String>>>, DataError> {
+        // An occurrence or layout the schema had not read yet: read, then
+        // the values again (as `filter_evaluated`).
+        let mut asked = BTreeSet::new();
+        loop {
+            let (values, needs) = self.related_sort_values_once(from, table, records, related)?;
+            if self.grow_for(needs, &mut asked)? {
+                continue;
+            }
+            return values.ok_or_else(|| {
+                DataError::with_code(
+                    om_data::rules::error::UNAVAILABLE,
+                    "A related sort field's table could not be read. The records were not sorted.",
+                )
+            });
+        }
+    }
+
+    /// [`Self::related_sort_values`] once, with what its reads asked for;
+    /// no values while a read waits for the schema (1224).
+    #[allow(clippy::type_complexity)]
+    fn related_sort_values_once(
+        &mut self,
+        from: u64,
+        table: u64,
+        records: &[u64],
+        related: &[RelatedSort],
+    ) -> Result<(Option<Vec<Vec<Option<String>>>>, crate::calc::SchemaNeeds), DataError> {
+        let schema = self.calc_schema_cached()?;
+        let session_info = self.session_info();
+        let today = om_data::host::session::today(session_info.utc_offset);
+        let globals = self.desktop_globals(&schema);
+        let session = self
+            .session
+            .as_mut()
+            .ok_or_else(|| DataError::new("No hosted file is open."))?;
+        let source = NativeSource::new(session, &schema, today)
+            .with_fonts(&self.calc.fonts)
+            .with_calculation_session(session_info.clone())
+            .with_session_globals(globals)
+            .with_external(&self.external);
+        source.prefetch_records(table, records);
+        let file = FileCalc::new(&schema, &source, today).with_session(&session_info);
+        let cx = Ctx::new(&schema.locale, today);
+        // 1224: the schema is still reading an occurrence on the way.
+        const PENDING: i32 = 1224;
+        let mut values = Vec::with_capacity(records.len());
+        let mut pending = false;
+        'records: for &record in records {
+            let mut row = Vec::with_capacity(related.len());
+            for sort in related {
+                let first = if sort.occurrence == from {
+                    Ok(Some(record))
+                } else {
+                    file.related_record(from, record, sort.occurrence, 0)
+                };
+                let value = first.and_then(|first| match first {
+                    Some(first) => file
+                        .read_field(sort.occurrence, first, sort.field, 1)
+                        .map(|value| value.to_text(&cx).into_string()),
+                    None => Ok(String::new()),
+                });
+                match value {
+                    Ok(text) => row.push((!text.is_empty()).then_some(text)),
+                    Err(error) if error.code() == PENDING => {
+                        pending = true;
+                        break 'records;
+                    }
+                    Err(error) => {
+                        return Err(DataError::new(format!(
+                            "A related sort value could not be read (error {}). The records \
+                             were not sorted.",
+                            error.code()
+                        )));
+                    }
+                }
+            }
+            values.push(row);
+        }
+        // A record or table that could not be read fails the sort rather
+        // than sorting it as empty.
+        if let Some(error) = source.take_failure() {
+            return Err(error);
+        }
+        Ok(((!pending).then_some(values), source.take_needs()))
+    }
+}
+
+/// A sort field of a related occurrence ([`NativeProvider::related_sort_field`]).
+struct RelatedSort {
+    /// `Occurrence::Field`, the sort field's name.
+    name: String,
+    occurrence: u64,
+    field: u64,
+    kind: om_data::FieldKind,
+}
+
+/// The kind a field of `data_type` sorts as.
+fn sort_kind(data_type: om_hbam::DataType) -> om_data::FieldKind {
+    use om_data::FieldKind;
+    match data_type {
+        om_hbam::DataType::Number => FieldKind::Number,
+        om_hbam::DataType::Date => FieldKind::Date,
+        om_hbam::DataType::Time => FieldKind::Time,
+        om_hbam::DataType::Timestamp => FieldKind::Timestamp,
+        om_hbam::DataType::Container => FieldKind::Container,
+        _ => FieldKind::Text,
     }
 }
 

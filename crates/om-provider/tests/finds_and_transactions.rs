@@ -2019,6 +2019,59 @@ fn browse_pages_defer_calculations_and_requested_fields_still_compute() {
     provider.close();
 }
 
+/// Sort Records by a related field (#47): each task by its first related
+/// note's Body, through Tasks::Name = Notes::Task, as `Rel::field` reads
+/// it. Claris documents "the value in the first matching record"; an
+/// unsorted relationship's first record is the first in creation order
+/// (calc-values.md 12.1), so Ship sorts by note 2's "z", not note 3's "a".
+/// A task without notes is empty: first ascending, last descending. Before,
+/// the provider refused the field as missing from the table.
+#[test]
+fn a_related_sort_orders_by_the_first_related_records_value() {
+    use om_data::found::{SortField, SortOrder};
+
+    // Tasks 1 "Write tests" and 2 "Ship" (the fixture's), 3 "Alpha", 4 "Beta".
+    let rows: Vec<(String, String, String)> = ["Alpha", "Beta"]
+        .iter()
+        .map(|name| (name.to_string(), "1".into(), String::new()))
+        .collect();
+    let file = file_with("related-sort", &rows, |root| {
+        use fixture::{BODY, NOTES, TASK};
+        // Notes::Task, and relationship 1, Tasks::Name = Notes::Task.
+        fixture::add_calculated(root);
+        let notes = uint_segment(NOTES);
+        for (id, task, body) in [
+            (2, "Ship", "z"),
+            (3, "Ship", "a"),
+            (4, "Write tests", "m"),
+            (5, "Alpha", "b"),
+        ] {
+            for (field, text) in [(TASK, task), (BODY, body)] {
+                root.put(
+                    &[&notes, &[5], &serial::encode(id), &uint_segment(field)],
+                    text_node(&[], text),
+                );
+            }
+        }
+        let ids: RidList = (1..=5).collect();
+        root.put(&[&notes, &[0x0d]], ids.to_node(Vec::new()));
+    });
+    let (port, ca_pem) = host(&file.0);
+    let mut provider = open(port, &ca_pem);
+    let tasks = layout(&mut provider, "Tasks");
+    let mut sorted = |order| {
+        provider
+            .change_found_set(
+                tasks,
+                FoundSetChange::Sort(vec![SortField::new("Notes::Body", order)]),
+            )
+            .unwrap();
+        ids_of(&all_records(&mut provider, tasks))
+    };
+    assert_eq!(sorted(SortOrder::Ascending), [4, 3, 1, 2]);
+    assert_eq!(sorted(SortOrder::Descending), [2, 1, 3, 4]);
+}
+
 #[test]
 fn projected_pages_keep_sort_context_for_lazy_summaries() {
     use std::cell::RefCell;
