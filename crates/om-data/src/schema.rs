@@ -136,9 +136,10 @@ pub struct SchemaField {
     pub data_type: FieldKind,
     /// The field's comment (`[T, 3, 5, F, 03]`), empty for none.
     pub comment: String,
-    /// The stored DDL annotation (`[T, 3, 5, F, 30]`).
+    /// The stored DDL annotation (`[T, 3, 5, F, 30]`), empty for none.
     pub annotation: String,
-    /// Whether Customize field display names is enabled (member `29`, bit 1).
+    /// Whether Customize field display names is on: bit `0x2` of the
+    /// advanced flags `[T, 3, 5, F, 29]` (file-metadata.md 1.2).
     pub display_names_enabled: bool,
     /// Unique-value validation or an auto-entered serial number
     /// (schema-path.md 5.5): the relationships graph draws its end of an
@@ -655,6 +656,10 @@ impl DatabaseSchema {
         match column {
             FieldColumn::Options => self.field_options_text(table, field),
             FieldColumn::Comments => field.comment.clone(),
+            // Which member FileMaker shows after "Display Names", and alone
+            // without the option, is not traced (client-ui.md): that it is
+            // the annotation, and the ", " between them, are inferred
+            // ([#611](https://github.com/OpenMaker-Dev/openmaker/issues/611)).
             FieldColumn::Advanced if field.display_names_enabled => {
                 if field.annotation.is_empty() {
                     "Display Names".into()

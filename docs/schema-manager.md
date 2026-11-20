@@ -21,9 +21,10 @@ starter solution):
   from each field's options to its comment, to its advanced options and
   back. Advanced shows "Display Names" when the field's display names
   are customized, then ", " and the field's annotation if it has one;
-  without the option, the annotation alone. That the text after "Display
-  Names" is the annotation, and the ", " between them, are inferred (the
-  member is not traced, client-ui.md). The options read as
+  without the option, the annotation alone. Which stored text FileMaker
+  Pro shows there, after "Display Names" or alone, is not traced
+  (client-ui.md): that it is the annotation, and the ", " between them,
+  are inferred ([#611](https://github.com/OpenMaker-Dev/openmaker/issues/611)). The options read as
   FileMaker Pro lists them ("Indexed,
   Auto-enter Calculation replaces existing value, Can't Modify Auto,
   Required Value, Unique", "= Count * 2", "= Total of Price";
@@ -738,8 +739,9 @@ wrote under the primary weights alone does not stay behind.
   ([#152](https://github.com/OpenMaker-Dev/openmaker/issues/152)).
 - **The Fields tab's third column.** Advanced options are read-only.
   The column shows the display-names option and the annotation, without
-  evaluating the display-names formula; its ", " separator and the
-  annotation's place after "Display Names" are inferred. The options text
+  evaluating the display-names formula. The annotation as the text shown,
+  after "Display Names" or alone without the option, and the ", "
+  separator are inferred ([#611](https://github.com/OpenMaker-Dev/openmaker/issues/611)). The options text
   says "Use Furigana" without the furigana field, and a summary's break or
   weight field by its name alone. Only the field name is exposed to
   accessibility, as for every list in the dialog. The text follows

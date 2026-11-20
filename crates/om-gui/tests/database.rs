@@ -267,6 +267,18 @@ fn manager_saves_tables_and_fields_on_an_openmaker_server() {
         &[&table_key, &[3], &[5], &name_key, &[0x30]],
         om_scripts::text_node(&[], "Task title"),
     );
+    // An annotation alone on Count, which the save renames: the rename
+    // keeps it.
+    root.put(
+        &[
+            &table_key,
+            &[3],
+            &[5],
+            &om_hbam::slot::uint_segment(fixture::COUNT),
+            &[0x30],
+        ],
+        om_scripts::text_node(&[], "How many"),
+    );
     // Advanced flags of another width than a u32 are not read as set.
     root.put(
         &[
@@ -384,6 +396,10 @@ fn manager_saves_tables_and_fields_on_an_openmaker_server() {
     );
     let quantity = tasks.fields.iter().find(|f| f.name == "Quantity").unwrap();
     assert_eq!(quantity.id, fixture::COUNT);
+    assert_eq!(
+        schema.field_column_text(tasks, quantity, om_data::FieldColumn::Advanced),
+        "How many"
+    );
     assert!(!tasks.fields.iter().any(|f| f.id == fixture::DUE));
     let projects = schema
         .tables

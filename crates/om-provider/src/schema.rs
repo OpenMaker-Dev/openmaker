@@ -743,7 +743,8 @@ fn schema_from_catalogs(
 }
 
 /// After a save, the host's schema must be the draft's: the same tables,
-/// fields and occurrences with the same names, types and field options. A host that
+/// fields and occurrences with the same names, types, comments, advanced
+/// options and field options. A host that
 /// stored nothing (one that refused the uploads) or something else is
 /// reported, not taken for a save.
 fn verify_saved(draft: &SchemaDraft, saved: &DatabaseSchema) -> Result<(), DataError> {
@@ -762,6 +763,8 @@ fn verify_saved(draft: &SchemaDraft, saved: &DatabaseSchema) -> Result<(), DataE
                             f.kind,
                             f.data_type,
                             f.comment.clone(),
+                            f.annotation.clone(),
+                            f.display_names_enabled,
                             f.options.clone(),
                             f.calculation.clone(),
                             f.summary,
