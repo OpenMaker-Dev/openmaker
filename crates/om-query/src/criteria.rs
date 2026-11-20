@@ -36,20 +36,41 @@ use std::cmp::Ordering;
 use om_collate::DateOrder;
 use om_hbam::DataType;
 
+use crate::keys::TextKeys;
+
 /// A date as (year, month, day).
 pub type Ymd = (i32, u32, u32);
 
-/// What criteria are read with: the file's date order and today's date
-/// (`//`, and dates typed without a year).
+/// What criteria are read with: the file's date order, today's date (`//`,
+/// and dates typed without a year), and the form the field's indexes key
+/// text in.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 pub struct FindContext {
     pub order: DateOrder,
     pub today: Option<Ymd>,
+    /// How the field's indexes key text (query-program.md 7.2): a text
+    /// criterion's keys, and the keys it compares a value's text by, are
+    /// in this form. English unless [`Self::with_text_keys`] names another.
+    pub text: TextKeys,
 }
 
 impl FindContext {
     pub fn new(order: DateOrder, today: Option<Ymd>) -> Self {
-        FindContext { order, today }
+        FindContext {
+            order,
+            today,
+            text: TextKeys::Collated,
+        }
+    }
+
+    /// This context for a field whose indexes key text in `text`. A form
+    /// with no keys ([`TextKeys::None`]) reads criteria in English.
+    pub fn with_text_keys(self, text: TextKeys) -> Self {
+        let text = match text {
+            TextKeys::None => TextKeys::Collated,
+            form => form,
+        };
+        FindContext { text, ..self }
     }
 }
 
@@ -72,6 +93,8 @@ pub const MAX_CRITERION_CHARS: usize = 10_000;
 pub struct Criterion {
     pub(crate) data_type: DataType,
     pub(crate) kind: Kind,
+    /// The form its text keys are in ([`FindContext::text`]).
+    pub(crate) text: TextKeys,
 }
 
 #[derive(Clone, Debug, PartialEq)]
@@ -343,7 +366,8 @@ impl Number {
                     }
                 }
                 '.' if !in_fraction => in_fraction = true,
-                '-' if !digits => negative = true,
+                // A minus sign, ASCII or U+2212, as a stored number reads it.
+                '-' | '\u{2212}' if !digits => negative = true,
                 // An exponent ends the digits FileMaker reads.
                 'e' | 'E' if digits => break,
                 _ => {}
@@ -368,17 +392,20 @@ impl Number {
         })
     }
 
-    /// The number's text when it is a non-negative integer, the only form
-    /// whose index key is known (query-program.md 7.3).
-    pub(crate) fn integer_text(&self) -> Option<String> {
-        if self.negative || !self.fraction.is_empty() {
-            return None;
-        }
-        Some(if self.integer.is_empty() {
-            "0".into()
+    /// The number's value-index key (query-program.md 7.3).
+    pub(crate) fn index_key(&self) -> Option<Vec<u8>> {
+        let digits = |d: &[u8]| d.iter().map(|d| char::from(b'0' + d)).collect::<String>();
+        // At least one integer digit: `0` has none of its own.
+        let integer = if self.integer.is_empty() {
+            "0".to_string()
         } else {
-            self.integer.iter().map(|d| char::from(b'0' + d)).collect()
-        })
+            digits(&self.integer)
+        };
+        om_collate::number_key(&format!(
+            "{}{integer}.{}",
+            if self.negative { "-" } else { "" },
+            digits(&self.fraction)
+        ))
     }
 
     /// The number as a binary float (for summaries that only order groups).
@@ -830,20 +857,38 @@ pub(crate) fn split_range(text: &str) -> Option<(&str, &str)> {
 
 // ----- text -------------------------------------------------------------------------
 
-/// A character's collation key: what the index compares (case and accents
-/// ignored); empty for an ignorable character.
-fn char_key(c: char) -> Vec<u8> {
+/// A character's key in `form`, as the index compares it: its primary
+/// weights (case and accents ignored), or in Unicode raw its UTF-16 code
+/// units; empty for an ignorable character.
+fn char_key(form: TextKeys, c: char) -> Vec<u8> {
     let mut buffer = [0u8; 4];
-    om_collate::text_key(c.encode_utf8(&mut buffer))[1..].to_vec()
+    prefix_key(form, c.encode_utf8(&mut buffer))[1..].to_vec()
+}
+
+/// The whole key of `text` (a word, a line, a bound) in `form`.
+pub(crate) fn whole_key(form: TextKeys, text: &str) -> Vec<u8> {
+    form.whole_key(text)
+        .unwrap_or_else(|| om_collate::text_key(text))
+}
+
+/// The key a word or value that starts with `text` starts with, in `form`:
+/// its whole key but in the padded form (System, Unicode standard), where
+/// only the primary weights come first and `00 00` and the secondary bytes
+/// follow them (query-program.md 7.2).
+pub(crate) fn prefix_key(form: TextKeys, text: &str) -> Vec<u8> {
+    match form {
+        TextKeys::Raw => whole_key(form, text),
+        _ => om_collate::text_key(text),
+    }
 }
 
 /// Characters with their collation keys.
 type KeyedChars = Vec<(char, Vec<u8>)>;
 
-/// The non-ignorable characters of `text` with their keys.
-fn units(text: &str) -> KeyedChars {
+/// The non-ignorable characters of `text` with their keys in `form`.
+fn units(form: TextKeys, text: &str) -> KeyedChars {
     text.chars()
-        .map(|c| (c, char_key(c)))
+        .map(|c| (c, char_key(form, c)))
         .filter(|(_, key)| !key.is_empty())
         .collect()
 }
@@ -903,22 +948,63 @@ fn is_word_char(c: char) -> bool {
     c.is_alphanumeric()
 }
 
-/// Whether the phrase `text` is in `value` (its characters in lower case).
-fn phrase_matches(text: &[char], anywhere: bool, open_end: bool, value: &[char]) -> bool {
-    if text.is_empty() || text.len() > value.len() {
+/// A value as phrases read it: its characters as [`phrase_chars`] gives
+/// them, and for each place between them (one more than the characters)
+/// whether it lies inside a word of the word index ([`words`]), so that a
+/// phrase starts and ends where the index's words do (`t` is inside
+/// `don't`, `テ` starts a word of `日本語のテキスト`).
+struct PhraseView {
+    chars: Vec<char>,
+    inside: Vec<bool>,
+}
+
+fn phrase_view(form: TextKeys, value: &str) -> PhraseView {
+    // Each word's byte span in `value`.
+    let spans: Vec<(usize, usize)> = words(value)
+        .iter()
+        .map(|w| {
+            let start = w.as_ptr() as usize - value.as_ptr() as usize;
+            (start, start + w.len())
+        })
+        .collect();
+    let mut chars = Vec::new();
+    let mut inside = Vec::new();
+    // The spans are in order: one cursor walks them with the characters.
+    let mut span = 0;
+    for (offset, c) in value.char_indices() {
+        while spans.get(span).is_some_and(|&(_, end)| end <= offset) {
+            span += 1;
+        }
+        let first = chars.len();
+        chars.extend(phrase_chars(form, std::iter::once(c)));
+        let in_word = spans
+            .get(span)
+            .is_some_and(|&(start, end)| start < offset && offset < end);
+        // Between the characters one character lowers to, inside it.
+        inside.extend((first..chars.len()).map(|i| in_word || i > first));
+    }
+    inside.push(false);
+    PhraseView { chars, inside }
+}
+
+/// Whether the phrase `text` is in `value`, starting a word unless
+/// `anywhere`, and ending one when `anywhere` and not `open_end`.
+fn phrase_matches(text: &[char], anywhere: bool, open_end: bool, value: &PhraseView) -> bool {
+    let chars = &value.chars;
+    if text.is_empty() || text.len() > chars.len() {
         return text.is_empty();
     }
     let starts_word = is_word_char(text[0]);
     let ends_word = is_word_char(text[text.len() - 1]);
-    (0..=value.len() - text.len()).any(|start| {
-        if value[start..start + text.len()] != *text {
+    (0..=chars.len() - text.len()).any(|start| {
+        if chars[start..start + text.len()] != *text {
             return false;
         }
-        if !anywhere && starts_word && start > 0 && is_word_char(value[start - 1]) {
+        if !anywhere && starts_word && value.inside[start] {
             return false;
         }
         let end = start + text.len();
-        if anywhere && !open_end && ends_word && end < value.len() && is_word_char(value[end]) {
+        if anywhere && !open_end && ends_word && value.inside[end] {
             return false;
         }
         true
@@ -988,7 +1074,7 @@ fn is_wildcard(c: char, literal: bool) -> bool {
     !literal && matches!(c, '*' | '@' | '#')
 }
 
-fn pattern_of(chars: &[(char, bool)]) -> Vec<Unit> {
+fn pattern_of(form: TextKeys, chars: &[(char, bool)]) -> Vec<Unit> {
     chars
         .iter()
         .filter_map(|&(c, literal)| match c {
@@ -996,14 +1082,23 @@ fn pattern_of(chars: &[(char, bool)]) -> Vec<Unit> {
             '@' if !literal => Some(Unit::One),
             '#' if !literal => Some(Unit::Digit),
             c => {
-                let key = char_key(c);
+                let key = char_key(form, c);
                 (!key.is_empty()).then_some(Unit::Char(key))
             }
         })
         .collect()
 }
 
-fn text_terms(text: &str) -> Vec<Term> {
+/// A value's characters as a phrase compares them: in lower case, but in
+/// Unicode raw, whose keys keep case, as written.
+fn phrase_chars(form: TextKeys, text: impl Iterator<Item = char>) -> Vec<char> {
+    match form {
+        TextKeys::Raw => text.collect(),
+        _ => text.flat_map(char::to_lowercase).collect(),
+    }
+}
+
+fn text_terms(form: TextKeys, text: &str) -> Vec<Term> {
     let mut terms = Vec::new();
     for raw in lex_terms(text) {
         let mut chars = raw.chars.as_slice();
@@ -1018,31 +1113,32 @@ fn text_terms(text: &str) -> Vec<Term> {
                 matches!(chars.first(), Some(('*', false))) && first_quote.is_some_and(|q| q > 0);
             let trailing_star = matches!(chars.last(), Some(('*', false)))
                 && last_quote.is_some_and(|q| q + 1 < chars.len());
-            let inner: Vec<char> = chars
-                .iter()
-                .enumerate()
-                .filter(|&(i, &(c, literal))| {
-                    !(c == '"' && !literal)
-                        && !(anywhere && i == 0)
-                        && !(trailing_star && i + 1 == chars.len())
-                })
-                .flat_map(|(_, &(c, _))| c.to_lowercase())
-                .collect();
+            let inner: Vec<char> = phrase_chars(
+                form,
+                chars
+                    .iter()
+                    .enumerate()
+                    .filter(|&(i, &(c, literal))| {
+                        !(c == '"' && !literal)
+                            && !(anywhere && i == 0)
+                            && !(trailing_star && i + 1 == chars.len())
+                    })
+                    .map(|(_, &(c, _))| c),
+            );
             terms.push(Term::Phrase {
                 text: inner,
                 anywhere,
                 open_end: !anywhere || trailing_star,
             });
         } else if chars.iter().any(|&(c, l)| is_wildcard(c, l)) {
-            terms.push(Term::Pattern(pattern_of(chars)));
+            terms.push(Term::Pattern(pattern_of(form, chars)));
         } else {
             let plain: String = chars.iter().map(|&(c, _)| c).collect();
             for word in words(&plain) {
-                let key = om_collate::text_key(word);
                 terms.push(if whole_word {
-                    Term::Word(key)
+                    Term::Word(whole_key(form, word))
                 } else {
-                    Term::Prefix(key)
+                    Term::Prefix(prefix_key(form, word))
                 });
             }
         }
@@ -1061,19 +1157,21 @@ fn starts_with_key(word: &[u8], prefix: &[u8]) -> bool {
 /// kept for the next term, so that a criterion of many terms reads the
 /// value once rather than once per term.
 struct ValueWords<'a> {
+    form: TextKeys,
     value: &'a str,
     words: Vec<&'a str>,
     keys: Vec<Option<Vec<u8>>>,
     units: Vec<Option<KeyedChars>>,
-    /// The value's characters in lower case, for phrases.
-    lowered: Option<Vec<char>>,
+    /// The value as phrases compare it ([`phrase_view`]).
+    lowered: Option<PhraseView>,
 }
 
 impl<'a> ValueWords<'a> {
-    fn new(value: &'a str) -> Self {
+    fn new(form: TextKeys, value: &'a str) -> Self {
         let words = words(value);
         let count = words.len();
         ValueWords {
+            form,
             value,
             words,
             keys: vec![None; count],
@@ -1084,8 +1182,9 @@ impl<'a> ValueWords<'a> {
 
     /// Whether the key of a word of the value passes `test`.
     fn any_key(&mut self, test: impl Fn(&[u8]) -> bool) -> bool {
+        let form = self.form;
         (0..self.words.len())
-            .any(|i| test(self.keys[i].get_or_insert_with(|| om_collate::text_key(self.words[i]))))
+            .any(|i| test(self.keys[i].get_or_insert_with(|| whole_key(form, self.words[i]))))
     }
 
     fn matches(&mut self, term: &Term) -> bool {
@@ -1094,9 +1193,10 @@ impl<'a> ValueWords<'a> {
             Term::Word(word) => self.any_key(|key| key == word.as_slice()),
             // A pattern of wildcards alone matches any word.
             Term::Pattern(pattern) => (0..self.words.len()).any(|i| {
+                let form = self.form;
                 pattern_matches(
                     pattern,
-                    self.units[i].get_or_insert_with(|| units(self.words[i])),
+                    self.units[i].get_or_insert_with(|| units(form, self.words[i])),
                 )
             }),
             Term::Phrase {
@@ -1104,10 +1204,8 @@ impl<'a> ValueWords<'a> {
                 anywhere,
                 open_end,
             } => {
-                let value = self.value;
-                let lowered = self
-                    .lowered
-                    .get_or_insert_with(|| value.chars().flat_map(char::to_lowercase).collect());
+                let (form, value) = (self.form, self.value);
+                let lowered = self.lowered.get_or_insert_with(|| phrase_view(form, value));
                 phrase_matches(text, *anywhere, *open_end, lowered)
             }
         }
@@ -1191,8 +1289,14 @@ impl Chain {
 
     /// The criterion this run applies to `operand`; `None` for the run
     /// alone (it ended with a lone `!`).
-    fn apply(self, operand: Option<Kind>, data_type: DataType) -> Option<Kind> {
-        let boxed = move |kind| Box::new(Criterion { data_type, kind });
+    fn apply(self, operand: Option<Kind>, data_type: DataType, text: TextKeys) -> Option<Kind> {
+        let boxed = move |kind| {
+            Box::new(Criterion {
+                data_type,
+                kind,
+                text,
+            })
+        };
         let mut kind = operand;
         if self.relaxed_duplicates {
             kind = Some(Kind::Duplicates(kind.map(boxed)));
@@ -1224,7 +1328,11 @@ impl Criterion {
             return Err(Unreadable);
         }
         let kind = Self::kind(text, data_type, ctx)?;
-        Ok(Some(Criterion { data_type, kind }))
+        Ok(Some(Criterion {
+            data_type,
+            kind,
+            text: ctx.text,
+        }))
     }
 
     /// The kind of `text`: its leading `!` and `~`, read in a loop
@@ -1262,7 +1370,7 @@ impl Criterion {
                 break Some(Self::operand(rest, data_type, ctx)?);
             }
         };
-        chain.apply(operand, data_type).ok_or(Unreadable)
+        chain.apply(operand, data_type, ctx.text).ok_or(Unreadable)
     }
 
     /// The kind of a criterion without a leading `!` or `~`.
@@ -1314,13 +1422,13 @@ impl Criterion {
                     let chars = literal_chars(rest.trim());
                     let wild = chars.iter().any(|&(c, l)| is_wildcard(c, l));
                     return Ok(Kind::Whole(if wild {
-                        Whole::Pattern(pattern_of(&chars))
+                        Whole::Pattern(pattern_of(ctx.text, &chars))
                     } else {
                         let plain: String = chars.iter().map(|&(c, _)| c).collect();
-                        Whole::Key(om_collate::text_key(plain.trim()))
+                        Whole::Key(whole_key(ctx.text, plain.trim()))
                     }));
                 }
-                Ok(Kind::Terms(text_terms(text)))
+                Ok(Kind::Terms(text_terms(ctx.text, text)))
             }
             DataType::Number => {
                 let value = text
@@ -1328,7 +1436,9 @@ impl Criterion {
                     .or(text.strip_prefix('='))
                     .unwrap_or(text);
                 if value.contains(['*', '@', '#']) {
+                    // A number's characters, whatever the form of text.
                     return Ok(Kind::Whole(Whole::Pattern(pattern_of(
+                        TextKeys::Collated,
                         &value.chars().map(|c| (c, false)).collect::<Vec<_>>(),
                     ))));
                 }
@@ -1383,7 +1493,7 @@ impl Criterion {
             }
             DataType::Container => Err(Unreadable),
             DataType::Text | DataType::Unknown(_) => {
-                let key = om_collate::text_key(text.trim_matches('"'));
+                let key = whole_key(ctx.text, text.trim_matches('"'));
                 Ok((Bound::Word(key.clone()), Bound::Word(key)))
             }
         }
@@ -1432,15 +1542,15 @@ impl Criterion {
             }
             Kind::Terms(terms) => {
                 !terms.is_empty() && {
-                    let mut words = ValueWords::new(value);
+                    let mut words = ValueWords::new(self.text, value);
                     terms.iter().all(|term| words.matches(term))
                 }
             }
             Kind::Whole(Whole::Key(key)) => {
-                lines(value).any(|l| om_collate::text_key(l.trim()) == *key)
+                lines(value).any(|l| whole_key(self.text, l.trim()) == *key)
             }
             Kind::Whole(Whole::Pattern(pattern)) => {
-                lines(value).any(|l| pattern_matches(pattern, &units(l.trim())))
+                lines(value).any(|l| pattern_matches(pattern, &units(self.text, l.trim())))
             }
             Kind::Number(n) => Number::parse(value).is_some_and(|v| v == *n),
             Kind::Range { low, high } => self.in_range(value, order, low.as_ref(), high.as_ref()),
@@ -1503,7 +1613,7 @@ impl Criterion {
             DataType::Container => false,
             DataType::Text | DataType::Unknown(_) => words(value)
                 .iter()
-                .any(|w| test(Bound::Word(om_collate::text_key(w)))),
+                .any(|w| test(Bound::Word(whole_key(self.text, w)))),
         }
     }
 }
@@ -1583,6 +1693,12 @@ mod tests {
         assert!(text("*\"son & Phillips\"", "Johnson & Phillips"));
         assert!(!text("*\"son & Phillips\"", "Paulson & Philson"));
         assert!(!text("*\"Phil\"", "Phillips") && text("*\"Phil\"*", "Phillips"));
+        // Phrases start and end where the word index's words do (7.1).
+        assert!(!text("\"t\"", "don't") && text("\"don't\"", "don't"));
+        assert!(text(
+            "\"\u{30c6}\u{30ad}\u{30b9}\u{30c8}\"",
+            "\u{65e5}\u{672c}\u{8a9e}\u{306e}\u{30c6}\u{30ad}\u{30b9}\u{30c8}"
+        ));
         // == the whole field, = whole words.
         assert!(text("==John", "John") && !text("==John", "John Smith"));
         assert!(text("==John Smith", "John Smith"));
@@ -1833,8 +1949,12 @@ mod tests {
 
     #[test]
     fn wildcard_matching_agrees_with_the_recursive_reference() {
-        let pattern =
-            |text: &str| pattern_of(&text.chars().map(|c| (c, false)).collect::<Vec<_>>());
+        let pattern = |text: &str| {
+            pattern_of(
+                TextKeys::Collated,
+                &text.chars().map(|c| (c, false)).collect::<Vec<_>>(),
+            )
+        };
         // The patterns and words of the Claris examples above, and others.
         let mut patterns: Vec<String> = [
             "Gr@y", "@on", "#", "##", "#3", "Jo*n", "J*r", "*phan*", "S*", "", "*", "**", "*a",
@@ -1867,7 +1987,10 @@ mod tests {
         };
         patterns.extend(all(&['a', '1', '@', '#', '*'], 4));
         words.extend(all(&['a', 'b', '1'], 4));
-        let words: Vec<_> = words.iter().map(|w| (w, units(w))).collect();
+        let words: Vec<_> = words
+            .iter()
+            .map(|w| (w, units(TextKeys::Collated, w)))
+            .collect();
         for p in &patterns {
             let units_of_p = pattern(p);
             for (w, units_of_w) in &words {
