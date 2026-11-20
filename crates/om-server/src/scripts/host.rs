@@ -88,6 +88,7 @@ mod containers;
 mod design;
 mod files;
 mod get;
+mod portals;
 mod related;
 mod requests;
 mod sort;
@@ -372,6 +373,8 @@ struct Window {
     /// The sort order of the found set (Sort Records), until the found
     /// set is replaced.
     sort: Option<SortSpec>,
+    /// The active portal row ([`portals`]).
+    portal: Option<portals::ActiveRow>,
 }
 
 impl Window {
@@ -1078,6 +1081,7 @@ impl ServerHost {
             mode: Mode::Browse,
             browse_current: 0,
             sort: None,
+            portal: None,
         })
     }
 
@@ -2805,6 +2809,31 @@ impl CalcHost for ServerHost {
         )
     }
 
+    /// A related field a step's calculation reads is the active portal
+    /// row's record when that row is one of the related records (the
+    /// creation row: no record), else the first related record
+    /// ([`portals`]).
+    fn related_record(
+        &self,
+        occurrence: u64,
+        record: u64,
+        related: u64,
+        index: usize,
+    ) -> Result<Option<u64>, CalcError> {
+        if !self.may_view() {
+            return Err(CalcError::from_code(NO_PRIVILEGES).expect("nonzero"));
+        }
+        if index == 0 {
+            if let Some(row) = self.active_row_record(occurrence, record, related)? {
+                return Ok(row);
+            }
+        }
+        Ok(self
+            .related_records(occurrence, record, related)?
+            .get(index)
+            .copied())
+    }
+
     fn related_records(
         &self,
         occurrence: u64,
@@ -3183,6 +3212,10 @@ impl Navigation for ServerHost {
         let mut next = self.window_on(index).ok_or(ErrorCode::LAYOUT_MISSING)?;
         if let Some(old) = &self.window {
             next.mode = old.mode;
+            // The current layout again keeps the active portal row (s35).
+            if old.layout == index {
+                next.portal.clone_from(&old.portal);
+            }
             if old.table == next.table {
                 // The same table keeps its found set, sort and record.
                 next.found.clone_from(&old.found);
@@ -3215,7 +3248,29 @@ impl Navigation for ServerHost {
             RecordMove::Number(n) if n < 1 => return Err(ErrorCode::RECORD_MISSING.into()),
             RecordMove::Number(n) => (n as usize - 1).min(last),
         };
+        self.keep_portal_row()?;
         Ok(true)
+    }
+
+    /// Go to Portal Row ([`portals`]).
+    fn go_to_portal_row(
+        &mut self,
+        movement: RecordMove,
+        select: bool,
+        _with_dialog: bool,
+    ) -> HostResult<bool> {
+        ServerHost::go_to_portal_row(self, movement, select)
+    }
+
+    /// Go to Next Field and Go to Previous Field: 0, as on FileMaker
+    /// Server (13.24); the focus stays where it is.
+    fn go_to_next_field(&mut self, _forward: bool) -> HostResult {
+        Ok(())
+    }
+
+    /// Go to Object ([`portals`]).
+    fn go_to_object(&mut self, name: &str, repetition: u32) -> HostResult {
+        self.go_to_named_object(name, repetition)
     }
 
     /// Go to Field: the field gets the focus; with none the field is left,
@@ -3476,8 +3531,12 @@ impl Records for ServerHost {
         Ok(())
     }
 
+    /// Commit Records also leaves the portal (13.24).
     fn commit_records(&mut self, options: CommitOptions) -> HostResult {
         self.focus = None;
+        if let Some(window) = self.window.as_mut() {
+            window.portal = None;
+        }
         self.commit_open(Entry::script(options.skip_validation, false))
     }
 

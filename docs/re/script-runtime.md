@@ -2994,8 +2994,29 @@ Server engine (11.3, 11.5)
   summary reorder are 3. The found set stays sorted (`Get ( SortState )`
   1) until a step replaces it (Show All, Show Omitted Only, a find, Go to
   List of Records, Go to Related Record).
+- Portal rows (13.24): Go to Portal Row moves through the related records
+  of the window's record in the relationship's order, then the creation
+  row when the relationship allows creating records and the portal
+  scrolls (a portal that does not scroll reaches its visible rows); it
+  uses the active portal, else the first in stacking order. It keeps the
+  field entered, else enters the row's first field (top to bottom, then
+  left to right), and with Select makes the row active without a field.
+  Go to Object makes a portal active as a whole (its row kept), enters a
+  portal's field in the active row (row 1 without one; 101, the portal
+  active, when it has no rows) or another field; no such object is 116,
+  an empty name 5, a repetition the field lacks 102. Go to Next and
+  Previous Field are 0. A step's calculation, and `Get (
+  ActiveFieldContents )`, read the active row's record for the portal's
+  related fields (the creation row reads empty); field calculations read
+  the first related record as before. Go to Record keeps the row number
+  (101, no row active, when the next record lacks it), the current layout
+  again keeps it, another layout or Commit Records clears it. Set Field
+  into a related field and Delete Portal Row are still 3, and a portal
+  that sorts or filters its own rows is refused (3) rather than numbered
+  in an order that may not be FileMaker's.
 - Steps with a host method: Go to Layout, Go to Record/Request, Go to
-  Field, Go to Related Record, Go to List of Records (same window), Enter
+  Field, Go to Portal Row, Go to Object, Go to Next/Previous Field, Go to
+  Related Record, Go to List of Records (same window), Enter
   Browse/Find Mode, New, Duplicate, Delete, Delete All, Open, Revert and
   Commit Records, Truncate Table (the window's table),
   Open/Commit/Revert Transaction, Set Field, Set Field By Name, the Insert

@@ -114,7 +114,11 @@ impl ServerHost {
             // for a script session's file [O: harness, not hosted].
             MULTI_USER_STATE => number(0),
             PAGE_NUMBER => text(""),
-            ACTIVE_PORTAL_ROW_NUMBER => number(0),
+            ACTIVE_PORTAL_ROW_NUMBER => number(
+                window
+                    .and_then(|w| w.portal.as_ref())
+                    .map_or(0, |r| i64::try_from(r.row).unwrap_or(0)),
+            ),
             ACTIVE_REPETITION_NUMBER => number(i64::from(self.focus.is_some())),
             ACTIVE_FIELD_NAME
             | ACTIVE_FIELD_TABLE_NAME
@@ -304,7 +308,12 @@ impl ServerHost {
     /// the object's name; empty without a focus.
     fn focus_answer(&self, selector: u8) -> Value {
         let Some(focus) = &self.focus else {
-            return Value::empty_text();
+            // A portal active without a field entered is the active object.
+            let portal = self.window.as_ref().and_then(|w| w.portal.as_ref());
+            return match (selector, portal) {
+                (ACTIVE_LAYOUT_OBJECT_NAME, Some(row)) => Value::text(&row.name),
+                _ => Value::empty_text(),
+            };
         };
         let contents = || -> String {
             let Some(window) = self.window.as_ref() else {
@@ -313,6 +322,11 @@ impl ServerHost {
             let record = match window.mode {
                 Mode::Find => NO_RECORD,
                 _ => window.record().unwrap_or(NO_RECORD),
+            };
+            let record = match self.active_row_record(window.occurrence, record, focus.occurrence) {
+                Ok(Some(Some(related))) => related,
+                Ok(Some(None)) | Err(_) => return String::new(),
+                Ok(None) => record,
             };
             let value = self
                 .field_value(focus.occurrence, record, focus.field, 1)

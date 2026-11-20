@@ -1653,3 +1653,113 @@ fn delete_account_removes_the_account_and_its_index_entries() {
     assert_eq!(value(4), Some(&1u32.to_be_bytes()[..]));
     assert_eq!(value(0), Some(&[1, 3][..]));
 }
+
+/// Portal rows in a server script (script-runtime.md 13.24, s35-portals):
+/// Go to Portal Row moves through the related records of the window's
+/// record, entering the row's first field; a step's calculation reads the
+/// active row's record for the portal's related fields; Next past the last
+/// row keeps it; Go to Object on the portal keeps the row with no field
+/// entered, by a name no object has is 116 and an empty name is 5; Commit
+/// Records leaves the portal (#100).
+#[test]
+fn server_scripts_move_through_portal_rows() {
+    use fixture::{
+        exit_with, go_to_layout, go_to_record, on, script, set_field_in, set_variable, with_calc,
+    };
+    use om_hbam::OwnedNode;
+    // Two notes of task 1 ("Write tests"), made by the script itself.
+    let mut steps = vec![on(86, true), go_to_layout(fixture::NOTES_LAYOUT)];
+    for body in ["first", "second"] {
+        steps.extend([
+            ScriptStep::new(7),
+            set_field_in(fixture::NOTES_OCCURRENCE, fixture::TASK, "\"Write tests\""),
+            set_field_in(
+                fixture::NOTES_OCCURRENCE,
+                fixture::BODY,
+                &format!("{body:?}"),
+            ),
+            ScriptStep::new(75),
+        ]);
+    }
+    let row = "Get ( ActivePortalRowNumber ) & \"/\" & Notes::Body & \"/\" & \
+               Get ( ActiveLayoutObjectName ) & \"/\" & Get ( ActiveFieldContents )";
+    steps.extend([
+        go_to_layout(fixture::LAYOUT),
+        go_to_record(1),
+        {
+            let mut step = ScriptStep::new(99);
+            step.value = 1;
+            step
+        },
+        set_variable("$first", row),
+        {
+            let mut step = ScriptStep::new(99);
+            step.value = 4;
+            step
+        },
+        set_variable("$second", row),
+        {
+            let mut step = ScriptStep::new(99);
+            step.value = 4;
+            step
+        },
+        set_variable(
+            "$past",
+            "Get ( LastError ) & \"/\" & Get ( ActivePortalRowNumber )",
+        ),
+        with_calc(145, "\"Notes portal\""),
+        set_variable("$portal", row),
+        with_calc(145, "\"Nope\""),
+        set_variable("$missing", "Get ( LastError )"),
+        with_calc(145, "\"\""),
+        set_variable("$empty", "Get ( LastError )"),
+        with_calc(145, "\"Notes portal\""),
+        ScriptStep::new(75),
+        exit_with(
+            "$first & \"|\" & $second & \"|\" & $past & \"|\" & $portal & \"|\" & $missing \
+             & \"|\" & $empty & \"|\" & Get ( ActivePortalRowNumber )",
+        ),
+    ]);
+    let scripts = [script(6, "Portal rows", steps)];
+    let mut root = fixture::tree(&scripts, true);
+    fixture::add_calculated(&mut root);
+    // The Tasks layout gets a portal of Notes (object 50) holding Body
+    // (object 51), named for Go to Object.
+    let layout = uint_segment(fixture::LAYOUT);
+    let alias = om_hbam::serial::id_of_raw(fixture::NOTES_OCCURRENCE).unwrap();
+    let rect = |top: f64, left: f64, bottom: f64, right: f64| om_layout::Rect {
+        top,
+        left,
+        bottom,
+        right,
+        ..Default::default()
+    };
+    let objects = [
+        om_layout::encode::portal_object(50, &rect(100.0, 20.0, 190.0, 400.0), &[51], alias, 3),
+        om_layout::encode::portal_field_object(
+            51,
+            &rect(100.0, 20.0, 125.0, 220.0),
+            alias,
+            fixture::BODY,
+        ),
+    ];
+    let store = om_layout::encode::append_to_store(&[], &[50], &objects);
+    root.put(
+        &[&[4], &[5], &layout, &[7]],
+        OwnedNode::leaf(Vec::new(), store),
+    );
+    for (id, name) in [(50u64, "Notes portal"), (51, "Note body")] {
+        root.put(
+            &[&[4], &[5], &layout, &[5], &serial::encode(id), &[0x10]],
+            om_scripts::text_node(&[], name),
+        );
+    }
+    let file = TempFile::from_tree("portal-rows", &root);
+    let port = start(&file, None);
+    let mut client = logged_in(port, "portals");
+    assert_eq!(
+        run(&mut client, 6).1,
+        "1/first/Note body/first|2/second/Note body/second|101/2|2/second/Notes portal/|116|5|0"
+    );
+    client.disconnect().unwrap();
+}
