@@ -867,14 +867,44 @@ fn home_of(path: &Path) -> &Path {
 fn protected(shared: &Shared) -> io::Result<Protected> {
     let mut protected = Protected::default();
     for configured in shared.hosting.configured() {
-        let hosted = shared.hosting.slot_named(&configured.name).is_some();
+        let slot = shared.hosting.slot_named(&configured.name);
         match protect(&mut protected, &configured.path) {
             Ok(()) => {}
-            Err(e) if !hosted && absent(&e) => protected.add_unresolved(&configured.path),
+            Err(e) if slot.is_none() && absent(&e) => protected.add_unresolved(&configured.path),
             Err(e) => return Err(e),
+        }
+        if let Some(served) = slot.and_then(|slot| slot.served()) {
+            // Where its saves go, when the path's last part was a link that
+            // has been pointed elsewhere since (#468).
+            if served.at.place() != configured.path.as_path() {
+                match protect(&mut protected, served.at.place()) {
+                    Ok(()) => {}
+                    Err(e) if absent(&e) => protected.add_unresolved(served.at.place()),
+                    Err(e) => return Err(e),
+                }
+            }
+            // A served file whose path no longer leads to the file its
+            // store last saved: that file may lie anywhere, an old backup
+            // included, so where its data lies is unknown (#468).
+            if !leads_to_saved(&served) {
+                protected.add_unresolved(&configured.path);
+            }
         }
     }
     Ok(protected)
+}
+
+/// Whether `hosted`'s path leads to the file its store was read from or
+/// last saved as (always, where the store has no identity for it).
+fn leads_to_saved(hosted: &Hosted) -> bool {
+    let Some(expected) = hosted.read_store().file() else {
+        return true;
+    };
+    hosted
+        .at
+        .folder_now()
+        .and_then(|folder| folder.entry(hosted.at.name()))
+        .is_ok_and(|entry| entry.is_some_and(|e| e.regular && e.id == Some(expected)))
 }
 
 /// A file or folder that is not there.
@@ -1036,7 +1066,15 @@ struct Source {
 fn open_source(hosted: &Hosted) -> io::Result<Source> {
     let (file, saves, unsaved) = {
         let store = hosted.read_store();
-        let file = File::open(&hosted.path)?;
+        // Only the file the server read or last saved there (#468).
+        let file = hosted.at.folder_now()?.open_regular(hosted.at.name())?;
+        if let Some(expected) = store.file() {
+            if crate::anchored::file_identity(&file)? != Some(expected) {
+                return Err(io::Error::other(
+                    "the path no longer leads to the file this server read or last saved",
+                ));
+            }
+        }
         (file, store.saves(), store.has_unsaved_changes())
     };
     let metadata = file.metadata()?;

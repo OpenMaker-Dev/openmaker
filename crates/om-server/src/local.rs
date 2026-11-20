@@ -513,7 +513,7 @@ impl LocalHost {
         }
         let mut journal = store.begin_commit();
         store.replace_node_in(&mut journal, vec![occurrence, vec![7]], node);
-        match store.save_commit(&file.path, journal) {
+        match store.save_commit(&file.at, journal) {
             Ok(()) => true,
             Err(e) => {
                 warn!(
