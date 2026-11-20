@@ -114,11 +114,10 @@ impl Values {
 }
 
 /// The whole key of one line or typed value, before an index cuts it, in
-/// only the native forms established by query-program.md 7.2-7.3. In
-/// particular, `om_query::keys::number_key` also has OpenMaker-specific
-/// negative/fractional forms; those cannot stand in for a native index.
-/// Whole keys tell apart values that share a 219-byte cut key (7.1), and
-/// sort as the index does.
+/// only the native forms established by query-program.md 7.2-7.3. A typed
+/// value with no digit, which FileMaker lists as invalid (`fe ff`), is not
+/// a value a list shows. Whole keys tell apart values that share a 219-byte
+/// cut key (7.1), and sort as the index does.
 fn native_key(
     data_type: DataType,
     value: &str,
@@ -1031,7 +1030,7 @@ mod native_key_tests {
     use super::*;
 
     #[test]
-    fn fallback_keys_match_literal_native_forms_instead_of_server_extensions() {
+    fn fallback_keys_are_the_native_forms() {
         for (kind, value, order, language, key) in [
             (
                 DataType::Number,
@@ -1052,7 +1051,14 @@ mod native_key_tests {
                 "21:26:57",
                 DateOrder::MonthDayYear,
                 21,
-                vec![0x80, 5, 0x88, 0x32, 0x80],
+                vec![0x80, 0, 0, 0x80, 5, 0x88, 0x32, 0x80],
+            ),
+            (
+                DataType::Number,
+                "-2",
+                DateOrder::MonthDayYear,
+                21,
+                vec![0x7f, 0xfe, 0xcf],
             ),
             (
                 DataType::Timestamp,
@@ -1088,11 +1094,10 @@ mod native_key_tests {
                 Some(key)
             );
         }
-        for (kind, value) in [
-            (DataType::Number, "-2"),
-            (DataType::Number, "2.5"),
-            (DataType::Date, "2/31/2026"),
-        ] {
+        // Digits among other characters
+        // (https://github.com/OpenMaker-Dev/openmaker/issues/246) and an
+        // impossible date.
+        for (kind, value) in [(DataType::Number, "1,234"), (DataType::Date, "2/31/2026")] {
             assert_eq!(
                 native_key(kind, value, DateOrder::MonthDayYear, TextKeys::Collated)
                     .unwrap_err()

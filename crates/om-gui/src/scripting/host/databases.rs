@@ -1,4 +1,5 @@
 //! Open File and the file/window boundary of external script calls.
+use super::windows::{same_window_key, WindowKey};
 use super::{ScriptEvent, Shared, WorkerHost};
 use crate::scripting::{databases::OpenFile, session::Endpoint, SessionContext};
 use om_data::{
@@ -786,17 +787,23 @@ impl WorkerHost<'_> {
             .map(|(id, _)| *id)
     }
 
-    pub(super) fn named_database_window(&self, name: &str) -> Option<WindowId> {
+    pub(super) fn named_database_window(&self, key: WindowKey, name: &str) -> Option<WindowId> {
         self.files.peers.values().find_map(|f| {
             std::iter::once(&f.state.window)
                 .chain(f.state.others.iter().rev())
                 .find(|w| {
-                    !w.state.hidden && {
-                        w.state.title.as_deref().map_or_else(
-                            || hosted_key(&f.state.context.file) == hosted_key(name),
-                            |title| title == name,
-                        )
-                    }
+                    !w.state.hidden
+                        && match key {
+                            WindowKey::ExactName => w.state.title.as_deref().map_or_else(
+                                || hosted_key(&f.state.context.file) == hosted_key(name),
+                                |title| title == name,
+                            ),
+                            WindowKey::Name => w.state.title.as_deref().map_or_else(
+                                || hosted_key(&f.state.context.file) == hosted_key(name),
+                                |title| same_window_key(title, name),
+                            ),
+                            WindowKey::Uuid => same_window_key(&w.state.uuid, name),
+                        }
                 })
                 .map(|w| u64::from(w.id()))
         })

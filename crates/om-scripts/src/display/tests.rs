@@ -26,7 +26,7 @@ impl Contacts {
         Self {
             names,
             layouts: HashMap::from([(3, ("Contact Details", "Contacts"))]),
-            scripts: HashMap::from([(2, "Go to Entry Field")]),
+            scripts: HashMap::from([(2, "Go to Entry Field"), (3, "Import from file: CSV")]),
         }
     }
 }
@@ -454,13 +454,59 @@ fn psos_canonical_names_have_a_real_calculation_span() {
         schema.params[name.parameter.unwrap()].name,
         "Specify by name"
     );
-    // Callback steps retain their existing name in slot 1 and callback
-    // in slot 2; these are not PSOS's canonical by-name layout.
-    step.opcode = 210;
-    step.set_calculation(1, Some(&calc(&names, "\"Server\"")));
-    assert!(step_line(&step, &names)
-        .text
-        .contains("Specified: By name ; \"Server\""));
+}
+
+#[test]
+fn psos_callback_reads_and_writes_the_slots_filemaker_stores() {
+    // The slots of #188's two FileMaker Pro 26.0.3 variants: the callback
+    // from the list (script 2 as the literal "02" in slot 3, `kOption`)
+    // and by name (`[00 6]` = 1, slot 7), which keeps that slot 3.
+    let names = Contacts::new();
+    let mut step = ScriptStep::new(210);
+    step.set_list_value(1, Some(1));
+    step.flags |= flag::STORE_REFERENCE | flag::RESTORE;
+    step.set_calculation(2, Some(&calc(&names, "\"Server\"")));
+    step.set_calculation(0, Some(&calc(&names, "\"ServerMarker\"")));
+    step.set_calculation(3, Some(&calc(&names, "\"02\"")));
+    step.set_calculation(4, Some(&calc(&names, "\"CallbackMarker\"")));
+    step.flags |= flag::OPTION | flag::OPTION2 | flag::MENU_SELECTION;
+    step.value = 3;
+    let text = step_text(&step, &names);
+    assert_eq!(
+        text,
+        "Perform Script on Server with Callback [ Specified: By name ; \"Server\" ; \
+         Parameter: \"ServerMarker\" ; Callback script specified: From list ; \
+         “Go to Entry Field” ; Callback script parameter: \"CallbackMarker\" ; \
+         State: Resume ]"
+    );
+    assert_eq!(canonical(&pasted(&text)), canonical(&step), "{text}");
+
+    step.set_list_value(6, Some(1));
+    step.set_calculation(7, Some(&calc(&names, "\"Other\"")));
+    step.flags |= flag::SELECT_ALL | flag::EXIT;
+    let text = step_text(&step, &names);
+    assert!(
+        text.contains(
+            "Callback script specified: By name ; \"Other\" ; \
+             Callback script parameter: \"CallbackMarker\" ;"
+        ),
+        "{text}"
+    );
+    // The stale slot 3 is not shown; the text keeps it as stored.
+    assert_eq!(canonical(&pasted(&text)), canonical(&step), "{text}");
+
+    // A script of this file whose name holds " from file: " is not
+    // another file's.
+    let mut local = ScriptStep::new(210);
+    local.set_script_key(StoredKey::from_serial_id(2));
+    local.set_calculation(3, Some(&calc(&names, "\"03\"")));
+    local.flags |= flag::OPTION;
+    let text = step_text(&local, &names);
+    assert!(
+        text.contains("From list ; “Import from file: CSV”"),
+        "{text}"
+    );
+    assert_eq!(canonical(&pasted(&text)), canonical(&local), "{text}");
 }
 
 #[test]
@@ -560,10 +606,29 @@ fn pasted_text_stores_what_filemaker_shows() {
         "Truncate Table [ With dialog: On ; Table: “Contacts” ]",
         "Import Records [ With dialog: On ; Source: “file:a.csv” ]",
         "New Window [ Style: Card ; Name: \"c\" ]",
+        "Go to List of Records [ List of record IDs: \"1¶2\" ; Using layout: “Contact Details” (Contacts) ; New window ]",
+        // FileMaker Pro 26.1.1's steps by name, as OpenMaker shows them [I].
+        "Set Variable by Name [ \"$x\" ; Value: 1 ]",
+        "Set Variable by Name [ \"$\" & \"x\" ; Repetition: 2 ; Value: 1 ]",
+        "Set Variable by Name [ Contacts::First Name[2] ; Value: 1 ]",
+        "Replace Field Contents by Name [ With dialog: Off ; \"Contacts::First Name\" ; Contacts::Last Name ]",
     ];
     for line in lines {
         assert_eq!(shown(&pasted(line)), line);
     }
+    // A target named by a calculation sets kFieldSpecByCalc, as FileMaker
+    // stores it (script-steps.md 4).
+    for line in [
+        lines[lines.len() - 1],
+        "Set Field By Name [ \"Contacts::First Name\" ; 1 ]",
+    ] {
+        assert!(pasted(line).has_flag(flag::FIELD_SPEC_BY_CALC), "{line}");
+    }
+    // Go to List of Records: the ids in slot 7, a new window under
+    // `kTurnOn` (script-steps.md 12.2).
+    let list = pasted(lines[10]);
+    assert!(list.calculation(7).is_some() && list.calculation(0).is_none());
+    assert!(list.has_flag(flag::TURN_ON) && !list.has_flag(flag::OPTION));
     // Insert Text's text is slot 0.
     let text = pasted(lines[0]);
     assert_eq!((text.text(0).as_deref(), text.text(1)), (Some("x"), None));

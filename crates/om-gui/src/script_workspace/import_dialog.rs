@@ -702,7 +702,7 @@ mod tests {
         let file = dir.join("source.tab");
         std::fs::write(&file, "First\tLast\tNotes\rAda\tLovelace\tx\r").unwrap();
         let parts = ImportParts {
-            paths: vec![format!("filelinux:{}", file.display())],
+            paths: vec![crate::scripting::files::file_line(&file)],
             order: None,
             profile: None,
             profile_ex: None,
@@ -773,7 +773,7 @@ mod tests {
             ],
         };
         let parts = ImportParts {
-            paths: vec![format!("filelinux:{}", file.display())],
+            paths: vec![crate::scripting::files::file_line(&file)],
             order: Some(stored.clone()),
             profile: Some(Profile::new(FileType::CommaSeparated)),
             profile_ex: None,
@@ -803,7 +803,7 @@ mod tests {
             mapping: Mapping::Import,
         };
         let parts = ImportParts {
-            paths: vec![format!("filelinux:{}", file.display())],
+            paths: vec![crate::scripting::files::file_line(&file)],
             order: Some(ImportOptions {
                 map: vec![entry(1), entry(2)],
                 ..new_order(0xd00002)
@@ -841,7 +841,7 @@ mod tests {
             mapping: Mapping::Import,
         };
         let parts = ImportParts {
-            paths: vec![format!("filelinux:{}", file.display())],
+            paths: vec![crate::scripting::files::file_line(&file)],
             order: Some(ImportOptions {
                 flags: import_flag::AUTO_ENTER | import_flag::MATCH_NAMES,
                 map: vec![entry(1), entry(2)],
@@ -868,8 +868,11 @@ mod tests {
 
     #[test]
     fn no_readable_source_says_why() {
+        let dir = tempfile::tempdir().unwrap();
         let parts = ImportParts {
-            paths: vec!["filelinux:/nonexistent/om-source.tab".into()],
+            paths: vec![crate::scripting::files::file_line(
+                &dir.path().join("om-source.tab"),
+            )],
             order: None,
             profile: None,
             profile_ex: None,

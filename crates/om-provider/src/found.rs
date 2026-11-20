@@ -726,6 +726,12 @@ impl NativeProvider {
         Ok(found)
     }
 
+    /// The file's own language (`Locale::Type`), which an index in
+    /// language 0 keys text in (query-program.md 7.2).
+    fn file_language(&mut self) -> Result<u32, DataError> {
+        Ok(u32::from(self.calc_schema_cached()?.locale.language.id()))
+    }
+
     /// The records of `table` (out of `all`) that match `criteria`, ANDed:
     /// one SimpleFind of the finders, then the client's filters on stored
     /// values, then the criteria on unstored calculations of `occurrence`
@@ -747,6 +753,7 @@ impl NativeProvider {
         let mut filters: Vec<(usize, Criterion)> = Vec::new();
         // Criteria on unstored calculations, by field id.
         let mut evaluated: Vec<(u64, Criterion)> = Vec::new();
+        let file_language = self.file_language()?;
         for (name, text) in criteria {
             let index = table
                 .fields
@@ -759,7 +766,9 @@ impl NativeProvider {
                     )
                 })?;
             let field = &table.fields[index];
-            let criterion = Criterion::parse(text, field.data_type, context)
+            // Text keyed as the field's index keys it (query-program.md 7.2).
+            let context = context.with_text_keys(read_text_keys(field, file_language));
+            let criterion = Criterion::parse(text, field.data_type, &context)
                 .map_err(|_| found::unreadable(text))?;
             let Some(criterion) = criterion else {
                 continue;
@@ -858,6 +867,7 @@ impl NativeProvider {
         let failed = |e: ClientFindError| client_find_error(table, e);
         let mut client = ClientFind::new(&finders, CLIENT_FIND_BUDGET).map_err(failed)?;
         let order = self.calc_schema_cached()?.locale.date_order;
+        let file_language = self.file_language()?;
         let reads: Vec<(om_hbam::Field, IndexKind, TextKeys)> = client
             .reads()
             .iter()
@@ -865,7 +875,7 @@ impl NativeProvider {
                 let field = table.field(id).cloned().ok_or_else(|| {
                     DataError::with_code(code::FIELD_MISSING, "A find names a missing field.")
                 })?;
-                let text = text_keys(&field)?;
+                let text = text_keys(&field, file_language)?;
                 Ok((field, index, text))
             })
             .collect::<Result<_, DataError>>()?;
@@ -1117,10 +1127,11 @@ impl NativeProvider {
                 let all: Vec<u64> = record_ids(session, near)?.iter().collect();
                 let fields: Vec<u64> = reads.iter().map(|(id, _)| *id).collect();
                 // The keys the field's value index holds for each record.
+                let file_language = self.file_language()?;
                 let text: Vec<(u64, TextKeys)> = fields
                     .iter()
                     .filter_map(|id| near_table.field(*id))
-                    .map(|field| Ok((field.id, text_keys(field)?)))
+                    .map(|field| Ok((field.id, text_keys(field, file_language)?)))
                     .collect::<Result<_, DataError>>()?;
                 let mut related = RidList::new();
                 for batch in all.chunks(SORT_BATCH) {
@@ -1398,10 +1409,23 @@ pub(crate) fn indexed_find(
 /// The duplicate-state accounting budget for a client find ([`ClientFind`]).
 const CLIENT_FIND_BUDGET: usize = 64 << 20;
 
+/// How a find reads `field`'s index when the host has one: its index
+/// language's form, language 0 the file's own (`file_language`), English
+/// where OpenMaker builds no form ([`om_data::rules::read_text_keys`]).
+fn read_text_keys(field: &om_hbam::Field, file_language: u32) -> TextKeys {
+    match field.decoded_options() {
+        Some(options) if field.data_type == om_hbam::DataType::Text => {
+            om_data::rules::read_text_keys(options.index_language(), file_language)
+        }
+        _ => TextKeys::Collated,
+    }
+}
+
 /// How `field`'s indexes key text: the form of its index language
-/// (query-program.md 7.2). A text field in a language whose keys are not
-/// established cannot be found without the host's index.
-fn text_keys(field: &om_hbam::Field) -> Result<TextKeys, DataError> {
+/// (query-program.md 7.2), language 0 the file's own (`file_language`). A
+/// text field in a language whose keys are not established cannot be found
+/// without the host's index.
+fn text_keys(field: &om_hbam::Field, file_language: u32) -> Result<TextKeys, DataError> {
     if field.data_type != om_hbam::DataType::Text {
         return Ok(TextKeys::Collated);
     }
@@ -1417,7 +1441,7 @@ fn text_keys(field: &om_hbam::Field) -> Result<TextKeys, DataError> {
             )
         })?
         .index_language();
-    TextKeys::of_language(language).ok_or_else(|| {
+    om_data::rules::written_text_keys(language, file_language).ok_or_else(|| {
         DataError::with_code(
             code::UNSUPPORTED,
             format!(

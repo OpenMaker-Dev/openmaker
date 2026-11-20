@@ -123,6 +123,16 @@ Done, verified against FileMaker:
   finds for indexed `field = constant`); all 1,244 runnable sample-file
   vectors match on the hosted path.
 
+Perform Script on Server with Callback reads the slots FileMaker Pro
+writes (script-steps.md 12.2): the callback by name (`[00 6]` = 1, slot 7)
+or from the list (the key literal in slot 3), and its parameter in slot 4;
+the step text shows and writes the same. These are OpenMaker's choices,
+not compared with FileMaker: a callback script the file does not have is
+error 104 and the server is not called, and a callback in another file is
+error 3 ([#372](https://github.com/OpenMaker-Dev/openmaker/issues/372)). The step text writes the list key's hex digits
+a-f in upper case ([#371](https://github.com/OpenMaker-Dev/openmaker/issues/371)), and pasting the step as FileMaker XML
+refuses its callback ([#370](https://github.com/OpenMaker-Dev/openmaker/issues/370)).
+
 The desktop host answers the Get selectors, layout-object attributes
 and Design functions for other files as FileMaker Pro 26.0.3 does
 (calc-functions.md 6.3, measured on local files in the isolated capture
@@ -189,6 +199,12 @@ repetitions remain refused on these layouts
 ([#43](https://github.com/OpenMaker-Dev/openmaker/issues/43)). The owning file
 is reached through its data source's paths, on its own host
 (desktop-files.md); native FileMaker acceptance is unmeasured.
+
+Go to List of Records finds its record ids in calculation slot 7, and
+Show in new window (`0x20000`) opens a window with the step's name, bounds
+and style first, as Go to Related Record's does (script-steps.md 12.2).
+OpenMaker Server refuses the new window with error 3. Neither is compared
+with FileMaker, which has not been measured running the step.
 
 Fixes from a review of import data safety:
 - Each imported row is checked once with the import's own auto-enter and
@@ -279,7 +295,7 @@ hostile text cannot overflow a script thread's stack (execute-sql.md,
 Import Records, Export Records and Save Records as Excel (`om-transfer`)
 run in server scripts and the desktop client. Formats: tab- and
 comma-separated, merge, HTML table, FMPXMLRESULT, Excel `.xlsx` and
-dBase.
+dBase, and for imports Excel 97-2004 `.xls` too.
 - Exports cover related fields, repetitions, group-by summaries, every
   export character set and FileMaker's line endings and quoting.
 - Without group-by fields each row holds its record's summaries, read in
@@ -294,6 +310,17 @@ dBase.
   the desktop: a running total's found-set total and a fraction's 1, as
   FileMaker Pro 26.0.3 wrote them without restart or subtotal. Restart,
   subtotal and FileMaker Server's own values are unmeasured.
+- A group's summary its values cannot give (the sample standard
+  deviation of a group with one value) is `?` in that group only, written
+  as FileMaker Server writes it: nothing in tab, an unquoted empty field
+  in comma-separated text, a `COL` without `DATA` in FMPXMLRESULT, `?` in
+  HTML and a text cell `?` in Excel (script-steps.md, Exports). Without
+  groups the same summary is empty on every row, as FileMaker Pro 26.0.3
+  wrote it in Excel. Unmeasured and OpenMaker's inference: merge files
+  (as comma), dBase (empty), the grand summary of a grouped export (`?`),
+  a calculation field whose value is `?` (as a summary), and a `?` among a
+  field's repetitions or related values in FMPXMLRESULT (an empty `DATA`,
+  so the values after it keep their places).
 - Imports cover every action, mapping by position or name, field names
   rows, and auto-enter and validation through `om_data::rules`.
 - Stored specs decode and re-encode byte for byte.
@@ -306,7 +333,12 @@ dBase.
   a session's data files close when its script ends or is aborted
   (script-steps.md, Paths on OpenMaker Server).
 - The desktop shows FileMaker's export, import mapping and summary
-  dialogs.
+  dialogs. The export dialog's Save as shows the step's first stored path
+  this machine reads (another platform's line is skipped), or the file's
+  name with the type's extension. It takes a native absolute path, which it
+  passes on in FileMaker's form (on macOS `/Macintosh HD/...`), a path
+  relative to Documents, or a path list line; the line it showed, left as
+  it was or with only its type changed, is passed on as it is.
 - In Browse mode, File > Import Records > File opens a source chooser
   before the shared import mapping dialog. Enter a native absolute path
   or a path relative to Documents, choose TSV, CSV or XLSX explicitly,
@@ -399,8 +431,6 @@ Open items:
     entries and per-table rules (re/session-identity.md 2) are not applied
     to LayoutAccess and RecordAccess, and FileMaker Server's answers under
     them are unmeasured.
-  - The recompute after a schema change answers Design functions from the
-    schema, where FileMaker gives empty.
   - `FieldAnnotation` and `FieldDisplayNames` answer empty text, as for a
     field without them: no file read so far stores either, so their
     storage is unknown.
@@ -414,6 +444,16 @@ Open items:
     is not reproduced (script-steps.md, Implementation notes
     (import/export)), and OpenMaker creates no table. How FileMaker stores
     a new-table import's target table is not observed.
+  - FileMaker 26.1's "Preserve target field data if source field is
+    empty" (import flag `0x40`) keeps a field an update's source leaves
+    empty. Unmeasured on FileMaker and OpenMaker's inference: a value
+    counts as empty repetition by repetition, a missing column counts as
+    empty, and a record the import adds is written in full. Neither import
+    dialog offers the option (FileMaker Pro 26.1's), but both keep it.
+    With "Perform auto-enter options" on too, an update fails with error 3
+    and imports nothing: a field left unwritten would no longer be kept
+    from auto-entry, and which FileMaker applies first is unmeasured. An
+    import with a flag past `0x40` fails with error 3 and imports nothing.
   - A stored XML import did not run on FileMaker Server (717), so XML
     imports are checked by round trip only.
   - Not probed: the layout data-formatting option, non-English files and
@@ -426,6 +466,14 @@ Open items:
     no 26.1.1 order has been read or run in FileMaker. Neither export
     dialog shows the option, and the orders OpenMaker makes are 26.0's.
   - The desktop writes a modification count of 0 in XML.
+  - `.xls` imports (`om_transfer::import`, the `xls` reader) read BIFF8
+    workbooks only, as an `.xlsx` sheet is read: numbers as the shortest
+    decimal of their value, formulas as their cached results, dates as
+    their serial numbers. How FileMaker spells an `.xls` number, and
+    whether FileMaker Server imports `.xls` at all, are unmeasured.
+    Excel 5.0/95 and encrypted workbooks fail with 730. File > Import
+    Records does not offer `.xls` (its type menu is FileMaker Pro's);
+    stored steps do.
   - An import reads its whole source and stages every row in one
     transaction; only the import limits bound its memory.
   - No `Import.log` (FileMaker Server writes none; FileMaker Pro's format
@@ -435,14 +483,44 @@ Open items:
     the header's 16-bit lengths would wrap. `.xlsx` exports past column
     `XFD` write invalid references. FileMaker's behavior past either
     limit is unknown.
+- Steps: the step catalog is FileMaker Pro 26.1.1's (valid ids below 251).
+  Its new steps 249 Replace Field Contents by Name and 250 Set Variable by
+  Name ([#349](https://github.com/OpenMaker-Dev/openmaker/issues/349)) are
+  stored as its binaries write them (script-steps.md 12.4), edited in the
+  Script Workspace, and run as Replace Field Contents and Set Variable do
+  with the field found as Set Field By Name finds its target and the
+  variable named by the calculation in slot 3. Their step text, the
+  errors for a name that finds nothing (102) or is not a variable's (5),
+  and the order the calculations are evaluated in are OpenMaker's
+  inference: no step saved or run by FileMaker Pro 26.1.1 has been
+  compared. On the desktop the unnamed id 248 fails with error 3: 26.1.1's
+  step table gives it no client. OpenMaker Server's scripts keep FileMaker
+  Server 26.0.3's table until FileMaker Server 26.1.1 ships: ids from 248,
+  these two steps among them, fail with error 4, and Save a Copy as Add-on
+  Package (96) with error 3 without evaluating its options.
+- Replace Field Contents and Replace Field Contents by Name: serial numbers
+  with "Use Entry Options" (`[00 5, 03]`, the field's own serial settings)
+  fail with error 3 before any record is written; the field's settings are
+  not read there. Other serial numbers count up the initial value's last
+  run of digits, keeping its width, on every host; one past an `i128`
+  fails with error 3.
+- On the desktop Replace Field Contents and Replace Field Contents by Name
+  refuse with error 3 a field reached through a relationship from the
+  layout's occurrence, a self-join's too, whose related records Set Field
+  would write; they replaced the found set's own field instead. Inside a
+  transaction this refusal and Use Entry Options' are the transaction's
+  error, as other writes OpenMaker cannot make are (script-runtime.md
+  8.4), where FileMaker would have written. Names given to Set Field By
+  Name and Replace Field Contents by Name match without regard to case,
+  as on the server.
 - Scripts: desktop steps still missing include the account steps
   ([#83](https://github.com/OpenMaker-Dev/openmaker/issues/83)) and the PDF
   steps other than Save Records as PDF
   ([#96](https://github.com/OpenMaker-Dev/openmaker/issues/96)). Set
   Web Viewer and Perform JavaScript in Web Viewer need a native web viewer
   (the `web-viewer` feature on Linux, under X11 or, on a Wayland session,
-  XWayland; Browse in Form or List view;
-  layout-model.md 9.6); elsewhere
+  XWayland, and on macOS; Browse in Form or List view; layout-model.md
+  9.6); elsewhere
   they fail with 116 (no live web
   viewer) rather than succeed. The error codes for a page still loading (5),
   a missing or throwing function (5) and a viewer that is not shown (116)
@@ -473,17 +551,25 @@ Open items:
 - Server: auto-enter calculations are not recomputed after a schema
   change (by design, as FileMaker). Schedules run (#11).
   - The recompute after a schema change reads container inputs from the
-    table's library. It still skips repeating calculations, container
-    results, plug-in functions and `Get` selectors that need a window,
-    leaving their values as they were and logging the field
-    ([#82](https://github.com/OpenMaker-Dev/openmaker/issues/82)).
+    table's library, computes repeating calculations in each repetition,
+    and answers Design functions as FileMaker Server's file context does
+    (empty, but `DatabaseNames`). With "do not evaluate if all referenced
+    fields are empty", which inputs count in a repetition above 1 is
+    OpenMaker's reading. It still skips these, leaving their values as
+    they were and logging the field: calculations of more than 255
+    repetitions; container results
+    ([#384](https://github.com/OpenMaker-Dev/openmaker/issues/384));
+    plug-in functions and `Get` selectors that need a window, whose
+    FileMaker Server answers there are unmeasured
+    ([#385](https://github.com/OpenMaker-Dev/openmaker/issues/385)).
   - FileMaker Pro clients: op77 GetFileList (the Hosts dialog's file list)
     and op89 CompareModCounts (reopening a cached file) are unsupported;
     an op13 with node state `00` (FileMaker Pro deleting a script) leaves
     an empty node (scripts.md, "Saving scripts to a host").
   - External container storage is not read (containers.md 8).
   - Unique and existing-value rules need a text field with a value index
-    in English or Unicode raw, value-list rules one in English. Lists from another file, a calculation, related values or
+    in English, System, Unicode standard or Unicode raw, value-list rules
+    one in English. Lists from another file, a calculation, related values or
     a second field still make the table read-only.
   - OpenMaker's own choices, not settled by the oracle: numeric forms
     beyond those tested, value-list dividers, ranges on text and date

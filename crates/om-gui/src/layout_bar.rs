@@ -365,6 +365,6 @@ fn layout_popup(ui: &mut Ui, session: &Session, mode: Mode, actions: &mut Vec<Ac
     egui::Popup::menu(&response)
         .style(theme::menu_popup_style)
         .show(|ui| {
-            crate::layout_menu::show(ui, session, mode, actions);
+            crate::layout_menu::show(&mut crate::menubar::Drawn(ui), session, mode, actions);
         });
 }

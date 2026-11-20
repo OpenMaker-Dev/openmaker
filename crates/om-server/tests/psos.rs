@@ -100,10 +100,11 @@ fn logged_in_as(port: u16, name: &str, account: &str) -> Session {
         INTERNAL_CREATION
     );
     let environment = LoginEnvironment::for_remote_file("127.0.0.1", FILE);
-    let password = if account == CLERK {
-        CLERK_PASSWORD
-    } else {
-        PASSWORD
+    let password = match account {
+        CLERK => CLERK_PASSWORD,
+        fixture::READER => fixture::READER_PASSWORD,
+        CUSTOM => CUSTOM_PASSWORD,
+        _ => PASSWORD,
     };
     let login = session
         .login(account, password, INTERNAL_CREATION, &environment)
@@ -636,23 +637,160 @@ fn scripts_run_with_the_requesting_accounts_privileges() {
                 exit_with("$write & \"|\" & Get ( LastError ) & \"|\" & $read"),
             ],
         ),
+        // Truncate Table (182) needs [Full Access] whatever the account may
+        // delete (Claris's Truncate Table help); elevation counts.
+        script(
+            6,
+            "Truncate",
+            vec![
+                on(86, true),
+                ScriptStep::new(182),
+                exit_with("Get ( LastError ) & \"|\" & Get ( TotalRecordCount )"),
+            ],
+        ),
+        full_access(
+            7,
+            "Truncate elevated",
+            vec![
+                on(86, true),
+                ScriptStep::new(182),
+                exit_with("Get ( LastError ) & \"|\" & Get ( TotalRecordCount )"),
+            ],
+        ),
     ];
-    let file = TempFile::new("privileges", &scripts, true);
+    let mut root = fixture::tree(&scripts, true);
+    fixture::add_reader(&mut root);
+    let file = TempFile::from_tree("privileges", &root);
     let port = start(&file, None);
-    let mut clerk = logged_in_as(port, "clerk", CLERK);
-    // The file's privilege sets are not decoded: an account the server
-    // does not know to have [Full Access] may not run an ordinary script
-    // (9, insufficient privileges), and nothing changes.
-    assert_eq!(run(&mut clerk, 1).0, 9);
-    assert_eq!(run(&mut clerk, 5).0, 9);
-    assert_eq!(records(&mut clerk).len(), 2);
-    // A full-access script runs; its sub-script's write is refused (9) and
-    // its read gives `?` (Set Variable keeps no calculation error).
-    assert_eq!(run(&mut clerk, 4), (0, "9|0|?".into()));
-    let after = records(&mut clerk);
+
+    // [Read-Only Access]: an ordinary script runs and reads every record;
+    // its writes are refused with 200, as the account's own writes are,
+    // and nothing changes. Under a script set to run with full access, its
+    // steps write; the sub-script it calls is the account's own again.
+    let mut reader = logged_in_as(port, "reader", fixture::READER);
+    assert_eq!(run(&mut reader, 5), (0, "200|0|Write tests".into()));
+    // New Record is refused too: the found set and record stay.
+    let (error, result) = run(&mut reader, 1);
+    assert_eq!(error, 0, "errors are captured");
+    assert!(result.starts_with("2|1|Write tests|Reader|"), "{result}");
+    assert_eq!(records(&mut reader).len(), 2);
+    assert_eq!(run(&mut reader, 4), (0, "200|0|By clerk".into()));
+    let after = records(&mut reader);
     assert_eq!(cell(&after, 1, NAME), Some("By clerk"));
     assert_eq!(cell(&after, 1, COUNT), Some("3"));
+    reader.disconnect().unwrap();
+
+    // [Data Entry Only]: an ordinary script runs under the account's set,
+    // which creates, edits and deletes records (session-identity.md 2.7).
+    let mut clerk = logged_in_as(port, "clerk", CLERK);
+    assert_eq!(run(&mut clerk, 5), (0, "0|0|By clerk".into()));
+    assert_eq!(cell(&records(&mut clerk), 1, COUNT), Some("1000"));
+    let (error, result) = run(&mut clerk, 1);
+    assert_eq!(error, 0);
+    assert!(result.starts_with("3|3|From |Clerk|"), "{result}");
+    assert_eq!(records(&mut clerk).len(), 3);
+    assert_eq!(run(&mut clerk, 6).1, "9|3");
+    let mut reader = logged_in_as(port, "reader", fixture::READER);
+    assert_eq!(run(&mut reader, 6).1, "9|3");
+    reader.disconnect().unwrap();
+    assert_eq!(run(&mut clerk, 7).1, "0|0");
     clerk.disconnect().unwrap();
+}
+
+/// An account in a custom set, which [`add_custom_set`] adds.
+const CUSTOM: &str = "Temp";
+const CUSTOM_PASSWORD: &str = "temp's secret";
+
+/// Add [`CUSTOM`] (security catalog record 7) in set 4, a custom set
+/// OpenMaker enforces: records view only, every layout and value list,
+/// every script executable only but scripts 4 and 200, which it gives no
+/// access (session-identity.md 2.2: `09, 11 04` is script `04`'s entry,
+/// `09, 11 80 48` script 200's, its key the serial encoding; `d5` no
+/// access), every other privilege, no password lifetime.
+fn add_custom_set(root: &mut om_hbam::OwnedNode) {
+    use om_hbam::OwnedNode;
+    let set: &[u8] = &[4];
+    root.put(
+        &[&[23], &[2], &[5], set, &[16]],
+        om_scripts::text_node(&[], "Clerks"),
+    );
+    for (member, value) in [(2u8, [0x10u8, 0x03]), (0x0a, [0x9f, 0xff]), (0x0c, [0, 0])] {
+        root.put(
+            &[&[23], &[2], &[5], set, &[member]],
+            OwnedNode::leaf(Vec::new(), value.to_vec()),
+        );
+    }
+    for (entry, quad) in [
+        (&[0x04u8][..], 0xdfu8),
+        (&[0x11], 0xd6),
+        (&[0x11, 0x04], 0xd5),
+        // Script 200, keyed `80 48` (two bytes, its serial encoding).
+        (&[0x11, 0x80, 0x48], 0xd5),
+        (&[0x21], 0xd6),
+    ] {
+        root.put(
+            &[&[23], &[2], &[5], set, &[9], entry],
+            OwnedNode::leaf(Vec::new(), vec![quad]),
+        );
+    }
+    root.put(
+        &[&[23], &[1], &[5], &[7], &[16]],
+        om_scripts::text_node(&[], CUSTOM),
+    );
+    fixture::put_account(root, 7, CUSTOM_PASSWORD, None, 4);
+}
+
+/// A custom set decides which scripts its account may run
+/// (session-identity.md 2.2): script 4, set to run with full access
+/// privileges, has no access in Temp's set, so op30 answers 9 and nothing
+/// changes, as `CallScript` refuses a script the account has no access to
+/// (script-runtime.md 3.7, 9.1). Before, being set to run with full access
+/// let it run, and its steps wrote with full access (#227). Script 5 is
+/// executable: it runs, and its record steps fail closed (9), since a
+/// custom set's record limits are not applied to server scripts yet.
+#[test]
+fn a_custom_set_decides_which_scripts_its_account_may_run() {
+    use fixture::{exit_with, full_access, go_to_record, on, script, set_field};
+    let scripts = [
+        full_access(
+            4,
+            "Elevated",
+            vec![
+                on(86, true),
+                go_to_record(1),
+                set_field(NAME, "\"By temp\""),
+                ScriptStep::new(75),
+                exit_with("\"ran\""),
+            ],
+        ),
+        script(
+            5,
+            "Own",
+            vec![
+                on(86, true),
+                set_field(COUNT, "1000"),
+                exit_with("Get ( LastError ) & \"|\" & Get ( AccountName )"),
+            ],
+        ),
+    ];
+    let mut scripts = scripts.to_vec();
+    scripts.push(full_access(200, "Elevated too", vec![exit_with("\"ran\"")]));
+    let mut root = fixture::tree(&scripts, true);
+    add_custom_set(&mut root);
+    let file = TempFile::from_tree("custom-scripts", &root);
+    let (port, _handle) = start_configured(&file, ScriptLimits::DEFAULT, |server| {
+        server.admitting_custom_sets()
+    });
+    let mut temp = logged_in_as(port, "temp", CUSTOM);
+    assert_eq!(run(&mut temp, 4), (9, String::new()));
+    // A two-byte key: its entry is found by the key, not the id's bytes.
+    assert_eq!(run(&mut temp, 200), (9, String::new()));
+    // The script's last error is Set Field's.
+    assert_eq!(run(&mut temp, 5), (9, "9|Temp".into()));
+    let after = records(&mut temp);
+    assert_eq!(cell(&after, 1, NAME), Some("Write tests"));
+    assert_eq!(cell(&after, 1, COUNT), Some("3"));
+    temp.disconnect().unwrap();
 }
 
 #[test]
@@ -688,16 +826,19 @@ fn a_sub_script_cannot_change_the_record_its_elevated_caller_opened() {
             ],
         ),
     ];
-    let file = TempFile::new("open-privileges", &scripts, true);
+    let mut root = fixture::tree(&scripts, true);
+    fixture::add_reader(&mut root);
+    let file = TempFile::from_tree("open-privileges", &root);
     let port = start(&file, None);
-    let mut clerk = logged_in_as(port, "clerk", CLERK);
-    // Set Field is 9; Revert Record changes nothing, so it may go on.
-    assert_eq!(run(&mut clerk, 4), (0, "9|0".into()));
-    let after = records(&mut clerk);
+    // [Read-Only Access]: Set Field is 200; Revert Record changes nothing,
+    // so it may go on.
+    let mut reader = logged_in_as(port, "reader", fixture::READER);
+    assert_eq!(run(&mut reader, 4), (0, "200|0".into()));
+    let after = records(&mut reader);
     assert_eq!(cell(&after, 1, COUNT), Some("3"));
     // Revert Record in the sub-script dropped the caller's change too.
     assert_eq!(cell(&after, 1, NAME), Some("Write tests"));
-    clerk.disconnect().unwrap();
+    reader.disconnect().unwrap();
 }
 
 /// Set Variable [name; ExecuteSQL ( sql ; "|" ; "," )].
@@ -764,8 +905,12 @@ fn execute_sql_reads_the_file_as_the_session_sees_it() {
     client.disconnect().unwrap();
 }
 
+/// ExecuteSQL reads as the session may: every account of a verified
+/// built-in set reads every record, also in the sub-script an elevated
+/// script calls. (An account the server fails closed reads nothing, 9:
+/// `scripts::tests::unknown_privileges_fail_closed_unless_elevated`.)
 #[test]
-fn execute_sql_needs_the_privileges_to_read_records() {
+fn execute_sql_reads_with_the_requesting_accounts_privileges() {
     use fixture::{exit_with, full_access, perform_script, script, set_variable};
     let scripts = [
         // Run with full access privileges: its queries read for any
@@ -794,13 +939,15 @@ fn execute_sql_needs_the_privileges_to_read_records() {
             ],
         ),
     ];
-    let file = TempFile::new("sql-privileges", &scripts, true);
+    let mut root = fixture::tree(&scripts, true);
+    fixture::add_reader(&mut root);
+    let file = TempFile::from_tree("sql-privileges", &root);
     let port = start(&file, None);
-    // The file's privilege sets are not decoded: an account without [Full
-    // Access] reads nothing, not even the system tables (9).
-    let mut clerk = logged_in_as(port, "clerk", CLERK);
-    assert_eq!(run(&mut clerk, 4).1, "2|9|? ERROR:  (9): Access denied");
-    clerk.disconnect().unwrap();
+    for (name, account) in [("clerk", CLERK), ("reader", fixture::READER)] {
+        let mut session = logged_in_as(port, name, account);
+        assert_eq!(run(&mut session, 4).1, "2|0|Write tests\rShip", "{account}");
+        session.disconnect().unwrap();
+    }
     let mut admin = logged_in(port, "admin");
     assert_eq!(run(&mut admin, 5).1, "0|Write tests\rShip");
     admin.disconnect().unwrap();

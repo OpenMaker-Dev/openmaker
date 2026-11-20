@@ -122,6 +122,9 @@ pub struct MemoryScriptHost {
     pub other_results: HashMap<u16, Value>,
     /// Perform Script on Server runs the script on a server-type runtime.
     pub server_scripts: bool,
+    /// Perform Script on Server with Callback's calls, in order; their
+    /// callbacks are never fired.
+    pub server_callbacks: Vec<ServerCallbackCall>,
     pub timer: Option<OnTimer>,
     /// The MBS plug-in subset's state; `None` (the default) evaluates its
     /// commands as without the plug-in, as the server does.
@@ -139,6 +142,8 @@ pub struct MemoryScriptHost {
     pub pending_opens: u32,
     /// Commit Transaction returns [`HostError::Pending`] this many times.
     pub pending_commits: u32,
+    /// Go to List of Records' requests, in order; the found set stays.
+    pub record_lists: Vec<RecordList>,
 }
 
 impl MemoryScriptHost {
@@ -172,6 +177,7 @@ impl MemoryScriptHost {
             other_steps: Vec::new(),
             other_results: HashMap::new(),
             server_scripts: true,
+            server_callbacks: Vec::new(),
             timer: None,
             plugin: None,
             idle: Vec::new(),
@@ -180,6 +186,7 @@ impl MemoryScriptHost {
             pending_new_records: 0,
             pending_opens: 0,
             pending_commits: 0,
+            record_lists: Vec::new(),
         }
     }
 
@@ -671,6 +678,13 @@ impl ScriptHost for MemoryScriptHost {
 }
 
 impl Navigation for MemoryScriptHost {
+    /// Keeps the request in [`MemoryScriptHost::record_lists`].
+    fn go_to_list_of_records(&mut self, request: &RecordList) -> HostResult {
+        self.call("go_to_list_of_records");
+        self.record_lists.push(request.clone());
+        Ok(())
+    }
+
     fn go_to_layout(&mut self, layout: &LayoutTarget, _animation: Option<u32>) -> HostResult {
         self.call(format!("go_to_layout {layout:?}"));
         let current = self.window().map(|w| w.layout);
@@ -880,17 +894,72 @@ impl Fields for MemoryScriptHost {
 
     fn set_field_by_name(&mut self, name: &str, value: Value) -> HostResult {
         self.call(format!("set_field_by_name {name}"));
+        let field = self.field_by_name(name)?;
+        self.set_value(field, value)
+    }
+
+    /// Every record of the found set, each made current in turn; the
+    /// active field is not modelled, so a field is needed.
+    fn replace_field_contents(
+        &mut self,
+        field: Option<FieldRef>,
+        with: &mut Replacement<'_>,
+        _with_dialog: bool,
+    ) -> HostResult {
+        let field = field.ok_or(HostError::Unsupported)?;
+        self.call(format!(
+            "replace_field_contents {}:{}",
+            field.occurrence, field.field
+        ));
+        let (count, current) = (self.window())
+            .map(|w| (w.found.len(), w.current))
+            .ok_or(HostError::Error(ErrorCode::RECORD_MISSING))?;
+        let contents = self.field_value_of(field)?;
+        // Serial numbers that cannot all be counted write none of them.
+        if let Replacement::Serial {
+            initial, increment, ..
+        } = with
+        {
+            let last = u64::try_from(count.saturating_sub(1)).unwrap_or(u64::MAX);
+            if serial_text(initial, *increment, last).is_none() {
+                return Err(HostError::Error(ErrorCode::UNAVAILABLE));
+            }
+        }
+        let mut result = Ok(());
+        for i in 0..count {
+            if let Some(window) = self.window_mut() {
+                window.current = i;
+            }
+            let value = match with {
+                Replacement::CurrentContents => contents.clone(),
+                Replacement::Calculation(evaluate) => evaluate(self),
+                Replacement::Serial {
+                    initial, increment, ..
+                } => match serial_text(initial, *increment, i as u64) {
+                    Some(text) => Value::text(text),
+                    None => return Err(HostError::Error(ErrorCode::UNAVAILABLE)),
+                },
+            };
+            result = self.set_value(field, value);
+            if result.is_err() {
+                break;
+            }
+        }
+        if let Some(window) = self.window_mut() {
+            window.current = current;
+        }
+        result
+    }
+
+    fn field_by_name(&mut self, name: &str) -> HostResult<FieldRef> {
         let (occurrence, field) = self
             .field_named(name)
             .ok_or(HostError::Error(ErrorCode::FIELD_MISSING))?;
-        self.set_value(
-            FieldRef {
-                occurrence,
-                field,
-                repetition: 1,
-            },
-            value,
-        )
+        Ok(FieldRef {
+            occurrence,
+            field,
+            repetition: 1,
+        })
     }
 
     fn field_value_of(&mut self, field: FieldRef) -> HostResult<Value> {
@@ -1272,6 +1341,20 @@ impl Network for MemoryScriptHost {
             result: call.wait.then(|| runtime.final_result().cloned()).flatten(),
             error: runtime.final_error(),
         })
+    }
+
+    /// Keeps the call in [`MemoryScriptHost::server_callbacks`]; the
+    /// server script does not run.
+    fn perform_script_on_server_with_callback(&mut self, call: &ServerCallbackCall) -> HostResult {
+        self.call(format!(
+            "perform_script_on_server_with_callback {}",
+            call.call.script
+        ));
+        if !self.server_scripts {
+            return Err(HostError::Unsupported);
+        }
+        self.server_callbacks.push(call.clone());
+        Ok(())
     }
 }
 
