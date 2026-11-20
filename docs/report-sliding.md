@@ -56,8 +56,17 @@ summary) is laid out on its own:
   by objects in another column.
 - **Parts shrink.** A body, sub-summary or grand-summary part shrinks by the
   least that its lowest *resize enclosing part* objects rose. The gap below
-  them stays. Headers, footers, title headers and title footers never shrink,
-  as Claris documents.
+  them stays.
+- **Fixed parts.** Claris: "Headers, footers, title headers, title footers,
+  and top navigation and bottom navigation parts never shrink or slide up."
+  An object in a header, footer, title header or title footer set to slide
+  up, or to resize its part, prints where it is placed, as one that does not
+  slide: none of the sliding refusals below apply to it, and a field there
+  whose text does not fit is cut at its box like any field that does not
+  slide. (Navigation parts do not print at all, so their objects are left
+  out whatever they are set to.) That FileMaker ignores the options
+  there, rather than refusing them in some other way, is read from that
+  sentence; no FileMaker output with a sliding header object was compared.
 
 Pagination (`om_layout::pagination::paginate_with`) places each part at its
 printed height. A part is measured with the record and the physical page it
@@ -78,7 +87,6 @@ file is staged or job spooled. Preview shows the reason instead of a page.
 - An object that slides up in a part that holds an object hidden when
   printing or one beyond the printable width: whether FileMaker lets it
   slide into the space of what is left out is unmeasured.
-- An object that slides up in a header, footer, title header or title footer.
 - An object that slides up and overlaps another object in its part. Whether
   it would natively move over, under or out of the other object is
   unmeasured.
@@ -154,8 +162,11 @@ Its tests are:
   without writes.
 - `sliding_refuses_unsupported_options_overlaps_and_cut_off_objects`:
   - the overlap clamp (a 60-point body);
-  - refusals of slide left, sliding beside a hidden object, header
-    sliding, overlap, cut-off and rotation.
+  - refusals of slide left, sliding beside a hidden object, overlap,
+    cut-off and rotation;
+  - header and footer objects set to slide up, one of them overlapping
+    another, print byte for byte as the same objects without the option,
+    and a sliding header field whose text does not fit prints cut.
 - `measured_parts_flow_by_printed_height_and_remeasure_on_their_new_page`
   (om-layout): measured pagination, re-measurement on the next page, and
   refusal of out-of-bounds heights.
