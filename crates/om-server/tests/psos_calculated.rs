@@ -204,7 +204,8 @@ fn scripts() -> Vec<Script> {
             vec![
                 sort(&[SENSED]),
                 exit_with(&format!(
-                    "{} & \" | \" & GetField ( \"Sensed\" )",
+                    "{} & \" | \" & GetField ( \"Sensed\" ) & \" | \" & GetField ( \"Dead\" ) & \
+                     \" \" & GetValue ( ExecuteSQL ( \"SELECT Dead FROM Tasks\" ; \"\" ; \"\" ) ; 1 )",
                     each("Count")
                 )),
             ],
@@ -215,6 +216,9 @@ fn scripts() -> Vec<Script> {
 /// An unstored number calculation, `Count` where `GetSensor` answers
 /// without an error and -1 otherwise.
 const SENSED: u64 = 30;
+/// An unstored number calculation, the error of `Evaluate` text naming
+/// `Location` in a branch never taken.
+const DEAD: u64 = 31;
 
 fn tree() -> OwnedNode {
     let mut root = fixture::tree(&scripts(), true);
@@ -340,7 +344,10 @@ fn relationships_match_unstored_calculations_on_the_side_travelled_from() {
 /// the same where a step's evaluation reads it and where a sort reads it
 /// (#79): Sensed is Count on every record, and the sort orders by it.
 /// Before, a sort's read answered 1225, so every record sorted as -1 and
-/// kept its place.
+/// kept its place. Dead's `Evaluate` text names `Location`, which the
+/// server's engine does not compile even in a branch never taken (s48):
+/// 1208 read directly and through ExecuteSQL, whose schema compiled it
+/// before (0).
 #[test]
 fn a_sort_reads_the_servers_functions_as_a_step_does() {
     let mut root = tree();
@@ -348,10 +355,16 @@ fn a_sort_reads_the_servers_functions_as_a_step_does() {
     let sensed = "If ( EvaluationError ( GetSensor ( \"location\" ) ) = 0 ; Count ; -1 )";
     let names = fixture::calculated_names();
     fixture::add_formula(&mut root, &names, (TABLE, OCCURRENCE), SENSED, 5, sensed);
+    fixture::add_field(&mut root, TABLE, DEAD, "Dead", 2, 2, 0, 0x2_0000, 0);
+    let dead = "EvaluationError ( Evaluate ( \"If ( 0 ; Location ( 10 ; 60 ) ; 1 )\" ) )";
+    fixture::add_formula(&mut root, &names, (TABLE, OCCURRENCE), DEAD, 5, dead);
     let file = TempFile::from_tree("psos-sort-sensed", &root);
     let port = server::start(&file);
     let (mut client, _) = server::logged_in(port, "client");
-    assert_eq!(run(&mut client, 5), (0, "1 3 5 7 | 1".to_string()));
+    assert_eq!(
+        run(&mut client, 5),
+        (0, "1 3 5 7 | 1 | 1208 1208".to_string())
+    );
 }
 
 #[test]

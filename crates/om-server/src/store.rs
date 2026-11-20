@@ -1911,6 +1911,7 @@ impl Store {
             .map_or(self.name.as_str(), |(stem, _)| stem);
         let mut calc = om_data::rules::schema::calc_schema(&tree, &self.catalog, stem);
         calc.locale = self.locale();
+        om_data::host::device::withhold_server_lacks(calc.names_mut());
         Some(f(&tree, &calc))
     }
 

@@ -240,17 +240,15 @@ impl Schema {
             let stem = file.rsplit_once('.').map_or(file, |(stem, _)| stem);
             let mut calc = rules::schema::calc_schema(&tree, &catalog, stem);
             calc.locale = store.locale();
+            om_data::host::device::withhold_server_lacks(calc.names_mut());
             Some((wire, Arc::new(calc)))
         });
         let mut names = NameTable::default();
         // FileMaker Server's engine compiles no location function (s48):
         // `Evaluate` text naming one fails with 1208, also in a branch it
-        // never takes.
-        for name in om_data::host::device::SERVER_LACKS {
-            if let Some(builtin) = om_formula::catalog::find_builtin(name) {
-                names.withhold_builtin(builtin.id);
-            }
-        }
+        // never takes. The rules', Design and privilege schemas withhold
+        // them too.
+        om_data::host::device::withhold_server_lacks(&mut names);
         let mut occurrences = HashMap::new();
         for occurrence in &catalog.table_occurrences {
             if let Some(table) = occurrence.base_table() {

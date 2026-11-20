@@ -48,6 +48,17 @@ pub const SENSORS: [&str; 20] = [
 /// call is evaluated ([`answer`]).
 pub const SERVER_LACKS: [&str; 3] = ["Location", "LocationValues", "RangeBeacons"];
 
+/// Make `names` FileMaker Server's engine's: text compiled against them
+/// fails [`SERVER_LACKS`]' names (1208), wherever the server compiles
+/// it (a step, a sort's read, SQL, a value list, a privilege formula).
+pub fn withhold_server_lacks(names: &mut om_formula::NameTable) {
+    for name in SERVER_LACKS {
+        if let Some(builtin) = om_formula::catalog::find_builtin(name) {
+            names.withhold_builtin(builtin.id);
+        }
+    }
+}
+
 /// FileMaker's "operator missing, function not found or ( not expected":
 /// FileMaker Server's answer for a sensor it does not list and for the
 /// location functions (s48).

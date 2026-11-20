@@ -770,14 +770,14 @@ a step, so the battery compiles them in the engine with `Evaluate`:
 
 - `Location`, `LocationValues` and `RangeBeacons` are `?` with error 1208
   ("operator missing, function not found or ( not expected") for every
-  argument run: `Location ( 10 ; 60 )`, `( 0 ; 0 )`, `( "" ; "" )`, the
-  one-argument `Location ( 10 )`, `LocationValues ( 10 ; 60 )` and
+  argument run: `Location ( 10 ; 60 )`, `( 0 ; 0 )`, `( "" ; "" )`,
+  `Location ( 10 )` (its timeout is optional), `LocationValues ( 10 ; 60 )` and
   `( -1 ; -1 )`, `RangeBeacons` of a UUID and 1, and of empty text. An
   unknown function, `Evaluate ( "Nothing ( 1 )" )`, is 1208 too: the
-  server's engine has no location functions. Their names fail while the
-  text compiles, as an unknown function's do: `Location ( 10 )`, one
-  argument short, is 1208 rather than a "too few parameters" error. In a
-  branch `Evaluate` never takes, `If ( 0 ; Location ( 10 ; 60 ) ; 1 )`,
+  server's engine has no location functions: nothing in its libraries
+  registers their `FMMB` group (calc-encoding.md 7). Their names fail
+  while the text compiles, as an unknown function's do. In a branch
+  `Evaluate` never takes, `If ( 0 ; Location ( 10 ; 60 ) ; 1 )`,
   and the same with `LocationValues ( 10 ; 60 )`, `RangeBeacons ( "" )`
   and `Nothing ( 1 )`, is still `?` with 1208, where
   `If ( 0 ; GetSensor ( "battery" ) ; 1 )` is 1, error 0 (the `dead` run).

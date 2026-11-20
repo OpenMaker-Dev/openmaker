@@ -470,9 +470,10 @@ Open items:
     whatever its option, the engine's answer without its reading
     dictionary; error 1208 for the three location functions, which
     `Evaluate` text fails to compile, also where the call is in a branch
-    never taken (its names are withheld from the server's compile,
-    `NameTable::withhold_builtin`). Arguments not run get the same
-    answers [I].
+    never taken: every name table the server compiles text against
+    withholds them (a step's, a sort's read, ExecuteSQL, value lists and
+    privilege formulas; `om_data::host::device::withhold_server_lacks`).
+    Arguments not run get the same answers [I].
   - The desktop answers `Location` and `LocationValues` empty, as Claris
     documents FileMaker Pro, and `GetSensor` as the server's engine does
     [I] (`om_data::host::device`). `GetAddonInfo`, `GetAVPlayerAttribute`,
