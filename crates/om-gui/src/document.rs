@@ -70,6 +70,11 @@ struct EditorSelection {
     range: (usize, usize),
 }
 
+/// A step's selection waiting for its field's editor
+/// (`DocumentState::pending_selection`): the layout, record and field, and
+/// the selection (1-based start and length; `None` after its text).
+type PendingSelection = (u64, i64, String, Option<(u64, u64)>);
+
 /// The related records portals showed in a frame, by layout, portal and
 /// parent record (`DocumentState::portal_records`).
 type ShownPortals = BTreeMap<(u64, u64, u64), std::sync::Arc<[u64]>>;
@@ -255,6 +260,15 @@ pub(crate) struct DocumentState {
     /// selection then: the characters from `range.0` to `range.1`, either
     /// way round (`selection`, `place_cursor`).
     editor_selection: Option<EditorSelection>,
+    /// Why the field with the focus as last drawn refuses typing, by its
+    /// editor (`guarded_editor`): Edit's Clear, Undo and Redo are refused
+    /// there as its keys are (`edit_field`).
+    entered_refusal: Option<(egui::Id, EditRefusal)>,
+    /// A step's selection for a field whose editor does not have the focus
+    /// yet (Set Selection into another field): its 1-based start and
+    /// length, or `None` for after its text. The editor takes it as it
+    /// gets the focus (`saw`).
+    pending_selection: Option<PendingSelection>,
     /// Fields (and the objects showing them) the user changed this frame.
     changed: Vec<Focused>,
     /// A checkbox or radio button set change waiting for the set to be
@@ -1300,6 +1314,7 @@ impl DocumentState {
     pub fn cancel_pending_focus(&mut self) {
         // A Tab's field waiting to draw: its keys go where the focus is.
         self.tab_goal = None;
+        self.pending_selection = None;
         self.portal_click = None;
         self.field_click = None;
         self.option_wait = None;
@@ -1710,6 +1725,14 @@ impl DocumentState {
     /// A script left the focus in `field` (or none): a selected container
     /// stays selected only if it is that field.
     pub fn script_focus(&mut self, field: Option<&str>) {
+        // A selection waiting for a field the focus no longer goes to.
+        if self
+            .pending_selection
+            .as_ref()
+            .is_some_and(|(_, _, pending, _)| Some(pending.as_str()) != field)
+        {
+            self.pending_selection = None;
+        }
         if self
             .container
             .as_ref()
@@ -1807,14 +1830,24 @@ impl DocumentState {
             self.seen_active = Some(field.to_owned());
             self.seen_object = object;
             self.scroll.focused(field, response.id);
-            if let Some(range) = egui::TextEdit::load_state(&response.ctx, response.id)
-                .and_then(|state| state.cursor.char_range())
-            {
-                self.editor_selection = Some(EditorSelection {
+            let state = egui::TextEdit::load_state(&response.ctx, response.id);
+            // A control that is not a text editor (a set's button, a pop-up
+            // menu) has no selection: none is read from an editor left.
+            self.editor_selection = state.as_ref().map(|state| {
+                let range = state.cursor.char_range();
+                EditorSelection {
                     field: field.to_owned(),
                     editor: response.id,
-                    range: (range.primary.index.0, range.secondary.index.0),
-                });
+                    range: range.map_or((0, 0), |range| {
+                        (range.primary.index.0, range.secondary.index.0)
+                    }),
+                }
+            });
+            if let Some((layout, record, _, selection)) = self
+                .pending_selection
+                .take_if(|(_, _, pending, _)| pending == field && state.is_some())
+            {
+                self.place_cursor(&response.ctx, (layout, record), field, selection, None);
             }
         }
         if response.changed() {
@@ -1867,23 +1900,24 @@ impl DocumentState {
 
     /// Edit > `edit` in the field the user is typing in, as its editor's
     /// own keys do (Undo and Redo through its history). The record's draft
-    /// takes the change; the field stays entered.
+    /// takes the change; the field stays entered. A field that refuses
+    /// typing (`entered_refusal`) still selects, and refuses a change, as
+    /// its keys are refused: the refusal is returned and nothing changes.
     pub(crate) fn edit_field(
         &mut self,
         ctx: &egui::Context,
         layout: u64,
         record: i64,
         edit: FieldEdit,
-    ) {
-        let Some((editor, _)) = self.entered_buffer(layout, record) else {
-            return;
-        };
-        let Some(field) = self.active.clone() else {
-            return;
-        };
-        let Some(buffer) = self.buffers.get_mut(&(layout, record, field)) else {
-            return;
-        };
+    ) -> Option<EditRefusal> {
+        let (editor, _) = self.entered_buffer(layout, record)?;
+        if edit != FieldEdit::SelectAll {
+            if let Some((_, refusal)) = self.entered_refusal.filter(|(id, _)| *id == editor) {
+                return Some(refusal);
+            }
+        }
+        let field = self.active.clone()?;
+        let buffer = self.buffers.get_mut(&(layout, record, field))?;
         let mut state = egui::TextEdit::load_state(ctx, editor).unwrap_or_default();
         let len = buffer.value.chars().count();
         let range = state
@@ -1937,6 +1971,7 @@ impl DocumentState {
             }
         }
         state.store(ctx, editor);
+        None
     }
 
     /// A step left `field`'s selection at `selection` (1-based start and
@@ -1946,17 +1981,28 @@ impl DocumentState {
     pub(crate) fn place_cursor(
         &mut self,
         ctx: &egui::Context,
+        (layout, record): (u64, i64),
         field: &str,
         selection: Option<(u64, u64)>,
-        len: usize,
+        len: Option<usize>,
     ) {
         let Some(editor) = self
             .editor_selection
             .as_mut()
             .filter(|selection| selection.field == field)
         else {
+            // Its editor takes it as it gets the focus.
+            self.pending_selection = Some((layout, record, field.to_owned(), selection));
             return;
         };
+        // The text as the step left it, else as the editor holds it.
+        let len = len
+            .or_else(|| {
+                self.buffers
+                    .get(&(layout, record, field.to_owned()))
+                    .map(|buffer| buffer.value.chars().count())
+            })
+            .unwrap_or(0);
         let (start, size) = selection.map_or((len, 0), |(start, size)| {
             let start = usize::try_from(start.saturating_sub(1))
                 .unwrap_or(len)
@@ -5646,6 +5692,9 @@ fn paint_object_repetition(
                                 interactive,
                             )
                         });
+                    if response.has_focus() {
+                        state.entered_refusal = refusal.map(|refusal| (editor, refusal));
+                    }
                     response.widget_info(|| {
                         let mut info = egui::WidgetInfo::text_edit(
                             !state.pending,

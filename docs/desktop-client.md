@@ -1012,16 +1012,26 @@ From Index... (⌘I) and From Last Visited Record (⌘') run their script
 steps (13, 14, 60, 11 and 12) on that field, at its insertion point and
 over its selection. A click on the menu bar or on an open menu leaves the
 field entered with its selection, as FileMaker Pro leaves it, and after the
-step the insertion point is after what was inserted. Scripts read the
-user's selection in the field too (`Get ( ActiveSelectionStart )`, `Get (
-ActiveSelectionSize )`, the Insert steps). Limits:
+step the insertion point is after what was inserted. Any other menu
+command (View > Find Mode, Records > New Record, ...) ends the field's
+editing first: its OnObjectValidate, OnObjectSave and OnObjectExit run,
+and the command runs once they let it go, as a click on a button does;
+one refusing keeps the field entered and the command undone. Scripts read
+the user's selection in the field too (`Get ( ActiveSelectionStart )`,
+`Get ( ActiveSelectionSize )`, the Insert steps); Select All, Set
+Selection and the Insert steps leave theirs in the editor, and Set
+Selection into another field shows when its editor takes the focus.
+Limits:
 - Find mode's criteria and Table view's cells take none of them yet; a
   container field selected takes Picture and File only.
 - From Last Visited Record replaces the field's text, as its step does here
   (whether FileMaker Pro pastes it at the insertion point instead is
   unmeasured).
-- That Editing only menus keep the five is inferred; Minimum leaves them
-  out, as it leaves out Export Field Contents.
+- That Editing only menus keep the five is inferred, and they run there,
+  as Copy's record copy does; Minimum leaves them out, as it leaves out
+  Export Field Contents.
+- An Insert shortcut typed in the same frame as other keys runs its step
+  after the editor took those keys.
 - ⌘- inserts the date while a field is entered and zooms out otherwise;
   FileMaker Pro's own shortcut for Zoom Out is unmeasured.
 
@@ -1032,12 +1042,15 @@ editor's own keys do: Undo and Redo through its typing history, Cut, Copy
 and Paste through the platform's clipboard, Clear deleting the selection
 without the clipboard. Paste Text Only pastes as Paste does, since the
 editors paste text only. With no field entered, Copy copies the current
-record (the Copy Record/Request step, 101). In Layout mode, Clear deletes
-the selected object, as before. Limits:
+record (the Copy Record/Request step, 101), from the menu or ⌘C. In a
+field the account may not change, Select All and Copy work and Clear,
+Undo and Redo are refused with the alert typing gets. In Layout mode,
+Clear deletes the selected object, as before. Limits:
 - Clear, Undo and Redo from the menu change the field's text without its
   object triggers (OnObjectModify), which typing runs.
 - Find mode's criteria, Table view's cells and portal rows' fields take
-  none of them from the menu; their editors' keys still work.
+  none of them from the menu but Cut, Copy and Paste; their editors' keys
+  still work.
 - Find/Replace and Spelling stay disabled.
 
 **Committing and reverting.** A record being edited shows no bar, as in

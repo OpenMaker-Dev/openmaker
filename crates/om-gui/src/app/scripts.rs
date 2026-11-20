@@ -2290,22 +2290,34 @@ impl OpenMakerApp {
         }
         self.w.document.active_object = state.object;
         self.w.document.script_focus(state.focus.as_deref());
-        // A step moved the selection in the field the user is in: Set
+        // A step moved the selection in the field it focuses: Set
         // Selection, or an Insert step, which puts the insertion point after
         // what it inserted (`None`: after the field's text). A selection
-        // only reset, with the field unchanged, leaves the editor's.
+        // only reset, with the field unchanged, leaves the editor's. Its
+        // length is the text's as the step left it, a draft's or else the
+        // editor's; a field whose editor does not have the focus yet takes
+        // it when it does.
         if state.selection != previous.selection {
-            if let Some(field) = state.focus.as_deref().filter(|field| {
-                state.selection.is_some() || state.drafts.get(*field) != previous.drafts.get(*field)
-            }) {
+            let at = state
+                .layout
+                .zip(state.record)
+                .map(|(layout, record)| (u64::from(layout), record));
+            if let Some((field, at)) = state
+                .focus
+                .as_deref()
+                .filter(|field| {
+                    state.selection.is_some()
+                        || state.drafts.get(*field) != previous.drafts.get(*field)
+                })
+                .zip(at)
+            {
                 let len = state
                     .drafts
                     .get(field)
-                    .and_then(|value| value.as_deref())
-                    .map_or(0, |value| value.chars().count());
+                    .map(|value| value.as_deref().map_or(0, |value| value.chars().count()));
                 self.w
                     .document
-                    .place_cursor(ctx, field, state.selection, len);
+                    .place_cursor(ctx, at, field, state.selection, len);
             }
         }
         self.w.uncommitted = state

@@ -985,6 +985,20 @@ fn typing_into_a_field_the_set_refuses_alerts_and_keeps_its_value() {
     assert!(common::text_field(&app, "Family").is_focused());
     assert!(!common::unsaved(&app));
     app.get_by_label("Contact: Clara Mason");
+    // Edit > Select All selects in it; Edit > Clear is refused as typing is.
+    for command in ["Select All", "Clear"] {
+        common::open_menu(&mut app, "Edit");
+        common::click(&mut app, command);
+        app.run_steps(2);
+    }
+    common::wait_for_label(&mut app, om_data::FIELD_NOT_MODIFIABLE);
+    common::click(&mut app, "OK");
+    app.run_steps(2);
+    assert_eq!(
+        common::text_field(&app, "Family").value().as_deref(),
+        Some("Mason")
+    );
+    assert!(!common::unsaved(&app));
 }
 
 fn click_at(app: &mut common::App, pos: egui::Pos2) {

@@ -67,6 +67,11 @@ pub(crate) struct Doc {
     /// back with it if the connection is lost meanwhile.
     pub shown_capabilities: Option<RecordCapabilities>,
     pub deferred_action: Option<Action>,
+    /// A menu command chosen while a field is entered, other than one of
+    /// the field's own (`OpenMakerApp::menu_leaves_field`): it runs once
+    /// the field's exit triggers let it go, as a button clicked from the
+    /// field does.
+    pub menu_exit: Option<Action>,
     /// The menus' New Record or Duplicate Record runs as its step: once
     /// that job ends with the focus still on the step's first field, the
     /// focus is the first field object painted in the tab order
@@ -238,6 +243,7 @@ impl Doc {
             record_capabilities: RecordCapabilities::default(),
             shown_capabilities: None,
             deferred_action: None,
+            menu_exit: None,
             new_record_focus: false,
             in_flight: None,
             unanswered: None,

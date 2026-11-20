@@ -1256,13 +1256,51 @@ impl OpenMakerApp {
         let Some((layout, record)) = self.current_layout_record() else {
             return;
         };
-        self.w.document.edit_field(ctx, layout, record, edit);
+        if let Some(refusal) = self.w.document.edit_field(ctx, layout, record, edit) {
+            self.apply(ctx, Action::RefuseTyping(refusal));
+        }
     }
 
     /// The window's layout and current record.
     fn current_layout_record(&self) -> Option<(u64, i64)> {
         let session = self.w.session.as_ref()?;
         Some((u64::from(session.layout?), session.current_record()?.1.id))
+    }
+
+    /// The menu commands chosen this frame (`chosen`) while a field is
+    /// entered: one other than the field's own (Edit's, and Insert's into
+    /// the field) ends the field's editing first, its validation, save and
+    /// exit triggers running, and runs once they let it go
+    /// (`WindowState::menu_exit`), as a keyboard commit does. A click on the
+    /// menus leaves the field entered (`draw_window_with`), so the field's
+    /// own commands act on it.
+    fn menu_leaves_field(&mut self, ui: &Ui, chosen: &[Action]) {
+        let own = |action: &Action| {
+            matches!(
+                action,
+                Action::EditField(_)
+                    | Action::Step(
+                        steps::INSERT_CURRENT_DATE
+                            | steps::INSERT_CURRENT_TIME
+                            | steps::INSERT_CURRENT_USER_NAME
+                            | steps::INSERT_FROM_INDEX
+                            | steps::INSERT_FROM_LAST_VISITED,
+                        _
+                    )
+            )
+        };
+        let Some(action) = chosen.iter().find(|action| !own(action)) else {
+            return;
+        };
+        if self.w.document.active.is_none() {
+            return;
+        }
+        ui.memory_mut(|memory| {
+            if let Some(editor) = memory.focused() {
+                memory.surrender_focus(editor);
+            }
+        });
+        self.w.menu_exit = Some(action.clone());
     }
 
     /// A text field of the current record is entered for typing in Browse,
@@ -1561,7 +1599,9 @@ impl OpenMakerApp {
         let mut on_menus = false;
         if self.w.menu_drawn {
             let top = ui.available_rect_before_wrap().top();
+            let before = actions.len();
             on_menus = self.menu_bar(ui, input, &mut actions);
+            self.menu_leaves_field(ui, &actions[before..]);
             self.w.menu_height = ui.available_rect_before_wrap().top() - top;
         }
         if front {
@@ -1928,6 +1968,8 @@ impl OpenMakerApp {
         // A first edit and focus change can share a frame. Retain before
         // validation, save, exit or enter triggers can send the draft.
         self.retain_drafts(&ctx);
+        // A menu command waits for the field it left only in this frame.
+        let menu_exit = self.w.menu_exit.take();
         if left.is_some() || entered.is_some() {
             let was_modified = left.as_ref().is_some_and(|(f, _)| {
                 modified.iter().any(|(m, _)| m == f)
@@ -1940,17 +1982,22 @@ impl OpenMakerApp {
                         None => self.w.document.edited(f),
                     }
             });
-            // The click that left the field: a button's, else the layout
-            // background's, which commits the record (#1066).
-            let button = actions
-                .iter()
-                .find(|action| matches!(action, Action::RunButton { .. }))
+            // The click that left the field: a menu command's, a button's,
+            // else the layout background's, which commits the record
+            // (#1066).
+            let button = menu_exit
+                .or_else(|| {
+                    actions
+                        .iter()
+                        .find(|action| matches!(action, Action::RunButton { .. }))
+                        .cloned()
+                })
                 .or_else(|| {
                     actions
                         .iter()
                         .find(|action| matches!(action, Action::CommitRecord))
-                })
-                .cloned();
+                        .cloned()
+                });
             let held = button.as_ref().map(std::mem::discriminant);
             if self.focus_changed(&ctx, left, entered, was_modified, button) {
                 // This click began the exit chain; its held continuation
@@ -2690,6 +2737,19 @@ impl OpenMakerApp {
         // availability: Editing only keeps them too).
         let inserts = self.text_field_entered()
             && self.menu_commands() != om_data::host::privilege_set::MenuCommands::Minimum;
+        // Copy with no field entered or other widget typing: the record's
+        // (Edit > Copy's availability).
+        let record_copy = browse
+            && !typing
+            && self.w.document.active.is_none()
+            && self.w.connection_lost.is_none()
+            && self.menu_commands() != om_data::host::privilege_set::MenuCommands::Minimum
+            && self.current_layout_record().is_some()
+            && !self
+                .w
+                .session
+                .as_ref()
+                .is_some_and(|session| self.w.document.selected_container(session).is_some());
         // The keypad's Enter, unlike Return, commits the record or goes to
         // the next object (`keypad`) from a field of the record or with no
         // editor focused. In an open menu or list, or in a box of the
@@ -2816,6 +2876,17 @@ impl OpenMakerApp {
                     if input.consume_shortcut(&KeyboardShortcut::new(modifiers, key)) {
                         actions.push(Action::Step(step, 0));
                     }
+                }
+            }
+            // With no field entered, Copy copies the record, as Edit > Copy
+            // does then (`menubar::edit_menu`).
+            if record_copy {
+                let copies = input.events.len();
+                input
+                    .events
+                    .retain(|event| !matches!(event, egui::Event::Copy));
+                if input.events.len() != copies {
+                    actions.push(Action::Step(steps::COPY_RECORD, 0));
                 }
             }
             if self.w.mode == Mode::Browse {
@@ -3178,12 +3249,23 @@ impl OpenMakerApp {
         // Editing only also keeps Show All, Show Omitted Only and Refresh
         // Window (#137's reading lists what Pro disables) and Export Field
         // Contents (#651's), and going back to Browse from a mode a script
-        // entered (Cancel Find, Exit Preview), which grants nothing.
+        // entered (Cancel Find, Exit Preview), which grants nothing. Its
+        // Edit and Insert menus keep Copy (the record's, with no field
+        // entered) and the Insert commands into the field entered, as its
+        // menus offer them [I: inferred, as Edit's own commands are].
         let editing = matches!(
             action,
             Action::Refresh
                 | Action::Step(
-                    steps::SHOW_ALL | steps::SHOW_OMITTED | steps::EXPORT_FIELD_CONTENTS,
+                    steps::SHOW_ALL
+                        | steps::SHOW_OMITTED
+                        | steps::EXPORT_FIELD_CONTENTS
+                        | steps::COPY_RECORD
+                        | steps::INSERT_CURRENT_DATE
+                        | steps::INSERT_CURRENT_TIME
+                        | steps::INSERT_CURRENT_USER_NAME
+                        | steps::INSERT_FROM_INDEX
+                        | steps::INSERT_FROM_LAST_VISITED,
                     _
                 )
                 | Action::SetMode(Mode::Browse)

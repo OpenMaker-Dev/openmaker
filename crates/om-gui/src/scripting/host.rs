@@ -4887,6 +4887,9 @@ impl Fields for WorkerHost<'_> {
     }
 
     fn select_all(&mut self) -> HostResult {
+        // All of the field's text, over a selection read from its editor
+        // or a step's (`insert` takes `select` without one).
+        self.s.file.window.state.selection = None;
         self.s.file.window.state.select = true;
         self.s.file.window.touch();
         Ok(())
@@ -4993,9 +4996,13 @@ impl WorkerHost<'_> {
             Some(Answer::Index(Some(value))) => value,
             _ => return Err(ErrorCode::CANCELED.into()),
         };
-        // Pasted as Insert Text pastes: at the insertion point of the field
-        // entered (its end otherwise), or over all of it with "Select
-        // entire contents".
+        // "Select entire contents" replaces the field's text, a Find
+        // request's criterion too, without reading it first. Otherwise
+        // pasted as Insert Text pastes: at the insertion point of the field
+        // entered, its end otherwise.
+        if target.select_all {
+            return self.write_named(&name, chosen);
+        }
         self.insert(target, Value::text(chosen))
     }
 }
