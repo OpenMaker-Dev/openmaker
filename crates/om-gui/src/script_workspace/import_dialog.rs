@@ -134,9 +134,11 @@ impl ImportMapping {
                     .to_owned()
             })?,
         };
+        // An Excel 97-2004 source reads as Import Records reads it when it
+        // runs (`om_transfer::import`'s BIFF8 reader).
         if matches!(
             profile.file_type,
-            FileType::FileMaker | FileType::Folder | FileType::Odbc | FileType::Excel2003
+            FileType::FileMaker | FileType::Folder | FileType::Odbc
         ) {
             return Err(format!(
                 "OpenMaker does not read a {} data source, so its import order cannot be \
@@ -741,6 +743,36 @@ mod tests {
         // Both encode as FileMaker reads them back.
         assert_eq!(ImportOptions::decode(&order.encode()).unwrap(), order);
         assert_eq!(ProfileEx::decode(&ex.encode()).unwrap(), ex);
+        std::fs::remove_dir_all(&dir).unwrap();
+    }
+
+    /// A stored legacy step's Excel 97-2004 source lists its sheet's first
+    /// row as the columns to map, read as Import Records reads it, and its
+    /// profile (the sheet it names) is kept.
+    #[test]
+    fn an_excel_97_2004_source_maps_its_first_rows_cells() {
+        let dir = std::env::temp_dir().join(format!("om-import-xls-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let file = dir.join("source.xls");
+        let fixture = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+            .join("../om-transfer/tests/data/xls/cells.xls");
+        std::fs::copy(fixture, &file).unwrap();
+        let mut profile = Profile::new(FileType::Excel2003);
+        profile.body = om_transfer::spec::ProfileBody::Excel {
+            sheet: 0,
+            worksheet: String::new(),
+            file: "source.xls".into(),
+        };
+        let parts = ImportParts {
+            paths: vec![crate::scripting::files::file_line(&file)],
+            order: None,
+            profile: Some(profile.clone()),
+            profile_ex: None,
+            field_flags: None,
+        };
+        let dialog = ImportMapping::open(parts, None).unwrap();
+        assert_eq!(dialog.columns, ["Text", "Number", "Flag", "When"]);
+        assert_eq!(dialog.profile, profile);
         std::fs::remove_dir_all(&dir).unwrap();
     }
 
