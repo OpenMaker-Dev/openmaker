@@ -630,9 +630,11 @@ finders carry the full criterion text; their operand text is 300 bytes in
 this capture. The native client requests establish the wire shapes for
 these three criteria. FileMaker Server's replies to them, including its
 behavior with and without `IncludeTooLong`, remain unmeasured. The
-loopback host returned normal no-match for the plain criterion and an
-unsupported-finder error for the other two; those are OpenMaker Server
-results, not FileMaker Server evidence. Evidence: private capture
+loopback host, an OpenMaker Server that did not yet answer Match finders,
+returned normal no-match for the plain criterion and an unsupported-finder
+error for the other two; those are OpenMaker Server results, not FileMaker
+Server evidence. om-query now tests Match finders and leaves an optional
+IndexScan out ([#48](https://github.com/OpenMaker-Dev/openmaker/issues/48)). Evidence: private capture
 `re/work/issue-316/long-find-loopback/capture/conn-000` and [#126](https://github.com/OpenMaker-Dev/openmaker/issues/126).
 
 **Which Match finders reach the host (Med: bin).** `DBPredicateBuilder::Process`
@@ -838,11 +840,24 @@ characters between two letters or two digits join:
   apostrophe separates (`l'équipe` gives `l`, `équipe`).
 
 Every other character separates (`e-mail`, `x-1`, `a_b`, `foo@bar.com`
-gives `foo`, `bar.com`; `#tag`, `C++`, `AT&T`, `$5`, `5%`), and so does a
-change between kanji, hiragana, katakana and Latin letters
-(`日本語のテキスト` gives `日本語`, `の`, `テキスト`; `日本語abc123` gives
-`日本語`, `abc123`). U+FFFE and an emoji do not separate (`a😀b` is one
-word). Evidence: every record of every word-indexed text field in test
+gives `foo`, `bar.com`; `#tag`, `C++`, `AT&T`, `$5`, `5%`, a tab, a soft
+hyphen U+00AD), and so does a change between kanji, hiragana, katakana and
+Latin letters (`日本語のテキスト` gives `日本語`, `の`, `テキスト`;
+`日本語abc123` gives `日本語`, `abc123`; `abc日本`, `x`×108 + U+20000), and
+between Hangul syllables, conjoining jamo and compatibility jamo (`각힣` +
+`각` as three jamo + `ㄱㅏ` gives three words). The kana sound marks
+U+309B and U+309C and the prolonged sound mark `ー` go with katakana
+(`゛゜゙゚ー` is one word), the iteration marks `々`, `〆` and `〻` with kanji,
+and `〇` with neither (`゛゜゙゚ー々〆〇〻` gives `゛゜゙゚ー`, `々〆`, `〇`, `〻`).
+Accents (U+0301 after `x`, U+3099), U+FFFE and an emoji do not separate
+(`a😀b` is one word); an emoji and the unassigned U+0378 alone are words,
+as if every code point the table does not list were a letter. Evidence: the word columns of
+[catalogs/index-key-vectors.tsv](catalogs/index-key-vectors.tsv). Which
+other characters fall in each class is inferred from Unicode's blocks.
+Unicode raw (2) breaks words by rules of its own: its word index splits
+the probe's values at spaces and line breaks only (`x-1`, `a_b` and `a`
+tab `b` are one word each), and a word of one supplementary character
+keys its high surrogate alone (`😀` = `01 d83d`). Evidence: every record of every word-indexed text field in test
 project and the en/fr/es/it FMS samples (`crates/om-collate/tests/indexes.rs`),
 and the word indexes of the probe file of 7.2 (English, French and
 Japanese fields). The full break rules (FileMaker's own word-break

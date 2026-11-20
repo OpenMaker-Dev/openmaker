@@ -799,6 +799,70 @@ fn blank_canvas_commits_but_changing_fields_keeps_the_record_draft() {
     }
 }
 
+/// Insert > Current User Name puts the user name at the insertion point of
+/// the field being typed in, which a click on the menus leaves entered, and
+/// the insertion point goes after it.
+#[test]
+fn the_insert_menu_puts_its_text_at_the_insertion_point() {
+    let mut provider = DocumentProvider::new(false);
+    provider.writable = true;
+    let mut app = open_provider(provider);
+    let family = |app: &common::App| common::text_field(app, "Family").value();
+    common::text_field(&app, "Family").focus();
+    app.run_steps(2);
+    // After "Ma" of "Mason".
+    for key in [
+        egui::Key::Home,
+        egui::Key::ArrowRight,
+        egui::Key::ArrowRight,
+    ] {
+        app.key_press(key);
+    }
+    app.run_steps(2);
+    common::open_menu(&mut app, "Insert");
+    assert!(common::text_field(&app, "Family").is_focused());
+    common::click(&mut app, "Current User Name");
+    let name = om_data::host::machine::user_name();
+    common::wait_until(&mut app, "the user name", |app| {
+        family(app).as_deref() == Some(format!("Ma{name}son").as_str())
+    });
+    assert!(common::text_field(&app, "Family").is_focused());
+    app.event(egui::Event::Text("!".into()));
+    app.run_steps(2);
+    assert_eq!(family(&app), Some(format!("Ma{name}!son")));
+    assert!(common::unsaved(&app));
+    assert!(app.state().error().is_none(), "{:?}", app.state().error());
+}
+
+/// Edit > Select All, Clear and Undo act on the field being typed in,
+/// which a click on the menus leaves entered.
+#[test]
+fn the_edit_menu_selects_clears_and_undoes_in_the_field() {
+    let mut provider = DocumentProvider::new(false);
+    provider.writable = true;
+    let mut app = open_provider(provider);
+    let family = |app: &common::App| common::text_field(app, "Family").value();
+    let edit = |app: &mut common::App, command: &str| {
+        common::open_menu(app, "Edit");
+        common::click(app, command);
+        app.run_steps(2);
+        assert!(common::text_field(app, "Family").is_focused(), "{command}");
+    };
+    common::text_field(&app, "Family").focus();
+    app.run_steps(2);
+    app.key_press(egui::Key::End);
+    app.event(egui::Event::Text(" Jr".into()));
+    app.run_steps(2);
+    assert_eq!(family(&app).as_deref(), Some("Mason Jr"));
+    edit(&mut app, "Select All");
+    edit(&mut app, "Clear");
+    assert_eq!(family(&app).as_deref(), Some(""));
+    assert!(common::unsaved(&app));
+    edit(&mut app, "Undo");
+    assert_eq!(family(&app).as_deref(), Some("Mason Jr"));
+    assert!(app.state().error().is_none(), "{:?}", app.state().error());
+}
+
 /// Return types a line break into an edit box, stored as FileMaker stores
 /// it, a carriage return; the keypad's Enter commits the record. From a
 /// field whose "Go to next object using" includes them, both go to the next
@@ -1010,6 +1074,20 @@ fn typing_into_a_field_the_set_refuses_alerts_and_keeps_its_value() {
     assert!(common::text_field(&app, "Family").is_focused());
     assert!(!common::unsaved(&app));
     app.get_by_label("Contact: Clara Mason");
+    // Edit > Select All selects in it; Edit > Clear is refused as typing is.
+    for command in ["Select All", "Clear"] {
+        common::open_menu(&mut app, "Edit");
+        common::click(&mut app, command);
+        app.run_steps(2);
+    }
+    common::wait_for_label(&mut app, om_data::FIELD_NOT_MODIFIABLE);
+    common::click(&mut app, "OK");
+    app.run_steps(2);
+    assert_eq!(
+        common::text_field(&app, "Family").value().as_deref(),
+        Some("Mason")
+    );
+    assert!(!common::unsaved(&app));
 }
 
 fn click_at(app: &mut common::App, pos: egui::Pos2) {
