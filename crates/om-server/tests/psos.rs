@@ -1654,39 +1654,36 @@ fn delete_account_removes_the_account_and_its_index_entries() {
     assert_eq!(value(0), Some(&[1, 3][..]));
 }
 
-/// Print Setup (42) runs in a server script as with its dialog off: a
-/// restored page format that reads gives 0 and one that does not gives 3,
-/// as on the desktop. Save Records as PDF (144) is still 3 on the server
-/// (#104).
+/// Print Setup (42) in a server script: with neither Restore nor its
+/// dialog it sets nothing (0). A restored setup, which would configure PDF
+/// output OpenMaker Server cannot make yet, and one with its dialog on are
+/// 3, and so is Save Records as PDF (144, #104).
 #[test]
-fn print_setup_reads_its_page_format_and_pdf_is_3() {
+fn print_setup_sets_nothing_on_the_server_and_pdf_is_3() {
     use fixture::{exit_with, on, script, set_variable};
     use om_data::flag;
     // A4 portrait at 100%, 8.5 pt insets (script-steps.md 11.6).
     const A4: &[u8] = b"Comm\x00\x00\x00\x1d\x00\x3f\x80\x00\x00\xc1\x08\x00\x00\xc1\x08\x00\x00\x44\x12\xb1\x48\x44\x50\x57\x0a\x44\x10\x91\x48\x44\x4e\x37\x0a";
-    let setup = |format: &[u8], flags: u32| {
+    let setup = |flags: u32| {
         let mut step = ScriptStep::new(42);
         step.flags = flags;
-        step.set_data_leaf(0x87, Some(om_data::scripts::bytes_node(&[0x87], format)));
+        step.set_data_leaf(0x87, Some(om_data::scripts::bytes_node(&[0x87], A4)));
         step
     };
-    let mut half = A4.to_vec();
-    half[9..13].copy_from_slice(&0.5f32.to_be_bytes());
     let steps = vec![
         on(86, true),
-        setup(A4, flag::RESTORE | flag::NO_INTERACT),
-        set_variable("$a", "Get ( LastError )"),
-        setup(&half, flag::RESTORE | flag::NO_INTERACT),
-        set_variable("$b", "Get ( LastError )"),
-        // Its dialog on, nothing restored: no dialog on a server.
-        setup(&half, 0),
-        set_variable("$c", "Get ( LastError )"),
+        setup(flag::RESTORE | flag::NO_INTERACT),
+        set_variable("$restored", "Get ( LastError )"),
+        setup(flag::NO_INTERACT),
+        set_variable("$nothing", "Get ( LastError )"),
+        setup(0),
+        set_variable("$dialog", "Get ( LastError )"),
         ScriptStep::new(144),
-        exit_with("$a & \"/\" & $b & \"/\" & $c & \"/\" & Get ( LastError )"),
+        exit_with("$restored & \"/\" & $nothing & \"/\" & $dialog & \"/\" & Get ( LastError )"),
     ];
     let tree = fixture::tree(&[script(4, "Print", steps)], true);
     let file = TempFile::from_tree("print-setup", &tree);
     let port = start(&file, None);
     let mut client = logged_in(port, "print-setup");
-    assert_eq!(run(&mut client, 4), (3, "0/3/0/3".into()));
+    assert_eq!(run(&mut client, 4), (3, "3/0/3/3".into()));
 }

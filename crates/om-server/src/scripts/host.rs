@@ -3173,44 +3173,19 @@ impl ScriptHost for ServerHost {
     }
 }
 
-/// Print Setup (42) in a server script. A server shows no dialog, so the
-/// step is run as with its dialog off. Its restored page format (`87`,
-/// script-steps.md 11.6) is read as the desktop reads it
-/// (`PaperSettings::from_page_format`): one that does not read gives 3, as
-/// there. OpenMaker Server prints nothing yet, so the paper is not kept:
-/// Save Records as PDF is 3 here (#104). That FileMaker Server answers 0 is
-/// inferred from its handler; the step's effect there is unmeasured.
+/// Print Setup (42) in a server script. With neither Restore nor its
+/// dialog it sets nothing and gives 0, as on the desktop. A restored setup
+/// configures later PDF output (Claris, Print Setup), which OpenMaker Server
+/// cannot make yet (Save Records as PDF is 3 here, #104), so it gives 3
+/// rather than claim a setup nothing would apply. With its dialog on it
+/// gives 3 too: a server shows no dialog, and what FileMaker Server answers
+/// then is unmeasured.
 fn print_setup(call: &StepCall<'_>) -> HostResult {
-    if !call.step.has_flag(om_data::flag::RESTORE) {
+    if !call.step.has_flag(om_data::flag::RESTORE) && call.step.has_flag(om_data::flag::NO_INTERACT)
+    {
         return Ok(());
     }
-    let unreadable = || HostError::Error(ErrorCode(3));
-    let node = call.step.data_leaf(0x87).ok_or_else(unreadable)?;
-    // The declared and stored sizes are checked before the value is put
-    // together, so that a hostile step cannot make it allocate.
-    let declared = node
-        .children
-        .first()
-        .and_then(|n| n.value.as_deref())
-        .and_then(|v| v.get(..4))
-        .map(|v| u32::from_be_bytes([v[0], v[1], v[2], v[3]]) as usize);
-    let stored = node.value.as_ref().map_or_else(
-        || {
-            node.children
-                .iter()
-                .skip(1)
-                .filter_map(|n| n.value.as_ref())
-                .map(Vec::len)
-                .sum()
-        },
-        Vec::len,
-    );
-    if stored > 1024 * 1024 || declared.is_some_and(|n| n > 1024 * 1024) {
-        return Err(unreadable());
-    }
-    let bytes = om_data::scripts::node_bytes(node).ok_or_else(unreadable)?;
-    om_layout::paper::PaperSettings::from_page_format(&bytes).map_err(|_| unreadable())?;
-    Ok(())
+    Err(HostError::Unsupported)
 }
 
 impl Navigation for ServerHost {
