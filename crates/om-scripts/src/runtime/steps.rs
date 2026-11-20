@@ -39,7 +39,7 @@ impl Runtime {
         if id == 0 {
             return Exec::error(ErrorCode::UNKNOWN);
         }
-        if is_unknown_step(id) {
+        if is_unknown_step(&self.options, id) {
             return Exec::error(ErrorCode::UNKNOWN_COMMAND);
         }
         if let Some(t) = &self.transaction {
@@ -66,7 +66,7 @@ impl Runtime {
                 _ => {}
             }
         }
-        if !client_supports(self.options.client, id) {
+        if !client_supports(&self.options, id) {
             return Exec::error(ErrorCode::UNAVAILABLE);
         }
         match id {
@@ -588,24 +588,56 @@ impl Runtime {
             Err(code) => return Exec::error(code),
         };
         call.wait = false;
-        let file = call.file;
-        let callback = self.eval_slot(host, step, 2).and_then(|e| {
-            let cx = Ctx::new(host.locale(), host.today());
-            match e.value.to_number(&cx).to_i64() {
-                Some(id) if id > 0 => Some((file, id as u64)),
-                _ => host
-                    .script_named(file, &self.text_of(host, &e.value))
-                    .map(|id| (file, id)),
-            }
-        });
+        let file = self.current_file();
+        let callback = match self.psos_callback(host, step, file) {
+            Ok(script) => script.map(|id| (file, id)),
+            Err(code) => return Exec::error(code),
+        };
         Exec::from_host(
             host.perform_script_on_server_with_callback(&ServerCallbackCall {
                 call,
                 callback,
-                callback_parameter: step.calculation(3),
+                callback_parameter: step.calculation(4),
                 state: step.value,
             }),
         )
+    }
+
+    /// The callback script of step 210 in `file`, the calling script's
+    /// file (script-steps.md 12.2): by name when `[00 6]` = 1, the name
+    /// calculation in slot 7; from the list when `kOption` marks the key
+    /// that slot 3 holds as a hex literal. Pro keeps that slot when the
+    /// choice changes to by name, so the choice decides. A script that is
+    /// not there is 104 before the server is called; a callback in another
+    /// file (`kOption3` with its data source in slot 5, or a by-name
+    /// `source::script`) is 3, not supported. Both are OpenMaker's choices:
+    /// FileMaker's handling of either is unmeasured.
+    fn psos_callback(
+        &mut self,
+        host: &mut dyn ScriptHost,
+        step: &ScriptStep,
+        file: FileId,
+    ) -> Result<Option<u64>, ErrorCode> {
+        if step.list_value(6) == Some(1) {
+            let name = self.slot_text(host, step, 7).unwrap_or_default();
+            if name.contains("::") {
+                return Err(ErrorCode::UNAVAILABLE);
+            }
+            return host
+                .script_named(file, &name)
+                .map(Some)
+                .ok_or(ErrorCode::SCRIPT_MISSING);
+        }
+        if !step.has_flag(flag::OPTION) {
+            return Ok(None);
+        }
+        if step.has_flag(flag::OPTION3) {
+            return Err(ErrorCode::UNAVAILABLE);
+        }
+        step.positioned_id(3)
+            .filter(|&id| host.script(file, id).is_some())
+            .map(Some)
+            .ok_or(ErrorCode::SCRIPT_MISSING)
     }
 
     /// Pause/Resume Script (62, script-runtime.md 6.2).
@@ -1087,17 +1119,27 @@ impl Runtime {
                 })
             }
             228 => {
-                let ids = self.slot_text(host, step, 0).unwrap_or_default();
+                // The ids are slot 7. The flag, not slot 0, asks for a new
+                // window: Pro keeps the name there when it is turned off
+                // (script-steps.md 12.2).
+                let ids = self.slot_text(host, step, 7).unwrap_or_default();
                 let layout = step
                     .member_key()
                     .and_then(|k| k.id())
                     .map(LayoutTarget::Key);
-                host.go_to_list_of_records(
-                    &ids,
-                    layout.as_ref(),
-                    step.list_value(6),
-                    step.has_flag(flag::OPTION),
-                )
+                let new_window = step.has_flag(flag::TURN_ON).then(|| NewWindow {
+                    name: self.slot_text(host, step, 0),
+                    bounds: self.bounds(host, step),
+                    layout: None,
+                    style: 0,
+                    options: step.number(0),
+                });
+                host.go_to_list_of_records(&RecordList {
+                    ids,
+                    layout,
+                    animation: step.list_value(6),
+                    new_window,
+                })
             }
             22 | 41 | 55 => {
                 let mode = match id {
