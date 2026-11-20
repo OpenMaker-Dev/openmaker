@@ -320,14 +320,22 @@ struct TriggerFrame {
     action: Option<u64>,
     /// The step whose event the trigger holds: it runs again when the
     /// trigger lets the event happen (3000, script-runtime.md 1.7, 13.17).
-    retry: Option<Box<ScriptStep>>,
+    retry: Option<Box<Retry>>,
+}
+
+/// A step to run again when its trigger lets the event happen, and the
+/// frame that ran it with whether the Script Debugger shows that frame
+/// (the step's error is that frame's).
+struct Retry {
+    step: ScriptStep,
+    owner: Option<(u64, bool)>,
 }
 
 /// A trigger action waiting for `DoTriggerAction`, with the step to run
 /// again when it proceeds.
 struct PendingAction {
     action: TriggerAction,
-    retry: Option<Box<ScriptStep>>,
+    retry: Option<Box<Retry>>,
 }
 
 /// A trigger whose script is called: its frame, not pushed yet.
@@ -464,6 +472,12 @@ pub struct Runtime {
     next_frame: u64,
     /// Frames that have not started yet.
     unstarted: std::collections::HashSet<u64>,
+    /// Frames queued below the running ones (`QueueScript`'s
+    /// queueAtBottom), until they start.
+    queued: std::collections::HashSet<u64>,
+    /// The frame whose step runs or last ran, and whether the Script
+    /// Debugger shows it: a failed step pauses only a shown script.
+    step_frame: Option<(u64, bool)>,
     globals: HashMap<FileId, Variables>,
     /// `$` variables outside any script (script level 0).
     level0: Variables,
@@ -531,6 +545,8 @@ impl Runtime {
             stack: Vec::new(),
             next_frame: 1,
             unstarted: Default::default(),
+            queued: Default::default(),
+            step_frame: None,
             globals: HashMap::new(),
             level0: Variables::new(),
             last_error: ErrorCode::NONE,
@@ -945,6 +961,7 @@ impl Runtime {
         self.debug_reset();
         self.stack.clear();
         self.unstarted.clear();
+        self.queued.clear();
         self.pending = None;
         self.transaction = None;
         self.trigger_actions.clear();
@@ -1074,7 +1091,7 @@ impl Runtime {
     fn do_trigger_actions(&mut self, host: &mut dyn ScriptHost) {
         for pending in std::mem::take(&mut self.trigger_actions) {
             let outcome = host.trigger_action(&pending.action);
-            let Some(step) = pending.retry.filter(|_| pending.action.proceed) else {
+            let Some(retry) = pending.retry.filter(|_| pending.action.proceed) else {
                 continue;
             };
             if self.stack.is_empty() {
@@ -1083,7 +1100,8 @@ impl Runtime {
             if self.trace.is_some() {
                 self.step_context = Some(self.trace_context());
             }
-            self.finish_step(host, &step, Exec::from_action(outcome));
+            self.step_frame = retry.owner;
+            self.finish_step(host, &retry.step, Exec::from_action(outcome));
         }
     }
 
@@ -1107,7 +1125,10 @@ impl Runtime {
                 Ok(mut c) => {
                     let first = exec.error != ErrorCode::RETRY;
                     if let (true, true, Some(t)) = (holds_event, first, c.frame.trigger.as_mut()) {
-                        t.retry = Some(Box::new(step.clone()));
+                        t.retry = Some(Box::new(Retry {
+                            step: step.clone(),
+                            owner: self.step_frame,
+                        }));
                         exec = Exec::error(ErrorCode::RETRY);
                     }
                     called.push(c);
@@ -1138,6 +1159,7 @@ impl Runtime {
             return false;
         };
         if self.unstarted.remove(&frame.id) {
+            self.queued.remove(&frame.id);
             if let Some(window) = frame.window {
                 if let Err(failure) = host.use_window(window) {
                     // A queued owner's window can close before its first
@@ -1152,7 +1174,10 @@ impl Runtime {
                 }
             }
         }
-        let shown = frame.debuggable && matches!(frame.kind, FrameKind::Script { .. });
+        let owner = (
+            frame.id,
+            frame.debuggable && matches!(frame.kind, FrameKind::Script { .. }),
+        );
         let (step, full_access) = match &mut frame.kind {
             FrameKind::Script { script, index, .. } => {
                 *index += 1;
@@ -1180,7 +1205,7 @@ impl Runtime {
                 ((**step).clone(), false)
             }
         };
-        self.debug_running(shown);
+        self.step_frame = Some(owner);
         if host.window_mode() == Mode::Layout && host.exit_layout_mode().is_err() {
             self.exit_frame(host, true);
             return false;
@@ -1528,6 +1553,7 @@ impl Runtime {
             }
             self.stack.push(frame);
         } else {
+            self.queued.insert(frame.id);
             self.stack.insert(0, frame);
         }
     }
@@ -1593,6 +1619,7 @@ impl Runtime {
         }
         let frame = self.stack.pop().expect("frame");
         self.unstarted.remove(&frame.id);
+        self.queued.remove(&frame.id);
         if frame.full_access {
             host.set_full_access(frame.file, false);
         }
@@ -1647,6 +1674,7 @@ impl Runtime {
             }
         }
         self.unstarted.clear();
+        self.queued.clear();
         self.pending = None;
     }
 

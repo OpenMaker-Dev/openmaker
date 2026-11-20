@@ -2327,3 +2327,103 @@ fn the_debugger_keeps_stops_and_errors_to_the_scripts_it_shows() {
     assert_eq!(g(&mut rt, "$$b"), "2");
     assert_eq!(debug(&mut h, &mut rt, DebugCommand::Run), RunState::Idle);
 }
+
+#[test]
+fn the_debugger_keeps_each_stop_and_error_with_its_frame() {
+    // Main's last step fails; Keys has a breakpoint; Plain has none.
+    let scripts = |h: &mut MemoryScriptHost| {
+        let main = vec![set_var(h, "$$a", "1"), go_to_layout(99)];
+        h.add_script(0, script(1, "Main", main));
+        h.add_script(
+            0,
+            script(6, "Keys", vec![breakpoint(set_var(h, "$$k", "1"))]),
+        );
+        h.add_script(0, script(7, "Plain", vec![set_var(h, "$$p", "1")]));
+    };
+    let debugging = |h: &mut MemoryScriptHost| {
+        let mut rt = Runtime::default();
+        rt.start_debugging();
+        rt.set_pause_on_error(true);
+        rt.perform_script(h, ScriptCall::new(0, 1)).expect("starts");
+        assert_eq!(rt.run(h), RunState::Debugger(DebugStop::Started));
+        rt
+    };
+    let keystroke = |script| Trigger::new(TriggerEvent::ObjectKeystroke, 0, script);
+    let failed = RunState::Debugger(DebugStop::Error(ErrorCode(105)));
+
+    // A trigger's own stop and Run leave Main's error stop below it.
+    let mut h = host();
+    scripts(&mut h);
+    let mut rt = debugging(&mut h);
+    assert_eq!(debug(&mut h, &mut rt, DebugCommand::Run), failed);
+    rt.fire_trigger(&mut h, keystroke(6));
+    assert_eq!(rt.run(&mut h), RunState::Debugger(DebugStop::Breakpoint));
+    assert_eq!(call_stack(&rt), at(&[("Main", Some(1)), ("Keys", Some(0))]));
+    assert_eq!(debug(&mut h, &mut rt, DebugCommand::Run), failed);
+    assert_eq!(call_stack(&rt), at(&[("Main", Some(2))]));
+    assert_eq!(debug(&mut h, &mut rt, DebugCommand::Run), RunState::Idle);
+
+    // A trigger on top of a script waiting for its first step is no new
+    // script: it runs through, and the script is stopped again.
+    let mut h = host();
+    scripts(&mut h);
+    let mut rt = debugging(&mut h);
+    rt.fire_trigger(&mut h, keystroke(7));
+    assert_eq!(rt.run(&mut h), RunState::Debugger(DebugStop::Started));
+    assert_eq!(call_stack(&rt), at(&[("Main", Some(0))]));
+    assert_eq!(g(&mut rt, "$$p"), "1");
+
+    // Main's error waits for Main: a trigger run before the check does not
+    // take it.
+    let mut h = host();
+    scripts(&mut h);
+    let mut rt = debugging(&mut h);
+    assert!(rt.debug(DebugCommand::Run));
+    assert_eq!(rt.step(&mut h), RunState::Yielded);
+    assert_eq!(rt.step(&mut h), RunState::Yielded);
+    rt.fire_trigger(&mut h, keystroke(7));
+    assert_eq!(rt.run(&mut h), failed);
+    assert_eq!(call_stack(&rt), at(&[("Main", Some(2))]));
+    assert_eq!(g(&mut rt, "$$p"), "1");
+
+    // A step that was waiting when the debugger opened is still Main's.
+    let mut h = host();
+    let steps = vec![
+        ScriptStep::new(205),
+        ScriptStep::new(206),
+        set_var(&h, "$$after", "1"),
+    ];
+    h.add_script(0, script(1, "Commit", steps));
+    h.pending_commits = 1;
+    let mut rt = Runtime::default();
+    assert_eq!(run(&mut h, &mut rt, 1), RunState::Waiting);
+    rt.start_debugging();
+    rt.set_pause_on_error(true);
+    rt.complete_step(ErrorCode(301));
+    assert_eq!(
+        rt.run(&mut h),
+        RunState::Debugger(DebugStop::Error(ErrorCode(301)))
+    );
+    assert_eq!(call_stack(&rt), at(&[("Commit", Some(2))]));
+
+    // A hidden script's step that a shown trigger let run, and that then
+    // failed, is still the hidden script's: its caller does not stop.
+    let mut h = host();
+    h.layout_triggers
+        .insert((1, TriggerEvent::LayoutExit), (0, 9));
+    h.add_script(0, script(9, "OnExit", vec![set_var(&h, "$$x", "1")]));
+    h.add_script(0, script(2, "Hidden", vec![go_to_layout(99)]));
+    h.executable_only.insert((0, 2));
+    let caller = vec![perform(2), set_var(&h, "$$m", "1")];
+    h.add_script(0, script(1, "Main", caller));
+    let mut rt = Runtime::default();
+    rt.start_debugging();
+    rt.set_pause_on_error(true);
+    rt.perform_script(&mut h, ScriptCall::new(0, 1))
+        .expect("starts");
+    assert_eq!(rt.run(&mut h), RunState::Debugger(DebugStop::Started));
+    assert_eq!(debug(&mut h, &mut rt, DebugCommand::Run), RunState::Idle);
+    assert_eq!(g(&mut rt, "$$x"), "1");
+    assert_eq!(g(&mut rt, "$$m"), "1");
+    assert_eq!(rt.last_error(), ErrorCode::NONE);
+}

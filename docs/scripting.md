@@ -658,7 +658,9 @@ uses it yet.
 - While it is open, `Runtime::run` returns `RunState::Debugger` before a
   step at which it stops:
   - the first step of a script started while no script runs (scripts
-    queued to run after the current ones do not count as running);
+    queued to run after the current ones do not count as running, and a
+    trigger on top of a script waiting for its first step is no new
+    script);
   - a step with a breakpoint (flag `0x100000`);
   - the next step after a finished Step Over, Step Into or Step Out;
   - with `set_pause_on_error`, the next step after a step whose error is
@@ -669,9 +671,13 @@ uses it yet.
   It does not stop again at the step it continued from, so Run from a
   breakpoint passes it.
 - A stop belongs to its script and step. A trigger that runs on top of it
-  follows the same rules, and the stop holds again when its script is back
-  on top there. A stop whose script ended (Halt, or another script started
-  with Exit) is forgotten, so no other script takes it over.
+  follows the same rules, and its own stops and commands leave the lower
+  stop, which holds again when its script is back on top there. A stop
+  whose script ended (Halt, or another script started with Exit) is
+  forgotten, so no other script takes it over.
+- A failed step's error belongs to the script whose step it was, also
+  when a trigger let the step run, or the debugger opened while it was
+  waiting. It stops that script, not one that runs on top first.
 - `Runtime::set_next_step` moves the current script's pointer while
   stopped. It is refused while a script transaction is open, since a jump
   could pass its Commit Transaction or reach another one. `Runtime::halt`
