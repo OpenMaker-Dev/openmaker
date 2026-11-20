@@ -214,11 +214,37 @@ fn stamp_key((year, month, day): Ymd, seconds: u32) -> Option<Vec<u8>> {
     )
 }
 
-/// A bound's index key; `None` when its form is not established (numbers
-/// other than non-negative integers, 7.3).
+/// The key of the last microsecond of second `seconds` (`h:mm:ss.999999`):
+/// a time period ends there, so a value with a fraction of that second is
+/// inside it. FileMaker's own finder for `12:30 PM` reads up to
+/// 45,059.999999 s (spec 7.3).
+fn time_end_key(seconds: u32) -> Option<Vec<u8>> {
+    om_collate::time_key(&format!("{}.999999", clock(seconds)))
+}
+
+/// [`time_end_key`] of a timestamp (the same fraction, inferred).
+fn stamp_end_key((year, month, day): Ymd, seconds: u32) -> Option<Vec<u8>> {
+    om_collate::timestamp_key(
+        &format!("{month}/{day}/{year} {}.999999", clock(seconds)),
+        DateOrder::MonthDayYear,
+    )
+}
+
+/// The key of a bound that stands for the last second of what it names
+/// (the end of an inclusive range, the start of `>x`): through that
+/// second's last microsecond for times and timestamps ([`time_end_key`]).
+fn bound_end_key(bound: &Bound) -> Option<Vec<u8>> {
+    match bound {
+        Bound::Time(seconds) => time_end_key(*seconds),
+        Bound::Stamp(date, seconds) => stamp_end_key(*date, *seconds),
+        other => bound_key(other),
+    }
+}
+
+/// A bound's index key; `None` when its form is not established.
 fn bound_key(bound: &Bound) -> Option<Vec<u8>> {
     match bound {
-        Bound::Number(n) => om_collate::number_key(&n.integer_text()?),
+        Bound::Number(n) => n.index_key(),
         Bound::Word(key) => Some(key.clone()),
         Bound::Date(date) => date_key(*date),
         Bound::Time(seconds) => time_key(*seconds),
@@ -307,30 +333,18 @@ fn keyed_plan(
             end,
         ))
     };
-    // A non-text field without a value has no key.
-    let no_value = || Finder {
-        bytes: make(kind::INDEX_RANGE, VALUE_SCOPE, 0, &[], &[]),
-        keep: false,
-    };
-    let empty_text = || keep(make(kind::INDEX_MATCH, VALUE_SCOPE, 0, EMPTY_TEXT_KEY, &[]));
+    // An empty value of any type is indexed under `01` (7.2, 7.3).
+    let empty = || keep(make(kind::INDEX_MATCH, VALUE_SCOPE, 0, EMPTY_TEXT_KEY, &[]));
     match &criterion.kind {
-        Kind::Empty if text_field => Plan::exact(vec![empty_text()]),
-        Kind::Empty => Plan::exact(vec![no_value()]),
+        Kind::Empty => Plan::exact(vec![empty()]),
         // The value index cannot tell an empty line from nothing.
-        Kind::EntirelyEmpty if text_field => Plan::candidates(vec![empty_text()]),
-        Kind::EntirelyEmpty => Plan::exact(vec![no_value()]),
-        Kind::NotEmpty if text_field => Plan::exact(vec![keep(make(
-            kind::INDEX_RANGE,
-            VALUE_SCOPE,
-            0,
-            EMPTY_TEXT_KEY,
-            &[],
-        ))]),
+        Kind::EntirelyEmpty if text_field => Plan::candidates(vec![empty()]),
+        Kind::EntirelyEmpty => Plan::exact(vec![empty()]),
         Kind::NotEmpty => Plan::exact(vec![keep(make(
             kind::INDEX_RANGE,
             VALUE_SCOPE,
             0,
-            &[],
+            EMPTY_TEXT_KEY,
             &[],
         ))]),
         Kind::Invalid => Plan::candidates(Vec::new()),
@@ -401,7 +415,7 @@ fn keyed_plan(
         } else {
             Vec::new()
         }),
-        Kind::Number(n) => match n.integer_text().and_then(|t| om_collate::number_key(&t)) {
+        Kind::Number(n) => match n.index_key() {
             Some(key) => Plan::exact(vec![keep(make(
                 kind::INDEX_MATCH,
                 VALUE_SCOPE,
@@ -413,13 +427,29 @@ fn keyed_plan(
         },
         Kind::Range { low, high } => {
             let scope = if text_field { WORD_SCOPE } else { VALUE_SCOPE };
-            let key = |b: &Option<(Bound, bool)>| -> Option<(Vec<u8>, bool)> {
-                match b {
-                    None => Some((Vec::new(), false)),
-                    Some((bound, inclusive)) => Some((bound_key(bound)?, *inclusive)),
+            // An open end of a typed range stops short of the empty value
+            // (`01`) and of values FileMaker cannot read (`fe ff`), as
+            // FileMaker's own open bounds do (6.4: `(01, K)`, `[K, fe ff)`).
+            let open = |typed: &[u8]| {
+                if text_field {
+                    Vec::new()
+                } else {
+                    typed.to_vec()
                 }
             };
-            match (key(low), key(high)) {
+            // `<=x`, `a...b` and `>x` take x's last second (criteria.rs),
+            // which ends at its last microsecond.
+            let key = |b: &Option<(Bound, bool)>, open: Vec<u8>, high: bool| match b {
+                None => Some((open, false)),
+                Some((bound, inclusive)) if *inclusive == high => {
+                    Some((bound_end_key(bound)?, *inclusive))
+                }
+                Some((bound, inclusive)) => Some((bound_key(bound)?, *inclusive)),
+            };
+            match (
+                key(low, open(EMPTY_TEXT_KEY), false),
+                key(high, open(crate::keys::INVALID_KEY), true),
+            ) {
                 (Some((begin, low_in)), Some((end, high_in))) => {
                     let options = if low_in { INCLUDE_BEGIN } else { 0 }
                         | if high_in { INCLUDE_END } else { 0 };
@@ -448,9 +478,11 @@ fn keyed_plan(
                     Some((first, last)) => period(date_key(first), date_key(last), d.is_period()),
                     None => Plan::candidates(Vec::new()),
                 },
-                Moment::Time(t) => {
-                    period(time_key(t.earliest()), time_key(t.latest()), t.is_period())
-                }
+                Moment::Time(t) => period(
+                    time_key(t.earliest()),
+                    time_end_key(t.latest()),
+                    t.is_period(),
+                ),
                 Moment::Stamp(d, t) => match days(d) {
                     Some((first, last)) => {
                         let whole_days = *t == any_time();
@@ -458,13 +490,13 @@ fn keyed_plan(
                         if one_day {
                             period(
                                 stamp_key(first, t.earliest()),
-                                stamp_key(last, t.latest()),
+                                stamp_end_key(last, t.latest()),
                                 true,
                             )
                         } else {
                             period(
                                 stamp_key(first, 0),
-                                stamp_key(last, 86_399),
+                                stamp_end_key(last, 86_399),
                                 whole_days && d.is_period(),
                             )
                         }
@@ -1020,7 +1052,9 @@ pub fn checked_join_program(
 /// host's index: a target matches a row when every predicate `(type, a,
 /// b)` relates some key of its `a` to some key of the row's `b`, keys
 /// compared as bytes, `×` relating every record. No rows or no predicates
-/// relate nothing.
+/// relate nothing. As the host leaves an empty value's key `01` out of
+/// `≠` and the inequalities ([`crate::exec`], file-metadata.md 4), a
+/// target's `01` relates only through `=`, `≥` and `×`.
 pub fn join_on_keys(
     targets: &[JoinRow],
     rows: &[JoinRow],
@@ -1034,6 +1068,7 @@ pub fn join_on_keys(
     }
     let relates = |kind: u8, a: &[u8], b: &[u8]| match kind {
         0 => a == b,
+        1..=3 if a == EMPTY_TEXT_KEY => false,
         1 => a != b,
         2 => a < b,
         3 => a <= b,
@@ -1331,20 +1366,40 @@ mod tests {
             &at_least[0].bytes[..3],
             [kind::INDEX_RANGE, VALUE_SCOPE, INCLUDE_BEGIN]
         );
+        // An open end stops short of the empty value and of invalid ones,
+        // as FileMaker's do (6.4).
         assert!(at_least[0]
             .bytes
-            .ends_with(&[key_operand(&seven), vec![0]].concat()));
+            .ends_with(&[key_operand(&seven), key_operand(&[0xfe, 0xff])].concat()));
         let below = number("<7");
         assert_eq!(below[0].bytes[2], 0);
         assert!(below[0]
             .bytes
-            .ends_with(&[vec![0], key_operand(&seven)].concat()));
+            .ends_with(&[key_operand(&[0x01]), key_operand(&seven)].concat()));
+        // U+2212 is a minus sign, as in a stored number (7.3).
+        let minus_two = om_collate::number_key("-2").unwrap();
+        assert!(number("\u{2212}2")[0]
+            .bytes
+            .ends_with(&[key_operand(&minus_two), vec![0]].concat()));
         let between = number("1...7");
         assert_eq!(between[0].bytes[2], INCLUDE_BEGIN | INCLUDE_END);
-        // Empty: the empty text key, or "no key" for other types.
+        // The finder FileMaker Server's engine built for `12:30 PM` on a
+        // time field (7.3): the whole minute, to 45,059.999999 s.
+        let minute = finders(TABLE, 3, DataType::Time, "12:30 PM", order).unwrap();
+        assert_eq!(
+            &minute[0].bytes[..3],
+            [kind::INDEX_RANGE, VALUE_SCOPE, INCLUDE_BEGIN | INCLUDE_END]
+        );
+        let begin = [0x80, 0, 0, 0x80, 0x05, 0x56, 0x11, 0x10];
+        let end = [0x80, 0, 0, 0x80, 0x05, 0x56, 0x16, 0xaa, 0xaa, 0xaa, 0xa0];
+        assert!(minute[0]
+            .bytes
+            .ends_with(&[key_operand(&begin), key_operand(&end)].concat()));
+        // Empty: the empty value's key `01`, for every type (7.3).
         let empty = finders(TABLE, 1, DataType::Text, "=", order).unwrap();
         assert!(empty[0].bytes.ends_with(&[2, 1, 1, 0]));
-        assert!(!number("=")[0].keep);
+        let empty = number("=");
+        assert!(empty[0].keep && empty[0].bytes.ends_with(&[2, 1, 1, 0]));
         assert_eq!(number("!")[0].bytes[0], kind::FIND_DUPLICATES);
         // Unknown syntax and values a field's type cannot key.
         for criterion in ["a*", "\"x\"", "//", "=="] {
@@ -1380,6 +1435,11 @@ mod tests {
             (DataType::Text, "<M"),
             (DataType::Number, "12"),
             (DataType::Number, "1...7"),
+            // FileMaker's own finders (6.4): IndexMatch `7f ff 9f`, IndexRange.
+            (DataType::Number, "-0.5"),
+            (DataType::Number, "-1...1"),
+            (DataType::Number, "0"),
+            (DataType::Number, "0...5"),
             (DataType::Date, "//"),
             (DataType::Date, "6/2019"),
             (DataType::Date, "2019"),
@@ -1399,7 +1459,6 @@ mod tests {
             (DataType::Text, "*\"son & Phil\"*", 1),
             (DataType::Text, "==", 1),
             (DataType::Text, "?", 0),
-            (DataType::Number, ".50", 0),
             (DataType::Date, "Tuesday", 0),
             (DataType::Date, "*/{10..15}/2019", 1),
             (DataType::Time, "*:15", 1),

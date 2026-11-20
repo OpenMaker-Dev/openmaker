@@ -343,7 +343,8 @@ impl Number {
                     }
                 }
                 '.' if !in_fraction => in_fraction = true,
-                '-' if !digits => negative = true,
+                // A minus sign, ASCII or U+2212, as a stored number reads it.
+                '-' | '\u{2212}' if !digits => negative = true,
                 // An exponent ends the digits FileMaker reads.
                 'e' | 'E' if digits => break,
                 _ => {}
@@ -368,17 +369,20 @@ impl Number {
         })
     }
 
-    /// The number's text when it is a non-negative integer, the only form
-    /// whose index key is known (query-program.md 7.3).
-    pub(crate) fn integer_text(&self) -> Option<String> {
-        if self.negative || !self.fraction.is_empty() {
-            return None;
-        }
-        Some(if self.integer.is_empty() {
-            "0".into()
+    /// The number's value-index key (query-program.md 7.3).
+    pub(crate) fn index_key(&self) -> Option<Vec<u8>> {
+        let digits = |d: &[u8]| d.iter().map(|d| char::from(b'0' + d)).collect::<String>();
+        // At least one integer digit: `0` has none of its own.
+        let integer = if self.integer.is_empty() {
+            "0".to_string()
         } else {
-            self.integer.iter().map(|d| char::from(b'0' + d)).collect()
-        })
+            digits(&self.integer)
+        };
+        om_collate::number_key(&format!(
+            "{}{integer}.{}",
+            if self.negative { "-" } else { "" },
+            digits(&self.fraction)
+        ))
     }
 
     /// The number as a binary float (for summaries that only order groups).

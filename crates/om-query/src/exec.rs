@@ -1100,7 +1100,12 @@ impl Predicate {
         if index.is_empty() {
             return Ok(Vec::new());
         }
-        let all = 0..index.len();
+        // An empty value relates to nothing, an inequality and `≠` included
+        // (file-metadata.md 4): the empty value's entry `01`, the lowest key
+        // an index can hold, is left out of every range.
+        let first = usize::from(index.key(0) == EMPTY_TEXT_KEY);
+        let all = first..index.len();
+        let above_empty = Bound::Excluded(EMPTY_TEXT_KEY);
         let unbounded = Bound::Unbounded;
         Ok(match self.kind {
             pred::EQ => {
@@ -1115,11 +1120,11 @@ impl Predicate {
             // Every key differs from one of two different source keys.
             pred::NE if least != greatest => vec![all],
             pred::NE => match index.find(least, work)? {
-                Some(at) => vec![0..at, at + 1..index.len()],
+                Some(at) => vec![first..at, at + 1..index.len()],
                 None => vec![all],
             },
-            pred::LT => vec![index.range((unbounded, Bound::Excluded(greatest)), work)?],
-            pred::LE => vec![index.range((unbounded, Bound::Included(greatest)), work)?],
+            pred::LT => vec![index.range((above_empty, Bound::Excluded(greatest)), work)?],
+            pred::LE => vec![index.range((above_empty, Bound::Included(greatest)), work)?],
             pred::GT => vec![index.range((Bound::Excluded(least), unbounded), work)?],
             pred::GE => vec![index.range((Bound::Included(least), unbounded), work)?],
             other => return Err(QueryError::Unsupported("join predicate", other)),
@@ -1949,14 +1954,15 @@ mod tests {
                 &[(pred::EQ, 1)],
                 &[1, 4],
             ),
-            (&[&[shared][..]], &[(pred::LT, 1)], &[1, 6]),
-            (&[&[shared][..]], &[(pred::LE, 1)], &[1, 2, 3, 6]),
+            // Record 6 holds the empty value `01`: only `=` relates it.
+            (&[&[shared][..]], &[(pred::LT, 1)], &[1]),
+            (&[&[shared][..]], &[(pred::LE, 1)], &[1, 2, 3]),
             (&[&[shared][..]], &[(pred::GT, 1)], &[4, 5]),
             (&[&[shared][..]], &[(pred::GE, 1)], &[2, 3, 4, 5]),
             (
                 &[&[&[0x01, 0x10][..], &[0x01, 0x10, 0x30]][..]],
                 &[(pred::LT, 1)],
-                &[1, 2, 3, 6],
+                &[1, 2, 3],
             ),
             (
                 &[&[&[0x01, 0x10][..], &[0x01, 0x10, 0x30]][..]],
@@ -1966,20 +1972,16 @@ mod tests {
             (&[&[&[0x00][..]][..]], &[(pred::LT, 1)], &[]),
             (&[&[&[0x00][..]][..]], &[(pred::GT, 1)], &[1, 2, 3, 4, 5, 6]),
             (&[&[&[0x02][..]][..]], &[(pred::GE, 1)], &[]),
-            (
-                &[&[&[0x01, 0x10][..]][..]],
-                &[(pred::NE, 1)],
-                &[2, 3, 4, 5, 6],
-            ),
+            (&[&[&[0x01, 0x10][..]][..]], &[(pred::NE, 1)], &[2, 3, 4, 5]),
             (
                 &[&[&[0x01, 0x10][..], &[0x01, 0x20]][..]],
                 &[(pred::NE, 1)],
-                &[1, 2, 3, 4, 5, 6],
+                &[1, 2, 3, 4, 5],
             ),
             (
                 &[&[&[0x01, 0x05][..]][..]],
                 &[(pred::NE, 1)],
-                &[1, 2, 3, 4, 5, 6],
+                &[1, 2, 3, 4, 5],
             ),
             (&[&[shared][..]], &[(pred::EQ, 1), (pred::GE, 1)], &[2, 3]),
             (&[&[shared][..]], &[(pred::EQ, 1), (pred::GT, 1)], &[]),
