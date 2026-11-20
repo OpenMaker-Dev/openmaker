@@ -2541,9 +2541,10 @@ fn transaction_options_skip_auto_enter_and_data_entry_validation() {
 /// S::Count, compared by value; Mark one of S::Shout, an unstored
 /// calculation computed on each related record (#1058), the written
 /// record's over the values the write gives it; Owner one of S::Who,
-/// `Get ( AccountName )`, this session's account; Word one of S::German,
-/// text indexed in German, whose keys OpenMaker does not build: refused
-/// (3) rather than compared in English, where `Apfel` is `Äpfel` (#571).
+/// `Get ( AccountName )`, this session's account; Word (validated always)
+/// one of S::German, text indexed in German, whose keys OpenMaker does not
+/// build: refused (3) rather than compared in English, where `Apfel` is
+/// `Äpfel` (#571).
 /// While a transaction holds a record of another table, which such a
 /// calculation could read only as stored, Commit Transaction refuses (3).
 #[test]
@@ -2558,6 +2559,8 @@ fn a_related_value_list_is_computed_for_the_written_record() {
     const WORD: u64 = 39;
     const RAW: u64 = 40;
     const LETTER: u64 = 41;
+    const ACCENTED: u64 = 42;
+    const VOWEL: u64 = 43;
     let mut root = fixture::tree(&[], true);
     let mut names = fixture::names();
     names.add_field(TABLE, SHOUT, "Shout");
@@ -2572,10 +2575,13 @@ fn a_related_value_list_is_computed_for_the_written_record() {
     fixture::add_field(&mut root, TABLE, OWNER, "Owner", 1, 1, 0, 0, 0x100);
     fixture::add_field(&mut root, TABLE, GERMAN, "German", 1, 1, 0, 0, 0);
     fixture::set_field_language(&mut root, TABLE, GERMAN, 25);
-    fixture::add_field(&mut root, TABLE, WORD, "Word", 1, 1, 0, 0, 0x100);
+    fixture::add_field(&mut root, TABLE, WORD, "Word", 1, 1, 0, 0, 0x500);
     fixture::add_field(&mut root, TABLE, RAW, "Raw", 1, 1, 0, 0, 0);
     fixture::set_field_language(&mut root, TABLE, RAW, 2);
     fixture::add_field(&mut root, TABLE, LETTER, "Letter", 1, 1, 0, 0, 0x100);
+    fixture::add_field(&mut root, TABLE, ACCENTED, "Accented", 1, 1, 0, 0, 0);
+    fixture::set_field_language(&mut root, TABLE, ACCENTED, 3);
+    fixture::add_field(&mut root, TABLE, VOWEL, "Vowel", 1, 1, 0, 0, 0x100);
     fixture::add_occurrence(&mut root, SELF_JOIN, "S", TABLE);
     fixture::add_relationship(&mut root, 12, (OCCURRENCE, COUNT), 0, (SELF_JOIN, COUNT));
     fixture::set_field_validation(&mut root, TABLE, CODE, 0x100);
@@ -2601,6 +2607,7 @@ fn a_related_value_list_is_computed_for_the_written_record() {
         (9, "Accounts", WHO, OWNER),
         (10, "Germans", GERMAN, WORD),
         (11, "Raws", RAW, LETTER),
+        (12, "Accents", ACCENTED, VOWEL),
     ] {
         root.put(&[&[0x21], &[5], &[list], &[0x10]], text_node(&[], name));
         root.put(&[&[0x21], &[5], &[list], &[2]], related(listed as u8));
@@ -2641,6 +2648,24 @@ fn a_related_value_list_is_computed_for_the_written_record() {
             Some(code) => assert_eq!(result.unwrap_err().code, Some(code), "{letter}"),
         }
     }
+    // The same for S::Accented, Unicode standard (3), whose padded keys tell
+    // `e` and `é` apart where the list keeps one of them.
+    for (vowel, expected) in [("e", None), ("é", Some(3))] {
+        let result = a.update_record(tasks, 2, values(&[("Accented", "e\ré"), ("Vowel", vowel)]));
+        match expected {
+            None => assert!(result.is_ok(), "{vowel}: {result:?}"),
+            Some(code) => assert_eq!(result.unwrap_err().code, Some(code), "{vowel}"),
+        }
+    }
+    // An import's row with such a value is refused as one whose rule
+    // OpenMaker does not support checking, which ends the import.
+    let cells = [
+        (GERMAN, Some("Äpfel".to_owned())),
+        (WORD, Some("Apfel".to_owned())),
+    ]
+    .into();
+    let refused = a.import_record(tasks, Some(2), &cells, true).unwrap_err();
+    assert!(refused.unsupported, "{refused:?}");
     // With Count 3 as written, record 1 ("Write tests", Count 3) is related.
     assert_eq!(
         code(a.update_record(tasks, 2, values(&[("Count", "3"), ("Code", "Write tests")]))),
