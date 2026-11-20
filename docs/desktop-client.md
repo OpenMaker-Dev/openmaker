@@ -959,6 +959,14 @@ in those languages, whose word breaks follow their locale
 ([#300](https://github.com/OpenMaker-Dev/openmaker/issues/300)), and any
 find in a tailored language fail with 3 until the host has the index.
 
+A find on a related field walks each relationship back from the related
+records (query-program.md 6.5): their match values are keyed in the form
+of the near match field's value index they are compared with, so a match
+field indexed in Unicode or System relates as it holds
+([#573](https://github.com/OpenMaker-Dev/openmaker/issues/573)). A near
+text match field in a tailored language fails such a find with 3, with
+the host's index or without.
+
 **Limits.** List view shows only the current request, as one body row.
 In the padded form a word's start is matched by its primary weights alone
 (`equ` finds `équipe`), and a Unicode raw find keeps case: FileMaker's keys

@@ -1738,6 +1738,46 @@ fn a_first_join_in_an_unknown_index_language_fails_instead_of_guessing() {
     provider.close();
 }
 
+/// A related find keys the related records' match values in the form of
+/// the near field's value index they are compared with (#573): Tasks::Name,
+/// indexed in Unicode raw (2), relates to a note whose Body is "Ship", with
+/// the host's index and without, as "Ship" relates "Ship".
+#[test]
+fn a_related_find_keys_related_values_in_the_near_fields_form() {
+    let answers = cold_and_warm_in(
+        "join-raw",
+        &[],
+        |root| {
+            fixture::set_field_language(root, TABLE, NAME, 2);
+            fixture::add_relationship(
+                root,
+                40,
+                (OCCURRENCE, NAME),
+                0,
+                (fixture::NOTES_OCCURRENCE, fixture::BODY),
+            );
+            let notes = uint_segment(fixture::NOTES);
+            root.put(
+                &[
+                    &notes,
+                    &[5],
+                    &serial::encode(2),
+                    &uint_segment(fixture::BODY),
+                ],
+                text_node(&[], "Ship"),
+            );
+            let mut list = root
+                .at(&[&notes, &[0x0d]])
+                .and_then(|n| RidList::from_owned(n).ok())
+                .unwrap_or_default();
+            list.insert(2);
+            root.put(&[&notes, &[0x0d]], list.to_node(Vec::new()));
+        },
+        vec![request("Notes::Body", "==Ship")],
+    );
+    assert_eq!(answers, (Ok(vec![2]), Ok(vec![2])));
+}
+
 /// A cartesian predicate does not read its displayed fields' indexes.
 /// An unsupported language there must not prevent fallback for a different
 /// predicate whose numeric index is missing (file-metadata.md 4.2).

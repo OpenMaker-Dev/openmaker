@@ -1074,13 +1074,34 @@ impl NativeProvider {
                 .iter()
                 .map(|p| (join_type(p.op), p.left, p.right))
                 .collect();
-            // Each related record's keys for the predicates' fields.
+            // Each related record's keys for the predicates' fields, text in
+            // the form of the near field's value index they are compared
+            // with (query-program.md 7.2): FileMaker relates records through
+            // that index (#573). A near field in a language OpenMaker does
+            // not key fails the find (3) rather than relating by English
+            // keys.
+            let near_table = self.table_def(near)?;
+            let file_language = self.file_language()?;
+            let mut forms: BTreeMap<u64, TextKeys> = BTreeMap::new();
+            for (kind, a, b) in &predicates {
+                let Some(field) = near_table.field(*a).filter(|_| *kind != CARTESIAN) else {
+                    continue;
+                };
+                let form = text_keys(field, file_language, IndexKind::Value)?;
+                if forms.insert(*b, form).is_some_and(|other| other != form) {
+                    return Err(DataError::with_code(
+                        code::UNSUPPORTED,
+                        "A related field is matched against fields indexed in different forms.",
+                    ));
+                }
+            }
             let ids: Vec<u64> = current.iter().collect();
             let fields: Vec<u64> = predicates.iter().map(|(_, _, b)| *b).collect();
             let rows = self.join_rows(&far_table, &ids, &fields, |field, row| {
+                let form = forms.get(&field.id).copied().unwrap_or(TextKeys::Collated);
                 row.cells
                     .get(&field.id)
-                    .map(|cell| join_keys(field.data_type, &cell.display(), order))
+                    .map(|cell| join_keys(field.data_type, &cell.display(), order, form))
                     .unwrap_or_default()
             })?;
             if rows.is_empty() {
@@ -1498,9 +1519,14 @@ fn field_texts(row: &om_hbam::record::Record, field: &om_hbam::Field) -> Vec<Str
 }
 
 /// The value-index keys of a stored value (one per line), as a join
-/// compares them; empty lines have none (an empty value never relates,
-/// file-metadata.md 4).
-fn join_keys(data_type: om_hbam::DataType, value: &str, order: DateOrder) -> Vec<Vec<u8>> {
+/// compares them, text in `form` (the near field's index form); empty
+/// lines have none (an empty value never relates, file-metadata.md 4).
+fn join_keys(
+    data_type: om_hbam::DataType,
+    value: &str,
+    order: DateOrder,
+    form: TextKeys,
+) -> Vec<Vec<u8>> {
     use om_hbam::DataType;
     value
         .split(['\r', '\n'])
@@ -1511,7 +1537,7 @@ fn join_keys(data_type: om_hbam::DataType, value: &str, order: DateOrder) -> Vec
             DataType::Date => om_collate::date_key(line, order),
             DataType::Time => om_collate::time_key(line),
             DataType::Timestamp => om_collate::timestamp_key(line, order),
-            _ => Some(om_collate::text_index_key(line)),
+            _ => form.key(line),
         })
         .collect()
 }
