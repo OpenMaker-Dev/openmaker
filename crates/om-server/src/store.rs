@@ -2792,7 +2792,7 @@ impl om_query::Source for Store {
         table: &[u8],
         field: &[u8],
         kind: u8,
-    ) -> om_hbam::Result<Option<OwnedNode>> {
+    ) -> Result<Option<OwnedNode>, om_query::QueryError> {
         let index: [&[u8]; 3] = [table, &[keys::INDEXES], field];
         if self
             .node(&[index[0], index[1], index[2], &[counts_key(kind)]])
@@ -2803,7 +2803,22 @@ impl om_query::Source for Store {
         let Some(data_type) = self.indexable(table, field, kind) else {
             return Ok(None);
         };
-        let form = self.read_text_keys(table, field);
+        // A text field in an index language whose keys this server does
+        // not build, holding text: its index would hold keys OpenMaker
+        // cannot make, and English ones would answer the query with
+        // another found set (a German `Äpfel` criterion missing records,
+        // French words broken at the wrong places). The query is refused,
+        // as the desktop refuses a find without the host's index (#572).
+        let Some(form) = self.written_form(table, field, data_type) else {
+            warn!(
+                "{}: a query needs an index this server cannot build in its field's language; \
+                 refused",
+                self.name
+            );
+            return Err(om_query::QueryError::Unimplemented(
+                "an index in this field's language",
+            ));
+        };
         let index = self.index_keys(table, field, data_type, kind, form);
         self.on_demand
             .lock()

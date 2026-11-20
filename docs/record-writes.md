@@ -1316,8 +1316,13 @@ than English ones a find in that language would miss (#159):
   deleted record with text there.
 - An index that op73 asks for, or that a find builds on demand, is not
   stored while a record holds text in the field. op73 then leaves the field
-  without the index it had. A find reads the field's text in English for
-  itself, so the next find builds it again.
+  without the index it had.
+- A query that needs such an index while a record holds text in the field
+  (a find, a join, a value list) is refused rather than answered from
+  English keys, which would give another found set: a client gets the
+  query's error (`0xffff`), a server script's find gives 3
+  ([#572](https://github.com/OpenMaker-Dev/openmaker/issues/572)). A field
+  that holds no text has no keys to differ, and is answered.
 
 OpenMaker's record rules refuse such a write first (error 3, naming the
 field and the language). They do so for a stored text field defined with

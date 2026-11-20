@@ -2628,7 +2628,7 @@ impl om_query::Source for QuerySource<'_> {
         table: &[u8],
         field: &[u8],
         kind: u8,
-    ) -> om_hbam::Result<Option<OwnedNode>> {
+    ) -> Result<Option<OwnedNode>, om_query::QueryError> {
         if self.view.as_ref().is_some_and(|view| view.limits(table)) {
             return Ok(None);
         }

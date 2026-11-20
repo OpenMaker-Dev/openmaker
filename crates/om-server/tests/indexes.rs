@@ -58,13 +58,34 @@ fn a_find_on_a_missing_index_builds_it_first_unless_builds_are_late() {
     assert_eq!(find_ship_twice(port), [(false, vec![]), (true, vec![2])]);
 
     // In German (25), whose keys OpenMaker does not build (query-program.md
-    // 7.2), the index is read in English for the find and not stored, so
-    // the next find builds it again (#159).
+    // 7.2), the find is refused rather than answered from English keys,
+    // which would miss what German keys find (#572), and nothing is stored
+    // (#159).
     let mut root = fixture::tree(&[], true);
     fixture::set_field_language(&mut root, fixture::TABLE, fixture::NAME, 25);
     let file = fixture::TempFile::from_tree("unkeyed-index-builds", &root);
     let port = server::start(&file);
-    assert_eq!(find_ship_twice(port), [(false, vec![2]), (false, vec![2])]);
+    let (mut session, file_id) = server::logged_in(port, "indexes");
+    let finders: Vec<Vec<u8>> = find::finders(
+        fixture::TABLE,
+        fixture::NAME,
+        DataType::Text,
+        "==Ship",
+        DateOrder::MonthDayYear,
+    )
+    .unwrap()
+    .into_iter()
+    .map(|finder| finder.bytes)
+    .collect();
+    let program = find::program(file_id, fixture::TABLE, &finders, None);
+    let reply = session.query(&program).unwrap();
+    // The query's error slot, 0xffff: refused, not an empty found set.
+    assert_eq!(
+        reply.slots,
+        [0x80, 0x06, 0x00, 0x03, 0x02, 0xff, 0xff, 0x40],
+        "the find is refused"
+    );
+    session.disconnect().unwrap();
     assert!(name_index_on_disk(&file).is_empty());
 }
 
