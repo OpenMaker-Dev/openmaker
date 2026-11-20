@@ -2969,10 +2969,14 @@ fn arial_text_prints_in_liberation_sans_and_other_text_in_inter() {
             int: Some(align),
             ..Default::default()
         });
-        render(text).unwrap().matches("W\nn").count()
+        render(text).unwrap()
     };
-    assert_eq!(spilling(3, 13.0), 1);
-    assert_eq!(spilling(1, 200.0), 0);
+    // The label's clip: its frame's width, its text box's height (the
+    // frame less the 1-point label inset above and below). The part's own
+    // clip is on every page.
+    let label_clip = |pdf: &str, width: f64| pdf.matches(&format!(" {width} 42 re\nW\nn")).count();
+    assert_eq!(label_clip(&spilling(3, 13.0), 13.0), 1);
+    assert_eq!(label_clip(&spilling(1, 200.0), 200.0), 0);
 }
 
 /// A field's text sits inside its text component's margins (properties
