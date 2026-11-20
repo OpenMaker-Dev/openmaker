@@ -107,12 +107,22 @@ the portals [Portals](#portals) lists, dynamic pictures, the button icons
 [Rounded frames](#rounded-frames) lists,
 hide/label calculations, the conditional formatting
 [Conditional formatting](#conditional-formatting) lists, layout merge symbols other than
-`{{PageNumber}}`, mixed rich text, decorated text, italic text in a family
-other than Arial or Helvetica,
+`{{PageNumber}}`, mixed rich text other than runs that differ only in color,
+decorated text, italic text in a family other than Arial or Helvetica,
 colors outside 0-1, unsupported glyphs/shaping, text overflow in anything but a
 field that does not slide ([field text](#field-text)), and object/page overflow. Ordinary
 flat character and paragraph styles, including uniform paragraph leading, can
-be used. Common object flags other than the anchor, plain-text/tooltip,
+be used. Character runs that differ in nothing but their color, as decoded and
+in their undecoded mask bits and extension byte (layout-model.md 8.1), print
+each in its own: a run's color, else the object's text color, else black, as
+Browse colors them. A line splits where its color changes, each part from where
+the previous ends, so wrapping and positions are those of one color. A
+conditional format's color replaces every run's, as in Browse. Colored runs are
+stored for the text as written, so a merged or calculated value, a
+`{{PageNumber}}` or a case transform in several colors is refused rather than
+colored at the wrong characters
+([#106](https://github.com/OpenMaker-Dev/openmaker/issues/106)). Runs in several
+fonts, sizes or faces, and several paragraph styles, are refused. Common object flags other than the anchor, plain-text/tooltip,
 tab-order (`kTabOrderOmit`, which nothing printed shows) and slide-up bits,
 and on a line its start corner, refuse output. A line runs
 between the corners its start bits name, as Browse draws it (layout-model.md

@@ -4069,6 +4069,130 @@ fn container_fields_print_pictures_by_graphic_format_and_files_by_name() {
     assert_eq!(at(image.left + 5.0, clip.top + 2.0), [255, 255, 255, 255]);
 }
 
+/// Character runs that differ only in color print each in its own, as
+/// Browse colors them: a line splits where its color changes, each part
+/// from where the previous one ends (#106). Runs in several sizes, and a
+/// value other than the text the runs are stored for, still refuse.
+#[test]
+fn character_runs_print_in_their_own_colors() {
+    use om_layout::{CharacterStyle, StyledRun};
+    let red = Color {
+        red: 1.0,
+        alpha: 1.0,
+        ..Default::default()
+    };
+    let mut colored = label(
+        1,
+        "Total overdue",
+        rect(12.0, 10.0, 300.0, 20.0),
+        12.0,
+        false,
+    );
+    let base = colored.rich_text.as_ref().unwrap().character_runs[0]
+        .style
+        .clone();
+    colored.rich_text.as_mut().unwrap().character_runs = vec![
+        StyledRun {
+            range: 0..6,
+            style: base.clone(),
+        },
+        StyledRun {
+            range: 6..13,
+            style: CharacterStyle {
+                color: Some(red),
+                ..base.clone()
+            },
+        },
+    ];
+    let layout = Layout {
+        def: Some(LayoutDef {
+            base_width: 540.0,
+            ..Default::default()
+        }),
+        parts: vec![Part {
+            part_type: 4,
+            height: 100.0,
+            ..Default::default()
+        }],
+        objects: ObjectStore {
+            root: vec![1],
+            objects: vec![colored],
+            ..Default::default()
+        },
+        ..Default::default()
+    };
+    let render = |layout: &Layout, text: &'static str| {
+        let paper = om_layout::pagination::PageSize::for_layout(layout).unwrap();
+        crate::report::render_pdf(layout, 1, paper, &[], move |_, _| Ok(text.to_owned()))
+            .map(|report| String::from_utf8_lossy(&report.bytes).into_owned())
+            .map_err(|e| e.message)
+    };
+    let pdf = render(&layout, "Total overdue").unwrap();
+    let (total, overdue) = (
+        text_origins(&pdf, 1, "Total "),
+        text_origins(&pdf, 1, "overdue"),
+    );
+    assert_eq!(
+        (total.len(), overdue.len()),
+        (1, 1),
+        "{total:?} {overdue:?}"
+    );
+    // "overdue" starts where "Total " ends: its advances in 12-point Inter.
+    let font =
+        ttf_parser::Face::parse(include_bytes!("../../assets/fonts/Inter-Regular.ttf"), 0).unwrap();
+    let advance: f64 = "Total "
+        .chars()
+        .map(|ch| {
+            f64::from(
+                font.glyph_hor_advance(font.glyph_index(ch).unwrap())
+                    .unwrap(),
+            )
+        })
+        .sum::<f64>()
+        * 12.0
+        / f64::from(font.units_per_em());
+    assert!(
+        (overdue[0].1 - total[0].1 - advance).abs() < 0.01,
+        "{total:?} {overdue:?}"
+    );
+    // Each part is filled in its color, set just before it.
+    let fill_before = |word: &str| {
+        let glyphs: String = word
+            .chars()
+            .map(|ch| format!("{:04X}", font.glyph_index(ch).unwrap().0))
+            .collect();
+        let at = pdf.find(&format!("<{glyphs}> Tj")).unwrap();
+        let fill = pdf[..at]
+            .lines()
+            .rev()
+            .find(|l| l.ends_with(" rg"))
+            .unwrap();
+        fill.to_owned()
+    };
+    assert_eq!(fill_before("Total "), "0 0 0 rg");
+    assert_eq!(fill_before("overdue"), "1 0 0 rg");
+
+    // Merged or calculated text is not the text the runs are stored for.
+    assert_eq!(
+        render(&layout, "Total 3 overdue").unwrap_err(),
+        "Report object 1's text is in several colors and is merged, calculated or \
+         transformed; only its text as written can print in them"
+    );
+    // Runs in two sizes still refuse.
+    let mut sized = layout.clone();
+    sized.objects.objects[0]
+        .rich_text
+        .as_mut()
+        .unwrap()
+        .character_runs[1]
+        .style
+        .font_size = Some(18.0);
+    assert_eq!(
+        render(&sized, "Total overdue").unwrap_err(),
+        "Mixed character styles are unsupported"
+    );
+}
+
 /// `{{PageNumber}}` prints each page's number, in a static label and in a
 /// merge text's literal (any case), as FileMaker Pro 26.0.3's Save Records
 /// as PDF wrote it on page *n* (calc-functions.md, O4), without touching
