@@ -310,19 +310,24 @@ fn weight(c: char) -> Weight {
     }
 }
 
-/// A character of the kana blocks: hiragana, katakana, their phonetic
-/// extensions, halfwidth katakana and its punctuation, and the kana
-/// supplements.
+/// A character of the kana blocks (Unicode 17): hiragana, katakana, their
+/// phonetic extensions, halfwidth katakana and its punctuation, Kana
+/// Extended-B, the Kana Supplement, Kana Extended-A and Small Kana
+/// Extension.
 fn kana(c: char) -> bool {
     matches!(
         u32::from(c),
-        0x3040..=0x30ff | 0x31f0..=0x31ff | 0xff61..=0xff9f | 0x1_b000..=0x1_b16f
+        0x3040..=0x30ff
+            | 0x31f0..=0x31ff
+            | 0xff61..=0xff9f
+            | 0x1_aff0..=0x1_afff
+            | 0x1_b000..=0x1_b16f
     )
 }
 
-/// A CJK ideograph: the unified blocks and their extensions A to I, and the
-/// compatibility ideographs and their supplement. Other supplementary code
-/// points key from the table.
+/// A CJK ideograph (Unicode 17 blocks): the unified block and its
+/// extensions A to J, and the compatibility ideographs and their
+/// supplement. Other supplementary code points key from the table.
 fn ideograph(c: char) -> bool {
     matches!(
         u32::from(c),
@@ -332,7 +337,7 @@ fn ideograph(c: char) -> bool {
             | 0x2_0000..=0x2_a6df
             | 0x2_a700..=0x2_ee5f
             | 0x2_f800..=0x2_fa1f
-            | 0x3_0000..=0x3_23af
+            | 0x3_0000..=0x3_347f
     )
 }
 
@@ -411,6 +416,8 @@ mod tests {
         assert_eq!(key("は\u{309a}"), None);
         // Kana the probe did not hold; the prolonged sound mark keys.
         assert_eq!(key("ㇰ"), None);
+        assert_eq!(key("\u{1aff0}"), None);
+        assert_eq!(key("\u{323b0}"), None);
         assert_eq!(key("・"), None);
         assert_eq!(key("ー").as_deref(), Some("0111dd"));
         // A supplementary code point outside the ideograph blocks keys from
