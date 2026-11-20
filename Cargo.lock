@@ -4581,6 +4581,7 @@ version = "0.0.0"
 name = "om-gui"
 version = "0.0.0"
 dependencies = [
+ "block2 0.6.2",
  "cap",
  "eframe",
  "egui",
@@ -4614,6 +4615,7 @@ dependencies = [
  "om-transfer",
  "om-url",
  "pdf-writer",
+ "quick-xml",
  "raw-window-handle",
  "rcgen 0.13.2",
  "resvg",

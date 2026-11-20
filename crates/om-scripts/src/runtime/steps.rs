@@ -126,6 +126,7 @@ impl Runtime {
                 Exec::ok()
             }
             id::SET_VARIABLE => self.set_variable(host, step),
+            id::SET_VARIABLE_BY_NAME => self.set_variable_by_name(host, step),
             id::PERFORM_SCRIPT => self.perform_script_step(host, step),
             id::PERFORM_SCRIPT_ON_SERVER => self.perform_script_on_server(host, step),
             210 => self.perform_script_on_server_with_callback(host, step),
@@ -280,6 +281,28 @@ impl Runtime {
         let Some(name) = step.text(0).filter(|n| valid_variable_name(n)) else {
             return Exec::error(ErrorCode::INVALID);
         };
+        self.assign_variable(host, step, name)
+    }
+
+    /// Set Variable by Name (250): Set Variable with the name calculated
+    /// in slot 3 (script-steps.md 12.4). The name is evaluated first, and
+    /// one that does not name a variable fails as Set Variable's stored
+    /// name does, with error 5 [I: FileMaker Pro 26.1.1 not run].
+    fn set_variable_by_name(&mut self, host: &mut dyn ScriptHost, step: &ScriptStep) -> Exec {
+        let Some(name) = (self.slot_text(host, step, 3)).filter(|n| valid_variable_name(n)) else {
+            return Exec::error(ErrorCode::INVALID);
+        };
+        self.assign_variable(host, step, name)
+    }
+
+    /// Set Variable's assignment of the repetition (slot 2) and value
+    /// (slot 1) to the variable `name`.
+    fn assign_variable(
+        &mut self,
+        host: &mut dyn ScriptHost,
+        step: &ScriptStep,
+        name: String,
+    ) -> Exec {
         let repetition = match self.eval_slot(host, step, 2) {
             None => Repetition::from(1),
             Some(e) if e.value.is_empty() => Repetition::from(1),
@@ -899,7 +922,11 @@ impl Runtime {
         if error == ErrorCode::RETRY || error == ErrorCode::MULTI_STAGE || self.is_paused() {
             return;
         }
-        if error != ErrorCode::CANCELED && !writes_records(step.id()) {
+        // A step the runtime does not know (on the server, 249 among them)
+        // never reaches the data layer.
+        if error != ErrorCode::CANCELED
+            && (!writes_records(step.id()) || is_unknown_step(&self.options, step.id()))
+        {
             return;
         }
         let location = self.location(step);
@@ -976,16 +1003,38 @@ impl Runtime {
             });
             targets.push(target);
         }
+        // "Close after (seconds)" (26.1.1): on in numeric slot 6, the
+        // seconds in calculation slot 13 (script-steps.md 12.4, from the
+        // binaries). The result is taken as a number as it is, not through
+        // its text. A time that is not a positive number leaves the dialog
+        // to the user: OpenMaker's choice, FileMaker's is unmeasured.
+        let close_after = step
+            .number(6)
+            .is_some_and(|on| on != 0)
+            .then(|| self.eval_slot(host, step, 13))
+            .flatten()
+            .and_then(|seconds| {
+                let cx = Ctx::new(host.locale(), host.today());
+                seconds.value.to_number(&cx).to_f64()
+            })
+            .filter(|seconds| seconds.is_finite() && *seconds > 0.0);
         let dialog = CustomDialog {
             title,
             message,
             buttons: buttons.iter().map(|(_, b)| b.clone()).collect(),
             inputs,
+            close_after,
         };
         let response = match host.show_custom_dialog(&dialog) {
             Ok(response) => response,
             Err(e) => return Exec::from_host(Err(e)),
         };
+        if response.button == 0 && close_after.is_some() {
+            // Closed by its timer: `Get ( LastMessageChoice )` is 0
+            // (Claris), and no button stored the inputs [I].
+            self.last_message_choice = Some(0);
+            return Exec::ok();
+        }
         let chosen = usize::from(response.button.max(1)) - 1;
         let Some((slot, button)) = buttons.get(chosen) else {
             return Exec::error(ErrorCode::INVALID);
@@ -1564,7 +1613,21 @@ impl Runtime {
                 }
                 return self.result_to_target(host, step, Ok(response.body), select_all);
             }
-            91 => {
+            91 | id::REPLACE_FIELD_CONTENTS_BY_NAME => {
+                // 249 names its field with the calculation in slot 1, found
+                // as Set Field By Name finds its target (script-steps.md
+                // 12.4); a name that finds none is error 102 [I].
+                let field = if id == id::REPLACE_FIELD_CONTENTS_BY_NAME {
+                    let Some(name) = self.slot_text(host, step, 1) else {
+                        return Exec::error(ErrorCode::INVALID);
+                    };
+                    match host.field_by_name(&name) {
+                        Ok(field) => Some(field),
+                        Err(e) => return Exec::from_host(Err(e)),
+                    }
+                } else {
+                    field
+                };
                 let mut evaluate;
                 let mut with = match step.number(1) {
                     Some(3) => {
@@ -1573,6 +1636,12 @@ impl Runtime {
                         };
                         evaluate = move |h: &mut dyn ScriptHost| self.eval(h, &calc).value;
                         Replacement::Calculation(&mut evaluate)
+                    }
+                    // "Use Entry Options" (`[00 5, 03]`) takes the field's
+                    // own serial settings, which are not read here: refused
+                    // before any record is written (script-steps.md 11.8).
+                    Some(2) if step.number(5).is_some_and(|n| n != 0) => {
+                        return Exec::error(ErrorCode::UNAVAILABLE);
                     }
                     Some(2) => Replacement::Serial {
                         initial: step.text(3).unwrap_or_else(|| "1".into()),
@@ -2033,6 +2102,7 @@ fn writes_records(id: u16) -> bool {
             | 216
             | 240
             | 241
+            | 249
     )
 }
 

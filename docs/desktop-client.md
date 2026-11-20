@@ -275,6 +275,12 @@ forgets the list (stopping a listing under way), and a reply to a listing no
 longer waited for is dropped unseen. The wording is OpenMaker's; FileMaker
 Pro's is not captured.
 
+Opening a file the host refuses because it blocks new users (Open status
+1638) shows FileMaker Pro's alert, "The host is not allowing new
+connections. Try again later.", with OK, its error 1638
+(network-protocol.md 5.6.4; `om_provider::HOST_BLOCKS_NEW_USERS`). Other
+refused opens keep OpenMaker's wording.
+
 ### Client license
 
 **FileMaker License...** is available in Hosts and the OpenMaker menu. It is
@@ -527,24 +533,56 @@ authoring part tabs or object kind captions.
   look is OpenMaker's own [I: FileMaker Pro's interactive container is
   unmeasured]. A container optimized for images shows a PDF's first page
   as above.
-- Such a container's audio and video (Insert Audio/Video's `movie` path,
-  or a file named as audio or video) play in the web viewer engine
-  (`container::paint_media`, #200): WebKitGTK with the `web-viewer`
-  feature, which plays through GStreamer and shows its own controls. The
-  data is copied to a folder only its user may read, removed with the
-  window, and the engine is placed over the field as a web viewer is, for
-  the current record only. It opens a page beside the copy whose media
-  element starts by itself only when the container's "Start playback
-  automatically" (`0x0200`, `GraphicFormat::autoplay`) is set (#1338);
-  otherwise it waits for the engine's play control. Without the engine (a
-  build without the feature, a window other than the file's first, a
-  display without X11) the file shows with a one-line note saying why it
-  does not play. The
-  engine is OpenMaker's choice [I: FileMaker Pro plays through the
-  system's media view, unmeasured].
+- An interactive container's audio and video play on the current record
+  in Form or List view outside portal rows. Playback uses the native web
+  viewer in builds with `web-viewer` (WebKitGTK on Linux/X11, including
+  XWayland, or WKWebView on macOS). The audio or video is copied to a
+  folder only its user may read and removed with the window. The player
+  starts automatically when the container's "Start playback
+  automatically" bit is set (`0x0200`, `GraphicFormat::autoplay`,
+  #1338). A window without a player shows the filename and a note.
+- The Insert menu offers PDF and Audio/Video for a selected, writable
+  interactive container outside portal rows whose field object allows
+  entry in Browse mode. On macOS the Insert commands ask for the file in
+  the system's open panel, which shows every file (whether FileMaker Pro's
+  panel filters by type is unmeasured); elsewhere, an in-app dialog takes
+  a typed path. Either way, a file of a different type (a picture Insert
+  Picture cannot show, a PDF without its header, a file the player would
+  not play) is refused with 734 or 700 before an edit is prepared or data
+  uploaded. [Container menus and file dialogs](re/containers.md#desktop-menus-and-file-dialogs-2026-11-02)
 - Button icons come from the file's library root `31` as the original SVG,
   colored through the icon component's style; no application icon is
   substituted for a file's library image.
+- A button with FileMaker Pro 26.1's "Calculated icon" (`buttonObj.flags`
+  `0x4`, layout-model.md 5.3.4) shows in Browse the SVG text its
+  `KButtonIconSvgCalc` formula (`91`) gives on the record, in the library
+  icon's place, drawn by the same SVG worker. "Image only" hides its label,
+  as for a library icon. Text the worker cannot draw, or none, shows a
+  warning sign, as FileMaker Pro shows a warning icon for SVG it does not
+  support (Claris). Popover buttons take the option too. A formula stored
+  without the flag is kept, neither evaluated nor drawn, and does not stop
+  reports or Refresh Object when it cannot be read.
+  - OpenMaker's choices: the icon is colored as the library icon is; text
+    longer than 64 KiB is dropped as it is computed and shows the warning;
+    the app keeps up to 256 distinct icons loaded across its windows.
+    Only icons within the document's visible clip claim or renew a slot.
+    The app warns on additional visible icons while all slots are in use. It keeps up to
+    64 after they leave the screen, with a one-second grace period.
+    Rasters are limited to 512 pixels per side and cached calculation
+    results have a 16 MiB text budget. The SVG worker queues up to 128
+    draws, reads their source bytes when drawing, and retries still-visible
+    icons on repaint.
+  - Inferred, not measured: the sign's look, which SVG FileMaker Pro
+    refuses, and whether popover buttons offer the option. The bit and the
+    key were read from FileMaker Pro 26.1.1's binaries; no file made by
+    26.1.1 has been read.
+  - Find mode, which evaluates no layout calculations, draws the library
+    icon, if any, where FileMaker Pro draws the calculated one
+    ([#512](https://github.com/OpenMaker-Dev/openmaker/issues/512)).
+    Preview, printing and PDF still draw the library icon, and Layout
+    mode, where FileMaker Pro shows a placeholder, too; whether FileMaker
+    Pro prints the calculated icon is unmeasured
+    ([#466](https://github.com/OpenMaker-Dev/openmaker/issues/466)).
 - SVG pictures and icons are drawn outside om-gui's process, by the SVG
   worker (`om-gui-pdf-worker --svg`, the one reports use: its allocator
   capped 512 MiB past its input, killed after 30 seconds, one SVG at a
@@ -1017,6 +1055,55 @@ Inferred, unmeasured in Pro:
 - **Not handled:** a field whose "Go to next object using" has Tab turned
   off; that is unmeasured in Pro too.
 
+**The Insert menu.** With a text field of the record entered in Browse,
+Insert > Current Date (⌘-), Current Time (⌘;), Current User Name (⇧⌘N),
+From Index... (⌘I) and From Last Visited Record (⌘') run their script
+steps (13, 14, 60, 11 and 12) on that field, at its insertion point and
+over its selection. A click on the menu bar or on an open menu leaves the
+field entered with its selection, as FileMaker Pro leaves it, and after the
+step the insertion point is after what was inserted. Any other menu
+command (View > Find Mode, Records > New Record, ...) ends the field's
+editing first: its OnObjectValidate, OnObjectSave and OnObjectExit run,
+and the command runs once they let it go, as a click on a button does;
+one refusing keeps the field entered and the command undone. Scripts read
+the user's selection in the field too (`Get ( ActiveSelectionStart )`,
+`Get ( ActiveSelectionSize )`, the Insert steps); Select All, Set
+Selection and the Insert steps leave theirs in the editor, and Set
+Selection into another field shows when its editor takes the focus.
+Limits:
+- Find mode's criteria and Table view's cells take none of them yet; a
+  container field selected takes Picture and File only.
+- From Last Visited Record replaces the field's text, as its step does here
+  (whether FileMaker Pro pastes it at the insertion point instead is
+  unmeasured).
+- That Editing only menus keep the five is inferred, and they run there,
+  as Copy's record copy does; Minimum leaves them out, as it leaves out
+  Export Field Contents.
+- While edit preparation holds a menu command's field exit, later menu
+  choices are ignored. File > Close can still cancel the pending edit.
+- An Insert shortcut typed in the same frame as other keys runs its step
+  after the editor took those keys.
+- ⌘- inserts the date while a field is entered and zooms out otherwise;
+  FileMaker Pro's own shortcut for Zoom Out is unmeasured.
+
+**The Edit menu.** In the field the user is typing in, Edit > Undo and
+Redo (labelled Can't Undo and Can't Redo when there is nothing to do), Cut,
+Copy, Paste, Paste Text Only, Clear and Select All do what the field
+editor's own keys do: Undo and Redo through its typing history, Cut, Copy
+and Paste through the platform's clipboard, Clear deleting the selection
+without the clipboard. Paste Text Only pastes as Paste does, since the
+editors paste text only. With no field entered, Copy copies the current
+record (the Copy Record/Request step, 101), from the menu or ⌘C. In a
+field the account may not change, Select All and Copy work and Clear,
+Undo and Redo are refused with the alert typing gets. In Layout mode,
+Clear deletes the selected object, as before. Limits:
+- Clear, Undo and Redo from the menu change the field's text without its
+  object triggers (OnObjectModify), which typing runs.
+- Find mode's criteria, Table view's cells and portal rows' fields take
+  none of them from the menu but Cut, Copy and Paste; their editors' keys
+  still work.
+- Find/Replace and Spelling stay disabled.
+
 **Committing and reverting.** A record being edited shows no bar, as in
 FileMaker Pro 26.0.3 (#871, observed on the Tasks starter), so the layout
 keeps its place. Switching fields keeps the record's draft. A click on
@@ -1040,6 +1127,8 @@ enabled in Browse while the record has changes no commit has kept (typed
 or left by scripts, its portal rows and related fields included, or a
 new record not yet committed, untouched too) and no save of it is in
 flight, and disabled while edits wait for Keep or Discard My Changes.
+With a field active, Revert runs OnObjectExit and OnRecordRevert as
+applicable, skipping the field's save and validation triggers.
 Revert Request... is enabled while the current request has a criterion
 typed. Neither has a shortcut. The alert has no title and reads "Revert
 all changes to this record since it was last entered?" ("... to this
@@ -1163,8 +1252,10 @@ with its match fields from the record as it is then
 13.24); a value the user typed into a match field stays. The portal's
 records are read again as the record begins; meanwhile it shows the rows
 it showed last, so the row's editor keeps the keyboard, the caret and
-every key typed in between (a click waiting for its row waits for the
-rows as read). Until the save,
+every key typed in between. Clicking a pop-up menu in a stale row opens
+the list once the same related record is ready. Using another ready
+related control cancels the waiting click
+([#288](https://github.com/OpenMaker-Dev/openmaker/issues/288)). Until the save,
 the begun record's row shows only what was typed: calculations and other
 objects of the row see no record, as a script's record to create is not
 seen. A value-list control there offers its list as in a saved row, except
@@ -1268,6 +1359,23 @@ are inferred; the private owner comparison shows a mismatch, and this
 bounded correction has only a neutral Linux fixture comparison, without a
 new macOS/FileMaker measurement.
 
+**A single checkbox without value.** A checkbox set with FileMaker Pro
+26.1's "Display single checkbox without value" (field flag `0x400000`,
+layout-model.md 5.4.1) draws one box without a label, checked when the
+field holds the list's first value. A click or Space checks it, storing
+that value, or clears it, storing the list's second value, or emptying
+the field when the list has one value (`om_data::choice::single_checkbox`,
+from Claris's release notes). A field holding anything else, another
+value or other lines with the first, is not written over: the click is
+refused with an alert (error 3), the data kept, until what FileMaker Pro
+does then is measured. A letter a keystroke trigger lets through changes
+nothing. In Find mode it gives the first value as the criterion, or none
+(`single_checkbox_criterion`) [I]. Inferred, not measured: the box's place
+in the field (where the set's first item would be), its look, and that a
+value holding the first value among other lines checks it. The flag's storage
+was read from FileMaker Pro 26.1.1's binaries; no file made by 26.1.1 has
+been read.
+
 Checkbox and radio button sets, pop-up menus and
 drop-down lists (layout-model.md 5.4) read their items through
 `om_data::choice`, the operation `om-author`'s `list_choices` also runs.
@@ -1293,11 +1401,16 @@ drop-down lists (layout-model.md 5.4) read their items through
     shorter for it.
   - The calculation sees no global variables, as when OpenMaker computes
     a summary or sort key itself.
-  - Such a list is built per object and record, as a list of related
-    values is, not once for every record: its calculation may read other
-    tables and the session, which a shared list's rebuilds do not
-    follow. It is built again when the window's context changes (its
-    size, for example), as results that read the session are.
+  - Such a list of all of a field's values is built once on the worker
+    for every object and record, from committed values ([#290](https://github.com/OpenMaker-Dev/openmaker/issues/290); "One
+    build per list, never in paint", below). Its calculation may read
+    other tables and the session: it is built again after any table's
+    data changes, and when the window's context (its size, for example)
+    or the date changes. A build asked before such a change is let finish
+    and its answer dropped, then one build for the new context follows,
+    so a resize keeps one build at a time on the worker. A list of an
+    unstored calculation's related values is built per object and record
+    in paint, as a list of related values is.
   - Validation against a related-values list of such a field computes it
     on each related record, and refuses with 3 only a record whose value
     cannot be computed (`om-provider`'s `related_lists.rs`;
@@ -1310,8 +1423,9 @@ drop-down lists (layout-model.md 5.4) read their items through
   nothing and asks the host for no records. A click on a list whose items
   are still being read opens it once they are.
 - **One build per list, never in paint.** A list that does not depend on
-  the record (custom values, or all of a field's values) is built once for
-  every object, record and portal row, from committed values.
+  the record (custom values, or all of a field's values, an unstored
+  calculation's among them) is built once for every object, record and
+  portal row, from committed values.
   - A field's list is built on the provider's thread (`list_build`, #745),
     which reads its table's records in two requests: their ids, then their
     values. Meanwhile the control waits as for any data being read, and the
@@ -1330,9 +1444,19 @@ drop-down lists (layout-model.md 5.4) read their items through
   - The list is built again after the data of a table it reads changes.
     One the window stopped reading before it was built (#987) is asked for
     again when a control shows it.
-  - A list of related values, or of an unstored calculation's values, is
-    built per record, with the record's unsaved values, in the window's
-    paint, as before.
+  - An unstored calculation's values are computed on each record of its
+    table, in that record's context, so no record of the window decides
+    them ([#290](https://github.com/OpenMaker-Dev/openmaker/issues/290)). The calculation may read any table and the session: the
+    list is built again after the data of any table changes, and when the
+    window's calculation session changes (its layout, record, mode or
+    account). A record's unsaved values are not read, as for a field's
+    list [inferred: how FileMaker lists an unstored calculation's values
+    is unmeasured]. On a debug build, with 30,000 records, the closed
+    pop-up menu that shows a label from such a list no longer blocks a
+    frame for 1.1 s; its longest frame while the worker builds the list is
+    44 ms.
+  - A list of related values is built per record, with the record's
+    unsaved values, in the window's paint, as before.
 - **A hosted file's field lists.** A list of all of a stored text field's
   values, with no second field and not only related values, comes from
   the host. One CreateValueListEx is sent when a control first needs the
@@ -1570,7 +1694,12 @@ The Objects pane is 220 pt wide, lists the layout's objects front to back,
 filters by kind or known field name, and selects and reveals the matching
 canvas object. Inspector tabs are interactive; Position shows real bounds
 with pt, in and cm conversion, and Data shows a known field binding and
-type and the field's control style and value list. Selection resets when the layout geometry or the file changes. These
+type and the field's control style and value list. A field object shows
+its field's name on the canvas, and a field another occurrence shows (a
+portal's, say) `::Field`, FileMaker Pro's Layout mode default with View >
+Show > Sample Data off (not compared with a capture). The Objects pane
+and the Inspector name that field `Occurrence::Field`. A field of a
+related file that is not open shows its object kind. Selection resets when the layout geometry or the file changes. These
 dimensions and interactions are OpenMaker's choices: FileMaker's runtime
 behavior was not observed (re/client-ui.md, Unknowns).
 
@@ -2004,9 +2133,9 @@ never left out; a provider without a catalog (the sample provider) shows
 its error instead of a list.
 
 The dialog belongs to the file that opened it and to its own catalog
-request. Bringing another file's window to the front, or closing the
-last window of its file, closes it; a reply for another file or for a
-dialog since closed is discarded before it is handled.
+request. Another file's window stays behind while the dialog is open.
+Closing the last window of its file closes it. Replies for another file
+or a closed dialog are discarded.
 
 Limits: this dialog changes no value list; a custom list's values change
 through a pop-up menu's Edit… ([Editing records](#editing-records)). No
@@ -2029,11 +2158,15 @@ step drafts, Run and Revert. Run runs the selected script in its file's
 window; a dialog the script shows (Show Custom Dialog, a "With dialog"
 confirmation, "Save changes to this record?", an error alert) brings that
 window in front of the workspace so it can be answered, as it does in front
-of any other window, and restores it when it is minimized. It does not over
-another file's window whose Script Workspace or Manage dialogs are open,
-since that would close them unsaved: the dialog then waits in its own
-window, unless the script itself brought a window forward. Where FileMaker
-Pro shows it is unmeasured. Save stores the active script's steps:
+of any other window, and restores it when it is minimized. Where FileMaker
+Pro shows it is unmeasured. Another file's window stays behind, by a
+script or Window > Select Window, while the front file's
+workspace waits for a save or a read, or while its Manage Database, Manage
+Security or Manage Value Lists is open (FileMaker Pro's are modal); the
+front window keeps the focus, and another file's script's dialog waits in
+its own window ([#497](https://github.com/OpenMaker-Dev/openmaker/issues/497)).
+Manage Layouts, which holds nothing unsaved, closes. Save stores the active
+script's steps:
 - **On a host that offers OpenMaker's authoring extension to the account**
   (OpenMaker Server, and the private host of a file opened from this
   computer), the native provider saves through the step save
@@ -2094,8 +2227,12 @@ Pro shows it is unmeasured. Save stores the active script's steps:
   Server, a host without the extension, an account that may not author,
   a file opened read-only. Nothing is written there.
 - The sample provider saves both. A failed save keeps the draft.
-- **The workspace belongs to its file.** Only that file's windows show it,
-  and bringing another file's window to the front closes it.
+- **The workspace belongs to its file.** While another file's window is
+  in front, the workspace and its drafts wait with their file. They return
+  when any window of that file comes forward, including after another
+  file closes. Closing an individual background window keeps the draft
+  while its file stays open. Closing the last window of a background
+  file discards its parked draft.
   - It takes only the answers to its own requests (its catalog, a script
     save, a catalog save), each named by a token of its own.
   - An answer for a workspace that was closed, reopened or replaced since
