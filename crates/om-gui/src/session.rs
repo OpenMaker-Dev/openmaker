@@ -164,7 +164,7 @@ impl Session {
             paper: None,
             paper_revision: 0,
             report: Default::default(),
-            pictures: Default::default(),
+            pictures: crate::report::Pictures::drawn_apart(),
             cache: BTreeMap::new(),
             ranges: BTreeSet::new(),
             range_errors: BTreeMap::new(),
