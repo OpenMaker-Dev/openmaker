@@ -98,24 +98,13 @@ fn set_variable(name: &str, text: &str) -> ScriptStep {
     step
 }
 
-#[test]
-fn a_grouped_export_summarizes_each_group() {
-    let name = format!("om-gui-grouped-{}.tab", std::process::id());
-    let scripts = vec![fixture::script(
-        1,
-        "Export groups",
-        vec![
-            fixture::on(86, true),
-            sort(&[STATUS, fixture::NAME]),
-            set_variable(
-                "$p",
-                &format!("\"file:\" & Get ( TemporaryPath ) & \"{name}\""),
-            ),
-            export_grouped(),
-            show("\"exported \" & Get ( LastError )"),
-        ],
-    )];
-    let mut root = fixture::tree(&scripts, true);
+/// The hosted Tasks file with `scripts`, Status Open for odd ids and Done
+/// for even ones, opened in the desktop client.
+fn open_tasks(
+    name: &str,
+    scripts: &[om_scripts::Script],
+) -> (common::App, hosted::Hosted, fixture::TempFile) {
+    let mut root = fixture::tree(scripts, true);
     fixture::add_tasks(&mut root, 3..=6);
     fixture::add_calculated(&mut root);
     let t = uint_segment(TABLE);
@@ -126,9 +115,9 @@ fn a_grouped_export_summarizes_each_group() {
             om_scripts::text_node(&[], status),
         );
     }
-    let file = fixture::TempFile::from_tree("gui-grouped-export", &root);
+    let file = fixture::TempFile::from_tree(name, &root);
     let hosted = hosted::host_file(
-        "grouped-export",
+        name,
         Path::new(&file.0),
         fixture::FILE,
         (fixture::ACCOUNT, fixture::PASSWORD),
@@ -140,22 +129,137 @@ fn a_grouped_export_summarizes_each_group() {
         assert!(app.state().error().is_none(), "native connection failed");
         app.state().is_settled()
     });
-    common::open_menu(&mut app, "Scripts");
-    common::click(&mut app, "Export groups");
-    common::wait_for_label(&mut app, "exported 0");
-    common::click(&mut app, "OK");
-    common::wait_until(&mut app, "the script to end", |app| {
+    (app, hosted, file)
+}
+
+/// Run script `name` from the Scripts menu up to its dialog `label`.
+fn run(app: &mut common::App, name: &str, label: &str) {
+    common::open_menu(app, "Scripts");
+    common::click(app, name);
+    common::wait_for_label(app, label);
+    common::click(app, "OK");
+    common::wait_until(app, "the script to end", |app| {
         !app.state().script_running()
     });
+}
+
+/// The file an export wrote to the temporary folder as `name`, removed.
+fn take_export(name: &str) -> String {
     let path = std::env::temp_dir()
         .join(format!("OpenMaker-S{}", std::process::id()))
-        .join(&name);
+        .join(name);
     let written = std::fs::read_to_string(&path).unwrap();
     let _ = std::fs::remove_file(&path);
+    written
+}
+
+fn export_to(name: &str) -> ScriptStep {
+    set_variable(
+        "$p",
+        &format!("\"file:\" & Get ( TemporaryPath ) & \"{name}\""),
+    )
+}
+
+#[test]
+fn a_grouped_export_summarizes_each_group() {
+    let name = format!("om-gui-grouped-{}.tab", std::process::id());
+    let scripts = vec![fixture::script(
+        1,
+        "Export groups",
+        vec![
+            fixture::on(86, true),
+            sort(&[STATUS, fixture::NAME]),
+            export_to(&name),
+            export_grouped(),
+            show("\"exported \" & Get ( LastError )"),
+        ],
+    )];
+    let (mut app, _hosted, _file) = open_tasks("grouped-export", &scripts);
+    run(&mut app, "Export groups", "exported 0");
     // Done: Ship 5, Task 4 4, Task 6 6; Open: Task 3 3, Task 5 5, Write
     // tests 3.
     assert_eq!(
-        written,
+        take_export(&name),
         "Done\tShip\t15\t15\t1\t26\rOpen\tTask 3\t11\t11\t1\t\r"
+    );
+}
+
+/// A found set sorted by one script and saved as Excel by another (as
+/// Records > Sort and then Share > Save as Excel run): Save Records as
+/// Excel [Restore; Records being browsed] restarts the running total and
+/// subtotals the fraction at each Status, as the window shows them. Once
+/// reported as unsorted values
+/// ([#264](https://github.com/OpenMaker-Dev/openmaker/issues/264),
+/// [#265](https://github.com/OpenMaker-Dev/openmaker/issues/265)).
+#[test]
+fn save_records_as_excel_after_a_sort_keeps_the_sorts_groups() {
+    let name = format!("om-gui-sorted-{}.xlsx", std::process::id());
+    let at = |field| FieldSpec::new(OCCURRENCE, field);
+    let column = |field| ExportField {
+        field: at(field),
+        sum_by: FieldSpec::none(),
+    };
+    let options = ExportOptions {
+        fields: vec![
+            column(STATUS),
+            column(fixture::NAME),
+            column(RUNNING),
+            column(SHARE),
+        ],
+        group_by: Vec::new(),
+        formatting: false,
+        charset: ExportCharset::Utf8,
+        use_name_alias: Some(1),
+        field_names: None,
+    };
+    let mut excel = ScriptStep::new(143);
+    excel.set_data_leaf(0x85, Some(OwnedNode::leaf([0x85], options.encode())));
+    // Slot 0 one byte and slot 1 two, the output path in slot 0's path
+    // list, as FileMaker Pro stores them (script-steps.md 11.7).
+    excel.set_number_bool(0, Some(false));
+    excel.set_number_u16(1, Some(1));
+    excel.flags |= flag::NO_INTERACT | flag::RESTORE;
+    excel.set_path_list("file:$q").unwrap();
+    let scripts = vec![
+        fixture::script(
+            1,
+            "Sort tasks",
+            vec![sort(&[STATUS, fixture::NAME]), show("\"sorted\"")],
+        ),
+        fixture::script(
+            2,
+            "Save rows",
+            vec![
+                fixture::on(86, true),
+                set_variable("$q", &format!("Get ( TemporaryPath ) & \"{name}\"")),
+                excel,
+                show("\"exported \" & Get ( LastError )"),
+            ],
+        ),
+    ];
+    let (mut app, _hosted, _file) = open_tasks("sorted-excel", &scripts);
+    run(&mut app, "Sort tasks", "sorted");
+    run(&mut app, "Save rows", "exported 0");
+    let path = std::env::temp_dir()
+        .join(format!("OpenMaker-S{}", std::process::id()))
+        .join(&name);
+    let bytes = std::fs::read(&path).unwrap();
+    let _ = std::fs::remove_file(&path);
+    let rows = om_transfer::import::read::workbook(&bytes, 0, "").unwrap();
+    let cells: Vec<String> = rows
+        .iter()
+        .map(|row| row.iter().map(|c| c.concat()).collect::<Vec<_>>().join("|"))
+        .collect();
+    assert_eq!(
+        cells,
+        [
+            "Status|Name|Running|Share",
+            "Done|Ship|5|.3333333333333333",
+            "Done|Task 4|9|.2666666666666667",
+            "Done|Task 6|15|.4",
+            "Open|Task 3|3|.2727272727272727",
+            "Open|Task 5|8|.4545454545454545",
+            "Open|Write tests|11|.2727272727272727",
+        ]
     );
 }

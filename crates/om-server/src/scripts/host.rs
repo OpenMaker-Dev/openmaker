@@ -47,6 +47,7 @@ use om_calc::eval::{
 };
 use om_calc::{CalcError, Ctx, Date, Locale, Time, TimeStyle, Timestamp, Value, ValueType};
 use om_data::found::Findable;
+use om_data::host::security::SetAccess;
 use om_data::host::sql::FileSql;
 use om_data::host::{CalcSchema, CalcSource, FileCalc, RecordValues, SessionInfo, Vars};
 use om_data::rules::{self, Entry, RecordEnvironment, RecordPlan, WriteMode};
@@ -699,6 +700,10 @@ pub(crate) struct ServerHost {
     pub log: ErrorLog,
     /// What the account may do.
     privileges: Privileges,
+    /// The account's privilege set as its login verified it, for the
+    /// scripts it may run (session-identity.md 2.2); `None`: as
+    /// [`Self::privileges`] says.
+    access: Option<SetAccess>,
     /// A step of a script set to run with full access privileges is
     /// executing (script-runtime.md 9.1).
     elevated: bool,
@@ -759,6 +764,7 @@ impl ServerHost {
             request_open: false,
             log: ErrorLog::default(),
             privileges,
+            access: None,
             elevated: false,
             control: Control::unlimited(),
             calc_limits: SCRIPT_CALC_LIMITS,
@@ -811,6 +817,11 @@ impl ServerHost {
     /// What one calculation of the script may build.
     pub fn set_calc_limits(&mut self, limits: CalcLimits) {
         self.calc_limits = limits;
+    }
+
+    /// The account's privilege set, which decides the scripts it may run.
+    pub fn set_access(&mut self, access: Option<SetAccess>) {
+        self.access = access;
     }
 
     /// End the session: revert an unfinished transaction, commit the open
@@ -1142,21 +1153,40 @@ impl ServerHost {
         self.with_record(table, id, |node| node?.child(&field).cloned())
     }
 
+    /// `read` of the record as [`Self::record_node`] finds it, without a
+    /// copy. For the file's record it runs under the store's read guard,
+    /// so it must not read the store again: a second read guard on this
+    /// thread waits behind a writer queued meanwhile, which waits for the
+    /// first (#421).
     fn with_record<T>(&self, table: u64, id: u64, read: impl FnOnce(Option<&OwnedNode>) -> T) -> T {
+        self.with_record_view(table, id, |node, _| read(node))
+    }
+
+    /// [`Self::with_record`], also given the store the file's record was
+    /// read from, its guard held (`None` for a record the session holds):
+    /// what `read` needs of the store it reads from that, never by a guard
+    /// of its own (#421).
+    fn with_record_view<T>(
+        &self,
+        table: u64,
+        id: u64,
+        read: impl FnOnce(Option<&OwnedNode>, Option<&Store>) -> T,
+    ) -> T {
         if let Some(open) = self
             .record
             .as_ref()
             .filter(|r| r.table == table && r.id == id)
         {
-            return read(Some(&open.node));
+            return read(Some(&open.node), None);
         }
         match self.pending(table, id) {
-            Some(Change::Write(record)) => return read(Some(&record.node)),
-            Some(Change::Delete) => return read(None),
+            Some(Change::Write(record)) => return read(Some(&record.node), None),
+            Some(Change::Delete) => return read(None, None),
             None => {}
         }
         let path = record_path(table, id);
-        read(self.hosted.read_store().node(&segments(&path)))
+        let store = self.hosted.read_store();
+        read(store.node(&segments(&path)), Some(&store))
     }
 
     /// The record as the file holds it.
@@ -2457,6 +2487,24 @@ impl ServerHost {
     }
 }
 
+impl ServerHost {
+    /// `GetRecordIDsFromFoundSet` over the session's window's found set, as
+    /// FileMaker Server's script engine answers it (calc-functions.md,
+    /// "GetRecordIDsFromFoundSet on FileMaker Server").
+    pub(super) fn record_ids_from_found_set(
+        &self,
+        args: &[Value],
+        context: &Context,
+    ) -> Result<Value, CalcError> {
+        let Some((_, schema)) = self.schema.rules.clone() else {
+            return Err(CalcError::from_code(3).expect("nonzero"));
+        };
+        let source = SessionSource::new(self, &schema);
+        let limit = om_calc::eval::CalcHost::limits(self).text;
+        FileCalc::new(&schema, &source, self.today).record_ids_from_found_set(args, context, limit)
+    }
+}
+
 /// The records a server session's query reads: the open record, then an
 /// open transaction's version, then the file's ([`ServerHost::with_record`]),
 /// decoded by field type once per query; the session's global values;
@@ -2482,7 +2530,7 @@ impl<'h> SessionSource<'h> {
         }
     }
 
-    fn values(&self, table: u64, node: &OwnedNode) -> RecordValues {
+    fn values(&self, table: u64, node: &OwnedNode, store: Option<&Store>) -> RecordValues {
         let cx = self.host.cx();
         let mut values = RecordValues {
             mod_count: Some(modcount::serial_value(node.child(&[modcount::MOD_COUNT]))),
@@ -2504,7 +2552,7 @@ impl<'h> SessionSource<'h> {
                     continue;
                 };
                 if let Some(cell) = node.child(&uint_segment(key)) {
-                    values.set(f.id, rep, self.decode(table, f, cell, &cx));
+                    values.set(f.id, rep, self.decode(table, f, cell, &cx, store));
                 }
             }
         }
@@ -2515,21 +2563,35 @@ impl<'h> SessionSource<'h> {
 impl SessionSource<'_> {
     /// A stored cell of field `f` of `table` as a query reads it: a
     /// container field as its file name alone (execute-sql.md 8.1, what
-    /// the column shows), without loading its data for every row.
-    fn decode(&self, table: u64, f: &om_data::host::FieldDef, cell: &OwnedNode, cx: &Ctx) -> Value {
+    /// the column shows), without loading its data for every row. The name
+    /// comes from `store`, the store the row was read from, under the
+    /// guard already held (a second guard on this thread would wait behind
+    /// a writer queued meanwhile, which waits for the first: #421), so
+    /// that the row and its library agree; a row the session holds reads
+    /// the store itself.
+    fn decode(
+        &self,
+        table: u64,
+        f: &om_data::host::FieldDef,
+        cell: &OwnedNode,
+        cx: &Ctx,
+        store: Option<&Store>,
+    ) -> Value {
         if f.value_type != ValueType::Container {
             return values::decode(f.value_type, Some(cell), cx);
         }
         match values::cell_text(cell).filter(|t| !t.is_empty()) {
-            Some(text) => Value::Container(om_calc::Container {
-                text: om_calc::Text::plain(
-                    self.host
-                        .hosted
-                        .read_store()
-                        .container_name(&uint_segment(table), &text),
-                ),
-                ..Default::default()
-            }),
+            Some(text) => {
+                let name = |store: &Store| store.container_name(&uint_segment(table), &text);
+                let name = match store {
+                    Some(store) => name(store),
+                    None => name(&self.host.hosted.read_store()),
+                };
+                Value::Container(om_calc::Container {
+                    text: om_calc::Text::plain(name),
+                    ..Default::default()
+                })
+            }
             None => Value::empty(ValueType::Container),
         }
     }
@@ -2542,7 +2604,9 @@ impl CalcSource for SessionSource<'_> {
         }
         let values = self
             .host
-            .with_record(table, record, |node| node.map(|n| self.values(table, n)))
+            .with_record_view(table, record, |node, store| {
+                node.map(|n| self.values(table, n, store))
+            })
             .map(Arc::new);
         self.records
             .borrow_mut()
@@ -3053,16 +3117,22 @@ impl ScriptHost for ServerHost {
         self.refresh_schema();
     }
 
-    /// An account in a verified built-in set may run every script (its
-    /// scripts modifiable or executable only, session-identity.md 2.7);
-    /// one in a custom set ([`Privileges::Unknown`]) only scripts set to
-    /// run with full access privileges, whose steps then have full access
-    /// (script-runtime.md 2.2, 9.1): a custom set's script privileges are
-    /// not read here.
+    /// The scripts the account's set lets it run (session-identity.md
+    /// 2.2): every script under a verified built-in set, and under a custom
+    /// set those it makes executable. A script the set gives no access is
+    /// not executable, and being set to run with full access privileges
+    /// does not make it so: only a caller running with full access lets it
+    /// run, and then with the account's own privileges (script-runtime.md
+    /// 3.7, 9.1). The runtime admits a script with either flag, so the flag
+    /// is given only for a script the account may run.
     fn script_access(&mut self, file: FileId, script: u64) -> ScriptAccess {
+        let executable = match &self.access {
+            Some(access) => access.runs_script(script),
+            None => self.privileges.runs_scripts(),
+        };
         ScriptAccess {
-            executable: self.privileges.runs_scripts(),
-            full_access: file == FILE && self.schema.full_access.contains(&script),
+            executable,
+            full_access: executable && file == FILE && self.schema.full_access.contains(&script),
         }
     }
 
