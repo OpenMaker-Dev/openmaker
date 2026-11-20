@@ -2136,7 +2136,7 @@ fn set_zoom_level_sets_and_clears_the_windows_zoom_lock() {
         let mut zoom = ScriptStep::new(97);
         zoom.value = 5;
         if locked {
-            zoom.flags |= om_data::runtime::flag::LOCK;
+            zoom.flags |= om_data::scripts::flag::LOCK;
         }
         let mut client = Client::new(vec![zoom], vec![]);
         client.run_in(WindowState {
