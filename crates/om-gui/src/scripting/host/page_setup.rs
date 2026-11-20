@@ -47,10 +47,12 @@ impl WorkerHost<'_> {
                 .and_then(|n| n.value.as_deref())
                 .and_then(|v| v.get(..4))
                 .map(|v| u32::from_be_bytes(v.try_into().unwrap()) as usize);
+            // The pieces after the chunk header (child 0) are the value.
             let actual = node.value.as_ref().map_or_else(
                 || {
                     node.children
                         .iter()
+                        .skip(1)
                         .filter_map(|n| n.value.as_ref())
                         .map(Vec::len)
                         .sum()
@@ -98,11 +100,16 @@ impl WorkerHost<'_> {
             .paper
             .validate()
             .map_err(|e| self.page_setup_error(e))?;
-        // Against the setup accepted in this session only: the windows are
-        // told of the first one even when it matches the file's stored
-        // setup, so none is left on another paper.
-        let paper_changed = (self.s.file.page_setup.as_ref())
+        // Against the paper the file session prints on now, the stored
+        // setup's before any is accepted: only a change of it starts the
+        // pages over.
+        let paper_changed = self
+            .page_setup()
             .is_none_or(|current| current.paper != candidate.paper);
+        // The windows are told of the first setup accepted even when it is
+        // the stored one, so none is left on another paper; a window
+        // already on it keeps its page (`Session::set_paper`).
+        let first = self.s.file.page_setup.is_none();
         let paper = candidate.paper.clone();
         self.s.file.page_setup = Some(candidate);
         if paper_changed {
@@ -112,6 +119,8 @@ impl WorkerHost<'_> {
             for window in &mut self.s.file.others {
                 window.state.preview_page = 0;
             }
+        }
+        if paper_changed || first {
             self.send(ScriptEvent::PaperSettings {
                 file: self.s.file.id,
                 paper,

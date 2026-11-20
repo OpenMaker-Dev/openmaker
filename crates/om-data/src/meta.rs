@@ -63,10 +63,12 @@ pub fn page_format(tree: &KeyTree<'_>) -> Option<Vec<u8>> {
     let declared = (node.children.first())
         .and_then(|header| header.value?.first_chunk::<4>().copied())
         .map(|total| u32::from_be_bytes(total) as usize);
+    // The pieces after the chunk header (child 0) are the value.
     let actual = node.value.map_or_else(
         || {
             node.children
                 .iter()
+                .skip(1)
                 .filter_map(|n| n.value)
                 .map(<[u8]>::len)
                 .sum()
@@ -1279,6 +1281,11 @@ mod tests {
         let pieces = [64_000; 17];
         assert!(pieces.iter().sum::<usize>() > MAX_PAGE_FORMAT);
         assert_eq!(stored(chunked(64_000 * 17, &pieces)), None);
+        // Exactly 1 MiB is read: the header is not counted.
+        let mut pieces = vec![64_000; 16];
+        pieces.push(MAX_PAGE_FORMAT - 16 * 64_000);
+        let whole = stored(chunked(MAX_PAGE_FORMAT as u32, &pieces));
+        assert_eq!(whole.map(|bytes| bytes.len()), Some(MAX_PAGE_FORMAT));
         // The declared total alone refuses, whatever pieces follow.
         assert_eq!(stored(chunked(u32::MAX, &[4])), None);
     }
