@@ -2090,6 +2090,46 @@ fn a_save_keeps_the_portal_rows_while_they_are_read_again() {
     assert!(app.state().error().is_none(), "{:?}", app.state().error());
 }
 
+/// A menu command other than the field's own (View > Find Mode) ends the
+/// field's editing first: its OnObjectValidate refusing keeps the field
+/// entered, the window in Browse and the record unsaved, as a click on a
+/// button does. The menus' own commands act on the field without leaving it.
+#[test]
+fn a_menu_command_waits_for_the_fields_validation_trigger() {
+    let hosted = host_with("menu-validate", |root| {
+        add_object_triggers(
+            root,
+            TASK_NAME,
+            &[(TriggerEvent::ObjectValidate, COMMIT_VETO)],
+        );
+    });
+    let before = stored(&hosted, TABLE, &[(NAME, 1)]);
+    let mut app = open(&hosted);
+    expect(&mut app, "Show portals", "on Portals");
+    common::text_field(&app, "Name").focus();
+    app.step();
+    app.key_press(egui::Key::End);
+    common::text_field(&app, "Name").type_text(" changed");
+    app.run_steps(2);
+    common::open_menu(&mut app, "View");
+    common::click(&mut app, "Find Mode");
+    let idle = |app: &common::App| !app.state().script_running() && app.state().is_settled();
+    common::wait_until(&mut app, "the validation trigger", idle);
+    app.run_steps(4);
+    assert_eq!(app.state().mode(), om_gui::Mode::Browse);
+    assert!(common::text_field(&app, "Name").is_focused());
+    assert!(common::unsaved(&app));
+    assert_eq!(stored(&hosted, TABLE, &[(NAME, 1)]), before);
+    // Revert keeps the field active for the discard triggers and can
+    // remove the draft that validation would reject on a saving exit.
+    common::revert_record(&mut app);
+    common::wait_until(&mut app, "the draft reverted", |app| {
+        idle(app) && !common::unsaved(app)
+    });
+    assert!(!common::text_field(&app, "Name").is_focused());
+    assert_eq!(stored(&hosted, TABLE, &[(NAME, 1)]), before);
+}
+
 /// The user's focus and typing in a portal row's field run the field
 /// object's triggers (#1005), with its row and field active: OnObjectEnter
 /// as the field is entered, OnObjectModify as it is typed into, and
