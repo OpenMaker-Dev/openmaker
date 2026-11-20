@@ -1252,7 +1252,17 @@ impl NativeProvider {
                 match occurrence {
                     // A summary's reordering by a related field is not
                     // built (#47).
-                    Some(from) if field.field.contains("::") && field.summary.is_none() => {
+                    Some(_) if field.field.contains("::") && field.summary.is_some() => {
+                        return Err(DataError::with_code(
+                            code::UNSUPPORTED,
+                            format!(
+                                "Reordering by a summary is not supported for the related \
+                                 sort field {:?}.",
+                                field.field
+                            ),
+                        ));
+                    }
+                    Some(from) if field.field.contains("::") => {
                         related.push(self.related_sort_field(from, &field.field)?);
                     }
                     _ => return Err(missing(&field.field)),
@@ -1344,10 +1354,34 @@ impl NativeProvider {
             ));
         }
         let (id, kind) = (field.id, sort_kind(field.data_type));
-        if occurrence != from && self.calc_schema_cached()?.path(from, occurrence).is_none() {
-            return Err(unsupported(
-                "its occurrence is not related to the layout's.",
-            ));
+        if occurrence != from {
+            let schema = self.calc_schema_cached()?;
+            let path = schema
+                .path(from, occurrence)
+                .ok_or_else(|| unsupported("its occurrence is not related to the layout's."))?;
+            // The relationships' own sort reads unstored calculations and
+            // summaries as empty (`om_data::host::sort_records`): a first
+            // related record ordered by one would be guessed.
+            let computed = |hop: &Hop| {
+                hop.sort.as_ref().is_some_and(|spec| {
+                    spec.fields.iter().any(|entry| {
+                        let occurrence = entry.field.occurrence.unwrap_or(hop.to);
+                        entry.summary.is_some()
+                            || schema
+                                .field(occurrence, entry.field.field)
+                                .is_none_or(|def| {
+                                    def.is_unstored_calculation()
+                                        || def.class == om_data::host::FieldClass::Summary
+                                })
+                    })
+                })
+            };
+            if path.iter().any(computed) {
+                return Err(unsupported(
+                    "a relationship on the way sorts its records by a calculation or summary \
+                     OpenMaker does not compute there.",
+                ));
+            }
         }
         Ok(RelatedSort {
             name: name.to_owned(),
@@ -1413,34 +1447,61 @@ impl NativeProvider {
         let cx = Ctx::new(&schema.locale, today);
         // 1224: the schema is still reading an occurrence on the way.
         const PENDING: i32 = 1224;
+        // The related records read, which the source keeps per record: past
+        // this the sort fails rather than hold them all (OpenMaker's limit).
+        let mut budget = RELATED_SORT_IDS;
         let mut values = Vec::with_capacity(records.len());
         let mut pending = false;
         'records: for &record in records {
             let mut row = Vec::with_capacity(related.len());
             for sort in related {
-                let first = if sort.occurrence == from {
-                    Ok(Some(record))
+                let read = if sort.occurrence == from {
+                    Ok(0)
                 } else {
-                    file.related_record(from, record, sort.occurrence, 0)
+                    file.related_records(from, record, sort.occurrence)
+                        .map(|ids| ids.len())
                 };
-                let value = first.and_then(|first| match first {
-                    Some(first) => file
-                        .read_field(sort.occurrence, first, sort.field, 1)
-                        .map(|value| value.to_text(&cx).into_string()),
-                    None => Ok(String::new()),
+                // `None`: past the budget.
+                let value = read.and_then(|count| {
+                    let Some(left) = budget.checked_sub(count) else {
+                        return Ok(None);
+                    };
+                    budget = left;
+                    file.read_related_computed(from, record, sort.occurrence, sort.field)
+                        .map(Some)
                 });
                 match value {
-                    Ok(text) => row.push((!text.is_empty()).then_some(text)),
+                    Ok(Some(value)) => {
+                        let text = sort_text(&value, &cx);
+                        row.push((!text.is_empty()).then_some(text));
+                    }
+                    Ok(None) => {
+                        return Err(DataError::with_code(
+                            code::UNSUPPORTED,
+                            format!(
+                                "Sorting by {:?} reads more than {RELATED_SORT_IDS} related \
+                                 records, OpenMaker's limit for one sort. The records were not \
+                                 sorted.",
+                                sort.name
+                            ),
+                        ));
+                    }
                     Err(error) if error.code() == PENDING => {
                         pending = true;
                         break 'records;
                     }
+                    // A read that failed, or a calculation that is `?`:
+                    // its records cannot be placed.
                     Err(error) => {
-                        return Err(DataError::new(format!(
-                            "A related sort value could not be read (error {}). The records \
-                             were not sorted.",
-                            error.code()
-                        )));
+                        return Err(DataError::with_code(
+                            code::UNSUPPORTED,
+                            format!(
+                                "A value of {:?} could not be computed (error {}). The records \
+                                 were not sorted.",
+                                sort.name,
+                                error.code()
+                            ),
+                        ));
                     }
                 }
             }
@@ -1462,6 +1523,98 @@ struct RelatedSort {
     occurrence: u64,
     field: u64,
     kind: om_data::FieldKind,
+}
+
+/// The related records a related sort may read, summed over the sorted
+/// records (8 bytes each, 64 MiB): OpenMaker's limit, as a client find's
+/// duplicates have one ([`CLIENT_FIND_BUDGET`]).
+const RELATED_SORT_IDS: usize = 8 << 20;
+
+/// `value` as text the desktop's sort reads back as the same value
+/// (`found::sort_rows_with_date_order`), whatever the file's formats: a
+/// number written out in full with `.` (its reader stops at an exponent
+/// and takes only `.`), a time, and a timestamp's time, with `:` and its
+/// fraction, a date in the file's format, which the date reader takes
+/// with any of `/ . -`.
+fn sort_text(value: &om_data::calc::Value, cx: &Ctx) -> String {
+    use om_data::calc::Value;
+    match value {
+        Value::Number(n) | Value::NumberText(n, _) => plain_number(&n.to_text_with('.')),
+        Value::Time(t) => clock(t.micros()),
+        Value::Timestamp(t) => format!(
+            "{} {}",
+            t.date().format(cx.locale),
+            clock(t.time_of_day().micros())
+        ),
+        other => other.to_text(cx).into_string(),
+    }
+}
+
+/// A time of `micros`: `h:mm:ss`, then its fraction of a second.
+fn clock(micros: i128) -> String {
+    let sign = if micros < 0 { "-" } else { "" };
+    let micros = micros.unsigned_abs();
+    let seconds = micros / 1_000_000;
+    let mut text = format!(
+        "{sign}{}:{:02}:{:02}",
+        seconds / 3600,
+        seconds / 60 % 60,
+        seconds % 60
+    );
+    let fraction = micros % 1_000_000;
+    if fraction != 0 {
+        text.push_str(format!(".{fraction:06}").trim_end_matches('0'));
+    }
+    text
+}
+
+/// FileMaker's number text written out in full: `1.0E+9` is `1000000000`,
+/// `1.5E-10` is `.00000000015`. Text without an exponent, or with one past
+/// any number's, is returned as it is.
+fn plain_number(text: &str) -> String {
+    let Some((mantissa, exponent)) = text.split_once('E') else {
+        return text.to_owned();
+    };
+    let Ok(exponent) = exponent.parse::<i64>() else {
+        return text.to_owned();
+    };
+    if exponent.unsigned_abs() > 10_000 {
+        return text.to_owned();
+    }
+    let (sign, mantissa) = match mantissa.strip_prefix('-') {
+        Some(mantissa) => ("-", mantissa),
+        None => ("", mantissa),
+    };
+    let (integer, fraction) = mantissa.split_once('.').unwrap_or((mantissa, ""));
+    let digits = format!("{integer}{fraction}");
+    // Where the point falls in `digits`.
+    let point = integer.len() as i64 + exponent;
+    let (integer, fraction) = if point <= 0 {
+        (
+            String::new(),
+            "0".repeat(point.unsigned_abs() as usize) + &digits,
+        )
+    } else if point as usize >= digits.len() {
+        (
+            digits.clone() + &"0".repeat(point as usize - digits.len()),
+            String::new(),
+        )
+    } else {
+        (
+            digits[..point as usize].to_owned(),
+            digits[point as usize..].to_owned(),
+        )
+    };
+    let (integer, fraction) = (
+        integer.trim_start_matches('0'),
+        fraction.trim_end_matches('0'),
+    );
+    match (integer.is_empty(), fraction.is_empty()) {
+        (true, true) => "0".to_owned(),
+        (_, true) => format!("{sign}{integer}"),
+        (true, false) => format!("{sign}.{fraction}"),
+        (false, false) => format!("{sign}{integer}.{fraction}"),
+    }
 }
 
 /// The kind a field of `data_type` sorts as.
@@ -1732,6 +1885,30 @@ pub(crate) fn query_error(slots: &[u8]) -> Option<u16> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// A related number or time sorts by its value whatever the file's
+    /// formats: FileMaker's scientific text written out in full (the sort's
+    /// number reader stops at an exponent), times with `:` and their
+    /// fraction (#47).
+    #[test]
+    fn related_sort_values_read_back_as_their_values() {
+        for (text, plain) in [
+            ("1.0E+9", "1000000000"),
+            ("-1.25E+10", "-12500000000"),
+            ("1.0E-10", ".0000000001"),
+            ("-9.9E-10", "-.00000000099"),
+            ("1.5", "1.5"),
+            ("1.234567890000000000005E+20", "123456789000000000000.5"),
+        ] {
+            assert_eq!(plain_number(text), plain, "{text}");
+        }
+        assert_eq!(
+            clock(9 * 3600 * 1_000_000 + 5 * 60 * 1_000_000 + 250_000),
+            "9:05:00.25"
+        );
+        assert_eq!(clock(-3600 * 1_000_000), "-1:00:00");
+        assert_eq!(clock(26 * 3600 * 1_000_000), "26:00:00");
+    }
 
     /// Repetition n of field F is the cell `F * 256 + n`, F from the file
     /// (#388): the largest field id whose repetitions have keys reads its

@@ -818,11 +818,21 @@ of this file's tables, a self join's included, sorts each record by its
 first related record's value, as Claris documents ("the value in the
 first matching record"), read as `Rel::field` reads it: without a
 relationship sort, the related record first in creation order
-(calc-values.md 12.1). FileMaker's related sort and a sorted
-relationship's first record are not measured. A related field of an
-imported table, an unrelated occurrence, a related summary or container
-field, a later repetition and a summary's reordering by a related field
-fail with 3; a local file reopened with such a sort reopens unsorted
+(calc-values.md 12.1); a calculation reads with the parent record as
+its context. A number or time sorts by its value whatever the file's
+formats. FileMaker's related sort and a sorted relationship's first
+record are not measured. Fail with 3:
+- a related field of an imported table, or of an unrelated occurrence;
+- a related summary or container field, or a later repetition;
+- a summary's reordering by a related field, and a summary of another
+  occurrence;
+- a path through a relationship that sorts by an unstored calculation or a
+  summary, which OpenMaker's relationship sort reads as empty;
+- a value that could not be computed (`?`, or a related file that did not
+  open);
+- more than 8,388,608 related records read for one sort, OpenMaker's limit.
+
+A local file reopened with such a sort reopens unsorted
 ([#47](https://github.com/OpenMaker-Dev/openmaker/issues/47)). A sort made from field names
 (Sort Records by Field) comes back without a value list or summary
 reordering, and a local file reopened sorted shows an empty order: the

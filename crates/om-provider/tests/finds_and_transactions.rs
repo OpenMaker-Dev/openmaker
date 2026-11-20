@@ -2070,6 +2070,26 @@ fn a_related_sort_orders_by_the_first_related_records_value() {
     };
     assert_eq!(sorted(SortOrder::Ascending), [4, 3, 1, 2]);
     assert_eq!(sorted(SortOrder::Descending), [2, 1, 3, 4]);
+    // From the Notes layout, by its related task's unstored number
+    // calculation Tasks::Notes (`Count ( Notes::Body )`): note 1 has no
+    // task (empty), notes 4 and 5 count 1, notes 2 and 3 count 2.
+    let notes = layout(&mut provider, "Notes");
+    provider
+        .change_found_set(
+            notes,
+            FoundSetChange::Sort(vec![SortField::new("Tasks::Notes", SortOrder::Descending)]),
+        )
+        .unwrap();
+    assert_eq!(ids_of(&all_records(&mut provider, notes)), [2, 3, 4, 5, 1]);
+    // A summary's reordering by a related field is refused (3), as is a
+    // related summary or container field.
+    let mut by_summary = SortField::new("Notes::Body", SortOrder::Ascending);
+    by_summary.summary = Some(om_data::found::SummaryOrder {
+        function: om_data::found::SummaryFunction::Total,
+        field: "Count".into(),
+    });
+    let refused = provider.change_found_set(tasks, FoundSetChange::Sort(vec![by_summary]));
+    assert_eq!(refused.unwrap_err().code, Some(3));
 }
 
 #[test]

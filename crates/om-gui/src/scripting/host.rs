@@ -3100,6 +3100,12 @@ impl<'a> WorkerHost<'a> {
             .filter(|o| schema.occurrence(*o).is_some())
             .or(self.s.file.occurrence)
             .ok_or(HostError::Error(ErrorCode::FIELD_MISSING))?;
+        // A summary of another occurrence, related or a self join's, would
+        // reorder by the related records' totals, which are not built: its
+        // field's name alone would name the layout table's field instead.
+        if Some(occurrence) != self.occurrence() {
+            return Err(HostError::Unsupported);
+        }
         let def = schema
             .field(occurrence, summary.field)
             .and_then(|f| f.summary)
@@ -5252,30 +5258,27 @@ impl FoundSets for WorkerHost<'_> {
             None => {
                 // Another table's stored order is not this table's.
                 let window = &self.s.file.window;
-                let spec = window
+                let last = window
                     .last_sort_spec
                     .clone()
-                    .filter(|(table, _)| *table == window.table)
-                    .map(|(_, spec)| spec);
+                    .filter(|last| last.table == window.table);
                 let sort = window.last_sort.clone();
-                // The order was accepted on a layout of this table, so a key
-                // of another occurrence of it named that layout's own field:
-                // it is this layout's own field now.
+                // The order was accepted on a layout of this table: a key of
+                // the occurrence it was accepted on named that layout's own
+                // field, so it is this layout's own field now. A key of
+                // another occurrence, a self join's included, stays related.
                 let own = self.occurrence();
-                let spec = match (spec, own, self.schema()) {
-                    (Some(mut spec), Some(own), Some(schema)) => {
-                        let table_of = |o: u64| schema.table_of(o).map(|t| t.id);
+                let spec = last.map(|last| {
+                    let mut spec = last.spec;
+                    if let (Some(own), Some(accepted)) = (own, last.occurrence) {
                         for entry in &mut spec.fields {
-                            if entry.field.occurrence.is_some_and(|o| {
-                                o != own && table_of(o).is_some() && table_of(o) == table_of(own)
-                            }) {
+                            if entry.field.occurrence == Some(accepted) {
                                 entry.field.occurrence = Some(own);
                             }
                         }
-                        Some(spec)
                     }
-                    (spec, _, _) => spec,
-                };
+                    spec
+                });
                 (sort, spec)
             }
         };
@@ -5308,7 +5311,12 @@ impl FoundSets for WorkerHost<'_> {
         self.commit_window()?;
         self.change(FoundSetChange::Sort(sort))?;
         let table = self.s.file.window.table;
-        self.s.file.window.last_sort_spec = spec.map(|spec| (table, spec));
+        let occurrence = self.occurrence();
+        self.s.file.window.last_sort_spec = spec.map(|spec| super::window::LastSortSpec {
+            table,
+            occurrence,
+            spec,
+        });
         self.after(TriggerEvent::RecordLoad, None);
         Ok(())
     }
