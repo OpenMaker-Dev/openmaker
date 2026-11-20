@@ -892,10 +892,13 @@ fn report_card(layout: &Layout, schema: &CalcSchema) -> ReportCard {
         report::object_text(object, occurrence, schema, |piece| {
             let field = match piece {
                 report::Piece::Field(field) => field,
-                // As Save Records as PDF refuses it.
+                // Refused as Save Records as PDF refuses it. A symbol
+                // prints empty here, as a field does: its value needs data.
                 report::Piece::Literal(text) => {
                     report::script_printed(text)?;
-                    return Ok(text.to_owned());
+                    return Ok(om_data::host::layout::replace_symbols(text, |_| {
+                        Some(String::new())
+                    }));
                 }
             };
             let def = report::field_def(schema, field, object)?;
@@ -904,12 +907,14 @@ fn report_card(layout: &Layout, schema: &CalcSchema) -> ReportCard {
         })
     };
     // Only objects the report prints: not a navigation part's, nor what a
-    // refused object holds.
+    // refused object holds. An image-only button's label is read only by
+    // its conditional formats, as the report reads it.
     for object in placed.iter().filter_map(|id| layout.objects.get(*id)) {
         if matches!(
             object.kind(),
             ObjectKind::Field | ObjectKind::Text | ObjectKind::Button
-        ) {
+        ) && (object.shows_label() || !object.calcs.conditions.is_empty())
+        {
             if let Err(error) = content(object, None) {
                 refuse(error);
             }

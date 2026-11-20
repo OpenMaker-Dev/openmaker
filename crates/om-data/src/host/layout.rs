@@ -176,40 +176,67 @@ enum Piece<'t> {
 }
 
 /// `text` in [`Piece`]s: each `<<$` or `{{`, whichever comes first, up to
-/// its closing `>>` or `}}`; an unclosed one is text.
-fn pieces(text: &str) -> Vec<Piece<'_>> {
-    let mut pieces = Vec::new();
-    let mut at = 0;
-    // The next of each opener from `at`, kept until it is passed: text of
-    // many symbols and no merge variable is read once, not once a symbol.
-    let (mut merge, mut symbol) = (None, None);
-    let next = |found: &mut Option<Option<usize>>, opener: &str, at: usize| {
-        if found.is_none_or(|next| next.is_some_and(|i| i < at)) {
-            *found = Some(text[at..].find(opener).map(|i| i + at));
+/// its closing `>>` or `}}`; an unclosed one is text. Read as they are
+/// taken, so a reader that refuses a piece reads no further.
+fn pieces(text: &str) -> Pieces<'_> {
+    Pieces {
+        text,
+        at: Some(0),
+        merge: None,
+        symbol: None,
+        held: None,
+    }
+}
+
+struct Pieces<'t> {
+    text: &'t str,
+    /// Where the next piece starts; `None` at the end.
+    at: Option<usize>,
+    /// The next of each opener from `at`, kept until it is passed: text of
+    /// many symbols and no merge variable is read once, not once a symbol.
+    merge: Option<Option<usize>>,
+    symbol: Option<Option<usize>>,
+    /// The piece found after the text just given.
+    held: Option<Piece<'t>>,
+}
+
+impl<'t> Iterator for Pieces<'t> {
+    type Item = Piece<'t>;
+
+    fn next(&mut self) -> Option<Piece<'t>> {
+        if let Some(piece) = self.held.take() {
+            return Some(piece);
         }
-        found.flatten()
-    };
-    loop {
-        let openers = [next(&mut merge, "<<$", at), next(&mut symbol, "{{", at)];
-        let Some(start) = openers.into_iter().flatten().min() else {
-            pieces.push(Piece::Text(&text[at..]));
-            return pieces;
+        let (text, at) = (self.text, self.at?);
+        let next = |found: &mut Option<Option<usize>>, opener: &str| {
+            if found.is_none_or(|next| next.is_some_and(|i| i < at)) {
+                *found = Some(text[at..].find(opener).map(|i| i + at));
+            }
+            found.flatten()
         };
-        pieces.push(Piece::Text(&text[at..start]));
+        let openers = [next(&mut self.merge, "<<$"), next(&mut self.symbol, "{{")];
+        let Some(start) = openers.into_iter().flatten().min() else {
+            self.at = None;
+            return Some(Piece::Text(&text[at..]));
+        };
         let tail = &text[start..];
         let is_merge = tail.starts_with("<<");
         let close = if is_merge { ">>" } else { "}}" };
-        let Some(end) = tail[2..].find(close).map(|i| i + 2) else {
-            pieces.push(Piece::Text(tail));
-            return pieces;
-        };
-        let (inner, raw) = (&tail[2..end], &tail[..end + 2]);
-        pieces.push(if is_merge {
-            Piece::Merge { inner, raw }
-        } else {
-            Piece::Symbol { inner, raw }
+        self.held = Some(match tail[2..].find(close).map(|i| i + 2) {
+            None => {
+                self.at = None;
+                Piece::Text(tail)
+            }
+            Some(end) => {
+                self.at = Some(start + end + 2);
+                let (inner, raw) = (&tail[2..end], &tail[..end + 2]);
+                match is_merge {
+                    true => Piece::Merge { inner, raw },
+                    false => Piece::Symbol { inner, raw },
+                }
+            }
         });
-        at = start + end + 2;
+        Some(Piece::Text(&text[at..start]))
     }
 }
 
@@ -234,7 +261,7 @@ pub enum Merged<'t> {
 /// reads them: a symbol never inside a merge variable, an unclosed one
 /// text. A `<<...>>` without the `$` is text too.
 pub fn merged(text: &str) -> impl Iterator<Item = Merged<'_>> {
-    pieces(text).into_iter().filter_map(|piece| match piece {
+    pieces(text).filter_map(|piece| match piece {
         Piece::Text(_) => None,
         Piece::Merge { inner, .. } => Some(match is_variable_reference(inner) {
             true => Merged::Variable(inner),
@@ -273,7 +300,7 @@ pub fn replace_symbols(text: &str, mut shown: impl FnMut(&str) -> Option<String>
 /// or by its selector's number (`{{1015}}`, `{{1125}}`; calc-values.md
 /// "Layout calculations"), read as [`merge_text`] reads its symbols.
 pub(super) fn has_page_symbol(text: &str) -> bool {
-    pieces(text).iter().any(|piece| match piece {
+    pieces(text).any(|piece| match piece {
         Piece::Symbol { inner, .. } => {
             names_symbol(inner, "PageNumber", 1015) || names_symbol(inner, "PageCount", 1125)
         }
