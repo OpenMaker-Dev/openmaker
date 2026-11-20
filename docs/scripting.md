@@ -560,7 +560,9 @@ Open items:
   stored sort can be refused there. A found set's sort carried to another
   layout is not run again: its order stays, and summaries read its fields
   from the record itself, as do relationship sorts, on both hosts (#610).
-  A sort entry the layout cannot reach fails the whole sort with 103
+  A sort entry the layout cannot reach fails the whole sort with 103 once
+  a record's key is read; on an empty found set no key is read and the
+  order is kept, as before
   ([#628](https://github.com/OpenMaker-Dev/openmaker/issues/628)). Sorts
   nested more than 16 deep inside one another, through related sort
   fields whose relationships sort by related fields, a finite chain as
