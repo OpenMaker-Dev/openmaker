@@ -6188,12 +6188,32 @@ impl OpenMakerApp {
             Reply::ValueListBuilt {
                 list,
                 ticket,
+                related,
                 result,
                 retry_after,
+                generation,
             } => {
-                self.w
-                    .calcs
-                    .accept_built_list(list, ticket, result, retry_after);
+                let calcs = &mut self.w.calcs;
+                // Read under data older than the window has seen (asked
+                // before a change): its request goes, its answer is not
+                // taken. Its reads took a change the window had not seen:
+                // the window's data and lists go, as on a calculation reply
+                // of that generation, and the request this answers with
+                // them.
+                let (result, retry_after) = match calcs.build_is_current(generation) {
+                    true => (result, retry_after),
+                    false => (None, None),
+                };
+                if calcs.observe_build_generation(generation) {
+                    if let Some(session) = &self.w.session {
+                        session.report_data_changed();
+                    }
+                }
+                if related {
+                    calcs.accept_related_list(ticket, result, retry_after);
+                } else {
+                    calcs.accept_built_list(list, ticket, result, retry_after);
+                }
                 ctx.request_repaint();
             }
             Reply::CalcData { needs, result } => {
