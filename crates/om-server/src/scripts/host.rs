@@ -2809,28 +2809,26 @@ impl CalcHost for ServerHost {
         )
     }
 
-    /// A related field a step's calculation reads is the active portal
-    /// row's record when that row is one of the related records (the
-    /// creation row: no record), else the first related record
-    /// ([`portals`]).
-    fn related_record(
+    /// A direct reference to a related field in a step's calculation reads
+    /// the active portal row's record when that row is one of the related
+    /// records (the creation row: no record), else the first related
+    /// record ([`portals`]). `GetNthRecord` keeps reading the related set
+    /// from the parent (calc-values.md, portal rows).
+    fn referenced_record(
         &self,
         occurrence: u64,
         record: u64,
         related: u64,
-        index: usize,
     ) -> Result<Option<u64>, CalcError> {
         if !self.may_view() {
             return Err(CalcError::from_code(NO_PRIVILEGES).expect("nonzero"));
         }
-        if index == 0 {
-            if let Some(row) = self.active_row_record(occurrence, record, related)? {
-                return Ok(row);
-            }
+        if let Some(row) = self.active_row_record(occurrence, record, related)? {
+            return Ok(row);
         }
         Ok(self
             .related_records(occurrence, record, related)?
-            .get(index)
+            .first()
             .copied())
     }
 
@@ -3208,13 +3206,17 @@ impl Navigation for ServerHost {
         }
         .filter(|i| layouts[*i].occurrence.is_some())
         .ok_or(ErrorCode::LAYOUT_MISSING)?;
+        let focus = self.focus.clone();
         self.leave()?;
         let mut next = self.window_on(index).ok_or(ErrorCode::LAYOUT_MISSING)?;
+        let mut kept_focus = None;
         if let Some(old) = &self.window {
             next.mode = old.mode;
-            // The current layout again keeps the active portal row (s35).
-            if old.layout == index {
+            // The current layout again keeps the active portal row and the
+            // field entered in it (s35).
+            if old.layout == index && old.portal.is_some() {
                 next.portal.clone_from(&old.portal);
+                kept_focus = focus;
             }
             if old.table == next.table {
                 // The same table keeps its found set, sort and record.
@@ -3224,10 +3226,14 @@ impl Navigation for ServerHost {
             }
         }
         self.window = Some(next);
+        if kept_focus.is_some() {
+            self.focus = kept_focus;
+        }
         Ok(())
     }
 
     fn go_to_record(&mut self, movement: RecordMove, _with_dialog: bool) -> HostResult<bool> {
+        let focus = self.focus.clone();
         self.leave()?;
         let count = match self.window()?.mode {
             Mode::Find => self.requests.len(),
@@ -3248,7 +3254,7 @@ impl Navigation for ServerHost {
             RecordMove::Number(n) if n < 1 => return Err(ErrorCode::RECORD_MISSING.into()),
             RecordMove::Number(n) => (n as usize - 1).min(last),
         };
-        self.keep_portal_row()?;
+        self.keep_portal_row(focus)?;
         Ok(true)
     }
 
@@ -3279,11 +3285,22 @@ impl Navigation for ServerHost {
         match field {
             Some(field) => {
                 self.target(field)?;
+                // A field in a portal is entered in its active row, else
+                // row 1 (s35); any other leaves the portal.
+                if self.go_to_portal_field(field)? {
+                    return Ok(());
+                }
                 self.focus_field(field.occurrence, field.field);
                 Ok(())
             }
-            None if self.focus.is_some() => self.leave(),
-            None => Ok(()),
+            None => {
+                self.clear_portal();
+                if self.focus.is_some() {
+                    self.leave()
+                } else {
+                    Ok(())
+                }
+            }
         }
     }
 
@@ -3326,6 +3343,8 @@ impl Navigation for ServerHost {
             _ => None,
         };
         self.leave()?;
+        // A mode change leaves the portal (as on the desktop).
+        self.clear_portal();
         match mode {
             Mode::Browse => {
                 let window = self.window_mut()?;
@@ -3499,11 +3518,14 @@ impl Records for ServerHost {
             return Ok(());
         }
         let id = window.record().ok_or(ErrorCode::RECORD_MISSING)?;
+        // The portal's rows were the deleted record's.
+        self.clear_portal();
         self.delete(&[id], false)
     }
 
     fn delete_all_records(&mut self, _with_dialog: bool) -> HostResult {
         let found = self.window()?.found.clone();
+        self.clear_portal();
         self.delete(&found, true)
     }
 

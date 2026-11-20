@@ -1698,6 +1698,14 @@ fn server_scripts_move_through_portal_rows() {
             step
         },
         set_variable("$second", row),
+        // GetNthRecord reads the related set from the parent, not the row.
+        set_variable(
+            "$nth",
+            "GetNthRecord ( Notes::Body ; 1 ) & \"/\" & Notes::Body",
+        ),
+        // Go to Record keeps the row, and the field entered in it.
+        go_to_record(1),
+        set_variable("$kept", row),
         {
             let mut step = ScriptStep::new(99);
             step.value = 4;
@@ -1714,10 +1722,26 @@ fn server_scripts_move_through_portal_rows() {
         with_calc(145, "\"\""),
         set_variable("$empty", "Get ( LastError )"),
         with_calc(145, "\"Notes portal\""),
+        {
+            // Go to Field outside the portal leaves it.
+            let mut step = ScriptStep::new(17);
+            step.set_field_spec(
+                0,
+                Some(om_scripts::FieldSpec::new(
+                    om_scripts::StoredKey::from_id(fixture::OCCURRENCE).unwrap(),
+                    om_scripts::StoredKey::from_id(fixture::NAME).unwrap(),
+                    0,
+                )),
+            );
+            step
+        },
+        set_variable("$left", "Get ( ActivePortalRowNumber )"),
+        with_calc(145, "\"Notes portal\""),
         ScriptStep::new(75),
         exit_with(
-            "$first & \"|\" & $second & \"|\" & $past & \"|\" & $portal & \"|\" & $missing \
-             & \"|\" & $empty & \"|\" & Get ( ActivePortalRowNumber )",
+            "$first & \"|\" & $second & \"|\" & $nth & \"|\" & $kept & \"|\" & $past & \"|\" \
+             & $portal & \"|\" & $missing & \"|\" & $empty & \"|\" & $left & \"|\" & \
+             Get ( ActivePortalRowNumber )",
         ),
     ]);
     let scripts = [script(6, "Portal rows", steps)];
@@ -1759,7 +1783,8 @@ fn server_scripts_move_through_portal_rows() {
     let mut client = logged_in(port, "portals");
     assert_eq!(
         run(&mut client, 6).1,
-        "1/first/Note body/first|2/second/Note body/second|101/2|2/second/Notes portal/|116|5|0"
+        "1/first/Note body/first|2/second/Note body/second|first/second|\
+         2/second/Note body/second|101/2|2/second/Notes portal/|116|5|0|0"
     );
     client.disconnect().unwrap();
 }

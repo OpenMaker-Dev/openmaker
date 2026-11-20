@@ -3003,17 +3003,26 @@ Server engine (11.3, 11.5)
   left to right), and with Select makes the row active without a field.
   Go to Object makes a portal active as a whole (its row kept), enters a
   portal's field in the active row (row 1 without one; 101, the portal
-  active, when it has no rows) or another field; no such object is 116,
-  an empty name 5, a repetition the field lacks 102. Go to Next and
-  Previous Field are 0. A step's calculation, and `Get (
-  ActiveFieldContents )`, read the active row's record for the portal's
-  related fields (the creation row reads empty); field calculations read
-  the first related record as before. Go to Record keeps the row number
-  (101, no row active, when the next record lacks it), the current layout
-  again keeps it, another layout or Commit Records clears it. Set Field
-  into a related field and Delete Portal Row are still 3, and a portal
-  that sorts or filters its own rows is refused (3) rather than numbered
-  in an order that may not be FileMaker's.
+  active, when it has no rows) in the repetition given, or another field;
+  no such object is 116, an empty name 5, a repetition the field lacks
+  102. Go to Field into a portal's field enters it the same way; into
+  another field, or with none, it leaves the portal. Go to Next and
+  Previous Field are 0. Which portal an object is in follows its parents,
+  read once per step, not where it is drawn. A step's direct reference to
+  the portal's related fields, and `Get ( ActiveFieldContents )`, read the
+  active row's record (the creation row reads empty); `GetNthRecord`,
+  aggregates and field calculations read the related set from the parent
+  as before. Go to Record keeps the row number and the field entered (101,
+  no row active, when the next record lacks the row), the current layout
+  again keeps them, and another layout, Commit Records, a mode change or
+  a deleted record clears the row. Set Field into a related field and
+  Delete Portal Row are still 3, and a portal that sorts its rows, or
+  filters them with "Filter portal records" on (`0x80`), is refused (3)
+  rather than numbered in an order that may not be FileMaker's. Not yet:
+  Go to Object on a button or text makes no object active (`Get (
+  ActiveLayoutObjectName )` empty); a portal of B in an A to B to C graph
+  leaves a read of C anchored to A's first B; 26.1's new-record row at the
+  top (`0x400`) is not placed first.
 - Steps with a host method: Go to Layout, Go to Record/Request, Go to
   Field, Go to Portal Row, Go to Object, Go to Next/Previous Field, Go to
   Related Record, Go to List of Records (same window), Enter

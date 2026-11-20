@@ -298,6 +298,21 @@ pub trait CalcHost {
         Err(CalcError::from_code(103).expect("nonzero"))
     }
 
+    /// The related record a direct reference `Related::Field` reads from
+    /// record `record` of `occurrence`: the first related record
+    /// ([`Self::related_record`] 0). A host whose window has an active
+    /// portal row on that relationship answers that row's record instead
+    /// (`Some(None)` from the host's own check means its empty creation
+    /// row); `GetNthRecord` and aggregates read the related set itself.
+    fn referenced_record(
+        &self,
+        occurrence: u64,
+        record: u64,
+        related: u64,
+    ) -> Result<Option<u64>, CalcError> {
+        self.related_record(occurrence, record, related, 0)
+    }
+
     /// The related record at `index` (0-based) of [`Self::related_records`];
     /// hosts with large related sets can answer without building the list.
     fn related_record(
