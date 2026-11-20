@@ -439,9 +439,9 @@ To:
 
 An arrangement that changes no frame (the objects are arranged so already)
 reports `unchanged` and writes nothing. An arrangement it does not know, or
-too few objects, is an `invalid_request`. The CLI's flags take one
-`--object`, so the command has no flag form: send it as a JSON request
-(`om-author request`) or as the MCP tool.
+too few objects, is an `invalid_request`. On the command line, repeat
+`--object` for each object and name the arrangement with
+`--arrangement`.
 
 ### Deleting objects
 

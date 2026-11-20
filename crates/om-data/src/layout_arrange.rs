@@ -313,7 +313,10 @@ mod tests {
             frame(2, 30.0, 10.0, 60.0, 30.0),
             frame(3, 200.0, 100.0, 40.0, 10.0),
         ];
-        let rows: [(Arrangement, [(f64, f64, f64, f64); 3]); 14] = [
+        // An arrangement, and each object's left, top, width and height
+        // after it.
+        type Row = (Arrangement, [(f64, f64, f64, f64); 3]);
+        let rows: [Row; 14] = [
             (
                 Arrangement::AlignLeftEdges,
                 [
