@@ -36,6 +36,7 @@ use crate::record::Recordings;
 use crate::schedules::{Clock, Schedule, ScheduleError, ScheduleStatus, Scheduler};
 use crate::scripts::{AbortReason, RunningScript, ScriptEngine};
 use crate::tls::{server_config, Identity, IdentityError};
+use crate::transfer::DownloadMemory;
 use crate::uploads::UploadMemory;
 use om_calc::eval::CalcLimits;
 
@@ -193,6 +194,7 @@ impl Server {
                 no_get_file_list: AtomicBool::new(false),
                 no_authoring: AtomicBool::new(false),
                 upload_memory: UploadMemory::new(ConnectionLimits::DEFAULT.upload_memory),
+                download_memory: DownloadMemory::new(ConnectionLimits::DEFAULT.download_memory),
                 #[cfg(debug_assertions)]
                 test_panic: Default::default(),
                 #[cfg(debug_assertions)]
@@ -256,6 +258,9 @@ impl Server {
     /// ([`ConnectionLimits::DEFAULT`] otherwise).
     pub fn with_connection_limits(mut self, limits: ConnectionLimits) -> Self {
         self.shared.upload_memory.set_limit(limits.upload_memory);
+        self.shared
+            .download_memory
+            .set_limit(limits.download_memory);
         self.limits = limits;
         self
     }
