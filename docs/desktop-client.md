@@ -2004,7 +2004,15 @@ does not open it.
 ### Script Workspace
 
 Script Workspace loads the file's scripts, with searchable script selection,
-step drafts, Run and Revert. Save stores the active script's steps:
+step drafts, Run and Revert. Run runs the selected script in its file's
+window; a dialog the script shows (Show Custom Dialog, a "With dialog"
+confirmation, "Save changes to this record?", an error alert) brings that
+window in front of the workspace so it can be answered, as it does in front
+of any other window, and restores it when it is minimized. It does not over
+another file's window whose Script Workspace or Manage dialogs are open,
+since that would close them unsaved: the dialog then waits in its own
+window, unless the script itself brought a window forward. Where FileMaker
+Pro shows it is unmeasured. Save stores the active script's steps:
 - **On a host that offers OpenMaker's authoring extension to the account**
   (OpenMaker Server, and the private host of a file opened from this
   computer), the native provider saves through the step save
