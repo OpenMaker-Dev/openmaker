@@ -798,6 +798,45 @@ fn save_layout(app: &mut common::App) {
     common::click(app, "Save Layout");
 }
 
+/// Save Layout stores the sidebar drop's full edit-box height (#315).
+#[test]
+fn a_sidebar_field_drop_saves_a_44_point_edit_box() {
+    let file = form_file();
+    let hosted = hosted::host_file(
+        "sidebar-field-drop",
+        Path::new(&file.0),
+        fixture::FILE,
+        (ACCOUNT, PASSWORD),
+    );
+    let mut app = open_window(&hosted);
+    common::click(&mut app, "Edit Layout");
+    common::wait_for_label(&mut app, "Field: Count (object 1)");
+    common::click(&mut app, "Objects");
+    common::click(&mut app, "Fields");
+    common::wait_for_label(&mut app, "Name");
+    let source = app.get_by_label("Name").rect().center();
+    let canvas = app.get_by_label("Layout canvas").rect();
+    drag(&mut app, source, canvas.min + egui::vec2(132.0, 72.0));
+    common::wait_for_label(&mut app, "New field Name");
+    shot(&mut app, "sidebar-field-drop", "Name field draft");
+    save_layout(&mut app);
+    common::wait_until(&mut app, "the dropped field saved", |app| {
+        assert!(app.state().error().is_none(), "{:?}", app.state().error());
+        app.state().is_settled() && app.query_by_label("New field Name").is_none()
+    });
+    let geometry = hosted
+        .opened()
+        .layout_geometry(fixture::LAYOUT.try_into().unwrap())
+        .unwrap()
+        .unwrap();
+    let field = geometry
+        .objects
+        .iter()
+        .find(|object| object.field_name.as_deref() == Some("Name"))
+        .unwrap();
+    assert_eq!(field.rect.height(), 44.0);
+}
+
 /// Layout mode's Portal tool draws a portal; Portal Setup, which opens as
 /// the drawing ends, offers the occurrences related to the layout's and the
 /// number of rows, and Add Fields to Portal the occurrence's fields; Save

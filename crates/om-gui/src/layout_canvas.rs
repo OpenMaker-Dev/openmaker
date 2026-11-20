@@ -1142,7 +1142,8 @@ fn draw(
                                 left: f64::from((pointer.x - origin.x).round()),
                                 top: f64::from((pointer.y - origin.y).round()),
                                 width: 120.0,
-                                height: 22.0,
+                                // Leave room for Universal Touch edit-box padding.
+                                height: 44.0,
                                 field: Some(payload.field.clone()),
                                 label: true,
                                 control: 0,
