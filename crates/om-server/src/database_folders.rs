@@ -31,6 +31,17 @@ pub fn discover(folders: &[PathBuf], exclude: &[PathBuf]) -> Vec<PathBuf> {
     };
     let mut found = Vec::new();
     let mut budget = MAX_ENTRIES;
+    // Folders the spent entry limit kept from being read (the limit may
+    // have run out right at an earlier folder's end, which warns of
+    // nothing), told once at the end: the first and how many.
+    let mut unread: (Option<PathBuf>, usize) = (None, 0);
+    let mut skip = |folder: &Path, budget: usize| {
+        if budget == 0 {
+            unread.0.get_or_insert_with(|| folder.to_path_buf());
+            unread.1 += 1;
+        }
+        budget == 0
+    };
     let add = |files: Vec<PathBuf>, found: &mut Vec<PathBuf>| {
         for file in files {
             if found.len() == MAX_FILES {
@@ -48,7 +59,7 @@ pub fn discover(folders: &[PathBuf], exclude: &[PathBuf]) -> Vec<PathBuf> {
         // only what is not a link is used, so every path found is a
         // resolved one.
         let folder = &canonical(folder);
-        if inside_excluded(folder) {
+        if inside_excluded(folder) || skip(folder, budget) {
             continue;
         }
         let (files, subfolders) = match entries(folder, &mut budget) {
@@ -62,7 +73,7 @@ pub fn discover(folders: &[PathBuf], exclude: &[PathBuf]) -> Vec<PathBuf> {
             break;
         }
         for subfolder in subfolders {
-            if inside_excluded(&subfolder) {
+            if inside_excluded(&subfolder) || skip(&subfolder, budget) {
                 continue;
             }
             match entries(&subfolder, &mut budget) {
@@ -77,6 +88,13 @@ pub fn discover(folders: &[PathBuf], exclude: &[PathBuf]) -> Vec<PathBuf> {
             }
         }
     }
+    if let (Some(first), count) = unread {
+        log::warn!(
+            "database folders: more than {MAX_ENTRIES} entries; {count} folders are not read, \
+             {} the first",
+            first.display()
+        );
+    }
     found
 }
 
@@ -87,12 +105,6 @@ fn entries(folder: &Path, budget: &mut usize) -> std::io::Result<(Vec<PathBuf>, 
     let mut files: Vec<(OsString, PathBuf)> = Vec::new();
     let mut subfolders: Vec<(OsString, PathBuf)> = Vec::new();
     if *budget == 0 {
-        // The limit was reached in an earlier folder, perhaps right at its
-        // end: this one is passed over, and says so.
-        log::warn!(
-            "database folders: more than {MAX_ENTRIES} entries; {} is not read",
-            folder.display()
-        );
         return Ok((Vec::new(), Vec::new()));
     }
     for entry in std::fs::read_dir(folder)? {

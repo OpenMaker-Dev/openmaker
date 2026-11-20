@@ -159,7 +159,8 @@ in one of its subfolders, or in a folder above them can still change what
 that path leads to. Keep database folders, their subfolders and the
 folders above them writable by the server's user only
 ([#468](https://github.com/OpenMaker-Dev/openmaker/issues/468)). Once the
-entry limit is reached, every folder not yet read is logged as not read.
+entry limit is reached, the log says how many folders were left unread
+and names the first.
 
 Failed logins are limited. After 5 failures an address (an IPv6 address by
 its /64) may try once a minute; after 30 failures of an account of a file
