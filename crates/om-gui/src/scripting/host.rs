@@ -810,6 +810,7 @@ impl<'a> WorkerHost<'a> {
                 password: false,
                 value: Value::text(count.max(1).to_string()),
             }],
+            close_after: None,
         };
         let Some(Answer::Dialog(DialogResponse { button: 1, inputs })) =
             self.ask(Prompt::Dialog(dialog))
@@ -3998,6 +3999,7 @@ impl ScriptHost for WorkerHost<'_> {
                     message: "No records match this find criteria.".into(),
                     buttons: vec![button("Modify Find"), button("Cancel")],
                     inputs: Vec::new(),
+                    close_after: None,
                 })),
                 Some(Answer::Dialog(DialogResponse { button: 1, .. }))
             );
