@@ -2366,6 +2366,35 @@ fn related_list_refused() -> HostError {
 }
 
 /// Today in the server's time zone.
+/// `value` as Find Matching Records writes it for the server's finds to read
+/// exactly: a number with `.` as its decimal separator, as the server's
+/// criteria read numbers; a time or timestamp with its seconds even when
+/// they are zero, since the display form drops them and would read as the
+/// whole minute. A fraction of a second is left out, so the criterion is
+/// the whole second; a time past 24 hours is no time of day and fails as a
+/// criterion (3).
+fn matching_text(value: &Value, cx: &Ctx) -> String {
+    let clock = |micros: i128| {
+        let seconds = micros.div_euclid(1_000_000);
+        format!(
+            "{}:{:02}:{:02}",
+            seconds / 3600,
+            seconds / 60 % 60,
+            seconds % 60
+        )
+    };
+    match value {
+        Value::Number(n) | Value::NumberText(n, _) => n.to_text_with('.'),
+        Value::Time(t) => clock(t.micros()),
+        Value::Timestamp(t) => format!(
+            "{} {}",
+            t.date().format(cx.locale),
+            clock(t.time_of_day().micros())
+        ),
+        other => other.to_text(cx).into_string(),
+    }
+}
+
 fn today() -> Date {
     let now = jiff::Zoned::now();
     Date::from_ymd(i64::from(now.year()), now.month() as u32, now.day() as u32)
@@ -3816,12 +3845,14 @@ impl FoundSets for ServerHost {
 
     /// Find Matching Records (155): the records whose `field`, or the
     /// field with the focus, holds the current record's value, by the
-    /// desktop's request (`om_data::found::matching_criterion`), found,
-    /// constrained or extended as Perform Find does with that one request.
-    /// Without a field it is 102, as on the desktop. A field of another
-    /// occurrence is a related criterion, which server finds do not support
-    /// (3), and so is Find mode, where the current record is a request
-    /// (FileMaker's behavior there is not measured).
+    /// desktop's request (`om_data::found::matching_criterion`, the value
+    /// written by [`matching_text`]), found, constrained or extended as
+    /// Perform Find does with that one request. Without a field it is 102,
+    /// as on the desktop. The step runs in Browse mode: from Find mode it
+    /// switches first, as Enter Browse Mode does (Claris, "Find Matching
+    /// Records"). A field of another occurrence is a related criterion,
+    /// which server finds do not support (3); a global or summary field is
+    /// no criterion at all (3; FileMaker's answer is not measured).
     fn find_matching(&mut self, field: Option<FieldRef>, kind: FindKind) -> HostResult {
         // A find reads field values.
         self.require_view()?;
@@ -3831,9 +3862,15 @@ impl FoundSets for ServerHost {
             repetition: 1,
         });
         let field = field.or(focused).ok_or(ErrorCode::FIELD_MISSING)?;
+        let (_, def) = self.target(field)?;
         let window = self.window()?;
-        if field.occurrence != window.occurrence || window.mode == Mode::Find {
+        if field.occurrence != window.occurrence
+            || om_data::found::findable(&def) == Findable::Ignored
+        {
             return Err(HostError::Unsupported);
+        }
+        if window.mode == Mode::Find {
+            self.enter_mode(Mode::Browse, false, None)?;
         }
         let value = self.value_of(field)?;
         let field_kind = match value.value_type() {
@@ -3844,7 +3881,7 @@ impl FoundSets for ServerHost {
             ValueType::Timestamp => om_data::FieldKind::Timestamp,
             ValueType::Container => om_data::FieldKind::Container,
         };
-        let text = value.to_text(&self.cx()).into_string();
+        let text = matching_text(&value, &self.cx());
         let mut request = Request::default();
         request.set(
             field.field,

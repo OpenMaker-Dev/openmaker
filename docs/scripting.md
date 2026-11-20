@@ -286,8 +286,11 @@ Server Find mode:
   value, else `==` and the value, a text value's find operators taken
   literally (`om_data::found::matching_criterion`), so `a*b` finds only
   `a*b`. This request is OpenMaker's reading of Claris's description; the
-  one FileMaker builds is not captured. On the server a field of another
-  occurrence fails with 3, and so does the step in Find mode.
+  one FileMaker builds is not captured. On the server a number is written
+  with `.` and a time or timestamp with its seconds, so the criterion is
+  that value and not the whole minute. From Find mode the server switches
+  to Browse first, as Claris documents. A field of another occurrence, a
+  global and a summary field fail with 3 on the server.
 - Globals read their value with no current record, and sessions start
   from the file's stored globals.
 - A criterion longer than 10,000 characters cannot be read (3), on the

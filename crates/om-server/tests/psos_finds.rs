@@ -49,27 +49,31 @@ fn set_var(name: &str, text: &str) -> ScriptStep {
     step
 }
 
+/// Perform Quick Find with the text of `text`, a calculation.
+fn quick_find(text: &str) -> ScriptStep {
+    let mut step = ScriptStep::new(150);
+    step.set_calculation(0, Some(&calc(text)));
+    step
+}
+
 /// After `before`, Perform Quick Find with each of `texts` (calculations)
 /// in turn, then exit with the last one's error, the found count and the
 /// current record's Name.
 fn quick_finds(before: Vec<ScriptStep>, texts: &[&str]) -> Vec<ScriptStep> {
     let mut steps = vec![fixture::on(86, true)];
     steps.extend(before);
-    for text in texts {
-        let mut step = ScriptStep::new(150);
-        step.set_calculation(0, Some(&calc(text)));
-        steps.push(step);
-    }
+    steps.extend(texts.iter().map(|text| quick_find(text)));
     steps.push(exit_with(
         "Get ( LastError ) & \":\" & Get ( FoundCount ) & \":\" & Tasks::Name",
     ));
     steps
 }
 
-/// Find Matching Records on Tasks::`field` (none: the field with the
-/// focus), `value` 1 replacing the found set, 2 constraining it, 3
-/// extending it, then exit with the error and the found count.
-fn find_matching_then_count(field: Option<u64>, value: u16) -> Vec<ScriptStep> {
+/// After `before`, Find Matching Records on Tasks::`field` (none: the
+/// field with the focus), `value` 1 replacing the found set, 2
+/// constraining it, 3 extending it, then exit with the error, the found
+/// count and the current record's Name.
+fn find_matching(before: Vec<ScriptStep>, field: Option<u64>, value: u16) -> Vec<ScriptStep> {
     let mut step = ScriptStep::new(155);
     step.value = value;
     if let Some(field) = field {
@@ -82,11 +86,13 @@ fn find_matching_then_count(field: Option<u64>, value: u16) -> Vec<ScriptStep> {
             )),
         );
     }
-    vec![
-        fixture::on(86, true),
-        step,
-        exit_with("Get ( LastError ) & \":\" & Get ( FoundCount )"),
-    ]
+    let mut steps = vec![fixture::on(86, true)];
+    steps.extend(before);
+    steps.push(step);
+    steps.push(exit_with(
+        "Get ( LastError ) & \":\" & Get ( FoundCount ) & \":\" & Tasks::Name",
+    ));
+    steps
 }
 
 fn exit_with(text: &str) -> ScriptStep {
@@ -265,13 +271,23 @@ fn scripts() -> Vec<Script> {
             "Quick Find every word",
             quick_finds(vec![], &["\"alpha ship\""]),
         ),
-        script(44, "Matching Name", find_matching_then_count(Some(NAME), 1)),
+        script(44, "Matching Name", find_matching(vec![], Some(NAME), 1)),
         script(
             45,
             "Matching Status",
-            find_matching_then_count(Some(fixture::STATUS), 1),
+            find_matching(vec![], Some(fixture::STATUS), 1),
         ),
-        script(46, "Matching no field", find_matching_then_count(None, 1)),
+        script(
+            46,
+            "Matching no field",
+            find_matching(vec![quick_find("\"ship\"")], None, 1),
+        ),
+        script(
+            48,
+            "Matching from Find mode",
+            find_matching(vec![ScriptStep::new(22)], Some(NAME), 1),
+        ),
+        script(49, "Matching Count", find_matching(vec![], Some(COUNT), 1)),
     ]
 }
 
@@ -429,15 +445,19 @@ fn server_quick_find_searches_the_layouts_quick_find_fields() {
 }
 
 /// Find Matching Records on the server: the records holding the current
-/// record's value of the field, record 1's "Write tests" in Name and its
-/// empty Status (records 1 to 4); without a field or a focus it is 102,
-/// the found set kept. It ran into error 3 before.
+/// record's value of the field, record 1's "Write tests" in Name, its
+/// empty Status (records 1 to 4) and its Count 3. From Find mode it
+/// switches to Browse first (Claris). Without a field or a focus it is
+/// 102, the found set (after a Quick Find, "Ship" alone) kept. It ran into
+/// error 3 before.
 #[test]
 fn server_find_matching_finds_the_current_records_value() {
     let file = TempFile::from_tree("psos-find-matching", &tree());
     let port = server::start(&file);
     let (mut client, _) = server::logged_in(port, "client");
-    assert_eq!(run(&mut client, 44), (0, "0:1".into()));
-    assert_eq!(run(&mut client, 45), (0, "0:4".into()));
-    assert_eq!(run(&mut client, 46), (102, "102:5".into()));
+    assert_eq!(run(&mut client, 44), (0, "0:1:Write tests".into()));
+    assert_eq!(run(&mut client, 45), (0, "0:4:Write tests".into()));
+    assert_eq!(run(&mut client, 46), (102, "102:1:Ship".into()));
+    assert_eq!(run(&mut client, 48), (0, "0:1:Write tests".into()));
+    assert_eq!(run(&mut client, 49), (0, "0:1:Write tests".into()));
 }
