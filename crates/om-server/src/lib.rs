@@ -116,6 +116,7 @@ mod connection;
 #[cfg(feature = "admin-console")]
 pub mod console;
 mod containers;
+pub mod database_folders;
 pub mod default_identity;
 mod eventlog;
 mod filelock;
