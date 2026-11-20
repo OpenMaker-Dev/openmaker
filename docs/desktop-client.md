@@ -1272,11 +1272,16 @@ drop-down lists (layout-model.md 5.4) read their items through
     shorter for it.
   - The calculation sees no global variables, as when OpenMaker computes
     a summary or sort key itself.
-  - Such a list is built per object and record, as a list of related
-    values is, not once for every record: its calculation may read other
-    tables and the session, which a shared list's rebuilds do not
-    follow. It is built again when the window's context changes (its
-    size, for example), as results that read the session are.
+  - Such a list of all of a field's values is built once on the worker
+    for every object and record, from committed values ([#290](https://github.com/OpenMaker-Dev/openmaker/issues/290); "One
+    build per list, never in paint", below). Its calculation may read
+    other tables and the session: it is built again after any table's
+    data changes, and when the window's context (its size, for example)
+    or the date changes. A build asked before such a change is let finish
+    and its answer dropped, then one build for the new context follows,
+    so a resize keeps one build at a time on the worker. A list of an
+    unstored calculation's related values is built per object and record
+    in paint, as a list of related values is.
   - Validation against a related-values list of such a field computes it
     on each related record, and refuses with 3 only a record whose value
     cannot be computed (`om-provider`'s `related_lists.rs`;
