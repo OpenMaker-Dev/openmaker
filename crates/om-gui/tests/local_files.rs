@@ -1234,6 +1234,146 @@ fn close_current_uses_the_open_identity_after_a_cross_folder_alias() {
 
 /// One real local login supplies both the desktop script and an object hide
 /// calculation. All files, credentials and the clock-derived status are synthetic.
+/// Revert Transaction removes the records the transaction created, and
+/// each window that showed one moves to a record that is there, whatever
+/// it had pending on it (#307): one New Record made, one committed into
+/// the transaction and edited after, and one a second window made. A
+/// record an earlier transaction saved, with an edit pending in its
+/// window, is not the reverted transaction's and keeps the edit.
+#[test]
+fn revert_transaction_lets_go_only_of_the_records_it_removes() {
+    use egui_kittest::kittest::{By, NodeT};
+    use om_scripts::{flag, ScriptStep};
+    let folder = Folder::new("revert-transaction");
+    let step = ScriptStep::new;
+    let capture = fixture::on(86, true);
+    // Open and Commit Transaction store the Commit's index in the script.
+    let transaction = |id: u16, commit_at: u16| {
+        let mut s = step(id);
+        s.value = commit_at;
+        s
+    };
+    let window = |id: u16, name: &str| {
+        let mut s = step(id);
+        if id == 123 {
+            s.value = 1;
+            s.flags |= flag::MENU_SELECTION;
+        }
+        s.set_calculation(0, Some(&fixture::calc(name)));
+        s
+    };
+    let place = "Get ( RecordNumber ) & \"|\" & Get ( RecordID ) & \"|\" & Get ( FoundCount )";
+    let scripts = [
+        fixture::script(
+            1,
+            "Revert new",
+            vec![
+                capture.clone(),
+                transaction(205, 4),
+                step(7),
+                step(207),
+                transaction(206, 4),
+                show(&format!("\"new:\" & {place}")),
+            ],
+        ),
+        fixture::script(
+            2,
+            "Revert committed new",
+            vec![
+                capture.clone(),
+                transaction(205, 6),
+                step(7),
+                step(75),
+                fixture::set_field(fixture::NAME, "\"pending\""),
+                step(207),
+                transaction(206, 6),
+                show(&format!("\"committed:\" & {place}")),
+            ],
+        ),
+        fixture::script(
+            3,
+            "Revert another window's",
+            vec![
+                capture.clone(),
+                fixture::set_variable("$main", "Get ( WindowName )"),
+                transaction(205, 7),
+                window(122, "\"B\""),
+                step(7),
+                window(123, "$main"),
+                step(207),
+                transaction(206, 7),
+                window(123, "\"B\""),
+                show(&format!("\"window:\" & {place}")),
+                step(121),
+            ],
+        ),
+        fixture::script(
+            4,
+            "Keep an earlier save",
+            vec![
+                capture,
+                fixture::set_variable("$main", "Get ( WindowName )"),
+                transaction(205, 6),
+                window(122, "\"C\""),
+                step(7),
+                window(123, "$main"),
+                transaction(206, 6),
+                window(123, "\"C\""),
+                fixture::set_field(fixture::NAME, "\"kept\""),
+                window(123, "$main"),
+                transaction(205, 12),
+                step(207),
+                transaction(206, 12),
+                window(123, "\"C\""),
+                step(75),
+                show("\"saved:\" & Tasks::Name & \"|\" & Get ( FoundCount ) & \"|\" & Get ( LastError )"),
+                step(121),
+            ],
+        ),
+    ];
+    let mut root = fixture::tree(&scripts, true);
+    fixture::add_local_accounts(&mut root);
+    add_name_field(&mut root);
+    fixture::write_tree(&folder.file(), &root);
+    let mut app = app();
+    common::click(&mut app, "Browse...");
+    choose(&mut app, &folder.file());
+    sign_in(&mut app, fixture::PASSWORD);
+    wait_open(&mut app);
+    // The two tasks stay; each window ends on the last, a record that is
+    // there, not on the one that is gone (whose id would read 0).
+    for (script, tag, expected) in [
+        ("Revert new", "new:", "new:2|2|2"),
+        ("Revert committed new", "committed:", "committed:2|2|2"),
+        ("Revert another window's", "window:", "window:2|2|2"),
+        ("Keep an earlier save", "saved:", "saved:kept|3|0"),
+    ] {
+        common::open_menu(&mut app, "Scripts");
+        common::click(&mut app, script);
+        let by = By::new().label_contains(tag);
+        common::wait_until(&mut app, script, |a| {
+            a.query_all(by.clone()).next().is_some()
+        });
+        let shown = app
+            .query_all(by)
+            .next()
+            .unwrap()
+            .accesskit_node()
+            .value()
+            .unwrap_or_default();
+        assert_eq!(shown, expected, "{script}");
+        common::click(&mut app, "OK");
+        common::wait_until(&mut app, "the script's end", |a| {
+            !a.state().script_running() && a.state().is_settled()
+        });
+        assert!(
+            app.state().error().is_none(),
+            "{script}: {:?}",
+            app.state().error()
+        );
+    }
+}
+
 #[test]
 fn local_login_account_facts_reach_a_script_and_layout_hide_calculation() {
     use om_hbam::slot::uint_segment;

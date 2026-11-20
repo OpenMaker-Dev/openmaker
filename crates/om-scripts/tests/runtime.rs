@@ -804,6 +804,102 @@ fn navigation_records_and_fields_reach_the_host() {
     assert_eq!(age_is(&h, 4), "40");
 }
 
+/// FileMaker Pro 26.1.1's steps by name (script-steps.md 12.4, #349):
+/// Set Variable by Name sets the variable its calculation names, at the
+/// repetition asked for, and a name that is not a variable's is error 5;
+/// Replace Field Contents by Name replaces the field its calculation names
+/// in every record of the found set, and a name that names no field is
+/// error 102 [I: both inferred from Set Variable and Set Field By Name].
+#[test]
+fn steps_by_name_find_their_variable_and_field() {
+    let mut h = host();
+    let set = |h: &MemoryScriptHost, name: &str, rep: Option<&str>, value: &str| {
+        let mut step = ScriptStep::new(250);
+        step.set_calculation(3, Some(&calc(h, name)));
+        if let Some(rep) = rep {
+            step.set_calculation(2, Some(&calc(h, rep)));
+        }
+        step.set_calculation(1, Some(&calc(h, value)));
+        step
+    };
+    let replace = |h: &MemoryScriptHost, name: &str, value: &str| {
+        let mut step = ScriptStep::new(249);
+        step.set_flag(flag::NO_INTERACT, true);
+        step.set_calculation(1, Some(&calc(h, name)));
+        step.set_number(1, Some(3));
+        step.set_calculation(0, Some(&calc(h, value)));
+        step
+    };
+    let steps = vec![
+        set(&h, "\"$$by\" & \"Name\"", Some("2"), "41"),
+        set(&h, "\"$$plain\"", None, "\"x\""),
+        go_to_layout(2),
+        ScriptStep::new(7),
+        replace(&h, "\"People::Age\"", "Length ( People::Name ) * 10"),
+        set_var(&h, "$$replaced", "Get ( LastError )"),
+        replace(&h, "\"People::Height\"", "1"),
+        set_var(&h, "$$missing", "Get ( LastError )"),
+        set(&h, "\"name\"", None, "1"),
+        set_var(&h, "$$bad", "Get ( LastError )"),
+    ];
+    h.add_script(0, script(1, "By name", steps));
+    let mut rt = Runtime::default();
+    assert_eq!(run(&mut h, &mut rt, 1), RunState::Idle);
+    assert_eq!(
+        var_text(rt.globals(0), "$$byName", 2).as_deref(),
+        Some("41")
+    );
+    assert_eq!(var_text(rt.globals(0), "$$byName", 1), None);
+    assert_eq!(g(&mut rt, "$$plain"), "x");
+    assert_eq!(g(&mut rt, "$$replaced"), "0");
+    assert_eq!(
+        [age_is(&h, 1), age_is(&h, 2), age_is(&h, 3)],
+        ["30", "30", "20"]
+    );
+    assert_eq!(g(&mut rt, "$$missing"), "102");
+    assert_eq!(g(&mut rt, "$$bad"), "5");
+
+    // "Use Entry Options" takes the field's own serial settings, which are
+    // not read: refused with 3 before any record is written.
+    let mut entry = replace(&h, "\"People::Age\"", "1");
+    entry.set_number(1, Some(2));
+    entry.set_number(5, Some(1));
+    let steps = vec![
+        go_to_layout(2),
+        entry,
+        set_var(&h, "$$entry", "Get ( LastError )"),
+    ];
+    h.add_script(0, script(2, "Entry options", steps));
+    let mut rt = Runtime::default();
+    run(&mut h, &mut rt, 2);
+    assert_eq!(g(&mut rt, "$$entry"), "3");
+    assert_eq!(
+        [age_is(&h, 1), age_is(&h, 2), age_is(&h, 3)],
+        ["30", "30", "20"]
+    );
+
+    // On the server 249 is unknown (FileMaker Server 26.0.3's table): its
+    // error 4 does not fail an open transaction, whose write commits. With
+    // Allow User Abort on, error 4 would halt the script instead.
+    let mut h = host();
+    let steps = vec![
+        on(85, false),
+        on(86, true),
+        ScriptStep::new(205),
+        set_age(&h, "30", 1),
+        replace(&h, "\"People::Age\"", "1"),
+        set_var(&h, "$$unknown", "Get ( LastError )"),
+        ScriptStep::new(206),
+        set_var(&h, "$$e", "Get ( LastError )"),
+    ];
+    h.add_script(0, script(1, "Server", steps));
+    let mut rt = Runtime::new(Options::new(Client::Server));
+    run(&mut h, &mut rt, 1);
+    assert_eq!(g(&mut rt, "$$unknown"), "4");
+    assert_eq!(g(&mut rt, "$$e"), "0");
+    assert_eq!(age_is(&h, 1), "30");
+}
+
 #[test]
 fn insert_steps_write_variables_and_fields() {
     let mut h = host();
@@ -839,12 +935,19 @@ fn custom_dialogs_store_inputs_and_the_choice() {
     dialog.set_number(4, Some(0));
     dialog.set_variable_target(0, "$$answer");
     dialog.set_calculation(2, Some(&calc(&h, "\"Your name\"")));
+    // FileMaker Pro 26.1's "Close after (seconds)": on in numeric slot 6,
+    // the seconds in calculation slot 13 (script-steps.md 12.4).
+    let mut timed = dialog.clone();
+    timed.set_number_bool(6, Some(true));
+    timed.set_calculation(13, Some(&calc(&h, "1 + 1")));
     let steps = vec![
         set_var(&h, "$$answer", "\"old\""),
         dialog.clone(),
         set_var(&h, "$$choice", "Get ( LastMessageChoice )"),
         dialog,
         set_var(&h, "$$choice2", "Get ( LastMessageChoice )"),
+        timed,
+        set_var(&h, "$$choice3", "Get ( LastMessageChoice )"),
     ];
     h.add_script(0, script(1, "Ask", steps));
     h.dialog_answers.push_back(DialogResponse {
@@ -855,8 +958,18 @@ fn custom_dialogs_store_inputs_and_the_choice() {
         button: 2,
         inputs: vec![Value::text("ignored")],
     });
+    // Closed by its timer: no button, so no input is stored.
+    h.dialog_answers.push_back(DialogResponse {
+        button: 0,
+        inputs: vec![Value::text("timed out")],
+    });
     let mut rt = Runtime::default();
     run(&mut h, &mut rt, 1);
+    assert_eq!(
+        h.dialogs.iter().map(|d| d.close_after).collect::<Vec<_>>(),
+        [None, None, Some(2.0)]
+    );
+    assert_eq!(g(&mut rt, "$$choice3"), "0");
     assert_eq!(h.dialogs[0].title, "Title");
     assert_eq!(h.dialogs[0].inputs[0].label, "Your name");
     assert_eq!(h.dialogs[1].inputs[0].value.value_type(), ValueType::Text);
