@@ -797,6 +797,25 @@ fn blank_canvas_commits_but_changing_fields_keeps_the_record_draft() {
             assert!(!common::unsaved(&app));
         }
     }
+    // In List view too, where the rows draw in the zoom layer over the
+    // window's canvas.
+    let mut provider = DocumentProvider::new(false);
+    provider.writable = true;
+    provider.list = true;
+    let mut app = open_provider(provider);
+    app.get_all_by_role_and_label(Role::TextInput, "Given")
+        .next()
+        .unwrap()
+        .focus();
+    app.step();
+    app.key_press_modifiers(egui::Modifiers::COMMAND, egui::Key::A);
+    app.event(egui::Event::Text("List edit".into()));
+    app.run_steps(2);
+    assert!(common::unsaved(&app), "unsaved record changes");
+    click_blank_canvas(&mut app);
+    common::wait_until(&mut app, "the List view commit", |app| {
+        !common::unsaved(app) && !common::saving(app)
+    });
 }
 
 /// Insert > Current User Name puts the user name at the insertion point of

@@ -3254,7 +3254,23 @@ fn show_document(
     }
     show_other_dialog(ui, session, state);
     if view == ViewMode::List {
-        show_list(ui, session, document, state, calc, actions);
+        // Zoomed as Form view is: its parts and records in the document's
+        // zoom layer, in the layout's own coordinates.
+        let factor = state.zoom.factor();
+        zoom::show(ui, ui.available_size() / factor, factor, |ui| {
+            // The canvas behind the rows, in their layer (the window's own
+            // canvas is under it): a click there that no row or field
+            // takes commits the record, as in Form view.
+            let background = ui.interact(
+                ui.max_rect(),
+                ui.scope_id().with("list_canvas"),
+                Sense::click(),
+            );
+            show_list(ui, session, document, state, calc, actions);
+            if background.clicked() && !state.pending && !state.changes(session).is_empty() {
+                actions.push(Action::CommitRecord);
+            }
+        });
         return;
     }
     let layout = &document.layout;
@@ -3613,10 +3629,15 @@ fn show_list(
         ("layout_list", layout.id),
         Some(selected_top..=selected_top + rows.height(selected)),
     );
+    // The rows take what the footer leaves, however little: egui's least
+    // scrolled height (64 points) would push a footer out of view when
+    // zoomed in.
+    let rows_height = (ui.available_height() - footer_height).max(0.0);
     let mut scroll = egui::ScrollArea::both()
         .id_salt(("layout_list", layout.id))
         .auto_shrink([false, false])
-        .max_height((ui.available_height() - footer_height).max(0.0));
+        .max_height(rows_height)
+        .min_scrolled_height(rows_height);
     if let Some(offset) = state.list_scroll(session, selected_top, ui) {
         scroll = scroll.vertical_scroll_offset(offset);
     }
