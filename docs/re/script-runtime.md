@@ -1982,7 +1982,18 @@ creating Attachments; its option word is 257.
 - Set Field into a related field writes the active row's record, else the
   first related record, else (the creation row, or no related record)
   creates one when the relationship allows it, its match field set to the
-  parent's key; without creation 101. The related records belong to the
+  parent's key; without creation 101. Through two relationships (s49: a
+  field of Phone Emails, reached from Contacts through Phone Numbers), a
+  hop with no related record gets one, made from the record before it: the
+  new phone's match field takes the contact's key, and the new email's takes
+  the new phone's auto-entered key. Set Field returns 0, and after Commit
+  Records both records exist, linked. A middle record that exists takes the
+  far one instead. When the far record's relationship does not allow
+  creation, the step fails with 101 and creates nothing, whatever the other
+  relationship allows. When it does, but the middle record is missing and its
+  relationship does not allow creation, the step fails with 415 ("One or
+  more required related records are not available"). Longer paths are
+  unmeasured. The related records belong to the
   parent's open record: Commit Records commits them together, a related
   record's validation failing the whole commit (507; Set Field 0, also for
   "only during data entry" rules), Revert Record drops them. Commit Records
