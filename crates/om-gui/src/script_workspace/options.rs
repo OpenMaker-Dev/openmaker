@@ -425,6 +425,12 @@ const WINDOW_STYLES: [(u32, &str); 3] = [
     (WindowOptions::CARD_WORD, "Card"),
 ];
 
+/// Replace Field Contents (91) and Replace Field Contents by Name (249),
+/// which store its options alike (script-steps.md 12.4).
+fn replaces(id: u16) -> bool {
+    matches!(id, 91 | 249)
+}
+
 /// The label of the step's Restore option where Claris names it.
 fn restore_label(id: u16) -> &'static str {
     match id {
@@ -535,7 +541,7 @@ impl StepOptions {
         // A calculated result needs its calculation: without one the
         // runtime refuses the step (error 5). Whether FileMaker's dialog
         // lets it be left empty is not measured.
-        if step.id() == 91 && step.number(1) == Some(3) && step.calculation(0).is_none() {
+        if replaces(step.id()) && step.number(1) == Some(3) && step.calculation(0).is_none() {
             return Err("Calculated result needs its calculation.".into());
         }
         // A Show Custom Dialog button labelled here gets its "Commit data"
@@ -585,7 +591,7 @@ impl StepOptions {
     fn apply(&self, step: &mut ScriptStep, row: &Row) -> Result<(), String> {
         match &row.edit {
             // Read-only (`enabled`): never written.
-            edit if step.id() == 91 && read_only_replace_option(edit) => {}
+            edit if replaces(step.id()) && read_only_replace_option(edit) => {}
             Edit::Flag { location, on, was } if on != was => match *location {
                 Location::Flag { bits, inverted } => step.set_flag(bits, *on != inverted),
                 Location::Slot { slot, .. } => step.set_number_bool(slot, Some(*on)),
@@ -931,7 +937,7 @@ impl StepOptions {
         // and take no input: FileMaker Pro 26.0.3 greys the first out for a
         // field without an auto-entered serial number, and what its own
         // editor writes for either is not measured (#798's Pro check).
-        if self.original.id() == 91 && read_only_replace_option(&self.rows[i].edit) {
+        if replaces(self.original.id()) && read_only_replace_option(&self.rows[i].edit) {
             return false;
         }
         // Print (#843): its records take a choice only beside stored
@@ -1830,7 +1836,8 @@ fn rows(step: &ScriptStep, names: &Option<Arc<CalcSchema>>) -> Vec<Row> {
             // choice, or "Use Entry Options" (`[00 5, 03]` set: the field's
             // own serial settings, which these rows do not offer and which
             // would override them), keeps the parameter as stored.
-            ParamKind::Compound if id == 91 && p.name == "Replace with" => match step.number(1) {
+            ParamKind::Compound if replaces(id) && p.name == "Replace with" => match step.number(1)
+            {
                 Some(n) if !(0..=3).contains(&n) => rows.extend(kept),
                 _ if step.number(5).is_some_and(|n| n != 0) => rows.extend(kept),
                 stored => {
