@@ -793,6 +793,96 @@ also governs unknown-step handling (4.9).
 Set Layout Object Animation (168) sets `mAllowAnimation` from kTurnOn (obs).
 Pause/Resume unfreezes a frozen window (doc).
 
+### 6.4 Script Debugger and Data Viewer
+
+FileMaker Pro's client, not the server build: the runtime keeps the
+debugger's state in `mAutoPaused` (1.1, "paused implicitly"), `mStepAction`
+(1.1, the pending action), `mIsProDebuggerDataViewerVisible` (1.1, which
+makes Loop's flush Always, 3.3), `mPauseOnError` and `mUserTriggersEnabled`
+(1.2) (obs). The rest is from Claris's help for FileMaker Pro 2026, fetched
+2026-11-20: "Debugging scripts" (`debugging-scripts.html`), "Data Viewer"
+(`data-viewer.html`), and "Script Debugger keyboard shortcuts" for macOS
+and Windows (`script-debugger-shortcuts-os-x.html`,
+`script-debugger-shortcuts-windows.html`) (doc). None of it was compared
+with a FileMaker Pro screen.
+
+- **Availability.** The Use advanced tools general setting. Tools > Script
+  Debugger, then run a script; or the Script Workspace's Debug button,
+  which with Shift (Windows) or Option (macOS) first saves every open
+  script. Scripts started from the Scripts menu, a shortcut, a trigger, a
+  button or a custom menu are debugged. For a startup script, open the
+  debugger before the file (doc).
+- **Commands** (doc):
+  - Step Over: one step at a time. A Perform Script runs its sub-script
+    whole and stops at the caller's next step, unless a breakpoint in the
+    sub-script stops it.
+  - Step Into: one step at a time, entering sub-scripts. A Perform Script
+    stops at the sub-script's first step.
+  - Step Out: the rest of the current script. In a sub-script it stops at
+    the caller's step after the Perform Script; in the outermost script it
+    runs to a breakpoint or the end.
+  - Set Next Step: the highlighted step of the currently executing script
+    becomes the next, without running it or the steps between.
+  - Run / Pause: run to a breakpoint or the end, or pause.
+  - Halt Script.
+  - Enable/Disable Script Triggers: all triggers in the file, with full
+    access only. They are on by default, and closing the debugger turns
+    them all on again.
+  - Edit Script: open the current script for editing; saving it halts
+    execution. While paused, a double-click in the Call Stack opens that
+    script in a Script Workspace tab.
+  - Open/Close Data Viewer.
+  - Authenticate/Deauthenticate script (lock icon): sign in with full
+    access to debug scripts the account cannot modify. It covers every
+    script but no records, layouts or other elements, and lasts until both
+    the debugger and the Data Viewer are closed.
+  - Pause on error: pause a script when a step returns an error.
+- **Shortcuts** (doc). macOS: Step Over F5, Step Into F6, Step Out F7, Run
+  to Breakpoint Option-F8, Halt Script Command-F8, Set Next Step
+  Shift-Command-F5, Set/Clear Breakpoint Command-F9, Remove Breakpoints
+  Shift-Command-F9. Windows: the same with Alt for Option and Ctrl for
+  Command, and Edit Script Ctrl+F10.
+- **Breakpoints.** A click on a step's line number sets or clears one; a
+  script may have several (doc). They are stored on the step as
+  `kBreakpoint` (script-steps.md, flag `0x100000`, inf). They are ignored
+  while the debugger is not in use, and "You cannot set breakpoints on
+  steps called by a button or custom menu" (doc).
+- **Call Stack.** The running scripts. After Step Into a Perform Script it
+  lists the sub-script, and selecting a script shows its steps (doc).
+- **Privileges** (doc). A Modifiable script calling an Executable Only one:
+  the Executable Only script runs whole and its steps are hidden. An
+  Executable Only script calling a Modifiable one: only the Modifiable
+  script's steps are shown.
+- **Overrides** (doc). Allow User Abort [ Off ] does not keep the debugger
+  from halting a script. Adjust Window [ Hide ] or [ Minimize ] reached by
+  Step Over or Step Into neither hides nor minimizes the window. Closing
+  the debugger while a script is paused lets the script run to its end.
+- **Data Viewer** (doc). Tools > Data Viewer, or the debugger's button.
+  - The Current tab lists the fields the running script uses, directly or
+    in calculations, its local variables, and the global variables. The
+    globals are listed even with no script running.
+  - The Watch tab holds one expression per row. + or a double-click opens
+    Edit Expression, which is like Specify Calculation: Automatically
+    evaluate updates the result while typing, and Evaluate updates it on
+    request. Expressions stay until deleted. With the debugger, their
+    values follow the paused script.
+  - A double-click in the Current tab opens Current Value with the whole
+    value, which can be copied. A variable's value can be changed, a
+    field's cannot, and closing the dialog commits the change.
+  - A repeating field is listed only when it holds values, as
+    `<fieldname>[<n>]`, the first repetition without brackets. A
+    calculated repetition shows no value until the script reaches the step
+    where it is solved.
+  - Privileges: full access always. "Manage database as a developer"
+    (client-ui.md, FileMaker 26) also works without a running script in
+    26; before, it worked only while debugging scripts the account may
+    modify. Variables defined outside scripts are shown only with full
+    access, or while debugging a Modifiable script with that privilege.
+    The Lock button signs in with full access, and a sign-in in either
+    window holds in both.
+
+Unknowns: U17.
+
 ## 7. Script triggers
 
 ### 7.1 Event ids
@@ -2118,6 +2208,23 @@ and Go to Record stays.
   Select Window [ Current Window ], each followed in A by Select Window
   [ Name: "B" ], recording `Get ( LastError )`, `WindowNames` and B's
   visibility after each step.
+- U17. The Script Debugger and Data Viewer (6.4) were taken from Claris's
+  help, not observed. Still to observe:
+  - whether a script started with the debugger open stops before its
+    first step;
+  - whether the debugger stops at disabled steps and comments;
+  - whether Step Over and Step Out stop in a trigger a step fires;
+  - whether Pause on error stops before or after the error alert, and
+    with error capture on;
+  - whether a breakpoint set in the debugger is saved to the file at once;
+  - whether the Call Stack lists an Executable Only script's name;
+  - the Debugging Controls submenu's items and order;
+  - the windows' layout, button order and tooltips, and the last error
+    shown.
+
+  Route: the FileMaker Pro oracle with Use advanced tools on, on a
+  disposable copy of a starter solution, recording the debugger's window
+  and `Get ( LastError )` after each command.
 
 ## What other workstreams need
 
@@ -2262,9 +2369,11 @@ Execution model
 - There is no step or depth limit. `Options::step_budget` is a host safety
   budget per top-level script (unlimited by default) and
   `Options::time_slice` returns from `Runtime::run` like the 2000 ms slice.
-  `Runtime::step` executes one step (a debugger's Step); with
-  `Runtime::set_tracing` every executed step is recorded as the oracle
-  traces it (`Runtime::take_trace`).
+  `Runtime::step` executes at most one step. The Script Debugger's stops
+  and commands (6.4) are `Runtime::start_debugging`, `debug`,
+  `set_next_step` and `debug_stack` (docs/scripting.md, "Script
+  Debugger"). With `Runtime::set_tracing` every executed step is recorded
+  as the oracle traces it (`Runtime::take_trace`).
 - Multi-stage steps (internal 3001): a host method returns
   `HostError::Pending`; `run` returns `Waiting`. `Runtime::complete_step`
   finishes the step with its error (post-step cleanup as usual); running

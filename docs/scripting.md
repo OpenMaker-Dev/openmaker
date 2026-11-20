@@ -642,6 +642,46 @@ Open items:
   notes). The memory budget makes a huge unfiltered product fail with
   error 2 where FileMaker would finish it.
 
+## Script Debugger
+
+`om-scripts`'s runtime has the Script Debugger's control of the run loop
+(`runtime/debug.rs`; FileMaker's behavior is in script-runtime.md 6.4).
+The desktop's Tools > Script Debugger, Debugging Controls and Data Viewer,
+and the Script Workspace's Debug button, are still disabled
+([#74](https://github.com/OpenMaker-Dev/openmaker/issues/74)). No window
+uses it yet.
+
+- `Runtime::start_debugging` opens the debugger, `stop_debugging` closes
+  it. A stopped script then runs to its end, and script triggers are
+  enabled again.
+- While it is open, `Runtime::run` returns `RunState::Debugger` before a
+  step at which it stops:
+  - the first step of a script started while no script frame runs;
+  - a step with a breakpoint (flag `0x100000`);
+  - the next step after a finished Step Over, Step Into or Step Out;
+  - the next step after a failed step, with `set_pause_on_error`.
+- `Runtime::debug` continues with Run, Step Over, Step Into or Step Out.
+  It does not stop again at the step it continued from, so Run from a
+  breakpoint passes it.
+- `Runtime::set_next_step` moves the current script's pointer while
+  stopped. `Runtime::halt` is Halt Script. `Runtime::debug_stack` is the
+  Call Stack: each script frame's name and step, the innermost last.
+- The debugger stops only in a script the host lets it show
+  (`ScriptHost::script_debuggable`, none by default). Another script runs
+  whole, and the Call Stack lists it without a step. This is how FileMaker
+  treats an Executable Only script. A button's single step never stops.
+
+Choices not compared with FileMaker (script-runtime.md U17):
+- the stop before a new script's first step;
+- that disabled steps and comments are never stopped at;
+- that Pause on error stops after any step error, captured or not, once
+  the step's alert is done;
+- that a trigger script fired by a step counts as a sub-script for Step
+  Over and Step Out.
+
+The desktop host and OpenMaker Server close a debugger the runtime has
+open: neither opens one yet.
+
 ## Calculation limits
 
 What one evaluation may do, and whose limit each is. Past any of them the

@@ -22,6 +22,7 @@
 
 mod calc;
 pub mod data_files;
+mod debug;
 pub mod dynapdf;
 pub mod dynapdf_text;
 mod error;
@@ -43,6 +44,7 @@ use om_formula::Expr;
 
 pub use crate::catalog::Client;
 pub use calc::selector;
+pub use debug::{DebugCommand, DebugFrame, DebugStop};
 pub use error::{confirm_alert, map_error, never_suppressed, ErrorCode};
 pub use host::{
     serial_text, Accounts, AlertChoice, Arg, Bar, Bounds, Clipboard, CommitOptions, CustomDialog,
@@ -222,6 +224,9 @@ pub enum RunState {
     Waiting,
     /// A script is paused; [`Runtime::resume`] continues it.
     Paused { seconds: Option<f64> },
+    /// The Script Debugger stopped the scripts before a step;
+    /// [`Runtime::debug`] continues them (script-runtime.md 6.4).
+    Debugger(DebugStop),
     /// The time slice ran out; run again.
     Yielded,
     /// The runtime halted every script.
@@ -352,6 +357,9 @@ struct Frame {
     parent_full_access: bool,
     /// Paused by Pause/Resume Script, a pausing step or a Pause queue mode.
     paused: Option<Option<f64>>,
+    /// The Script Debugger may stop in this script and show its steps
+    /// ([`ScriptHost::script_debuggable`]).
+    debuggable: bool,
 }
 
 impl Frame {
@@ -501,6 +509,8 @@ pub struct Runtime {
     memory_checks: u64,
     stopped: Option<Stop>,
     exprs: HashMap<Vec<u8>, Arc<Expr>>,
+    /// The Script Debugger, while it is open.
+    debugger: Option<debug::Debugging>,
 }
 
 impl Default for Runtime {
@@ -552,6 +562,7 @@ impl Runtime {
             memory_checks: 0,
             stopped: None,
             exprs: HashMap::new(),
+            debugger: None,
         }
     }
 
@@ -931,6 +942,7 @@ impl Runtime {
     /// connection is gone): no transaction is reverted and no trigger
     /// action is performed. The runtime states return to their defaults.
     pub fn clear(&mut self) {
+        self.debug_reset();
         self.stack.clear();
         self.unstarted.clear();
         self.pending = None;
@@ -1034,8 +1046,13 @@ impl Runtime {
                 self.halt_script(host);
                 continue;
             }
+            if let Some(stop) = self.debug_check() {
+                return RunState::Debugger(stop);
+            }
             host.before_step();
-            if self.next_step(host) {
+            let waiting = self.next_step(host);
+            self.debug_stepped();
+            if waiting {
                 return RunState::Waiting;
             }
             self.after_step(host);
@@ -1234,6 +1251,9 @@ impl Runtime {
 
     fn post_step_cleanup(&mut self, host: &mut dyn ScriptHost, step: &ScriptStep, exec: Exec) {
         self.last_executed = step.id();
+        if exec.error.is_error() && !exec.control && exec.error != ErrorCode::RETRY {
+            self.debug_error(exec.error);
+        }
         if exec.unsupported && self.options.stop_on_unsupported {
             let location = self.location(step);
             self.set_last_error(ErrorCode::UNAVAILABLE, false);
@@ -1425,6 +1445,7 @@ impl Runtime {
             full_access: false,
             parent_full_access: false,
             paused: None,
+            debuggable: false,
         }
     }
 
@@ -1464,6 +1485,7 @@ impl Runtime {
         );
         frame.full_access = access.full_access;
         frame.parent_full_access = parent_full_access;
+        frame.debuggable = host.script_debuggable(file, script);
         Ok(frame)
     }
 
@@ -1588,6 +1610,7 @@ impl Runtime {
     /// `HaltScript` (script-runtime.md 3.5): reset the runtime states,
     /// revert an open transaction, clear the stack and queue.
     fn halt_script(&mut self, host: &mut dyn ScriptHost) {
+        self.debug_reset();
         self.allow_abort = true;
         self.capture = false;
         self.animation = false;
