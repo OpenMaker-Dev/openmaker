@@ -1390,13 +1390,21 @@ impl OpenMakerApp {
                     && !self.script.busy()
                     && self.script.prompt.is_none()
                     && self.text_field_entered(),
+                // Not under a paused script either: the step would run in
+                // a frame above it, and its error, a Cancel's 1 included,
+                // would fail the script's open transaction. Nor while a
+                // hosted edit is being prepared, which would hold the
+                // command until the focus may have moved.
                 relookup: input
-                    && !self.script.busy()
+                    && !self.script.running
                     && self.script.prompt.is_none()
                     && !self.recovery_holds()
+                    && !self.w.document.preparing_edit()
+                    && !self.w.document.failed_edit()
                     && om_data::scripts::relookup::available(
                         self.w.mode.runtime(),
                         self.text_field_entered() && self.w.document.active_related.is_none(),
+                        self.record_modified(),
                     ),
                 own_field: self.w.document.active_related.is_none(),
                 field_undo: self

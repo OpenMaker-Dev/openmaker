@@ -43,10 +43,14 @@ pub fn message(field: &str, records: usize) -> String {
 /// Whether the command can run: in Browse mode with a field entered, the
 /// field the command looks up through (Claris's help: "In Browse mode
 /// ... select the match field, then choose Records menu > Relookup Field
-/// Contents"). Whether FileMaker Pro enables the item for a field that is
+/// Contents"), and `changed`, whether the record has changes no commit
+/// has kept, false. FileMaker's command leaves such a record uncommitted;
+/// the step commits it first (#624), past the field's validation and save
+/// triggers, so OpenMaker offers the command only on a record with nothing
+/// to commit. Whether FileMaker Pro enables the item for a field that is
 /// no match field is unmeasured; the step answers that one (3).
-pub fn available(mode: Mode, field_entered: bool) -> bool {
-    mode == Mode::Browse && field_entered
+pub fn available(mode: Mode, field_entered: bool, changed: bool) -> bool {
+    mode == Mode::Browse && field_entered && !changed
 }
 
 /// The step the command runs on the field the user is in: with its dialog

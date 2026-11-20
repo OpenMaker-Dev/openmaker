@@ -45,9 +45,10 @@ pub(crate) struct MenuContext<'a> {
     /// (Find) can run (`om_data::scripts::revert_record::available`).
     pub revert_record: bool,
     /// Records > Relookup Field Contents can run: a field of the
-    /// record's own table is entered in Browse mode, no script running
-    /// (`om_data::scripts::relookup::available`). A related field leaves
-    /// it off: the step does not look up through one (3).
+    /// record's own table is entered in Browse mode on a record with
+    /// nothing to commit, no script running or paused and no edit being
+    /// prepared (`om_data::scripts::relookup::available`). A related field
+    /// leaves it off: the step does not look up through one (3).
     pub relookup: bool,
     /// The account may change the file's design: File > Manage's dialogs,
     /// Layout mode and Script Workspace (`App::design_allowed`).

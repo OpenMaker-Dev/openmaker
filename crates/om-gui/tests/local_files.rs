@@ -1649,8 +1649,9 @@ fn relookup_field_contents_writes_nothing_it_refuses() {
 }
 
 /// Records > Relookup Field Contents runs the step with its dialog on the
-/// field entered (#87): Cancel writes nothing, and OK copies each found
-/// record's lookup again. With no field entered the item is off.
+/// field entered (#87): Cancel relooks up nothing, and OK copies each found
+/// record's lookup again. With no field entered, or typing in the record,
+/// the item is off.
 #[test]
 fn the_records_menu_relooks_up_through_the_field_entered() {
     use egui_kittest::kittest::NodeT as _;
@@ -1692,6 +1693,20 @@ fn the_records_menu_relooks_up_through_the_field_entered() {
     run_and_read(&mut app, "Notes", "old,old");
     relookup(&mut app, "OK");
     run_and_read(&mut app, "Notes", "w,Hi");
+    // Typed in, the record has something to commit, which the step would
+    // commit past the field's triggers (#624): the item is off.
+    app.get_all_by_role_and_label(egui::Role::TextInput, "Name")
+        .next()
+        .unwrap()
+        .click();
+    app.run_steps(2);
+    app.event(egui::Event::Text("x".into()));
+    app.run_steps(2);
+    common::open_menu(&mut app, menu);
+    common::wait_for_label(&mut app, item);
+    assert!(app.get_by_label(item).accesskit_node().is_disabled());
+    app.key_press(egui::Key::Escape);
+    app.run_steps(2);
 }
 
 /// A folder of its own holding a copy of a given file as `Tasks.fmp12`,

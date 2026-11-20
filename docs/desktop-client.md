@@ -1153,15 +1153,20 @@ It runs Relookup Field Contents (40) with its dialog on the field
 entered, as a script does (re/script-runtime.md, Relookup Field
 Contents), and the field stays entered while the step starts, as for
 Insert's commands. The item is enabled in Browse mode when a field of the
-record's own table is entered and no script runs, and only under All
-menu commands. A related field leaves it disabled, because the step
-cannot relook up through a related field. The dialog is titled Relookup
+record's own table is entered and the record has nothing to commit, and
+only under All menu commands. Typing, or changes a script left, leave it
+disabled: FileMaker's command keeps such a record uncommitted, while the
+step commits it first, which would save it past the field's validation
+and save triggers
+([#624](https://github.com/OpenMaker-Dev/openmaker/issues/624)). So do a
+running or paused script (the step's error, a Cancel included, would
+fail a paused script's open transaction) and a hosted edit still being
+prepared. A related field leaves it disabled, because the step cannot
+relook up through a related field. The dialog is titled Relookup
 Field Contents and asks "Look up the values again in all N records of
 the current found set, through the field “Name”?". It has Cancel and OK,
 and OK is the default. That text is OpenMaker's; FileMaker Pro's wording
-is unmeasured (re/auto-entry.md, Lookups). Cancel writes nothing. Unlike
-FileMaker, the step commits the window's record before it writes
-([#624](https://github.com/OpenMaker-Dev/openmaker/issues/624)).
+is unmeasured (re/auto-entry.md, Lookups). Cancel relooks up no record.
 
 **Limits of committing and reverting:**
 - **Keypad Enter and Return.** egui reports both keys as Enter, so the
