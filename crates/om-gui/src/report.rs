@@ -495,8 +495,14 @@ fn text_style(
             if let Some(faces) = ch.faces {
                 // Bold 256, italic 512, underline 1024 and strikethrough 1
                 // ([`decorations`]); word and double underline, case,
-                // super- and subscript and the rest are refused.
-                if faces & !(256 | 512 | UNDERLINE | STRIKETHROUGH) != 0 {
+                // super- and subscript and the rest are refused. Only the
+                // faces the run's mask sets count (a style built without a
+                // mask sets them all).
+                if faces
+                    & ch.face_mask.unwrap_or(u16::MAX)
+                    & !(256 | 512 | UNDERLINE | STRIKETHROUGH)
+                    != 0
+                {
                     return Err(ReportError::unsupported(
                         "Only regular, bold, italic, underlined and struck-through report text \
                          is supported",
@@ -677,9 +683,18 @@ const STRIKETHROUGH: u16 = 1;
 fn decorations(object: &LayoutObject) -> (bool, bool) {
     let faces = (object.rich_text.as_ref())
         .and_then(|rich| rich.character_runs.first())
-        .and_then(|run| run.style.faces)
+        .and_then(|run| Some(run.style.faces? & run.style.face_mask.unwrap_or(u16::MAX)))
         .unwrap_or(0);
     (faces & UNDERLINE != 0, faces & STRIKETHROUGH != 0)
+}
+
+/// `lines` underlined and struck through as `object`'s runs say
+/// ([`decorations`]).
+fn decorate(object: &LayoutObject, lines: &mut [TextLine]) {
+    let (underline, strike) = decorations(object);
+    for line in lines {
+        (line.underline, line.strike) = (underline, strike);
+    }
 }
 
 /// [`prepare_text_in`] for `object`'s text `value`, in the colors of its
@@ -696,10 +711,7 @@ fn prepare_object_text(
     let colors = run_colors(layout, object, value, style, conditions)?;
     let (mut lines, needed, overflowed) =
         prepare_colored_text_in(value, r, style, overflow, colors.as_deref())?;
-    let (underline, strike) = decorations(object);
-    for line in &mut lines {
-        (line.underline, line.strike) = (underline, strike);
-    }
+    decorate(object, &mut lines);
     Ok((lines, needed, overflowed))
 }
 
@@ -1028,6 +1040,7 @@ fn prepare_colored_text_in(
             spans: Vec::new(),
             underline: false,
             strike: false,
+            sides: (left, right),
             clip: (cut || spills).then(|| Rect {
                 top: if cut { r.top + pad[0] } else { r.top },
                 bottom: if cut {
@@ -1134,6 +1147,9 @@ pub(crate) struct TextLine {
     /// drawn as [`Self::decorations`] places them).
     pub underline: bool,
     pub strike: bool,
+    /// The text box's left and right sides, which its strokes stay within
+    /// ([`Self::decorations`]).
+    pub sides: (f64, f64),
     /// The box overflowing text is cut at ([`Overflow::Clip`]): its field's
     /// text box, between the padding and margins above and below, across
     /// the field's width; `None` when the text fits.
@@ -1145,8 +1161,9 @@ impl TextLine {
     /// underline and OS/2 strikeout position and thickness, the position the
     /// stroke's top above the baseline) [I: FileMaker Pro's positions and
     /// thicknesses are unmeasured]. They run under the line's glyphs from
-    /// its start to its last that is not a space: a wrapped line's trailing
-    /// space is not underlined [I].
+    /// its start to its last that is not a space, so a wrapped line's
+    /// trailing space is not underlined [I], and no further than its text
+    /// box's sides.
     pub(crate) fn decorations(&self) -> Vec<(Rect, Color)> {
         let face = self.face.face();
         let unit = self.size / f64::from(face.units_per_em());
@@ -1169,11 +1186,14 @@ impl TextLine {
                 let count = glyphs.len().min(end.saturating_sub(first));
                 first += glyphs.len();
                 let width: f64 = glyphs[..count].iter().map(|g| g.1).sum();
-                if width > 0.0 && thickness > 0.0 {
+                // Within the text box: an advance wider than the box would
+                // carry the stroke into its padding.
+                let (left, right) = (x.max(self.sides.0), (x + width).min(self.sides.1));
+                if right > left && thickness > 0.0 {
                     let rect = Rect {
-                        left: x,
+                        left,
                         top,
-                        right: x + width,
+                        right,
                         bottom: top + thickness,
                         ..Default::default()
                     };
@@ -4187,8 +4207,13 @@ fn file(
         top: shown.as_ref().map_or(top, |icon| icon.bottom + 2.0),
         ..frame.clone()
     };
+    // In the field's faces, as its text style gives it bold and italic.
     let text = match below.height() > 0.0 {
-        true => prepare_text(name, &below, &style)?.0,
+        true => {
+            let mut lines = prepare_text(name, &below, &style)?.0;
+            decorate(object, &mut lines);
+            lines
+        }
         false => Vec::new(),
     };
     Ok((shown, text))
