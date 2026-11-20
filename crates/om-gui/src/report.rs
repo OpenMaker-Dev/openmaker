@@ -1,5 +1,6 @@
 //! Portable vector reports. Pagination is shared with future Preview/printing;
-//! this backend embeds the existing OFL Inter fonts, independently of OS fonts.
+//! this backend embeds the bundled OFL Inter and Liberation Sans fonts,
+//! independently of OS fonts.
 //! Static layout pictures are decoded once per owner and embedded as image
 //! XObjects; nothing else is rasterized.
 //! Unsupported content and text overflow fail before any destination is opened.
@@ -25,6 +26,11 @@ const BOLD: &[u8] = include_bytes!("../assets/fonts/Inter-SemiBold.ttf");
 /// cut where FileMaker's do.
 pub(crate) const SANS: &[u8] = include_bytes!("../assets/fonts/LiberationSans-Regular.ttf");
 pub(crate) const SANS_BOLD: &[u8] = include_bytes!("../assets/fonts/LiberationSans-Bold.ttf");
+/// Liberation Sans Italic and Bold Italic 2.1.5, metric-compatible with
+/// Arial Italic and Arial Bold Italic.
+pub(crate) const SANS_ITALIC: &[u8] = include_bytes!("../assets/fonts/LiberationSans-Italic.ttf");
+pub(crate) const SANS_BOLD_ITALIC: &[u8] =
+    include_bytes!("../assets/fonts/LiberationSans-BoldItalic.ttf");
 
 /// The faces report text is set in.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Hash)]
@@ -34,21 +40,28 @@ pub(crate) enum ReportFace {
     /// Liberation Sans, for Arial and Helvetica.
     Sans,
     SansBold,
+    SansItalic,
+    SansBoldItalic,
 }
 
 impl ReportFace {
-    pub(crate) const ALL: [ReportFace; 4] = [
+    pub(crate) const ALL: [ReportFace; 6] = [
         ReportFace::Inter,
         ReportFace::InterBold,
         ReportFace::Sans,
         ReportFace::SansBold,
+        ReportFace::SansItalic,
+        ReportFace::SansBoldItalic,
     ];
 
     /// The face for text in `style`: Liberation Sans when the style's first
     /// font family is Arial or Helvetica, else Inter; bold from weight 2 or
-    /// 600 and up.
-    fn of(style: &ResolvedStyle) -> Self {
+    /// 600 and up; italic from font-style italic or oblique (2, 3). No
+    /// italic Inter is bundled, so italic text in another family refuses
+    /// rather than print upright.
+    fn of(style: &ResolvedStyle) -> Result<Self, ReportError> {
         let bold = style.font_weight.is_some_and(|w| w == 2 || w >= 600);
+        let italic = matches!(style.font_style, Some(2 | 3));
         let family = style
             .font_family
             .as_deref()
@@ -60,12 +73,19 @@ impl ReportFace {
                     .to_ascii_lowercase()
             });
         let sans = matches!(family.as_deref(), Some("arial" | "helvetica"));
-        match (sans, bold) {
-            (false, false) => ReportFace::Inter,
-            (false, true) => ReportFace::InterBold,
-            (true, false) => ReportFace::Sans,
-            (true, true) => ReportFace::SansBold,
-        }
+        Ok(match (sans, bold, italic) {
+            (false, false, false) => ReportFace::Inter,
+            (false, true, false) => ReportFace::InterBold,
+            (false, _, true) => {
+                return Err(ReportError::unsupported(
+                    "Italic report text is supported only in Arial and Helvetica",
+                ))
+            }
+            (true, false, false) => ReportFace::Sans,
+            (true, true, false) => ReportFace::SansBold,
+            (true, false, true) => ReportFace::SansItalic,
+            (true, true, true) => ReportFace::SansBoldItalic,
+        })
     }
 
     fn index(self) -> usize {
@@ -78,6 +98,8 @@ impl ReportFace {
             ReportFace::InterBold => BOLD,
             ReportFace::Sans => SANS,
             ReportFace::SansBold => SANS_BOLD,
+            ReportFace::SansItalic => SANS_ITALIC,
+            ReportFace::SansBoldItalic => SANS_BOLD_ITALIC,
         }
     }
 
@@ -92,11 +114,13 @@ impl ReportFace {
             ReportFace::InterBold => (b"F2", b"Inter-SemiBold"),
             ReportFace::Sans => (b"F3", b"LiberationSans"),
             ReportFace::SansBold => (b"F4", b"LiberationSans-Bold"),
+            ReportFace::SansItalic => (b"F5", b"LiberationSans-Italic"),
+            ReportFace::SansBoldItalic => (b"F6", b"LiberationSans-BoldItalic"),
         }
     }
 
     pub(crate) fn is_sans(self) -> bool {
-        matches!(self, ReportFace::Sans | ReportFace::SansBold)
+        !matches!(self, ReportFace::Inter | ReportFace::InterBold)
     }
 }
 
@@ -457,19 +481,23 @@ fn text_style(
                 ));
             }
             let ch = &first.style;
+            // The run's own font, as Browse sets it (`rich_text::text_format`):
+            // its face, italic included, is chosen by it.
+            style.font_family = ch.font_family.clone().or(style.font_family);
             style.font_size = ch.font_size.or(style.font_size);
             style.color = ch.color.or(style.color);
             if let Some(faces) = ch.faces {
-                if faces & !256 != 0 {
+                if faces & !(256 | 512) != 0 {
                     return Err(ReportError::unsupported(
-                        "Only regular and bold report text is supported",
+                        "Only regular, bold and italic report text is supported",
                     ));
                 }
                 if ch.face_mask.unwrap_or(u16::MAX) & 256 != 0 {
                     style.font_weight = Some(if faces & 256 != 0 { 700 } else { 400 });
                 }
+                // Italic as font-style italic (2), upright as normal (1).
                 if ch.face_mask.unwrap_or(u16::MAX) & 512 != 0 {
-                    style.font_style = Some(1);
+                    style.font_style = Some(if faces & 512 != 0 { 2 } else { 1 });
                 }
             }
         }
@@ -509,11 +537,6 @@ fn text_style(
         style.color = condition.color.or(style.color);
         style.font_weight = condition.font_weight.or(style.font_weight);
         style.font_style = condition.font_style.or(style.font_style);
-    }
-    if matches!(style.font_style, Some(2 | 3)) {
-        return Err(ReportError::unsupported(
-            "Italic report text is unsupported",
-        ));
     }
     Ok(style)
 }
@@ -649,7 +672,7 @@ fn prepare_text_in(
     if !size.is_finite() || !(1.0..=512.0).contains(&size) {
         return Err(ReportError::unsupported("Invalid report font size"));
     }
-    let report_face = ReportFace::of(style);
+    let report_face = ReportFace::of(style)?;
     let face = report_face.face();
     let unit = size / f64::from(face.units_per_em());
     let ascent = f64::from(face.ascender()) * unit;
@@ -797,6 +820,19 @@ fn prepare_text_in(
                 ))
             }
         };
+        // A glyph whose outline reaches past the text box's sides (an
+        // italic overhang, say), though its advance fits, is cut there, as
+        // Pro clips text to its box.
+        let (left, right) = (r.left + pad[3], (r.right - pad[1]).max(r.left + pad[3]));
+        let mut pen = left + dx;
+        let mut spills = false;
+        for (glyph, advance, _) in &glyphs {
+            if let Some(ink) = face.glyph_bounding_box(ttf_parser::GlyphId(*glyph)) {
+                spills |= pen + f64::from(ink.x_min) * unit < left - 0.01
+                    || pen + f64::from(ink.x_max) * unit > right + 0.01;
+            }
+            pen += advance;
+        }
         output.push(TextLine {
             glyphs,
             x: r.left + pad[3] + dx,
@@ -807,9 +843,19 @@ fn prepare_text_in(
             // Cut at the text box: the field's frame less the padding and
             // text margins above and below. FileMaker Pro 26 keeps a wrapped
             // second line in its PDF's text but shows none of it (#536).
-            clip: cut.then(|| Rect {
-                top: r.top + pad[0],
-                bottom: (r.bottom - pad[2]).max(r.top + pad[0]),
+            // Ink that spills past the box's sides is cut at its sides
+            // (a label's frame less its 1-point inset, layout-model.md 6.5),
+            // and only there: a line that fits keeps the frame's height, so
+            // an accent above the box is not cut for a bearing at its side.
+            clip: (cut || spills).then(|| Rect {
+                top: if cut { r.top + pad[0] } else { r.top },
+                bottom: if cut {
+                    (r.bottom - pad[2]).max(r.top + pad[0])
+                } else {
+                    r.bottom
+                },
+                left: if spills { left } else { r.left },
+                right: if spills { right } else { r.right },
                 ..r.clone()
             }),
         });
@@ -847,16 +893,20 @@ pub(crate) fn embed(pdf: &mut Pdf, face_id: ReportFace, base: i32, map: &BTreeMa
     );
     cid.finish();
     let bbox = face.global_bounding_box();
+    let mut flags = FontFlags::NON_SYMBOLIC;
+    if face.is_italic() {
+        flags |= FontFlags::ITALIC;
+    }
     pdf.font_descriptor(id(2))
         .name(name)
-        .flags(FontFlags::NON_SYMBOLIC)
+        .flags(flags)
         .bbox(pdf_writer::Rect::new(
             f32::from(bbox.x_min) * scale,
             f32::from(bbox.y_min) * scale,
             f32::from(bbox.x_max) * scale,
             f32::from(bbox.y_max) * scale,
         ))
-        .italic_angle(0.0)
+        .italic_angle(face.italic_angle())
         .ascent(f32::from(face.ascender()) * scale)
         .descent(f32::from(face.descender()) * scale)
         .cap_height(f32::from(face.capital_height().unwrap_or(face.ascender())) * scale)
@@ -2039,11 +2089,6 @@ fn tab_headers(
         text.color = text.color.or(control_text.color);
         text.text_align = Some(2);
         text.vertical_align = Some(1);
-        if matches!(text.font_style, Some(2 | 3)) {
-            return Err(ReportError::unsupported(
-                "Italic report text is unsupported",
-            ));
-        }
         let label = panel.text.as_deref().unwrap_or("");
         // Rounded as the panel's style rounds it, as Browse draws a tab.
         let radius = corner_radius(
@@ -3908,7 +3953,7 @@ fn image_name(index: usize) -> String {
 fn encode_page(
     scene: &ReportPage,
     h: f64,
-    maps: &mut [BTreeMap<u16, char>; 4],
+    maps: &mut [BTreeMap<u16, char>; ReportFace::ALL.len()],
     images: &mut Vec<Arc<Picture>>,
     alphas: &mut BTreeSet<u8>,
 ) -> Result<Vec<u8>, ReportError> {
@@ -4142,7 +4187,7 @@ pub fn render_pdf_viewed(
         }
     }
     catalog.finish();
-    let mut maps: [BTreeMap<u16, char>; 4] = Default::default();
+    let mut maps: [BTreeMap<u16, char>; ReportFace::ALL.len()] = Default::default();
     // Every page decodes and embeds a library picture once, by document.
     let pictures = Pictures::default();
     let mut images = Vec::new();
@@ -4188,6 +4233,8 @@ pub fn render_pdf_viewed(
         ReportFace::InterBold => 9,
         ReportFace::Sans => after_alphas,
         ReportFace::SansBold => after_alphas + 6,
+        ReportFace::SansItalic => after_alphas + 12,
+        ReportFace::SansBoldItalic => after_alphas + 18,
     };
     let fonts_used: Vec<ReportFace> = ReportFace::ALL
         .into_iter()
