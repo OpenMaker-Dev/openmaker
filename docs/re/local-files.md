@@ -405,7 +405,29 @@ its old password is tested, as FileMaker's check gives it; an account that may n
 gets `SetPassword`'s checks (206, 208, 209); more than 100 characters is
 11. A new password outside ASCII is hashed after `HashDecompose` (2.1), as
 FileMaker Pro's own accounts are. It does not create the empty `5d`
-subtree.
+subtree. Before it rewrites an account, it recomputes the stored `04`
+from the account's current members; when the two differ nothing is
+written (3 for a script step; OpenMaker's choice): FileMaker Pro would
+refuse a file whose checksum OpenMaker got wrong (808), so an account it
+does not read as FileMaker does is left alone. An account with no `04`
+is given one.
+
+OpenMaker Server's scripts run Change Password through the same
+operation, as `DoChangePassword` does. The target is the account the
+session logged in with, found by its record key so that a rename since
+cannot redirect it. Both passwords are cut to 100 UTF-16 code units, and
+[Guest] or an account of another kind gives 3. A step running with full
+access counts as a caller that may manage the account, so it skips
+`SetPassword`'s set checks [I: Claris documents that a script granted
+full access may change a password the set does not let the account
+change]. The step's dialog is not shown on a server, so with it the step
+gives 3 [I: FileMaker Server's handling is not measured]. While it
+writes, the script's session holds a write lock on `[23, 1]`, as Manage
+Security does, and another user's lock gives 310 [I: Reset Account
+Password's observed code]. The commit stamps the account and the
+catalog's index `[23, 1, 1]` (schema-path.md 8.1), so a client's cached
+copy of the catalog shows as stale, and other clients are told the
+catalog changed.
 
 When a local file's Login is refused with 211, the desktop asks for a new
 password in a Change Password dialog (New Password, Confirm New Password)

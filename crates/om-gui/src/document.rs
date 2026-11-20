@@ -2646,6 +2646,7 @@ fn find_field(
     // or a radio button sets it, a checkbox adds or removes its line.
     if let Some(choices) = choices.as_ref() {
         let radio = display == 4;
+        let single = field.is_some_and(om_layout::FieldObject::single_unlabeled_checkbox);
         let shown = if display == choice::POP_UP_MENU {
             let empty = criterion.is_empty().then_some(placeholder).flatten();
             let text = field_text_box(
@@ -2676,23 +2677,29 @@ fn find_field(
             )
         } else {
             let styles = options::styles(&state.layout_cache, layout, object, &[], false);
+            let single_items = single.then(|| options::single_item(choices));
             options::show(
                 ui,
                 id,
                 rect,
                 &criterion,
-                &choices.items,
+                single_items.as_deref().unwrap_or(&choices.items),
                 radio,
                 &styles,
                 enterable,
                 true,
                 &name,
+                single,
             )
         };
         let picked = match shown.input {
             Some(options::Input::Open) => {
                 egui::Popup::open_id(ui.ctx(), popup::menu_id(id));
                 None
+            }
+            // A single checkbox's criterion is its first value or none.
+            Some(options::Input::Click { .. } | options::Input::Space(_)) if single => {
+                choice::single_checkbox_criterion(choices, &criterion)
             }
             Some(options::Input::Click { index, shift }) => {
                 choices.items.get(index).and_then(|item| {
@@ -5915,6 +5922,10 @@ fn paint_related_option_set(
         false => Default::default(),
     };
     let items = &choices.items;
+    let single = object
+        .field_obj
+        .as_ref()
+        .is_some_and(om_layout::FieldObject::single_unlabeled_checkbox);
     // Not in a row shown while its portal's records are read again.
     let enabled = !state.pending && !state.clicks_held && !state.painting_stale;
     let label = target.name.as_str();
@@ -5961,8 +5972,19 @@ fn paint_related_option_set(
     } else {
         // A related field's set keeps its normal state (#753's first slice).
         let styles = options::styles(&state.layout_cache, layout, object, set.conditions, false);
+        let single_items = single.then(|| options::single_item(&choices));
         options::show(
-            ui, id, set.rect, &value, items, radio, &styles, editable, enabled, label,
+            ui,
+            id,
+            set.rect,
+            &value,
+            single_items.as_deref().unwrap_or(items),
+            radio,
+            &styles,
+            editable,
+            enabled,
+            label,
+            single,
         )
     };
     if let Some(refusal) = &refusal {
@@ -6009,6 +6031,15 @@ fn paint_related_option_set(
             response.request_focus();
             egui::Popup::open_id(ui.ctx(), popup::menu_id(id));
             None
+        }
+        options::Input::Click { .. } | options::Input::Space(_) if single => {
+            match choice::single_checkbox(&choices, &value) {
+                Ok(value) => value,
+                Err(error) => {
+                    state.choice_refusal = Some(error);
+                    None
+                }
+            }
         }
         options::Input::Click { index, shift } => items.get(index).and_then(|item| {
             if pop_up {
@@ -7187,6 +7218,10 @@ fn paint_option_set(
         false => Default::default(),
     };
     let items = &choices.items;
+    let single = object
+        .field_obj
+        .as_ref()
+        .is_some_and(om_layout::FieldObject::single_unlabeled_checkbox);
     let enabled = !state.pending && !state.clicks_held;
     let label = name.map_or("", String::as_str);
     let shown = if pop_up {
@@ -7223,8 +7258,19 @@ fn paint_option_set(
             label,
         )
     } else {
+        let single_items = single.then(|| options::single_item(&choices));
         options::show(
-            ui, id, set.rect, set.value, items, radio, &styles, editable, enabled, label,
+            ui,
+            id,
+            set.rect,
+            set.value,
+            single_items.as_deref().unwrap_or(items),
+            radio,
+            &styles,
+            editable,
+            enabled,
+            label,
+            single,
         )
     };
     if let (Some(refusal), Some(_)) = (&refusal, name) {
@@ -7417,6 +7463,10 @@ fn apply_option_wait(
     let choices = set.items.shown();
     let choices = &*choices;
     let items = &choices.items;
+    let single = object
+        .field_obj
+        .as_ref()
+        .is_some_and(om_layout::FieldObject::single_unlabeled_checkbox);
     let display = object.field_obj.as_ref().map(|field| field.display_type);
     let is_drop_down = display == Some(choice::DROP_DOWN_LIST);
     let is_calendar = display == Some(calendar::DROP_DOWN_CALENDAR);
@@ -7458,6 +7508,21 @@ fn apply_option_wait(
                 .ok()
                 .map(|edit| edit.value)
         }
+        // A single checkbox toggles between the list's first and second
+        // values (`choice::single_checkbox`), by a click or Space; a letter
+        // a keystroke trigger let through picks nothing in it.
+        OptionChange::Pick { .. } if single => choice::single_checkbox(choices, &buffer.value)
+            .unwrap_or_else(|error| {
+                state.choice_refusal = Some(error);
+                None
+            }),
+        OptionChange::Key(key) if single => match key.as_str() {
+            " " => choice::single_checkbox(choices, &buffer.value).unwrap_or_else(|error| {
+                state.choice_refusal = Some(error);
+                None
+            }),
+            _ => None,
+        },
         OptionChange::Pick { value, shift } => items
             .iter()
             .position(|item| item.value == value)
