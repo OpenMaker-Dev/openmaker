@@ -6892,7 +6892,18 @@ fn field_galley(
     let mut style = style.clone();
     style.text_transform = None;
     let job = ui.fonts_mut(|fonts| rich_text::layout_job(fonts, text, &style, None, wrap_width));
-    layer_galley(ui, job)
+    let galley = layer_galley(ui, job.clone());
+    // Rows snapped to whole pixels at a small zoom and font can land on one
+    // another, where the caret could not move between them: those lines
+    // keep their unzoomed raster.
+    if galley
+        .rows
+        .windows(2)
+        .any(|rows| rows[1].pos.y <= rows[0].pos.y)
+    {
+        return ui.fonts_mut(|fonts| rich_text::layout_galley(fonts, job));
+    }
+    galley
 }
 
 /// A field object's editor in Browse over `rect`: the field's font,
@@ -7073,11 +7084,14 @@ fn lines_editor(
     // brings the insertion point into view itself: egui asks for that only
     // as the text or the selection changes, which happened, if at all, in
     // a frame without the scroll area.
+    // A new zoom counts as a new scroll area: the rows' heights change with
+    // their raster, the area's offset does not.
     let scrolled = id.with("lines scrolled");
     let frame_nr = ui.ctx().cumulative_frame_nr();
+    let scale = layer_scale(ui);
     let continued = ui
-        .data(|data| data.get_temp::<u64>(scrolled))
-        .is_some_and(|at| at + 1 == frame_nr);
+        .data(|data| data.get_temp::<(u64, f32)>(scrolled))
+        .is_some_and(|(at, at_scale)| at + 1 == frame_nr && at_scale == scale);
     let response = if fits {
         // As the one-line editor sits: the field's own rect.
         ui.add_sized(inner.size(), edit)
@@ -7110,7 +7124,7 @@ fn lines_editor(
             .inner
     };
     if !fits && response.has_focus() {
-        ui.data_mut(|data| data.insert_temp(scrolled, frame_nr));
+        ui.data_mut(|data| data.insert_temp(scrolled, (frame_nr, scale)));
     }
     // The editor locks its own keys while it has the focus; the document's
     // Tab stays locked from egui's traversal as on one line.

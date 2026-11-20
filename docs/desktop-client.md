@@ -884,7 +884,10 @@ way; the wheel and the scroll bars still scroll them.
 A field being typed in lays its text out at the zoom as well, in Form, List
 and Find (`field_galley`, and the single-line editor's layouter), so its text
 stays as sharp as the field's text at rest; an empty editor's placeholder is
-egui's.
+egui's. Text `scaled_text` cannot rebuild (justified, elided or with leading
+space) keeps the unzoomed raster in the editor too, as do lines that a small
+zoom and font would put on one pixel row. A new zoom brings a scrolling
+field's insertion point back into view.
 
 Limits: Layout mode and generic Form fallbacks are not zoomed (Preview scales its paper:
 [preview.md](preview.md)), and Set Zoom Level's lock option is not enforced
