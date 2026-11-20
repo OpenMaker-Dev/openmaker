@@ -941,9 +941,27 @@ fn send_mail_reads_the_message_and_its_options_from_filemakers_slots() {
     let mut smtp = mail.clone();
     smtp.set_number_bool(4, Some(true));
     smtp.set_flag(flag::NO_INTERACT, true);
-    h.add_script(0, script(1, "Mail", vec![mail, smtp]));
+    // What OpenMaker cannot read is 3, no message sent: an SMTP selector
+    // of a width no number has, and attachments flagged (`kFilePath`)
+    // with no list.
+    let mut unreadable = mail.clone();
+    unreadable.set_slot_child(4, 0x03, Some(OwnedNode::leaf([0x03], [1, 0, 0])));
+    let mut attached = mail.clone();
+    attached.set_flag(flag::FILE_PATH, true);
+    let steps = vec![
+        on(86, true),
+        mail,
+        smtp,
+        unreadable,
+        set_var(&h, "$$unreadable", "Get ( LastError )"),
+        attached,
+        set_var(&h, "$$attached", "Get ( LastError )"),
+    ];
+    h.add_script(0, script(1, "Mail", steps));
     let mut rt = Runtime::default();
     run(&mut h, &mut rt, 1);
+    assert_eq!(g(&mut rt, "$$unreadable"), "3");
+    assert_eq!(g(&mut rt, "$$attached"), "3");
     assert_eq!(
         h.mails,
         [

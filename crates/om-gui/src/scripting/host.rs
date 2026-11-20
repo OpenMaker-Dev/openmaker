@@ -134,6 +134,7 @@ pub(crate) enum Act {
 
 mod containers;
 mod databases;
+mod mail;
 mod page_setup;
 mod pdf;
 mod pdf_text;
@@ -5749,11 +5750,14 @@ impl Network for WorkerHost<'_> {
     }
 
     /// Send Mail through the email client, with dialog: a new message in
-    /// the system's mail client, opened as a `mailto:` URL (#89), for the
-    /// user to look over and send. What a `mailto:` URL cannot carry is 3,
-    /// as FileMaker fails a step it cannot run: SMTP and OAuth, no dialog
-    /// (sending unseen), attachments, one email per record, and addresses
-    /// collected across a found set of more than one record.
+    /// the system's mail client, handed over as a `mailto:` URL to the
+    /// handler the system registers for `mailto:` ([`mail::open_mailto`]),
+    /// for the user to look over and send. What a `mailto:` URL cannot
+    /// carry is 3, as FileMaker fails a step it cannot run: SMTP and OAuth,
+    /// no dialog (sending unseen), attachments, one email per record, and
+    /// addresses collected across a found set of more than one record. So
+    /// are an address whose quote does not end, a message too long for the
+    /// URL, and a handler that does not take it (OpenMaker's choices).
     fn send_mail(&mut self, mail: &om_data::runtime::Mail) -> HostResult {
         let client = mail.via == om_data::runtime::MailVia::Client;
         if !client
@@ -5769,9 +5773,13 @@ impl Network for WorkerHost<'_> {
                 return Err(HostError::Unsupported);
             }
         }
-        let url = om_url::mailto(&mail.to, &mail.cc, &mail.bcc, &mail.subject, &mail.message);
-        self.send(ScriptEvent::OpenUrl(url));
-        Ok(())
+        let unavailable = |host: &mut Self, message: String| {
+            host.s.failure = Some(message);
+            HostError::Error(ErrorCode::UNAVAILABLE)
+        };
+        let url = om_url::mailto(&mail.to, &mail.cc, &mail.bcc, &mail.subject, &mail.message)
+            .map_err(|e| unavailable(self, e.to_string()))?;
+        mail::open_mailto(&url).map_err(|message| unavailable(self, message))
     }
 
     /// Insert from URL (`om_url`): into a container field as container
