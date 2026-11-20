@@ -2357,9 +2357,10 @@ impl Store {
             let Some(data_type) = self.indexable(&table, &field, kind) else {
                 continue;
             };
-            // Read in English for the query that built it, an index in a
-            // language whose keys this server does not build is not stored
-            // (#159): the next query builds it again.
+            // A query builds no index in a language whose keys this server
+            // does not build while a record holds text there (#572); one
+            // built while none did, a record of which has gained text since,
+            // is not stored (#159), and the next query is refused.
             let Some(form) = self.written_form(&table, &field, data_type) else {
                 continue;
             };
