@@ -961,8 +961,10 @@ impl DocumentState {
     }
 
     /// Keep field-editing commands in the field. Revert also takes the
-    /// active field so its script step can run the discard triggers.
-    /// Other menu commands surrender focus and wait for the exit triggers.
+    /// active field so its script step can run the discard triggers, and
+    /// Relookup Field Contents as its target (Claris's help: select the
+    /// match field, then choose the command). Other menu commands
+    /// surrender focus and wait for the exit triggers.
     pub(crate) fn menu_leaves_field(&mut self, ui: &Ui, chosen: &mut Vec<Action>) {
         if chosen.is_empty() {
             return;
@@ -990,7 +992,8 @@ impl DocumentState {
                                 | steps::INSERT_CURRENT_USER_NAME
                                 | steps::INSERT_FROM_INDEX
                                 | steps::INSERT_FROM_LAST_VISITED
-                                | om_data::scripts::revert_record::STEP_ID,
+                                | om_data::scripts::revert_record::STEP_ID
+                                | om_data::scripts::relookup::STEP_ID,
                             _
                         )
                 ))
@@ -1032,6 +1035,10 @@ impl DocumentState {
                         | Action::DiscardEntryCandidates
                 ) {
                     cancellation.push(action);
+                } else if matches!(action, Action::Step(om_data::scripts::relookup::STEP_ID, _)) {
+                    // Relookup acts on the field entered when it was
+                    // chosen, and the record had something to commit: not
+                    // held for later, when the focus may have moved.
                 } else {
                     retained.push(action);
                 }
@@ -5298,8 +5305,27 @@ fn paint_object_repetition(
         ObjectKind::Field => {
             let (mut value, mut rich_value, data) =
                 field_content(session, document, calc, object, record_index, portal);
-            let targeted_value =
-                portal.is_none() && calc.is_some_and(|calc| calc.refreshed_value(object.id));
+            // The value the editor begins from: a Refresh Object's, or a
+            // global's, the session's value, as calculations read it, not
+            // the one the record's page holds.
+            let targeted_value = portal.is_none()
+                && calc.is_some_and(|calc| {
+                    calc.refreshed_value(object.id)
+                        || object.field_spec().is_some_and(|spec| calc.is_global(spec))
+                });
+            // A global whose session value is being read again (a script
+            // set it) shows the value from before: its editor takes no
+            // typing until the value is in, so that no edit begins from the
+            // old one. An edit begun before keeps its draft
+            // (`FieldBuffer::refresh_targeted`).
+            let global_pending = portal.is_none()
+                && calc.zip(object.field_spec()).is_some_and(|(calc, spec)| {
+                    calc.is_global(spec)
+                        && session
+                            .record_at(record_index)
+                            .and_then(|(_, record)| u64::try_from(record.id).ok())
+                            .is_some_and(|record| calc.value_pending(object.id, spec, record, None))
+                });
             // A container's draft is a library reference, never shown: the
             // calculations read its file name through the drafts.
             let container =
@@ -5858,7 +5884,7 @@ fn paint_object_repetition(
                     let editor = ui.scope_id().with((layout.id, object.id, record.id));
                     return_goes_on(ui, &mut state.tab_held, object, editor);
                     let cache = &state.layout_cache;
-                    let interactive = !state.pending;
+                    let interactive = !state.pending && !global_pending;
                     let (response, changed) =
                         guarded_editor(ui, editor, buffer, refusal, actions, |ui, buffer| {
                             field_editor(

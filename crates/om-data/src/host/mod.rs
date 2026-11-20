@@ -75,7 +75,7 @@ pub use schema::{
     SummaryDef, SummaryKind, TableDef,
 };
 pub use session::{AccountInfo, OpenFile, Privileges, SessionInfo, WindowMode};
-pub use sort::sort_records;
+pub use sort::{sort_records, SortNesting};
 pub use summary::{FoundGroups, SummaryCache};
 pub use window::{Frame, WindowInfo};
 

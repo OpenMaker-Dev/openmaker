@@ -1811,6 +1811,32 @@ fn record_capabilities_defer_the_files_only_a_writes_rules_read() {
         CALCULATED_VALUE,
         0,
     );
+    const GLOBAL_TEXT: u64 = 92;
+    const GLOBAL_NUMBER: u64 = 93;
+    const GLOBAL_STORAGE: u32 = 0x1_0000;
+    const NUMERIC_ONLY: u32 = 0x1000;
+    fixture::add_field(
+        &mut root,
+        TABLE,
+        GLOBAL_TEXT,
+        "Global text",
+        1,
+        1,
+        0,
+        GLOBAL_STORAGE,
+        0,
+    );
+    fixture::add_field(
+        &mut root,
+        TABLE,
+        GLOBAL_NUMBER,
+        "Global number",
+        1,
+        2,
+        0,
+        GLOBAL_STORAGE,
+        NUMERIC_ONLY,
+    );
     let mut names = fixture::names();
     names.add_occurrence(REMOTE, "Remote Tasks", TABLE);
     names.add_field(TABLE, COPIED, "Copied");
@@ -1842,6 +1868,8 @@ fn record_capabilities_defer_the_files_only_a_writes_rules_read() {
         editable.contains("Copied") && editable.contains("Name"),
         "{editable:?}"
     );
+    assert!(editable.contains("Global text"), "{editable:?}");
+    assert!(editable.contains("Global number"), "{editable:?}");
     assert!(provider.calc_schema().unwrap().unwrap().is_pending(REMOTE));
     assert_eq!(
         host.captures.opens_and_logins().0.get("Related.fmp12"),

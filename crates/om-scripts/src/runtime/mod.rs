@@ -22,6 +22,7 @@
 
 mod calc;
 pub mod data_files;
+mod debug;
 pub mod dynapdf;
 pub mod dynapdf_text;
 mod error;
@@ -43,6 +44,7 @@ use om_formula::Expr;
 
 pub use crate::catalog::Client;
 pub use calc::selector;
+pub use debug::{DebugCommand, DebugFrame, DebugStop};
 pub use error::{confirm_alert, map_error, never_suppressed, ErrorCode};
 pub use host::{
     serial_text, Accounts, AlertChoice, Arg, Bar, Bounds, Clipboard, CommitOptions, CustomDialog,
@@ -222,6 +224,9 @@ pub enum RunState {
     Waiting,
     /// A script is paused; [`Runtime::resume`] continues it.
     Paused { seconds: Option<f64> },
+    /// The Script Debugger stopped the scripts before a step;
+    /// [`Runtime::debug`] continues them (script-runtime.md 6.4).
+    Debugger(DebugStop),
     /// The time slice ran out; run again.
     Yielded,
     /// The runtime halted every script.
@@ -315,14 +320,22 @@ struct TriggerFrame {
     action: Option<u64>,
     /// The step whose event the trigger holds: it runs again when the
     /// trigger lets the event happen (3000, script-runtime.md 1.7, 13.17).
-    retry: Option<Box<ScriptStep>>,
+    retry: Option<Box<Retry>>,
+}
+
+/// A step to run again when its trigger lets the event happen, and the
+/// frame that ran it with whether the Script Debugger shows that frame
+/// (the step's error is that frame's).
+struct Retry {
+    step: ScriptStep,
+    owner: Option<(u64, bool)>,
 }
 
 /// A trigger action waiting for `DoTriggerAction`, with the step to run
 /// again when it proceeds.
 struct PendingAction {
     action: TriggerAction,
-    retry: Option<Box<ScriptStep>>,
+    retry: Option<Box<Retry>>,
 }
 
 /// A trigger whose script is called: its frame, not pushed yet.
@@ -352,6 +365,9 @@ struct Frame {
     parent_full_access: bool,
     /// Paused by Pause/Resume Script, a pausing step or a Pause queue mode.
     paused: Option<Option<f64>>,
+    /// The Script Debugger may stop in this script and show its steps
+    /// ([`ScriptHost::script_debuggable`]).
+    debuggable: bool,
 }
 
 impl Frame {
@@ -456,6 +472,12 @@ pub struct Runtime {
     next_frame: u64,
     /// Frames that have not started yet.
     unstarted: std::collections::HashSet<u64>,
+    /// Frames queued below the running ones (`QueueScript`'s
+    /// queueAtBottom), until they start.
+    queued: std::collections::HashSet<u64>,
+    /// The frame whose step runs or last ran, and whether the Script
+    /// Debugger shows it: a failed step pauses only a shown script.
+    step_frame: Option<(u64, bool)>,
     globals: HashMap<FileId, Variables>,
     /// `$` variables outside any script (script level 0).
     level0: Variables,
@@ -501,6 +523,8 @@ pub struct Runtime {
     memory_checks: u64,
     stopped: Option<Stop>,
     exprs: HashMap<Vec<u8>, Arc<Expr>>,
+    /// The Script Debugger, while it is open.
+    debugger: Option<debug::Debugging>,
 }
 
 impl Default for Runtime {
@@ -521,6 +545,8 @@ impl Runtime {
             stack: Vec::new(),
             next_frame: 1,
             unstarted: Default::default(),
+            queued: Default::default(),
+            step_frame: None,
             globals: HashMap::new(),
             level0: Variables::new(),
             last_error: ErrorCode::NONE,
@@ -552,6 +578,7 @@ impl Runtime {
             memory_checks: 0,
             stopped: None,
             exprs: HashMap::new(),
+            debugger: None,
         }
     }
 
@@ -931,8 +958,10 @@ impl Runtime {
     /// connection is gone): no transaction is reverted and no trigger
     /// action is performed. The runtime states return to their defaults.
     pub fn clear(&mut self) {
+        self.debug_reset();
         self.stack.clear();
         self.unstarted.clear();
+        self.queued.clear();
         self.pending = None;
         self.transaction = None;
         self.trigger_actions.clear();
@@ -1034,8 +1063,13 @@ impl Runtime {
                 self.halt_script(host);
                 continue;
             }
+            if let Some(stop) = self.debug_check() {
+                return RunState::Debugger(stop);
+            }
             host.before_step();
-            if self.next_step(host) {
+            let waiting = self.next_step(host);
+            self.debug_stepped();
+            if waiting {
                 return RunState::Waiting;
             }
             self.after_step(host);
@@ -1057,7 +1091,7 @@ impl Runtime {
     fn do_trigger_actions(&mut self, host: &mut dyn ScriptHost) {
         for pending in std::mem::take(&mut self.trigger_actions) {
             let outcome = host.trigger_action(&pending.action);
-            let Some(step) = pending.retry.filter(|_| pending.action.proceed) else {
+            let Some(retry) = pending.retry.filter(|_| pending.action.proceed) else {
                 continue;
             };
             if self.stack.is_empty() {
@@ -1066,7 +1100,8 @@ impl Runtime {
             if self.trace.is_some() {
                 self.step_context = Some(self.trace_context());
             }
-            self.finish_step(host, &step, Exec::from_action(outcome));
+            self.step_frame = retry.owner;
+            self.finish_step(host, &retry.step, Exec::from_action(outcome));
         }
     }
 
@@ -1090,7 +1125,10 @@ impl Runtime {
                 Ok(mut c) => {
                     let first = exec.error != ErrorCode::RETRY;
                     if let (true, true, Some(t)) = (holds_event, first, c.frame.trigger.as_mut()) {
-                        t.retry = Some(Box::new(step.clone()));
+                        t.retry = Some(Box::new(Retry {
+                            step: step.clone(),
+                            owner: self.step_frame,
+                        }));
                         exec = Exec::error(ErrorCode::RETRY);
                     }
                     called.push(c);
@@ -1121,6 +1159,7 @@ impl Runtime {
             return false;
         };
         if self.unstarted.remove(&frame.id) {
+            self.queued.remove(&frame.id);
             if let Some(window) = frame.window {
                 if let Err(failure) = host.use_window(window) {
                     // A queued owner's window can close before its first
@@ -1135,6 +1174,10 @@ impl Runtime {
                 }
             }
         }
+        let owner = (
+            frame.id,
+            frame.debuggable && matches!(frame.kind, FrameKind::Script { .. }),
+        );
         let (step, full_access) = match &mut frame.kind {
             FrameKind::Script { script, index, .. } => {
                 *index += 1;
@@ -1162,6 +1205,7 @@ impl Runtime {
                 ((**step).clone(), false)
             }
         };
+        self.step_frame = Some(owner);
         if host.window_mode() == Mode::Layout && host.exit_layout_mode().is_err() {
             self.exit_frame(host, true);
             return false;
@@ -1234,6 +1278,14 @@ impl Runtime {
 
     fn post_step_cleanup(&mut self, host: &mut dyn ScriptHost, step: &ScriptStep, exec: Exec) {
         self.last_executed = step.id();
+        // Pause on error: an error the step stores or reports, including a
+        // failed Commit Transaction, which stores its own (`handled`).
+        if exec.error.is_error()
+            && exec.error != ErrorCode::RETRY
+            && (exec.handled || !exec.control)
+        {
+            self.debug_error(exec.error);
+        }
         if exec.unsupported && self.options.stop_on_unsupported {
             let location = self.location(step);
             self.set_last_error(ErrorCode::UNAVAILABLE, false);
@@ -1425,6 +1477,7 @@ impl Runtime {
             full_access: false,
             parent_full_access: false,
             paused: None,
+            debuggable: false,
         }
     }
 
@@ -1464,6 +1517,7 @@ impl Runtime {
         );
         frame.full_access = access.full_access;
         frame.parent_full_access = parent_full_access;
+        frame.debuggable = host.script_debuggable(file, script);
         Ok(frame)
     }
 
@@ -1499,6 +1553,7 @@ impl Runtime {
             }
             self.stack.push(frame);
         } else {
+            self.queued.insert(frame.id);
             self.stack.insert(0, frame);
         }
     }
@@ -1564,6 +1619,7 @@ impl Runtime {
         }
         let frame = self.stack.pop().expect("frame");
         self.unstarted.remove(&frame.id);
+        self.queued.remove(&frame.id);
         if frame.full_access {
             host.set_full_access(frame.file, false);
         }
@@ -1588,6 +1644,7 @@ impl Runtime {
     /// `HaltScript` (script-runtime.md 3.5): reset the runtime states,
     /// revert an open transaction, clear the stack and queue.
     fn halt_script(&mut self, host: &mut dyn ScriptHost) {
+        self.debug_reset();
         self.allow_abort = true;
         self.capture = false;
         self.animation = false;
@@ -1617,6 +1674,7 @@ impl Runtime {
             }
         }
         self.unstarted.clear();
+        self.queued.clear();
         self.pending = None;
     }
 

@@ -1296,6 +1296,35 @@ fn a_step_budget_stops_endless_loops() {
 }
 
 #[test]
+fn go_to_related_record_takes_its_table_by_calculation() {
+    // FileMaker Pro 26.1's "Table by Calculation": `0x400` and the
+    // occurrence's name in calculation slot 8 (script-steps.md 12.4).
+    let mut h = host();
+    let mut by_name = ScriptStep::new(74);
+    by_name.set_flag(flag::OPTION3, true);
+    by_name.set_calculation(8, Some(&calc(&h, "\"Peo\" & \"ple\"")));
+    let mut missing = by_name.clone();
+    missing.set_calculation(8, Some(&calc(&h, "\"Nowhere\"")));
+    let steps = vec![
+        on(86, true),
+        by_name,
+        missing,
+        set_var(&h, "$$e", "Get ( LastError )"),
+    ];
+    h.add_script(0, script(1, "Related", steps));
+    let mut rt = Runtime::default();
+    run(&mut h, &mut rt, 1);
+    let calls: Vec<_> = h
+        .calls
+        .iter()
+        .filter(|c| c.starts_with("go_to_related_record"))
+        .collect();
+    assert_eq!(calls, [&format!("go_to_related_record Some({PEOPLE})")]);
+    // A name no occurrence has: 106, the host not asked.
+    assert_eq!(g(&mut rt, "$$e"), "106");
+}
+
+#[test]
 fn go_to_list_of_records_reads_filemaker_slots() {
     // #189: the ids are calculation slot 7, and `kTurnOn` asks for the new
     // window named by slot 0, which Pro keeps when New Window is turned
@@ -2097,4 +2126,395 @@ fn huge_variable_repetitions_stay_distinct() {
     let mut rt = Runtime::default();
     run(&mut h, &mut rt, 1);
     assert_eq!(g(&mut rt, "$$x"), "1|2");
+}
+
+// ----- the Script Debugger (script-runtime.md 6.4) ----------------------------
+
+fn breakpoint(mut step: ScriptStep) -> ScriptStep {
+    step.set_flag(flag::BREAKPOINT, true);
+    step
+}
+
+/// The Call Stack: each script's name and step, the innermost last.
+fn call_stack(rt: &Runtime) -> Vec<(String, Option<usize>)> {
+    rt.debug_stack()
+        .into_iter()
+        .map(|frame| (frame.name, frame.step))
+        .collect()
+}
+
+fn at(frames: &[(&str, Option<usize>)]) -> Vec<(String, Option<usize>)> {
+    frames.iter().map(|&(n, s)| (n.to_owned(), s)).collect()
+}
+
+/// Continue the stopped scripts with `command` until the debugger stops
+/// them again or they end.
+fn debug(h: &mut MemoryScriptHost, rt: &mut Runtime, command: DebugCommand) -> RunState {
+    assert!(rt.debug(command), "not stopped");
+    rt.run(h)
+}
+
+#[test]
+fn the_debugger_steps_over_into_and_out_and_stops_at_breakpoints() {
+    let mut h = host();
+    let sub = vec![set_var(&h, "$$s", "1"), breakpoint(set_var(&h, "$$t", "2"))];
+    h.add_script(0, script(2, "Sub", sub));
+    let main = vec![
+        set_var(&h, "$$a", "1"),
+        perform(2),
+        breakpoint(set_var(&h, "$$b", "2")),
+        set_var(&h, "$$c", "3"),
+    ];
+    h.add_script(0, script(1, "Main", main));
+    let mut rt = Runtime::default();
+    rt.start_debugging();
+    rt.perform_script(&mut h, ScriptCall::new(0, 1))
+        .expect("starts");
+    // A script started with the debugger open stops before its first step,
+    // and stays stopped until it is continued.
+    let started = RunState::Debugger(DebugStop::Started);
+    assert_eq!(rt.run(&mut h), started);
+    assert_eq!(rt.run(&mut h), started);
+    assert_eq!(call_stack(&rt), at(&[("Main", Some(0))]));
+    assert_eq!(global(&mut rt, "$$a"), None);
+
+    let stepped = RunState::Debugger(DebugStop::Stepped);
+    assert_eq!(debug(&mut h, &mut rt, DebugCommand::StepOver), stepped);
+    assert_eq!(call_stack(&rt), at(&[("Main", Some(1))]));
+    assert_eq!(g(&mut rt, "$$a"), "1");
+    // Step Into the Perform Script: the sub-script's first step.
+    assert_eq!(debug(&mut h, &mut rt, DebugCommand::StepInto), stepped);
+    assert_eq!(call_stack(&rt), at(&[("Main", Some(1)), ("Sub", Some(0))]));
+    // Step Out stops at a breakpoint on its way.
+    let breakpoint = RunState::Debugger(DebugStop::Breakpoint);
+    assert_eq!(debug(&mut h, &mut rt, DebugCommand::StepOut), breakpoint);
+    assert_eq!(call_stack(&rt), at(&[("Main", Some(1)), ("Sub", Some(1))]));
+    // From the breakpoint it runs on, and stops in the caller after the
+    // Perform Script.
+    assert_eq!(debug(&mut h, &mut rt, DebugCommand::StepOut), stepped);
+    assert_eq!(call_stack(&rt), at(&[("Main", Some(2))]));
+    assert_eq!(g(&mut rt, "$$t"), "2");
+    // Run continues past the breakpoint it is stopped at, to the end.
+    assert_eq!(debug(&mut h, &mut rt, DebugCommand::Run), RunState::Idle);
+    assert_eq!(g(&mut rt, "$$c"), "3");
+    assert_eq!(rt.debug_stop(), None);
+
+    // Run from the start stops at the breakpoint inside the sub-script;
+    // Step Over from there stops in the caller once the sub-script ends.
+    rt.perform_script(&mut h, ScriptCall::new(0, 1))
+        .expect("starts");
+    assert_eq!(rt.run(&mut h), started);
+    assert_eq!(debug(&mut h, &mut rt, DebugCommand::Run), breakpoint);
+    assert_eq!(call_stack(&rt), at(&[("Main", Some(1)), ("Sub", Some(1))]));
+    assert_eq!(debug(&mut h, &mut rt, DebugCommand::StepOver), stepped);
+    assert_eq!(call_stack(&rt), at(&[("Main", Some(2))]));
+    assert_eq!(debug(&mut h, &mut rt, DebugCommand::Run), RunState::Idle);
+}
+
+#[test]
+fn the_debugger_sets_the_next_step_pauses_on_errors_halts_and_closes() {
+    let mut h = host();
+    let main = vec![
+        set_var(&h, "$$a", "1"),
+        go_to_layout(99),
+        set_var(&h, "$$b", "2"),
+        breakpoint(set_var(&h, "$$c", "3")),
+    ];
+    h.add_script(0, script(1, "Main", main));
+    let mut rt = Runtime::default();
+    rt.start_debugging();
+    rt.set_pause_on_error(true);
+    rt.perform_script(&mut h, ScriptCall::new(0, 1))
+        .expect("starts");
+    assert_eq!(rt.run(&mut h), RunState::Debugger(DebugStop::Started));
+    // Set Next Step skips the first step and stays stopped.
+    assert!(rt.set_next_step(1));
+    assert!(!rt.set_next_step(4), "past the last step");
+    assert_eq!(call_stack(&rt), at(&[("Main", Some(1))]));
+    // The missing layout's error stops the script before the next step.
+    let state = debug(&mut h, &mut rt, DebugCommand::Run);
+    let error = rt.last_error();
+    assert!(error.is_error());
+    assert_eq!(state, RunState::Debugger(DebugStop::Error(error)));
+    assert_eq!(call_stack(&rt), at(&[("Main", Some(2))]));
+    assert_eq!(global(&mut rt, "$$a"), None);
+    assert!(rt.set_next_step(3));
+    assert_eq!(debug(&mut h, &mut rt, DebugCommand::Run), RunState::Idle);
+    assert_eq!(global(&mut rt, "$$b"), None);
+    assert_eq!(g(&mut rt, "$$c"), "3");
+    assert!(!rt.set_next_step(0), "no script is stopped");
+
+    // Halt ends the stopped script.
+    rt.perform_script(&mut h, ScriptCall::new(0, 1))
+        .expect("starts");
+    assert_eq!(rt.run(&mut h), RunState::Debugger(DebugStop::Started));
+    rt.halt(&mut h);
+    assert_eq!(rt.run(&mut h), RunState::Idle);
+    assert_eq!(rt.debug_stop(), None);
+    assert!(rt.is_debugging());
+
+    // Closing the debugger lets a stopped script run to its end, past its
+    // error and its breakpoint, with script triggers enabled again.
+    rt.perform_script(&mut h, ScriptCall::new(0, 1))
+        .expect("starts");
+    assert_eq!(rt.run(&mut h), RunState::Debugger(DebugStop::Started));
+    rt.set_user_triggers(false);
+    rt.stop_debugging();
+    assert_eq!(rt.run(&mut h), RunState::Idle);
+    assert_eq!(g(&mut rt, "$$b"), "2");
+    assert!(rt.triggers_enabled());
+}
+
+#[test]
+fn the_debugger_runs_an_executable_only_script_whole() {
+    // A Modifiable script calling an Executable Only one: the latter runs
+    // whole with its steps hidden; a Modifiable script it calls is shown
+    // (script-runtime.md 6.4).
+    let mut h = host();
+    h.add_script(
+        0,
+        script(3, "Inner", vec![breakpoint(set_var(&h, "$$i", "1"))]),
+    );
+    h.add_script(0, script(2, "Hidden", vec![breakpoint(perform(3))]));
+    h.executable_only.insert((0, 2));
+    let main = vec![perform(2), set_var(&h, "$$a", "1")];
+    h.add_script(0, script(1, "Main", main));
+    let mut rt = Runtime::default();
+    rt.start_debugging();
+    rt.perform_script(&mut h, ScriptCall::new(0, 1))
+        .expect("starts");
+    assert_eq!(rt.run(&mut h), RunState::Debugger(DebugStop::Started));
+    // Run passes the hidden script's breakpoint and stops at the inner one.
+    let state = debug(&mut h, &mut rt, DebugCommand::Run);
+    assert_eq!(state, RunState::Debugger(DebugStop::Breakpoint));
+    assert_eq!(
+        call_stack(&rt),
+        at(&[("Main", Some(0)), ("Hidden", None), ("Inner", Some(0))])
+    );
+    assert_eq!(debug(&mut h, &mut rt, DebugCommand::Run), RunState::Idle);
+    assert_eq!(g(&mut rt, "$$i"), "1");
+
+    // Step Into from the caller goes through the hidden script to the
+    // first step it shows.
+    rt.perform_script(&mut h, ScriptCall::new(0, 1))
+        .expect("starts");
+    assert_eq!(rt.run(&mut h), RunState::Debugger(DebugStop::Started));
+    let state = debug(&mut h, &mut rt, DebugCommand::StepInto);
+    assert_eq!(state, RunState::Debugger(DebugStop::Stepped));
+    assert_eq!(
+        call_stack(&rt),
+        at(&[("Main", Some(0)), ("Hidden", None), ("Inner", Some(0))])
+    );
+    assert_eq!(
+        debug(&mut h, &mut rt, DebugCommand::StepOut),
+        RunState::Debugger(DebugStop::Stepped)
+    );
+    assert_eq!(call_stack(&rt), at(&[("Main", Some(1))]));
+    assert_eq!(debug(&mut h, &mut rt, DebugCommand::Run), RunState::Idle);
+    assert_eq!(g(&mut rt, "$$a"), "1");
+}
+
+#[test]
+fn the_debugger_keeps_stops_and_errors_to_the_scripts_it_shows() {
+    let mut h = host();
+    h.pause_waits = true;
+    let transaction = vec![
+        ScriptStep::new(205),
+        set_var(&h, "$$t", "1"),
+        ScriptStep::new(206),
+        set_var(&h, "$$after", "1"),
+    ];
+    h.add_script(0, script(1, "Transaction", transaction));
+    h.add_script(0, script(2, "Hidden", vec![go_to_layout(99)]));
+    h.executable_only.insert((0, 2));
+    let caller = vec![perform(2), set_var(&h, "$$caller", "1")];
+    h.add_script(0, script(3, "Caller", caller));
+    h.add_script(
+        0,
+        script(4, "Last", vec![set_var(&h, "$$a", "1"), go_to_layout(99)]),
+    );
+    let mut pause = ScriptStep::new(62);
+    pause.flags &= !flag::CALCULATION;
+    let paused = vec![pause, set_var(&h, "$$b", "2"), set_var(&h, "$$c", "3")];
+    h.add_script(0, script(5, "Paused", paused));
+    let mut rt = Runtime::default();
+    rt.start_debugging();
+    rt.set_pause_on_error(true);
+    let started = RunState::Debugger(DebugStop::Started);
+
+    // Set Next Step is refused while a transaction is open, and a failed
+    // Commit Transaction, which stores its own error, stops the script.
+    rt.perform_script(&mut h, ScriptCall::new(0, 1))
+        .expect("starts");
+    assert_eq!(rt.run(&mut h), started);
+    assert_eq!(
+        debug(&mut h, &mut rt, DebugCommand::StepOver),
+        RunState::Debugger(DebugStop::Stepped)
+    );
+    assert!(rt.transaction_open());
+    assert!(!rt.set_next_step(3));
+    h.pending_commits = 1;
+    assert_eq!(debug(&mut h, &mut rt, DebugCommand::Run), RunState::Waiting);
+    rt.complete_step(ErrorCode(301));
+    assert_eq!(
+        rt.run(&mut h),
+        RunState::Debugger(DebugStop::Error(ErrorCode(301)))
+    );
+    assert_eq!(call_stack(&rt), at(&[("Transaction", Some(3))]));
+    assert_eq!(debug(&mut h, &mut rt, DebugCommand::Run), RunState::Idle);
+
+    // A hidden script's error does not stop its caller.
+    rt.perform_script(&mut h, ScriptCall::new(0, 3))
+        .expect("starts");
+    assert_eq!(rt.run(&mut h), started);
+    assert_eq!(debug(&mut h, &mut rt, DebugCommand::Run), RunState::Idle);
+    assert_eq!(g(&mut rt, "$$caller"), "1");
+
+    // A failure of the last step stops at the script's end.
+    rt.perform_script(&mut h, ScriptCall::new(0, 4))
+        .expect("starts");
+    assert_eq!(rt.run(&mut h), started);
+    let state = debug(&mut h, &mut rt, DebugCommand::Run);
+    assert_eq!(state, RunState::Debugger(DebugStop::Error(ErrorCode(105))));
+    assert_eq!(call_stack(&rt), at(&[("Last", Some(2))]));
+    assert_eq!(debug(&mut h, &mut rt, DebugCommand::Run), RunState::Idle);
+
+    // A script queued to run after the current one neither keeps that one
+    // from stopping first nor shows in the Call Stack.
+    rt.perform_script(&mut h, ScriptCall::new(0, 3))
+        .expect("starts");
+    let mut queued = ScriptCall::new(0, 4);
+    queued.queue_at_bottom = true;
+    rt.perform_script(&mut h, queued).expect("queues");
+    assert_eq!(rt.run(&mut h), started);
+    assert_eq!(call_stack(&rt), at(&[("Caller", Some(0))]));
+    // The stop belongs to its script: Exit ends it, and the hidden script
+    // started in its place runs whole.
+    let mut exit = ScriptCall::new(0, 2);
+    exit.mode = QueueMode::Exit;
+    rt.perform_script(&mut h, exit).expect("starts");
+    assert_eq!(rt.debug_stop(), None);
+    assert!(!rt.set_next_step(0));
+    // The queued script then starts and stops before its first step.
+    assert_eq!(rt.run(&mut h), started);
+    assert_eq!(call_stack(&rt), at(&[("Last", Some(0))]));
+    rt.halt(&mut h);
+    assert_eq!(rt.run(&mut h), RunState::Idle);
+
+    // A Pause/Resume Script pause is continued by the debugger's commands.
+    rt.set_pause_on_error(false);
+    rt.perform_script(&mut h, ScriptCall::new(0, 5))
+        .expect("starts");
+    assert_eq!(rt.run(&mut h), started);
+    assert!(matches!(
+        debug(&mut h, &mut rt, DebugCommand::Run),
+        RunState::Paused { .. }
+    ));
+    assert_eq!(
+        debug(&mut h, &mut rt, DebugCommand::StepOver),
+        RunState::Debugger(DebugStop::Stepped)
+    );
+    assert_eq!(call_stack(&rt), at(&[("Paused", Some(2))]));
+    assert_eq!(g(&mut rt, "$$b"), "2");
+    assert_eq!(debug(&mut h, &mut rt, DebugCommand::Run), RunState::Idle);
+}
+
+#[test]
+fn the_debugger_keeps_each_stop_and_error_with_its_frame() {
+    // Main's last step fails; Keys has a breakpoint; Plain has none.
+    let scripts = |h: &mut MemoryScriptHost| {
+        let main = vec![set_var(h, "$$a", "1"), go_to_layout(99)];
+        h.add_script(0, script(1, "Main", main));
+        h.add_script(
+            0,
+            script(6, "Keys", vec![breakpoint(set_var(h, "$$k", "1"))]),
+        );
+        h.add_script(0, script(7, "Plain", vec![set_var(h, "$$p", "1")]));
+    };
+    let debugging = |h: &mut MemoryScriptHost| {
+        let mut rt = Runtime::default();
+        rt.start_debugging();
+        rt.set_pause_on_error(true);
+        rt.perform_script(h, ScriptCall::new(0, 1)).expect("starts");
+        assert_eq!(rt.run(h), RunState::Debugger(DebugStop::Started));
+        rt
+    };
+    let keystroke = |script| Trigger::new(TriggerEvent::ObjectKeystroke, 0, script);
+    let failed = RunState::Debugger(DebugStop::Error(ErrorCode(105)));
+
+    // A trigger's own stop and Run leave Main's error stop below it.
+    let mut h = host();
+    scripts(&mut h);
+    let mut rt = debugging(&mut h);
+    assert_eq!(debug(&mut h, &mut rt, DebugCommand::Run), failed);
+    rt.fire_trigger(&mut h, keystroke(6));
+    assert_eq!(rt.run(&mut h), RunState::Debugger(DebugStop::Breakpoint));
+    assert_eq!(call_stack(&rt), at(&[("Main", Some(1)), ("Keys", Some(0))]));
+    assert_eq!(debug(&mut h, &mut rt, DebugCommand::Run), failed);
+    assert_eq!(call_stack(&rt), at(&[("Main", Some(2))]));
+    assert_eq!(debug(&mut h, &mut rt, DebugCommand::Run), RunState::Idle);
+
+    // A trigger on top of a script waiting for its first step is no new
+    // script: it runs through, and the script is stopped again.
+    let mut h = host();
+    scripts(&mut h);
+    let mut rt = debugging(&mut h);
+    rt.fire_trigger(&mut h, keystroke(7));
+    assert_eq!(rt.run(&mut h), RunState::Debugger(DebugStop::Started));
+    assert_eq!(call_stack(&rt), at(&[("Main", Some(0))]));
+    assert_eq!(g(&mut rt, "$$p"), "1");
+
+    // Main's error waits for Main: a trigger run before the check does not
+    // take it.
+    let mut h = host();
+    scripts(&mut h);
+    let mut rt = debugging(&mut h);
+    assert!(rt.debug(DebugCommand::Run));
+    assert_eq!(rt.step(&mut h), RunState::Yielded);
+    assert_eq!(rt.step(&mut h), RunState::Yielded);
+    rt.fire_trigger(&mut h, keystroke(7));
+    assert_eq!(rt.run(&mut h), failed);
+    assert_eq!(call_stack(&rt), at(&[("Main", Some(2))]));
+    assert_eq!(g(&mut rt, "$$p"), "1");
+
+    // A step that was waiting when the debugger opened is still Main's.
+    let mut h = host();
+    let steps = vec![
+        ScriptStep::new(205),
+        ScriptStep::new(206),
+        set_var(&h, "$$after", "1"),
+    ];
+    h.add_script(0, script(1, "Commit", steps));
+    h.pending_commits = 1;
+    let mut rt = Runtime::default();
+    assert_eq!(run(&mut h, &mut rt, 1), RunState::Waiting);
+    rt.start_debugging();
+    rt.set_pause_on_error(true);
+    rt.complete_step(ErrorCode(301));
+    assert_eq!(
+        rt.run(&mut h),
+        RunState::Debugger(DebugStop::Error(ErrorCode(301)))
+    );
+    assert_eq!(call_stack(&rt), at(&[("Commit", Some(2))]));
+
+    // A hidden script's step that a shown trigger let run, and that then
+    // failed, is still the hidden script's: its caller does not stop.
+    let mut h = host();
+    h.layout_triggers
+        .insert((1, TriggerEvent::LayoutExit), (0, 9));
+    h.add_script(0, script(9, "OnExit", vec![set_var(&h, "$$x", "1")]));
+    h.add_script(0, script(2, "Hidden", vec![go_to_layout(99)]));
+    h.executable_only.insert((0, 2));
+    let caller = vec![perform(2), set_var(&h, "$$m", "1")];
+    h.add_script(0, script(1, "Main", caller));
+    let mut rt = Runtime::default();
+    rt.start_debugging();
+    rt.set_pause_on_error(true);
+    rt.perform_script(&mut h, ScriptCall::new(0, 1))
+        .expect("starts");
+    assert_eq!(rt.run(&mut h), RunState::Debugger(DebugStop::Started));
+    assert_eq!(debug(&mut h, &mut rt, DebugCommand::Run), RunState::Idle);
+    assert_eq!(g(&mut rt, "$$x"), "1");
+    assert_eq!(g(&mut rt, "$$m"), "1");
+    assert_eq!(rt.last_error(), ErrorCode::NONE);
 }

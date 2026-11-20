@@ -119,10 +119,16 @@ fn word_index_keys_match() {
         // sample separates there, while English joins (the probe,
         // query-program.md 7.1), which these files' text did not need.
         (english && data_type == DataType::Text).then(|| {
-            om_collate::words_with(value, false)
-                .into_iter()
-                .map(om_collate::text_key)
-                .collect()
+            om_collate::words_in(
+                value,
+                om_collate::WordBreaks {
+                    apostrophe_letters: false,
+                    ..om_collate::WordBreaks::ENGLISH
+                },
+            )
+            .into_iter()
+            .map(om_collate::text_key)
+            .collect()
         })
     });
     println!("word index: {checked} values checked");

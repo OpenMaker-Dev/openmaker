@@ -545,7 +545,24 @@ impl WorkerHost<'_> {
     ) -> Result<(String, Option<Value>), ReportError> {
         let mut own = None;
         let (group, row) = (context.group, context.portal);
-        let text = report::object_text(object, origin, schema, |field| {
+        let text = report::object_text(object, origin, schema, |piece| {
+            let field = match piece {
+                report::Piece::Field(field) => field,
+                report::Piece::Literal(text) if !report::merges(text) => return Ok(text.into()),
+                // Symbols on the record, as Browse shows them. The running
+                // script's variables are the runtime's, which this host
+                // does not read (#596): a merge variable would print
+                // empty.
+                report::Piece::Literal(text) => {
+                    report::script_printed(text)?;
+                    let context = report::in_row(Context::record(origin, record), row);
+                    return om_data::host::layout::merge_text_checked(self, text, &context)
+                        .map_err(|code| ReportError {
+                            code: if code == 0 { 3 } else { code },
+                            message: "A report symbol could not be calculated completely".into(),
+                        });
+                }
+            };
             let (value, text) =
                 self.pdf_field(origin, record, group, row, field, object, schema)?;
             if object.kind() == ObjectKind::Field {
