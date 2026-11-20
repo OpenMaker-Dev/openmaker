@@ -1501,19 +1501,24 @@ fn join_keys(data_type: om_hbam::DataType, value: &str, reading: Reading) -> Vec
     if value.trim().is_empty() {
         return Vec::new();
     }
-    // A number, date, time or timestamp is keyed whole, as its index keys
-    // it (`om_query::keys::typed_value_keys`: `$12` and `$34` on two lines
-    // is 1234); the reading of a number treats spaces itself.
-    let typed = match data_type {
-        DataType::Number => Some(om_collate::number_key_in(value, reading.numbers)),
-        DataType::Date => Some(om_collate::date_key(value.trim(), reading.order)),
-        DataType::Time => Some(om_collate::time_key(value.trim())),
-        DataType::Timestamp => Some(om_collate::timestamp_key(value.trim(), reading.order)),
-        _ => None,
-    };
-    match typed {
-        Some(key) => key.into_iter().collect(),
-        None => value
+    match data_type {
+        // A number, date, time or timestamp is keyed whole, by the builder
+        // its index uses (`typed_value_keys`: `$12` and `$34` on two lines
+        // is 1234; a timestamp stored as a date alone is its date's
+        // midnight). Its markers are no match value: the empty value never
+        // relates, and an invalid one (`fe ff`) relates to nothing either,
+        // as it had no key before (OpenMaker's choice; FileMaker's is not
+        // measured).
+        DataType::Number | DataType::Date | DataType::Time | DataType::Timestamp => {
+            om_query::keys::typed_value_keys(data_type, value, reading)
+                .into_iter()
+                .filter(|key| {
+                    key.as_slice() != om_query::keys::EMPTY_TEXT_KEY
+                        && key.as_slice() != om_query::keys::INVALID_KEY
+                })
+                .collect()
+        }
+        _ => value
             .split(['\r', '\n'])
             .map(str::trim)
             .filter(|line| !line.is_empty())
@@ -1583,5 +1588,19 @@ mod tests {
         let texts = field_texts(&row, &field(largest, 255));
         assert_eq!((texts[0].as_str(), texts[254].as_str()), ("first", "last"));
         assert_eq!(field_texts(&row, &field(largest + 1, 3)), ["only", "", ""]);
+    }
+
+    /// A join's source keys are those the target's index holds
+    /// (query-program.md 7.3): a timestamp stored as a date alone relates
+    /// through its midnight, and empty and invalid values relate to nothing.
+    #[test]
+    fn join_sources_key_typed_values_as_their_index() {
+        use om_hbam::DataType::{Number, Timestamp};
+        let reading = Reading::from(om_collate::DateOrder::MonthDayYear);
+        let midnight = join_keys(Timestamp, "10/27/2026 12:00:00 AM", reading);
+        assert_eq!(midnight.len(), 1);
+        assert_eq!(join_keys(Timestamp, "10/27/2026", reading), midnight);
+        assert!(join_keys(Number, "N/A", reading).is_empty());
+        assert!(join_keys(Number, " ", reading).is_empty());
     }
 }
