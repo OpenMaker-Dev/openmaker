@@ -96,7 +96,8 @@ Browse reads them. Refused with 3:
   fields, rectangles, straight lines, plain ovals,
   [static layout pictures](#static-layout-pictures), and
   [buttons, their icons, and groups](#buttons-and-groups). Geometry is in layout points.
-  Solid colors/borders, font size, regular/bold face, horizontal/vertical alignment,
+  Solid colors/borders, font size, regular, bold and italic faces (italic in
+  Arial and Helvetica only), horizontal/vertical alignment,
   padding and measured line wrapping are supported. Header/footer/body backgrounds
   use the layout style cascade. A body prints in its own style on every record:
   where a body keeps "Use alternate row state" is not decoded (layout-model.md
@@ -139,7 +140,8 @@ the portals [Portals](#portals) lists, dynamic pictures, the button icons
 [Rounded frames](#rounded-frames) lists,
 hide/label calculations, the conditional formatting
 [Conditional formatting](#conditional-formatting) lists, the layout symbols and merge
-variables listed above, mixed rich text, italic/decorated text,
+variables listed above, mixed rich text, decorated text, italic text in a family
+other than Arial or Helvetica,
 colors outside 0-1, unsupported glyphs/shaping, text overflow in anything but a
 field that does not slide ([field text](#field-text)), and object/page overflow. Ordinary
 flat character and paragraph styles, including uniform paragraph leading, can
@@ -337,8 +339,8 @@ now wraps inside the narrower text box and is cut, as Pro's would be.
 Reports set text in one of two bundled font families and embed the whole font
 file in the PDF:
 - Text whose style's first font family is Arial or Helvetica prints in
-  **Liberation Sans 2.1.5**, Regular or Bold. It is designed to be
-  metric-compatible with Arial. The 39 character widths in Pro's embedded ArialMT
+  **Liberation Sans 2.1.5**, Regular, Bold, Italic or Bold Italic. It is
+  designed to be metric-compatible with Arial. The 39 character widths in Pro's embedded ArialMT
   (Task Details, [#201](https://github.com/OpenMaker-Dev/openmaker/issues/201)) match Liberation Sans to within 1/1000 em. One wrap point
   was compared: Task List's long task name breaks after "…review for" in both.
   That other lines wrap and cut where Pro's do is inferred from those
@@ -347,8 +349,22 @@ file in the PDF:
 - All other text, including text with no stored family (24 starter objects),
   prints in **Inter**, Regular or SemiBold, as before.
 
-Bold is weight 2, or 600 and up. Italic text still refuses (error 3): neither
-family's italic faces are bundled, and no starter text is italic. Liberation
+Bold is weight 2, or 600 and up. Italic is a font-style of italic or oblique
+(property 67, 2 or 3), or a character run's italic face (`0x0200` under mask
+`0x0020`, layout-model.md 8.1), which a run can also turn off. A run's own
+font, as Browse reads it, chooses the family. Italic Arial or
+Helvetica text prints in Liberation Sans Italic or Bold Italic, metric-compatible
+with Arial Italic and Arial Bold Italic, and the PDF's font descriptor carries
+its italic flag and -12 degree angle. That FileMaker Pro prints these faces
+with Arial Italic's widths is inferred from Arial's; no FileMaker PDF with
+italic text has been compared, and no starter text is italic. Italic text in
+any other family still refuses (error 3): no italic Inter is bundled, and
+printing it upright would misrepresent the layout. A line whose glyph
+outlines reach past its text box's sides, as an italic overhang can though
+the advances fit, is cut at those sides (for a label, its frame less the
+1-point inset), as Pro clips text to its box (layout-model.md 6.5); only a
+line that overflows the box is also cut at its top and bottom, so an accent
+above the box is not cut for a bearing at its side. Liberation
 Sans stands in for Helvetica as well, though Helvetica's widths differ from
 Arial's; that is inferred adequate, not measured. Browse is unchanged: it uses
 the system Arial where macOS ships it and Inter elsewhere. Preview draws the
@@ -633,7 +649,8 @@ Refused (error 3, before any output file or print job):
   picture or group);
 - on an object set to slide up: pages are planned without conditions;
 - a condition whose style sets corner radii;
-- what a condition makes unsupported elsewhere, such as italic text.
+- what a condition makes unsupported elsewhere, such as italic text in a
+  family other than Arial or Helvetica.
 
 That FileMaker Pro prints conditional formatting this way is inferred from
 the model and Browse; its printed output has not been compared.
