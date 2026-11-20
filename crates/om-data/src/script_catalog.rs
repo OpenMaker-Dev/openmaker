@@ -228,7 +228,7 @@ fn stamp(node: &mut OwnedNode, stamp: &Stamp, new: bool) {
     }
     node.set_child(om_scripts::text_node(MOD_USER, &stamp.user));
     node.set_child(om_scripts::text_node(MOD_ACCOUNT, &stamp.account));
-    // A key string: the time's key is shorter than 8 bytes before 00:16:40
+    // A key string: the time's key is shorter than 8 bytes before 02:46:40
     // (schema-path.md 3.1).
     node.set_child(OwnedNode::leaf(MOD_TIME.to_vec(), key_string(&stamp.time)));
 }

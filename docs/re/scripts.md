@@ -281,7 +281,9 @@ before its node exists.
 4. op13 to `[17, 5, S]`, node state `02`: the script's whole subtree
    (name, steps, parameters; scripts.md "Catalog"). It carries a stamp
    under `fc`: `fc 01` the client's user name, `fc 02` the account name
-   (masked SCSU), `fc 03` `08` + the 8-byte host timestamp from step 2.
+   (masked SCSU), `fc 03` the host timestamp from step 2 as a key string
+   (`08` and 8 bytes in this capture; shorter before 02:46:40,
+   schema-path.md 8.1).
 5. op62 `[17, 5, S]`, type `0a`, attention `0x2`.
 6. op61 `[17, 1]` from 9 to `0a` (the second transaction).
 7. op13 to `[17, 1]`, node state `02`: the whole catalog index (every
