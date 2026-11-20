@@ -64,10 +64,10 @@ use om_protocol::write::{CreateRecord, GetSerial, KeyPath, LOCK_WRITE, SERIAL_IN
 use om_query::keys::TextKeys;
 use om_scripts::runtime::Fields as FieldSteps;
 use om_scripts::runtime::{
-    Accounts, CommitOptions, Dialogs, ErrorCode, ErrorLogEntry, FieldRef, FileId, Files, FindKind,
-    FoundSets, HostError, HostResult, InsertTarget, LayoutTarget, Mode, Navigation, Network,
-    PauseEnd, Platform, RecordList, RecordMove, Records, RelatedRecords, ScriptAccess, ScriptHost,
-    TransactionOptions, WindowId, Windows,
+    Accounts, Bar, CommitOptions, Dialogs, ErrorCode, ErrorLogEntry, FieldRef, FileId, Files,
+    FindKind, FoundSets, HostError, HostResult, InsertTarget, LayoutTarget, Mode, Navigation,
+    Network, NewWindow, PauseEnd, Platform, RecordList, RecordMove, Records, RelatedRecords,
+    ScriptAccess, ScriptHost, TransactionOptions, Visibility, WindowId, WindowTarget, Windows,
 };
 use om_scripts::specs::SortSpec;
 use om_scripts::{Script, ScriptCatalog, ScriptKind};
@@ -379,6 +379,20 @@ impl Window {
     }
 }
 
+/// A window of the session other than the current one, with what each
+/// window keeps of its own: its layout, found set, record and mode, and
+/// Find mode's requests (script-runtime.md 13.25).
+struct Parked {
+    name: Option<String>,
+    serial: u32,
+    window: Option<Window>,
+    requests: Vec<Request>,
+    last_find: Vec<Request>,
+    request_count: usize,
+    focus: Option<get::Focus>,
+    request_open: bool,
+}
+
 /// A record being edited: locked for the session, its contents changed
 /// here until it is committed (FileMaker's open record).
 #[derive(Clone, Debug)]
@@ -675,6 +689,19 @@ pub(crate) struct ServerHost {
     today: Date,
     schema: Schema,
     window: Option<Window>,
+    /// The current window's name; `None` for the file's name, which names
+    /// a session's first window.
+    window_name: Option<String>,
+    /// Which window of the session the current one is (0 the first), for
+    /// its `Get ( WindowUUID )`.
+    window_serial: u32,
+    /// The session's other windows, the most recently current last
+    /// (script-runtime.md 13.25).
+    others: Vec<Parked>,
+    /// How many windows the session has opened after its first.
+    windows_opened: u32,
+    /// A step closed the session's last window: the script stops.
+    windows_closed: bool,
     record: Option<OpenRecord>,
     /// Open Transaction and the changes since.
     transaction: Option<Transaction>,
@@ -747,6 +774,11 @@ impl ServerHost {
             today: today(),
             schema,
             window: None,
+            window_name: None,
+            window_serial: 0,
+            others: Vec::new(),
+            windows_opened: 0,
+            windows_closed: false,
             record: None,
             transaction: None,
             globals: HashMap::new(),
@@ -3069,9 +3101,10 @@ impl ScriptHost for ServerHost {
     }
 
     /// The administrator, a file close, the server's shutdown or a limit
-    /// aborted the script (`IsServerAbort`, script-runtime.md 2.3, 6.1).
+    /// aborted the script (`IsServerAbort`, script-runtime.md 2.3, 6.1),
+    /// or a step closed its last window (13.25).
     fn abort_requested(&mut self) -> bool {
-        self.control.aborted().is_some()
+        self.control.aborted().is_some() || self.windows_closed
     }
 
     /// Each step sees the schema as it is when the step starts.
@@ -3171,8 +3204,8 @@ impl Navigation for ServerHost {
     }
 
     fn go_to_list_of_records(&mut self, request: &RecordList) -> HostResult {
-        if request.new_window.is_some() {
-            return Err(HostError::Unsupported);
+        if let Some(window) = &request.new_window {
+            self.new_window(window)?;
         }
         if let Some(layout) = &request.layout {
             self.go_to_layout(layout, None)?;
@@ -3755,10 +3788,191 @@ impl FoundSets for ServerHost {
     }
 }
 
+impl ServerHost {
+    /// The current window's name: the file's name until a step names it.
+    pub(super) fn window_name(&self) -> String {
+        self.window_name
+            .clone()
+            .unwrap_or_else(|| self.session_info().file_name)
+    }
+
+    /// The session's windows' names, front to back (`WindowNames`): the
+    /// current one, then the others from the most recently current.
+    pub(super) fn window_names(&self) -> Vec<String> {
+        let file = self.session_info().file_name;
+        std::iter::once(self.window_name())
+            .chain(
+                self.others
+                    .iter()
+                    .rev()
+                    .map(|w| w.name.clone().unwrap_or_else(|| file.clone())),
+            )
+            .collect()
+    }
+
+    /// The window `target` names: `None` the current one, else its place
+    /// among the others, names matched front to back; 112 when no window
+    /// has the name.
+    fn window_target(&self, target: &WindowTarget) -> HostResult<Option<usize>> {
+        let WindowTarget::Named(name) = target else {
+            return Ok(None);
+        };
+        if self.window_name() == *name {
+            return Ok(None);
+        }
+        let file = self.session_info().file_name;
+        self.others
+            .iter()
+            .rposition(|w| w.name.as_deref().unwrap_or(&file) == name)
+            .map(Some)
+            .ok_or(ErrorCode::WINDOW_MISSING.into())
+    }
+
+    /// The current window, taken out with what is its own.
+    fn park(&mut self) -> Parked {
+        Parked {
+            name: self.window_name.take(),
+            serial: self.window_serial,
+            window: self.window.take(),
+            requests: std::mem::take(&mut self.requests),
+            last_find: std::mem::take(&mut self.last_find),
+            request_count: std::mem::take(&mut self.request_count),
+            focus: self.focus.take(),
+            request_open: std::mem::take(&mut self.request_open),
+        }
+    }
+
+    /// Make `window` the current one.
+    fn unpark(&mut self, window: Parked) {
+        self.window_name = window.name;
+        self.window_serial = window.serial;
+        self.window = window.window;
+        self.requests = window.requests;
+        self.last_find = window.last_find;
+        self.request_count = window.request_count;
+        self.focus = window.focus;
+        self.request_open = window.request_open;
+    }
+}
+
+/// The server's windows (script-runtime.md 13.25, s35-windows): each has
+/// its own layout, found set, record and mode, and Find mode's requests;
+/// a step works on the current one. The record a step opened (and a
+/// transaction) belong to the session: a window that stops being current
+/// commits it first, as New Window and Close Window commit
+/// (OpenMaker's choice for Select Window, which FileMaker Server's runs
+/// do not show). Nothing is drawn, so bounds are not kept: every window
+/// answers 640 x 480 at 0, 0.
 impl Windows for ServerHost {
+    /// New Window (122): a window showing what the current one shows, its
+    /// layout, found set, record and mode, named as given, else after the
+    /// current one with " - 2" (" - 3", ... when taken); it becomes
+    /// current, and goes to the layout given.
+    fn new_window(&mut self, window: &NewWindow) -> HostResult {
+        self.leave()?;
+        let names = self.window_names();
+        let name = window
+            .name
+            .clone()
+            .filter(|n| !n.is_empty())
+            .unwrap_or_else(|| {
+                let base = self.window_name();
+                (2..)
+                    .map(|n| format!("{base} - {n}"))
+                    .find(|n| !names.contains(n))
+                    .expect("a free name")
+            });
+        let copy = Parked {
+            name: Some(name),
+            serial: self.windows_opened + 1,
+            window: self.window.clone(),
+            requests: self.requests.clone(),
+            last_find: self.last_find.clone(),
+            request_count: self.request_count,
+            focus: self.focus.clone(),
+            request_open: self.request_open,
+        };
+        self.windows_opened += 1;
+        let previous = self.park();
+        self.others.push(previous);
+        self.unpark(copy);
+        if let Some(layout) = window.layout {
+            self.go_to_layout(&LayoutTarget::Key(layout), None)?;
+        }
+        Ok(())
+    }
+
+    /// Select Window (123): the window named becomes current (112 when no
+    /// window has the name).
+    fn select_window(&mut self, target: &WindowTarget, _current_file_only: bool) -> HostResult {
+        let Some(index) = self.window_target(target)? else {
+            return Ok(());
+        };
+        self.leave()?;
+        let selected = self.others.remove(index);
+        let previous = self.park();
+        self.others.push(previous);
+        self.unpark(selected);
+        Ok(())
+    }
+
+    /// Close Window (121): the window's record is committed and the
+    /// window closed. Closing the current one makes the window current
+    /// before it current; closing the session's last window is 13 and
+    /// stops the script, as on FileMaker Server.
+    fn close_window(&mut self, target: &WindowTarget, _current_file_only: bool) -> HostResult {
+        match self.window_target(target)? {
+            Some(index) => {
+                self.others.remove(index);
+                Ok(())
+            }
+            None => {
+                self.leave()?;
+                let Some(previous) = self.others.pop() else {
+                    // 13 on FileMaker Server, and the script stops
+                    // ([`Self::abort_requested`]).
+                    self.window = None;
+                    self.windows_closed = true;
+                    return Err(ErrorCode(13).into());
+                };
+                self.unpark(previous);
+                Ok(())
+            }
+        }
+    }
+
+    /// Set Window Title (124).
+    fn set_window_title(
+        &mut self,
+        target: &WindowTarget,
+        title: &str,
+        _current_file_only: bool,
+    ) -> HostResult {
+        match self.window_target(target)? {
+            None => self.window_name = Some(title.to_owned()),
+            Some(index) => self.others[index].name = Some(title.to_owned()),
+        }
+        Ok(())
+    }
+
     /// Nothing is drawn on the server.
     fn refresh_window(&mut self, _flush_joins: bool, _flush_external: bool) -> HostResult {
         Ok(())
+    }
+
+    /// View As (30): no window is drawn on the server, so the step does
+    /// nothing (FileMaker Server runs it, script-step-compat.csv).
+    fn view_as(&mut self, _choice: u16) -> HostResult {
+        Ok(())
+    }
+
+    /// Show/Hide Toolbars (29) does nothing on the server, which draws no
+    /// toolbar; the other bars stay unsupported.
+    fn show_hide(&mut self, what: Bar, _visibility: Visibility, _lock: bool) -> HostResult {
+        match what {
+            Bar::Toolbars { .. } => Ok(()),
+            _ => Err(HostError::Unsupported),
+        }
     }
 }
 

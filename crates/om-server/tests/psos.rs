@@ -1213,3 +1213,61 @@ fn administrators_abort_scripts_and_shut_down() {
     assert_eq!(aborts(), expected);
     std::fs::remove_dir_all(&folder).unwrap();
 }
+
+/// A server script's windows (script-runtime.md 13.25, s35-windows): New
+/// Window copies the current one and is named after it with " - 2"; each
+/// window keeps its own record; Select Window by a name no window has is
+/// 112; `WindowNames` lists them front to back; closing another window
+/// keeps the current one, and closing the last is 13 and stops the script
+/// (#99).
+#[test]
+fn server_scripts_keep_windows_of_their_own() {
+    use fixture::{calc, exit_with, go_to_record, on, script, set_variable};
+    let named = |id: u16, name: &str| {
+        let mut step = ScriptStep::new(id);
+        step.value = 1;
+        step.set_calculation(0, Some(&calc(name)));
+        step
+    };
+    let scripts = [
+        script(
+            6,
+            "Windows",
+            vec![
+                on(86, true),
+                ScriptStep::new(122),
+                set_variable("$name", "Get ( WindowName )"),
+                go_to_record(2),
+                set_variable("$last", "Get ( RecordNumber ) = Get ( FoundCount )"),
+                named(123, "Get ( FileName )"),
+                set_variable("$first", "Get ( RecordNumber )"),
+                named(123, "\"Nope\""),
+                set_variable("$missing", "Get ( LastError )"),
+                set_variable(
+                    "$names",
+                    "Substitute ( WindowNames ( Get ( FileName ) ) ; ¶ ; \",\" )",
+                ),
+                named(121, "Get ( FileName ) & \" - 2\""),
+                exit_with(
+                    "$name & \"|\" & $last & \"|\" & $first & \"|\" & $missing & \"|\" & $names \
+                     & \"|\" & WindowNames ( Get ( FileName ) )",
+                ),
+            ],
+        ),
+        script(
+            7,
+            "Close the last",
+            vec![ScriptStep::new(121), exit_with("\"after\"")],
+        ),
+    ];
+    let file = TempFile::new("windows", &scripts, true);
+    let port = start(&file, None);
+    let mut client = logged_in(port, "windows");
+    let stem = FILE.trim_end_matches(".fmp12");
+    assert_eq!(
+        run(&mut client, 6).1,
+        format!("{stem} - 2|1|1|112|{stem},{stem} - 2|{stem}")
+    );
+    assert_eq!(run(&mut client, 7), (13, String::new()));
+    client.disconnect().unwrap();
+}

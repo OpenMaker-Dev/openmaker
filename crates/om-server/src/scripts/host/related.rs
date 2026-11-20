@@ -25,7 +25,7 @@ use om_data::host::{
 };
 use om_hbam::slot::{be_uint, uint_segment};
 use om_hbam::{FieldKind, OwnedNode, RidList};
-use om_scripts::runtime::{ErrorCode, HostResult, LayoutTarget, Mode, RelatedRecords};
+use om_scripts::runtime::{ErrorCode, HostResult, LayoutTarget, Mode, RelatedRecords, Windows};
 
 use super::{values, ServerHost, Window, INDEXES, VALUE_INDEX};
 use crate::modcount;
@@ -355,8 +355,9 @@ impl ServerHost {
     /// Go to Related Record (script-steps.md 11.8): the records related to
     /// the current record, or to every record of the found set, on the
     /// layout given (or the first layout of the related table), as the
-    /// found set or as the current record of all records. The server has
-    /// one window: "show in new window" uses it.
+    /// found set or as the current record of all records. "Show in new
+    /// window" opens a window for them, named as the step names it
+    /// (13.25's New Window), once the records are found.
     pub(super) fn go_to_related(&mut self, request: &RelatedRecords<'_>) -> HostResult {
         let related = request.occurrence.ok_or(ErrorCode::INVALID)?;
         self.require_view()?;
@@ -400,6 +401,19 @@ impl ServerHost {
             next.current = 0;
         } else {
             next.current = next.found.iter().position(|id| *id == ids[0]).unwrap_or(0);
+        }
+        if request.new_window {
+            let cx = Ctx::new(&self.locale, self.today);
+            let name = request.window[0]
+                .as_ref()
+                .map(|v| v.to_text(&cx).into_string());
+            self.new_window(&om_scripts::runtime::NewWindow {
+                name,
+                bounds: Default::default(),
+                layout: None,
+                style: 0,
+                options: request.options,
+            })?;
         }
         self.requests.clear();
         self.window = Some(next);

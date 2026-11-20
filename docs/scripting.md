@@ -203,7 +203,7 @@ is reached through its data source's paths, on its own host
 Go to List of Records finds its record ids in calculation slot 7, and
 Show in new window (`0x20000`) opens a window with the step's name, bounds
 and style first, as Go to Related Record's does (script-steps.md 12.2).
-OpenMaker Server refuses the new window with error 3. Neither is compared
+OpenMaker Server opens it as its New Window does. Neither is compared
 with FileMaker, which has not been measured running the step.
 
 Fixes from a review of import data safety:

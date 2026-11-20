@@ -130,7 +130,12 @@ impl ServerHost {
         let schema = self.design()?;
         let source = SessionSource { host: self };
         let mut session = self.session_info();
-        session.window_name.clone_from(&session.file_name);
+        session.window_name = self.window_name();
+        session.windows = self
+            .window_names()
+            .into_iter()
+            .map(|name| (session.file_name.clone(), name))
+            .collect();
         if let Some(layout) = self.window_layout(&schema) {
             session.layout_name = layout.name;
         }

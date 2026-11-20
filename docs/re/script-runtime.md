@@ -2940,7 +2940,25 @@ Server engine (11.3, 11.5)
   table's layout is 106, no related record 101 (the window stays), an
   occurrence without a path 103. "Show only related records" makes them
   the found set; without it the found set is all records with the first
-  related one current. "Show in new window" uses the session's one window.
+  related one current. "Show in new window" opens a window for them, as
+  New Window does, once the records are found.
+- Windows (13.25): a session's windows each keep their layout, found set,
+  record, mode and Find mode's requests; steps work on the current one.
+  New Window copies the current window and becomes current, named as
+  given, else after the current one with " - 2" (" - 3", ... when taken),
+  then goes to its layout. Select Window and Close Window match names
+  front to back; a name no window has is 112. Closing the current window
+  makes the one current before it current, closing another keeps the
+  current one, and closing the last is 13 and stops the script. Set
+  Window Title renames. `WindowNames` lists the windows front to back and
+  `Get ( WindowUUID )` differs per window. The record a step opened
+  belongs to the session, so a window that stops being current commits
+  it first: New Window and Close Window as FileMaker's do, Select Window
+  by OpenMaker's choice (FileMaker Server's runs do not show it). No
+  bounds are kept: every window is 640 x 480 at 0, 0, whatever New Window
+  asks. The new window's layout does not run OnLayoutEnter, as the
+  server's Go to Layout does not. View As and Show/Hide Toolbars do
+  nothing, as nothing is drawn.
 - Finds: Enter Find Mode (with or without stored requests), Set Field into
   requests, New/Duplicate/Delete Record and Omit in Find mode, Perform Find,
   Constrain and Extend with their stored requests (script-steps.md 11.2,
