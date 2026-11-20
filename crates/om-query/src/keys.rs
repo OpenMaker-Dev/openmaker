@@ -91,6 +91,29 @@ impl TextKeys {
         }
     }
 
+    /// The form text keys in for an index of `language` when that is
+    /// known for this text: [`Self::of_language`]'s, or English's
+    /// ([`TextKeys::Collated`]) for Japanese (31) text without kana, their
+    /// sound marks or kanji, which alone its tailoring changes; every
+    /// other character keys from the shared table, Latin letters and
+    /// digits as in English (query-program.md 7.2, High). To stay within
+    /// that, text with any character of the CJK, kana or fullwidth blocks
+    /// has no known form.
+    pub fn of_language_for(language: u32, text: &str) -> Option<TextKeys> {
+        const JAPANESE: u32 = 31;
+        let cjk = |c: char| {
+            matches!(
+                u32::from(c),
+                0x2E80..=0x9FFF | 0xF900..=0xFAFF | 0xFE30..=0xFE4F | 0xFF00..=0xFFEF
+                    | 0x1_B000..=0x1_B16F | 0x2_0000..=0x3_FFFF
+            )
+        };
+        match language {
+            JAPANESE if !text.chars().any(cjk) => Some(TextKeys::Collated),
+            _ => TextKeys::of_language(language),
+        }
+    }
+
     /// The key of one line or word as an index holds it: its first
     /// [`om_collate::INDEX_KEY_LIMIT`] bytes (7.1).
     pub fn key(self, text: &str) -> Option<Vec<u8>> {

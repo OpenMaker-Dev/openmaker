@@ -29,7 +29,7 @@ use om_hbam::{RidList, Table};
 use om_query::find::{
     self as finders, ClientFind, ClientFindError, Criterion, FieldIndex, FindContext, IndexKind,
 };
-use om_query::keys::{record_value_keys, word_keys, TextKeys};
+use om_query::keys::{record_value_keys, word_keys, TextKeys, EMPTY_TEXT_KEY, INVALID_KEY};
 
 use crate::calc::NativeSource;
 use crate::{download_records, download_tree, failure, record_ids, NativeProvider};
@@ -1060,6 +1060,12 @@ impl NativeProvider {
         let order = schema.locale.date_order;
         let mut current = records;
         for hop in path.iter().rev() {
+            // Nothing related on this side relates nothing further back,
+            // with no value to key or ask about: a request that found no
+            // related records, or a hop that related none.
+            if current.is_empty() {
+                return Ok(RidList::new());
+            }
             let (Some(near), Some(far)) = (schema.table_of(hop.from), schema.table_of(hop.to))
             else {
                 return Err(DataError::with_code(
@@ -1074,36 +1080,80 @@ impl NativeProvider {
                 .iter()
                 .map(|p| (join_type(p.op), p.left, p.right))
                 .collect();
-            // Each related record's keys for the predicates' fields, text in
-            // the form of the near field's value index they are compared
-            // with (query-program.md 7.2): FileMaker relates records through
-            // that index (#573). A near field in a language OpenMaker does
-            // not key fails the find (3) rather than relating by English
-            // keys.
+            // Each related record's keys for the predicates' fields, as the
+            // near field's value index keys the values they are compared
+            // with (#573): FileMaker relates records through that index, so
+            // a related value is converted to the near field's type (a
+            // projection's requested type, query-program.md 9.1) and keyed
+            // in its index language (7.2). A far field compared with near
+            // fields of different types or forms is uploaded under a source
+            // slot for each: B only labels a source row's keys (9.2).
             let near_table = self.table_def(near)?;
             let file_language = self.file_language()?;
-            let mut forms: BTreeMap<u64, TextKeys> = BTreeMap::new();
-            for (kind, a, b) in &predicates {
-                let Some(field) = near_table.field(*a).filter(|_| *kind != CARTESIAN) else {
-                    continue;
+            // Each projection, its slot and a near field it is for.
+            let mut projections: Vec<(Projection, u64, u64)> = Vec::new();
+            let mut sent = Vec::with_capacity(predicates.len());
+            for &(kind, a, b) in &predicates {
+                let projection = match near_table.field(a).filter(|_| kind != CARTESIAN) {
+                    Some(near_field) => Projection {
+                        field: b,
+                        data_type: near_field.data_type,
+                        language: near_field
+                            .decoded_options()
+                            .map_or(0, |o| o.index_language()),
+                    },
+                    // A cartesian predicate relates whatever the keys.
+                    None => Projection {
+                        field: b,
+                        data_type: far_table
+                            .field(b)
+                            .map_or(om_hbam::DataType::Text, |f| f.data_type),
+                        language: ENGLISH,
+                    },
                 };
-                let form = text_keys(field, file_language, IndexKind::Value)?;
-                if forms.insert(*b, form).is_some_and(|other| other != form) {
-                    return Err(DataError::with_code(
-                        code::UNSUPPORTED,
-                        "A related field is matched against fields indexed in different forms.",
-                    ));
-                }
+                let slot = match projections.iter().find(|(p, _, _)| *p == projection) {
+                    Some((_, slot, _)) => *slot,
+                    None => {
+                        let shared = projections.iter().any(|(p, _, _)| p.field == b);
+                        let slot = match shared {
+                            true => OWN_SLOTS + projections.len() as u64,
+                            false => b,
+                        };
+                        projections.push((projection, slot, a));
+                        slot
+                    }
+                };
+                sent.push((kind, a, slot));
             }
+            let predicates = sent;
             let ids: Vec<u64> = current.iter().collect();
-            let fields: Vec<u64> = predicates.iter().map(|(_, _, b)| *b).collect();
-            let rows = self.join_rows(&far_table, &ids, &fields, |field, row| {
-                let form = forms.get(&field.id).copied().unwrap_or(TextKeys::Collated);
-                row.cells
-                    .get(&field.id)
-                    .map(|cell| join_keys(field.data_type, &cell.display(), order, form))
-                    .unwrap_or_default()
+            let slots: Vec<(u64, u64)> =
+                projections.iter().map(|(p, s, _)| (*s, p.field)).collect();
+            let unkeyed = std::cell::Cell::new(None);
+            let rows = self.join_rows(&far_table, &ids, &slots, |at, field, row| {
+                let texts = field_texts(row, field);
+                related_keys(projections[at].0, &texts, order, file_language).unwrap_or_else(|| {
+                    unkeyed.set(Some(at));
+                    Vec::new()
+                })
             })?;
+            // Only a value to key in a form OpenMaker does not build fails
+            // the find (3), rather than relate by English keys.
+            if let Some(at) = unkeyed.get() {
+                let (projection, _, near_field) = projections[at];
+                let name = near_table.field(near_field).map_or("", |f| f.name.as_str());
+                let language = match projection.language {
+                    0 => file_language,
+                    language => language,
+                };
+                return Err(DataError::with_code(
+                    code::UNSUPPORTED,
+                    format!(
+                        "Field \"{name}\" is matched by a related value OpenMaker cannot key in \
+                         its index language ({language})."
+                    ),
+                ));
+            }
             if rows.is_empty() {
                 return Ok(RidList::new());
             }
@@ -1153,17 +1203,19 @@ impl NativeProvider {
                     .map(|field| Ok((field.id, text_keys(field, file_language, IndexKind::Value)?)))
                     .collect::<Result<_, DataError>>()?;
                 let mut related = RidList::new();
+                let labels: Vec<(u64, u64)> = fields.iter().map(|id| (*id, *id)).collect();
                 for batch in all.chunks(SORT_BATCH) {
-                    let targets = self.join_rows(&near_table, batch, &fields, |field, row| {
-                        let texts = field_texts(row, field);
-                        let form = text
-                            .iter()
-                            .find(|(id, _)| *id == field.id)
-                            .map_or(TextKeys::Collated, |(_, form)| *form);
-                        record_value_keys(field.data_type, &texts, order, form)
-                            .into_iter()
-                            .collect()
-                    })?;
+                    let targets =
+                        self.join_rows(&near_table, batch, &labels, |_, field, row| {
+                            let texts = field_texts(row, field);
+                            let form = text
+                                .iter()
+                                .find(|(id, _)| *id == field.id)
+                                .map_or(TextKeys::Collated, |(_, form)| *form);
+                            record_value_keys(field.data_type, &texts, order, form)
+                                .into_iter()
+                                .collect()
+                        })?;
                     for id in finders::join_on_keys(&targets, &rows, &predicates).iter() {
                         related.insert(id);
                     }
@@ -1182,14 +1234,15 @@ impl NativeProvider {
             .ok_or_else(|| DataError::new("A related table is missing."))
     }
 
-    /// The records `ids` of `table` as join rows: each record's `keys` of
-    /// each of `fields`, read in batches.
+    /// The records `ids` of `table` as join rows: under each slot label of
+    /// `slots` (label, field), the record's `keys` (by the slot's place) of
+    /// that field, read in batches.
     fn join_rows(
         &mut self,
         table: &Table,
         ids: &[u64],
-        fields: &[u64],
-        keys: impl Fn(&om_hbam::Field, &om_hbam::record::Record) -> Vec<Vec<u8>>,
+        slots: &[(u64, u64)],
+        keys: impl Fn(usize, &om_hbam::Field, &om_hbam::record::Record) -> Vec<Vec<u8>>,
     ) -> Result<Vec<finders::JoinRow>, DataError> {
         let session = self.session_mut()?;
         let mut rows = Vec::with_capacity(ids.len());
@@ -1197,11 +1250,12 @@ impl NativeProvider {
             let data = download_records(session, table.id, batch)?;
             let tree = download_tree(std::slice::from_ref(&data))?;
             for row in om_hbam::record::records(&tree, table.id) {
-                let row_keys = fields
+                let row_keys = slots
                     .iter()
-                    .map(|&id| {
-                        let found = table.field(id).map(|field| keys(field, &row));
-                        (id, found.unwrap_or_default())
+                    .enumerate()
+                    .map(|(at, &(slot, id))| {
+                        let found = table.field(id).map(|field| keys(at, field, &row));
+                        (slot, found.unwrap_or_default())
                     })
                     .collect();
                 rows.push((row.id, row_keys));
@@ -1518,28 +1572,69 @@ fn field_texts(row: &om_hbam::record::Record, field: &om_hbam::Field) -> Vec<Str
         .collect()
 }
 
-/// The value-index keys of a stored value (one per line), as a join
-/// compares them, text in `form` (the near field's index form); empty
-/// lines have none (an empty value never relates, file-metadata.md 4).
-fn join_keys(
+/// English (21), whose keys a cartesian predicate's values are given in.
+const ENGLISH: u32 = 21;
+
+/// The first of the source slot labels a join gives a far field's second
+/// and later projections (query-program.md 9.2: B only labels the keys of
+/// a source row), above any field id.
+const OWN_SLOTS: u64 = 1 << 48;
+
+/// How a related find keys a far field's values for one predicate (#573):
+/// in the near field's data type and its index language (0 the file's).
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+struct Projection {
+    field: u64,
     data_type: om_hbam::DataType,
-    value: &str,
+    language: u32,
+}
+
+/// The keys a far field's stored repetitions `texts` give a join under
+/// `projection`: each nonempty value converted to the near field's type
+/// and keyed as its value index keys it, lines as stored
+/// ([`record_value_keys`]), less the empty value's key and a value's that
+/// does not convert, which relate nothing (file-metadata.md 4,
+/// query-program.md 9.1). `None` when a text value's key in the near
+/// field's language is not one OpenMaker builds for it (the tailored
+/// languages, Japanese text with kana or kanji: [`TextKeys::of_language_for`]).
+fn related_keys(
+    projection: Projection,
+    texts: &[String],
     order: DateOrder,
-    form: TextKeys,
-) -> Vec<Vec<u8>> {
+    file_language: u32,
+) -> Option<Vec<Vec<u8>>> {
     use om_hbam::DataType;
-    value
-        .split(['\r', '\n'])
-        .map(str::trim)
-        .filter(|line| !line.is_empty())
-        .filter_map(|line| match data_type {
-            DataType::Number => om_collate::number_key(line),
-            DataType::Date => om_collate::date_key(line, order),
-            DataType::Time => om_collate::time_key(line),
-            DataType::Timestamp => om_collate::timestamp_key(line, order),
-            _ => form.key(line),
-        })
-        .collect()
+    let filled: Vec<String> = texts.iter().filter(|t| !t.is_empty()).cloned().collect();
+    if filled.is_empty() {
+        return Some(Vec::new());
+    }
+    let typed = matches!(
+        projection.data_type,
+        DataType::Number | DataType::Date | DataType::Time | DataType::Timestamp
+    );
+    let form = if typed {
+        TextKeys::Collated
+    } else {
+        let known = om_data::rules::value_text_keys(projection.language, file_language);
+        let language = match projection.language {
+            0 => file_language,
+            language => language,
+        };
+        let mut forms = filled
+            .iter()
+            .map(|text| known.or_else(|| TextKeys::of_language_for(language, text)));
+        let form = forms.next()??;
+        if !forms.all(|other| other == Some(form)) {
+            return None;
+        }
+        form
+    };
+    Some(
+        record_value_keys(projection.data_type, &filled, order, form)
+            .into_iter()
+            .filter(|key| key != EMPTY_TEXT_KEY && key != INVALID_KEY)
+            .collect(),
+    )
 }
 
 /// The error slot of a failed op86 reply, `[00] = 02 <u16>` (query-program.md

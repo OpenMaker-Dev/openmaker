@@ -960,12 +960,18 @@ in those languages, whose word breaks follow their locale
 find in a tailored language fail with 3 until the host has the index.
 
 A find on a related field walks each relationship back from the related
-records (query-program.md 6.5): their match values are keyed in the form
-of the near match field's value index they are compared with, so a match
+records (query-program.md 6.5): their match values, every stored
+repetition and each line as stored, are converted to the near match
+field's type and keyed as its value index keys them (9.1, 7.2), so a match
 field indexed in Unicode or System relates as it holds
-([#573](https://github.com/OpenMaker-Dev/openmaker/issues/573)). A near
-text match field in a tailored language fails such a find with 3, with
-the host's index or without.
+([#573](https://github.com/OpenMaker-Dev/openmaker/issues/573)). A far
+field compared with near fields of different types or forms is sent once
+for each, under a source slot of its own (9.2). Japanese text without kana
+or kanji keys as in English (7.2). A related value that needs a key
+OpenMaker does not build (another tailored language, or Japanese text with
+kana or kanji) fails the find with 3, with the host's index or without; a
+request that finds no related record relates nothing, with nothing to
+key.
 
 **Limits.** List view shows only the current request, as one body row.
 In the padded form a word's start is matched by its primary weights alone
