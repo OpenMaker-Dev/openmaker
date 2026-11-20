@@ -305,10 +305,15 @@ Server Find mode:
   literally (`om_data::found::matching_criterion`), so `a*b` finds only
   `a*b`. This request is OpenMaker's reading of Claris's description; the
   one FileMaker builds is not captured. On the server a number is written
-  with `.` and a time or timestamp with its seconds, so the criterion is
-  that value and not the whole minute. From Find mode the server switches
-  to Browse first, as Claris documents. A field of another occurrence, a
-  global and a summary field fail with 3 on the server.
+  out in full with `.` (`1000000000`, not `1.0E+9`) and a time or
+  timestamp with its seconds, so the criterion is that value and not the
+  whole minute. Its criteria compare whole seconds, so a time or timestamp
+  with a fraction of a second fails with 3 rather than finding its
+  neighbours. From Find mode the server switches to Browse first, as
+  Claris documents, and reads the record current when Find mode was
+  entered (inferred: FileMaker's record after Find mode is not measured).
+  A field of another occurrence, a global and a summary field fail with 3
+  on the server.
 - Globals read their value with no current record, and sessions start
   from the file's stored globals.
 - A criterion longer than 10,000 characters cannot be read (3), on the

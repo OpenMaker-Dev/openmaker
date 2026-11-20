@@ -288,6 +288,15 @@ fn scripts() -> Vec<Script> {
             find_matching(vec![ScriptStep::new(22)], Some(NAME), 1),
         ),
         script(49, "Matching Count", find_matching(vec![], Some(COUNT), 1)),
+        script(
+            50,
+            "Matching from Find mode on record 2",
+            find_matching(
+                vec![fixture::go_to_record(4), ScriptStep::new(22)],
+                Some(NAME),
+                1,
+            ),
+        ),
     ]
 }
 
@@ -449,7 +458,8 @@ fn server_quick_find_searches_the_layouts_quick_find_fields() {
 /// Find Matching Records on the server: the records holding the current
 /// record's value of the field, record 1's "Write tests" in Name, its
 /// empty Status (records 1 to 4) and its Count 3. From Find mode it
-/// switches to Browse first (Claris). Without a field or a focus it is
+/// switches to Browse first (Claris) and reads the record current before,
+/// record 2's "Ship". Without a field or a focus it is
 /// 102, the found set (after a Quick Find, "Ship" alone) kept. It ran into
 /// error 3 before.
 #[test]
@@ -462,4 +472,5 @@ fn server_find_matching_finds_the_current_records_value() {
     assert_eq!(run(&mut client, 46), (102, "102:1:Ship".into()));
     assert_eq!(run(&mut client, 48), (0, "0:1:Write tests".into()));
     assert_eq!(run(&mut client, 49), (0, "0:1:Write tests".into()));
+    assert_eq!(run(&mut client, 50), (0, "0:1:Ship".into()));
 }

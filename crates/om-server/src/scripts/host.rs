@@ -2414,15 +2414,15 @@ fn related_list_refused() -> HostError {
     HostError::Error(ErrorCode(rules::error::UNAVAILABLE))
 }
 
-/// Today in the server's time zone.
 /// `value` as Find Matching Records writes it for the server's finds to read
-/// exactly: a number with `.` as its decimal separator, as the server's
-/// criteria read numbers; a time or timestamp with its seconds even when
-/// they are zero, since the display form drops them and would read as the
-/// whole minute. A fraction of a second is left out, so the criterion is
-/// the whole second; a time past 24 hours is no time of day and fails as a
-/// criterion (3).
-fn matching_text(value: &Value, cx: &Ctx) -> String {
+/// exactly: a number written out in full with `.` as its decimal separator,
+/// as the server's criteria read numbers (not `1.0E+9`); a time or
+/// timestamp with its seconds even when they are zero, since the display
+/// form drops them and would read as the whole minute. `None` for a time
+/// with a fraction of a second: the server's criteria compare whole
+/// seconds, so it would find its neighbours too. A time past 24 hours is
+/// no time of day and fails as a criterion (3).
+fn matching_text(value: &Value, cx: &Ctx) -> Option<String> {
     let clock = |micros: i128| {
         let seconds = micros.div_euclid(1_000_000);
         format!(
@@ -2432,18 +2432,21 @@ fn matching_text(value: &Value, cx: &Ctx) -> String {
             seconds % 60
         )
     };
-    match value {
-        Value::Number(n) | Value::NumberText(n, _) => n.to_text_with('.'),
-        Value::Time(t) => clock(t.micros()),
-        Value::Timestamp(t) => format!(
+    let whole = |micros: i128| micros.rem_euclid(1_000_000) == 0;
+    Some(match value {
+        Value::Number(n) | Value::NumberText(n, _) => n.to_plain_text_with('.'),
+        Value::Time(t) if whole(t.micros()) => clock(t.micros()),
+        Value::Timestamp(t) if whole(t.time_of_day().micros()) => format!(
             "{} {}",
             t.date().format(cx.locale),
             clock(t.time_of_day().micros())
         ),
+        Value::Time(_) | Value::Timestamp(_) => return None,
         other => other.to_text(cx).into_string(),
-    }
+    })
 }
 
+/// Today in the server's time zone.
 fn today() -> Date {
     let now = jiff::Zoned::now();
     Date::from_ymd(i64::from(now.year()), now.month() as u32, now.day() as u32)
@@ -3941,7 +3944,10 @@ impl FoundSets for ServerHost {
     /// Perform Find does with that one request. Without a field it is 102,
     /// as on the desktop. The step runs in Browse mode: from Find mode it
     /// switches first, as Enter Browse Mode does (Claris, "Find Matching
-    /// Records"). A field of another occurrence is a related criterion,
+    /// Records"), and takes the value of the record current when Find mode
+    /// was entered. That is inferred: this server's Enter Browse Mode
+    /// returns to the first record, and FileMaker's record after Find mode
+    /// is not measured. A field of another occurrence is a related criterion,
     /// which server finds do not support (3); a global or summary field is
     /// no criterion at all (3; FileMaker's answer is not measured).
     fn find_matching(&mut self, field: Option<FieldRef>, kind: FindKind) -> HostResult {
@@ -3961,7 +3967,10 @@ impl FoundSets for ServerHost {
             return Err(HostError::Unsupported);
         }
         if window.mode == Mode::Find {
+            let before = window.browse_current;
             self.enter_mode(Mode::Browse, false, None)?;
+            let window = self.window_mut()?;
+            window.current = before.min(window.found.len().saturating_sub(1));
         }
         let value = self.value_of(field)?;
         let field_kind = match value.value_type() {
@@ -3972,7 +3981,7 @@ impl FoundSets for ServerHost {
             ValueType::Timestamp => om_data::FieldKind::Timestamp,
             ValueType::Container => om_data::FieldKind::Container,
         };
-        let text = matching_text(&value, &self.cx());
+        let text = matching_text(&value, &self.cx()).ok_or(HostError::Unsupported)?;
         let mut request = Request::default();
         request.set(
             field.field,
