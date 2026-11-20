@@ -3193,12 +3193,15 @@ fn missing_index_never_indexed_text_is_scanned_but_unknown_formats_are_explicit(
                 "type={data_type}, language={language}, {candidate:?}: {error}"
             );
             if code == 3 {
-                // Refused by the scan, or before any lookup by a source
-                // language OpenMaker does not key (#571).
+                // Refused by the scan, before any lookup by a source
+                // language OpenMaker does not key (#571), or as a value of
+                // its type OpenMaker cannot key (#591: `a` is no number,
+                // date or time).
                 let message = error.to_string();
                 assert!(
                     message.contains("without the host's value index")
-                        || message.contains("the source of a value list"),
+                        || message.contains("the source of a value list")
+                        || message.contains("is not one OpenMaker can look up"),
                     "{error}"
                 );
             }

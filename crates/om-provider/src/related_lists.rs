@@ -673,17 +673,19 @@ impl NativeProvider {
             }
             if !found {
                 // The list keeps one of the values a calculation compares
-                // equal (`FileCalc::list_entries`): where its field's keys
-                // tell those apart (case or accents in Unicode raw or
-                // standard, `v` and `w` in a Swedish file's English keys),
-                // the value it left out for an equal one may be this one.
+                // equal (`FileCalc::list_entries`), as values of its field's
+                // type: where its field's keys tell those apart (case or
+                // accents in Unicode raw or standard, `v` and `w` in a
+                // Swedish file's English keys), the value it left out for an
+                // equal one may be this one. A number list's `1e3` is not
+                // `1é3` (13), as the list compares them (#591).
+                let listed_type = schema
+                    .field(primary, listed)
+                    .map_or(ValueType::Text, |def| def.value_type);
+                let as_listed = |value: &str| om_data::host::stored_value(value, listed_type, &cx);
                 let equal = |listed: &str| {
                     matches!(
-                        om_data::calc::ops::compare(
-                            &om_data::calc::Value::text(listed),
-                            &om_data::calc::Value::text(&text),
-                            &cx
-                        ),
+                        om_data::calc::ops::compare(&as_listed(listed), &as_listed(&text), &cx),
                         om_data::calc::ops::Comparison::Ordered(std::cmp::Ordering::Equal)
                     )
                 };
