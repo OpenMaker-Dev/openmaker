@@ -20,8 +20,9 @@
 //! as a picture, 700 a file of the wrong type for Insert PDF or Insert
 //! Audio/Video, 2 a file over [`MAX_INSERT`].
 //!
-//! A step without a path asks for the file in an in-app dialog
-//! ([`Prompt::ContainerFile`]; a path, not the system's file panel), once
+//! A step without a path asks for the file ([`Prompt::ContainerFile`]): in
+//! the system's open panel on macOS (`crate::file_panel`), elsewhere and in
+//! the GUI tests in an in-app dialog that takes a path, once
 //! the field can take it: a stored container field of the window's own
 //! table in Browse mode, on a connection that may change the record. The
 //! dialog's answer applies only to what it was opened for
@@ -188,10 +189,13 @@ impl WorkerHost<'_> {
             field,
             export: false,
             path: String::new(),
+            chosen: None,
         };
-        let line = self.choose_file(dialog, context.as_ref())?;
         let documents = self.s.file.data_files.folders.documents.clone();
-        files::existing(&[line], &documents, false).map_err(Into::into)
+        match self.choose_file(dialog, context.as_ref())? {
+            Chosen::Native(path) => Ok(path),
+            Chosen::Line(line) => files::existing(&[line], &documents, false).map_err(Into::into),
+        }
     }
 
     /// The related field an Insert step's file goes into, or Export Field
@@ -286,10 +290,13 @@ impl WorkerHost<'_> {
                 field: self.field_label(reference, &def.name),
                 export: false,
                 path: String::new(),
+                chosen: None,
             };
-            let line = self.choose_file(dialog, Some(&context))?;
             let documents = self.s.file.data_files.folders.documents.clone();
-            files::existing(&[line], &documents, false)?
+            match self.choose_file(dialog, Some(&context))? {
+                Chosen::Native(path) => path,
+                Chosen::Line(line) => files::existing(&[line], &documents, false)?,
+            }
         } else {
             let family = match request.kind {
                 InsertKind::File => "file",
@@ -594,8 +601,12 @@ impl WorkerHost<'_> {
             field: self.field_label(reference, &context.name),
             export: true,
             path: format!("file:{}", output_name(name.as_deref(), &context.name)),
+            chosen: None,
         };
-        let line = self.choose_file(dialog, Some(&context))?;
+        let line = match self.choose_file(dialog, Some(&context))? {
+            Chosen::Native(path) => files::file_line(&path),
+            Chosen::Line(line) => line,
+        };
         let documents = self.s.file.data_files.folders.documents.clone();
         let lines = [line];
         // Before anything is created (folders included): replacing a file
@@ -676,14 +687,14 @@ impl WorkerHost<'_> {
         Ok(())
     }
 
-    /// Show `dialog` and wait: the path line the user chose, `Err` with 1
-    /// when cancelled (or the session was interrupted), and with 3 when
+    /// Show `dialog` and wait: the file the user chose, `Err` with 1 when
+    /// cancelled (or the session was interrupted), and with 3 when
     /// `context` no longer holds.
     fn choose_file(
         &mut self,
         dialog: ContainerFileDialog,
         context: Option<&DialogContext>,
-    ) -> HostResult<String> {
+    ) -> HostResult<Chosen> {
         let Some(Answer::ContainerFile(Some(answer))) = self.ask(Prompt::ContainerFile(dialog))
         else {
             return Err(ErrorCode::CANCELED.into());
@@ -691,10 +702,13 @@ impl WorkerHost<'_> {
         if let Some(context) = context {
             self.check_context(context)?;
         }
+        if let Some(path) = answer.chosen {
+            return Ok(Chosen::Native(path));
+        }
         if answer.path.trim().is_empty() {
             return Err(ErrorCode::CANCELED.into());
         }
-        Ok(files::chosen_path(&answer.path))
+        Ok(Chosen::Line(files::chosen_path(&answer.path)))
     }
 
     /// The definition of the window's own field `name`.
@@ -823,6 +837,14 @@ fn read_inserted(path: &Path, kind: InsertKind) -> Result<Container, ErrorCode> 
         _ => {}
     }
     Ok(value)
+}
+
+/// The file a container dialog's answer names.
+enum Chosen {
+    /// Typed in the in-app dialog: a path list line.
+    Line(String),
+    /// Chosen in the platform's open panel: the path as the panel named it.
+    Native(PathBuf),
 }
 
 /// The file name Export Field Contents' dialog offers: the container's own

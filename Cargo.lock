@@ -4581,6 +4581,7 @@ version = "0.0.0"
 name = "om-gui"
 version = "0.0.0"
 dependencies = [
+ "block2 0.6.2",
  "cap",
  "eframe",
  "egui",
