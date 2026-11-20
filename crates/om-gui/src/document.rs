@@ -4820,12 +4820,11 @@ fn paint_object_repetition(
             };
             // A calculated icon (FileMaker Pro 26.1) is the SVG its formula
             // gives on the record, in the library icon's place.
-            let calculated = object.button.as_ref().is_some_and(|b| b.calculated_icon())
-                || object
-                    .popover_button
-                    .as_ref()
-                    .is_some_and(|b| b.calculated_icon());
-            let svg = calculated.then(|| calc_state.icon_svg.clone().unwrap_or_default());
+            // Not evaluated (Find mode, or until its data is read): the
+            // library icon, if any [I: what Find mode shows is unmeasured].
+            let svg = object
+                .active_icon_formula()
+                .and_then(|_| calc_state.icon_svg.clone());
             // A library icon shows only with its key; a calculated one
             // always, its size the button's icon size.
             let shown = icon.filter(|(key, _)| svg.is_some() || *key != 0);
@@ -7297,17 +7296,27 @@ fn paint_library_image(
     }
 }
 
-/// A button's calculated icon `svg` (FileMaker Pro 26.1) over `rect`, an
-/// icon's SVG tinted as a library icon's is. Text that is not an SVG
-/// document shows a warning sign, as FileMaker Pro shows a warning icon for
-/// SVG it does not support (Claris); the sign's look, and which SVG
-/// FileMaker Pro refuses, are unmeasured. An SVG the loader cannot read
-/// draws nothing.
+/// The calculated icons the window keeps drawn, by URI, with their
+/// tinted SVG bytes, the most recently drawn last
+/// (`paint_calculated_icon`). Past [`CALCULATED_ICONS`] the oldest is
+/// forgotten, with its bytes, textures and rasters in egui's loaders and
+/// the SVG worker's cache: each distinct result gets a URI of its own.
+#[derive(Clone, Default)]
+struct CalculatedIcons(std::collections::VecDeque<(String, std::sync::Arc<[u8]>)>);
+
+/// How many calculated icons stay loaded at once (OpenMaker's bound).
+const CALCULATED_ICONS: usize = 64;
+
+/// A button's calculated icon, the SVG text `svg` its formula gave
+/// (`ObjectState::icon_svg`), over `rect`, tinted as the button's library
+/// icon is (OpenMaker's choice). Text that is empty (none, or longer than
+/// `om_data::host::layout::MAX_ICON_SVG`) or that the SVG worker cannot
+/// draw shows a warning sign instead, as FileMaker Pro shows a warning
+/// icon for SVG it does not support (Claris); the sign's look, and which
+/// SVG FileMaker Pro refuses, are unmeasured.
 fn paint_calculated_icon(ui: &Ui, svg: &str, rect: Rect, tint: Option<Color32>) {
     use std::hash::{Hash, Hasher};
-    let text = svg.trim_start_matches('\u{feff}').trim_start();
-    let is_svg = (text.starts_with("<svg") || text.starts_with("<?xml")) && text.contains("<svg");
-    if !is_svg {
+    let warning = || {
         ui.painter().text(
             rect.center(),
             egui::Align2::CENTER_CENTER,
@@ -7315,25 +7324,69 @@ fn paint_calculated_icon(ui: &Ui, svg: &str, rect: Rect, tint: Option<Color32>) 
             FontId::proportional(rect.height().max(1.0)),
             tint.unwrap_or(theme::TEXT),
         );
+    };
+    if svg.trim().is_empty() {
+        warning();
         return;
     }
-    let image = om_layout::LibraryImage {
-        format: om_layout::LibraryImageFormat::Svg,
-        data: svg.as_bytes().to_vec(),
-    };
-    let data = tinted_image(&image, tint);
     let mut hash = std::collections::hash_map::DefaultHasher::new();
-    data.hash(&mut hash);
+    svg.hash(&mut hash);
+    tint.hash(&mut hash);
     let uri = format!(
         "bytes://openmaker/calculated-icon-{:016x}.svg",
         hash.finish()
     );
-    egui::Image::new(egui::ImageSource::Bytes {
+    let id = egui::Id::unique("openmaker calculated icons");
+    let (bytes, forgotten) = ui.data_mut(|data| {
+        let icons = data.get_temp_mut_or_default::<CalculatedIcons>(id);
+        let known = icons
+            .0
+            .iter()
+            .position(|(known, _)| *known == uri)
+            .and_then(|at| icons.0.remove(at));
+        // Copied and tinted once, as it first shows.
+        let bytes = known.map_or_else(
+            || {
+                let image = om_layout::LibraryImage {
+                    format: om_layout::LibraryImageFormat::Svg,
+                    data: svg.as_bytes().to_vec(),
+                };
+                std::sync::Arc::<[u8]>::from(tinted_image(&image, tint))
+            },
+            |(_, bytes)| bytes,
+        );
+        icons.0.push_back((uri.clone(), bytes.clone()));
+        let forgotten = (icons.0.len() > CALCULATED_ICONS)
+            .then(|| icons.0.pop_front())
+            .flatten();
+        (bytes, forgotten)
+    });
+    if let Some((old, _)) = forgotten {
+        ui.ctx().forget_image(&old);
+    }
+    let source = egui::ImageSource::Bytes {
         uri: uri.into(),
-        bytes: data.into(),
-    })
-    .show_loading_spinner(false)
-    .paint_at(ui, rect);
+        bytes: bytes.into(),
+    };
+    // As `Image::paint_at` asks for it: the SVG worker draws exact sizes.
+    let ppp = ui.pixels_per_point();
+    let pixels = (ppp * egui::emath::GuiRounding::round_to_pixels(rect, ppp).size()).round();
+    let hint = egui::SizeHint::Size {
+        width: pixels.x as u32,
+        height: pixels.y as u32,
+        maintain_aspect_ratio: false,
+    };
+    if source
+        .clone()
+        .load(ui.ctx(), egui::TextureOptions::default(), hint)
+        .is_err()
+    {
+        warning();
+        return;
+    }
+    egui::Image::new(source)
+        .show_loading_spinner(false)
+        .paint_at(ui, rect);
 }
 
 /// A library image's encoded bytes, an SVG's tinted, under a URI naming

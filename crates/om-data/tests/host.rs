@@ -431,6 +431,15 @@ fn layout_calculations_hide_format_and_label_objects() {
     assert_eq!(icon(&mut host, &button).as_deref(), Some("<svg>Ada"));
     button.button.as_mut().unwrap().flags = 0;
     assert_eq!(icon(&mut host, &button), None);
+    // Text past `MAX_ICON_SVG` (128 KiB here) is not kept: empty, the
+    // warning.
+    button.button.as_mut().unwrap().flags = 0x4;
+    button.calcs.button_icon = field(
+        "Let ( [ a = \"<svg>xxxxxxxxxxx\" ; b = a & a ; c = b & b ; d = c & c ; e = d & d ; \
+         f = e & e ; g = f & f ; h = g & g ; i = h & h ; j = i & i ; k = j & j ; l = k & k ; \
+         m = l & l ; n = m & m ] ; n )",
+    );
+    assert_eq!(icon(&mut host, &button).as_deref(), Some(""));
     assert_eq!(
         merge_text(
             &mut host,

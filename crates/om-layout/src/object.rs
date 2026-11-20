@@ -821,12 +821,54 @@ impl LayoutObject {
     /// whatever label the object stores; every other button and object shows
     /// its text.
     pub fn shows_label(&self) -> bool {
+        // An icon: a library image's key, or a calculated icon.
         let icon = match (&self.button, &self.popover_button) {
-            (Some(button), _) => (button.library_key, button.display_type),
-            (None, Some(button)) => (button.library_key, button.display_type),
+            (Some(button), _) => (
+                button.library_key != 0 || button.calculated_icon(),
+                button.display_type,
+            ),
+            (None, Some(button)) => (
+                button.library_key != 0 || button.calculated_icon(),
+                button.display_type,
+            ),
             (None, None) => return true,
         };
-        !matches!(icon, (key, 1) if key != 0)
+        !matches!(icon, (true, 1))
+    }
+
+    /// The calculated icon the object draws: its `KButtonIconSvgCalc`
+    /// formula ([`ObjectCalcs::button_icon`]) when it is a button or
+    /// popover button with the calculated-icon flag set
+    /// ([`ButtonObject::calculated_icon`]). A formula stored with the flag
+    /// clear is kept, and neither evaluated nor drawn.
+    pub fn active_icon_formula(&self) -> Option<&om_formula::Formula> {
+        let active = self
+            .button
+            .as_ref()
+            .is_some_and(ButtonObject::calculated_icon)
+            || self
+                .popover_button
+                .as_ref()
+                .is_some_and(PopoverButtonObject::calculated_icon);
+        self.calcs.button_icon.as_ref().filter(|_| active)
+    }
+
+    /// Whether a calculation the object uses could not be read
+    /// ([`ObjectCalcs::undecodable`]): a calculated icon's only while the
+    /// object draws it ([`Self::active_icon_formula`]).
+    pub fn has_undecodable_calcs(&self) -> bool {
+        let icon_active = self
+            .button
+            .as_ref()
+            .is_some_and(ButtonObject::calculated_icon)
+            || self
+                .popover_button
+                .as_ref()
+                .is_some_and(PopoverButtonObject::calculated_icon);
+        self.calcs
+            .undecodable
+            .iter()
+            .any(|key| icon_active || *key != crate::calcs::BUTTON_ICON)
     }
 
     /// The bound field, for field objects.
