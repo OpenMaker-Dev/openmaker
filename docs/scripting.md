@@ -434,8 +434,16 @@ Open items:
   - `FieldAnnotation` and `FieldDisplayNames` answer empty text, as for a
     field without them: no file read so far stores either, so their
     storage is unknown.
-  - Also open: AI (`GetEmbedding`, `GetTokenCount`) and mobile functions
-    through each host, and the TextEncode transliteration table.
+  - OpenMaker Server answers `GetAddonInfo`, `GetSensor`,
+    `GetAVPlayerAttribute` and `Furigana` as FileMaker Server's script
+    engine does (calc-functions.md, s45): the add-on interface's version
+    for any name (error 3 for empty text), error 1208, empty, and the text
+    unchanged (the engine's answer without its reading dictionary). The
+    desktop still answers them with error 1225: FileMaker Pro's answers
+    are unmeasured ([#79](https://github.com/OpenMaker-Dev/openmaker/issues/79)).
+  - Also open: AI (`GetEmbedding`, `GetTokenCount`), the mobile functions
+    (`Location`, `LocationValues`, `RangeBeacons`) through each host, and
+    the TextEncode transliteration table.
 - Import and export:
   - Shift-JIS, Big-5 and EUC-KR differ for some letters, and `.xlsx`
     times match to about 15 digits.

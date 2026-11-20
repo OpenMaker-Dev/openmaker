@@ -196,12 +196,31 @@ fn performs_scripts_on_the_server() {
             fixture::server_work(),
             fixture::failing(),
             fixture::slow(1.5),
+            // What FileMaker Server's script engine answers for an add-on,
+            // a sensor, the media player and Furigana without its
+            // dictionary (s45, calc-functions.md).
+            fixture::script(
+                4,
+                "Device functions",
+                vec![fixture::exit_with(
+                    "GetAddonInfo ( \"x\" ) & \"|\" & EvaluationError ( GetAddonInfo ( \"\" ) ) & \
+                     \"|\" & EvaluationError ( GetSensor ( \"battery\" ) ) & \"|\" & \
+                     GetAVPlayerAttribute ( \"playbackState\" ) & \"|\" & \
+                     EvaluationError ( GetAVPlayerAttribute ( \"playbackState\" ) ) & \"|\" & \
+                     Furigana ( \"abc\" )",
+                )],
+            ),
         ],
         true,
     );
     let port = start(&file, None);
     let mut client = logged_in(port, "requester");
     let mut other = logged_in(port, "other");
+    let device = client.perform_script_on_server(4, "", true).unwrap();
+    assert_eq!(
+        (device.error, device.result.as_str()),
+        (0, "{\r\t\"APIVers\" : 2\r}|3|1208||0|abc")
+    );
 
     // Wait for completion: the reply carries the Exit Script result and the
     // script's final Get ( LastError ).

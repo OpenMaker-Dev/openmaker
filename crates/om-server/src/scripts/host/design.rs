@@ -10,7 +10,7 @@
 use std::sync::Arc;
 
 use om_calc::eval::{default_call, Context, HostFunction};
-use om_calc::{CalcError, Value};
+use om_calc::{CalcError, Ctx, Value};
 use om_data::host::layout_objects::{self, ObjectState, ObjectWindow};
 use om_data::host::{read_field, CalcSchema, FileCalc, LayoutEntry};
 use om_hbam::slot::uint_segment;
@@ -118,6 +118,21 @@ impl ServerHost {
             }
             HostFunction::Named(name) if name.eq_ignore_ascii_case("GetRecordIDsFromFoundSet") => {
                 return self.record_ids_from_found_set(args, context);
+            }
+            // As FileMaker Server's script engine answers them (script
+            // oracle s45; calc-functions.md, "GetRecordIDsFromFoundSet on
+            // FileMaker Server").
+            HostFunction::Named(name) if name.eq_ignore_ascii_case("GetAddonInfo") => {
+                return server_function_answer(ServerFunction::AddonInfo, args, &self.cx());
+            }
+            HostFunction::Named(name) if name.eq_ignore_ascii_case("GetSensor") => {
+                return server_function_answer(ServerFunction::Sensor, args, &self.cx());
+            }
+            HostFunction::Named(name) if name.eq_ignore_ascii_case("GetAVPlayerAttribute") => {
+                return server_function_answer(ServerFunction::PlayerAttribute, args, &self.cx());
+            }
+            HostFunction::Named(name) if name.eq_ignore_ascii_case("Furigana") => {
+                return server_function_answer(ServerFunction::Furigana, args, &self.cx());
             }
             _ => {}
         }
@@ -302,6 +317,41 @@ impl ObjectState for WindowState<'_> {
                 .unwrap_or_default(),
         };
         om_data::host::layout::holds(host, &hide, &context)
+    }
+}
+
+/// A function FileMaker Server's script engine answers without the
+/// device, add-on or dictionary it reads on a client (script oracle s45).
+#[derive(Clone, Copy)]
+enum ServerFunction {
+    AddonInfo,
+    Sensor,
+    PlayerAttribute,
+    Furigana,
+}
+
+/// What FileMaker Server's script engine answered (s45):
+/// - `GetAddonInfo`: the add-on interface's version for any name, `{` CR
+///   TAB `"APIVers" : 2` CR `}`; empty text is error 3;
+/// - `GetSensor`: error 1208, as on a device without the sensor;
+/// - `GetAVPlayerAttribute`: empty, no error, nothing playing;
+/// - `Furigana`: its text unchanged, as the engine answers without its
+///   reading dictionary (a `kakasi` program it calls) [O: on a server
+///   without it; one with it answers readings, unmeasured].
+fn server_function_answer(
+    function: ServerFunction,
+    args: &[Value],
+    cx: &Ctx<'_>,
+) -> Result<Value, CalcError> {
+    let text = || args.first().map(|value| value.to_text(cx).into_string());
+    match function {
+        ServerFunction::AddonInfo if text().unwrap_or_default().is_empty() => {
+            Err(CalcError::from_code(3).expect("nonzero"))
+        }
+        ServerFunction::AddonInfo => Ok(Value::text("{\r\t\"APIVers\" : 2\r}")),
+        ServerFunction::Sensor => Err(CalcError::from_code(1208).expect("nonzero")),
+        ServerFunction::PlayerAttribute => Ok(Value::empty_text()),
+        ServerFunction::Furigana => Ok(Value::text(text().unwrap_or_default())),
     }
 }
 
