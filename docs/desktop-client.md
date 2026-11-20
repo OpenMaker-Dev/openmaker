@@ -293,9 +293,9 @@ waits while another dialog, alert or confirmation is open (Settings, a
 script's dialog, Delete Layout's question, a related file's sign-in, a
 required password change), its countdown not started, so
 its Close, Return and Escape are its own [I: FileMaker Pro shows it over
-them]. The providers of every open file read their hosts' calls each
-second while idle (`DataProvider::take_host_messages`), so a message shows
-within about a second, not at the session's next exchange. That read never
+them]. The providers of every open file read their hosts' calls once a
+second between requests (`DataProvider::take_host_messages`), so a message
+shows within about a second, not at the session's next exchange. That read never
 waits behind another exchange on the connection (a Tickle waiting for a
 slow host), reads at most 32 messages, each for at most 5 milliseconds
 however slowly it arrives, and writes its answers within 2 seconds or

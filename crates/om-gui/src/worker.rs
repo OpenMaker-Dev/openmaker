@@ -887,6 +887,10 @@ fn serve(
     // The epoch and the egui context of the UI's last request: a loss
     // noticed while idle is told as of it, and wakes that context.
     let (mut epoch, mut ctx) = (0, None::<egui::Context>);
+    // When the hosts' calls were last read between requests: once a second
+    // at most, so that a request does not wait for that read after the one
+    // before it (each file's read waits for up to its first message).
+    let mut host_messages_read = std::time::Instant::now();
     loop {
         let wait = scripts
             .next_wake(&files)
@@ -935,7 +939,10 @@ fn serve(
         }
         if let Some(ctx) = &ctx {
             scripts.notice_loss(provider.as_ref(), responses, epoch, ctx, &mut files);
-            scripts.tell_host_messages(provider.as_mut(), responses, epoch, ctx, &mut files);
+            if host_messages_read.elapsed() >= CONNECTION_POLL {
+                scripts.tell_host_messages(provider.as_mut(), responses, epoch, ctx, &mut files);
+                host_messages_read = std::time::Instant::now();
+            }
         }
     }
     files.close_all();
