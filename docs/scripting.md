@@ -162,30 +162,59 @@ the message or cannot be started.
 Send Mail by SMTP sends the message itself, on the desktop and on
 OpenMaker Server (`om_url::send_smtp`), with the step's SMTP options
 (script-steps.md 12.3): the sender's name and address, Reply-To, the
-server and port (25 when empty, the SMTP Options dialog's default [I]),
-Encryption (none; SSL, TLS from the start; TLS, STARTTLS) and
-Authentication (none; plain password, AUTH PLAIN or else LOGIN; CRAM-MD5),
-the calculations evaluated in the current record. TLS checks the server's
-certificate against the webpki roots, as Insert from URL does. Esc, Cmd-.
-and a closing window end it on the desktop (1), and the script's time
-limit and abort on the server. The message is plain text in UTF-8: a
-non-ASCII name or subject as RFC 2047 encoded words, and the body in
-base64 unless it is ASCII with short lines. BCC addresses go in the
-envelope only. The client names itself to the server by its address
-(`EHLO [address]`), not by the computer's name. The codes are FileMaker's
-SMTP codes matched by their names, OpenMaker's reading
-([#89](https://github.com/OpenMaker-Dev/openmaker/issues/89)):
+server and port, Encryption (none; SSL, TLS from the start; TLS,
+STARTTLS) and Authentication (none; plain password, AUTH PLAIN or else
+LOGIN; CRAM-MD5), the calculations evaluated in the current record. An
+empty port is 25: Claris documents 25 as the
+[SMTP Options](https://help.claris.com/en/pro-help/content/smtp-options.html)
+dialog's default, and that an empty calculated port means it is
+OpenMaker's reading. A stored option calculation that does not decode is
+3. TLS checks the server's certificate against the webpki roots, as
+Insert from URL does. For a certificate it cannot verify, Claris
+documents ([Send Mail](https://help.claris.com/en/pro-help/content/send-mail.html))
+that FileMaker Pro offers to connect anyway or cancel, that with error
+capture on the step behaves as if the server were unavailable, and that
+a server-side script behaves as if the user cancelled. OpenMaker offers
+no choice: the desktop answers as with error capture on, 1502 (which
+code FileMaker gives is unmeasured), and OpenMaker Server 1. With
+Encryption none a plain password goes in clear, as the step says.
+
+Esc, Cmd-. and a closing window end the session on the desktop (1), and
+the script's time limit and abort on the server. Either shuts the
+connection where it is, unless the message's end is already sent: from
+then on the server's answer to it is the step's result, so a message
+the server took is never reported as unsent. The result is given before
+QUIT's reply. Connecting, each reply, each write and the TLS handshake
+have a minute each. The system resolver has no limit of its own here, so
+a lookup that does not answer holds its session until the resolver
+gives up.
+
+The message is plain text in UTF-8. A non-ASCII name or subject becomes
+RFC 2047 encoded words of at most 76 characters a line, and the body is
+base64 unless it is ASCII without NUL in short lines. BCC addresses go in
+the envelope only. One recipient the server refuses stops the message
+for all before DATA (FileMaker's behavior is unmeasured). Addresses must
+be RFC 5321 mailboxes in ASCII. The client names itself to the server by
+its address (`EHLO [address]`), not by the computer's name. The server's
+replies are parsed strictly (one code per reply, CRLF lines), and its
+reply to a login is reported by its code only, since a server may echo
+what it was sent.
+
+The codes are FileMaker's SMTP codes matched by their names, OpenMaker's
+reading ([#89](https://github.com/OpenMaker-Dev/openmaker/issues/89)):
 - 1501: the server refused the user name or password (535).
-- 1502: no connection, or the greeting refused one.
+- 1502: no connection, the greeting refused one, or (desktop) a
+  certificate TLS cannot verify.
 - 1503: TLS failed, or the server offers no STARTTLS for TLS.
-- 1504: the server asks for encryption first (530 naming STARTTLS, 538,
-  or a login offered only after STARTTLS).
+- 1504: the server asks for encryption first: 538, or a 530 that names
+  TLS or encryption. A plain connection whose server lists STARTTLS and
+  no usable AUTH is read as one too [I].
 - 1505: none of the mechanisms the step's authentication can use is
-  offered.
-- 1507: another login failure, or a login the server wants and the step
-  does not make.
+  offered, or the server finds it too weak (534).
+- 1507: another login failure, or a login the server wants (530) and the
+  step does not make.
 - 1506: the server refused the sender, a recipient or the message, did
-  not answer within a minute, or ended the session.
+  not answer in time, or ended the session.
 How FileMaker composes its message, and which code it gives for which
 reply, were not compared.
 

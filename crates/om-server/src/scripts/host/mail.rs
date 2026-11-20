@@ -21,7 +21,14 @@ impl ServerHost {
         let (account, message) =
             om_url::smtp_parts(mail).map_err(|e| HostError::Error(e.code()))?;
         let deadline = self.control.deadline;
-        om_url::send_smtp(&account, &message, deadline, &mut || self.aborted())
-            .map_err(|e| HostError::Error(e.code()))
+        om_url::send_smtp(&account, &message, deadline, &mut || self.aborted()).map_err(|e| {
+            // A server-side script whose server's certificate cannot be
+            // verified "behaves as if it had been canceled by the user"
+            // (Claris, "Send Mail").
+            HostError::Error(match e {
+                om_url::SmtpError::Certificate(_) => om_scripts::runtime::ErrorCode::CANCELED,
+                e => e.code(),
+            })
+        })
     }
 }

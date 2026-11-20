@@ -13,14 +13,15 @@
 //! FileMaker's error list (1501 to 1507, docs/re/catalogs/error-codes.csv),
 //! and the message's form is OpenMaker's.
 //!
-//! The server is hostile input: replies are bounded in length and lines,
-//! every read and write has a timeout, and STARTTLS refuses bytes the
-//! server sent ahead of the handshake.
+//! The server is hostile input: replies are parsed strictly and bounded
+//! in length and lines, each reply, write and handshake has a time budget,
+//! STARTTLS refuses bytes the server sent ahead of the handshake, and the
+//! server's text never carries what the client sent to log in.
 
 use std::io::{self, Read, Write};
-use std::net::{SocketAddr, TcpStream, ToSocketAddrs};
-use std::sync::atomic::{AtomicU64, Ordering};
-use std::sync::{mpsc, Arc};
+use std::net::{Shutdown, SocketAddr, TcpStream, ToSocketAddrs};
+use std::sync::atomic::{AtomicU64, AtomicU8, Ordering};
+use std::sync::{mpsc, Arc, Mutex};
 use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
 use om_scripts::runtime::{ErrorCode, Mail};
@@ -29,8 +30,12 @@ use rustls::{ClientConfig, ClientConnection, RootCertStore, StreamOwned};
 
 use super::{base64, split_addresses, HelperSlot, LIVE_HELPERS, POLL};
 
-/// How long one connection attempt, read or write may take.
+/// How long connecting, one reply, one write or the TLS handshake may
+/// take.
 const IO_TIMEOUT: Duration = Duration::from_secs(60);
+
+/// How long QUIT may take once the message is taken.
+const QUIT_TIMEOUT: Duration = Duration::from_secs(5);
 
 /// The longest reply line read (RFC 5321 4.5.3.1.5 allows 512 octets;
 /// servers write longer ones).
@@ -38,6 +43,14 @@ const MAX_LINE: usize = 4096;
 
 /// The most lines one reply may have.
 const MAX_LINES: usize = 200;
+
+/// The longest command line (RFC 5321 4.5.3.1.4), CRLF included.
+const MAX_COMMAND: usize = 512;
+
+/// The longest chunk of text one RFC 2047 encoded word carries: 39 bytes
+/// are 52 base64 characters, a 64-character word, which fits a 76-character
+/// line after the longest field name used ("Reply-To: ").
+const WORD_BYTES: usize = 39;
 
 /// The connection's security: the step's Encryption (`[00 5, 03]`).
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -52,7 +65,7 @@ pub enum Security {
 
 /// The step's Authentication (`[00 6, 03]`) with its user name and
 /// password.
-#[derive(Clone, Debug, PartialEq, Eq)]
+#[derive(Clone, PartialEq, Eq)]
 pub enum Auth {
     /// 1: none.
     None,
@@ -61,6 +74,23 @@ pub enum Auth {
     Password { user: String, password: String },
     /// 3: AUTH CRAM-MD5.
     CramMd5 { user: String, password: String },
+}
+
+/// The password is left out.
+impl std::fmt::Debug for Auth {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::None => f.write_str("None"),
+            Self::Password { user, .. } => f
+                .debug_struct("Password")
+                .field("user", user)
+                .finish_non_exhaustive(),
+            Self::CramMd5 { user, .. } => f
+                .debug_struct("CramMd5")
+                .field("user", user)
+                .finish_non_exhaustive(),
+        }
+    }
 }
 
 /// The server a message goes to.
@@ -102,10 +132,17 @@ pub enum SmtpError {
     Connect(String),
     /// TLS failed, or the server offers no STARTTLS: 1503.
     Tls(String),
+    /// TLS could not verify the server's certificate. Claris documents
+    /// that FileMaker Pro then offers to connect anyway, that with error
+    /// capture on the step "behaves as if the server were unavailable",
+    /// and that in a server-side script it "behaves as if it had been
+    /// canceled by the user". OpenMaker offers no choice: 1502 here, as
+    /// with error capture on [I: the code]; a server host answers 1.
+    Certificate(String),
     /// The server wants an encrypted connection first: 1504.
     NeedsEncryption(String),
     /// The server offers none of the mechanisms the step's authentication
-    /// can use: 1505.
+    /// can use, or finds it too weak: 1505.
     AuthUnsupported(String),
     /// The server refused the user name or password: 1501.
     AuthFailed(String),
@@ -125,7 +162,7 @@ impl SmtpError {
         match self {
             Self::Address(_) | Self::Options(_) => ErrorCode::UNAVAILABLE,
             Self::AuthFailed(_) => ErrorCode(1501),
-            Self::Connect(_) => ErrorCode(1502),
+            Self::Connect(_) | Self::Certificate(_) => ErrorCode(1502),
             Self::Tls(_) => ErrorCode(1503),
             Self::NeedsEncryption(_) => ErrorCode(1504),
             Self::AuthUnsupported(_) => ErrorCode(1505),
@@ -143,22 +180,22 @@ impl std::fmt::Display for SmtpError {
             Self::Options(detail) => write!(f, "The step's SMTP options cannot be used: {detail}"),
             Self::Connect(detail) => write!(f, "Could not connect to the SMTP server: {detail}"),
             Self::Tls(detail) => write!(f, "The SMTP server's TLS failed: {detail}"),
-            Self::NeedsEncryption(detail) => {
-                write!(
-                    f,
-                    "The SMTP server requires an encrypted connection: {detail}"
-                )
-            }
+            Self::Certificate(detail) => write!(
+                f,
+                "The SMTP server's certificate could not be verified: {detail}"
+            ),
+            Self::NeedsEncryption(detail) => write!(
+                f,
+                "The SMTP server requires an encrypted connection: {detail}"
+            ),
             Self::AuthUnsupported(detail) => write!(
                 f,
                 "The SMTP server does not support the step's authentication: {detail}"
             ),
-            Self::AuthFailed(detail) => {
-                write!(
-                    f,
-                    "The SMTP server refused the user name or password: {detail}"
-                )
-            }
+            Self::AuthFailed(detail) => write!(
+                f,
+                "The SMTP server refused the user name or password: {detail}"
+            ),
             Self::Login(detail) => write!(f, "Could not log in to the SMTP server: {detail}"),
             Self::Rejected(detail) => {
                 write!(f, "The SMTP server did not take the message: {detail}")
@@ -169,7 +206,8 @@ impl std::fmt::Display for SmtpError {
 }
 
 /// The account and message a Send Mail step by SMTP describes. An empty
-/// port is 25, the SMTP Options dialog's default [I]; one that is no port
+/// port is 25, the SMTP Options dialog's documented default (that an empty
+/// calculated port means it is OpenMaker's reading); one that is no port
 /// number cannot connect (1502).
 pub fn smtp_parts(mail: &Mail) -> Result<(Account, Message), SmtpError> {
     let options = mail
@@ -221,6 +259,11 @@ pub fn smtp_parts(mail: &Mail) -> Result<(Account, Message), SmtpError> {
 /// Send `message` through `account`'s server, by `deadline` if given;
 /// `cancelled` is asked while the session runs. The message is composed,
 /// and its addresses checked, before connecting.
+///
+/// A cancel or the deadline stops the session where it is, its socket
+/// shut, unless the end of the message is already sent: from then on the
+/// server's answer to it is the result, so a message the server took is
+/// never reported as not sent.
 pub fn send_smtp(
     account: &Account,
     message: &Message,
@@ -253,13 +296,26 @@ fn send_with(
     }
     let slot = HelperSlot::reserve(&LIVE_HELPERS)
         .ok_or_else(|| SmtpError::Connect("too many transfers are running".into()))?;
+    let control = Arc::new(Control::default());
     let (sender, receiver) = mpsc::sync_channel(1);
     let account = account.clone();
+    let shared = control.clone();
     std::thread::Builder::new()
         .name("om-url-smtp".into())
         .spawn(move || {
             let _slot = slot;
-            let _ = sender.send(session(&account, &mail, tls, deadline));
+            match deliver(&account, &mail, tls, deadline, &shared) {
+                Ok(mut session) => {
+                    // The message is taken: the caller hears so now, not
+                    // after QUIT.
+                    let _ = sender.send(Ok(()));
+                    session.deadline = Some(Instant::now() + QUIT_TIMEOUT);
+                    let _ = session.command("QUIT");
+                }
+                Err(error) => {
+                    let _ = sender.send(Err(error));
+                }
+            }
         })
         .map_err(|e| SmtpError::Connect(e.to_string()))?;
     loop {
@@ -268,15 +324,87 @@ fn send_with(
             Err(mpsc::RecvTimeoutError::Disconnected) => {
                 return Err(SmtpError::Rejected("the session ended unexpectedly".into()))
             }
-            // A session left behind ends by its own timeouts.
             Err(mpsc::RecvTimeoutError::Timeout) => {
-                if cancelled() {
-                    return Err(SmtpError::Cancelled);
-                }
-                if deadline.is_some_and(|d| Instant::now() >= d) {
-                    return Err(SmtpError::Rejected("the script's time limit passed".into()));
+                let stop = if cancelled() {
+                    Some(SmtpError::Cancelled)
+                } else if deadline.is_some_and(|d| Instant::now() >= d) {
+                    Some(SmtpError::Rejected("the script's time limit passed".into()))
+                } else {
+                    None
+                };
+                // Past the message's end the session's answer stands; it
+                // comes within its own budget.
+                if let Some(error) = stop {
+                    if control.cancel() {
+                        return Err(error);
+                    }
                 }
             }
+        }
+    }
+}
+
+/// What the caller and a session share: whether it may still be stopped,
+/// and its socket, to shut when it is.
+#[derive(Default)]
+struct Control {
+    state: AtomicU8,
+    socket: Mutex<Option<TcpStream>>,
+}
+
+impl Control {
+    const RUNNING: u8 = 0;
+    /// The end of the message is being sent.
+    const COMMITTED: u8 = 1;
+    const CANCELLED: u8 = 2;
+
+    /// Stop the session unless its message's end is sent: whether it was
+    /// stopped. A read or write in flight ends with the socket shut.
+    fn cancel(&self) -> bool {
+        let stopped = self
+            .state
+            .compare_exchange(
+                Self::RUNNING,
+                Self::CANCELLED,
+                Ordering::AcqRel,
+                Ordering::Acquire,
+            )
+            .is_ok()
+            || self.state.load(Ordering::Acquire) == Self::CANCELLED;
+        if stopped {
+            if let Ok(socket) = self.socket.lock() {
+                if let Some(socket) = socket.as_ref() {
+                    let _ = socket.shutdown(Shutdown::Both);
+                }
+            }
+        }
+        stopped
+    }
+
+    fn cancelled(&self) -> bool {
+        self.state.load(Ordering::Acquire) == Self::CANCELLED
+    }
+
+    /// The session is about to send the message's end: false when it was
+    /// stopped first.
+    fn commit(&self) -> bool {
+        self.state
+            .compare_exchange(
+                Self::RUNNING,
+                Self::COMMITTED,
+                Ordering::AcqRel,
+                Ordering::Acquire,
+            )
+            .is_ok()
+    }
+
+    /// The session's socket, shut at once if it was stopped already.
+    fn adopt(&self, socket: &TcpStream) {
+        if let (Ok(mut held), Ok(clone)) = (self.socket.lock(), socket.try_clone()) {
+            *held = Some(clone);
+        }
+        if self.cancelled() {
+            let _ = socket.shutdown(Shutdown::Both);
         }
     }
 }
@@ -350,29 +478,63 @@ fn unquote(name: &str) -> String {
     }
 }
 
-/// An address the envelope can carry: ASCII (no SMTPUTF8), a local part
-/// and a domain, and no space, control character or angle bracket outside
-/// a quoted local part.
+/// RFC 5322's atext: what an atom, and a dot-string's parts, are made of.
+fn atext(c: u8) -> bool {
+    c.is_ascii_alphanumeric() || b"!#$%&'*+-/=?^_`{|}~".contains(&c)
+}
+
+/// An RFC 5321 Mailbox (4.1.2), ASCII (no SMTPUTF8): a local part that is
+/// a dot-string or a quoted string, `@`, and a domain of LDH labels or an
+/// address literal, within the lengths of 4.5.3.1.
 fn check_address(address: &str) -> Result<(), SmtpError> {
     let refuse = || {
         SmtpError::Address(format!(
             "\u{201c}{address}\u{201d} is not an address OpenMaker can send to"
         ))
     };
-    if !address.is_ascii() || address.is_empty() {
-        return Err(refuse());
-    }
-    let at = address.rfind('@').ok_or_else(refuse)?;
-    let (local, domain) = (&address[..at], &address[at + 1..]);
-    if local.is_empty() || domain.is_empty() {
-        return Err(refuse());
-    }
-    let bad = |c: char| c.is_ascii_control() || matches!(c, ' ' | '<' | '>' | '"' | '\\');
-    let local_ok = match local.strip_prefix('"').and_then(|l| l.strip_suffix('"')) {
-        Some(inner) => !inner.chars().any(|c| c.is_ascii_control()),
-        None => !local.chars().any(bad),
+    let bytes = address.as_bytes();
+    let local_end = if bytes.first() == Some(&b'"') {
+        // A quoted string: qtextSMTP and quoted-pairSMTP to its closing
+        // quote.
+        let mut i = 1;
+        loop {
+            match bytes.get(i) {
+                Some(b'"') => break i + 1,
+                Some(b'\\') if bytes.get(i + 1).is_some_and(|c| (32..=126).contains(c)) => i += 2,
+                Some(c) if matches!(c, 32 | 33 | 35..=91 | 93..=126) => i += 1,
+                _ => return Err(refuse()),
+            }
+        }
+    } else {
+        let end = address.find('@').ok_or_else(refuse)?;
+        let dot_string = address[..end]
+            .split('.')
+            .all(|atom| !atom.is_empty() && atom.bytes().all(atext));
+        if !dot_string {
+            return Err(refuse());
+        }
+        end
     };
-    if !local_ok || domain.chars().any(|c| bad(c) || c == '@') {
+    if bytes.get(local_end) != Some(&b'@') || local_end > 64 {
+        return Err(refuse());
+    }
+    let domain = &address[local_end + 1..];
+    let literal = domain
+        .strip_prefix('[')
+        .and_then(|d| d.strip_suffix(']'))
+        .is_some_and(|inner| {
+            !inner.is_empty() && inner.bytes().all(|c| matches!(c, 33..=90 | 94..=126))
+        });
+    let labels = domain.split('.').all(|label| {
+        let label = label.as_bytes();
+        (1..=63).contains(&label.len())
+            && label
+                .iter()
+                .all(|c| c.is_ascii_alphanumeric() || *c == b'-')
+            && label.first() != Some(&b'-')
+            && label.last() != Some(&b'-')
+    });
+    if domain.len() > 255 || !(literal || labels) {
         return Err(refuse());
     }
     Ok(())
@@ -436,7 +598,10 @@ fn compose(message: &Message, now: SystemTime) -> Result<Composed, SmtpError> {
     headers.push("MIME-Version: 1.0".into());
     headers.push("Content-Type: text/plain; charset=utf-8".into());
     let body = crlf(&message.body);
-    let plain = body.is_ascii() && body.split("\r\n").all(|line| line.len() <= 998);
+    // 7bit holds ASCII without NUL in lines of at most 998 octets (RFC
+    // 2045 2.7).
+    let plain =
+        body.is_ascii() && !body.contains('\0') && body.split("\r\n").all(|line| line.len() <= 998);
     let body = if plain {
         headers.push("Content-Transfer-Encoding: 7bit".into());
         body
@@ -485,24 +650,20 @@ fn crlf(text: &str) -> String {
 }
 
 /// One mailbox of a header: `address`, or `name <address>` with the name
-/// quoted or encoded as it needs.
+/// quoted or encoded as it needs. An encoded name ends its line, the
+/// mailbox folded onto the next.
 fn mailbox_header(name: Option<String>, address: &str) -> String {
-    match name {
-        None => address.to_owned(),
-        Some(name) => {
-            let name: String = name.chars().filter(|c| !c.is_control()).collect();
-            let atoms = name
-                .chars()
-                .all(|c| c.is_ascii_alphanumeric() || " !#$%&'*+-/=?^_`{|}~".contains(c));
-            if atoms {
-                format!("{name} <{address}>")
-            } else if name.is_ascii() {
-                let quoted = name.replace('\\', "\\\\").replace('"', "\\\"");
-                format!("\"{quoted}\" <{address}>")
-            } else {
-                format!("{} <{address}>", encoded_words(&name))
-            }
-        }
+    let Some(name) = name else {
+        return address.to_owned();
+    };
+    let name: String = name.chars().filter(|c| !c.is_control()).collect();
+    if name.len() <= 900 && name.bytes().all(|c| c == b' ' || atext(c)) {
+        format!("{name} <{address}>")
+    } else if name.len() <= 900 && name.is_ascii() {
+        let quoted = name.replace('\\', "\\\\").replace('"', "\\\"");
+        format!("\"{quoted}\" <{address}>")
+    } else {
+        format!("{}\r\n <{address}>", encoded_words(&name))
     }
 }
 
@@ -516,13 +677,13 @@ fn header_text(text: &str) -> String {
     }
 }
 
-/// `text` as UTF-8 "B" encoded words of at most 75 characters each,
-/// folded onto lines of their own, no character split between two.
+/// `text` as UTF-8 "B" encoded words of [`WORD_BYTES`] each at most, one
+/// per line, no character split between two.
 fn encoded_words(text: &str) -> String {
     let mut words = Vec::new();
     let mut chunk = String::new();
     for c in text.chars() {
-        if chunk.len() + c.len_utf8() > 45 {
+        if chunk.len() + c.len_utf8() > WORD_BYTES {
             words.push(format!("=?utf-8?b?{}?=", base64(chunk.as_bytes())));
             chunk.clear();
         }
@@ -627,53 +788,73 @@ impl Reply {
     }
 
     /// Whether the text says encryption is wanted (530 5.7.0 "Must issue
-    /// a STARTTLS command first", 538).
+    /// a STARTTLS command first").
     fn wants_encryption(&self) -> bool {
         let text = self.lines.join(" ").to_ascii_lowercase();
-        self.code == 538
-            || text.contains("starttls")
-            || text.contains("tls")
-            || text.contains("encrypt")
+        text.contains("tls") || text.contains("encrypt")
     }
+}
+
+/// Why reading a reply or sending failed.
+fn invalid(what: &str) -> io::Error {
+    io::Error::new(io::ErrorKind::InvalidData, what.to_owned())
 }
 
 /// An SMTP session on a connection, with what it read ahead.
-struct Session {
+struct Session<'a> {
     stream: Stream,
     buffer: Vec<u8>,
+    /// The script's deadline, if any.
     deadline: Option<Instant>,
+    /// When the current reply, write or handshake must be done.
+    operation: Instant,
+    control: &'a Control,
 }
 
-impl Session {
-    /// Set the socket's timeouts for the next operation.
+impl Session<'_> {
+    /// Start an operation's budget.
+    fn begin(&mut self) {
+        self.operation = Instant::now() + IO_TIMEOUT;
+    }
+
+    /// Set the socket's timeouts to what is left of the operation's
+    /// budget and the deadline; an error once none is, or once stopped.
     fn arm(&self) -> io::Result<()> {
-        let mut timeout = IO_TIMEOUT;
-        if let Some(deadline) = self.deadline {
-            timeout = timeout.min(deadline.saturating_duration_since(Instant::now()));
+        if self.control.cancelled() {
+            return Err(io::Error::new(io::ErrorKind::Interrupted, "cancelled"));
         }
-        if timeout.is_zero() {
+        let mut end = self.operation;
+        if let Some(deadline) = self.deadline {
+            end = end.min(deadline);
+        }
+        let left = end.saturating_duration_since(Instant::now());
+        if left.is_zero() {
             return Err(io::Error::new(
                 io::ErrorKind::TimedOut,
-                "the script's time limit passed",
+                "the server did not answer in time",
             ));
         }
         let socket = self.stream.socket();
-        socket.set_read_timeout(Some(timeout))?;
-        socket.set_write_timeout(Some(timeout))
+        socket.set_read_timeout(Some(left))?;
+        socket.set_write_timeout(Some(left))
     }
 
+    /// One reply line without its CRLF; a bare LF or a line past
+    /// [`MAX_LINE`] is refused.
     fn line(&mut self) -> io::Result<String> {
         loop {
             if let Some(end) = self.buffer.iter().position(|&b| b == b'\n') {
+                if end > MAX_LINE {
+                    return Err(invalid("a reply line is too long"));
+                }
+                if end == 0 || self.buffer[end - 1] != b'\r' {
+                    return Err(invalid("a reply line does not end with CRLF"));
+                }
                 let line: Vec<u8> = self.buffer.drain(..=end).collect();
-                let line = String::from_utf8_lossy(&line);
-                return Ok(line.trim_end_matches(['\r', '\n']).to_owned());
+                return Ok(String::from_utf8_lossy(&line[..line.len() - 2]).into_owned());
             }
             if self.buffer.len() > MAX_LINE {
-                return Err(io::Error::new(
-                    io::ErrorKind::InvalidData,
-                    "a reply line is too long",
-                ));
+                return Err(invalid("a reply line is too long"));
             }
             self.arm()?;
             let mut chunk = [0u8; 1024];
@@ -688,32 +869,47 @@ impl Session {
         }
     }
 
+    /// One whole reply (RFC 5321 4.2): every line the same code, `-`
+    /// between lines and a space or nothing after the last code.
     fn reply(&mut self) -> io::Result<Reply> {
+        self.begin();
         let mut lines = Vec::new();
+        let mut code = None;
         loop {
             let line = self.line()?;
             let bytes = line.as_bytes();
-            let code = (bytes.len() >= 3 && bytes[..3].iter().all(u8::is_ascii_digit))
-                .then(|| line[..3].parse::<u16>().ok())
-                .flatten()
-                .ok_or_else(|| io::Error::new(io::ErrorKind::InvalidData, "not an SMTP reply"))?;
-            let more = bytes.get(3) == Some(&b'-');
+            let valid = bytes.len() >= 3
+                && (b'2'..=b'5').contains(&bytes[0])
+                && bytes[1..3].iter().all(u8::is_ascii_digit)
+                && matches!(bytes.get(3), None | Some(b' ' | b'-'));
+            if !valid {
+                return Err(invalid("not an SMTP reply"));
+            }
+            let this: u16 = line[..3]
+                .parse()
+                .map_err(|_| invalid("not an SMTP reply"))?;
+            if code.is_some_and(|c| c != this) {
+                return Err(invalid("a reply's lines have different codes"));
+            }
+            code = Some(this);
             lines.push(line.get(4..).unwrap_or_default().to_owned());
             if lines.len() > MAX_LINES {
-                return Err(io::Error::new(
-                    io::ErrorKind::InvalidData,
-                    "a reply has too many lines",
-                ));
+                return Err(invalid("a reply has too many lines"));
             }
-            if !more {
-                return Ok(Reply { code, lines });
+            if bytes.get(3) != Some(&b'-') {
+                return Ok(Reply { code: this, lines });
             }
         }
     }
 
     fn send(&mut self, bytes: &[u8]) -> io::Result<()> {
+        self.begin();
+        // A write is bounded too: in pieces, each with what is left.
+        for piece in bytes.chunks(16 * 1024) {
+            self.arm()?;
+            self.stream.write_all(piece)?;
+        }
         self.arm()?;
-        self.stream.write_all(bytes)?;
         self.stream.flush()
     }
 
@@ -721,21 +917,179 @@ impl Session {
         self.send(format!("{command}\r\n").as_bytes())?;
         self.reply()
     }
+
+    /// TLS on the connection, the handshake done within its budget.
+    fn upgrade(
+        &mut self,
+        tls: &Arc<ClientConfig>,
+        name: ServerName<'static>,
+    ) -> Result<(), SmtpError> {
+        let Stream::Plain(socket) = &self.stream else {
+            return Err(SmtpError::Tls("the connection is already encrypted".into()));
+        };
+        let mut socket = socket
+            .try_clone()
+            .map_err(|e| SmtpError::Tls(e.to_string()))?;
+        let mut connection =
+            ClientConnection::new(tls.clone(), name).map_err(|e| SmtpError::Tls(e.to_string()))?;
+        self.begin();
+        while connection.is_handshaking() {
+            self.arm().map_err(|e| SmtpError::Tls(e.to_string()))?;
+            connection.complete_io(&mut socket).map_err(|e| {
+                let certificate = e
+                    .get_ref()
+                    .and_then(|inner| inner.downcast_ref::<rustls::Error>())
+                    .is_some_and(|inner| matches!(inner, rustls::Error::InvalidCertificate(_)));
+                if certificate {
+                    SmtpError::Certificate(e.to_string())
+                } else {
+                    SmtpError::Tls(e.to_string())
+                }
+            })?;
+        }
+        self.stream = Stream::Tls(Box::new(StreamOwned::new(connection, socket)));
+        Ok(())
+    }
+
+    /// EHLO, or HELO when the server does not know it: the extensions
+    /// the server lists, upper case.
+    fn hello(&mut self, client: &str) -> Result<Vec<String>, SmtpError> {
+        let reply = self.command(&format!("EHLO {client}")).map_err(broken)?;
+        if reply.code == 250 {
+            return Ok(reply
+                .lines
+                .iter()
+                .skip(1)
+                .map(|line| line.trim().to_ascii_uppercase())
+                .collect());
+        }
+        let reply = self.command(&format!("HELO {client}")).map_err(broken)?;
+        if reply.code != 250 {
+            return Err(SmtpError::Connect(reply.text()));
+        }
+        Ok(Vec::new())
+    }
+
+    /// Log in as `auth` says. The errors carry the server's codes only: a
+    /// server may echo what it was sent, the credentials among it.
+    fn authenticate(
+        &mut self,
+        auth: &Auth,
+        extensions: &[String],
+        encrypted: bool,
+    ) -> Result<(), SmtpError> {
+        let (user, password, cram) = match auth {
+            Auth::None => return Ok(()),
+            Auth::Password { user, password } => (user, password, false),
+            Auth::CramMd5 { user, password } => (user, password, true),
+        };
+        let mechanisms: Vec<&str> = extensions
+            .iter()
+            .filter_map(|e| {
+                e.strip_prefix("AUTH")
+                    .filter(|rest| rest.starts_with([' ', '=']))
+            })
+            .flat_map(|rest| rest[1..].split_whitespace())
+            .collect();
+        let offered = |m: &str| mechanisms.contains(&m);
+        let unsupported = |wanted: &str| {
+            // A server that lists STARTTLS and no usable AUTH on a plain
+            // connection is read as one that offers it after STARTTLS [I].
+            if !encrypted && extensions.iter().any(|e| e == "STARTTLS") {
+                SmtpError::NeedsEncryption(format!(
+                    "the server offers {wanted} only over an encrypted connection"
+                ))
+            } else {
+                SmtpError::AuthUnsupported(format!(
+                    "the server offers {}",
+                    if mechanisms.is_empty() {
+                        "no AUTH".to_owned()
+                    } else {
+                        mechanisms.join(" ")
+                    }
+                ))
+            }
+        };
+        let outcome = |reply: &Reply| -> Result<(), SmtpError> {
+            let detail = format!("the server answered {}", reply.code);
+            match reply.code {
+                235 => Ok(()),
+                535 => Err(SmtpError::AuthFailed(detail)),
+                534 => Err(SmtpError::AuthUnsupported(format!(
+                    "{detail}: the mechanism is too weak"
+                ))),
+                538 => Err(SmtpError::NeedsEncryption(detail)),
+                530 if reply.wants_encryption() => Err(SmtpError::NeedsEncryption(detail)),
+                504 => Err(SmtpError::AuthUnsupported(detail)),
+                _ => Err(SmtpError::Login(detail)),
+            }
+        };
+        let quiet = |e: io::Error| SmtpError::Login(format!("the session broke: {}", e.kind()));
+        if cram {
+            if !offered("CRAM-MD5") {
+                return Err(unsupported("CRAM-MD5"));
+            }
+            let reply = self.command("AUTH CRAM-MD5").map_err(quiet)?;
+            if reply.code != 334 {
+                return outcome(&reply);
+            }
+            let challenge = unbase64(reply.lines.first().map_or("", |l| l.trim()))
+                .ok_or_else(|| SmtpError::Login("the server's challenge is not base64".into()))?;
+            let response = format!("{user} {}", cram_md5(password.as_bytes(), &challenge));
+            let reply = self.command(&base64(response.as_bytes())).map_err(quiet)?;
+            return outcome(&reply);
+        }
+        if offered("PLAIN") {
+            let token = base64(format!("\0{user}\0{password}").as_bytes());
+            let initial = format!("AUTH PLAIN {token}");
+            // Without the initial response when it would make the command
+            // too long (RFC 4954 4).
+            let short = initial.len() + 2 <= MAX_COMMAND;
+            let mut reply = self
+                .command(if short { &initial } else { "AUTH PLAIN" })
+                .map_err(quiet)?;
+            if reply.code == 334 {
+                reply = self.command(&token).map_err(quiet)?;
+            }
+            return outcome(&reply);
+        }
+        if offered("LOGIN") {
+            let mut reply = self.command("AUTH LOGIN").map_err(quiet)?;
+            for answer in [user, password] {
+                if reply.code != 334 {
+                    return outcome(&reply);
+                }
+                reply = self.command(&base64(answer.as_bytes())).map_err(quiet)?;
+            }
+            return outcome(&reply);
+        }
+        Err(unsupported("PLAIN or LOGIN"))
+    }
 }
 
-/// An I/O failure while sending: refused before the greeting, the
-/// session broken after it.
+/// An I/O failure after connecting: the session broken.
 fn broken(error: io::Error) -> SmtpError {
     SmtpError::Rejected(error.to_string())
 }
 
-/// Connect to `account`'s server and send `mail`.
-fn session(
+/// What a 530 asks: encryption, or a login the step did not make.
+fn required(reply: &Reply) -> SmtpError {
+    if reply.wants_encryption() {
+        SmtpError::NeedsEncryption(reply.text())
+    } else {
+        SmtpError::Login(reply.text())
+    }
+}
+
+/// Connect to `account`'s server and send `mail`: the session, once the
+/// server has taken the message.
+fn deliver<'a>(
     account: &Account,
     mail: &Composed,
     tls: Arc<ClientConfig>,
     deadline: Option<Instant>,
-) -> Result<(), SmtpError> {
+    control: &'a Control,
+) -> Result<Session<'a>, SmtpError> {
     let server = account.server.trim();
     if server.is_empty() {
         return Err(SmtpError::Connect("the step names no SMTP server".into()));
@@ -743,21 +1097,25 @@ fn session(
     let name = ServerName::try_from(server.to_owned()).map_err(|_| {
         SmtpError::Connect(format!("\u{201c}{server}\u{201d} is not a server name"))
     })?;
+    // The system resolver has no deadline of its own here; its timeouts
+    // end a lookup that does not answer.
     let addresses: Vec<SocketAddr> = (server, account.port)
         .to_socket_addrs()
         .map_err(|e| SmtpError::Connect(e.to_string()))?
         .collect();
+    let budget = Instant::now() + IO_TIMEOUT;
     let mut last = SmtpError::Connect(format!("no address for {server}"));
     let mut socket = None;
     for address in addresses {
-        let timeout = match deadline {
-            Some(d) => IO_TIMEOUT.min(d.saturating_duration_since(Instant::now())),
-            None => IO_TIMEOUT,
-        };
-        if timeout.is_zero() {
-            return Err(SmtpError::Connect("the script's time limit passed".into()));
+        let mut end = budget;
+        if let Some(deadline) = deadline {
+            end = end.min(deadline);
         }
-        match TcpStream::connect_timeout(&address, timeout) {
+        let left = end.saturating_duration_since(Instant::now());
+        if left.is_zero() || control.cancelled() {
+            break;
+        }
+        match TcpStream::connect_timeout(&address, left) {
             Ok(connected) => {
                 socket = Some(connected);
                 break;
@@ -766,6 +1124,7 @@ fn session(
         }
     }
     let socket = socket.ok_or(last)?;
+    control.adopt(&socket);
     let local = socket
         .local_addr()
         .map_err(|e| SmtpError::Connect(e.to_string()))?;
@@ -773,6 +1132,8 @@ fn session(
         stream: Stream::Plain(socket),
         buffer: Vec::new(),
         deadline,
+        operation: Instant::now(),
+        control,
     };
     if account.security == Security::Ssl {
         session.upgrade(&tls, name.clone())?;
@@ -814,164 +1175,35 @@ fn session(
         .map_err(broken)?;
     if reply.code != 250 {
         return Err(match reply.code {
-            530 if reply.wants_encryption() => SmtpError::NeedsEncryption(reply.text()),
-            530 => SmtpError::Login(reply.text()),
+            530 => required(&reply),
             _ => SmtpError::Rejected(reply.text()),
         });
     }
+    // One recipient refused stops the message for all, before DATA.
     for recipient in &mail.recipients {
         let reply = session
             .command(&format!("RCPT TO:<{recipient}>"))
             .map_err(broken)?;
         if !matches!(reply.code, 250 | 251) {
-            return Err(SmtpError::Rejected(format!(
-                "{recipient}: {}",
-                reply.text()
-            )));
+            return Err(match reply.code {
+                530 => required(&reply),
+                _ => SmtpError::Rejected(format!("{recipient}: {}", reply.text())),
+            });
         }
     }
     let reply = session.command("DATA").map_err(broken)?;
     if reply.code != 354 {
         return Err(SmtpError::Rejected(reply.text()));
     }
+    if !control.commit() {
+        return Err(SmtpError::Cancelled);
+    }
     session.send(&dot_stuffed(&mail.data)).map_err(broken)?;
     let reply = session.reply().map_err(broken)?;
     if reply.code != 250 {
         return Err(SmtpError::Rejected(reply.text()));
     }
-    // The message is taken; how QUIT goes does not change that.
-    let _ = session.command("QUIT");
-    Ok(())
-}
-
-impl Session {
-    /// TLS on the connection, the handshake done.
-    fn upgrade(
-        &mut self,
-        tls: &Arc<ClientConfig>,
-        name: ServerName<'static>,
-    ) -> Result<(), SmtpError> {
-        let Stream::Plain(socket) = &self.stream else {
-            return Err(SmtpError::Tls("the connection is already encrypted".into()));
-        };
-        let socket = socket
-            .try_clone()
-            .map_err(|e| SmtpError::Tls(e.to_string()))?;
-        let mut connection =
-            ClientConnection::new(tls.clone(), name).map_err(|e| SmtpError::Tls(e.to_string()))?;
-        self.arm().map_err(|e| SmtpError::Tls(e.to_string()))?;
-        let mut socket = socket;
-        while connection.is_handshaking() {
-            connection
-                .complete_io(&mut socket)
-                .map_err(|e| SmtpError::Tls(e.to_string()))?;
-        }
-        self.stream = Stream::Tls(Box::new(StreamOwned::new(connection, socket)));
-        Ok(())
-    }
-
-    /// EHLO, or HELO when the server does not know it: the extensions
-    /// the server lists, upper case.
-    fn hello(&mut self, client: &str) -> Result<Vec<String>, SmtpError> {
-        let reply = self.command(&format!("EHLO {client}")).map_err(broken)?;
-        if reply.code == 250 {
-            return Ok(reply
-                .lines
-                .iter()
-                .skip(1)
-                .map(|line| line.trim().to_ascii_uppercase())
-                .collect());
-        }
-        let reply = self.command(&format!("HELO {client}")).map_err(broken)?;
-        if reply.code != 250 {
-            return Err(SmtpError::Connect(reply.text()));
-        }
-        Ok(Vec::new())
-    }
-
-    fn authenticate(
-        &mut self,
-        auth: &Auth,
-        extensions: &[String],
-        encrypted: bool,
-    ) -> Result<(), SmtpError> {
-        let (user, password, cram) = match auth {
-            Auth::None => return Ok(()),
-            Auth::Password { user, password } => (user, password, false),
-            Auth::CramMd5 { user, password } => (user, password, true),
-        };
-        let mechanisms: Vec<&str> = extensions
-            .iter()
-            .filter_map(|e| {
-                e.strip_prefix("AUTH")
-                    .filter(|rest| rest.starts_with([' ', '=']))
-            })
-            .flat_map(|rest| rest[1..].split_whitespace())
-            .collect();
-        let offered = |m: &str| mechanisms.contains(&m);
-        let unsupported = |wanted: &str| {
-            if !encrypted && extensions.iter().any(|e| e == "STARTTLS") {
-                SmtpError::NeedsEncryption(format!(
-                    "the server offers {wanted} only over an encrypted connection"
-                ))
-            } else {
-                SmtpError::AuthUnsupported(format!(
-                    "the server offers {}",
-                    if mechanisms.is_empty() {
-                        "no AUTH".to_owned()
-                    } else {
-                        mechanisms.join(" ")
-                    }
-                ))
-            }
-        };
-        let outcome = |reply: &Reply| -> Result<(), SmtpError> {
-            match reply.code {
-                235 => Ok(()),
-                535 => Err(SmtpError::AuthFailed(reply.text())),
-                534 | 538 => Err(SmtpError::NeedsEncryption(reply.text())),
-                530 if reply.wants_encryption() => Err(SmtpError::NeedsEncryption(reply.text())),
-                504 => Err(SmtpError::AuthUnsupported(reply.text())),
-                _ => Err(SmtpError::Login(reply.text())),
-            }
-        };
-        if cram {
-            if !offered("CRAM-MD5") {
-                return Err(unsupported("CRAM-MD5"));
-            }
-            let reply = self.command("AUTH CRAM-MD5").map_err(broken)?;
-            if reply.code != 334 {
-                return outcome(&reply);
-            }
-            let challenge = unbase64(reply.lines.first().map_or("", |l| l.trim()))
-                .ok_or_else(|| SmtpError::Login("the server's challenge is not base64".into()))?;
-            let response = format!("{user} {}", cram_md5(password.as_bytes(), &challenge));
-            let reply = self.command(&base64(response.as_bytes())).map_err(broken)?;
-            return outcome(&reply);
-        }
-        if offered("PLAIN") {
-            let token = base64(format!("\0{user}\0{password}").as_bytes());
-            let mut reply = self
-                .command(&format!("AUTH PLAIN {token}"))
-                .map_err(broken)?;
-            // A server that asks for the response in a step of its own.
-            if reply.code == 334 {
-                reply = self.command(&token).map_err(broken)?;
-            }
-            return outcome(&reply);
-        }
-        if offered("LOGIN") {
-            let mut reply = self.command("AUTH LOGIN").map_err(broken)?;
-            for answer in [user, password] {
-                if reply.code != 334 {
-                    return outcome(&reply);
-                }
-                reply = self.command(&base64(answer.as_bytes())).map_err(broken)?;
-            }
-            return outcome(&reply);
-        }
-        Err(unsupported("PLAIN or LOGIN"))
-    }
+    Ok(session)
 }
 
 /// CRAM-MD5's digest: HMAC-MD5 of `challenge` keyed by `password`, in
@@ -1038,6 +1270,7 @@ mod tests {
     use super::*;
     use std::io::BufRead;
     use std::net::TcpListener;
+    use std::sync::atomic::AtomicBool;
 
     fn message() -> Message {
         Message {
@@ -1052,8 +1285,9 @@ mod tests {
     }
 
     /// The message and envelope as composed: CRLF lines, the Bcc in the
-    /// envelope only, a quoted display name kept, and a non-ASCII subject
-    /// and body encoded.
+    /// envelope only, a quoted display name kept, a non-ASCII subject,
+    /// name and body encoded within RFC 2047's line length, and addresses
+    /// outside RFC 5321's syntax refused.
     #[test]
     fn a_message_is_composed_as_rfc_5322_has_it() {
         let at = UNIX_EPOCH + Duration::from_secs(1_795_000_000);
@@ -1079,38 +1313,60 @@ mod tests {
         assert_eq!(body, "Line one\r\n.hidden\r\nLine three\r\n");
 
         let accented = Message {
-            from_name: "Zoë".into(),
+            from_name: "Zoë".repeat(20),
             subject: "Café".into(),
             body: "Grüße".into(),
             ..message()
         };
         let text = String::from_utf8(compose(&accented, at).unwrap().data).unwrap();
         assert!(
-            text.contains("\r\nFrom: =?utf-8?b?Wm/Dqw==?= <pat@example.org>\r\n"),
+            text.contains("\r\nSubject: =?utf-8?b?Q2Fmw6k=?=\r\n"),
             "{text}"
         );
-        assert!(text.contains("\r\nSubject: =?utf-8?b?Q2Fmw6k=?=\r\n"));
         assert!(text.ends_with("\r\n\r\nR3LDvMOfZQ==\r\n"));
+        let head = text.split_once("\r\n\r\n").unwrap().0;
+        assert!(head.contains("?=\r\n <pat@example.org>\r\n"), "{head}");
+        for line in head.split("\r\n").filter(|l| l.contains("=?utf-8?")) {
+            assert!(line.len() <= 76, "{line}");
+        }
+        let nul = Message {
+            body: "a\0b".into(),
+            ..message()
+        };
+        let text = String::from_utf8(compose(&nul, at).unwrap().data).unwrap();
+        assert!(text.contains("Content-Transfer-Encoding: base64"));
 
-        for (field, bad) in [
-            ("to", "no-at-sign"),
-            ("to", "a b@example.org"),
-            ("from", ""),
+        for bad in [
+            "no-at-sign",
+            "a b@example.org",
+            "a,b@example.org",
+            "\"a\"b\"@example.org",
+            "a..b@example.org",
+            "a@-example.org",
+            "a@exa_mple.org",
+            "zoë@example.org",
         ] {
-            let mut wrong = message();
-            match field {
-                "to" => wrong.to = bad.into(),
-                _ => wrong.from = bad.into(),
-            }
+            let wrong = Message {
+                to: bad.into(),
+                ..message()
+            };
             assert!(
                 matches!(compose(&wrong, at), Err(SmtpError::Address(_))),
                 "{bad}"
             );
         }
+        for good in ["\"a b\\\"c\"@example.org", "a.b+c@[192.0.2.1]"] {
+            assert!(check_address(good).is_ok(), "{good}");
+        }
+        let empty = Message {
+            from: String::new(),
+            ..message()
+        };
+        assert!(matches!(compose(&empty, at), Err(SmtpError::Address(_))));
         assert_eq!(dot_stuffed(b".a\r\nb\r\n.\r\n"), b"..a\r\nb\r\n..\r\n.\r\n");
     }
 
-    /// RFC 2195's own example.
+    /// RFC 2195's own example, and the credentials kept out of Debug.
     #[test]
     fn cram_md5_answers_rfc_2195s_example() {
         let challenge =
@@ -1120,12 +1376,21 @@ mod tests {
             cram_md5(b"tanstaaftanstaaf", &challenge),
             "b913a602c7eda7a495b4e6e7334d3890"
         );
+        let auth = Auth::Password {
+            user: "pat".into(),
+            password: "secret".into(),
+        };
+        assert!(!format!("{auth:?}").contains("secret"));
     }
 
     /// A scripted SMTP server: it answers each command it reads with the
     /// next reply and records what it read, until QUIT or the end of the
-    /// script.
-    fn server(replies: &'static [&'static str]) -> (u16, std::thread::JoinHandle<Vec<String>>) {
+    /// script. `ended` is set when it has read the message's end.
+    fn server(
+        replies: &'static [&'static str],
+        ended: Arc<AtomicBool>,
+        quit_delay: Duration,
+    ) -> (u16, std::thread::JoinHandle<Vec<String>>) {
         let listener = TcpListener::bind("127.0.0.1:0").unwrap();
         let port = listener.local_addr().unwrap().port();
         let handle = std::thread::spawn(move || {
@@ -1134,9 +1399,7 @@ mod tests {
             let mut reader = io::BufReader::new(socket);
             let mut read = Vec::new();
             let mut replies = replies.iter();
-            writer
-                .write_all(replies.next().unwrap().as_bytes())
-                .unwrap();
+            let _ = writer.write_all(replies.next().unwrap().as_bytes());
             let mut in_data = false;
             loop {
                 let mut line = String::new();
@@ -1149,18 +1412,25 @@ mod tests {
                         continue;
                     }
                     in_data = false;
+                    ended.store(true, Ordering::SeqCst);
                 } else if line == "DATA\r\n" {
                     in_data = true;
                 }
                 let Some(reply) = replies.next() else { break };
-                writer.write_all(reply.as_bytes()).unwrap();
                 if line == "QUIT\r\n" {
+                    std::thread::sleep(quit_delay);
+                }
+                if writer.write_all(reply.as_bytes()).is_err() || line == "QUIT\r\n" {
                     break;
                 }
             }
             read
         });
         (port, handle)
+    }
+
+    fn scripted(replies: &'static [&'static str]) -> (u16, std::thread::JoinHandle<Vec<String>>) {
+        server(replies, Arc::default(), Duration::ZERO)
     }
 
     fn account(port: u16, auth: Auth) -> Account {
@@ -1172,11 +1442,29 @@ mod tests {
         }
     }
 
-    /// The session as RFC 5321 runs it, with AUTH PLAIN, the message
-    /// dot-stuffed; and each refusal answers its FileMaker code.
+    fn login(password: &str) -> Auth {
+        Auth::Password {
+            user: "pat".into(),
+            password: password.into(),
+        }
+    }
+
+    const TAKEN: [&str; 7] = [
+        "250 OK\r\n",
+        "250 OK\r\n",
+        "250 OK\r\n",
+        "250 OK\r\n",
+        "354 Go ahead\r\n",
+        "250 OK queued\r\n",
+        "221 Bye\r\n",
+    ];
+
+    /// The session as RFC 5321 runs it with each login, the message
+    /// dot-stuffed; and each refusal answers its FileMaker code, the
+    /// server's echo of a login left out of it.
     #[test]
     fn the_session_sends_the_message_and_answers_each_refusal_with_its_code() {
-        let (port, scripted) = server(&[
+        let (port, server) = scripted(&[
             "220 mail.example.org ESMTP\r\n",
             "250-mail.example.org\r\n250-AUTH LOGIN PLAIN\r\n250 8BITMIME\r\n",
             "235 2.7.0 Authentication successful\r\n",
@@ -1188,19 +1476,15 @@ mod tests {
             "250 OK queued\r\n",
             "221 Bye\r\n",
         ]);
-        let auth = Auth::Password {
-            user: "pat".into(),
-            password: "secret".into(),
-        };
         send_with(
-            &account(port, auth),
+            &account(port, login("secret")),
             &message(),
             RootCertStore::empty(),
             None,
             &mut || false,
         )
         .unwrap();
-        let read = scripted.join().unwrap();
+        let read = server.join().unwrap();
         assert!(read[0].starts_with("EHLO [127.0.0.1]"), "{read:?}");
         assert_eq!(
             read[1],
@@ -1219,26 +1503,87 @@ mod tests {
         assert!(read.contains(&"..hidden\r\n".to_owned()), "{read:?}");
         assert_eq!(read.last().unwrap(), "QUIT\r\n");
 
-        let cases: [(&'static [&'static str], Auth, ErrorCode); 5] = [
+        // LOGIN, and a full CRAM-MD5 exchange.
+        let challenge = base64(b"<1.2@example.org>");
+        let cram: &'static str = Box::leak(format!("334 {challenge}\r\n").into_boxed_str());
+        for (auth, first, second, expected) in [
+            (
+                login("secret"),
+                "250-hi\r\n250 AUTH LOGIN\r\n",
+                "334 VXNlcm5hbWU6\r\n",
+                vec![
+                    "AUTH LOGIN\r\n".to_owned(),
+                    format!("{}\r\n", base64(b"pat")),
+                    format!("{}\r\n", base64(b"secret")),
+                ],
+            ),
+            (
+                Auth::CramMd5 {
+                    user: "pat".into(),
+                    password: "secret".into(),
+                },
+                "250-hi\r\n250 AUTH CRAM-MD5\r\n",
+                cram,
+                vec![
+                    "AUTH CRAM-MD5\r\n".to_owned(),
+                    format!(
+                        "{}\r\n",
+                        base64(
+                            format!("pat {}", cram_md5(b"secret", b"<1.2@example.org>")).as_bytes()
+                        )
+                    ),
+                ],
+            ),
+        ] {
+            let mut replies = vec!["220 hi\r\n", first, second];
+            if expected.len() == 3 {
+                replies.push("334 UGFzc3dvcmQ6\r\n");
+            }
+            replies.push("235 OK\r\n");
+            replies.extend(TAKEN.iter().copied());
+            let (port, server) = scripted(Vec::leak(replies));
+            send_with(
+                &account(port, auth),
+                &message(),
+                RootCertStore::empty(),
+                None,
+                &mut || false,
+            )
+            .unwrap();
+            let read = server.join().unwrap();
+            assert_eq!(&read[1..1 + expected.len()], expected.as_slice());
+        }
+
+        let cases: [(&'static [&'static str], Auth, ErrorCode); 9] = [
             (
                 &[
                     "220 hi\r\n",
                     "250-hi\r\n250 AUTH PLAIN\r\n",
-                    "535 5.7.8 Bad credentials\r\n",
+                    "535 5.7.8 Bad credentials AGRhAHNlY3JldA==\r\n",
                 ],
-                Auth::Password {
-                    user: "pat".into(),
-                    password: "wrong".into(),
-                },
+                login("wrong"),
                 ErrorCode(1501),
             ),
             (&["554 No service\r\n"], Auth::None, ErrorCode(1502)),
+            // A bare LF, and a reply whose lines' codes differ.
+            (&["220 hi\n"], Auth::None, ErrorCode(1502)),
+            (
+                &[
+                    "220 hi\r\n",
+                    "250 hi\r\n",
+                    "250 OK\r\n",
+                    "250 OK\r\n",
+                    "250 OK\r\n",
+                    "250 OK\r\n",
+                    "354 Go\r\n",
+                    "550-no\r\n250 OK\r\n",
+                ],
+                Auth::None,
+                ErrorCode(1506),
+            ),
             (
                 &["220 hi\r\n", "250-hi\r\n250 STARTTLS\r\n"],
-                Auth::Password {
-                    user: "pat".into(),
-                    password: "x".into(),
-                },
+                login("x"),
                 ErrorCode(1504),
             ),
             (
@@ -1252,6 +1597,15 @@ mod tests {
             (
                 &[
                     "220 hi\r\n",
+                    "250-hi\r\n250 AUTH PLAIN\r\n",
+                    "534 5.7.9 Mechanism too weak\r\n",
+                ],
+                login("x"),
+                ErrorCode(1505),
+            ),
+            (
+                &[
+                    "220 hi\r\n",
                     "250 hi\r\n",
                     "250 OK\r\n",
                     "550 5.1.1 No such user\r\n",
@@ -1259,9 +1613,19 @@ mod tests {
                 Auth::None,
                 ErrorCode(1506),
             ),
+            (
+                &[
+                    "220 hi\r\n",
+                    "250 hi\r\n",
+                    "250 OK\r\n",
+                    "530 5.7.0 Authentication required\r\n",
+                ],
+                Auth::None,
+                ErrorCode(1507),
+            ),
         ];
         for (replies, auth, code) in cases {
-            let (port, scripted) = server(replies);
+            let (port, server) = scripted(replies);
             let error = send_with(
                 &account(port, auth),
                 &message(),
@@ -1271,14 +1635,77 @@ mod tests {
             )
             .unwrap_err();
             assert_eq!(error.code(), code, "{error}");
-            drop(scripted);
+            assert!(!error.to_string().contains("AGRhAHNlY3JldA"), "{error}");
+            drop(server);
         }
     }
 
-    /// STARTTLS: the session goes on over TLS with the server's own
-    /// certificate trusted; a server that offers no STARTTLS is 1503.
+    /// A cancel stops the session where it is, the message unsent; once
+    /// the message's end is sent the server's answer stands, and it is
+    /// given before QUIT's.
     #[test]
-    fn starttls_upgrades_the_connection_before_the_login() {
+    fn a_cancel_stops_the_session_unless_the_message_is_sent() {
+        // A server that never greets: the cancel shuts the connection and
+        // the server reads nothing, at once.
+        let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+        let port = listener.local_addr().unwrap().port();
+        let (shut, closed) = mpsc::channel();
+        std::thread::spawn(move || {
+            let (socket, _) = listener.accept().unwrap();
+            let mut line = String::new();
+            let read = io::BufReader::new(socket).read_line(&mut line).unwrap_or(0);
+            let _ = shut.send(read);
+        });
+        let started = Instant::now();
+        let mut polls = 0;
+        let error = send_with(
+            &account(port, Auth::None),
+            &message(),
+            RootCertStore::empty(),
+            None,
+            &mut || {
+                polls += 1;
+                polls > 4
+            },
+        )
+        .unwrap_err();
+        assert_eq!(error, SmtpError::Cancelled);
+        assert!(started.elapsed() < Duration::from_secs(5));
+        let read = closed
+            .recv_timeout(Duration::from_secs(5))
+            .expect("the cancel shuts the connection");
+        assert_eq!(read, 0);
+
+        // Cancelled once the server has read the message's end: sent.
+        let ended = Arc::new(AtomicBool::new(false));
+        let mut replies = vec!["220 hi\r\n", "250 hi\r\n"];
+        replies.extend(TAKEN.iter().copied());
+        let (port, server) = server(Vec::leak(replies), ended.clone(), Duration::from_secs(3));
+        let started = Instant::now();
+        send_with(
+            &account(port, Auth::None),
+            &message(),
+            RootCertStore::empty(),
+            None,
+            &mut || ended.load(Ordering::SeqCst),
+        )
+        .unwrap();
+        assert!(started.elapsed() < Duration::from_secs(3));
+        drop(server);
+    }
+
+    /// A TLS server with a fresh certificate for "localhost": its port,
+    /// the certificate, and what it read; with `implicit`, TLS from the
+    /// start, else after STARTTLS (and, with `inject`, a reply sent ahead
+    /// of the handshake).
+    fn tls_server(
+        implicit: bool,
+        inject: bool,
+    ) -> (
+        u16,
+        rustls::pki_types::CertificateDer<'static>,
+        std::thread::JoinHandle<Vec<String>>,
+    ) {
         let certified = rcgen::generate_simple_self_signed(vec!["localhost".to_owned()]).unwrap();
         let der = certified.cert.der().clone();
         let key =
@@ -1294,73 +1721,117 @@ mod tests {
         );
         let listener = TcpListener::bind("127.0.0.1:0").unwrap();
         let port = listener.local_addr().unwrap().port();
-        let tls_server = std::thread::spawn(move || {
+        let handle = std::thread::spawn(move || {
             let (mut socket, _) = listener.accept().unwrap();
-            socket.write_all(b"220 hi\r\n").unwrap();
-            let mut reader = io::BufReader::new(socket.try_clone().unwrap());
-            let mut line = String::new();
-            reader.read_line(&mut line).unwrap();
-            socket.write_all(b"250-hi\r\n250 STARTTLS\r\n").unwrap();
-            line.clear();
-            reader.read_line(&mut line).unwrap();
-            assert_eq!(line, "STARTTLS\r\n");
-            socket.write_all(b"220 Go ahead\r\n").unwrap();
-            let connection = rustls::ServerConnection::new(config).unwrap();
-            let tls = StreamOwned::new(connection, socket);
-            let mut reader = io::BufReader::new(tls);
-            let mut read = Vec::new();
-            for reply in [
-                "250-hi\r\n250 AUTH PLAIN\r\n",
-                "235 OK\r\n",
-                "250 OK\r\n",
-                "250 OK\r\n",
-                "250 OK\r\n",
-                "250 OK\r\n",
-                "354 Go\r\n",
-            ] {
+            if !implicit {
+                socket.write_all(b"220 hi\r\n").unwrap();
+                let mut reader = io::BufReader::new(socket.try_clone().unwrap());
                 let mut line = String::new();
                 reader.read_line(&mut line).unwrap();
+                socket.write_all(b"250-hi\r\n250 STARTTLS\r\n").unwrap();
+                line.clear();
+                reader.read_line(&mut line).unwrap();
+                assert_eq!(line, "STARTTLS\r\n");
+                let ready: &[u8] = if inject {
+                    b"220 Go ahead\r\n250 injected\r\n"
+                } else {
+                    b"220 Go ahead\r\n"
+                };
+                socket.write_all(ready).unwrap();
+            }
+            let connection = rustls::ServerConnection::new(config).unwrap();
+            let mut reader = io::BufReader::new(StreamOwned::new(connection, socket));
+            let mut read = Vec::new();
+            let mut replies = vec!["250-hi\r\n250 AUTH PLAIN\r\n", "235 OK\r\n"];
+            replies.extend(TAKEN[..5].iter().copied());
+            if implicit {
+                replies.insert(0, "220 hi\r\n");
+                if reader
+                    .get_mut()
+                    .write_all(replies.remove(0).as_bytes())
+                    .is_err()
+                    || reader.get_mut().flush().is_err()
+                {
+                    return read;
+                }
+            }
+            for reply in replies {
+                let mut line = String::new();
+                if reader.read_line(&mut line).unwrap_or(0) == 0 {
+                    return read;
+                }
                 read.push(line);
                 reader.get_mut().write_all(reply.as_bytes()).unwrap();
                 reader.get_mut().flush().unwrap();
             }
             loop {
                 let mut line = String::new();
-                reader.read_line(&mut line).unwrap();
-                if line == ".\r\n" {
+                if reader.read_line(&mut line).unwrap_or(0) == 0 || line == ".\r\n" {
                     break;
                 }
             }
-            reader
-                .get_mut()
-                .write_all(b"250 queued\r\n221 Bye\r\n")
-                .unwrap();
-            reader.get_mut().flush().unwrap();
+            let _ = reader.get_mut().write_all(b"250 queued\r\n221 Bye\r\n");
+            let _ = reader.get_mut().flush();
             read
         });
-        let mut roots = RootCertStore::empty();
-        roots.add(der).unwrap();
-        let account = Account {
+        (port, der, handle)
+    }
+
+    fn tls_account(port: u16, security: Security) -> Account {
+        Account {
             server: "localhost".into(),
             port,
-            security: Security::StartTls,
-            auth: Auth::Password {
-                user: "pat".into(),
-                password: "secret".into(),
-            },
-        };
-        send_with(&account, &message(), roots, None, &mut || false).unwrap();
-        let read = tls_server.join().unwrap();
-        assert!(read[0].starts_with("EHLO "), "{read:?}");
-        assert!(read[1].starts_with("AUTH PLAIN "));
+            security,
+            auth: login("secret"),
+        }
+    }
 
-        let (port, scripted) = server(&["220 hi\r\n", "250 hi\r\n"]);
-        let plain = Account {
-            security: Security::StartTls,
-            ..account
-        };
+    /// STARTTLS and TLS from the start: the session goes on over TLS with
+    /// the server's certificate trusted. With it untrusted the step is
+    /// 1502, as if the server were unavailable; with no STARTTLS offered,
+    /// or a reply sent ahead of the handshake, 1503.
+    #[test]
+    fn tls_carries_the_login_and_refuses_what_it_cannot_trust() {
+        for security in [Security::StartTls, Security::Ssl] {
+            let (port, der, server) = tls_server(security == Security::Ssl, false);
+            let mut roots = RootCertStore::empty();
+            roots.add(der).unwrap();
+            send_with(
+                &tls_account(port, security),
+                &message(),
+                roots,
+                None,
+                &mut || false,
+            )
+            .unwrap();
+            let read = server.join().unwrap();
+            assert!(read[0].starts_with("EHLO "), "{read:?}");
+            assert!(read[1].starts_with("AUTH PLAIN "));
+        }
+        for (security, inject, code) in [
+            (Security::Ssl, false, 1502),
+            (Security::StartTls, false, 1502),
+            (Security::StartTls, true, 1503),
+        ] {
+            let (port, der, server) = tls_server(security == Security::Ssl, inject);
+            let mut roots = RootCertStore::empty();
+            if inject {
+                roots.add(der).unwrap();
+            }
+            let error = send_with(
+                &tls_account(port, security),
+                &message(),
+                roots,
+                None,
+                &mut || false,
+            )
+            .unwrap_err();
+            assert_eq!(error.code(), ErrorCode(code), "{error}");
+            drop(server);
+        }
+        let (port, server) = scripted(&["220 hi\r\n", "250 hi\r\n"]);
         let error = send_with(
-            &Account { port, ..plain },
+            &tls_account(port, Security::StartTls),
             &message(),
             RootCertStore::empty(),
             None,
@@ -1368,6 +1839,6 @@ mod tests {
         )
         .unwrap_err();
         assert_eq!(error.code(), ErrorCode(1503), "{error}");
-        drop(scripted);
+        drop(server);
     }
 }

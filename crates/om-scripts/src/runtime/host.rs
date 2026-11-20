@@ -512,8 +512,8 @@ pub struct Mail {
 }
 
 /// Send Mail's SMTP options (script-steps.md 12.3), the calculations
-/// evaluated in the current record.
-#[derive(Clone, Debug, Default, PartialEq, Eq)]
+/// evaluated in the current record. Its Debug leaves the password out.
+#[derive(Clone, Default, PartialEq, Eq)]
 pub struct SmtpOptions {
     /// The sender's name (calculation 5), address (6) and Reply-To (7).
     pub name: String,
@@ -531,6 +531,21 @@ pub struct SmtpOptions {
     /// authentication other than none.
     pub user: String,
     pub password: String,
+}
+
+impl std::fmt::Debug for SmtpOptions {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("SmtpOptions")
+            .field("name", &self.name)
+            .field("email", &self.email)
+            .field("reply_to", &self.reply_to)
+            .field("server", &self.server)
+            .field("port", &self.port)
+            .field("encryption", &self.encryption)
+            .field("authentication", &self.authentication)
+            .field("user", &self.user)
+            .finish_non_exhaustive()
+    }
 }
 
 /// How Send Mail sends.

@@ -947,6 +947,7 @@ fn send_mail_reads_the_message_and_its_options_from_filemakers_slots() {
     for (slot, text) in [
         (5, "\"Pat\""),
         (6, "\"pat@example.org\""),
+        (7, "\"replies@example.org\""),
         (8, "\"smtp.example.org\""),
         (9, "587"),
         (10, "\"pat\""),
@@ -963,6 +964,10 @@ fn send_mail_reads_the_message_and_its_options_from_filemakers_slots() {
     unreadable.set_slot_child(4, 0x03, Some(OwnedNode::leaf([0x03], [1, 0, 0])));
     let mut attached = mail.clone();
     attached.set_flag(flag::FILE_PATH, true);
+    // A stored SMTP port calculation that does not decode is 3 too, not
+    // an empty port.
+    let mut unreadable_port = smtp.clone();
+    unreadable_port.set_slot_child(9, 0x05, Some(OwnedNode::leaf([0x05], [0xff])));
     let steps = vec![
         on(86, true),
         mail,
@@ -971,12 +976,16 @@ fn send_mail_reads_the_message_and_its_options_from_filemakers_slots() {
         set_var(&h, "$$unreadable", "Get ( LastError )"),
         attached,
         set_var(&h, "$$attached", "Get ( LastError )"),
+        unreadable_port,
+        set_var(&h, "$$port", "Get ( LastError )"),
     ];
     h.add_script(0, script(1, "Mail", steps));
     let mut rt = Runtime::default();
     run(&mut h, &mut rt, 1);
     assert_eq!(g(&mut rt, "$$unreadable"), "3");
     assert_eq!(g(&mut rt, "$$attached"), "3");
+    assert_eq!(g(&mut rt, "$$port"), "3");
+    assert!(!format!("{:?}", h.mails[1]).contains("secret"));
     assert_eq!(
         h.mails,
         [
@@ -999,7 +1008,7 @@ fn send_mail_reads_the_message_and_its_options_from_filemakers_slots() {
                 smtp: Some(SmtpOptions {
                     name: "Pat".into(),
                     email: "pat@example.org".into(),
-                    reply_to: String::new(),
+                    reply_to: "replies@example.org".into(),
                     server: "smtp.example.org".into(),
                     port: "587".into(),
                     encryption: 2,

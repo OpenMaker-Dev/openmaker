@@ -1699,6 +1699,14 @@ impl Runtime {
                 // none when absent.
                 let mut choices = [0, 1];
                 if via == MailVia::Smtp {
+                    // A stored SMTP calculation that does not decode
+                    // would read as empty: an empty port is 25, which
+                    // could offer the login to another service.
+                    let unreadable = (5u16..=11)
+                        .any(|slot| stored(slot, 0x05) && step.calculation(slot).is_none());
+                    if unreadable {
+                        return Exec::error(ErrorCode::UNAVAILABLE);
+                    }
                     for (choice, slot) in choices.iter_mut().zip([5u16, 6]) {
                         match step.number(slot) {
                             Some(n) => *choice = n,
