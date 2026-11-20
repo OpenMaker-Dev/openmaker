@@ -545,6 +545,36 @@ authoring part tabs or object kind captions.
 - Button icons come from the file's library root `31` as the original SVG,
   colored through the icon component's style; no application icon is
   substituted for a file's library image.
+- A button with FileMaker Pro 26.1's "Calculated icon" (`buttonObj.flags`
+  `0x4`, layout-model.md 5.3.4) shows in Browse the SVG text its
+  `KButtonIconSvgCalc` formula (`91`) gives on the record, in the library
+  icon's place, drawn by the same SVG worker. "Image only" hides its label,
+  as for a library icon. Text the worker cannot draw, or none, shows a
+  warning sign, as FileMaker Pro shows a warning icon for SVG it does not
+  support (Claris). Popover buttons take the option too. A formula stored
+  without the flag is kept, neither evaluated nor drawn, and does not stop
+  reports or Refresh Object when it cannot be read.
+  - OpenMaker's choices: the icon is colored as the library icon is; text
+    longer than 64 KiB is dropped as it is computed and shows the warning;
+    the app keeps up to 256 distinct icons loaded across its windows.
+    Only icons within the document's visible clip claim or renew a slot.
+    The app warns on additional visible icons while all slots are in use. It keeps up to
+    64 after they leave the screen, with a one-second grace period.
+    Rasters are limited to 512 pixels per side and cached calculation
+    results have a 16 MiB text budget. The SVG worker queues up to 128
+    draws, reads their source bytes when drawing, and retries still-visible
+    icons on repaint.
+  - Inferred, not measured: the sign's look, which SVG FileMaker Pro
+    refuses, and whether popover buttons offer the option. The bit and the
+    key were read from FileMaker Pro 26.1.1's binaries; no file made by
+    26.1.1 has been read.
+  - Find mode, which evaluates no layout calculations, draws the library
+    icon, if any, where FileMaker Pro draws the calculated one
+    ([#512](https://github.com/OpenMaker-Dev/openmaker/issues/512)).
+    Preview, printing and PDF still draw the library icon, and Layout
+    mode, where FileMaker Pro shows a placeholder, too; whether FileMaker
+    Pro prints the calculated icon is unmeasured
+    ([#466](https://github.com/OpenMaker-Dev/openmaker/issues/466)).
 - SVG pictures and icons are drawn outside om-gui's process, by the SVG
   worker (`om-gui-pdf-worker --svg`, the one reports use: its allocator
   capped 512 MiB past its input, killed after 30 seconds, one SVG at a

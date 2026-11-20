@@ -1959,7 +1959,7 @@ fn report_object<'a>(
         )
     {
         Some("conditional formatting".to_owned())
-    } else if !object.calcs.undecodable.is_empty() {
+    } else if object.has_undecodable_calcs() {
         Some("calculations OpenMaker cannot read".to_owned())
     } else {
         None
@@ -2435,7 +2435,7 @@ pub(crate) fn band_refusal(
                 || calcs.placeholder.is_some()
                 || calcs.active_segment.is_some()
                 || !calcs.conditions.is_empty()
-                || !calcs.undecodable.is_empty()
+                || object.has_undecodable_calcs()
             {
                 return Some(
                     "Summary fields with layout calculations in sub-summary parts are unsupported"

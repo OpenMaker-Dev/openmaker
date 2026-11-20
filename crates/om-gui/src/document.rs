@@ -5115,7 +5115,17 @@ fn paint_object_repetition(
                 (None, Some(button)) => Some((button.library_key, button.icon_size)),
                 (None, None) => None,
             };
-            if let Some((library_key, icon_size)) = icon.filter(|(key, _)| *key != 0) {
+            // A calculated icon (FileMaker Pro 26.1) is the SVG its formula
+            // gives on the record, in the library icon's place.
+            // Not evaluated (Find mode, or until its data is read): the
+            // library icon, if any [I: what Find mode shows is unmeasured].
+            let svg = object
+                .active_icon_formula()
+                .and_then(|_| calc_state.icon_svg.clone());
+            // A library icon shows only with its key; a calculated one
+            // always, its size the button's icon size.
+            let shown = icon.filter(|(key, _)| svg.is_some() || *key != 0);
+            if let Some((library_key, icon_size)) = shown {
                 let size = (icon_size.max(1) as f32)
                     .min(rect.width())
                     .min(rect.height());
@@ -5132,14 +5142,13 @@ fn paint_object_repetition(
                     .or(icon.color)
                     .or(style.border_color[0])
                     .map(color);
-                paint_library_image(
-                    ui,
-                    &state.layout_cache,
-                    layout,
-                    library_key,
-                    Rect::from_center_size(center, vec2(size, size)),
-                    tint,
-                );
+                let at = Rect::from_center_size(center, vec2(size, size));
+                match &svg {
+                    Some(svg) => paint_calculated_icon(ui, svg, at, tint),
+                    None => {
+                        paint_library_image(ui, &state.layout_cache, layout, library_key, at, tint)
+                    }
+                }
                 if !text.is_empty() {
                     text_rect.min.x += size + 10.0;
                 }
@@ -7908,6 +7917,123 @@ fn paint_library_image(
     }
 }
 
+/// Calculated SVGs by URI, ordered by when they were last drawn. Each
+/// forgotten URI releases its bytes and rasters from egui's loaders.
+#[derive(Clone, Default)]
+struct CalculatedIcons(
+    std::collections::VecDeque<(String, std::sync::Arc<[u8]>, std::time::Instant)>,
+);
+
+/// Retain at most this many icons after they leave the screen.
+const CALCULATED_ICONS: usize = 64;
+/// Absolute ceiling across the application's viewports. If all slots are
+/// in use, warn on additional icons and retry when a slot is available.
+const MAX_CALCULATED_ICONS: usize = 256;
+const ICON_SHOWN: std::time::Duration = std::time::Duration::from_secs(1);
+
+/// A button's calculated icon, the SVG text `svg` its formula gave
+/// (`ObjectState::icon_svg`), over `rect`, tinted as the button's library
+/// icon is (OpenMaker's choice). Text that is empty (none, or longer than
+/// `om_data::host::layout::MAX_ICON_SVG`) or that the SVG worker cannot
+/// draw shows a warning sign instead, as FileMaker Pro shows a warning
+/// icon for SVG it does not support (Claris); the sign's look, and which
+/// SVG FileMaker Pro refuses, are unmeasured.
+fn paint_calculated_icon(ui: &Ui, svg: &str, rect: Rect, tint: Option<Color32>) {
+    use std::hash::{Hash, Hasher};
+    // Form view can paint objects outside the current scroll clip.
+    // Only visible icons can admit or renew a cache entry.
+    if !ui.is_rect_visible(rect) || !rect.intersect(ui.clip_rect()).is_positive() {
+        return;
+    }
+    let warning = || {
+        ui.painter().text(
+            rect.center(),
+            egui::Align2::CENTER_CENTER,
+            "\u{26a0}",
+            FontId::proportional(rect.height().max(1.0)),
+            tint.unwrap_or(theme::TEXT),
+        );
+    };
+    if svg.trim().is_empty() {
+        warning();
+        return;
+    }
+    let mut hash = std::collections::hash_map::DefaultHasher::new();
+    svg.hash(&mut hash);
+    tint.hash(&mut hash);
+    let uri = format!(
+        "{}{:016x}.svg",
+        crate::svg_loader::CALCULATED_ICON_URI,
+        hash.finish()
+    );
+    let id = egui::Id::unique("openmaker calculated icons");
+    let now = std::time::Instant::now();
+    let (bytes, forgotten) = ui.data_mut(|data| {
+        let icons = data.get_temp_mut_or_default::<CalculatedIcons>(id);
+        let known = icons
+            .0
+            .iter()
+            .position(|(known, ..)| *known == uri)
+            .and_then(|at| icons.0.remove(at));
+        let mut forgotten = Vec::new();
+        while icons.0.len() >= CALCULATED_ICONS
+            && icons
+                .0
+                .front()
+                .is_some_and(|(.., drawn)| now.duration_since(*drawn) >= ICON_SHOWN)
+        {
+            forgotten.extend(icons.0.pop_front().map(|(old, ..)| old));
+        }
+        if known.is_none() && icons.0.len() >= MAX_CALCULATED_ICONS {
+            return (None, forgotten);
+        }
+        // Copied and tinted once, as it first shows.
+        let bytes = known.map_or_else(
+            || {
+                let image = om_layout::LibraryImage {
+                    format: om_layout::LibraryImageFormat::Svg,
+                    data: svg.as_bytes().to_vec(),
+                };
+                std::sync::Arc::<[u8]>::from(tinted_image(&image, tint))
+            },
+            |(_, bytes, _)| bytes,
+        );
+        icons.0.push_back((uri.clone(), bytes.clone(), now));
+        (Some(bytes), forgotten)
+    });
+    for old in forgotten {
+        ui.ctx().forget_image(&old);
+    }
+    let Some(bytes) = bytes else {
+        warning();
+        ui.ctx().request_repaint_after(ICON_SHOWN);
+        return;
+    };
+    let source = egui::ImageSource::Bytes {
+        uri: uri.into(),
+        bytes: bytes.into(),
+    };
+    // As `Image::paint_at` asks for it: the SVG worker draws exact sizes.
+    let ppp = ui.pixels_per_point();
+    let pixels = (ppp * egui::emath::GuiRounding::round_to_pixels(rect, ppp).size()).round();
+    let hint = egui::SizeHint::Size {
+        width: pixels.x as u32,
+        height: pixels.y as u32,
+        maintain_aspect_ratio: false,
+    };
+    if source
+        .clone()
+        .load(ui.ctx(), egui::TextureOptions::default(), hint)
+        .is_err()
+    {
+        warning();
+        return;
+    }
+    egui::Image::new(source)
+        .show_loading_spinner(false)
+        .paint_at(ui, rect);
+}
+
 /// A library image's encoded bytes, an SVG's tinted, under a URI naming
 /// those bytes: egui's loaders keep the first bytes they get for a URI.
 fn library_image(
@@ -7937,13 +8063,10 @@ pub(crate) fn tinted_image(image: &om_layout::LibraryImage, tint: Option<Color32
     let mut data = image.data.clone();
     if image.format == om_layout::LibraryImageFormat::Svg {
         if let (Some(tint), Ok(svg)) = (tint, std::str::from_utf8(&data)) {
-            if let Some(start) = svg
-                .find("<svg")
-                .and_then(|start| svg[start..].find('>').map(|end| start + end + 1))
-            {
+            if let Some(start) = svg_root_content_offset(svg) {
                 let opacity = f32::from(tint.a()) / 255.0;
                 let css = format!(
-                    "<style>.fm_fill{{fill:#{:02x}{:02x}{:02x}!important;\
+                    "<style xmlns=\"http://www.w3.org/2000/svg\">.fm_fill{{fill:#{:02x}{:02x}{:02x}!important;\
                      fill-opacity:{opacity}!important}}</style>",
                     tint.r(),
                     tint.g(),
@@ -7954,6 +8077,26 @@ pub(crate) fn tinted_image(image: &om_layout::LibraryImage, tint: Option<Color32
         }
     }
     data
+}
+
+/// Find the root's opening tag without expanding entities or parsing the
+/// SVG body. The rendering worker still decides whether the SVG is valid.
+fn svg_root_content_offset(svg: &str) -> Option<usize> {
+    use quick_xml::events::Event;
+
+    let xml = svg.strip_prefix('\u{feff}').unwrap_or(svg);
+    let prefix_len = svg.len() - xml.len();
+    let mut reader = quick_xml::Reader::from_str(xml);
+    loop {
+        match reader.read_event().ok()? {
+            Event::Start(root) if root.local_name().as_ref() == b"svg" => {
+                return Some(prefix_len + usize::try_from(reader.buffer_position()).ok()?);
+            }
+            Event::Comment(_) | Event::Decl(_) | Event::PI(_) | Event::DocType(_) => {}
+            Event::Text(text) if text.iter().all(u8::is_ascii_whitespace) => {}
+            _ => return None,
+        }
+    }
 }
 
 fn default_panel(object: &LayoutObject, panels: &[&LayoutObject]) -> u64 {
@@ -8769,6 +8912,45 @@ mod visibility_tests;
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn clipped_calculated_icons_do_not_claim_visible_cache_slots() {
+        let ctx = egui::Context::default();
+        ctx.run_ui(egui::RawInput::default(), |ui| {
+            let clip = Rect::from_min_size(pos2(0.0, 0.0), vec2(40.0, 40.0));
+            ui.set_clip_rect(clip);
+            let outside = clip.translate(vec2(0.0, 40.0));
+            for icon in 0..MAX_CALCULATED_ICONS {
+                paint_calculated_icon(ui, &format!("<svg>{icon}</svg>"), outside, None);
+            }
+            let id = egui::Id::unique("openmaker calculated icons");
+            assert!(ui.data(|data| data.get_temp::<CalculatedIcons>(id).is_none()));
+            paint_calculated_icon(ui, "<svg/>", clip.shrink(10.0), None);
+            assert_eq!(
+                ui.data(|data| data.get_temp::<CalculatedIcons>(id).unwrap().0.len()),
+                1
+            );
+        })
+        .drop_without_applying_deltas();
+    }
+
+    #[test]
+    fn svg_tint_starts_inside_the_root_after_an_xml_prolog() {
+        let data = br#"<?xml version="1.0"?>
+<!-- Example <svg -->
+<?example svg?>
+<svg xmlns="http://www.w3.org/2000/svg" width="8" height="8" data-example=">"><rect class="fm_fill" width="8" height="8"/></svg>"#;
+        for data in [data.to_vec(), [b"\xef\xbb\xbf".as_slice(), data].concat()] {
+            let image = om_layout::LibraryImage {
+                format: om_layout::LibraryImageFormat::Svg,
+                data,
+            };
+            let tinted = tinted_image(&image, Some(Color32::RED));
+            let picture = crate::report::browse_svg(&tinted, [8, 8]).unwrap();
+            assert_eq!(&picture.rgba[..4], &[255, 0, 0, 255]);
+        }
+        assert!(crate::report::browse_svg(b"<svg>", [8, 8]).is_err());
+    }
 
     /// A field click waiting for its row (#1099) keeps waiting through a
     /// frame that cannot tell yet whether its row shows, and goes once
