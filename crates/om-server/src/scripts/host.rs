@@ -672,6 +672,10 @@ pub(crate) struct ServerHost {
     /// What other users see as the holder of the session's locks.
     holder: String,
     account: String,
+    /// The record key of the account the session logged in with, when it
+    /// did: Change Password changes that account's password, whatever its
+    /// name is by then. A session without one changes none.
+    account_key: Option<Vec<u8>>,
     locale: Locale,
     today: Date,
     schema: Schema,
@@ -748,6 +752,7 @@ impl ServerHost {
                 txn: 1,
             },
             account: account.to_string(),
+            account_key: None,
             locale,
             today: today(),
             schema,
@@ -807,6 +812,11 @@ impl ServerHost {
     /// (`SMScriptRuntime::ExecuteScript`, 11.3).
     pub fn has_window(&self) -> bool {
         self.window.is_some()
+    }
+
+    /// The record key of the account the session logged in with.
+    pub fn set_account_key(&mut self, key: &[u8]) {
+        self.account_key = Some(key.to_vec());
     }
 
     /// The script's abort flag and time limit.
@@ -3896,5 +3906,206 @@ impl Network for ServerHost {
         self.fetch_url_step(request)
     }
 }
-impl Accounts for ServerHost {}
+/// FileMaker's error 310, "Cannot modify items because another user is
+/// modifying them": Reset Account Password's code when the account catalog
+/// is locked (script-runtime.md 2.3, its 8003).
+const ACCOUNTS_IN_USE: i32 = 310;
+
+/// The attention code of a catalog change (`kDBAttnCatalog`,
+/// schema-path.md 9).
+const ATTENTION_CATALOG: u32 = 2;
+
+/// `text` cut to at most `units` UTF-16 code units, as Change Password cuts
+/// its passwords (local-files.md 2.4); a character that would be split
+/// goes whole.
+fn utf16_prefix(text: &str, units: usize) -> &str {
+    let mut counted = 0;
+    for (at, c) in text.char_indices() {
+        counted += c.len_utf16();
+        if counted > units {
+            return &text[..at];
+        }
+    }
+    text
+}
+
+impl ServerHost {
+    /// Run `edit` while the session holds the write lock FileMaker Pro's
+    /// Manage Security takes on the account catalog `[23, 1]`
+    /// (local-files.md 2.4), so that a client saving accounts and a script
+    /// do not change them at once: 310 while another user holds it
+    /// (FileMaker's code for Reset Account Password, inferred for the
+    /// other account steps). `edit` gets the modification stamp to write
+    /// and says whether it wrote; once it has, the other clients are told
+    /// the catalog changed, as a
+    /// client's commit tells them. A file the server hosts read-only
+    /// changes nothing: 3 (OpenMaker's choice).
+    fn edit_accounts(
+        &self,
+        step: &str,
+        edit: impl FnOnce(&crate::hosting::ModStamp<'_>) -> HostResult<bool>,
+    ) -> HostResult {
+        if self.hosted.read_only {
+            info!(
+                "{:?}: {step} changed nothing: the file is hosted read-only",
+                self.hosted.name
+            );
+            return Err(ErrorCode::UNAVAILABLE.into());
+        }
+        let catalog = vec![vec![23], vec![1]];
+        self.hosted
+            .lock_table()
+            .lock(&catalog, self.user, LOCK_WRITE, &self.holder)
+            .map_err(|conflict| {
+                info!(
+                    "{:?}: {step} refused: the accounts are in use by {}",
+                    self.hosted.name, conflict.users
+                );
+                HostError::Error(ErrorCode(ACCOUNTS_IN_USE))
+            })?;
+        let time = crate::connection::host_time_key();
+        // `Get ( UserName )` of a server script is its account's name.
+        let stamp = crate::hosting::ModStamp {
+            user: &self.account,
+            account: &self.account,
+            time: &time,
+        };
+        let result = edit(&stamp);
+        self.hosted.lock_table().release_path(&catalog, self.user);
+        if result == Ok(true) {
+            writes::notify(
+                &self.hosted,
+                &self.shared.mailboxes,
+                self.user.connection,
+                &[
+                    writes::Change {
+                        path: catalog.clone(),
+                        code: ATTENTION_CATALOG,
+                    },
+                    writes::Change {
+                        path: vec![vec![23], vec![1], vec![1]],
+                        code: ATTENTION_CATALOG,
+                    },
+                ],
+            );
+        }
+        result.map(|_| ())
+    }
+}
+
+impl Accounts for ServerHost {
+    /// Change Password (83), as FileMaker's `DoChangePassword` runs it
+    /// (local-files.md 2.4): the password of the account the session
+    /// logged in with, found by its record key so that a rename since
+    /// cannot redirect it, both passwords cut to 100 UTF-16 code units,
+    /// and 3 for [Guest] or an account of another kind. Then
+    /// [`crate::hosting::Hosted::change_password`] sets it with
+    /// `SetPassword`'s errors (212 a wrong old password, 206 a set that
+    /// does not allow it, 208 shorter than the set's minimum, 209 the same
+    /// password, 210 an inactive account), skipping the set's checks for a
+    /// step with full access, and saves it before the step ends. With its
+    /// dialog the step is refused with 3: FileMaker Server's handling of
+    /// that dialog is not measured.
+    fn change_password(&mut self, old: &str, new: &str, with_dialog: bool) -> HostResult {
+        if with_dialog {
+            return Err(HostError::Unsupported);
+        }
+        let Some(key) = self.account_key.clone() else {
+            return Err(HostError::Unsupported);
+        };
+        let is_file_account =
+            self.hosted.accounts().iter().any(|a| {
+                a.key == key && a.kind == Some(crate::accounts::AccountKind::FileMakerFile)
+            });
+        if key == [1] || !is_file_account {
+            return Err(HostError::Unsupported);
+        }
+        let (old, new) = (utf16_prefix(old, 100), utf16_prefix(new, 100));
+        let manager = self.privileged();
+        self.edit_accounts("Change Password", |stamp| {
+            let now = jiff::Zoned::now().datetime();
+            self.hosted
+                .change_password(
+                    crate::hosting::AccountRef::Key(&key),
+                    old,
+                    new,
+                    manager,
+                    Some(stamp),
+                    now,
+                )
+                .map(|()| true)
+                .map_err(|e| {
+                    if let crate::hosting::PasswordChangeError::Unwritten(reason) = &e {
+                        warn!(
+                            "{:?}: Change Password changed nothing: {reason}",
+                            self.hosted.name
+                        );
+                    }
+                    ErrorCode(e.code().unwrap_or(ErrorCode::UNAVAILABLE.0)).into()
+                })
+        })
+    }
+
+    /// Reset Account Password (136): only a session with full access
+    /// privileges (9), as FileMaker's `DoResetAccount`;
+    /// [`crate::hosting::Hosted::reset_account_password`] writes it. With
+    /// "Expire password" it is refused (3) before anything changes: the
+    /// account could then sign in to a hosted file only with a new
+    /// password, which this server does not take at login yet
+    /// ([#248](https://github.com/OpenMaker-Dev/openmaker/issues/248)).
+    fn reset_account_password(&mut self, name: &str, password: &str, expire: bool) -> HostResult {
+        self.require_full_access()?;
+        if expire {
+            info!(
+                "{:?}: Reset Account Password with Expire password is not supported yet",
+                self.hosted.name
+            );
+            return Err(HostError::Unsupported);
+        }
+        self.edit_accounts("Reset Account Password", |stamp| {
+            let now = jiff::Zoned::now().datetime();
+            self.hosted
+                .reset_account_password(name, password, false, Some(stamp), now)
+                .map(|()| true)
+                .map_err(|e| self.account_edit_error("Reset Account Password", &e))
+        })
+    }
+
+    /// Delete Account (135): only a session with full access privileges
+    /// (9), as FileMaker's `DoDeleteAccount`;
+    /// [`crate::hosting::Hosted::delete_account`] removes it.
+    fn delete_account(&mut self, name: &str) -> HostResult {
+        self.require_full_access()?;
+        self.edit_accounts("Delete Account", |stamp| {
+            self.hosted
+                .delete_account(name, Some(stamp))
+                .map(|()| true)
+                .map_err(|e| self.account_edit_error("Delete Account", &e))
+        })
+    }
+
+    /// Enable Account (137): only a session with full access privileges
+    /// (9), as FileMaker's `DoEnableAccount`;
+    /// [`crate::hosting::Hosted::enable_account`] writes it.
+    fn enable_account(&mut self, name: &str, active: bool) -> HostResult {
+        self.require_full_access()?;
+        self.edit_accounts("Enable Account", |stamp| {
+            self.hosted
+                .enable_account(name, active, Some(stamp))
+                .map_err(|e| self.account_edit_error("Enable Account", &e))
+        })
+    }
+}
+
+impl ServerHost {
+    /// The step error for Reset Account Password's or Enable Account's
+    /// `e`: its FileMaker code, or 3 for an account or file that could not
+    /// be written, logged.
+    fn account_edit_error(&self, step: &str, e: &crate::hosting::AccountEditError) -> HostError {
+        if let crate::hosting::AccountEditError::Unwritten(reason) = e {
+            warn!("{:?}: {step} changed nothing: {reason}", self.hosted.name);
+        }
+        ErrorCode(e.code().unwrap_or(ErrorCode::UNAVAILABLE.0)).into()
+    }
+}
 impl Platform for ServerHost {}

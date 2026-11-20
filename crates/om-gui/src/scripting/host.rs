@@ -3792,12 +3792,20 @@ impl ScriptHost for WorkerHost<'_> {
         self.s.active_files.extend(files.iter().copied());
     }
 
+    /// A script the account's set gives no access is not executable, and
+    /// being set to run with full access privileges does not make it so:
+    /// only a caller running with full access lets it run, and then with
+    /// the account's own privileges (script-runtime.md 3.7, 9.1). The
+    /// runtime admits a script with either flag, so the flag is given only
+    /// for a script the account may run (#408).
     fn script_access(&mut self, file: FileId, script: u64) -> ScriptAccess {
+        let executable = self.script_executable(file, script);
         ScriptAccess {
-            executable: self.script_executable(file, script),
-            full_access: self
-                .script(file, script)
-                .is_some_and(|s| s.runs_with_full_access()),
+            executable,
+            full_access: executable
+                && self
+                    .script(file, script)
+                    .is_some_and(|s| s.runs_with_full_access()),
         }
     }
 
@@ -4634,17 +4642,42 @@ impl Records for WorkerHost<'_> {
         // The active record is exited without OnRecordRevert (8.3), unless
         // the window holds it apart from the transaction: its typing stays
         // (#1103).
-        if !self.record_apart() {
+        let apart = self.record_apart();
+        if !apart {
             self.s.file.window.state.drafts.clear();
             self.s.file.window.state.focus = None;
             self.s.file.window.state.object = None;
             self.s.file.window.state.portal = None;
         }
         let held = self.s.file.transaction.take().unwrap_or_default();
-        let result = self.p().revert_transaction().map_err(|e| self.failed(e));
+        // The records this revert removes, by identity: the ones the
+        // provider's transaction created, whichever window made them and
+        // whether or not a commit logged them. A window's flags cannot
+        // tell: one whose record an earlier transaction saved may still
+        // read as new there.
+        let removed = self.p().transaction_created();
+        let mut result = self.p().revert_transaction().map_err(|e| self.failed(e));
         if result.is_ok() {
-            // The records the transaction created are gone.
+            // The records the transaction created are gone, with what any
+            // window of the file still has pending on them; one held apart
+            // in its window's record session is not the transaction's and
+            // stays.
             self.release_records(&held, transaction::Operation::New);
+            let created: Vec<(u64, i64)> = held
+                .iter()
+                .filter(|e| e.operation == transaction::Operation::New)
+                .map(|e| (e.table, e.record))
+                .chain(removed)
+                .collect();
+            for other in &mut self.s.file.others {
+                other.forget_reverted_record_waiting(&created);
+            }
+            if !apart {
+                let (window, provider) = self.wp();
+                result = window
+                    .forget_reverted_record(provider, &created)
+                    .map_err(data_error);
+            }
         }
         // The held writes went with the connection, not by this revert.
         self.s.file.lost_transaction |= self.p().connection_lost().is_some();
@@ -4900,6 +4933,9 @@ impl Fields for WorkerHost<'_> {
     }
 
     fn select_all(&mut self) -> HostResult {
+        // All of the field's text, over a selection read from its editor
+        // or a step's (`insert` takes `select` without one).
+        self.s.file.window.state.selection = None;
         self.s.file.window.state.select = true;
         self.s.file.window.touch();
         Ok(())
@@ -5022,17 +5058,14 @@ impl WorkerHost<'_> {
             Some(Answer::Index(Some(value))) => value,
             _ => return Err(ErrorCode::CANCELED.into()),
         };
-        let text = if target.select_all {
-            chosen
-        } else {
-            let (window, provider) = self.wp();
-            let current = window
-                .value(provider, &name)
-                .map_err(data_error)?
-                .unwrap_or_default();
-            current + &chosen
-        };
-        self.write_named(&name, text)
+        // "Select entire contents" replaces the field's text, a Find
+        // request's criterion too, without reading it first. Otherwise
+        // pasted as Insert Text pastes: at the insertion point of the field
+        // entered, its end otherwise.
+        if target.select_all {
+            return self.write_named(&name, chosen);
+        }
+        self.insert(target, Value::text(chosen))
     }
 }
 
