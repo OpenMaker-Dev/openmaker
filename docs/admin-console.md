@@ -226,7 +226,7 @@ what backs it.
 | Databases | [below](#databases): files with status, encryption and client count; clients with session name, files or account, address, sign-in time and client type; Disconnect and Send Message; Open, Pause, Resume and Close of a file or of all. In `om-server`, `console::ServerBackend` takes only the immediate Disconnect so far; the rest are refused when tried ([Limits](#limits)) | `databases`, `clients`, `disconnect_client`, `send_message`, `change_database` |
 | Databases: Download, Remove, Verify, Flush, Clear Encryption Password | not available ([Limits](#limits)) | |
 | Configuration > General Settings | Server Information (state, start time, name, id, addresses, version, display language); of the Startup Settings, Block New Users, which says it is not available until `console::ServerBackend` passes it to `ServerHandle::set_block_new_users` | `ServerHandle` |
-| Configuration > Folders | Database Folders: the folders of the hosted files, in FileMaker's path syntax with Copy; Additional Database Folders: a note that the server hosts the files named on its command line; Backup Folders: the backup folder, Progressive Backup not available. In `om-server`, `console::ServerBackend` does not pass the backup folder on yet | `Backend::folders` |
+| Configuration > Folders | Database Folders: the database folders searched at startup and the folders of files named elsewhere, in FileMaker's path syntax with Copy; Additional Database Folders: a note that the database folders are given when the server starts; Backup Folders: the backup folder, Progressive Backup not available. In `om-server`, `console::ServerBackend` does not pass the backup folder on yet | `Backend::folders` |
 | Configuration > SSL Certificate | Certificate Information (status, issued to and by, expiry) and Certificate Details of the certificate the server presents; a note in place of Create CSR, Let's Encrypt, Import and Delete Files | `Backend::certificate`, certificate parsing |
 | Configuration > Schedules | the schedules of `om-server --schedules` in FileMaker Server's grid, with Run Now for the checked ones and an Enabled toggle in each row; Last Run and Last Status refresh live; a note in place of Create Schedule, Duplicate, Delete and Edit | `Backend::schedules`, `run_schedule`, `enable_schedule` |
 | Configuration > FileMaker Clients, Notifications | not available | |
@@ -383,7 +383,7 @@ no reply has been compared with a live FileMaker Server's. Points marked
 | `DELETE /clients/{id}` | disconnects after asking the client to close its files with `messageText`, waiting `graceTime` (default 90 s); with no message and a grace time of 0, at once |
 | `POST /clients/{id}/message` | sends `messageText` (1-200 characters, not only white space) |
 | `GET`, `PATCH /server/config/blocknewusers` | `blockNewUsers` |
-| `GET /server/currentfoldersettings` | the first folder of hosted files as `defaultDatabaseFolder`, the next two as `additionalDatabaseFolder` and `additionalDatabaseFolder2` (`["enabled", path]`, else `["disabled"]`), and `backupPath`; secure, remote container and progressive backup folders do not exist |
+| `GET /server/currentfoldersettings` | the first of the Database Folders (above) as `defaultDatabaseFolder`, the next two as `additionalDatabaseFolder` and `additionalDatabaseFolder2` (`["enabled", path]`, else `["disabled"]`), and `backupPath`; secure, remote container and progressive backup folders do not exist |
 | `GET /server/certificate/info` | `certificate` with `subjectName` and `issuerName`, the common names (the issuer's organization when it has none) |
 | `GET /schedules`, `GET /schedules/{id}` | `id`, `name`, `enabled`, `status` (`IDLE` or `RUNNING`), `lastError` (0, or -1 after a failed run: the model has no number; inf), `lastRun`, `nextRun`, and the type member: `filemakerScriptType` with `resource` and `fmScriptAccount`, or an empty `backupType` |
 | `PATCH /schedules/{id}` | `enabled`, and `status` `RUNNING` to run it now (`IDLE` asks nothing); edits of its name, timing or task are refused (409, 1709): schedules come from the server's configuration. Schedule ids start at 2, and id 1, which FileMaker Server reserves, is refused on every schedule path (400, 1708) |
@@ -488,8 +488,11 @@ where FileMaker Server's behavior is not observed or does not apply.
 - **Folders.** OpenMaker Server hosts the files named on its command line,
   wherever they are, and those it finds in its database folders at
   startup (docs/development.md, "Hosting a file and opening it"), so
-  Database Folders lists the folders that hold them; a database folder
-  without a hosted file is not listed yet:
+  Database Folders lists the database folders it looked in, whether or
+  not they hold a hosted file, and the folders of the files named
+  elsewhere, in path order. The Databases filter uses the same resolved
+  folder paths, so a file opened through a directory symlink appears
+  under its reported database folder. Labels read
   "Database Folder Path" for one, "Database Folder 1 Path" and on for
   several (inf), at most 100, then "Showing n of m". There is no Secure
   Database Folder Path. A path is shown as FileMaker writes a folder
