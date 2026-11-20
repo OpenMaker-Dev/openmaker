@@ -1242,6 +1242,7 @@ impl OpenMakerApp {
                 mode: self.w.mode,
                 view: self.w.view,
                 zoom: self.w.document.zoom.percent(),
+                zoom_locked: self.w.zoom_locked,
                 session: self.w.session.as_ref(),
                 find: &self.w.find,
                 toolbar: self.w.show_toolbar,
@@ -2759,7 +2760,9 @@ impl OpenMakerApp {
             if input.consume_shortcut(&shortcuts::STATUS_TOOLBAR) {
                 actions.push(Action::ToggleToolbar);
             }
-            if (browse && self.w.view == ViewMode::Form) || self.w.mode == Mode::Preview {
+            if !self.w.zoom_locked
+                && ((browse && self.w.view == ViewMode::Form) || self.w.mode == Mode::Preview)
+            {
                 if input.consume_shortcut(&shortcuts::ZOOM_IN)
                     || input.consume_shortcut(&shortcuts::ZOOM_IN_ALTERNATE)
                 {
@@ -3683,10 +3686,12 @@ impl OpenMakerApp {
                 }
             }
             Action::ZoomIn | Action::ZoomOut | Action::ActualSize => {
-                if self.w.session.as_ref().is_some_and(|session| {
-                    matches!(session.render, crate::session::RenderState::Loaded(_))
-                }) && ((self.w.mode == Mode::Browse && self.w.view == ViewMode::Form)
-                    || self.w.mode == Mode::Preview)
+                if !self.w.zoom_locked
+                    && self.w.session.as_ref().is_some_and(|session| {
+                        matches!(session.render, crate::session::RenderState::Loaded(_))
+                    })
+                    && ((self.w.mode == Mode::Browse && self.w.view == ViewMode::Form)
+                        || self.w.mode == Mode::Preview)
                 {
                     match action {
                         Action::ZoomIn => self.w.document.zoom.zoom_in(),
@@ -6158,6 +6163,13 @@ mod tests {
         assert_eq!(app.w.document.zoom.percent(), 150);
         assert_eq!(context.zoom_factor(), 1.0);
 
+        app.w.zoom_locked = true;
+        for action in [Action::ZoomIn, Action::ZoomOut, Action::ActualSize] {
+            app.apply(&context, action);
+            assert_eq!(app.w.document.zoom.percent(), 150);
+        }
+        app.w.zoom_locked = false;
+
         app.w.view = ViewMode::Table;
         app.apply(&context, Action::ZoomIn);
         assert_eq!(app.w.document.zoom.percent(), 150);
@@ -6190,6 +6202,7 @@ mod tests {
         let mut window = app.window_state();
         assert_eq!(window.zoom, 150);
         window.zoom = 200;
+        window.zoom_locked = true;
         app.on_script_event(
             &context,
             crate::scripting::ScriptEvent::Window(Box::new(crate::scripting::WindowUpdate {
@@ -6207,8 +6220,10 @@ mod tests {
         );
         assert_eq!(app.w.document.zoom.percent(), 200);
         assert_eq!(app.window_state().zoom, 200);
+        assert!(app.window_state().zoom_locked);
         app.apply(&context, Action::CloseFile);
         assert_eq!(app.w.document.zoom.percent(), 100);
+        assert!(!app.window_state().zoom_locked);
     }
 
     /// Layout 1: object 1, a rectangle of `fill`, and object 2, a graphic

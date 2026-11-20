@@ -824,9 +824,13 @@ replacement invalidates the identity. Text whose row and source mapping
 cannot be verified, justified text and elided text keep the ordinary
 renderer.
 
+Set Zoom Level with Lock on disables View > Actual Size, Zoom In and
+Zoom Out and their shortcuts for that window. A script can still set the
+level, and Lock off restores those controls. Lock inheritance across
+new windows has not been compared with FileMaker Pro.
+
 Limits: List, Table, Layout mode, generic Form fallbacks and focused field
-editors are not zoomed (Preview scales its paper: [preview.md](preview.md)),
-and Set Zoom Level's lock option is not enforced.
+editors are not zoomed (Preview scales its paper: [preview.md](preview.md)).
 
 ### Layout menus
 
