@@ -1,0 +1,42 @@
+# What FileMaker Server's script engine answers for the FileMaker Go
+# location functions, whose steps s45 could not run: FMUpgradeTool drops a
+# step naming them (they are external functions, calc-functions.md 10), so
+# here Evaluate compiles them in the engine. Also arguments of the add-on,
+# Furigana, sensor and player functions s45 did not run, and GetSensor of
+# each sensor name the engine lists (resource 162). Run on contacts-en.
+
+== location
+Exit Script [ "location " & Evaluate ( "Location ( 10 ; 60 )" ) & "/" & EvaluationError ( Evaluate ( "Location ( 10 ; 60 )" ) ) & "/" & Length ( Evaluate ( "Location ( 10 ; 60 )" ) ) ]
+
+== values
+Exit Script [ "values " & Evaluate ( "LocationValues ( 10 ; 60 )" ) & "/" & EvaluationError ( Evaluate ( "LocationValues ( 10 ; 60 )" ) ) & "/" & Length ( Evaluate ( "LocationValues ( 10 ; 60 )" ) ) ]
+
+== location-args
+Exit Script [ "args " & EvaluationError ( Evaluate ( "Location ( 0 ; 0 )" ) ) & ":" & Evaluate ( "Location ( 0 ; 0 )" ) & "/" & EvaluationError ( Evaluate ( "Location ( \"\" ; \"\" )" ) ) & ":" & Evaluate ( "Location ( \"\" ; \"\" )" ) & "/" & EvaluationError ( Evaluate ( "Location ( 10 )" ) ) & "/" & EvaluationError ( Evaluate ( "LocationValues ( -1 ; -1 )" ) ) & ":" & Evaluate ( "LocationValues ( -1 ; -1 )" ) ]
+
+== beacons
+Exit Script [ "beacons " & Evaluate ( "RangeBeacons ( " & Quote ( "00000000-0000-0000-0000-000000000000" ) & " ; 1 )" ) & "/" & EvaluationError ( Evaluate ( "RangeBeacons ( " & Quote ( "00000000-0000-0000-0000-000000000000" ) & " ; 1 )" ) ) & "/" & EvaluationError ( Evaluate ( "RangeBeacons ( " & Quote ( "" ) & " )" ) ) & ":" & Evaluate ( "RangeBeacons ( " & Quote ( "" ) & " )" ) ]
+
+== control
+Exit Script [ "control " & EvaluationError ( Evaluate ( "Nothing ( 1 )" ) ) & "/" & EvaluationError ( Evaluate ( "GetSensor ( " & Quote ( "battery" ) & " )" ) ) & ":" & Evaluate ( "GetSensor ( " & Quote ( "battery" ) & " )" ) ]
+
+== addon
+Exit Script [ "addon " & GetAddonInfo ( "com.example.Other" ) & "/" & EvaluationError ( GetAddonInfo ( "com.example.Other" ) ) & "/" & EvaluationError ( GetAddonInfo ( "?" ) ) & ":" & GetAddonInfo ( "?" ) ]
+
+== furigana
+Exit Script [ "furigana " & Furigana ( "abc" ; 2 ) & "/" & EvaluationError ( Furigana ( "abc" ; 2 ) ) & "/" & Furigana ( "abc" ; 99 ) & "/" & EvaluationError ( Furigana ( "abc" ; 99 ) ) & "/" & Furigana ( "" ) & "/" & EvaluationError ( Furigana ( "" ) ) ]
+
+== sensor
+Exit Script [ "sensor " & EvaluationError ( GetSensor ( "location" ) ) & ":" & GetSensor ( "location" ) & "/" & EvaluationError ( GetSensor ( "" ) ) & ":" & GetSensor ( "" ) & "/" & EvaluationError ( GetSensor ( "nothing" ) ) & ":" & GetSensor ( "nothing" ) ]
+
+== player
+Exit Script [ "player " & EvaluationError ( GetAVPlayerAttribute ( "position" ) ) & ":" & GetAVPlayerAttribute ( "position" ) & "/" & EvaluationError ( GetAVPlayerAttribute ( "" ) ) & ":" & GetAVPlayerAttribute ( "" ) & "/" & EvaluationError ( GetAVPlayerAttribute ( "nothing" ) ) & ":" & GetAVPlayerAttribute ( "nothing" ) ]
+
+== sensors-a
+Exit Script [ "available=" & EvaluationError ( GetSensor ( "available" ) ) & ":" & GetSensor ( "available" ) & "|" & "batteryLevel=" & EvaluationError ( GetSensor ( "batteryLevel" ) ) & ":" & GetSensor ( "batteryLevel" ) & "|" & "batteryStatus=" & EvaluationError ( GetSensor ( "batteryStatus" ) ) & ":" & GetSensor ( "batteryStatus" ) & "|" & "proximityState=" & EvaluationError ( GetSensor ( "proximityState" ) ) & ":" & GetSensor ( "proximityState" ) & "|" & "location=" & EvaluationError ( GetSensor ( "location" ) ) & ":" & GetSensor ( "location" ) & "|" & "locationValues=" & EvaluationError ( GetSensor ( "locationValues" ) ) & ":" & GetSensor ( "locationValues" ) & "|" & "attitude=" & EvaluationError ( GetSensor ( "attitude" ) ) & ":" & GetSensor ( "attitude" ) & "|" & "rotationRate=" & EvaluationError ( GetSensor ( "rotationRate" ) ) & ":" & GetSensor ( "rotationRate" ) & "|" & "accelerationByUser=" & EvaluationError ( GetSensor ( "accelerationByUser" ) ) & ":" & GetSensor ( "accelerationByUser" ) & "|" & "accelerationByGravity=" & EvaluationError ( GetSensor ( "accelerationByGravity" ) ) & ":" & GetSensor ( "accelerationByGravity" ) ]
+
+== sensors-b
+Exit Script [ "speed=" & EvaluationError ( GetSensor ( "speed" ) ) & ":" & GetSensor ( "speed" ) & "|" & "heading=" & EvaluationError ( GetSensor ( "heading" ) ) & ":" & GetSensor ( "heading" ) & "|" & "magneticField=" & EvaluationError ( GetSensor ( "magneticField" ) ) & ":" & GetSensor ( "magneticField" ) & "|" & "compassMagneticHeading=" & EvaluationError ( GetSensor ( "compassMagneticHeading" ) ) & ":" & GetSensor ( "compassMagneticHeading" ) & "|" & "compassTrueHeading=" & EvaluationError ( GetSensor ( "compassTrueHeading" ) ) & ":" & GetSensor ( "compassTrueHeading" ) & "|" & "stepCount=" & EvaluationError ( GetSensor ( "stepCount" ) ) & ":" & GetSensor ( "stepCount" ) & "|" & "stepDistance=" & EvaluationError ( GetSensor ( "stepDistance" ) ) & ":" & GetSensor ( "stepDistance" ) & "|" & "stepFloorsUp=" & EvaluationError ( GetSensor ( "stepFloorsUp" ) ) & ":" & GetSensor ( "stepFloorsUp" ) & "|" & "stepFloorsDown=" & EvaluationError ( GetSensor ( "stepFloorsDown" ) ) & ":" & GetSensor ( "stepFloorsDown" ) & "|" & "airPressure=" & EvaluationError ( GetSensor ( "airPressure" ) ) & ":" & GetSensor ( "airPressure" ) ]
+
+== sensors-c
+Exit Script [ "Location=" & EvaluationError ( GetSensor ( "Location" ) ) & ":" & GetSensor ( "Location" ) & "|" & "BATTERYLEVEL=" & EvaluationError ( GetSensor ( "BATTERYLEVEL" ) ) & ":" & GetSensor ( "BATTERYLEVEL" ) & "|" & "stepCount;3600=" & EvaluationError ( GetSensor ( "stepCount" ; 3600 ) ) & ":" & GetSensor ( "stepCount" ; 3600 ) & "|" & "location;1;2=" & EvaluationError ( GetSensor ( "location" ; 1 ; 2 ) ) & ":" & GetSensor ( "location" ; 1 ; 2 ) & "|" & "battery=" & EvaluationError ( GetSensor ( "battery" ) ) & ":" & GetSensor ( "battery" ) ]
