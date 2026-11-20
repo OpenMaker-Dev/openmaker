@@ -959,6 +959,7 @@ impl ManageDatabase {
             ui.label("Create a table to define fields.");
             return;
         };
+        let table_id = table.id;
         let mut fields: Vec<_> = table.fields.iter().collect();
         match self.field_order {
             Order::Name => fields.sort_by_key(|field| field.name.to_lowercase()),
@@ -999,10 +1000,16 @@ impl ManageDatabase {
         if toggled {
             self.field_column = self.field_column.next();
         }
-        let selected_field = table
-            .fields
-            .iter()
-            .find(|field| Some(field.id) == self.field);
+        if let Some(id) = opened.or(clicked) {
+            self.field = Some(id);
+            self.sync_editor();
+        }
+        let selected = self.field;
+        let selected_field = self
+            .schema
+            .as_ref()
+            .and_then(|schema| schema.table(table_id))
+            .and_then(|table| table.fields.iter().find(|field| Some(field.id) == selected));
         // Change renames and comments a field of the kind the Type menu
         // shows; a normal field's type changes too. Turning a field into a
         // calculation or back is not built.
@@ -1029,14 +1036,8 @@ impl ManageDatabase {
         let summary_of = selected_field
             .filter(|field| field.summary.is_some())
             .map(|field| field.id);
-        if let Some(id) = clicked {
-            self.field = Some(id);
-            self.sync_editor();
-        }
         ui.add_space(8.0);
         let named = valid_name(&self.name);
-        let table_id = self.table.expect("a table is shown");
-        let selected = self.field;
         let mut open_calculation = None;
         let mut open_summary = None;
         ui.horizontal(|ui| {
@@ -1081,12 +1082,8 @@ impl ManageDatabase {
             let enabled = writable
                 && (options_of.is_some() || calculation_of.is_some() || summary_of.is_some());
             let options = widgets::dialog_button(ui, "Options…", false, enabled);
-            // Double-clicking the selected field is Options… too: the field
-            // the options above were taken from, also when both clicks
-            // came in one frame onto another row.
-            let double =
-                enabled && opened.is_some() && opened == selected_field.map(|field| field.id);
-            if options.clicked() || double {
+            // The double-click selected its row before resolving the options.
+            if options.clicked() || (enabled && opened.is_some()) {
                 if let Some((field_id, name, data_type, options)) = options_of.clone() {
                     let names = self.option_names(table_id);
                     self.options = Some(OptionsDialog::new(

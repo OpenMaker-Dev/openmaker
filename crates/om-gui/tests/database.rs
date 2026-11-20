@@ -588,14 +588,15 @@ fn a_summary_field_is_made_on_an_openmaker_server() {
         })
     };
     for double in [false, true, false] {
-        row(&mut app, "Running Count");
         if double {
+            row(&mut app, "Name");
             let at = app
                 .get_by_role_and_label(Role::Button, "Running Count")
                 .rect()
                 .center();
             common::workspace::double_click_at(&mut app, at);
         } else {
+            row(&mut app, "Running Count");
             press(&mut app, "Options…");
         }
         wait_until(&mut app, "the dialog in front", |app| {
