@@ -63,12 +63,13 @@ use om_hbam::{
 };
 use om_protocol::write::{CreateRecord, GetSerial, KeyPath, LOCK_WRITE, SERIAL_INCREMENT};
 use om_query::keys::TextKeys;
+use om_scripts::runtime::serial_text;
 use om_scripts::runtime::Fields as FieldSteps;
 use om_scripts::runtime::{
     Accounts, CommitOptions, Dialogs, ErrorCode, ErrorLogEntry, FieldRef, FileId, Files, FindKind,
     FoundSets, HostError, HostResult, InsertTarget, LayoutTarget, Mode, Navigation, Network,
-    PauseEnd, Platform, RecordList, RecordMove, Records, RelatedRecords, ScriptAccess, ScriptHost,
-    TransactionOptions, WindowId, Windows,
+    PauseEnd, Platform, RecordList, RecordMove, Records, RelatedRecords, Replacement, ScriptAccess,
+    ScriptHost, TransactionOptions, WindowId, Windows,
 };
 use om_scripts::specs::SortSpec;
 use om_scripts::{Script, ScriptCatalog, ScriptKind};
@@ -3692,9 +3693,143 @@ impl FieldSteps for ServerHost {
             .save_commit(&mut store, journal)
             .map_err(|e| HostError::Error(ErrorCode(i32::from(crate::hosting::save_error(&e)))))
     }
+
+    /// Replace Field Contents (91), as the desktop runs it
+    /// (script-runtime.md, "Steps"): each record of the found set in order
+    /// is made current and opened (locked, so the value is computed from
+    /// what it holds now), takes the current record's value, a serial
+    /// number or the calculation evaluated on it through Set Field's checks,
+    /// and is committed. The first failure stops the step: the records
+    /// before it stay replaced, the failed one's draft is reverted (to what
+    /// an open transaction holds) and its lock released, and the record
+    /// current before is current again. An abort or the script's time limit
+    /// stops it before the next record is written.
+    ///
+    /// Refused before any record changes: no field and no focus (102); a
+    /// container, global or related field, Find mode, or a serial run past
+    /// what its digits hold (3); a calculation or summary field (201).
+    /// FileMaker does not commit the active record ("Replace Field Contents
+    /// ... do not commit the active record"), which the server, holding one
+    /// open record, cannot do while it commits the others: a record with
+    /// uncommitted changes when the step starts is refused (3), its draft
+    /// kept for Commit or Revert Record
+    /// ([#513](https://github.com/OpenMaker-Dev/openmaker/issues/513)). The
+    /// dialog option is not shown on the server (Claris: as if With dialog
+    /// were off).
+    fn replace_field_contents(
+        &mut self,
+        field: Option<FieldRef>,
+        with: &mut Replacement<'_>,
+        _with_dialog: bool,
+    ) -> HostResult {
+        let focused = self.focus.as_ref().map(|f| FieldRef {
+            occurrence: f.occurrence,
+            field: f.field,
+            repetition: 1,
+        });
+        let field = field.or(focused).ok_or(ErrorCode::FIELD_MISSING)?;
+        let (_, def) = self.target(field)?;
+        let window = self.window()?;
+        if def.data_type == DataType::Container
+            || Self::is_global(&def)
+            || window.mode == Mode::Find
+            || window.occurrence != field.occurrence
+        {
+            return Err(HostError::Unsupported);
+        }
+        if def.kind != FieldKind::Normal {
+            return Err(FIELD_LOCKED.into());
+        }
+        let count = window.found.len();
+        if let Replacement::Serial {
+            initial, increment, ..
+        } = with
+        {
+            let last = count.saturating_sub(1) as u64;
+            if serial_text(initial, *increment, 0).is_none()
+                || serial_text(initial, *increment, last).is_none()
+            {
+                return Err(HostError::Unsupported);
+            }
+        }
+        if self
+            .record
+            .as_ref()
+            .is_some_and(|r| r.new || !r.changed.is_empty())
+        {
+            return Err(HostError::Unsupported);
+        }
+        self.require_edit()?;
+        self.leave()?;
+        let current = match with {
+            Replacement::CurrentContents => Some(self.value_of(field)?),
+            _ => None,
+        };
+        let original = self.window()?.current;
+        let mut result = Ok(());
+        for index in 0..count {
+            result = self.replace_one(field, with, current.as_ref(), index);
+            if result.is_err() {
+                // The failed record's draft and lock go; a record the
+                // transaction changed before is again what it holds.
+                if self.record.is_some() {
+                    let _ = self.revert_record(false);
+                }
+                break;
+            }
+        }
+        if let Some(window) = self.window.as_mut() {
+            window.current = original.min(window.found.len().saturating_sub(1));
+        }
+        result
+    }
 }
 
 impl ServerHost {
+    /// Replace Field Contents on the `index`th record of the found set:
+    /// open it, compute its value, set and commit it, stopping at an abort.
+    fn replace_one(
+        &mut self,
+        field: FieldRef,
+        with: &mut Replacement<'_>,
+        current: Option<&Value>,
+        index: usize,
+    ) -> HostResult {
+        if self.aborted() {
+            return Err(ErrorCode::CANCELED.into());
+        }
+        self.window_mut()?.current = index;
+        self.replace_open(field, with, current, index)?;
+        self.leave()
+    }
+
+    /// Open the current record and set its replacement, the `index`th.
+    fn replace_open(
+        &mut self,
+        field: FieldRef,
+        with: &mut Replacement<'_>,
+        current: Option<&Value>,
+        index: usize,
+    ) -> HostResult {
+        self.open_current()?;
+        let value = match with {
+            Replacement::CurrentContents => current.cloned().unwrap_or_else(Value::empty_text),
+            Replacement::Serial {
+                initial, increment, ..
+            } => {
+                let text =
+                    serial_text(initial, *increment, index as u64).ok_or(HostError::Unsupported)?;
+                Value::text(text)
+            }
+            Replacement::Calculation(evaluate) => evaluate(self),
+        };
+        // A calculation stopped by the abort gives `?`: nothing is written.
+        if self.aborted() {
+            return Err(ErrorCode::CANCELED.into());
+        }
+        self.store_value(field, value)
+    }
+
     /// Run `requests` as Perform Find, Constrain or Extend Found Set
     /// (`kind`), from Find mode when `in_find_mode`: see
     /// [`FoundSets::perform_find`].

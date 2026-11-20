@@ -4995,6 +4995,17 @@ impl Fields for WorkerHost<'_> {
             let (window, provider) = self.wp();
             window.found_count(provider).map_err(data_error)?
         };
+        // Serial numbers that cannot all be counted write none of them, and
+        // are refused before the dialog asks. The last bounds the run: the
+        // first is the initial value itself.
+        if let Replacement::Serial {
+            initial, increment, ..
+        } = with
+        {
+            if serial_text(initial, *increment, found.saturating_sub(1)).is_none() {
+                return Err(HostError::Error(ErrorCode::UNAVAILABLE));
+            }
+        }
         if with_dialog {
             self.confirm(
                 "Replace Field Contents",
@@ -5012,15 +5023,6 @@ impl Fields for WorkerHost<'_> {
                 .map_err(data_error)?
                 .unwrap_or_default()
         };
-        // Serial numbers that cannot all be counted write none of them.
-        if let Replacement::Serial {
-            initial, increment, ..
-        } = with
-        {
-            if serial_text(initial, *increment, found.saturating_sub(1)).is_none() {
-                return Err(HostError::Error(ErrorCode::UNAVAILABLE));
-            }
-        }
         for index in 0..found {
             self.s.file.window.go_to(index);
             let text = match with {

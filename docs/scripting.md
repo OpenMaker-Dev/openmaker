@@ -287,6 +287,28 @@ codes and timing (script-runtime.md 13.21, 291 engine runs):
   500, time 501, range 503, value list 506.
 - Existing value is Commit's 505.
 
+Replace Field Contents (91) runs in server scripts as on the desktop
+(script-runtime.md, "Steps"): each found record in order is made current,
+takes the value through Set Field's checks, and is committed. The first
+failure stops the step, and the records before it stay replaced. On the
+server each record is opened, and locked before its value is computed; a
+failure reverts the failed record's draft and releases its lock, and the
+record current before is current again. On the desktop the failed record
+stays current, a change that failed its commit still uncommitted, as a
+failed commit leaves any record. An abort stops the server's step before
+the next record is written. Refused before any record changes, on both
+clients, and on the desktop before the With dialog asks: serial numbers
+from the field's Entry Options, "Update serial number in Entry Options"
+and "Skip auto-enter options" (3;
+[#500](https://github.com/OpenMaker-Dev/openmaker/issues/500)), and a
+serial run past what an `i128` holds or below zero (3). On the server also a
+container, global or related field and Find mode (3), and a calculation or
+summary field (201); FileMaker's answers there are not measured. FileMaker
+does not commit the active record (Claris). The server, which holds one
+open record, refuses the step (3) when a record has uncommitted changes as
+it starts, keeping them for Commit or Revert Record; the desktop commits
+them first ([#513](https://github.com/OpenMaker-Dev/openmaker/issues/513)).
+
 Server Find mode:
 - An unstored calculation with all-empty references reads empty, on the
   desktop too.
@@ -548,8 +570,9 @@ Open items:
   with "Use Entry Options" (`[00 5, 03]`, the field's own serial settings)
   fail with error 3 before any record is written; the field's settings are
   not read there. Other serial numbers count up the initial value's last
-  run of digits, keeping its width, on every host; one past an `i128`
-  fails with error 3.
+  run of digits, keeping its width, on every host; one past an `i128` or
+  below zero fails with error 3 (how FileMaker spells a negative serial
+  is not measured).
 - On the desktop Replace Field Contents and Replace Field Contents by Name
   refuse with error 3 a field reached through a relationship from the
   layout's occurrence, a self-join's too, whose related records Set Field
