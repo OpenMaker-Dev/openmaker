@@ -116,6 +116,9 @@ impl ServerHost {
             HostFunction::Named(name) if name.eq_ignore_ascii_case("GetLayoutObjectOwnerInfo") => {
                 return Ok(Value::text(layout_objects::owner_info_not_found()));
             }
+            HostFunction::Named(name) if name.eq_ignore_ascii_case("GetRecordIDsFromFoundSet") => {
+                return self.record_ids_from_found_set(args, context);
+            }
             _ => {}
         }
         default_call(function)
@@ -397,6 +400,7 @@ pub(super) mod tests {
             no_get_file_list: Default::default(),
             no_authoring: Default::default(),
             upload_memory: crate::uploads::UploadMemory::new(usize::MAX),
+            download_memory: crate::transfer::DownloadMemory::new(usize::MAX),
             #[cfg(debug_assertions)]
             test_panic: Default::default(),
             #[cfg(debug_assertions)]
