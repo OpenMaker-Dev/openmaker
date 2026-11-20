@@ -1693,13 +1693,22 @@ fn the_records_menu_relooks_up_through_the_field_entered() {
     run_and_read(&mut app, "Notes", "old,old");
     relookup(&mut app, "OK");
     run_and_read(&mut app, "Notes", "w,Hi");
-    // Typed in, the record has something to commit, which the step would
-    // commit past the field's triggers (#624): the item is off.
+    // Typing in the frame of the click is caught when the step is
+    // dispatched: no dialog, nothing run.
     app.get_all_by_role_and_label(egui::Role::TextInput, "Name")
         .next()
         .unwrap()
         .click();
     app.run_steps(2);
+    common::open_menu(&mut app, menu);
+    common::wait_for_label(&mut app, item);
+    app.event(egui::Event::Text("y".into()));
+    app.get_by_label(item).click();
+    app.run_steps(6);
+    assert!(app.query_by_label(&message("Name", 2)).is_none());
+    assert!(!app.state().script_running());
+    // Typed in, the record has something to commit, which the step would
+    // commit past the field's triggers (#624): the item is off.
     app.event(egui::Event::Text("x".into()));
     app.run_steps(2);
     common::open_menu(&mut app, menu);
