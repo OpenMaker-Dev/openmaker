@@ -146,9 +146,12 @@ change due, in [Full Access], [Data Entry Only] or [Read-Only Access] as
 FileMaker stores them. An account in a custom privilege set is refused
 with error 9: the server does not yet hold a client that sends its own
 requests to every member of one ([#227](https://github.com/OpenMaker-Dev/openmaker/issues/227)). An account in [Full Access] may
-run any Perform Script on Server script and make `om-author` edits; any
-other account runs only scripts set to run with full access privileges and
-authors nothing. The rules and their error codes are in
+run any Perform Script on Server script and make `om-author` edits. One in
+[Data Entry Only] or [Read-Only Access] runs any script under its set: it
+reads every record, and under [Data Entry Only] creates, edits and deletes
+them, while [Read-Only Access]'s writes are refused with 200. An account in
+a custom set (admitted by a local file's private host) runs only scripts
+set to run with full access privileges. Only [Full Access] authors. The rules and their error codes are in
 [docs/re/local-files.md](re/local-files.md) 2. A desktop's private host
 for a local file applies the same ones, but admits the custom sets
 OpenMaker enforces, since its one client is the desktop itself. A password,

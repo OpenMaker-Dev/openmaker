@@ -33,21 +33,46 @@ pub struct HostedFile {
 /// privileges a Perform Script on Server session runs with
 /// (script-runtime.md 9, 11.3).
 ///
-/// An account of a file in its verified built-in [Full Access] set
-/// (`hosting::FileAccount::full_access`) has [`Privileges::FullAccess`].
-/// Every other account is [`Privileges::Unknown`] and fails closed in the
-/// server's own sessions: its scripts run only when they are set to run
-/// with full access privileges, and steps that create, change, delete,
-/// find or read records without that elevation fail with FileMaker's
-/// error 9 (insufficient privileges).
+/// An account of a file in one of its verified built-in sets
+/// (`hosting::FileAccount::privileges`, session-identity.md 2.7) has that
+/// set's privileges. Every other account is [`Privileges::Unknown`] and
+/// fails closed in the server's own sessions: its scripts run only when
+/// they are set to run with full access privileges, and steps that create,
+/// change, delete, find or read records without that elevation fail with
+/// FileMaker's error 9 (insufficient privileges).
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 pub enum Privileges {
     /// The [Full Access] privilege set.
     FullAccess,
+    /// [Data Entry Only]: every record viewed, created, edited and
+    /// deleted, every script executable, no design.
+    DataEntry,
+    /// [Read-Only Access]: every record viewed only, every script
+    /// executable, no design.
+    ReadOnly,
     /// Any other privilege set: its limits are not applied to scripts, so
     /// nothing is assumed.
     #[default]
     Unknown,
+}
+
+impl Privileges {
+    /// Whether the account may run every script of the file: a verified
+    /// built-in set's account (scripts modifiable or executable only).
+    pub fn runs_scripts(self) -> bool {
+        self != Self::Unknown
+    }
+
+    /// Whether the account may read every record: a verified built-in
+    /// set's account.
+    pub fn views_records(self) -> bool {
+        self != Self::Unknown
+    }
+
+    /// Whether the account may create, edit and delete every record.
+    pub fn edits_records(self) -> bool {
+        matches!(self, Self::FullAccess | Self::DataEntry)
+    }
 }
 
 /// Limits on Perform Script on Server scripts. FileMaker has no step or time
@@ -124,6 +149,13 @@ pub struct ConnectionLimits {
     /// before anything is staged, stored or run, and an upload refused part
     /// way is dropped whole.
     pub upload_memory: usize,
+    /// Bytes of memory held for the download streams connections keep
+    /// paged (a reply larger than one page is kept until its last page is
+    /// sent), on the whole server. Past it the streams least recently
+    /// paged, on any connection, are dropped (never the one just started),
+    /// and a client that continues one is refused with the CORBA system
+    /// exception `IMP_LIMIT`.
+    pub download_memory: usize,
     /// How long a client disconnected with notice has, once its grace time
     /// ends, to log out and disconnect before the server ends its session
     /// (`ServerHandle::disconnect_client_with_notice`).
@@ -159,6 +191,10 @@ impl ConnectionLimits {
     /// not safe on a machine with much less than 8 GB of memory: set it
     /// lower there. Clients behind one NAT address share its quarter.
     ///
+    /// 2 GiB of paged downloads. A client pages each download to its end at
+    /// once, so what is held is the downloads in progress; the streams
+    /// dropped past it are those clients left unfinished longest.
+    ///
     /// 30 s to log out after a grace time: FileMaker Server called
     /// `Disconnect` on a client that had closed its files 90 s after a
     /// disconnect with a 60-second grace time (network-protocol.md 6.5;
@@ -171,6 +207,7 @@ impl ConnectionLimits {
         idle_without_session: Duration::from_secs(145),
         write_stall: Duration::from_secs(120),
         upload_memory: 4 << 30,
+        download_memory: 2 << 30,
         logout_wait: Duration::from_secs(30),
     };
 }

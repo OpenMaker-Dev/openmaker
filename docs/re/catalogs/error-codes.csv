@@ -42,6 +42,7 @@ code,message
 117,Data source is missing
 118,Theme is missing
 119,No supported email client found
+120,Custom menu is missing
 130,Files are damaged or missing and must be reinstalled
 131,Language pack files are missing
 200,Record access is denied

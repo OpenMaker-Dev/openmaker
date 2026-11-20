@@ -769,6 +769,7 @@ mod tests {
             no_get_file_list: Default::default(),
             no_authoring: Default::default(),
             upload_memory: crate::uploads::UploadMemory::new(usize::MAX),
+            download_memory: crate::transfer::DownloadMemory::new(usize::MAX),
             #[cfg(debug_assertions)]
             test_panic: Default::default(),
             #[cfg(debug_assertions)]
@@ -1346,6 +1347,12 @@ mod tests {
         );
         let read = CalcHost::field_value(&host, fixture::OCCURRENCE, 1, fixture::NAME, 1);
         assert_eq!(read.unwrap_err().code(), 9);
+        let query = om_calc::eval::evaluate_text(
+            "ExecuteSQL ( \"SELECT Name FROM Tasks\" ; \"\" ; \"\" )",
+            &mut host,
+            &om_calc::eval::Context::new(),
+        );
+        assert_eq!(query.code(), 9, "{:?}", query.value);
         host.enter_mode(Mode::Find, false, None).unwrap();
         host.set_field(field(fixture::NAME), Value::text("Ship"))
             .unwrap();
