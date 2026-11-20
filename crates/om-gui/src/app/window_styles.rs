@@ -226,9 +226,19 @@ impl OpenMakerApp {
             }
             return;
         }
-        // The viewport's menu bar works on the card in front.
+        // The viewport's menu bar works on the card in front. A choice made
+        // in the system menu bar while a window under it was in front cannot
+        // reach that window now: it goes, rather than run once the card
+        // closes.
+        #[cfg(target_os = "macos")]
+        if let Some(bar) = &mut self.system_menu {
+            for &covered in chain.iter().filter(|&&window| window != top) {
+                bar.drop_choices_for((self.epoch, covered));
+            }
+        }
         let mut menu = Vec::new();
-        if self.with_window(id, |app| app.w.menubar).unwrap_or(false) {
+        let system = self.system_menu_bar();
+        if system || self.with_window(id, |app| app.w.menubar).unwrap_or(false) {
             self.with_window(top, |app| {
                 if dialog.is_some() {
                     ui.disable();

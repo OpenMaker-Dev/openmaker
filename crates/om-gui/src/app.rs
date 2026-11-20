@@ -1241,8 +1241,14 @@ impl OpenMakerApp {
                 bar.behind(owner);
             }
             if key || bar.has_choice_for(owner) {
-                let blocked =
-                    !ui.is_enabled() || ui.ctx().memory(|m| m.top_modal_layer().is_some());
+                // The window's own dialogs count from the frame they are
+                // asked for, before egui first draws them.
+                let blocked = !ui.is_enabled()
+                    || ui.ctx().memory(|m| m.top_modal_layer().is_some())
+                    || self.w.delete_record.is_some()
+                    || self.w.delete_layout.is_some()
+                    || self.w.delete_portal_row.is_some()
+                    || self.w.document.other_dialog_open();
                 self.with_menu_context(input, |context| {
                     bar.record(owner, key, blocked, |menu| {
                         menubar::menus(context, actions, menu);
@@ -1847,7 +1853,7 @@ impl OpenMakerApp {
                 None => {}
             }
         }
-        if self.w.delete_record {
+        if self.w.delete_record.is_some() {
             // FileMaker Pro's alert, local or hosted (client-ui.md,
             // "Delete confirmations"): its message and no more.
             egui::Modal::new(Id::unique(("delete_record", self.w.id))).show(&ctx, |ui| {
@@ -2599,7 +2605,7 @@ impl OpenMakerApp {
             || self.create_new.is_some()
             || self.local_login.is_some()
             || self.own_password.is_some()
-            || self.w.delete_record
+            || self.w.delete_record.is_some()
             || self.w.delete_layout.is_some()
             || self.w.delete_portal_row.is_some()
             || self.error.is_some()
@@ -3436,17 +3442,17 @@ impl OpenMakerApp {
             }
             Action::DeleteRecord => {
                 if !self.w.document.pending && self.w.record_capabilities.delete {
-                    self.w.delete_record = self
-                        .w
-                        .session
-                        .as_ref()
-                        .and_then(Session::current_record)
-                        .is_some();
+                    // The alert asks about this record: Delete deletes it or
+                    // nothing (`ConfirmDeleteRecord`).
+                    self.w.delete_record = self.w.session.as_ref().and_then(|session| {
+                        let (_, record) = session.current_record()?;
+                        Some((session.layout.unwrap_or_default(), record.id))
+                    });
                 }
             }
-            Action::CancelDeleteRecord => self.w.delete_record = false,
+            Action::CancelDeleteRecord => self.w.delete_record = None,
             Action::ConfirmDeleteRecord => {
-                self.w.delete_record = false;
+                let asked = self.w.delete_record.take();
                 if self.w.document.pending || !self.w.record_capabilities.delete {
                     return;
                 }
@@ -3457,6 +3463,11 @@ impl OpenMakerApp {
                     return;
                 };
                 let (layout_id, record_id) = (session.layout.unwrap_or_default(), record.id);
+                // Another record (or layout) than the alert asked about is
+                // current now (a command that ran meanwhile): delete nothing.
+                if asked != Some((layout_id, record_id)) {
+                    return;
+                }
                 // A new record the window's record session holds is not on
                 // the host: the window's own Delete Record releases it (#892).
                 if self.uncommitted().is_some_and(|open| open.session) {
@@ -5216,7 +5227,7 @@ impl OpenMakerApp {
                 doc.reconnected = false;
                 doc.document.pending = false;
                 doc.deferred_action = None;
-                doc.delete_record = false;
+                doc.delete_record = None;
                 doc.delete_portal_row = None;
             });
         }

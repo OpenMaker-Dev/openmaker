@@ -101,7 +101,9 @@ pub(crate) struct Doc {
     /// The save on its way sets only global fields, the session's values:
     /// it writes no record (no OnWindowTransaction).
     pub globals_only: bool,
-    pub delete_record: bool,
+    /// Delete Record's alert is up, asking about this record (layout and
+    /// record id).
+    pub delete_record: Option<(u32, i64)>,
     /// The layout Delete Layout asks to delete, while its alert is open.
     pub delete_layout: Option<u32>,
     /// The selected portal row Delete Record asks to delete.
@@ -247,7 +249,7 @@ impl Doc {
             retained: Default::default(),
             reconnected: false,
             globals_only: false,
-            delete_record: false,
+            delete_record: None,
             delete_layout: None,
             delete_portal_row: None,
             found_set: None,

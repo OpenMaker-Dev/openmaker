@@ -288,6 +288,12 @@ impl SystemMenuBar {
         self.chosen.retain(|(made, _)| made.is_some_and(&live));
     }
 
+    /// Drop the choices made in `owner`'s menus: it cannot take them (a card
+    /// covers it).
+    pub(crate) fn drop_choices_for(&mut self, owner: Owner) {
+        self.chosen.retain(|(made, _)| *made != Some(owner));
+    }
+
     /// Whether a choice made in `owner`'s menus waits for it.
     pub(crate) fn has_choice_for(&self, owner: Owner) -> bool {
         self.chosen.iter().any(|(made, _)| *made == Some(owner))
