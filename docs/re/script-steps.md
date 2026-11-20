@@ -230,8 +230,10 @@ the corpus [Low].
 | `kScriptKey` 0x40 | `HBKey<5>` of a script | Perform Script, PSOS, Install OnTimer Script [O] |
 | (privilege) | `HBSerialKey<7>` of a privilege set, no flag | Add Account (`SetPrivilegeKey`) [O: the serial key `02 01 02` in the first bytes gave [Data Entry Only] on FileMaker Server's engine, local-files.md 2.4] |
 
-When the flag is clear the bytes keep stale content (Go to Field without a
-target keeps an old field spec) [O]; readers must test the flag first.
+For the flag-gated references above, when the flag is clear the bytes
+keep stale content (Go to Field without a target keeps an old field spec)
+[O]; readers must test the flag first. Add Account's privilege set is not
+flag-gated: its key is read without a flag.
 
 **Variable targets.** A target that is a variable is a field spec whose table
 key is `HBAbstractKey(0)` and field key `HBAbstractKey(0x20)`
@@ -486,7 +488,8 @@ named ids absent from the corpus the CSV rests on the binary alone. Section
 
 - Slot maps inside compound elements for 23 step ids (CSV notes): AVPlayer,
   window options, Insert File options, web viewer actions, mobile steps,
-  Perform AppleScript, the account steps' Booleans. Section 12's method
+  Perform AppleScript (the account steps' Booleans are the step value,
+  local-files.md 2.4). Section 12's method
   (the step's `V2_ScriptStepXML` writer and reader in the Mac `FMEngine`, a
   probe through FileMaker Server's XML importer) applies to them unchanged.
 - Section 12's own open points: the meaning of Perform Find by Natural
