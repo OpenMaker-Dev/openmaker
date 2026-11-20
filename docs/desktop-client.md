@@ -981,6 +981,24 @@ finder (a leading wildcard, as in `==*pfel*`) is still tested against the
 stored values in English in those languages
 ([#588](https://github.com/OpenMaker-Dev/openmaker/issues/588)).
 
+A find on a related field walks each relationship back from the related
+records (query-program.md 6.5): their match values, every stored
+repetition and each nonempty line as stored, are converted to the near
+match field's type from their own (a timestamp to a date or a time by its
+part, a date to a timestamp as its midnight) and keyed as its value index
+keys them (9.1, 7.2), so a match field indexed in Unicode or System
+relates as it holds
+([#573](https://github.com/OpenMaker-Dev/openmaker/issues/573)). A far
+field compared with near fields of different types or forms is sent once
+for each, under a source slot of its own (9.2). Japanese text without kana
+or kanji keys as in English, `ー` included (7.2), and German dictionary is
+untailored. A related value that needs a key
+OpenMaker does not build (another tailored language, Japanese text with
+kana or kanji, or language 0 when the file's locale record cannot be read)
+fails the find with 3, with the host's index or without; a
+request that finds no related record relates nothing, with nothing to
+key.
+
 **Limits.** List view shows only the current request, as one body row.
 In the padded form a word's start is matched by its primary weights alone
 (`equ` finds `équipe`), and a Unicode raw find keeps case: FileMaker's keys

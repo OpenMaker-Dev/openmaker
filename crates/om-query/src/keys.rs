@@ -91,6 +91,39 @@ impl TextKeys {
         }
     }
 
+    /// The form text keys in for an index of `language` when that is
+    /// known for this text: [`Self::of_language`]'s, or English's
+    /// ([`TextKeys::Collated`]) for Japanese (31) text without kana, their
+    /// sound marks or kanji, which alone its tailoring changes; every
+    /// other character keys from the shared table, Latin letters and
+    /// digits as in English and `ー` as `11dd` in both (query-program.md
+    /// 7.2, High). Kana (with their iteration marks and the halfwidth
+    /// forms), the sound marks, kanji and the kanji-like `々 〆 〇` have no
+    /// known form here; a kanji the table lacks keys from the shared table
+    /// (`㐀`), but which ones it lacks is not derived.
+    pub fn of_language_for(language: u32, text: &str) -> Option<TextKeys> {
+        const JAPANESE: u32 = 31;
+        let tailored = |c: char| {
+            c != 'ー'
+                && matches!(
+                    u32::from(c),
+                    0x3005..=0x3007
+                        | 0x3041..=0x30FF
+                        | 0x31F0..=0x31FF
+                        | 0x3400..=0x4DBF
+                        | 0x4E00..=0x9FFF
+                        | 0xF900..=0xFAFF
+                        | 0xFF65..=0xFF9F
+                        | 0x1_B000..=0x1_B16F
+                        | 0x2_0000..=0x3_FFFF
+                )
+        };
+        match language {
+            JAPANESE if !text.chars().any(tailored) => Some(TextKeys::Collated),
+            _ => TextKeys::of_language(language),
+        }
+    }
+
     /// The key of one line or word as an index holds it: its first
     /// [`om_collate::INDEX_KEY_LIMIT`] bytes (7.1).
     pub fn key(self, text: &str) -> Option<Vec<u8>> {
