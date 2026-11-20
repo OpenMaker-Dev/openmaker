@@ -203,7 +203,7 @@ pub(crate) struct WorkerHost<'a> {
     /// The file whose script step runs with full access, while `elevated`.
     elevated_file: Option<FileId>,
     /// Evaluation of a report row does not navigate the user's window.
-    report_record: Option<(u64, usize, usize)>,
+    pub(super) report_record: Option<(u64, usize, usize)>,
     /// One report session snapshot reaches nested field/summary hosts.
     report_session: Option<SessionInfo>,
     /// The UUID of the layout object whose calculation a report evaluates
@@ -3608,7 +3608,10 @@ impl CalcHost for WorkerHost<'_> {
                 om_data::host::session::selector::PAGE_NUMBER => {
                     return Ok(Value::number(page as i64 + 1))
                 }
-                RECORD_NUMBER => return Ok(Value::number(index as i64 + 1)),
+                // In a portal row, the row's number, as below.
+                RECORD_NUMBER if context.portal_row_number.is_none() => {
+                    return Ok(Value::number(index as i64 + 1))
+                }
                 RECORD_ID => return Ok(Value::number(record as i64)),
                 _ => (),
             }
