@@ -181,24 +181,29 @@ Encryption none a plain password goes in clear, as the step says.
 
 Esc, Cmd-. and a closing window end the session on the desktop (1), and
 the script's time limit and abort on the server. Either shuts the
-connection where it is, unless the message's end is already sent: from
-then on the server's answer to it is the step's result, so a message
-the server took is never reported as unsent. The result is given before
-QUIT's reply. Connecting, each reply, each write and the TLS handshake
-have a minute each. The system resolver has no limit of its own here, so
-a lookup that does not answer holds its session until the resolver
-gives up.
+connection where it is, during the message's body too, unless the
+message's final `.` is already sent. From then on the server's answer to
+it is the step's result, and the step waits up to ten minutes for it, RFC
+5321's timeout for that reply, as a shorter wait could report a message
+the server took as unsent and a retry send it twice. No answer by then,
+or a closed connection, is 1506 with the message possibly sent. The
+result is given before QUIT's reply. Connecting, each other reply, each
+write and the TLS handshake have a minute each, every socket read and
+write within it. The system resolver has no limit of its own here, so a
+lookup that does not answer holds its session until the resolver gives
+up.
 
 The message is plain text in UTF-8. A non-ASCII name or subject becomes
 RFC 2047 encoded words of at most 76 characters a line, and the body is
 base64 unless it is ASCII without NUL in short lines. BCC addresses go in
 the envelope only. One recipient the server refuses stops the message
 for all before DATA (FileMaker's behavior is unmeasured). Addresses must
-be RFC 5321 mailboxes in ASCII. The client names itself to the server by
-its address (`EHLO [address]`), not by the computer's name. The server's
-replies are parsed strictly (one code per reply, CRLF lines), and its
-reply to a login is reported by its code only, since a server may echo
-what it was sent.
+be RFC 5321 mailboxes in ASCII (an address literal an IPv4 or IPv6
+address). The client names itself to the server by its address
+(`EHLO [address]`), not by the computer's name. The server's replies are
+parsed strictly (one code per reply, CRLF lines without CR or NUL inside,
+nothing sent ahead of a command's reply), and its reply to a login is
+reported by its code only, since a server may echo what it was sent.
 
 The codes are FileMaker's SMTP codes matched by their names, OpenMaker's
 reading ([#89](https://github.com/OpenMaker-Dev/openmaker/issues/89)):
@@ -214,7 +219,8 @@ reading ([#89](https://github.com/OpenMaker-Dev/openmaker/issues/89)):
 - 1507: another login failure, or a login the server wants (530) and the
   step does not make.
 - 1506: the server refused the sender, a recipient or the message, did
-  not answer in time, or ended the session.
+  not answer in time, or ended the session; also a message whose end was
+  sent and never confirmed, which may have been sent.
 How FileMaker composes its message, and which code it gives for which
 reply, were not compared.
 

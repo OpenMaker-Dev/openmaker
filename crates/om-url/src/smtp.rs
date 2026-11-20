@@ -18,8 +18,10 @@
 //! STARTTLS refuses bytes the server sent ahead of the handshake, and the
 //! server's text never carries what the client sent to log in.
 
+use std::cell::Cell;
 use std::io::{self, Read, Write};
-use std::net::{Shutdown, SocketAddr, TcpStream, ToSocketAddrs};
+use std::net::{Ipv4Addr, Ipv6Addr, Shutdown, SocketAddr, TcpStream, ToSocketAddrs};
+use std::rc::Rc;
 use std::sync::atomic::{AtomicU64, AtomicU8, Ordering};
 use std::sync::{mpsc, Arc, Mutex};
 use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
@@ -36,6 +38,11 @@ const IO_TIMEOUT: Duration = Duration::from_secs(60);
 
 /// How long QUIT may take once the message is taken.
 const QUIT_TIMEOUT: Duration = Duration::from_secs(5);
+
+/// How long the server may take to answer the message's end: RFC 5321
+/// 4.5.3.2.6's ten minutes, as a shorter wait could report a message the
+/// server takes as unsent, and a retry send it twice.
+const DATA_END_TIMEOUT: Duration = Duration::from_secs(600);
 
 /// The longest reply line read (RFC 5321 4.5.3.1.5 allows 512 octets;
 /// servers write longer ones).
@@ -152,6 +159,10 @@ pub enum SmtpError {
     /// The server refused the sender, a recipient or the message, did not
     /// answer in time, or ended the session: 1506.
     Rejected(String),
+    /// The message's end was sent and the server's answer never came:
+    /// the message may have been sent. 1506 too, the one code FileMaker
+    /// has for it.
+    Unconfirmed(String),
     /// The user stopped the step: 1.
     Cancelled,
 }
@@ -166,7 +177,7 @@ impl SmtpError {
             Self::Tls(_) => ErrorCode(1503),
             Self::NeedsEncryption(_) => ErrorCode(1504),
             Self::AuthUnsupported(_) => ErrorCode(1505),
-            Self::Rejected(_) => ErrorCode(1506),
+            Self::Rejected(_) | Self::Unconfirmed(_) => ErrorCode(1506),
             Self::Login(_) => ErrorCode(1507),
             Self::Cancelled => ErrorCode::CANCELED,
         }
@@ -200,6 +211,10 @@ impl std::fmt::Display for SmtpError {
             Self::Rejected(detail) => {
                 write!(f, "The SMTP server did not take the message: {detail}")
             }
+            Self::Unconfirmed(detail) => write!(
+                f,
+                "The SMTP server did not confirm the message, which may have been sent: {detail}"
+            ),
             Self::Cancelled => write!(f, "Sending was cancelled."),
         }
     }
@@ -261,9 +276,10 @@ pub fn smtp_parts(mail: &Mail) -> Result<(Account, Message), SmtpError> {
 /// and its addresses checked, before connecting.
 ///
 /// A cancel or the deadline stops the session where it is, its socket
-/// shut, unless the end of the message is already sent: from then on the
-/// server's answer to it is the result, so a message the server took is
-/// never reported as not sent.
+/// shut, unless the message's final `.` is already sent: from then on the
+/// server's answer to it is the result, within [`DATA_END_TIMEOUT`], so a
+/// message the server took is not reported as not sent, and one whose
+/// answer never comes is [`SmtpError::Unconfirmed`].
 pub fn send_smtp(
     account: &Account,
     message: &Message,
@@ -398,14 +414,25 @@ impl Control {
             .is_ok()
     }
 
-    /// The session's socket, shut at once if it was stopped already.
-    fn adopt(&self, socket: &TcpStream) {
-        if let (Ok(mut held), Ok(clone)) = (self.socket.lock(), socket.try_clone()) {
+    /// The session's socket, shut at once if it was stopped already. A
+    /// socket a cancel could not shut is refused: the session would go on
+    /// after the step returned.
+    fn adopt(&self, socket: &TcpStream) -> Result<(), SmtpError> {
+        let watched = socket.try_clone().ok().and_then(|clone| {
+            let mut held = self.socket.lock().ok()?;
             *held = Some(clone);
+            Some(())
+        });
+        if watched.is_none() {
+            let _ = socket.shutdown(Shutdown::Both);
+            return Err(SmtpError::Connect(
+                "the connection could not be watched for a cancel".into(),
+            ));
         }
         if self.cancelled() {
             let _ = socket.shutdown(Shutdown::Both);
         }
+        Ok(())
     }
 }
 
@@ -519,11 +546,14 @@ fn check_address(address: &str) -> Result<(), SmtpError> {
         return Err(refuse());
     }
     let domain = &address[local_end + 1..];
+    // An IPv4 or IPv6 address literal (4.1.3); a general one's tags are
+    // not taken.
     let literal = domain
         .strip_prefix('[')
         .and_then(|d| d.strip_suffix(']'))
-        .is_some_and(|inner| {
-            !inner.is_empty() && inner.bytes().all(|c| matches!(c, 33..=90 | 94..=126))
+        .is_some_and(|inner| match inner.strip_prefix("IPv6:") {
+            Some(v6) => v6.parse::<Ipv6Addr>().is_ok(),
+            None => inner.parse::<Ipv4Addr>().is_ok(),
         });
     let labels = domain.split('.').all(|label| {
         let label = label.as_bytes();
@@ -534,7 +564,9 @@ fn check_address(address: &str) -> Result<(), SmtpError> {
             && label.first() != Some(&b'-')
             && label.last() != Some(&b'-')
     });
-    if domain.len() > 255 || !(literal || labels) {
+    // The path, its angle brackets included, is at most 256 octets
+    // (4.5.3.1.3).
+    if domain.len() > 255 || address.len() + 2 > 256 || !(literal || labels) {
         return Err(refuse());
     }
     Ok(())
@@ -657,13 +689,21 @@ fn mailbox_header(name: Option<String>, address: &str) -> String {
         return address.to_owned();
     };
     let name: String = name.chars().filter(|c| !c.is_control()).collect();
-    if name.len() <= 900 && name.bytes().all(|c| c == b' ' || atext(c)) {
-        format!("{name} <{address}>")
-    } else if name.len() <= 900 && name.is_ascii() {
-        let quoted = name.replace('\\', "\\\\").replace('"', "\\\"");
-        format!("\"{quoted}\" <{address}>")
+    let form = if name.bytes().all(|c| c == b' ' || atext(c)) {
+        Some(name.clone())
+    } else if name.is_ascii() {
+        Some(format!(
+            "\"{}\"",
+            name.replace('\\', "\\\\").replace('"', "\\\"")
+        ))
     } else {
-        format!("{}\r\n <{address}>", encoded_words(&name))
+        None
+    };
+    // The line, the longest field name ("Reply-To: ") and the trailing
+    // comma included, within RFC 5322's 998 octets.
+    match form.filter(|form| form.len() + address.len() + 3 + 11 <= 998) {
+        Some(form) => format!("{form} <{address}>"),
+        None => format!("{}\r\n <{address}>", encoded_words(&name)),
     }
 }
 
@@ -736,19 +776,48 @@ fn message_id(now: SystemTime) -> String {
     )
 }
 
-/// The connection, plain or TLS.
-enum Stream {
-    Plain(TcpStream),
-    Tls(Box<StreamOwned<ClientConnection, TcpStream>>),
+/// The socket, each read and write it makes bounded by the current
+/// operation's end, so the several a TLS record or a long write make stay
+/// within it too.
+struct Timed {
+    socket: TcpStream,
+    end: Rc<Cell<Instant>>,
 }
 
-impl Stream {
-    fn socket(&self) -> &TcpStream {
-        match self {
-            Self::Plain(socket) => socket,
-            Self::Tls(tls) => tls.get_ref(),
+impl Timed {
+    fn left(&self) -> io::Result<Duration> {
+        let left = self.end.get().saturating_duration_since(Instant::now());
+        if left.is_zero() {
+            return Err(io::Error::new(
+                io::ErrorKind::TimedOut,
+                "the server did not answer in time",
+            ));
         }
+        Ok(left)
     }
+}
+
+impl Read for Timed {
+    fn read(&mut self, buf: &mut [u8]) -> io::Result<usize> {
+        self.socket.set_read_timeout(Some(self.left()?))?;
+        self.socket.read(buf)
+    }
+}
+
+impl Write for Timed {
+    fn write(&mut self, buf: &[u8]) -> io::Result<usize> {
+        self.socket.set_write_timeout(Some(self.left()?))?;
+        self.socket.write(buf)
+    }
+    fn flush(&mut self) -> io::Result<()> {
+        self.socket.flush()
+    }
+}
+
+/// The connection, plain or TLS.
+enum Stream {
+    Plain(Timed),
+    Tls(Box<StreamOwned<ClientConnection, Timed>>),
 }
 
 impl Read for Stream {
@@ -808,17 +877,21 @@ struct Session<'a> {
     deadline: Option<Instant>,
     /// When the current reply, write or handshake must be done.
     operation: Instant,
+    /// What [`Timed`] bounds each read and write by: the operation's end
+    /// or the deadline, the earlier.
+    end: Rc<Cell<Instant>>,
     control: &'a Control,
 }
 
 impl Session<'_> {
     /// Start an operation's budget.
-    fn begin(&mut self) {
-        self.operation = Instant::now() + IO_TIMEOUT;
+    fn begin(&mut self, budget: Duration) {
+        self.operation = Instant::now() + budget;
     }
 
-    /// Set the socket's timeouts to what is left of the operation's
-    /// budget and the deadline; an error once none is, or once stopped.
+    /// Bound the socket's reads and writes by what is left of the
+    /// operation's budget and the deadline; an error once none is, or once
+    /// stopped.
     fn arm(&self) -> io::Result<()> {
         if self.control.cancelled() {
             return Err(io::Error::new(io::ErrorKind::Interrupted, "cancelled"));
@@ -827,31 +900,34 @@ impl Session<'_> {
         if let Some(deadline) = self.deadline {
             end = end.min(deadline);
         }
-        let left = end.saturating_duration_since(Instant::now());
-        if left.is_zero() {
+        if end <= Instant::now() {
             return Err(io::Error::new(
                 io::ErrorKind::TimedOut,
                 "the server did not answer in time",
             ));
         }
-        let socket = self.stream.socket();
-        socket.set_read_timeout(Some(left))?;
-        socket.set_write_timeout(Some(left))
+        self.end.set(end);
+        Ok(())
     }
 
-    /// One reply line without its CRLF; a bare LF or a line past
-    /// [`MAX_LINE`] is refused.
+    /// One reply line without its CRLF; a bare LF, a CR or NUL inside it,
+    /// or a line of more than [`MAX_LINE`] octets with its CRLF is
+    /// refused.
     fn line(&mut self) -> io::Result<String> {
         loop {
             if let Some(end) = self.buffer.iter().position(|&b| b == b'\n') {
-                if end > MAX_LINE {
+                if end + 1 > MAX_LINE {
                     return Err(invalid("a reply line is too long"));
                 }
                 if end == 0 || self.buffer[end - 1] != b'\r' {
                     return Err(invalid("a reply line does not end with CRLF"));
                 }
                 let line: Vec<u8> = self.buffer.drain(..=end).collect();
-                return Ok(String::from_utf8_lossy(&line[..line.len() - 2]).into_owned());
+                let text = &line[..line.len() - 2];
+                if text.iter().any(|&b| b == b'\r' || b == 0) {
+                    return Err(invalid("a reply line holds a CR or NUL"));
+                }
+                return Ok(String::from_utf8_lossy(text).into_owned());
             }
             if self.buffer.len() > MAX_LINE {
                 return Err(invalid("a reply line is too long"));
@@ -872,7 +948,12 @@ impl Session<'_> {
     /// One whole reply (RFC 5321 4.2): every line the same code, `-`
     /// between lines and a space or nothing after the last code.
     fn reply(&mut self) -> io::Result<Reply> {
-        self.begin();
+        self.reply_within(IO_TIMEOUT)
+    }
+
+    /// [`Self::reply`] within `budget`.
+    fn reply_within(&mut self, budget: Duration) -> io::Result<Reply> {
+        self.begin(budget);
         let mut lines = Vec::new();
         let mut code = None;
         loop {
@@ -880,7 +961,8 @@ impl Session<'_> {
             let bytes = line.as_bytes();
             let valid = bytes.len() >= 3
                 && (b'2'..=b'5').contains(&bytes[0])
-                && bytes[1..3].iter().all(u8::is_ascii_digit)
+                && (b'0'..=b'5').contains(&bytes[1])
+                && bytes[2].is_ascii_digit()
                 && matches!(bytes.get(3), None | Some(b' ' | b'-'));
             if !valid {
                 return Err(invalid("not an SMTP reply"));
@@ -903,8 +985,13 @@ impl Session<'_> {
     }
 
     fn send(&mut self, bytes: &[u8]) -> io::Result<()> {
-        self.begin();
-        // A write is bounded too: in pieces, each with what is left.
+        // No command is pipelined: what the server sent beyond the last
+        // reply was asked for by no one, and would answer the next.
+        if !self.buffer.is_empty() {
+            return Err(invalid("the server sent a reply no command asked for"));
+        }
+        self.begin(IO_TIMEOUT);
+        // In pieces, a cancel checked before each.
         for piece in bytes.chunks(16 * 1024) {
             self.arm()?;
             self.stream.write_all(piece)?;
@@ -924,15 +1011,19 @@ impl Session<'_> {
         tls: &Arc<ClientConfig>,
         name: ServerName<'static>,
     ) -> Result<(), SmtpError> {
-        let Stream::Plain(socket) = &self.stream else {
+        let Stream::Plain(plain) = &self.stream else {
             return Err(SmtpError::Tls("the connection is already encrypted".into()));
         };
-        let mut socket = socket
-            .try_clone()
-            .map_err(|e| SmtpError::Tls(e.to_string()))?;
+        let mut socket = Timed {
+            socket: plain
+                .socket
+                .try_clone()
+                .map_err(|e| SmtpError::Tls(e.to_string()))?,
+            end: self.end.clone(),
+        };
         let mut connection =
             ClientConnection::new(tls.clone(), name).map_err(|e| SmtpError::Tls(e.to_string()))?;
-        self.begin();
+        self.begin(IO_TIMEOUT);
         while connection.is_handshaking() {
             self.arm().map_err(|e| SmtpError::Tls(e.to_string()))?;
             connection.complete_io(&mut socket).map_err(|e| {
@@ -1124,15 +1215,20 @@ fn deliver<'a>(
         }
     }
     let socket = socket.ok_or(last)?;
-    control.adopt(&socket);
+    control.adopt(&socket)?;
     let local = socket
         .local_addr()
         .map_err(|e| SmtpError::Connect(e.to_string()))?;
+    let end = Rc::new(Cell::new(Instant::now()));
     let mut session = Session {
-        stream: Stream::Plain(socket),
+        stream: Stream::Plain(Timed {
+            socket,
+            end: end.clone(),
+        }),
         buffer: Vec::new(),
         deadline,
         operation: Instant::now(),
+        end,
         control,
     };
     if account.security == Security::Ssl {
@@ -1195,14 +1291,20 @@ fn deliver<'a>(
     if reply.code != 354 {
         return Err(SmtpError::Rejected(reply.text()));
     }
+    // The body may still be cancelled: without its final `.` the server
+    // takes nothing.
+    session.send(&dot_stuffed(&mail.data)).map_err(broken)?;
     if !control.commit() {
         return Err(SmtpError::Cancelled);
     }
     // From here the server's answer is the result: the script's deadline
-    // no longer cuts it short, only the operations' own budgets.
+    // no longer cuts it short, and the wait is RFC 5321's for it.
     session.deadline = None;
-    session.send(&dot_stuffed(&mail.data)).map_err(broken)?;
-    let reply = session.reply().map_err(broken)?;
+    let unconfirmed = |e: io::Error| SmtpError::Unconfirmed(e.to_string());
+    session.send(b".\r\n").map_err(unconfirmed)?;
+    let reply = session
+        .reply_within(DATA_END_TIMEOUT)
+        .map_err(unconfirmed)?;
     if reply.code != 250 {
         return Err(SmtpError::Rejected(reply.text()));
     }
@@ -1252,8 +1354,8 @@ fn unbase64(text: &str) -> Option<Vec<u8>> {
     Some(out)
 }
 
-/// DATA's bytes: a line that starts with a period gets another (RFC 5321
-/// 4.5.2), and the end mark follows.
+/// DATA's bytes before its final `.`: a line that starts with a period
+/// gets another (RFC 5321 4.5.2).
 fn dot_stuffed(data: &[u8]) -> Vec<u8> {
     let mut out = Vec::with_capacity(data.len() + 16);
     let mut line_start = true;
@@ -1264,7 +1366,6 @@ fn dot_stuffed(data: &[u8]) -> Vec<u8> {
         out.push(b);
         line_start = b == b'\n';
     }
-    out.extend_from_slice(b".\r\n");
     out
 }
 
@@ -1348,6 +1449,8 @@ mod tests {
             "a@-example.org",
             "a@exa_mple.org",
             "zoë@example.org",
+            "a@[999.1.1.1]",
+            "a@[example]",
         ] {
             let wrong = Message {
                 to: bad.into(),
@@ -1358,15 +1461,38 @@ mod tests {
                 "{bad}"
             );
         }
-        for good in ["\"a b\\\"c\"@example.org", "a.b+c@[192.0.2.1]"] {
+        for good in [
+            "\"a b\\\"c\"@example.org",
+            "a.b+c@[192.0.2.1]",
+            "a@[IPv6:2001:db8::1]",
+        ] {
             assert!(check_address(good).is_ok(), "{good}");
         }
+        let long = format!(
+            "{}@{}.org",
+            "a".repeat(64),
+            vec!["b".repeat(63); 3].join(".")
+        );
+        assert!(
+            matches!(check_address(&long), Err(SmtpError::Address(_))),
+            "{long}"
+        );
+        // A 900-character ASCII name with a long mailbox is encoded rather
+        // than written past 998 octets.
+        let header = mailbox_header(
+            Some("n".repeat(900)),
+            &format!("{}@example.org", "m".repeat(60)),
+        );
+        assert!(
+            header.split("\r\n").all(|line| line.len() + 11 <= 998),
+            "{header}"
+        );
         let empty = Message {
             from: String::new(),
             ..message()
         };
         assert!(matches!(compose(&empty, at), Err(SmtpError::Address(_))));
-        assert_eq!(dot_stuffed(b".a\r\nb\r\n.\r\n"), b"..a\r\nb\r\n..\r\n.\r\n");
+        assert_eq!(dot_stuffed(b".a\r\nb\r\n.\r\n"), b"..a\r\nb\r\n..\r\n");
     }
 
     /// RFC 2195's own example, and the credentials kept out of Debug.
@@ -1388,10 +1514,12 @@ mod tests {
 
     /// A scripted SMTP server: it answers each command it reads with the
     /// next reply and records what it read, until QUIT or the end of the
-    /// script. `ended` is set when it has read the message's end.
+    /// script. `ended` is set when it has read the message's end, and its
+    /// reply to that waits until `release` is set (or five seconds).
     fn server(
         replies: &'static [&'static str],
         ended: Arc<AtomicBool>,
+        release: Arc<AtomicBool>,
         quit_delay: Duration,
     ) -> (u16, std::thread::JoinHandle<Vec<String>>) {
         let listener = TcpListener::bind("127.0.0.1:0").unwrap();
@@ -1416,6 +1544,12 @@ mod tests {
                     }
                     in_data = false;
                     ended.store(true, Ordering::SeqCst);
+                    let waited = Instant::now();
+                    while !release.load(Ordering::SeqCst)
+                        && waited.elapsed() < Duration::from_secs(5)
+                    {
+                        std::thread::sleep(Duration::from_millis(10));
+                    }
                 } else if line == "DATA\r\n" {
                     in_data = true;
                 }
@@ -1433,7 +1567,12 @@ mod tests {
     }
 
     fn scripted(replies: &'static [&'static str]) -> (u16, std::thread::JoinHandle<Vec<String>>) {
-        server(replies, Arc::default(), Duration::ZERO)
+        server(
+            replies,
+            Arc::default(),
+            Arc::new(AtomicBool::new(true)),
+            Duration::ZERO,
+        )
     }
 
     fn account(port: u16, auth: Auth) -> Account {
@@ -1557,7 +1696,7 @@ mod tests {
             assert_eq!(&read[1..1 + expected.len()], expected.as_slice());
         }
 
-        let cases: [(&'static [&'static str], Auth, ErrorCode); 9] = [
+        let cases: [(&'static [&'static str], Auth, ErrorCode); 12] = [
             (
                 &[
                     "220 hi\r\n",
@@ -1568,8 +1707,25 @@ mod tests {
                 ErrorCode(1501),
             ),
             (&["554 No service\r\n"], Auth::None, ErrorCode(1502)),
-            // A bare LF, and a reply whose lines' codes differ.
+            // A bare LF, a NUL, a second digit past 5, and a reply whose
+            // lines' codes differ.
             (&["220 hi\n"], Auth::None, ErrorCode(1502)),
+            (&["220 h\0i\r\n"], Auth::None, ErrorCode(1502)),
+            (&["290 hi\r\n"], Auth::None, ErrorCode(1502)),
+            // A 250 sent with the 354, ahead of the message.
+            (
+                &[
+                    "220 hi\r\n",
+                    "250 hi\r\n",
+                    "250 OK\r\n",
+                    "250 OK\r\n",
+                    "250 OK\r\n",
+                    "250 OK\r\n",
+                    "354 Go\r\n250 OK\r\n",
+                ],
+                Auth::None,
+                ErrorCode(1506),
+            ),
             (
                 &[
                     "220 hi\r\n",
@@ -1679,20 +1835,37 @@ mod tests {
             .expect("the cancel shuts the connection");
         assert_eq!(read, 0);
 
-        // Cancelled once the server has read the message's end: sent.
-        let ended = Arc::new(AtomicBool::new(false));
+        // Cancelled once the server has read the message's end, its 250
+        // held until the cancel was seen: sent, and told before QUIT's
+        // delayed reply.
+        let (ended, seen) = (
+            Arc::new(AtomicBool::new(false)),
+            Arc::new(AtomicBool::new(false)),
+        );
         let mut replies = vec!["220 hi\r\n", "250 hi\r\n"];
         replies.extend(TAKEN.iter().copied());
-        let (port, server) = server(Vec::leak(replies), ended.clone(), Duration::from_secs(3));
+        let (port, server) = server(
+            Vec::leak(replies),
+            ended.clone(),
+            seen.clone(),
+            Duration::from_secs(3),
+        );
         let started = Instant::now();
         send_with(
             &account(port, Auth::None),
             &message(),
             RootCertStore::empty(),
             None,
-            &mut || ended.load(Ordering::SeqCst),
+            &mut || {
+                let cancel = ended.load(Ordering::SeqCst);
+                if cancel {
+                    seen.store(true, Ordering::SeqCst);
+                }
+                cancel
+            },
         )
         .unwrap();
+        assert!(seen.load(Ordering::SeqCst));
         assert!(started.elapsed() < Duration::from_secs(3));
         drop(server);
     }
@@ -1769,12 +1942,25 @@ mod tests {
             }
             loop {
                 let mut line = String::new();
-                if reader.read_line(&mut line).unwrap_or(0) == 0 || line == ".\r\n" {
+                if reader.read_line(&mut line).unwrap_or(0) == 0 {
+                    return read;
+                }
+                if line == ".\r\n" {
+                    read.push(line);
                     break;
                 }
             }
-            let _ = reader.get_mut().write_all(b"250 queued\r\n221 Bye\r\n");
-            let _ = reader.get_mut().flush();
+            if reader.get_mut().write_all(b"250 queued\r\n").is_err()
+                || reader.get_mut().flush().is_err()
+            {
+                return read;
+            }
+            let mut line = String::new();
+            if reader.read_line(&mut line).unwrap_or(0) > 0 {
+                read.push(line);
+                let _ = reader.get_mut().write_all(b"221 Bye\r\n");
+                let _ = reader.get_mut().flush();
+            }
             read
         });
         (port, der, handle)
@@ -1810,6 +1996,8 @@ mod tests {
             let read = server.join().unwrap();
             assert!(read[0].starts_with("EHLO "), "{read:?}");
             assert!(read[1].starts_with("AUTH PLAIN "));
+            // The message's end reached the server before its 250.
+            assert_eq!(&read[read.len() - 2..], [".\r\n", "QUIT\r\n"]);
         }
         for (security, inject, code) in [
             (Security::Ssl, false, 1502),
