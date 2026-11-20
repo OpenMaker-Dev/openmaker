@@ -2359,8 +2359,12 @@ impl<'a> Evaluator<'a> {
                 report::Piece::Literal(text) => {
                     let context = report::in_row(Context::record(self.occurrence, record), row);
                     return report_eval
-                        .with_host(|host| layout::merge_text(host, text, &context))
-                        .ok_or_else(loading);
+                        .with_host(|host| layout::merge_text_checked(host, text, &context))
+                        .ok_or_else(loading)?
+                        .map_err(|failed| ReportError {
+                            code: failed.code(),
+                            message: "A report symbol could not be calculated completely".into(),
+                        });
                 }
             };
             let def = self

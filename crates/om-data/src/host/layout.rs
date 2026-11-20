@@ -179,16 +179,24 @@ enum Piece<'t> {
 /// its closing `>>` or `}}`; an unclosed one is text.
 fn pieces(text: &str) -> Vec<Piece<'_>> {
     let mut pieces = Vec::new();
-    let mut rest = text;
+    let mut at = 0;
+    // The next of each opener from `at`, kept until it is passed: text of
+    // many symbols and no merge variable is read once, not once a symbol.
+    let (mut merge, mut symbol) = (None, None);
+    let next = |found: &mut Option<Option<usize>>, opener: &str, at: usize| {
+        if found.is_none_or(|next| next.is_some_and(|i| i < at)) {
+            *found = Some(text[at..].find(opener).map(|i| i + at));
+        }
+        found.flatten()
+    };
     loop {
-        let merge = rest.find("<<$");
-        let symbol = rest.find("{{");
-        let Some(start) = [merge, symbol].into_iter().flatten().min() else {
-            pieces.push(Piece::Text(rest));
+        let openers = [next(&mut merge, "<<$", at), next(&mut symbol, "{{", at)];
+        let Some(start) = openers.into_iter().flatten().min() else {
+            pieces.push(Piece::Text(&text[at..]));
             return pieces;
         };
-        pieces.push(Piece::Text(&rest[..start]));
-        let tail = &rest[start..];
+        pieces.push(Piece::Text(&text[at..start]));
+        let tail = &text[start..];
         let is_merge = tail.starts_with("<<");
         let close = if is_merge { ">>" } else { "}}" };
         let Some(end) = tail[2..].find(close).map(|i| i + 2) else {
@@ -201,7 +209,7 @@ fn pieces(text: &str) -> Vec<Piece<'_>> {
         } else {
             Piece::Symbol { inner, raw }
         });
-        rest = &tail[end + 2..];
+        at = start + end + 2;
     }
 }
 
@@ -216,17 +224,22 @@ pub enum Merged<'t> {
     /// A `{{symbol}}` [`merge_text`] keeps as written: another name or
     /// number, `{{PageCount}}` among them. Its inside.
     Kept(&'t str),
+    /// A `<<$...>>` [`merge_text`] keeps as written, since its inside is no
+    /// variable reference it reads: a name with a space, say, which Set
+    /// Variable accepts (script-runtime.md 13.6). Its inside.
+    KeptVariable(&'t str),
 }
 
 /// The merge variables and symbols of layout text, read as [`merge_text`]
 /// reads them: a symbol never inside a merge variable, an unclosed one
-/// text. A `<<...>>` that names no variable is text too.
+/// text. A `<<...>>` without the `$` is text too.
 pub fn merged(text: &str) -> impl Iterator<Item = Merged<'_>> {
     pieces(text).into_iter().filter_map(|piece| match piece {
         Piece::Text(_) => None,
-        Piece::Merge { inner, .. } => {
-            is_variable_reference(inner).then_some(Merged::Variable(inner))
-        }
+        Piece::Merge { inner, .. } => Some(match is_variable_reference(inner) {
+            true => Merged::Variable(inner),
+            false => Merged::KeptVariable(inner),
+        }),
         Piece::Symbol { inner, .. } => {
             Some(symbol_name(inner).map_or(Merged::Kept(inner), Merged::Symbol))
         }
@@ -272,6 +285,27 @@ pub(super) fn has_page_symbol(text: &str) -> bool {
 /// an optional `[repetition]`) and `{{symbols}}` replaced by their values
 /// in `context`. Other text, including unresolved `<<...>>`, is kept.
 pub fn merge_text(host: &mut dyn CalcHost, text: &str, context: &Context) -> String {
+    // Unchecked, nothing fails: a failed value shows as `display` shows it.
+    merge(host, text, context, false).unwrap_or_default()
+}
+
+/// [`merge_text`] for output that must not show a failed value, such as a
+/// report: the first evaluation that failed, waits for data
+/// (`pending_execution`) or is `?`, instead of the text.
+pub fn merge_text_checked(
+    host: &mut dyn CalcHost,
+    text: &str,
+    context: &Context,
+) -> Result<String, Evaluation> {
+    merge(host, text, context, true)
+}
+
+fn merge(
+    host: &mut dyn CalcHost,
+    text: &str,
+    context: &Context,
+    checked: bool,
+) -> Result<String, Evaluation> {
     let mut out = String::with_capacity(text.len());
     for piece in pieces(text) {
         let (formula, raw) = match piece {
@@ -286,13 +320,20 @@ pub fn merge_text(host: &mut dyn CalcHost, text: &str, context: &Context) -> Str
         };
         match formula {
             Some(formula) => {
-                let value = evaluate_text(&formula, host, context).value;
-                out.push_str(&display(&value, host));
+                let evaluation = evaluate_text(&formula, host, context);
+                if checked
+                    && (evaluation.pending_execution
+                        || evaluation.error.is_some()
+                        || evaluation.value.is_invalid())
+                {
+                    return Err(evaluation);
+                }
+                out.push_str(&display(&evaluation.value, host));
             }
             None => out.push_str(raw),
         }
     }
-    out
+    Ok(out)
 }
 
 /// `$name`, `$$name` or either with `[n]`: what a merge variable may hold.
@@ -343,6 +384,7 @@ mod tests {
         assert_eq!(
             merged(text).collect::<Vec<_>>(),
             [
+                Merged::KeptVariable("$x{{PageNumber}}"),
                 Merged::Symbol("PageNumber"),
                 Merged::Variable("$$y[2]"),
                 Merged::Kept("pagecount"),
@@ -352,6 +394,20 @@ mod tests {
         assert_eq!(
             replace_symbols(text, |name| (name == "PageNumber").then(|| "2".into())),
             "<<$x{{PageNumber}}>> 2 <<$$y[2]>> {{pagecount}} {{1002}} <<Name>>"
+        );
+        // Symbols after one another, a variable after them, and openers
+        // passed inside a piece are each read once, in order.
+        let long = "{{1015}}".repeat(3) + "<<$$a>>{{ <<$$b>> }}<<$$c>>";
+        assert_eq!(
+            merged(&long).collect::<Vec<_>>(),
+            [
+                Merged::Symbol("PageNumber"),
+                Merged::Symbol("PageNumber"),
+                Merged::Symbol("PageNumber"),
+                Merged::Variable("$$a"),
+                Merged::Kept(" <<$$b>> "),
+                Merged::Variable("$$c"),
+            ]
         );
     }
 

@@ -554,14 +554,13 @@ impl WorkerHost<'_> {
                 // does not read (#596): a merge variable would print
                 // empty.
                 report::Piece::Literal(text) => {
-                    use om_data::host::layout::{merged, Merged};
-                    if merged(text).any(|piece| matches!(piece, Merged::Variable(_))) {
-                        return Err(ReportError::unsupported(
-                            "Merge variables in reports a script prints are unsupported",
-                        ));
-                    }
+                    report::script_printed(text)?;
                     let context = report::in_row(Context::record(origin, record), row);
-                    return Ok(om_data::host::layout::merge_text(self, text, &context));
+                    return om_data::host::layout::merge_text_checked(self, text, &context)
+                        .map_err(|failed| ReportError {
+                            code: if failed.code() == 0 { 3 } else { failed.code() },
+                            message: "A report symbol could not be calculated completely".into(),
+                        });
                 }
             };
             let (value, text) =

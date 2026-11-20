@@ -4019,6 +4019,19 @@ fn page_number_symbols_print_each_pages_number() {
         Literal("<<Page {{PageNumber}}>> / ".into()),
         MergeField("Name".into()),
     ];
+    // A label the runs do not spell is numbered by whole symbols outside
+    // placeholders, by number too.
+    let mut stored = label(
+        8,
+        "Page {{1015}} of <<Name>> (draft)",
+        rect(12.0, 135.0, 400.0, 20.0),
+        12.0,
+        false,
+    );
+    stored.text_runs = vec![
+        Literal("Page {{1015}} of ".into()),
+        MergeField("Name".into()),
+    ];
     let layout = Layout {
         def: Some(LayoutDef {
             base_width: 540.0,
@@ -4038,7 +4051,7 @@ fn page_number_symbols_print_each_pages_number() {
             },
         ],
         objects: ObjectStore {
-            root: vec![1, 2, 3, 4, 5, 6, 7],
+            root: vec![1, 2, 3, 4, 5, 6, 7, 8],
             objects: vec![
                 label(1, "Body", rect(12.0, 10.0, 200.0, 20.0), 12.0, false),
                 label(
@@ -4053,6 +4066,7 @@ fn page_number_symbols_print_each_pages_number() {
                 noted,
                 named,
                 angled,
+                stored,
             ],
             ..Default::default()
         },
@@ -4111,6 +4125,7 @@ fn page_number_symbols_print_each_pages_number() {
             format!("Note {{{{ <<Name>> / Page {number}"),
             format!("<<Name {{{{PageNumber}}}}>> / Page {number}"),
             format!("<<Page {number}>> / <<Name>>"),
+            format!("Page {number} of <<Name>> (draft)"),
         ] {
             let found = text_origins(&labels, 2, &label);
             assert_eq!(
@@ -4130,6 +4145,15 @@ fn page_number_symbols_print_each_pages_number() {
             "{symbol}"
         );
     }
+    // A variable name with a space, which Set Variable accepts and Browse
+    // shows as written.
+    let mut spaced = layout.clone();
+    spaced.objects.objects[1].text = Some("Printed by <<$$printed by>>".into());
+    assert_eq!(
+        render(&spaced).unwrap_err(),
+        "Report object 2 holds a <<$...>> OpenMaker does not read as a merge variable; \
+         how FileMaker reads it is unmeasured"
+    );
     // A data format that presents dates (format 7, numeric with the full
     // year): FileMaker's for a variable or symbol is unmeasured.
     let mut formatted = layout.clone();
@@ -4160,8 +4184,8 @@ fn page_number_symbols_print_each_pages_number() {
 
 /// [`document`] with layout symbols and a merge variable: the header shows
 /// the user name and the date, each body the record's number by name and
-/// by its selector's number (`{{1020}}`), then `$$suffix`, which no script
-/// sets.
+/// by its selector's number (`{{1020}}`), then `$$suffix`'s second
+/// repetition.
 pub(super) fn symbols_document() -> RenderLayout {
     let mut document = document();
     let objects = &mut document.layout.objects;
@@ -4174,7 +4198,7 @@ pub(super) fn symbols_document() -> RenderLayout {
     );
     objects.objects.push(label(
         11,
-        "No. {{RecordNumber}} / {{1020}}<<$$suffix>>",
+        "No. {{RecordNumber}} / {{1020}}<<$$suffix[2]>>",
         rect(360.0, 86.0, 170.0, 24.0),
         11.0,
         false,
@@ -4249,7 +4273,7 @@ fn layout_symbols_print_as_browse_shows_them() {
     headers.sort();
     assert_eq!(headers, [0, 1, 2], "{dates:?}");
 
-    // `$$suffix`, which the script set, would print empty: refused, and
+    // `$$suffix[2]` would print empty whatever the script set: refused, and
     // nothing is written.
     let refused = temporary.path().join("variables.pdf");
     let mut v = client(steps(&refused));

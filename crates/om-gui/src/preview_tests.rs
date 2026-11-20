@@ -344,7 +344,7 @@ fn preview_applies_conditional_formatting_per_record_like_the_pdf() {
 
 /// Preview fills in merge variables and layout symbols on each record as
 /// Browse does: the record's number, by name and by its selector's
-/// number, as the PDF prints it; a variable that was never set is empty.
+/// number, as the PDF prints it, and the window's `$$suffix[2]`.
 #[test]
 fn preview_fills_in_merge_variables_and_symbols_like_the_pdf() {
     let (provider, _) = crate::scripting::session::symbols_fixture();
@@ -360,11 +360,13 @@ fn preview_fills_in_merge_variables_and_symbols_like_the_pdf() {
             app
         });
     wait(&mut app, |a| a.is_settled() && a.w.calcs.schema().is_some());
+    let suffix = om_data::calc::Value::text(" of 9");
+    app.state_mut().w.globals.set("$$suffix", 2, suffix);
     click(&mut app, "Preview");
-    shows(&mut app, "No. 1 / 1");
+    shows(&mut app, "No. 1 / 1 of 9");
     shot(&mut app, "symbols");
     for n in 2..=3 {
-        app.get_by_label(&format!("No. {n} / {n}"));
+        app.get_by_label(&format!("No. {n} / {n} of 9"));
     }
     assert!(app.query_by_label_contains("By ").is_some());
     assert!(app.query_by_label_contains("{{").is_none());

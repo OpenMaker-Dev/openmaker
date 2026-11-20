@@ -45,11 +45,17 @@ Browse reads them. Refused with 3:
   mode it was measured in, and any other symbol Browse keeps as written:
   FileMaker shows another `Get` function's result for one (Claris, "Inserting
   the date, page number, or other variable").
+- A `<<$...>>` Browse shows as written because it is no variable reference
+  OpenMaker reads, such as a name with a space, which Set Variable accepts
+  ([script runtime](re/script-runtime.md) 13.6).
 - A merge variable, or a symbol other than `{{PageNumber}}`, in an object whose
   data format presents numbers, dates or times (other than General or as
   entered): FileMaker formats an object's merge fields with it
   ([data formats](re/data-format.md)), but whether it formats variables and
   symbols is unmeasured, and Browse does not.
+- A symbol or variable whose evaluation fails, waits for data that cannot be
+  read, or gives `?`: the report is refused, as for a field, where Browse
+  shows `?`.
 
 ## Supported layout and output contract
 

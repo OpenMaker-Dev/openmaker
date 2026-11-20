@@ -2925,6 +2925,9 @@ fn part_objects<'s, 'a>(
 ///   FileMaker shows a `Get` function's result for other names (Claris,
 ///   "Inserting the date, page number, or other variable"), and what it
 ///   prints for the page count is unmeasured.
+/// - So does a `<<$...>>` Browse keeps as written: Set Variable accepts a
+///   name with a space (script-runtime.md 13.6), which a merge variable
+///   may then name.
 /// - So does a merge variable or symbol other than the page number in an
 ///   object whose data format presents numbers, dates or times: FileMaker
 ///   formats merge fields with it (data-format.md), but whether it formats
@@ -2944,6 +2947,13 @@ fn merged_refusal(object: &LayoutObject) -> Result<(), ReportError> {
                     "Layout merge symbols other than {{PageNumber}}, {{RecordNumber}}, \
                      {{CurrentDate}}, {{CurrentTime}} and {{UserName}} are unsupported",
                 ))
+            }
+            Merged::KeptVariable(_) => {
+                return Err(ReportError::unsupported(format!(
+                    "Report object {} holds a <<$...>> OpenMaker does not read as a merge \
+                     variable; how FileMaker reads it is unmeasured",
+                    object.id
+                )))
             }
             Merged::Symbol("PageNumber") => {}
             _ if formats => {
@@ -2987,42 +2997,59 @@ fn symbol_texts(object: &LayoutObject) -> Box<dyn Iterator<Item = &String> + '_>
     }
 }
 
-/// `label` with each whole `{{PageNumber}}` (any case) replaced by page
+/// `label` with each whole `{{PageNumber}}` (any case, or `{{1015}}`) replaced by page
 /// `page`'s number (from 0): a merge text's label beside the runs its
 /// symbols are read from ([`symbol_texts`]), for content that reads the
 /// label. Its merged fields are written in it, so only whole symbols are
 /// numbered, never one paired across a field, and a field's placeholder
 /// (`<<Name>>`) is kept as written, whatever its name holds.
 fn numbered_label(label: &str, page: usize) -> String {
-    const SYMBOL: &str = "{{PageNumber}}";
+    use om_data::host::layout::{merged, Merged};
     let mut out = String::with_capacity(label.len());
-    let mut rest = label;
+    let mut at = 0;
+    // The next of each token from `at`, kept until it is passed, so the
+    // label is read once whatever it repeats.
+    let (mut field, mut symbol, mut field_end) = (None, None, None);
+    let next = |found: &mut Option<Option<usize>>, token: &str, at: usize| {
+        if found.is_none_or(|next| next.is_some_and(|i| i < at)) {
+            *found = Some(label[at..].find(token).map(|i| i + at));
+        }
+        found.flatten()
+    };
     loop {
-        let field = rest.find("<<");
-        let Some(start) = [field, rest.find("{{")].into_iter().flatten().min() else {
+        let fields = next(&mut field, "<<", at);
+        let Some(start) = [fields, next(&mut symbol, "{{", at)]
+            .into_iter()
+            .flatten()
+            .min()
+        else {
             break;
         };
-        out.push_str(&rest[..start]);
-        let tail = &rest[start..];
+        out.push_str(&label[at..start]);
         // A merged field's placeholder is its name, kept as written.
-        if field == Some(start) {
-            let end = tail[2..].find(">>").map_or(2, |end| end + 4);
-            out.push_str(&tail[..end]);
-            rest = &tail[end..];
+        if fields == Some(start) {
+            at = next(&mut field_end, ">>", start + 2).map_or(start + 2, |end| end + 2);
+            out.push_str(&label[start..at]);
             continue;
         }
-        match tail.get(..SYMBOL.len()) {
-            Some(symbol) if symbol.eq_ignore_ascii_case(SYMBOL) => {
+        // A whole page symbol, by name or by number, as runs are numbered
+        // ([`numbered`]). Its inside is a dozen characters at most, so
+        // only the next few are read for its `}}`.
+        let tail = &label[start..];
+        let near = &tail.as_bytes()[2..tail.len().min(18)];
+        let whole = (near.windows(2).position(|pair| pair == b"}}")).map(|i| &tail[..i + 4]);
+        match whole.filter(|symbol| merged(symbol).eq([Merged::Symbol("PageNumber")])) {
+            Some(symbol) => {
                 out.push_str(&(page + 1).to_string());
-                rest = &tail[SYMBOL.len()..];
+                at = start + symbol.len();
             }
-            _ => {
+            None => {
                 out.push_str("{{");
-                rest = &tail[2..];
+                at = start + 2;
             }
         }
     }
-    out.push_str(rest);
+    out.push_str(&label[at..]);
     out
 }
 
@@ -4388,7 +4415,22 @@ pub(crate) enum Piece<'t> {
 /// needs evaluating: a merge variable, or a symbol Browse shows.
 pub(crate) fn merges(text: &str) -> bool {
     use om_data::host::layout::{merged, Merged};
-    merged(text).any(|piece| !matches!(piece, Merged::Kept(_)))
+    merged(text).any(|piece| matches!(piece, Merged::Variable(_) | Merged::Symbol(_)))
+}
+
+/// Why a report that a script prints (Save Records as PDF, Print) refuses
+/// `text`, a [`Piece::Literal`], if it does: a merge variable. The script
+/// worker does not read the running script's variables
+/// ([#596](https://github.com/OpenMaker-Dev/openmaker/issues/596)), so it
+/// would print empty.
+pub(crate) fn script_printed(text: &str) -> Result<(), ReportError> {
+    use om_data::host::layout::{merged, Merged};
+    match merged(text).any(|piece| matches!(piece, Merged::Variable(_))) {
+        true => Err(ReportError::unsupported(
+            "Merge variables in reports a script prints are unsupported",
+        )),
+        false => Ok(()),
+    }
 }
 
 /// Resolve the shared report field/merge binding contract. The caller supplies

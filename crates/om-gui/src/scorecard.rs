@@ -892,7 +892,11 @@ fn report_card(layout: &Layout, schema: &CalcSchema) -> ReportCard {
         report::object_text(object, occurrence, schema, |piece| {
             let field = match piece {
                 report::Piece::Field(field) => field,
-                report::Piece::Literal(text) => return Ok(text.to_owned()),
+                // As Save Records as PDF refuses it.
+                report::Piece::Literal(text) => {
+                    report::script_printed(text)?;
+                    return Ok(text.to_owned());
+                }
             };
             let def = report::field_def(schema, field, object)?;
             report::group_summary(def, field, occurrence, group)?;
