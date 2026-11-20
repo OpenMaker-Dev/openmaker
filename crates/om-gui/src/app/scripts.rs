@@ -410,6 +410,7 @@ impl OpenMakerApp {
             toolbar: self.w.show_toolbar,
             menubar: self.w.menubar,
             zoom: self.w.document.zoom.percent(),
+            zoom_locked: self.w.zoom_locked,
             // The user's selection in the field being typed in.
             selection: (self.w.mode == Mode::Browse)
                 .then_some(self.w.document.active.as_deref())
@@ -2426,6 +2427,7 @@ impl OpenMakerApp {
         self.w.show_toolbar = state.toolbar;
         self.w.menubar = state.menubar;
         self.w.document.zoom.set_percent(state.zoom);
+        self.w.zoom_locked = state.zoom_locked;
         self.w.requests = state.requests;
         self.w.uuid = state.uuid;
         self.w.style = state.style;

@@ -3211,9 +3211,13 @@ impl OpenMakerApp {
     /// Whether View's Zoom In, Zoom Out and Actual Size change the window's
     /// zoom: a layout drawn in Browse's Form or List view, in Find mode
     /// (which draws its requests as Form view does), or Preview, and Browse's
-    /// Table view, which draws the found set's grid whatever the layout.
-    /// Layout mode and the generic views are not zoomed yet (#36).
+    /// Table view, which draws the found set's grid whatever the layout,
+    /// unless Set Zoom Level locked the window's zoom. Layout mode and the
+    /// generic views are not zoomed yet (#36).
     fn zooms(&self) -> bool {
+        if self.w.zoom_locked {
+            return false;
+        }
         let Some(session) = self.w.session.as_ref() else {
             return false;
         };
@@ -6461,6 +6465,13 @@ mod tests {
         assert_eq!(app.w.document.zoom.percent(), 150);
         assert_eq!(context.zoom_factor(), 1.0);
 
+        app.w.zoom_locked = true;
+        for action in [Action::ZoomIn, Action::ZoomOut, Action::ActualSize] {
+            app.apply(&context, action);
+            assert_eq!(app.w.document.zoom.percent(), 150);
+        }
+        app.w.zoom_locked = false;
+
         // List and Table view zoom too, and Find mode's layout.
         app.w.view = ViewMode::List;
         app.apply(&context, Action::ZoomIn);
@@ -6504,6 +6515,7 @@ mod tests {
         let mut window = app.window_state();
         assert_eq!(window.zoom, 150);
         window.zoom = 200;
+        window.zoom_locked = true;
         app.on_script_event(
             &context,
             crate::scripting::ScriptEvent::Window(Box::new(crate::scripting::WindowUpdate {
@@ -6521,8 +6533,10 @@ mod tests {
         );
         assert_eq!(app.w.document.zoom.percent(), 200);
         assert_eq!(app.window_state().zoom, 200);
+        assert!(app.window_state().zoom_locked);
         app.apply(&context, Action::CloseFile);
         assert_eq!(app.w.document.zoom.percent(), 100);
+        assert!(!app.window_state().zoom_locked);
     }
 
     /// Layout 1: object 1, a rectangle of `fill`, and object 2, a graphic

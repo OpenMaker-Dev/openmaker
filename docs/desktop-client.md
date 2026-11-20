@@ -889,9 +889,14 @@ space) keeps the unzoomed raster in the editor too, as do lines that a small
 zoom and font would put on one pixel row. A new zoom brings a scrolling
 field's insertion point back into view.
 
+Set Zoom Level with Lock on disables View > Actual Size, Zoom In and
+Zoom Out and their shortcuts for that window. A script can still set the
+level, and Lock off restores those controls. A new window (New Window,
+the step or Window > New Window) takes the lock with the zoom of the window
+it opens from [I: inheritance has not been compared with FileMaker Pro].
+
 Limits: Layout mode and generic Form fallbacks are not zoomed (Preview scales its paper:
-[preview.md](preview.md)), and Set Zoom Level's lock option is not enforced
-([#36](https://github.com/OpenMaker-Dev/openmaker/issues/36)). Scroll bars
+[preview.md](preview.md); [#36](https://github.com/OpenMaker-Dev/openmaker/issues/36)). Scroll bars
 inside the zoomed layer (List and Table view's) scale with it; FileMaker Pro's
 keep their size [I: unmeasured]. How FileMaker Pro scales Table view's
 header and row heights is unmeasured. A Table view column is resized from
