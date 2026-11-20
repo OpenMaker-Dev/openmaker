@@ -167,6 +167,16 @@ fn list_field(list: &om_data::meta::ValueList) -> u64 {
     }
 }
 
+/// [`not_checked`] for a check whose rule OpenMaker does not support
+/// (#571): an import ends at its row ([`DataError::unsupported`]) rather
+/// than skipping it.
+fn unsupported_check(field: &str, why: &str) -> DataError {
+    DataError {
+        unsupported: true,
+        ..not_checked(field, why)
+    }
+}
+
 fn not_checked(field: &str, why: &str) -> DataError {
     DataError::with_code(
         error::UNAVAILABLE,
@@ -627,10 +637,62 @@ impl NativeProvider {
             let data_type = table
                 .field(field)
                 .map_or(om_hbam::catalog::DataType::Text, |f| f.data_type);
-            let listed = items
-                .iter()
-                .any(|item| om_data::rules::same_list_value(data_type, &item.value, &text, &cx));
-            if !listed {
+            // Text compares as the list's field keys it (#571): in its index
+            // language, 0 being the language of the file that owns its table
+            // (a related file's own, `table_context`), unknown when that
+            // file's locale record does not decode. A field of another type
+            // is keyed by value, whatever its language, and compares as it
+            // did.
+            let keys = schema.table_of(primary).and_then(|source| {
+                let def = source.fields.get(&listed)?;
+                if def.value_type != ValueType::Text {
+                    return Some(om_query::keys::TextKeys::Collated);
+                }
+                let file_language = match schema.table_context(source.id) {
+                    Some(file) => file.file_language(),
+                    None => schema.file_language(),
+                };
+                om_data::rules::value_text_keys(def.language, file_language)
+            });
+            let mut found = false;
+            for item in &items {
+                match om_data::rules::same_list_value(data_type, &item.value, &text, &cx, keys) {
+                    Some(true) => {
+                        found = true;
+                        break;
+                    }
+                    Some(false) => {}
+                    None => {
+                        return Err(unsupported_check(
+                            &name,
+                            "its list's field is indexed in a language whose keys OpenMaker \
+                             does not build",
+                        ))
+                    }
+                }
+            }
+            if !found {
+                // The list keeps one of the values a calculation compares
+                // equal (`FileCalc::list_entries`): where its field's keys
+                // tell those apart (case or accents in Unicode raw or
+                // standard, `v` and `w` in a Swedish file's English keys),
+                // the value it left out for an equal one may be this one.
+                let equal = |listed: &str| {
+                    matches!(
+                        om_data::calc::ops::compare(
+                            &om_data::calc::Value::text(listed),
+                            &om_data::calc::Value::text(&text),
+                            &cx
+                        ),
+                        om_data::calc::ops::Comparison::Ordered(std::cmp::Ordering::Equal)
+                    )
+                };
+                if items.iter().any(|item| equal(&item.value)) {
+                    return Err(unsupported_check(
+                        &name,
+                        "its list's field keys apart values its list as computed takes as one",
+                    ));
+                }
                 return Err(plan.refusal(field, error::NOT_IN_LIST));
             }
         }

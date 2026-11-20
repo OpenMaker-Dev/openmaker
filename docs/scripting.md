@@ -348,7 +348,13 @@ dBase, and for imports Excel 97-2004 `.xls` too.
   field's repetitions or related values in FMPXMLRESULT (an empty `DATA`,
   so the values after it keep their places).
 - Imports cover every action, mapping by position or name, field names
-  rows, and auto-enter and validation through `om_data::rules`.
+  rows, and auto-enter and validation through `om_data::rules`. A row
+  whose rule OpenMaker does not support checking (a value list it cannot
+  key, #571) ends the import with 3 rather than being skipped (729):
+  OpenMaker Server then imports none of its rows; the desktop keeps the
+  rows it committed before it (outside a transaction, where each row is
+  committed as it is imported). A row's other errors, 3 among them (a
+  record changed meanwhile, a lookup it cannot read), skip that row.
 - Stored specs decode and re-encode byte for byte.
 - On FileMaker Server: export probes match byte for byte, except
   Shift-JIS, Big-5 and EUC-KR and `.xlsx` time cells; 49 of 51 import
@@ -627,7 +633,7 @@ Open items:
     language (0) when it is one of those and its locale record can be
     read, or a language FileMaker leaves untailored (record-writes.md).
     Field-backed value-list rules check their source in the same forms;
-    a source in a tailored language is looked up in English
+    a text source in a tailored language refuses the check with 3
     ([#571](https://github.com/OpenMaker-Dev/openmaker/issues/571)). Lists from another file, a calculation, related
     values or a second field still make the table read-only.
   - OpenMaker's own choices, not settled by the oracle: numeric forms

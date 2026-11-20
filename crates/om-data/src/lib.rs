@@ -561,6 +561,11 @@ pub struct DataError {
     /// partly applied. The window then keeps every change it made and
     /// sends none again by itself.
     pub commit: Vec<FileCommit>,
+    /// A write refused because OpenMaker does not support checking one of
+    /// its rules (code 3), such as a value list whose source field it
+    /// cannot key (#571): an import ends at such a row rather than
+    /// skipping it as a row FileMaker refused.
+    pub unsupported: bool,
 }
 
 /// What a commit did in one file whose records it held (#1006).
@@ -612,6 +617,7 @@ impl DataError {
             code: None,
             lost: false,
             commit: Vec::new(),
+            unsupported: false,
         }
     }
 
@@ -622,6 +628,16 @@ impl DataError {
             code: Some(code),
             lost: false,
             commit: Vec::new(),
+            unsupported: false,
+        }
+    }
+
+    /// A write refused with 3 because OpenMaker does not support checking
+    /// one of its rules ([`Self::unsupported`]).
+    pub fn unsupported(message: impl Into<String>) -> Self {
+        Self {
+            unsupported: true,
+            ..Self::with_code(3, message)
         }
     }
 
@@ -632,6 +648,7 @@ impl DataError {
             code: None,
             lost: true,
             commit: Vec::new(),
+            unsupported: false,
         }
     }
 }

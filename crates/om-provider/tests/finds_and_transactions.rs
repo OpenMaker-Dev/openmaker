@@ -2541,9 +2541,12 @@ fn transaction_options_skip_auto_enter_and_data_entry_validation() {
 /// S::Count, compared by value; Mark one of S::Shout, an unstored
 /// calculation computed on each related record (#1058), the written
 /// record's over the values the write gives it; Owner one of S::Who,
-/// `Get ( AccountName )`, this session's account. While a transaction holds
-/// a record of another table, which such a calculation could read only as
-/// stored, Commit Transaction refuses (3).
+/// `Get ( AccountName )`, this session's account; Word (validated always)
+/// one of S::German, text indexed in German, whose keys OpenMaker does not
+/// build: refused (3) rather than compared in English, where `Apfel` is
+/// `Äpfel` (#571).
+/// While a transaction holds a record of another table, which such a
+/// calculation could read only as stored, Commit Transaction refuses (3).
 #[test]
 fn a_related_value_list_is_computed_for_the_written_record() {
     const SELF_JOIN: u64 = 0xd0_0009;
@@ -2552,6 +2555,12 @@ fn a_related_value_list_is_computed_for_the_written_record() {
     const NUM: u64 = 35;
     const WHO: u64 = 36;
     const OWNER: u64 = 37;
+    const GERMAN: u64 = 38;
+    const WORD: u64 = 39;
+    const RAW: u64 = 40;
+    const LETTER: u64 = 41;
+    const ACCENTED: u64 = 42;
+    const VOWEL: u64 = 43;
     let mut root = fixture::tree(&[], true);
     let mut names = fixture::names();
     names.add_field(TABLE, SHOUT, "Shout");
@@ -2564,6 +2573,15 @@ fn a_related_value_list_is_computed_for_the_written_record() {
     let who = "Get ( AccountName )";
     fixture::add_formula(&mut root, &names, (TABLE, OCCURRENCE), WHO, 5, who);
     fixture::add_field(&mut root, TABLE, OWNER, "Owner", 1, 1, 0, 0, 0x100);
+    fixture::add_field(&mut root, TABLE, GERMAN, "German", 1, 1, 0, 0, 0);
+    fixture::set_field_language(&mut root, TABLE, GERMAN, 25);
+    fixture::add_field(&mut root, TABLE, WORD, "Word", 1, 1, 0, 0, 0x500);
+    fixture::add_field(&mut root, TABLE, RAW, "Raw", 1, 1, 0, 0, 0);
+    fixture::set_field_language(&mut root, TABLE, RAW, 2);
+    fixture::add_field(&mut root, TABLE, LETTER, "Letter", 1, 1, 0, 0, 0x100);
+    fixture::add_field(&mut root, TABLE, ACCENTED, "Accented", 1, 1, 0, 0, 0);
+    fixture::set_field_language(&mut root, TABLE, ACCENTED, 3);
+    fixture::add_field(&mut root, TABLE, VOWEL, "Vowel", 1, 1, 0, 0, 0x100);
     fixture::add_occurrence(&mut root, SELF_JOIN, "S", TABLE);
     fixture::add_relationship(&mut root, 12, (OCCURRENCE, COUNT), 0, (SELF_JOIN, COUNT));
     fixture::set_field_validation(&mut root, TABLE, CODE, 0x100);
@@ -2587,6 +2605,9 @@ fn a_related_value_list_is_computed_for_the_written_record() {
         (7u8, "Shouts", SHOUT, MARK),
         (8, "Counts", COUNT, NUM),
         (9, "Accounts", WHO, OWNER),
+        (10, "Germans", GERMAN, WORD),
+        (11, "Raws", RAW, LETTER),
+        (12, "Accents", ACCENTED, VOWEL),
     ] {
         root.put(&[&[0x21], &[5], &[list], &[0x10]], text_node(&[], name));
         root.put(&[&[0x21], &[5], &[list], &[2]], related(listed as u8));
@@ -2612,6 +2633,39 @@ fn a_related_value_list_is_computed_for_the_written_record() {
         code(a.update_record(tasks, 2, values(&[("Code", "Write tests")]))),
         Err(Some(506))
     );
+    let refused = a
+        .update_record(tasks, 2, values(&[("German", "Äpfel"), ("Word", "Apfel")]))
+        .unwrap_err();
+    assert_eq!(refused.code, Some(3), "{refused:?}");
+    assert!(refused.message.contains("language"), "{refused:?}");
+    // S::Raw, Unicode raw (2), holds "A" and "a" on record 2's two lines:
+    // the list keeps one of them, so an exact "a" or "A" may be the one it
+    // left out (3), "A" exact is there, and "b" is in neither (506).
+    for (letter, expected) in [("A", None), ("a", Some(3)), ("b", Some(506))] {
+        let result = a.update_record(tasks, 2, values(&[("Raw", "A\ra"), ("Letter", letter)]));
+        match expected {
+            None => assert!(result.is_ok(), "{letter}: {result:?}"),
+            Some(code) => assert_eq!(result.unwrap_err().code, Some(code), "{letter}"),
+        }
+    }
+    // The same for S::Accented, Unicode standard (3), whose padded keys tell
+    // `e` and `é` apart where the list keeps one of them.
+    for (vowel, expected) in [("e", None), ("é", Some(3))] {
+        let result = a.update_record(tasks, 2, values(&[("Accented", "e\ré"), ("Vowel", vowel)]));
+        match expected {
+            None => assert!(result.is_ok(), "{vowel}: {result:?}"),
+            Some(code) => assert_eq!(result.unwrap_err().code, Some(code), "{vowel}"),
+        }
+    }
+    // An import's row with such a value is refused as one whose rule
+    // OpenMaker does not support checking, which ends the import.
+    let cells = [
+        (GERMAN, Some("Äpfel".to_owned())),
+        (WORD, Some("Apfel".to_owned())),
+    ]
+    .into();
+    let refused = a.import_record(tasks, Some(2), &cells, true).unwrap_err();
+    assert!(refused.unsupported, "{refused:?}");
     // With Count 3 as written, record 1 ("Write tests", Count 3) is related.
     assert_eq!(
         code(a.update_record(tasks, 2, values(&[("Count", "3"), ("Code", "Write tests")]))),
@@ -2709,23 +2763,7 @@ fn existing_values_and_value_lists_of_a_field_are_checked_on_the_host() {
     let mut root = fixture::tree(&[], true);
     fixture::set_field_options(&mut root, TABLE, NAME, 0x8000_0000);
     fixture::set_field_validation(&mut root, TABLE, NAME, 0x420);
-    fixture::set_field_validation(&mut root, TABLE, CODE, 0x500);
-    let (t, code) = (uint_segment(TABLE), uint_segment(CODE));
-    let reference = vec![2, 1, 5, 0x90, 0, 0, 2, 1, 0, 0, 0, 0, 0xff];
-    root.put(
-        &[&t, &[3], &[5], &code, &[0x07]],
-        OwnedNode::leaf(Vec::new(), reference),
-    );
-    root.put(&[&[0x21], &[5], &[5], &[0x10]], text_node(&[], "Names"));
-    // Kind 1: Tasks::Name (occurrence d0 00 01, field 1), no second field.
-    let mut list = vec![
-        1, 0, 0, 4, 3, 0xd0, 0, 1, 2, 1, 1, 0, 1, 0, 0, 0, 0, 0, 0, 0,
-    ];
-    list.extend(om_scsu::encode_counted(" "));
-    root.put(
-        &[&[0x21], &[5], &[5], &[2]],
-        OwnedNode::leaf(Vec::new(), list),
-    );
+    fixture::code_in_names_list(&mut root);
     let file = TempFile::from_tree("lookups", &root);
     let (port, ca_pem) = host(&file.0);
     let mut a = open(port, &ca_pem);
@@ -2753,6 +2791,54 @@ fn existing_values_and_value_lists_of_a_field_are_checked_on_the_host() {
     assert_eq!(text(&page, 1, "Name"), Some("ship"));
     assert_eq!(text(&page, 2, "Code"), Some("SHIP"));
     a.close();
+}
+
+/// A value list of a field's values whose field is indexed in a language
+/// OpenMaker does not key (German, 25, #299) refuses the check (3) before
+/// looking the value up, rather than keying it in English, which can both
+/// miss the index's key and match another value (#571).
+#[test]
+fn a_value_list_of_a_field_in_an_unkeyed_language_is_not_checked_in_english() {
+    for late in [false, true] {
+        let mut root = fixture::tree(&[], true);
+        fixture::set_field_options(&mut root, TABLE, NAME, 0x8000_0000);
+        fixture::set_field_language(&mut root, TABLE, NAME, 25);
+        fixture::code_in_names_list(&mut root);
+        let file = TempFile::from_tree("list-language", &root);
+        let (port, ca_pem) = host_with(&file.0, None, |server| {
+            if late {
+                server.with_late_index_builds()
+            } else {
+                server
+            }
+        });
+        let mut a = open(port, &ca_pem);
+        let tasks = layout(&mut a, "Tasks");
+        let before = all_records(&mut a, tasks);
+        // Record 2's Name is "Ship": English keys would accept it.
+        let refused = a
+            .update_record(tasks, 1, values(&[("Code", "Ship")]))
+            .unwrap_err();
+        assert_eq!(refused.code, Some(3), "late={late}: {refused:?}");
+        // Refused by the value list's source language before any lookup:
+        // against OpenMaker Server, which builds no German index, the
+        // lookup itself would also fail (its scan), but a host with the
+        // index answers English keys wrongly.
+        assert!(
+            refused.message.contains("source of a value list"),
+            "late={late}: {refused:?}"
+        );
+        // An import's row, new or into a record, is refused as one whose
+        // rule OpenMaker does not support checking, which ends the import
+        // (`DataError::unsupported`), not as a row FileMaker refused.
+        let cells = [(CODE, Some("Ship".to_owned()))].into();
+        for record in [None, Some(1)] {
+            let refused = a.import_record(tasks, record, &cells, true).unwrap_err();
+            assert!(refused.unsupported, "late={late} {record:?}: {refused:?}");
+        }
+        assert_eq!(all_records(&mut a, tasks), before);
+        a.close();
+    }
 }
 
 /// A field-backed list on Code, with no related-value filter or second
@@ -3074,8 +3160,12 @@ fn missing_index_never_indexed_text_is_scanned_but_unknown_formats_are_explicit(
                 "type={data_type}, language={language}, {candidate:?}: {error}"
             );
             if code == 3 {
+                // Refused by the scan, or before any lookup by a source
+                // language OpenMaker does not key (#571).
+                let message = error.to_string();
                 assert!(
-                    error.to_string().contains("without the host's value index"),
+                    message.contains("without the host's value index")
+                        || message.contains("the source of a value list"),
                     "{error}"
                 );
             }

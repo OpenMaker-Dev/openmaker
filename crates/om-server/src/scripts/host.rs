@@ -1536,7 +1536,10 @@ impl ServerHost {
                     continue;
                 };
                 if let Some((occurrence, source)) = plan.value_list_field(*cell, entry) {
-                    if !self.field_holds(occurrence, source, text) {
+                    let holds = self
+                        .field_holds(occurrence, source, text)
+                        .ok_or_else(unkeyed_list_refused)?;
+                    if !holds {
                         let is_field = self
                             .schema
                             .catalog
@@ -1652,25 +1655,32 @@ impl ServerHost {
     /// record and repetition (a value list of the field's values): its
     /// value index when it has one, else its stored values, as committed.
     /// Text compares as index keys, so case does not matter in English
-    /// (script oracle s18); keyed as the field's index keys it, English
-    /// where OpenMaker has no exact form (#159).
-    fn field_holds(&self, occurrence: u64, field: u64, text: &str) -> bool {
+    /// (script oracle s18); keyed as the field's index keys it. `None` when
+    /// a text field's index language has no key form OpenMaker builds (the
+    /// tailored ones, #299): the check is then refused (3) rather than
+    /// keyed in English, which can both miss the index's key and match
+    /// another value (#571). Other types are keyed as text, as before:
+    /// their typed keys do not depend on the language.
+    fn field_holds(&self, occurrence: u64, field: u64, text: &str) -> Option<bool> {
         let Some((table, def)) = self.schema.field(occurrence, field) else {
-            return false;
+            return Some(false);
         };
         let keys = FieldOptions::decode(&def.options)
-            .and_then(|o| rules::value_text_keys(o.index_language(), self.file_language()))
-            .unwrap_or(TextKeys::Collated);
+            .and_then(|o| rules::value_text_keys(o.index_language(), self.file_language()));
+        let keys = match def.data_type {
+            DataType::Text => keys?,
+            _ => keys.unwrap_or(TextKeys::Collated),
+        };
         let key = keys.key(text).unwrap_or_default();
         let store = self.hosted.read_store();
         let (t, f) = (uint_segment(table), uint_segment(field));
         if let Some(index) = store.node(&[&t, &[INDEXES], &f, &[VALUE_INDEX]]) {
-            return index.child(&key).is_some();
+            return Some(index.child(&key).is_some());
         }
         let cells: Vec<u64> = (1..=Self::repetitions(def))
             .filter_map(|rep| cell_id(field, rep))
             .collect();
-        store.node(&[&t, &[RECORDS]]).is_some_and(|records| {
+        Some(store.node(&[&t, &[RECORDS]]).is_some_and(|records| {
             records.children.iter().any(|record| {
                 cells.iter().any(|cell| {
                     record
@@ -1679,7 +1689,7 @@ impl ServerHost {
                         .is_some_and(|v| keys.key(&v).as_ref() == Some(&key))
                 })
             })
-        })
+        }))
     }
 
     /// Whether a record other than `record` holds `text` in a repetition
@@ -1951,7 +1961,10 @@ impl ServerHost {
                 return Err(related_list_refused());
             }
             if let Some((occurrence, source)) = plan.value_list_field(cell, entry) {
-                if !self.field_holds(occurrence, source, text) {
+                let holds = self
+                    .field_holds(occurrence, source, text)
+                    .ok_or_else(unkeyed_list_refused)?;
+                if !holds {
                     info!(
                         "{:?}: Set Field refused: field {} must hold a value of its value list",
                         self.hosted.name, field.field
@@ -2435,6 +2448,14 @@ fn rule_error(error: &DataError) -> HostError {
 /// OpenMaker Server does not compute for a written record.
 fn related_list_refused() -> HostError {
     HostError::Error(ErrorCode(rules::error::UNAVAILABLE))
+}
+
+/// A value list of a field's values whose field is indexed in a language
+/// OpenMaker does not key (#571): the value is not looked up. Set Field
+/// reports it as error 3; an import ends at its row rather than skipping
+/// it (`transfer_error`), unlike a row's ordinary error 3.
+fn unkeyed_list_refused() -> HostError {
+    HostError::Unsupported
 }
 
 /// Today in the server's time zone.

@@ -4697,16 +4697,37 @@ fn in_range(data_type: DataType, text: &str, from: &str, to: &str, cx: &Ctx) -> 
     within(from, CompareOp::Ge) && within(to, CompareOp::Le)
 }
 
-/// Whether an entered value is a value list's value: text compares as an
-/// index key (case and accents as an English index folds them: `mr.` is
-/// `Mr.`, script oracle s18), other types by value.
-/// Whether `text`, a value of a field of `data_type`, is the list value
-/// `listed`, as a value list check compares them (script-runtime.md 13.21:
-/// text as English index keys, other types by value).
-pub fn same_list_value(data_type: DataType, listed: &str, text: &str, cx: &Ctx) -> bool {
-    same_entry(data_type, listed, text, cx)
+/// Whether `text`, a value of a field of `data_type`, is the value `listed`
+/// of a list of a field's values, as a value list check compares them
+/// (script-runtime.md 13.21): other types by value, text as the list's
+/// field keys it in its index, `keys` (its index language's form,
+/// [`value_text_keys`]; case does not matter in English, script oracle
+/// s18). `None` when they compare as text and the field's language has no
+/// form OpenMaker builds (`keys` `None`, the tailored ones, #299): English
+/// keys could both miss its value and match another (#571).
+pub fn same_list_value(
+    data_type: DataType,
+    listed: &str,
+    text: &str,
+    cx: &Ctx,
+    keys: Option<om_query::keys::TextKeys>,
+) -> Option<bool> {
+    match (
+        data_type,
+        typed(data_type, listed, cx),
+        typed(data_type, text, cx),
+    ) {
+        (DataType::Text, ..) | (_, None, _) | (_, _, None) => {
+            let keys = keys?;
+            Some(keys.whole_key(listed) == keys.whole_key(text))
+        }
+        (_, Some(a), Some(b)) => Some(ops::compare_op(&a, CompareOp::Eq, &b, cx).is_true(cx)),
+    }
 }
 
+/// Whether an entered value is a custom value list's value: text compares
+/// as an English index key (case and accents folded: `mr.` is `Mr.`,
+/// script oracle s18), other types by value.
 fn same_entry(data_type: DataType, listed: &str, text: &str, cx: &Ctx) -> bool {
     match (
         data_type,
