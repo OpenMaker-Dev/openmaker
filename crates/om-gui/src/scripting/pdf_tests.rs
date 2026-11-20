@@ -1392,6 +1392,11 @@ fn sliding_left_closes_up_a_line_of_fields() {
     assert!(render(&layout(line(LEFT), 4), "Ada\rKing")
         .unwrap_err()
         .contains("more than one line"));
+    // So does one whose one line is wider than the field (it would wrap),
+    // whatever its text's colour.
+    assert!(render(&layout(line(LEFT), 4), &"Ada King ".repeat(6))
+        .unwrap_err()
+        .contains("more than one line"));
 }
 
 #[test]

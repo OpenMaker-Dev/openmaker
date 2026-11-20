@@ -64,9 +64,11 @@ summary) is laid out on its own:
   inferred from it; no FileMaker output with a sliding-left object was
   compared:
   - a field set to slide left narrows to the width its text needs on one
-    line, its padding included (an empty one to nothing, painting nothing);
-    a container's frame keeps its width, and other objects move but never
-    narrow;
+    line (its glyphs' advances, or the last glyph's ink where it reaches
+    further), its padding included; an empty field, an empty container
+    field among them, collapses to nothing and paints nothing, as one that
+    slides up does; a container field holding data keeps its width; other
+    objects move but never narrow;
   - an object set to slide left moves left by the least that its nearest
     objects on its left on the same line (overlapping it vertically) moved
     and narrowed, so the gaps between them stay; an object that does not
@@ -105,8 +107,9 @@ file is staged or job spooled. Preview shows the reason instead of a page.
   footer: Claris says only that those never slide up.
 - A part where objects slide both left and up (or one object does both):
   which FileMaker applies first is unmeasured.
-- A field that slides left whose text takes more than one line: how a field
-  of several lines narrows is unmeasured.
+- A field that slides left whose text takes more than one line, or is wider
+  than the field (so that it would wrap): how a field of several lines
+  narrows is unmeasured.
 - An object that slides (up or left) in a part that holds an object hidden
   when printing or one beyond the printable width: whether FileMaker lets it
   slide into the space of what is left out is unmeasured.
@@ -146,9 +149,8 @@ file is staged or job spooled. Preview shows the reason instead of a page.
   (`SlideDeltaCalculator::GetSlideDV`) compares edges with 4-point margins
   whose role is not decoded, so objects within 4 points of each other may
   slide differently natively.
-- Sliding left, repeating-field repetitions, portal row omission, panel
-  controls, merge-field line collapse and part page breaks are not
-  implemented.
+- Repeating-field repetitions, portal row omission, panel controls,
+  merge-field line collapse and part page breaks are not implemented.
 
 Native parity is **unmeasured**: no FileMaker output was compared. The
 "nearest objects" reading of *All objects above* and *Only objects directly

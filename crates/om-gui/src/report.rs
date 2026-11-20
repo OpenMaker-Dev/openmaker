@@ -2991,10 +2991,12 @@ fn part_objects<'s, 'a>(
         left_nearest[o] = candidates
             .iter()
             .copied()
+            // Separated by another such object further right; ties go by
+            // the order, so two at the same place do not cancel out.
             .filter(|&c| {
-                !candidates
-                    .iter()
-                    .any(|&b| b != c && rects[c].right <= rects[b].left + SLIDE_EPSILON)
+                !candidates.iter().any(|&b| {
+                    left_rank[c] < left_rank[b] && rects[c].right <= rects[b].left + SLIDE_EPSILON
+                })
             })
             .collect();
         left_colliders[o] = candidates;
@@ -3147,30 +3149,54 @@ fn on_page(object: &LayoutObject, page: usize) -> std::borrow::Cow<'_, LayoutObj
 }
 
 /// The width `value` needs in a box styled `style` on one line: its glyphs'
-/// advances and the box's side padding, with a hair to spare so that it is
-/// not cut; nothing for an empty value. A value of more than one line
-/// refuses: how FileMaker narrows a field of several lines is unmeasured.
-fn one_line_width(id: u64, value: &str, style: &ResolvedStyle) -> Result<f64, ReportError> {
+/// advances, or the last glyph's ink where it reaches further, and the
+/// box's side padding, with a hair to spare; nothing for an empty value.
+/// It is measured in an opaque copy of the style, so text of any colour
+/// counts. A value that would take more than one line in `width`, the
+/// field's own width, refuses: how FileMaker narrows (or does not narrow)
+/// a field of several lines is unmeasured.
+fn one_line_width(
+    id: u64,
+    value: &str,
+    style: &ResolvedStyle,
+    width: f64,
+) -> Result<f64, ReportError> {
     if value.is_empty() {
         return Ok(0.0);
     }
+    let mut opaque = style.clone();
+    opaque.color = Some(Color {
+        alpha: 1.0,
+        ..Default::default()
+    });
     let wide = Rect {
         right: 1.0e9,
         bottom: 1.0e9,
         ..Default::default()
     };
-    let (lines, _, _) = prepare_text_in(value, &wide, style, Overflow::Clip)?;
-    if lines.len() > 1 {
+    let (lines, _, _) = prepare_text_in(value, &wide, &opaque, Overflow::Clip)?;
+    let mut needed = 0.0f64;
+    for line in &lines {
+        let face = line.face.face();
+        let unit = line.size / f64::from(face.units_per_em());
+        let mut pen = 0.0;
+        for (glyph, advance, _) in &line.glyphs {
+            let ink = face
+                .glyph_bounding_box(ttf_parser::GlyphId(*glyph))
+                .map_or(0.0, |b| f64::from(b.x_max) * unit);
+            needed = needed.max(pen + advance).max(pen + ink);
+            pen += advance;
+        }
+    }
+    let pad = style.padding.map(|p| p.unwrap_or(0.0));
+    let needed = needed + pad[1] + pad[3] + 0.01;
+    if lines.len() > 1 || needed > width + SLIDE_EPSILON {
         return Err(ReportError::unsupported(format!(
             "Report field {id} slides left with more than one line of text; \
              how a field of several lines narrows is unmeasured"
         )));
     }
-    let used: f64 = (lines.iter().flat_map(|line| &line.glyphs))
-        .map(|glyph| glyph.1)
-        .sum();
-    let pad = style.padding.map(|p| p.unwrap_or(0.0));
-    Ok(used + pad[1] + pad[3] + 0.01)
+    Ok(needed)
 }
 
 /// Lay out one part for one record and page, sliding objects up as
@@ -3250,7 +3276,7 @@ fn layout_part(
             (&value, part.left[i], object.kind(), &container)
         {
             let rect = &part.rects[i];
-            narrow[i] = rect.width() - one_line_width(object.id, value, style)?.min(rect.width());
+            narrow[i] = rect.width() - one_line_width(object.id, value, style, rect.width())?;
         }
         values.push(value);
         data.push(container);
@@ -3316,7 +3342,8 @@ fn layout_part(
         let (left, right) = (rect.left - shift[i], rect.right - shift[i] - narrow[i]);
         // An empty shrinking or narrowing field collapses: no frame, fill
         // or borders.
-        if (shrink[i] > 0.0 && bottom <= top) || (narrow[i] > 0.0 && right <= left) {
+        if (shrink[i] > 0.0 && bottom <= top) || (narrow[i] > 0.0 && right <= left + SLIDE_EPSILON)
+        {
             continue;
         }
         let bounds = Rect {
