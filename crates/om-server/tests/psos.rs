@@ -645,10 +645,15 @@ fn server_scripts_apply_the_files_record_rules() {
 /// value list of a field's values, that field indexed in a language
 /// OpenMaker does not key (German, 25, #299): refused with 3, with the
 /// index or without, rather than keyed in English, which would accept
-/// "Ship" here (#571).
+/// "Ship" here (#571). The index holds the key FileMaker built for record
+/// 2's "Ship" (alike in English and German), which English keys would
+/// find.
 #[test]
 fn a_value_list_of_a_field_in_an_unkeyed_language_refuses_the_check() {
     use fixture::{exit_with, go_to_record, on, script, set_field, set_variable};
+    use om_query::keys::{record_value_entries, TextKeys};
+    let index_path = [uint_segment(TABLE), vec![1], uint_segment(NAME), vec![0]];
+    let index_path: Vec<&[u8]> = index_path.iter().map(Vec::as_slice).collect();
     for indexed in [false, true] {
         let mut tree = fixture::tree(
             &[script(
@@ -667,10 +672,29 @@ fn a_value_list_of_a_field_in_an_unkeyed_language_refuses_the_check() {
         );
         if indexed {
             fixture::set_field_options(&mut tree, TABLE, NAME, 0x8000_0000);
+            let ship = record_value_entries(
+                om_hbam::catalog::DataType::Text,
+                &["Ship".to_owned()],
+                om_collate::DateOrder::MonthDayYear,
+                TextKeys::Collated,
+            );
+            for key in ship {
+                let records: om_hbam::RidList = [2].into_iter().collect();
+                let mut path = index_path.clone();
+                path.push(&key);
+                tree.put(&path, records.to_node(Vec::new()));
+            }
         }
         fixture::set_field_language(&mut tree, TABLE, NAME, 25);
         fixture::code_in_names_list(&mut tree);
         let file = TempFile::from_tree("list-language", &tree);
+        let on_disk = om_hbam::HbamFile::open(&file.0).unwrap();
+        let index = on_disk.subtree(&index_path).unwrap();
+        assert_eq!(
+            index.is_some_and(|i| !i.children.is_empty()),
+            indexed,
+            "the index as the server opens it"
+        );
         let port = start(&file, None);
         let mut client = logged_in(port, "list-language");
         assert_eq!(run(&mut client, 4), (0, "3".into()), "indexed={indexed}");

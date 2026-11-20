@@ -621,10 +621,11 @@ pub fn code_in_names_list(root: &mut OwnedNode) {
     );
     root.put(&[&[0x21], &[5], &[5], &[0x10]], text_node(&[], "Names"));
     // Kind 1: Tasks::Name (occurrence d0 00 01, field 1), no second field.
-    let mut list = vec![
-        1, 0, 0, 4, 3, 0xd0, 0, 1, 2, 1, 1, 0, 1, 0, 0, 0, 0, 0, 0, 0,
+    // Then the counted separator text " " (one unit, SCSU as ASCII),
+    // spelled out: om-author includes this fixture without om-scsu.
+    let list = vec![
+        1, 0, 0, 4, 3, 0xd0, 0, 1, 2, 1, 1, 0, 1, 0, 0, 0, 0, 0, 0, 0, 1, b' ',
     ];
-    list.extend(om_scsu::encode_counted(" "));
     root.put(
         &[&[0x21], &[5], &[5], &[2]],
         OwnedNode::leaf(Vec::new(), list),

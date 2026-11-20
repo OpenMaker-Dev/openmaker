@@ -380,6 +380,7 @@ impl NativeProvider {
         let schema = plan.schema();
         let today = om_data::host::session::today(0);
         let cx = Ctx::new(&schema.locale, today);
+        let file_language = u32::from(schema.locale.language.id());
         let types = schema.table(table.id);
         let mut draft = RecordValues::default();
         for (cell, text) in &row {
@@ -627,10 +628,30 @@ impl NativeProvider {
             let data_type = table
                 .field(field)
                 .map_or(om_hbam::catalog::DataType::Text, |f| f.data_type);
-            let listed = items
-                .iter()
-                .any(|item| om_data::rules::same_list_value(data_type, &item.value, &text, &cx));
-            if !listed {
+            // Text compares as the list's field keys it (#571); that field
+            // is this file's (another file's occurrence has no definition
+            // here and was refused above).
+            let keys = schema
+                .field(primary, listed)
+                .and_then(|def| om_data::rules::value_text_keys(def.language, file_language));
+            let mut found = false;
+            for item in &items {
+                match om_data::rules::same_list_value(data_type, &item.value, &text, &cx, keys) {
+                    Some(true) => {
+                        found = true;
+                        break;
+                    }
+                    Some(false) => {}
+                    None => {
+                        return Err(not_checked(
+                            &name,
+                            "its list's field is indexed in a language whose keys OpenMaker \
+                             does not build",
+                        ))
+                    }
+                }
+            }
+            if !found {
                 return Err(plan.refusal(field, error::NOT_IN_LIST));
             }
         }

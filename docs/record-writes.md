@@ -765,8 +765,10 @@ checked by the desktop at the commit (`om-provider` `related_lists.rs`).
 - **How:** the list is computed as a choice list computes it
   (`FileCalc::value_list_entries`, with the session's global values) for
   the record as the write leaves it. A changed value not among its values
-  is refused with 506. Text compares as English index keys, other types by
-  value, as for a list of one field's values.
+  is refused with 506. Text compares as the list's field keys it in its
+  value index, its index language's form; a field indexed in a tailored
+  language refuses the check with 3 rather than compare in English, where
+  `Apfel` would be `Äpfel` ([#571](https://github.com/OpenMaker-Dev/openmaker/issues/571)). Other types compare by value.
 - **An existing record** is among its own related records with its
   unsaved values, as F91 saw for a related list FileMaker Pro shows. That
   validation reads the same list is inferred.
@@ -1373,10 +1375,14 @@ values that share its first 109 weights, or code units in Unicode raw ([#177](ht
 Raw keys keep case, so `A` and `a` are two values there; FileMaker documents
 its Unicode index as case-sensitive, which was not measured.
 A value list of a field's values is checked in its source field's value
-index the same way: a source field in a tailored language refuses the
-check with 3, on the client and on OpenMaker Server, rather than keying
-the value in English, which could both miss the host's key and match
-another value ([#571](https://github.com/OpenMaker-Dev/openmaker/issues/571)).
+index the same way: a text source field in a tailored language refuses
+the check with 3, on the client and on OpenMaker Server, rather than
+keying the value in English, which could both miss the host's key and
+match another value ([#571](https://github.com/OpenMaker-Dev/openmaker/issues/571)). A number, date, time or timestamp
+source is still looked up as text, whatever its language. A new record's
+refusal before its commit (unique, existing value, value list) is the
+write's, with its code: the record id it reserved stays unused, as
+FileMaker's reserved ids can (write-path.md 2).
 A definition marked indexed does not prove that the host has built the
 index (schema-path.md 6). Unique, Existing and
 field-backed value-list validation therefore read the value-index counts

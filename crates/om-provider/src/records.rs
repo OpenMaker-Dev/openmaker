@@ -257,30 +257,33 @@ pub(super) fn checked_keys(
 /// How the value index of `table`'s `field`, the source of a value list,
 /// keys a value looked up in it: its value form
 /// ([`om_data::rules::value_text_keys`], language 0 the file's own). A
-/// language OpenMaker does not key (the tailored ones, #299) refuses the
-/// check (3), as a unique or existing-value check does, rather than keying
-/// the value in English, which can both miss the host's key and match
-/// another value (#571).
+/// text field in a language OpenMaker does not key (the tailored ones,
+/// #299) refuses the check (3), as a unique or existing-value check does,
+/// rather than keying the value in English, which can both miss the host's
+/// key and match another value (#571). Other types are keyed as text, as
+/// before: their typed keys do not depend on the language.
 fn list_keys(
     catalog: &Catalog,
     table: u64,
     field: u64,
     file_language: u32,
 ) -> Result<TextKeys, DataError> {
-    catalog
-        .table(table)
-        .and_then(|t| t.field(field))
+    let field_def = catalog.table(table).and_then(|t| t.field(field));
+    let keys = field_def
         .and_then(|f| f.decoded_options())
-        .and_then(|o| om_data::rules::value_text_keys(o.index_language(), file_language))
-        .ok_or_else(|| {
-            DataError::with_code(
-                om_data::found::code::UNSUPPORTED,
-                format!(
-                    "Field {field}, the source of a value list, has no index OpenMaker can check \
+        .and_then(|o| om_data::rules::value_text_keys(o.index_language(), file_language));
+    if field_def.is_some_and(|f| f.data_type != om_hbam::catalog::DataType::Text) {
+        return Ok(keys.unwrap_or(TextKeys::Collated));
+    }
+    keys.ok_or_else(|| {
+        DataError::with_code(
+            om_data::found::code::UNSUPPORTED,
+            format!(
+                "Field {field}, the source of a value list, has no index OpenMaker can check \
                      a value in."
-                ),
-            )
-        })
+            ),
+        )
+    })
 }
 
 /// ExistsInIndex's answer, `[3, 3, 00]` = `01 01` (another record holds the
@@ -1352,9 +1355,12 @@ impl NativeProvider {
             _ => None,
         }
         .ok_or_else(|| DataError::new("The server returned an invalid record ID."))?;
+        // A refusal before the commit leaves only a reserved id, which no
+        // record uses (write-path.md 2): it is the write's refusal, with its
+        // code, not a record created and unverified.
+        self.check_unique(table, plan.unique_fields_for(entry), &values, record, txn)?;
+        self.check_lookups(table, plan, entry, &values, record)?;
         (|| {
-            self.check_unique(table, plan.unique_fields_for(entry), &values, record, txn)?;
-            self.check_lookups(table, plan, entry, &values, record)?;
             // A new record has no modification count (write-path.md 5.4).
             let mut node = OwnedNode::list(serial::encode(record), Vec::new());
             apply_values(&mut node, values.clone());

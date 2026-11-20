@@ -41,7 +41,11 @@
 //! imported value (empty too). Validation set to "always" is checked and a
 //! row that fails is not imported; the step then ends with error 729 after
 //! importing the others. "Only during data entry" validation is not
-//! checked. Values are stored as the source spells them, except dates with
+//! checked. A row the host refuses as one it cannot check or write
+//! (error 3, a rule OpenMaker does not support) ends the import there with
+//! error 3 instead: counting it as a skipped row would report an
+//! unsupported check as the row's validation failure (729) and keep the
+//! others. Values are stored as the source spells them, except dates with
 //! a year of less than four digits, which are stored completed
 //! (`1/1/24` is `01/01/2024`).
 //!
@@ -96,7 +100,8 @@ pub trait ImportTarget {
 
     /// Make a record with `writes`, applying auto-entry to the other fields
     /// when `auto_enter` and the "always" validation of the record. `Err`
-    /// refuses the row (its code is reported).
+    /// refuses the row (its code is reported); one with code 3
+    /// ([`code::UNAVAILABLE`]) ends the import (module docs).
     fn create(
         &mut self,
         occurrence: u64,
@@ -406,6 +411,19 @@ pub fn import_rows(
         out
     };
     let mut found = Vec::new();
+    // A row's error is kept for the summary, except one that ends the
+    // import (module docs).
+    let refused = |summary: &mut ImportSummary, index: usize, e: TransferError| {
+        if e.code == code::UNAVAILABLE {
+            return Err(e);
+        }
+        summary.errors.push(RowError {
+            row: first_row + index,
+            code: e.code,
+            message: e.message,
+        });
+        Ok(())
+    };
     let add = |target: &mut dyn ImportTarget,
                summary: &mut ImportSummary,
                found: &mut Vec<RecordId>,
@@ -415,12 +433,9 @@ pub fn import_rows(
             Ok(id) => {
                 summary.added += 1;
                 found.push(id);
+                Ok(())
             }
-            Err(e) => summary.errors.push(RowError {
-                row: first_row + index,
-                code: e.code,
-                message: e.message,
-            }),
+            Err(e) => refused(summary, index, e),
         }
     };
     match options.action {
@@ -430,7 +445,7 @@ pub fn import_rows(
                     return Err(crate::interrupted());
                 }
                 let writes = writes_of(row, true, false);
-                add(target, &mut summary, &mut found, i, &writes);
+                add(target, &mut summary, &mut found, i, &writes)?;
             }
         }
         ImportAction::UpdateFoundSet => {
@@ -444,16 +459,12 @@ pub fn import_rows(
                         let writes = writes_of(row, true, true);
                         match target.update(occurrence, record, &writes, auto_enter) {
                             Ok(()) => summary.updated += 1,
-                            Err(e) => summary.errors.push(RowError {
-                                row: first_row + i,
-                                code: e.code,
-                                message: e.message,
-                            }),
+                            Err(e) => refused(&mut summary, i, e)?,
                         }
                     }
                     None if add_remaining => {
                         let writes = writes_of(row, true, false);
-                        add(target, &mut summary, &mut found, i, &writes);
+                        add(target, &mut summary, &mut found, i, &writes)?;
                     }
                     None => break,
                 }
@@ -509,7 +520,7 @@ pub fn import_rows(
                 if matches.is_empty() {
                     if add_remaining {
                         let writes = writes_of(row, true, false);
-                        add(target, &mut summary, &mut found, i, &writes);
+                        add(target, &mut summary, &mut found, i, &writes)?;
                     }
                     continue;
                 }
@@ -524,11 +535,7 @@ pub fn import_rows(
                                 found.push(record);
                             }
                         }
-                        Err(e) => summary.errors.push(RowError {
-                            row: first_row + i,
-                            code: e.code,
-                            message: e.message,
-                        }),
+                        Err(e) => refused(&mut summary, i, e)?,
                     }
                 }
             }

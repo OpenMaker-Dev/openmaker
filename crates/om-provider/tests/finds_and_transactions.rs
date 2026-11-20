@@ -2508,9 +2508,11 @@ fn transaction_options_skip_auto_enter_and_data_entry_validation() {
 /// S::Count, compared by value; Mark one of S::Shout, an unstored
 /// calculation computed on each related record (#1058), the written
 /// record's over the values the write gives it; Owner one of S::Who,
-/// `Get ( AccountName )`, this session's account. While a transaction holds
-/// a record of another table, which such a calculation could read only as
-/// stored, Commit Transaction refuses (3).
+/// `Get ( AccountName )`, this session's account; Word one of S::German,
+/// text indexed in German, whose keys OpenMaker does not build: refused
+/// (3) rather than compared in English, where `Apfel` is `Äpfel` (#571).
+/// While a transaction holds a record of another table, which such a
+/// calculation could read only as stored, Commit Transaction refuses (3).
 #[test]
 fn a_related_value_list_is_computed_for_the_written_record() {
     const SELF_JOIN: u64 = 0xd0_0009;
@@ -2519,6 +2521,8 @@ fn a_related_value_list_is_computed_for_the_written_record() {
     const NUM: u64 = 35;
     const WHO: u64 = 36;
     const OWNER: u64 = 37;
+    const GERMAN: u64 = 38;
+    const WORD: u64 = 39;
     let mut root = fixture::tree(&[], true);
     let mut names = fixture::names();
     names.add_field(TABLE, SHOUT, "Shout");
@@ -2531,6 +2535,9 @@ fn a_related_value_list_is_computed_for_the_written_record() {
     let who = "Get ( AccountName )";
     fixture::add_formula(&mut root, &names, (TABLE, OCCURRENCE), WHO, 5, who);
     fixture::add_field(&mut root, TABLE, OWNER, "Owner", 1, 1, 0, 0, 0x100);
+    fixture::add_field(&mut root, TABLE, GERMAN, "German", 1, 1, 0, 0, 0);
+    fixture::set_field_language(&mut root, TABLE, GERMAN, 25);
+    fixture::add_field(&mut root, TABLE, WORD, "Word", 1, 1, 0, 0, 0x100);
     fixture::add_occurrence(&mut root, SELF_JOIN, "S", TABLE);
     fixture::add_relationship(&mut root, 12, (OCCURRENCE, COUNT), 0, (SELF_JOIN, COUNT));
     fixture::set_field_validation(&mut root, TABLE, CODE, 0x100);
@@ -2554,6 +2561,7 @@ fn a_related_value_list_is_computed_for_the_written_record() {
         (7u8, "Shouts", SHOUT, MARK),
         (8, "Counts", COUNT, NUM),
         (9, "Accounts", WHO, OWNER),
+        (10, "Germans", GERMAN, WORD),
     ] {
         root.put(&[&[0x21], &[5], &[list], &[0x10]], text_node(&[], name));
         root.put(&[&[0x21], &[5], &[list], &[2]], related(listed as u8));
@@ -2579,6 +2587,11 @@ fn a_related_value_list_is_computed_for_the_written_record() {
         code(a.update_record(tasks, 2, values(&[("Code", "Write tests")]))),
         Err(Some(506))
     );
+    let refused = a
+        .update_record(tasks, 2, values(&[("German", "Äpfel"), ("Word", "Apfel")]))
+        .unwrap_err();
+    assert_eq!(refused.code, Some(3), "{refused:?}");
+    assert!(refused.message.contains("language"), "{refused:?}");
     // With Count 3 as written, record 1 ("Write tests", Count 3) is related.
     assert_eq!(
         code(a.update_record(tasks, 2, values(&[("Count", "3"), ("Code", "Write tests")]))),

@@ -1639,16 +1639,21 @@ impl ServerHost {
     /// value index when it has one, else its stored values, as committed.
     /// Text compares as index keys, so case does not matter in English
     /// (script oracle s18); keyed as the field's index keys it. `None` when
-    /// OpenMaker has no key form for its index language (the tailored
-    /// ones, #299): the check is then refused (3) rather than keyed in
-    /// English, which can both miss the index's key and match another
-    /// value (#571).
+    /// a text field's index language has no key form OpenMaker builds (the
+    /// tailored ones, #299): the check is then refused (3) rather than
+    /// keyed in English, which can both miss the index's key and match
+    /// another value (#571). Other types are keyed as text, as before:
+    /// their typed keys do not depend on the language.
     fn field_holds(&self, occurrence: u64, field: u64, text: &str) -> Option<bool> {
         let Some((table, def)) = self.schema.field(occurrence, field) else {
             return Some(false);
         };
         let keys = FieldOptions::decode(&def.options)
-            .and_then(|o| rules::value_text_keys(o.index_language(), self.file_language()))?;
+            .and_then(|o| rules::value_text_keys(o.index_language(), self.file_language()));
+        let keys = match def.data_type {
+            DataType::Text => keys?,
+            _ => keys.unwrap_or(TextKeys::Collated),
+        };
         let key = keys.key(text).unwrap_or_default();
         let store = self.hosted.read_store();
         let (t, f) = (uint_segment(table), uint_segment(field));
