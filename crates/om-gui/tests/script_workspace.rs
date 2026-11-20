@@ -830,7 +830,7 @@ fn import_records_source_and_order_are_specified_and_stored() {
     common::wait_for_label(&mut app, "Specify File");
     app.get_by_label("File Path List").focus();
     app.get_by_label("File Path List")
-        .type_text(&format!("filelinux:{}", source.display()));
+        .type_text(&common::file_line(&source));
     app.run_steps(2);
     // The file dialog's OK, above the options'.
     app.query_all_by_label("OK").last().unwrap().click();
@@ -869,7 +869,7 @@ fn import_records_source_and_order_are_specified_and_stored() {
     assert!(step.has_flag(om_data::scripts::flag::RESTORE));
     assert_eq!(
         step.path_list().as_deref(),
-        Some(format!("filelinux:{}", source.display()).as_str())
+        Some(common::file_line(&source).as_str())
     );
     let leaf = |key: u8| {
         om_data::scripts::node_bytes(step.data_leaf(key).unwrap())

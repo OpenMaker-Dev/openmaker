@@ -1250,8 +1250,8 @@ writes `0x800000` for year 0, then the number key of
 
 A find for `12:30 PM` on a time field reads the range [`80 00 00 80 05 56
 11 10`, `80 00 00 80 05 56 16 aa aa aa a0`], the whole minute up to
-45,059.9999999 s (the finder FileMaker Server's engine built for that
-find, traced in the probe).
+45,059.999999 s, its last microsecond (the finder FileMaker Server's engine
+built for that find, traced in the probe).
 
 **Timestamp (High).** The 3-byte date part, then the number key of the
 seconds since midnight: 2026-10-27 21:26:57 = `9f aa 9b | 80 05 88 32 80`
@@ -1669,8 +1669,9 @@ values, not the value index: live:proj_ts keys ModificationTimestamp, which
 has no index. When the requested type is the field's own type and the
 language gives the index's form, the output equals the value index inverted
 (record -> keys) without its empty-value key `01`; om-query answers that case
-from the index and reports the others (conversions, unindexed fields, other
-languages) as unsupported until it can key stored values.
+from the index, keys text in System and Unicode standard and unindexed text
+fields from the stored values, and reports the others (conversions, other
+unindexed fields, other languages) as unsupported.
 
 ### 9.2 JoinProjection, op 12: full semantics (High)
 
@@ -1708,6 +1709,10 @@ Multi-key and multi-row cases: jp_two_keys (two keys under B, one matching)
 {1}; jp_two_rows (one matching row, one not) {1}; jp_two_preds_hit
 (PK = K and Company = empty) {1}; jp_two_preds_miss (Company = "A") {};
 jp_company_emptykey (Company = `01`) {1,2,3}; jp_pk_miss, jp_empty_src {}.
+Whether `≠` and the inequalities list the records under the empty value's
+key `01` is not measured on the host; a relationship never relates an empty
+value (file-metadata.md 4, observed), and om-query leaves `01` out of
+those ranges while `=` matches it.
 
 Not observed: `25` KFilter and `0a` KOperand1, which `JoinProjection` reads
 when present (bin @0xfc90c0; by name, a relationship filter and its operand;
@@ -1961,7 +1966,14 @@ the value indexes of First Name, Company and PK (`dl_*`).
    Thai and Greek-mixed tailorings, the Chinese, Chinese-stroke and Korean
    tables and the Japanese weights of kanji outside JIS X 0208 level 1;
    whether System (1) follows the machine's language; language 77, which
-   FMUpgradeTool would not create. The full word-break rules (7.1). The
+   FMUpgradeTool would not create. In the padded form, the secondary
+   weights of the weights FileMaker gives unlisted code points: no probe
+   value mixed them with accents, so whether each weight adds a secondary
+   byte is not known. The keys of the characters DUCET lists with UCA's
+   implicit weights, other than the compatibility ideographs that have a
+   canonical decomposition: Kangxi and CJK radicals, circled and
+   parenthesized ideographs, and the twelve unified ideographs in
+   U+FA0E..U+FA29, which have no decomposition. The full word-break rules (7.1). The
    cut of long keys in every form (7.1) and `IncludeTooLong` (6.3) are
    solved; three FileMaker Pro long-criterion wire requests are captured
    (6.4), but its finders were not replayed against FileMaker Server with

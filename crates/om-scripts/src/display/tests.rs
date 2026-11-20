@@ -26,7 +26,7 @@ impl Contacts {
         Self {
             names,
             layouts: HashMap::from([(3, ("Contact Details", "Contacts"))]),
-            scripts: HashMap::from([(2, "Go to Entry Field")]),
+            scripts: HashMap::from([(2, "Go to Entry Field"), (3, "Import from file: CSV")]),
         }
     }
 }
@@ -454,13 +454,59 @@ fn psos_canonical_names_have_a_real_calculation_span() {
         schema.params[name.parameter.unwrap()].name,
         "Specify by name"
     );
-    // Callback steps retain their existing name in slot 1 and callback
-    // in slot 2; these are not PSOS's canonical by-name layout.
-    step.opcode = 210;
-    step.set_calculation(1, Some(&calc(&names, "\"Server\"")));
-    assert!(step_line(&step, &names)
-        .text
-        .contains("Specified: By name ; \"Server\""));
+}
+
+#[test]
+fn psos_callback_reads_and_writes_the_slots_filemaker_stores() {
+    // The slots of #188's two FileMaker Pro 26.0.3 variants: the callback
+    // from the list (script 2 as the literal "02" in slot 3, `kOption`)
+    // and by name (`[00 6]` = 1, slot 7), which keeps that slot 3.
+    let names = Contacts::new();
+    let mut step = ScriptStep::new(210);
+    step.set_list_value(1, Some(1));
+    step.flags |= flag::STORE_REFERENCE | flag::RESTORE;
+    step.set_calculation(2, Some(&calc(&names, "\"Server\"")));
+    step.set_calculation(0, Some(&calc(&names, "\"ServerMarker\"")));
+    step.set_calculation(3, Some(&calc(&names, "\"02\"")));
+    step.set_calculation(4, Some(&calc(&names, "\"CallbackMarker\"")));
+    step.flags |= flag::OPTION | flag::OPTION2 | flag::MENU_SELECTION;
+    step.value = 3;
+    let text = step_text(&step, &names);
+    assert_eq!(
+        text,
+        "Perform Script on Server with Callback [ Specified: By name ; \"Server\" ; \
+         Parameter: \"ServerMarker\" ; Callback script specified: From list ; \
+         “Go to Entry Field” ; Callback script parameter: \"CallbackMarker\" ; \
+         State: Resume ]"
+    );
+    assert_eq!(canonical(&pasted(&text)), canonical(&step), "{text}");
+
+    step.set_list_value(6, Some(1));
+    step.set_calculation(7, Some(&calc(&names, "\"Other\"")));
+    step.flags |= flag::SELECT_ALL | flag::EXIT;
+    let text = step_text(&step, &names);
+    assert!(
+        text.contains(
+            "Callback script specified: By name ; \"Other\" ; \
+             Callback script parameter: \"CallbackMarker\" ;"
+        ),
+        "{text}"
+    );
+    // The stale slot 3 is not shown; the text keeps it as stored.
+    assert_eq!(canonical(&pasted(&text)), canonical(&step), "{text}");
+
+    // A script of this file whose name holds " from file: " is not
+    // another file's.
+    let mut local = ScriptStep::new(210);
+    local.set_script_key(StoredKey::from_serial_id(2));
+    local.set_calculation(3, Some(&calc(&names, "\"03\"")));
+    local.flags |= flag::OPTION;
+    let text = step_text(&local, &names);
+    assert!(
+        text.contains("From list ; “Import from file: CSV”"),
+        "{text}"
+    );
+    assert_eq!(canonical(&pasted(&text)), canonical(&local), "{text}");
 }
 
 #[test]
@@ -560,10 +606,16 @@ fn pasted_text_stores_what_filemaker_shows() {
         "Truncate Table [ With dialog: On ; Table: “Contacts” ]",
         "Import Records [ With dialog: On ; Source: “file:a.csv” ]",
         "New Window [ Style: Card ; Name: \"c\" ]",
+        "Go to List of Records [ List of record IDs: \"1¶2\" ; Using layout: “Contact Details” (Contacts) ; New window ]",
     ];
     for line in lines {
         assert_eq!(shown(&pasted(line)), line);
     }
+    // Go to List of Records: the ids in slot 7, a new window under
+    // `kTurnOn` (script-steps.md 12.2).
+    let list = pasted(lines[10]);
+    assert!(list.calculation(7).is_some() && list.calculation(0).is_none());
+    assert!(list.has_flag(flag::TURN_ON) && !list.has_flag(flag::OPTION));
     // Insert Text's text is slot 0.
     let text = pasted(lines[0]);
     assert_eq!((text.text(0).as_deref(), text.text(1)), (Some("x"), None));
@@ -643,6 +695,29 @@ fn lines_that_do_not_read_are_kept_as_disabled_comments() {
         panic!("{:?}", pasted[2]);
     };
     assert_eq!(layout.member_key().and_then(|k| k.id()), Some(3));
+    // A step OpenMaker cannot yet edit or run is not made from text or
+    // XML (#338).
+    for text in [
+        "Set Variable by Name",
+        r#"<fmxmlsnippet type="FMObjectList"><Step id="249" name="Replace Field Contents by Name"/></fmxmlsnippet>"#,
+    ] {
+        let pasted = parse_steps(text, &names, Origin::Unknown).unwrap();
+        assert!(
+            matches!(&pasted[..], [Pasted::Failed { reason, .. }] if reason.contains("cannot make")),
+            "{pasted:?}"
+        );
+    }
+    // Its text as OpenMaker writes it, stored bytes included, reads back.
+    let mut stored = ScriptStep::new(250);
+    stored.set_calculation(3, Some(&calc(&names, "\"$x\"")));
+    let text = step_text(&stored, &names);
+    for origin in [Origin::ThisFile, Origin::Unknown] {
+        let pasted = parse_steps(&text, &names, origin).unwrap();
+        assert!(
+            matches!(&pasted[..], [Pasted::Step(step)] if step.id() == 250),
+            "{text}: {pasted:?}"
+        );
+    }
     let comment = failed_comment("Not a step");
     assert!(!comment.is_enabled());
     assert_eq!(comment.text(0).as_deref(), Some("Not a step"));

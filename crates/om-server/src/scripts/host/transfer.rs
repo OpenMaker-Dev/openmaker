@@ -131,7 +131,7 @@ impl ServerHost {
         };
         if matches!(
             profile.file_type,
-            FileType::FileMaker | FileType::Folder | FileType::Odbc | FileType::Excel2003
+            FileType::FileMaker | FileType::Folder | FileType::Odbc
         ) {
             return Err(HostError::Unsupported);
         }
@@ -143,6 +143,8 @@ impl ServerHost {
             .field_flags
             .as_deref()
             .and_then(|b| FieldFlags::decode(b).ok());
+        import::refuse_unsupported(&options, field_flags.as_ref())
+            .map_err(|_| HostError::Unsupported)?;
         let mut paths = call.paths.clone();
         if paths.is_empty() {
             if let ProfileBody::XmlImport {
@@ -406,9 +408,7 @@ impl ExportSource for ServerExport<'_> {
             // desktop reads it: a running total's total, a fraction's 1.
             let summary = FieldId { occurrence, field };
             let context = om_calc::eval::Context::record(self.window.occurrence, first);
-            return self
-                .host
-                .get_summary(&context, summary, summary)
+            return om_data::summary::or_invalid(self.host.get_summary(&context, summary, summary))
                 .map(ExportValue::Computed)
                 .map_err(calc_error);
         };

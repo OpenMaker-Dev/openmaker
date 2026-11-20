@@ -80,7 +80,7 @@ pub fn step_name(id: u16) -> Option<&'static str> {
         .filter(|name| !name.is_empty())
 }
 
-/// Every step id the catalog lists (0..=247).
+/// Every step id the catalog lists (0..=250, FileMaker Pro 26.1.1's).
 pub fn step_ids() -> impl Iterator<Item = u16> {
     infos().keys().copied()
 }
@@ -91,10 +91,27 @@ pub fn step_ids() -> impl Iterator<Item = u16> {
 pub const OBSOLETE_STEP_IDS: [u16; 13] =
     [15, 52, 54, 58, 59, 78, 100, 153, 176, 198, 204, 224, 239];
 
-/// Whether FileMaker accepts the step id at all (absolute value below 248).
+/// Whether FileMaker accepts the step id at all: below 251 in FileMaker
+/// Pro 26.1.1, below 248 in 26.0.3 (script-runtime.md 2.5). A valid id
+/// without a step (248 among them) fails with error 3, as one without a
+/// handler.
 pub fn is_valid_step_id(id: u16) -> bool {
+    id < 251
+}
+
+/// Whether FileMaker Server 26.0.3 accepts the step id: below 248
+/// (script-runtime.md 2.5). OpenMaker Server's script runtimes keep its
+/// bound until FileMaker Server 26.1.1 ships, so a step only FileMaker Pro
+/// 26.1.1 knows fails there with error 4, as on 26.0.3.
+pub fn is_server_step_id(id: u16) -> bool {
     id < 248
 }
+
+/// Steps FileMaker Pro 26.1.1 added that OpenMaker cannot yet edit or run
+/// (Replace Field Contents by Name and Set Variable by Name,
+/// script-steps.md 12.4, #349): not offered in the Script Workspace, and
+/// failing with error 3 when a script holds one.
+pub const PENDING_STEP_IDS: [u16; 2] = [249, 250];
 
 /// A client that runs scripts, by its `StateFlags` bit (script-runtime.md 10.1).
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, PartialOrd, Ord)]
@@ -254,6 +271,14 @@ pub fn is_supported(id: u16, client: Client) -> bool {
     step_compat(id).is_some_and(|c| c.supports(client))
 }
 
+/// [`is_supported`] by FileMaker Server 26.0.3's table, which OpenMaker
+/// Server's script runtimes keep until FileMaker Server 26.1.1 ships: its
+/// steps only, and without the Server bit 26.1.1 gives Save a Copy as
+/// Add-on Package (96) (script-runtime.md 10.1).
+pub fn is_supported_on_server(id: u16, client: Client) -> bool {
+    is_server_step_id(id) && is_supported(id, client) && !(client == Client::Server && id == 96)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -263,7 +288,12 @@ mod tests {
         assert_eq!(step_name(1), Some("Perform Script"));
         assert_eq!(step_name(186), None);
         assert_eq!(step_info(1).unwrap().category, "Control");
-        assert_eq!(step_ids().count(), 248);
+        // FileMaker Pro 26.1.1's ids: 248 unnamed, 249 and 250 its new
+        // steps, 147 spelled anew (script-steps.md 12.4).
+        assert_eq!(step_ids().count(), 251);
+        assert_eq!(step_name(248), None);
+        assert_eq!(step_name(250), Some("Set Variable by Name"));
+        assert_eq!(step_name(147), Some("Set Field by Name"));
         assert_eq!(split_csv(r#"a,"b, ""c""",d"#), ["a", r#"b, "c""#, "d"]);
     }
 
@@ -276,11 +306,19 @@ mod tests {
             [Client::Mac, Client::Windows, Client::Server]
         );
         assert!(!is_supported(2, Client::Server));
-        // 84 named steps lack the Server bit (script-steps.md 7).
+        // 83 named steps lack the Server bit: 26.0.3's 84 (script-steps.md
+        // 7) less Save a Copy as Add-on Package (96), which 26.1.1 runs on
+        // the server; its two new steps run on every client.
         let unsupported = step_ids()
             .filter(|id| step_name(*id).is_some() && !is_supported(*id, Client::Server))
             .count();
-        assert_eq!(unsupported, 84);
+        assert_eq!(unsupported, 83);
+        assert_eq!(supported_clients(250), Client::ALL);
+        assert!(supported_clients(248).is_empty());
+        // OpenMaker Server keeps FileMaker Server 26.0.3's table.
+        assert!(!is_supported_on_server(96, Client::Server));
+        assert!(!is_supported_on_server(250, Client::Server));
+        assert!(is_supported_on_server(3, Client::Server));
         let comment = step_compat(89).unwrap();
         assert!(!comment.button_compatible());
         assert!(step_compat(1).unwrap().button_compatible());

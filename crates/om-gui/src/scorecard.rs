@@ -1364,6 +1364,12 @@ impl Desktop {
         {
             return ("unknown", Some("not a step FileMaker Pro 26 runs".into()));
         }
+        if om_data::scripts::PENDING_STEP_IDS.contains(&id) {
+            return (
+                "error3",
+                Some("a FileMaker Pro 26.1.1 step OpenMaker cannot run yet".into()),
+            );
+        }
         if !om_data::scripts::is_supported(id, self.client) {
             return (
                 "filemaker",
