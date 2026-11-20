@@ -13,6 +13,7 @@ use om_hbam::HbamFile;
 
 use crate::accounts::{AccountKind, AccountStatus};
 use crate::admin::FileStatus;
+use crate::anchored::FileAt;
 use crate::config::{HostedFile, Privileges};
 use crate::eventlog::{Event, EventLog, SaveOutcome};
 use crate::filelock::FileLock;
@@ -212,8 +213,11 @@ pub struct Hosted {
     pub id: u32,
     /// The name clients open it by.
     pub name: String,
-    /// Where the file lives on disk.
+    /// Where the file lives on disk, as it was given.
     pub path: PathBuf,
+    /// The file's folder, held since the file was first hosted, through
+    /// which it is read and saved ([`FileAt`], #468).
+    pub(crate) at: FileAt,
     /// The file's contents: every download, query and write goes here.
     /// Taken through [`Hosted::read_store`] and [`Hosted::write_store`],
     /// which keeps `accounts` following it.
@@ -318,6 +322,7 @@ impl Hosted {
     fn load(
         id: u32,
         hosted: &HostedFile,
+        at: FileAt,
         file: &HbamFile,
         local: Option<(Option<FileLock>, bool)>,
         insecure_files: bool,
@@ -362,6 +367,7 @@ impl Hosted {
             id,
             name: hosted.name.clone(),
             path: hosted.path.clone(),
+            at,
             store: RwLock::new(store),
             locks: Mutex::new(LockTable::default()),
             registrations: Mutex::new(Vec::new()),
@@ -492,7 +498,7 @@ impl Hosted {
             ));
         }
         let started = Instant::now();
-        let error = match store.save(&self.path) {
+        let error = match store.save(&self.at) {
             Ok(true) => {
                 debug!("{:?}: saved in {:?}", self.name, started.elapsed());
                 return Ok(());
@@ -537,7 +543,7 @@ impl Hosted {
         if !kept.is_empty() {
             return Err(error);
         }
-        if let Err(e) = store.save(&self.path) {
+        if let Err(e) = store.save(&self.at) {
             error!(
                 "{:?}: saving to {} failed, unsaved changes are kept in memory: {e}",
                 self.name,
@@ -897,7 +903,7 @@ impl Hosted {
     /// [`Store::save_commit`] for this file, logged.
     pub fn save_commit(&self, store: &mut Store, journal: Journal) -> std::io::Result<()> {
         let started = Instant::now();
-        let saved = store.save_commit(&self.path, journal);
+        let saved = store.save_commit(&self.at, journal);
         match &saved {
             Ok(()) => debug!("{:?}: saved in {:?}", self.name, started.elapsed()),
             Err(e) => {
@@ -1473,6 +1479,9 @@ pub struct Slot {
     pub name: String,
     /// Where it lives on disk.
     pub path: PathBuf,
+    /// Its folder, held since it was first hosted: a reopen reads the file
+    /// there ([`FileAt`]).
+    at: FileAt,
     state: Mutex<SlotState>,
 }
 
@@ -1493,6 +1502,7 @@ impl Slot {
             id: hosted.id,
             name: hosted.name.clone(),
             path: hosted.path.clone(),
+            at: hosted.at.clone(),
             state: Mutex::new(SlotState {
                 status: FileStatus::Open,
                 file: Some(hosted),
@@ -1637,7 +1647,13 @@ impl Hosting {
             }
             events.record(Event::file_opening(&hosted.name));
             let id = u32::try_from(index + 1).expect("fewer than 2^32 files");
-            match load_hosted(id, hosted, insecure_files, events) {
+            let loaded = FileAt::open(&hosted.path)
+                .map_err(|e| HostingError::Open {
+                    name: hosted.name.clone(),
+                    error: om_hbam::Error::from(e),
+                })
+                .and_then(|at| load_hosted(id, hosted, &at, insecure_files, events));
+            match loaded {
                 Ok(loaded) => {
                     events.record(Event::file_opened(&loaded.name, loaded.read_only));
                     hosting.slots.push(Slot::serving(loaded));
@@ -1664,12 +1680,16 @@ impl Hosting {
         let slot = self.slot(id).ok_or(ReopenError::UnknownFile)?;
         slot.change(FileStatus::Closed, FileStatus::Opening)
             .map_err(ReopenError::NotAllowed)?;
+        // Read through the folder held since startup, not the path again:
+        // a folder of the path swapped for a link since then is not
+        // followed (#468).
         let loaded = load_hosted(
             id,
             &HostedFile {
                 name: slot.name.clone(),
                 path: slot.path.clone(),
             },
+            &slot.at,
             self.insecure_files,
             events,
         );
@@ -1702,9 +1722,14 @@ impl Hosting {
         read_only: bool,
     ) -> Result<Self, HostingError> {
         let configured = vec![hosted.clone()];
+        let at = FileAt::open(&hosted.path).map_err(|e| HostingError::Open {
+            name: hosted.name.clone(),
+            error: om_hbam::Error::from(e),
+        })?;
         let hosted = Hosted::load(
             1,
             hosted,
+            at,
             file,
             Some((lock, read_only)),
             false,
@@ -1767,10 +1792,11 @@ impl Hosting {
 fn load_hosted(
     id: u32,
     hosted: &HostedFile,
+    at: &FileAt,
     insecure_files: bool,
     events: &EventLog,
 ) -> Result<Arc<Hosted>, HostingError> {
-    let file = read_regular_file(&hosted.path)
+    let file = read_regular_file(at)
         .map_err(om_hbam::Error::from)
         .and_then(HbamFile::from_bytes)
         .map_err(|error| HostingError::Open {
@@ -1780,6 +1806,7 @@ fn load_hosted(
     let loaded = Arc::new(Hosted::load(
         id,
         hosted,
+        at.clone(),
         &file,
         None,
         insecure_files,
@@ -1790,27 +1817,14 @@ fn load_hosted(
     Ok(loaded)
 }
 
-/// The bytes of the regular file at `path`, read through the one handle
-/// whose type was checked: opened without blocking (a FIFO named as a
-/// database would otherwise hold startup before the server listens), and
-/// refused unless it is a regular file, so that one swapped in after a
-/// check cannot be read instead.
-fn read_regular_file(path: &std::path::Path) -> std::io::Result<Vec<u8>> {
+/// The bytes of the regular file `at`, read through the one handle whose
+/// type was checked: opened without blocking (a FIFO named as a database
+/// would otherwise hold startup before the server listens), without
+/// following a link at its name, and refused unless it is a regular file,
+/// so that one swapped in after a check cannot be read instead.
+fn read_regular_file(at: &FileAt) -> std::io::Result<Vec<u8>> {
     use std::io::Read as _;
-    let mut options = std::fs::OpenOptions::new();
-    options.read(true);
-    #[cfg(unix)]
-    {
-        use std::os::unix::fs::OpenOptionsExt;
-        options.custom_flags(rustix::fs::OFlags::NONBLOCK.bits() as i32);
-    }
-    let mut file = options.open(path)?;
-    if !file.metadata()?.is_file() {
-        return Err(std::io::Error::new(
-            std::io::ErrorKind::InvalidInput,
-            "not a regular file",
-        ));
-    }
+    let mut file = at.open_regular(at.name())?;
     let mut data = Vec::new();
     file.read_to_end(&mut data)?;
     Ok(data)

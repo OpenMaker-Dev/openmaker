@@ -1036,7 +1036,8 @@ struct Source {
 fn open_source(hosted: &Hosted) -> io::Result<Source> {
     let (file, saves, unsaved) = {
         let store = hosted.read_store();
-        let file = File::open(&hosted.path)?;
+        // Through the folder held since the file was hosted (#468).
+        let file = hosted.at.open_regular(hosted.at.name())?;
         (file, store.saves(), store.has_unsaved_changes())
     };
     let metadata = file.metadata()?;

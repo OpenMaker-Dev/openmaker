@@ -44,6 +44,7 @@ use om_query::Write;
 
 use om_data::containers::{self, MemberInfo};
 
+use crate::anchored::FileAt;
 use crate::filelock::FileLock;
 use crate::library::{self, BinaryData, Stored, LIBRARY};
 use crate::modcount::{self, MOD_COUNT};
@@ -269,12 +270,20 @@ pub(crate) fn save_copy_path(path: &Path) -> PathBuf {
     PathBuf::from(temporary)
 }
 
-/// Whether `file`, the copy a save created, is still the entry at `path`.
-fn owned_copy(file: &std::fs::File, path: &Path) -> bool {
-    match crate::filelock::same_file(file, path) {
+/// The name of a save's new copy of the file named `name`, beside it.
+fn save_copy_name(name: &std::ffi::OsStr) -> std::ffi::OsString {
+    let mut temporary = name.to_owned();
+    temporary.push(".omsave");
+    temporary
+}
+
+/// Whether `file`, the copy a save created, is still entry `name` of the
+/// file's folder.
+fn owned_copy(at: &FileAt, file: &std::fs::File, name: &std::ffi::OsStr) -> bool {
+    match at.is_entry(file, name) {
         Ok(same) => same,
         // No inode identity (Windows): a regular file where the save made it.
-        Err(_) => std::fs::symlink_metadata(path).is_ok_and(|m| m.is_file()),
+        Err(_) => at.is_regular(name),
     }
 }
 
@@ -448,7 +457,7 @@ impl Store {
         self.dirty
     }
 
-    /// Write the tree to `path` if it has unsaved changes: a complete new
+    /// Write the tree to the file `at` if it has unsaved changes: a complete new
     /// file (`om_hbam::writer::rebuild`) written beside it, flushed, given
     /// the old file's permissions, then renamed over it, so a crash leaves
     /// the old file or the new one (hbam-writer.md 6.2). Returns whether it
@@ -458,29 +467,31 @@ impl Store {
     /// an entry of that name the store did not make (a copy a crash left,
     /// a link to another file) stops the save, untouched. A store holding
     /// the file's lock first checks that its locked descriptor is still the
-    /// file at `path` with no other names (a file another program replaced
-    /// or linked is not saved over), and locks the new copy before the
-    /// rename. On an error the file is the old one, the copy the store made
-    /// is removed (only it) and the tree stays unsaved; once the rename
-    /// succeeded the file is the new one, so a failure to flush the
-    /// directory after it is only logged.
+    /// file's entry in its folder, with no other names (a file another
+    /// program replaced or linked is not saved over), and locks the new
+    /// copy before the rename. On an error the file is the old one, the
+    /// copy the store made is removed (only it) and the tree stays unsaved;
+    /// once the rename succeeded the file is the new one, so a failure to
+    /// flush the folder after it is only logged. Every step goes through
+    /// the folder `at` holds, so a folder of the path swapped for a link
+    /// since the file was hosted does not move the save (#468).
     ///
     /// The copy is the whole database, password verifiers included. Until
     /// it has the old file's permissions it is owner-only (0600 on Unix,
     /// given as it is created, whatever the umask), so no one the file
     /// keeps out can open it while it is written: a descriptor opened then
     /// would go on reading it whatever its permissions became. With no file
-    /// at `path` it is a new file from the start (0666 less the umask);
+    /// there it is a new file from the start (0666 less the umask);
     /// when the old file's permissions cannot be read, nothing is saved.
-    pub fn save(&mut self, path: &Path) -> std::io::Result<bool> {
-        self.save_observed(path, &mut |_| {})
+    pub fn save(&mut self, at: &FileAt) -> std::io::Result<bool> {
+        self.save_observed(at, &mut |_| {})
     }
 
     /// [`Store::save`], calling `created` with the new copy's path once it
     /// exists, before anything is written to it (tests).
     fn save_observed(
         &mut self,
-        path: &Path,
+        at: &FileAt,
         created: &mut dyn FnMut(&Path),
     ) -> std::io::Result<bool> {
         use std::io::{Error, ErrorKind};
@@ -493,9 +504,12 @@ impl Store {
                 "the file is open read-only",
             ));
         }
+        // Every step goes through the file's folder as it was when the file
+        // was hosted, by name, never following a link at the name (#468).
+        let name = at.name();
         let permissions = match &self.lock {
             Some(lock) => {
-                let current = crate::filelock::same_file(lock.file(), path)?
+                let current = at.is_entry(lock.file(), name)?
                     && crate::filelock::link_count(lock.file())? == 1;
                 if !current {
                     return Err(Error::other(
@@ -505,45 +519,36 @@ impl Store {
                 }
                 Some(lock.file().metadata()?.permissions())
             }
-            None => match std::fs::metadata(path) {
-                Ok(metadata) => Some(metadata.permissions()),
-                Err(e) if e.kind() == ErrorKind::NotFound => None,
-                Err(e) => return Err(e),
-            },
+            None => at.permissions(name)?,
         };
         let bytes = om_hbam::writer::rebuild(&self.root, &self.superblock)
             .map_err(|e| Error::new(ErrorKind::InvalidData, e.to_string()))?;
-        let temporary = save_copy_path(path);
-        let mut options = std::fs::OpenOptions::new();
-        options.write(true).create_new(true);
-        #[cfg(unix)]
-        {
-            use std::os::unix::fs::OpenOptionsExt;
-            // Owner-only until it takes the old file's permissions; a new
-            // file's (0666 less the umask) when there is none to take.
-            options.mode(if permissions.is_some() { 0o600 } else { 0o666 });
-        }
-        let file = options.open(&temporary).map_err(|e| {
+        let temporary = save_copy_name(name);
+        let shown = save_copy_path(at.path());
+        // Owner-only until it takes the old file's permissions; a new
+        // file's (0666 less the umask) when there is none to take.
+        let mode = if permissions.is_some() { 0o600 } else { 0o666 };
+        let file = at.create_new(&temporary, mode).map_err(|e| {
             if e.kind() == ErrorKind::AlreadyExists {
                 Error::new(
                     e.kind(),
                     format!(
                         "{} is in the way of the save's new copy (left by an earlier save?)",
-                        temporary.display()
+                        shown.display()
                     ),
                 )
             } else {
                 e
             }
         })?;
-        created(&temporary);
+        created(&shown);
         // The copy is this save's from here on: on an error it removes the
         // entry only while it is still that copy.
         let owner = match file.try_clone() {
             Ok(owner) => owner,
             Err(e) => {
-                if owned_copy(&file, &temporary) {
-                    let _ = std::fs::remove_file(&temporary);
+                if owned_copy(at, &file, &temporary) {
+                    let _ = at.remove(&temporary);
                 }
                 return Err(e);
             }
@@ -562,13 +567,13 @@ impl Store {
                 }
             })();
             let renamed = written.and_then(|lock| {
-                if !owned_copy(&owner, &temporary) {
+                if !owned_copy(at, &owner, &temporary) {
                     return Err(Error::other("the save's new copy was replaced"));
                 }
-                std::fs::rename(&temporary, path).map(|()| lock)
+                at.rename(&temporary, name).map(|()| lock)
             });
-            if renamed.is_err() && owned_copy(&owner, &temporary) {
-                let _ = std::fs::remove_file(&temporary);
+            if renamed.is_err() && owned_copy(at, &owner, &temporary) {
+                let _ = at.remove(&temporary);
             }
             renamed
         };
@@ -580,14 +585,12 @@ impl Store {
         self.superblock = bytes[..self.superblock.len()].to_vec();
         self.dirty = false;
         self.saves += 1;
-        if let Some(dir) = path.parent().filter(|d| !d.as_os_str().is_empty()) {
-            if let Err(e) = std::fs::File::open(dir).and_then(|d| d.sync_all()) {
-                warn!(
-                    "{}: saved, but flushing {} failed: {e}",
-                    self.name,
-                    dir.display()
-                );
-            }
+        if let Err(e) = at.sync_folder() {
+            warn!(
+                "{}: saved, but flushing the folder of {} failed: {e}",
+                self.name,
+                at.path().display()
+            );
         }
         Ok(true)
     }
@@ -843,7 +846,7 @@ impl Store {
     /// tree before the commit, the field indexes among it are taken out
     /// ([`Store::drop_unwritable_indexes`]), so the next commit is saved;
     /// anything else stays as it is and is logged.
-    pub fn save_commit(&mut self, path: &Path, mut journal: Journal) -> std::io::Result<()> {
+    pub fn save_commit(&mut self, at: &FileAt, mut journal: Journal) -> std::io::Result<()> {
         let saved = self.guarded(&mut journal, |store, journal| {
             if let Some(reason) = journal.refused.take() {
                 return Err(std::io::Error::new(
@@ -856,7 +859,7 @@ impl Store {
             if store.fail_commit_saves {
                 return Err(std::io::Error::other("a test makes commit saves fail"));
             }
-            store.save(path)
+            store.save(at)
         });
         let error = match saved {
             Ok(_) => return Ok(()),
@@ -3058,17 +3061,18 @@ mod tests {
         store.superblock = vec![0; 4096];
         store.superblock[0x0f..0x14].copy_from_slice(b"HBAM7");
         store.superblock[0x14..0x18].copy_from_slice(&4096u32.to_be_bytes());
+        std::fs::write(&path, b"old").unwrap();
+        let at = FileAt::open(&path).unwrap();
         let save = |store: &mut Store| {
             store.dirty = true;
             let mut copy = None;
-            let saved = store.save_observed(&path, &mut |c| copy = mode(c).ok());
+            let saved = store.save_observed(&at, &mut |c| copy = mode(c).ok());
             (
                 saved.ok(),
                 copy.map(|m| m & 0o777),
                 mode(&path).ok().map(|m| m & 0o777),
             )
         };
-        std::fs::write(&path, b"old").unwrap();
         std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o640)).unwrap();
         // Under this umask a copy made with a new file's permissions is
         // 0644, readable by everyone.
@@ -3080,6 +3084,46 @@ mod tests {
         let _ = std::fs::remove_file(&path);
         assert_eq!(replaced, (Some(true), Some(0o600), Some(0o640)));
         assert_eq!(new, (Some(true), Some(0o644), Some(0o644)));
+    }
+
+    /// A hosted file is saved in the folder it was hosted from, through the
+    /// handle held since (#468): a folder of its path swapped for a link to
+    /// another folder afterwards does not move the save there.
+    #[cfg(unix)]
+    #[test]
+    fn a_save_stays_in_the_hosted_files_folder_when_a_link_replaces_it() {
+        let base = std::env::temp_dir().join(format!("om-store-anchor-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&base);
+        let (databases, moved, elsewhere) = (
+            base.join("Databases"),
+            base.join("moved"),
+            base.join("elsewhere"),
+        );
+        std::fs::create_dir_all(&databases).unwrap();
+        std::fs::create_dir_all(&elsewhere).unwrap();
+        let path = databases.join("Tasks.fmp12");
+        std::fs::write(&path, b"old").unwrap();
+        let at = FileAt::open(&path).unwrap();
+        // The folder moves away and a link to another folder takes its name.
+        std::fs::rename(&databases, &moved).unwrap();
+        std::os::unix::fs::symlink(&elsewhere, &databases).unwrap();
+        let mut store = store_of(OwnedNode::default());
+        store.superblock = vec![0; 4096];
+        store.superblock[0x0f..0x14].copy_from_slice(b"HBAM7");
+        store.superblock[0x14..0x18].copy_from_slice(&4096u32.to_be_bytes());
+        store.dirty = true;
+        let saved = store.save(&at);
+        let kept = std::fs::read(moved.join("Tasks.fmp12"))
+            .map(|b| b.len())
+            .ok();
+        let followed = std::fs::read_dir(&elsewhere).map(|d| d.count());
+        let _ = std::fs::remove_dir_all(&base);
+        assert_eq!(saved.ok(), Some(true));
+        assert!(
+            kept.is_some_and(|n| n > 3),
+            "saved in the held folder: {kept:?}"
+        );
+        assert_eq!(followed.ok(), Some(0), "nothing written through the link");
     }
 
     #[test]

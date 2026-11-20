@@ -152,16 +152,25 @@ server starts again. With no files at all the server still starts, with an
 empty file list; when files are found or named and none of them opens, it
 does not start.
 
-Discovery checks each entry when it reads the folder. The server opens,
-recovers and saves a hosted file by its path afterwards, during startup
-(between discovery and the file's load, and a recovery's save while it
-loads) as well as later on. So whoever may write in a database folder,
-in one of its subfolders, or in a folder above them can still change what
-that path leads to. Keep database folders, their subfolders and the
-folders above them writable by the server's user only
-([#468](https://github.com/OpenMaker-Dev/openmaker/issues/468)). Once the
-entry limit is reached, the log says how many folders were left unread
-and names the first.
+Discovery checks each entry when it reads the folder. The server resolves
+a hosted file's path once more when it loads the file, links included,
+and on Linux and macOS holds the folder the path ends in open from then
+on. It reads, recovers, saves, backs up and reopens the file through that
+folder, by its name, never following a link at the name
+([#468](https://github.com/OpenMaker-Dev/openmaker/issues/468)). A folder
+of the path swapped for a link after the load does not move any of
+these. A folder moved away keeps its files: the server goes on saving
+there. A file hosted through a link is saved where the link pointed at
+the load, and the link is left as it is. Some things still follow the
+path itself:
+- the time between discovery and the file's load;
+- a file's external container data, beside it;
+- the Documents folder of server scripts' file steps;
+- on Windows, everything.
+
+So keep database folders, their subfolders and the folders above them
+writable by the server's user only. Once the entry limit is reached, the
+log says how many folders were left unread and names the first.
 
 Failed logins are limited. After 5 failures an address (an IPv6 address by
 its /64) may try once a minute; after 30 failures of an account of a file
