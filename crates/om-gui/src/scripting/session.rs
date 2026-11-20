@@ -657,6 +657,38 @@ impl ScriptSession {
         }
     }
 
+    /// Between requests: tell the UI what the hosts' administrators sent
+    /// the sessions of the window's file and of the other files open
+    /// (`files`; [`DataProvider::take_host_messages`]; #156), as of the
+    /// request of `epoch`, waking `ctx`. Files that share a connection share
+    /// its messages: whichever takes them first shows them once.
+    pub(crate) fn tell_host_messages(
+        &mut self,
+        provider: &mut dyn DataProvider,
+        responses: &Sender<Response>,
+        epoch: u64,
+        ctx: &egui::Context,
+        files: &mut super::databases::OpenFiles,
+    ) {
+        let tell = |window, messages: Vec<om_data::HostMessage>| {
+            if messages.is_empty() {
+                return;
+            }
+            let response = Response {
+                epoch,
+                window,
+                reply: worker::Reply::HostMessages(messages),
+            };
+            if responses.send(response).is_ok() {
+                ctx.request_repaint();
+            }
+        };
+        tell(self.s.file.window.id(), provider.take_host_messages());
+        for file in files.peers.values_mut() {
+            tell(file.state.window.id(), file.provider.take_host_messages());
+        }
+    }
+
     /// Between requests: tell the UI if the connection was lost (see
     /// [`Shared::connection_lost`]), as of the request of `epoch`.
     pub(crate) fn notice_loss(

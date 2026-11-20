@@ -5371,6 +5371,37 @@ impl DataProvider for NativeProvider {
         )))
     }
 
+    fn take_host_messages(&mut self) -> Vec<om_data::HostMessage> {
+        use om_data::HostMessageKind;
+        use om_protocol::notify::attention;
+        let Some(session) = self.session.as_mut() else {
+            return Vec::new();
+        };
+        // The host's calls that have arrived, read now rather than at the
+        // session's next exchange (a Tickle, up to a minute later), unless
+        // that exchange holds the connection now: nothing waits for it, and
+        // the next poll reads them. A failure here shows as the
+        // connection's loss (`connection_lost`).
+        session
+            .try_take_admin_messages()
+            .unwrap_or_default()
+            .into_iter()
+            .filter_map(|message| {
+                let kind = match message.code & !attention::HOST_SERIAL {
+                    attention::MESSAGE => HostMessageKind::Message,
+                    attention::CLOSE_FILE | attention::CLOSE_ALL => HostMessageKind::CloseFiles,
+                    attention::DISCONNECT_ALL => HostMessageKind::Disconnected,
+                    _ => return None,
+                };
+                Some(om_data::HostMessage {
+                    kind,
+                    text: message.text,
+                    server_name: message.server_name,
+                })
+            })
+            .collect()
+    }
+
     fn carried_record_sessions(&self) -> Vec<u32> {
         self.carried_windows()
     }

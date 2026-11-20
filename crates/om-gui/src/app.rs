@@ -599,6 +599,8 @@ pub(crate) enum Action {
     /// Edit Value List's OK: save the list's values.
     SetValueListValues(om_data::value_lists::ValuesChange),
     DismissAlert,
+    /// Close the host administrator's message shown (`host_message`).
+    DismissHostMessage,
     /// Discard input refused by before-mutation preparation, keeping accepted drafts.
     DiscardEntryCandidates,
     Minimize,
@@ -685,6 +687,7 @@ impl Action {
                 | Action::Quit
                 | Action::Minimize
                 | Action::DismissAlert
+                | Action::DismissHostMessage
                 | Action::DiscardEntryCandidates
                 | Action::ZoomIn
                 | Action::ZoomOut
@@ -715,6 +718,7 @@ impl Action {
                 | Action::SetView(_)
                 | Action::Minimize
                 | Action::DismissAlert
+                | Action::DismissHostMessage
                 | Action::ZoomIn
                 | Action::ZoomOut
                 | Action::ActualSize
@@ -740,6 +744,11 @@ impl Action {
 }
 
 /// The OpenMaker application.
+/// How long the host administrator's message stays up, in seconds:
+/// FileMaker Pro's closed itself about 30 s after it came
+/// (network-protocol.md 6.5, Medium: polled every 20 s).
+const HOST_MESSAGE_SECONDS: f64 = 30.0;
+
 pub struct OpenMakerApp {
     worker: Worker,
     /// Bumped whenever a session is abandoned; replies from older epochs are
@@ -774,6 +783,11 @@ pub struct OpenMakerApp {
     value_list_edit: Option<(u32, crate::document::value_dialogs::EditDialog)>,
     part_setup: Option<PartSetup>,
     error: Option<String>,
+    /// The host administrators' messages still to show, the first shown
+    /// now ([`Self::host_message`]; #156), and when it was first shown
+    /// (`InputState::time`).
+    host_messages: std::collections::VecDeque<om_data::HostMessage>,
+    host_message_since: Option<f64>,
     worker_stopped: bool,
     /// Closing the file (and then quitting, when `true`): each window
     /// that closes closes the next, until a trigger or a save stops it.
@@ -897,6 +911,8 @@ impl OpenMakerApp {
             value_list_edit: None,
             part_setup: None,
             error: None,
+            host_messages: Default::default(),
+            host_message_since: None,
             worker_stopped: false,
             closing: None,
             quit_ready: false,
@@ -2063,7 +2079,10 @@ impl OpenMakerApp {
             if busy
                 && !matches!(
                     action,
-                    Action::DismissAlert | Action::Quit | Action::Minimize
+                    Action::DismissAlert
+                        | Action::DismissHostMessage
+                        | Action::Quit
+                        | Action::Minimize
                 )
             {
                 continue;
@@ -2412,6 +2431,7 @@ impl OpenMakerApp {
         self.own_password_dialog(&ctx);
         self.related_sign_in(&ctx);
         self.alert(&ctx, actions);
+        self.host_message(&ctx, actions);
         self.prompt(&ctx);
     }
 
@@ -2707,6 +2727,12 @@ impl OpenMakerApp {
 
     /// A dialog or alert over the document has the keyboard.
     fn dialog_over_document(&self) -> bool {
+        self.dialog_open() || self.host_message_shown()
+    }
+
+    /// A dialog, alert or confirmation of the app's is open: the host's
+    /// message waits for it ([`Self::host_message_shown`]).
+    fn dialog_open(&self) -> bool {
         self.manage_layouts.is_some()
             || self.layout_setup.is_some()
             || self.part_setup.is_some()
@@ -2722,7 +2748,12 @@ impl OpenMakerApp {
             || self.open_file.is_some()
             || self.create_new.is_some()
             || self.local_login.is_some()
+            || self.change_password.is_some()
             || self.own_password.is_some()
+            || self
+                .related_login
+                .as_ref()
+                .is_some_and(|login| login.window == self.w.id)
             || self.w.delete_record
             || self.w.delete_layout.is_some()
             || self.w.delete_portal_row.is_some()
@@ -3228,6 +3259,88 @@ impl OpenMakerApp {
                     });
                     if ok.clicked() || key {
                         actions.push(Action::DismissAlert);
+                    }
+                });
+            });
+    }
+
+    /// Whether the host administrator's message shows now: one waits, and
+    /// no other dialog, alert or confirmation is open, whose keys it would
+    /// share (Return, Escape). It waits for them, its countdown not started
+    /// [I: FileMaker Pro shows it over them; OpenMaker's choice].
+    pub(super) fn host_message_shown(&self) -> bool {
+        !self.host_messages.is_empty() && !self.dialog_open()
+    }
+
+    /// The host administrator's message (Send Message), as FileMaker Pro
+    /// shows it: "Message from “<server name>”", the text, and Close, with
+    /// "(This dialog will be dismissed in N seconds.)"; it closes itself
+    /// after [`HOST_MESSAGE_SECONDS`] (network-protocol.md 6.5,
+    /// admin-console.md 9). Messages that came meanwhile follow, one at a
+    /// time.
+    fn host_message(&mut self, ctx: &egui::Context, actions: &mut Vec<Action>) {
+        if !self.host_message_shown() {
+            return;
+        }
+        let Some(message) = self.host_messages.front().cloned() else {
+            return;
+        };
+        let now = ctx.input(|input| input.time);
+        let since = *self.host_message_since.get_or_insert(now);
+        let left = HOST_MESSAGE_SECONDS - (now - since);
+        if left <= 0.0 {
+            actions.push(Action::DismissHostMessage);
+            return;
+        }
+        // The countdown shows whole seconds: the next one comes then.
+        ctx.request_repaint_after(std::time::Duration::from_secs_f64(left.fract().max(0.05)));
+        let frame = egui::Frame::new()
+            .fill(theme::DIALOG_BG)
+            .stroke(egui::Stroke::new(1.0, Color32::from_gray(0xC4)))
+            .corner_radius(CornerRadius::same(12))
+            .shadow(ctx.global_style().visuals.window_shadow)
+            .inner_margin(egui::Margin::same(16));
+        egui::Modal::new(Id::unique("host message"))
+            .frame(frame)
+            .backdrop_color(Color32::from_black_alpha(30))
+            .show(ctx, |ui| {
+                ui.set_width(320.0);
+                ui.label(
+                    RichText::new(format!("Message from “{}”", message.server_name))
+                        .font(egui::FontId::new(theme::BODY, theme::semibold()))
+                        .color(theme::TEXT),
+                );
+                ui.add_space(8.0);
+                ui.add(egui::Label::new(RichText::new(&message.text).color(theme::TEXT)).wrap());
+                ui.add_space(12.0);
+                ui.label(
+                    RichText::new(format!(
+                        "(This dialog will be dismissed in {} seconds.)",
+                        left.ceil() as u64
+                    ))
+                    .color(theme::CAPTION),
+                );
+                ui.add_space(12.0);
+                ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                    let close = widgets::dialog_button(ui, "Close", true, true);
+                    // No other dialog is open (`host_message_shown`):
+                    // Return and Escape, with any modifier, are its own.
+                    let keys = ui.input_mut(|input| {
+                        let before = input.events.len();
+                        input.events.retain(|event| {
+                            !matches!(
+                                event,
+                                egui::Event::Key {
+                                    key: Key::Enter | Key::Escape,
+                                    pressed: true,
+                                    ..
+                                }
+                            )
+                        });
+                        input.events.len() != before
+                    });
+                    if close.clicked() || keys {
+                        actions.push(Action::DismissHostMessage);
                     }
                 });
             });
@@ -4215,6 +4328,10 @@ impl OpenMakerApp {
             Action::DismissAlert => {
                 self.error = None;
                 self.w.document.release_focus();
+            }
+            Action::DismissHostMessage => {
+                self.host_messages.pop_front();
+                self.host_message_since = None;
             }
             Action::SelectWindow(id) => {
                 // A window behind an open dialog cannot come forward; a
@@ -5565,7 +5682,10 @@ impl OpenMakerApp {
         }
         match reply {
             // Taken above; a reconnect's answer is the app's (windows.rs).
-            Reply::ConnectionLost(_) | Reply::Reconnected(_) | Reply::Released => {}
+            Reply::ConnectionLost(_)
+            | Reply::HostMessages(_)
+            | Reply::Reconnected(_)
+            | Reply::Released => {}
             // Unwrapped for the file's windows in `on_response`; here, this
             // window's file takes the schema before the answer.
             Reply::Grown { grown, then } => {

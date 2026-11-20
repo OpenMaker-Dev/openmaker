@@ -281,6 +281,37 @@ connections. Try again later.", with OK, its error 1638
 (network-protocol.md 5.6.4; `om_provider::HOST_BLOCKS_NEW_USERS`). Other
 refused opens keep OpenMaker's wording.
 
+### Messages from the host
+
+A hosted file's administrator can send its sessions a message (FileMaker
+Server's Send Message, OpenMaker Server's `ServerHandle::send_message`;
+network-protocol.md 6.5). The window shows it as FileMaker Pro does: a
+dialog "Message from “<server name>”" with the text, Close and "(This
+dialog will be dismissed in N seconds.)", which closes itself after 30
+seconds. Messages that come meanwhile follow, one at a time. A message
+waits while another dialog, alert or confirmation is open (Settings, a
+script's dialog, Delete Layout's question, a related file's sign-in, a
+required password change), its countdown not started, so
+its Close, Return and Escape are its own [I: FileMaker Pro shows it over
+them]. The providers of every open file read their hosts' calls once a
+second between requests (`DataProvider::take_host_messages`), so a message
+shows within about a second, not at the session's next exchange. That read never
+waits behind another exchange on the connection (a Tickle waiting for a
+slow host), reads at most 32 messages, each for at most 5 milliseconds
+however slowly it arrives, and writes its answers within 2 seconds or
+loses the connection; the rest waits for the next second.
+
+Limits ([#156](https://github.com/OpenMaker-Dev/openmaker/issues/156)):
+- The host's requests to close the files (Close, Disconnect) and its
+  notice of a forced disconnect are taken and not acted on yet: FileMaker
+  Pro shows a Close File dialog with a countdown, or closes the windows
+  with an alert.
+- The dialog's look is OpenMaker's; FileMaker Pro's was read from its
+  text only (capture s07).
+- An open Script Workspace holds the message too, although it is a
+  window of its own: OpenMaker counts it among the dialogs that hold the
+  document [I: FileMaker Pro is unmeasured there].
+
 ### Client license
 
 **FileMaker License...** is available in Hosts and the OpenMaker menu. It is

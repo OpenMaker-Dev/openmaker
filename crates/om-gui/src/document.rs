@@ -1032,6 +1032,7 @@ impl DocumentState {
                     Action::RevertRecord
                         | Action::CloseFile
                         | Action::DismissAlert
+                        | Action::DismissHostMessage
                         | Action::DiscardEntryCandidates
                 ) {
                     cancellation.push(action);

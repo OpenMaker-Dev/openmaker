@@ -561,6 +561,9 @@ pub(crate) enum Reply {
     Script(crate::scripting::ScriptEvent),
     /// The open file's connection to the host was lost.
     ConnectionLost(DataError),
+    /// What the host's administrator sent the file's session, read while
+    /// idle ([`DataProvider::take_host_messages`]), oldest first.
+    HostMessages(Vec<om_data::HostMessage>),
     Reconnected(Box<Result<Reconnected, DataError>>),
     /// What [`Request::Recreate`] did: the record's old and new id, and
     /// its place in the window's found set, when it was made again; `None`
@@ -638,6 +641,7 @@ impl Reply {
             Reply::ValueListBuilt { .. } => None,
             Reply::RecordEditPrepared(_, _, result) => result.as_ref().err(),
             Reply::ConnectionLost(error) => Some(error),
+            Reply::HostMessages(_) => None,
             Reply::Reconnected(result) => result.as_ref().as_ref().err(),
             Reply::Recreated(result) => result.as_ref().err(),
             // Each record's read carries its own error.
@@ -887,10 +891,19 @@ fn serve(
     // The epoch and the egui context of the UI's last request: a loss
     // noticed while idle is told as of it, and wakes that context.
     let (mut epoch, mut ctx) = (0, None::<egui::Context>);
+    // When the hosts' calls were last read between requests: once a second
+    // at most, so that a request does not wait for that read after the one
+    // before it (each file's read waits for up to its first message).
+    let mut host_messages_read = std::time::Instant::now();
     loop {
-        let wait = scripts
+        let mut wait = scripts
             .next_wake(&files)
             .map_or(CONNECTION_POLL, |wait| wait.min(CONNECTION_POLL));
+        // The next read of the hosts' calls is due a second after the last,
+        // not a second after the last request.
+        if ctx.is_some() {
+            wait = wait.min(CONNECTION_POLL.saturating_sub(host_messages_read.elapsed()));
+        }
         let job = match jobs.recv_timeout(wait) {
             Ok(job) => Some(job),
             Err(RecvTimeoutError::Timeout) => None,
@@ -935,6 +948,10 @@ fn serve(
         }
         if let Some(ctx) = &ctx {
             scripts.notice_loss(provider.as_ref(), responses, epoch, ctx, &mut files);
+            if host_messages_read.elapsed() >= CONNECTION_POLL {
+                scripts.tell_host_messages(provider.as_mut(), responses, epoch, ctx, &mut files);
+                host_messages_read = std::time::Instant::now();
+            }
         }
     }
     files.close_all();

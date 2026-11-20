@@ -106,6 +106,28 @@ pub type FieldChanges = std::collections::BTreeMap<String, Option<String>>;
 
 /// Typed edits to a session's global values, keyed by field and repetition.
 pub type GlobalChanges = std::collections::BTreeMap<(u64, u32), String>;
+/// What a host's administrator asks of a session (FileMaker Server's Admin
+/// Console and Admin API; network-protocol.md 6.5, admin-console.md 9).
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum HostMessageKind {
+    /// Send Message: a message to show (`0x0810`).
+    Message,
+    /// A request to close a file (`0x0040`) or every file (`0x0850`), which
+    /// FileMaker Pro closes after a countdown.
+    CloseFiles,
+    /// The notice that the host disconnects the session now (`0x0870`).
+    Disconnected,
+}
+
+/// A message from the host's administrator ([`DataProvider::take_host_messages`]).
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct HostMessage {
+    pub kind: HostMessageKind,
+    /// The administrator's text.
+    pub text: String,
+    /// The host's name, as it names itself (`remoteName`).
+    pub server_name: String,
+}
 
 /// A script's write of one record (Set Field and the other field steps,
 /// committed by Commit Records or by leaving the record): the rules a
@@ -2251,6 +2273,14 @@ pub trait DataProvider: Send {
     /// host. Cheap: callers poll it while idle.
     fn connection_lost(&self) -> Option<DataError> {
         None
+    }
+
+    /// What the host's administrator sent this session since the last
+    /// call, oldest first ([`HostMessage`]; network-protocol.md 6.5): the
+    /// host's calls that have arrived are read first, without waiting.
+    /// Cheap: callers poll it while idle. The default has none.
+    fn take_host_messages(&mut self) -> Vec<HostMessage> {
+        Vec::new()
     }
 
     /// The windows whose record sessions a reconnect of this file carries
