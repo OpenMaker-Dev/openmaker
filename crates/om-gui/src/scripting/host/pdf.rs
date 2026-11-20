@@ -111,32 +111,38 @@ const MAX_APPENDED: u64 = 512 << 20;
 
 /// "Append to existing PDF" (`kOption`): one new document of the existing
 /// file's pages, then the report's, which the PDF worker assembles,
-/// copying each page with all it refers to (`pdf_worker::assemble`).
+/// copying each page with what it refers to (`pdf_worker::assemble`).
 /// Claris: the records are added to the end of the existing PDF. What the
 /// page copy would leave behind refuses the append with 3 and leaves the
 /// file as it was, rather than lose it: a file that is not a PDF the
 /// worker reads, or one with bookmarks, a form, a structure tree, names,
-/// page labels, document information, encryption or optional content
-/// (`pdf_worker::Info`). OpenMaker's own reports have none of these, so a
-/// script that saves and then appends builds one document [I: FileMaker's
-/// handling of such files is unmeasured].
+/// page labels, document information, file identifiers, encryption,
+/// optional content or pages it cannot copy whole (`pdf_worker::Info`,
+/// asked with `info_whole`). OpenMaker's own reports have none of these,
+/// so a script that saves and then appends builds one document
+/// [I: FileMaker's handling of such files is unmeasured].
 fn appended(existing: &[u8], report: &[u8], report_pages: usize) -> Result<Vec<u8>, ReportError> {
     use om_data::calc::functions::pdf_worker;
     let unavailable =
         || ReportError::unsupported("Appending to a PDF needs the PDF worker (om-gui-pdf-worker)");
-    let info = pdf_worker::info(existing)
+    let info = pdf_worker::info_whole(existing)
         .map_err(|_| unavailable())?
         .ok_or_else(|| {
             ReportError::unsupported("The file to append to is not a PDF OpenMaker reads")
         })?;
-    if !info.optional_content_kept || !info.document_kept {
+    if !info.optional_content_kept || info.document_kept != Some(true) {
         return Err(ReportError::unsupported(
             "The PDF to append to has bookmarks, a form, document information, encryption or \
              other parts appending would not keep",
         ));
     }
+    // Both documents' pages within one request's, before the plan is made.
     let report_pages = u32::try_from(report_pages)
-        .map_err(|_| ReportError::unsupported("The report has too many pages to append"))?;
+        .ok()
+        .filter(|&pages| info.pages as usize + pages as usize <= pdf_worker::MAX_PAGES)
+        .ok_or_else(|| {
+            ReportError::unsupported("The PDF and the report have too many pages to append")
+        })?;
     let plan: Vec<(u32, u32)> = (0..info.pages)
         .map(|page| (0, page))
         .chain((0..report_pages).map(|page| (1, page)))
@@ -145,6 +151,11 @@ fn appended(existing: &[u8], report: &[u8], report_pages: usize) -> Result<Vec<u
         .map_err(|_| unavailable())?
         .ok_or_else(|| ReportError::unsupported("The PDF could not be appended to"))
 }
+
+/// Appends in this process run one at a time, each reading, assembling
+/// and saving its file before the next reads one, so two scripts appending
+/// to one file both keep their pages.
+static APPENDING: std::sync::Mutex<()> = std::sync::Mutex::new(());
 
 /// The existing PDF an append reads, at most [`MAX_APPENDED`] bytes of it.
 fn read_existing(path: &std::path::Path) -> Result<Vec<u8>, ReportError> {
@@ -227,15 +238,27 @@ impl WorkerHost<'_> {
         self.commit_window()?;
         let report = self.build_report(current, None, view)?;
         let path = self.export_path(&paths, call.step.has_flag(flag::OPTION2))?;
-        // Without a file to append to, the report is the new file [I].
-        let bytes = if call.step.has_flag(flag::OPTION) && path.is_file() {
+        // Without a file to append to, the report is the new file [I]. An
+        // append saves only over what it read, or where there still is no
+        // file: one that changed or appeared meanwhile is kept, and the
+        // step fails.
+        let append = call.step.has_flag(flag::OPTION);
+        let _turn = append.then(|| APPENDING.lock().unwrap_or_else(|e| e.into_inner()));
+        let (bytes, expected) = if append && path.is_file() {
+            let read = report::Expected::read(&path).map_err(|e| {
+                self.report_error(ReportError {
+                    code: 800,
+                    message: format!("The PDF to append to could not be read: {e}"),
+                })
+            })?;
             let existing = read_existing(&path).map_err(|e| self.report_error(e))?;
-            appended(&existing, &report.bytes, report.plan.pages.len())
-                .map_err(|e| self.report_error(e))?
+            let bytes = appended(&existing, &report.bytes, report.plan.pages.len())
+                .map_err(|e| self.report_error(e))?;
+            (bytes, Some(read))
         } else {
-            report.bytes
+            (report.bytes, append.then_some(report::Expected::Absent))
         };
-        report::save_pdf(&path, &bytes).map_err(|e| {
+        report::save_pdf_if(&path, &bytes, expected.as_ref()).map_err(|e| {
             self.report_error(ReportError {
                 code: 800,
                 message: format!("The PDF could not be saved: {e}"),

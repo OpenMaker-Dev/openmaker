@@ -437,11 +437,12 @@ pub struct Info {
     /// no optional content configuration: it has none (`pdf_assemble`).
     /// [`assemble`] refuses pages of a PDF that has one.
     pub optional_content_kept: bool,
-    /// Whether a new document of all its pages keeps everything else it
-    /// holds too: no document-level parts, document information or
-    /// encryption that the page copy would leave behind
-    /// (`pdf_assemble::document_kept`).
-    pub document_kept: bool,
+    /// With [`info_whole`], whether a new document of all its pages keeps
+    /// everything else it holds too: no document-level parts, document
+    /// information, file identifiers or encryption that the page copy
+    /// would leave behind (`pdf_assemble::document_kept`); `None` from
+    /// [`info`], which does not ask.
+    pub document_kept: Option<bool>,
     /// The geometry of its first `INFO_PAGES` pages.
     geometry: Vec<PageGeometry>,
 }
@@ -461,19 +462,34 @@ impl Info {
     }
 }
 
-/// A PDF's page count and what copying its pages keeps; `Ok(None)` for
-/// data that does not read.
+/// A PDF's page count and what copying its pages keeps of how they look;
+/// `Ok(None)` for data that does not read.
 pub fn info(data: &[u8]) -> Result<Option<Info>, Unavailable> {
-    Ok(ask(Op::Info, 0, 0, data)?.and_then(|reply| {
+    info_asking(data, false)
+}
+
+/// [`info`], and whether a new document of all its pages keeps everything
+/// the document holds ([`Info::document_kept`]), as appending to a PDF
+/// asks. The request's width 1 asks for it, which a worker that does not
+/// know it ignores: its answer then says it is not kept.
+pub fn info_whole(data: &[u8]) -> Result<Option<Info>, Unavailable> {
+    info_asking(data, true)
+}
+
+/// The Info reply's flags byte: bit 0 optional content kept, and only when
+/// `whole` was asked bit 1 the whole document kept, so a host that does not
+/// ask reads the reply it always did.
+fn info_asking(data: &[u8], whole: bool) -> Result<Option<Info>, Unavailable> {
+    Ok(ask(Op::Info, u32::from(whole), 0, data)?.and_then(|reply| {
         let (pages, rest) = reply.split_at_checked(4)?;
         let (kept, geometry) = rest.split_first()?;
         let pages = u32::from_be_bytes(pages.try_into().ok()?);
         let described = (pages as usize).min(pdf_assemble::INFO_PAGES);
         let geometry = pdf_assemble::decode_geometry(geometry, described)?;
-        (*kept <= 3).then_some(Info {
+        (*kept <= if whole { 3 } else { 1 }).then_some(Info {
             pages,
             optional_content_kept: *kept & 1 != 0,
-            document_kept: *kept & 2 != 0,
+            document_kept: whole.then_some(*kept & 2 != 0),
             geometry,
         })
     }))
@@ -504,7 +520,7 @@ pub fn annotation_free(data: &[u8], pages: &[u32]) -> Result<Option<bool>, Unava
     )
 }
 
-pub use super::pdf_assemble::{BoxKind, PageGeometry, Planned, INFO_PAGES, MAX_SOURCES};
+pub use super::pdf_assemble::{BoxKind, PageGeometry, Planned, INFO_PAGES, MAX_PAGES, MAX_SOURCES};
 pub use super::pdf_form::{
     check_fits, export_ok, group_refusal, name_ok, rect_ok, uri_ok, Field, FieldKind, Highlight,
     Link, MAX_ACTIONS, MAX_CAPTION, MAX_COORD, MAX_FIELDS, MAX_HIGHLIGHTS, MAX_LINKS, MAX_SCRIPT,
@@ -543,12 +559,19 @@ pub fn assemble_highlighted(
     links: &[Link],
     highlights: &[Highlight],
 ) -> Result<Option<Vec<u8>>, Unavailable> {
+    // The sources and the plan's fixed part, counted before the request
+    // copies them: no bundle past the worker's input limit is built.
+    let least = (sources.iter())
+        .map(|source| source.len() as u64 + 8)
+        .sum::<u64>()
+        .saturating_add(plan.len() as u64 * 17 + 8);
     if sources.len() > pdf_assemble::MAX_SOURCES
         || plan.len() > pdf_assemble::MAX_PAGES
         || fields.len() > MAX_FIELDS
         || actions.len() > MAX_ACTIONS
         || links.len() > MAX_LINKS
         || highlights.len() > MAX_HIGHLIGHTS
+        || least > MAX_INPUT
     {
         return Ok(None);
     }
@@ -587,9 +610,9 @@ pub fn serve(limit: impl FnOnce(usize) -> bool) -> ExitCode {
             bytes
         }),
         Op::Text => pdf::text(&data).map(String::into_bytes),
-        Op::Info => pdf_assemble::info(data).map(|(pages, kept, whole, geometry)| {
+        Op::Info => pdf_assemble::info(data, width == 1).map(|(pages, kept, whole, geometry)| {
             let mut bytes = pages.to_be_bytes().to_vec();
-            bytes.push(u8::from(kept) | u8::from(whole) << 1);
+            bytes.push(u8::from(kept) | u8::from(whole == Some(true)) << 1);
             pdf_assemble::encode_geometry(&geometry, &mut bytes);
             bytes
         }),

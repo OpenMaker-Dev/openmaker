@@ -3,8 +3,9 @@
 //! docs/plugins.md). Read in the PDF worker process only (`pdf_worker`),
 //! as every PDF is.
 //!
-//! Each page of the plan is copied with everything it refers to: its
-//! content, resources, fonts, images, annotations. Streams keep their
+//! Each page of the plan is copied with what it refers to: its content,
+//! resources, fonts, images, annotations (but see below for references to
+//! the catalog, the page tree and pages not copied). Streams keep their
 //! encoded bytes and filters (decrypted, if the source was encrypted with
 //! an empty password); numbers, strings and names are written as read. An
 //! object two pages share is copied once. A page's inherited attributes
@@ -70,10 +71,13 @@ pub struct PageGeometry {
 }
 
 /// A PDF's page count, whether [`assemble`] keeps how its pages look
-/// ([`optional_content_kept`]) and everything else it holds
-/// ([`document_kept`]), and the geometry of its first [`INFO_PAGES`]
-/// pages; `None` for data that does not read.
-pub(super) fn info(data: Vec<u8>) -> Option<(u32, bool, bool, Vec<PageGeometry>)> {
+/// ([`optional_content_kept`]), with `whole` whether it keeps everything
+/// else the document holds ([`document_kept`]), and the geometry of its
+/// first [`INFO_PAGES`] pages; `None` for data that does not read.
+pub(super) fn info(
+    data: Vec<u8>,
+    whole: bool,
+) -> Option<(u32, bool, Option<bool>, Vec<PageGeometry>)> {
     let pdf = Pdf::new(data).ok()?;
     let pages = pdf.pages();
     let count = u32::try_from(pages.len()).ok()?;
@@ -99,7 +103,7 @@ pub(super) fn info(data: Vec<u8>) -> Option<(u32, bool, bool, Vec<PageGeometry>)
     Some((
         count,
         optional_content_kept(&pdf),
-        document_kept(&pdf),
+        whole.then(|| document_kept(&pdf)),
         geometry,
     ))
 }
@@ -272,11 +276,18 @@ pub(super) fn optional_content_kept(pdf: &Pdf) -> bool {
 }
 
 /// Whether a new document of all of a document's pages ([`assemble`]) keeps
-/// all that it holds: its catalog names nothing past its type and page tree
-/// (no outlines, interactive form, structure tree, names, page labels,
-/// metadata stream, open action, page mode or viewer preferences, which the
-/// page copy leaves behind), it has no document information (title,
-/// author, dates, producer...) and it is not encrypted (the copy is not).
+/// all that it holds:
+/// - its catalog names nothing past its type and page tree (no outlines,
+///   interactive form, structure tree, names, page labels, metadata
+///   stream, open action, page mode or viewer preferences, which the page
+///   copy leaves behind);
+/// - its trailer names nothing the new trailer leaves out
+///   ([`trailer_kept`]: no document information, file identifiers or
+///   encryption);
+/// - hayro reads no document information from it either;
+/// - each page's `/Parent` chain is within the [`MAX_PARENTS`] ancestors
+///   the copy reads its inherited attributes from ([`parents_in_reach`]).
+///
 /// A document OpenMaker's reports or this assembler wrote, without a form,
 /// keeps all; appending to a PDF refuses one that does not rather than drop
 /// what it holds.
@@ -287,12 +298,227 @@ pub(super) fn document_kept(pdf: &Pdf) -> bool {
     catalog
         .keys()
         .all(|key| matches!(key.as_ref(), b"Type" | b"Pages"))
+        && trailer_kept(pdf.data().as_ref())
         && *pdf.metadata() == hayro::hayro_interpret::hayro_syntax::metadata::Metadata::default()
-        && !pdf
-            .data()
-            .as_ref()
-            .windows(b"/Encrypt".len())
-            .any(|w| w == b"/Encrypt")
+        && parents_in_reach(pdf)
+}
+
+/// Whether the trailer of the cross-reference table the file's last
+/// `startxref` names holds only `/Size` and `/Root`, the entries the new
+/// document's trailer has (PDF 1.7, 7.5.5; an update's trailer repeats
+/// every entry, 7.5.6). Its keys are read as written, so an escaped name
+/// (`/Encr#79pt`) counts as another key. Anything else refuses: document
+/// information (`/Info`), file identifiers (`/ID`), encryption
+/// (`/Encrypt`), earlier revisions (`/Prev`), a hybrid file's
+/// cross-reference stream (`/XRefStm`), and a file whose cross-references
+/// are a stream, or whose trailer does not read.
+fn trailer_kept(data: &[u8]) -> bool {
+    const STARTXREF: &[u8] = b"startxref";
+    let Some(at) = data.windows(STARTXREF.len()).rposition(|w| w == STARTXREF) else {
+        return false;
+    };
+    let mut cursor = at + STARTXREF.len();
+    skip_space(data, &mut cursor);
+    let digits = data[cursor..]
+        .iter()
+        .take_while(|b| b.is_ascii_digit())
+        .count();
+    let Some(offset) = std::str::from_utf8(&data[cursor..cursor + digits])
+        .ok()
+        .and_then(|digits| digits.parse::<usize>().ok())
+        .filter(|&offset| offset < at)
+    else {
+        return false;
+    };
+    let mut cursor = offset;
+    skip_space(data, &mut cursor);
+    if !data[cursor..].starts_with(b"xref") {
+        return false;
+    }
+    let Some(trailer) = data[cursor..at]
+        .windows(b"trailer".len())
+        .position(|w| w == b"trailer")
+    else {
+        return false;
+    };
+    let mut cursor = cursor + trailer + b"trailer".len();
+    let Some(keys) = dict_keys(data, &mut cursor, 0) else {
+        return false;
+    };
+    keys.contains(&&b"Root"[..]) && keys.iter().all(|key| matches!(*key, b"Size" | b"Root"))
+}
+
+/// PDF white space (PDF 1.7, 7.2.2) and comments from `at`.
+fn skip_space(data: &[u8], at: &mut usize) {
+    while let Some(&byte) = data.get(*at) {
+        match byte {
+            b'\0' | b'\t' | b'\n' | b'\x0c' | b'\r' | b' ' => *at += 1,
+            b'%' => {
+                while data.get(*at).is_some_and(|&b| b != b'\n' && b != b'\r') {
+                    *at += 1;
+                }
+            }
+            _ => return,
+        }
+    }
+}
+
+/// Whether `byte` ends a name, number or keyword (white space or a
+/// delimiter, PDF 1.7, 7.2.2).
+fn ends_token(byte: u8) -> bool {
+    matches!(
+        byte,
+        b'\0'
+            | b'\t'
+            | b'\n'
+            | b'\x0c'
+            | b'\r'
+            | b' '
+            | b'('
+            | b')'
+            | b'<'
+            | b'>'
+            | b'['
+            | b']'
+            | b'{'
+            | b'}'
+            | b'/'
+            | b'%'
+    )
+}
+
+/// The name, number or keyword at `at` (after white space), as written.
+fn token<'d>(data: &'d [u8], at: &mut usize) -> Option<&'d [u8]> {
+    skip_space(data, at);
+    let start = *at;
+    while data.get(*at).is_some_and(|&b| !ends_token(b)) {
+        *at += 1;
+    }
+    (*at > start).then(|| &data[start..*at])
+}
+
+/// The keys of the dictionary at `at` (after white space), as written,
+/// each value skipped ([`skip_value`]); `None` when it does not read or
+/// nests deeper than [`MAX_DEPTH`].
+fn dict_keys<'d>(data: &'d [u8], at: &mut usize, depth: usize) -> Option<Vec<&'d [u8]>> {
+    skip_space(data, at);
+    if depth > MAX_DEPTH || !data[*at..].starts_with(b"<<") {
+        return None;
+    }
+    *at += 2;
+    let mut keys = Vec::new();
+    loop {
+        skip_space(data, at);
+        if data[*at..].starts_with(b">>") {
+            *at += 2;
+            return Some(keys);
+        }
+        if data.get(*at) != Some(&b'/') {
+            return None;
+        }
+        *at += 1;
+        keys.push(token(data, at).unwrap_or_default());
+        skip_value(data, at, depth + 1)?;
+    }
+}
+
+/// Moves `at` past the object written there (after white space): a
+/// dictionary, array, string, name, or a number, keyword or reference
+/// (`12 0 R`).
+fn skip_value(data: &[u8], at: &mut usize, depth: usize) -> Option<()> {
+    skip_space(data, at);
+    if depth > MAX_DEPTH {
+        return None;
+    }
+    match *data.get(*at)? {
+        b'<' if data.get(*at + 1) == Some(&b'<') => dict_keys(data, at, depth).map(|_| ()),
+        b'<' => {
+            *at += data[*at..].iter().position(|&b| b == b'>')? + 1;
+            Some(())
+        }
+        b'[' => {
+            *at += 1;
+            loop {
+                skip_space(data, at);
+                if *data.get(*at)? == b']' {
+                    *at += 1;
+                    return Some(());
+                }
+                skip_value(data, at, depth + 1)?;
+            }
+        }
+        b'(' => {
+            let mut open = 0usize;
+            loop {
+                match *data.get(*at)? {
+                    b'\\' => *at += 1,
+                    b'(' => open += 1,
+                    b')' => {
+                        open -= 1;
+                        if open == 0 {
+                            *at += 1;
+                            return Some(());
+                        }
+                    }
+                    _ => {}
+                }
+                *at += 1;
+            }
+        }
+        b'/' => {
+            *at += 1;
+            token(data, at);
+            Some(())
+        }
+        _ => {
+            let first = token(data, at)?;
+            // A reference: two integers and `R`.
+            if first.iter().all(u8::is_ascii_digit) {
+                let mut ahead = *at;
+                if token(data, &mut ahead).is_some_and(|g| g.iter().all(u8::is_ascii_digit))
+                    && token(data, &mut ahead) == Some(b"R")
+                {
+                    *at = ahead;
+                }
+            }
+            Some(())
+        }
+    }
+}
+
+/// Whether every page's `/Parent` chain ends within the [`MAX_PARENTS`]
+/// ancestors the copy reads inherited attributes from (`Copier::inherited`),
+/// following parents as it does: an attribute only a farther ancestor has
+/// would be lost.
+fn parents_in_reach(pdf: &Pdf) -> bool {
+    let mut nodes: HashMap<ObjectIdentifier, Dict<'_>> = HashMap::new();
+    pdf.pages().iter().all(|page| {
+        let mut node = page.raw().clone();
+        for _ in 0..=MAX_PARENTS {
+            let parent = match node.get_raw::<Object<'_>>(b"Parent") {
+                None => return true,
+                Some(MaybeRef::Ref(reference)) => {
+                    let id = ObjectIdentifier::from(reference);
+                    match nodes.get(&id) {
+                        Some(parent) => Some(parent.clone()),
+                        None => {
+                            let parent = pdf.xref().get::<Dict<'_>>(id);
+                            if let Some(parent) = &parent {
+                                nodes.insert(id, parent.clone());
+                            }
+                            parent
+                        }
+                    }
+                }
+                Some(MaybeRef::NotRef(_)) => node.get::<Dict<'_>>(b"Parent"),
+            };
+            let Some(parent) = parent else {
+                return true;
+            };
+            node = parent;
+        }
+        false
+    })
 }
 
 /// A page box a page may set.

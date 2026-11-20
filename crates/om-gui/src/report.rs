@@ -3780,6 +3780,37 @@ pub fn save_pdf(path: &Path, bytes: &[u8]) -> std::io::Result<()> {
     replace_file(path, bytes)
 }
 
+/// What [`save_pdf_if`] expects at its path when it puts the new file
+/// there.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub(crate) enum Expected {
+    /// No file: one that appeared meanwhile is kept, and the save fails.
+    Absent,
+    /// The file as it was read, by its size and modification time: one
+    /// that differs is kept, and the save fails.
+    Read(u64, Option<std::time::SystemTime>),
+}
+
+impl Expected {
+    /// The file at `path` as it is now.
+    pub(crate) fn read(path: &Path) -> std::io::Result<Self> {
+        let metadata = std::fs::metadata(path)?;
+        Ok(Expected::Read(metadata.len(), metadata.modified().ok()))
+    }
+}
+
+/// [`save_pdf`], only over what `expected` names (any file without it).
+/// The check is made just before the staged file is put in place, so a
+/// writer outside OpenMaker that changes the file in between can still be
+/// overwritten.
+pub(crate) fn save_pdf_if(
+    path: &Path,
+    bytes: &[u8],
+    expected: Option<&Expected>,
+) -> std::io::Result<()> {
+    replace_file_if(path, bytes, expected)
+}
+
 /// Write `bytes` to `path` as [`save_pdf`] does: staged beside it, then
 /// renamed over it only once complete (Export Field Contents too). The
 /// file gets a new file's permissions (the user's umask applies, not a
@@ -3787,6 +3818,11 @@ pub fn save_pdf(path: &Path, bytes: &[u8]) -> std::io::Result<()> {
 /// and until the staged file has them it stays owner-only, so a private
 /// file's new contents are never readable by others on the way.
 pub(crate) fn replace_file(path: &Path, bytes: &[u8]) -> std::io::Result<()> {
+    replace_file_if(path, bytes, None)
+}
+
+/// [`replace_file`], put in place only as [`save_pdf_if`] says.
+fn replace_file_if(path: &Path, bytes: &[u8], expected: Option<&Expected>) -> std::io::Result<()> {
     let existing = std::fs::metadata(path)
         .ok()
         .filter(std::fs::Metadata::is_file)
@@ -3808,8 +3844,19 @@ pub(crate) fn replace_file(path: &Path, bytes: &[u8]) -> std::io::Result<()> {
     if let Some(permissions) = existing {
         temp.as_file().set_permissions(permissions)?;
     }
-    temp.persist(path).map_err(|e| e.error)?;
-    Ok(())
+    match expected {
+        None => temp.persist(path).map(drop).map_err(|e| e.error),
+        // Linked or renamed in only where nothing is.
+        Some(Expected::Absent) => temp.persist_noclobber(path).map(drop).map_err(|e| e.error),
+        Some(read) => {
+            if Expected::read(path).ok().as_ref() != Some(read) {
+                return Err(std::io::Error::other(
+                    "the file changed while it was being appended to; it was left as it is",
+                ));
+            }
+            temp.persist(path).map(drop).map_err(|e| e.error)
+        }
+    }
 }
 
 /// The definition of a field a report shows, or why the report refuses it
@@ -3908,6 +3955,26 @@ pub(crate) mod tests {
     //! Anonymous synthetic pictures, generated here, and the pixels both
     //! backends must show for them.
     use super::*;
+
+    /// A conditional save (an append's) puts its file in place only over
+    /// the file it read, or where there is none, and otherwise keeps what
+    /// is there and leaves no staged file behind.
+    #[test]
+    fn a_conditional_save_keeps_a_file_that_changed_or_appeared() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("out.pdf");
+        save_pdf_if(&path, b"one", Some(&Expected::Absent)).unwrap();
+        assert!(save_pdf_if(&path, b"two", Some(&Expected::Absent)).is_err());
+        assert_eq!(std::fs::read(&path).unwrap(), b"one");
+        let read = Expected::read(&path).unwrap();
+        std::fs::write(&path, b"changed").unwrap();
+        assert!(save_pdf_if(&path, b"three", Some(&read)).is_err());
+        assert_eq!(std::fs::read(&path).unwrap(), b"changed");
+        let read = Expected::read(&path).unwrap();
+        save_pdf_if(&path, b"four", Some(&read)).unwrap();
+        assert_eq!(std::fs::read(&path).unwrap(), b"four");
+        assert_eq!(std::fs::read_dir(dir.path()).unwrap().count(), 1);
+    }
     use om_layout::pagination::Placement;
     use om_layout::{GraphicObject, ObjectStyle, Property, StyleSet};
 

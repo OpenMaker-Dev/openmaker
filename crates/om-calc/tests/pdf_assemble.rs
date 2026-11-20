@@ -131,11 +131,13 @@ fn selected_and_whole_imports_keep_pages_resources_and_streams() {
     assert_eq!(pdf_worker::find(&a, 3, "A1"), Ok(None));
     assert_eq!(pdf_worker::find(&a, 0, ""), Ok(None));
     let b = source_b();
-    let info = pdf_worker::info(&a).unwrap().unwrap();
+    let info = pdf_worker::info_whole(&a).unwrap().unwrap();
     assert_eq!(
         (info.pages, info.optional_content_kept, info.document_kept),
-        (3, true, true)
+        (3, true, Some(true))
     );
+    // Not asked, the reply is the one a host that does not ask reads.
+    assert_eq!(pdf_worker::info(&a).unwrap().unwrap().document_kept, None);
     // Page 3 and page 1 of A, then all of B.
     let out = pdf_worker::assemble(&[&a, &b], &[(0, 2), (0, 0), (1, 0)])
         .unwrap()
@@ -146,7 +148,10 @@ fn selected_and_whole_imports_keep_pages_resources_and_streams() {
     );
     // What the assembler writes keeps all it holds when copied again
     // (Save Records as PDF appends to it).
-    assert!(pdf_worker::info(&out).unwrap().unwrap().document_kept);
+    assert_eq!(
+        pdf_worker::info_whole(&out).unwrap().unwrap().document_kept,
+        Some(true)
+    );
     let parsed = Parsed::new(out.clone()).unwrap();
     let pages = parsed.pages();
     assert_eq!(pages.len(), 3);
@@ -275,10 +280,10 @@ fn what_does_not_read_or_names_a_missing_page_makes_nothing() {
     // groups are on.
     for off in [true, false] {
         let layered = layered(off);
-        let info = pdf_worker::info(&layered).unwrap().unwrap();
+        let info = pdf_worker::info_whole(&layered).unwrap().unwrap();
         assert_eq!(
             (info.pages, info.optional_content_kept, info.document_kept),
-            (1, false, false),
+            (1, false, Some(false)),
             "{off}"
         );
         assert_eq!(
@@ -290,6 +295,51 @@ fn what_does_not_read_or_names_a_missing_page_makes_nothing() {
     assert_eq!(pdf_worker::assemble(&[b"not a PDF"], &[(0, 0)]), Ok(None));
     assert_eq!(pdf_worker::assemble(&[&a], &[(0, 3)]), Ok(None));
     assert_eq!(pdf_worker::assemble(&[&a], &[(1, 0)]), Ok(None));
+}
+
+/// What a new document of a PDF's pages would leave behind makes it not
+/// kept whole (`Info::document_kept`, which appending asks for): document
+/// information of any kind, file identifiers and any trailer entry past
+/// `/Size` and `/Root`, however its name is written. Text that only spells
+/// such a name is not one.
+#[test]
+fn what_a_page_copy_leaves_behind_is_not_kept_whole() {
+    worker();
+    let whole = |pdf: &[u8]| pdf_worker::info_whole(pdf).unwrap().unwrap().document_kept;
+    let plain = |change: &dyn Fn(&mut Pdf)| {
+        let mut pdf = Pdf::new();
+        pdf.catalog(Ref::new(1)).pages(Ref::new(2));
+        pdf.pages(Ref::new(2)).kids([Ref::new(3)]).count(1);
+        pdf.page(Ref::new(3))
+            .parent(Ref::new(2))
+            .media_box(R::new(0.0, 0.0, 200.0, 200.0))
+            .contents(Ref::new(4));
+        pdf.stream(Ref::new(4), &content("/Encrypt"));
+        change(&mut pdf);
+        pdf.finish()
+    };
+    assert_eq!(whole(&plain(&|_| {})), Some(true));
+    let custom = plain(&|pdf| {
+        pdf.document_info(Ref::new(9))
+            .pair(N(b"ProjectCode"), pdf_writer::TextStr("Q42"));
+    });
+    assert_eq!(whole(&custom), Some(false));
+    let identified = plain(&|pdf| {
+        pdf.set_file_id((b"first".to_vec(), b"second".to_vec()));
+    });
+    assert_eq!(whole(&identified), Some(false));
+    // An extra trailer key, an escaped one among them.
+    let bytes = plain(&|_| {});
+    for key in ["/Foo 1", "/F#6fo 1"] {
+        let at = bytes
+            .windows(b"/Root".len())
+            .rposition(|w| w == b"/Root")
+            .unwrap();
+        let mut extra = bytes[..at].to_vec();
+        extra.extend(format!("{key} ").bytes());
+        extra.extend(&bytes[at..]);
+        assert_eq!(whole(&extra), Some(false), "{key}");
+    }
 }
 
 /// Five pages whose `/Parent` is not their page tree but objects 10, 12,
@@ -607,7 +657,16 @@ fn a_page_written_on_keeps_its_content_and_gets_its_boxes() {
             .pair(N(b"Type"), N(b"Page"))
             .pair(N(b"Parent"), Ref::new(parent));
     }
-    let deep = pdf_worker::info(&deep.finish()).unwrap().unwrap();
+    let deep = deep.finish();
+    // A page copy would lose the deep page's box: appending refuses it.
+    assert_eq!(
+        pdf_worker::info_whole(&deep)
+            .unwrap()
+            .unwrap()
+            .document_kept,
+        Some(false)
+    );
+    let deep = pdf_worker::info(&deep).unwrap().unwrap();
     assert_eq!(deep.pages, 2);
     assert_eq!(
         deep.geometry(0).unwrap().boxes[BoxKind::Media as usize],
