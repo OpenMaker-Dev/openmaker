@@ -3004,6 +3004,25 @@ impl<'a> Evaluator<'a> {
         self.field_value_in_portal(object, spec, record, None)
     }
 
+    /// Whether field object `object` on `record` shows a value kept from
+    /// before while the data it reads is read again
+    /// ([`Self::field_value_in_portal`] found none from the data as it is
+    /// now, and data is awaited). Data that cannot be supplied is not
+    /// awaited ([`Calculations::awaiting_data`]).
+    pub fn value_pending(
+        &self,
+        object: u64,
+        spec: &FieldSpec,
+        record: u64,
+        portal: Option<PortalRow>,
+    ) -> bool {
+        let key = (
+            (self.layout, object, record, portal),
+            spec.repetition.max(1),
+        );
+        !self.calcs.values.borrow().contains_key(&key) && self.calcs.awaiting_data()
+    }
+
     pub fn field_value_in_portal(
         &self,
         object: u64,

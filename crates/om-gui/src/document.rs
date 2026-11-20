@@ -5285,6 +5285,19 @@ fn paint_object_repetition(
                     calc.refreshed_value(object.id)
                         || object.field_spec().is_some_and(|spec| calc.is_global(spec))
                 });
+            // A global whose session value is being read again (a script
+            // set it) shows the value from before: its editor takes no
+            // typing until the value is in, so that no edit begins from the
+            // old one. An edit begun before keeps its draft
+            // (`FieldBuffer::refresh_targeted`).
+            let global_pending = portal.is_none()
+                && calc.zip(object.field_spec()).is_some_and(|(calc, spec)| {
+                    calc.is_global(spec)
+                        && session
+                            .record_at(record_index)
+                            .and_then(|(_, record)| u64::try_from(record.id).ok())
+                            .is_some_and(|record| calc.value_pending(object.id, spec, record, None))
+                });
             // A container's draft is a library reference, never shown: the
             // calculations read its file name through the drafts.
             let container =
@@ -5843,7 +5856,7 @@ fn paint_object_repetition(
                     let editor = ui.scope_id().with((layout.id, object.id, record.id));
                     return_goes_on(ui, &mut state.tab_held, object, editor);
                     let cache = &state.layout_cache;
-                    let interactive = !state.pending;
+                    let interactive = !state.pending && !global_pending;
                     let (response, changed) =
                         guarded_editor(ui, editor, buffer, refusal, actions, |ui, buffer| {
                             field_editor(
