@@ -961,8 +961,10 @@ impl DocumentState {
     }
 
     /// Keep field-editing commands in the field. Revert also takes the
-    /// active field so its script step can run the discard triggers.
-    /// Other menu commands surrender focus and wait for the exit triggers.
+    /// active field so its script step can run the discard triggers, and
+    /// Relookup Field Contents as its target (Claris's help: select the
+    /// match field, then choose the command). Other menu commands
+    /// surrender focus and wait for the exit triggers.
     pub(crate) fn menu_leaves_field(&mut self, ui: &Ui, chosen: &mut Vec<Action>) {
         if chosen.is_empty() {
             return;
@@ -990,7 +992,8 @@ impl DocumentState {
                                 | steps::INSERT_CURRENT_USER_NAME
                                 | steps::INSERT_FROM_INDEX
                                 | steps::INSERT_FROM_LAST_VISITED
-                                | om_data::scripts::revert_record::STEP_ID,
+                                | om_data::scripts::revert_record::STEP_ID
+                                | om_data::scripts::relookup::STEP_ID,
                             _
                         )
                 ))
@@ -1032,6 +1035,10 @@ impl DocumentState {
                         | Action::DiscardEntryCandidates
                 ) {
                     cancellation.push(action);
+                } else if matches!(action, Action::Step(om_data::scripts::relookup::STEP_ID, _)) {
+                    // Relookup acts on the field entered when it was
+                    // chosen, and the record had something to commit: not
+                    // held for later, when the focus may have moved.
                 } else {
                     retained.push(action);
                 }

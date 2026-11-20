@@ -5058,12 +5058,8 @@ impl Fields for WorkerHost<'_> {
         };
         if with_dialog {
             self.confirm(
-                "Relookup Field Contents",
-                format!(
-                    "Look up the values again in all {} records of the current found set, \
-                     through the field \u{201c}{name}\u{201d}?",
-                    ids.len()
-                ),
+                om_data::scripts::relookup::LABEL,
+                om_data::scripts::relookup::message(&name, ids.len()),
                 "OK",
             )?;
         }
