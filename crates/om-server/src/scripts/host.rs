@@ -47,6 +47,7 @@ use om_calc::eval::{
 };
 use om_calc::{CalcError, Ctx, Date, Locale, Time, TimeStyle, Timestamp, Value, ValueType};
 use om_data::found::Findable;
+use om_data::host::security::SetAccess;
 use om_data::host::sql::FileSql;
 use om_data::host::{CalcSchema, CalcSource, FileCalc, RecordValues, SessionInfo, Vars};
 use om_data::rules::{self, Entry, RecordEnvironment, RecordPlan, WriteMode};
@@ -699,6 +700,10 @@ pub(crate) struct ServerHost {
     pub log: ErrorLog,
     /// What the account may do.
     privileges: Privileges,
+    /// The account's privilege set as its login verified it, for the
+    /// scripts it may run (session-identity.md 2.2); `None`: as
+    /// [`Self::privileges`] says.
+    access: Option<SetAccess>,
     /// A step of a script set to run with full access privileges is
     /// executing (script-runtime.md 9.1).
     elevated: bool,
@@ -759,6 +764,7 @@ impl ServerHost {
             request_open: false,
             log: ErrorLog::default(),
             privileges,
+            access: None,
             elevated: false,
             control: Control::unlimited(),
             calc_limits: SCRIPT_CALC_LIMITS,
@@ -811,6 +817,11 @@ impl ServerHost {
     /// What one calculation of the script may build.
     pub fn set_calc_limits(&mut self, limits: CalcLimits) {
         self.calc_limits = limits;
+    }
+
+    /// The account's privilege set, which decides the scripts it may run.
+    pub fn set_access(&mut self, access: Option<SetAccess>) {
+        self.access = access;
     }
 
     /// End the session: revert an unfinished transaction, commit the open
@@ -2060,8 +2071,17 @@ impl ServerHost {
                 .schema
                 .field(occurrence, *field)
                 .ok_or(FindError::Unsupported)?;
-            let criterion = find::Criterion::parse(text, def.data_type, &context)
-                .map_err(|_| FindError::Unsupported)?;
+            // Text keyed as the field's index keys it (query-program.md 7.2).
+            let form = match def.decoded_options() {
+                Some(options) if def.data_type == DataType::Text => rules::read_text_keys(
+                    options.index_language(),
+                    u32::from(self.locale.language.id()),
+                ),
+                _ => TextKeys::Collated,
+            };
+            let criterion =
+                find::Criterion::parse(text, def.data_type, &context.with_text_keys(form))
+                    .map_err(|_| FindError::Unsupported)?;
             let Some(criterion) = criterion else {
                 continue;
             };
@@ -2464,6 +2484,24 @@ impl ServerHost {
         let file = FileCalc::new(&schema, &source, self.today);
         let mut sql = FileSql::new(file, &session, vars);
         om_data::sql::calc::execute_sql(&mut sql, variant, args)
+    }
+}
+
+impl ServerHost {
+    /// `GetRecordIDsFromFoundSet` over the session's window's found set, as
+    /// FileMaker Server's script engine answers it (calc-functions.md,
+    /// "GetRecordIDsFromFoundSet on FileMaker Server").
+    pub(super) fn record_ids_from_found_set(
+        &self,
+        args: &[Value],
+        context: &Context,
+    ) -> Result<Value, CalcError> {
+        let Some((_, schema)) = self.schema.rules.clone() else {
+            return Err(CalcError::from_code(3).expect("nonzero"));
+        };
+        let source = SessionSource::new(self, &schema);
+        let limit = om_calc::eval::CalcHost::limits(self).text;
+        FileCalc::new(&schema, &source, self.today).record_ids_from_found_set(args, context, limit)
     }
 }
 
@@ -3079,16 +3117,22 @@ impl ScriptHost for ServerHost {
         self.refresh_schema();
     }
 
-    /// An account in a verified built-in set may run every script (its
-    /// scripts modifiable or executable only, session-identity.md 2.7);
-    /// one in a custom set ([`Privileges::Unknown`]) only scripts set to
-    /// run with full access privileges, whose steps then have full access
-    /// (script-runtime.md 2.2, 9.1): a custom set's script privileges are
-    /// not read here.
+    /// The scripts the account's set lets it run (session-identity.md
+    /// 2.2): every script under a verified built-in set, and under a custom
+    /// set those it makes executable. A script the set gives no access is
+    /// not executable, and being set to run with full access privileges
+    /// does not make it so: only a caller running with full access lets it
+    /// run, and then with the account's own privileges (script-runtime.md
+    /// 3.7, 9.1). The runtime admits a script with either flag, so the flag
+    /// is given only for a script the account may run.
     fn script_access(&mut self, file: FileId, script: u64) -> ScriptAccess {
+        let executable = match &self.access {
+            Some(access) => access.runs_script(script),
+            None => self.privileges.runs_scripts(),
+        };
         ScriptAccess {
-            executable: self.privileges.runs_scripts(),
-            full_access: file == FILE && self.schema.full_access.contains(&script),
+            executable,
+            full_access: executable && file == FILE && self.schema.full_access.contains(&script),
         }
     }
 

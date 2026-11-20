@@ -186,6 +186,8 @@ pub mod leaf {
     pub const TABLE: u8 = 0x05;
     pub const PROJ_LIST: u8 = 0x06;
     pub const ACCESS_KEY: u8 = 0x07;
+    /// LookupValue: `01 01` for the next higher value, else the next lower.
+    pub const LOOKUP_HIGHER: u8 = 0x08;
     pub const FIELD_KEY: u8 = 0x09;
     pub const OPERAND1: u8 = 0x0a;
     pub const OPERAND2: u8 = 0x0b;
