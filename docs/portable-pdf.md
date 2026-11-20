@@ -311,14 +311,17 @@ file in the PDF:
 
 Bold is weight 2, or 600 and up. Italic is a font-style of italic or oblique
 (property 67, 2 or 3), or a character run's italic face (`0x0200` under mask
-`0x0020`, layout-model.md 8.1), which a run can also turn off. Italic Arial or
+`0x0020`, layout-model.md 8.1), which a run can also turn off. A run's own
+font, as Browse reads it, chooses the family. Italic Arial or
 Helvetica text prints in Liberation Sans Italic or Bold Italic, metric-compatible
 with Arial Italic and Arial Bold Italic, and the PDF's font descriptor carries
 its italic flag and -12 degree angle. That FileMaker Pro prints these faces
 with Arial Italic's widths is inferred from Arial's; no FileMaker PDF with
 italic text has been compared, and no starter text is italic. Italic text in
 any other family still refuses (error 3): no italic Inter is bundled, and
-printing it upright would misrepresent the layout. Liberation
+printing it upright would misrepresent the layout. A line whose glyph
+outlines reach past the object's frame, as an italic overhang can though the
+advances fit, is cut at the frame, as Pro clips text to its box. Liberation
 Sans stands in for Helvetica as well, though Helvetica's widths differ from
 Arial's; that is inferred adequate, not measured. Browse is unchanged: it uses
 the system Arial where macOS ships it and Inter elsewhere. Preview draws the

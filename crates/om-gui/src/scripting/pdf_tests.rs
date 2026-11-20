@@ -2920,13 +2920,59 @@ fn arial_text_prints_in_liberation_sans_and_other_text_in_inter() {
     let upright = italic_run(italic_style(text(Some("Arial"), false, "Ada")), false);
     let pdf = render(upright).unwrap();
     assert!(pdf.contains("/F3 ") && !pdf.contains("LiberationSans-Italic"));
+    // The run's own font chooses the face, as Browse draws it: an Arial
+    // italic run on a Verdana label prints, a Verdana one on an Arial
+    // label refuses.
+    let run_family = |mut text: LayoutObject, family: &str| {
+        let rich = text.rich_text.as_mut().unwrap();
+        rich.character_runs[0].style.font_family = Some(family.to_owned());
+        text
+    };
+    let pdf = render(run_family(
+        italic_run(text(Some("Verdana"), false, "Ada"), true),
+        "Arial",
+    ))
+    .unwrap();
+    assert!(pdf.contains("/BaseFont /LiberationSans-Italic"));
     for italic in [
         italic_style(text(Some("Verdana"), false, "Ada")),
         italic_run(text(None, false, "Ada"), true),
+        run_family(
+            italic_run(text(Some("Arial"), false, "Ada"), true),
+            "Verdana",
+        ),
     ] {
         let error = render(italic).unwrap_err();
         assert_eq!(error.code, 3, "{}", error.message);
     }
+    // An italic glyph whose outline reaches past its frame, though its
+    // advance fits (a right-aligned 36-point `f` in a 13-point label), is
+    // cut at the frame; one well inside it is not.
+    let spilling = |align: i32, width: f64| {
+        let mut text = italic_style(label(1, "f", rect(10.0, 10.0, width, 44.0), 36.0, false));
+        let props = &mut text
+            .style
+            .as_mut()
+            .unwrap()
+            .local_styles
+            .as_mut()
+            .unwrap()
+            .components[0]
+            .properties;
+        props.push(Property {
+            id: 64,
+            string: Some("Arial".into()),
+            ..Default::default()
+        });
+        props.push(Property {
+            id: 74,
+            int: Some(align),
+            ..Default::default()
+        });
+        render(text).unwrap().matches("W\nn").count()
+    };
+    assert_eq!(spilling(3, 13.0), 1);
+    assert_eq!(spilling(1, 200.0), 0);
 }
 
 /// A field's text sits inside its text component's margins (properties
