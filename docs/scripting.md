@@ -275,7 +275,8 @@ Server Find mode:
 - A find without criteria (400) returns to Browse.
 - Perform Quick Find (150) searches the window's layout by the
   desktop's rules ([Quick Find](desktop-client.md#quick-find)), among
-  all the table's records. A word that a Quick Find field of another
+  all the table's records, reading dates in the file's date order as
+  the server's other finds do. A word that a Quick Find field of another
   occurrence would be searched for fails with 3, as a related find
   criterion does on the server
   ([#101](https://github.com/OpenMaker-Dev/openmaker/issues/101)). What

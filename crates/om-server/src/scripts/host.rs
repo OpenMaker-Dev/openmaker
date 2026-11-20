@@ -3730,7 +3730,8 @@ impl FoundSets for ServerHost {
         self.require_view()?;
         let fields = self.quick_find_fields();
         let (year, month, day) = self.today.ymd();
-        let change = om_data::quick_find::change(text, &fields, (year as i32, month, day))
+        let today = (year as i32, month, day);
+        let change = om_data::quick_find::change_in(text, &fields, today, self.locale.date_order)
             .map_err(|e| ErrorCode(e.code.unwrap_or(3)))?;
         let om_data::found::FoundSetChange::QuickFind(terms) = change else {
             return Err(HostError::Unsupported);
@@ -3770,6 +3771,11 @@ impl FoundSets for ServerHost {
         }
         if found.is_empty() {
             return Err(NO_RECORDS_MATCH.into());
+        }
+        // Leaving Find mode, `Get ( RequestCount )` keeps its requests'
+        // count, as Enter Browse Mode does (s31, s33).
+        if self.window()?.mode == Mode::Find {
+            self.request_count = self.requests.len();
         }
         self.requests.clear();
         let window = self.window_mut()?;

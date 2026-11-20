@@ -49,16 +49,21 @@ fn set_var(name: &str, text: &str) -> ScriptStep {
     step
 }
 
-/// Perform Quick Find with the text of `text`, a calculation, then exit
-/// with the error and the found count.
-fn quick_find_then_count(text: &str) -> Vec<ScriptStep> {
-    let mut step = ScriptStep::new(150);
-    step.set_calculation(0, Some(&calc(text)));
-    vec![
-        fixture::on(86, true),
-        step,
-        exit_with("Get ( LastError ) & \":\" & Get ( FoundCount )"),
-    ]
+/// After `before`, Perform Quick Find with each of `texts` (calculations)
+/// in turn, then exit with the last one's error, the found count and the
+/// current record's Name.
+fn quick_finds(before: Vec<ScriptStep>, texts: &[&str]) -> Vec<ScriptStep> {
+    let mut steps = vec![fixture::on(86, true)];
+    steps.extend(before);
+    for text in texts {
+        let mut step = ScriptStep::new(150);
+        step.set_calculation(0, Some(&calc(text)));
+        steps.push(step);
+    }
+    steps.push(exit_with(
+        "Get ( LastError ) & \":\" & Get ( FoundCount ) & \":\" & Tasks::Name",
+    ));
+    steps
 }
 
 /// Find Matching Records on Tasks::`field` (none: the field with the
@@ -239,17 +244,26 @@ fn scripts() -> Vec<Script> {
                 exit_with("IsEmpty ( Tasks::Label ) & \"|\" & Length ( Tasks::Label )"),
             ],
         ),
-        script(40, "Quick Find", quick_find_then_count("\"ship\"")),
-        script(41, "Quick Find no word", quick_find_then_count("\"  \"")),
+        script(40, "Quick Find", quick_finds(vec![], &["\"ship\""])),
+        script(
+            41,
+            "Quick Find no word",
+            quick_finds(vec![], &["\"ship\"", "\"  \""]),
+        ),
         script(
             42,
             "Quick Find no match",
-            quick_find_then_count("\"write qqq\""),
+            quick_finds(vec![fixture::go_to_record(4)], &["\"write qqq\""]),
         ),
         script(
             43,
             "Quick Find merge field",
-            quick_find_then_count("\"open\""),
+            quick_finds(vec![], &["\"open\""]),
+        ),
+        script(
+            47,
+            "Quick Find every word",
+            quick_finds(vec![], &["\"alpha ship\""]),
         ),
         script(44, "Matching Name", find_matching_then_count(Some(NAME), 1)),
         script(
@@ -397,18 +411,21 @@ fn find_mode_reads_and_finds_without_criteria_are_filemakers() {
 
 /// Perform Quick Find on the server (query-program.md 6.6) searches the
 /// layout's Name field object and its Status merge field: a word finds the
-/// records holding it, the words narrow one another, and no match (401) or
-/// no word (400) keeps the found set. It ran into error 3 before.
+/// records holding it, and a record must hold every word. No word (400) or
+/// no match (401) keeps the found set and the current record (after Go to
+/// Record [Next], "Ship"). It ran into error 3 before.
 #[test]
 fn server_quick_find_searches_the_layouts_quick_find_fields() {
     let file = TempFile::from_tree("psos-quick-find", &tree());
     let port = server::start(&file);
     let (mut client, _) = server::logged_in(port, "client");
-    assert_eq!(run(&mut client, 40), (0, "0:1".into()));
-    assert_eq!(run(&mut client, 41), (400, "400:5".into()));
-    assert_eq!(run(&mut client, 42), (401, "401:5".into()));
+    assert_eq!(run(&mut client, 40), (0, "0:1:Ship".into()));
+    assert_eq!(run(&mut client, 41), (400, "400:1:Ship".into()));
+    assert_eq!(run(&mut client, 42), (401, "401:5:Ship".into()));
     // Record 5's Status "Open", through the merge field.
-    assert_eq!(run(&mut client, 43), (0, "0:1".into()));
+    assert_eq!(run(&mut client, 43), (0, "0:1:".into()));
+    // "alpha" and "ship" are in different records.
+    assert_eq!(run(&mut client, 47), (401, "401:5:Write tests".into()));
 }
 
 /// Find Matching Records on the server: the records holding the current
