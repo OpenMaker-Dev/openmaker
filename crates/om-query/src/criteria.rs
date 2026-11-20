@@ -1328,6 +1328,11 @@ impl Criterion {
         if text.chars().nth(MAX_CRITERION_CHARS).is_some() {
             return Err(Unreadable);
         }
+        // A text criterion with a character the field's form does not key
+        // (`TextKeys::keys`) cannot be keyed, rather than keyed in English.
+        if data_type == DataType::Text && !ctx.text.keys(text) {
+            return Err(Unreadable);
+        }
         let kind = Self::kind(text, data_type, ctx)?;
         Ok(Some(Criterion {
             data_type,

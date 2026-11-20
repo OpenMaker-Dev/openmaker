@@ -7,9 +7,11 @@
 //!
 //! A kanji outside level 1 (level 2, JIS X 0212, the extensions and the
 //! compatibility ideographs) has a table weight whose order is not derived;
-//! the combining semi-voiced mark U+309A and the halfwidth sound marks are
-//! not established. A text holding one has no key ([`japanese_key`]), so
-//! whoever needs its key refuses that text.
+//! the combining semi-voiced mark U+309A, the halfwidth sound marks and
+//! the kana the probe did not hold (the phonetic extensions, the kana
+//! supplements, `・`, the halfwidth punctuation) are not established. A
+//! text holding one has no key ([`japanese_key`]), so whoever needs its key
+//! refuses that text.
 
 /// Each kana's weights in a Japanese key: hiragana `40xx`, katakana `44xx`,
 /// halfwidth katakana the fullwidth ones', a voiced kana its plain kana then
@@ -291,7 +293,13 @@ fn weight(c: char) -> Weight {
         // U+309A after U+3099 added nothing in the probe, though 7.2 reads
         // it as 01f8: how it keys is open, as are the halfwidth marks.
         '\u{309a}' | '\u{ff9e}' | '\u{ff9f}' => return Weight::Unkeyed,
+        // The prolonged sound mark keys from the table (`11dd`, probe).
+        'ー' => return Weight::Table,
         _ => {}
+    }
+    // A kana the probe did not hold: its Japanese weight is not known.
+    if kana(c) {
+        return Weight::Unkeyed;
     }
     if !ideograph(c) {
         return Weight::Table;
@@ -302,12 +310,29 @@ fn weight(c: char) -> Weight {
     }
 }
 
-/// A CJK ideograph: the unified blocks, their extensions and the
-/// compatibility ideographs.
+/// A character of the kana blocks: hiragana, katakana, their phonetic
+/// extensions, halfwidth katakana and its punctuation, and the kana
+/// supplements.
+fn kana(c: char) -> bool {
+    matches!(
+        u32::from(c),
+        0x3040..=0x30ff | 0x31f0..=0x31ff | 0xff61..=0xff9f | 0x1_b000..=0x1_b16f
+    )
+}
+
+/// A CJK ideograph: the unified blocks and their extensions A to I, and the
+/// compatibility ideographs and their supplement. Other supplementary code
+/// points key from the table.
 fn ideograph(c: char) -> bool {
     matches!(
         u32::from(c),
-        0x3400..=0x4dbf | 0x4e00..=0x9fff | 0xf900..=0xfaff | 0x2_0000..=0x3_ffff
+        0x3400..=0x4dbf
+            | 0x4e00..=0x9fff
+            | 0xf900..=0xfaff
+            | 0x2_0000..=0x2_a6df
+            | 0x2_a700..=0x2_ee5f
+            | 0x2_f800..=0x2_fa1f
+            | 0x3_0000..=0x3_23af
     )
 }
 
@@ -379,7 +404,18 @@ mod tests {
         assert_eq!(japanese_key("abc"), Some(crate::text_key("abc")));
         assert_eq!(key("々〆").as_deref(), Some("0111d7446b"));
         assert_eq!(key("豈"), None);
+        assert_eq!(key("\u{f900}"), None);
+        // JIS X 0212 and an extension, each on its own.
+        assert_eq!(key("丂"), None);
+        assert_eq!(key("㐀"), None);
         assert_eq!(key("は\u{309a}"), None);
+        // Kana the probe did not hold; the prolonged sound mark keys.
+        assert_eq!(key("ㇰ"), None);
+        assert_eq!(key("・"), None);
+        assert_eq!(key("ー").as_deref(), Some("0111dd"));
+        // A supplementary code point outside the ideograph blocks keys from
+        // the table.
+        assert!(japanese_key("\u{3fffe}").is_some());
         assert_eq!(key("ﾊﾞ"), None);
         assert!(KANA.windows(2).all(|w| w[0].0 < w[1].0));
     }

@@ -99,6 +99,18 @@ impl TextKeys {
         }
     }
 
+    /// Whether every character of `text` keys in this form: always, but in
+    /// [`TextKeys::Japanese`], which does not key a kanji outside level 1
+    /// and the other characters [`om_collate::japanese_key`] names. A value
+    /// that does not has no index keys at all ([`record_value_keys`],
+    /// [`word_keys`]), and whoever needs them must refuse it.
+    pub fn keys(self, text: &str) -> bool {
+        match self {
+            TextKeys::Japanese => om_collate::japanese_key(text).is_some(),
+            _ => true,
+        }
+    }
+
     /// The key of one line or word as an index holds it: its first
     /// [`om_collate::INDEX_KEY_LIMIT`] bytes (7.1).
     pub fn key(self, text: &str) -> Option<Vec<u8>> {
@@ -147,6 +159,9 @@ fn whole_value_keys(
     text: TextKeys,
 ) -> Vec<Vec<u8>> {
     match data_type {
+        // A value with a character the form does not key has none, not the
+        // keys of its other lines (`TextKeys::keys`).
+        DataType::Text if !text.keys(value) => Vec::new(),
         DataType::Text => {
             let mut keys: Vec<Vec<u8>> = value
                 .split(['\r', '\n'])
@@ -242,6 +257,11 @@ fn held_value_keys(
         filled
     };
     let mut held = Held::default();
+    // A repetition with a character the form does not key leaves the
+    // record without keys, not with the others' (`TextKeys::keys`).
+    if data_type == DataType::Text && !values.iter().all(|value| text.keys(value)) {
+        return held;
+    }
     for value in values {
         for key in whole_value_keys(data_type, value, order, text) {
             held.add(key);
@@ -266,6 +286,10 @@ pub fn word_entries(texts: &[String], text: TextKeys) -> BTreeSet<Vec<u8>> {
 
 fn held_word_keys(texts: &[String], text: TextKeys) -> Held {
     let mut held = Held::default();
+    // As for value keys: none for a record with a keyless character.
+    if !texts.iter().all(|value| text.keys(value)) {
+        return held;
+    }
     for word in texts.iter().flat_map(|value| om_collate::words(value)) {
         if let Some(key) = text.whole_key(word) {
             held.add(key);
@@ -332,6 +356,27 @@ mod tests {
         assert_eq!(
             value_keys(DataType::Number, &fraction, order, english)[0].len(),
             2 + 100
+        );
+        // A Japanese value with a character the form does not key (a kanji
+        // outside JIS X 0208 level 1) has no keys at all: not the empty
+        // value's, nor its other lines' or repetitions' (#299).
+        let japanese = TextKeys::Japanese;
+        let japanese_value = |values: &[&str]| {
+            let values: Vec<String> = values.iter().map(|v| v.to_string()).collect();
+            (
+                record_value_entries(DataType::Text, &values, order, japanese),
+                word_entries(&values, japanese),
+            )
+        };
+        let none = (BTreeSet::new(), BTreeSet::new());
+        assert_eq!(japanese_value(&["\u{f900}"]), none);
+        assert_eq!(japanese_value(&["中\r\u{f900}"]), none);
+        assert_eq!(japanese_value(&["中", "\u{f900}"]), none);
+        assert!(!japanese.keys("中\u{f900}") && japanese.keys("中"));
+        let key = om_collate::japanese_key("中").unwrap();
+        assert_eq!(
+            japanese_value(&["中"]),
+            ([key.clone()].into(), [key].into())
         );
     }
 
