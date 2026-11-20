@@ -22,8 +22,7 @@ in [architecture.md](architecture.md).
     XWayland and the X11 libraries winit opens (Debian/Ubuntu:
     `libxkbcommon-x11-0`, `libx11-xcb1`, `libxcursor1`, `libxi6`).
     Without them the windows stay on Wayland and web viewers show a note.
-    On macOS they use the system's WKWebView, with nothing to install; only
-    a file's first window shows pages so far.
+    On macOS they use the system's WKWebView, with nothing to install.
   - Saving a FileMaker client license: an unlocked desktop Secret Service
     on Linux (Keychain on macOS, Credential Manager on Windows).
   - Print: CUPS (`lp`).

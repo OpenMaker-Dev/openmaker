@@ -2100,11 +2100,14 @@ OpenMaker's runtime (`om-gui` `web_viewer`, the `web-viewer` feature):
   at the page's `loading`: a navigation is loading from when it starts,
   and one that fails before committing ends a quarter of a second after it
   stops loading. An address Foundation cannot read as a URL shows a blank
-  page [I, OpenMaker's choice; wry would panic on it]. Only the file's first window shows pages: the other windows show
-  the note "this window has no native window to show it in" ([#304](https://github.com/OpenMaker-Dev/openmaker/issues/304)).
-  `tests/web_viewer_native.rs` runs on macOS too, with the window's mouse
-  events given to the view under the page's button rather than real input
-  (the test window is not made key, so as to leave the desktop alone).
+  page [I, OpenMaker's choice; wry would panic on it]. Every window shows
+  its own pages: another window's AppKit window is found as
+  `web_viewer/viewports.rs` says (below). `tests/web_viewer_native.rs`
+  runs on macOS too, with the window's mouse events given to the view under
+  the page's button rather than real input (the test window is not made key,
+  so as to leave the desktop alone), and `tests/web_viewer_windows_native.rs`
+  reads a second window's List rows' colors from the system's
+  `screencapture`.
 - On Linux the views can only be children of X11 windows, so a build with
   the feature puts its windows on winit's X11 backend whenever an X server
   answers at startup (`om_gui::native_options`). On a Wayland session, where
@@ -2125,7 +2128,7 @@ OpenMaker's runtime (`om-gui` `web_viewer`, the `web-viewer` feature):
   A test runs the real event loop with `WAYLAND_DISPLAY` naming no socket.
   An XWayland window under a nested compositor was checked by hand, and no
   Wayland desktop has been tried.
-- On Linux every window shows its own views. eframe 0.37 gives out only the root
+- Every window shows its own views. eframe 0.37 gives out only the root
   viewport's native window; another window's viewport is an immediate
   viewport whose X11 window OpenMaker finds from the server
   (`web_viewer/viewports.rs`): a connection of its own watches the screen's
@@ -2134,7 +2137,13 @@ OpenMaker's runtime (`om-gui` `web_viewer`, the `web-viewer` feature):
   between the moment before the viewport is shown and the start of its code
   is that viewport's, since eframe creates the window there. A title that
   matches breaks a tie, and anything else leaves the window without views
-  and with a note. When eframe recreates a viewport's window (some builder
+  and with a note. On macOS the moment is read from AppKit instead: the
+  window `NSApplication.windows` lists at the start of a viewport's code that
+  it did not list just before the viewport was shown is that viewport's,
+  since winit makes it there on the main thread; when that moment shows
+  several, the one of them with the viewport's title, then or on a later
+  frame. A window that was there before is never taken.
+  When eframe recreates a viewport's window (some builder
   changes), or a window moves to the root viewport, its views are made
   again in the new native window. A test checks this in eframe's real event
   loop under Xvfb, and another, on a WebKitGTK build, renders a page in a
@@ -2188,7 +2197,7 @@ OpenMaker's runtime (`om-gui` `web_viewer`, the `web-viewer` feature):
   once). A callback is routed by the view's window id, window UUID, session
   epoch, file, layout and object; one from a destroyed view, a closed
   window or an earlier session is dropped.
-- Not yet: macOS's other windows, a Windows (WebView2) adapter, views in
+- Not yet: a Windows (WebView2) adapter, views in
   native Wayland windows,
   embedded viewports (a backend without native windows), Find mode's "Display content in Find
   mode", progress bar and status messages, `GetLayoutObjectAttribute`'s
