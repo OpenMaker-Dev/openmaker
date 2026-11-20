@@ -442,6 +442,12 @@ fn word_char(c: char) -> WordChar {
     }
 }
 
+/// A letter of the Latin blocks (Basic Latin to Latin Extended-B, and
+/// Latin Extended Additional), which hold no combining marks.
+fn latin_letter(c: char) -> bool {
+    c.is_alphabetic() && matches!(u32::from(c), 0x41..=0x24f | 0x1e00..=0x1eff)
+}
+
 /// A character the table gives no primary weight but a secondary one: an
 /// accent, which keys with the letter before it.
 fn accent(c: char) -> bool {
@@ -529,9 +535,10 @@ fn joins_word(before: char, c: char, after: char, breaks: WordBreaks) -> bool {
         ':' => digits && breaks.colon_digits,
         '/' => digits && breaks.slash_digits,
         '\'' | '\u{2019}' => letters && breaks.apostrophe_letters,
-        // Between two letters themselves: not an alphabetic accent
-        // (U+0345) on either side, which keys with the letter before it.
-        '\u{B7}' => letters && breaks.middle_dot_letters && !accent(before) && !accent(after),
+        // Between two Latin letters themselves, as Catalan writes `l·l`
+        // (the probe's letters are ASCII): not an accent or another
+        // script's sign (U+0345, U+093F) beside it.
+        '\u{B7}' => breaks.middle_dot_letters && latin_letter(before) && latin_letter(after),
         _ => false,
     }
 }
@@ -673,6 +680,7 @@ mod tests {
         let catalan = WordBreaks::of_language(16).unwrap();
         assert_eq!(words_in("l·l", catalan), ["l·l"]);
         assert_eq!(words_in("1\u{345}·a", catalan), ["1\u{345}", "a"]);
+        assert_eq!(words_in("a·\u{93f}", catalan), ["a", "\u{93f}"]);
         // The dot does not stay with `a`; the accent after it is a word of
         // its own, as an alphabetic accent after a separator is today.
         assert_eq!(words_in("a·\u{345}", catalan), ["a", "\u{345}"]);
