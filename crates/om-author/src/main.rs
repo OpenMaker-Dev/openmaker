@@ -155,6 +155,7 @@ connection (or the environment variable):
   --account NAME         OPENMAKER_ACCOUNT
   --password-file PATH   OPENMAKER_PASSWORD_FILE, else OPENMAKER_PASSWORD
 TLS: OPENMAKER_CA_CERT, OPENMAKER_CLIENT_CERT and OPENMAKER_CLIENT_KEY.
+FileMaker client license: OPENMAKER_LICENSE_FILE (first line).
 Passwords are never taken as arguments.";
 
 /// The arguments, parsed.
@@ -326,7 +327,14 @@ fn target(args: &Args) -> Result<Target, String> {
         .clone()
         .or_else(|| setting(None, "OPENMAKER_PASSWORD_FILE").map(PathBuf::from));
     let password = read_password(password_file.as_deref())?;
-    let tls = NativeConfig::from_env().map_err(|e| e.to_string())?;
+    let mut tls = NativeConfig::from_env().map_err(|e| e.to_string())?;
+    if let Some(path) = std::env::var_os("OPENMAKER_LICENSE_FILE").filter(|p| !p.is_empty()) {
+        let license = zeroize::Zeroizing::new(
+            std::fs::read_to_string(path)
+                .map_err(|e| format!("Cannot read the FileMaker client license file: {e}"))?,
+        );
+        tls.machine.install_code = license.lines().next().unwrap_or_default().trim().to_owned();
+    }
     Ok(Target::new(host, port, file, account, password, tls))
 }
 

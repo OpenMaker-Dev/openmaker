@@ -1700,9 +1700,9 @@ impl Service {
                 AuthorError::new(
                     ErrorKind::OutcomeUnknown,
                     format!(
-                        "The edit of {label} was sent but no answer came back ({reason}), so it \
-                         may or may not have been applied. Read the script again: at \
-                         after_revision it was applied, at previous_revision it was not."
+                        "The edit of {label} was sent but could not be confirmed ({reason}). Read \
+                         the script again to compare its content with after_revision and \
+                         previous_revision."
                     ),
                 )
                 .with_details(json!({

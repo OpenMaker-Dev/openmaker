@@ -19,7 +19,9 @@ an optional text label), texts and portals, moves, resizes and deletes
 objects, and changes a field's control and a text's words; changes a
 **custom value list's values**; and **runs scripts** on the host with
 Perform Script on Server. `create-file` makes a blank file on this
-computer without a connection. Everything else is read-only; see
+computer without a connection. On FileMaker Server 26, a [Full Access]
+account can replace an existing script's steps through the native save.
+See
 [Limits](#limits).
 
 ## Commands (`openmaker.authoring/v1`)
@@ -159,10 +161,11 @@ service's checks before a write. Each command's `effect` says what it can
 change: `reads` nothing, `authors` the file's design, `runs` a script, or
 `edits` a record's field as a user's choice in a window does.
 A command that authors needs the host's grant (`script_steps`, `fields`,
-`layouts`, `new_layouts`, `layout_objects`, `object_deletion`, `texts`, `layout_copies` or `layout_deletion`): only OpenMaker Server's authoring extension gives one, to
-an account allowed to author, so on any other host, FileMaker Server
-included, `capabilities` reports the operation unavailable and the
-command answers `unsupported` without sending anything. MCP tools are
+`layouts`, `new_layouts`, `layout_objects`, `object_deletion`, `texts`, `layout_copies` or `layout_deletion`). OpenMaker Server's authoring extension
+reports these grants for the current account. For FileMaker Server 26,
+`capabilities` offers `apply_script_steps` when the authenticated account's
+privilege set is verified as [Full Access]. It reports other design edits
+as unavailable there. MCP tools are
 marked read-only only for `reads`; `run_script`'s tool is marked
 destructive, not idempotent and open-world, so a client does not retry it
 on its own. `commands` returns the descriptions with each command's
@@ -972,7 +975,9 @@ om-author commands                          # every command and its parameters; 
 `--host`, `--port` (default 5003), `--file`, `--account` and
 `--password-file` override the environment; `commands` needs none of
 them. Passwords are never taken as arguments, which other users of the
-machine can list, and are never printed. The exit status is 0 for a
+machine can list, and are never printed. For FileMaker Server, set
+`OPENMAKER_LICENSE_FILE` to a file whose first line is a FileMaker client
+license. The CLI and MCP server read the same setting. The exit status is 0 for a
 successful response (a valid `validate`, a `run_script` whose last error
 is 0), 1 for an error response or another `run_script` last error, and
 2 for a usage error.
@@ -1010,7 +1015,7 @@ environment above. Nothing registers it automatically.
 
 ## How writes reach the file
 
-Writes go through **OpenMaker Server's authoring extension**: one Perform
+On OpenMaker Server, writes go through its **authoring extension**: one Perform
 transaction, opcode 240. It is not a FileMaker transaction, and it is sent
 only to a host that claims it: the client first asks the server object
 `_is_a("IDL:OpenMaker/Authoring:1.0")`, CORBA's built-in type check, as for
@@ -1020,13 +1025,19 @@ for the file list's interface) and is never sent the transaction; a host
 that claims it but answers with a lone status 3 is treated as not having
 it.
 
-FileMaker Pro saves a script with op60, op82, op61, op13 and op62 on
-`[17, 5, S]` and `[17, 1]` (re/scripts.md, "Saving scripts to a host").
-That sequence was captured against OpenMaker Server only, and op13's reply
-is the same empty page whether the host stored the upload, skipped it (a
-protected index without `fc` and `KSerNum`, re/schema-path.md 3.3) or
-failed to save it, so a client cannot tell an applied edit from a lost
-one. The extension does the same catalog edit on the host and answers
+On FileMaker Server 26, `apply` locks the script member `[17, 5, S]` and
+the index `[17, 1]` using the native catalog operations in
+[Saving scripts to a host](re/scripts.md#saving-scripts-to-a-host-live-capture-2026-10-29).
+It checks the script's revision and modification count while holding both
+locks, then uploads the member with its edited steps and the otherwise
+unchanged index with updated stamps. It reads back both nodes before
+releasing the locks, and verifies the script from a fresh connection.
+The native protocol provides no disk-save confirmation. The two uploads
+are separate, so a failure after an upload begins reports
+`outcome_unknown` and may leave the script and index with different
+stamps. A fresh read can confirm what the host serves.
+
+The extension does the edit on the host in a single commit and answers
 with what happened:
 
 1. The session must have the file open (status 100) and be logged in,
@@ -1187,21 +1198,19 @@ codec is `om_protocol::authoring`; the host side is `om-server`'s
 
 ## Limits
 
-- **Hosts.** Every design change needs OpenMaker Server: the commands
-  `commands` lists with the effect `authors`, and the desktop's placements
-  through the same extension. On a host that does not claim the extension,
-  FileMaker Server (Claris) included, those commands report `unsupported`
-  and nothing is sent. `get_security` is refused there too, since reading
+- **Hosts.** FileMaker Server 26 supports `apply` for existing script
+  steps under [Full Access]. The other design edits still require OpenMaker
+  Server. `get_security` also requires OpenMaker Server, since reading
   security needs the extension ([Reading security](#reading-security)),
   and the choice commands need a window (Records, below); the other
   commands work.
   `run_script` sends the request FileMaker Pro sends for Perform Script
   on Server, which FileMaker Server answers too, but it has been run
   against OpenMaker Server only (in process, on a synthetic file).
-  Native script, schema and layout saves to FileMaker Server stay
-  unavailable until its replies to the captured sequences are verified;
-  OpenMaker reading back what OpenMaker wrote does not prove FileMaker Pro
-  compatibility either. One case has been checked in FileMaker Pro 26
+  A native script-step save was verified by fresh read-back on FileMaker
+  Server 26.0.3. Opening or running the changed script in FileMaker Pro
+  and its persistence after a server restart were not measured.
+  One case has been checked in FileMaker Pro 26
   (issue #166): a stored Text field from `create_field` and its edit box
   from `place_field`, without a label, on a Form layout of a copy of a
   starter solution. The file passed Check Consistency and opened without a
@@ -1275,8 +1284,9 @@ codec is `om_protocol::authoring`; the host side is `om-server`'s
   Server returns it. Runs cannot be undone, and a run whose answer is lost
   is not retried. The MCP server answers one tool call at a time, so the
   calls after a long run wait for it.
-- **The desktop Script Workspace** saves a script's steps through the same
-  step save as `apply` (`NativeProvider::save_script_steps`: the stored
+- **The desktop Script Workspace** saves a script's steps on OpenMaker
+  Server and local files through the extension path shared with `apply`
+  (`NativeProvider::save_script_steps`: the stored
   definition with the edited step list and step data, at the revision the
   scripts were read at). Its catalog changes (new, duplicated, renamed,
   moved and deleted scripts, script options) go through FileMaker Pro's
