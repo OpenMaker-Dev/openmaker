@@ -1385,9 +1385,19 @@ fn server_scripts_keep_windows_of_their_own() {
                     "Substitute ( WindowNames ( Get ( FileName ) ) ; ¶ ; \",\" )",
                 ),
                 named(121, "Get ( FileName ) & \" - 2\""),
+                {
+                    // A layout that does not exist: 105, no window opened.
+                    let mut step = ScriptStep::new(122);
+                    step.set_member_key(om_scripts::StoredKey::from_id(999));
+                    step
+                },
+                set_variable(
+                    "$gone",
+                    "Get ( LastError ) & \"/\" & ValueCount ( WindowNames ( Get ( FileName ) ) )",
+                ),
                 exit_with(
                     "$name & \"|\" & $last & \"|\" & $first & \"|\" & $missing & \"|\" & $lower \
-                     & \"|\" & $names & \"|\" & WindowNames ( Get ( FileName ) )",
+                     & \"|\" & $names & \"|\" & WindowNames ( Get ( FileName ) ) & \"|\" & $gone",
                 ),
             ],
             ),
@@ -1403,7 +1413,7 @@ fn server_scripts_keep_windows_of_their_own() {
     let stem = FILE.trim_end_matches(".fmp12");
     assert_eq!(
         run(&mut client, 6).1,
-        format!("{stem} - 2|1|1/{stem}|112|{stem} - 2|{stem},{stem} - 2|{stem}")
+        format!("{stem} - 2|1|1/{stem}|112|{stem} - 2|{stem},{stem} - 2|{stem}|105/1")
     );
     assert_eq!(run(&mut client, 7), (0, String::new()));
     client.disconnect().unwrap();

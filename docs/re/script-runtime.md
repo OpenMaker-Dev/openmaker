@@ -2977,16 +2977,23 @@ Server engine (11.3, 11.5)
 - A window that becomes current again drops from its found set the
   records deleted meanwhile (in Find mode its active request stays as it
   was), and a schema change moves every window back onto its own layout,
-  as it moves the current one.
+  as it moves the current one. A window that is not current and must move
+  to another table's layout then shows none of its records, not all of
+  them (OpenMaker's choice), so that a schema change cannot fill the
+  windows past their budget.
 - OpenMaker keeps at most 256 windows per session and budgets 128 MiB
-  for their found sets, sort orders and Find requests, including the
-  last find. New Window checks the budget before copying the current
-  state and again after setting the new window's layout or found set.
-  If the second check fails, it closes the new window and restores the
-  opener. An active window can grow during ordinary script operations,
-  as it can in a single-window session. Select Window checks whether it
-  can park the active state before committing its open record. A refusal
-  returns error 2. FileMaker Server's limits are unmeasured.
+  for their found sets, sort orders, Find requests (the last find
+  included) and names. New Window, and the new window of Go to Related
+  Record and Go to List of Records, resolve the destination layout (105,
+  no window opened, when it is gone) and check the budget for the window
+  as it will be (its layout's records, or the records the step fills it
+  with) before the current window's record is committed; the check after
+  the window is filled stays as a guard, closing it again. Set Window
+  Title checks the budget for the new name. An active window can grow
+  during ordinary script operations, as it can in a single-window
+  session. Select Window checks whether it can park the active state
+  before committing its open record. A refusal returns error 2 and
+  changes nothing. FileMaker Server's limits are unmeasured.
 - No bounds or styles are kept: every window is 640 x 480 at 0, 0,
   whatever New Window asks. The new window's layout does not run
   OnLayoutEnter, as the server's Go to Layout does not. View As and

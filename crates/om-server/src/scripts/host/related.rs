@@ -25,7 +25,7 @@ use om_data::host::{
 };
 use om_hbam::slot::{be_uint, uint_segment};
 use om_hbam::{FieldKind, OwnedNode, RidList};
-use om_scripts::runtime::{ErrorCode, HostResult, LayoutTarget, Mode, RelatedRecords, Windows};
+use om_scripts::runtime::{ErrorCode, HostResult, LayoutTarget, Mode, RelatedRecords};
 
 use super::{values, ServerHost, Window, INDEXES, VALUE_INDEX};
 use crate::modcount;
@@ -411,13 +411,18 @@ impl ServerHost {
             let name = request.window[0]
                 .as_ref()
                 .map(|v| v.to_text(&cx).into_string());
-            self.new_window(&om_scripts::runtime::NewWindow {
-                name,
-                bounds: Default::default(),
-                layout: None,
-                style: 0,
-                options: request.options,
-            })?;
+            // The window opens holding the found set prepared for it.
+            let incoming = next.found.len();
+            self.open_window(
+                &om_scripts::runtime::NewWindow {
+                    name,
+                    bounds: Default::default(),
+                    layout: None,
+                    style: 0,
+                    options: request.options,
+                },
+                Some(incoming),
+            )?;
         }
         self.requests.clear();
         self.window = Some(next);

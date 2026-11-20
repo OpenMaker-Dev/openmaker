@@ -1045,10 +1045,23 @@ impl ServerHost {
         self.locale = locale;
         self.plans.clear();
         self.place_window(layout);
-        // Each other window goes back on its own layout the same way.
+        // Each other window goes back on its own layout the same way, but
+        // one that must move to another table's layout shows none of its
+        // records rather than all of them: parked windows are not checked
+        // against the windows' budget again, and a schema change must not
+        // fill them past it (OpenMaker's choice).
         for (index, id) in parked.into_iter().enumerate() {
+            let table = self.others[index].window.as_ref().map(|w| w.table);
             let current = std::mem::replace(&mut self.window, self.others[index].window.take());
             self.place_window(id);
+            if let Some(window) = self.window.as_mut() {
+                if Some(window.table) != table {
+                    window.found = Vec::new();
+                    window.current = 0;
+                    window.browse_current = 0;
+                    window.sort = None;
+                }
+            }
             self.others[index].window = std::mem::replace(&mut self.window, current);
         }
         if let Some(mut record) = self.record.take() {
@@ -3329,7 +3342,7 @@ impl Navigation for ServerHost {
             return Err(ErrorCode::RECORD_MISSING.into());
         }
         if let Some(window) = &request.new_window {
-            self.new_window(window)?;
+            self.open_window(window, Some(found.len()))?;
         }
         if let Some(layout) = &request.layout {
             self.go_to_layout(layout, None)?;
@@ -4057,8 +4070,11 @@ impl ServerHost {
         Ok(())
     }
 
+    /// What the current window holds: its found set, sort and Find state,
+    /// and its name.
     fn current_window_data_bytes(&self) -> usize {
         window_data_bytes(self.window.as_ref(), [&self.requests, &self.last_find])
+            .saturating_add(self.window_name.as_ref().map_or(0, String::len))
     }
 
     /// Data already parked, excluding the window becoming current.
@@ -4068,11 +4084,109 @@ impl ServerHost {
             .enumerate()
             .filter(|(index, _)| Some(*index) != selected)
             .fold(0usize, |total, (_, window)| {
-                total.saturating_add(window_data_bytes(
-                    window.window.as_ref(),
-                    [&window.requests, &window.last_find],
-                ))
+                total
+                    .saturating_add(window_data_bytes(
+                        window.window.as_ref(),
+                        [&window.requests, &window.last_find],
+                    ))
+                    .saturating_add(window.name.as_ref().map_or(0, String::len))
             })
+    }
+
+    /// New Window, and the new window of Go to Related Record and Go to
+    /// List of Records: a window showing what the current one shows, its
+    /// layout, found set, record and mode, named as given, else after the
+    /// current one with " - 2" (" - 3", ... when taken); it becomes
+    /// current, and goes to the layout given. Everything that can refuse
+    /// it is checked before the current window's record is committed: the
+    /// layout (105 when it is gone, no window opened), and the windows'
+    /// budget for the window as it will be, holding `incoming` record ids
+    /// when the step fills it, else its layout's (2).
+    pub(super) fn open_window(
+        &mut self,
+        window: &NewWindow,
+        incoming: Option<usize>,
+    ) -> HostResult {
+        self.windows_may_change()?;
+        let destination = match window.layout {
+            Some(layout) => Some(
+                self.layout_index(&LayoutTarget::Key(layout))?
+                    .ok_or(ErrorCode::LAYOUT_MISSING)?,
+            ),
+            None => None,
+        };
+        let names = self.window_names();
+        let name = window
+            .name
+            .clone()
+            .filter(|n| !n.is_empty())
+            .unwrap_or_else(|| {
+                let base = self.window_name();
+                (2..)
+                    .map(|n| format!("{base} - {n}"))
+                    .find(|n| !names.contains(n))
+                    .expect("a free name")
+            });
+        // What the new window will hold: the current window's copy, or
+        // its destination layout's records, or what the step fills it
+        // with, and its name.
+        let current = self.current_window_data_bytes();
+        let records = |count: usize| count.saturating_mul(size_of::<u64>());
+        let filled = match (incoming, destination) {
+            (Some(count), _) => records(count),
+            (None, Some(index)) => {
+                let same_table = self
+                    .window
+                    .as_ref()
+                    .zip(self.window_on_table(index))
+                    .is_some_and(|(w, table)| w.table == table);
+                if same_table {
+                    current
+                } else {
+                    self.window_on_table(index)
+                        .map_or(0, |table| records(self.all_records(table).len()))
+                }
+            }
+            (None, None) => current,
+        };
+        let bytes = self
+            .parked_window_data_bytes(None)
+            .saturating_add(current)
+            .saturating_add(filled.max(current))
+            .saturating_add(name.len());
+        if self.others.len() + 2 > MAX_WINDOWS || bytes > MAX_WINDOW_DATA_BYTES {
+            warn!(
+                "{:?}: a new window refused: the session's windows would hold too much",
+                self.hosted.name
+            );
+            return Err(ErrorCode(2).into());
+        }
+        self.leave()?;
+        let copy = Parked {
+            name: Some(name),
+            serial: self.windows_opened + 1,
+            window: self.window.clone(),
+            requests: self.requests.clone(),
+            last_find: self.last_find.clone(),
+            request_count: self.request_count,
+            focus: self.focus.clone(),
+            request_open: self.request_open,
+        };
+        self.windows_opened += 1;
+        let previous = self.park();
+        self.others.push(previous);
+        self.unpark(copy);
+        if let Some(layout) = window.layout {
+            self.go_to_layout(&LayoutTarget::Key(layout), None)?;
+            self.keep_windows_within_budget()?;
+        }
+        Ok(())
+    }
+
+    /// The table layout `index` shows.
+    fn window_on_table(&self, index: usize) -> Option<u64> {
+        let occurrence = self.schema.layouts.get(index)?.occurrence?;
+        self.schema.table_of(occurrence)
     }
 
     /// After a step filled the window it just opened (its layout's
@@ -4196,49 +4310,7 @@ impl Windows for ServerHost {
     /// current one with " - 2" (" - 3", ... when taken); it becomes
     /// current, and goes to the layout given.
     fn new_window(&mut self, window: &NewWindow) -> HostResult {
-        self.windows_may_change()?;
-        let bytes = self
-            .parked_window_data_bytes(None)
-            .saturating_add(self.current_window_data_bytes().saturating_mul(2));
-        if self.others.len() + 2 > MAX_WINDOWS || bytes > MAX_WINDOW_DATA_BYTES {
-            warn!(
-                "{:?}: New Window refused: the session's windows would hold too much",
-                self.hosted.name
-            );
-            return Err(ErrorCode(2).into());
-        }
-        self.leave()?;
-        let names = self.window_names();
-        let name = window
-            .name
-            .clone()
-            .filter(|n| !n.is_empty())
-            .unwrap_or_else(|| {
-                let base = self.window_name();
-                (2..)
-                    .map(|n| format!("{base} - {n}"))
-                    .find(|n| !names.contains(n))
-                    .expect("a free name")
-            });
-        let copy = Parked {
-            name: Some(name),
-            serial: self.windows_opened + 1,
-            window: self.window.clone(),
-            requests: self.requests.clone(),
-            last_find: self.last_find.clone(),
-            request_count: self.request_count,
-            focus: self.focus.clone(),
-            request_open: self.request_open,
-        };
-        self.windows_opened += 1;
-        let previous = self.park();
-        self.others.push(previous);
-        self.unpark(copy);
-        if let Some(layout) = window.layout {
-            self.go_to_layout(&LayoutTarget::Key(layout), None)?;
-            self.keep_windows_within_budget()?;
-        }
-        Ok(())
+        self.open_window(window, None)
     }
 
     /// Select Window (123): the window named becomes current (112 when no
@@ -4298,7 +4370,23 @@ impl Windows for ServerHost {
         title: &str,
         _current_file_only: bool,
     ) -> HostResult {
-        match self.window_target(target)? {
+        let target = self.window_target(target)?;
+        // A name is held as long as its window: it counts in the windows'
+        // budget (2 past it, the name unchanged).
+        let old = match target {
+            None => self.window_name.as_ref(),
+            Some(index) => self.others[index].name.as_ref(),
+        }
+        .map_or(0, String::len);
+        let bytes = self
+            .parked_window_data_bytes(None)
+            .saturating_add(self.current_window_data_bytes())
+            .saturating_sub(old)
+            .saturating_add(title.len());
+        if bytes > MAX_WINDOW_DATA_BYTES {
+            return Err(ErrorCode(2).into());
+        }
+        match target {
             None => self.window_name = Some(title.to_owned()),
             Some(index) => self.others[index].name = Some(title.to_owned()),
         }
