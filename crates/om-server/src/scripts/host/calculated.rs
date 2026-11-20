@@ -391,12 +391,12 @@ impl ServerHost {
         })
     }
 
-    /// `field` read from `record` of `occurrence`: on the record, unless
-    /// the field's occurrence is a related one
-    /// ([`ServerHost::related_occurrence`]), then on the first related
+    /// `field` read from `record` of `occurrence`: on the record when the
+    /// field's occurrence shows the same table, else on the first related
     /// record (empty without one).
     fn read_from(&self, occurrence: u64, record: u64, field: FieldId) -> Result<Value, CalcError> {
-        if !self.related_occurrence(occurrence, field.occurrence) {
+        let table = self.schema.table_of(occurrence);
+        if self.schema.table_of(field.occurrence) == table {
             return self.read_field(field.occurrence, record, field.field, 1);
         }
         match self
@@ -437,14 +437,14 @@ impl ServerHost {
     }
 
     /// Whether a sort entry sorts by `field`: the same occurrence, or two
-    /// occurrences that both read the window's record itself (not a self
-    /// join's related record, [`ServerHost::related_occurrence`]).
+    /// occurrences of the window's table.
     fn sorts_by(&self, window: &Window, entry: &SortEntry, field: FieldId) -> bool {
         let occurrence = entry.field.occurrence.unwrap_or(window.occurrence);
-        let own = |o: u64| !self.related_occurrence(window.occurrence, o);
         entry.summary.is_none()
             && entry.field.field == field.field
-            && (occurrence == field.occurrence || (own(occurrence) && own(field.occurrence)))
+            && (occurrence == field.occurrence
+                || (self.schema.table_of(occurrence) == Some(window.table)
+                    && self.schema.table_of(field.occurrence) == Some(window.table)))
     }
 }
 

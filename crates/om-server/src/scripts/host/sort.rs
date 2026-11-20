@@ -8,12 +8,11 @@
 //! language override, else of the field's index language; numbers, dates
 //! and times by value; a custom value list's order with values not in the
 //! list after its values (dividers ignored); ties to the next field, and
-//! finally to the record id. A sort field of another occurrence sorts by
-//! its first related record's value (Claris): one of another table, or of
-//! the same table that a relationship leads to (a self join, inferred from
-//! calc-values.md 12.1; [`ServerHost::related_occurrence`]). An unstored
-//! calculation sorts by its value on each record. Sorts nested more than
-//! 16 deep inside one another, through related sort fields, stop with 3
+//! finally to the record id. A sort field of another occurrence of a
+//! different table sorts by its first related record's value (Claris); an
+//! unstored calculation by its value on each record. Sort Records refuses
+//! a self join's field (3, #610). Sorts nested more than 16 deep inside one
+//! another, through related sort fields, stop with 3
 //! (`om_data::host::SortNesting`). Value lists from
 //! fields and the summary reorder are not supported (3).
 
@@ -106,6 +105,16 @@ impl ServerHost {
         }
         let window = self.window()?;
         let (occurrence, found) = (window.occurrence, window.found.clone());
+        // A self join's field would sort by its first related record, and
+        // the summaries a sorted found set feeds would have to follow:
+        // refused rather than sorted by the record's own value (#610).
+        let self_joined = spec.fields.iter().any(|entry| {
+            entry.summary.is_none()
+                && self.self_join(occurrence, entry.field.occurrence.unwrap_or(occurrence))
+        });
+        if self_joined {
+            return Err(UNSUPPORTED.into());
+        }
         let sorted = self.sorted(occurrence, found, spec)?;
         let window = self.window_mut()?;
         window.found = sorted;
@@ -138,18 +147,18 @@ impl ServerHost {
         self.sort_window(&spec)
     }
 
-    /// Whether a field of `field_occurrence`, read for a record of
-    /// `occurrence`, is read from its first related record: another
-    /// occurrence of another table, or of the same table when a
-    /// relationship path leads there (a self join; calc-values.md 12.1).
+    /// Whether `field_occurrence` is a self join's from `occurrence`:
+    /// another occurrence of the same table that a relationship path leads
+    /// to. A field of it sorts by its first related record in FileMaker
+    /// (Claris for related fields; calc-values.md 12.1 for the self join).
     /// Another occurrence of the same table that none leads to, as a sort
-    /// kept from a layout of it names, reads the record's own field.
-    pub(super) fn related_occurrence(&self, occurrence: u64, field_occurrence: u64) -> bool {
+    /// kept from a layout of it names, is the record's own field.
+    fn self_join(&self, occurrence: u64, field_occurrence: u64) -> bool {
         field_occurrence != occurrence
-            && (self.schema.table_of(field_occurrence) != self.schema.table_of(occurrence)
-                || self
-                    .calc_schema()
-                    .is_some_and(|schema| schema.path(occurrence, field_occurrence).is_some()))
+            && self.schema.table_of(field_occurrence) == self.schema.table_of(occurrence)
+            && self
+                .calc_schema()
+                .is_some_and(|schema| schema.path(occurrence, field_occurrence).is_some())
     }
 
     /// `records` of `occurrence`'s table in the order of `spec`.
@@ -159,16 +168,16 @@ impl ServerHost {
         records: Vec<u64>,
         spec: &SortSpec,
     ) -> Result<Vec<u64>, ErrorCode> {
-        if records.len() < 2 {
-            return Ok(records);
-        }
-        // A related sort field's related set may be sorted too.
-        let _nesting = om_data::host::SortNesting::enter().ok_or(UNSUPPORTED)?;
         let levels = spec
             .fields
             .iter()
             .map(|entry| self.level(occurrence, entry))
             .collect::<Result<Vec<_>, _>>()?;
+        if records.len() < 2 {
+            return Ok(records);
+        }
+        // A related sort field's related set may be sorted too.
+        let _nesting = om_data::host::SortNesting::enter().ok_or(UNSUPPORTED)?;
         let mut keyed = Vec::with_capacity(records.len());
         for (i, record) in records.into_iter().enumerate() {
             // A key may evaluate a calculation or follow a relationship.
@@ -234,11 +243,12 @@ impl ServerHost {
             return Err(UNSUPPORTED);
         }
         let field_occurrence = entry.field.occurrence.unwrap_or(occurrence);
-        let (_, field) = self
+        let (table, field) = self
             .schema
             .field(field_occurrence, entry.field.field)
             .ok_or(ErrorCode::FIELD_MISSING)?;
-        let related = self.related_occurrence(occurrence, field_occurrence);
+        let related =
+            field_occurrence != occurrence && self.schema.table_of(occurrence) != Some(table);
         let file = Collation::of(self.locale.language);
         let own = field
             .options

@@ -500,13 +500,11 @@ fn server_scripts_sort_with_stored_orders() {
         ]
     );
 
-    // By a self join's field: each task by its first related task's Name,
-    // not its own (#610). Through `Tasks::Count ≠ Mates::Count` every other
-    // task is related, in creation order: Write tests' first is Ship, every
-    // other task's is Write tests. Descending, those come first (ties by
-    // record), then Write tests; by their own names it would be 3,5,7,1.
-    // An occurrence of Tasks that no relationship leads to, as a sort kept
-    // from a layout of it names, sorts by the record's own Name.
+    // By a self join's field (`Tasks::Count ≠ Mates::Count`), which would
+    // sort by each task's first related task: refused with 3, the found set
+    // left as it was, rather than sorted by each task's own Name (#610). An
+    // occurrence of Tasks that no relationship leads to, as a sort kept from
+    // a layout of it names, sorts by the record's own Name.
     const MATES: u64 = 0xd0_0030;
     const ALIAS: u64 = 0xd0_0031;
     let mut joined = tree();
@@ -540,7 +538,7 @@ fn server_scripts_sort_with_stored_orders() {
     let file = TempFile::from_tree("psos-sort-self-join", &joined);
     let port = server::start(&file);
     let (mut client, _) = server::logged_in(port, "client");
-    assert_eq!(run(&mut client, 12), (0, "0|5,7,1,3".to_string()));
+    assert_eq!(run(&mut client, 12), (3, "3|3,5,7,1".to_string()));
     assert_eq!(run(&mut client, 13), (0, "0|1,7,5,3".to_string()));
 }
 
@@ -955,25 +953,25 @@ fn lookup_tree() -> OwnedNode {
     root
 }
 
-/// A related sort can loop: a sort field of another occurrence is read
-/// from its first related record, whose relationship may be sorted by a
-/// field leading back. Here both of `Tasks::Count ≠ Mates::Count`'s sort
-/// orders name a field of the other side, so sorting tasks by a mate's Name
-/// needs the mates sorted by a task's Name, and so on. The sorts nested
-/// inside one another stop with 3 (`om_data::host::SortNesting`) instead
-/// of overflowing the server's stack.
+/// A related sort can loop: a sort field of another table's occurrence is
+/// read from its first related record, whose relationship may be sorted by
+/// a field leading back. Here both of `Tasks::Name ≠ Pages::Body`'s sort
+/// orders name a field of each side, so sorting tasks by a page's Body
+/// needs the pages sorted by a task's Name, and so on. The sorts nested
+/// inside one another stop with 3 (`om_data::host::SortNesting`) instead of
+/// overflowing the server's stack.
 #[test]
 fn a_related_sort_that_loops_stops_with_3() {
-    const MATES: u64 = 0xd0_0030;
+    const PAGES: u64 = 0xd0_0032;
     let mut looping = tree();
-    fixture::add_occurrence(&mut looping, MATES, "Mates", TABLE);
-    fixture::add_relationship(&mut looping, 30, (OCCURRENCE, COUNT), 1, (MATES, COUNT));
+    fixture::add_occurrence(&mut looping, PAGES, "Pages", NOTES);
+    fixture::add_relationship(&mut looping, 30, (OCCURRENCE, NAME), 1, (PAGES, BODY));
     // Each order names both sides, so it loops whichever direction it
     // applies to.
     let both = spec(
         false,
         vec![
-            entry(MATES, NAME, false, None),
+            entry(PAGES, BODY, false, None),
             entry(OCCURRENCE, NAME, false, None),
         ],
     );
@@ -982,7 +980,7 @@ fn a_related_sort_that_loops_stops_with_3() {
         [vec![segment.len() as u8 + 1, segment.len() as u8], segment].concat()
     };
     let mut definition = key(OCCURRENCE);
-    definition.extend(key(MATES));
+    definition.extend(key(PAGES));
     definition.extend(both.encode());
     definition.extend(both.encode());
     // Sorted in both directions (`SORT_LEFT_TO_RIGHT` 0x40,
@@ -999,7 +997,7 @@ fn a_related_sort_that_loops_stops_with_3() {
             "Loop",
             vec![
                 fixture::on(86, true),
-                sort(&spec(false, vec![entry(MATES, NAME, false, None)])),
+                sort(&spec(false, vec![entry(PAGES, BODY, false, None)])),
                 exit_with("Get ( LastError )"),
             ],
         )

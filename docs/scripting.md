@@ -549,20 +549,21 @@ Open items:
   8.4), where FileMaker would have written. Names given to Set Field By
   Name and Replace Field Contents by Name match without regard to case,
   as on the server.
-- Sort Records in server scripts sorts by a field of a self join's
-  occurrence (another occurrence of the layout's table that a relationship
-  leads to) by its first related record's value
-  ([#610](https://github.com/OpenMaker-Dev/openmaker/issues/610); inferred
-  from calc-values.md 12.1, the sort unmeasured). Another occurrence of the
-  same table that no relationship leads to, as a sort kept from a layout of
-  it names, still reads the record's own field. Summaries' break fields
-  follow the same rule. A sorted relationship's related records still read
-  a self join's sort field from the record itself, on both hosts (#610).
-  A sort entry the layout cannot reach fails the whole sort with 103
+- Sort Records in server scripts refuses with 3 a sort by a self join's
+  field: another occurrence of the layout's table that a relationship leads
+  to. FileMaker sorts it by its first related record's value (inferred
+  from Claris and calc-values.md 12.1), and the summaries a sorted found
+  set feeds would have to follow
+  ([#610](https://github.com/OpenMaker-Dev/openmaker/issues/610)). Before,
+  it sorted by the record's own value. A sort kept from another layout of
+  the same table, a relationship's sort and summaries' break fields still
+  read such a field from the record itself, on both hosts (#610). A sort
+  entry the layout cannot reach fails the whole sort with 103
   ([#628](https://github.com/OpenMaker-Dev/openmaker/issues/628)). Sorts
   nested more than 16 deep inside one another, through related sort fields
-  whose relationships sort by related fields, stop with 3. The bound is
-  OpenMaker's; FileMaker's handling of a loop is unmeasured.
+  whose relationships sort by related fields, stop with 3. That ends a
+  looping relationship sort, which overflowed the server's stack before.
+  The bound is OpenMaker's; FileMaker's handling of a loop is unmeasured.
 - Scripts: desktop steps still missing include the account steps
   ([#83](https://github.com/OpenMaker-Dev/openmaker/issues/83)) and the PDF
   steps other than Save Records as PDF
