@@ -65,10 +65,10 @@ use om_protocol::write::{CreateRecord, GetSerial, KeyPath, LOCK_WRITE, SERIAL_IN
 use om_query::keys::TextKeys;
 use om_scripts::runtime::Fields as FieldSteps;
 use om_scripts::runtime::{
-    Accounts, CommitOptions, Dialogs, ErrorCode, ErrorLogEntry, FieldRef, FileId, Files, FindKind,
-    FoundSets, HostError, HostResult, InsertTarget, LayoutTarget, Mode, Navigation, Network,
-    PauseEnd, Platform, RecordList, RecordMove, Records, RelatedRecords, ScriptAccess, ScriptHost,
-    TransactionOptions, WindowId, Windows,
+    Accounts, Bar, CommitOptions, Dialogs, ErrorCode, ErrorLogEntry, FieldRef, FileId, Files,
+    FindKind, FoundSets, HostError, HostResult, InsertTarget, LayoutTarget, Mode, Navigation,
+    Network, NewWindow, PauseEnd, Platform, RecordList, RecordMove, Records, RelatedRecords,
+    ScriptAccess, ScriptHost, TransactionOptions, Visibility, WindowId, WindowTarget, Windows,
 };
 use om_scripts::specs::SortSpec;
 use om_scripts::{Script, ScriptCatalog, ScriptKind};
@@ -380,6 +380,46 @@ impl Window {
     }
 }
 
+/// A window of the session other than the current one, with what each
+/// window keeps of its own: its layout, found set, record and mode, and
+/// Find mode's requests (script-runtime.md 13.25).
+struct Parked {
+    name: Option<String>,
+    serial: u32,
+    window: Option<Window>,
+    requests: Vec<Request>,
+    last_find: Vec<Request>,
+    request_count: usize,
+    focus: Option<get::Focus>,
+    request_open: bool,
+}
+
+/// Heap allocations retained by a window's found set, sort, and Find state.
+fn window_data_bytes(window: Option<&Window>, requests: [&Vec<Request>; 2]) -> usize {
+    let records_and_sort = window.map_or(0, |window| {
+        let sort = window.sort.as_ref().map_or(0, |sort| {
+            sort.fields.capacity() * size_of::<om_scripts::specs::SortEntry>()
+        });
+        (window.found.capacity() * size_of::<u64>()).saturating_add(sort)
+    });
+    requests
+        .into_iter()
+        .fold(records_and_sort, |total, requests| {
+            let bytes = requests.iter().fold(
+                requests.capacity() * size_of::<Request>(),
+                |total, request| {
+                    request.criteria.iter().fold(
+                        total.saturating_add(
+                            request.criteria.capacity() * size_of::<(u64, String)>(),
+                        ),
+                        |total, (_, text)| total.saturating_add(text.capacity()),
+                    )
+                },
+            );
+            total.saturating_add(bytes)
+        })
+}
+
 /// A record being edited: locked for the session, its contents changed
 /// here until it is committed (FileMaker's open record).
 #[derive(Clone, Debug)]
@@ -680,6 +720,19 @@ pub(crate) struct ServerHost {
     today: Date,
     schema: Schema,
     window: Option<Window>,
+    /// The current window's name; `None` for the file's name, which names
+    /// a session's first window.
+    window_name: Option<String>,
+    /// Which window of the session the current one is (0 the first), for
+    /// its `Get ( WindowUUID )`.
+    window_serial: u32,
+    /// The session's other windows, the most recently current last
+    /// (script-runtime.md 13.25).
+    others: Vec<Parked>,
+    /// How many windows the session has opened after its first.
+    windows_opened: u32,
+    /// A step closed the session's last window: the script stops.
+    windows_closed: bool,
     record: Option<OpenRecord>,
     /// Open Transaction and the changes since.
     transaction: Option<Transaction>,
@@ -757,6 +810,11 @@ impl ServerHost {
             today: today(),
             schema,
             window: None,
+            window_name: None,
+            window_serial: 0,
+            others: Vec::new(),
+            windows_opened: 0,
+            windows_closed: false,
             record: None,
             transaction: None,
             globals: HashMap::new(),
@@ -812,6 +870,12 @@ impl ServerHost {
     /// (`SMScriptRuntime::ExecuteScript`, 11.3).
     pub fn has_window(&self) -> bool {
         self.window.is_some()
+    }
+
+    /// A step closed the session's last window (13.25: the script stops,
+    /// and FileMaker Server's run ends with 0 and no result).
+    pub fn closed_last_window(&self) -> bool {
+        self.windows_closed
     }
 
     /// The record key of the account the session logged in with.
@@ -965,15 +1029,41 @@ impl ServerHost {
             "{:?}: script session reads the file's changed schema",
             self.hosted.name
         );
-        let layout = self
-            .window
-            .as_ref()
-            .and_then(|w| self.schema.layouts.get(w.layout))
-            .map(|l| l.id);
+        let layout_of = |window: &Option<Window>, schema: &Schema| {
+            window
+                .as_ref()
+                .and_then(|w| schema.layouts.get(w.layout))
+                .map(|l| l.id)
+        };
+        let layout = layout_of(&self.window, &self.schema);
+        let parked: Vec<Option<u64>> = self
+            .others
+            .iter()
+            .map(|p| layout_of(&p.window, &self.schema))
+            .collect();
         self.schema = schema;
         self.locale = locale;
         self.plans.clear();
         self.place_window(layout);
+        // Each other window goes back on its own layout the same way, but
+        // one that must move to another table's layout shows none of its
+        // records rather than all of them: parked windows are not checked
+        // against the windows' budget again, and a schema change must not
+        // fill them past it (OpenMaker's choice).
+        for (index, id) in parked.into_iter().enumerate() {
+            let table = self.others[index].window.as_ref().map(|w| w.table);
+            let current = std::mem::replace(&mut self.window, self.others[index].window.take());
+            self.place_window(id);
+            if let Some(window) = self.window.as_mut() {
+                if Some(window.table) != table {
+                    window.found = Vec::new();
+                    window.current = 0;
+                    window.browse_current = 0;
+                    window.sort = None;
+                }
+            }
+            self.others[index].window = std::mem::replace(&mut self.window, current);
+        }
         if let Some(mut record) = self.record.take() {
             self.rebase(&mut record);
             self.record = Some(record);
@@ -1073,7 +1163,13 @@ impl ServerHost {
             layout: index,
             occurrence,
             table,
-            found: self.all_records(table),
+            found: {
+                let mut found = self.all_records(table);
+                // Held as long as the window: no spare capacity, as the
+                // windows' budget counts it.
+                found.shrink_to_fit();
+                found
+            },
             current: 0,
             mode: Mode::Browse,
             browse_current: 0,
@@ -3129,9 +3225,10 @@ impl ScriptHost for ServerHost {
     }
 
     /// The administrator, a file close, the server's shutdown or a limit
-    /// aborted the script (`IsServerAbort`, script-runtime.md 2.3, 6.1).
+    /// aborted the script (`IsServerAbort`, script-runtime.md 2.3, 6.1),
+    /// or a step closed its last window (13.25).
     fn abort_requested(&mut self) -> bool {
-        self.control.aborted().is_some()
+        self.control.aborted().is_some() || self.windows_closed
     }
 
     /// Each step sees the schema as it is when the step starts.
@@ -3165,20 +3262,9 @@ impl ScriptHost for ServerHost {
 
 impl Navigation for ServerHost {
     fn go_to_layout(&mut self, layout: &LayoutTarget, _animation: Option<u32>) -> HostResult {
-        let layouts = &self.schema.layouts;
-        let index = match layout {
-            LayoutTarget::Original => return Ok(()),
-            LayoutTarget::Key(id) => layouts.iter().position(|l| l.id == *id),
-            LayoutTarget::Name(name) => {
-                layouts.iter().position(|l| l.name == *name).or_else(|| {
-                    let name = name.to_lowercase();
-                    layouts.iter().position(|l| l.name.to_lowercase() == name)
-                })
-            }
-            LayoutTarget::Number(n) => usize::try_from(*n - 1).ok().filter(|i| *i < layouts.len()),
-        }
-        .filter(|i| layouts[*i].occurrence.is_some())
-        .ok_or(ErrorCode::LAYOUT_MISSING)?;
+        let Some(index) = self.layout_index(layout)? else {
+            return Ok(());
+        };
         self.leave()?;
         let mut next = self.window_on(index).ok_or(ErrorCode::LAYOUT_MISSING)?;
         if let Some(old) = &self.window {
@@ -3237,28 +3323,46 @@ impl Navigation for ServerHost {
     }
 
     fn go_to_list_of_records(&mut self, request: &RecordList) -> HostResult {
-        if request.new_window.is_some() {
-            return Err(HostError::Unsupported);
-        }
-        if let Some(layout) = &request.layout {
-            self.go_to_layout(layout, None)?;
-        }
-        let ids = &request.ids;
-        self.leave()?;
-        let table = self.window()?.table;
+        // The layout and the records first, so that a failure leaves the
+        // current window as it was and opens none.
+        let layout = match &request.layout {
+            Some(target) => self.layout_index(target)?,
+            None => None,
+        };
+        let table = match layout {
+            Some(index) => {
+                self.window_on(index)
+                    .ok_or(ErrorCode::LAYOUT_MISSING)?
+                    .table
+            }
+            None => self.window()?.table,
+        };
         let existing: BTreeSet<u64> = self.all_records(table).into_iter().collect();
-        let found: Vec<u64> = ids
+        let found: Vec<u64> = request
+            .ids
             .split(['\r', '\n'])
             .filter_map(|id| id.trim().parse().ok())
             .filter(|id| existing.contains(id))
             .collect();
+        if found.is_empty() {
+            return Err(ErrorCode::RECORD_MISSING.into());
+        }
+        let mut found = found;
+        found.shrink_to_fit();
+        if let Some(window) = &request.new_window {
+            self.open_window(window, Some(found.len()))?;
+        }
+        if let Some(layout) = &request.layout {
+            self.go_to_layout(layout, None)?;
+        }
+        self.leave()?;
         let window = self.window_mut()?;
         window.mode = Mode::Browse;
         window.found = found;
         window.current = 0;
         window.sort = None;
-        if window.found.is_empty() {
-            return Err(ErrorCode::RECORD_MISSING.into());
+        if request.new_window.is_some() {
+            self.keep_windows_within_budget()?;
         }
         Ok(())
     }
@@ -3905,10 +4009,446 @@ impl FoundSets for ServerHost {
     }
 }
 
+impl ServerHost {
+    /// The current window's name: the file's name until a step names it.
+    pub(super) fn window_name(&self) -> String {
+        self.window_name
+            .clone()
+            .unwrap_or_else(|| self.session_info().file_name)
+    }
+
+    /// The session's windows' names, front to back (`WindowNames`): the
+    /// current one, then the others from the most recently current.
+    pub(super) fn window_names(&self) -> Vec<String> {
+        let file = self.session_info().file_name;
+        std::iter::once(self.window_name())
+            .chain(
+                self.others
+                    .iter()
+                    .rev()
+                    .map(|w| w.name.clone().unwrap_or_else(|| file.clone())),
+            )
+            .collect()
+    }
+
+    /// The window `target` names: `None` the current one, else its place
+    /// among the others. Names are matched front to back ignoring case,
+    /// then window UUIDs, as Claris documents Select Window's lookup; 112
+    /// when no window matches.
+    fn window_target(&self, target: &WindowTarget) -> HostResult<Option<usize>> {
+        let WindowTarget::Named(name) = target else {
+            return Ok(None);
+        };
+        let wanted = name.to_lowercase();
+        let file = self.session_info().file_name;
+        let named = |n: &str| n.to_lowercase() == wanted;
+        if named(&self.window_name()) {
+            return Ok(None);
+        }
+        if let Some(index) = self
+            .others
+            .iter()
+            .rposition(|w| named(w.name.as_deref().unwrap_or(&file)))
+        {
+            return Ok(Some(index));
+        }
+        if named(&self.window_uuid_of(self.window_serial)) {
+            return Ok(None);
+        }
+        self.others
+            .iter()
+            .rposition(|w| named(&self.window_uuid_of(w.serial)))
+            .map(Some)
+            .ok_or(ErrorCode::WINDOW_MISSING.into())
+    }
+
+    /// Windows cannot change while a transaction is open: a record a
+    /// step commits in another window is not part of the transaction in
+    /// FileMaker (script-runtime.md 8.5), and this session keeps one
+    /// transaction for all its windows, so a revert would take it back.
+    /// 3 until windows keep transactions of their own.
+    fn windows_may_change(&self) -> HostResult {
+        if self.transaction.is_some() {
+            info!(
+                "{:?}: a window step refused: a transaction is open",
+                self.hosted.name
+            );
+            return Err(HostError::Unsupported);
+        }
+        Ok(())
+    }
+
+    /// What the current window holds: its found set, sort and Find state,
+    /// and its name.
+    fn current_window_data_bytes(&self) -> usize {
+        window_data_bytes(self.window.as_ref(), [&self.requests, &self.last_find])
+            .saturating_add(self.window_name.as_ref().map_or(0, String::len))
+    }
+
+    /// Data already parked, excluding the window becoming current.
+    fn parked_window_data_bytes(&self, selected: Option<usize>) -> usize {
+        self.others
+            .iter()
+            .enumerate()
+            .filter(|(index, _)| Some(*index) != selected)
+            .fold(0usize, |total, (_, window)| {
+                total
+                    .saturating_add(window_data_bytes(
+                        window.window.as_ref(),
+                        [&window.requests, &window.last_find],
+                    ))
+                    .saturating_add(window.name.as_ref().map_or(0, String::len))
+            })
+    }
+
+    /// What refuses a new window, checked without changing anything: a
+    /// transaction (3), its layout (105 when gone), the window count and
+    /// the windows' budget (2) for the window as it will be, holding at
+    /// most `incoming` record ids when the step fills it, else its
+    /// layout's, else a copy of the current window, with its name (a
+    /// default name at its longest).
+    pub(super) fn check_new_window(
+        &self,
+        window: &NewWindow,
+        incoming: Option<usize>,
+    ) -> HostResult {
+        self.windows_may_change()?;
+        let destination = match window.layout {
+            Some(layout) => Some(
+                self.layout_index(&LayoutTarget::Key(layout))?
+                    .ok_or(ErrorCode::LAYOUT_MISSING)?,
+            ),
+            None => None,
+        };
+        let name = match window.name.as_ref().filter(|n| !n.is_empty()) {
+            Some(name) => name.len(),
+            // "<current> - n", n at most 20 digits.
+            None => self.window_name().len() + 23,
+        };
+        // The current window's data without its name, which it keeps;
+        // the copy holds the same, or its layout's or the step's records
+        // with the same Find state.
+        let current = window_data_bytes(self.window.as_ref(), [&self.requests, &self.last_find]);
+        let find_state = window_data_bytes(None, [&self.requests, &self.last_find]);
+        let records = |count: usize| {
+            count
+                .saturating_mul(size_of::<u64>())
+                .saturating_add(find_state)
+        };
+        let filled = match (incoming, destination) {
+            (Some(count), _) => records(count),
+            (None, Some(index)) => {
+                let same_table = self
+                    .window
+                    .as_ref()
+                    .zip(self.window_on_table(index))
+                    .is_some_and(|(w, table)| w.table == table);
+                if same_table {
+                    current
+                } else {
+                    self.window_on_table(index)
+                        .map_or(0, |table| records(self.table_record_count(table)))
+                }
+            }
+            (None, None) => current,
+        };
+        let bytes = self
+            .parked_window_data_bytes(None)
+            .saturating_add(self.current_window_data_bytes())
+            .saturating_add(filled.max(current))
+            .saturating_add(name);
+        if self.others.len() + 2 > MAX_WINDOWS || bytes > MAX_WINDOW_DATA_BYTES {
+            warn!(
+                "{:?}: a new window refused: the session's windows would hold too much",
+                self.hosted.name
+            );
+            return Err(ErrorCode(2).into());
+        }
+        Ok(())
+    }
+
+    /// How many records of `table` the session sees.
+    fn table_record_count(&self, table: u64) -> usize {
+        self.all_records(table).len()
+    }
+
+    /// New Window, and the new window of Go to Related Record and Go to
+    /// List of Records: a window showing what the current one shows, its
+    /// layout, found set, record and mode, named as given, else after the
+    /// current one with " - 2" (" - 3", ... when taken); it becomes
+    /// current, and goes to the layout given. Everything that can refuse
+    /// it is checked before the current window's record is committed: the
+    /// layout (105 when it is gone, no window opened), and the windows'
+    /// budget for the window as it will be, holding `incoming` record ids
+    /// when the step fills it, else its layout's (2).
+    pub(super) fn open_window(
+        &mut self,
+        window: &NewWindow,
+        incoming: Option<usize>,
+    ) -> HostResult {
+        self.check_new_window(window, incoming)?;
+        let names = self.window_names();
+        let name = window
+            .name
+            .clone()
+            .filter(|n| !n.is_empty())
+            .unwrap_or_else(|| {
+                let base = self.window_name();
+                (2..)
+                    .map(|n| format!("{base} - {n}"))
+                    .find(|n| !names.contains(n))
+                    .expect("a free name")
+            });
+        self.leave()?;
+        let copy = Parked {
+            name: Some(name),
+            serial: self.windows_opened + 1,
+            window: self.window.clone(),
+            requests: self.requests.clone(),
+            last_find: self.last_find.clone(),
+            request_count: self.request_count,
+            focus: self.focus.clone(),
+            request_open: self.request_open,
+        };
+        self.windows_opened += 1;
+        let previous = self.park();
+        self.others.push(previous);
+        self.unpark(copy);
+        if let Some(layout) = window.layout {
+            self.go_to_layout(&LayoutTarget::Key(layout), None)?;
+            self.keep_windows_within_budget()?;
+        }
+        Ok(())
+    }
+
+    /// The table layout `index` shows.
+    fn window_on_table(&self, index: usize) -> Option<u64> {
+        let occurrence = self.schema.layouts.get(index)?.occurrence?;
+        self.schema.table_of(occurrence)
+    }
+
+    /// After a step filled the window it just opened (its layout's
+    /// records, or the records it went to): when the session's windows
+    /// now hold too much, that window closes again, the one it was opened
+    /// from current, and the step is 2.
+    pub(super) fn keep_windows_within_budget(&mut self) -> HostResult {
+        let bytes = self
+            .parked_window_data_bytes(None)
+            .saturating_add(self.current_window_data_bytes());
+        if bytes <= MAX_WINDOW_DATA_BYTES {
+            return Ok(());
+        }
+        warn!(
+            "{:?}: a new window closed again: the session's windows would hold too much",
+            self.hosted.name
+        );
+        if let Some(opener) = self.others.pop() {
+            self.unpark(opener);
+        }
+        Err(ErrorCode(2).into())
+    }
+
+    /// The current window's found set without the records that are gone
+    /// (deleted while another window was current), its record kept when
+    /// it still exists.
+    fn prune_found_set(&mut self) {
+        let Some(table) = self.window.as_ref().map(|w| w.table) else {
+            return;
+        };
+        let existing: BTreeSet<u64> = self.all_records(table).into_iter().collect();
+        let Some(window) = self.window.as_mut() else {
+            return;
+        };
+        if window.found.iter().all(|id| existing.contains(id)) {
+            return;
+        }
+        // In Find mode `current` is the active request; the record to come
+        // back to is `browse_current`.
+        let place = if window.mode == Mode::Find {
+            window.browse_current
+        } else {
+            window.current
+        };
+        let record = window.found.get(place).copied();
+        window.found.retain(|id| existing.contains(id));
+        let place = record
+            .and_then(|id| window.found.iter().position(|f| *f == id))
+            .unwrap_or_else(|| place.min(window.found.len().saturating_sub(1)));
+        if window.mode == Mode::Find {
+            window.browse_current = place;
+        } else {
+            window.current = place;
+        }
+    }
+
+    /// The index of the layout `layout` names, `None` for the original
+    /// layout; 105 for one that is missing or shows no table.
+    fn layout_index(&self, layout: &LayoutTarget) -> HostResult<Option<usize>> {
+        let layouts = &self.schema.layouts;
+        let index = match layout {
+            LayoutTarget::Original => return Ok(None),
+            LayoutTarget::Key(id) => layouts.iter().position(|l| l.id == *id),
+            LayoutTarget::Name(name) => {
+                layouts.iter().position(|l| l.name == *name).or_else(|| {
+                    let name = name.to_lowercase();
+                    layouts.iter().position(|l| l.name.to_lowercase() == name)
+                })
+            }
+            LayoutTarget::Number(n) => usize::try_from(*n - 1).ok().filter(|i| *i < layouts.len()),
+        }
+        .filter(|i| layouts[*i].occurrence.is_some())
+        .ok_or(ErrorCode::LAYOUT_MISSING)?;
+        Ok(Some(index))
+    }
+
+    /// The current window, taken out with what is its own.
+    fn park(&mut self) -> Parked {
+        Parked {
+            name: self.window_name.take(),
+            serial: self.window_serial,
+            window: self.window.take(),
+            requests: std::mem::take(&mut self.requests),
+            last_find: std::mem::take(&mut self.last_find),
+            request_count: std::mem::take(&mut self.request_count),
+            focus: self.focus.take(),
+            request_open: std::mem::take(&mut self.request_open),
+        }
+    }
+
+    /// Make `window` the current one.
+    fn unpark(&mut self, window: Parked) {
+        self.window_name = window.name;
+        self.window_serial = window.serial;
+        self.window = window.window;
+        self.requests = window.requests;
+        self.last_find = window.last_find;
+        self.request_count = window.request_count;
+        self.focus = window.focus;
+        self.request_open = window.request_open;
+    }
+}
+
+/// A session's window count and memory budget for copies of found sets,
+/// sort orders and Find state. The active window may grow as in a session
+/// with one window; it must fit the budget before it is parked or copied.
+const MAX_WINDOWS: usize = 256;
+const MAX_WINDOW_DATA_BYTES: usize = 128 << 20;
+
+/// The server's windows (script-runtime.md 13.25, s35-windows): each has
+/// its own layout, found set, record and mode, and Find mode's requests;
+/// a step works on the current one. The record a step opened (and a
+/// transaction) belong to the session: a window that stops being current
+/// commits it first, as New Window and Close Window commit
+/// (OpenMaker's choice for Select Window, which FileMaker Server's runs
+/// do not show). Nothing is drawn, so bounds are not kept: every window
+/// answers 640 x 480 at 0, 0.
 impl Windows for ServerHost {
+    /// New Window (122): a window showing what the current one shows, its
+    /// layout, found set, record and mode, named as given, else after the
+    /// current one with " - 2" (" - 3", ... when taken); it becomes
+    /// current, and goes to the layout given.
+    fn new_window(&mut self, window: &NewWindow) -> HostResult {
+        self.open_window(window, None)
+    }
+
+    /// Select Window (123): the window named becomes current (112 when no
+    /// window has the name).
+    fn select_window(&mut self, target: &WindowTarget, _current_file_only: bool) -> HostResult {
+        let Some(index) = self.window_target(target)? else {
+            return Ok(());
+        };
+        self.windows_may_change()?;
+        let bytes = self
+            .parked_window_data_bytes(Some(index))
+            .saturating_add(self.current_window_data_bytes());
+        if bytes > MAX_WINDOW_DATA_BYTES {
+            return Err(ErrorCode(2).into());
+        }
+        self.leave()?;
+        let selected = self.others.remove(index);
+        let previous = self.park();
+        self.others.push(previous);
+        self.unpark(selected);
+        self.prune_found_set();
+        Ok(())
+    }
+
+    /// Close Window (121): the window's record is committed and the
+    /// window closed. Closing the current one makes the window current
+    /// before it current; closing the session's last window is 13 and
+    /// stops the script, as on FileMaker Server.
+    fn close_window(&mut self, target: &WindowTarget, _current_file_only: bool) -> HostResult {
+        let target = self.window_target(target)?;
+        self.windows_may_change()?;
+        match target {
+            Some(index) => {
+                self.others.remove(index);
+                Ok(())
+            }
+            None => {
+                self.leave()?;
+                let Some(previous) = self.others.pop() else {
+                    // 13 on FileMaker Server, and the script stops
+                    // ([`Self::abort_requested`]).
+                    self.window = None;
+                    self.windows_closed = true;
+                    return Err(ErrorCode(13).into());
+                };
+                self.unpark(previous);
+                self.prune_found_set();
+                Ok(())
+            }
+        }
+    }
+
+    /// Set Window Title (124).
+    fn set_window_title(
+        &mut self,
+        target: &WindowTarget,
+        title: &str,
+        _current_file_only: bool,
+    ) -> HostResult {
+        let target = self.window_target(target)?;
+        // A name is held as long as its window: it counts in the windows'
+        // budget (2 past it, the name unchanged).
+        let old = match target {
+            None => self.window_name.as_ref(),
+            Some(index) => self.others[index].name.as_ref(),
+        }
+        .map_or(0, String::len);
+        let bytes = self
+            .parked_window_data_bytes(None)
+            .saturating_add(self.current_window_data_bytes())
+            .saturating_sub(old)
+            .saturating_add(title.len());
+        if bytes > MAX_WINDOW_DATA_BYTES {
+            return Err(ErrorCode(2).into());
+        }
+        match target {
+            None => self.window_name = Some(title.to_owned()),
+            Some(index) => self.others[index].name = Some(title.to_owned()),
+        }
+        Ok(())
+    }
+
     /// Nothing is drawn on the server.
     fn refresh_window(&mut self, _flush_joins: bool, _flush_external: bool) -> HostResult {
         Ok(())
+    }
+
+    /// View As (30): no window is drawn on the server, so the step does
+    /// nothing (FileMaker Server runs it, script-step-compat.csv).
+    fn view_as(&mut self, _choice: u16) -> HostResult {
+        Ok(())
+    }
+
+    /// Show/Hide Toolbars (29) does nothing on the server, which draws no
+    /// toolbar; the other bars stay unsupported.
+    fn show_hide(&mut self, what: Bar, _visibility: Visibility, _lock: bool) -> HostResult {
+        match what {
+            Bar::Toolbars { .. } => Ok(()),
+            _ => Err(HostError::Unsupported),
+        }
     }
 }
 

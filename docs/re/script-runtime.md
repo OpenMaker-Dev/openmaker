@@ -2950,7 +2950,65 @@ Server engine (11.3, 11.5)
   table's layout is 106, no related record 101 (the window stays), an
   occurrence without a path 103. "Show only related records" makes them
   the found set; without it the found set is all records with the first
-  related one current. "Show in new window" uses the session's one window.
+  related one current. "Show in new window" opens a window for them, as
+  New Window does, once the records are found.
+- Windows (13.25): a session's windows each keep their layout, found set,
+  record, mode and Find mode's requests; steps work on the current one.
+  New Window copies the current window and becomes current, named as
+  given, else after the current one with " - 2" (" - 3", ... when taken),
+  then goes to its layout. Select Window and Close Window match names
+  front to back ignoring case, then window UUIDs, as Claris documents
+  Select Window's lookup; nothing matching is 112. Closing the current
+  window makes the one current before it current, and closing another
+  keeps the current one. Closing the last stops the script: the step
+  returns 13, and the run ends with 0 and no result, as in s35's "close
+  last". Set Window Title renames. `WindowNames` lists the windows front
+  to back, and `Get ( WindowUUID )` differs per window.
+- The record a step opened belongs to the session, so a window that
+  stops being current commits it first. New Window and Close Window
+  commit it as FileMaker's do; for Select Window this is OpenMaker's
+  choice, since FileMaker Server's runs do not show it. Committing also
+  leaves the field with the focus and closes Find mode's new request, so
+  `Get ( ActiveFieldName )` is empty and `Get ( RecordOpenState )` 0 back
+  in that window (unmeasured).
+- No window step runs while a transaction is open (3): in FileMaker a
+  record another window commits is not part of the transaction (8.5),
+  and the session keeps one transaction for all its windows.
+- A window that becomes current again drops from its found set the
+  records deleted meanwhile (in Find mode its active request stays as it
+  was), and a schema change moves every window back onto its own layout,
+  as it moves the current one. A window that is not current and must move
+  to another table's layout then shows none of its records, not all of
+  them (OpenMaker's choice), so that a schema change cannot fill the
+  windows past their budget.
+- OpenMaker keeps at most 256 windows per session and budgets 128 MiB
+  for their found sets, sort orders, Find requests (the last find
+  included) and names. New Window, and the new window of Go to Related
+  Record and Go to List of Records, resolve the destination layout (105,
+  no window opened, when it is gone) and check the budget for the window
+  as it will be (its layout's records, or the records the step fills it
+  with; for Go to Related Record, which finds its records only after the
+  open record is committed, every record of the related table) before the
+  current window's record is committed. Found sets are kept without spare
+  capacity, so the check counts what is held; the check after the window
+  is filled stays as a guard, closing it again. Set Window
+  Title checks the budget for the new name. An active window can grow
+  during ordinary script operations, as it can in a single-window
+  session. Select Window checks whether it can park the active state
+  before committing its open record. A refusal returns error 2 and
+  changes nothing. FileMaker Server's limits are unmeasured.
+- No bounds or styles are kept: every window is 640 x 480 at 0, 0,
+  whatever New Window asks. The new window's layout does not run
+  OnLayoutEnter, as the server's Go to Layout does not. View As and
+  Show/Hide Toolbars do nothing, as nothing is drawn, so `Get (
+  LayoutViewState )` and `Get ( StatusAreaState )` keep their answers
+  (unmeasured).
+- Go to Related Record finds the related records and checks the layout
+  before it opens its new window, and Go to List of Records finds the
+  layout and its records first, so a failure of either leaves the
+  current window as it was. Go to List of Records still skips ids no
+  record has, without an error, and reads only one id per line
+  ([#511](https://github.com/OpenMaker-Dev/openmaker/issues/511)).
 - Finds: Enter Find Mode (with or without stored requests), Set Field into
   requests, New/Duplicate/Delete Record and Omit in Find mode, Perform Find,
   Constrain and Extend with their stored requests (script-steps.md 11.2,
@@ -2995,7 +3053,7 @@ Server engine (11.3, 11.5)
   1) until a step replaces it (Show All, Show Omitted Only, a find, Go to
   List of Records, Go to Related Record).
 - Steps with a host method: Go to Layout, Go to Record/Request, Go to
-  Field, Go to Related Record, Go to List of Records (same window), Enter
+  Field, Go to Related Record, Go to List of Records, the window steps, Enter
   Browse/Find Mode, New, Duplicate, Delete, Delete All, Open, Revert and
   Commit Records, Truncate Table (the window's table),
   Open/Commit/Revert Transaction, Set Field, Set Field By Name, the Insert

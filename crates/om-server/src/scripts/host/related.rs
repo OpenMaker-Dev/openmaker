@@ -352,14 +352,38 @@ impl ServerHost {
         Ok(records)
     }
 
+    /// The new window Go to Related Record opens: named as the step names
+    /// it, on no layout of its own.
+    fn related_window(&self, request: &RelatedRecords<'_>) -> om_scripts::runtime::NewWindow {
+        let cx = Ctx::new(&self.locale, self.today);
+        om_scripts::runtime::NewWindow {
+            name: request.window[0]
+                .as_ref()
+                .map(|v| v.to_text(&cx).into_string()),
+            bounds: Default::default(),
+            layout: None,
+            style: 0,
+            options: request.options,
+        }
+    }
+
     /// Go to Related Record (script-steps.md 11.8): the records related to
     /// the current record, or to every record of the found set, on the
     /// layout given (or the first layout of the related table), as the
-    /// found set or as the current record of all records. The server has
-    /// one window: "show in new window" uses it.
+    /// found set or as the current record of all records. "Show in new
+    /// window" opens a window for them, named as the step names it
+    /// (13.25's New Window), once the records are found.
     pub(super) fn go_to_related(&mut self, request: &RelatedRecords<'_>) -> HostResult {
         let related = request.occurrence.ok_or(ErrorCode::INVALID)?;
         self.require_view()?;
+        // Before the open record is left a refusal changes nothing: the new
+        // window is checked holding at most every record of the related
+        // table, then again with the records found.
+        if request.new_window {
+            let table = self.schema.table_of(related).ok_or(super::TABLE_MISSING)?;
+            let upper = self.table_record_count(table);
+            self.check_new_window(&self.related_window(request), Some(upper))?;
+        }
         self.leave()?;
         let window = self.window()?;
         let from = window.occurrence;
@@ -401,8 +425,17 @@ impl ServerHost {
         } else {
             next.current = next.found.iter().position(|id| *id == ids[0]).unwrap_or(0);
         }
+        next.found.shrink_to_fit();
+        if request.new_window {
+            // The window opens holding the found set prepared for it.
+            let incoming = next.found.len();
+            self.open_window(&self.related_window(request), Some(incoming))?;
+        }
         self.requests.clear();
         self.window = Some(next);
+        if request.new_window {
+            self.keep_windows_within_budget()?;
+        }
         Ok(())
     }
 }
