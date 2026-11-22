@@ -130,6 +130,12 @@ pub(crate) struct Uncommitted {
     /// changed it since, so Revert drops only the window's changes and
     /// keeps it.
     pub saved: bool,
+    /// The new record's place in the found set when it was made, which
+    /// its auto-entered `Get ( RecordNumber )` was given: its later
+    /// writes before its commit give it again, as the value is entered
+    /// when the record is made (Duplicate Record, #526). `None` when it
+    /// is not known (New Record, #298).
+    pub record_number: Option<u64>,
 }
 
 impl Uncommitted {
@@ -168,6 +174,9 @@ pub(crate) struct NewRecord {
     session: bool,
     /// Made at once on the host.
     saved: bool,
+    /// Its place in the found set when it was made, if known
+    /// ([`Uncommitted::record_number`]).
+    record_number: Option<u64>,
 }
 
 /// What [`Window::commit`] writes with, as its caller gave it.
@@ -842,7 +851,9 @@ impl Window {
                 typed,
                 skip_validation,
                 privilege_set: privilege_set.clone(),
-                record_number: None,
+                // A new record keeps the place it was made at: what its
+                // auto-entered Get ( RecordNumber ) was given then (#526).
+                record_number: open.new.then_some(open.record_number).flatten(),
                 prepared: None,
             });
             if let Some((table, _)) = pinned {
@@ -1272,7 +1283,8 @@ impl Window {
         privilege_set: Option<String>,
     ) -> Result<(), DataError> {
         let session = self.open_new_record(provider);
-        let made = self.make_new_record(provider, session, (values, cells), privilege_set)?;
+        let made =
+            self.make_new_record(provider, session, (values, cells), (privilege_set, None))?;
         self.adopt_new_record(provider, made)
     }
 
@@ -1297,13 +1309,14 @@ impl Window {
     /// in the session (#892). A refusal is the error: it is never made at
     /// once instead. A record a provider without transactions makes at once
     /// is saved: Revert keeps it. A failure reverts the session: nothing
-    /// was made.
+    /// was made. `record_number`: the record's place in the found set,
+    /// when it is known (`ScriptWrite::record_number`).
     pub fn make_new_record(
         &mut self,
         provider: &mut dyn DataProvider,
         session: bool,
         (values, cells): (FieldChanges, Cells),
-        privilege_set: Option<String>,
+        (privilege_set, record_number): (Option<String>, Option<u64>),
     ) -> Result<NewRecord, DataError> {
         let revert = |provider: &mut dyn DataProvider, session: bool| {
             if session {
@@ -1323,7 +1336,7 @@ impl Window {
             typed: BTreeSet::new(),
             skip_validation: false,
             privilege_set,
-            record_number: None,
+            record_number,
             prepared: None,
         };
         let (record, saved) = match provider.write_record(&write) {
@@ -1337,6 +1350,7 @@ impl Window {
             record,
             session,
             saved,
+            record_number,
         })
     }
 
@@ -1351,6 +1365,7 @@ impl Window {
         if self.state.uncommitted.new {
             self.state.uncommitted.session = made.session;
             self.state.uncommitted.saved = made.saved;
+            self.state.uncommitted.record_number = made.record_number;
         } else if made.session {
             let _ = provider.revert_transaction();
         }

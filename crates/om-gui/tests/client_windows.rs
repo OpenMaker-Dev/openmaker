@@ -118,6 +118,69 @@ fn host_scripts(tag: &str, scripts: &[Script]) -> hosted::Hosted {
     )
 }
 
+/// The host administrator's Send Message shows over the window while it is
+/// idle, as FileMaker Pro shows it: "Message from “<server>”", the text,
+/// the countdown and Close, which closes it (#156).
+#[test]
+fn a_host_message_shows_over_the_idle_window_until_closed() {
+    let hosted = host("host-message");
+    let mut app = common::harness(Box::new(hosted.provider()));
+    hosted.fill_form(&mut app);
+    common::click(&mut app, "Open");
+    common::wait_until(&mut app, "the file", |app| app.state().is_settled());
+    let server = hosted.server();
+    let client = server
+        .clients()
+        .into_iter()
+        .find(|client| !client.files.is_empty())
+        .expect("the window's session")
+        .id;
+    server
+        .send_message(client, "Back in five minutes.")
+        .unwrap();
+    common::wait_for_label(&mut app, "Back in five minutes.");
+    app.get_by_label("Message from “openmaker-test”");
+    assert!(app
+        .query_by_label_contains("(This dialog will be dismissed in")
+        .is_some());
+    common::click(&mut app, "Close");
+    app.run_steps(2);
+    assert!(app.query_by_label("Back in five minutes.").is_none());
+    assert!(app.state().error().is_none(), "{:?}", app.state().error());
+    // A close with no time to leave forces the disconnect at once: the
+    // alert says so with the administrator's text, and OK closes the file,
+    // both its windows.
+    common::open_menu(&mut app, "Window");
+    common::click(&mut app, "New Window");
+    common::wait_until(&mut app, "two windows", |app| !app.state().script_running());
+    assert_eq!(app.state_mut().window_titles().len(), 2);
+    let file = server
+        .files()
+        .into_iter()
+        .find(|info| info.clients > 0)
+        .expect("the window's file")
+        .id;
+    server
+        .close_file(
+            file,
+            &om_server::Notice {
+                message: "Closing for the night.".into(),
+                grace: std::time::Duration::ZERO,
+            },
+        )
+        .unwrap();
+    common::wait_until(&mut app, "the forced disconnect", |app| {
+        app.query_by_label_contains("File has been forcefully disconnected by the host.")
+            .is_some()
+    });
+    assert!(app
+        .query_by_label_contains("[From Administrator: “Closing for the night.”]")
+        .is_some());
+    common::click(&mut app, "OK");
+    common::wait_until(&mut app, "the file to close", |app| !app.state().is_open());
+    assert_eq!(app.state_mut().window_titles().len(), 1);
+}
+
 /// A window that goes to another table's layout and back returns to the
 /// record it showed on the first table (#660): FileMaker keeps a current
 /// record per table occurrence.

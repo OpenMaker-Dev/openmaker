@@ -55,6 +55,7 @@ pub(super) fn design_schema(store: &Store, file: &str) -> Option<Arc<CalcSchema>
     let stem = file.rsplit_once('.').map_or(file, |(stem, _)| stem);
     let mut schema = om_data::rules::schema::calc_schema(&tree, store.catalog(), stem);
     schema.locale = store.locale();
+    schema.locale_unreadable = store.file_language().is_none();
     om_data::host::device::withhold_server_lacks(schema.names_mut());
     Some(Arc::new(schema))
 }
