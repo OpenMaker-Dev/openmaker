@@ -1564,6 +1564,119 @@ fn administrators_abort_scripts_and_shut_down() {
     std::fs::remove_dir_all(&folder).unwrap();
 }
 
+/// A server script's windows (script-runtime.md 13.25, s35-windows): New
+/// Window copies the current one and is named after it with " - 2"; each
+/// window keeps its own record; Select Window matches names ignoring case,
+/// then window UUIDs, and a window nothing matches is 112; `WindowNames`
+/// lists them front to back; closing another window keeps the current one.
+/// Closing the last stops the script, which then ends with 0 and no result,
+/// as FileMaker Server's run does (#99).
+#[test]
+fn server_scripts_keep_windows_of_their_own() {
+    use fixture::{calc, exit_with, go_to_record, on, script, set_variable};
+    let named = |id: u16, name: &str| {
+        let mut step = ScriptStep::new(id);
+        step.value = 1;
+        step.set_calculation(0, Some(&calc(name)));
+        step
+    };
+    let scripts =
+        [
+            script(
+                6,
+                "Windows",
+                vec![
+                on(86, true),
+                set_variable("$uuid", "Get ( WindowUUID )"),
+                ScriptStep::new(122),
+                set_variable("$name", "Get ( WindowName )"),
+                go_to_record(2),
+                set_variable("$last", "Get ( RecordNumber ) = Get ( FoundCount )"),
+                named(123, "$uuid"),
+                set_variable("$first", "Get ( RecordNumber ) & \"/\" & Get ( WindowName )"),
+                named(123, "\"Nope\""),
+                set_variable("$missing", "Get ( LastError )"),
+                named(123, "Lower ( Get ( FileName ) & \" - 2\" )"),
+                set_variable("$lower", "Get ( WindowName )"),
+                named(123, "Get ( FileName )"),
+                set_variable(
+                    "$names",
+                    "Substitute ( WindowNames ( Get ( FileName ) ) ; ¶ ; \",\" )",
+                ),
+                named(121, "Get ( FileName ) & \" - 2\""),
+                {
+                    // A layout that does not exist: 105, no window opened.
+                    let mut step = ScriptStep::new(122);
+                    step.set_member_key(om_scripts::StoredKey::from_id(999));
+                    step
+                },
+                set_variable(
+                    "$gone",
+                    "Get ( LastError ) & \"/\" & ValueCount ( WindowNames ( Get ( FileName ) ) )",
+                ),
+                exit_with(
+                    "$name & \"|\" & $last & \"|\" & $first & \"|\" & $missing & \"|\" & $lower \
+                     & \"|\" & $names & \"|\" & WindowNames ( Get ( FileName ) ) & \"|\" & $gone",
+                ),
+            ],
+            ),
+            script(
+                7,
+                "Close the last",
+                vec![ScriptStep::new(121), exit_with("\"after\"")],
+            ),
+        ];
+    let file = TempFile::new("windows", &scripts, true);
+    let port = start(&file, None);
+    let mut client = logged_in(port, "windows");
+    let stem = FILE.trim_end_matches(".fmp12");
+    assert_eq!(
+        run(&mut client, 6).1,
+        format!("{stem} - 2|1|1/{stem}|112|{stem} - 2|{stem},{stem} - 2|{stem}|105/1")
+    );
+    assert_eq!(run(&mut client, 7), (0, String::new()));
+    client.disconnect().unwrap();
+}
+
+#[test]
+fn server_scripts_empty_record_list_replaces_the_same_window_found_set() {
+    use fixture::{calc, exit_with, go_to_record, on, script, set_variable};
+
+    let list = |layout: Option<u64>, new_window| {
+        let mut step = on(228, new_window);
+        step.set_calculation(7, Some(&calc("\"999\"")));
+        if let Some(layout) = layout {
+            step.value = 5;
+            step.set_member_key(om_scripts::StoredKey::from_id(layout));
+        }
+        step
+    };
+    let state = "Get ( LastError ) & \"/\" & Get ( LayoutName ) & \"/\" & Get ( FoundCount ) & \
+                 \"/\" & Get ( RecordID ) & \"/\" & ValueCount ( WindowNames ( Get ( FileName ) ) )";
+    let scripts = [script(
+        6,
+        "Missing record IDs",
+        vec![
+            on(86, true),
+            go_to_record(2),
+            list(Some(fixture::NOTES_LAYOUT), true),
+            set_variable("$new", state),
+            list(None, false),
+            set_variable("$same", state),
+            list(Some(fixture::NOTES_LAYOUT), false),
+            exit_with(&format!("$new & \"|\" & $same & \"|\" & ({state})")),
+        ],
+    )];
+    let file = TempFile::new("empty-record-list", &scripts, true);
+    let port = start(&file, None);
+    let mut client = logged_in(port, "empty-record-list");
+    assert_eq!(
+        run(&mut client, 6).1,
+        "101/Tasks/2/2/1|101/Tasks/0/0/1|101/Notes/0/0/1"
+    );
+    client.disconnect().unwrap();
+}
+
 /// Change Password (83) in a server script sets the password of the
 /// account the session logged in with, as FileMaker's `DoChangePassword`
 /// and `SetPassword` do (local-files.md 2.4): with its dialog the step is
@@ -1883,7 +1996,8 @@ fn delete_account_removes_the_account_and_its_index_entries() {
 #[test]
 fn server_scripts_move_through_portal_rows() {
     use fixture::{
-        exit_with, go_to_layout, go_to_record, on, script, set_field_in, set_variable, with_calc,
+        calc, exit_with, go_to_layout, go_to_record, on, script, set_field_in, set_variable,
+        with_calc,
     };
     use om_hbam::OwnedNode;
     // Two notes of task 1 ("Write tests"), made by the script itself.
@@ -1934,6 +2048,8 @@ fn server_scripts_move_through_portal_rows() {
         // Go to Record keeps the row, and the field entered in it.
         go_to_record(1),
         set_variable("$kept", row),
+        go_to_layout(fixture::LAYOUT),
+        set_variable("$same_layout", row),
         {
             let mut step = ScriptStep::new(99);
             step.value = 4;
@@ -1945,6 +2061,39 @@ fn server_scripts_move_through_portal_rows() {
         ),
         with_calc(145, "\"Notes portal\""),
         set_variable("$portal", row),
+        ScriptStep::new(122),
+        set_variable("$new_window", "Get ( ActivePortalRowNumber )"),
+        {
+            let mut step = ScriptStep::new(99);
+            step.value = 1;
+            step
+        },
+        {
+            let mut step = ScriptStep::new(123);
+            step.value = 1;
+            step.set_calculation(0, Some(&calc("Get ( FileName )")));
+            step
+        },
+        set_variable("$opener", row),
+        ScriptStep::new(121),
+        set_variable("$other", row),
+        // Move the last related record to a different parent while the
+        // window is parked on its row.
+        {
+            let mut step = ScriptStep::new(99);
+            step.value = 2;
+            step
+        },
+        ScriptStep::new(122),
+        go_to_layout(fixture::NOTES_LAYOUT),
+        go_to_record(2),
+        set_field_in(fixture::NOTES_OCCURRENCE, fixture::TASK, "\"Ship\""),
+        ScriptStep::new(75),
+        set_variable("$moved", "Get ( LastError )"),
+        ScriptStep::new(121),
+        set_variable("$resumed", &format!("Get ( LastError ) & \"/\" & ({row})")),
+        with_calc(145, "\"Note body\""),
+        set_variable("$reentered", row),
         with_calc(145, "\"Nope\""),
         set_variable("$missing", "Get ( LastError )"),
         with_calc(145, "\"\""),
@@ -1971,8 +2120,10 @@ fn server_scripts_move_through_portal_rows() {
         with_calc(145, "\"Notes portal\""),
         ScriptStep::new(75),
         exit_with(
-            "$first & \"|\" & $reverted & \"|\" & $second & \"|\" & $nth & \"|\" & $kept & \"|\" & $past & \"|\" \
-             & $portal & \"|\" & $missing & \"|\" & $empty & \"|\" & $left & \"|\" & \
+            "$first & \"|\" & $reverted & \"|\" & $second & \"|\" & $nth & \"|\" & $kept & \"|\" & \
+             $same_layout & \"|\" & $past & \"|\" & $portal & \"|\" & $new_window & \"|\" & \
+             $opener & \"|\" & $other & \"|\" & $moved & \"|\" & $resumed & \"|\" & $reentered & \"|\" & \
+             $missing & \"|\" & $empty & \"|\" & $left & \"|\" & \
              Get ( ActivePortalRowNumber )",
         ),
     ]);
@@ -2016,7 +2167,8 @@ fn server_scripts_move_through_portal_rows() {
     assert_eq!(
         run(&mut client, 6).1,
         "1/first/Note body/first|3|2/second/Note body/second|first/second|\
-         2/second/Note body/second|101/2|2/second/Notes portal/|116|5|0|0"
+         2/second/Note body/second|2/second/Note body/second|101/2|2/second/Notes portal/|\
+         0|2/second/Notes portal/|1/first/Notes portal/|0|0/0/first//|1/first/Note body/first|116|5|0|0"
     );
     client.disconnect().unwrap();
 }

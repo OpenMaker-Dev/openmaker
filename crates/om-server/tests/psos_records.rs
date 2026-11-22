@@ -335,6 +335,27 @@ fn scripts() -> Vec<Script> {
                 exit_with("Get ( LastError )"),
             ],
         ),
+        script(14, "Related window", {
+            let mut related = go_to_related(NOTES_OCCURRENCE, NOTES_LAYOUT);
+            related.set_flag(flag::TURN_ON, true);
+            vec![
+                fixture::on(86, true),
+                fixture::go_to_record(1),
+                set_field(NAME, 1, "\"Unmatched\""),
+                related.clone(),
+                set_var(
+                    "$refused",
+                    "Get ( LastError ) & \"/\" & ValueCount ( WindowNames ( Get ( FileName ) ) )",
+                ),
+                ScriptStep::new(51),
+                set_var("$reverted", "Tasks::Name"),
+                related,
+                exit_with(
+                    "$refused & \"/\" & $reverted & \"/\" & Get ( LastError ) & \"/\" & \
+                     ValueCount ( WindowNames ( Get ( FileName ) ) ) & \"/\" & Notes::Body",
+                ),
+            ]
+        }),
     ]
 }
 
@@ -474,6 +495,12 @@ fn server_scripts_follow_relationships() {
     assert_eq!(
         run(&mut client, 2),
         (101, "0|2|Notes|a-note,b-note/101|Tasks".to_string())
+    );
+    // The pending change would remove the matching note if committed. After
+    // refusal Revert restores the key, and the same step can open its window.
+    assert_eq!(
+        run(&mut client, 14),
+        (0, "3/1/Write tests/0/2/w".to_string())
     );
     // The index the join read was built on demand and stored.
     let notes = uint_segment(NOTES);
