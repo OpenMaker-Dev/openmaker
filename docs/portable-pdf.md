@@ -141,7 +141,8 @@ the portals [Portals](#portals) lists, dynamic pictures, the button icons
 hide/label calculations, the conditional formatting
 [Conditional formatting](#conditional-formatting) lists, the layout symbols and merge
 variables listed above, mixed rich text other than runs that differ only in color,
-decorated text, italic text in a family other than Arial or Helvetica,
+unsupported character faces in the runs described below, italic text in a
+family other than Arial or Helvetica,
 colors outside 0-1, unsupported glyphs/shaping, text overflow in anything but a
 field that does not slide ([field text](#field-text)), and object/page overflow. Ordinary
 flat character and paragraph styles, including uniform paragraph leading, can
@@ -157,7 +158,19 @@ runs that are not their text's partition in order on character boundaries (the
 layout decoder always gives one), a field's layout runs (its record value
 carries its own styles), and a merged or calculated value, a `{{PageNumber}}` or
 a case transform in several colors. Runs in several fonts, sizes or faces, and
-several paragraph styles, are refused. Common object flags other than the anchor, plain-text/tooltip,
+several paragraph styles, are refused. A text object's, button's or field's
+underlined (face `0x0400`) and struck-through (`0x0001`) runs, the faces their
+mask sets, print a stroke under or through each line, each part in its color,
+from the line's start through its last non-whitespace character. The strokes use
+the bundled face's `post` underline and OS/2 strikeout metrics, with the position
+giving the stroke's top above the baseline [I: FileMaker Pro's positions,
+thicknesses and treatment of trailing spaces are unmeasured]. A container
+field's file name prints in the same faces. Strokes are clipped to the text
+box on all four sides. Reports refuse word and double underline, case,
+superscript, subscript, condense, extend and other unsupported faces in these
+runs with error 3. Tab captions print without their character runs, as in
+Browse. Reports also omit style-level underline and strikethrough
+([#644](https://github.com/OpenMaker-Dev/openmaker/issues/644)). Common object flags other than the anchor, plain-text/tooltip,
 tab-order (`kTabOrderOmit`, which nothing printed shows) and slide-up bits,
 and on a line its start corner, refuse output. A line runs
 between the corners its start bits name, as Browse draws it (layout-model.md
