@@ -429,8 +429,11 @@ Replace Field Contents (91) visits the found records in order and applies
 Set Field's checks to each replacement (script-runtime.md, "Steps"). The
 first failure stops the step. Earlier replacements stay written or staged
 in the open transaction, subject to that transaction's error handling.
-The server locks each record before computing its replacement. If a row
-fails, the server drops that row's draft and restores the original cursor.
+The server visits repeated record IDs once, in first-seen order, for
+serial numbering and writes. It locks each record before computing its
+replacement and uses the starting portal row only where that row exists.
+If a row fails, the server drops that row's draft. The step restores the
+original cursor and keeps its portal row if the row still exists.
 Outside a transaction it releases the failed draft's lock. Inside one,
 the transaction keeps its earlier staged changes and locks until it ends.
 On the desktop the failed record stays current, and a change that failed
@@ -443,10 +446,11 @@ value, and Skip auto-enter options with error 3 before changing records
 run outside 0 through `i128::MAX` returns 3 before replacing a row and,
 on the desktop, before confirmation. The server also refuses container,
 global and related fields and Find mode (3), and calculation and summary
-fields (201). FileMaker's answers for these server refusals and mid-step
-lock or validation failures are unmeasured. FileMaker leaves the active
-record uncommitted (Claris). The desktop commits it before checking the
-serial run. The server supports one open record and refuses the step (3)
+fields (201). FileMaker's behavior with repeated IDs, portal rows, these
+server refusals, and mid-step lock or validation failures is unmeasured.
+FileMaker leaves the active record uncommitted (Claris). The desktop
+commits it before checking the serial run. The server supports one open
+record and refuses the step (3)
 when that record is new or edited, leaving the draft available to
 calculations and to Commit or Revert Record
 ([#513](https://github.com/OpenMaker-Dev/openmaker/issues/513)).

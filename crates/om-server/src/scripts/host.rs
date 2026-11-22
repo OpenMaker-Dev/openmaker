@@ -4427,7 +4427,7 @@ impl FieldSteps for ServerHost {
     }
 
     /// Replace Field Contents (91) in a server script
-    /// (script-runtime.md, "Steps"): each record of the found set in order
+    /// (script-runtime.md, "Steps"): each distinct record in found-set order
     /// is made current and opened (locked, so the value is computed from
     /// what it holds now), takes the current record's value, a serial
     /// number or the calculation evaluated on it through Set Field's checks,
@@ -4474,12 +4474,20 @@ impl FieldSteps for ServerHost {
         if def.kind != FieldKind::Normal {
             return Err(FIELD_LOCKED.into());
         }
-        let count = window.found.len();
+        // Go to List of Records can repeat an ID. Keep the window's found
+        // set intact and use only the first position of each record here.
+        let mut seen = BTreeSet::new();
+        let positions: Vec<usize> = window
+            .found
+            .iter()
+            .enumerate()
+            .filter_map(|(index, id)| seen.insert(*id).then_some(index))
+            .collect();
         if let Replacement::Serial {
             initial, increment, ..
         } = with
         {
-            let last = count.saturating_sub(1) as u64;
+            let last = positions.len().saturating_sub(1) as u64;
             if serial_text(initial, *increment, 0).is_none()
                 || serial_text(initial, *increment, last).is_none()
             {
@@ -4499,10 +4507,16 @@ impl FieldSteps for ServerHost {
             Replacement::CurrentContents => Some(self.value_of(field)?),
             _ => None,
         };
-        let original = self.window()?.current;
+        let window = self.window()?;
+        let original = window.current;
+        let portal = window.portal.clone();
         let mut result = Ok(());
-        for index in 0..count {
-            result = self.replace_one(field, with, current.as_ref(), index);
+        for (serial_index, position) in positions.into_iter().enumerate() {
+            let window = self.window_mut()?;
+            window.current = position;
+            // Recheck the starting row independently on each record.
+            window.portal.clone_from(&portal);
+            result = self.replace_one(field, with, current.as_ref(), serial_index);
             if result.is_err() {
                 // Drop the failed draft. An open transaction keeps its
                 // earlier staged version and releases locks when it ends.
@@ -4514,45 +4528,37 @@ impl FieldSteps for ServerHost {
         }
         if let Some(window) = self.window.as_mut() {
             window.current = original.min(window.found.len().saturating_sub(1));
+            window.portal = portal;
         }
+        // A write may have changed the original record's join key, even
+        // if a later write failed.
+        self.revalidate_portal();
         result
     }
 }
 
 impl ServerHost {
-    /// Replace Field Contents on the `index`th record of the found set:
-    /// open it, compute its value, set and commit it, stopping at an abort.
+    /// Open the current record, compute its replacement, set and commit
+    /// it. `serial_index` counts the distinct records visited so far.
     fn replace_one(
         &mut self,
         field: FieldRef,
         with: &mut Replacement<'_>,
         current: Option<&Value>,
-        index: usize,
+        serial_index: usize,
     ) -> HostResult {
         if self.aborted() {
             return Err(ErrorCode::CANCELED.into());
         }
-        self.window_mut()?.current = index;
-        self.replace_open(field, with, current, index)?;
-        self.leave()
-    }
-
-    /// Open the current record and set its replacement, the `index`th.
-    fn replace_open(
-        &mut self,
-        field: FieldRef,
-        with: &mut Replacement<'_>,
-        current: Option<&Value>,
-        index: usize,
-    ) -> HostResult {
         self.open_current()?;
+        self.revalidate_portal();
         let value = match with {
             Replacement::CurrentContents => current.cloned().unwrap_or_else(Value::empty_text),
             Replacement::Serial {
                 initial, increment, ..
             } => {
-                let text =
-                    serial_text(initial, *increment, index as u64).ok_or(HostError::Unsupported)?;
+                let text = serial_text(initial, *increment, serial_index as u64)
+                    .ok_or(HostError::Unsupported)?;
                 Value::text(text)
             }
             Replacement::Calculation(evaluate) => evaluate(self),
@@ -4561,7 +4567,8 @@ impl ServerHost {
         if self.aborted() {
             return Err(ErrorCode::CANCELED.into());
         }
-        self.store_value(field, value)
+        self.store_value(field, value)?;
+        self.leave()
     }
 
     /// Run `requests` as Perform Find, Constrain or Extend Found Set

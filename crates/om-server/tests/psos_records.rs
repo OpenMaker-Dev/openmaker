@@ -458,6 +458,12 @@ fn values_of(column: &str) -> String {
     format!("ExecuteSQL ( \"SELECT \\\"{column}\\\" FROM Tasks\" ; \"\" ; \",\" )")
 }
 
+fn record_list(ids: &str, new_window: bool) -> ScriptStep {
+    let mut step = fixture::on(228, new_window);
+    step.set_calculation(7, Some(&calc(ids)));
+    step
+}
+
 /// After `before`, Replace Field Contents [Tasks::`field`] with `choice` 1
 /// the current contents, 2 serial numbers from `text` by 2 or 3 the
 /// calculation `text`, then exit with the error, the calculation `after`
@@ -1515,6 +1521,98 @@ fn server_replace_field_contents_writes_every_found_record() {
     assert_eq!(
         run(&mut client, 19),
         (3, "3/1/Edited,T-08,T-10,T-12".into())
+    );
+}
+
+#[test]
+fn server_replace_field_contents_visits_duplicate_ids_once() {
+    let mut root = tree();
+    let before = || {
+        vec![
+            record_list("\"2\" & ¶ & \"2\" & ¶ & \"1\"", true),
+            // Start on the second occurrence of record 2.
+            fixture::go_to_record(4),
+        ]
+    };
+    let after = "Get ( RecordNumber ) & \"/\" & Get ( FoundCount ) & \"/\" & \
+                 ValueCount ( WindowNames ( Get ( FileName ) ) )";
+    let calculation = replaced(before(), COUNT, 3, "Count + 1", after);
+    let mut serial = replaced(before(), NAME, 2, "3", after);
+    serial[3].set_number(2, Some(-2));
+    for (id, name, steps) in [
+        (21, "Replace duplicates by calculation", calculation),
+        (22, "Replace duplicates by descending serials", serial),
+    ] {
+        root.put(
+            &[&[17], &[5], &uint_segment(id)],
+            script(id, name, steps).encode(),
+        );
+    }
+    let file = TempFile::from_tree("psos-replace-duplicates", &root);
+    let port = server::start(&file);
+    let (mut client, _) = server::logged_in(port, "client");
+    // The list and cursor keep both positions for ID 2, but the write
+    // visits ID 2 once and assigns serials 3, 1 in first-seen order.
+    assert_eq!(run(&mut client, 21), (0, "0/2/3/2/4,6,7,1".into()));
+    assert_eq!(run(&mut client, 22), (0, "0/2/3/2/1,3,alpha,".into()));
+}
+
+#[test]
+fn server_replace_field_contents_revalidates_the_portal_on_each_record() {
+    let mut root = tree();
+    let layout = uint_segment(fixture::LAYOUT);
+    let occurrence = om_hbam::serial::id_of_raw(NOTES_OCCURRENCE).unwrap();
+    let rect = om_layout::Rect {
+        top: 100.0,
+        left: 20.0,
+        bottom: 190.0,
+        right: 400.0,
+        ..Default::default()
+    };
+    let portal = om_layout::encode::portal_object(50, &rect, &[], occurrence, 3);
+    root.put(
+        &[&[4], &[5], &layout, &[7]],
+        OwnedNode::leaf(
+            Vec::new(),
+            om_layout::encode::append_to_store(&[], &[50], &[portal]),
+        ),
+    );
+    fixture::set_field_validation(&mut root, TABLE, NAME, 0x405);
+    fixture::add_formula(
+        &mut root,
+        &names(),
+        (TABLE, OCCURRENCE),
+        NAME,
+        0x19,
+        "Length ( Self ) <= 6",
+    );
+    let mut last_portal_row = ScriptStep::new(99);
+    last_portal_row.value = 2;
+    let steps = replaced(
+        vec![
+            record_list("\"2\" & ¶ & \"1\" & ¶ & \"3\"", false),
+            last_portal_row,
+            set_var("$selected", "Get ( ActivePortalRowNumber )"),
+        ],
+        NAME,
+        3,
+        "If ( Get ( RecordID ) = 3 ; \"too long\" ; Notes::Body )",
+        "$selected & \"/\" & Get ( RecordID ) & \"/\" & Get ( ActivePortalRowNumber ) & \"/\" & \
+         Get ( RecordOpenState )",
+    );
+    root.put(
+        &[&[17], &[5], &uint_segment(21)],
+        script(21, "Replace with portal row", steps).encode(),
+    );
+    let file = TempFile::from_tree("psos-replace-portal", &root);
+    let port = server::start(&file);
+    let (mut client, _) = server::logged_in(port, "client");
+    // Ship has a second note, b-note. Write tests has only w. The last
+    // write fails validation, and returning to the renamed Ship clears
+    // the old selection because its join no longer finds any notes.
+    assert_eq!(
+        run(&mut client, 21),
+        (507, "507/2/2/0/0/w,b-note,alpha,".into())
     );
 }
 
