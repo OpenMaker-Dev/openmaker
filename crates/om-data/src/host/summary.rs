@@ -27,7 +27,9 @@ use om_calc::ops::{self, Comparison};
 use om_calc::{CalcError, Ctx, Value, ValueType};
 
 use super::schema::FieldDef;
-use super::{record_missing, FileCalc, HostReads, ReadDepth, UNRESOLVED_SORT_FIELD};
+use super::{
+    record_missing, FileCalc, HostReads, ReadDepth, VariableSnapshot, UNRESOLVED_SORT_FIELD,
+};
 use crate::summary::{or_invalid, Break, Found, Operation, Summary};
 
 /// Summary reuse during one immutable calculation pass. A fresh cache (or
@@ -51,6 +53,29 @@ impl SummaryCache {
     }
 }
 
+/// Why [`FileCalc::found_groups`] gives a report no groups.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum GroupError {
+    /// A sort key up to a break is a related field the sort does not
+    /// resolve.
+    RelatedSortKey,
+    /// A sort key up to a break reads as `?` on a record: its groups are
+    /// not known.
+    UnevaluableKey,
+    /// A sort key up to a break is an unstored calculation that may read
+    /// the caller's variables ([`FileCalc::reads_variables`]): the found
+    /// set was sorted without them, so its order need not be the keys'.
+    VariableKey,
+    /// A read failed.
+    Calc(CalcError),
+}
+
+impl From<CalcError> for GroupError {
+    fn from(error: CalcError) -> Self {
+        GroupError::Calc(error)
+    }
+}
+
 /// [`FileCalc::found_groups`]: the found set read, and per break field
 /// its sort position and each record's group when sorted by it.
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -71,6 +96,9 @@ struct SummaryKey {
     /// The parent whose related set is summarized; `None` for the found
     /// set.
     related_from: Option<(u64, u64)>,
+    /// The identities of the variables the inputs read
+    /// ([`VariableSnapshot::revisions`]); `None` without any.
+    variables: Option<(u64, u64)>,
 }
 
 /// One summary field over one found or related set: what it reads, read once
@@ -165,7 +193,15 @@ impl<'a> FileCalc<'a> {
             field,
             repetition,
             related_from,
+            variables: self.variables.and_then(VariableSnapshot::revisions),
         }
+    }
+
+    /// The summary cache, unless the variables' identity cannot be read
+    /// now (a read holds them): then nothing is reused or kept.
+    fn cache(&self) -> Option<&'a SummaryCache> {
+        let known = self.variables.is_none_or(|s| s.revisions().is_some());
+        self.summaries.filter(|_| known)
     }
 
     /// The value of summary field `def` of `occurrence` on `record`,
@@ -185,7 +221,7 @@ impl<'a> FileCalc<'a> {
         };
         let key = self.summary_key(occurrence, def.id, repetition, related_from);
         if let Some((value, reads)) = self
-            .summaries
+            .cache()
             .and_then(|cache| cache.values.borrow().get(&key).cloned())
         {
             self.record_reads(reads);
@@ -201,7 +237,7 @@ impl<'a> FileCalc<'a> {
         // inputs too would multiply a large found set by every summary.
         let run = if fixed {
             match self
-                .summaries
+                .cache()
                 .and_then(|cache| cache.runs.borrow().get(&key).cloned())
             {
                 Some(run) => Some(run),
@@ -219,7 +255,7 @@ impl<'a> FileCalc<'a> {
             None => Value::empty(def.value_type),
         };
         if fixed {
-            if let Some(cache) = self.summaries {
+            if let Some(cache) = self.cache() {
                 cache
                     .values
                     .borrow_mut()
@@ -286,7 +322,7 @@ impl<'a> FileCalc<'a> {
                 break_field.field,
                 related_from,
             )? {
-                Some(found) => {
+                Some((found, _)) => {
                     groups = found;
                     Break::Groups(&groups)
                 }
@@ -333,9 +369,13 @@ impl<'a> FileCalc<'a> {
             vec![or_invalid(run.summary.group_value(&found, None, Break::All, &cx))?; count]
         } else {
             let groups = match same_table {
-                true => {
-                    self.break_groups(summary.occurrence, &run.records, break_field.field, None)?
-                }
+                true => (self.break_groups(
+                    summary.occurrence,
+                    &run.records,
+                    break_field.field,
+                    None,
+                )?)
+                .map(|(groups, _)| groups),
                 false => None,
             };
             match groups {
@@ -386,7 +426,7 @@ impl<'a> FileCalc<'a> {
     /// it is not sorted by. Reads every found record's sort values up to
     /// the deepest sorted break, in one prefetch. `NOT_SUPPORTED` when such
     /// a group depends on a sort key of another table.
-    pub fn found_groups(&self, occurrence: u64, breaks: &[u64]) -> Result<FoundGroups, CalcError> {
+    pub fn found_groups(&self, occurrence: u64, breaks: &[u64]) -> Result<FoundGroups, GroupError> {
         let table = self
             .schema
             .table_of(occurrence)
@@ -404,17 +444,24 @@ impl<'a> FileCalc<'a> {
             });
         };
         if sort[..=*deepest].contains(&UNRESOLVED_SORT_FIELD) {
-            return Err(CalcError::NOT_SUPPORTED);
+            return Err(GroupError::RelatedSortKey);
+        }
+        if self.sort_may_read_variables(occurrence, &sort[..=*deepest]) {
+            return Err(GroupError::VariableKey);
         }
         self.source.prefetch_records(table.id, &records);
         let mut groups = Vec::with_capacity(breaks.len());
         for (field, depth) in breaks.iter().zip(depths) {
             groups.push(match depth {
-                Some(depth) => Some((
-                    depth,
-                    self.break_groups(occurrence, &records, *field, None)?
-                        .ok_or(CalcError::NOT_SUPPORTED)?,
-                )),
+                Some(depth) => {
+                    let (found, unevaluable) = self
+                        .break_groups(occurrence, &records, *field, None)?
+                        .ok_or(GroupError::RelatedSortKey)?;
+                    if unevaluable {
+                        return Err(GroupError::UnevaluableKey);
+                    }
+                    Some((depth, found))
+                }
                 None => None,
             });
         }
@@ -435,7 +482,7 @@ impl<'a> FileCalc<'a> {
     ) -> Result<Option<Rc<SummaryRun>>, CalcError> {
         let key = self.summary_key(occurrence, def.id, repetition, related_from);
         if let Some(run) = self
-            .summaries
+            .cache()
             .and_then(|cache| cache.runs.borrow().get(&key).cloned())
         {
             self.record_reads(run.reads);
@@ -444,7 +491,7 @@ impl<'a> FileCalc<'a> {
         let run = self
             .summary_run_in_context(occurrence, def, repetition, related_from)?
             .map(Rc::new);
-        if let (Some(cache), Some(run)) = (self.summaries, &run) {
+        if let (Some(cache), Some(run)) = (self.cache(), &run) {
             cache.runs.borrow_mut().insert(key, Rc::clone(run));
         }
         Ok(run)
@@ -534,9 +581,9 @@ impl<'a> FileCalc<'a> {
             None => Vec::new(),
         };
         let groups = match summary.additional.filter(|_| summary.uses_groups()) {
-            Some(by) if self.table_id(by.occurrence).ok() == Some(table.id) => {
-                self.break_groups(occurrence, &records, by.field, related_from)?
-            }
+            Some(by) if self.table_id(by.occurrence).ok() == Some(table.id) => (self
+                .break_groups(occurrence, &records, by.field, related_from)?)
+            .map(|(groups, _)| groups),
             _ => None,
         };
         Ok(Some(SummaryRun {
@@ -593,17 +640,25 @@ impl<'a> FileCalc<'a> {
         )
     }
 
+    fn sort_may_read_variables(&self, occurrence: u64, keys: &[u64]) -> bool {
+        self.variables.is_some()
+            && keys
+                .iter()
+                .any(|key| self.reads_variables(occurrence, *key))
+    }
+
     /// Each record's group by `field` when the found set of `occurrence`
     /// (or `related_from`'s related set) is sorted by it: a new group at
-    /// each change of a sort field up to `field`; `None` when the sort does
-    /// not include it, or a key up to it is unresolved (a related field).
+    /// each change of a sort field up to `field`, and whether a key read as
+    /// `?` on some record; `None` when the sort does not include it, or a
+    /// key up to it is unresolved (a related field).
     fn break_groups(
         &self,
         occurrence: u64,
         records: &[u64],
         field: u64,
         related_from: Option<(u64, u64)>,
-    ) -> Result<Option<Vec<usize>>, CalcError> {
+    ) -> Result<Option<(Vec<usize>, bool)>, CalcError> {
         let Some(sort) = self.summary_sort(occurrence, related_from) else {
             return Ok(None);
         };
@@ -614,15 +669,22 @@ impl<'a> FileCalc<'a> {
         if keys.contains(&UNRESOLVED_SORT_FIELD) {
             return Ok(None);
         }
+        // GetSummary can reach this path without a layout sub-summary
+        // part. Its break prefix must agree with the sort that ran.
+        if self.sort_may_read_variables(occurrence, keys) {
+            return Err(CalcError::from_code(3).expect("nonzero"));
+        }
         let cx = self.table_cx(occurrence);
         let mut groups = Vec::with_capacity(records.len());
         let mut previous: Option<Vec<Value>> = None;
         let mut group = 0;
+        let mut unevaluable = false;
         for &record in records {
             let values = keys
                 .iter()
                 .map(|f| self.read_field(occurrence, record, *f, 1))
                 .collect::<Result<Vec<_>, _>>()?;
+            unevaluable |= values.iter().any(Value::is_invalid);
             if let Some(previous) = &previous {
                 let same = previous.iter().zip(&values).all(|(a, b)| {
                     // Stored sorting gives empty values their own key.
@@ -644,6 +706,6 @@ impl<'a> FileCalc<'a> {
             groups.push(group);
             previous = Some(values);
         }
-        Ok(Some(groups))
+        Ok(Some((groups, unevaluable)))
     }
 }

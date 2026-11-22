@@ -54,13 +54,13 @@ use om_scripts::display::{Lookup, StepNames, MAX_PASTE_BYTES, MAX_PASTE_STEPS};
 use serde_json::{json, Value};
 
 use crate::api::{
-    self, ApplyParams, AuthorError, ChangePartsParams, ChoiceParams, ChooseParams, Command,
-    CompletionParams, CreateFieldParams, CreateFileParams, CreateLayoutParams, DeleteLayoutParams,
-    DeleteObjectsParams, DuplicateLayoutParams, EditParams, ErrorKind, FieldControlParams,
-    FieldParams, FieldType, FrameParams, InspectParams, LayoutParams, LayoutSetupParams,
-    LayoutWidthParams, ObjectFramesParams, OtherParams, Part, PartOptionsParams, PlaceFieldParams,
-    PlacePortalParams, PlaceTextParams, PlacementParams, RunScriptParams, ScriptParams, TextParams,
-    ValueListParams, ValueListValuesParams, API_VERSION,
+    self, ApplyParams, ArrangeObjectsParams, AuthorError, ChangePartsParams, ChoiceParams,
+    ChooseParams, Command, CompletionParams, CreateFieldParams, CreateFileParams,
+    CreateLayoutParams, DeleteLayoutParams, DeleteObjectsParams, DuplicateLayoutParams, EditParams,
+    ErrorKind, FieldControlParams, FieldParams, FieldType, FrameParams, InspectParams,
+    LayoutParams, LayoutSetupParams, LayoutWidthParams, ObjectFramesParams, OtherParams, Part,
+    PartOptionsParams, PlaceFieldParams, PlacePortalParams, PlaceTextParams, PlacementParams,
+    RunScriptParams, ScriptParams, TextParams, ValueListParams, ValueListValuesParams, API_VERSION,
 };
 use crate::catalog::{self, CommandSpec, Grant, Needs};
 use crate::refs::{self, reference};
@@ -639,7 +639,9 @@ fn only_gained(old: &OwnedNode, new: &OwnedNode) -> bool {
 /// reference index `01`, the parts `03` (whose lists of objects gain the
 /// new ones; checked by `layout_placement::part_lists_extended`), the
 /// object attributes `05`, the object store `07`, the object index `0a`
-/// and the modification stamp.
+/// and the tab order `15` (which gain the edit box; checked by
+/// `layout_placement::object_index_and_tab_order_as_planned`), the table
+/// view `0d` and the modification stamp.
 fn kept_layout_keys(member: &OwnedNode) -> Vec<&OwnedNode> {
     member
         .children
@@ -647,7 +649,7 @@ fn kept_layout_keys(member: &OwnedNode) -> Vec<&OwnedNode> {
         .filter(|c| {
             !matches!(
                 c.segment.as_slice(),
-                [1] | [3] | [5] | [7] | [0x0a] | [0x0d]
+                [1] | [3] | [5] | [7] | [0x0a] | [0x0d] | [0x15]
             ) && !is_stamp(&c.segment)
         })
         .collect()
@@ -693,6 +695,7 @@ impl Service {
             Command::PlaceField(params) => self.place_field(params),
             Command::CreateLayout(params) => self.create_layout(params),
             Command::SetObjectFrames(params) => self.set_object_frames(params),
+            Command::ArrangeObjects(params) => self.arrange_objects(params),
             Command::DeleteObjects(params) => self.delete_objects(params),
             Command::PlaceText(params) => self.place_text(params),
             Command::PlacePortal(params) => self.place_portal(params),
@@ -1622,12 +1625,18 @@ impl Service {
         );
         let normalized =
             after_text.trim_end_matches('\n') != params.source.trim_end_matches(['\n', '\r']);
+        let matches_later_revision = after == current && expected.is_some_and(|e| e != current);
+        let native_save_unconfirmed = matches_later_revision
+            && loaded
+                .opened
+                .uses_native_script_save()
+                .map_err(Self::read_error)?;
         let mut out = json!({
             "script": self.script_json(loaded.script(), &loaded.definitions),
             "base_revision": revision_text(&current),
             "after_revision": revision_text(&after),
             "changed": after != current,
-            "already_applied": after == current && expected.is_some_and(|e| e != current),
+            "already_applied": matches_later_revision && !native_save_unconfirmed,
             "steps": {
                 "before": loaded.script().steps.len(),
                 "after": compiled.script.steps.len(),
@@ -1640,6 +1649,9 @@ impl Service {
             "normalized": normalized,
             "kept_keys": preserved_keys(loaded.definition()),
         });
+        if native_save_unconfirmed {
+            out["native_save_unconfirmed"] = json!(true);
+        }
         out["apply"] = Self::available(&mut loaded.opened, &catalog::APPLY)?;
         Ok(out)
     }
@@ -1678,7 +1690,28 @@ impl Service {
             "deleted": compiled.deleted,
         });
         if after == current {
-            // Nothing to write: the script already has these steps.
+            if expected != current {
+                let reason = match loaded.opened.uses_native_script_save() {
+                    Ok(false) => None,
+                    Ok(true) => Some("The earlier native index upload cannot be verified.".into()),
+                    Err(error) => Some(format!(
+                        "The host's script save path could not be confirmed ({}).",
+                        error.message
+                    )),
+                };
+                if let Some(reason) = reason {
+                    return Err(AuthorError::new(
+                        ErrorKind::OutcomeUnknown,
+                        format!("The member for {label} has the requested steps. {reason}"),
+                    )
+                    .with_details(json!({
+                        "previous_revision": revision_text(&expected),
+                        "after_revision": revision_text(&after),
+                        "member_content_matches": true,
+                        "index_verified": false,
+                    })));
+                }
+            }
             return Ok(json!({
                 "status": if expected == current { "unchanged" } else { "already_applied" },
                 "script": label,
@@ -1701,9 +1734,9 @@ impl Service {
                 AuthorError::new(
                     ErrorKind::OutcomeUnknown,
                     format!(
-                        "The edit of {label} was sent but no answer came back ({reason}), so it \
-                         may or may not have been applied. Read the script again: at \
-                         after_revision it was applied, at previous_revision it was not."
+                        "The edit of {label} was sent but could not be confirmed ({reason}). A \
+                         fresh script read can compare the member with after_revision and \
+                         previous_revision. A native save also needs its index upload confirmed."
                     ),
                 )
                 .with_details(json!({
@@ -2068,6 +2101,112 @@ impl Service {
     /// Move or resize objects of a layout (`om_data::layout_objects`)
     /// through the host's authoring extension, then read the layout back
     /// over a new connection.
+    /// Arrange's Align, Distribute or Resize To on objects of a layout: the
+    /// frames `om_data::layout_arrange` gives them from their stored
+    /// frames, written as `set_object_frames` writes frames.
+    fn arrange_objects(&mut self, params: &ArrangeObjectsParams) -> Result<Value, AuthorError> {
+        use om_data::layout_arrange::{arrange, Arrangement};
+        let arrangement = Arrangement::from_id(&params.arrangement).ok_or_else(|| {
+            let ids: Vec<&str> = Arrangement::ALL.iter().map(|a| a.id()).collect();
+            AuthorError::new(
+                ErrorKind::InvalidRequest,
+                format!(
+                    "“{}” is no arrangement; the arrangements are {}.",
+                    params.arrangement,
+                    ids.join(", ")
+                ),
+            )
+        })?;
+        if params.objects.len() < arrangement.minimum() {
+            return Err(AuthorError::new(
+                ErrorKind::InvalidRequest,
+                format!(
+                    "{} needs at least {} objects.",
+                    arrangement.id(),
+                    arrangement.minimum()
+                ),
+            ));
+        }
+        let expected = parse_revision(&params.expected_revision)?;
+        let file = self.file();
+        let layout = self.load_layout(&LayoutParams {
+            layout: params.layout.clone(),
+            layout_name: params.layout_name.clone(),
+        })?;
+        let layout_ref = self.layout_ref(layout.id);
+        let refused = |refusal: layout_placement::Refusal| {
+            let kind = match refusal {
+                layout_placement::Refusal::Invalid(_) => ErrorKind::InvalidRequest,
+                layout_placement::Refusal::Unsupported(_) => ErrorKind::Unsupported,
+            };
+            AuthorError::new(kind, refusal.to_string())
+        };
+        let (_, store) = layout_placement::stored_objects(&layout.member).map_err(refused)?;
+        let decoded = layout_placement::decode(&layout.member).ok_or_else(|| {
+            AuthorError::new(
+                ErrorKind::Unsupported,
+                format!("OpenMaker cannot read {layout_ref}'s objects."),
+            )
+        })?;
+        let mut frames = Vec::with_capacity(params.objects.len());
+        for object in &params.objects {
+            let (on, key) = refs::layout_object_id(object, &file)?;
+            let stored = decoded.objects.get(key).filter(|_| on == layout.id);
+            let Some(bounds) = stored.and_then(|o| o.bounds.clone()) else {
+                return Err(AuthorError::new(
+                    ErrorKind::InvalidRequest,
+                    format!("{object} is not an object of {layout_ref} with a frame."),
+                ));
+            };
+            if frames.iter().any(|f: &ObjectFrame| f.object == key) {
+                return Err(AuthorError::new(
+                    ErrorKind::InvalidRequest,
+                    format!("{object} is named twice."),
+                ));
+            }
+            // Every object, the ones that stay included: one that cannot be
+            // moved must not anchor the others.
+            layout_objects::movable(&store, key).map_err(refused)?;
+            frames.push(ObjectFrame {
+                object: key,
+                frame: bounds,
+            });
+        }
+        let changed = arrange(&frames, arrangement).map_err(refused)?;
+        if changed.is_empty() {
+            // Arranged so already: at the expected revision nothing is to
+            // change; at another, as after a request whose answer was lost,
+            // the objects are as asked (set_object_frames' already_applied).
+            return Ok(json!({
+                "status": if expected == layout.revision { "unchanged" } else { "already_applied" },
+                "layout": layout_ref,
+                "arrangement": arrangement.id(),
+                "revision": revision_text(&layout.revision),
+            }));
+        }
+        let mut result = self.set_object_frames(&ObjectFramesParams {
+            layout: Some(layout_ref.clone()),
+            layout_name: None,
+            objects: changed
+                .iter()
+                .map(|f| crate::api::ObjectFrameParams {
+                    object: self.object_ref(layout.id, f.object),
+                    frame: FrameParams {
+                        left: f.frame.left,
+                        top: f.frame.top,
+                        width: f.frame.right - f.frame.left,
+                        height: f.frame.bottom - f.frame.top,
+                    },
+                })
+                .collect(),
+            expected_revision: params.expected_revision.clone(),
+        })?;
+        if let Some(fields) = result.as_object_mut() {
+            fields.insert("arrangement".into(), json!(arrangement.id()));
+        }
+        Ok(result)
+    }
+
     fn set_object_frames(&mut self, params: &ObjectFramesParams) -> Result<Value, AuthorError> {
         let expected = parse_revision(&params.expected_revision)?;
         let file = self.file();
@@ -4292,6 +4431,23 @@ impl Service {
         } else {
             base.child(&[0x0d]) == member.child(&[0x0d])
         };
+        // The object index and tab order as the plan writes them: the
+        // stored entries as they were, the edit box's entry in each, and its
+        // tab position in its attribute record. A repeated request wrote
+        // nothing, as above.
+        // ([#316](https://github.com/OpenMaker-Dev/openmaker/issues/316))
+        let indexes_as_planned = if placed.changed {
+            layout_placement::object_index_and_tab_order_as_planned(
+                base,
+                &member,
+                placement,
+                placed.field_object,
+            )
+        } else {
+            [0x0a, 0x15]
+                .iter()
+                .all(|&key| base.child(&[key]) == member.child(&[key]))
+        };
         let table_matches = names
             .as_ref()
             .and_then(|schema| schema.table_of(placement.occurrence))
@@ -4312,7 +4468,8 @@ impl Service {
             && issued_past
             && index_kept
             && parts_kept
-            && table_view_as_planned;
+            && table_view_as_planned
+            && indexes_as_planned;
         if found != placed.revision
             || !indexed
             || field_object.is_none()
@@ -4345,6 +4502,7 @@ impl Service {
                 "object_indexed": indexed,
                 "part_lists_extended_as_planned": parts_kept,
                 "table_view_as_planned": table_view_as_planned,
+                "object_index_and_tab_order_as_planned": indexes_as_planned,
                 "last_issued_key_past_new_objects": issued_past,
             })));
         }

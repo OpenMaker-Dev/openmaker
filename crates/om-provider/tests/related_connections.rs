@@ -45,17 +45,16 @@ fn solution(n: u64) -> Vec<(String, om_hbam::OwnedNode)> {
 }
 
 /// Threads of this process whose name starts as `name` does (Linux keeps
-/// 15 bytes of it).
-fn threads(name: &str) -> usize {
+/// 15 bytes of it), counted through `/proc`; `None` where there is none to
+/// count them by (macOS, Windows).
+fn threads(name: &str) -> Option<usize> {
     let name = &name[..name.len().min(15)];
-    std::fs::read_dir("/proc/self/task")
-        .map(|tasks| {
-            tasks
-                .filter_map(|task| std::fs::read_to_string(task.ok()?.path().join("comm")).ok())
-                .filter(|comm| comm.trim_end() == name)
-                .count()
-        })
-        .unwrap_or(0)
+    std::fs::read_dir("/proc/self/task").ok().map(|tasks| {
+        tasks
+            .filter_map(|task| std::fs::read_to_string(task.ok()?.path().join("comm")).ok())
+            .filter(|comm| comm.trim_end() == name)
+            .count()
+    })
 }
 
 /// A loopback relay to `port` that delays every chunk `delay` each way;
@@ -133,7 +132,8 @@ fn measure(n: u64, delay: Option<Duration>) -> String {
         provider.related_file_warnings()
     );
     let sessions = host.handle.clients().len();
-    let keepalives = threads("om-session keepalive");
+    let keepalives =
+        threads("om-session keepalive").map_or_else(|| "n/a".to_owned(), |n| n.to_string());
     let (opens, logins) = host.captures.opens_and_logins();
     provider.close();
     let connections = std::fs::read_dir(&host.captures.0).unwrap().count();
@@ -170,7 +170,10 @@ fn related_files_share_the_opened_files_connection() {
     let schema = provider.calc_schema().unwrap().unwrap();
     assert_eq!(schema.tables().count(), 2 * 9);
     assert_eq!(host.handle.clients().len(), 1, "one session");
-    assert_eq!(threads("om-session keepalive"), 1);
+    // One keepalive, where the threads can be counted.
+    if let Some(keepalives) = threads("om-session keepalive") {
+        assert_eq!(keepalives, 1);
+    }
     let (opens, logins) = host.captures.opens_and_logins();
     assert_eq!((opens.len(), logins.len()), (9, 9), "{opens:?} {logins:?}");
     assert!(opens.values().chain(logins.values()).all(|n| *n == 1));

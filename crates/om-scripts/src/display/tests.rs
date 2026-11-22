@@ -606,6 +606,7 @@ fn pasted_text_stores_what_filemaker_shows() {
         "Truncate Table [ With dialog: On ; Table: “Contacts” ]",
         "Import Records [ With dialog: On ; Source: “file:a.csv” ]",
         "New Window [ Style: Card ; Name: \"c\" ]",
+        "Go to Related Record [ From table: \"Con\" & \"tacts\" ; Using layout: <Current Layout> ]",
         "Go to List of Records [ List of record IDs: \"1¶2\" ; Using layout: “Contact Details” (Contacts) ; New window ]",
         // FileMaker Pro 26.1.1's steps by name, as OpenMaker shows them [I].
         "Set Variable by Name [ \"$x\" ; Value: 1 ]",
@@ -616,6 +617,17 @@ fn pasted_text_stores_what_filemaker_shows() {
     for line in lines {
         assert_eq!(shown(&pasted(line)), line);
     }
+    // Table by Calculation: the name's calculation in slot 8, `0x400`
+    // (script-steps.md 12.4), and no stored occurrence.
+    let related = pasted(lines[10]);
+    assert!(related.has_flag(flag::OPTION3) && related.calculation(8).is_some());
+    assert!(related.data.as_ref().and_then(|d| d.slot(0)).is_none());
+    // No table at all is no calculation: refused, as before.
+    let empty = "Go to Related Record [ From table:  ; Using layout: <Current Layout> ]";
+    assert!(matches!(
+        &parse_steps(empty, &Contacts::new(), Origin::Unknown).unwrap()[..],
+        [Pasted::Failed { .. }]
+    ));
     // A target named by a calculation sets kFieldSpecByCalc, as FileMaker
     // stores it (script-steps.md 4).
     for line in [
@@ -626,7 +638,7 @@ fn pasted_text_stores_what_filemaker_shows() {
     }
     // Go to List of Records: the ids in slot 7, a new window under
     // `kTurnOn` (script-steps.md 12.2).
-    let list = pasted(lines[10]);
+    let list = pasted(lines[11]);
     assert!(list.calculation(7).is_some() && list.calculation(0).is_none());
     assert!(list.has_flag(flag::TURN_ON) && !list.has_flag(flag::OPTION));
     // Insert Text's text is slot 0.
@@ -1273,4 +1285,80 @@ fn empty_elements_count_toward_the_xml_depth_bound() {
     ));
     let refused = parse_steps(&nested(MAX_XML_DEPTH), &names, Origin::Unknown).unwrap_err();
     assert!(refused.contains("more than 128 deep"), "{refused}");
+}
+
+/// The account steps' options are the step value, nonzero when on, as
+/// FileMaker Server's engine reads them (local-files.md 2.4, #525): text
+/// sets them there, not in flag 0x100, and prints them back; so does
+/// FileMaker's XML.
+#[test]
+fn account_step_options_are_the_step_value() {
+    for (line, value) in [
+        ("Add Account [ Account Name: \"u\" ; Password: \"p\" ; Expire password ]", 1),
+        ("Add Account [ Account Name: \"u\" ; Password: \"p\" ]", 0),
+        ("Reset Account Password [ Account Name: \"u\" ; New Password: \"q\" ; Expire password ]", 1),
+        ("Enable Account [ Account Name: \"u\" ; Deactivate ]", 1),
+        ("Enable Account [ Account Name: \"u\" ; Activate ]", 0),
+    ] {
+        let step = pasted(line);
+        assert_eq!(step.value, value, "{line}");
+        assert!(!step.has_flag(flag::OPTION), "{line}");
+        assert_eq!(step.has_flag(flag::MENU_SELECTION), value != 0, "{line}");
+        assert_eq!(shown(&step), line);
+    }
+    let xml = r#"<fmxmlsnippet type="FMObjectList"><Step id="137" name="Enable Account"><Options>16384</Options><ParameterValues><Parameter type="AccountName"><Calculation position="0"><Calculation><Text><![CDATA["u"]]></Text></Calculation></Calculation></Parameter><Parameter type="Boolean"><Boolean type="EnableAccountBoolean" value="False" name="Activate"></Boolean></Parameter></ParameterValues></Step></fmxmlsnippet>"#;
+    let without_options = pasted(&xml.replace("<Options>16384</Options>", ""));
+    assert_eq!(without_options.value, 1);
+    assert_eq!(
+        without_options.flags,
+        flag::CALCULATION | flag::MENU_SELECTION
+    );
+    let pasted = parse_steps(xml, &Contacts::new(), Origin::Unknown).unwrap();
+    let [Pasted::Step(step)] = &pasted[..] else {
+        panic!("{pasted:?}");
+    };
+    assert_eq!(step.value, 1);
+    assert_eq!(step.flags, 16384, "<Options> is the stored flags word");
+    assert_eq!(
+        shown(step),
+        "Enable Account [ Account Name: \"u\" ; Deactivate ]"
+    );
+    // Activate with `kMenuSelection` in `<Options>`: value 0 is the choice
+    // given, not a missing one.
+    let xml = xml
+        .replace("<Options>16384</Options>", "<Options>16386</Options>")
+        .replace("value=\"False\"", "value=\"True\"");
+    let pasted = parse_steps(&xml, &Contacts::new(), Origin::Unknown).unwrap();
+    let [Pasted::Step(step)] = &pasted[..] else {
+        panic!("{pasted:?}");
+    };
+    assert_eq!((step.value, step.flags), (0, 16386));
+    assert_eq!(
+        shown(step),
+        "Enable Account [ Account Name: \"u\" ; Activate ]"
+    );
+}
+
+/// Add Account's privilege set is a flagless key in `mReserved` (#525):
+/// its text with the stored bytes keeps it within this file, and from
+/// elsewhere the step is refused rather than added without its set.
+#[test]
+fn add_accounts_stored_privilege_set_is_kept_or_refused() {
+    let mut step = pasted("Add Account [ Account Name: \"u\" ; Password: \"p\" ]");
+    step.reserved[..3].copy_from_slice(&[2, 1, 2]);
+    step.set_flag(flag::OPTION, true);
+    assert!(!shown(&step).contains("Expire password"));
+    step.value = 4;
+    assert!(shown(&step).contains("Expire password"));
+    let text = step_text(&step, &Contacts::new());
+    let here = parse_steps(&text, &Contacts::new(), Origin::ThisFile).unwrap();
+    let [Pasted::Step(back)] = &here[..] else {
+        panic!("{text}: {here:?}");
+    };
+    assert_eq!(canonical(back), canonical(&step), "{text}");
+    let elsewhere = parse_steps(&text, &Contacts::new(), Origin::Unknown).unwrap();
+    assert!(
+        matches!(&elsewhere[..], [Pasted::Failed { reason, .. }] if reason.contains("privilege set")),
+        "{elsewhere:?}"
+    );
 }

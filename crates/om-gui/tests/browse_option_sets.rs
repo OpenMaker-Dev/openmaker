@@ -9,10 +9,11 @@ mod common;
 use egui::{Key, Modifiers, Role};
 use egui_kittest::kittest::{By, NodeT as _, Queryable};
 use om_data::calc::{Ctx, Date, Locale, Value, ValueType};
+use om_data::host::RelationshipDef;
 use om_data::host::{
     CalcData, CalcNeed, CalcSchema, FieldDef, MemorySource, RecordValues, Recorder,
 };
-use om_data::meta::{value_list_option, ValueList, ValueSource};
+use om_data::meta::{value_list_option, JoinOp, JoinPredicate, ValueList, ValueSource};
 use om_data::specs::SpecField;
 use om_data::{
     Connection, DataError, DataProvider, Field, FieldChanges, FieldKind, HostedFile, LayoutInfo,
@@ -35,6 +36,9 @@ const CODES_TABLE: u64 = 0x8002;
 /// The table whose field's values Shade's drop-down list offers.
 const TINTS: u64 = 0xd00003;
 const TINTS_TABLE: u64 = 0x8003;
+/// Tints related to every Items record (a Cartesian join): #290's
+/// related-values list.
+const RELATED_TINTS: u64 = 0xd00004;
 const FIELDS: [&str; 8] = [
     "Colors", "Size", "Code", "Note", "Locked", "Kept", "Guarded", "Shade",
 ];
@@ -104,6 +108,15 @@ struct State {
     no_host_list: bool,
     /// The custom values Edit Value List saved, by list.
     list_values: Vec<(u64, Vec<String>)>,
+    /// How many Tints records there are (#290's measurement); none: the
+    /// three named ones.
+    tints: u64,
+    /// Note has a pop-up menu of Tints::Label's values, an unstored
+    /// calculation (#290's measurement).
+    label_menu: bool,
+    /// That menu's list is the related tints' Name values, shown by their
+    /// Label, starting from Items instead (#290's related list).
+    related_menu: bool,
 }
 
 struct Provider(Arc<Mutex<State>>);
@@ -122,6 +135,26 @@ fn schema() -> CalcSchema {
     s.add_table(TINTS_TABLE, "Tints");
     s.add_occurrence(TINTS, "Tints", TINTS_TABLE);
     s.add_field(TINTS_TABLE, FieldDef::data(1, "Name", ValueType::Text));
+    // Tints::Label, unstored: Name & "!".
+    let mut context = om_data::formula::Context::new(s.names());
+    context.occurrence = Some(TINTS);
+    let polish = om_data::formula::compile("Name & \"!\"", &context)
+        .unwrap()
+        .expr;
+    s.add_field(
+        TINTS_TABLE,
+        FieldDef::calculation(
+            2,
+            "Label",
+            ValueType::Text,
+            om_data::formula::Formula {
+                context: Some(om_data::formula::Key::from_id(TINTS)),
+                formatted: None,
+                polish,
+            },
+            false,
+        ),
+    );
     let custom = |id: u64, items: &str| ValueList {
         id,
         name: format!("List {id}"),
@@ -153,6 +186,50 @@ fn schema() -> CalcSchema {
             start: None,
         },
         ..custom(8, "")
+    });
+    // Label menu's list: Tints::Label's values, shown by Tints::Name, so
+    // that the closed menu reads its items to show its value's name
+    // (#290's measurement).
+    let tint = |field| SpecField {
+        occurrence: Some(TINTS),
+        field,
+        repetition: 1,
+    };
+    s.add_value_list(ValueList {
+        source: ValueSource::Field {
+            primary: tint(2),
+            secondary: Some(tint(1)),
+            start: None,
+        },
+        options: value_list_option::SECOND_ONLY,
+        ..custom(9, "")
+    });
+    // The related tints' Names, shown by their Labels, starting from Items
+    // (#290's related list).
+    s.add_occurrence(RELATED_TINTS, "Related tints", TINTS_TABLE);
+    s.add_relationship(RelationshipDef::new(
+        5,
+        ITEMS,
+        RELATED_TINTS,
+        vec![JoinPredicate {
+            op: JoinOp::Cartesian,
+            left: 1,
+            right: 1,
+        }],
+    ));
+    let related = |field| SpecField {
+        occurrence: Some(RELATED_TINTS),
+        field,
+        repetition: 1,
+    };
+    s.add_value_list(ValueList {
+        source: ValueSource::Field {
+            primary: related(1),
+            secondary: Some(related(2)),
+            start: Some(ITEMS),
+        },
+        options: value_list_option::SECOND_ONLY,
+        ..custom(10, "")
     });
     let code = |field| SpecField {
         occurrence: Some(CODES),
@@ -278,6 +355,9 @@ impl DataProvider for Provider {
             state.shade_without_arrow,
             state.shade_completes,
             state.single,
+            state
+                .label_menu
+                .then_some(if state.related_menu { 10 } else { 9 }),
         )))
     }
     fn calc_schema(&mut self) -> Result<Option<Arc<CalcSchema>>, DataError> {
@@ -341,9 +421,16 @@ impl DataProvider for Provider {
             values.set(2, 1, Value::text(name));
             source.put_record(CODES_TABLE, id as u64, values);
         }
-        for (id, name) in [(1, "Stone"), (2, "Ash"), (3, "Slate")] {
+        if state.tints == 0 {
+            for (id, name) in [(1, "Stone"), (2, "Ash"), (3, "Slate")] {
+                let mut values = RecordValues::default();
+                values.set(1, 1, Value::text(name));
+                source.put_record(TINTS_TABLE, id, values);
+            }
+        }
+        for id in 1..=state.tints {
             let mut values = RecordValues::default();
-            values.set(1, 1, Value::text(name));
+            values.set(1, 1, Value::text(format!("Tint {id}")));
             source.put_record(TINTS_TABLE, id, values);
         }
         let recorder = Recorder::new(&source);
@@ -467,6 +554,7 @@ fn document(
     shade_without_arrow: bool,
     completes: bool,
     single: bool,
+    label_menu: Option<u64>,
 ) -> RenderLayout {
     let title = LayoutObject {
         text: Some("OPTION SETS".into()),
@@ -560,7 +648,7 @@ fn document(
         size.triggers.push(trigger(5, 45));
         shade.triggers.push(trigger(5, 45));
     }
-    let objects = vec![
+    let mut objects = vec![
         title,
         colors,
         size,
@@ -573,6 +661,9 @@ fn document(
         code_menu,
         shade,
     ];
+    if let Some(list) = label_menu {
+        objects.push(field(12, 4, 2, list, 0, (460.0, 250.0)));
+    }
     RenderLayout {
         layout: Layout {
             id: 7,
@@ -607,6 +698,7 @@ fn document(
             (9, "Colors".into()),
             (10, "Code".into()),
             (11, "Shade".into()),
+            (12, "Note".into()),
         ]),
     }
 }
@@ -649,6 +741,9 @@ fn state(exit: Exit) -> Arc<Mutex<State>> {
         host_lists: 0,
         no_host_list: false,
         list_values: Vec::new(),
+        tints: 0,
+        label_menu: false,
+        related_menu: false,
     }))
 }
 
@@ -1661,4 +1756,94 @@ fn option_rows_use_the_labels_saved_leading() {
         checked(app, Role::CheckBox, "Green")
     });
     assert!(checked(&app, Role::CheckBox, "Red") && checked(&app, Role::CheckBox, "Blue"));
+}
+
+/// Measurement for #290: a pop-up menu whose list is an unstored
+/// calculation's values (Tints::Label) over `TINTS` records, on a record
+/// whose Note holds one of them, shown by Tints::Name: the closed menu
+/// reads its items to show its value's name. Prints the longest frame
+/// until it shows it, and the whole wait: a list built in paint shows as
+/// one frame as long as the build.
+#[test]
+#[ignore = "measurement for #290; set OM_TINTS (default 30000), prints the longest frame"]
+fn a_calculated_lists_build_and_the_frames_it_takes() {
+    let tints = std::env::var("OM_TINTS")
+        .ok()
+        .and_then(|n| n.parse().ok())
+        .unwrap_or(30_000u64);
+    let state = state(Exit::None);
+    {
+        let mut state = state.lock().unwrap();
+        state.tints = tints;
+        state.label_menu = true;
+        state.rows[0].values[3] = Some("Tint 7!".into());
+    }
+    let mut app = common::harness(Box::new(Provider(state.clone())));
+    common::fill(&mut app, "Host", "options.example.invalid");
+    common::fill(&mut app, "File", "Options.fmp12");
+    common::click(&mut app, "Open");
+    // The closed menu of Label shows the name its value has.
+    let shows = |app: &common::App| {
+        app.query_by_role_and_label(Role::ComboBox, "Note")
+            .and_then(|node| node.accesskit_node().value())
+            .is_some_and(|value| value == "Tint 7")
+    };
+    let started = std::time::Instant::now();
+    let mut longest = std::time::Duration::ZERO;
+    let mut frames = 0;
+    while !shows(&app) && started.elapsed() < std::time::Duration::from_secs(600) {
+        let frame = std::time::Instant::now();
+        app.run_steps(1);
+        longest = longest.max(frame.elapsed());
+        frames += 1;
+    }
+    assert!(shows(&app), "the menu never showed its value");
+    println!(
+        "tints {tints}: shown: longest frame {longest:?} over {frames} frames, {:?} in all",
+        started.elapsed()
+    );
+}
+
+/// Measurement for #290's related lists: as
+/// [`a_calculated_lists_build_and_the_frames_it_takes`], the menu's list
+/// the `TINTS` related tints' Names, shown by their Labels, starting from
+/// Items (every tint is related): built per record, in paint today.
+#[test]
+#[ignore = "measurement for #290; set OM_TINTS (default 30000), prints the longest frame"]
+fn a_related_lists_build_and_the_frames_it_takes() {
+    let tints = std::env::var("OM_TINTS")
+        .ok()
+        .and_then(|n| n.parse().ok())
+        .unwrap_or(30_000u64);
+    let state = state(Exit::None);
+    {
+        let mut state = state.lock().unwrap();
+        state.tints = tints;
+        state.label_menu = true;
+        state.related_menu = true;
+        state.rows[0].values[3] = Some("Tint 7".into());
+    }
+    let mut app = common::harness(Box::new(Provider(state.clone())));
+    common::fill(&mut app, "Host", "options.example.invalid");
+    common::fill(&mut app, "File", "Options.fmp12");
+    common::click(&mut app, "Open");
+    let shows = |app: &common::App| {
+        app.query_by_role_and_label(Role::ComboBox, "Note")
+            .and_then(|node| node.accesskit_node().value())
+            .is_some_and(|value| value == "Tint 7!")
+    };
+    let started = std::time::Instant::now();
+    let mut longest = std::time::Duration::ZERO;
+    let mut frames = 0;
+    while !shows(&app) && started.elapsed() < std::time::Duration::from_secs(600) {
+        let frame = std::time::Instant::now();
+        app.run_steps(1);
+        longest = longest.max(frame.elapsed());
+        frames += 1;
+    }
+    assert!(shows(&app), "the menu never showed its value");
+    println!(
+        "related tints {tints}: shown: longest frame {longest:?} over {frames} frames, {:?} in all",
+        started.elapsed()
+    );
 }

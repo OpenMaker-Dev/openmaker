@@ -841,19 +841,21 @@ fn options(l: &mut Line<'_>) -> bool {
         134 => {
             l.labeled("Account name", "Account Name", 0);
             l.labeled("Password", "Password", 1);
-            let expire = l.has(flag::OPTION);
+            // The account steps' options are the step value (local-files.md
+            // 2.4).
+            let expire = l.step.value != 0;
             l.word("Expire password", "Expire password", expire);
         }
         135 => l.labeled_always("Account name", "Account Name", 0),
         136 => {
             l.labeled_always("Account name", "Account Name", 0);
             l.labeled("New password", "New Password", 1);
-            let expire = l.has(flag::OPTION);
+            let expire = l.step.value != 0;
             l.word("Expire password", "Expire password", expire);
         }
         137 => {
             l.labeled_always("Account name", "Account Name", 0);
-            let off = l.has(flag::OPTION);
+            let off = l.step.value != 0;
             l.push(
                 "Activate/Deactivate",
                 if off { "Deactivate" } else { "Activate" },
@@ -1225,10 +1227,18 @@ fn go_to_related_record(l: &mut Line<'_>) {
             let (&len, segment) = bytes.split_first()?;
             om_hbam::slot::be_uint(segment.get(..usize::from(len))?)
         });
-    let table = occurrence
-        .and_then(|o| l.names.calc_names().occurrence_name(o))
-        .map_or_else(|| UNKNOWN.into(), quoted);
-    l.push("Related table", format!("From table: {table}"));
+    if l.has(flag::OPTION3) {
+        // Table by Calculation (26.1, script-steps.md 12.4): the name's
+        // calculation, slot 8, where a quoted occurrence name goes
+        // otherwise. OpenMaker's text: FileMaker 26.1.1's is not observed.
+        let name = l.calc(8).unwrap_or_default();
+        l.push_calculation("Related table", 8, format!("From table: {name}"));
+    } else {
+        let table = occurrence
+            .and_then(|o| l.names.calc_names().occurrence_name(o))
+            .map_or_else(|| UNKNOWN.into(), quoted);
+        l.push("Related table", format!("From table: {table}"));
+    }
     let layout = match step.value {
         1 => "<Current Layout>".into(),
         _ => l.member_layout(),

@@ -618,16 +618,15 @@ fn a_file_opens_once_through_any_of_its_paths_until_it_is_closed() {
 /// Save a Copy as: a copy is the file's bytes, a compacted copy its tree
 /// rewritten, both open as files of their own; nothing that is already
 /// there is replaced, and clones are refused.
+#[cfg(target_os = "linux")]
 #[test]
 fn saved_copies_are_new_files_that_open_and_replace_nothing() {
     use om_data::CopyKind;
+    use std::os::unix::fs::PermissionsExt;
     let folder = Folder::new("save-copy");
+    std::fs::set_permissions(&folder.0, std::fs::Permissions::from_mode(0o700)).unwrap();
     let path = folder.tasks(FILE);
-    #[cfg(unix)]
-    {
-        use std::os::unix::fs::PermissionsExt;
-        std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o640)).unwrap();
-    }
+    std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o640)).unwrap();
     let original = std::fs::read(&path).unwrap();
     let client = client();
     let host = LocalHost::open(&path, &client.cert).unwrap();
@@ -643,21 +642,18 @@ fn saved_copies_are_new_files_that_open_and_replace_nothing() {
         tree.root.to_owned_node()
     };
     assert_eq!(tree(&compacted), tree(&path));
-    #[cfg(unix)]
-    {
-        // Its owner's alone, whatever the file's group may read.
-        use std::os::unix::fs::PermissionsExt;
-        for made in [&copy, &compacted] {
-            let mode = std::fs::metadata(made).unwrap().permissions().mode() & 0o777;
-            assert_eq!(mode, 0o600, "{mode:o}");
-        }
+    for made in [&copy, &compacted] {
+        let mode = std::fs::metadata(made).unwrap().permissions().mode() & 0o777;
+        assert_eq!(mode, 0o600, "{mode:o}");
     }
 
     // What is there stays: another file, the open file itself, and names
     // of the kind its saves make their new copy under.
     let taken = folder.0.join("Taken.fmp12");
+    let pending = host.prepare_copy(&taken, CopyKind::Copy).unwrap();
+    assert!(!taken.exists());
     std::fs::write(&taken, b"someone else's").unwrap();
-    let refused = host.save_copy(&taken, CopyKind::Copy).unwrap_err();
+    let refused = pending().unwrap_err();
     assert_eq!(
         refused.kind(),
         std::io::ErrorKind::AlreadyExists,
@@ -670,30 +666,18 @@ fn saved_copies_are_new_files_that_open_and_replace_nothing() {
         std::io::ErrorKind::AlreadyExists,
         "{refused}"
     );
-    for reserved in [format!("{FILE}.omsave"), "tasks.fmp12.OMSave".into()] {
-        let refused = host
-            .save_copy(&folder.0.join(reserved), CopyKind::Copy)
-            .unwrap_err();
-        assert_eq!(
-            refused.kind(),
-            std::io::ErrorKind::InvalidInput,
-            "{refused}"
-        );
-    }
-    // A spelling only a file system that folds names takes for the save's
-    // name (U+017F folds to "s" on case-insensitive APFS): refused there,
-    // a file of its own elsewhere. Either way the save's name stays free.
-    let folded = folder.0.join(format!("{FILE}.om\u{17f}ave"));
-    let made = host.save_copy(&folded, CopyKind::Copy);
-    assert!(std::fs::symlink_metadata(folder.0.join(format!("{FILE}.omsave"))).is_err());
-    match made {
-        Ok(()) => std::fs::remove_file(&folded).unwrap(),
-        Err(refused) => assert_eq!(
-            refused.kind(),
-            std::io::ErrorKind::InvalidInput,
-            "{refused}"
-        ),
-    }
+    let reserved = folder.0.join(format!("{FILE}.omsave"));
+    let refused = host.save_copy(&reserved, CopyKind::Copy).unwrap_err();
+    assert_eq!(refused.kind(), std::io::ErrorKind::Unsupported, "{refused}");
+    assert!(!reserved.exists());
+
+    let blocked = folder.0.join("Blocked.fmp12");
+    std::fs::set_permissions(&folder.0, std::fs::Permissions::from_mode(0o770)).unwrap();
+    let refused = host.save_copy(&blocked, CopyKind::Copy).unwrap_err();
+    std::fs::set_permissions(&folder.0, std::fs::Permissions::from_mode(0o700)).unwrap();
+    assert_eq!(refused.kind(), std::io::ErrorKind::Unsupported, "{refused}");
+    assert!(!blocked.exists());
+
     let clone = folder.0.join("Clone.fmp12");
     let refused = host.save_copy(&clone, CopyKind::Clone).unwrap_err();
     assert_eq!(refused.kind(), std::io::ErrorKind::Unsupported, "{refused}");
@@ -708,7 +692,7 @@ fn saved_copies_are_new_files_that_open_and_replace_nothing() {
         std::fs::read(&saved).unwrap(),
         std::fs::read(&path).unwrap()
     );
-    // Nothing else is left beside them: no staged copy or its folder.
+    // Nothing else is left beside them: no staging entries.
     assert_eq!(
         folder.files(),
         [

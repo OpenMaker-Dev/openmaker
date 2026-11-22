@@ -19,7 +19,9 @@ an optional text label), texts and portals, moves, resizes and deletes
 objects, and changes a field's control and a text's words; changes a
 **custom value list's values**; and **runs scripts** on the host with
 Perform Script on Server. `create-file` makes a blank file on this
-computer without a connection. Everything else is read-only; see
+computer without a connection. On FileMaker Server 26, a [Full Access]
+account can replace an existing script's steps through the native save.
+See
 [Limits](#limits).
 
 ## Commands (`openmaker.authoring/v1`)
@@ -46,7 +48,7 @@ and every response is one JSON object:
 | `inspect` | `include` (optional: `scripts`, `tables`, `occurrences`, `layouts`, `value_lists`, `data_sources`) | the file's metadata, each object with a file-qualified `ref`, and with `layouts` the `layouts_revision` `create_layout` names. Never reads records |
 | `get_script` | `script` or `script_name` | the script's summary and `revision`, its `source` text, each step (line, depth, step id and name, `fidelity`), what is carried opaquely, whether `apply` is available |
 | `validate` | `script`/`script_name`, `source`, optional `expected_revision` | `valid`, step counts (kept, new, deleted) or `diagnostics` with line, step and text |
-| `plan` | as `validate` | `base_revision`, `after_revision`, `changed`, `already_applied`, a unified `diff` of the canonical text, `after_source`, step counts. Writes nothing |
+| `plan` | as `validate` | `base_revision`, `after_revision`, `changed`, `already_applied`, a unified `diff` of the canonical text, `after_source`, step counts. `native_save_unconfirmed` is true if the member already matches but the earlier native save cannot be verified. Writes nothing |
 | `apply` | `script`/`script_name`, `source`, `expected_revision` (required), optional `expected_after_revision` | `status` (`applied`, `already_applied`, `unchanged`), `previous_revision`, `revision`, and `verified` from a new connection |
 | `plan_field` | `table` or `table_name`, `name`, `type` (`text`, `number`, `date`, `time`, `timestamp`), optional `comment` and `expected_revision` | the table, `base_revision`, `already_applied`, the `field` (the reference and id the host would give it now, its definition and defaults), the catalog `changes`, whether `create` is available. Writes nothing |
 | `create_field` | as `plan_field`, `expected_revision` required | `status` (`created`, `already_applied`), the `field` and its `ref`, `previous_revision`, `revision`, and `verified` from a new connection |
@@ -55,6 +57,7 @@ and every response is one JSON object:
 | `place_field` | as `plan_field_placement`, `expected_revision` required | `status` (`placed`, `already_applied`), the `objects` and their refs, `previous_revision`, `revision`, and `verified` from a new connection |
 | `place_text` | `layout`/`layout_name`, `text` (one line), `frame` (`left`, `top`, `width`, `height` in points), `expected_revision` (get_layout's, required) | `status` (`placed`, `already_applied`), the `layout`, the text's `object` reference, `previous_revision`, `revision`, and `verified` from a new connection. [Texts on layouts](#texts-on-layouts) |
 | `set_object_frames` | `layout`/`layout_name`, `objects` (each a `layout_object` reference and its new `frame`: `left`, `top`, `width`, `height` in points), `expected_revision` (get_layout's, required) | `status` (`moved`, `already_applied`), the `layout`, the `objects`, `previous_revision`, `revision`, and `verified` from a new connection. [Moving objects](#moving-objects) |
+| `arrange_objects` | `layout`/`layout_name`, `objects` (`layout_object` references: two or more, three to distribute), `arrangement` (`align_left_edges`, `align_vertical_centers`, `align_right_edges`, `align_top_edges`, `align_horizontal_centers`, `align_bottom_edges`, `distribute_horizontally`, `distribute_vertically`, `resize_to_smallest_width`, `resize_to_smallest_height`, `resize_to_smallest_width_and_height`, `resize_to_largest_width`, `resize_to_largest_height`, `resize_to_largest_width_and_height`), `expected_revision` (get_layout's, required) | `status` (`moved`, `already_applied`, `unchanged`) and the `arrangement`. A write returns `set_object_frames`'s result fields; an arrangement that changes nothing returns the `layout` and its `revision`. [Arranging objects](#arranging-objects) |
 | `delete_objects` | `layout`/`layout_name`, `objects` (`layout_object` references), `expected_revision` (get_layout's, required) | `status` (`deleted`, `already_applied`), the `layout`, the `objects`, `previous_revision`, `revision`, and `verified` from a new connection. [Deleting objects](#deleting-objects) |
 | `create_layout` | `name`, `occurrence` or `occurrence_name` (the table occurrence it shows records of), optional `layout`/`layout_name` (whose theme and width it takes), `expected_revision` (inspect's `layouts_revision`, required) | `status` (`created`, `already_applied`), the `layout` (`ref`, `id`, `name`), the `occurrence`, `previous_revision`, `revision`, and `verified` from a new connection. [New layouts](#new-layouts) |
 | `duplicate_layout` | `layout`/`layout_name`, `expected_revision` (inspect's `layouts_revision`, required) | `status` (`created`, `already_applied`), the copy's `layout` (`ref`, `id`, `name`), the `source`, `previous_revision`, `revision`, and `verified` from a new connection. [Duplicating layouts](#duplicating-layouts) |
@@ -108,13 +111,14 @@ layout's indexes), leaving out every stamp in it.
 **Errors** (`error.kind`): `invalid_request`, `connection`, `not_found`,
 `wrong_file`, `ambiguous_reference`, `unsupported`, `permission_denied`,
 `conflict`, `locked`, `invalid_source`, `invalid_name`, `duplicate_name`,
-`outcome_unknown`, `save_failed`, `verification_failed`. All but the last
-two mean nothing was written. `outcome_unknown` means the edit was sent and
-no answer came back: read the script or table again — a script is at
-`after_revision` if the edit was applied, at `previous_revision` if not —
-and do not resend blindly. A `plan` or `apply` of the same text then
-reports `already_applied` without writing, and so does a `create_field` of
-the same field from the same revision.
+`outcome_unknown`, `save_failed`, `verification_failed`. An
+`outcome_unknown` result means the save could not be confirmed. For an
+OpenMaker Server script save, read the script again and compare its
+revision with `after_revision` and `previous_revision`. The same edit from
+the same revision reports `already_applied` if the script has the requested
+steps. The same `create_field` request reports `already_applied` if its field
+is present. For FileMaker Server script saves, see
+[How writes reach the file](#how-writes-reach-the-file).
 
 ### Reading security
 
@@ -159,10 +163,11 @@ service's checks before a write. Each command's `effect` says what it can
 change: `reads` nothing, `authors` the file's design, `runs` a script, or
 `edits` a record's field as a user's choice in a window does.
 A command that authors needs the host's grant (`script_steps`, `fields`,
-`layouts`, `new_layouts`, `layout_objects`, `object_deletion`, `texts`, `layout_copies` or `layout_deletion`): only OpenMaker Server's authoring extension gives one, to
-an account allowed to author, so on any other host, FileMaker Server
-included, `capabilities` reports the operation unavailable and the
-command answers `unsupported` without sending anything. MCP tools are
+`layouts`, `new_layouts`, `layout_objects`, `object_deletion`, `texts`, `layout_copies` or `layout_deletion`). OpenMaker Server's authoring extension
+reports these grants for the current account. For FileMaker Server 26,
+`capabilities` offers `apply_script_steps` when the authenticated account's
+privilege set is verified as [Full Access]. It reports other design edits
+as unavailable there. MCP tools are
 marked read-only only for `reads`; `run_script`'s tool is marked
 destructive, not idempotent and open-world, so a client does not retry it
 on its own. `commands` returns the descriptions with each command's
@@ -275,9 +280,11 @@ writes into the layout member `[4, 5, L]` only:
   but the rotation FileMaker Pro writes, so the layout's theme styles
   them;
 - an attribute record `[4, 5, L, 05, O]` for each object: an empty name
-  `10`, fresh UUIDs `d8` and `d9`, and for the label its text `01` (a
-  plain SCSU value, as the templates store a plain label) and a text
-  height of 0 `0d`;
+  `10`, fresh UUIDs `d8` and `d9`, for the edit box its tab order
+  position `07` (and, where the layout stores a Table View layout, the
+  columns' data format record `0d`, below), and for the label its text
+  `01` (a plain SCSU value, as the templates store a plain label) and a
+  text height of 0 `0d`;
 - the field reference index entry `[4, 5, L, 01, <occurrence>, <field>,
   <object>]` (an empty value, as every field object in the templates has);
 - both objects at the end of the body part's list of its objects `[4, 5,
@@ -290,6 +297,11 @@ writes into the layout member `[4, 5, L]` only:
   the object tree, and its key. Every field object FileMaker saved has
   one. The index holds whole points, so the field's frame must start at
   whole points (status 3 otherwise);
+- the edit box's entry in the layout's tab order `[4, 5, L, 15, <n>]`,
+  holding the same reference as its object index entry, at the position
+  after the greatest stored one; every stored entry and gap is kept, and
+  the label stays outside the order
+  ([#316](https://github.com/OpenMaker-Dev/openmaker/issues/316));
 - the last object key issued `[4, 5, L, 05, 00]`, raised to the new
   objects' keys;
 - where the layout stores a Table View layout `[4, 5, L, 0d]` (every
@@ -309,20 +321,23 @@ writes into the layout member `[4, 5, L]` only:
 - the layout's stamp (`fc` counted up, `fc 01` to `fc 03`).
 
 Object keys are the next after every key the layout uses (its objects,
-root stack, containers' children, attribute records, index and part
-lists) and after the last key it issued. A layout whose object tree does
+root stack, containers' children, attribute records, field reference
+index and part lists), every key its object index and tab order entries
+name, and the last key it issued. A layout whose object tree does
 not reach each of its objects once, whose object index already holds the
 new edit box's position in that tree, or whose body part has no list of
-its objects that OpenMaker reads, is refused (status 3). Nothing else is written: no
-tab order, object name, data formatting, script trigger, conditional
-formatting or hide condition, and no other layout index
-(re/layout-model.md 10.5). Every other key of the layout, known or not,
-every stored object's attribute record and every index entry are kept;
+its objects that OpenMaker reads, is refused (status 3). Nothing else is
+written: no object name, other data formatting, script trigger,
+conditional formatting or hide condition, and no other layout index
+(re/layout-model.md 10.5).
+Every other key of the layout, known or not, every stored object's
+attribute record and every index entry are kept;
 `place_field` checks them again on the read-back, decodes the layout as
 the desktop client does (`om_layout::Layout::decode_from_tree`), and
 checks that the client lists the new object among the layout's fields,
-that the object index lists the edit box, and that the parts are as they
-were but for the new objects at the end of the body's list.
+that the parts are as they were but for the new objects at the end of
+the body's list, and that the object index, the tab order and the edit
+box's position in it are the plan's.
 
 A request repeated after a lost answer finds its objects on top of the
 stack (the same field at the same frame, and the same label) and reports
@@ -423,6 +438,34 @@ The desktop's Layout mode moves and resizes objects the same way
 (`DataProvider::set_layout_object_frames`, the same request) at Save
 Layout ([desktop client](desktop-client.md), "Layout mode and Manage
 Layouts").
+
+### Arranging objects
+
+`arrange_objects` is Layout mode's Arrange > Align, Distribute and Resize
+To:
+- It reads the objects' stored frames.
+- It gives them new frames with `om_data::layout_arrange`, as the
+  desktop's Arrange menu does (re/client-ui.md, "Layout mode: Align,
+  Distribute and Resize To").
+- It writes them with `set_object_frames`, so the objects it accepts, the
+  refusals, the `conflict` at an old revision, `already_applied` and the
+  read-back are the same.
+
+Every object named must be one `set_object_frames` can move, the ones that
+stay where they are included, so an object that cannot be moved never
+anchors the others. A frame with no size, a negative size or a non-finite
+edge is refused, whether read or computed. Distribute keeps both endpoint
+frames exactly and refuses results whose rounded leading edges would
+change the order of the objects. These refusals and a malformed
+`expected_revision` report `invalid_request`.
+
+An arrangement that changes no frame (the objects are arranged so already)
+writes nothing. It reports `unchanged` at the expected revision, and
+`already_applied` at another one, as after a request whose answer was lost.
+An arrangement it does not know, or too few objects, is an
+`invalid_request`. On the command line, repeat
+`--object` for each object and name the arrangement with
+`--arrangement`.
 
 ### Deleting objects
 
@@ -972,7 +1015,9 @@ om-author commands                          # every command and its parameters; 
 `--host`, `--port` (default 5003), `--file`, `--account` and
 `--password-file` override the environment; `commands` needs none of
 them. Passwords are never taken as arguments, which other users of the
-machine can list, and are never printed. The exit status is 0 for a
+machine can list, and are never printed. For FileMaker Server, set
+`OPENMAKER_LICENSE_FILE` to a file whose first line is a FileMaker client
+license. The CLI and MCP server read the same setting. The exit status is 0 for a
 successful response (a valid `validate`, a `run_script` whose last error
 is 0), 1 for an error response or another `run_script` last error, and
 2 for a usage error.
@@ -1010,7 +1055,7 @@ environment above. Nothing registers it automatically.
 
 ## How writes reach the file
 
-Writes go through **OpenMaker Server's authoring extension**: one Perform
+On OpenMaker Server, writes go through its **authoring extension**: one Perform
 transaction, opcode 240. It is not a FileMaker transaction, and it is sent
 only to a host that claims it: the client first asks the server object
 `_is_a("IDL:OpenMaker/Authoring:1.0")`, CORBA's built-in type check, as for
@@ -1020,13 +1065,25 @@ for the file list's interface) and is never sent the transaction; a host
 that claims it but answers with a lone status 3 is treated as not having
 it.
 
-FileMaker Pro saves a script with op60, op82, op61, op13 and op62 on
-`[17, 5, S]` and `[17, 1]` (re/scripts.md, "Saving scripts to a host").
-That sequence was captured against OpenMaker Server only, and op13's reply
-is the same empty page whether the host stored the upload, skipped it (a
-protected index without `fc` and `KSerNum`, re/schema-path.md 3.3) or
-failed to save it, so a client cannot tell an applied edit from a lost
-one. The extension does the same catalog edit on the host and answers
+On FileMaker Server 26, `apply` locks the script member `[17, 5, S]` and
+the index `[17, 1]` using the native catalog operations in
+[Saving scripts to a host](re/scripts.md#saving-scripts-to-a-host-live-capture-2026-10-29).
+It checks the script's revision and modification count while holding both
+locks, then uploads the member with its edited steps and the otherwise
+unchanged index with updated stamps. It reads back both nodes before
+releasing the locks, and verifies the script from a fresh connection.
+The native protocol provides no disk-save confirmation. The two uploads
+are separate, so a failure after an upload begins reports
+`outcome_unknown` and may leave the script and index with different
+stamps. A fresh `get_script` can confirm the member's content. The index
+stamp is shared across scripts and cannot identify the earlier save.
+If the same `apply` from the original revision finds the requested steps
+already present, it returns `outcome_unknown` with
+`member_content_matches: true` and `index_verified: false`. The retry
+makes no writes. `unchanged` describes a no-op requested at the current
+revision.
+
+The extension does the edit on the host in a single commit and answers
 with what happened:
 
 1. The session must have the file open (status 100) and be logged in,
@@ -1187,21 +1244,19 @@ codec is `om_protocol::authoring`; the host side is `om-server`'s
 
 ## Limits
 
-- **Hosts.** Every design change needs OpenMaker Server: the commands
-  `commands` lists with the effect `authors`, and the desktop's placements
-  through the same extension. On a host that does not claim the extension,
-  FileMaker Server (Claris) included, those commands report `unsupported`
-  and nothing is sent. `get_security` is refused there too, since reading
+- **Hosts.** FileMaker Server 26 supports `apply` for existing script
+  steps under [Full Access]. The other design edits still require OpenMaker
+  Server. `get_security` also requires OpenMaker Server, since reading
   security needs the extension ([Reading security](#reading-security)),
   and the choice commands need a window (Records, below); the other
   commands work.
   `run_script` sends the request FileMaker Pro sends for Perform Script
   on Server, which FileMaker Server answers too, but it has been run
   against OpenMaker Server only (in process, on a synthetic file).
-  Native script, schema and layout saves to FileMaker Server stay
-  unavailable until its replies to the captured sequences are verified;
-  OpenMaker reading back what OpenMaker wrote does not prove FileMaker Pro
-  compatibility either. One case has been checked in FileMaker Pro 26
+  A native script-step save was verified by fresh read-back on FileMaker
+  Server 26.0.3. Opening or running the changed script in FileMaker Pro
+  and its persistence after a server restart were not measured.
+  One case has been checked in FileMaker Pro 26
   (issue #166): a stored Text field from `create_field` and its edit box
   from `place_field`, without a label, on a Form layout of a copy of a
   starter solution. The file passed Check Consistency and opened without a
@@ -1247,16 +1302,13 @@ codec is `om_protocol::authoring`; the host side is `om-server`'s
   fields their formulas compiled against the file's names.
 - **New fields are not placed on layouts by `create_field`**, as FileMaker
   Pro's "Add newly defined fields to current layout" option would; place
-  one with `place_field`. A placed field is not in the layout's tab order,
-  so Tab does not reach it (a click does), and New Record does not put the
-  focus in it; a portal's fields are, as FileMaker Pro puts them there.
-- **Layout indexes.** Besides the field reference and object indexes,
-  FileMaker keeps an object name index `[4, 5, L, 08]` and the tab order
-  `[4, 5, L, 15]` (re/layout-model.md 10.5); a placed object is unnamed
-  and outside the tab order, so they are left as they are. FileMaker Pro's
-  own save of a layout holding a placed edit box also added it to the tab
-  order, set an undecoded flag bit on it and wrote a table view `0d` for
-  the layout (issue #166); a placement does none of these. The layout
+  one with `place_field`. New edit boxes go at the end of the layout's
+  tab order. Placement keeps the order of all existing entries. Where
+  FileMaker Pro inserts a new field in an existing order is unmeasured.
+- **Layout indexes.** The edit box's tab order entry at `[4, 5, L, 15]`
+  refers to the same field object as its object index entry, and its
+  attribute `07` records the new position (re/layout-model.md 10.5).
+  Labels stay outside the order. Placed objects are unnamed. The layout
   catalog's index `[4, 1]` and its stamp are not changed. FileMaker Pro
   counted up its `fc` during a session that saved a field and a layout;
   which saves do so is not isolated.
@@ -1275,8 +1327,9 @@ codec is `om_protocol::authoring`; the host side is `om-server`'s
   Server returns it. Runs cannot be undone, and a run whose answer is lost
   is not retried. The MCP server answers one tool call at a time, so the
   calls after a long run wait for it.
-- **The desktop Script Workspace** saves a script's steps through the same
-  step save as `apply` (`NativeProvider::save_script_steps`: the stored
+- **The desktop Script Workspace** saves a script's steps on OpenMaker
+  Server and local files through the extension path shared with `apply`
+  (`NativeProvider::save_script_steps`: the stored
   definition with the edited step list and step data, at the revision the
   scripts were read at). Its catalog changes (new, duplicated, renamed,
   moved and deleted scripts, script options) go through FileMaker Pro's
@@ -1292,8 +1345,9 @@ codec is `om_protocol::authoring`; the host side is `om-server`'s
   that may write the file, as below) is still to be done.
 
 Structured authoring authenticates without requiring Browse layouts or tables.
-Accepted source is aligned after parser normalization, so retrying the same
-normalized edit retains its stored revision and reports already applied.
+Accepted source is aligned after parser normalization. On OpenMaker
+Server, retrying the same normalized edit retains its stored revision
+and reports already applied.
 Direct native catalog uploads and schema-changing query instructions require the
 file's [Full Access] set too; staging ordinary record edits keeps
 its existing permissions. The native upload reply does not prove persistence.

@@ -373,6 +373,12 @@ impl StepReader<'_> {
         match (id, kind) {
             (87, "Button1" | "Button2" | "Button3") => return self.button(parameter, kind),
             (87, "Field1" | "Field2" | "Field3") => return self.input(parameter, kind),
+            // FileMaker Pro 26.1.1's "Close after (seconds)": its Boolean
+            // and `AutoCloseSeconds` are known from the binaries only
+            // (script-steps.md 12.4), not their XML shape.
+            (87, "AutoCloseTimer") => {
+                return Err("Show Custom Dialog's “Close after” is not read".into());
+            }
             (1 | 164 | 210, "List") => return self.script_choice(parameter),
             // Pro's XML names the callback `CallbackScriptReference id=n`
             // and keeps its name and parameter calculations at positions 7
@@ -1007,21 +1013,15 @@ impl StepReader<'_> {
         Ok(())
     }
 
-    /// Add Account's "Expire password", Reset Account Password's and
-    /// Enable Account's choice: shown from the step value, whose stored
-    /// number for the other choice (1, 2 or 4) the XML does not tell.
+    /// The account steps' Booleans give the logical choice. The XML does
+    /// not carry the original nonzero step value (local-files.md 2.4).
     fn account_choice(&mut self, b: &Element) -> Read<()> {
         b.known(&["type", "value", "name"])?;
         b.no_children()?;
         let set = truth(b)?;
         // Enable Account shows Activate (True) for step value 0.
         let stored = if self.id() == 137 { !set } else { set };
-        if stored {
-            let label = b.attr("name").or(b.attr("type")).unwrap_or_default();
-            return Err(format!(
-                "The choice “{label}” is not read: its stored value is not known"
-            ));
-        }
+        self.choice(u16::from(stored));
         Ok(())
     }
 

@@ -163,6 +163,8 @@ step_id,step_name,order,parameter,xml_type,storage,values,default,evidence,notes
 87,Show Custom Dialog,6,Input labels,Calculation,slot:2:calc|slot:3:calc|slot:4:calc,,,xml+params,"XML positions and corpus: label calculations are slots 2, 3, 4 for inputs 1-3 (script-steps.md 11.8)"
 87,Show Custom Dialog,7,Password,Boolean,slot:0:num|slot:1:num|slot:2:num,,,xml+params,"XML and corpus: ""use password character"" is [00 n-1]/03 = 1 for input n (slots 0-2) (script-steps.md 11.8)"
 87,Show Custom Dialog,8,Window,Calculation,slot:8:calc|slot:9:calc|slot:11:calc|slot:12:calc,,,xml+params,"Height 8, Width 9, Top 11, Left 12"
+87,Show Custom Dialog,9,Close after,Boolean,slot:6:num,,Off,bin-26.1.1,"FileMaker Pro 26.1.1: XML AutoCloseTimer's Boolean (SerializeShowCustomDialog); no step written by 26.1.1 read yet, its byte width unmeasured (script-steps.md 12.4)"
+87,Show Custom Dialog,10,Close after seconds,Calculation,slot:13:calc,,,bin-26.1.1,"FileMaker Pro 26.1.1: XML AutoCloseSeconds, written when Close after is on (script-steps.md 12.4)"
 88,Open Script Workspace,0,,,,,,xml+params,no parameters: absent from both XML dispatchers and from GenerateParameters
 89,# (comment),1,Comment,Text,slot:0:text,,,xml+params,kTextData
 89,# (comment),2,Disabled/collapsed,Boolean,flag:0x800000,,,xml+params,kDisableStepCollapsed
@@ -250,13 +252,13 @@ step_id,step_name,order,parameter,xml_type,storage,values,default,evidence,notes
 134,Add Account,1,Account name,Calculation,slot:0:calc,,,xml+params,
 134,Add Account,2,Password,Calculation,slot:1:calc,,,xml+params,
 134,Add Account,3,Privilege set,PrivilegeSet,reserved:key,,,xml+params,privilege set key (HBSerialKey<7>)
-134,Add Account,4,Expire password,Boolean,flag:0x100,,Off,xml+params,user must change password on next login; Low
+134,Add Account,4,Expire password,Boolean,value,0 Off; 1 On,Off,xml+params+oracle,"user must change password on next login: mStepValue nonzero sets status bit 18 (1, 2 and 4 alike; flag 0x100 does nothing); local-files.md 2.4"
 135,Delete Account,1,Account name,Calculation,slot:0:calc,,,xml+params,
 136,Reset Account Password,1,Account name,Calculation,slot:0:calc,,,xml+params,
 136,Reset Account Password,2,New password,Calculation,slot:1:calc,,,xml+params,
-136,Reset Account Password,3,Expire password,Boolean,flag:0x100,,Off,xml+params,Low
+136,Reset Account Password,3,Expire password,Boolean,value,0 Off; 1 On,Off,xml+params+oracle,"mStepValue nonzero sets status bit 18; local-files.md 2.4"
 137,Enable Account,1,Account name,Calculation,slot:0:calc,,,xml+params,
-137,Enable Account,2,Activate/Deactivate,List,flag:0x100,Activate / Deactivate,,xml+params,EnableAccountBoolean; Low
+137,Enable Account,2,Activate/Deactivate,List,value,0 Activate; 1 Deactivate,,xml+params+oracle,"EnableAccountBoolean: mStepValue nonzero deactivates (status bit 19), 0 activates; local-files.md 2.4"
 138,Re-Login,1,With dialog,Boolean,flag:!0x80,,On,xml+params,On/Off; On = flag clear (kNoInteract is the stored bit)
 138,Re-Login,2,Account name,Calculation,slot:0:calc,,,xml+params,
 138,Re-Login,3,Password,Calculation,slot:1:calc,,,xml+params,

@@ -50,6 +50,13 @@ commands (each prints one JSON response):
   set-object-frames LAYOUT --object REF --frame FRAME --expected-revision REV
                                      move or resize one object, then read the
                                      layout back
+  arrange-objects LAYOUT --object REF --object REF [--object REF ...]
+        --arrangement ID --expected-revision REV
+                                     align, distribute or resize the objects
+                                     relative to one another (ARRANGEMENT:
+                                     align_left_edges, distribute_horizontally,
+                                     resize_to_largest_width, ...), then read
+                                     the layout back
   place-text LAYOUT --text TEXT --frame FRAME --expected-revision REV
                                      place a text on the body, then read the
                                      layout back
@@ -155,6 +162,7 @@ connection (or the environment variable):
   --account NAME         OPENMAKER_ACCOUNT
   --password-file PATH   OPENMAKER_PASSWORD_FILE, else OPENMAKER_PASSWORD
 TLS: OPENMAKER_CA_CERT, OPENMAKER_CLIENT_CERT and OPENMAKER_CLIENT_KEY.
+FileMaker client license: OPENMAKER_LICENSE_FILE (first line).
 Passwords are never taken as arguments.";
 
 /// The arguments, parsed.
@@ -189,6 +197,9 @@ struct Args {
     label_frame: Option<String>,
     parameter: Option<String>,
     object: Option<String>,
+    /// Every `--object`, in order (`arrange-objects`).
+    objects: Vec<String>,
+    arrangement: Option<String>,
     record: Option<String>,
     value: Option<String>,
     text: Option<String>,
@@ -265,7 +276,12 @@ fn parse_args(raw: Vec<String>) -> Result<Args, String> {
             "--type" => args.field_type = Some(value(&arg)?),
             "--comment" => args.comment = Some(value(&arg)?),
             "--layout" => args.layout = Some(value(&arg)?),
-            "--object" => args.object = Some(value(&arg)?),
+            "--object" => {
+                let object = value(&arg)?;
+                args.objects.push(object.clone());
+                args.object = Some(object);
+            }
+            "--arrangement" => args.arrangement = Some(value(&arg)?),
             "--record" => args.record = Some(value(&arg)?),
             "--value" => args.value = Some(value(&arg)?),
             "--layout-name" => args.layout_name = Some(value(&arg)?),
@@ -326,7 +342,14 @@ fn target(args: &Args) -> Result<Target, String> {
         .clone()
         .or_else(|| setting(None, "OPENMAKER_PASSWORD_FILE").map(PathBuf::from));
     let password = read_password(password_file.as_deref())?;
-    let tls = NativeConfig::from_env().map_err(|e| e.to_string())?;
+    let mut tls = NativeConfig::from_env().map_err(|e| e.to_string())?;
+    if let Some(path) = std::env::var_os("OPENMAKER_LICENSE_FILE").filter(|p| !p.is_empty()) {
+        let license = zeroize::Zeroizing::new(
+            std::fs::read_to_string(path)
+                .map_err(|e| format!("Cannot read the FileMaker client license file: {e}"))?,
+        );
+        tls.machine.install_code = license.lines().next().unwrap_or_default().trim().to_owned();
+    }
     Ok(Target::new(host, port, file, account, password, tls))
 }
 
@@ -534,6 +557,23 @@ fn command(name: &str, args: &Args) -> Result<Command, String> {
             }],
             expected_revision: args.expected_revision.clone().ok_or(
                 "set-object-frames needs --expected-revision: the layout's revision from \
+                 get-layout.",
+            )?,
+        }),
+        "arrange_objects" => Command::ArrangeObjects(api::ArrangeObjectsParams {
+            layout: args.layout.clone(),
+            layout_name: args.layout_name.clone(),
+            objects: if args.objects.is_empty() {
+                args.object.iter().cloned().collect()
+            } else {
+                args.objects.clone()
+            },
+            arrangement: args.arrangement.clone().ok_or(
+                "arrange-objects needs --arrangement: align_left_edges, distribute_horizontally, \
+                 resize_to_largest_width or another arrangement id.",
+            )?,
+            expected_revision: args.expected_revision.clone().ok_or(
+                "arrange-objects needs --expected-revision: the layout's revision from \
                  get-layout.",
             )?,
         }),
@@ -905,6 +945,7 @@ mod tests {
             height: Some("100".into()),
             path: Some("New.fmp12".into()),
             value_list: Some("value_list:1@F.fmp12".into()),
+            arrangement: Some("align_left_edges".into()),
             ..Args::default()
         };
         // A text to place, where `--text` is not a formula's.

@@ -349,6 +349,7 @@ fn mcp_2026_07_28_discovers_lists_and_applies_through_the_same_service() {
             "openmaker_plan_field_placement",
             "openmaker_place_field",
             "openmaker_set_object_frames",
+            "openmaker_arrange_objects",
             "openmaker_delete_objects",
             "openmaker_place_text",
             "openmaker_place_portal",

@@ -45,11 +45,16 @@ and calculation errors display an explicit unavailable state. Loading never keep
 the previous page's scene on screen. Get(PageNumber) in calculated report fields
 uses the physical page context in both Preview and PDF, including nested
 summary calculations. Exporting does not change the user's window mode or
-leave the report page in subsequent script calculations. Advanced layout merge
-symbols such as `{{PageNumber}}` and `{{PageCount}}` remain explicitly refused.
+leave the report page in subsequent script calculations. `{{PageNumber}}` in a
+text object or button prints the page's number, and the other symbols Browse
+shows and merge variables print on each record as Browse shows them (Save
+Records as PDF and Print refuse merge variables,
+[#596](https://github.com/OpenMaker-Dev/openmaker/issues/596));
+`{{PageCount}}` and other symbols remain explicitly refused
+([layout symbols](portable-pdf.md)).
 
 The portable PDF refusal contract also applies to Preview: bodyless reports,
-unsupported sub-summary sorts/breaks, advanced part options, sliding left, split parts,
+unsupported sub-summary sorts/breaks, advanced part options, the sliding [report sliding](report-sliding.md) refuses, split parts,
 layouts set to print in columns, responsive layouts, sorted, filtered or sliding portals, slide controls, objects inside any container but a group, a portal or a tab control's front panel,
 dynamic pictures, the button icons portable-pdf.md lists, unsupported text/styles and overflow remain
 unavailable, except a field's text, which shows cut at the field

@@ -1231,13 +1231,16 @@ fn related_file_layouts_browse_and_expose_only_supported_edit_capabilities() {
         provider.update_record(layout, 1, values).unwrap_err().code,
         Some(3)
     );
+    // The user's deletion is refused, as the user's edits are. A script's
+    // is held in the related file's part of the transaction: it locks the
+    // record and commits nothing before Commit Transaction.
     assert_eq!(provider.delete_record(layout, 1).unwrap_err().code, Some(3));
+    provider.delete_record_in_script(layout, 1).unwrap();
     provider.revert_transaction().unwrap();
     refused(provider.set_next_serial_value(REMOTE, NAME, "10"));
     for op in [
         om_protocol::Opcode::HostCreateRecord,
         om_protocol::Opcode::HostCommit,
-        om_protocol::Opcode::Lock,
         om_protocol::Opcode::HostGetSerial,
     ] {
         assert!(host.captures.with_opcode(op).is_empty(), "{op:?} was sent");
@@ -1558,15 +1561,16 @@ fn imported_layout_delete_uses_owner_verification_without_field_entry_rules() {
     provider.use_window(1);
     assert_eq!(ids(&mut provider, 2), [2, 1]);
 
+    // A script's deletion is held in the related file's part of the
+    // transaction: nothing is committed, and the revert keeps the record.
+    // The user's own is refused there.
     provider.begin_transaction(Default::default()).unwrap();
-    let before = host.captures.transactions().len();
+    let commits = host.captures.with_opcode(Opcode::HostCommit).len();
     assert_eq!(provider.delete_record(2, 1).unwrap_err().code, Some(3));
-    assert_eq!(
-        host.captures.transactions().len(),
-        before,
-        "pre-effect refusal"
-    );
+    provider.delete_record_in_script(2, 1).unwrap();
     provider.revert_transaction().unwrap();
+    assert_eq!(host.captures.with_opcode(Opcode::HostCommit).len(), commits);
+    assert_eq!(ids(&mut provider, 2), [2, 1], "the reverted deletion");
     let generation = provider.calc_data(&[]).unwrap().generation;
     let barrier = host.block_saves(1);
     let error = provider.delete_record(2, 1).unwrap_err();
@@ -1628,6 +1632,17 @@ fn imported_layout_delete_uses_owner_verification_without_field_entry_rules() {
     provider.delete_record(1, 2).unwrap();
     assert_eq!(ids(&mut host.open(ROOT), 1), [1]);
     assert_eq!(ids(&mut host.open(RELATED), 1), [2]);
+
+    // Held in a transaction and committed, the deletion needs no
+    // field-entry plan either: the table's unplannable auto-entry does not
+    // refuse Commit Transaction.
+    provider.begin_transaction(Default::default()).unwrap();
+    provider.delete_record_in_script(2, 2).unwrap();
+    // Held until the commit.
+    assert_eq!(ids(&mut host.open(RELATED), 1), [2]);
+    provider.commit_transaction(false).unwrap();
+    assert!(ids(&mut host.open(RELATED), 1).is_empty());
+    assert!(ids(&mut provider, 2).is_empty());
 }
 
 /// New Record, Duplicate Record's copied values and a script's New Record
@@ -8040,6 +8055,112 @@ fn a_previewed_portal_row_stores_the_values_its_preview_showed() {
     provider.close();
 }
 
+/// The opened file (English) validates Code against a related-values list
+/// of Remote Tasks::Name, a field of the related file (German) indexed in
+/// language 0, that file's own (#571): its keys are German's, which
+/// OpenMaker does not build, so the check is refused (3), not made in the
+/// opened file's English, where `Apfel` is the related `Äpfel`. The same
+/// when the related file's locale record does not decode: its language is
+/// unknown, not English. Num, against a list of the related file's Count,
+/// a number in language 0 too, compares by value as before: `3` is listed.
+#[test]
+fn a_related_files_list_is_compared_in_its_own_files_language() {
+    use fixture::{CODE, COUNT};
+    const JOB_KEY: u64 = 30;
+    const NUM: u64 = 31;
+    let german = om_calc::Locale {
+        language: om_calc::Language::from_id(25),
+        ..om_calc::Locale::en_us()
+    };
+    for (tag, locale) in [
+        ("related-list-language", german.to_record()),
+        ("related-list-unreadable-locale", vec![0xff; 3]),
+    ] {
+        let mut root = fixture::tree(&[], true);
+        let mut child = fixture::tree(&[], true);
+        reference(&mut root, (REMOTE, "Remote Tasks"), 1, "Related");
+        for tree in [&mut root, &mut child] {
+            fixture::add_field(tree, TABLE, JOB_KEY, "JobKey", 1, 2, 0, 0, 0);
+        }
+        child.put(&[&[2], &[0x0d]], OwnedNode::leaf(Vec::new(), locale));
+        // Its Name and Count are indexed in language 0, the file's own (the
+        // fixture's are English, 21).
+        fixture::set_field_language(&mut child, TABLE, NAME, 0);
+        fixture::set_field_language(&mut child, TABLE, COUNT, 0);
+        fixture::add_relationship(&mut root, 9, (OCCURRENCE, JOB_KEY), 0, (REMOTE, JOB_KEY));
+        // Value lists 7 and 8, "Include only related values starting from"
+        // Tasks (0x0001): Remote Tasks::Name and ::Count, no second field.
+        // Code and Num are members of them, validated always.
+        fixture::add_field(&mut root, TABLE, NUM, "Num", 1, 1, 0, 0, 0x500);
+        fixture::set_field_validation(&mut root, TABLE, CODE, 0x500);
+        for (id, name, listed, validated) in [
+            (7u8, "Remote names", NAME, CODE),
+            (8, "Remote counts", COUNT, NUM),
+        ] {
+            root.put(
+                &[&[0x21], &[5], &[id], &[0x10]],
+                om_scripts::text_node(&[], name),
+            );
+            let mut list = vec![
+                1,
+                0,
+                1,
+                4,
+                3,
+                0xd0,
+                0,
+                0x40,
+                2,
+                1,
+                listed as u8,
+                0,
+                1,
+                0,
+                0,
+                0,
+                0,
+            ];
+            list.extend([4, 3, 0xd0, 0, 1, 0, 0]);
+            list.extend(om_scsu::encode_counted(" "));
+            root.put(
+                &[&[0x21], &[5], &[id], &[2]],
+                OwnedNode::leaf(Vec::new(), list),
+            );
+            root.put(
+                &[
+                    &uint_segment(TABLE),
+                    &[3],
+                    &[5],
+                    &uint_segment(validated),
+                    &[7],
+                ],
+                OwnedNode::leaf(
+                    Vec::new(),
+                    vec![2, 1, id, 0x90, 0, 0, 2, 1, 0, 0, 0, 0, 0xff],
+                ),
+            );
+        }
+        put(&mut root, 1, JOB_KEY, "7");
+        put(&mut child, 1, JOB_KEY, "7");
+        put(&mut child, 1, NAME, "Äpfel");
+        let host = Host::new(tag, vec![(ROOT, root), (RELATED, child)]);
+        let mut provider = host.open(ROOT);
+        provider.calc_schema().unwrap();
+        let layout = u32::try_from(fixture::LAYOUT).unwrap();
+        let change = |field: &str, text: &str| {
+            om_data::FieldChanges::from([(field.to_owned(), Some(text.to_owned()))])
+        };
+        let refused = provider
+            .update_record(layout, 1, change("Code", "Apfel"))
+            .unwrap_err();
+        assert_eq!(refused.code, Some(3), "{tag}: {refused}");
+        assert!(refused.message.contains("language"), "{tag}: {refused}");
+        let num = provider.update_record(layout, 1, change("Num", "3"));
+        assert!(num.is_ok(), "{tag}: {num:?}");
+        provider.close();
+    }
+}
+
 /// A related-values list of an unstored calculation reading the opened
 /// file, checked by the related file that writes the record (#1058, #1000):
 /// Related's `Mark` must be one of `S::Shout`, related through `S`, a
@@ -8334,9 +8455,10 @@ fn a_related_files_list_of_a_calculation_reads_the_opened_file() {
 /// A new record's auto-entry reading its own table through a self-join that
 /// no other record matches, by the key the record was given, reads the
 /// relationship as empty, as #1035's two native cases measured: Count 0,
-/// List empty, the first related record's fields empty. Where another record
-/// matches, or the commit holds another record of the table, the record's
-/// own membership is unmeasured: refused (3).
+/// List empty, the first related record's fields empty. Where another
+/// record matches, it reads that one, never itself (s47, FileMaker Server's
+/// engine). Where the commit holds another record of the table, refused (3):
+/// FileMaker's transaction did not read it, OpenMaker's held reads would.
 #[test]
 fn a_new_records_auto_entry_reads_an_unmatched_self_join_as_empty() {
     const KEY: u64 = 30;
@@ -8363,15 +8485,22 @@ fn a_new_records_auto_entry_reads_an_unmatched_self_join_as_empty() {
     }
     let host = Host::new("self-join-unmatched", vec![(ROOT, root)]);
     let mut provider = host.open(ROOT);
+    fn create_counting(
+        provider: &mut impl DataProvider,
+        key: &str,
+        count: &str,
+    ) -> Result<om_data::Record, om_data::DataError> {
+        let values = [
+            ("Key".to_owned(), Some(key.to_owned())),
+            ("Count".to_owned(), Some(count.to_owned())),
+        ];
+        provider.create_record(fixture::LAYOUT as u32, values.into())
+    }
     fn create(
         provider: &mut impl DataProvider,
         key: &str,
     ) -> Result<om_data::Record, om_data::DataError> {
-        let values = [
-            ("Key".to_owned(), Some(key.to_owned())),
-            ("Count".to_owned(), Some("5".to_owned())),
-        ];
-        provider.create_record(fixture::LAYOUT as u32, values.into())
+        create_counting(provider, key, "5")
     }
     let made = create(&mut provider, "x2").unwrap();
     let page = provider.records(fixture::LAYOUT as u32, 0, 100).unwrap();
@@ -8379,10 +8508,22 @@ fn a_new_records_auto_entry_reads_an_unmatched_self_join_as_empty() {
     let record = page.records.iter().find(|r| r.id == made.id).unwrap();
     assert_eq!(record.values[at("Tally")].as_deref(), Some("5|0||"));
     assert_eq!(record.values[at("First")].as_deref(), Some("s=|"));
-    // Another record matches now: whether the new one is among its own
-    // related records is unmeasured.
-    let refused = create(&mut provider, "x2").unwrap_err();
-    assert_eq!(refused.code, Some(3), "{refused:?}");
+    // Another record matches now: the new one reads it, not itself.
+    let second = create(&mut provider, "x2").unwrap();
+    let page = provider.records(fixture::LAYOUT as u32, 0, 100).unwrap();
+    let record = page.records.iter().find(|r| r.id == second.id).unwrap();
+    assert_eq!(record.values[at("Tally")].as_deref(), Some("5|1|5|10"));
+    assert_eq!(record.values[at("First")].as_deref(), Some("s=|5"));
+    // Three older matches made in another order than their values': the
+    // fourth reads them in creation order.
+    for count in ["7", "3", "9"] {
+        create_counting(&mut provider, "w", count).unwrap();
+    }
+    let fourth = create_counting(&mut provider, "w", "1").unwrap();
+    let page = provider.records(fixture::LAYOUT as u32, 0, 100).unwrap();
+    let record = page.records.iter().find(|r| r.id == fourth.id).unwrap();
+    let tally = record.values[at("Tally")].as_deref().unwrap_or_default();
+    assert_eq!(tally.replace(['\r', '\n'], ","), "1|3|7,3,9|14,6,18");
     // Two new records in one commit: the other could match by then.
     provider.begin_transaction(Default::default()).unwrap();
     create(&mut provider, "y1").unwrap();
@@ -8422,8 +8563,8 @@ fn a_new_records_auto_entry_reads_an_unmatched_self_join_as_empty() {
 /// counts nothing through `Lead`, though `C`'s own key is auto-entered.
 /// Computed non-empty, a later record reads the other records where its
 /// final `Lead` differs from its own final `Code2`. Equal final keys read
-/// one older match during new-row aggregate auto-entry (C126); with two
-/// older matches the self-dependent answer remains unmeasured/refused (3).
+/// the older matches during new-row auto-entry, never the record itself:
+/// one (C126), and two (s47, FileMaker Server's engine).
 #[test]
 fn a_self_join_by_an_empty_computed_key_relates_nothing() {
     const KEY: u64 = 30;
@@ -8468,11 +8609,10 @@ fn a_self_join_by_an_empty_computed_key_relates_nothing() {
         provider.create_record(fixture::LAYOUT as u32, values.into())
     };
     let first = create("g1", "g1").unwrap();
-    // Equal computed keys, one older match: Count sees that older row
-    // (C126). More than one older match gains no new allowance.
+    // Equal computed keys: Count sees the older rows, one (C126), then two
+    // (s47), and Lead the group's first record.
     let matching = create("g1", "x").unwrap();
-    let refused = create("g1", "z").unwrap_err();
-    assert_eq!(refused.code, Some(3), "{refused:?}");
+    let third = create("g1", "z").unwrap();
     // Lead "x" differs from its own Code2 "h1": it cannot satisfy its own
     // predicate, so it reads the other records (none).
     create("h1", "x").unwrap();
@@ -8487,6 +8627,8 @@ fn a_self_join_by_an_empty_computed_key_relates_nothing() {
     assert_eq!(value(first.id, "Tally").as_deref(), Some("t=0"));
     assert_eq!(value(matching.id, "Lead").as_deref(), Some("g1"));
     assert_eq!(value(matching.id, "Tally").as_deref(), Some("t=1"));
+    assert_eq!(value(third.id, "Lead").as_deref(), Some("g1"));
+    assert_eq!(value(third.id, "Tally").as_deref(), Some("t=2"));
     assert_eq!(value(later.id, "Lead").as_deref(), Some("x"));
     assert_eq!(value(later.id, "Tally").as_deref(), Some("t=0"));
     provider.close();

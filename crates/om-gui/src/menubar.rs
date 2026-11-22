@@ -19,6 +19,8 @@ pub(crate) struct MenuContext<'a> {
     pub mode: Mode,
     pub view: ViewMode,
     pub zoom: u16,
+    /// View's zoom commands can change it (`OpenMakerApp::zooms`).
+    pub zooms: bool,
     pub session: Option<&'a Session>,
     pub find: &'a FindState,
     pub toolbar: bool,
@@ -42,6 +44,12 @@ pub(crate) struct MenuContext<'a> {
     /// Records > Revert Record... (Browse) or Requests > Revert Request...
     /// (Find) can run (`om_data::scripts::revert_record::available`).
     pub revert_record: bool,
+    /// Records > Relookup Field Contents can run: a field of the
+    /// record's own table is entered in Browse mode on a record with
+    /// nothing to commit, no script running or paused and no edit being
+    /// prepared (`om_data::scripts::relookup::available`). A related field
+    /// leaves it off: the step does not look up through one (3).
+    pub relookup: bool,
     /// The account may change the file's design: File > Manage's dialogs,
     /// Layout mode and Script Workspace (`App::design_allowed`).
     pub design: bool,
@@ -60,6 +68,8 @@ pub(crate) struct MenuContext<'a> {
     pub container: bool,
     /// ...and the record may be changed: Insert's Picture and File.
     pub container_insert: bool,
+    /// The selection is optimized for interactive content outside portal rows.
+    pub container_interactive: bool,
     /// A text field is entered for typing (Browse mode, no script
     /// running): Edit's Cut, Copy and Paste, and Insert's Current Date,
     /// Current Time, Current User Name, From Index and From Last Visited
@@ -80,6 +90,9 @@ pub(crate) struct MenuContext<'a> {
     /// Layout mode has an object selected that can be deleted (Edit >
     /// Clear).
     pub layout_delete: bool,
+    /// How many of Layout mode's selected objects Arrange's Align,
+    /// Distribute and Resize To apply to.
+    pub layout_arrange: usize,
 }
 
 impl MenuContext<'_> {
@@ -267,7 +280,9 @@ pub(crate) fn show(ui: &mut Ui, context: &MenuContext<'_>, actions: &mut Vec<Act
                             menu(ui, "Layouts", &mut |rows| {
                                 layouts_menu(rows, context, actions)
                             });
-                            menu(ui, "Arrange", &mut |rows| arrange_menu(rows));
+                            menu(ui, "Arrange", &mut |rows| {
+                                arrange_menu(rows, context, actions)
+                            });
                         }
                     }
                     menu(ui, "Scripts", &mut |rows| {
@@ -574,11 +589,7 @@ fn view_menu(rows: &mut dyn MenuRows, context: &MenuContext<'_>, actions: &mut V
     }
     pending(rows, "Ruler", None);
     rows.separator();
-    let zoom_enabled = context
-        .session
-        .is_some_and(|session| matches!(session.render, crate::session::RenderState::Loaded(_)))
-        && ((context.mode == Mode::Browse && context.view == ViewMode::Form)
-            || context.mode == Mode::Preview);
+    let zoom_enabled = context.zooms;
     if rows.item(
         "Actual Size",
         None,
@@ -605,21 +616,29 @@ fn view_menu(rows: &mut dyn MenuRows, context: &MenuContext<'_>, actions: &mut V
     }
 }
 
-/// Picture and File insert into the selected container field (the
-/// script steps without a path, which ask for the file). Audio/Video and
-/// PDF stay disabled: OpenMaker plays no media and shows no PDF, and how
-/// FileMaker Pro stores what those commands insert is not measured.
+/// Picture, Audio/Video, PDF and File insert into the selected container
+/// field: the script steps without a path, which ask for the file and store
+/// it as the steps with a path do, typed by its name (what FileMaker Pro
+/// stores for each is not measured, containers.md "Desktop menus and file
+/// dialogs").
 fn insert_menu(rows: &mut dyn MenuRows, context: &MenuContext<'_>, actions: &mut Vec<Action>) {
     // Editing only and Minimum leave both out (FileMaker Pro 26.0.3,
     // #651's reading).
     let insert = context.container_insert && context.full_menus();
-    if rows.item("Picture...", None, false, insert) {
-        actions.push(Action::Step(steps::INSERT_PICTURE, 0));
-    }
-    pending(rows, "Audio/Video...", None);
-    pending(rows, "PDF...", None);
-    if rows.item("File...", None, false, insert) {
-        actions.push(Action::Step(steps::INSERT_FILE, 0));
+    let insert_interactive = insert && context.container_interactive;
+    for (label, step, enabled) in [
+        ("Picture...", steps::INSERT_PICTURE, insert),
+        (
+            "Audio/Video...",
+            steps::INSERT_AUDIO_VIDEO,
+            insert_interactive,
+        ),
+        ("PDF...", steps::INSERT_PDF, insert_interactive),
+        ("File...", steps::INSERT_FILE, insert),
+    ] {
+        if rows.item(label, None, false, enabled) {
+            actions.push(Action::Step(step, 0));
+        }
     }
     rows.separator();
     // The field's steps (script-steps.md: 13, 14, 60, 11, 12), on the field
@@ -786,7 +805,14 @@ fn records_menu(rows: &mut dyn MenuRows, context: &MenuContext<'_>, actions: &mu
     }
     rows.separator();
     pending(rows, "Replace Field Contents...", command(CMD, Key::Equals));
-    pending(rows, "Relookup Field Contents", None);
+    // Relookup Field Contents (40) with its dialog, on the field entered,
+    // as a script runs it (`om_data::scripts::relookup`). Under Editing
+    // only and Minimum it stays off, as Sort Records and Revert Record do
+    // there [I].
+    let [_, label] = om_data::scripts::relookup::MENU_PATH;
+    if rows.item(label, None, false, context.relookup && context.full_menus()) {
+        actions.push(Action::Step(om_data::scripts::relookup::STEP_ID, 0));
+    }
     rows.separator();
     // Revert Record/Request (51) with its dialog, as a script runs it
     // (`om_data::scripts::revert_record`). Under Editing only and Minimum
@@ -915,7 +941,7 @@ fn layouts_menu(rows: &mut dyn MenuRows, context: &MenuContext<'_>, actions: &mu
     }
 }
 
-fn arrange_menu(rows: &mut dyn MenuRows) {
+fn arrange_menu(rows: &mut dyn MenuRows, context: &MenuContext<'_>, actions: &mut Vec<Action>) {
     pending(rows, "Group", command(CMD, Key::R));
     pending(rows, "Ungroup", command(SHIFT_CMD, Key::R));
     pending(rows, "Lock", command(CMD, Key::L));
@@ -926,9 +952,23 @@ fn arrange_menu(rows: &mut dyn MenuRows) {
     pending(rows, "Send to Back", None);
     pending(rows, "Send Backward", None);
     rows.separator();
-    pending_submenu(rows, "Align");
-    pending_submenu(rows, "Distribute");
-    pending_submenu(rows, "Resize To");
+    // Align, Distribute and Resize To: `om_data::layout_arrange`, the
+    // operation `om-author`'s arrange_objects runs.
+    use om_data::layout_arrange::Arrangement;
+    for submenu in ["Align", "Distribute", "Resize To"] {
+        let items: Vec<Arrangement> = Arrangement::ALL
+            .into_iter()
+            .filter(|a| a.menu().0 == submenu)
+            .collect();
+        let enabled = |a: &Arrangement| context.layout_arrange >= a.minimum();
+        rows.submenu(submenu, items.iter().any(enabled), &mut |rows| {
+            for arrangement in &items {
+                if rows.item(arrangement.menu().1, None, false, enabled(arrangement)) {
+                    actions.push(Action::Arrange(*arrangement));
+                }
+            }
+        });
+    }
 }
 
 /// Script Workspace and the scripts supplied by this file's catalog.

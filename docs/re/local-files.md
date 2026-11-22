@@ -168,10 +168,10 @@ Observed [O]:
 The starter solutions checked are all 330 shipped with FileMaker Pro
 19.6.3, 20.3.2, 21.1.3, 22.0.6 and 26.0.3 (six solutions in eleven
 languages each, read-only copies): no account has `02`, and every [Full
-Access] set lacks `0c`. Not observed in any file: a status with bit 18
-set, a kind other than 0 or a set with `0c`; those forms are known from
-the code above only. The account's 16-byte `04` is a checksum of the
-record (2.4).
+Access] set lacks `0c`. None of those files has bit 18 set, an account
+of a kind other than 0 or a set with `0c`. The Manage Security and
+server-engine script probes in 2.4 both observed changes to bits 18 and
+19. The account's 16-byte `04` is a checksum of the record (2.4).
 
 [Guest] is the account with record key `01` (FileMaker's `KIndex`, which
 its Guest check reads); FileMaker opens a file as [Guest] by a login of its
@@ -349,8 +349,7 @@ signing in as that account showed a required-change prompt, accepted a
 new password and opened the file. This changed the salt and hash,
 advanced the password-set second, cleared bit 18 and recomputed `04`.
 Deleting the account removed its member and index entries. An independent
-recalculation of `04` matched at every saved stage. These are UI and
-sign-in observations; the account script steps below were not run.
+recalculation of `04` matched at every saved stage.
 Changing the starter's Admin password from empty through File > Change
 Password also created an empty subtree at `[23, 1, 5, 02, 5d, 0000, 11,
 18]` [O: both the key-tree scan and `om-hbam` read it; the same subtree
@@ -358,15 +357,67 @@ is present in another FileMaker-written full-access account]. Its
 purpose and whether another password change needs to update it are not
 established; it is not part of the `04` calculation above.
 
-**Script steps** (Mac x86_64 FMEngine `ScriptRuntimeBase`):
+**Script steps** (Mac x86_64 FMEngine `ScriptRuntimeBase` [from bin] and
+the runs below [O]). The table lists selected writes. The runs also
+record UUIDs and modification stamps.
 
 | Step | Writes | Notes |
 |---|---|---|
-| Add Account (`DoAddAccount`, `0x681002`) | a new member: `02` (`SetUserType`), `10`, `06` and `0a` (kind 0 only), `0b`, bit 18 of `0a` when "User must change password" is set, `04` | needs full access (9); an empty name or the [Full Access] set gives 5 |
-| Delete Account (`DoDeleteAccount`, `0x6815c6`) | removes the member | needs full access (9) |
-| Reset Account Password (`DoResetAccount`, `0x6818b0`) | `06`, `0a` (password stamp, then bit 18 as the step's option says), `04` | needs full access (9) |
-| Enable Account (`DoEnableAccount`, `0x681cde`) | bit 19 of `0a`, `04` | needs full access (9) |
-| Change Password (`DoChangePassword`, `0x6b21be`) | `06`, `0a` (bit 18 cleared), `04` | the signed-in account only; 3 for [Guest] or another kind; both passwords cut to 100 code units; the old one must test 0 or 211 |
+| Add Account (`DoAddAccount`, `0x681002`) | a new member: `10`, `06` and `0a` (kind 0 only), `0b`, bit 18 of `0a` when "Expire password" is set, `04` [from bin; O]; `02` (`SetUserType`) [from bin], but none for a FileMaker-file account [O] | needs full access (9) [from bin]; an empty name gives 5 [O], the [Full Access] set too [from bin] |
+| Delete Account (`DoDeleteAccount`, `0x6815c6`) | removes the member [from bin; O] | needs full access (9) [from bin] |
+| Reset Account Password (`DoResetAccount`, `0x6818b0`) | `06`, `0a` (password stamp, then bit 18 as the step's option says), `04` [from bin; O] | needs full access (9) [from bin] |
+| Enable Account (`DoEnableAccount`, `0x681cde`) | bit 19 of `0a`, `04` [from bin; O]; the password stamp stays [O] | needs full access (9) [from bin] |
+| Change Password (`DoChangePassword`, `0x6b21be`) | `06`, `0a` (bit 18 cleared), `04` [from bin] | the signed-in account only; 3 for [Guest] or another kind; both passwords cut to 100 code units; the old one must test 0 or 211 [from bin]; 3 in one server script run [O, below] |
+
+**The steps run [O: FileMaker Server 26.0.3's engine, 2026-11-20].**
+Scripts holding the account steps, written with OpenMaker's step writer
+into a copy of the English Contacts starter, ran in the script harness
+(`tools/fms-script-harness`, run lines naming them, using the harness's
+default security-bypass identity, which reports the account name Admin).
+The account catalog was compared after each run:
+
+- Add Account made a member with `04`, `06`, `0a`, `0b`, `10`, the member
+  UUID `d8`, `fc01` and `fc02` (both reading Admin), and `fc03`. It
+  wrote no `02`. With expiry off, `fc03` and `0a` were byte-identical
+  (`07 9f aa d4 80 04 34 16`). The step's `mReserved` began with
+  `02 01 02` with only `kCalculation` set, which selected [Data Entry
+  Only] and stored `01 02` in `0b`. An empty name gave 5 and made
+  nothing.
+- **The options are the step value.** Add Account and Reset Account
+  Password set bit 18 of `0a` ("Expire password") with `mStepValue` 1.
+  Enable Account set bit 19 ("Deactivate") with value 1. Nonzero values
+  2 and 4 also enabled the options in the probes, and value 1 worked
+  with `kMenuSelection` set. Flag `0x100` with value 0 changed neither
+  bit. Activate (value 0) left an already-active account active. The
+  inactive-to-active transition was not exercised.
+- Reset Account Password wrote a new `06` (new salt), stamped `0a`, set
+  `fc03` to the same bytes as `0a` in the UTC-6 run and counted the
+  member's changes in `fc` (`01 01`, then `01 02` after the reset with
+  expiry on). Enable Account set `fc` to `01 01` on the account it
+  deactivated and moved `fc03` to the time of its run, keeping `0a`'s
+  password-set second.
+- Delete Account removed the member. Change Password ran with its
+  dialog off and an empty old password under that security-bypass
+  identity. That attempt returned 3 and changed nothing. The cause remains
+  unknown. The run did not exercise a non-empty old password or a client
+  session. Claris lists the step as Partial on FileMaker Server.
+- Every account's `04` matched the checksum rule above at every stage.
+
+The recorded `0a` values decode as follows (2.2). The microsecond field
+holds the status flags.
+
+| Run | `0a` | Date | Seconds since midnight | Microseconds |
+|---|---|---|---:|---:|
+| Add Account, expiry off | `07 9f aa d4 80 04 34 16` | 2026-11-20 | 2305 | 0 |
+| Add Account, expiry on | `0a 9f aa d4 80 04 36 59 37 32 55` | 2026-11-20 | 2548 | 262144 |
+| Reset Account Password, expiry on | `0a 9f aa d4 80 04 37 54 37 32 55` | 2026-11-20 | 2643 | 262144 |
+| Enable Account, deactivating the expiry-off Add Account member | `0a 9f aa d4 80 04 34 16 63 53 99` | 2026-11-20 | 2305 | 524288 |
+| Reset Account Password at UTC-6 | `08 9f aa d3 80 05 78 34 10` | 2026-11-19 | 67230 | 0 |
+
+In the UTC-6 run, Reset Account Password stamped 18:40:30 on the
+previous date, matching the engine's local time for the run at 00:40
+UTC. The other runs used UTC. Local-time stamping on other paths is
+inferred from `DateTime::Now`.
 
 **Native hosted writes [O].** The `s148-hosted-account-writes-20261113`
 private relay capture recorded FileMaker Pro 26.0.3 changing a disposable
@@ -423,8 +474,10 @@ full access may change a password the set does not let the account
 change]. The step's dialog is not shown on a server, so with it the step
 gives 3 [I: FileMaker Server's handling is not measured]. While it
 writes, the script's session holds a write lock on `[23, 1]`, as Manage
-Security does, and another user's lock gives 310 [I: Reset Account
-Password's observed code]. The commit stamps the account and the
+Security does, and another user's lock gives 310. That Change Password
+behavior is inferred from the binary's Reset Account Password mapping
+of 8003 to 310 ([script-runtime.md §2.3](script-runtime.md#23-executing-one-step-execute-0xa771a0)).
+The commit stamps the account and the
 catalog's index `[23, 1, 1]` (schema-path.md 8.1), so a client's cached
 copy of the catalog shows as stale, and other clients are told the
 catalog changed.
@@ -451,6 +504,30 @@ text, is never found. A new status that would not read back as written
 (flags added to a fraction of a second already held, past the six digits
 the value keeps) is not written (3).
 
+Delete Account runs through `Hosted::delete_account`, under the same
+lock and notification, for a session with full access (else 9). It
+removes the account's member and, from the catalog's index (3), its name
+list entry, its place in the display order (the order numbered again
+from 1) and its `07` entry, and takes one from the count; `00` keeps the
+last key issued, and the index is stamped. A name no account has gives
+213 (inferred). As Claris documents for the step, it does not delete a
+[Full Access] account, nor an OAuth or Claris ID one; [Guest] (key `01`)
+is not deleted either. Each of these gives 3 [I: the codes are not
+observed]. The index must be one OpenMaker reads as 3 describes: its
+name list and its display order (positions 1 to n) each name every
+account once, the count is the number of accounts, and the account's
+`07` entry, if any, is an empty leaf. Otherwise nothing is written (3),
+so no data it does not read is dropped. The account's own checksum is not
+checked, since nothing of it is written. The header's `10` is left as it
+is. It is the account File Options' "Log in using" names, signed in with
+the password the header keeps in `06` (3.1), so when it names the deleted
+account, the file's automatic sign-in is left naming an account that no
+longer exists [I: what FileMaker Pro does with it then is not observed].
+
+OpenMaker still refuses Add Account. The server-engine probe confirms
+one inline privilege-set key in `mReserved`. The full inline layout
+and editor output remain unverified (script-steps.md 4.1).
+
 When a local file's Login is refused with 211, the desktop asks for a new
 password in a Change Password dialog (New Password, Confirm New Password)
 in the sign-in dialog's place [I: OpenMaker's wording; FileMaker Pro's
@@ -471,14 +548,15 @@ a refusal (212 for a wrong old password, 206, 208, 209, 11) keeps it up
 with its reason. The new password is then the session's, for the files its
 scripts open later [I]. A file on a host does not offer it yet ([#248](https://github.com/OpenMaker-Dev/openmaker/issues/248)).
 
-Unknowns: the account script steps above and hosted password change at
-sign-in were not run live, so their errors for a missing account, for an
-account catalog another user has locked (other than Reset Account
-Password's 310) and for [Guest] are not observed; login type 2 was not captured; whether the
-password stamp's time is local or UTC is not measured; the empty `5d`
-subtree noted above is not explained. The checksums for privilege sets,
-extended privileges and file access entries are specified separately in
-session-identity.md 4.
+Unknowns: the account script probes covered the server engine only.
+FileMaker Pro script execution and hosted catalog transfers for those
+steps remain unmeasured. The probes did not check missing accounts,
+catalog lock conflicts or [Guest]. Reset Account Password's 310 on a
+catalog lock conflict comes from the binary. Hosted password change at
+sign-in and Re-Login (login type 2) remain uncaptured. The editor's and
+XML importer's storage are open in script-steps.md 9. The empty `5d`
+subtree noted above is unexplained. See session-identity.md 4 for the
+checksums for privilege sets, extended privileges and file access entries.
 
 ## 3. The account catalog's header `[23, 1, 1]`
 
@@ -487,6 +565,31 @@ It is the member data of the account catalog itself
 (`DBUserAccountCatalog`, the file user's `mUserAccountCatalog`). In every
 starter solution [O]: `00` = `01 02` (account 2's key), `04` = 2, `06`
 empty, `16` = "Admin", `24` = "0" (text), `252` = `01 02`.
+
+It is the catalog's index `[cat, 1]` (schema-path.md 1), laid out as the
+other catalogs' indexes are [O: the English Contacts and Tasks and the
+German Inventory starter solutions of FileMaker Pro 26, read with
+`om-hbam`'s `dump_keys` example; all three alike]:
+
+| Key | Content | Starter value |
+|---|---|---|
+| `00` | the last account key issued, as a key string | `01 02` |
+| `01, <name key>` | the name list: one leaf per account, keyed by its name's key (schema-path.md 5.6), holding the account's key as a key string | `0301ffe0e0020302000000` → `01 01` ([Guest]); `120f1250135f12ec136d000000` → `01 02` ("Admin") |
+| `03, <position>` | the display order: big-endian u32 positions from 1, each holding an account's key as a key string | `00000001` → `01 01`, `00000002` → `01 02` |
+| `04` | the number of accounts, big-endian u32 | `00000002` |
+| `06` | empty | |
+| `07, <key>` | one empty leaf per account | `07/01`, `07/02` |
+| `10` | "Admin": the header's account name above | |
+| `18` | "0" | |
+| `d8`, `fc`, `fc01`-`fc03` | the index's UUID and modification stamps (schema-path.md 8.1) | |
+
+So a new account takes the key after `00`, a name list entry, the next
+display position, one more in `04` and a `07` entry, as a new script does
+in the script catalog's index (scripts.md); a deleted one gives up its
+name list entry, display position and `07` entry and one of `04`, while
+`00` keeps the last key issued [I: from the other catalogs' indexes; an
+account added or deleted by FileMaker Pro was observed to change its index
+entries (2.4), but those entries were not compared one by one].
 
 ### 3.1 File Options > Open: "Log in using" and sign-in options
 
@@ -725,46 +828,40 @@ than a second reader and writer.
     the key tree written as a new packed file (hbam-writer.md 7.2). So is a
     copy while changes a failed save left wait in memory, or of a file the
     host could not lock.
-  - *Writing.* The copy is written and flushed in a folder of its own
-    made beside the output (`.omcopy-<process>-<n>-<time>`, 0700, checked
-    once opened to be this user's alone). It is then moved to the output
-    name with a rename that refuses to replace (`RENAME_NOREPLACE` on
-    Linux, `RENAME_EXCL` on macOS), or, on file systems without one,
-    hard-linked there. Every step after the folder is made goes through
-    the folder's and the output folder's descriptors and compares file
-    identities (device and inode), not names. The staged file must be the
-    one written before it is published, and the entry at the output name
-    must be it afterwards. A file another account put in its place (an ACL
-    the folder passes on can let it) is never reported as the copy: the
-    copy fails, and that file is left as it is. An entry at the output path
-    (a file, the open file, a link) refuses the copy and is left untouched.
-    So does a name ending in `.omsave` in any case, with the characters
-    HFS+ ignores in names left out. A copy that still turns out to be the
-    file's own save name (`<file>.omsave` under a spelling the file system
-    folds to it, such as `ſ` for `s` on case-insensitive APFS) is taken
-    back and refused, so the next save keeps its name. Cleanup removes
-    only what the copy made: the staged file while it is still the copy,
-    and the folder while its name still holds the folder that was opened.
-    A crash can leave that folder beside the output, never a partial copy
-    at the output name.
-  - *Permissions.* The copy holds the password verifiers, so it is created
-    owner-only (0600), whatever the file's own permissions or the
-    folder's group [I: OpenMaker's choice; FileMaker's is unmeasured].
-    Read access an ACL of the folder passes on to new files still applies,
-    to the staged copy as to the published one and to every file created
-    there: OpenMaker cannot clear it without platform ACL calls. Off Linux
-    and macOS a copy is refused, as local files are read-only there
-    ([#30](https://github.com/OpenMaker-Dev/openmaker/issues/30)).
-  - *The desktop's step.* Before committing or creating anything, it
-    fails as a step OpenMaker does not support (error 3; the desktop stops
-    the script with its "not supported here yet" alert) for clones and
-    self-contained copies, a step without an output file (the Save dialog
-    of File > Save a Copy As is not built), "Automatically open file",
-    "Create email", an open transaction and a hosted file [I]
-    ([#63](https://github.com/OpenMaker-Dev/openmaker/issues/63)). Otherwise
-    it returns 800 when the account's set denies exporting, commits the
-    window's record, as Export Records does [I], and returns 800 when the
-    copy cannot be created, an existing file included [I].
+  - *Destinations.* Linux only. The resolved path must lead through
+    existing directories on ext2, ext3, ext4 or tmpfs. Each ancestor must
+    be owned by root or the effective user and either deny group and other
+    writes or have the sticky bit set. The output directory must be owned
+    by the effective user, grant that user read, write and search access,
+    and deny group and other writes, including via the POSIX ACL mask.
+    Symbolic-link directories and parent traversal in the resolved path
+    are refused. The final name must be ASCII with a `.fmp12` extension
+    (case-insensitive), which keeps it distinct from ordinary saves'
+    `.omsave` suffix under byte lookup and ext4 case folding. The
+    destination needs kernel support for `O_TMPFILE` and access to procfs
+    at `/proc/self/fd`. The isolation assumes the effective user and system
+    administrators are trusted.
+  - *Writing and permissions.* The host opens and validates the destination
+    before the record commit. The copy is written to an unnamed file on
+    that filesystem, with mode 0600. Linux's creation mode masks any
+    inherited POSIX ACL grants to other accounts from the start. The host
+    flushes the file, then links its descriptor to the final name using
+    the opened output directory. A file, directory or link already at
+    that name is left untouched. An interrupted or failed write closes
+    the unnamed file, which the kernel reclaims. There is no staging name
+    to remove, and the final name appears only after the bytes are written
+    and flushed. These are OpenMaker's choices [I].
+  - *The desktop's step.* The step refuses clones, self-contained copies,
+    an absent output path (the Save dialog is not built), "Automatically
+    open file", "Create email", an open transaction, a hosted file and
+    unsupported platforms or destination rules with error 3 [I].
+    It does not create destination folders even with Create folders
+    enabled. If no candidate has an existing parent, the step returns
+    800. Export denial and a known occupied destination also return 800.
+    These refusals happen before the window's record is committed.
+    With a prepared destination the step commits the record, then copies
+    the resulting store [I]. A later I/O failure or a destination that
+    becomes occupied during the commit returns 800.
 - **Recovery.** Deferred field work an earlier stop left in the file
   (schema-path.md) is finished in memory when the file opens and saved only
   once an admitted account logs in to a writable file: a wrong password,

@@ -199,6 +199,19 @@ impl<'a> Parser<'a> {
         }
     }
 
+    /// `word` as a step value of 1, with `kMenuSelection` as the catalog's
+    /// `value` storage writes it: the account steps' options, on when the
+    /// value is nonzero (local-files.md 2.4).
+    fn value_word(&mut self, word: &str) -> bool {
+        if !self.next_is(word) {
+            return false;
+        }
+        self.step.value = 1;
+        self.step.flags |= flag::MENU_SELECTION;
+        self.pos += 1;
+        true
+    }
+
     /// `label: On|Off` for `bits` (set when On).
     fn on_off(&mut self, label: &str, bits: u32) {
         if let Some(value) = self.labeled_value(label) {
@@ -1106,17 +1119,17 @@ fn rule(p: &mut Parser<'_>) {
         134 => {
             p.labeled("Account Name", 0);
             p.labeled("Password", 1);
-            p.word("Expire password", flag::OPTION);
+            p.value_word("Expire password");
         }
         135 => p.labeled("Account Name", 0),
         136 => {
             p.labeled("Account Name", 0);
             p.labeled("New Password", 1);
-            p.word("Expire password", flag::OPTION);
+            p.value_word("Expire password");
         }
         137 => {
             p.labeled("Account Name", 0);
-            if !p.word("Deactivate", flag::OPTION) && p.next_is("Activate") {
+            if !p.value_word("Deactivate") && p.next_is("Activate") {
                 p.pos += 1;
             }
         }
@@ -1489,20 +1502,27 @@ fn go_to_related_record(p: &mut Parser<'_>) {
     p.word("Show only related records", flag::RESTORE);
     p.word("Match found set", flag::OPTION2);
     if let Some(text) = p.labeled_value("From table") {
-        let occurrence = match quoted_head(&text) {
-            Some(name) => p
-                .names
-                .find_occurrence(name)
-                .require(&format!("the table occurrence “{name}”")),
-            None => Err(format!("{text} is not a table occurrence name")),
-        };
-        match occurrence {
-            Ok(o) => {
-                let key = om_formula::Key::from_id(o).0;
-                p.step
-                    .set_slot_child(0, 0x11, Some(om_hbam::OwnedNode::leaf([0x11], key)));
+        if quoted_head(&text).is_none() && text != UNKNOWN && !text.trim().is_empty() {
+            // Table by Calculation: the name's calculation in slot 8 with
+            // `0x400` (script-steps.md 12.4).
+            p.calc_into(8, &text);
+            p.step.flags |= flag::OPTION3;
+        } else {
+            let occurrence = match quoted_head(&text) {
+                Some(name) => p
+                    .names
+                    .find_occurrence(name)
+                    .require(&format!("the table occurrence “{name}”")),
+                None => Err(format!("{text} is not a table occurrence name")),
+            };
+            match occurrence {
+                Ok(o) => {
+                    let key = om_formula::Key::from_id(o).0;
+                    p.step
+                        .set_slot_child(0, 0x11, Some(om_hbam::OwnedNode::leaf([0x11], key)));
+                }
+                Err(reason) => p.issue(reason, Some(Part::Slot(0))),
             }
-            Err(reason) => p.issue(reason, Some(Part::Slot(0))),
         }
     }
     if let Some(text) = p.labeled_value("Using layout") {

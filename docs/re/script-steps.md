@@ -228,10 +228,14 @@ the corpus [Low].
 | `kFieldSpec` 0x1 | `DBFieldSpec` (14 bytes) | `mTableKey` `HBKey<5>` (table occurrence, e.g. `04 03 d0 00 05`), `mFieldKey` `HBKey<5>` (`02 01 05`), `mRepetition` i16 BE [O] |
 | `kMemberKey` 0x8 | `HBKey<5>` of a layout or menu set | Go to Layout, GTRR, New Window, Install Menu Set (`KStandardMenuSet` = standard menus) [O] |
 | `kScriptKey` 0x40 | `HBKey<5>` of a script | Perform Script, PSOS, Install OnTimer Script [O] |
-| (privilege) | `HBSerialKey<7>` of a privilege set | Add Account (`SetPrivilegeKey`) [I] |
+| none (privilege set) | `HBSerialKey<7>` [from bin: `SetPrivilegeKey`] | Add Account [O: FileMaker Server's engine accepted `02 01 02` at the start of `mReserved` with only `kCalculation` set and assigned [Data Entry Only], local-files.md 2.4] |
 
-When the flag is clear the bytes keep stale content (Go to Field without a
-target keeps an old field spec) [O]; readers must test the flag first.
+For `kFieldSpec`, `kMemberKey` and `kScriptKey`, test the flag before
+reading the reference. The bytes can retain stale content when the flag
+is clear (Go to Field without a target keeps an old field spec [O]). The
+Add Account probe exercised one serial-key prefix with all three
+reference flags clear. The editor's output and other key lengths still
+need verification.
 
 **Variable targets.** A target that is a variable is a field spec whose table
 key is `HBAbstractKey(0)` and field key `HBAbstractKey(0x20)`
@@ -484,11 +488,15 @@ named ids absent from the corpus the CSV rests on the binary alone. Section
 
 ## 9. Unknowns
 
-- Slot maps inside compound elements for 23 step ids (CSV notes): AVPlayer,
+- Slot maps inside compound elements (CSV notes): AVPlayer,
   window options, Insert File options, web viewer actions, mobile steps,
-  Perform AppleScript, the account steps' Booleans. Section 12's method
-  (the step's `V2_ScriptStepXML` writer and reader in the Mac `FMEngine`, a
-  probe through FileMaker Server's XML importer) applies to them unchanged.
+  and Perform AppleScript. Section 12's method uses the step's
+  `V2_ScriptStepXML` writer and reader in the Mac `FMEngine` and a probe
+  through FileMaker Server's XML importer.
+- The server-engine account probes measured the runtime's interpretation
+  of `mStepValue` (local-files.md 2.4). The specific values and flags
+  written by FileMaker Pro's editor and FileMaker Server's XML importer
+  for those options remain unverified.
 - Section 12's own open points: the meaning of Perform Find by Natural
   Language's `Target` calculation (slot 6) and of Configure Prompt
   Template's step value; the slots of the web script parameters of
@@ -593,7 +601,8 @@ indexes, none differ).
 | Truncate Table (182) | the base table key (two-byte id from `0x8000`) in `mReserved` with `kMemberKey`, step value 1 and `kMenuSelection` (42/42); value 0 denotes the current table |
 | plug-in step (186) | `mStepValue` = function id, `83` = the plug-in's QuadChar id (`MBSP`) and bytes, one calculation per parameter in slots 0-9, a field or variable target, `0x100`, `0x200` and `0x1000` on all 5 steps |
 | Send Event, Send Mail, Speak, Perform AppleScript, New Window, Perform Find/Replace, Save Records as Excel, Set Web Viewer, Insert from Device, AVPlayer Play/Set Options, Configure Region Monitor Script, Local Notification, NFC Reading, Machine Learning Model | further numeric, list and calculation slots and flag bits of the compound element (listed in `CORPUS`); Send Event's numbers are four-character codes (`aevt`, `odoc`, target signatures), Speak's voice too; AppleScript stores a compiled blob under `83`; Send Event, Send Mail, Speak and Perform Find/Replace are mapped in section 12.3, the others' meanings are not mapped |
-| Paste, Dial Phone, Add/Reset/Enable Account, Convert File | a `kMenuSelection` step value (0, 1 or 4), meaning not mapped |
+| Paste, Dial Phone, Convert File | a `kMenuSelection` step value (0, 1 or 4), meaning not mapped |
+| Add Account, Reset Account Password, Enable Account | the corpus has these steps with `kMenuSelection` and a step value. The server-engine probes mapped the options to zero and nonzero `mStepValue` (local-files.md 2.4) |
 
 ## 11. Stored specs inside steps
 
@@ -2412,9 +2421,9 @@ unknown origin (`Origin::Unknown`). Then a `Stored …` option is taken only
 where it leaves every file-local id the step holds (its field, layout,
 table or script reference; the fields, occurrences and custom functions of
 its calculations; slot fields and occurrences; sort orders, find
-requests, file references, import and export orders) as the open file's
-names give them. A plug-in function a calculation calls counts too: its
-id is the plug-in's, not the file's, but a call the text cannot name
+requests, file references, privilege sets, import and export orders) as
+the open file's names give them. A plug-in function's id belongs to the
+plug-in, but a call the text cannot name
 (`<Function Missing>`) is code the text does not show, so it fails the
 step. Where the text names a part the options hold under other
 ids, the bytes can only be another file's, so the part is taken as the
@@ -2424,10 +2433,11 @@ with other ids in the same places, one for one (as sets, First Name and
 Last Name could not be told from the same two fields the other way
 round). Stored code that differs from what its text compiles to, or whose
 ids do not stand one for one for the named ones, fails the step: its text
-and code disagree. Ids the text names nothing for, and a reference whose
-name the file lacks, fail the step; reference bytes no flag uses are
-dropped. Only the text form's own round trip reads with
-`Origin::ThisFile`, taking every option as written.
+and code disagree. Ids the text names nothing for, including Add Account's
+flagless privilege-set key, fail the step, as does a reference whose name
+the file lacks. Unused inline reference bytes are dropped. Only the text
+form's own round trip reads with `Origin::ThisFile`, taking every option
+as written.
 
 **Lossless options.** When a step's display line alone does not give the
 step back, the text adds `Stored …` options after the displayed ones:
@@ -2655,7 +2665,7 @@ and the cached indexes:
 | Replace with (Replace Field Contents: `[00 1, 03]`, `[00 2, 03]`, `[00 3, 01]`, slot 0; 11.8) | pop-up "Replace with": Current contents (1, also when nothing is stored), Serial numbers (2), Calculated result (3); with Serial numbers "Initial value" and "Increment by", both 1 when nothing is stored as the runtime reads them, and "Update serial number in Entry Options" (`[00 4, 03]`); with Calculated result its calculation; always "Perform auto-enter options for fields", FileMaker Pro 26.0.3's label, checked unless `kRestore` is set with `[00 6, 03]` = 0 (the XML reader's "Skip auto-enter options") | the choice with `set_number(1)`, 4 bytes, as the step text's parser writes it; `set_text(3)`, `set_number(2)`, `set_calculation(0)`, each only when changed. Calculated result without a calculation is refused at OK (the runtime would end the step with error 5). The two checkboxes show what is stored and take no input: Pro greys "Update serial number in Entry Options" out for a field without an auto-entered serial number, and reads "Perform auto-enter options for fields" checked with nothing stored [O: #798's Pro check]; what its own editor writes for either is not measured. Another stored choice, or "Use Entry Options" stored (`[00 5, 03]` set, which would override the initial value and increment), keeps the parameter as stored [I: the widths of `[00 1, 03]` and `[00 2, 03]` in FileMaker Pro's own steps are not measured] |
 | Records (Save Records as PDF: the step value under its PDF options; Save Records as Excel: slot 1, two bytes; 11.7) | pop-up "Records": Records being browsed (1, also when nothing is stored), Current record (2); Save Records as Excel's only while Restore is checked, as FileMaker and the runtime apply it only then | PDF: the step value and `kMenuSelection`, as the step text's parser writes it; Excel: `set_number_u16(1)`, as FileMaker Server's XML writer reads it (11.7); each only when changed. Any other stored value keeps the parameter as stored; so do the PDF and Excel options this row does not cover. FileMaker Pro 26.0.3 read both back as Current record [O: #821's Pro check]. Print's records have a row of their own (below). |
 | Print's records (the step value, and `printStyleSetting` in the macOS `M_PM` chunk of the stored print settings `88`; 11.6) | pop-up "Records": Records being browsed (1, also when nothing is stored), Current record (2), shown only while "Specify print options" (Pro's label for Restore) is checked | Both places, as FileMaker Pro 26.0.3 writes them [O: #843's twins]: the step value without `kMenuSelection`, and the digit in place, one byte in the stored piece that holds it; only when changed. Read-only unless `M_PM` holds exactly one `printStyleSetting` of 1 or 2 and no comment or CDATA section (Pro's have none), and unless the record is within the runtime's 1 MiB bound. "Specify print options" cannot be checked on a step with no `88`: Pro asks for the options in its Print dialog. Unchecking it clears only `kRestore`, keeping the step value, `87` and `88`, as Pro does [O: #843]. A blank-record value (3-6) keeps the parameter as stored. The runtime prints a stored current record only with `kRestore`, else the records being browsed [I: from Pro's dialog preselection, #843] |
-| Send Mail (Send Mail by the email client: calculations 0-4, `[00 0..3, 03]`, `[00 0, 82]`; 12.3) | checkbox "One email per record" (`[00 3, 03]`); "To", "CC", "BCC" (calculations 0-2), each followed, while one email per record is unchecked, by "Collect … addresses across found set" (`[00 0..2, 03]`); "Subject" (3), "Message" (4); "Attachments", the path list as File paths | `set_calculation` of slots 0-4; the checkboxes with `set_number_bool` (one byte); the attachments with `set_path_list` (`[00 0, 82]` with `kFilePath`); each only when changed [I: the widths FileMaker Pro writes for `[00 0..3, 03]` are not measured]. A step sending by SMTP (`[00 4, 03]` set) or OAuth (`[00 7, 03]` set) keeps the parameter as stored, as do the SMTP and OAuth options; OpenMaker does not run Send Mail ([#89](https://github.com/OpenMaker-Dev/openmaker/issues/89)) |
+| Send Mail (Send Mail by the email client: calculations 0-4, `[00 0..3, 03]`, `[00 0, 82]`; 12.3) | checkbox "One email per record" (`[00 3, 03]`); "To", "CC", "BCC" (calculations 0-2), each followed, while one email per record is unchecked, by "Collect … addresses across found set" (`[00 0..2, 03]`); "Subject" (3), "Message" (4); "Attachments", the path list as File paths | `set_calculation` of slots 0-4; the checkboxes with `set_number_bool` (one byte); the attachments with `set_path_list` (`[00 0, 82]` with `kFilePath`); each only when changed [I: the widths FileMaker Pro writes for `[00 0..3, 03]` are not measured]. A step sending by SMTP (`[00 4, 03]` set) or OAuth (`[00 7, 03]` set) keeps the parameter as stored, as do the SMTP and OAuth options, which the dialog does not edit ([#89](https://github.com/OpenMaker-Dev/openmaker/issues/89)) |
 
 Step rules: Perform Script and Perform Script on Server show "Specified: From list / By name" (`[00 1]`
 1 by name; the by-name bits `0x800` and `0x2000000` set with it, cleared
@@ -2672,6 +2682,19 @@ reads it, and write nothing unless another is chosen (138 of the
 templates' 160 Go to Layout steps store no slot 6). A calculation
 parameter named Repetition with nothing stored shows 1, as 35b does; it
 is written only when changed.
+
+**Account options.** Add Account and Reset Account Password show "Expire
+password" on for any nonzero step value. Enable Account shows "Deactivate"
+for any nonzero value. The dialog keeps the raw step value and flags when
+the logical choice is unchanged. A changed choice writes 0 or 1 with
+`kMenuSelection`, as the catalog's value setter does. Hand-written step
+text and XML without `Options` set that flag for value 1 and use zero with
+the flag clear for the off choice. XML with `Options` uses its flags word
+for `kMenuSelection`, including when the Boolean gives an explicit zero.
+OpenMaker uses these conventions because the values and flags written by
+FileMaker's editor and XML importer remain unverified (9).
+Add Account's privilege set remains read-only in the dialog. The XML
+reader refuses a nonzero `PrivilegeSetReference`.
 
 **Kept as stored.** A parameter no row edits shows "Kept as stored" when
 something is stored for it, and is never touched: compound parameters
@@ -2750,13 +2773,18 @@ with the step's profile as Import Records parses it when it runs. At most
 16 MB is read there (only the source's fields are needed; OpenMaker's
 choice), and a source of more than 65,535 fields does not fit the order's
 count. Without a readable source, with a type OpenMaker does not read
-(FileMaker files, folders, ODBC, Excel 97-2004), or with a stored `86`,
+(FileMaker files, folders, ODBC), with an order matched by the names in a
+text or spreadsheet source's names row (Import Records matches it by them,
+and this dialog shows such a source's columns by position), or with a
+stored `86`,
 `87` or `f0` that does not decode (a default would write over it),
 Specify… says why in an alert. A source with
 no stored profile takes one from its extension (`.tab`, `.txt`, `.csv`,
 `.mer`, `.dbf`; written to `86` with the order); an Excel profile names a
 sheet and a file, how FileMaker fills them for a new step is not
-established, so `.xlsx` without a stored profile is refused. Import Field
+established, so `.xlsx` and `.xls` without a stored profile are refused;
+with one, an Excel 97-2004 source is read as an `.xlsx` sheet is (the BIFF8
+reader Import Records runs). Import Field
 Mapping (Claris's name; the run-time dialog of Import Records with dialog
 has the same controls) lists the source's fields (their names, or the first
 record's values) with a target field pop-up each (the target table's data
@@ -2920,6 +2948,7 @@ forms listed at the end.
 | `Step id`, `enable="False"` | step id; disabled = negated id |
 | `Options` (decimal, signed 32-bit: `-2147483648`) | the flags word, taken as is; the Booleans only stand in when it is missing |
 | `Boolean id=bits value` | those bits (inverted for "With dialog" 0x80, PSOS "Wait for completion" 0x100, Convert File "Open File" 0x100); without `id`: "Exit after last" 0x2000, "With dialog" 0x80 inverted |
+| Account steps' `Boolean value` without `id` | OpenMaker stores step value 0 or 1. `True` means 1 for Expire password and 0 for Activate. The Boolean carries no original nonzero value. |
 | `Calculation position=n` (anywhere) | compiled into slot n against the open file's names; `datatype` is the result type |
 | `FieldReference` + `TableOccurrenceReference` (Parameter `FieldReference` or `Target`) | target field spec (`mReserved`, slot n for Show Custom Dialog input n + 1) |
 | `repetition` of a field or variable target | digits = the spec's repetition; anything else = spec repetition 0 and the calculation in its `position` (10 for a field, 0x20 + n for a target) |
@@ -2969,9 +2998,8 @@ Send Event, Send Mail, Speak, Perform AppleScript, Perform Find/Replace,
 Insert File's options, Import and Export orders, Save Records as Excel and
 PDF options, Print PDF, Insert from Device, the AVPlayer play and option
 lists, the AI steps' lists, Replace Field Contents (its "Skip auto-enter
-options" reads differently in the writer and the importer), the account
-steps' non-zero choices (the XML shows a Boolean for step values 1, 2 and
-4 alike), scripts and data sources in other files, privilege sets, and
+options" reads differently in the writer and the importer), scripts and
+data sources in other files, privilege sets, and
 `LayoutReferenceContainer External="True"`.
 
 **FileMaker's importer normalizes** what it stores from the same XML (the
@@ -3012,10 +3040,9 @@ Open (FileMaker Pro is not available on this machine):
    the `fmxmlsnippet` wrapper itself, `Options`-less steps (flags from the
    Booleans), and whether Pro's paste stores the importer's forms above or
    the original's.
-2. The stored values behind the account steps' Booleans ("Expire
-   password", Activate/Deactivate) and `External="True"` in Go to Related
-   Record. (Replace Field Contents' options are now specified in 11.8; the
-   reader still refuses the step.)
+2. `External="True"` in Go to Related Record and the XML importer's
+   storage of the account steps' options (9). Replace Field Contents'
+   options are now specified in 11.8. The reader still refuses the step.
 3. Data sources (`DataSourceReference`, file references `20`) and menu
    sets are not looked up by name (`StepNames` has no lookup for them), so
    steps naming them fail.

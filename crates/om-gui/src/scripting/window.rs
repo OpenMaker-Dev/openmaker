@@ -130,6 +130,12 @@ pub(crate) struct Uncommitted {
     /// changed it since, so Revert drops only the window's changes and
     /// keeps it.
     pub saved: bool,
+    /// The new record's place in the found set when it was made, which
+    /// its auto-entered `Get ( RecordNumber )` was given: its later
+    /// writes before its commit give it again, as the value is entered
+    /// when the record is made (Duplicate Record, #526). `None` when it
+    /// is not known (New Record, #298).
+    pub record_number: Option<u64>,
 }
 
 impl Uncommitted {
@@ -168,6 +174,9 @@ pub(crate) struct NewRecord {
     session: bool,
     /// Made at once on the host.
     saved: bool,
+    /// Its place in the found set when it was made, if known
+    /// ([`Uncommitted::record_number`]).
+    record_number: Option<u64>,
 }
 
 /// What [`Window::commit`] writes with, as its caller gave it.
@@ -842,7 +851,9 @@ impl Window {
                 typed,
                 skip_validation,
                 privilege_set: privilege_set.clone(),
-                record_number: None,
+                // A new record keeps the place it was made at: what its
+                // auto-entered Get ( RecordNumber ) was given then (#526).
+                record_number: open.new.then_some(open.record_number).flatten(),
                 prepared: None,
             });
             if let Some((table, _)) = pinned {
@@ -1036,6 +1047,58 @@ impl Window {
         self.touch();
     }
 
+    /// Whether Revert Transaction removed this window's record: one the
+    /// transaction created (`created`, by base table and id: logged by a
+    /// commit, or held new by the provider), whatever the window still has
+    /// pending on it. A record a window's record session holds apart, or
+    /// one an earlier transaction saved, is not among them.
+    fn reverted_record(&self, created: &[(u64, i64)]) -> bool {
+        let Some(record) = self.state.record else {
+            return false;
+        };
+        self.table
+            .is_some_and(|table| created.contains(&(table, record)))
+    }
+
+    /// The window lets go of its record and what it has pending on it,
+    /// with no call to delete it: the transaction that held it is reverted.
+    fn let_go_of_reverted_record(&mut self) {
+        self.state.uncommitted = Uncommitted::default();
+        self.state.drafts.clear();
+        self.state.portal = None;
+        self.state.record = None;
+        self.changed_data();
+        self.found = None;
+    }
+
+    /// Revert Transaction removed the current window's record
+    /// ([`Self::reverted_record`], #307): it shows the record at its place
+    /// in the found set as the revert leaves it, the last one when nothing
+    /// is there any more, as Revert Record of a new record does.
+    pub fn forget_reverted_record(
+        &mut self,
+        provider: &mut dyn DataProvider,
+        created: &[(u64, i64)],
+    ) -> Result<(), DataError> {
+        if !self.reverted_record(created) {
+            return Ok(());
+        }
+        self.discard_previews(provider);
+        self.let_go_of_reverted_record();
+        let found = self.found_count(provider)?;
+        self.state.index = self.state.index.min(found.saturating_sub(1));
+        Ok(())
+    }
+
+    /// [`Self::forget_reverted_record`] for a window that is not current: a
+    /// record its own session holds stays, and its found set and place are
+    /// read again when it is current.
+    pub fn forget_reverted_record_waiting(&mut self, created: &[(u64, i64)]) {
+        if self.reverted_record(created) {
+            self.let_go_of_reverted_record();
+        }
+    }
+
     /// Revert Record: drop the drafts, the related records' too; a new
     /// record is deleted.
     pub fn revert(&mut self, provider: &mut dyn DataProvider) -> Result<(), DataError> {
@@ -1058,7 +1121,7 @@ impl Window {
             // provider without record sessions. A refused delete has not
             // reverted the new record. Keep its drafts and ownership
             // intact so Discard can be retried.
-            provider.delete_record(layout, id)?;
+            provider.delete_record_in_script(layout, id)?;
         }
         self.discard_previews(provider);
         self.state.uncommitted = Uncommitted::default();
@@ -1220,7 +1283,8 @@ impl Window {
         privilege_set: Option<String>,
     ) -> Result<(), DataError> {
         let session = self.open_new_record(provider);
-        let made = self.make_new_record(provider, session, (values, cells), privilege_set)?;
+        let made =
+            self.make_new_record(provider, session, (values, cells), (privilege_set, None))?;
         self.adopt_new_record(provider, made)
     }
 
@@ -1245,13 +1309,14 @@ impl Window {
     /// in the session (#892). A refusal is the error: it is never made at
     /// once instead. A record a provider without transactions makes at once
     /// is saved: Revert keeps it. A failure reverts the session: nothing
-    /// was made.
+    /// was made. `record_number`: the record's place in the found set,
+    /// when it is known (`ScriptWrite::record_number`).
     pub fn make_new_record(
         &mut self,
         provider: &mut dyn DataProvider,
         session: bool,
         (values, cells): (FieldChanges, Cells),
-        privilege_set: Option<String>,
+        (privilege_set, record_number): (Option<String>, Option<u64>),
     ) -> Result<NewRecord, DataError> {
         let revert = |provider: &mut dyn DataProvider, session: bool| {
             if session {
@@ -1271,7 +1336,7 @@ impl Window {
             typed: BTreeSet::new(),
             skip_validation: false,
             privilege_set,
-            record_number: None,
+            record_number,
             prepared: None,
         };
         let (record, saved) = match provider.write_record(&write) {
@@ -1285,6 +1350,7 @@ impl Window {
             record,
             session,
             saved,
+            record_number,
         })
     }
 
@@ -1299,6 +1365,7 @@ impl Window {
         if self.state.uncommitted.new {
             self.state.uncommitted.session = made.session;
             self.state.uncommitted.saved = made.saved;
+            self.state.uncommitted.record_number = made.record_number;
         } else if made.session {
             let _ = provider.revert_transaction();
         }
@@ -1371,7 +1438,7 @@ impl Window {
         // provider deletes the record under it, its edits going with the
         // session. A refusal keeps the edits; a session it ended is no
         // longer the window's.
-        let deleted = provider.delete_record(layout, id);
+        let deleted = provider.delete_record_in_script(layout, id);
         let session = self.state.uncommitted.session;
         if session && !provider.record_session_open() && !provider.record_session_held() {
             self.state.uncommitted.session = false;

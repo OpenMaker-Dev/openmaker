@@ -133,6 +133,115 @@ error 3 ([#372](https://github.com/OpenMaker-Dev/openmaker/issues/372)). The ste
 a-f in upper case ([#371](https://github.com/OpenMaker-Dev/openmaker/issues/371)), and pasting the step as FileMaker XML
 refuses its callback ([#370](https://github.com/OpenMaker-Dev/openmaker/issues/370)).
 
+Send Mail (63) through the email client, with dialog, opens a new message
+in the system's mail client on the desktop: a `mailto:` URL (RFC 6068,
+`om_url::mailto`) with the To, CC, BCC, subject and message the step's
+calculations give in the current record, for the user to look over and
+send. The URL goes to the application the system registers for
+`mailto:`, never to a web browser: on Linux the default handler of
+`x-scheme-handler/mailto` (`xdg-mime`), launched from its desktop entry's
+command (not through `xdg-open`, which exits 0 when the handler fails and
+falls back to a browser when none is registered); on macOS `open`. The
+step waits up to 10 seconds for the client's exit: zero is the message
+taken, non-zero a refusal, and a client that has not exited by then is
+unconfirmed, also 3. That client is left running, so its compose window
+may still appear after the step returned 3: a client launched fresh keeps
+running while the message is written, and only one already running
+answers within the wait. On Windows
+the step is 3 for now
+([#609](https://github.com/OpenMaker-Dev/openmaker/issues/609)): its
+`url.dll` launcher reports no failure.
+Address lists split at returns, semicolons and commas outside a quoted
+local part (`"Sales, West"@example.org` stays one address). FileMaker Pro
+hands the message to the email client too; a URL is OpenMaker's means,
+which cannot carry the rest, so through the email client these fail with
+3: no dialog (sending unseen), and a URL longer than 32,000 characters
+(OpenMaker's limit), no registered mail client, and a client that refuses
+the message or cannot be started.
+
+Send Mail by SMTP sends the message itself, on the desktop and on
+OpenMaker Server (`om_url::send_smtp`), with the step's SMTP options
+(script-steps.md 12.3): the sender's name and address, Reply-To, the
+server and port, Encryption (none; SSL, TLS from the start; TLS,
+STARTTLS) and Authentication (none; plain password, AUTH PLAIN or else
+LOGIN; CRAM-MD5), the calculations evaluated in the current record. An
+empty port is 25: Claris documents 25 as the
+[SMTP Options](https://help.claris.com/en/pro-help/content/smtp-options.html)
+dialog's default, and that an empty calculated port means it is
+OpenMaker's reading. A stored option calculation that does not decode is
+3. TLS checks the server's certificate against the webpki roots, as
+Insert from URL does. For a certificate it cannot verify, Claris
+documents ([Send Mail](https://help.claris.com/en/pro-help/content/send-mail.html))
+that FileMaker Pro offers to connect anyway or cancel, that with error
+capture on the step behaves as if the server were unavailable, and that
+a server-side script behaves as if the user cancelled. OpenMaker offers
+no choice: the desktop answers as with error capture on, 1502 (which
+code FileMaker gives is unmeasured), and OpenMaker Server 1. With
+Encryption none a plain password goes in clear, as the step says.
+
+Esc, Cmd-. and a closing window end the session on the desktop (1), and
+the script's time limit and abort on the server. Either shuts the
+connection where it is, during the message's body too, unless the
+message's final `.` is already sent. From then on the server's answer to
+it is the step's result, and the step waits up to ten minutes for it, RFC
+5321's timeout for that reply, as a shorter wait could report a message
+the server took as unsent and a retry send it twice. No answer by then,
+or a closed connection, is 1506 with the message possibly sent. A
+deadline already passed when the `.` would be committed withholds it; one
+passing after the commit, even before the `.` is written, does not. On
+OpenMaker Server a script that ends past its time limit reports 1 unless
+an earlier error stands, as any script that runs past it does, also when
+its last step was a Send Mail the server took. The result is given before
+QUIT's reply. Connecting, each other reply, each
+write and the TLS handshake have a minute each, every socket read and
+write within it. The system resolver has no limit of its own here, so a
+lookup that does not answer holds its session until the resolver gives
+up.
+
+The message is plain text in UTF-8. A non-ASCII name or subject becomes
+RFC 2047 encoded words of at most 76 characters a line, and the body is
+base64 unless it is ASCII without NUL in short lines. BCC addresses go in
+the envelope only. One recipient the server refuses stops the message
+for all before DATA (FileMaker's behavior is unmeasured). Addresses must
+be RFC 5321 mailboxes in ASCII (an address literal an IPv4 or IPv6
+address). The client names itself to the server by its address
+(`EHLO [address]`), not by the computer's name. The server's replies are
+parsed strictly (one code per reply, CRLF lines without CR or NUL inside),
+and a reply already received before the command it would answer is
+refused, the message's final `.` withheld for it; one still in transit
+then cannot be told from the answer. Its reply to a login is reported by
+its code only, since a server may echo what it was sent.
+
+The codes are FileMaker's SMTP codes matched by their names, OpenMaker's
+reading ([#89](https://github.com/OpenMaker-Dev/openmaker/issues/89)):
+- 1501: the server refused the user name or password (535).
+- 1502: no connection, the greeting refused one, or (desktop) a
+  certificate TLS cannot verify.
+- 1503: TLS failed, or the server offers no STARTTLS for TLS.
+- 1504: the server asks for encryption first: 538, or a 530 that names
+  TLS or encryption. A plain connection whose server lists STARTTLS and
+  no usable AUTH is read as one too [I].
+- 1505: none of the mechanisms the step's authentication can use is
+  offered, or the server finds it too weak (534).
+- 1507: another login failure, or a login the server wants (530) and the
+  step does not make.
+- 1506: the server refused the sender, a recipient or the message, did
+  not answer in time, or ended the session; also a message whose end was
+  sent and never confirmed, which may have been sent.
+How FileMaker composes its message, and which code it gives for which
+reply, were not compared.
+
+Either way these fail with 3
+([#89](https://github.com/OpenMaker-Dev/openmaker/issues/89)):
+- OAuth;
+- attachments;
+- one email per record;
+- addresses collected across a found set of more than one record;
+- an address with characters beyond ASCII (no SMTPUTF8);
+- a stored option or attachment list OpenMaker cannot read;
+- an address whose quote does not end.
+On OpenMaker Server the email client is 3, as a server has none.
+
 The desktop host answers the Get selectors, layout-object attributes
 and Design functions for other files as FileMaker Pro 26.0.3 does
 (calc-functions.md 6.3, measured on local files in the isolated capture
@@ -142,6 +251,22 @@ requests, sort and open state, `ModifiedFields`, and layout objects in
 screen points at every zoom and toolbar state. Battery `s33` settled the
 server's focus, `ModifiedFields`, `RequestCount` and extended privilege
 answers.
+
+Go to Related Record's "Table by Calculation" (FileMaker Pro 26.1: step
+flag `0x400` with the occurrence's name in calculation slot 8,
+script-steps.md 12.4) goes to the occurrence that name gives, found as
+calculations find one, then as the step does with a stored occurrence; a
+name no occurrence of the file has is 106. The step text shows the
+calculation in place of a quoted occurrence name. The 106, the text and the
+layout choices kept as they are stored for other steps are OpenMaker's,
+since no step FileMaker Pro 26.1.1 wrote has been read
+([#352](https://github.com/OpenMaker-Dev/openmaker/issues/352)). The Script
+Workspace's options do not offer the choice yet, and keep a stored one as it
+is, with no table picker. As for every Go to Related Record step, OpenMaker
+Server shows the records on the stored layout or the related table's first
+([#481](https://github.com/OpenMaker-Dev/openmaker/issues/481)), and the step
+text does not show a layout chosen by calculation
+([#482](https://github.com/OpenMaker-Dev/openmaker/issues/482)).
 
 Desktop scripts have portal rows, a script's own write rules, real windows
 and OnWindowTransaction, as FileMaker Server's engine answered them
@@ -172,6 +297,17 @@ and OnWindowTransaction, as FileMaker Server's engine answered them
 - OnWindowTransaction runs after the script that committed, with
   FileMaker's JSON.
 
+Show Custom Dialog's "Close after (seconds)" (FileMaker Pro 26.1, numeric
+slot 6 and calculation slot 13, script-steps.md 12.4) closes the desktop's
+dialog by itself once the time is up, as no button: `Get ( LastMessageChoice )`
+is 0, as Claris documents, and no input is stored. A time that is not a
+positive number leaves the dialog to the user (OpenMaker's choice). No step
+FileMaker Pro 26.1.1 wrote has been read
+([#348](https://github.com/OpenMaker-Dev/openmaker/issues/348)), so the
+Boolean's byte width is unknown: the Script Workspace's options show the
+option and its seconds as stored and take no input, and pasting the step as
+FileMaker XML refuses the option, whose XML shape is not recorded.
+
 Root-file layouts backed by a readable related hosted table can edit existing
 records. Browse and Set Field write their ordinary stored text, number, date,
 time, timestamp and container fields, a container's data going to the owning
@@ -186,14 +322,21 @@ Record (Records menu, toolbar and script steps) create the record with the
 same owning engine: the owner issues the record id, enters its auto-entry
 values and stores the ordinary scalar values; the new record joins the
 caller window's found set and becomes current, as a local creation does.
-Duplicate Record of a record holding a container reference is refused before
-any effect. A script's transaction includes these layouts and commits all or
+Duplicate Record copies a container reference too: the copy's reference is
+counted in the owning file's library, as a local duplicate counts it in its
+own. A copy that fails gives its references back; one whose answer is lost
+counts as given back, so that no later transaction's revert gives it back
+again. When the owner did not apply it, or the connection was lost in
+between, the member keeps one reference too many: its data is kept longer,
+never lost. Its auto-entered values are copied as the window's duplicate copies them
+([#473](https://github.com/OpenMaker-Dev/openmaker/issues/473)). A script's transaction includes these layouts and commits all or
 none: Commit Transaction prepares every file before any record data goes, and
 a refusal in any file reverts every file's part; only a connection lost, or a
 host refusing a later file, after an earlier file's commit leaves that earlier
 file committed (record-writes.md, "A script's transaction across files").
-Delete Record inside one is refused
-([#312](https://github.com/OpenMaker-Dev/openmaker/issues/312)).
+A script's Delete Record inside one is held there too; the user's own edits
+and deletions on such a layout while the script is paused are refused
+([#411](https://github.com/OpenMaker-Dev/openmaker/issues/411)).
 Import, writes to the layout's related records in other tables, globals and
 repetitions remain refused on these layouts
 ([#43](https://github.com/OpenMaker-Dev/openmaker/issues/43)). The owning file
@@ -273,6 +416,35 @@ Server Find mode:
 - An unstored calculation with all-empty references reads empty, on the
   desktop too.
 - A find without criteria (400) returns to Browse.
+- Perform Quick Find (150) searches the window's layout by the
+  desktop's rules ([Quick Find](desktop-client.md#quick-find)), among
+  all the table's records, reading dates in the file's date order as
+  the server's other finds do. A word that a Quick Find field of another
+  occurrence would be searched for fails with 3, as a related find
+  criterion does on the server
+  ([#101](https://github.com/OpenMaker-Dev/openmaker/issues/101)). What
+  FileMaker Server does is not measured.
+- Find Matching Records (155), here and on the desktop, finds the records
+  whose field holds the current record's whole value: `=` for an empty
+  value, else `==` and the value, a text value's find operators taken
+  literally (`om_data::found::matching_criterion`), so `a*b` finds only
+  `a*b`. This request is OpenMaker's reading of Claris's description; the
+  one FileMaker builds is not captured. On the server a number is written
+  out in full with `.` (`1000000000`, not `1.0E+9`) and a time or
+  timestamp with its seconds, so the criterion is that second, not the
+  whole minute. The server's criteria compare whole seconds: a record
+  holding a fraction of a second within it is found too (`9:05:00` finds
+  `9:05:00.250`), and a value with a fraction of a second fails with 3,
+  as no criterion holds it. A number is matched by its index key, which
+  keeps 200 digits as FileMaker's does (query-program.md 7.3), so numbers
+  whose keys are equal (the same sign, count of integer digits and first
+  200 digits) match each other; whether FileMaker then compares the
+  stored values is not measured. From Find mode the
+  server switches to Browse first, as
+  Claris documents, and reads the record current when Find mode was
+  entered (inferred: FileMaker's record after Find mode is not measured).
+  A field of another occurrence, a global and a summary field fail with 3
+  on the server.
 - Globals read their value with no current record, and sessions start
   from the file's stored globals.
 - A criterion longer than 10,000 characters cannot be read (3), on the
@@ -322,7 +494,13 @@ dBase, and for imports Excel 97-2004 `.xls` too.
   field's repetitions or related values in FMPXMLRESULT (an empty `DATA`,
   so the values after it keep their places).
 - Imports cover every action, mapping by position or name, field names
-  rows, and auto-enter and validation through `om_data::rules`.
+  rows, and auto-enter and validation through `om_data::rules`. A row
+  whose rule OpenMaker does not support checking (a value list it cannot
+  key, #571) ends the import with 3 rather than being skipped (729):
+  OpenMaker Server then imports none of its rows; the desktop keeps the
+  rows it committed before it (outside a transaction, where each row is
+  committed as it is imported). A row's other errors, 3 among them (a
+  record changed meanwhile, a lookup it cannot read), skip that row.
 - Stored specs decode and re-encode byte for byte.
 - On FileMaker Server: export probes match byte for byte, except
   Shift-JIS, Big-5 and EUC-KR and `.xlsx` time cells; 49 of 51 import
@@ -435,17 +613,36 @@ Open items:
     field without them: no file read so far stores either, so their
     storage is unknown.
   - OpenMaker Server answers `GetAddonInfo`, `GetSensor`,
-    `GetAVPlayerAttribute` and `Furigana` as FileMaker Server's script
-    engine answered one call of each (calc-functions.md, s45): the add-on
-    interface's version for `"x"` (error 3 for empty text), error 1208 for
-    `"battery"`, empty for `"playbackState"`, and `"abc"` unchanged, the
-    engine's answer without its reading dictionary. Other arguments get
-    the same answers, OpenMaker's fallback [I]; Furigana's option is
-    ignored. The desktop still answers them with error 1225: FileMaker
+    `GetAVPlayerAttribute`, `Furigana`, `Location`, `LocationValues` and
+    `RangeBeacons` as FileMaker Server's script engine answered them
+    (calc-functions.md, s45 and s48): the add-on interface's version for
+    any add-on name (error 3 for empty text); empty for a sensor the
+    engine lists, whatever its case and options, and error 1208 for any
+    other name; empty for any player attribute; Furigana's text unchanged
+    whatever its option, the engine's answer without its reading
+    dictionary; error 1208 for the three location functions, which
+    `Evaluate` text fails to compile, also where the call is in a branch
+    never taken: every name table OpenMaker Server compiles text against
+    withholds them (a step's, a sort's read, ExecuteSQL, value lists and
+    privilege formulas; `om_data::host::device::withhold_server_lacks`).
+    A file the desktop opens locally, served by the same engine
+    (`LocalHost`), keeps them in its privilege formulas and stored
+    recalculation, as FileMaker Pro has them.
+    Arguments not run get the same answers [I].
+  - The desktop answers `Location` and `LocationValues` empty, as Claris
+    documents FileMaker Pro, and `GetSensor` as the server's engine does
+    [I] (`om_data::host::device`). `GetAddonInfo`, `GetAVPlayerAttribute`,
+    `Furigana` and `RangeBeacons` still answer error 1225 there: FileMaker
     Pro's answers are unmeasured ([#79](https://github.com/OpenMaker-Dev/openmaker/issues/79)).
-  - Also open: AI (`GetEmbedding`, `GetTokenCount`), the mobile functions
-    (`Location`, `LocationValues`, `RangeBeacons`) through each host, and
-    the TextEncode transliteration table.
+  - On OpenMaker Server an unstored calculation read outside a step's own
+    evaluation (a sort's, say) answers these functions as the step does.
+  - Record rules (auto-entry, validation, stored recalculation and record
+    privilege formulas) still refuse a formula that calls `Location`,
+    `LocationValues` or `RangeBeacons` while they are planned, on either
+    side, as they refuse plug-in functions; a write that needs one is
+    refused. `GetSensor` answers there as above.
+  - Also open: AI (`GetEmbedding`, `GetTokenCount`) and the TextEncode
+    transliteration table.
 - Import and export:
   - Shift-JIS, Big-5 and EUC-KR differ for some letters, and `.xlsx`
     times match to about 15 digits.
@@ -523,6 +720,35 @@ Open items:
   8.4), where FileMaker would have written. Names given to Set Field By
   Name and Replace Field Contents by Name match without regard to case,
   as on the server.
+- In server scripts Print Setup with neither Restore nor its dialog sets
+  nothing and gives 0, as on the desktop. A restored setup gives 3, since
+  it would configure PDF output OpenMaker Server cannot make yet: Save
+  Records as PDF and Print are 3 there, as the report builder is part of
+  the desktop client
+  ([#104](https://github.com/OpenMaker-Dev/openmaker/issues/104)). With
+  its dialog on, Print Setup gives 3 as well, since a server shows no
+  dialog. FileMaker Server's answer is unmeasured in every one of these
+  cases, the 0 included, and so is how long a restored setup lasts there.
+- Sort Records and Sort Records by Field in server scripts refuse with 3
+  a sort by a self join's field: another occurrence of the layout's table
+  that a relationship leads to. FileMaker sorts it by its first related
+  record's value (inferred from Claris and calc-values.md 12.1), and the
+  summaries a sorted found set feeds would have to follow
+  ([#610](https://github.com/OpenMaker-Dev/openmaker/issues/610)). Before,
+  it sorted by the record's own value. Sort Records [Restore] run again
+  on another layout is checked against that layout's occurrence, so a
+  stored sort can be refused there. A found set's sort carried to another
+  layout is not run again: its order stays, and summaries read its fields
+  from the record itself, as do relationship sorts, on both hosts (#610).
+  A sort entry the layout cannot reach fails the whole sort with 103 once
+  a record's key is read; on an empty found set no key is read and the
+  order is kept, as before
+  ([#628](https://github.com/OpenMaker-Dev/openmaker/issues/628)). Sorts
+  nested more than 16 deep inside one another, through related sort
+  fields whose relationships sort by related fields, a finite chain as
+  well as a loop, stop with 3. That ends a looping relationship sort,
+  which overflowed the server's stack before. The bound is OpenMaker's;
+  FileMaker's handling of a loop is unmeasured.
 - Scripts: desktop steps still missing include the account steps
   ([#83](https://github.com/OpenMaker-Dev/openmaker/issues/83)) and the PDF
   steps other than Save Records as PDF
@@ -539,8 +765,10 @@ Open items:
     ([#41](https://github.com/OpenMaker-Dev/openmaker/issues/41)).
   - A running summary or
   fraction on a record outside the found set reads empty (unconfirmed);
-  related-field criteria in server scripts; sorts by
-  a value list's second field or a calculated or external list; desktop
+  related-field criteria in server scripts; sorts by a value list of
+  related values only, by one whose second field is in another table, or
+  by a calculated or external list (a list sorted by its second field
+  orders by it); desktop
   transactions validate at Commit Transaction (FileMaker Pro's timing
   unknown); Insert from URL
   verifies certificates even when a script turns that off (deliberate),
@@ -573,10 +801,16 @@ Open items:
     can set a new password
     ([#248](https://github.com/OpenMaker-Dev/openmaker/issues/248)), and
     Enable Account gives 3 for OAuth and Claris ID accounts and rather
-    than make a [Full Access] account inactive. None of
-    them rewrites an account whose stored checksum OpenMaker does not
-    reproduce (3). Add Account, Delete Account and Re-Login fail with
-    error 3 ([#83](https://github.com/OpenMaker-Dev/openmaker/issues/83)).
+    than make a [Full Access] account inactive. Delete Account removes an
+    account and its entries in the account catalog's index; it gives 3
+    for [Guest] and for [Full Access], OAuth and Claris ID accounts. The
+    steps that rewrite an account (all but Delete Account) leave alone one
+    whose stored checksum OpenMaker does not reproduce (3). Add Account and Re-Login fail with error 3
+    ([#83](https://github.com/OpenMaker-Dev/openmaker/issues/83)).
+    The Script Workspace reads Expire password and Deactivate from the
+    step value. Older OpenMaker steps that stored the option only in flag
+    `0x100` keep their stored bytes and show Off or Activate. Set the option
+    again to store the intended choice ([#525](https://github.com/OpenMaker-Dev/openmaker/issues/525)).
   - The recompute after a schema change reads container inputs from the
     table's library, computes repeating calculations in each repetition,
     and answers Design functions as FileMaker Server's file context does
@@ -595,9 +829,13 @@ Open items:
     an empty node (scripts.md, "Saving scripts to a host").
   - External container storage is not read (containers.md 8).
   - Unique and existing-value rules need a text field with a value index
-    in English, System, Unicode standard or Unicode raw, value-list rules
-    one in English. Lists from another file, a calculation, related values or
-    a second field still make the table read-only.
+    in English, System, Unicode standard, Unicode raw, the file's own
+    language (0) when it is one of those and its locale record can be
+    read, or a language FileMaker leaves untailored (record-writes.md).
+    Field-backed value-list rules check their source in the same forms;
+    a text source in a tailored language refuses the check with 3
+    ([#571](https://github.com/OpenMaker-Dev/openmaker/issues/571)). Lists from another file, a calculation, related
+    values or a second field still make the table read-only.
   - OpenMaker's own choices, not settled by the oracle: numeric forms
     beyond those tested, value-list dividers, ranges on text and date
     fields, and the year position for non-US date orders.
@@ -613,6 +851,69 @@ Open items:
   ORDER BY with FETCH or OFFSET is inferred (execute-sql.md implementation
   notes). The memory budget makes a huge unfiltered product fail with
   error 2 where FileMaker would finish it.
+
+## Script Debugger
+
+`om-scripts`'s runtime has the Script Debugger's control of the run loop
+(`runtime/debug.rs`; FileMaker's behavior is in script-runtime.md 6.4).
+The desktop's Tools > Script Debugger, Debugging Controls and Data Viewer,
+and the Script Workspace's Debug button, are still disabled
+([#74](https://github.com/OpenMaker-Dev/openmaker/issues/74)). No window
+uses it yet.
+
+- `Runtime::start_debugging` opens the debugger, `stop_debugging` closes
+  it. A stopped script then runs to its end, and script triggers are
+  enabled again. A Pause/Resume Script pause stays, as without the
+  debugger.
+- While it is open, `Runtime::run` returns `RunState::Debugger` before a
+  step at which it stops:
+  - the first step of a script started while no script runs (scripts
+    queued to run after the current ones do not count as running, and a
+    trigger on top of a script waiting for its first step is no new
+    script);
+  - a step with a breakpoint (flag `0x100000`);
+  - the next step after a finished Step Over, Step Into or Step Out;
+  - with `set_pause_on_error`, the next step after a step whose error is
+    stored or reported, a failed Commit Transaction included, or the
+    script's end when that step was its last.
+- `Runtime::debug` continues with Run, Step Over, Step Into or Step Out,
+  from a stop or from a Pause/Resume Script pause in a script it shows.
+  It does not stop again at the step it continued from, so Run from a
+  breakpoint passes it.
+- A stop belongs to its script and step. A trigger that runs on top of it
+  follows the same rules, and its own stops and commands leave the lower
+  stop, which holds again when its script is back on top there. A stop
+  whose script ended (Halt, or another script started with Exit) is
+  forgotten, so no other script takes it over.
+- A failed step's error belongs to the script whose step it was, also
+  when a trigger let the step run, or the debugger opened while it was
+  waiting. It stops that script, not one that runs on top first.
+- `Runtime::set_next_step` moves the current script's pointer while
+  stopped. It is refused while a script transaction is open, since a jump
+  could pass its Commit Transaction or reach another one. `Runtime::halt`
+  is Halt Script. `Runtime::debug_stack` is the Call Stack: each running
+  script's name and step, the innermost last.
+- The debugger stops only in a script the host lets it show
+  (`ScriptHost::script_debuggable`, none by default). Another script runs
+  whole, its errors do not pause, and the Call Stack lists it by name
+  without a step. This is how FileMaker treats an Executable Only script.
+  A button's single step never stops or pauses on its error.
+
+Choices not compared with FileMaker (script-runtime.md U17):
+- the stop before a new script's first step;
+- that disabled steps and comments are never stopped at;
+- that Pause on error stops after a step's alert, with error capture on
+  or off, and at the end after a failed last step;
+- that a trigger script fired by a step counts as a sub-script for Step
+  Over and Step Out;
+- that the Call Stack lists an Executable Only script's name;
+- what Set Next Step does across a block's boundaries (If, Loop), where
+  OpenMaker follows the cached jump indexes as for any step; and that it
+  is refused in a transaction;
+- that closing the debugger leaves a Pause/Resume Script pause waiting.
+
+The desktop host and OpenMaker Server close a debugger the runtime has
+open: neither opens one yet.
 
 ## Calculation limits
 

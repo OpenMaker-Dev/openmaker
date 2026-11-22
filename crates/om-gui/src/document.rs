@@ -24,6 +24,7 @@ use crate::{
 
 mod calendar;
 mod container;
+pub(crate) use container::is_media;
 pub use container::PdfViewer;
 pub(crate) mod data_format;
 mod drop_down;
@@ -224,6 +225,10 @@ pub(crate) struct DocumentState {
     /// occurrence, `(id, table, cells)`. Calculations see them, and begun
     /// records show as rows.
     pub related_drafts: RelatedDrafts,
+    /// The current record's later repetitions a script set and no commit
+    /// has kept: its base table, id and those cells (`related_drafts` shows
+    /// them too, under the user's typing). Their editors open with them.
+    pub scripted: Option<(u64, u64, crate::scripting::Cells)>,
     pub begun_rows: BegunRows,
     /// The field of the current record that has the focus, as of the last
     /// frame, and what this frame saw (object triggers).
@@ -364,6 +369,36 @@ pub(crate) struct ContainerSelection {
     /// A related container's portal row (`field` is then
     /// `Occurrence::Field`): the Insert menu fills that row's record.
     pub row: Option<ContainerRow>,
+}
+
+impl ContainerSelection {
+    /// Whether its field object lets the user change the field in Browse
+    /// mode: "Field entry behavior" Edit. View Only and Select Only
+    /// prevent edits through the object (Claris Help, "Allowing or
+    /// preventing entry into fields"), so the Insert menu does not fill it.
+    pub(crate) fn allows_entry(&self, session: &Session) -> bool {
+        let crate::session::RenderState::Loaded(render) = &session.render else {
+            return false;
+        };
+        render
+            .layout
+            .objects
+            .get(self.object)
+            .and_then(|object| object.field_obj.as_ref())
+            .is_some_and(|field| field.field_entry(false) == om_layout::FieldEntry::Edit)
+    }
+
+    pub(crate) fn is_interactive(&self, session: &Session) -> bool {
+        let crate::session::RenderState::Loaded(render) = &session.render else {
+            return false;
+        };
+        self.row.is_none()
+            && render
+                .layout
+                .objects
+                .get(self.object)
+                .is_some_and(container::is_interactive)
+    }
 }
 
 /// The portal row of a selected related container: of portal `portal`
@@ -609,14 +644,54 @@ struct RelatedBuffer {
     occurrence: u64,
     version: Option<u64>,
     buffer: FieldBuffer,
+    /// What a script left in the cell, uncommitted, as the edit began or
+    /// last took it (`DocumentState::scripted_value`). The editor opens
+    /// with it, and the user's edit is a change against it, not against
+    /// the stored value: clearing the box back to the stored value
+    /// replaces the script's too.
+    scripted: Option<String>,
 }
 
 impl RelatedBuffer {
-    /// The record was read again: an unchanged edit takes its value and
-    /// version; a changed one keeps the version it began from.
-    fn refresh(&mut self, target: &crate::calc::RelatedRecord) {
-        self.buffer.refresh(&target.stored);
-        if self.buffer.value == self.buffer.original {
+    fn new(occurrence: u64, version: Option<u64>, stored: &str, scripted: Option<String>) -> Self {
+        let mut buffer = FieldBuffer::new(stored);
+        if let Some(value) = &scripted {
+            buffer.value.clone_from(value);
+        }
+        Self {
+            occurrence,
+            version,
+            buffer,
+            scripted,
+        }
+    }
+
+    /// Whether the user changed a stored record's value: from the script's,
+    /// if one is left, else from the stored one.
+    fn changed(&self) -> bool {
+        self.buffer.value != *self.scripted.as_ref().unwrap_or(&self.buffer.original)
+    }
+
+    /// The record was read again: an unchanged edit takes its value (the
+    /// script's, if one is left) and version; a changed one keeps the
+    /// version it began from.
+    fn refresh(&mut self, target: &crate::calc::RelatedRecord, scripted: Option<String>) {
+        if self.changed() {
+            // An override of a scripted draft can equal the stored text.
+            // Keep its edit and the original text/version together.
+            if self.scripted.is_none() {
+                self.buffer.refresh(&target.stored);
+                if self.buffer.value == self.buffer.original {
+                    self.version = target.version;
+                }
+            }
+        } else {
+            self.buffer.value.clone_from(&self.buffer.original);
+            self.buffer.refresh(&target.stored);
+            if let Some(value) = &scripted {
+                self.buffer.value.clone_from(value);
+            }
+            self.scripted = scripted;
             self.version = target.version;
         }
     }
@@ -886,8 +961,10 @@ impl DocumentState {
     }
 
     /// Keep field-editing commands in the field. Revert also takes the
-    /// active field so its script step can run the discard triggers.
-    /// Other menu commands surrender focus and wait for the exit triggers.
+    /// active field so its script step can run the discard triggers, and
+    /// Relookup Field Contents as its target (Claris's help: select the
+    /// match field, then choose the command). Other menu commands
+    /// surrender focus and wait for the exit triggers.
     pub(crate) fn menu_leaves_field(&mut self, ui: &Ui, chosen: &mut Vec<Action>) {
         if chosen.is_empty() {
             return;
@@ -915,7 +992,8 @@ impl DocumentState {
                                 | steps::INSERT_CURRENT_USER_NAME
                                 | steps::INSERT_FROM_INDEX
                                 | steps::INSERT_FROM_LAST_VISITED
-                                | om_data::scripts::revert_record::STEP_ID,
+                                | om_data::scripts::revert_record::STEP_ID
+                                | om_data::scripts::relookup::STEP_ID,
                             _
                         )
                 ))
@@ -954,9 +1032,15 @@ impl DocumentState {
                     Action::RevertRecord
                         | Action::CloseFile
                         | Action::DismissAlert
+                        | Action::DismissHostMessage
+                        | Action::CloseDisconnectedFile(_)
                         | Action::DiscardEntryCandidates
                 ) {
                     cancellation.push(action);
+                } else if matches!(action, Action::Step(om_data::scripts::relookup::STEP_ID, _)) {
+                    // Relookup acts on the field entered when it was
+                    // chosen, and the record had something to commit: not
+                    // held for later, when the focus may have moved.
                 } else {
                     retained.push(action);
                 }
@@ -1832,6 +1916,18 @@ impl DocumentState {
         }
     }
 
+    /// What a script left uncommitted in `field`, a later repetition of
+    /// the current record (`scripted`): "" for one it cleared.
+    fn scripted_value(&self, field: &RelatedField) -> Option<String> {
+        let (table, record, cells) = self.scripted.as_ref()?;
+        if field.table != *table || field.row != RelatedRow::Record(*record) {
+            return None;
+        }
+        cells
+            .get(&field.field)
+            .map(|value| value.clone().unwrap_or_default())
+    }
+
     /// Whether `field` of any record has an unsaved draft.
     pub fn edited(&self, field: &str) -> bool {
         self.buffers
@@ -1852,7 +1948,7 @@ impl DocumentState {
         self.related
             .get(&focus.field)
             .is_some_and(|edit| match focus.field.row {
-                RelatedRow::Record(_) => edit.buffer.value != edit.buffer.original,
+                RelatedRow::Record(_) => edit.changed(),
                 RelatedRow::New { .. } => edit.buffer.ui_edited,
             })
     }
@@ -2326,7 +2422,7 @@ impl DocumentState {
                 key.layout == layout
                     && key.parent == parent
                     && match key.row {
-                        RelatedRow::Record(_) => edit.buffer.value != edit.buffer.original,
+                        RelatedRow::Record(_) => edit.changed(),
                         RelatedRow::New { .. } => edit.buffer.ui_edited,
                     }
             })
@@ -2345,10 +2441,7 @@ impl DocumentState {
     pub fn all_related_edits(&self) -> Vec<RelatedEdit> {
         self.related
             .iter()
-            .filter(|(key, edit)| {
-                matches!(key.row, RelatedRow::Record(_))
-                    && edit.buffer.value != edit.buffer.original
-            })
+            .filter(|(key, edit)| matches!(key.row, RelatedRow::Record(_)) && edit.changed())
             .map(|(key, edit)| RelatedEdit {
                 field: *key,
                 occurrence: edit.occurrence,
@@ -2370,11 +2463,10 @@ impl DocumentState {
         original: &str,
         value: &str,
     ) {
-        let edit = self.related.entry(field).or_insert_with(|| RelatedBuffer {
-            occurrence,
-            version,
-            buffer: FieldBuffer::new(original),
-        });
+        let edit = self
+            .related
+            .entry(field)
+            .or_insert_with(|| RelatedBuffer::new(occurrence, version, original, None));
         edit.buffer.value = value.into();
         edit.buffer.ui_edited = true;
     }
@@ -2386,7 +2478,7 @@ impl DocumentState {
         self.related.iter().any(|(key, edit)| {
             key.layout == layout
                 && match key.row {
-                    RelatedRow::Record(_) => edit.buffer.value != edit.buffer.original,
+                    RelatedRow::Record(_) => edit.changed(),
                     RelatedRow::New { .. } => edit.buffer.ui_edited,
                 }
         })
@@ -2574,14 +2666,38 @@ impl DocumentState {
             state.store(ui.ctx(), id);
         }
         let pending = self.pending;
+        // Zoomed, the cell's text is rasterized at the zoom, as the layout's
+        // own text is; at 100% it is egui's single-line text as it lays it
+        // out itself.
+        let font = egui::TextStyle::Body.resolve(ui.style());
+        let line_height =
+            ui.fonts_mut(|fonts| fonts.row_height(&font)) + ui.spacing().extra_text_line_spacing;
+        let mut layouter = |ui: &Ui, text: &dyn egui::TextBuffer, _wrap_width: f32| {
+            let mut job = egui::text::LayoutJob::simple_singleline(
+                text.as_str().to_owned(),
+                font.clone(),
+                theme::TEXT,
+            );
+            job.keep_trailing_whitespace = true;
+            for section in &mut job.sections {
+                section.format.line_height = Some(line_height);
+            }
+            layer_galley(ui, job)
+        };
+        let zoomed = layer_scale(ui) != 1.0;
         let (response, changed) =
             guarded_editor(ui, id, &mut edit.value, refusal, actions, |ui, buffer| {
+                let editor = egui::TextEdit::singleline(buffer)
+                    .id(id)
+                    .interactive(!pending)
+                    .text_color(theme::TEXT);
                 ui.add_sized(
                     vec2(width, ui.spacing().interact_size.y),
-                    egui::TextEdit::singleline(buffer)
-                        .id(id)
-                        .interactive(!pending)
-                        .text_color(theme::TEXT),
+                    if zoomed {
+                        editor.font(font.clone()).layouter(&mut layouter)
+                    } else {
+                        editor
+                    },
                 )
             });
         response.widget_info(|| {
@@ -3171,7 +3287,23 @@ fn show_document(
     }
     show_other_dialog(ui, session, state);
     if view == ViewMode::List {
-        show_list(ui, session, document, state, calc, actions);
+        // Zoomed as Form view is: its parts and records in the document's
+        // zoom layer, in the layout's own coordinates.
+        let factor = state.zoom.factor();
+        zoom::show(ui, ui.available_size() / factor, factor, |ui| {
+            // The canvas behind the rows, in their layer (the window's own
+            // canvas is under it): a click there that no row or field
+            // takes commits the record, as in Form view.
+            let background = ui.interact(
+                ui.max_rect(),
+                ui.scope_id().with("list_canvas"),
+                Sense::click(),
+            );
+            show_list(ui, session, document, state, calc, actions);
+            if background.clicked() && !state.pending && !state.changes(session).is_empty() {
+                actions.push(Action::CommitRecord);
+            }
+        });
         return;
     }
     let layout = &document.layout;
@@ -3530,10 +3662,15 @@ fn show_list(
         ("layout_list", layout.id),
         Some(selected_top..=selected_top + rows.height(selected)),
     );
+    // The rows take what the footer leaves, however little: egui's least
+    // scrolled height (64 points) would push a footer out of view when
+    // zoomed in.
+    let rows_height = (ui.available_height() - footer_height).max(0.0);
     let mut scroll = egui::ScrollArea::both()
         .id_salt(("layout_list", layout.id))
         .auto_shrink([false, false])
-        .max_height((ui.available_height() - footer_height).max(0.0));
+        .max_height(rows_height)
+        .min_scrolled_height(rows_height);
     if let Some(offset) = state.list_scroll(session, selected_top, ui) {
         scroll = scroll.vertical_scroll_offset(offset);
     }
@@ -5194,8 +5331,27 @@ fn paint_object_repetition(
         ObjectKind::Field => {
             let (mut value, mut rich_value, data) =
                 field_content(session, document, calc, object, record_index, portal);
-            let targeted_value =
-                portal.is_none() && calc.is_some_and(|calc| calc.refreshed_value(object.id));
+            // The value the editor begins from: a Refresh Object's, or a
+            // global's, the session's value, as calculations read it, not
+            // the one the record's page holds.
+            let targeted_value = portal.is_none()
+                && calc.is_some_and(|calc| {
+                    calc.refreshed_value(object.id)
+                        || object.field_spec().is_some_and(|spec| calc.is_global(spec))
+                });
+            // A global whose session value is being read again (a script
+            // set it) shows the value from before: its editor takes no
+            // typing until the value is in, so that no edit begins from the
+            // old one. An edit begun before keeps its draft
+            // (`FieldBuffer::refresh_targeted`).
+            let global_pending = portal.is_none()
+                && calc.zip(object.field_spec()).is_some_and(|(calc, spec)| {
+                    calc.is_global(spec)
+                        && session
+                            .record_at(record_index)
+                            .and_then(|(_, record)| u64::try_from(record.id).ok())
+                            .is_some_and(|record| calc.value_pending(object.id, spec, record, None))
+                });
             // A container's draft is a library reference, never shown: the
             // calculations read its file name through the drafts.
             let container =
@@ -5754,7 +5910,7 @@ fn paint_object_repetition(
                     let editor = ui.scope_id().with((layout.id, object.id, record.id));
                     return_goes_on(ui, &mut state.tab_held, object, editor);
                     let cache = &state.layout_cache;
-                    let interactive = !state.pending;
+                    let interactive = !state.pending && !global_pending;
                     let (response, changed) =
                         guarded_editor(ui, editor, buffer, refusal, actions, |ui, buffer| {
                             field_editor(
@@ -6155,8 +6311,9 @@ fn paint_related_option_set(
     let read = !pop_up || set.labels || egui::Popup::is_id_open(ui.ctx(), popup::menu_id(id));
     let refusal = related_refusal(state, &set, target, read);
     let editable = refusal.is_none();
+    let scripted = state.scripted_value(&field);
     if let (Some(edit), RelatedRow::Record(_)) = (state.related.get_mut(&field), field.row) {
-        edit.refresh(target);
+        edit.refresh(target, scripted);
     }
     let value = state
         .related
@@ -6258,6 +6415,30 @@ fn paint_related_option_set(
     if enabled && response.clicked() && response.interact_pointer_pos().is_some() {
         response.request_focus();
     }
+    // A stale row's pop-up click waits for the same related record,
+    // as a click on a related edit box does (#1099).
+    if pop_up {
+        if state.painting_stale && response.clicked() {
+            state.field_click = Some(FieldClickWait {
+                field,
+                object: object.id,
+                seen: true,
+            });
+        }
+        if let Some(wait) = state
+            .field_click
+            .as_mut()
+            .filter(|wait| wait.object == object.id && wait.field == field)
+        {
+            wait.seen = true;
+            if enabled {
+                state.field_click = None;
+                response.request_focus();
+                egui::Popup::open_id(ui.ctx(), popup::menu_id(id));
+                ui.ctx().request_repaint();
+            }
+        }
+    }
     // It keeps Tab from egui, as the record's own sets do (#859).
     if current && editable && response.has_focus() {
         let keys = egui::EventFilter {
@@ -6271,6 +6452,8 @@ fn paint_related_option_set(
     let Some(input) = shown.input.filter(|_| enabled) else {
         return;
     };
+    // Any newer interaction with a ready control supersedes the waiting click.
+    state.field_click = None;
     let chosen = match input {
         options::Input::Open => {
             response.request_focus();
@@ -6323,10 +6506,9 @@ fn paint_related_option_set(
         }
     };
     if let Some(chosen) = chosen {
-        let edit = state.related.entry(field).or_insert_with(|| RelatedBuffer {
-            occurrence: target.occurrence,
-            version: target.version,
-            buffer: FieldBuffer::new(&target.stored),
+        let scripted = state.scripted_value(&field);
+        let edit = state.related.entry(field).or_insert_with(|| {
+            RelatedBuffer::new(target.occurrence, target.version, &target.stored, scripted)
         });
         edit.buffer.value = chosen;
         edit.buffer.ui_edited = true;
@@ -6394,8 +6576,9 @@ fn related_field(
         state.related_click = None;
     }
     // A record begun in a creation row has no stored values to refresh from.
+    let scripted = state.scripted_value(&field);
     if let (Some(edit), RelatedRow::Record(_)) = (state.related.get_mut(&field), field.row) {
-        edit.refresh(target);
+        edit.refresh(target, scripted);
     }
     // A field of the current record is a Tab stop (#859); one a Tab goes
     // to takes the focus now, its insertion point after its text.
@@ -6470,51 +6653,48 @@ fn related_field(
         }
         return Some(response);
     }
+    let enabled = !state.pending && !state.clicks_held;
+    let keep = list.is_some_and(|list| drop_down::keeps_focus(ui, id, rect, list.with_arrow));
+    let open = list.is_some() && drop_down::is_open(ui, id);
+    // Entered: the list's items are read now.
+    let refusal = list.and_then(|list| related_refusal(state, list.set, target, true));
+    // A later repetition a script set opens with the script's value.
+    let scripted = state.scripted_value(&field);
+    let edit = state.related.entry(field).or_insert_with(|| {
+        RelatedBuffer::new(target.occurrence, target.version, &target.stored, scripted)
+    });
     if state.related_select == Some(id) {
         state.related_select = None;
-        let mut edit = egui::TextEdit::load_state(ui.ctx(), id).unwrap_or_default();
-        let text = state
-            .related
-            .get(&field)
-            .map_or(target.stored.as_str(), |edit| edit.buffer.value.as_str());
-        edit.cursor
-            .set_char_range(Some(egui::text::CCursorRange::select_all_str(text)));
-        edit.store(ui.ctx(), id);
+        let mut editor = egui::TextEdit::load_state(ui.ctx(), id).unwrap_or_default();
+        editor
+            .cursor
+            .set_char_range(Some(egui::text::CCursorRange::select_all_str(
+                &edit.buffer.value,
+            )));
+        editor.store(ui.ctx(), id);
     }
     // Entered by Tab: the insertion point after the text (#859), or a
     // calendar's text selected (#964).
     if state.related_entry == Some(id) {
         state.related_entry = None;
-        let text = state
-            .related
-            .get(&field)
-            .map_or(target.stored.as_str(), |edit| edit.buffer.value.as_str());
-        let mut edit = egui::TextEdit::load_state(ui.ctx(), id).unwrap_or_default();
-        edit.cursor
-            .set_char_range(Some(tab_entry_range(object, text)));
-        edit.store(ui.ctx(), id);
+        let mut editor = egui::TextEdit::load_state(ui.ctx(), id).unwrap_or_default();
+        editor
+            .cursor
+            .set_char_range(Some(tab_entry_range(object, &edit.buffer.value)));
+        editor.store(ui.ctx(), id);
         // A row the portal shows only in part comes into view.
         ui.scroll_to_rect(rect, None);
     }
     if state.related_click == Some(id) {
         state.related_click = None;
         if let Some(cursor) = state.pending_cursor.take() {
-            let mut edit = egui::TextEdit::load_state(ui.ctx(), id).unwrap_or_default();
-            edit.cursor
+            let mut editor = egui::TextEdit::load_state(ui.ctx(), id).unwrap_or_default();
+            editor
+                .cursor
                 .set_char_range(Some(egui::text::CCursorRange::one(cursor)));
-            edit.store(ui.ctx(), id);
+            editor.store(ui.ctx(), id);
         }
     }
-    let enabled = !state.pending && !state.clicks_held;
-    let keep = list.is_some_and(|list| drop_down::keeps_focus(ui, id, rect, list.with_arrow));
-    let open = list.is_some() && drop_down::is_open(ui, id);
-    // Entered: the list's items are read now.
-    let refusal = list.and_then(|list| related_refusal(state, list.set, target, true));
-    let edit = state.related.entry(field).or_insert_with(|| RelatedBuffer {
-        occurrence: target.occurrence,
-        version: target.version,
-        buffer: FieldBuffer::new(&target.stored),
-    });
     return_goes_on(ui, &mut state.tab_held, object, id);
     let response = field_editor(
         ui,
@@ -6729,7 +6909,8 @@ impl egui::TextBuffer for FieldText<'_> {
 /// The galley of a field's text in its editor: as `paint_rich_text` lays
 /// the field out at rest (its font, color, alignment, line spacing and
 /// wrapping, a carriage return breaking the line), without an uppercase
-/// transform, which could change the number of characters.
+/// transform, which could change the number of characters. Zoomed, its
+/// glyphs are rasterized at the zoom, as the field's text at rest is.
 fn field_galley(
     ui: &Ui,
     text: &str,
@@ -6738,10 +6919,19 @@ fn field_galley(
 ) -> std::sync::Arc<egui::Galley> {
     let mut style = style.clone();
     style.text_transform = None;
-    ui.fonts_mut(|fonts| {
-        let job = rich_text::layout_job(fonts, text, &style, None, wrap_width);
-        rich_text::layout_galley(fonts, job)
-    })
+    let job = ui.fonts_mut(|fonts| rich_text::layout_job(fonts, text, &style, None, wrap_width));
+    let galley = layer_galley(ui, job.clone());
+    // Rows snapped to whole pixels at a small zoom and font can land on one
+    // another, where the caret could not move between them: those lines
+    // keep their unzoomed raster.
+    if galley
+        .rows
+        .windows(2)
+        .any(|rows| rows[1].pos.y <= rows[0].pos.y)
+    {
+        return ui.fonts_mut(|fonts| rich_text::layout_galley(fonts, job));
+    }
+    galley
 }
 
 /// A field object's editor in Browse over `rect`: the field's font,
@@ -6833,26 +7023,45 @@ fn field_editor(
             hint,
         );
     }
-    child.add_sized(
-        inner.size(),
-        egui::TextEdit::singleline(buffer)
-            .id(id)
-            .event_filter(keys)
-            .frame(frame)
-            .interactive(interactive)
-            .font(FontId::new(
-                size,
-                theme::document_font(
-                    style.font_family.as_deref(),
-                    style
-                        .font_weight
-                        .is_some_and(|weight| weight == 2 || weight >= 600),
-                    matches!(style.font_style, Some(2 | 3)),
-                ),
-            ))
-            .text_color(style.color.map(color).unwrap_or(theme::TEXT))
-            .hint_text(hint),
-    )
+    let font = FontId::new(
+        size,
+        theme::document_font(
+            style.font_family.as_deref(),
+            style
+                .font_weight
+                .is_some_and(|weight| weight == 2 || weight >= 600),
+            matches!(style.font_style, Some(2 | 3)),
+        ),
+    );
+    let text_color = style.color.map(color).unwrap_or(theme::TEXT);
+    let editor = egui::TextEdit::singleline(buffer)
+        .id(id)
+        .event_filter(keys)
+        .frame(frame)
+        .interactive(interactive)
+        .font(font.clone())
+        .text_color(text_color)
+        .hint_text(hint);
+    if layer_scale(&child) == 1.0 {
+        return child.add_sized(inner.size(), editor);
+    }
+    // Zoomed, the text is rasterized at the zoom, as the field's text at
+    // rest is; otherwise egui lays it out as its own single-line editor does.
+    let line_height =
+        child.fonts_mut(|fonts| fonts.row_height(&font)) + child.spacing().extra_text_line_spacing;
+    let mut layouter = |ui: &Ui, text: &dyn egui::TextBuffer, _wrap_width: f32| {
+        let mut job = egui::text::LayoutJob::simple_singleline(
+            text.as_str().to_owned(),
+            font.clone(),
+            text_color,
+        );
+        job.keep_trailing_whitespace = true;
+        for section in &mut job.sections {
+            section.format.line_height = Some(line_height);
+        }
+        layer_galley(ui, job)
+    };
+    child.add_sized(inner.size(), editor.layouter(&mut layouter))
 }
 
 /// [`field_editor`] with `lines`: a multi-line editor of [`FieldText`],
@@ -6903,17 +7112,24 @@ fn lines_editor(
     // brings the insertion point into view itself: egui asks for that only
     // as the text or the selection changes, which happened, if at all, in
     // a frame without the scroll area.
+    // A new zoom counts as a new scroll area: the rows' heights change with
+    // their raster, the area's offset does not.
     let scrolled = id.with("lines scrolled");
     let frame_nr = ui.ctx().cumulative_frame_nr();
+    let scale = layer_scale(ui);
     let continued = ui
-        .data(|data| data.get_temp::<u64>(scrolled))
-        .is_some_and(|at| at + 1 == frame_nr);
+        .data(|data| data.get_temp::<(u64, f32)>(scrolled))
+        .is_some_and(|(at, at_scale)| at + 1 == frame_nr && at_scale == scale);
     let response = if fits {
         // As the one-line editor sits: the field's own rect.
         ui.add_sized(inner.size(), edit)
     } else {
         egui::ScrollArea::vertical()
             .id_salt(id.with("lines"))
+            // Scrolls at once, the editor's own to its insertion point too:
+            // an animation under way at a change of zoom would carry the
+            // field past the insertion point at the new one.
+            .animated(false)
             // The field's height, not egui's least scrolled height (64
             // points), which would grow the area past the field instead.
             .max_height(inner.height())
@@ -6940,7 +7156,7 @@ fn lines_editor(
             .inner
     };
     if !fits && response.has_focus() {
-        ui.data_mut(|data| data.insert_temp(scrolled, frame_nr));
+        ui.data_mut(|data| data.insert_temp(scrolled, (frame_nr, scale)));
     }
     // The editor locks its own keys while it has the focus; the document's
     // Tab stays locked from egui's traversal as on one line.
@@ -7375,11 +7591,11 @@ fn show_other_dialog(ui: &Ui, session: &Session, state: &mut DocumentState) {
                 record: u64::try_from(field.parent).unwrap_or(u64::MAX),
             };
             if let Ok(edit) = choice::other_value(&dialog.object, at, at, &text) {
-                let related = state.related.entry(field).or_insert_with(|| RelatedBuffer {
-                    occurrence,
-                    version,
-                    buffer: FieldBuffer::new(&stored),
-                });
+                let scripted = state.scripted_value(&field);
+                let related = state
+                    .related
+                    .entry(field)
+                    .or_insert_with(|| RelatedBuffer::new(occurrence, version, &stored, scripted));
                 related.buffer.value = edit.value;
                 related.buffer.ui_edited = true;
             }
@@ -7800,6 +8016,21 @@ fn to_window(ui: &Ui, rect: Rect) -> Rect {
     ui.ctx()
         .layer_transform_to_global(ui.layer_id())
         .map_or(rect, |transform| transform * rect)
+}
+
+/// The scale of the layer `ui` paints in: the window's zoom in the
+/// document's zoom layer, 1 outside it.
+pub(crate) fn layer_scale(ui: &Ui) -> f32 {
+    ui.ctx()
+        .layer_transform_to_global(ui.layer_id())
+        .map_or(1.0, |transform| transform.scaling)
+}
+
+/// `job` laid out in `ui`'s layer, its glyphs rasterized at the layer's
+/// scale so that zoomed text stays sharp (`scaled_text`).
+pub(crate) fn layer_galley(ui: &Ui, job: egui::text::LayoutJob) -> std::sync::Arc<egui::Galley> {
+    let scale = layer_scale(ui);
+    ui.fonts_mut(|fonts| scaled_text::layout_galley(fonts, job, scale))
 }
 
 /// A short caption centered in a part that shows none of its content.
@@ -8912,6 +9143,27 @@ mod visibility_tests;
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn a_refresh_preserves_an_override_cleared_to_the_stored_value() {
+        let mut edit = RelatedBuffer::new(1, Some(7), "AB", Some("ABC".into()));
+        edit.buffer.value = "AB".into();
+        let newer = crate::calc::RelatedRecord {
+            occurrence: 1,
+            table: 2,
+            record: 3,
+            field: 4,
+            cell: 4,
+            name: "Name".into(),
+            stored: "XY".into(),
+            version: Some(8),
+        };
+        edit.refresh(&newer, Some("ABC".into()));
+        assert!(edit.changed());
+        assert_eq!(edit.buffer.value, "AB");
+        assert_eq!(edit.buffer.original, "AB");
+        assert_eq!(edit.version, Some(7));
+    }
 
     #[test]
     fn clipped_calculated_icons_do_not_claim_visible_cache_slots() {
