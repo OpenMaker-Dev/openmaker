@@ -160,6 +160,16 @@ struct HeldKeysOwner {
     field: Option<String>,
 }
 
+/// The target of a field command at the time it was chosen.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub(crate) struct FieldMenuTarget {
+    owner: HeldKeysOwner,
+    object: Option<u64>,
+    related: Option<crate::document::RelatedFocus>,
+    focused: Option<egui::Id>,
+    container: Option<crate::document::ContainerSelection>,
+}
+
 /// Whether a field editor applies `event` to its text or selection: typed
 /// text, a paste or cut, an input method's text, a key pressed.
 fn edits_text(event: &egui::Event) -> bool {
@@ -170,6 +180,25 @@ fn edits_text(event: &egui::Event) -> bool {
             | egui::Event::Cut
             | egui::Event::Ime(_)
             | egui::Event::Key { pressed: true, .. }
+    )
+}
+
+#[cfg(target_os = "macos")]
+fn native_field_step(step: u16) -> bool {
+    matches!(
+        step,
+        steps::COPY_RECORD
+            | steps::EXPORT_FIELD_CONTENTS
+            | steps::INSERT_CURRENT_DATE
+            | steps::INSERT_CURRENT_TIME
+            | steps::INSERT_CURRENT_USER_NAME
+            | steps::INSERT_FROM_INDEX
+            | steps::INSERT_FROM_LAST_VISITED
+            | steps::INSERT_PICTURE
+            | steps::INSERT_AUDIO_VIDEO
+            | steps::INSERT_PDF
+            | steps::INSERT_FILE
+            | om_data::scripts::relookup::STEP_ID
     )
 }
 
@@ -519,6 +548,10 @@ pub(crate) enum Action {
     /// A command that is one script step (found-set commands, Perform
     /// Find): the step id and its flags.
     Step(u16, u32),
+    /// A menu step that can only run against the field or record it targeted.
+    FieldMenuStep(u16, u32, Box<FieldMenuTarget>),
+    #[cfg(target_os = "macos")]
+    NativeEditField(egui::Id, EditCommand),
     /// Edit > Undo, Redo, Cut, Copy, Paste, Clear or Select All in the
     /// field the user is typing in.
     EditField(EditCommand),
@@ -721,7 +754,8 @@ impl Action {
     fn works_while_held(&self) -> bool {
         matches!(
             self,
-            Action::SelectWindow(_)
+            Action::ReadScripts
+                | Action::SelectWindow(_)
                 | Action::SetView(_)
                 | Action::Minimize
                 | Action::DismissAlert
@@ -1361,6 +1395,33 @@ impl OpenMakerApp {
                 .is_none_or(|session| self.w.document.selected_container(session).is_none())
     }
 
+    fn field_menu_target(&self, ctx: &egui::Context) -> FieldMenuTarget {
+        FieldMenuTarget {
+            owner: self.held_keys_owner(),
+            object: self.w.document.active_object,
+            related: self.w.document.active_related,
+            focused: ctx.memory(|memory| memory.focused()),
+            container: self
+                .w
+                .session
+                .as_ref()
+                .and_then(|session| self.w.document.selected_container(session)),
+        }
+    }
+
+    fn held_keys_owner(&self) -> HeldKeysOwner {
+        HeldKeysOwner {
+            file: self.w.file_id,
+            mode: self.w.mode,
+            record: self
+                .w
+                .session
+                .as_ref()
+                .and_then(|session| Some((session.layout?, session.current_record()?.1.id))),
+            field: self.w.document.active.clone(),
+        }
+    }
+
     /// Returns whether this frame's pointer is on the window's own menu
     /// bar or its open menus (`menubar::show`); never with the system menu
     /// bar.
@@ -1392,11 +1453,41 @@ impl OpenMakerApp {
                     || self.w.delete_layout.is_some()
                     || self.w.delete_portal_row.is_some()
                     || self.w.document.other_dialog_open();
-                self.with_menu_context(&ctx, input, |context| {
-                    bar.record(owner, key, blocked, |menu| {
-                        menubar::menus(context, actions, menu);
-                    });
+                let target = self.field_menu_target(&ctx);
+                let editor = if key && !egui::Popup::is_any_open(&ctx) {
+                    self.current_layout_record()
+                        .and_then(|(layout, record)| self.w.document.entered_editor(layout, record))
+                        .filter(|id| target.focused == Some(*id))
+                } else {
+                    None
+                };
+                let mut chosen = Vec::new();
+                let shown_target = self.with_menu_context(&ctx, input, true, editor, |context| {
+                    bar.record(owner, key, blocked, &target, |menu| {
+                        menubar::menus(context, &mut chosen, menu);
+                    })
                 });
+                for action in chosen {
+                    match action {
+                        Action::EditField(command) => {
+                            if let Some(editor) =
+                                editor.filter(|_| shown_target.as_ref() == Some(&target))
+                            {
+                                actions.push(Action::NativeEditField(editor, command));
+                            }
+                        }
+                        Action::Step(step, flags) if native_field_step(step) => {
+                            if shown_target.as_ref() == Some(&target) {
+                                actions.push(Action::FieldMenuStep(
+                                    step,
+                                    flags,
+                                    Box::new(target.clone()),
+                                ));
+                            }
+                        }
+                        action => actions.push(action),
+                    }
+                }
             }
             if bar.has_choices() {
                 // Choices answered one a frame: the rest on the next.
@@ -1405,7 +1496,9 @@ impl OpenMakerApp {
             self.system_menu = Some(bar);
             return false;
         }
-        self.with_menu_context(&ctx, input, |context| menubar::show(ui, context, actions))
+        self.with_menu_context(&ctx, input, false, None, |context| {
+            menubar::show(ui, context, actions)
+        })
     }
 
     /// Whether the system menu bar shows the menus (macOS), so the windows
@@ -1426,6 +1519,8 @@ impl OpenMakerApp {
         &self,
         ctx: &egui::Context,
         input: bool,
+        native: bool,
+        native_editor: Option<egui::Id>,
         f: impl FnOnce(&MenuContext<'_>) -> R,
     ) -> R {
         let window_title = self.window_title();
@@ -1467,6 +1562,7 @@ impl OpenMakerApp {
             window: self.w.id,
             scripts: &self.w.scripts,
             scripts_read: self.w.scripts_read == windows::ScriptsRead::Read,
+            scripts_unread: self.w.scripts_read == windows::ScriptsRead::Unread,
             set_access: self
                 .w
                 .calcs
@@ -1518,8 +1614,9 @@ impl OpenMakerApp {
             text_field: input
                 && !self.script.busy()
                 && self.script.prompt.is_none()
-                && self.text_field_entered(),
-            relookup: input && self.relookup_available(),
+                && self.text_field_entered()
+                && (!native || native_editor.is_some()),
+            relookup: input && self.relookup_available() && (!native || native_editor.is_some()),
             own_field: self.w.document.active_related.is_none(),
             field_undo: self
                 .current_layout_record()
@@ -1533,6 +1630,7 @@ impl OpenMakerApp {
                 && self.w.mode == Mode::Browse
                 && self.w.connection_lost.is_none()
                 && self.w.document.active.is_none()
+                && (!native || !ctx.egui_wants_keyboard_input())
                 && selection.is_none()
                 && self.current_layout_record().is_some(),
             client_license: self.client_license,
@@ -1755,6 +1853,25 @@ impl OpenMakerApp {
             self.w.document.menu_leaves_field(ui, &mut chosen);
             actions.extend(chosen);
         }
+        #[cfg(target_os = "macos")]
+        actions.retain(|action| {
+            if let Action::NativeEditField(editor, command) = *action {
+                if !self.w.document.keys_held
+                    && !self.recovery_holds()
+                    && !egui::Popup::is_any_open(&ctx)
+                    && !ctx.input(|input| {
+                        input.events.iter().any(|event| {
+                            matches!(event, egui::Event::PointerButton { pressed: true, .. })
+                        })
+                    })
+                {
+                    crate::system_menu::edit_field(&ctx, editor, command);
+                }
+                false
+            } else {
+                true
+            }
+        });
         if front {
             self.pause_bar(ui);
         }
@@ -2029,6 +2146,8 @@ impl OpenMakerApp {
                 self.forget_other_hosts();
             }
         }
+        #[cfg(target_os = "macos")]
+        crate::system_menu::clear_field_edit(&ctx);
         if content_rect.is_some() {
             self.w.content_rect = content_rect;
         }
@@ -2169,7 +2288,7 @@ impl OpenMakerApp {
         // anything else in the window (portal_clicks.rs).
         if actions
             .iter()
-            .any(|action| !matches!(action, Action::LoadRecordRange(_)))
+            .any(|action| !matches!(action, Action::LoadRecordRange(_) | Action::ReadScripts))
         {
             self.w.document.drop_portal_click();
         }
@@ -2986,16 +3105,8 @@ impl OpenMakerApp {
         // shows by then.
         let held_id = egui::Id::unique("held_commit_keys").with(ui.ctx().viewport_id());
         let frame = ui.ctx().cumulative_frame_nr();
-        let typed_in = HeldKeysOwner {
-            file: self.w.file_id,
-            mode: self.w.mode,
-            record: self
-                .w
-                .session
-                .as_ref()
-                .and_then(|session| Some((session.layout?, session.current_record()?.1.id))),
-            field: self.w.document.active.clone(),
-        };
+        let typed_in = self.held_keys_owner();
+        let field_target = (inserts || record_copy).then(|| self.field_menu_target(ui.ctx()));
         let held: Option<(u64, HeldKeysOwner, Vec<egui::Event>)> =
             ui.ctx().data_mut(|data| data.remove_temp(held_id));
         let mut hold = None;
@@ -3072,7 +3183,7 @@ impl OpenMakerApp {
             {
                 actions.push(Action::DeleteLayoutObject);
             }
-            if inserts {
+            if let Some(target) = field_target.as_ref().filter(|_| inserts) {
                 // Before New Record: egui's match of Command-N ignores Shift.
                 for (modifiers, key, step) in [
                     (Modifiers::COMMAND, Key::Minus, steps::INSERT_CURRENT_DATE),
@@ -3094,19 +3205,28 @@ impl OpenMakerApp {
                     ),
                 ] {
                     if input.consume_shortcut(&KeyboardShortcut::new(modifiers, key)) {
-                        actions.push(Action::Step(step, 0));
+                        actions.push(Action::FieldMenuStep(step, 0, Box::new(target.clone())));
                     }
                 }
             }
             // With no field entered, Copy copies the record, as Edit > Copy
             // does then (`menubar::edit_menu`).
-            if record_copy {
+            if let Some(target) = field_target.as_ref().filter(|_| {
+                record_copy
+                    && !input.events.iter().any(|event| {
+                        matches!(event, egui::Event::PointerButton { pressed: true, .. })
+                    })
+            }) {
                 let copies = input.events.len();
                 input
                     .events
                     .retain(|event| !matches!(event, egui::Event::Copy));
                 if input.events.len() != copies {
-                    actions.push(Action::Step(steps::COPY_RECORD, 0));
+                    actions.push(Action::FieldMenuStep(
+                        steps::COPY_RECORD,
+                        0,
+                        Box::new(target.clone()),
+                    ));
                 }
             }
             if self.w.mode == Mode::Browse {
@@ -3752,6 +3872,15 @@ impl OpenMakerApp {
     }
 
     fn apply(&mut self, ctx: &egui::Context, action: Action) {
+        let action = match action {
+            Action::FieldMenuStep(step, flags, target) => {
+                if self.dialog_over_document() || self.field_menu_target(ctx) != *target {
+                    return;
+                }
+                Action::Step(step, flags)
+            }
+            action => action,
+        };
         // A window's card closes before it (Claris: closing a card's
         // parent first closes the card); closing the file or quitting
         // goes on to the parent once the card has closed.
@@ -3858,7 +3987,11 @@ impl OpenMakerApp {
             return;
         }
         match action {
-            Action::MenuFieldExit(_) => unreachable!("resolved before dispatch"),
+            Action::MenuFieldExit(_) | Action::FieldMenuStep(..) => {
+                unreachable!("resolved before dispatch")
+            }
+            #[cfg(target_os = "macos")]
+            Action::NativeEditField(..) => unreachable!("delivered before drawing the field"),
             Action::ShowSettings => {
                 if self.settings.is_none() {
                     self.settings = Some(crate::settings::SettingsDialog::new());
@@ -6742,6 +6875,13 @@ impl OpenMakerApp {
 }
 
 impl eframe::App for OpenMakerApp {
+    #[cfg(target_os = "macos")]
+    fn raw_input_hook(&mut self, _: &egui::Context, input: &mut egui::RawInput) {
+        if self.system_menu_bar() {
+            crate::system_menu::paste_text_only(input);
+        }
+    }
+
     fn ui(&mut self, ui: &mut Ui, frame: &mut eframe::Frame) {
         self.native_parent = crate::web_viewer::NativeParent::of(frame);
         self.native_window = {

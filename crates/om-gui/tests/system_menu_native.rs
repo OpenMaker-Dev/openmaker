@@ -163,6 +163,20 @@ mod macos {
                             open.keyEquivalent().to_string()
                         ));
                     }
+                    for (menu, title) in [
+                        ("Edit", "Copy"),
+                        ("Edit", "Paste"),
+                        ("Edit", "Can't Undo"),
+                        ("Insert", "Current Date"),
+                        ("View", "Zoom Out"),
+                    ] {
+                        let found = self::menu(menu).expect("menu");
+                        let (_, row) = item(&found, title).expect("row");
+                        assert!(
+                            row.keyEquivalent().to_string().is_empty(),
+                            "{menu} > {title}"
+                        );
+                    }
                     choose("View", "Find Mode");
                     self.phase = Phase::Finding;
                 }
@@ -220,6 +234,10 @@ mod macos {
                     if row("Records", "Delete Record...").is_some_and(|(on, _)| on) {
                         fail("Delete Record... is enabled under its own confirmation".into());
                     }
+                    let file = menu("File").expect("File");
+                    let (_, open) = item(&file, "Open...").expect("Open...");
+                    assert!(!open.isEnabled());
+                    assert!(open.keyEquivalent().to_string().is_empty());
                     println!("rows disabled while Delete Record asks to confirm");
                     shot("confirming");
                     println!("PASS");
@@ -230,6 +248,10 @@ mod macos {
     }
 
     impl eframe::App for Driver {
+        fn raw_input_hook(&mut self, ctx: &egui::Context, input: &mut egui::RawInput) {
+            eframe::App::raw_input_hook(&mut self.app, ctx, input);
+        }
+
         fn ui(&mut self, ui: &mut egui::Ui, frame: &mut eframe::Frame) {
             eframe::App::ui(&mut self.app, ui, frame);
             self.step();

@@ -20,10 +20,14 @@ FileMaker Pro's measured chrome is specified in
 - On macOS the menus are in the system menu bar, as FileMaker Pro's are:
   the menus of the window AppKit has in front, built each frame through the
   same code as the window's bar (`menubar::MenuRows`, `system_menu.rs`),
-  with each row's shortcut as its key equivalent. A choice reaches only the
-  window whose menus showed it, in the order made, also once another window
-  is in front; while a modal dialog is up in the window, its rows are
-  disabled, as the window's own bar is. The app menu adds macOS's Services, Hide,
+  with key equivalents on enabled rows. Editing, text insertion and zoom
+  shortcuts go through the window's keyboard handling, where Current Date
+  takes precedence over Zoom Out in an entered Browse field. A choice
+  reaches the window whose menus showed it in the order made. Native Edit
+  clicks act on a still-focused text editor of the current record. Portal
+  and related-field editors use keyboard editing. Field and record
+  commands are dropped if their target changes before they can run.
+  A modal dialog disables that window's native rows. The app menu adds macOS's Services, Hide,
   Hide Others and Show All, and the Help menu the system's search field;
   that FileMaker Pro's app menu has the same is inferred. The windows draw
   no menu bar of their own. The Scripts menu reads the file's scripts once

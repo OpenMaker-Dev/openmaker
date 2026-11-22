@@ -37,6 +37,7 @@ pub(crate) struct MenuContext<'a> {
     /// Whether `scripts` is the file's catalog as read: until it is, the
     /// Scripts menu asks for it ([`Action::ReadScripts`], #1053).
     pub scripts_read: bool,
+    pub scripts_unread: bool,
     /// The account's privilege set as the host enforces it: the Scripts
     /// menu leaves out the scripts it gives no access.
     pub set_access: Option<&'a om_data::host::security::SetAccess>,
@@ -1008,7 +1009,7 @@ fn scripts_menu(rows: &mut dyn MenuRows, context: &MenuContext<'_>, actions: &mu
         if context.open() {
             rows.separator();
             rows.item("Loading Scripts…", None, false, false);
-            if rows.ask("scripts") {
+            if context.scripts_unread && rows.ask("scripts") {
                 actions.push(Action::ReadScripts);
             }
         }

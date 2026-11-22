@@ -15,15 +15,16 @@
 //!
 //! The app menu also gets macOS's own Services, Hide, Hide Others and Show
 //! All, and the Help menu the system's search field.
-//! A row's shortcut is its menu item's key equivalent, so the system menu
-//! takes that key while the row is enabled.
+//! Enabled rows can install key equivalents. Editor and zoom shortcuts
+//! stay with the viewport so they follow its focus and event order.
 
 use std::collections::HashMap;
 
-use egui::{Key, KeyboardShortcut};
+use egui::{Event, Key, KeyboardShortcut, Modifiers};
 use muda::accelerator::{Key as MudaKey, KeyAccelerator, Modifiers as MudaModifiers, NamedKey};
 use muda::{CheckMenuItem, Menu, MenuEvent, PredefinedMenuItem, Submenu};
 
+use crate::app::{EditCommand, FieldMenuTarget};
 use crate::menubar::MenuRows;
 
 /// A row of a menu as recorded.
@@ -135,6 +136,7 @@ impl Recorder<'_> {
         if chosen {
             *self.chosen = None;
         }
+        let shortcut = shortcut.filter(|shortcut| !editor_equivalent(&self.path, *shortcut));
         self.rows.push(Row::Item {
             id,
             label: label.to_owned(),
@@ -178,7 +180,8 @@ impl MenuRows for Recorder<'_> {
 
     fn submenu(&mut self, label: &str, enabled: bool, rows: &mut dyn FnMut(&mut dyn MenuRows)) {
         let id = self.id(label);
-        let mut inner = Recorder::new(id.clone(), &mut *self.chosen, self.may_ask, self.blocked);
+        let enabled = enabled && !self.blocked;
+        let mut inner = Recorder::new(id.clone(), &mut *self.chosen, self.may_ask, !enabled);
         rows(&mut inner);
         let rows = inner.rows;
         self.rows.push(Row::Submenu {
@@ -208,7 +211,7 @@ impl MenuRows for Recorder<'_> {
     fn ask(&mut self, _: &str) -> bool {
         // As long as no read failed since the window came to the front: one
         // that failed is asked again when it next does, not every frame.
-        self.may_ask
+        self.may_ask && !self.blocked
     }
 }
 
@@ -225,9 +228,10 @@ pub(crate) struct SystemMenuBar {
     handles: HashMap<String, Handle>,
     /// The window (session epoch and window id) whose menus the bar shows.
     owner: Option<Owner>,
+    field_target: Option<FieldMenuTarget>,
     /// The rows the user chose, in order, each with the window whose menus
     /// showed it, until a recording answers or drops it.
-    chosen: std::collections::VecDeque<(Option<Owner>, String)>,
+    chosen: std::collections::VecDeque<Choice>,
     /// A choice came: the bar's check marks may differ from the rows (muda
     /// flips a check item's mark itself when it is chosen).
     reconcile: bool,
@@ -238,6 +242,12 @@ pub(crate) struct SystemMenuBar {
 
 /// A window, as the system bar tells windows apart.
 pub(crate) type Owner = (u64, u32);
+
+struct Choice {
+    owner: Owner,
+    id: String,
+    target: FieldMenuTarget,
+}
 
 /// The most choices that wait for the app at once.
 const CHOICES: usize = 16;
@@ -266,6 +276,7 @@ impl SystemMenuBar {
             shown: Vec::new(),
             handles: HashMap::new(),
             owner: None,
+            field_target: None,
             chosen: std::collections::VecDeque::new(),
             reconcile: false,
             failed: std::collections::HashSet::new(),
@@ -277,26 +288,33 @@ impl SystemMenuBar {
     pub(crate) fn begin(&mut self) {
         while let Ok(id) = self.events.try_recv() {
             self.reconcile = true;
-            if self.chosen.len() < CHOICES {
-                self.chosen.push_back((self.owner, id));
+            if self.chosen.len() >= CHOICES {
+                continue;
+            }
+            if let Some((owner, target)) = self.owner.zip(self.field_target.as_ref()) {
+                self.chosen.push_back(Choice {
+                    owner,
+                    id,
+                    target: target.clone(),
+                });
             }
         }
     }
 
     /// Keep only the choices whose window is still open (`live`).
     pub(crate) fn retain_choices(&mut self, live: impl Fn(Owner) -> bool) {
-        self.chosen.retain(|(made, _)| made.is_some_and(&live));
+        self.chosen.retain(|choice| live(choice.owner));
     }
 
     /// Drop the choices made in `owner`'s menus: it cannot take them (a card
     /// covers it).
     pub(crate) fn drop_choices_for(&mut self, owner: Owner) {
-        self.chosen.retain(|(made, _)| *made != Some(owner));
+        self.chosen.retain(|choice| choice.owner != owner);
     }
 
     /// Whether a choice made in `owner`'s menus waits for it.
     pub(crate) fn has_choice_for(&self, owner: Owner) -> bool {
-        self.chosen.iter().any(|(made, _)| *made == Some(owner))
+        self.chosen.iter().any(|choice| choice.owner == owner)
     }
 
     /// Whether choices wait for any window.
@@ -326,13 +344,14 @@ impl SystemMenuBar {
         owner: Owner,
         shown: bool,
         blocked: bool,
+        target: &FieldMenuTarget,
         menus: impl FnOnce(&mut crate::menubar::MenuSink<'_>),
-    ) {
-        let mine = self
-            .chosen
-            .iter()
-            .position(|(made, _)| *made == Some(owner));
-        let mut chosen = mine.and_then(|at| self.chosen.remove(at)).map(|(_, id)| id);
+    ) -> Option<FieldMenuTarget> {
+        let mine = self.chosen.iter().position(|choice| choice.owner == owner);
+        let (mut chosen, chosen_target) = match mine.and_then(|at| self.chosen.remove(at)) {
+            Some(choice) => (Some(choice.id), Some(choice.target)),
+            None => (None, None),
+        };
         let may_ask = shown && !self.failed.contains(&owner);
         let mut recorded: Menus = Vec::new();
         menus(&mut |title, rows| {
@@ -341,12 +360,13 @@ impl SystemMenuBar {
             recorded.push((title.to_owned(), recorder.rows));
         });
         if !shown {
-            return;
+            return chosen_target;
         }
         self.owner = Some(owner);
+        self.field_target = Some(target.clone());
         let reconcile = std::mem::take(&mut self.reconcile);
         if recorded == self.shown && !reconcile {
-            return;
+            return chosen_target;
         }
         if self.menu.is_some() && shape(&recorded) == shape(&self.shown) {
             self.update(&recorded);
@@ -354,6 +374,7 @@ impl SystemMenuBar {
             self.build(&recorded);
         }
         self.shown = recorded;
+        chosen_target
     }
 
     fn update(&self, menus: &Menus) {
@@ -364,9 +385,11 @@ impl SystemMenuBar {
                         id,
                         checked,
                         enabled,
+                        shortcut,
                         ..
                     } => {
                         if let Some(Handle::Item(item)) = handles.get(id) {
+                            let _ = item.set_key_accelerator(key_equivalent(*enabled, *shortcut));
                             item.set_enabled(*enabled);
                             item.set_checked(*checked);
                         }
@@ -445,7 +468,7 @@ fn append(submenu: &Submenu, rows: &[Row], handles: &mut HashMap<String, Handle>
                 enabled,
             } => {
                 let item = CheckMenuItem::with_id(id.clone(), label, *enabled, *checked, None);
-                if let Some(accelerator) = shortcut.and_then(accelerator) {
+                if let Some(accelerator) = key_equivalent(*enabled, *shortcut) {
                     let _ = item.set_key_accelerator(Some(accelerator));
                 }
                 let _ = submenu.append(&item);
@@ -467,6 +490,115 @@ fn append(submenu: &Submenu, rows: &[Row], handles: &mut HashMap<String, Handle>
             }
         }
     }
+}
+
+/// These keys go through the viewport even when the menu row is enabled.
+fn editor_equivalent(path: &str, shortcut: KeyboardShortcut) -> bool {
+    matches!(
+        (path.split('\u{1f}').next(), shortcut.logical_key),
+        (Some("Edit" | "Insert"), _) | (Some("View"), Key::Plus | Key::Minus)
+    )
+}
+
+fn key_equivalent(enabled: bool, shortcut: Option<KeyboardShortcut>) -> Option<KeyAccelerator> {
+    // AppKit can consume a key equivalent even on a disabled menu item.
+    shortcut.filter(|_| enabled).and_then(accelerator)
+}
+
+fn clipboard_paste() -> Option<Event> {
+    use objc2_app_kit::NSPasteboard;
+    use objc2_foundation::NSString;
+
+    let plain_text = NSString::from_str("public.utf8-plain-text");
+    let text = NSPasteboard::generalPasteboard().stringForType(&plain_text)?;
+    let text = text.to_string().replace("\r\n", "\n");
+    (!text.is_empty()).then_some(Event::Paste(text))
+}
+
+/// Paste Text Only also enters the viewport's input stream in key order.
+pub(crate) fn paste_text_only(input: &mut egui::RawInput) {
+    for event in &mut input.events {
+        if matches!(event, Event::Key { key: Key::V, pressed: true, modifiers, .. }
+            if modifiers.matches_exact(Modifiers::MAC_CMD | Modifiers::SHIFT | Modifiers::ALT))
+        {
+            if let Some(paste) = clipboard_paste() {
+                *event = paste;
+            }
+        }
+    }
+}
+
+fn field_edit_id(ctx: &egui::Context) -> egui::Id {
+    egui::Id::unique("native_field_edit").with(ctx.viewport_id())
+}
+
+pub(crate) fn edit_field(ctx: &egui::Context, editor: egui::Id, command: EditCommand) {
+    let key = |key, modifiers| Event::Key {
+        key,
+        physical_key: None,
+        pressed: true,
+        repeat: false,
+        modifiers,
+    };
+    // Clear deletes a selection only. A bare Delete would also remove the
+    // character at the insertion point.
+    let has_selection = || {
+        egui::TextEdit::load_state(ctx, editor)
+            .and_then(|state| state.cursor.char_range())
+            .is_some_and(|range| !range.is_empty())
+    };
+    let event = match command {
+        EditCommand::Cut => Event::Cut,
+        EditCommand::Copy => Event::Copy,
+        EditCommand::Paste => {
+            let Some(paste) = clipboard_paste() else {
+                return;
+            };
+            paste
+        }
+        EditCommand::Undo => key(Key::Z, Modifiers::COMMAND),
+        EditCommand::Redo => key(Key::Z, Modifiers::COMMAND | Modifiers::SHIFT),
+        EditCommand::Clear if has_selection() => key(Key::Delete, Modifiers::NONE),
+        EditCommand::Clear => return,
+        EditCommand::SelectAll => key(Key::A, Modifiers::COMMAND),
+    };
+    let slot = field_edit_id(ctx);
+    ctx.data_mut(|data| data.insert_temp(slot, (editor, event)));
+}
+
+/// Only the original, still-focused editor gets the event. It processes
+/// the command through TextEdit and reports modifications through the same
+/// draft and trigger path as typing.
+pub(crate) fn with_field_edit<R>(
+    ui: &mut egui::Ui,
+    editor: egui::Id,
+    draw: impl FnOnce(&mut egui::Ui) -> R,
+) -> R {
+    let slot = field_edit_id(ui.ctx());
+    let event = ui.ctx().data_mut(|data| {
+        let (target, event) = data.get_temp::<(egui::Id, Event)>(slot)?;
+        if target != editor {
+            return None;
+        }
+        data.remove::<(egui::Id, Event)>(slot);
+        Some(event)
+    });
+    let Some(event) = event.filter(|_| ui.memory(|memory| memory.has_focus(editor))) else {
+        return draw(ui);
+    };
+    ui.input_mut(|input| input.events.insert(0, event.clone()));
+    let response = draw(ui);
+    ui.input_mut(|input| {
+        if input.events.first() == Some(&event) {
+            input.events.remove(0);
+        }
+    });
+    response
+}
+
+pub(crate) fn clear_field_edit(ctx: &egui::Context) {
+    let slot = field_edit_id(ctx);
+    ctx.data_mut(|data| data.remove::<(egui::Id, Event)>(slot));
 }
 
 /// A shortcut as a key equivalent: the key the shortcut names, with its

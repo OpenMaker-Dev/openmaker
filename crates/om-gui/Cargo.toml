@@ -72,10 +72,10 @@ muda = { version = "0.21", default-features = false }
 # The `web-viewer` feature's backend (wry: MIT OR Apache-2.0).
 wry = { version = "0.57", default-features = false, features = ["os-webview"], optional = true }
 # AppKit (the versions wry uses; MIT): the views web viewers place pages
-# in, and the Insert commands' open panel (`file_panel`) with its
-# completion block.
+# in, the Insert commands' open panel (`file_panel`), and the Edit
+# menu's text pasteboard.
 objc2 = "0.6"
-objc2-app-kit = { version = "0.3", default-features = false, features = ["std", "block2", "objc2-core-foundation", "NSApplication", "NSOpenPanel", "NSPanel", "NSResponder", "NSSavePanel", "NSView", "NSWindow"] }
+objc2-app-kit = { version = "0.3", default-features = false, features = ["std", "block2", "objc2-core-foundation", "NSApplication", "NSOpenPanel", "NSPanel", "NSPasteboard", "NSResponder", "NSSavePanel", "NSView", "NSWindow"] }
 objc2-core-foundation = { version = "0.3", default-features = false, features = ["std", "CFCGTypes"] }
 objc2-foundation = { version = "0.3", default-features = false, features = ["std", "NSArray", "NSKeyValueCoding", "NSObject", "NSString", "NSURL", "NSValue"] }
 block2 = "0.6"
