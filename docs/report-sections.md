@@ -69,6 +69,25 @@ table, so later keys cannot group without them. `GetSummary`, restarting running
 summaries and subtotaled fractions read such groups as unsorted (empty), and
 reports refuse. Grouping by related keys is not implemented.
 
+The groups' keys, and the inputs of the summaries the parts print, read the
+reader's variables [I: unmeasured in FileMaker]. Preview uses the window's
+variables. Save Records as PDF and Print use the script's lent variables
+for report grouping and summaries. Each read takes a snapshot, and
+assignments by an input stay within that read
+([#615](https://github.com/OpenMaker-Dev/openmaker/issues/615),
+[calc values](re/calc-values.md), "The host's own reads of a field").
+Reports refuse with 3 for these cases.
+
+- a sort key up to a break that reads as `?` on any record;
+- while the reader has variables, a sort key up to a break that is an unstored
+  calculation which may read one (`Expr::variable_reads`, through the custom
+  functions it calls and the unstored calculations it references; one that
+  cannot be resolved counts as may), since the found set was sorted without
+  them [I: whether FileMaker's sort evaluates such a key with the
+  script's or window's variables is unmeasured]. The same check applies
+  to the sort prefix of a `GetSummary` break, even on a report without
+  sub-summary parts.
+
 ### Costs and limits
 
 Planning a grouped report reads the ordered found set's IDs and each found
@@ -85,7 +104,7 @@ that, as do reports whose parts resize by sliding.
 
 ## Bounds and acceptance
 
-One body is required. Bodyless (summary-only) reports, sliding left, splitting,
+One body is required. Bodyless (summary-only) reports, splitting,
 explicit page breaks/restarts ("page break before/after each occurrence"),
 nonzero part flags other than body bit `0x400`, unknown part options, columns
 and responsive forms remain refused. Existing unsupported objects, typography, page ranges and opaque output
@@ -124,8 +143,8 @@ The earlier title/grand checks (shuffled nine records, four pages, overall total
 5625, page summaries on a grand-only page) still apply. Artifact environment
 variables are documented in [Preview](preview.md) and [portable PDF](portable-pdf.md).
 
-This extends partial C41 ([client-progress.md](client-progress.md)). Objects that slide up and resize sub-summary and
-grand parts are in [report sliding](report-sliding.md). Sliding left, bodyless
+This extends partial C41 ([client-progress.md](client-progress.md)). Objects that slide up or left, and resize sub-summary and
+grand parts, are in [report sliding](report-sliding.md). Bodyless
 summary reports, part page breaks,
 related-key grouping, native FileMaker geometry, printer hardware and native
 acceptance remain unmeasured or unimplemented. All fixtures and rendered artifacts

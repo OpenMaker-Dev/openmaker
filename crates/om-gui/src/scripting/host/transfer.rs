@@ -924,8 +924,14 @@ impl GuiImport<'_, '_> {
     }
 }
 
+/// A row's write error as the import takes it: one whose rule OpenMaker
+/// does not support checking ([`om_data::DataError::unsupported`]) ends the
+/// import; any other refuses the row.
 fn write_error(e: om_data::DataError) -> TransferError {
-    TransferError::new(e.code.unwrap_or(3), e.message)
+    match e.unsupported {
+        true => TransferError::unsupported(e.message),
+        false => TransferError::new(e.code.unwrap_or(3), e.message),
+    }
 }
 
 impl ImportTarget for GuiImport<'_, '_> {

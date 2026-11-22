@@ -184,6 +184,12 @@ impl Hosted {
     }
 
     /// The hosted copy, as the server last saved it.
+    /// The server, as its administrator drives it (Send Message, clients).
+    #[allow(dead_code)]
+    pub fn server(&self) -> &om_server::ServerHandle {
+        self.handle.as_ref().expect("the server's handle")
+    }
+
     pub fn file(&self) -> &Path {
         &self.copies[0]
     }

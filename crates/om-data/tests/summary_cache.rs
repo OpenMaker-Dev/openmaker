@@ -604,6 +604,203 @@ fn failed_reads_are_not_cached_as_completed_summaries() {
     assert_eq!(source.reads.get(), 4);
 }
 
+/// A summary of an unstored calculation totals its inputs as the host's
+/// own calculations read them, with the host's variables (#615): read as
+/// a field and through `GetSummary`. Without variables, as before, the
+/// inputs read none.
+#[test]
+fn summaries_of_unstored_fields_read_the_hosts_variables() {
+    let mut schema = schema();
+    let mut context = om_data::formula::Context::new(schema.names());
+    context.occurrence = Some(OCCURRENCE);
+    let compiled =
+        om_data::formula::compile("If ( IsEmpty ( $$rate ) ; -1 ; $$rate )", &context).unwrap();
+    schema.add_field(
+        TABLE,
+        FieldDef::calculation(
+            7,
+            "Rated",
+            ValueType::Number,
+            om_data::formula::Formula {
+                context: Some(om_data::formula::Key::from_id(OCCURRENCE)),
+                formatted: None,
+                polish: compiled.expr,
+            },
+            false,
+        ),
+    );
+    schema.add_field(
+        TABLE,
+        FieldDef {
+            class: FieldClass::Summary,
+            summary: Some(SummaryDef::new(SummaryKind::Total, 7)),
+            ..FieldDef::data(19, "Rated total", ValueType::Number)
+        },
+    );
+    let source = CountingSource::new();
+    let session = SessionInfo::default();
+    let read = |rate: Option<i64>, text: &str| {
+        let (mut locals, mut globals) = (Variables::new(), Variables::new());
+        if let Some(rate) = rate {
+            globals.set("$$rate", 1, Value::number(rate));
+        }
+        let file = FileCalc::new(&schema, &source, today(29));
+        let mut host = FileHost::new(file, &session, &mut locals, &mut globals);
+        let result = evaluate_text(text, &mut host, &Context::record(OCCURRENCE, 1));
+        assert_eq!(result.code(), 0, "{text}");
+        display(&result.value, &host)
+    };
+    for text in ["Rated total", "GetSummary ( Rated total ; Rated total )"] {
+        assert_eq!(read(Some(10), text), "30", "{text}");
+        assert_eq!(read(None, text), "-3", "{text}");
+    }
+    // The input itself reads it too, on its record.
+    assert_eq!(read(Some(10), "Rated"), "10");
+
+    // A pass's cache tells variables apart by their identity: a total read
+    // again after an assignment in the same evaluation is read again.
+    let cache = SummaryCache::default();
+    let (mut locals, mut globals) = (Variables::new(), Variables::new());
+    let file = FileCalc::new(&schema, &source, today(29)).with_summary_cache(&cache);
+    let mut host = FileHost::new(file, &session, &mut locals, &mut globals);
+    for text in [
+        "Let ( [ $$rate = 10 ; first = Rated total ; $$rate = 20 ] ; first & \"|\" & Rated total )",
+        "Let ( [ $$rate = 10 ; first = GetSummary ( Rated total ; Rated total ) ; $$rate = 20 ] ; first & \"|\" & GetSummary ( Rated total ; Rated total ) )",
+    ] {
+        let result = evaluate_text(text, &mut host, &Context::record(OCCURRENCE, 1));
+        assert_eq!(display(&result.value, &host), "30|60", "{text}");
+    }
+}
+
+/// A report's groups by a calculation that may read variables refuse while
+/// the reader has some, since the found set was sorted without them, and a
+/// sort key that reads as `?` refuses always (#615).
+#[test]
+fn report_groups_refuse_keys_their_sort_did_not_establish() {
+    use om_data::host::{GroupError, VariableSnapshot};
+    let mut schema = schema();
+    let mut context = om_data::formula::Context::new(schema.names());
+    context.occurrence = Some(OCCURRENCE);
+    let fields: Vec<_> = [
+        (7, "Rated", "If ( IsEmpty ( $$rate ) ; -1 ; $$rate )"),
+        (8, "Broken", "1 / 0"),
+        (9, "Doubled", "Amount * 2"),
+    ]
+    .into_iter()
+    .map(|(id, name, source)| {
+        (
+            id,
+            name,
+            om_data::formula::compile(source, &context).unwrap(),
+        )
+    })
+    .collect();
+    for (id, name, compiled) in fields {
+        schema.add_field(
+            TABLE,
+            FieldDef::calculation(
+                id,
+                name,
+                ValueType::Number,
+                om_data::formula::Formula {
+                    context: Some(om_data::formula::Key::from_id(OCCURRENCE)),
+                    formatted: None,
+                    polish: compiled.expr,
+                },
+                false,
+            ),
+        );
+    }
+    // Keys through custom functions: one returning its argument, one that
+    // reads `$$rate`, and one the file does not define.
+    use om_data::calc::eval::CustomFunction;
+    use om_data::formula::{Expr, Field, Formula, Key};
+    schema.add_custom_function(
+        1,
+        CustomFunction {
+            name: "Same".into(),
+            parameters: vec!["x".into()],
+            body: Expr::Local(0),
+        },
+    );
+    schema.add_custom_function(
+        2,
+        CustomFunction {
+            name: "Rate".into(),
+            parameters: vec!["x".into()],
+            body: Expr::Variable("$$rate".into()),
+        },
+    );
+    for (id, function) in [(20, 1), (21, 2), (22, 99)] {
+        let call = Expr::CustomCall {
+            tail: false,
+            function: Key::from_id(function),
+            args: vec![Expr::Field(Field::new(OCCURRENCE, 1, true))],
+        };
+        schema.add_field(
+            TABLE,
+            FieldDef::calculation(
+                id,
+                format!("Through {function}"),
+                ValueType::Number,
+                Formula {
+                    context: Some(Key::from_id(OCCURRENCE)),
+                    formatted: None,
+                    polish: call,
+                },
+                false,
+            ),
+        );
+    }
+    let (locals, mut globals) = (Variables::new(), Variables::new());
+    globals.set("$$rate", 1, Value::number(10));
+    let snapshot = VariableSnapshot::of(&locals, &globals);
+    // Each record's group by `key`, sorted by it, with or without variables.
+    let groups = |key: u64, variables: bool| {
+        let mut source = CountingSource::new();
+        source
+            .data
+            .set_found_set(OCCURRENCE, &[1, 2, 3], Some(&[key]));
+        let file = FileCalc::new(&schema, &source, today(29));
+        let file = file.with_variables(snapshot.as_ref().filter(|_| variables));
+        let found = file.found_groups(OCCURRENCE, &[key])?;
+        Ok::<_, GroupError>(found.breaks[0].clone().map(|(_, ids)| ids))
+    };
+    assert_eq!(groups(7, true), Err(GroupError::VariableKey));
+    // Without variables `$$rate` is empty: -1 on every record, one group.
+    assert_eq!(groups(7, false), Ok(Some(vec![0, 0, 0])));
+    // Calculations that read no variable group as before: 20, 40 and 120.
+    assert_eq!(groups(9, true), Ok(Some(vec![0, 1, 2])));
+    assert_eq!(groups(20, true), Ok(Some(vec![0, 1, 2])));
+    // A custom function that reads one, or one that cannot be resolved,
+    // may read them.
+    assert_eq!(groups(21, true), Err(GroupError::VariableKey));
+    assert_eq!(groups(22, true), Err(GroupError::VariableKey));
+    assert_eq!(groups(8, false), Err(GroupError::UnevaluableKey));
+
+    // GetSummary with no layout grouping still checks the entire sort
+    // prefix, including variable-dependent keys before the break field.
+    let mut source = CountingSource::new();
+    source
+        .data
+        .set_found_set(OCCURRENCE, &[1, 2, 3], Some(&[7, 9]));
+    let file = FileCalc::new(&schema, &source, today(29)).with_variables(snapshot.as_ref());
+    let summary = FieldId {
+        occurrence: OCCURRENCE,
+        field: 10,
+    };
+    let break_field = FieldId {
+        occurrence: OCCURRENCE,
+        field: 9,
+    };
+    assert_eq!(
+        file.summary(&Context::record(OCCURRENCE, 1), summary, break_field)
+            .unwrap_err()
+            .code(),
+        3
+    );
+}
+
 #[test]
 fn summaries_of_unstored_fields_do_not_mix_sessions_or_dates() {
     let mut schema = schema();

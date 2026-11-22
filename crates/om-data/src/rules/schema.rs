@@ -209,13 +209,16 @@ pub fn font_families(tree: &KeyTree<'_>) -> std::collections::BTreeMap<u64, Stri
 
 /// The file's schema for calculations from its downloaded catalogs: `tree`
 /// holds `[3]`, every `[T, 3]` and, when the file has any, `[16]`; with
-/// `[2, 0d]` the file's locale (else en-US), with `[2, 18]` its options and
+/// `[2, 0d]` the file's locale (else en-US, a record that does not decode
+/// marking [`CalcSchema::locale_unreadable`]), with `[2, 18]` its options and
 /// file triggers, with `[2, 87]` its page setup, with `[21]` its value lists (also ExecuteSQL's), with
 /// `[17]` its scripts, `[25, 5]` its fonts, and with `[4, 1]` the layouts'
 /// display order.
 pub fn calc_schema(tree: &KeyTree<'_>, catalog: &Catalog, file_name: &str) -> CalcSchema {
-    let locale = meta::locale(tree).unwrap_or_else(Locale::en_us);
-    let mut schema = CalcSchema::new(file_name, locale);
+    let locale = meta::locale(tree);
+    let locale_unreadable = locale.is_none() && tree.at(&meta::LOCALE).is_some();
+    let mut schema = CalcSchema::new(file_name, locale.unwrap_or_else(Locale::en_us));
+    schema.locale_unreadable = locale_unreadable;
     schema.font_families = font_families(tree);
     schema.file_options = meta::file_options(tree);
     schema.page_format = meta::page_format(tree);

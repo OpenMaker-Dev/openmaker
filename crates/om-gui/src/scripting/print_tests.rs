@@ -321,15 +321,95 @@ fn desktop_print_takes_a_stored_current_record_only_with_its_options() {
 
 #[test]
 fn desktop_print_commit_veto_and_external_trigger_resume_owning_window() {
-    for (proceed, expected, jobs) in [(false, "20", 0), (true, "0", 1)] {
+    for (proceed, replace_trigger, expected, jobs) in [
+        (false, false, "20", 0),
+        (true, false, "0", 1),
+        (true, true, "0", 1),
+    ] {
+        let trigger = if replace_trigger {
+            vec![ScriptStep::new(62)]
+        } else {
+            vec![exit(if proceed { "1" } else { "0" })]
+        };
         let (mut c, fake) = client(
-            vec![print(true, false, false), exit("Get ( LastError )")],
-            vec![exit(if proceed { "1" } else { "0" })],
+            vec![
+                var("$$signer", "\"Ada\""),
+                var("$who", "\"Lovelace\""),
+                print(true, false, false),
+                exit("Get ( LastError )"),
+            ],
+            trigger,
         );
-        let mut document = pdf_tests::document();
+        // Print, held for the trigger, prints with the script's variables
+        // when the trigger lets it (#596).
+        let mut document = pdf_tests::signed_document();
         document.layout.triggers = vec![external_trigger(TriggerEvent::RecordCommit)];
-        c.server.lock().unwrap().refresh_render = Some(document);
+        {
+            let mut server = c.server.lock().unwrap();
+            server.report_variables = true;
+            server.refresh_render = Some(document);
+            if replace_trigger {
+                let mut replacement = script(vec![exit("1")]);
+                replacement.id = 2;
+                replacement.name = "Replacement".into();
+                server
+                    .scripts
+                    .get_mut("Root.fmp12")
+                    .unwrap()
+                    .push(replacement);
+            }
+        }
+        let replace_paused_trigger = if replace_trigger {
+            // The button exits the paused trigger and starts a new script
+            // before the held Print runs. Print still belongs to its caller.
+            let mut button = ScriptStep::new(1);
+            button.reserved[..4].copy_from_slice(&[2, 1, 2, 0xbe]);
+            button.value = 2; // Exit current script.
+            let window = dirty();
+            let job = Job {
+                epoch: 1,
+                window: window.id,
+                ctx: Default::default(),
+                request: Request::Script(Box::new(ScriptJob {
+                    start: Start::Button {
+                        step: Box::new(button),
+                        formula: None,
+                        literal: String::new(),
+                        portal: None,
+                    },
+                    window,
+                    others: Vec::new(),
+                    context: SessionContext {
+                        host: "host.invalid".into(),
+                        file: "Root.fmp12".into(),
+                        account: "root-account".into(),
+                        local: None,
+                    },
+                })),
+            };
+            let events = std::mem::replace(&mut c.events, mpsc::channel().1);
+            let jobs = c._keep_jobs.clone();
+            let abort = c.session.s.abort.clone();
+            Some(std::thread::spawn(move || {
+                while let Ok(event) = events.recv_timeout(std::time::Duration::from_secs(30)) {
+                    if matches!(
+                        event.reply,
+                        worker::Reply::Script(ScriptEvent::Paused { .. })
+                    ) {
+                        jobs.send(job).unwrap();
+                        return;
+                    }
+                }
+                abort.store(true, std::sync::atomic::Ordering::SeqCst);
+                panic!("The Print trigger did not pause");
+            }))
+        } else {
+            None
+        };
         c.run_in(dirty());
+        if let Some(button) = replace_paused_trigger {
+            button.join().unwrap();
+        }
         assert_eq!(c.result(), expected);
         assert_eq!(fake.jobs.lock().unwrap().len(), jobs);
         if !proceed {
@@ -345,7 +425,10 @@ fn desktop_print_commit_veto_and_external_trigger_resume_owning_window() {
                 .iter()
                 .any(|e| e.ends_with(":write")));
         } else {
-            assert!(fake.jobs.lock().unwrap()[0].title.ends_with("Root.fmp12"));
+            let job = &fake.jobs.lock().unwrap()[0];
+            assert!(job.title.ends_with("Root.fmp12"));
+            let pdf = String::from_utf8_lossy(&job.bytes);
+            assert!(!pdf_tests::text_origins(&pdf, 3, "Ada / Lovelace").is_empty());
         }
     }
 }
