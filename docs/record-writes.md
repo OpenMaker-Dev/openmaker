@@ -791,14 +791,15 @@ checked by the desktop at the commit (`om-provider` `related_lists.rs`).
   file that owns the field's table (a related file's own, unknown when its
   locale record does not decode). A text field indexed in a tailored
   language refuses the check with 3 rather than compare in English, where
-  `Apfel` would be `Äpfel` ([#571](https://github.com/OpenMaker-Dev/openmaker/issues/571)); a field of another type compares by value,
-  whatever its language. The computed list keeps one of the values a
-  calculation compares equal, so where the field's keys tell such values
-  apart (case or accents in Unicode raw or standard, `v` and `w` in a
-  Swedish file), a value not listed that a calculation takes as equal to
-  a listed one is refused with 3: the one left out may be it. Such a
-  refusal ends an import, as other rules OpenMaker does not support
-  checking do (scripting.md).
+  `Apfel` would be `Äpfel` ([#571](https://github.com/OpenMaker-Dev/openmaker/issues/571)).
+  A field of another type compares by value, whatever its language. The
+  computed list keeps one of the values a calculation compares equal. For
+  a text destination, the index keys can distinguish values the list
+  groups together (case or accents in Unicode raw or standard, `v` and `w`
+  in a Swedish file). If a text value matches only by calculation equality,
+  the check returns 3 because deduplication may have dropped an exact match.
+  That refusal ends an import (scripting.md). A numeric miss returns 506
+  and skips the row, even if the values' stored text compares equal.
 - **An existing record** is among its own related records with its
   unsaved values, as F91 saw for a related list FileMaker Pro shows. That
   validation reads the same list is inferred.

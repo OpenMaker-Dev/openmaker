@@ -2717,7 +2717,7 @@ fn a_related_value_list_is_computed_for_the_written_record() {
     let shout = "Name & \"!\"";
     fixture::add_formula(&mut root, &names, (TABLE, OCCURRENCE), SHOUT, 5, shout);
     fixture::add_field(&mut root, TABLE, MARK, "Mark", 1, 1, 0, 0, 0x100);
-    fixture::add_field(&mut root, TABLE, NUM, "Num", 1, 2, 0, 0, 0x100);
+    fixture::add_field(&mut root, TABLE, NUM, "Num", 1, 2, 0, 0, 0x500);
     fixture::add_field(&mut root, TABLE, WHO, "Who", 2, 1, 0, 0x2_0000, 0);
     let who = "Get ( AccountName )";
     fixture::add_formula(&mut root, &names, (TABLE, OCCURRENCE), WHO, 5, who);
@@ -2815,6 +2815,17 @@ fn a_related_value_list_is_computed_for_the_written_record() {
     .into();
     let refused = a.import_record(tasks, Some(2), &cells, true).unwrap_err();
     assert!(refused.unsupported, "{refused:?}");
+    // Count still relates record 2 to itself only. Its stored "1e3" is
+    // 1000, while "1é3" parses as 13. The text comparison would fold the
+    // accent, but the numeric list miss must skip only this import row.
+    a.update_record(tasks, 2, values(&[("Count", "1e3")]))
+        .unwrap();
+    let cells = [(NUM, Some("1000".to_owned()))].into();
+    a.import_record(tasks, Some(2), &cells, true).unwrap();
+    let cells = [(NUM, Some("1é3".to_owned()))].into();
+    let refused = a.import_record(tasks, Some(2), &cells, true).unwrap_err();
+    assert_eq!(refused.code, Some(506), "{refused:?}");
+    assert!(!refused.unsupported, "{refused:?}");
     // With Count 3 as written, record 1 ("Write tests", Count 3) is related.
     assert_eq!(
         code(a.update_record(tasks, 2, values(&[("Count", "3"), ("Code", "Write tests")]))),

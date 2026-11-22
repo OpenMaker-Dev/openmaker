@@ -45,7 +45,7 @@ use om_data::host::{CalcSchema, CalcSource, FileCalc, RecordValues};
 use om_data::meta::ValueSource;
 use om_data::rules::{error, Entry, HeldRecords, RecordPlan, Written};
 use om_data::DataError;
-use om_hbam::Table;
+use om_hbam::{DataType, Table};
 
 use crate::NativeProvider;
 
@@ -636,7 +636,7 @@ impl NativeProvider {
             let items = items.ok_or_else(|| not_checked(&name, "its list is too long"))?;
             let data_type = table
                 .field(field)
-                .map_or(om_hbam::catalog::DataType::Text, |f| f.data_type);
+                .map_or(DataType::Text, |f| f.data_type);
             // Text compares as the list's field keys it (#571): in its index
             // language, 0 being the language of the file that owns its table
             // (a related file's own, `table_context`), unknown when that
@@ -673,10 +673,10 @@ impl NativeProvider {
             }
             if !found {
                 // The list keeps one of the values a calculation compares
-                // equal (`FileCalc::list_entries`): where its field's keys
-                // tell those apart (case or accents in Unicode raw or
-                // standard, `v` and `w` in a Swedish file's English keys),
-                // the value it left out for an equal one may be this one.
+                // equal (`FileCalc::list_entries`). A text rule's index keys
+                // can tell those apart, so the value it left out may be
+                // this one. For a typed rule, equal rendered strings can
+                // represent different values, such as 1e3 and 1é3.
                 let equal = |listed: &str| {
                     matches!(
                         om_data::calc::ops::compare(
@@ -687,7 +687,7 @@ impl NativeProvider {
                         om_data::calc::ops::Comparison::Ordered(std::cmp::Ordering::Equal)
                     )
                 };
-                if items.iter().any(|item| equal(&item.value)) {
+                if data_type == DataType::Text && items.iter().any(|item| equal(&item.value)) {
                     return Err(unsupported_check(
                         &name,
                         "its list's field keys apart values its list as computed takes as one",
