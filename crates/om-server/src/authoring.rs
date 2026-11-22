@@ -452,9 +452,6 @@ fn other_change(old: &OwnedNode, new: &OwnedNode) -> Option<Vec<u8>> {
     differs(&new, &old).or_else(|| differs(&old, &new))
 }
 
-/// `member` with the modification stamp of a save by `user` and `account`
-/// at host time `time` (schema-path.md 8.1): the count `fc` incremented as
-/// a serial key (none counts as 0), the user name, account and time.
 /// The modification count of `member`'s stamp (0 without one).
 fn stamp_count(member: &OwnedNode) -> u64 {
     member
@@ -464,13 +461,18 @@ fn stamp_count(member: &OwnedNode) -> u64 {
         .unwrap_or(0)
 }
 
-/// `member` stamped by `user` and `account` at `time`, its count raised
-/// by one: a count at the largest stays (a hostile file's; never a panic).
+/// `member` with the modification stamp of a save by `user` and `account`
+/// at host time `time` (schema-path.md 8.1): the count `fc` raised by one
+/// as a serial key (none counts as 0; a count at the largest stays, a
+/// hostile file's, never a panic), the user name, the account, and the
+/// date-time key `time` as a key string. That key's time part is a number
+/// key as long as the seconds' digits, so the key is 8 bytes only from
+/// 02:46:40 (10,000 seconds) on and shorter before.
 pub(crate) fn stamped(mut member: OwnedNode, user: &str, account: &str, time: &[u8]) -> OwnedNode {
     let key = serial::encode(stamp_count(&member).saturating_add(1));
     let mut count = vec![key.len() as u8];
     count.extend(key);
-    let mut when = vec![0x08];
+    let mut when = vec![time.len() as u8];
     when.extend(time);
     member.set_child(OwnedNode::leaf(MOD_COUNT.to_vec(), count));
     member.set_child(om_scripts::text_node(MOD_USER, user));
@@ -2940,6 +2942,15 @@ mod tests {
             Some(&[1, 1][..])
         );
         assert_eq!(once.child(MOD_TIME).unwrap().value.as_ref().unwrap()[0], 8);
+        // Five seconds after midnight the time part is one digit: a 6-byte
+        // key, written with its own length.
+        let midnight =
+            om_collate::timestamp_key("11/13/2026 0:00:05", om_collate::DateOrder::MonthDayYear)
+                .unwrap();
+        assert_eq!(midnight.len(), 6);
+        let late = stamped(member.clone(), "OpenMaker", "Admin", &midnight);
+        let when = late.child(MOD_TIME).unwrap().value.clone().unwrap();
+        assert_eq!((when[0], &when[1..]), (6, &midnight[..]));
         let twice = stamped(once.clone(), "OpenMaker", "Admin", &[1; 8]);
         assert_eq!(
             twice.child(MOD_COUNT).unwrap().value.as_deref(),

@@ -40,6 +40,9 @@ pub struct FileSchemaContext {
     pub identity: Option<crate::file_refs::FileIdentity>,
     /// Its formats (file-metadata.md 2).
     pub locale: Locale,
+    /// Its locale record does not decode, so that `locale` is only the
+    /// en-US default ([`CalcSchema::locale_unreadable`]).
+    pub locale_unreadable: bool,
     /// The owning file's authenticated account, independent of the root
     /// session's account or script elevation. `None` means unavailable.
     pub authenticated_privileges: Option<Privileges>,
@@ -55,6 +58,13 @@ pub struct FileSchemaContext {
 }
 
 impl FileSchemaContext {
+    /// Its own language, which an index of its fields in language 0 keys
+    /// text in; `None` when its locale record does not decode, as
+    /// [`CalcSchema::file_language`].
+    pub fn file_language(&self) -> Option<u32> {
+        (!self.locale_unreadable).then(|| u32::from(self.locale.language.id()))
+    }
+
     /// Privilege selectors for a formula owned by this file, independent of
     /// root script elevation. Missing metadata answers empty text; `None`
     /// means this is not a privilege selector.
@@ -473,6 +483,7 @@ impl CalcSchema {
             file_path,
             identity,
             locale: source.locale.clone(),
+            locale_unreadable: source.locale_unreadable,
             authenticated_privileges: source.authenticated_privileges.clone(),
             account_info: source.authenticated_account.clone(),
             font_families: source.font_families.clone(),

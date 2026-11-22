@@ -102,23 +102,32 @@ impl SessionSource<'_> {
         }
         let all: RidList = self.records(to.id)?.iter().copied().collect();
         let mut matched = RidList::new();
-        for &record in sources {
-            let mut these = all.clone();
+        'records: for &record in sources {
+            // Each predicate's match values first: a predicate with none
+            // relates nothing, whatever any index holds, so no index is
+            // read (an empty match value never matches, file-metadata.md
+            // 4.3).
+            let mut lookups = Vec::new();
             for predicate in &hop.predicates {
                 if predicate.op == JoinOp::Cartesian {
                     continue;
                 }
                 let Some(right) = to.fields.get(&predicate.right) else {
-                    these = RidList::new();
-                    break;
+                    continue 'records;
                 };
-                // An empty match value never matches (file-metadata.md 4.3).
                 let texts: Vec<String> = self
                     .match_values(from, hop.from, record, predicate.left)?
                     .iter()
                     .map(|v| v.to_text(cx).into_string())
                     .collect();
-                let found = host.index_lookup(to.id, predicate.right, right.value_type, &texts);
+                if texts.is_empty() {
+                    continue 'records;
+                }
+                lookups.push((predicate.right, right.value_type, texts));
+            }
+            let mut these = all.clone();
+            for (field, value_type, texts) in &lookups {
+                let found = host.index_lookup(to.id, *field, *value_type, texts)?;
                 these = these.and(&found);
             }
             matched = matched.or(&these);
@@ -272,14 +281,17 @@ impl ServerHost {
     }
 
     /// The records of `table` whose value index for `field` holds a key of
-    /// one of `texts` (each keyed as a value of `value_type`).
+    /// one of `texts` (each keyed as a value of `value_type`). Error 3 when
+    /// the index is missing and cannot be built (a text field in a language
+    /// this server does not key, `Store::index_on_demand`): a scan would
+    /// compare in English, which the index would not.
     fn index_lookup(
         &self,
         table: u64,
         field: u64,
         value_type: ValueType,
         texts: &[String],
-    ) -> RidList {
+    ) -> Result<RidList, CalcError> {
         let data_type = match value_type {
             ValueType::Number => om_hbam::DataType::Number,
             ValueType::Date => om_hbam::DataType::Date,
@@ -301,8 +313,7 @@ impl ServerHost {
                 Some(index) => Some(index),
                 None => {
                     on_demand = om_query::Source::index_on_demand(&*store, &t, &f, VALUE_INDEX)
-                        .ok()
-                        .flatten();
+                        .map_err(|_| CalcError::from_code(3).expect("nonzero"))?;
                     on_demand.as_ref()
                 }
             };
@@ -320,7 +331,7 @@ impl ServerHost {
             self.hosted.write_store().store_indexes_on_demand();
             self.hosted.save();
         }
-        found
+        Ok(found)
     }
 
     /// The records of `related` related to `record` of `occurrence`, in

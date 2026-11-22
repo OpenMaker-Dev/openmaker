@@ -1032,7 +1032,19 @@ impl NativeProvider {
                     record_number: context.record_number.or(previewed.context.record_number),
                     ..previewed.context.clone()
                 },
-                None => context,
+                // A record made in the transaction keeps the place it was
+                // made at, which its auto-entered Get ( RecordNumber ) was
+                // given, through later writes that give none: a window's
+                // commit or navigation forgets it, the record is still
+                // the transaction's to create (#526).
+                None => WriteContext {
+                    record_number: context.record_number.or_else(|| {
+                        before
+                            .filter(|h| matches!(h.change, Change::New(_)))
+                            .and_then(|h| h.context.record_number)
+                    }),
+                    ..context
+                },
             };
             let held = Held {
                 script,
@@ -2003,12 +2015,18 @@ impl NativeProvider {
             }
         };
         apply_values(&mut node, cells.clone());
+        let file_language = self.file_language()?;
         let imported_unique = plan.unique_fields_for(Entry::import(true));
-        if later.is_empty() {
-            note_unique(unique, table, imported_unique.clone(), cells, record)?;
-        }
         let mut written = cells.clone();
-        if !later.is_empty() {
+        if later.is_empty() {
+            note_unique(
+                unique,
+                table,
+                imported_unique,
+                cells,
+                (record, file_language),
+            )?;
+        } else {
             let existing = text_values(&stored_record(record, &node));
             // Over what the import left, not the stored row (#1035).
             let ready = self.prepare_record(
@@ -2027,9 +2045,21 @@ impl NativeProvider {
                 .filter(|(cell, _)| !ready.values.contains_key(cell))
                 .map(|(cell, value)| (*cell, value.clone()))
                 .collect();
-            note_unique(unique, table, imported_unique, &kept, record)?;
+            note_unique(
+                unique,
+                table,
+                imported_unique,
+                &kept,
+                (record, file_language),
+            )?;
             let fields = plan.unique_fields_for(entry);
-            note_unique(unique, table, fields.clone(), &ready.values, record)?;
+            note_unique(
+                unique,
+                table,
+                fields.clone(),
+                &ready.values,
+                (record, file_language),
+            )?;
             self.check_unique(table, fields, &ready.values, record, txn)?;
             self.check_lookups(table, plan, entry, &ready.values, record)?;
             // Over what the import left, not the stored row: not named, so a
@@ -3939,8 +3969,13 @@ impl NativeProvider {
         // Whether a related-values list may read the records computed so far
         // (`computed`, below).
         let mut lists = false;
-        for (table, _) in &transaction.order {
-            if !reads_of.contains_key(table) {
+        for key @ (table, _) in &transaction.order {
+            // A deletion evaluates no rules: its table needs no plan.
+            let deleted = transaction
+                .held
+                .get(key)
+                .is_some_and(|held| matches!(held.change, Change::Deleted));
+            if !deleted && !reads_of.contains_key(table) {
                 let (_, plan) = self.table_plan(*table)?;
                 reads_of.insert(*table, plan.related_tables());
                 lists |= plan.checks_related_lists();
@@ -4075,6 +4110,33 @@ impl NativeProvider {
             }
             done.insert(*key);
             let record_key = serial::encode(record);
+            if matches!(held.change, Change::Deleted) {
+                // Prepared from the table's fields and the stored record's
+                // container references alone, with no field-entry plan, as
+                // the ordinary deletion is: a table whose rules OpenMaker
+                // cannot plan still deletes.
+                let table_def = self.table_fields(table)?;
+                let released = match self.read_record(table, record)? {
+                    Some(node) => super::containers::references(
+                        &table_def,
+                        &text_values(&stored_record(record, &node)),
+                        None,
+                    ),
+                    None => Vec::new(),
+                };
+                prepared.push(Prepared {
+                    table: table_def,
+                    record,
+                    node: None,
+                    entry: OwnedNode::leaf(record_key, vec![write::COMMIT_DELETED]),
+                    expected: None,
+                    cells: None,
+                    released,
+                    acquired: Vec::new(),
+                });
+                computed.delete(table, record);
+                continue;
+            }
             let (table_def, plan) = self.table_plan(table)?;
             // The session's global values its formulas read (5.17), for
             // an imported row's later edits as for any held record.
@@ -4126,28 +4188,7 @@ impl NativeProvider {
             }
             let (values, mode, mut node, base) = match &held.change {
                 Change::Imported { .. } => unreachable!("written above"),
-                Change::Deleted => {
-                    let released = match self.read_record(table, record)? {
-                        Some(node) => super::containers::references(
-                            &table_def,
-                            &text_values(&stored_record(record, &node)),
-                            None,
-                        ),
-                        None => Vec::new(),
-                    };
-                    prepared.push(Prepared {
-                        table: table_def,
-                        record,
-                        node: None,
-                        entry: OwnedNode::leaf(record_key, vec![write::COMMIT_DELETED]),
-                        expected: None,
-                        cells: None,
-                        released,
-                        acquired: Vec::new(),
-                    });
-                    computed.delete(table, record);
-                    continue;
-                }
+                Change::Deleted => unreachable!("prepared above"),
                 Change::New(values) => (
                     values,
                     WriteMode::Create,
@@ -4190,12 +4231,13 @@ impl NativeProvider {
             )?;
             self.refuse_related_lists(&table_def, &plan, entry, entered(&ready.values))?;
             let unique_fields = plan.unique_fields_for(entry);
+            let file_language = self.file_language()?;
             note_unique(
                 &mut unique,
                 &table_def,
                 unique_fields.clone(),
                 &ready.values,
-                record,
+                (record, file_language),
             )?;
             self.check_unique(&table_def, unique_fields, &ready.values, record, txn)?;
             self.check_lookups(&table_def, &plan, entry, &ready.values, record)?;
@@ -4373,13 +4415,13 @@ fn note_unique(
     table: &Table,
     fields: Vec<u64>,
     values: &EncodedChanges,
-    record: u64,
+    (record, file_language): (u64, Option<u32>),
 ) -> Result<(), DataError> {
     // Every repetition a write changes (`field_cells`).
     for (field, value) in super::records::field_cells(table, &fields, values) {
         let text = om_scsu::decode_scsu(value)
             .map_err(|e| failure("decode a unique value", format!("{e:?}")))?;
-        let keys = super::records::checked_keys(table, field)?;
+        let keys = super::records::checked_keys(table, field, file_language)?;
         let checked = keys.key(&text).unwrap_or_default();
         // Text keys do not depend on the file's date order.
         let stored = om_query::keys::record_value_keys(

@@ -586,6 +586,9 @@ pub(crate) enum Action {
     /// Delete or Edit > Clear in Layout mode: delete the selected object,
     /// as a change Save Layout stores.
     DeleteLayoutObject,
+    /// Arrange > Align, Distribute or Resize To in Layout mode: move or
+    /// resize the selected objects, as changes Save Layout stores.
+    Arrange(om_data::layout_arrange::Arrangement),
     ToggleToolbar,
     ToggleFormattingBar,
     /// The user typed into a field the account's privilege set lets them
@@ -599,6 +602,11 @@ pub(crate) enum Action {
     /// Edit Value List's OK: save the list's values.
     SetValueListValues(om_data::value_lists::ValuesChange),
     DismissAlert,
+    /// Close the host administrator's message shown (`host_message`).
+    DismissHostMessage,
+    /// The OK of the alert that the host disconnected file `0` (a file id):
+    /// its windows close ([`OpenMakerApp::disconnected_by_host`]).
+    CloseDisconnectedFile(u64),
     /// Discard input refused by before-mutation preparation, keeping accepted drafts.
     DiscardEntryCandidates,
     Minimize,
@@ -685,6 +693,8 @@ impl Action {
                 | Action::Quit
                 | Action::Minimize
                 | Action::DismissAlert
+                | Action::DismissHostMessage
+                | Action::CloseDisconnectedFile(_)
                 | Action::DiscardEntryCandidates
                 | Action::ZoomIn
                 | Action::ZoomOut
@@ -715,6 +725,8 @@ impl Action {
                 | Action::SetView(_)
                 | Action::Minimize
                 | Action::DismissAlert
+                | Action::DismissHostMessage
+                | Action::CloseDisconnectedFile(_)
                 | Action::ZoomIn
                 | Action::ZoomOut
                 | Action::ActualSize
@@ -740,6 +752,16 @@ impl Action {
 }
 
 /// The OpenMaker application.
+/// How long the host administrator's message stays up, in seconds:
+/// FileMaker Pro's closed itself about 30 s after it came
+/// (network-protocol.md 6.5, Medium: polled every 20 s).
+const HOST_MESSAGE_SECONDS: f64 = 30.0;
+
+/// FileMaker Pro's alert when the host disconnects a file
+/// (network-protocol.md 6.5); the administrator's text follows it.
+const HOST_DISCONNECTED: &str =
+    "File has been forcefully disconnected by the host. All affected windows will be closed.";
+
 pub struct OpenMakerApp {
     worker: Worker,
     /// Bumped whenever a session is abandoned; replies from older epochs are
@@ -774,6 +796,16 @@ pub struct OpenMakerApp {
     value_list_edit: Option<(u32, crate::document::value_dialogs::EditDialog)>,
     part_setup: Option<PartSetup>,
     error: Option<String>,
+    /// The host administrators' messages still to show, the first shown
+    /// now ([`Self::host_message`]; #156), and when it was first shown
+    /// (`InputState::time`).
+    host_messages: std::collections::VecDeque<om_data::HostMessage>,
+    /// Files the host disconnected (`0x0870`), by file id, each with the
+    /// alert that says so ([`Self::disconnected_by_host`]).
+    forced_disconnects: std::collections::VecDeque<(u64, String)>,
+    /// The one of them alerted now: the alert's OK closes that file.
+    forced_alert: Option<(u64, String)>,
+    host_message_since: Option<f64>,
     worker_stopped: bool,
     /// Closing the file (and then quitting, when `true`): each window
     /// that closes closes the next, until a trigger or a save stops it.
@@ -814,6 +846,9 @@ pub struct OpenMakerApp {
     /// found for the other windows' viewports.
     web: crate::web_viewer::WebViewers,
     native_parent: Result<crate::web_viewer::NativeParent, crate::web_viewer::Unavailable>,
+    /// The app runs in a native window of the platform's (not a test
+    /// harness's): the Insert commands use the platform's file panel.
+    native_window: bool,
     viewport_windows: crate::web_viewer::ViewportWindows,
     /// Open the form's file when the app first draws (`open_on_launch`).
     open_on_launch: bool,
@@ -894,6 +929,10 @@ impl OpenMakerApp {
             value_list_edit: None,
             part_setup: None,
             error: None,
+            host_messages: Default::default(),
+            forced_disconnects: Default::default(),
+            forced_alert: None,
+            host_message_since: None,
             worker_stopped: false,
             closing: None,
             quit_ready: false,
@@ -917,6 +956,7 @@ impl OpenMakerApp {
             settings_path: crate::settings::default_path(),
             web: Default::default(),
             native_parent: Err(crate::web_viewer::Unavailable::Window),
+            native_window: false,
             viewport_windows: Default::default(),
             open_on_launch: false,
             reconnect: None,
@@ -1126,6 +1166,9 @@ impl OpenMakerApp {
             ctx.options_mut(|options| options.zoom_with_keyboard = false);
             // Keys go to the keystroke triggers before egui sees them.
             ctx.add_plugin(scripts::KeyGate::default());
+            // A dialog reopened by a quick click comes in front of the one
+            // it was opened from.
+            ctx.add_plugin(crate::widgets::RaiseOpened::default());
             self.styled = true;
         }
         if std::mem::take(&mut self.open_on_launch) {
@@ -1280,6 +1323,27 @@ impl OpenMakerApp {
     /// A text field of the current record is entered for typing in Browse,
     /// where Insert's Current Date, Current Time, Current User Name, From
     /// Index and From Last Visited Record put their text.
+    /// Records > Relookup Field Contents can run
+    /// (`om_data::scripts::relookup::available`): asked when the menu is
+    /// drawn and again when its step is dispatched, since typing in the
+    /// same frame, or an edit preparation the step waited for, can change
+    /// the record in between. Not under a paused script either: the step
+    /// would run in a frame above it, and its error, a Cancel's 1
+    /// included, would fail the script's open transaction. Nor while a
+    /// hosted edit is being prepared.
+    pub(super) fn relookup_available(&self) -> bool {
+        !self.script.running
+            && self.script.prompt.is_none()
+            && !self.recovery_holds()
+            && !self.w.document.preparing_edit()
+            && !self.w.document.failed_edit()
+            && om_data::scripts::relookup::available(
+                self.w.mode.runtime(),
+                self.text_field_entered() && self.w.document.active_related.is_none(),
+                self.record_modified(),
+            )
+    }
+
     fn text_field_entered(&self) -> bool {
         self.w.mode == Mode::Browse
             && self.w.connection_lost.is_none()
@@ -1322,6 +1386,7 @@ impl OpenMakerApp {
                 mode: self.w.mode,
                 view: self.w.view,
                 zoom: self.w.document.zoom.percent(),
+                zooms: self.zooms(),
                 session: self.w.session.as_ref(),
                 find: &self.w.find,
                 toolbar: self.w.show_toolbar,
@@ -1385,6 +1450,7 @@ impl OpenMakerApp {
                     && !self.script.busy()
                     && self.script.prompt.is_none()
                     && self.text_field_entered(),
+                relookup: input && self.relookup_available(),
                 own_field: self.w.document.active_related.is_none(),
                 field_undo: self
                     .current_layout_record()
@@ -1410,6 +1476,16 @@ impl OpenMakerApp {
                         !self.w.layout_workspace.saving
                             && self.w.layout_workspace.selection_count(session) > 0
                     }),
+                layout_arrange: match self.w.session.as_ref() {
+                    Some(session)
+                        if self.w.mode == Mode::Layout
+                            && self.design_allowed()
+                            && !self.w.layout_workspace.saving =>
+                    {
+                        self.w.layout_workspace.arrangeable_count(session)
+                    }
+                    _ => 0,
+                },
             },
             actions,
         )
@@ -2033,7 +2109,11 @@ impl OpenMakerApp {
             if busy
                 && !matches!(
                     action,
-                    Action::DismissAlert | Action::Quit | Action::Minimize
+                    Action::DismissAlert
+                        | Action::DismissHostMessage
+                        | Action::CloseDisconnectedFile(_)
+                        | Action::Quit
+                        | Action::Minimize
                 )
             {
                 continue;
@@ -2381,7 +2461,18 @@ impl OpenMakerApp {
         self.change_password_dialog(&ctx);
         self.own_password_dialog(&ctx);
         self.related_sign_in(&ctx);
+        // The next file the host disconnected is alerted about once no other
+        // alert or script dialog is up; a file closed meanwhile is passed.
+        while self.forced_alert.is_none() && self.error.is_none() && self.script.prompt.is_none() {
+            let Some((file, text)) = self.forced_disconnects.pop_front() else {
+                break;
+            };
+            if self.docs().any(|doc| doc.file_id == file) {
+                self.forced_alert = Some((file, text));
+            }
+        }
         self.alert(&ctx, actions);
+        self.host_message(&ctx, actions);
         self.prompt(&ctx);
     }
 
@@ -2677,6 +2768,12 @@ impl OpenMakerApp {
 
     /// A dialog or alert over the document has the keyboard.
     fn dialog_over_document(&self) -> bool {
+        self.dialog_open() || self.host_message_shown()
+    }
+
+    /// A dialog, alert or confirmation of the app's is open: the host's
+    /// message waits for it ([`Self::host_message_shown`]).
+    fn dialog_open(&self) -> bool {
         self.manage_layouts.is_some()
             || self.layout_setup.is_some()
             || self.part_setup.is_some()
@@ -2692,11 +2789,17 @@ impl OpenMakerApp {
             || self.open_file.is_some()
             || self.create_new.is_some()
             || self.local_login.is_some()
+            || self.change_password.is_some()
             || self.own_password.is_some()
+            || self
+                .related_login
+                .as_ref()
+                .is_some_and(|login| login.window == self.w.id)
             || self.w.delete_record
             || self.w.delete_layout.is_some()
             || self.w.delete_portal_row.is_some()
             || self.error.is_some()
+            || self.forced_alert.is_some()
             || self.script.prompt.is_some()
             || self.w.document.other_dialog_open()
             || self.value_list_edit.is_some()
@@ -2989,7 +3092,7 @@ impl OpenMakerApp {
             if input.consume_shortcut(&shortcuts::STATUS_TOOLBAR) {
                 actions.push(Action::ToggleToolbar);
             }
-            if (browse && self.w.view == ViewMode::Form) || self.w.mode == Mode::Preview {
+            if self.zooms() {
                 if input.consume_shortcut(&shortcuts::ZOOM_IN)
                     || input.consume_shortcut(&shortcuts::ZOOM_IN_ALTERNATE)
                 {
@@ -3140,8 +3243,12 @@ impl OpenMakerApp {
     /// A FileMaker-style alert for errors: the app glyph, a bold message
     /// and a blue OK button.
     fn alert(&self, ctx: &egui::Context, actions: &mut Vec<Action>) {
-        let Some(message) = self.error.clone() else {
-            return;
+        // One alert at a time: the host's disconnect of a file, with its own
+        // OK, before any other, which waits for it.
+        let (message, dismiss) = match (&self.forced_alert, &self.error) {
+            (Some((file, text)), _) => (text.clone(), Action::CloseDisconnectedFile(*file)),
+            (None, Some(error)) => (error.clone(), Action::DismissAlert),
+            (None, None) => return,
         };
         let frame = egui::Frame::new()
             .fill(theme::DIALOG_BG)
@@ -3197,10 +3304,161 @@ impl OpenMakerApp {
                         input.key_pressed(Key::Enter) || input.key_pressed(Key::Escape)
                     });
                     if ok.clicked() || key {
-                        actions.push(Action::DismissAlert);
+                        actions.push(dismiss.clone());
                     }
                 });
             });
+    }
+
+    /// The host disconnected window `window`'s file (`0x0870`: an
+    /// administrator's close or disconnect ran out of time;
+    /// network-protocol.md 6.5). The session routes the notice to the
+    /// handles holding the file, and its connection let go of the file at
+    /// once (`om_session`), so the window's provider took it for its own
+    /// file. FileMaker Pro signs out of the file and disconnects, then
+    /// alerts "File has been forcefully disconnected by the host. All
+    /// affected windows will be closed.", with the administrator's text, and
+    /// OK. Here the file's windows lose the connection at once, so nothing
+    /// more is saved or asked of the host, and the alert's OK closes them
+    /// ([`Action::CloseDisconnectedFile`]).
+    pub(super) fn disconnected_by_host(&mut self, window: u32, message: &om_data::HostMessage) {
+        let Some(file) = self.with_window(window, |app| app.w.file_id) else {
+            return;
+        };
+        let queued = self
+            .forced_disconnects
+            .iter()
+            .map(|(queued, _)| *queued)
+            .chain(self.forced_alert.as_ref().map(|(alerted, _)| *alerted))
+            .any(|queued| queued == file);
+        if queued {
+            return;
+        }
+        // Only the file's own windows and what is the file's: the other
+        // files' windows, a close of them under way and their script go on.
+        let lost = om_data::DataError::connection_lost(HOST_DISCONNECTED);
+        if self.with_window(window, |app| app.mark_file_lost(&lost)) == Some(true) {
+            if self.front_doc().file_id == file {
+                self.closing = None;
+            }
+            if self.script.owner_file == Some(file) {
+                self.stop_scripts();
+            }
+        }
+        let mut alert = String::from(HOST_DISCONNECTED);
+        if !message.text.is_empty() {
+            alert.push_str(&format!("\n\n[From Administrator: “{}”]", message.text));
+        }
+        self.forced_disconnects.push_back((file, alert));
+    }
+
+    /// The host's alert that a file was disconnected shows now.
+    pub(super) fn forced_alert_shown(&self) -> bool {
+        self.forced_alert.is_some()
+    }
+
+    /// Whether the host administrator's message shows now: one waits, and
+    /// no other dialog, alert or confirmation is open, whose keys it would
+    /// share (Return, Escape). It waits for them, its countdown not started
+    /// [I: FileMaker Pro shows it over them; OpenMaker's choice].
+    pub(super) fn host_message_shown(&self) -> bool {
+        !self.host_messages.is_empty() && !self.dialog_open()
+    }
+
+    /// The host administrator's message (Send Message), as FileMaker Pro
+    /// shows it: "Message from “<server name>”", the text, and Close, with
+    /// "(This dialog will be dismissed in N seconds.)"; it closes itself
+    /// after [`HOST_MESSAGE_SECONDS`] (network-protocol.md 6.5,
+    /// admin-console.md 9). Messages that came meanwhile follow, one at a
+    /// time.
+    fn host_message(&mut self, ctx: &egui::Context, actions: &mut Vec<Action>) {
+        if !self.host_message_shown() {
+            return;
+        }
+        let Some(message) = self.host_messages.front().cloned() else {
+            return;
+        };
+        let now = ctx.input(|input| input.time);
+        let since = *self.host_message_since.get_or_insert(now);
+        let left = HOST_MESSAGE_SECONDS - (now - since);
+        if left <= 0.0 {
+            actions.push(Action::DismissHostMessage);
+            return;
+        }
+        // The countdown shows whole seconds: the next one comes then.
+        ctx.request_repaint_after(std::time::Duration::from_secs_f64(left.fract().max(0.05)));
+        let frame = egui::Frame::new()
+            .fill(theme::DIALOG_BG)
+            .stroke(egui::Stroke::new(1.0, Color32::from_gray(0xC4)))
+            .corner_radius(CornerRadius::same(12))
+            .shadow(ctx.global_style().visuals.window_shadow)
+            .inner_margin(egui::Margin::same(16));
+        egui::Modal::new(Id::unique("host message"))
+            .frame(frame)
+            .backdrop_color(Color32::from_black_alpha(30))
+            .show(ctx, |ui| {
+                ui.set_width(320.0);
+                ui.label(
+                    RichText::new(format!("Message from “{}”", message.server_name))
+                        .font(egui::FontId::new(theme::BODY, theme::semibold()))
+                        .color(theme::TEXT),
+                );
+                ui.add_space(8.0);
+                ui.add(egui::Label::new(RichText::new(&message.text).color(theme::TEXT)).wrap());
+                ui.add_space(12.0);
+                ui.label(
+                    RichText::new(format!(
+                        "(This dialog will be dismissed in {} seconds.)",
+                        left.ceil() as u64
+                    ))
+                    .color(theme::CAPTION),
+                );
+                ui.add_space(12.0);
+                ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                    let close = widgets::dialog_button(ui, "Close", true, true);
+                    // No other dialog is open (`host_message_shown`):
+                    // Return and Escape, with any modifier, are its own.
+                    let keys = ui.input_mut(|input| {
+                        let before = input.events.len();
+                        input.events.retain(|event| {
+                            !matches!(
+                                event,
+                                egui::Event::Key {
+                                    key: Key::Enter | Key::Escape,
+                                    pressed: true,
+                                    ..
+                                }
+                            )
+                        });
+                        input.events.len() != before
+                    });
+                    if close.clicked() || keys {
+                        actions.push(Action::DismissHostMessage);
+                    }
+                });
+            });
+    }
+
+    /// Whether View's Zoom In, Zoom Out and Actual Size change the window's
+    /// zoom: a layout drawn in Browse's Form or List view, in Find mode
+    /// (which draws its requests as Form view does), or Preview, and Browse's
+    /// Table view, which draws the found set's grid whatever the layout,
+    /// unless Set Zoom Level locked the window's zoom. Layout mode and the
+    /// generic views are not zoomed yet (#36).
+    fn zooms(&self) -> bool {
+        if self.w.zoom_locked {
+            return false;
+        }
+        let Some(session) = self.w.session.as_ref() else {
+            return false;
+        };
+        let drawn = matches!(session.render, crate::session::RenderState::Loaded(_));
+        match self.w.mode {
+            Mode::Browse => drawn || self.w.view == ViewMode::Table,
+            Mode::Find => drawn && self.w.view != ViewMode::Table,
+            Mode::Preview => drawn,
+            Mode::Layout => false,
+        }
     }
 
     fn can_export_records(&self) -> bool {
@@ -3926,11 +4184,7 @@ impl OpenMakerApp {
                 }
             }
             Action::ZoomIn | Action::ZoomOut | Action::ActualSize => {
-                if self.w.session.as_ref().is_some_and(|session| {
-                    matches!(session.render, crate::session::RenderState::Loaded(_))
-                }) && ((self.w.mode == Mode::Browse && self.w.view == ViewMode::Form)
-                    || self.w.mode == Mode::Preview)
-                {
+                if self.zooms() {
                     match action {
                         Action::ZoomIn => self.w.document.zoom.zoom_in(),
                         Action::ZoomOut => self.w.document.zoom.zoom_out(),
@@ -4094,6 +4348,19 @@ impl OpenMakerApp {
                 }
             }
             Action::DeleteLayoutObject => {}
+            Action::Arrange(arrangement) => {
+                if self.w.mode == Mode::Layout
+                    && self.design_allowed()
+                    && !self.w.layout_workspace.saving
+                {
+                    let Some(session) = self.w.session.as_ref() else {
+                        return;
+                    };
+                    if let Err(refusal) = self.w.layout_workspace.arrange(session, arrangement) {
+                        self.error = Some(refusal.to_string());
+                    }
+                }
+            }
             Action::ChangePassword => {
                 let local = self
                     .w
@@ -4171,6 +4438,29 @@ impl OpenMakerApp {
             Action::DismissAlert => {
                 self.error = None;
                 self.w.document.release_focus();
+            }
+            Action::CloseDisconnectedFile(file) => {
+                self.forced_alert = None;
+                // Every window of the file at once, wherever it is: the
+                // other files' windows, the front one included, stay.
+                let window = self
+                    .docs()
+                    .find(|doc| doc.file_id == file)
+                    .map(|doc| doc.id);
+                if let Some(window) = window {
+                    // `close_file` resets what the front file's close or
+                    // open had under way: another file's stays.
+                    let front = self.front_doc().file_id;
+                    let kept = (self.closing, self.opening.clone(), self.status);
+                    self.with_window(window, |app| app.close_file(ctx));
+                    if front != file {
+                        (self.closing, self.opening, self.status) = kept;
+                    }
+                }
+            }
+            Action::DismissHostMessage => {
+                self.host_messages.pop_front();
+                self.host_message_since = None;
             }
             Action::SelectWindow(id) => {
                 // A window behind an open dialog cannot come forward; a
@@ -5400,8 +5690,18 @@ impl OpenMakerApp {
     /// replies, and keeps its unsaved edits on screen; closing the file
     /// stops waiting for the saves it needed.
     fn lose_connection(&mut self, err: &DataError) {
+        if self.mark_file_lost(err) {
+            self.closing = None;
+            self.stop_scripts();
+        }
+    }
+
+    /// [`Self::lose_connection`] for the window's file's own windows: each
+    /// is lost, with what waited in it; `false` when it was lost already.
+    /// The app's close continuation and scripts are left to the caller.
+    fn mark_file_lost(&mut self, err: &DataError) -> bool {
         if self.w.connection_lost.is_some() || self.w.session.is_none() {
-            return;
+            return false;
         }
         self.w.connection_lost = Some(err.message.clone());
         let file = self.w.file_id;
@@ -5442,8 +5742,7 @@ impl OpenMakerApp {
                 doc.delete_portal_row = None;
             });
         }
-        self.closing = None;
-        self.stop_scripts();
+        true
     }
 
     /// The window's notice of a lost connection, in place of the unsaved
@@ -5521,7 +5820,10 @@ impl OpenMakerApp {
         }
         match reply {
             // Taken above; a reconnect's answer is the app's (windows.rs).
-            Reply::ConnectionLost(_) | Reply::Reconnected(_) | Reply::Released => {}
+            Reply::ConnectionLost(_)
+            | Reply::HostMessages(_)
+            | Reply::Reconnected(_)
+            | Reply::Released => {}
             // Unwrapped for the file's windows in `on_response`; here, this
             // window's file takes the schema before the answer.
             Reply::Grown { grown, then } => {
@@ -6169,12 +6471,32 @@ impl OpenMakerApp {
             Reply::ValueListBuilt {
                 list,
                 ticket,
+                related,
                 result,
                 retry_after,
+                generation,
             } => {
-                self.w
-                    .calcs
-                    .accept_built_list(list, ticket, result, retry_after);
+                let calcs = &mut self.w.calcs;
+                // Read under data older than the window has seen (asked
+                // before a change): its request goes, its answer is not
+                // taken. Its reads took a change the window had not seen:
+                // the window's data and lists go, as on a calculation reply
+                // of that generation, and the request this answers with
+                // them.
+                let (result, retry_after) = match calcs.build_is_current(generation) {
+                    true => (result, retry_after),
+                    false => (None, None),
+                };
+                if calcs.observe_build_generation(generation) {
+                    if let Some(session) = &self.w.session {
+                        session.report_data_changed();
+                    }
+                }
+                if related {
+                    calcs.accept_related_list(ticket, result, retry_after);
+                } else {
+                    calcs.accept_built_list(list, ticket, result, retry_after);
+                }
                 ctx.request_repaint();
             }
             Reply::CalcData { needs, result } => {
@@ -6333,6 +6655,13 @@ impl OpenMakerApp {
 impl eframe::App for OpenMakerApp {
     fn ui(&mut self, ui: &mut Ui, frame: &mut eframe::Frame) {
         self.native_parent = crate::web_viewer::NativeParent::of(frame);
+        self.native_window = {
+            use raw_window_handle::{HasWindowHandle, RawWindowHandle};
+            matches!(
+                frame.window_handle().map(|h| h.as_raw()),
+                Ok(RawWindowHandle::AppKit(_))
+            )
+        };
         self.show(ui);
         self.web.flush(frame);
     }
@@ -6435,15 +6764,33 @@ mod tests {
         assert_eq!(app.w.document.zoom.percent(), 150);
         assert_eq!(context.zoom_factor(), 1.0);
 
-        app.w.view = ViewMode::Table;
+        app.w.zoom_locked = true;
+        for action in [Action::ZoomIn, Action::ZoomOut, Action::ActualSize] {
+            app.apply(&context, action);
+            assert_eq!(app.w.document.zoom.percent(), 150);
+        }
+        app.w.zoom_locked = false;
+
+        // List and Table view zoom too, and Find mode's layout.
+        app.w.view = ViewMode::List;
         app.apply(&context, Action::ZoomIn);
-        assert_eq!(app.w.document.zoom.percent(), 150);
+        assert_eq!(app.w.document.zoom.percent(), 200);
+        app.apply(&context, Action::ZoomOut);
         app.w.view = ViewMode::Form;
+        app.w.mode = Mode::Find;
+        app.apply(&context, Action::ZoomIn);
+        assert_eq!(app.w.document.zoom.percent(), 200);
+        app.apply(&context, Action::ZoomOut);
+        app.w.mode = Mode::Browse;
+        app.w.view = ViewMode::Table;
         app.w.session.as_mut().unwrap().render = crate::session::RenderState::Unavailable;
+        app.apply(&context, Action::ZoomIn);
+        assert_eq!(app.w.document.zoom.percent(), 200);
+        app.w.view = ViewMode::Form;
         app.apply(&context, Action::ZoomIn);
         assert_eq!(
             app.w.document.zoom.percent(),
-            150,
+            200,
             "generic fallback keeps its existing scale"
         );
     }
@@ -6467,6 +6814,7 @@ mod tests {
         let mut window = app.window_state();
         assert_eq!(window.zoom, 150);
         window.zoom = 200;
+        window.zoom_locked = true;
         app.on_script_event(
             &context,
             crate::scripting::ScriptEvent::Window(Box::new(crate::scripting::WindowUpdate {
@@ -6484,8 +6832,10 @@ mod tests {
         );
         assert_eq!(app.w.document.zoom.percent(), 200);
         assert_eq!(app.window_state().zoom, 200);
+        assert!(app.window_state().zoom_locked);
         app.apply(&context, Action::CloseFile);
         assert_eq!(app.w.document.zoom.percent(), 100);
+        assert!(!app.window_state().zoom_locked);
     }
 
     /// Layout 1: object 1, a rectangle of `fill`, and object 2, a graphic

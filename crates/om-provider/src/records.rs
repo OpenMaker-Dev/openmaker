@@ -243,10 +243,6 @@ fn exists_in_index_program(
     .to_wire()
 }
 
-/// How the value index of `table`'s `field`, validated as unique or as an
-/// existing value, keys the text checked in it: its index language's form
-/// (query-program.md 7.2), which the record rules require to be one
-/// OpenMaker builds exactly.
 /// The changed values among `values` of `fields`, each repetition's: a
 /// field's own cell for its first, `field * 256 + n` for repetition n of
 /// 2 to 255 (`om_data::rules::cell_of`). A unique value is checked in each
@@ -269,11 +265,19 @@ pub(super) fn field_cells<'v>(
         .collect()
 }
 
-pub(super) fn checked_keys(table: &Table, field: u64) -> Result<TextKeys, DataError> {
+/// How the value index of `table`'s `field`, validated as unique or as an
+/// existing value, keys the text checked in it: its index language's form
+/// (query-program.md 7.2), which the record rules require to be one
+/// OpenMaker builds exactly.
+pub(super) fn checked_keys(
+    table: &Table,
+    field: u64,
+    file_language: Option<u32>,
+) -> Result<TextKeys, DataError> {
     table
         .field(field)
         .and_then(|f| f.decoded_options())
-        .and_then(|o| om_data::rules::checked_text_keys(o.index_language()))
+        .and_then(|o| om_data::rules::value_text_keys(o.index_language(), file_language))
         .ok_or_else(|| {
             DataError::with_code(
                 om_data::found::code::UNSUPPORTED,
@@ -282,16 +286,104 @@ pub(super) fn checked_keys(table: &Table, field: u64) -> Result<TextKeys, DataEr
         })
 }
 
+/// How a value checked in a field's value index is keyed: text in the
+/// index's form (query-program.md 7.2), or a number, date, time or
+/// timestamp in its type's key (7.3), which no index language changes,
+/// dates read in the file's order (#591).
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(super) enum IndexKeys {
+    Text(TextKeys),
+    /// The type and the file's date order.
+    Typed(om_hbam::DataType, om_collate::DateOrder),
+}
+
+impl IndexKeys {
+    /// The key `text` is looked up under, as the index holds it; for a
+    /// typed source `None` when it is not one of the type's values
+    /// OpenMaker keys (empty, no digit, digits among other characters).
+    fn key(self, text: &str) -> Option<Vec<u8>> {
+        match self {
+            IndexKeys::Text(keys) => keys.key(text),
+            IndexKeys::Typed(data_type, order) => {
+                om_query::keys::value_keys(data_type, text, order, TextKeys::Collated)
+                    .into_iter()
+                    .find(|key| {
+                        key != om_query::keys::EMPTY_TEXT_KEY && key != om_query::keys::INVALID_KEY
+                    })
+            }
+        }
+    }
+
+    /// The keys a stored value's repetitions `texts` have in the index.
+    fn stored(self, texts: &[String]) -> std::collections::BTreeSet<Vec<u8>> {
+        match self {
+            // Text keys do not depend on the file's date order.
+            IndexKeys::Text(keys) => record_value_keys(
+                om_hbam::DataType::Text,
+                texts,
+                om_collate::DateOrder::MonthDayYear,
+                keys,
+            ),
+            IndexKeys::Typed(data_type, order) => {
+                record_value_keys(data_type, texts, order, TextKeys::Collated)
+            }
+        }
+    }
+}
+
 /// How the value index of `table`'s `field`, the source of a value list,
-/// keys a value looked up in it: its form where OpenMaker builds it
-/// exactly, else English, as before (#159).
-fn list_keys(catalog: &Catalog, table: u64, field: u64) -> TextKeys {
-    catalog
-        .table(table)
-        .and_then(|t| t.field(field))
+/// keys a value looked up in it. A text source keys it in its value form
+/// ([`om_data::rules::value_text_keys`], language 0 the file's own); one in
+/// a language OpenMaker does not key (the tailored ones, #299, or language
+/// 0 in a file whose locale record cannot be read) refuses the check (3),
+/// as a unique or existing-value check does, rather than keying the value
+/// in English, which can both miss the host's key and match another value
+/// (#571). A number, date, time or timestamp source keys it as its type,
+/// whatever its language, dates in `order`, the file's (#591); a date or
+/// timestamp source refuses the check (3) when that order is not known
+/// (`None`: the file's locale record does not decode), rather than read
+/// day and month the wrong way round.
+fn list_keys(
+    catalog: &Catalog,
+    table: u64,
+    field: u64,
+    (file_language, order, decimal): (Option<u32>, Option<om_collate::DateOrder>, char),
+) -> Result<IndexKeys, DataError> {
+    use om_hbam::DataType;
+    let field_def = catalog.table(table).and_then(|t| t.field(field));
+    // A number in a file whose decimal separator is not a point is not keyed
+    // as the file reads it, neither here nor by OpenMaker Server's index
+    // builder (`1.000` is 1000 in German, keyed as 1), until #415: it is
+    // looked up as text, as before #591.
+    let typed = |f: &&om_hbam::Field| match f.data_type {
+        DataType::Number => decimal == '.',
+        DataType::Date | DataType::Time | DataType::Timestamp => true,
+        _ => false,
+    };
+    if let Some(def) = field_def.filter(typed) {
+        let dated = matches!(def.data_type, DataType::Date | DataType::Timestamp);
+        return match (order, dated) {
+            (Some(order), _) => Ok(IndexKeys::Typed(def.data_type, order)),
+            // Numbers and times read no date order.
+            (None, false) => Ok(IndexKeys::Typed(def.data_type, Default::default())),
+            (None, true) => Err(DataError::unsupported(format!(
+                "Field {field}, the source of a value list, holds dates in an order OpenMaker \
+                 does not know: the file's locale record cannot be read."
+            ))),
+        };
+    }
+    let keys = field_def
         .and_then(|f| f.decoded_options())
-        .and_then(|o| om_data::rules::checked_text_keys(o.index_language()))
-        .unwrap_or(TextKeys::Collated)
+        .and_then(|o| om_data::rules::value_text_keys(o.index_language(), file_language));
+    if field_def.is_some_and(|f| f.data_type != DataType::Text) {
+        return Ok(IndexKeys::Text(keys.unwrap_or(TextKeys::Collated)));
+    }
+    keys.map(IndexKeys::Text).ok_or_else(|| {
+        DataError::unsupported(format!(
+            "Field {field}, the source of a value list, has no index OpenMaker can check a \
+             value in."
+        ))
+    })
 }
 
 /// ExistsInIndex's answer, `[3, 3, 00]` = `01 01` (another record holds the
@@ -357,8 +449,32 @@ impl NativeProvider {
 
     /// [`Self::record_plan`] of base table `table` (a related record's).
     pub(super) fn table_plan(&mut self, table: u64) -> Result<(Table, RecordPlan), DataError> {
+        let (mut table, data) = self.table_catalog(table)?;
+        let tree = download_tree(std::slice::from_ref(&data))?;
+        table.fields = om_hbam::catalog::fields(&tree, table.id)
+            .map_err(|e| failure("decode server fields", e))?;
+        let plan = self.plan_table(&table, Some(&tree))?;
+        Ok((table, plan))
+    }
+
+    /// Base table `table` with its fields as the host has them now, and no
+    /// rules planned: what a held deletion reads (its containers'
+    /// references). A deletion evaluates no field-entry rules, so a table
+    /// whose rules OpenMaker cannot plan still deletes, as the ordinary
+    /// deletion does.
+    pub(super) fn table_fields(&mut self, table: u64) -> Result<Table, DataError> {
+        let (mut table, data) = self.table_catalog(table)?;
+        let tree = download_tree(std::slice::from_ref(&data))?;
+        table.fields = om_hbam::catalog::fields(&tree, table.id)
+            .map_err(|e| failure("decode server fields", e))?;
+        Ok(table)
+    }
+
+    /// Base table `table` of the catalog, and its field catalog downloaded
+    /// now.
+    fn table_catalog(&mut self, table: u64) -> Result<(Table, Download), DataError> {
         self.refuse_imported_table(table)?;
-        let mut table = self
+        let table = self
             .catalog
             .table(table)
             .ok_or_else(|| {
@@ -369,11 +485,7 @@ impl NativeProvider {
             })?
             .clone();
         let data = download(self.session_mut()?, &[table.id, 3])?;
-        let tree = download_tree(std::slice::from_ref(&data))?;
-        table.fields = om_hbam::catalog::fields(&tree, table.id)
-            .map_err(|e| failure("decode server fields", e))?;
-        let plan = self.plan_table(&table, Some(&tree))?;
-        Ok((table, plan))
+        Ok((table, data))
     }
 
     /// The rules of `table` ([`RecordPlan::from_file_schema`]) over
@@ -643,6 +755,7 @@ impl NativeProvider {
             // A write's operation supplies it (`Self::write_context`).
             context: WriteContext::default(),
             held: None,
+            others_held: Default::default(),
             related_needs: None,
         })
     }
@@ -932,6 +1045,7 @@ impl NativeProvider {
         record: u64,
         txn: u32,
     ) -> Result<(), DataError> {
+        let file_language = self.file_language()?;
         let mut changed: BTreeMap<u64, BTreeSet<String>> = BTreeMap::new();
         for (field, value) in field_cells(table, &fields, values) {
             let text = om_scsu::decode_scsu(value)
@@ -952,7 +1066,7 @@ impl NativeProvider {
             }
             // Keep the index lock across both the queries and any scan,
             // including checks of pending transaction records.
-            let keys = checked_keys(table, field)?;
+            let keys = checked_keys(table, field, file_language)?;
             let texts: Vec<String> = texts.into_iter().collect();
             if self.any_in_index(table.id, field, &texts, record, keys)? {
                 return Err(DataError::with_code(
@@ -980,6 +1094,7 @@ impl NativeProvider {
         values: &EncodedChanges,
         record: u64,
     ) -> Result<(), DataError> {
+        let file_language = self.file_language()?;
         let existing = plan.existing_fields_for(entry);
         for (&cell, value) in values {
             let Some(value) = value else {
@@ -996,7 +1111,13 @@ impl NativeProvider {
                 cell >> 8
             };
             if existing.contains(&field)
-                && !self.in_index(table.id, field, &text, record, checked_keys(table, field)?)?
+                && !self.in_index(
+                    table.id,
+                    field,
+                    &text,
+                    record,
+                    IndexKeys::Text(checked_keys(table, field, file_language)?),
+                )?
             {
                 return Err(plan.refusal(field, error::NOT_EXISTING));
             }
@@ -1007,7 +1128,15 @@ impl NativeProvider {
                     .table_of(occurrence)
                     .map(|t| t.id)
                     .ok_or_else(|| DataError::new("A value list names a missing table."))?;
-                let keys = list_keys(&self.catalog, source_table, source);
+                let file_language = self.file_language()?;
+                let order = (!schema.locale_unreadable).then_some(schema.locale.date_order);
+                let decimal = schema.locale.decimal_separator;
+                let keys = list_keys(
+                    &self.catalog,
+                    source_table,
+                    source,
+                    (file_language, order, decimal),
+                )?;
                 if !self.in_index(source_table, source, &text, 0, keys)? {
                     return Err(plan.refusal(field, error::NOT_IN_LIST));
                 }
@@ -1060,20 +1189,56 @@ impl NativeProvider {
         field: u64,
         text: &str,
         ignore: u64,
-        keys: TextKeys,
+        keys: IndexKeys,
     ) -> Result<bool, DataError> {
-        self.any_in_index(table, field, std::slice::from_ref(&text), ignore, keys)
+        // The key as the index holds it (query-program.md 7.1-7.3). A value
+        // a typed source's type does not read as one OpenMaker keys (a
+        // decimal comma, digits among other characters, until #415) is
+        // looked up as text, as before #591.
+        let key = match (keys, keys.key(text)) {
+            (_, Some(key)) => key,
+            (IndexKeys::Typed(..), None) => {
+                return self.in_index(
+                    table,
+                    field,
+                    text,
+                    ignore,
+                    IndexKeys::Text(TextKeys::Collated),
+                )
+            }
+            (IndexKeys::Text(_), None) => {
+                return Err(DataError::new("A validated field's index holds no keys."))
+            }
+        };
+        match self.index_answer(table, field, std::slice::from_ref(&key), ignore)? {
+            Some(answer) => Ok(answer),
+            None => {
+                // An unkeyed stored value of a typed source compares as text.
+                let as_text = match keys {
+                    IndexKeys::Typed(..) => TextKeys::Collated.key(text),
+                    IndexKeys::Text(_) => None,
+                };
+                self.scan_index_keys(
+                    table,
+                    field,
+                    std::slice::from_ref(&key),
+                    ignore,
+                    keys,
+                    as_text.as_deref(),
+                )
+            }
+        }
     }
 
     /// [`Self::in_index`] for any of `texts`: their distinct index keys
     /// asked together (at most [`EXISTS_KEYS`] in one op86), and the stored
     /// records scanned once for every key the host's index could not
     /// answer.
-    fn any_in_index<T: AsRef<str>>(
+    fn any_in_index(
         &mut self,
         table: u64,
         field: u64,
-        texts: &[T],
+        texts: &[String],
         ignore: u64,
         keys: TextKeys,
     ) -> Result<bool, DataError> {
@@ -1081,7 +1246,7 @@ impl NativeProvider {
         // texts that differ only in case, or share a cut key, ask once.
         let asked = texts
             .iter()
-            .map(|text| keys.key(text.as_ref()))
+            .map(|text| keys.key(text))
             .collect::<Option<BTreeSet<Vec<u8>>>>()
             .ok_or_else(|| DataError::new("A validated field's index holds no keys."))?;
         let asked: Vec<Vec<u8>> = asked.into_iter().collect();
@@ -1096,7 +1261,14 @@ impl NativeProvider {
         if unanswered.is_empty() {
             return Ok(false);
         }
-        self.scan_index_keys(table, field, &unanswered, ignore, keys)
+        self.scan_index_keys(
+            table,
+            field,
+            &unanswered,
+            ignore,
+            IndexKeys::Text(keys),
+            None,
+        )
     }
 
     /// The host's op86 ExistsInIndex answer for `asked` in `field`'s value
@@ -1134,16 +1306,19 @@ impl NativeProvider {
     /// host's counts were missing: whether a record other than `ignore`
     /// holds any of `wanted`. The caller's unique-index lock, if any, stays
     /// held. This sees committed records, like op18; pending transaction
-    /// duplicates remain checked by transaction::note_unique.
+    /// duplicates remain checked by transaction::note_unique. For a typed
+    /// lookup, `as_text` is the candidate's text key for unkeyed stored values.
     fn scan_index_keys(
         &mut self,
         table: u64,
         field: u64,
         wanted: &[Vec<u8>],
         ignore: u64,
-        keys: TextKeys,
+        keys: IndexKeys,
+        as_text: Option<&[u8]>,
     ) -> Result<bool, DataError> {
         use om_hbam::{DataType, FieldKind};
+        let file_language = self.file_language()?;
         let unsupported = |reason: &str| {
             DataError::with_code(
                 om_data::found::code::UNSUPPORTED,
@@ -1166,17 +1341,44 @@ impl NativeProvider {
         let options = field
             .decoded_options()
             .ok_or_else(|| unsupported("the field definition is unreadable."))?;
-        // The caller keyed the value as `keys`. Do not pretend that a
-        // typed or differently collated source has equivalent keys, even
-        // though PR65's generic helpers can key some of those formats.
-        if field.data_type != DataType::Text
+        // A typed source's text fallback compares each stored repetition
+        // whole, skipping absent cells, as OpenMaker Server's scan does.
+        let whole = matches!(keys, IndexKeys::Text(_)) && field.data_type != DataType::Text;
+        // The caller keyed the value as `keys`: stored values are keyed
+        // the same, a text source only in that form, a typed one as its
+        // own type (#591).
+        let same_form = match (keys, field.data_type) {
+            (IndexKeys::Text(form), DataType::Text) => {
+                om_data::rules::value_text_keys(options.index_language(), file_language)
+                    == Some(form)
+            }
+            // A typed source's value looked up as text (one its type does
+            // not read as one OpenMaker keys, or a number in a file whose
+            // decimal separator is not a point): its stored values compare
+            // as text too, as OpenMaker Server's scan compares them.
+            (
+                IndexKeys::Text(form),
+                DataType::Number | DataType::Date | DataType::Time | DataType::Timestamp,
+            ) => {
+                form == TextKeys::Collated
+                    || om_data::rules::value_text_keys(options.index_language(), file_language)
+                        == Some(form)
+            }
+            (IndexKeys::Text(_), _) => false,
+            (IndexKeys::Typed(data_type, _), _) => field.data_type == data_type,
+        };
+        if !same_form
             || !matches!(field.kind, FieldKind::Normal | FieldKind::Calculation)
             || options.options & 0x3_0000 != 0
-            || om_data::rules::checked_text_keys(options.index_language()) != Some(keys)
         {
             return Err(unsupported(
-                "only stored text in the index language of the checked value is supported.",
+                "only stored values keyed as the checked value is are supported.",
             ));
+        }
+        // Repetition n is the cell `F * 256 + n` only up to 255; a later one
+        // would be another field's cell (execute-sql.md).
+        if options.max_repetitions > 255 {
+            return Err(unsupported("repetitions past 255 are not read."));
         }
         let repetitions = usize::from(options.max_repetitions.max(1));
         let session = self.session_mut()?;
@@ -1252,25 +1454,42 @@ impl NativeProvider {
                 }
                 let row = stored_record(id, &node);
                 let texts = (1..=repetitions)
-                    .map(|rep| {
+                    .filter_map(|rep| {
                         let cell = om_data::rules::cell_of(field.id, rep as u32);
-                        match cell.and_then(|cell| row.cells.get(&cell)) {
-                            None => Ok(String::new()),
-                            Some(value) => value
-                                .text()
-                                .ok_or_else(|| unsupported("a stored cell is not readable text."))?
-                                .map_err(|e| failure("decode a validation source value", e)),
-                        }
+                        let Some(value) = cell.and_then(|cell| row.cells.get(&cell)) else {
+                            return (!whole).then(|| Ok(String::new()));
+                        };
+                        Some(match value.text() {
+                            Some(text) => {
+                                text.map_err(|e| failure("decode a validation source value", e))
+                            }
+                            None => Err(unsupported("a stored cell is not readable text.")),
+                        })
                     })
                     .collect::<Result<Vec<_>, DataError>>()?;
-                // Text keys do not depend on the file's date order.
-                let held = record_value_keys(
-                    DataType::Text,
-                    &texts,
-                    om_collate::DateOrder::MonthDayYear,
-                    keys,
-                );
-                if wanted.iter().any(|key| held.contains(key)) {
+                if whole {
+                    if texts
+                        .iter()
+                        .any(|text| keys.key(text).is_some_and(|key| wanted.contains(&key)))
+                    {
+                        return Ok(true);
+                    }
+                    continue;
+                }
+                let (texts, unkeyed): (Vec<String>, Vec<String>) = match keys {
+                    IndexKeys::Typed(..) => texts
+                        .into_iter()
+                        .partition(|text| text.is_empty() || keys.key(text).is_some()),
+                    IndexKeys::Text(_) => (texts, Vec::new()),
+                };
+                let held = keys.stored(&texts);
+                if wanted.iter().any(|key| held.contains(key))
+                    || as_text.is_some_and(|key| {
+                        unkeyed
+                            .iter()
+                            .any(|text| TextKeys::Collated.key(text).as_deref() == Some(key))
+                    })
+                {
                     return Ok(true);
                 }
             }
@@ -1407,9 +1626,12 @@ impl NativeProvider {
             _ => None,
         }
         .ok_or_else(|| DataError::new("The server returned an invalid record ID."))?;
+        // A refusal before the commit leaves only a reserved id, which no
+        // record uses (write-path.md 2): it is the write's refusal, with its
+        // code, not a record created and unverified.
+        self.check_unique(table, plan.unique_fields_for(entry), &values, record, txn)?;
+        self.check_lookups(table, plan, entry, &values, record)?;
         (|| {
-            self.check_unique(table, plan.unique_fields_for(entry), &values, record, txn)?;
-            self.check_lookups(table, plan, entry, &values, record)?;
             // A new record has no modification count (write-path.md 5.4).
             let mut node = OwnedNode::list(serial::encode(record), Vec::new());
             apply_values(&mut node, values.clone());
@@ -1760,9 +1982,20 @@ impl NativeProvider {
         Ok(stored)
     }
 
+    /// The error `field` of `table` refuses an entry with: `code`, with the
+    /// field's validation message when it has one.
+    pub(super) fn entry_refusal(
+        &mut self,
+        table: u64,
+        field: u64,
+        code: i32,
+    ) -> Result<DataError, DataError> {
+        Ok(self.entry_plan(table)?.refusal(field, code))
+    }
+
     /// The rules of `table`, from the schema read at open (with the opened
     /// file's tables, as `plan_schema` gives it, for an owner's write).
-    fn entry_plan(&mut self, table: u64) -> Result<RecordPlan, DataError> {
+    pub(super) fn entry_plan(&mut self, table: u64) -> Result<RecordPlan, DataError> {
         self.refuse_imported_table(table)?;
         let table = self
             .catalog
@@ -1796,7 +2029,15 @@ impl NativeProvider {
                 .table_of(occurrence)
                 .map(|t| t.id)
                 .ok_or_else(|| DataError::new("A value list names a missing table."))?;
-            let keys = list_keys(&self.catalog, source_table, source);
+            let file_language = self.file_language()?;
+            let order = (!file.locale_unreadable).then_some(file.locale.date_order);
+            let decimal = file.locale.decimal_separator;
+            let keys = list_keys(
+                &self.catalog,
+                source_table,
+                source,
+                (file_language, order, decimal),
+            )?;
             if !self.in_index(source_table, source, text, 0, keys)? {
                 let field = if self
                     .catalog

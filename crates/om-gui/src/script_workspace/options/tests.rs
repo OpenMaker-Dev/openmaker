@@ -377,6 +377,16 @@ fn go_to_related_records_options_set_its_flags_window_and_found_set() {
         edit(&mut again, "Match all records in current found set"),
         Edit::Flag { on: true, .. }
     ));
+    // Table by Calculation (26.1, `0x400` and slot 8): no picker, so no
+    // stored occurrence beside the calculation the runtime follows.
+    let mut by_calc = stored(ScriptStep::new(74), 35);
+    by_calc.set_flag(flag::OPTION3, true);
+    by_calc.set_calculation(8, Some(&calc("\"Tasks\"")));
+    let mut options = StepOptions::new(by_calc, None);
+    assert!(matches!(edit(&mut options, "Related Table"), Edit::Kept));
+    let answer = ok(&options);
+    assert!(answer.calculation(8).is_some());
+    assert!(answer.data.as_ref().and_then(|d| d.slot(0)).is_none());
 }
 
 #[test]
@@ -642,9 +652,19 @@ fn rows_follow_the_schema_and_keep_what_they_do_not_edit() {
             ("Input 3", false),
             ("Input 3 label", false),
             ("Input 3 uses password character", false),
+            // FileMaker Pro 26.1's "Close after (seconds)" (script-steps.md
+            // 12.4).
+            ("Close after", false),
+            ("Close After Seconds", false),
             ("Button Label Calculations", true)
         ]
     );
+    // Both show what is stored and take no input: the Boolean's byte
+    // width is not measured, so OpenMaker writes neither.
+    for label in ["Close after", "Close After Seconds"] {
+        let row = options.rows.iter().position(|r| r.label == label).unwrap();
+        assert!(!options.enabled(row), "{label}");
+    }
     // Go to Record: Exit after last only with Previous and Next.
     let mut record = ScriptStep::new(16);
     record

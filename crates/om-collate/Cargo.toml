@@ -9,6 +9,7 @@ description = "FileMaker text index keys (UCA 5.2.0 primary weights), catalog na
 # distributed under data/LICENSE-UNICODE.
 
 [dependencies]
+encoding_rs = "0.8"
 
 [dev-dependencies]
 om-hbam = { path = "../om-hbam" }
