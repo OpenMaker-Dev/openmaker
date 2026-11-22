@@ -2125,6 +2125,34 @@ New Layout/Report are refused with an alert asking for Save Layout or
 Revert Layout. Saving them is OpenMaker's choice of UI (FileMaker Pro saves a layout's changes when the user leaves
 it or confirms), and so are the handles' size and the outline.
 
+**Arranging objects.** Arrange > Align (Left Edges, Vertical Centers,
+Right Edges, Top Edges, Horizontal Centers, Bottom Edges), Distribute
+(Horizontally, Vertically) and Resize To (Smallest or Largest Width,
+Height, or Width and Height) apply to the selected objects when every one
+of them can be moved. They need two objects, and three to distribute. The
+new frames are changes like a drag's: outlined until Save Layout, which
+sends them in the same request, or dropped by Revert Layout. The frames
+come from `om_data::layout_arrange`, which `om-author`'s `arrange_objects`
+runs too ([authoring](authoring.md), "Arranging objects").
+- Edges align to the object farthest out, as Claris documents it. Centers
+  align to the middle of the objects' extent, and Distribute keeps the two
+  outermost objects and spaces the others evenly; both are OpenMaker's
+  reading of the help (re/client-ui.md, "Layout mode: Align, Distribute
+  and Resize To").
+- Changed left and top edges land on whole points. Objects too wide (tall)
+  together to distribute with equal gaps get evenly spaced leading edges
+  instead. Arrange shows an error and leaves the draft intact if rounding
+  would change the distribution order or a new frame would collapse to
+  a point.
+- A pending move keeps the revision it was made on through Arrange, so
+  frames derived from it conflict at Save Layout if the layout changed
+  since.
+- The submenus' item names follow the help's wording; FileMaker Pro's are
+  unmeasured.
+- Arrange does nothing for a selection holding a new field or an object
+  that cannot be moved. Group, Lock, the stacking commands, and Arrange's
+  other commands are still disabled ([#70](https://github.com/OpenMaker-Dev/openmaker/issues/70)).
+
 **Deleting an object.** Delete or Backspace (unless a text field has the
 keyboard), or Edit > Clear, deletes the selected object: the canvas and
 the Objects pane stop showing it, as an unsaved change. Objects that can be
