@@ -4977,28 +4977,24 @@ fn paint_object_repetition(
                 return;
             }
             if let Some(parent) = record {
-                // The creation row takes typing on the current record when
-                // the relationship allows creating records and the related
-                // table's rules let the user edit fields of the portal's
-                // occurrence: each record begun there is a row of its own.
-                let creating = calc
-                    .zip(session.record_at(record_index))
-                    .filter(|_| record_index == session.current)
-                    .and_then(|(calc, (_, parent))| {
-                        let occurrence =
-                            om_layout::occurrence_id(object.portal.as_ref()?.table_alias_key)?;
-                        (calc.portal_allows_creation(object)
-                            && state.capabilities.related.contains_key(&occurrence))
-                        .then_some((calc, occurrence, parent.id))
-                    });
-                let new_rows = creating.map_or_else(Vec::new, |(_, occurrence, parent)| {
-                    state.new_rows(layout.id, parent, occurrence)
-                });
                 let parent_id = session.record_at(record_index).map(|(_, r)| r.id);
                 let occurrence = object
                     .portal
                     .as_ref()
                     .and_then(|portal| om_layout::occurrence_id(portal.table_alias_key));
+                // A script's pending rows can already exist in a portal
+                // whose relationship offers no blank creation row.
+                let draft_context = calc
+                    .zip(occurrence)
+                    .zip(parent_id)
+                    .filter(|_| record_index == session.current);
+                let new_rows = draft_context.map_or_else(Vec::new, |((_, occurrence), parent)| {
+                    state.new_rows(layout.id, parent, occurrence)
+                });
+                let can_create = draft_context.is_some_and(|((calc, occurrence), _)| {
+                    calc.portal_allows_creation(object)
+                        && state.capabilities.related.contains_key(&occurrence)
+                });
                 let table = calc
                     .zip(occurrence)
                     .and_then(|(calc, occurrence)| calc.table_of(occurrence));
@@ -5044,8 +5040,16 @@ fn paint_object_repetition(
                     |ui, row| {
                         state.painting_stale = outer_stale || row.stale;
                         let mut row_visited = BTreeSet::new();
+                        let draft = row.new.and_then(|index| {
+                            let id = new_rows
+                                .get(index)
+                                .copied()
+                                .or(can_create.then_some(next))?;
+                            let ((calc, occurrence), parent) = draft_context?;
+                            Some((id, calc, occurrence, parent))
+                        });
                         for &child in &object.children {
-                            match (row.context, row.new.zip(creating)) {
+                            match (row.context, draft) {
                                 (Some(context), _) => paint_object(
                                     ui,
                                     session,
@@ -5060,18 +5064,12 @@ fn paint_object_repetition(
                                     actions,
                                     &mut row_visited,
                                 ),
-                                (None, Some((index, (calc, occurrence, parent)))) => paint_new_row(
+                                (None, Some((id, calc, occurrence, parent))) => paint_new_row(
                                     ui,
                                     (session, document, state, calc),
                                     (layout, origin + row.origin_delta, growth),
                                     child,
-                                    (
-                                        RelatedRow::New {
-                                            occurrence,
-                                            id: new_rows.get(index).copied().unwrap_or(next),
-                                        },
-                                        row.number,
-                                    ),
+                                    (RelatedRow::New { occurrence, id }, row.number),
                                     (parent, record_index),
                                     actions,
                                     &mut row_visited,

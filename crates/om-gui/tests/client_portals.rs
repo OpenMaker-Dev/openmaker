@@ -62,6 +62,12 @@ const PORTAL_EXTRA: u64 = 6;
 const EXTRA: u64 = 200;
 /// A Tasks occurrence related to Tasks by `Name ≠ Name` (relationship 4).
 const OTHER_TASKS: u64 = 0xd0_0005;
+/// Occurrences of Tasks two relationships away, through Notes
+/// ([`add_note_tasks`]).
+const NOTE_TASKS: u64 = 0xd0_0006;
+const BARE_NOTE_TASKS: u64 = 0xd0_0007;
+/// A Notes occurrence three relationships away, through Note tasks.
+const FOLLOW_UP_NOTES: u64 = 0xd0_0008;
 /// The script OnObjectExit of the portal's Body field runs.
 const KEEP: u64 = 18;
 /// A button in the portal's rows, labeled [`ROW_ACTION`]: Perform Script
@@ -264,15 +270,19 @@ fn add_portal_layout(root: &mut OwnedNode) {
 
 /// The Notes portal (three rows of Notes::Body, Notes::Extra and the row
 /// button), its option word `flags`, at `bounds` in its container.
-fn portal_object(flags: u64, bounds: Vec<u8>) -> Vec<u8> {
-    portal_object_rows(flags, (3, 1), bounds)
+fn portal_object(occurrence: u64, flags: u64, bounds: Vec<u8>) -> Vec<u8> {
+    portal_object_rows(occurrence, flags, (3, 1), bounds)
 }
 
-/// [`portal_object`] with `rows` visible rows from its initial row
-/// `initial`.
-fn portal_object_rows(flags: u64, (rows, initial): (u32, u64), bounds: Vec<u8>) -> Vec<u8> {
+/// The portal with the given number of visible rows and initial row.
+fn portal_object_rows(
+    occurrence: u64,
+    flags: u64,
+    (rows, initial): (u32, u64),
+    bounds: Vec<u8>,
+) -> Vec<u8> {
     let mut portal_obj = Vec::new();
-    uint(2, alias(NOTES_OCCURRENCE), &mut portal_obj);
+    uint(2, alias(occurrence), &mut portal_obj);
     uint(3, flags, &mut portal_obj);
     if initial > 1 {
         uint(5, initial, &mut portal_obj);
@@ -325,7 +335,7 @@ fn portal_store_with(flags: u64, body_display: u64, extra: Vec<u8>, setting: Vec
     uint(1, TASK_SETTING, &mut store);
     bytes(
         2,
-        &portal_object(flags, rect(60.0, 10.0, 130.0, 410.0)),
+        &portal_object(NOTES_OCCURRENCE, flags, rect(60.0, 10.0, 130.0, 410.0)),
         &mut store,
     );
     bytes(
@@ -367,20 +377,20 @@ fn portal_store_with(flags: u64, body_display: u64, extra: Vec<u8>, setting: Vec
 
 /// The Portals layout's objects with the portal alone: none of the
 /// layout's own fields.
-fn portal_only_store() -> Vec<u8> {
+fn portal_only_store(occurrence: u64, field: u64) -> Vec<u8> {
     let mut store = Vec::new();
     uint(1, PORTAL, &mut store);
     bytes(
         2,
-        &portal_object(PORTAL_FLAGS, rect(60.0, 10.0, 130.0, 410.0)),
+        &portal_object(occurrence, PORTAL_FLAGS, rect(60.0, 10.0, 130.0, 410.0)),
         &mut store,
     );
     bytes(
         2,
         &shown_field_object(
             PORTAL_BODY,
-            NOTES_OCCURRENCE,
-            BODY,
+            occurrence,
+            field,
             rect(0.0, 0.0, 20.0, 300.0),
             0,
         ),
@@ -420,7 +430,12 @@ fn append_notes(root: &mut OwnedNode, notes: &[(u64, &str)]) {
 /// Relationship 1 allows creating Notes from Tasks (option `0x10`,
 /// file-metadata.md 4.1).
 fn allow_creation(root: &mut OwnedNode) {
-    let path: [&[u8]; 5] = [&[3], &[0xfb], &[5], &[1], &[2]];
+    allow_creation_through(root, 1);
+}
+
+/// Relationship `id` allows creating its right occurrence's records.
+fn allow_creation_through(root: &mut OwnedNode, id: u8) {
+    let path: [&[u8]; 5] = [&[3], &[0xfb], &[5], &[id], &[2]];
     let mut definition = root.at(&path).and_then(|n| n.value.clone()).unwrap();
     let at = definition.len() - 4;
     definition[at..].copy_from_slice(&0x10u32.to_be_bytes());
@@ -437,6 +452,85 @@ fn extra_raw() -> u64 {
 fn add_extra(root: &mut OwnedNode) {
     fixture::add_field(root, NOTES, extra_raw(), "Extra", 1, 1, 0, 0, 0);
     fixture::set_field_repetitions(root, NOTES, extra_raw(), 2);
+}
+
+/// Occurrences "Note tasks" and "Bare note tasks" of Tasks, related from
+/// Notes by `Notes::Body = Name` (relationships 5 and 6), the first allowing
+/// creation: fields two relationships away from Tasks.
+fn add_note_tasks(root: &mut OwnedNode) {
+    fixture::add_occurrence(root, NOTE_TASKS, "Note tasks", TABLE);
+    fixture::add_relationship(root, 5, (NOTES_OCCURRENCE, BODY), 0, (NOTE_TASKS, NAME));
+    allow_creation_through(root, 5);
+    fixture::add_occurrence(root, BARE_NOTE_TASKS, "Bare note tasks", TABLE);
+    fixture::add_relationship(
+        root,
+        6,
+        (NOTES_OCCURRENCE, BODY),
+        0,
+        (BARE_NOTE_TASKS, NAME),
+    );
+}
+
+/// A file whose scripts set fields two relationships away
+/// ([`add_note_tasks`]): "Two hops" from task 1, whose notes are "first"
+/// and "second", "Missing middle" from task 2, which has none.
+/// Relationship 1 (Tasks to Notes) allows creation when `middle` is.
+fn two_hops_host(middle: bool) -> hosted::Hosted {
+    let two_hops = fixture::script(
+        1,
+        "Two hops",
+        vec![
+            fixture::on(86, true),
+            fixture::go_to_record(1),
+            set_field(NOTE_TASKS, CODE, 0, "\"zz\""),
+            note("$made", "Get ( LastError )"),
+            set_field(BARE_NOTE_TASKS, CODE, 0, "\"yy\""),
+            note("$bare", "Get ( LastError )"),
+            without_dialog(75),
+            note("$commit", "Get ( LastError )"),
+            show("\"hops \" & $made & \" \" & $bare & \" \" & $commit"),
+        ],
+    );
+    let missing = fixture::script(
+        2,
+        "Missing middle",
+        vec![
+            fixture::on(86, true),
+            fixture::go_to_record(2),
+            set_field(NOTE_TASKS, CODE, 0, "\"xx\""),
+            show("\"missing \" & Get ( LastError )"),
+        ],
+    );
+    let tag = if middle {
+        "two-hops"
+    } else {
+        "two-hops-closed"
+    };
+    host_note_tasks(tag, &[two_hops, missing], |root| {
+        if middle {
+            allow_creation(root);
+        }
+    })
+}
+
+fn host_note_tasks(
+    tag: &str,
+    scripts: &[Script],
+    change: impl FnOnce(&mut OwnedNode),
+) -> hosted::Hosted {
+    let mut root = fixture::tree(scripts, true);
+    fixture::add_calculated(&mut root);
+    add_notes(&mut root);
+    add_note_tasks(&mut root);
+    change(&mut root);
+    let file = fixture::TempFile::from_tree(&format!("gui-portals-{tag}"), &root);
+    hosted::host_file_with(
+        &format!("portals-{tag}"),
+        Path::new(&file.0),
+        fixture::FILE,
+        (ACCOUNT, PASSWORD),
+        |server| server,
+    )
 }
 
 /// Occurrence "Other tasks" of Tasks, related by `Tasks::Name ≠ Other
@@ -1818,6 +1912,402 @@ fn set_field_creates_a_related_record_through_the_relationship() {
         notes.last().map(|(_, v)| v.clone()),
         Some(vec!["new note".to_owned(), "Ship".to_owned()])
     );
+}
+
+/// Set Field of a field two relationships away (s49): from a task with
+/// notes the record is made from the first related note, its match field
+/// set from the note's Body, and committed with the task; without creation
+/// through the far relationship 101. From a task without notes, without
+/// creation through Tasks to Notes, 415. FileMaker makes the note too when
+/// that relationship allows creation; OpenMaker stops the script there
+/// instead, before it changes anything (#41).
+#[test]
+fn set_field_creates_a_record_two_relationships_away() {
+    for middle in [true, false] {
+        let hosted = two_hops_host(middle);
+        let mut app = open(&hosted);
+        expect(&mut app, "Two hops", "hops 0 101 0");
+        if middle {
+            app.query_all(
+                By::new()
+                    .role(egui::accesskit::Role::Button)
+                    .label("Scripts"),
+            )
+            .next()
+            .unwrap()
+            .click();
+            app.run_steps(2);
+            common::click(&mut app, "Missing middle");
+            common::wait_until(&mut app, "the script to stop", |app| {
+                !app.state().script_running()
+                    && app
+                        .state()
+                        .error()
+                        .is_some_and(|e| e.contains("not supported here yet"))
+            });
+        } else {
+            expect(&mut app, "Missing middle", "missing 415");
+        }
+        let tasks = stored(&hosted, TABLE, &[(NAME, 1), (CODE, 1)]);
+        let made: Vec<&Vec<String>> = tasks
+            .iter()
+            .map(|(_, values)| values)
+            .filter(|values| values[1] == "zz")
+            .collect();
+        assert_eq!(
+            made,
+            [&vec!["first".to_owned(), "zz".to_owned()]],
+            "middle={middle}"
+        );
+        assert!(
+            tasks
+                .iter()
+                .all(|(_, values)| values[1] != "yy" && values[1] != "xx"),
+            "middle={middle}: {tasks:?}"
+        );
+    }
+}
+
+#[test]
+fn set_field_copies_a_calculated_middle_key_and_shows_the_pending_row() {
+    let create = fixture::script(
+        1,
+        "Create from calculated key",
+        vec![
+            fixture::on(86, true),
+            fixture::go_to_layout(PORTALS),
+            fixture::go_to_record(1),
+            set_field(NOTE_TASKS, CODE, 0, "\"key\""),
+            note("$set", "Get ( LastError )"),
+            go_to_portal_row(2),
+            show(
+                "\"draft \" & $set & \":\" & Get ( LastError ) & \":\" & \
+                 Get ( ActivePortalRowNumber ) & \":\" & Get ( ActiveFieldContents )",
+            ),
+        ],
+    );
+    let read = fixture::script(
+        2,
+        "Read calculated relationship",
+        vec![
+            go_to_portal_row(1),
+            show("\"linked \" & Get ( LastError ) & \":\" & Get ( ActiveFieldContents )"),
+        ],
+    );
+    let hosted = host_note_tasks("calculated-middle-key", &[create, read], |root| {
+        const JOIN_KEY: u64 = 3;
+        let mut names = fixture::calculated_names();
+        names.add_field(NOTES, JOIN_KEY, "Join key");
+        fixture::add_field(root, NOTES, JOIN_KEY, "Join key", 2, 1, 0, 0x2_0000, 0);
+        fixture::add_formula(
+            root,
+            &names,
+            (NOTES, NOTES_OCCURRENCE),
+            JOIN_KEY,
+            5,
+            "\"K-\" & Body",
+        );
+        fixture::add_field(root, TABLE, NAME, "Name", 1, 1, 0, 0x8000_0000, 0);
+        fixture::add_relationship(root, 5, (NOTES_OCCURRENCE, JOIN_KEY), 0, (NOTE_TASKS, NAME));
+        allow_creation_through(root, 5);
+        add_portal_layout(root);
+        root.put(
+            &[&[4], &[5], &uint_segment(PORTALS), &[7]],
+            OwnedNode::leaf(Vec::new(), portal_only_store(NOTE_TASKS, CODE)),
+        );
+    });
+    let mut app = open(&hosted);
+    expect(&mut app, "Create from calculated key", "draft 0:0:1:key");
+    common::wait_for_label(&mut app, "Portal Row 1");
+    assert!(app.query(By::new().label("Portal Row 2")).is_none());
+    common::save_record(&mut app);
+    wait_saved(&mut app);
+    assert_eq!(
+        stored(&hosted, TABLE, &[(NAME, 1), (CODE, 1)]).last(),
+        Some(&(3, vec!["K-first".to_owned(), "key".to_owned()]))
+    );
+    expect(&mut app, "Read calculated relationship", "linked 0:key");
+}
+
+#[test]
+fn a_multi_hop_draft_cannot_commit_with_its_parent_deleted() {
+    for delete_first in [true, false] {
+        let mut steps = vec![
+            fixture::on(86, true),
+            fixture::go_to_layout(PORTALS),
+            fixture::go_to_record(1),
+        ];
+        let create = [
+            set_field(FOLLOW_UP_NOTES, BODY, 0, "\"orphan\""),
+            note("$created", "Get ( LastError )"),
+        ];
+        let delete = [
+            go_to_portal_row(1),
+            without_dialog(104),
+            note("$deleted", "Get ( LastError )"),
+        ];
+        if delete_first {
+            steps.extend(delete);
+            steps.extend(create);
+        } else {
+            steps.extend(create);
+            steps.extend(delete);
+        }
+        steps.extend([
+            without_dialog(75),
+            show("\"parent \" & $deleted & \":\" & $created & \":\" & Get ( LastError )"),
+        ]);
+        let tag = if delete_first {
+            "delete-first"
+        } else {
+            "create-first"
+        };
+        let hosted = host_note_tasks(
+            tag,
+            &[fixture::script(1, "Remove parent", steps)],
+            add_follow_up_notes,
+        );
+        let mut app = open(&hosted);
+        let expected = if delete_first {
+            "parent 0:415:0"
+        } else {
+            "parent 0:0:415"
+        };
+        expect(&mut app, "Remove parent", expected);
+        assert_eq!(stored(&hosted, NOTES, &[(BODY, 1)]).len(), 3, "{tag}");
+        assert_eq!(
+            stored(&hosted, TABLE, &[(NAME, 1)])
+                .iter()
+                .any(|(id, _)| *id == 2),
+            !delete_first,
+            "{tag}"
+        );
+        if !delete_first {
+            common::wait_until(&mut app, "the refused ordinary drafts", common::unsaved);
+        }
+    }
+}
+
+fn add_follow_up_notes(root: &mut OwnedNode) {
+    // The first note leads to Task 2 (Ship) in the portal, and
+    // Ship's Code links to the otherwise empty Follow up notes.
+    root.put(
+        &[
+            &uint_segment(NOTES),
+            &[5],
+            &serial::encode(2),
+            &uint_segment(BODY),
+        ],
+        text_node(&[], "Ship"),
+    );
+    root.put(
+        &[
+            &uint_segment(TABLE),
+            &[5],
+            &serial::encode(2),
+            &uint_segment(CODE),
+        ],
+        text_node(&[], "key"),
+    );
+    fixture::add_occurrence(root, FOLLOW_UP_NOTES, "Follow up notes", NOTES);
+    fixture::add_relationship(root, 7, (NOTE_TASKS, CODE), 0, (FOLLOW_UP_NOTES, TASK));
+    allow_creation_through(root, 7);
+    add_portal_layout(root);
+    root.put(
+        &[&[4], &[5], &uint_segment(PORTALS), &[7]],
+        OwnedNode::leaf(Vec::new(), portal_only_store(NOTE_TASKS, NAME)),
+    );
+}
+
+#[test]
+fn rolling_back_a_multi_hop_creation_clears_its_related_drafts() {
+    for (tag, stage_child, revert, expected) in [
+        ("staged", true, false, "transaction 0:0:0:415"),
+        ("pending", false, false, "transaction 0:-:0:415"),
+        ("reverted", true, true, "transaction 0:0:0:0"),
+    ] {
+        let mut steps = vec![
+            fixture::on(86, true),
+            fixture::go_to_layout(PORTALS),
+            fixture::go_to_record(1),
+            ScriptStep::new(205),
+            set_field(FOLLOW_UP_NOTES, BODY, 0, "\"orphan\""),
+            note("$created", "Get ( LastError )"),
+        ];
+        if stage_child {
+            steps.extend([without_dialog(75), note("$staged", "Get ( LastError )")]);
+        } else {
+            steps.push(note("$staged", "\"-\""));
+        }
+        steps.extend([
+            go_to_portal_row(1),
+            without_dialog(104),
+            note("$deleted", "Get ( LastError )"),
+        ]);
+        if revert {
+            steps.push(ScriptStep::new(207));
+        }
+        let commit_at = u16::try_from(steps.len()).unwrap();
+        steps[3].value = commit_at;
+        let mut commit = ScriptStep::new(206);
+        commit.value = commit_at;
+        steps.extend([
+            commit,
+            show(
+                "\"transaction \" & $created & \":\" & $staged & \":\" & $deleted & \":\" & \
+                 Get ( LastError )",
+            ),
+        ]);
+
+        let mut open_transaction = ScriptStep::new(205);
+        open_transaction.value = 4;
+        let mut commit = ScriptStep::new(206);
+        commit.value = 4;
+        let retry = fixture::script(
+            2,
+            "Retry with parent",
+            vec![
+                fixture::on(86, true),
+                open_transaction,
+                set_field(FOLLOW_UP_NOTES, BODY, 0, "\"linked\""),
+                note("$set", "Get ( LastError )"),
+                commit,
+                show("\"retry \" & $set & \":\" & Get ( LastError )"),
+            ],
+        );
+        let hosted = host_note_tasks(
+            tag,
+            &[fixture::script(1, "Remove parent", steps), retry],
+            add_follow_up_notes,
+        );
+        let tasks = stored(&hosted, TABLE, &[(NAME, 1)]);
+        let notes = stored(&hosted, NOTES, &[(BODY, 1), (TASK, 1)]);
+        let mut app = open(&hosted);
+        expect(&mut app, "Remove parent", expected);
+        wait_saved(&mut app);
+        common::wait_for_label(&mut app, "Portal Row 1");
+        assert_eq!(stored(&hosted, TABLE, &[(NAME, 1)]), tasks, "{tag}");
+        assert_eq!(
+            stored(&hosted, NOTES, &[(BODY, 1), (TASK, 1)]),
+            notes,
+            "{tag}"
+        );
+        expect(&mut app, "Retry with parent", "retry 0:0");
+        let saved = stored(&hosted, NOTES, &[(BODY, 1), (TASK, 1)]);
+        assert_eq!(saved.len(), notes.len() + 1, "{tag}");
+        assert_eq!(saved.last().unwrap().1, ["linked", "key"], "{tag}");
+    }
+}
+
+#[test]
+fn reverting_a_transaction_discards_a_child_draft_in_another_window() {
+    let extra_field = extra_raw();
+    for (tag, revert_record) in [("retain-ordinary", false), ("revert-ordinary", true)] {
+        // The optional Revert Record moves the matching Commit Transaction.
+        let commit_index = 12 + u16::from(revert_record);
+        let mut open_transaction = ScriptStep::new(205);
+        open_transaction.value = commit_index;
+        let mut commit = ScriptStep::new(206);
+        commit.value = commit_index;
+        let mut steps = vec![
+            fixture::on(86, true),
+            fixture::go_to_layout(PORTALS),
+            fixture::go_to_record(1),
+            new_window("W2"),
+            set_field(NOTES_OCCURRENCE, extra_field, 1, "\"ordinary\""),
+            note(
+                "$ordinary",
+                "Get ( LastError ) & \":\" & Get ( WindowName )",
+            ),
+            select_window("Tasks"),
+            open_transaction,
+            select_window("W2"),
+            set_field(FOLLOW_UP_NOTES, BODY, 0, "\"orphan\""),
+            note("$created", "Get ( LastError )"),
+        ];
+        if revert_record {
+            steps.push(without_dialog(51));
+        }
+        steps.extend([
+            note("$beforeRevert", "Get ( LastError )"),
+            ScriptStep::new(207),
+            commit,
+            show(
+                "\"revert \" & $ordinary & \":\" & $created & \":\" & $beforeRevert & \
+                 \":\" & Get ( LastError )",
+            ),
+        ]);
+        let revert = fixture::script(1, "Revert from second window", steps);
+        let save = fixture::script(
+            2,
+            "Save second window",
+            vec![
+                fixture::on(86, true),
+                select_window("W2"),
+                without_dialog(75),
+                show("\"save \" & Get ( LastError ) & \":\" & Get ( WindowName )"),
+            ],
+        );
+        let hosted = host_note_tasks(tag, &[revert, save], |root| {
+            add_follow_up_notes(root);
+            add_extra(root);
+        });
+        let notes = stored(&hosted, NOTES, &[(BODY, 1), (TASK, 1)]);
+        let extra_cells = [(extra_field, 1), (extra_field, 2)];
+        let mut extra = stored(&hosted, NOTES, &extra_cells);
+        let mut app = open(&hosted);
+        expect(&mut app, "Revert from second window", "revert 0:W2:0:0:0");
+        assert_eq!(
+            stored(&hosted, NOTES, &[(BODY, 1), (TASK, 1)]),
+            notes,
+            "{tag}"
+        );
+        assert_eq!(stored(&hosted, NOTES, &extra_cells), extra, "{tag}");
+
+        expect(&mut app, "Save second window", "save 0:W2");
+        assert_eq!(
+            stored(&hosted, NOTES, &[(BODY, 1), (TASK, 1)]),
+            notes,
+            "{tag}"
+        );
+        if !revert_record {
+            // Task 1's first related note is record 2.
+            let (_, fields) = extra.iter_mut().find(|(id, _)| *id == 2).unwrap();
+            fields[0] = "ordinary".to_owned();
+        }
+        assert_eq!(stored(&hosted, NOTES, &extra_cells), extra, "{tag}");
+    }
+}
+
+#[test]
+fn set_field_refuses_an_uncommitted_middle_record_even_with_a_key() {
+    let script = fixture::script(
+        1,
+        "Use draft as parent",
+        vec![
+            fixture::on(86, true),
+            fixture::go_to_record(2),
+            set_field(NOTES_OCCURRENCE, BODY, 0, "\"draft key\""),
+            show("\"middle \" & Get ( LastError )"),
+            set_field(NOTE_TASKS, CODE, 0, "\"bad\""),
+            without_dialog(75),
+        ],
+    );
+    let hosted = host_note_tasks("draft-middle", &[script], allow_creation);
+    let mut app = open(&hosted);
+    common::open_menu(&mut app, "Scripts");
+    common::click(&mut app, "Use draft as parent");
+    common::wait_for_label(&mut app, "middle 0");
+    common::click(&mut app, "OK");
+    common::wait_until(&mut app, "the unsupported related write", |app| {
+        !app.state().script_running()
+            && app
+                .state()
+                .error()
+                .is_some_and(|e| e.contains("not supported here yet"))
+    });
+    assert_eq!(stored(&hosted, TABLE, &[]).len(), 2);
+    assert_eq!(stored(&hosted, NOTES, &[]).len(), 3);
 }
 
 #[test]
@@ -3458,7 +3948,7 @@ fn tab_the_portal(root: &mut OwnedNode) {
         control,
         panel(FIRST_TAB, 0, &[]),
         panel(NOTES_TAB, 100, &[PORTAL]),
-        portal_object(PORTAL_FLAGS, rect(1.0, 5.0, 71.0, 405.0)),
+        portal_object(NOTES_OCCURRENCE, PORTAL_FLAGS, rect(1.0, 5.0, 71.0, 405.0)),
     ];
     let store = om_layout::encode::append_to_store(&store, &[TABS], &objects);
     root.put(
@@ -4343,7 +4833,12 @@ fn new_row_top_portal(root: &mut OwnedNode, rows: u32, initial: u64) {
 /// rows from row `initial`.
 fn shaped_portal(root: &mut OwnedNode, flags: u64, rows: u32, initial: u64) {
     let store = om_layout::encode::without_objects(&portal_store(flags), &[PORTAL]).unwrap();
-    let portal = portal_object_rows(flags, (rows, initial), rect(60.0, 10.0, 130.0, 410.0));
+    let portal = portal_object_rows(
+        NOTES_OCCURRENCE,
+        flags,
+        (rows, initial),
+        rect(60.0, 10.0, 130.0, 410.0),
+    );
     root.put(
         &[&[4], &[5], &uint_segment(PORTALS), &[7]],
         OwnedNode::leaf(
@@ -5948,7 +6443,7 @@ fn a_held_new_records_portal_follows_its_auto_entered_key_before_typing() {
     let hosted = host_with("held-new-auto-key", |root| {
         root.put(
             &[&[4], &[5], &uint_segment(PORTALS), &[7]],
-            OwnedNode::leaf(Vec::new(), portal_only_store()),
+            OwnedNode::leaf(Vec::new(), portal_only_store(NOTES_OCCURRENCE, BODY)),
         );
         fixture::add_relationship(root, 1, (OCCURRENCE, CREATOR), 0, (NOTES_OCCURRENCE, TASK));
         for note in [2u64, 3] {

@@ -8,6 +8,7 @@ use om_data::found::{code, FindRequest, FoundSet, FoundSetChange, SortField};
 use om_data::runtime::Mode;
 use om_data::{DataError, DataProvider, Field, FieldChanges, Record, ScriptWrite};
 
+use super::host::transaction::{missing_related_parent, Staged};
 use super::{ScrollRequest, WindowState, WindowUpdate};
 
 /// Values by cell: a field's id for its first repetition, `F * 256 + n`
@@ -58,6 +59,9 @@ pub(crate) struct RelatedDraft {
     /// a script's later Set Field of one too. The user's begun records
     /// take theirs at the save (`match_begun_records`).
     pub matched: bool,
+    /// The stored parent (base table and record) of a script-created
+    /// draft reached through an intermediate occurrence.
+    pub creation_parent: Option<(u64, u64)>,
     /// Delete Portal Row deleted the record.
     pub deleted: bool,
     /// The cells of `typed` whose field object's OnObjectSave already ran,
@@ -184,8 +188,21 @@ impl Uncommitted {
 /// The current record's unsaved changes ([`Window::pending`]).
 #[derive(Clone, Debug)]
 pub(crate) struct Pending {
+    layout: Option<u32>,
+    record: Option<i64>,
     drafts: FieldChanges,
     uncommitted: Uncommitted,
+}
+
+impl Pending {
+    /// Revert Record settled this record's drafts. Keep the window in
+    /// rollback cleanup without restoring what the step discarded.
+    pub fn discard_drafts_for(&mut self, layout: Option<u32>, record: Option<i64>) {
+        if self.layout == layout && self.record == record {
+            self.drafts.clear();
+            self.uncommitted = Uncommitted::default();
+        }
+    }
 }
 
 /// A new record [`Window::make_new_record`] made, for
@@ -207,6 +224,7 @@ struct CommitWrite<'a> {
     skip_validation: bool,
     privilege_set: Option<String>,
     record_numbers: &'a BTreeMap<usize, u64>,
+    transaction: Option<&'a mut Staged>,
 }
 
 /// A record a commit wrote (OnWindowTransaction's parameter).
@@ -722,13 +740,8 @@ impl Window {
         skip_validation: bool,
         privilege_set: Option<String>,
         record_numbers: &BTreeMap<usize, u64>,
+        transaction: Option<&mut Staged>,
     ) -> Result<Vec<Committed>, DataError> {
-        let write = CommitWrite {
-            cell_of,
-            skip_validation,
-            privilege_set,
-            record_numbers,
-        };
         // The record session the window's entry opened for its record
         // (`record.prepare_edit`) is the window's before the reply that
         // says so reaches it: the commit writes through it and commits it,
@@ -743,6 +756,13 @@ impl Window {
         // holds a record outside that transaction (script-runtime.md 8.5):
         // committed apart from it, in its own session.
         let entered = self.state.uncommitted.session && provider.enter_record_session();
+        let write = CommitWrite {
+            cell_of,
+            skip_validation,
+            privilege_set,
+            record_numbers,
+            transaction: transaction.filter(|_| !self.state.uncommitted.session),
+        };
         let committed = self.commit_record(provider, write);
         if entered {
             provider.leave_record_session();
@@ -834,8 +854,16 @@ impl Window {
             skip_validation,
             privilege_set,
             record_numbers,
+            mut transaction,
         } = write;
         let open = &self.state.uncommitted;
+        if open.related.iter().any(|draft| {
+            draft
+                .creation_parent
+                .is_some_and(|(table, record)| open.deletes(table, record))
+        }) {
+            return Err(missing_related_parent());
+        }
         let mut committed = Vec::new();
         // Repetition editors retain numeric cell identities in related drafts.
         // The layout's own repetitions belong to the same record write as its
@@ -907,15 +935,20 @@ impl Window {
                 continue;
             }
             let record = draft.record.and_then(|r| i64::try_from(r).ok());
-            // A new record a refused attempt reserved, which the session
-            // still holds: written there again, as it was made.
-            let reserved = draft
-                .reserved
-                .filter(|_| record.is_none())
-                .filter(|id| provider.related_record_reserved(draft.table, *id));
+            // A new record a refused attempt reserved in a record session
+            // or staged in the script transaction keeps its id on retry.
+            let reserved = draft.reserved.filter(|_| record.is_none()).filter(|id| {
+                transaction
+                    .as_ref()
+                    .is_some_and(|tx| tx.holds_related(draft.table, *id))
+                    || provider.related_record_reserved(draft.table, *id)
+            });
             if draft.deleted {
                 let Some(record) = record else { continue };
                 provider.delete_related_record(draft.table, record)?;
+                if let Some(tx) = transaction.as_deref_mut() {
+                    tx.deleted(draft.table, record);
+                }
                 committed.push(Committed {
                     table: Some(draft.table),
                     record,
@@ -966,6 +999,11 @@ impl Window {
             let written = written?;
             if record.is_none() {
                 self.reserved_made.push((index, written.id));
+                if let (Some(tx), Some(parent)) =
+                    (transaction.as_deref_mut(), draft.creation_parent)
+                {
+                    tx.created_related(draft.table, written.id, parent);
+                }
             }
             committed.push(Committed {
                 table: Some(draft.table),
@@ -1043,6 +1081,8 @@ impl Window {
     /// after the window let go of it.
     pub fn pending(&self) -> Pending {
         Pending {
+            layout: self.state.layout,
+            record: self.state.record,
             drafts: self.state.drafts.clone(),
             uncommitted: self.state.uncommitted.clone(),
         }
@@ -1115,10 +1155,58 @@ impl Window {
     /// [`Self::forget_reverted_record`] for a window that is not current: a
     /// record its own session holds stays, and its found set and place are
     /// read again when it is current.
-    pub fn forget_reverted_record_waiting(&mut self, created: &[(u64, i64)]) {
+    pub fn forget_reverted_record_waiting(
+        &mut self,
+        provider: &mut dyn DataProvider,
+        created: &[(u64, i64)],
+    ) {
         if self.reverted_record(created) {
+            self.discard_previews(provider);
             self.let_go_of_reverted_record();
         }
+    }
+
+    /// Drop the script transaction's drafts, keeping the ordinary drafts
+    /// that were already pending on this record when the window joined.
+    pub fn discard_transaction_drafts(&mut self, provider: &mut dyn DataProvider, before: Pending) {
+        if self.state.uncommitted.session {
+            return;
+        }
+        let before = (self.state.layout == before.layout
+            && self.state.record == before.record
+            && !before.uncommitted.session)
+            .then_some(before);
+        if before.as_ref().is_some_and(|before| {
+            self.state.drafts == before.drafts && self.state.uncommitted == before.uncommitted
+        }) {
+            return;
+        }
+        let kept_previews: BTreeSet<_> = before
+            .iter()
+            .flat_map(|before| &before.uncommitted.related)
+            .filter_map(|draft| draft.prepared.as_ref().map(|prepared| prepared.id))
+            .collect();
+        for draft in &self.state.uncommitted.related {
+            if let Some(prepared) = &draft.prepared {
+                if !kept_previews.contains(&prepared.id) {
+                    provider.discard_prepared(prepared.id);
+                }
+            }
+        }
+        self.reserved_made.clear();
+        if let Some(before) = before {
+            self.restore(before);
+        } else {
+            self.state.uncommitted = Uncommitted::default();
+            self.state.drafts.clear();
+        }
+        self.state.focus = None;
+        self.state.object = None;
+        self.state.portal = None;
+        self.row_record = None;
+        self.state.typing = None;
+        self.state.selection = None;
+        self.changed_data();
     }
 
     /// Revert Record: drop the drafts, the related records' too; a new
@@ -1439,7 +1527,11 @@ impl Window {
     }
 
     /// Delete Record: the record goes; the next one takes its place.
-    pub fn delete(&mut self, provider: &mut dyn DataProvider) -> Result<(), DataError> {
+    pub fn delete(
+        &mut self,
+        provider: &mut dyn DataProvider,
+        transaction: Option<&mut Staged>,
+    ) -> Result<(), DataError> {
         // A new record the window's session holds is not on the host:
         // deleting it is releasing it. An existing record's session set
         // aside for a script's transaction goes first: the delete joins
@@ -1466,6 +1558,9 @@ impl Window {
             self.state.uncommitted.session = false;
         }
         deleted?;
+        if let (Some(tx), Some(table)) = (transaction, self.table) {
+            tx.deleted(table, id);
+        }
         // The previews of rows begun in its portals go with the record:
         // read from the drafts, before they are cleared.
         self.discard_previews(provider);

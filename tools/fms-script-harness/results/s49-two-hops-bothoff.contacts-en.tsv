@@ -1,0 +1,32 @@
+# scan TwoHops: open 0 load 0 scan 0 commit 0; index:id=value (0-based): 0:86=0 1:6=5 2:7=0 3:141=0 4:76=0 5:75=0 6:76=0 7:141=0 8:75=0 9:141=0 10:103=0
+# scan FromMiddle: open 0 load 0 scan 0 commit 0; index:id=value (0-based): 0:86=0 1:6=5 2:7=0 3:141=0 4:76=0 5:75=0 6:76=0 7:75=0 8:76=0 9:141=0 10:75=0 11:141=0 12:103=0
+# scan: close 13
+TwoHops	bothoff-a	0	101|0|0|0|0|	0
+>	1	TwoHops	1	86	0	0	0	0
+>	1	TwoHops	2	6	0	0	0	0
+>	1	TwoHops	3	7	0	0	0	0
+>	1	TwoHops	4	141	0	0	0	0
+>	1	TwoHops	5	76	0	0	0	0
+>	1	TwoHops	6	75	0	0	0	0
+!	101	work : TwoHops : 7 : Set Field
+>	1	TwoHops	7	76	101	0	0	101
+>	1	TwoHops	8	141	0	0	0	0
+>	1	TwoHops	9	75	0	0	0	0
+>	1	TwoHops	10	141	0	0	0	0
+>	1	TwoHops	11	103	0	0	1	0
+FromMiddle	bothoff-b	0	101|0|0|0|0|	0
+>	1	FromMiddle	1	86	0	0	0	0
+>	1	FromMiddle	2	6	0	0	0	0
+>	1	FromMiddle	3	7	0	0	0	0
+>	1	FromMiddle	4	141	0	0	0	0
+>	1	FromMiddle	5	76	0	0	0	0
+>	1	FromMiddle	6	75	0	0	0	0
+!	101	work : FromMiddle : 7 : Set Field
+>	1	FromMiddle	7	76	101	0	0	101
+>	1	FromMiddle	8	75	0	0	0	0
+!	101	work : FromMiddle : 9 : Set Field
+>	1	FromMiddle	9	76	101	0	0	101
+>	1	FromMiddle	10	141	0	0	0	0
+>	1	FromMiddle	11	75	0	0	0	0
+>	1	FromMiddle	12	141	0	0	0	0
+>	1	FromMiddle	13	103	0	0	1	0

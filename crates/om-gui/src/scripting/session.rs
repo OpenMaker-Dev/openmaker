@@ -134,9 +134,8 @@ pub(crate) struct FileState {
     pub next_callback: u32,
     /// Data files scripts opened (until Close Data File or the file closes).
     pub data_files: super::files::DataFiles,
-    /// An open transaction's committed records, for OnWindowTransaction
-    /// at Commit Transaction.
-    pub transaction: Option<Vec<host::transaction::Entry>>,
+    /// The open script transaction's staged records and related dependencies.
+    pub transaction: Option<host::transaction::Staged>,
     /// The last Open Transaction skipped auto-entry ("Skip auto-enter
     /// options"): what the open `transaction` does.
     pub transaction_skips_auto_entry: bool,

@@ -20,11 +20,13 @@
 //! script and runs when every script has ended, one per commit, in commit
 //! order.
 
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, BTreeSet};
 
 use om_data::calc::Value;
+use om_data::DataError;
 
 use super::WorkerHost;
+use crate::scripting::window::{Pending, Window};
 
 /// The field the trigger reads when its field-name option is empty.
 const DEFAULT_FIELD: &str = "OnWindowTransaction";
@@ -55,6 +57,60 @@ pub(crate) struct Entry {
     pub operation: Operation,
     /// The trigger field's value.
     pub content: String,
+}
+
+/// Records staged by the open script transaction. Related writes can
+/// succeed before the rest of a record commit fails, so track their
+/// dependencies at the write, independently of the trigger entries.
+#[derive(Default)]
+pub(crate) struct Staged {
+    pub(super) entries: Vec<Entry>,
+    pub(super) window_drafts: BTreeMap<u32, Pending>,
+    parents: BTreeMap<(u64, i64), (u64, i64)>,
+    deleted: BTreeSet<(u64, i64)>,
+}
+
+impl Staged {
+    /// Keep the ordinary drafts as they were when this window entered the
+    /// script transaction. Returning to the window must keep that baseline.
+    pub(super) fn visit(&mut self, window: &Window) {
+        self.window_drafts
+            .entry(window.id())
+            .or_insert_with(|| window.pending());
+    }
+
+    pub(crate) fn created_related(&mut self, table: u64, record: i64, parent: (u64, u64)) {
+        if let Ok(id) = i64::try_from(parent.1) {
+            self.parents.insert((table, record), (parent.0, id));
+        }
+    }
+
+    pub(crate) fn holds_related(&self, table: u64, record: i64) -> bool {
+        self.parents.contains_key(&(table, record))
+    }
+
+    pub(crate) fn deleted(&mut self, table: u64, record: i64) {
+        self.parents.remove(&(table, record));
+        self.deleted.insert((table, record));
+    }
+
+    pub(super) fn validate_related_parents(&self) -> Result<(), DataError> {
+        if self
+            .parents
+            .values()
+            .any(|parent| self.deleted.contains(parent))
+        {
+            return Err(missing_related_parent());
+        }
+        Ok(())
+    }
+}
+
+pub(crate) fn missing_related_parent() -> DataError {
+    DataError::with_code(
+        415,
+        "A required parent of a new related record is pending deletion.",
+    )
 }
 
 /// The trigger's parameter for `entries` of file `file` (its name without
@@ -415,7 +471,12 @@ impl WorkerHost<'_> {
     pub(super) fn committed_records(&mut self, entries: Vec<Entry>) {
         self.release_records(&entries, Operation::Deleted);
         if let Some(held) = self.s.file.transaction.as_mut() {
-            held.extend(entries);
+            for entry in &entries {
+                if entry.operation == Operation::Deleted {
+                    held.deleted(entry.table, entry.record);
+                }
+            }
+            held.entries.extend(entries);
             return;
         }
         // Once each, as Commit Transaction lists them: a new record a
