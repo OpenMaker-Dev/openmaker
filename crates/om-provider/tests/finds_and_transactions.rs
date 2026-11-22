@@ -3001,6 +3001,85 @@ fn a_value_list_of_a_field_in_an_unkeyed_language_is_not_checked_in_english() {
     }
 }
 
+/// A value list of a number field's values (Tasks::Count; record 2 holds
+/// 5) checks a value as a number, in the index's number keys
+/// (query-program.md 7.3), with the host's index and without (#591):
+/// `5.0` is listed, `4` is not (506). `abc`, no number OpenMaker keys, is
+/// looked up as text, as before: not in the number index (506; by then
+/// the host built it, also when it builds indexes late).
+#[test]
+fn a_value_list_of_a_number_field_checks_values_as_numbers() {
+    // A German file: `3.000` is 3000 there, and record 2's `5.000` is 5000.
+    // OpenMaker does not read such numbers yet, here or in the index
+    // OpenMaker Server builds, and looks them up as text (#415): never as
+    // 3, and `5` is not 5000.
+    let german = om_calc::Locale {
+        language: om_calc::Language::from_id(25),
+        decimal_separator: ',',
+        thousands_separator: '.',
+        ..om_calc::Locale::en_us()
+    };
+    for (late, german) in [
+        (false, None),
+        (true, None),
+        (false, Some(&german)),
+        (true, Some(&german)),
+    ] {
+        let mut root = fixture::tree(&[], true);
+        fixture::set_field_options(&mut root, TABLE, COUNT, 0x8000_0000);
+        fixture::code_in_list_of(&mut root, COUNT);
+        let count_of = |root: &mut OwnedNode, record: u64, text: &str| {
+            root.put(
+                &[
+                    &uint_segment(TABLE),
+                    &[5],
+                    &serial::encode(record),
+                    &uint_segment(COUNT),
+                ],
+                text_node(&[], text),
+            )
+        };
+        if let Some(locale) = german {
+            root.put(
+                &[&[2], &[0x0d]],
+                OwnedNode::leaf(Vec::new(), locale.to_record()),
+            );
+            count_of(&mut root, 2, "5.000");
+        } else {
+            // One cell of two lines: a number field's value is not split.
+            count_of(&mut root, 1, "3,000\r2,000");
+        }
+        let file = TempFile::from_tree("list-of-numbers", &root);
+        let (port, ca_pem) = host_with(&file.0, None, |server| {
+            if late {
+                server.with_late_index_builds()
+            } else {
+                server
+            }
+        });
+        let mut a = open(port, &ca_pem);
+        let tasks = layout(&mut a, "Tasks");
+        let code = |a: &mut NativeProvider, text: &str| {
+            a.update_record(tasks, 1, values(&[("Code", text)]))
+                .map(|_| ())
+                .map_err(|e| e.code)
+        };
+        if german.is_some() {
+            assert_eq!(code(&mut a, "3.000"), Err(Some(506)), "late={late}");
+            assert_eq!(code(&mut a, "5"), Err(Some(506)), "late={late}");
+        } else {
+            // First, while a late index is not built yet: a value no
+            // number reads is looked up as text among the stored values,
+            // each a whole.
+            assert_eq!(code(&mut a, "3,000"), Err(Some(506)), "late={late}");
+            assert_eq!(code(&mut a, "abc"), Err(Some(506)), "late={late}");
+            assert_eq!(code(&mut a, "5.0"), Ok(()), "late={late}");
+            assert_eq!(code(&mut a, "4"), Err(Some(506)), "late={late}");
+        }
+        a.close();
+    }
+}
+
 /// A field-backed list on Code, with no related-value filter or second
 /// display field. This exercises ExistsInIndex, not CreateValueListEx.
 fn validation_list(root: &mut OwnedNode, occurrence: u64, field: u64) {
@@ -3275,10 +3354,13 @@ fn missing_index_never_indexed_text_is_scanned_but_unknown_formats_are_explicit(
         // Language 0 is the file's own, English here: the fixture has no
         // locale record.
         (1, 0, 0, ACCEPTED),
-        (2, 21, 0, UNSUPPORTED),
-        (3, 21, 0, UNSUPPORTED),
-        (4, 21, 0, UNSUPPORTED),
-        (5, 21, 0, UNSUPPORTED),
+        // A number, date, time or timestamp source's `A`, which its type
+        // gives no key, compares as text with a value that has none either,
+        // as on OpenMaker Server (#591).
+        (2, 21, 0, ACCEPTED),
+        (3, 21, 0, ACCEPTED),
+        (4, 21, 0, ACCEPTED),
+        (5, 21, 0, ACCEPTED),
         (6, 21, 0, UNSUPPORTED),
         (1, 21, 0x10000, UNSUPPORTED), // Globals are not record index values.
     ] {
@@ -3296,6 +3378,9 @@ fn missing_index_never_indexed_text_is_scanned_but_unknown_formats_are_explicit(
             0,
         );
         fixture::set_field_language(&mut root, fixture::NOTES, 20, language);
+        if data_type == 2 {
+            fixture::set_field_repetitions(&mut root, fixture::NOTES, 20, 2);
+        }
         root.put(
             &[&uint_segment(fixture::NOTES), &[5], &[1], &[20]],
             text_node(&[], "A"),
@@ -3305,6 +3390,14 @@ fn missing_index_never_indexed_text_is_scanned_but_unknown_formats_are_explicit(
         let mut provider = open(port, &ca);
         let tasks = layout(&mut provider, "Tasks");
         let before = all_records(&mut provider, tasks);
+        if data_type == 2 {
+            // The absent second repetition cannot hold the zero-width
+            // space, even though it has the same text key as empty text.
+            let error = provider
+                .update_record(tasks, 1, values(&[("Code", "\u{200b}")]))
+                .unwrap_err();
+            assert_eq!(error.code, Some(506), "{error}");
+        }
         // A never-indexed text field continues to use the scan on each
         // attempt; unsupported keys are not reported as NOT_IN_LIST.
         for (candidate, expected) in ["a", "A"].into_iter().zip(expected) {

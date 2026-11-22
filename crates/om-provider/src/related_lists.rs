@@ -670,26 +670,39 @@ impl NativeProvider {
                 }
             }
             if !found {
-                // The list keeps one of the values a calculation compares
-                // equal (`FileCalc::list_entries`). A text rule's index keys
-                // can tell those apart, so the value it left out may be
-                // this one. For a typed rule, equal rendered strings can
-                // represent different values, such as 1e3 and 1é3.
-                let equal = |listed: &str| {
-                    matches!(
-                        om_data::calc::ops::compare(
-                            &om_data::calc::Value::text(listed),
-                            &om_data::calc::Value::text(&text),
-                            &cx
-                        ),
-                        om_data::calc::ops::Comparison::Ordered(std::cmp::Ordering::Equal)
-                    )
-                };
-                if data_type == DataType::Text && items.iter().any(|item| equal(&item.value)) {
-                    return Err(unsupported_check(
-                        &name,
-                        "its list's field keys apart values its list as computed takes as one",
-                    ));
+                // A typed destination's miss stays 506 so an import can skip
+                // the row. A text rule's keys can distinguish values the list
+                // deduplicates by calculation equality (such as `A` and `a`
+                // in Unicode raw), so it cannot resolve a match by equality
+                // alone. Read the candidate in the source field's locale and
+                // compare in the list owner's locale, as `list_entries` does.
+                if data_type == DataType::Text {
+                    let listed_type = schema
+                        .field(primary, listed)
+                        .map_or(ValueType::Text, |def| def.value_type);
+                    let listed_locale = schema
+                        .table_of(primary)
+                        .and_then(|source| schema.table_context(source.id))
+                        .map_or(&schema.locale, |file| &file.locale);
+                    let listed_cx = Ctx::new(listed_locale, today);
+                    let list_locale = schema
+                        .value_list_context(list.id)
+                        .map_or(&schema.locale, |file| &file.locale);
+                    let list_cx = Ctx::new(list_locale, today);
+                    let checked = om_data::host::stored_value(&text, listed_type, &listed_cx);
+                    if items.iter().any(|item| {
+                        let listed =
+                            om_data::host::stored_value(&item.value, listed_type, &list_cx);
+                        matches!(
+                            om_data::calc::ops::compare(&listed, &checked, &list_cx),
+                            om_data::calc::ops::Comparison::Ordered(std::cmp::Ordering::Equal)
+                        )
+                    }) {
+                        return Err(unsupported_check(
+                            &name,
+                            "its list's field keys apart values its list as computed takes as one",
+                        ));
+                    }
                 }
                 return Err(plan.refusal(field, error::NOT_IN_LIST));
             }

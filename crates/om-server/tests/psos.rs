@@ -730,6 +730,86 @@ fn a_value_list_of_a_field_in_an_unkeyed_language_refuses_the_check() {
     }
 }
 
+/// A server script's Set Field into a field that must be a member of a
+/// value list of a number field's values (Tasks::Count; record 2 holds 5):
+/// the value is checked as a number, as the index keys numbers
+/// (query-program.md 7.3; #591): `5.0` is listed, `4` is not (506). A value
+/// no number OpenMaker keys is looked up as text, as before: `abc` is not
+/// listed (506), and in a German file a stored `379,5`, a decimal comma
+/// OpenMaker does not read as a number yet (#415), is listed as itself.
+#[test]
+fn a_value_list_of_a_number_field_checks_values_as_numbers() {
+    use fixture::{exit_with, go_to_record, on, script, set_field};
+    let attempt = |n: u64, text: &str| {
+        script(
+            n,
+            "Code from counts",
+            vec![
+                on(86, true),
+                go_to_record(1),
+                set_field(CODE, &format!("\"{text}\"")),
+                exit_with("Get ( LastError )"),
+            ],
+        )
+    };
+    let mut tree = fixture::tree(
+        &[
+            attempt(4, "5.0"),
+            attempt(5, "4"),
+            attempt(6, "abc"),
+            attempt(7, "379,5"),
+            attempt(8, "3"),
+            attempt(9, "3.000"),
+        ],
+        true,
+    );
+    fixture::code_in_list_of(&mut tree, COUNT);
+    let count_of = |tree: &mut om_hbam::OwnedNode, record: u64, text: &str| {
+        tree.put(
+            &[
+                &uint_segment(TABLE),
+                &[5],
+                &serial::encode(record),
+                &uint_segment(COUNT),
+            ],
+            om_scripts::text_node(&[], text),
+        )
+    };
+    // Record 1's Count `3` is followed by a zero-width space, which gives
+    // it no number key: it still compares as text with `3`.
+    count_of(&mut tree, 1, "3\u{200b}");
+    let file = TempFile::from_tree("list-of-numbers", &tree);
+    let port = start(&file, None);
+    let mut client = logged_in(port, "list-of-numbers");
+    // The exit result is the Set Field's error.
+    assert_eq!(run(&mut client, 4).1, "0");
+    assert_eq!(run(&mut client, 5).1, "506");
+    assert_eq!(run(&mut client, 6).1, "506");
+    assert_eq!(run(&mut client, 8).1, "0");
+    client.disconnect().unwrap();
+    // A German file whose records hold Count `3` and `379,5`. `3.000` is
+    // 3000 there; OpenMaker does not read it as one yet and compares it as
+    // text (#415), never as 3.
+    let german = om_calc::Locale {
+        language: om_calc::Language::from_id(25),
+        decimal_separator: ',',
+        thousands_separator: '.',
+        ..om_calc::Locale::en_us()
+    };
+    tree.put(
+        &[&[2], &[0x0d]],
+        om_hbam::OwnedNode::leaf(Vec::new(), german.to_record()),
+    );
+    count_of(&mut tree, 1, "3");
+    count_of(&mut tree, 2, "379,5");
+    let file = TempFile::from_tree("list-of-german-numbers", &tree);
+    let port = start(&file, None);
+    let mut client = logged_in(port, "list-of-german-numbers");
+    assert_eq!(run(&mut client, 7).1, "0");
+    assert_eq!(run(&mut client, 9).1, "506");
+    client.disconnect().unwrap();
+}
+
 #[test]
 fn scripts_run_with_the_requesting_accounts_privileges() {
     use fixture::{exit_with, full_access, go_to_record, on, perform_script, script, set_field};

@@ -793,14 +793,20 @@ checked by the desktop at the commit (`om-provider` `related_lists.rs`).
   locale record does not decode). A text field indexed in a tailored
   language refuses the check with 3 rather than compare in English, where
   `Apfel` would be `Äpfel` ([#571](https://github.com/OpenMaker-Dev/openmaker/issues/571)).
-  A field of another type compares by value, whatever its language. The
+  A destination of another type compares by value, whatever its language. The
   computed list keeps one of the values a calculation compares equal. For
   a text destination, the index keys can distinguish values the list
   groups together (case or accents in Unicode raw or standard, `v` and `w`
   in a Swedish file). If a text value matches only by calculation equality,
   the check returns 3 because deduplication may have dropped an exact match.
-  That refusal ends an import (scripting.md). A numeric miss returns 506
-  and skips the row, even if the values' stored text compares equal.
+  This comparison reads the candidate in the listed field's locale and
+  uses the list owner's collation. The check reparses each rendered list
+  item in the list owner's locale, which can misread a number retaining
+  its original spelling. For example, a US list can read a German `1,500`
+  as 1500 and return 3 for that candidate instead of 506
+  ([#634](https://github.com/OpenMaker-Dev/openmaker/issues/634)). A refusal
+  with 3 ends an import (scripting.md). A numeric destination's miss
+  returns 506 and skips the row, even if the stored text compares equal.
 - **An existing record** is among its own related records with its
   unsaved values, as F91 saw for a related list FileMaker Pro shows. That
   validation reads the same list is inferred.
@@ -1481,8 +1487,17 @@ A value list of a field's values is checked in its source field's value
 index the same way: a text source field in a tailored language refuses
 the check with 3, on the client and on OpenMaker Server, rather than
 keying the value in English, which could both miss the host's key and
-match another value ([#571](https://github.com/OpenMaker-Dev/openmaker/issues/571)). A number, date, time or timestamp
-source is still looked up as text, whatever its language. A new record's
+match another value ([#571](https://github.com/OpenMaker-Dev/openmaker/issues/571)).
+A number, date, time or timestamp source uses its type's index keys,
+with dates read in the file's order (query-program.md 7.3). For example,
+`5.0` matches a listed `5`
+([#591](https://github.com/OpenMaker-Dev/openmaker/issues/591)). Number
+sources in files with a decimal separator other than a point are still
+looked up as text until #415. This avoids false matches against an index
+built by OpenMaker Server, whose number parser keys a German `1.000` as 1.
+A value for which OpenMaker cannot build a typed key also falls back to
+text. On the desktop, a date or timestamp source with an unreadable
+locale record returns 3 because the date order is unknown. A new record's
 refusal before its commit (unique, existing value, value list) is the
 write's, with its code: the record id it reserved stays unused, as
 FileMaker's reserved ids can (write-path.md 2).
@@ -1520,11 +1535,15 @@ limited to stored text keyed in its value form
 standard (3), Unicode raw (2), a language FileMaker leaves untailored, or
 language 0 resolved as above. A field-backed value list is checked in its
 source's value form too; a text source in a tailored language refuses the
-check with 3, with the host's index or without (above, [#571](https://github.com/OpenMaker-Dev/openmaker/issues/571)). Typed,
-tailored-language, global, summary or
-unstored sources are explicitly unsupported without an index; file date
-formats are consequently not interpreted by this fallback. A stored
-text source that prohibits index creation can be scanned on each
+check with 3, with the host's index or without (above,
+[#571](https://github.com/OpenMaker-Dev/openmaker/issues/571)). A stored
+number, date, time or timestamp source is scanned in its type's keys,
+with dates read in the file's order. Text fallback compares whole stored
+repetitions and skips absent cells. A source with more than 255
+repetitions is refused because a later repetition would read another
+field's cell. Tailored-language text, global, summary and unstored
+sources are unsupported without an index. A stored text source that
+prohibits index creation can be scanned on each
 check. Field-backed lists still require a local source without a related
 filter or second display field; CreateValueListEx is a separate path.
 
