@@ -146,6 +146,24 @@ impl FieldDef {
         self.class == FieldClass::Data && self.options & 0x202 != 0
     }
 
+    /// Whether Duplicate Record copies the field's value into the copy: a
+    /// stored data field's, unless the field auto-enters a value, which
+    /// the copy gets anew. A lookup and a calculation that does not
+    /// replace an existing value are copied (auto-entry.md, "Serial
+    /// numbers"; script oracle s46-record-number-ae for a replacing
+    /// calculation). The auto-entry bits (schema-path.md 5.5): a selected
+    /// variable `0x1`, a serial `0x2` or `0x200`, a constant `0x4`, the
+    /// last visited record's value `0x10`, a calculation `0x8` replacing
+    /// with `0x80`.
+    pub fn duplicate_copies(&self) -> bool {
+        let replacing_calculation = self.options & 0x88 == 0x88;
+        self.class == FieldClass::Data
+            && self.stored
+            && !self.global
+            && self.options & (0x1 | 0x2 | 0x4 | 0x10 | 0x200) == 0
+            && !replacing_calculation
+    }
+
     /// The evaluator's view of the field.
     pub fn info(&self) -> FieldInfo {
         let storage = match (&self.class, &self.formula) {
@@ -352,6 +370,11 @@ impl LayoutField {
 pub struct CalcSchema {
     pub file_name: String,
     pub locale: Locale,
+    /// Whether the file holds a locale record `[2, 0d]` that does not
+    /// decode, so that [`Self::locale`] is only the en-US default: the
+    /// file's own language, which index language 0 keys text in, is then
+    /// unknown ([`Self::file_language`]).
+    pub locale_unreadable: bool,
     /// This file's authenticated account metadata, retained when its schema
     /// is imported. `None` stays unavailable; script elevation is session-local.
     pub authenticated_privileges: Option<Privileges>,
@@ -381,6 +404,8 @@ pub struct CalcSchema {
     sql: SqlCatalog,
     /// The document preferences: default layout and file triggers.
     pub file_options: Option<FileOptions>,
+    /// The page setup the file stores, as stored ([`crate::meta::page_format`]).
+    pub page_format: Option<Vec<u8>>,
     /// Value lists in display order.
     value_lists: Vec<ValueList>,
     /// The script catalog's members in display order.
@@ -406,6 +431,7 @@ impl CalcSchema {
         CalcSchema {
             file_name: file_name.into(),
             locale,
+            locale_unreadable: false,
             authenticated_privileges: None,
             authenticated_account: super::AccountInfo::default(),
             font_families: BTreeMap::new(),
@@ -421,6 +447,7 @@ impl CalcSchema {
             names: NameTable::default(),
             sql: SqlCatalog::default(),
             file_options: None,
+            page_format: None,
             value_lists: Vec::new(),
             scripts: Vec::new(),
             table_order: None,
@@ -431,6 +458,15 @@ impl CalcSchema {
             data_sources: HashMap::new(),
             runtime_floor: u64::MAX,
         }
+    }
+
+    /// The file's own language (`Locale::Type`), which an index in
+    /// language 0 keys text in (query-program.md 7.2). `None` when its
+    /// locale record does not decode ([`Self::locale_unreadable`]): the
+    /// en-US default would key a German file's `ä` as `a`. A file with no
+    /// locale record reads as en-US's English.
+    pub fn file_language(&self) -> Option<u32> {
+        (!self.locale_unreadable).then(|| u32::from(self.locale.language.id()))
     }
 
     pub fn add_table(&mut self, id: u64, name: impl Into<String>) {

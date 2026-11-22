@@ -355,6 +355,7 @@ fn choice_error(error: ChoiceError) -> AuthorError {
         | ChoiceError::ListUnsupported(_)
         | ChoiceError::Pending
         | ChoiceError::TooLarge
+        | ChoiceError::OtherValues
         | ChoiceError::NoCommand(_)
         | ChoiceError::Refused(_) => ErrorKind::Unsupported,
     };
@@ -638,7 +639,9 @@ fn only_gained(old: &OwnedNode, new: &OwnedNode) -> bool {
 /// reference index `01`, the parts `03` (whose lists of objects gain the
 /// new ones; checked by `layout_placement::part_lists_extended`), the
 /// object attributes `05`, the object store `07`, the object index `0a`
-/// and the modification stamp.
+/// and the tab order `15` (which gain the edit box; checked by
+/// `layout_placement::object_index_and_tab_order_as_planned`), the table
+/// view `0d` and the modification stamp.
 fn kept_layout_keys(member: &OwnedNode) -> Vec<&OwnedNode> {
     member
         .children
@@ -646,7 +649,7 @@ fn kept_layout_keys(member: &OwnedNode) -> Vec<&OwnedNode> {
         .filter(|c| {
             !matches!(
                 c.segment.as_slice(),
-                [1] | [3] | [5] | [7] | [0x0a] | [0x0d]
+                [1] | [3] | [5] | [7] | [0x0a] | [0x0d] | [0x15]
             ) && !is_stamp(&c.segment)
         })
         .collect()
@@ -4291,6 +4294,23 @@ impl Service {
         } else {
             base.child(&[0x0d]) == member.child(&[0x0d])
         };
+        // The object index and tab order as the plan writes them: the
+        // stored entries as they were, the edit box's entry in each, and its
+        // tab position in its attribute record. A repeated request wrote
+        // nothing, as above.
+        // ([#316](https://github.com/OpenMaker-Dev/openmaker/issues/316))
+        let indexes_as_planned = if placed.changed {
+            layout_placement::object_index_and_tab_order_as_planned(
+                base,
+                &member,
+                placement,
+                placed.field_object,
+            )
+        } else {
+            [0x0a, 0x15]
+                .iter()
+                .all(|&key| base.child(&[key]) == member.child(&[key]))
+        };
         let table_matches = names
             .as_ref()
             .and_then(|schema| schema.table_of(placement.occurrence))
@@ -4311,7 +4331,8 @@ impl Service {
             && issued_past
             && index_kept
             && parts_kept
-            && table_view_as_planned;
+            && table_view_as_planned
+            && indexes_as_planned;
         if found != placed.revision
             || !indexed
             || field_object.is_none()
@@ -4344,6 +4365,7 @@ impl Service {
                 "object_indexed": indexed,
                 "part_lists_extended_as_planned": parts_kept,
                 "table_view_as_planned": table_view_as_planned,
+                "object_index_and_tab_order_as_planned": indexes_as_planned,
                 "last_issued_key_past_new_objects": issued_past,
             })));
         }

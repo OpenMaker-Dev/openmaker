@@ -358,6 +358,10 @@ pub struct CustomDialog {
     /// One to three buttons, default button first.
     pub buttons: Vec<DialogButton>,
     pub inputs: Vec<DialogInput>,
+    /// "Close after (seconds)" (FileMaker Pro 26.1): the dialog closes by
+    /// itself after this many seconds, answering button 0
+    /// ([`DialogResponse::button`]). Always a positive, finite number.
+    pub close_after: Option<f64>,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -378,7 +382,8 @@ pub struct DialogInput {
 /// The user's answer to a custom dialog.
 #[derive(Clone, Debug)]
 pub struct DialogResponse {
-    /// The 1-based button chosen (`Get ( LastMessageChoice )`).
+    /// The 1-based button chosen (`Get ( LastMessageChoice )`); 0 when
+    /// the dialog closed by itself after [`CustomDialog::close_after`].
     pub button: u8,
     /// The input values, in input order.
     pub inputs: Vec<Value>,
@@ -482,6 +487,78 @@ pub struct ServerCallbackCall {
     pub state: u16,
 }
 
+/// Send Mail (63, script-steps.md 12.3): one message, its calculations
+/// evaluated in the current record, and how it is to go.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct Mail {
+    pub via: MailVia,
+    pub to: String,
+    pub cc: String,
+    pub bcc: String,
+    pub subject: String,
+    pub message: String,
+    /// "Collect addresses across found set" for To, CC and BCC
+    /// (`[00 0..2, 03]`): each address calculation over every record of the
+    /// found set, not the current record's alone.
+    pub collect: [bool; 3],
+    /// "Multiple emails (one for each record in found set)" (`[00 3, 03]`).
+    pub one_per_record: bool,
+    /// The attachments' paths, one per line (`[00 0, 82]`).
+    pub attachments: String,
+    /// "With dialog": the message is shown before it goes.
+    pub with_dialog: bool,
+    /// The SMTP options, read when the step sends by SMTP.
+    pub smtp: Option<SmtpOptions>,
+}
+
+/// Send Mail's SMTP options (script-steps.md 12.3), the calculations
+/// evaluated in the current record. Its Debug leaves the password out.
+#[derive(Clone, Default, PartialEq, Eq)]
+pub struct SmtpOptions {
+    /// The sender's name (calculation 5), address (6) and Reply-To (7).
+    pub name: String,
+    pub email: String,
+    pub reply_to: String,
+    /// The server (8) and its port (9), as the calculations give them.
+    pub server: String,
+    pub port: String,
+    /// Encryption `[00 5, 03]`: 0 none, 1 SSL, 2 TLS; 0 when absent.
+    pub encryption: i64,
+    /// Authentication `[00 6, 03]`: 1 none, 2 plain password, 3 CRAM-MD5;
+    /// 1 when absent.
+    pub authentication: i64,
+    /// The user name (10) and password (11), read only with an
+    /// authentication other than none.
+    pub user: String,
+    pub password: String,
+}
+
+impl std::fmt::Debug for SmtpOptions {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("SmtpOptions")
+            .field("name", &self.name)
+            .field("email", &self.email)
+            .field("reply_to", &self.reply_to)
+            .field("server", &self.server)
+            .field("port", &self.port)
+            .field("encryption", &self.encryption)
+            .field("authentication", &self.authentication)
+            .field("user", &self.user)
+            .finish_non_exhaustive()
+    }
+}
+
+/// How Send Mail sends.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum MailVia {
+    /// The user's email client.
+    Client,
+    /// SMTP (`[00 4, 03]`), with the step's server and account.
+    Smtp,
+    /// OAuth (`[00 7, 03]`), Google or Microsoft.
+    OAuth,
+}
+
 /// Insert from URL.
 #[derive(Clone, Debug)]
 pub struct UrlRequest {
@@ -524,6 +601,37 @@ pub enum Replacement<'a> {
     /// The calculation, evaluated on each record after the host made it
     /// current.
     Calculation(&'a mut dyn FnMut(&mut dyn ScriptHost) -> Value),
+}
+
+/// The `index`th of [`Replacement::Serial`]'s numbers from `initial`: its
+/// last run of digits counts up by `increment`, keeping its width, and the
+/// rest stays ("INV0009" + 1 = "INV0010"); text without a digit stays as
+/// it is. `None` when the digits or the result do not fit an `i128`.
+pub fn serial_text(initial: &str, increment: i64, index: u64) -> Option<String> {
+    let end = initial
+        .char_indices()
+        .rev()
+        .find(|(_, c)| c.is_ascii_digit())
+        .map(|(i, c)| i + c.len_utf8());
+    let Some(end) = end else {
+        return Some(initial.to_owned());
+    };
+    let start = initial[..end]
+        .char_indices()
+        .rev()
+        .take_while(|(_, c)| c.is_ascii_digit())
+        .last()
+        .map_or(end, |(i, _)| i);
+    let digits = &initial[start..end];
+    let step = i128::from(increment).checked_mul(i128::from(index))?;
+    let number = digits.parse::<i128>().ok()?.checked_add(step)?;
+    Some(format!(
+        "{}{:0width$}{}",
+        &initial[..start],
+        number,
+        &initial[end..],
+        width = digits.len()
+    ))
 }
 
 /// Data file encodings (Write to / Read from Data File).
@@ -675,6 +783,15 @@ pub trait ScriptHost:
     /// The account's access to a script.
     fn script_access(&mut self, _file: FileId, _script: u64) -> ScriptAccess {
         ScriptAccess::default()
+    }
+
+    /// Whether the Script Debugger may stop in a script and show its steps:
+    /// FileMaker runs a script the account may only execute ("Executable
+    /// Only") whole and hides its steps, unless the user authenticated with
+    /// full access (script-runtime.md 6.4). No script by default, so a host
+    /// shows none it has not checked.
+    fn script_debuggable(&mut self, _file: FileId, _script: u64) -> bool {
+        false
     }
 
     /// Raise the file user to full access for one step, or restore it.
@@ -897,6 +1014,12 @@ pub trait Fields {
     }
     /// Set Field By Name (147): `Table::Field`, as calculated.
     fn set_field_by_name(&mut self, _name: &str, _value: Value) -> HostResult {
+        Err(HostError::Unsupported)
+    }
+    /// The field a calculated name names, as Set Field By Name (147)
+    /// finds it: `Occurrence::Field`, or a field of the current layout's
+    /// occurrence (Replace Field Contents by Name, 249).
+    fn field_by_name(&mut self, _name: &str) -> HostResult<FieldRef> {
         Err(HostError::Unsupported)
     }
     /// The value of a field target (Show Custom Dialog's inputs).
@@ -1373,6 +1496,10 @@ pub trait Network {
     fn fetch_url(&mut self, _request: &UrlRequest) -> HostResult<UrlResponse> {
         Err(HostError::Unsupported)
     }
+    /// Send Mail (63).
+    fn send_mail(&mut self, _mail: &Mail) -> HostResult {
+        Err(HostError::Unsupported)
+    }
     /// Execute FileMaker Data API (203): the JSON response.
     fn execute_data_api(&mut self, _request: &str) -> HostResult<Value> {
         Err(HostError::Unsupported)
@@ -1495,5 +1622,23 @@ mod window_style_tests {
         assert_eq!(of(0x0037_0608).style, WindowStyle::Unknown(0x08));
         // No word is FileMaker's default, a document window.
         assert_eq!(WindowOptions::from_word(None).style, WindowStyle::Document);
+    }
+}
+
+#[cfg(test)]
+mod serial_tests {
+    use super::serial_text;
+
+    #[test]
+    fn serial_numbers_count_up_the_last_digits() {
+        assert_eq!(serial_text("1", 1, 0).as_deref(), Some("1"));
+        assert_eq!(serial_text("1", 1, 4).as_deref(), Some("5"));
+        assert_eq!(serial_text("INV0009", 1, 1).as_deref(), Some("INV0010"));
+        assert_eq!(serial_text("A-10-x", 5, 2).as_deref(), Some("A-20-x"));
+        assert_eq!(serial_text("none", 1, 3).as_deref(), Some("none"));
+        // Past an i128, refused rather than wrapped.
+        let max = i128::MAX.to_string();
+        assert_eq!(serial_text(&max, 1, 1), None);
+        assert_eq!(serial_text(&format!("{max}0"), 1, 0), None);
     }
 }

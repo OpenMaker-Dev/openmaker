@@ -18,6 +18,16 @@ impl Settings {
         }
     }
 
+    /// The paper a file's stored page setup gives (`[2, 87]`,
+    /// `CalcSchema::page_format`), when its common format reads: the file
+    /// session's paper until a Page Setup is accepted in it.
+    pub fn stored_paper(
+        schema: Option<&om_data::host::CalcSchema>,
+    ) -> Option<om_layout::paper::PaperSettings> {
+        let bytes = schema?.page_format.as_deref()?;
+        Self::restored(bytes).ok().map(|settings| settings.paper)
+    }
+
     pub fn restored(bytes: &[u8]) -> Result<Self, String> {
         if bytes.len() > 1024 * 1024 {
             return Err("Page format exceeds 1 MiB".into());
@@ -173,12 +183,29 @@ pub(crate) mod tests {
     // plus an opaque platform record. No catalog/customer bytes are used.
     pub(crate) const A4: &[u8] = b"Comm\x00\x00\x00\x1d\x00\x3f\x80\x00\x00\xc1\x08\x00\x00\xc1\x08\x00\x00\x44\x12\xb1\x48\x44\x50\x57\x0a\x44\x10\x91\x48\x44\x4e\x37\x0aM_PM\x00\x00\x00\x03raw";
 
+    /// The `Comm` chunk FileMaker Pro 26 for macOS stored in a file's page
+    /// setup `[2, 87]` (before its `M_PM` print record, left out here): US
+    /// Letter portrait at 100%, the sheet -18, -18 to 594, 774 around a
+    /// 576 x 734 printable area, the printer's 18 / 40 / 18 / 18 margins.
+    pub(crate) const STORED_LETTER: &[u8] = b"Comm\x00\x00\x00\x1d\x00\x3f\x80\x00\x00\xc1\x90\x00\x00\xc1\x90\x00\x00\x44\x14\x80\x00\x44\x41\x80\x00\x44\x10\x00\x00\x44\x37\x80\x00";
+
     #[test]
     fn page_setup_common_format_is_bounded_and_preserves_native_records() {
         let settings = Settings::restored(A4).unwrap();
         assert!((settings.paper.width - 595.27).abs() < 0.01);
         assert!((settings.paper.height - 841.86).abs() < 0.01);
         assert_eq!(settings.native_page_format.as_deref(), Some(A4));
+        // Native bytes read as the sheet they describe: the big-endian f32
+        // reading holds for what FileMaker Pro writes.
+        let stored = Settings::restored(STORED_LETTER).unwrap();
+        assert_eq!(
+            (
+                stored.paper.width,
+                stored.paper.height,
+                stored.paper.orientation
+            ),
+            (612.0, 792.0, Orientation::Portrait)
+        );
         for bad in [
             A4[..A4.len() - 1].to_vec(),
             {

@@ -196,12 +196,46 @@ fn performs_scripts_on_the_server() {
             fixture::server_work(),
             fixture::failing(),
             fixture::slow(1.5),
+            // What FileMaker Server's script engine answers for an add-on,
+            // a sensor, the media player and Furigana without its
+            // dictionary (s45, calc-functions.md).
+            fixture::script(
+                4,
+                "Device functions",
+                vec![fixture::exit_with(
+                    "GetAddonInfo ( \"x\" ) & \"|\" & EvaluationError ( GetAddonInfo ( \"\" ) ) & \
+                     \"|\" & EvaluationError ( GetSensor ( \"battery\" ) ) & \"|\" & \
+                     GetAVPlayerAttribute ( \"playbackState\" ) & \"|\" & \
+                     EvaluationError ( GetAVPlayerAttribute ( \"playbackState\" ) ) & \"|\" & \
+                     Furigana ( \"abc\" )",
+                )],
+            ),
+            fixture::script(
+                5,
+                "No add-on name",
+                vec![fixture::exit_with("GetAddonInfo ( \"\" )")],
+            ),
+            fixture::script(
+                6,
+                "Battery",
+                vec![fixture::exit_with("GetSensor ( \"battery\" )")],
+            ),
         ],
         true,
     );
     let port = start(&file, None);
     let mut client = logged_in(port, "requester");
     let mut other = logged_in(port, "other");
+    let device = client.perform_script_on_server(4, "", true).unwrap();
+    assert_eq!(
+        (device.error, device.result.as_str()),
+        (0, "{\r\t\"APIVers\" : 2\r}|3|1208||0|abc")
+    );
+    // The two errors' results are `?`, not empty, as s45 shows them.
+    for script in [5, 6] {
+        let bare = client.perform_script_on_server(script, "", true).unwrap();
+        assert_eq!(bare.result, "?", "script {script}: {bare:?}");
+    }
 
     // Wait for completion: the reply carries the Exit Script result and the
     // script's final Get ( LastError ).
@@ -842,6 +876,56 @@ fn a_sub_script_cannot_change_the_record_its_elevated_caller_opened() {
 }
 
 /// Set Variable [name; ExecuteSQL ( sql ; "|" ; "," )].
+/// Send Mail by SMTP from a server script (#89): the message reaches the
+/// server named in the step, a refused password is 1501, and the email
+/// client, which a server has not, is 3.
+#[test]
+fn send_mail_sends_through_the_steps_smtp_server() {
+    use fixture::{exit_with, on, script, set_variable};
+    let (smtp, mail) = fixture::smtp_server(fixture::smtp_sent_then_refused());
+    let mut client_mail = fixture::smtp_mail(smtp, false);
+    client_mail.set_number_bool(4, Some(false));
+    let scripts = [script(
+        4,
+        "Mail",
+        vec![
+            on(86, true),
+            fixture::smtp_mail(smtp, false),
+            set_variable("$sent", "Get ( LastError )"),
+            fixture::smtp_mail(smtp, true),
+            set_variable("$refused", "Get ( LastError )"),
+            client_mail,
+            exit_with("$sent & \"/\" & $refused & \"/\" & Get ( LastError )"),
+        ],
+    )];
+    let file = TempFile::from_tree("smtp", &fixture::tree(&scripts, true));
+    let port = start(&file, None);
+    let mut client = logged_in(port, "smtp");
+    assert_eq!(run(&mut client, 4), (3, "0/1501/3".to_string()));
+    let sessions = mail.join().unwrap();
+    let sent = sessions[0].concat();
+    assert!(
+        sent.contains("MAIL FROM:<pat@example.org>\r\nRCPT TO:<kim@example.org>\r\nDATA\r\n"),
+        "{sent}"
+    );
+    assert!(
+        sent.contains(
+            "\r\nFrom: Pat <pat@example.org>\r\nTo: kim@example.org\r\nSubject: Weekly report\r\n"
+        ),
+        "{sent}"
+    );
+    assert!(
+        sent.contains("\r\n\r\nSee you\r\nPat\r\n.\r\nQUIT\r\n"),
+        "{sent}"
+    );
+    assert!(
+        sessions[1][1].starts_with("AUTH PLAIN "),
+        "{:?}",
+        sessions[1]
+    );
+    client.disconnect().unwrap();
+}
+
 fn query(name: &str, sql: &str) -> ScriptStep {
     fixture::set_variable(name, &format!("ExecuteSQL ( {sql:?} ; \"|\" ; \",\" )"))
 }
@@ -1309,4 +1393,347 @@ fn administrators_abort_scripts_and_shut_down() {
     }
     assert_eq!(aborts(), expected);
     std::fs::remove_dir_all(&folder).unwrap();
+}
+
+/// Change Password (83) in a server script sets the password of the
+/// account the session logged in with, as FileMaker's `DoChangePassword`
+/// and `SetPassword` do (local-files.md 2.4): with its dialog the step is
+/// refused (3); a wrong old password is 212 and changes nothing; the right
+/// one sets the new password, cut to 100 UTF-16 code units, which the old
+/// one then no longer matches. The saved account carries the checksum its
+/// members give, and the account catalog's index a raised modification
+/// count, so clients holding a copy see it is stale (#83).
+#[test]
+fn change_password_sets_the_accounts_own_password() {
+    use fixture::{calc, exit_with, on, script, set_variable};
+    let change = |old: &str, new: &str, dialog: bool| {
+        let mut step = ScriptStep::new(83);
+        step.set_calculation(0, Some(&calc(old)));
+        step.set_calculation(1, Some(&calc(new)));
+        // "With dialog" is on unless the step stores kNoInteract (0x80).
+        step.set_flag(0x80, !dialog);
+        step
+    };
+    let old = format!("{CLERK_PASSWORD:?}");
+    let long = "x".repeat(101);
+    let scripts = [script(
+        6,
+        "Change",
+        vec![
+            on(86, true),
+            change(&old, "\"fresh secret\"", true),
+            set_variable("$dialog", "Get ( LastError )"),
+            change("\"wrong\"", "\"fresh secret\"", false),
+            set_variable("$wrong", "Get ( LastError )"),
+            change(&old, &format!("{long:?}"), false),
+            set_variable("$right", "Get ( LastError )"),
+            change(&old, "\"another\"", false),
+            exit_with("$dialog & \"|\" & $wrong & \"|\" & $right & \"|\" & Get ( LastError )"),
+        ],
+    )];
+    // The account catalog's index, which every FileMaker file has
+    // (local-files.md 3); the server refuses to change accounts without it.
+    let mut root = fixture::tree(&scripts, true);
+    root.put(
+        &[&[23], &[1], &[1], &[4]],
+        om_hbam::OwnedNode::leaf(Vec::new(), vec![2]),
+    );
+    let file = TempFile::from_tree("change-password", &root);
+    let index_count = |file: &TempFile| {
+        let saved = om_hbam::HbamFile::open(&file.0).unwrap();
+        let count = saved
+            .subtree(&[&[23], &[1], &[1], &[0xfc]])
+            .unwrap()
+            .and_then(|n| n.value)
+            .map(<[u8]>::to_vec);
+        count
+    };
+    let before = index_count(&file);
+    let port = start(&file, None);
+    let mut clerk = logged_in_as(port, "clerk", CLERK);
+    assert_eq!(run(&mut clerk, 6).1, "3|212|0|212");
+    clerk.disconnect().unwrap();
+    // A new login takes the new password, its first 100 characters, and
+    // not the old one.
+    let login = |password: &str| {
+        let mut session = connect(port, "check");
+        session.open_file("127.0.0.1", FILE).unwrap();
+        session.fetch_internal_creation().unwrap();
+        let environment = LoginEnvironment::for_remote_file("127.0.0.1", FILE);
+        let reply = session
+            .login(CLERK, password, INTERNAL_CREATION, &environment)
+            .unwrap();
+        let _ = session.disconnect();
+        reply.is_success()
+    };
+    assert!(login(&long[..100]));
+    assert!(!login(CLERK_PASSWORD));
+
+    // On disk: the checksum of the account as changed, and the catalog's
+    // count raised.
+    let saved = om_hbam::HbamFile::open(&file.0).unwrap();
+    let at = |path: &[&[u8]]| saved.subtree(path).unwrap().and_then(|n| n.value);
+    let account = saved.subtree(&[&[23], &[1], &[5], &[3]]).unwrap().unwrap();
+    let member = |key: u8| account.child(&[key]).and_then(|n| n.value);
+    let name = account.child(&[16]).and_then(|n| n.text()?.ok()).unwrap();
+    let expected = om_server::accounts::checksum(&om_server::accounts::ChecksumInput {
+        version: at(&[&[2], &[5]]).map(|v| u16::from_be_bytes(v.try_into().unwrap())),
+        access_uuid: at(&[&[23], &[4], &[1], &[0x10]]),
+        creation: at(&[&[2], &[254]]),
+        key: &[3],
+        kind: member(2).and_then(|v| v.first().copied()),
+        name: &name,
+        password: member(6).unwrap(),
+        description: None,
+        status: member(0x0a),
+        set: member(0x0b),
+    });
+    assert_eq!(member(4), Some(&expected[..]));
+    assert_ne!(index_count(&file), before);
+}
+
+/// Reset Account Password (136) and Enable Account (137) in a server
+/// script, as FileMaker's `DoResetAccount` and `DoEnableAccount` write them
+/// (local-files.md 2.4): a full-access session resets Clerk's password,
+/// makes the account inactive and then active again, each saved with the
+/// checksum FileMaker Pro checks. A missing account is 213 (inferred), an
+/// account whose stored checksum is not the one its members give is not
+/// rewritten (3), a [Full Access] account is not made inactive (3),
+/// Expire password is refused (3), and a session without full access gets
+/// 9 (#83).
+#[test]
+fn account_steps_reset_passwords_and_enable_accounts() {
+    use fixture::{calc, exit_with, on, script, set_variable};
+    let named = |id: u16, name: &str| {
+        let mut step = ScriptStep::new(id);
+        step.set_calculation(0, Some(&calc(name)));
+        step
+    };
+    let reset = |name: &str, password: &str| {
+        let mut step = named(136, name);
+        step.set_calculation(1, Some(&calc(password)));
+        step
+    };
+    // Deactivate is the step's flag 0x100.
+    let enable = |name: &str, active: bool| {
+        let mut step = named(137, name);
+        step.set_flag(0x100, !active);
+        step
+    };
+    let mut expired = reset("\"Clerk\"", "\"later\"");
+    expired.set_flag(0x100, true);
+    let scripts = [
+        script(
+            6,
+            "Reset and disable",
+            vec![
+                on(86, true),
+                reset("\"clerk\"", "\"new secret\""),
+                set_variable("$reset", "Get ( LastError )"),
+                enable("\"Clerk\"", false),
+                set_variable("$off", "Get ( LastError )"),
+                reset("\"Nobody\"", "\"x\""),
+                set_variable("$missing", "Get ( LastError )"),
+                enable(&format!("{:?}", fixture::READER), false),
+                set_variable("$unread", "Get ( LastError )"),
+                // [Full Access] is never made inactive, and Expire password
+                // is refused until a hosted login can set a new password.
+                enable("\"Admin\"", false),
+                set_variable("$admin", "Get ( LastError )"),
+                expired,
+                exit_with(
+                    "$reset & \"|\" & $off & \"|\" & $missing & \"|\" & $unread & \"|\" & \
+                     $admin & \"|\" & Get ( LastError )",
+                ),
+            ],
+        ),
+        script(
+            7,
+            "Enable",
+            vec![
+                on(86, true),
+                enable("\"Clerk\"", true),
+                exit_with("Get ( LastError )"),
+            ],
+        ),
+    ];
+    let mut root = fixture::tree(&scripts, true);
+    // The account catalog's index, which every FileMaker file has.
+    root.put(
+        &[&[23], &[1], &[1], &[4]],
+        om_hbam::OwnedNode::leaf(Vec::new(), vec![2]),
+    );
+    fixture::add_reader(&mut root);
+    root.put(
+        &[&[23], &[1], &[5], &[6], &[4]],
+        om_hbam::OwnedNode::leaf(Vec::new(), vec![0; 16]),
+    );
+    let file = TempFile::from_tree("account-steps", &root);
+    let port = start(&file, None);
+    // Clerk ([Data Entry Only]) may not manage accounts.
+    let mut clerk = logged_in_as(port, "clerk", CLERK);
+    assert_eq!(run(&mut clerk, 7).1, "9");
+    clerk.disconnect().unwrap();
+
+    let login = |account: &str, password: &str| {
+        let mut session = connect(port, "check");
+        session.open_file("127.0.0.1", FILE).unwrap();
+        session.fetch_internal_creation().unwrap();
+        let environment = LoginEnvironment::for_remote_file("127.0.0.1", FILE);
+        let reply = session
+            .login(account, password, INTERNAL_CREATION, &environment)
+            .unwrap();
+        let _ = session.disconnect();
+        reply.is_success()
+    };
+    let mut admin = logged_in(port, "admin");
+    assert_eq!(run(&mut admin, 6).1, "0|0|213|3|3|3");
+    assert!(!login(CLERK, "new secret"), "Clerk is inactive");
+    assert!(login(fixture::READER, fixture::READER_PASSWORD));
+    assert_eq!(run(&mut admin, 7).1, "0");
+    assert!(login(CLERK, "new secret"));
+    assert!(!login(CLERK, CLERK_PASSWORD));
+
+    // The saved account carries the checksum its members give.
+    let saved = om_hbam::HbamFile::open(&file.0).unwrap();
+    let at = |path: &[&[u8]]| saved.subtree(path).unwrap().and_then(|n| n.value);
+    let account = saved.subtree(&[&[23], &[1], &[5], &[3]]).unwrap().unwrap();
+    let member = |key: u8| account.child(&[key]).and_then(|n| n.value);
+    let name = account.child(&[16]).and_then(|n| n.text()?.ok()).unwrap();
+    let expected = om_server::accounts::checksum(&om_server::accounts::ChecksumInput {
+        version: at(&[&[2], &[5]]).map(|v| u16::from_be_bytes(v.try_into().unwrap())),
+        access_uuid: at(&[&[23], &[4], &[1], &[0x10]]),
+        creation: at(&[&[2], &[254]]),
+        key: &[3],
+        kind: member(2).and_then(|v| v.first().copied()),
+        name: &name,
+        password: member(6).unwrap(),
+        description: None,
+        status: member(0x0a),
+        set: member(0x0b),
+    });
+    assert_eq!(member(4), Some(&expected[..]));
+}
+
+/// Delete Account (135) in a server script, as FileMaker's
+/// `DoDeleteAccount` removes an account (local-files.md 2.4 and 3): the
+/// member goes, and the catalog's index loses its name list entry, its
+/// place in the display order (numbered again from 1), its `07` entry and
+/// one from the count, while the last key issued stays. A [Full Access]
+/// account is not deleted (3) and a missing one is 213 (inferred) (#83).
+/// Admin, second in the display order, becomes first.
+#[test]
+fn delete_account_removes_the_account_and_its_index_entries() {
+    use fixture::{calc, exit_with, on, script, set_variable};
+    let delete = |name: &str| {
+        let mut step = ScriptStep::new(135);
+        step.set_calculation(0, Some(&calc(name)));
+        step
+    };
+    let scripts = [script(
+        6,
+        "Delete",
+        vec![
+            on(86, true),
+            delete("\"Admin\""),
+            set_variable("$admin", "Get ( LastError )"),
+            delete("\"Nobody\""),
+            set_variable("$missing", "Get ( LastError )"),
+            delete("\"clerk\""),
+            exit_with("$admin & \"|\" & $missing & \"|\" & Get ( LastError )"),
+        ],
+    )];
+    // The account catalog's index as FileMaker keeps it (local-files.md
+    // 3), for Admin (key 2) and Clerk (key 3), Clerk first in the display
+    // order so that Admin moves up to its place.
+    let mut root = fixture::tree(&scripts, true);
+    let leaf = |value: Vec<u8>| om_hbam::OwnedNode::leaf(Vec::new(), value);
+    let index: [&[u8]; 3] = [&[23], &[1], &[1]];
+    fn at<'a>(rest: &[&'a [u8]]) -> Vec<&'a [u8]> {
+        let mut path: Vec<&'a [u8]> = vec![&[23], &[1], &[1]];
+        path.extend_from_slice(rest);
+        path
+    }
+    root.put(&at(&[&[0]]), leaf(vec![1, 3]));
+    for (position, key, name) in [(2u32, 2u8, ACCOUNT), (1, 3, CLERK)] {
+        let listed = om_data::field_catalog::listed_key(name).unwrap();
+        root.put(&at(&[&[1], &listed]), leaf(vec![1, key]));
+        root.put(&at(&[&[3], &position.to_be_bytes()]), leaf(vec![1, key]));
+        root.put(&at(&[&[7], &[key]]), leaf(Vec::new()));
+    }
+    root.put(&at(&[&[4]]), leaf(2u32.to_be_bytes().to_vec()));
+    let file = TempFile::from_tree("delete-account", &root);
+    let port = start(&file, None);
+    let mut admin = logged_in(port, "admin");
+    assert_eq!(run(&mut admin, 6).1, "3|213|0");
+    let mut session = connect(port, "check");
+    session.open_file("127.0.0.1", FILE).unwrap();
+    session.fetch_internal_creation().unwrap();
+    let environment = LoginEnvironment::for_remote_file("127.0.0.1", FILE);
+    let reply = session
+        .login(CLERK, CLERK_PASSWORD, INTERNAL_CREATION, &environment)
+        .unwrap();
+    assert!(!reply.is_success(), "Clerk is gone");
+    let _ = session.disconnect();
+
+    let saved = om_hbam::HbamFile::open(&file.0).unwrap();
+    let node = |path: &[&[u8]]| saved.subtree(path).unwrap();
+    assert!(node(&[&[23], &[1], &[5], &[3]]).is_none());
+    assert!(node(&[&[23], &[1], &[5], &[2]]).is_some());
+    let index = node(&index).unwrap();
+    let entries = |key: u8| -> Vec<(Vec<u8>, Option<Vec<u8>>)> {
+        index
+            .child(&[key])
+            .map(|n| {
+                n.children
+                    .iter()
+                    .map(|c| (c.segment.0.to_vec(), c.value.map(<[u8]>::to_vec)))
+                    .collect()
+            })
+            .unwrap_or_default()
+    };
+    let admin_key = om_data::field_catalog::listed_key(ACCOUNT).unwrap();
+    assert_eq!(entries(1), [(admin_key, Some(vec![1, 2]))]);
+    assert_eq!(
+        entries(3),
+        [(1u32.to_be_bytes().to_vec(), Some(vec![1, 2]))]
+    );
+    assert_eq!(entries(7), [(vec![2], Some(Vec::new()))]);
+    let value = |key: u8| index.child(&[key]).and_then(|n| n.value);
+    assert_eq!(value(4), Some(&1u32.to_be_bytes()[..]));
+    assert_eq!(value(0), Some(&[1, 3][..]));
+}
+
+/// Print Setup (42) in a server script: with neither Restore nor its
+/// dialog it sets nothing (0). A restored setup, which would configure PDF
+/// output OpenMaker Server cannot make yet, and one with its dialog on are
+/// 3, and so is Save Records as PDF (144, #104).
+#[test]
+fn print_setup_sets_nothing_on_the_server_and_pdf_is_3() {
+    use fixture::{exit_with, on, script, set_variable};
+    use om_data::flag;
+    // A4 portrait at 100%, 8.5 pt insets (script-steps.md 11.6).
+    const A4: &[u8] = b"Comm\x00\x00\x00\x1d\x00\x3f\x80\x00\x00\xc1\x08\x00\x00\xc1\x08\x00\x00\x44\x12\xb1\x48\x44\x50\x57\x0a\x44\x10\x91\x48\x44\x4e\x37\x0a";
+    let setup = |flags: u32| {
+        let mut step = ScriptStep::new(42);
+        step.flags = flags;
+        step.set_data_leaf(0x87, Some(om_data::scripts::bytes_node(&[0x87], A4)));
+        step
+    };
+    let steps = vec![
+        on(86, true),
+        setup(flag::RESTORE | flag::NO_INTERACT),
+        set_variable("$restored", "Get ( LastError )"),
+        setup(flag::NO_INTERACT),
+        set_variable("$nothing", "Get ( LastError )"),
+        setup(0),
+        set_variable("$dialog", "Get ( LastError )"),
+        ScriptStep::new(144),
+        exit_with("$restored & \"/\" & $nothing & \"/\" & $dialog & \"/\" & Get ( LastError )"),
+    ];
+    let tree = fixture::tree(&[script(4, "Print", steps)], true);
+    let file = TempFile::from_tree("print-setup", &tree);
+    let port = start(&file, None);
+    let mut client = logged_in(port, "print-setup");
+    assert_eq!(run(&mut client, 4), (3, "3/0/3/3".into()));
 }

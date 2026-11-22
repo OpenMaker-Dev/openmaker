@@ -10,7 +10,7 @@
 use std::sync::Arc;
 
 use om_calc::eval::{default_call, Context, HostFunction};
-use om_calc::{CalcError, Value};
+use om_calc::{CalcError, Ctx, Value};
 use om_data::host::layout_objects::{self, ObjectState, ObjectWindow};
 use om_data::host::{read_field, CalcSchema, FileCalc, LayoutEntry};
 use om_hbam::slot::uint_segment;
@@ -55,6 +55,7 @@ pub(super) fn design_schema(store: &Store, file: &str) -> Option<Arc<CalcSchema>
     let stem = file.rsplit_once('.').map_or(file, |(stem, _)| stem);
     let mut schema = om_data::rules::schema::calc_schema(&tree, store.catalog(), stem);
     schema.locale = store.locale();
+    schema.locale_unreadable = store.file_language().is_none();
     Some(Arc::new(schema))
 }
 
@@ -81,7 +82,7 @@ impl ServerHost {
     }
 
     /// The window's layout in the Design view.
-    fn window_layout(&self, schema: &CalcSchema) -> Option<LayoutEntry> {
+    pub(super) fn window_layout(&self, schema: &CalcSchema) -> Option<LayoutEntry> {
         let window = self.window.as_ref()?;
         let id = self.schema.layouts.get(window.layout)?.id;
         schema
@@ -118,6 +119,21 @@ impl ServerHost {
             }
             HostFunction::Named(name) if name.eq_ignore_ascii_case("GetRecordIDsFromFoundSet") => {
                 return self.record_ids_from_found_set(args, context);
+            }
+            // As FileMaker Server's script engine answers them (script
+            // oracle s45; calc-functions.md, "GetRecordIDsFromFoundSet on
+            // FileMaker Server").
+            HostFunction::Named(name) if name.eq_ignore_ascii_case("GetAddonInfo") => {
+                return server_function_answer(ServerFunction::AddonInfo, args, &self.cx());
+            }
+            HostFunction::Named(name) if name.eq_ignore_ascii_case("GetSensor") => {
+                return server_function_answer(ServerFunction::Sensor, args, &self.cx());
+            }
+            HostFunction::Named(name) if name.eq_ignore_ascii_case("GetAVPlayerAttribute") => {
+                return server_function_answer(ServerFunction::PlayerAttribute, args, &self.cx());
+            }
+            HostFunction::Named(name) if name.eq_ignore_ascii_case("Furigana") => {
+                return server_function_answer(ServerFunction::Furigana, args, &self.cx());
             }
             _ => {}
         }
@@ -302,6 +318,44 @@ impl ObjectState for WindowState<'_> {
                 .unwrap_or_default(),
         };
         om_data::host::layout::holds(host, &hide, &context)
+    }
+}
+
+/// A function FileMaker Server's script engine answers without the
+/// device, add-on or dictionary it reads on a client (script oracle s45).
+#[derive(Clone, Copy)]
+enum ServerFunction {
+    AddonInfo,
+    Sensor,
+    PlayerAttribute,
+    Furigana,
+}
+
+/// What FileMaker Server's script engine answered (s45), for every
+/// argument [I: s45 ran one of each, given below; the others are answered
+/// the same, OpenMaker's fallback]:
+/// - `GetAddonInfo`: `{` CR TAB `"APIVers" : 2` CR `}` for `"x"`, error 3
+///   for empty text;
+/// - `GetSensor`: error 1208 for `"battery"`;
+/// - `GetAVPlayerAttribute`: empty, no error, for `"playbackState"`;
+/// - `Furigana`: its text unchanged for `"abc"`, the engine's answer
+///   without its reading dictionary (a `kakasi` program it calls); its
+///   option is ignored. A server with the dictionary answers readings
+///   [unmeasured].
+fn server_function_answer(
+    function: ServerFunction,
+    args: &[Value],
+    cx: &Ctx<'_>,
+) -> Result<Value, CalcError> {
+    let text = || args.first().map(|value| value.to_text(cx).into_string());
+    match function {
+        ServerFunction::AddonInfo if text().unwrap_or_default().is_empty() => {
+            Err(CalcError::from_code(3).expect("nonzero"))
+        }
+        ServerFunction::AddonInfo => Ok(Value::text("{\r\t\"APIVers\" : 2\r}")),
+        ServerFunction::Sensor => Err(CalcError::from_code(1208).expect("nonzero")),
+        ServerFunction::PlayerAttribute => Ok(Value::empty_text()),
+        ServerFunction::Furigana => Ok(Value::text(text().unwrap_or_default())),
     }
 }
 
