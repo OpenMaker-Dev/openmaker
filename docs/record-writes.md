@@ -1314,10 +1314,12 @@ keeps a record OpenMaker Server changes under none of those keys
   validates every posting under the write lock. If the sweep makes a
   change, recounting reads the resulting postings again.
 
-A new record's id is in no entry, so creating one checks nothing. An index
-that a commit empties stays in the commit's plan, so its later records are
-still indexed. Until a write changes a record in an index, the index is
-read as stored.
+A new record's id has no prior membership, so creation skips the index
+agreement check and the sweep. The server still checks existing postings
+at the new keys and refuses the commit if an edit would not round-trip.
+An index that a commit empties stays in the commit's plan, so its later
+records are still indexed. Until a write changes a record in an index,
+the index is read as stored.
 
 Word-index keys break words as FileMaker's English and Unicode standard
 indexes do (query-program.md 7.1): within a script, across `.` and
