@@ -617,16 +617,21 @@ fn assert_import_clears_duplicate_code(entered: bool) {
     use fixture::{OCCURRENCE, TABLE};
     use om_hbam::{serial, slot::uint_segment};
 
+    // Keep the ordinary preview from recalculating Code before Import.
+    // The import has its own auto-entry option and must still clear it.
+    let mut open = ScriptStep::new(205);
+    open.set_flag(om_scripts::flag::SELECT_ALL, entered);
     let mut steps = vec![
         fixture::on(86, true),
         set_variable("$p", "Get ( DocumentsPath ) & \"clear.tab\""),
         ScriptStep::new(23),
         fixture::go_to_record(1),
-        ScriptStep::new(205),
+        open,
         ScriptStep::new(8),
     ];
     if entered {
         steps.push(fixture::set_field(CODE, "\"Ship\""));
+        steps.push(set_variable("$set", "Get ( LastError )"));
         steps.push(set_variable("$entered", "Code"));
     }
     steps.extend([
@@ -637,7 +642,9 @@ fn assert_import_clears_duplicate_code(entered: bool) {
         set_variable("$import", "Get ( LastError )"),
         ScriptStep::new(206),
         if entered {
-            fixture::exit_with("$import & \"|\" & Get ( LastError ) & \"|\" & $entered")
+            fixture::exit_with(
+                "$import & \"|\" & Get ( LastError ) & \"|\" & $set & \"|\" & $entered",
+            )
         } else {
             fixture::exit_with("$import & \"|\" & Get ( LastError )")
         },
@@ -675,7 +682,7 @@ fn assert_import_clears_duplicate_code(entered: bool) {
     let port = server::start(&file);
     let (mut client, _) = server::logged_in(port, "duplicate-import-list");
 
-    let expected = if entered { "0|0|Ship" } else { "0|0" };
+    let expected = if entered { "0|0|0|Ship" } else { "0|0" };
     assert_eq!(run(&mut client, 1), (0, expected.into()));
     let copy = record_named(&mut client, "Imported copy").expect("duplicate committed");
     assert_ne!(copy.0, 1);
