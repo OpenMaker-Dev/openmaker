@@ -2031,7 +2031,7 @@ fn unshown_field_fallback_keeps_untargeted_insert_on_repetition_one() {
         2,
     );
     let mut seed = set_field(NAME, "\"keep\"");
-    seed.set_field_spec(0, Some(second.clone()));
+    seed.set_field_spec(0, Some(second));
     let mut go_to_field = ScriptStep::new(17);
     go_to_field.set_field_spec(0, Some(second));
     let mut insert = with_calc(77, "\"changed\"");
