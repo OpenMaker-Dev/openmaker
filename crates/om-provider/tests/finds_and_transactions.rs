@@ -2516,7 +2516,8 @@ fn a_related_sort_refuses_an_unsupported_path_inside_a_calculation() {
             );
             if predicate == 0 {
                 // Define an unstored field used only as the nested sort key.
-                fixture::add_field(root, NOTES, COUNT, "Rank", 2, 2, 0, 0x2_0000, 0);
+                const RANK: u64 = 42;
+                fixture::add_field(root, NOTES, RANK, "Rank", 2, 2, 0, 0x2_0000, 0);
                 let unsorted = SortSpec {
                     keep_sorted: false,
                     blanks_last: false,
@@ -2526,7 +2527,7 @@ fn a_related_sort_refuses_an_unsupported_path_inside_a_calculation() {
                     fields: vec![SortEntry {
                         field: SpecField {
                             occurrence: Some(NOTES_OCCURRENCE),
-                            field: COUNT,
+                            field: RANK,
                             repetition: 1,
                         },
                         summary: None,
