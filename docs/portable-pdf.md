@@ -26,10 +26,9 @@ The other symbols Browse shows, `{{RecordNumber}}`, `{{CurrentDate}}`,
 them (`om_data::host::layout::merge_text`): each the value of its `Get`
 function, evaluated on the record the part prints, as a calculation field there
 would be. So do merge variables (`<<$$name>>`, `<<$name>>`, with an optional
-`[n]`) in Preview, with the window's variables. Save Records as PDF and Print
-refuse a merge variable with 3: they evaluate on the script worker, which does
-not read the running script's variables, so it would print empty
-([#596](https://github.com/OpenMaker-Dev/openmaker/issues/596)). `{{RecordNumber}}` is the record's position in the found set, or the
+`[n]`) in Preview, with the window's variables. Merge variables in Save
+Records as PDF and Print still return error 3. `{{RecordNumber}}` is the
+record's position in the found set, or the
 row's number in a portal row. In a header, footer, title or summary part the
 record is the one the part's fields read ([report sections](report-sections.md):
 a header the page's first, a footer its last), so the symbol prints what a
@@ -104,6 +103,25 @@ Browse reads them. Refused with 3:
   4.3), so alternate row fills do not print. The two starter bodies read in
   FileMaker, Task Details and Task List, have the option off. Fonts are
   covered in [report fonts](#report-fonts).
+- Calculations the report evaluates when a script prints it, with Save Records
+  as PDF or Print (unstored calculation fields, conditional formats, and
+  ExecuteSQL's own reads in them), read the running script's `$` variables and
+  its file's `$$` variables as the script set them before the step
+  ([#596](https://github.com/OpenMaker-Dev/openmaker/issues/596)). A Print a
+  trigger held reads the initiating script's live variables when the
+  trigger lets it print. If that scope has ended, the held Print is
+  canceled ([#616](https://github.com/OpenMaker-Dev/openmaker/issues/616)). The
+  script runtime lends copies to the desktop's script worker for the step
+  (`ScriptHost::other_step_with`, `trigger_action_with`) and takes back what
+  they hold after it, so a step that unwinds loses no variable. Report
+  grouping and summaries read snapshots of the lent variables
+  ([report sections](report-sections.md)). Print preflight calculations,
+  such as Browse portal filters, use the worker's scratch store. A related
+  file's formula does not yet read that file's `$$` variables
+  ([#613](https://github.com/OpenMaker-Dev/openmaker/issues/613)). Claris says
+  a variable on a layout shows its value "when you print the layout"; which `$`
+  variables FileMaker Pro's report sees is unmeasured [I: the running
+  script's, as its own steps see them].
 - Output paths use the transfer steps' platform path lists, variable expansion,
   relative Documents paths and Create folders convention. With dialog On (or no
   output path), a desktop modal offers the file as a save panel does (Save As

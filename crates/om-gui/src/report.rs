@@ -4921,10 +4921,7 @@ pub(crate) fn merges(text: &str) -> bool {
 }
 
 /// Why a report that a script prints (Save Records as PDF, Print) refuses
-/// `text`, a [`Piece::Literal`], if it does: a merge variable. The script
-/// worker does not read the running script's variables
-/// ([#596](https://github.com/OpenMaker-Dev/openmaker/issues/596)), so it
-/// would print empty.
+/// `text`, a [`Piece::Literal`], if it contains a merge variable.
 pub(crate) fn script_printed(text: &str) -> Result<(), ReportError> {
     use om_data::host::layout::{merged, Merged};
     match merged(text).any(|piece| matches!(piece, Merged::Variable(_))) {
