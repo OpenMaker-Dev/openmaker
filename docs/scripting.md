@@ -807,6 +807,10 @@ Open items:
     steps that rewrite an account (all but Delete Account) leave alone one
     whose stored checksum OpenMaker does not reproduce (3). Add Account and Re-Login fail with error 3
     ([#83](https://github.com/OpenMaker-Dev/openmaker/issues/83)).
+    The Script Workspace reads Expire password and Deactivate from the
+    step value. Older OpenMaker steps that stored the option only in flag
+    `0x100` keep their stored bytes and show Off or Activate. Set the option
+    again to store the intended choice ([#525](https://github.com/OpenMaker-Dev/openmaker/issues/525)).
   - The recompute after a schema change reads container inputs from the
     table's library, computes repeating calculations in each repetition,
     and answers Design functions as FileMaker Server's file context does

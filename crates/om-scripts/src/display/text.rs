@@ -798,8 +798,9 @@ pub enum Origin {
     /// `Stored …` option is taken only where it leaves every file-local id
     /// (fields, table occurrences, layouts, scripts, custom functions, sort
     /// and find specs, file references, import and export orders) as the
-    /// open file's names give them; otherwise the step fails whole. Stored
-    /// reference bytes no flag makes a reference are dropped.
+    /// open file's names give them; otherwise the step fails whole. This
+    /// includes Add Account's flagless privilege-set key. Unused inline
+    /// reference bytes are dropped.
     Unknown,
 }
 
@@ -853,6 +854,17 @@ pub fn parse_record(
 /// ambiguous name already failed), so the part is taken as the names give
 /// it. Ids the text names nothing for fail the step.
 fn from_elsewhere(step: &mut ScriptStep, resolved: &ScriptStep) -> Result<(), String> {
+    // Add Account's privilege set is a key in `mReserved` that no flag
+    // marks (local-files.md 2.4), a file-local id its text does not name:
+    // from another file it cannot be checked, and dropping it would add the
+    // account without its set.
+    if step.id() == 134 && step.reserved != resolved.reserved {
+        return Err(
+            "Its stored privilege set is an id its text does not name in this file \
+             (the text may come from another file)"
+                .into(),
+        );
+    }
     if step.flags & REFERENCES == 0 {
         step.reserved = resolved.reserved;
     }

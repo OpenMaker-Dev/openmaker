@@ -1379,3 +1379,25 @@ fn the_starter_files_steps_are_all_editable_and_kept_byte_for_byte() {
     assert_eq!(files, 66);
     println!("{files} files, {steps} steps");
 }
+
+/// The account steps' options are on for any nonzero step value
+/// (local-files.md 2.4, #525): a stored 4 shows as Deactivate, OK without
+/// a change keeps the 4, and Activate stores 0.
+#[test]
+fn account_options_show_any_nonzero_value_as_on() {
+    let mut step = ScriptStep::new(137);
+    step.value = 4;
+    step.set_flag(flag::OPTION, true);
+    let mut options = StepOptions::new(step.clone(), None);
+    match edit(&mut options, "Activate/Deactivate") {
+        Edit::Choice { value, .. } => assert_eq!(*value, Some(1)),
+        _ => panic!("Activate/Deactivate is not a choice"),
+    }
+    assert_eq!(options.result().unwrap(), step);
+    if let Edit::Choice { value, .. } = edit(&mut options, "Activate/Deactivate") {
+        *value = Some(0);
+    }
+    let activated = ok(&options);
+    assert_eq!(activated.value, 0);
+    assert_eq!(activated.flags, step.flags | flag::MENU_SELECTION);
+}
