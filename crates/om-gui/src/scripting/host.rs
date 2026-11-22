@@ -4658,7 +4658,9 @@ impl Records for WorkerHost<'_> {
         self.p()
             .begin_transaction(options)
             .map_err(|e| self.failed(e))?;
-        self.s.file.transaction = Some(transaction::Staged::default());
+        let mut staged = transaction::Staged::default();
+        staged.visit(&self.s.file.window);
+        self.s.file.transaction = Some(staged);
         self.s.file.transaction_skips_auto_entry = options.skip_auto_enter;
         Ok(())
     }
@@ -4668,7 +4670,6 @@ impl Records for WorkerHost<'_> {
         // commit fires OnRecordCommit (8.2). A record held apart from it
         // is committed apart, and keeps its typing if the transaction
         // fails (#1103).
-        let apart = self.record_apart();
         let drafts = self.s.file.window.state.drafts.clone();
         let committed = self.commit_window().and_then(|()| {
             let staged = self.s.file.transaction.as_ref();
@@ -4716,9 +4717,9 @@ impl Records for WorkerHost<'_> {
         self.s.file.window.found = None;
         *self.s.file.cache.borrow_mut() = CalcData::default();
         // OnWindowTransaction names every record the transaction wrote.
-        let entries = self.s.file.transaction.take().unwrap_or_default().entries;
+        let staged = self.s.file.transaction.take().unwrap_or_default();
         if result.is_ok() {
-            let entries = transaction::merged(entries)
+            let entries = transaction::merged(staged.entries)
                 .into_iter()
                 .map(|mut e| {
                     if e.operation != transaction::Operation::Deleted {
@@ -4733,7 +4734,7 @@ impl Records for WorkerHost<'_> {
         } else if rolled_back {
             // A position refresh can fail after the revert has completed.
             // Keep the original commit error as the step's result.
-            let _ = self.discard_rolled_back_transaction(&entries, removed, apart);
+            let _ = self.discard_rolled_back_transaction(staged, removed);
         }
         result
     }
@@ -4748,7 +4749,7 @@ impl Records for WorkerHost<'_> {
             self.s.file.window.state.object = None;
             self.s.file.window.state.portal = None;
         }
-        let held = self.s.file.transaction.take().unwrap_or_default().entries;
+        let staged = self.s.file.transaction.take().unwrap_or_default();
         // The records this revert removes, by identity: the ones the
         // provider's transaction created, whichever window made them and
         // whether or not a commit logged them. A window's flags cannot
@@ -4757,7 +4758,7 @@ impl Records for WorkerHost<'_> {
         let removed = self.p().transaction_created();
         let mut result = self.p().revert_transaction().map_err(|e| self.failed(e));
         if result.is_ok() {
-            result = self.discard_rolled_back_transaction(&held, removed, apart);
+            result = self.discard_rolled_back_transaction(staged, removed);
         }
         // The held writes went with the connection, not by this revert.
         self.s.file.lost_transaction |= self.p().connection_lost().is_some();
@@ -4787,30 +4788,51 @@ impl Records for WorkerHost<'_> {
 impl WorkerHost<'_> {
     fn discard_rolled_back_transaction(
         &mut self,
-        entries: &[transaction::Entry],
+        mut staged: transaction::Staged,
         removed: Vec<(u64, i64)>,
-        apart: bool,
     ) -> HostResult {
         // The records the transaction created are gone, with what any
         // window of the file still has pending on them.
-        self.release_records(entries, transaction::Operation::New);
-        let created: Vec<(u64, i64)> = entries
-            .iter()
+        let created: Vec<(u64, i64)> = staged
+            .entries
+            .into_iter()
             .filter(|e| e.operation == transaction::Operation::New)
             .map(|e| (e.table, e.record))
             .chain(removed)
             .collect();
-        for other in &mut self.s.file.others {
-            other.forget_reverted_record_waiting(&created);
+        // A waiting window may have changed layouts since the worker last
+        // made it current.
+        if !created.is_empty() {
+            for i in 0..self.s.file.others.len() {
+                let layout = self.s.file.others[i].state.layout;
+                self.s.file.others[i].table = layout.and_then(|id| self.layout_table(id));
+            }
         }
-        if !apart {
-            let (window, provider) = self.wp();
-            window.discard_transaction_drafts(provider);
-            window
-                .forget_reverted_record(provider, &created)
-                .map_err(data_error)?;
+        let file = &mut self.s.file;
+        let provider = self.provider.get_mut().as_mut();
+        let mut updates = Vec::new();
+        for other in &mut file.others {
+            if let Some(before) = staged.window_drafts.remove(&other.id()) {
+                other.discard_transaction_drafts(provider, before);
+            }
+            other.forget_reverted_record_waiting(provider, &created);
+            if let Some(mut update) = other.take_update(false) {
+                update.file = file.id;
+                update.background = true;
+                updates.push(update);
+            }
         }
-        Ok(())
+        let window = &mut file.window;
+        if let Some(before) = staged.window_drafts.remove(&window.id()) {
+            window.discard_transaction_drafts(provider, before);
+        }
+        let result = window
+            .forget_reverted_record(provider, &created)
+            .map_err(data_error);
+        for update in updates {
+            self.send_for(update.state.id, ScriptEvent::Window(Box::new(update)));
+        }
+        result
     }
 }
 

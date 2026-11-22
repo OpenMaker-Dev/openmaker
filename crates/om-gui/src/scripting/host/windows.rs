@@ -68,6 +68,10 @@ impl WorkerHost<'_> {
     pub(crate) fn use_current_window(&mut self) {
         let id = self.s.file.window.id();
         self.p().use_window(id);
+        let file = &mut self.s.file;
+        if let Some(transaction) = &mut file.transaction {
+            transaction.visit(&file.window);
+        }
     }
 
     pub(crate) fn reveal_window(&mut self) {

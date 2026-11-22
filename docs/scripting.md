@@ -776,8 +776,10 @@ Open items:
     Inside a script transaction, the dependency survives a successful
     Commit Records. Commit Transaction returns 415 and rolls back if
     the transaction would delete the parent while keeping the new child.
-    A rollback discards the active record's transaction drafts, including
-    related edits and deletions. A record session held apart keeps its edits.
+    A rollback discards transaction drafts in each window of the file
+    that joined the transaction, including related edits and deletions.
+    Ordinary drafts still on their original record and record sessions
+    held apart keep their edits.
   - At creation, OpenMaker reads an unstored equality key in the source
     record's occurrence with the relationship evaluator. It copies a
     single nonempty, single-line text value into an ordinary text match

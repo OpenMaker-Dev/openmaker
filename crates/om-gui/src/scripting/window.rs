@@ -166,6 +166,8 @@ impl Uncommitted {
 /// The current record's unsaved changes ([`Window::pending`]).
 #[derive(Clone, Debug)]
 pub(crate) struct Pending {
+    layout: Option<u32>,
+    record: Option<i64>,
     drafts: FieldChanges,
     uncommitted: Uncommitted,
 }
@@ -1046,6 +1048,8 @@ impl Window {
     /// after the window let go of it.
     pub fn pending(&self) -> Pending {
         Pending {
+            layout: self.state.layout,
+            record: self.state.record,
             drafts: self.state.drafts.clone(),
             uncommitted: self.state.uncommitted.clone(),
         }
@@ -1118,21 +1122,58 @@ impl Window {
     /// [`Self::forget_reverted_record`] for a window that is not current: a
     /// record its own session holds stays, and its found set and place are
     /// read again when it is current.
-    pub fn forget_reverted_record_waiting(&mut self, created: &[(u64, i64)]) {
+    pub fn forget_reverted_record_waiting(
+        &mut self,
+        provider: &mut dyn DataProvider,
+        created: &[(u64, i64)],
+    ) {
         if self.reverted_record(created) {
+            self.discard_previews(provider);
             self.let_go_of_reverted_record();
         }
     }
 
-    /// Drop changes that belonged to the rolled-back script transaction.
-    /// The caller keeps a record session held apart from that transaction.
-    pub fn discard_transaction_drafts(&mut self, provider: &mut dyn DataProvider) {
-        self.discard_previews(provider);
+    /// Drop the script transaction's drafts, keeping the ordinary drafts
+    /// that were already pending on this record when the window joined.
+    pub fn discard_transaction_drafts(&mut self, provider: &mut dyn DataProvider, before: Pending) {
+        if self.state.uncommitted.session {
+            return;
+        }
+        let before = (self.state.layout == before.layout
+            && self.state.record == before.record
+            && !before.uncommitted.session)
+            .then_some(before);
+        if before.as_ref().is_some_and(|before| {
+            self.state.drafts == before.drafts && self.state.uncommitted == before.uncommitted
+        }) {
+            return;
+        }
+        let kept_previews: BTreeSet<_> = before
+            .iter()
+            .flat_map(|before| &before.uncommitted.related)
+            .filter_map(|draft| draft.prepared.as_ref().map(|prepared| prepared.id))
+            .collect();
+        for draft in &self.state.uncommitted.related {
+            if let Some(prepared) = &draft.prepared {
+                if !kept_previews.contains(&prepared.id) {
+                    provider.discard_prepared(prepared.id);
+                }
+            }
+        }
         self.reserved_made.clear();
-        self.state.uncommitted = Uncommitted::default();
-        self.state.drafts.clear();
+        if let Some(before) = before {
+            self.restore(before);
+        } else {
+            self.state.uncommitted = Uncommitted::default();
+            self.state.drafts.clear();
+        }
+        self.state.focus = None;
+        self.state.object = None;
+        self.state.portal = None;
+        self.row_record = None;
         self.state.typing = None;
         self.state.selection = None;
+        self.changed_data();
     }
 
     /// Revert Record: drop the drafts, the related records' too; a new

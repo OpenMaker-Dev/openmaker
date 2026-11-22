@@ -26,6 +26,7 @@ use om_data::calc::Value;
 use om_data::DataError;
 
 use super::WorkerHost;
+use crate::scripting::window::{Pending, Window};
 
 /// The field the trigger reads when its field-name option is empty.
 const DEFAULT_FIELD: &str = "OnWindowTransaction";
@@ -64,11 +65,20 @@ pub(crate) struct Entry {
 #[derive(Default)]
 pub(crate) struct Staged {
     pub(super) entries: Vec<Entry>,
+    pub(super) window_drafts: BTreeMap<u32, Pending>,
     parents: BTreeMap<(u64, i64), (u64, i64)>,
     deleted: BTreeSet<(u64, i64)>,
 }
 
 impl Staged {
+    /// Keep the ordinary drafts as they were when this window entered the
+    /// script transaction. Returning to the window must keep that baseline.
+    pub(super) fn visit(&mut self, window: &Window) {
+        self.window_drafts
+            .entry(window.id())
+            .or_insert_with(|| window.pending());
+    }
+
     pub(crate) fn created_related(&mut self, table: u64, record: i64, parent: (u64, u64)) {
         if let Ok(id) = i64::try_from(parent.1) {
             self.parents.insert((table, record), (parent.0, id));

@@ -2177,6 +2177,61 @@ fn rolling_back_a_multi_hop_creation_clears_its_related_drafts() {
 }
 
 #[test]
+fn reverting_a_transaction_discards_a_child_draft_in_another_window() {
+    let mut open_transaction = ScriptStep::new(205);
+    open_transaction.value = 11;
+    let mut commit = ScriptStep::new(206);
+    commit.value = 11;
+    let revert = fixture::script(
+        1,
+        "Revert from second window",
+        vec![
+            fixture::on(86, true),
+            fixture::go_to_layout(PORTALS),
+            fixture::go_to_record(1),
+            new_window("W2"),
+            set_field(NOTES_OCCURRENCE, EXTRA, 0, "\"ordinary\""),
+            select_window("Tasks"),
+            open_transaction,
+            select_window("W2"),
+            set_field(FOLLOW_UP_NOTES, BODY, 0, "\"orphan\""),
+            note("$created", "Get ( LastError )"),
+            ScriptStep::new(207),
+            commit,
+            show("\"revert \" & $created & \":\" & Get ( LastError )"),
+        ],
+    );
+    let save = fixture::script(
+        2,
+        "Save second window",
+        vec![
+            fixture::on(86, true),
+            select_window("W2"),
+            without_dialog(75),
+            show("\"save \" & Get ( LastError ) & \":\" & Get ( WindowName )"),
+        ],
+    );
+    let hosted = host_note_tasks("revert-second-window", &[revert, save], |root| {
+        add_follow_up_notes(root);
+        add_extra(root);
+    });
+    let notes = stored(&hosted, NOTES, &[(BODY, 1), (TASK, 1)]);
+    let mut app = open(&hosted);
+    expect(&mut app, "Revert from second window", "revert 0:0");
+    assert_eq!(stored(&hosted, NOTES, &[(BODY, 1), (TASK, 1)]), notes);
+
+    expect(&mut app, "Save second window", "save 0:W2");
+    assert_eq!(stored(&hosted, NOTES, &[(BODY, 1), (TASK, 1)]), notes);
+    assert_eq!(
+        stored(&hosted, NOTES, &[(EXTRA, 1)])
+            .into_iter()
+            .filter(|(_, fields)| fields == &["ordinary"])
+            .count(),
+        1
+    );
+}
+
+#[test]
 fn set_field_refuses_an_uncommitted_middle_record_even_with_a_key() {
     let script = fixture::script(
         1,
