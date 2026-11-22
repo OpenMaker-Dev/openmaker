@@ -5437,6 +5437,7 @@ impl<'a> UnstoredGraph<'a> {
             schema,
             &expression.formula.polish,
             false,
+            false,
             &mut BTreeSet::new(),
         )
         .map_err(|reason| format!("Field {}: {reason}", def.name))?;
