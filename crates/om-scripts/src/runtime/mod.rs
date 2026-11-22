@@ -33,7 +33,7 @@ mod stack;
 mod steps;
 mod trigger;
 
-use std::collections::HashMap;
+use std::collections::{HashMap, VecDeque};
 use std::fmt;
 use std::sync::Arc;
 use std::time::{Duration, Instant};
@@ -53,9 +53,9 @@ pub use host::{
     InsertFile, InsertKind, InsertTarget, LayoutTarget, Mail, MailVia, Mode, Navigation, Network,
     NewWindow, OnTimer, PauseEnd, Platform, RecordList, RecordMove, Records, RelatedRecords,
     Replacement, ScriptAccess, ScriptHost, ServerCallbackCall, ServerScriptCall,
-    ServerScriptResult, SmtpOptions, StepArg, StepCall, TransactionOptions, TransferCall,
-    UrlRequest, UrlResponse, Visibility, WindowId, WindowOptions, WindowStyle, WindowTarget,
-    Windows,
+    ServerScriptResult, SmtpOptions, StepArg, StepCall, StepVariables, TransactionOptions,
+    TransferCall, UrlRequest, UrlResponse, Visibility, WindowId, WindowOptions, WindowStyle,
+    WindowTarget, Windows,
 };
 pub use memory::{MemoryLayout, MemoryScriptHost, MemoryWindow, SessionFunction};
 pub use om_hbam::OwnedNode;
@@ -71,6 +71,7 @@ use calc::{ScriptCalc, ScriptState};
 pub(crate) mod id {
     pub const PERFORM_SCRIPT: u16 = 1;
     pub const GO_TO_RECORD: u16 = 16;
+    pub const PRINT: u16 = 43;
     pub const PAUSE_RESUME: u16 = 62;
     pub const IF: u16 = 68;
     pub const ELSE: u16 = 69;
@@ -330,6 +331,15 @@ struct TriggerFrame {
 struct Retry {
     step: ScriptStep,
     owner: Option<(u64, bool)>,
+    variables: Option<StepVariableScope>,
+}
+
+/// The frames and file whose live variables a held Print may borrow.
+#[derive(Clone, Copy)]
+struct StepVariableScope {
+    owner: u64,
+    locals: Option<u64>,
+    file: FileId,
 }
 
 /// A trigger action waiting for `DoTriggerAction`, with the step to run
@@ -803,7 +813,7 @@ impl Runtime {
     /// `CallScriptTrigger`: the trigger's frame runs next (or queued), and
     /// `Get ( LastError )` starts over when `reset_error`.
     fn fire(&mut self, host: &mut dyn ScriptHost, trigger: Trigger, reset_error: bool) -> Fired {
-        match self.call_trigger(host, trigger) {
+        match self.call_trigger(host, trigger, None) {
             Ok(called) => self.push_trigger(called, reset_error),
             Err((reason, _)) => Fired::Suppressed(reason),
         }
@@ -816,6 +826,7 @@ impl Runtime {
         &mut self,
         host: &mut dyn ScriptHost,
         trigger: Trigger,
+        variables: Option<StepVariableScope>,
     ) -> Result<Called, (Suppressed, HostResult)> {
         let suppressed = if trigger.modes & trigger.mode.trigger_bit() == 0 {
             Some(Suppressed::Mode)
@@ -836,7 +847,10 @@ impl Runtime {
             None
         };
         if let Some(reason) = suppressed {
-            return Err((reason, self.proceed_without_trigger(host, &trigger)));
+            return Err((
+                reason,
+                self.proceed_without_trigger(host, &trigger, variables),
+            ));
         }
         let previous_window = host.current_window();
         let called = (|| {
@@ -883,7 +897,7 @@ impl Runtime {
             Err(code) => {
                 self.set_last_error(code, false);
                 self.set_last_error(ErrorCode::NONE, false);
-                let outcome = self.proceed_without_trigger(host, &trigger);
+                let outcome = self.proceed_without_trigger(host, &trigger, variables);
                 return Err((Suppressed::CallFailed(code.0), outcome));
             }
         };
@@ -924,15 +938,77 @@ impl Runtime {
         &mut self,
         host: &mut dyn ScriptHost,
         trigger: &Trigger,
+        variables: Option<StepVariableScope>,
     ) -> HostResult {
         match trigger.action {
-            Some(action) => host.trigger_action(&TriggerAction {
-                event: trigger.event,
-                action,
-                proceed: true,
-            }),
+            Some(action) => self.perform_trigger_action(
+                host,
+                &TriggerAction {
+                    event: trigger.event,
+                    action,
+                    proceed: true,
+                },
+                variables,
+            ),
             None => Ok(()),
         }
+    }
+
+    fn perform_trigger_action(
+        &mut self,
+        host: &mut dyn ScriptHost,
+        action: &TriggerAction,
+        scope: Option<StepVariableScope>,
+    ) -> HostResult {
+        let Some(scope) = scope.filter(|_| action.proceed) else {
+            return host.trigger_action(action);
+        };
+        if let Some(variables) = self.held_step_variables(scope) {
+            return host.trigger_action_with(action, variables);
+        }
+        // Drop the held action when its caller has gone away.
+        host.trigger_action(&TriggerAction {
+            proceed: false,
+            ..*action
+        })?;
+        Err(ErrorCode::CANCELED.into())
+    }
+
+    /// The file of the running script, whose `$$` variables its steps use.
+    fn script_file(&self, host: &mut dyn ScriptHost) -> FileId {
+        self.stack
+            .last()
+            .map_or_else(|| host.current_file(), |f| f.file)
+    }
+
+    /// The running script's variables, as its steps' calculations read
+    /// them ([`Self::calc`]): its `$` variables (level 0's without a
+    /// script) and the `$$` variables of `file`, its file
+    /// ([`Self::script_file`]), for the host to lend to what
+    /// it evaluates in a step it performs ([`ScriptHost::other_step_with`],
+    /// [`ScriptHost::trigger_action_with`]).
+    pub(crate) fn step_variables(&mut self, file: FileId) -> StepVariables<'_> {
+        self.variables_at(self.script_frame_index(), file)
+    }
+
+    fn held_step_variables(&mut self, scope: StepVariableScope) -> Option<StepVariables<'_>> {
+        if !self.stack.iter().any(|frame| frame.id == scope.owner) {
+            return None;
+        }
+        let local_index = match scope.locals {
+            Some(id) => Some(self.stack.iter().position(|frame| frame.id == id)?),
+            None => None,
+        };
+        Some(self.variables_at(local_index, scope.file))
+    }
+
+    fn variables_at(&mut self, index: Option<usize>, file: FileId) -> StepVariables<'_> {
+        let locals = match index.map(|i| &mut self.stack[i].kind) {
+            Some(FrameKind::Script { vars, .. }) => vars,
+            _ => &mut self.level0,
+        };
+        let globals = self.globals.entry(file).or_default();
+        StepVariables { locals, globals }
     }
 
     /// Finish a step that returned [`HostError::Pending`] with its outcome
@@ -1019,7 +1095,7 @@ impl Runtime {
                                 ..Exec::default()
                             },
                         };
-                        self.finish_step(host, &pending.step, exec);
+                        self.finish_step(host, &pending.step, exec, None);
                     }
                     None => {
                         let exec = self.execute(host, &pending.step);
@@ -1030,7 +1106,7 @@ impl Runtime {
                             });
                             return RunState::Waiting;
                         }
-                        self.finish_step(host, &pending.step, exec);
+                        self.finish_step(host, &pending.step, exec, None);
                     }
                 }
                 self.after_step(host);
@@ -1091,7 +1167,8 @@ impl Runtime {
     /// 1.7, 13.17).
     fn do_trigger_actions(&mut self, host: &mut dyn ScriptHost) {
         for pending in std::mem::take(&mut self.trigger_actions) {
-            let outcome = host.trigger_action(&pending.action);
+            let variables = pending.retry.as_ref().and_then(|retry| retry.variables);
+            let outcome = self.perform_trigger_action(host, &pending.action, variables);
             let Some(retry) = pending.retry.filter(|_| pending.action.proceed) else {
                 continue;
             };
@@ -1102,7 +1179,7 @@ impl Runtime {
                 self.step_context = Some(self.trace_context());
             }
             self.step_frame = retry.owner;
-            self.finish_step(host, &retry.step, Exec::from_action(outcome));
+            self.finish_step(host, &retry.step, Exec::from_action(outcome), variables);
         }
     }
 
@@ -1113,22 +1190,39 @@ impl Runtime {
     /// pre-event trigger with an action) makes the step return 3000, not
     /// stored, and the step runs again when the trigger lets the event
     /// happen (script-runtime.md 1.7, 13.17).
-    fn finish_step(&mut self, host: &mut dyn ScriptHost, step: &ScriptStep, mut exec: Exec) {
+    fn finish_step(
+        &mut self,
+        host: &mut dyn ScriptHost,
+        step: &ScriptStep,
+        mut exec: Exec,
+        variables: Option<StepVariableScope>,
+    ) {
         let mut called = Vec::new();
         let mut others = Vec::new();
-        for trigger in host.take_triggers() {
+        let mut triggers = VecDeque::from(host.take_triggers());
+        let variables = variables.or_else(|| {
+            let (owner, _) = self.step_frame.filter(|_| step.id() == id::PRINT)?;
+            Some(StepVariableScope {
+                owner,
+                locals: self.script_frame_index().map(|i| self.stack[i].id),
+                file: self.script_file(host),
+            })
+        });
+        while let Some(trigger) = triggers.pop_front() {
             if !trigger.from_step {
                 others.push(trigger);
                 continue;
             }
             let holds_event = trigger.action.is_some() && trigger.event.can_cancel();
-            match self.call_trigger(host, trigger) {
+            let scope = if holds_event { variables } else { None };
+            match self.call_trigger(host, trigger, scope) {
                 Ok(mut c) => {
                     let first = exec.error != ErrorCode::RETRY;
                     if let (true, true, Some(t)) = (holds_event, first, c.frame.trigger.as_mut()) {
                         t.retry = Some(Box::new(Retry {
                             step: step.clone(),
                             owner: self.step_frame,
+                            variables: scope,
                         }));
                         exec = Exec::error(ErrorCode::RETRY);
                     }
@@ -1137,6 +1231,11 @@ impl Runtime {
                 // The trigger did not fire: its event happened at once.
                 Err((_, outcome)) if holds_event && !exec.error.is_error() => {
                     exec = Exec::from_action(outcome);
+                    // Skipping a trigger can advance Print to another
+                    // held stage. Keep it attached to the same step.
+                    if scope.is_some() {
+                        triggers.extend(host.take_triggers());
+                    }
                 }
                 Err(_) => {}
             }
@@ -1245,7 +1344,7 @@ impl Runtime {
             });
             return true;
         }
-        self.finish_step(host, &step, exec);
+        self.finish_step(host, &step, exec, None);
         false
     }
 
