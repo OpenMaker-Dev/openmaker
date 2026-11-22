@@ -702,6 +702,18 @@ fn cell_id(field: u64, repetition: u32) -> Option<u64> {
     }
 }
 
+/// A script find's failed query as the step's error: what OpenMaker cannot
+/// do (an index it cannot key, #572) is 3, as FileMaker reports a criterion
+/// it cannot use; another failure is the query's own code.
+fn find_failure(error: om_query::QueryError) -> FindError {
+    match error {
+        om_query::QueryError::Unimplemented(_)
+        | om_query::QueryError::Unsupported(..)
+        | om_query::QueryError::UnkeyedIndex => FindError::Unsupported,
+        error => FindError::Query(error.code()),
+    }
+}
+
 /// A server script session.
 pub(crate) struct ServerHost {
     shared: Arc<Shared>,
@@ -2584,7 +2596,7 @@ impl ServerHost {
         let outcome = om_query::execute(&scratch, &program, &context);
         if let Some(error) = outcome.error {
             info!("{:?}: script find failed: {error}", self.hosted.name);
-            return Err(FindError::Query(error.code()));
+            return Err(find_failure(error));
         }
         let matched = find::found(&outcome.slots).ok_or(FindError::Query(0xffff))?;
         Ok(found.or(&matched))
@@ -2610,7 +2622,7 @@ impl ServerHost {
         }
         if let Some(error) = outcome.error {
             info!("{:?}: script find failed: {error}", self.hosted.name);
-            return Err(FindError::Query(error.code()));
+            return Err(find_failure(error));
         }
         find::found(&outcome.slots).ok_or(FindError::Query(0xffff))
     }

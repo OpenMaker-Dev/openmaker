@@ -208,7 +208,7 @@ pub struct Store {
 }
 
 /// An index: its table, field and kind (value 0, word 1).
-type IndexId = (Vec<u8>, Vec<u8>, u8);
+pub type IndexId = (Vec<u8>, Vec<u8>, u8);
 
 /// Per catalog path: the last member id and modification count issued.
 type IssuedKeys = HashMap<Vec<Vec<u8>>, (u64, u64)>;
@@ -2431,6 +2431,19 @@ impl Store {
             .then_some(field.data_type)
     }
 
+    /// Take `built` back from the indexes due to be stored
+    /// ([`Store::store_indexes_on_demand`]). A query refused for an index
+    /// this server cannot key keeps none of the others it built (#572), so
+    /// the client that asks next which indexes are missing sees the file as
+    /// the query found it, whichever query stores the due indexes first. A
+    /// later query builds them again.
+    pub fn forget_indexes_on_demand(&self, built: &[IndexId]) {
+        let mut due = self.on_demand.lock().expect("index lock");
+        for id in built {
+            due.remove(id);
+        }
+    }
+
     /// Whether a query read indexes that were built on demand and are not
     /// yet stored.
     pub fn has_indexes_on_demand(&self) -> bool {
@@ -2453,9 +2466,10 @@ impl Store {
             let Some(data_type) = self.indexable(&table, &field, kind) else {
                 continue;
             };
-            // Read in English for the query that built it, an index in a
-            // language whose keys this server does not build is not stored
-            // (#159): the next query builds it again.
+            // A query builds no index in a language whose keys this server
+            // does not build while a record holds text there (#572); one
+            // built while none did, a record of which has gained text since,
+            // is not stored (#159), and the next query is refused.
             let Some(form) = self.written_form(&table, &field, data_type) else {
                 continue;
             };
@@ -3130,7 +3144,7 @@ impl om_query::Source for Store {
         table: &[u8],
         field: &[u8],
         kind: u8,
-    ) -> om_hbam::Result<Option<OwnedNode>> {
+    ) -> Result<Option<OwnedNode>, om_query::QueryError> {
         let index: [&[u8]; 3] = [table, &[keys::INDEXES], field];
         if self
             .node(&[index[0], index[1], index[2], &[counts_key(kind)]])
@@ -3141,7 +3155,20 @@ impl om_query::Source for Store {
         let Some(data_type) = self.indexable(table, field, kind) else {
             return Ok(None);
         };
-        let form = self.read_text_keys(table, field);
+        // A text field in an index language whose keys this server does
+        // not build, holding text: its index would hold keys OpenMaker
+        // cannot make, and English ones would answer the query with
+        // another found set (a German `Äpfel` criterion missing records,
+        // French words broken at the wrong places). The query is refused,
+        // as the desktop refuses a find without the host's index (#572).
+        let Some(form) = self.written_form(table, field, data_type) else {
+            warn!(
+                "{}: a query needs an index this server cannot build in its field's language; \
+                 refused",
+                self.name
+            );
+            return Err(om_query::QueryError::UnkeyedIndex);
+        };
         let index = self.index_keys(table, field, data_type, kind, form);
         self.on_demand
             .lock()
