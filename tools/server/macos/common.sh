@@ -277,9 +277,17 @@ id_holders() {
 
 # The record names in `dscl /Search -search` output on stdin for `key`: each
 # match starts a line `<name><tab><tab><key> = (`, its values on the lines
-# below. A name may hold spaces; records of the same name stay apart.
+# below. Match the suffix so the name can contain spaces or tabs.
+# Records with the same name stay apart.
 search_headers() {
-    awk -F '\t\t' -v header="$1 = (" 'NF == 2 && $2 == header { print $1 }'
+    awk -v key="$1" '
+        BEGIN { suffix = "\t\t" key " = (" }
+        {
+            start = length($0) - length(suffix) + 1
+            if (start > 1 && substr($0, start) == suffix)
+                print substr($0, 1, start - 1)
+        }
+    '
 }
 
 # Make the group and the user when they are missing, and check them when

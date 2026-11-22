@@ -57,11 +57,11 @@ run() {
 }
 
 # --- The directory search's answer, as `dscl /Search -search` prints it: a
-# name with spaces, and two records of one name, each counted.
-sample=$(printf 'omserver\t\tUniqueID = (\n    452\n)\nOther Service\t\tUniqueID = (\n    452\n)\nomserver\t\tUniqueID = (\n    452\n)\n')
-[[ $(OPENMAKER_PREFIX=$work/parse bash -c 'source "$1"; search_headers UniqueID' _ "$here/common.sh" <<<"$sample") == $'omserver\nOther Service\nomserver' ]] ||
+# name with spaces, a name with tabs, and two records of one name.
+sample=$(printf 'omserver\t\tUniqueID = (\n    452\n)\nOther Service\t\tUniqueID = (\n    452\n)\nTabbed\t\tService\t\tUniqueID = (\n    452\n)\nomserver\t\tUniqueID = (\n    452\n)\n')
+[[ $(OPENMAKER_PREFIX=$work/parse bash -c 'source "$1"; search_headers UniqueID' _ "$here/common.sh" <<<"$sample") == $'omserver\nOther Service\nTabbed\t\tService\nomserver' ]] ||
     failed 'the directory search answer was misread'
-echo 'directory search answer: names with spaces and repeated names kept'
+echo 'directory search answer: names with spaces, tabs and repetitions kept'
 
 # --- A fresh install: the account and group made, the folders, the job.
 fresh=$work/fresh
