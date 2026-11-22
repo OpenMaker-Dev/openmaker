@@ -762,6 +762,10 @@ fn an_unresolved_save_location_blocks_retention_but_not_an_unrelated_backup() {
                 .with_schedules(vec![schedule])
                 .unwrap()
         });
+    assert!(
+        handle.wait_for_schedules(WAIT),
+        "the scheduler did not start"
+    );
     // A symlink loop gives the secondary container lookup an I/O error
     // even when the test runner can bypass file permissions.
     std::os::unix::fs::symlink("RC_Data_FMS", real.join("RC_Data_FMS")).unwrap();
