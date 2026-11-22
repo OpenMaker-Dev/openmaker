@@ -1302,8 +1302,17 @@ keeps a record OpenMaker Server changes under none of those keys
   entries as FileMaker wrote them, an overflow `ff 80` membership included.
 - Every entry a write or a sweep changes is kept first, so a failed save
   puts each back exactly.
-- An entry that is not a plain record list, and counts of an unknown
-  shape, are left as they are.
+- Before changing a record, the server checks the existing postings at
+  its computed old and new keys. If any cannot round-trip through the
+  RID writer, the whole commit fails before publication. This includes
+  readable forms such as a one-bit bitmap in place of a singleton, even
+  when the computed keys are unchanged and only the sweep would add a
+  membership. The sweep leaves other postings of unrecognized shape or
+  encoding as stored, so a stale membership there can remain. Counts of
+  an unknown shape also stay as stored.
+- A commit that changes records in a disagreeing index still scans and
+  validates every posting under the write lock. If the sweep makes a
+  change, recounting reads the resulting postings again.
 
 A new record's id is in no entry, so creating one checks nothing. An index
 that a commit empties stays in the commit's plan, so its later records are

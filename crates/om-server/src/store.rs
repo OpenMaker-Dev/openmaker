@@ -234,10 +234,9 @@ pub struct Journal {
     /// Whether the commit changed the schema the store reads
     /// ([`Store::replace_schema_in`]): a roll-back reads it again.
     schema: bool,
-    /// Why a write of the commit was refused: it would have changed a
-    /// value it does not name, or left something the file cannot hold
-    /// (`om_hbam::writer::put_refusals`). The refused write changed
-    /// nothing; [`Store::save_commit`] then takes back the rest of the
+    /// Why a write of the commit was refused (for example, a posting
+    /// whose RID encoding the writer cannot preserve). The refused write
+    /// changed nothing. [`Store::save_commit`] takes back the rest of the
     /// commit and fails it.
     refused: Option<String>,
 }
@@ -2730,10 +2729,20 @@ impl Store {
             if let Some(path) = value_on_path(&self.root, &path) {
                 return Some(describe_value(&path));
             }
-            for key in before.symmetric_difference(after) {
+            // A move can replace a posting in the difference, and a sweep
+            // can add a missing membership even to a key on both sides.
+            for key in before.union(after) {
                 let entry: [&[u8]; 5] = [path[0], path[1], path[2], path[3], key];
-                if self.node(&entry).is_some_and(holds_value) {
+                let Some(posting) = self.node(&entry) else {
+                    continue;
+                };
+                if holds_value(posting) {
                     return Some(describe_value(&entry.map(<[u8]>::to_vec)));
+                }
+                if plain_entry(posting).is_none() {
+                    return Some(format!(
+                        "index posting {entry:02x?} has a RID encoding this server cannot edit losslessly"
+                    ));
                 }
             }
         }
@@ -2915,9 +2924,9 @@ impl Store {
     /// it is missing from, as its move added none when the computed keys
     /// did not change (`a_b` to `a b` in Unicode raw). Other records'
     /// memberships are not touched. Each entry changed goes into `journal`
-    /// first; the index's counts go into `recount`. An entry that is not a
-    /// plain record list ([`plain_entry`]) is left as it is. The index's
-    /// entries are rewritten in one pass.
+    /// first. The index's counts go into `recount`. Entries outside the
+    /// computed keys that fail [`plain_entry`] stay as stored.
+    /// [`Store::record_refusal`] checks every computed key before any move.
     fn sweep_index(
         &mut self,
         journal: Option<&mut Journal>,
@@ -2935,41 +2944,26 @@ impl Store {
             }
         }
         // The entries to write (`None`: removed), by key.
-        let mut changed: BTreeMap<Vec<u8>, Option<RidList>> = BTreeMap::new();
-        let mut opaque = BTreeSet::new();
+        let mut changed: BTreeMap<Vec<u8>, Option<OwnedNode>> = BTreeMap::new();
         for entry in self.node(&path).map_or(&[][..], |n| &n.children) {
+            let want = wanted.remove(entry.segment.as_slice());
             let Some(list) = plain_entry(entry) else {
-                opaque.insert(entry.segment.clone());
                 continue;
             };
-            let want = wanted.get(entry.segment.as_slice());
-            let leaving = list.and(&swept).and_not(want.unwrap_or(&RidList::new()));
+            let leaving = list
+                .and(&swept)
+                .and_not(want.as_ref().unwrap_or(&RidList::new()));
             let joining = want.map_or_else(RidList::new, |w| w.and_not(&list));
             if leaving.is_empty() && joining.is_empty() {
                 continue;
             }
             let kept = list.and_not(&leaving).or(&joining);
-            changed.insert(entry.segment.clone(), (!kept.is_empty()).then_some(kept));
+            let replacement = (!kept.is_empty()).then(|| kept.to_node(entry.segment.clone()));
+            changed.insert(entry.segment.clone(), replacement);
         }
-        let present: BTreeSet<&[u8]> = self
-            .node(&path)
-            .map_or(&[][..], |n| &n.children)
-            .iter()
-            .map(|e| e.segment.as_slice())
-            .collect();
-        for (key, ids) in &wanted {
-            if !present.contains(key) {
-                changed.insert(key.to_vec(), Some(ids.clone()));
-            }
-        }
-        for key in &opaque {
-            if wanted.contains_key(key.as_slice()) {
-                warn!(
-                    "{}: entry {key:02x?} of index {kind} of field {field:02x?} in table \
-                     {table:02x?} has an unknown shape; its records were not changed there",
-                    self.name
-                );
-            }
+        // Only missing keys remain in `wanted`.
+        for (key, ids) in wanted {
+            changed.insert(key.to_vec(), Some(ids.to_node(key.to_vec())));
         }
         if changed.is_empty() {
             return;
@@ -2985,26 +2979,26 @@ impl Store {
                 journal.save_node(&self.root, entry);
             }
         }
-        // One pass over the sorted entries, the new keys merged in order.
+        // Move untouched postings into the merged list after journaling
+        // the replacements, so even a large unchanged posting stays intact.
+        let old_len = self.node(&path).map_or(0, |n| n.children.len());
+        let mut entries = Vec::with_capacity(old_len + changed.len());
         let old = self
             .root
-            .at(&path)
-            .map(|n| n.children.clone())
+            .at_mut(&path)
+            .map(|n| std::mem::take(&mut n.children))
             .unwrap_or_default();
-        let mut entries = Vec::with_capacity(old.len() + changed.len());
         let mut changes = changed.into_iter().peekable();
         for entry in old {
-            while let Some((key, ids)) = changes.next_if(|(key, _)| *key < entry.segment) {
-                entries.extend(ids.map(|ids| ids.to_node(key)));
+            while let Some((_, replacement)) = changes.next_if(|(key, _)| *key < entry.segment) {
+                entries.extend(replacement);
             }
             match changes.next_if(|(key, _)| *key == entry.segment) {
-                Some((key, ids)) => entries.extend(ids.map(|ids| ids.to_node(key))),
+                Some((_, replacement)) => entries.extend(replacement),
                 None => entries.push(entry),
             }
         }
-        for (key, ids) in changes {
-            entries.extend(ids.map(|ids| ids.to_node(key)));
-        }
+        entries.extend(changes.filter_map(|(_, replacement)| replacement));
         if entries.is_empty() {
             self.root.remove(&path);
         } else {
@@ -3219,7 +3213,7 @@ impl om_data::rules::ContainerReader for LibraryContainers {
 /// The record list an index entry holds, when the entry is nothing but a
 /// list of record-id runs written as [`RidList::entries`] writes them
 /// (FileMaker Server's form, write-path.md 5.3): no value of its own, each
-/// run a leaf. `None` for any other shape, which a rebuild would lose.
+/// run a leaf. `None` if re-encoding would discard the stored shape.
 fn plain_entry(entry: &OwnedNode) -> Option<RidList> {
     if entry.value.is_some() {
         return None;

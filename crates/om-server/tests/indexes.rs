@@ -777,3 +777,59 @@ fn a_record_whose_keys_did_not_move_gets_them_in_a_disagreeing_index() {
     assert_eq!(index_on_disk(&file, fixture::NAME, 1), expected);
     session.disconnect().unwrap();
 }
+
+#[test]
+fn a_commit_refuses_a_noncanonical_destination_posting() {
+    use om_hbam::slot::uint_segment;
+    use om_hbam::{serial, OwnedNode, RidList};
+    let mut root = fixture::tree(&[], true);
+    fixture::set_field_language(&mut root, fixture::TABLE, fixture::NAME, 2);
+    let table = uint_segment(fixture::TABLE);
+    let name = uint_segment(fixture::NAME);
+    let raw = |word: &str| TextKeys::Raw.key(word).unwrap();
+    for (id, text) in [(1, "a_b"), (2, "b")] {
+        root.put(
+            &[&table, &[5], &serial::encode(id), &name],
+            om_scripts::text_node(&[], text),
+        );
+    }
+    // The reader accepts this one-bit bitmap for record 2. The writer
+    // would emit a singleton, so it cannot round-trip the stored posting.
+    let bitmap = OwnedNode::list(
+        raw("b"),
+        vec![OwnedNode::leaf(vec![0], 4u32.to_be_bytes().to_vec())],
+    );
+    let stale = [1].into_iter().collect::<RidList>().to_node(raw("a_b"));
+    root.put(
+        &[&table, &[1], &name, &[1]],
+        OwnedNode::list(vec![1], vec![stale, bitmap]),
+    );
+    let file = fixture::TempFile::from_tree("noncanonical-posting", &root);
+    let before = std::fs::read(&file.0).unwrap();
+    let index = field_index_on_disk(&file, fixture::NAME);
+    assert_eq!(
+        index_on_disk(&file, fixture::NAME, 1),
+        [(raw("a_b"), vec![1]), (raw("b"), vec![2])]
+    );
+    let port = server::start(&file);
+    let (mut session, _) = server::logged_in(port, "noncanonical posting");
+    // Both values compute {a, b}, so only the sweep would add record 1
+    // to b. Refuse the commit before replacing any of its memberships.
+    assert!(matches!(
+        commit_cells(&mut session, 1, &[(fixture::NAME, "a b")]),
+        Err(om_session::SessionError::Protocol(_))
+    ));
+    assert!(std::fs::read(&file.0).unwrap() == before);
+
+    // Publish an unrelated change to check the in-memory state too.
+    commit_cells(
+        &mut session,
+        2,
+        &[(fixture::NAME, "b"), (fixture::COUNT, "9")],
+    )
+    .unwrap();
+    assert!(std::fs::read(&file.0).unwrap() != before);
+    assert_eq!(field_index_on_disk(&file, fixture::NAME), index);
+    assert_eq!(name_on_disk(&file, 1).as_deref(), Some("a_b"));
+    session.disconnect().unwrap();
+}
