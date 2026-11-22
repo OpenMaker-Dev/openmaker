@@ -1360,20 +1360,25 @@ key text in the form of the field's index language (query-program.md 7.2,
 Number, date, time and timestamp fields are keyed in the forms of 7.3: an
 empty value under `01`, a value with no digit (`N/A`, a date stored as `?`)
 under `fe ff`, and a timestamp stored as a date alone under its date and
-`fe ff`. A number with other characters among its digits (`1,234`, `abc12`)
-gets no key yet ([#246](https://github.com/OpenMaker-Dev/openmaker/issues/246)).
+`fe ff`. A number's text is read as FileMaker reads it, with the file's
+decimal and thousands separators (`om_collate::number_text`, the reading
+the calculation engine uses too, calc-values.md 2.8): `1,234` is 1234 in
+an en-US file, `abc12` is 12, `(5)` is -5. A date or time with digits that
+OpenMaker does not read gets no key.
+
 An index whose keys another rule wrote (an earlier OpenMaker build's, or
 FileMaker's where OpenMaker's rules still differ or give a value no key)
-keeps a record OpenMaker Server changes under none of those keys
+can hold stale memberships for a record OpenMaker Server changes
 ([#448](https://github.com/OpenMaker-Dev/openmaker/issues/448)):
 - The first write that changes a field's value, after the server starts or
   the schema changes, compares each of the field's indexes with one built
   from every stored record (`Store::index_agrees`).
 - In an index that disagrees, every record the commit changes or deletes
   leaves the entries its new value does not give when the commit finishes
-  (`Store::sweep_index`). That covers a key an earlier build gave `1.5`, a
-  FileMaker word break and a number among letters, and it happens also
-  when the record's computed keys do not move.
+  (`Store::sweep_index`). For example, an earlier build indexed `1.5`
+  as 1.5 in a German file. The current reader gives both `1.5` and `15,0`
+  the key for 15. Editing the record from `1.5` to `15,0` moves its stored
+  membership even though its computed keys are equal.
 - The index is never rebuilt: records no write touches keep their
   entries as FileMaker wrote them, an overflow `ff 80` membership included.
 - Every entry a write or a sweep changes is kept first, so a failed save
@@ -1395,7 +1400,8 @@ agreement check and the sweep. The server still checks existing postings
 at the new keys and refuses the commit if an edit would not round-trip.
 An index that a commit empties stays in the commit's plan, so its later
 records are still indexed. Until a write changes a record in an index,
-the index is read as stored.
+the index is read as stored. A find for `=` can miss untouched empty
+values in a typed index an earlier build wrote without `01` entries.
 
 Word-index keys break words as FileMaker's English, System and Unicode
 standard indexes do (query-program.md 7.2, "Word breaking"): within a

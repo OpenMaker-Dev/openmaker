@@ -28,7 +28,7 @@ use std::sync::{Mutex, MutexGuard, PoisonError};
 
 use log::{error, info, warn};
 use om_calc::Locale;
-use om_collate::DateOrder;
+use om_collate::{DateOrder, NumberFormat};
 use om_data::rules::recalc::{ContainerResult, Recalculation};
 use om_data::rules::RecordEnvironment;
 use om_hbam::catalog::keys as catalog_keys;
@@ -39,7 +39,7 @@ use om_hbam::writer::{
 use om_hbam::{
     serial, Catalog, Cell, DataType, FieldKind, HbamFile, KeyTree, OwnedNode, RidList, SlotReader,
 };
-use om_query::keys::{record_value_entries, value_keys, word_entries, TextKeys};
+use om_query::keys::{record_value_entries, value_keys, word_entries, Reading, TextKeys};
 use om_query::Write;
 
 use om_data::containers::{self, MemberInfo};
@@ -1336,6 +1336,24 @@ impl Store {
         self.date_order
     }
 
+    /// How the file's stored numbers and dates are read for their index
+    /// keys (query-program.md 7.3): its date order, and its locale's decimal
+    /// and thousands separators (en-US when it records no locale).
+    fn reading(&self) -> Reading {
+        let numbers = self
+            .locale
+            .as_ref()
+            .map(|l| NumberFormat {
+                decimal: l.decimal_separator,
+                thousands: l.thousands_separator,
+            })
+            .unwrap_or_default();
+        Reading {
+            order: self.date_order,
+            numbers,
+        }
+    }
+
     /// The node at `path`, if present.
     pub fn node(&self, path: &[&[u8]]) -> Option<&OwnedNode> {
         self.root.at(path)
@@ -1380,7 +1398,7 @@ impl Store {
         value_keys(
             data_type,
             text,
-            self.date_order,
+            self.reading(),
             self.read_text_keys(table, field),
         )
     }
@@ -2850,7 +2868,7 @@ impl Store {
             };
             let texts = field_texts(record, field, repetitions);
             let keys: BTreeSet<Vec<u8>> = if kind == keys::VALUE_INDEX {
-                record_value_entries(data_type, &texts, self.date_order, form)
+                record_value_entries(data_type, &texts, self.reading(), form)
             } else {
                 word_entries(&texts, form)
             };
@@ -3352,7 +3370,7 @@ impl Store {
                     if record.is_none() {
                         return BTreeSet::new();
                     }
-                    record_value_entries(data_type, texts, self.date_order, form)
+                    record_value_entries(data_type, texts, self.reading(), form)
                 };
                 let (before, after) = (keys_of(old, &old_texts), keys_of(new, &new_texts));
                 if new.is_some() && after.is_empty() && new_texts.iter().any(|t| !t.is_empty()) {
