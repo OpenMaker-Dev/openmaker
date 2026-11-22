@@ -1539,9 +1539,18 @@ Claris documents that Insert File without a source file shows a dialog in
 which the user selects a file, that its data goes into the target or the
 active container field, and that Export Field Contents without an output
 file asks the user for a file name and location ("Insert File script
-step", "Export Field Contents script step"). The desktop now does both,
-in an in-app dialog that takes a path (absolute, or relative to the
-Documents folder); the system's file panels are not used.
+step", "Export Field Contents script step"). The desktop does both. On
+macOS the Insert commands' file comes from the system's open panel
+(`NSOpenPanel`, shown modeless while the window waits on the step's
+prompt, titled with the command and saying the field the file goes into;
+`om-gui` `file_panel`). On Linux and Windows, in the GUI tests, and for
+Export Field Contents, an in-app dialog takes a path (absolute, or
+relative to the Documents folder). Neither offers "Store only a reference
+to the file", which FileMaker Pro's panel has: how FileMaker stores a
+reference is unmeasured ("External storage: still open", step 5), so such
+a step still stops as unsupported. That FileMaker Pro shows the panel
+modeless rather than as a sheet, and its exact title and message, are
+unmeasured [I].
 
 [Claris's container commands](https://help.claris.com/en/pro-help/content/data-in-container-fields.html)
 describe PDF and Audio/Video insertion for interactive containers.

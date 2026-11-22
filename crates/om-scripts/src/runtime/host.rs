@@ -487,6 +487,78 @@ pub struct ServerCallbackCall {
     pub state: u16,
 }
 
+/// Send Mail (63, script-steps.md 12.3): one message, its calculations
+/// evaluated in the current record, and how it is to go.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct Mail {
+    pub via: MailVia,
+    pub to: String,
+    pub cc: String,
+    pub bcc: String,
+    pub subject: String,
+    pub message: String,
+    /// "Collect addresses across found set" for To, CC and BCC
+    /// (`[00 0..2, 03]`): each address calculation over every record of the
+    /// found set, not the current record's alone.
+    pub collect: [bool; 3],
+    /// "Multiple emails (one for each record in found set)" (`[00 3, 03]`).
+    pub one_per_record: bool,
+    /// The attachments' paths, one per line (`[00 0, 82]`).
+    pub attachments: String,
+    /// "With dialog": the message is shown before it goes.
+    pub with_dialog: bool,
+    /// The SMTP options, read when the step sends by SMTP.
+    pub smtp: Option<SmtpOptions>,
+}
+
+/// Send Mail's SMTP options (script-steps.md 12.3), the calculations
+/// evaluated in the current record. Its Debug leaves the password out.
+#[derive(Clone, Default, PartialEq, Eq)]
+pub struct SmtpOptions {
+    /// The sender's name (calculation 5), address (6) and Reply-To (7).
+    pub name: String,
+    pub email: String,
+    pub reply_to: String,
+    /// The server (8) and its port (9), as the calculations give them.
+    pub server: String,
+    pub port: String,
+    /// Encryption `[00 5, 03]`: 0 none, 1 SSL, 2 TLS; 0 when absent.
+    pub encryption: i64,
+    /// Authentication `[00 6, 03]`: 1 none, 2 plain password, 3 CRAM-MD5;
+    /// 1 when absent.
+    pub authentication: i64,
+    /// The user name (10) and password (11), read only with an
+    /// authentication other than none.
+    pub user: String,
+    pub password: String,
+}
+
+impl std::fmt::Debug for SmtpOptions {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("SmtpOptions")
+            .field("name", &self.name)
+            .field("email", &self.email)
+            .field("reply_to", &self.reply_to)
+            .field("server", &self.server)
+            .field("port", &self.port)
+            .field("encryption", &self.encryption)
+            .field("authentication", &self.authentication)
+            .field("user", &self.user)
+            .finish_non_exhaustive()
+    }
+}
+
+/// How Send Mail sends.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum MailVia {
+    /// The user's email client.
+    Client,
+    /// SMTP (`[00 4, 03]`), with the step's server and account.
+    Smtp,
+    /// OAuth (`[00 7, 03]`), Google or Microsoft.
+    OAuth,
+}
+
 /// Insert from URL.
 #[derive(Clone, Debug)]
 pub struct UrlRequest {
@@ -715,6 +787,15 @@ pub trait ScriptHost:
     /// The account's access to a script.
     fn script_access(&mut self, _file: FileId, _script: u64) -> ScriptAccess {
         ScriptAccess::default()
+    }
+
+    /// Whether the Script Debugger may stop in a script and show its steps:
+    /// FileMaker runs a script the account may only execute ("Executable
+    /// Only") whole and hides its steps, unless the user authenticated with
+    /// full access (script-runtime.md 6.4). No script by default, so a host
+    /// shows none it has not checked.
+    fn script_debuggable(&mut self, _file: FileId, _script: u64) -> bool {
+        false
     }
 
     /// Raise the file user to full access for one step, or restore it.
@@ -1417,6 +1498,10 @@ pub trait Network {
     /// Insert from URL (160): the response, which the runtime stores in the
     /// step's target, and the variables the options write.
     fn fetch_url(&mut self, _request: &UrlRequest) -> HostResult<UrlResponse> {
+        Err(HostError::Unsupported)
+    }
+    /// Send Mail (63).
+    fn send_mail(&mut self, _mail: &Mail) -> HostResult {
         Err(HostError::Unsupported)
     }
     /// Execute FileMaker Data API (203): the JSON response.

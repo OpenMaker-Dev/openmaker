@@ -288,6 +288,15 @@ fn scripts() -> Vec<Script> {
             find_matching(vec![ScriptStep::new(22)], Some(NAME), 1),
         ),
         script(49, "Matching Count", find_matching(vec![], Some(COUNT), 1)),
+        script(
+            50,
+            "Matching from Find mode on record 2",
+            find_matching(
+                vec![fixture::go_to_record(4), ScriptStep::new(22)],
+                Some(NAME),
+                1,
+            ),
+        ),
     ]
 }
 
@@ -446,10 +455,31 @@ fn server_quick_find_searches_the_layouts_quick_find_fields() {
     assert_eq!(run(&mut client, 47), (401, "401:5:Write tests".into()));
 }
 
+/// A find on a text field indexed in a language OpenMaker does not key
+/// (German), with no index built yet, is refused with 3 rather than
+/// answered from English keys, which would miss records German keys find
+/// (#572).
+#[test]
+fn a_find_on_an_index_this_server_cannot_key_is_3() {
+    let scripts = [find_by_set_field(
+        10,
+        "German",
+        &[(fixture::NAME, "\"Ship\"")],
+        ERRORS,
+    )];
+    let mut root = fixture::tree(&scripts, true);
+    fixture::set_field_language(&mut root, fixture::TABLE, fixture::NAME, 25);
+    let file = TempFile::from_tree("psos-finds-german", &root);
+    let port = server::start(&file);
+    let (mut client, _) = server::logged_in(port, "client");
+    assert_eq!(run(&mut client, 10), (3, "0/3".to_string()));
+}
+
 /// Find Matching Records on the server: the records holding the current
 /// record's value of the field, record 1's "Write tests" in Name, its
 /// empty Status (records 1 to 4) and its Count 3. From Find mode it
-/// switches to Browse first (Claris). Without a field or a focus it is
+/// switches to Browse first (Claris) and reads the record current before,
+/// record 2's "Ship". Without a field or a focus it is
 /// 102, the found set (after a Quick Find, "Ship" alone) kept. It ran into
 /// error 3 before.
 #[test]
@@ -462,4 +492,5 @@ fn server_find_matching_finds_the_current_records_value() {
     assert_eq!(run(&mut client, 46), (102, "102:1:Ship".into()));
     assert_eq!(run(&mut client, 48), (0, "0:1:Write tests".into()));
     assert_eq!(run(&mut client, 49), (0, "0:1:Write tests".into()));
+    assert_eq!(run(&mut client, 50), (0, "0:1:Ship".into()));
 }
