@@ -290,10 +290,13 @@ time; the host was on CDT). The 8 key bytes are the timestamp index key of
 query-program.md 7.3: date `0x800000 | year << 10 | month << 6 | day` in
 three bytes (`9f aa 9c` = 2026-10-28), then the time as a number key of the
 seconds since midnight (`80 05 65 87 30` = digits 5 4 7 6 2 = 54762 s =
-15:12:42; each nibble is digit + 1). Whole seconds only (bin
-`RCHostTimeStamp::Perform`, linux 0xf33980: `DateTime::Now()` ->
-`DBDateTimeKey::Set`). Three calls within two seconds returned the same
-value. A server must answer from its own clock in its local time zone.
+15:12:42; each nibble is digit + 1). The time part is as long as its
+digits, so the key is 8 bytes only from 10,000 seconds (02:46:40) on and
+5 bytes at midnight (`80 00`, no digits; inferred from 7.3, not captured).
+Whole seconds only (bin `RCHostTimeStamp::Perform`, linux 0xf33980:
+`DateTime::Now()` -> `DBDateTimeKey::Set`). Three calls within two seconds
+returned the same value. A server must answer from its own clock in its
+local time zone.
 
 Client use (bin `mac:RCHostTimeStamp::Call` 0x1a1a93e): FileMaker Pro asks
 for the host time when it stamps catalog mod info (8.2) and for
@@ -2217,7 +2220,7 @@ of the value (query-program.md 7.2).
 | `fc` (`KModCount`) | key string of a serial key, `01 nn` | `[3, 16, 1, fc]` = `01 02` |
 | `fc01` (`KModUser`) | text, the user name of the client (`Get(UserName)`, from FileMaker Pro's preferences) | "Duc Ha" (the template's author) |
 | `fc02` (`KModAccount`) | text, the account name | "Admin" |
-| `fc03` (`KModTimestamp`) | `08` + the 8-byte date-time key of 3.1 (9 bytes) | `08 9f 91 03 80 05 51 91 50` = 2020-04-03 11:20:04 |
+| `fc03` (`KModTimestamp`) | key string of the date-time key of 3.1: its length, then the key. The key is 8 bytes from 02:46:40 on; before that its time part has fewer digits, so the key is 5 to 7 bytes (inferred from 3.1 and query-program.md 7.3: no stamp written before 02:46:40 was captured) | `08 9f 91 03 80 05 51 91 50` = 2020-04-03 11:20:04 |
 
 `DBCatalogCommon::IncrementModCount(isNew)` (bin 0x190bad0) writes them for a
 catalog index or a member on every commit: unless the object is new it reads

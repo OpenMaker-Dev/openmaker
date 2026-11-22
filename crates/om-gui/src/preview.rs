@@ -114,6 +114,11 @@ pub(crate) fn show(
         return;
     }
     let pictures = session.report_pictures();
+    // A picture drawn apart asks for the repaint that draws its page.
+    pictures.on_drawn(|| {
+        let ctx = ui.ctx().clone();
+        std::sync::Arc::new(move || ctx.request_repaint())
+    });
     let scene = report::prepare_page(
         &document.layout,
         &plan,
@@ -131,6 +136,8 @@ pub(crate) fn show(
     let scene = match scene {
         Ok(scene) => scene,
         Err(error) => {
+            // Pending: a picture being drawn apart, whose drawing asks for
+            // the repaint (`on_drawn`), or data on its way.
             ui.label(if error.code == -1 {
                 error.message
             } else {
@@ -292,9 +299,11 @@ impl report::ReportContent for Content<'_, '_, '_> {
         object: &om_layout::LayoutObject,
         context: report::ContentContext,
     ) -> Result<String, report::ReportError> {
-        // A static label (a text object's or a button's) needs no record.
+        // A static label (a text object's or a button's) needs no record,
+        // unless it holds merge variables or symbols.
         if matches!(object.kind(), ObjectKind::Text | ObjectKind::Button)
             && object.text_runs.is_empty()
+            && !report::merges(object.text.as_deref().unwrap_or_default())
         {
             self.session
                 .record_at(context.record as u64)
@@ -488,26 +497,37 @@ pub(crate) fn paint(
                         };
                         let font =
                             egui::FontId::new(line.size as f32, theme::report_family(line.face));
-                        let mut x = line.x as f32 + 16.0;
                         // Use shared measured advances and baselines; egui only
-                        // rasterizes the bundled font glyphs at those positions.
-                        for (_, advance, ch) in &line.glyphs {
-                            let galley = painter.layout_no_wrap(
-                                ch.to_string(),
-                                font.clone(),
-                                color(line.color),
+                        // rasterizes the bundled font glyphs at those positions,
+                        // each part of the line in its color.
+                        for (glyphs, part_color, start) in line.parts() {
+                            let mut x = start as f32 + 16.0;
+                            for (_, advance, ch) in glyphs {
+                                let galley = painter.layout_no_wrap(
+                                    ch.to_string(),
+                                    font.clone(),
+                                    color(part_color),
+                                );
+                                let baseline = galley
+                                    .rows
+                                    .first()
+                                    .and_then(|r| r.glyphs.first().map(|g| r.pos.y + g.pos.y))
+                                    .unwrap_or(0.0);
+                                painter.galley(
+                                    pos2(x, line.baseline as f32 + 16.0 - baseline),
+                                    galley,
+                                    color(part_color),
+                                );
+                                x += *advance as f32;
+                            }
+                        }
+                        // Underlines and strikethroughs, in the line's clip.
+                        for (decoration, decoration_color) in line.decorations() {
+                            painter.rect_filled(
+                                rect(&decoration),
+                                CornerRadius::ZERO,
+                                color(decoration_color),
                             );
-                            let baseline = galley
-                                .rows
-                                .first()
-                                .and_then(|r| r.glyphs.first().map(|g| r.pos.y + g.pos.y))
-                                .unwrap_or(0.0);
-                            painter.galley(
-                                pos2(x, line.baseline as f32 + 16.0 - baseline),
-                                galley,
-                                color(line.color),
-                            );
-                            x += *advance as f32;
                         }
                         // One accessible label per physical line, without any
                         // field editor or interaction in the read-only scene.

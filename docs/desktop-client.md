@@ -288,6 +288,86 @@ forgets the list (stopping a listing under way), and a reply to a listing no
 longer waited for is dropped unseen. The wording is OpenMaker's; FileMaker
 Pro's is not captured.
 
+Opening a file the host refuses because it blocks new users (Open status
+1638) shows FileMaker Pro's alert, "The host is not allowing new
+connections. Try again later.", with OK, its error 1638
+(network-protocol.md 5.6.4; `om_provider::HOST_BLOCKS_NEW_USERS`). Other
+refused opens keep OpenMaker's wording.
+
+### Messages from the host
+
+A hosted file's administrator can send its sessions a message (FileMaker
+Server's Send Message, OpenMaker Server's `ServerHandle::send_message`;
+network-protocol.md 6.5). The window shows it as FileMaker Pro does: a
+dialog "Message from “<server name>”" with the text, Close and "(This
+dialog will be dismissed in N seconds.)", which closes itself after 30
+seconds. Messages that come meanwhile follow, one at a time. A message
+waits while another dialog, alert or confirmation is open (Settings, a
+script's dialog, Delete Layout's question, a related file's sign-in, a
+required password change), its countdown not started, so
+its Close, Return and Escape are its own [I: FileMaker Pro shows it over
+them]. The providers of every open file read their hosts' calls once a
+second between requests (`DataProvider::take_host_messages`), so a message
+shows within about a second, not at the session's next exchange. That read never
+waits behind another exchange on the connection (a Tickle waiting for a
+slow host), reads at most 32 messages, each for at most 5 milliseconds
+however slowly it arrives, and writes its answers within 2 seconds or
+loses the connection; the rest waits for the next second.
+
+When the host disconnects a file (`0x0870`: an administrator's close or
+disconnect whose time ran out), that open of the file is lost at once to
+every handle holding it, related readers included, when the connection
+reads the notice: the idle read, any request, a Tickle. A request for it
+does not go out, whenever it was built. One op62 release follows from the
+next idle caller (the worker between requests, or while a script waits in
+a pause or a dialog), waiting at most 2 seconds for the host's answer and
+sent again up to three times. The host drops a connection that still holds
+such a file after its wait for the client to sign out, and with it the
+connection's other files, which this keeps usable. A later open of the file
+on the same connection is a new one, not lost.
+
+The notice goes to the handles holding the file the host names, by its host
+file id (one naming a file the connection no longer holds is dropped), so the
+window it reaches shows that file. Its windows lose the connection at once:
+nothing more is saved. An alert says, as FileMaker Pro's does, "File has been
+forcefully disconnected by the host. All affected windows will be closed.",
+then "[From Administrator: “<text>”]" when the administrator gave a text,
+and OK. It waits for an alert or script dialog that is up, and holds the
+others while it shows. Its OK closes every window of that file at once,
+whichever window is in front; unsaved changes are lost with the file. A
+related file the host disconnects fails only what reads it.
+
+Limits ([#156](https://github.com/OpenMaker-Dev/openmaker/issues/156)):
+- The host's requests to close the files (Close, Disconnect) are taken and
+  not acted on yet: FileMaker Pro shows a Close File dialog with a
+  countdown, and closes the files when it ends.
+- On a forced disconnect FileMaker Pro signs out of the file (op81 Logout)
+  and disconnects before its alert. OpenMaker sends the op62 release a
+  user's close sends, as no Logout is built yet, and keeps the connection
+  for its other files. The alert's brackets are as the capture's reading
+  recorded them [I: whether FileMaker Pro shows them is unmeasured].
+- A script that runs without asking anything of the host reads the notice
+  at the next Tickle at the latest. The alert shows when the worker next
+  reads the hosts' calls: between requests, or while a script waits.
+- Disconnect Client: OpenMaker Server names one file in its forced notice
+  and then ends the connection if a file is still open. Only that file is
+  alerted about and closed; the connection's other files show the lost
+  connection instead ([#638](https://github.com/OpenMaker-Dev/openmaker/issues/638)).
+- Ordering and edge cases left open
+  ([#640](https://github.com/OpenMaker-Dev/openmaker/issues/640)):
+  - A loss the worker reports before the notice clears the app's close and
+    script state the generic way.
+  - A dialog wait of another file's script ends when the alert's OK closes
+    the disconnected file.
+  - The alert is missed when the window the notice went to closed first.
+  - A commit refused before it was sent counts as ambiguous.
+  - The release's callback replies keep the normal write timeout.
+- The dialog's look is OpenMaker's; FileMaker Pro's was read from its
+  text only (capture s07).
+- An open Script Workspace holds the message too, although it is a
+  window of its own: OpenMaker counts it among the dialogs that hold the
+  document [I: FileMaker Pro is unmeasured there].
+
 ### Client license
 
 **FileMaker License...** is available in Hosts and the OpenMaker menu. It is
@@ -550,9 +630,13 @@ authoring part tabs or object kind captions.
   #1338). A window without a player shows the filename and a note.
 - The Insert menu offers PDF and Audio/Video for a selected, writable
   interactive container outside portal rows whose field object allows
-  entry in Browse mode. The typed-path dialogs reject a file of a
-  different type (a PDF without its header, a file the player would not
-  play) before they prepare an edit or upload data. [Container menus and file dialogs](re/containers.md#desktop-menus-and-file-dialogs-2026-11-02)
+  entry in Browse mode. On macOS the Insert commands ask for the file in
+  the system's open panel, which shows every file (whether FileMaker Pro's
+  panel filters by type is unmeasured); elsewhere, an in-app dialog takes
+  a typed path. Either way, a file of a different type (a picture Insert
+  Picture cannot show, a PDF without its header, a file the player would
+  not play) is refused with 734 or 700 before an edit is prepared or data
+  uploaded. [Container menus and file dialogs](re/containers.md#desktop-menus-and-file-dialogs-2026-11-02)
 - Button icons come from the file's library root `31` as the original SVG,
   colored through the icon component's style; no application icon is
   substituted for a file's library image.
@@ -682,7 +766,7 @@ picture is drawn one pixel to a point whatever resolution (`DPI_`) it
 has; the file icon is OpenMaker's own, not the system's icon for the
 file's type; and only the starters' two graphic formats (5 and 7, centered)
 were compared with FileMaker Pro, the others are inferred from Claris's
-flag names. Zoom applies to loaded Form layouts only (below).
+flag names. Zoom applies to loaded Form and List layouts and Find mode only (below).
 
 **Checks.** Regular tests use synthetic layouts and records. The ignored
 `live` tests (`cargo test -p om-gui --test live -- --ignored`) host a
@@ -840,8 +924,8 @@ is not shown; neither is compared with FileMaker Pro.
 
 ### Zoom
 
-Loaded Browse Form layouts have document-local Actual Size, Zoom In and Zoom
-Out commands, in steps of 25, 50, 75, 100, 150, 200, 300 and 400 percent.
+Loaded Browse Form and List layouts, Browse Table view and Find mode's
+layout have document-local Actual Size, Zoom In and Zoom Out commands, in steps of 25, 50, 75, 100, 150, 200, 300 and 400 percent.
 The menu and keyboard controls scale the document's allocation, clipping,
 pointer input and accessibility bounds together; menus and toolbars keep the
 application scale. While the layout paints, egui treats the zoomed layer as
@@ -865,9 +949,46 @@ replacement invalidates the identity. Text whose row and source mapping
 cannot be verified, justified text and elided text keep the ordinary
 renderer.
 
-Limits: List, Table, Layout mode, generic Form fallbacks and focused field
-editors are not zoomed (Preview scales its paper: [preview.md](preview.md)),
-and Set Zoom Level's lock option is not enforced.
+List view draws its header, records and footer in the same zoomed layer,
+in the layout's coordinates, so its rows scroll and take clicks as at 100%.
+Find mode draws its request as Form view draws a record, so it was already
+drawn at the window's zoom; its commands now change it there too.
+
+Table view draws its grid, header and scroll areas in the zoomed layer too,
+whatever the layout (the grid is the found set's), so column widths, rows
+and clicks are in unzoomed points at every zoom. Its labels and its cells'
+editors lay their text out at the zoom (`document::layer_galley`) to keep it
+sharp; a value cut off at its column's edge keeps egui's renderer, as
+elided text does above. The table's last column fills the width the previous
+frame left, so a new zoom lays the table out once more before it shows. The
+table keeps its columns' widths itself, by field, and draws their dividers in
+the header: a divider dragged at any zoom follows the pointer from where it
+was pressed, in the table's points (egui_extras' own resizing reads the
+pointer in window points, so a zoomed drag jumped). While zoomed, Table view's scroll areas do not follow a
+touch drag, which egui would move by the zoom's multiple of the finger's
+way; the wheel and the scroll bars still scroll them.
+
+A field being typed in lays its text out at the zoom as well, in Form, List
+and Find (`field_galley`, and the single-line editor's layouter), so its text
+stays as sharp as the field's text at rest; an empty editor's placeholder is
+egui's. Text `scaled_text` cannot rebuild (justified, elided or with leading
+space) keeps the unzoomed raster in the editor too, as do lines that a small
+zoom and font would put on one pixel row. A new zoom brings a scrolling
+field's insertion point back into view.
+
+Set Zoom Level with Lock on disables View > Actual Size, Zoom In and
+Zoom Out and their shortcuts for that window. A script can still set the
+level, and Lock off restores those controls. A new window (New Window,
+the step or Window > New Window) takes the lock with the zoom of the window
+it opens from [I: inheritance has not been compared with FileMaker Pro].
+
+Limits: Layout mode and generic Form fallbacks are not zoomed (Preview scales its paper:
+[preview.md](preview.md); [#36](https://github.com/OpenMaker-Dev/openmaker/issues/36)). Scroll bars
+inside the zoomed layer (List and Table view's) scale with it; FileMaker Pro's
+keep their size [I: unmeasured]. How FileMaker Pro scales Table view's
+header and row heights is unmeasured. A Table view column is resized from
+its divider in the header only, and a double click does not fit it to its
+contents; FileMaker Pro's divider behavior is unmeasured.
 
 ### Layout menus
 
@@ -963,11 +1084,48 @@ Unicode raw by its code units with case kept, and language 0 in the file's
 own language. A field in another language is keyed in English, which keys
 most text as those languages do.
 
+Without the host's index, the client keys each record itself. That works
+in the forms above and, for finds that read the value index (`==`, `=`,
+`*` and `!`), in the languages FileMaker leaves untailored, whose value
+keys are English's (`om_data::rules::value_text_keys`; the set is
+inferred, [#46](https://github.com/OpenMaker-Dev/openmaker/issues/46)).
+Finds that read the word index there (words, ranges of text) fail with 3
+until the host has the index: those languages' word breaks are not
+established, and French's differ from English's
+([#300](https://github.com/OpenMaker-Dev/openmaker/issues/300)). So does a
+find that reads an index in a tailored language, or in language 0 when
+the file's locale record cannot be read. A criterion that gives no
+finder (a leading wildcard, as in `==*pfel*`) is still tested against the
+stored values in English in those languages
+([#588](https://github.com/OpenMaker-Dev/openmaker/issues/588)).
+
+A find on a related field walks each relationship back from the related
+records (query-program.md 6.5): their match values, every stored
+repetition and each nonempty line as stored, are projected for the near
+match field's type and index language (9.1, 7.2). A date compares with a
+timestamp as midnight, so times on the same date remain distinct. A
+timestamp compared with a time uses its time part. A match field indexed
+in Unicode or System uses that index's keys
+([#573](https://github.com/OpenMaker-Dev/openmaker/issues/573)). A far
+field compared with near fields of different types or forms is sent once
+for each, under a source slot of its own (9.2). With a hosted near index,
+a Japanese match field can use shared English weights, including `ー` and
+`㐀` (7.2). German dictionary uses the untailored form. A related value
+that needs an unsupported key, or a text field whose language 0 cannot be
+resolved from the file locale, fails the find with error 3. A request
+that finds no related records contributes no matches.
+
 **Limits.** List view shows only the current request, as one body row.
 In the padded form a word's start is matched by its primary weights alone
 (`equ` finds `équipe`), and a Unicode raw find keeps case: FileMaker's keys
 for those criteria are unmeasured. The mock provider's in-memory finds key
 text in English.
+Japanese match fields that need keys fail with error 3 without the host's
+index. Date–Timestamp related finds remain unmeasured in FileMaker
+([#606](https://github.com/OpenMaker-Dev/openmaker/issues/606)). A far text
+value matched to a near number field must parse as a number. Extracting
+digits from mixed text, as in the projection example in query-program.md
+9.1, is unsupported.
 The badge's place, the portal's single row, empty merge fields, Return
 performing the find and how the value-list controls build criteria are
 OpenMaker's reading, not compared with FileMaker Pro (client-ui.md, "Find
@@ -1144,6 +1302,26 @@ record is current; on a request it clears the
 criteria. That is as Pro 26.0.3 does it (#871, observed on the Contacts
 starter), except the re-read, which is OpenMaker's. Pro has no Save
 Record menu item, and OpenMaker adds none.
+
+Records > Relookup Field Contents is the `om_scripts::relookup` command.
+It runs Relookup Field Contents (40) with its dialog on the field
+entered, as a script does (re/script-runtime.md, Relookup Field
+Contents), and the field stays entered while the step starts, as for
+Insert's commands. The item is enabled in Browse mode when a field of the
+record's own table is entered and the record has nothing to commit, and
+only under All menu commands. Typing, or changes a script left, leave it
+disabled: FileMaker's command keeps such a record uncommitted, while the
+step commits it first, which would save it past the field's validation
+and save triggers
+([#624](https://github.com/OpenMaker-Dev/openmaker/issues/624)). So do a
+running or paused script (the step's error, a Cancel included, would
+fail a paused script's open transaction) and a hosted edit still being
+prepared. A related field leaves it disabled, because the step cannot
+relook up through a related field. The dialog is titled Relookup
+Field Contents and asks "Look up the values again in all N records of
+the current found set, through the field “Name”?". It has Cancel and OK,
+and OK is the default. That text is OpenMaker's; FileMaker Pro's wording
+is unmeasured (re/auto-entry.md, Lookups). Cancel relooks up no record.
 
 **Limits of committing and reverting:**
 - **Keypad Enter and Return.** egui reports both keys as Enter, so the
@@ -1412,8 +1590,8 @@ drop-down lists (layout-model.md 5.4) read their items through
     or the date changes. A build asked before such a change is let finish
     and its answer dropped, then one build for the new context follows,
     so a resize keeps one build at a time on the worker. A list of an
-    unstored calculation's related values is built per object and record
-    in paint, as a list of related values is.
+    unstored calculation's related values is built on the worker per
+    record, as a list of related values is (below).
   - Validation against a related-values list of such a field computes it
     on each related record, and refuses with 3 only a record whose value
     cannot be computed (`om-provider`'s `related_lists.rs`;
@@ -1458,8 +1636,36 @@ drop-down lists (layout-model.md 5.4) read their items through
     pop-up menu that shows a label from such a list no longer blocks a
     frame for 1.1 s; its longest frame while the worker builds the list is
     44 ms.
-  - A list of related values is built per record, with the record's
-    unsaved values, in the window's paint, as before.
+  - A list of related values is built on the worker too, once per record
+    and portal row it is shown on, over the window's unsaved changes as
+    the window's paint read them, starting from that record
+    ([#290](https://github.com/OpenMaker-Dev/openmaker/issues/290)). Its relationships can lead through any table, so it is
+    built again after any data change (a page read under the same data
+    generation is none), and after the window's unsaved changes, or the
+    records they are laid over, change; one whose list a calculation
+    computes also after the window's calculation session or the date
+    changes. A build asked before such a change is let finish and its
+    answer dropped, so typing, scrolling or a resize keeps one build per
+    list and record on the worker. While the stored values of a record
+    with unsaved changes are not in the window (a refresh dropped them),
+    the list waits for them rather than be built over the stored values
+    (one the provider cannot read, or the host has no record of, makes the
+    list unknown, error 3). The
+    build reads the record it starts from (and the portal row) first, so a
+    new record a transaction holds relates records by its own values, as
+    paint did. A build whose reads took a change the window had not seen (a
+    newer data generation) has the window read its data and lists again;
+    one read under a generation older than the window has seen is not
+    taken. A reconnected file counts generations again, so the window
+    forgets the newest it saw then. A page of the generation the window has
+    seen keeps the built lists and their waits. A related host it could not reach holds that record's list only,
+    until the data, the unsaved changes or a refresh change its inputs.
+    Built lists are kept within 64 MiB and 4,096 lists beyond those the last
+    frame showed, those shown longest ago going first. Like a list of all of a field's values it sees no global
+    variables. On a debug build, with 30,000 related records,
+    the closed pop-up menu that shows a label from such a list no longer
+    blocks a frame for 1.05 s; its longest frame while the worker builds
+    the list is 43 ms.
 - **A hosted file's field lists.** A list of all of a stored text field's
   values, with no second field and not only related values, comes from
   the host. One CreateValueListEx is sent when a control first needs the
@@ -1709,12 +1915,15 @@ behavior was not observed (re/client-ui.md, Unknowns).
 **Placing a field.** The Field tool places an edit box with the operation
 `om-author`'s `place_field` uses (`DataProvider::place_layout_field`,
 `om_data::layout_placement`; [authoring](authoring.md), "Fields on
-layouts").
+layouts"). Saving a placed edit box adds it at the end of the layout's
+stored tab order.
 - **Fields sidebar.** Open Objects, then Fields to list the selected
   layout's own table's placeable fields. Search filters definitions, not
   already-placed objects. Drag a field onto the design surface to add a
-  bound draft (120 by 22 pt, top-left at the rounded drop point, with Create
-  label on; these dimensions are OpenMaker's choices). Additional drops
+  bound draft (120 by 44 pt, top-left at the rounded drop point, with Create
+  label on). OpenMaker uses 44 pt on every theme so the default Universal
+  Touch edit box can show its text in FileMaker Pro. Pro's own sidebar
+  drop dimensions are unmeasured. Additional drops
   keep earlier drafts. Select one on the canvas or Objects to edit its
   binding and frame in Inspector. Save and Revert have the same deferred
   semantics as fields drawn with the Field tool.
@@ -1950,6 +2159,34 @@ changes (moved or deleted objects or a new field), another layout, another mode 
 New Layout/Report are refused with an alert asking for Save Layout or
 Revert Layout. Saving them is OpenMaker's choice of UI (FileMaker Pro saves a layout's changes when the user leaves
 it or confirms), and so are the handles' size and the outline.
+
+**Arranging objects.** Arrange > Align (Left Edges, Vertical Centers,
+Right Edges, Top Edges, Horizontal Centers, Bottom Edges), Distribute
+(Horizontally, Vertically) and Resize To (Smallest or Largest Width,
+Height, or Width and Height) apply to the selected objects when every one
+of them can be moved. They need two objects, and three to distribute. The
+new frames are changes like a drag's: outlined until Save Layout, which
+sends them in the same request, or dropped by Revert Layout. The frames
+come from `om_data::layout_arrange`, which `om-author`'s `arrange_objects`
+runs too ([authoring](authoring.md), "Arranging objects").
+- Edges align to the object farthest out, as Claris documents it. Centers
+  align to the middle of the objects' extent, and Distribute keeps the two
+  outermost objects and spaces the others evenly; both are OpenMaker's
+  reading of the help (re/client-ui.md, "Layout mode: Align, Distribute
+  and Resize To").
+- Changed left and top edges land on whole points. Objects too wide (tall)
+  together to distribute with equal gaps get evenly spaced leading edges
+  instead. Arrange shows an error and leaves the draft intact if rounding
+  would change the distribution order or a new frame would collapse to
+  a point.
+- A pending move keeps the revision it was made on through Arrange, so
+  frames derived from it conflict at Save Layout if the layout changed
+  since.
+- The submenus' item names follow the help's wording; FileMaker Pro's are
+  unmeasured.
+- Arrange does nothing for a selection holding a new field or an object
+  that cannot be moved. Group, Lock, the stacking commands, and Arrange's
+  other commands are still disabled ([#70](https://github.com/OpenMaker-Dev/openmaker/issues/70)).
 
 **Deleting an object.** Delete or Backspace (unless a text field has the
 keyboard), or Edit > Clear, deletes the selected object: the canvas and
@@ -2217,12 +2454,12 @@ script's steps:
     id, which no script takes again.
 - **Refused with an alert (error 3), nothing saved:** new folders and
   separators (and duplicated folders), a name another script or folder
-  has, names with characters outside ASCII, and deleting or renaming one
-  of two members of one name. Files whose own script names do not show
-  how FileMaker keys an ASCII name in their language refuse new and
-  renamed scripts (deletes, moves and options still save): the Japanese,
-  Korean and Chinese starter files, and the Swedish Assets and the French
-  and Swedish Meetings, whose script names all have accents ([#209](https://github.com/OpenMaker-Dev/openmaker/issues/209)). A
+  has, names with characters outside ASCII
+  ([#209](https://github.com/OpenMaker-Dev/openmaker/issues/209)), and
+  deleting or renaming one of two members of one name. New and renamed scripts are listed under
+  FileMaker's name list key, which is the same in every file, so a Create
+  New file and the Japanese, Korean and Chinese starters take them too
+  ([#274](https://github.com/OpenMaker-Dev/openmaker/issues/274)). A
   file whose script index lacks a part every file FileMaker made has is
   refused too, and so is one whose stored digest is not the one OpenMaker
   computes for its scripts.

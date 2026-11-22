@@ -579,6 +579,19 @@ impl CalcHost for Reader<'_> {
         self.host.load_container(container)
     }
 
+    /// The session's functions as a step's evaluation answers them
+    /// (`ServerHost::shared_call`): GetSensor, the Design functions and the
+    /// rest; `GetLayoutObjectAttribute` alone is the default's (empty), as
+    /// it would evaluate the window's objects.
+    fn call(
+        &mut self,
+        function: HostFunction<'_>,
+        args: &[Value],
+        context: &Context,
+    ) -> Result<Value, CalcError> {
+        self.host.shared_call(function, args, context)
+    }
+
     fn call_reporting(
         &mut self,
         function: HostFunction<'_>,

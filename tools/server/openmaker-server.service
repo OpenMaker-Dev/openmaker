@@ -1,0 +1,33 @@
+# Managed by the OpenMaker Server service scripts.
+[Unit]
+Description=OpenMaker Server
+Wants=network-online.target
+After=network-online.target
+
+[Service]
+Type=exec
+User=omserver
+Group=omadmin
+UMask=0027
+EnvironmentFile=/etc/openmaker/server.env
+LoadCredential=admin-password:/etc/openmaker/admin-password
+LoadCredential=tls-cert:/etc/openmaker/tls/cert.pem
+LoadCredential=tls-key:/etc/openmaker/tls/key.pem
+StateDirectory=openmaker-server
+StateDirectoryMode=0750
+ExecStart="/opt/OpenMaker/OpenMaker Server/bin/om-server" \
+    --name ${OPENMAKER_NAME} --bind ${OPENMAKER_BIND} --admin-bind ${OPENMAKER_ADMIN_BIND} \
+    --admin-user ${OPENMAKER_ADMIN_USER} --admin-password-file %d/admin-password \
+    --cert %d/tls-cert --key %d/tls-key \
+    --database-folder "/opt/OpenMaker/OpenMaker Server/Data/Databases" \
+    --backup-folder "/opt/OpenMaker/OpenMaker Server/Data/Backups" \
+    --log-folder "/opt/OpenMaker/OpenMaker Server/Logs" --list-all
+NoNewPrivileges=yes
+ProtectHome=yes
+PrivateTmp=yes
+KillMode=mixed
+Restart=on-failure
+RestartSec=3s
+
+[Install]
+WantedBy=multi-user.target

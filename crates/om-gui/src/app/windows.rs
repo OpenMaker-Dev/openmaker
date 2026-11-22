@@ -118,6 +118,8 @@ pub(crate) struct Doc {
     /// Zoom Level sets the window's document zoom.
     pub title: Option<String>,
     pub menubar: bool,
+    /// Set Zoom Level can disable the user's zoom commands for this window.
+    pub zoom_locked: bool,
     /// The view the window last showed each layout in, the current one's
     /// included (FileMaker Pro 26 keeps a view per layout in each window,
     /// #805): going back to a layout shows it in its entry; a layout not
@@ -257,6 +259,7 @@ impl Doc {
             document: crate::document::DocumentState::for_window(id),
             title: None,
             menubar: true,
+            zoom_locked: false,
             views: Default::default(),
             pending_enter: None,
             new_layout: None,
@@ -656,6 +659,20 @@ impl OpenMakerApp {
             Reply::ConnectionLost(err) => {
                 self.with_window(window, |app| app.lose_connection(&err));
             }
+            // Send Message shows over every window; a forced disconnect
+            // closes the file's windows. The requests to close the files
+            // are not acted on yet (#156).
+            Reply::HostMessages(messages) => {
+                for message in messages {
+                    match message.kind {
+                        om_data::HostMessageKind::Message => self.host_messages.push_back(message),
+                        om_data::HostMessageKind::Disconnected => {
+                            self.disconnected_by_host(window, &message)
+                        }
+                        om_data::HostMessageKind::CloseFiles => {}
+                    }
+                }
+            }
             // The reconnect's file may have more windows than the one that
             // asked (perhaps one closed since).
             Reply::Reconnected(result) => self.reconnected(ctx, *result),
@@ -919,6 +936,13 @@ impl OpenMakerApp {
             crate::session::DEFAULT_PAGE_SIZE,
         );
         session.set_layouts_for(opened.layouts, doc.calcs.schema().map(AsRef::as_ref));
+        // The page setup the file stores, as a file the user opens starts
+        // with it (`accept_calc_schema`).
+        if let Some(paper) =
+            crate::page_setup::Settings::stored_paper(doc.calcs.schema().map(AsRef::as_ref))
+        {
+            session.set_paper(paper);
+        }
         // The layout the file opened on, the blank page when the account
         // may not see it (#696).
         session.open_on(opened.window.layout);

@@ -10,6 +10,7 @@ rust-version.workspace = true
 [dependencies]
 om-data = { path = "../om-data" }
 om-layout = { path = "../om-layout" }
+om-report = { path = "../om-report" }
 om-provider = { path = "../om-provider" }
 om-url = { path = "../om-url" }
 # The PDF worker executable's limiting allocator (om-gui-pdf-worker; MIT OR Apache-2.0).
@@ -58,7 +59,7 @@ log = "0.4"
 # libwebkit2gtk-4.1-dev) and pkg-config; running it, the WebKitGTK 4.1
 # runtime. Without it, web viewers show a note and their script steps fail.
 # On Linux its windows are on winit's X11 backend, also on a Wayland session.
-web-viewer = ["dep:wry", "dep:gtk", "dep:gdkx11", "dep:webkit2gtk", "dep:javascriptcore-rs", "winit/x11", "dep:x11-dl", "dep:xkbcommon-dl", "dep:objc2", "dep:objc2-app-kit", "dep:objc2-core-foundation", "dep:objc2-foundation", "dep:getrandom"]
+web-viewer = ["dep:wry", "dep:gtk", "dep:gdkx11", "dep:webkit2gtk", "dep:javascriptcore-rs", "winit/x11", "dep:x11-dl", "dep:xkbcommon-dl", "dep:getrandom"]
 
 [target.'cfg(unix)'.dependencies]
 # Nonblocking open before checking local Insert/URL files, including FIFOs.
@@ -68,13 +69,16 @@ libc = "0.2"
 keyring = { version = "3.6.3", features = ["apple-native"] }
 # The system menu bar (Apache-2.0 OR MIT).
 muda = { version = "0.21", default-features = false }
-# The `web-viewer` feature's backend (wry: MIT OR Apache-2.0), and the
-# AppKit views it places pages in (the versions wry uses; MIT).
+# The `web-viewer` feature's backend (wry: MIT OR Apache-2.0).
 wry = { version = "0.57", default-features = false, features = ["os-webview"], optional = true }
-objc2 = { version = "0.6", optional = true }
-objc2-app-kit = { version = "0.3", default-features = false, features = ["std", "objc2-core-foundation", "NSApplication", "NSResponder", "NSView", "NSWindow"], optional = true }
-objc2-core-foundation = { version = "0.3", default-features = false, features = ["std", "CFCGTypes"], optional = true }
-objc2-foundation = { version = "0.3", default-features = false, features = ["std", "NSKeyValueCoding", "NSObject", "NSString", "NSURL", "NSValue"], optional = true }
+# AppKit (the versions wry uses; MIT): the views web viewers place pages
+# in, and the Insert commands' open panel (`file_panel`) with its
+# completion block.
+objc2 = "0.6"
+objc2-app-kit = { version = "0.3", default-features = false, features = ["std", "block2", "objc2-core-foundation", "NSApplication", "NSOpenPanel", "NSPanel", "NSResponder", "NSSavePanel", "NSView", "NSWindow"] }
+objc2-core-foundation = { version = "0.3", default-features = false, features = ["std", "CFCGTypes"] }
+objc2-foundation = { version = "0.3", default-features = false, features = ["std", "NSArray", "NSKeyValueCoding", "NSObject", "NSString", "NSURL", "NSValue"] }
+block2 = "0.6"
 # The web viewer bridge's tokens (the version om-data uses; MIT OR Apache-2.0).
 getrandom = { version = "0.2.17", optional = true }
 
@@ -120,10 +124,9 @@ serde = { version = "1", features = ["derive"] }
 serde_json = "1"
 
 [target.'cfg(target_os = "macos")'.dev-dependencies]
-# The web viewer test's window, views and posted clicks, and the menu bar
-# test's reading of the system menu bar (the versions wry and muda use; MIT).
+# AppKit tests for web viewers, the system menu bar and the open panel.
 objc2 = "0.6"
-objc2-app-kit = { version = "0.3", default-features = false, features = ["std", "objc2-core-foundation", "NSApplication", "NSEvent", "NSGraphicsContext", "NSMenu", "NSMenuItem", "NSResponder", "NSView", "NSWindow"] }
+objc2-app-kit = { version = "0.3", default-features = false, features = ["std", "objc2-core-foundation", "NSApplication", "NSEvent", "NSGraphicsContext", "NSMenu", "NSMenuItem", "NSOpenPanel", "NSPanel", "NSResponder", "NSSavePanel", "NSView", "NSWindow"] }
 objc2-core-foundation = { version = "0.3", default-features = false, features = ["std", "CFCGTypes"] }
 
 [target.'cfg(target_os = "linux")'.dev-dependencies]
@@ -140,6 +143,10 @@ harness = false
 
 # Web viewers in the real event loop under an X server: one eframe event
 # loop per process, on the main thread.
+[[test]]
+name = "insert_panel_native"
+harness = false
+
 [[test]]
 name = "web_viewer_native"
 harness = false
