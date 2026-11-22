@@ -29,7 +29,7 @@ use std::sync::{Mutex, MutexGuard, PoisonError};
 use log::{error, info, warn};
 use om_calc::Locale;
 use om_collate::DateOrder;
-use om_data::rules::recalc::Recalculation;
+use om_data::rules::recalc::{ContainerResult, Recalculation};
 use om_data::rules::RecordEnvironment;
 use om_hbam::catalog::keys as catalog_keys;
 use om_hbam::slot::{be_uint, uint_segment};
@@ -100,6 +100,8 @@ mod deferred {
     /// A normal field changed to timestamp: rewrite each stored value as a
     /// timestamp (7.2.1).
     pub const TO_TIMESTAMP: u32 = 0x800;
+    pub const KNOWN: u32 = 0x1fff;
+    pub const REMOVES_VALUES: u32 = DELETE | FEWER | CONTAINER;
     // `0x40` alone changes no value of the field's own; its dependents are
     // recalculated ([`crate::recalc`]). `0x1000` (fewer repetitions) does
     // nothing by itself.
@@ -234,6 +236,9 @@ pub struct Journal {
     /// Per table, the record ids the commit added to and removed from its
     /// record list `[T, 0d]`.
     ids: BTreeMap<Vec<u8>, (Vec<u64>, Vec<u64>)>,
+    /// Container names of deleted script records, by table. Their releases
+    /// are checked once all the commit's record changes are in the tree.
+    deleted_container_refs: BTreeMap<Vec<u8>, BTreeMap<Vec<u8>, i32>>,
     /// The indexes whose counts the commit's records changed.
     recount: BTreeSet<Recount>,
     /// Per index that disagrees with the current rules, the records the
@@ -252,6 +257,9 @@ pub struct Journal {
 
 /// An index whose counts leaf is due: table, field, index and counts keys.
 type Recount = (Vec<u8>, Vec<u8>, u8, u8);
+
+/// Pending field operations and the named cell keys used to resolve them.
+type DeferredFieldWork<'a> = (&'a [(Vec<u8>, u32)], &'a BTreeSet<Vec<u8>>);
 
 /// One index a record write changes: the field, the index (value 0, word
 /// 1), and the record's entries in it before and after.
@@ -432,15 +440,82 @@ impl Store {
             .map(|t| uint_segment(t.id))
             .filter(|t| self.node(&Self::deferred_path(t)).is_some())
             .collect();
+        if self.is_read_only() {
+            return false;
+        }
+        // A failed recovery must leave the file and the pending work intact.
+        for table in &pending {
+            if let Err(reason) = self.deferred_work(table) {
+                warn!(
+                    "{}: table {table:02x?}: deferred work kept, hosting read-only: {reason}",
+                    self.name
+                );
+                self.set_read_only();
+                return false;
+            }
+        }
         let mut changed = false;
         for table in pending {
             info!(
                 "{}: finishing the deferred field work of table {table:02x?}",
                 self.name
             );
-            changed |= self.update_table(&table, environment);
+            // The preflight checked every pending table before any changed.
+            changed |= self.update_table(&table, environment).unwrap_or(false);
         }
         changed
+    }
+
+    fn deferred_work(&self, table: &[u8]) -> Result<Vec<(Vec<u8>, u32)>, &'static str> {
+        let Some(list) = self.node(&Self::deferred_path(table)) else {
+            return Ok(Vec::new());
+        };
+        if holds_value(list) {
+            return Err("the deferred work list is not a list");
+        }
+        list.children
+            .iter()
+            .map(|entry| {
+                let field = be_uint(&entry.segment)
+                    .filter(|id| *id != 0 && uint_segment(*id) == entry.segment)
+                    .ok_or("a deferred field key does not decode")?;
+                let bits = entry
+                    .value
+                    .as_deref()
+                    .filter(|_| entry.children.is_empty())
+                    .and_then(|bytes| bytes.try_into().ok())
+                    .map(u32::from_be_bytes)
+                    .filter(|bits| bits & !deferred::KNOWN == 0)
+                    .ok_or("the deferred work uses unknown metadata")?;
+                if bits & (deferred::REMOVES_VALUES | deferred::TO_DATE | deferred::TO_TIMESTAMP)
+                    != 0
+                {
+                    let old = self.basis.get(table).and_then(|basis| basis.get(&field));
+                    let (container, global) =
+                        old.and_then(recalc::FieldBasis::known_storage).ok_or(
+                            "deferred value removal or conversion has no known old field type",
+                        )?;
+                    if bits & deferred::REMOVES_VALUES != 0
+                        && (container != (bits & deferred::CONTAINER != 0)
+                            || global != (bits & deferred::GLOBAL != 0))
+                    {
+                        return Err(
+                            "deferred value removal disagrees with the old field type or storage",
+                        );
+                    }
+                    if bits & deferred::FEWER != 0
+                        && !self
+                            .defined_repetitions(table, &entry.segment)
+                            .is_some_and(|n| n >= 1)
+                    {
+                        return Err(
+                            "deferred repetition removal has no known new repetition count",
+                        );
+                    }
+                }
+                Ok((entry.segment.clone(), bits))
+            })
+            .collect()
     }
 
     /// The file's own language (`Locale::Type`), which an index in
@@ -684,6 +759,7 @@ impl Store {
             undo: Vec::new(),
             saved: BTreeSet::new(),
             ids: BTreeMap::new(),
+            deleted_container_refs: BTreeMap::new(),
             recount: BTreeSet::new(),
             sweep: BTreeMap::new(),
             schema: false,
@@ -788,6 +864,22 @@ impl Store {
         new: Option<&OwnedNode>,
         counted: &[Vec<u8>],
     ) {
+        if new.is_none() {
+            for cell in old.iter().flat_map(|r| &r.children) {
+                if self.container_cell(table, &cell.segment) {
+                    if let Some(member) = member_key(cell) {
+                        let count = journal
+                            .deleted_container_refs
+                            .entry(table.to_vec())
+                            .or_default()
+                            .entry(member)
+                            .or_default();
+                        *count = count.saturating_add(1);
+                    }
+                }
+            }
+            return;
+        }
         let mut deltas: BTreeMap<Vec<u8>, i32> = BTreeMap::new();
         for member in counted {
             *deltas.entry(member.clone()).or_default() -= 1;
@@ -801,6 +893,34 @@ impl Store {
                 }
             }
         }
+        self.adjust_container_counts(journal, table, deltas);
+    }
+
+    /// Retained text from a converted field can name a member without a
+    /// counted reference. Protect the names that remain in records and
+    /// globals, scanning each affected table only once per script commit.
+    pub fn release_deleted_record_containers(&mut self, journal: &mut Journal) {
+        for (table, removed) in std::mem::take(&mut journal.deleted_container_refs) {
+            let naming = self.naming_cells(&table, &[], &BTreeSet::new());
+            let deltas = removed
+                .into_iter()
+                .map(|(member, removed)| {
+                    let surviving = naming.get(&member).copied().unwrap_or_default();
+                    let release =
+                        self.guarded_container_release(&table, &member, 0, surviving, removed);
+                    (member, -release)
+                })
+                .collect();
+            self.adjust_container_counts(journal, &table, deltas);
+        }
+    }
+
+    fn adjust_container_counts(
+        &mut self,
+        journal: &mut Journal,
+        table: &[u8],
+        deltas: BTreeMap<Vec<u8>, i32>,
+    ) {
         let library: [&[u8]; 2] = [table, &[LIBRARY]];
         for (member, delta) in deltas.into_iter().filter(|(_, d)| *d != 0) {
             if let Some(reason) = self.library_refusal(&library, None, Some((&member, delta))) {
@@ -831,6 +951,75 @@ impl Store {
                 self.dirty = true;
             }
         }
+    }
+
+    /// References that remain after deferred value removal, including
+    /// globals and cells kept when an old field's record cannot advance.
+    fn naming_cells(
+        &self,
+        table: &[u8],
+        work: &[(Vec<u8>, u32)],
+        named: &BTreeSet<Vec<u8>>,
+    ) -> BTreeMap<Vec<u8>, i64> {
+        let mut naming = BTreeMap::new();
+        for storage in [keys::RECORDS, keys::GLOBALS] {
+            let old: BTreeSet<_> = work
+                .iter()
+                .filter(|(_, bits)| {
+                    bits & deferred::CONTAINER != 0
+                        && (bits & deferred::GLOBAL != 0) == (storage == keys::GLOBALS)
+                })
+                .flat_map(|(field, _)| self.cells_from(table, field, 1, named))
+                .collect();
+            let Some(values) = self.node(&[table, &[storage]]) else {
+                continue;
+            };
+            let mut count = |cell: &OwnedNode| {
+                if old.contains(&cell.segment)
+                    || (self.container_cell(table, &cell.segment)
+                        && (!named.contains(&cell.segment)
+                            || self.field_type(table, &cell.segment) == Some(DataType::Container)))
+                {
+                    if let Some(member) = member_key(cell) {
+                        *naming.entry(member).or_default() += 1;
+                    }
+                }
+            };
+            if storage == keys::GLOBALS {
+                values.children.iter().for_each(&mut count);
+            } else {
+                for record in &values.children {
+                    record.children.iter().for_each(&mut count);
+                }
+            }
+        }
+        naming
+    }
+
+    /// Releases can spend only pre-existing references left after
+    /// protecting surviving names. Acquisitions from this change are
+    /// reserved for its new cells, even when old text named the same key.
+    fn guarded_container_release(
+        &self,
+        table: &[u8],
+        member: &[u8],
+        counted: i32,
+        surviving: i64,
+        removed: i32,
+    ) -> i32 {
+        let stored = self
+            .library_member(&[table, &[LIBRARY]], member)
+            .map_or(0, library::reference_count);
+        let available = i64::from(stored) - i64::from(counted) - surviving.max(0);
+        let release = available.clamp(0, i64::from(removed)) as i32;
+        if release < removed {
+            warn!(
+                "{}: table {table:02x?} member {member:02x?}: held {} container release(s)",
+                self.name,
+                removed - release
+            );
+        }
+        release
     }
 
     /// Store container data a server script set into a field of a record
@@ -1840,69 +2029,55 @@ impl Store {
         &mut self,
         table: &[u8],
         environment: &mut dyn FnMut() -> RecordEnvironment,
-    ) -> bool {
+    ) -> Result<bool, &'static str> {
+        if self.is_read_only() {
+            return Err("the file is hosted read-only");
+        }
         let Some(definition) = be_uint(table).and_then(|t| self.catalog.table(t)).cloned() else {
-            return false;
+            return Ok(false);
         };
+        let preflight = (|| {
+            let work = self.deferred_work(table)?;
+            let basis = recalc::table_basis(&self.root, &definition);
+            let retyped = recalc::retyped_to_container(self.basis.get(table), &basis)?;
+            Ok((work, basis, retyped))
+        })();
+        let (work, basis, retyped) = match preflight {
+            Ok(prepared) => prepared,
+            Err(reason) => {
+                warn!(
+                    "{}: table {table:02x?}: deferred work kept, hosting read-only: {reason}",
+                    self.name
+                );
+                self.set_read_only();
+                return Err(reason);
+            }
+        };
+        let stale = recalc::changed_fields(self.basis.get(table), &basis, &work);
         let list = Self::deferred_path(table);
-        let work: Vec<(Vec<u8>, u32)> = self
-            .node(&list)
-            .map(|n| {
-                n.children
-                    .iter()
-                    .filter_map(|entry| {
-                        let bits = entry.value.as_deref()?.try_into().ok()?;
-                        Some((entry.segment.clone(), u32::from_be_bytes(bits)))
-                    })
-                    .collect()
-            })
-            .unwrap_or_default();
         let mut changed = self.root.remove(&list).is_some();
         // Every field the work names keeps its own cells: a field deleted in
         // the same edit is no longer in the catalog, and its key may read as
         // another's repetition (`repetition_cells`).
-        let named: BTreeSet<Vec<u8>> = work.iter().map(|(field, _)| field.clone()).collect();
+        let mut named: BTreeSet<Vec<u8>> = work.iter().map(|(field, _)| field.clone()).collect();
+        if let Some(old) = self.basis.get(table) {
+            named.extend(old.keys().map(|id| uint_segment(*id)));
+        }
+        let mut removed = BTreeMap::new();
         for (field, bits) in &work {
-            if bits & deferred::DELETE != 0 {
-                // A global's value is the table's, not its records'
-                // (schema-path.md 7.2: `DeleteGlobalRecordData`).
+            if bits & deferred::REMOVES_VALUES != 0 {
+                // For a repetition cut, the preflight checked the new
+                // maximum. A delete or type change removes all repetitions.
+                let from = if bits & deferred::FEWER != 0 && bits & deferred::DELETE == 0 {
+                    self.repetitions(table, field).saturating_add(1)
+                } else {
+                    1
+                };
                 let container = bits & deferred::CONTAINER != 0;
                 if bits & deferred::GLOBAL != 0 {
-                    self.drop_global_value(table, field, 1, container, &named);
+                    self.drop_global_value(table, field, from, container, &named, &mut removed);
                 } else {
-                    self.drop_field_values(table, field, 1, container, &named);
-                }
-            } else if bits & deferred::FEWER != 0 {
-                // The repetitions above the new maximum go, releasing a
-                // container's library references (`0x8`), from the table's
-                // global value instead for a global (`0x2`; 7.2). A
-                // definition that does not read deletes nothing.
-                let container = bits & deferred::CONTAINER != 0;
-                match self.defined_repetitions(table, field).filter(|n| *n >= 1) {
-                    Some(maximum) => {
-                        let from = maximum.saturating_add(1);
-                        if bits & deferred::GLOBAL != 0 {
-                            self.drop_global_value(table, field, from, container, &named);
-                        } else {
-                            self.drop_field_values(table, field, from, container, &named);
-                        }
-                        changed = true;
-                    }
-                    None => warn!(
-                        "{}: table {table:02x?} field {field:02x?}: the repetitions above the \
-                         new count not deleted: the field's definition does not read (deferred \
-                         work {bits:#x})",
-                        self.name
-                    ),
-                }
-            } else if bits & deferred::CONTAINER != 0 {
-                // A type change from container deletes every repetition,
-                // releasing its library reference (7.2.1), the table's
-                // global value instead for a global (7.2).
-                if bits & deferred::GLOBAL != 0 {
-                    self.drop_global_value(table, field, 1, true, &named);
-                } else {
-                    self.drop_field_values(table, field, 1, true, &named);
+                    self.drop_field_values(table, field, from, container, &named, &mut removed);
                 }
                 changed = true;
             }
@@ -1922,13 +2097,18 @@ impl Store {
                     .is_some();
             }
         }
-        let basis = recalc::table_basis(&self.root, &definition);
-        let stale = recalc::changed_fields(self.basis.get(table), &basis, &work);
         self.basis.insert(table.to_vec(), basis);
+        for field in &retyped {
+            changed |= self.drop_retyped_cells(table, *field, &named);
+        }
+        if !removed.is_empty() {
+            let naming = self.naming_cells(table, &work, &named);
+            self.release_containers(table, removed, &naming);
+        }
         let recomputed = if stale.is_empty() {
             Vec::new()
         } else {
-            self.recalculate(table, &definition, &stale, environment)
+            self.recalculate(table, &definition, &stale, (&work, &named), environment)
         };
         changed |= !recomputed.is_empty();
         let mut rebuild: BTreeSet<Vec<u8>> = work
@@ -1993,7 +2173,7 @@ impl Store {
         if changed {
             self.generation += 1;
         }
-        changed
+        Ok(changed)
     }
 
     /// `f` of the catalogs a calculation of `table` reads, as a key tree
@@ -2058,6 +2238,7 @@ impl Store {
         table: &[u8],
         definition: &om_hbam::Table,
         stale: &BTreeSet<u64>,
+        deferred: DeferredFieldWork<'_>,
         environment: &mut dyn FnMut() -> RecordEnvironment,
     ) -> Vec<u64> {
         let Some(plan) = self.with_calc_inputs(table, |tree, calc| {
@@ -2113,6 +2294,21 @@ impl Store {
             self.root.put(&[table, &[LIBRARY]], node);
         }
         let outcome = outcome.unwrap_or_else(|panic| std::panic::resume_unwind(panic));
+        // The library is back: container results go into it, each release
+        // held to the references the table's cells make
+        // ([`Self::naming_cells`]).
+        if !outcome.containers.is_empty() {
+            let mut naming = self.naming_cells(table, deferred.0, deferred.1);
+            for (record, cells) in &outcome.containers {
+                self.store_recomputed_containers(
+                    table,
+                    record,
+                    cells,
+                    &definition.name,
+                    &mut naming,
+                );
+            }
+        }
         for (field, (records, first)) in &outcome.failed {
             let name = definition.field(*field).map_or("", |f| f.name.as_str());
             warn!(
@@ -2138,6 +2334,178 @@ impl Store {
         );
         self.dirty |= outcome.changed > 0;
         fields
+    }
+
+    /// Drop, in every record of `table`, the cells of `field`, whose type
+    /// changed to container in this change: they hold values of the old
+    /// type, which name no member they counted, so they are not counted
+    /// as references either (`recalc::retyped_to_container`). A record that
+    /// lost one counts one more modification; one whose count cannot
+    /// advance loses it too (it is not a container value), logged.
+    /// Returns whether a record changed.
+    fn drop_retyped_cells(&mut self, table: &[u8], field: u64, named: &BTreeSet<Vec<u8>>) -> bool {
+        let key = uint_segment(field);
+        let mut cells = self.repetition_cells(table, &key, named);
+        cells.insert(key);
+        let Some(records) = self.root.at_mut(&[table, &[keys::RECORDS]]) else {
+            return false;
+        };
+        let mut changed = false;
+        let mut exhausted = 0usize;
+        for record in &mut records.children {
+            let before = record.children.len();
+            record
+                .children
+                .retain(|cell| !cells.contains(&cell.segment));
+            if record.children.len() != before {
+                changed = true;
+                if modcount::bump(record, 1).is_none() {
+                    exhausted += 1;
+                }
+            }
+        }
+        if exhausted > 0 {
+            warn!(
+                "{}: table {table:02x?} field {field}: {exhausted} record(s) lost the old \
+                 values of a field changed to container without counting the change: their \
+                 modification count is the largest a serial key holds",
+                self.name
+            );
+        }
+        self.dirty |= changed;
+        changed
+    }
+
+    /// Store the container results `cells` the recompute computed for
+    /// record `record` of `table` (its key under `[T, 05]`), as a server
+    /// script's commit stores container data (containers.md,
+    /// "Implementation notes (OpenMaker Server scripts)"): a member of the
+    /// table's library the value names takes one more reference, data
+    /// (another table's member's, or data a calculation made) is stored as
+    /// a member, or counts one more reference to a member with the same
+    /// data, and text is the cell's text; a member a cell no longer names
+    /// is released (deleted at 0). When the library would refuse a write,
+    /// the record keeps its container values, logged.
+    ///
+    /// `naming` tracks surviving cells, including retained text in the
+    /// form of a member reference. Releases cannot spend the references
+    /// reserved for those cells or for this record's new results.
+    /// `naming` follows the record's change only once storage succeeds.
+    fn store_recomputed_containers(
+        &mut self,
+        table: &[u8],
+        record: &[u8],
+        cells: &BTreeMap<u64, ContainerResult>,
+        name: &str,
+        naming: &mut BTreeMap<Vec<u8>, i64>,
+    ) {
+        let path: [&[u8]; 3] = [table, &[keys::RECORDS], record];
+        let Some(old) = self.node(&path).cloned() else {
+            return;
+        };
+        let mut new = old.clone();
+        let mut journal = self.begin_commit();
+        // Added cells, removed names, and additions already counted by storage.
+        let mut references: BTreeMap<Vec<u8>, (i32, i32, i32)> = BTreeMap::new();
+        for (cell, result) in cells {
+            let key = uint_segment(*cell);
+            if let Some(member) = old.child(&key).and_then(member_key) {
+                references.entry(member).or_default().1 += 1;
+            }
+            let text = match result {
+                ContainerResult::Empty => None,
+                ContainerResult::Text(text) => Some(text.clone()),
+                ContainerResult::Data(value) => {
+                    let Some((member, stored)) = self.recomputed_member(&mut journal, table, value)
+                    else {
+                        journal.refused.get_or_insert_with(|| {
+                            "the container value has no data to store".to_string()
+                        });
+                        break;
+                    };
+                    let (added, _, counted) = references.entry(member.clone()).or_default();
+                    *added += 1;
+                    if stored {
+                        *counted += 1;
+                    }
+                    Some(containers::reference_text(&member))
+                }
+            };
+            match text {
+                Some(text) => new.set_child(om_scripts::text_node(&key, &text)),
+                None => {
+                    new.remove(&[&key]);
+                }
+            }
+        }
+        if journal.refused.is_none() {
+            let deltas = references
+                .iter()
+                .map(|(member, &(added, removed, counted))| {
+                    let surviving =
+                        naming.get(member).copied().unwrap_or_default() - i64::from(removed);
+                    let release =
+                        self.guarded_container_release(table, member, counted, surviving, removed);
+                    (member.clone(), added - counted - release)
+                })
+                .collect();
+            self.adjust_container_counts(&mut journal, table, deltas);
+        }
+        if let Some(reason) = journal.refused.take() {
+            warn!(
+                "{}: table {name:?}: record {record:02x?} keeps its container calculation \
+                 values: {reason}",
+                self.name
+            );
+            self.roll_back(journal);
+            return;
+        }
+        if let Some(node) = self.root.at_mut(&path) {
+            for (member, (added, removed, _)) in references {
+                *naming.entry(member).or_default() += i64::from(added - removed);
+            }
+            *node = new;
+            self.dirty = true;
+        }
+    }
+
+    /// The member of `table`'s library a recomputed container value names
+    /// when it is one of that library's, with `false`; else the member
+    /// [`Self::store_container_in`] stores its data in, counted, with
+    /// `true`: another table's member's tree as stored there, or the tree
+    /// the field stores for data a calculation made
+    /// (`om_data::containers::tree`). `None` without data to store, or
+    /// when the library refused it (in `journal`).
+    fn recomputed_member(
+        &mut self,
+        journal: &mut Journal,
+        table: &[u8],
+        value: &om_calc::Container,
+    ) -> Option<(Vec<u8>, bool)> {
+        let mut data = None;
+        if let Some(r) = &value.library {
+            let library = [uint_segment(r.table), vec![LIBRARY]];
+            let segments: Vec<&[u8]> = library.iter().map(Vec::as_slice).collect();
+            let member = self
+                .library_member(&segments, &r.member)
+                .filter(|m| MemberInfo::read(m).is_some_and(|i| i.md5 == r.md5));
+            if let Some(member) = member {
+                if library[0] == table {
+                    return Some((r.member.clone(), false));
+                }
+                data = library::member_tree(member);
+            }
+        }
+        let data = match data {
+            Some(data) => data,
+            None if value.streams.is_empty() => return None,
+            None => {
+                let (keys, md5) = containers::tree(value)?;
+                BinaryData::from_tree(keys, md5)
+            }
+        };
+        let member = self.store_container_in(journal, table, data);
+        (!member.is_empty()).then_some((member, true))
     }
 
     /// The cells holding repetitions 2 to 255 of `field`, in a record of
@@ -2175,22 +2543,38 @@ impl Store {
         cells
     }
 
-    /// Release the container data `values`, removed cells of `table`,
-    /// named.
-    fn release_containers(&mut self, table: &[u8], values: &[OwnedNode]) {
-        let library: [&[u8]; 2] = [table, &[LIBRARY]];
-        for member in values.iter().filter_map(member_key) {
-            let Some(library) = self.root.at_mut(&library) else {
+    /// Release names removed by deferred work after protecting the names
+    /// that still appear in records and globals.
+    fn release_containers(
+        &mut self,
+        table: &[u8],
+        removed: BTreeMap<Vec<u8>, i32>,
+        naming: &BTreeMap<Vec<u8>, i64>,
+    ) {
+        let path: [&[u8]; 2] = [table, &[LIBRARY]];
+        for (member, removed) in removed {
+            let surviving = naming.get(&member).copied().unwrap_or_default();
+            let release = self.guarded_container_release(table, &member, 0, surviving, removed);
+            if release == 0 {
                 continue;
-            };
-            if let Some(reason) = library::adjust_counter_refusal(library, &member, -1) {
+            }
+            if let Some(reason) = self.library_refusal(&path, None, Some((&member, -release))) {
                 warn!(
                     "{}: container data {member:02x?} of table {table:02x?} not released: {reason}",
                     self.name
                 );
                 continue;
             }
-            library::adjust(library, &member, -1);
+            if let Some(library) = self.root.at_mut(&path) {
+                library::adjust(library, &member, -release);
+            }
+        }
+    }
+
+    fn collect_removed_references(values: Vec<OwnedNode>, removed: &mut BTreeMap<Vec<u8>, i32>) {
+        for member in values.iter().filter_map(member_key) {
+            let count = removed.entry(member).or_default();
+            *count = count.saturating_add(1);
         }
     }
 
@@ -2204,6 +2588,7 @@ impl Store {
         from: u16,
         container: bool,
         others: &BTreeSet<Vec<u8>>,
+        removed: &mut BTreeMap<Vec<u8>, i32>,
     ) {
         let cells = self.cells_from(table, field, from, others);
         let Some(globals) = self.root.at_mut(&[table, &[keys::GLOBALS]]) else {
@@ -2217,7 +2602,7 @@ impl Store {
             return;
         }
         if container {
-            self.release_containers(table, &gone);
+            Self::collect_removed_references(gone, removed);
         }
         self.dirty = true;
     }
@@ -2317,10 +2702,10 @@ impl Store {
         from: u16,
         container: bool,
         others: &BTreeSet<Vec<u8>>,
+        removed: &mut BTreeMap<Vec<u8>, i32>,
     ) {
         let cells = self.cells_from(table, field, from, others);
         let is_value = |c: &OwnedNode| cells.contains(&c.segment);
-        let mut released = Vec::new();
         let mut kept = 0usize;
         if let Some(records) = self.root.at_mut(&[table, &[keys::RECORDS]]) {
             for record in &mut records.children {
@@ -2337,7 +2722,7 @@ impl Store {
                         .partition(is_value);
                 record.children = others;
                 if container {
-                    released.extend(gone);
+                    Self::collect_removed_references(gone, removed);
                 }
             }
         }
@@ -2348,7 +2733,6 @@ impl Store {
                 self.name
             );
         }
-        self.release_containers(table, &released);
         self.dirty = true;
     }
 
@@ -3870,7 +4254,14 @@ mod tests {
                 .put(&[table, &[keys::RECORDS], &record, cell], reference.clone());
         }
         // Cut to one repetition: from repetition 2 up.
-        store.drop_field_values(table, &first, 2, true, &BTreeSet::new());
+        let mut removed = BTreeMap::new();
+        store.drop_field_values(table, &first, 2, true, &BTreeSet::new(), &mut removed);
+        let naming = store.naming_cells(
+            table,
+            &[(first.clone(), deferred::FEWER | deferred::CONTAINER)],
+            &BTreeSet::new(),
+        );
+        store.release_containers(table, removed, &naming);
         let cell = |cell: &[u8]| {
             store
                 .node(&[table, &[keys::RECORDS], &record, cell])

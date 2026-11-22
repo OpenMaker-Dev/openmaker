@@ -233,10 +233,6 @@ pub struct Hosted {
     /// The accounts in the file's security catalog as the store holds it
     /// at a schema generation ([`Hosted::accounts`]).
     accounts: RwLock<Accounts>,
-    /// The file may not be written ([`Store::set_read_only`]): hosted for a
-    /// local client that cannot write it, or it holds content the writer
-    /// cannot write back ([`Store::is_read_only`]).
-    pub read_only: bool,
     /// Deferred field work [`Store::recover`] finished in memory and not
     /// saved yet: a local file keeps it provisional until an eligible
     /// account logs in ([`Hosted::commit_recovery`]); closing before that
@@ -346,7 +342,6 @@ impl Hosted {
             }
         })?;
         let mut store = Store::load(file, &hosted.name).map_err(open)?;
-        let mut read_only = false;
         if let Some((lock, local_read_only)) = local {
             store.serve_desktop();
             if let Some(lock) = lock {
@@ -354,12 +349,8 @@ impl Hosted {
             }
             if local_read_only {
                 store.set_read_only();
-                read_only = true;
             }
         }
-        // Loaded with content the writer cannot write back: served, never
-        // written (the store logged what it found).
-        read_only |= store.is_read_only();
         let mut environment =
             || crate::recalc::record_environment("", crate::recalc::random_uuid());
         let recovered = store.recover(&mut environment);
@@ -375,7 +366,6 @@ impl Hosted {
             thumbnails: Mutex::new(thumbnail::Cache::default()),
             internal_creation,
             accounts,
-            read_only,
             pending_recovery: std::sync::atomic::AtomicBool::new(recovered),
             events: events.clone(),
         })
@@ -455,6 +445,11 @@ impl Hosted {
             .unwrap_or_else(std::sync::PoisonError::into_inner)
     }
 
+    /// Whether the file is hosted read-only, including after refused deferred work.
+    pub fn is_read_only(&self) -> bool {
+        self.read_store().is_read_only()
+    }
+
     /// The connections registered for the file's change notifications,
     /// also after a request panicked holding them: each change is one push
     /// or retain, which leaves the list whole, and a session's end must
@@ -479,11 +474,11 @@ impl Hosted {
     /// [`Store::save_commit`], which takes them back when the file cannot be
     /// written.
     pub fn save(&self) {
-        if self.read_only {
+        let mut store = self.write_store();
+        if store.is_read_only() {
             // Indexes built on demand and the like stay in memory.
             return;
         }
-        let mut store = self.write_store();
         let _ = self.save_held(&mut store);
     }
 
@@ -492,7 +487,7 @@ impl Hosted {
     /// that must be on disk before it is answered (an issued record id,
     /// #927) is taken back when this fails.
     pub fn save_held(&self, store: &mut Store) -> std::io::Result<()> {
-        if self.read_only {
+        if store.is_read_only() {
             return Err(std::io::Error::new(
                 std::io::ErrorKind::ReadOnlyFilesystem,
                 "the file is hosted read-only",
@@ -1694,7 +1689,7 @@ impl Hosting {
                 });
             match loaded {
                 Ok(loaded) => {
-                    events.record(Event::file_opened(&loaded.name, loaded.read_only));
+                    events.record(Event::file_opened(&loaded.name, loaded.is_read_only()));
                     hosting.slots.push(Slot::serving(loaded));
                 }
                 Err(e) => {
