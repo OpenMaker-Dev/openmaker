@@ -3269,7 +3269,7 @@ impl RecordPlan {
             return Err(refused(id));
         }
         // As `compute_values` refuses on every other way to a write.
-        let changed = Self::changed_values(computed, existing, None);
+        let changed = Self::changed_values(computed, existing, |_, _| false);
         self.refuse_unwritable_changes(&changed)?;
         Self::prepared(changed)
     }
@@ -3324,19 +3324,25 @@ impl RecordPlan {
         self.compute_values(mode, existing, changes, environment, entry, None)
     }
 
-    /// Compute changes for a host that has already applied `changes` to
-    /// its draft. A rule can restore the stored value (including empty on
-    /// creation), which still requires a write to the draft.
-    pub fn compute_staged(
+    /// Compute changes for a draft that already holds copied cells.
+    /// A rule that restores a copied cell to its stored value (empty on
+    /// creation) still needs to overwrite the copy in the draft.
+    pub fn compute_with_copied_cells(
         &self,
         mode: WriteMode,
         existing: &BTreeMap<u64, String>,
         changes: &BTreeMap<u64, Option<String>>,
         environment: &RecordEnvironment,
         entry: Entry,
+        was_copied: impl Fn(u64) -> bool,
     ) -> Result<BTreeMap<u64, Option<String>>, DataError> {
         let computed = self.compute_inner(mode, existing, changes, environment, entry, None)?;
-        let changed = Self::changed_values(computed, existing, Some(changes));
+        let changed = Self::changed_values(computed, existing, |id, value| {
+            was_copied(id)
+                && changes
+                    .get(&id)
+                    .is_some_and(|text| value != text.as_deref().unwrap_or_default())
+        });
         self.refuse_unwritable_changes(&changed)?;
         Ok(changed)
     }
@@ -3505,7 +3511,7 @@ impl RecordPlan {
         preview: Option<&BTreeSet<u64>>,
     ) -> Result<BTreeMap<u64, Option<String>>, DataError> {
         let computed = self.compute_inner(mode, existing, changes, environment, entry, preview)?;
-        let changed = Self::changed_values(computed, existing, None);
+        let changed = Self::changed_values(computed, existing, |_, _| false);
         if preview.is_none() {
             self.refuse_unwritable_changes(&changed)?;
         }
@@ -3557,12 +3563,12 @@ impl RecordPlan {
         Ok(())
     }
 
-    /// The cells `computed` changes from `existing` or a staged input, not
+    /// The cells `computed` changes from `existing` or a copied input, not
     /// left out: stored text, `None` empty.
     fn changed_values(
         computed: Computed,
         existing: &BTreeMap<u64, String>,
-        staged: Option<&BTreeMap<u64, Option<String>>>,
+        differs_from_copy: impl Fn(u64, &str) -> bool,
     ) -> BTreeMap<u64, Option<String>> {
         let Computed {
             row,
@@ -3576,9 +3582,7 @@ impl RecordPlan {
             .filter(|id| {
                 let value = row.get(id).map_or("", String::as_str);
                 value != existing.get(id).map_or("", String::as_str)
-                    || staged
-                        .and_then(|cells| cells.get(id))
-                        .is_some_and(|text| value != text.as_deref().unwrap_or_default())
+                    || differs_from_copy(*id, value)
             })
             .map(|id| {
                 let text = row.get(&id).map_or("", String::as_str);

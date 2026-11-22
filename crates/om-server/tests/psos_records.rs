@@ -861,26 +861,32 @@ fn a_duplicates_empty_replacement_clears_the_copied_value() {
         ],
         text_node(&[], "source"),
     );
-    root.put(
-        &[&[17], &[5], &uint_segment(8)],
-        script(
-            8,
-            "Duplicate with an empty replacement",
-            vec![
-                fixture::on(86, true),
-                ScriptStep::new(23),
-                fixture::go_to_record(1),
-                set_var("$source", "Tasks::Number"),
-                ScriptStep::new(8),
-                set_var("$preview", "Tasks::Number"),
-                ScriptStep::new(75),
-                exit_with(
-                    "$source & \"|\" & $preview & \"|\" & Tasks::Number & \"|\" & Get ( LastError )",
-                ),
-            ],
-        )
-        .encode(),
-    );
+    for (id, name, enter_copy) in [
+        (8, "Duplicate with an empty replacement", false),
+        (9, "Set Field on the duplicate", true),
+    ] {
+        let mut steps = vec![
+            fixture::on(86, true),
+            ScriptStep::new(23),
+            fixture::go_to_record(1),
+            set_var("$source", "Tasks::Number"),
+            ScriptStep::new(8),
+        ];
+        if enter_copy {
+            steps.push(fixture::set_field(NUMBER, "$source"));
+        }
+        steps.extend([
+            set_var("$preview", "Tasks::Number"),
+            ScriptStep::new(75),
+            exit_with(
+                "$source & \"|\" & $preview & \"|\" & Tasks::Number & \"|\" & Get ( LastError )",
+            ),
+        ]);
+        root.put(
+            &[&[17], &[5], &uint_segment(id)],
+            script(id, name, steps).encode(),
+        );
+    }
     let file = TempFile::from_tree("psos-empty-replacement", &root);
     let port = server::start(&file);
     let (mut client, _) = server::logged_in(port, "client");
@@ -897,6 +903,9 @@ fn a_duplicates_empty_replacement_clears_the_copied_value() {
         .find(|(id, _)| before.iter().all(|(old, _)| old != id))
         .expect("duplicate committed");
     assert_eq!(server::cell(&after, *duplicate, NUMBER), None);
+    // Set Field makes the value an explicit entry even when the text
+    // matches the copy. The preview and commit both keep that entry.
+    assert_eq!(run(&mut client, 9), (0, "source|source|source|0".into()));
 }
 
 /// A new record's auto-entered value read before its commit (#474) is not

@@ -403,9 +403,8 @@ struct OpenRecord {
     node: OwnedNode,
     /// Created by New Record and never committed.
     new: bool,
-    /// The cells steps set (Set Field, an imported row); the rules' own
-    /// values are not among them.
-    changed: BTreeSet<u64>,
+    /// The cells steps set and where each staged value came from.
+    changed: BTreeMap<u64, CellSource>,
     /// Set when the rules already ran on the record (an imported row,
     /// with the import's own entry options): a commit writes what they
     /// left and applies its rules only to the cells changed since.
@@ -433,6 +432,13 @@ struct OpenRecord {
     /// them (a duplicate, a transaction's other records, its unique
     /// values), so `node` holds only what the steps set.
     preview: BTreeMap<u64, String>,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum CellSource {
+    Entered,
+    /// Rules can clear a copy even when the new record's base is empty.
+    Copied,
 }
 
 /// A row's write mode, the values it holds, the changes made to it and how
@@ -478,7 +484,7 @@ impl OpenRecord {
 
     /// A step changed `cell`.
     fn changed_cell(&mut self, cell: u64) {
-        self.changed.insert(cell);
+        self.changed.insert(cell, CellSource::Entered);
         if let Some(ruled) = &mut self.ruled {
             ruled.since.insert(cell);
         }
@@ -1104,7 +1110,7 @@ impl ServerHost {
         let Some(mut current) = self.committed_node(record.table, record.id) else {
             return;
         };
-        let mut kept = record.changed.clone();
+        let mut kept: BTreeSet<_> = record.changed.keys().copied().collect();
         if let Some(ruled) = &record.ruled {
             kept.extend(&ruled.written);
         }
@@ -1355,7 +1361,7 @@ impl ServerHost {
             id,
             node,
             new: false,
-            changed: BTreeSet::new(),
+            changed: BTreeMap::new(),
             ruled: None,
             serials: BTreeMap::new(),
             context,
@@ -1591,7 +1597,7 @@ impl ServerHost {
         let existing = BTreeMap::new();
         let changes: BTreeMap<u64, Option<String>> = record
             .changed
-            .iter()
+            .keys()
             .map(|cell| {
                 let text = record
                     .node
@@ -1631,14 +1637,18 @@ impl ServerHost {
             if record.serials.contains_key(&cell) || unknown.contains(&field_of(cell)) {
                 continue;
             }
-            // Overlay an entered cell only if its rules give it a
-            // different value, including clearing a copied value.
-            if record.changed.contains(&cell) {
+            // Match the commit: an empty result clears a copied cell.
+            // An entered cell on a new record keeps its value when the
+            // result is already empty in the base.
+            if let Some(source) = record.changed.get(&cell) {
                 let entered = record
                     .node
                     .child(&uint_segment(cell))
                     .and_then(values::cell_text);
-                if !plan.has_rules(cell) || entered.as_deref().unwrap_or_default() == text {
+                if !plan.has_rules(cell)
+                    || (text.is_empty() && *source == CellSource::Entered)
+                    || entered.as_deref().unwrap_or_default() == text
+                {
                     continue;
                 }
             }
@@ -1671,20 +1681,24 @@ impl ServerHost {
             }
         }
         let plan = self.plan(record.table)?;
-        let (mode, existing, cells) = match &record.ruled {
+        let (mode, existing, cells): (_, _, BTreeSet<_>) = match &record.ruled {
             Some(ruled) if ruled.since.is_empty() => return Ok(BTreeSet::new()),
             Some(ruled) => (
                 WriteMode::Update,
                 ruled.base.clone().unwrap_or_else(|| texts(&record.node)),
                 ruled.since.clone(),
             ),
-            None if record.new => (WriteMode::Create, BTreeMap::new(), record.changed.clone()),
+            None if record.new => (
+                WriteMode::Create,
+                BTreeMap::new(),
+                record.changed.keys().copied().collect(),
+            ),
             None => {
                 let stored = self.committed_node(record.table, record.id);
                 (
                     WriteMode::Update,
                     stored.as_ref().map(texts).unwrap_or_default(),
-                    record.changed.clone(),
+                    record.changed.keys().copied().collect(),
                 )
             }
         };
@@ -1715,7 +1729,16 @@ impl ServerHost {
                 record,
                 (mode, &existing, &changes, entry),
                 &mut environment,
-                |environment| plan.compute_staged(mode, &existing, &changes, environment, entry),
+                |environment| {
+                    plan.compute_with_copied_cells(
+                        mode,
+                        &existing,
+                        &changes,
+                        environment,
+                        entry,
+                        |cell| record.changed.get(&cell) == Some(&CellSource::Copied),
+                    )
+                },
             )
             .map_err(|e| {
                 info!(
@@ -2269,10 +2292,12 @@ impl ServerHost {
             }
         }
         // A value written over the preview is entered, also one the preview
-        // shows (#474): clearing a previewed lookup clears it.
+        // shows (#474): clearing a previewed lookup clears it. Writing a
+        // copied value again makes it an explicit entry.
         let changed = record.node.child(&key) != before.as_ref()
             || lookup_match
-            || record.preview.contains_key(&cell);
+            || record.preview.contains_key(&cell)
+            || record.changed.get(&cell) == Some(&CellSource::Copied);
         if changed {
             record.changed_cell(cell);
         }
@@ -3403,7 +3428,7 @@ impl ServerHost {
                     let typed = self.focus.as_ref().filter(|f| f.typed).map(|f| f.field);
                     let changed: BTreeSet<u64> = r
                         .changed
-                        .iter()
+                        .keys()
                         .copied()
                         .filter(|c| Some(*c) != typed)
                         .collect();
@@ -3831,7 +3856,7 @@ impl Records for ServerHost {
             id,
             node,
             new: true,
-            changed: BTreeSet::new(),
+            changed: BTreeMap::new(),
             ruled: None,
             serials,
             context: Box::new(self.step_context()),
@@ -3921,7 +3946,7 @@ impl Records for ServerHost {
                     continue;
                 }
                 if entered.contains(&field) {
-                    record.changed_cell(field);
+                    record.changed.insert(field, CellSource::Copied);
                 }
             }
             record.node.set_child(cell);
