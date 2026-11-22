@@ -1847,11 +1847,21 @@ impl<'a> WorkerHost<'a> {
         let mut related = self.related_container_drafts();
         self.leave_provider_owned(&mut taken, &mut related);
         let (window, provider) = self.wp();
+        let (id, layout, record) = (window.id(), window.state.layout, window.state.record);
         let reverted = window.revert(provider);
         // A confirmed delete settles the drafts even if reading the new
         // found count then fails. A refused delete retains them all.
         let settled = window.state.drafts.is_empty() && window.state.uncommitted.is_empty();
         if settled {
+            if let Some(before) = self
+                .s
+                .file
+                .transaction
+                .as_mut()
+                .and_then(|staged| staged.window_drafts.get_mut(&id))
+            {
+                before.discard_drafts_for(layout, record);
+            }
             self.adjust_containers(&taken, -1);
             for (table, reference) in related {
                 let _ = self.p().adjust_related_container(table, &reference, -1);

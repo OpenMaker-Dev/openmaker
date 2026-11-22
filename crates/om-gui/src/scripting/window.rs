@@ -172,6 +172,17 @@ pub(crate) struct Pending {
     uncommitted: Uncommitted,
 }
 
+impl Pending {
+    /// Revert Record settled this record's drafts. Keep the window in
+    /// rollback cleanup without restoring what the step discarded.
+    pub fn discard_drafts_for(&mut self, layout: Option<u32>, record: Option<i64>) {
+        if self.layout == layout && self.record == record {
+            self.drafts.clear();
+            self.uncommitted = Uncommitted::default();
+        }
+    }
+}
+
 /// A new record [`Window::make_new_record`] made, for
 /// [`Window::adopt_new_record`].
 pub(crate) struct NewRecord {

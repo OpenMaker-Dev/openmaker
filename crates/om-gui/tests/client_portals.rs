@@ -2178,14 +2178,12 @@ fn rolling_back_a_multi_hop_creation_clears_its_related_drafts() {
 
 #[test]
 fn reverting_a_transaction_discards_a_child_draft_in_another_window() {
-    let mut open_transaction = ScriptStep::new(205);
-    open_transaction.value = 11;
-    let mut commit = ScriptStep::new(206);
-    commit.value = 11;
-    let revert = fixture::script(
-        1,
-        "Revert from second window",
-        vec![
+    for (tag, revert_record) in [("retain-ordinary", false), ("revert-ordinary", true)] {
+        let mut open_transaction = ScriptStep::new(205);
+        open_transaction.value = 11;
+        let mut commit = ScriptStep::new(206);
+        commit.value = 11;
+        let mut steps = vec![
             fixture::on(86, true),
             fixture::go_to_layout(PORTALS),
             fixture::go_to_record(1),
@@ -2196,39 +2194,61 @@ fn reverting_a_transaction_discards_a_child_draft_in_another_window() {
             select_window("W2"),
             set_field(FOLLOW_UP_NOTES, BODY, 0, "\"orphan\""),
             note("$created", "Get ( LastError )"),
+        ];
+        if revert_record {
+            steps.push(without_dialog(51));
+        }
+        steps.extend([
+            note("$beforeRevert", "Get ( LastError )"),
             ScriptStep::new(207),
             commit,
-            show("\"revert \" & $created & \":\" & Get ( LastError )"),
-        ],
-    );
-    let save = fixture::script(
-        2,
-        "Save second window",
-        vec![
-            fixture::on(86, true),
-            select_window("W2"),
-            without_dialog(75),
-            show("\"save \" & Get ( LastError ) & \":\" & Get ( WindowName )"),
-        ],
-    );
-    let hosted = host_note_tasks("revert-second-window", &[revert, save], |root| {
-        add_follow_up_notes(root);
-        add_extra(root);
-    });
-    let notes = stored(&hosted, NOTES, &[(BODY, 1), (TASK, 1)]);
-    let mut app = open(&hosted);
-    expect(&mut app, "Revert from second window", "revert 0:0");
-    assert_eq!(stored(&hosted, NOTES, &[(BODY, 1), (TASK, 1)]), notes);
+            show("\"revert \" & $created & \":\" & $beforeRevert & \":\" & Get ( LastError )"),
+        ]);
+        let revert = fixture::script(1, "Revert from second window", steps);
+        let save = fixture::script(
+            2,
+            "Save second window",
+            vec![
+                fixture::on(86, true),
+                select_window("W2"),
+                without_dialog(75),
+                show("\"save \" & Get ( LastError ) & \":\" & Get ( WindowName )"),
+            ],
+        );
+        let hosted = host_note_tasks(tag, &[revert, save], |root| {
+            add_follow_up_notes(root);
+            add_extra(root);
+        });
+        let notes = stored(&hosted, NOTES, &[(BODY, 1), (TASK, 1)]);
+        let extra = stored(&hosted, NOTES, &[(EXTRA, 1)]);
+        let mut app = open(&hosted);
+        expect(&mut app, "Revert from second window", "revert 0:0:0");
+        assert_eq!(
+            stored(&hosted, NOTES, &[(BODY, 1), (TASK, 1)]),
+            notes,
+            "{tag}"
+        );
+        assert_eq!(stored(&hosted, NOTES, &[(EXTRA, 1)]), extra, "{tag}");
 
-    expect(&mut app, "Save second window", "save 0:W2");
-    assert_eq!(stored(&hosted, NOTES, &[(BODY, 1), (TASK, 1)]), notes);
-    assert_eq!(
-        stored(&hosted, NOTES, &[(EXTRA, 1)])
-            .into_iter()
-            .filter(|(_, fields)| fields == &["ordinary"])
-            .count(),
-        1
-    );
+        expect(&mut app, "Save second window", "save 0:W2");
+        assert_eq!(
+            stored(&hosted, NOTES, &[(BODY, 1), (TASK, 1)]),
+            notes,
+            "{tag}"
+        );
+        let saved_extra = stored(&hosted, NOTES, &[(EXTRA, 1)]);
+        if revert_record {
+            assert_eq!(saved_extra, extra, "{tag}");
+        } else {
+            assert_eq!(
+                saved_extra
+                    .iter()
+                    .filter(|(_, fields)| fields == &["ordinary"])
+                    .count(),
+                1
+            );
+        }
+    }
 }
 
 #[test]

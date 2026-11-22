@@ -89,7 +89,9 @@ FileMaker Pro's order:
   holds them new (`DataProvider::transaction_created`), not by what a
   window remembers of its record: a record an earlier transaction saved
   stays, with an edit pending on it, and so does a record a window's
-  record session holds apart. The window shows the
+  record session holds apart. OpenMaker discards participating windows'
+  transaction drafts and keeps the ordinary drafts they brought in on the
+  same record, unless Revert Record discarded them. The window shows the
   record at the same place in the found set as the revert leaves it, or the
   last one when no record is there any more (so the record before a new one
   at the end), and `Get ( RecordID )` answers that record's id
