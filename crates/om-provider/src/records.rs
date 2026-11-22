@@ -24,6 +24,10 @@ const EXISTS_IN_INDEX: u8 = 18;
 const EXISTS_RESULT: u8 = 0x03;
 /// GetKey's independent result spot, `[3, 4]`.
 const INDEX_COUNTS_RESULT: u8 = 0x04;
+/// The most index keys one op86 ExistsInIndex asks (a unique field's
+/// changed repetitions are asked together): enough for every repetition of
+/// a field, small enough for one request.
+const EXISTS_KEYS: usize = 64;
 /// Finite work limits for a validation without the host's value index.
 const VALIDATION_SCAN_RECORDS: usize = 100_000;
 const VALIDATION_SCAN_BYTES: usize = 64 << 20;
@@ -175,7 +179,7 @@ fn exists_in_index_program(
     connection_key: &[u8; 16],
     table: u64,
     field: u64,
-    key: &[u8],
+    keys: &[Vec<u8>],
     ignore: u64,
 ) -> Option<Vec<u8>> {
     let leaf = |key: u8, value: Vec<u8>| OwnedNode::leaf(vec![key], value);
@@ -215,11 +219,17 @@ fn exists_in_index_program(
             leaf(0x10, vec![1, 2, 1, 2]),
         ],
     );
-    // The record to ignore as a one-record RID list (5.1).
+    // The keys as value-less leaves of one spot, any of which answers true
+    // (query-program.md 8.4, live:exists2_two); the record to ignore as a
+    // one-record RID list (5.1).
+    let asked = keys
+        .iter()
+        .map(|key| OwnedNode::leaf(key.clone(), Vec::new()))
+        .collect();
     let upload = OwnedNode::list(
         vec![2],
         vec![
-            OwnedNode::list(vec![1], vec![OwnedNode::leaf(key.to_vec(), Vec::new())]),
+            OwnedNode::list(vec![1], asked),
             OwnedNode::list(
                 vec![2],
                 vec![OwnedNode::leaf(serial::encode(ignore), Vec::new())],
@@ -231,6 +241,28 @@ fn exists_in_index_program(
         vec![OwnedNode::list(vec![1], vec![check, instruction]), upload],
     )
     .to_wire()
+}
+
+/// The changed values among `values` of `fields`, each repetition's: a
+/// field's own cell for its first, `field * 256 + n` for repetition n of
+/// 2 to 255 (`om_data::rules::cell_of`). A unique value is checked in each
+/// (script-runtime.md, the unique oracle's later repetitions).
+pub(super) fn field_cells<'v>(
+    table: &Table,
+    fields: &[u64],
+    values: &'v EncodedChanges,
+) -> Vec<(u64, &'v [u8])> {
+    values
+        .iter()
+        .filter_map(|(cell, value)| {
+            let field = match table.field(*cell) {
+                Some(_) => *cell,
+                None if *cell & 0xff >= 2 => *cell >> 8,
+                None => return None,
+            };
+            Some((field, value.as_deref()?)).filter(|(field, _)| fields.contains(field))
+        })
+        .collect()
 }
 
 /// How the value index of `table`'s `field`, validated as unique or as an
@@ -581,26 +613,31 @@ impl NativeProvider {
         Ok(record)
     }
 
-    /// Only ordinary stored scalar and container cells are enabled on imported layouts.
-    /// Check before rules/locks/uploads, including Set Field's repetitions.
+    /// The cells a write through another file's owner takes: each
+    /// repetition of an ordinary stored text, number, date, time, timestamp
+    /// or container field, cell `field * 256 + n` for repetition n of 2 and
+    /// up as the owner's own writes name it (`om_data::rules::cell_of`); no
+    /// global or calculation. Checked before rules, locks and uploads,
+    /// including Set Field's repetitions.
     pub(super) fn check_scalar_cells(
         table: &Table,
         cells: &BTreeMap<u64, Option<String>>,
     ) -> Result<(), DataError> {
         for cell in cells.keys() {
-            if !table.field(*cell).is_some_and(|field| {
-                field.kind == om_hbam::FieldKind::Normal
-                    && matches!(
-                        field.data_type,
-                        om_hbam::DataType::Text
-                            | om_hbam::DataType::Number
-                            | om_hbam::DataType::Date
-                            | om_hbam::DataType::Time
-                            | om_hbam::DataType::Timestamp
-                            | om_hbam::DataType::Container
-                    )
+            // A first repetition is the field's own cell, never `F * 256
+            // + 1`, which the owner does not take.
+            let (field, repetition) = match table.field(*cell) {
+                Some(field) => (Some(field), 1),
+                None if *cell & 0xff >= 2 => (
+                    table.field(*cell >> 8),
+                    u16::try_from(*cell & 0xff).unwrap_or(0),
+                ),
+                None => (None, 0),
+            };
+            if !field.is_some_and(|field| {
+                Self::ordinary_stored(field)
                     && field.decoded_options().is_some_and(|options| {
-                        options.max_repetitions == 1 && options.options & 0x1_0000 == 0
+                        (1..=options.max_repetitions.max(1)).contains(&repetition)
                     })
             }) {
                 return Err(DataError::with_code(
@@ -610,6 +647,36 @@ impl NativeProvider {
             }
         }
         Ok(())
+    }
+
+    /// Whether `field` is an ordinary stored text, number, date, time,
+    /// timestamp or container field, not a global.
+    fn ordinary_stored(field: &om_hbam::Field) -> bool {
+        field.kind == om_hbam::FieldKind::Normal
+            && matches!(
+                field.data_type,
+                om_hbam::DataType::Text
+                    | om_hbam::DataType::Number
+                    | om_hbam::DataType::Date
+                    | om_hbam::DataType::Time
+                    | om_hbam::DataType::Timestamp
+                    | om_hbam::DataType::Container
+            )
+            && field
+                .decoded_options()
+                .is_some_and(|options| options.options & 0x1_0000 == 0)
+    }
+
+    /// Whether Browse edits `field` of another file's table on a layout:
+    /// one a routed write takes ([`Self::check_scalar_cells`]) that does
+    /// not repeat. Browse edits a later repetition of the layout's own
+    /// record through its related path, which a routed table does not
+    /// take yet.
+    pub(super) fn routed_browse_field(field: &om_hbam::Field) -> bool {
+        Self::ordinary_stored(field)
+            && field
+                .decoded_options()
+                .is_some_and(|options| options.max_repetitions <= 1)
     }
 
     /// A new transaction id for one record write (write-path.md 1.2): the
@@ -967,6 +1034,9 @@ impl NativeProvider {
     /// (write-path.md 1.3): write-lock the field's index `[T, 01, F]` for
     /// `txn`, then ask the server whether a record other than `record`
     /// already holds the value. The lock is kept until the transaction ends.
+    /// A field's changed repetitions are checked together: its index locked
+    /// once, each distinct value asked once, and any scan of the stored
+    /// records made once for all of them.
     pub(super) fn check_unique(
         &mut self,
         table: &Table,
@@ -976,13 +1046,14 @@ impl NativeProvider {
         txn: u32,
     ) -> Result<(), DataError> {
         let file_language = self.file_language()?;
-        for field in fields {
-            let Some(Some(value)) = values.get(&field) else {
-                continue;
-            };
-            let name = table.field(field).map_or("", |f| f.name.as_str());
+        let mut changed: BTreeMap<u64, BTreeSet<String>> = BTreeMap::new();
+        for (field, value) in field_cells(table, &fields, values) {
             let text = om_scsu::decode_scsu(value)
                 .map_err(|e| failure("decode a unique value", format!("{e:?}")))?;
+            changed.entry(field).or_default().insert(text);
+        }
+        for (field, texts) in changed {
+            let name = table.field(field).map_or("", |f| f.name.as_str());
             let field_key = key_bytes(field);
             let path: [&[u8]; 3] = [&key_bytes(table.id), &[INDEXES], &field_key];
             let session = self.session_mut()?;
@@ -993,15 +1064,11 @@ impl NativeProvider {
                 LockReply::Granted { .. } => {}
                 refused => return Err(lock_refused(&format!("Field {name}"), refused)),
             }
-            // Keep the index lock across both the query and any scan,
+            // Keep the index lock across both the queries and any scan,
             // including checks of pending transaction records.
-            if self.in_index(
-                table.id,
-                field,
-                &text,
-                record,
-                IndexKeys::Text(checked_keys(table, field, file_language)?),
-            )? {
+            let keys = checked_keys(table, field, file_language)?;
+            let texts: Vec<String> = texts.into_iter().collect();
+            if self.any_in_index(table.id, field, &texts, record, keys)? {
                 return Err(DataError::with_code(
                     om_data::rules::error::NOT_UNIQUE,
                     format!("Field {name} requires a unique value."),
@@ -1143,6 +1210,77 @@ impl NativeProvider {
                 return Err(DataError::new("A validated field's index holds no keys."))
             }
         };
+        match self.index_answer(table, field, std::slice::from_ref(&key), ignore)? {
+            Some(answer) => Ok(answer),
+            None => {
+                // An unkeyed stored value of a typed source compares as text.
+                let as_text = match keys {
+                    IndexKeys::Typed(..) => TextKeys::Collated.key(text),
+                    IndexKeys::Text(_) => None,
+                };
+                self.scan_index_keys(
+                    table,
+                    field,
+                    std::slice::from_ref(&key),
+                    ignore,
+                    keys,
+                    as_text.as_deref(),
+                )
+            }
+        }
+    }
+
+    /// [`Self::in_index`] for any of `texts`: their distinct index keys
+    /// asked together (at most [`EXISTS_KEYS`] in one op86), and the stored
+    /// records scanned once for every key the host's index could not
+    /// answer.
+    fn any_in_index(
+        &mut self,
+        table: u64,
+        field: u64,
+        texts: &[String],
+        ignore: u64,
+        keys: TextKeys,
+    ) -> Result<bool, DataError> {
+        // The keys as the index holds them (query-program.md 7.1, 7.2):
+        // texts that differ only in case, or share a cut key, ask once.
+        let asked = texts
+            .iter()
+            .map(|text| keys.key(text))
+            .collect::<Option<BTreeSet<Vec<u8>>>>()
+            .ok_or_else(|| DataError::new("A validated field's index holds no keys."))?;
+        let asked: Vec<Vec<u8>> = asked.into_iter().collect();
+        let mut unanswered = Vec::new();
+        for chunk in asked.chunks(EXISTS_KEYS) {
+            match self.index_answer(table, field, chunk, ignore)? {
+                Some(true) => return Ok(true),
+                Some(false) => {}
+                None => unanswered.extend_from_slice(chunk),
+            }
+        }
+        if unanswered.is_empty() {
+            return Ok(false);
+        }
+        self.scan_index_keys(
+            table,
+            field,
+            &unanswered,
+            ignore,
+            IndexKeys::Text(keys),
+            None,
+        )
+    }
+
+    /// The host's op86 ExistsInIndex answer for `asked` in `field`'s value
+    /// index: whether a record other than `ignore` holds any of them;
+    /// `None` when the index's counts were missing.
+    fn index_answer(
+        &mut self,
+        table: u64,
+        field: u64,
+        asked: &[Vec<u8>],
+        ignore: u64,
+    ) -> Result<Option<bool>, DataError> {
         let session = self.session_mut()?;
         let file_id = session
             .opened_file()
@@ -1154,39 +1292,32 @@ impl NativeProvider {
             session.connection_key(),
             table,
             field,
-            &key,
+            asked,
             ignore,
         )
         .ok_or_else(|| DataError::new("A validated value is too long to check."))?;
         let reply = session
             .query(&program)
             .map_err(|e| failure("check a validated value", e))?;
-        match exists_in_index_result(&reply.slots)? {
-            Some(answer) => Ok(answer),
-            None => self.scan_index_key(table, field, (text, &key), ignore, keys),
-        }
+        exists_in_index_result(&reply.slots)
     }
 
     /// The same key membership question over stored records when the
-    /// host's counts were missing. The caller's unique-index lock, if
-    /// any, stays held. This sees committed records, like op18; pending
-    /// transaction duplicates remain checked by transaction::note_unique.
-    fn scan_index_key(
+    /// host's counts were missing: whether a record other than `ignore`
+    /// holds any of `wanted`. The caller's unique-index lock, if any, stays
+    /// held. This sees committed records, like op18; pending transaction
+    /// duplicates remain checked by transaction::note_unique. For a typed
+    /// lookup, `as_text` is the candidate's text key for unkeyed stored values.
+    fn scan_index_keys(
         &mut self,
         table: u64,
         field: u64,
-        (text, key): (&str, &[u8]),
+        wanted: &[Vec<u8>],
         ignore: u64,
         keys: IndexKeys,
+        as_text: Option<&[u8]>,
     ) -> Result<bool, DataError> {
         use om_hbam::{DataType, FieldKind};
-        // A stored value a typed source's type gives no key OpenMaker
-        // builds compares as text with the checked value, as before #591:
-        // a stored `5` and a zero-width space holds `5`.
-        let as_text = match keys {
-            IndexKeys::Typed(..) => TextKeys::Collated.key(text),
-            IndexKeys::Text(_) => None,
-        };
         let file_language = self.file_language()?;
         let unsupported = |reason: &str| {
             DataError::with_code(
@@ -1339,7 +1470,7 @@ impl NativeProvider {
                 if whole {
                     if texts
                         .iter()
-                        .any(|text| keys.key(text).as_deref() == Some(key))
+                        .any(|text| keys.key(text).is_some_and(|key| wanted.contains(&key)))
                     {
                         return Ok(true);
                     }
@@ -1351,10 +1482,13 @@ impl NativeProvider {
                         .partition(|text| text.is_empty() || keys.key(text).is_some()),
                     IndexKeys::Text(_) => (texts, Vec::new()),
                 };
-                if keys.stored(&texts).contains(key)
-                    || unkeyed
-                        .iter()
-                        .any(|text| as_text.is_some() && TextKeys::Collated.key(text) == as_text)
+                let held = keys.stored(&texts);
+                if wanted.iter().any(|key| held.contains(key))
+                    || as_text.is_some_and(|key| {
+                        unkeyed
+                            .iter()
+                            .any(|text| TextKeys::Collated.key(text).as_deref() == Some(key))
+                    })
                 {
                     return Ok(true);
                 }
@@ -2246,7 +2380,8 @@ mod tests {
         // FileMaker Pro's ExistsInIndex for table 80 04, field 06 (write-path.md
         // 1.3), up to its access key: the same leaves in the same slot codes.
         let program =
-            exists_in_index_program(1, &[7; 16], 0x8004, 6, &om_collate::text_key("a"), 2).unwrap();
+            exists_in_index_program(1, &[7; 16], 0x8004, 6, &[om_collate::text_key("a")], 2)
+                .unwrap();
         let tree = KeyTree::from_slots(SlotReader::new(&program)).unwrap();
         let check = tree.node(&[&[1], &[1]]).unwrap();
         assert_eq!(check.child(&[0]).unwrap().value, Some(&[42][..]));

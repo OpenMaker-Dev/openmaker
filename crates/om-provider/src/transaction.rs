@@ -2016,15 +2016,17 @@ impl NativeProvider {
         };
         apply_values(&mut node, cells.clone());
         let file_language = self.file_language()?;
-        note_unique(
-            unique,
-            table,
-            plan.unique_fields_for(Entry::import(true)),
-            cells,
-            (record, file_language),
-        )?;
+        let imported_unique = plan.unique_fields_for(Entry::import(true));
         let mut written = cells.clone();
-        if !later.is_empty() {
+        if later.is_empty() {
+            note_unique(
+                unique,
+                table,
+                imported_unique,
+                cells,
+                (record, file_language),
+            )?;
+        } else {
             let existing = text_values(&stored_record(record, &node));
             // Over what the import left, not the stored row (#1035).
             let ready = self.prepare_record(
@@ -2035,6 +2037,21 @@ impl NativeProvider {
                 environment,
             )?;
             self.refuse_related_lists(table, plan, entry, entered(&ready.values))?;
+            // The record's unique values are noted once, as the later edits
+            // left them: an imported value they replaced is no longer the
+            // record's.
+            let kept: EncodedChanges = cells
+                .iter()
+                .filter(|(cell, _)| !ready.values.contains_key(cell))
+                .map(|(cell, value)| (*cell, value.clone()))
+                .collect();
+            note_unique(
+                unique,
+                table,
+                imported_unique,
+                &kept,
+                (record, file_language),
+            )?;
             let fields = plan.unique_fields_for(entry);
             note_unique(
                 unique,
@@ -4372,12 +4389,27 @@ impl NativeProvider {
     }
 }
 
-/// Unique values among a transaction's held records: by (table, field),
-/// each text index key and the record holding it.
-type UniqueHeld = BTreeMap<(u64, u64), BTreeMap<Vec<u8>, u64>>;
+/// Unique values among a transaction's held records, by (table, field)
+/// ([`HeldUnique`]).
+type UniqueHeld = BTreeMap<(u64, u64), HeldUnique>;
+
+/// A unique field's values among a transaction's held records, as the
+/// committed records' check sees them: each key the records' values put in
+/// the field's value index, one per line (`record_value_keys`, as the host
+/// keys a stored value and the scan of stored records reads it), and each
+/// key a value is checked by (`TextKeys::key`, what op86 asks), with the
+/// records that hold it.
+#[derive(Default)]
+struct HeldUnique {
+    stored: BTreeMap<Vec<u8>, BTreeSet<u64>>,
+    checked: BTreeMap<Vec<u8>, BTreeSet<u64>>,
+}
 
 /// Note the values `values` gives `fields` of `record` among the held
-/// records' unique values; another held record with the same value is 504.
+/// records' unique values: one checked by a key another held record's
+/// value is checked by too (the same value), or by a key another held
+/// record's values put in the index, or putting in the index a key another
+/// held record's value is checked by, is 504.
 fn note_unique(
     unique: &mut UniqueHeld,
     table: &Table,
@@ -4385,23 +4417,36 @@ fn note_unique(
     values: &EncodedChanges,
     (record, file_language): (u64, Option<u32>),
 ) -> Result<(), DataError> {
-    for field in fields {
-        if let Some(Some(value)) = values.get(&field) {
-            let text = om_scsu::decode_scsu(value)
-                .map_err(|e| failure("decode a unique value", format!("{e:?}")))?;
-            let key = super::records::checked_keys(table, field, file_language)?
-                .key(&text)
-                .unwrap_or_default();
-            let seen = unique.entry((table.id, field)).or_default();
-            if let Some(other) = seen.insert(key, record) {
-                if other != record {
-                    let name = table.field(field).map_or("", |f| f.name.as_str());
-                    return Err(DataError::with_code(
-                        error::NOT_UNIQUE,
-                        format!("Field {name} requires a unique value."),
-                    ));
-                }
-            }
+    // Every repetition a write changes (`field_cells`).
+    for (field, value) in super::records::field_cells(table, &fields, values) {
+        let text = om_scsu::decode_scsu(value)
+            .map_err(|e| failure("decode a unique value", format!("{e:?}")))?;
+        let keys = super::records::checked_keys(table, field, file_language)?;
+        let checked = keys.key(&text).unwrap_or_default();
+        // Text keys do not depend on the file's date order.
+        let stored = om_query::keys::record_value_keys(
+            om_hbam::DataType::Text,
+            std::slice::from_ref(&text),
+            om_collate::DateOrder::MonthDayYear,
+            keys,
+        );
+        let held = unique.entry((table.id, field)).or_default();
+        let another = |records: Option<&BTreeSet<u64>>| {
+            records.is_some_and(|records| records.iter().any(|r| *r != record))
+        };
+        if another(held.checked.get(&checked))
+            || another(held.stored.get(&checked))
+            || stored.iter().any(|key| another(held.checked.get(key)))
+        {
+            let name = table.field(field).map_or("", |f| f.name.as_str());
+            return Err(DataError::with_code(
+                error::NOT_UNIQUE,
+                format!("Field {name} requires a unique value."),
+            ));
+        }
+        held.checked.entry(checked).or_default().insert(record);
+        for key in stored {
+            held.stored.entry(key).or_default().insert(record);
         }
     }
     Ok(())

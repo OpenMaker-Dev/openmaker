@@ -3204,16 +3204,15 @@ impl DataProvider for NativeProvider {
                         ..Default::default()
                     });
                 }
-                // Only the fields a routed write takes (`check_scalar_cells`):
-                // a repeating field the owner's plan offers is not (#185).
+                // Only the fields Browse writes through the owner
+                // (`routed_browse_field`): a repeating field the owner's
+                // plan offers is not.
                 related_owner::RoutedEdits::Offered(names, table) => Some(
                     names
                         .into_iter()
                         .filter(|name| {
                             table.fields.iter().any(|field| {
-                                field.name == *name
-                                    && Self::check_scalar_cells(&table, &[(field.id, None)].into())
-                                        .is_ok()
+                                field.name == *name && Self::routed_browse_field(field)
                             })
                         })
                         .collect(),
