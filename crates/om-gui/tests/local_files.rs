@@ -1031,7 +1031,7 @@ fn consecutive_fields_are_drafts_until_save_and_survive_reopen() {
                 field.rect.width(),
                 field.rect.height()
             ),
-            (115.0, top, width, 22.0)
+            (115.0, top, width, 44.0)
         );
     }
     let schema = reader.database_schema().unwrap();
@@ -1448,6 +1448,45 @@ fn local_login_account_facts_reach_a_script_and_layout_hide_calculation() {
     });
 }
 
+/// Send Mail by SMTP from a desktop script (#89): the message reaches the
+/// server the step names, and a refused password is 1501.
+#[test]
+fn send_mail_sends_through_the_steps_smtp_server() {
+    let (smtp, sessions) = fixture::smtp_server(fixture::smtp_sent_then_refused());
+    let folder = Folder::new("smtp");
+    let scripts = [fixture::script(
+        1,
+        "Mail",
+        vec![
+            fixture::on(86, true),
+            fixture::smtp_mail(smtp, false),
+            fixture::set_variable("$sent", "Get ( LastError )"),
+            fixture::smtp_mail(smtp, true),
+            show("$sent & \"/\" & Get ( LastError )"),
+        ],
+    )];
+    let mut root = fixture::tree(&scripts, true);
+    fixture::add_local_accounts(&mut root);
+    add_name_field(&mut root);
+    fixture::write_tree(&folder.file(), &root);
+    let mut app = app();
+    common::click(&mut app, "Browse...");
+    choose(&mut app, &folder.file());
+    sign_in(&mut app, fixture::PASSWORD);
+    wait_open(&mut app);
+    common::open_menu(&mut app, "Scripts");
+    common::click(&mut app, "Mail");
+    common::wait_for_label(&mut app, "0/1501");
+    common::click(&mut app, "OK");
+    common::wait_until(&mut app, "the script's end", |app| {
+        !app.state().script_running()
+    });
+    let sessions = sessions.join().unwrap();
+    let sent = sessions[0].concat();
+    assert!(sent.contains("RCPT TO:<kim@example.org>\r\n"), "{sent}");
+    assert!(sent.contains("\r\nSubject: Weekly report\r\n"), "{sent}");
+}
+
 /// Tasks::Note, looked up from Notes::Body through Tasks::Name =
 /// Notes::Task (relationship 1), in the local Tasks file: note 1 "Hi" is
 /// Ship's (task 2), note 2 "w" is Write tests' (task 1), and both tasks'
@@ -1646,6 +1685,90 @@ fn relookup_field_contents_writes_nothing_it_refuses() {
     sign_in(&mut app, fixture::PASSWORD);
     wait_open(&mut app);
     run_and_read(&mut app, "Refused", "3/3/old,old/0");
+}
+
+/// Records > Relookup Field Contents runs the step with its dialog on the
+/// field entered (#87): Cancel relooks up nothing, and OK copies each found
+/// record's lookup again. With no field entered, or typing in the record,
+/// the item is off.
+#[test]
+fn the_records_menu_relooks_up_through_the_field_entered() {
+    use egui_kittest::kittest::NodeT as _;
+    use om_scripts::relookup::{message, MENU_PATH};
+    let folder = Folder::new("relookup-menu");
+    let mut shown = show("\"\"");
+    shown.set_calculation(
+        1,
+        Some(&relookup_calc(
+            "GetNthRecord ( Tasks::Note ; 1 ) & \",\" & GetNthRecord ( Tasks::Note ; 2 )",
+        )),
+    );
+    relookup_file(&folder, &[fixture::script(1, "Notes", vec![shown])], false);
+    let mut app = app();
+    common::click(&mut app, "Browse...");
+    choose(&mut app, &folder.file());
+    sign_in(&mut app, fixture::PASSWORD);
+    wait_open(&mut app);
+    let [menu, item] = MENU_PATH;
+    common::open_menu(&mut app, menu);
+    common::wait_for_label(&mut app, item);
+    assert!(app.get_by_label(item).accesskit_node().is_disabled());
+    app.key_press(egui::Key::Escape);
+    app.run_steps(2);
+    let relookup = |app: &mut App, answer: &str| {
+        app.get_all_by_role_and_label(egui::Role::TextInput, "Name")
+            .next()
+            .unwrap()
+            .click();
+        app.run_steps(2);
+        common::open_menu(app, menu);
+        common::click(app, item);
+        common::wait_for_label(app, &message("Name", 2));
+        common::click(app, answer);
+        common::wait_until(app, "the step's end", |app| !app.state().script_running());
+        assert!(app.state().error().is_none(), "{:?}", app.state().error());
+    };
+    relookup(&mut app, "Cancel");
+    run_and_read(&mut app, "Notes", "old,old");
+    relookup(&mut app, "OK");
+    run_and_read(&mut app, "Notes", "w,Hi");
+    // Typing in the frame of the click (one raw input batch: the
+    // harness's queued events take a frame each) opens no dialog and runs
+    // nothing. (`run_step` checks the item again at dispatch; this harness
+    // does not show the frame order that would reach that check.)
+    app.get_all_by_role_and_label(egui::Role::TextInput, "Name")
+        .next()
+        .unwrap()
+        .click();
+    app.run_steps(2);
+    common::open_menu(&mut app, menu);
+    common::wait_for_label(&mut app, item);
+    let at = app.get_by_label(item).rect().center();
+    let button = |pressed| egui::Event::PointerButton {
+        pos: at,
+        button: egui::PointerButton::Primary,
+        pressed,
+        modifiers: egui::Modifiers::NONE,
+    };
+    app.input_mut()
+        .events
+        .extend([egui::Event::PointerMoved(at), button(true)]);
+    app.step();
+    app.input_mut()
+        .events
+        .extend([egui::Event::Text("y".into()), button(false)]);
+    app.run_steps(6);
+    assert!(app.query_by_label(&message("Name", 2)).is_none());
+    assert!(!app.state().script_running());
+    // Typed in, the record has something to commit, which the step would
+    // commit past the field's triggers (#624): the item is off.
+    app.event(egui::Event::Text("x".into()));
+    app.run_steps(2);
+    common::open_menu(&mut app, menu);
+    common::wait_for_label(&mut app, item);
+    assert!(app.get_by_label(item).accesskit_node().is_disabled());
+    app.key_press(egui::Key::Escape);
+    app.run_steps(2);
 }
 
 /// A folder of its own holding a copy of a given file as `Tasks.fmp12`,

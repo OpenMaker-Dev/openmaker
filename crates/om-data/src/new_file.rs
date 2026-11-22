@@ -582,6 +582,7 @@ fn first_record(
         // A file being made has no window or session to answer them.
         context: Default::default(),
         held: None,
+        others_held: Default::default(),
         related_needs: None,
     };
     let values = plan.compute(
@@ -755,7 +756,7 @@ fn stamped(mut node: OwnedNode, stamp: &Stamp) -> OwnedNode {
     node.set_child(om_scripts::text_node(MOD_USER, &stamp.user));
     node.set_child(om_scripts::text_node(MOD_ACCOUNT, &stamp.account));
     // The time as a key string: its key is shorter than 8 bytes before
-    // 00:16:40 (schema-path.md 3.1).
+    // 02:46:40 (schema-path.md 3.1).
     node.set_child(OwnedNode::leaf(MOD_TIME.to_vec(), key_string(&stamp.time)));
     node
 }
@@ -1162,6 +1163,60 @@ mod tests {
             .unwrap(),
             internal_creation: 0xe8b3_1c05,
         }
+    }
+
+    /// A new file's empty script catalog takes its first script (#274): the
+    /// name list key is FileMaker's in every file, so no stored name needs
+    /// to show it.
+    #[test]
+    fn a_new_file_takes_its_first_script() {
+        use crate::field_catalog::listed_key;
+        use crate::script_catalog::plan;
+        use crate::{Script, ScriptCatalog};
+        use std::collections::BTreeMap;
+        let root = tree(&alpha(), &mut counter()).unwrap();
+        let index = root
+            .child(&[crate::script_catalog::SCRIPTS])
+            .and_then(|catalog| catalog.child(&[1]))
+            .expect("the script index")
+            .clone();
+        let requested = ScriptCatalog {
+            scripts: vec![Script {
+                id: 1,
+                name: "First".into(),
+                ..Script::default()
+            }],
+            ..ScriptCatalog::default()
+        };
+        let by = Stamp {
+            user: "Tester".into(),
+            account: ADMIN.into(),
+            time: alpha().time,
+        };
+        let saved = plan(
+            Some(&index),
+            &ScriptCatalog::default(),
+            &BTreeMap::new(),
+            &requested,
+            &by,
+            &mut || [9; 16],
+        )
+        .unwrap()
+        .unwrap();
+        assert_eq!(saved.assigned[&1], 1);
+        let entry = listed_key("First").unwrap();
+        assert_eq!(
+            saved
+                .index
+                .child(&[1])
+                .and_then(|names| names.child(&entry))
+                .and_then(|e| e.value.clone()),
+            Some(vec![1, 1])
+        );
+        assert_eq!(
+            saved.index.child(&[4]).and_then(|n| n.value.clone()),
+            Some(1u32.to_be_bytes().to_vec())
+        );
     }
 
     /// Every stamp holds its time as a key string, also a time whose key is

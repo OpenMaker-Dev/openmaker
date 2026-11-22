@@ -3,8 +3,8 @@
 //! docs/plugins.md). Read in the PDF worker process only (`pdf_worker`),
 //! as every PDF is.
 //!
-//! Each page of the plan is copied with everything it refers to: its
-//! content, resources, fonts, images, annotations. Streams keep their
+//! Each page of the plan is copied with what it refers to: its content,
+//! resources, fonts, images and annotations. Streams keep their
 //! encoded bytes and filters (decrypted, if the source was encrypted with
 //! an empty password); numbers, strings and names are written as read. An
 //! object two pages share is copied once. A page's inherited attributes
@@ -49,12 +49,18 @@ pub const MAX_SOURCES: usize = 64;
 pub const MAX_PAGES: usize = 100_000;
 /// The most objects one new document holds, and how deeply direct values
 /// may nest in one object.
-const MAX_OBJECTS: u32 = 2_000_000;
-const MAX_DEPTH: usize = 64;
+pub(super) const MAX_OBJECTS: u32 = 2_000_000;
+pub(super) const MAX_DEPTH: usize = 64;
 /// How many `/Parent` levels an inherited page attribute is looked up in.
 const MAX_PARENTS: usize = 64;
 /// The page attributes a page inherits from its ancestors.
 const INHERITED: [&[u8]; 4] = [b"Resources", b"MediaBox", b"CropBox", b"Rotate"];
+
+/// The four bytes of the binary-marker comment (PDF 1.7, 7.5.2) after the
+/// header of every PDF OpenMaker writes: its reports and the documents this
+/// assembler makes. The byte-preserving append path also validates the
+/// entire document against the supported profile.
+pub const MARKER: &[u8; 4] = b"\xcf\xcd\xcb\xb4";
 
 /// How many of a PDF's pages [`info`] describes.
 pub const INFO_PAGES: usize = 10_000;
@@ -70,9 +76,13 @@ pub struct PageGeometry {
 }
 
 /// A PDF's page count, whether [`assemble`] keeps how its pages look
-/// ([`optional_content_kept`]), and the geometry of its first
-/// [`INFO_PAGES`] pages; `None` for data that does not read.
-pub(super) fn info(data: Vec<u8>) -> Option<(u32, bool, Vec<PageGeometry>)> {
+/// ([`optional_content_kept`]), with `whole` whether it keeps everything
+/// else the document holds (after an independent profile check), and the
+/// geometry of its first [`INFO_PAGES`] pages; `None` for data that does not read.
+pub(super) fn info(
+    data: Vec<u8>,
+    whole: bool,
+) -> Option<(u32, bool, Option<bool>, Vec<PageGeometry>)> {
     let pdf = Pdf::new(data).ok()?;
     let pages = pdf.pages();
     let count = u32::try_from(pages.len()).ok()?;
@@ -95,7 +105,12 @@ pub(super) fn info(data: Vec<u8>) -> Option<(u32, bool, Vec<PageGeometry>)> {
             }
         })
         .collect();
-    Some((count, optional_content_kept(&pdf), geometry))
+    Some((
+        count,
+        optional_content_kept(&pdf),
+        whole.then(|| super::pdf_append::page_count(pdf.data().as_ref()) == Some(pages.len())),
+        geometry,
+    ))
 }
 
 /// Check only the selected source pages. The index prefix is bounded
@@ -329,9 +344,22 @@ pub fn bundle(
     actions: &[String],
     links: &[Link],
     highlights: &[Highlight],
-) -> Vec<u8> {
-    let size = sources.iter().map(|s| s.len() + 8).sum::<usize>() + plan.len() * 20 + 8;
-    let mut out = Vec::with_capacity(size);
+    max: u64,
+) -> Option<Vec<u8>> {
+    // The exact size, counted before the sources are copied: no request
+    // past `max` is built.
+    let mut form = Vec::new();
+    pdf_form::encode(fields, actions, links, highlights, &mut form);
+    let size = (sources.iter().map(|s| s.len() as u64 + 8))
+        .chain(
+            plan.iter()
+                .map(|page| 17 + 33 * page.boxes.len().min(BoxKind::ALL.len()) as u64),
+        )
+        .fold(8 + form.len() as u64, u64::saturating_add);
+    if size > max {
+        return None;
+    }
+    let mut out = Vec::with_capacity(usize::try_from(size).ok()?);
     out.extend((sources.len() as u32).to_be_bytes());
     for source in sources {
         out.extend((source.len() as u64).to_be_bytes());
@@ -352,8 +380,8 @@ pub fn bundle(
             }
         }
     }
-    pdf_form::encode(fields, actions, links, highlights, &mut out);
-    out
+    out.extend(form);
+    Some(out)
 }
 
 /// A part of the request's buffer, read as one source without a copy.
@@ -442,8 +470,15 @@ fn unbundle(data: Vec<u8>) -> Option<Request> {
 
 /// The new PDF a [`bundle`] asks for; `None` when a source does not read,
 /// the plan names a page no source has, or the copy passes the limits.
-pub(super) fn assemble(data: Vec<u8>) -> Option<Vec<u8>> {
+pub(super) fn assemble(data: Vec<u8>, whole: bool) -> Option<Vec<u8>> {
     let (parts, plan, fields, actions, links, highlights) = unbundle(data)?;
+    if whole {
+        if !fields.is_empty() || !actions.is_empty() || !links.is_empty() || !highlights.is_empty()
+        {
+            return None;
+        }
+        return super::pdf_append::assemble(&parts, &plan);
+    }
     let pdfs = parts
         .into_iter()
         .map(|part| Pdf::new(Arc::new(part)).ok())
@@ -516,9 +551,9 @@ struct Copier<'p> {
 }
 
 /// The new document's catalog and page tree; the pages follow.
-const CATALOG: u32 = 1;
-const PAGE_TREE: u32 = 2;
-const FIRST_PAGE: u32 = 3;
+pub(super) const CATALOG: u32 = 1;
+pub(super) const PAGE_TREE: u32 = 2;
+pub(super) const FIRST_PAGE: u32 = 3;
 
 impl<'p> Copier<'p> {
     fn new(pdfs: &'p [Pdf], plan: &[Planned]) -> Option<Self> {
@@ -534,7 +569,9 @@ impl<'p> Copier<'p> {
         }
         let mut out = Vec::new();
         // A comment of bytes above 127 marks the file as binary.
-        out.extend(b"%PDF-1.7\n%\xe2\xe3\xcf\xd3\n");
+        out.extend(b"%PDF-1.7\n%");
+        out.extend(MARKER);
+        out.push(b'\n');
         Some(Copier {
             pdfs,
             ids: HashMap::new(),
@@ -720,20 +757,7 @@ impl<'p> Copier<'p> {
         self.object(PAGE_TREE, tree.as_bytes(), None);
         let catalog = format!("<< /Type /Catalog /Pages 2 0 R{form} >>");
         self.object(CATALOG, catalog.as_bytes(), None);
-        let xref = self.out.len();
-        let size = self.offsets.len();
-        let _ = write!(
-            Writer(&mut self.out),
-            "xref\n0 {size}\n0000000000 65535 f \n"
-        );
-        for offset in &self.offsets[1..] {
-            let _ = writeln!(Writer(&mut self.out), "{offset:010} 00000 n ");
-        }
-        let _ = write!(
-            Writer(&mut self.out),
-            "trailer\n<< /Size {size} /Root {CATALOG} 0 R >>\nstartxref\n{xref}\n%%EOF\n"
-        );
-        Some(self.out)
+        Some(finish_pdf(self.out, &self.offsets))
     }
 
     /// The value `key` page `page` of `source` inherits from the nearest of
@@ -1141,9 +1165,10 @@ impl<'p> Copier<'p> {
             return Some(*known);
         }
         let pdf = &self.pdfs[source];
+        let object = pdf.xref().get::<Object<'_>>(id);
         let skipped = id == pdf.xref().root_id()
-            || match pdf.xref().get::<Object<'_>>(id) {
-                Some(Object::Dict(dict)) => page_tree_node(&dict),
+            || match &object {
+                Some(Object::Dict(dict)) => page_tree_node(dict),
                 Some(Object::Stream(stream)) => page_tree_node(stream.dict()),
                 Some(_) => false,
                 None => true,
@@ -1207,7 +1232,22 @@ pub(super) fn name(bytes: &[u8], out: &mut String) {
 }
 
 /// `write!` into a byte buffer.
-struct Writer<'a>(&'a mut Vec<u8>);
+pub(super) struct Writer<'a>(pub(super) &'a mut Vec<u8>);
+
+/// Write a classic cross-reference table for the emitted object offsets.
+pub(super) fn finish_pdf(mut out: Vec<u8>, offsets: &[usize]) -> Vec<u8> {
+    let xref = out.len();
+    let size = offsets.len();
+    let _ = write!(Writer(&mut out), "xref\n0 {size}\n0000000000 65535 f \n");
+    for offset in &offsets[1..] {
+        let _ = writeln!(Writer(&mut out), "{offset:010} 00000 n ");
+    }
+    let _ = write!(
+        Writer(&mut out),
+        "trailer\n<< /Size {size} /Root {CATALOG} 0 R >>\nstartxref\n{xref}\n%%EOF\n"
+    );
+    out
+}
 
 impl std::fmt::Write for Writer<'_> {
     fn write_str(&mut self, s: &str) -> std::fmt::Result {

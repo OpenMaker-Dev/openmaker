@@ -31,10 +31,10 @@ pub const PROTOCOL_VERSIONS: [ProtocolVersion; 2] =
     [ProtocolVersion::V_2025_11_25, ProtocolVersion::V_2026_07_28];
 
 /// A command's tool: its title, description and parameters' schema, with
-/// hints from its effect. Reads and authoring edits are idempotent (a
-/// repeated edit reports `already_applied`) and stay within the file; a
-/// script run may delete records or reach other systems, and running it
-/// again runs it again, so clients must not retry it on their own.
+/// hints from its effect. Reads and authoring edits are idempotent and
+/// stay within the file. A script run may delete records or reach other
+/// systems, and running it again runs it again, so clients must not retry
+/// it on their own.
 fn tool(spec: &CommandSpec) -> Tool {
     let runs = spec.effect == Effect::Runs;
     // An edit overwrites a field's value; choosing the same item again

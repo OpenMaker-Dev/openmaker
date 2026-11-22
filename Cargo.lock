@@ -4527,6 +4527,7 @@ dependencies = [
 name = "om-collate"
 version = "0.0.0"
 dependencies = [
+ "encoding_rs",
  "om-hbam",
 ]
 
@@ -4609,6 +4610,7 @@ dependencies = [
  "om-layout",
  "om-protocol",
  "om-provider",
+ "om-report",
  "om-scripts",
  "om-scsu",
  "om-server",
@@ -4704,6 +4706,14 @@ name = "om-rctransaction"
 version = "0.0.0"
 dependencies = [
  "om-scsu",
+]
+
+[[package]]
+name = "om-report"
+version = "0.0.0"
+dependencies = [
+ "om-data",
+ "om-layout",
 ]
 
 [[package]]
@@ -4805,9 +4815,14 @@ dependencies = [
 name = "om-url"
 version = "0.0.0"
 dependencies = [
+ "hmac 0.12.1",
+ "md-5 0.10.6",
  "om-calc",
  "om-scripts",
+ "rcgen 0.14.10",
+ "rustls",
  "ureq",
+ "webpki-roots 0.26.11",
 ]
 
 [[package]]

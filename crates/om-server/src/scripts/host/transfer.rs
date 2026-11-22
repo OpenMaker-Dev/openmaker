@@ -58,10 +58,16 @@ fn host_error(e: TransferError) -> HostError {
     HostError::Error(ErrorCode(e.code))
 }
 
+/// A row's write error as the import takes it: a rule OpenMaker does not
+/// support checking ([`HostError::Unsupported`], a value list it cannot
+/// key, #571) ends the import; any other refuses the row.
 fn transfer_error(e: HostError) -> TransferError {
     match e {
         HostError::Error(code) => TransferError::new(code.0, "the record could not be written"),
-        _ => TransferError::new(3, "the record could not be written"),
+        HostError::Unsupported => {
+            TransferError::unsupported("a rule of the record cannot be checked")
+        }
+        HostError::Pending => TransferError::new(3, "the record could not be written"),
     }
 }
 
@@ -554,6 +560,9 @@ impl ServerImport<'_> {
                 ..Ruled::default()
             }));
         }
+        // Its node now holds the import's computed values: a preview from
+        // before is not read again.
+        record.preview.clear();
         let key = (record.table, record.id);
         let Some(transaction) = self.host.transaction.as_mut() else {
             return Err(TransferError::new(3, "The import has no transaction."));
@@ -667,6 +676,8 @@ impl ImportTarget for ServerImport<'_> {
             context: Box::new(self.host.step_context()),
             relooked: false,
             relookup: false,
+            created: None,
+            preview: BTreeMap::new(),
         };
         self.locked.push((table, id));
         self.stage(record, writes, auto_enter, true)?;
@@ -688,11 +699,10 @@ impl ImportTarget for ServerImport<'_> {
             // refused (3), the transaction failing, rather than either
             // half written (OpenMaker's limit, #647).
             Some(Change::Write(r)) if r.relookup => {
-                return Err(TransferError::new(
-                    3,
+                return Err(TransferError::unsupported(
                     "The transaction holds a Relookup Field Contents of this record, \
                      which an import does not update.",
-                ))
+                ));
             }
             Some(Change::Write(r)) => Some(r.clone()),
             Some(Change::Delete) => return Err(TransferError::new(101, "The record is missing.")),
@@ -721,6 +731,8 @@ impl ImportTarget for ServerImport<'_> {
                         context: Box::new(self.host.step_context()),
                         relooked: false,
                         relookup: false,
+                        created: None,
+                        preview: BTreeMap::new(),
                     },
                     true,
                 )
