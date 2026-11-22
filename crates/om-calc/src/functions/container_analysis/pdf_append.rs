@@ -94,6 +94,11 @@ impl<'a> Source<'a> {
             let start = reader.at;
             reader.body()?;
             let body_end = reader.at;
+            // This slice contains the entire source object. The copy pass
+            // reads only its body, with the separator after it excluded.
+            if !reader.data.get(body_end).copied().is_some_and(space) {
+                return None;
+            }
             if reader.word()? != b"endobj"
                 || !reader.data.get(reader.at).copied().is_some_and(space)
                 || !reader.done()
@@ -388,9 +393,6 @@ impl<'a, 'v> Reader<'a, 'v> {
             self.at += b"\nstream\n".len();
             self.at = self.at.checked_add(length? as usize)?;
             let end = self.data.get(self.at..)?.strip_prefix(b"\nendstream")?;
-            if !end.first().copied().is_some_and(space) {
-                return None;
-            }
             self.at = self.data.len() - end.len();
         }
         Some(())
