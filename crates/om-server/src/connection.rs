@@ -2503,8 +2503,14 @@ fn query(
                         .map(|account| account.key.as_slice()),
                     late: shared.late_index_builds.load(Ordering::Relaxed),
                     view: view_filter(file, &store),
+                    built: Default::default(),
                 };
                 let outcome = om_query::execute_parsed(&source, program, &context);
+                // A query refused for an index this server cannot key
+                // (#572) keeps none of the indexes it built of other fields.
+                if matches!(outcome.error, Some(om_query::QueryError::UnkeyedIndex)) {
+                    store.forget_indexes_on_demand(&source.built.borrow());
+                }
                 if let Some(view) = &source.view {
                     note_withheld(file, view);
                 }
@@ -2590,6 +2596,9 @@ struct QuerySource<'s> {
     /// The account's view limits: records it may not view are read without
     /// their values, and a view-limited table has no index.
     view: Option<crate::views::ViewFilter>,
+    /// The indexes this query had built on demand, which a refused query
+    /// takes back ([`crate::store::Store::forget_indexes_on_demand`]).
+    built: std::cell::RefCell<Vec<crate::store::IndexId>>,
 }
 
 impl om_query::Source for QuerySource<'_> {
@@ -2628,11 +2637,17 @@ impl om_query::Source for QuerySource<'_> {
         table: &[u8],
         field: &[u8],
         kind: u8,
-    ) -> om_hbam::Result<Option<OwnedNode>> {
+    ) -> Result<Option<OwnedNode>, om_query::QueryError> {
         if self.view.as_ref().is_some_and(|view| view.limits(table)) {
             return Ok(None);
         }
-        om_query::Source::index_on_demand(self.store, table, field, kind)
+        let index = om_query::Source::index_on_demand(self.store, table, field, kind)?;
+        if index.is_some() {
+            self.built
+                .borrow_mut()
+                .push((table.to_vec(), field.to_vec(), kind));
+        }
+        Ok(index)
     }
 
     fn finders_read_missing_indexes(&self) -> bool {

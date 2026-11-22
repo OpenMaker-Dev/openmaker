@@ -1147,13 +1147,25 @@ impl Runtime {
                         .and_then(|k| k.id())
                         .map(LayoutTarget::Key),
                 };
-                let occurrence = step
-                    .data
-                    .as_ref()
-                    .and_then(|d| d.slot(0))
-                    .and_then(|s| s.child(0x11))
-                    .and_then(crate::node_bytes)
-                    .and_then(|b| key_id(&b));
+                let occurrence = if step.has_flag(flag::OPTION3) {
+                    // "Table by Calculation" (FileMaker Pro 26.1): `0x400`
+                    // with the occurrence's name in calculation slot 8 in
+                    // place of `[00 0, 11]` (script-steps.md 12.4, from the
+                    // binaries). A name no occurrence of the file has is
+                    // 106, OpenMaker's choice: FileMaker's is unmeasured.
+                    let name = self.slot_text(host, step, 8).unwrap_or_default();
+                    match host.names().find_occurrence(&name) {
+                        Some(occurrence) => Some(occurrence),
+                        None => return Exec::error(ErrorCode::TABLE_MISSING),
+                    }
+                } else {
+                    step.data
+                        .as_ref()
+                        .and_then(|d| d.slot(0))
+                        .and_then(|s| s.child(0x11))
+                        .and_then(crate::node_bytes)
+                        .and_then(|b| key_id(&b))
+                };
                 host.go_to_related_record(&RelatedRecords {
                     occurrence,
                     layout,
@@ -1656,6 +1668,97 @@ impl Runtime {
                 let request = self.slot_text(host, step, 0).unwrap_or_default();
                 let value = host.execute_data_api(&request);
                 return self.result_to_target(host, step, value, select_all);
+            }
+            63 => {
+                // Slots of script-steps.md 12.3: To, CC, BCC, Subject and
+                // Message calculations 0-4, Collect `[00 0..2, 03]`, one
+                // per record `[00 3, 03]`, SMTP `[00 4, 03]`, OAuth
+                // `[00 7, 03]`, attachments `[00 0, 82]`.
+                // A stored option or attachment list OpenMaker cannot read
+                // is 3: read as absent, it could turn SMTP into the client
+                // or drop an attachment, a different message than the step
+                // describes.
+                let stored = |slot: u16, key: u8| {
+                    step.data
+                        .as_ref()
+                        .and_then(|d| d.slot(slot))
+                        .and_then(|s| s.child(key))
+                        .is_some()
+                };
+                let mut on = [false; 8];
+                for slot in [0u16, 1, 2, 3, 4, 7] {
+                    match step.number(slot) {
+                        Some(n) => on[usize::from(slot)] = n != 0,
+                        None if stored(slot, 0x03) => return Exec::error(ErrorCode::UNAVAILABLE),
+                        None => {}
+                    }
+                }
+                let attached =
+                    step.has_flag(flag::FILE_PATH) || stored(0, crate::StepData::PATH_STRING);
+                let attachments = match path_list(step) {
+                    Some(list) => list,
+                    None if attached => return Exec::error(ErrorCode::UNAVAILABLE),
+                    None => String::new(),
+                };
+                let via = if on[7] {
+                    MailVia::OAuth
+                } else if on[4] {
+                    MailVia::Smtp
+                } else {
+                    MailVia::Client
+                };
+                // Encryption `[00 5, 03]` and Authentication `[00 6, 03]`,
+                // none when absent.
+                let mut choices = [0, 1];
+                if via == MailVia::Smtp {
+                    // A stored SMTP calculation that does not decode
+                    // would read as empty: an empty port is 25, which
+                    // could offer the login to another service.
+                    let unreadable = (5u16..=11)
+                        .any(|slot| stored(slot, 0x05) && step.calculation(slot).is_none());
+                    if unreadable {
+                        return Exec::error(ErrorCode::UNAVAILABLE);
+                    }
+                    for (choice, slot) in choices.iter_mut().zip([5u16, 6]) {
+                        match step.number(slot) {
+                            Some(n) => *choice = n,
+                            None if stored(slot, 0x03) => {
+                                return Exec::error(ErrorCode::UNAVAILABLE)
+                            }
+                            None => {}
+                        }
+                    }
+                }
+                let mut text = |slot| self.slot_text(host, step, slot).unwrap_or_default();
+                let (to, cc, bcc, subject, message) = (text(0), text(1), text(2), text(3), text(4));
+                let smtp = (via == MailVia::Smtp).then(|| {
+                    let [encryption, authentication] = choices;
+                    let login = authentication != 1;
+                    SmtpOptions {
+                        name: text(5),
+                        email: text(6),
+                        reply_to: text(7),
+                        server: text(8),
+                        port: text(9),
+                        encryption,
+                        authentication,
+                        user: if login { text(10) } else { String::new() },
+                        password: if login { text(11) } else { String::new() },
+                    }
+                });
+                host.send_mail(&Mail {
+                    via,
+                    to,
+                    cc,
+                    bcc,
+                    subject,
+                    message,
+                    collect: [on[0], on[1], on[2]],
+                    one_per_record: on[3],
+                    attachments,
+                    with_dialog: dialog,
+                    smtp,
+                })
             }
             // Accounts
             134 | 135 | 136 | 137 | 83 | 138 => {

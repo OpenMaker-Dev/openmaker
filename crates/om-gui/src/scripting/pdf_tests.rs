@@ -1283,7 +1283,7 @@ fn sliding_address_blocks_close_up_and_resize_parts_in_pdf_print_and_preview_pag
         .s
         .failure
         .as_deref()
-        .is_some_and(|f| f.contains("sliding left is unsupported")));
+        .is_some_and(|f| f.contains("slide left and up in one part")));
     assert_eq!(std::fs::read(&path).unwrap(), saved);
     assert_eq!(fake.jobs.lock().unwrap().len(), 1);
     assert!(!c
@@ -1293,6 +1293,199 @@ fn sliding_address_blocks_close_up_and_resize_parts_in_pdf_print_and_preview_pag
         .events
         .iter()
         .any(|e| e.ends_with(":write") || e.contains(":found:")));
+}
+
+/// Sliding left closes up a line, as Claris describes it: a field set to
+/// slide left narrows to the width its text needs, and an object set to
+/// slide left moves by the least its nearest objects on its left moved and
+/// narrowed, keeping the gaps between them; an object that does not slide
+/// holds. What is unmeasured refuses: sliding left in a header, a part
+/// where objects slide both left and up, and a field of several lines.
+#[test]
+fn sliding_left_closes_up_a_line_of_fields() {
+    use om_layout::sliding::{LEFT, UP};
+    let paper = om_layout::pagination::PageSize::default();
+    let slide = |mut object: LayoutObject, flags| {
+        object.flags |= 0x3000_0000 | flags;
+        object
+    };
+    let layout = |objects: Vec<LayoutObject>, part_type| Layout {
+        def: Some(LayoutDef {
+            base_width: 540.0,
+            ..Default::default()
+        }),
+        parts: vec![Part {
+            part_type,
+            height: 60.0,
+            ..Default::default()
+        }],
+        objects: ObjectStore {
+            root: objects.iter().map(|o| o.id).collect(),
+            objects,
+            ..Default::default()
+        },
+        ..Default::default()
+    };
+    let line = |first_flags| {
+        vec![
+            slide(field(1, 1, rect(10.0, 10.0, 100.0, 18.0)), first_flags),
+            slide(field(2, 11, rect(115.0, 10.0, 100.0, 18.0)), LEFT),
+            slide(
+                label(3, "!", rect(220.0, 10.0, 20.0, 18.0), 12.0, false),
+                LEFT,
+            ),
+        ]
+    };
+    let render = |layout: &Layout, first: &str| {
+        let first = first.to_owned();
+        crate::report::render_pdf(layout, 1, paper.clone(), &[], move |o, _| {
+            Ok(match o.id {
+                1 => first.clone(),
+                2 => "Lovelace".into(),
+                _ => o.text.clone().unwrap_or_default(),
+            })
+        })
+        .map(|report| String::from_utf8_lossy(&report.bytes).into_owned())
+        .map_err(|e| e.message)
+    };
+    let font =
+        ttf_parser::Face::parse(include_bytes!("../../assets/fonts/Inter-Regular.ttf"), 0).unwrap();
+    let width = |text: &str| {
+        text.chars()
+            .map(|ch| {
+                let glyph = font.glyph_index(ch).unwrap();
+                f64::from(font.glyph_hor_advance(glyph).unwrap()) * 12.0
+                    / f64::from(font.units_per_em())
+            })
+            .sum::<f64>()
+    };
+    let pdf = render(&layout(line(LEFT), 4), "Ada").unwrap();
+    let x = |text: &str| text_origins(&pdf, 1, text)[0].1;
+    // First narrows to "Ada"; Last keeps its 5-point gap after it and
+    // narrows to "Lovelace"; the label keeps its 5-point gap after Last
+    // (its text 1 point into its frame).
+    assert!((x("Lovelace") - x("Ada") - (width("Ada") + 5.0)).abs() < 0.05);
+    assert!(
+        (x("!") - x("Lovelace") - (width("Lovelace") + 5.0 + 1.0)).abs() < 0.05,
+        "{} {}",
+        x("!"),
+        x("Lovelace")
+    );
+    // A first field that does not slide holds the line where it is placed.
+    let held = render(&layout(line(0), 4), "Ada").unwrap();
+    let held_x = |text: &str| text_origins(&held, 1, text)[0].1;
+    assert!((held_x("Lovelace") - held_x("Ada") - 105.0).abs() < 0.05);
+    // Refused: a header (Claris says only that it never slides up), a part
+    // that slides both ways, and a field of more than one line.
+    let mut headed = layout(line(LEFT), 1);
+    headed.parts.push(Part {
+        part_type: 4,
+        top: 60.0,
+        height: 20.0,
+        ..Default::default()
+    });
+    let header = render(&headed, "Ada").unwrap_err();
+    assert!(header.contains("header, footer or title part"), "{header}");
+    assert!(render(&layout(line(LEFT | UP), 4), "Ada")
+        .unwrap_err()
+        .contains("slide left and up in one part"));
+    assert!(render(&layout(line(LEFT), 4), "Ada\rKing")
+        .unwrap_err()
+        .contains("more than one line"));
+    // So does one whose one line is wider than the field (it would wrap),
+    // whatever its text's colour.
+    assert!(render(&layout(line(LEFT), 4), &"Ada King ".repeat(6))
+        .unwrap_err()
+        .contains("more than one line"));
+}
+
+#[test]
+fn sliding_left_keeps_centered_italic_ink_inside_the_field() {
+    use crate::report::{prepare_page, ContentContext, Pictures, ReportFace};
+    let mut italic = field(1, 1, rect(10.0, 10.0, 100.0, 120.0));
+    italic.flags |= om_layout::sliding::LEFT;
+    let mut text_style = style(96.0, false, None);
+    text_style.local_styles.as_mut().unwrap().components[0]
+        .properties
+        .extend([
+            Property {
+                id: 64,
+                string: Some("Arial".into()),
+                ..Default::default()
+            },
+            Property {
+                id: 67,
+                int: Some(2), // Italic
+                ..Default::default()
+            },
+            Property {
+                id: 74,
+                int: Some(2), // Centered
+                ..Default::default()
+            },
+        ]);
+    italic.style = Some(text_style);
+    let mut layout = Layout {
+        def: Some(LayoutDef {
+            base_width: 540.0,
+            ..Default::default()
+        }),
+        parts: vec![Part {
+            part_type: 4,
+            height: 140.0,
+            ..Default::default()
+        }],
+        objects: ObjectStore {
+            root: vec![1],
+            objects: vec![italic],
+            ..Default::default()
+        },
+        ..Default::default()
+    };
+    let mut content = |_: &LayoutObject, _: ContentContext| Ok("f".into());
+    let paper = om_layout::pagination::PageSize::default();
+    let plan = crate::report::plan_report(&layout, 1, paper, &[], &mut content).unwrap();
+    let pictures = Pictures::default();
+    let page = prepare_page(&layout, &plan, 0, &pictures, &mut content).unwrap();
+    let object = page
+        .parts
+        .iter()
+        .flat_map(|part| &part.objects)
+        .next()
+        .unwrap();
+    let [line] = object.text.as_slice() else {
+        panic!("expected one line of text");
+    };
+    assert_eq!(line.face, ReportFace::SansItalic);
+    assert_eq!(line.size, 96.0);
+    let face = line.face.face();
+    let ink = face
+        .glyph_bounding_box(face.glyph_index('f').unwrap())
+        .unwrap();
+    let right_ink = line.x + f64::from(ink.x_max) * line.size / f64::from(face.units_per_em());
+    assert!(object.bounds.width() < 100.0);
+    assert!(right_ink <= object.bounds.right);
+    assert!(line.clip.is_none());
+
+    // Right alignment pins the advance at the right inset, so extra width
+    // cannot make room for the same glyph's right overhang.
+    layout.objects.objects[0]
+        .style
+        .as_mut()
+        .unwrap()
+        .local_styles
+        .as_mut()
+        .unwrap()
+        .components[0]
+        .properties
+        .last_mut()
+        .unwrap()
+        .int = Some(3);
+    let error = prepare_page(&layout, &plan, 0, &pictures, &mut content).unwrap_err();
+    assert_eq!(error.code, 3);
+    assert!(error
+        .message
+        .contains("aligned text whose ink does not fit"));
 }
 
 #[test]
@@ -1334,7 +1527,7 @@ fn sliding_refuses_unsupported_options_overlaps_and_cut_off_objects() {
         (
             &(|l: &mut Layout| find(l, 53).flags |= om_layout::sliding::LEFT)
                 as &dyn Fn(&mut Layout),
-            "sliding left is unsupported",
+            "slide left and up in one part",
         ),
         (
             &|l: &mut Layout| find(l, 56).flags |= om_layout::sliding::NON_PRINTING,
@@ -1456,6 +1649,8 @@ fn desktop_pdf_outputs_found_set_and_current_record_and_preserves_existing_on_re
         assert!(String::from_utf8_lossy(&bytes).contains(&format!("/Count {pages}")));
     }
     let existing = std::fs::read(&all).unwrap();
+    // Without the PDF worker (unit tests have none) an append refuses and
+    // keeps the file; with it, tests/script_engine.rs appends.
     let mut append = pdf(&path(&all), false);
     append.flags |= flag::OPTION;
     let mut c = client(vec![append, exit("Get ( LastError )")]);
@@ -2855,10 +3050,13 @@ fn field_borders_and_fill_print_unless_delineated_on_the_current_record_only() {
 /// Text whose font is Arial or Helvetica prints in the bundled Liberation
 /// Sans, which is metric-compatible with Arial, so it wraps where FileMaker
 /// Pro's does (#265); any other font, or none, stays on Inter. A face is
-/// embedded only when the document uses it.
+/// embedded only when the document uses it. Italic Arial or Helvetica, from
+/// the style's font-style or a character run's italic face, prints in
+/// Liberation Sans Italic or Bold Italic; italic in another family refuses
+/// with 3 (no italic Inter is bundled).
 #[test]
 fn arial_text_prints_in_liberation_sans_and_other_text_in_inter() {
-    let labelled_text = |family: Option<&str>, bold: bool, value: &str| {
+    let text = |family: Option<&str>, bold: bool, value: &str| {
         let mut text = label(1, value, rect(10.0, 10.0, 300.0, 40.0), 12.0, bold);
         if let Some(family) = family {
             text.style
@@ -2875,6 +3073,9 @@ fn arial_text_prints_in_liberation_sans_and_other_text_in_inter() {
                     ..Default::default()
                 });
         }
+        text
+    };
+    let render = |text: LayoutObject| {
         let layout = Layout {
             def: Some(LayoutDef {
                 base_width: 540.0,
@@ -2892,18 +3093,19 @@ fn arial_text_prints_in_liberation_sans_and_other_text_in_inter() {
             },
             ..Default::default()
         };
-        let report = crate::report::render_pdf(
+        crate::report::render_pdf(
             &layout,
             1,
             om_layout::pagination::PageSize::default(),
             &[],
             |o, _| Ok(o.text.clone().unwrap_or_default()),
         )
-        .unwrap();
-        String::from_utf8_lossy(&report.bytes).into_owned()
+        .map(|report| String::from_utf8_lossy(&report.bytes).into_owned())
     };
-    let labelled = |family: Option<&str>, bold: bool| labelled_text(family, bold, "Ada Lovelace");
-    let labelled_value = |family: Option<&str>, value: &str| labelled_text(family, false, value);
+    let labelled =
+        |family: Option<&str>, bold: bool| render(text(family, bold, "Ada Lovelace")).unwrap();
+    let labelled_value =
+        |family: Option<&str>, value: &str| render(text(family, false, value)).unwrap();
     for family in ["arial,sans-serif", "Arial", "Helvetica"] {
         let pdf = labelled(Some(family), false);
         assert!(pdf.contains("/BaseFont /LiberationSans"), "{family}");
@@ -2920,6 +3122,99 @@ fn arial_text_prints_in_liberation_sans_and_other_text_in_inter() {
         assert!(!pdf.contains("LiberationSans"), "{family:?}");
         assert_eq!(text_origins(&pdf, 1, "Ada Lovelace").len(), 1, "{family:?}");
     }
+    // Italic from the style (font-style 2, italic) and from a character
+    // run's italic face (512 under mask 512), which a run can also turn off.
+    let italic_style = |mut text: LayoutObject| {
+        let local = text.style.as_mut().unwrap().local_styles.as_mut().unwrap();
+        local.components[0].properties.push(Property {
+            id: 67,
+            int: Some(2),
+            ..Default::default()
+        });
+        text
+    };
+    let italic_run = |mut text: LayoutObject, italic: bool| {
+        let rich = text.rich_text.as_mut().unwrap();
+        let run = &mut rich.character_runs[0].style;
+        run.faces = Some(run.faces.unwrap_or(0) | if italic { 512 } else { 0 });
+        run.face_mask = Some(256 | 512);
+        text
+    };
+    let pdf = render(italic_style(text(Some("Arial"), false, "Ada Lovelace"))).unwrap();
+    assert!(pdf.contains("/BaseFont /LiberationSans-Italic"), "{pdf}");
+    assert!(pdf.contains("/F5 ") && !pdf.contains("/F3 "));
+    assert!(pdf.contains("/ItalicAngle -12"));
+    let pdf = render(italic_run(
+        text(Some("Helvetica"), true, "Ada Lovelace"),
+        true,
+    ))
+    .unwrap();
+    assert!(pdf.contains("/BaseFont /LiberationSans-BoldItalic"));
+    let upright = italic_run(italic_style(text(Some("Arial"), false, "Ada")), false);
+    let pdf = render(upright).unwrap();
+    assert!(pdf.contains("/F3 ") && !pdf.contains("LiberationSans-Italic"));
+    // The run's own font chooses the face, as Browse draws it: an Arial
+    // italic run on a Verdana label prints, a Verdana one on an Arial
+    // label refuses.
+    let run_family = |mut text: LayoutObject, family: &str| {
+        let rich = text.rich_text.as_mut().unwrap();
+        rich.character_runs[0].style.font_family = Some(family.to_owned());
+        text
+    };
+    let pdf = render(run_family(
+        italic_run(text(Some("Verdana"), false, "Ada"), true),
+        "Arial",
+    ))
+    .unwrap();
+    assert!(pdf.contains("/BaseFont /LiberationSans-Italic"));
+    for italic in [
+        italic_style(text(Some("Verdana"), false, "Ada")),
+        italic_run(text(None, false, "Ada"), true),
+        run_family(
+            italic_run(text(Some("Arial"), false, "Ada"), true),
+            "Verdana",
+        ),
+    ] {
+        let error = render(italic).unwrap_err();
+        assert_eq!(error.code, 3, "{}", error.message);
+    }
+    // An italic glyph whose outline reaches past its text box, though its
+    // advance fits (a right-aligned 36-point `f` in a 13-point label, or an
+    // 11-point one in a 7-point label, into the 1-point inset), is cut at
+    // the box's sides and the frame's top and bottom; one well inside it is
+    // not.
+    let spilling = |align: i32, width: f64, size: f64| {
+        let mut text = italic_style(label(1, "f", rect(10.0, 10.0, width, 44.0), size, false));
+        let props = &mut text
+            .style
+            .as_mut()
+            .unwrap()
+            .local_styles
+            .as_mut()
+            .unwrap()
+            .components[0]
+            .properties;
+        props.push(Property {
+            id: 64,
+            string: Some("Arial".into()),
+            ..Default::default()
+        });
+        props.push(Property {
+            id: 74,
+            int: Some(align),
+            ..Default::default()
+        });
+        render(text).unwrap()
+    };
+    // The label's clip: its text box's width (the frame less the 1-point
+    // inset at each side) and its frame's height, so nothing above or below
+    // the box is cut for a glyph's side.
+    let label_clip = |pdf: &str, width: f64, height: f64| {
+        pdf.matches(&format!(" {width} {height} re\nW\nn")).count()
+    };
+    assert_eq!(label_clip(&spilling(3, 13.0, 36.0), 11.0, 44.0), 1);
+    assert_eq!(label_clip(&spilling(3, 7.0, 11.0), 5.0, 44.0), 1);
+    assert_eq!(label_clip(&spilling(1, 200.0, 36.0), 198.0, 44.0), 0);
 }
 
 /// A field's text sits inside its text component's margins (properties
@@ -3197,7 +3492,7 @@ fn field_text_keeps_its_margins_and_is_cut_at_its_text_box() {
     // inside it, as Pro's narrower text box would, and is cut rather than
     // refused: 13-point Arial "WW" (24.54 points) in a 25 by 16 label. So
     // is a glyph wider than its label.
-    for (value, width) in [("WW", 25.0), ("W", 8.0)] {
+    for (value, width, clip_left, clip_width) in [("WW", 25.0, 10.0, 25.0), ("W", 8.0, 11.0, 6.0)] {
         let mut tight = self::label(2, value, rect(10.0, 10.0, width, 16.0), 13.0, false);
         tight
             .style
@@ -3214,12 +3509,14 @@ fn field_text_keeps_its_margins_and_is_cut_at_its_text_box() {
                 ..Default::default()
             });
         let pdf = String::from_utf8_lossy(&render(tight, value).unwrap().bytes).into_owned();
-        // Every line is cut at the frame's sides and the text box's top and
-        // bottom; "WW"'s second "W" starts inside the frame, so it stays in
-        // the PDF's text, as Pro keeps a field's.
+        // Every line is cut at the text box's top and bottom, and at the
+        // frame's sides, or the box's (the frame less its 1-point inset)
+        // where its glyph's ink reaches past them, as the wide "W" does;
+        // "WW"'s second "W" starts inside the frame, so it stays in the
+        // PDF's text, as Pro keeps a field's.
         let lines = pdf.matches("/F3 13 Tf").count();
         assert_eq!(lines, value.len(), "{value}");
-        let clip = format!("{} 731 {width} 14 re", paper.left + 10.0);
+        let clip = format!("{} 731 {clip_width} 14 re", paper.left + clip_left);
         assert_eq!(pdf.matches(&clip).count(), lines, "{value}: {clip}");
     }
     // A rounded baseline can carry a descender below a field whose exact
@@ -3967,12 +4264,195 @@ fn container_fields_print_pictures_by_graphic_format_and_files_by_name() {
     assert_eq!(at(image.left + 5.0, clip.top + 2.0), [255, 255, 255, 255]);
 }
 
+/// Character runs that differ only in color print each in its own, as
+/// Browse colors them: a line keeps its baseline and wrapping and changes
+/// color where its runs do, each part from where the previous one ends
+/// (#106). Stored styles compare every byte but the color's, so an explicit
+/// size 0 differs from an unset size. Runs that are not their text's
+/// partition, runs in several sizes, and a value other than the text the
+/// runs are stored for refuse with 3.
+#[test]
+fn character_runs_print_in_their_own_colors() {
+    use om_layout::{CharacterStyle, StyledRun};
+    let font =
+        ttf_parser::Face::parse(include_bytes!("../../assets/fonts/Inter-Regular.ttf"), 0).unwrap();
+    let advance = |text: &str| {
+        text.chars()
+            .map(|ch| {
+                f64::from(
+                    font.glyph_hor_advance(font.glyph_index(ch).unwrap())
+                        .unwrap(),
+                )
+            })
+            .sum::<f64>()
+            * 12.0
+            / f64::from(font.units_per_em())
+    };
+    // A stored color-only style (mask 0x0004, layout-model.md 8.1), and the
+    // same with an explicit size of 0 (mask 0x0006).
+    let stored = |mask: u16, rgb: [u8; 3]| {
+        let mut raw = mask.to_be_bytes().to_vec();
+        raw.extend([0; 6]);
+        raw.extend([rgb[0], rgb[1], rgb[2], 255]);
+        CharacterStyle {
+            color: Some(Color {
+                red: f32::from(rgb[0]) / 255.0,
+                green: f32::from(rgb[1]) / 255.0,
+                blue: f32::from(rgb[2]) / 255.0,
+                alpha: 1.0,
+            }),
+            raw,
+            ..Default::default()
+        }
+    };
+    // "Grüße", a CRLF, then a line that wraps after "overdue ": black up to
+    // "overdue", red from there on, across the wrap.
+    let text = "Grüße\r\nTotal overdue item";
+    let red_from = text.find("overdue").unwrap();
+    let width = advance("Total overdue ") + 3.0;
+    let mut colored = label(1, text, rect(12.0, 10.0, width, 60.0), 12.0, false);
+    colored.rich_text.as_mut().unwrap().character_runs = vec![
+        StyledRun {
+            range: 0..red_from,
+            style: stored(4, [0, 0, 0]),
+        },
+        StyledRun {
+            range: red_from..text.len(),
+            style: stored(4, [255, 0, 0]),
+        },
+    ];
+    let layout = Layout {
+        def: Some(LayoutDef {
+            base_width: 540.0,
+            ..Default::default()
+        }),
+        parts: vec![Part {
+            part_type: 4,
+            height: 100.0,
+            ..Default::default()
+        }],
+        objects: ObjectStore {
+            root: vec![1],
+            objects: vec![colored],
+            ..Default::default()
+        },
+        ..Default::default()
+    };
+    let render = |layout: &Layout, value: &'static str| {
+        let paper = om_layout::pagination::PageSize::for_layout(layout).unwrap();
+        crate::report::render_pdf(layout, 1, paper, &[], move |_, _| Ok(value.to_owned()))
+            .map(|report| String::from_utf8_lossy(&report.bytes).into_owned())
+            .map_err(|e| (e.code, e.message))
+    };
+    let pdf = render(&layout, text).unwrap();
+    let origin = |word: &str| {
+        let found = text_origins(&pdf, 1, word);
+        assert_eq!(found.len(), 1, "{word}: {found:?}");
+        found[0]
+    };
+    let (first, total, overdue, item) = (
+        origin("Grüße"),
+        origin("Total "),
+        origin("overdue "),
+        origin("item"),
+    );
+    // "overdue " continues "Total "'s line, at its advance, on its baseline;
+    // "item" wraps to the next line, at the line's start.
+    assert!(
+        (overdue.1 - total.1 - advance("Total ")).abs() < 0.01,
+        "{total:?} {overdue:?}"
+    );
+    assert_eq!(overdue.2, total.2);
+    assert_eq!(item.1, total.1);
+    assert!(
+        first.2 > total.2 && total.2 > item.2,
+        "{first:?} {total:?} {item:?}"
+    );
+    // Each part is filled in its color, set just before it.
+    let fill_before = |word: &str| {
+        let glyphs: String = word
+            .chars()
+            .map(|ch| format!("{:04X}", font.glyph_index(ch).unwrap().0))
+            .collect();
+        let at = pdf.find(&format!("<{glyphs}> Tj")).unwrap();
+        let fill = pdf[..at]
+            .lines()
+            .rev()
+            .find(|l| l.ends_with(" rg"))
+            .unwrap();
+        fill.to_owned()
+    };
+    for (word, fill) in [
+        ("Grüße", "0 0 0 rg"),
+        ("Total ", "0 0 0 rg"),
+        ("overdue ", "1 0 0 rg"),
+        ("item", "1 0 0 rg"),
+    ] {
+        assert_eq!(fill_before(word), fill, "{word}");
+    }
+
+    fn runs(layout: &mut Layout) -> &mut Vec<om_layout::StyledRun<CharacterStyle>> {
+        &mut layout.objects.objects[0]
+            .rich_text
+            .as_mut()
+            .unwrap()
+            .character_runs
+    }
+    // Merged or calculated text is not the text the runs are stored for.
+    let several = "Report object 1's text is in several colors and is merged, calculated or \
+                   transformed; only its text as written can print in them";
+    assert_eq!(
+        render(&layout, "Grüße\r\nTotal 3 overdue").unwrap_err(),
+        (3, several.to_owned())
+    );
+    // An explicit size of 0 is not an unset size, nor are two sizes one.
+    let mixed = (3, "Mixed character styles are unsupported".to_owned());
+    let mut sized = layout.clone();
+    runs(&mut sized)[1].style = stored(6, [255, 0, 0]);
+    assert_eq!(render(&sized, text).unwrap_err(), mixed);
+    let mut sized = layout.clone();
+    runs(&mut sized)[1].style.raw[7] = 18;
+    runs(&mut sized)[1].style.font_size = Some(18.0);
+    assert_eq!(render(&sized, text).unwrap_err(), mixed);
+    // A size given only decoded, with the stored bytes unchanged, too.
+    let mut sized = layout.clone();
+    runs(&mut sized)[1].style.font_size = Some(18.0);
+    assert_eq!(render(&sized, text).unwrap_err(), mixed);
+    // One style stored in a length the decoder does not read still prints,
+    // as before, in one color, and two copies of it as one.
+    let mut odd = layout.clone();
+    let style = CharacterStyle {
+        raw: vec![0; 14],
+        ..Default::default()
+    };
+    for run in runs(&mut odd) {
+        run.style = style.clone();
+    }
+    assert!(render(&odd, text).is_ok());
+    // A field's layout runs in two colors refuse, its filename included.
+    let mut field = layout.clone();
+    field.objects.objects[0].object_type = 1;
+    assert_eq!(render(&field, "notes.txt").unwrap_err(), mixed);
+    // Runs that leave a gap, or overlap, are not the text's partition.
+    let mut gap = layout.clone();
+    runs(&mut gap)[1].range.start += 1;
+    assert_eq!(
+        render(&gap, text).unwrap_err(),
+        (
+            3,
+            "Report object 1's character runs do not cover its text in order".to_owned()
+        )
+    );
+}
+
 /// `{{PageNumber}}` prints each page's number, in a static label and in a
 /// merge text's literal (any case), as FileMaker Pro 26.0.3's Save Records
 /// as PDF wrote it on page *n* (calc-functions.md, O4), without touching
 /// the merged field's value. An unclosed `{{` prints as it is, and a
 /// symbol is read within one literal run, never across a merged field.
-/// Other layout symbols still refuse.
+/// `{{PageCount}}` and symbols Browse does not show refuse, as do merge
+/// variables and other symbols in an object whose data format presents
+/// values.
 #[test]
 fn page_number_symbols_print_each_pages_number() {
     use om_layout::TextRun::{Literal, MergeField};
@@ -4017,6 +4497,19 @@ fn page_number_symbols_print_each_pages_number() {
         Literal("<<Page {{PageNumber}}>> / ".into()),
         MergeField("Name".into()),
     ];
+    // A label the runs do not spell is numbered by whole symbols outside
+    // placeholders, by number too.
+    let mut stored = label(
+        8,
+        "Page {{1015}} of <<Name>> (draft)",
+        rect(12.0, 135.0, 400.0, 20.0),
+        12.0,
+        false,
+    );
+    stored.text_runs = vec![
+        Literal("Page {{1015}} of ".into()),
+        MergeField("Name".into()),
+    ];
     let layout = Layout {
         def: Some(LayoutDef {
             base_width: 540.0,
@@ -4036,7 +4529,7 @@ fn page_number_symbols_print_each_pages_number() {
             },
         ],
         objects: ObjectStore {
-            root: vec![1, 2, 3, 4, 5, 6, 7],
+            root: vec![1, 2, 3, 4, 5, 6, 7, 8],
             objects: vec![
                 label(1, "Body", rect(12.0, 10.0, 200.0, 20.0), 12.0, false),
                 label(
@@ -4051,6 +4544,7 @@ fn page_number_symbols_print_each_pages_number() {
                 noted,
                 named,
                 angled,
+                stored,
             ],
             ..Default::default()
         },
@@ -4109,6 +4603,7 @@ fn page_number_symbols_print_each_pages_number() {
             format!("Note {{{{ <<Name>> / Page {number}"),
             format!("<<Name {{{{PageNumber}}}}>> / Page {number}"),
             format!("<<Page {number}>> / <<Name>>"),
+            format!("Page {number} of <<Name>> (draft)"),
         ] {
             let found = text_origins(&labels, 2, &label);
             assert_eq!(
@@ -4118,10 +4613,179 @@ fn page_number_symbols_print_each_pages_number() {
             );
         }
     }
-    let mut dated = layout.clone();
-    dated.objects.objects[1].text = Some("{{CurrentDate}}".into());
+    for symbol in ["{{PageCount}}", "{{1125}}", "{{AccountName}}"] {
+        let mut counted = layout.clone();
+        counted.objects.objects[1].text = Some(format!("Page {{{{PageNumber}}}} of {symbol}"));
+        assert_eq!(
+            render(&counted).unwrap_err(),
+            "Layout merge symbols other than {{PageNumber}}, {{RecordNumber}}, \
+             {{CurrentDate}}, {{CurrentTime}} and {{UserName}} are unsupported",
+            "{symbol}"
+        );
+    }
+    // A variable name with a space, which Set Variable accepts and Browse
+    // shows as written.
+    let mut spaced = layout.clone();
+    spaced.objects.objects[1].text = Some("Printed by <<$$printed by>>".into());
     assert_eq!(
-        render(&dated).unwrap_err(),
-        "Layout merge symbols other than {{PageNumber}} are unsupported"
+        render(&spaced).unwrap_err(),
+        "Report object 2 holds a <<$...>> OpenMaker does not read as a merge variable; \
+         how FileMaker reads it is unmeasured"
     );
+    // A data format that presents dates (format 7, numeric with the full
+    // year): FileMaker's for a variable or symbol is unmeasured.
+    let mut formatted = layout.clone();
+    formatted.objects.objects[1].data_format = Some(DataFormat {
+        date: om_layout::DateFormat {
+            flags: 7 << 24,
+            ..Default::default()
+        },
+        ..DataFormat::new_field()
+    });
+    for (text, refused) in [
+        ("Page {{PageNumber}}", false),
+        ("Printed {{CurrentDate}}", true),
+        ("Total <<$$total>>", true),
+    ] {
+        formatted.objects.objects[1].text = Some(text.into());
+        assert_eq!(
+            render(&formatted).err(),
+            refused.then(|| {
+                "Report object 2 formats numbers, dates or times and holds a merge variable \
+                 or layout symbol; whether FileMaker formats them is unmeasured"
+                    .to_owned()
+            }),
+            "{text}"
+        );
+    }
+}
+
+/// [`document`] with layout symbols and a merge variable: the header shows
+/// the user name and the date, each body the record's number by name and
+/// by its selector's number (`{{1020}}`), then `$$suffix`'s second
+/// repetition.
+pub(super) fn symbols_document() -> RenderLayout {
+    let mut document = document();
+    let objects = &mut document.layout.objects;
+    objects.objects[1] = label(
+        2,
+        "By {{UserName}} on {{CurrentDate}}",
+        rect(12.0, 44.0, 500.0, 22.0),
+        10.0,
+        false,
+    );
+    objects.objects.push(label(
+        11,
+        "No. {{RecordNumber}} / {{1020}}<<$$suffix[2]>>",
+        rect(360.0, 86.0, 170.0, 24.0),
+        11.0,
+        false,
+    ));
+    objects.root.push(11);
+    document
+}
+
+/// Layout symbols print as Browse shows them
+/// (`om_data::host::layout::merge_text`), on each record: the record
+/// number its found-set position, the header's user name and date the
+/// session's. In a portal row the record number is the row's, as in Browse
+/// and Preview. A merge variable refuses (#596): this host does not read
+/// the running script's variables.
+#[test]
+fn layout_symbols_print_as_browse_shows_them() {
+    let temporary = tempfile::tempdir().unwrap();
+    let path = temporary.path().join("symbols.pdf");
+    let steps = |path: &std::path::Path| {
+        vec![
+            var("$$suffix", "\" of 9\""),
+            var("$before", "Get ( CurrentDate )"),
+            pdf(&crate::scripting::files::file_line(path), false),
+            exit("Get ( LastError ) & \"|\" & Get ( UserName ) & \"|\" & $before & \"|\" & Get ( CurrentDate )"),
+        ]
+    };
+    let mut c = client(steps(&path));
+    let mut document = symbols_document();
+    let objects = &mut document.layout.objects.objects;
+    let body = objects.iter_mut().find(|o| o.id == 11).unwrap();
+    *body = label(
+        11,
+        "No. {{RecordNumber}} / {{1020}}",
+        rect(360.0, 86.0, 170.0, 24.0),
+        11.0,
+        false,
+    );
+    c.server.lock().unwrap().refresh_render = Some(document);
+    c.run_in(WindowState {
+        layout: Some(1),
+        record: Some(9),
+        index: 2,
+        ..Default::default()
+    });
+    let result = c.result();
+    let [error, user, before, after] = result.split('|').collect::<Vec<_>>()[..] else {
+        panic!("{result}");
+    };
+    assert_eq!(error, "0", "{:?}", c.session.s.failure);
+    let pdf = String::from_utf8_lossy(&std::fs::read(&path).unwrap()).into_owned();
+    // Each record's once, in found-set order over the three pages.
+    let pages: Vec<usize> = (1..=9)
+        .map(|n| {
+            let numbered = text_origins(&pdf, 3, &format!("No. {n} / {n}"));
+            assert_eq!(numbered.len(), 1, "{n}");
+            numbered[0].0
+        })
+        .collect();
+    assert!(
+        pages.is_sorted() && pages[0] == 0 && pages[8] == 2,
+        "{pages:?}"
+    );
+    // The header on each page; the date is the day the script ran on.
+    let mut dates = vec![before];
+    if after != before {
+        dates.push(after);
+    }
+    let mut headers: Vec<usize> = (dates.iter())
+        .flat_map(|date| text_origins(&pdf, 3, &format!("By {user} on {date}")))
+        .map(|o| o.0)
+        .collect();
+    headers.sort();
+    assert_eq!(headers, [0, 1, 2], "{dates:?}");
+
+    // `$$suffix[2]` would print empty whatever the script set: refused, and
+    // nothing is written.
+    let refused = temporary.path().join("variables.pdf");
+    let mut v = client(steps(&refused));
+    v.server.lock().unwrap().refresh_render = Some(symbols_document());
+    v.run_in(WindowState {
+        layout: Some(1),
+        record: Some(9),
+        index: 2,
+        ..Default::default()
+    });
+    assert!(v.result().starts_with("3|"), "{}", v.result());
+    assert!(!refused.exists());
+
+    // The report host answers a portal row's number there.
+    let mut store = Store;
+    let mut io = Io {
+        provider: &mut c.provider,
+        files: &mut c.files,
+        store: &mut store,
+        jobs: &c.jobs,
+        responses: &c.responses,
+    };
+    let mut host = WorkerHost::new(&mut io, &mut c.session.s);
+    host.report_record = Some((9, 2, 0));
+    let row = crate::report::PortalRowContext {
+        occurrence: 6,
+        record: 101,
+        number: 2,
+    };
+    for (row, shown) in [(None, "3"), (Some(row), "2")] {
+        let context = crate::report::in_row(om_data::calc::eval::Context::record(5, 9), row);
+        assert_eq!(
+            om_data::host::layout::merge_text(&mut host, "{{RecordNumber}}", &context),
+            shown
+        );
+    }
 }

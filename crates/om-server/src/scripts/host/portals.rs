@@ -25,7 +25,7 @@
 //! refused (3) rather than numbered in an order that may not be
 //! FileMaker's.
 
-use std::collections::{HashMap, HashSet};
+use std::collections::{hash_map::Entry, HashMap, HashSet};
 
 use om_calc::CalcError;
 use om_data::meta::relation_option;
@@ -95,19 +95,29 @@ fn shown_field(object: &LayoutObject) -> Option<(u64, u64)> {
     ))
 }
 
-/// A layout's objects, read once per step through an index by id: their
-/// stacking order, the portal each lies in (by following its parents; a
-/// chain that loops lies in none, and where it is drawn never matters) and
-/// each one's origin in layout coordinates. Every lookup is by id, so a
-/// step's work grows with the layout's size, not its square.
+#[derive(Clone, Copy, Default)]
+struct Ancestry {
+    portal: Option<u64>,
+    origin: Option<(f64, f64)>,
+}
+
+impl Ancestry {
+    fn for_children(mut self, parent: &LayoutObject) -> Self {
+        if parent.kind() == ObjectKind::Portal {
+            self.portal = Some(parent.id);
+        }
+        self
+    }
+}
+
+/// A layout's objects indexed by id, with stacking order and parent-chain
+/// results. Geometry is independent of portal membership.
 struct ObjectIndex<'l> {
     by_id: HashMap<u64, &'l LayoutObject>,
     /// Back-most first, as `layout_objects::objects_in_order` walks them.
     in_order: Vec<&'l LayoutObject>,
-    portal_of: HashMap<u64, u64>,
-    /// Each object's top and left in layout coordinates; none without
-    /// geometry along its parents, or in a loop.
-    origin: HashMap<u64, Option<(f64, f64)>>,
+    /// None marks an ancestry that reaches a cycle.
+    ancestry: HashMap<u64, Option<Ancestry>>,
 }
 
 impl<'l> ObjectIndex<'l> {
@@ -128,104 +138,65 @@ impl<'l> ObjectIndex<'l> {
             in_order.push(*object);
             stack.extend(object.children.iter().rev());
         }
-        // The objects on a loop of parents (a malformed store's), found
-        // first so that what they answer does not depend on the order the
-        // objects are read in: they, and everything below them, lie in no
-        // portal and have no origin.
-        let mut on_loop: HashSet<u64> = HashSet::new();
-        let mut settled: HashSet<u64> = HashSet::new();
+        // Each id joins a chain once. A pending id and an already settled
+        // cyclic ancestor both mean this whole chain reaches a cycle, so
+        // the same marker covers both cases.
+        let mut ancestry: HashMap<u64, Option<Ancestry>> = HashMap::with_capacity(by_id.len());
+        let mut chain = Vec::new();
         for object in &layout.objects.objects {
-            let mut path: Vec<u64> = Vec::new();
             let mut at = Some(object.id);
-            while let Some(id) = at {
-                if settled.contains(&id) || !by_id.contains_key(&id) {
-                    break;
-                }
-                if let Some(start) = path.iter().position(|p| *p == id) {
-                    on_loop.extend(&path[start..]);
-                    break;
-                }
-                path.push(id);
-                at = by_id[&id].parent;
-            }
-            settled.extend(path);
-        }
-        // The nearest portal above each object and each object's origin,
-        // each parent chain walked once, every object on it answered.
-        let mut portal_of: HashMap<u64, Option<u64>> = HashMap::new();
-        let mut origin: HashMap<u64, Option<(f64, f64)>> = HashMap::new();
-        for object in &layout.objects.objects {
-            if on_loop.contains(&object.id) {
-                portal_of.insert(object.id, None);
-                origin.insert(object.id, None);
-                continue;
-            }
-            // The chain from the object up to the first object already
-            // answered (or the root, or a loop).
-            let mut chain = vec![object.id];
-            let mut seen = HashSet::from([object.id]);
-            let mut at = object.parent;
-            let mut looped = false;
-            while let Some(id) = at {
-                if on_loop.contains(&id) {
-                    looped = true;
-                    break;
-                }
-                if portal_of.contains_key(&id) || !by_id.contains_key(&id) {
-                    break;
-                }
-                if !seen.insert(id) {
-                    looped = true;
-                    break;
-                }
-                chain.push(id);
-                at = by_id[&id].parent;
-            }
-            // Answer the chain from the top down.
-            let mut above_portal = if looped {
-                None
-            } else {
-                at.and_then(|id| match by_id.get(&id) {
-                    Some(o) if o.kind() == ObjectKind::Portal => Some(id),
-                    Some(_) => portal_of.get(&id).copied().flatten(),
-                    None => None,
-                })
-            };
-            let mut above_origin = if looped {
-                None
-            } else {
-                match at {
-                    None => Some((0.0, 0.0)),
-                    Some(id) => origin.get(&id).copied().flatten(),
+            let mut above = loop {
+                let Some(id) = at else {
+                    break Some(Ancestry {
+                        portal: None,
+                        origin: Some((0.0, 0.0)),
+                    });
+                };
+                let Some(&ancestor) = by_id.get(&id) else {
+                    // A missing parent loses geometry without making a cycle.
+                    break Some(Ancestry::default());
+                };
+                match ancestry.entry(id) {
+                    Entry::Occupied(entry) => {
+                        break entry.get().map(|info| info.for_children(ancestor));
+                    }
+                    Entry::Vacant(entry) => {
+                        entry.insert(None);
+                        chain.push(ancestor);
+                        at = ancestor.parent;
+                    }
                 }
             };
-            for id in chain.into_iter().rev() {
-                let object = by_id[&id];
-                portal_of.insert(id, above_portal);
-                let own = above_origin
-                    .zip(object.bounds.as_ref())
-                    .map(|((top, left), b)| (top + b.top, left + b.left));
-                origin.insert(id, own);
-                if object.kind() == ObjectKind::Portal {
-                    above_portal = Some(id);
-                }
-                above_origin = own;
+            while let Some(object) = chain.pop() {
+                let own = above.map(|info| Ancestry {
+                    portal: info.portal,
+                    origin: info
+                        .origin
+                        .zip(object.bounds.as_ref())
+                        .map(|((top, left), bounds)| (top + bounds.top, left + bounds.left)),
+                });
+                ancestry.insert(object.id, own);
+                above = own.map(|info| info.for_children(object));
             }
         }
         ObjectIndex {
             by_id,
             in_order,
-            portal_of: portal_of
-                .into_iter()
-                .filter_map(|(id, portal)| Some((id, portal?)))
-                .collect(),
-            origin,
+            ancestry,
         }
+    }
+
+    fn has_cyclic_ancestry(&self, id: u64) -> bool {
+        self.ancestry.get(&id).is_some_and(Option::is_none)
     }
 
     /// The portal object `id` lies in.
     fn portal_of(&self, id: u64) -> Option<u64> {
-        self.portal_of.get(&id).copied()
+        self.ancestry.get(&id).copied().flatten()?.portal
+    }
+
+    fn origin(&self, id: u64) -> Option<(f64, f64)> {
+        self.ancestry.get(&id).copied().flatten()?.origin
     }
 
     /// The objects of portal `portal` that show a field, in the order
@@ -237,7 +208,7 @@ impl<'l> ObjectIndex<'l> {
             .iter()
             .enumerate()
             .filter(|(_, o)| o.field_spec().is_some() && self.portal_of(o.id) == Some(portal))
-            .map(|(at, o)| match self.origin.get(&o.id).copied().flatten() {
+            .map(|(at, o)| match self.origin(o.id) {
                 Some((top, left)) => (top, left, at, *o),
                 None => (f64::INFINITY, f64::INFINITY, at, *o),
             })
@@ -254,7 +225,7 @@ impl<'l> ObjectIndex<'l> {
     fn portals(&self) -> Vec<Portal> {
         self.in_order
             .iter()
-            .filter(|o| o.kind() == ObjectKind::Portal)
+            .filter(|o| o.kind() == ObjectKind::Portal && !self.has_cyclic_ancestry(o.id))
             .filter_map(|o| portal(o))
             .collect()
     }
@@ -464,6 +435,7 @@ impl ServerHost {
             .in_order
             .iter()
             .find(|o| o.name.as_deref() == Some(name))
+            .filter(|o| !index.has_cyclic_ancestry(o.id))
             .copied()
         else {
             self.leave_objects()?;
@@ -555,6 +527,10 @@ impl ServerHost {
             self.clear_portal();
             return Ok(false);
         };
+        if index.has_cyclic_ancestry(object.id) {
+            self.leave_objects()?;
+            return Err(ErrorCode::FIELD_MISSING.into());
+        }
         let repetition = field.repetition.max(1);
         let repetitions = self
             .schema
@@ -652,4 +628,90 @@ fn focus_on(object: &LayoutObject, repetition: u32) -> Option<Focus> {
         repetition: repetition.max(1),
         typed: false,
     })
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use om_layout::{encode, Rect};
+
+    #[test]
+    fn cyclic_ancestry_reaches_through_portals_in_either_order() {
+        let rect = Rect::default();
+        let portal = |id, child, parent| LayoutObject {
+            parent,
+            // Missing bounds alone do not invalidate a portal or its fields.
+            bounds: None,
+            ..LayoutObject::decode(&encode::portal_object(id, &rect, &[child], 1, 3)).unwrap()
+        };
+        let field = |id, parent| LayoutObject {
+            parent: Some(parent),
+            ..LayoutObject::decode(&encode::portal_field_object(id, &rect, 1, 1)).unwrap()
+        };
+        let mut layout = Layout::default();
+        layout.objects.root = vec![1, 5];
+        layout.objects.objects = vec![
+            LayoutObject {
+                id: 1,
+                parent: Some(2),
+                children: vec![2, 3],
+                object_type: 8,
+                ..Default::default()
+            },
+            LayoutObject {
+                id: 2,
+                parent: Some(1),
+                children: vec![1],
+                object_type: 8,
+                ..Default::default()
+            },
+            portal(3, 4, Some(1)),
+            field(4, 3),
+            portal(5, 6, None),
+            field(6, 5),
+        ];
+        for _ in 0..2 {
+            let index = ObjectIndex::new(&layout);
+            for id in 1..=4 {
+                assert!(index.has_cyclic_ancestry(id));
+                assert_eq!(index.portal_of(id), None);
+                assert_eq!(index.origin(id), None);
+            }
+            assert!(index.portal_fields(3).is_empty());
+            assert_eq!(
+                index.portals().iter().map(|p| p.object).collect::<Vec<_>>(),
+                [5]
+            );
+            assert_eq!(index.portal_of(6), Some(5));
+            assert_eq!(index.origin(6), None);
+            assert_eq!(index.portal_fields(5)[0].id, 6);
+            layout.objects.objects.reverse();
+        }
+    }
+
+    #[test]
+    fn deep_parent_chain_resolves_from_the_leaf() {
+        const DEPTH: u64 = 4096;
+        let mut layout = Layout::default();
+        layout.objects.objects = (1..=DEPTH)
+            .rev()
+            .map(|id| LayoutObject {
+                id,
+                parent: (id > 1).then_some(id - 1),
+                object_type: if id == 1 { 9 } else { 8 },
+                bounds: Some(Rect {
+                    top: 1.0,
+                    left: 2.0,
+                    ..Default::default()
+                }),
+                ..Default::default()
+            })
+            .collect();
+        let index = ObjectIndex::new(&layout);
+        assert_eq!(index.portal_of(DEPTH), Some(1));
+        assert_eq!(
+            index.origin(DEPTH),
+            Some((DEPTH as f64, 2.0 * DEPTH as f64))
+        );
+    }
 }

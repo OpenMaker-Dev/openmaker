@@ -452,6 +452,46 @@ struct PeerAuth {
 
 pub(crate) use om_data::{FIELD_NOT_MODIFIABLE, PRIVILEGE_DENIED};
 
+/// Whether Browse's typing into a global with `options` can be checked as
+/// FileMaker checks it (`NativeProvider::set_typed_global`): no "Prohibit
+/// modification", and no validation by calculation (`0x1`), unique (`0x10`)
+/// or existing value (`0x20`), whose checks are not implemented for
+/// globals. Entry rules and Not empty are checked.
+fn typed_global_options(options: &om_hbam::FieldOptions) -> bool {
+    !options.auto_entry_editing_prohibited() && options.validation_options & 0x31 == 0
+}
+
+/// Whether Browse's typing into repetition `repetition` of global `field`
+/// can be checked as it is entered (`NativeProvider::set_typed_global`):
+/// its options allow it (`typed_global_options`), it is one of the first
+/// 255 repetitions, and a value list it is validated by is a custom list
+/// or a field of this file (`RecordPlan::checks_global_entry`; another
+/// file's field is refused as `refuse_related_lists` refuses it). A global
+/// that fails this stays display-only.
+fn checks_typed_global(
+    file: &om_data::host::CalcSchema,
+    plan: &om_data::rules::RecordPlan,
+    options: &om_hbam::FieldOptions,
+    field: u64,
+    repetition: u32,
+) -> bool {
+    let Some(cell) = om_data::rules::cell_of(field, repetition).filter(|_| repetition <= 255)
+    else {
+        return false;
+    };
+    typed_global_options(options)
+        && plan.checks_global_entry(field, cell)
+        && plan
+            .value_list_field(cell, om_data::rules::Entry::default())
+            .is_none_or(|(occurrence, _)| !shows_related_file(file, occurrence))
+}
+
+/// What FileMaker Pro says when the host refuses to open a file because it
+/// blocks new users (error 1638, catalogs/error-codes.csv; network-protocol.md
+/// 5.6.4).
+pub const HOST_BLOCKS_NEW_USERS: &str =
+    "The host is not allowing new connections. Try again later.";
+
 impl NativeProvider {
     pub fn new(config: NativeConfig) -> Self {
         Self {
@@ -1766,6 +1806,152 @@ impl NativeProvider {
         self.pinned.remove(&own);
     }
 
+    /// Check the target and privilege before changing a session global.
+    fn global_write_schema(
+        &mut self,
+        table: u64,
+        field: u64,
+        repetition: u32,
+    ) -> Result<std::sync::Arc<om_data::host::CalcSchema>, DataError> {
+        self.refuse_while_unsettled()?;
+        self.require_open()?;
+        self.refuse_imported_table(table)?;
+        let schema = self.calc_schema_cached()?;
+        let def = schema
+            .table(table)
+            .and_then(|t| t.fields.get(&field))
+            .ok_or_else(|| DataError::with_code(102, "The field is missing."))?;
+        if !def.global || repetition == 0 || repetition > def.repetitions.max(1) {
+            return Err(DataError::with_code(
+                201,
+                format!("Field {} is not a global field's repetition.", def.name),
+            ));
+        }
+        // A global the account's custom set gives view-only access keeps its
+        // value: Set Field and Browse's typing both come here, not through
+        // `prepare_record`.
+        let modifies = self.account_info.set_access.as_ref().is_none_or(|access| {
+            access.modifies(
+                &om_hbam::slot::uint_segment(table),
+                &om_hbam::slot::uint_segment(field),
+            )
+        });
+        if !modifies {
+            return Err(DataError::with_code(201, FIELD_NOT_MODIFIABLE));
+        }
+        Ok(schema)
+    }
+
+    /// The text a user's typing `text` into repetition `repetition` of
+    /// global `field` of `table` stores, checked as FileMaker checks it
+    /// (`DataProvider::set_typed_global`), or its refusal. Nothing is set.
+    fn typed_global(
+        &mut self,
+        table: u64,
+        field: u64,
+        repetition: u32,
+        text: &str,
+    ) -> Result<(String, Option<u16>), DataError> {
+        self.refuse_while_unsettled()?;
+        self.require_open()?;
+        self.refuse_imported_table(table)?;
+        self.calc_schema_cached()?;
+        let def = self
+            .catalog
+            .table(table)
+            .and_then(|t| t.field(field))
+            .ok_or_else(|| DataError::with_code(102, "The field is missing."))?;
+        let options = def.decoded_options();
+        let supported = def.kind == om_hbam::FieldKind::Normal
+            && matches!(
+                def.data_type,
+                om_hbam::DataType::Text
+                    | om_hbam::DataType::Number
+                    | om_hbam::DataType::Date
+                    | om_hbam::DataType::Time
+                    | om_hbam::DataType::Timestamp
+            )
+            && (1..=255).contains(&repetition)
+            && options.as_ref().is_some_and(|options| {
+                options.options & 0x1_0000 != 0
+                    && repetition <= u32::from(options.max_repetitions.max(1))
+            });
+        if !supported {
+            return Err(DataError::with_code(
+                3,
+                "Typed entry requires a supported repetition of a text, number, date, \
+                 time or timestamp global.",
+            ));
+        }
+        if !options.as_ref().is_some_and(typed_global_options) {
+            return Err(DataError::with_code(201, FIELD_NOT_MODIFIABLE));
+        }
+        // A text or number global without validation takes the text as
+        // typed, as before, with no plan; only dates and times are parsed.
+        let temporal = matches!(
+            def.data_type,
+            om_hbam::DataType::Date | om_hbam::DataType::Time | om_hbam::DataType::Timestamp
+        );
+        self.global_write_schema(table, field, repetition)?;
+        if !temporal
+            && options
+                .as_ref()
+                .is_some_and(|options| options.validation_options == 0)
+        {
+            return Ok((text.to_owned(), None));
+        }
+        let plan = self.entry_plan(table)?;
+        let file = self.calc_schema_cached()?;
+        if !options
+            .as_ref()
+            .is_some_and(|options| checks_typed_global(&file, &plan, options, field, repetition))
+        {
+            return Err(DataError::with_code(201, FIELD_NOT_MODIFIABLE));
+        }
+        // Reuse ordinary entry's locale-aware parsing and rules (maximum
+        // characters, strict data type, range, value list), without
+        // changing a script's permissive global assignment. Refusal changes
+        // no value.
+        let cell = om_data::rules::cell_of(field, repetition)
+            .ok_or_else(|| DataError::with_code(201, "The repetition is out of range."))?;
+        let text = self.check_typed_entry(table, cell, text)?;
+        let required = options
+            .filter(|options| options.validation_not_empty())
+            .map(|options| options.max_repetitions.max(1));
+        Ok((text, required))
+    }
+
+    /// Check Not empty against the complete proposed global values. Use
+    /// the session value for repetitions untouched by this save.
+    fn check_required_globals(
+        &mut self,
+        table: u64,
+        changes: &om_data::GlobalChanges,
+        required: BTreeMap<u64, u16>,
+    ) -> Result<(), DataError> {
+        if required.is_empty() {
+            return Ok(());
+        }
+        let data = self.calc_data(&[om_data::host::CalcNeed::Globals { table }])?;
+        let stored = data.globals.get(&table);
+        for (field, repetitions) in required {
+            let has_value = (1..=u32::from(repetitions)).any(|repetition| {
+                changes.get(&(field, repetition)).map_or_else(
+                    || {
+                        stored
+                            .and_then(|values| values.get(field, repetition))
+                            .is_some_and(|value| !value.is_empty())
+                    },
+                    |text| !text.is_empty(),
+                )
+            });
+            if !has_value {
+                return Err(self.entry_refusal(table, field, om_data::rules::error::REQUIRED)?);
+            }
+        }
+        Ok(())
+    }
+
     /// Move the values of global fields out of a user's edit of the
     /// layout's record into this session's globals (`set_global`): typing
     /// into a global field on a layout sets the session's value, as Set
@@ -1787,31 +1973,24 @@ impl NativeProvider {
         let Some(def) = schema.table(table) else {
             return Ok(false);
         };
-        let globals: Vec<(String, u64, bool)> = values
+        let globals: Vec<(String, u64)> = values
             .keys()
             .filter_map(|name| {
                 let field = def.fields.values().find(|f| f.name == *name)?;
-                field.global.then(|| {
-                    (
-                        name.clone(),
-                        field.id,
-                        matches!(
-                            field.value_type,
-                            om_data::calc::ValueType::Date
-                                | om_data::calc::ValueType::Time
-                                | om_data::calc::ValueType::Timestamp
-                        ),
-                    )
-                })
+                field.global.then(|| (name.clone(), field.id))
             })
             .collect();
-        for (name, field, temporal) in &globals {
-            let text = values.get(name).cloned().flatten().unwrap_or_default();
-            if *temporal {
-                self.set_typed_global(table, *field, 1, &text)?;
-            } else {
-                self.set_global(table, *field, 1, &text)?;
-            }
+        let changes = globals
+            .iter()
+            .map(|(name, field)| {
+                (
+                    (*field, 1),
+                    values.get(name).cloned().flatten().unwrap_or_default(),
+                )
+            })
+            .collect();
+        self.set_typed_globals(table, &changes)?;
+        for (name, _) in &globals {
             values.remove(name);
         }
         Ok(!globals.is_empty())
@@ -2085,6 +2264,11 @@ impl NativeProvider {
                     session
                 .open_file(&connection.host, &connection.file)
                 .map_err(|e| {
+                    // Block New Users: FileMaker Pro's alert, with its error
+                    // (network-protocol.md 5.6.4, admin-console.md 9).
+                    if session.refused_open() == Some(1638) {
+                        return DataError::with_code(1638, HOST_BLOCKS_NEW_USERS);
+                    }
                     // A client license matters only to a server that asks
                     // for one, never to a file opened from this computer.
                     let hint = if !local && endpoint.machine.install_code.is_empty() {
@@ -3023,17 +3207,21 @@ impl DataProvider for NativeProvider {
             ),
             Err(_) => None,
         };
-        // Text globals and plain number/date/time/timestamp globals take the session's
-        // value (`take_globals`). Non-text globals with validation
-        // stay display-only: their field-exit checks are not implemented.
+        // Text, number, date, time and timestamp data globals take the
+        // session's value (`take_globals`), their typing checked as it is
+        // applied (`set_typed_global`). One with a rule that cannot be
+        // checked so stays display-only (`checks_typed_global`).
         let globals = file.table(table.id).into_iter().flat_map(|t| {
             t.fields
                 .values()
                 .filter(|f| {
-                    let plain = f.class == om_data::host::FieldClass::Data
+                    f.global
+                        && f.repetitions <= 255
+                        && f.class == om_data::host::FieldClass::Data
                         && matches!(
                             f.value_type,
-                            om_data::calc::ValueType::Number
+                            om_data::calc::ValueType::Text
+                                | om_data::calc::ValueType::Number
                                 | om_data::calc::ValueType::Date
                                 | om_data::calc::ValueType::Time
                                 | om_data::calc::ValueType::Timestamp
@@ -3041,13 +3229,16 @@ impl DataProvider for NativeProvider {
                         && table
                             .field(f.id)
                             .and_then(|field| field.decoded_options())
-                            .is_some_and(|options| {
-                                options.validation_options == 0
-                                    && !options.auto_entry_editing_prohibited()
-                            });
-                    f.global
-                        && f.repetitions <= 255
-                        && (f.value_type == om_data::calc::ValueType::Text || plain)
+                            .is_some_and(|options| match &planned {
+                                Ok(plan) => checks_typed_global(&file, plan, &options, f.id, 1),
+                                Err(_) if deferred => {
+                                    typed_global_options(&options)
+                                        && om_data::rules::RecordPlan::offers_global_while_plan_deferred(
+                                            table.id, f.id, &options, &tree, &file,
+                                        )
+                                }
+                                Err(_) => false,
+                            })
                 })
                 .map(|f| f.name.clone())
         });
@@ -3489,6 +3680,99 @@ impl DataProvider for NativeProvider {
         self.adjust_table_container(table, reference, delta)
     }
 
+    fn relookup(
+        &mut self,
+        layout_id: u32,
+        field: &str,
+        ids: &[i64],
+        privilege_set: Option<String>,
+    ) -> Result<(), DataError> {
+        self.refuse_while_unsettled()?;
+        self.require_writable()?;
+        self.require_script_layout_records(layout_id)?;
+        self.invalidate_calc_data();
+        let layout = self.decoded_layout(layout_id)?;
+        let table = self.read_table_for_layout(&layout)?.id;
+        if self.external.route(table).is_some() {
+            return Err(DataError::with_code(
+                3,
+                "Relookup Field Contents on a layout of another file's table is not supported.",
+            ));
+        }
+        let (_, plan) = self.table_plan(table)?;
+        let cell = plan.relookup_target(field)?;
+        // Every record's own value first, so that a refusal writes none:
+        // a plain value written back is no change to the record (the rules
+        // fire the lookups through it, `RecordPlan::is_lookup_match`), but
+        // one stored with character styles would be replaced by its text.
+        let mut own = Vec::with_capacity(ids.len());
+        for &id in ids {
+            let Ok(record) = u64::try_from(id) else {
+                continue;
+            };
+            // A record the open transaction holds (a new one, or one with a
+            // held edit of the field) has a value the host does not: the
+            // stored one written back would replace what it holds.
+            if self.transaction_new(table, record).is_some() {
+                return Err(DataError::with_code(
+                    3,
+                    format!(
+                        "Record {id} holds a change in the open transaction: no record was \
+                         relooked up."
+                    ),
+                ));
+            }
+            let Some(node) = self.read_record(table, record)? else {
+                continue;
+            };
+            let stored = records::stored_record(record, &node);
+            let text = match stored.cells.get(&cell) {
+                None => None,
+                Some(om_hbam::Cell::Nested(_)) => {
+                    return Err(DataError::with_code(
+                        3,
+                        format!(
+                            "Record {id} stores “{field}” with character styles, which \
+                             writing it again would lose: no record was relooked up."
+                        ),
+                    ))
+                }
+                Some(value) => {
+                    let text = value.text().and_then(Result::ok).ok_or_else(|| {
+                        DataError::with_code(
+                            3,
+                            format!(
+                                "Record {id}'s “{field}” cannot be read as text: no record \
+                                 was relooked up."
+                            ),
+                        )
+                    })?;
+                    Some(text).filter(|t| !t.is_empty())
+                }
+            };
+            own.push((id, text));
+        }
+        for (id, text) in own {
+            let cells = BTreeMap::from([(cell, text)]);
+            self.script_native_record(
+                table,
+                Some(id),
+                (&cells, &BTreeSet::new()),
+                false,
+                records::Origin {
+                    layout: Some(layout_id),
+                    set: records::CurrentSet::Step(privilege_set.clone()),
+                    record_number: None,
+                    prepared: None,
+                },
+            )?;
+            if let Ok(record) = u64::try_from(id) {
+                self.calc.page.invalidate_record(table, record);
+            }
+        }
+        Ok(())
+    }
+
     fn delete_record(&mut self, layout_id: u32, record_id: i64) -> Result<(), DataError> {
         self.delete_layout_record(layout_id, record_id, false)
     }
@@ -3696,39 +3980,43 @@ impl DataProvider for NativeProvider {
         repetition: u32,
         text: &str,
     ) -> Result<(), DataError> {
-        self.refuse_while_unsettled()?;
-        self.require_open()?;
-        self.refuse_imported_table(table)?;
-        self.calc_schema_cached()?;
-        let def = self
-            .catalog
-            .table(table)
-            .and_then(|t| t.field(field))
-            .ok_or_else(|| DataError::with_code(102, "The field is missing."))?;
-        let supported = def.kind == om_hbam::FieldKind::Normal
-            && matches!(
-                def.data_type,
-                om_hbam::DataType::Date | om_hbam::DataType::Time | om_hbam::DataType::Timestamp
-            )
-            && repetition >= 1
-            && def.decoded_options().is_some_and(|options| {
-                options.options & 0x1_0000 != 0
-                    && repetition <= u32::from(options.max_repetitions.max(1))
-                    && options.validation_options == 0
-                    && !options.auto_entry_editing_prohibited()
-            });
-        if !supported {
-            return Err(DataError::with_code(
-                3,
-                "Typed entry requires a supported repetition of a plain temporal global.",
-            ));
+        self.set_typed_globals(table, &[((field, repetition), text.to_owned())].into())
+    }
+
+    fn set_typed_globals(
+        &mut self,
+        table: u64,
+        changes: &om_data::GlobalChanges,
+    ) -> Result<(), DataError> {
+        let mut checked = om_data::GlobalChanges::new();
+        let mut required = BTreeMap::new();
+        for (&(field, repetition), text) in changes {
+            let (text, repetitions) = self.typed_global(table, field, repetition, text)?;
+            if let Some(repetitions) = repetitions.filter(|_| text.is_empty()) {
+                required.insert(field, repetitions);
+            }
+            checked.insert((field, repetition), text);
         }
-        // Reuse ordinary entry's locale-aware parsing, without changing a
-        // script's permissive global assignment. Refusal changes no value.
-        let cell = om_data::rules::cell_of(field, repetition)
-            .ok_or_else(|| DataError::with_code(201, "The repetition is out of range."))?;
-        let text = self.check_typed_entry(table, cell, text)?;
-        self.set_global(table, field, repetition, &text)
+        self.check_required_globals(table, &checked, required)?;
+        if !checked.is_empty() {
+            let schema = self.calc_schema_cached()?;
+            self.invalidate_calc_data();
+            self.set_desktop_globals(
+                &schema,
+                table,
+                checked.iter().map(|(&cell, text)| (cell, text.as_str())),
+            );
+            self.calc.globals.extend(
+                checked
+                    .into_iter()
+                    .map(|((field, repetition), text)| ((table, field, repetition), text)),
+            );
+        }
+        Ok(())
+    }
+
+    fn enters_typed_globals(&self) -> bool {
+        true
     }
 
     /// The session's own value, never uploaded: calculations read it over
@@ -3740,34 +4028,9 @@ impl DataProvider for NativeProvider {
         repetition: u32,
         text: &str,
     ) -> Result<(), DataError> {
-        self.refuse_while_unsettled()?;
-        self.require_open()?;
-        self.refuse_imported_table(table)?;
-        let schema = self.calc_schema_cached()?;
-        let def = schema
-            .table(table)
-            .and_then(|t| t.fields.get(&field))
-            .ok_or_else(|| DataError::with_code(102, "The field is missing."))?;
-        if !def.global || repetition == 0 || repetition > def.repetitions.max(1) {
-            return Err(DataError::with_code(
-                201,
-                format!("Field {} is not a global field's repetition.", def.name),
-            ));
-        }
-        // A global the account's custom set gives view-only access keeps its
-        // value: Set Field and Browse's typing both come here, not through
-        // `prepare_record`.
-        let modifies = self.account_info.set_access.as_ref().is_none_or(|access| {
-            access.modifies(
-                &om_hbam::slot::uint_segment(table),
-                &om_hbam::slot::uint_segment(field),
-            )
-        });
-        if !modifies {
-            return Err(DataError::with_code(201, FIELD_NOT_MODIFIABLE));
-        }
+        let schema = self.global_write_schema(table, field, repetition)?;
         self.invalidate_calc_data();
-        self.set_desktop_global(&schema, table, field, repetition, text);
+        self.set_desktop_globals(&schema, table, [((field, repetition), text)]);
         self.calc
             .globals
             .insert((table, field, repetition), text.to_string());
@@ -5102,10 +5365,48 @@ impl DataProvider for NativeProvider {
                 "The connection to the host was lost ({reason})."
             )));
         }
+        // The host disconnected the file itself; a related file it
+        // disconnected only fails what reads it.
+        if session.file_disconnected() {
+            return Some(DataError::connection_lost(
+                om_session::HOST_DISCONNECTED_FILE,
+            ));
+        }
         let (file, reason) = self.external.connection_lost()?;
         Some(DataError::connection_lost(format!(
             "The connection to the host was lost for related file “{file}” ({reason})."
         )))
+    }
+
+    fn take_host_messages(&mut self) -> Vec<om_data::HostMessage> {
+        use om_data::HostMessageKind;
+        use om_protocol::notify::attention;
+        let Some(session) = self.session.as_mut() else {
+            return Vec::new();
+        };
+        // The host's calls that have arrived, read now rather than at the
+        // session's next exchange (a Tickle, up to a minute later), unless
+        // that exchange holds the connection now: nothing waits for it, and
+        // the next poll reads them. A failure here shows as the
+        // connection's loss (`connection_lost`).
+        session
+            .try_take_admin_messages()
+            .unwrap_or_default()
+            .into_iter()
+            .filter_map(|message| {
+                let kind = match message.code & !attention::HOST_SERIAL {
+                    attention::MESSAGE => HostMessageKind::Message,
+                    attention::CLOSE_FILE | attention::CLOSE_ALL => HostMessageKind::CloseFiles,
+                    attention::DISCONNECT_ALL => HostMessageKind::Disconnected,
+                    _ => return None,
+                };
+                Some(om_data::HostMessage {
+                    kind,
+                    text: message.text,
+                    server_name: message.server_name,
+                })
+            })
+            .collect()
     }
 
     fn carried_record_sessions(&self) -> Vec<u32> {
