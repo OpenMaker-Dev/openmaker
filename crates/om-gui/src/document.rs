@@ -961,8 +961,10 @@ impl DocumentState {
     }
 
     /// Keep field-editing commands in the field. Revert also takes the
-    /// active field so its script step can run the discard triggers.
-    /// Other menu commands surrender focus and wait for the exit triggers.
+    /// active field so its script step can run the discard triggers, and
+    /// Relookup Field Contents as its target (Claris's help: select the
+    /// match field, then choose the command). Other menu commands
+    /// surrender focus and wait for the exit triggers.
     pub(crate) fn menu_leaves_field(&mut self, ui: &Ui, chosen: &mut Vec<Action>) {
         if chosen.is_empty() {
             return;
@@ -990,7 +992,8 @@ impl DocumentState {
                                 | steps::INSERT_CURRENT_USER_NAME
                                 | steps::INSERT_FROM_INDEX
                                 | steps::INSERT_FROM_LAST_VISITED
-                                | om_data::scripts::revert_record::STEP_ID,
+                                | om_data::scripts::revert_record::STEP_ID
+                                | om_data::scripts::relookup::STEP_ID,
                             _
                         )
                 ))
@@ -1029,9 +1032,15 @@ impl DocumentState {
                     Action::RevertRecord
                         | Action::CloseFile
                         | Action::DismissAlert
+                        | Action::DismissHostMessage
+                        | Action::CloseDisconnectedFile(_)
                         | Action::DiscardEntryCandidates
                 ) {
                     cancellation.push(action);
+                } else if matches!(action, Action::Step(om_data::scripts::relookup::STEP_ID, _)) {
+                    // Relookup acts on the field entered when it was
+                    // chosen, and the record had something to commit: not
+                    // held for later, when the focus may have moved.
                 } else {
                     retained.push(action);
                 }
@@ -2657,14 +2666,38 @@ impl DocumentState {
             state.store(ui.ctx(), id);
         }
         let pending = self.pending;
+        // Zoomed, the cell's text is rasterized at the zoom, as the layout's
+        // own text is; at 100% it is egui's single-line text as it lays it
+        // out itself.
+        let font = egui::TextStyle::Body.resolve(ui.style());
+        let line_height =
+            ui.fonts_mut(|fonts| fonts.row_height(&font)) + ui.spacing().extra_text_line_spacing;
+        let mut layouter = |ui: &Ui, text: &dyn egui::TextBuffer, _wrap_width: f32| {
+            let mut job = egui::text::LayoutJob::simple_singleline(
+                text.as_str().to_owned(),
+                font.clone(),
+                theme::TEXT,
+            );
+            job.keep_trailing_whitespace = true;
+            for section in &mut job.sections {
+                section.format.line_height = Some(line_height);
+            }
+            layer_galley(ui, job)
+        };
+        let zoomed = layer_scale(ui) != 1.0;
         let (response, changed) =
             guarded_editor(ui, id, &mut edit.value, refusal, actions, |ui, buffer| {
+                let editor = egui::TextEdit::singleline(buffer)
+                    .id(id)
+                    .interactive(!pending)
+                    .text_color(theme::TEXT);
                 ui.add_sized(
                     vec2(width, ui.spacing().interact_size.y),
-                    egui::TextEdit::singleline(buffer)
-                        .id(id)
-                        .interactive(!pending)
-                        .text_color(theme::TEXT),
+                    if zoomed {
+                        editor.font(font.clone()).layouter(&mut layouter)
+                    } else {
+                        editor
+                    },
                 )
             });
         response.widget_info(|| {
@@ -5296,8 +5329,27 @@ fn paint_object_repetition(
         ObjectKind::Field => {
             let (mut value, mut rich_value, data) =
                 field_content(session, document, calc, object, record_index, portal);
-            let targeted_value =
-                portal.is_none() && calc.is_some_and(|calc| calc.refreshed_value(object.id));
+            // The value the editor begins from: a Refresh Object's, or a
+            // global's, the session's value, as calculations read it, not
+            // the one the record's page holds.
+            let targeted_value = portal.is_none()
+                && calc.is_some_and(|calc| {
+                    calc.refreshed_value(object.id)
+                        || object.field_spec().is_some_and(|spec| calc.is_global(spec))
+                });
+            // A global whose session value is being read again (a script
+            // set it) shows the value from before: its editor takes no
+            // typing until the value is in, so that no edit begins from the
+            // old one. An edit begun before keeps its draft
+            // (`FieldBuffer::refresh_targeted`).
+            let global_pending = portal.is_none()
+                && calc.zip(object.field_spec()).is_some_and(|(calc, spec)| {
+                    calc.is_global(spec)
+                        && session
+                            .record_at(record_index)
+                            .and_then(|(_, record)| u64::try_from(record.id).ok())
+                            .is_some_and(|record| calc.value_pending(object.id, spec, record, None))
+                });
             // A container's draft is a library reference, never shown: the
             // calculations read its file name through the drafts.
             let container =
@@ -5856,7 +5908,7 @@ fn paint_object_repetition(
                     let editor = ui.scope_id().with((layout.id, object.id, record.id));
                     return_goes_on(ui, &mut state.tab_held, object, editor);
                     let cache = &state.layout_cache;
-                    let interactive = !state.pending;
+                    let interactive = !state.pending && !global_pending;
                     let (response, changed) =
                         guarded_editor(ui, editor, buffer, refusal, actions, |ui, buffer| {
                             field_editor(
@@ -6855,7 +6907,8 @@ impl egui::TextBuffer for FieldText<'_> {
 /// The galley of a field's text in its editor: as `paint_rich_text` lays
 /// the field out at rest (its font, color, alignment, line spacing and
 /// wrapping, a carriage return breaking the line), without an uppercase
-/// transform, which could change the number of characters.
+/// transform, which could change the number of characters. Zoomed, its
+/// glyphs are rasterized at the zoom, as the field's text at rest is.
 fn field_galley(
     ui: &Ui,
     text: &str,
@@ -6864,10 +6917,19 @@ fn field_galley(
 ) -> std::sync::Arc<egui::Galley> {
     let mut style = style.clone();
     style.text_transform = None;
-    ui.fonts_mut(|fonts| {
-        let job = rich_text::layout_job(fonts, text, &style, None, wrap_width);
-        rich_text::layout_galley(fonts, job)
-    })
+    let job = ui.fonts_mut(|fonts| rich_text::layout_job(fonts, text, &style, None, wrap_width));
+    let galley = layer_galley(ui, job.clone());
+    // Rows snapped to whole pixels at a small zoom and font can land on one
+    // another, where the caret could not move between them: those lines
+    // keep their unzoomed raster.
+    if galley
+        .rows
+        .windows(2)
+        .any(|rows| rows[1].pos.y <= rows[0].pos.y)
+    {
+        return ui.fonts_mut(|fonts| rich_text::layout_galley(fonts, job));
+    }
+    galley
 }
 
 /// A field object's editor in Browse over `rect`: the field's font,
@@ -6959,26 +7021,45 @@ fn field_editor(
             hint,
         );
     }
-    child.add_sized(
-        inner.size(),
-        egui::TextEdit::singleline(buffer)
-            .id(id)
-            .event_filter(keys)
-            .frame(frame)
-            .interactive(interactive)
-            .font(FontId::new(
-                size,
-                theme::document_font(
-                    style.font_family.as_deref(),
-                    style
-                        .font_weight
-                        .is_some_and(|weight| weight == 2 || weight >= 600),
-                    matches!(style.font_style, Some(2 | 3)),
-                ),
-            ))
-            .text_color(style.color.map(color).unwrap_or(theme::TEXT))
-            .hint_text(hint),
-    )
+    let font = FontId::new(
+        size,
+        theme::document_font(
+            style.font_family.as_deref(),
+            style
+                .font_weight
+                .is_some_and(|weight| weight == 2 || weight >= 600),
+            matches!(style.font_style, Some(2 | 3)),
+        ),
+    );
+    let text_color = style.color.map(color).unwrap_or(theme::TEXT);
+    let editor = egui::TextEdit::singleline(buffer)
+        .id(id)
+        .event_filter(keys)
+        .frame(frame)
+        .interactive(interactive)
+        .font(font.clone())
+        .text_color(text_color)
+        .hint_text(hint);
+    if layer_scale(&child) == 1.0 {
+        return child.add_sized(inner.size(), editor);
+    }
+    // Zoomed, the text is rasterized at the zoom, as the field's text at
+    // rest is; otherwise egui lays it out as its own single-line editor does.
+    let line_height =
+        child.fonts_mut(|fonts| fonts.row_height(&font)) + child.spacing().extra_text_line_spacing;
+    let mut layouter = |ui: &Ui, text: &dyn egui::TextBuffer, _wrap_width: f32| {
+        let mut job = egui::text::LayoutJob::simple_singleline(
+            text.as_str().to_owned(),
+            font.clone(),
+            text_color,
+        );
+        job.keep_trailing_whitespace = true;
+        for section in &mut job.sections {
+            section.format.line_height = Some(line_height);
+        }
+        layer_galley(ui, job)
+    };
+    child.add_sized(inner.size(), editor.layouter(&mut layouter))
 }
 
 /// [`field_editor`] with `lines`: a multi-line editor of [`FieldText`],
@@ -7029,17 +7110,24 @@ fn lines_editor(
     // brings the insertion point into view itself: egui asks for that only
     // as the text or the selection changes, which happened, if at all, in
     // a frame without the scroll area.
+    // A new zoom counts as a new scroll area: the rows' heights change with
+    // their raster, the area's offset does not.
     let scrolled = id.with("lines scrolled");
     let frame_nr = ui.ctx().cumulative_frame_nr();
+    let scale = layer_scale(ui);
     let continued = ui
-        .data(|data| data.get_temp::<u64>(scrolled))
-        .is_some_and(|at| at + 1 == frame_nr);
+        .data(|data| data.get_temp::<(u64, f32)>(scrolled))
+        .is_some_and(|(at, at_scale)| at + 1 == frame_nr && at_scale == scale);
     let response = if fits {
         // As the one-line editor sits: the field's own rect.
         ui.add_sized(inner.size(), edit)
     } else {
         egui::ScrollArea::vertical()
             .id_salt(id.with("lines"))
+            // Scrolls at once, the editor's own to its insertion point too:
+            // an animation under way at a change of zoom would carry the
+            // field past the insertion point at the new one.
+            .animated(false)
             // The field's height, not egui's least scrolled height (64
             // points), which would grow the area past the field instead.
             .max_height(inner.height())
@@ -7066,7 +7154,7 @@ fn lines_editor(
             .inner
     };
     if !fits && response.has_focus() {
-        ui.data_mut(|data| data.insert_temp(scrolled, frame_nr));
+        ui.data_mut(|data| data.insert_temp(scrolled, (frame_nr, scale)));
     }
     // The editor locks its own keys while it has the focus; the document's
     // Tab stays locked from egui's traversal as on one line.
@@ -7926,6 +8014,21 @@ fn to_window(ui: &Ui, rect: Rect) -> Rect {
     ui.ctx()
         .layer_transform_to_global(ui.layer_id())
         .map_or(rect, |transform| transform * rect)
+}
+
+/// The scale of the layer `ui` paints in: the window's zoom in the
+/// document's zoom layer, 1 outside it.
+pub(crate) fn layer_scale(ui: &Ui) -> f32 {
+    ui.ctx()
+        .layer_transform_to_global(ui.layer_id())
+        .map_or(1.0, |transform| transform.scaling)
+}
+
+/// `job` laid out in `ui`'s layer, its glyphs rasterized at the layer's
+/// scale so that zoomed text stays sharp (`scaled_text`).
+pub(crate) fn layer_galley(ui: &Ui, job: egui::text::LayoutJob) -> std::sync::Arc<egui::Galley> {
+    let scale = layer_scale(ui);
+    ui.fonts_mut(|fonts| scaled_text::layout_galley(fonts, job, scale))
 }
 
 /// A short caption centered in a part that shows none of its content.

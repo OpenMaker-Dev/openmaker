@@ -124,41 +124,12 @@ impl ReportFace {
     }
 }
 
-#[derive(Clone, Debug)]
-pub struct ReportError {
-    pub code: i32,
-    pub message: String,
-}
-impl ReportError {
-    pub fn unsupported(message: impl Into<String>) -> Self {
-        Self {
-            code: 3,
-            message: message.into(),
-        }
-    }
-}
-
-/// What a viewer shows beside the page when it opens the PDF: Save Records
-/// as PDF's restored Initial View option (script-steps.md 11.7, its values
-/// as Create PDF's `View` names them in 12.5), written as the catalog's
-/// `/PageMode`.
-#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
-pub enum PdfView {
-    /// 0 Page Only: no `/PageMode`, the PDF default (`/UseNone`).
-    #[default]
-    PageOnly,
-    /// 1 Bookmarks Panel and Page: `/UseOutlines`.
-    Bookmarks,
-    /// 2 Pages Panel and Page: `/UseThumbs`.
-    Pages,
-}
-
-/// The planned document and its complete, validated PDF. No file I/O is done.
-#[derive(Debug)]
-pub struct PdfReport {
-    pub plan: ReportPlan,
-    pub bytes: Vec<u8>,
-}
+// The interface between a host's data and this renderer lives in
+// om-report, so that OpenMaker Server can give its own report content
+// (#104).
+pub use om_report::{
+    in_row, ContentContext, PdfReport, PdfView, PortalRowContext, ReportContent, ReportError,
+};
 
 /// A color as the PDF paints it: RGB, and its opacity in 255ths when it is
 /// translucent (8 bits, as Browse's `Color32` keeps it).
@@ -1819,111 +1790,6 @@ pub(crate) struct ReportPage {
 
 type SourceObject<'a> = (&'a LayoutObject, Rect, usize);
 
-/// Independent coordinates for content evaluation. A once-only part or footer
-/// may reuse a record on a different physical page.
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub struct ContentContext {
-    /// Index in the selected records, in found-set order. A sub-summary
-    /// part's is its group's first (leading) or last (trailing) record.
-    pub record: usize,
-    /// Zero-based physical page, independent of the record's first placement.
-    pub page: usize,
-    /// A sub-summary part's break field: its summary fields read the
-    /// record's group (`GetSummary`) rather than the whole found set.
-    pub group: Option<BreakField>,
-    /// The portal row an object prints in: its fields read the row's
-    /// related record.
-    pub portal: Option<PortalRowContext>,
-}
-
-/// `context` in portal row `row`, as Browse evaluates a portal row's
-/// objects: the row's record of the portal's occurrence, and its number.
-pub(crate) fn in_row(
-    context: om_data::calc::eval::Context,
-    row: Option<PortalRowContext>,
-) -> om_data::calc::eval::Context {
-    match row {
-        Some(row) => context
-            .with_portal(row.occurrence, row.record)
-            .with_portal_row_number(row.number as u64),
-        None => context,
-    }
-}
-
-/// A portal row's related record: what Browse's portal rows evaluate in
-/// (`Context::with_portal`, row number from 1).
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub struct PortalRowContext {
-    pub occurrence: u64,
-    pub record: u64,
-    pub number: usize,
-}
-
-/// What a report shows of its objects for a record: the text of a text,
-/// button or field object, the data of a container field, and the
-/// conditional formats that hold for it. A closure gives text only: its
-/// container fields print as their text, and an object with conditional
-/// formatting is refused rather than printed unformatted.
-pub trait ReportContent {
-    fn text(
-        &mut self,
-        object: &LayoutObject,
-        context: ContentContext,
-    ) -> Result<String, ReportError>;
-
-    /// The data a field object shows when it is a container field holding
-    /// data, its streams loaded; `None` for other objects and empty fields.
-    /// A missing or pending value is an error, as for text.
-    fn container(
-        &mut self,
-        _object: &LayoutObject,
-        _context: ContentContext,
-    ) -> Result<Option<Arc<om_data::calc::eval::StoredContainer>>, ReportError> {
-        Ok(None)
-    }
-
-    /// The conditional formats of `object` whose condition holds for the
-    /// record and page, as indexes into `calcs.conditions` in stored order;
-    /// `None` when this source does not evaluate them.
-    fn conditions(
-        &mut self,
-        _object: &LayoutObject,
-        _context: ContentContext,
-    ) -> Result<Option<Vec<usize>>, ReportError> {
-        Ok(None)
-    }
-
-    /// The related records `portal` shows for the record in `context`, in
-    /// the relationship's order; `None` when this source does not read
-    /// them. A pending read is an error, as for text.
-    fn portal_records(
-        &mut self,
-        _portal: &LayoutObject,
-        _context: ContentContext,
-    ) -> Result<Option<Vec<u64>>, ReportError> {
-        Ok(None)
-    }
-
-    /// The panel tab control `control` shows in the window the report is
-    /// for; `None` to print the one it first shows.
-    fn front_panel(&mut self, _control: &LayoutObject) -> Option<u64> {
-        None
-    }
-}
-
-impl<F> ReportContent for F
-where
-    F: FnMut(&LayoutObject, ContentContext) -> Result<String, ReportError>,
-{
-    fn text(
-        &mut self,
-        object: &LayoutObject,
-        context: ContentContext,
-    ) -> Result<String, ReportError> {
-        self(object, context)
-    }
-}
-
 /// A found set's record ids and the sorted groups read for them.
 pub(crate) type FoundSetGroups = (std::sync::Arc<[u64]>, Vec<BreakGroups>);
 
@@ -1962,16 +1828,24 @@ pub(crate) fn report_breaks(
 }
 
 /// A failure of `FileCalc::found_groups` as a report refusal.
-pub(crate) fn group_error(error: om_data::calc::CalcError) -> ReportError {
+pub(crate) fn group_error(error: om_data::host::GroupError) -> ReportError {
+    use om_data::host::GroupError;
     ReportError {
         code: 3,
-        message: if error == om_data::calc::CalcError::NOT_SUPPORTED {
-            "Sub-summary groups after a related-field sort key are unsupported".into()
-        } else {
-            format!(
+        message: match error {
+            GroupError::RelatedSortKey => {
+                "Sub-summary groups after a related-field sort key are unsupported".into()
+            }
+            GroupError::UnevaluableKey => {
+                "A sub-summary group's sort key could not be calculated on every record".into()
+            }
+            GroupError::VariableKey => "Sub-summary groups by a calculation that may read \
+                variables are unsupported: the records were not sorted with them"
+                .into(),
+            GroupError::Calc(error) => format!(
                 "The report groups could not be read (error {})",
                 error.code()
-            )
+            ),
         },
     }
 }
@@ -2187,15 +2061,33 @@ fn walk_report_objects<'a>(
     ] {
         // Only what prints can slide: a slider that is itself left out (or
         // inside what is) moves nothing.
-        if let Some((object, _, _)) = objects.iter().find(|(o, _, _)| {
-            part_of(o).is_some_and(|part| {
-                parts.contains(&part) && slide_in_part(layout, o, part).is_some()
-            })
+        if let Some((object, way)) = objects.iter().find_map(|(o, _, _)| {
+            let part = part_of(o).filter(|part| parts.contains(part))?;
+            Some((o, sliding_way(layout, o, part)?))
         }) {
             refuse(ReportError::unsupported(format!(
-                "Report object {} slides up in a part with {what}; how those slide is \
+                "Report object {} slides {way} in a part with {what}; how those slide is \
                  unmeasured",
                 object.id
+            )))?;
+        }
+    }
+    // Which FileMaker applies first, sliding left or sliding up, is
+    // unmeasured; a part where objects do both is refused.
+    for (a, _, pa) in &objects {
+        let left = a.flags & sliding::LEFT != 0
+            && layout.parts.get(*pa).is_some_and(|p| slides_in(p.kind()));
+        if !left {
+            continue;
+        }
+        if let Some((b, _, _)) = objects
+            .iter()
+            .find(|(b, _, pb)| pb == pa && slide_in_part(layout, b, *pb).is_some())
+        {
+            refuse(ReportError::unsupported(format!(
+                "Report objects {} and {} slide left and up in one part; which FileMaker \
+                 applies first is unmeasured",
+                a.id, b.id
             )))?;
         }
     }
@@ -2203,18 +2095,20 @@ fn walk_report_objects<'a>(
     // out of it natively is unmeasured; such layouts are refused.
     for (i, (a, ra, pa)) in objects.iter().enumerate() {
         for (b, rb, pb) in &objects[i + 1..] {
+            let way = sliding_way(layout, a, *pa).or(sliding_way(layout, b, *pb));
             if pa == pb
-                && (slide_in_part(layout, a, *pa).is_some()
-                    || slide_in_part(layout, b, *pb).is_some())
+                && way.is_some()
                 && ra.left < rb.right - SLIDE_EPSILON
                 && rb.left < ra.right - SLIDE_EPSILON
                 && ra.top < rb.bottom - SLIDE_EPSILON
                 && rb.top < ra.bottom - SLIDE_EPSILON
             {
                 refuse(ReportError::unsupported(format!(
-                    "Report objects {} and {} overlap and one slides up; \
+                    "Report objects {} and {} overlap and one slides {}; \
                      overlapping sliding objects are unsupported",
-                    a.id, b.id
+                    a.id,
+                    b.id,
+                    way.unwrap_or("up")
                 )))?;
             }
         }
@@ -2438,42 +2332,47 @@ fn report_object<'a>(
     if beyond_page(object, &rect, paper) {
         return Ok(None);
     }
-    if object.flags & sliding::LEFT != 0 {
+    // Claris names the parts that never slide up; how an object set to
+    // slide left moves in one of them is unmeasured.
+    if object.flags & sliding::LEFT != 0
+        && !layout.parts.get(part).is_some_and(|p| slides_in(p.kind()))
+    {
         return Err(ReportError::unsupported(format!(
-            "Report object {} slides left; sliding left is unsupported",
+            "Report object {} slides left in a header, footer or title part; \
+             how it slides there is unmeasured",
             object.id
         )));
     }
-    // A portal's rows have its height; how its objects would slide in a
-    // row, or a tab control, is unmeasured.
-    let slides = slide_in_part(layout, object, part).is_some();
-    if slides
-        && (in_portal.is_some()
+    if let Some(way) = sliding_way(layout, object, part) {
+        // A portal's rows have its height; how its objects would slide in
+        // a row, or a tab control, is unmeasured.
+        if in_portal.is_some()
             || matches!(
                 object.kind(),
                 ObjectKind::Portal | ObjectKind::TabControl | ObjectKind::TabPanel
-            ))
-    {
-        return Err(ReportError::unsupported(format!(
-            "Report object {} slides up in a portal; sliding portals is unsupported",
-            object.id
-        )));
-    }
-    // How FileMaker slides a group, or one of its members, is unmeasured.
-    if slides && (group.is_some() || object.kind() == ObjectKind::Group) {
-        return Err(ReportError::unsupported(format!(
-            "Report object {} slides up in a group; sliding groups is unsupported",
-            object.id
-        )));
-    }
-    // Pages are planned without conditions, so one that resized a sliding
-    // object's text would not be measured.
-    if slides && !object.calcs.conditions.is_empty() {
-        return Err(ReportError::unsupported(format!(
-            "Report object {} slides up and has conditional formatting; \
-             sliding formatted objects are unsupported",
-            object.id
-        )));
+            )
+        {
+            return Err(ReportError::unsupported(format!(
+                "Report object {} slides {way} in a portal; sliding portals is unsupported",
+                object.id
+            )));
+        }
+        // How FileMaker slides a group, or one of its members, is unmeasured.
+        if group.is_some() || object.kind() == ObjectKind::Group {
+            return Err(ReportError::unsupported(format!(
+                "Report object {} slides {way} in a group; sliding groups is unsupported",
+                object.id
+            )));
+        }
+        // Pages are planned without conditions, so one that resized a
+        // sliding object's text would not be measured.
+        if !object.calcs.conditions.is_empty() {
+            return Err(ReportError::unsupported(format!(
+                "Report object {} slides {way} and has conditional formatting; \
+                 sliding formatted objects are unsupported",
+                object.id
+            )));
+        }
     }
     if !(matches!(
         object.kind(),
@@ -2651,12 +2550,8 @@ fn report_object<'a>(
             object.id
         )));
     }
-    if matches!(object.kind(), ObjectKind::Text | ObjectKind::Button)
-        && symbol_texts(object).any(|text| numbered(text, 0).is_none())
-    {
-        return Err(ReportError::unsupported(
-            "Layout merge symbols other than {{PageNumber}} are unsupported",
-        ));
+    if matches!(object.kind(), ObjectKind::Text | ObjectKind::Button) {
+        merged_refusal(object)?;
     }
     if [rect.top, rect.left, rect.bottom, rect.right]
         .iter()
@@ -2783,7 +2678,7 @@ fn printed_flags(kind: ObjectKind) -> u64 {
     } else {
         0
     };
-    0xf000_0000 | 0x0002_4001 | TAB_ORDER_OMIT | SLIDE_UP_FLAGS | line
+    0xf000_0000 | 0x0002_4001 | TAB_ORDER_OMIT | SLIDE_UP_FLAGS | sliding::LEFT | line
 }
 /// Tolerance, in points, for touching edges of sliding objects.
 const SLIDE_EPSILON: f64 = 0.01;
@@ -2813,6 +2708,21 @@ fn slide_in_part(
     object
         .slide_up()
         .filter(|_| layout.parts.get(part).is_some_and(|p| slides_in(p.kind())))
+}
+
+/// The way `object` slides in `layout`'s part `part`, where it takes
+/// effect: "up" ([`slide_in_part`]), "left" (sliding left, `0x20`, in a
+/// part that slides, [`slides_in`]), or `None`.
+fn sliding_way(layout: &Layout, object: &LayoutObject, part: usize) -> Option<&'static str> {
+    if slide_in_part(layout, object, part).is_some() {
+        Some("up")
+    } else if object.flags & sliding::LEFT != 0
+        && layout.parts.get(part).is_some_and(|p| slides_in(p.kind()))
+    {
+        Some("left")
+    } else {
+        None
+    }
 }
 
 /// Whether a printed part's height depends on its record: an object there
@@ -3074,6 +2984,18 @@ struct PartObjects<'s, 'a> {
     /// Each object's slide-up option where it takes effect: none in a part
     /// that never slides ([`slide_in_part`]).
     slides: Vec<Option<om_layout::SlideUp>>,
+    /// Whether each object slides left ([`sliding_way`]).
+    left: Vec<bool>,
+    /// Left to right; ties keep stacking order.
+    left_order: Vec<usize>,
+    /// For each object sliding left, the nearest objects on its left on
+    /// the same line (vertically overlapping it), without any that another
+    /// of them separates from it: it moves by the least they moved and
+    /// narrowed.
+    left_nearest: Vec<Vec<usize>>,
+    /// For each object sliding left, every object on its left on the same
+    /// line: it never moves over one of them.
+    left_colliders: Vec<Vec<usize>>,
 }
 
 fn part_objects<'s, 'a>(
@@ -3146,6 +3068,47 @@ fn part_objects<'s, 'a>(
             (objects.iter()).position(|(o, _, _)| o.id == parent && o.kind() == ObjectKind::Portal)
         })
         .collect();
+    // Sliding left, as sliding up across: an object moves against the
+    // objects on its left on the same line.
+    let left: Vec<bool> = (objects.iter())
+        .map(|(object, _, _)| object.flags & sliding::LEFT != 0 && slides_in(part.kind()))
+        .collect();
+    let mut left_order: Vec<usize> = (0..rects.len()).collect();
+    left_order.sort_by(|&a, &b| {
+        let (ra, rb) = (&rects[a], &rects[b]);
+        ra.left
+            .total_cmp(&rb.left)
+            .then(ra.right.total_cmp(&rb.right))
+            .then(a.cmp(&b))
+    });
+    let mut left_rank = vec![0; rects.len()];
+    for (position, &i) in left_order.iter().enumerate() {
+        left_rank[i] = position;
+    }
+    // `a` is wholly on `b`'s left, earlier in the order, on its line.
+    let beside = |a: usize, b: usize| {
+        left_rank[a] < left_rank[b]
+            && rects[a].right <= rects[b].left + SLIDE_EPSILON
+            && rects[a].top < rects[b].bottom - SLIDE_EPSILON
+            && rects[b].top < rects[a].bottom - SLIDE_EPSILON
+    };
+    let mut left_nearest = vec![Vec::new(); rects.len()];
+    let mut left_colliders = vec![Vec::new(); rects.len()];
+    for o in (0..rects.len()).filter(|&o| left[o]) {
+        let candidates: Vec<usize> = (0..rects.len()).filter(|&c| beside(c, o)).collect();
+        left_nearest[o] = candidates
+            .iter()
+            .copied()
+            // Separated by another such object further right; ties go by
+            // the order, so two at the same place do not cancel out.
+            .filter(|&c| {
+                !candidates.iter().any(|&b| {
+                    left_rank[c] < left_rank[b] && rects[c].right <= rects[b].left + SLIDE_EPSILON
+                })
+            })
+            .collect();
+        left_colliders[o] = candidates;
+    }
     PartObjects {
         objects,
         rects,
@@ -3155,33 +3118,77 @@ fn part_objects<'s, 'a>(
         resizers,
         in_portal,
         slides,
+        left,
+        left_order,
+        left_nearest,
+        left_colliders,
     }
 }
 
-/// `text` with each `{{PageNumber}}` (in any case, as Browse reads layout
-/// symbols, `om_data::host::layout::merge_text`) replaced by page `page`'s
-/// number (from 0): what FileMaker Pro 26.0.3 wrote on page *n* of Save
-/// Records as PDF (calc-functions.md, O4). `None` when the text holds
-/// another symbol, which reports refuse; an unclosed `{{` is text, as
-/// Browse keeps it.
-fn numbered(text: &str, page: usize) -> Option<String> {
-    let mut out = String::with_capacity(text.len());
-    let mut rest = text;
-    while let Some(start) = rest.find("{{") {
-        out.push_str(&rest[..start]);
-        let tail = &rest[start..];
-        let Some(end) = tail[2..].find("}}").map(|i| i + 2) else {
-            out.push_str(tail);
-            return Some(out);
-        };
-        if !tail[2..end].eq_ignore_ascii_case("PageNumber") {
-            return None;
+/// Why a report refuses `object`'s merge variables or layout symbols, if
+/// it does. The rest print as Browse shows them: `{{PageNumber}}` the
+/// page's number ([`numbered`]), and the others through the content's
+/// [`Piece::Literal`].
+///
+/// - A symbol Browse keeps as written refuses, `{{PageCount}}` among them:
+///   FileMaker shows a `Get` function's result for other names (Claris,
+///   "Inserting the date, page number, or other variable"), and what it
+///   prints for the page count is unmeasured.
+/// - So does a `<<$...>>` Browse keeps as written: Set Variable accepts a
+///   name with a space (script-runtime.md 13.6), which a merge variable
+///   may then name.
+/// - So does a merge variable or symbol other than the page number in an
+///   object whose data format presents numbers, dates or times: FileMaker
+///   formats merge fields with it (data-format.md), but whether it formats
+///   these too is unmeasured, and Browse does not.
+fn merged_refusal(object: &LayoutObject) -> Result<(), ReportError> {
+    use om_data::host::layout::{merged, Merged};
+    let formats = object.data_format.as_ref().is_some_and(|format| {
+        let number = &format.number;
+        (!number.as_entered() && (number.boolean() || !number.general()))
+            || format.date.format() != 0
+            || !format.time.as_entered()
+    });
+    for piece in symbol_texts(object).flat_map(|text| merged(text)) {
+        match piece {
+            Merged::Kept(_) => {
+                return Err(ReportError::unsupported(
+                    "Layout merge symbols other than {{PageNumber}}, {{RecordNumber}}, \
+                     {{CurrentDate}}, {{CurrentTime}} and {{UserName}} are unsupported",
+                ))
+            }
+            Merged::KeptVariable(_) => {
+                return Err(ReportError::unsupported(format!(
+                    "Report object {} holds a <<$...>> OpenMaker does not read as a merge \
+                     variable; how FileMaker reads it is unmeasured",
+                    object.id
+                )))
+            }
+            Merged::Symbol("PageNumber") => {}
+            _ if formats => {
+                return Err(ReportError::unsupported(format!(
+                    "Report object {} formats numbers, dates or times and holds a merge \
+                     variable or layout symbol; whether FileMaker formats them is unmeasured",
+                    object.id
+                )))
+            }
+            _ => {}
         }
-        out.push_str(&(page + 1).to_string());
-        rest = &tail[end + 2..];
     }
-    out.push_str(rest);
-    Some(out)
+    Ok(())
+}
+
+/// `text` with each `{{PageNumber}}` (in any case, or by its selector's
+/// number, as Browse reads layout symbols,
+/// `om_data::host::layout::merge_text`) replaced by page `page`'s number
+/// (from 0): what FileMaker Pro 26.0.3 wrote on page *n* of Save Records
+/// as PDF (calc-functions.md, O4). The rest is kept as written, for the
+/// content to fill in as Browse does: other symbols, merge variables (a
+/// symbol inside one is the variable's text), and an unclosed `{{`.
+fn numbered(text: &str, page: usize) -> String {
+    om_data::host::layout::replace_symbols(text, |name| {
+        (name == "PageNumber").then(|| (page + 1).to_string())
+    })
 }
 
 /// The texts a text object's or button's layout symbols are read from, as
@@ -3199,42 +3206,59 @@ fn symbol_texts(object: &LayoutObject) -> Box<dyn Iterator<Item = &String> + '_>
     }
 }
 
-/// `label` with each whole `{{PageNumber}}` (any case) replaced by page
+/// `label` with each whole `{{PageNumber}}` (any case, or `{{1015}}`) replaced by page
 /// `page`'s number (from 0): a merge text's label beside the runs its
 /// symbols are read from ([`symbol_texts`]), for content that reads the
 /// label. Its merged fields are written in it, so only whole symbols are
 /// numbered, never one paired across a field, and a field's placeholder
 /// (`<<Name>>`) is kept as written, whatever its name holds.
 fn numbered_label(label: &str, page: usize) -> String {
-    const SYMBOL: &str = "{{PageNumber}}";
+    use om_data::host::layout::{merged, Merged};
     let mut out = String::with_capacity(label.len());
-    let mut rest = label;
+    let mut at = 0;
+    // The next of each token from `at`, kept until it is passed, so the
+    // label is read once whatever it repeats.
+    let (mut field, mut symbol, mut field_end) = (None, None, None);
+    let next = |found: &mut Option<Option<usize>>, token: &str, at: usize| {
+        if found.is_none_or(|next| next.is_some_and(|i| i < at)) {
+            *found = Some(label[at..].find(token).map(|i| i + at));
+        }
+        found.flatten()
+    };
     loop {
-        let field = rest.find("<<");
-        let Some(start) = [field, rest.find("{{")].into_iter().flatten().min() else {
+        let fields = next(&mut field, "<<", at);
+        let Some(start) = [fields, next(&mut symbol, "{{", at)]
+            .into_iter()
+            .flatten()
+            .min()
+        else {
             break;
         };
-        out.push_str(&rest[..start]);
-        let tail = &rest[start..];
+        out.push_str(&label[at..start]);
         // A merged field's placeholder is its name, kept as written.
-        if field == Some(start) {
-            let end = tail[2..].find(">>").map_or(2, |end| end + 4);
-            out.push_str(&tail[..end]);
-            rest = &tail[end..];
+        if fields == Some(start) {
+            at = next(&mut field_end, ">>", start + 2).map_or(start + 2, |end| end + 2);
+            out.push_str(&label[start..at]);
             continue;
         }
-        match tail.get(..SYMBOL.len()) {
-            Some(symbol) if symbol.eq_ignore_ascii_case(SYMBOL) => {
+        // A whole page symbol, by name or by number, as runs are numbered
+        // ([`numbered`]). Its inside is a dozen characters at most, so
+        // only the next few are read for its `}}`.
+        let tail = &label[start..];
+        let near = &tail.as_bytes()[2..tail.len().min(18)];
+        let whole = (near.windows(2).position(|pair| pair == b"}}")).map(|i| &tail[..i + 4]);
+        match whole.filter(|symbol| merged(symbol).eq([Merged::Symbol("PageNumber")])) {
+            Some(symbol) => {
                 out.push_str(&(page + 1).to_string());
-                rest = &tail[SYMBOL.len()..];
+                at = start + symbol.len();
             }
-            _ => {
+            None => {
                 out.push_str("{{");
-                rest = &tail[2..];
+                at = start + 2;
             }
         }
     }
-    out.push_str(rest);
+    out.push_str(&label[at..]);
     out
 }
 
@@ -3251,11 +3275,7 @@ fn on_page(object: &LayoutObject, page: usize) -> std::borrow::Cow<'_, LayoutObj
         return std::borrow::Cow::Borrowed(object);
     }
     let mut object = object.clone();
-    let number = |text: &mut String| {
-        if let Some(n) = numbered(text, page) {
-            *text = n;
-        }
-    };
+    let number = |text: &mut String| *text = numbered(text, page);
     if object.text_runs.is_empty() {
         if let Some(text) = object.text.as_mut() {
             number(text);
@@ -3267,9 +3287,7 @@ fn on_page(object: &LayoutObject, page: usize) -> std::borrow::Cow<'_, LayoutObj
         let spelled = |numbered_runs: bool| {
             (object.text_runs.iter())
                 .map(|run| match run {
-                    TextRun::Literal(literal) if numbered_runs => {
-                        numbered(literal, page).unwrap_or_else(|| literal.clone())
-                    }
+                    TextRun::Literal(literal) if numbered_runs => numbered(literal, page),
                     TextRun::Literal(literal) => literal.clone(),
                     TextRun::MergeField(name) => format!("<<{name}>>"),
                 })
@@ -3287,6 +3305,76 @@ fn on_page(object: &LayoutObject, page: usize) -> std::borrow::Cow<'_, LayoutObj
         }
     }
     std::borrow::Cow::Owned(object)
+}
+
+/// The width `value` needs in a box styled `style` on one line, including
+/// side padding and room for the ink after alignment; zero for an empty value.
+/// It is measured in an opaque copy of the style, so text of any colour
+/// counts. A value that would take more than one line in `width`, the
+/// field's own width, refuses: how FileMaker narrows (or does not narrow)
+/// a field of several lines is unmeasured.
+fn one_line_width(
+    id: u64,
+    value: &str,
+    style: &ResolvedStyle,
+    width: f64,
+) -> Result<f64, ReportError> {
+    if value.is_empty() {
+        return Ok(0.0);
+    }
+    let mut opaque = style.clone();
+    opaque.color = Some(Color {
+        alpha: 1.0,
+        ..Default::default()
+    });
+    let wide = Rect {
+        right: 1.0e9,
+        bottom: 1.0e9,
+        ..Default::default()
+    };
+    let (lines, _, _) = prepare_text_in(value, &wide, &opaque, Overflow::Clip)?;
+    let wraps = || {
+        ReportError::unsupported(format!(
+            "Report field {id} slides left with more than one line of text; \
+             how a field of several lines narrows is unmeasured"
+        ))
+    };
+    let [line] = lines.as_slice() else {
+        return Err(wraps());
+    };
+    let face = line.face.face();
+    let unit = line.size / f64::from(face.units_per_em());
+    let (mut advance, mut ink_left, mut ink_right) = (0.0f64, 0.0f64, 0.0f64);
+    for (glyph, step, _) in &line.glyphs {
+        if let Some(ink) = face.glyph_bounding_box(ttf_parser::GlyphId(*glyph)) {
+            ink_left = ink_left.min(advance + f64::from(ink.x_min) * unit);
+            ink_right = ink_right.max(advance + f64::from(ink.x_max) * unit);
+        }
+        advance += step;
+    }
+    let side_padding = style.padding[1].unwrap_or(0.0) + style.padding[3].unwrap_or(0.0);
+    let unaligned = advance.max(ink_right);
+    if unaligned + side_padding > width {
+        return Err(wraps());
+    }
+
+    let clipped = || {
+        ReportError::unsupported(format!(
+            "Report field {id} slides left with aligned text whose ink does not fit its box"
+        ))
+    };
+    // Centering gives half the spare width to each side. Right alignment
+    // gives it all to the left; widening cannot make room on the right.
+    let needed = match style.text_align {
+        Some(2) => advance + 2.0 * (-ink_left).max(ink_right - advance),
+        Some(3) if ink_right > advance => return Err(clipped()),
+        Some(3) => advance - ink_left,
+        _ => unaligned,
+    } + side_padding;
+    if needed > width {
+        return Err(clipped());
+    }
+    Ok((needed + SLIDE_EPSILON).min(width))
 }
 
 /// Lay out one part for one record and page, sliding objects up as
@@ -3317,6 +3405,7 @@ fn layout_part(
     let mut values = Vec::with_capacity(count);
     let mut data = Vec::with_capacity(count);
     let mut shrink = vec![0.0; count];
+    let mut narrow = vec![0.0; count];
     for (i, (object, _, _)) in part.objects.iter().enumerate() {
         let paged = on_page(object, context.page);
         let object = paged.as_ref();
@@ -3357,6 +3446,16 @@ fn layout_part(
             let rect = &part.rects[i];
             shrink[i] = (rect.height() - prepare_text(value, rect, style)?.1).max(0.0);
         }
+        // A field set to slide left narrows to the width its text needs on
+        // one line, its padding included; an empty one to nothing (Claris:
+        // "the minimum needed for their data"). A container's frame keeps
+        // its width.
+        if let (Some((value, style, _)), true, ObjectKind::Field, None) =
+            (&value, part.left[i], object.kind(), &container)
+        {
+            let rect = &part.rects[i];
+            narrow[i] = rect.width() - one_line_width(object.id, value, style, rect.width())?;
+        }
         values.push(value);
         data.push(container);
     }
@@ -3372,6 +3471,26 @@ fn layout_part(
         rise[o] = part.colliders[o]
             .iter()
             .map(|&c| part.rects[o].top - (part.rects[c].bottom - rise[c] - shrink[c]))
+            .fold(least, f64::min)
+            .max(0.0);
+    }
+    // Sliding left: an object moves by the least that its nearest objects on
+    // its left on the same line moved and narrowed, never over one of them.
+    let mut shift = vec![0.0; count];
+    for &o in &part.left_order {
+        if !part.left[o] {
+            continue;
+        }
+        let Some(least) = part.left_nearest[o]
+            .iter()
+            .map(|&a| shift[a] + narrow[a])
+            .reduce(f64::min)
+        else {
+            continue;
+        };
+        shift[o] = part.left_colliders[o]
+            .iter()
+            .map(|&c| part.rects[o].left - (part.rects[c].right - shift[c] - narrow[c]))
             .fold(least, f64::min)
             .max(0.0);
     }
@@ -3398,15 +3517,18 @@ fn layout_part(
                 part.objects[i].0.id
             )));
         }
-        // An empty shrinking field collapses: no frame, fill or borders.
-        if shrink[i] > 0.0 && bottom <= top {
+        let (left, right) = (rect.left - shift[i], rect.right - shift[i] - narrow[i]);
+        // An empty shrinking or narrowing field collapses: no frame, fill
+        // or borders.
+        if (shrink[i] > 0.0 && bottom <= top) || (narrow[i] > 0.0 && right <= left + SLIDE_EPSILON)
+        {
             continue;
         }
         let bounds = Rect {
             top: top + origin.1,
             bottom: bottom + origin.1,
-            left: rect.left + origin.0,
-            right: rect.right + origin.0,
+            left: left + origin.0,
+            right: right + origin.0,
             ..Default::default()
         };
         let (lines, conditions, icon) = match value {
@@ -3745,12 +3867,6 @@ pub(crate) fn plan_report_with(
         )?
         .height)
     })
-}
-
-impl From<String> for ReportError {
-    fn from(message: String) -> Self {
-        Self::unsupported(message)
-    }
 }
 
 /// Prepare only the selected physical page. The callback receives both the
@@ -4376,6 +4492,8 @@ pub fn render_pdf_viewed(
 ) -> Result<PdfReport, ReportError> {
     let plan = plan_report_with(layout, records, paper, breaks, content)?;
     let mut pdf = Pdf::new();
+    // OpenMaker's mark, which appending to a PDF looks for (`pdf_worker::MARKER`).
+    pdf.set_binary_marker(om_data::calc::functions::pdf_worker::MARKER);
     let root = Ref::new(1);
     let pages = Ref::new(2);
     let mut catalog = pdf.catalog(root);
@@ -4546,6 +4664,48 @@ pub fn save_pdf(path: &Path, bytes: &[u8]) -> std::io::Result<()> {
     replace_file(path, bytes)
 }
 
+/// What [`save_pdf_if`] expects at its path when it puts the new file
+/// there.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) enum Expected<'a> {
+    /// No file: one that appeared meanwhile is kept, and the save fails.
+    Absent,
+    /// The file as it was read, these bytes: one that holds anything else
+    /// is kept, and the save fails.
+    Read(&'a [u8]),
+}
+
+/// Whether the file at `path` holds exactly `bytes`, read in pieces and
+/// stopped at the first difference.
+fn file_holds(path: &Path, bytes: &[u8]) -> std::io::Result<bool> {
+    use std::io::Read as _;
+    let mut file = std::fs::File::open(path)?;
+    let mut piece = vec![0; 1 << 16];
+    let mut at = 0;
+    loop {
+        let read = file.read(&mut piece)?;
+        if read == 0 {
+            return Ok(at == bytes.len());
+        }
+        if bytes.get(at..at + read) != Some(&piece[..read]) {
+            return Ok(false);
+        }
+        at += read;
+    }
+}
+
+/// [`save_pdf`], only over what `expected` names (any file without it).
+/// The check is made just before the staged file is put in place; no
+/// rename compares and replaces at once, so another program that writes
+/// the file in that instant can still lose its change.
+pub(crate) fn save_pdf_if(
+    path: &Path,
+    bytes: &[u8],
+    expected: Option<&Expected<'_>>,
+) -> std::io::Result<()> {
+    replace_file_if(path, bytes, expected)
+}
+
 /// Write `bytes` to `path` as [`save_pdf`] does: staged beside it, then
 /// renamed over it only once complete (Export Field Contents too). The
 /// file gets a new file's permissions (the user's umask applies, not a
@@ -4553,6 +4713,15 @@ pub fn save_pdf(path: &Path, bytes: &[u8]) -> std::io::Result<()> {
 /// and until the staged file has them it stays owner-only, so a private
 /// file's new contents are never readable by others on the way.
 pub(crate) fn replace_file(path: &Path, bytes: &[u8]) -> std::io::Result<()> {
+    replace_file_if(path, bytes, None)
+}
+
+/// [`replace_file`], put in place only as [`save_pdf_if`] says.
+fn replace_file_if(
+    path: &Path,
+    bytes: &[u8],
+    expected: Option<&Expected<'_>>,
+) -> std::io::Result<()> {
     let existing = std::fs::metadata(path)
         .ok()
         .filter(std::fs::Metadata::is_file)
@@ -4574,8 +4743,19 @@ pub(crate) fn replace_file(path: &Path, bytes: &[u8]) -> std::io::Result<()> {
     if let Some(permissions) = existing {
         temp.as_file().set_permissions(permissions)?;
     }
-    temp.persist(path).map_err(|e| e.error)?;
-    Ok(())
+    match expected {
+        None => temp.persist(path).map(drop).map_err(|e| e.error),
+        // Linked or renamed in only where nothing is.
+        Some(Expected::Absent) => temp.persist_noclobber(path).map(drop).map_err(|e| e.error),
+        Some(Expected::Read(bytes)) => {
+            if !file_holds(path, bytes)? {
+                return Err(std::io::Error::other(
+                    "the file changed while it was being appended to; it was left as it is",
+                ));
+            }
+            temp.persist(path).map(drop).map_err(|e| e.error)
+        }
+    }
 }
 
 /// The definition of a field a report shows, or why the report refuses it
@@ -4601,13 +4781,48 @@ pub(crate) fn field_def<'s>(
     Ok(def)
 }
 
+/// A piece of a report object's text that its content fills in.
+pub(crate) enum Piece<'t> {
+    /// A field object's field, or a merge field: its value, presented.
+    Field(om_data::runtime::FieldRef),
+    /// A text or button object's label, or a merge text's literal run: the
+    /// text with its merge variables and layout symbols filled in as
+    /// Browse fills them in (`om_data::host::layout::merge_text`), on the
+    /// record and in the portal row the content is for. What reports
+    /// refuse of them is refused before ([`merged_refusal`]), and
+    /// `{{PageNumber}}` is numbered already ([`on_page`]).
+    Literal(&'t str),
+}
+
+/// Whether `text` holds what [`Piece::Literal`] fills in, so its content
+/// needs evaluating: a merge variable, or a symbol Browse shows.
+pub(crate) fn merges(text: &str) -> bool {
+    use om_data::host::layout::{merged, Merged};
+    merged(text).any(|piece| matches!(piece, Merged::Variable(_) | Merged::Symbol(_)))
+}
+
+/// Why a report that a script prints (Save Records as PDF, Print) refuses
+/// `text`, a [`Piece::Literal`], if it does: a merge variable. The script
+/// worker does not read the running script's variables
+/// ([#596](https://github.com/OpenMaker-Dev/openmaker/issues/596)), so it
+/// would print empty.
+pub(crate) fn script_printed(text: &str) -> Result<(), ReportError> {
+    use om_data::host::layout::{merged, Merged};
+    match merged(text).any(|piece| matches!(piece, Merged::Variable(_))) {
+        true => Err(ReportError::unsupported(
+            "Merge variables in reports a script prints are unsupported",
+        )),
+        false => Ok(()),
+    }
+}
+
 /// Resolve the shared report field/merge binding contract. The caller supplies
 /// read-only per-record calculation and display formatting.
 pub(crate) fn object_text(
     object: &LayoutObject,
     origin: u64,
     schema: &om_data::host::CalcSchema,
-    mut field_text: impl FnMut(om_data::runtime::FieldRef) -> Result<String, ReportError>,
+    mut piece_text: impl FnMut(Piece<'_>) -> Result<String, ReportError>,
 ) -> Result<String, ReportError> {
     use om_data::formula::Names;
     use om_data::runtime::FieldRef;
@@ -4631,19 +4846,19 @@ pub(crate) fn object_text(
         let id = spec
             .field_id()
             .ok_or_else(|| ReportError::unsupported("A report field key is invalid"))?;
-        return field_text(FieldRef {
+        return piece_text(Piece::Field(FieldRef {
             occurrence,
             field: id,
             repetition: spec.repetition.max(1) as u32,
-        });
+        }));
     }
     if object.text_runs.is_empty() {
-        return Ok(object.text.clone().unwrap_or_default());
+        return piece_text(Piece::Literal(object.text.as_deref().unwrap_or_default()));
     }
     let mut text = String::new();
     for run in &object.text_runs {
         match run {
-            TextRun::Literal(literal) => text.push_str(literal),
+            TextRun::Literal(literal) => text.push_str(&piece_text(Piece::Literal(literal))?),
             TextRun::MergeField(name) => {
                 let (occurrence, name) = match name.split_once("::") {
                     Some((to, name)) => (
@@ -4658,11 +4873,11 @@ pub(crate) fn object_text(
                     .names()
                     .find_field(occurrence, name)
                     .ok_or_else(|| ReportError::unsupported("A report merge field is missing"))?;
-                text.push_str(&field_text(FieldRef {
+                text.push_str(&piece_text(Piece::Field(FieldRef {
                     occurrence,
                     field,
                     repetition: 1,
-                })?);
+                }))?);
             }
         }
     }
@@ -4674,6 +4889,25 @@ pub(crate) mod tests {
     //! Anonymous synthetic pictures, generated here, and the pixels both
     //! backends must show for them.
     use super::*;
+
+    /// A conditional save (an append's) puts its file in place only over
+    /// the file it read, or where there is none, and otherwise keeps what
+    /// is there and leaves no staged file behind.
+    #[test]
+    fn a_conditional_save_keeps_a_file_that_changed_or_appeared() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("out.pdf");
+        save_pdf_if(&path, b"one", Some(&Expected::Absent)).unwrap();
+        assert!(save_pdf_if(&path, b"two", Some(&Expected::Absent)).is_err());
+        assert_eq!(std::fs::read(&path).unwrap(), b"one");
+        // Replaced by other bytes of the same size: still a change.
+        std::fs::write(&path, b"won").unwrap();
+        assert!(save_pdf_if(&path, b"three", Some(&Expected::Read(b"one"))).is_err());
+        assert_eq!(std::fs::read(&path).unwrap(), b"won");
+        save_pdf_if(&path, b"four", Some(&Expected::Read(b"won"))).unwrap();
+        assert_eq!(std::fs::read(&path).unwrap(), b"four");
+        assert_eq!(std::fs::read_dir(dir.path()).unwrap().count(), 1);
+    }
     use om_layout::pagination::Placement;
     use om_layout::{GraphicObject, ObjectStyle, Property, StyleSet};
 

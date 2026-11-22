@@ -1119,6 +1119,13 @@ impl OpenMakerApp {
     /// Find mode buttons).
     pub(super) fn run_step(&mut self, ctx: &egui::Context, id: u16, flags: u32) {
         use super::steps::{INSERT_AUDIO_VIDEO, INSERT_FILE, INSERT_PDF, INSERT_PICTURE};
+        // Relookup's menu item is checked again here: text typed in the
+        // frame of the click, or an edit the step was held behind, makes
+        // the record one with something to commit, which the step would
+        // commit past the field's triggers (#624). It then does nothing.
+        if id == om_data::scripts::relookup::STEP_ID && !self.relookup_available() {
+            return;
+        }
         // The Insert menu fills the selected container only while its
         // object still takes entry (and PDF and Audio/Video only an
         // interactive one), as when the menu offered it.
@@ -2504,7 +2511,13 @@ impl OpenMakerApp {
 
     /// Esc / Cmd-period while a script runs; Esc in a pause cancels it.
     pub(super) fn abort_keys(&mut self, ctx: &egui::Context) {
-        if !self.script.running || self.script.prompt.is_some() {
+        // The host's message over the window, or its alert that a file was
+        // disconnected, takes Escape for itself.
+        if !self.script.running
+            || self.script.prompt.is_some()
+            || self.host_message_shown()
+            || self.forced_alert_shown()
+        {
             return;
         }
         let abort = ctx.input_mut(|input| {
@@ -2556,6 +2569,11 @@ impl OpenMakerApp {
 
     /// The prompt on screen, as a modal.
     pub(super) fn prompt(&mut self, ctx: &egui::Context) {
+        // A script's dialog that came while the host's alert that a file was
+        // disconnected shows waits for its OK: one dialog takes the keys.
+        if self.forced_alert_shown() {
+            return;
+        }
         let Some(view) = self.script.prompt.as_mut() else {
             return;
         };

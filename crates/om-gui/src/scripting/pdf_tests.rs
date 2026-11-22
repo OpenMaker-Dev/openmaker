@@ -1283,7 +1283,7 @@ fn sliding_address_blocks_close_up_and_resize_parts_in_pdf_print_and_preview_pag
         .s
         .failure
         .as_deref()
-        .is_some_and(|f| f.contains("sliding left is unsupported")));
+        .is_some_and(|f| f.contains("slide left and up in one part")));
     assert_eq!(std::fs::read(&path).unwrap(), saved);
     assert_eq!(fake.jobs.lock().unwrap().len(), 1);
     assert!(!c
@@ -1293,6 +1293,199 @@ fn sliding_address_blocks_close_up_and_resize_parts_in_pdf_print_and_preview_pag
         .events
         .iter()
         .any(|e| e.ends_with(":write") || e.contains(":found:")));
+}
+
+/// Sliding left closes up a line, as Claris describes it: a field set to
+/// slide left narrows to the width its text needs, and an object set to
+/// slide left moves by the least its nearest objects on its left moved and
+/// narrowed, keeping the gaps between them; an object that does not slide
+/// holds. What is unmeasured refuses: sliding left in a header, a part
+/// where objects slide both left and up, and a field of several lines.
+#[test]
+fn sliding_left_closes_up_a_line_of_fields() {
+    use om_layout::sliding::{LEFT, UP};
+    let paper = om_layout::pagination::PageSize::default();
+    let slide = |mut object: LayoutObject, flags| {
+        object.flags |= 0x3000_0000 | flags;
+        object
+    };
+    let layout = |objects: Vec<LayoutObject>, part_type| Layout {
+        def: Some(LayoutDef {
+            base_width: 540.0,
+            ..Default::default()
+        }),
+        parts: vec![Part {
+            part_type,
+            height: 60.0,
+            ..Default::default()
+        }],
+        objects: ObjectStore {
+            root: objects.iter().map(|o| o.id).collect(),
+            objects,
+            ..Default::default()
+        },
+        ..Default::default()
+    };
+    let line = |first_flags| {
+        vec![
+            slide(field(1, 1, rect(10.0, 10.0, 100.0, 18.0)), first_flags),
+            slide(field(2, 11, rect(115.0, 10.0, 100.0, 18.0)), LEFT),
+            slide(
+                label(3, "!", rect(220.0, 10.0, 20.0, 18.0), 12.0, false),
+                LEFT,
+            ),
+        ]
+    };
+    let render = |layout: &Layout, first: &str| {
+        let first = first.to_owned();
+        crate::report::render_pdf(layout, 1, paper.clone(), &[], move |o, _| {
+            Ok(match o.id {
+                1 => first.clone(),
+                2 => "Lovelace".into(),
+                _ => o.text.clone().unwrap_or_default(),
+            })
+        })
+        .map(|report| String::from_utf8_lossy(&report.bytes).into_owned())
+        .map_err(|e| e.message)
+    };
+    let font =
+        ttf_parser::Face::parse(include_bytes!("../../assets/fonts/Inter-Regular.ttf"), 0).unwrap();
+    let width = |text: &str| {
+        text.chars()
+            .map(|ch| {
+                let glyph = font.glyph_index(ch).unwrap();
+                f64::from(font.glyph_hor_advance(glyph).unwrap()) * 12.0
+                    / f64::from(font.units_per_em())
+            })
+            .sum::<f64>()
+    };
+    let pdf = render(&layout(line(LEFT), 4), "Ada").unwrap();
+    let x = |text: &str| text_origins(&pdf, 1, text)[0].1;
+    // First narrows to "Ada"; Last keeps its 5-point gap after it and
+    // narrows to "Lovelace"; the label keeps its 5-point gap after Last
+    // (its text 1 point into its frame).
+    assert!((x("Lovelace") - x("Ada") - (width("Ada") + 5.0)).abs() < 0.05);
+    assert!(
+        (x("!") - x("Lovelace") - (width("Lovelace") + 5.0 + 1.0)).abs() < 0.05,
+        "{} {}",
+        x("!"),
+        x("Lovelace")
+    );
+    // A first field that does not slide holds the line where it is placed.
+    let held = render(&layout(line(0), 4), "Ada").unwrap();
+    let held_x = |text: &str| text_origins(&held, 1, text)[0].1;
+    assert!((held_x("Lovelace") - held_x("Ada") - 105.0).abs() < 0.05);
+    // Refused: a header (Claris says only that it never slides up), a part
+    // that slides both ways, and a field of more than one line.
+    let mut headed = layout(line(LEFT), 1);
+    headed.parts.push(Part {
+        part_type: 4,
+        top: 60.0,
+        height: 20.0,
+        ..Default::default()
+    });
+    let header = render(&headed, "Ada").unwrap_err();
+    assert!(header.contains("header, footer or title part"), "{header}");
+    assert!(render(&layout(line(LEFT | UP), 4), "Ada")
+        .unwrap_err()
+        .contains("slide left and up in one part"));
+    assert!(render(&layout(line(LEFT), 4), "Ada\rKing")
+        .unwrap_err()
+        .contains("more than one line"));
+    // So does one whose one line is wider than the field (it would wrap),
+    // whatever its text's colour.
+    assert!(render(&layout(line(LEFT), 4), &"Ada King ".repeat(6))
+        .unwrap_err()
+        .contains("more than one line"));
+}
+
+#[test]
+fn sliding_left_keeps_centered_italic_ink_inside_the_field() {
+    use crate::report::{prepare_page, ContentContext, Pictures, ReportFace};
+    let mut italic = field(1, 1, rect(10.0, 10.0, 100.0, 120.0));
+    italic.flags |= om_layout::sliding::LEFT;
+    let mut text_style = style(96.0, false, None);
+    text_style.local_styles.as_mut().unwrap().components[0]
+        .properties
+        .extend([
+            Property {
+                id: 64,
+                string: Some("Arial".into()),
+                ..Default::default()
+            },
+            Property {
+                id: 67,
+                int: Some(2), // Italic
+                ..Default::default()
+            },
+            Property {
+                id: 74,
+                int: Some(2), // Centered
+                ..Default::default()
+            },
+        ]);
+    italic.style = Some(text_style);
+    let mut layout = Layout {
+        def: Some(LayoutDef {
+            base_width: 540.0,
+            ..Default::default()
+        }),
+        parts: vec![Part {
+            part_type: 4,
+            height: 140.0,
+            ..Default::default()
+        }],
+        objects: ObjectStore {
+            root: vec![1],
+            objects: vec![italic],
+            ..Default::default()
+        },
+        ..Default::default()
+    };
+    let mut content = |_: &LayoutObject, _: ContentContext| Ok("f".into());
+    let paper = om_layout::pagination::PageSize::default();
+    let plan = crate::report::plan_report(&layout, 1, paper, &[], &mut content).unwrap();
+    let pictures = Pictures::default();
+    let page = prepare_page(&layout, &plan, 0, &pictures, &mut content).unwrap();
+    let object = page
+        .parts
+        .iter()
+        .flat_map(|part| &part.objects)
+        .next()
+        .unwrap();
+    let [line] = object.text.as_slice() else {
+        panic!("expected one line of text");
+    };
+    assert_eq!(line.face, ReportFace::SansItalic);
+    assert_eq!(line.size, 96.0);
+    let face = line.face.face();
+    let ink = face
+        .glyph_bounding_box(face.glyph_index('f').unwrap())
+        .unwrap();
+    let right_ink = line.x + f64::from(ink.x_max) * line.size / f64::from(face.units_per_em());
+    assert!(object.bounds.width() < 100.0);
+    assert!(right_ink <= object.bounds.right);
+    assert!(line.clip.is_none());
+
+    // Right alignment pins the advance at the right inset, so extra width
+    // cannot make room for the same glyph's right overhang.
+    layout.objects.objects[0]
+        .style
+        .as_mut()
+        .unwrap()
+        .local_styles
+        .as_mut()
+        .unwrap()
+        .components[0]
+        .properties
+        .last_mut()
+        .unwrap()
+        .int = Some(3);
+    let error = prepare_page(&layout, &plan, 0, &pictures, &mut content).unwrap_err();
+    assert_eq!(error.code, 3);
+    assert!(error
+        .message
+        .contains("aligned text whose ink does not fit"));
 }
 
 #[test]
@@ -1334,7 +1527,7 @@ fn sliding_refuses_unsupported_options_overlaps_and_cut_off_objects() {
         (
             &(|l: &mut Layout| find(l, 53).flags |= om_layout::sliding::LEFT)
                 as &dyn Fn(&mut Layout),
-            "sliding left is unsupported",
+            "slide left and up in one part",
         ),
         (
             &|l: &mut Layout| find(l, 56).flags |= om_layout::sliding::NON_PRINTING,
@@ -1456,6 +1649,8 @@ fn desktop_pdf_outputs_found_set_and_current_record_and_preserves_existing_on_re
         assert!(String::from_utf8_lossy(&bytes).contains(&format!("/Count {pages}")));
     }
     let existing = std::fs::read(&all).unwrap();
+    // Without the PDF worker (unit tests have none) an append refuses and
+    // keeps the file; with it, tests/script_engine.rs appends.
     let mut append = pdf(&path(&all), false);
     append.flags |= flag::OPTION;
     let mut c = client(vec![append, exit("Get ( LastError )")]);
@@ -4255,7 +4450,9 @@ fn character_runs_print_in_their_own_colors() {
 /// as PDF wrote it on page *n* (calc-functions.md, O4), without touching
 /// the merged field's value. An unclosed `{{` prints as it is, and a
 /// symbol is read within one literal run, never across a merged field.
-/// Other layout symbols still refuse.
+/// `{{PageCount}}` and symbols Browse does not show refuse, as do merge
+/// variables and other symbols in an object whose data format presents
+/// values.
 #[test]
 fn page_number_symbols_print_each_pages_number() {
     use om_layout::TextRun::{Literal, MergeField};
@@ -4300,6 +4497,19 @@ fn page_number_symbols_print_each_pages_number() {
         Literal("<<Page {{PageNumber}}>> / ".into()),
         MergeField("Name".into()),
     ];
+    // A label the runs do not spell is numbered by whole symbols outside
+    // placeholders, by number too.
+    let mut stored = label(
+        8,
+        "Page {{1015}} of <<Name>> (draft)",
+        rect(12.0, 135.0, 400.0, 20.0),
+        12.0,
+        false,
+    );
+    stored.text_runs = vec![
+        Literal("Page {{1015}} of ".into()),
+        MergeField("Name".into()),
+    ];
     let layout = Layout {
         def: Some(LayoutDef {
             base_width: 540.0,
@@ -4319,7 +4529,7 @@ fn page_number_symbols_print_each_pages_number() {
             },
         ],
         objects: ObjectStore {
-            root: vec![1, 2, 3, 4, 5, 6, 7],
+            root: vec![1, 2, 3, 4, 5, 6, 7, 8],
             objects: vec![
                 label(1, "Body", rect(12.0, 10.0, 200.0, 20.0), 12.0, false),
                 label(
@@ -4334,6 +4544,7 @@ fn page_number_symbols_print_each_pages_number() {
                 noted,
                 named,
                 angled,
+                stored,
             ],
             ..Default::default()
         },
@@ -4392,6 +4603,7 @@ fn page_number_symbols_print_each_pages_number() {
             format!("Note {{{{ <<Name>> / Page {number}"),
             format!("<<Name {{{{PageNumber}}}}>> / Page {number}"),
             format!("<<Page {number}>> / <<Name>>"),
+            format!("Page {number} of <<Name>> (draft)"),
         ] {
             let found = text_origins(&labels, 2, &label);
             assert_eq!(
@@ -4401,10 +4613,179 @@ fn page_number_symbols_print_each_pages_number() {
             );
         }
     }
-    let mut dated = layout.clone();
-    dated.objects.objects[1].text = Some("{{CurrentDate}}".into());
+    for symbol in ["{{PageCount}}", "{{1125}}", "{{AccountName}}"] {
+        let mut counted = layout.clone();
+        counted.objects.objects[1].text = Some(format!("Page {{{{PageNumber}}}} of {symbol}"));
+        assert_eq!(
+            render(&counted).unwrap_err(),
+            "Layout merge symbols other than {{PageNumber}}, {{RecordNumber}}, \
+             {{CurrentDate}}, {{CurrentTime}} and {{UserName}} are unsupported",
+            "{symbol}"
+        );
+    }
+    // A variable name with a space, which Set Variable accepts and Browse
+    // shows as written.
+    let mut spaced = layout.clone();
+    spaced.objects.objects[1].text = Some("Printed by <<$$printed by>>".into());
     assert_eq!(
-        render(&dated).unwrap_err(),
-        "Layout merge symbols other than {{PageNumber}} are unsupported"
+        render(&spaced).unwrap_err(),
+        "Report object 2 holds a <<$...>> OpenMaker does not read as a merge variable; \
+         how FileMaker reads it is unmeasured"
     );
+    // A data format that presents dates (format 7, numeric with the full
+    // year): FileMaker's for a variable or symbol is unmeasured.
+    let mut formatted = layout.clone();
+    formatted.objects.objects[1].data_format = Some(DataFormat {
+        date: om_layout::DateFormat {
+            flags: 7 << 24,
+            ..Default::default()
+        },
+        ..DataFormat::new_field()
+    });
+    for (text, refused) in [
+        ("Page {{PageNumber}}", false),
+        ("Printed {{CurrentDate}}", true),
+        ("Total <<$$total>>", true),
+    ] {
+        formatted.objects.objects[1].text = Some(text.into());
+        assert_eq!(
+            render(&formatted).err(),
+            refused.then(|| {
+                "Report object 2 formats numbers, dates or times and holds a merge variable \
+                 or layout symbol; whether FileMaker formats them is unmeasured"
+                    .to_owned()
+            }),
+            "{text}"
+        );
+    }
+}
+
+/// [`document`] with layout symbols and a merge variable: the header shows
+/// the user name and the date, each body the record's number by name and
+/// by its selector's number (`{{1020}}`), then `$$suffix`'s second
+/// repetition.
+pub(super) fn symbols_document() -> RenderLayout {
+    let mut document = document();
+    let objects = &mut document.layout.objects;
+    objects.objects[1] = label(
+        2,
+        "By {{UserName}} on {{CurrentDate}}",
+        rect(12.0, 44.0, 500.0, 22.0),
+        10.0,
+        false,
+    );
+    objects.objects.push(label(
+        11,
+        "No. {{RecordNumber}} / {{1020}}<<$$suffix[2]>>",
+        rect(360.0, 86.0, 170.0, 24.0),
+        11.0,
+        false,
+    ));
+    objects.root.push(11);
+    document
+}
+
+/// Layout symbols print as Browse shows them
+/// (`om_data::host::layout::merge_text`), on each record: the record
+/// number its found-set position, the header's user name and date the
+/// session's. In a portal row the record number is the row's, as in Browse
+/// and Preview. A merge variable refuses (#596): this host does not read
+/// the running script's variables.
+#[test]
+fn layout_symbols_print_as_browse_shows_them() {
+    let temporary = tempfile::tempdir().unwrap();
+    let path = temporary.path().join("symbols.pdf");
+    let steps = |path: &std::path::Path| {
+        vec![
+            var("$$suffix", "\" of 9\""),
+            var("$before", "Get ( CurrentDate )"),
+            pdf(&crate::scripting::files::file_line(path), false),
+            exit("Get ( LastError ) & \"|\" & Get ( UserName ) & \"|\" & $before & \"|\" & Get ( CurrentDate )"),
+        ]
+    };
+    let mut c = client(steps(&path));
+    let mut document = symbols_document();
+    let objects = &mut document.layout.objects.objects;
+    let body = objects.iter_mut().find(|o| o.id == 11).unwrap();
+    *body = label(
+        11,
+        "No. {{RecordNumber}} / {{1020}}",
+        rect(360.0, 86.0, 170.0, 24.0),
+        11.0,
+        false,
+    );
+    c.server.lock().unwrap().refresh_render = Some(document);
+    c.run_in(WindowState {
+        layout: Some(1),
+        record: Some(9),
+        index: 2,
+        ..Default::default()
+    });
+    let result = c.result();
+    let [error, user, before, after] = result.split('|').collect::<Vec<_>>()[..] else {
+        panic!("{result}");
+    };
+    assert_eq!(error, "0", "{:?}", c.session.s.failure);
+    let pdf = String::from_utf8_lossy(&std::fs::read(&path).unwrap()).into_owned();
+    // Each record's once, in found-set order over the three pages.
+    let pages: Vec<usize> = (1..=9)
+        .map(|n| {
+            let numbered = text_origins(&pdf, 3, &format!("No. {n} / {n}"));
+            assert_eq!(numbered.len(), 1, "{n}");
+            numbered[0].0
+        })
+        .collect();
+    assert!(
+        pages.is_sorted() && pages[0] == 0 && pages[8] == 2,
+        "{pages:?}"
+    );
+    // The header on each page; the date is the day the script ran on.
+    let mut dates = vec![before];
+    if after != before {
+        dates.push(after);
+    }
+    let mut headers: Vec<usize> = (dates.iter())
+        .flat_map(|date| text_origins(&pdf, 3, &format!("By {user} on {date}")))
+        .map(|o| o.0)
+        .collect();
+    headers.sort();
+    assert_eq!(headers, [0, 1, 2], "{dates:?}");
+
+    // `$$suffix[2]` would print empty whatever the script set: refused, and
+    // nothing is written.
+    let refused = temporary.path().join("variables.pdf");
+    let mut v = client(steps(&refused));
+    v.server.lock().unwrap().refresh_render = Some(symbols_document());
+    v.run_in(WindowState {
+        layout: Some(1),
+        record: Some(9),
+        index: 2,
+        ..Default::default()
+    });
+    assert!(v.result().starts_with("3|"), "{}", v.result());
+    assert!(!refused.exists());
+
+    // The report host answers a portal row's number there.
+    let mut store = Store;
+    let mut io = Io {
+        provider: &mut c.provider,
+        files: &mut c.files,
+        store: &mut store,
+        jobs: &c.jobs,
+        responses: &c.responses,
+    };
+    let mut host = WorkerHost::new(&mut io, &mut c.session.s);
+    host.report_record = Some((9, 2, 0));
+    let row = crate::report::PortalRowContext {
+        occurrence: 6,
+        record: 101,
+        number: 2,
+    };
+    for (row, shown) in [(None, "3"), (Some(row), "2")] {
+        let context = crate::report::in_row(om_data::calc::eval::Context::record(5, 9), row);
+        assert_eq!(
+            om_data::host::layout::merge_text(&mut host, "{{RecordNumber}}", &context),
+            shown
+        );
+    }
 }

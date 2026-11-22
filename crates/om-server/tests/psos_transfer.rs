@@ -638,6 +638,41 @@ fn imports_into_tables_the_server_cannot_write_fail_with_3() {
     assert_eq!(records_named(&mut client, "Alpha"), 0);
 }
 
+/// An import into a field that must be a member of a value list of a
+/// field's values, that field indexed in a language OpenMaker does not key
+/// (German, #571): the row with a value to check ends the import with 3
+/// and nothing is imported, the row before it neither, rather than
+/// skipping that row (729) and keeping the others.
+#[test]
+fn imports_checked_against_an_unkeyed_value_list_fail_with_3() {
+    let scripts = vec![script(
+        1,
+        "Import",
+        vec![
+            fixture::on(86, true),
+            set_variable("$p", "Get ( DocumentsPath ) & \"codes.tab\""),
+            import(&["$p"], &[NAME, CODE], true),
+            fixture::exit_with("Get ( LastError )"),
+        ],
+    )];
+    let layout = Layout::new("unkeyed-list");
+    let mut root = fixture::tree(&scripts, true);
+    fixture::set_field_language(&mut root, fixture::TABLE, NAME, 25);
+    fixture::code_in_names_list(&mut root);
+    let file = TempFile(layout.0.join("Tasks.fmp12"));
+    fixture::write_tree(&file.0, &root);
+    std::fs::write(
+        layout.0.join("Documents").join("codes.tab"),
+        "Blank\t\rShipped\tShip\r",
+    )
+    .unwrap();
+    let port = server::start(&file);
+    let (mut client, _) = server::logged_in(port, "unkeyed-list");
+    assert_eq!(run(&mut client, 1), (3, "3".into()));
+    assert_eq!(records_named(&mut client, "Blank"), 0);
+    assert_eq!(records_named(&mut client, "Shipped"), 0);
+}
+
 /// The review's C4 and C5: an import or export the script's time limit
 /// (or an administrator) aborts stops at the next row or record with
 /// error 1, and writes nothing: no record of the import, also inside the
