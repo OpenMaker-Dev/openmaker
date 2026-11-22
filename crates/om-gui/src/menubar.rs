@@ -321,7 +321,7 @@ pub(crate) fn menus(context: &MenuContext<'_>, actions: &mut Vec<Action>, menu: 
         }),
         Mode::Layout => {
             menu("Layouts", &mut |rows| layouts_menu(rows, context, actions));
-            menu("Arrange", &mut |rows| arrange_menu(rows));
+            menu("Arrange", &mut |rows| arrange_menu(rows, context, actions));
         }
     }
     menu("Scripts", &mut |rows| scripts_menu(rows, context, actions));
