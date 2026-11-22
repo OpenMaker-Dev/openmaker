@@ -634,9 +634,7 @@ impl NativeProvider {
             }
             let items = items.map_err(read)?;
             let items = items.ok_or_else(|| not_checked(&name, "its list is too long"))?;
-            let data_type = table
-                .field(field)
-                .map_or(DataType::Text, |f| f.data_type);
+            let data_type = table.field(field).map_or(DataType::Text, |f| f.data_type);
             // Text compares as the list's field keys it (#571): in its index
             // language, 0 being the language of the file that owns its table
             // (a related file's own, `table_context`), unknown when that
