@@ -71,6 +71,7 @@ enum Op {
     AnnotationFree = 8,
     PageSizes = 9,
     RenderPage = 10,
+    AssembleWhole = 11,
 }
 
 impl Op {
@@ -86,6 +87,7 @@ impl Op {
             8 => Some(Op::AnnotationFree),
             9 => Some(Op::PageSizes),
             10 => Some(Op::RenderPage),
+            11 => Some(Op::AssembleWhole),
             _ => None,
         }
     }
@@ -94,7 +96,7 @@ impl Op {
         Duration::from_secs(match self {
             Op::PageSize | Op::Info | Op::AnnotationFree | Op::PageSizes => 15,
             Op::Render | Op::RenderPage | Op::Text | Op::Find | Op::Positions => 30,
-            Op::Assemble => 60,
+            Op::Assemble | Op::AssembleWhole => 60,
         })
     }
 
@@ -112,7 +114,7 @@ impl Op {
             Op::Text => 64 << 20,
             // A page's flags and its five boxes at most.
             Op::Info => 5 + pdf_assemble::INFO_PAGES as u64 * (1 + 5 * 32),
-            Op::Assemble => input.saturating_mul(8).clamp(1 << 20, MAX_INPUT),
+            Op::Assemble | Op::AssembleWhole => input.saturating_mul(8).clamp(1 << 20, MAX_INPUT),
         }
     }
 }
@@ -437,11 +439,9 @@ pub struct Info {
     /// no optional content configuration: it has none (`pdf_assemble`).
     /// [`assemble`] refuses pages of a PDF that has one.
     pub optional_content_kept: bool,
-    /// With [`info_whole`], whether a new document of all its pages keeps
-    /// everything else it holds too: no document-level parts, document
-    /// information, file identifiers or encryption that the page copy
-    /// would leave behind (`pdf_assemble::document_kept`); `None` from
-    /// [`info`], which does not ask.
+    /// With [`info_whole`], whether the source satisfies the page-only
+    /// append format. [`assemble_whole`] also accounts for every object and
+    /// reference during the copy. [`info`] leaves this unset.
     pub document_kept: Option<bool>,
     /// The geometry of its first `INFO_PAGES` pages.
     geometry: Vec<PageGeometry>,
@@ -541,9 +541,8 @@ pub fn assemble(sources: &[&[u8]], plan: &[(u32, u32)]) -> Result<Option<Vec<u8>
 /// [`assemble`], keeping everything the copied pages refer to or failing:
 /// `Ok(None)` rather than a document in which a reference to an object
 /// left behind (the catalog, a page-tree node, a page not copied) became
-/// `null`, as appending to a PDF asks. The request's width 1 asks for it;
-/// only a worker that also answers [`info_whole`] knows it, and a host
-/// asks this only of a PDF that worker said it keeps whole.
+/// `null`. This operation has its own request code so older workers
+/// cannot fall back to the ordinary page importer.
 pub fn assemble_whole(
     sources: &[&[u8]],
     plan: &[(u32, u32)],
@@ -602,7 +601,12 @@ fn assemble_request(
     else {
         return Ok(None);
     };
-    ask(Op::Assemble, u32::from(whole), 0, &request)
+    let op = if whole {
+        Op::AssembleWhole
+    } else {
+        Op::Assemble
+    };
+    ask(op, 0, 0, &request)
 }
 
 /// A worker executable's `main`: read one request from stdin, answer it on
@@ -643,6 +647,7 @@ pub fn serve(limit: impl FnOnce(usize) -> bool) -> ExitCode {
         }
         Op::AnnotationFree => None,
         Op::Assemble => pdf_assemble::assemble(data, width == 1),
+        Op::AssembleWhole => pdf_assemble::assemble(data, true),
         Op::Find => find_request(&data, width),
         Op::Positions => positions_request(&data, width, height),
     };

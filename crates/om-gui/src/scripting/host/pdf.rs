@@ -109,19 +109,9 @@ fn pdf_options(step: &ScriptStep) -> Result<report::PdfView, ReportError> {
 /// what one request to the PDF worker carries (1 GiB).
 const MAX_APPENDED: u64 = 512 << 20;
 
-/// "Append to existing PDF" (`kOption`): one new document of the existing
-/// file's pages, then the report's, which the PDF worker assembles,
-/// copying each page with what it refers to (`pdf_worker::assemble`).
-/// Claris: the records are added to the end of the existing PDF. What the
-/// page copy would leave behind refuses the append with 3 and leaves the
-/// file as it was, rather than lose it: a file that is not a PDF the
-/// worker reads, or one with bookmarks, a form, a structure tree, names,
-/// page labels, document information, file identifiers, encryption,
-/// optional content or pages it cannot copy whole (`pdf_worker::Info`,
-/// asked with `info_whole`), and one whose pages refer to what the copy
-/// leaves behind (`assemble_whole`). OpenMaker's own reports have none of these,
-/// so a script that saves and then appends builds one document
-/// [I: FileMaker's handling of such files is unmeasured].
+/// Append the report's pages after the existing page-only PDF. The worker
+/// validates both sources and copies the object bytes while remapping their
+/// references. Unsupported inputs fail before the destination is changed.
 fn appended(existing: &[u8], report: &[u8], report_pages: usize) -> Result<Vec<u8>, ReportError> {
     use om_data::calc::functions::pdf_worker;
     let unavailable =
@@ -133,8 +123,7 @@ fn appended(existing: &[u8], report: &[u8], report_pages: usize) -> Result<Vec<u
         })?;
     if !info.optional_content_kept || info.document_kept != Some(true) {
         return Err(ReportError::unsupported(
-            "The PDF to append to has bookmarks, a form, document information, encryption or \
-             other parts appending would not keep",
+            "The PDF to append to is outside the supported page-only format",
         ));
     }
     // Both documents' pages within one request's, before the plan is made.

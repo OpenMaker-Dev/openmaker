@@ -485,6 +485,100 @@ fn what_a_page_copy_leaves_behind_is_not_kept_whole() {
         .is_some());
 }
 
+/// The table is built from the actual byte offsets even for the commented
+/// reference, so an xref failure cannot mask that separate rejection.
+fn marked_append_source(reference: &str, extra_body: &str, bad_xref: bool) -> Vec<u8> {
+    use std::io::Write as _;
+
+    let payload = "q\n% startxref trailer endobj endstream\nQ";
+    let objects = [
+        "<< /Type /Catalog /Pages 2 0 R >>".to_owned(),
+        "<< /Type /Pages /Kids [3 0 R 4 0 R] /Count 2 >>".to_owned(),
+        format!(
+            "<< /Type /Page /Parent 2 0 R /MediaBox [0 0 200.000000000000000001 250] \
+             /Contents {reference} /Private (paragraph\n\nnext \\501 5 0 R) >>"
+        ),
+        "<< /Type /Page /Parent 2 0 R /MediaBox [0 0 210 250] /Contents 5 0 R >>".to_owned(),
+        format!(
+            "<< /Length {} >>\nstream\n{payload}\nendstream",
+            payload.len()
+        ),
+    ];
+    let mut pdf = [b"%PDF-1.7\n%".as_slice(), pdf_worker::MARKER, b"\n"].concat();
+    let mut offsets = Vec::new();
+    for (index, body) in objects.iter().enumerate() {
+        offsets.push(pdf.len());
+        let id = index + 1;
+        writeln!(pdf, "{id} 0 obj\n{body}\nendobj").unwrap();
+    }
+    pdf.extend(extra_body.bytes());
+    let xref = pdf.len();
+    if bad_xref {
+        offsets[0] = offsets[1];
+    }
+    pdf.extend(b"xref\n0 6\n0000000000 65535 f \n");
+    for offset in offsets {
+        writeln!(pdf, "{offset:010} 00000 n ").unwrap();
+    }
+    write!(
+        pdf,
+        "trailer\n<< /Size 6 /Root 1 0 R >>\nstartxref\n{xref}\n%%EOF\n"
+    )
+    .unwrap();
+    pdf
+}
+
+#[test]
+fn append_copies_object_syntax_and_refuses_unreliable_boundaries() {
+    worker();
+    let source = marked_append_source("5 0 R", "", false);
+    let plain = [(0, 0), (0, 1)];
+    for invalid in [
+        marked_append_source("5 % comment\n0 R", "", false),
+        marked_append_source("5 0 R", "", true),
+        marked_append_source(
+            "5 0 R",
+            "5 0 obj\n<< /Length 0 >>\nstream\n\nendstream\nendobj\n",
+            false,
+        ),
+        marked_append_source(
+            "5 0 R",
+            "5 0 obj\n<< /Length 0 >>\nstream\n\nendstream\nendobj\n",
+            true,
+        ),
+        marked_append_source("6 0 R", "", false),
+    ] {
+        assert_eq!(pdf_worker::assemble_whole(&[&invalid], &plain), Ok(None));
+    }
+    let mut output = source.clone();
+    for expected in [4, 6] {
+        let mut plan: Vec<_> = (0..expected - 2).map(|page| (0, page)).collect();
+        plan.extend([(1, 0), (1, 1)]);
+        output = pdf_worker::assemble_whole(&[&output, &source], &plan)
+            .unwrap()
+            .expect("append result");
+        for bytes in [
+            b"(paragraph\n\nnext \\501 5 0 R)".as_slice(),
+            b"200.000000000000000001",
+            b"q\n% startxref trailer endobj endstream\nQ",
+        ] {
+            assert_eq!(
+                output.windows(bytes.len()).filter(|&w| w == bytes).count(),
+                expected as usize / 2
+            );
+        }
+        let info = pdf_worker::info(&output).unwrap().unwrap();
+        assert_eq!(info.pages, expected);
+        for page in 0..expected {
+            let width = if page % 2 == 0 { 200.0 } else { 210.0 };
+            assert_eq!(
+                info.geometry(page).unwrap().boxes[0],
+                Some([0.0, 0.0, width, 250.0])
+            );
+        }
+    }
+}
+
 /// Five pages whose `/Parent` is not their page tree but objects 10, 12,
 /// 11, 10 and 12, in a PDF whose cross-reference table is broken: objects
 /// 10 and 6 (the media box 12 refers to) are listed free and object 11 at a

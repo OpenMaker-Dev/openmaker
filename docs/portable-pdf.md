@@ -116,64 +116,33 @@ email attachment creation, encryption/restricted permissions, metadata,
 page ranges and page layouts and magnifications other than Default are
 explicitly refused. With Restore On, slots 0-7 accept only their decoded
 neutral numeric defaults. The other options:
-- **Append to existing PDF** (`kOption`) writes one new document of the
-  existing file's pages followed by the report's, which the PDF worker
-  assembles as it does DynaPDF's documents ([plugins](plugins.md)), each
-  page with what it refers to. With no file at the path it writes the
-  report alone [I: FileMaker's answer there is unmeasured]. It appends only
-  to a PDF OpenMaker wrote: its reports and the documents the assembler
-  makes start `%PDF-1.7` and carry OpenMaker's four binary-marker bytes
-  (`pdf_worker::MARKER`). Reading another program's PDF and writing it
-  again can change it in ways no check here rules out: how hayro repairs a
-  damaged cross-reference table, a comment inside a reference, how a string
-  is spelled. Those appends are refused (3), unlike FileMaker, which appends
-  to any PDF. The mark is a hint, not proof, so every check below still
-  applies to a marked file. It refuses with 3, and leaves the file as it
-  was, rather than drop part of it:
-  - a file the worker does not read as a PDF, or one without OpenMaker's
-    mark;
-  - one whose catalog holds more than its page tree (bookmarks, an
-    interactive form, a structure tree, names, page labels, an XMP metadata
-    stream, an open action, a page mode, viewer preferences);
-  - one whose last trailer, read from the cross-reference table `startxref`
-    names entry by entry, holds more than `/Size` and `/Root`, its keys read
-    as written: document information of any kind, file identifiers (`/ID`),
-    encryption, an earlier revision (`/Prev`), or any other key, however its
-    name is spelled; one whose cross-references are a stream or do not
-    read that way; and one that spells `startxref` or `trailer` more than
-    once (another revision, or a comment naming an older table);
-  - one with optional content, or whose page tree reads differently down its
-    `/Kids` than up its pages' `/Parent` links (where the copy finds what a
-    page inherits), is deeper than the 64 levels the copy reads, has an
-    inheritable attribute of the wrong type (which readers pass over and
-    the copy would write), or has a node holding anything but its tree
-    (`/Type`, `/Kids`, `/Count`, `/Parent`): the copy writes inherited
-    attributes on each page, so a node's own would be dropped where every
-    page overrides it;
-  - one with a page that has annotations, whose strings a copy may not
-    spell as they were;
-  - one with a page that refers to the old catalog, a page-tree node or
-    anything else the copy leaves behind: the worker's whole copy fails
-    rather than write `null` there;
-  - one with any object the whole copy would not keep: after copying, every
-    object the cross-reference table lists in use must have been copied, or
-    be a copied page, a page-tree node or the catalog, whatever refers to
-    it;
-  - an initial view other than Page Only, since the new document sets none;
-  - more pages in the two documents than one assembly takes (100,000).
+- **Append to existing PDF** (`kOption`) writes the existing file's pages
+  followed by the report's. With no file at the path it writes the report
+  alone [I: FileMaker's answer there is unmeasured]. With a file to append to,
+  the PDF worker accepts the bounded page-only format OpenMaker emits. Its
+  PDF 1.7 binary marker identifies a candidate for validation. The worker
+  verifies the terminal footer, the classic cross-reference table, and every
+  indexed object at its exact offset. It requires a minimal catalog and
+  trailer, a flat page tree with matching page parents and count, and each
+  page's own media box. Extra revisions, unindexed objects, metadata,
+  encryption, annotations, comments outside strings or streams, and other
+  syntax outside this format are refused with error 3 before saving.
 
-  OpenMaker's own reports have none of these, so saving and then appending
-  in a script builds one document, again and again. A PDF from FileMaker
-  or another producer is refused. With a file to append to, it refuses without
-  the PDF worker too. The existing file is read up to 512 MiB. The new file
-  is saved only over a file that still holds exactly the bytes that were
-  read, or, with none, only where there still is none; a file that changed
-  or appeared meanwhile is kept and the step fails with 800. Appends in one
-  OpenMaker run one at a time, so two scripts appending to one file keep
-  both reports. No rename compares and replaces at once, so another program
-  (or another OpenMaker) that writes the file in the instant between that
-  check and the save can still lose its change. FileMaker's own append was
-  not compared.
+  The copy remaps indirect references and writes a new page tree and
+  cross-reference table. It copies other object bytes, including literal
+  strings, numbers and encoded streams, verbatim. References to missing
+  objects or to discarded structural objects fail the append, as do
+  indexed objects unreachable from the pages. The worker does not use a
+  repaired PDF to assemble the result. Reports saved with Page Only can
+  be appended repeatedly. The existing file is read up to 512 MiB and
+  both reports together can have at most 100,000 pages.
+
+  The staged result replaces the destination only after comparing the
+  destination with the bytes read. A changed file or a file that appeared
+  after an absent-path check results in error 800. OpenMaker serializes
+  appends within one process. A writer in another process can still race
+  the comparison, including the reread, through the rename. FileMaker's
+  own append was not compared.
 - **Initial view (slot 8)** is honored in the PDF's catalog (script-steps.md
   11.7, 12.5):
   - 0 Page Only writes no `/PageMode`, the PDF default;

@@ -2603,7 +2603,8 @@ fn a_script_stopped_by_a_provider_panic_frees_its_window() {
 /// saved just before, and again to the document that append made; with no
 /// file yet, it writes a new one. A PDF another program wrote (without
 /// OpenMaker's mark, even with only pages), a file that is not a PDF, and
-/// one with document information refuse with 3 and stay as they were.
+/// one with document information or a marked file with a bad xref refuse
+/// with 3 and stay as they were.
 #[test]
 fn save_records_as_pdf_appends_and_refuses_what_it_would_not_keep() {
     om_data::calc::functions::pdf_worker::set_default(
@@ -2614,6 +2615,21 @@ fn save_records_as_pdf_appends_and_refuses_what_it_would_not_keep() {
     let path = |name: &str| dir.path().join(name);
     let plain = marked_pdf(&["P1"]);
     std::fs::write(path("plain.pdf"), &plain).unwrap();
+    let mut marked = plain.clone();
+    marked[b"%PDF-1.7\n%".len()..][..4].copy_from_slice(pdf_worker::MARKER);
+    let xref = marked.windows(7).position(|w| w == b"xref\n0 ").unwrap();
+    let start = xref
+        + marked[xref..]
+            .iter()
+            .enumerate()
+            .filter(|&(_, &b)| b == b'\n')
+            .nth(1)
+            .unwrap()
+            .0
+        + 1;
+    // Point the catalog's row at object 2. The marker still matches.
+    marked.copy_within(start + 40..start + 50, start + 20);
+    std::fs::write(path("bad-xref.pdf"), &marked).unwrap();
     std::fs::write(path("bad.pdf"), b"not a PDF").unwrap();
     let titled = titled_pdf(&["T1"], Some("Kept"));
     std::fs::write(path("titled.pdf"), &titled).unwrap();
@@ -2643,6 +2659,8 @@ fn save_records_as_pdf_appends_and_refuses_what_it_would_not_keep() {
         errors("$b"),
         save("records.pdf", true),
         errors("$g"),
+        save("bad-xref.pdf", true),
+        errors("$h"),
         save("plain.pdf", true),
         errors("$c"),
         save("new.pdf", true),
@@ -2653,7 +2671,7 @@ fn save_records_as_pdf_appends_and_refuses_what_it_would_not_keep() {
         errors("$f"),
         set_field(
             "Note",
-            "$a & \"|\" & $b & \"|\" & $g & \"|\" & $c & \"|\" & $d & \"|\" & $e & \"|\" & $f",
+            "$a & \"|\" & $b & \"|\" & $g & \"|\" & $c & \"|\" & $d & \"|\" & $e & \"|\" & $f & \"|\" & $h",
         ),
         // Commit Records: the script's end does not save the field.
         step(75),
@@ -2669,7 +2687,7 @@ fn save_records_as_pdf_appends_and_refuses_what_it_would_not_keep() {
     });
     run(&mut app, "Append");
     wait_idle(&mut app);
-    assert_eq!(notes(&state)[0].as_deref(), Some("0|0|0|3|0|3|3"));
+    assert_eq!(notes(&state)[0].as_deref(), Some("0|0|0|3|0|3|3|3"));
     let pages = |name: &str| {
         pdf_worker::info(&std::fs::read(path(name)).unwrap())
             .unwrap()
@@ -2680,6 +2698,7 @@ fn save_records_as_pdf_appends_and_refuses_what_it_would_not_keep() {
     assert!(once > 0);
     assert_eq!(pages("records.pdf"), 3 * once);
     assert_eq!(std::fs::read(path("plain.pdf")).unwrap(), plain);
+    assert_eq!(std::fs::read(path("bad-xref.pdf")).unwrap(), marked);
     assert_eq!(std::fs::read(path("bad.pdf")).unwrap(), b"not a PDF");
     assert_eq!(std::fs::read(path("titled.pdf")).unwrap(), titled);
 }
