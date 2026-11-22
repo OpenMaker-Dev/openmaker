@@ -161,8 +161,8 @@ several paragraph styles, are refused. Common object flags other than the anchor
 tab-order (`kTabOrderOmit`, which nothing printed shows) and slide-up bits,
 and on a line its start corner, refuse output. A line runs
 between the corners its start bits name, as Browse draws it (layout-model.md
-5.3.1), without Browse's half-width extension of its ends. Sliding left and Hide when
-printing are decoded but refused ([report sliding](report-sliding.md)). The supported slice does not silently clip oversized
+5.3.1), without Browse's half-width extension of its ends. Sliding up and left and Hide when
+printing print as [report sliding](report-sliding.md) describes, which also lists what of them is refused. The supported slice does not silently clip oversized
 objects or drop records returned incompletely by the provider.
 
 Target/container/variable/currently-open-PDF destinations, blank records,
