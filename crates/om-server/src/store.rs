@@ -231,6 +231,9 @@ pub struct Journal {
     /// Per table, the record ids the commit added to and removed from its
     /// record list `[T, 0d]`.
     ids: BTreeMap<Vec<u8>, (Vec<u64>, Vec<u64>)>,
+    /// Container names of deleted script records, by table. Their releases
+    /// are checked once all the commit's record changes are in the tree.
+    deleted_container_refs: BTreeMap<Vec<u8>, BTreeMap<Vec<u8>, i32>>,
     /// The indexes whose counts the commit's records changed.
     recount: BTreeSet<Recount>,
     /// Per index that disagrees with the current rules, the records the
@@ -701,6 +704,7 @@ impl Store {
             undo: Vec::new(),
             saved: BTreeSet::new(),
             ids: BTreeMap::new(),
+            deleted_container_refs: BTreeMap::new(),
             recount: BTreeSet::new(),
             sweep: BTreeMap::new(),
             schema: false,
@@ -805,6 +809,22 @@ impl Store {
         new: Option<&OwnedNode>,
         counted: &[Vec<u8>],
     ) {
+        if new.is_none() {
+            for cell in old.iter().flat_map(|r| &r.children) {
+                if self.container_cell(table, &cell.segment) {
+                    if let Some(member) = member_key(cell) {
+                        let count = journal
+                            .deleted_container_refs
+                            .entry(table.to_vec())
+                            .or_default()
+                            .entry(member)
+                            .or_default();
+                        *count = count.saturating_add(1);
+                    }
+                }
+            }
+            return;
+        }
         let mut deltas: BTreeMap<Vec<u8>, i32> = BTreeMap::new();
         for member in counted {
             *deltas.entry(member.clone()).or_default() -= 1;
@@ -819,6 +839,25 @@ impl Store {
             }
         }
         self.adjust_container_counts(journal, table, deltas);
+    }
+
+    /// Retained text from a converted field can name a member without a
+    /// counted reference. Protect the names that remain in records and
+    /// globals, scanning each affected table only once per script commit.
+    pub fn release_deleted_record_containers(&mut self, journal: &mut Journal) {
+        for (table, removed) in std::mem::take(&mut journal.deleted_container_refs) {
+            let naming = self.naming_cells(&table, &[], &BTreeSet::new());
+            let deltas = removed
+                .into_iter()
+                .map(|(member, removed)| {
+                    let surviving = naming.get(&member).copied().unwrap_or_default();
+                    let release =
+                        self.guarded_container_release(&table, &member, 0, surviving, removed);
+                    (member, -release)
+                })
+                .collect();
+            self.adjust_container_counts(journal, &table, deltas);
+        }
     }
 
     fn adjust_container_counts(
@@ -905,7 +944,7 @@ impl Store {
     /// Releases can spend only pre-existing references left after
     /// protecting surviving names. Acquisitions from this change are
     /// reserved for its new cells, even when old text named the same key.
-    fn schema_release(
+    fn guarded_container_release(
         &self,
         table: &[u8],
         member: &[u8],
@@ -920,7 +959,7 @@ impl Store {
         let release = available.clamp(0, i64::from(removed)) as i32;
         if release < removed {
             warn!(
-                "{}: table {table:02x?} member {member:02x?}: held {} schema release(s)",
+                "{}: table {table:02x?} member {member:02x?}: held {} container release(s)",
                 self.name,
                 removed - release
             );
@@ -1936,13 +1975,30 @@ impl Store {
         table: &[u8],
         environment: &mut dyn FnMut() -> RecordEnvironment,
     ) -> Result<bool, &'static str> {
+        if self.is_read_only() {
+            return Err("the file is hosted read-only");
+        }
         let Some(definition) = be_uint(table).and_then(|t| self.catalog.table(t)).cloned() else {
             return Ok(false);
         };
-        let work = self.deferred_work(table)?;
-        let basis = recalc::table_basis(&self.root, &definition);
+        let preflight = (|| {
+            let work = self.deferred_work(table)?;
+            let basis = recalc::table_basis(&self.root, &definition);
+            let retyped = recalc::retyped_to_container(self.basis.get(table), &basis)?;
+            Ok((work, basis, retyped))
+        })();
+        let (work, basis, retyped) = match preflight {
+            Ok(prepared) => prepared,
+            Err(reason) => {
+                warn!(
+                    "{}: table {table:02x?}: deferred work kept, hosting read-only: {reason}",
+                    self.name
+                );
+                self.set_read_only();
+                return Err(reason);
+            }
+        };
         let stale = recalc::changed_fields(self.basis.get(table), &basis, &work);
-        let retyped = recalc::retyped_to_container(self.basis.get(table), &basis)?;
         let list = Self::deferred_path(table);
         let mut changed = self.root.remove(&list).is_some();
         // Every field the work names keeps its own cells: a field deleted in
@@ -2333,7 +2389,8 @@ impl Store {
                 .map(|(member, &(added, removed, counted))| {
                     let surviving =
                         naming.get(member).copied().unwrap_or_default() - i64::from(removed);
-                    let release = self.schema_release(table, member, counted, surviving, removed);
+                    let release =
+                        self.guarded_container_release(table, member, counted, surviving, removed);
                     (member.clone(), added - counted - release)
                 })
                 .collect();
@@ -2442,7 +2499,7 @@ impl Store {
         let path: [&[u8]; 2] = [table, &[LIBRARY]];
         for (member, removed) in removed {
             let surviving = naming.get(&member).copied().unwrap_or_default();
-            let release = self.schema_release(table, &member, 0, surviving, removed);
+            let release = self.guarded_container_release(table, &member, 0, surviving, removed);
             if release == 0 {
                 continue;
             }

@@ -202,11 +202,6 @@ pub struct Outcome {
 /// in memory (#427's review).
 pub const CONTAINER_BUDGET: usize = 256 << 20;
 
-/// What a queued record holds beyond its results' slots ([`CONTAINER_BUDGET`]).
-const QUEUED_RECORD: usize = 11 * std::mem::size_of::<(u64, ContainerResult)>()
-    + std::mem::size_of::<(Vec<u8>, BTreeMap<u64, ContainerResult>)>()
-    + 64;
-
 /// Recompute `recalc`'s calculations on every record under `records`
 /// (`[T, 05]`), in place, one record at a time: a record whose values
 /// change gets them and its modification count one higher (as op73's
@@ -233,7 +228,16 @@ pub fn recompute_records(
         if per_record {
             shared = environment();
         }
-        let result = recalc.recompute(&texts(record), &shared, &mut budget);
+        let queue = &mut outcome.containers;
+        let growth = if queue.len() == queue.capacity() {
+            queue.capacity().max(1)
+        } else {
+            0
+        };
+        let overhead = growth * std::mem::size_of::<(Vec<u8>, BTreeMap<u64, ContainerResult>)>()
+            + record.segment.len();
+        let mut available = budget.saturating_sub(overhead);
+        let result = recalc.recompute(&texts(record), &shared, &mut available);
         // A calculation failing in several repetitions of the record is
         // one record it failed on.
         let mut seen = BTreeSet::new();
@@ -257,13 +261,13 @@ pub fn recompute_records(
             continue;
         }
         if !result.containers.is_empty() {
-            // The record's own map and queue entry, beyond the slots its
-            // results were charged: a B-tree leaf of eleven slots however
-            // few it holds, the entry and the record's key (#427's review).
-            budget = budget.saturating_sub(QUEUED_RECORD + record.segment.len());
-            outcome
-                .containers
-                .push((record.segment.clone(), result.containers));
+            // A result costs at least one node, so a nonempty map means
+            // its costs and the record's queue allocation both fit.
+            budget = available;
+            if growth != 0 {
+                queue.reserve_exact(growth);
+            }
+            queue.push((record.segment.clone(), result.containers));
         }
         for (field, text) in &result.values {
             let key = uint_segment(*field);

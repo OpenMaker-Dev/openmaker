@@ -124,7 +124,7 @@ const LIMIT_EXCEPTION: &str = "IMP_LIMIT";
 
 /// Download lock error for a key the session may not read yet (FileMaker
 /// error 200, "record access is denied"; OpenMaker's choice).
-const ACCESS_DENIED: u16 = 200;
+pub(crate) const ACCESS_DENIED: u16 = 200;
 /// FileMaker's error for a file id not open on the connection
 /// (`kFileMissing`, containers.md 3.2).
 const FILE_NOT_OPEN: u16 = 100;
@@ -2485,7 +2485,7 @@ fn query(
         (Some(file), Some(program))
             if file.account.is_some()
                 && !(query_changes_file(&program)
-                    && (file.hosted.read_only || !full_access(file))) =>
+                    && (file.hosted.is_read_only() || !full_access(file))) =>
         {
             let context = QueryContext {
                 file_id: file.hosted.id,
@@ -2493,6 +2493,9 @@ fn query(
             };
             let outcome = {
                 let store = file.hosted.read_store();
+                if store.is_read_only() && query_changes_file(&program) {
+                    return Err(Refused.into());
+                }
                 let restricted = !full_access(file);
                 let source = QuerySource {
                     store: &store,
@@ -2537,9 +2540,16 @@ fn query(
                 }
                 let released = {
                     let mut store = file.hosted.write_store();
-                    store.write_issued_member_keys();
+                    if store.is_read_only() && !outcome.writes.is_empty() {
+                        return Err(Refused.into());
+                    }
                     store.store_indexes_on_demand();
-                    store.apply(outcome.writes)
+                    if store.is_read_only() {
+                        Vec::new()
+                    } else {
+                        store.write_issued_member_keys();
+                        store.apply(outcome.writes)
+                    }
                 };
                 // A deleted table's library is gone: so are its thumbnails.
                 let mut thumbnails = file.hosted.thumbnails.lock().expect("thumbnail lock");
@@ -2700,7 +2710,7 @@ fn writable<'s>(peer: &str, session: &'s Session, header: &Header) -> Option<&'s
         info!("{peer}: refusing a write before Login");
         return None;
     }
-    if file.hosted.read_only {
+    if file.hosted.is_read_only() {
         info!(
             "{peer}: refusing a write to read-only {:?}",
             file.hosted.name
@@ -2880,7 +2890,7 @@ fn get_serial(session: &Session, header: &Header, txn: &[u8]) -> Result<Vec<u8>,
         .get(&header.file_id)
         // Reserving a value and Set Next Serial Value both save the field:
         // a record write, refused to [Read-Only Access] as `writable` does.
-        .filter(|f| f.account.is_some() && !f.hosted.read_only && !views_records_only(f))
+        .filter(|f| f.account.is_some() && !f.hosted.is_read_only() && !views_records_only(f))
         // A serial is taken for a new record of its table.
         .filter(|f| {
             may_ever(
@@ -3046,8 +3056,11 @@ fn upload_to_file(
         request.dest,
         payload.len().max(request.terminal.len())
     );
-    hosted.write_store().put_subtree(&request.dest, node);
-    hosted.save();
+    let mut store = hosted.write_store();
+    if !store.is_read_only() {
+        store.put_subtree(&request.dest, node);
+        let _ = hosted.save_held(&mut store);
+    }
     Ok(())
 }
 
@@ -3070,13 +3083,12 @@ fn update_table(
         let account = file.account.as_deref().map_or("", |account| &account.name);
         let mut environment =
             || recalc::record_environment(account, recalc::uuid_text(shared.random()));
-        let changed = file
-            .hosted
-            .write_store()
+        let mut store = file.hosted.write_store();
+        let changed = store
             .update_table(table, &mut environment)
             .map_err(|reason| PerformError::Status(reason.into()))?;
         if changed {
-            file.hosted.save();
+            let _ = file.hosted.save_held(&mut store);
         }
     }
     Ok(schema::update_table_reply())

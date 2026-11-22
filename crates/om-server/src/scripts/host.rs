@@ -4488,7 +4488,7 @@ impl ServerHost {
         step: &str,
         edit: impl FnOnce(&crate::hosting::ModStamp<'_>) -> HostResult<bool>,
     ) -> HostResult {
-        if self.hosted.read_only {
+        if self.hosted.is_read_only() {
             info!(
                 "{:?}: {step} changed nothing: the file is hosted read-only",
                 self.hosted.name

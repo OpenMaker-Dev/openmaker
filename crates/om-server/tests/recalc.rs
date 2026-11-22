@@ -36,6 +36,15 @@ const BUILD_INDEX: u32 = 0x10;
 /// FileMaker Pro saves a field change (schema-path.md 2.3a), each reply
 /// checked.
 fn save_field_catalog(session: &mut Session, file: u32, catalog: &OwnedNode) {
+    let reply = try_save_field_catalog(session, file, catalog);
+    assert_eq!(reply.unwrap(), schema::update_table_reply());
+}
+
+fn try_save_field_catalog(
+    session: &mut Session,
+    file: u32,
+    catalog: &OwnedNode,
+) -> Result<Vec<u8>, om_session::SessionError> {
     let t = uint_segment(TABLE);
     let mut id = 1000;
     let mut next = || {
@@ -119,7 +128,6 @@ fn save_field_catalog(session: &mut Session, file: u32, catalog: &OwnedNode) {
         ))
         .unwrap();
     let reply = session.perform(&schema::build_update_table(next(), file, &vec![t.clone()]));
-    assert_eq!(reply.unwrap(), schema::update_table_reply());
     for release in [
         unlock(vec![vec![8]], write::LOCK_WRITE, 3, SCHEMA_TXN),
         unlock(
@@ -133,6 +141,7 @@ fn save_field_catalog(session: &mut Session, file: u32, catalog: &OwnedNode) {
             .perform(&write::build_unlock(next(), file, &release))
             .unwrap();
     }
+    reply
 }
 
 /// The Tasks field catalog `[T, 03]` of `root`.
@@ -448,6 +457,42 @@ fn deferred_work_a_stop_interrupted_is_finished_at_startup() {
     let (mut client, _) = server::logged_in(server::start(&file), "client");
     let records = records_of(&mut client, TABLE);
     assert!(cell(&records, 1, NAME).is_some());
+    assert_eq!(cell(&records, 1, DOUBLED), Some("6"));
+    assert_eq!(std::fs::read(&file.0).unwrap(), before);
+}
+
+#[test]
+fn refused_live_deferred_work_keeps_the_host_read_only() {
+    let root = fixture::tree(&[], true);
+    let file = TempFile::from_tree("recalc-live-unknown-old-type", &root);
+    let port = server::start(&file);
+    let (mut designer, id) = server::logged_in(port, "designer");
+    let (mut writer, writer_id) = server::logged_in(port, "writer");
+    let mut catalog = field_catalog(&root);
+    set_formula(&mut catalog, DOUBLED, "Count * 4");
+    defer(&mut catalog, DOUBLED, FORMULA_CHANGED);
+    // op13 saves the new catalog, but op73 cannot classify this removal.
+    defer(&mut catalog, 46, 0x1e1);
+    assert!(try_save_field_catalog(&mut designer, id, &catalog).is_err());
+
+    let table = uint_segment(TABLE);
+    let pending = [&table[..], &[3], &[1], &[0xfd]];
+    let saved = om_hbam::HbamFile::open(&file.0).unwrap();
+    assert!(saved.key_tree().unwrap().node(&pending).is_some());
+    let before = std::fs::read(&file.0).unwrap();
+    let request = write::CreateRecord {
+        table: vec![table],
+        count: 1,
+        txn: 0x51,
+    };
+    let reply = writer
+        .perform(&write::build_create_record(1, writer_id, &request))
+        .unwrap();
+    assert_eq!(
+        write::parse_create_record_reply(&reply).unwrap().status,
+        200
+    );
+    let records = records_of(&mut writer, TABLE);
     assert_eq!(cell(&records, 1, DOUBLED), Some("6"));
     assert_eq!(std::fs::read(&file.0).unwrap(), before);
 }
@@ -1140,4 +1185,93 @@ fn deleting_a_converted_field_preserves_the_member_owned_by_photo() {
         .unwrap();
     assert_eq!(count.node_state, om_protocol::NodeState::Terminal);
     assert_eq!(count.value, 1u32.to_be_bytes());
+}
+
+#[test]
+fn deleting_a_record_preserves_the_member_named_by_a_surviving_cell() {
+    use fixture::{exit_with, go_to_record, on, script};
+    use om_scripts::ScriptStep;
+
+    const ENTERED: u64 = 46;
+    const GLOBAL: u64 = 47;
+    let table = uint_segment(TABLE);
+    let field = uint_segment(ENTERED);
+    let photo = uint_segment(fixture::PHOTO);
+    let global = uint_segment(GLOBAL);
+    let reference = om_data::containers::reference_text(&[1]);
+
+    for global_owner in [false, true] {
+        let delete = script(
+            4,
+            "Delete converted row",
+            vec![
+                on(86, true),
+                go_to_record(2),
+                ScriptStep::new(9),
+                exit_with("Get ( LastError )"),
+            ],
+        );
+        let mut root = fixture::tree(&[delete], true);
+        fixture::add_photo(&mut root);
+        if global_owner {
+            fixture::add_field(
+                &mut root,
+                TABLE,
+                GLOBAL,
+                "Global Photo",
+                1,
+                6,
+                0,
+                0x1_0000,
+                0,
+            );
+            root.remove(&[&table, &[5], &[1], &photo]);
+            root.put(
+                &[&table, &[8], &global],
+                om_scripts::text_node(&[], &reference),
+            );
+        }
+        fixture::add_field(&mut root, TABLE, ENTERED, "Entered", 1, 1, 0, 0, 0);
+        root.put(
+            &[&table, &[5], &[2], &field],
+            om_scripts::text_node(&[], &reference),
+        );
+        let file = TempFile::from_tree("recalc-delete-record", &root);
+        let (mut designer, id) = server::logged_in(server::start(&file), "designer");
+        fixture::add_field(&mut root, TABLE, ENTERED, "Entered", 2, 6, 0, 0x20, 0);
+        fixture::add_formula(
+            &mut root,
+            &fixture::names(),
+            (TABLE, OCCURRENCE),
+            ENTERED,
+            5,
+            "Notes::Body",
+        );
+        let mut catalog = field_catalog(&root);
+        defer(&mut catalog, ENTERED, 0x40 | FORMULA_CHANGED);
+        save_field_catalog(&mut designer, id, &catalog);
+        let records = records_of(&mut designer, TABLE);
+        assert_eq!(cell(&records, 2, ENTERED), Some(reference.as_str()));
+
+        let result = designer.perform_script_on_server(4, "", true).unwrap();
+        assert_eq!((result.error, result.result.as_str()), (0, "0"));
+        let saved = om_hbam::HbamFile::open(&file.0).unwrap();
+        let tree = saved.key_tree().unwrap();
+        assert!(tree.node(&[&table, &[5], &[2]]).is_none());
+        let owner = if global_owner {
+            tree.node(&[&table, &[8], &global])
+        } else {
+            tree.node(&[&table, &[5], &[1], &photo])
+        };
+        let value = owner
+            .and_then(|n| om_hbam::Cell::from_node(n).text())
+            .unwrap()
+            .unwrap();
+        assert_eq!(value, reference);
+        let count = designer
+            .download(&[&table, &[0x1f], &[5], &[1], &[0x12]])
+            .unwrap();
+        assert_eq!(count.node_state, om_protocol::NodeState::Terminal);
+        assert_eq!(count.value, 1u32.to_be_bytes());
+    }
 }

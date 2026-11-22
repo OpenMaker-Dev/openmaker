@@ -2481,15 +2481,19 @@ calculation keeps its entered values until the recompute writes its
 results, so a calculation the recompute cannot evaluate loses nothing.
 A cell can still name a member without having counted a reference,
 for example when an ordinary Text field becomes a container
-calculation and the calculation cannot be evaluated. Both recompute and
-deferred schema cleanup protect the references named by surviving
-record or global cells before releasing old names. Recompute reserves
+calculation and the calculation cannot be evaluated. Recompute, deferred
+schema cleanup and server-script Delete Record protect the references
+named by surviving record or global cells before releasing old names. Recompute reserves
 each new acquisition separately, including when a newly created member
 receives a key that old text happens to name. When names do not establish
-ownership, the server may retain a count and logs the held release (inf). The new container data held for the library during one walk is
-limited to 256 MiB, charged as each result is queued (its data, text and
-slot) and per queued record (its map and entry); past it a result fails
-on its record. A
+ownership, the server may retain a count and logs the held release (inf).
+One recompute meters 256 MiB of queued container results. It charges
+each result for a full 11-slot B-tree node with edges and metadata, and
+for text, file names, styles, streams and shared buffer or library handles.
+The queue's allocated record slots and record keys also count before
+admission. The charge counts shared allocations per result and excludes
+allocator overhead, temporary formula evaluation, and non-container
+results. A result that does not fit keeps its old cell. A
 calculation that reads a container result recomputed in the same change
 is skipped, since it would read the old value, and so is one reading a
 calculation skipped so. How FileMaker Server stores a recomputed
@@ -2545,10 +2549,10 @@ basis. For a recognized list that does not request removal or conversion
 of stored values, `Store::recover` finishes the work and recomputes
 the stored calculations with guarded library accounting. A malformed
 or unsupported list, or deferred removal or conversion that requires an
-unknown old field type, leaves the work and values in place. Startup
-hosts that file read-only. A live op73 rejects those cases before
-removing the work list or changing any stored values (inf: FileMaker
-Server's restart behavior is unmeasured).
+unknown old field type, leaves the work and values in place. Both startup
+recovery and a live op73 refusal put the file in read-only mode before
+removing any work or changing any values (inf: FileMaker Server's restart
+behavior is unmeasured).
 
 **What else read the schema (2026-10-29, review fix).** The store counts
 schema changes (`Store::schema_generation`: every catalog op13 or op86

@@ -555,18 +555,30 @@ fn container_result(value: om_calc::Value, text: String) -> Result<ContainerResu
     Ok(ContainerResult::Text(text))
 }
 
-/// What `result` holds in memory until the host stores it: its data, its
-/// text or file name, and its slot in the record's map. The map itself is
-/// the host's to charge.
+/// Charge each result for a whole map node so a split, including a new
+/// root, can never leave a sparsely filled node uncharged. Rust's B-tree
+/// nodes have 11 key/value slots and up to 12 edges. Allow four extra
+/// words for node metadata and alignment.
 fn held_cost(result: &ContainerResult) -> usize {
-    std::mem::size_of::<(u64, ContainerResult)>()
-        + match result {
-            ContainerResult::Empty => 0,
-            ContainerResult::Text(text) => text.len(),
-            ContainerResult::Data(c) => {
-                c.text.as_str().len() + c.streams.iter().map(|(_, b)| b.len()).sum::<usize>()
-            }
+    use std::mem::size_of;
+
+    const NODE: usize = 11 * size_of::<(u64, ContainerResult)>() + 16 * size_of::<usize>();
+    const ARC_HEADER: usize = 2 * size_of::<usize>();
+    NODE + match result {
+        ContainerResult::Empty => 0,
+        ContainerResult::Text(text) => text.capacity(),
+        ContainerResult::Data(c) => {
+            let streams = c.streams.capacity() * size_of::<(om_calc::StreamType, Vec<u8>)>()
+                + c.streams.iter().map(|(_, b)| b.capacity()).sum::<usize>();
+            let expanded = c.decompressed.as_ref().map_or(0, |bytes| {
+                ARC_HEADER + size_of::<Vec<u8>>() + bytes.capacity()
+            });
+            let library = c.library.as_ref().map_or(0, |reference| {
+                ARC_HEADER + size_of::<om_calc::LibraryRef>() + reference.member.capacity()
+            });
+            c.text.heap_capacity_bytes() + streams + expanded + library
         }
+    }
 }
 
 /// Whether the cell text `stored` of a record of `table` already holds
