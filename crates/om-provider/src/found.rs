@@ -31,7 +31,7 @@ use om_query::find::{
 };
 use om_query::keys::{record_value_keys, word_keys, TextKeys, EMPTY_TEXT_KEY, INVALID_KEY};
 
-use crate::calc::{check_sort_match_path, NativeSource};
+use crate::calc::{check_sort_path, NativeSource};
 use crate::{download_records, download_tree, failure, record_ids, NativeProvider};
 
 /// Records downloaded per request while sorting.
@@ -1467,30 +1467,7 @@ impl NativeProvider {
             let path = schema
                 .path(from, occurrence)
                 .ok_or_else(|| unsupported("its occurrence is not related to the layout's."))?;
-            check_sort_match_path(&schema, &path)?;
-            // The relationships' own sort reads unstored calculations and
-            // summaries as empty (`om_data::host::sort_records`): a first
-            // related record ordered by one would be guessed.
-            let computed = |hop: &Hop| {
-                hop.sort.as_ref().is_some_and(|spec| {
-                    spec.fields.iter().any(|entry| {
-                        let occurrence = entry.field.occurrence.unwrap_or(hop.to);
-                        entry.summary.is_some()
-                            || schema
-                                .field(occurrence, entry.field.field)
-                                .is_none_or(|def| {
-                                    def.is_unstored_calculation()
-                                        || def.class == om_data::host::FieldClass::Summary
-                                })
-                    })
-                })
-            };
-            if path.iter().any(computed) {
-                return Err(unsupported(
-                    "a relationship on the way sorts its records by a calculation or summary \
-                     OpenMaker does not compute there.",
-                ));
-            }
+            check_sort_path(&schema, &path)?;
         }
         Ok(RelatedSort {
             name: name.to_owned(),

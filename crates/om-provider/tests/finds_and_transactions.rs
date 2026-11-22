@@ -2494,40 +2494,91 @@ fn a_related_sort_orders_by_the_first_related_records_value() {
 #[test]
 fn a_related_sort_refuses_an_unsupported_path_inside_a_calculation() {
     use om_data::found::{SortField, SortOrder};
+    use om_data::meta::relation_option::SORT_LEFT_TO_RIGHT;
+    use om_scripts::specs::{SortEntry, SortSpec, SpecField};
 
-    let file = file_with("related-sort-calculation", &[], |root| {
-        use fixture::{NOTES_BY_KEY, NOTES_OCCURRENCE, TASK};
-        fixture::add_calculated(root);
-        // Notes by key -> Tasks has stored match fields. The calculation
-        // Tasks::Notes follows a different path, Tasks -> Notes.
-        fixture::add_relationship(root, 2, (OCCURRENCE, NAME), 0, (NOTES_BY_KEY, TASK));
-        fixture::add_relationship(root, 1, (OCCURRENCE, NAME), 6, (NOTES_OCCURRENCE, TASK));
-        root.put(
-            &[&[4], &[5], &uint_segment(fixture::NOTES_LAYOUT), &[2]],
-            OwnedNode::leaf(Vec::new(), fixture::layout_def(NOTES_BY_KEY)),
-        );
-        root.put(
-            &[
-                &uint_segment(fixture::NOTES),
-                &[5],
-                &serial::encode(1),
-                &uint_segment(TASK),
-            ],
-            text_node(&[], "Ship"),
-        );
-    });
-    let (port, ca_pem) = host(&file.0);
-    let mut provider = open(port, &ca_pem);
-    let notes = layout(&mut provider, "Notes");
-    let before = ids_of(&all_records(&mut provider, notes));
-    let error = provider
-        .change_found_set(
-            notes,
-            FoundSetChange::Sort(vec![SortField::new("Tasks::Notes", SortOrder::Descending)]),
-        )
-        .unwrap_err();
-    assert_eq!(error.code, Some(3));
-    assert_eq!(ids_of(&all_records(&mut provider, notes)), before);
+    for (tag, predicate, refused) in [
+        ("cartesian", 6, "Cartesian predicates"),
+        ("computed-order", 0, "A relationship sorts by a calculation"),
+    ] {
+        let file = file_with(tag, &[], |root| {
+            use fixture::{NOTES, NOTES_BY_KEY, NOTES_OCCURRENCE, TASK};
+            fixture::add_calculated(root);
+            // Notes by key -> Tasks has stored match fields. The calculation
+            // Tasks::Notes follows a different path, Tasks -> Notes.
+            fixture::add_relationship(root, 2, (OCCURRENCE, NAME), 0, (NOTES_BY_KEY, TASK));
+            fixture::add_relationship(
+                root,
+                1,
+                (OCCURRENCE, NAME),
+                predicate,
+                (NOTES_OCCURRENCE, TASK),
+            );
+            if predicate == 0 {
+                // Define an unstored field used only as the nested sort key.
+                fixture::add_field(root, NOTES, COUNT, "Rank", 2, 2, 0, 0x2_0000, 0);
+                let unsorted = SortSpec {
+                    keep_sorted: false,
+                    blanks_last: false,
+                    fields: Vec::new(),
+                };
+                let sorted = SortSpec {
+                    fields: vec![SortEntry {
+                        field: SpecField {
+                            occurrence: Some(NOTES_OCCURRENCE),
+                            field: COUNT,
+                            repetition: 1,
+                        },
+                        summary: None,
+                        value_list: None,
+                        descending: false,
+                        locale: 0,
+                    }],
+                    ..unsorted.clone()
+                };
+                let mut definition = Vec::new();
+                for id in [OCCURRENCE, NOTES_OCCURRENCE] {
+                    let segment = uint_segment(id);
+                    definition.extend([segment.len() as u8 + 1, segment.len() as u8]);
+                    definition.extend(segment);
+                }
+                definition.extend(sorted.encode());
+                definition.extend(unsorted.encode());
+                definition.extend(SORT_LEFT_TO_RIGHT.to_be_bytes());
+                root.put(
+                    &[&[3], &[0xfb], &[5], &[1], &[2]],
+                    OwnedNode::leaf(Vec::new(), definition),
+                );
+            }
+            root.put(
+                &[&[4], &[5], &uint_segment(fixture::NOTES_LAYOUT), &[2]],
+                OwnedNode::leaf(Vec::new(), fixture::layout_def(NOTES_BY_KEY)),
+            );
+            root.put(
+                &[
+                    &uint_segment(NOTES),
+                    &[5],
+                    &serial::encode(1),
+                    &uint_segment(TASK),
+                ],
+                text_node(&[], "Ship"),
+            );
+        });
+        let (port, ca_pem) = host(&file.0);
+        let mut provider = open(port, &ca_pem);
+        let notes = layout(&mut provider, "Notes");
+        let before = ids_of(&all_records(&mut provider, notes));
+        let error = provider
+            .change_found_set(
+                notes,
+                FoundSetChange::Sort(vec![SortField::new("Tasks::Notes", SortOrder::Descending)]),
+            )
+            .unwrap_err();
+        assert_eq!(error.code, Some(3));
+        assert!(error.message.contains(refused), "{error:?}");
+        assert_eq!(ids_of(&all_records(&mut provider, notes)), before);
+        provider.close();
+    }
 }
 
 #[test]

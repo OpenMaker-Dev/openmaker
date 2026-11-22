@@ -39,9 +39,9 @@ mod demand;
 pub(crate) use demand::rule_reads;
 mod related;
 
-/// A related sort accepts paths whose match values are stored. Check both
-/// sides of each hop, including when a calculation follows a path of its own.
-pub(crate) fn check_sort_match_path(schema: &CalcSchema, path: &[Hop]) -> Result<(), DataError> {
+/// Check the paths used to read a related sort key, including paths its
+/// calculations follow while choosing the first related record.
+pub(crate) fn check_sort_path(schema: &CalcSchema, path: &[Hop]) -> Result<(), DataError> {
     for hop in path {
         for predicate in &hop.predicates {
             let unstored = |occurrence, field| {
@@ -58,6 +58,25 @@ pub(crate) fn check_sort_match_path(schema: &CalcSchema, path: &[Hop]) -> Result
                     "Related sorts do not support Cartesian predicates or unstored match fields.",
                 ));
             }
+        }
+        // The relationship sorter reads unstored calculations and summaries
+        // as empty, so using that order could select the wrong record.
+        let unsupported_order = hop.sort.as_ref().is_some_and(|order| {
+            order.fields.iter().any(|entry| {
+                let occurrence = entry.field.occurrence.unwrap_or(hop.to);
+                entry.summary.is_some()
+                    || schema
+                        .field(occurrence, entry.field.field)
+                        .is_none_or(|field| {
+                            field.is_unstored_calculation() || field.class == FieldClass::Summary
+                        })
+            })
+        });
+        if unsupported_order {
+            return Err(DataError::with_code(
+                om_data::found::code::UNSUPPORTED,
+                "A relationship sorts by a calculation or summary OpenMaker does not compute there.",
+            ));
         }
     }
     Ok(())
@@ -985,7 +1004,7 @@ impl CalcSource for NativeSource<'_> {
         }
         if self.related_limit.is_some() {
             if let Some(path) = schema.path(from, to) {
-                check_sort_match_path(schema, &path).map_err(|error| self.fail(error))?;
+                check_sort_path(schema, &path).map_err(|error| self.fail(error))?;
             }
         }
         let ids = if let Some(ids) = self.indexed_related(schema, from, record, to, cx)? {
