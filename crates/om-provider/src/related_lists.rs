@@ -45,7 +45,7 @@ use om_data::host::{CalcSchema, CalcSource, FileCalc, RecordValues};
 use om_data::meta::ValueSource;
 use om_data::rules::{error, Entry, HeldRecords, RecordPlan, Written};
 use om_data::DataError;
-use om_hbam::Table;
+use om_hbam::{DataType, Table};
 
 use crate::NativeProvider;
 
@@ -164,6 +164,16 @@ fn list_field(list: &om_data::meta::ValueList) -> u64 {
     match &list.source {
         ValueSource::Field { primary, .. } => primary.field,
         _ => 0,
+    }
+}
+
+/// [`not_checked`] for a check whose rule OpenMaker does not support
+/// (#571): an import ends at its row ([`DataError::unsupported`]) rather
+/// than skipping it.
+fn unsupported_check(field: &str, why: &str) -> DataError {
+    DataError {
+        unsupported: true,
+        ..not_checked(field, why)
     }
 }
 
@@ -624,13 +634,63 @@ impl NativeProvider {
             }
             let items = items.map_err(read)?;
             let items = items.ok_or_else(|| not_checked(&name, "its list is too long"))?;
-            let data_type = table
-                .field(field)
-                .map_or(om_hbam::catalog::DataType::Text, |f| f.data_type);
-            let listed = items
-                .iter()
-                .any(|item| om_data::rules::same_list_value(data_type, &item.value, &text, &cx));
-            if !listed {
+            let data_type = table.field(field).map_or(DataType::Text, |f| f.data_type);
+            // Text compares as the list's field keys it (#571): in its index
+            // language, 0 being the language of the file that owns its table
+            // (a related file's own, `table_context`), unknown when that
+            // file's locale record does not decode. A field of another type
+            // is keyed by value, whatever its language, and compares as it
+            // did.
+            let keys = schema.table_of(primary).and_then(|source| {
+                let def = source.fields.get(&listed)?;
+                if def.value_type != ValueType::Text {
+                    return Some(om_query::keys::TextKeys::Collated);
+                }
+                let file_language = match schema.table_context(source.id) {
+                    Some(file) => file.file_language(),
+                    None => schema.file_language(),
+                };
+                om_data::rules::value_text_keys(def.language, file_language)
+            });
+            let mut found = false;
+            for item in &items {
+                match om_data::rules::same_list_value(data_type, &item.value, &text, &cx, keys) {
+                    Some(true) => {
+                        found = true;
+                        break;
+                    }
+                    Some(false) => {}
+                    None => {
+                        return Err(unsupported_check(
+                            &name,
+                            "its list's field is indexed in a language whose keys OpenMaker \
+                             does not build",
+                        ))
+                    }
+                }
+            }
+            if !found {
+                // The list keeps one of the values a calculation compares
+                // equal (`FileCalc::list_entries`). A text rule's index keys
+                // can tell those apart, so the value it left out may be
+                // this one. For a typed rule, equal rendered strings can
+                // represent different values, such as 1e3 and 1é3.
+                let equal = |listed: &str| {
+                    matches!(
+                        om_data::calc::ops::compare(
+                            &om_data::calc::Value::text(listed),
+                            &om_data::calc::Value::text(&text),
+                            &cx
+                        ),
+                        om_data::calc::ops::Comparison::Ordered(std::cmp::Ordering::Equal)
+                    )
+                };
+                if data_type == DataType::Text && items.iter().any(|item| equal(&item.value)) {
+                    return Err(unsupported_check(
+                        &name,
+                        "its list's field keys apart values its list as computed takes as one",
+                    ));
+                }
                 return Err(plan.refusal(field, error::NOT_IN_LIST));
             }
         }

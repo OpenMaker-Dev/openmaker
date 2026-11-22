@@ -786,8 +786,20 @@ checked by the desktop at the commit (`om-provider` `related_lists.rs`).
 - **How:** the list is computed as a choice list computes it
   (`FileCalc::value_list_entries`, with the session's global values) for
   the record as the write leaves it. A changed value not among its values
-  is refused with 506. Text compares as English index keys, other types by
-  value, as for a list of one field's values.
+  is refused with 506. Text compares as the list's field keys it in its
+  value index, its index language's form, language 0 being that of the
+  file that owns the field's table (a related file's own, unknown when its
+  locale record does not decode). A text field indexed in a tailored
+  language refuses the check with 3 rather than compare in English, where
+  `Apfel` would be `Äpfel` ([#571](https://github.com/OpenMaker-Dev/openmaker/issues/571)).
+  A field of another type compares by value, whatever its language. The
+  computed list keeps one of the values a calculation compares equal. For
+  a text destination, the index keys can distinguish values the list
+  groups together (case or accents in Unicode raw or standard, `v` and `w`
+  in a Swedish file). If a text value matches only by calculation equality,
+  the check returns 3 because deduplication may have dropped an exact match.
+  That refusal ends an import (scripting.md). A numeric miss returns 506
+  and skips the row, even if the values' stored text compares equal.
 - **An existing record** is among its own related records with its
   unsaved values, as F91 saw for a related list FileMaker Pro shows. That
   validation reads the same list is inferred.
@@ -1464,6 +1476,15 @@ bytes as the index holds it (7.1), so a long value is checked against the
 values that share its first 109 weights, or code units in Unicode raw ([#177](https://github.com/OpenMaker-Dev/openmaker/issues/177)).
 Raw keys keep case, so `A` and `a` are two values there; FileMaker documents
 its Unicode index as case-sensitive, which was not measured.
+A value list of a field's values is checked in its source field's value
+index the same way: a text source field in a tailored language refuses
+the check with 3, on the client and on OpenMaker Server, rather than
+keying the value in English, which could both miss the host's key and
+match another value ([#571](https://github.com/OpenMaker-Dev/openmaker/issues/571)). A number, date, time or timestamp
+source is still looked up as text, whatever its language. A new record's
+refusal before its commit (unique, existing value, value list) is the
+write's, with its code: the record id it reserved stays unused, as
+FileMaker's reserved ids can (write-path.md 2).
 A definition marked indexed does not prove that the host has built the
 index (schema-path.md 6). Unique, Existing and
 field-backed value-list validation therefore read the value-index counts
@@ -1497,8 +1518,8 @@ limited to stored text keyed in its value form
 (`om_data::rules::value_text_keys`): English (21, 77), System (1), Unicode
 standard (3), Unicode raw (2), a language FileMaker leaves untailored, or
 language 0 resolved as above. A field-backed value list is checked in its
-source's value form too; with the host's index, a source in a tailored
-language is still looked up in English ([#571](https://github.com/OpenMaker-Dev/openmaker/issues/571)). Typed,
+source's value form too; a text source in a tailored language refuses the
+check with 3, with the host's index or without (above, [#571](https://github.com/OpenMaker-Dev/openmaker/issues/571)). Typed,
 tailored-language, global, summary or
 unstored sources are explicitly unsupported without an index; file date
 formats are consequently not interpreted by this fallback. A stored
