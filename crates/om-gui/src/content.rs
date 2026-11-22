@@ -1138,7 +1138,7 @@ impl LayoutWorkspace {
         &mut self,
         session: &Session,
         arrangement: om_data::layout_arrange::Arrangement,
-    ) -> bool {
+    ) -> Result<bool, om_data::layout_placement::Refusal> {
         self.canvas.arrange(session, arrangement)
     }
 

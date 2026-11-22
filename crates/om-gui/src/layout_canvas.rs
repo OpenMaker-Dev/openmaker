@@ -811,9 +811,9 @@ impl CanvasState {
         &mut self,
         session: &Session,
         arrangement: om_data::layout_arrange::Arrangement,
-    ) -> bool {
+    ) -> Result<bool, om_data::layout_placement::Refusal> {
         let Some(objects) = self.arrangeable(session) else {
-            return false;
+            return Ok(false);
         };
         // One change of the draft: a pending move keeps the revision it was
         // made on, so frames derived from it conflict at Save Layout if the
@@ -830,9 +830,7 @@ impl CanvasState {
                 frame: layout_rect(shown),
             })
             .collect();
-        let Ok(changed) = om_data::layout_arrange::arrange(&frames, arrangement) else {
-            return false;
-        };
+        let changed = om_data::layout_arrange::arrange(&frames, arrangement)?;
         for new in &changed {
             let Some(&(_, _, stored)) = objects.iter().find(|o| o.0 == new.object) else {
                 continue;
@@ -848,7 +846,7 @@ impl CanvasState {
                 self.moved.revision = revision;
             }
         }
-        !changed.is_empty()
+        Ok(!changed.is_empty())
     }
 
     pub(crate) fn can_delete_selection(&self, session: &Session) -> bool {
@@ -2559,7 +2557,9 @@ mod tests {
         // Centers of 80..90 and 120..130 meet at 105: A goes back to its
         // stored 100, and B to 100, a frame that comes from A's draft.
         use om_data::layout_arrange::Arrangement;
-        assert!(state.arrange(&session, Arrangement::AlignVerticalCenters));
+        assert!(state
+            .arrange(&session, Arrangement::AlignVerticalCenters)
+            .unwrap());
         assert_eq!(state.moved().frames.get(&1), None);
         assert_eq!(state.moved().frames.get(&2), Some(&at(100.0)));
         assert_eq!(state.moved().revision, Some(older));

@@ -36,6 +36,7 @@ pub enum Arrangement {
     /// gaps between neighbours are equal (inferred). Objects wider together
     /// than the space between the outermost edges get evenly spaced left
     /// edges instead, so their order stays (OpenMaker's choice).
+    /// If rounding would change that order, distribution is refused.
     DistributeHorizontally,
     /// As [`Arrangement::DistributeHorizontally`], along top edges.
     DistributeVertically,
@@ -136,9 +137,9 @@ pub fn arrangeable(frame: &Rect) -> bool {
 
 /// The frames `arrangement` gives `objects`: only those it changes, in the
 /// objects' order. Fewer objects than [`Arrangement::minimum`] change
-/// nothing; a frame that is not [`arrangeable`] is refused. Left and top
-/// edges land on whole points (and never below 0); widths and heights
-/// change only with Resize To.
+/// nothing; an input or output frame that is not [`arrangeable`] is
+/// refused. Changed left and top edges land on whole points (and never
+/// below 0); widths and heights change only with Resize To.
 pub fn arrange(
     objects: &[ObjectFrame],
     arrangement: Arrangement,
@@ -195,8 +196,8 @@ pub fn arrange(
                 .map(|r| at(r, r.left, y - height(r) / 2.0))
                 .collect()
         }
-        Arrangement::DistributeHorizontally => distribute(&frames, true),
-        Arrangement::DistributeVertically => distribute(&frames, false),
+        Arrangement::DistributeHorizontally => distribute(&frames, true)?,
+        Arrangement::DistributeVertically => distribute(&frames, false)?,
         Arrangement::SmallestWidth
         | Arrangement::SmallestHeight
         | Arrangement::SmallestWidthAndHeight
@@ -242,6 +243,16 @@ pub fn arrange(
                 .collect()
         }
     };
+    if let Some((object, _)) = objects
+        .iter()
+        .zip(&new)
+        .find(|(_, frame)| !arrangeable(frame))
+    {
+        return Err(Refusal::Invalid(format!(
+            "Arranging object {} would give it an invalid or point-sized frame.",
+            object.object
+        )));
+    }
     Ok(objects
         .iter()
         .zip(new)
@@ -279,12 +290,15 @@ fn at(r: &Rect, left: f64, top: f64) -> Rect {
 /// first and the last staying exactly where they are. When the objects do
 /// not fit between the outermost edges, equal gaps would be negative and
 /// could reverse their order; their leading edges are spaced evenly
-/// instead.
-fn distribute(frames: &[&Rect], horizontal: bool) -> Vec<Rect> {
+/// instead. Refuse if the rounded leading edges would change that order.
+fn distribute(frames: &[&Rect], horizontal: bool) -> Result<Vec<Rect>, Refusal> {
     let lead = |r: &Rect| if horizontal { r.left } else { r.top };
     let size = |r: &Rect| if horizontal { width(r) } else { height(r) };
+    let compare = |a: usize, b: usize, left: &Rect, right: &Rect| {
+        lead(left).total_cmp(&lead(right)).then(a.cmp(&b))
+    };
     let mut order: Vec<usize> = (0..frames.len()).collect();
-    order.sort_by(|&a, &b| lead(frames[a]).total_cmp(&lead(frames[b])).then(a.cmp(&b)));
+    order.sort_by(|&a, &b| compare(a, b, frames[a], frames[b]));
     let (first, last) = (order[0], order[order.len() - 1]);
     let (start, end) = (lead(frames[first]), lead(frames[last]));
     let span = end + size(frames[last]) - start;
@@ -301,7 +315,7 @@ fn distribute(frames: &[&Rect], horizontal: bool) -> Vec<Rect> {
         };
         next += size(frames[i]) + gap;
     }
-    frames
+    let new: Vec<_> = frames
         .iter()
         .zip(leads)
         .enumerate()
@@ -314,7 +328,18 @@ fn distribute(frames: &[&Rect], horizontal: bool) -> Vec<Rect> {
                 at(r, r.left, to)
             }
         })
-        .collect()
+        .collect();
+    // Use the same tie break as the next call would, including at both
+    // unchanged endpoints.
+    if order.windows(2).any(|pair| {
+        let (a, b) = (pair[0], pair[1]);
+        compare(a, b, &new[a], &new[b]).is_gt()
+    }) {
+        return Err(Refusal::Invalid(
+            "Distributing these objects on whole points would change their order.".into(),
+        ));
+    }
+    Ok(new)
 }
 
 #[cfg(test)]
@@ -499,7 +524,7 @@ mod tests {
             frame(3, 40.5, 0.0, 10.0, 5.0),
         ];
         let spaced = arrange(&fractional, Arrangement::DistributeHorizontally).unwrap();
-        assert!(spaced.iter().all(|f| f.object == 2), "{spaced:?}");
+        assert_eq!(spaced, [frame(2, 20.0, 0.0, 10.0, 5.0)]);
         // Too wide to fit: leading edges evenly spaced, order kept, and the
         // same again when repeated.
         let wide = [
@@ -532,5 +557,45 @@ mod tests {
             arrange(&line, Arrangement::AlignLeftEdges).unwrap().len(),
             1
         );
+    }
+
+    #[test]
+    fn distribution_refuses_rounding_that_would_change_order() {
+        let fractional_endpoints = [
+            frame(1, 100.5, 0.0, 10.0, 5.0),
+            frame(2, 100.625, 20.0, 10.0, 5.0),
+            frame(3, 100.875, 40.0, 10.0, 5.0),
+        ];
+        let tie_at_first = [
+            frame(2, 101.0, 20.0, 10.0, 5.0),
+            frame(1, 100.0, 10.5, 10.0, 5.0),
+            frame(3, 101.0, 40.0, 10.0, 5.0),
+            frame(4, 101.0, 60.0, 10.0, 5.0),
+        ];
+        let tie_at_last = [
+            frame(1, 30.0, 0.0, 0.0, 5.0),
+            frame(3, 31.0, 40.0, 1.0, 5.0),
+            frame(2, 30.0, 20.0, 0.0, 5.0),
+        ];
+        for objects in [&fractional_endpoints[..], &tie_at_first, &tie_at_last] {
+            assert!(matches!(
+                arrange(objects, Arrangement::DistributeHorizontally),
+                Err(Refusal::Invalid(_))
+            ));
+        }
+    }
+
+    #[test]
+    fn resize_refuses_an_output_frame_collapsed_to_a_point() {
+        let objects = [
+            frame(1, 0.0, 0.0, 0.0, 10.0),
+            frame(2, 20.0, 0.0, 10.0, 10.0),
+            frame(3, 40.0, 0.0, 10.0, 0.0),
+        ];
+        assert!(objects.iter().all(|o| arrangeable(&o.frame)));
+        assert!(matches!(
+            arrange(&objects, Arrangement::SmallestWidth),
+            Err(Refusal::Invalid(_))
+        ));
     }
 }

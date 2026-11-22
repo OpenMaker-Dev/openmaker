@@ -439,9 +439,11 @@ To:
 
 Every object named must be one `set_object_frames` can move, the ones that
 stay where they are included, so an object that cannot be moved never
-anchors the others. A frame with no size, a negative size or an edge that
-is not a number is refused. A malformed `expected_revision` is an
-`invalid_request`.
+anchors the others. A frame with no size, a negative size or a non-finite
+edge is refused, whether read or computed. Distribute keeps both endpoint
+frames exactly and refuses results whose rounded leading edges would
+change the order of the objects. These refusals and a malformed
+`expected_revision` report `invalid_request`.
 
 An arrangement that changes no frame (the objects are arranged so already)
 writes nothing. It reports `unchanged` at the expected revision, and

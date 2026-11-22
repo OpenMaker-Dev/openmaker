@@ -4131,8 +4131,11 @@ impl OpenMakerApp {
                     && self.design_allowed()
                     && !self.w.layout_workspace.saving
                 {
-                    if let Some(session) = self.w.session.as_ref() {
-                        self.w.layout_workspace.arrange(session, arrangement);
+                    let Some(session) = self.w.session.as_ref() else {
+                        return;
+                    };
+                    if let Err(refusal) = self.w.layout_workspace.arrange(session, arrangement) {
+                        self.error = Some(refusal.to_string());
                     }
                 }
             }

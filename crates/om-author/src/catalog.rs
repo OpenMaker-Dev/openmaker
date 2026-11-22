@@ -425,10 +425,10 @@ pub static ARRANGE_OBJECTS: CommandSpec = CommandSpec {
     title: "Align, distribute or resize layout objects",
     description: "Align, distribute or resize top-level objects of a layout relative to one \
                   another, as Layout mode's Arrange menu does (Align, Distribute, Resize To), \
-                  if the layout is still at expected_revision (get_layout's revision). The new \
-                  frames are written and read back as set_object_frames writes them; left and \
-                  top edges land on whole points. Objects already arranged so report \
-                  unchanged.",
+                  using expected_revision (get_layout's revision). Changes use set_object_frames \
+                  for revision checking and read-back. Changed frames start on whole points. \
+                  When no frames change, the command returns layout, arrangement, revision and \
+                  status: unchanged at the expected revision or already_applied at another one.",
     effect: Effect::Authors,
     needs: Needs::Grant(Grant::LayoutObjects),
     operation: Some("set_object_frames"),

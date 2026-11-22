@@ -1973,9 +1973,11 @@ runs too ([authoring](authoring.md), "Arranging objects").
   outermost objects and spaces the others evenly; both are OpenMaker's
   reading of the help (re/client-ui.md, "Layout mode: Align, Distribute
   and Resize To").
-- Left and top edges land on whole points. Objects too wide (tall)
+- Changed left and top edges land on whole points. Objects too wide (tall)
   together to distribute with equal gaps get evenly spaced leading edges
-  instead, so their order stays.
+  instead. Arrange shows an error and leaves the draft intact if rounding
+  would change the distribution order or a new frame would collapse to
+  a point.
 - A pending move keeps the revision it was made on through Arrange, so
   frames derived from it conflict at Save Layout if the layout changed
   since.
