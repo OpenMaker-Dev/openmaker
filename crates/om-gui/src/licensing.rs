@@ -279,12 +279,18 @@ pub(crate) enum LicenseAction {
     Close,
 }
 
+/// An app-wide credential-store operation sent to the worker.
+#[derive(Debug)]
+pub(crate) enum LicenseOperation {
+    Status,
+    Save(LicenseKey),
+    Remove,
+}
+
 pub(crate) struct LicenseDialog {
     pub input: Zeroizing<String>,
-    pub pending: bool,
-    /// The request waited for saves or removes the key: the draft goes
-    /// when it succeeds. A status read keeps it.
-    pub writing: bool,
+    /// The request this dialog is waiting for and whether it writes.
+    pending: Option<(u64, bool)>,
     pub stored: Option<bool>,
     pub error: Option<String>,
 }
@@ -293,8 +299,7 @@ impl Default for LicenseDialog {
     fn default() -> Self {
         Self {
             input: Zeroizing::new(String::new()),
-            pending: true,
-            writing: false,
+            pending: None,
             stored: None,
             error: None,
         }
@@ -302,9 +307,22 @@ impl Default for LicenseDialog {
 }
 
 impl LicenseDialog {
-    pub fn accept(&mut self, result: Result<bool, DataError>) {
-        self.pending = false;
-        let writing = std::mem::take(&mut self.writing);
+    pub fn wait_for(&mut self, id: u64, writing: bool) {
+        self.pending = Some((id, writing));
+    }
+
+    pub fn pending(&self) -> bool {
+        self.pending.is_some()
+    }
+
+    pub fn accept(&mut self, id: u64, result: Result<bool, DataError>) {
+        let Some((expected, writing)) = self.pending else {
+            return;
+        };
+        if id != expected {
+            return;
+        }
+        self.pending = None;
         match result {
             Ok(stored) => {
                 self.stored = Some(stored);
@@ -324,7 +342,7 @@ impl LicenseDialog {
             ui.heading("FileMaker License");
             ui.label("Optional. FileMaker Server may require a client license; OpenMaker Server does not.");
             ui.add_space(8.0);
-            ui.label(if self.pending {
+            ui.label(if self.pending() {
                 "Accessing credential store…"
             } else if self.stored == Some(true) {
                 "A license is saved in your system credential store."
@@ -333,7 +351,7 @@ impl LicenseDialog {
             } else {
                 "License storage is unavailable."
             });
-            ui.add_enabled_ui(!self.pending, |ui| {
+            ui.add_enabled_ui(!self.pending(), |ui| {
                 let label = ui.label("License key");
                 ui.add(
                     egui::TextEdit::singleline(&mut *self.input)

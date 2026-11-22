@@ -455,6 +455,9 @@ impl<'a> WorkerHost<'a> {
                     Err(_) => return None,
                 },
             };
+            let Some(job) = job.serve_license(self.store, self.responses) else {
+                continue;
+            };
             match job.request {
                 Request::Answer { prompt, answer } => {
                     if Some(prompt) == wait_for {

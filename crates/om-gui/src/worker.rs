@@ -19,7 +19,7 @@ use std::sync::mpsc::{self, Receiver, RecvTimeoutError, Sender, TryRecvError};
 use std::thread;
 use std::time::Duration;
 
-use crate::licensing::{LicenseKey, LicenseStore};
+use crate::licensing::{LicenseKey, LicenseOperation, LicenseStore};
 use crate::session::PageKey;
 
 use std::sync::Arc;
@@ -52,9 +52,10 @@ pub(crate) enum Request {
     /// File Options say (`DataProvider::open_local_asking`); answered as
     /// [`Request::OpenLocal`] is.
     OpenLocalAsking(std::path::PathBuf),
-    LicenseStatus,
-    SaveLicense(LicenseKey),
-    RemoveLicense,
+    License {
+        id: u64,
+        operation: LicenseOperation,
+    },
     Layouts,
     /// The file's scripts: for the Script Workspace that asked when
     /// `workspace` names its request, else for the file's windows only.
@@ -421,7 +422,10 @@ pub(crate) enum Reply {
     Opened(Result<Opened, DataError>),
     /// A local file opened, or asks for an account.
     OpenedLocal(Result<(LocalOpen, Opened), DataError>),
-    License(Result<bool, DataError>),
+    License {
+        id: u64,
+        result: Result<bool, DataError>,
+    },
     Layouts(Result<(Vec<LayoutInfo>, Vec<om_data::LayoutMenuEntry>), DataError>),
     LayoutFieldPlaced(Result<om_data::layout_placement::PlacedLayoutField, DataError>),
     LayoutCreated(Result<om_data::layout_catalog::CreatedLayout, DataError>),
@@ -600,7 +604,7 @@ impl Reply {
         match self {
             Reply::Opened(r) => r.as_ref().err(),
             Reply::OpenedLocal(r) => r.as_ref().err(),
-            Reply::License(r) => r.as_ref().err(),
+            Reply::License { result, .. } => result.as_ref().err(),
             Reply::Layouts(r) => r.as_ref().err(),
             Reply::LayoutFieldPlaced(r) => r.as_ref().err(),
             Reply::LayoutCreated(r) => r.as_ref().err(),
@@ -672,6 +676,37 @@ pub(crate) struct Job {
     pub ctx: egui::Context,
 }
 
+impl Job {
+    /// Answer license jobs before routing to a document, which may have
+    /// closed while the job was queued. Return other jobs for normal routing.
+    pub(crate) fn serve_license(
+        self,
+        store: &mut dyn LicenseStore,
+        responses: &Sender<Response>,
+    ) -> Option<Self> {
+        let Request::License { id, operation } = self.request else {
+            return Some(self);
+        };
+        let result = panic::catch_unwind(AssertUnwindSafe(|| match operation {
+            LicenseOperation::Status => store.load().map(|key| key.is_some()),
+            LicenseOperation::Save(key) => store.save(&key).map(|()| true),
+            LicenseOperation::Remove => store.remove().map(|()| false),
+        }))
+        .unwrap_or_else(|_| {
+            Err(DataError::new(
+                "The credential-store operation failed unexpectedly.",
+            ))
+        });
+        let _ = responses.send(Response {
+            epoch: self.epoch,
+            window: self.window,
+            reply: Reply::License { id, result },
+        });
+        self.ctx.request_repaint();
+        None
+    }
+}
+
 /// The UI-side handle to the provider thread.
 pub(crate) struct Worker {
     jobs: Option<Sender<Job>>,
@@ -700,8 +735,14 @@ impl Worker {
     /// Hold requests without executing them, to check UI dispatch ordering.
     #[cfg(test)]
     pub(crate) fn capture_jobs() -> (Self, Receiver<Job>) {
+        let (worker, jobs, _) = Self::capture_jobs_with_replies();
+        (worker, jobs)
+    }
+
+    #[cfg(test)]
+    pub(crate) fn capture_jobs_with_replies() -> (Self, Receiver<Job>, Sender<Response>) {
         let (jobs, received) = mpsc::channel();
-        let (_, responses) = mpsc::channel();
+        let (replies, responses) = mpsc::channel();
         (
             Self {
                 jobs: Some(jobs),
@@ -712,6 +753,7 @@ impl Worker {
                 listed: mpsc::channel(),
             },
             received,
+            replies,
         )
     }
 
@@ -1177,15 +1219,7 @@ fn answer(
                 .map(HostListing::of_files)
                 .map_err(ListingError::from),
         }),
-        Request::LicenseStatus => {
-            Reply::License(contain(provider, |_| store.load().map(|key| key.is_some())))
-        }
-        Request::SaveLicense(key) => {
-            Reply::License(contain(provider, |_| store.save(&key).map(|()| true)))
-        }
-        Request::RemoveLicense => {
-            Reply::License(contain(provider, |_| store.remove().map(|()| false)))
-        }
+        Request::License { .. } => unreachable!("license jobs are served before document routing"),
         Request::Open {
             connection,
             use_saved_license,

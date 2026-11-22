@@ -938,6 +938,9 @@ impl ScriptSession {
 
     /// Handle one request from the UI.
     pub(crate) fn handle(&mut self, io: &mut Io<'_>, job: Job) {
+        let Some(job) = job.serve_license(io.store, io.responses) else {
+            return;
+        };
         let Job {
             epoch,
             window,
@@ -1481,8 +1484,12 @@ impl ScriptSession {
                 d.saturating_duration_since(Instant::now())
                     .min(CALLBACK_POLL)
             });
-            match io.jobs.recv_timeout(wait) {
-                Ok(job) => match job.request {
+            match io
+                .jobs
+                .recv_timeout(wait)
+                .map(|job| job.serve_license(io.store, io.responses))
+            {
+                Ok(Some(job)) => match job.request {
                     Request::Answer {
                         answer: Answer::Resume(window),
                         ..
@@ -1587,6 +1594,7 @@ impl ScriptSession {
                         }
                     }
                 },
+                Ok(None) => {}
                 Err(RecvTimeoutError::Timeout) => {
                     if deadline.is_some_and(|d| Instant::now() >= d) {
                         self.resume(io);

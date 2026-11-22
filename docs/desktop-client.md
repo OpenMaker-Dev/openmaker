@@ -383,9 +383,10 @@ the answer of a read that was still waiting rather than asking again, if it
 came within the last minute ([#151](https://github.com/OpenMaker-Dev/openmaker/issues/151)).
 While such a read waits, Save and Remove say so and change nothing;
 otherwise they wait for the store without a limit. When the dialog cannot
-tell whether a key is saved, **Check Again** reads the store again, keeping
-a key typed but not saved. License requests reach the store also when the
-window's host is gone. If the
+tell whether a key is saved, **Check Again** reads the store again and keeps
+the draft. The app-wide dialog takes only the reply to its current request,
+even if the window that sent it closes or its session changes. License
+requests reach the store even when the window's host is gone. If the
 store's thread stops (its store failed), OpenMaker must be started again to
 reach it. Turning off **Use saved license** bypasses the store. The desktop client does not
 import license keys from `.env` or environment variables. License values and
