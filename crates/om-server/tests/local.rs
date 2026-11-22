@@ -615,6 +615,121 @@ fn a_file_opens_once_through_any_of_its_paths_until_it_is_closed() {
     assert_eq!(login(&reopened, &client, ACCOUNT, PASSWORD), 0);
 }
 
+/// Save a Copy as: a copy is the file's bytes, a compacted copy its tree
+/// rewritten, both open as files of their own; nothing that is already
+/// there is replaced, and clones are refused.
+#[cfg(target_os = "linux")]
+#[test]
+fn saved_copies_are_new_files_that_open_and_replace_nothing() {
+    use om_data::CopyKind;
+    use std::os::unix::fs::PermissionsExt;
+    let folder = Folder::new("save-copy");
+    std::fs::set_permissions(&folder.0, std::fs::Permissions::from_mode(0o700)).unwrap();
+    let path = folder.tasks(FILE);
+    std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o640)).unwrap();
+    let original = std::fs::read(&path).unwrap();
+    let client = client();
+    let host = LocalHost::open(&path, &client.cert).unwrap();
+
+    let copy = folder.0.join("Copy.fmp12");
+    match host.prepare_copy(&copy, CopyKind::Copy) {
+        Ok(publish) => publish().unwrap(),
+        Err(err)
+            if err.kind() == std::io::ErrorKind::Unsupported
+                && err
+                    .to_string()
+                    .starts_with("copy destinations require ext2") =>
+        {
+            // Overlay-root test runners exercise refusal, even when their
+            // temporary directory is on a supported mount.
+            assert!(!copy.exists());
+            assert_eq!(std::fs::read(&path).unwrap(), original);
+            assert!(host.close());
+            return;
+        }
+        Err(err) => panic!("prepare copy: {err}"),
+    }
+    assert_eq!(std::fs::read(&copy).unwrap(), original);
+    let compacted = folder.0.join("Compacted.fmp12");
+    host.save_copy(&compacted, CopyKind::Compacted).unwrap();
+    let tree = |path: &Path| {
+        let file = om_hbam::HbamFile::open(path).unwrap();
+        let tree = file.key_tree().unwrap();
+        tree.root.to_owned_node()
+    };
+    assert_eq!(tree(&compacted), tree(&path));
+    for made in [&copy, &compacted] {
+        let mode = std::fs::metadata(made).unwrap().permissions().mode() & 0o777;
+        assert_eq!(mode, 0o600, "{mode:o}");
+    }
+
+    // What is there stays: another file, the open file itself, and names
+    // of the kind its saves make their new copy under.
+    let taken = folder.0.join("Taken.fmp12");
+    let pending = host.prepare_copy(&taken, CopyKind::Copy).unwrap();
+    assert!(!taken.exists());
+    std::fs::write(&taken, b"someone else's").unwrap();
+    let refused = pending().unwrap_err();
+    assert_eq!(
+        refused.kind(),
+        std::io::ErrorKind::AlreadyExists,
+        "{refused}"
+    );
+    assert_eq!(std::fs::read(&taken).unwrap(), b"someone else's");
+    let refused = host.save_copy(&path, CopyKind::Compacted).unwrap_err();
+    assert_eq!(
+        refused.kind(),
+        std::io::ErrorKind::AlreadyExists,
+        "{refused}"
+    );
+    let reserved = folder.0.join(format!("{FILE}.omsave"));
+    let refused = host.save_copy(&reserved, CopyKind::Copy).unwrap_err();
+    assert_eq!(refused.kind(), std::io::ErrorKind::Unsupported, "{refused}");
+    assert!(!reserved.exists());
+
+    let blocked = folder.0.join("Blocked.fmp12");
+    std::fs::set_permissions(&folder.0, std::fs::Permissions::from_mode(0o770)).unwrap();
+    let refused = host.save_copy(&blocked, CopyKind::Copy).unwrap_err();
+    std::fs::set_permissions(&folder.0, std::fs::Permissions::from_mode(0o700)).unwrap();
+    assert_eq!(refused.kind(), std::io::ErrorKind::Unsupported, "{refused}");
+    assert!(!blocked.exists());
+
+    let clone = folder.0.join("Clone.fmp12");
+    let refused = host.save_copy(&clone, CopyKind::Clone).unwrap_err();
+    assert_eq!(refused.kind(), std::io::ErrorKind::Unsupported, "{refused}");
+    assert_eq!(std::fs::read(&path).unwrap(), original);
+
+    // After a save (the password changed), a copy is the file as saved.
+    const CHANGED: &str = "another horse";
+    host.change_password(ACCOUNT, PASSWORD, CHANGED).unwrap();
+    let saved = folder.0.join("Saved.fmp12");
+    host.save_copy(&saved, CopyKind::Copy).unwrap();
+    assert_eq!(
+        std::fs::read(&saved).unwrap(),
+        std::fs::read(&path).unwrap()
+    );
+    // Nothing else is left beside them: no staging entries.
+    assert_eq!(
+        folder.files(),
+        [
+            "Compacted.fmp12",
+            "Copy.fmp12",
+            "Saved.fmp12",
+            "Taken.fmp12",
+            FILE
+        ]
+    );
+    assert!(host.close());
+
+    // Each copy is a file of its own, with the file's accounts.
+    for (made, password) in [(&copy, PASSWORD), (&compacted, PASSWORD), (&saved, CHANGED)] {
+        let opened = LocalHost::open(made, &client.cert).unwrap();
+        assert_eq!(opened.read_only(), None);
+        assert_eq!(login(&opened, &client, ACCOUNT, password), 0);
+        assert!(opened.close());
+    }
+}
+
 #[test]
 fn a_connection_stalled_before_its_handshake_does_not_keep_the_file() {
     let folder = Folder::new("stalled");

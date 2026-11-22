@@ -214,6 +214,8 @@ impl Folder {
     /// Create entry `name` for writing, only where nothing is: owner-only
     /// (0600) when `owner_only`, else a new file's permissions (0666), less
     /// the umask on Unix.
+    // A local file lock can move to this descriptor. Copy reads need
+    // the same saved file the lock names.
     pub fn create_new(&self, name: &OsStr, owner_only: bool) -> io::Result<File> {
         #[cfg(unix)]
         {
@@ -227,7 +229,7 @@ impl Folder {
             Ok(File::from(rustix::fs::openat(
                 &self.fd,
                 name,
-                OFlags::WRONLY | OFlags::CREATE | OFlags::EXCL | OFlags::NOFOLLOW | OFlags::CLOEXEC,
+                OFlags::RDWR | OFlags::CREATE | OFlags::EXCL | OFlags::NOFOLLOW | OFlags::CLOEXEC,
                 mode,
             )?))
         }
@@ -235,6 +237,7 @@ impl Folder {
         {
             let _ = owner_only;
             std::fs::OpenOptions::new()
+                .read(true)
                 .write(true)
                 .create_new(true)
                 .open(self.dir.join(name))

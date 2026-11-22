@@ -751,6 +751,32 @@ impl Store {
         Ok(true)
     }
 
+    /// The file as the store last loaded or saved it, for a copy of it: a
+    /// new descriptor of the one the store holds locked, which names that
+    /// version whatever later saves rename over its path, read from its
+    /// start by position so as not to move the offset the two share. `None`
+    /// while the tree has changes the file lacks (a failed save's) or when
+    /// the store holds no lock, where the file at the path could be another
+    /// program's: such a copy is built from the tree
+    /// ([`Store::compacted`]).
+    #[cfg(target_os = "linux")]
+    pub fn saved_file(&self) -> Option<std::io::Result<std::fs::File>> {
+        if self.dirty {
+            return None;
+        }
+        self.lock.as_ref().map(|lock| lock.file().try_clone())
+    }
+
+    /// The tree as a complete new file, packed (`om_hbam::writer::rebuild`,
+    /// hbam-writer.md 7.2): the shape of FileMaker's compacted copies
+    /// (hbam-writer.md 9.3). A tree holding content the writer cannot write
+    /// is refused, as its saves are.
+    #[cfg(target_os = "linux")]
+    pub fn compacted(&self) -> std::io::Result<Vec<u8>> {
+        om_hbam::writer::rebuild(&self.root, &self.superblock)
+            .map_err(|e| std::io::Error::new(std::io::ErrorKind::InvalidData, e.to_string()))
+    }
+
     /// Start a commit whose save must succeed for it to count
     /// ([`Store::save_commit`]).
     pub fn begin_commit(&self) -> Journal {

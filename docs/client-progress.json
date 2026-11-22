@@ -1093,8 +1093,8 @@
       "feature": "File recovery / copy / conversion tools",
       "previous_status": "Unavailable",
       "status": "Partial",
-      "scope": "File > Create New makes a blank file, as `om-author create-file` does; FileMaker Pro 26.0.3 opened such files with no alert and its consistency check found no bad block ([checks](new-files.md#checks)).",
-      "remaining": "Save a Copy As [#63](https://github.com/OpenMaker-Dev/openmaker/issues/63), Recover [#64](https://github.com/OpenMaker-Dev/openmaker/issues/64) and conversion of older files [#65](https://github.com/OpenMaker-Dev/openmaker/issues/65) are not available; a new file has one plain theme [#222](https://github.com/OpenMaker-Dev/openmaker/issues/222), and FileMaker Pro has not opened one holding a script OpenMaker added [#407](https://github.com/OpenMaker-Dev/openmaker/issues/407) ([limits](new-files.md#limits)).",
+      "scope": "File > Create New makes a blank file, as `om-author create-file` does; FileMaker Pro 26.0.3 opened such files with no alert and its consistency check found no bad block ([checks](new-files.md#checks)). On supported Linux destinations, a local file's Save a Copy as step writes a copy of the current file or a compacted copy ([local-files](re/local-files.md)).",
+      "remaining": "File > Save a Copy As, the step's Save dialog, clones and self-contained copies [#63](https://github.com/OpenMaker-Dev/openmaker/issues/63), Recover [#64](https://github.com/OpenMaker-Dev/openmaker/issues/64) and conversion of older files [#65](https://github.com/OpenMaker-Dev/openmaker/issues/65) are not available; a new file has one plain theme [#222](https://github.com/OpenMaker-Dev/openmaker/issues/222), and FileMaker Pro has not opened one holding a script OpenMaker added [#407](https://github.com/OpenMaker-Dev/openmaker/issues/407) ([limits](new-files.md#limits)).",
       "issues": [
         63,
         64,

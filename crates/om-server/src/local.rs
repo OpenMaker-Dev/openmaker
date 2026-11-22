@@ -525,6 +525,84 @@ impl LocalHost {
         }
     }
 
+    /// Save a Copy as (local-files.md 4, "Save a Copy as"): write the file
+    /// as `kind` to `to`, a new file. A copy of the current file is the
+    /// file's bytes as its last save left them, read through the
+    /// descriptor the host holds locked ([`crate::store::Store::saved_file`]);
+    /// a compacted copy is the tree rewritten packed
+    /// ([`crate::store::Store::compacted`]), and so is a copy while changes
+    /// a failed save left wait in memory or when the file is not locked.
+    /// Clones and self-contained copies are refused with
+    /// [`io::ErrorKind::Unsupported`].
+    ///
+    /// The destination is validated before reading the store. See
+    /// [`Self::prepare_copy`] for its platform and pathname requirements.
+    pub fn save_copy(&self, to: &Path, kind: om_data::CopyKind) -> io::Result<()> {
+        self.prepare_copy(to, kind)?()
+    }
+
+    /// Prepare a copy to an existing, protected Linux directory using an
+    /// unnamed file. The returned operation snapshots the store when called
+    /// so a script can validate the destination before committing a record.
+    /// Dropping the operation has no visible filesystem side effects.
+    #[cfg(target_os = "linux")]
+    pub fn prepare_copy(
+        &self,
+        to: &Path,
+        kind: om_data::CopyKind,
+    ) -> io::Result<impl FnOnce() -> io::Result<()> + use<>> {
+        use om_data::CopyKind;
+        let compacted = match kind {
+            CopyKind::Copy => false,
+            CopyKind::Compacted => true,
+            CopyKind::Clone | CopyKind::SelfContained => {
+                return Err(io::Error::new(
+                    io::ErrorKind::Unsupported,
+                    "OpenMaker does not save clones or self-contained copies yet",
+                ));
+            }
+        };
+        let Some(file) = self
+            .handle
+            .as_ref()
+            .and_then(|handle| handle.shared.hosting.files().into_iter().next())
+        else {
+            return Err(io::Error::other("the file is closed"));
+        };
+        let mut destination = copy_destination::Destination::open(to)?;
+        Ok(move || {
+            let contents = {
+                let store = file.read_store();
+                let saved = if compacted { None } else { store.saved_file() };
+                match saved {
+                    Some(saved) => Contents::File(saved?),
+                    None => Contents::Bytes(store.compacted()?),
+                }
+            };
+            use std::io::Write;
+            match contents {
+                Contents::File(file) => {
+                    io::copy(&mut FromStart { file: &file, at: 0 }, &mut destination.file)?;
+                }
+                Contents::Bytes(bytes) => destination.file.write_all(&bytes)?,
+            }
+            destination.publish()
+        })
+    }
+
+    /// Copy destinations are currently supported on Linux only.
+    #[cfg(not(target_os = "linux"))]
+    pub fn prepare_copy(
+        &self,
+        _to: &Path,
+        _kind: om_data::CopyKind,
+    ) -> io::Result<impl FnOnce() -> io::Result<()> + use<>> {
+        Err::<fn() -> io::Result<()>, _>(io::Error::new(
+            io::ErrorKind::Unsupported,
+            "OpenMaker saves copies of local files only on Linux",
+        ))
+    }
+
     /// Stop serving the file and wait until nothing holds it: its lock and
     /// port are released when this returns `true`, and `false` says that
     /// something (a script that did not stop in time) still does. The
@@ -578,6 +656,34 @@ impl LocalHost {
 impl Drop for LocalHost {
     fn drop(&mut self) {
         self.shut_down();
+    }
+}
+
+#[cfg(target_os = "linux")]
+mod copy_destination;
+
+/// What a saved copy holds: a version of the file, or new bytes.
+#[cfg(target_os = "linux")]
+enum Contents {
+    File(File),
+    Bytes(Vec<u8>),
+}
+
+/// `file` read from its start by position (`pread`), leaving alone the
+/// offset it shares with the descriptor it was cloned from.
+#[cfg(target_os = "linux")]
+struct FromStart<'a> {
+    file: &'a File,
+    at: u64,
+}
+
+#[cfg(target_os = "linux")]
+impl Read for FromStart<'_> {
+    fn read(&mut self, buf: &mut [u8]) -> io::Result<usize> {
+        use std::os::unix::fs::FileExt;
+        let n = self.file.read_at(buf, self.at)?;
+        self.at += n as u64;
+        Ok(n)
     }
 }
 
