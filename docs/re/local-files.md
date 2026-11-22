@@ -372,8 +372,9 @@ record UUIDs and modification stamps.
 **The steps run [O: FileMaker Server 26.0.3's engine, 2026-11-20].**
 Scripts holding the account steps, written with OpenMaker's step writer
 into a copy of the English Contacts starter, ran in the script harness
-(`tools/fms-script-harness`, run lines naming them, in the harness's
-default Admin context). The account catalog was compared after each run:
+(`tools/fms-script-harness`, run lines naming them, using the harness's
+default security-bypass identity, which reports the account name Admin).
+The account catalog was compared after each run:
 
 - Add Account made a member with `04`, `06`, `0a`, `0b`, `10`, the member
   UUID `d8`, `fc01` and `fc02` (both reading Admin), and `fc03`. It
@@ -396,8 +397,8 @@ default Admin context). The account catalog was compared after each run:
   deactivated and moved `fc03` to the time of its run, keeping `0a`'s
   password-set second.
 - Delete Account removed the member. Change Password ran with its
-  dialog off and an empty old password in the harness's default Admin
-  context. It returned 3 and changed nothing. The cause remains
+  dialog off and an empty old password under that security-bypass
+  identity. That attempt returned 3 and changed nothing. The cause remains
   unknown. The run did not exercise a non-empty old password or a client
   session. Claris lists the step as Partial on FileMaker Server.
 - Every account's `04` matched the checksum rule above at every stage.
@@ -473,8 +474,10 @@ full access may change a password the set does not let the account
 change]. The step's dialog is not shown on a server, so with it the step
 gives 3 [I: FileMaker Server's handling is not measured]. While it
 writes, the script's session holds a write lock on `[23, 1]`, as Manage
-Security does, and another user's lock gives 310 [I: Reset Account
-Password's observed code]. The commit stamps the account and the
+Security does, and another user's lock gives 310. That Change Password
+behavior is inferred from the binary's Reset Account Password mapping
+of 8003 to 310 ([script-runtime.md §2.3](script-runtime.md#23-executing-one-step-execute-0xa771a0)).
+The commit stamps the account and the
 catalog's index `[23, 1, 1]` (schema-path.md 8.1), so a client's cached
 copy of the catalog shows as stale, and other clients are told the
 catalog changed.
