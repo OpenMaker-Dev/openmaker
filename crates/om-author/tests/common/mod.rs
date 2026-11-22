@@ -6,6 +6,7 @@
 #[path = "../../../om-server/tests/fixtures/tasks.rs"]
 pub mod fixture;
 
+use std::path::{Path, PathBuf};
 use std::time::Duration;
 
 use om_author::Target;
@@ -292,7 +293,18 @@ pub fn host(file: &TempFile, version_string: &str) -> Host {
 /// solution, whose Admin has [Full Access] and an empty password
 /// (`ServerConfig::insecure_files`).
 pub fn host_insecure(file: &TempFile, version_string: &str) -> Host {
-    serve(file, version_string, true, |server| server)
+    serve(file, version_string, true, None, |server| server)
+}
+
+/// [`host`] with recording enabled to check what reaches the wire.
+pub fn host_recording(file: &TempFile, record_dir: &Path) -> Host {
+    serve(
+        file,
+        "OpenMaker Server test",
+        false,
+        Some(record_dir.to_path_buf()),
+        |server| server,
+    )
 }
 
 /// [`host`], the server configured by `configure` first.
@@ -301,13 +313,14 @@ pub fn host_configured(
     version_string: &str,
     configure: impl FnOnce(Server) -> Server,
 ) -> Host {
-    serve(file, version_string, false, configure)
+    serve(file, version_string, false, None, configure)
 }
 
 fn serve(
     file: &TempFile,
     version_string: &str,
     insecure_files: bool,
+    record_dir: Option<PathBuf>,
     configure: impl FnOnce(Server) -> Server,
 ) -> Host {
     let generated = rcgen::generate_simple_self_signed(vec!["127.0.0.1".into()]).unwrap();
@@ -326,7 +339,7 @@ fn serve(
             path: file.0.clone(),
         }],
         insecure_files,
-        record_dir: None,
+        record_dir,
     };
     let server = configure(Server::bind("127.0.0.1:0", config, identity).unwrap());
     let port = server.local_addr().unwrap().port();

@@ -1086,11 +1086,33 @@ finder (a leading wildcard, as in `==*pfel*`) is still tested against the
 stored values in English in those languages
 ([#588](https://github.com/OpenMaker-Dev/openmaker/issues/588)).
 
+A find on a related field walks each relationship back from the related
+records (query-program.md 6.5): their match values, every stored
+repetition and each nonempty line as stored, are projected for the near
+match field's type and index language (9.1, 7.2). A date compares with a
+timestamp as midnight, so times on the same date remain distinct. A
+timestamp compared with a time uses its time part. A match field indexed
+in Unicode or System uses that index's keys
+([#573](https://github.com/OpenMaker-Dev/openmaker/issues/573)). A far
+field compared with near fields of different types or forms is sent once
+for each, under a source slot of its own (9.2). With a hosted near index,
+a Japanese match field can use shared English weights, including `ー` and
+`㐀` (7.2). German dictionary uses the untailored form. A related value
+that needs an unsupported key, or a text field whose language 0 cannot be
+resolved from the file locale, fails the find with error 3. A request
+that finds no related records contributes no matches.
+
 **Limits.** List view shows only the current request, as one body row.
 In the padded form a word's start is matched by its primary weights alone
 (`equ` finds `équipe`), and a Unicode raw find keeps case: FileMaker's keys
 for those criteria are unmeasured. The mock provider's in-memory finds key
 text in English.
+Japanese match fields that need keys fail with error 3 without the host's
+index. Date–Timestamp related finds remain unmeasured in FileMaker
+([#606](https://github.com/OpenMaker-Dev/openmaker/issues/606)). A far text
+value matched to a near number field must parse as a number. Extracting
+digits from mixed text, as in the projection example in query-program.md
+9.1, is unsupported.
 The badge's place, the portal's single row, empty merge fields, Return
 performing the find and how the value-list controls build criteria are
 OpenMaker's reading, not compared with FileMaker Pro (client-ui.md, "Find
@@ -1414,6 +1436,28 @@ too, so a hidden one takes nothing. A button there runs in that row, which
 the worker finds by its number (`enter_clicked_row` without a record
 identity): Set Field into the creation row creates a related record, and
 Delete Portal Row there deletes nothing (script-runtime.md 13.24).
+
+A portal saved with FileMaker Pro 26.1's "Place row for new record at top"
+(portal option `0x400`, layout-model.md 5.3.2) draws the creation row,
+and the rows begun in it, above its records, when it does not scroll
+(option `0x1` clear); a portal that scrolls keeps them last, as FileMaker
+Pro 26.1.1's `DataEntryModel::IsVisibleTopNewPortalRow` decides
+([#343](https://github.com/OpenMaker-Dev/openmaker/issues/343)). Rows are numbered where they are drawn, in Browse, for Tab and
+for scripts alike: the creation row is row 1, the records follow, and
+scripts reach the creation row there (Go to Portal Row, a button in the
+row) as Browse shows it [I: how FileMaker numbers a row drawn at the top,
+and whether a script reaches it, are unmeasured]. A portal whose initial
+row is past 1, scrolling or not, draws the records from that row on and
+numbers its rows from there, whether or not records fill the rows before
+it, also for scripts. Go to Portal Row [First] and Go to Field go to the
+initial row, Previous stops there, and a number before it is 101. Go to
+Related Record from a filtering portal's row includes earlier filter
+matches in the found set [I: the effect of Initial Row is unmeasured].
+A Go to Portal Row whose OnObjectExit begins or deletes a row moves to
+the row it chose, found again by what it shows (a record being created
+by its draft, whatever other drafts go), or fails with 101 when that row
+left the portal. The option's storage is read from FileMaker Pro 26.1.1's
+binaries, not from a file it saved, and Portal Setup does not offer it.
 
 A step that puts the focus in a field of a portal row (Go to Field, Go to
 Object, Go to Portal Row with a field active), as the starter solutions'
@@ -2124,6 +2168,34 @@ changes (moved or deleted objects or a new field), another layout, another mode 
 New Layout/Report are refused with an alert asking for Save Layout or
 Revert Layout. Saving them is OpenMaker's choice of UI (FileMaker Pro saves a layout's changes when the user leaves
 it or confirms), and so are the handles' size and the outline.
+
+**Arranging objects.** Arrange > Align (Left Edges, Vertical Centers,
+Right Edges, Top Edges, Horizontal Centers, Bottom Edges), Distribute
+(Horizontally, Vertically) and Resize To (Smallest or Largest Width,
+Height, or Width and Height) apply to the selected objects when every one
+of them can be moved. They need two objects, and three to distribute. The
+new frames are changes like a drag's: outlined until Save Layout, which
+sends them in the same request, or dropped by Revert Layout. The frames
+come from `om_data::layout_arrange`, which `om-author`'s `arrange_objects`
+runs too ([authoring](authoring.md), "Arranging objects").
+- Edges align to the object farthest out, as Claris documents it. Centers
+  align to the middle of the objects' extent, and Distribute keeps the two
+  outermost objects and spaces the others evenly; both are OpenMaker's
+  reading of the help (re/client-ui.md, "Layout mode: Align, Distribute
+  and Resize To").
+- Changed left and top edges land on whole points. Objects too wide (tall)
+  together to distribute with equal gaps get evenly spaced leading edges
+  instead. Arrange shows an error and leaves the draft intact if rounding
+  would change the distribution order or a new frame would collapse to
+  a point.
+- A pending move keeps the revision it was made on through Arrange, so
+  frames derived from it conflict at Save Layout if the layout changed
+  since.
+- The submenus' item names follow the help's wording; FileMaker Pro's are
+  unmeasured.
+- Arrange does nothing for a selection holding a new field or an object
+  that cannot be moved. Group, Lock, the stacking commands, and Arrange's
+  other commands are still disabled ([#70](https://github.com/OpenMaker-Dev/openmaker/issues/70)).
 
 **Deleting an object.** Delete or Backspace (unless a text field has the
 keyboard), or Edit > Clear, deletes the selected object: the canvas and

@@ -54,7 +54,7 @@ Records as PDF and Print refuse merge variables,
 ([layout symbols](portable-pdf.md)).
 
 The portable PDF refusal contract also applies to Preview: bodyless reports,
-unsupported sub-summary sorts/breaks, advanced part options, sliding left, split parts,
+unsupported sub-summary sorts/breaks, advanced part options, the sliding [report sliding](report-sliding.md) refuses, split parts,
 layouts set to print in columns, responsive layouts, sorted, filtered or sliding portals, slide controls, objects inside any container but a group, a portal or a tab control's front panel,
 dynamic pictures, the button icons portable-pdf.md lists, unsupported text/styles and overflow remain
 unavailable, except a field's text, which shows cut at the field

@@ -75,8 +75,9 @@ specification is in script-runtime.md, "Implementation notes".
 Runtime semantics (control flow, errors, variables, triggers,
 transactions, server execution) are in [script-runtime.md](script-runtime.md).
 
-What OpenMaker saves: a script's steps through its own authoring
-extension ([authoring.md](../authoring.md)), and new, duplicated,
+OpenMaker saves a script's steps through its authoring extension and,
+for agent edits on FileMaker Server 26, through the native save
+([authoring.md](../authoring.md)). It saves new, duplicated,
 renamed, moved and deleted scripts and the two script options with
 FileMaker Pro's transaction below, on OpenMaker Server and on local files
 ([desktop-client.md](../desktop-client.md), Script Workspace).
@@ -315,6 +316,22 @@ OpenMaker's Script Workspace sends the same sequences, without the locks
 held while a script is open (it takes `[17, 1]` and each changed or
 deleted member just before the save), and then reads the catalog back
 (`om-provider` `scripts.rs`).
+
+**Native step replacement on FileMaker Server 26.0.3** [observed,
+2026-11-19, [#23](https://github.com/OpenMaker-Dev/openmaker/issues/23)].
+An authenticated agent used separate type-9 locks on an existing
+script and its index, read the member and index with op15, then upgraded
+both locks to type 10 before the first upload. It used the time from
+op82 and advanced each modification count. The server accepted the
+member and index via op13 and returned both nodes as uploaded via op15
+under the locks. The index kept its original serial key and
+digest. The agent released both locks with attention 2, and a fresh
+session read back the planned script with its other keys intact.
+The edit inserted one step and kept the existing steps.
+The order of the upgrades and verification reads is OpenMaker's
+choice. FileMaker Pro opening or running this edit, persistence after
+the host restarts, and the replies of other FileMaker Server releases
+are unmeasured.
 
 **Open:**
 
