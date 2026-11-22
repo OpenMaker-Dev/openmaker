@@ -889,19 +889,32 @@ fn report_card(layout: &Layout, schema: &CalcSchema) -> ReportCard {
     }
     // What `pdf_field` checks before it reads a value; no value is read.
     let content = |object: &LayoutObject, group: Option<om_layout::BreakField>| {
-        report::object_text(object, occurrence, schema, |field| {
+        report::object_text(object, occurrence, schema, |piece| {
+            let field = match piece {
+                report::Piece::Field(field) => field,
+                // Refused as Save Records as PDF refuses it. A symbol
+                // prints empty here, as a field does: its value needs data.
+                report::Piece::Literal(text) => {
+                    report::script_printed(text)?;
+                    return Ok(om_data::host::layout::replace_symbols(text, |_| {
+                        Some(String::new())
+                    }));
+                }
+            };
             let def = report::field_def(schema, field, object)?;
             report::group_summary(def, field, occurrence, group)?;
             Ok(String::new())
         })
     };
     // Only objects the report prints: not a navigation part's, nor what a
-    // refused object holds.
+    // refused object holds. An image-only button's label is read only by
+    // its conditional formats, as the report reads it.
     for object in placed.iter().filter_map(|id| layout.objects.get(*id)) {
         if matches!(
             object.kind(),
             ObjectKind::Field | ObjectKind::Text | ObjectKind::Button
-        ) {
+        ) && (object.shows_label() || !object.calcs.conditions.is_empty())
+        {
             if let Err(error) = content(object, None) {
                 refuse(error);
             }
@@ -1274,9 +1287,8 @@ impl Uses {
 /// The script host capabilities the desktop host (`WorkerHost`) leaves to
 /// the runtime's default, error 3 "Command is unavailable". [`Desktop::read`]
 /// checks this list against the sources it was built from.
-const PROBED: [&str; 17] = [
+const PROBED: [&str; 16] = [
     "undo_redo",
-    "relookup",
     "save_a_copy_as",
     "set_multi_user",
     "set_use_system_formats",
@@ -1551,9 +1563,6 @@ impl Records for Probe {}
 impl Fields for Probe {
     fn undo_redo(&mut self, _choice: u16) -> HostResult {
         self.reach("undo_redo")
-    }
-    fn relookup(&mut self, _field: Option<FieldRef>, _with_dialog: bool) -> HostResult {
-        self.reach("relookup")
     }
 }
 impl FoundSets for Probe {}

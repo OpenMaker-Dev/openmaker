@@ -39,7 +39,7 @@ impl Runtime {
         if id == 0 {
             return Exec::error(ErrorCode::UNKNOWN);
         }
-        if is_unknown_step(id) {
+        if is_unknown_step(&self.options, id) {
             return Exec::error(ErrorCode::UNKNOWN_COMMAND);
         }
         if let Some(t) = &self.transaction {
@@ -66,7 +66,7 @@ impl Runtime {
                 _ => {}
             }
         }
-        if !client_supports(self.options.client, id) {
+        if !client_supports(&self.options, id) {
             return Exec::error(ErrorCode::UNAVAILABLE);
         }
         match id {
@@ -126,6 +126,7 @@ impl Runtime {
                 Exec::ok()
             }
             id::SET_VARIABLE => self.set_variable(host, step),
+            id::SET_VARIABLE_BY_NAME => self.set_variable_by_name(host, step),
             id::PERFORM_SCRIPT => self.perform_script_step(host, step),
             id::PERFORM_SCRIPT_ON_SERVER => self.perform_script_on_server(host, step),
             210 => self.perform_script_on_server_with_callback(host, step),
@@ -280,6 +281,28 @@ impl Runtime {
         let Some(name) = step.text(0).filter(|n| valid_variable_name(n)) else {
             return Exec::error(ErrorCode::INVALID);
         };
+        self.assign_variable(host, step, name)
+    }
+
+    /// Set Variable by Name (250): Set Variable with the name calculated
+    /// in slot 3 (script-steps.md 12.4). The name is evaluated first, and
+    /// one that does not name a variable fails as Set Variable's stored
+    /// name does, with error 5 [I: FileMaker Pro 26.1.1 not run].
+    fn set_variable_by_name(&mut self, host: &mut dyn ScriptHost, step: &ScriptStep) -> Exec {
+        let Some(name) = (self.slot_text(host, step, 3)).filter(|n| valid_variable_name(n)) else {
+            return Exec::error(ErrorCode::INVALID);
+        };
+        self.assign_variable(host, step, name)
+    }
+
+    /// Set Variable's assignment of the repetition (slot 2) and value
+    /// (slot 1) to the variable `name`.
+    fn assign_variable(
+        &mut self,
+        host: &mut dyn ScriptHost,
+        step: &ScriptStep,
+        name: String,
+    ) -> Exec {
         let repetition = match self.eval_slot(host, step, 2) {
             None => Repetition::from(1),
             Some(e) if e.value.is_empty() => Repetition::from(1),
@@ -588,24 +611,56 @@ impl Runtime {
             Err(code) => return Exec::error(code),
         };
         call.wait = false;
-        let file = call.file;
-        let callback = self.eval_slot(host, step, 2).and_then(|e| {
-            let cx = Ctx::new(host.locale(), host.today());
-            match e.value.to_number(&cx).to_i64() {
-                Some(id) if id > 0 => Some((file, id as u64)),
-                _ => host
-                    .script_named(file, &self.text_of(host, &e.value))
-                    .map(|id| (file, id)),
-            }
-        });
+        let file = self.current_file();
+        let callback = match self.psos_callback(host, step, file) {
+            Ok(script) => script.map(|id| (file, id)),
+            Err(code) => return Exec::error(code),
+        };
         Exec::from_host(
             host.perform_script_on_server_with_callback(&ServerCallbackCall {
                 call,
                 callback,
-                callback_parameter: step.calculation(3),
+                callback_parameter: step.calculation(4),
                 state: step.value,
             }),
         )
+    }
+
+    /// The callback script of step 210 in `file`, the calling script's
+    /// file (script-steps.md 12.2): by name when `[00 6]` = 1, the name
+    /// calculation in slot 7; from the list when `kOption` marks the key
+    /// that slot 3 holds as a hex literal. Pro keeps that slot when the
+    /// choice changes to by name, so the choice decides. A script that is
+    /// not there is 104 before the server is called; a callback in another
+    /// file (`kOption3` with its data source in slot 5, or a by-name
+    /// `source::script`) is 3, not supported. Both are OpenMaker's choices:
+    /// FileMaker's handling of either is unmeasured.
+    fn psos_callback(
+        &mut self,
+        host: &mut dyn ScriptHost,
+        step: &ScriptStep,
+        file: FileId,
+    ) -> Result<Option<u64>, ErrorCode> {
+        if step.list_value(6) == Some(1) {
+            let name = self.slot_text(host, step, 7).unwrap_or_default();
+            if name.contains("::") {
+                return Err(ErrorCode::UNAVAILABLE);
+            }
+            return host
+                .script_named(file, &name)
+                .map(Some)
+                .ok_or(ErrorCode::SCRIPT_MISSING);
+        }
+        if !step.has_flag(flag::OPTION) {
+            return Ok(None);
+        }
+        if step.has_flag(flag::OPTION3) {
+            return Err(ErrorCode::UNAVAILABLE);
+        }
+        step.positioned_id(3)
+            .filter(|&id| host.script(file, id).is_some())
+            .map(Some)
+            .ok_or(ErrorCode::SCRIPT_MISSING)
     }
 
     /// Pause/Resume Script (62, script-runtime.md 6.2).
@@ -867,7 +922,11 @@ impl Runtime {
         if error == ErrorCode::RETRY || error == ErrorCode::MULTI_STAGE || self.is_paused() {
             return;
         }
-        if error != ErrorCode::CANCELED && !writes_records(step.id()) {
+        // A step the runtime does not know (on the server, 249 among them)
+        // never reaches the data layer.
+        if error != ErrorCode::CANCELED
+            && (!writes_records(step.id()) || is_unknown_step(&self.options, step.id()))
+        {
             return;
         }
         let location = self.location(step);
@@ -944,16 +1003,38 @@ impl Runtime {
             });
             targets.push(target);
         }
+        // "Close after (seconds)" (26.1.1): on in numeric slot 6, the
+        // seconds in calculation slot 13 (script-steps.md 12.4, from the
+        // binaries). The result is taken as a number as it is, not through
+        // its text. A time that is not a positive number leaves the dialog
+        // to the user: OpenMaker's choice, FileMaker's is unmeasured.
+        let close_after = step
+            .number(6)
+            .is_some_and(|on| on != 0)
+            .then(|| self.eval_slot(host, step, 13))
+            .flatten()
+            .and_then(|seconds| {
+                let cx = Ctx::new(host.locale(), host.today());
+                seconds.value.to_number(&cx).to_f64()
+            })
+            .filter(|seconds| seconds.is_finite() && *seconds > 0.0);
         let dialog = CustomDialog {
             title,
             message,
             buttons: buttons.iter().map(|(_, b)| b.clone()).collect(),
             inputs,
+            close_after,
         };
         let response = match host.show_custom_dialog(&dialog) {
             Ok(response) => response,
             Err(e) => return Exec::from_host(Err(e)),
         };
+        if response.button == 0 && close_after.is_some() {
+            // Closed by its timer: `Get ( LastMessageChoice )` is 0
+            // (Claris), and no button stored the inputs [I].
+            self.last_message_choice = Some(0);
+            return Exec::ok();
+        }
         let chosen = usize::from(response.button.max(1)) - 1;
         let Some((slot, button)) = buttons.get(chosen) else {
             return Exec::error(ErrorCode::INVALID);
@@ -1066,13 +1147,25 @@ impl Runtime {
                         .and_then(|k| k.id())
                         .map(LayoutTarget::Key),
                 };
-                let occurrence = step
-                    .data
-                    .as_ref()
-                    .and_then(|d| d.slot(0))
-                    .and_then(|s| s.child(0x11))
-                    .and_then(crate::node_bytes)
-                    .and_then(|b| key_id(&b));
+                let occurrence = if step.has_flag(flag::OPTION3) {
+                    // "Table by Calculation" (FileMaker Pro 26.1): `0x400`
+                    // with the occurrence's name in calculation slot 8 in
+                    // place of `[00 0, 11]` (script-steps.md 12.4, from the
+                    // binaries). A name no occurrence of the file has is
+                    // 106, OpenMaker's choice: FileMaker's is unmeasured.
+                    let name = self.slot_text(host, step, 8).unwrap_or_default();
+                    match host.names().find_occurrence(&name) {
+                        Some(occurrence) => Some(occurrence),
+                        None => return Exec::error(ErrorCode::TABLE_MISSING),
+                    }
+                } else {
+                    step.data
+                        .as_ref()
+                        .and_then(|d| d.slot(0))
+                        .and_then(|s| s.child(0x11))
+                        .and_then(crate::node_bytes)
+                        .and_then(|b| key_id(&b))
+                };
                 host.go_to_related_record(&RelatedRecords {
                     occurrence,
                     layout,
@@ -1087,17 +1180,27 @@ impl Runtime {
                 })
             }
             228 => {
-                let ids = self.slot_text(host, step, 0).unwrap_or_default();
+                // The ids are slot 7. The flag, not slot 0, asks for a new
+                // window: Pro keeps the name there when it is turned off
+                // (script-steps.md 12.2).
+                let ids = self.slot_text(host, step, 7).unwrap_or_default();
                 let layout = step
                     .member_key()
                     .and_then(|k| k.id())
                     .map(LayoutTarget::Key);
-                host.go_to_list_of_records(
-                    &ids,
-                    layout.as_ref(),
-                    step.list_value(6),
-                    step.has_flag(flag::OPTION),
-                )
+                let new_window = step.has_flag(flag::TURN_ON).then(|| NewWindow {
+                    name: self.slot_text(host, step, 0),
+                    bounds: self.bounds(host, step),
+                    layout: None,
+                    style: 0,
+                    options: step.number(0),
+                });
+                host.go_to_list_of_records(&RecordList {
+                    ids,
+                    layout,
+                    animation: step.list_value(6),
+                    new_window,
+                })
             }
             22 | 41 | 55 => {
                 let mode = match id {
@@ -1522,7 +1625,21 @@ impl Runtime {
                 }
                 return self.result_to_target(host, step, Ok(response.body), select_all);
             }
-            91 => {
+            91 | id::REPLACE_FIELD_CONTENTS_BY_NAME => {
+                // 249 names its field with the calculation in slot 1, found
+                // as Set Field By Name finds its target (script-steps.md
+                // 12.4); a name that finds none is error 102 [I].
+                let field = if id == id::REPLACE_FIELD_CONTENTS_BY_NAME {
+                    let Some(name) = self.slot_text(host, step, 1) else {
+                        return Exec::error(ErrorCode::INVALID);
+                    };
+                    match host.field_by_name(&name) {
+                        Ok(field) => Some(field),
+                        Err(e) => return Exec::from_host(Err(e)),
+                    }
+                } else {
+                    field
+                };
                 let mut evaluate;
                 let mut with = match step.number(1) {
                     Some(3) => {
@@ -1531,6 +1648,12 @@ impl Runtime {
                         };
                         evaluate = move |h: &mut dyn ScriptHost| self.eval(h, &calc).value;
                         Replacement::Calculation(&mut evaluate)
+                    }
+                    // "Use Entry Options" (`[00 5, 03]`) takes the field's
+                    // own serial settings, which are not read here: refused
+                    // before any record is written (script-steps.md 11.8).
+                    Some(2) if step.number(5).is_some_and(|n| n != 0) => {
+                        return Exec::error(ErrorCode::UNAVAILABLE);
                     }
                     Some(2) => Replacement::Serial {
                         initial: step.text(3).unwrap_or_else(|| "1".into()),
@@ -1545,6 +1668,97 @@ impl Runtime {
                 let request = self.slot_text(host, step, 0).unwrap_or_default();
                 let value = host.execute_data_api(&request);
                 return self.result_to_target(host, step, value, select_all);
+            }
+            63 => {
+                // Slots of script-steps.md 12.3: To, CC, BCC, Subject and
+                // Message calculations 0-4, Collect `[00 0..2, 03]`, one
+                // per record `[00 3, 03]`, SMTP `[00 4, 03]`, OAuth
+                // `[00 7, 03]`, attachments `[00 0, 82]`.
+                // A stored option or attachment list OpenMaker cannot read
+                // is 3: read as absent, it could turn SMTP into the client
+                // or drop an attachment, a different message than the step
+                // describes.
+                let stored = |slot: u16, key: u8| {
+                    step.data
+                        .as_ref()
+                        .and_then(|d| d.slot(slot))
+                        .and_then(|s| s.child(key))
+                        .is_some()
+                };
+                let mut on = [false; 8];
+                for slot in [0u16, 1, 2, 3, 4, 7] {
+                    match step.number(slot) {
+                        Some(n) => on[usize::from(slot)] = n != 0,
+                        None if stored(slot, 0x03) => return Exec::error(ErrorCode::UNAVAILABLE),
+                        None => {}
+                    }
+                }
+                let attached =
+                    step.has_flag(flag::FILE_PATH) || stored(0, crate::StepData::PATH_STRING);
+                let attachments = match path_list(step) {
+                    Some(list) => list,
+                    None if attached => return Exec::error(ErrorCode::UNAVAILABLE),
+                    None => String::new(),
+                };
+                let via = if on[7] {
+                    MailVia::OAuth
+                } else if on[4] {
+                    MailVia::Smtp
+                } else {
+                    MailVia::Client
+                };
+                // Encryption `[00 5, 03]` and Authentication `[00 6, 03]`,
+                // none when absent.
+                let mut choices = [0, 1];
+                if via == MailVia::Smtp {
+                    // A stored SMTP calculation that does not decode
+                    // would read as empty: an empty port is 25, which
+                    // could offer the login to another service.
+                    let unreadable = (5u16..=11)
+                        .any(|slot| stored(slot, 0x05) && step.calculation(slot).is_none());
+                    if unreadable {
+                        return Exec::error(ErrorCode::UNAVAILABLE);
+                    }
+                    for (choice, slot) in choices.iter_mut().zip([5u16, 6]) {
+                        match step.number(slot) {
+                            Some(n) => *choice = n,
+                            None if stored(slot, 0x03) => {
+                                return Exec::error(ErrorCode::UNAVAILABLE)
+                            }
+                            None => {}
+                        }
+                    }
+                }
+                let mut text = |slot| self.slot_text(host, step, slot).unwrap_or_default();
+                let (to, cc, bcc, subject, message) = (text(0), text(1), text(2), text(3), text(4));
+                let smtp = (via == MailVia::Smtp).then(|| {
+                    let [encryption, authentication] = choices;
+                    let login = authentication != 1;
+                    SmtpOptions {
+                        name: text(5),
+                        email: text(6),
+                        reply_to: text(7),
+                        server: text(8),
+                        port: text(9),
+                        encryption,
+                        authentication,
+                        user: if login { text(10) } else { String::new() },
+                        password: if login { text(11) } else { String::new() },
+                    }
+                });
+                host.send_mail(&Mail {
+                    via,
+                    to,
+                    cc,
+                    bcc,
+                    subject,
+                    message,
+                    collect: [on[0], on[1], on[2]],
+                    one_per_record: on[3],
+                    attachments,
+                    with_dialog: dialog,
+                    smtp,
+                })
             }
             // Accounts
             134 | 135 | 136 | 137 | 83 | 138 => {
@@ -1963,6 +2177,7 @@ fn writes_records(id: u16) -> bool {
             | 216
             | 240
             | 241
+            | 249
     )
 }
 

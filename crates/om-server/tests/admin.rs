@@ -115,6 +115,35 @@ fn log_lines(handle: &ServerHandle, name: &str) -> Vec<String> {
         .collect()
 }
 
+#[cfg(all(unix, feature = "admin-console"))]
+#[test]
+fn the_databases_filter_uses_the_resolved_folder_of_a_file_opened_through_a_link() {
+    use om_admin::Backend;
+    use om_server::console::ServerBackend;
+
+    let fixture = TempFile::new("admin-folder-alias", &[], true);
+    let folder = fixture.0.with_extension("databases");
+    let alias = fixture.0.with_extension("alias");
+    std::fs::create_dir(&folder).unwrap();
+    std::os::unix::fs::symlink(&folder, &alias).unwrap();
+    let file = TempFile(alias.join(FILE));
+    std::fs::copy(&fixture.0, &file.0).unwrap();
+    let root = folder.canonicalize().unwrap();
+    let (_, handle) = server::start_configured_with_handle(&file, |server| {
+        server.with_database_folders(vec![root.clone()])
+    });
+
+    let backend = ServerBackend::new(handle, Vec::new());
+    let folders = backend.folders().unwrap();
+    let [database] = backend.databases().try_into().unwrap();
+    assert_eq!(folders.databases.as_slice(), std::slice::from_ref(&root));
+    assert_eq!(database.folder, root);
+
+    drop(file);
+    std::fs::remove_file(alias).unwrap();
+    std::fs::remove_dir(folder).unwrap();
+}
+
 /// Also checks that `Access.log` records each session's login, refused or
 /// accepted, the files it logs in to and out of, and its end, in FileMaker
 /// Server's form (`docs/re/server-logs.md` 3).
@@ -123,8 +152,14 @@ fn snapshots_follow_clients_through_their_sessions() {
     let started = SystemTime::now();
     let file = TempFile::new("admin", &[], true);
     let folder = file.0.with_extension("logs");
+    // A database folder the server looked in that holds no hosted file.
+    let databases = file.0.with_extension("databases");
+    std::fs::create_dir_all(&databases).unwrap();
     let (port, handle) = server::start_configured_with_handle(&file, |server| {
-        server.with_event_log(&folder).unwrap()
+        server
+            .with_event_log(&folder)
+            .unwrap()
+            .with_database_folders(vec![databases.clone()])
     });
 
     let overview = handle.overview();
@@ -228,6 +263,11 @@ fn snapshots_follow_clients_through_their_sessions() {
             Err(BackendError::NotFound)
         );
         assert_eq!(console.run_schedule(2), Err(BackendError::NotFound));
+        // Database Folders lists the empty database folder, and the one
+        // of the file named on the command line (#430).
+        let folders = console.folders().unwrap();
+        assert!(folders.databases.contains(&databases), "{folders:?}");
+        assert_eq!(folders.databases.len(), 2, "{folders:?}");
     }
 
     // A second client: both listed, oldest first, and both have the file
@@ -289,6 +329,7 @@ fn snapshots_follow_clients_through_their_sessions() {
     let written = std::fs::read_to_string(folder.join("Access.log")).unwrap();
     assert!(!written.contains("s3cret") && !written.contains(PASSWORD));
     std::fs::remove_dir_all(&folder).unwrap();
+    std::fs::remove_dir_all(&databases).unwrap();
 }
 
 /// The event log records the disconnect and the session's end, naming

@@ -24,7 +24,7 @@ use std::path::{Path, PathBuf};
 use om_calc::Locale;
 use om_hbam::{serial, OwnedNode};
 
-use crate::field_catalog::name_key;
+use crate::field_catalog::listed_key;
 use crate::field_options::{
     AutoCalculation, AutoEnter, AutoEnterValue, EntryValue, FieldOptions, Indexing, OptionFormula,
     Storage, StrictType, Validation,
@@ -480,7 +480,7 @@ pub fn tree(file: &NewFile, random: &mut dyn FnMut(&mut [u8])) -> Result<OwnedNo
         .ok_or_else(|| Refusal("The new table has no occurrence.".into()))?;
 
     // The theme the layout uses, then the layout.
-    root.set_child(theme::catalog(&stamp, &mut || new_uuid(random)));
+    root.set_child(theme::catalog(&stamp, &mut || new_uuid(random))?);
     // An empty layout catalog: its index's name list, order, count and
     // entries.
     let mut empty_index: Vec<OwnedNode> = [NAMES, ORDER, ENTRIES]
@@ -526,7 +526,7 @@ pub fn tree(file: &NewFile, random: &mut dyn FnMut(&mut [u8])) -> Result<OwnedNo
         &mut || new_uuid(random),
     ));
     root.set_child(security(file, &stamp, random)?);
-    root.set_child(fonts(&stamp, &mut || new_uuid(random)));
+    root.set_child(fonts(&stamp, &mut || new_uuid(random))?);
     root.set_child(empty_catalog(VALUE_LISTS, 0x01, false, &stamp, &mut || {
         new_uuid(random)
     }));
@@ -755,7 +755,7 @@ fn stamped(mut node: OwnedNode, stamp: &Stamp) -> OwnedNode {
     node.set_child(om_scripts::text_node(MOD_USER, &stamp.user));
     node.set_child(om_scripts::text_node(MOD_ACCOUNT, &stamp.account));
     // The time as a key string: its key is shorter than 8 bytes before
-    // 00:16:40 (schema-path.md 3.1).
+    // 02:46:40 (schema-path.md 3.1).
     node.set_child(OwnedNode::leaf(MOD_TIME.to_vec(), key_string(&stamp.time)));
     node
 }
@@ -768,15 +768,15 @@ fn index(
     ordered: bool,
     stamp: &Stamp,
     uuid: &mut dyn FnMut() -> [u8; 16],
-) -> OwnedNode {
+) -> Result<OwnedNode, Refusal> {
     let mut index = OwnedNode::list(vec![INDEX], Vec::new());
     if let Some((last, _)) = members.last() {
         index.set_child(OwnedNode::leaf([LAST_ID], key_string(last)));
     }
     let names = members
         .iter()
-        .map(|(key, name)| OwnedNode::leaf(listed(name), key_string(key)))
-        .collect::<Vec<_>>();
+        .map(|(key, name)| Ok(OwnedNode::leaf(listed(name)?, key_string(key))))
+        .collect::<Result<Vec<_>, Refusal>>()?;
     let mut names_node = OwnedNode::list([NAMES], Vec::new());
     for name in names {
         names_node.set_child(name);
@@ -800,20 +800,14 @@ fn index(
         .collect();
     index.set_child(OwnedNode::list([ENTRIES], entries));
     index.set_child(OwnedNode::leaf([UNIQUE_ID], uuid().to_vec()));
-    stamped(index, stamp)
+    Ok(stamped(index, stamp))
 }
 
-/// A name list key: the name's key and `00 00 00` (schema-path.md 5.6).
-/// [Guest]'s placeholder has the key every FileMaker file stores for it,
-/// in every language [O: the 66 starters]; the collation key would weigh
-/// U+E002 as an unassigned character.
-fn listed(name: &str) -> Vec<u8> {
-    if name == GUEST {
-        return vec![0x03, 0x01, 0xff, 0xe0, 0xe0, 0x02, 0x03, 0x02, 0, 0, 0];
-    }
-    let mut key = name_key(name);
-    key.extend([0, 0, 0]);
-    key
+/// A name list key (schema-path.md 5.6). [Guest]'s placeholder has the
+/// key every FileMaker file stores for it, in every language [O: the 66
+/// starters], which FileMaker's own weights for U+E002 give.
+fn listed(name: &str) -> Result<Vec<u8>, Refusal> {
+    listed_key(name).ok_or_else(|| Refusal(format!("“{name}” has no name list key.")))
 }
 
 /// The file status `[2]`: the format and file version, the locale, the
@@ -895,7 +889,7 @@ fn security(
         true,
         stamp,
         &mut || new_uuid(random),
-    );
+    )?;
     // File Options > Open: log in as Admin with no password (local-files.md 3.1).
     accounts_index.set_child(OwnedNode::leaf([0x06], Vec::new()));
     accounts_index.set_child(om_scripts::text_node(&[NAME], ADMIN));
@@ -961,7 +955,7 @@ fn security(
         true,
         stamp,
         &mut || new_uuid(random),
-    );
+    )?;
     // The index of the sets' checksums (session-identity.md 4.1).
     let mut by_sum = OwnedNode::list([0x08], Vec::new());
     for (sum, key) in sums {
@@ -1000,7 +994,7 @@ fn security(
     security.set_child(OwnedNode::list(
         [0x03],
         vec![
-            index(&names, false, stamp, &mut || new_uuid(random)),
+            index(&names, false, stamp, &mut || new_uuid(random))?,
             OwnedNode::list([MEMBERS], extended),
         ],
     ));
@@ -1124,20 +1118,20 @@ fn catalog_65(stamp: &Stamp, uuid: &mut dyn FnMut() -> [u8; 16]) -> OwnedNode {
 /// starter has it (some have no other); Pro 26's blank files list their
 /// theme's fonts instead, and OpenMaker's theme names none. Styles name
 /// fonts by these keys.
-fn fonts(stamp: &Stamp, uuid: &mut dyn FnMut() -> [u8; 16]) -> OwnedNode {
+fn fonts(stamp: &Stamp, uuid: &mut dyn FnMut() -> [u8; 16]) -> Result<OwnedNode, Refusal> {
     const DEFAULT_FONT: &str = "arial,sans-serif";
     let key = vec![0, 0];
     let mut member = OwnedNode::list(key.clone(), Vec::new());
     member.set_child(OwnedNode::leaf([0x02], [0x01, 0x00]));
     member.set_child(om_scripts::text_node(&[NAME], DEFAULT_FONT));
     member.set_child(OwnedNode::leaf([UNIQUE_ID], uuid().to_vec()));
-    OwnedNode::list(
+    Ok(OwnedNode::list(
         [FONTS],
         vec![
-            index(&[(key, DEFAULT_FONT)], false, stamp, uuid),
+            index(&[(key, DEFAULT_FONT)], false, stamp, uuid)?,
             OwnedNode::list([MEMBERS], vec![stamped(member, stamp)]),
         ],
-    )
+    ))
 }
 
 #[cfg(test)]
@@ -1168,6 +1162,60 @@ mod tests {
             .unwrap(),
             internal_creation: 0xe8b3_1c05,
         }
+    }
+
+    /// A new file's empty script catalog takes its first script (#274): the
+    /// name list key is FileMaker's in every file, so no stored name needs
+    /// to show it.
+    #[test]
+    fn a_new_file_takes_its_first_script() {
+        use crate::field_catalog::listed_key;
+        use crate::script_catalog::plan;
+        use crate::{Script, ScriptCatalog};
+        use std::collections::BTreeMap;
+        let root = tree(&alpha(), &mut counter()).unwrap();
+        let index = root
+            .child(&[crate::script_catalog::SCRIPTS])
+            .and_then(|catalog| catalog.child(&[1]))
+            .expect("the script index")
+            .clone();
+        let requested = ScriptCatalog {
+            scripts: vec![Script {
+                id: 1,
+                name: "First".into(),
+                ..Script::default()
+            }],
+            ..ScriptCatalog::default()
+        };
+        let by = Stamp {
+            user: "Tester".into(),
+            account: ADMIN.into(),
+            time: alpha().time,
+        };
+        let saved = plan(
+            Some(&index),
+            &ScriptCatalog::default(),
+            &BTreeMap::new(),
+            &requested,
+            &by,
+            &mut || [9; 16],
+        )
+        .unwrap()
+        .unwrap();
+        assert_eq!(saved.assigned[&1], 1);
+        let entry = listed_key("First").unwrap();
+        assert_eq!(
+            saved
+                .index
+                .child(&[1])
+                .and_then(|names| names.child(&entry))
+                .and_then(|e| e.value.clone()),
+            Some(vec![1, 1])
+        );
+        assert_eq!(
+            saved.index.child(&[4]).and_then(|n| n.value.clone()),
+            Some(1u32.to_be_bytes().to_vec())
+        );
     }
 
     /// Every stamp holds its time as a key string, also a time whose key is

@@ -24,6 +24,7 @@ members = [
     "crates/om-transfer",
     "crates/om-url",
     "crates/om-author",
+    "crates/om-report",
 ]
 
 [workspace.package]

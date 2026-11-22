@@ -729,6 +729,9 @@ warning icon when the text is not SVG FileMaker supports (Claris).
 FileMaker Pro caches the rendered images under keys made by
 `FMFileUser::GenerateRuntimeLibraryKey` (`runtime_calc_` names, FileMaker
 Pro strings); nothing shows that they are stored in the file [I].
+OpenMaker reads the bit (`ButtonObject::calculated_icon`, also on popover
+buttons) and the formula (`ObjectCalcs::button_icon`), keeping every other
+byte of the object and its record as it is.
 
 ### 5.4 Field control styles (`FieldLayoutObject.displayType`)
 
@@ -1000,10 +1003,11 @@ Chooser and Add Assignee layouts, which are also the only two without
 
 `0x20000` (with placeholder text, above 5.5) and `0x80000` (on every
 value-list control and calendar of the templates) are in neither source
-[U]. OpenMaker reads `0x8000` (`FieldObject::quick_find`) and `0x80`
-(`FieldObject::next_object_on_enter`, which the keypad's Enter follows in
-Browse); the other bits of the table it reads only where this section's
-other paragraphs say.
+[U]. OpenMaker reads `0x8000` (`FieldObject::quick_find`), `0x40` and
+`0x80` (`FieldObject::next_object_on_return`, `next_object_on_enter`,
+which Return and the keypad's Enter follow in Browse), and `0x400000`
+(`FieldObject::single_unlabeled_checkbox`); the other bits of the table
+it reads only where this section's other paragraphs say.
 
 [O, FileMaker Pro 26.1.1 x86_64] The Inspector writes the two 26.1.1 bits
 into this word: `PropFieldFormatter::ApplyFormatImpl` (0x101b35f90 and
@@ -1592,6 +1596,17 @@ the theme, is [I]. A capture of Meetings' Notes with its Inspector would tell.
 Drop-down lists and calendars at the top is inferred: no capture shows one with
 a value.
 
+[O, 2026-11-18] On copies of the Contacts starter using Universal Touch,
+FileMaker Pro 26.0.3's Insert > Field made a 44 pt edit box. Both a field
+placed in OpenMaker and a Pro-created field resized to 22 pt drew blank
+when inactive in Browse. Each showed its value during entry, and the
+saved value was visible on another layout and survived reopening. The
+OpenMaker-placed field showed the value while inactive once resized to
+44 pt. [I] The theme's combined 24 pt vertical padding leaves too little
+room for text in the shorter frame. [U] Pro's default height for a Fields
+sidebar drop and the dimensions used by other themes were not measured.
+See [#315](https://github.com/OpenMaker-Dev/openmaker/issues/315).
+
 [O] Compiled property 64 can carry `intVal`, rather than `stringVal`: it then
 indexes the file font list at `25/5/<id>/16`. Contacts index 0 is
 `arial,sans-serif`; index 2 is `Helvetica Neue`. The integer 0 is a valid font
@@ -2055,14 +2070,18 @@ Storage [O, 2026-11-02]:
 OpenMaker's runtime (`om-gui` `web_viewer`, the `web-viewer` feature):
 
 - Browse evaluates the address on the current record in Form view and on
-  each row's record in List view, and shows it in a WebKitGTK view (wry)
-  whose X11 window is a child of its window's own X11 window, at the
+  each row's record in List view, and shows it in a native view (wry): on
+  Linux a WebKitGTK view whose X11 window is a child of its window's own X11
+  window, on macOS a WKWebView in a clipping view of its window's content
+  view (below). The view lies at the
   object's rectangle, clipped to the document's scroll area
   and zoomed with it; the view hides while egui draws anything over it
   (menus, pop-ups, dialogs, popovers) and is destroyed when the object is no
   longer painted (another layout, mode or view, a panel not in front, a hide
   condition, the window or file closing). A different calculated address
-  loads in the same view. "Allow interaction" off makes the page insensitive;
+  loads in the same view. "Allow interaction" off makes the page insensitive
+  (on macOS a plain view over the page takes its clicks, which go on to the
+  window);
   "Automatically encode URL" uses Insert from URL's encoding, and also
   encodes `#` in a `data:` URL. Views are incognito, without developer tools,
   new windows or downloads, and navigate only to http, https, data, blob,
@@ -2071,8 +2090,41 @@ OpenMaker's runtime (`om-gui` `web_viewer`, the `web-viewer` feature):
   `WEBKIT_DISABLE_DMABUF_RENDERER` is set; the page bridge uses its own
   `openmaker` script message handler (wry's IPC drops messages from `data:`
   pages, whose URL it cannot parse).
-- The views can only be children of X11 windows, so a build with the
-  feature puts its windows on winit's X11 backend whenever an X server
+- On macOS (`web_viewer/appkit.rs`) AppKit's views live on the main thread,
+  where the app's frames run: commands apply as they come, and a page is
+  made at the end of the frame, with wry, as a child of the root window,
+  whose handle eframe gives out, and then moved into its own container
+  view in its window. The page bridge posts by asking a hidden frame to
+  load an `openmaker-message:` URL, which the view's navigation handler
+  takes and refuses; wry's IPC would drop `data:` pages' messages, and a
+  message handler of OpenMaker's own needs code objc2 marks unsafe, which
+  the workspace forbids. The handler hears every frame's navigations, so
+  the URL carries a random token, known only to the bridge script injected
+  into the main frame. Each document the main frame commits gets a new one
+  from the OS's random source (without it the bridge stays off), and the
+  last document's stops working as the next one commits, with what it
+  posted that the app has not taken yet: another site's frame in the page
+  cannot post, nor can a page that learned an earlier document's token. Only
+  well-formed messages are kept; one longer than 16 MiB, or one that would
+  put more than 256 messages or 32 MiB (each counted as at least 1 KiB) in
+  wait for the app, is dropped. A page whose Content
+  Security Policy forbids frames (`frame-src 'none'`) cannot post at all.
+  For the same reason the history and loading state that Set Web Viewer's
+  Back and Forward need are read through key-value coding. wry reports a
+  load only when it commits and when it finishes, so each frame also looks
+  at the page's `loading`: a navigation is loading from when it starts,
+  and one that fails before committing ends a quarter of a second after it
+  stops loading. An address Foundation cannot read as a URL shows a blank
+  page [I, OpenMaker's choice; wry would panic on it]. Every window shows
+  its own pages: another window's AppKit window is found as
+  `web_viewer/viewports.rs` says (below). `tests/web_viewer_native.rs`
+  runs on macOS too, with the window's mouse events given to the view under
+  the page's button rather than real input (the test window is not made key,
+  so as to leave the desktop alone), and `tests/web_viewer_windows_native.rs`
+  reads a second window's List rows' colors from the system's
+  `screencapture`.
+- On Linux the views can only be children of X11 windows, so a build with
+  the feature puts its windows on winit's X11 backend whenever an X server
   answers at startup (`om_gui::native_options`). On a Wayland session, where
   winit would otherwise choose Wayland, that is XWayland, and no environment
   variable is needed. When no X server answers (XWayland turned off), or a
@@ -2100,7 +2152,13 @@ OpenMaker's runtime (`om-gui` `web_viewer`, the `web-viewer` feature):
   between the moment before the viewport is shown and the start of its code
   is that viewport's, since eframe creates the window there. A title that
   matches breaks a tie, and anything else leaves the window without views
-  and with a note. When eframe recreates a viewport's window (some builder
+  and with a note. On macOS the moment is read from AppKit instead: the
+  window `NSApplication.windows` lists at the start of a viewport's code that
+  it did not list just before the viewport was shown is that viewport's,
+  since winit makes it there on the main thread; when that moment shows
+  several, the one of them with the viewport's title, then or on a later
+  frame. A window that was there before is never taken.
+  When eframe recreates a viewport's window (some builder
   changes), or a window moves to the root viewport, its views are made
   again in the new native window. A test checks this in eframe's real event
   loop under Xvfb, and another, on a WebKitGTK build, renders a page in a
@@ -2154,7 +2212,7 @@ OpenMaker's runtime (`om-gui` `web_viewer`, the `web-viewer` feature):
   once). A callback is routed by the view's window id, window UUID, session
   epoch, file, layout and object; one from a destroyed view, a closed
   window or an earlier session is dropped.
-- Not yet: macOS (WKWebView) and Windows (WebView2) adapters, views in
+- Not yet: a Windows (WebView2) adapter, views in
   native Wayland windows,
   embedded viewports (a backend without native windows), Find mode's "Display content in Find
   mode", progress bar and status messages, `GetLayoutObjectAttribute`'s
@@ -2331,6 +2389,17 @@ layout 3 has no `0d`. The third file shows that the two entries together
 are enough for this case; whether the part list entry alone is, is not
 isolated.
 
+[O, 2026-11-18, FileMaker Pro 26.0.3] On a Contacts starter copy with
+a new layout, New Record left no field active while the new layout's
+only field was absent from `15`. Insert > Field added Pro's new field to
+`15`; saving also added the previously placed field. On a duplicate of
+Contact Details, the stored order kept its 24 entries and the two portal
+fields appended by OpenMaker. Tab reached the portal fields and skipped
+the placed Website field, which was absent from the stored order even
+though Set Tab Order proposed a number for it. [U] Where Pro inserts a
+new field into a populated custom order and what it does inside a tab or
+slide panel. See [#316](https://github.com/OpenMaker-Dev/openmaker/issues/316).
+
 What OpenMaker's placement writes (`om_data::layout_placement`,
 `docs/authoring.md`, "Fields on layouts") follows these: an edit box and a
 label encoded as above with flags `0x30000000` and field flags `0xe0`,
@@ -2343,13 +2412,16 @@ raised, every stored entry and byte kept); the edit box's `0a` entry (its
 frame's top and left, which must be whole points, as no fractional
 position was seen there; the number of objects in the tree as its
 pre-order index, since it is the last root; its key string, 0 and
-repetition 1); `05, 00` raised to the last new key; and the layout's stamp.
-Object keys are the next after every key the layout uses, every key its
-part lists name, and `05, 00`. A body part without a list, or with one
+repetition 1); the same reference appended to `15` with the new position
+in the edit box's attribute `07`; `05, 00` raised to the last new key;
+and the layout's stamp. Appending after the greatest stored position
+preserves the existing order and gaps. Object keys are the next after
+every key the layout uses, every key its part lists, object index and
+tab order name, and `05, 00`. A body part without a list, or with one
 whose count does not match its entries, is refused: every part FileMaker
-saved has a readable one. The label gets no `0a` entry (no text object has
-one), and `08` and `15` are left alone (the objects are unnamed and
-outside the tab order). A text placed on its own (the desktop's Text
+saved has a readable one. The label stays outside both `0a` and `15`.
+New objects are unnamed, so placement leaves `08` alone.
+A text placed on its own (the desktop's Text
 tool, `place_text`) is the same text object and attribute record at the
 end of the body's list, with `05, 00` raised to its key and nothing else
 written. The field's `labelKey` (5.2), which 23 fields of the starters

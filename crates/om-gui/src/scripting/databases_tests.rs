@@ -19,6 +19,8 @@ use std::sync::{mpsc, Mutex};
 struct Server {
     refresh_render: Option<RenderLayout>,
     pdf_rows: Vec<i64>,
+    /// The page setup the file stores (`[2, 87]`).
+    page_format: Option<Vec<u8>>,
     report_grands: bool,
     /// A Region field (10) grouping the report rows, and the found set's
     /// sort field ids (empty: unsorted).
@@ -124,6 +126,7 @@ impl Provider {
         schema.add_occurrence(5, "Rows", 5);
         schema.add_field(5, FieldDef::data(1, "Text", ValueType::Text));
         schema.authenticated_account.set_access = self.server.lock().unwrap().set_access.clone();
+        schema.page_format = self.server.lock().unwrap().page_format.clone();
         if self.server.lock().unwrap().containers {
             schema.add_field(5, FieldDef::data(20, "Photo", ValueType::Container));
         }
@@ -2130,6 +2133,35 @@ fn opening_a_peer_evaluates_its_trigger_parameter_in_the_peer_namespace() {
     assert_eq!(c.result(), "Root");
 }
 
+#[test]
+fn set_zoom_level_sets_and_clears_the_windows_zoom_lock() {
+    for locked in [true, false] {
+        let mut zoom = ScriptStep::new(97);
+        zoom.value = 5;
+        if locked {
+            zoom.flags |= om_data::scripts::flag::LOCK;
+        }
+        let mut client = Client::new(vec![zoom], vec![]);
+        client.run_in(WindowState {
+            layout: Some(1),
+            record: Some(1),
+            zoom_locked: !locked,
+            ..Default::default()
+        });
+        let state = client
+            .events()
+            .into_iter()
+            .rev()
+            .find_map(|event| match event {
+                ScriptEvent::Window(update) => Some(update.state),
+                _ => None,
+            })
+            .expect("Set Zoom Level publishes the window");
+        assert_eq!(state.zoom, 150);
+        assert_eq!(state.zoom_locked, locked);
+    }
+}
+
 /// Adjust Window [Resize to Fit] before the window's content area was
 /// drawn (#1115): the worker sends the window what the step fits, at the
 /// step's zoom and bars, after the window update with what the script
@@ -3019,6 +3051,10 @@ pub(super) fn conditional_fixture() -> (Box<dyn DataProvider>, impl Fn() -> Vec<
     report_fixture(false, Some(pdf_tests::conditional_document()))
 }
 
+pub(super) fn symbols_fixture() -> (Box<dyn DataProvider>, impl Fn() -> Vec<String>) {
+    report_fixture(false, Some(pdf_tests::symbols_document()))
+}
+
 /// The rows sorted by Region (East, North, West) with sub-summary parts.
 pub(super) fn grouped_fixture() -> (Box<dyn DataProvider>, impl Fn() -> Vec<String>) {
     let (provider, events, server) = report_server(true, Some(pdf_tests::grouped_document()));
@@ -3302,4 +3338,70 @@ fn full_access_raises_only_the_scripts_own_files_set() {
     assert_eq!(host.current_set_name(), account);
     host.set_full_access(here + 1, false);
     assert_eq!(host.current_set_name(), account);
+}
+
+/// A script the account's custom set gives no access is refused with 9
+/// when another script performs it, also when it is set to run with full
+/// access privileges: the flag elevates the steps of a script that runs,
+/// and only a caller running with full access lets a script without access
+/// run (script-runtime.md 3.7, 9.1; #408). Before, the flag let it run
+/// with full access.
+#[test]
+fn a_script_its_set_gives_no_access_is_refused_however_it_runs() {
+    use om_data::host::privilege_set::{
+        AccessLevel, Actions, Allow, CustomRules, ItemAccess, MenuCommands, Quad, TableRules,
+    };
+    let mut perform = ScriptStep::new(1);
+    perform.set_script_key(StoredKey::from_id(2));
+    // The fixture's scripts capture errors.
+    let mut c = Client::new(
+        vec![
+            perform,
+            exit("Get ( LastError ) & \"|\" & Get ( ScriptResult )"),
+        ],
+        vec![],
+    );
+    let all = ItemAccess {
+        default: Some(Quad(0xff)),
+        items: BTreeMap::new(),
+    };
+    // Scripts executable only (`d6`), script 2 no access (`d5`).
+    let scripts = ItemAccess {
+        default: Some(Quad(0xd6)),
+        items: BTreeMap::from([(vec![2], Quad(0xd5))]),
+    };
+    {
+        let mut server = c.server.lock().unwrap();
+        server.set_access = Some(om_data::host::security::SetAccess::Custom(Box::new(
+            CustomRules {
+                default: TableRules {
+                    actions: Actions {
+                        create: Allow::Yes,
+                        view: Allow::Yes,
+                        edit: Allow::Yes,
+                        delete: Allow::Yes,
+                    },
+                    fields: AccessLevel::Modifiable,
+                    field_levels: BTreeMap::new(),
+                },
+                tables: BTreeMap::new(),
+                layouts: all.clone(),
+                scripts,
+                value_lists: all,
+                prints: true,
+                exports: true,
+                menus: MenuCommands::All,
+            },
+        )));
+        let mut locked = Script {
+            id: 2,
+            name: "Locked".into(),
+            steps: vec![exit("\"ran\"")],
+            ..Default::default()
+        };
+        locked.set_runs_with_full_access(true);
+        server.scripts.get_mut("Root.fmp12").unwrap().push(locked);
+    }
+    c.run();
+    assert_eq!(c.result(), "9|");
 }

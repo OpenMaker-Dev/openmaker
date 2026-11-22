@@ -717,6 +717,89 @@ Design function answers empty but `DatabaseNames`.
   follows the last bracket (FMS sample, Task Details), `<¶>` otherwise. A
   named container gives its name, then `<`: `Assignee Portal¶<¶>`.
 
+#### GetRecordIDsFromFoundSet on FileMaker Server [O: script engine, 2026-11-19]
+
+FileMaker Server 26.0.3's script engine (`tools/fms-script-harness`,
+battery `s45-record-ids` on the Contacts template, records 1 to 8 made in
+the run) answers `GetRecordIDsFromFoundSet ( type {; tableOccurrenceOrPortal} )`
+from the window's found set, in its order:
+
+| type | records 1 to 8 | 1, 3, 4, 6, 7, 8 | 7, 6, 4, 3, 1 (sorted descending) | empty found set |
+|---|---|---|---|---|
+| 0 (`ValueNumber`) | `1¶2¶...¶8` | `1¶3¶4¶6¶7¶8` | `7¶6¶4¶3¶1` | empty |
+| 1 (`JSONString`) | not run | `["1","3","4","6","7","8"]` | `["7","6","4","3","1"]` | not run |
+| 2 (`JSONNumber`) | not run | `[1,3,4,6,7,8]` | `[7,6,4,3,1]` | not run |
+| 3 (`ValueNumberRanges`) | `1-8` | `1¶3-4¶6-8` | `7¶6¶4¶3¶1` | empty |
+| 4 (`JSONStringRanges`) | `["1-8"]` | `["1","3-4","6-8"]` | `["7","6","4","3","1"]` | `[]` |
+
+- The keywords are numbers: `GetAsNumber ( ValueNumber )` is 0,
+  `ValueNumberRanges` 3, `JSONStringRanges` 4. Types 1 and 2 are the JSON
+  functions' `JSONString` and `JSONNumber`, which Claris documents as this
+  function's types too. The type is truncated (1.5 is 1). Text
+  that is no number is 0 (`"x"` lists the ids); `"3"` is 3. Empty text,
+  -1, 5 to 7 and 2912 are `?` with error 1708.
+- A range is a run of ids each one more than the one before, in the found
+  set's order: a set sorted descending has no ranges. The JSON arrays have
+  no spaces.
+- Over an empty found set (after Delete All Records), types 0 and 3 are
+  empty and type 4 is `[]`. Types 1 and 2 were not run there; Claris
+  documents `[]` for an empty JSON result
+  ([function reference](https://help.claris.com/en/pro-help/content/getrecordidsfromfoundset.html)).
+  Find mode was not run.
+- The second parameter names a table occurrence. The layout's own
+  (`"Contacts"`) gives its found set; a related one (`"Phone Numbers"`)
+  gives the current record's related records (one in the run). An unknown
+  name (`"Nothing"`) or empty text is `?` with error 10. A portal object's
+  name was not run.
+
+In the same battery: `GetAddonInfo ( "x" )` answers `{` CR TAB
+`"APIVers" : 2` CR `}` with error 0, and `GetAddonInfo ( "" )` is `?` with
+error 3. `Furigana ( "abc" )` answers `abc`: the engine calls an external
+`kakasi` program, missing in the harness, so this is no answer for a
+system with one. `GetSensor ( "battery" )` is `?` with error 1208, and
+`GetAVPlayerAttribute ( "playbackState" )` is empty with error 0.
+`Location`, `LocationValues` and `RangeBeacons` were not evaluated there:
+FMUpgradeTool dropped the steps naming them (battery s48 below runs them).
+These are FileMaker Server's answers, not FileMaker Pro's.
+
+#### FileMaker Go functions on FileMaker Server [O: script engine, 2026-11-20]
+
+Battery `s48-location-evaluate` (contacts-en). The location functions
+are external functions (section 10), which FMUpgradeTool will not put in
+a step, so the battery compiles them in the engine with `Evaluate`:
+
+- `Location`, `LocationValues` and `RangeBeacons` are `?` with error 1208
+  ("operator missing, function not found or ( not expected") for every
+  argument run: `Location ( 10 ; 60 )`, `( 0 ; 0 )`, `( "" ; "" )`,
+  `Location ( 10 )` (its timeout is optional), `LocationValues ( 10 ; 60 )` and
+  `( -1 ; -1 )`, `RangeBeacons` of a UUID and 1, and of empty text. An
+  unknown function, `Evaluate ( "Nothing ( 1 )" )`, is 1208 too: the
+  server's engine has no location functions: nothing in its libraries
+  registers their `FMMB` group (calc-encoding.md 7). Their names fail
+  while the text compiles, as an unknown function's do. In a branch
+  `Evaluate` never takes, `If ( 0 ; Location ( 10 ; 60 ) ; 1 )`,
+  and the same with `LocationValues ( 10 ; 60 )`, `RangeBeacons ( "" )`
+  and `Nothing ( 1 )`, is still `?` with 1208, where
+  `If ( 0 ; GetSensor ( "battery" ) ; 1 )` is 1, error 0 (the `dead` run).
+  A call compiled into a file by FileMaker Pro and run on the server was
+  not run [I: the same 1208 when it is evaluated].
+- `GetSensor` of each of the 20 sensor names the engine lists (resource
+  162, `catalogs/enumerations.csv`) is empty with error 0, also in another
+  case (`"Location"`, `"BATTERYLEVEL"`) and with options
+  (`"stepCount" ; 3600`, `"location" ; 1 ; 2`). Any other name (`"battery"`,
+  empty text, `"nothing"`) is `?` with error 1208, through `Evaluate`
+  too.
+- `GetAddonInfo` of `"com.example.Other"` and `"?"` answers the same
+  `{` CR TAB `"APIVers" : 2` CR `}` as `"x"`, error 0.
+- `Furigana ( "abc" ; 2 )` and `( "abc" ; 99 )` are `abc`, and
+  `Furigana ( "" )` is empty, all error 0.
+- `GetAVPlayerAttribute` of `"position"`, empty text and `"nothing"` is
+  empty with error 0.
+
+FileMaker Pro's answers are unmeasured: Claris documents empty for
+`Location` and `LocationValues` and "empty when the sensor is
+unavailable" for `GetSensor` (`catalogs/calc-function-spec.json`).
+
 #### Layout objects (`GetLayoutObjectAttribute`) [O: script engine]
 
 Battery `s32-layout-objects-*` (Contacts' Contact Details, Tasks' Task

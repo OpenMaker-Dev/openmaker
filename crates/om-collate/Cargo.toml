@@ -4,11 +4,12 @@ version.workspace = true
 edition.workspace = true
 license.workspace = true
 rust-version.workspace = true
-description = "FileMaker text index keys (UCA 5.2.0 primary weights) and word breaking"
+description = "FileMaker text index keys (UCA 5.2.0 primary weights), catalog name keys and word breaking"
 # data/allkeys-5.2.0.txt is the Unicode Collation Algorithm's DUCET 5.2.0,
 # distributed under data/LICENSE-UNICODE.
 
 [dependencies]
+encoding_rs = "0.8"
 
 [dev-dependencies]
 om-hbam = { path = "../om-hbam" }

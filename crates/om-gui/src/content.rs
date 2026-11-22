@@ -84,7 +84,31 @@ pub(crate) fn browse(
             Geometry::Unavailable => form_view(ui, session, document, calc, actions),
         },
         ViewMode::List => list_view(ui, session, page, document, calc, actions),
-        ViewMode::Table => table_view(ui, session, page, document, calc, actions),
+        ViewMode::Table => {
+            // Zoomed as Form and List view are: the grid, its header and its
+            // scroll areas in the document's zoom layer.
+            let factor = document.zoom.factor();
+            // The last column fills the width the table's previous frame
+            // left: at a new zoom the table is laid out once more before it
+            // shows, or it keeps the old zoom's width until the next input.
+            let shown = ui.scope_id().with("table zoom");
+            if ui.data(|data| data.get_temp::<f32>(shown)) != Some(factor) {
+                ui.data_mut(|data| data.insert_temp(shown, factor));
+                ui.ctx().request_discard("Table view zoom changed");
+            }
+            crate::document::zoom::show(ui, ui.available_size() / factor, factor, |ui| {
+                // The canvas below the rows, in their layer (the window's
+                // canvas is under it): a click there that no cell takes
+                // commits the record.
+                let canvas = ui.interact(
+                    ui.max_rect(),
+                    ui.scope_id().with("table_canvas"),
+                    Sense::click(),
+                );
+                table_view(ui, session, page, document, calc, actions);
+                commit_canvas_click(&canvas, session, document, actions);
+            });
+        }
     }
     commit_canvas_click(&background, session, document, actions);
 }
@@ -670,6 +694,10 @@ fn table_view(
     egui::ScrollArea::horizontal()
         .id_salt(("columns", page.key.layout_id))
         .auto_shrink(false)
+        .scroll_source(egui::scroll_area::ScrollSource {
+            drag: table_drag_scroll(ui),
+            ..Default::default()
+        })
         .show(ui, |ui| {
             table_grid(ui, session, page, document, calc, &completing, actions);
         });
@@ -709,18 +737,39 @@ fn table_grid(
     let frame = document
         .scroll
         .begin(ui, salt, Some(selected..=selected + row_height));
+    // The widths of the columns before the last, which takes the rest: the
+    // table's own, so that a divider dragged in the zoom layer measures
+    // in the table's points (egui_extras' resizing reads the pointer in
+    // window points).
+    let widths_id = ui
+        .scope_id()
+        .with(("table column widths", page.key.layout_id));
+    // By field, so that a column keeps its width wherever its field goes.
+    let mut stored: Vec<(String, f32)> =
+        ui.data(|data| data.get_temp(widths_id)).unwrap_or_default();
+    let resizable = fields.len().saturating_sub(1);
+    let mut widths: Vec<f32> = fields[..resizable]
+        .iter()
+        .map(|field| {
+            stored
+                .iter()
+                .find(|(name, _)| *name == field.name)
+                .map_or(TABLE_COLUMN_WIDTH, |(_, width)| *width)
+        })
+        .collect();
+    let drag_scroll = table_drag_scroll(ui);
     let mut table = TableBuilder::new(ui)
         .id_salt(("records", page.key.layout_id))
         .striped(false)
-        .resizable(true)
+        .resizable(false)
+        .drag_to_scroll(drag_scroll)
         .sense(Sense::click())
         .cell_layout(Layout::left_to_right(Align::Center))
         .column(Column::exact(36.0))
-        .columns(
-            Column::initial(170.0).at_least(40.0).clip(true),
-            fields.len().saturating_sub(1),
-        )
         .min_scrolled_height(0.0);
+    for width in &widths {
+        table = table.column(Column::exact(*width).clip(true));
+    }
     if !fields.is_empty() {
         table = table.column(Column::remainder().at_least(80.0).clip(true));
     }
@@ -733,11 +782,16 @@ fn table_grid(
         table = table.vertical_scroll_offset(offset.y);
     }
     let table = table.stick_to_bottom(frame.at_end());
+    // Each column's header cell, where its divider is dragged.
+    let mut header_cells: Vec<Rect> = Vec::with_capacity(fields.len());
     let output = table
         .header(row_height, |mut header| {
             header.col(|ui| table_header_cell(ui, ""));
             for field in fields {
-                header.col(|ui| table_header_cell(ui, &field.name));
+                header.col(|ui| {
+                    header_cells.push(ui.max_rect());
+                    table_header_cell(ui, &field.name);
+                });
             }
         })
         .body(|mut body| {
@@ -767,13 +821,12 @@ fn table_grid(
                         table_cell_rule(ui);
                         ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
                             ui.add_space(6.0);
-                            ui.add(
-                                egui::Label::new(
-                                    RichText::new(format!("{}", absolute + 1))
-                                        .font(theme::small())
-                                        .color(theme::WEAK_TEXT),
-                                )
-                                .selectable(false),
+                            table_label(
+                                ui,
+                                RichText::new(format!("{}", absolute + 1))
+                                    .font(theme::small())
+                                    .color(theme::WEAK_TEXT),
+                                false,
                             );
                         });
                     });
@@ -825,16 +878,13 @@ fn table_grid(
                             }
                             let value = column_value(record, column, field, calc)
                                 .hidden(session.no_access(absolute, &field.name));
-                            let label =
-                                egui::Label::new(RichText::new(value.as_ref()).color(theme::TEXT))
-                                    .truncate()
-                                    .selectable(false);
+                            let text = RichText::new(value.as_ref()).color(theme::TEXT);
                             if is_numeric(field.kind) {
                                 ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
-                                    ui.add(label);
+                                    table_label(ui, text, true);
                                 });
                             } else {
-                                ui.add(label);
+                                table_label(ui, text, true);
                             }
                         });
                     }
@@ -875,6 +925,17 @@ fn table_grid(
             frame.hold(&tail);
         });
     document.scroll.finish(frame, &output);
+    // Over the header, after it: a cell clips what reaches past its edge.
+    for (column, (cell, width)) in header_cells.iter().zip(&mut widths).enumerate() {
+        column_divider(ui, widths_id.with(column), *cell, width);
+    }
+    for (field, width) in fields.iter().zip(&widths) {
+        match stored.iter_mut().find(|(name, _)| *name == field.name) {
+            Some(entry) => entry.1 = *width,
+            None => stored.push((field.name.clone(), *width)),
+        }
+    }
+    ui.data_mut(|data| data.insert_temp(widths_id, stored));
     ui.data_mut(|data| {
         if let Some(id) = waiting {
             data.insert_temp(waiting_id, id);
@@ -913,11 +974,92 @@ fn table_header_cell(ui: &mut Ui, text: &str) {
         rect.y_range(),
         Stroke::new(1.0, Color32::from_gray(0xD6)),
     );
-    ui.add(
-        egui::Label::new(RichText::new(text).font(theme::small()).color(theme::TEXT))
-            .selectable(false)
-            .truncate(),
+    table_label(
+        ui,
+        RichText::new(text).font(theme::small()).color(theme::TEXT),
+        true,
     );
+}
+
+/// A Table view column's width before it is dragged.
+const TABLE_COLUMN_WIDTH: f32 = 170.0;
+
+/// Dragging a Table view column's width wider or narrower, at the divider
+/// after its header `cell`. The drag is in the table's points, the zoom
+/// layer's when zoomed: egui gives the pointer in window points.
+fn column_divider(ui: &mut Ui, id: egui::Id, cell: Rect, width: &mut f32) {
+    let x = cell.right() + ui.spacing().item_spacing.x / 2.0;
+    let grab = ui.style().interaction.resize_grab_radius_side;
+    let header = cell.expand2(vec2(0.0, 2.0)).y_range();
+    let handle = Rect::from_x_y_ranges(x - grab..=x + grab, header);
+    let response = ui.interact(handle, id, Sense::drag());
+    // The width follows the pointer from where it was pressed, so that
+    // movement that came with the press or with the release counts.
+    let from_global = ui
+        .ctx()
+        .layer_transform_from_global(ui.layer_id())
+        .unwrap_or(egui::emath::TSTransform::IDENTITY);
+    let start = id.with("drag start");
+    if response.drag_started() {
+        if let Some(origin) = ui.input(|input| input.pointer.press_origin()) {
+            let origin = (from_global * origin).x;
+            ui.data_mut(|data| data.insert_temp(start, (origin, *width)));
+        }
+    }
+    if response.dragged() || response.drag_stopped() {
+        let pointer = ui.input(|input| input.pointer.latest_pos());
+        if let (Some((origin, from)), Some(pointer)) =
+            (ui.data(|data| data.get_temp::<(f32, f32)>(start)), pointer)
+        {
+            *width = (from + (from_global * pointer).x - origin).clamp(40.0, 4000.0);
+        }
+    }
+    if response.drag_stopped() {
+        ui.data_mut(|data| data.remove::<(f32, f32)>(start));
+    }
+    if response.hovered() || response.dragged() {
+        ui.ctx().set_cursor_icon(egui::CursorIcon::ResizeColumn);
+        let stroke = if response.dragged() {
+            ui.visuals().widgets.active.bg_stroke
+        } else {
+            ui.visuals().widgets.hovered.bg_stroke
+        };
+        ui.painter().vline(x - 0.5, header, stroke);
+    }
+}
+
+/// Table view's scroll areas follow a touch drag at 100% only: zoomed, egui
+/// would move them by the drag in window points, the zoom's multiple of
+/// the finger's way.
+fn table_drag_scroll(ui: &Ui) -> egui::scroll_area::DragScroll {
+    if crate::document::layer_scale(ui) == 1.0 {
+        egui::scroll_area::DragScroll::OnTouch
+    } else {
+        egui::scroll_area::DragScroll::Never
+    }
+}
+
+/// A Table view label, cut off at the cell's edge with `truncate`. Zoomed,
+/// its glyphs are rasterized at the zoom (`document::layer_galley`), as the
+/// layout's own text is; text cut off keeps egui's renderer, which
+/// `scaled_text` does not rebuild.
+fn table_label(ui: &mut Ui, text: RichText, truncate: bool) -> egui::Response {
+    if crate::document::layer_scale(ui) == 1.0 {
+        let label = egui::Label::new(text).selectable(false);
+        return ui.add(if truncate { label.truncate() } else { label });
+    }
+    let mut job = std::sync::Arc::unwrap_or_clone(egui::WidgetText::from(text).into_layout_job(
+        ui.style(),
+        egui::FontSelection::Default,
+        Align::Center,
+    ));
+    job.wrap = if truncate {
+        egui::text::TextWrapping::truncate_at_width(ui.available_width())
+    } else {
+        egui::text::TextWrapping::no_max_width()
+    };
+    let galley = crate::document::layer_galley(ui, job);
+    ui.add(egui::Label::new(galley).selectable(false))
 }
 
 fn table_cell_rule(ui: &Ui) {
@@ -1124,6 +1266,22 @@ impl LayoutWorkspace {
 
     pub(crate) fn selection_count(&self, session: &Session) -> usize {
         self.canvas.selection_count(session)
+    }
+
+    /// How many selected objects Arrange's Align, Distribute and Resize To
+    /// apply to (`CanvasState::arrangeable_count`).
+    pub(crate) fn arrangeable_count(&self, session: &Session) -> usize {
+        self.canvas.arrangeable_count(session)
+    }
+
+    /// Arrange > Align, Distribute or Resize To on the selection, as
+    /// changes Save Layout stores.
+    pub(crate) fn arrange(
+        &mut self,
+        session: &Session,
+        arrangement: om_data::layout_arrange::Arrangement,
+    ) -> Result<bool, om_data::layout_placement::Refusal> {
+        self.canvas.arrange(session, arrangement)
     }
 
     pub(crate) fn take_field_finished(&mut self) -> bool {

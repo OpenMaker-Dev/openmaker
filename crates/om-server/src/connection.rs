@@ -59,7 +59,7 @@ use crate::recalc;
 use crate::record::{Recorder, Recordings};
 use crate::scripts::{self, ScriptEngine};
 use crate::transfer::{
-    page_limit, Owner, Refused, Transfers, Upload, MAX_PRE_LOGIN_UPLOAD, MAX_UPLOAD,
+    page_limit, DownloadMemory, Owner, Refused, Transfers, Upload, MAX_PRE_LOGIN_UPLOAD, MAX_UPLOAD,
 };
 use crate::uploads::{self, Charge, UploadMemory};
 use crate::writes::{self, Mailboxes};
@@ -210,6 +210,9 @@ pub(crate) struct Shared {
     /// The memory clients' uploads take as trees, on the whole server and
     /// for each client address ([`crate::uploads`]).
     pub upload_memory: Arc<UploadMemory>,
+    /// The memory the download streams connections keep paged take, on
+    /// the whole server ([`crate::transfer`]).
+    pub download_memory: Arc<DownloadMemory>,
     /// A request that panics ([`crate::Server::panicking_on`]).
     #[cfg(debug_assertions)]
     pub test_panic: std::sync::OnceLock<TestPanic>,
@@ -1207,7 +1210,11 @@ impl Connection {
             key,
             name: machine.machine_name.clone(),
             open: HashMap::new(),
-            transfers: Transfers::new(&self.shared.upload_memory, client),
+            transfers: Transfers::new(
+                &self.shared.upload_memory,
+                &self.shared.download_memory,
+                client,
+            ),
             temp: HashMap::new(),
             client,
             version: machine.version_string.clone(),
@@ -2496,8 +2503,14 @@ fn query(
                         .map(|account| account.key.as_slice()),
                     late: shared.late_index_builds.load(Ordering::Relaxed),
                     view: view_filter(file, &store),
+                    built: Default::default(),
                 };
                 let outcome = om_query::execute_parsed(&source, program, &context);
+                // A query refused for an index this server cannot key
+                // (#572) keeps none of the indexes it built of other fields.
+                if matches!(outcome.error, Some(om_query::QueryError::UnkeyedIndex)) {
+                    store.forget_indexes_on_demand(&source.built.borrow());
+                }
                 if let Some(view) = &source.view {
                     note_withheld(file, view);
                 }
@@ -2583,6 +2596,9 @@ struct QuerySource<'s> {
     /// The account's view limits: records it may not view are read without
     /// their values, and a view-limited table has no index.
     view: Option<crate::views::ViewFilter>,
+    /// The indexes this query had built on demand, which a refused query
+    /// takes back ([`crate::store::Store::forget_indexes_on_demand`]).
+    built: std::cell::RefCell<Vec<crate::store::IndexId>>,
 }
 
 impl om_query::Source for QuerySource<'_> {
@@ -2621,11 +2637,17 @@ impl om_query::Source for QuerySource<'_> {
         table: &[u8],
         field: &[u8],
         kind: u8,
-    ) -> om_hbam::Result<Option<OwnedNode>> {
+    ) -> Result<Option<OwnedNode>, om_query::QueryError> {
         if self.view.as_ref().is_some_and(|view| view.limits(table)) {
             return Ok(None);
         }
-        om_query::Source::index_on_demand(self.store, table, field, kind)
+        let index = om_query::Source::index_on_demand(self.store, table, field, kind)?;
+        if index.is_some() {
+            self.built
+                .borrow_mut()
+                .push((table.to_vec(), field.to_vec(), kind));
+        }
+        Ok(index)
     }
 
     fn finders_read_missing_indexes(&self) -> bool {
@@ -2747,6 +2769,39 @@ fn container_member_editable(file: &OpenFile, path: &[Vec<u8>]) -> bool {
         Some((None, _)) => access.may_in_every_table(RecordAction::Edit),
         // Not a member: the adjustment itself refuses it.
         None => true,
+    }
+}
+
+/// Whether `file`'s session may store container data in the library op88
+/// names (`table`): a create or an edit of that table's records, which a
+/// container cell naming the data is; for the file's own library, which
+/// any table's records may hold, one of the two in every base table of
+/// the file, each by its own rules (the set's default counts only for a
+/// table without an entry). Data already stored raises that member's count
+/// instead, which op87 allows only to such an edit
+/// ([`container_member_editable`]). FileMaker Server's answer to an upload
+/// its set denies is unmeasured; it is refused as op88's other privilege
+/// refusals are. A request that names no table library is refused by the
+/// upload itself.
+fn container_library_writable(file: &OpenFile, table: &[Vec<u8>]) -> bool {
+    let Some(access) = set_access(file) else {
+        return false;
+    };
+    let actions = [RecordAction::Create, RecordAction::Edit];
+    match table {
+        [] => {
+            let tables: Vec<Vec<u8>> = file
+                .hosted
+                .read_store()
+                .catalog()
+                .tables
+                .iter()
+                .map(|t| om_hbam::slot::uint_segment(t.id))
+                .collect();
+            access.may_any_in_tables(tables.iter().map(Vec::as_slice), &actions)
+        }
+        [table] => actions.iter().any(|a| access.may(table, *a)),
+        _ => true,
     }
 }
 
@@ -3203,7 +3258,9 @@ fn perform_script(
         scripts::Request {
             hosted,
             privileges: account.privileges(),
+            access: account.access.clone(),
             account: account.name.clone(),
+            account_key: account.key.clone(),
             requester: session.connection_id,
             script: request,
         },
@@ -3231,6 +3288,12 @@ fn upload_binary(
     };
     if !views_every_record(file) {
         info!("{peer}: refusing container data from an account with a view limit");
+        return Ok(failed(ACCESS_DENIED));
+    }
+    if !container_library_writable(file, &request.table) {
+        info!(
+            "{peer}: refusing container data for a table its privilege set does not let it write"
+        );
         return Ok(failed(ACCESS_DENIED));
     }
     let hosted = file.hosted.clone();

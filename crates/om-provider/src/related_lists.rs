@@ -45,7 +45,7 @@ use om_data::host::{CalcSchema, CalcSource, FileCalc, RecordValues};
 use om_data::meta::ValueSource;
 use om_data::rules::{error, Entry, HeldRecords, RecordPlan, Written};
 use om_data::DataError;
-use om_hbam::Table;
+use om_hbam::{DataType, Table};
 
 use crate::NativeProvider;
 
@@ -164,6 +164,16 @@ fn list_field(list: &om_data::meta::ValueList) -> u64 {
     match &list.source {
         ValueSource::Field { primary, .. } => primary.field,
         _ => 0,
+    }
+}
+
+/// [`not_checked`] for a check whose rule OpenMaker does not support
+/// (#571): an import ends at its row ([`DataError::unsupported`]) rather
+/// than skipping it.
+fn unsupported_check(field: &str, why: &str) -> DataError {
+    DataError {
+        unsupported: true,
+        ..not_checked(field, why)
     }
 }
 
@@ -624,13 +634,76 @@ impl NativeProvider {
             }
             let items = items.map_err(read)?;
             let items = items.ok_or_else(|| not_checked(&name, "its list is too long"))?;
-            let data_type = table
-                .field(field)
-                .map_or(om_hbam::catalog::DataType::Text, |f| f.data_type);
-            let listed = items
-                .iter()
-                .any(|item| om_data::rules::same_list_value(data_type, &item.value, &text, &cx));
-            if !listed {
+            let data_type = table.field(field).map_or(DataType::Text, |f| f.data_type);
+            // Text compares as the list's field keys it (#571): in its index
+            // language, 0 being the language of the file that owns its table
+            // (a related file's own, `table_context`), unknown when that
+            // file's locale record does not decode. A field of another type
+            // is keyed by value, whatever its language, and compares as it
+            // did.
+            let keys = schema.table_of(primary).and_then(|source| {
+                let def = source.fields.get(&listed)?;
+                if def.value_type != ValueType::Text {
+                    return Some(om_query::keys::TextKeys::Collated);
+                }
+                let file_language = match schema.table_context(source.id) {
+                    Some(file) => file.file_language(),
+                    None => schema.file_language(),
+                };
+                om_data::rules::value_text_keys(def.language, file_language)
+            });
+            let mut found = false;
+            for item in &items {
+                match om_data::rules::same_list_value(data_type, &item.value, &text, &cx, keys) {
+                    Some(true) => {
+                        found = true;
+                        break;
+                    }
+                    Some(false) => {}
+                    None => {
+                        return Err(unsupported_check(
+                            &name,
+                            "its list's field is indexed in a language whose keys OpenMaker \
+                             does not build",
+                        ))
+                    }
+                }
+            }
+            if !found {
+                // A typed destination's miss stays 506 so an import can skip
+                // the row. A text rule's keys can distinguish values the list
+                // deduplicates by calculation equality (such as `A` and `a`
+                // in Unicode raw), so it cannot resolve a match by equality
+                // alone. Read the candidate in the source field's locale and
+                // compare in the list owner's locale, as `list_entries` does.
+                if data_type == DataType::Text {
+                    let listed_type = schema
+                        .field(primary, listed)
+                        .map_or(ValueType::Text, |def| def.value_type);
+                    let listed_locale = schema
+                        .table_of(primary)
+                        .and_then(|source| schema.table_context(source.id))
+                        .map_or(&schema.locale, |file| &file.locale);
+                    let listed_cx = Ctx::new(listed_locale, today);
+                    let list_locale = schema
+                        .value_list_context(list.id)
+                        .map_or(&schema.locale, |file| &file.locale);
+                    let list_cx = Ctx::new(list_locale, today);
+                    let checked = om_data::host::stored_value(&text, listed_type, &listed_cx);
+                    if items.iter().any(|item| {
+                        let listed =
+                            om_data::host::stored_value(&item.value, listed_type, &list_cx);
+                        matches!(
+                            om_data::calc::ops::compare(&listed, &checked, &list_cx),
+                            om_data::calc::ops::Comparison::Ordered(std::cmp::Ordering::Equal)
+                        )
+                    }) {
+                        return Err(unsupported_check(
+                            &name,
+                            "its list's field keys apart values its list as computed takes as one",
+                        ));
+                    }
+                }
                 return Err(plan.refusal(field, error::NOT_IN_LIST));
             }
         }

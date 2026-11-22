@@ -23,13 +23,18 @@ use om_data::{DataProvider, FieldChanges};
 use om_scripts::ScriptStep;
 
 const LAYOUT: u32 = fixture::LAYOUT as u32;
-const ON_HOLD: &str = "Your unsaved changes are on hold.";
 
 fn host(tag: &str) -> hosted::Hosted {
+    host_with(tag, |_| {})
+}
+
+/// [`host`]'s file, changed by `change` first.
+fn host_with(tag: &str, change: impl FnOnce(&mut om_hbam::OwnedNode)) -> hosted::Hosted {
     // Delete Record/Request [With dialog: Off].
     let mut delete = ScriptStep::new(9);
     delete.set_flag(om_scripts::flag::NO_INTERACT, true);
-    let root = fixture::tree(&[fixture::script(1, "Delete", vec![delete])], true);
+    let mut root = fixture::tree(&[fixture::script(1, "Delete", vec![delete])], true);
+    change(&mut root);
     let file = fixture::TempFile::from_tree(&format!("gui-conflicts-{tag}"), &root);
     hosted::host_file(
         &format!("conflicts-{tag}"),
@@ -60,13 +65,6 @@ fn cell(app: &common::App) -> Option<String> {
     app.query_all_by_role_and_label(Role::TextInput, "Name")
         .next()
         .and_then(|cell| cell.value())
-}
-
-/// The first row's Name cell is on screen and empty.
-fn emptied(app: &common::App) -> bool {
-    app.query_all_by_role_and_label(Role::TextInput, "Name")
-        .next()
-        .is_some_and(|cell| cell.value().unwrap_or_default().is_empty())
 }
 
 /// Type `text` over the first row's Name (empty text empties it).
@@ -119,16 +117,6 @@ fn hold(other: &mut om_provider::NativeProvider, text: &str) {
     other.update_record(LAYOUT, 1, name(text)).unwrap();
 }
 
-/// The window's save is held for the user's choice, the bar saying why.
-fn held(app: &mut common::App) {
-    common::wait_until(app, "the edit held", |app| {
-        app.query_by_label("Keep My Changes").is_some() && app.state().is_settled()
-    });
-    app.get_by_label(ON_HOLD);
-    app.get_by_label_contains("was changed on the host");
-    assert!(app.state().error().is_none(), "{:?}", app.state().error());
-}
-
 /// The window's save went through.
 fn saved(app: &mut common::App) {
     common::wait_until(app, "the save", |app| {
@@ -137,97 +125,117 @@ fn saved(app: &mut common::App) {
     });
 }
 
-/// An emptied Name is refused over the other client's change, held, and
-/// kept by the user; a change the other client makes before that save is
-/// refused too; a later edit held the same way goes when discarded.
+/// The window's first change of a record locks it on the host, as FileMaker
+/// Pro locks a record as editing begins (write-path.md 4.1): another
+/// client's change of it is refused with 301, naming the holder, until the
+/// window saves, and goes through after.
 #[test]
-fn a_save_over_another_clients_change_waits_for_the_users_choice() {
-    let hosted = host("changed");
+fn another_clients_change_waits_while_the_window_edits_the_record() {
+    let hosted = host("editing");
     let mut app = open(&hosted);
     let mut other = hosted.opened();
-    type_name(&mut app, "");
-    change(&mut other, "Theirs");
-
-    common::save_record(&mut app);
-    held(&mut app);
-    assert!(emptied(&app), "the emptied draft stays: {:?}", cell(&app));
-    assert_eq!(stored(&hosted).as_deref(), Some("Theirs"));
-
-    // Kept, then changed again on the host before the save: held again.
-    common::click(&mut app, "Keep My Changes");
-    change(&mut other, "Theirs again");
-    common::save_record(&mut app);
-    held(&mut app);
-    assert!(emptied(&app), "{:?}", cell(&app));
-    assert_eq!(stored(&hosted).as_deref(), Some("Theirs again"));
-    common::click(&mut app, "Keep My Changes");
+    type_name(&mut app, "Mine");
+    common::wait_until(&mut app, "the edit taken", common::unsaved);
+    other.records(LAYOUT, 0, 10).unwrap();
+    let refused = other.update_record(LAYOUT, 1, name("Theirs")).unwrap_err();
+    assert_eq!(refused.code, Some(301), "{refused}");
+    assert!(refused.message.contains("being modified by"), "{refused}");
+    assert_eq!(stored(&hosted).as_deref(), Some("Write tests"));
     common::save_record(&mut app);
     saved(&mut app);
-    assert_eq!(stored(&hosted), None, "the user's choice, saved once");
-
-    type_name(&mut app, "Mine");
-    change(&mut other, "Theirs last");
-    common::save_record(&mut app);
-    held(&mut app);
-    common::click(&mut app, "Discard My Changes");
-    common::wait_until(&mut app, "the host's value", |app| {
-        cell(app).as_deref() == Some("Theirs last") && app.state().is_settled()
-    });
-    assert!(!common::editing(&app), "nothing unsaved");
-    assert_eq!(stored(&hosted).as_deref(), Some("Theirs last"));
+    assert_eq!(stored(&hosted).as_deref(), Some("Mine"));
+    change(&mut other, "Theirs");
+    assert_eq!(stored(&hosted).as_deref(), Some("Theirs"));
     other.close();
 }
 
-/// The other client holds the record: the window's save is refused and its
-/// edit stays, saved only when the user tries again, after the other
-/// client let go. When the other client changed the record before letting
-/// go, the retry is held instead.
+/// Another client holds the record: the window's first change of it is
+/// refused at entry with the host's reason, and nothing is sent; once the
+/// other client let go and the refused input is discarded, a new change
+/// is taken and saved.
 #[test]
-fn a_record_another_client_holds_is_saved_when_the_user_tries_again() {
+fn a_record_another_client_holds_refuses_the_windows_entry() {
     let hosted = host("locked");
     let mut app = open(&hosted);
     let mut other = hosted.opened();
-    type_name(&mut app, "Mine");
     hold(&mut other, "Abandoned");
-    common::save_record(&mut app);
+    type_name(&mut app, "Mine");
     common::wait_until(&mut app, "the refusal", |app| {
-        app.query_by_label_contains("Save Record tries again")
-            .is_some()
+        app.query_by_label("Discard Input").is_some() && app.state().error().is_some()
     });
-    assert!(
-        app.state().error().is_none(),
-        "the bar says so, not an alert"
-    );
-    assert_eq!(cell(&app).as_deref(), Some("Mine"));
+    let error = app.state().error().unwrap_or_default().to_owned();
+    assert!(error.contains("being modified by"), "{error}");
+    common::click(&mut app, "OK");
     other.revert_transaction().unwrap();
     app.run_steps(20);
     assert_eq!(
         stored(&hosted).as_deref(),
         Some("Write tests"),
-        "nothing sent again by itself"
+        "nothing sent"
     );
+    common::click(&mut app, "Discard Input");
+    common::wait_until(&mut app, "the input discarded", |app| {
+        app.query_by_label("Discard Input").is_none() && cell(app).as_deref() == Some("Write tests")
+    });
+    type_name(&mut app, "Mine");
+    common::wait_until(&mut app, "the edit taken", common::unsaved);
     common::save_record(&mut app);
     saved(&mut app);
     assert_eq!(stored(&hosted).as_deref(), Some("Mine"));
-
-    type_name(&mut app, "Mine again");
-    hold(&mut other, "Theirs");
-    common::save_record(&mut app);
-    common::wait_until(&mut app, "the refusal", |app| {
-        app.query_by_label_contains("Save Record tries again")
-            .is_some()
-    });
-    other.commit_transaction(false).unwrap();
-    common::save_record(&mut app);
-    held(&mut app);
-    assert_eq!(cell(&app).as_deref(), Some("Mine again"));
-    assert_eq!(stored(&hosted).as_deref(), Some("Theirs"));
-    common::click(&mut app, "Discard My Changes");
-    common::wait_until(&mut app, "the host's value", |app| {
-        cell(app).as_deref() == Some("Theirs") && app.state().is_settled()
-    });
     other.close();
 }
+
+/// A record another client changed after the window read it: the
+/// window's first change is refused at entry (306), nothing sent. Once the
+/// refused input is discarded, the window shows the host's value and takes
+/// a new change, saved over that value.
+#[test]
+fn a_record_changed_before_editing_refuses_the_entry() {
+    let hosted = host("changed");
+    let mut app = open(&hosted);
+    let mut other = hosted.opened();
+    change(&mut other, "Theirs");
+    type_name(&mut app, "Mine");
+    common::wait_until(&mut app, "the refusal", |app| {
+        app.query_by_label("Discard Input").is_some() && app.state().error().is_some()
+    });
+    common::click(&mut app, "OK");
+    assert_eq!(stored(&hosted).as_deref(), Some("Theirs"));
+    common::click(&mut app, "Discard Input");
+    common::wait_until(&mut app, "the host's value", |app| {
+        app.query_by_label("Discard Input").is_none()
+            && cell(app).as_deref() == Some("Theirs")
+            && app.state().is_settled()
+    });
+    type_name(&mut app, "Mine");
+    common::wait_until(&mut app, "the edit taken", common::unsaved);
+    common::save_record(&mut app);
+    saved(&mut app);
+    assert_eq!(stored(&hosted).as_deref(), Some("Mine"));
+    other.close();
+}
+
+/// Delete Record on a record whose editing took its lock deletes the
+/// record under that lock, its edit going with it, and no other record
+/// takes its edit.
+#[test]
+fn deleting_a_record_being_edited_deletes_it() {
+    let hosted = host("delete-edited");
+    let mut app = open(&hosted);
+    type_name(&mut app, "Mine");
+    common::wait_until(&mut app, "the edit taken", common::unsaved);
+    common::click(&mut app, "Delete Record");
+    common::wait_for_label(&mut app, DELETE_CONFIRMATION);
+    common::click(&mut app, "Delete");
+    common::wait_until(&mut app, "the record deleted", |app| {
+        app.state().is_settled() && !app.state().script_running() && !common::editing(app)
+    });
+    assert!(app.state().error().is_none(), "{:?}", app.state().error());
+    assert_eq!(stored_names(&hosted), [Some("Ship".to_owned())]);
+}
+
+/// Delete Record's confirmation (client-ui.md, "Delete confirmations").
+const DELETE_CONFIRMATION: &str = "Permanently delete this ENTIRE record?";
 
 /// The Names of the tasks the host has, read by a client of its own.
 fn stored_names(hosted: &hosted::Hosted) -> Vec<Option<String>> {
@@ -463,11 +471,23 @@ mod delayed_page_tests {
             assert_eq!(cell(&app).as_deref(), Some("Mine"));
             common::save_record(&mut app);
         }
+        // A refused save first holds the edits while the record is read
+        // back (Check Again, Discard My Changes), which the window then
+        // compares with what the edits began from (`recheck_refused_save`):
+        // the outcome is the hold that comparison gives, a read-back that
+        // failed, or no bar at all, not that interim one (#541).
+        let unread = |app: &common::App| {
+            app.query(egui_kittest::kittest::By::new().label_contains("could not be read back"))
+                .is_some()
+        };
         common::wait_until(&mut app, "save outcome", |app| {
             app.state().is_settled()
                 && !common::saving(app)
-                && (app.query_by_label("Keep My Changes").is_some() || !common::editing(app))
+                && (app.query_by_label("Keep My Changes").is_some()
+                    || unread(app)
+                    || !common::editing(app) && app.query_by_label("Discard My Changes").is_none())
         });
+        assert!(!unread(&app), "the refused record could not be read back");
         let persisted = stored(&hosted);
         eprintln!("trace: {:?}", gate.trace.lock().unwrap());
         eprintln!(
@@ -504,10 +524,16 @@ mod delayed_page_tests {
 /// nothing is stored, and another client cannot write its id. Revert
 /// Record is offered on the untouched new record and releases it, deleting
 /// nothing, as Pro 26.0.3 removes an untouched new record. A duplicate is
-/// stored when it is saved.
+/// stored when it is saved, with its own auto-entered values: Token
+/// auto-enters `Get ( UUID )`, replacing the value, and the copy of record
+/// 2 enters a new one rather than copy record 2's, as FileMaker Server's
+/// engine enters a replacing calculation on a duplicate again (script
+/// oracle s46-record-number-ae, #473).
 #[test]
 fn the_menus_new_record_is_held_until_saved_and_its_revert_deletes_nothing() {
-    let hosted = host("menu-new");
+    let hosted = host_with("menu-new", |root| {
+        replacing(root, (20, "Token"), "Get ( UUID )", "record 2's");
+    });
     let mut app = open(&hosted);
     let before = stored_names(&hosted);
     let held = i64::try_from(before.len()).unwrap() + 1;
@@ -541,4 +567,184 @@ fn the_menus_new_record_is_held_until_saved_and_its_revert_deletes_nothing() {
     let after = stored_names(&hosted);
     assert_eq!(after[..before.len()], before[..]);
     assert_eq!(after[before.len()..], [shown]);
+    let tokens = stored_values(&hosted, "Token");
+    assert_eq!(tokens[1], "record 2's", "{tokens:?}");
+    assert_eq!(tokens[2].len(), 36, "a new UUID: {tokens:?}");
+}
+
+/// The values of `field` in every stored record, in order.
+fn stored_values(hosted: &hosted::Hosted, field: &str) -> Vec<String> {
+    let mut reader = hosted.opened();
+    let page = reader.records(LAYOUT, 0, 10).unwrap();
+    reader.close();
+    let index = page.fields.iter().position(|f| f.name == field).unwrap();
+    page.records
+        .into_iter()
+        .map(|record| record.values[index].clone().unwrap_or_default())
+        .collect()
+}
+
+/// `field` auto-enters `formula`, replacing an existing value, and record
+/// 2 holds `value` in it.
+fn replacing(
+    root: &mut om_hbam::OwnedNode,
+    (field, name): (u64, &str),
+    formula: &str,
+    value: &str,
+) {
+    use fixture::{OCCURRENCE, TABLE};
+    use om_hbam::slot::uint_segment;
+    fixture::add_field(root, TABLE, field, name, 1, 1, 0, 0x88, 0);
+    fixture::add_formula(
+        root,
+        &fixture::names(),
+        (TABLE, OCCURRENCE),
+        field,
+        5,
+        formula,
+    );
+    root.put(
+        &[&uint_segment(TABLE), &[5], &[2], &uint_segment(field)],
+        om_scripts::text_node(&[], value),
+    );
+}
+
+/// A duplicate enters a replacing `Get ( RecordNumber )` as its own place,
+/// after the records of the unsorted found set, as FileMaker Server's
+/// engine does (script oracle s46-record-number-ae: the copy of the first
+/// of nine stores 10), not record 2's copied number. An edit of the copy
+/// before its save keeps it.
+#[test]
+fn a_duplicate_enters_its_own_record_number() {
+    let hosted = host_with("duplicate-number", |root| {
+        replacing(root, (21, "Number"), "Get ( RecordNumber )", "2");
+    });
+    let mut app = open(&hosted);
+    let before = stored_names(&hosted);
+    common::open_menu(&mut app, "Records");
+    common::click(&mut app, "Duplicate Record");
+    common::wait_until(&mut app, "the duplicate", |app| {
+        app.state().is_settled() && common::record_number(app) == (before.len() + 1).to_string()
+    });
+    // The list's last row: the copy.
+    app.query_all_by_role_and_label(Role::TextInput, "Name")
+        .last()
+        .unwrap()
+        .focus();
+    app.step();
+    app.key_press_modifiers(egui::Modifiers::COMMAND, egui::Key::A);
+    app.query_all_by_role_and_label(Role::TextInput, "Name")
+        .last()
+        .unwrap()
+        .type_text("Copy");
+    app.run_steps(2);
+    common::save_record(&mut app);
+    saved(&mut app);
+    assert!(app.state().error().is_none(), "{:?}", app.state().error());
+    let numbers = stored_values(&hosted, "Number");
+    assert_eq!(numbers[1..], ["2", "3"], "{numbers:?}");
+    assert_eq!(stored_names(&hosted)[2].as_deref(), Some("Copy"));
+}
+
+/// In a script's transaction a duplicate keeps its place as its
+/// `Get ( RecordNumber )` through Commit Records and a later Set Field of
+/// it, which give none: the transaction commits the copy with 3.
+#[test]
+fn a_duplicate_keeps_its_number_through_a_transactions_later_writes() {
+    let hosted = host_with("duplicate-number-transaction", |root| {
+        replacing(root, (21, "Number"), "Get ( RecordNumber )", "2");
+        let mut commit = ScriptStep::new(75);
+        commit.set_flag(om_scripts::flag::NO_INTERACT, true);
+        let mut name = ScriptStep::new(76);
+        name.set_calculation(0, Some(&fixture::calculated_calc("\"Copy\"")));
+        name.set_field_spec(
+            0,
+            Some(om_scripts::FieldSpec::new(
+                om_scripts::StoredKey::from_id(fixture::OCCURRENCE).unwrap(),
+                om_scripts::StoredKey::from_id(fixture::NAME).unwrap(),
+                0,
+            )),
+        );
+        let script = fixture::script(
+            3,
+            "Duplicate in transaction",
+            vec![
+                fixture::go_to_record(2),
+                ScriptStep::new(205),
+                ScriptStep::new(8),
+                commit,
+                name,
+                ScriptStep::new(206),
+            ],
+        );
+        let node = script.encode();
+        let id = node.segment.clone();
+        root.put(&[&[17], &[5], &id], node);
+    });
+    let mut app = open(&hosted);
+    let before = stored_names(&hosted);
+    common::open_menu(&mut app, "Scripts");
+    common::click(&mut app, "Duplicate in transaction");
+    common::wait_until(&mut app, "the committed transaction", |app| {
+        app.state().is_settled()
+            && !app.state().script_running()
+            && (app.state().error().is_some() || stored_names(&hosted).len() == before.len() + 1)
+    });
+    assert!(app.state().error().is_none(), "{:?}", app.state().error());
+    let numbers = stored_values(&hosted, "Number");
+    assert_eq!(numbers[1..], ["2", "3"], "{numbers:?}");
+    assert_eq!(stored_names(&hosted)[2].as_deref(), Some("Copy"));
+}
+
+/// In a transaction that skips auto-entry, a duplicate takes the record's
+/// values: it enters none of its own, and its Token is record 2's, not
+/// empty; a serial number is not copied, and the copy has none [I:
+/// FileMaker's duplicate there is unmeasured; OpenMaker keeps what it did
+/// before #473].
+#[test]
+fn a_duplicate_in_a_transaction_skipping_auto_entry_keeps_the_values() {
+    let hosted = host_with("duplicate-skip-entry", |root| {
+        replacing(root, (20, "Token"), "Get ( UUID )", "record 2's");
+        // An editable serial number, generated on creation.
+        fixture::add_field(root, fixture::TABLE, 22, "Order", 1, 1, 0, 0x2, 0);
+        fixture::set_field_serial_increment(root, fixture::TABLE, 22, 1);
+        root.put(
+            &[
+                &om_hbam::slot::uint_segment(fixture::TABLE),
+                &[5],
+                &[2],
+                &om_hbam::slot::uint_segment(22),
+            ],
+            om_scripts::text_node(&[], "ORD0042"),
+        );
+        let mut open = ScriptStep::new(205);
+        open.set_flag(om_scripts::flag::SELECT_ALL, true);
+        let script = fixture::script(
+            2,
+            "Duplicate skipping entry",
+            vec![
+                fixture::go_to_record(2),
+                open,
+                ScriptStep::new(8),
+                ScriptStep::new(206),
+            ],
+        );
+        let node = script.encode();
+        let id = node.segment.clone();
+        root.put(&[&[17], &[5], &id], node);
+    });
+    let mut app = open(&hosted);
+    let before = stored_names(&hosted);
+    common::open_menu(&mut app, "Scripts");
+    common::click(&mut app, "Duplicate skipping entry");
+    common::wait_until(&mut app, "the committed duplicate", |app| {
+        app.state().is_settled()
+            && !app.state().script_running()
+            && stored_names(&hosted).len() == before.len() + 1
+    });
+    assert!(app.state().error().is_none(), "{:?}", app.state().error());
+    let tokens = stored_values(&hosted, "Token");
+    assert_eq!(tokens[1..], ["record 2's", "record 2's"], "{tokens:?}");
+    let orders = stored_values(&hosted, "Order");
+    assert_eq!(orders[1..], ["ORD0042", ""], "{orders:?}");
 }

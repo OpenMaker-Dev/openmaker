@@ -353,6 +353,54 @@ pub fn no_records() -> DataError {
     DataError::with_code(code::NO_MATCH, "No records match this find criteria.")
 }
 
+/// The criterion Find Matching Records (155) puts in its field for the
+/// current record's `value`: `=` for an empty value, else `==` and the
+/// value, in a text field with every find operator taken literally (`\`
+/// before it), so only records holding that whole value are found. This
+/// is OpenMaker's reading of Claris's description of the step (finding
+/// the records that match the field's value); the request FileMaker builds
+/// is not captured. Other kinds take the value as stored, which their
+/// operators cannot appear in, and so does a field whose kind the caller
+/// does not know (`None`).
+pub fn matching_criterion(value: &str, kind: Option<FieldKind>) -> String {
+    if value.is_empty() {
+        return "=".into();
+    }
+    let mut out = String::with_capacity(value.len() + 4);
+    out.push_str("==");
+    for c in value.chars() {
+        if kind == Some(FieldKind::Text) && is_find_operator(c) {
+            out.push('\\');
+        }
+        out.push(c);
+    }
+    out
+}
+
+/// A character Find mode reads as an operator (`om_query::criteria`).
+pub(crate) fn is_find_operator(c: char) -> bool {
+    matches!(
+        c,
+        '\\' | '"'
+            | '='
+            | '*'
+            | '@'
+            | '#'
+            | '!'
+            | '?'
+            | '~'
+            | '<'
+            | '>'
+            | '≤'
+            | '≥'
+            | '.'
+            | '…'
+            | '/'
+            | '{'
+            | '}'
+    )
+}
+
 fn field_missing(name: &str) -> DataError {
     DataError::with_code(
         code::FIELD_MISSING,
@@ -958,6 +1006,22 @@ mod tests {
         assert_eq!(empty.code, Some(code::EMPTY_CRITERIA));
         let invalid = find(&f, &all, &[request("Age", "many")]).unwrap_err();
         assert_eq!(invalid.code, Some(code::UNSUPPORTED));
+        // Find Matching Records: the whole value, its operators literal.
+        let names = ["a*b...c", "axxb...c", "a*b", "a*b...c d", ""];
+        let named: Vec<Record> = (1..)
+            .zip(names)
+            .map(|(id, name)| Record {
+                id,
+                values: vec![(!name.is_empty()).then(|| name.into()), None],
+            })
+            .collect();
+        let matching = |value: &str| {
+            let criterion = matching_criterion(value, Some(FieldKind::Text));
+            find(&f, &named, &[request("Name", &criterion)]).unwrap()
+        };
+        assert_eq!(matching("a*b...c"), [1]);
+        assert_eq!(matching(""), [5]);
+        assert_eq!(matching_criterion("1.5", Some(FieldKind::Number)), "==1.5");
     }
 
     #[test]
