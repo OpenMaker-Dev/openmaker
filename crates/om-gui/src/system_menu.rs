@@ -7,9 +7,9 @@
 //!
 //! The menus are built each frame through [`MenuRows`] (`menubar.rs`), as
 //! the window's bar builds them: a [`Recorder`] keeps the rows. When they
-//! differ from what the bar shows only in which rows are enabled or
-//! checked, the bar's items change in place; otherwise the bar is built
-//! again. A row the user chooses comes back as a muda event with the row's
+//! differ from what the bar shows only in enabled or checked states, the
+//! bar's items change in place. Changes to labels, structure or key
+//! equivalents rebuild the bar. A row the user chooses comes back as a muda event with the row's
 //! id; the next frame's recording answers `true` for that row, so its
 //! action runs as a click in the window's menu would.
 //!
@@ -136,7 +136,11 @@ impl Recorder<'_> {
         if chosen {
             *self.chosen = None;
         }
-        let shortcut = shortcut.filter(|shortcut| !editor_equivalent(&self.path, *shortcut));
+        // AppKit can consume an equivalent on a disabled item. Keep the
+        // effective shortcut in the row's shape so a change rebuilds the
+        // item: muda's setter leaves the old AppKit equivalent on None.
+        let shortcut =
+            shortcut.filter(|shortcut| enabled && !editor_equivalent(&self.path, *shortcut));
         self.rows.push(Row::Item {
             id,
             label: label.to_owned(),
@@ -385,11 +389,9 @@ impl SystemMenuBar {
                         id,
                         checked,
                         enabled,
-                        shortcut,
                         ..
                     } => {
                         if let Some(Handle::Item(item)) = handles.get(id) {
-                            let _ = item.set_key_accelerator(key_equivalent(*enabled, *shortcut));
                             item.set_enabled(*enabled);
                             item.set_checked(*checked);
                         }
@@ -468,7 +470,7 @@ fn append(submenu: &Submenu, rows: &[Row], handles: &mut HashMap<String, Handle>
                 enabled,
             } => {
                 let item = CheckMenuItem::with_id(id.clone(), label, *enabled, *checked, None);
-                if let Some(accelerator) = key_equivalent(*enabled, *shortcut) {
+                if let Some(accelerator) = shortcut.and_then(accelerator) {
                     let _ = item.set_key_accelerator(Some(accelerator));
                 }
                 let _ = submenu.append(&item);
@@ -498,11 +500,6 @@ fn editor_equivalent(path: &str, shortcut: KeyboardShortcut) -> bool {
         (path.split('\u{1f}').next(), shortcut.logical_key),
         (Some("Edit" | "Insert"), _) | (Some("View"), Key::Plus | Key::Minus)
     )
-}
-
-fn key_equivalent(enabled: bool, shortcut: Option<KeyboardShortcut>) -> Option<KeyAccelerator> {
-    // AppKit can consume a key equivalent even on a disabled menu item.
-    shortcut.filter(|_| enabled).and_then(accelerator)
 }
 
 fn clipboard_paste() -> Option<Event> {
@@ -704,6 +701,19 @@ mod tests {
     fn shortcuts_become_key_equivalents() {
         let shortcut = |m, k| KeyboardShortcut::new(m, k);
         let cmd = egui::Modifiers::COMMAND;
+        let open = Some(shortcut(cmd, Key::O));
+        let record_open = |enabled| record(None, |rows| rows.item("Open", open, false, enabled)).0;
+        let enabled = record_open(true);
+        let disabled = record_open(false);
+        assert!(matches!(
+            enabled[0],
+            Row::Item {
+                shortcut: Some(_),
+                ..
+            }
+        ));
+        assert!(matches!(disabled[0], Row::Item { shortcut: None, .. }));
+        assert_ne!(enabled[0].shape(), disabled[0].shape());
         assert_eq!(
             accelerator(shortcut(cmd, Key::N)),
             Some(KeyAccelerator::new(
