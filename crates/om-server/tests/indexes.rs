@@ -532,6 +532,48 @@ fn a_changed_record_leaves_entries_another_rule_wrote() {
     session.disconnect().unwrap();
 }
 
+/// A German file's legacy Number index used a period as the decimal
+/// separator. Both spellings now key as 15, so only the sweep can move
+/// the edited record; the untouched record keeps its old membership.
+#[test]
+fn a_numeric_edit_sweeps_an_old_decimal_key() {
+    use om_hbam::slot::uint_segment;
+    use om_hbam::{serial, OwnedNode, RidList};
+    let mut root = fixture::tree(&[], true);
+    root.put(
+        &[&[2], &[0x0d]],
+        OwnedNode::leaf(Vec::new(), om_calc::Locale::de_de().to_record()),
+    );
+    let table = uint_segment(fixture::TABLE);
+    let count = uint_segment(fixture::COUNT);
+    for id in [1, 2] {
+        root.put(
+            &[&table, &[5], &serial::encode(id), &count],
+            om_scripts::text_node(&[], "1.5"),
+        );
+    }
+    let old_key = vec![0x80, 0x01, 0x26]; // 1.5
+    let new_key = vec![0x80, 0x02, 0x26]; // 15
+    let posting = [1, 2]
+        .into_iter()
+        .collect::<RidList>()
+        .to_node(old_key.clone());
+    root.put(
+        &[&table, &[1], &count, &[0]],
+        OwnedNode::list(vec![0], vec![posting]),
+    );
+    let file = fixture::TempFile::from_tree("legacy-decimal-index", &root);
+    let port = server::start(&file);
+    let (mut session, _) = server::logged_in(port, "legacy decimal index");
+
+    commit_cells(&mut session, 2, &[(fixture::COUNT, "15,0")]).unwrap();
+    assert_eq!(
+        index_on_disk(&file, fixture::COUNT, 0),
+        [(old_key, vec![1]), (new_key, vec![2])]
+    );
+    session.disconnect().unwrap();
+}
+
 /// A node of a subtree: its path below the subtree's root, and its value.
 type Flat = (Vec<Vec<u8>>, Option<Vec<u8>>);
 
@@ -556,10 +598,9 @@ fn field_index_on_disk(file: &fixture::TempFile, field: u64) -> Vec<Flat> {
     out
 }
 
-/// A record deleted with a value the current rules give no key (a number
-/// among letters, #246) leaves the entry FileMaker wrote for it (#448):
-/// the deletion's computed keys name nothing, and the record would stay
-/// listed under 1234 after it no longer exists.
+/// A deleted record with a stored date the server cannot key leaves its
+/// persisted posting (#448). The synthetic index holds a posting for the
+/// short-year date, so only the sweep can remove it.
 #[test]
 fn a_deleted_record_leaves_entries_another_rule_wrote() {
     use om_hbam::slot::uint_segment;
@@ -575,27 +616,29 @@ fn a_deleted_record_leaves_entries_another_rule_wrote() {
     );
     let mut root = fixture::tree(&[delete], true);
     let table = uint_segment(fixture::TABLE);
-    let count = uint_segment(fixture::COUNT);
+    let due = uint_segment(fixture::DUE);
     root.put(
-        &[&table, &[5], &serial::encode(2), &count],
-        om_scripts::text_node(&[], "12abc34"),
+        &[&table, &[5], &serial::encode(2), &due],
+        om_scripts::text_node(&[], "10/2/26"),
     );
+    let date_key = |value: &str| om_collate::date_key(value, DateOrder::MonthDayYear).unwrap();
     let entry = |value: &str, id: u64| {
-        let key = om_collate::number_key(value).unwrap();
-        [id].into_iter().collect::<RidList>().to_node(key)
+        [id].into_iter()
+            .collect::<RidList>()
+            .to_node(date_key(value))
     };
     root.put(
-        &[&table, &[1], &count, &[0]],
-        OwnedNode::list(vec![0], vec![entry("3", 1), entry("1234", 2)]),
+        &[&table, &[1], &due, &[0]],
+        OwnedNode::list(vec![0], vec![entry("10/1/2026", 1), entry("10/2/2026", 2)]),
     );
     // Counts of a shape this server does not write are left as they are.
     root.put(
-        &[&table, &[1], &count, &[0x10], &[7]],
+        &[&table, &[1], &due, &[0x10], &[7]],
         OwnedNode::leaf(Vec::new(), vec![1, 2, 3]),
     );
     let file = fixture::TempFile::from_tree("purged-index", &root);
     let counts = |file: &fixture::TempFile| -> Vec<Flat> {
-        field_index_on_disk(file, fixture::COUNT)
+        field_index_on_disk(file, fixture::DUE)
             .into_iter()
             .filter(|(path, _)| path[0] == [0x10])
             .collect()
@@ -606,12 +649,12 @@ fn a_deleted_record_leaves_entries_another_rule_wrote() {
     let (mut session, _) = server::logged_in(port, "purged index");
     let reply = session.perform_script_on_server(1, "", true).unwrap();
     assert_eq!((reply.error, reply.result.as_str()), (0, "0"));
-    let keys: Vec<(Vec<u8>, Option<Vec<u8>>)> = field_index_on_disk(&file, fixture::COUNT)
+    let keys: Vec<(Vec<u8>, Option<Vec<u8>>)> = field_index_on_disk(&file, fixture::DUE)
         .into_iter()
         .filter(|(path, _)| path.len() == 2 && path[0] == [0])
         .map(|(path, value)| (path[1].clone(), value))
         .collect();
-    assert_eq!(keys, [(om_collate::number_key("3").unwrap(), None)]);
+    assert_eq!(keys, [(date_key("10/1/2026"), None)]);
     assert_eq!(counts(&file), stored_counts);
     session.disconnect().unwrap();
 }
