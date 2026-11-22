@@ -1625,12 +1625,18 @@ impl Service {
         );
         let normalized =
             after_text.trim_end_matches('\n') != params.source.trim_end_matches(['\n', '\r']);
+        let matches_later_revision = after == current && expected.is_some_and(|e| e != current);
+        let native_save_unconfirmed = matches_later_revision
+            && loaded
+                .opened
+                .uses_native_script_save()
+                .map_err(Self::read_error)?;
         let mut out = json!({
             "script": self.script_json(loaded.script(), &loaded.definitions),
             "base_revision": revision_text(&current),
             "after_revision": revision_text(&after),
             "changed": after != current,
-            "already_applied": after == current && expected.is_some_and(|e| e != current),
+            "already_applied": matches_later_revision && !native_save_unconfirmed,
             "steps": {
                 "before": loaded.script().steps.len(),
                 "after": compiled.script.steps.len(),
@@ -1643,6 +1649,9 @@ impl Service {
             "normalized": normalized,
             "kept_keys": preserved_keys(loaded.definition()),
         });
+        if native_save_unconfirmed {
+            out["native_save_unconfirmed"] = json!(true);
+        }
         out["apply"] = Self::available(&mut loaded.opened, &catalog::APPLY)?;
         Ok(out)
     }
@@ -1681,7 +1690,28 @@ impl Service {
             "deleted": compiled.deleted,
         });
         if after == current {
-            // Nothing to write: the script already has these steps.
+            if expected != current {
+                let reason = match loaded.opened.uses_native_script_save() {
+                    Ok(false) => None,
+                    Ok(true) => Some("The earlier native index upload cannot be verified.".into()),
+                    Err(error) => Some(format!(
+                        "The host's script save path could not be confirmed ({}).",
+                        error.message
+                    )),
+                };
+                if let Some(reason) = reason {
+                    return Err(AuthorError::new(
+                        ErrorKind::OutcomeUnknown,
+                        format!("The member for {label} has the requested steps. {reason}"),
+                    )
+                    .with_details(json!({
+                        "previous_revision": revision_text(&expected),
+                        "after_revision": revision_text(&after),
+                        "member_content_matches": true,
+                        "index_verified": false,
+                    })));
+                }
+            }
             return Ok(json!({
                 "status": if expected == current { "unchanged" } else { "already_applied" },
                 "script": label,
@@ -1704,9 +1734,9 @@ impl Service {
                 AuthorError::new(
                     ErrorKind::OutcomeUnknown,
                     format!(
-                        "The edit of {label} was sent but no answer came back ({reason}), so it \
-                         may or may not have been applied. Read the script again: at \
-                         after_revision it was applied, at previous_revision it was not."
+                        "The edit of {label} was sent but could not be confirmed ({reason}). A \
+                         fresh script read can compare the member with after_revision and \
+                         previous_revision. A native save also needs its index upload confirmed."
                     ),
                 )
                 .with_details(json!({

@@ -1456,18 +1456,42 @@ impl Session {
         key_path: &[&[u8]],
         max_return: u32,
     ) -> Result<DownloadReply, SessionError> {
+        self.download_pages(key_path, max_return, build_download, parse_download_reply)
+    }
+
+    /// Download a catalog node via op15 without asking for a read lock.
+    /// FileMaker Server's op90 would wait behind our own exclusive lock.
+    pub fn download_from_host(
+        &mut self,
+        key_path: &[&[u8]],
+    ) -> Result<DownloadReply, SessionError> {
+        self.download_pages(
+            key_path,
+            DOWNLOAD_MAX_RETURN,
+            om_protocol::build_download_from_host,
+            om_protocol::parse_download_from_host_reply,
+        )
+    }
+
+    fn download_pages(
+        &mut self,
+        key_path: &[&[u8]],
+        max_return: u32,
+        build: fn(&DownloadRequest<'_>) -> Vec<u8>,
+        parse: fn(&[u8]) -> Result<DownloadReply, om_protocol::PerformError>,
+    ) -> Result<DownloadReply, SessionError> {
         let file_id = self.opened_file_id()?;
         let mut resume = Resume::start();
         let mut slots = Vec::new();
         loop {
-            let transaction = build_download(&DownloadRequest {
+            let transaction = build(&DownloadRequest {
                 transaction_id: self.take_file_transaction(),
                 file_id,
                 key_path,
                 resume,
             });
             let result = self.perform_with_max(&transaction, max_return)?;
-            let reply = parse_download_reply(&result)
+            let reply = parse(&result)
                 .map_err(|e| SessionError::Protocol(format!("download reply: {e}")))?;
             check_progress(&reply.resume, reply.slots.len())?;
             slots.extend_from_slice(&reply.slots);
