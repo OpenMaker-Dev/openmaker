@@ -94,7 +94,10 @@ impl<'a> Source<'a> {
             let start = reader.at;
             reader.body()?;
             let body_end = reader.at;
-            if reader.word()? != b"endobj" || !reader.done() {
+            if reader.word()? != b"endobj"
+                || !reader.data.get(reader.at).copied().is_some_and(space)
+                || !reader.done()
+            {
                 return None;
             }
             objects[id as usize] = Some(&data[at + start..at + body_end]);
@@ -385,6 +388,9 @@ impl<'a, 'v> Reader<'a, 'v> {
             self.at += b"\nstream\n".len();
             self.at = self.at.checked_add(length? as usize)?;
             let end = self.data.get(self.at..)?.strip_prefix(b"\nendstream")?;
+            if !end.first().copied().is_some_and(space) {
+                return None;
+            }
             self.at = self.data.len() - end.len();
         }
         Some(())

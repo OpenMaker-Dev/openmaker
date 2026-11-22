@@ -487,7 +487,12 @@ fn what_a_page_copy_leaves_behind_is_not_kept_whole() {
 
 /// The table is built from the actual byte offsets even for the commented
 /// reference, so an xref failure cannot mask that separate rejection.
-fn marked_append_source(reference: &str, extra_body: &str, bad_xref: bool) -> Vec<u8> {
+fn marked_append_source(
+    reference: &str,
+    extra_body: &str,
+    bad_xref: bool,
+    [after_endobj, after_endstream]: [&str; 2],
+) -> Vec<u8> {
     use std::io::Write as _;
 
     let payload = "q\n% startxref trailer endobj endstream\nQ";
@@ -509,7 +514,12 @@ fn marked_append_source(reference: &str, extra_body: &str, bad_xref: bool) -> Ve
     for (index, body) in objects.iter().enumerate() {
         offsets.push(pdf.len());
         let id = index + 1;
-        writeln!(pdf, "{id} 0 obj\n{body}\nendobj").unwrap();
+        let before_endobj = if body.ends_with("\nendstream") {
+            after_endstream
+        } else {
+            "\n"
+        };
+        write!(pdf, "{id} 0 obj\n{body}{before_endobj}endobj{after_endobj}").unwrap();
     }
     pdf.extend(extra_body.bytes());
     let xref = pdf.len();
@@ -531,22 +541,27 @@ fn marked_append_source(reference: &str, extra_body: &str, bad_xref: bool) -> Ve
 #[test]
 fn append_copies_object_syntax_and_refuses_unreliable_boundaries() {
     worker();
-    let source = marked_append_source("5 0 R", "", false);
+    let separators = ["\n", "\n"];
+    let source = marked_append_source("5 0 R", "", false, separators);
     let plain = [(0, 0), (0, 1)];
     for invalid in [
-        marked_append_source("5 % comment\n0 R", "", false),
-        marked_append_source("5 0 R", "", true),
+        marked_append_source("5 % comment\n0 R", "", false, separators),
+        marked_append_source("5 0 R", "", true, separators),
+        marked_append_source("5 0 R", "", false, ["", "\n"]),
+        marked_append_source("5 0 R", "", false, ["\n", ""]),
         marked_append_source(
             "5 0 R",
             "5 0 obj\n<< /Length 0 >>\nstream\n\nendstream\nendobj\n",
             false,
+            separators,
         ),
         marked_append_source(
             "5 0 R",
             "5 0 obj\n<< /Length 0 >>\nstream\n\nendstream\nendobj\n",
             true,
+            separators,
         ),
-        marked_append_source("6 0 R", "", false),
+        marked_append_source("6 0 R", "", false, separators),
     ] {
         assert_eq!(pdf_worker::assemble_whole(&[&invalid], &plain), Ok(None));
     }
