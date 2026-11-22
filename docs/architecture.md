@@ -61,6 +61,7 @@ toolkit (egui/eframe).
 | Protocol | `om-protocol` | The RCFMP12 session: both the client and the server half of every exchange |
 | | `om-session` | TLS + GIOP transport and a live session, as a library |
 | Data contract | `om-data` | `DataProvider`, the GUI's only view of data; value types, record rules, the mock provider |
+| | `om-report` | The interface between a host's records and the report renderer: what a report asks of them and what rendering gives back ([#104](https://github.com/OpenMaker-Dev/openmaker/issues/104)) |
 | Host | `om-admin` | OpenMaker Server's Admin Console and Admin API: HTTPS, sign-in, sessions, pages and API tokens, over a backend trait ([admin-console.md](admin-console.md)) |
 | | `om-server` | OpenMaker Server: hosts `.fmp12` files for FileMaker-protocol clients |
 | Client | `om-provider` | `NativeProvider`: hosted files over the protocol, and local files through a private embedded host |
@@ -87,7 +88,24 @@ for byte).
 `om_data::DataProvider`, which it runs on a background worker thread.
 `om-provider`'s `NativeProvider` implements it for real files; the mock
 provider (`OPENMAKER_PROVIDER=mock`) gives labeled sample data for UI work
-without a server.
+without a server. A provider panic inside a request's provider call is
+that request's error reply (`worker::contain`). One after the call answered
+still sends the answer, with the schema read failed when it came asking
+whether the schema grew, so the file's calculations stop instead of going
+on with a stale schema. One while the provider switches to the window of a
+save (an update or a deletion) is that save's failure reply
+(`worker::handle_in`, [#313](https://github.com/OpenMaker-Dev/openmaker/issues/313)).
+While scripts run or are paused, the worker switches back to their window
+before it replies: a panic there ends the scripts, whose cleanup reverts a
+script transaction still open, so a save that transaction held is answered
+as not saved and the window keeps its draft (`worker::unkept_save`, also
+inside a grown schema's reply). Whether the save was held is asked of the
+provider that answered it, before the switch back can make another file's
+provider current (`worker::holds_in_transaction`).
+A panic elsewhere ends the running scripts, not the worker, and the request
+gets no reply: other replies, such as a save's settling or a page and its
+access mask, cannot be made into a plain failure without saying something
+untrue ([#444](https://github.com/OpenMaker-Dev/openmaker/issues/444)).
 
 **Local files use the hosted path.** Opening a `.fmp12` file on this
 computer starts a private, in-process OpenMaker Server

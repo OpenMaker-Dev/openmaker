@@ -4314,6 +4314,59 @@ fn an_object_exit_trigger_keeps_the_portal_row() {
     expect(&mut app, "Veto", "veto 1, allowed 2");
 }
 
+/// A single save can clear the first repetition and fill another.
+#[test]
+fn a_browse_save_validates_the_proposed_repetitions_of_a_required_global() {
+    let hosted = host_with("required-global-repetitions", |root| {
+        fixture::add_field(root, TABLE, SETTING, "Setting", 1, 2, 0, 0x1_0000, 0x8);
+        fixture::set_field_repetitions(root, TABLE, SETTING, 2);
+        let second = repetition_object(
+            602,
+            OCCURRENCE,
+            SETTING,
+            (2, 1),
+            rect(164.0, 120.0, 184.0, 320.0),
+        );
+        let store =
+            om_layout::encode::append_to_store(&portal_store(PORTAL_FLAGS), &[602], &[second]);
+        root.put(
+            &[&[4], &[5], &uint_segment(PORTALS), &[7]],
+            OwnedNode::leaf(Vec::new(), store),
+        );
+        add_script(
+            root,
+            &fixture::script(
+                12,
+                "Read setting",
+                vec![show(
+                    r#""setting " & Tasks::Setting & ":" & Tasks::Setting[2]"#,
+                )],
+            ),
+        );
+    });
+    let mut app = open(&hosted);
+    expect(&mut app, "Show portals", "on Portals");
+    common::text_field(&app, "Setting").focus();
+    app.step();
+    app.event(egui::Event::Text("7".into()));
+    app.run_steps(2);
+    common::save_record(&mut app);
+    wait_saved(&mut app);
+
+    common::text_field(&app, "Setting").focus();
+    app.step();
+    app.key_press_modifiers(egui::Modifiers::COMMAND, egui::Key::A);
+    app.key_press(egui::Key::Backspace);
+    app.run_steps(2);
+    common::text_field(&app, "Tasks::Setting").focus();
+    app.step();
+    app.event(egui::Event::Text("3".into()));
+    app.run_steps(2);
+    common::save_record(&mut app);
+    wait_saved(&mut app);
+    expect(&mut app, "Read setting", "setting :3");
+}
+
 /// Typing only into a text, number or date global and saving writes no record
 /// (the value is the session's): OnWindowTransaction does not run for it.
 #[test]
@@ -4439,31 +4492,59 @@ fn saving_only_a_typed_global_runs_no_window_transaction() {
             }
         }
     }
-    // Do not offer the new Number case when it needs a global's own
-    // field-exit validation or prohibits user modification.
-    for (tag, options, validation) in [("validated", 0x1_0000, 0x1000), ("prohibited", 0x1_0100, 0)]
-    {
-        let hosted = host_with(tag, |root| {
-            fixture::add_field(
-                root, TABLE, SETTING, "Setting", 1, 2, 0, options, validation,
-            );
-        });
-        let mut app = open(&hosted);
-        expect(&mut app, "Show portals", "on Portals");
-        assert!(common::find_text_field(&app, "Setting").is_none());
-    }
-    for (tag, options, validation) in [
-        ("date-validated", 0x1_0000, 0x2000),
-        ("date-prohibited", 0x1_0100, 0),
+    // A number or date global validated by its entry rules is offered, its
+    // typing checked as it is applied; one validated by calculation, or
+    // prohibiting user modification, is not.
+    for (tag, data_type, options, validation, offered) in [
+        ("validated", 2, 0x1_0000, 0x1000, true),
+        ("calculated", 2, 0x1_0000, 0x1, false),
+        ("prohibited", 2, 0x1_0100, 0, false),
+        ("date-validated", 3, 0x1_0000, 0x2000, true),
+        ("date-calculated", 3, 0x1_0000, 0x1, false),
+        ("date-prohibited", 3, 0x1_0100, 0, false),
     ] {
         let hosted = host_with(tag, |root| {
             fixture::add_field(
-                root, TABLE, SETTING, "Setting", 1, 3, 0, options, validation,
+                root, TABLE, SETTING, "Setting", 1, data_type, 0, options, validation,
             );
+            // Its formula, so the table's other fields are planned and only
+            // the global is left out.
+            if validation & 0x1 != 0 {
+                let mut names = fixture::names();
+                names.add_field(TABLE, SETTING, "Setting");
+                let formula = "not IsEmpty ( Setting )";
+                fixture::add_formula(root, &names, (TABLE, OCCURRENCE), SETTING, 0x19, formula);
+            }
         });
         let mut app = open(&hosted);
         expect(&mut app, "Show portals", "on Portals");
-        assert!(common::find_text_field(&app, "Setting").is_none());
+        assert_eq!(
+            common::find_text_field(&app, "Setting").is_some(),
+            offered,
+            "{tag}"
+        );
+        assert!(common::find_text_field(&app, "Name").is_some(), "{tag}");
+        // Numeric only: the ordinary save refuses other typing, and the
+        // field keeps it.
+        if tag == "validated" {
+            common::text_field(&app, "Setting").focus();
+            app.step();
+            common::text_field(&app, "Setting").type_text("12abc");
+            app.run_steps(2);
+            common::save_record(&mut app);
+            common::wait_until(&mut app, "non-numeric global refused", |app| {
+                app.state().error().is_some() && !app.state().script_running()
+            });
+            assert!(
+                app.state().error().is_some_and(|e| e.contains("Setting")),
+                "{:?}",
+                app.state().error()
+            );
+            assert_eq!(
+                common::text_field(&app, "Setting").accesskit_node().value(),
+                Some("12abc".into())
+            );
+        }
     }
 }
 
@@ -4732,6 +4813,21 @@ fn run_without_dialog(app: &mut common::App, name: &str) {
     common::wait_until(app, "the script", |app| !app.state().script_running());
 }
 
+/// Wait until the commit gate (OnRecordCommit, script 21) that an action
+/// after the window's `started`th script start runs has run and ended. The
+/// action starts it only once the record's field exit is through, a frame
+/// or more later, so a wait for no running script alone can pass before it
+/// starts; and the window discards the user's next menu command while it
+/// runs (#544).
+fn wait_commit_gate(app: &mut common::App, started: usize, what: &str) {
+    common::wait_until(app, what, |app| {
+        app.state().scripts_started()[started..]
+            .iter()
+            .any(|start| start == "RecordCommit 21")
+            && !app.state().script_running()
+    });
+}
+
 #[test]
 fn a_trigger_released_save_finishes_before_navigation_and_rearms_the_trigger() {
     let hosted = host_with("commit-navigation", add_commit_gate);
@@ -4752,8 +4848,9 @@ fn a_trigger_released_save_finishes_before_navigation_and_rearms_the_trigger() {
     app.step();
     common::text_field(&app, "Code").type_text("vetoed");
     app.run_steps(2);
+    let started = app.state().scripts_started().len();
     common::save_record(&mut app);
-    common::wait_until(&mut app, "the veto", |app| !app.state().script_running());
+    wait_commit_gate(&mut app, started, "the veto");
     common::wait_until(&mut app, "unsaved record changes", common::unsaved);
     expect(&mut app, "Show commits", "commits 2");
     assert_eq!(stored(&hosted, TABLE, &[(CODE, 1)])[1].1, [""]);
@@ -4844,10 +4941,9 @@ fn a_commit_veto_keeps_browse_mode_and_the_pending_record() {
     leave(&mut app);
     run_without_dialog(&mut app, "Refuse commit");
     let before = left_values(&hosted);
+    let started = app.state().scripts_started().len();
     enter_find(&mut app);
-    common::wait_until(&mut app, "the commit veto", |app| {
-        !app.state().script_running()
-    });
+    wait_commit_gate(&mut app, started, "the commit veto");
     assert_eq!(app.state().mode(), om_gui::Mode::Browse);
     assert_eq!(left_values(&hosted), before);
     common::wait_until(&mut app, "unsaved record changes", common::unsaved);

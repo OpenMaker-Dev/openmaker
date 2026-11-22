@@ -237,11 +237,15 @@ fn exists_in_index_program(
 /// existing value, keys the text checked in it: its index language's form
 /// (query-program.md 7.2), which the record rules require to be one
 /// OpenMaker builds exactly.
-pub(super) fn checked_keys(table: &Table, field: u64) -> Result<TextKeys, DataError> {
+pub(super) fn checked_keys(
+    table: &Table,
+    field: u64,
+    file_language: Option<u32>,
+) -> Result<TextKeys, DataError> {
     table
         .field(field)
         .and_then(|f| f.decoded_options())
-        .and_then(|o| om_data::rules::checked_text_keys(o.index_language()))
+        .and_then(|o| om_data::rules::value_text_keys(o.index_language(), file_language))
         .ok_or_else(|| {
             DataError::with_code(
                 om_data::found::code::UNSUPPORTED,
@@ -251,15 +255,33 @@ pub(super) fn checked_keys(table: &Table, field: u64) -> Result<TextKeys, DataEr
 }
 
 /// How the value index of `table`'s `field`, the source of a value list,
-/// keys a value looked up in it: its form where OpenMaker builds it
-/// exactly, else English, as before (#159).
-fn list_keys(catalog: &Catalog, table: u64, field: u64) -> TextKeys {
-    catalog
-        .table(table)
-        .and_then(|t| t.field(field))
+/// keys a value looked up in it: its value form
+/// ([`om_data::rules::value_text_keys`], language 0 the file's own). A
+/// text field in a language OpenMaker does not key (the tailored ones,
+/// #299, or language 0 in a file whose locale record cannot be read)
+/// refuses the check (3), as a unique or existing-value check does, rather
+/// than keying the value in English, which can both miss the host's key
+/// and match another value (#571). Other types are keyed as text, as
+/// before: their typed keys do not depend on the language.
+fn list_keys(
+    catalog: &Catalog,
+    table: u64,
+    field: u64,
+    file_language: Option<u32>,
+) -> Result<TextKeys, DataError> {
+    let field_def = catalog.table(table).and_then(|t| t.field(field));
+    let keys = field_def
         .and_then(|f| f.decoded_options())
-        .and_then(|o| om_data::rules::checked_text_keys(o.index_language()))
-        .unwrap_or(TextKeys::Collated)
+        .and_then(|o| om_data::rules::value_text_keys(o.index_language(), file_language));
+    if field_def.is_some_and(|f| f.data_type != om_hbam::catalog::DataType::Text) {
+        return Ok(keys.unwrap_or(TextKeys::Collated));
+    }
+    keys.ok_or_else(|| {
+        DataError::unsupported(format!(
+            "Field {field}, the source of a value list, has no index OpenMaker can check a \
+             value in."
+        ))
+    })
 }
 
 /// ExistsInIndex's answer, `[3, 3, 00]` = `01 01` (another record holds the
@@ -325,8 +347,32 @@ impl NativeProvider {
 
     /// [`Self::record_plan`] of base table `table` (a related record's).
     pub(super) fn table_plan(&mut self, table: u64) -> Result<(Table, RecordPlan), DataError> {
+        let (mut table, data) = self.table_catalog(table)?;
+        let tree = download_tree(std::slice::from_ref(&data))?;
+        table.fields = om_hbam::catalog::fields(&tree, table.id)
+            .map_err(|e| failure("decode server fields", e))?;
+        let plan = self.plan_table(&table, Some(&tree))?;
+        Ok((table, plan))
+    }
+
+    /// Base table `table` with its fields as the host has them now, and no
+    /// rules planned: what a held deletion reads (its containers'
+    /// references). A deletion evaluates no field-entry rules, so a table
+    /// whose rules OpenMaker cannot plan still deletes, as the ordinary
+    /// deletion does.
+    pub(super) fn table_fields(&mut self, table: u64) -> Result<Table, DataError> {
+        let (mut table, data) = self.table_catalog(table)?;
+        let tree = download_tree(std::slice::from_ref(&data))?;
+        table.fields = om_hbam::catalog::fields(&tree, table.id)
+            .map_err(|e| failure("decode server fields", e))?;
+        Ok(table)
+    }
+
+    /// Base table `table` of the catalog, and its field catalog downloaded
+    /// now.
+    fn table_catalog(&mut self, table: u64) -> Result<(Table, Download), DataError> {
         self.refuse_imported_table(table)?;
-        let mut table = self
+        let table = self
             .catalog
             .table(table)
             .ok_or_else(|| {
@@ -337,11 +383,7 @@ impl NativeProvider {
             })?
             .clone();
         let data = download(self.session_mut()?, &[table.id, 3])?;
-        let tree = download_tree(std::slice::from_ref(&data))?;
-        table.fields = om_hbam::catalog::fields(&tree, table.id)
-            .map_err(|e| failure("decode server fields", e))?;
-        let plan = self.plan_table(&table, Some(&tree))?;
-        Ok((table, plan))
+        Ok((table, data))
     }
 
     /// The rules of `table` ([`RecordPlan::from_file_schema`]) over
@@ -862,6 +904,7 @@ impl NativeProvider {
         record: u64,
         txn: u32,
     ) -> Result<(), DataError> {
+        let file_language = self.file_language()?;
         for field in fields {
             let Some(Some(value)) = values.get(&field) else {
                 continue;
@@ -881,7 +924,13 @@ impl NativeProvider {
             }
             // Keep the index lock across both the query and any scan,
             // including checks of pending transaction records.
-            if self.in_index(table.id, field, &text, record, checked_keys(table, field)?)? {
+            if self.in_index(
+                table.id,
+                field,
+                &text,
+                record,
+                checked_keys(table, field, file_language)?,
+            )? {
                 return Err(DataError::with_code(
                     om_data::rules::error::NOT_UNIQUE,
                     format!("Field {name} requires a unique value."),
@@ -907,6 +956,7 @@ impl NativeProvider {
         values: &EncodedChanges,
         record: u64,
     ) -> Result<(), DataError> {
+        let file_language = self.file_language()?;
         let existing = plan.existing_fields_for(entry);
         for (&cell, value) in values {
             let Some(value) = value else {
@@ -923,7 +973,13 @@ impl NativeProvider {
                 cell >> 8
             };
             if existing.contains(&field)
-                && !self.in_index(table.id, field, &text, record, checked_keys(table, field)?)?
+                && !self.in_index(
+                    table.id,
+                    field,
+                    &text,
+                    record,
+                    checked_keys(table, field, file_language)?,
+                )?
             {
                 return Err(plan.refusal(field, error::NOT_EXISTING));
             }
@@ -934,7 +990,8 @@ impl NativeProvider {
                     .table_of(occurrence)
                     .map(|t| t.id)
                     .ok_or_else(|| DataError::new("A value list names a missing table."))?;
-                let keys = list_keys(&self.catalog, source_table, source);
+                let file_language = self.file_language()?;
+                let keys = list_keys(&self.catalog, source_table, source, file_language)?;
                 if !self.in_index(source_table, source, &text, 0, keys)? {
                     return Err(plan.refusal(field, error::NOT_IN_LIST));
                 }
@@ -1030,6 +1087,7 @@ impl NativeProvider {
         keys: TextKeys,
     ) -> Result<bool, DataError> {
         use om_hbam::{DataType, FieldKind};
+        let file_language = self.file_language()?;
         let unsupported = |reason: &str| {
             DataError::with_code(
                 om_data::found::code::UNSUPPORTED,
@@ -1058,7 +1116,8 @@ impl NativeProvider {
         if field.data_type != DataType::Text
             || !matches!(field.kind, FieldKind::Normal | FieldKind::Calculation)
             || options.options & 0x3_0000 != 0
-            || om_data::rules::checked_text_keys(options.index_language()) != Some(keys)
+            || om_data::rules::value_text_keys(options.index_language(), file_language)
+                != Some(keys)
         {
             return Err(unsupported(
                 "only stored text in the index language of the checked value is supported.",
@@ -1294,9 +1353,12 @@ impl NativeProvider {
             _ => None,
         }
         .ok_or_else(|| DataError::new("The server returned an invalid record ID."))?;
+        // A refusal before the commit leaves only a reserved id, which no
+        // record uses (write-path.md 2): it is the write's refusal, with its
+        // code, not a record created and unverified.
+        self.check_unique(table, plan.unique_fields_for(entry), &values, record, txn)?;
+        self.check_lookups(table, plan, entry, &values, record)?;
         (|| {
-            self.check_unique(table, plan.unique_fields_for(entry), &values, record, txn)?;
-            self.check_lookups(table, plan, entry, &values, record)?;
             // A new record has no modification count (write-path.md 5.4).
             let mut node = OwnedNode::list(serial::encode(record), Vec::new());
             apply_values(&mut node, values.clone());
@@ -1647,9 +1709,20 @@ impl NativeProvider {
         Ok(stored)
     }
 
+    /// The error `field` of `table` refuses an entry with: `code`, with the
+    /// field's validation message when it has one.
+    pub(super) fn entry_refusal(
+        &mut self,
+        table: u64,
+        field: u64,
+        code: i32,
+    ) -> Result<DataError, DataError> {
+        Ok(self.entry_plan(table)?.refusal(field, code))
+    }
+
     /// The rules of `table`, from the schema read at open (with the opened
     /// file's tables, as `plan_schema` gives it, for an owner's write).
-    fn entry_plan(&mut self, table: u64) -> Result<RecordPlan, DataError> {
+    pub(super) fn entry_plan(&mut self, table: u64) -> Result<RecordPlan, DataError> {
         self.refuse_imported_table(table)?;
         let table = self
             .catalog
@@ -1683,7 +1756,8 @@ impl NativeProvider {
                 .table_of(occurrence)
                 .map(|t| t.id)
                 .ok_or_else(|| DataError::new("A value list names a missing table."))?;
-            let keys = list_keys(&self.catalog, source_table, source);
+            let file_language = self.file_language()?;
+            let keys = list_keys(&self.catalog, source_table, source, file_language)?;
             if !self.in_index(source_table, source, text, 0, keys)? {
                 let field = if self
                     .catalog

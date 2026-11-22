@@ -78,8 +78,14 @@ Complete, on every path:
   international DUCET 5.2 primary weights, System and Unicode standard
   (the same, `00 00` and the secondary weights), Unicode raw (UTF-16BE),
   and the number, date, time and timestamp keys of 7.3 (negative numbers,
-  fractions and fractions of a second included). Language 0 has no keys
-  and lists nothing.
+  fractions and fractions of a second included). Language 0 is keyed in
+  the file's own language, as a host writes it (7.2,
+  `om_data::rules::written_text_keys`).
+- a list sorted by its second field ranks each item by the second value's
+  index key (file-metadata.md 6.4): a blank or missing value as the empty
+  value, a typed value with no digit as invalid, a timestamp stored as a
+  date alone by its date's midnight. Each distinct second value keeps its
+  item, so a first value can appear twice.
 
 Refused with error 3:
 

@@ -797,6 +797,84 @@ fn blank_canvas_commits_but_changing_fields_keeps_the_record_draft() {
             assert!(!common::unsaved(&app));
         }
     }
+    // In List view too, where the rows draw in the zoom layer over the
+    // window's canvas.
+    let mut provider = DocumentProvider::new(false);
+    provider.writable = true;
+    provider.list = true;
+    let mut app = open_provider(provider);
+    app.get_all_by_role_and_label(Role::TextInput, "Given")
+        .next()
+        .unwrap()
+        .focus();
+    app.step();
+    app.key_press_modifiers(egui::Modifiers::COMMAND, egui::Key::A);
+    app.event(egui::Event::Text("List edit".into()));
+    app.run_steps(2);
+    assert!(common::unsaved(&app), "unsaved record changes");
+    click_blank_canvas(&mut app);
+    common::wait_until(&mut app, "the List view commit", |app| {
+        !common::unsaved(app) && !common::saving(app)
+    });
+    // And in Table view, zoomed: a cell takes the click meant for it, and
+    // the canvas below the rows commits.
+    let mut provider = DocumentProvider::new(false);
+    provider.writable = true;
+    let mut app = open_provider(provider);
+    common::click(&mut app, "Table View");
+    common::open_menu(&mut app, "View");
+    common::click(&mut app, "Zoom In");
+    app.run_steps(2);
+    app.get_all_by_role_and_label(Role::TextInput, "Given")
+        .nth(1)
+        .expect("second record's Given editor")
+        .click();
+    app.run_steps(2);
+    assert_eq!(common::record_number(&app), "2");
+    app.key_press_modifiers(egui::Modifiers::COMMAND, egui::Key::A);
+    app.event(egui::Event::Text("Table edit".into()));
+    app.run_steps(2);
+    assert!(common::unsaved(&app), "unsaved record changes");
+    click_blank_canvas(&mut app);
+    common::wait_until(&mut app, "the Table view commit", |app| {
+        !common::unsaved(app) && !common::saving(app)
+    });
+    // A column's divider follows the pointer at the zoom: the next
+    // column's header moves as far as the drag.
+    let family = |app: &common::App| {
+        app.get_by_role_and_label(Role::Label, "Family")
+            .rect()
+            .left()
+    };
+    let before = family(&app);
+    let header = app.get_by_role_and_label(Role::Label, "Family").rect();
+    // The divider, half the column spacing (8 points) left of the cell.
+    // Movement comes in the press's frame and in the release's, as from a
+    // quick hand: it counts too.
+    let mut pos = egui::pos2(before - 6.0, header.center().y);
+    app.event(egui::Event::PointerMoved(pos));
+    app.run_steps(2);
+    let button = |pos, pressed| egui::Event::PointerButton {
+        pos,
+        button: egui::PointerButton::Primary,
+        pressed,
+        modifiers: egui::Modifiers::NONE,
+    };
+    app.event(button(pos, true));
+    pos.x += 9.0;
+    app.event(egui::Event::PointerMoved(pos));
+    app.run_steps(1);
+    for _ in 0..6 {
+        pos.x += 3.0;
+        app.event(egui::Event::PointerMoved(pos));
+        app.run_steps(1);
+    }
+    pos.x += 3.0;
+    app.event(egui::Event::PointerMoved(pos));
+    app.event(button(pos, false));
+    app.run_steps(2);
+    let moved = family(&app) - before;
+    assert!((moved - 30.0).abs() < 2.0, "Family's header moved {moved}");
 }
 
 /// Insert > Current User Name puts the user name at the insertion point of
@@ -933,6 +1011,11 @@ fn return_types_a_line_break_and_the_keypad_enter_commits_or_both_go_on() {
     assert!(!common::text_field(&app, "Family").is_focused());
     assert_eq!(family(&app).as_deref(), Some("Keypad\rTwo\rQ Z"));
     assert!(app.state().error().is_none(), "{:?}", app.state().error());
+    // The saved record read back, so that it does not land between the
+    // keys below and the field they go to.
+    common::wait_until(&mut app, "the saved record", |app| {
+        app.state().is_settled() && !common::saving(app)
+    });
 
     // Return, then Tab and typing, in one frame: Return goes on from Given
     // to Family, the Tab from Family on to Given, which takes the typing.
