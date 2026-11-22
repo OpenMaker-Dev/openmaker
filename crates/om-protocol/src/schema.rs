@@ -20,8 +20,9 @@ pub fn build_host_timestamp(transaction_id: u32, file_id: u32) -> Vec<u8> {
     Builder::with_header(file_header(Opcode::HostTimeStamp, transaction_id, file_id)).finish()
 }
 
-/// The op82 reply: the host's date-time key (the 8-byte timestamp index
-/// key of query-program.md 7.3) as a one-segment key, with no status.
+/// The op82 reply: the host's date-time key (the timestamp index key of
+/// query-program.md 7.3, 8 bytes from 02:46:40 and 5 to 7 before,
+/// schema-path.md 3.1) as a one-segment key, with no status.
 pub fn host_timestamp_reply(date_time_key: &[u8]) -> Vec<u8> {
     let key: KeyPath = vec![date_time_key.to_vec()];
     result_key(ResultBuilder::new(), &key).finish()

@@ -479,6 +479,37 @@ fn server_scripts_follow_relationships() {
         .download(&[&notes, &[1], &uint_segment(TASK), &[0]])
         .unwrap();
     assert_eq!(index.node_state, om_protocol::NodeState::NonTerminal);
+
+    // Indexed in German, which this server does not key, the missing index
+    // is not built in English for the join: Go to Related Record gives 3.
+    // From a new task, whose key is blank, nothing is related whatever the
+    // index: 101, the index not read.
+    let mut german = tree();
+    fixture::set_field_language(&mut german, NOTES, TASK, 25);
+    german.put(
+        &[&[17], &[5], &uint_segment(10)],
+        script(
+            10,
+            "Blank key",
+            vec![
+                fixture::on(86, true),
+                ScriptStep::new(7),
+                go_to_related(NOTES_OCCURRENCE, NOTES_LAYOUT),
+                exit_with("Get ( LastError )"),
+            ],
+        )
+        .encode(),
+    );
+    let file = TempFile::from_tree("psos-related-german", &german);
+    let port = server::start(&file);
+    let (mut client, _) = server::logged_in(port, "client");
+    let (error, result) = run(&mut client, 2);
+    assert_eq!(
+        (error, result.split('|').next()),
+        (3, Some("3")),
+        "{result}"
+    );
+    assert_eq!(run(&mut client, 10), (101, "101".to_string()));
 }
 
 #[test]
@@ -505,6 +536,47 @@ fn server_scripts_sort_with_stored_orders() {
             "3,5,7,1|0",
         ]
     );
+
+    // By a self join's field (`Tasks::Count ≠ Mates::Count`), which would
+    // sort by each task's first related task: refused with 3, the found set
+    // left as it was, rather than sorted by each task's own Name (#610). An
+    // occurrence of Tasks that no relationship leads to, as a sort kept from
+    // a layout of it names, sorts by the record's own Name.
+    const MATES: u64 = 0xd0_0030;
+    const ALIAS: u64 = 0xd0_0031;
+    let mut joined = tree();
+    fixture::add_occurrence(&mut joined, MATES, "Mates", TABLE);
+    fixture::add_occurrence(&mut joined, ALIAS, "Alias", TABLE);
+    fixture::add_relationship(&mut joined, 30, (OCCURRENCE, COUNT), 1, (MATES, COUNT));
+    joined.put(
+        &[&[17], &[5], &uint_segment(13)],
+        script(
+            13,
+            "Alias",
+            vec![
+                sort(&spec(false, vec![entry(ALIAS, NAME, false, None)])),
+                exit_with(&format!("Get ( LastError ) & \"|\" & {COUNTS}")),
+            ],
+        )
+        .encode(),
+    );
+    joined.put(
+        &[&[17], &[5], &uint_segment(12)],
+        script(
+            12,
+            "Mates",
+            vec![
+                sort(&spec(false, vec![entry(MATES, NAME, true, None)])),
+                exit_with(&format!("Get ( LastError ) & \"|\" & {COUNTS}")),
+            ],
+        )
+        .encode(),
+    );
+    let file = TempFile::from_tree("psos-sort-self-join", &joined);
+    let port = server::start(&file);
+    let (mut client, _) = server::logged_in(port, "client");
+    assert_eq!(run(&mut client, 12), (3, "3|3,5,7,1".to_string()));
+    assert_eq!(run(&mut client, 13), (0, "0|1,7,5,3".to_string()));
 }
 
 #[test]
@@ -615,6 +687,39 @@ fn server_scripts_auto_enter_over_a_global_reads_the_sessions_value() {
     let (mut client, _) = server::logged_in(port, "client");
     assert_eq!(run(&mut client, 8), (0, "0|Adas".to_string()));
     assert_eq!(run(&mut client, 9), (0, "0|Beax".to_string()));
+}
+
+/// A new record's auto-entered value read before its commit (#474) is not
+/// one the script entered: Set Field of Stamp to the value it previews
+/// (`A`, from Name) enters it, and Stamp, which does not replace an
+/// existing value, keeps it when Name changes after.
+#[test]
+fn a_value_entered_over_a_new_records_preview_stays_entered() {
+    let mut root = tree();
+    fixture::add_field(&mut root, TABLE, STAMP, "Stamp", 1, 1, 0, 0x8, 0);
+    fixture::add_formula(&mut root, &names(), (TABLE, OCCURRENCE), STAMP, 5, "Name");
+    root.put(
+        &[&[17], &[5], &uint_segment(8)],
+        script(
+            8,
+            "Entered",
+            vec![
+                ScriptStep::new(7),
+                fixture::set_field(NAME, "\"A\""),
+                set_var("$previewed", "Tasks::Stamp"),
+                fixture::set_field(STAMP, "\"A\""),
+                fixture::set_field(NAME, "\"B\""),
+                set_var("$before", "Tasks::Stamp"),
+                ScriptStep::new(75),
+                exit_with("$previewed & \"|\" & $before & \"|\" & Get ( LastError ) & \"|\" & Tasks::Stamp"),
+            ],
+        )
+        .encode(),
+    );
+    let file = TempFile::from_tree("psos-entered-over-preview", &root);
+    let port = server::start(&file);
+    let (mut client, _) = server::logged_in(port, "client");
+    assert_eq!(run(&mut client, 8), (0, "A|A|0|A".to_string()));
 }
 
 #[test]
@@ -863,6 +968,76 @@ fn set_match_fields_perform_lookups() {
     }
 }
 
+/// A new record's entered value that its replacing auto-entered calculation
+/// computes as empty reads as the commit stores it (#474): the commit writes
+/// only a nonempty computed value over a new record, so it keeps `manual`,
+/// and the script reads `manual` before the commit too.
+#[test]
+fn an_entered_value_a_replacing_calculation_empties_reads_as_stored() {
+    let mut root = tree();
+    // Auto-entered calculation (0x8) that replaces an existing value (0x80).
+    fixture::add_field(&mut root, TABLE, STAMP, "Stamp", 1, 1, 0, 0x88, 0);
+    fixture::add_formula(
+        &mut root,
+        &names(),
+        (TABLE, OCCURRENCE),
+        STAMP,
+        5,
+        "If ( Name = \"clear\" ; \"\" ; \"default\" )",
+    );
+    root.put(
+        &[&[17], &[5], &uint_segment(8)],
+        script(
+            8,
+            "Replaced",
+            vec![
+                ScriptStep::new(7),
+                fixture::set_field(NAME, "\"clear\""),
+                fixture::set_field(STAMP, "\"manual\""),
+                set_var("$before", "Tasks::Stamp"),
+                ScriptStep::new(75),
+                exit_with("$before & \"|\" & Get ( LastError ) & \"|\" & Tasks::Stamp"),
+            ],
+        )
+        .encode(),
+    );
+    let file = TempFile::from_tree("psos-replaced-empty", &root);
+    let port = server::start(&file);
+    let (mut client, _) = server::logged_in(port, "client");
+    assert_eq!(run(&mut client, 8), (0, "manual|0|manual".to_string()));
+}
+
+/// A new record's looked-up value read before its commit (#474) is not
+/// entered: a Set Field that clears it clears it, and the commit, which
+/// keeps a value a script set over a lookup, stores it empty.
+#[test]
+fn clearing_a_new_records_previewed_lookup_clears_it() {
+    let mut tree = lookup_tree();
+    tree.put(
+        &[&[17], &[5], &uint_segment(40)],
+        script(
+            40,
+            "Cleared",
+            vec![
+                ScriptStep::new(7),
+                set_field(NAME, 1, "\"Write tests\""),
+                set_var("$previewed", "Tasks::Note"),
+                set_field(NOTE, 1, "\"\""),
+                set_var("$cleared", "Tasks::Note"),
+                ScriptStep::new(75),
+                exit_with(
+                    "$previewed & \"|\" & $cleared & \"|\" & Get ( LastError ) & \"|\" & Tasks::Note",
+                ),
+            ],
+        )
+        .encode(),
+    );
+    let file = TempFile::from_tree("psos-cleared-lookup", &tree);
+    let port = server::start(&file);
+    let (mut client, _) = server::logged_in(port, "client");
+    assert_eq!(run(&mut client, 40), (0, "w||0|".to_string()));
+}
+
 /// Open Transaction's "Skip auto-enter options" performs no lookup: a
 /// Set Field of Name to its own value then changes nothing, and the
 /// commit leaves the record's modification count as it was.
@@ -918,64 +1093,139 @@ fn lookup_tree() -> OwnedNode {
     root
 }
 
-/// A new record's auto-entry through a self-join reads the group's records
-/// committed before it, never itself (s47, FileMaker Server's engine;
-/// #297): 0, then 1. Of two new records of the group in one transaction,
-/// the second, which reads the self-join, is refused (3): FileMaker's did
-/// not read the first, and the session's reads would. The first takes a
-/// branch that reads no related record, so only the second can refuse.
+/// A related sort can loop: a sort field of another table's occurrence is
+/// read from its first related record, whose relationship may be sorted by
+/// a field leading back. Here both of `Tasks::Name ≠ Pages::Body`'s sort
+/// orders name a field of each side, so sorting tasks by a page's Body
+/// needs the pages sorted by a task's Name, and so on. The sorts nested
+/// inside one another stop with 3 (`om_data::host::SortNesting`) instead of
+/// overflowing the server's stack.
+#[test]
+fn a_related_sort_that_loops_stops_with_3() {
+    const PAGES: u64 = 0xd0_0032;
+    let mut looping = tree();
+    fixture::add_occurrence(&mut looping, PAGES, "Pages", NOTES);
+    fixture::add_relationship(&mut looping, 30, (OCCURRENCE, NAME), 1, (PAGES, BODY));
+    // Each order names both sides, so it loops whichever direction it
+    // applies to.
+    let both = spec(
+        false,
+        vec![
+            entry(PAGES, BODY, false, None),
+            entry(OCCURRENCE, NAME, false, None),
+        ],
+    );
+    let key = |id: u64| {
+        let segment = uint_segment(id);
+        [vec![segment.len() as u8 + 1, segment.len() as u8], segment].concat()
+    };
+    let mut definition = key(OCCURRENCE);
+    definition.extend(key(PAGES));
+    definition.extend(both.encode());
+    definition.extend(both.encode());
+    // Sorted in both directions (`SORT_LEFT_TO_RIGHT` 0x40,
+    // `SORT_RIGHT_TO_LEFT` 0x80).
+    definition.extend(0xc0u32.to_be_bytes());
+    looping.put(
+        &[&[3], &[0xfb], &[5], &[30], &[2]],
+        OwnedNode::leaf(Vec::new(), definition),
+    );
+    looping.put(
+        &[&[17], &[5], &uint_segment(12)],
+        script(
+            12,
+            "Loop",
+            vec![
+                fixture::on(86, true),
+                sort(&spec(false, vec![entry(PAGES, BODY, false, None)])),
+                exit_with("Get ( LastError )"),
+            ],
+        )
+        .encode(),
+    );
+    let file = TempFile::from_tree("psos-sort-loop", &looping);
+    let port = server::start(&file);
+    let (mut client, _) = server::logged_in(port, "client");
+    assert_eq!(run(&mut client, 12), (3, "3".to_string()));
+}
+
+/// s47: a new record sees the older committed matches through its
+/// self-join. With a held peer, the preview leaves its answer out and
+/// the commit refuses the read with 3. Exercise both an aggregate and a
+/// first-related read that could otherwise use the earlier peer.
 #[test]
 fn server_scripts_self_join_auto_entry_reads_committed_matches_only() {
     const GROUP: u64 = 0xd0_0019;
-    let mut root = tree();
     let mut names = names();
     names.add_occurrence(GROUP, "G", TABLE);
-    fixture::add_field(&mut root, TABLE, GROUP_KEY, "Group", 1, 1, 0, 0, 0);
-    fixture::add_occurrence(&mut root, GROUP, "G", TABLE);
-    fixture::add_relationship(
-        &mut root,
-        20,
-        (OCCURRENCE, GROUP_KEY),
-        0,
-        (GROUP, GROUP_KEY),
-    );
-    // Replacing an existing value, as the oracle's witness did.
-    fixture::add_field(&mut root, TABLE, SEEN, "Seen", 1, 1, 0, 0x88, 0);
-    fixture::add_formula(
-        &mut root,
-        &names,
-        (TABLE, OCCURRENCE),
-        SEEN,
-        5,
-        "If ( Name = \"first\" ; -1 ; Count ( G::Group ) )",
-    );
-    let make = vec![
-        ScriptStep::new(7),
-        fixture::set_field(GROUP_KEY, "\"k\""),
-        ScriptStep::new(75),
-        exit_with("Get ( LastError ) & \"|\" & Tasks::Seen"),
-    ];
-    let two = vec![
-        fixture::on(86, true),
-        ScriptStep::new(205),
-        ScriptStep::new(7),
-        fixture::set_field(NAME, "\"first\""),
-        fixture::set_field(GROUP_KEY, "\"t\""),
-        ScriptStep::new(7),
-        fixture::set_field(GROUP_KEY, "\"t\""),
-        ScriptStep::new(206),
-        exit_with("Get ( LastError )"),
-    ];
-    for (id, name, steps) in [(10, "Make", make), (11, "Two", two)] {
-        root.put(
-            &[&[17], &[5], &uint_segment(id)],
-            script(id, name, steps).encode(),
+    for (kind, read, first, second) in [
+        ("count", "Count ( G::Group )", "0", "1"),
+        ("first", "G::Name", "", "committed"),
+    ] {
+        let mut root = tree();
+        fixture::add_field(&mut root, TABLE, GROUP_KEY, "Group", 1, 1, 0, 0, 0);
+        fixture::add_occurrence(&mut root, GROUP, "G", TABLE);
+        fixture::add_relationship(
+            &mut root,
+            20,
+            (OCCURRENCE, GROUP_KEY),
+            0,
+            (GROUP, GROUP_KEY),
         );
+        // The first transaction row takes the constant branch. Only the
+        // second can fail by following the join.
+        fixture::add_field(&mut root, TABLE, SEEN, "Seen", 1, 1, 0, 0x88, 0);
+        fixture::add_formula(
+            &mut root,
+            &names,
+            (TABLE, OCCURRENCE),
+            SEEN,
+            5,
+            &format!("If ( Name = \"peer\" ; \"peer\" ; {read} )"),
+        );
+        let make = vec![
+            ScriptStep::new(7),
+            fixture::set_field(NAME, "\"committed\""),
+            fixture::set_field(GROUP_KEY, "\"k\""),
+            set_var("$preview", "Tasks::Seen"),
+            ScriptStep::new(75),
+            exit_with("Get ( LastError ) & \"|\" & $preview & \"|\" & Tasks::Seen"),
+        ];
+        let two = vec![
+            fixture::on(86, true),
+            ScriptStep::new(205),
+            ScriptStep::new(7),
+            fixture::set_field(NAME, "\"peer\""),
+            fixture::set_field(GROUP_KEY, "\"t\""),
+            set_var("$first", "Get ( LastError ) & \"|\" & Tasks::Seen"),
+            ScriptStep::new(7),
+            fixture::set_field(NAME, "\"reader\""),
+            fixture::set_field(GROUP_KEY, "\"t\""),
+            set_var("$second", "Get ( LastError ) & \"|\" & Tasks::Seen"),
+            ScriptStep::new(206),
+            exit_with("$first & \"|\" & $second & \"|\" & Get ( LastError )"),
+        ];
+        for (id, name, steps) in [(10, "Make", make), (11, "Two", two)] {
+            root.put(
+                &[&[17], &[5], &uint_segment(id)],
+                script(id, name, steps).encode(),
+            );
+        }
+        let file = TempFile::from_tree(&format!("psos-self-join-{kind}"), &root);
+        let port = server::start(&file);
+        let (mut client, _) = server::logged_in(port, "client");
+        assert_eq!(
+            run(&mut client, 10),
+            (0, format!("0|{first}|{first}")),
+            "{read}"
+        );
+        assert_eq!(
+            run(&mut client, 10),
+            (0, format!("0|{second}|{second}")),
+            "{read}"
+        );
+        let before = server::records_of(&mut client, TABLE);
+        assert_eq!(run(&mut client, 11).1, "0|peer|0||3", "{read}");
+        assert_eq!(server::records_of(&mut client, TABLE), before, "{read}");
     }
-    let file = TempFile::from_tree("psos-self-join", &root);
-    let port = server::start(&file);
-    let (mut client, _) = server::logged_in(port, "client");
-    assert_eq!(run(&mut client, 10).1, "0|0");
-    assert_eq!(run(&mut client, 10).1, "0|1");
-    assert_eq!(run(&mut client, 11).1, "3");
 }

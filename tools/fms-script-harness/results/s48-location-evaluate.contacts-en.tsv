@@ -1,0 +1,40 @@
+# scan location: open 0 load 0 scan 0 commit 0; index:id=value (0-based): 0:103=0
+# scan values: open 0 load 0 scan 0 commit 0; index:id=value (0-based): 0:103=0
+# scan location-args: open 0 load 0 scan 0 commit 0; index:id=value (0-based): 0:103=0
+# scan beacons: open 0 load 0 scan 0 commit 0; index:id=value (0-based): 0:103=0
+# scan control: open 0 load 0 scan 0 commit 0; index:id=value (0-based): 0:103=0
+# scan dead: open 0 load 0 scan 0 commit 0; index:id=value (0-based): 0:103=0
+# scan addon: open 0 load 0 scan 0 commit 0; index:id=value (0-based): 0:103=0
+# scan furigana: open 0 load 0 scan 0 commit 0; index:id=value (0-based): 0:103=0
+# scan sensor: open 0 load 0 scan 0 commit 0; index:id=value (0-based): 0:103=0
+# scan player: open 0 load 0 scan 0 commit 0; index:id=value (0-based): 0:103=0
+# scan sensors-a: open 0 load 0 scan 0 commit 0; index:id=value (0-based): 0:103=0
+# scan sensors-b: open 0 load 0 scan 0 commit 0; index:id=value (0-based): 0:103=0
+# scan sensors-c: open 0 load 0 scan 0 commit 0; index:id=value (0-based): 0:103=0
+# scan: close 13
+location		0	location ?/1208/1	0
+>	1	location	1	103	0	0	1	0
+values		0	values ?/1208/1	0
+>	1	values	1	103	0	0	1	0
+location-args		0	args 1208:?/1208:?/1208/1208:?	0
+>	1	location-args	1	103	0	0	1	0
+beacons		0	beacons ?/1208/1208:?	0
+>	1	beacons	1	103	0	0	1	0
+control		0	control 1208/1208:?	0
+>	1	control	1	103	0	0	1	0
+dead		0	dead 1208:?/1208/1208/1208/0:1	0
+>	1	dead	1	103	0	0	1	0
+addon		0	addon {\r\t"APIVers" : 2\r}/0/0:{\r\t"APIVers" : 2\r}	0
+>	1	addon	1	103	0	0	1	0
+furigana		0	furigana abc/0/abc/0//0	0
+>	1	furigana	1	103	0	0	1	0
+sensor		0	sensor 0:/1208:?/1208:?	0
+>	1	sensor	1	103	0	0	1	0
+player		0	player 0:/0:/0:	0
+>	1	player	1	103	0	0	1	0
+sensors-a		0	available=0:|batteryLevel=0:|batteryStatus=0:|proximityState=0:|location=0:|locationValues=0:|attitude=0:|rotationRate=0:|accelerationByUser=0:|accelerationByGravity=0:	0
+>	1	sensors-a	1	103	0	0	1	0
+sensors-b		0	speed=0:|heading=0:|magneticField=0:|compassMagneticHeading=0:|compassTrueHeading=0:|stepCount=0:|stepDistance=0:|stepFloorsUp=0:|stepFloorsDown=0:|airPressure=0:	0
+>	1	sensors-b	1	103	0	0	1	0
+sensors-c		0	Location=0:|BATTERYLEVEL=0:|stepCount;3600=0:|location;1;2=0:|battery=1208:?	0
+>	1	sensors-c	1	103	0	0	1	0
