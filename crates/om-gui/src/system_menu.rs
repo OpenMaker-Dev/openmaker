@@ -267,6 +267,7 @@ impl SystemMenuBar {
         let Ok(RawWindowHandle::AppKit(_)) = frame.window_handle().map(|h| h.as_raw()) else {
             return None;
         };
+        ctx.add_plugin(TextOnlyPaste(clipboard_paste));
         // A choice wakes the app, which reads it on its next frame.
         let (sender, events) = std::sync::mpsc::channel();
         let ctx = ctx.clone();
@@ -512,14 +513,22 @@ fn clipboard_paste() -> Option<Event> {
     (!text.is_empty()).then_some(Event::Paste(text))
 }
 
-/// Paste Text Only also enters the viewport's input stream in key order.
-pub(crate) fn paste_text_only(input: &mut egui::RawInput) {
-    for event in &mut input.events {
-        if matches!(event, Event::Key { key: Key::V, pressed: true, modifiers, .. }
-            if modifiers.matches_exact(Modifiers::MAC_CMD | Modifiers::SHIFT | Modifiers::ALT))
-        {
-            if let Some(paste) = clipboard_paste() {
-                *event = paste;
+/// egui runs this hook for the root and immediate viewports, before their editors.
+struct TextOnlyPaste(fn() -> Option<Event>);
+
+impl egui::plugin::Plugin for TextOnlyPaste {
+    fn debug_name(&self) -> &'static str {
+        "Paste Text Only"
+    }
+
+    fn input_hook(&mut self, _: &egui::Context, input: &mut egui::RawInput) {
+        for event in &mut input.events {
+            if matches!(event, Event::Key { key: Key::V, pressed: true, modifiers, .. }
+                if modifiers.matches_exact(Modifiers::MAC_CMD | Modifiers::SHIFT | Modifiers::ALT))
+            {
+                if let Some(paste) = (self.0)() {
+                    *event = paste;
+                }
             }
         }
     }
@@ -651,6 +660,44 @@ fn accelerator(shortcut: KeyboardShortcut) -> Option<KeyAccelerator> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn text_only_paste_stays_in_key_order_in_each_viewport() {
+        let ctx = egui::Context::default();
+        ctx.add_plugin(TextOnlyPaste(|| Some(Event::Paste("clipboard".into()))));
+        let shortcut = Event::Key {
+            key: Key::V,
+            physical_key: None,
+            pressed: true,
+            repeat: false,
+            modifiers: Modifiers::MAC_CMD | Modifiers::SHIFT | Modifiers::ALT,
+        };
+        let tab = Event::Key {
+            key: Key::Tab,
+            physical_key: None,
+            pressed: true,
+            repeat: false,
+            modifiers: Modifiers::NONE,
+        };
+        for viewport_id in [
+            egui::ViewportId::ROOT,
+            egui::ViewportId::from_hash_of("second"),
+        ] {
+            let mut input = egui::RawInput {
+                viewport_id,
+                events: vec![shortcut.clone(), tab.clone()],
+                ..Default::default()
+            };
+            input.viewports.entry(viewport_id).or_default();
+            let _ = ctx.run_ui(input, |ui| {
+                assert_eq!(ui.ctx().viewport_id(), viewport_id);
+                assert_eq!(
+                    ui.input(|input| input.events.clone()),
+                    [Event::Paste("clipboard".into()), tab.clone()],
+                );
+            });
+        }
+    }
 
     fn record(chosen: Option<&str>, f: impl FnOnce(&mut dyn MenuRows) -> bool) -> (Vec<Row>, bool) {
         let mut chosen = chosen.map(str::to_owned);

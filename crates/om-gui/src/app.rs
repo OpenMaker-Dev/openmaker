@@ -1405,7 +1405,8 @@ impl OpenMakerApp {
                 .w
                 .session
                 .as_ref()
-                .and_then(|session| self.w.document.selected_container(session)),
+                .and_then(|session| self.w.document.selected_container(session))
+                .cloned(),
         }
     }
 
@@ -6875,13 +6876,6 @@ impl OpenMakerApp {
 }
 
 impl eframe::App for OpenMakerApp {
-    #[cfg(target_os = "macos")]
-    fn raw_input_hook(&mut self, _: &egui::Context, input: &mut egui::RawInput) {
-        if self.system_menu_bar() {
-            crate::system_menu::paste_text_only(input);
-        }
-    }
-
     fn ui(&mut self, ui: &mut Ui, frame: &mut eframe::Frame) {
         self.native_parent = crate::web_viewer::NativeParent::of(frame);
         self.native_window = {
