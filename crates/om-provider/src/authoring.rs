@@ -6,12 +6,9 @@
 //!
 //! The host must claim the extension first (CORBA's `_is_a`), which a host
 //! without it answers `false`, as FileMaker Server 26.0.3 did for
-//! OpenMaker's file list interface. OpenMaker sends FileMaker Server no
-//! native catalog writes for scripts either: FileMaker Pro's own script save
-//! (scripts.md, "Saving scripts to a host") was captured against
-//! OpenMaker Server only, and its op13 replies cannot tell an applied edit
-//! from a refused or lost one. Manage Database sends FileMaker Pro's own
-//! schema transaction instead, and reads what it sent back (`crate::schema`);
+//! OpenMaker's file list interface. Existing script steps can also be saved
+//! through the native FileMaker Server path in `scripts.rs`. Manage Database
+//! sends FileMaker Pro's own schema transaction and reads it back (`crate::schema`);
 //! it asks [`NativeProvider::field_authoring`] whether the account may
 //! change the design.
 
@@ -47,6 +44,11 @@ pub enum Authoring {
     Unavailable(String),
 }
 
+enum ScriptSave {
+    Extension,
+    Native,
+}
+
 /// The scripts as the host stores them: the catalog, each member's
 /// definition node `[17, 5, S]`, by id, and the catalog's index `[17, 1]`.
 #[derive(Clone, Debug, Default)]
@@ -71,8 +73,8 @@ pub enum AuthoringError {
     Unavailable(String),
     /// The request was not sent; nothing changed.
     NotSent(String),
-    /// The request was sent but no answer came back: the host may or may
-    /// not have applied it. Read the script again rather than resending.
+    /// An upload was attempted and the result could not be confirmed.
+    /// Read the script again before making another edit.
     OutcomeUnknown(String),
 }
 
@@ -85,10 +87,9 @@ impl std::fmt::Display for AuthoringError {
             AuthoringError::Unavailable(reason) | AuthoringError::NotSent(reason) => {
                 f.write_str(reason)
             }
-            AuthoringError::OutcomeUnknown(reason) => write!(
-                f,
-                "No answer came back, so the edit may or may not have been applied: {reason}"
-            ),
+            AuthoringError::OutcomeUnknown(reason) => {
+                write!(f, "The edit could not be confirmed: {reason}")
+            }
         }
     }
 }
@@ -96,10 +97,44 @@ impl std::fmt::Display for AuthoringError {
 impl std::error::Error for AuthoringError {}
 
 impl NativeProvider {
-    /// Whether this connection may change scripts on its host. Asks the
-    /// host only after it claimed the extension (`_is_a`).
+    /// Whether this connection may replace the steps of an existing script.
     pub fn script_authoring(&mut self) -> Result<Authoring, DataError> {
+        self.script_step_authoring()
+            .map(|(availability, _)| availability)
+    }
+
+    /// Script Workspace's catalog editing requires both the extension and
+    /// its disk-save confirmation.
+    pub(crate) fn script_extension_authoring(&mut self) -> Result<Authoring, DataError> {
         self.authoring(OP_REPLACE_SCRIPT_STEPS, "replacing script steps")
+    }
+
+    fn script_step_authoring(&mut self) -> Result<(Authoring, ScriptSave), DataError> {
+        if self.uses_native_script_save()? {
+            let availability = match &self.privileges.principal {
+                Some(principal) if principal.is_full_access() => Authoring::Available {
+                    max_definition_bytes: authoring::MAX_DEFINITION_BYTES,
+                },
+                _ => Authoring::Denied(
+                    "Native script saves require a verified [Full Access] account.".into(),
+                ),
+            };
+            return Ok((availability, ScriptSave::Native));
+        }
+        self.script_extension_authoring()
+            .map(|grant| (grant, ScriptSave::Extension))
+    }
+
+    /// Whether this host uses the two-upload native path for step edits.
+    /// A matching member revision alone cannot confirm such an edit.
+    pub fn uses_native_script_save(&mut self) -> Result<bool, DataError> {
+        self.require_open()?;
+        let session = self.session.as_ref().expect("open session");
+        let identity = session.identity();
+        let filemaker_server = identity.exe_type == 0x22
+            && identity.app_type == 0x03
+            && identity.version_string.starts_with("Server 26.");
+        Ok(filemaker_server && !self.has_authoring_extension()?)
     }
 
     /// Whether this connection may add fields to tables on its host, as
@@ -198,21 +233,25 @@ impl NativeProvider {
     /// Whether this connection may do `operation` (an `OP_` bit of
     /// `om_protocol::authoring`), described as `what`.
     fn authoring(&mut self, operation: u32, what: &str) -> Result<Authoring, DataError> {
-        self.require_open()?;
-        let claimed = self
-            .session
-            .as_mut()
-            .expect("open session")
-            .is_a(authoring::REPO_ID)
-            .map_err(|e| failure("ask the host for script authoring", e))?;
-        if !claimed {
+        if !self.has_authoring_extension()? {
             return Ok(Authoring::Unavailable(format!(
-                "The host (“{}”) does not offer OpenMaker's authoring extension. OpenMaker \
-                 changes scripts and the schema only through it: saving them to FileMaker \
-                 Server is not verified, so nothing is sent to such a host.",
+                "The host (“{}”) does not offer OpenMaker's authoring extension.",
                 self.host_version
             )));
         }
+        self.describe_authoring(operation, what)
+    }
+
+    fn has_authoring_extension(&mut self) -> Result<bool, DataError> {
+        self.require_open()?;
+        self.session
+            .as_mut()
+            .expect("open session")
+            .is_a(authoring::REPO_ID)
+            .map_err(|e| failure("ask the host for authoring", e))
+    }
+
+    fn describe_authoring(&mut self, operation: u32, what: &str) -> Result<Authoring, DataError> {
         let reply = self
             .authoring_request(&Request::Describe)
             .map_err(|e| DataError::new(e.to_string()))?;
@@ -1101,8 +1140,8 @@ impl NativeProvider {
     /// So a draft kept from an older read cannot be saved over a later one
     /// even when `expected` was read later. Steps the script already has
     /// are not sent: the answer is unchanged. Otherwise [`NativeProvider::replace_script_steps`] sends
-    /// them, and the host checks the account, the locks and the revision
-    /// again and saves the file before it answers.
+    /// them via the extension, or uses the native FileMaker Server save and
+    /// reads the written nodes back under the locks.
     pub fn save_script_steps(
         &mut self,
         edited: &Script,
@@ -1139,7 +1178,20 @@ impl NativeProvider {
                 revision: current,
             });
         }
-        self.replace_script_steps(edited.id, expected, definition)
+        match self
+            .script_step_authoring()
+            .map_err(|e| AuthoringError::NotSent(e.message))?
+        {
+            (Authoring::Available { .. }, ScriptSave::Native) => {
+                self.save_native_script_steps(edited, stored)
+            }
+            (Authoring::Available { .. }, ScriptSave::Extension) => {
+                self.send_script_replacement(edited.id, expected, definition)
+            }
+            (Authoring::Denied(reason) | Authoring::Unavailable(reason), _) => {
+                Err(AuthoringError::Unavailable(reason))
+            }
+        }
     }
 
     /// Replace script `script`'s steps with those of `definition` (its
@@ -1153,13 +1205,22 @@ impl NativeProvider {
         expected: Revision,
         definition: OwnedNode,
     ) -> Result<authoring::Replaced, AuthoringError> {
-        match self.script_authoring() {
+        match self.script_extension_authoring() {
             Ok(Authoring::Available { .. }) => {}
             Ok(Authoring::Denied(reason) | Authoring::Unavailable(reason)) => {
                 return Err(AuthoringError::Unavailable(reason))
             }
             Err(e) => return Err(AuthoringError::NotSent(e.to_string())),
         }
+        self.send_script_replacement(script, expected, definition)
+    }
+
+    fn send_script_replacement(
+        &mut self,
+        script: u64,
+        expected: Revision,
+        definition: OwnedNode,
+    ) -> Result<authoring::Replaced, AuthoringError> {
         let request = Request::ReplaceScriptSteps(authoring::ReplaceScriptSteps {
             script,
             expected,
