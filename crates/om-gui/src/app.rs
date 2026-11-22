@@ -3197,7 +3197,7 @@ impl OpenMakerApp {
                 // batch, but still consume its shortcut before Zoom Out.
                 let traversing = self.w.document.tab_in_progress()
                     || input.events.iter().any(traverses_fields)
-                    || self.has_queued_keystroke(traverses_fields);
+                    || self.has_pending_keystroke(traverses_fields);
                 // Before New Record: egui's match of Command-N ignores Shift.
                 for (modifiers, key, step) in [
                     (Modifiers::COMMAND, Key::Minus, steps::INSERT_CURRENT_DATE),
