@@ -244,9 +244,15 @@ impl Schema {
             // The record rules refuse a unique check in language 0 when
             // the file's language is unknown.
             calc.locale_unreadable = store.file_language().is_none();
+            om_data::host::device::withhold_server_lacks(calc.names_mut());
             Some((wire, Arc::new(calc)))
         });
         let mut names = NameTable::default();
+        // FileMaker Server's engine compiles no location function (s48):
+        // `Evaluate` text naming one fails with 1208, also in a branch it
+        // never takes. The rules', Design and privilege schemas withhold
+        // them too.
+        om_data::host::device::withhold_server_lacks(&mut names);
         let mut occurrences = HashMap::new();
         for occurrence in &catalog.table_occurrences {
             if let Some(table) = occurrence.base_table() {
