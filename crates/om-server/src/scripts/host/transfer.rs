@@ -499,10 +499,12 @@ impl ServerImport<'_> {
             .ok_or_else(|| TransferError::new(102, "The table occurrence is missing."))
     }
 
-    /// Put an imported row's values into a record's cells.
-    fn put(&self, record: &mut OpenRecord, writes: &[FieldWrite]) {
+    /// Put an imported row's values into a record and return the cells
+    /// the import set. The draft can also hold earlier changes.
+    fn put(&self, record: &mut OpenRecord, writes: &[FieldWrite]) -> BTreeSet<u64> {
+        let mut mapped = BTreeSet::new();
         let Some(table) = self.host.schema.catalog.table(record.table) else {
-            return;
+            return mapped;
         };
         record.before_change();
         *record.context = self.host.step_context();
@@ -523,7 +525,9 @@ impl ServerImport<'_> {
                 record.node.set_child(super::values::cell(&key, &w.text));
             }
             record.changed_cell(cell);
+            mapped.insert(cell);
         }
+        mapped
     }
 
     /// Check a row against the rules with the import's options
@@ -538,13 +542,15 @@ impl ServerImport<'_> {
         auto_enter: bool,
         locked_here: bool,
     ) -> om_transfer::Result<()> {
-        self.put(&mut record, writes);
+        let mapped = self.put(&mut record, writes);
         // A record the script changed earlier in its transaction gets the
-        // import's rules for those changes too (OpenMaker's choice).
-        let written = match self
-            .host
-            .apply_rules(&mut record, Entry::import(auto_enter))
-        {
+        // import's rules too (OpenMaker's choice). Only mapped values
+        // are protected from replacement.
+        let entry = Entry {
+            mapped_cells: Some(&mapped),
+            ..Entry::import(auto_enter)
+        };
+        let written = match self.host.apply_rules(&mut record, entry) {
             Ok(written) => written,
             Err(e) => {
                 if locked_here {

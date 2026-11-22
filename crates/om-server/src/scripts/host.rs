@@ -445,9 +445,8 @@ struct OpenRecord {
     node: OwnedNode,
     /// Created by New Record and never committed.
     new: bool,
-    /// The cells steps set (Set Field, an imported row); the rules' own
-    /// values are not among them.
-    changed: BTreeSet<u64>,
+    /// The cells steps set and where each staged value came from.
+    changed: BTreeMap<u64, CellSource>,
     /// Set when the rules already ran on the record (an imported row,
     /// with the import's own entry options): a commit writes what they
     /// left and applies its rules only to the cells changed since.
@@ -485,13 +484,20 @@ struct OpenRecord {
     preview: BTreeMap<u64, String>,
 }
 
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum CellSource {
+    Entered,
+    /// Rules can clear a copy even when the new record's base is empty.
+    Copied,
+}
+
 /// A row's write mode, the values it holds, the changes made to it and how
 /// they were entered: what its lookups and rules are read from.
 type RowInputs<'a> = (
     WriteMode,
     &'a BTreeMap<u64, String>,
     &'a BTreeMap<u64, Option<String>>,
-    Entry,
+    Entry<'a>,
 );
 
 /// What a new record's rules read of the clock (#474).
@@ -529,7 +535,7 @@ impl OpenRecord {
     /// A step changed `cell`.
     fn changed_cell(&mut self, cell: u64) {
         self.relooked = false;
-        self.changed.insert(cell);
+        self.changed.insert(cell, CellSource::Entered);
         if let Some(ruled) = &mut self.ruled {
             ruled.since.insert(cell);
         }
@@ -1209,7 +1215,7 @@ impl ServerHost {
         let Some(mut current) = self.committed_node(record.table, record.id) else {
             return;
         };
-        let mut kept = record.changed.clone();
+        let mut kept: BTreeSet<_> = record.changed.keys().copied().collect();
         if let Some(ruled) = &record.ruled {
             kept.extend(&ruled.written);
         }
@@ -1374,7 +1380,12 @@ impl ServerHost {
             }
             let mut view = open.node.clone();
             for (cell, text) in &open.preview {
-                view.set_child(values::cell(&uint_segment(*cell), text));
+                let key = uint_segment(*cell);
+                if text.is_empty() {
+                    view.remove(&[&key]);
+                } else {
+                    view.set_child(values::cell(&key, text));
+                }
             }
             return read(Some(&view), None);
         }
@@ -1462,7 +1473,7 @@ impl ServerHost {
             id,
             node,
             new: false,
-            changed: BTreeSet::new(),
+            changed: BTreeMap::new(),
             ruled: None,
             serials: BTreeMap::new(),
             context,
@@ -1611,8 +1622,8 @@ impl ServerHost {
             privilege_set: answer(om_data::host::session::selector::CURRENT_PRIVILEGE_SET_NAME)
                 .filter(|name| !name.is_empty()),
             host_timestamp: None,
-            // What a server script's record number is for auto-entry is not
-            // measured (#1038): not answered.
+            // A record a script makes is given its position by New Record
+            // (#298); other writes' record number is unmeasured.
             record_number: None,
         }
     }
@@ -1734,7 +1745,7 @@ impl ServerHost {
         let existing = BTreeMap::new();
         let changes: BTreeMap<u64, Option<String>> = record
             .changed
-            .iter()
+            .keys()
             .map(|cell| {
                 let text = record
                     .node
@@ -1774,20 +1785,17 @@ impl ServerHost {
             if record.serials.contains_key(&cell) || unknown.contains(&field_of(cell)) {
                 continue;
             }
-            // An entered value reads as entered, unless the field's own rules
-            // give it another (an auto-entered calculation that replaces it,
-            // such as the UUID Duplicate Record copied): then as the commit
-            // will store it. The commit writes only a nonempty one over a new
-            // record (`changed_values` compares with its empty base), so an
-            // empty one leaves the entered value, and so reads.
-            if record.changed.contains(&cell) {
+            // Match the commit: an empty result clears a copied cell.
+            // An entered cell on a new record keeps its value when the
+            // result is already empty in the base.
+            if let Some(source) = record.changed.get(&cell) {
                 let entered = record
                     .node
                     .child(&uint_segment(cell))
                     .and_then(values::cell_text);
                 if !plan.has_rules(cell)
-                    || text.is_empty()
-                    || entered.as_deref() == Some(text.as_str())
+                    || (text.is_empty() && *source == CellSource::Entered)
+                    || entered.as_deref().unwrap_or_default() == text
                 {
                     continue;
                 }
@@ -1804,21 +1812,41 @@ impl ServerHost {
     /// none changed): an imported row keeps what the import's own options
     /// gave it. Returns the cells the rules wrote.
     fn apply_rules(&mut self, record: &mut OpenRecord, entry: Entry) -> HostResult<BTreeSet<u64>> {
+        // The place New Record gave a new record is its number only while
+        // it is still there, in the window's unsorted found set of its own
+        // table: its creation and its commit then read the same place.
+        // If the record moved, the set was sorted, or the window shows
+        // another table, what FileMaker stores is unmeasured (#298).
+        if let Some(number) = record.context.record_number {
+            let at = usize::try_from(number).ok().and_then(|n| n.checked_sub(1));
+            let there = self.window().is_ok_and(|w| {
+                w.table == record.table
+                    && w.sort.is_none()
+                    && at.and_then(|at| w.found.get(at)) == Some(&record.id)
+            });
+            if !there {
+                record.context.record_number = None;
+            }
+        }
         let plan = self.plan(record.table)?;
-        let (mode, existing, cells) = match &record.ruled {
+        let (mode, existing, cells): (_, _, BTreeSet<_>) = match &record.ruled {
             Some(ruled) if ruled.since.is_empty() => return Ok(BTreeSet::new()),
             Some(ruled) => (
                 WriteMode::Update,
                 ruled.base.clone().unwrap_or_else(|| texts(&record.node)),
                 ruled.since.clone(),
             ),
-            None if record.new => (WriteMode::Create, BTreeMap::new(), record.changed.clone()),
+            None if record.new => (
+                WriteMode::Create,
+                BTreeMap::new(),
+                record.changed.keys().copied().collect(),
+            ),
             None => {
                 let stored = self.committed_node(record.table, record.id);
                 (
                     WriteMode::Update,
                     stored.as_ref().map(texts).unwrap_or_default(),
-                    record.changed.clone(),
+                    record.changed.keys().copied().collect(),
                 )
             }
         };
@@ -1849,7 +1877,16 @@ impl ServerHost {
                 record,
                 (mode, &existing, &changes, entry),
                 &mut environment,
-                |environment| plan.compute(mode, &existing, &changes, environment, entry),
+                |environment| {
+                    plan.compute_with_staged_cells(
+                        mode,
+                        &existing,
+                        &changes,
+                        environment,
+                        entry,
+                        |cell| record.changed.get(&cell) == Some(&CellSource::Copied),
+                    )
+                },
             )
             .map_err(|e| {
                 info!(
@@ -1867,20 +1904,29 @@ impl ServerHost {
                 }
             }
         }
+        // Rule output supersedes staged input for the same cell, including
+        // a rule that clears a copied or previously staged value.
+        let effective_changes = || {
+            computed.iter().chain(
+                changes
+                    .iter()
+                    .filter(|(cell, _)| !computed.contains_key(*cell)),
+            )
+        };
         // A related-values list is computed for the written record only by
         // the desktop's provider (om-provider `related_lists.rs`): a value
         // the rules check against one refuses the write here (3).
-        for (cell, text) in computed.iter().chain(&changes) {
+        for (cell, text) in effective_changes() {
             if text.as_deref().is_some_and(|t| !t.is_empty())
                 && plan.related_value_list(*cell, entry).is_some()
             {
                 return Err(related_list_refused());
             }
         }
-        // An imported value is not Set Field's, which checks a value list of
-        // a field's values as it is entered: the import checks it here.
+        // Set Field checks field-backed lists at entry. An import checks
+        // them here, using both its mapped inputs and any rule output.
         if entry.keep_written {
-            for (cell, text) in &changes {
+            for (cell, text) in effective_changes() {
                 let Some(text) = text.as_deref().filter(|t| !t.is_empty()) else {
                     continue;
                 };
@@ -2380,6 +2426,11 @@ impl ServerHost {
         let key = uint_segment(cell);
         let before = record.node.child(&key).cloned();
         record.before_change();
+        // The place New Record gave the record stays its own.
+        let context = rules::WriteContext {
+            record_number: record.context.record_number,
+            ..context
+        };
         let context_changed = *record.context != context;
         *record.context = context;
         match stored {
@@ -2389,10 +2440,12 @@ impl ServerHost {
             }
         }
         // A value written over the preview is entered, also one the preview
-        // shows (#474): clearing a previewed lookup clears it.
+        // shows (#474): clearing a previewed lookup clears it. Writing a
+        // copied value again makes it an explicit entry.
         let changed = record.node.child(&key) != before.as_ref()
             || lookup_match
-            || record.preview.contains_key(&cell);
+            || record.preview.contains_key(&cell)
+            || record.changed.get(&cell) == Some(&CellSource::Copied);
         if changed {
             record.changed_cell(cell);
         }
@@ -3525,7 +3578,7 @@ impl ServerHost {
                     let typed = self.focus.as_ref().filter(|f| f.typed).map(|f| f.field);
                     let changed: BTreeSet<u64> = r
                         .changed
-                        .iter()
+                        .keys()
                         .copied()
                         .filter(|c| Some(*c) != typed)
                         .collect();
@@ -3972,7 +4025,7 @@ impl Records for ServerHost {
             id,
             node,
             new: true,
-            changed: BTreeSet::new(),
+            changed: BTreeMap::new(),
             ruled: None,
             serials,
             context: Box::new(self.step_context()),
@@ -3989,6 +4042,16 @@ impl Records for ServerHost {
         let window = self.window_mut()?;
         window.found.push(id);
         window.current = window.found.len() - 1;
+        // The record joins the end of the found set, and an unsorted found
+        // set's position is what its auto-entry reads as Get (
+        // RecordNumber ): n + 1 over the n records found before, wherever
+        // the current record was, also when none were and for a duplicate
+        // (s46, FileMaker Server's engine). A sorted found set's is
+        // unmeasured and stays unanswered (#298).
+        let number = (window.sort.is_none()).then_some(window.found.len() as u64);
+        if let Some(record) = &mut self.record {
+            record.context.record_number = number;
+        }
         // The first field of the tab order gets the focus (s31, s33).
         self.focus_first_field();
         self.preview_new_record();
@@ -4026,10 +4089,11 @@ impl Records for ServerHost {
                 .ok_or(ErrorCode::RECORD_MISSING)?,
         };
         self.new_record()?;
-        // The copied values of normal fields are the new record's entries;
-        // the rules compute its calculations and creation values again
-        // when it is committed. A serial number is not copied: the copy
-        // takes the next one (`duplicate-record-request.html`).
+        // The copied values of normal fields are the new record's entries.
+        // Its effective write rules decide which values to replace: an
+        // import can stage the copy with auto-entry disabled. A serial
+        // number is not copied: the copy takes the next one
+        // (`duplicate-record-request.html`).
         let fields = self.schema.catalog.table(table);
         let normal = |kind: &dyn Fn(&Field) -> bool| {
             fields.map_or_else(BTreeSet::new, |t| {
@@ -4053,7 +4117,7 @@ impl Records for ServerHost {
                     continue;
                 }
                 if entered.contains(&field) {
-                    record.changed_cell(field);
+                    record.changed.insert(field, CellSource::Copied);
                 }
             }
             record.node.set_child(cell);
@@ -4173,6 +4237,16 @@ impl Records for ServerHost {
             skip_validation || options.skip_validation,
             options.skip_auto_enter,
         );
+        // The open row has joined the transaction. Count new writes in
+        // every table, including imported rows: s46 measured commits
+        // with one new record.
+        let multiple_creates = transaction
+            .changes
+            .values()
+            .filter(|change| matches!(change, Change::Write(record) if record.new))
+            .take(2)
+            .count()
+            > 1;
         let keys: Vec<(u64, u64)> = transaction.changes.keys().copied().collect();
         let mut unchanged_relookups = BTreeSet::new();
         for key in keys {
@@ -4185,6 +4259,9 @@ impl Records for ServerHost {
             let Some(Change::Write(mut record)) = transaction.remove(&key) else {
                 continue;
             };
+            if multiple_creates {
+                record.context.record_number = None;
+            }
             let result = self.apply_rules(&mut record, entry);
             // Keep an unchanged relookup held while the other records run
             // their rules, including the new-record self-join check (#490).

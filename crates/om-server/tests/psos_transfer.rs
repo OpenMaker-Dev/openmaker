@@ -527,6 +527,170 @@ fn imported_rows_keep_the_values_auto_enter_gave_them() {
     }
 }
 
+#[test]
+fn import_into_a_duplicate_protects_only_mapped_values_from_auto_entry() {
+    use fixture::{OCCURRENCE, TABLE};
+    use om_hbam::{serial, slot::uint_segment};
+
+    const NUMBER: u64 = 41;
+    let duplicate_and_import = |id, name, source, fields: &[u64], auto_enter| {
+        script(
+            id,
+            name,
+            vec![
+                fixture::on(86, true),
+                set_variable("$p", &format!("Get ( DocumentsPath ) & \"{source}\"")),
+                ScriptStep::new(23),
+                fixture::go_to_record(1),
+                ScriptStep::new(205),
+                ScriptStep::new(8),
+                // Replace the found set with just the duplicate.
+                ScriptStep::new(25),
+                ScriptStep::new(27),
+                import_as(&["$p"], fields, auto_enter, ImportAction::UpdateFoundSet),
+                ScriptStep::new(206),
+                fixture::exit_with("Get ( LastError )"),
+            ],
+        )
+    };
+    let scripts = [
+        duplicate_and_import(1, "Unmapped Number", "copy.tab", &[NAME], true),
+        duplicate_and_import(2, "Auto-entry off", "copy.tab", &[NAME], false),
+        duplicate_and_import(3, "Mapped Number", "mapped.tab", &[NAME, NUMBER], true),
+    ];
+    let mut root = fixture::tree(&scripts, true);
+    fixture::add_field(&mut root, TABLE, NUMBER, "Number", 1, 1, 0, 0x88, 0);
+    fixture::add_formula(
+        &mut root,
+        &fixture::names(),
+        (TABLE, OCCURRENCE),
+        NUMBER,
+        5,
+        "Get ( RecordNumber )",
+    );
+    root.put(
+        &[
+            &uint_segment(TABLE),
+            &[5],
+            &serial::encode(1),
+            &uint_segment(NUMBER),
+        ],
+        om_scripts::text_node(&[], "1"),
+    );
+    let layout = Layout::new("duplicate-import");
+    let file = TempFile(layout.0.join("Tasks.fmp12"));
+    fixture::write_tree(&file.0, &root);
+    std::fs::write(layout.documents("copy.tab"), "Imported copy\r").unwrap();
+    std::fs::write(layout.documents("mapped.tab"), "Mapped copy\t99\r").unwrap();
+    let port = server::start(&file);
+    let (mut client, _) = server::logged_in(port, "duplicate-import");
+
+    let before = server::records_of(&mut client, TABLE);
+    assert_eq!(server::cell(&before, 1, NUMBER), Some("1"));
+    // The unmapped calculation needs a record number the import cannot
+    // supply. A refused row gives 729, and Commit Transaction rolls back.
+    assert_eq!(run(&mut client, 1).1, "729");
+    assert_eq!(server::records_of(&mut client, TABLE), before);
+
+    assert_eq!(run(&mut client, 2), (0, "0".into()));
+    let copy = record_named(&mut client, "Imported copy").expect("duplicate committed");
+    assert_ne!(copy.0, 1);
+    assert_eq!(value(&copy, NUMBER), Some("1"));
+
+    assert_eq!(run(&mut client, 3), (0, "0".into()));
+    let copy = record_named(&mut client, "Mapped copy").expect("duplicate committed");
+    assert_ne!(copy.0, 1);
+    assert_eq!(value(&copy, NUMBER), Some("99"));
+}
+
+#[test]
+fn import_validates_the_cleared_value_of_a_duplicate() {
+    assert_import_clears_duplicate_code(false);
+}
+
+#[test]
+fn import_clears_an_unmapped_value_entered_earlier_in_a_duplicate() {
+    assert_import_clears_duplicate_code(true);
+}
+
+fn assert_import_clears_duplicate_code(entered: bool) {
+    use fixture::{OCCURRENCE, TABLE};
+    use om_hbam::{serial, slot::uint_segment};
+
+    // Keep the ordinary preview from recalculating Code before Import.
+    // The import has its own auto-entry option and must still clear it.
+    let mut open = ScriptStep::new(205);
+    open.set_flag(om_scripts::flag::SELECT_ALL, entered);
+    let mut steps = vec![
+        fixture::on(86, true),
+        set_variable("$p", "Get ( DocumentsPath ) & \"clear.tab\""),
+        ScriptStep::new(23),
+        fixture::go_to_record(1),
+        open,
+        ScriptStep::new(8),
+    ];
+    if entered {
+        steps.push(fixture::set_field(CODE, "\"Ship\""));
+        steps.push(set_variable("$set", "Get ( LastError )"));
+        steps.push(set_variable("$entered", "Code"));
+    }
+    steps.extend([
+        // Stage the duplicate and select it alone.
+        ScriptStep::new(25),
+        ScriptStep::new(27),
+        import_as(&["$p"], &[NAME], true, ImportAction::UpdateFoundSet),
+        set_variable("$import", "Get ( LastError )"),
+        ScriptStep::new(206),
+        if entered {
+            fixture::exit_with(
+                "$import & \"|\" & Get ( LastError ) & \"|\" & $set & \"|\" & $entered",
+            )
+        } else {
+            fixture::exit_with("$import & \"|\" & Get ( LastError )")
+        },
+    ]);
+    let scripts = [script(
+        1,
+        "Import into a duplicate with replacing auto-entry",
+        steps,
+    )];
+    let mut root = fixture::tree(&scripts, true);
+    fixture::code_in_names_list(&mut root);
+    fixture::set_field_options(&mut root, TABLE, CODE, 0x88);
+    fixture::add_formula(
+        &mut root,
+        &fixture::names(),
+        (TABLE, OCCURRENCE),
+        CODE,
+        5,
+        "If ( Name = \"Imported copy\" ; \"\" ; \"Retired\" )",
+    );
+    // The source still holds a code that is no longer in the Names list.
+    root.put(
+        &[
+            &uint_segment(TABLE),
+            &[5],
+            &serial::encode(1),
+            &uint_segment(CODE),
+        ],
+        om_scripts::text_node(&[], "Retired"),
+    );
+    let layout = Layout::new("duplicate-import-list");
+    let file = TempFile(layout.0.join("Tasks.fmp12"));
+    fixture::write_tree(&file.0, &root);
+    std::fs::write(layout.documents("clear.tab"), "Imported copy\r").unwrap();
+    let port = server::start(&file);
+    let (mut client, _) = server::logged_in(port, "duplicate-import-list");
+
+    let expected = if entered { "0|0|0|Ship" } else { "0|0" };
+    assert_eq!(run(&mut client, 1), (0, expected.into()));
+    let copy = record_named(&mut client, "Imported copy").expect("duplicate committed");
+    assert_ne!(copy.0, 1);
+    assert_eq!(value(&copy, CODE), None);
+    let records = server::records_of(&mut client, TABLE);
+    assert_eq!(server::cell(&records, 1, CODE), Some("Retired"));
+}
+
 /// The review's C1 for updates, C2 and C3: an update's stored calculation
 /// reads the new modification value; inside Open Transaction, Commit
 /// Transaction neither auto-enters what the import left out nor checks

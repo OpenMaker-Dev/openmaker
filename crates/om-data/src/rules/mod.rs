@@ -283,7 +283,7 @@ pub enum WriteMode {
 /// Who writes a record and with which options; that decides which rules
 /// apply.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
-pub struct Entry {
+pub struct Entry<'a> {
     /// A script step (Set Field, ...) rather than a user typing: any normal
     /// field of a supported type may be set, also one whose auto-entered
     /// value prohibits modification during data entry (scripts ignore that
@@ -299,9 +299,12 @@ pub struct Entry {
     /// where an auto-entered value would replace an existing one (oracle
     /// x02).
     pub keep_written: bool,
+    /// Cells this import maps when `changes` also contains earlier staged
+    /// values. By default all cells in `changes` are explicitly set.
+    pub mapped_cells: Option<&'a BTreeSet<u64>>,
 }
 
-impl Entry {
+impl Entry<'_> {
     /// A script's write with the given Skip options.
     pub fn script(skip_data_entry_validation: bool, skip_auto_enter: bool) -> Self {
         Entry {
@@ -309,6 +312,7 @@ impl Entry {
             skip_data_entry_validation,
             skip_auto_enter,
             keep_written: false,
+            mapped_cells: None,
         }
     }
 
@@ -323,13 +327,21 @@ impl Entry {
             skip_data_entry_validation: true,
             skip_auto_enter: !auto_enter,
             keep_written: true,
+            mapped_cells: None,
         }
     }
 
     /// Whether auto-enter leaves `cell`, which the write sets in `changes`,
     /// as written ([`Entry::keep_written`]).
     fn keeps(&self, changes: &BTreeMap<u64, Option<String>>, cell: u64) -> bool {
-        self.keep_written && changes.contains_key(&cell)
+        self.keep_written && self.sets(changes, cell)
+    }
+
+    fn sets(&self, changes: &BTreeMap<u64, Option<String>>, cell: u64) -> bool {
+        self.mapped_cells.map_or_else(
+            || changes.contains_key(&cell),
+            |cells| cells.contains(&cell),
+        )
     }
 }
 
@@ -2325,7 +2337,7 @@ impl RecordPlan {
     /// record, whose auto-entered values FileMaker enters anew
     /// (`duplicate-record-request.html`).
     fn keeps_serial(entry: Entry, changes: &BTreeMap<u64, Option<String>>, id: u64) -> bool {
-        entry.script && changes.contains_key(&id)
+        entry.script && entry.sets(changes, id)
     }
 
     /// Whether a field of the table auto-enters a looked-up value.
@@ -2803,7 +2815,7 @@ impl RecordPlan {
         };
         // Any match field replaced so: the whole relationship matches
         // nothing (its predicates are all `=`).
-        !entry.skip_auto_enter && !changes.contains_key(&id) && !lookup.matches.iter().any(replaced)
+        !entry.skip_auto_enter && !entry.sets(changes, id) && !lookup.matches.iter().any(replaced)
     }
 
     /// Whether a change of `cell` can change what the rules compute for a
@@ -3445,7 +3457,7 @@ impl RecordPlan {
             return Err(refused(id));
         }
         // As `compute_values` refuses on every other way to a write.
-        let changed = Self::changed_values(computed, existing);
+        let changed = Self::changed_values(computed, existing, |_, _| false);
         self.refuse_unwritable_changes(&changed)?;
         Self::prepared(changed)
     }
@@ -3498,6 +3510,31 @@ impl RecordPlan {
         entry: Entry,
     ) -> Result<BTreeMap<u64, Option<String>>, DataError> {
         self.compute_values(mode, existing, changes, environment, entry, None)
+    }
+
+    /// Compute changes for a draft with copied cells or earlier edits.
+    /// A rule can restore the stored value and still change the draft
+    /// if the cell was copied or an import leaves an earlier edit unmapped.
+    pub fn compute_with_staged_cells(
+        &self,
+        mode: WriteMode,
+        existing: &BTreeMap<u64, String>,
+        changes: &BTreeMap<u64, Option<String>>,
+        environment: &RecordEnvironment,
+        entry: Entry,
+        was_copied: impl Fn(u64) -> bool,
+    ) -> Result<BTreeMap<u64, Option<String>>, DataError> {
+        let computed = self.compute_inner(mode, existing, changes, environment, entry, None)?;
+        let changed = Self::changed_values(computed, existing, |id, value| {
+            let unmapped =
+                entry.keep_written && entry.mapped_cells.is_some_and(|cells| !cells.contains(&id));
+            (was_copied(id) || unmapped)
+                && changes
+                    .get(&id)
+                    .is_some_and(|text| value != text.as_deref().unwrap_or_default())
+        });
+        self.refuse_unwritable_changes(&changed)?;
+        Ok(changed)
     }
 
     /// The fields a preview computes (#1047): those the rules give the same
@@ -3667,7 +3704,7 @@ impl RecordPlan {
         preview: Option<&BTreeSet<u64>>,
     ) -> Result<BTreeMap<u64, Option<String>>, DataError> {
         let computed = self.compute_inner(mode, existing, changes, environment, entry, preview)?;
-        let changed = Self::changed_values(computed, existing);
+        let changed = Self::changed_values(computed, existing, |_, _| false);
         if preview.is_none() {
             self.refuse_unwritable_changes(&changed)?;
         }
@@ -3719,11 +3756,12 @@ impl RecordPlan {
         Ok(())
     }
 
-    /// The cells `computed` changes from `existing`, not left out: stored
-    /// text, `None` empty.
+    /// The cells `computed` changes from `existing` or a staged input,
+    /// excluding deferred cells: stored text, `None` empty.
     fn changed_values(
         computed: Computed,
         existing: &BTreeMap<u64, String>,
+        differs_from_staged: impl Fn(u64, &str) -> bool,
     ) -> BTreeMap<u64, Option<String>> {
         let Computed {
             row,
@@ -3735,8 +3773,9 @@ impl RecordPlan {
             .into_iter()
             .filter(|id| !deferred.contains(id))
             .filter(|id| {
-                row.get(id).map_or("", String::as_str)
-                    != existing.get(id).map_or("", String::as_str)
+                let value = row.get(id).map_or("", String::as_str);
+                value != existing.get(id).map_or("", String::as_str)
+                    || differs_from_staged(*id, value)
             })
             .map(|id| {
                 let text = row.get(&id).map_or("", String::as_str);

@@ -220,7 +220,23 @@ comes only at the commit, it presumably sees nothing until then
   - **Unknown fields.** A field the provider can't know yet reads its stored value, never empty. With a related record to delete in the same commit, nothing is computed.
   - **Browse** still shows a stored calculation's stored value until the commit.
   - **Measured only for a script's Set Field** on a local file's own stored calculation. The user's typing, Browse and hosted files are unmeasured [I].
-  - **On OpenMaker Server** a script's new record is computed the same way, from New Record on and again after each change of a cell the rules compute from (`RecordPlan::computes_from`): its auto-entered values and stored calculations, validation left to the commit (`ServerHost::preview_new_record`, [#474](https://github.com/OpenMaker-Dev/openmaker/issues/474)). FileMaker Server's engine gave an auto-entered value right after New Record (script oracle s46). The preview is only what the script reads of its open record: the record holds just what the steps set, so a Set Field of the value it previews enters that value, and a duplicate, the transaction's other records and its unique values never see it. The commit computes the values again, with the clock and UUID the record was created with: a creation and a modification timestamp of a new record are its creation time [I]. What the commit stores can still differ from what was read where an input changed in between without a change of the record's own cells (a global, a related record). A value the preview cannot know yet (a formula it cannot answer, `Get ( RecordNumber )` until #456) reads empty, as before. An existing record's stored calculations still read their stored value until the commit there.
+  - **On OpenMaker Server** a script sees its open new record's
+    auto-entered values and stored calculations from New Record on. A
+    change to a cell the rules compute from runs the preview again
+    (`RecordPlan::computes_from`, `ServerHost::preview_new_record`,
+    [#474](https://github.com/OpenMaker-Dev/openmaker/issues/474)).
+    The preview includes the record's creation position in an unsorted
+    found set for `Get ( RecordNumber )`, as measured in script oracle
+    s46. Set Field of a previewed value enters that value in the record.
+    Duplicate Record, the transaction's other records and unique-value
+    checks use the record's own cells. The commit validates the row and
+    computes its values again using the same clock and UUID. A new
+    record's creation and modification timestamps are its creation time
+    [I]. A global or related record can change between the preview and
+    the commit. The commit also checks whether the record's creation
+    position is still valid (see below). A formula with an unavailable
+    input can be absent from the preview. An existing record's stored
+    calculations read their stored value until the commit.
 
 ### A new record's preview
 
@@ -966,13 +982,32 @@ record's place in what the rules read:
   portal that neither sorts nor filters is its place among the portal's
   related records, after the ones related before the save: 1 with none
   before, 3 with two.
+- **Measured: records a window makes.** New Record and Duplicate Record
+  in a script append the record to the window's unsorted found set, and
+  its number is the found set's count before it plus one, wherever the
+  current record was (FileMaker Server's engine, auto-entry.md;
+  [#298](https://github.com/OpenMaker-Dev/openmaker/issues/298)).
+  OpenMaker Server's scripts give that number to their New Record and
+  Duplicate Record and keep it through the record's Set Field steps. At
+  commit the number is available only if the row is still at that
+  position in its table's unsorted found set and it is the sole new
+  row in the commit, counting all tables and imports. A rule that
+  needs an unavailable number refuses the write with 3. The server
+  stages a duplicate with its copied values. The effective write rules
+  replace a copied calculated auto-entry value in the preview and at
+  commit, including when the result is empty. An import updating a
+  staged duplicate protects the cells it maps from auto-entry. With
+  auto-entry off it also keeps unmapped copied values. With auto-entry
+  on an unmapped calculation that needs the unavailable record number
+  refuses the import row (reported by Import Records as 729). These
+  import combinations are unmeasured in FileMaker. The desktop's
+  Duplicate Record behavior is described above under the window's
+  record session.
 - **Hosted files** take the same answer, an inference (parity-unverified).
 - **Routed writes:** a portal row of another file's table carries the
   calling window's number to that file.
-- **Everything else is unanswered:** a portal with rows, sorted or
-  filtered, New Record in the table's own window, scripts and OpenMaker
-  Server's scripts. A formula that is evaluated without the number
-  refuses its write with 3.
+- The number is also unavailable for a portal that sorts or filters, the
+  desktop's New Record command, and edits of stored records.
 - **Edits that evaluate no such formula are written.** An auto-entered
   calculation with no field inputs is evaluated only at creation.
 - **The desktop window gives it in the measured shape only**

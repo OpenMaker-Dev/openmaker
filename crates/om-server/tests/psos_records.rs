@@ -39,6 +39,8 @@ const PRIORITY_LIST: u64 = 1;
 const NOTE: u64 = 9;
 /// Tasks::Stamp, auto-entered `Name & Setting` where a test adds it.
 const STAMP: u64 = 40;
+/// A field auto-entering `Get ( RecordNumber )` (#298).
+const NUMBER: u64 = 41;
 /// Tasks::Group and Seen, a self-join's key and an auto-entry reading it,
 /// where a test adds them.
 const GROUP_KEY: u64 = 42;
@@ -50,6 +52,7 @@ fn names() -> NameTable {
     names.add_field(NOTES, TASK, "Task");
     names.add_field(TABLE, NOTE, "Note");
     names.add_field(TABLE, STAMP, "Stamp");
+    names.add_field(TABLE, NUMBER, "Number");
     names.add_field(TABLE, GROUP_KEY, "Group");
     names.add_field(TABLE, SEEN, "Seen");
     names
@@ -866,6 +869,222 @@ fn server_scripts_auto_enter_over_a_global_reads_the_sessions_value() {
     let (mut client, _) = server::logged_in(port, "client");
     assert_eq!(run(&mut client, 8), (0, "0|Adas".to_string()));
     assert_eq!(run(&mut client, 9), (0, "0|Beax".to_string()));
+}
+
+/// A record a server script makes auto-enters Get ( RecordNumber ) as the
+/// position it takes at the end of the found set, n + 1, wherever the
+/// current record was: in every record, after records were omitted, and
+/// for a duplicate, whose copied number the calculation replaces (s46,
+/// FileMaker Server's engine, whose fields replaced; #298). A field set
+/// before the commit keeps it, as in the oracle's probes. A record no
+/// longer at that place when its rules run (an earlier record omitted in
+/// a transaction), or one of two new records in one transaction, is not
+/// answered: the write is refused. A duplicate in a transaction that
+/// skips auto-entry keeps the copied number.
+#[test]
+fn server_scripts_new_records_auto_enter_their_found_set_position() {
+    let made = |before: Vec<ScriptStep>| {
+        let mut steps = vec![ScriptStep::new(23)];
+        steps.extend(before);
+        steps.extend([
+            set_var("$preview", "Tasks::Number"),
+            set_field(fixture::NAME, 1, "\"made\""),
+            ScriptStep::new(75),
+            exit_with("$preview & \"|\" & Tasks::Number & \"|\" & Get ( FoundCount ) & \"|\" & Get ( LastError )"),
+        ]);
+        steps
+    };
+    let mut root = tree();
+    fixture::add_field(&mut root, TABLE, NUMBER, "Number", 1, 1, 0, 0x88, 0);
+    fixture::add_formula(
+        &mut root,
+        &names(),
+        (TABLE, OCCURRENCE),
+        NUMBER,
+        5,
+        "Get ( RecordNumber )",
+    );
+    for (id, name, steps) in [
+        (
+            8,
+            "All",
+            made(vec![fixture::go_to_record(1), ScriptStep::new(7)]),
+        ),
+        (
+            9,
+            "Omitted",
+            made(vec![
+                fixture::go_to_record(1),
+                ScriptStep::new(25),
+                ScriptStep::new(7),
+            ]),
+        ),
+        (
+            10,
+            "Duplicate",
+            made(vec![
+                fixture::go_to_record(1),
+                set_field(NUMBER, 1, "\"1\""),
+                ScriptStep::new(75),
+                ScriptStep::new(8),
+            ]),
+        ),
+        (
+            11,
+            "Moved",
+            vec![
+                fixture::on(86, true),
+                ScriptStep::new(23),
+                ScriptStep::new(205),
+                ScriptStep::new(7),
+                fixture::go_to_record(1),
+                ScriptStep::new(25),
+                ScriptStep::new(206),
+                exit_with("Get ( LastError )"),
+            ],
+        ),
+        (
+            12,
+            "Two",
+            vec![
+                fixture::on(86, true),
+                ScriptStep::new(23),
+                ScriptStep::new(205),
+                ScriptStep::new(7),
+                ScriptStep::new(7),
+                ScriptStep::new(206),
+                exit_with("Get ( LastError )"),
+            ],
+        ),
+        (
+            13,
+            "Kept",
+            vec![
+                ScriptStep::new(23),
+                fixture::go_to_record(1),
+                {
+                    // Open Transaction [Skip auto-enter options].
+                    let mut open = ScriptStep::new(205);
+                    open.set_flag(om_scripts::flag::SELECT_ALL, true);
+                    open
+                },
+                ScriptStep::new(8),
+                ScriptStep::new(206),
+                exit_with("Tasks::Number & \"|\" & Get ( LastError )"),
+            ],
+        ),
+        (
+            14,
+            "Two tables",
+            vec![
+                fixture::on(86, true),
+                ScriptStep::new(205),
+                fixture::go_to_layout(NOTES_LAYOUT),
+                ScriptStep::new(7),
+                set_var("$notes", "Get ( LastError )"),
+                fixture::go_to_layout(fixture::LAYOUT),
+                ScriptStep::new(7),
+                set_var("$position", "Tasks::Number = Get ( FoundCount )"),
+                ScriptStep::new(206),
+                exit_with("$notes & \"|\" & $position & \"|\" & Get ( LastError )"),
+            ],
+        ),
+    ] {
+        root.put(
+            &[&[17], &[5], &uint_segment(id)],
+            script(id, name, steps).encode(),
+        );
+    }
+    let file = TempFile::from_tree("psos-record-number", &root);
+    let port = server::start(&file);
+    let (mut client, _) = server::logged_in(port, "client");
+    let (error, all) = run(&mut client, 8);
+    assert_eq!(error, 0);
+    let found: u64 = all.split('|').nth(2).unwrap().parse().unwrap();
+    assert_eq!(all, format!("{found}|{found}|{found}|0"));
+    // One more record; one omitted of the rest.
+    assert_eq!(run(&mut client, 9).1, format!("{found}|{found}|{found}|0"));
+    let duplicate = found + 2;
+    assert_eq!(
+        run(&mut client, 10).1,
+        format!("{duplicate}|{duplicate}|{duplicate}|0")
+    );
+    assert_eq!(run(&mut client, 11).1, "3");
+    assert_eq!(run(&mut client, 12).1, "3");
+    assert_eq!(run(&mut client, 13).1, "1|0");
+    let tasks = server::records_of(&mut client, TABLE);
+    let notes = server::records_of(&mut client, NOTES);
+    assert_eq!(run(&mut client, 14).1, "0|1|3");
+    assert_eq!(server::records_of(&mut client, TABLE), tasks);
+    assert_eq!(server::records_of(&mut client, NOTES), notes);
+}
+
+#[test]
+fn a_duplicates_empty_replacement_clears_the_copied_value() {
+    let mut root = tree();
+    fixture::add_field(&mut root, TABLE, NUMBER, "Number", 1, 1, 0, 0x88, 0);
+    fixture::add_formula(
+        &mut root,
+        &names(),
+        (TABLE, OCCURRENCE),
+        NUMBER,
+        5,
+        "If ( Get ( RecordNumber ) <= 4 ; \"source\" ; \"\" )",
+    );
+    root.put(
+        &[
+            &uint_segment(TABLE),
+            &[5],
+            &serial::encode(1),
+            &uint_segment(NUMBER),
+        ],
+        text_node(&[], "source"),
+    );
+    for (id, name, enter_copy) in [
+        (8, "Duplicate with an empty replacement", false),
+        (9, "Set Field on the duplicate", true),
+    ] {
+        let mut steps = vec![
+            fixture::on(86, true),
+            ScriptStep::new(23),
+            fixture::go_to_record(1),
+            set_var("$source", "Tasks::Number"),
+            ScriptStep::new(8),
+        ];
+        if enter_copy {
+            steps.push(fixture::set_field(NUMBER, "$source"));
+        }
+        steps.extend([
+            set_var("$preview", "Tasks::Number"),
+            ScriptStep::new(75),
+            exit_with(
+                "$source & \"|\" & $preview & \"|\" & Tasks::Number & \"|\" & Get ( LastError )",
+            ),
+        ]);
+        root.put(
+            &[&[17], &[5], &uint_segment(id)],
+            script(id, name, steps).encode(),
+        );
+    }
+    let file = TempFile::from_tree("psos-empty-replacement", &root);
+    let port = server::start(&file);
+    let (mut client, _) = server::logged_in(port, "client");
+
+    let before = server::records_of(&mut client, TABLE);
+    assert_eq!(before.len(), 4);
+    assert_eq!(server::cell(&before, 1, NUMBER), Some("source"));
+    assert_eq!(run(&mut client, 8), (0, "source|||0".into()));
+    let after = server::records_of(&mut client, TABLE);
+    assert_eq!(after.len(), 5);
+    assert_eq!(server::cell(&after, 1, NUMBER), Some("source"));
+    let (duplicate, _) = after
+        .iter()
+        .find(|(id, _)| before.iter().all(|(old, _)| old != id))
+        .expect("duplicate committed");
+    assert_eq!(server::cell(&after, *duplicate, NUMBER), None);
+    // Set Field makes the value an explicit entry even when the text
+    // matches the copy. The preview and commit both keep that entry.
+    assert_eq!(run(&mut client, 9), (0, "source|source|source|0".into()));
 }
 
 /// A new record's auto-entered value read before its commit (#474) is not
