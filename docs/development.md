@@ -135,10 +135,11 @@ on the command line. `--database-folder <dir>`, given once or more,
 replaces it; a folder named this way is resolved once, links and all,
 since the administrator chose it. Inside a database folder only regular
 files and folders are used, never a link, so a database elsewhere is
-hosted by naming its folder or the file itself. A file named on the
-command line may be a link to a regular file; every hosted file must be a
-regular file, and one that is not (a FIFO, a device) is refused without
-being waited on.
+hosted by naming its folder or the file itself. On Unix, a file named on
+the command line may be a link to a regular file. On Windows, the server
+refuses file symlinks at open, before recovery or saves. Name the regular
+database file directly. Other non-regular files (such as FIFOs and devices)
+are refused without waiting.
 
 Files named on the command line come first. A found file with the name of
 one already hosted is left out and logged. The backup and log folders in
@@ -166,17 +167,20 @@ the file's name, never following a link at the name
 So a folder of the path swapped for a link to other content, to an empty
 folder, or to a folder whose entry links back to the file, makes those
 fail instead of writing or reading there, and a save's changes wait in
-memory. While a hosted file's path does not lead to its file, no backup
-is deleted. An administrator who moves a hosted file's folder and makes
-the path lead to it again keeps saves and backups going; a reopen then
-refuses until the server restarts.
+memory. Backup deletion protects a slot's last saved file even while the
+slot is closed or opening. If the saved location cannot be verified,
+retention and manual deletion stop. A schedule can still back up other
+files if the target passes the known container-folder checks. If an
+administrator moves a hosted file's folder and makes its path lead to
+the same file, saves and backups can continue. A reopen then refuses
+until the server restarts.
 
 On Linux and macOS a path whose last part is a link (allowed on the
 command line) is resolved once, when the file is hosted: the file is read
-and saved where the link led, and the link is left as it is, and backups
-keep to both places. A file already hosted under another name, through a
-link or a second hard link, is not hosted again. A file the desktop
-opens, and every file on Windows, keeps its path as named.
+and saved where the link led, and backup deletion checks both the
+configured and saved locations. A file already hosted under another
+name, through a link or a second hard link, is refused. The desktop
+keeps the path it opened.
 Outside Linux, a folder the server may search but not read cannot hold a
 hosted file. Some things still go by the path alone:
 - the time between discovery and the file's load;

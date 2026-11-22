@@ -97,6 +97,7 @@ use jiff::civil::DateTime;
 use jiff::{Timestamp, Zoned};
 use log::{debug, error, info, warn};
 
+use crate::anchored::{FileAt, FileId};
 use crate::connection::Shared;
 use crate::hosting::{save_error, Hosted};
 use crate::schedules::{BackupFiles, BackupTask};
@@ -853,7 +854,8 @@ fn home_of(path: &Path) -> &Path {
 /// `RC_Data_FMS` and its `RC_Data_FMS/<file>` (`fs` module docs). A file's
 /// folder is both the folder its path names and the folder of the file
 /// that path leads to, which differ when the path is a link to a file
-/// elsewhere.
+/// elsewhere. For a slot that was hosted through a file link, also
+/// protect the location where the server saves and reopens the file.
 ///
 /// Every file the server was given counts, whether it is open, paused,
 /// closing or closed ([`crate::hosting::Slot`]), or failed to open at
@@ -863,7 +865,8 @@ fn home_of(path: &Path) -> &Path {
 /// cannot be found keeps what of it can be opened (its folder and
 /// container data) and is recorded as unresolved: nothing is deleted
 /// while it is ([`Protected::removal_refused`]), but backups are still
-/// made and checked against what is known.
+/// made and checked against what is known. An unverified saved location
+/// also blocks removal, including when its slot is closed or opening.
 fn protected(shared: &Shared) -> io::Result<Protected> {
     let mut protected = Protected::default();
     for configured in shared.hosting.configured() {
@@ -873,37 +876,34 @@ fn protected(shared: &Shared) -> io::Result<Protected> {
             Err(e) if slot.is_none() && absent(&e) => protected.add_unresolved(&configured.path),
             Err(e) => return Err(e),
         }
-        if let Some(served) = slot.and_then(|slot| slot.served()) {
-            // Where its saves go, when the path's last part was a link that
-            // has been pointed elsewhere since (#468).
-            if served.at.place() != configured.path.as_path() {
-                match protect(&mut protected, served.at.place()) {
-                    Ok(()) => {}
-                    Err(e) if absent(&e) => protected.add_unresolved(served.at.place()),
-                    Err(e) => return Err(e),
-                }
+        if let Some(slot) = slot {
+            let at = slot.file_at();
+            // The saved location can differ from the configured link's
+            // current target, and a closed slot still reopens there (#468).
+            if at.place() != configured.path.as_path()
+                && protect(&mut protected, at.place()).is_err()
+            {
+                // Incomplete protection prevents removal. A schedule can
+                // still copy its own files outside the known container data.
+                protected.add_unresolved(at.place());
             }
-            // A served file whose path no longer leads to the file its
-            // store last saved: that file may lie anywhere, an old backup
-            // included, so where its data lies is unknown (#468).
-            if !leads_to_saved(&served) {
-                protected.add_unresolved(&configured.path);
+            // The last saved file may lie in a backup if its path no
+            // longer leads to it, even while the slot is closed (#468).
+            if !leads_to_saved(at, slot.saved_file()) {
+                protected.add_unresolved(at.place());
             }
         }
     }
     Ok(protected)
 }
 
-/// Whether `hosted`'s path leads to the file its store was read from or
-/// last saved as (always, where the store has no identity for it).
-fn leads_to_saved(hosted: &Hosted) -> bool {
-    let Some(expected) = hosted.read_store().file() else {
+/// Whether `at` still names the last saved file, where its identity is known.
+fn leads_to_saved(at: &FileAt, expected: Option<FileId>) -> bool {
+    let Some(expected) = expected else {
         return true;
     };
-    hosted
-        .at
-        .folder_now()
-        .and_then(|folder| folder.entry(hosted.at.name()))
+    at.folder_now()
+        .and_then(|folder| folder.entry(at.name()))
         .is_ok_and(|entry| entry.is_some_and(|e| e.regular && e.id == Some(expected)))
 }
 

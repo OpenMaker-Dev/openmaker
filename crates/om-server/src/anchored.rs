@@ -24,7 +24,8 @@
 //! A path whose last part is a link (a file named on the command line may
 //! be one) is resolved once, when the file is hosted on Unix: the file is
 //! then worked on where the link led, and the link is left as it is. A
-//! file the desktop opened, and Windows, keep the path as it is named.
+//! file the desktop opened keeps its already resolved path. On Windows a
+//! hosted file named by a link is refused before it can be saved.
 //!
 //! On Linux the folder is opened for searching only (`O_PATH`), so a
 //! folder the server may search but not list works. Elsewhere on Unix it
@@ -53,9 +54,7 @@ pub struct FileAt {
 
 impl FileAt {
     /// Note where `path` leads now: on Unix a link as its last part is
-    /// resolved once, here, and the folder the file is in is noted. Without
-    /// inode identities (Windows) a link is not resolved, as two names of
-    /// one file could not be told apart there.
+    /// resolved once, here, and the folder the file is in is noted.
     pub fn open(path: &Path) -> io::Result<FileAt> {
         FileAt::new(path, cfg!(unix))
     }
@@ -190,7 +189,19 @@ impl Folder {
             )?)
         };
         #[cfg(not(unix))]
-        let file = File::open(self.dir.join(name))?;
+        let file = {
+            let path = self.dir.join(name);
+            if std::fs::symlink_metadata(&path)?.file_type().is_symlink() {
+                return Err(io::Error::new(
+                    io::ErrorKind::Unsupported,
+                    format!(
+                        "{} is a symbolic link; name the regular database file directly",
+                        path.display()
+                    ),
+                ));
+            }
+            File::open(path)?
+        };
         if !file.metadata()?.is_file() {
             return Err(io::Error::new(
                 io::ErrorKind::InvalidInput,
@@ -274,6 +285,7 @@ impl Folder {
 
     /// Whether entry `name` is a regular file, not followed when it is a
     /// link.
+    #[cfg(not(unix))]
     pub fn is_regular(&self, name: &OsStr) -> bool {
         self.entry(name).is_ok_and(|e| e.is_some_and(|e| e.regular))
     }

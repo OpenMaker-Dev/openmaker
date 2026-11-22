@@ -296,10 +296,15 @@ fn save_copy_name(name: &std::ffi::OsStr) -> std::ffi::OsString {
 /// Whether `file`, the copy a save created, is still entry `name` of the
 /// file's folder.
 fn owned_copy(folder: &Folder, file: &std::fs::File, name: &std::ffi::OsStr) -> bool {
-    match folder.is_entry(file, name) {
-        Ok(same) => same,
+    #[cfg(unix)]
+    {
+        folder.is_entry(file, name).unwrap_or(false)
+    }
+    #[cfg(not(unix))]
+    {
         // No inode identity (Windows): a regular file where the save made it.
-        Err(_) => folder.is_regular(name),
+        let _ = file;
+        folder.is_regular(name)
     }
 }
 
@@ -633,35 +638,27 @@ impl Store {
                 }
             })();
             let renamed = written.and_then(|lock| {
+                // Read the staged file's identity before publication. The
+                // destination name could refer to another file after rename.
+                let identity = if self.file.is_some() {
+                    let staged = crate::anchored::file_identity(&owner)?;
+                    Some(staged.ok_or_else(|| Error::other("the new copy has no file identity"))?)
+                } else {
+                    None
+                };
                 if !owned_copy(&folder, &owner, &temporary) {
                     return Err(Error::other("the save's new copy was replaced"));
                 }
-                folder.rename(&temporary, name).map(|()| lock)
+                folder.rename(&temporary, name)?;
+                Ok((lock, identity))
             });
             if renamed.is_err() && owned_copy(&folder, &owner, &temporary) {
                 let _ = folder.remove(&temporary);
             }
             renamed
         };
-        let lock = saved?;
-        if self.file.is_some() {
-            // Where the new file's identity cannot be read, the old one is
-            // kept: the next save then fails closed.
-            let found = crate::anchored::file_identity(&owner).or_else(|_| {
-                folder
-                    .entry(name)
-                    .map(|entry| entry.filter(|e| e.regular).and_then(|e| e.id))
-            });
-            match found {
-                Ok(Some(file)) => self.file = Some(file),
-                Ok(None) => {}
-                Err(e) => warn!(
-                    "{}: saved, but reading the new file's identity failed ({e}); the next \
-                     save will be refused",
-                    self.name
-                ),
-            }
-        }
+        let (lock, identity) = saved?;
+        self.file = identity;
         if lock.is_some() {
             // The old file is gone from the path: its lock guards nothing.
             self.lock = lock;
@@ -3605,6 +3602,7 @@ mod tests {
         std::fs::remove_file(&databases).unwrap();
         std::os::unix::fs::symlink(&moved, &databases).unwrap();
         let saved = store.save(&at);
+        let published = std::fs::metadata(&path).ok().map(|m| (m.dev(), m.ino()));
         let written = std::fs::read(moved.join("Tasks.fmp12"))
             .map(|b| b.len())
             .ok();
@@ -3617,6 +3615,8 @@ mod tests {
         assert!(link_kept, "the link back is not saved over");
         assert_eq!(still_old.as_deref(), Some(&b"old"[..]));
         assert_eq!(saved.ok(), Some(true));
+        assert_ne!(store.file(), Some((read.dev(), read.ino())));
+        assert_eq!(store.file(), published);
         assert!(written.is_some_and(|n| n > 3), "{written:?}");
     }
 

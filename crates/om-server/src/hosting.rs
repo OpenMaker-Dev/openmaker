@@ -1501,6 +1501,8 @@ struct SlotState {
     status: FileStatus,
     /// The file, while it is served: open, paused or closing.
     file: Option<Arc<Hosted>>,
+    /// The last saved identity while closed or opening, for backup protection.
+    closed_file: Option<FileId>,
     /// The close under way, while the file is closing.
     closing: Option<FileClose>,
     /// Why the file is closed: its last open failed.
@@ -1517,6 +1519,7 @@ impl Slot {
             state: Mutex::new(SlotState {
                 status: FileStatus::Open,
                 file: Some(hosted),
+                closed_file: None,
                 closing: None,
                 error: None,
             }),
@@ -1539,6 +1542,23 @@ impl Slot {
     /// The file, while it is served (open, paused or closing).
     pub fn served(&self) -> Option<Arc<Hosted>> {
         self.state().file.clone()
+    }
+
+    /// Where the slot saves and reopens its file, also while it is closed.
+    pub(crate) fn file_at(&self) -> &FileAt {
+        &self.at
+    }
+
+    /// The file this slot last read or saved, even after its store is closed.
+    pub(crate) fn saved_file(&self) -> Option<FileId> {
+        let (served, closed) = {
+            let state = self.state();
+            (state.file.clone(), state.closed_file)
+        };
+        match served {
+            Some(file) => file.read_store().file(),
+            None => closed,
+        }
     }
 
     /// Why the file is closed, when its last open failed.
@@ -1601,7 +1621,7 @@ impl Slot {
             return false;
         }
         state.status = FileStatus::Closed;
-        state.file = None;
+        state.closed_file = state.file.take().and_then(|file| file.read_store().file());
         state.closing = None;
         true
     }
@@ -1724,6 +1744,7 @@ impl Hosting {
             Ok(hosted) => {
                 state.status = FileStatus::Open;
                 state.file = Some(hosted);
+                state.closed_file = None;
                 state.error = None;
                 Ok(())
             }

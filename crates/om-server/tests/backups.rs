@@ -559,6 +559,28 @@ fn plant_backup(backups: &Path, name: &str, minute: &str) -> PathBuf {
 }
 
 #[cfg(unix)]
+fn close_file(handle: &ServerHandle, id: u32) {
+    handle
+        .close_file(
+            id,
+            &om_server::Notice {
+                message: String::new(),
+                grace: Duration::ZERO,
+            },
+        )
+        .unwrap();
+    let deadline = std::time::Instant::now() + WAIT;
+    while !handle
+        .files()
+        .iter()
+        .any(|file| file.id == id && file.status == om_server::FileStatus::Closed)
+    {
+        assert!(std::time::Instant::now() < deadline, "file did not close");
+        std::thread::sleep(Duration::from_millis(5));
+    }
+}
+
+#[cfg(unix)]
 #[test]
 fn a_backup_folder_never_holds_a_hosted_file() {
     let folder = Folder::new("overlap");
@@ -579,21 +601,7 @@ fn a_backup_folder_never_holds_a_hosted_file() {
     // eligible for backup retention or deletion.
     {
         let closed = server_for(&inside);
-        let handle = closed.handle().unwrap();
-        handle
-            .close_file(
-                1,
-                &om_server::Notice {
-                    message: String::new(),
-                    grace: Duration::ZERO,
-                },
-            )
-            .unwrap();
-        let deadline = std::time::Instant::now() + WAIT;
-        while handle.files()[0].status != om_server::FileStatus::Closed {
-            assert!(std::time::Instant::now() < deadline, "file did not close");
-            std::thread::sleep(Duration::from_millis(5));
-        }
+        close_file(&closed.handle().unwrap(), 1);
         assert!(matches!(
             closed.with_backup_folder(&backups),
             Err(ScheduleError::BackupFolder { .. })
@@ -697,7 +705,8 @@ fn a_hosted_file_reached_through_a_file_link_is_never_deleted() {
     std::os::unix::fs::symlink(&inside, &hosted).unwrap();
     assert!(server_for(&hosted).with_backup_folder(&backups).is_err());
 
-    // The same, made after startup: Delete refuses and the file stays.
+    // A saved file moved into a backup after startup stays protected even
+    // if the administrator points the configured link at another file.
     let real = folder.0.join("real");
     std::fs::create_dir_all(&real).unwrap();
     std::fs::rename(&inside, real.join("Sample.fmp12")).unwrap();
@@ -706,12 +715,64 @@ fn a_hosted_file_reached_through_a_file_link_is_never_deleted() {
     let file = TempFile(hosted.clone());
     let clock = ManualClock::new(at(8, 0));
     let (_, handle) = start(&file, &backups, vec![], &clock);
-    std::fs::rename(real.join("Sample.fmp12"), &inside).unwrap();
+    let moved = preserved.join("Live");
+    std::fs::rename(&real, &moved).unwrap();
+    std::os::unix::fs::symlink(&moved, &real).unwrap();
+    let replacement = db.join("Other.fmp12");
+    let saved = moved.join("Sample.fmp12");
+    std::fs::copy(&saved, &replacement).unwrap();
     std::fs::remove_file(&hosted).unwrap();
-    std::os::unix::fs::symlink(&inside, &hosted).unwrap();
+    std::os::unix::fs::symlink(&replacement, &hosted).unwrap();
     let id = handle.backups()[0].id.clone();
     assert!(matches!(handle.delete_backup(&id), Err(BackupError::Io(_))));
-    assert!(inside.exists() && std::fs::metadata(&hosted).is_ok());
+    assert!(saved.exists());
+    close_file(&handle, 1);
+    assert!(matches!(handle.delete_backup(&id), Err(BackupError::Io(_))));
+    assert!(saved.exists());
+    handle.open_file(1).unwrap();
+}
+
+#[cfg(unix)]
+#[test]
+fn an_unresolved_save_location_blocks_retention_but_not_an_unrelated_backup() {
+    let folder = Folder::new("unresolved-save-location");
+    let file = hosted_file(&folder);
+    let linked = TempFile::new("linked-backup", &[], true);
+    let real = folder.0.join("Real");
+    std::fs::create_dir(&real).unwrap();
+    let saved = real.join("Linked.fmp12");
+    std::fs::rename(&linked.0, &saved).unwrap();
+    let alias = TempFile(folder.0.join("Alias.fmp12"));
+    std::os::unix::fs::symlink(&saved, &alias.0).unwrap();
+
+    let backups = folder.0.join("Backups");
+    let old = plant_backup(&backups, "Nightly", "0900");
+    let clock = ManualClock::new(at(8, 59));
+    let mut schedule = backup_schedule("Nightly", 1);
+    let ScheduleTask::Backup(task) = &mut schedule.task else {
+        unreachable!();
+    };
+    task.files = BackupFiles::File(fixture::FILE.into());
+    let (_, handle) =
+        server::start_hosting(&[(fixture::FILE, &file), ("Alias", &alias)], |server| {
+            server
+                .with_clock(clock.clone())
+                .with_backup_folder(&backups)
+                .unwrap()
+                .with_schedules(vec![schedule])
+                .unwrap()
+        });
+    // A symlink loop gives the secondary container lookup an I/O error
+    // even when the test runner can bypass file permissions.
+    std::os::unix::fs::symlink("RC_Data_FMS", real.join("RC_Data_FMS")).unwrap();
+    move_to(&handle, &clock, at(9, 0));
+    let run = last_run(&handle, "Nightly");
+    assert!(run.succeeded(), "{run:?}");
+    assert_eq!(
+        std::fs::read(backups.join(run.result).join("Databases/db/Sample.fmp12")).unwrap(),
+        std::fs::read(&file.0).unwrap(),
+    );
+    assert!(old.exists(), "unresolved data prevents retention");
 }
 
 #[cfg(unix)]
