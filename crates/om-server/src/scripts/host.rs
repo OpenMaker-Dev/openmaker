@@ -702,6 +702,18 @@ fn cell_id(field: u64, repetition: u32) -> Option<u64> {
     }
 }
 
+/// A script find's failed query as the step's error: what OpenMaker cannot
+/// do (an index it cannot key, #572) is 3, as FileMaker reports a criterion
+/// it cannot use; another failure is the query's own code.
+fn find_failure(error: om_query::QueryError) -> FindError {
+    match error {
+        om_query::QueryError::Unimplemented(_)
+        | om_query::QueryError::Unsupported(..)
+        | om_query::QueryError::UnkeyedIndex => FindError::Unsupported,
+        error => FindError::Query(error.code()),
+    }
+}
+
 /// A server script session.
 pub(crate) struct ServerHost {
     shared: Arc<Shared>,
@@ -1850,19 +1862,49 @@ impl ServerHost {
     /// a text field's index language has no key form OpenMaker builds (the
     /// tailored ones, #299): the check is then refused (3) rather than
     /// keyed in English, which can both miss the index's key and match
-    /// another value (#571). Other types are keyed as text, as before:
-    /// their typed keys do not depend on the language.
+    /// another value (#571). A number, date, time or timestamp field keys
+    /// `text` as its type, whatever its language (query-program.md 7.3,
+    /// dates in the file's order), and its stored values the same (#591);
+    /// a value its type does not read as one OpenMaker keys (a decimal
+    /// comma, digits among other characters, until #415) is looked up as
+    /// text, as before.
     fn field_holds(&self, occurrence: u64, field: u64, text: &str) -> Option<bool> {
         let Some((table, def)) = self.schema.field(occurrence, field) else {
             return Some(false);
         };
-        let keys = FieldOptions::decode(&def.options)
-            .and_then(|o| rules::value_text_keys(o.index_language(), self.file_language()));
-        let keys = match def.data_type {
-            DataType::Text => keys?,
-            _ => keys.unwrap_or(TextKeys::Collated),
+        let order = self.locale.date_order;
+        // A number in a file whose decimal separator is not a point is not
+        // keyed as the file reads it, neither here nor by the index builder
+        // (`1.000` is 1000 in German, keyed as 1), until #415: it is looked
+        // up as text, as before #591.
+        let typed = match def.data_type {
+            DataType::Number => self.locale.decimal_separator == '.',
+            DataType::Date | DataType::Time | DataType::Timestamp => true,
+            _ => false,
         };
-        let key = keys.key(text).unwrap_or_default();
+        let typed_keys = |value: &str| {
+            om_query::keys::value_keys(def.data_type, value, order, TextKeys::Collated)
+        };
+        let typed_key = |value: &str| {
+            if !typed {
+                return None;
+            }
+            typed_keys(value).into_iter().find(|key| {
+                key != om_query::keys::EMPTY_TEXT_KEY && key != om_query::keys::INVALID_KEY
+            })
+        };
+        let text_form = FieldOptions::decode(&def.options)
+            .and_then(|o| rules::value_text_keys(o.index_language(), self.file_language()));
+        let (key, text_keys) = match typed_key(text) {
+            Some(key) => (key, None),
+            None => {
+                let keys = match def.data_type {
+                    DataType::Text => text_form?,
+                    _ => text_form.unwrap_or(TextKeys::Collated),
+                };
+                (keys.key(text).unwrap_or_default(), Some(keys))
+            }
+        };
         let store = self.hosted.read_store();
         let (t, f) = (uint_segment(table), uint_segment(field));
         if let Some(index) = store.node(&[&t, &[INDEXES], &f, &[VALUE_INDEX]]) {
@@ -1871,13 +1913,24 @@ impl ServerHost {
         let cells: Vec<u64> = (1..=Self::repetitions(def))
             .filter_map(|rep| cell_id(field, rep))
             .collect();
+        // A stored value its type gives no key OpenMaker builds compares as
+        // text with the checked value, as before #591: a stored `5` and a
+        // zero-width space holds `5`.
+        let as_text = TextKeys::Collated.key(text);
+        let holds = |value: &str| match text_keys {
+            Some(keys) => keys.key(value).as_ref() == Some(&key),
+            None => match typed_key(value) {
+                Some(_) => typed_keys(value).contains(&key),
+                None => as_text.is_some() && TextKeys::Collated.key(value) == as_text,
+            },
+        };
         Some(store.node(&[&t, &[RECORDS]]).is_some_and(|records| {
             records.children.iter().any(|record| {
                 cells.iter().any(|cell| {
                     record
                         .child(&uint_segment(*cell))
                         .and_then(values::cell_text)
-                        .is_some_and(|v| keys.key(&v).as_ref() == Some(&key))
+                        .is_some_and(|v| holds(&v))
                 })
             })
         }))
@@ -2564,7 +2617,7 @@ impl ServerHost {
         let outcome = om_query::execute(&scratch, &program, &context);
         if let Some(error) = outcome.error {
             info!("{:?}: script find failed: {error}", self.hosted.name);
-            return Err(FindError::Query(error.code()));
+            return Err(find_failure(error));
         }
         let matched = find::found(&outcome.slots).ok_or(FindError::Query(0xffff))?;
         Ok(found.or(&matched))
@@ -2590,7 +2643,7 @@ impl ServerHost {
         }
         if let Some(error) = outcome.error {
             info!("{:?}: script find failed: {error}", self.hosted.name);
-            return Err(FindError::Query(error.code()));
+            return Err(find_failure(error));
         }
         find::found(&outcome.slots).ok_or(FindError::Query(0xffff))
     }

@@ -476,6 +476,37 @@ fn server_scripts_follow_relationships() {
         .download(&[&notes, &[1], &uint_segment(TASK), &[0]])
         .unwrap();
     assert_eq!(index.node_state, om_protocol::NodeState::NonTerminal);
+
+    // Indexed in German, which this server does not key, the missing index
+    // is not built in English for the join: Go to Related Record gives 3.
+    // From a new task, whose key is blank, nothing is related whatever the
+    // index: 101, the index not read.
+    let mut german = tree();
+    fixture::set_field_language(&mut german, NOTES, TASK, 25);
+    german.put(
+        &[&[17], &[5], &uint_segment(10)],
+        script(
+            10,
+            "Blank key",
+            vec![
+                fixture::on(86, true),
+                ScriptStep::new(7),
+                go_to_related(NOTES_OCCURRENCE, NOTES_LAYOUT),
+                exit_with("Get ( LastError )"),
+            ],
+        )
+        .encode(),
+    );
+    let file = TempFile::from_tree("psos-related-german", &german);
+    let port = server::start(&file);
+    let (mut client, _) = server::logged_in(port, "client");
+    let (error, result) = run(&mut client, 2);
+    assert_eq!(
+        (error, result.split('|').next()),
+        (3, Some("3")),
+        "{result}"
+    );
+    assert_eq!(run(&mut client, 10), (101, "101".to_string()));
 }
 
 #[test]

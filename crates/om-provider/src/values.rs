@@ -482,6 +482,12 @@ impl NativeProvider {
             .query(&program)
             .map_err(|e| failure("list a field's values", e))?;
         if let Some(code) = found::query_error(&reply.slots) {
+            // A list refused on a missing index is read from the records,
+            // as after FileMaker Server's list without one.
+            let index = [(field, om_query::find::IndexKind::Value)];
+            if found::missing_after_refusal(session, code, table, &index)?.is_some() {
+                return Ok(Listed::NoIndex);
+            }
             return Err(DataError::with_code(
                 i32::from(code),
                 format!("The host could not list the field's values (error {code})."),
