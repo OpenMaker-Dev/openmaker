@@ -225,6 +225,9 @@ fn read_license(file: Option<&Path>, use_env: bool) -> Result<Zeroizing<String>,
                 return Err("OPENMAKER_LICENSE_KEY is not valid Unicode.".into());
             }
         }
+        if let Some(path) = env_path("OPENMAKER_LICENSE_FILE") {
+            return read_secret_file(&path, "license");
+        }
     }
     match file {
         Some(file) => read_secret_file(file, "license"),

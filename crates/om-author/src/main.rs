@@ -49,6 +49,13 @@ commands (each prints one JSON response):
   set-object-frames LAYOUT --object REF --frame FRAME --expected-revision REV
                                      move or resize one object, then read the
                                      layout back
+  arrange-objects LAYOUT --object REF --object REF [--object REF ...]
+        --arrangement ID --expected-revision REV
+                                     align, distribute or resize the objects
+                                     relative to one another (ARRANGEMENT:
+                                     align_left_edges, distribute_horizontally,
+                                     resize_to_largest_width, ...), then read
+                                     the layout back
   place-text LAYOUT --text TEXT --frame FRAME --expected-revision REV
                                      place a text on the body, then read the
                                      layout back
@@ -154,7 +161,8 @@ connection (or the environment variable):
   --file NAME            OPENMAKER_FILE
   --account NAME         OPENMAKER_ACCOUNT
   --password-file PATH   OPENMAKER_PASSWORD_FILE, else OPENMAKER_PASSWORD
-License: OPENMAKER_LICENSE_KEY, or license_file in author.json.
+License: OPENMAKER_LICENSE_KEY, OPENMAKER_LICENSE_FILE (first line), or
+         license_file in author.json.
 TLS: OPENMAKER_CA_CERT, OPENMAKER_CLIENT_CERT and OPENMAKER_CLIENT_KEY.
 Run om-author config-path to print the selected configuration file path.
 Passwords and license keys are never taken as arguments.";
@@ -187,6 +195,9 @@ struct Args {
     label_frame: Option<String>,
     parameter: Option<String>,
     object: Option<String>,
+    /// Every `--object`, in order (`arrange-objects`).
+    objects: Vec<String>,
+    arrangement: Option<String>,
     record: Option<String>,
     value: Option<String>,
     text: Option<String>,
@@ -264,7 +275,12 @@ fn parse_args(raw: Vec<String>) -> Result<Args, String> {
             "--type" => args.field_type = Some(value(&arg)?),
             "--comment" => args.comment = Some(value(&arg)?),
             "--layout" => args.layout = Some(value(&arg)?),
-            "--object" => args.object = Some(value(&arg)?),
+            "--object" => {
+                let object = value(&arg)?;
+                args.objects.push(object.clone());
+                args.object = Some(object);
+            }
+            "--arrangement" => args.arrangement = Some(value(&arg)?),
             "--record" => args.record = Some(value(&arg)?),
             "--value" => args.value = Some(value(&arg)?),
             "--layout-name" => args.layout_name = Some(value(&arg)?),
@@ -504,6 +520,23 @@ fn command(name: &str, args: &Args) -> Result<Command, String> {
             }],
             expected_revision: args.expected_revision.clone().ok_or(
                 "set-object-frames needs --expected-revision: the layout's revision from \
+                 get-layout.",
+            )?,
+        }),
+        "arrange_objects" => Command::ArrangeObjects(api::ArrangeObjectsParams {
+            layout: args.layout.clone(),
+            layout_name: args.layout_name.clone(),
+            objects: if args.objects.is_empty() {
+                args.object.iter().cloned().collect()
+            } else {
+                args.objects.clone()
+            },
+            arrangement: args.arrangement.clone().ok_or(
+                "arrange-objects needs --arrangement: align_left_edges, distribute_horizontally, \
+                 resize_to_largest_width or another arrangement id.",
+            )?,
+            expected_revision: args.expected_revision.clone().ok_or(
+                "arrange-objects needs --expected-revision: the layout's revision from \
                  get-layout.",
             )?,
         }),
@@ -887,6 +920,7 @@ mod tests {
             height: Some("100".into()),
             path: Some("New.fmp12".into()),
             value_list: Some("value_list:1@F.fmp12".into()),
+            arrangement: Some("align_left_edges".into()),
             ..Args::default()
         };
         // A text to place, where `--text` is not a formula's.

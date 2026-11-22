@@ -47,6 +47,7 @@ pub enum Command {
     /// revision, then read it back over a new connection.
     PlaceField(PlaceFieldParams),
     SetObjectFrames(ObjectFramesParams),
+    ArrangeObjects(ArrangeObjectsParams),
     DeleteObjects(DeleteObjectsParams),
     PlaceText(PlaceTextParams),
     PlacePortal(PlacePortalParams),
@@ -108,6 +109,7 @@ impl Command {
             Command::PlanFieldPlacement(_) => &catalog::PLAN_FIELD_PLACEMENT,
             Command::PlaceField(_) => &catalog::PLACE_FIELD,
             Command::SetObjectFrames(_) => &catalog::SET_OBJECT_FRAMES,
+            Command::ArrangeObjects(_) => &catalog::ARRANGE_OBJECTS,
             Command::DeleteObjects(_) => &catalog::DELETE_OBJECTS,
             Command::PlaceText(_) => &catalog::PLACE_TEXT,
             Command::PlacePortal(_) => &catalog::PLACE_PORTAL,
@@ -411,6 +413,33 @@ pub struct ObjectFramesParams {
 pub struct ObjectFrameParams {
     pub object: String,
     pub frame: FrameParams,
+}
+
+/// Objects of a layout to align, distribute or resize relative to one
+/// another, as Layout mode's Arrange menu does.
+#[derive(Clone, Debug, Deserialize, JsonSchema, PartialEq)]
+#[serde(deny_unknown_fields)]
+pub struct ArrangeObjectsParams {
+    /// The layout, as for `get_layout`.
+    #[serde(default)]
+    pub layout: Option<String>,
+    #[serde(default)]
+    pub layout_name: Option<String>,
+    /// The objects, `layout_object` references from get_layout: two or
+    /// more, three or more to distribute. Each is a top-level object that
+    /// `set_object_frames` can move.
+    pub objects: Vec<String>,
+    /// One of `align_left_edges`, `align_vertical_centers`,
+    /// `align_right_edges`, `align_top_edges`, `align_horizontal_centers`,
+    /// `align_bottom_edges`, `distribute_horizontally`,
+    /// `distribute_vertically`, `resize_to_smallest_width`,
+    /// `resize_to_smallest_height`, `resize_to_smallest_width_and_height`,
+    /// `resize_to_largest_width`, `resize_to_largest_height`,
+    /// `resize_to_largest_width_and_height`.
+    pub arrangement: String,
+    /// The layout's `revision` from get_layout: required, so nothing is
+    /// arranged on a layout that changed unseen.
+    pub expected_revision: String,
 }
 
 /// A text to place on a layout's body on its own, as the Text tool places

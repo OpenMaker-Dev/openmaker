@@ -418,6 +418,36 @@ struct OpenRecord {
     /// access (Commit Transaction, #187).
     /// Boxed: an open record is held in a transaction's [`Change`].
     context: Box<rules::WriteContext>,
+    /// A new record's creation clock (#474): the date, time, timestamp and
+    /// UUID its rules read, at New Record for what a script reads of it
+    /// before the commit, and again at the commit, which so stores what
+    /// was read. `None` for an existing record or an imported row.
+    created: Option<Box<CreatedClock>>,
+    /// A new record's values as its rules would compute them now
+    /// ([`ServerHost::preview_new_record`]), by cell: what a script reads of
+    /// the open record over `node`, and only that. They are not the
+    /// record's: its commit computes them again, and nothing else reads
+    /// them (a duplicate, a transaction's other records, its unique
+    /// values), so `node` holds only what the steps set.
+    preview: BTreeMap<u64, String>,
+}
+
+/// A row's write mode, the values it holds, the changes made to it and how
+/// they were entered: what its lookups and rules are read from.
+type RowInputs<'a> = (
+    WriteMode,
+    &'a BTreeMap<u64, String>,
+    &'a BTreeMap<u64, Option<String>>,
+    Entry,
+);
+
+/// What a new record's rules read of the clock (#474).
+#[derive(Clone, Debug)]
+struct CreatedClock {
+    date: String,
+    time: String,
+    timestamp: String,
+    uuid: String,
 }
 
 /// The record rules' state of an [`OpenRecord`] they already ran on.
@@ -669,6 +699,18 @@ fn cell_id(field: u64, repetition: u32) -> Option<u64> {
         0 | 1 => Some(field),
         2..=255 => field.checked_mul(256).map(|f| f + u64::from(repetition)),
         _ => None,
+    }
+}
+
+/// A script find's failed query as the step's error: what OpenMaker cannot
+/// do (an index it cannot key, #572) is 3, as FileMaker reports a criterion
+/// it cannot use; another failure is the query's own code.
+fn find_failure(error: om_query::QueryError) -> FindError {
+    match error {
+        om_query::QueryError::Unimplemented(_)
+        | om_query::QueryError::Unsupported(..)
+        | om_query::QueryError::UnkeyedIndex => FindError::Unsupported,
+        error => FindError::Query(error.code()),
     }
 }
 
@@ -1000,6 +1042,7 @@ impl ServerHost {
         if let Some(mut record) = self.record.take() {
             self.rebase(&mut record);
             self.record = Some(record);
+            self.preview_new_record();
         }
         if let Some(mut transaction) = self.transaction.take() {
             transaction.rebase_each(|record| self.rebase(record));
@@ -1210,7 +1253,14 @@ impl ServerHost {
             .as_ref()
             .filter(|r| r.table == table && r.id == id)
         {
-            return read(Some(&open.node), None);
+            if open.preview.is_empty() {
+                return read(Some(&open.node), None);
+            }
+            let mut view = open.node.clone();
+            for (cell, text) in &open.preview {
+                view.set_child(values::cell(&uint_segment(*cell), text));
+            }
+            return read(Some(&view), None);
         }
         match self.pending(table, id) {
             Some(Change::Write(record)) => return read(Some(&record.node), None),
@@ -1274,7 +1324,13 @@ impl ServerHost {
         match self.pending(table, id) {
             Some(Change::Write(record)) => {
                 let record = record.clone();
-                return Ok(self.record.insert(record));
+                let new = record.new;
+                self.record = Some(record);
+                // Its preview is computed again, with what it reads now.
+                if new {
+                    self.preview_new_record();
+                }
+                return Ok(self.record.as_mut().expect("reopened"));
             }
             Some(Change::Delete) => return Err(ErrorCode::RECORD_MISSING.into()),
             None => {}
@@ -1294,6 +1350,8 @@ impl ServerHost {
             ruled: None,
             serials: BTreeMap::new(),
             context,
+            created: None,
+            preview: BTreeMap::new(),
         }))
     }
 
@@ -1407,6 +1465,185 @@ impl ServerHost {
         }
     }
 
+    /// The rules' environment for `record`: the session's, with the context
+    /// of the step that last changed the record (not the one committing it),
+    /// the session's global values when a formula reads one (schema-path.md
+    /// 5.17), the serial numbers the record took, and for a new record the
+    /// clock it was created with (#474).
+    fn rules_environment(&self, record: &OpenRecord, plan: &RecordPlan) -> RecordEnvironment {
+        let mut environment = self.record_environment();
+        // The session sees pending writes and deletes. A new record's
+        // self-join needs committed membership (s47), so both preview and
+        // commit refuse a read that could depend on these peers.
+        if record.new
+            && self
+                .pending_in(record.table)
+                .any(|((_, id), _)| *id != record.id)
+        {
+            environment.others_held.insert(record.table);
+        }
+        environment.context = rules::WriteContext {
+            host_timestamp: environment.context.host_timestamp.take(),
+            ..(*record.context).clone()
+        };
+        if let Some(clock) = record.created.as_deref() {
+            environment.date.clone_from(&clock.date);
+            environment.time.clone_from(&clock.time);
+            environment.timestamp.clone_from(&clock.timestamp);
+            environment.uuid.clone_from(&clock.uuid);
+            environment.context.host_timestamp = Some(clock.timestamp.clone());
+        }
+        if plan.reads_globals() {
+            environment.globals = Some(self.session_globals(record.table));
+        }
+        environment.serials = record.serials.clone();
+        environment
+    }
+
+    /// `compute` (the rules over `record`'s cells) once the write's lookups,
+    /// read from the session's records as the script's calculations read
+    /// them, are in `environment`. Calculated lookup keys are read only once
+    /// their dependencies have settled: the provider's bounded demand
+    /// protocol, where an exhausted or unsupported demand keeps the
+    /// evaluator's explicit error.
+    fn with_lookups<T>(
+        &self,
+        plan: &RecordPlan,
+        record: &OpenRecord,
+        (mode, existing, changes, entry): RowInputs<'_>,
+        environment: &mut RecordEnvironment,
+        compute: impl Fn(&RecordEnvironment) -> Result<T, DataError>,
+    ) -> Result<T, DataError> {
+        let needs = Arc::new(rules::RelatedNeeds::default());
+        environment.related_needs = Some(Arc::clone(&needs));
+        let mut keyed = BTreeMap::new();
+        let mut rounds = 4;
+        loop {
+            environment.lookups = plan.read_lookups_with(
+                mode,
+                existing,
+                changes,
+                entry,
+                &related::SessionSource { host: self },
+                // Its own row is left out of its table's self-joins (#1035).
+                // An imported row's rules see what the import left, not its
+                // stored row: it names no record, and answers no self-join.
+                (
+                    &keyed,
+                    match record.ruled {
+                        Some(_) => rules::Written::Unknown,
+                        None => rules::Written::held(mode, record.id),
+                    },
+                ),
+            )?;
+            let computed = compute(environment);
+            let more = needs.take();
+            if more.is_empty() || rounds == 0 {
+                return computed;
+            }
+            rounds -= 1;
+            keyed.extend(more);
+        }
+    }
+
+    /// A new record's values as its rules compute them now (#474): its
+    /// auto-entered values and stored calculations over the cells the steps
+    /// set, kept as the open record's [`OpenRecord::preview`] so that a
+    /// script reads them before the commit, as FileMaker Server's engine
+    /// gives an auto-entered value right after New Record (script oracle
+    /// s46). With the record's creation clock, which its commit keeps.
+    /// Validation is left to the commit, and a value the preview cannot know
+    /// (a serial number not taken yet, a formula it cannot answer) is left
+    /// out. Run after New Record, after a change of a cell the rules compute
+    /// from, and when the record is opened again.
+    fn preview_new_record(&mut self) {
+        let Some(record) = self.record.as_mut() else {
+            return;
+        };
+        // An existing record, or one an import's rules already ran on (its
+        // node holds their values), has no preview.
+        if !record.new || record.ruled.is_some() {
+            record.preview.clear();
+            return;
+        }
+        let table = record.table;
+        let Ok(plan) = self.plan(table) else {
+            if let Some(record) = self.record.as_mut() {
+                record.preview.clear();
+            }
+            return;
+        };
+        let record = self.record.as_ref().expect("the new record");
+        let options = self.transaction.as_ref().map(|t| t.options);
+        let entry = Entry::script(
+            options.is_some_and(|o| o.skip_validation),
+            options.is_some_and(|o| o.skip_auto_enter),
+        );
+        let existing = BTreeMap::new();
+        let changes: BTreeMap<u64, Option<String>> = record
+            .changed
+            .iter()
+            .map(|cell| {
+                let text = record
+                    .node
+                    .child(&uint_segment(*cell))
+                    .and_then(values::cell_text);
+                (*cell, text)
+            })
+            .collect();
+        let mut environment = self.rules_environment(record, &plan);
+        let unknown: rules::UnknownValue<'_> = &|_, _, _| false;
+        let preview = self.with_lookups(
+            &plan,
+            record,
+            (WriteMode::Create, &existing, &changes, entry),
+            &mut environment,
+            |environment| {
+                plan.pending_row(
+                    WriteMode::Create,
+                    &existing,
+                    &changes,
+                    environment,
+                    (entry, (true, true), unknown),
+                )
+            },
+        );
+        let fields = self.schema.catalog.table(table).cloned();
+        let record = self.record.as_mut().expect("the new record");
+        record.preview.clear();
+        let Ok((row, unknown)) = preview else {
+            return;
+        };
+        let field_of = |cell: u64| match fields.as_ref().and_then(|t| t.field(cell)) {
+            Some(_) => cell,
+            None => cell >> 8,
+        };
+        for (cell, text) in row {
+            if record.serials.contains_key(&cell) || unknown.contains(&field_of(cell)) {
+                continue;
+            }
+            // An entered value reads as entered, unless the field's own rules
+            // give it another (an auto-entered calculation that replaces it,
+            // such as the UUID Duplicate Record copied): then as the commit
+            // will store it. The commit writes only a nonempty one over a new
+            // record (`changed_values` compares with its empty base), so an
+            // empty one leaves the entered value, and so reads.
+            if record.changed.contains(&cell) {
+                let entered = record
+                    .node
+                    .child(&uint_segment(cell))
+                    .and_then(values::cell_text);
+                if !plan.has_rules(cell)
+                    || text.is_empty()
+                    || entered.as_deref() == Some(text.as_str())
+                {
+                    continue;
+                }
+            }
+            record.preview.insert(cell, text);
+        }
+    }
+
     /// Apply the table's rules to a record about to be written: auto-enter
     /// values, stored calculations, validation and unique values
     /// (`om_data::rules`, auto-entry.md); the computed cells go into the
@@ -1443,22 +1680,9 @@ impl ServerHost {
                 (*field, text)
             })
             .collect();
-        // What the write's lookups copy, read from the session's records as
-        // the script's calculations read them.
-        let mut environment = self.record_environment();
-        // The step that last changed the record, not the one committing it.
-        environment.context = rules::WriteContext {
-            host_timestamp: environment.context.host_timestamp.take(),
-            ..(*record.context).clone()
-        };
-        // The session's global values, which an auto-entered or validation
-        // formula reads of a global field (schema-path.md 5.17).
-        if plan.reads_globals() {
-            environment.globals = Some(self.session_globals(record.table));
-        }
+        let mut environment = self.rules_environment(record, &plan);
         // Serials not taken yet: a new record's on creation were taken by
         // New Record.
-        environment.serials = record.serials.clone();
         let missing: Vec<_> = plan
             .serials_for(mode, entry)
             .into_iter()
@@ -1467,55 +1691,21 @@ impl ServerHost {
         environment
             .serials
             .extend(self.reserve_serials(record.table, missing)?);
-        // Read calculated lookup keys only once their dependencies have
-        // settled. Match the provider's bounded demand protocol; exhausted
-        // or unsupported demands preserve the evaluator's explicit error.
-        let needs = Arc::new(rules::RelatedNeeds::default());
-        environment.related_needs = Some(Arc::clone(&needs));
-        let mut keyed = BTreeMap::new();
-        let mut rounds = 4;
-        let computed = loop {
-            environment.lookups = plan
-                .read_lookups_with(
-                    mode,
-                    &existing,
-                    &changes,
-                    entry,
-                    &related::SessionSource { host: self },
-                    // Its own row is left out of its table's self-joins (#1035).
-                    // An imported row's rules see what the import left, not its
-                    // stored row: it names no record, and answers no self-join.
-                    (
-                        &keyed,
-                        match record.ruled {
-                            Some(_) => rules::Written::Unknown,
-                            None => rules::Written::held(mode, record.id),
-                        },
-                    ),
-                )
-                .map_err(|e| {
-                    info!(
-                        "{:?}: record {} of table {:#x} refused: {e}",
-                        self.hosted.name, record.id, record.table
-                    );
-                    rule_error(&e)
-                })?;
-            let computed = plan
-                .compute(mode, &existing, &changes, &environment, entry)
-                .map_err(|e| {
-                    info!(
-                        "{:?}: record {} of table {:#x} refused: {e}",
-                        self.hosted.name, record.id, record.table
-                    );
-                    rule_error(&e)
-                });
-            let more = needs.take();
-            if more.is_empty() || rounds == 0 {
-                break computed?;
-            }
-            rounds -= 1;
-            keyed.extend(more);
-        };
+        let computed = self
+            .with_lookups(
+                &plan,
+                record,
+                (mode, &existing, &changes, entry),
+                &mut environment,
+                |environment| plan.compute(mode, &existing, &changes, environment, entry),
+            )
+            .map_err(|e| {
+                info!(
+                    "{:?}: record {} of table {:#x} refused: {e}",
+                    self.hosted.name, record.id, record.table
+                );
+                rule_error(&e)
+            })?;
         for (field, text) in &computed {
             let key = uint_segment(*field);
             match text {
@@ -1543,7 +1733,10 @@ impl ServerHost {
                     continue;
                 };
                 if let Some((occurrence, source)) = plan.value_list_field(*cell, entry) {
-                    if !self.field_holds(occurrence, source, text) {
+                    let holds = self
+                        .field_holds(occurrence, source, text)
+                        .ok_or_else(unkeyed_list_refused)?;
+                    if !holds {
                         let is_field = self
                             .schema
                             .catalog
@@ -1659,34 +1852,82 @@ impl ServerHost {
     /// record and repetition (a value list of the field's values): its
     /// value index when it has one, else its stored values, as committed.
     /// Text compares as index keys, so case does not matter in English
-    /// (script oracle s18); keyed as the field's index keys it, English
-    /// where OpenMaker has no exact form (#159).
-    fn field_holds(&self, occurrence: u64, field: u64, text: &str) -> bool {
+    /// (script oracle s18); keyed as the field's index keys it. `None` when
+    /// a text field's index language has no key form OpenMaker builds (the
+    /// tailored ones, #299): the check is then refused (3) rather than
+    /// keyed in English, which can both miss the index's key and match
+    /// another value (#571). A number, date, time or timestamp field keys
+    /// `text` as its type, whatever its language (query-program.md 7.3,
+    /// dates in the file's order), and its stored values the same (#591);
+    /// a value its type does not read as one OpenMaker keys (a decimal
+    /// comma, digits among other characters, until #415) is looked up as
+    /// text, as before.
+    fn field_holds(&self, occurrence: u64, field: u64, text: &str) -> Option<bool> {
         let Some((table, def)) = self.schema.field(occurrence, field) else {
-            return false;
+            return Some(false);
         };
-        let keys = FieldOptions::decode(&def.options)
-            .and_then(|o| rules::value_text_keys(o.index_language(), self.file_language()))
-            .unwrap_or(TextKeys::Collated);
-        let key = keys.key(text).unwrap_or_default();
+        let order = self.locale.date_order;
+        // A number in a file whose decimal separator is not a point is not
+        // keyed as the file reads it, neither here nor by the index builder
+        // (`1.000` is 1000 in German, keyed as 1), until #415: it is looked
+        // up as text, as before #591.
+        let typed = match def.data_type {
+            DataType::Number => self.locale.decimal_separator == '.',
+            DataType::Date | DataType::Time | DataType::Timestamp => true,
+            _ => false,
+        };
+        let typed_keys = |value: &str| {
+            om_query::keys::value_keys(def.data_type, value, order, TextKeys::Collated)
+        };
+        let typed_key = |value: &str| {
+            if !typed {
+                return None;
+            }
+            typed_keys(value).into_iter().find(|key| {
+                key != om_query::keys::EMPTY_TEXT_KEY && key != om_query::keys::INVALID_KEY
+            })
+        };
+        let text_form = FieldOptions::decode(&def.options)
+            .and_then(|o| rules::value_text_keys(o.index_language(), self.file_language()));
+        let (key, text_keys) = match typed_key(text) {
+            Some(key) => (key, None),
+            None => {
+                let keys = match def.data_type {
+                    DataType::Text => text_form?,
+                    _ => text_form.unwrap_or(TextKeys::Collated),
+                };
+                (keys.key(text).unwrap_or_default(), Some(keys))
+            }
+        };
         let store = self.hosted.read_store();
         let (t, f) = (uint_segment(table), uint_segment(field));
         if let Some(index) = store.node(&[&t, &[INDEXES], &f, &[VALUE_INDEX]]) {
-            return index.child(&key).is_some();
+            return Some(index.child(&key).is_some());
         }
         let cells: Vec<u64> = (1..=Self::repetitions(def))
             .filter_map(|rep| cell_id(field, rep))
             .collect();
-        store.node(&[&t, &[RECORDS]]).is_some_and(|records| {
+        // A stored value its type gives no key OpenMaker builds compares as
+        // text with the checked value, as before #591: a stored `5` and a
+        // zero-width space holds `5`.
+        let as_text = TextKeys::Collated.key(text);
+        let holds = |value: &str| match text_keys {
+            Some(keys) => keys.key(value).as_ref() == Some(&key),
+            None => match typed_key(value) {
+                Some(_) => typed_keys(value).contains(&key),
+                None => as_text.is_some() && TextKeys::Collated.key(value) == as_text,
+            },
+        };
+        Some(store.node(&[&t, &[RECORDS]]).is_some_and(|records| {
             records.children.iter().any(|record| {
                 cells.iter().any(|cell| {
                     record
                         .child(&uint_segment(*cell))
                         .and_then(values::cell_text)
-                        .is_some_and(|v| keys.key(&v).as_ref() == Some(&key))
+                        .is_some_and(|v| holds(&v))
                 })
             })
-        })
+        }))
     }
 
     /// Whether a record other than `record` holds `text` in a repetition
@@ -1958,7 +2199,10 @@ impl ServerHost {
                 return Err(related_list_refused());
             }
             if let Some((occurrence, source)) = plan.value_list_field(cell, entry) {
-                if !self.field_holds(occurrence, source, text) {
+                let holds = self
+                    .field_holds(occurrence, source, text)
+                    .ok_or_else(unkeyed_list_refused)?;
+                if !holds {
                     info!(
                         "{:?}: Set Field refused: field {} must hold a value of its value list",
                         self.hosted.name, field.field
@@ -1984,6 +2228,7 @@ impl ServerHost {
         let key = uint_segment(cell);
         let before = record.node.child(&key).cloned();
         record.before_change();
+        let context_changed = *record.context != context;
         *record.context = context;
         match stored {
             Some(text) => record.node.set_child(values::cell(&key, &text)),
@@ -1991,8 +2236,23 @@ impl ServerHost {
                 record.node.remove(&[&key]);
             }
         }
-        if record.node.child(&key) != before.as_ref() || lookup_match {
+        // A value written over the preview is entered, also one the preview
+        // shows (#474): clearing a previewed lookup clears it.
+        let changed = record.node.child(&key) != before.as_ref()
+            || lookup_match
+            || record.preview.contains_key(&cell);
+        if changed {
             record.changed_cell(cell);
+        }
+        // A new record's values computed from the cell, or from the step's
+        // layout or privilege set, are computed again.
+        let new = record.new;
+        let again = self.plan(table).map_or(true, |plan| {
+            changed && plan.computes_from(cell)
+                || context_changed && !plan.context_reads().is_empty()
+        });
+        if new && again {
+            self.preview_new_record();
         }
         Ok(())
     }
@@ -2346,7 +2606,7 @@ impl ServerHost {
         let outcome = om_query::execute(&scratch, &program, &context);
         if let Some(error) = outcome.error {
             info!("{:?}: script find failed: {error}", self.hosted.name);
-            return Err(FindError::Query(error.code()));
+            return Err(find_failure(error));
         }
         let matched = find::found(&outcome.slots).ok_or(FindError::Query(0xffff))?;
         Ok(found.or(&matched))
@@ -2372,7 +2632,7 @@ impl ServerHost {
         }
         if let Some(error) = outcome.error {
             info!("{:?}: script find failed: {error}", self.hosted.name);
-            return Err(FindError::Query(error.code()));
+            return Err(find_failure(error));
         }
         find::found(&outcome.slots).ok_or(FindError::Query(0xffff))
     }
@@ -2442,6 +2702,14 @@ fn rule_error(error: &DataError) -> HostError {
 /// OpenMaker Server does not compute for a written record.
 fn related_list_refused() -> HostError {
     HostError::Error(ErrorCode(rules::error::UNAVAILABLE))
+}
+
+/// A value list of a field's values whose field is indexed in a language
+/// OpenMaker does not key (#571): the value is not looked up. Set Field
+/// reports it as error 3; an import ends at its row rather than skipping
+/// it (`transfer_error`), unlike a row's ordinary error 3.
+fn unkeyed_list_refused() -> HostError {
+    HostError::Unsupported
 }
 
 /// `value` as Find Matching Records writes it for the server's finds, as
@@ -3445,6 +3713,8 @@ impl Records for ServerHost {
         for (field, text) in &serials {
             node.set_child(values::cell(&uint_segment(*field), text));
         }
+        // The clock its rules read now and at its commit (#474).
+        let clock = crate::recalc::record_environment(&self.account, self.uuid());
         self.record = Some(OpenRecord {
             table,
             id,
@@ -3454,12 +3724,20 @@ impl Records for ServerHost {
             ruled: None,
             serials,
             context: Box::new(self.step_context()),
+            created: Some(Box::new(CreatedClock {
+                date: clock.date,
+                time: clock.time,
+                timestamp: clock.timestamp,
+                uuid: clock.uuid,
+            })),
+            preview: BTreeMap::new(),
         });
         let window = self.window_mut()?;
         window.found.push(id);
         window.current = window.found.len() - 1;
         // The first field of the tab order gets the focus (s31, s33).
         self.focus_first_field();
+        self.preview_new_record();
         Ok(())
     }
 
@@ -3480,9 +3758,19 @@ impl Records for ServerHost {
             window.table,
             window.record().ok_or(ErrorCode::RECORD_MISSING)?,
         );
-        let source = self
-            .record_node(table, id)
-            .ok_or(ErrorCode::RECORD_MISSING)?;
+        // An open new record's preview is not its own (it is computed again
+        // at its commit), so not the copy's either: the copy's own preview
+        // and commit compute those values for it.
+        let source = match self
+            .record
+            .as_ref()
+            .filter(|r| r.table == table && r.id == id)
+        {
+            Some(open) => open.node.clone(),
+            None => self
+                .record_node(table, id)
+                .ok_or(ErrorCode::RECORD_MISSING)?,
+        };
         self.new_record()?;
         // The copied values of normal fields are the new record's entries;
         // the rules compute its calculations and creation values again
@@ -3516,6 +3804,7 @@ impl Records for ServerHost {
             }
             record.node.set_child(cell);
         }
+        self.preview_new_record();
         Ok(())
     }
 

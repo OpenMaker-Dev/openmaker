@@ -29,6 +29,10 @@ struct Server {
     /// Street (11), Suite (12, empty for even ids) and Notes (13, `id % 4`
     /// lines) of each report row, for sliding address blocks.
     report_slides: bool,
+    /// Signed (7), an unstored calculation of a `$$` and a `$` variable,
+    /// Queried (8), which reads a row's Signed through ExecuteSQL, and
+    /// Rated (14) and RatedTotal (15), for a variable-dependent total.
+    report_variables: bool,
     scripts: BTreeMap<String, Vec<Script>>,
     rows: BTreeMap<String, String>,
     events: Vec<String>,
@@ -167,6 +171,45 @@ impl Provider {
         }
         if self.server.lock().unwrap().report_grands {
             pdf_tests::add_grand_fields(&mut schema);
+        }
+        if self.server.lock().unwrap().report_variables {
+            use om_data::host::{FieldClass, SummaryDef, SummaryKind};
+            for (id, name, value_type, source) in [
+                (7, "Signed", ValueType::Text, "$$signer & \" / \" & $who"),
+                (
+                    8,
+                    "Queried",
+                    ValueType::Text,
+                    r#"GetValue ( ExecuteSQL ( "SELECT \"Signed\" FROM \"Rows\"" ; "" ; "" ) ; 1 )"#,
+                ),
+                (
+                    14,
+                    "Rated",
+                    ValueType::Number,
+                    "If ( IsEmpty ( $$signer ) Or IsEmpty ( $who ) ; -1 ; 10 )",
+                ),
+            ] {
+                let mut cx = om_data::formula::Context::new(schema.names());
+                cx.occurrence = Some(5);
+                let compiled = om_data::formula::compile(source, &cx).unwrap();
+                let formula = om_data::formula::Formula {
+                    context: None,
+                    formatted: Some(compiled.tokens),
+                    polish: compiled.expr,
+                };
+                schema.add_field(
+                    5,
+                    FieldDef::calculation(id, name, value_type, formula, false),
+                );
+            }
+            schema.add_field(
+                5,
+                FieldDef {
+                    class: FieldClass::Summary,
+                    summary: Some(SummaryDef::new(SummaryKind::Total, 14)),
+                    ..FieldDef::data(15, "RatedTotal", ValueType::Number)
+                },
+            );
         }
         if self.server.lock().unwrap().report_groups {
             schema.add_field(5, FieldDef::data(10, "Region", ValueType::Text));

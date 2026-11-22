@@ -26,10 +26,9 @@ The other symbols Browse shows, `{{RecordNumber}}`, `{{CurrentDate}}`,
 them (`om_data::host::layout::merge_text`): each the value of its `Get`
 function, evaluated on the record the part prints, as a calculation field there
 would be. So do merge variables (`<<$$name>>`, `<<$name>>`, with an optional
-`[n]`) in Preview, with the window's variables. Save Records as PDF and Print
-refuse a merge variable with 3: they evaluate on the script worker, which does
-not read the running script's variables, so it would print empty
-([#596](https://github.com/OpenMaker-Dev/openmaker/issues/596)). `{{RecordNumber}}` is the record's position in the found set, or the
+`[n]`) in Preview, with the window's variables. Merge variables in Save
+Records as PDF and Print still return error 3. `{{RecordNumber}}` is the
+record's position in the found set, or the
 row's number in a portal row. In a header, footer, title or summary part the
 record is the one the part's fields read ([report sections](report-sections.md):
 a header the page's first, a footer its last), so the symbol prints what a
@@ -104,6 +103,25 @@ Browse reads them. Refused with 3:
   4.3), so alternate row fills do not print. The two starter bodies read in
   FileMaker, Task Details and Task List, have the option off. Fonts are
   covered in [report fonts](#report-fonts).
+- Calculations the report evaluates when a script prints it, with Save Records
+  as PDF or Print (unstored calculation fields, conditional formats, and
+  ExecuteSQL's own reads in them), read the running script's `$` variables and
+  its file's `$$` variables as the script set them before the step
+  ([#596](https://github.com/OpenMaker-Dev/openmaker/issues/596)). A Print a
+  trigger held reads the initiating script's live variables when the
+  trigger lets it print. If that scope has ended, the held Print is
+  canceled ([#616](https://github.com/OpenMaker-Dev/openmaker/issues/616)). The
+  script runtime lends copies to the desktop's script worker for the step
+  (`ScriptHost::other_step_with`, `trigger_action_with`) and takes back what
+  they hold after it, so a step that unwinds loses no variable. Report
+  grouping and summaries read snapshots of the lent variables
+  ([report sections](report-sections.md)). Print preflight calculations,
+  such as Browse portal filters, use the worker's scratch store. A related
+  file's formula does not yet read that file's `$$` variables
+  ([#613](https://github.com/OpenMaker-Dev/openmaker/issues/613)). Claris says
+  a variable on a layout shows its value "when you print the layout"; which `$`
+  variables FileMaker Pro's report sees is unmeasured [I: the running
+  script's, as its own steps see them].
 - Output paths use the transfer steps' platform path lists, variable expansion,
   relative Documents paths and Create folders convention. With dialog On (or no
   output path), a desktop modal offers the file as a save panel does (Save As
@@ -141,7 +159,8 @@ the portals [Portals](#portals) lists, dynamic pictures, the button icons
 hide/label calculations, the conditional formatting
 [Conditional formatting](#conditional-formatting) lists, the layout symbols and merge
 variables listed above, mixed rich text other than runs that differ only in color,
-decorated text, italic text in a family other than Arial or Helvetica,
+unsupported character faces in the runs described below, italic text in a
+family other than Arial or Helvetica,
 colors outside 0-1, unsupported glyphs/shaping, text overflow in anything but a
 field that does not slide ([field text](#field-text)), and object/page overflow. Ordinary
 flat character and paragraph styles, including uniform paragraph leading, can
@@ -157,19 +176,58 @@ runs that are not their text's partition in order on character boundaries (the
 layout decoder always gives one), a field's layout runs (its record value
 carries its own styles), and a merged or calculated value, a `{{PageNumber}}` or
 a case transform in several colors. Runs in several fonts, sizes or faces, and
-several paragraph styles, are refused. Common object flags other than the anchor, plain-text/tooltip,
+several paragraph styles, are refused. A text object's, button's or field's
+underlined (face `0x0400`) and struck-through (`0x0001`) runs, the faces their
+mask sets, print a stroke under or through each line, each part in its color,
+from the line's start through its last non-whitespace character. The strokes use
+the bundled face's `post` underline and OS/2 strikeout metrics, with the position
+giving the stroke's top above the baseline [I: FileMaker Pro's positions,
+thicknesses and treatment of trailing spaces are unmeasured]. A container
+field's file name prints in the same faces. Strokes are clipped to the text
+box on all four sides. Reports refuse word and double underline, case,
+superscript, subscript, condense, extend and other unsupported faces in these
+runs with error 3. Tab captions print without their character runs, as in
+Browse. Reports also omit style-level underline and strikethrough
+([#644](https://github.com/OpenMaker-Dev/openmaker/issues/644)). Common object flags other than the anchor, plain-text/tooltip,
 tab-order (`kTabOrderOmit`, which nothing printed shows) and slide-up bits,
 and on a line its start corner, refuse output. A line runs
 between the corners its start bits name, as Browse draws it (layout-model.md
-5.3.1), without Browse's half-width extension of its ends. Sliding left and Hide when
-printing are decoded but refused ([report sliding](report-sliding.md)). The supported slice does not silently clip oversized
+5.3.1), without Browse's half-width extension of its ends. Sliding up and left and Hide when
+printing print as [report sliding](report-sliding.md) describes, which also lists what of them is refused. The supported slice does not silently clip oversized
 objects or drop records returned incompletely by the provider.
 
-Append, target/container/variable/currently-open-PDF destinations, blank records,
+Target/container/variable/currently-open-PDF destinations, blank records,
 email attachment creation, encryption/restricted permissions, metadata,
 page ranges and page layouts and magnifications other than Default are
 explicitly refused. With Restore On, slots 0-7 accept only their decoded
-neutral numeric defaults. The other restored options:
+neutral numeric defaults. The other options:
+- **Append to existing PDF** (`kOption`) writes the existing file's pages
+  followed by the report's. With no file at the path it writes the report
+  alone [I: FileMaker's answer there is unmeasured]. With a file to append to,
+  the PDF worker accepts the bounded page-only format OpenMaker emits. Its
+  PDF 1.7 binary marker identifies a candidate for validation. The worker
+  verifies the terminal footer, the classic cross-reference table, and every
+  indexed object at its exact offset. It requires a minimal catalog and
+  trailer, a flat page tree with matching page parents and count, and each
+  page's own media box. Extra revisions, unindexed objects, metadata,
+  encryption, annotations, comments outside strings or streams, and other
+  syntax outside this format are refused with error 3 before saving.
+
+  The copy remaps indirect references and writes a new page tree and
+  cross-reference table. It copies other object bytes, including literal
+  strings, numbers and encoded streams, verbatim. References to missing
+  objects or to discarded structural objects fail the append, as do
+  indexed objects unreachable from the pages. The worker does not use a
+  repaired PDF to assemble the result. Reports saved with Page Only can
+  be appended repeatedly. The existing file is read up to 512 MiB and
+  both reports together can have at most 100,000 pages.
+
+  The staged result replaces the destination only after comparing the
+  destination with the bytes read. A changed file or a file that appeared
+  after an absent-path check results in error 800. OpenMaker serializes
+  appends within one process. A writer in another process can still race
+  the comparison, including the reread, through the rename. FileMaker's
+  own append was not compared.
 - **Initial view (slot 8)** is honored in the PDF's catalog (script-steps.md
   11.7, 12.5):
   - 0 Page Only writes no `/PageMode`, the PDF default;
@@ -737,8 +795,9 @@ is inferred from Browse; its printed output has not been compared.
 
 `cargo test -p om-gui --lib pdf_` exercises the real desktop runtime/host, generates
 found-set (three pages) and current-record (one page) output from synthetic data,
-keeps the selected record/index, and verifies cancellation plus unsupported
-append/security preserve existing output. The found set is deliberately shuffled;
+keeps the selected record/index, and verifies cancellation, an append
+without the PDF worker and unsupported security options preserve existing
+output (`tests/script_engine.rs` appends with the worker). The found set is deliberately shuffled;
 fields include a calculation using `Get ( RecordNumber )` and a formatted currency
 value. A second check refuses text overflow and a summary part. A small pagination
 unit check verifies repeated parts, whole-record transitions and oversize refusal.

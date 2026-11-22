@@ -64,6 +64,12 @@ pub enum QueryError {
     NoTable,
     /// A feature of an implemented instruction this engine does not support.
     Unimplemented(&'static str),
+    /// An index the program reads is missing, and the host cannot build it:
+    /// its text field's index language has no key form in OpenMaker
+    /// ([`Source::index_on_demand`]). FileMaker Server would build it;
+    /// error 3 ("command is unavailable") is OpenMaker's own answer, which
+    /// its client takes as a missing index.
+    UnkeyedIndex,
     /// The program goes past one of OpenMaker's limits on what a program
     /// may hold or do ([`program::limits`]).
     Limit(&'static str),
@@ -83,6 +89,7 @@ impl QueryError {
             QueryError::Missing(_) => 102,
             QueryError::NoTable => 106,
             QueryError::NoRecords => 401,
+            QueryError::UnkeyedIndex => 3,
             QueryError::Malformed(_)
             | QueryError::BadAccessKey
             | QueryError::Unsupported(..)
@@ -110,6 +117,9 @@ impl std::fmt::Display for QueryError {
             QueryError::Missing(what) => write!(f, "{what} does not exist"),
             QueryError::NoTable => f.write_str("instruction names no table"),
             QueryError::Unimplemented(what) => write!(f, "unsupported: {what}"),
+            QueryError::UnkeyedIndex => {
+                f.write_str("an index in a language this host does not key is missing")
+            }
             QueryError::Limit(what) => write!(f, "program goes past OpenMaker's limit on {what}"),
             QueryError::NoRecords => f.write_str("no records match"),
             QueryError::File(e) => write!(f, "reading the file: {e}"),

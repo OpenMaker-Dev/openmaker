@@ -218,6 +218,7 @@ comes only at the commit, it presumably sees nothing until then
   - **Unknown fields.** A field the provider can't know yet reads its stored value, never empty. With a related record to delete in the same commit, nothing is computed.
   - **Browse** still shows a stored calculation's stored value until the commit.
   - **Measured only for a script's Set Field** on a local file's own stored calculation. The user's typing, Browse and hosted files are unmeasured [I].
+  - **On OpenMaker Server** a script's new record is computed the same way, from New Record on and again after each change of a cell the rules compute from (`RecordPlan::computes_from`): its auto-entered values and stored calculations, validation left to the commit (`ServerHost::preview_new_record`, [#474](https://github.com/OpenMaker-Dev/openmaker/issues/474)). FileMaker Server's engine gave an auto-entered value right after New Record (script oracle s46). The preview is only what the script reads of its open record: the record holds just what the steps set, so a Set Field of the value it previews enters that value, and a duplicate, the transaction's other records and its unique values never see it. The commit computes the values again, with the clock and UUID the record was created with: a creation and a modification timestamp of a new record are its creation time [I]. What the commit stores can still differ from what was read where an input changed in between without a change of the record's own cells (a global, a related record). A value the preview cannot know yet (a formula it cannot answer, `Get ( RecordNumber )` until #456) reads empty, as before. An existing record's stored calculations still read their stored value until the commit there.
 
 ### A new record's preview
 
@@ -786,8 +787,26 @@ checked by the desktop at the commit (`om-provider` `related_lists.rs`).
 - **How:** the list is computed as a choice list computes it
   (`FileCalc::value_list_entries`, with the session's global values) for
   the record as the write leaves it. A changed value not among its values
-  is refused with 506. Text compares as English index keys, other types by
-  value, as for a list of one field's values.
+  is refused with 506. Text compares as the list's field keys it in its
+  value index, its index language's form, language 0 being that of the
+  file that owns the field's table (a related file's own, unknown when its
+  locale record does not decode). A text field indexed in a tailored
+  language refuses the check with 3 rather than compare in English, where
+  `Apfel` would be `Äpfel` ([#571](https://github.com/OpenMaker-Dev/openmaker/issues/571)).
+  A destination of another type compares by value, whatever its language. The
+  computed list keeps one of the values a calculation compares equal. For
+  a text destination, the index keys can distinguish values the list
+  groups together (case or accents in Unicode raw or standard, `v` and `w`
+  in a Swedish file). If a text value matches only by calculation equality,
+  the check returns 3 because deduplication may have dropped an exact match.
+  This comparison reads the candidate in the listed field's locale and
+  uses the list owner's collation. The check reparses each rendered list
+  item in the list owner's locale, which can misread a number retaining
+  its original spelling. For example, a US list can read a German `1,500`
+  as 1500 and return 3 for that candidate instead of 506
+  ([#634](https://github.com/OpenMaker-Dev/openmaker/issues/634)). A refusal
+  with 3 ends an import (scripting.md). A numeric destination's miss
+  returns 506 and skips the row, even if the stored text compares equal.
 - **An existing record** is among its own related records with its
   unsaved values, as F91 saw for a related list FileMaker Pro shows. That
   validation reads the same list is inferred.
@@ -1404,10 +1423,25 @@ than English ones a find in that language would miss (#159):
 - A commit that would change the field's text where the field has an index
   in the file is refused and changes nothing. That includes a new or
   deleted record with text there.
-- An index that op73 asks for, or that a find builds on demand, is not
-  stored while a record holds text in the field. op73 then leaves the field
-  without the index it had. A find reads the field's text in English for
-  itself, so the next find builds it again.
+- op73 builds no such index while a record holds text in the field, and
+  so leaves the field without the index it had.
+- A query that needs such an index the file does not hold, while a record
+  holds text in the field (a find, a join, a value list), is refused
+  rather than answered from English keys, which would give another found
+  set ([#572](https://github.com/OpenMaker-Dev/openmaker/issues/572)). It
+  builds nothing, and keeps none of the indexes it built of other fields
+  before the refusal: a later query builds them again. A client gets the
+  query's error, 3 (`om_query::QueryError::UnkeyedIndex`; FileMaker
+  Server builds every language's index, so its answer is unmeasured).
+  Only after that error
+  does OpenMaker's desktop client ask which of the indexes it read are
+  missing. If one is, it takes its own path for a missing index, as after
+  FileMaker Server's empty answer (query-program.md 7.1). For these
+  languages that path fails the find with 3
+  ([#46](https://github.com/OpenMaker-Dev/openmaker/issues/46)). A server
+  script's find, or a join of its Go to Related Record, gives 3. A blank
+  match value relates nothing without reading the index. A field that
+  holds no text has no keys to differ, and is answered.
 
 OpenMaker's record rules refuse such a write first (error 3, naming the
 field and the language). They do so for a stored text field defined with
@@ -1464,6 +1498,24 @@ bytes as the index holds it (7.1), so a long value is checked against the
 values that share its first 109 weights, or code units in Unicode raw ([#177](https://github.com/OpenMaker-Dev/openmaker/issues/177)).
 Raw keys keep case, so `A` and `a` are two values there; FileMaker documents
 its Unicode index as case-sensitive, which was not measured.
+A value list of a field's values is checked in its source field's value
+index the same way: a text source field in a tailored language refuses
+the check with 3, on the client and on OpenMaker Server, rather than
+keying the value in English, which could both miss the host's key and
+match another value ([#571](https://github.com/OpenMaker-Dev/openmaker/issues/571)).
+A number, date, time or timestamp source uses its type's index keys,
+with dates read in the file's order (query-program.md 7.3). For example,
+`5.0` matches a listed `5`
+([#591](https://github.com/OpenMaker-Dev/openmaker/issues/591)). Number
+sources in files with a decimal separator other than a point are still
+looked up as text until #415. This avoids false matches against an index
+built by OpenMaker Server, whose number parser keys a German `1.000` as 1.
+A value for which OpenMaker cannot build a typed key also falls back to
+text. On the desktop, a date or timestamp source with an unreadable
+locale record returns 3 because the date order is unknown. A new record's
+refusal before its commit (unique, existing value, value list) is the
+write's, with its code: the record id it reserved stays unused, as
+FileMaker's reserved ids can (write-path.md 2).
 A definition marked indexed does not prove that the host has built the
 index (schema-path.md 6). Unique, Existing and
 field-backed value-list validation therefore read the value-index counts
@@ -1497,12 +1549,16 @@ limited to stored text keyed in its value form
 (`om_data::rules::value_text_keys`): English (21, 77), System (1), Unicode
 standard (3), Unicode raw (2), a language FileMaker leaves untailored, or
 language 0 resolved as above. A field-backed value list is checked in its
-source's value form too; with the host's index, a source in a tailored
-language is still looked up in English ([#571](https://github.com/OpenMaker-Dev/openmaker/issues/571)). Typed,
-tailored-language, global, summary or
-unstored sources are explicitly unsupported without an index; file date
-formats are consequently not interpreted by this fallback. A stored
-text source that prohibits index creation can be scanned on each
+source's value form too; a text source in a tailored language refuses the
+check with 3, with the host's index or without (above,
+[#571](https://github.com/OpenMaker-Dev/openmaker/issues/571)). A stored
+number, date, time or timestamp source is scanned in its type's keys,
+with dates read in the file's order. Text fallback compares whole stored
+repetitions and skips absent cells. A source with more than 255
+repetitions is refused because a later repetition would read another
+field's cell. Tailored-language text, global, summary and unstored
+sources are unsupported without an index. A stored text source that
+prohibits index creation can be scanned on each
 check. Field-backed lists still require a local source without a related
 filter or second display field; CreateValueListEx is a separate path.
 
@@ -1700,24 +1756,40 @@ application creation plan.
       gives, or computed fields whose evaluation has passed without being
       deferred or omitted. C126 measured a computed non-empty key with no
       other row.
-  - **One older matching row (C126 follow-up).** A new row's aggregate
-    auto-entry can read that older row through an unsorted equality join
-    with an auto-entered key. Both sides' keys must be final, the commit
-    must hold no other row of the table, and exactly one older row must
-    match. Reads by position and first-field reads gain no new allowance.
-    The native witness stores Count 1 and the older row's value; this
-    observes the last stored evaluation, not persistent self-exclusion.
-    Applying it to analogous keys/aggregates is inference.
+  - **Older matching rows (C126 follow-up, s47).** A new row's auto-entry
+    reads the rows committed before it with its key through an unsorted
+    equality join, never itself: aggregates and the first related record
+    read them in creation order. FileMaker Pro's local witness read one
+    older row (computed key, an aggregate); FileMaker Server's engine read
+    zero to three older rows of records a script made (given keys, an
+    auto-entry that replaces an existing value; auto-entry.md, "A new
+    record's own self-join"). Both sides' keys must be final and the
+    commit must hold no other row of the table: a desktop commit's held
+    records, or, on OpenMaker Server, the other records of a script's
+    transaction. The s47 allowance requires an auto-entry that replaces
+    an existing value. A calculation that keeps a value from creation
+    retains the earlier C126 allowance for one older match with a computed
+    key and an aggregate. A join on several equal predicates is read the
+    same way, an inference. Reads by position (`Last`, `GetNthRecord`) are
+    outside these allowances.
   - **A match field on the record's side left empty** relates nothing, the
     record included, since an empty match value never matches
     (file-metadata.md 4.3). This holds also where the write computes that
     key: its value is final by then. A reader of a key left out is left out
     too, and one read with other keys is not answered. Only a field the
     record's row holds counts, not a global or an unstored calculation.
-  - **What is unmeasured:** more than one matching record, later
-    reevaluations, another held row, sorted/non-equality matching joins,
-    and the original solution's context. Stored/validation formulas and
-    edited records have no new measured allowance.
+  - **Measured, not answered yet:** an edited record reads itself, with
+    the values being written, where its committed key matches the key being
+    written, and not otherwise; a second new row of one transaction does
+    not read the first (s47). OpenMaker refuses membership-dependent
+    reads for edited records with 3. For a new row with another pending
+    change in its table, the server preview omits the result if it needs
+    the self-join, and the commit refuses that read with 3. An empty
+    match key is still answered as above.
+    [#297](https://github.com/OpenMaker-Dev/openmaker/issues/297)
+  - **What is unmeasured:** sorted or non-equality joins with matches,
+    stored and validation formulas, portal rows made in one commit, and
+    the original solution's context.
   - **Its stored row is never read as a related record.** Every write names
     its record (`rules::Written`): new, as reserved by New Record, or
     stored. The stored row holds the values the write replaces.

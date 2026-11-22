@@ -446,9 +446,7 @@ impl<'a> FileCalc<'a> {
         if sort[..=*deepest].contains(&UNRESOLVED_SORT_FIELD) {
             return Err(GroupError::RelatedSortKey);
         }
-        if self.variables.is_some()
-            && (sort[..=*deepest].iter()).any(|key| self.reads_variables(occurrence, *key))
-        {
+        if self.sort_may_read_variables(occurrence, &sort[..=*deepest]) {
             return Err(GroupError::VariableKey);
         }
         self.source.prefetch_records(table.id, &records);
@@ -642,6 +640,13 @@ impl<'a> FileCalc<'a> {
         )
     }
 
+    fn sort_may_read_variables(&self, occurrence: u64, keys: &[u64]) -> bool {
+        self.variables.is_some()
+            && keys
+                .iter()
+                .any(|key| self.reads_variables(occurrence, *key))
+    }
+
     /// Each record's group by `field` when the found set of `occurrence`
     /// (or `related_from`'s related set) is sorted by it: a new group at
     /// each change of a sort field up to `field`, and whether a key read as
@@ -663,6 +668,11 @@ impl<'a> FileCalc<'a> {
         let keys = &sort[..=depth];
         if keys.contains(&UNRESOLVED_SORT_FIELD) {
             return Ok(None);
+        }
+        // GetSummary can reach this path without a layout sub-summary
+        // part. Its break prefix must agree with the sort that ran.
+        if self.sort_may_read_variables(occurrence, keys) {
+            return Err(CalcError::from_code(3).expect("nonzero"));
         }
         let cx = self.table_cx(occurrence);
         let mut groups = Vec::with_capacity(records.len());

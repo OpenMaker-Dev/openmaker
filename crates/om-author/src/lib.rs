@@ -10,10 +10,11 @@
 //! [`Service`]. Each command is described once in [`catalog`]: its id, CLI
 //! name, MCP tool, parameters, effect and what it needs from the host.
 //!
-//! Writes go through OpenMaker Server's authoring extension
+//! OpenMaker Server writes go through its authoring extension
 //! (`om_protocol::authoring`), which checks the account, the locks and
 //! the revision and saves the `.fmp12` file before it answers.
-//! Hosts that are not OpenMaker Server are read only. Running a script is
+//! FileMaker Server 26 accepts native saves of existing script steps.
+//! Running a script is
 //! Perform Script on Server, which the host runs as the configured
 //! account.
 

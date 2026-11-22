@@ -85,15 +85,26 @@ fn cli_and_mcp_resolve_user_config_and_send_the_selected_license() {
         " synthetic-license-from-file \r\n",
     )
     .unwrap();
+    let mut profile = json!({
+        "host": "127.0.0.1", "port": host.port, "file": FILE, "account": ACCOUNT,
+        "password_file": "password", "ca_cert": "ca.pem", "license_file": "license",
+    });
+    std::fs::write(&config, profile.to_string()).unwrap();
+
+    let legacy = Secrets::new("legacy-license-file", &host);
+    let license_path = legacy.dir.join("license");
     std::fs::write(
-        &config,
-        json!({
-            "host": "127.0.0.1", "port": host.port, "file": FILE, "account": ACCOUNT,
-            "password_file": "password", "ca_cert": "ca.pem", "license_file": "license",
-        })
-        .to_string(),
+        &license_path,
+        " synthetic-license-from-env-file \r\nignored\n",
     )
     .unwrap();
+    let output = om_author(&host, &legacy)
+        .env("OPENMAKER_LICENSE_FILE", &license_path)
+        .arg("capabilities")
+        .output()
+        .unwrap();
+    assert!(output.status.success(), "{output:?}");
+    ok(serde_json::from_slice(&output.stdout).unwrap());
 
     let output = scratch
         .command()
@@ -108,6 +119,7 @@ fn cli_and_mcp_resolve_user_config_and_send_the_selected_license() {
 
     let env_override = scratch
         .command()
+        .env("OPENMAKER_LICENSE_FILE", &license_path)
         .env("OPENMAKER_LICENSE_KEY", "synthetic-license-from-env")
         .arg("capabilities")
         .output()
@@ -134,6 +146,10 @@ fn cli_and_mcp_resolve_user_config_and_send_the_selected_license() {
         .env(
             "OPENMAKER_LICENSE_KEY",
             "synthetic-license-for-another-file",
+        )
+        .env(
+            "OPENMAKER_LICENSE_FILE",
+            scratch.dir.join("missing-license"),
         );
     let mut mcp = Mcp::from_command(command);
     let call = mcp.request(
@@ -145,6 +161,23 @@ fn cli_and_mcp_resolve_user_config_and_send_the_selected_license() {
     );
     ok(tool_result(&call));
     drop(mcp);
+
+    // A profile without a saved license must still ignore a license file
+    // inherited from a different endpoint.
+    profile.as_object_mut().unwrap().remove("license_file");
+    let unlicensed_profile = directory.join("unlicensed.json");
+    std::fs::write(&unlicensed_profile, profile.to_string()).unwrap();
+    let unlicensed = scratch
+        .command()
+        .arg("--config")
+        .arg(&unlicensed_profile)
+        .env("OPENMAKER_PORT", "1")
+        .env("OPENMAKER_LICENSE_FILE", &license_path)
+        .arg("capabilities")
+        .output()
+        .unwrap();
+    assert!(unlicensed.status.success(), "{unlicensed:?}");
+    ok(serde_json::from_slice(&unlicensed.stdout).unwrap());
 
     let override_host = scratch
         .command()
@@ -168,9 +201,11 @@ fn cli_and_mcp_resolve_user_config_and_send_the_selected_license() {
 
     host.stop();
     for (index, expected) in [
+        "synthetic-license-from-env-file",
         "synthetic-license-from-file",
         "synthetic-license-from-env",
         "synthetic-license-from-file",
+        "",
     ]
     .into_iter()
     .enumerate()
@@ -484,6 +519,7 @@ fn mcp_2026_07_28_discovers_lists_and_applies_through_the_same_service() {
             "openmaker_plan_field_placement",
             "openmaker_place_field",
             "openmaker_set_object_frames",
+            "openmaker_arrange_objects",
             "openmaker_delete_objects",
             "openmaker_place_text",
             "openmaker_place_portal",
