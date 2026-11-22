@@ -16,13 +16,46 @@ index and physical top edge. The PDF backend consumes those placements, not a
 screen image. [Preview](preview.md) consumes the same selected-page scene, including object
 stacking, field bindings and measured text lines. Calculated Get(PageNumber) uses
 the physical page context, and a text object's or button's `{{PageNumber}}`
-(in its label, or in each of a merge text's literal runs, any case) prints
-page *n*'s number on page *n*, as FileMaker Pro 26.0.3's Save Records as PDF
-wrote it ([calc functions](re/calc-functions.md), O4). A symbol is read within
-one literal run, never across a merged field, and a `{{` with no closing
-`}}` prints as it is, as Browse reads them. Other layout symbols remain
-refused; `{{PageCount}}` among them, as FileMaker Pro left `Get ( PageCount )`
-empty in every mode it was measured in.
+(in its label, or in each of a merge text's literal runs, in any case or as
+`{{1015}}`) prints page *n*'s number on page *n*, as FileMaker Pro 26.0.3's
+Save Records as PDF wrote it ([calc functions](re/calc-functions.md), O4).
+
+The other symbols Browse shows, `{{RecordNumber}}`, `{{CurrentDate}}`,
+`{{CurrentTime}}` and `{{UserName}}` (by name or by their selectors' numbers,
+[calc values](re/calc-values.md), layout calculations), print as Browse shows
+them (`om_data::host::layout::merge_text`): each the value of its `Get`
+function, evaluated on the record the part prints, as a calculation field there
+would be. So do merge variables (`<<$$name>>`, `<<$name>>`, with an optional
+`[n]`) in Preview, with the window's variables. Save Records as PDF and Print
+refuse a merge variable with 3: they evaluate on the script worker, which does
+not read the running script's variables, so it would print empty
+([#596](https://github.com/OpenMaker-Dev/openmaker/issues/596)). `{{RecordNumber}}` is the record's position in the found set, or the
+row's number in a portal row. In a header, footer, title or summary part the
+record is the one the part's fields read ([report sections](report-sections.md):
+a header the page's first, a footer its last), so the symbol prints what a
+`Get ( RecordNumber )` calculation field there prints [I: FileMaker Pro's report
+output for these symbols is unmeasured; Claris documents only that they show
+their values in Preview and in print]. They print in the file's default format.
+
+A symbol is read within one literal run, never across a merged field, never
+inside a merge variable, and a `{{` with no closing `}}` prints as it is, as
+Browse reads them. Refused with 3:
+
+- `{{PageCount}}`, as FileMaker Pro left `Get ( PageCount )` empty in every
+  mode it was measured in, and any other symbol Browse keeps as written:
+  FileMaker shows another `Get` function's result for one (Claris, "Inserting
+  the date, page number, or other variable").
+- A `<<$...>>` Browse shows as written because it is no variable reference
+  OpenMaker reads, such as a name with a space, which Set Variable accepts
+  ([script runtime](re/script-runtime.md) 13.6).
+- A merge variable, or a symbol other than `{{PageNumber}}`, in an object whose
+  data format presents numbers, dates or times (other than General or as
+  entered): FileMaker formats an object's merge fields with it
+  ([data formats](re/data-format.md)), but whether it formats variables and
+  symbols is unmeasured, and Browse does not.
+- A symbol or variable whose evaluation fails, waits for data that cannot be
+  read, or gives `?`: the report is refused, as for a field, where Browse
+  shows `?`.
 
 ## Supported layout and output contract
 
@@ -63,7 +96,8 @@ empty in every mode it was measured in.
   fields, rectangles, straight lines, plain ovals,
   [static layout pictures](#static-layout-pictures), and
   [buttons, their icons, and groups](#buttons-and-groups). Geometry is in layout points.
-  Solid colors/borders, font size, regular/bold face, horizontal/vertical alignment,
+  Solid colors/borders, font size, regular, bold and italic faces (italic in
+  Arial and Helvetica only), horizontal/vertical alignment,
   padding and measured line wrapping are supported. Header/footer/body backgrounds
   use the layout style cascade. A body prints in its own style on every record:
   where a body keeps "Use alternate row state" is not decoded (layout-model.md
@@ -105,12 +139,25 @@ the portals [Portals](#portals) lists, dynamic pictures, the button icons
 [Buttons and groups](#buttons-and-groups) lists, option controls and repeating fields, rotated objects, the rounded frames
 [Rounded frames](#rounded-frames) lists,
 hide/label calculations, the conditional formatting
-[Conditional formatting](#conditional-formatting) lists, layout merge symbols other than
-`{{PageNumber}}`, mixed rich text, italic/decorated text,
+[Conditional formatting](#conditional-formatting) lists, the layout symbols and merge
+variables listed above, mixed rich text other than runs that differ only in color,
+decorated text, italic text in a family other than Arial or Helvetica,
 colors outside 0-1, unsupported glyphs/shaping, text overflow in anything but a
 field that does not slide ([field text](#field-text)), and object/page overflow. Ordinary
 flat character and paragraph styles, including uniform paragraph leading, can
-be used. Common object flags other than the anchor, plain-text/tooltip,
+be used. A text object's or button's character runs that differ in nothing but
+their color print each in its own: a run's color, else the object's text color,
+else black, as Browse colors them. Stored runs compare every byte but the color's
+(layout-model.md 8.1), so an explicit size 0 differs from an unset size. A line
+keeps its wrapping, positions and baseline, and changes color where its runs do.
+A conditional format's color replaces every run's, as in Browse. Refused with 3,
+rather than colored at the wrong characters
+([#106](https://github.com/OpenMaker-Dev/openmaker/issues/106)):
+runs that are not their text's partition in order on character boundaries (the
+layout decoder always gives one), a field's layout runs (its record value
+carries its own styles), and a merged or calculated value, a `{{PageNumber}}` or
+a case transform in several colors. Runs in several fonts, sizes or faces, and
+several paragraph styles, are refused. Common object flags other than the anchor, plain-text/tooltip,
 tab-order (`kTabOrderOmit`, which nothing printed shows) and slide-up bits,
 and on a line its start corner, refuse output. A line runs
 between the corners its start bits name, as Browse draws it (layout-model.md
@@ -304,8 +351,8 @@ now wraps inside the narrower text box and is cut, as Pro's would be.
 Reports set text in one of two bundled font families and embed the whole font
 file in the PDF:
 - Text whose style's first font family is Arial or Helvetica prints in
-  **Liberation Sans 2.1.5**, Regular or Bold. It is designed to be
-  metric-compatible with Arial. The 39 character widths in Pro's embedded ArialMT
+  **Liberation Sans 2.1.5**, Regular, Bold, Italic or Bold Italic. It is
+  designed to be metric-compatible with Arial. The 39 character widths in Pro's embedded ArialMT
   (Task Details, [#201](https://github.com/OpenMaker-Dev/openmaker/issues/201)) match Liberation Sans to within 1/1000 em. One wrap point
   was compared: Task List's long task name breaks after "…review for" in both.
   That other lines wrap and cut where Pro's do is inferred from those
@@ -314,8 +361,22 @@ file in the PDF:
 - All other text, including text with no stored family (24 starter objects),
   prints in **Inter**, Regular or SemiBold, as before.
 
-Bold is weight 2, or 600 and up. Italic text still refuses (error 3): neither
-family's italic faces are bundled, and no starter text is italic. Liberation
+Bold is weight 2, or 600 and up. Italic is a font-style of italic or oblique
+(property 67, 2 or 3), or a character run's italic face (`0x0200` under mask
+`0x0020`, layout-model.md 8.1), which a run can also turn off. A run's own
+font, as Browse reads it, chooses the family. Italic Arial or
+Helvetica text prints in Liberation Sans Italic or Bold Italic, metric-compatible
+with Arial Italic and Arial Bold Italic, and the PDF's font descriptor carries
+its italic flag and -12 degree angle. That FileMaker Pro prints these faces
+with Arial Italic's widths is inferred from Arial's; no FileMaker PDF with
+italic text has been compared, and no starter text is italic. Italic text in
+any other family still refuses (error 3): no italic Inter is bundled, and
+printing it upright would misrepresent the layout. A line whose glyph
+outlines reach past its text box's sides, as an italic overhang can though
+the advances fit, is cut at those sides (for a label, its frame less the
+1-point inset), as Pro clips text to its box (layout-model.md 6.5); only a
+line that overflows the box is also cut at its top and bottom, so an accent
+above the box is not cut for a bearing at its side. Liberation
 Sans stands in for Helvetica as well, though Helvetica's widths differ from
 Arial's; that is inferred adequate, not measured. Browse is unchanged: it uses
 the system Arial where macOS ships it and Inter elsewhere. Preview draws the
@@ -600,7 +661,8 @@ Refused (error 3, before any output file or print job):
   picture or group);
 - on an object set to slide up: pages are planned without conditions;
 - a condition whose style sets corner radii;
-- what a condition makes unsupported elsewhere, such as italic text.
+- what a condition makes unsupported elsewhere, such as italic text in a
+  family other than Arial or Helvetica.
 
 That FileMaker Pro prints conditional formatting this way is inferred from
 the model and Browse; its printed output has not been compared.

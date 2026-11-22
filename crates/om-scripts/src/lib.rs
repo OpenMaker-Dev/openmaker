@@ -17,6 +17,7 @@ mod flow;
 mod key;
 mod params;
 pub mod paths;
+pub mod relookup;
 pub mod revert_record;
 pub mod runtime;
 pub mod save_records;

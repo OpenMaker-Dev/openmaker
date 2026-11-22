@@ -7,10 +7,11 @@
 //!   definition, whose first byte 1 takes the values from a field (its
 //!   occurrence and field follow as a field spec, 6.2). A field's values are
 //!   its value index's distinct values in index order, which CreateValueListEx
-//!   lists (query-program.md 8.7). "Also display values from a second
-//!   field", "sort by the second field" and "include only related values"
-//!   are not applied (the first field's values, all records, index order);
-//!   external and calculated lists are error 3.
+//!   lists (query-program.md 8.7). A list sorted by its second field
+//!   orders the first field's values by the second's, read from every
+//!   record; a second field only shown beside the first leaves the order.
+//!   Lists of related values only, whose second field is in another table,
+//!   from another file or from a calculation are error 3.
 //! - Insert from Index lists the field's value index the same way.
 //! - Set Next Serial Value is op72 with `kReplace` (write-path.md 3.2): the
 //!   host stores the text as the field's next serial value.
@@ -163,6 +164,33 @@ struct Keying {
 }
 
 impl Keying {
+    /// The key `value` ranks by as a list's second field (file-metadata.md
+    /// 6.4), as the field's value index holds it: text in the field's form,
+    /// a typed value as `typed_value_keys` keys it (empty `01`, no digit
+    /// `fe ff`, a timestamp stored as a date alone by its date's midnight).
+    /// Error 3 when the index holds the value under no key.
+    fn rank_key(&self, value: &str) -> Result<Vec<u8>, DataError> {
+        if self.data_type == DataType::Text {
+            return Ok(self
+                .whole_key(value)?
+                .unwrap_or_else(|| EMPTY_TEXT_KEY.to_vec()));
+        }
+        let order = match self.data_type {
+            DataType::Date | DataType::Timestamp => self
+                .order
+                .ok_or_else(|| unsupported("The file's date order could not be read."))?,
+            _ => DateOrder::MonthDayYear,
+        };
+        om_query::keys::typed_value_keys(self.data_type, value, order)
+            .into_iter()
+            .next()
+            .ok_or_else(|| {
+                unsupported(
+                    "A stored value has no established native index key; the field's values cannot be listed from it.",
+                )
+            })
+    }
+
     /// [`native_key`] of `value`, or error 3 when the field's form cannot be
     /// keyed exactly.
     fn whole_key(&self, value: &str) -> Result<Option<Vec<u8>>, DataError> {
@@ -286,6 +314,81 @@ fn primary_field(definition: &[u8]) -> Option<(u64, u64)> {
     let occurrence = key_value(&mut rest)??;
     let field = key_value(&mut rest)??;
     Some((occurrence, field))
+}
+
+/// Value-list options (`DBValueList::Options`, file-metadata.md 6.2).
+const SHOW_RELATED_VALUES: u16 = 0x1;
+const SORT_BY_SECONDARY_FIELD: u16 = 0x2;
+
+/// A field value list's options, its first field's repetition and its
+/// second field ("also display values from second field": occurrence,
+/// field and repetition, `None` when the definition names none, `0:0`),
+/// from the definition's `u16` options and its two field specs (occurrence
+/// key, field key, u16 repetition each; a repetition of 0 is the first).
+struct ListOptions {
+    options: u16,
+    repetition: u16,
+    second: Option<(u64, u64, u16)>,
+}
+
+fn list_options(definition: &[u8]) -> Option<ListOptions> {
+    let u16_at = |rest: &mut &[u8]| -> Option<u16> {
+        let value = u16::from_be_bytes(rest.get(..2)?.try_into().ok()?);
+        *rest = &rest[2..];
+        Some(value.max(1))
+    };
+    let options = u16::from_be_bytes(definition.get(1..3)?.try_into().ok()?);
+    let mut rest = definition.get(3..)?;
+    key_value(&mut rest)?;
+    key_value(&mut rest)?;
+    let repetition = u16_at(&mut rest)?;
+    let occurrence = key_value(&mut rest)?.filter(|id| *id != 0);
+    let field = key_value(&mut rest)?.filter(|id| *id != 0);
+    let second_repetition = u16_at(&mut rest)?;
+    Some(ListOptions {
+        options,
+        repetition,
+        second: occurrence
+            .zip(field)
+            .map(|(occurrence, field)| (occurrence, field, second_repetition)),
+    })
+}
+
+/// Whether the provider can read `field`'s values from its stored records:
+/// a stored field or calculation, not a global, an unstored calculation, a
+/// summary, a container or an unknown type.
+fn scannable(field: &om_hbam::Field, options: &om_hbam::FieldOptions) -> Result<(), DataError> {
+    if !matches!(
+        field.kind,
+        om_hbam::FieldKind::Normal | om_hbam::FieldKind::Calculation
+    ) || options.options & 0x70000 != 0
+        || matches!(field.data_type, DataType::Container | DataType::Unknown(_))
+    {
+        return Err(unsupported(
+            "This field has no stored native values that can be listed without its index.",
+        ));
+    }
+    Ok(())
+}
+
+/// One repetition's stored text of `field` in `row` (repetition 1 the
+/// field's own cell); empty when the record stores none, an error when the
+/// stored cell is not readable text.
+fn repetition_text(
+    row: &om_hbam::record::Record,
+    field: u64,
+    repetition: u16,
+) -> Result<String, DataError> {
+    let Some(cell) = om_data::rules::cell_of(field, u32::from(repetition)) else {
+        return Ok(String::new());
+    };
+    match row.cells.get(&cell) {
+        None => Ok(String::new()),
+        Some(value) => value
+            .text()
+            .ok_or_else(|| unsupported("a stored cell is not readable text."))?
+            .map_err(|e| failure("decode a value list's stored value", e)),
+    }
 }
 
 impl NativeProvider {
@@ -571,7 +674,26 @@ impl NativeProvider {
         strict: bool,
     ) -> Result<Keying, DataError> {
         let language = options.index_language();
-        let text = TextKeys::of_language(language);
+        // Language 0 is the file's own, as the host writes it
+        // (`om_data::rules::written_text_keys`, query-program.md 7.2); a
+        // language whose form OpenMaker does not build has none, and so has
+        // language 0 when the file's locale cannot be read.
+        let text = if field.data_type == DataType::Text {
+            // Only language 0 reads the file's locale: the other forms
+            // need none, so an unreadable locale does not refuse them.
+            let file = if language == 0 {
+                match self.file_locale_language() {
+                    Ok(file) => Some(file),
+                    Err(error) if strict => return Err(error),
+                    Err(_) => None,
+                }
+            } else {
+                Some(language)
+            };
+            file.and_then(|file| om_data::rules::written_text_keys(language, file))
+        } else {
+            TextKeys::of_language(language)
+        };
         if strict && field.data_type == DataType::Text && text.is_none() {
             return Err(unsupported(format!(
                 "Field {:?} has no index, and its index language ({language}) has no established native keys.",
@@ -594,6 +716,25 @@ impl NativeProvider {
             text,
             order,
         })
+    }
+
+    /// The file's own language from its stored locale (`[02, 0d]`,
+    /// file-metadata.md 2), which index language 0 keys text in. Error 3
+    /// when the file holds a locale that cannot be read, rather than
+    /// English, which would key a German file's `a` and `ä` alike. A file
+    /// with no locale record at all (none FileMaker writes) reads as the
+    /// schema's default.
+    fn file_locale_language(&mut self) -> Result<u32, DataError> {
+        let unreadable = || unsupported("The file's language could not be read.");
+        let Some(data) = download_node(self.session_mut()?, vec![vec![2]])? else {
+            return self.file_language()?.ok_or_else(unreadable);
+        };
+        let tree = download_tree(std::slice::from_ref(&data))?;
+        if tree.at(&[2, 13]).is_none() {
+            return self.file_language()?.ok_or_else(unreadable);
+        }
+        let locale = om_data::meta::locale(&tree).ok_or_else(unreadable)?;
+        Ok(u32::from(locale.language.id()))
     }
 
     /// The file's date order, read explicitly from its locale `[02, 0d]`:
@@ -627,16 +768,7 @@ impl NativeProvider {
         let options = field
             .decoded_options()
             .ok_or_else(|| unsupported("The field's index metadata could not be read."))?;
-        if !matches!(
-            field.kind,
-            om_hbam::FieldKind::Normal | om_hbam::FieldKind::Calculation
-        ) || options.options & 0x70000 != 0
-            || matches!(field.data_type, DataType::Container | DataType::Unknown(_))
-        {
-            return Err(unsupported(
-                "This field has no stored native values that can be listed without its index.",
-            ));
-        }
+        scannable(field, &options)?;
         let keying = self.keying(field, &options, true)?;
         let session = self.session_mut()?;
         let ids = record_ids(session, table)?;
@@ -660,6 +792,91 @@ impl NativeProvider {
             }
         }
         Ok(values.finish())
+    }
+
+    /// The items of a list sorted by its second field (file-metadata.md 6.2,
+    /// `kSortBySecondaryField`; 6.4, observed with `ValueListItems`): one
+    /// first-field value per distinct second-field value, the first record
+    /// in source order winning, ordered by the second value's key (empty
+    /// values first), each first value kept where it first comes for the
+    /// sort's order. Each field's value is its spec's repetition. Read from
+    /// every record, as a list without an index is
+    /// (docs/value-lists-missing-index.md), within the same limits.
+    fn field_values_by_second(
+        &mut self,
+        table: u64,
+        (first, first_repetition): (u64, u16),
+        (second, second_repetition): (u64, u16),
+    ) -> Result<Vec<String>, DataError> {
+        let definition = self
+            .catalog
+            .table(table)
+            .ok_or_else(|| unsupported("The value list's table is missing."))?
+            .clone();
+        let field_of = |id: u64| -> Result<(om_hbam::Field, om_hbam::FieldOptions), DataError> {
+            let field = definition
+                .field(id)
+                .cloned()
+                .ok_or_else(|| unsupported("The value list's field is missing."))?;
+            let options = field
+                .decoded_options()
+                .ok_or_else(|| unsupported("The field's index metadata could not be read."))?;
+            scannable(&field, &options)?;
+            Ok((field, options))
+        };
+        let (first, first_options) = field_of(first)?;
+        let (second, second_options) = field_of(second)?;
+        let first_keying = self.keying(&first, &first_options, true)?;
+        let second_keying = self.keying(&second, &second_options, true)?;
+        let session = self.session_mut()?;
+        let ids = record_ids(session, table)?;
+        // Second key -> the first value of the first record holding it.
+        let mut items: BTreeMap<Vec<u8>, (Vec<u8>, String)> = BTreeMap::new();
+        let mut bytes = 0usize;
+        let mut batch = Vec::with_capacity(SCAN_BATCH);
+        let mut ids = ids.iter();
+        loop {
+            batch.clear();
+            batch.extend(ids.by_ref().take(SCAN_BATCH));
+            if batch.is_empty() {
+                break;
+            }
+            let data = download_records(session, table, &batch)?;
+            let tree = download_tree(std::slice::from_ref(&data))?;
+            // Records come in id order, the source order.
+            for row in om_hbam::record::records(&tree, table) {
+                // Keyed as stored: trimming would make values a raw index
+                // keeps apart (`A`, `A `) one.
+                let second_value = repetition_text(&row, second.id, second_repetition)?;
+                let second_key = second_keying.rank_key(&second_value)?;
+                if items.contains_key(&second_key) {
+                    continue;
+                }
+                let first_value = repetition_text(&row, first.id, first_repetition)?;
+                let Some(line) = first_value
+                    .split(['\r', '\n'])
+                    .find(|l| !l.trim().is_empty())
+                else {
+                    continue;
+                };
+                let Some(key) = first_keying.whole_key(line)? else {
+                    continue;
+                };
+                if items.len() == MAX_INDEX_VALUES as usize {
+                    return Err(too_many_values());
+                }
+                bytes += second_key.len() + key.len() + line.len();
+                if bytes > VALUE_BYTES {
+                    return Err(unsupported(
+                        "Listing the field's values exceeded the retained-value byte budget.",
+                    ));
+                }
+                items.insert(second_key, (key, line.to_owned()));
+            }
+        }
+        // One item per distinct second value, a first value repeating when
+        // two second values' first records share it (6.4).
+        Ok(items.into_values().map(|(_, value)| value).collect())
     }
 
     /// Value list `id`'s items; refused with 9 when the account's custom set
@@ -700,12 +917,41 @@ impl NativeProvider {
                     .collect())
             }
             Some(1) => {
-                let (occurrence, field) = definition
-                    .as_deref()
-                    .and_then(primary_field)
-                    .ok_or_else(|| DataError::new("A value list's field could not be read."))?;
+                let definition = definition.unwrap_or_default();
+                let unreadable = || DataError::new("A value list's field could not be read.");
+                let (occurrence, field) = primary_field(&definition).ok_or_else(unreadable)?;
+                let ListOptions {
+                    options,
+                    repetition,
+                    second,
+                } = list_options(&definition).ok_or_else(unreadable)?;
+                // Related values depend on a record to start from, which a
+                // sort by the list has none of.
+                if options & SHOW_RELATED_VALUES != 0 {
+                    return Err(unsupported(
+                        "A value list of related values only cannot be listed here.",
+                    ));
+                }
                 let table = self.occurrence_table(occurrence)?;
-                self.field_values(table, field)
+                match second {
+                    Some((second_occurrence, second, second_repetition))
+                        if options & SORT_BY_SECONDARY_FIELD != 0 =>
+                    {
+                        if self.occurrence_table(second_occurrence)? != table {
+                            return Err(unsupported(
+                                "A value list whose second field is in another table cannot be listed here.",
+                            ));
+                        }
+                        self.field_values_by_second(
+                            table,
+                            (field, repetition),
+                            (second, second_repetition),
+                        )
+                    }
+                    // A second field shown beside the first does not change
+                    // the order of the first field's values.
+                    _ => self.field_values(table, field),
+                }
             }
             Some(kind) => Err(unsupported(format!(
                 "Value lists of type {kind} (another file's or calculated) are not supported."
