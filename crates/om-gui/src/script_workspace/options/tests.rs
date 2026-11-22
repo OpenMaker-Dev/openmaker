@@ -1387,6 +1387,7 @@ fn the_starter_files_steps_are_all_editable_and_kept_byte_for_byte() {
 fn account_options_show_any_nonzero_value_as_on() {
     let mut step = ScriptStep::new(137);
     step.value = 4;
+    step.set_flag(flag::OPTION, true);
     let mut options = StepOptions::new(step.clone(), None);
     match edit(&mut options, "Activate/Deactivate") {
         Edit::Choice { value, .. } => assert_eq!(*value, Some(1)),
@@ -1396,5 +1397,7 @@ fn account_options_show_any_nonzero_value_as_on() {
     if let Edit::Choice { value, .. } = edit(&mut options, "Activate/Deactivate") {
         *value = Some(0);
     }
-    assert_eq!(ok(&options).value, 0);
+    let activated = ok(&options);
+    assert_eq!(activated.value, 0);
+    assert_eq!(activated.flags, step.flags | flag::MENU_SELECTION);
 }

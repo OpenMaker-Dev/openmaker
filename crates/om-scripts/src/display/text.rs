@@ -798,8 +798,9 @@ pub enum Origin {
     /// `Stored …` option is taken only where it leaves every file-local id
     /// (fields, table occurrences, layouts, scripts, custom functions, sort
     /// and find specs, file references, import and export orders) as the
-    /// open file's names give them; otherwise the step fails whole. Stored
-    /// reference bytes no flag makes a reference are dropped.
+    /// open file's names give them; otherwise the step fails whole. This
+    /// includes Add Account's flagless privilege-set key. Unused inline
+    /// reference bytes are dropped.
     Unknown,
 }
 

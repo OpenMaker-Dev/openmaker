@@ -1013,24 +1013,15 @@ impl StepReader<'_> {
         Ok(())
     }
 
-    /// Add Account's "Expire password", Reset Account Password's and
-    /// Enable Account's choice: shown from the step value, whose stored
-    /// number for the other choice (1, 2 or 4) the XML does not tell.
+    /// The account steps' Booleans give the logical choice. The XML does
+    /// not carry the original nonzero step value (local-files.md 2.4).
     fn account_choice(&mut self, b: &Element) -> Read<()> {
         b.known(&["type", "value", "name"])?;
         b.no_children()?;
         let set = truth(b)?;
-        // Enable Account shows Activate (True) for step value 0. The other
-        // choice is any nonzero value (local-files.md 2.4); 1 is written,
-        // with `kMenuSelection` as the catalog's `value` storage writes it.
+        // Enable Account shows Activate (True) for step value 0.
         let stored = if self.id() == 137 { !set } else { set };
-        if stored {
-            self.step.value = 1;
-            self.step.flags |= flag::MENU_SELECTION;
-        }
-        // The XML gave the step's choice, off (0) as much as on: a
-        // `kMenuSelection` in `<Options>` with value 0 is not a missing one.
-        self.chosen = true;
+        self.choice(u16::from(stored));
         Ok(())
     }
 

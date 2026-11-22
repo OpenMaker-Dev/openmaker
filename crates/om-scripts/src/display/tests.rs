@@ -1303,9 +1303,16 @@ fn account_step_options_are_the_step_value() {
         let step = pasted(line);
         assert_eq!(step.value, value, "{line}");
         assert!(!step.has_flag(flag::OPTION), "{line}");
+        assert_eq!(step.has_flag(flag::MENU_SELECTION), value != 0, "{line}");
         assert_eq!(shown(&step), line);
     }
     let xml = r#"<fmxmlsnippet type="FMObjectList"><Step id="137" name="Enable Account"><Options>16384</Options><ParameterValues><Parameter type="AccountName"><Calculation position="0"><Calculation><Text><![CDATA["u"]]></Text></Calculation></Calculation></Parameter><Parameter type="Boolean"><Boolean type="EnableAccountBoolean" value="False" name="Activate"></Boolean></Parameter></ParameterValues></Step></fmxmlsnippet>"#;
+    let without_options = pasted(&xml.replace("<Options>16384</Options>", ""));
+    assert_eq!(without_options.value, 1);
+    assert_eq!(
+        without_options.flags,
+        flag::CALCULATION | flag::MENU_SELECTION
+    );
     let pasted = parse_steps(xml, &Contacts::new(), Origin::Unknown).unwrap();
     let [Pasted::Step(step)] = &pasted[..] else {
         panic!("{pasted:?}");
@@ -1339,12 +1346,16 @@ fn account_step_options_are_the_step_value() {
 fn add_accounts_stored_privilege_set_is_kept_or_refused() {
     let mut step = pasted("Add Account [ Account Name: \"u\" ; Password: \"p\" ]");
     step.reserved[..3].copy_from_slice(&[2, 1, 2]);
+    step.set_flag(flag::OPTION, true);
+    assert!(!shown(&step).contains("Expire password"));
+    step.value = 4;
+    assert!(shown(&step).contains("Expire password"));
     let text = step_text(&step, &Contacts::new());
     let here = parse_steps(&text, &Contacts::new(), Origin::ThisFile).unwrap();
-    assert!(
-        matches!(&here[..], [Pasted::Step(back)] if back.reserved == step.reserved),
-        "{text}: {here:?}"
-    );
+    let [Pasted::Step(back)] = &here[..] else {
+        panic!("{text}: {here:?}");
+    };
+    assert_eq!(canonical(back), canonical(&step), "{text}");
     let elsewhere = parse_steps(&text, &Contacts::new(), Origin::Unknown).unwrap();
     assert!(
         matches!(&elsewhere[..], [Pasted::Failed { reason, .. }] if reason.contains("privilege set")),

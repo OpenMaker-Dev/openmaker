@@ -1525,14 +1525,14 @@ fn account_steps_reset_passwords_and_enable_accounts() {
         step.set_calculation(1, Some(&calc(password)));
         step
     };
-    // Deactivate is the step's flag 0x100.
+    // Deactivate and Expire password use the step value (local-files.md 2.4).
     let enable = |name: &str, active: bool| {
         let mut step = named(137, name);
-        step.set_flag(0x100, !active);
+        step.value = u16::from(!active);
         step
     };
     let mut expired = reset("\"Clerk\"", "\"later\"");
-    expired.set_flag(0x100, true);
+    expired.value = 1;
     let scripts = [
         script(
             6,
