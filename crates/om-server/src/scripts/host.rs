@@ -1733,20 +1733,29 @@ impl ServerHost {
                 }
             }
         }
+        // Rule output supersedes staged input for the same cell, including
+        // an explicit clear of a value copied by Duplicate Record.
+        let effective_changes = || {
+            computed.iter().chain(
+                changes
+                    .iter()
+                    .filter(|(cell, _)| !computed.contains_key(*cell)),
+            )
+        };
         // A related-values list is computed for the written record only by
         // the desktop's provider (om-provider `related_lists.rs`): a value
         // the rules check against one refuses the write here (3).
-        for (cell, text) in computed.iter().chain(&changes) {
+        for (cell, text) in effective_changes() {
             if text.as_deref().is_some_and(|t| !t.is_empty())
                 && plan.related_value_list(*cell, entry).is_some()
             {
                 return Err(related_list_refused());
             }
         }
-        // An imported value is not Set Field's, which checks a value list of
-        // a field's values as it is entered: the import checks it here.
+        // Set Field checks field-backed lists at entry. An import checks
+        // them here, using both its mapped inputs and any rule output.
         if entry.keep_written {
-            for (cell, text) in &changes {
+            for (cell, text) in effective_changes() {
                 let Some(text) = text.as_deref().filter(|t| !t.is_empty()) else {
                     continue;
                 };

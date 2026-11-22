@@ -603,6 +603,66 @@ fn import_into_a_duplicate_protects_only_mapped_values_from_auto_entry() {
     assert_eq!(value(&copy, NUMBER), Some("99"));
 }
 
+#[test]
+fn import_validates_the_cleared_value_of_a_duplicate() {
+    use fixture::{OCCURRENCE, TABLE};
+    use om_hbam::{serial, slot::uint_segment};
+
+    let scripts = [script(
+        1,
+        "Import into a duplicate with replacing auto-entry",
+        vec![
+            fixture::on(86, true),
+            set_variable("$p", "Get ( DocumentsPath ) & \"clear.tab\""),
+            ScriptStep::new(23),
+            fixture::go_to_record(1),
+            ScriptStep::new(205),
+            ScriptStep::new(8),
+            // Stage the duplicate and select it alone.
+            ScriptStep::new(25),
+            ScriptStep::new(27),
+            import_as(&["$p"], &[NAME], true, ImportAction::UpdateFoundSet),
+            set_variable("$import", "Get ( LastError )"),
+            ScriptStep::new(206),
+            fixture::exit_with("$import & \"|\" & Get ( LastError )"),
+        ],
+    )];
+    let mut root = fixture::tree(&scripts, true);
+    fixture::code_in_names_list(&mut root);
+    fixture::set_field_options(&mut root, TABLE, CODE, 0x88);
+    fixture::add_formula(
+        &mut root,
+        &fixture::names(),
+        (TABLE, OCCURRENCE),
+        CODE,
+        5,
+        "If ( Name = \"Imported copy\" ; \"\" ; \"Retired\" )",
+    );
+    // The source still holds a code that is no longer in the Names list.
+    root.put(
+        &[
+            &uint_segment(TABLE),
+            &[5],
+            &serial::encode(1),
+            &uint_segment(CODE),
+        ],
+        om_scripts::text_node(&[], "Retired"),
+    );
+    let layout = Layout::new("duplicate-import-list");
+    let file = TempFile(layout.0.join("Tasks.fmp12"));
+    fixture::write_tree(&file.0, &root);
+    std::fs::write(layout.documents("clear.tab"), "Imported copy\r").unwrap();
+    let port = server::start(&file);
+    let (mut client, _) = server::logged_in(port, "duplicate-import-list");
+
+    assert_eq!(run(&mut client, 1), (0, "0|0".into()));
+    let copy = record_named(&mut client, "Imported copy").expect("duplicate committed");
+    assert_ne!(copy.0, 1);
+    assert_eq!(value(&copy, CODE), None);
+    let records = server::records_of(&mut client, TABLE);
+    assert_eq!(server::cell(&records, 1, CODE), Some("Retired"));
+}
+
 /// The review's C1 for updates, C2 and C3: an update's stored calculation
 /// reads the new modification value; inside Open Transaction, Commit
 /// Transaction neither auto-enters what the import left out nor checks
