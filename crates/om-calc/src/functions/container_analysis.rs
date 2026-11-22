@@ -29,6 +29,7 @@ mod audio;
 mod exif;
 mod media;
 mod pdf;
+mod pdf_append;
 mod pdf_assemble;
 mod pdf_form;
 mod pdf_highlight;

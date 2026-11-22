@@ -16,11 +16,6 @@ use crate::scripting::{files, Answer, PdfDialog, Prompt};
 /// whose semantics this slice cannot implement. Restore-off option slots
 /// are stale native storage and are not requests.
 fn pdf_options(step: &ScriptStep) -> Result<report::PdfView, ReportError> {
-    if step.has_flag(flag::OPTION) {
-        return Err(ReportError::unsupported(
-            "Appending to an existing PDF is unsupported",
-        ));
-    }
     if step.has_flag(flag::CREATE_EMAIL) {
         return Err(ReportError::unsupported(
             "Creating an email with a PDF attachment is unsupported",
@@ -95,11 +90,80 @@ fn pdf_options(step: &ScriptStep) -> Result<report::PdfView, ReportError> {
             }
         }
     }
-    Ok(match step.number(8) {
+    let view = match step.number(8) {
         Some(1) => report::PdfView::Bookmarks,
         Some(2) => report::PdfView::Pages,
         _ => report::PdfView::PageOnly,
-    })
+    };
+    // An appended document is a new one of both files' pages, with no
+    // page mode of its own (`appended`).
+    if step.has_flag(flag::OPTION) && view != report::PdfView::PageOnly {
+        return Err(ReportError::unsupported(
+            "Appending to a PDF with an initial view other than Page Only is unsupported",
+        ));
+    }
+    Ok(view)
+}
+
+/// The most of an existing PDF read to append to: with the report, within
+/// what one request to the PDF worker carries (1 GiB).
+const MAX_APPENDED: u64 = 512 << 20;
+
+/// Append the report's pages after the existing page-only PDF. The worker
+/// validates both sources and copies the object bytes while remapping their
+/// references. Unsupported inputs fail before the destination is changed.
+fn appended(existing: &[u8], report: &[u8], report_pages: usize) -> Result<Vec<u8>, ReportError> {
+    use om_data::calc::functions::pdf_worker;
+    let unavailable =
+        || ReportError::unsupported("Appending to a PDF needs the PDF worker (om-gui-pdf-worker)");
+    let info = pdf_worker::info_whole(existing)
+        .map_err(|_| unavailable())?
+        .ok_or_else(|| {
+            ReportError::unsupported("The file to append to is not a PDF OpenMaker reads")
+        })?;
+    if !info.optional_content_kept || info.document_kept != Some(true) {
+        return Err(ReportError::unsupported(
+            "The PDF to append to is outside the supported page-only format",
+        ));
+    }
+    // Both documents' pages within one request's, before the plan is made.
+    let report_pages = u32::try_from(report_pages)
+        .ok()
+        .filter(|&pages| info.pages as usize + pages as usize <= pdf_worker::MAX_PAGES)
+        .ok_or_else(|| {
+            ReportError::unsupported("The PDF and the report have too many pages to append")
+        })?;
+    let plan: Vec<(u32, u32)> = (0..info.pages)
+        .map(|page| (0, page))
+        .chain((0..report_pages).map(|page| (1, page)))
+        .collect();
+    pdf_worker::assemble_whole(&[existing, report], &plan)
+        .map_err(|_| unavailable())?
+        .ok_or_else(|| ReportError::unsupported("The PDF could not be appended to"))
+}
+
+/// Appends in this process run one at a time, each reading, assembling
+/// and saving its file before the next reads one, so two scripts appending
+/// to one file both keep their pages.
+static APPENDING: std::sync::Mutex<()> = std::sync::Mutex::new(());
+
+/// The existing PDF an append reads, at most [`MAX_APPENDED`] bytes of it.
+fn read_existing(path: &std::path::Path) -> Result<Vec<u8>, ReportError> {
+    use std::io::Read as _;
+    let unreadable = |e: std::io::Error| ReportError {
+        code: 800,
+        message: format!("The PDF to append to could not be read: {e}"),
+    };
+    let mut bytes = Vec::new();
+    std::fs::File::open(path)
+        .and_then(|file| file.take(MAX_APPENDED + 1).read_to_end(&mut bytes))
+        .map_err(unreadable)?;
+    if bytes.len() as u64 > MAX_APPENDED {
+        return Err(ReportError::unsupported(
+            "The PDF to append to is larger than OpenMaker appends to (512 MiB)",
+        ));
+    }
+    Ok(bytes)
 }
 
 /// A stored calculation as FileMaker writes one: only its context,
@@ -164,7 +228,26 @@ impl WorkerHost<'_> {
         self.commit_window()?;
         let report = self.build_report(current, None, view)?;
         let path = self.export_path(&paths, call.step.has_flag(flag::OPTION2))?;
-        report::save_pdf(&path, &report.bytes).map_err(|e| {
+        // Without a file to append to, the report is the new file [I]. An
+        // append saves only over what it read, or where there still is no
+        // file: one that changed or appeared meanwhile is kept, and the
+        // step fails.
+        let append = call.step.has_flag(flag::OPTION);
+        let _turn = append.then(|| APPENDING.lock().unwrap_or_else(|e| e.into_inner()));
+        let existing = if append && path.is_file() {
+            Some(read_existing(&path).map_err(|e| self.report_error(e))?)
+        } else {
+            None
+        };
+        let (bytes, expected) = match &existing {
+            Some(existing) => {
+                let bytes = appended(existing, &report.bytes, report.plan.pages.len())
+                    .map_err(|e| self.report_error(e))?;
+                (bytes, Some(report::Expected::Read(existing)))
+            }
+            None => (report.bytes, append.then_some(report::Expected::Absent)),
+        };
+        report::save_pdf_if(&path, &bytes, expected.as_ref()).map_err(|e| {
             self.report_error(ReportError {
                 code: 800,
                 message: format!("The PDF could not be saved: {e}"),
