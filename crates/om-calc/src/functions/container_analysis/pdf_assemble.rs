@@ -37,7 +37,7 @@ use std::ops::Range;
 use std::sync::Arc;
 
 use hayro::hayro_interpret::hayro_syntax::object::{
-    Array, Dict, MaybeRef, Name, Number, Object, ObjectIdentifier, Rect,
+    Array, Dict, MaybeRef, Name, Number, Object, ObjectIdentifier,
 };
 use hayro::hayro_interpret::hayro_syntax::page::Rotation;
 use hayro::hayro_interpret::hayro_syntax::Pdf;
