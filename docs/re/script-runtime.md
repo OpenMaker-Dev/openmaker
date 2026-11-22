@@ -3927,7 +3927,26 @@ Steps
   its record and found set. A record refused partway ends the step, the
   records before it written; a record deleted after the check is 101.
   Records > Relookup Field Contents runs the step with its dialog on the
-  field entered. Unmeasured, and OpenMaker's choices:
+  field entered.
+  OpenMaker Server's host does the same in its own session, with the same
+  checks and a match value whose text does not decode refused too (3).
+  Each record of the found set is opened once, by id, with the match
+  field marked set and its stored value unchanged, and the rules run on
+  it. Outside a transaction, the server writes the record if the rules
+  change a cell. Inside one, it stages the record like Set Field with the
+  match field's own value. Commit Transaction runs validation with the
+  transaction's options and looks up values with what the transaction
+  holds then. It writes a record staged only by Relookup if the rules
+  change a cell.
+  An Import Records that would update a record whose relookup the
+  transaction holds aborts with error 3 and rolls back any rows staged by
+  that import. By default Commit Transaction reverts the transaction,
+  including the pending relookup
+  ([#647](https://github.com/OpenMaker-Dev/openmaker/issues/647)).
+  FileMaker copies the lookup at the step. Under "Skip auto-enter
+  options" nothing is copied and nothing staged. A record refused is left
+  as it was.
+  Unmeasured, and OpenMaker's choices:
   - the dialog's text;
   - committing the window's record before the writes, which Claris's help
     says neither the command nor the step does

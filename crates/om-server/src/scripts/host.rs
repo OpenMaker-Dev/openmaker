@@ -421,6 +421,14 @@ struct OpenRecord {
     /// access (Commit Transaction, #187).
     /// Boxed: an open record is held in a transaction's [`Change`].
     context: Box<rules::WriteContext>,
+    /// Staged by Relookup Field Contents with no edit of its own (any
+    /// later edit clears it): Commit Transaction writes it only when its
+    /// rules change a cell.
+    relooked: bool,
+    /// Relookup Field Contents staged the record in the transaction, its
+    /// lookup left for Commit Transaction's rules: an import does not
+    /// update it.
+    relookup: bool,
     /// A new record's creation clock (#474): the date, time, timestamp and
     /// UUID its rules read, at New Record for what a script reads of it
     /// before the commit, and again at the commit, which so stores what
@@ -478,6 +486,7 @@ impl OpenRecord {
 
     /// A step changed `cell`.
     fn changed_cell(&mut self, cell: u64) {
+        self.relooked = false;
         self.changed.insert(cell);
         if let Some(ruled) = &mut self.ruled {
             ruled.since.insert(cell);
@@ -1354,15 +1363,51 @@ impl ServerHost {
             ruled: None,
             serials: BTreeMap::new(),
             context,
+            relooked: false,
+            relookup: false,
             created: None,
             preview: BTreeMap::new(),
         }))
     }
 
-    /// Commit the open record (leaving a record, changing layouts, Commit
-    /// Records) with its table's rules; inside a transaction it joins the
-    /// transaction, whose commit applies them. A record the rules refuse
-    /// stays open and the step fails with their error.
+    /// Commit the record Relookup opened with its match field marked set.
+    /// Outside a transaction, write it only if the rules change a cell.
+    /// Inside a transaction, defer the rules to Commit Transaction. If
+    /// the transaction skips auto-entry, release the record without staging it.
+    fn commit_open_relooked(&mut self) -> HostResult {
+        let Some(mut record) = self.record.take() else {
+            return Ok(());
+        };
+        let key = (record.table, record.id);
+        if let Some(transaction) = self.transaction.as_mut() {
+            if transaction.options.skip_auto_enter {
+                self.unlock_record(record.table, record.id);
+                return Ok(());
+            }
+            record.relooked = true;
+            record.relookup = true;
+            transaction.insert(key, Change::Write(record));
+            return Ok(());
+        }
+        let mut ready = record.clone();
+        if let Err(error) = self.apply_rules(&mut ready, Entry::script(false, false)) {
+            self.record = Some(record);
+            return Err(error);
+        }
+        if texts(&ready.node) == texts(&record.node) {
+            self.unlock_record(record.table, record.id);
+            return Ok(());
+        }
+        let committed = self.write(vec![(key, Change::Write(ready))]);
+        if committed.is_err() {
+            self.record = Some(record);
+        }
+        committed
+    }
+
+    /// Commit the open record when leaving it, changing layouts or running
+    /// Commit Records. Inside a transaction, defer its rules to the commit.
+    /// A record the rules refuse stays open and the step returns their error.
     fn commit_open(&mut self, entry: Entry) -> HostResult {
         let Some(record) = self.record.take() else {
             return Ok(());
@@ -3807,6 +3852,8 @@ impl Records for ServerHost {
             ruled: None,
             serials,
             context: Box::new(self.step_context()),
+            relooked: false,
+            relookup: false,
             created: Some(Box::new(CreatedClock {
                 date: clock.date,
                 time: clock.time,
@@ -4003,6 +4050,7 @@ impl Records for ServerHost {
             options.skip_auto_enter,
         );
         let keys: Vec<(u64, u64)> = transaction.changes.keys().copied().collect();
+        let mut unchanged_relookups = BTreeSet::new();
         for key in keys {
             let Some(transaction) = self.transaction.as_mut() else {
                 break;
@@ -4014,6 +4062,17 @@ impl Records for ServerHost {
                 continue;
             };
             let result = self.apply_rules(&mut record, entry);
+            // Keep an unchanged relookup held while the other records run
+            // their rules, including the new-record self-join check (#490).
+            // Omit it from the write and release its lock with the others.
+            if result.is_ok()
+                && record.relooked
+                && self
+                    .committed_node(record.table, record.id)
+                    .is_some_and(|stored| texts(&stored) == texts(&record.node))
+            {
+                unchanged_relookups.insert(key);
+            }
             if let Some(transaction) = self.transaction.as_mut() {
                 transaction.insert(key, Change::Write(record));
             }
@@ -4025,7 +4084,12 @@ impl Records for ServerHost {
         let changes: Vec<((u64, u64), Change)> = self
             .transaction
             .take()
-            .map(|t| t.changes.into_iter().collect())
+            .map(|t| {
+                t.changes
+                    .into_iter()
+                    .filter(|(key, _)| !unchanged_relookups.contains(key))
+                    .collect()
+            })
             .unwrap_or_default();
         let (created, deleted) = created_and_deleted(&changes);
         let result = if changes.is_empty() {
@@ -4048,6 +4112,104 @@ impl Records for ServerHost {
 }
 
 impl FieldSteps for ServerHost {
+    /// Relookup Field Contents (40), as the desktop's provider operation
+    /// does it (`DataProvider::relookup`): in each record of the found set,
+    /// by id as the step began, the match field is marked set with its
+    /// stored value unchanged, which performs the lookups through it
+    /// (auto-entry.md, Lookups, battery s41), and the record is committed;
+    /// a transaction holds it. Before any record changes: the target is a
+    /// field of the window's own occurrence that `RecordPlan::
+    /// relookup_target` takes, and no record stores it with character
+    /// styles (a plain write would drop them) or is held in the open
+    /// transaction (whose held value the stored one would replace). A
+    /// record refused ends the step, that record left as it was; the
+    /// window keeps its record. The server shows no dialog.
+    fn relookup(&mut self, field: Option<FieldRef>, _with_dialog: bool) -> HostResult {
+        let field = match field {
+            Some(field) => field,
+            None => {
+                let focus = self.focus.as_ref().ok_or(ErrorCode::FIELD_MISSING)?;
+                FieldRef {
+                    occurrence: focus.occurrence,
+                    field: focus.field,
+                    repetition: 1,
+                }
+            }
+        };
+        let window = self.window()?;
+        if window.mode == Mode::Find {
+            return Err(ErrorCode::UNAVAILABLE.into());
+        }
+        if window.occurrence != field.occurrence || field.repetition > 1 {
+            // A related record's field (relationships are not followed), or
+            // a later repetition, which the target check does not name.
+            return Err(HostError::Unsupported);
+        }
+        let (table, def) = self.target(field)?;
+        let cell = self
+            .plan(table)?
+            .relookup_target(&def.name)
+            .map_err(|e| rule_error(&e))?;
+        self.leave()?;
+        let (mut ids, original) = {
+            let window = self.window()?;
+            (window.found.clone(), window.record())
+        };
+        // Each record once: a list Go to List of Records made can name one
+        // twice, and a second pass would reopen the first's staged write.
+        let mut seen = BTreeSet::new();
+        ids.retain(|id| seen.insert(*id));
+        let key = uint_segment(cell);
+        for &id in &ids {
+            if self.pending(table, id).is_some() {
+                return Err(ErrorCode::UNAVAILABLE.into());
+            }
+            // A value with character styles reads as nested, and one whose
+            // text does not decode would match as empty; a plain one
+            // stored in chunks assembles into a value and is relooked up.
+            let unreadable = self.committed_node(table, id).is_some_and(|node| {
+                node.child(&key)
+                    .is_some_and(|c| !matches!(om_hbam::Cell::from_owned(c).text(), Some(Ok(_))))
+            });
+            if unreadable {
+                return Err(ErrorCode::UNAVAILABLE.into());
+            }
+        }
+        let mut result = Ok(());
+        for &id in &ids {
+            let Some(index) = self.window()?.found.iter().position(|r| *r == id) else {
+                continue;
+            };
+            self.window_mut()?.current = index;
+            let context = self.step_context();
+            match self.open_current() {
+                Ok(record) => {
+                    record.before_change();
+                    *record.context = context;
+                    record.changed_cell(cell);
+                }
+                Err(error) => {
+                    result = Err(error);
+                    break;
+                }
+            }
+            if let Err(error) = self.commit_open_relooked() {
+                // The refused record goes back to what it was: no write of
+                // it stays pending for a later commit.
+                self.drop_open();
+                result = Err(error);
+                break;
+            }
+        }
+        if let Some(window) = self.window.as_mut() {
+            if let Some(index) = original.and_then(|id| window.found.iter().position(|r| *r == id))
+            {
+                window.current = index;
+            }
+        }
+        result
+    }
+
     fn export_field_contents(
         &mut self,
         field: Option<FieldRef>,
