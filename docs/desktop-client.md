@@ -1437,6 +1437,28 @@ the worker finds by its number (`enter_clicked_row` without a record
 identity): Set Field into the creation row creates a related record, and
 Delete Portal Row there deletes nothing (script-runtime.md 13.24).
 
+A portal saved with FileMaker Pro 26.1's "Place row for new record at top"
+(portal option `0x400`, layout-model.md 5.3.2) draws the creation row,
+and the rows begun in it, above its records, when it does not scroll
+(option `0x1` clear); a portal that scrolls keeps them last, as FileMaker
+Pro 26.1.1's `DataEntryModel::IsVisibleTopNewPortalRow` decides
+([#343](https://github.com/OpenMaker-Dev/openmaker/issues/343)). Rows are numbered where they are drawn, in Browse, for Tab and
+for scripts alike: the creation row is row 1, the records follow, and
+scripts reach the creation row there (Go to Portal Row, a button in the
+row) as Browse shows it [I: how FileMaker numbers a row drawn at the top,
+and whether a script reaches it, are unmeasured]. A portal whose initial
+row is past 1, scrolling or not, draws the records from that row on and
+numbers its rows from there, whether or not records fill the rows before
+it, also for scripts. Go to Portal Row [First] and Go to Field go to the
+initial row, Previous stops there, and a number before it is 101. Go to
+Related Record from a filtering portal's row includes earlier filter
+matches in the found set [I: the effect of Initial Row is unmeasured].
+A Go to Portal Row whose OnObjectExit begins or deletes a row moves to
+the row it chose, found again by what it shows (a record being created
+by its draft, whatever other drafts go), or fails with 101 when that row
+left the portal. The option's storage is read from FileMaker Pro 26.1.1's
+binaries, not from a file it saved, and Portal Setup does not offer it.
+
 A step that puts the focus in a field of a portal row (Go to Field, Go to
 Object, Go to Portal Row with a field active), as the starter solutions'
 add buttons do with Go to Portal Row [Last] and Go to Field, gives that

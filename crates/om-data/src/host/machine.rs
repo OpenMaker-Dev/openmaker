@@ -6,8 +6,30 @@
 //! except free storage, which changes. The user name in effect follows the
 //! User Name setting ([`user_name`]).
 
-use std::path::Path;
+use std::path::{Path, PathBuf};
 use std::sync::OnceLock;
+
+/// The OS account's OpenMaker configuration directory, if one is available.
+pub fn user_config_dir() -> Option<PathBuf> {
+    let home = || {
+        std::env::var_os("HOME")
+            .filter(|p| !p.is_empty())
+            .map(PathBuf::from)
+    };
+    if cfg!(target_os = "macos") {
+        home().map(|h| h.join("Library/Application Support/OpenMaker"))
+    } else if cfg!(windows) {
+        std::env::var_os("APPDATA")
+            .filter(|p| !p.is_empty())
+            .map(|a| PathBuf::from(a).join("OpenMaker"))
+    } else {
+        std::env::var_os("XDG_CONFIG_HOME")
+            .map(PathBuf::from)
+            .filter(|p| p.is_absolute())
+            .or_else(|| home().map(|h| h.join(".config")))
+            .map(|c| c.join("openmaker"))
+    }
+}
 
 /// The facts that do not change while the process runs.
 #[derive(Clone, Debug, Default)]

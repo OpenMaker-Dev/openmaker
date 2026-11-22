@@ -16,8 +16,8 @@ use om_giop::{
 
 mod connect;
 pub use connect::{
-    build_connect, build_connect_reply, parse_connect_reply, parse_connect_request, ConnectError,
-    ConnectReply, ConnectRequest, MachineInfo,
+    build_connect, build_connect_reply, parse_connect_reply, parse_connect_request,
+    validate_client_license, ConnectError, ConnectReply, ConnectRequest, MachineInfo,
 };
 
 mod download;

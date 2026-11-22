@@ -137,9 +137,9 @@ impl OpenMakerApp {
     }
 
     /// The worker's identity of the clicked row: its related record, the
-    /// creation row, or the record the user began in that row, by its
-    /// place among what the window's record keeps uncommitted (`None` when
-    /// it keeps no such record any more).
+    /// creation row, or the record the user began in that row, by the key
+    /// of its draft among what the window's record keeps uncommitted
+    /// (`None` when it keeps no such record any more).
     fn clicked_identity(&self, click: &PortalClick) -> Option<PortalIdentity> {
         self.row_identity(click.record, click.unsaved)
     }
@@ -158,8 +158,8 @@ impl OpenMakerApp {
                 .uncommitted()?
                 .related
                 .iter()
-                .position(|d| d.begun == Some(id))
-                .map(PortalIdentity::New),
+                .find(|d| d.begun == Some(id))
+                .map(|d| PortalIdentity::New(d.key)),
         }
     }
 

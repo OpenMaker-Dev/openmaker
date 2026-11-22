@@ -34,7 +34,7 @@ use om_data::runtime::{
 use om_data::{Calculation, FieldChanges, ScriptStep};
 
 pub(crate) use session::ScriptSession;
-pub(crate) use window::{Cells, RelatedDraft, Uncommitted};
+pub(crate) use window::{Cells, DraftKey, RelatedDraft, Uncommitted};
 
 /// The window's view (View As: 1 Form, 2 List, 3 Table).
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
@@ -303,7 +303,9 @@ pub(crate) struct PortalRow {
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub(crate) enum PortalIdentity {
     Record(u64),
-    New(usize),
+    /// A record a script or the user is creating through the portal (a
+    /// related draft, by its key, which other drafts going leave as it is).
+    New(DraftKey),
     Creation,
 }
 

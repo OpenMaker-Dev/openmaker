@@ -2145,6 +2145,7 @@ mod tests {
         };
         let ctx = egui::Context::default();
         let draft = |deleted: bool| RelatedDraft {
+            key: crate::scripting::DraftKey::fresh(),
             reserved: None,
             matched_cells: Default::default(),
             occurrence: 70,
