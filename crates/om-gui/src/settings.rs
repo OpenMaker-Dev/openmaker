@@ -21,19 +21,7 @@ pub fn default_path() -> Option<PathBuf> {
     if let Some(path) = std::env::var_os("OPENMAKER_SETTINGS").filter(|p| !p.is_empty()) {
         return Some(PathBuf::from(path));
     }
-    let home = || std::env::var_os("HOME").map(PathBuf::from);
-    let folder = if cfg!(target_os = "macos") {
-        home().map(|h| h.join("Library/Application Support/OpenMaker"))
-    } else if cfg!(windows) {
-        std::env::var_os("APPDATA").map(|a| PathBuf::from(a).join("OpenMaker"))
-    } else {
-        std::env::var_os("XDG_CONFIG_HOME")
-            .map(PathBuf::from)
-            .filter(|p| p.is_absolute())
-            .or_else(|| home().map(|h| h.join(".config")))
-            .map(|c| c.join("openmaker"))
-    };
-    folder.map(|f| f.join("settings.json"))
+    machine::user_config_dir().map(|f| f.join("settings.json"))
 }
 
 const USER_NAME: &str = "user_name";
