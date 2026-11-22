@@ -600,6 +600,21 @@ fn server_scripts_apply_the_files_record_rules() {
                 exit_with("Get ( LastError ) & \"|\" & Get ( RecordID )"),
             ],
         ),
+        // A new record's auto-entered creator and its stored calculation
+        // read before its commit as the commit stores them (#474), as
+        // FileMaker Server's engine gave an auto-entered value right after
+        // New Record (script oracle s46).
+        script(
+            7,
+            "Before the commit",
+            vec![
+                ScriptStep::new(7),
+                set_field(COUNT, "4"),
+                set_variable("$before", "Tasks::Creator & \"|\" & Tasks::Doubled"),
+                ScriptStep::new(75),
+                exit_with("$before & \"|\" & Tasks::Creator & \"|\" & Tasks::Doubled"),
+            ],
+        ),
     ];
     let file = TempFile::new("rules", &scripts, true);
     let port = start(&file, None);
@@ -620,6 +635,7 @@ fn server_scripts_apply_the_files_record_rules() {
     assert_eq!(cell(&after, 4, COUNT), Some("21"));
     assert_eq!(cell(&after, 4, DOUBLED), Some("42"));
     assert_eq!(cell(&after, 4, CREATOR), Some("Admin"));
+    assert_eq!(run(&mut client, 7), (0, "Admin|8|Admin|8".into()));
     client.disconnect().unwrap();
 
     // A rule the server cannot enforce (an auto-entered serial number)
