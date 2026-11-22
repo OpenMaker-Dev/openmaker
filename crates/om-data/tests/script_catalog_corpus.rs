@@ -265,16 +265,13 @@ fn check(path: &Path) -> (usize, usize) {
     let save = match planned {
         Ok(Some(save)) => save,
         Ok(None) => panic!("{at}: nothing planned"),
-        Err(e) => {
-            // Refused only where no member shows the ASCII key form.
-            assert!(
-                ascii_keyed == 0 && e.message.contains("do not show the key"),
-                "{at}: {} ({ascii_keyed} ASCII-keyed, ASCII-named scripts: {ascii_named})",
-                e.message
-            );
-            println!("refused: {at}");
-            return (0, 1);
-        }
+        // Name list keys are the same in every file (#274): a new ASCII
+        // name is listed in every starter, the Japanese, Korean and
+        // Chinese ones, which hold no ASCII script name, included.
+        Err(e) => panic!(
+            "{at}: {} ({ascii_keyed} ASCII-keyed, ASCII-named scripts: {ascii_named})",
+            e.message
+        ),
     };
     let mut members = definitions.clone();
     for member in &save.members {

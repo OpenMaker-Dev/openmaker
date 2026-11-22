@@ -12,10 +12,20 @@ use om_layout::{pagination::PageSize, paper::PaperSettings, Layout};
 
 impl WorkerHost<'_> {
     pub(super) fn report_paper(&self, layout: &Layout) -> Result<PageSize, String> {
-        self.s.file.page_setup.as_ref().map_or_else(
+        self.page_setup().as_ref().map_or_else(
             || PageSize::for_layout(layout),
             |settings| settings.paper.for_layout(layout),
         )
+    }
+
+    /// The file session's page setup: the one accepted in it, else the one
+    /// the file stores (`[2, 87]`) when its common format reads; `None`
+    /// before either, for the layout's own defaults.
+    fn page_setup(&self) -> Option<Settings> {
+        self.s.file.page_setup.clone().or_else(|| {
+            let bytes = self.schema()?.page_format.as_deref()?;
+            Settings::restored(bytes).ok()
+        })
     }
 
     fn page_setup_error(&mut self, message: String) -> HostError {
@@ -37,10 +47,12 @@ impl WorkerHost<'_> {
                 .and_then(|n| n.value.as_deref())
                 .and_then(|v| v.get(..4))
                 .map(|v| u32::from_be_bytes(v.try_into().unwrap()) as usize);
+            // The pieces after the chunk header (child 0) are the value.
             let actual = node.value.as_ref().map_or_else(
                 || {
                     node.children
                         .iter()
+                        .skip(1)
                         .filter_map(|n| n.value.as_ref())
                         .map(Vec::len)
                         .sum()
@@ -60,7 +72,7 @@ impl WorkerHost<'_> {
         if restored.is_none() && call.step.has_flag(flag::NO_INTERACT) {
             return Ok(());
         }
-        let mut candidate = match restored.or_else(|| self.s.file.page_setup.clone()) {
+        let mut candidate = match restored.or_else(|| self.page_setup()) {
             Some(settings) => settings,
             None => {
                 let id = self
@@ -88,12 +100,16 @@ impl WorkerHost<'_> {
             .paper
             .validate()
             .map_err(|e| self.page_setup_error(e))?;
+        // Against the paper the file session prints on now, the stored
+        // setup's before any is accepted: only a change of it starts the
+        // pages over.
         let paper_changed = self
-            .s
-            .file
-            .page_setup
-            .as_ref()
+            .page_setup()
             .is_none_or(|current| current.paper != candidate.paper);
+        // The windows are told of the first setup accepted even when it is
+        // the stored one, so none is left on another paper; a window
+        // already on it keeps its page (`Session::set_paper`).
+        let first = self.s.file.page_setup.is_none();
         let paper = candidate.paper.clone();
         self.s.file.page_setup = Some(candidate);
         if paper_changed {
@@ -103,6 +119,8 @@ impl WorkerHost<'_> {
             for window in &mut self.s.file.others {
                 window.state.preview_page = 0;
             }
+        }
+        if paper_changed || first {
             self.send(ScriptEvent::PaperSettings {
                 file: self.s.file.id,
                 paper,

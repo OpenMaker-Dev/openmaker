@@ -729,6 +729,9 @@ warning icon when the text is not SVG FileMaker supports (Claris).
 FileMaker Pro caches the rendered images under keys made by
 `FMFileUser::GenerateRuntimeLibraryKey` (`runtime_calc_` names, FileMaker
 Pro strings); nothing shows that they are stored in the file [I].
+OpenMaker reads the bit (`ButtonObject::calculated_icon`, also on popover
+buttons) and the formula (`ObjectCalcs::button_icon`), keeping every other
+byte of the object and its record as it is.
 
 ### 5.4 Field control styles (`FieldLayoutObject.displayType`)
 
@@ -1000,10 +1003,11 @@ Chooser and Add Assignee layouts, which are also the only two without
 
 `0x20000` (with placeholder text, above 5.5) and `0x80000` (on every
 value-list control and calendar of the templates) are in neither source
-[U]. OpenMaker reads `0x8000` (`FieldObject::quick_find`), and `0x40` and
+[U]. OpenMaker reads `0x8000` (`FieldObject::quick_find`), `0x40` and
 `0x80` (`FieldObject::next_object_on_return`, `next_object_on_enter`,
-which Return and the keypad's Enter follow in Browse); the other bits of
-the table it reads only where this section's other paragraphs say.
+which Return and the keypad's Enter follow in Browse), and `0x400000`
+(`FieldObject::single_unlabeled_checkbox`); the other bits of the table
+it reads only where this section's other paragraphs say.
 
 [O, FileMaker Pro 26.1.1 x86_64] The Inspector writes the two 26.1.1 bits
 into this word: `PropFieldFormatter::ApplyFormatImpl` (0x101b35f90 and
@@ -1591,6 +1595,17 @@ That Pro draws from the file's stored values, not the application's copy of
 the theme, is [I]. A capture of Meetings' Notes with its Inspector would tell.
 Drop-down lists and calendars at the top is inferred: no capture shows one with
 a value.
+
+[O, 2026-11-18] On copies of the Contacts starter using Universal Touch,
+FileMaker Pro 26.0.3's Insert > Field made a 44 pt edit box. Both a field
+placed in OpenMaker and a Pro-created field resized to 22 pt drew blank
+when inactive in Browse. Each showed its value during entry, and the
+saved value was visible on another layout and survived reopening. The
+OpenMaker-placed field showed the value while inactive once resized to
+44 pt. [I] The theme's combined 24 pt vertical padding leaves too little
+room for text in the shorter frame. [U] Pro's default height for a Fields
+sidebar drop and the dimensions used by other themes were not measured.
+See [#315](https://github.com/OpenMaker-Dev/openmaker/issues/315).
 
 [O] Compiled property 64 can carry `intVal`, rather than `stringVal`: it then
 indexes the file font list at `25/5/<id>/16`. Contacts index 0 is
@@ -2374,6 +2389,17 @@ layout 3 has no `0d`. The third file shows that the two entries together
 are enough for this case; whether the part list entry alone is, is not
 isolated.
 
+[O, 2026-11-18, FileMaker Pro 26.0.3] On a Contacts starter copy with
+a new layout, New Record left no field active while the new layout's
+only field was absent from `15`. Insert > Field added Pro's new field to
+`15`; saving also added the previously placed field. On a duplicate of
+Contact Details, the stored order kept its 24 entries and the two portal
+fields appended by OpenMaker. Tab reached the portal fields and skipped
+the placed Website field, which was absent from the stored order even
+though Set Tab Order proposed a number for it. [U] Where Pro inserts a
+new field into a populated custom order and what it does inside a tab or
+slide panel. See [#316](https://github.com/OpenMaker-Dev/openmaker/issues/316).
+
 What OpenMaker's placement writes (`om_data::layout_placement`,
 `docs/authoring.md`, "Fields on layouts") follows these: an edit box and a
 label encoded as above with flags `0x30000000` and field flags `0xe0`,
@@ -2386,13 +2412,16 @@ raised, every stored entry and byte kept); the edit box's `0a` entry (its
 frame's top and left, which must be whole points, as no fractional
 position was seen there; the number of objects in the tree as its
 pre-order index, since it is the last root; its key string, 0 and
-repetition 1); `05, 00` raised to the last new key; and the layout's stamp.
-Object keys are the next after every key the layout uses, every key its
-part lists name, and `05, 00`. A body part without a list, or with one
+repetition 1); the same reference appended to `15` with the new position
+in the edit box's attribute `07`; `05, 00` raised to the last new key;
+and the layout's stamp. Appending after the greatest stored position
+preserves the existing order and gaps. Object keys are the next after
+every key the layout uses, every key its part lists, object index and
+tab order name, and `05, 00`. A body part without a list, or with one
 whose count does not match its entries, is refused: every part FileMaker
-saved has a readable one. The label gets no `0a` entry (no text object has
-one), and `08` and `15` are left alone (the objects are unnamed and
-outside the tab order). A text placed on its own (the desktop's Text
+saved has a readable one. The label stays outside both `0a` and `15`.
+New objects are unnamed, so placement leaves `08` alone.
+A text placed on its own (the desktop's Text
 tool, `place_text`) is the same text object and attribute record at the
 end of the body's list, with `05, 00` raised to its key and nothing else
 written. The field's `labelKey` (5.2), which 23 fields of the starters

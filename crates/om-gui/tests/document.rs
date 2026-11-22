@@ -797,6 +797,148 @@ fn blank_canvas_commits_but_changing_fields_keeps_the_record_draft() {
             assert!(!common::unsaved(&app));
         }
     }
+    // In List view too, where the rows draw in the zoom layer over the
+    // window's canvas.
+    let mut provider = DocumentProvider::new(false);
+    provider.writable = true;
+    provider.list = true;
+    let mut app = open_provider(provider);
+    app.get_all_by_role_and_label(Role::TextInput, "Given")
+        .next()
+        .unwrap()
+        .focus();
+    app.step();
+    app.key_press_modifiers(egui::Modifiers::COMMAND, egui::Key::A);
+    app.event(egui::Event::Text("List edit".into()));
+    app.run_steps(2);
+    assert!(common::unsaved(&app), "unsaved record changes");
+    click_blank_canvas(&mut app);
+    common::wait_until(&mut app, "the List view commit", |app| {
+        !common::unsaved(app) && !common::saving(app)
+    });
+    // And in Table view, zoomed: a cell takes the click meant for it, and
+    // the canvas below the rows commits.
+    let mut provider = DocumentProvider::new(false);
+    provider.writable = true;
+    let mut app = open_provider(provider);
+    common::click(&mut app, "Table View");
+    common::open_menu(&mut app, "View");
+    common::click(&mut app, "Zoom In");
+    app.run_steps(2);
+    app.get_all_by_role_and_label(Role::TextInput, "Given")
+        .nth(1)
+        .expect("second record's Given editor")
+        .click();
+    app.run_steps(2);
+    assert_eq!(common::record_number(&app), "2");
+    app.key_press_modifiers(egui::Modifiers::COMMAND, egui::Key::A);
+    app.event(egui::Event::Text("Table edit".into()));
+    app.run_steps(2);
+    assert!(common::unsaved(&app), "unsaved record changes");
+    click_blank_canvas(&mut app);
+    common::wait_until(&mut app, "the Table view commit", |app| {
+        !common::unsaved(app) && !common::saving(app)
+    });
+    // A column's divider follows the pointer at the zoom: the next
+    // column's header moves as far as the drag.
+    let family = |app: &common::App| {
+        app.get_by_role_and_label(Role::Label, "Family")
+            .rect()
+            .left()
+    };
+    let before = family(&app);
+    let header = app.get_by_role_and_label(Role::Label, "Family").rect();
+    // The divider, half the column spacing (8 points) left of the cell.
+    // Movement comes in the press's frame and in the release's, as from a
+    // quick hand: it counts too.
+    let mut pos = egui::pos2(before - 6.0, header.center().y);
+    app.event(egui::Event::PointerMoved(pos));
+    app.run_steps(2);
+    let button = |pos, pressed| egui::Event::PointerButton {
+        pos,
+        button: egui::PointerButton::Primary,
+        pressed,
+        modifiers: egui::Modifiers::NONE,
+    };
+    app.event(button(pos, true));
+    pos.x += 9.0;
+    app.event(egui::Event::PointerMoved(pos));
+    app.run_steps(1);
+    for _ in 0..6 {
+        pos.x += 3.0;
+        app.event(egui::Event::PointerMoved(pos));
+        app.run_steps(1);
+    }
+    pos.x += 3.0;
+    app.event(egui::Event::PointerMoved(pos));
+    app.event(button(pos, false));
+    app.run_steps(2);
+    let moved = family(&app) - before;
+    assert!((moved - 30.0).abs() < 2.0, "Family's header moved {moved}");
+}
+
+/// Insert > Current User Name puts the user name at the insertion point of
+/// the field being typed in, which a click on the menus leaves entered, and
+/// the insertion point goes after it.
+#[test]
+fn the_insert_menu_puts_its_text_at_the_insertion_point() {
+    let mut provider = DocumentProvider::new(false);
+    provider.writable = true;
+    let mut app = open_provider(provider);
+    let family = |app: &common::App| common::text_field(app, "Family").value();
+    common::text_field(&app, "Family").focus();
+    app.run_steps(2);
+    // After "Ma" of "Mason".
+    for key in [
+        egui::Key::Home,
+        egui::Key::ArrowRight,
+        egui::Key::ArrowRight,
+    ] {
+        app.key_press(key);
+    }
+    app.run_steps(2);
+    common::open_menu(&mut app, "Insert");
+    assert!(common::text_field(&app, "Family").is_focused());
+    common::click(&mut app, "Current User Name");
+    let name = om_data::host::machine::user_name();
+    common::wait_until(&mut app, "the user name", |app| {
+        family(app).as_deref() == Some(format!("Ma{name}son").as_str())
+    });
+    assert!(common::text_field(&app, "Family").is_focused());
+    app.event(egui::Event::Text("!".into()));
+    app.run_steps(2);
+    assert_eq!(family(&app), Some(format!("Ma{name}!son")));
+    assert!(common::unsaved(&app));
+    assert!(app.state().error().is_none(), "{:?}", app.state().error());
+}
+
+/// Edit > Select All, Clear and Undo act on the field being typed in,
+/// which a click on the menus leaves entered.
+#[test]
+fn the_edit_menu_selects_clears_and_undoes_in_the_field() {
+    let mut provider = DocumentProvider::new(false);
+    provider.writable = true;
+    let mut app = open_provider(provider);
+    let family = |app: &common::App| common::text_field(app, "Family").value();
+    let edit = |app: &mut common::App, command: &str| {
+        common::open_menu(app, "Edit");
+        common::click(app, command);
+        app.run_steps(2);
+        assert!(common::text_field(app, "Family").is_focused(), "{command}");
+    };
+    common::text_field(&app, "Family").focus();
+    app.run_steps(2);
+    app.key_press(egui::Key::End);
+    app.event(egui::Event::Text(" Jr".into()));
+    app.run_steps(2);
+    assert_eq!(family(&app).as_deref(), Some("Mason Jr"));
+    edit(&mut app, "Select All");
+    edit(&mut app, "Clear");
+    assert_eq!(family(&app).as_deref(), Some(""));
+    assert!(common::unsaved(&app));
+    edit(&mut app, "Undo");
+    assert_eq!(family(&app).as_deref(), Some("Mason Jr"));
+    assert!(app.state().error().is_none(), "{:?}", app.state().error());
 }
 
 /// Return types a line break into an edit box, stored as FileMaker stores
@@ -869,6 +1011,11 @@ fn return_types_a_line_break_and_the_keypad_enter_commits_or_both_go_on() {
     assert!(!common::text_field(&app, "Family").is_focused());
     assert_eq!(family(&app).as_deref(), Some("Keypad\rTwo\rQ Z"));
     assert!(app.state().error().is_none(), "{:?}", app.state().error());
+    // The saved record read back, so that it does not land between the
+    // keys below and the field they go to.
+    common::wait_until(&mut app, "the saved record", |app| {
+        app.state().is_settled() && !common::saving(app)
+    });
 
     // Return, then Tab and typing, in one frame: Return goes on from Given
     // to Family, the Tab from Family on to Given, which takes the typing.
@@ -1005,6 +1152,20 @@ fn typing_into_a_field_the_set_refuses_alerts_and_keeps_its_value() {
     assert!(common::text_field(&app, "Family").is_focused());
     assert!(!common::unsaved(&app));
     app.get_by_label("Contact: Clara Mason");
+    // Edit > Select All selects in it; Edit > Clear is refused as typing is.
+    for command in ["Select All", "Clear"] {
+        common::open_menu(&mut app, "Edit");
+        common::click(&mut app, command);
+        app.run_steps(2);
+    }
+    common::wait_for_label(&mut app, om_data::FIELD_NOT_MODIFIABLE);
+    common::click(&mut app, "OK");
+    app.run_steps(2);
+    assert_eq!(
+        common::text_field(&app, "Family").value().as_deref(),
+        Some("Mason")
+    );
+    assert!(!common::unsaved(&app));
 }
 
 fn click_at(app: &mut common::App, pos: egui::Pos2) {

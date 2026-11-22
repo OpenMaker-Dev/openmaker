@@ -68,7 +68,7 @@ use om_scripts::runtime::{
     Accounts, CommitOptions, Dialogs, ErrorCode, ErrorLogEntry, FieldRef, FileId, Files, FindKind,
     FoundSets, HostError, HostResult, InsertTarget, LayoutTarget, Mode, Navigation, Network,
     PauseEnd, Platform, RecordList, RecordMove, Records, RelatedRecords, ScriptAccess, ScriptHost,
-    TransactionOptions, WindowId, Windows,
+    StepCall, TransactionOptions, WindowId, Windows,
 };
 use om_scripts::specs::SortSpec;
 use om_scripts::{Script, ScriptCatalog, ScriptKind};
@@ -88,6 +88,7 @@ mod containers;
 mod design;
 mod files;
 mod get;
+mod mail;
 mod related;
 mod requests;
 mod sort;
@@ -240,9 +241,18 @@ impl Schema {
             let stem = file.rsplit_once('.').map_or(file, |(stem, _)| stem);
             let mut calc = rules::schema::calc_schema(&tree, &catalog, stem);
             calc.locale = store.locale();
+            // The record rules refuse a unique check in language 0 when
+            // the file's language is unknown.
+            calc.locale_unreadable = store.file_language().is_none();
+            om_data::host::device::withhold_server_lacks(calc.names_mut());
             Some((wire, Arc::new(calc)))
         });
         let mut names = NameTable::default();
+        // FileMaker Server's engine compiles no location function (s48):
+        // `Evaluate` text naming one fails with 1208, also in a branch it
+        // never takes. The rules', Design and privilege schemas withhold
+        // them too.
+        om_data::host::device::withhold_server_lacks(&mut names);
         let mut occurrences = HashMap::new();
         for occurrence in &catalog.table_occurrences {
             if let Some(table) = occurrence.base_table() {
@@ -672,7 +682,14 @@ pub(crate) struct ServerHost {
     /// What other users see as the holder of the session's locks.
     holder: String,
     account: String,
+    /// The record key of the account the session logged in with, when it
+    /// did: Change Password changes that account's password, whatever its
+    /// name is by then. A session without one changes none.
+    account_key: Option<Vec<u8>>,
     locale: Locale,
+    /// The file's own language, `None` when its locale record does not
+    /// decode ([`Store::file_language`]).
+    file_language: Option<u32>,
     today: Date,
     schema: Schema,
     window: Option<Window>,
@@ -735,9 +752,13 @@ impl ServerHost {
     ) -> Self {
         // The file's formats (file-metadata.md 2): FileMaker Server
         // evaluates with the file's locale record.
-        let (schema, locale) = {
+        let (schema, locale, file_language) = {
             let store = hosted.read_store();
-            (Schema::load(&store, &hosted.name), store.locale())
+            (
+                Schema::load(&store, &hosted.name),
+                store.locale(),
+                store.file_language(),
+            )
         };
         let mut host = ServerHost {
             holder: format!("{} (script engine, {account})", shared.identity.name),
@@ -748,7 +769,9 @@ impl ServerHost {
                 txn: 1,
             },
             account: account.to_string(),
+            account_key: None,
             locale,
+            file_language,
             today: today(),
             schema,
             window: None,
@@ -807,6 +830,11 @@ impl ServerHost {
     /// (`SMScriptRuntime::ExecuteScript`, 11.3).
     pub fn has_window(&self) -> bool {
         self.window.is_some()
+    }
+
+    /// The record key of the account the session logged in with.
+    pub fn set_account_key(&mut self, key: &[u8]) {
+        self.account_key = Some(key.to_vec());
     }
 
     /// The script's abort flag and time limit.
@@ -944,12 +972,16 @@ impl ServerHost {
     /// changed over what the file now stores: op73 may have recomputed
     /// their stored calculations or dropped a deleted field's values.
     pub fn refresh_schema(&mut self) {
-        let (schema, locale) = {
+        let (schema, locale, file_language) = {
             let store = self.hosted.read_store();
             if store.schema_generation() == self.schema.generation {
                 return;
             }
-            (Schema::load(&store, &self.hosted.name), store.locale())
+            (
+                Schema::load(&store, &self.hosted.name),
+                store.locale(),
+                store.file_language(),
+            )
         };
         info!(
             "{:?}: script session reads the file's changed schema",
@@ -962,6 +994,7 @@ impl ServerHost {
             .map(|l| l.id);
         self.schema = schema;
         self.locale = locale;
+        self.file_language = file_language;
         self.plans.clear();
         self.place_window(layout);
         if let Some(mut record) = self.record.take() {
@@ -1615,6 +1648,13 @@ impl ServerHost {
         Ok(reserved)
     }
 
+    /// The file's own language (`Locale::Type`), which an index in language
+    /// 0 keys text in (query-program.md 7.2): `None` when the file's locale
+    /// record does not decode, so that a check in language 0 is refused.
+    fn file_language(&self) -> Option<u32> {
+        self.file_language
+    }
+
     /// Whether field `field` of `occurrence`'s table holds `text` in some
     /// record and repetition (a value list of the field's values): its
     /// value index when it has one, else its stored values, as committed.
@@ -1626,7 +1666,7 @@ impl ServerHost {
             return false;
         };
         let keys = FieldOptions::decode(&def.options)
-            .and_then(|o| rules::checked_text_keys(o.index_language()))
+            .and_then(|o| rules::value_text_keys(o.index_language(), self.file_language()))
             .unwrap_or(TextKeys::Collated);
         let key = keys.key(text).unwrap_or_default();
         let store = self.hosted.read_store();
@@ -1662,15 +1702,15 @@ impl ServerHost {
         text: &str,
     ) -> bool {
         let table = record.table;
-        // The record rules plan such a field only in a language whose keys
-        // `checked_text_keys` builds.
+        // The record rules plan such a field only in a language whose value
+        // keys `value_text_keys` builds.
         let keys = self
             .schema
             .catalog
             .table(table)
             .and_then(|t| t.field(field))
             .and_then(|f| f.decoded_options())
-            .and_then(|o| rules::checked_text_keys(o.index_language()))
+            .and_then(|o| rules::value_text_keys(o.index_language(), self.file_language()))
             .unwrap_or(TextKeys::Collated);
         let key = keys.key(text).unwrap_or_default();
         let holds = |node: &OwnedNode| {
@@ -2337,6 +2377,18 @@ impl ServerHost {
         find::found(&outcome.slots).ok_or(FindError::Query(0xffff))
     }
 
+    /// The window's layout's Quick Find fields (`om_data::quick_find`); none
+    /// when the layout cannot be read or has Quick Find turned off.
+    fn quick_find_fields(&self) -> Vec<om_data::quick_find::QuickFindField> {
+        let Some(schema) = self.design() else {
+            return Vec::new();
+        };
+        self.window_layout(&schema)
+            .and_then(|entry| entry.layout)
+            .and_then(|layout| om_data::quick_find::fields(&layout, &schema))
+            .unwrap_or_default()
+    }
+
     /// A field by `Table::Field` name, or a field of the window's table.
     fn field_named(&self, name: &str) -> Option<(u64, u64)> {
         let (occurrence, field) = match name.split_once("::") {
@@ -2390,6 +2442,39 @@ fn rule_error(error: &DataError) -> HostError {
 /// OpenMaker Server does not compute for a written record.
 fn related_list_refused() -> HostError {
     HostError::Error(ErrorCode(rules::error::UNAVAILABLE))
+}
+
+/// `value` as Find Matching Records writes it for the server's finds, as
+/// exactly as they read: a number written out in full with `.` as its
+/// decimal separator, as the server's criteria read numbers (not
+/// `1.0E+9`); a time or timestamp with its seconds even when they are
+/// zero, since the display form drops them and would read as the whole
+/// minute. `None` for a time with a fraction of a second: the server's
+/// criteria compare whole seconds, so no criterion holds it (and a whole
+/// second's criterion also finds the fractions within it). A time past 24
+/// hours is no time of day and fails as a criterion (3).
+fn matching_text(value: &Value, cx: &Ctx) -> Option<String> {
+    let clock = |micros: i128| {
+        let seconds = micros.div_euclid(1_000_000);
+        format!(
+            "{}:{:02}:{:02}",
+            seconds / 3600,
+            seconds / 60 % 60,
+            seconds % 60
+        )
+    };
+    let whole = |micros: i128| micros.rem_euclid(1_000_000) == 0;
+    Some(match value {
+        Value::Number(n) | Value::NumberText(n, _) => n.to_plain_text_with('.'),
+        Value::Time(t) if whole(t.micros()) => clock(t.micros()),
+        Value::Timestamp(t) if whole(t.time_of_day().micros()) => format!(
+            "{} {}",
+            t.date().format(cx.locale),
+            clock(t.time_of_day().micros())
+        ),
+        Value::Time(_) | Value::Timestamp(_) => return None,
+        other => other.to_text(cx).into_string(),
+    })
 }
 
 /// Today in the server's time zone.
@@ -3139,6 +3224,31 @@ impl ScriptHost for ServerHost {
     fn set_full_access(&mut self, _file: FileId, on: bool) {
         self.elevated = on;
     }
+
+    /// Print Setup (42), which FileMaker Server runs in its own step
+    /// handler (script-runtime.md 10.2); every other step without a method
+    /// is 3.
+    fn other_step(&mut self, call: &StepCall<'_>) -> HostResult<Option<Value>> {
+        match call.id {
+            42 => print_setup(call).map(|()| None),
+            _ => Err(HostError::Unsupported),
+        }
+    }
+}
+
+/// Print Setup (42) in a server script. With neither Restore nor its
+/// dialog it sets nothing and gives 0, as on the desktop. A restored setup
+/// configures later PDF output (Claris, Print Setup), which OpenMaker Server
+/// cannot make yet (Save Records as PDF is 3 here, #104), so it gives 3
+/// rather than claim a setup nothing would apply. With its dialog on it
+/// gives 3 too: a server shows no dialog, and what FileMaker Server answers
+/// then is unmeasured.
+fn print_setup(call: &StepCall<'_>) -> HostResult {
+    if !call.step.has_flag(om_data::flag::RESTORE) && call.step.has_flag(om_data::flag::NO_INTERACT)
+    {
+        return Ok(());
+    }
+    Err(HostError::Unsupported)
 }
 
 impl Navigation for ServerHost {
@@ -3564,15 +3674,17 @@ impl FieldSteps for ServerHost {
     }
 
     fn set_field_by_name(&mut self, name: &str, value: Value) -> HostResult {
+        let field = self.field_by_name(name)?;
+        self.store_value(field, value)
+    }
+
+    fn field_by_name(&mut self, name: &str) -> HostResult<FieldRef> {
         let (occurrence, field) = self.field_named(name).ok_or(ErrorCode::FIELD_MISSING)?;
-        self.store_value(
-            FieldRef {
-                occurrence,
-                field,
-                repetition: 1,
-            },
-            value,
-        )
+        Ok(FieldRef {
+            occurrence,
+            field,
+            repetition: 1,
+        })
     }
 
     fn field_value_of(&mut self, field: FieldRef) -> HostResult<Value> {
@@ -3638,6 +3750,66 @@ impl FieldSteps for ServerHost {
         self.hosted
             .save_commit(&mut store, journal)
             .map_err(|e| HostError::Error(ErrorCode(i32::from(crate::hosting::save_error(&e)))))
+    }
+}
+
+impl ServerHost {
+    /// Run `requests` as Perform Find, Constrain or Extend Found Set
+    /// (`kind`), from Find mode when `in_find_mode`: see
+    /// [`FoundSets::perform_find`].
+    fn find_with(
+        &mut self,
+        kind: FindKind,
+        requests: Vec<Request>,
+        in_find_mode: bool,
+    ) -> HostResult {
+        self.request_count = requests.len();
+        let window = self.window()?;
+        let current: RidList = window.found.iter().copied().collect();
+        let all: RidList = self.all_records(window.table).into_iter().collect();
+        let master = if kind == FindKind::Constrain {
+            &current
+        } else {
+            &all
+        };
+        let matched = match self.find_within(&requests, master) {
+            Ok(found) => found,
+            Err(e) if e.code() == NO_CRITERIA.0 => {
+                // Without criteria FileMaker's engine is back in Browse
+                // mode, the found set and current record as they were
+                // (script-runtime.md 13.19, 13.21).
+                self.requests.clear();
+                let window = self.window_mut()?;
+                if window.mode == Mode::Find {
+                    window.current = window
+                        .browse_current
+                        .min(window.found.len().saturating_sub(1));
+                }
+                window.mode = Mode::Browse;
+                return Err(NO_CRITERIA.into());
+            }
+            Err(e) => {
+                if in_find_mode && self.requests.is_empty() {
+                    self.requests = requests;
+                }
+                return Err(ErrorCode(e.code()).into());
+            }
+        };
+        self.last_find = requests;
+        self.requests.clear();
+        let window = self.window_mut()?;
+        let found = match kind {
+            FindKind::Replace | FindKind::Constrain => matched,
+            FindKind::Extend => current.or(&matched),
+        };
+        window.found = found.iter().collect();
+        window.current = 0;
+        window.mode = Mode::Browse;
+        window.sort = None;
+        if window.found.is_empty() {
+            return Err(NO_RECORDS_MATCH.into());
+        }
+        Ok(())
     }
 }
 
@@ -3719,6 +3891,88 @@ impl FoundSets for ServerHost {
         Ok(())
     }
 
+    /// Perform Quick Find (query-program.md 6.6), by the desktop's rules
+    /// (`om_data::quick_find`): the window's layout's Quick Find fields;
+    /// each word or quoted phrase finds the records one of them matches,
+    /// among all the table's records, and the words narrow one another.
+    /// The current record stays current when it is found, the first found
+    /// record is current otherwise, and the found set is unsorted. A text
+    /// with no word is 400; no match is 401 and keeps the found set, its
+    /// sort and the current record (6.6, reported). A layout with Quick
+    /// Find turned off searches no field (401). A word a field of another
+    /// occurrence would be searched for is a related criterion, which
+    /// server finds do not support (3, script-steps.md 11.2.5); a related
+    /// field whose type cannot read the word is not searched for it, as on
+    /// the desktop, and needs no join.
+    fn perform_quick_find(&mut self, text: &str) -> HostResult {
+        // A find reads field values.
+        self.require_view()?;
+        let fields = self.quick_find_fields();
+        let (year, month, day) = self.today.ymd();
+        let today = (year as i32, month, day);
+        let change = om_data::quick_find::change_in(text, &fields, today, self.locale.date_order)
+            .map_err(|e| ErrorCode(e.code.unwrap_or(3)))?;
+        let om_data::found::FoundSetChange::QuickFind(terms) = change else {
+            return Err(HostError::Unsupported);
+        };
+        let own = self.window()?.occurrence;
+        let mut words = Vec::with_capacity(terms.len());
+        for term in terms {
+            let mut requests = Vec::with_capacity(term.len());
+            for found in term {
+                let mut request = Request::default();
+                for (name, criterion) in found.criteria {
+                    let (occurrence, field) =
+                        self.field_named(&name).ok_or(ErrorCode::FIELD_MISSING)?;
+                    if occurrence != own {
+                        return Err(ErrorCode(3).into());
+                    }
+                    request.set(field, criterion);
+                }
+                requests.push(request);
+            }
+            words.push(requests);
+        }
+        self.leave()?;
+        let window = self.window()?;
+        let all: RidList = self.all_records(window.table).into_iter().collect();
+        let mut found = all.clone();
+        for requests in &words {
+            // A word no field can read finds nothing.
+            if requests.is_empty() {
+                found = RidList::new();
+                break;
+            }
+            let matched = self
+                .find_within(requests, &all)
+                .map_err(|e| ErrorCode(e.code()))?;
+            found = found.and(&matched);
+        }
+        if found.is_empty() {
+            return Err(NO_RECORDS_MATCH.into());
+        }
+        // Leaving Find mode, `Get ( RequestCount )` keeps its requests'
+        // count, as Enter Browse Mode does (s31, s33).
+        if self.window()?.mode == Mode::Find {
+            self.request_count = self.requests.len();
+        }
+        self.requests.clear();
+        let window = self.window_mut()?;
+        let at = if window.mode == Mode::Find {
+            window.browse_current
+        } else {
+            window.current
+        };
+        let current = window.found.get(at).copied();
+        window.found = found.iter().collect();
+        window.current = current
+            .and_then(|record| window.found.iter().position(|&id| id == record))
+            .unwrap_or(0);
+        window.mode = Mode::Browse;
+        window.sort = None;
+        Ok(())
+    }
+
     /// Perform Find, Constrain and Extend Found Set, with the stored
     /// requests or the window's (script-steps.md 11.2.4): Constrain finds
     /// within the found set, Perform Find and Extend within all records,
@@ -3736,53 +3990,61 @@ impl FoundSets for ServerHost {
             None if in_find_mode => std::mem::take(&mut self.requests),
             None => self.last_find.clone(),
         };
-        self.request_count = requests.len();
+        self.find_with(kind, requests, in_find_mode)
+    }
+
+    /// Find Matching Records (155): the records whose `field`, or the
+    /// field with the focus, holds the current record's value, by the
+    /// desktop's request (`om_data::found::matching_criterion`, the value
+    /// written by [`matching_text`]), found, constrained or extended as
+    /// Perform Find does with that one request. Without a field it is 102,
+    /// as on the desktop. The step runs in Browse mode: from Find mode it
+    /// switches first, as Enter Browse Mode does (Claris, "Find Matching
+    /// Records"), and takes the value of the record current when Find mode
+    /// was entered. That is inferred: this server's Enter Browse Mode
+    /// returns to the first record, and FileMaker's record after Find mode
+    /// is not measured. A field of another occurrence is a related criterion,
+    /// which server finds do not support (3); a global or summary field is
+    /// no criterion at all (3; FileMaker's answer is not measured).
+    fn find_matching(&mut self, field: Option<FieldRef>, kind: FindKind) -> HostResult {
+        // A find reads field values.
+        self.require_view()?;
+        let focused = self.focus.as_ref().map(|f| FieldRef {
+            occurrence: f.occurrence,
+            field: f.field,
+            repetition: 1,
+        });
+        let field = field.or(focused).ok_or(ErrorCode::FIELD_MISSING)?;
+        let (_, def) = self.target(field)?;
         let window = self.window()?;
-        let current: RidList = window.found.iter().copied().collect();
-        let all: RidList = self.all_records(window.table).into_iter().collect();
-        let master = if kind == FindKind::Constrain {
-            &current
-        } else {
-            &all
-        };
-        let matched = match self.find_within(&requests, master) {
-            Ok(found) => found,
-            Err(e) if e.code() == NO_CRITERIA.0 => {
-                // Without criteria FileMaker's engine is back in Browse
-                // mode, the found set and current record as they were
-                // (script-runtime.md 13.19, 13.21).
-                self.requests.clear();
-                let window = self.window_mut()?;
-                if window.mode == Mode::Find {
-                    window.current = window
-                        .browse_current
-                        .min(window.found.len().saturating_sub(1));
-                }
-                window.mode = Mode::Browse;
-                return Err(NO_CRITERIA.into());
-            }
-            Err(e) => {
-                if in_find_mode && self.requests.is_empty() {
-                    self.requests = requests;
-                }
-                return Err(ErrorCode(e.code()).into());
-            }
-        };
-        self.last_find = requests;
-        self.requests.clear();
-        let window = self.window_mut()?;
-        let found = match kind {
-            FindKind::Replace | FindKind::Constrain => matched,
-            FindKind::Extend => current.or(&matched),
-        };
-        window.found = found.iter().collect();
-        window.current = 0;
-        window.mode = Mode::Browse;
-        window.sort = None;
-        if window.found.is_empty() {
-            return Err(NO_RECORDS_MATCH.into());
+        if field.occurrence != window.occurrence
+            || om_data::found::findable(&def) == Findable::Ignored
+        {
+            return Err(HostError::Unsupported);
         }
-        Ok(())
+        if window.mode == Mode::Find {
+            let before = window.browse_current;
+            self.enter_mode(Mode::Browse, false, None)?;
+            let window = self.window_mut()?;
+            window.current = before.min(window.found.len().saturating_sub(1));
+        }
+        let value = self.value_of(field)?;
+        let field_kind = match value.value_type() {
+            ValueType::Text => om_data::FieldKind::Text,
+            ValueType::Number => om_data::FieldKind::Number,
+            ValueType::Date => om_data::FieldKind::Date,
+            ValueType::Time => om_data::FieldKind::Time,
+            ValueType::Timestamp => om_data::FieldKind::Timestamp,
+            ValueType::Container => om_data::FieldKind::Container,
+        };
+        let text = matching_text(&value, &self.cx()).ok_or(HostError::Unsupported)?;
+        let mut request = Request::default();
+        request.set(
+            field.field,
+            om_data::found::matching_criterion(&text, Some(field_kind)),
+        );
+        self.leave()?;
+        self.find_with(kind, vec![request], false)
     }
 
     /// Sort Records with its stored order (script-steps.md 11.1); without
@@ -3893,6 +4155,211 @@ impl Network for ServerHost {
     ) -> HostResult<om_scripts::runtime::UrlResponse> {
         self.fetch_url_step(request)
     }
+
+    fn send_mail(&mut self, mail: &om_scripts::runtime::Mail) -> HostResult {
+        self.send_mail_step(mail)
+    }
 }
-impl Accounts for ServerHost {}
+/// FileMaker's error 310, "Cannot modify items because another user is
+/// modifying them": Reset Account Password's code when the account catalog
+/// is locked (script-runtime.md 2.3, its 8003).
+const ACCOUNTS_IN_USE: i32 = 310;
+
+/// The attention code of a catalog change (`kDBAttnCatalog`,
+/// schema-path.md 9).
+const ATTENTION_CATALOG: u32 = 2;
+
+/// `text` cut to at most `units` UTF-16 code units, as Change Password cuts
+/// its passwords (local-files.md 2.4); a character that would be split
+/// goes whole.
+fn utf16_prefix(text: &str, units: usize) -> &str {
+    let mut counted = 0;
+    for (at, c) in text.char_indices() {
+        counted += c.len_utf16();
+        if counted > units {
+            return &text[..at];
+        }
+    }
+    text
+}
+
+impl ServerHost {
+    /// Run `edit` while the session holds the write lock FileMaker Pro's
+    /// Manage Security takes on the account catalog `[23, 1]`
+    /// (local-files.md 2.4), so that a client saving accounts and a script
+    /// do not change them at once: 310 while another user holds it
+    /// (FileMaker's code for Reset Account Password, inferred for the
+    /// other account steps). `edit` gets the modification stamp to write
+    /// and says whether it wrote; once it has, the other clients are told
+    /// the catalog changed, as a
+    /// client's commit tells them. A file the server hosts read-only
+    /// changes nothing: 3 (OpenMaker's choice).
+    fn edit_accounts(
+        &self,
+        step: &str,
+        edit: impl FnOnce(&crate::hosting::ModStamp<'_>) -> HostResult<bool>,
+    ) -> HostResult {
+        if self.hosted.read_only {
+            info!(
+                "{:?}: {step} changed nothing: the file is hosted read-only",
+                self.hosted.name
+            );
+            return Err(ErrorCode::UNAVAILABLE.into());
+        }
+        let catalog = vec![vec![23], vec![1]];
+        self.hosted
+            .lock_table()
+            .lock(&catalog, self.user, LOCK_WRITE, &self.holder)
+            .map_err(|conflict| {
+                info!(
+                    "{:?}: {step} refused: the accounts are in use by {}",
+                    self.hosted.name, conflict.users
+                );
+                HostError::Error(ErrorCode(ACCOUNTS_IN_USE))
+            })?;
+        let time = crate::connection::host_time_key();
+        // `Get ( UserName )` of a server script is its account's name.
+        let stamp = crate::hosting::ModStamp {
+            user: &self.account,
+            account: &self.account,
+            time: &time,
+        };
+        let result = edit(&stamp);
+        self.hosted.lock_table().release_path(&catalog, self.user);
+        if result == Ok(true) {
+            writes::notify(
+                &self.hosted,
+                &self.shared.mailboxes,
+                self.user.connection,
+                &[
+                    writes::Change {
+                        path: catalog.clone(),
+                        code: ATTENTION_CATALOG,
+                    },
+                    writes::Change {
+                        path: vec![vec![23], vec![1], vec![1]],
+                        code: ATTENTION_CATALOG,
+                    },
+                ],
+            );
+        }
+        result.map(|_| ())
+    }
+}
+
+impl Accounts for ServerHost {
+    /// Change Password (83), as FileMaker's `DoChangePassword` runs it
+    /// (local-files.md 2.4): the password of the account the session
+    /// logged in with, found by its record key so that a rename since
+    /// cannot redirect it, both passwords cut to 100 UTF-16 code units,
+    /// and 3 for [Guest] or an account of another kind. Then
+    /// [`crate::hosting::Hosted::change_password`] sets it with
+    /// `SetPassword`'s errors (212 a wrong old password, 206 a set that
+    /// does not allow it, 208 shorter than the set's minimum, 209 the same
+    /// password, 210 an inactive account), skipping the set's checks for a
+    /// step with full access, and saves it before the step ends. With its
+    /// dialog the step is refused with 3: FileMaker Server's handling of
+    /// that dialog is not measured.
+    fn change_password(&mut self, old: &str, new: &str, with_dialog: bool) -> HostResult {
+        if with_dialog {
+            return Err(HostError::Unsupported);
+        }
+        let Some(key) = self.account_key.clone() else {
+            return Err(HostError::Unsupported);
+        };
+        let is_file_account =
+            self.hosted.accounts().iter().any(|a| {
+                a.key == key && a.kind == Some(crate::accounts::AccountKind::FileMakerFile)
+            });
+        if key == [1] || !is_file_account {
+            return Err(HostError::Unsupported);
+        }
+        let (old, new) = (utf16_prefix(old, 100), utf16_prefix(new, 100));
+        let manager = self.privileged();
+        self.edit_accounts("Change Password", |stamp| {
+            let now = jiff::Zoned::now().datetime();
+            self.hosted
+                .change_password(
+                    crate::hosting::AccountRef::Key(&key),
+                    old,
+                    new,
+                    manager,
+                    Some(stamp),
+                    now,
+                )
+                .map(|()| true)
+                .map_err(|e| {
+                    if let crate::hosting::PasswordChangeError::Unwritten(reason) = &e {
+                        warn!(
+                            "{:?}: Change Password changed nothing: {reason}",
+                            self.hosted.name
+                        );
+                    }
+                    ErrorCode(e.code().unwrap_or(ErrorCode::UNAVAILABLE.0)).into()
+                })
+        })
+    }
+
+    /// Reset Account Password (136): only a session with full access
+    /// privileges (9), as FileMaker's `DoResetAccount`;
+    /// [`crate::hosting::Hosted::reset_account_password`] writes it. With
+    /// "Expire password" it is refused (3) before anything changes: the
+    /// account could then sign in to a hosted file only with a new
+    /// password, which this server does not take at login yet
+    /// ([#248](https://github.com/OpenMaker-Dev/openmaker/issues/248)).
+    fn reset_account_password(&mut self, name: &str, password: &str, expire: bool) -> HostResult {
+        self.require_full_access()?;
+        if expire {
+            info!(
+                "{:?}: Reset Account Password with Expire password is not supported yet",
+                self.hosted.name
+            );
+            return Err(HostError::Unsupported);
+        }
+        self.edit_accounts("Reset Account Password", |stamp| {
+            let now = jiff::Zoned::now().datetime();
+            self.hosted
+                .reset_account_password(name, password, false, Some(stamp), now)
+                .map(|()| true)
+                .map_err(|e| self.account_edit_error("Reset Account Password", &e))
+        })
+    }
+
+    /// Delete Account (135): only a session with full access privileges
+    /// (9), as FileMaker's `DoDeleteAccount`;
+    /// [`crate::hosting::Hosted::delete_account`] removes it.
+    fn delete_account(&mut self, name: &str) -> HostResult {
+        self.require_full_access()?;
+        self.edit_accounts("Delete Account", |stamp| {
+            self.hosted
+                .delete_account(name, Some(stamp))
+                .map(|()| true)
+                .map_err(|e| self.account_edit_error("Delete Account", &e))
+        })
+    }
+
+    /// Enable Account (137): only a session with full access privileges
+    /// (9), as FileMaker's `DoEnableAccount`;
+    /// [`crate::hosting::Hosted::enable_account`] writes it.
+    fn enable_account(&mut self, name: &str, active: bool) -> HostResult {
+        self.require_full_access()?;
+        self.edit_accounts("Enable Account", |stamp| {
+            self.hosted
+                .enable_account(name, active, Some(stamp))
+                .map_err(|e| self.account_edit_error("Enable Account", &e))
+        })
+    }
+}
+
+impl ServerHost {
+    /// The step error for Reset Account Password's or Enable Account's
+    /// `e`: its FileMaker code, or 3 for an account or file that could not
+    /// be written, logged.
+    fn account_edit_error(&self, step: &str, e: &crate::hosting::AccountEditError) -> HostError {
+        if let crate::hosting::AccountEditError::Unwritten(reason) = e {
+            warn!("{:?}: {step} changed nothing: {reason}", self.hosted.name);
+        }
+        ErrorCode(e.code().unwrap_or(ErrorCode::UNAVAILABLE.0)).into()
+    }
+}
 impl Platform for ServerHost {}

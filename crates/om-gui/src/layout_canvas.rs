@@ -1142,7 +1142,8 @@ fn draw(
                                 left: f64::from((pointer.x - origin.x).round()),
                                 top: f64::from((pointer.y - origin.y).round()),
                                 width: 120.0,
-                                height: 22.0,
+                                // Leave room for Universal Touch edit-box padding.
+                                height: 44.0,
                                 field: Some(payload.field.clone()),
                                 label: true,
                                 control: 0,
@@ -1486,9 +1487,14 @@ fn draw(
                                 .or_else(|| (texts.stored)(object.key))
                         })
                         .flatten();
+                    // A field of another occurrence reads `::Field`, as in
+                    // FileMaker Pro's Layout mode.
                     let caption = words
                         .as_deref()
-                        .or(object.field_name.as_deref())
+                        .or(object
+                            .field_name
+                            .as_deref()
+                            .map(|name| name.find("::").map_or(name, |at| &name[at..])))
                         .unwrap_or(&object.kind_name);
                     painter
                         .with_clip_rect(rect.shrink(3.0).intersect(ui.clip_rect()))

@@ -163,6 +163,8 @@ step_id,step_name,order,parameter,xml_type,storage,values,default,evidence,notes
 87,Show Custom Dialog,6,Input labels,Calculation,slot:2:calc|slot:3:calc|slot:4:calc,,,xml+params,"XML positions and corpus: label calculations are slots 2, 3, 4 for inputs 1-3 (script-steps.md 11.8)"
 87,Show Custom Dialog,7,Password,Boolean,slot:0:num|slot:1:num|slot:2:num,,,xml+params,"XML and corpus: ""use password character"" is [00 n-1]/03 = 1 for input n (slots 0-2) (script-steps.md 11.8)"
 87,Show Custom Dialog,8,Window,Calculation,slot:8:calc|slot:9:calc|slot:11:calc|slot:12:calc,,,xml+params,"Height 8, Width 9, Top 11, Left 12"
+87,Show Custom Dialog,9,Close after,Boolean,slot:6:num,,Off,bin-26.1.1,"FileMaker Pro 26.1.1: XML AutoCloseTimer's Boolean (SerializeShowCustomDialog); no step written by 26.1.1 read yet, its byte width unmeasured (script-steps.md 12.4)"
+87,Show Custom Dialog,10,Close after seconds,Calculation,slot:13:calc,,,bin-26.1.1,"FileMaker Pro 26.1.1: XML AutoCloseSeconds, written when Close after is on (script-steps.md 12.4)"
 88,Open Script Workspace,0,,,,,,xml+params,no parameters: absent from both XML dispatchers and from GenerateParameters
 89,# (comment),1,Comment,Text,slot:0:text,,,xml+params,kTextData
 89,# (comment),2,Disabled/collapsed,Boolean,flag:0x800000,,,xml+params,kDisableStepCollapsed
@@ -570,3 +572,9 @@ step_id,step_name,order,parameter,xml_type,storage,values,default,evidence,notes
 246,Open PDF,2,Password,Calculation,slot:7:calc|flag:0x100,,,xml+params+oracle,XML PDFPassword
 246,Open PDF,3,Source file,List,key:82|flag:0x20|reserved:field|slot:32:text|slot:10:calc|flag:0x200,,,xml+params+oracle,"File: UniversalPathList at [00 0]/82 and Boolean Create folders (written from 0x200 as id 512, read as id 256 into 0x100); Target: field or variable as a response target"
 247,Cancel PDF,0,,,,,,xml+params,no parameters: absent from both XML dispatchers and from GenerateParameters
+249,Replace Field Contents by Name,1,With dialog,Boolean,flag:!0x80,,On,bin,On/Off; On = flag clear (kNoInteract is the stored bit); as Replace Field Contents (91)
+249,Replace Field Contents by Name,2,Target field by name,Calculation,slot:1:calc|flag:0x8000000,,,bin,"kFieldSpecByCalc enables the field-name calculation in slot 1, as Set Field By Name (147); script-steps.md 12.4"
+249,Replace Field Contents by Name,3,Replace with,ReplaceFieldContents,slot:1:num|slot:0:calc|slot:2:num|slot:3:text|slot:4:num|slot:5:num|slot:6:num|flag:0x2000000,1 current contents; 2 serial numbers; 3 calculated result,,bin,"as Replace Field Contents (91): XML replace List value = [00 1]/03; calculation slot 0; serial: Update Entry Options [00 4]/03, Entry option values [00 5]/03, Initial value text [00 3]/01, increment [00 2]/03; Skip auto-enter options: the reader sets kRestore and [00 6]/03 = 0 for True, 1 for False; script-steps.md 11.8"
+250,Set Variable by Name,1,Name,Calculation,slot:3:calc,,,bin,"the variable name, calculated ($local or $$global); script-steps.md 12.4"
+250,Set Variable by Name,2,Value,Calculation,slot:1:calc,,,bin,as Set Variable (141)
+250,Set Variable by Name,3,Repetition,Calculation,slot:2:calc,,,bin,"absent = 1, as Set Variable (141)"
